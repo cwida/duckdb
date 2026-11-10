@@ -5,10 +5,10 @@
 require parquet
 
 statement ok
-COPY (SELECT 1 i) TO '__TEST_DIR__/prepared_metadata.parquet'
+COPY (SELECT 1 i) TO '{TEST_DIR}/prepared_metadata.parquet'
 
 statement ok
-PREPARE p AS SELECT row_group_id, row_group_num_rows FROM parquet_metadata('__TEST_DIR__/prepared_metadata.parquet')
+PREPARE p AS SELECT row_group_id, row_group_num_rows FROM parquet_metadata('{TEST_DIR}/prepared_metadata.parquet')
 
 query II
 EXECUTE p
@@ -21,7 +21,7 @@ EXECUTE p
 0	1
 
 statement ok
-PREPARE s AS SELECT name FROM parquet_schema('__TEST_DIR__/prepared_metadata.parquet') WHERE name = 'i'
+PREPARE s AS SELECT name FROM parquet_schema('{TEST_DIR}/prepared_metadata.parquet') WHERE name = 'i'
 
 query I
 EXECUTE s
@@ -34,7 +34,7 @@ EXECUTE s
 i
 
 statement ok
-PREPARE f AS SELECT num_rows FROM parquet_file_metadata('__TEST_DIR__/prepared_metadata.parquet')
+PREPARE f AS SELECT num_rows FROM parquet_file_metadata('{TEST_DIR}/prepared_metadata.parquet')
 
 query I
 EXECUTE f

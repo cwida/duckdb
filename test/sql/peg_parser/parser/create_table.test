@@ -64,6 +64,12 @@ CALL check_peg_parser($TEST_PEG_PARSER$CREATE TEMPORARY TABLE integers(i INTEGER
 statement ok
 CALL check_peg_parser($TEST_PEG_PARSER$CREATE TABLE tbl8 AS SELECT 42 WITH NO DATA$TEST_PEG_PARSER$);
 
+statement ok
+CALL check_peg_parser($TEST_PEG_PARSER$CREATE TABLE t(i INTEGER UNIQUE IMMEDIATE)$TEST_PEG_PARSER$);
+
+statement ok
+CALL check_peg_parser($TEST_PEG_PARSER$CREATE TABLE t(i INTEGER, PRIMARY KEY(i) DEFERRED)$TEST_PEG_PARSER$);
+
 statement error
 CREATE TABLE dotted_column_name(a.b INTEGER);
 ----

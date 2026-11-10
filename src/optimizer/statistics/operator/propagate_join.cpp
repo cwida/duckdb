@@ -106,7 +106,33 @@ bool StatisticsPropagator::HandleJoinAlwaysMatches(LogicalJoin &join, unique_ptr
 	}
 }
 
+//! Suspends attaching verification statistics to propagated expressions for the lifetime of the guard
+struct VerificationStatsGuard {
+	explicit VerificationStatsGuard(bool &attach_p) : attach(attach_p), previous(attach_p) {
+		attach = false;
+	}
+	~VerificationStatsGuard() {
+		attach = previous;
+	}
+
+	bool &attach;
+	bool previous;
+};
+
 void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, unique_ptr<LogicalOperator> &node_ptr) {
+	// every condition is evaluated over the candidate pairs of the join inputs, so the verification statistics of
+	// the condition expressions are derived from the input statistics before any condition narrows them
+	for (auto &condition : join.conditions) {
+		if (condition.IsComparison()) {
+			PropagateExpression(condition.LeftReference());
+			PropagateExpression(condition.RightReference());
+		} else {
+			PropagateExpression(condition.JoinExpressionReference());
+		}
+	}
+	// below, the conditions are propagated again against statistics narrowed by the earlier conditions: these hold
+	// for the join output and the later conditions, but not for the vectors the conditions are evaluated on
+	VerificationStatsGuard narrowing_guard(attach_verification_stats);
 	for (idx_t i = 0; i < join.conditions.size(); i++) {
 		auto &condition = join.conditions[i];
 		if (!condition.IsComparison()) {
@@ -116,6 +142,11 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 
 		const auto stats_left = PropagateExpression(condition.LeftReference());
 		const auto stats_right = PropagateExpression(condition.RightReference());
+		if (join.join_type != JoinType::MARK) {
+			// Ordinary joins reject both FALSE and NULL candidate pairs.
+			condition.SetComparisonType(SimplifyDistinctComparison(condition.GetComparisonType(), stats_left.get(),
+			                                                       stats_right.get(), ComparisonContext::JOIN));
+		}
 		if (stats_left && stats_right) {
 			if ((condition.GetComparisonType() == ExpressionType::COMPARE_DISTINCT_FROM ||
 			     condition.GetComparisonType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM) &&
@@ -189,7 +220,8 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 		}
 		switch (join.join_type) {
 		case JoinType::INNER:
-		case JoinType::SEMI: {
+		case JoinType::SEMI:
+		case JoinType::RIGHT_SEMI: {
 			UpdateFilterStatistics(condition.GetLHS(), condition.GetRHS(), condition.GetComparisonType());
 			auto updated_stats_left = PropagateExpression(condition.LeftReference());
 			auto updated_stats_right = PropagateExpression(condition.RightReference());

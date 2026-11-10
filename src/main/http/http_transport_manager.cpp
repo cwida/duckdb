@@ -361,7 +361,7 @@ void HTTPTransportManager::SetHTTPUtil(const shared_ptr<HTTPUtil> &new_http_util
 		if (clients.IsClosed()) {
 			throw InvalidInputException("HTTP transport manager is closed");
 		}
-		if (providers.size() == DConstants::INVALID_INDEX) {
+		if (providers.size() == providers.max_size()) {
 			throw InternalException("HTTP provider identifiers exhausted");
 		}
 		old_provider_epoch = current_provider_epoch;

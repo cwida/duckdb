@@ -244,6 +244,18 @@ SELECT replace(replace(trim(content, chr(10)), chr(10), ' '), chr(9), '') FROM r
 {"type":"Feature","id":1,"geometry":null,"properties":{"name":"x"}}
 
 statement error
+COPY (
+    WITH RECURSIVE t(d, v) AS (
+        SELECT 0, [1]::VARIANT
+        UNION ALL
+        SELECT d + 1, [v]::VARIANT FROM t WHERE d < 128
+    )
+    SELECT 'POINT(1 2)'::GEOMETRY AS geom, v AS prop FROM t WHERE d = 128
+) TO '{TEST_DIR}/deep_variant.geojson' (FORMAT GEOJSON);
+----
+<REGEX>:.*VARIANT exceeds maximum recursion depth.*
+
+statement error
 COPY (SELECT 1 AS id, 'x' AS name) TO '{TEST_DIR}/no_geom.geojson' (FORMAT GEOJSON);
 ----
 <REGEX>:.*requires a GEOMETRY column.*

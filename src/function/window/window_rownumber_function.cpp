@@ -135,6 +135,7 @@ WindowFunction RowNumberFun::GetFunction() {
 	    Name, {}, LogicalType::BIGINT, ExpressionType::WINDOW_ROW_NUMBER, nullptr, WindowRowNumberExecutor::GetBounds,
 	    WindowRowNumberExecutor::GetSharing, WindowRowNumberExecutor::GetGlobal, WindowRowNumberExecutor::GetLocal,
 	    WindowRowNumberLocalState::Sinker, WindowRowNumberLocalState::Finalizer, WindowRowNumberExecutor::GetData);
+	fun.SetIsRanking(true);
 	fun.SetCanStreamCallback(WindowRowNumberExecutor::CanStream);
 	fun.SetStreamingStateCallback(WindowRowNumberExecutor::GetStreamingState);
 	fun.SetStreamingDataCallback(WindowRowNumberExecutor::StreamData);
@@ -232,7 +233,9 @@ WindowFunction NtileFun::GetFunction() {
 	                   WindowNtileExecutor::GetBounds, WindowNtileExecutor::GetSharing, WindowNtileExecutor::GetGlobal,
 	                   WindowNtileExecutor::GetLocal, WindowNtileLocalState::Sinker, WindowNtileLocalState::Finalizer,
 	                   WindowNtileExecutor::GetData);
+	fun.SetIsRanking(true);
 	fun.GetSignature().AddParameter("num_buckets", LogicalType::BIGINT);
+	fun.SetFallible(); // non-positive bucket counts are rejected at runtime
 	return fun;
 }
 

@@ -5,6 +5,8 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/function/aggregate/distributive_functions.hpp"
+#include "duckdb/parser/expression/case_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/window_expression.hpp"
@@ -80,8 +82,38 @@ static LogicalType BindRangeExpression(ClientContext &context, const string &nam
 	return bound->GetReturnType();
 }
 
+//! COUNT(*) FILTER (WHERE p) counts the rows where p holds, which is what COUNT(v) counts for a v
+//! that is null exactly where p does not. Spelled that way the frame is answered by a segment tree;
+//! COUNT(*) has no argument for one to be built over, so it counts the rows a filter leaves in one at
+//! a time - a pass over the partition per row, where the frame grows a row at a time.
+static void RewriteFilteredCountStar(WindowExpression &window) {
+	if (!window.FilterMutable() || !window.GetArguments().empty() || window.Distinct() || !window.ArgOrders().empty()) {
+		return;
+	}
+	auto &qualified = window.GetQualifiedName();
+	// COUNT(*) reaches here as COUNT with no argument; the star is what the parser drops
+	const auto &spelled = qualified.Name().GetIdentifierName();
+	if (!qualified.Catalog().empty() || !qualified.Schema().empty() ||
+	    (!StringUtil::CIEquals(spelled, CountFun::Name) && !StringUtil::CIEquals(spelled, CountStarFun::Name))) {
+		return;
+	}
+
+	auto kept = make_uniq<CaseExpression>();
+	CaseCheck check;
+	check.when_expr = std::move(window.FilterMutable());
+	check.then_expr = ConstantExpression::FromValue(Value::BOOLEAN(true));
+	kept->CaseChecksMutable().push_back(std::move(check));
+	kept->ElseMutable() = ConstantExpression::FromValue(Value(LogicalType::BOOLEAN));
+
+	window.GetArgumentsMutable().emplace_back(std::move(kept));
+	window.FilterMutable() = nullptr;
+	window.SetFunctionName(CountFun::Name);
+}
+
 BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_t depth) {
 	QueryErrorContext error_context(window.GetQueryLocation());
+
+	RewriteFilteredCountStar(window);
 
 	//	Check for macros pretending to be aggregates
 	EntryLookupInfo function_lookup(CatalogType::SCALAR_FUNCTION_ENTRY, window.GetQualifiedName(), error_context);
@@ -134,6 +166,10 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	// bind inside the children of the window function
 	// we set the inside_window flag to true to prevent binding nested window functions
 	inside_window = true;
+	// window arguments are evaluated by the window operator, where a transported error flag has no
+	// consumer; nested subqueries in them bind as plain subqueries
+	const auto save_transport_try_errors = transport_try_errors;
+	transport_try_errors = false;
 	ErrorData error;
 	vector<unique_ptr<Expression>> bound_args;
 	for (auto &child : window.GetArgumentsMutable()) {
@@ -179,6 +215,7 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	}
 
 	inside_window = false;
+	transport_try_errors = save_transport_try_errors;
 	if (error.HasError()) {
 		// failed to bind children of window function
 		return BindResult(std::move(error));

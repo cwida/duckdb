@@ -214,7 +214,7 @@ DuckDBReader::DuckDBReader(ClientContext &context_p, OpenFileInfo file_p, const 
 	vector<reference<TableCatalogEntry>> tables;
 	vector<reference<TableCatalogEntry>> candidate_tables;
 	catalog.ScanSchemas(context, [&](SchemaCatalogEntry &schema) {
-		schema.Scan(CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
+		schema.Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
 			if (entry.type != CatalogType::TABLE_ENTRY) {
 				return;
 			}
@@ -259,7 +259,7 @@ AttachedDatabase &DuckDBReader::GetAttachedDatabase() {
 		info.name = GenerateInternalName("__duckdb_reader_");
 		info.on_conflict = OnCreateConflict::ERROR_ON_CONFLICT;
 		unordered_map<string, Value> attach_kv;
-		AttachOptions attach_options(attach_kv, AccessMode::READ_ONLY);
+		AttachOptions attach_options(context.GetContext(), attach_kv, AccessMode::READ_ONLY);
 		attach_options.visibility = AttachVisibility::HIDDEN;
 
 		auto attached = db_manager.AttachDatabase(context, info, attach_options);

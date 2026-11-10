@@ -1483,6 +1483,10 @@ date_t StrpTimeFormat::ParseResult::ToDate() {
 }
 
 bool StrpTimeFormat::ParseResult::TryToDate(date_t &result) {
+	if (is_special) {
+		result = special;
+		return true;
+	}
 	return Date::TryFromDate(data[0], data[1], data[2], result);
 }
 
@@ -1526,28 +1530,16 @@ timestamp_t StrpTimeFormat::ParseResult::ToTimestamp() {
 }
 
 bool StrpTimeFormat::ParseResult::TryToTimestamp(timestamp_t &result) {
+	if (is_special) {
+		result = ToTimestamp();
+		return true;
+	}
 	date_t date;
 	if (!TryToDate(date)) {
 		return false;
 	}
 	dtime_t time = ToTime();
 	return Timestamp::TryFromDatetime(date, time, result);
-}
-
-//! days * NANOS_PER_DAY + time_ns without overflowing on the first day of the range, where the final value is valid but
-//! the number of nanoseconds in the days alone is not
-static bool TryDaysAndTimeToNanos(int64_t days, int64_t time_ns, int64_t &result) {
-	int64_t day_nanos;
-	if (TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(days, Interval::NANOS_PER_DAY, day_nanos)) {
-		return TryAddOperator::Operation<int64_t, int64_t, int64_t>(day_nanos, time_ns, result);
-	}
-	if (days >= 0) {
-		return false;
-	}
-	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(days + 1, Interval::NANOS_PER_DAY, day_nanos)) {
-		return false;
-	}
-	return TryAddOperator::Operation<int64_t, int64_t, int64_t>(day_nanos, time_ns - Interval::NANOS_PER_DAY, result);
 }
 
 timestamp_ns_t StrpTimeFormat::ParseResult::ToTimestampNS() {
@@ -1564,7 +1556,7 @@ timestamp_ns_t StrpTimeFormat::ParseResult::ToTimestampNS() {
 		// Don't use rounded µs
 		const auto date = ToDate();
 		const auto time = ToTimeNS();
-		if (!TryDaysAndTimeToNanos(date.days, time, result.value)) {
+		if (!Timestamp::TryCombineUnits(date.days, time, Interval::NANOS_PER_DAY, result.value)) {
 			throw ConversionException("Date out of nanosecond range: %d-%d-%d", data[0], data[1], data[2]);
 		}
 		if (!result.IsFinite()) {
@@ -1576,6 +1568,10 @@ timestamp_ns_t StrpTimeFormat::ParseResult::ToTimestampNS() {
 }
 
 bool StrpTimeFormat::ParseResult::TryToTimestampNS(timestamp_ns_t &result) {
+	if (is_special) {
+		result = ToTimestampNS();
+		return true;
+	}
 	date_t date;
 	if (!TryToDate(date)) {
 		return false;
@@ -1583,7 +1579,7 @@ bool StrpTimeFormat::ParseResult::TryToTimestampNS(timestamp_ns_t &result) {
 
 	// Don't use rounded µs
 	const auto time = ToTimeNS();
-	if (!TryDaysAndTimeToNanos(date.days, time, result.value)) {
+	if (!Timestamp::TryCombineUnits(date.days, time, Interval::NANOS_PER_DAY, result.value)) {
 		return false;
 	}
 	return result.IsFinite();

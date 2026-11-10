@@ -55,5 +55,18 @@
         "comment": "File is one big array of units"
       }
     ]
+  },
+  {
+    "name": "JSONKeyMatch",
+    "values": [
+      {
+        "name": "EXACT",
+        "comment": "Object keys match names byte for byte"
+      },
+      {
+        "name": "CASE_INSENSITIVE",
+        "comment": "Object keys match names ignoring ASCII case"
+      }
+    ]
   }
 ]

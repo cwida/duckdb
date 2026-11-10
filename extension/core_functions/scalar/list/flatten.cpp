@@ -135,6 +135,23 @@ unique_ptr<BaseStatistics> ListFlattenStats(ClientContext &context, FunctionStat
 	auto &list_child_stats = ListStats::GetChildStats(child_stats[0]);
 	auto child_copy = list_child_stats.Copy();
 	child_copy.CopyValidity(child_stats[0]);
+	// the result length is the sum of the inner lengths, NULL inner lists add no elements
+	auto outer_min = ListStats::MinListLength(child_stats[0]);
+	auto outer_max = ListStats::MaxListLength(child_stats[0]);
+	auto inner_min = ListStats::MinListLength(list_child_stats);
+	auto inner_max = ListStats::MaxListLength(list_child_stats);
+	optional_idx min_length(0);
+	if (outer_min.IsValid() && inner_min.IsValid() && !list_child_stats.CanHaveNull() &&
+	    (inner_min.GetIndex() == 0 || outer_min.GetIndex() <= NumericLimits<idx_t>::Maximum() / inner_min.GetIndex())) {
+		min_length = outer_min.GetIndex() * inner_min.GetIndex();
+	}
+	optional_idx max_length;
+	if (outer_max.IsValid() && inner_max.IsValid() &&
+	    (inner_max.GetIndex() == 0 || outer_max.GetIndex() <= NumericLimits<idx_t>::Maximum() / inner_max.GetIndex())) {
+		max_length = outer_max.GetIndex() * inner_max.GetIndex();
+	}
+	ListStats::ResetTotalListLength(child_copy);
+	ListStats::SetLengthBounds(child_copy, min_length, max_length);
 	return child_copy.ToUnique();
 }
 

@@ -8,6 +8,7 @@ add_library_unity(
   bind_expressionlistref.cpp
   bind_column_data_ref.cpp
   bind_joinref.cpp
+  bind_match_recognize_ref.cpp
   bind_pivot.cpp
   bind_showref.cpp
   bind_subqueryref.cpp

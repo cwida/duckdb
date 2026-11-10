@@ -25,6 +25,8 @@ class LogicalComparisonJoin;
 class LogicalColumnDataGet;
 class LogicalGet;
 class LogicalExpressionGet;
+class LogicalCopyToFile;
+class LogicalCreateTable;
 class LogicalFilter;
 class LogicalProjection;
 class LogicalSecureView;
@@ -106,6 +108,21 @@ struct LogicalPlanSQLExportHelpers {
 
 	static bool IsIdentityProjection(const LogicalProjection &projection,
 	                                 const vector<LogicalPlanSQLExportField> &fields);
+
+	//! Alias the relation's visible columns with the statement's output names.
+	static LogicalPlanSQLExportResult ApplyOutputNames(LogicalPlanSQLExportResult result,
+	                                                   const vector<Identifier> &output_names);
+};
+
+//! Export of write statements with a query source (sql_export_statements.cpp)
+struct SQLExportStatementHelpers {
+	static LogicalPlanSQLExportResult ExportCopyToNode(LogicalCopyToFile &op, LogicalPlanSQLExportContext &context,
+	                                                   const LogicalPlanVerificationPath &path);
+	static LogicalPlanSQLExportResult ExportCreateTableAsNode(LogicalCreateTable &op,
+	                                                          LogicalPlanSQLExportContext &context,
+	                                                          const LogicalPlanVerificationPath &path);
+	//! The query node that carries WITH definitions for this exported relation.
+	static QueryNode &SourceDefinitionNode(QueryNode &query);
 };
 
 //! Export of data-modifying plan roots and CTE bodies (sql_export_dml.cpp)
@@ -118,23 +135,13 @@ struct SQLExportDMLHelpers {
 	                                                  const LogicalPlanVerificationPath &path);
 	//! Whether this operator is a data-modifying statement body: a DML operator or its RETURNING projection.
 	static bool MatchDMLBody(LogicalOperator &op);
+	//! Whether the statement-body chain itself crosses a replaced source boundary, in which case
+	//! the ordinary relational export must handle it instead of the statement export.
+	static bool ContainsReplacedBoundary(const LogicalPlanSQLExportContext &context, LogicalOperator &op);
 	//! Export a data-modifying statement body outside the plan root (e.g. a materialized CTE side).
 	static LogicalPlanSQLExportResult ExportBody(LogicalPlanSQLExportContext &context, LogicalOperator &op,
 	                                             const LogicalPlanVerificationPath &path);
 	//! Whether this exported query is a data-modifying statement node.
 	static bool IsDMLNode(const QueryNode &query);
-	//! The row-id column that keys an exported data-modifying statement, with its position among the
-	//! row-id columns the binder appends to the bound source.
-	struct SelectedRowId {
-		//! The selected column, pointing into the given map, or null when no key exists
-		optional_ptr<const TableColumn> column;
-		//! Index of the selected column within the row-id set
-		idx_t ordinal = 0;
-		//! Number of row-id columns the binder appends to the source
-		idx_t count = 0;
-	};
-	//! Selects the single row-id column, or the logical row identifier among several.
-	static SelectedRowId SelectRowIdColumn(const vector<column_t> &row_id_columns,
-	                                       const virtual_column_map_t &virtual_columns);
 };
 } // namespace duckdb

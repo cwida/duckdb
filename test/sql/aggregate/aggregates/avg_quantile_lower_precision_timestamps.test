@@ -1,0 +1,84 @@
+# name: test/sql/aggregate/aggregates/avg_quantile_lower_precision_timestamps.test
+# description: avg and approx_quantile widen TIMESTAMP_S, TIMESTAMP_MS and DATE to TIMESTAMP, not to TIMESTAMP_NS, so values outside the nanosecond range work
+# group: [aggregates]
+
+query I
+SELECT approx_quantile(TIMESTAMP_S '3000-01-01', 0.5);
+----
+3000-01-01 00:00:00
+
+query I
+SELECT approx_quantile(TIMESTAMP_MS '3000-01-01', 0.5);
+----
+3000-01-01 00:00:00
+
+query I
+SELECT avg(TIMESTAMP_S '3000-01-01');
+----
+3000-01-01 00:00:00
+
+query I
+SELECT avg(TIMESTAMP_MS '1600-01-01');
+----
+1600-01-01 00:00:00
+
+query IIII
+SELECT typeof(approx_quantile(TIMESTAMP_S '2000-01-01', 0.5)), typeof(approx_quantile(TIMESTAMP_MS '2000-01-01', 0.5)), typeof(avg(TIMESTAMP_S '2000-01-01')), typeof(avg(TIMESTAMP_MS '2000-01-01'));
+----
+TIMESTAMP	TIMESTAMP	TIMESTAMP	TIMESTAMP
+
+# the values just outside the nanosecond range
+query II
+SELECT approx_quantile(TIMESTAMP_S '2262-04-11 23:47:17', 0.5), approx_quantile(TIMESTAMP_S '1677-09-21 00:12:43', 0.5);
+----
+2262-04-11 23:47:17	1677-09-21 00:12:43
+
+# values inside it keep their results, in microseconds
+query II
+SELECT approx_quantile(TIMESTAMP_S '2262-04-11 23:47:16', 0.5), avg(TIMESTAMP_MS '1677-09-21 00:12:44.123');
+----
+2262-04-11 23:47:16	1677-09-21 00:12:44.123
+
+statement ok
+CREATE TABLE ts_s AS SELECT * FROM (VALUES (TIMESTAMP_S '2000-01-01'), (TIMESTAMP_S '3000-01-01')) t(t);
+
+query IIII
+SELECT avg, q25, q50, q75 FROM (SUMMARIZE ts_s);
+----
+2499-12-31 12:00:00	2000-01-01 00:00:00	2499-12-31 12:00:00	3000-01-01 00:00:00
+
+query II
+SELECT avg(t), approx_quantile(t, 0.5) FROM ts_s;
+----
+2499-12-31 12:00:00	2499-12-31 12:00:00
+
+statement ok
+CREATE TABLE ts_ms AS SELECT * FROM (VALUES (TIMESTAMP_MS '1600-01-01 12:00:00.5'), (TIMESTAMP_MS '2400-01-01 12:00:00.5')) t(t);
+
+query II
+SELECT avg(t), approx_quantile(t, 0.5) FROM ts_ms;
+----
+2000-01-01 12:00:00.5	2000-01-01 12:00:00.5
+
+# the nanosecond types keep their overloads
+query II
+SELECT typeof(avg(TIMESTAMP_NS '2000-01-01')), typeof(approx_quantile(TIMESTAMP_NS '2000-01-01', 0.5));
+----
+TIMESTAMP_NS	TIMESTAMP_NS
+
+# infinities and NULLs behave as for TIMESTAMP
+query III
+SELECT avg(TIMESTAMP_S 'infinity'), approx_quantile(TIMESTAMP_MS '-infinity', 0.5), avg(NULL::TIMESTAMP_S);
+----
+infinity	-infinity	NULL
+
+# DATE averages widen to TIMESTAMP as well
+query II
+SELECT avg(DATE '3000-01-01'), typeof(avg(DATE '2000-01-01'));
+----
+3000-01-01 00:00:00	TIMESTAMP
+
+query I
+SELECT avg(d) FROM (VALUES (DATE '1600-01-01'), (DATE '2400-01-01')) t(d);
+----
+2000-01-01 00:00:00

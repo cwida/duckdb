@@ -1,0 +1,22 @@
+# name: test/sql/constraints/deferred/test_alter_constraint_check_mode.test
+# description: Test constraint check mode when adding constraints to existing columns
+# group: [deferred]
+
+statement ok
+CREATE TABLE t(i INTEGER, j INTEGER, k INTEGER);
+
+statement ok
+ALTER TABLE t ADD UNIQUE(i) DEFERRED;
+
+statement ok
+ALTER TABLE t ADD PRIMARY KEY(j) DEFERRED;
+
+statement ok
+ALTER TABLE t ADD UNIQUE(k) IMMEDIATE;
+
+query I rowsort
+SELECT constraint_text FROM duckdb_constraints() WHERE table_name = 't' AND constraint_type <> 'NOT NULL';
+----
+PRIMARY KEY(j) DEFERRED
+UNIQUE(i) DEFERRED
+UNIQUE(k) IMMEDIATE

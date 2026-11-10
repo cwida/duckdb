@@ -66,8 +66,6 @@ struct DictFSSTCompressionStorage {
 	static void StringScanPartial(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result,
 	                              idx_t result_offset);
 	static void StringScan(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result);
-	static void StringFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
-	                           idx_t result_idx);
 };
 
 //===--------------------------------------------------------------------===//
@@ -119,7 +117,7 @@ unique_ptr<SegmentScanState> DictFSSTCompressionStorage::StringInitScan(const Qu
                                                                         ColumnSegment &segment) {
 	auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
 	auto state = make_uniq<CompressedStringScanState>(segment, buffer_manager.Pin(segment.GetBlockHandle()));
-	state->Initialize(true);
+	state->Initialize();
 
 	const auto &stats = segment.GetStats();
 	if (stats.GetStatsType() == StatisticsType::STRING_STATS && StringStats::HasMaxStringLength(stats)) {
@@ -139,7 +137,7 @@ void DictFSSTCompressionStorage::StringScanPartial(ColumnSegment &segment, Colum
 
 	auto start = state.GetPositionInSegment();
 	if (!ALLOW_DICT_VECTORS || !scan_state.AllowDictionaryScan(scan_count)) {
-		scan_state.ScanToFlatVector(result, result_offset, start, scan_count);
+		scan_state.ScanToFlatVector(result, result_offset, start, scan_count, state.string_scan_type);
 	} else {
 		scan_state.ScanToDictionaryVector(segment, result, result_offset, start, scan_count);
 	}
@@ -148,17 +146,6 @@ void DictFSSTCompressionStorage::StringScanPartial(ColumnSegment &segment, Colum
 void DictFSSTCompressionStorage::StringScan(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count,
                                             Vector &result) {
 	StringScanPartial<true>(segment, state, scan_count, result, 0);
-}
-
-//===--------------------------------------------------------------------===//
-// Fetch
-//===--------------------------------------------------------------------===//
-void DictFSSTCompressionStorage::StringFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id,
-                                                Vector &result, idx_t result_idx) {
-	// fetch a single row from the string segment
-	CompressedStringScanState scan_state(segment, state.GetOrInsertHandle(segment));
-	scan_state.Initialize(false);
-	scan_state.ScanToFlatVector(result, result_idx, NumericCast<idx_t>(row_id), 1);
 }
 
 //===--------------------------------------------------------------------===//
@@ -175,7 +162,7 @@ void DictFSSTSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vector
 		result.Slice(sel, sel_count);
 		return;
 	}
-	scan_state.Select(result, result_offset, state.GetPositionInSegment(), sel, sel_count);
+	scan_state.Select(result, result_offset, state.GetPositionInSegment(), sel, sel_count, state.string_scan_type);
 }
 
 //===--------------------------------------------------------------------===//
@@ -213,25 +200,31 @@ static void DictFSSTFilter(ColumnSegment &segment, ColumnScanState &state, idx_t
 		auto &dict_sel = scan_state.GetSelVec(start, vector_count);
 		SelectionVector new_sel(sel_count);
 		idx_t approved_tuple_count = 0;
-		for (idx_t idx = 0; idx < sel_count; idx++) {
-			auto row_idx = sel.get_index(idx);
-			D_ASSERT(row_idx < vector_count);
-			auto dict_offset = dict_sel.get_index(row_idx);
-			// Evaluate NULL only when slot zero is referenced by an actual row.
-			if (dict_offset == 0 && !scan_state.null_filter_result_initialized) {
-				Vector null_data(scan_state.dictionary->data, /*offset=*/0, /*end=*/1);
-				SelectionVector null_sel;
-				idx_t null_filter_count = 1;
-				ColumnSegment::FilterSelection(null_sel, null_data, filter_state, 1, null_filter_count);
-				scan_state.filter_result[0] = null_filter_count == 1;
-				scan_state.null_filter_result_initialized = true;
+		if (!sel.IsSet() && (scan_state.null_filter_result_initialized || !segment.GetStats().CanHaveNull())) {
+			approved_tuple_count =
+			    SelectionVector::SelectFromBoolean(scan_state.filter_result.get(), &dict_sel, sel_count,
+			                                       array_ptr<sel_t>(new_sel.data(), new_sel.Capacity()));
+		} else {
+			for (idx_t idx = 0; idx < sel_count; idx++) {
+				auto row_idx = sel.get_index(idx);
+				D_ASSERT(row_idx < vector_count);
+				auto dict_offset = dict_sel.get_index(row_idx);
+				// Evaluate NULL only when slot zero is referenced by an actual row.
+				if (dict_offset == 0 && !scan_state.null_filter_result_initialized) {
+					Vector null_data(scan_state.dictionary->data, /*offset=*/0, /*end=*/1);
+					SelectionVector null_sel;
+					idx_t null_filter_count = 1;
+					ColumnSegment::FilterSelection(null_sel, null_data, filter_state, 1, null_filter_count);
+					scan_state.filter_result[0] = null_filter_count == 1;
+					scan_state.null_filter_result_initialized = true;
+				}
+				// Check filter result for the value at the offset and assign selection vector.
+				if (!scan_state.filter_result[dict_offset]) {
+					// does not pass the filter
+					continue;
+				}
+				new_sel.set_index(approved_tuple_count++, row_idx);
 			}
-			// Check filter result for the value at the offset and assign selection vector.
-			if (!scan_state.filter_result[dict_offset]) {
-				// does not pass the filter
-				continue;
-			}
-			new_sel.set_index(approved_tuple_count++, row_idx);
 		}
 		if (approved_tuple_count < vector_count) {
 			sel.Initialize(new_sel);
@@ -265,7 +258,7 @@ static string DictFSSTModeToString(const DictFSSTMode mode) {
 static InsertionOrderPreservingMap<string> DictFSSTGetSegmentInfo(QueryContext, ColumnSegment &segment) {
 	auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
 	auto state = make_uniq<CompressedStringScanState>(segment, buffer_manager.Pin(segment.GetBlockHandle()));
-	state->Initialize(false);
+	state->Initialize();
 
 	const auto tuple_count = segment.count.load();
 
@@ -286,8 +279,7 @@ CompressionFunction DictFSSTCompressionFun::GetFunction(PhysicalType data_type) 
 	    dict_fsst::DictFSSTCompressionStorage::InitCompression, dict_fsst::DictFSSTCompressionStorage::Compress,
 	    dict_fsst::DictFSSTCompressionStorage::FinalizeCompress, dict_fsst::DictFSSTCompressionStorage::StringInitScan,
 	    dict_fsst::DictFSSTCompressionStorage::StringScan,
-	    dict_fsst::DictFSSTCompressionStorage::StringScanPartial<false>,
-	    dict_fsst::DictFSSTCompressionStorage::StringFetchRow, UncompressedFunctions::EmptySkip,
+	    dict_fsst::DictFSSTCompressionStorage::StringScanPartial<false>, UncompressedFunctions::EmptySkip,
 	    UncompressedStringStorage::StringInitSegment);
 	res.validity = CompressionValidity::NO_VALIDITY_REQUIRED;
 	res.select = dict_fsst::DictFSSTSelect;

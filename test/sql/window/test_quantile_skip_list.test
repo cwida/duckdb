@@ -33,3 +33,39 @@ ORDER BY i;
 9	40	45.0	[10, 60]	25.0
 10	50	50.0	[20, 70]	30.0
 11	60	60.0	[40, 80]	20.0
+
+# The skip list retains values across cursor page loads, so string values must be owned
+# rather than views into the current page. The strings are unique (flat pages), non-inlinable,
+# and large enough that a trailing frame crosses collection block boundaries.
+statement ok
+CREATE TABLE skip_strings AS
+SELECT i, 'payload_' || lpad(CAST(i AS VARCHAR), 8, '0') AS v
+FROM range(50000) t(i);
+
+statement ok
+SET threads=1;
+
+# the median of the trailing frame is its exact middle element
+query II
+SELECT count(*), count(*) FILTER (WHERE m = 'payload_' || lpad(CAST(greatest(i - 50, i // 2) AS VARCHAR), 8, '0'))
+FROM (
+	SELECT i, quantile_disc(v, 0.5) OVER (ORDER BY i ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) AS m
+	FROM skip_strings
+)
+----
+50000	50000
+
+# the list form extracts several quantiles from the same state-owned buffer
+query II
+SELECT count(*), count(*) FILTER (WHERE i < 100 OR m = [
+	'payload_' || lpad(CAST(i - 75 AS VARCHAR), 8, '0'),
+	'payload_' || lpad(CAST(i - 25 AS VARCHAR), 8, '0')])
+FROM (
+	SELECT i, quantile_disc(v, [0.25, 0.75]) OVER (ORDER BY i ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) AS m
+	FROM skip_strings
+)
+----
+50000	50000
+
+statement ok
+RESET threads;

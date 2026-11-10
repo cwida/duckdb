@@ -36,8 +36,6 @@ private:
 	idx_t global_csv_pos = 0;
 	//! If this buffer manager is done (i.e., no more buffers to read beyond the ones that were cached
 	bool done = false;
-	//! If the file_handle used seek
-	bool has_seeked = false;
 	unordered_set<idx_t> reset_when_possible;
 	bool is_pipe;
 };

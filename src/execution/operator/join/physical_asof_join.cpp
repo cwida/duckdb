@@ -6,7 +6,6 @@
 #include "duckdb/common/sorting/sort_key.hpp"
 #include "duckdb/common/sorting/sorted_run.hpp"
 #include "duckdb/common/types/row/block_iterator.hpp"
-#include "duckdb/common/types/value_map.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/execution/operator/join/outer_join_marker.hpp"
 #include "duckdb/function/create_sort_key.hpp"
@@ -89,26 +88,23 @@ public:
 	void Reset(ClientContext &context) override {
 		// The sort strategy, executors, and shared expression layout are iteration-invariant. Only the
 		// sort sink holds per-iteration materialized data, so replace that while preserving the setup.
-		lock_guard<mutex> sinks_guard(lock);
-		if (op.partition_infos.empty()) {
-			strategy_sinks[child][Value()] = sort_strategies[child]->GetGlobalSinkState(context);
-		}
+		strategy_sinks[child] = sort_strategies[child]->GetGlobalSinkState(context);
 		GlobalSinkState::Reset(context);
 	}
 
-	optional_ptr<GlobalSinkState> GetOrCreatePartition(ClientContext &client, const Value &partition, idx_t child) {
+	optional_ptr<GlobalSinkState> GetOrCreatePartition(ClientContext &client, idx_t child) {
 		lock_guard<mutex> l(lock);
 		// find the state that corresponds to this partition and combine
 		auto &strategy_sink = strategy_sinks[child];
-		auto entry = strategy_sink.find(partition);
-		if (entry != strategy_sink.end()) {
-			return entry->second.get();
+		if (strategy_sink) {
+			return strategy_sink.get();
 		}
+
 		// no state yet for this partition - allocate a new one
 		auto &sort_strategy = sort_strategies[child];
 		auto new_global_state = sort_strategy->GetGlobalSinkState(client);
 		auto result = new_global_state.get();
-		strategy_sink[partition] = std::move(new_global_state);
+		strategy_sink = std::move(new_global_state);
 		return result;
 	}
 
@@ -119,42 +115,26 @@ public:
 	//! The child's partitioning description
 	array<SortStrategyPtr, 2> sort_strategies;
 	//! The child's partitioning buffer
-	array<value_map_t<SortStrategySinkPtr>, 2> strategy_sinks;
+	array<SortStrategySinkPtr, 2> strategy_sinks;
 };
 
 AsOfGlobalSinkState::AsOfGlobalSinkState(ClientContext &client, const PhysicalAsOfJoin &op) : op(op), child(op.child) {
 	// Set up partitions for both sides
 	const vector<unique_ptr<BaseStatistics>> partitions_stats;
 	auto &lhs = op.children[0].get();
-
-	unique_ptr<SortStrategy> sort_strategy;
-	vector<unique_ptr<Expression>> unpartitioned;
-	vector<unique_ptr<BaseStatistics>> unpartitioned_stats;
-	if (op.partition_infos.empty()) {
-		sort_strategy = SortStrategy::Factory(client, op.lhs_partitions, op.lhs_orders, lhs.GetTypes(),
-		                                      partitions_stats, lhs.estimated_cardinality, true);
-	} else {
-		//	Pipeline does the partitioning for us, so leave them out
-		sort_strategy = SortStrategy::Factory(client, unpartitioned, op.lhs_orders, lhs.GetTypes(), unpartitioned_stats,
-		                                      lhs.estimated_cardinality, true);
-	}
-	sort_strategies[0] = std::move(sort_strategy);
+	OperatorPartitionInfo empty_info;
+	const OperatorPartitionInfo &lhs_partition_info = !op.partition_infos.empty() ? op.partition_infos[0] : empty_info;
+	sort_strategies[0] = SortStrategy::Factory(client, op.lhs_partitions, op.lhs_orders, lhs.GetTypes(),
+	                                           partitions_stats, lhs_partition_info, lhs.estimated_cardinality, true);
 
 	auto &rhs = op.children[1].get();
-	if (op.partition_infos.empty()) {
-		sort_strategy = SortStrategy::Factory(client, op.rhs_partitions, op.rhs_orders, rhs.GetTypes(),
-		                                      partitions_stats, rhs.estimated_cardinality, true);
-	} else {
-		//	Pipeline does the partitioning for us, so leave them out
-		sort_strategy = SortStrategy::Factory(client, unpartitioned, op.rhs_orders, rhs.GetTypes(), unpartitioned_stats,
-		                                      rhs.estimated_cardinality, true);
-	}
-	sort_strategies[1] = std::move(sort_strategy);
+	const OperatorPartitionInfo &rhs_partition_info =
+	    (op.partition_infos.size() > 1) ? op.partition_infos[1] : empty_info;
+	sort_strategies[1] = SortStrategy::Factory(client, op.rhs_partitions, op.rhs_orders, rhs.GetTypes(),
+	                                           partitions_stats, rhs_partition_info, rhs.estimated_cardinality, true);
 
-	if (op.partition_infos.empty()) {
-		GetOrCreatePartition(client, Value(), 0);
-		GetOrCreatePartition(client, Value(), 1);
-	}
+	GetOrCreatePartition(client, 0);
+	GetOrCreatePartition(client, 1);
 }
 
 //===--------------------------------------------------------------------===//
@@ -162,7 +142,6 @@ AsOfGlobalSinkState::AsOfGlobalSinkState(ClientContext &client, const PhysicalAs
 //===--------------------------------------------------------------------===//
 class AsOfLocalSinkState : public LocalSinkState {
 public:
-	using GlobalStatePtr = optional_ptr<GlobalSinkState>;
 	using LocalStatePtr = unique_ptr<LocalSinkState>;
 
 	AsOfLocalSinkState(ExecutionContext &context, AsOfGlobalSinkState &gsink) {
@@ -172,17 +151,12 @@ public:
 
 	LocalStatePtr local_partition;
 
-	//	Partitioning state
-	Value current_partition;
-	GlobalStatePtr partition_group;
-
 	bool SupportsReuse() const override {
 		return true;
 	}
 
 	void Reset(ExecutionContext &context, GlobalSinkState &gstate_p) override {
 		auto &gstate = gstate_p.Cast<AsOfGlobalSinkState>();
-		partition_group = nullptr;
 		if (local_partition) {
 			auto &sort_strategy = gstate.sort_strategies[gstate.child];
 			local_partition = sort_strategy->GetLocalSinkState(context);
@@ -190,30 +164,18 @@ public:
 			local_partition.reset();
 		}
 	}
-
-	SinkCombineResultType Combine(ExecutionContext &context, const AsOfGlobalSinkState &gstate,
-	                              InterruptState &interrupt_state) {
-		if (!partition_group) {
-			return SinkCombineResultType::FINISHED;
-		}
-
-		// flush the local state
-		OperatorSinkCombineInput hcombine {*partition_group, *local_partition, interrupt_state};
-		auto &sort_strategy = gstate.sort_strategies[gstate.child];
-		auto result = sort_strategy->Combine(context, hcombine);
-
-		//	Start a new state pair
-		partition_group = nullptr;
-		local_partition.reset();
-
-		return result;
-	}
 };
 
+//===--------------------------------------------------------------------===//
+// GetGlobalSinkState
+//===--------------------------------------------------------------------===//
 unique_ptr<GlobalSinkState> PhysicalAsOfJoin::GetGlobalSinkState(ClientContext &context) const {
 	return make_uniq<AsOfGlobalSinkState>(context, *this);
 }
 
+//===--------------------------------------------------------------------===//
+// GetLocalSinkState
+//===--------------------------------------------------------------------===//
 unique_ptr<LocalSinkState> PhysicalAsOfJoin::GetLocalSinkState(ExecutionContext &context) const {
 	auto &gsink = sink_state->Cast<AsOfGlobalSinkState>();
 	return make_uniq<AsOfLocalSinkState>(context, gsink);
@@ -241,9 +203,15 @@ SinkNextBatchType PhysicalAsOfJoin::NextBatch(ExecutionContext &context, Operato
 	auto &gstate = batch.global_state.Cast<AsOfGlobalSinkState>();
 	auto &lstate = batch.local_state.Cast<AsOfLocalSinkState>();
 
-	(void)lstate.Combine(context, gstate, batch.interrupt_state);
+	//	Transfer the partition key (if any) to the strategy state
+	lstate.local_partition->partition_info.batch_index = lstate.partition_info.batch_index;
+	lstate.local_partition->partition_info.partition_data = lstate.partition_info.partition_data;
 
-	return SinkNextBatchType::READY;
+	auto &sort_strategy = *gstate.sort_strategies[gstate.child];
+	auto &strategy_sink = *gstate.strategy_sinks[gstate.child];
+
+	OperatorSinkNextBatchInput child_batch {strategy_sink, *lstate.local_partition, batch.interrupt_state};
+	return sort_strategy.NextBatch(context, child_batch);
 }
 
 //===--------------------------------------------------------------------===//
@@ -253,31 +221,10 @@ SinkResultType PhysicalAsOfJoin::Sink(ExecutionContext &context, DataChunk &chun
 	auto &gstate = sink.global_state.Cast<AsOfGlobalSinkState>();
 	auto &lstate = sink.local_state.Cast<AsOfLocalSinkState>();
 
-	if (!partition_infos.empty()) {
-		if (!lstate.partition_group) {
-			child_list_t<Value> partition_values;
-			const auto &partition_info = partition_infos[gstate.child];
-			const auto &partition_columns = partition_info.partition_columns;
-			for (idx_t partition_idx = 0; partition_idx < partition_columns.size(); partition_idx++) {
-				auto column_name = to_string(partition_idx);
-				auto &partition = lstate.partition_info.partition_data[partition_idx];
-				D_ASSERT(Value::NotDistinctFrom(partition.min_val, partition.max_val));
-				partition_values.emplace_back(make_pair(std::move(column_name), partition.min_val));
-			}
-			lstate.current_partition = Value::STRUCT(std::move(partition_values));
-
-			// initialize the state
-			lstate.partition_group =
-			    gstate.GetOrCreatePartition(context.client, lstate.current_partition, gstate.child);
-			lstate.local_partition = gstate.sort_strategies[gstate.child]->GetLocalSinkState(context);
-		}
-	} else if (!lstate.partition_group) {
-		lstate.partition_group = gstate.GetOrCreatePartition(context.client, lstate.current_partition, gstate.child);
-	}
-
 	auto &sort_strategy = *gstate.sort_strategies[gstate.child];
+	auto &strategy_sink = *gstate.strategy_sinks[gstate.child];
 
-	OperatorSinkInput hsink {*lstate.partition_group, *lstate.local_partition, sink.interrupt_state};
+	OperatorSinkInput hsink {strategy_sink, *lstate.local_partition, sink.interrupt_state};
 	return sort_strategy.Sink(context, chunk, hsink);
 }
 
@@ -288,15 +235,10 @@ SinkCombineResultType PhysicalAsOfJoin::Combine(ExecutionContext &context, Opera
 	auto &gstate = combine.global_state.Cast<AsOfGlobalSinkState>();
 	auto &lstate = combine.local_state.Cast<AsOfLocalSinkState>();
 
-	if (!partition_infos.empty()) {
-		return lstate.Combine(context, gstate, combine.interrupt_state);
-	} else if (!lstate.partition_group) {
-		lstate.partition_group = gstate.GetOrCreatePartition(context.client, lstate.current_partition, gstate.child);
-	}
-
 	auto &sort_strategy = *gstate.sort_strategies[gstate.child];
+	auto &strategy_sink = *gstate.strategy_sinks[gstate.child];
 
-	OperatorSinkCombineInput hcombine {*lstate.partition_group, *lstate.local_partition, combine.interrupt_state};
+	OperatorSinkCombineInput hcombine {strategy_sink, *lstate.local_partition, combine.interrupt_state};
 	return sort_strategy.Combine(context, hcombine);
 }
 
@@ -308,22 +250,17 @@ SinkFinalizeType PhysicalAsOfJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	auto &gstate = finalize.global_state.Cast<AsOfGlobalSinkState>();
 	auto &sort_strategy = *gstate.sort_strategies[gstate.child];
 
-	// The data is all in so we can synchronise the left partitioning.
-	if (gstate.child == 1) {
-		for (auto &partition_sink : gstate.strategy_sinks[gstate.child]) {
-			auto &lhs_groups = *gstate.GetOrCreatePartition(client, partition_sink.first, 0);
-			auto &rhs_groups = *partition_sink.second;
-			sort_strategy.Synchronize(rhs_groups, lhs_groups);
-		}
-	}
+	// The data is all in so we can synchronise the two partitionings.
+	auto &tgt_groups = *gstate.GetOrCreatePartition(client, 1 - gstate.child);
+	auto &src_groups = *gstate.strategy_sinks[gstate.child];
+	sort_strategy.Synchronize(client, src_groups, tgt_groups);
 
 	//	Finalize all the partitions
 	SinkFinalizeType result = SinkFinalizeType::READY;
 	lock_guard<mutex> sinks_guard(gstate.lock);
-	for (auto &partition_sink : gstate.strategy_sinks[gstate.child]) {
-		OperatorSinkFinalizeInput hfinalize {*partition_sink.second, finalize.interrupt_state};
-		result = sort_strategy.Finalize(client, hfinalize);
-	}
+	auto &partition_sink = gstate.strategy_sinks[gstate.child];
+	OperatorSinkFinalizeInput hfinalize {*partition_sink, finalize.interrupt_state};
+	result = sort_strategy.Finalize(client, hfinalize);
 
 	// Switch sides
 	gstate.child = 1 - gstate.child;
@@ -331,6 +268,9 @@ SinkFinalizeType PhysicalAsOfJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	return result;
 }
 
+//===--------------------------------------------------------------------===//
+// ExecuteInternal
+//===--------------------------------------------------------------------===//
 OperatorResultType PhysicalAsOfJoin::ExecuteInternal(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
                                                      GlobalOperatorState &gstate, OperatorState &lstate_p) const {
 	return OperatorResultType::FINISHED;
@@ -463,7 +403,7 @@ public:
 	}
 
 	AsOfHashGroup(const PhysicalAsOfJoin &op, const ChunkRow &left_stats, const ChunkRow &right_stats,
-	              const idx_t group_idx, const Value &sink_idx, const idx_t bin_idx);
+	              const idx_t group_idx, const idx_t bin_idx);
 
 	//! Is this a right join (do we have a RIGHT stage?)
 	inline bool IsRightOuter() const {
@@ -509,8 +449,6 @@ public:
 	const PhysicalAsOfJoin &op;
 	//! The global group number (so we can find the task
 	const idx_t group_idx;
-	//! The sink index (so we can find the sink state)
-	const Value sink_idx;
 	//! The sink bin (so we can find the bin within the sink state)
 	const idx_t bin_idx;
 	//! The number of left chunks/rows
@@ -546,10 +484,10 @@ public:
 };
 
 AsOfHashGroup::AsOfHashGroup(const PhysicalAsOfJoin &op, const ChunkRow &left_stats, const ChunkRow &right_stats,
-                             const idx_t group_idx, const Value &sink_idx, const idx_t bin_idx)
-    : op(op), group_idx(group_idx), sink_idx(sink_idx), bin_idx(bin_idx), left_stats(left_stats),
-      right_stats(right_stats), right_outer(IsRightOuterJoin(op.join_type)), stage(AsOfJoinSourceStage::INIT),
-      sorted(0), materialized(0), gotten(0), left_completed(0), right_completed(0) {
+                             const idx_t group_idx, const idx_t bin_idx)
+    : op(op), group_idx(group_idx), bin_idx(bin_idx), left_stats(left_stats), right_stats(right_stats),
+      right_outer(IsRightOuterJoin(op.join_type)), stage(AsOfJoinSourceStage::INIT), sorted(0), materialized(0),
+      gotten(0), left_completed(0), right_completed(0) {
 	right_outer.Initialize(right_stats.count);
 }
 
@@ -736,7 +674,6 @@ public:
 	using AsOfHashGroupPtr = unique_ptr<AsOfHashGroup>;
 	using AsOfHashGroups = vector<AsOfHashGroupPtr>;
 	using HashedSourceStatePtr = unique_ptr<GlobalSourceState>;
-	using HashedSourceMap = value_map_t<HashedSourceStatePtr>;
 	using Task = AsOfSourceTask;
 	using TaskPtr = optional_ptr<Task>;
 	using PartitionBlock = std::pair<idx_t, idx_t>;
@@ -758,7 +695,7 @@ public:
 	//! The parent operator
 	const PhysicalAsOfJoin &op;
 	//! The source states for the hashed sort
-	array<HashedSourceMap, 2> hashed_sources;
+	array<HashedSourceStatePtr, 2> hashed_sources;
 	//! The hash groups
 	AsOfHashGroups asof_groups;
 	//! The sorted list of (blocks, group_idx) pairs
@@ -797,38 +734,33 @@ AsOfGlobalSourceState::AsOfGlobalSourceState(ClientContext &client, const Physic
 
 	using ChunkRow = SortStrategy::ChunkRow;
 	using ChunkRows = SortStrategy::ChunkRows;
-	using ChunkPartitionRows = value_map_t<ChunkRows>;
-	vector<ChunkPartitionRows> child_groups(2);
-	value_set_t partition_keys;
+	array<ChunkRows, 2> child_groups;
 
+	//	We know that the two sides have the same number of bins because we synchronised in both directions.
 	for (idx_t child = 0; child < child_groups.size(); ++child) {
 		auto &sort_strategy = *gsink.sort_strategies[child];
-		for (auto &strategy_sink : gsink.strategy_sinks[child]) {
-			auto hashed_source = sort_strategy.GetGlobalSourceState(client, *strategy_sink.second);
-			partition_keys.insert(strategy_sink.first);
-			child_groups[child][strategy_sink.first] = sort_strategy.GetHashGroups(*hashed_source);
-			hashed_sources[child][strategy_sink.first] = std::move(hashed_source);
-		}
+		auto &strategy_sink = gsink.strategy_sinks[child];
+		auto hashed_source = sort_strategy.GetGlobalSourceState(client, *strategy_sink);
+		child_groups[child] = sort_strategy.GetHashGroups(*hashed_source);
+		hashed_sources[child] = std::move(hashed_source);
 	}
 
 	//	Pivot into AsOfHashGroups using the unified partition key set.
-	for (const auto &partition_key : partition_keys) {
-		auto &lhs_groups = child_groups[0][partition_key];
-		auto &rhs_groups = child_groups[1][partition_key];
-		const auto group_count = MaxValue<idx_t>(lhs_groups.size(), rhs_groups.size());
-		for (idx_t bin_idx = 0; bin_idx < group_count; ++bin_idx) {
-			ChunkRow lhs_stats;
-			if (bin_idx < lhs_groups.size()) {
-				lhs_stats = lhs_groups[bin_idx];
-			}
-			ChunkRow rhs_stats;
-			if (bin_idx < rhs_groups.size()) {
-				rhs_stats = rhs_groups[bin_idx];
-			}
-			const idx_t group_idx = asof_groups.size();
-			auto asof_group = make_uniq<AsOfHashGroup>(op, lhs_stats, rhs_stats, group_idx, partition_key, bin_idx);
-			asof_groups.emplace_back(std::move(asof_group));
+	auto &lhs_groups = child_groups[0];
+	auto &rhs_groups = child_groups[1];
+	const auto group_count = MaxValue<idx_t>(lhs_groups.size(), rhs_groups.size());
+	for (idx_t bin_idx = 0; bin_idx < group_count; ++bin_idx) {
+		ChunkRow lhs_stats;
+		if (bin_idx < lhs_groups.size()) {
+			lhs_stats = lhs_groups[bin_idx];
 		}
+		ChunkRow rhs_stats;
+		if (bin_idx < rhs_groups.size()) {
+			rhs_stats = rhs_groups[bin_idx];
+		}
+		const idx_t group_idx = asof_groups.size();
+		auto asof_group = make_uniq<AsOfHashGroup>(op, lhs_stats, rhs_stats, group_idx, bin_idx);
+		asof_groups.emplace_back(std::move(asof_group));
 	}
 
 	CreateTaskList(client);
@@ -1661,7 +1593,7 @@ void AsOfLocalSourceState::ExecuteSortTask(ExecutionContext &context, DataChunk 
 	const idx_t child = task_local.begin_idx >= asof_group.LeftChunks();
 	auto &gsink = gsource.op.sink_state->Cast<AsOfGlobalSinkState>();
 	auto &sort_strategy = *gsink.sort_strategies[child];
-	auto &hashed_sink = gsink.strategy_sinks[child][asof_group.sink_idx];
+	auto &hashed_sink = gsink.strategy_sinks[child];
 
 	OperatorSinkFinalizeInput finalize {*hashed_sink, source.interrupt_state};
 	sort_strategy.SortColumnData(context, asof_group.bin_idx, finalize);
@@ -1678,7 +1610,7 @@ void AsOfLocalSourceState::ExecuteMaterializeTask(ExecutionContext &context, Dat
 	const idx_t child = task_local.begin_idx >= asof_group.LeftChunks();
 	const auto &gsink = gsource.op.sink_state->Cast<AsOfGlobalSinkState>();
 	auto &sort_strategy = *gsink.sort_strategies[child];
-	auto &hashed_source = *gsource.hashed_sources[child][asof_group.sink_idx];
+	auto &hashed_source = *gsource.hashed_sources[child];
 
 	auto unused = make_uniq<LocalSourceState>();
 	OperatorSourceInput hsource {hashed_source, *unused, source.interrupt_state};
@@ -1707,7 +1639,7 @@ void AsOfLocalSourceState::ExecuteGetTask(ExecutionContext &context, DataChunk &
 		}
 
 		auto &sort_strategy = *gsink.sort_strategies[child];
-		auto &hashed_source = *gsource.hashed_sources[child][asof_group.sink_idx];
+		auto &hashed_source = *gsource.hashed_sources[child];
 		OperatorSourceInput hsource {hashed_source, *unused, source.interrupt_state};
 
 		auto group = sort_strategy.GetSortedRun(context.client, asof_group.bin_idx, hsource);

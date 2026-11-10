@@ -319,8 +319,7 @@ SchemaCatalogEntry &Binder::BindSchema(CreateInfo &info) {
 	vector<Identifier> schema_path(path.begin() + 1, path.end() - 1);
 	auto &schema_obj = *Catalog::GetSchema(context, path.front(), schema_path, OnEntryNotFound::THROW_EXCEPTION);
 	D_ASSERT(schema_obj.type == CatalogType::SCHEMA_ENTRY);
-	GetStatementProperties().RegisterDBModify(schema_obj.catalog, context,
-	                                          DatabaseModificationType::CREATE_CATALOG_ENTRY);
+	GetStatementProperties().RegisterDBModify(schema_obj.catalog, context, info.GetModifications());
 	return schema_obj;
 }
 
@@ -337,7 +336,7 @@ void Binder::SetCatalogLookupCallback(catalog_entry_callback_t callback) {
 }
 
 void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const Identifier &catalog_name,
-                      const Identifier &schema_name, optional_ptr<LogicalDependencyList> dependencies,
+                      const vector<Identifier> &schema_path, optional_ptr<LogicalDependencyList> dependencies,
                       const vector<Identifier> &aliases, vector<LogicalType> &result_types,
                       vector<Identifier> &result_names) {
 	auto view_binder = Binder::CreateBinder(context);
@@ -354,7 +353,7 @@ void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const
 	}
 	view_binder->SetCanContainNulls(true);
 
-	auto view_search_path = view_binder->GetSearchPath(catalog, schema_name, true);
+	auto view_search_path = view_binder->GetSearchPath(catalog, schema_path, true);
 	view_binder->entry_retriever.SetSearchPath(std::move(view_search_path));
 
 	auto copy = stmt.Copy();
@@ -396,8 +395,33 @@ void Binder::BindCreateViewInfo(CreateViewInfo &base) {
 	if (Settings::Get<EnableViewDependenciesSetting>(context)) {
 		dependencies = base.dependencies;
 	}
-	BindView(context, *base.query, base.GetQualifiedName().Catalog(), base.GetQualifiedName().Schema(), dependencies,
-	         base.aliases, base.types, base.names);
+	BindView(context, *base.query, base.GetQualifiedName().Catalog(), base.GetQualifiedName().SchemaPath(),
+	         dependencies, base.aliases, base.types, base.names);
+}
+
+void Binder::CheckMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &info) {
+	bool uses_returns = false;
+	for (auto &member : info.macros) {
+		if (member->return_type.id() != LogicalTypeId::UNKNOWN) {
+			uses_returns = true;
+			break;
+		}
+	}
+	if (!uses_returns) {
+		return;
+	}
+	auto &attached = catalog.GetAttached();
+	if (!attached.HasStorageManager()) {
+		return;
+	}
+	auto &storage_manager = attached.GetStorageManager();
+	const auto since = StorageCompatibility::FromString("v2.1.0").storage_version;
+	if (!info.temporary && !attached.IsTemporary() && !storage_manager.InMemory() &&
+	    storage_manager.GetStorageVersion() < since) {
+		string msg = "Macros with a declared RETURNS type are only supported for storage versions v2.1.0 and higher.\n";
+		msg += "Use an in-memory database, ATTACH with (STORAGE_VERSION v2.1.0), or create a TEMP macro";
+		throw BinderException(msg);
+	}
 }
 
 SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
@@ -446,6 +470,7 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 	// try to bind each of the included functions
 	vector_of_logical_type_set_t type_overloads;
 	auto &base = info.Cast<CreateMacroInfo>();
+	CheckMacroStorageVersion(catalog, base);
 	for (auto &function : base.macros) {
 		if (!store_types) {
 			for (const auto &type : function->types) {
@@ -505,6 +530,11 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			const_expr->SetAlias(param_name);
 			it.second = std::move(const_expr);
 			default_values[param_name] = std::move(default_val);
+		}
+
+		// Resolve a user type in the declared return type
+		if (function->return_type.id() == LogicalTypeId::UNBOUND) {
+			BindLogicalType(function->return_type);
 		}
 
 		// Resolve any user type arguments
@@ -856,7 +886,7 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 		auto &info = stmt.info->Cast<CreateSchemaInfo>();
 		BindCreateSchema(info);
 		properties.RegisterDBModify(Catalog::GetCatalog(context, info.SchemaCatalog()), context,
-		                            DatabaseModificationType::CREATE_CATALOG_ENTRY);
+		                            info.GetModifications());
 		result.plan = make_uniq<LogicalCreate>(LogicalOperatorType::LOGICAL_CREATE_SCHEMA, std::move(stmt.info));
 		break;
 	}
@@ -1086,7 +1116,7 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 		                                       info.on_conflict,
 		                                       info.persist_type};
 
-		result = SecretManager::Get(context).BindCreateSecret(transaction, create_secret_input);
+		result = SecretManager::Get(context).BindCreateSecret(context.GetContext(), transaction, create_secret_input);
 		break;
 	}
 	case CatalogType::TRIGGER_ENTRY: {

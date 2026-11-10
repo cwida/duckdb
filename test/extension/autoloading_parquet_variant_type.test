@@ -1,0 +1,39 @@
+# name: test/extension/autoloading_parquet_variant_type.test
+# description: Autoload Parquet when resolving its variant type
+# group: [extension]
+
+require parquet
+
+# Keep the explicit unloaded state until type resolution triggers autoloading.
+require skip_reload
+
+restart no_extension_load
+
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name='parquet';
+----
+false
+
+statement ok
+SET autoload_known_extensions=false;
+
+statement ok
+SET autoinstall_known_extensions=false;
+
+statement error
+SELECT NULL::PARQUET_VARIANT;
+----
+Catalog Error: Type with name "PARQUET_VARIANT" is not in the catalog, but it exists in the parquet extension.
+
+statement ok
+SET autoload_known_extensions=true;
+
+query TI
+SELECT get_type(NULL::PARQUET_VARIANT), NULL::PARQUET_VARIANT IS NULL;
+----
+PARQUET_VARIANT	true
+
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name='parquet';
+----
+true

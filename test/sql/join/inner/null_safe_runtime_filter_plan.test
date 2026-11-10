@@ -1,0 +1,95 @@
+# name: test/sql/join/inner/null_safe_runtime_filter_plan.test
+# description: NULL-safe joins publish each supported direct-scan filter choice
+# group: [inner]
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization';
+
+statement ok
+CREATE TABLE p AS SELECT i a,0 g FROM range(1000000)t(i) UNION ALL SELECT NULL::BIGINT,0;
+
+statement ok
+CREATE TABLE b AS SELECT * FROM (VALUES(42::BIGINT,0),(NULL::BIGINT,0))t(b,g);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IS NULL.*IS NOT DISTINCT FROM 42.*
+
+query I
+SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b;
+----
+2
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+statement ok
+INSERT INTO b VALUES (44,0);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b AND p.g=b.g;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IS NULL.*a >= 42.*a IS NULL.*a <= 44.*
+
+query I
+SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b AND p.g=b.g;
+----
+3
+
+statement ok
+SET dynamic_or_filter_threshold=50;
+
+statement ok
+UPDATE b SET b=44444 WHERE b=44;
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b AND p.g=b.g;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IS NULL.*a IN \(.*
+
+query I
+SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b AND p.g=b.g;
+----
+3
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+statement ok
+CREATE OR REPLACE TABLE b AS SELECT i*2 b FROM range(20000)t(i) UNION ALL SELECT NULL::BIGINT;
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*IN PRF.*
+
+query I
+SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b;
+----
+20001
+
+statement ok
+CREATE OR REPLACE TABLE p AS SELECT i*1000000 a FROM range(1000000)t(i) UNION ALL SELECT NULL::BIGINT;
+
+statement ok
+CREATE OR REPLACE TABLE b AS SELECT * FROM (VALUES(42000000::BIGINT),(50000000000::BIGINT),(NULL::BIGINT))t(b);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*IN BF.*
+
+query I
+SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b;
+----
+3
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+RESET dynamic_or_filter_threshold;

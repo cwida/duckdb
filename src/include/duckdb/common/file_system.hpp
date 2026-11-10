@@ -197,8 +197,6 @@ public:
 	DUCKDB_API static FileSystem &GetFileSystem(DatabaseInstance &db);
 	DUCKDB_API static FileSystem &GetLocal(DatabaseInstance &db);
 	DUCKDB_API static FileSystem &Get(AttachedDatabase &db);
-	//! The client's file system if there is one, so database files use the settings and logger of the session
-	DUCKDB_API static FileSystem &Get(QueryContext context, AttachedDatabase &db);
 
 	DUCKDB_API virtual unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags,
 	                                                   optional_ptr<FileOpener> opener = nullptr);
@@ -393,6 +391,7 @@ public:
 	DUCKDB_API static bool IsRemoteFile(const string &path, string &extension);
 
 	DUCKDB_API virtual void SetDisabledFileSystems(const vector<string> &names);
+	DUCKDB_API virtual vector<string> GetDisabledFileSystems();
 	DUCKDB_API virtual bool SubSystemIsDisabled(const string &name);
 	//! Check if the filesystem that would handle this path is disabled
 	DUCKDB_API virtual bool IsDisabledForPath(const string &path);

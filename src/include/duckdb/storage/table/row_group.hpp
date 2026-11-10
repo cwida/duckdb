@@ -96,6 +96,31 @@ struct RowGroupWriteData {
 	optional_idx write_count;
 };
 
+//! The version info of a row group, shared with the row groups a checkpoint or an ALTER copies it into
+class RowGroupVersionInfo {
+public:
+	explicit RowGroupVersionInfo(vector<MetaBlockPointer> deletes_pointers = {});
+
+	//! Loads the persisted deletes if necessary
+	optional_ptr<RowVersionManager> Get(BlockManager &block_manager);
+	//! Does not load persisted deletes
+	optional_ptr<RowVersionManager> GetIfLoaded() const {
+		return version_info.load();
+	}
+	shared_ptr<RowVersionManager> GetOrCreate(BlockManager &block_manager);
+	bool HasUnloadedDeletes() const;
+	const vector<MetaBlockPointer> &GetDeletesPointers() const {
+		return deletes_pointers;
+	}
+
+private:
+	mutex lock;
+	vector<MetaBlockPointer> deletes_pointers;
+	atomic<bool> deletes_is_loaded;
+	shared_ptr<RowVersionManager> owned_version_info;
+	atomic<optional_ptr<RowVersionManager>> version_info;
+};
+
 //! Collects the ids of the rows that a delete actually deleted, but only once rows were skipped (e.g. because they
 //! were matched more than once) - in the common case all input rows are deleted and nothing is collected
 struct DeletedRowIds {
@@ -123,9 +148,7 @@ private:
 	//! The RowGroupCollection this row-group is a part of
 	reference<RowGroupCollection> collection;
 	//! The version info of the row_group (inserted and deleted tuple info)
-	atomic<optional_ptr<RowVersionManager>> version_info;
-	//! The owned version info of the row_group (inserted and deleted tuple info)
-	shared_ptr<RowVersionManager> owned_version_info;
+	shared_ptr<RowGroupVersionInfo> version_info;
 	//! The column data of the row_group (mutable because `const` can lazily load)
 	mutable vector<shared_ptr<ColumnData>> columns;
 
@@ -171,7 +194,7 @@ public:
 	//! Checks the given set of table filters against the row-group statistics. Returns false if the entire row group
 	//! can be skipped.
 	bool CheckZonemap(optional_ptr<ClientContext> context, ScanFilterInfo &filters, idx_t row_start);
-	//! Checks the given set of table filters against the per-segment statistics. Returns false if any segments were
+	//! Checks the given set of table filters against the zonemaps of their columns. Returns false if any vectors were
 	//! skipped.
 	bool CheckZonemapSegments(CollectionScanState &state);
 	void Scan(ScanOptions options, CollectionScanState &state, DataChunk &result);
@@ -180,8 +203,8 @@ public:
 	void PrefetchScanIO(CollectionScanState &state, idx_t row_count) const;
 	//! Collects the async I/O tasks required to scan the next row_count rows, without performing any I/O
 	vector<unique_ptr<AsyncTask>> CollectScanIOTasks(CollectionScanState &state, idx_t row_count) const;
-	//! Rows of the remaining assignment worth prefetching, trailing vectors the zonemaps reject are left out
-	idx_t PrefetchRowCount(CollectionScanState &state);
+	//! Collects the async I/O tasks of the remaining assignment, leaving out the vectors the zonemaps reject
+	vector<unique_ptr<AsyncTask>> CollectAssignmentIOTasks(CollectionScanState &state) const;
 	//! Prepares the next eligible vector in the assigned range, idempotent, returns false when none remain
 	bool PrepareScan(ScanOptions options, CollectionScanState &state);
 	//! Processes the vector prepared by PrepareScan, clearing the prepared state when the vector is finished
@@ -261,7 +284,9 @@ public:
 
 	void NextVector(CollectionScanState &state);
 
-	idx_t DeleteRows(idx_t vector_idx, transaction_t transaction_id, row_t rows[], idx_t count);
+	//! Writes a delete or an update into the version info of the rows (ids[i] - offset) and pushes its undo entry
+	void WriteRows(TransactionData transaction, DuckTableEntry &table_entry, idx_t vector_idx, idx_t base_row,
+	               const row_t ids[], idx_t count, row_t offset, bool is_update, WrittenRows &written);
 	RowVersionManager &GetOrCreateVersionInfo();
 
 	// Serialization
@@ -284,8 +309,10 @@ public:
 	ColumnData &GetRawColumnData(storage_t c) const;
 
 private:
-	//! Registers prefetch candidates for the next row_count rows, returns false when prefetching is not supported
-	bool RegisterScanIO(CollectionScanState &state, idx_t row_count, PrefetchState &prefetch_state) const;
+	//! Registers prefetch candidates for the rows in [start_row, end_row), returns false when prefetching is not
+	//! supported
+	bool RegisterScanIO(CollectionScanState &state, idx_t start_row, idx_t end_row,
+	                    PrefetchState &prefetch_state) const;
 	//! Shared scan-state setup for InitializeScan and InitializeScanWithOffset
 	bool InitializeScanInternal(CollectionScanState &state, SegmentNode<RowGroup> &node, idx_t vector_offset);
 	//! Advances the scan past the current vector, clearing the prepared state
@@ -294,8 +321,6 @@ private:
 	optional_ptr<RowVersionManager> GetVersionInfo();
 	optional_ptr<RowVersionManager> GetVersionInfoIfLoaded() const;
 	shared_ptr<RowVersionManager> GetOrCreateVersionInfoPtr();
-	shared_ptr<RowVersionManager> GetOrCreateVersionInfoInternal();
-	void SetVersionInfo(shared_ptr<RowVersionManager> version);
 
 	ColumnData &GetColumn(storage_t c) const;
 	void LoadColumn(storage_t c) const;
@@ -318,12 +343,10 @@ private:
 	vector<MetaBlockPointer> column_pointers;
 	//! Whether or not each column is loaded (mutable because `const` can lazy load)
 	mutable unique_ptr<atomic<bool>[]> is_loaded;
-	vector<MetaBlockPointer> deletes_pointers;
 	bool has_metadata_blocks = false;
 	vector<idx_t> extra_metadata_blocks;
 	bool has_per_column_metadata_blocks = false;
 	PerColumnMetadataBlocks per_column_metadata_blocks;
-	atomic<bool> deletes_is_loaded;
 	atomic<idx_t> allocation_size;
 	//! Append cursor, retained between appends and moved when appending to the next row group
 	unique_ptr<SuballocationBlock> transient;

@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/enums/column_segment_info_scan_type.hpp"
+#include "duckdb/common/enums/constraint_check_mode.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/storage/table/persistent_table_data.hpp"
@@ -35,12 +36,15 @@ class Serializer;
 class StorageManager;
 class TableCatalogEntry;
 class TableIOManager;
+class TableStorageInfo;
 class Vector;
 class Transaction;
 class WriteAheadLog;
 class TableDataWriter;
+class TableStatistics;
 class ConflictManager;
 class TableScanState;
+struct CollectionCheckpointResult;
 struct TableDeleteState;
 struct ConstraintState;
 struct TableUpdateState;
@@ -192,6 +196,8 @@ public:
 	//! commit (e.g. because of an I/O exception)
 	void RevertAppend(DuckTransaction &transaction, idx_t start_row, idx_t count);
 	void RevertAppendInternal(idx_t start_row);
+	//! Revert an append that failed before it was finalized
+	void RevertFailedAppend(TableAppendState &state);
 
 	void ScanTableSegment(DuckTransaction &transaction, idx_t start_row, idx_t count,
 	                      const std::function<void(DataChunk &chunk)> &function);
@@ -227,10 +233,10 @@ public:
 	//! Sets statistics of a physical column within the table
 	void SetDistinct(column_t column_id, unique_ptr<DistinctStatistics> distinct_stats);
 
-	//! Obtains a lock during a checkpoint operation that prevents other threads from reading this table
-	unique_ptr<StorageLockKey> GetCheckpointLock();
 	//! Checkpoint the table to the specified table data writer
 	void Checkpoint(TableDataWriter &writer, Serializer &serializer);
+	//! Install checkpointed row groups.
+	void PublishCheckpoint(CollectionCheckpointResult result, TableStatistics &checkpoint_stats);
 	//! Accumulates the table's on-disk blocks for reclamation into the drop state.
 	void CommitDropTable(CommitDropState &drop_state);
 	//! Accumulates the column's on-disk blocks for reclamation into the drop state.
@@ -286,7 +292,7 @@ public:
 	//! AddIndex initializes an index and adds it to the table's index list.
 	//! It is either empty, or initialized via its index storage information.
 	void AddIndex(const ColumnList &columns, const vector<LogicalIndex> &column_indexes, const IndexConstraintType type,
-	              IndexStorageInfo index_info, idx_t index_oid);
+	              IndexStorageInfo index_info, idx_t index_oid, ConstraintCheckMode check_mode);
 	//! AddIndex moves an index to this table's index list.
 	void AddIndex(unique_ptr<Index> index, idx_t index_oid);
 

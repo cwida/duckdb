@@ -1,0 +1,263 @@
+# name: test/optimizer/fixed_key_domain.test
+# description: Restrict a local grouped aggregate without changing demanded bags or NULLs
+# group: [optimizer]
+
+statement ok
+CREATE TABLE fact_data AS SELECT (i % 1000)::INTEGER k, i::BIGINT v FROM range(10000) t(i);
+
+statement ok
+INSERT INTO fact_data VALUES (NULL, 4), (NULL, 7), (1, NULL);
+
+# The computed key prevents the consumer's runtime filters from reaching the scan.
+statement ok
+CREATE VIEW fact AS SELECT (k + 1000) % 1000 k, v FROM fact_data;
+
+query IIII rowsort
+SELECT d.k, a.s, a.n, a.c
+FROM (VALUES (1), (2), (2), (2000), (NULL)) d(k)
+LEFT JOIN (SELECT k, sum(v) s, count(*) n, count(v) c FROM fact GROUP BY k) a USING(k);
+----
+1	45010	11	10
+2	45020	10	10
+2	45020	10	10
+2000	NULL	NULL	NULL
+NULL	NULL	NULL	NULL
+
+query III rowsort
+SELECT d.k, a.s, a.n
+FROM (VALUES (1), (NULL), (NULL)) d(k)
+LEFT JOIN (SELECT k, sum(v) s, count(*) n FROM fact GROUP BY k) a
+ON d.k IS NOT DISTINCT FROM a.k;
+----
+1	45010	11
+NULL	11	2
+NULL	11	2
+
+query II rowsort
+SELECT d.k, a.s
+FROM (SELECT k AS renamed, sum(v) s FROM fact GROUP BY k) a
+JOIN (SELECT col0 AS k FROM (VALUES (1), (2), (2), (NULL))) d
+ON a.renamed=d.k;
+----
+1	45010
+2	45020
+2	45020
+
+query IR rowsort
+SELECT d.k, a.av
+FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (SELECT k, avg(v) av FROM fact GROUP BY k) a USING(k);
+----
+1	4501.000
+2	4502.000
+
+# Computed arguments and residual predicates retain their original semantics.
+query II rowsort
+SELECT d.k, a.s
+FROM (VALUES (1, 50000), (2, 40000)) d(k, threshold)
+LEFT JOIN (SELECT k, sum(v + 1) s FROM fact GROUP BY k) a
+ON d.k=a.k AND a.s > d.threshold;
+----
+1	NULL
+2	45030
+
+# The domain may include keys removed by a caller filter; its payload is unchanged.
+query II rowsort
+SELECT d.k, a.s
+FROM (SELECT * FROM (VALUES (1), (2), (3)) d(k) WHERE k < 3) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact WHERE v > 1000 GROUP BY k) a USING(k);
+----
+1	45009
+2	45018
+
+statement ok
+PREPARE demand AS
+SELECT d.k, a.s FROM (VALUES ($1::INTEGER), ($2::INTEGER), ($1::INTEGER)) d(k)
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a
+ON d.k IS NOT DISTINCT FROM a.k ORDER BY d.k NULLS FIRST;
+
+query II
+EXECUTE demand(1, 2);
+----
+1	45010
+1	45010
+2	45020
+
+query II
+EXECUTE demand(NULL, 2);
+----
+NULL	11
+NULL	11
+2	45020
+
+query II
+WITH a AS NOT MATERIALIZED (SELECT k, sum(v) s FROM fact GROUP BY k)
+SELECT d.k, a.s FROM (VALUES (1)) d(k) LEFT JOIN a USING(k);
+----
+1	45010
+
+query I
+SELECT count(*) FROM (SELECT 1 k WHERE false) d
+JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+0
+
+# Scalar COUNT completion still distinguishes a missing group from a NULL key.
+query III rowsort
+SELECT d.k,
+       (SELECT sum(v) FROM fact WHERE fact.k=d.k),
+       (SELECT count(*) FROM fact WHERE fact.k=d.k)
+FROM (VALUES (1), (2000), (NULL)) d(k);
+----
+1	45010	11
+2000	NULL	0
+NULL	NULL	0
+
+statement ok
+CREATE TABLE decimal_fact AS SELECT k, v::DECIMAL(18,2) v FROM fact;
+
+query IR rowsort
+SELECT d.k, a.s FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (SELECT k, sum(v) s FROM decimal_fact GROUP BY k) a USING(k);
+----
+1	45010.000
+2	45020.000
+
+# SUM/AVG output sharing may introduce a computed projection before this rule.
+query IRR rowsort
+SELECT d.k, a.s, a.av FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (SELECT k, sum(v) s, avg(v) av FROM fact GROUP BY k) a USING(k);
+----
+1	45010.000	4501.000
+2	45020.000	4502.000
+
+statement ok
+CREATE TABLE text_fact AS SELECT (i % 1000)::VARCHAR k, i v FROM range(10000) t(i);
+
+query TI rowsort
+SELECT d.k, a.s FROM (VALUES ('1'), ('2'), ('2')) d(k)
+LEFT JOIN (SELECT k, sum(v) s FROM text_fact GROUP BY k) a USING(k);
+----
+1	45010
+2	45020
+2	45020
+
+query III rowsort
+SELECT d.k, a.s, a.g
+FROM (VALUES (1), (NULL)) d(k)
+LEFT JOIN (SELECT k, sum(v) s, grouping(k) g FROM fact GROUP BY GROUPING SETS ((k), ())) a
+ON d.k IS NOT DISTINCT FROM a.k;
+----
+1	45010	0
+NULL	11	0
+NULL	49995011	1
+
+# A demand-side grouping set can add a NULL key that is absent from its input.
+query II
+SELECT d.k, a.s
+FROM (SELECT k FROM (VALUES (1), (2)) v(k) GROUP BY ROLLUP(k)) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a ON d.k IS NOT DISTINCT FROM a.k
+ORDER BY ALL;
+----
+1	45010
+2	45020
+NULL	11
+
+# DISTINCT with a different collation cannot prove coverage of fixed binary keys.
+statement ok
+CREATE TABLE collated_fact AS
+SELECT (['A', 'a', 'B', 'b'])[i % 4 + 1] k FROM range(10000) t(i);
+
+query II
+SELECT count(a.n), sum(a.n)
+FROM (VALUES ('A'), ('a'), ('B'), ('b')) d(k)
+LEFT JOIN (
+    SELECT f.k, count(*) n FROM collated_fact f
+    SEMI JOIN (
+        SELECT DISTINCT k COLLATE nocase AS k FROM (VALUES ('A'), ('a'), ('B'), ('b')) v(k)
+    ) old ON f.k = old.k COLLATE "C" GROUP BY f.k
+) a ON d.k IS NOT DISTINCT FROM a.k;
+----
+2	5000
+
+# DISTINCT ON retains the first row chosen from its ordered input.
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE ordered_fact_data AS SELECT (i % 1000)::INTEGER k, i::BIGINT v FROM range(100000) t(i);
+
+statement ok
+CREATE VIEW ordered_fact AS SELECT (k + 1000) % 1000 k, v FROM ordered_fact_data;
+
+query II
+SELECT d.k, a.v FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (
+    SELECT DISTINCT ON(k) k, v FROM (SELECT * FROM ordered_fact ORDER BY v DESC)
+) a USING(k) ORDER BY d.k;
+----
+1	99001
+2	99002
+
+statement ok
+RESET threads;
+
+# Extracting a constant key above DISTINCT leaves the neighboring payload in place.
+statement ok
+CREATE SEQUENCE fixed_payload_visits;
+
+query III rowsort
+SELECT d.k, d.payload, a.s
+FROM (
+    SELECT 1::INTEGER k, nextval('fixed_payload_visits') payload
+    FROM (SELECT DISTINCT x FROM (VALUES (10), (20)) t(x)) q
+) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+1	1	45010
+1	2	45010
+
+query I
+SELECT currval('fixed_payload_visits');
+----
+2
+
+# Global aggregation still demands a key when its input is empty.
+query III
+SELECT d.k, d.n, a.s
+FROM (
+    SELECT 1::INTEGER k, n
+    FROM (SELECT count(*) n FROM (VALUES (10), (20)) t(x) WHERE false) q
+) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+1	0	45010
+
+# An empty grouping set can also emit a row from empty input.
+query IIII
+SELECT d.k, d.x, d.n, a.s
+FROM (
+    SELECT 1::INTEGER k, x, n
+    FROM (
+        SELECT x, count(*) n FROM (VALUES (10), (20)) t(x)
+        WHERE false GROUP BY GROUPING SETS ((x), ())
+    ) q
+) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+1	NULL	0	45010
+
+# Volatile aggregate arguments must still run on the original input.
+statement ok
+CREATE SEQUENCE visits;
+
+query I
+SELECT count(a.s) FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (SELECT k, sum(nextval('visits')) s FROM fact GROUP BY k) a USING(k);
+----
+2
+
+query I
+SELECT currval('visits');
+----
+10003

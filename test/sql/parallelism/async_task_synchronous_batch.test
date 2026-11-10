@@ -1,0 +1,55 @@
+# name: test/sql/parallelism/async_task_synchronous_batch.test
+# description: A scan that cannot park runs the I/O tasks of a blocked result side by side, as one batch, instead of one after the other
+# group: [parallelism]
+
+load {TEST_DIR}/async_task_synchronous_batch.db
+
+# a single row group, so the checkpoint lays out the blocks deterministically: the wide string column fills whole
+# blocks and comes first, the integer columns share its last block, so the first vector reads two non-adjacent blocks
+statement ok
+CREATE TABLE t AS SELECT md5(range::VARCHAR) || md5((range + 1)::VARCHAR) AS s, range AS i, range * 2 AS a, range * 3 AS b, range * 5 AS c FROM range(100000);
+
+statement ok
+CHECKPOINT
+
+restart
+
+# force the synchronous fallback: the scan cannot park on its I/O, so the tasks of a BLOCKED result run at the call site
+statement ok
+SET debug_physical_table_scan_execution_strategy=SYNCHRONOUS
+
+statement ok
+SET threads=1
+
+# disable read-ahead so the I/O is issued by the per-thread scan path this test asserts
+statement ok
+SET read_ahead_depth=0
+
+statement ok
+SET storage_block_prefetch='debug_force_always'
+
+statement ok
+CALL enable_logging('AsyncTaskSchedule')
+
+query IIIII
+SELECT sum(i), sum(a), sum(b), sum(c), max(s) FROM t
+----
+4999950000	9999900000	14999850000	24999750000	fffffe98d0963d27015c198262d972215f4e974a5f4e1643e264f86c20a74e64
+
+statement ok
+CALL disable_logging()
+
+# the blocked results' tasks were run synchronously, and at least one batch held more than one task
+query I
+SELECT count(*) > 0 FROM duckdb_logs_parsed('AsyncTaskSchedule') WHERE pool LIKE 'SYNCHRONOUS_%' AND task_count > 1
+----
+true
+
+# nothing was scheduled on a pool: the scan could not park
+query I
+SELECT count(*) FROM duckdb_logs_parsed('AsyncTaskSchedule') WHERE pool NOT LIKE 'SYNCHRONOUS_%'
+----
+0
+
+statement ok
+CALL truncate_duckdb_logs()

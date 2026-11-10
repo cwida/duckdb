@@ -14,6 +14,13 @@ namespace duckdb {
 
 using std::atomic;
 
+//! Isolate an atomic from neighboring fields on machines with 64- or 128-byte cache lines.
+template <class T>
+struct alignas(128) PaddedAtomic : public atomic<T> {
+	using atomic<T>::atomic;
+	using atomic<T>::operator=;
+};
+
 //! NOTE: When repeatedly trying to atomically set a value in a loop, you can use as the loop condition:
 //! * std::atomic_compare_exchange_weak
 //! * std::atomic::compare_exchange_weak

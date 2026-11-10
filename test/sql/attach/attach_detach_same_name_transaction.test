@@ -36,7 +36,7 @@ statement ok
 BEGIN
 
 statement ok
-ATTACH '__TEST_DIR__/detach_same_name_modified.db' AS b
+ATTACH '{TEST_DIR}/detach_same_name_modified.db' AS b
 
 statement ok
 CREATE TABLE b.tbl AS SELECT 1 AS i
@@ -60,7 +60,7 @@ statement ok
 BEGIN
 
 statement ok
-ATTACH '__TEST_DIR__/detach_same_name_read.db' AS c
+ATTACH '{TEST_DIR}/detach_same_name_read.db' AS c
 
 statement ok
 CREATE TABLE c.tbl AS SELECT 1 AS i

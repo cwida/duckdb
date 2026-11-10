@@ -175,11 +175,14 @@ functions:
         type: scalar_function
         description: The function to set the name of.
       name:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The name to set. Borrowed and copied.
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1
@@ -383,7 +386,7 @@ functions:
 
   scalar_function_set_stats_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-02" ]
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
     description: |
       Sets the optional stats callback of the scalar function.
 
@@ -698,7 +701,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_stats_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-02" ]
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
     description: Retrieves the user data set via `[[scalar_function_set_user_data]]`.
     parameters:
       info:
@@ -717,7 +720,7 @@ functions:
 
   scalar_function_stats_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-02" ]
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -737,7 +740,7 @@ functions:
 
   scalar_function_stats_get_arg_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-02" ]
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
     description: |
       Returns how many arguments the call site has, split into the four parts of the argument list.
 
@@ -776,7 +779,7 @@ functions:
 
   scalar_function_stats_get_arg_stats:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-02" ]
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
     description: |
       Retrieves the statistics of the argument at the given index.
 
@@ -803,7 +806,7 @@ functions:
 
   scalar_function_stats_get_result_stats:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-02" ]
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
     description: |
       Retrieves the statistics of the call site's result, for the callback to narrow.
 

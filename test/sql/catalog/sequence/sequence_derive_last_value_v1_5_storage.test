@@ -11,10 +11,10 @@ statement ok
 PRAGMA wal_autocheckpoint='1TB';
 
 statement ok
-ATTACH '__TEST_DIR__/sequence_last_value_v1_5.db' AS v15 (STORAGE_VERSION 'v1.5.0');
+ATTACH '{TEST_DIR}/sequence_last_value_v1_5.db' AS v15 (STORAGE_VERSION 'v1.5.0');
 
 statement ok
-ATTACH '__TEST_DIR__/sequence_last_value_v2_0.db' AS v20 (STORAGE_VERSION 'v2.0.0');
+ATTACH '{TEST_DIR}/sequence_last_value_v2_0.db' AS v20 (STORAGE_VERSION 'v2.0.0');
 
 foreach db v15 v20
 
@@ -55,10 +55,10 @@ statement ok
 DETACH v20
 
 statement ok
-ATTACH '__TEST_DIR__/sequence_last_value_v1_5.db' AS v15
+ATTACH '{TEST_DIR}/sequence_last_value_v1_5.db' AS v15
 
 statement ok
-ATTACH '__TEST_DIR__/sequence_last_value_v2_0.db' AS v20
+ATTACH '{TEST_DIR}/sequence_last_value_v2_0.db' AS v20
 
 foreach db v15 v20
 

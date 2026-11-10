@@ -5,12 +5,12 @@
 foreach threads 1 4
 
 statement ok
-SET threads=${threads};
+SET threads={threads};
 
 foreach memory_limit 10000KB 10500KB 11000KB 11500KB 12000KB 13000KB
 
 statement ok
-SET memory_limit='${memory_limit}';
+SET memory_limit='{memory_limit}';
 
 statement maybe
 SELECT count(*) FROM range(300000) a(k) JOIN range(300000) b(k) USING (k);

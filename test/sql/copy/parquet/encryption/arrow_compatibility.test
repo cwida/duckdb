@@ -54,3 +54,56 @@ SELECT * FROM read_parquet('{DATA_DIR}/parquet-testing/encryption/arrow_uniform_
 18	false
 19	true
 20	false
+
+# DataPageV2 pages, generated with parquet-rs 58.3.0 (from duckdb/duckdb#24406)
+query I
+SELECT value FROM read_parquet('{DATA_DIR}/parquet-testing/encryption/arrow_rust_pme_data_page_v2_uncompressed_required.parquet', encryption_config={footer_key: 'arrow_key_generated_files'});
+----
+7
+9
+11
+13
+
+query I
+SELECT value FROM read_parquet('{DATA_DIR}/parquet-testing/encryption/arrow_rust_pme_data_page_v2_uncompressed_nullable.parquet', encryption_config={footer_key: 'arrow_key_generated_files'});
+----
+7
+NULL
+11
+13
+
+query I
+SELECT value FROM read_parquet('{DATA_DIR}/parquet-testing/encryption/arrow_rust_pme_data_page_v2_snappy_required.parquet', encryption_config={footer_key: 'arrow_key_generated_files'});
+----
+7
+9
+11
+13
+
+query I
+SELECT value FROM read_parquet('{DATA_DIR}/parquet-testing/encryption/arrow_rust_pme_data_page_v2_snappy_nullable.parquet', encryption_config={footer_key: 'arrow_key_generated_files'});
+----
+7
+NULL
+11
+13
+
+# DataPageV2 pages whose values are compressed, generated with parquet-rs 58.4.0 (dictionary disabled)
+query IIII
+SELECT count(*), count(value), sum(value), count(*) FILTER (value = 9) FROM read_parquet('{DATA_DIR}/parquet-testing/encryption/arrow_rust_pme_data_page_v2_snappy_compressed_required.parquet', encryption_config={footer_key: 'arrow_key_generated_files'});
+----
+4096	4096	40960	1024
+
+query IIII
+SELECT count(*), count(value), sum(value), count(*) FILTER (value = 9) FROM read_parquet('{DATA_DIR}/parquet-testing/encryption/arrow_rust_pme_data_page_v2_snappy_compressed_nullable.parquet', encryption_config={footer_key: 'arrow_key_generated_files'});
+----
+4096	3072	31744	0
+
+query II
+SELECT file_row_number, value FROM read_parquet('{DATA_DIR}/parquet-testing/encryption/arrow_rust_pme_data_page_v2_snappy_compressed_nullable.parquet', encryption_config={footer_key: 'arrow_key_generated_files'}, file_row_number = true) WHERE file_row_number < 5 ORDER BY file_row_number;
+----
+0	7
+1	NULL
+2	11
+3	13
+4	7

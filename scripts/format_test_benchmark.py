@@ -1,8 +1,94 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
+
+# Deprecated spellings that the sqllogictest runner still accepts with a "Replacing deprecated ..." warning
+# (test/sqlite/sqllogic_test_runner.cpp, test/helpers/test_config.cpp). The formatter rewrites them so that
+# `make format-check` rejects them and `make format-fix` repairs them.
+DEPRECATED_KEYWORDS = {
+    '__TEST_DIR__': '{TEST_DIR}',
+    '__WORKING_DIRECTORY__': '{WORKING_DIRECTORY}',
+    '__BUILD_DIRECTORY__': '{BUILD_DIRECTORY}',
+}
+
+# Environment variables the runner defines for every test (see the table in test/README.md).
+# `${NAME}` is the deprecated spelling of `{NAME}` for these and for any variable the test declares itself.
+BUILTIN_TEST_VARIABLES = {
+    'TEST_NAME',
+    'TEST_NAME__NO_SLASH',
+    'TEST_ID',
+    'TEST_UUID',
+    'RUN_ID',
+    'WORKING_DIR',
+    'BUILD_DIR',
+    'DATA_DIR',
+    'LOCAL_DATA_DIR',
+    'TEMP_DIR_ROOT',
+    'TEMP_DIR',
+    'TEMP_DIR_ABSOLUTE',
+    'LOCAL_TEMP_DIR',
+    'CATALOG_DIR',
+}
+
+LOOP_DIRECTIVES = {'loop', 'concurrentloop', 'foreach', 'concurrentforeach'}
+DEPRECATED_VARIABLE_PATTERN = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}')
+SQLLOGICTEST_EXTENSIONS = {'.test', '.test_slow', '.test_coverage'}
+
+
+def declared_test_variables(lines):
+    """Collect the loop iterators and environment variables a sqllogictest file declares."""
+    variables = set(BUILTIN_TEST_VARIABLES)
+    for line in lines:
+        tokens = line.split()
+        if len(tokens) < 2:
+            continue
+        if tokens[0] in LOOP_DIRECTIVES:
+            # `foreach a,b x,1 y,2` declares two iterators
+            variables.update(name for name in tokens[1].split(',') if name)
+        elif tokens[0] == 'require-env':
+            variables.add(tokens[1])
+        elif tokens[0] == 'require-env-not' and len(tokens) >= 3:
+            # with a value list the variable must exist and is registered for substitution
+            variables.add(tokens[1])
+        elif tokens[0] == 'set' and tokens[1] == 'variable' and len(tokens) >= 3:
+            variables.add(tokens[2])
+    return variables
+
+
+def replace_deprecated_syntax(full_path, lines):
+    """Rewrite deprecated runner syntax to its current spelling; returns (lines, list of messages)."""
+    variables = declared_test_variables(lines)
+    messages = []
+    result = []
+
+    def report(line_number, old, new):
+        message = f'{full_path}:{line_number}: deprecated {old} - please replace with {new}'
+        if message not in messages:
+            messages.append(message)
+
+    for line_number, line in enumerate(lines, 1):
+        if line.startswith('#'):
+            result.append(line)
+            continue
+        for old, new in DEPRECATED_KEYWORDS.items():
+            if old in line:
+                report(line_number, old, new)
+                line = line.replace(old, new)
+
+        def replace_variable(match):
+            name = match.group(1)
+            if name not in variables:
+                # not a loop iterator or environment variable: leave the text alone, the runner does too
+                return match.group(0)
+            report(line_number, '${' + name + '}', '{' + name + '}')
+            return '{' + name + '}'
+
+        line = DEPRECATED_VARIABLE_PATTERN.sub(replace_variable, line)
+        result.append(line)
+    return result, messages
 
 
 def open_utf8(file_path, mode):
@@ -34,6 +120,12 @@ def format_file_content(full_path, lines):
                 return None, 1
             found_description = True
             new_description_line = f'# description: {line.split(":", 1)[1].strip()}\n'
+
+    # Benchmark files have their own `${...}` substitution, so only sqllogictest files are checked
+    if ext in SQLLOGICTEST_EXTENSIONS:
+        lines, messages = replace_deprecated_syntax(full_path, lines)
+        for message in messages:
+            print(message, file=sys.stderr)
 
     # Filter out old metadata lines
     meta = ['#name:', '# name:', '#description:', '# description:', '#group:', '# group:']

@@ -78,12 +78,12 @@
       {
         "id": 200,
         "name": "width",
-        "type": "uint8_t"
+        "type": "uint32_t"
       },
       {
         "id": 201,
         "name": "scale",
-        "type": "uint8_t"
+        "type": "uint32_t"
       }
     ]
   },

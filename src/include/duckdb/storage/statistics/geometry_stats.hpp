@@ -15,6 +15,7 @@
 
 namespace duckdb {
 class BaseStatistics;
+class StatsStructFields;
 struct SelectionVector;
 
 class GeometryTypeSet {
@@ -195,12 +196,14 @@ public:
 		return result_found;
 	}
 
-	void AddWKBType(int32_t wkb_type) {
-		const auto vert_idx = static_cast<uint8_t>((wkb_type / 1000) % 10);
-		const auto geom_idx = static_cast<uint8_t>(wkb_type % 1000);
-		D_ASSERT(vert_idx < VERT_TYPES);
-		D_ASSERT(geom_idx < PART_TYPES);
+	bool TryAddWKBType(int32_t wkb_type) {
+		const auto vert_idx = wkb_type / 1000;
+		const auto geom_idx = wkb_type % 1000;
+		if (vert_idx < 0 || vert_idx >= VERT_TYPES || geom_idx < 1 || geom_idx >= PART_TYPES) {
+			return false;
+		}
 		sets[vert_idx] |= (1 << geom_idx);
+		return true;
 	}
 
 	vector<int32_t> ToWKBList() const {
@@ -336,7 +339,9 @@ struct GeometryStats {
 	DUCKDB_API static void Serialize(const BaseStatistics &stats, Serializer &serializer);
 	DUCKDB_API static void Deserialize(Deserializer &deserializer, BaseStatistics &base);
 
-	DUCKDB_API static child_list_t<Value> ToStruct(const BaseStatistics &stats);
+	DUCKDB_API static child_list_t<Value> ToStruct(const BaseStatistics &stats, bool exact);
+	//! Sets the parts of the statistics the struct fields describe (the inverse of ToStruct)
+	DUCKDB_API static void SetFromStruct(BaseStatistics &stats, StatsStructFields &fields);
 
 	DUCKDB_API static void Update(BaseStatistics &stats, const string_t &value);
 	DUCKDB_API static void Merge(BaseStatistics &stats, const BaseStatistics &other);

@@ -18,6 +18,7 @@ class TableCatalogEntry;
 struct AlterTableInfo;
 
 class DuckTableEntry;
+class LogicalOperator;
 
 //! Physical index creation operator.
 class PhysicalCreateIndex : public PhysicalOperator {

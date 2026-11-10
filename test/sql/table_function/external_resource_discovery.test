@@ -2,15 +2,15 @@
 # description: duckdb_external_resources(discover := true) — union in resources reported by a type's list callback
 # group: [table_function]
 
-# A list callback enumerates the resources of a type that exist externally, one row per resource. `handle`
-# (a MAP(VARCHAR,VARCHAR)) is required; `reference` and `state` are picked up by name when present. It takes
-# the options map discovery passes it (empty here) and ignores it.
+# A list callback enumerates the resources of a type that exist externally, one row per resource: `handle`
+# (a MAP(VARCHAR,VARCHAR)), `name` (the provider's own name for it), `reference` and `state`. It takes the
+# options map discovery passes it (empty here) and ignores it.
 statement ok
 CREATE MACRO mock_list(opts) AS TABLE
     SELECT * FROM (VALUES
-        (MAP {'id': 'd1'}, 'ext-1', 'running'),
-        (MAP {'id': 'd2'}, 'ext-2', 'stopped')
-    ) t(handle, reference, state);
+        (MAP {'id': 'd1'}, 'dee-one', 'ext-1', 'running'),
+        (MAP {'id': 'd2'}, 'dee-two', 'ext-2', 'stopped')
+    ) t(handle, name, reference, state);
 
 statement ok
 CALL register_external_resource_type('mock@disc', kind := 'catalog', create_function := 'noop_create', list_function := 'mock_list');
@@ -27,13 +27,13 @@ SELECT count(*) FROM duckdb_external_resources();
 ----
 0
 
-# discover := true unions in the list callback's rows as unmanaged (managed = false, name NULL), carrying
-# their state/reference through.
+# discover := true unions in the list callback's rows as unmanaged (managed = false), carrying their
+# name/state/reference through.
 query TTTTT
 SELECT name, type, managed, state, reference FROM duckdb_external_resources(discover := true) ORDER BY reference;
 ----
-NULL	mock@disc	false	running	ext-1
-NULL	mock@disc	false	stopped	ext-2
+dee-one	mock@disc	false	running	ext-1
+dee-two	mock@disc	false	stopped	ext-2
 
 # Register one of the discovered resources locally (same handle).
 statement ok
@@ -45,13 +45,14 @@ SELECT name, type, managed FROM duckdb_external_resources();
 ----
 local_d1	mock@disc	true
 
-# With discovery, the locally registered handle is shown once (as managed) and the discovered duplicate is
-# suppressed — dedup is by (type, handle). state/reference are empty (NULL) for the managed row.
+# With discovery, the locally registered handle is shown once (as managed, under its local name) and the
+# discovered duplicate is suppressed — dedup is by (type, handle). state/reference are empty (NULL) for the
+# managed row.
 query TTTTT
 SELECT name, type, managed, state, reference FROM duckdb_external_resources(discover := true) ORDER BY managed DESC;
 ----
 local_d1	mock@disc	true	NULL	NULL
-NULL	mock@disc	false	stopped	ext-2
+dee-two	mock@disc	false	stopped	ext-2
 
 # A type without a list callback contributes nothing to discovery (no error).
 statement ok
@@ -66,7 +67,7 @@ SELECT count(*) FROM duckdb_external_resources(discover := true);
 # still surfaced even though 'd1' is registered locally under mock@disc.
 statement ok
 CREATE MACRO other_list(opts) AS TABLE
-    SELECT * FROM (VALUES (MAP {'id': 'd1'}, 'other-1', 'running')) t(handle, reference, state);
+    SELECT * FROM (VALUES (MAP {'id': 'd1'}, 'other-one', 'other-1', 'running')) t(handle, name, reference, state);
 
 statement ok
 CALL register_external_resource_type('other@disc', kind := 'catalog', create_function := 'noop_create', list_function := 'other_list');
@@ -74,9 +75,9 @@ CALL register_external_resource_type('other@disc', kind := 'catalog', create_fun
 query TTTTT
 SELECT name, type, managed, state, reference FROM duckdb_external_resources(discover := true) ORDER BY type, reference;
 ----
-NULL	mock@disc	false	stopped	ext-2
+dee-two	mock@disc	false	stopped	ext-2
 local_d1	mock@disc	true	NULL	NULL
-NULL	other@disc	false	running	other-1
+other-one	other@disc	false	running	other-1
 
 # Registering that handle under the second type too makes both managed, independently of each other.
 statement ok
@@ -85,6 +86,6 @@ CALL register_external_resource('other@disc', 'other_d1', MAP {'id': 'd1'});
 query TTT
 SELECT name, type, managed FROM duckdb_external_resources(discover := true) ORDER BY type, name;
 ----
+dee-two	mock@disc	false
 local_d1	mock@disc	true
-NULL	mock@disc	false
 other_d1	other@disc	true

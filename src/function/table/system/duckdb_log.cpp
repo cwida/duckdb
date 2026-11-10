@@ -118,6 +118,8 @@ unique_ptr<TableRef> DuckDBLogBindReplace(ClientContext &context, TableFunctionB
 void DuckDBLogFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction logs_fun("duckdb_logs", {}, DuckDBLogFunction, DuckDBLogBind, DuckDBLogInit);
 	logs_fun.bind_replace = DuckDBLogBindReplace;
+	// the log storage grows while a query executes
+	logs_fun.stability = FunctionStability::VOLATILE;
 	logs_fun.table_scan_progress = DuckDBLogProgress;
 	logs_fun.GetSignature().WithTypedKwargs(
 	    "options", [](TypedKwargs &options) { options.Add("denormalized_table", LogicalType::BOOLEAN); });

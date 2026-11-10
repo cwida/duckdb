@@ -3,6 +3,8 @@
 #include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
+#include "duckdb/parallel/pipeline.hpp"
+#include "duckdb/execution/executor.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/storage_info.hpp"
@@ -124,6 +126,111 @@ TEST_CASE("Test external threads", "[api]") {
 }
 
 #ifndef DUCKDB_NO_THREADS
+namespace {
+
+struct ThreadCapSourceState : public GlobalSourceState {
+	explicit ThreadCapSourceState(idx_t limit_p) : limit(limit_p) {
+	}
+	idx_t limit;
+
+	idx_t MaxThreads() override {
+		return limit;
+	}
+};
+
+struct ThreadCapOperatorState : public GlobalOperatorState {
+	explicit ThreadCapOperatorState(idx_t limit_p) : limit(limit_p) {
+	}
+	idx_t limit;
+
+	idx_t MaxThreads(idx_t source_max_threads) override {
+		return limit;
+	}
+};
+
+struct ThreadCapSinkState : public GlobalSinkState {
+	explicit ThreadCapSinkState(idx_t limit_p) : limit(limit_p) {
+	}
+	idx_t limit;
+	idx_t calls = 0;
+	idx_t input_limit = 0;
+
+	idx_t MaxThreads(idx_t source_max_threads) override {
+		calls++;
+		input_limit = source_max_threads;
+		return limit;
+	}
+};
+
+class ThreadCapOperator : public PhysicalOperator {
+public:
+	ThreadCapOperator(PhysicalPlan &plan, idx_t limit_p)
+	    : PhysicalOperator(plan, PhysicalOperatorType::INVALID, {LogicalType::INTEGER}, 0), limit(limit_p) {
+	}
+
+	unique_ptr<GlobalSourceState> GetGlobalSourceState(ClientContext &context) const override {
+		return make_uniq<ThreadCapSourceState>(limit);
+	}
+	unique_ptr<GlobalOperatorState> GetGlobalOperatorState(ClientContext &context) const override {
+		return make_uniq<ThreadCapOperatorState>(limit);
+	}
+	unique_ptr<GlobalSinkState> GetGlobalSinkState(ClientContext &context) const override {
+		return make_uniq<ThreadCapSinkState>(limit);
+	}
+	bool IsSource() const override {
+		return true;
+	}
+	bool IsSink() const override {
+		return true;
+	}
+	bool ParallelSource() const override {
+		return true;
+	}
+	bool ParallelOperator() const override {
+		return true;
+	}
+	bool ParallelSink() const override {
+		return true;
+	}
+
+private:
+	idx_t limit;
+};
+
+} // namespace
+
+// SQL cannot supply a sink callback that raises the accumulated source/operator limit.
+TEST_CASE("Pipeline sink thread limits cannot raise source or operator caps", "[api]") {
+	DBConfig config;
+	config.options.maximum_threads = 8;
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	Executor executor(*con.context);
+	PipelineBuildState build_state;
+	struct Limits {
+		idx_t source, op, sink, expected, sink_input;
+	};
+	const Limits cases[] = {{1, 8, 8, 1, 1}, {8, 2, 8, 2, 2}, {8, 8, 3, 3, 8},
+	                        {0, 8, 8, 0, 0}, {8, 8, 0, 0, 8}, {16, 16, 16, 8, 8}};
+	for (const auto &limits : cases) {
+		CAPTURE(limits.source, limits.op, limits.sink);
+		PhysicalPlan plan(Allocator::Get(*con.context));
+		auto &source = plan.Make<ThreadCapOperator>(limits.source);
+		auto &op = plan.Make<ThreadCapOperator>(limits.op);
+		auto &sink = plan.Make<ThreadCapOperator>(limits.sink);
+		Pipeline pipeline(executor);
+		build_state.SetPipelineSource(pipeline, source);
+		build_state.SetPipelineOperators(pipeline, {op});
+		build_state.SetPipelineSink(pipeline, sink, 1);
+		pipeline.Ready();
+		pipeline.Reset();
+		REQUIRE(pipeline.GetMaxThreads() == limits.expected);
+		auto &sink_state = sink.sink_state->Cast<ThreadCapSinkState>();
+		REQUIRE(sink_state.calls == 1);
+		REQUIRE(sink_state.input_limit == limits.sink_input);
+	}
+}
+
 TEST_CASE("Test async threads", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);

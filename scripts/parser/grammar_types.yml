@@ -24,8 +24,7 @@
 # the type entry takes precedence and their value IS extracted. Keep this list
 # for syntax-only rules and temporary manual exceptions; matcher-provided rules
 # belong in matcher_rule_overrides instead.
-# Note: some entries (e.g. SingleArrowPair,
-# IntervalNumber, Program) also appear in type categories because
+# Note: some entries (e.g. IntervalNumber, Program) also appear in type categories because
 # they are manually implemented and referenced as children by auto-generated
 # rules. The excluded status only suppresses Internal auto-generation.
 #
@@ -102,6 +101,8 @@ SQLStatement:
     - ResetVariableOrSetting
     - SelectStatement
     - SetStatement
+    - SetKeywordStatement
+    - VariableAssignment
     - TransactionStatement
     - BeginTransaction
     - CommitTransaction
@@ -117,7 +118,6 @@ SQLStatement:
     - CreateExternalResourceStmt
     - RegisterExternalResourceStmt
     - DestroyExternalResourceStmt
-    - ShowExternalResourcesStmt
     - ExtensionRepositoryStatement
     - CreateExtensionRepositoryStmt
     - DropExtensionRepositoryStmt
@@ -154,6 +154,7 @@ QueryNode:
   type: "unique_ptr<QueryNode>"
   by_value: true
   rules:
+    - ShowExternalResources
     - ShowDeprecatedSelect
     - DescribeSelect
     - ShowTables
@@ -385,7 +386,6 @@ Expression:
     - ColumnDefaultExpr
     - SingleExpression
     - BaseExpression
-    - LambdaArrowExpression
     - LogicalOrExpression
     - LogicalOrExpressionTail
     - ColDefOrExpr
@@ -460,7 +460,6 @@ Expression:
     - SliceExpression
     - EndSliceBound
     - StepSliceBound
-    - SingleArrowPair
     - StarExpression
     - SpecialFunctionExpression
     - CoalesceExpression
@@ -484,6 +483,8 @@ Expression:
     - ForExpression
     - CastExpression
     - CaseExpression
+    - SimpleCaseExpression
+    - SearchedCaseExpression
     - CaseElse
     - TypeLiteral
     - DefaultExpression
@@ -556,6 +557,24 @@ Expression:
     - UsingExpression
     - IndexElement
     - RelOptionArgumentOpt
+    - ExpressionAlias
+    - MeasuresElement
+    - PatternClause
+    - RowPattern
+    - RowPatternAlternative
+    - RowPatternTerm
+    - RowPatternFactor
+    - RowPatternPrimary
+    - RowPatternPermute
+    - RowPatternAnchor
+    - PatternStart
+    - PatternEnd
+    - RowPatternGroup
+    - RowPatternEmpty
+    - RowPatternExclusion
+    - RowPatternLabel
+    - MeasureSemanticsExpression
+    - DefineElement
 
 ColumnRefExpression:
   type: "unique_ptr<ColumnRefExpression>"
@@ -607,6 +626,8 @@ TableRef:
     - CTEBody
     - CTESelectBody
     - CTEDMLBody
+    - TableMatchRecognizeClause
+    - MatchRecognizeBody
 
 BaseTableRef:
   type: "unique_ptr<BaseTableRef>"
@@ -662,6 +683,8 @@ ExpressionList:
     - SetAssignment
     - VariableList
     - UsingKey
+    - MeasuresClause
+    - DefineClause
 
 FunctionArgumentList:
   type: "vector<FunctionArgument>"
@@ -811,6 +834,8 @@ QualifiedName:
     - SchemaReservedFunctionName
     - CatalogReservedSchemaFunctionName
     - QualifiedTableFunction
+    - CatalogReservedSchemaTableFunctionName
+    - TableFunctionNameAsQualifiedName
     - UseTarget
     - UseTargetCatalogSchema
     - SchemaNameAsUseTarget
@@ -1135,6 +1160,14 @@ String:
     - DoubleType
     - UpdateSetColumnTarget
 
+ConstraintCheckMode:
+  type: "ConstraintCheckMode"
+  by_value: false
+  rules:
+    - ConstraintTiming
+    - ImmediateConstraint
+    - DeferredConstraint
+
 Bool:
   type: "bool"
   by_value: false
@@ -1201,7 +1234,6 @@ Bool:
     - IfNotExists
     - OrReplace
     - InstallAndLoad
-    - ShowAllModifier
     - FunctionTypeMacro
     - FunctionTypeMacroKeyword
     - FunctionTypeFunction
@@ -1239,6 +1271,7 @@ LogicalType:
   by_value: false
   rules:
     - Type
+    - ReturnsType
 
 LogicalTypeList:
   type: "vector<LogicalType>"
@@ -1661,6 +1694,15 @@ overrides:
   ComparisonExpressionTail:
     type: "ComparisonExpressionTail"
     by_value: true
+  SimpleCaseWhenOperand:
+    type: "ComparisonExpressionTail"
+    by_value: true
+  SimpleCaseWhenEquals:
+    type: "ComparisonExpressionTail"
+    by_value: true
+  SimpleCaseWhenThen:
+    type: "SimpleCaseCheck"
+    by_value: true
   IsExpressionTail:
     type: "IsExpressionTail"
     by_value: true
@@ -1705,6 +1747,24 @@ overrides:
     by_value: true
   OtherOperatorExpressionTail:
     type: "OtherOperatorTail"
+    by_value: true
+  SingleArrowTail:
+    type: "OtherOperatorTail"
+    by_value: true
+  ArrowChainTail:
+    type: "OtherOperatorTail"
+    by_value: true
+  DoubleArrowTail:
+    type: "OtherOperatorTail"
+    by_value: true
+  SingleArrowBody:
+    type: "ArrowBody"
+    by_value: true
+  ArrowChainBody:
+    type: "ArrowBody"
+    by_value: true
+  ArrowFullBody:
+    type: "ArrowBody"
     by_value: true
   AdditiveExpressionTail:
     type: "BinaryExpressionTail"
@@ -1752,6 +1812,7 @@ IdentifierType:
     - AnalyzeKeyword
     - ColId
     - ColIdOrString
+    - ShowExternalResourcesType
     - UsingColumnName
     - ColLabelOrString
     - ColLabelIdentifier
@@ -1839,6 +1900,9 @@ matcher_rule_overrides:
   TableFunctionName:
     matcher: identifier
     suggestion: SUGGEST_TABLE_FUNCTION_NAME
+  ReservedTableFunctionName:
+    matcher: reserved_identifier
+    suggestion: SUGGEST_TABLE_FUNCTION_NAME
   TypeName:
     matcher: identifier
     suggestion: SUGGEST_TYPE_NAME
@@ -1879,13 +1943,13 @@ expression_depth_nesting_rules:
   - CustomPrefixExpression
 
 expression_depth_chain_rules:
-  - LambdaArrowExpression
   - NotExpression
   - IsExpressionContinuation
   - IsDistinctFromExpression
   - ComparisonExpression
   - BetweenInLikeExpression
   - InfixOtherOperatorExpression
+  - ArrowChainBody
   - BitwiseExpression
   - TildeExpression
   - AdditiveExpression
@@ -1903,7 +1967,6 @@ expression_depth_chain_rules:
 collapsible_rules:
   - Expression
   - ColumnDefaultExpr
-  - LambdaArrowExpression
   - LogicalOrExpression
   - ColDefOrExpr
   - LogicalAndExpression
@@ -1936,6 +1999,33 @@ packrat_memoized_rules:
   - CatalogQualification
   - SchemaQualification
   - ReservedSchemaQualification
+
+# rule_labels: see Matcher::SetLabel. When a syntax error lists what the parser expected at the failure point,
+# every alternative inside a labelled rule is summarised by the label instead of being spelled out. Only label
+# rules that cannot match empty input and that accept a plain identifier somewhere.
+rule_labels:
+  an expression:
+    - Expression
+    - LogicalOrExpression
+    - LogicalAndExpression
+    - LogicalNotExpression
+    - IsExpression
+    - IsDistinctFromExpression
+    - ComparisonExpression
+    - BetweenInLikeExpression
+    - OtherOperatorExpression
+    - InContainsExpression
+    - BitwiseExpression
+    - AdditiveExpression
+    - MultiplicativeExpression
+    - ExponentiationExpression
+    - CollateExpression
+    - AtTimeZoneExpression
+    - PrefixExpression
+    - BaseExpression
+    - SingleExpression
+  a type:
+    - Type
 
 # ---------------------------------------------------------------------------
 # excluded_rules: no transformer stub generated, no semantic value extracted
@@ -1997,3 +2087,70 @@ excluded_rules:
   # expression.gram rules kept manual during incremental transformer generation migration
   - OverClause
   - PrefixExpression
+
+MatchRecognizeClauseEntry:
+  type: "MatchRecognizeClause"
+  by_value: true
+  rules:
+    - MatchRecognizeClause
+    - MRPartition
+    - MROrderBy
+    - MRMeasures
+    - MRRows
+    - MRSkip
+    - MRPattern
+    - MRSubset
+    - MRDefineAuto
+    - MRDefine
+MatchRecognizeSubset:
+  type: "MatchRecognizeSubset"
+  by_value: true
+  rules:
+    - SubsetElement
+MatchRecognizeSubsetList:
+  type: "vector<MatchRecognizeSubset>"
+  by_value: true
+  rules:
+    - SubsetClause
+MeasureSemantics:
+  type: "bool"
+  rules:
+    - MeasureSemantics
+    - RunningSemantics
+    - FinalSemantics
+    - QuantifierReluctant
+MatchRecognizeRows:
+  type: "MatchRecognizeRows"
+  rules:
+    - RowsPerMatch
+    - OneRowPerMatch
+    - AllRowsPerMatch
+    - AllRowsEmptyMatches
+    - ShowEmptyMatches
+    - OmitEmptyMatches
+    - WithUnmatchedRows
+MatchRecognizeAfterMatchClause:
+  type: "MatchRecognizeAfterMatchClause"
+  by_value: true
+  rules:
+    - AfterMatchSkip
+    - AfterMatchSkipTarget
+    - SkipToNextRow
+    - SkipPastLastRow
+    - SkipToFirstVar
+    - SkipToLastVar
+    - SkipToVar
+MatchRecognizeQuantifier:
+  type: "MatchRecognizeQuantifier"
+  rules:
+    - RowPatternQuantifier
+    - RowPatternQuantifierKind
+    - QuantifierStar
+    - QuantifierPlus
+    - QuantifierOptional
+    - QuantifierRange
+    - QuantifierBounds
+    - QuantifierMinMax
+    - QuantifierMin
+    - QuantifierMax
+    - QuantifierExact

@@ -295,8 +295,8 @@ ScalarFunctionSet JSONFunctions::GetStructureFunction() {
 	ScalarFunctionSet fun_set("json_structure");
 
 	fun_set.AddFunction(GetStructureFunctionInternal(LogicalType::VARCHAR));
-	fun_set.SetFallible();
 	fun_set.AddFunction(GetStructureFunctionInternal(LogicalType::JSON()));
+	fun_set.SetFallible();
 
 	return fun_set;
 }

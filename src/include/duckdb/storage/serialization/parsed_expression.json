@@ -346,6 +346,9 @@
         "accessor_mut": "GetLambdaSyntaxTypeMutable()",
         "accessor": "GetLambdaSyntaxType()"
       }
+    ],
+    "finalize_deserialization": [
+      "result->FinalizeDeserialization(deserializer);"
     ]
   },
   {
@@ -377,6 +380,13 @@
         "type": "duckdb::Identifier"
       }
     ]
+  },
+  {
+    "class": "PatternExpression",
+    "base": "ParsedExpression",
+    "enum": "PATTERN",
+    "custom_implementation": true,
+    "custom_switch_code": "result = PatternExpression::Deserialize(deserializer);\nbreak;"
   },
   {
     "class": "PositionalReferenceExpression",

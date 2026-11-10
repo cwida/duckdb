@@ -147,7 +147,6 @@ static void GetValidityMask(ValidityMask &mask, ArrowArray &array, idx_t chunk_o
 
 void ArrowToDuckDBConversion::SetValidityMask(Vector &vector, ArrowArray &array, idx_t chunk_offset, idx_t size,
                                               int64_t parent_offset, int64_t nested_offset, bool add_null) {
-	D_ASSERT(vector.GetVectorType() == VectorType::FLAT_VECTOR);
 	auto &mask = FlatVector::ValidityMutable(vector);
 	GetValidityMask(mask, array, chunk_offset, size, parent_offset, nested_offset, add_null);
 }

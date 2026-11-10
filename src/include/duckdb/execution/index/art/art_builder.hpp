@@ -22,8 +22,8 @@ public:
 
 public:
 	//! Initialize the ART builder by passing a reference to the root node.
-	void Init(NodePtr &node, const idx_t end) {
-		s.emplace(node, 0, end, 0);
+	void Init(NodePtr &node_ptr, const idx_t end) {
+		s.emplace(node_ptr, 0, end, 0);
 	}
 	//! Build the ART starting at the first entry in the stack.
 	ARTConflictType Build();
@@ -31,10 +31,10 @@ public:
 private:
 	struct NodeEntry {
 		NodeEntry() = delete;
-		NodeEntry(NodePtr &node, const idx_t start, const idx_t end, const idx_t depth)
-		    : node(node), start(start), end(end), depth(depth) {};
+		NodeEntry(NodePtr &node_ptr, const idx_t start, const idx_t end, const idx_t depth)
+		    : node_ptr(node_ptr), start(start), end(end), depth(depth) {};
 
-		NodePtr &node;
+		NodePtr &node_ptr;
 		idx_t start;
 		idx_t end;
 		idx_t depth;

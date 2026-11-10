@@ -1,4 +1,5 @@
 #include "duckdb/planner/sql_export/logical_plan_sql_exporter_internal.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/scalar/compressed_materialization_utils.hpp"
 #include "duckdb/planner/logical_plan_sql_exporter.hpp"
 #include "duckdb/planner/sql_export/bound_expression_sql_exporter_internal.hpp"
@@ -41,6 +42,15 @@ static optional<Value> ConstantSQLInput(const Expression &expression, LogicalOpe
 	}
 	if (auto wrapped = CMUtils::GetWrappedInput(expression)) {
 		return ConstantSQLInput(*wrapped, input, context);
+	}
+	if (expression.IsFoldable()) {
+		// An unfolded constant expression, e.g. a cast of a literal with the expression rewriter disabled.
+		// Fold it like GetConstant does at bind time, so constant-required arguments restore to constants.
+		Value value;
+		if (ExpressionExecutor::TryEvaluateScalar(context.GetClientContext(), expression, value)) {
+			return value;
+		}
+		return {};
 	}
 	if (context.FindSource(input) || expression.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
 	    input.children.size() != 1) {
@@ -95,8 +105,8 @@ static LogicalPlanSQLExportResult EnsureSQLProjection(LogicalPlanSQLExportResult
 	return result;
 }
 
-static LogicalPlanSQLExportResult ApplyOutputNames(LogicalPlanSQLExportResult result,
-                                                   const vector<Identifier> &output_names) {
+LogicalPlanSQLExportResult LogicalPlanSQLExportHelpers::ApplyOutputNames(LogicalPlanSQLExportResult result,
+                                                                         const vector<Identifier> &output_names) {
 	if (result.HasError()) {
 		return result;
 	}
@@ -264,6 +274,34 @@ LogicalPlanSQLExportContext::ExportChild(LogicalOperator &child, const LogicalPl
 	return ExportChild(child, path);
 }
 
+LogicalPlanVerificationResult<LogicalPlanSQLExportedChild>
+LogicalPlanSQLExportContext::ExportRoot(LogicalOperator &root, const LogicalPlanVerificationPath &path,
+                                        const vector<LogicalPlanSQLExportSource> &sources,
+                                        const optional<vector<Identifier>> &output_names) {
+	SourceScope scope(*this, sources);
+	auto returning = SQLExportDMLHelpers::MatchReturningRoot(root);
+	// a replaced root or a replaced statement below it exports through the ordinary
+	// relational path, which reads the supplied replacement instead of the statement
+	if (!returning || SQLExportDMLHelpers::ContainsReplacedBoundary(*this, root)) {
+		return ExportChild(root, path);
+	}
+	// consumers of an exported statement address its RETURNING columns positionally
+	optional<vector<Identifier>> names = output_names;
+	if (!names) {
+		vector<Identifier> positional;
+		for (idx_t i = 0; i < returning->expressions.size(); i++) {
+			positional.push_back(LogicalPlanSQLExportHelpers::FieldIdentifier(i));
+		}
+		names = std::move(positional);
+	}
+	auto exported = SQLExportDMLHelpers::ExportReturning(*this, *returning, names, path);
+	if (exported.HasError()) {
+		return LogicalPlanVerificationResult<LogicalPlanSQLExportedChild>::Failure(exported);
+	}
+	return LogicalPlanVerificationResult<LogicalPlanSQLExportedChild>::Success(
+	    {std::move(exported.GetValue()), NextRelationAlias()});
+}
+
 LogicalPlanVerificationResult<unique_ptr<ParsedExpression>> LogicalPlanSQLExportContext::ExportExpression(
     const LogicalOperator &op, const vector<reference<const Expression>> &expressions, idx_t expression_ordinal,
     const BoundExpressionSQLExportContext &expression_context, const LogicalPlanVerificationPath &path,
@@ -346,7 +384,7 @@ LogicalPlanSQLExporter::Export(ClientContext &context, LogicalOperator &root,
 	if (!options.output_names) {
 		return result;
 	}
-	return ApplyOutputNames(std::move(result), *options.output_names);
+	return LogicalPlanSQLExportHelpers::ApplyOutputNames(std::move(result), *options.output_names);
 }
 
 LogicalPlanSQLExportResult
@@ -409,26 +447,29 @@ LogicalPlanSQLExporter::ExportWithSources(ClientContext &context, LogicalOperato
 	for (auto &replacement : replacements) {
 		sources.push_back({replacement.op,
 		                   state.NextRelationAlias(Identifier("__export_source")),
-		                   {replacement.relation.query->Copy(), replacement.relation.fields}});
+		                   {replacement.relation.query->Copy(), replacement.relation.fields},
+		                   replacement.materialized});
 	}
-	auto exported = state.ExportChild(root, LogicalPlanVerificationPath(), sources);
+	auto exported = state.ExportRoot(root, LogicalPlanVerificationPath(), sources, options.output_names);
 	if (exported.HasError()) {
 		return LogicalPlanSQLExportResult::Failure(exported);
 	}
 	auto result = std::move(exported.GetValue().relation);
-	auto consumers = std::move(result.query->cte_map);
-	result.query->cte_map = CommonTableExpressionMap();
+	// an exported statement that cannot carry a WITH clause holds its definitions in its source query
+	auto &definitions = SQLExportStatementHelpers::SourceDefinitionNode(*result.query);
+	auto consumers = std::move(definitions.cte_map);
+	definitions.cte_map = CommonTableExpressionMap();
 	for (auto &source : sources) {
 		auto info = make_uniq<CommonTableExpressionInfo>();
 		for (idx_t i = 0; i < source.relation.fields.size(); i++) {
 			info->aliases.push_back(LogicalPlanSQLExportHelpers::FieldIdentifier(i));
 		}
 		info->query_node = std::move(source.relation.query);
-		info->materialized = CTEMaterialize::CTE_MATERIALIZE_ALWAYS;
-		result.query->cte_map.map.insert(source.name, std::move(info));
+		info->materialized = source.materialized;
+		definitions.cte_map.map.insert(source.name, std::move(info));
 	}
 	for (auto &consumer : consumers.map) {
-		result.query->cte_map.map.insert(consumer.first, std::move(consumer.second));
+		definitions.cte_map.map.insert(consumer.first, std::move(consumer.second));
 	}
 	// A source callback may emit an unqualified reference the plan verifier never sees;
 	// refuse a result whose generated names would rebind such a reference.
@@ -436,12 +477,14 @@ LogicalPlanSQLExporter::ExportWithSources(ClientContext &context, LogicalOperato
 	for (auto &source : sources) {
 		source_names.insert(source.name);
 	}
-	if (auto captured = state.FindCapturedSourceReference(*result.query, source_names)) {
+	if (auto captured = state.FindCapturedSourceReference(definitions, source_names)) {
 		return invalid("A generated SQL source name would capture a relation reference of the exported plan: " +
 		               captured->GetIdentifierName());
 	}
 	auto success = LogicalPlanSQLExportResult::Success(std::move(result));
-	return options.output_names ? ApplyOutputNames(std::move(success), *options.output_names) : std::move(success);
+	return options.output_names
+	           ? LogicalPlanSQLExportHelpers::ApplyOutputNames(std::move(success), *options.output_names)
+	           : std::move(success);
 }
 
 } // namespace duckdb

@@ -6,6 +6,8 @@
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/common/unordered_set.hpp"
+#include "duckdb/common/string_map_set.hpp"
+#include "duckdb/common/types/string_heap.hpp"
 #include "duckdb/function/scalar/variant_utils.hpp"
 
 namespace duckdb {
@@ -29,7 +31,7 @@ public:
 
 	idx_t total_count = 0;
 	//! indices into the top-level 'columns' vector where the stats for the field/element live
-	unordered_map<string, idx_t> field_stats;
+	string_map_t<idx_t> field_stats;
 	idx_t element_stats = DConstants::INVALID_INDEX;
 };
 
@@ -41,13 +43,20 @@ public:
 
 public:
 	VariantColumnStatsData &GetOrCreateElement(idx_t parent_index);
-	VariantColumnStatsData &GetOrCreateField(idx_t parent_index, const string &name);
+	VariantColumnStatsData &GetOrCreateField(idx_t parent_index, const string_t &name);
 
 	VariantColumnStatsData &GetColumnStats(idx_t index);
 	const VariantColumnStatsData &GetColumnStats(idx_t index) const;
 
 public:
 	void Update(const Vector &input, idx_t count);
+	//! A value is nested too deep for the visitors that write the shredded data, so the column stays unshredded
+	void SetTooDeep() {
+		too_deep = true;
+	}
+	bool IsTooDeep() const {
+		return too_deep;
+	}
 	//! If force_partial is set, every level keeps its 'untyped_value_index' (overlay) column even when the
 	//! sampled values are fully consistent - allowing later inconsistent values to be partially shredded.
 	LogicalType GetShreddedType(bool force_partial = false) const;
@@ -59,6 +68,9 @@ private:
 private:
 	//! Nested type analysis
 	vector<VariantColumnStatsData> columns;
+	//! Owns the field names referenced by the 'field_stats' of the columns
+	StringHeap field_names;
+	bool too_deep = false;
 };
 
 struct VariantShredding {
@@ -106,12 +118,14 @@ public:
 public:
 	bool ValueIsShredded(UnifiedVariantVectorData &variant, idx_t row, uint32_t values_index);
 	void SetShredded(uint32_t row, uint32_t values_index, uint32_t result_idx);
-	unordered_set<string> ObjectFields() const;
+	//! The field names of the STRUCT type - the keys point into 'type'
+	const string_set_t &ObjectFields() const;
 	virtual const unordered_set<VariantLogicalType> &GetVariantTypes() = 0;
 
 public:
 	//! The type the field is shredded on
 	const LogicalType &type;
+	string_set_t object_fields;
 	//! row that is shredded
 	SelectionVector shredded_sel;
 	//! 'values_index' of the shredded value

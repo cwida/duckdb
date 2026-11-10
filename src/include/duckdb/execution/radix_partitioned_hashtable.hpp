@@ -43,7 +43,9 @@ public:
 	//! Sink Interface
 	unique_ptr<GlobalSinkState> GetGlobalSinkState(ClientContext &context) const;
 	unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const;
-	void ResetGlobalSinkState(ClientContext &context, GlobalSinkState &gstate) const;
+	void ResetGlobalSinkState(ClientContext &context, GlobalSinkState &gstate, idx_t scheduled_workers) const;
+	//! Resizes the restart configuration to the actual worker count, if no data has flowed yet
+	void AdjustScheduledWorkers(ClientContext &context, GlobalSinkState &gstate, idx_t scheduled_workers) const;
 	void ResetLocalSinkState(ExecutionContext &context, GlobalSinkState &gstate, LocalSinkState &lstate) const;
 
 	void Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input, DataChunk &aggregate_input_chunk,

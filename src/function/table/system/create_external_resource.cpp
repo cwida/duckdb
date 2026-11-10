@@ -128,7 +128,7 @@ static unique_ptr<FunctionData> CreateExternalResourceBind(ClientContext &contex
 			result->adopt_handle =
 			    np.second.type().id() == LogicalTypeId::MAP
 			        ? np.second
-			        : np.second.DefaultCastAs(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+			        : np.second.CastAs(context, LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 		} else if (key == "teardown_on_failure" && !np.second.IsNull()) {
 			result->teardown_on_failure = BooleanValue::Get(np.second);
 		} else if (key == "timeout_seconds" && !np.second.IsNull()) {
@@ -169,12 +169,21 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 	}
 	auto &bind_data = data_p.bind_data->Cast<CreateExternalResourceBindData>();
 
-	auto type = ExternalResourceTypeRegistry::Get(context).Lookup(bind_data.type_name);
+	// An unknown type autoloads the extension known to provide it, like an unknown function or file format does
+	auto type =
+	    ExternalResourceTypeRegistry::LookupOrAutoload(DatabaseInstance::GetDatabase(context), bind_data.type_name);
 	if (!type) {
+		auto extension = ExternalResourceTypeRegistry::ProvidingExtension(bind_data.type_name);
+		if (!extension.empty()) {
+			throw InvalidInputException("create_external_resource: unknown resource type \"%s\": it is provided by the "
+			                            "%s extension, which could not be autoloaded. Try: INSTALL AND LOAD %s;",
+			                            bind_data.type_name, extension, extension);
+		}
 		throw InvalidInputException("create_external_resource: unknown resource type \"%s\"", bind_data.type_name);
 	}
 	// Separate internal connection: the current connection's context lock is held here.
-	Connection con(DatabaseInstance::GetDatabase(context));
+	auto callback_con = CreateExternalResourceCallbackConnection(DatabaseInstance::GetDatabase(context), &context);
+	auto &con = *callback_con;
 	// Resolve the callbacks in the search path captured at registration, so unqualified names in a non-default
 	// schema/catalog keep resolving here (not against this fresh connection's default, nor the current path).
 	if (!type->search_path.empty()) {
@@ -383,6 +392,8 @@ void CreateExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
 		    .Add("timeout_seconds", LogicalType::BIGINT)
 		    .Add("poll_interval_seconds", LogicalType::BIGINT);
 	});
+	// provisions an external resource per execution
+	fn.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn);
 }
 
@@ -430,7 +441,8 @@ static void DestroyExternalResourceFunction(ClientContext &context, TableFunctio
 	auto &bind_data = data_p.bind_data->Cast<DestroyExternalResourceBindData>();
 
 	// CALL <deleter_function>(<deleter_payload>) on a separate internal connection.
-	Connection con(DatabaseInstance::GetDatabase(context));
+	auto callback_con = CreateExternalResourceCallbackConnection(DatabaseInstance::GetDatabase(context), &context);
+	auto &con = *callback_con;
 	auto sql = "SELECT * FROM " + QualifiedName::Parse(bind_data.deleter_function).ToString() + "(" +
 	           bind_data.deleter_payload.ToSQLString() + ")";
 	// resource_type/name are unknown at this callsite (the deleter binding does not carry them).
@@ -450,12 +462,15 @@ static void DestroyExternalResourceFunction(ClientContext &context, TableFunctio
 }
 
 void DestroyExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("destroy_external_resource",
-	                              FunctionSignature()
-	                                  .AddPositionalOnly("deleter_function", LogicalType::VARCHAR)
-	                                  .AddPositionalOnly("payload", LogicalType::ANY),
-	                              DestroyExternalResourceFunction, DestroyExternalResourceBind,
-	                              DestroyExternalResourceInit));
+	TableFunction destroy_fun("destroy_external_resource",
+	                          FunctionSignature()
+	                              .AddPositionalOnly("deleter_function", LogicalType::VARCHAR)
+	                              .AddPositionalOnly("payload", LogicalType::ANY),
+	                          DestroyExternalResourceFunction, DestroyExternalResourceBind,
+	                          DestroyExternalResourceInit);
+	// tears down an external resource per execution
+	destroy_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(destroy_fun));
 }
 
 } // namespace duckdb

@@ -67,13 +67,14 @@ void ExpressionColumnReader::InitializeChunk() {
 }
 
 void ExpressionColumnReader::InitializeRead(idx_t row_group_idx_p, idx_t row_group_num_rows,
-                                            const vector<ColumnChunk> &columns, TProtocol &protocol_p) {
+                                            const duckdb_parquet::ColumnChunkList &columns, TProtocol &protocol_p) {
 	for (auto &child_reader : child_readers) {
 		child_reader->InitializeRead(row_group_idx_p, row_group_num_rows, columns, protocol_p);
 	}
 }
 
-unique_ptr<BaseStatistics> ExpressionColumnReader::Stats(idx_t row_group_idx_p, const vector<ColumnChunk> &columns) {
+unique_ptr<BaseStatistics> ExpressionColumnReader::Stats(idx_t row_group_idx_p,
+                                                         const duckdb_parquet::ColumnChunkList &columns) {
 	if (Schema().schema_type != ParquetColumnSchemaType::EXPRESSION) {
 		return ColumnReader::Stats(row_group_idx_p, columns);
 	}

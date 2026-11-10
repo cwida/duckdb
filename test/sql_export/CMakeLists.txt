@@ -14,6 +14,7 @@ add_library_unity(
   sql_export_plan_pivot.cpp
   sql_export_plan_relations.cpp
   sql_export_plan_sources.cpp
+  sql_export_plan_statements.cpp
   sql_export_plan_values.cpp
   sql_export_row_id_selection.cpp
   sql_export_statement_verification.cpp)

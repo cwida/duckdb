@@ -1,0 +1,86 @@
+# name: test/sql/match_recognize/test_match_recognize_cursors.test
+# description: MATCH_RECOGNIZE - reading the collected rows a condition navigates, across chunks and threads
+# group: [match_recognize]
+
+statement ok
+PRAGMA enable_verification
+
+statement ok
+pragma threads=1
+
+# A condition that depends on the match is decided against the collected rows themselves rather than
+# against a copy of them, so the rows it reads have to survive being read out of order, across the
+# chunk boundaries of the collection, and from more than one place at once.
+
+statement ok
+CREATE TABLE wide AS
+    SELECT i, i % 13 AS v, repeat('z', 1 + (i % 40)) AS s, {'a': i % 5, 'b': [i % 3, i % 4]} AS st
+    FROM range(30000) t(i);
+
+# navigation and the current row are read at once, over a match that spans several chunks
+query II
+SELECT count(*), sum(n) FROM (
+    FROM wide MATCH_RECOGNIZE (
+        ORDER BY i MEASURES count(*) AS n
+        PATTERN (A+ B)
+        DEFINE A AS v < 12, B AS FIRST(A.v) = 0 AND length(s) > 0
+    )
+)
+----
+2308	30000
+
+# two navigations of one condition read two different rows of the same match
+query II
+SELECT count(*), sum(n) FROM (
+    FROM wide MATCH_RECOGNIZE (
+        ORDER BY i MEASURES count(*) AS n
+        PATTERN (A+ B)
+        DEFINE A AS v < 12, B AS FIRST(A.v) = 0 AND LAST(A.v) = 11 AND st.a >= 0
+    )
+)
+----
+2307	29991
+
+# a nested value navigated out of a row that is no longer the one being tested
+query II
+SELECT count(*), sum(n) FROM (
+    FROM wide MATCH_RECOGNIZE (
+        ORDER BY i MEASURES count(*) AS n
+        PATTERN (A+)
+        DEFINE A AS st.a < 4 AND (FIRST(st.b[1]) IS NOT NULL) AND MATCH_NUMBER() > 0
+    )
+)
+----
+6000	24000
+
+# NULLs read through the same path stay NULL
+query II
+SELECT count(*), sum(n) FROM (
+    SELECT * FROM (SELECT i, CASE WHEN i % 9 = 0 THEN NULL ELSE i % 9 END AS v FROM range(12000) t(i)) t
+    MATCH_RECOGNIZE (
+        ORDER BY i MEASURES count(*) AS n
+        PATTERN (A+ B)
+        DEFINE A AS v IS NOT NULL, B AS FIRST(A.v) = 1 OR FIRST(A.v) IS NULL
+    )
+)
+----
+1334	11999
+
+# the rows of one partition are read while another thread reads another partition's
+statement ok
+pragma threads=4;
+
+query III
+SELECT count(*), sum(n), sum(hash(c)) FROM (
+    SELECT * FROM (SELECT i % 37 AS p, i AS x, (i * 7) % 11 AS v FROM range(60000) t(i)) t
+    MATCH_RECOGNIZE (
+        PARTITION BY p ORDER BY x MEASURES count(*) AS n, CLASSIFIER() AS c
+        ALL ROWS PER MATCH PATTERN (A+ B)
+        DEFINE A AS v < 9, B AS FIRST(A.v) = 0
+    )
+)
+----
+43543	195811	304588192825445155531597
+
+statement ok
+pragma threads=1;

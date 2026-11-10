@@ -11,9 +11,8 @@ namespace {
 struct EpochSecOperator {
 	template <class INPUT_TYPE, class RESULT_TYPE>
 	static RESULT_TYPE Operation(INPUT_TYPE sec) {
-		static const auto min_timestamp = Value::MinimumValue(LogicalType::TIMESTAMP).GetValue<timestamp_t>();
 		int64_t result;
-		if (!TryCast::Operation(sec * Interval::MICROS_PER_SEC, result) || result < min_timestamp.value) {
+		if (!TryCast::Operation(sec * Interval::MICROS_PER_SEC, result)) {
 			throw ConversionException("Epoch seconds out of range for TIMESTAMP WITH TIME ZONE");
 		}
 		return timestamp_t(result);

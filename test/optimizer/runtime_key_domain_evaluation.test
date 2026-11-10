@@ -1,0 +1,98 @@
+# name: test/optimizer/runtime_key_domain_evaluation.test
+# description: Runtime domain sources retain demand evaluation and support columnar inputs
+# group: [optimizer]
+
+statement ok
+CREATE TABLE fact_data AS SELECT (i % 20000)::INTEGER k, i::BIGINT v FROM range(200000) t(i);
+
+statement ok
+CREATE VIEW fact AS SELECT (k + 20000) % 20000 k, v FROM fact_data;
+
+statement ok
+CREATE TABLE demand AS SELECT (i % 100)::INTEGER k, CASE WHEN i = 2999 THEN 'x' ELSE i::VARCHAR END label FROM range(3000) t(i);
+
+# Unused demand outputs must remain eligible for pruning.
+query I
+SELECT count(*) FROM (
+    SELECT d.k, d.n, a.s FROM (SELECT k, label::INTEGER n FROM demand) d
+    LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING (k) LIMIT 1
+);
+----
+1
+
+# Scan predicates can be evaluated on more rows when demand is materialized under LIMIT.
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE filtered_demand AS
+SELECT (i % 100)::INTEGER k, CASE WHEN i = 199999 THEN 'x' ELSE i::VARCHAR END label
+FROM range(200000) t(i);
+
+query I
+SELECT count(*) FROM (
+    SELECT d.k FROM (SELECT k FROM filtered_demand WHERE label::INTEGER >= 0) d
+    LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING (k) LIMIT 1
+);
+----
+1
+
+# Multi-column predicates remain safe when a residual filter is retained.
+query I
+SELECT count(*) FROM (
+    SELECT d.k FROM (SELECT k FROM filtered_demand WHERE label::INTEGER >= k) d
+    LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING (k) LIMIT 1
+);
+----
+1
+
+# A scalar subquery on a later demand row must not be evaluated just to materialize its keys.
+statement ok
+CREATE TABLE scalar_fact_data AS SELECT (i % 1000)::INTEGER k, i::BIGINT v FROM range(200000) t(i);
+
+statement ok
+CREATE VIEW scalar_fact AS SELECT (k + 1000) % 1000 k, v FROM scalar_fact_data;
+
+statement ok
+CREATE TABLE scalar_demand AS SELECT i::INTEGER id, (i % 2)::INTEGER k FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE scalar_payload AS SELECT i::INTEGER id, i::BIGINT p FROM range(10000) t(i)
+UNION ALL SELECT 9999, -1;
+
+query III
+SELECT d.id, d.p, a.s
+FROM (
+    SELECT id, k, (SELECT p FROM scalar_payload WHERE scalar_payload.id = scalar_demand.id) p
+    FROM scalar_demand
+) d
+LEFT JOIN (SELECT k, sum(v) s FROM scalar_fact GROUP BY k) a USING (k)
+LIMIT 1;
+----
+0	0	19900000
+
+statement ok
+RESET threads;
+
+# A columnar input stays columnar when its keys are shared with the aggregate.
+statement ok
+CREATE TABLE described_columns AS SELECT 1 a, 2 b, 3 c;
+
+statement ok
+CREATE TABLE name_values AS
+SELECT CASE i % 4 WHEN 0 THEN 'a' WHEN 1 THEN 'b' WHEN 2 THEN 'zz' ELSE 'q' || (i % 997)::VARCHAR END n,
+       i::BIGINT v
+FROM range(50000) t(i);
+
+statement ok
+CREATE VIEW names AS SELECT lower(upper(n)) n, v FROM name_values;
+
+query TI
+SELECT d.column_name, a.s
+FROM (DESCRIBE described_columns) d
+LEFT JOIN (SELECT n, sum(v) s FROM names GROUP BY n) a ON a.n = d.column_name
+ORDER BY d.column_name;
+----
+a	312475000
+b	312487500
+c	NULL

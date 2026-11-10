@@ -598,7 +598,6 @@ TEST_CONFIGS_STORAGE_ENGINE := \
 	test/configs/block_verification_latest.json \
 	test/configs/block_size_16kB.json \
 	test/configs/latest_storage_block_size_16kB.json \
-	test/configs/block_allocator_100mib.json \
 	test/configs/compressed_in_memory.json \
 	test/configs/prefetch_all_storage.json \
 	test/configs/force_storage_mmap.json
@@ -703,6 +702,11 @@ release-artifact:
 
 cli-release-artifact:
 	bash scripts/package_release_artifact.sh cli "$(ARTIFACT_SUFFIX)" "$(CLI_BINARY)"
+
+.PHONY: cli-zip-release-artifact
+
+cli-zip-release-artifact:
+	PYTHON="$(PYTHON)" bash scripts/package_release_artifact.sh cli-zip "$(ARTIFACT_SUFFIX)" "$(CLI_BINARY)"
 
 .PHONY: shared-libs-release-artifact
 

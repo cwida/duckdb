@@ -179,14 +179,14 @@
 			"description": "Intermediate size in bytes produced by the operator",
 			"unit": "bytes"
 		},
-		"name": {
-			"metric_type": "string",
-			"description": "Name of the operator"
-		},
 		"bytes_scanned": {
 			"metric_type": "uint64",
 			"description": "Compressed size of the Parquet column chunks scanned by the operator",
 			"unit": "bytes"
+		},
+		"name": {
+			"metric_type": "string",
+			"description": "Name of the operator"
 		},
 		"row_groups_scanned": {
 			"metric_type": "uint64",

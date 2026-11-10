@@ -54,6 +54,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	reserved_keyword_map.insert("lateral");
 	reserved_keyword_map.insert("leading");
 	reserved_keyword_map.insert("limit");
+	reserved_keyword_map.insert("match_recognize");
 	reserved_keyword_map.insert("not");
 	reserved_keyword_map.insert("null");
 	reserved_keyword_map.insert("offset");
@@ -106,6 +107,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	unreserved_keyword_map.insert("assignment");
 	unreserved_keyword_map.insert("attach");
 	unreserved_keyword_map.insert("attribute");
+	unreserved_keyword_map.insert("auto");
 	unreserved_keyword_map.insert("backward");
 	unreserved_keyword_map.insert("before");
 	unreserved_keyword_map.insert("begin");
@@ -154,6 +156,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	unreserved_keyword_map.insert("defaults");
 	unreserved_keyword_map.insert("deferred");
 	unreserved_keyword_map.insert("definer");
+	unreserved_keyword_map.insert("defines");
 	unreserved_keyword_map.insert("delete");
 	unreserved_keyword_map.insert("delimiter");
 	unreserved_keyword_map.insert("delimiters");
@@ -380,6 +383,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	unreserved_keyword_map.insert("strict");
 	unreserved_keyword_map.insert("strip");
 	unreserved_keyword_map.insert("subscription");
+	unreserved_keyword_map.insert("subset");
 	unreserved_keyword_map.insert("sysid");
 	unreserved_keyword_map.insert("system");
 	unreserved_keyword_map.insert("tables");

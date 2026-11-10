@@ -4,6 +4,12 @@
   "skip_compiled": "true",
   "skip_tests": [
     {
+      "reason": "Synthetic projections change common-subplan matching; result coverage remains in companion tests.",
+      "paths": [
+        "test/sql/optimizer/test_common_subplan_matching_plan.test"
+      ]
+    },
+    {
       "reason": "Type and function pushdown optimizers collapses projections and check for that",
       "paths": [
         "test/optimizer/pushdown/csv_type_pushdown.test",
@@ -13,6 +19,7 @@
     {
       "reason": "Synthetic verification projections intentionally hide the direct recursive-state scan.",
       "paths": [
+        "test/sql/cte/recursive_cte_key_finalize_owned_state.test",
         "test/sql/cte/recursive_cte_key_probe.test",
         "test/sql/cte/recursive_cte_key_union_plan.test",
         "test/sql/cte/recursive_cte_logging.test",
@@ -20,9 +27,16 @@
       ]
     },
     {
-      "reason": "Cost-aware projection placement tests assert topology changed by synthetic verification projections.",
+      "reason": "Asserts the EXPLAIN ANALYZE row counts of secure views, whose layout the synthetic verification projections change.",
       "paths": [
-        "test/optimizer/projection_placement.test"
+        "test/sql/optimizer/secure_view_join_filter_pushdown.test"
+      ]
+    },
+    {
+      "reason": "Projection placement and pullup tests assert topology changed by synthetic verification projections.",
+      "paths": [
+        "test/optimizer/projection_placement.test",
+        "test/optimizer/projection_pullup_nested_plan.test"
       ]
     },
     {
@@ -32,12 +46,6 @@
         "test/sql/sql_export/scope_reuse_plan.test",
         "test/sql/sql_export/composition_q1_plan.test",
         "test/sql/sql_export/dml_statements.test"
-      ]
-    },
-    {
-      "reason": "FIXME: INTERNAL binding error for an ANY subquery in the ON clause of a LEFT JOIN with a verification projection",
-      "paths": [
-        "test/sql/subquery/any_all/test_any_left_join_in_on_clause.test"
       ]
     }
   ]

@@ -5,19 +5,19 @@
 require parquet
 
 statement error
-COPY (SELECT 1 i) TO '__TEST_DIR__/null_key.parquet' (ENCRYPTION_CONFIG {footer_key: NULL});
+COPY (SELECT 1 i) TO '{TEST_DIR}/null_key.parquet' (ENCRYPTION_CONFIG {footer_key: NULL});
 ----
 Binder Error: Parquet encryption_config "footer_key" cannot be NULL
 
 statement error
-COPY (SELECT 1 i) TO '__TEST_DIR__/null_key.parquet' (ENCRYPTION_CONFIG {footer_key_value: NULL});
+COPY (SELECT 1 i) TO '{TEST_DIR}/null_key.parquet' (ENCRYPTION_CONFIG {footer_key_value: NULL});
 ----
 Binder Error: Parquet encryption_config "footer_key_value" cannot be NULL
 
 statement ok
-COPY (SELECT 1 i) TO '__TEST_DIR__/plain.parquet';
+COPY (SELECT 1 i) TO '{TEST_DIR}/plain.parquet';
 
 statement error
-SELECT * FROM read_parquet('__TEST_DIR__/plain.parquet', encryption_config={footer_key_value: NULL});
+SELECT * FROM read_parquet('{TEST_DIR}/plain.parquet', encryption_config={footer_key_value: NULL});
 ----
 Binder Error: Parquet encryption_config "footer_key_value" cannot be NULL

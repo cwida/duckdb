@@ -144,13 +144,13 @@ constexpr hugeint_t HugeintAbs(hugeint_t n) {
 }
 
 constexpr hugeint_t HugeintAddOne(hugeint_t n) {
-	const int carry = (n.lower == UINT64_MAX) ? 1 : 0;
+	const uint64_t carry = (n.lower == UINT64_MAX) ? 1 : 0;
 	return hugeint_t(static_cast<int64_t>(static_cast<uint64_t>(n.upper) + carry), n.lower + 1);
 }
 
 constexpr hugeint_t HugeintSubtractOne(hugeint_t n) {
 	// lower wraps to UINT64_MAX, so a borrow is taken out of upper
-	const int borrow = (n.lower == 0) ? 1 : 0;
+	const uint64_t borrow = (n.lower == 0) ? 1 : 0;
 	return hugeint_t(static_cast<int64_t>(static_cast<uint64_t>(n.upper) - borrow), n.lower - 1);
 }
 

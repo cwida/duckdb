@@ -85,3 +85,23 @@ query I
 SELECT count(*) FROM empty_rowid_prune WHERE rowid = 0;
 ----
 0
+
+# Multi-column filters can combine exact rowid ranges with stored column statistics.
+# Only the middle row group can satisfy rowid < boundary.
+statement ok
+CREATE TABLE rowid_column_prune AS
+SELECT CASE
+           WHEN range >= 122880 AND range < 245760 THEN 400000
+           ELSE -1
+       END::BIGINT AS boundary
+FROM range(300000);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM rowid_column_prune WHERE rowid < boundary;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM rowid_column_prune WHERE rowid < boundary;
+----
+122880

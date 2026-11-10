@@ -71,6 +71,8 @@ public:
 		completion->AddIOTask();
 	}
 	~ReadAheadIOTask() override {
+		// release the task's resources before waking the scan, they may outlive the database otherwise
+		task.reset();
 		// If we are done we decrement the pending
 		completion->FinishIOTask();
 	}
@@ -83,6 +85,8 @@ public:
 			// recording the error through the read-ahead also wakes the threads waiting for progress
 			read_ahead.PushError(ErrorData(ex));
 		}
+		// release the task's resources while the executor still counts this task as running
+		task.reset();
 	}
 
 private:
@@ -177,7 +181,7 @@ unique_ptr<ScanReadAhead> ScanReadAhead::Create(ClientContext &context) {
 	if (configured_depth < 0) {
 		// automatic mode, unlimited depth, the backlog is bounded by a temp-memory reservation instead
 		return make_uniq<ScanReadAhead>(context, NumericLimits<idx_t>::Maximum(),
-		                                make_uniq<ManagedAsyncMemoryGovernor>(context));
+		                                make_uniq<ManagedAsyncMemoryGovernor>(context.GetContext()));
 	}
 	return make_uniq<ScanReadAhead>(context, NumericCast<idx_t>(configured_depth), nullptr);
 }
@@ -297,9 +301,9 @@ void ScanReadAhead::SetDone() {
 
 idx_t ScanReadAhead::ReservationDepth() const {
 	// over budget one job stays queued, claimed jobs hold the budget until their task resumes
-	const bool over_memory_budget = pending_io_bytes.load() >= backlog_budget.load();
-	const bool over_open_file_budget = ReadAheadOpenFile::Count() >= open_file_budget;
-	return over_memory_budget || over_open_file_budget ? 1 : read_ahead_depth;
+	const bool over_budget =
+	    pending_io_bytes.load() >= backlog_budget.load() || ReadAheadOpenFile::Count() >= open_file_budget;
+	return over_budget ? 1 : read_ahead_depth;
 }
 
 bool ScanReadAhead::TryReserveSlot() {
@@ -307,7 +311,6 @@ bool ScanReadAhead::TryReserveSlot() {
 	const bool over_memory_budget = pending_io_bytes.fetch_add(MINIMUM_JOB_IO_CHARGE) >= backlog_budget.load();
 	// queued jobs keep their files open, so the open file budget bounds the queue too
 	const bool over_budget = over_memory_budget || ReadAheadOpenFile::Count() >= open_file_budget;
-	// over budget one job stays queued, claimed jobs hold the budget until their task resumes
 	const idx_t depth = over_budget ? 1 : read_ahead_depth;
 	if (active_jobs.fetch_add(1) >= depth) {
 		--active_jobs;
@@ -346,6 +349,7 @@ void ScanReadAhead::PushJob(unique_ptr<ScanReadAheadJob> job, vector<unique_ptr<
 		memory_governor->UpdateReservation(pending_io_bytes.load() + MINIMUM_JOB_IO_CHARGE);
 		backlog_budget = memory_governor->BackpressureBudget();
 	}
+	DUCKDB_LOG(context, ReadAheadBudgetLogType, pending_io_bytes.load(), backlog_budget.load(), active_jobs.load());
 	// producers push concurrently, so admit jobs to the queue in batch-index order
 	if (job->batch_index < next_batch_index || !pending_jobs.emplace(job->batch_index, std::move(job)).second) {
 		throw InternalException("Read-ahead jobs must have unique batch indexes, assigned densely from 0");

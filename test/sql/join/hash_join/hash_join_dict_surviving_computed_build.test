@@ -29,3 +29,25 @@ query II
 SELECT count(*), count(DISTINCT nm) FROM probe p JOIN (SELECT c.ck, CASE WHEN c.ck < 5000000 OR random() < 0 THEN n.n_name ELSE 'other' END AS nm FROM customer c JOIN nation n ON c.nk = n.nk) b ON p.ck = b.ck;
 ----
 100000	6
+
+statement ok
+CREATE TABLE b AS SELECT i AS id, 'b' || i AS name, CASE WHEN i = 0 THEN repeat('x,', 4999) || 'x' ELSE 'r' || i END AS csv FROM range(2000) t(i)
+
+statement ok
+CREATE TABLE p AS SELECT 1999 - i % 2000 AS id FROM range(300000) t(i)
+
+statement ok
+CREATE TABLE q AS SELECT 'r' || (i % 2000) AS r FROM range(1000000) t(i)
+
+query II
+SELECT max(y.name), count(*) FROM q JOIN (SELECT b.name, unnest(string_split(b.csv, ',')) AS r FROM p JOIN b USING (id)) y USING (r);
+----
+b999	149925000
+
+statement ok
+CREATE TABLE p_small AS SELECT i % 2000 AS id FROM range(2 * 2048 + 50) t(i);
+
+query II
+SELECT max(y.name), count(*) FROM q JOIN (SELECT b.name, 'r' || b.id AS r FROM (SELECT * FROM p_small JOIN b USING (id)) b, range(100) t(k)) y USING (r);
+----
+b999	207300000

@@ -10,6 +10,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/execution/physical_table_scan_enum.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/parallel/pipeline.hpp"
 
 #include <utility>
 
@@ -200,7 +201,7 @@ SourceResultType PhysicalTableScan::GetDataInternal(ExecutionContext &context, D
 					return SourceResultType::BLOCKED;
 				}
 			}
-			data.async_result.ExecuteTasksSynchronously();
+			data.async_result.ExecuteTasksSynchronously(context.client);
 			return SourceResultType::HAVE_MORE_OUTPUT;
 		}
 		return AsyncResult::GetSourceResultType(output_async_result, chunk.size());

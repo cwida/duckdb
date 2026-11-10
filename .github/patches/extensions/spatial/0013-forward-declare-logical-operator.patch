@@ -1,0 +1,12 @@
+diff --git a/src/spatial/index/rtree/rtree_index_create_physical.hpp b/src/spatial/index/rtree/rtree_index_create_physical.hpp
+index e6f3dc7..02ccb8c 100644
+--- a/src/spatial/index/rtree/rtree_index_create_physical.hpp
++++ b/src/spatial/index/rtree/rtree_index_create_physical.hpp
+@@ -5,6 +5,7 @@
+ namespace duckdb {
+ 
+ class DuckTableEntry;
++class LogicalOperator;
+ 
+ class PhysicalCreateRTreeIndex final : public PhysicalOperator {
+ public:

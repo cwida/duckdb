@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/constants.hpp"
+#include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/types/validity_mask.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/unordered_set.hpp"
@@ -16,9 +17,10 @@
 #include "duckdb/execution/index/index_pointer.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/index_storage_info.hpp"
-#include "duckdb/storage/partial_block_manager.hpp"
 
 namespace duckdb {
+
+class PartialBlockManager;
 
 //! The FixedSizeAllocator provides pointers to fixed-size memory segments of pre-allocated memory buffers.
 //! The pointers are IndexPointers, and the leftmost byte (metadata) must always be zero.
@@ -101,6 +103,9 @@ public:
 
 	//! Resets the allocator, e.g., during 'DELETE FROM table'
 	void Reset();
+	//! Resets the allocator without freeing the on-disk blocks of its buffers.
+	//! The blocks stay owned by the storage information the allocator was initialized from.
+	void DisownBuffers();
 
 	//! Returns the in-memory size in bytes
 	idx_t GetInMemorySize() const;
@@ -134,8 +139,9 @@ public:
 
 	//! Returns all FixedSizeAllocator information for serialization
 	FixedSizeAllocatorInfo GetInfo() const;
-	//! Serializes all in-memory buffers
-	void SerializeBuffers(PartialBlockManager &partial_block_manager);
+	//! Creates a checkpoint allocator, sharing clean buffers and independently persisting dirty ones.
+	//! The source must remain read-only until the checkpoint allocator is installed or discarded.
+	unsafe_unique_ptr<FixedSizeAllocator> Persist(PartialBlockManager &partial_block_manager);
 	//! Sets the allocation sizes and returns data to serialize each buffer
 	vector<IndexBufferInfo> InitSerializationToWAL();
 	//! Initialize a fixed-size allocator from allocator storage information
@@ -183,7 +189,7 @@ private:
 	idx_t total_segment_count;
 
 	//! Buffers containing the segments.
-	unordered_map<idx_t, unique_ptr<FixedSizeBuffer>> buffers;
+	unordered_map<idx_t, shared_ptr<FixedSizeBuffer>> buffers;
 	//! Buffers with free space.
 	unordered_set<idx_t> buffers_with_free_space;
 	//! Caches the next buffer to be filled up.

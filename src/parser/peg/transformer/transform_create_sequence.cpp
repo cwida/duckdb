@@ -110,13 +110,17 @@ unique_ptr<CreateStatement> PEGTransformerFactory::TransformCreateSequenceStmt(
 	if (info->max_value <= info->min_value) {
 		throw ParserException("MINVALUE (%lld) must be less than MAXVALUE (%lld)", info->min_value, info->max_value);
 	}
-	if (info->start_value < info->min_value) {
-		throw ParserException("START value (%lld) cannot be less than MINVALUE (%lld)", info->start_value,
-		                      info->min_value);
-	}
-	if (info->start_value > info->max_value) {
-		throw ParserException("START value (%lld) cannot be greater than MAXVALUE (%lld)", info->start_value,
-		                      info->max_value);
+	// a non cycling sequence can start outside its range, the exhausted state EXPORT DATABASE writes once the counter
+	// has moved past the last value. a cycling sequence wraps and never exhausts, so its range still bounds its START
+	if (info->cycle) {
+		if (info->start_value < info->min_value) {
+			throw ParserException("START value (%lld) cannot be less than MINVALUE (%lld)", info->start_value,
+			                      info->min_value);
+		}
+		if (info->start_value > info->max_value) {
+			throw ParserException("START value (%lld) cannot be greater than MAXVALUE (%lld)", info->start_value,
+			                      info->max_value);
+		}
 	}
 	result->info = std::move(info);
 	return result;

@@ -1,0 +1,13 @@
+# name: test/sql/sql_export/copy_empty_filename_pattern.test
+# description: An explicitly empty filename pattern round-trips through the generated COPY
+# group: [sql_export]
+
+statement ok
+COPY (
+        SELECT CAST(1 AS INTEGER) AS a
+    ) TO '{TEST_DIR}/empty_pattern_rt'(FORMAT 'csv', "filename_pattern" '', "per_thread_output" TRUE)
+
+query I
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/empty_pattern_rt/.csv');
+----
+1

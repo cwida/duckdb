@@ -1,0 +1,160 @@
+# name: test/sql/match_recognize/test_match_recognize_idioms.test
+# description: MATCH_RECOGNIZE - pattern shapes that come up in practice
+# group: [match_recognize]
+
+# The shapes below are the ones people reach for when writing MATCH_RECOGNIZE by hand: a run with an
+# optional run between two others, a quantifier followed by a choice, a prefix that may be absent, a
+# step that reads a row of a different variable. Every answer here was checked against another engine
+# before it was written down, so a change in any of them is a change in behaviour rather than a
+# rebaselined guess.
+
+statement ok
+pragma threads=1;
+
+statement ok
+create table tiers(i integer, tier varchar, amt integer);
+
+# ten rows in three tiers, arranged so that each shape below has something to find and something to
+# reject: two low-then-middle-then-high progressions, with a lone low row at the end that starts no
+# match because nothing follows it
+statement ok
+insert into tiers values
+    (1,'lo',20),(2,'lo',30),(3,'mid',60),(4,'hi',150),(5,'lo',10),
+    (6,'mid',70),(7,'mid',80),(8,'hi',120),(9,'hi',200),(10,'lo',5);
+
+# A run, then a run that may match nothing at all, then a run. The middle one matching zero rows is
+# what separates this from a plain three step sequence.
+query I
+SELECT count(*) FROM tiers MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A+ B* C+) DEFINE A AS tier = 'lo', B AS tier = 'mid', C AS tier = 'hi'
+)
+----
+2
+
+# the same three tiers without the optional middle, which here finds the same two matches
+query I
+SELECT count(*) FROM tiers MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A+ B+ C+) DEFINE A AS tier = 'lo', B AS tier = 'mid', C AS tier = 'hi'
+)
+----
+2
+
+# a quantifier followed by a choice, rather than a choice of sequences
+query I
+SELECT count(*) FROM tiers MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A+ (B | C)) DEFINE A AS tier = 'lo', B AS tier = 'mid', C AS tier = 'hi'
+)
+----
+2
+
+# a prefix that may be absent: the first row starts no match, because dropping the optional A still
+# leaves B+ with a row it cannot take
+query I
+SELECT count(*) FROM tiers MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n ONE ROW PER MATCH
+    PATTERN (A? B+) DEFINE A AS tier = 'lo', B AS tier <> 'lo'
+)
+----
+2
+
+# a single row, an optional run, a single row
+query I
+SELECT count(*) FROM tiers MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n ONE ROW PER MATCH
+    PATTERN (A B* C) DEFINE A AS tier = 'lo', B AS tier = 'mid', C AS tier = 'hi'
+)
+----
+2
+
+# resuming at the last row of the match rather than past it, which lets the next match begin on a row
+# this one already covered
+query I
+SELECT count(*) FROM tiers MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n ONE ROW PER MATCH AFTER MATCH SKIP TO LAST C
+    PATTERN (A B* C) DEFINE A AS tier = 'lo', B AS tier = 'mid', C AS tier = 'hi'
+)
+----
+2
+
+# a quantified group alternated with a single variable
+query I
+SELECT count(*) FROM tiers MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n ONE ROW PER MATCH
+    PATTERN ((A | B)+ | C) DEFINE A AS tier = 'lo', B AS tier = 'mid', C AS tier = 'hi'
+)
+----
+6
+
+# a drop followed by at least three rises, which is the {n,} form after a single row
+query I
+SELECT count(*) FROM tiers MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n ONE ROW PER MATCH
+    PATTERN (D R{3,}) DEFINE D AS amt < PREV(amt), R AS amt > PREV(amt)
+)
+----
+1
+
+# One measure may navigate two variables, as long as each navigation reads one of them: the rule is
+# that a single navigation cannot name two, not that an expression cannot.
+query I
+SELECT s FROM tiers MATCH_RECOGNIZE(
+    ORDER BY i MEASURES LAST(C.i) - FIRST(A.i) AS s ONE ROW PER MATCH
+    PATTERN (A+ B+ C+) DEFINE A AS tier = 'lo', B AS tier = 'mid', C AS tier = 'hi'
+) ORDER BY s
+----
+3
+4
+
+# an aggregate over an expression of two columns, both of the same variable
+query I
+SELECT s FROM tiers MATCH_RECOGNIZE(
+    ORDER BY i MEASURES sum(B.amt * 2 + B.i) AS s ONE ROW PER MATCH
+    PATTERN (A+ B+ C+) DEFINE A AS tier = 'lo', B AS tier = 'mid', C AS tier = 'hi'
+) ORDER BY s
+----
+123
+313
+
+# the classifier of each row collected alongside a column of that row, which is what reports the
+# shape a match actually took under ONE ROW PER MATCH
+query I
+SELECT s FROM tiers MATCH_RECOGNIZE(
+    ORDER BY i MEASURES list({'sym': CLASSIFIER(), 'tier': tier}) AS s ONE ROW PER MATCH
+    AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A+ B+ C+) DEFINE A AS tier = 'lo', B AS tier = 'mid', C AS tier = 'hi'
+) ORDER BY len(s)
+----
+[{'sym': A, 'tier': lo}, {'sym': A, 'tier': lo}, {'sym': B, 'tier': mid}, {'sym': C, 'tier': hi}]
+[{'sym': A, 'tier': lo}, {'sym': B, 'tier': mid}, {'sym': B, 'tier': mid}, {'sym': C, 'tier': hi}, {'sym': C, 'tier': hi}]
+
+# A step may read a row of a variable other than the one being defined: here the second row matches
+# only when the row after the first one is in the middle tier (ISO/IEC 19075-5 5.6.2).
+query I
+SELECT count(*) FROM tiers MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n ONE ROW PER MATCH
+    PATTERN (P Q) DEFINE P AS tier = 'lo', Q AS NEXT(P.tier) = 'mid'
+)
+----
+2
+
+# A condition may name a variable defined after it. The standard allows the forward reference and
+# reads it against the rows mapped so far, which for a variable the match has not reached is none.
+query I
+SELECT count(*) FROM tiers MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n ONE ROW PER MATCH
+    PATTERN (A B) DEFINE A AS LAST(B.amt) IS NULL, B AS true
+)
+----
+5
+
+# a measure that reads no row at all
+query I
+SELECT DISTINCT m FROM tiers MATCH_RECOGNIZE(
+    ORDER BY i MEASURES 42 AS m ONE ROW PER MATCH
+    PATTERN (A+ B+ C+) DEFINE A AS tier = 'lo', B AS tier = 'mid', C AS tier = 'hi'
+)
+----
+42

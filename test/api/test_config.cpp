@@ -263,6 +263,21 @@ TEST_CASE("Test secret_directory configuration update after secret creation", "[
 	REQUIRE_FAIL(update_secret_directory);
 }
 
+TEST_CASE("Test warnings_as_errors in the startup config", "[api]") {
+	DBConfig config;
+	REQUIRE_NOTHROW(config.SetOptionByName("warnings_as_errors", Value::BOOLEAN(false)));
+	REQUIRE_THROWS_WITH(config.SetOptionByName("warnings_as_errors", Value::BOOLEAN(true)),
+	                    Catch::Contains("startup config"));
+	// string values, as the C API passes them
+	REQUIRE_NOTHROW(config.SetOptionByName("warnings_as_errors", Value("false")));
+	REQUIRE_THROWS_WITH(config.SetOptionByName("warnings_as_errors", Value("true")), Catch::Contains("startup config"));
+	REQUIRE_THROWS_WITH(config.SetOptionByName("warnings_as_errors", Value()), Catch::Contains("cannot be NULL"));
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto result = con.Query("SELECT current_setting('warnings_as_errors')");
+	REQUIRE(CHECK_COLUMN(result, 0, {false}));
+}
+
 TEST_CASE("Test deprecated extension options warn when set", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -325,4 +340,21 @@ TEST_CASE("Test every deprecated setting warns when set", "[api]") {
 		}
 	}
 	REQUIRE(checked > 0);
+}
+
+TEST_CASE("Test tracked_metrics in the startup config", "[api]") {
+	DBConfig config;
+	REQUIRE_NOTHROW(config.SetOptionByName("tracked_metrics", Value("['query.*']")));
+	REQUIRE_THROWS_WITH(config.SetOptionByName("tracked_metrics", Value("['query.*', NULL]")),
+	                    Catch::Contains("cannot contain NULL entries"));
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto expected = Value::LIST(LogicalType::VARCHAR, {Value("query.*")});
+	auto result = con.Query("SELECT current_setting('tracked_metrics')");
+	REQUIRE(CHECK_COLUMN(result, 0, {expected}));
+	// a session value resets to the configured global value
+	REQUIRE_NO_FAIL(con.Query("SET tracked_metrics = ['optimizer.*']"));
+	REQUIRE_NO_FAIL(con.Query("RESET tracked_metrics"));
+	result = con.Query("SELECT current_setting('tracked_metrics')");
+	REQUIRE(CHECK_COLUMN(result, 0, {expected}));
 }

@@ -317,7 +317,7 @@ AddColumnEntry PEGTransformerFactory::TransformAddColumnEntry(
 	if (column_constraint) {
 		for (auto &constraint : *column_constraint) {
 			auto constraint_type =
-			    constraint.constraint ? constraint.constraint->type : constraint.constraint_type_info.second;
+			    constraint.constraint ? constraint.constraint->type : constraint.constraint_type_info.type;
 			if (constraint.constraint_name == "DefaultValue") {
 				if (new_column.default_value) {
 					throw ParserException("Cannot define a default value twice");
@@ -325,10 +325,13 @@ AddColumnEntry PEGTransformerFactory::TransformAddColumnEntry(
 				new_column.default_value = std::move(constraint.expression);
 			} else if (constraint_type == ConstraintType::NOT_NULL) {
 				new_column.add_column_constraints.add_not_null = true;
-			} else if (constraint_type == ConstraintType::UNIQUE && !constraint.constraint_type_info.first) {
-				new_column.add_column_constraints.add_unique = true;
-			} else if (constraint_type == ConstraintType::UNIQUE) {
+			} else if (constraint_type == ConstraintType::UNIQUE && constraint.constraint_type_info.is_primary_key) {
 				throw ParserException("Adding columns with PRIMARY KEY constraints is not supported yet");
+			} else if (constraint_type == ConstraintType::UNIQUE &&
+			           constraint.constraint_type_info.check_mode != ConstraintCheckMode::DEFAULT) {
+				throw ParserException("Adding columns with UNIQUE constraints with a check mode is not supported yet");
+			} else if (constraint_type == ConstraintType::UNIQUE) {
+				new_column.add_column_constraints.add_unique = true;
 			} else if (constraint_type == ConstraintType::CHECK) {
 				throw ParserException("Adding columns with CHECK constraints is not supported yet");
 			} else if (constraint_type == ConstraintType::FOREIGN_KEY) {

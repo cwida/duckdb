@@ -2,6 +2,7 @@
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/table/system_functions.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -11,6 +12,7 @@
 #include "duckdb/parser/constraints/foreign_key_constraint.hpp"
 #include "duckdb/parser/constraints/not_null_constraint.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
+#include "duckdb/parser/expression/lambda_expression.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/constraints/bound_check_constraint.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
@@ -90,6 +92,9 @@ static unique_ptr<FunctionData> DuckDBConstraintsBind(ClientContext &context, Ta
 	names.emplace_back("referenced_column_names");
 	return_types.push_back(LogicalType::LIST(LogicalType::VARCHAR));
 
+	names.emplace_back("constraint_check_mode");
+	return_types.emplace_back(LogicalType::VARCHAR);
+
 	return nullptr;
 }
 
@@ -124,9 +129,24 @@ struct ExtraConstraintInfo {
 	vector<Identifier> referenced_columns;
 };
 
-void ExtractReferencedColumns(const ParsedExpression &root_expr, vector<Identifier> &result) {
-	ParsedExpressionIterator::VisitExpression<ColumnRefExpression>(
-	    root_expr, [&](const ColumnRefExpression &colref) { result.emplace_back(colref.GetColumnName()); });
+//! The columns a CHECK reads, named as the CHECK binder resolves them. That is the first name, or the second when the
+//! first is the name of the table, while the names after it are struct fields
+void ExtractReferencedColumns(const TableCatalogEntry &table, const ParsedExpression &expr,
+                              vector<Identifier> &result) {
+	if (expr.GetExpressionClass() == ExpressionClass::LAMBDA &&
+	    expr.Cast<LambdaExpression>().GetLambdaSyntaxType() == LambdaSyntaxType::LAMBDA_KEYWORD) {
+		// the CHECK binder refuses columns in lambdas, so a lambda only names its own parameters. The arrow form is
+		// also the JSON operator, whose operands are read
+		return;
+	}
+	if (expr.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
+		auto &names = expr.Cast<ColumnRefExpression>().ColumnNames();
+		const idx_t column_position = names.size() > 1 && names[0] == table.name ? 1 : 0;
+		result.emplace_back(names[column_position]);
+		return;
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    expr, [&](const ParsedExpression &child) { ExtractReferencedColumns(table, child, result); });
 }
 
 ExtraConstraintInfo GetExtraConstraintInfo(const TableCatalogEntry &table, const Constraint &constraint) {
@@ -134,7 +154,7 @@ ExtraConstraintInfo GetExtraConstraintInfo(const TableCatalogEntry &table, const
 	switch (constraint.type) {
 	case ConstraintType::CHECK: {
 		auto &check_constraint = constraint.Cast<CheckConstraint>();
-		ExtractReferencedColumns(*check_constraint.expression, result.column_names);
+		ExtractReferencedColumns(table, *check_constraint.expression, result.column_names);
 		break;
 	}
 	case ConstraintType::NOT_NULL: {
@@ -245,6 +265,8 @@ void DuckDBConstraintsFunction(ClientContext &context, TableFunctionInput &data_
 	auto &referenced_table = output.data[13];
 	// referenced_column_names, LIST(VARCHAR)
 	auto &referenced_column_names = output.data[14];
+	// constraint_check_mode, VARCHAR
+	auto &constraint_check_mode = output.data[15];
 
 	while (data.offset < data.entries.size() && count < STANDARD_VECTOR_SIZE) {
 		auto &entry = data.entries[data.offset];
@@ -326,6 +348,10 @@ void DuckDBConstraintsFunction(ClientContext &context, TableFunctionInput &data_
 			constraint_name_vec.Append(Value(std::move(constraint_name)));
 			referenced_table.Append(info.referenced_table.empty() ? Value() : Value(info.referenced_table));
 			referenced_column_names.Append(Value::LIST(LogicalType::VARCHAR, std::move(referenced_column_name_list)));
+			auto check_mode = constraint->type == ConstraintType::UNIQUE
+			                      ? constraint->Cast<UniqueConstraint>().check_mode
+			                      : ConstraintCheckMode::DEFAULT;
+			constraint_check_mode.Append(Value(EnumUtil::ToString(check_mode)));
 			count++;
 		}
 

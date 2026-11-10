@@ -1,0 +1,125 @@
+# name: test/sql/match_recognize/test_match_recognize_nulls.test
+# description: MATCH_RECOGNIZE with NULLs in the conditions, the measures and the keys
+# group: [match_recognize]
+
+statement ok
+pragma threads=1;
+
+statement ok
+create table n(i integer, v integer);
+
+statement ok
+insert into n values (1,1),(2,NULL),(3,2),(4,3),(5,NULL),(6,4);
+
+# a condition that is NULL is not true, so a NULL row ends the run rather than extending it
+query II
+SELECT i, cl FROM n MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x, CLASSIFIER() AS cl ALL ROWS PER MATCH PATTERN (A+) DEFINE A as v>0
+) ORDER BY i
+----
+1	A
+3	A
+4	A
+6	A
+
+# IS NULL is how a variable asks for those rows
+query I
+SELECT i FROM n MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x ALL ROWS PER MATCH PATTERN (A+) DEFINE A as v IS NULL
+) ORDER BY i
+----
+2
+5
+
+# a NULL reached through navigation makes the comparison NULL too, so only offset 3 holds: every
+# other row either is NULL itself or looks back at one
+query I
+SELECT i FROM n MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x ALL ROWS PER MATCH PATTERN (A+) DEFINE A as v > PREV(v)
+) ORDER BY i
+----
+4
+
+# FIRST and LAST name a row of the match, so a NULL that row holds is the answer - it is not skipped
+# in search of a row that has a value
+query II
+SELECT lv, fv FROM n MATCH_RECOGNIZE(
+    ORDER BY i MEASURES last(v) AS lv, first(v) AS fv, min(i) AS m PATTERN (A A) DEFINE A as true
+) ORDER BY m
+----
+NULL	1
+3	2
+4	NULL
+
+# the same for a value read off the row being reported
+query II
+SELECT i, av FROM n MATCH_RECOGNIZE(
+    ORDER BY i MEASURES A.v AS av ALL ROWS PER MATCH PATTERN (A+) DEFINE A as true
+) ORDER BY i
+----
+1	1
+2	NULL
+3	2
+4	3
+5	NULL
+6	4
+
+# qualifying by a variable does pick the last row that variable matched, which here is a row with a
+# value because the NULL rows are not part of the match at all
+query II
+SELECT lav, fav FROM n MATCH_RECOGNIZE(
+    ORDER BY i MEASURES LAST(A.v) AS lav, FIRST(A.v) AS fav PATTERN (A+) DEFINE A as v IS NOT NULL
+) ORDER BY fav
+----
+1	1
+3	2
+4	4
+
+# an aggregate over the match keeps ordinary aggregate NULL semantics
+query III
+SELECT n_all, n_v, s FROM n MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n_all, count(v) AS n_v, sum(v) AS s PATTERN (A{6}) DEFINE A as true
+)
+----
+6	4	10
+
+statement ok
+create table pn(p integer, i integer, v integer);
+
+statement ok
+insert into pn values (1,1,1),(1,2,2),(NULL,3,3),(NULL,4,4),(2,5,5);
+
+# a NULL partition key is a partition of its own rather than a row that belongs nowhere
+query II
+SELECT p, cnt FROM pn MATCH_RECOGNIZE(
+    PARTITION BY p ORDER BY i MEASURES count(*) AS cnt PATTERN (A+) DEFINE A as true
+) ORDER BY p NULLS LAST
+----
+1	2
+2	1
+NULL	2
+
+statement ok
+create table onull(i integer, v integer);
+
+statement ok
+insert into onull values (1,10),(NULL,20),(2,30);
+
+# a NULL ordering key sorts where the null order puts it, and the match follows that order
+query II
+SELECT v, pos FROM onull MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS pos ALL ROWS PER MATCH PATTERN (A+) DEFINE A as true
+) ORDER BY pos
+----
+10	1
+30	2
+20	3
+
+query II
+SELECT v, pos FROM onull MATCH_RECOGNIZE(
+    ORDER BY i NULLS FIRST MEASURES count(*) AS pos ALL ROWS PER MATCH PATTERN (A+) DEFINE A as true
+) ORDER BY pos
+----
+20	1
+10	2
+30	3

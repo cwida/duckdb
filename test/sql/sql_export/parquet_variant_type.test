@@ -1,0 +1,82 @@
+# name: test/sql/sql_export/parquet_variant_type.test
+# description: Preserve the registered Parquet variant type when exported SQL is rebound
+# group: [sql_export]
+
+require parquet
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+# Folded constants and nonconstant function results both retain their aliased type.
+query T
+SELECT variant_to_parquet_variant(NULL);
+----
+{'metadata': '\\x01\\x00\\x00', 'value': '\\x00'}
+
+query T
+SELECT variant_to_parquet_variant(i::VARIANT) FROM range(2) t(i);
+----
+{'metadata': '\\x01\\x00\\x00', 'value': '\\x18\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00'}
+{'metadata': '\\x01\\x00\\x00', 'value': '\\x18\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x00'}
+
+query T rowsort
+SELECT variant_to_parquet_variant(i::VARIANT) FROM (VALUES (1),(NULL),(1)) t(i);
+----
+{'metadata': '\\x01\\x00\\x00', 'value': '\\x00'}
+{'metadata': '\\x01\\x00\\x00', 'value': '\\x14\\x01\\x00\\x00\\x00'}
+{'metadata': '\\x01\\x00\\x00', 'value': '\\x14\\x01\\x00\\x00\\x00'}
+
+# TYPE values and nested types distinguish preserving an alias from dropping it.
+query T
+SELECT get_type(variant_to_parquet_variant(NULL));
+----
+PARQUET_VARIANT
+
+query T
+SELECT get_type([variant_to_parquet_variant(NULL)]);
+----
+PARQUET_VARIANT[]
+
+query T
+SELECT get_type({'v': variant_to_parquet_variant(NULL)});
+----
+STRUCT(v PARQUET_VARIANT)
+
+query T
+SELECT [variant_to_parquet_variant(NULL)];
+----
+[{'metadata': '\\x01\\x00\\x00', 'value': '\\x00'}]
+
+query T
+SELECT {'v': variant_to_parquet_variant(NULL)};
+----
+{'v': {'metadata': '\\x01\\x00\\x00', 'value': '\\x00'}}
+
+# A SQL NULL in the aliased type is distinct from the encoded VARIANT null value.
+query II
+SELECT NULL::PARQUET_VARIANT IS NULL, variant_to_parquet_variant(NULL) IS NULL;
+----
+true	false
+
+query T
+SELECT get_type(NULL::PARQUET_VARIANT);
+----
+PARQUET_VARIANT
+
+query T
+SELECT variant_to_parquet_variant(i::VARIANT)::STRUCT(metadata BLOB, value BLOB)::PARQUET_VARIANT
+FROM range(1) t(i);
+----
+{'metadata': '\\x01\\x00\\x00', 'value': '\\x18\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00'}
+
+# Registering the fixed type does not expose an unsupported shredding modifier.
+statement error
+SELECT NULL::PARQUET_VARIANT('STRUCT(a VARCHAR)');
+----
+Binder Error
+
+# Parameterized types retain their existing behavior.
+query T
+SELECT get_type(1.25::DECIMAL(9,2));
+----
+DECIMAL(9,2)

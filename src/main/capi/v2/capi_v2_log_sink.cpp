@@ -44,13 +44,12 @@ public:
 	void WriteLogEntry(timestamp_t timestamp, LogLevel level, const string &log_type, const string &log_message,
 	                   const RegisteredLoggingContext &context) override {
 		CV2LogSinkWriteInfo info(context.context);
-		duckdb_v2_str type {log_type.data(), log_type.size()};
-		duckdb_v2_str message {log_message.data(), log_message.size()};
 		CV2ErrorInfo err = {};
 		auto err_ptr = Convert(&err);
 		// the values of the level and scope enums match duckdb::LogLevel and duckdb::LogContextScope
 		write_cb(Convert(&info), GetUserData(), timestamp.value, static_cast<DUCKDB_V2_LOG_LEVEL>(level),
-		         static_cast<DUCKDB_V2_LOG_SCOPE>(context.context.scope), &type, &message, &err_ptr);
+		         static_cast<DUCKDB_V2_LOG_SCOPE>(context.context.scope), log_type.data(), log_type.size(),
+		         log_message.data(), log_message.size(), &err_ptr);
 	}
 
 	void WriteLogEntries(DataChunk &chunk, const RegisteredLoggingContext &context) override {
@@ -152,11 +151,12 @@ DUCKDB_V2_ERROR duckdb_v2_log_sink_create(duckdb_v2_factory_handle factory, duck
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_log_sink_set_name(duckdb_v2_log_sink_handle sink, const duckdb_v2_identifier_t *name,
+DUCKDB_V2_ERROR duckdb_v2_log_sink_set_name(duckdb_v2_log_sink_handle sink, const char *name, idx_t name_length,
                                             duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(sink);
-	DUCKDB_CHECK_ARG(name);
-	return WithErrorHandler(err, [&]() { Convert(sink)->name = duckdb::string(ConvertIdentifierName(name)); });
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	return WithErrorHandler(err,
+	                        [&]() { Convert(sink)->name = duckdb::string(ConvertIdentifierName(name, name_length)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_log_sink_set_user_data(duckdb_v2_log_sink_handle sink, duckdb_v2_opaque *data,

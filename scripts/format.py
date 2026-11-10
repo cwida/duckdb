@@ -212,12 +212,18 @@ def run_typos_check():
     typos_command = ['typos', '--force-exclude']
     if not check_only:
         typos_command.append('-w')
-    typos_command += ['-c', 'scripts/typos.toml'] + typos_targets
+    typos_command += ['-c', 'scripts/typos.toml']
+    # check the files in chunks to bound the memory usage of a single typos process
+    typos_chunk_size = 500
+    status = 0
     try:
-        return subprocess.call(typos_command)
+        for start in range(0, len(typos_targets), typos_chunk_size):
+            chunk_status = subprocess.call(typos_command + typos_targets[start : start + typos_chunk_size])
+            status = status or chunk_status
     except FileNotFoundError:
         print('typos not found. Install it with "brew install typos-cli"')
         return 1
+    return status
 
 
 def file_is_ignored(full_path):

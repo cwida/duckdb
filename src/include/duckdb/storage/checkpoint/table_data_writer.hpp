@@ -8,14 +8,19 @@
 
 #pragma once
 
+#include "duckdb/common/vector.hpp"
 #include "duckdb/parallel/task_executor.hpp"
+#include "duckdb/storage/checkpoint/table_index_writer.hpp"
 #include "duckdb/storage/checkpoint/row_group_writer.hpp"
+#include "duckdb/storage/index_storage_info.hpp"
 
 namespace duckdb {
+class TableIndexList;
 class DuckTableEntry;
 class TableStatistics;
 class SingleFileCheckpointWriter;
 class RowGroupCollection;
+class PendingPublication;
 struct RowGroupPointer;
 
 //! The table data writer is responsible for writing the data of a table to storage.
@@ -26,7 +31,7 @@ struct RowGroupPointer;
 //! Abstraction will support, for example: tiering, versioning, or splitting into multiple block managers.
 class TableDataWriter {
 public:
-	explicit TableDataWriter(TableCatalogEntry &table, QueryContext context);
+	explicit TableDataWriter(TableCatalogEntry &table, Context &context);
 	virtual ~TableDataWriter();
 
 public:
@@ -36,11 +41,20 @@ public:
 	                                 idx_t total_rows, idx_t next_row_id) = 0;
 	//! global_stats is empty when reusing existing table metadata.
 	virtual void FinalizeTable(const TableStatistics &global_stats, DataTableInfo &info, RowGroupCollection &collection,
+	                           const vector<shared_ptr<const IndexStorageInfo>> &index_infos,
 	                           Serializer &serializer) = 0;
-	virtual unique_ptr<RowGroupWriter> GetRowGroupWriter(RowGroup &row_group) = 0;
+
+	virtual unique_ptr<RowGroupWriter> GetRowGroupWriter() = 0;
+	virtual unique_ptr<TableIndexWriter> GetTableIndexWriter(StorageVersion version) = 0;
 
 	virtual void AddRowGroup(RowGroupPointer &&row_group_pointer, unique_ptr<RowGroupWriter> writer);
 	virtual CheckpointOptions GetCheckpointOptions() const = 0;
+	//! Whether publication can be deferred, evaluated after the collection's rebuild requirements are known.
+	virtual bool CanDeferPublication() const {
+		return false;
+	}
+	//! Transfer prepared state to the enclosing checkpoint; only valid when publication can be deferred.
+	virtual void AddPendingPublication(unique_ptr<PendingPublication> publication);
 	virtual void FlushPartialBlocks() = 0;
 	virtual MetadataManager &GetMetadataManager() = 0;
 	//! Whether this is a SingleFileTableDataWriter
@@ -75,11 +89,11 @@ public:
 	AttachedDatabase &GetAttached();
 	DatabaseInstance &GetDatabase();
 	unique_ptr<TaskExecutor> CreateTaskExecutor();
-	optional_ptr<ClientContext> TryGetClientContext() const;
+	Context &GetContext() const;
 
 protected:
 	DuckTableEntry &table;
-	optional_ptr<ClientContext> context;
+	Context &context;
 	//! Pointers to the start of each row group.
 	vector<RowGroupPointer> row_group_pointers;
 
@@ -99,9 +113,14 @@ public:
 	void WriteUnchangedTable(MetaBlockPointer pointer, const vector<MetaBlockPointer> &metadata_pointers,
 	                         idx_t total_rows, idx_t next_row_id) override;
 	void FinalizeTable(const TableStatistics &global_stats, DataTableInfo &info, RowGroupCollection &collection,
-	                   Serializer &serializer) override;
-	unique_ptr<RowGroupWriter> GetRowGroupWriter(RowGroup &row_group) override;
+	                   const vector<shared_ptr<const IndexStorageInfo>> &index_infos, Serializer &serializer) override;
+
+	unique_ptr<RowGroupWriter> GetRowGroupWriter() override;
+	unique_ptr<TableIndexWriter> GetTableIndexWriter(StorageVersion version) override;
+
 	CheckpointOptions GetCheckpointOptions() const override;
+	bool CanDeferPublication() const override;
+	void AddPendingPublication(unique_ptr<PendingPublication> publication) override;
 	void FlushPartialBlocks() override;
 	MetadataManager &GetMetadataManager() override;
 	bool IsSingleFileWriter() const override {

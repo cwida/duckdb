@@ -1,0 +1,493 @@
+# name: test/sql/match_recognize/test_match_recognize_backtracking.test
+# description: MATCH_RECOGNIZE pattern algebra - quantifiers, alternation preference and backtracking
+# group: [match_recognize]
+
+# A PATTERN is a regular expression over pattern variables, so the shapes that pin down a regex
+# engine pin this down too: nested quantifiers, a quantifier that can match nothing, which branch of
+# an alternation wins, and how much a greedy quantifier has to give back for the rest to fit. Each
+# case below is a string of single letter rows, one row per character, with a variable per letter.
+
+statement ok
+pragma threads=1;
+
+statement ok
+create table rows_aaaaa(i integer, c varchar);
+
+statement ok
+insert into rows_aaaaa values (0,'a'),(1,'a'),(2,'a'),(3,'a'),(4,'a');
+
+statement ok
+create table rows_aaab(i integer, c varchar);
+
+statement ok
+insert into rows_aaab values (0,'a'),(1,'a'),(2,'a'),(3,'b');
+
+statement ok
+create table rows_abcd(i integer, c varchar);
+
+statement ok
+insert into rows_abcd values (0,'a'),(1,'b'),(2,'c'),(3,'d');
+
+statement ok
+create table rows_aaa(i integer, c varchar);
+
+statement ok
+insert into rows_aaa values (0,'a'),(1,'a'),(2,'a');
+
+statement ok
+create table rows_aaaa(i integer, c varchar);
+
+statement ok
+insert into rows_aaaa values (0,'a'),(1,'a'),(2,'a'),(3,'a');
+
+statement ok
+create table rows_b(i integer, c varchar);
+
+statement ok
+insert into rows_b values (0,'b');
+
+statement ok
+create table rows_aab(i integer, c varchar);
+
+statement ok
+insert into rows_aab values (0,'a'),(1,'a'),(2,'b');
+
+statement ok
+create table rows_abab(i integer, c varchar);
+
+statement ok
+insert into rows_abab values (0,'a'),(1,'b'),(2,'a'),(3,'b');
+
+statement ok
+create table rows_ab(i integer, c varchar);
+
+statement ok
+insert into rows_ab values (0,'a'),(1,'b');
+
+statement ok
+create table rows_aa(i integer, c varchar);
+
+statement ok
+insert into rows_aa values (0,'a'),(1,'a');
+
+statement ok
+create table rows_a(i integer, c varchar);
+
+statement ok
+insert into rows_a values (0,'a');
+
+statement ok
+create table rows_abac(i integer, c varchar);
+
+statement ok
+insert into rows_abac values (0,'a'),(1,'b'),(2,'a'),(3,'c');
+
+# a star inside a star: the inner one can match nothing, which must not loop
+query III
+SELECT count(*), min(len), max(len) FROM rows_aaaaa MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A*)*)
+    DEFINE A AS A.c = 'a'
+)
+----
+1	5	5
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_aaaaa MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A+)+)
+    DEFINE A AS A.c = 'a'
+)
+----
+1	5	5
+
+# the left alternative is preferred, so this is five single repetitions
+query III
+SELECT count(*), min(len), max(len) FROM rows_aaaaa MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A|A A)+)
+    DEFINE A AS A.c = 'a'
+)
+----
+1	5	5
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_aaaaa MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A{2,4})
+    DEFINE A AS A.c = 'a'
+)
+----
+1	4	4
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_aaab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A{0,3} B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	4	4
+
+# preference is per alternation, not longest overall: A wins, then B C D has to
+query III
+SELECT count(*), min(len), max(len) FROM rows_abcd MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A|A B)(C|B C D))
+    DEFINE A AS A.c = 'a', B AS B.c = 'b', C AS C.c = 'c', D AS D.c = 'd'
+)
+----
+1	4	4
+
+# n optional repetitions followed by n mandatory ones - the shape that makes a
+# backtracking engine try every split
+query III
+SELECT count(*), min(len), max(len) FROM rows_aaa MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A{0,1}){3} A{3})
+    DEFINE A AS A.c = 'a'
+)
+----
+1	3	3
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_aaaa MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A{0,1}){4} A{4})
+    DEFINE A AS A.c = 'a'
+)
+----
+1	4	4
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_b MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A* B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	1	1
+
+# three stars over the same rows: only the first can take any
+query III
+SELECT count(*), min(len), max(len) FROM rows_aaa MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A* A* A*)
+    DEFINE A AS A.c = 'a'
+)
+----
+1	3	3
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_aaaaa MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A|A){5})
+    DEFINE A AS A.c = 'a'
+)
+----
+1	5	5
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_aab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A|A B) B{0,1})
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+2	1	2
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_abab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A B){2})
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	4	4
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_abab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A B)+)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	4	4
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_aab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A{1,2} A{1,2} B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	3	3
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_ab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A{0,1} B)|(A B))
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	2	2
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_aaab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A+)+ B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	4	4
+
+# the same pattern with nothing to end on: every way of splitting the run fails
+query III
+SELECT count(*), min(len), max(len) FROM rows_aaaa MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A+)+ B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+0	NULL	NULL
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_ab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A|A B))
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	1	1
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_aa MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A{0,1} A{0,1} A{0,1})
+    DEFINE A AS A.c = 'a'
+)
+----
+1	2	2
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_abab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A|B)+)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	4	4
+
+# A pattern that can only match nothing still matches - as an empty match at every row, covering no
+# rows at all, so the aggregate over the match sees nothing. The empty pattern () is how the pattern
+# algebra spells that; a quantifier may not, since its upper bound has to allow a repetition
+# (ISO/IEC 19075-5 4.14.1), and test_match_recognize_errors.test pins that refusal.
+query III
+SELECT count(*), min(len), max(len) FROM rows_aaa MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (())
+)
+----
+3	0	0
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_a MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (((A)))
+    DEFINE A AS A.c = 'a'
+)
+----
+1	1	1
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_abac MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A B|A C)+)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b', C AS C.c = 'c'
+)
+----
+1	4	4
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_aab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A+ A B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	3	3
+
+query III
+SELECT count(*), min(len), max(len) FROM rows_aaab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A{2,} B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	4	4
+
+# the optional B has to give its row to the mandatory one
+query III
+SELECT count(*), min(len), max(len) FROM rows_ab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A B{0,1} B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	2	2
+
+# An empty match covers no rows. It is still a match: it is numbered, it is reported once per row it
+# happens at, and every measure over it sees nothing - count is zero and CLASSIFIER() is NULL,
+# because no row was ever assigned to a variable.
+query III
+SELECT match_no, len, var_name FROM rows_aaa MATCH_RECOGNIZE(
+    ORDER BY i MEASURES MATCH_NUMBER() AS match_no, count(*) AS len, CLASSIFIER() AS var_name
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (B*)
+    DEFINE B AS B.c = 'b'
+) ORDER BY match_no
+----
+1	0	NULL
+2	0	NULL
+3	0	NULL
+
+# where the pattern can match rows it does, and only the rows it cannot reach are empty matches
+query III
+SELECT match_no, len, var_name FROM rows_aab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES MATCH_NUMBER() AS match_no, count(*) AS len, CLASSIFIER() AS var_name
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (B*)
+    DEFINE B AS B.c = 'b'
+) ORDER BY match_no
+----
+1	0	NULL
+2	0	NULL
+3	1	B
+
+# an empty match does not stop the scan: it steps to the next row rather than skipping
+query I
+SELECT count(*) FROM rows_aaaaa MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (B{0,3})
+    DEFINE B AS B.c = 'b'
+)
+----
+5
+
+# a state that failed under one set of matched rows can succeed under another, so a condition that
+# navigates the match cannot leave that state recorded as a dead end for the alternative beside it
+query I
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n
+    PATTERN ((A | B) C)
+    DEFINE A AS true, B AS true, C AS FIRST(B.x) IS NOT NULL
+)
+----
+2
+
+# the same pattern with the shared symbol written out per alternative has always worked
+query I
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n
+    PATTERN (A C | B C)
+    DEFINE A AS true, B AS true, C AS FIRST(B.x) IS NOT NULL
+)
+----
+2
+
+# a state a failed attempt walked past the end of its partition is the first row of the next one, and
+# what it was recorded under does not hold there
+query I
+SELECT count(*)
+FROM (VALUES (0::BIGINT), (11::BIGINT)) t(p) MATCH_RECOGNIZE (
+    PARTITION BY p MEASURES count(*) AS n
+    PATTERN (A? B)
+    DEFINE A AS true, B AS p % 2 = 1
+)
+----
+1
+
+query I
+SELECT count(*)
+FROM (VALUES (0::BIGINT), (11::BIGINT)) t(p) MATCH_RECOGNIZE (
+    PARTITION BY p MEASURES count(*) AS n
+    PATTERN (A? B)
+    DEFINE A AS false, B AS p % 2 = 1
+)
+----
+1
+
+# Cycle detection over a nullable repetition. Matching a row opens a scope of its own, so an
+# alternative left behind under an earlier one has to see the marks that scope had taken: without
+# them it walks the empty loop again, matches the same row again, and never stops.
+query I
+FROM range(1) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n
+    PATTERN ((A*)* B)
+    DEFINE A AS true, B AS FIRST(A.x) < 0
+)
+----
+
+query I
+FROM range(1) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n
+    PATTERN ((A+)* B)
+    DEFINE A AS true, B AS FIRST(A.x) < 0
+)
+----
+
+query I
+FROM range(4) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n
+    PATTERN ((A*)* B)
+    DEFINE A AS x < 2, B AS FIRST(A.x) = 0
+)
+----
+3
+
+# a reluctant nullable repetition takes the way out first, and still may not spin in the loop
+query I
+FROM range(3) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n
+    PATTERN ((A*?)*? B)
+    DEFINE A AS true, B AS FIRST(A.x) < 0
+)
+----
+
+# backtracking after rows have been matched still finds the alternative that works
+query I
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n
+    PATTERN ((A | B) C)
+    DEFINE A AS false, B AS true, C AS FIRST(B.x) IS NOT NULL
+)
+----
+2

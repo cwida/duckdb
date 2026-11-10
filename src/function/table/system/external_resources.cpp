@@ -1,57 +1,149 @@
 #include "duckdb/function/table/system_functions.hpp"
 
-#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/map.hpp"
-#include "duckdb/common/set.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
-#include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/external_resource_type_registry.hpp"
 #include "duckdb/main/external_resources_manager.hpp"
+#include "duckdb/parser/keyword_helper.hpp"
+#include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/qualified_name.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
 
 namespace duckdb {
 
 //===--------------------------------------------------------------------===//
-// duckdb_external_resources(discover := false)
+// duckdb_external_resources(discover := false, type := NULL)
 //
-// Lists the external resources this instance knows about. `discover := false` (the default) returns just
-// the locally registered resources (managed = true) and stays local. `discover := true` also calls each
-// resource type's `list` callback to discover resources that exist externally, unioning in the ones not
-// locally registered (managed = false) — the reconciliation view that feeds REGISTER.
+// Lists the external resources this instance knows about. By default that is the local registry: the
+// resources registered in this instance (managed = true). `type` restricts the listing to one type.
+//
+// `discover := true` also lists what exists externally. The call is then rewritten (bind_replace) into
+// plain SQL: the registry UNION ALL one `SELECT ... FROM <list callback>()` per type with a list callback,
+// each tagged with its type name and anti-joined against the registry, so a resource registered here is
+// shown once, as managed. A list callback returns one row per resource: handle (MAP), name, reference and
+// state. The name is the provider's own name for the resource (unique within the type), so a discovered
+// row can be referred to by it; a registered row shows its local name instead. A `type` restriction leaves out the
+// other types' branches up front, and a `WHERE type = ...` on the result is pushed into the branches by the optimizer,
+// where it folds to a constant and drops the branch - so only the callbacks of the types asked for run.
 //===--------------------------------------------------------------------===//
 
-struct ExternalResourceRow {
-	string name; // local registration name; empty for a discovered (unmanaged) resource
+struct ExternalResourcesParameters {
+	bool discover = false;
+	//! The type to list; empty lists every type.
 	string type;
-	Value handle;
-	string uri;
-	string attached_db_type;
-	bool managed;
-	string reference; // from the type's `list` callback
-	string state;     // from the type's `list` callback
 };
 
+static ExternalResourcesParameters ReadParameters(TableFunctionBindInput &input) {
+	ExternalResourcesParameters result;
+	for (auto &np : input.named_parameters) {
+		if (np.second.IsNull()) {
+			continue;
+		}
+		if (np.first == "discover") {
+			result.discover = BooleanValue::Get(np.second);
+		} else if (np.first == "type") {
+			result.type = StringValue::Get(np.second);
+		}
+	}
+	return result;
+}
+
+static bool MatchesType(const string &type, const string &type_name) {
+	return type.empty() || type == type_name;
+}
+
+//! The registry scan restricted to `type`, as SQL.
+static string RegistryScan(const string &type) {
+	if (type.empty()) {
+		return "duckdb_external_resources()";
+	}
+	return "duckdb_external_resources(type := " + Value(type).ToSQLString() + ")";
+}
+
+static bool RegistryHasType(ClientContext &context, const string &type) {
+	for (auto &instance : ExternalResourcesManager::Get(context).List()) {
+		if (instance.type == type) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static unique_ptr<TableRef> ExternalResourcesBindReplace(ClientContext &context, TableFunctionBindInput &input) {
+	auto params = ReadParameters(input);
+	if (!params.discover) {
+		return nullptr; // the registry scan below
+	}
+	vector<string> branches;
+	branches.push_back("SELECT name, type, managed, NULL::VARCHAR AS state, NULL::VARCHAR AS reference, uri, "
+	                   "attached_db_type, handle FROM " +
+	                   RegistryScan(params.type));
+	if (!params.type.empty()) {
+		// An unknown type autoloads the extension known to provide it, like an unknown function does
+		ExternalResourceTypeRegistry::LookupOrAutoload(DatabaseInstance::GetDatabase(context), params.type);
+	}
+	bool matched = false;
+	for (auto &type : ExternalResourceTypeRegistry::Get(context).List()) {
+		if (!MatchesType(params.type, type.name)) {
+			continue;
+		}
+		matched = true;
+		if (type.list_function.empty()) {
+			continue; // a type without a list callback has nothing to discover
+		}
+		// Resolved here, in the caller's search path, so the generated SQL does not depend on it.
+		auto callback = QualifyTableCallback(context, type.list_function);
+		if (callback.empty()) {
+			throw InvalidInputException(
+			    "external resource discovery for type \"%s\": the list callback \"%s\" does not exist", type.name,
+			    type.list_function);
+		}
+		// The callback returns handle (MAP), name, reference and state; the rows registered here are left out by
+		// handle. The callback's rows are aliased with its name, so a binder error about a missing column names it.
+		auto type_literal = Value(type.name).ToSQLString();
+		auto alias = KeywordHelper::WriteQuotedAndEscaped(type.list_function, '"');
+		branches.push_back(StringUtil::Format(
+		    "SELECT %s.name::VARCHAR AS name, %s AS type, false AS managed, %s.state::VARCHAR AS state, "
+		    "%s.reference::VARCHAR AS reference, NULL::VARCHAR AS uri, NULL::VARCHAR AS attached_db_type, "
+		    "%s.handle::MAP(VARCHAR, VARCHAR) AS handle FROM %s(MAP {}::MAP(VARCHAR, VARCHAR)) AS %s "
+		    "ANTI JOIN %s AS registry ON %s.handle = registry.handle",
+		    alias, type_literal, alias, alias, alias, callback, alias, RegistryScan(type.name), alias));
+	}
+	// A type nothing provides but the registry knows (its extension is not loaded, or it was registered as an
+	// opaque type) has nothing to discover, like a type without a list callback. A type neither knows is most
+	// likely a typo, or a missing extension.
+	if (!matched && !params.type.empty() && !RegistryHasType(context, params.type)) {
+		auto extension = ExternalResourceTypeRegistry::ProvidingExtension(params.type);
+		if (!extension.empty()) {
+			throw InvalidInputException(
+			    "duckdb_external_resources: unknown resource type \"%s\": it is provided by the "
+			    "%s extension, which could not be autoloaded. Try: INSTALL AND LOAD %s;",
+			    params.type, extension, extension);
+		}
+		throw InvalidInputException("duckdb_external_resources: unknown resource type \"%s\"", params.type);
+	}
+	Parser parser(context);
+	parser.ParseQuery(StringUtil::Join(branches, " UNION ALL "));
+	auto select = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(parser.statements[0]));
+	return make_uniq<SubqueryRef>(std::move(select));
+}
+
 struct ExternalResourcesBindData : public TableFunctionData {
-	bool discover = false;
+	string type;
 };
 
 struct ExternalResourcesGlobalState : public GlobalTableFunctionState {
-	ExternalResourcesGlobalState() : offset(0) {
-	}
-	vector<ExternalResourceRow> rows;
-	idx_t offset;
+	vector<ExternalResource> rows;
+	idx_t offset = 0;
 };
 
 static unique_ptr<FunctionData> ExternalResourcesBind(ClientContext &context, TableFunctionBindInput &input,
                                                       vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<ExternalResourcesBindData>();
-	for (auto &np : input.named_parameters) {
-		if (StringUtil::Lower(np.first.GetIdentifierName()) == "discover" && !np.second.IsNull()) {
-			result->discover = BooleanValue::Get(np.second);
-		}
-	}
+	result->type = ReadParameters(input).type;
 
 	names.emplace_back("name");
 	return_types.emplace_back(LogicalType::VARCHAR);
@@ -72,116 +164,13 @@ static unique_ptr<FunctionData> ExternalResourcesBind(ClientContext &context, Ta
 	return std::move(result);
 }
 
-//! A stable key for a handle, so a discovered resource can be matched against a locally registered one.
-//! Handles are only ever compared within a single type: the durable identity is (type, handle), so a
-//! matching handle under a different type is a different resource.
-static string HandleKey(const Value &handle) {
-	return handle.IsNull() ? string() : handle.ToString();
-}
-
-//! Call a type's `list` callback and append the resources it discovers that are not already locally
-//! managed (keyed by handle). A misconfigured type is a hard error: a callback that fails or returns the
-//! wrong schema must surface, not be silently dropped as "nothing exists externally".
-static void DiscoverExternalResources(ClientContext &context, const ExternalResourceType &type,
-                                      const set<string> &managed_handles, vector<ExternalResourceRow> &rows) {
-	// Separate internal connection (the current connection's context lock is held here), resolving the
-	// callback in the type's registration-time search path.
-	Connection con(DatabaseInstance::GetDatabase(context));
-	if (!type.search_path.empty()) {
-		auto set_res = con.Query("SET search_path = " + Value(type.search_path).ToSQLString());
-		if (set_res->HasError()) {
-			throw InvalidInputException("external resource discovery for type \"%s\": failed to set the type's "
-			                            "registration search path: %s",
-			                            type.name, set_res->GetError());
-		}
-	}
-	auto sql =
-	    "SELECT * FROM " + QualifiedName::Parse(type.list_function).ToString() + "(MAP {}::MAP(VARCHAR, VARCHAR))";
-	// con.Query reports query errors in-band, but with statement verification active (a global debug setting
-	// the internal connection inherits) a bind-time failure of the callback is thrown instead. Handle both so
-	// the wrapped message is identical in every mode.
-	unique_ptr<QueryResult> res;
-	try {
-		res = con.Query(sql);
-	} catch (const std::exception &ex) {
-		throw InvalidInputException("external resource discovery for type \"%s\": the list callback \"%s\" failed: %s",
-		                            type.name, type.list_function, ErrorData(ex).RawMessage());
-	}
-	if (res->HasError()) {
-		throw InvalidInputException("external resource discovery for type \"%s\": the list callback \"%s\" failed: %s",
-		                            type.name, type.list_function, res->GetError());
-	}
-	// Resolve the columns we consume by name; only `handle` is required.
-	idx_t handle_idx = DConstants::INVALID_INDEX, reference_idx = DConstants::INVALID_INDEX,
-	      state_idx = DConstants::INVALID_INDEX;
-	for (idx_t c = 0; c < res->GetNames().size(); c++) {
-		auto col = StringUtil::Lower(res->ColumnName(c).GetIdentifierName());
-		if (col == "handle") {
-			handle_idx = c;
-		} else if (col == "reference") {
-			reference_idx = c;
-		} else if (col == "state") {
-			state_idx = c;
-		}
-	}
-	if (handle_idx == DConstants::INVALID_INDEX) {
-		throw InvalidInputException(
-		    "external resource discovery for type \"%s\": the list callback \"%s\" did not return a \"handle\" column",
-		    type.name, type.list_function);
-	}
-	auto res_rows = res->Collection().GetRows();
-	for (idx_t r = 0; r < res->RowCount(); r++) {
-		// The handle is a MAP (opaque to us), the same contract create/status enforce - reject anything else
-		// with a clear message rather than a cast failure deep in the output append.
-		auto handle = RequireResourceMap(res_rows.GetValue(handle_idx, r), type.list_function, "handle");
-		if (managed_handles.count(HandleKey(handle)) > 0) {
-			continue; // already shown as a locally managed resource of this type
-		}
-		ExternalResourceRow row;
-		row.type = type.name;
-		row.handle = std::move(handle);
-		row.managed = false;
-		if (reference_idx != DConstants::INVALID_INDEX) {
-			auto ref = res_rows.GetValue(reference_idx, r);
-			row.reference = ref.IsNull() ? string() : ref.ToString();
-		}
-		if (state_idx != DConstants::INVALID_INDEX) {
-			auto st = res_rows.GetValue(state_idx, r);
-			row.state = st.IsNull() ? string() : st.ToString();
-		}
-		rows.push_back(std::move(row));
-	}
-}
-
 static unique_ptr<GlobalTableFunctionState> ExternalResourcesInit(ClientContext &context,
                                                                   TableFunctionInitInput &input) {
 	auto &bind_data = input.bind_data->Cast<ExternalResourcesBindData>();
 	auto result = make_uniq<ExternalResourcesGlobalState>();
-
-	// Locally registered resources — always shown (managed = true).
-	// Handles of the locally registered resources, bucketed per type - handles are only comparable within a type.
-	map<string, set<string>> managed_handles;
 	for (auto &instance : ExternalResourcesManager::Get(context).List()) {
-		ExternalResourceRow row;
-		row.name = instance.name;
-		row.type = instance.type;
-		row.handle = instance.handle;
-		row.uri = instance.uri;
-		row.attached_db_type = instance.attached_db_type;
-		row.managed = true;
-		managed_handles[instance.type].insert(HandleKey(instance.handle));
-		result->rows.push_back(std::move(row));
-	}
-
-	// Discovery union: for each type with a `list` callback, add the externally-existing resources that
-	// are not locally managed.
-	if (bind_data.discover) {
-		for (auto &type : ExternalResourceTypeRegistry::Get(context).List()) {
-			if (type.list_function.empty()) {
-				continue;
-			}
-			// operator[] gives an empty bucket for a type with nothing registered locally
-			DiscoverExternalResources(context, type, managed_handles[type.name], result->rows);
+		if (MatchesType(bind_data.type, instance.type)) {
+			result->rows.push_back(std::move(instance));
 		}
 	}
 	return std::move(result);
@@ -194,14 +183,15 @@ static Value NullableString(const string &s) {
 static void ExternalResourcesFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &state = data_p.global_state->Cast<ExternalResourcesGlobalState>();
 	auto empty_handle = Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	auto null_string = Value(LogicalType::VARCHAR);
 	idx_t count = 0;
 	while (state.offset < state.rows.size() && count < STANDARD_VECTOR_SIZE) {
 		auto &r = state.rows[state.offset++];
-		output.data[0].Append(NullableString(r.name));
+		output.data[0].Append(Value(r.name));
 		output.data[1].Append(Value(r.type));
-		output.data[2].Append(Value::BOOLEAN(r.managed));
-		output.data[3].Append(NullableString(r.state));
-		output.data[4].Append(NullableString(r.reference));
+		output.data[2].Append(Value::BOOLEAN(true));
+		output.data[3].Append(null_string);
+		output.data[4].Append(null_string);
 		output.data[5].Append(NullableString(r.uri));
 		output.data[6].Append(NullableString(r.attached_db_type));
 		output.data[7].Append(r.handle.IsNull() ? empty_handle : r.handle);
@@ -212,8 +202,12 @@ static void ExternalResourcesFunction(ClientContext &context, TableFunctionInput
 void DuckDBExternalResourcesFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction fn("duckdb_external_resources", {}, ExternalResourcesFunction, ExternalResourcesBind,
 	                 ExternalResourcesInit);
-	fn.GetSignature().WithTypedKwargs("options",
-	                                  [](TypedKwargs &options) { options.Add("discover", LogicalType::BOOLEAN); });
+	fn.bind_replace = ExternalResourcesBindReplace;
+	fn.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("discover", LogicalType::BOOLEAN).Add("type", LogicalType::VARCHAR);
+	});
+	// reads the live external resource registry, and discovery reaches out to external systems
+	fn.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn);
 }
 
@@ -301,6 +295,8 @@ void RegisterExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
 		    .Add("attached_db_type", LogicalType::VARCHAR)
 		    .Add("deleter_function", LogicalType::VARCHAR);
 	});
+	// writes the external resource registry per execution
+	fn.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn);
 }
 
@@ -352,9 +348,12 @@ static void DeregisterExternalResourceFunction(ClientContext &context, TableFunc
 }
 
 void DeregisterExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction(
+	TableFunction deregister_fun(
 	    "deregister_external_resource", FunctionSignature().AddPositionalOnly("name", LogicalType::VARCHAR),
-	    DeregisterExternalResourceFunction, DeregisterExternalResourceBind, DeregisterExternalResourceInit));
+	    DeregisterExternalResourceFunction, DeregisterExternalResourceBind, DeregisterExternalResourceInit);
+	// writes the external resource registry per execution
+	deregister_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(deregister_fun));
 }
 
 } // namespace duckdb

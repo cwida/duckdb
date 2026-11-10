@@ -679,9 +679,9 @@ void DependencyManager::ReorderEntries(catalog_entry_vector_t &entries, ClientCo
 	ReorderEntries(entries, transaction, false);
 }
 
-void DependencyManager::ReorderEntries(catalog_entry_vector_t &entries) {
-	// Read all committed entries. A checkpoint writes internal entries too
-	CatalogTransaction transaction(catalog.GetDatabase(), MAX_COMMIT_ID, VisibilityBound::Before(MAX_COMMIT_ID));
+void DependencyManager::ReorderEntries(catalog_entry_vector_t &entries, VisibilityBound bound) {
+	// Read the entries committed below the checkpoint's bound. A checkpoint writes internal entries too
+	CatalogTransaction transaction(catalog.GetDatabase(), MAX_TRANSACTION_ID, bound);
 	ReorderEntries(entries, transaction, true);
 }
 

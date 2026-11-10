@@ -13,65 +13,22 @@
 
 namespace duckdb {
 
+class Context;
+
+template <class T>
+struct IsSettingList : std::false_type {};
+
+template <class T>
+struct IsSettingList<vector<T>> : std::true_type {};
+
 struct Settings {
 	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_enum<typename OP::RETURN_TYPE>::value, typename OP::RETURN_TYPE>::type
-	Get(const SOURCE &source) {
+	static typename OP::RETURN_TYPE Get(const SOURCE &source) {
 		Value result;
 		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return EnumUtil::FromString<typename OP::RETURN_TYPE>(StringValue::Get(result));
+			return FromValue<typename OP::RETURN_TYPE>(result);
 		}
-		return EnumUtil::FromString<typename OP::RETURN_TYPE>(OP::DefaultValue);
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, string>::value, string>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return StringValue::Get(result);
-		}
-		return OP::DefaultValue;
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, bool>::value, bool>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return BooleanValue::Get(result);
-		}
-		return StringUtil::Equals(OP::DefaultValue, "true");
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, idx_t>::value, idx_t>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return UBigIntValue::Get(result);
-		}
-		return StringUtil::ToUnsigned(OP::DefaultValue);
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, int64_t>::value, int64_t>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return BigIntValue::Get(result);
-		}
-		return StringUtil::ToSigned(OP::DefaultValue);
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, double>::value, double>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return DoubleValue::Get(result);
-		}
-		return StringUtil::ToDouble(OP::DefaultValue);
+		return FromDefault<typename OP::RETURN_TYPE>(OP::DefaultValue);
 	}
 
 	template <class SOURCE>
@@ -84,10 +41,140 @@ struct Settings {
 		Set(source, OP::SettingIndex, scope, std::move(target_value));
 	}
 
+	//! The default value of a setting as a Value of its input type
+	template <class OP>
+	static Value GetDefaultValue() {
+		return DefaultToValue<typename OP::RETURN_TYPE>(OP::DefaultValue);
+	}
+
 private:
+	//! Converts the value of a setting to its return type
+	template <class T>
+	static typename std::enable_if<std::is_enum<T>::value, T>::type FromValue(const Value &value) {
+		return EnumUtil::FromString<T>(StringValue::Get(value));
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, string>::value, T>::type FromValue(const Value &value) {
+		return StringValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, bool>::value, T>::type FromValue(const Value &value) {
+		return BooleanValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, idx_t>::value, T>::type FromValue(const Value &value) {
+		return UBigIntValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, int64_t>::value, T>::type FromValue(const Value &value) {
+		return BigIntValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, double>::value, T>::type FromValue(const Value &value) {
+		return DoubleValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<IsSettingList<T>::value, T>::type FromValue(const Value &value) {
+		T result;
+		for (auto &child : ListValue::GetChildren(value)) {
+			result.push_back(FromValue<typename T::value_type>(child));
+		}
+		return result;
+	}
+
+	//! Parses the default value of a setting
+	template <class T>
+	static typename std::enable_if<std::is_enum<T>::value, T>::type FromDefault(const char *default_value) {
+		return EnumUtil::FromString<T>(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, string>::value, T>::type FromDefault(const char *default_value) {
+		return default_value;
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, bool>::value, T>::type FromDefault(const char *default_value) {
+		return StringUtil::Equals(default_value, "true");
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, idx_t>::value, T>::type FromDefault(const char *default_value) {
+		return StringUtil::ToUnsigned(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, int64_t>::value, T>::type FromDefault(const char *default_value) {
+		return StringUtil::ToSigned(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, double>::value, T>::type FromDefault(const char *default_value) {
+		return StringUtil::ToDouble(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<IsSettingList<T>::value, T>::type FromDefault(const char *default_value) {
+		T result;
+		for (auto &entry : SplitListDefault(default_value)) {
+			result.push_back(FromDefault<typename T::value_type>(entry.c_str()));
+		}
+		return result;
+	}
+	//! Splits a list literal (e.g. "['a', 'b']") into its entries
+	static vector<string> SplitListDefault(const char *default_value);
+
+	//! String and enum settings are VARCHAR: their default is used as written
+	template <class T>
+	static typename std::enable_if<std::is_enum<T>::value || std::is_same<T, string>::value, Value>::type
+	DefaultToValue(const char *default_value) {
+		return Value(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<!std::is_enum<T>::value && !std::is_same<T, string>::value, Value>::type
+	DefaultToValue(const char *default_value) {
+		return ToSettingValue(FromDefault<T>(default_value));
+	}
+
+	static Value ToSettingValue(const string &value) {
+		return Value(value);
+	}
+	static Value ToSettingValue(bool value) {
+		return Value::BOOLEAN(value);
+	}
+	static Value ToSettingValue(uint64_t value) {
+		return Value::UBIGINT(value);
+	}
+	static Value ToSettingValue(int64_t value) {
+		return Value::BIGINT(value);
+	}
+	static Value ToSettingValue(double value) {
+		return Value::DOUBLE(value);
+	}
+	template <class T>
+	static Value ToSettingValue(const vector<T> &values) {
+		vector<Value> children;
+		for (auto &value : values) {
+			children.push_back(ToSettingValue(value));
+		}
+		return Value::LIST(SettingLogicalType(static_cast<const T *>(nullptr)), std::move(children));
+	}
+
+	//! The logical type of a setting value, selected by the (unused) pointer type
+	static LogicalType SettingLogicalType(const string *) {
+		return LogicalType::VARCHAR;
+	}
+	static LogicalType SettingLogicalType(const bool *) {
+		return LogicalType::BOOLEAN;
+	}
+	static LogicalType SettingLogicalType(const uint64_t *) {
+		return LogicalType::UBIGINT;
+	}
+	static LogicalType SettingLogicalType(const int64_t *) {
+		return LogicalType::BIGINT;
+	}
+	static LogicalType SettingLogicalType(const double *) {
+		return LogicalType::DOUBLE;
+	}
+
 	static bool TryGetSettingInternal(const DatabaseInstance &db, idx_t setting_index, Value &result);
 	static bool TryGetSettingInternal(const DBConfig &config, idx_t setting_index, Value &result);
 	static bool TryGetSettingInternal(const ClientContext &context, idx_t setting_index, Value &result);
+	static bool TryGetSettingInternal(const Context &context, idx_t setting_index, Value &result);
 
 	static void SetSettingInternal(DatabaseInstance &db, idx_t setting_index, SetScope scope, Value target_value);
 	static void SetSettingInternal(DBConfig &config, idx_t setting_index, SetScope scope, Value target_value);
@@ -452,19 +539,6 @@ struct AutoloadKnownExtensionsSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
-struct BlockAllocatorMemorySetting {
-	using RETURN_TYPE = string;
-	static constexpr const char *Name = "block_allocator_memory";
-	static constexpr const char *Description = "Physical memory that the block allocator is allowed to use. This "
-	                                           "memory is allocated once, never freed, and cannot be reduced.";
-	static constexpr const char *InputType = "VARCHAR";
-	static constexpr bool IsDebug = false;
-	static constexpr bool IsDeprecated = false;
-	static void SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &parameter);
-	static void ResetGlobal(DatabaseInstance *db, DBConfig &config);
-	static Value GetSetting(const ClientContext &context);
-};
-
 struct CacheLocalFilesSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "cache_local_files";
@@ -751,7 +825,7 @@ struct DebugForceExternalSetting {
 struct DebugForceFetchRowSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "debug_force_fetch_row";
-	static constexpr const char *Description = "Force per-row fetching during scans.";
+	static constexpr const char *Description = "Read the rows of scans through the fetch by row id.";
 	static constexpr const char *InputType = "BOOLEAN";
 	static constexpr bool IsDebug = true;
 	static constexpr bool IsDeprecated = false;
@@ -809,6 +883,19 @@ struct ForceVariantShredding {
 	static void SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &parameter);
 	static void ResetGlobal(DatabaseInstance *db, DBConfig &config);
 	static Value GetSetting(const ClientContext &context);
+};
+
+struct DebugForceWalFsyncFailureSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "debug_force_wal_fsync_failure";
+	static constexpr const char *Description =
+	    "DEBUG SETTING: makes every WAL fsync fail, used for testing durability error handling";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = true;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
 struct DebugLocalFileSystemDelayMsSetting {
@@ -998,6 +1085,19 @@ struct DebugVerifyVectorSetting {
 	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
+struct DebugWalFsyncSleepMsSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "debug_wal_fsync_sleep_ms";
+	static constexpr const char *Description =
+	    "DEBUG SETTING: time to sleep during each WAL fsync, emulating high-latency durable storage";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr bool IsDebug = true;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "0";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct DebugWindowModeSetting {
 	using RETURN_TYPE = WindowAggregationMode;
 	static constexpr const char *Name = "debug_window_mode";
@@ -1036,6 +1136,19 @@ struct DefaultCollationSetting {
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
+struct DefaultGrammarExtensionsSetting {
+	using RETURN_TYPE = vector<string>;
+	static constexpr const char *Name = "default_grammar_extensions";
+	static constexpr const char *Description =
+	    "The grammar extensions sessions parse with when active_grammar_extensions is not set.";
+	static constexpr const char *InputType = "VARCHAR[]";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static void SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &parameter);
+	static void ResetGlobal(DatabaseInstance *db, DBConfig &config);
+	static Value GetSetting(const ClientContext &context);
 };
 
 struct DefaultNullOrderSetting {
@@ -1222,6 +1335,20 @@ struct DynamicOrFilterThresholdSetting {
 	static constexpr const char *DefaultValue = "50";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
+struct EnableBlockAllocatorSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "enable_block_allocator";
+	static constexpr const char *Description =
+	    "Enable new allocations from the fixed-size block pool (64-bit only; disabled by default on MinGW). Disabling "
+	    "preserves existing allocations and the virtual memory reservation.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static void SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &parameter);
+	static void ResetGlobal(DatabaseInstance *db, DBConfig &config);
+	static Value GetSetting(const ClientContext &context);
 };
 
 struct EnableExternalAccessSetting {
@@ -1713,6 +1840,34 @@ struct HTTPProxyUsernameSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
+struct HTTPRetryQuotaThrottledSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "http_retry_quota_throttled";
+	static constexpr const char *Description =
+	    "Whether the per-host retry quota can refuse the retry of a throttled request (HTTP 429 or 503). When false, a "
+	    "throttled retry is still charged to the quota but is not refused when the quota is empty.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "true";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
+struct HTTPRetryThrottledWaitMsSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "http_retry_throttled_wait_ms";
+	static constexpr const char *Description =
+	    "Smallest base wait, in milliseconds, of the back-off between retries of a throttled request (HTTP 429 or "
+	    "503). Throttled retries back off from the larger of this and http_retry_wait_ms.";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "0";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct IeeeFloatingPointOpsSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "ieee_floating_point_ops";
@@ -1924,6 +2079,21 @@ struct LoggingStorage {
 	static void SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &parameter);
 	static void ResetGlobal(DatabaseInstance *db, DBConfig &config);
 	static Value GetSetting(const ClientContext &context);
+};
+
+struct MatchRecognizeMaxStatesSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "match_recognize_max_states";
+	static constexpr const char *Description =
+	    "The maximum number of pattern states MATCH_RECOGNIZE explores for a single match, before it refuses the "
+	    "pattern (0 = no limit). A match is never refused below what matching the pattern without backtracking would "
+	    "take.";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "1000000";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
 struct MaxExecutionTimeSetting {
@@ -2331,6 +2501,20 @@ struct RegexMatchOperatorSemanticsSetting {
 	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
+struct ScalarAggregateMergeThresholdSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "scalar_aggregate_merge_threshold";
+	static constexpr const char *Description =
+	    "The number of rows a table needs for sibling scalar aggregates over it to be computed in one pass. 0 computes "
+	    "them in one pass only over table functions such as read_parquet.";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "0";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct ScalarSubqueryErrorOnMultipleRowsSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "scalar_subquery_error_on_multiple_rows";
@@ -2513,9 +2697,10 @@ struct TrackedMetricsSetting {
 	static constexpr const char *InputType = "VARCHAR[]";
 	static constexpr bool IsDebug = false;
 	static constexpr bool IsDeprecated = false;
-	static void SetLocal(ClientContext &context, const Value &parameter);
-	static void ResetLocal(ClientContext &context);
-	static Value GetSetting(const ClientContext &context);
+	static constexpr const char *DefaultValue = "['*']";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
 struct UsernameSetting {

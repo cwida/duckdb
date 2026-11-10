@@ -80,6 +80,8 @@ enum class PrintOutput { STDOUT, STDERR };
 
 enum class InputMode { STANDARD, FILE, DUCKDB_RC };
 
+enum class OutputCommand { OUTPUT, ONCE, EXCEL };
+
 enum class LargeNumberRendering { NONE = 0, FOOTER = 1, ALL = 2, DEFAULT = 3 };
 
 /*
@@ -139,6 +141,8 @@ struct MetadataCommand {
 	const char *description;
 	idx_t match_size;
 	const char *extra_description;
+	//! Pass the remainder of the line as one argument instead of splitting it into words
+	bool raw_arguments;
 };
 
 struct ShellColumnInfo {
@@ -344,7 +348,7 @@ public:
 	bool SetOutputMode(const string &mode, const char *tbl_name);
 	bool ImportData(const vector<string> &args);
 	bool OpenDatabase(const vector<string> &args);
-	bool SetOutputFile(const vector<string> &args, char output_mode);
+	bool SetOutputFile(const vector<string> &args, OutputCommand output_command);
 	bool ReadFromFile(const string &file);
 	bool DisplaySchemas(const vector<string> &args);
 	MetadataResult DisplayEntries(const vector<string> &args, char type);
@@ -354,6 +358,7 @@ public:
 	void ClearInterrupt();
 
 	[[noreturn]] static void Exit(int exit_code);
+	static void IgnoreInterrupts();
 	static idx_t RenderLength(const char *str, idx_t str_len);
 	static idx_t RenderLength(duckdb::string_t str);
 	static idx_t RenderLength(const string &str);
@@ -524,7 +529,5 @@ struct PagerState {
 	optional_ptr<ShellState> state;
 	uint32_t win_console_cp_before_pager = 0;
 };
-
-void IgnoreInterrupts();
 
 } // namespace duckdb_shell

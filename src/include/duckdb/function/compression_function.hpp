@@ -32,7 +32,6 @@ class SegmentStatistics;
 class TableFilter;
 struct TableFilterState;
 struct ColumnSegmentState;
-struct ColumnFetchState;
 struct ColumnScanState;
 struct PrefetchState;
 struct SegmentScanState;
@@ -172,9 +171,6 @@ typedef void (*compression_select_t)(ColumnSegment &segment, ColumnScanState &st
 typedef void (*compression_filter_t)(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count, Vector &result,
                                      SelectionVector &sel, idx_t &sel_count, const TableFilter &filter,
                                      TableFilterState &filter_state);
-//! Function prototype used for reading a single value
-typedef void (*compression_fetch_row_t)(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
-                                        idx_t result_idx);
 //! Function prototype used for skipping 'skip_count' values, non-trivial if random-access is not supported for the
 //! compressed data.
 typedef void (*compression_skip_t)(ColumnSegment &segment, ColumnScanState &state, idx_t skip_count);
@@ -216,8 +212,7 @@ public:
 	                    compression_init_compression_t init_compression, compression_compress_data_t compress,
 	                    compression_compress_finalize_t compress_finalize, compression_init_segment_scan_t init_scan,
 	                    compression_scan_vector_t scan_vector, compression_scan_partial_t scan_partial,
-	                    compression_fetch_row_t fetch_row, compression_skip_t skip,
-	                    compression_init_segment_t init_segment = nullptr,
+	                    compression_skip_t skip, compression_init_segment_t init_segment = nullptr,
 	                    compression_init_append_t init_append = nullptr, compression_append_t append = nullptr,
 	                    compression_finalize_append_t finalize_append = nullptr,
 	                    compression_revert_append_t revert_append = nullptr,
@@ -229,8 +224,8 @@ public:
 	    : type(type), data_type(data_type), init_analyze(init_analyze), analyze(analyze), final_analyze(final_analyze),
 	      init_compression(init_compression), compress(compress), compress_finalize(compress_finalize),
 	      init_prefetch(init_prefetch), init_scan(init_scan), scan_vector(scan_vector), scan_partial(scan_partial),
-	      select(select), filter(filter), fetch_row(fetch_row), skip(skip), init_segment(init_segment),
-	      init_append(init_append), append(append), finalize_append(finalize_append), revert_append(revert_append),
+	      select(select), filter(filter), skip(skip), init_segment(init_segment), init_append(init_append),
+	      append(append), finalize_append(finalize_append), revert_append(revert_append),
 	      serialize_state(serialize_state), deserialize_state(deserialize_state), visit_block_ids(visit_block_ids) {
 	}
 
@@ -274,9 +269,6 @@ public:
 	compression_select_t select;
 	//! Scan and apply a filter to a vector while scanning
 	compression_filter_t filter;
-	//! fetch an individual row from the compressed vector
-	//! used for index lookups
-	compression_fetch_row_t fetch_row;
 	//! Skip forward in the compressed segment
 	compression_skip_t skip;
 

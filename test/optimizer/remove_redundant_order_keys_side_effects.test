@@ -11,6 +11,10 @@ INSERT INTO t VALUES (3, 'c', 1), (1, 'a', 2), (2, NULL, 1), (5, 'a', NULL), (4,
 statement ok
 CREATE SEQUENCE seq_elide START 1;
 
+# keep the sort under the aggregate so that the key removal is what is tested
+statement ok
+SET disabled_optimizers = 'redundant_order';
+
 # a dropped key never raises, and never runs its side effect
 query I
 SELECT count(*) FROM (SELECT id FROM t ORDER BY id, CAST(payload AS INTEGER)) q;
@@ -43,7 +47,7 @@ SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'seq_keep';
 
 # without the optimizer that key does raise
 statement ok
-SET disabled_optimizers = 'redundant_order_keys';
+SET disabled_optimizers = 'redundant_order_keys,redundant_order';
 
 statement error
 SELECT count(*) FROM (SELECT id FROM t ORDER BY id, CAST(payload AS INTEGER)) q;

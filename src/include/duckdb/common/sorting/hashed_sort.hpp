@@ -39,7 +39,7 @@ public:
 	SinkFinalizeType Finalize(ClientContext &client, OperatorSinkFinalizeInput &finalize) const override;
 	ProgressData GetSinkProgress(ClientContext &context, GlobalSinkState &gstate,
 	                             const ProgressData source_progress) const override;
-	void Synchronize(const GlobalSinkState &source, GlobalSinkState &target) const override;
+	void Synchronize(ClientContext &client, const GlobalSinkState &source, GlobalSinkState &target) const override;
 
 public:
 	//===--------------------------------------------------------------------===//

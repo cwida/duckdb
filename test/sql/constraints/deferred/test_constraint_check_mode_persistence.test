@@ -1,0 +1,52 @@
+# name: test/sql/constraints/deferred/test_constraint_check_mode_persistence.test
+# description: Preserve explicit and default constraint check mode across database reopen
+# group: [deferred]
+
+load {TEST_DIR}/constraint_check_mode.db readwrite v2.0.0
+
+statement ok
+CREATE TABLE t(a INTEGER UNIQUE, b INTEGER UNIQUE IMMEDIATE, c INTEGER PRIMARY KEY IMMEDIATE);
+
+query I rowsort
+SELECT constraint_text FROM duckdb_constraints() WHERE table_name = 't' AND constraint_type <> 'NOT NULL';
+----
+PRIMARY KEY(c) IMMEDIATE
+UNIQUE(a)
+UNIQUE(b) IMMEDIATE
+
+query I
+SELECT sql FROM duckdb_tables() WHERE table_name = 't';
+----
+CREATE TABLE t(a INTEGER UNIQUE, b INTEGER UNIQUE IMMEDIATE, c INTEGER PRIMARY KEY IMMEDIATE);
+
+restart
+
+query I
+SELECT sql FROM duckdb_tables() WHERE table_name = 't';
+----
+CREATE TABLE t(a INTEGER UNIQUE, b INTEGER UNIQUE IMMEDIATE, c INTEGER PRIMARY KEY IMMEDIATE);
+
+query I rowsort
+SELECT constraint_text FROM duckdb_constraints() WHERE table_name = 't' AND constraint_type <> 'NOT NULL';
+----
+PRIMARY KEY(c) IMMEDIATE
+UNIQUE(a)
+UNIQUE(b) IMMEDIATE
+
+statement ok
+INSERT INTO t VALUES (1, 2, 3);
+
+statement error
+INSERT INTO t VALUES (1, 4, 5);
+----
+Constraint Error: Duplicate key
+
+statement error
+INSERT INTO t VALUES (4, 2, 5);
+----
+Constraint Error: Duplicate key
+
+statement error
+INSERT INTO t VALUES (4, 5, 3);
+----
+Constraint Error: Duplicate key

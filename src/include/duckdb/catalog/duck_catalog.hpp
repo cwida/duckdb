@@ -11,6 +11,7 @@
 #include "duckdb/catalog/catalog.hpp"
 
 namespace duckdb {
+class DuckSchemaEntry;
 
 //! The Catalog object represents the catalog of the database.
 class DuckCatalog : public Catalog {
@@ -44,7 +45,7 @@ public:
 	DUCKDB_API void AlterSchema(CatalogTransaction transaction, SchemaCatalogEntry &schema,
 	                            AlterSchemaInfo &info) override;
 	DUCKDB_API void ScanSchemas(ClientContext &context, std::function<void(SchemaCatalogEntry &)> callback) override;
-	DUCKDB_API void ScanSchemas(std::function<void(SchemaCatalogEntry &)> callback);
+	DUCKDB_API void ScanSchemas(VisibilityBound bound, std::function<void(DuckSchemaEntry &)> callback);
 
 	DUCKDB_API optional_ptr<SchemaCatalogEntry> LookupSchema(CatalogTransaction transaction,
 	                                                         const EntryLookupInfo &schema_lookup,

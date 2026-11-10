@@ -74,8 +74,7 @@ void CompressedFile::Initialize(QueryContext context, bool write) {
 		    stream_data.in_buf_size, MinValue<idx_t>(REMOTE_READ_IN_BUF_SIZE, child_handle->GetFileSize()));
 	}
 	stream_data.out_buf_size = compressed_fs.OutBufferSize();
-	auto &allocator =
-	    context.Valid() ? BufferAllocator::Get(*context.GetClientContext()) : Allocator::DefaultAllocator();
+	auto &allocator = context.Valid() ? BufferAllocator::Get(*context.GetContext()) : Allocator::DefaultAllocator();
 	stream_data.in_buff = allocator.Allocate(stream_data.in_buf_size);
 	stream_data.in_buff_start = stream_data.in_buff.get();
 	stream_data.in_buff_end = stream_data.in_buff.get();

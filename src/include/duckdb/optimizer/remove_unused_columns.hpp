@@ -129,7 +129,7 @@ protected:
 private:
 	//! The current mode of the pruner, enables/disables certain behaviors
 	BaseColumnPrunerMode mode = BaseColumnPrunerMode::DEFAULT;
-	//! True while visiting the child of OPERATOR_TRY. Do not push throwing CASTs (#25236).
+	//! True while visiting the child of OPERATOR_TRY or OPERATOR_HAS_ERROR. Do not push throwing CASTs (#25236).
 	bool inside_try = false;
 };
 

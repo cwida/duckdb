@@ -385,6 +385,11 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 			if (!index.is_unique) {
 				continue;
 			}
+			if (index.check_mode == ConstraintCheckMode::DEFERRED) {
+				// Without a conflict target, every constraint is a conflict target.
+				throw BinderException("DEFERRED PRIMARY KEY or UNIQUE constraints cannot be ON CONFLICT targets, "
+				                      "specify the ON CONFLICT columns of a constraint that is not DEFERRED");
+			}
 
 			vector<unique_ptr<ParsedExpression>> and_children;
 			auto &indexed_columns = index.column_set;
@@ -459,17 +464,22 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 			}
 		}
 		bool index_references_columns = false;
+		bool deferred_index_matches = false;
 		for (auto &index : storage_info.index_info) {
-			if (!index.is_unique) {
+			if (!index.is_unique || on_conflict_filter != index.column_set) {
 				continue;
 			}
-			bool index_matches = on_conflict_filter == index.column_set;
-			if (index_matches) {
-				index_references_columns = true;
-				break;
+			if (index.check_mode == ConstraintCheckMode::DEFERRED) {
+				deferred_index_matches = true;
+				continue;
 			}
+			index_references_columns = true;
+			break;
 		}
 		if (!index_references_columns) {
+			if (deferred_index_matches) {
+				throw BinderException("DEFERRED PRIMARY KEY or UNIQUE constraints cannot be ON CONFLICT targets");
+			}
 			// Same as before, this is essentially a no-op, turning this into a DO THROW instead
 			// But since this makes no logical sense, it's probably better to throw an error
 			throw BinderException("The specified columns as conflict target are not referenced by a UNIQUE/PRIMARY KEY "
@@ -737,9 +747,8 @@ BoundStatement Binder::BindNode(InsertQueryNode &node) {
 
 	// bind the default values
 	auto &catalog_name = table.ParentCatalog().GetName();
-	auto &schema_name = table.ParentSchema().name;
 	BindDefaultValues(table.GetColumns(), insert->bound_defaults, catalog_name.GetIdentifierName(),
-	                  schema_name.GetIdentifierName());
+	                  table.ParentSchema().GetSchemaPath());
 	insert->bound_constraints = BindConstraints(table);
 	if (!node.select_statement && !node.default_values) {
 		result.plan = std::move(insert);

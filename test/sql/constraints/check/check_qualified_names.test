@@ -78,7 +78,7 @@ CHECK constraint failed
 
 # renaming a table renames the table qualifiers in its CHECK constraints
 statement ok
-ATTACH '__TEST_DIR__/check_rename.db' AS d
+ATTACH '{TEST_DIR}/check_rename.db' AS d
 
 statement ok
 CREATE TABLE d.u(x INT, CHECK (u.x > 0));
@@ -115,7 +115,7 @@ statement ok
 DETACH d
 
 statement ok
-ATTACH '__TEST_DIR__/check_rename.db' AS d
+ATTACH '{TEST_DIR}/check_rename.db' AS d
 
 statement ok
 INSERT INTO d.u2 VALUES (2, 3);

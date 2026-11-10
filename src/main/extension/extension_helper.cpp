@@ -876,8 +876,8 @@ vector<string> ExtensionHelper::GetTrustedPublicKeys(DatabaseInstance &db, Exten
 	case ExtensionRepositoryType::USER_PROVIDED: {
 		// when adding repositories has been forbidden, the user repositories are distrusted entirely: their keys are
 		// no longer trusted, so extensions installed from them can no longer be loaded. Note that 'undecided' still
-		// trusts existing repositories - only 'forbidden' distrusts them
-		if (ExtensionRepositoryManager::GetAccess(db) == ExtensionRepositoryAccess::FORBIDDEN) {
+		// trusts existing repositories
+		if (!ExtensionRepositoryManager::TrustsExistingRepositories(db)) {
 			return keys;
 		}
 		// only the keys of the repository the extension came from are trusted

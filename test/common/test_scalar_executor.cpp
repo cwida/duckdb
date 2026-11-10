@@ -130,6 +130,166 @@ static bool Contains(const SelectionVector &sel, idx_t count, idx_t value) {
 
 } // namespace
 
+TEST_CASE("Boolean selection compacts bounded stable output", "[selection][scalar_executor]") {
+	constexpr sel_t SENTINEL = NumericLimits<sel_t>::Maximum();
+	for (idx_t count : {0, 1, 7, 8, 9, 63, 64, 65, 127, 129}) {
+		for (idx_t pattern = 0; pattern < 258; pattern++) {
+			auto matches = make_unsafe_uniq_array<bool>(count);
+			duckdb::vector<sel_t> expected, expected_false;
+			for (idx_t i = 0; i < count; i++) {
+				matches[i] = pattern >= 256 ? pattern - 256 : ((pattern + 17 * (i / 8)) >> (i % 8)) & 1;
+				(matches[i] ? expected : expected_false).push_back(UnsafeNumericCast<sel_t>(97 + i));
+			}
+			for (bool select_true : {false, true}) {
+				for (bool select_false : {false, true}) {
+					if (!select_true && !select_false) {
+						continue;
+					}
+					duckdb::vector<sel_t> output(count + 2, SENTINEL), false_output(count + 2, SENTINEL);
+					optional<array_ptr<sel_t>> true_sel, false_sel;
+					if (select_true) {
+						true_sel = array_ptr<sel_t>(output.data() + 1, count);
+					}
+					if (select_false) {
+						false_sel = array_ptr<sel_t>(false_output.data() + 1, count);
+					}
+					auto true_count =
+					    SelectionVector::SelectFromBoolean(matches.get(), nullptr, count, true_sel, false_sel, 97);
+					REQUIRE(true_count == expected.size());
+					if (select_true) {
+						for (idx_t i = 0; i < expected.size(); i++) {
+							REQUIRE(output[i + 1] == expected[i]);
+						}
+					}
+					if (select_false) {
+						for (idx_t i = 0; i < expected_false.size(); i++) {
+							REQUIRE(false_output[i + 1] == expected_false[i]);
+						}
+					}
+					REQUIRE(output.front() == SENTINEL);
+					REQUIRE(output.back() == SENTINEL);
+					REQUIRE(false_output.front() == SENTINEL);
+					REQUIRE(false_output.back() == SENTINEL);
+				}
+			}
+		}
+	}
+
+	REQUIRE(SelectionVector::SelectFromBoolean(nullptr, nullptr, 0, {}) == 0);
+#ifndef DUCKDB_CRASH_ON_ASSERT
+	bool matches[8] {};
+	REQUIRE_THROWS_AS(SelectionVector::SelectFromBoolean(matches, nullptr, 8, {}), InternalException);
+	// Even an empty selection needs scratch space for every input row.
+	sel_t output[8], false_output[8];
+	std::fill(output, output + 8, SENTINEL);
+	std::fill(false_output, false_output + 8, SENTINEL);
+	for (idx_t capacity : {0, 7}) {
+		REQUIRE_THROWS_AS(SelectionVector::SelectFromBoolean(matches, nullptr, 8, array_ptr<sel_t>(output, capacity)),
+		                  InternalException);
+		REQUIRE_THROWS_AS(
+		    SelectionVector::SelectFromBoolean(matches, nullptr, 8, {}, array_ptr<sel_t>(false_output, capacity)),
+		    InternalException);
+		for (bool short_true : {false, true}) {
+			REQUIRE_THROWS_AS(SelectionVector::SelectFromBoolean(
+			                      matches, nullptr, 8, array_ptr<sel_t>(output, short_true ? capacity : 8),
+			                      array_ptr<sel_t>(false_output, short_true ? 8 : capacity)),
+			                  InternalException);
+		}
+		for (idx_t i = 0; i < 8; i++) {
+			REQUIRE(output[i] == SENTINEL);
+			REQUIRE(false_output[i] == SENTINEL);
+		}
+	}
+#endif
+}
+
+TEST_CASE("Boolean selection reads mapped matches and emits logical positions", "[selection][scalar_executor]") {
+	bool matches[257];
+	for (idx_t i = 0; i < 257; i++) {
+		matches[i] = i % 7 < 3;
+	}
+	const sel_t canary = 999999;
+	for (idx_t count : {0, 1, 7, 8, 9, 63, 64, 65, 2048, 4099}) {
+		SelectionVector match_sel(count);
+		duckdb::vector<sel_t> expected, expected_false;
+		for (idx_t i = 0; i < count; i++) {
+			auto index = (i * 97 + i / 5) % 257;
+			match_sel.set_index(i, index);
+			(matches[index] ? expected : expected_false).push_back(NumericCast<sel_t>(i + 13));
+		}
+		for (bool select_true : {false, true}) {
+			for (bool select_false : {false, true}) {
+				if (!select_true && !select_false) {
+					continue;
+				}
+				duckdb::vector<sel_t> output(count + 2, canary), false_output(count + 2, canary);
+				optional<array_ptr<sel_t>> true_sel, false_sel;
+				if (select_true) {
+					true_sel = array_ptr<sel_t>(output.data() + 1, count);
+				}
+				if (select_false) {
+					false_sel = array_ptr<sel_t>(false_output.data() + 1, count);
+				}
+				auto true_count =
+				    SelectionVector::SelectFromBoolean(matches, &match_sel, count, true_sel, false_sel, 13);
+				REQUIRE(true_count == expected.size());
+				if (select_true) {
+					for (idx_t i = 0; i < expected.size(); i++) {
+						REQUIRE(output[i + 1] == expected[i]);
+					}
+				}
+				if (select_false) {
+					for (idx_t i = 0; i < expected_false.size(); i++) {
+						REQUIRE(false_output[i + 1] == expected_false[i]);
+					}
+				}
+				REQUIRE(output.front() == canary);
+				REQUIRE(output.back() == canary);
+				REQUIRE(false_output.front() == canary);
+				REQUIRE(false_output.back() == canary);
+			}
+		}
+	}
+
+	SelectionVector identity;
+	sel_t output[257], false_output[257];
+	auto selected = SelectionVector::SelectFromBoolean(matches, &identity, 257, array_ptr<sel_t>(output, 257),
+	                                                   array_ptr<sel_t>(false_output, 257));
+	idx_t expected_count = 0, expected_false_count = 0;
+	for (idx_t i = 0; i < 257; i++) {
+		if (matches[i]) {
+			REQUIRE(output[expected_count++] == i);
+		} else {
+			REQUIRE(false_output[expected_false_count++] == i);
+		}
+	}
+	REQUIRE(selected == expected_count);
+
+#ifndef DUCKDB_CRASH_ON_ASSERT
+	SelectionVector short_selection(7);
+	std::fill(output, output + 257, canary);
+	std::fill(false_output, false_output + 257, canary);
+	REQUIRE_THROWS_AS(SelectionVector::SelectFromBoolean(matches, &short_selection, 8, array_ptr<sel_t>(output, 257)),
+	                  InternalException);
+	REQUIRE_THROWS_AS(
+	    SelectionVector::SelectFromBoolean(matches, &short_selection, 8, {}, array_ptr<sel_t>(false_output, 257)),
+	    InternalException);
+	REQUIRE_THROWS_AS(SelectionVector::SelectFromBoolean(matches, &short_selection, 8, array_ptr<sel_t>(output, 257),
+	                                                     array_ptr<sel_t>(false_output, 257)),
+	                  InternalException);
+	SelectionVector valid_selection = SelectionVector::Incremental(8);
+	REQUIRE_THROWS_AS(SelectionVector::SelectFromBoolean(matches, &valid_selection, 8, array_ptr<sel_t>(output, 7), {}),
+	                  InternalException);
+	REQUIRE_THROWS_AS(SelectionVector::SelectFromBoolean(matches, &valid_selection, 8, array_ptr<sel_t>(output, 257),
+	                                                     array_ptr<sel_t>(false_output, 7)),
+	                  InternalException);
+	for (idx_t i = 0; i < 257; i++) {
+		REQUIRE(output[i] == canary);
+		REQUIRE(false_output[i] == canary);
+	}
+#endif
+}
+
 TEST_CASE("Scalar executor handles every ternary flat and constant profile", "[scalar_executor]") {
 	static constexpr idx_t COUNT = 131;
 	for (uint8_t constant_mask = 0; constant_mask < 8; constant_mask++) {
@@ -434,6 +594,67 @@ TEST_CASE("Unary dictionary execution respects error and reuse guards", "[scalar
 			RequireNull(optional_result, row);
 		} else {
 			RequireValue(optional_result, row, NumericCast<int64_t>((row % 3) + 1));
+		}
+	}
+}
+
+TEST_CASE("Dense integral selection handles validity words and mapped fallbacks", "[scalar_executor]") {
+	static constexpr idx_t COUNT = 193;
+	for (bool nullable : {false, true}) {
+		Vector base(LogicalType::INTEGER, COUNT);
+		{
+			auto writer = FlatVector::Writer<int32_t>(base, COUNT);
+			for (idx_t row = 0; row < COUNT; row++) {
+				if (nullable && ((row >= 64 && row < 128) || row == 132)) {
+					writer.WriteNull();
+				} else {
+					writer.WriteValue(NumericCast<int32_t>((row * 37) % 101) - 50);
+				}
+			}
+		}
+		SelectionVector dictionary_sel(COUNT);
+		SelectionVector labels(COUNT);
+		for (idx_t row = 0; row < COUNT; row++) {
+			dictionary_sel.set_index(row, (row * 17) % (COUNT / 2));
+			labels.set_index(row, 1000 + (COUNT - row) / 2);
+		}
+		Vector dictionary(base, dictionary_sel, COUNT);
+		Vector constant(Value::INTEGER(7), count_t(COUNT));
+		for (bool use_dictionary : {false, true}) {
+			auto &input = use_dictionary ? dictionary : base;
+			for (bool mapped : {false, true}) {
+				for (bool constant_left : {false, true}) {
+					for (idx_t output_mode = 0; output_mode < 3; output_mode++) {
+						SelectionVector true_sel(COUNT);
+						SelectionVector false_sel(COUNT);
+						auto true_ptr = output_mode == 1 ? nullptr : &true_sel;
+						auto false_ptr = output_mode == 0 ? nullptr : &false_sel;
+						auto count = BinaryExecutor::Select<int32_t, int32_t, LessThan>(
+						    constant_left ? constant : input, constant_left ? input : constant,
+						    mapped ? &labels : nullptr, COUNT, true_ptr, false_ptr);
+						idx_t true_count = 0;
+						idx_t false_count = 0;
+						for (idx_t row = 0; row < COUNT; row++) {
+							auto value = input.GetValue(row);
+							auto label = mapped ? labels.get_index(row) : row;
+							bool selected = !value.IsNull() && (constant_left ? 7 < value.GetValue<int32_t>()
+							                                                  : value.GetValue<int32_t>() < 7);
+							if (selected) {
+								if (true_ptr) {
+									REQUIRE(true_sel.get_index(true_count) == label);
+								}
+								true_count++;
+							} else {
+								if (false_ptr) {
+									REQUIRE(false_sel.get_index(false_count) == label);
+								}
+								false_count++;
+							}
+						}
+						REQUIRE(count == true_count);
+					}
+				}
+			}
 		}
 	}
 }

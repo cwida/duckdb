@@ -22,9 +22,10 @@ enum class TimestampOffsetState : uint8_t { UNKNOWN, WITH_OFFSET, WITHOUT_OFFSET
 
 struct JSONStructureNode {
 public:
-	JSONStructureNode();
-	JSONStructureNode(const char *key_ptr, const size_t key_len);
-	JSONStructureNode(yyjson_val *key_p, yyjson_val *val_p, bool ignore_errors, bool detect_geojson);
+	explicit JSONStructureNode(bool case_insensitive_keys);
+	JSONStructureNode(const char *key_ptr, const size_t key_len, bool case_insensitive_keys);
+	//! An empty node that matches object keys the way parent does
+	static JSONStructureNode EmptyLike(const JSONStructureNode &parent);
 
 	//! Disable copy constructors
 	JSONStructureNode(const JSONStructureNode &other) = delete;
@@ -61,11 +62,14 @@ public:
 	vector<JSONStructureDescription> descriptions;
 	idx_t count;
 	idx_t null_count;
+	//! Object keys that differ only in ASCII case are the same key (read_json case_insensitive_keys). Set when the
+	//! node is created: the root from the reader options, every child from its parent
+	bool case_insensitive_keys = false;
 };
 
 struct JSONStructureDescription {
 public:
-	explicit JSONStructureDescription(LogicalTypeId type_p);
+	JSONStructureDescription(LogicalTypeId type_p, bool case_insensitive_keys);
 	//! Disable copy constructors
 	JSONStructureDescription(const JSONStructureDescription &other) = delete;
 	JSONStructureDescription &operator=(const JSONStructureDescription &) = delete;
@@ -83,7 +87,7 @@ public:
 	LogicalTypeId type = LogicalTypeId::INVALID;
 
 	//! Map to children and children
-	json_key_map_t<idx_t> key_map;
+	json_key_optional_case_map_t<idx_t> key_map;
 	vector<JSONStructureNode> children;
 
 	//! Candidate types (if auto-detecting and type == LogicalTypeId::VARCHAR)

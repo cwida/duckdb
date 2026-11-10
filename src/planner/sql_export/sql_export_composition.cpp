@@ -141,6 +141,7 @@ static CompositionProperties OutputProperties(LogicalOperator &op, const ColumnB
 
 static bool HasCompositionBarrier(const Expression &expression) {
 	if (expression.GetExpressionType() == ExpressionType::OPERATOR_TRY ||
+	    expression.GetExpressionType() == ExpressionType::OPERATOR_HAS_ERROR ||
 	    expression.GetExpressionType() == ExpressionType::OPERATOR_COALESCE ||
 	    expression.GetExpressionClass() == ExpressionClass::BOUND_CASE ||
 	    expression.GetExpressionClass() == ExpressionClass::BOUND_LAMBDA ||

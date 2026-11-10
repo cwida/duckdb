@@ -1,0 +1,19 @@
+# name: benchmark/micro/order/string_sort_skew.benchmark
+# description: Sort long common-prefix keys with approximately 90% duplicates
+# group: [order]
+
+name Order By (Skewed Strings)
+group micro
+subgroup order
+resultmode streaming drop
+
+load
+SET threads=1;
+SET memory_limit='2GB';
+CREATE TABLE strings AS
+SELECT i, repeat('a',64) ||
+       CASE WHEN hash(i)%10=0 THEN substr(md5(i::VARCHAR),1,16) ELSE repeat('b',16) END AS s
+FROM range(524288) t(i);
+
+run
+SELECT s, i FROM strings ORDER BY s;

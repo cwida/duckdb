@@ -27,11 +27,12 @@
 
 namespace duckdb {
 
-TaskScheduler::TaskScheduler(DatabaseInstance &db) : db(db) {
+TaskScheduler::TaskScheduler(DatabaseInstance &db) : db(db), relaunch_requested(true) {
 	for (uint8_t i = 0; i < TASK_SCHEDULER_TYPE_COUNT; i++) {
 		pools[i] = make_uniq<TaskSchedulerPool>(db, static_cast<TaskSchedulerType>(i));
 		queues[i] = make_uniq<TaskSchedulerQueue>(static_cast<TaskSchedulerType>(i));
 	}
+	BlockAllocator::Get(db).SetScheduler(*this);
 }
 
 TaskScheduler::~TaskScheduler() {
@@ -40,11 +41,12 @@ TaskScheduler::~TaskScheduler() {
 		for (auto &pool : pools) {
 			pool->RelaunchThreads(*this, true);
 		}
-		BlockAllocator::Get(db).FlushAll();
+		BlockAllocator::Get(db).FlushOnShutdown();
 	} catch (...) {
 		// nothing we can do in the destructor if this fails
 	}
 #endif
+	BlockAllocator::Get(db).ClearScheduler();
 }
 
 TaskScheduler &TaskScheduler::GetScheduler(ClientContext &context) {
@@ -91,6 +93,7 @@ TaskSchedulerQueue &TaskScheduler::GetQueue(TaskSchedulerType pool_type) const {
 
 void TaskScheduler::SetThreadsInternal(TaskSchedulerType pool_type, idx_t n) {
 	GetPool(pool_type).SetThreads(n);
+	relaunch_requested = true;
 }
 
 void TaskScheduler::ScheduleTask(ProducerToken &token, shared_ptr<Task> task, TaskSchedulerType pool_type) {
@@ -111,10 +114,6 @@ bool TaskScheduler::GetTaskInternal(ConsumerToken &consumer, shared_ptr<Task> &t
 		}
 	}
 	return false;
-}
-
-void TaskScheduler::ExecuteForever(atomic<bool> *marker) {
-	ExecuteForever(marker, TaskSchedulerType::REGULAR);
 }
 
 //! The task a worker thread took from a queue. It stays here until the worker is done with it, so that an exception
@@ -180,8 +179,27 @@ void TaskScheduler::ProcessTask(const DBConfig &config, WorkerTask &worker_task)
 	worker_task = WorkerTask();
 }
 
-void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType pool_type) {
 #ifndef DUCKDB_NO_THREADS
+static bool SetThreadAffinity(idx_t cpu_id) {
+#if defined(__GLIBC__)
+	if (cpu_id >= CPU_SETSIZE) {
+		return false;
+	}
+	cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+	CPU_SET(cpu_id, &cpuset);
+	return pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) == 0;
+#else
+	return false;
+#endif
+}
+#endif
+
+void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType pool_type, optional_idx cpu) {
+#ifndef DUCKDB_NO_THREADS
+	if (cpu.IsValid() && SetThreadAffinity(cpu.GetIndex())) {
+		GetPinnedCPUId() = cpu;
+	}
 	static constexpr int64_t INITIAL_FLUSH_WAIT = 500000; // initial wait time of 0.5s (in mus) before flushing
 	static constexpr int64_t RETRY_WAIT = 10000;    // wait time of 10ms (in mus) before retrying after an exception
 	static constexpr idx_t MAX_TASK_RETRIES = 1000; // retries of the held task, about 10s, before rethrowing
@@ -227,7 +245,7 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 						    GetPool(TaskSchedulerType::REGULAR).NumberOfThreads());
 						flush_pending = false;
 					}
-					auto decay_delay = Allocator::DecayDelay();
+					auto decay_delay = block_allocator.DecayDelay();
 					if (!decay_delay.IsValid()) {
 						// no decay delay specified - just wait
 						pool.Wait();
@@ -235,9 +253,12 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 						if (!pool.Wait(UnsafeNumericCast<int64_t>(decay_delay.GetIndex()) * 1000000 -
 						               INITIAL_FLUSH_WAIT)) {
 							// in total, the thread was idle for the entire decay delay (note: seconds converted to mus)
-							// mark it as idle and start an untimed wait
-							Allocator::ThreadIdle();
-							pool.Wait();
+							// Another thread may have returned allocations during this worker's idle interval.
+							// Keep the wait timed until those cached allocations have had a chance to decay.
+							block_allocator.ThreadIdle();
+							if (!block_allocator.HasPendingCacheDecay()) {
+								pool.Wait();
+							}
 						}
 					}
 				}
@@ -281,7 +302,7 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 	}
 	if (block_allocator.SupportsFlush()) {
 		try {
-			Allocator::ThreadIdle();
+			block_allocator.ThreadExit();
 		} catch (...) {
 			// returning the memory of an exiting thread is best effort
 		}
@@ -439,7 +460,20 @@ void TaskScheduler::YieldThread() {
 #endif
 }
 
+optional_idx &TaskScheduler::GetPinnedCPUId() {
+#ifndef DUCKDB_NO_THREADS
+	static thread_local optional_idx cpu_id;
+#else
+	static optional_idx cpu_id;
+#endif
+	return cpu_id;
+}
+
 idx_t TaskScheduler::GetEstimatedCPUId() {
+	const auto &pinned_cpu_id = GetPinnedCPUId();
+	if (pinned_cpu_id.IsValid()) {
+		return pinned_cpu_id.GetIndex();
+	}
 #if defined(__EMSCRIPTEN__)
 	// FIXME: Wasm + multithreads can likely be implemented as
 	//   return return (idx_t)std::hash<std::thread::id>()(std::this_thread::get_id());
@@ -477,7 +511,11 @@ idx_t TaskScheduler::GetEstimatedCPUId() {
 }
 
 void TaskScheduler::RelaunchThreads() {
+	if (!relaunch_requested) {
+		return;
+	}
 	lock_guard<mutex> t(thread_lock);
+	relaunch_requested = false;
 	for (auto &pool : pools) {
 		pool->RelaunchThreads(*this, false);
 	}

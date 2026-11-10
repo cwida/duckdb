@@ -12,6 +12,7 @@
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/catalog/catalog_entry/dependency/dependency_entry.hpp"
+#include "duckdb/common/set.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
@@ -375,7 +376,7 @@ bool CatalogSet::AlterEntry(CatalogTransaction transaction, const Identifier &na
 	unique_ptr<CatalogEntry> entry_to_destroy;
 	if (transaction.transaction) {
 		// serialize the AlterInfo into a temporary buffer
-		MemoryStream stream(Allocator::Get(*transaction.db));
+		MemoryStream stream(Allocator::Get(transaction.db));
 		BinarySerializer serializer(stream);
 		serializer.Begin();
 		serializer.WriteProperty(100, "column_name", alter_info.GetColumnName());
@@ -551,28 +552,30 @@ CatalogEntry &CatalogSet::GetEntryForTransaction(CatalogTransaction transaction,
 	return entry.get();
 }
 
-CatalogEntry &CatalogSet::GetCommittedEntry(CatalogEntry &current) {
-	reference<CatalogEntry> entry(current);
-	while (entry.get().HasChild()) {
-		if (IsCommitted(entry.get().timestamp.load())) {
-			// this entry is committed: use it
-			break;
-		}
-		entry = entry.get().Child();
-	}
-	return entry.get();
-}
-
 SimilarCatalogEntry CatalogSet::SimilarEntry(CatalogTransaction transaction, const Identifier &name) {
 	unique_lock<mutex> lock(catalog_lock);
-	CreateDefaultEntries(transaction, lock);
+
+	// Score the names of default entries that have not been created yet without creating them: creating a default
+	// view parses and binds its SQL, which is far more work than an error suggestion needs.
+	// The candidates are visited in map order, so ties resolve as they would if the defaults had been created.
+	set<Identifier, IdentifierCompare> candidates;
+	for (auto &kv : map.Entries()) {
+		candidates.insert(kv.first);
+	}
+	if (defaults && !defaults->created_all_entries) {
+		for (auto &default_entry : defaults->GetDefaultEntries()) {
+			if (!map.GetEntry(default_entry)) {
+				candidates.insert(default_entry);
+			}
+		}
+	}
 
 	SimilarCatalogEntry result;
-	for (auto &kv : map.Entries()) {
-		auto entry_score = StringUtil::SimilarityRating(kv.first.GetIdentifierName(), name.GetIdentifierName());
+	for (auto &candidate : candidates) {
+		auto entry_score = StringUtil::SimilarityRating(candidate.GetIdentifierName(), name.GetIdentifierName());
 		if (entry_score > result.score) {
 			result.score = entry_score;
-			result.name = Identifier(kv.first.GetIdentifierName());
+			result.name = Identifier(candidate.GetIdentifierName());
 		}
 	}
 	return result;
@@ -785,14 +788,14 @@ void CatalogSet::ScanWithPrefix(CatalogTransaction transaction, const std::funct
 	}
 }
 
-void CatalogSet::Scan(const std::function<void(CatalogEntry &)> &callback) {
+void CatalogSet::Scan(VisibilityBound bound, const std::function<void(CatalogEntry &)> &callback) {
 	// lock the catalog set
 	lock_guard<mutex> lock(catalog_lock);
+	CatalogTransaction transaction(catalog.GetDatabase(), MAX_TRANSACTION_ID, bound);
 	for (auto &kv : map.Entries()) {
-		auto &entry = *kv.second;
-		auto &committed_entry = GetCommittedEntry(entry);
-		if (!committed_entry.deleted) {
-			callback(committed_entry);
+		auto &entry = GetEntryForTransaction(transaction, *kv.second);
+		if (!entry.deleted) {
+			callback(entry);
 		}
 	}
 }
@@ -805,7 +808,7 @@ void CatalogSet::SetDefaultGenerator(unique_ptr<DefaultGenerator> defaults_p) {
 void CatalogSet::Verify(Catalog &catalog_p) {
 	D_ASSERT(&catalog_p == &catalog);
 	vector<reference<CatalogEntry>> entries;
-	Scan([&](CatalogEntry &entry) { entries.push_back(entry); });
+	Scan(VisibilityBound::AllCommitted(), [&](CatalogEntry &entry) { entries.push_back(entry); });
 	for (auto &entry : entries) {
 		entry.get().Verify(catalog_p);
 	}

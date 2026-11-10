@@ -21,9 +21,7 @@ bool TryEvaluateAtConstants(ClientContext &context, const BoundFunctionExpressio
 	// Functions such as alias() inspect expression metadata during execution.
 	auto clone = func.Copy();
 	clone->Cast<BoundFunctionExpression>().GetChildrenMutable() = std::move(children);
-	// a nested result with many elements is not worth materializing as a Value just to derive statistics
-	return ExpressionExecutor::TryEvaluateScalar(context, *clone, result,
-	                                             ExpressionExecutor::MAX_FOLDED_NESTED_ELEMENTS);
+	return ExpressionExecutor::TryEvaluateScalar(context, *clone, result);
 }
 
 // Whether [lo, hi] holds -infinity and another value. The smallest finite DATE or TIMESTAMP sorts below -infinity.
@@ -91,7 +89,7 @@ bool TryInferConstantBounds(const BaseStatistics &stats, Value &constant) {
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateConstantInputs(ClientContext &context,
                                                                          const BoundFunctionExpression &func,
                                                                          const vector<BaseStatistics> &child_stats) {
-	if (func.Function().GetStability() != FunctionStability::CONSISTENT || func.GetChildren().empty()) {
+	if (func.Function().GetStability() == FunctionStability::VOLATILE || func.GetChildren().empty()) {
 		return nullptr;
 	}
 	// Lambda arguments are placeholders, not SQL values that can be evaluated independently.
@@ -128,7 +126,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateMonotoneBounds(ClientC
 	if (!func.Function().HasArgProperties() || func.GetChildren().empty()) {
 		return nullptr;
 	}
-	if (func.Function().GetStability() != FunctionStability::CONSISTENT) {
+	if (func.Function().GetStability() == FunctionStability::VOLATILE) {
 		return nullptr;
 	}
 	if (BaseStatistics::GetStatsType(func.GetReturnType()) != StatisticsType::NUMERIC_STATS ||
@@ -253,6 +251,10 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundFuncti
 		// an invalidated parameter has no statistics until it is rebound at execution
 		if (child->GetExpressionType() == ExpressionType::VALUE_PARAMETER &&
 		    child->GetReturnType().id() == LogicalTypeId::SQLNULL) {
+			has_invalidated_parameter = true;
+		}
+		// neither does an input whose type depends on an unresolved parameter
+		if (!child->GetReturnType().IsComplete()) {
 			has_invalidated_parameter = true;
 		}
 		if (!stat) {

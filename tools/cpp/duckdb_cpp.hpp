@@ -999,12 +999,7 @@ public:
 	/// @param apply_invalidation_policy Whether a syntax error invalidates the active transaction, according to the
 	/// transaction invalidation policy. Pass false when the statements are only inspected, e.g. with `Bind`, instead of
 	/// run.
-	auto ParseSQL(const char *sql, bool apply_invalidation_policy = true) -> StatementIterator;
-
-	/// `std::string` overload of `ParseSQL`.
-	auto ParseSQL(const std::string &sql, bool apply_invalidation_policy = true) -> StatementIterator {
-		return ParseSQL(sql.c_str(), apply_invalidation_policy);
-	}
+	auto ParseSQL(std::string_view sql, bool apply_invalidation_policy = true) -> StatementIterator;
 
 	/// Splits a SQL string into its tokens without parsing it: no binding, no catalog access, no transaction. The
 	/// connection supplies the grammar whose keyword set decides KEYWORD versus IDENTIFIER. Offsets are byte offsets
@@ -3578,7 +3573,7 @@ enum class OrderPreservation : uint8_t {
 ///
 /// Every statistic states what can occur: `true` means a kind of value may be present, `false` guarantees it is
 /// absent. The engine relies on the guarantees, so claiming less than the data holds produces wrong query results.
-/// Borrowed: valid only for the duration of the callback that handed it out.
+/// Borrowed: valid only for the duration of the callback that handed it out. Unstable API.
 class Stats final : public detail::Handle<Stats> {
 	friend detail::HandleFactory;
 
@@ -3642,7 +3637,7 @@ public:
 	/// Called for every batch of rows; must fill the result vector. Required.
 	using ExecCallback = void (*)(ExecInput &input);
 	/// Called while the query is optimized, possibly more than once, to narrow the statistics of the result from
-	/// those of the arguments. Optional; without it the engine knows nothing about the result.
+	/// those of the arguments. Optional; without it the engine knows nothing about the result. Unstable API.
 	using StatsCallback = void (*)(StatsInput &input);
 
 	ScalarFunction(ScalarFunction &&) noexcept = default;
@@ -3922,14 +3917,14 @@ public:
 		auto GetResultStats() const -> Stats;
 
 		/// The query's context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		StatsInput(void *args, void *context) : args(args), context(context) {
+		StatsInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetUserDataInternal() const;
@@ -4000,7 +3995,7 @@ public:
 	/// Called to release resources a batch of states owns. Optional; must not fail.
 	using DestroyCallback = void (*)(DestroyInput &input);
 	/// Called while the query is optimized, possibly more than once, to narrow the statistics of the result from
-	/// those of the arguments. Optional; without it the engine knows nothing about the result.
+	/// those of the arguments. Optional; without it the engine knows nothing about the result. Unstable API.
 	using StatsCallback = void (*)(StatsInput &input);
 
 	AggregateFunction(AggregateFunction &&) noexcept = default;
@@ -4386,14 +4381,14 @@ public:
 		auto GetResultStats() const -> Stats;
 
 		/// The query's context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		StatsInput(void *args, void *context) : args(args), context(context) {
+		StatsInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetUserDataInternal() const;
@@ -4587,7 +4582,7 @@ public:
 	/// for the same bind data: only report what the bind already determined. Optional; unstable API.
 	using GetBindInfoCallback = void (*)(GetBindInfoInput &input);
 	/// Called while the query is optimized, once per declared column the query reads, to narrow that column's
-	/// statistics. Optional; without it the engine knows nothing about the columns.
+	/// statistics. Optional; without it the engine knows nothing about the columns. Unstable API.
 	using StatsCallback = void (*)(StatsInput &input);
 
 	TableFunction(TableFunction &&) noexcept = default;
@@ -4649,6 +4644,7 @@ public:
 	auto SetClaimBatchCallback(ClaimBatchCallback callback) & -> TableFunction &;
 	/// Lets the function describe what a bound call reads: see `GetBindInfoCallback`. Unstable API.
 	auto SetGetBindInfoCallback(GetBindInfoCallback callback) & -> TableFunction &;
+	/// Lets the function narrow the statistics of the columns it produces: see `StatsCallback`. Unstable API.
 	auto SetStatsCallback(StatsCallback callback) & -> TableFunction &;
 
 	/// Declares whether the function supports projection pushdown. Defaults to false. With it, the engine asks for
@@ -5267,14 +5263,14 @@ public:
 		auto GetResultStats() const -> Stats;
 
 		/// The query's context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		StatsInput(void *args, void *context) : args(args), context(context) {
+		StatsInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetUserDataInternal() const;

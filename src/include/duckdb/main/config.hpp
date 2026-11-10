@@ -10,6 +10,7 @@
 
 #include "duckdb/storage/storage_info.hpp"
 #include "duckdb/common/allocator.hpp"
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/cgroups.hpp"
 #include "duckdb/common/common.hpp"
@@ -96,6 +97,12 @@ struct DBConfigOptions {
 	string default_autoinstall_repository;
 	//! The maximum memory used by the database system (in bytes). Default: 80% of System available memory
 	idx_t maximum_memory = DConstants::INVALID_INDEX;
+	//! Initial permission to allocate from the fixed-size block pool.
+#ifdef __MINGW32__
+	bool enable_block_allocator = false;
+#else
+	bool enable_block_allocator = true;
+#endif
 	//! The maximum size of the 'temp_directory' folder when set (in bytes). Default: 90% of available disk space.
 	idx_t maximum_swap_space = DConstants::INVALID_INDEX;
 	//! The maximum amount of CPU threads used by the database system. Default: all available.
@@ -162,8 +169,6 @@ struct DBConfigOptions {
 	identifier_set_t allowed_configs;
 	//! The log configuration
 	LogConfig log_config = LogConfig();
-	//! Physical memory that the block allocator is allowed to use (this memory is never freed and cannot be reduced)
-	idx_t block_allocator_size = 0;
 	//! Memory limit for the write buffer per row group (optional)
 	optional_idx write_buffer_row_group_memory_limit;
 	//! Whether to print bindings when printing the plan (debug mode only)
@@ -253,6 +258,10 @@ public:
 	shared_ptr<DatabaseFilePathManager> path_manager;
 	//! Database configuration variables as controlled by SET
 	GlobalUserSettings user_settings;
+	//! The grammar extensions sessions parse with when active_grammar_extensions is not set: an
+	//! immutable snapshot replaced on SET GLOBAL and loaded atomically because sessions read it at
+	//! parse time without the config lock (nullptr when unset)
+	shared_ptr<const vector<string>> default_grammar_extensions;
 
 public:
 	DUCKDB_API static DBConfig &GetConfig(ClientContext &context);
@@ -392,6 +401,10 @@ public:
 	HTTPUtil &GetHTTPUtil() const;
 	//! Replace how external extensions are installed and loaded, before the database runs queries
 	DUCKDB_API void SetExternalExtensionProvider(const shared_ptr<ExternalExtensionProvider> &new_provider);
+	//! Returns a copy of the forced variant shredding type (INVALID if unset), safe to call while it is being modified
+	DUCKDB_API LogicalType GetForceVariantShredding() const;
+	//! Returns a copy of the allowed_configs set, safe to call while it is being modified
+	DUCKDB_API identifier_set_t GetAllowedConfigs() const;
 	DUCKDB_API ExternalExtensionProvider &GetExternalExtensionProvider() const;
 	DUCKDB_API HTTPTransportManager &GetHTTPTransportManager();
 	DUCKDB_API const HTTPTransportManager &GetHTTPTransportManager() const;
@@ -402,6 +415,8 @@ private:
 	mutable mutex allowed_paths_lock;
 	//! Guards disabled_optimizers, which can be changed while other connections plan queries
 	mutable mutex disabled_optimizers_lock;
+	//! Whether disabled_optimizers is non-empty
+	atomic<bool> has_disabled_optimizers {false};
 	unique_ptr<CompressionFunctionSet> compression_functions;
 	unique_ptr<EncodingFunctionSet> encoding_functions;
 	unique_ptr<ArrowTypeExtensionSet> arrow_extensions;

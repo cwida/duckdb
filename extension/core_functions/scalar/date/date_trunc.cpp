@@ -84,7 +84,7 @@ struct DateTrunc {
 		template <class TA, class TR>
 		static inline TR Operation(TA input) {
 			date_t date = Date::GetMondayOfCurrentWeek(input);
-			return Date::SubtractDays(date, (Date::ExtractISOWeekNumber(date) - 1) * Interval::DAYS_PER_WEEK);
+			return Date::SubtractDays(date, int64_t(Date::ExtractISOWeekNumber(date) - 1) * Interval::DAYS_PER_WEEK);
 		}
 	};
 

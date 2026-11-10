@@ -33,12 +33,14 @@ int wmain(int argc, wchar_t **wargv) {
 		ErrorData error(ex);
 		fprintf(stderr, "Exited due to error: %s", error.Message().c_str());
 	}
-	if (shell_state) {
-		shell_state->PrintExitHint(rc);
-	}
 	try {
+		// Stop new interrupt callbacks before destroying any shell owners.
+		ShellState::IgnoreInterrupts();
+		// Print before output cleanup forgets whether stdout was a console.
+		if (shell_state) {
+			shell_state->PrintExitHint(rc);
+		}
 		// destroy shell state prior to program clean-up
-		IgnoreInterrupts();
 		if (shell_state) {
 			delete shell_state;
 		}

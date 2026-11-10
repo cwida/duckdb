@@ -1,0 +1,357 @@
+# name: test/sql/match_recognize/test_match_recognize_names.test
+# description: MATCH_RECOGNIZE - names: what the clause generates, what the input calls its columns, and qualification
+# group: [match_recognize]
+
+statement ok
+PRAGMA enable_verification
+
+statement ok
+pragma threads=1
+
+# the alias list renames the columns, as it does for any other table reference
+query I
+SELECT n FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS c PATTERN (A+)
+ DEFINE A AS true) mr(n)
+----
+2
+
+statement error
+SELECT n FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS c PATTERN (A+)
+ DEFINE A AS true) mr(n, too, many)
+----
+<REGEX>:Binder Error:.*columns available but.*columns specified.*
+
+# what is in front of a column is a table to strip only if the input has one by that name; anything
+# else is navigation into the column and has to survive
+query I
+FROM (VALUES ({'v': 1})) t(x) MATCH_RECOGNIZE (
+    MEASURES x.v AS v PATTERN (A)
+ DEFINE A AS true)
+----
+1
+
+query I
+FROM (VALUES ({'v': 1}), ({'v': 2})) t(x) MATCH_RECOGNIZE (
+    MEASURES count(*) AS n PATTERN (A+) DEFINE A AS x.v > 0
+)
+----
+2
+
+statement ok
+CREATE TABLE qualified(x INTEGER);
+
+statement ok
+INSERT INTO qualified VALUES (1), (2);
+
+query I
+FROM qualified q MATCH_RECOGNIZE (
+    ORDER BY x MEASURES max(q.x) AS m PATTERN (A+) DEFINE A AS q.x > 0
+)
+----
+2
+
+query I
+FROM qualified MATCH_RECOGNIZE (
+    ORDER BY x MEASURES max(qualified.x) AS m PATTERN (A+) DEFINE A AS qualified.x > 0
+)
+----
+2
+
+# A measure may be called after a column of the input. The projections below the output refer to the
+# measure by a name of its own, so the reference cannot find the input column instead.
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES sum(x) AS x
+    PATTERN (A+)
+ DEFINE A AS true)
+----
+30
+
+query II
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES sum(x) AS x
+    ALL ROWS PER MATCH PATTERN (A+)
+ DEFINE A AS true)
+----
+10	10
+20	30
+
+# the columns a clause needs are named after the clause, so an input column of the shape they used to
+# have is left alone
+query I
+FROM (VALUES (10, 99), (20, 99)) t(x, __mr_win_0) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES PREV(x) AS p
+    PATTERN (A)
+ DEFINE A AS true)
+----
+NULL
+10
+
+query I
+FROM (VALUES (10, 99), (20, 99)) t(x, __mr_nav_0) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n
+    PATTERN (A+) DEFINE A AS FIRST(x) = 10
+)
+----
+2
+
+query I
+FROM (VALUES (10, 99), (20, 99)) t(x, __mr_match_number) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES MATCH_NUMBER() AS m
+    PATTERN (A+)
+ DEFINE A AS true)
+----
+1
+
+# Two of the input's tables can have a column of the same name, and a reference qualified with one of
+# them means that one. The clause is evaluated above a subquery of the input, so the reference is
+# computed where the input still is one rather than reduced to a bare column name.
+query II
+FROM (VALUES (10)) t1(x) JOIN (VALUES (20)) t2(x) ON true
+MATCH_RECOGNIZE (
+    MEASURES t1.x AS ax, t2.x AS bx PATTERN (Z)
+ DEFINE Z AS true)
+----
+10	20
+
+query I
+FROM (VALUES (10)) t1(x) JOIN (VALUES (20)) t2(x) ON true
+MATCH_RECOGNIZE (
+    MEASURES count(*) AS n PATTERN (Z) DEFINE Z AS t2.x > 15
+)
+----
+1
+
+query I
+FROM (VALUES (10)) t1(x) JOIN (VALUES (20)) t2(x) ON true
+MATCH_RECOGNIZE (
+    MEASURES count(*) AS n PATTERN (Z) DEFINE Z AS t1.x > 15
+)
+----
+
+# a qualifier only names the table; everything behind it navigates into the column
+query I
+FROM (VALUES ({'v': 10}, 99)) t(x, v) MATCH_RECOGNIZE (
+    MEASURES t.x.v AS s PATTERN (A)
+ DEFINE A AS true)
+----
+10
+
+query I
+FROM (VALUES ({'v': 10}, 99)) t(x, v) MATCH_RECOGNIZE (
+    MEASURES count(*) AS n PATTERN (A) DEFINE A AS t.x.v = 10
+)
+----
+1
+
+query I
+FROM (VALUES ({'v': 10}), ({'v': 20})) t(x) MATCH_RECOGNIZE (
+    ORDER BY x.v MEASURES LAST(A.x.v) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+20
+
+# partitioning and ordering are bound where the input still is one, and report the name they spelled
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY t.x MEASURES sum(x) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+30
+
+query II
+FROM (VALUES (10, 'a'), (20, 'a')) t(x, g) MATCH_RECOGNIZE (
+    PARTITION BY t.g ORDER BY t.x MEASURES sum(x) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+a	30
+
+# a name the input's tables and the pattern share is the pattern variable's
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES LAST(t.x) AS s PATTERN (t+) DEFINE t AS x > 0
+)
+----
+20
+
+# The input is bound before the clause generates any column of its own, so what it generates is named
+# apart from what the input already calls its columns - whatever those are.
+
+query I
+FROM (VALUES (10, 99), (20, 99)) t(x, __mr_measure_0) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES sum(x) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+30
+
+query I
+FROM (VALUES (10, 99), (20, 99)) t(x, __mr_win) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES PREV(x) AS p PATTERN (A)
+ DEFINE A AS true)
+----
+NULL
+10
+
+query I
+FROM (VALUES (10, 99), (20, 99)) t(x, __mr_nav) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+) DEFINE A AS FIRST(x) = 10
+)
+----
+2
+
+query I
+FROM (VALUES (1, 2), (3, 4)) t(a, __pattern_window) MATCH_RECOGNIZE (
+    ORDER BY a MEASURES sum(a) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+4
+
+# every one of them at once, and the input's own columns still reach the output
+query IIIIIII
+FROM (VALUES (1, 2, 3, 4, 5), (6, 7, 8, 9, 10))
+     t(__mr_win, __mr_nav, __mr_ref_0, __mr_measure_0, __pattern_window)
+MATCH_RECOGNIZE (
+    ORDER BY __mr_win MEASURES sum(__mr_measure_0) AS s, PREV(__mr_nav) AS p
+    ALL ROWS PER MATCH PATTERN (A+)
+ DEFINE A AS true)
+----
+1	4	NULL	2	3	4	5
+6	13	2	7	8	9	10
+
+# A reference is computed against the input rather than rewritten to a bare name, so a dot inside a
+# quoted identifier is not read as the boundary between two names.
+query II
+FROM (VALUES (10, {'y': 20})) t("x.y", x) MATCH_RECOGNIZE (
+    MEASURES t."x.y" AS a, t.x.y AS b PATTERN (A)
+ DEFINE A AS true)
+----
+10	20
+
+query II
+FROM (VALUES (10, {'y': 20})) t("x.y", x) MATCH_RECOGNIZE (
+    MEASURES "x.y" AS a, x.y AS b PATTERN (A)
+ DEFINE A AS true)
+----
+10	20
+
+# a table function without an alias, and a fully qualified table, are named the way the input names them
+query I
+FROM range(2) MATCH_RECOGNIZE (
+    ORDER BY range.range MEASURES count(*) AS n PATTERN (A+)
+ DEFINE A AS true)
+----
+2
+
+statement ok
+CREATE TABLE ticks(x INT);
+
+statement ok
+INSERT INTO ticks VALUES (1), (2);
+
+# the schema is named here rather than taken as the default one, so that the reference reads the
+# same wherever the test's tables happen to live
+statement ok
+CREATE SCHEMA mr_schema;
+
+statement ok
+CREATE TABLE mr_schema.ticks AS FROM ticks;
+
+query I
+FROM mr_schema.ticks MATCH_RECOGNIZE (
+    ORDER BY mr_schema.ticks.x MEASURES count(*) AS n PATTERN (A+)
+ DEFINE A AS true)
+----
+2
+
+# a reference the input finds ambiguous says so rather than quietly taking the first of them
+statement error
+FROM ticks t1 JOIN ticks t2 ON t1.x = t2.x MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+ DEFINE A AS true)
+----
+Ambiguous reference to column name "x"
+
+statement error
+FROM ticks MATCH_RECOGNIZE (
+    ORDER BY nope MEASURES count(*) AS n PATTERN (A+)
+ DEFINE A AS true)
+----
+Referenced column "nope" not found
+
+# A measure may name one written before it, the way a select list may name an earlier column, in
+# either of the two ways a select list spells that.
+query II
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n, n + 1 AS m PATTERN (A+)
+ DEFINE A AS true)
+----
+2	3
+
+query II
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n, alias.n + 1 AS m PATTERN (A+)
+ DEFINE A AS true)
+----
+2	3
+
+query III
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS a, a + 1 AS b, b + 1 AS c PATTERN (A+)
+ DEFINE A AS true)
+----
+2	3	4
+
+query II
+FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES FIRST(x) AS f, f * 10 AS g PATTERN (A+)
+ DEFINE A AS true)
+----
+1	10
+
+# a column of the input by the same name is still the column
+query III
+FROM (VALUES (7), (8)) t(n) MATCH_RECOGNIZE (
+    ORDER BY n MEASURES count(*) AS n, n AS m ALL ROWS PER MATCH PATTERN (A+)
+ DEFINE A AS true)
+----
+7	1	7
+8	2	8
+
+# naming one written after it is not something a measure can do
+statement error
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES m + 1 AS n, count(*) AS m PATTERN (A+)
+ DEFINE A AS true)
+----
+cannot be referenced before it is defined
+
+# A clause that never names a column of its input still reports the input's columns, and which
+# column a reference lands on has to be the same question above the clause as below it: a base
+# table only hands out a binding for a column once something has asked for it, so the input is
+# projected before the clause reads its columns by position.
+statement ok
+CREATE TABLE mr_passthrough(a INTEGER, b VARCHAR)
+
+statement ok
+INSERT INTO mr_passthrough VALUES (1, 'x'), (2, 'y')
+
+query IT
+FROM mr_passthrough MATCH_RECOGNIZE (ALL ROWS PER MATCH PATTERN (A) DEFINE A AS true)
+----
+1	x
+2	y
+
+query IIT
+FROM mr_passthrough MATCH_RECOGNIZE (MEASURES 1 AS m ALL ROWS PER MATCH PATTERN (A) DEFINE A AS true)
+----
+1	1	x
+1	2	y
+
+query I
+SELECT count(*) FROM mr_passthrough MATCH_RECOGNIZE (
+    MEASURES count(*) AS n ONE ROW PER MATCH PATTERN (A)
+ DEFINE A AS true)
+----
+2

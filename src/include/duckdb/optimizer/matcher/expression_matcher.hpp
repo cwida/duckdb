@@ -87,6 +87,17 @@ public:
 	bool Match(Expression &expr, vector<reference<Expression>> &bindings) override;
 };
 
+class NotExpressionMatcher : public ExpressionMatcher {
+public:
+	NotExpressionMatcher() : ExpressionMatcher(ExpressionClass::BOUND_OPERATOR) {
+		expr_type = make_uniq<SpecificExpressionTypeMatcher>(ExpressionType::OPERATOR_NOT);
+	}
+	//! The matcher for the operand of the NOT (nullptr for ANY)
+	unique_ptr<ExpressionMatcher> child;
+
+	bool Match(Expression &expr, vector<reference<Expression>> &bindings) override;
+};
+
 class InClauseExpressionMatcher : public ExpressionMatcher {
 public:
 	InClauseExpressionMatcher() : ExpressionMatcher(ExpressionClass::BOUND_OPERATOR) {

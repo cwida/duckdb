@@ -75,6 +75,25 @@ NULL
 0
 NULL
 
+# negating values longer than the inlined string_t size must produce comparable results
+statement ok
+CREATE TABLE long_values AS SELECT ('1234567890123456789012345678901234567890' || i::VARCHAR)::BIGNUM AS b FROM range(100) r(i);
+
+query I
+SELECT count(*) FROM long_values WHERE (-b)::VARCHAR::BIGNUM <> -b
+----
+0
+
+query I
+SELECT count(*) FROM long_values WHERE -b <> ('-' || b::VARCHAR)::BIGNUM
+----
+0
+
+query I
+SELECT count(*) FROM long_values WHERE -(-b) <> b OR -b >= b OR -b >= 0::BIGNUM
+----
+0
+
 # both operands reference the same value
 query II
 SELECT x - x, x - y FROM (VALUES ('123456789012345678901234567890123456789012345678901234567890'::BIGNUM, '123456789012345678901234567890123456789012345678901234567890'::BIGNUM)) v(x, y)

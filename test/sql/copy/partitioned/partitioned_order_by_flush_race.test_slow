@@ -1,0 +1,38 @@
+# name: test/sql/copy/partitioned/partitioned_order_by_flush_race.test_slow
+# description: Regression test for intermittent hang in partitioned COPY ORDER_BY intermediate flushing
+# group: [partitioned]
+
+require parquet
+
+statement ok
+SET debug_force_external=true;
+
+statement ok
+PRAGMA threads=6;
+
+statement ok
+SET partitioned_write_flush_threshold=2048;
+
+# Intentionally high parallelism + many iterations: this amplifies the
+# intermediate-flush scheduling race window that previously caused hangs.
+loop i 0 20
+
+statement ok
+CREATE OR REPLACE TABLE large_ordered_source AS
+SELECT
+	(i % 16)::INTEGER AS p,
+	((i * 17) % 65536)::INTEGER AS v
+FROM range(524288) tbl(i);
+
+statement ok
+COPY (SELECT p, v FROM large_ordered_source ORDER BY v DESC, p DESC)
+TO '{TEST_DIR}/large_ordered_partitioned_{i}'
+(FORMAT PARQUET, PARTITION_BY (p), ORDER_BY (p, v), ROW_GROUP_SIZE 2048);
+
+query I
+SELECT count(*)
+FROM read_parquet('{TEST_DIR}/large_ordered_partitioned_{i}/**/*.parquet', hive_partitioning = true);
+----
+524288
+
+endloop

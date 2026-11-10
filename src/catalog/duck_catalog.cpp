@@ -137,6 +137,15 @@ void DuckCatalog::DropSchema(ClientContext &context, DropInfo &info) {
 	DropSchema(GetCatalogTransaction(context), info);
 }
 
+static void ScanNestedSchemas(VisibilityBound bound, DuckSchemaEntry &schema,
+                              const std::function<void(DuckSchemaEntry &)> &callback) {
+	schema.Scan(CatalogType::SCHEMA_ENTRY, bound, [&](CatalogEntry &entry) {
+		auto &nested = entry.Cast<DuckSchemaEntry>();
+		callback(nested);
+		ScanNestedSchemas(bound, nested, callback);
+	});
+}
+
 void DuckCatalog::ScanSchemas(ClientContext &context, std::function<void(SchemaCatalogEntry &)> callback) {
 	// obtain the transaction once (up front) so the nested scan does not re-acquire the meta-transaction lock while
 	// holding a catalog set lock
@@ -147,10 +156,11 @@ void DuckCatalog::ScanSchemas(ClientContext &context, std::function<void(SchemaC
 	});
 }
 
-void DuckCatalog::ScanSchemas(std::function<void(SchemaCatalogEntry &)> callback) {
-	schemas->Scan([&](CatalogEntry &entry) {
-		auto &schema = entry.Cast<SchemaCatalogEntry>();
-		schema.ScanSchemaTree(callback);
+void DuckCatalog::ScanSchemas(VisibilityBound bound, std::function<void(DuckSchemaEntry &)> callback) {
+	schemas->Scan(bound, [&](CatalogEntry &entry) {
+		auto &schema = entry.Cast<DuckSchemaEntry>();
+		callback(schema);
+		ScanNestedSchemas(bound, schema, callback);
 	});
 }
 

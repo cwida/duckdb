@@ -1,0 +1,56 @@
+# name: test/sql/catalog/function/default_table_macro_shadowing.test
+# description: Default table macro bodies resolve in their defining context, not under session shadows
+# group: [function]
+
+# split from default_macro_shadowing.test: histogram_values/histogram use memory-owning
+# aggregates without a state-export callback, so this file is skipped under
+# verify_aggregate_state_export while the scalar matrix keeps running there
+
+statement ok
+CREATE MACRO generate_series(a, b) AS a + b;
+
+statement ok
+CREATE TABLE hist_t AS SELECT range AS v FROM range(100);
+
+# a default table macro: its body uses generate_series (shadowed above), assert actual bin values
+
+query II
+SELECT bin, count FROM histogram_values(hist_t, v) ORDER BY bin LIMIT 3;
+----
+10	11
+20	10
+30	10
+
+# equi-height quantile positions come from the shadowed generate_series, assert values
+
+query II
+SELECT bin, count FROM histogram_values(hist_t, v, technique := 'equi-height') ORDER BY bin LIMIT 3;
+----
+9	10
+19	10
+29	10
+
+# window nodes stored inside a default table-macro body (histogram uses row_number/lag/max OVER)
+
+statement ok
+CREATE MACRO row_number() AS 0;
+
+query I
+SELECT count(*) FROM system.main.histogram('hist_t', v);
+----
+10
+
+# the equi-height comprehension spells its list_apply helper and division
+
+statement ok
+CREATE MACRO list_apply(xs, f) AS [0.5];
+
+statement ok
+CREATE MACRO "/"(a, b) AS 0.5;
+
+query II
+SELECT bin, count FROM histogram_values(hist_t, v, technique := 'equi-height') ORDER BY bin LIMIT 3;
+----
+9	10
+19	10
+29	10

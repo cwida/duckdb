@@ -9,7 +9,10 @@
 #pragma once
 
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/storage/metadata/metadata_writer.hpp"
 #include "duckdb/storage/partial_block_manager.hpp"
+#include "duckdb/storage/storage_manager.hpp"
+#include "duckdb/storage/checkpoint/table_index_writer.hpp"
 
 namespace duckdb {
 
@@ -39,6 +42,7 @@ class TriggerCatalogEntry;
 class ViewCatalogEntry;
 class TableDataWriter;
 class TypeCatalogEntry;
+class PendingPublication;
 struct BoundCreateTableInfo;
 struct CheckpointOptions;
 
@@ -47,15 +51,13 @@ class ActiveCheckpointWrapper {
 public:
 	//! Creates a connection if we have a context.
 	//! If there is no context, we are on shutdown and a checkpoint connection/transaction is not created.
-	ActiveCheckpointWrapper(optional_ptr<ClientContext> context, AttachedDatabase &db,
-	                        DuckTransactionManager &transaction_manager);
+	ActiveCheckpointWrapper(Context &context, AttachedDatabase &db, DuckTransactionManager &transaction_manager);
 
 	~ActiveCheckpointWrapper();
 
-	//! Begin the transaction within the newly created connection.
-	void GetCheckpointTransaction(CheckpointOptions &options);
+	//! Registers the checkpoint (id, bound, active checkpoint), through a checkpoint transaction if there is a context
+	void Begin(CheckpointOptions &options);
 	void Commit();
-	bool HasCheckpointContext() const;
 	//! The context of the checkpoint connection, null when there is none (shutdown path)
 	optional_ptr<ClientContext> GetCheckpointContext() const;
 
@@ -65,22 +67,37 @@ private:
 	unique_ptr<Connection> checkpoint_connection;
 	optional_ptr<ClientContext> checkpoint_context;
 	optional_ptr<DuckTransaction> checkpoint_transaction;
+	//! Whether Begin registered an active checkpoint that Commit has not reset yet
+	bool active = false;
 };
 
 class CheckpointWriter {
 public:
-	explicit CheckpointWriter(AttachedDatabase &db) : db(db) {
-	}
-	virtual ~CheckpointWriter() {
-	}
+	//! The client context is only set for explicit checkpoints, which bind buffered index operations before writing
+	CheckpointWriter(AttachedDatabase &db, QueryContext context, optional_ptr<ClientContext> client_context = nullptr);
+	virtual ~CheckpointWriter();
 
 	//! The database
 	AttachedDatabase &db;
+
+	//! The services of the query that triggered the checkpoint, or database-wide services if there is none
+	Context &GetContext() const {
+		return context;
+	}
+	//! The client that triggered an explicit checkpoint (null for checkpoints on commit and on shutdown)
+	optional_ptr<ClientContext> TryGetClientContext() const {
+		return client_context;
+	}
 
 	virtual void CreateCheckpoint() = 0;
 	virtual MetadataManager &GetMetadataManager() = 0;
 	virtual MetadataWriter &GetMetadataWriter() = 0;
 	virtual unique_ptr<TableDataWriter> GetTableDataWriter(TableCatalogEntry &table) = 0;
+
+private:
+	shared_ptr<Context> owned_context;
+	Context &context;
+	optional_ptr<ClientContext> client_context;
 
 protected:
 	virtual void WriteEntry(CatalogEntry &entry, Serializer &serializer);
@@ -136,12 +153,14 @@ public:
 };
 
 class SingleFileCheckpointWriter final : public CheckpointWriter {
+	friend class SingleFileTableIndexWriter;
 	friend class SingleFileRowGroupWriter;
 	friend class SingleFileTableDataWriter;
 
 public:
 	SingleFileCheckpointWriter(QueryContext context, AttachedDatabase &db, BlockManager &block_manager,
-	                           CheckpointOptions options);
+	                           CheckpointOptions options, optional_ptr<ClientContext> client_context = nullptr);
+	~SingleFileCheckpointWriter() override;
 
 	void CreateCheckpoint() override;
 
@@ -150,18 +169,20 @@ public:
 	unique_ptr<TableDataWriter> GetTableDataWriter(TableCatalogEntry &table) override;
 
 	BlockManager &GetBlockManager();
+	//! Make a partial block scope for an index that persists immediately.
+	PartialBlockManager CreatePerIndexPartialBlockManager();
 	CheckpointOptions GetCheckpointOptions() const {
 		return options;
-	}
-	optional_ptr<ClientContext> GetClientContext() const {
-		return context;
 	}
 
 public:
 	void WriteTable(TableCatalogEntry &table, Serializer &serializer) override;
 
 private:
-	optional_ptr<ClientContext> context;
+	//! Retain prepared state until the shared blocks are flushed and publication can run.
+	void AddPendingPublication(unique_ptr<PendingPublication> publication);
+
+private:
 	//! Context of the checkpoint transaction, used for catalog lookups during the checkpoint.
 	//! Only set while CreateCheckpoint runs, which owns the connection it belongs to.
 	optional_ptr<ClientContext> checkpoint_context;
@@ -176,6 +197,8 @@ private:
 	CheckpointOptions options;
 	//! Block usage count for verification purposes
 	unordered_map<block_id_t, idx_t> verify_block_usage_count;
+	//! Owns prepared state in publication order.
+	vector<unique_ptr<PendingPublication>> pending_publications;
 };
 
 } // namespace duckdb

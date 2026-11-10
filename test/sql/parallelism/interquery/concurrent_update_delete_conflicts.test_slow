@@ -1,0 +1,93 @@
+# name: test/sql/parallelism/interquery/concurrent_update_delete_conflicts.test_slow
+# description: Concurrent updates and deletes of the same rows never lose a committed write
+# group: [interquery]
+
+statement ok
+CREATE TABLE t (id INTEGER, v BIGINT, tags VARCHAR[]);
+
+statement ok
+INSERT INTO t SELECT i, 0, [] FROM range(32) r(i);
+
+# every increment and delete is logged by the transaction that makes it
+statement ok
+CREATE TABLE increments (id INTEGER);
+
+statement ok
+CREATE TABLE deletes (id INTEGER, v BIGINT);
+
+concurrentloop threadid 0 8
+
+loop x 0 300
+
+statement ok
+BEGIN
+
+# all threads work on the same row in the same iteration; widen the window between snapshot and write
+statement ok
+SELECT v FROM t WHERE id = {x} % 32
+
+statement ok
+SELECT sum(i) FROM range(20000) r(i)
+
+# threads 0-5 increment the row, the even ones in place and the odd ones as delete + insert (LIST column)
+onlyif threadid<6
+statement maybe
+UPDATE t SET v = v + 1 WHERE id = {x} % 32 AND {threadid} % 2 = 0
+----
+Conflict on update
+
+onlyif threadid<6
+statement maybe
+UPDATE t SET v = v + 1, tags = ['x'] WHERE id = {x} % 32 AND {threadid} % 2 = 1
+----
+<REGEX>:.*(Conflict on tuple deletion|aborted).*
+
+onlyif threadid<6
+statement maybe
+INSERT INTO increments SELECT id FROM t WHERE id = {x} % 32
+----
+aborted
+
+# threads 6-7 delete the row on every fourth iteration, logging the value they delete
+onlyif threadid>=6
+statement ok
+INSERT INTO deletes SELECT id, v FROM t WHERE id = {x} % 32 AND {x} % 4 = 0
+
+onlyif threadid>=6
+statement maybe
+DELETE FROM t WHERE id = {x} % 32 AND {x} % 4 = 0
+----
+Conflict on tuple deletion
+
+# commits, or rolls back a transaction that hit a conflict
+statement ok
+COMMIT
+
+endloop
+
+endloop
+
+# every row is either still present or deleted, exactly once
+query I
+SELECT count(*) - count(DISTINCT id) FROM t
+----
+0
+
+query I
+SELECT count(*) - count(DISTINCT id) FROM deletes
+----
+0
+
+query I
+SELECT count(*) FROM range(32) r(id) WHERE (id IN (SELECT id FROM t)) = (id IN (SELECT id FROM deletes))
+----
+0
+
+# no committed increment was lost: neither a surviving row nor a delete missed one
+query II
+SELECT id, v FROM t WHERE v != (SELECT count(*) FROM increments i WHERE i.id = t.id)
+----
+
+query II
+SELECT id, v FROM deletes d WHERE v != (SELECT count(*) FROM increments i WHERE i.id = d.id)
+----

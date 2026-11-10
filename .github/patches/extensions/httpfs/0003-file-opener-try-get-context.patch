@@ -1,0 +1,261 @@
+diff --git a/src/http/http_state.cpp b/src/http/http_state.cpp
+index 00e346d..6e5a880 100644
+--- a/src/http/http_state.cpp
++++ b/src/http/http_state.cpp
+@@ -194,13 +194,17 @@ bool HTTPState::IsEmpty() const {
+ }
+ 
+ shared_ptr<HTTPState> HTTPState::TryGetState(ClientContext &context) {
+-	return context.GetContext().GetRegisteredState().GetOrCreate<HTTPState>("http_state");
++	return TryGetState(context.GetContext());
++}
++
++shared_ptr<HTTPState> HTTPState::TryGetState(Context &context) {
++	return context.GetRegisteredState().GetOrCreate<HTTPState>("http_state");
+ }
+ 
+ shared_ptr<HTTPState> HTTPState::TryGetState(optional_ptr<FileOpener> opener) {
+-	auto client_context = FileOpener::TryGetClientContext(opener);
+-	if (client_context) {
+-		return TryGetState(*client_context);
++	auto context = FileOpener::TryGetContext(opener);
++	if (context && context->IsClient()) {
++		return TryGetState(*context);
+ 	}
+ 	return nullptr;
+ }
+diff --git a/src/http/httpfs.cpp b/src/http/httpfs.cpp
+index 81ce938..f38e906 100644
+--- a/src/http/httpfs.cpp
++++ b/src/http/httpfs.cpp
+@@ -109,9 +109,9 @@ private:
+ 		FileOpener::TryGetCurrentSetting(opener, "unsafe_disable_etag_checks", result->unsafe_disable_etag_checks,
+ 		                                 info);
+ 		FileOpener::TryGetCurrentSetting(opener, "s3_version_id_pinning", result->s3_version_id_pinning, info);
+-		auto context = FileOpener::TryGetClientContext(opener);
++		auto context = FileOpener::TryGetContext(opener);
+ 		Value external_cache_enabled;
+-		if (context &&
++		if (context && context->IsClient() &&
+ 		    context->TryGetCurrentUserSetting(EnableExternalFileCacheSetting::SettingIndex, external_cache_enabled) &&
+ 		    external_cache_enabled.GetValue<bool>()) {
+ 			result->override_response_cache_policy = true;
+@@ -648,7 +648,7 @@ void HTTPFileSystem::EraseGlobalCacheEntry(const string &path) {
+ // Get either the local, global, or no cache depending on settings
+ static optional_ptr<HTTPMetadataCache> TryGetMetadataCache(optional_ptr<FileOpener> opener, HTTPFileSystem &httpfs) {
+ 	auto db = FileOpener::TryGetDatabase(opener);
+-	auto client_context = FileOpener::TryGetClientContext(opener);
++	auto context = FileOpener::TryGetContext(opener);
+ 	if (!db) {
+ 		return nullptr;
+ 	}
+@@ -662,9 +662,9 @@ static optional_ptr<HTTPMetadataCache> TryGetMetadataCache(optional_ptr<FileOpen
+ 
+ 	if (use_shared_cache) {
+ 		return httpfs.GetGlobalCache();
+-	} else if (client_context) {
+-		return client_context->GetContext().GetRegisteredState().GetOrCreate<HTTPMetadataCache>(
+-		    "http_cache", HTTPMetadataCacheMode::QUERY_LOCAL);
++	} else if (context && context->IsClient()) {
++		return context->GetRegisteredState().GetOrCreate<HTTPMetadataCache>("http_cache",
++		                                                                     HTTPMetadataCacheMode::QUERY_LOCAL);
+ 	}
+ 	return nullptr;
+ }
+@@ -1112,9 +1112,9 @@ void HTTPFileHandle::LoadFileInfo() {
+ }
+ 
+ void HTTPFileHandle::InitializeLogger(FileOpener &opener) {
+-	auto context = opener.TryGetClientContext();
+-	if (context) {
+-		logger = context->GetContext().GetLoggerPtr();
++	auto &context = opener.TryGetContext();
++	if (context.IsClient()) {
++		logger = context.GetLoggerPtr();
+ 		return;
+ 	}
+ 	auto database = opener.TryGetDatabase();
+@@ -1151,21 +1151,21 @@ HTTPMetadataCacheEntry HTTPFileHandle::GetCacheEntry() const {
+ }
+ 
+ void HTTPFileHandle::InitializeRequestState(const OpenFileInfo &file, optional_ptr<FileOpener> opener) {
+-	auto client_context = FileOpener::TryGetClientContext(opener);
++	auto context = FileOpener::TryGetContext(opener);
+ 	auto database = FileOpener::TryGetDatabase(opener);
+-	if (client_context) {
+-		buffer_allocator = BufferAllocator::Get(*client_context);
++	if (context) {
++		buffer_allocator = BufferAllocator::Get(*context);
+ 	} else {
+ 		buffer_allocator = database ? BufferAllocator::Get(*database) : Allocator::DefaultAllocator();
+ 	}
+ 	auto captured = request_session->Capture();
+ 	auto snapshot_params = captured.snapshot->Params();
+ 	if (database) {
+-		optional_ptr<Context> services;
+-		if (client_context) {
+-			services = &client_context->GetContext();
++		optional_ptr<Context> cache_context;
++		if (context && context->IsClient()) {
++			cache_context = context;
+ 		}
+-		const auto validation = ExternalFileCacheUtil::GetCacheValidationMode(file, services, *database);
++		const auto validation = ExternalFileCacheUtil::GetCacheValidationMode(file, cache_context, *database);
+ 		snapshot_params.override_response_cache_policy =
+ 		    snapshot_params.override_response_cache_policy || validation == CacheValidationMode::NO_VALIDATION;
+ 	}
+diff --git a/src/include/http/http_state.hpp b/src/include/http/http_state.hpp
+index 7f9d284..9f71e29 100644
+--- a/src/include/http/http_state.hpp
++++ b/src/include/http/http_state.hpp
+@@ -254,6 +254,7 @@ public:
+ 
+ 	//! Helper functions to get the HTTP state
+ 	static shared_ptr<HTTPState> TryGetState(ClientContext &context);
++	static shared_ptr<HTTPState> TryGetState(Context &context);
+ 	static shared_ptr<HTTPState> TryGetState(optional_ptr<FileOpener> opener);
+ 
+ 	//! Called by the ClientContext when the current query ends
+diff --git a/src/s3/s3_list.cpp b/src/s3/s3_list.cpp
+index 0a30ec8..5adfa10 100644
+--- a/src/s3/s3_list.cpp
++++ b/src/s3/s3_list.cpp
+@@ -99,6 +99,8 @@ private:
+ 	void AppendMatchingFiles(vector<OpenFileInfo> &s3_keys) const;
+ 
+ private:
++	//! The client of the opener (if any): used to schedule the listing tasks and to log
++	optional_ptr<ClientContext> context;
+ 	S3FileSystem &fs;
+ 	string glob_pattern;
+ 	optional_ptr<FileOpener> opener;
+@@ -138,8 +140,9 @@ private:
+ 
+ S3GlobResult::S3GlobResult(S3FileSystem &fs_p, const string &glob_pattern_p, optional_ptr<FileOpener> opener,
+                            const S3AuthResolveOptions &options)
+-    : LazyMultiFileList(FileOpener::TryGetClientContext(opener)), fs(fs_p), glob_pattern(glob_pattern_p),
+-      opener(opener) {
++    : LazyMultiFileList(FileOpener::TryGetContext(opener)),
++      context(Context::TryGetClientContext(FileOpener::TryGetContext(opener))), fs(fs_p),
++      glob_pattern(glob_pattern_p), opener(opener) {
+ 	if (!opener) {
+ 		throw InternalException("Cannot S3 Glob without FileOpener");
+ 	}
+diff --git a/src/s3/s3_request.cpp b/src/s3/s3_request.cpp
+index ccd35a3..1783736 100644
+--- a/src/s3/s3_request.cpp
++++ b/src/s3/s3_request.cpp
+@@ -748,7 +748,7 @@ bool S3RequestExecutor::TryRefreshSession(HTTPRequestSession &session, const S3R
+ 	if (!context) {
+ 		return false;
+ 	}
+-	ClientContextFileOpener opener(*context);
++	ClientContextFileOpener opener(context->GetContext());
+ 	auto refreshed_auth_params = current_snapshot.auth_params;
+ 	auto refreshed_http_params = current_snapshot.Params();
+ 	if (!TryRefreshS3AuthMaterial(context, opener, current_snapshot.refresh_path, refreshed_auth_params,
+@@ -1142,7 +1142,7 @@ shared_ptr<HTTPRequestSession> S3RequestExecutor::CreateSession(optional_ptr<Fil
+ 	FileOpenerInfo info = {path};
+ 	auto request_session = HTTPRequestSession::Create(opener, info);
+ 	weak_ptr<ClientContext> weak_context;
+-	auto context = FileOpener::TryGetClientContext(opener);
++	auto context = Context::TryGetClientContext(FileOpener::TryGetContext(opener));
+ 	auto refresh_enabled = CredentialRefreshEnabled(opener);
+ 	if (context && refresh_enabled) {
+ 		weak_context = context->shared_from_this();
+diff --git a/src/s3/s3fs.cpp b/src/s3/s3fs.cpp
+index c83a99f..dd0cf99 100644
+--- a/src/s3/s3fs.cpp
++++ b/src/s3/s3fs.cpp
+@@ -249,7 +249,7 @@ HTTPMetadataCacheEntry S3FileHandle::GetCacheEntry() const {
+ }
+ 
+ void S3FileHandle::Initialize(const OpenFileInfo &file, optional_ptr<FileOpener> opener) {
+-	auto context = FileOpener::TryGetClientContext(opener);
++	auto context = Context::TryGetClientContext(FileOpener::TryGetContext(opener));
+ 	auto refresh_enabled = S3RequestExecutor::CredentialRefreshEnabled(opener);
+ 	{
+ 		auto captured = request_session->Capture();
+diff --git a/test/unittest/s3/s3_refresh_test.cpp b/test/unittest/s3/s3_refresh_test.cpp
+index 14669be..29abefb 100644
+--- a/test/unittest/s3/s3_refresh_test.cpp
++++ b/test/unittest/s3/s3_refresh_test.cpp
+@@ -546,7 +546,7 @@ CREATE SECRET refresh_s3_endpoint_mode (
+ 	                                                     refreshed_endpoint, test_id));
+ 
+ 	S3TestHelper::RequireQueryOk(con, "BEGIN TRANSACTION");
+-	ClientContextFileOpener opener(*con.context);
++	ClientContextFileOpener opener(con.context->GetContext());
+ 	FileOpenerInfo info = {S3TestHelper::S3_PATH};
+ 	auto auth_params = S3AuthResolver::Resolve(opener, info);
+ 	REQUIRE(auth_params.GetURLParams().endpoint_mode == initial_mode);
+diff --git a/test/unittest/s3/s3_request_test.cpp b/test/unittest/s3/s3_request_test.cpp
+index 71e14fb..4ca1d53 100644
+--- a/test/unittest/s3/s3_request_test.cpp
++++ b/test/unittest/s3/s3_request_test.cpp
+@@ -947,7 +947,7 @@ static void RunDirectDeleteErrorScenario(const string &client_implementation) {
+ 
+ static S3AuthParams ReadSecretAuthParams(Connection &con, KeyValueSecret &secret,
+                                          const string &path = "s3://bucket/key") {
+-	ClientContextFileOpener opener(*con.context);
++	ClientContextFileOpener opener(con.context->GetContext());
+ 	S3KeyValueReader secret_reader {KeyValueSecretReader(secret, opener)};
+ 	S3AuthResolveOptions options;
+ 	options.enable_deprecated_url_parameters = true;
+@@ -2267,7 +2267,7 @@ TEST_CASE("S3 malformed response cleanup does not require retry admission", "[ht
+ 			Connection con(db);
+ 			HTTPTestHelper::Configure(db, con, retries, client, true);
+ 			HTTPTestHelper::RequireQueryOk(con, "BEGIN TRANSACTION");
+-			ClientContextFileOpener opener(*con.context);
++			ClientContextFileOpener opener(con.context->GetContext());
+ 			auto session =
+ 			    S3RequestExecutor::CreateSession(opener, "s3://bucket/key", ResolveTestAuth(TestAuthConfig()));
+ 			::AESStateSSLFactory encryption_util;
+diff --git a/test/unittest/s3/s3_retry_test.cpp b/test/unittest/s3/s3_retry_test.cpp
+index bc72169..8d2f90f 100644
+--- a/test/unittest/s3/s3_retry_test.cpp
++++ b/test/unittest/s3/s3_retry_test.cpp
+@@ -989,7 +989,7 @@ static void RunThrottledListSignalTest(const string &client_implementation, idx_
+ 	ConfigureListRetryTest(db, con, server, client_implementation, 2);
+ 
+ 	S3TestHelper::RequireQueryOk(con, "BEGIN TRANSACTION");
+-	ClientContextFileOpener opener(*con.context);
++	ClientContextFileOpener opener(con.context->GetContext());
+ 	FileOpenerInfo info = {S3TestHelper::S3_PATH};
+ 	auto auth_params = S3AuthResolver::Resolve(opener, info);
+ 	auto session = S3RequestExecutor::CreateSession(opener, S3TestHelper::S3_PATH, auth_params);
+diff --git a/test/unittest/s3/s3_sse_test.cpp b/test/unittest/s3/s3_sse_test.cpp
+index 1125ed9..1e6d948 100644
+--- a/test/unittest/s3/s3_sse_test.cpp
++++ b/test/unittest/s3/s3_sse_test.cpp
+@@ -626,7 +626,7 @@ WHERE name = 'persistent_sse' AND contains(secret_string, '%s') AND contains(sec
+ 		auto secret_entry = secret_manager.GetSecretByName(transaction, "persistent_sse");
+ 		REQUIRE(secret_entry);
+ 		auto &secret = secret_entry->secret->Cast<KeyValueSecret>();
+-		ClientContextFileOpener opener(*con.context);
++		ClientContextFileOpener opener(con.context->GetContext());
+ 		S3KeyValueReader reader {KeyValueSecretReader(secret, opener)};
+ 		auto auth_params = S3AuthResolver::Resolve(reader, "s3://persistent/object.bin");
+ 		REQUIRE(auth_params.GetRequestOptions().sse_customer_key);
+diff --git a/test/unittest/s3/s3_url_parameters_test.cpp b/test/unittest/s3/s3_url_parameters_test.cpp
+index 6648997..6a2c814 100644
+--- a/test/unittest/s3/s3_url_parameters_test.cpp
++++ b/test/unittest/s3/s3_url_parameters_test.cpp
+@@ -24,7 +24,7 @@ static constexpr const char *SET_NULL = "SET s3_enable_deprecated_url_parameters
+ static constexpr const char *MIGRATION_HINT = "opt in with SET s3_enable_deprecated_url_parameters = true";
+ 
+ static bool Enabled(Connection &con) {
+-	ClientContextFileOpener opener(*con.context);
++	ClientContextFileOpener opener(con.context->GetContext());
+ 	return S3Settings::URLParametersEnabled(&opener);
+ }
+ 
+@@ -46,7 +46,7 @@ static void Configure(Connection &con, const MockS3Server &server, const string
+ class ChangePolicyDuringRequest : public ClientContextFileOpener {
+ public:
+ 	ChangePolicyDuringRequest(ClientContext &context, Connection &other, string statement)
+-	    : ClientContextFileOpener(context), other(other), statement(std::move(statement)) {
++	    : ClientContextFileOpener(context.GetContext()), other(other), statement(std::move(statement)) {
+ 	}
+ 
+ 	SettingLookupResult TryGetCurrentSetting(const Identifier &key, Value &result, FileOpenerInfo &info) override {

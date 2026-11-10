@@ -1436,8 +1436,8 @@ struct SortStarter<StdSortThreshold, AmericanFlagSortThreshold, SubKey<void>>
 template<size_t StdSortThreshold, size_t AmericanFlagSortThreshold, typename CurrentSubKey>
 struct SortStarter
 {
-    template<typename It, typename ExtractKey, typename Merge>
-    static void sort(It begin, It end, size_t num_elements, ExtractKey & extract_key, const Merge & merge)
+    template<typename It, typename ExtractKey, typename Merge, typename SortNext>
+    static void sort(It begin, It end, size_t num_elements, ExtractKey & extract_key, const Merge & merge, const SortNext & sort_next)
     {
         if (StdSortIfLessThanThreshold<StdSortThreshold>(begin, end, num_elements, extract_key))
             return;
@@ -1446,27 +1446,31 @@ struct SortStarter
         // if (next_sort == static_cast<void (*)(It, It, size_t, ExtractKey &, void *)>(&SortStarter<StdSortThreshold, AmericanFlagSortThreshold, SubKey<void>>::sort))
         //     next_sort = nullptr;
 
-    	// LNK: different templating for DuckDB
-    	// The sort data pointer that the radix passes carry along is the merge policy for the comparison sort of the
-    	// buckets that the radix passes cannot order (the sub keys of DuckDB's sort keys never look at it)
-    	void (*next_sort)(It, It, size_t, ExtractKey &, void *) = nullptr;
-    	void * next_sort_data = nullptr;
-    	if (extract_key.requires_next_sort) {
-    		next_sort = [](It b, It e, size_t, ExtractKey& ek, void* merge_policy) {
-    			StdSortFallback(b, e, ek, *static_cast<const Merge *>(merge_policy));
-    		};
-    		next_sort_data = const_cast<void *>(static_cast<const void *>(&merge));
-    	}
+        // LNK: different templating for DuckDB
+        // The continuation and merge policy outlive all synchronous radix passes.
+        struct NextSortData {
+            const Merge & merge;
+            const SortNext & sort;
+        } continuation {merge, sort_next};
+        void (*next_sort)(It, It, size_t, ExtractKey &, void *) = nullptr;
+        void * next_sort_data = nullptr;
+        if (extract_key.requires_next_sort) {
+            next_sort = [](It b, It e, size_t, ExtractKey& ek, void* data) {
+                const auto & continuation = *static_cast<const NextSortData *>(data);
+                continuation.sort(b, e, ek, continuation.merge);
+            };
+            next_sort_data = &continuation;
+        }
 
         InplaceSorter<StdSortThreshold, AmericanFlagSortThreshold, CurrentSubKey>::sort(begin, end, num_elements, extract_key, next_sort, next_sort_data);
     }
 };
 
-template<size_t StdSortThreshold, size_t AmericanFlagSortThreshold, typename It, typename ExtractKey, typename Merge>
-void inplace_radix_sort(It begin, It end, ExtractKey & extract_key, const Merge & merge)
+template<size_t StdSortThreshold, size_t AmericanFlagSortThreshold, typename It, typename ExtractKey, typename Merge, typename SortNext>
+void inplace_radix_sort(It begin, It end, ExtractKey & extract_key, const Merge & merge, const SortNext & sort_next)
 {
     typedef SubKey<decltype(extract_key(*begin))> SubKeyType;
-    SortStarter<StdSortThreshold, AmericanFlagSortThreshold, SubKeyType>::sort(begin, end, end - begin, extract_key, merge);
+    SortStarter<StdSortThreshold, AmericanFlagSortThreshold, SubKeyType>::sort(begin, end, end - begin, extract_key, merge, sort_next);
 }
 
 struct IdentityFunctor
@@ -1479,12 +1483,21 @@ struct IdentityFunctor
 };
 }
 
-// Sorts [begin, end) by the radix of extract_key; buckets whose extracted keys are equal (when extract_key requires
-// a next sort) are sorted by the full comparison with vergesort, whose run merges go through the given merge policy
+// Sorts by the extracted radix, then calls sort_next on equal-key buckets that still require sorting.
+template<typename It, typename ExtractKey, typename Merge, typename SortNext>
+static void ska_sort(It begin, It end, ExtractKey && extract_key, const Merge & merge, const SortNext & sort_next)
+{
+    detail::inplace_radix_sort<128, 1024>(begin, end, extract_key, merge, sort_next);
+}
+
+// By default, equal-key buckets use full comparison and the caller's merge policy.
 template<typename It, typename ExtractKey, typename Merge>
 static void ska_sort(It begin, It end, ExtractKey && extract_key, const Merge & merge)
 {
-    detail::inplace_radix_sort<128, 1024>(begin, end, extract_key, merge);
+    const auto sort_next = [](It b, It e, typename std::remove_reference<ExtractKey>::type & ek, const Merge & policy) {
+        detail::StdSortFallback(b, e, ek, policy);
+    };
+    ska_sort(begin, end, extract_key, merge, sort_next);
 }
 
 template<typename It, typename ExtractKey>

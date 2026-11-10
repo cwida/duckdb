@@ -61,6 +61,14 @@ bool HTTPRetryQuota::TryAcquire(int64_t cost, int64_t now_ms) {
 	return true;
 }
 
+int64_t HTTPRetryQuota::AcquireUpTo(int64_t cost, int64_t now_ms) {
+	lock_guard<mutex> guard(lock);
+	Touch(now_ms);
+	const auto taken = MinValue<int64_t>(cost, capacity);
+	capacity -= taken;
+	return taken;
+}
+
 void HTTPRetryQuota::Release(int64_t amount, int64_t now_ms) {
 	lock_guard<mutex> guard(lock);
 	Touch(now_ms);
@@ -79,11 +87,13 @@ int64_t HTTPRetryQuota::IdleMs(int64_t now_ms) const {
 
 HTTPRetryBudget::HTTPRetryBudget(const HTTPParams &params, HTTPRetryOutcomeOwner owner_p)
     : retries(params.retries), retry_wait_ms(params.retry_wait_ms), retry_backoff(params.retry_backoff),
+      retry_quota_throttled(params.retry_quota_throttled), retry_throttled_wait_ms(params.retry_throttled_wait_ms),
       owner(owner_p) {
 #ifdef DUCKDB_NO_THREADS
 	// Without threads there is no back-off sleep, so the schedule settings go unused.
 	(void)retry_wait_ms;
 	(void)retry_backoff;
+	(void)retry_throttled_wait_ms;
 #endif
 }
 
@@ -183,6 +193,9 @@ void HTTPRetryBudget::Settle(bool success) {
 		} else if (quota) {
 			quota->Release(HTTPRetryQuota::NO_RETRY_REFUND);
 		}
+		for (auto &charge : earlier_throttled_retries) {
+			charge.quota->Release(charge.cost);
+		}
 	}
 	ForgetLastRetry();
 }
@@ -190,6 +203,8 @@ void HTTPRetryBudget::Settle(bool success) {
 void HTTPRetryBudget::ForgetLastRetry() {
 	last_retry_quota.reset();
 	last_retry_cost = 0;
+	last_retry_throttled = false;
+	earlier_throttled_retries.clear();
 }
 
 uint64_t HTTPRetryBudget::BackoffMs(uint64_t retry_wait_ms, float retry_backoff, uint64_t retry, uint64_t floor_ms,
@@ -230,8 +245,11 @@ bool HTTPRetryBudget::TryParseRetryAfterMs(const string &retry_after, uint64_t &
 		delay_ms = seconds > MAX_BACKOFF_MS / 1000 ? MAX_BACKOFF_MS : seconds * 1000;
 		return true;
 	}
+	StrpTimeFormat::ParseResult parsed;
 	timestamp_t target;
-	if (!RetryAfterDateFormat().TryParseTimestamp(value.c_str(), value.size(), target)) {
+	// The timestamp parser accepts the words epoch, infinity and -infinity, which are not HTTP-dates.
+	if (!RetryAfterDateFormat().Parse(value.c_str(), value.size(), parsed) || parsed.is_special ||
+	    !parsed.TryToTimestamp(target)) {
 		return false;
 	}
 	const auto now_ms = Timestamp::GetEpochMs(Timestamp::GetCurrentTimestamp());
@@ -329,14 +347,23 @@ bool HTTPRetryBudget::ConsumeAndWait(const HTTPRetryDecision &decision) {
 	}
 	const auto cost = decision.type == HTTPRetryDecision::Type::TRANSIENT ? HTTPRetryQuota::TRANSIENT_RETRY_COST
 	                                                                      : HTTPRetryQuota::RETRY_COST;
-	if (quota && !quota->TryAcquire(cost)) {
+	auto charged = cost;
+	if (quota && throttled && !retry_quota_throttled) {
+		// The server asked to slow down, not to stop: the retry is charged what the quota has left, and a success
+		// refunds only that, but an empty quota does not refuse it.
+		charged = quota->AcquireUpTo(cost);
+	} else if (quota && !quota->TryAcquire(cost)) {
 		quota_exhausted = true;
 		ForgetLastRetry();
 		return false;
 	}
 	// The admitted retry is the one a later success refunds; its outcome is still open.
+	if (last_retry_quota && last_retry_throttled) {
+		earlier_throttled_retries.push_back(HTTPThrottledRetryCharge {std::move(last_retry_quota), last_retry_cost});
+	}
 	last_retry_quota = quota;
-	last_retry_cost = cost;
+	last_retry_cost = charged;
+	last_retry_throttled = throttled;
 	outcome_settled = false;
 	retries_used++;
 	if (throttled) {
@@ -347,9 +374,11 @@ bool HTTPRetryBudget::ConsumeAndWait(const HTTPRetryDecision &decision) {
 	if (throttled && !decision.retry_after.empty()) {
 		TryParseRetryAfterMs(decision.retry_after, floor_ms);
 	}
+	// Throttled retries back off from at least http_retry_throttled_wait_ms.
+	const auto wait_ms = throttled ? MaxValue<uint64_t>(retry_wait_ms, retry_throttled_wait_ms) : retry_wait_ms;
 	RandomEngine random;
 	const auto sleep_ms =
-	    BackoffMs(retry_wait_ms, retry_backoff, retries_used, floor_ms, random.NextRandomInteger64(), throttled);
+	    BackoffMs(wait_ms, retry_backoff, retries_used, floor_ms, random.NextRandomInteger64(), throttled);
 	if (sleep_ms > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
 	}

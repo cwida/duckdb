@@ -83,23 +83,10 @@ buffer_ptr<VectorBuffer> ShreddedVectorBuffer::Deserialize(Deserializer &deseria
 }
 
 Value ShreddedVectorBuffer::GetValue(const LogicalType &type, idx_t index) const {
-	// FIXME: this is extremely inefficient
-	auto &shredded = StructVector::GetEntries(*shredded_data)[1];
-	auto &unshredded = StructVector::GetEntries(*shredded_data)[0];
-
-	auto shredded_val = shredded.GetValue(index);
-	auto unshredded_val = unshredded.GetValue(index);
-
-	child_list_t<LogicalType> shredded_subtypes;
-	shredded_subtypes.emplace_back(make_pair("unshredded", unshredded.GetType()));
-	shredded_subtypes.emplace_back(make_pair("shredded", shredded.GetType()));
-	Vector new_shredded(LogicalType::STRUCT(std::move(shredded_subtypes)));
-	StructVector::GetEntries(new_shredded)[0].Reference(unshredded_val, count_t(1));
-	StructVector::GetEntries(new_shredded)[1].Reference(shredded_val, count_t(1));
-
-	Vector result_vec(LogicalType::VARIANT(), 1);
-	VariantUtils::UnshredVariantData(new_shredded, result_vec, 1);
-	return result_vec.GetValue(0);
+	Vector input(*shredded_data, index, index + 1);
+	Vector result(LogicalType::VARIANT(), 1);
+	VariantUtils::UnshredVariantData(input, result, 1);
+	return result.GetValue(0);
 }
 
 buffer_ptr<VectorBuffer> ShreddedVectorBuffer::SliceInternal(const LogicalType &type, idx_t offset, idx_t end) {
