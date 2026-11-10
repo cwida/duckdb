@@ -294,10 +294,6 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 	// WALStartCheckpoint we will create a transaction for the checkpoint.
 	ActiveCheckpointWrapper active_checkpoint(GetContext(), db, transaction_manager);
 	auto has_wal = storage_manager.WALStartCheckpoint(meta_block, options, active_checkpoint);
-	if (ValidChecker::IsInvalidated(db.GetDatabase())) {
-		// a commit that failed while we waited for the commit lock invalidated the database
-		return;
-	}
 	checkpoint_context = active_checkpoint.GetCheckpointContext();
 
 	catalog_entry_vector_t catalog_entries;

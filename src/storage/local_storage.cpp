@@ -630,14 +630,15 @@ void LocalStorage::Flush(DataTable &table, LocalTableStorage &storage, optional_
 
 	TableAppendState append_state;
 	table.AppendLock(transaction, append_state);
-	// A bulk append (at least one full row group, no deletes) moves the storage over directly.
-	// Appends to an empty table are also merged if the table cannot be written to disk
-	// (temporary / in-memory / read-only, e.g. WAL replay of a read-only attach) - there are
-	// no optimistically written blocks to manage, and merging avoids re-appending row by row.
 	const bool merge_storage =
 	    storage.IsBulkAppend() || (append_state.row_start == 0 && storage.deleted_rows == 0 && !storage.WritesToDisk());
 	if (merge_storage) {
-		// flush any outstanding blocks before merging
+		// bulk append (at least one full row group, no deletes): move over the storage directly.
+		// Appends to an empty table are also merged directly if the table cannot be written to
+		// disk (temporary / in-memory / read-only, e.g. WAL replay of a read-only attach) -
+		// there are no optimistically written blocks to manage, and merging avoids re-appending
+		// row by row.
+		// first flush any outstanding blocks
 		storage.FlushBlocks();
 	} else {
 		// check if we have written data

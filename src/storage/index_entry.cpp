@@ -31,10 +31,7 @@ void IndexEntry::Append(DataChunk &chunk, Vector &row_ids) {
 		return;
 	}
 	auto &bound_index = owned_index->Cast<BoundIndex>();
-	auto error = bound_index.Append(chunk, row_ids);
-	if (error.HasError()) {
-		error.Throw();
-	}
+	bound_index.Append(chunk, row_ids);
 }
 
 ErrorData IndexEntry::Append(DataChunk &chunk, Vector &row_ids, const shared_ptr<IndexEntry> &delete_entry,
@@ -80,22 +77,14 @@ ErrorData IndexEntry::Append(DataChunk &chunk, Vector &row_ids, const shared_ptr
 		return ErrorData(ex);
 	}
 
-	ErrorData error;
-	try {
-		IndexAppendInfo index_append_info(append_mode, nullptr);
-		if (delete_index) {
-			index_append_info.delete_indexes.push_back(*delete_index);
-		}
-		if (append_index) {
-			error = append_index->Append(chunk, row_ids, index_append_info);
-		} else {
-			error = bound_index.Append(chunk, row_ids, index_append_info);
-		}
-	} catch (ConstraintException &ex) {
-		// a conflict leaves the index unchanged; any other exception may leave a partial append and must throw
-		error = ErrorData(ex);
+	IndexAppendInfo index_append_info(append_mode, nullptr);
+	if (delete_index) {
+		index_append_info.delete_indexes.push_back(*delete_index);
 	}
-	return error;
+	if (append_index) {
+		return append_index->Append(chunk, row_ids, index_append_info);
+	}
+	return bound_index.Append(chunk, row_ids, index_append_info);
 }
 
 void IndexEntry::RevertAppend(DataChunk &chunk, Vector &row_ids) {
@@ -460,6 +449,9 @@ void IndexEntry::Rebuild(const IndexRebuildScan &scan) {
 	IndexRebuildAppend append = [&](DataChunk &chunk, Vector &row_ids) {
 		auto error = bound_index.Append(chunk, row_ids);
 		if (error.HasError()) {
+			if (error.Type() != ExceptionType::CONSTRAINT) {
+				error.Throw();
+			}
 			throw InternalException("Failed to rebuild index %s after vacuum: %s", bound_index.GetIndexName(),
 			                        error.Message());
 		}

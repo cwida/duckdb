@@ -1384,6 +1384,9 @@ void WriteAheadLogDeserializer::ReplayRowGroupData() {
 			auto error = indexes.Append(nullptr, chunk, NumericCast<row_t>(current_row_id),
 			                            IndexAppendMode::INSERT_DUPLICATES, optional_idx());
 			if (error.HasError()) {
+				if (error.Type() != ExceptionType::CONSTRAINT) {
+					error.Throw();
+				}
 				throw InternalException("Failed to append to index during ROW_GROUP_DATA WAL replay: %s",
 				                        error.Message());
 			}
