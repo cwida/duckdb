@@ -6106,7 +6106,7 @@ static const TransformChildPlan FRAME_CHILDREN_446[] = {{PEGRuleId::SchemaQualif
                                                          {0, TRANSFORM_PATH_END, 0},
                                                          {0, TRANSFORM_PATH_END, 0}},
                                                         {PEGRuleId::CatalogQualification,
-                                                         TransformChildKind::OPTIONAL,
+                                                         TransformChildKind::REQUIRED,
                                                          0,
                                                          0,
                                                          false,
@@ -8908,8 +8908,12 @@ static const TransformFrameOps GENERATED_FRAME_OPS[] = {
      &PEGTransformerFactory::FinalizeTableFunctionAliasColonTrampoline, &FRAME_PLAN_460},
     {"WithOrdinality", &PEGTransformerFactory::InitializePlannedTrampoline,
      &PEGTransformerFactory::FinalizeWithOrdinalityTrampoline, &FRAME_PLAN_12},
-    {"QualifiedTableFunction", &PEGTransformerFactory::InitializePlannedTrampoline,
-     &PEGTransformerFactory::FinalizeQualifiedTableFunctionTrampoline, &FRAME_PLAN_461},
+    {"QualifiedTableFunction", &PEGTransformerFactory::InitializePlannedChoiceTrampoline,
+     &PEGTransformerFactory::FinalizePassthroughTrampoline, &FRAME_PLAN_1},
+    {"CatalogReservedSchemaTableFunctionName", &PEGTransformerFactory::InitializePlannedTrampoline,
+     &PEGTransformerFactory::FinalizeCatalogReservedSchemaTableFunctionNameTrampoline, &FRAME_PLAN_461},
+    {"TableFunctionNameAsQualifiedName", &PEGTransformerFactory::InitializePlannedTrampoline,
+     &PEGTransformerFactory::FinalizeTableFunctionNameAsQualifiedNameTrampoline, &FRAME_PLAN_12},
     {"TableFunctionArguments", &PEGTransformerFactory::InitializePlannedTrampoline,
      &PEGTransformerFactory::FinalizeTableFunctionArgumentsTrampoline, &FRAME_PLAN_462},
     {"FunctionArgument", &PEGTransformerFactory::InitializePlannedChoiceTrampoline,
@@ -18154,8 +18158,8 @@ PEGTransformerFactory::FinalizeWithOrdinalityTrampoline(PEGTransformer &transfor
 }
 
 arena_ptr<TransformResultValue>
-PEGTransformerFactory::FinalizeQualifiedTableFunctionTrampoline(PEGTransformer &transformer,
-                                                                GeneratedTransformProcess &process) {
+PEGTransformerFactory::FinalizeCatalogReservedSchemaTableFunctionNameTrampoline(PEGTransformer &transformer,
+                                                                                GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
 	idx_t dynamic_child_count = 0;
 	auto &dynamic_repeat_opt = list_pr.GetChild(1).Cast<OptionalParseResult>();
@@ -18164,10 +18168,7 @@ PEGTransformerFactory::FinalizeQualifiedTableFunctionTrampoline(PEGTransformer &
 		auto dynamic_repeat_children = dynamic_repeat_pr.GetChildren();
 		dynamic_child_count = dynamic_repeat_children.size();
 	}
-	optional<Identifier> catalog_qualification {};
-	if (process.child_results[0]) {
-		catalog_qualification = process.TakeResult<Identifier>(0);
-	}
+	auto catalog_qualification = process.TakeResult<Identifier>(0);
 	optional<vector<Identifier>> schema_qualification {};
 	if (dynamic_child_count > 0) {
 		vector<Identifier> schema_qualification_value;
@@ -18177,9 +18178,18 @@ PEGTransformerFactory::FinalizeQualifiedTableFunctionTrampoline(PEGTransformer &
 		}
 		schema_qualification = std::move(schema_qualification_value);
 	}
-	auto table_function_name = list_pr.GetChild(2).Cast<IdentifierParseResult>().identifier;
-	auto result =
-	    TransformQualifiedTableFunction(transformer, catalog_qualification, schema_qualification, table_function_name);
+	auto reserved_table_function_name = list_pr.GetChild(2).Cast<IdentifierParseResult>().identifier;
+	auto result = TransformCatalogReservedSchemaTableFunctionName(transformer, catalog_qualification,
+	                                                              schema_qualification, reserved_table_function_name);
+	return transformer.MakeResult<QualifiedName>(result);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeTableFunctionNameAsQualifiedNameTrampoline(PEGTransformer &transformer,
+                                                                          GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	auto table_function_name = list_pr.GetChild(0).Cast<IdentifierParseResult>().identifier;
+	auto result = TransformTableFunctionNameAsQualifiedName(transformer, table_function_name);
 	return transformer.MakeResult<QualifiedName>(result);
 }
 

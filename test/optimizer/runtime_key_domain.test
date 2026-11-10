@@ -1,0 +1,160 @@
+# name: test/optimizer/runtime_key_domain.test
+# description: Runtime demand preserves consumer payloads, bags, NULLs and shared evaluation
+# group: [optimizer]
+
+statement ok
+CREATE TABLE fact_data AS SELECT (i % 1000)::INTEGER k, i::BIGINT v FROM range(10000) t(i);
+
+statement ok
+INSERT INTO fact_data VALUES (NULL, 4), (NULL, 7), (1, NULL);
+
+statement ok
+CREATE VIEW fact AS SELECT (k + 1000) % 1000 k, v FROM fact_data;
+
+statement ok
+CREATE TABLE demand(k INTEGER, label VARCHAR);
+
+statement ok
+INSERT INTO demand VALUES (1, 'one'), (2, 'two'), (2, 'again'), (2000, 'missing'), (NULL, 'null');
+
+query TIII rowsort
+SELECT d.label, d.k, a.s, a.n FROM demand d
+LEFT JOIN (SELECT k, sum(v) s, count(*) n FROM fact GROUP BY k) a USING(k);
+----
+again	2	45020	10
+missing	2000	NULL	NULL
+null	NULL	NULL	NULL
+one	1	45010	11
+two	2	45020	10
+
+query TII rowsort
+SELECT d.label, d.k, a.s FROM demand d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a ON d.k IS NOT DISTINCT FROM a.k;
+----
+again	2	45020
+missing	2000	NULL
+null	NULL	11
+one	1	45010
+two	2	45020
+
+# The materialized source keeps reordered payload columns and its filter.
+query TII rowsort
+SELECT d.payload, d.renamed, a.s
+FROM (SELECT label || '!' payload, k renamed FROM demand WHERE k < 3) d
+JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a ON a.k=d.renamed;
+----
+again!	2	45020
+one!	1	45010
+two!	2	45020
+
+query TIII rowsort
+SELECT label, k,
+       (SELECT sum(v) FROM fact WHERE fact.k=d.k),
+       (SELECT count(*) FROM fact WHERE fact.k=d.k)
+FROM demand d;
+----
+again	2	45020	10
+missing	2000	NULL	0
+null	NULL	NULL	0
+one	1	45010	11
+two	2	45020	10
+
+statement ok
+PREPARE runtime_demand AS
+SELECT d.label, a.s FROM (SELECT * FROM demand WHERE k <= $1) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k) ORDER BY d.label;
+
+query TI
+EXECUTE runtime_demand(1);
+----
+one	45010
+
+query TI
+EXECUTE runtime_demand(2);
+----
+again	45020
+one	45010
+two	45020
+
+query I
+SELECT count(*) FROM (SELECT * FROM demand WHERE k < 0) d
+JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+0
+
+# Two aggregate consumers share the original owner and its payload.
+query TII rowsort
+WITH d AS MATERIALIZED (SELECT label, k FROM demand)
+SELECT d.label, a.s, 1 branch FROM d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k)
+UNION ALL
+SELECT d.label, a.s, 2 branch FROM d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+again	45020	1
+again	45020	2
+missing	NULL	1
+missing	NULL	2
+null	NULL	1
+null	NULL	2
+one	45010	1
+one	45010	2
+two	45020	1
+two	45020	2
+
+statement ok
+CREATE SEQUENCE shared_visits;
+
+query III
+WITH d AS MATERIALIZED (SELECT k, nextval('shared_visits') occurrence FROM demand)
+SELECT count(*), sum(d.occurrence), sum(a.s) FROM d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+5	15	135050
+
+query I
+SELECT currval('shared_visits');
+----
+5
+
+# Adding a reader must not revoke existing producer filter pushdown.
+statement ok
+CREATE SEQUENCE filtered_visits;
+
+query III
+WITH d AS MATERIALIZED (
+    SELECT i selector, (i % 5)::INTEGER k, nextval('filtered_visits') occurrence FROM range(10000) t(i)
+)
+SELECT count(*), count(d.occurrence), sum(a.s) FROM d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k)
+WHERE d.selector < 2;
+----
+2	2	90010
+
+# A local volatile source is not moved or duplicated.
+statement ok
+CREATE SEQUENCE local_visits;
+
+query III
+SELECT count(*), sum(d.occurrence), sum(a.s)
+FROM (SELECT k, nextval('local_visits') occurrence FROM demand) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+5	15	135050
+
+query I
+SELECT currval('local_visits');
+----
+5
+
+query TI rowsort
+WITH first AS MATERIALIZED (SELECT * FROM demand),
+     second AS MATERIALIZED (SELECT * FROM first)
+SELECT d.label, a.s FROM second d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+again	45020
+missing	NULL
+null	NULL
+one	45010
+two	45020

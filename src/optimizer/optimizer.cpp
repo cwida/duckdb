@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/optimizer/duplicate_eliminated_domain_optimizer.hpp"
 
 #include "duckdb/common/enums/optimizer_type.hpp"
 #include "duckdb/function/function_binder.hpp"
@@ -261,6 +262,11 @@ void Optimizer::RunBuiltInOptimizers() {
 	});
 
 	if (!CTEContainsDML(*plan)) {
+		RunOptimizer(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN, [&]() {
+			DuplicateEliminatedDomainOptimizer domain_optimizer(*this);
+			domain_optimizer.Optimize(plan);
+		});
+
 		FilterStatisticsOptimizer filter_statistics(*this);
 		filter_statistics.Optimize(plan);
 	}
