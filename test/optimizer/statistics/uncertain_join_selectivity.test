@@ -8,7 +8,7 @@ statement ok
 SET explain_output='optimized_only';
 
 statement ok
-COPY (SELECT i::VARCHAR AS x, (i%10)::VARCHAR AS y FROM range(1000) r(i))
+COPY (SELECT i::VARCHAR AS x, (i%10)::VARCHAR AS y, (i%100)::INTEGER AS n FROM range(1000) r(i))
 TO '{TEST_DIR}/uncertain_join_selectivity.parquet';
 
 statement ok
@@ -45,3 +45,26 @@ query I
 SELECT count(*) FROM p a, p b, p c WHERE a.x=b.x AND b.x=c.x AND a.y=c.y AND a.x=c.x;
 ----
 1000
+
+# Nullable-safe equalities do not rely on FilterCombiner adding transitive predicates.
+query II
+EXPLAIN (FORMAT JSON) SELECT a.x FROM p a, p b, p c
+WHERE a.x IS NOT DISTINCT FROM b.x AND b.x IS NOT DISTINCT FROM c.x AND a.n=c.n;
+----
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"40000000"\s*}\s*}\s*\]\s*$
+
+query II
+EXPLAIN (FORMAT JSON) SELECT a.x FROM p a, p b, p c
+WHERE a.x IS NOT DISTINCT FROM b.x AND b.x IS NOT DISTINCT FROM c.x AND a.n=c.n
+AND a.x IS NOT DISTINCT FROM c.x;
+----
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"40000000"\s*}\s*}\s*\]\s*$
+
+statement ok
+COPY (SELECT i::VARCHAR AS x FROM range(4) r(i)) TO '{TEST_DIR}/small_unknown_domain.parquet';
+
+query II
+EXPLAIN (FORMAT JSON) SELECT a.x FROM read_parquet('{TEST_DIR}/small_unknown_domain.parquet') a,
+read_parquet('{TEST_DIR}/small_unknown_domain.parquet') b WHERE a.x=b.x;
+----
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"4"\s*}\s*}\s*\]\s*$
