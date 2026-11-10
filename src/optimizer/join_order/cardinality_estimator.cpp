@@ -548,6 +548,13 @@ bool CardinalityEstimator::ApplyJoinIncrement(CardinalityValue &target_selectivi
                                               reference_map_t<JoinRelationSet, CompositeJoinPairStats> &join_pair_stats,
                                               reference_set_t<JoinRelationSet> &capped_join_pairs,
                                               JoinRelationSet &scope, optional_ptr<JoinRelationSet> join_pair) {
+	if (edge.RequiresSelectivityFloor()) {
+		if (!JoinRelationSet::IsSubset(scope, edge.GetPredicate().GetSet())) {
+			return false;
+		}
+		target_selectivity = CalculateInnerJoinSelectivity(target_selectivity, edge);
+		return true;
+	}
 	if (edge.IsInnerEquality()) {
 		auto target_pair = join_pair;
 		if (!target_pair) {
@@ -556,13 +563,15 @@ bool CardinalityEstimator::ApplyJoinIncrement(CardinalityValue &target_selectivi
 		if (!target_pair) {
 			return false;
 		}
-		if (!JoinRelationSet::IsSubset(scope, *target_pair) ||
-		    !predicate_model.HasDirectCompositeEquality(*target_pair)) {
+		if (!JoinRelationSet::IsSubset(scope, *target_pair)) {
 			return false;
 		}
 		if (state->floored_join_pairs.count(*target_pair)) {
 			target_selectivity = CalculateInnerJoinSelectivity(target_selectivity, edge);
 			return true;
+		}
+		if (!predicate_model.HasDirectCompositeEquality(*target_pair)) {
+			return false;
 		}
 		if (capped_join_pairs.find(*target_pair) != capped_join_pairs.end()) {
 			// The composite-key cap already accounts for same-pair equality predicates.
@@ -665,7 +674,7 @@ void CardinalityEstimator::ProcessSelectivityEdge(FilterInfoWithTotalDomains &ed
 		    ApplyJoinIncrement(complete_subgraph.selectivity, edge, state.join_pair_stats, state.capped_join_pairs,
 		                       *complete_subgraph.relations)) {
 			auto pair = GetEqualityJoinPair(edge, set_manager);
-			if (pair && this->state->floored_join_pairs.count(*pair)) {
+			if (edge.RequiresSelectivityFloor() || (pair && this->state->floored_join_pairs.count(*pair))) {
 				auto equality_class_index = edge.GetPredicate().GetEqualityClassIndex();
 				if (equality_class_index.IsValid()) {
 					state.applied_equivalence_groups.insert(equality_class_index.GetIndex());
@@ -969,6 +978,9 @@ void CardinalityEstimator::Initialize(const vector<RelationStats> &relations,
 	for (auto &edge : state->edges) {
 		if (edge.RequiresSelectivityFloor()) {
 			auto pair = GetEqualityJoinPair(edge, set_manager);
+			if (!pair && edge.GetPredicate().HasDisjointJoinEndpoints() && edge.GetPredicate().GetSet().count == 2) {
+				pair = edge.GetPredicate().GetSet();
+			}
 			if (pair) {
 				state->floored_join_pairs.insert(*pair);
 			}

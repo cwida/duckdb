@@ -1,0 +1,47 @@
+# name: test/optimizer/statistics/uncertain_join_selectivity.test
+# description: Unknown join domains use independent selectivity factors without duplicate equalities
+# group: [statistics]
+
+require parquet
+
+statement ok
+SET explain_output='optimized_only';
+
+statement ok
+COPY (SELECT i::VARCHAR AS x, (i%10)::VARCHAR AS y FROM range(1000) r(i))
+TO '{TEST_DIR}/uncertain_join_selectivity.parquet';
+
+statement ok
+CREATE VIEW p AS FROM read_parquet('{TEST_DIR}/uncertain_join_selectivity.parquet');
+
+# Expressions without equality-class bindings still contribute independent factors.
+query II
+EXPLAIN (FORMAT JSON) SELECT a.x FROM p a, p b WHERE lower(a.x)=b.x AND lower(a.y)=b.y;
+----
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"40000"\s*}\s*}\s*\]\s*$
+
+query I
+SELECT count(*) FROM p a, p b WHERE lower(a.x)=b.x AND lower(a.y)=b.y;
+----
+1000
+
+query II
+EXPLAIN (FORMAT JSON) SELECT a.x FROM p a, p b WHERE lower(a.x)=b.x AND lower(a.x)=b.x;
+----
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"200000"\s*}\s*}\s*\]\s*$
+
+# A redundant transitive predicate does not alter another equality's contribution.
+query II
+EXPLAIN (FORMAT JSON) SELECT a.x FROM p a, p b, p c WHERE a.x=b.x AND b.x=c.x AND a.y=c.y;
+----
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"8000000"\s*}\s*}\s*\]\s*$
+
+query II
+EXPLAIN (FORMAT JSON) SELECT a.x FROM p a, p b, p c WHERE a.x=b.x AND b.x=c.x AND a.y=c.y AND a.x=c.x;
+----
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"8000000"\s*}\s*}\s*\]\s*$
+
+query I
+SELECT count(*) FROM p a, p b, p c WHERE a.x=b.x AND b.x=c.x AND a.y=c.y AND a.x=c.x;
+----
+1000
