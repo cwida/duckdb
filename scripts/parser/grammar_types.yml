@@ -155,10 +155,13 @@ QueryNode:
   by_value: true
   rules:
     - ShowExternalResources
+    - ShowAllResourceWords
+    - ShowResourceWords
     - ShowDeprecatedSelect
     - DescribeSelect
     - ShowTables
     - ShowAllTables
+    - ShowAll
     - ShowByName
     - DescribeByName
 

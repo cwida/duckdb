@@ -67,11 +67,16 @@ unique_ptr<QueryNode> PEGTransformerFactory::TransformShowTables(PEGTransformer 
 }
 
 unique_ptr<QueryNode> PEGTransformerFactory::TransformShowAllTables(PEGTransformer &transformer,
-                                                                    const ShowType &show_or_describe,
-                                                                    const bool &has_result) {
+                                                                    const ShowType &show_or_describe) {
 	auto showref = make_uniq<ShowRef>();
 	SetShowAllTables(*showref);
 	return WrapShowRef(std::move(showref));
+}
+
+// "SHOW ALL" without TABLES: the same listing, its own rule so the type-as-words form can sit between the two.
+unique_ptr<QueryNode> PEGTransformerFactory::TransformShowAll(PEGTransformer &transformer,
+                                                              const ShowType &show_or_describe) {
+	return TransformShowAllTables(transformer, show_or_describe);
 }
 
 // The special MySQL-inherited forms - "[SHOW|DESCRIBE] DATABASES|SCHEMAS|TABLES|VARIABLES" - which the binder

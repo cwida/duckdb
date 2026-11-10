@@ -1,0 +1,110 @@
+# name: test/sql/attach/external_resource_show_words.test
+# description: SHOW [ALL] A B C is SHOW [ALL] EXTERNAL RESOURCES WITH TYPE 'a:b:c', and the older SHOW forms are untouched
+# group: [attach]
+
+statement ok
+CREATE MACRO list_a(opts) AS TABLE
+    SELECT MAP {'id': 'a1'} AS handle, 'res-a' AS name, 'a-ref' AS reference, 'running' AS state;
+
+statement ok
+CREATE MACRO list_b(opts) AS TABLE
+    SELECT MAP {'id': 'b1'} AS handle, 'res-b' AS name, 'b-ref' AS reference, 'running' AS state;
+
+statement ok
+CALL register_external_resource_type('ns:kind-a', kind := 'catalog', create_function := 'noop_create', list_function := 'list_a');
+
+statement ok
+CALL register_external_resource_type('ns:sub:kind-b', kind := 'catalog', create_function := 'noop_create', list_function := 'list_b');
+
+statement ok
+CALL register_external_resource('ns:kind-a', 'local_a', MAP {'id': 'x'});
+
+# The words are lower-cased, '_' is read as '-', and they are joined with ':'.
+query TTTTTTTT rowsort
+SHOW ALL NS KIND_A;
+----
+local_a	ns:kind-a	true	NULL	NULL	NULL	NULL	{id=x}
+res-a	ns:kind-a	false	running	a-ref	NULL	NULL	{id=a1}
+
+query TTTTTTTT rowsort
+SHOW ALL EXTERNAL RESOURCES WITH TYPE 'ns:kind-a';
+----
+local_a	ns:kind-a	true	NULL	NULL	NULL	NULL	{id=x}
+res-a	ns:kind-a	false	running	a-ref	NULL	NULL	{id=a1}
+
+# Any number of words from two up; it is a query, so it works as a subquery.
+query TT
+SELECT name, type FROM (SHOW ALL ns sub kind_b);
+----
+res-b	ns:sub:kind-b
+
+# Without ALL only the registry is listed, as with SHOW EXTERNAL RESOURCES WITH TYPE.
+query TT
+SELECT name, type FROM (SHOW NS KIND_A);
+----
+local_a	ns:kind-a
+
+query I
+SELECT count(*) FROM (SHOW ns sub kind_b);
+----
+0
+
+# A reserved word is a type word when quoted.
+statement ok
+CALL register_external_resource_type('ns:table', kind := 'catalog', create_function := 'noop_create');
+
+query I
+SELECT count(*) FROM (SHOW ALL NS "table");
+----
+0
+
+statement error
+SHOW ALL NS TABLE;
+----
+<REGEX>:Parser Error.*
+
+# An unknown type fails as the string form does, naming the type the words spell.
+statement error
+SHOW ALL NS NOPE;
+----
+<REGEX>:.*unknown resource type "ns:nope".*
+
+# The older SHOW forms are untouched.
+statement ok
+SHOW ALL TABLES;
+
+statement ok
+SHOW ALL;
+
+statement ok
+DESCRIBE ALL TABLES;
+
+statement ok
+SHOW TABLES;
+
+# A single word after SHOW is still a setting.
+query I
+SELECT count(*) FROM (SHOW threads);
+----
+1
+
+statement error
+SHOW ALL TABLES extra;
+----
+<REGEX>:.*Parser Error.*
+
+statement error
+SHOW ALL EXTERNAL RESOURCES extra;
+----
+<REGEX>:.*Parser Error.*
+
+# The first word is never EXTERNAL: that is the long form, so a truncated one stays an error.
+statement error
+SHOW EXTERNAL RESOURCE;
+----
+<REGEX>:Parser Error.*EXTERNAL RESOURCE.*
+
+statement error
+SHOW ALL EXTERNAL RESOURCE;
+----
+<REGEX>:Parser Error.*EXTERNAL RESOURCE.*

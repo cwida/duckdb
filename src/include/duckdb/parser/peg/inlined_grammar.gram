@@ -1491,7 +1491,7 @@ TargetOptAlias <- BaseTableName TargetAlias?
 TargetAlias <- 'AS'? ColId
 DeleteUsingClause <- 'USING' List(TableRef)
 
-DescribeStatement <- ShowExternalResources / ShowTables / ShowDeprecatedSelect / DescribeSelect / ShowAllTables / ShowByName / DescribeByName
+DescribeStatement <- ShowExternalResources / ShowTables / ShowDeprecatedSelect / DescribeSelect / ShowAllTables / ShowAllResourceWords / ShowAll / ShowResourceWords / ShowByName / DescribeByName
 
 # "SHOW [ALL] EXTERNAL RESOURCES" is a query over duckdb_external_resources, so it works as a subquery too. It comes
 # first: "SHOW ALL" alone is ShowAllTables, and "SHOW <name>" is ShowByName, and neither can be retried once matched.
@@ -1499,12 +1499,22 @@ ShowExternalResources <- ShowRule 'ALL'? 'EXTERNAL' 'RESOURCES' ShowExternalReso
 # "WITH TYPE 'aws:s3tables:table-bucket'" restricts the listing (and the discovery) to one type; a bare identifier
 # is passed through as the type name as well.
 ShowExternalResourcesType <- 'WITH' 'TYPE' ColIdOrString
+# "SHOW [ALL] A B C" is "SHOW [ALL] EXTERNAL RESOURCES WITH TYPE 'a:b:c'": the type spelled as words, lower-cased and
+# joined with ':', '_' read as '-'. A word is a ColId, so a reserved word needs quotes ("table"); the words must stop
+# at a following keyword in the statements that have one. A matched alternative is never retried, so the order around
+# them is what keeps the older forms: "SHOW ALL TABLES" goes first, then the words, then the bare "SHOW ALL" (which
+# would otherwise match the prefix of any words). Without ALL, "SHOW <name>" is a setting (ShowByName), so the words
+# form needs two words, which every type has (a namespace and a name).
+ShowAllResourceWords <- ShowRule 'ALL' ColId+
+ShowResourceWords <- ShowRule ColId ColId+
 
 # "DESCRIBE (query)" and "SUMMARIZE (query)" describe the query's columns. "SHOW (query)" does too but is deprecated,
 # so ShowDeprecatedSelect is parsed yet suppressed from autocomplete (matcher_factory.cpp) - SHOW won't offer to complete a query.
 ShowDeprecatedSelect <- ShowRule SelectStatementInternal
 DescribeSelect <- DescribeOrSummarize SelectStatementInternal
-ShowAllTables <- ShowOrDescribe 'ALL' 'TABLES'?
+# Split in two around ShowAllResourceWords (see above); both list all tables.
+ShowAllTables <- ShowOrDescribe 'ALL' 'TABLES'
+ShowAll <- ShowOrDescribe 'ALL'
 ShowTables <- ShowOrDescribe 'TABLES' 'FROM' QualifiedName
 
 # "SHOW name" is settings-first, so its target autocompletes setting names (and the special MySQL forms), not

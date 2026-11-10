@@ -1,3 +1,5 @@
+#include "duckdb/common/exception/parser_exception.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
@@ -78,6 +80,39 @@ PEGTransformerFactory::TransformShowExternalResources(PEGTransformer &transforme
 	select_node->select_list.push_back(make_uniq<StarExpression>());
 	select_node->from_table = std::move(table_function);
 	return std::move(select_node);
+}
+
+//! The type spelled as words: `A B C` is 'a:b:c'. Lower-cased, since type names are, and '_' read as '-', since an
+//! identifier cannot carry one; the string form is there for any name this cannot spell.
+static string TypeOfWords(const vector<Identifier> &words) {
+	// A truncated or misspelt long form ("SHOW EXTERNAL RESOURCE") must not read as a type named after the noun.
+	if (StringUtil::CIEquals(words[0].GetIdentifierName(), "EXTERNAL")) {
+		throw ParserException("a resource type spelled as words cannot start with EXTERNAL; the long form, EXTERNAL "
+		                      "RESOURCE, takes the type as a string");
+	}
+	vector<string> parts;
+	for (auto &word : words) {
+		parts.push_back(StringUtil::Replace(StringUtil::Lower(word.GetIdentifierName()), "_", "-"));
+	}
+	return StringUtil::Join(parts, ":");
+}
+
+// SHOW ALL <words> is SHOW ALL EXTERNAL RESOURCES WITH TYPE '<words joined>'
+unique_ptr<QueryNode> PEGTransformerFactory::TransformShowAllResourceWords(PEGTransformer &transformer,
+                                                                           const ShowType &show_rule,
+                                                                           const vector<Identifier> &col_id) {
+	return TransformShowExternalResources(transformer, show_rule, true, Identifier(TypeOfWords(col_id)));
+}
+
+// SHOW <word> <words> is SHOW EXTERNAL RESOURCES WITH TYPE '<words joined>'
+unique_ptr<QueryNode> PEGTransformerFactory::TransformShowResourceWords(PEGTransformer &transformer,
+                                                                        const ShowType &show_rule,
+                                                                        const Identifier &col_id,
+                                                                        const vector<Identifier> &col_ids) {
+	vector<Identifier> words;
+	words.push_back(col_id);
+	words.insert(words.end(), col_ids.begin(), col_ids.end());
+	return TransformShowExternalResources(transformer, show_rule, false, Identifier(TypeOfWords(words)));
 }
 
 } // namespace duckdb
