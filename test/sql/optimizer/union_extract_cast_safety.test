@@ -1,0 +1,35 @@
+# name: test/sql/optimizer/union_extract_cast_safety.test
+# description: Extract pushdown preserves conditional evaluation of throwing casts
+# group: [optimizer]
+
+statement ok
+CREATE TABLE guarded_casts(id INTEGER, v VARIANT, s STRUCT(k VARCHAR));
+
+statement ok
+INSERT INTO guarded_casts VALUES (1, {'k': 1}::VARIANT, {'k': '1'}), (2, {'k': 'bad'}::VARIANT, {'k': 'bad'});
+
+foreach FIELD v s
+
+query I rowsort
+SELECT CASE WHEN id = 1 THEN {FIELD}.k::INTEGER END
+FROM (SELECT id, {FIELD} FROM guarded_casts UNION ALL SELECT id, {FIELD} FROM guarded_casts);
+----
+1
+1
+NULL
+NULL
+
+query I rowsort
+SELECT id FROM (SELECT id, {FIELD} FROM guarded_casts UNION ALL SELECT id, {FIELD} FROM guarded_casts)
+WHERE CASE WHEN id = 1 THEN {FIELD}.k::INTEGER = 1 ELSE false END;
+----
+1
+1
+
+query I rowsort
+SELECT CASE WHEN id = 1 THEN {FIELD}.k::INTEGER END FROM (SELECT id, {FIELD} FROM guarded_casts);
+----
+1
+NULL
+
+endloop
