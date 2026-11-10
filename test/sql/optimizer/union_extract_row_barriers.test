@@ -1,0 +1,71 @@
+# name: test/sql/optimizer/union_extract_row_barriers.test
+# description: Extract pushdown preserves the rows on which casts are evaluated
+# group: [optimizer]
+
+statement ok
+CREATE TABLE cast_rows(id INTEGER, v VARIANT, s STRUCT(k VARCHAR));
+
+statement ok
+INSERT INTO cast_rows VALUES (1, {'k': 1}::VARIANT, {'k': '1'}), (2, {'k': 'bad'}::VARIANT, {'k': 'bad'});
+
+statement ok
+CREATE TABLE odd_keys AS SELECT i AS id FROM range(1, 20001, 2) r(i);
+
+foreach FIELD v s
+
+query I rowsort
+SELECT u.{FIELD}.k::INTEGER
+FROM (SELECT id, {FIELD} FROM cast_rows UNION ALL SELECT id, {FIELD} FROM cast_rows) u
+JOIN odd_keys USING (id);
+----
+1
+1
+
+query I rowsort
+SELECT u.{FIELD}.k::INTEGER
+FROM (SELECT id, {FIELD} FROM cast_rows UNION ALL SELECT id, {FIELD} FROM cast_rows) u
+WHERE id IN (SELECT id FROM odd_keys);
+----
+1
+1
+
+query I rowsort
+SELECT u.{FIELD}.k::INTEGER
+FROM (SELECT id, {FIELD} FROM cast_rows UNION ALL SELECT id, {FIELD} FROM cast_rows) u
+ANTI JOIN (SELECT id + 1 AS id FROM odd_keys) excluded USING (id);
+----
+1
+1
+
+query I
+SELECT {FIELD}.k::INTEGER FROM (
+    SELECT id, {FIELD} FROM cast_rows UNION ALL SELECT id, {FIELD} FROM cast_rows LIMIT 1);
+----
+1
+
+query I
+SELECT {FIELD}.k::INTEGER FROM (
+    SELECT id, {FIELD} FROM cast_rows UNION ALL SELECT id, {FIELD} FROM cast_rows ORDER BY id LIMIT 1);
+----
+1
+
+endloop
+
+# A sibling residual filter must not inspect references owned by rewritten union expressions.
+statement ok
+CREATE TABLE extraction_rows AS SELECT i AS id, {'k': i::VARCHAR}::VARIANT AS v,
+    {'k': i::VARCHAR} AS s, {'k': i::VARCHAR} AS s2 FROM range(100000) r(i);
+
+query I
+SELECT sum(u.v.k::INTEGER)
+FROM (SELECT id, v FROM extraction_rows UNION ALL SELECT id, v FROM extraction_rows) u
+JOIN range(10) r(id) ON u.id = r.id WHERE r.id % 2 = 1;
+----
+50
+
+query II
+SELECT sum(x.s.k::INTEGER), sum(x.s2.k::INTEGER)
+FROM (SELECT id, s, s2 FROM extraction_rows) x
+JOIN range(10) r(id) ON x.id = r.id WHERE r.id % 2 = 1;
+----
+25	25
