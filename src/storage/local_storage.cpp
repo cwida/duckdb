@@ -6,6 +6,7 @@
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/main/valid_checker.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/partial_block_manager.hpp"
@@ -672,8 +673,10 @@ void LocalStorage::Flush(DataTable &table, LocalTableStorage &storage, optional_
 			transaction.PushAppend(*storage.table_entry, NumericCast<idx_t>(append_state.row_start), append_count);
 		}
 	} catch (std::exception &ex) {
-		throw FatalException("Failed to flush table %s during commit: %s", table.GetTableName(),
-		                     ErrorData(ex).RawMessage());
+		// the shared table or indexes may be partially modified: no checkpoint may persist them
+		ValidChecker::Invalidate(table.db.GetDatabase(), "Failed to flush table " + table.GetTableName() +
+		                                                     " during commit: " + ErrorData(ex).RawMessage());
+		throw;
 	}
 	if (error.HasError()) {
 		error.Throw();

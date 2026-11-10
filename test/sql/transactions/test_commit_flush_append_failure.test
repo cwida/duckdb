@@ -30,7 +30,7 @@ SET debug_force_flush_append_failure = true;
 statement error
 COMMIT;
 ----
-Failed to flush table
+Forced flush append failure
 
 statement error
 SELECT count(*) FROM pk;
@@ -83,7 +83,7 @@ SET debug_force_flush_append_failure = true;
 statement error
 COMMIT;
 ----
-Failed to flush table
+Forced flush append failure
 
 statement error
 SELECT count(*) FROM m;

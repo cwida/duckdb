@@ -450,19 +450,12 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 	if (error.HasError()) {
 		DUCKDB_LOG(context, TransactionLogType, db, "Rollback (after failed commit)", info.commit_id);
 
-		if (Exception::InvalidatesDatabase(error.Type())) {
-			// invalidate before the commit lock is released, so that no checkpoint can persist the corrupt state
-			ValidChecker::Invalidate(db.GetDatabase(), error.RawMessage());
-		}
-
 		// COMMIT not successful: ROLLBACK.
 		checkpoint_decision = CheckpointDecision(error.Message());
 		transaction.commit_id = 0;
 
 		auto rollback_error = transaction.Rollback();
 		if (rollback_error.HasError()) {
-			// invalidate before the throw releases the commit lock, as above
-			ValidChecker::Invalidate(db.GetDatabase(), rollback_error.RawMessage());
 			throw FatalException(
 			    "Failed to rollback transaction. Cannot continue operation.\nOriginal Error: %s\nRollback Error: %s",
 			    error.Message(), rollback_error.Message());
