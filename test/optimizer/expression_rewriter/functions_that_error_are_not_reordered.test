@@ -83,3 +83,24 @@ query II
 SELECT * FROM (VALUES (0)) x(a), (VALUES (0), (2)) y(b) WHERE b < 1 AND get_bit('1'::BIT, b) = 1;
 ----
 0	0
+
+# both conjuncts reference x and y, so they become a single join condition; it is evaluated in reverse order
+statement error
+SELECT * FROM (VALUES (0)) x(a), (VALUES (1)) y(b) WHERE a + b < 1 AND get_bit('1'::BIT, a + b) = 1;
+----
+bit index 1 out of valid range
+
+statement error
+SELECT * FROM (VALUES (0)) x(a) JOIN (VALUES (1)) y(b) ON a + b < 1 AND get_bit('1'::BIT, a + b) = 1;
+----
+bit index 1 out of valid range
+
+statement error
+SELECT * FROM (VALUES (0)) x(a), (VALUES (0), (1)) y(b) WHERE a + b < 1 AND get_bit('1'::BIT, a + b) = 1;
+----
+bit index 1 out of valid range
+
+# written in the opposite order, the reversal puts a + b < 1 first
+query II
+SELECT * FROM (VALUES (0)) x(a), (VALUES (1)) y(b) WHERE get_bit('1'::BIT, a + b) = 1 AND a + b < 1;
+----
