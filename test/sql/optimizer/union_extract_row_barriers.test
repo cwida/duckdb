@@ -87,6 +87,13 @@ SELECT x.k::INTEGER FROM (
 1
 1
 
+query I rowsort
+SELECT x.k::INTEGER FROM (
+    SELECT s AS x FROM (SELECT s FROM cast_rows UNION ALL SELECT s FROM cast_rows));
+----
+1
+1
+
 statement ok
 CREATE TABLE nested_cast_rows(id INTEGER, v VARIANT);
 
@@ -104,7 +111,7 @@ SELECT x.outer.k::INTEGER FROM (
 1
 
 query I
-SELECT x.k::INTEGER FROM (SELECT v.outer AS x FROM nested_cast_rows);
+SELECT x.outer.k::INTEGER FROM (SELECT v AS x FROM nested_cast_rows);
 ----
 1
 
