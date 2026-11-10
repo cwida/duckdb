@@ -5,7 +5,7 @@ namespace duckdb {
 
 class ParserTokenizerBehavior : public TokenizerBehavior {
 public:
-	ParserTokenizerBehavior(const string &sql, vector<MatcherToken> &tokens);
+	explicit ParserTokenizerBehavior(const string &sql);
 	~ParserTokenizerBehavior() override = default;
 
 	void PushToken(idx_t start, idx_t end, TokenType type, bool unterminated = false) override;
