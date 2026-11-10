@@ -379,10 +379,8 @@ ErrorData AttachedDatabase::ScopeFatalError(ErrorData error) {
 	if (!error.HasError() || !Exception::InvalidatesDatabase(error.Type()) || !SupportsScopedInvalidation()) {
 		return error;
 	}
-	if (!ValidChecker::Get(*this).IsInvalidated()) {
-		Invalidate("of a fatal error", error.RawMessage());
-	}
-	return ErrorData(IOException("%s", ValidChecker::InvalidatedMessage(*this)));
+	error.SetExtraInfo(Exception::INVALIDATED_DATABASE_KEY, GetName().GetIdentifierName());
+	return error;
 }
 
 void AttachedDatabase::SetInitialDatabase() {

@@ -149,7 +149,7 @@ public:
 	//! Invalidate this database after an unrecoverable error: it rejects all use until it is detached.
 	//! Escalates to the database instance if the invalidation cannot be scoped to this database.
 	void Invalidate(const string &cause, const string &error);
-	//! Scope a fatal error raised by this database to it: invalidates it and returns a non-fatal error
+	//! Scope a fatal error raised by this database to it, so the invalidation site invalidates only this database
 	ErrorData ScopeFatalError(ErrorData error);
 
 	optional_ptr<StorageExtension> GetStorageExtension() {

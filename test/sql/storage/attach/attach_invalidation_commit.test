@@ -147,7 +147,7 @@ SELECT i FROM a.tbl ORDER BY i;
 1
 5
 
-# --- a fatal error during the commit of an attached database is scoped to it ---
+# --- a fatal error during the commit of an attached database invalidates only that database ---
 
 statement ok
 PRAGMA debug_checkpoint_abort = 'before_wal_flush';
@@ -155,7 +155,12 @@ PRAGMA debug_checkpoint_abort = 'before_wal_flush';
 statement error
 INSERT INTO a.tbl VALUES (7);
 ----
-<REGEX>:.*Failed to commit: Database "a" has been invalidated because of a simulated crash.*
+<REGEX>:FATAL Error: Simulated crash before WAL_FLUSH write.*
+
+statement error
+SELECT COUNT(*) FROM a.tbl;
+----
+<REGEX>:IO Error: Database "a" has been invalidated because of a simulated crash.*
 
 statement ok
 PRAGMA debug_checkpoint_abort = 'none';
