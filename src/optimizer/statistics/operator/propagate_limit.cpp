@@ -12,7 +12,9 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalLimi
 		auto constant_limit = limit.limit_val.GetConstantValue();
 		if (limit.offset_val.Type() == LimitNodeType::UNSET && child_stats && child_stats->has_max_cardinality &&
 		    child_stats->max_cardinality < constant_limit) {
-			node_ptr = std::move(limit.children[0]);
+			if (!SuppressPlanFolds()) {
+				node_ptr = std::move(limit.children[0]);
+			}
 			return child_stats;
 		}
 		return make_uniq<NodeStatistics>(constant_limit, constant_limit);

@@ -1,4 +1,5 @@
 #include "core_functions/aggregate/nested_functions.hpp"
+#include "duckdb/main/settings.hpp"
 #include "core_functions/scalar/list_functions.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
@@ -535,8 +536,15 @@ unique_ptr<FunctionData> ListAggregatesBind(BindScalarFunctionInput &input) {
 	}
 
 	// the extra arguments are pushed into the list aggregate bind
+	// under the portable_plan profile the retained SQL arguments must keep the written expressions
+	const bool keep_written_arguments =
+	    Settings::Get<PortablePlanSetting>(context) && arguments.size() == bound_function.GetLogicalArguments().size();
+	vector<unique_ptr<Expression>> written_arguments;
 	vector<unique_ptr<Expression>> extra_arguments;
 	for (idx_t i = 2; i < arguments.size(); i++) {
+		if (keep_written_arguments) {
+			written_arguments.push_back(arguments[i]->Copy());
+		}
 		extra_arguments.push_back(std::move(arguments[i]));
 	}
 	const idx_t extra_argument_count = extra_arguments.size();
@@ -564,7 +572,11 @@ unique_ptr<FunctionData> ListAggregatesBind(BindScalarFunctionInput &input) {
 	// Preserve folded SQL arguments without evaluating them again.
 	if (extra_argument_count + 2 == bound_function.GetLogicalArguments().size()) {
 		for (idx_t child_idx = 1; child_idx <= extra_argument_count && child_idx < aggr_children.size(); child_idx++) {
-			arguments.push_back(aggr_children[child_idx]->Copy());
+			if (keep_written_arguments && child_idx - 1 < written_arguments.size()) {
+				arguments.push_back(written_arguments[child_idx - 1]->Copy());
+			} else {
+				arguments.push_back(aggr_children[child_idx]->Copy());
+			}
 		}
 	}
 

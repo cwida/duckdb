@@ -57,6 +57,8 @@ ScalarFunction GetVariableFun::GetFunction() {
 	ScalarFunction getvar("getvariable", {}, LogicalType::ANY, nullptr, GetVariableBind, nullptr);
 	getvar.GetSignature().AddParameter("variable_name", LogicalType::VARCHAR);
 	getvar.SetBindExpressionCallback(BindGetVariableExpression);
+	// folding is the portable semantics: a client variable cannot exist where exported text executes
+	getvar.SetBindingSensitivity(FunctionBindingSensitivity::CONTEXT_INSENSITIVE);
 	// the value of the variable can change between queries
 	getvar.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 	return getvar;

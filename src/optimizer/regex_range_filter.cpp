@@ -33,7 +33,8 @@ unique_ptr<LogicalOperator> RegexRangeFilter::Rewrite(unique_ptr<LogicalOperator
 				continue;
 			}
 			auto &info = func.BindInfo()->Cast<RegexpMatchesBindData>();
-			if (!info.range_success) {
+			if (!info.range_success || func.GetChildren()[1]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+				// the bind-time range only reflects the written pattern when the argument is a literal
 				continue;
 			}
 			auto filter_left = BoundComparisonExpression::Create(

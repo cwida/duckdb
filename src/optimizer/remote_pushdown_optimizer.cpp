@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/remote_pushdown_optimizer.hpp"
+#include "duckdb/main/settings.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
@@ -1174,6 +1175,12 @@ RemotePushdownOptimizer::TryConstantFold(unique_ptr<ParsedExpression> &expr) {
 	if (bound_expr->IsVolatile()) {
 		// volatile functions (random(), ...) must be re-evaluated on every row
 		return ConstantFoldResult::NOT_FOLDABLE;
+	}
+	if (requires_rebind || bound_expr->RequiresRebind() || bound_expr->ObservesBindingContext()) {
+		if (Settings::Get<PortablePlanSetting>(binder.context)) {
+			// an environment observation must not fold into the statement
+			return ConstantFoldResult::NOT_FOLDABLE;
+		}
 	}
 	if (requires_rebind || bound_expr->RequiresRebind()) {
 		// functions like now() or strftime() must be re-folded when a prepared statement is re-executed

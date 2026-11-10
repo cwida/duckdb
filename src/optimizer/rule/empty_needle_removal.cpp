@@ -16,7 +16,7 @@ static unique_ptr<Expression> TryRemoveEmptyStringConcat(ClientContext &context,
 	}
 	auto &children = root.GetChildrenMutable();
 	for (idx_t child_idx = 0; child_idx < children.size(); child_idx++) {
-		if (!children[child_idx]->IsFoldable()) {
+		if (!ExpressionRewriter::CanConstantFold(context, *children[child_idx])) {
 			continue;
 		}
 		Value value;
@@ -53,7 +53,7 @@ unique_ptr<Expression> EmptyNeedleRemovalRule::Apply(LogicalOperator &op, vector
 	auto &prefix_expr = bindings[2].get();
 
 	// the constant_expr is a scalar expression that we have to fold
-	if (!prefix_expr.IsFoldable()) {
+	if (!ExpressionRewriter::CanConstantFold(GetContext(), prefix_expr)) {
 		return nullptr;
 	}
 	D_ASSERT(root.GetReturnType().id() == LogicalTypeId::BOOLEAN);
@@ -99,7 +99,8 @@ unique_ptr<Expression> NoopReplaceRemovalRule::Apply(LogicalOperator &op, vector
 	D_ASSERT(root.GetChildren().size() == 3);
 	auto &needle_expr = bindings[2].get();
 	auto &replacement_expr = bindings[3].get();
-	if (!needle_expr.IsFoldable() || !replacement_expr.IsFoldable()) {
+	if (!ExpressionRewriter::CanConstantFold(GetContext(), needle_expr) ||
+	    !ExpressionRewriter::CanConstantFold(GetContext(), replacement_expr)) {
 		return nullptr;
 	}
 

@@ -1,4 +1,5 @@
 #include "duckdb/common/assert.hpp"
+#include "duckdb/optimizer/expression_rewriter.hpp"
 #include "duckdb/common/enums/join_type.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/typedefs.hpp"
@@ -88,7 +89,7 @@ static bool FilterRemovesNull(ClientContext &context, ExpressionRewriter &rewrit
 
 	// check if all expressions are foldable
 	for (idx_t i = 0; i < filter->expressions.size(); i++) {
-		if (!filter->expressions[i]->IsFoldable()) {
+		if (!ExpressionRewriter::CanConstantFold(context, *filter->expressions[i])) {
 			return false;
 		}
 		// we flattened the result into a scalar, check if it is FALSE or NULL

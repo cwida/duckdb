@@ -1,6 +1,7 @@
 #include "duckdb/optimizer/expression_rewriter.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
@@ -149,6 +150,16 @@ unique_ptr<Expression> ExpressionRewriter::ApplyRules(LogicalOperator &op, const
 		stack.pop_back();
 	}
 	return expr;
+}
+
+bool ExpressionRewriter::CanConstantFold(ClientContext &context, const Expression &expr) {
+	if (!expr.IsFoldable()) {
+		return false;
+	}
+	if (expr.IsConsistent() && !expr.RequiresRebind() && !expr.ObservesBindingContext()) {
+		return true;
+	}
+	return !Settings::Get<PortablePlanSetting>(context);
 }
 
 unique_ptr<Expression> ExpressionRewriter::ConstantOrNull(ClientContext &context, unique_ptr<Expression> child,

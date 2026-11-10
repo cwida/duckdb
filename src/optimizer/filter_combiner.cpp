@@ -1,4 +1,6 @@
 #include "duckdb/optimizer/filter_combiner.hpp"
+#include "duckdb/main/settings.hpp"
+#include "duckdb/optimizer/expression_rewriter.hpp"
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
@@ -497,6 +499,11 @@ static unique_ptr<ExpressionFilter> TryCreateMultiColumnExpressionFilter(Logical
 FilterPushdownResult FilterCombiner::TryPushdownGenericExpression(LogicalGet &get, Expression &expr) {
 	if (!get.function.pushdown_expression) {
 		// the scan does not support pushing down generic expressions
+		return FilterPushdownResult::NO_PUSHDOWN;
+	}
+	if (Settings::Get<PortablePlanSetting>(context) && expr.ObservesBindingContext()) {
+		// a retained context-observing expression keeps bind data that scan threads copy during
+		// zone-map checks, which can re-bind through the catalog while holding storage locks
 		return FilterPushdownResult::NO_PUSHDOWN;
 	}
 	// extract the column bindings from this expression
@@ -1043,6 +1050,9 @@ FilterPushdownResult FilterCombiner::TryPushdownTemporalCastFilter(TableFilterSe
 	}
 
 	// evaluate the constant side
+	if (!ExpressionRewriter::CanConstantFold(context, const_side)) {
+		return FilterPushdownResult::NO_PUSHDOWN;
+	}
 	Value constant_value;
 	string error_msg;
 	if (!ExpressionExecutor::TryEvaluateScalar(context, const_side, constant_value)) {
@@ -1164,6 +1174,9 @@ FilterResult FilterCombiner::AddBoundComparisonFilter(Expression &expr) {
 		auto &node = GetNode(left_is_scalar ? *right : *left);
 		idx_t equivalence_set = GetEquivalenceSet(node);
 		auto &scalar = left_is_scalar ? left : right;
+		if (!ExpressionRewriter::CanConstantFold(context, *scalar)) {
+			return FilterResult::UNSUPPORTED;
+		}
 		Value constant_value;
 		if (!ExpressionExecutor::TryEvaluateScalar(context, *scalar, constant_value)) {
 			return FilterResult::UNSUPPORTED;
@@ -1253,7 +1266,7 @@ FilterResult FilterCombiner::AddFilter(Expression &expr) {
 	if (expr.HasParameter() || expr.IsVolatile()) {
 		return FilterResult::UNSUPPORTED;
 	}
-	if (expr.IsFoldable()) {
+	if (ExpressionRewriter::CanConstantFold(context, expr)) {
 		// scalar condition, evaluate it
 		Value result;
 		if (!ExpressionExecutor::TryEvaluateScalar(context, expr, result)) {
@@ -1269,7 +1282,7 @@ FilterResult FilterCombiner::AddFilter(Expression &expr) {
 			return FilterResult::SUCCESS;
 		}
 	}
-	D_ASSERT(!expr.IsFoldable());
+	D_ASSERT(!ExpressionRewriter::CanConstantFold(context, expr));
 	if (expr.GetExpressionType() == ExpressionType::COMPARE_BETWEEN) {
 		auto &between = expr.Cast<BoundFunctionExpression>();
 		//! check if one of the sides is a scalar value
@@ -1288,6 +1301,9 @@ FilterResult FilterCombiner::AddFilter(Expression &expr) {
 
 			if (lower_is_scalar) {
 				auto &scalar = lower_bound;
+				if (!ExpressionRewriter::CanConstantFold(context, scalar)) {
+					return FilterResult::UNSUPPORTED;
+				}
 				Value constant_value;
 				if (!ExpressionExecutor::TryEvaluateScalar(context, scalar, constant_value)) {
 					return FilterResult::UNSUPPORTED;
@@ -1324,6 +1340,9 @@ FilterResult FilterCombiner::AddFilter(Expression &expr) {
 
 			if (upper_is_scalar) {
 				auto &scalar = upper_bound;
+				if (!ExpressionRewriter::CanConstantFold(context, scalar)) {
+					return FilterResult::UNSUPPORTED;
+				}
 				Value constant_value;
 				if (!ExpressionExecutor::TryEvaluateScalar(context, scalar, constant_value)) {
 					return FilterResult::UNSUPPORTED;

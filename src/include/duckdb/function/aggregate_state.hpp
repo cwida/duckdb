@@ -161,6 +161,9 @@ struct AggregateStatisticsInput {
 	optional_ptr<FunctionData> bind_data;
 	vector<BaseStatistics> &child_stats;
 	optional_ptr<NodeStatistics> node_stats;
+	//! When unset, the callback must not change the SQL shape of the aggregate - implementation swaps that
+	//! preserve the bound definition remain allowed
+	bool allow_plan_rewrite = true;
 };
 
 } // namespace duckdb

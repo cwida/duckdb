@@ -29,6 +29,19 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateBetween(BoundFunctionE
 	if (upper_stats) {
 		upper_prune = PropagateComparison(*input_stats, *upper_stats, upper_comparison);
 	}
+	if (SuppressPlanFolds()) {
+		// the comparison outcomes are data observations that must not rewrite the plan,
+		// but a proven result still supplies constant statistics
+		if (lower_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE &&
+		    upper_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE) {
+			return FoldToConstant(expr_ptr, Value::BOOLEAN(true));
+		}
+		if (lower_prune == FilterPropagateResult::FILTER_ALWAYS_FALSE ||
+		    upper_prune == FilterPropagateResult::FILTER_ALWAYS_FALSE) {
+			return FoldToConstant(expr_ptr, Value::BOOLEAN(false));
+		}
+		return nullptr;
+	}
 	if (lower_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE &&
 	    upper_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE) {
 		// both filters are always true: replace the between expression with a constant true

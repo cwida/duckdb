@@ -70,6 +70,8 @@ ScalarFunction GetTypeFun::GetFunction() {
 	fun.GetSignature().AddParameter("expression", LogicalType::ANY);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	fun.SetBindExpressionCallback(BindGetTypeFunctionExpression);
+	// the replacement derives from the argument type, which the statement text determines
+	fun.SetBindingSensitivity(FunctionBindingSensitivity::CONTEXT_INSENSITIVE);
 	return fun;
 }
 
@@ -131,6 +133,8 @@ ScalarFunction MakeTypeFun::GetFunction() {
 	fun.GetSignature().AddParameter("name", LogicalType::VARCHAR);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	fun.SetBindExpressionCallback(BindMakeTypeFunctionExpression);
+	// the replacement evaluates the arguments into a constant type value
+	fun.SetBindingSensitivity(FunctionBindingSensitivity::CONTEXT_SENSITIVE);
 	fun.GetProperties().SetRequiresExpressionNames(true);
 	fun.GetSignature().AddArgs("args", LogicalType::ANY).AddKwargs("kwargs", LogicalType::ANY);
 	return fun;

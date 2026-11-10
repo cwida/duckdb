@@ -153,6 +153,9 @@ static unique_ptr<FunctionData> CastFunctionDeserialize(Deserializer &deserializ
 	}
 	function.SetStability(bound_cast.GetStability());
 	SetCastNullHandling(function, target_type);
+	if (is_default_cast || !CastFunctionSet::Get(context).CanOverrideDefaultCast(source_type, target_type)) {
+		function.SetBindingSensitivity(FunctionBindingSensitivity::CONTEXT_INSENSITIVE);
+	}
 	return make_uniq<CastFunctionData>(source_type, target_type, std::move(bound_cast), try_cast, is_default_cast);
 }
 
@@ -192,6 +195,11 @@ static unique_ptr<Expression> CreateCastExpression(unique_ptr<Expression> child,
 	}
 	scalar_function.SetStability(stability);
 	SetCastNullHandling(scalar_function, target_type);
+	if (is_default_cast) {
+		// a default cast is determined by the written source and target types alone,
+		// a registered cast may capture context in its bind data
+		scalar_function.SetBindingSensitivity(FunctionBindingSensitivity::CONTEXT_INSENSITIVE);
+	}
 
 	BoundScalarFunction bound_function(scalar_function);
 	bound_function.GetArguments() = {source_type};

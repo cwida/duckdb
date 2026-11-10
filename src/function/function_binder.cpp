@@ -1,4 +1,5 @@
 #include "duckdb/function/function_binder.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/parser/parsed_data/bound_pragma_info.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
@@ -738,6 +739,13 @@ static Value FoldArgument(ClientContext &context, Expression &expr) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 		return expr.Cast<BoundConstantExpression>().GetValue();
 	}
+	if (Settings::Get<PortablePlanSetting>(context) &&
+	    (!expr.IsConsistent() || expr.RequiresRebind() || expr.ObservesBindingContext())) {
+		// the retained argument is a value, so there is no form that keeps the expression
+		throw BinderException("Argument %s observes the environment and cannot be planned under "
+		                      "portable_plan: this argument is retained as a plain value",
+		                      expr.GetName());
+	}
 	return ExpressionExecutor::EvaluateScalar(context, expr, true);
 }
 
@@ -1090,6 +1098,11 @@ static bool FoldConstantArgument(ClientContext &context, unique_ptr<Expression> 
 	}
 	// a lambda has no value of its own, the function it is passed to executes its body
 	if (child->GetExpressionClass() == ExpressionClass::BOUND_LAMBDA || !child->IsFoldable()) {
+		return false;
+	}
+	if (Settings::Get<PortablePlanSetting>(context) &&
+	    (!child->IsConsistent() || child->RequiresRebind() || child->ObservesBindingContext())) {
+		// an environment observation must not fold into the plan
 		return false;
 	}
 	if (binder && child->RequiresRebind()) {
@@ -1556,6 +1569,13 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(const FunctionBinding 
 		binder->SetAlwaysRequireRebind();
 	}
 	if (result_func->Function().HasBindExpressionCallback()) {
+		if (Settings::Get<PortablePlanSetting>(context) && result_func->Function().ObservesBindingContext()) {
+			// the replacement would bake the observed environment into the plan, and there is no
+			// executable form to fall back to
+			throw BinderException("Function %s cannot be planned under portable_plan: its binding "
+			                      "replaces the call with an environment-derived expression",
+			                      result_func->Function().GetName());
+		}
 		// if a bind_expression callback is registered - call it and emit the resulting expression
 		FunctionBindExpressionInput input(context, result_func->FunctionMutable(), result_func->BindInfoMutable().get(),
 		                                  result_func->GetChildrenMutable());

@@ -272,6 +272,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundFuncti
 	}
 	if (func.Function().HasStatisticsCallback()) {
 		FunctionStatisticsInput input(func, func.BindInfo().get(), stats, &expr_ptr);
+		input.allow_plan_rewrite = !SuppressPlanFolds();
 		return func.Function().GetStatisticsCallback()(context, input);
 	}
 	return PropagateMonotoneBounds(context, func, stats);

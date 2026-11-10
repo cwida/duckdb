@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/sampling_pushdown.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/common/random_engine.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_sample.hpp"
@@ -16,8 +17,10 @@ unique_ptr<LogicalOperator> SamplingPushdown::Optimize(unique_ptr<LogicalOperato
 		const bool can_push_system_sample =
 		    get.function.sampling_pushdown && sample_options.method == SampleMethod::SYSTEM_SAMPLE && !has_filters;
 
-		if (can_push_system_sample) {
-			const bool is_row_count_sampling = !sample_options.is_percentage;
+		const bool is_row_count_sampling = !sample_options.is_percentage;
+		// the row-count conversion bakes a cardinality-derived rate and a materialized seed into the plan
+		const bool portable_row_count = is_row_count_sampling && Settings::Get<PortablePlanSetting>(context);
+		if (can_push_system_sample && !portable_row_count) {
 			int64_t row_limit = 0;
 			if (is_row_count_sampling) {
 				if (!sample_op.sample_options->seed.IsValid()) {

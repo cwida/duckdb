@@ -12,14 +12,15 @@ namespace duckdb {
 struct ICUDateTrunc : public ICUDateFunc {
 	static unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input) {
 		auto part_value = input.TryGetConstant(0);
-		if (part_value && !part_value->IsNull()) {
-			DatePartSpecifier part;
-			if (TryGetDatePartSpecifier(part_value->GetValue<string>(), part) &&
-			    (part == DatePartSpecifier::DECADE || part == DatePartSpecifier::CENTURY ||
-			     part == DatePartSpecifier::MILLENNIUM || part == DatePartSpecifier::ERA)) {
-				// date_trunc is not monotone for these parts because ICU years skip year 0 at the BC/AD boundary
-				input.GetBoundFunction().SetArgProperties({});
-			}
+		DatePartSpecifier part;
+		// date_trunc is not monotone for decades, centuries, millennia and eras because ICU years skip
+		// year 0 at the BC/AD boundary - an unresolved part cannot prove the annotations safe
+		const bool known_monotone = part_value && !part_value->IsNull() &&
+		                            TryGetDatePartSpecifier(part_value->GetValue<string>(), part) &&
+		                            part != DatePartSpecifier::DECADE && part != DatePartSpecifier::CENTURY &&
+		                            part != DatePartSpecifier::MILLENNIUM && part != DatePartSpecifier::ERA;
+		if (!known_monotone) {
+			input.GetBoundFunction().SetArgProperties({});
 		}
 		return ICUDateFunc::Bind(input);
 	}

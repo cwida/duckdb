@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/rule/case_simplification.hpp"
+#include "duckdb/optimizer/expression_rewriter.hpp"
 
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_case_expression.hpp"
@@ -16,7 +17,7 @@ unique_ptr<Expression> CaseSimplificationRule::Apply(LogicalOperator &op, vector
 	auto &root = bindings[0].get().Cast<BoundCaseExpression>();
 	for (idx_t i = 0; i < root.CaseChecksMutable().size(); i++) {
 		auto &case_check = root.CaseChecksMutable()[i];
-		if (case_check.when_expr->IsFoldable()) {
+		if (ExpressionRewriter::CanConstantFold(GetContext(), *case_check.when_expr)) {
 			// the WHEN check is a foldable expression
 			// use an ExpressionExecutor to execute the expression
 			Value condition;

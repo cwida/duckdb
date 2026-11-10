@@ -45,6 +45,27 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 	}
 	switch (expr.GetExpressionType()) {
 	case ExpressionType::OPERATOR_COALESCE:
+		if (SuppressPlanFolds()) {
+			// the expression stays intact, but only children that can contribute merge their statistics
+			unique_ptr<BaseStatistics> merged;
+			for (idx_t i = 0; i < child_stats.size(); i++) {
+				D_ASSERT(child_stats[i]);
+				if (!child_stats[i]->CanHaveNoNull()) {
+					// this child is always NULL and never contributes
+					continue;
+				}
+				if (merged) {
+					merged->Merge(*child_stats[i]);
+				} else {
+					merged = child_stats[i]->ToUnique();
+				}
+				if (!child_stats[i]->CanHaveNull()) {
+					// later children are unreachable
+					break;
+				}
+			}
+			return merged ? std::move(merged) : std::move(child_stats[0]);
+		}
 		// COALESCE, merge stats of all children
 		for (idx_t i = 0; i < expr.GetChildrenMutable().size(); i++) {
 			D_ASSERT(child_stats[i]);
@@ -89,13 +110,11 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 		}
 		if (!child_stats[0]->CanHaveNull()) {
 			// child has no null values: x IS NULL will always be false
-			expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
-			return PropagateExpression(expr_ptr);
+			return FoldToConstant(expr_ptr, Value::BOOLEAN(false));
 		}
 		if (!child_stats[0]->CanHaveNoNull()) {
 			// child has no valid values: x IS NULL will always be true
-			expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
-			return PropagateExpression(expr_ptr);
+			return FoldToConstant(expr_ptr, Value::BOOLEAN(true));
 		}
 		return nullptr;
 	case ExpressionType::OPERATOR_IS_NOT_NULL:
@@ -104,13 +123,11 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 		}
 		if (!child_stats[0]->CanHaveNull()) {
 			// child has no null values: x IS NOT NULL will always be true
-			expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
-			return PropagateExpression(expr_ptr);
+			return FoldToConstant(expr_ptr, Value::BOOLEAN(true));
 		}
 		if (!child_stats[0]->CanHaveNoNull()) {
 			// child has no valid values: x IS NOT NULL will always be false
-			expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
-			return PropagateExpression(expr_ptr);
+			return FoldToConstant(expr_ptr, Value::BOOLEAN(false));
 		}
 		return nullptr;
 	default:

@@ -12,6 +12,7 @@
     {
       "reason": "Explain/profiling output is different due to verification",
       "paths": [
+        "test/sql/sql_export/portable_plan_profile.test",
         "test/optimizer/aggregate_reuse.test",
         "test/optimizer/avg_rewrite_profitability.test",
         "test/optimizer/deliminator.test",

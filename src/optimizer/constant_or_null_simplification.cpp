@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/constant_or_null_simplification.hpp"
+#include "duckdb/main/settings.hpp"
 
 #include "duckdb/function/scalar/generic_common.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -26,22 +27,27 @@ static optional<bool> GetBooleanConstant(const Expression &expr) {
 	return BooleanValue::Get(constant);
 }
 
-static optional<bool> GetConstantOrNullBoolean(Expression &expr) {
+static optional<bool> GetConstantOrNullBoolean(ClientContext &context, Expression &expr) {
 	if (expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION ||
 	    expr.GetReturnType().id() != LogicalTypeId::BOOLEAN) {
 		return optional<bool>();
 	}
 
 	auto &func = expr.Cast<BoundFunctionExpression>();
+	optional<bool> proof;
 	if (ConstantOrNull::IsConstantOrNull(func, Value::BOOLEAN(true))) {
-		return true;
+		proof = true;
+	} else if (ConstantOrNull::IsConstantOrNull(func, Value::BOOLEAN(false))) {
+		proof = false;
 	}
-
-	if (ConstantOrNull::IsConstantOrNull(func, Value::BOOLEAN(false))) {
-		return false;
+	if (!proof.has_value()) {
+		return proof;
 	}
-
-	return optional<bool>();
+	if (Settings::Get<PortablePlanSetting>(context) && !ConstantOrNull::ProofIsPortable(func)) {
+		// the cached value observed the planning environment
+		return optional<bool>();
+	}
+	return proof;
 }
 
 //! Whether every input that can still turn the result into NULL is provably NOT NULL.
@@ -89,7 +95,7 @@ unique_ptr<Expression> ConstantOrNullSimplification::SimplifyExpression(LogicalO
 		if (!allow_folding) {
 			return expr;
 		}
-		auto value = GetConstantOrNullBoolean(*expr);
+		auto value = GetConstantOrNullBoolean(context, *expr);
 		if (!value.has_value()) {
 			return expr;
 		}

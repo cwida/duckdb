@@ -22,6 +22,10 @@ bool StatisticsPropagator::ExpressionIsConstant(Expression &expr, const Value &v
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 		expr_value = expr.Cast<BoundConstantExpression>().GetValue();
 	} else if (expr.IsFoldable()) {
+		if (SuppressPlanFolds() && (!expr.IsConsistent() || expr.RequiresRebind() || expr.ObservesBindingContext())) {
+			// evaluating an environment-dependent expression would bake the planning environment into the plan
+			return false;
+		}
 		if (!ExpressionExecutor::TryEvaluateScalar(context, expr, expr_value)) {
 			return false;
 		}
@@ -37,7 +41,14 @@ bool StatisticsPropagator::ExpressionIsConstantOrNull(Expression &expr, const Va
 		return false;
 	}
 	auto &bound_function = expr.Cast<BoundFunctionExpression>();
-	return ConstantOrNull::IsConstantOrNull(bound_function, val);
+	if (!ConstantOrNull::IsConstantOrNull(bound_function, val)) {
+		return false;
+	}
+	if (SuppressPlanFolds() && !ConstantOrNull::ProofIsPortable(bound_function)) {
+		// the cached value observed the planning environment
+		return false;
+	}
+	return true;
 }
 
 void StatisticsPropagator::SetStatisticsNotNull(ColumnBinding binding) {

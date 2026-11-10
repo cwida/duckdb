@@ -90,6 +90,8 @@ struct FunctionStatisticsInput {
 	optional_ptr<FunctionData> bind_data;
 	vector<BaseStatistics> &child_stats;
 	unique_ptr<Expression> *expr_ptr;
+	//! When unset, the callback must not rewrite the expression - the plan has to stay free of data observations
+	bool allow_plan_rewrite = true;
 };
 
 struct FunctionModifiedDatabasesInput {
@@ -248,6 +250,21 @@ public:
 public: // Properties
 
 	auto GetStability() const -> FunctionStability { return properties.stability; }
+	auto SetBindingSensitivity(FunctionBindingSensitivity value) -> void {
+		properties.binding_sensitivity = value;
+	}
+	//! Whether binding observes the environment in a way that affects the result - AUTOMATIC resolves
+	//! to sensitive exactly when the function has a bind callback
+	auto ObservesBindingContext() const -> bool {
+		switch (properties.binding_sensitivity) {
+		case FunctionBindingSensitivity::CONTEXT_SENSITIVE:
+			return true;
+		case FunctionBindingSensitivity::CONTEXT_INSENSITIVE:
+			return false;
+		default:
+			return HasBindCallback();
+		}
+	}
 	auto SetStability(FunctionStability value) -> void { properties.stability = value; }
 
 	auto GetNullHandling() const -> FunctionNullHandling { return properties.null_handling; }

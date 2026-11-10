@@ -171,6 +171,11 @@ unique_ptr<Expression> RegexOptimizationRule::Apply(LogicalOperator &op, vector<
 			return nullptr;
 		}
 	}
+	if (root.GetChildren().size() == 3 &&
+	    root.GetChildren()[2]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+		// the cached options only reflect the written argument when it is a literal
+		return nullptr;
+	}
 	auto regexp_bind_data = root.BindInfo().get()->Cast<RegexpMatchesBindData>();
 
 	Value constant_value;
@@ -307,6 +312,9 @@ unique_ptr<Expression> RegexpReplaceExtractRule::Apply(LogicalOperator &op, vect
 
 	string options_str = "k";
 	if (root.GetChildrenMutable().size() == 4) {
+		if (root.GetChildrenMutable()[3]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+			return nullptr;
+		}
 		auto &options_const = root.GetChildrenMutable()[3]->Cast<BoundConstantExpression>();
 		if (options_const.GetValue().IsNull() || options_const.GetValue().type().id() != LogicalTypeId::VARCHAR) {
 			return nullptr;

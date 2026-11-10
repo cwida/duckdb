@@ -35,6 +35,8 @@ ScalarFunction CanCastImplicitlyFun::GetFunction() {
 	fun.GetSignature().AddParameter("source_type", LogicalType::ANY).AddParameter("target_type", LogicalType::ANY);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	fun.SetBindExpressionCallback(BindCanCastImplicitlyExpression);
+	// the implicit-cast decision observes old_implicit_casting
+	fun.SetBindingSensitivity(FunctionBindingSensitivity::CONTEXT_SENSITIVE);
 	return fun;
 }
 

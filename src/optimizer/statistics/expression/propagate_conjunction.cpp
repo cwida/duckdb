@@ -1,4 +1,5 @@
 
+#include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -67,10 +68,38 @@ void StatisticsPropagator::SimplifyConstantOrNull(vector<unique_ptr<Expression>>
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundConjunctionExpression &expr,
                                                                      unique_ptr<Expression> &expr_ptr) {
 	auto is_and = expr.GetExpressionType() == ExpressionType::CONJUNCTION_AND;
+	// under suppressed plan folds, proven child statistics still compose to a proven conjunction
+	bool all_children_proven = true;
+	bool proven_result = is_and;
+	bool proven_short_circuit = false;
 	for (idx_t expr_idx = 0; expr_idx < expr.GetChildrenMutable().size(); expr_idx++) {
 		auto &child = expr.GetChildrenMutable()[expr_idx];
 		auto stats = PropagateExpression(child);
+		if (SuppressPlanFolds()) {
+			bool child_proven = false;
+			bool child_value = false;
+			if (stats && stats->GetType().id() == LogicalTypeId::BOOLEAN && !stats->CanHaveNull() &&
+			    NumericStats::HasMinMax(*stats)) {
+				auto min_value = NumericStats::Min(*stats);
+				auto max_value = NumericStats::Max(*stats);
+				if (min_value == max_value) {
+					child_proven = true;
+					child_value = BooleanValue::Get(min_value);
+				}
+			}
+			if (child_proven && child_value != is_and) {
+				// a proven FALSE decides an AND, a proven TRUE decides an OR
+				proven_result = child_value;
+				proven_short_circuit = true;
+			}
+			all_children_proven &= child_proven;
+		}
 		if (!child->IsFoldable()) {
+			continue;
+		}
+		if (SuppressPlanFolds() &&
+		    (!child->IsConsistent() || child->RequiresRebind() || child->ObservesBindingContext())) {
+			// evaluating an environment-dependent child would bake the planning environment into the plan
 			continue;
 		}
 		// we have a constant in a conjunction
@@ -121,6 +150,9 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundConjun
 	} else if (expr.GetChildrenMutable().size() == 1) {
 		// if there is one child left, replace the conjunction with that one child
 		expr_ptr = std::move(expr.GetChildrenMutable()[0]);
+	}
+	if (SuppressPlanFolds() && (proven_short_circuit || all_children_proven)) {
+		return FoldToConstant(expr_ptr, Value::BOOLEAN(proven_result));
 	}
 	return nullptr;
 }

@@ -54,6 +54,8 @@ public:
 	virtual bool IsVolatile() const;
 	//! Whether the expression returns the same result for the same input within a query
 	virtual bool IsConsistent() const;
+	//! Whether any function in the expression observed its binding environment in a way that affects the result
+	virtual bool ObservesBindingContext() const;
 	virtual bool PropagatesNullValues() const;
 	virtual bool IsFoldable() const;
 	virtual bool CanThrow() const;

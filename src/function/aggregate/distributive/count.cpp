@@ -277,7 +277,7 @@ AggregateStateLayout GetCountStateType(AggregateLayoutInput &input) {
 
 unique_ptr<BaseStatistics> CountPropagateStats(ClientContext &context, BoundAggregateExpression &expr,
                                                AggregateStatisticsInput &input) {
-	if (!expr.IsDistinct() && !input.child_stats[0].CanHaveNull()) {
+	if (!expr.IsDistinct() && !input.child_stats[0].CanHaveNull() && input.allow_plan_rewrite) {
 		// count on a column without null values: use count star
 		expr.FunctionMutable() = BoundAggregateFunction(CountStarFun::GetFunction());
 		expr.GetChildrenMutable().clear();

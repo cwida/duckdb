@@ -185,10 +185,13 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateComparison(BoundFuncti
 	auto &right = BoundComparisonExpression::RightMutable(expr);
 	auto left_stats = PropagateExpression(left);
 	auto right_stats = PropagateExpression(right);
-	auto comparison = SimplifyDistinctComparison(expr.GetExpressionType(), left_stats.get(), right_stats.get(),
-	                                             ComparisonContext::SCALAR);
-	if (comparison != expr.GetExpressionType()) {
-		BoundComparisonExpression::SetType(expr, comparison);
+	if (!SuppressPlanFolds()) {
+		// the null counts are a data observation that must not rewrite the comparison under portable_plan
+		auto comparison = SimplifyDistinctComparison(expr.GetExpressionType(), left_stats.get(), right_stats.get(),
+		                                             ComparisonContext::SCALAR);
+		if (comparison != expr.GetExpressionType()) {
+			BoundComparisonExpression::SetType(expr, comparison);
+		}
 	}
 	if (!left_stats || !right_stats) {
 		return nullptr;
@@ -197,12 +200,13 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateComparison(BoundFuncti
 	auto propagate_result = PropagateComparison(*left_stats, *right_stats, expr.GetExpressionType());
 	switch (propagate_result) {
 	case FilterPropagateResult::FILTER_ALWAYS_TRUE:
-		expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
-		return PropagateExpression(expr_ptr);
+		return FoldToConstant(expr_ptr, Value::BOOLEAN(true));
 	case FilterPropagateResult::FILTER_ALWAYS_FALSE:
-		expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
-		return PropagateExpression(expr_ptr);
+		return FoldToConstant(expr_ptr, Value::BOOLEAN(false));
 	case FilterPropagateResult::FILTER_TRUE_OR_NULL: {
+		if (SuppressPlanFolds()) {
+			return nullptr;
+		}
 		vector<unique_ptr<Expression>> children;
 		children.push_back(std::move(left));
 		children.push_back(std::move(right));
@@ -210,6 +214,9 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateComparison(BoundFuncti
 		return nullptr;
 	}
 	case FilterPropagateResult::FILTER_FALSE_OR_NULL: {
+		if (SuppressPlanFolds()) {
+			return nullptr;
+		}
 		vector<unique_ptr<Expression>> children;
 		children.push_back(std::move(left));
 		children.push_back(std::move(right));

@@ -20,6 +20,9 @@ struct SortedAggregateStateOrder;
 
 struct ConstantOrNull {
 	static bool IsConstantOrNull(BoundFunctionExpression &expr, const Value &val);
+	//! Whether the cached proof is derivable from the retained first argument - binding evaluated it,
+	//! and a context-observing argument makes the cached value non-portable
+	static bool ProofIsPortable(const BoundFunctionExpression &expr);
 };
 
 struct ExportAggregateFunctionBindData : public FunctionData {

@@ -154,16 +154,26 @@ private:
 	//! Try to execute aggregates using only the statistics if possible
 	void TryExecuteAggregates(LogicalAggregate &op, unique_ptr<LogicalOperator> &node_ptr);
 	void ReplaceWithEmptyResult(unique_ptr<LogicalOperator> &node);
+	//! Fold the expression to the proven constant, or keep it and return the constant's statistics
+	//! when plan folds are suppressed
+	unique_ptr<BaseStatistics> FoldToConstant(unique_ptr<Expression> &expr_ptr, Value value);
 
 	bool ExpressionIsConstant(Expression &expr, const Value &val);
 	bool ExpressionIsConstantOrNull(Expression &expr, const Value &val);
 
 	unique_ptr<NodeStatistics> PropagateUnion(LogicalSetOperation &setop, unique_ptr<LogicalOperator> &node_ptr);
 
+	//! Whether plan-rewriting folds are suppressed - statistics still propagate for costing
+	bool SuppressPlanFolds() const {
+		return portable_plan;
+	}
+
 private:
 	Optimizer &optimizer;
 	ClientContext &context;
 	StatisticsPropagationMode mode;
+	//! Resolved portable_plan setting - under the profile, observations must not rewrite the plan
+	bool portable_plan;
 	//! Reference to the owning pointer so root replacements remain visible
 	unique_ptr<LogicalOperator> &root;
 	//! The map of ColumnBinding -> statistics for the various nodes

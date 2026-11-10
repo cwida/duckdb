@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/in_clause_rewriter.hpp"
+#include "duckdb/optimizer/expression_rewriter.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -97,7 +98,13 @@ unique_ptr<Expression> InClauseRewriter::VisitReplace(BoundOperatorExpression &e
 	// IN clause with many children: try to generate a mark join that replaces this IN expression
 	// we can only do this if the expressions in the expression list are scalar
 	for (idx_t i = 1; i < expr.GetChildrenMutable().size(); i++) {
-		if (!expr.GetChildrenMutable()[i]->IsFoldable()) {
+		auto &child = *expr.GetChildrenMutable()[i];
+		if (child.IsFoldable() && !ExpressionRewriter::CanConstantFold(context, child)) {
+			// an environment-dependent value must not materialize, and the OR fallback would copy
+			// the probe per comparison - keep the native IN evaluation
+			return nullptr;
+		}
+		if (!child.IsFoldable()) {
 			// non-scalar expression
 			all_scalar = false;
 		}

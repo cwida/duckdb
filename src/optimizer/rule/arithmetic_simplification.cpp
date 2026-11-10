@@ -77,7 +77,8 @@ unique_ptr<Expression> ArithmeticSimplificationRule::Apply(LogicalOperator &op, 
 				// divide by 1, replace with non-constant child
 				return Expression::PreserveReturnType(root.GetReturnType(),
 				                                      std::move(root.GetChildrenMutable()[1 - constant_child]));
-			} else if (constant.GetValue() == 0 && !Settings::Get<ErrorOnDivisionByZeroSetting>(rewriter.context)) {
+			} else if (constant.GetValue() == 0 && !Settings::Get<ErrorOnDivisionByZeroSetting>(rewriter.context) &&
+			           !Settings::Get<PortablePlanSetting>(rewriter.context)) {
 				// divide by 0, replace with NULL
 				return make_uniq<BoundConstantExpression>(Value(root.GetReturnType()));
 			}

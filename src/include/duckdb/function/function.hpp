@@ -55,6 +55,11 @@ enum class FunctionNullHandling : uint8_t { DEFAULT_NULL_HANDLING = 0, SPECIAL_H
 //! VOLATILE                -> the result of this function might change per row (e.g. RANDOM())
 enum class FunctionStability : uint8_t { CONSISTENT = 0, VOLATILE = 1, CONSISTENT_WITHIN_QUERY = 2 };
 
+//! Whether binding the function observes its environment (settings, catalog state) in a way that
+//! affects the result. AUTOMATIC resolves to CONTEXT_SENSITIVE when the function has a bind callback
+//! and to CONTEXT_INSENSITIVE otherwise, so an unaudited bind cannot leak an observation by accident.
+enum class FunctionBindingSensitivity : uint8_t { AUTOMATIC = 0, CONTEXT_INSENSITIVE = 1, CONTEXT_SENSITIVE = 2 };
+
 //! How to handle collations
 //! PROPAGATE_COLLATIONS        -> this function combines collation from its inputs and emits them again (default)
 //! PUSH_COMBINABLE_COLLATIONS  -> combinable collations are executed for the input arguments
@@ -576,6 +581,13 @@ public:
 		requires_ordered_execution = value;
 	}
 
+	auto GetBindingSensitivity() const -> FunctionBindingSensitivity {
+		return binding_sensitivity;
+	}
+	auto SetBindingSensitivity(FunctionBindingSensitivity value) -> void {
+		binding_sensitivity = value;
+	}
+
 	// Helpers
 	auto SetFallible() -> void {
 		errors = FunctionErrors::CAN_THROW_RUNTIME_ERROR;
@@ -603,6 +615,8 @@ public:
 	bool requires_expression_names = false;
 	//! Whether calls to this function must follow input order
 	bool requires_ordered_execution = false;
+	//! Whether binding observes the environment in a way that affects the result
+	FunctionBindingSensitivity binding_sensitivity = FunctionBindingSensitivity::AUTOMATIC;
 };
 
 class BoundSimpleFunction {
