@@ -2150,19 +2150,19 @@ void DatePartFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	const auto &spec_arg = args.data[0];
 	const auto &date_arg = args.data[1];
 
-	BinaryExecutor::Execute<string_t, T, double>(
-	    spec_arg, date_arg, result, [&](string_t specifier, T date) -> optional<double> {
-		    if (date.IsFinite()) {
-			    const auto part_code = GetDatePartSpecifier(specifier.GetString());
-			    if (IsBigintDatepart(part_code)) {
-				    return ExtractElement<T>(part_code, date);
-			    } else {
-				    return ExtractDoubleElement<T>(part_code, date);
-			    }
-		    } else {
-			    return nullopt;
-		    }
-	    });
+	BinaryExecutor::Execute<string_t, T, double>(spec_arg, date_arg, result,
+	                                             [&](string_t specifier, T date) -> optional<double> {
+		                                             if (date.IsFinite()) {
+			                                             const auto part_code = GetDatePartSpecifier(specifier);
+			                                             if (IsBigintDatepart(part_code)) {
+				                                             return ExtractElement<T>(part_code, date);
+			                                             } else {
+				                                             return ExtractDoubleElement<T>(part_code, date);
+			                                             }
+		                                             } else {
+			                                             return nullopt;
+		                                             }
+	                                             });
 }
 
 template <typename RESULT_TYPE, typename OP>
