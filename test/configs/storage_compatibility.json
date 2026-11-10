@@ -18,6 +18,12 @@
   "skip_compiled": "true",
   "skip_tests": [
     {
+      "reason": "Older versions cannot read the types of the tables left behind by the test.",
+      "paths": [
+        "test/sql/index/art/create_index_time_zone_dependent.test"
+      ]
+    },
+    {
       "reason": "Contains explicit use of the memory catalog.",
       "paths": [
         "test/sql/show_select/test_describe_all.test",
@@ -57,6 +63,8 @@
     {
       "reason": "Time (NS) not supported (new type).",
       "paths": [
+        "test/sql/copy/parquet/bloom_filter_fallback_types.test",
+        "test/sql/aggregate/aggregates/summarize_nanosecond_types.test",
         "test/sql/optimizer/expression/test_time_ns_cast_comparison.test",
         "test/fuzzer/duckfuzz/arg_minmax_by_decimal.test",
         "test/fuzzer/duckfuzz/array_distance.test",
@@ -103,7 +111,8 @@
         "test/parquet/timens_parquet.test",
         "test/sql/types/time/test_time_ns.test",
         "test/sql/copy/parquet/int96_as.test",
-        "test/sql/copy/parquet/byte_stream_split_flba.test"
+        "test/sql/copy/parquet/byte_stream_split_flba.test",
+        "test/sql/function/timestamp/test_icu_time_bucket_timestamptz_ns.test"
       ]
     },
     {

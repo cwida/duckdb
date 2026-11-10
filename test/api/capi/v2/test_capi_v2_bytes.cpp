@@ -51,7 +51,7 @@ struct V2InlineFixture {
 	duckdb_v2_connection_handle conn = nullptr;
 	V2InlineFixture() {
 		duckdb_v2_environment_create(&env, nullptr);
-		OpenInstance(env, duckdb_v2_str {nullptr, 0}, &instance, nullptr);
+		OpenInstance(env, std::string_view(), &instance, nullptr);
 		duckdb_v2_connection_create(instance, &conn, nullptr);
 	}
 	~V2InlineFixture() {
@@ -175,7 +175,7 @@ TEST_CASE("V2 bytes layout: BIGNUM sign matches bignum_decode", "[capi_v2][bytes
 		idx_t mag_len = 0;
 		bool dec_neg = false;
 		// A null out buffer is a size + sign query, which is all this needs.
-		REQUIRE(duckdb_v2_bignum_decode(reinterpret_cast<const uint8_t *>(storage.ptr), storage.len, nullptr, 0,
+		REQUIRE(duckdb_v2_bignum_decode(reinterpret_cast<const uint8_t *>(storage.data()), storage.size(), nullptr, 0,
 		                                &mag_len, &dec_neg, nullptr) == DUCKDB_V2_ERROR_NONE);
 
 		REQUIRE(BignumNegative(&arr[phys]) == dec_neg);

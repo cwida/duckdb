@@ -33,13 +33,14 @@ DebugVerificationMode DBConfigOptions::global_verification_mode = DebugVerificat
 #define DUCKDB_SETTING(_PARAM)                                                                                         \
 	{                                                                                                                  \
 		_PARAM::Name, _PARAM::Description, _PARAM::InputType, nullptr, nullptr, nullptr, nullptr, nullptr,             \
-		    _PARAM::Scope, _PARAM::DefaultValue, nullptr, _PARAM::SettingIndex, _PARAM::IsDebug, _PARAM::IsDeprecated  \
+		    _PARAM::Scope, _PARAM::DefaultValue, nullptr, _PARAM::SettingIndex, _PARAM::IsDebug, _PARAM::IsDeprecated, \
+		    Settings::GetDefaultValue<_PARAM>                                                                          \
 	}
 #define DUCKDB_SETTING_CALLBACK(_PARAM)                                                                                \
 	{                                                                                                                  \
 		_PARAM::Name, _PARAM::Description, _PARAM::InputType, nullptr, nullptr, nullptr, nullptr, nullptr,             \
 		    _PARAM::Scope, _PARAM::DefaultValue, _PARAM::OnSet, _PARAM::SettingIndex, _PARAM::IsDebug,                 \
-		    _PARAM::IsDeprecated                                                                                       \
+		    _PARAM::IsDeprecated, Settings::GetDefaultValue<_PARAM>                                                    \
 	}
 #define DUCKDB_GLOBAL(_PARAM)                                                                                          \
 	{                                                                                                                  \
@@ -145,6 +146,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING_CALLBACK(DebugWindowModeSetting),
     DUCKDB_SETTING_CALLBACK(DefaultBlockSizeSetting),
     DUCKDB_SETTING_CALLBACK(DefaultCollationSetting),
+    DUCKDB_GLOBAL(DefaultGrammarExtensionsSetting),
     DUCKDB_SETTING_CALLBACK(DefaultNullOrderSetting),
     DUCKDB_SETTING_CALLBACK(DefaultOrderSetting),
     DUCKDB_GLOBAL(DefaultSecretStorageSetting),
@@ -197,6 +199,8 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_GLOBAL(HTTPProxySetting),
     DUCKDB_SETTING(HTTPProxyPasswordSetting),
     DUCKDB_SETTING(HTTPProxyUsernameSetting),
+    DUCKDB_SETTING(HTTPRetryQuotaThrottledSetting),
+    DUCKDB_SETTING(HTTPRetryThrottledWaitMsSetting),
     DUCKDB_SETTING(IeeeFloatingPointOpsSetting),
     DUCKDB_SETTING(IgnoreUnknownCrsSetting),
     DUCKDB_SETTING(ImmediateTransactionModeSetting),
@@ -245,6 +249,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING_CALLBACK(ReadAheadDepthSetting),
     DUCKDB_SETTING(RedactHttpLogsSetting),
     DUCKDB_SETTING_CALLBACK(RegexMatchOperatorSemanticsSetting),
+    DUCKDB_SETTING(ScalarAggregateMergeThresholdSetting),
     DUCKDB_SETTING(ScalarSubqueryErrorOnMultipleRowsSetting),
     DUCKDB_SETTING(SchedulerProcessPartialSetting),
     DUCKDB_LOCAL(SchemaSetting),
@@ -258,7 +263,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_GLOBAL(TempDirectorySetting),
     DUCKDB_SETTING_CALLBACK(TempFileEncryptionSetting),
     DUCKDB_GLOBAL(ThreadsSetting),
-    DUCKDB_LOCAL(TrackedMetricsSetting),
+    DUCKDB_SETTING_CALLBACK(TrackedMetricsSetting),
     DUCKDB_SETTING(UsernameSetting),
     DUCKDB_SETTING_CALLBACK(VacuumRebuildIndexesSetting),
     DUCKDB_SETTING_CALLBACK(ValidateExternalFileCacheSetting),
@@ -703,10 +708,11 @@ void DBConfig::CheckLock(const Identifier &name) {
 		// we are always allowed to change these settings
 		return;
 	}
-	if (!options.allowed_configs.empty()) {
+	auto allowed_configs = GetAllowedConfigs();
+	if (!allowed_configs.empty()) {
 		auto option = GetOptionByName(name);
 		auto canonical_name = option ? Identifier(option->name) : name;
-		if (options.allowed_configs.find(canonical_name) != options.allowed_configs.end()) {
+		if (allowed_configs.find(canonical_name) != allowed_configs.end()) {
 			// settings that are allowed through allowed_configs
 			return;
 		}
@@ -879,8 +885,10 @@ SettingLookupResult DBConfig::TryGetDefaultValue(optional_ptr<const Configuratio
 	if (!option || !option->default_value) {
 		return SettingLookupResult();
 	}
-	auto input_type = ParseLogicalType(option->parameter_type);
-	result = Value(option->default_value).DefaultCastAs(input_type);
+	if (!option->get_default_value) {
+		throw InternalException("Generic setting \"%s\" has no typed default value", option->name);
+	}
+	result = option->get_default_value();
 	return SettingLookupResult(SettingScope::GLOBAL);
 }
 
@@ -898,10 +906,10 @@ SettingLookupResult DBConfig::TryGetCurrentSetting(const Identifier &key, Value 
 
 optional_idx DBConfig::TryGetSettingIndex(const Identifier &name,
                                           optional_ptr<const ConfigurationOption> &option) const {
-	ExtensionOption extension_option;
-	if (TryGetExtensionOption(name, extension_option)) {
+	auto extension_setting_index = user_settings.TryGetExtensionSettingIndex(name);
+	if (extension_setting_index.IsValid()) {
 		// extension setting
-		return extension_option.setting_index;
+		return extension_setting_index;
 	}
 	option = GetOptionByName(name);
 	if (option) {
@@ -1018,6 +1026,16 @@ bool DBConfig::IsOptimizerDisabled(OptimizerType type) const {
 	}
 	lock_guard<mutex> guard(disabled_optimizers_lock);
 	return options.disabled_optimizers.find(type) != options.disabled_optimizers.end();
+}
+
+LogicalType DBConfig::GetForceVariantShredding() const {
+	std::lock_guard<std::recursive_mutex> guard(config_lock);
+	return options.force_variant_shredding;
+}
+
+identifier_set_t DBConfig::GetAllowedConfigs() const {
+	std::lock_guard<std::recursive_mutex> guard(config_lock);
+	return options.allowed_configs;
 }
 
 set<OptimizerType> DBConfig::GetDisabledOptimizers() const {

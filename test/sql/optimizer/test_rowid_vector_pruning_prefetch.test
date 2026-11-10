@@ -1,0 +1,224 @@
+# name: test/sql/optimizer/test_rowid_vector_pruning_prefetch.test
+# description: Scans with row id filters only prefetch the vectors that hold the row ids (duckdblabs/bot-issue-tracker#549)
+# group: [optimizer]
+
+require json
+
+load {TEST_DIR}/rowid_vector_pruning_prefetch.db
+
+statement ok
+SET threads = 1
+
+# with prefetching, late materialization reads the blocks of one vector instead of its whole row group
+statement ok
+CREATE TABLE p (k BIGINT PRIMARY KEY, o BIGINT, s VARCHAR);
+
+statement ok
+INSERT INTO p SELECT i, i % 1000, md5(i::VARCHAR) || md5((i + 1)::VARCHAR) FROM range(245760) t(i);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+statement ok
+SET threads = 1
+
+statement ok
+SET storage_block_prefetch = 'debug_force_always'
+
+statement ok
+SET enable_profiling = 'json'
+
+statement ok
+SET tracked_metrics = ['io.total_bytes_read']
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_prefetch_late.json'
+
+query I
+SELECT s FROM p WHERE k = 122881 ORDER BY o LIMIT 1
+----
+506995c3dc5272bbfb3321c48ef268ff71452dbcef3372bb549d6385d9566ee5
+
+restart
+
+statement ok
+SET threads = 1
+
+statement ok
+SET storage_block_prefetch = 'debug_force_always'
+
+statement ok
+SET enable_profiling = 'json'
+
+statement ok
+SET tracked_metrics = ['io.total_bytes_read']
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_prefetch_group.json'
+
+query I
+SELECT count(DISTINCT s) FROM p WHERE rowid >= 122880
+----
+122880
+
+# a row id in the first vector of the row group and one in its last vector, each on its own
+foreach id 122881 245759
+
+restart
+
+statement ok
+SET threads = 1
+
+statement ok
+SET storage_block_prefetch = 'debug_force_always'
+
+statement ok
+SET enable_profiling = 'json'
+
+statement ok
+SET tracked_metrics = ['io.total_bytes_read']
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_prefetch_{id}.json'
+
+query I
+SELECT length(s) FROM p WHERE rowid = {id}
+----
+64
+
+endloop
+
+# both row ids together prefetch their two vectors and nothing in between
+restart
+
+statement ok
+SET threads = 1
+
+statement ok
+SET storage_block_prefetch = 'debug_force_always'
+
+statement ok
+SET enable_profiling = 'json'
+
+statement ok
+SET tracked_metrics = ['io.total_bytes_read']
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_prefetch_range.json'
+
+query I
+SELECT s FROM p WHERE rowid IN (122881, 245759) ORDER BY rowid
+----
+506995c3dc5272bbfb3321c48ef268ff71452dbcef3372bb549d6385d9566ee5
+16d1463e014629c4db37dfbc739a1cfc54251033b4966af2e59dff7330afed9d
+
+# late materialization with row ids at both ends of the row group reads less than the row group too
+restart
+
+statement ok
+SET threads = 1
+
+statement ok
+SET storage_block_prefetch = 'debug_force_always'
+
+statement ok
+SET enable_profiling = 'json'
+
+statement ok
+SET tracked_metrics = ['io.total_bytes_read']
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_prefetch_late_range.json'
+
+query I
+SELECT s FROM p WHERE k IN (122881, 245759) ORDER BY o LIMIT 2
+----
+16d1463e014629c4db37dfbc739a1cfc54251033b4966af2e59dff7330afed9d
+506995c3dc5272bbfb3321c48ef268ff71452dbcef3372bb549d6385d9566ee5
+
+statement ok
+PRAGMA disable_profiling
+
+query III
+SELECT late.io.total_bytes_read < row_group.io.total_bytes_read,
+       two_ids.io.total_bytes_read <= first_id.io.total_bytes_read + last_id.io.total_bytes_read,
+       late_two_ids.io.total_bytes_read < row_group.io.total_bytes_read
+FROM '{TEST_DIR}/rowid_vector_pruning_prefetch_late.json' late,
+     '{TEST_DIR}/rowid_vector_pruning_prefetch_group.json' row_group,
+     '{TEST_DIR}/rowid_vector_pruning_prefetch_122881.json' first_id,
+     '{TEST_DIR}/rowid_vector_pruning_prefetch_245759.json' last_id,
+     '{TEST_DIR}/rowid_vector_pruning_prefetch_range.json' two_ids,
+     '{TEST_DIR}/rowid_vector_pruning_prefetch_late_range.json' late_two_ids
+----
+true	true	true
+
+# a list of structs of lists prefetches its children from the position the skipped vectors leave the list scan at
+statement ok
+CREATE TABLE nested AS SELECT [{'xs': [i, i + 1]}] AS v, i AS k FROM range(4097) t(i);
+
+statement ok
+CHECKPOINT
+
+foreach depth -1 0
+
+restart
+
+statement ok
+SET threads = 1
+
+statement ok
+SET storage_block_prefetch = 'debug_force_always'
+
+statement ok
+SET read_ahead_depth = {depth}
+
+query II
+SELECT rowid, v FROM nested WHERE rowid IN (2048, 4096) ORDER BY rowid
+----
+2048	[{'xs': [2048, 2049]}]
+4096	[{'xs': [4096, 4097]}]
+
+query I
+SELECT v FROM nested WHERE k = 4000 ORDER BY k LIMIT 1
+----
+[{'xs': [4000, 4001]}]
+
+endloop
+
+# a scan state reused for a row group of empty lists keeps the child scan of the earlier row group
+statement ok
+CREATE TABLE reuse AS SELECT CASE WHEN i < 122880 THEN [[i, i + 1]] ELSE [] END AS v, i AS k FROM range(245760) t(i);
+
+statement ok
+CHECKPOINT
+
+foreach depth -1 0
+
+restart
+
+statement ok
+SET threads = 2
+
+statement ok
+PRAGMA verify_parallelism
+
+statement ok
+SET storage_block_prefetch = 'debug_force_always'
+
+statement ok
+SET read_ahead_depth = {depth}
+
+query II
+SELECT count(*), sum(len(v)) FROM reuse WHERE k % 7 = 0
+----
+35109	17555
+
+query II
+SELECT rowid, v FROM reuse WHERE rowid IN (100, 200000) ORDER BY rowid
+----
+100	[[100, 101]]
+200000	[]
+
+endloop

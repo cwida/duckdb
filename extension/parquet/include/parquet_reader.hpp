@@ -96,6 +96,7 @@ struct CryptoMetaData;
 struct GlobalTableFunctionState;
 struct LocalTableFunctionState;
 struct PartitionStatistics;
+struct ReadHead;
 struct TableFilterState;
 
 struct ParquetReaderPrefetchConfig {
@@ -322,6 +323,12 @@ struct ParquetOptions {
 	StringColumnReader::Utf8ValidationOption utf8_validation_option =
 	    StringColumnReader::Utf8ValidationOption::STRICT_UTF8;
 	ParquetInt96AsOption int96_as = ParquetInt96AsOption::TIMESTAMP;
+
+	//! Whether invalid UTF-8 in a VARCHAR column (not JSON) is changed as it is read, so that the values no longer lie
+	//! within the statistics and bloom filters of the stored bytes
+	bool RepairsInvalidUTF8() const {
+		return utf8_validation_option != StringColumnReader::Utf8ValidationOption::STRICT_UTF8;
+	}
 };
 
 struct ParquetOptionsSerialization {
@@ -495,7 +502,9 @@ private:
 	uint64_t GetGroupSpan(ParquetReaderScanState &state);
 	FilterPropagateResult CheckRowGroupFilterStatistics(ClientContext &context, ParquetReaderScanState &state,
 	                                                    ColumnReader &column_reader, const TableFilter &filter);
-	bool DynamicFiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state);
+	FilterPropagateResult CheckRowGroupFilterStatistics(ClientContext &context, idx_t group_index,
+	                                                    ColumnReader &column_reader, const TableFilter &filter);
+	bool FiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state, bool dynamic_filters_only);
 	void PrepareRowGroupBuffer(ClientContext &context, ParquetReaderScanState &state, idx_t out_col_idx);
 	//! Reads the page index of the row group and works out which rows may match the filters; a page index that
 	//! cannot be read or evaluated is ignored
@@ -504,6 +513,13 @@ private:
 	//! Serves the page index of the whole file from one buffer that is read once per reader and shared by every row
 	//! group and thread, when the index fits the transport's accepted column gap; returns false when it does not
 	bool TryAttachPageIndexBuffer(ThriftFileTransport &transport) const;
+	struct BloomFilterReadPlan;
+	BloomFilterReadPlan PlanBloomFilterReads(ClientContext &context, ThriftFileTransport &transport,
+	                                         ColumnReader &column_reader, const TableFilter &filter, bool nested_filter,
+	                                         idx_t column_chunk_idx);
+	bool TryAttachBloomFilterReadHead(ClientContext &context, ParquetReaderScanState &state,
+	                                  ColumnReader &column_reader, const TableFilter &filter, bool nested_filter,
+	                                  idx_t column_chunk_idx);
 	//! Moves the scan to the next rows of the row group that may match according to the page index, skipping the
 	//! rows in between in every column reader; returns the number of rows to scan next (0 if none are left)
 	idx_t SkipToPageIndexRows(ParquetReaderScanState &state);
@@ -560,6 +576,9 @@ private:
 	mutable mutex page_index_buffer_lock;
 	mutable AllocatedData page_index_buffer;
 	mutable bool page_index_buffer_loaded = false;
+	mutex bloom_filter_read_heads_lock;
+	//! Per column, unclaimed row groups hold their shared read heads. Plans use the first gap estimate.
+	unordered_map<idx_t, unordered_map<idx_t, shared_ptr<ReadHead>>> bloom_filter_read_heads;
 	//! Scan handle shared by all scan states of this reader
 	mutable shared_ptr<CachingFileHandle> shared_scan_handle;
 	mutable annotated_mutex variant_stats_lock;

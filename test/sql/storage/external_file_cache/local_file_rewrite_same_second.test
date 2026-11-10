@@ -1,0 +1,70 @@
+# name: test/sql/storage/external_file_cache/local_file_rewrite_same_second.test
+# description: A local file rewritten in place with the same size within the same second is not read from a cache
+# group: [external_file_cache]
+
+require parquet
+
+# the modification time of a file on Windows does not change on every write
+require notwindows
+
+# the Parquet metadata cache, with the column statistics of the file
+statement ok
+SET parquet_metadata_cache = true;
+
+# each round rewrites the file after a pause longer than the timestamp granularity of file systems, and the rounds
+# make it unlikely that every rewrite falls into another second than the write before it
+loop i 0 3
+
+statement ok
+COPY (SELECT {i}::INTEGER AS x) TO '{TEST_DIR}/rewrite_metadata.parquet' (USE_TMP_FILE false);
+
+query I
+SELECT max(x) = {i} FROM read_parquet('{TEST_DIR}/rewrite_metadata.parquet');
+----
+true
+
+sleep 20 milliseconds
+
+statement ok
+COPY (SELECT ({i} + 10)::INTEGER AS x) TO '{TEST_DIR}/rewrite_metadata.parquet' (USE_TMP_FILE false);
+
+query II
+SELECT min(x) = {i} + 10, max(x) = {i} + 10 FROM read_parquet('{TEST_DIR}/rewrite_metadata.parquet');
+----
+true	true
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/rewrite_metadata.parquet') WHERE x = {i} + 10;
+----
+1
+
+endloop
+
+statement ok
+RESET parquet_metadata_cache;
+
+# the external file cache, with the contents of the file
+statement ok
+SET cache_local_files = true;
+
+loop i 0 3
+
+statement ok
+COPY (SELECT {i}::INTEGER AS x) TO '{TEST_DIR}/rewrite_contents.parquet' (USE_TMP_FILE false);
+
+query I
+SELECT x = {i} FROM read_parquet('{TEST_DIR}/rewrite_contents.parquet');
+----
+true
+
+sleep 20 milliseconds
+
+statement ok
+COPY (SELECT ({i} + 10)::INTEGER AS x) TO '{TEST_DIR}/rewrite_contents.parquet' (USE_TMP_FILE false);
+
+query I
+SELECT x = {i} + 10 FROM read_parquet('{TEST_DIR}/rewrite_contents.parquet');
+----
+true
+
+endloop

@@ -42,6 +42,7 @@ void SetSeedFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 			throw InvalidInputException("SETSEED accepts seed values between -1.0 and 1.0, inclusive");
 		}
 		auto norm_seed = LossyNumericCast<uint32_t>((input_seeds[i] + 1.0) * half_max);
+		lock_guard<mutex> guard(random_engine.lock);
 		random_engine.SetSeed(norm_seed);
 	}
 

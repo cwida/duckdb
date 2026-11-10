@@ -1,0 +1,114 @@
+# name: test/sql/function/generic/case_when_list.test
+# description: Test simple CASE with a comma-separated list of WHEN operands
+# group: [generic]
+
+statement ok
+CREATE TABLE tbl AS SELECT * FROM (VALUES (0), (2), (3), (5), (9), (NULL)) tbl(i)
+
+query II
+SELECT i, CASE i WHEN 0, 1, 2 THEN 'good'
+                 WHEN 3, 7, 9 THEN 'bad'
+          END
+FROM tbl
+ORDER BY i NULLS LAST
+----
+0	good
+2	good
+3	bad
+5	NULL
+9	bad
+NULL	NULL
+
+# the first WHEN with a matching operand wins
+query I
+SELECT CASE 3 WHEN 1, 3 THEN 'first' WHEN 3, 4 THEN 'second' END
+----
+first
+
+# list operands can use comparison operators
+query II
+SELECT i, CASE i WHEN < 1, > 8 THEN 'outside' WHEN 2, >= 5 THEN 'mixed' ELSE 'other' END
+FROM tbl
+ORDER BY i NULLS LAST
+----
+0	outside
+2	mixed
+3	other
+5	mixed
+9	outside
+NULL	other
+
+# a NULL operand in the list never matches
+query II
+SELECT i, CASE i WHEN NULL, 2 THEN 'match' ELSE 'no match' END
+FROM tbl
+ORDER BY i NULLS LAST
+----
+0	no match
+2	match
+3	no match
+5	no match
+9	no match
+NULL	no match
+
+query I
+SELECT CASE 'pear' WHEN 'apple', 'pear' THEN 'fruit' WHEN 'carrot' THEN 'vegetable' END
+----
+fruit
+
+# the commas do not leak into an enclosing argument list
+query I
+SELECT list_value(CASE 2 WHEN 1, 2 THEN 'a' END, 'b')
+----
+[a, b]
+
+query I
+SELECT CASE i WHEN 0, 2 THEN CASE i WHEN 0, 1 THEN 'zero or one' ELSE 'two' END END
+FROM tbl
+WHERE i IN (0, 2)
+ORDER BY i
+----
+zero or one
+two
+
+statement ok
+PREPARE q AS SELECT CASE ? WHEN ?, ? THEN 'match' ELSE 'no match' END
+
+query I
+EXECUTE q(2, 1, 2)
+----
+match
+
+query I
+EXECUTE q(3, 1, 2)
+----
+no match
+
+statement ok
+CREATE VIEW v AS SELECT i, CASE i WHEN 0, 1, 2 THEN 'good' WHEN 3, 7, 9 THEN 'bad' END AS s FROM tbl
+
+query II
+SELECT * FROM v ORDER BY i NULLS LAST
+----
+0	good
+2	good
+3	bad
+5	NULL
+9	bad
+NULL	NULL
+
+# a list of operands needs an operand after CASE
+statement error
+SELECT CASE WHEN 0, 1 THEN 'good' END
+----
+Parser Error
+
+statement error
+SELECT CASE 1 WHEN 0,, 1 THEN 'good' END
+----
+Parser Error
+
+statement error
+SELECT CASE 1 WHEN , 1 THEN 'good' END
+----
+Parser Error

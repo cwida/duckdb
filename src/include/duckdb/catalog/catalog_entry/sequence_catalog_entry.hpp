@@ -22,6 +22,8 @@ struct SequenceValue {
 	SequenceCatalogEntry *entry;
 	uint64_t usage_count;
 	int64_t counter;
+	bool has_last_value;
+	int64_t last_value;
 };
 
 struct SequenceData {
@@ -82,6 +84,9 @@ public:
 	string ToSQL() const override;
 
 private:
+	//! An exhaustion counter outside of the range, if the range and the storage format permit one
+	optional<int64_t> GetExhaustedCounter() const;
+
 	//! The sequence state (shared with the other versions of this entry)
 	shared_ptr<SequenceState> state;
 };

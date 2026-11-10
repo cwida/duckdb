@@ -83,9 +83,10 @@ void SkipScanner::FinalizeChunkProcess() {
 			Process(result);
 		}
 	}
-	// Skip Carriage Return
+	// Skip the LF of a CRLF pair
 	if (state_machine->options.dialect_options.state_machine_options.new_line == NewLineIdentifier::CARRY_ON &&
-	    states.states[1] == CSVState::CARRIAGE_RETURN) {
+	    states.IsCarriageReturn() && cur_buffer_handle && iterator.pos.buffer_pos < cur_buffer_handle->actual_size &&
+	    buffer_handle_ptr[iterator.pos.buffer_pos] == '\n') {
 		iterator.pos.buffer_pos++;
 	}
 	iterator.done = FinishedFile();

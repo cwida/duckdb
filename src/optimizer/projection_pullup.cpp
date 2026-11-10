@@ -64,21 +64,16 @@ void ProjectionPullup::InsertProjectionBelowOp(unique_ptr<LogicalOperator> &op, 
 		}
 		replacer.VisitOperator(*root);
 	}
-	ProjectionPullup next(optimizer, root);
+	// the projection kept below this operator is a binding barrier: nothing above it
+	// can reference bindings produced underneath, so the subtree runs its own pass
+	// with the projection as replacement root instead of walking the whole plan for
+	// every pull inside it
+	ProjectionPullup next(optimizer, child);
 	next.Optimize(child->children[0]);
 }
 
 void ProjectionPullup::PullUpColrefProjection(unique_ptr<LogicalOperator> &op, LogicalProjection &proj,
                                               vector<ColumnBinding> &proj_bindings) {
-	// LOGICAL_DISTINCT sets `everything_referenced = true` in RemoveUnusedColumns
-	// for its subtree. The projection above it acts as a binding barrier; removing
-	// it lets upstream references point past DISTINCT and breaks column pruning
-	// down to READ_PARQUET. Repro: TPC-DS Q54 regresses 4-5x without this guard.
-	if (proj.children[0]->type == LogicalOperatorType::LOGICAL_DISTINCT) {
-		ProjectionPullup next(optimizer, root);
-		next.Optimize(proj.children[0]);
-		return;
-	}
 	ColumnBindingReplacer replacer;
 	for (idx_t i = 0; i < proj.expressions.size(); i++) {
 		auto &colref = proj.expressions[i]->Cast<BoundColumnRefExpression>();
@@ -174,6 +169,10 @@ void ProjectionPullup::PullUpNonColrefProjection(unique_ptr<LogicalOperator> &op
 			}
 		}
 	}
+
+	// The caller's traversal no longer reaches the subtree left behind by the moved projection.
+	ProjectionPullup next(optimizer, root);
+	next.Optimize(op);
 }
 
 static bool HasJoinBelow(const LogicalOperator &op) {
@@ -257,7 +256,6 @@ void ProjectionPullup::VisitOperator(unique_ptr<LogicalOperator> &op) {
 		}
 		return;
 	}
-	case LogicalOperatorType::LOGICAL_DISTINCT:
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
 	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE:
 	case LogicalOperatorType::LOGICAL_CTE_REF:

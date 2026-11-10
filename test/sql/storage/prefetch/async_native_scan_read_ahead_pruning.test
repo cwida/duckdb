@@ -65,3 +65,53 @@ SELECT sum(task_count) FROM duckdb_logs_parsed('AsyncTaskSchedule')
 
 statement ok
 CALL truncate_duckdb_logs()
+
+# read-ahead jobs leave out the blocks between two accepted segments, also when the filter is on a struct child
+statement ok
+SET force_compression='uncompressed'
+
+# i and s.i hold four segments of 32767 rows each, pad holds 17 segments of 7281 rows
+statement ok
+CREATE TABLE gaps AS SELECT range::BIGINT AS i, {'i': range::BIGINT} AS s, md5(range::VARCHAR) AS pad FROM range(122880);
+
+statement ok
+CHECKPOINT
+
+restart
+
+query I
+SELECT count(DISTINCT block_id) FROM pragma_storage_info('gaps') WHERE segment_type IN ('BIGINT', 'VARCHAR')
+----
+25
+
+foreach col i s.i
+
+restart
+
+statement ok
+SET threads=4
+
+statement ok
+SET async_threads=4
+
+statement ok
+SET read_ahead_depth=-1
+
+statement ok
+SET storage_block_prefetch='debug_force_always'
+
+statement ok
+CREATE TEMPORARY TABLE before AS SELECT memory_usage_bytes AS bytes FROM duckdb_memory() WHERE tag = 'BASE_TABLE'
+
+# the vectors of the first and the last segment of the filter column need nine of the 17 blocks of pad
+query I
+SELECT sum(length(pad)) FROM gaps WHERE {col} BETWEEN 1 AND 9 OR {col} BETWEEN 122870 AND 122878
+----
+576
+
+query I
+SELECT memory_usage_bytes - (SELECT bytes FROM before) <= 13 * 262144 FROM duckdb_memory() WHERE tag = 'BASE_TABLE'
+----
+true
+
+endloop

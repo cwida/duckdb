@@ -43,9 +43,9 @@ CSVReaderOptions::CSVReaderOptions(const CSVOption<char> single_byte_delimiter,
 		dialect_options.state_machine_options.delimiter = multi_byte_delimiter;
 	}
 }
-static bool ParseBoolean(const Value &value, const Identifier &loption);
+static bool ParseBoolean(Context &context, const Value &value, const Identifier &loption);
 
-static bool ParseBoolean(const vector<Value> &set, const Identifier &loption) {
+static bool ParseBoolean(Context &context, const vector<Value> &set, const Identifier &loption) {
 	if (set.empty()) {
 		// no option specified: default to true
 		return true;
@@ -53,22 +53,22 @@ static bool ParseBoolean(const vector<Value> &set, const Identifier &loption) {
 	if (set.size() > 1) {
 		throw BinderException("%s expects a single argument as a boolean value (e.g. TRUE or 1)", loption);
 	}
-	return ParseBoolean(set[0], loption);
+	return ParseBoolean(context, set[0], loption);
 }
 
-static bool ParseBoolean(const Value &value, const Identifier &loption) {
+static bool ParseBoolean(Context &context, const Value &value, const Identifier &loption) {
 	if (value.IsNull()) {
 		throw BinderException("%s expects a non-null boolean value (e.g. TRUE or 1)", loption);
 	}
 	if (value.type().id() == LogicalTypeId::LIST) {
 		auto &children = ListValue::GetChildren(value);
-		return ParseBoolean(children, loption);
+		return ParseBoolean(context, children, loption);
 	}
 	if (value.type() == LogicalType::FLOAT || value.type() == LogicalType::DOUBLE ||
 	    value.type().id() == LogicalTypeId::DECIMAL) {
 		throw BinderException("%s expects a boolean value (e.g. TRUE or 1)", loption);
 	}
-	return BooleanValue::Get(value.DefaultCastAs(LogicalType::BOOLEAN));
+	return BooleanValue::Get(value.CastAs(context, LogicalType::BOOLEAN));
 }
 
 static string ParseString(const Value &value, const Identifier &loption) {
@@ -252,13 +252,13 @@ void CSVReaderOptions::SetDateFormat(LogicalTypeId type, const string &format, b
 	}
 }
 
-void CSVReaderOptions::SetReadOption(const Identifier &loption, const Value &value,
+void CSVReaderOptions::SetReadOption(Context &context, const Identifier &loption, const Value &value,
                                      const vector<Identifier> &expected_names) {
-	if (SetBaseOption(loption, value)) {
+	if (SetBaseOption(context, loption, value)) {
 		return;
 	}
 	if (loption == "auto_detect") {
-		auto_detect = ParseBoolean(value, loption);
+		auto_detect = ParseBoolean(context, value, loption);
 	} else if (loption == "sample_size") {
 		const auto sample_size_option = ParseInteger(value, loption);
 		if (sample_size_option < 1 && sample_size_option != -1) {
@@ -293,7 +293,7 @@ void CSVReaderOptions::SetReadOption(const Identifier &loption, const Value &val
 		string format = ParseString(value, loption);
 		SetDateFormat(LogicalTypeId::TIMESTAMP, format, true);
 	} else if (loption == "ignore_errors") {
-		ignore_errors.Set(ParseBoolean(value, loption));
+		ignore_errors.Set(ParseBoolean(context, value, loption));
 	} else if (loption == "buffer_size") {
 		auto buffer_size = ParseInteger(value, loption);
 		if (buffer_size < 0) {
@@ -315,13 +315,13 @@ void CSVReaderOptions::SetReadOption(const Identifier &loption, const Value &val
 			throw BinderException("Unsupported parameter for DECIMAL_SEPARATOR: should be '.' or ','");
 		}
 	} else if (loption == "null_padding") {
-		null_padding = ParseBoolean(value, loption);
+		null_padding = ParseBoolean(context, value, loption);
 	} else if (loption == "parallel") {
-		parallel = ParseBoolean(value, loption);
+		parallel = ParseBoolean(context, value, loption);
 	} else if (loption == "allow_quoted_nulls") {
-		allow_quoted_nulls = ParseBoolean(value, loption);
+		allow_quoted_nulls = ParseBoolean(context, value, loption);
 	} else if (loption == "store_rejects") {
-		store_rejects.Set(ParseBoolean(value, loption));
+		store_rejects.Set(ParseBoolean(context, value, loption));
 	} else if (loption == "force_not_null") {
 		if (!expected_names.empty()) {
 			force_not_null = ParseColumnList(value, expected_names, loption);
@@ -386,14 +386,14 @@ void CSVReaderOptions::SetReadOption(const Identifier &loption, const Value &val
 	}
 }
 
-void CSVReaderOptions::SetWriteOption(const Identifier &loption, const Value &value) {
+void CSVReaderOptions::SetWriteOption(Context &context, const Identifier &loption, const Value &value) {
 	if (loption == "new_line") {
 		// Steal this from SetBaseOption so we can write different newlines (e.g., format JSON ARRAY)
 		write_newline = ParseString(value, loption);
 		return;
 	}
 
-	if (SetBaseOption(loption, value, true)) {
+	if (SetBaseOption(context, loption, value, true)) {
 		return;
 	}
 
@@ -404,7 +404,7 @@ void CSVReaderOptions::SetWriteOption(const Identifier &loption, const Value &va
 		SetDateFormat(LogicalTypeId::DATE, format, false);
 	} else if (loption == "timestamp_format" || loption == "timestampformat") {
 		string format = ParseString(value, loption);
-		if (StringUtil::Lower(format) == "iso") {
+		if (StringUtil::CIEquals(format, "iso")) {
 			format = "%Y-%m-%dT%H:%M:%S.%fZ";
 		}
 		SetDateFormat(LogicalTypeId::TIMESTAMP, format, false);
@@ -418,7 +418,8 @@ void CSVReaderOptions::SetWriteOption(const Identifier &loption, const Value &va
 	}
 }
 
-bool CSVReaderOptions::SetBaseOption(const Identifier &loption, const Value &value, bool write_option) {
+bool CSVReaderOptions::SetBaseOption(Context &context, const Identifier &loption, const Value &value,
+                                     bool write_option) {
 	if (loption.StartsWith("delim") || loption.StartsWith("sep")) {
 		SetDelimiter(ParseString(value, loption));
 	} else if (loption == "quote") {
@@ -430,7 +431,7 @@ bool CSVReaderOptions::SetBaseOption(const Identifier &loption, const Value &val
 	} else if (loption == "escape") {
 		SetEscape(ParseString(value, loption));
 	} else if (loption == "header") {
-		SetHeader(ParseBoolean(value, loption));
+		SetHeader(ParseBoolean(context, value, loption));
 	} else if (loption == "nullstr" || loption == "null") {
 		auto &child_type = value.type();
 		null_str.clear();
@@ -483,7 +484,7 @@ bool CSVReaderOptions::SetBaseOption(const Identifier &loption, const Value &val
 	} else if (loption == "compression") {
 		SetCompression(ParseString(value, loption));
 	} else if (loption == "strict_mode") {
-		SetRFC4180(ParseBoolean(value, loption));
+		SetRFC4180(ParseBoolean(context, value, loption));
 	} else {
 		// unrecognized option in base CSV
 		return false;
@@ -849,7 +850,7 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 	} else if (key == "normalize_names") {
 		normalize_names = GetBooleanValue(key, val);
 	} else {
-		SetReadOption(key, val, name_list);
+		SetReadOption(context.GetContext(), key, val, name_list);
 	}
 }
 //! This function is used to remember options set by the sniffer, for use in ReadCSVRelation

@@ -43,7 +43,7 @@ unique_ptr<Expression> ConjunctionSimplificationRule::Apply(LogicalOperator &op,
 	if (!ExpressionExecutor::TryEvaluateScalar(GetContext(), constant_expr, constant_value)) {
 		return nullptr;
 	}
-	constant_value = constant_value.DefaultCastAs(LogicalType::BOOLEAN);
+	constant_value = constant_value.CastAs(GetContext(), LogicalType::BOOLEAN);
 	if (constant_value.IsNull()) {
 		// FALSE and NULL have the same effect in filters and joins
 		if (conjunction.GetExpressionType() != ExpressionType::CONJUNCTION_OR || !is_root ||

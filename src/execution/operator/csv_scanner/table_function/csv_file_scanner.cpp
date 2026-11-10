@@ -1,4 +1,5 @@
 #include "duckdb/execution/operator/csv_scanner/csv_file_scanner.hpp"
+#include "duckdb/main/query_profiler.hpp"
 
 #include "duckdb/execution/operator/csv_scanner/sniffer/csv_sniffer.hpp"
 #include "duckdb/execution/operator/csv_scanner/skip_scanner.hpp"
@@ -80,6 +81,15 @@ CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, con
 	SetStart();
 }
 
+void CSVFileScan::CountBytesScanned(CSVBufferManager &manager) {
+	auto bytes = manager.file_handle->TakeStoredBytesRead();
+	if (bytes == 0) {
+		return;
+	}
+	bytes_scanned_unreported += bytes;
+	QueryProfiler::Get(manager.context).TrackBytesScanned(bytes);
+}
+
 void CSVFileScan::SetStart() {
 	idx_t rows_to_skip = options.GetSkipRows() + state_machine->dialect_options.header.GetValue();
 
@@ -155,6 +165,9 @@ void CSVFileScan::InitializeProjection() {
 }
 
 void CSVFileScan::Finish() {
+	if (buffer_manager) {
+		CountBytesScanned(*buffer_manager);
+	}
 	buffer_manager.reset();
 }
 
