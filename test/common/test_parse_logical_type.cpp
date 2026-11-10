@@ -11,6 +11,21 @@ TEST_CASE("Test parse logical type", "[parse_logical_type]") {
 		REQUIRE(DBConfig::ParseLogicalType("any") == LogicalType::ANY);
 	}
 
+	SECTION("variant types") {
+		const auto variant = LogicalType::VARIANT();
+		REQUIRE(DBConfig::ParseLogicalType("VARIANT") == variant);
+		REQUIRE(DBConfig::ParseLogicalType("variant") == variant);
+		REQUIRE(DBConfig::ParseLogicalType("VaRiAnT") == variant);
+		REQUIRE(DBConfig::ParseLogicalType("VARIANT[]") == LogicalType::LIST(variant));
+		REQUIRE(DBConfig::ParseLogicalType("VARIANT[3]") == LogicalType::ARRAY(variant, 3));
+		REQUIRE(DBConfig::ParseLogicalType("MAP(VARCHAR, VARIANT)") == LogicalType::MAP(LogicalType::VARCHAR, variant));
+		REQUIRE(DBConfig::ParseLogicalType("STRUCT(v VARIANT)") == LogicalType::STRUCT({{"v", variant}}));
+		REQUIRE(DBConfig::ParseLogicalType("UNION(v VARIANT, s VARCHAR)") ==
+		        LogicalType::UNION({{"v", variant}, {"s", LogicalType::VARCHAR}}));
+		REQUIRE(DBConfig::ParseLogicalType("STRUCT(v VARIANT[])[]") ==
+		        LogicalType::LIST(LogicalType::STRUCT({{"v", LogicalType::LIST(variant)}})));
+	}
+
 	SECTION("nested types") {
 		// list
 		REQUIRE(DBConfig::ParseLogicalType("ANY[]") == LogicalType::LIST(LogicalType::ANY));

@@ -1,0 +1,69 @@
+# name: test/sql/table_function/duckdb_functions_variant.test
+# description: Typed VARIANT function parameters retain their documentation
+# group: [table_function]
+
+# Typed descriptions and untyped (ANY) descriptions both match VARIANT signatures.
+query TTT rowsort
+SELECT function_name, parameter_types, description IS NULL
+FROM duckdb_functions()
+WHERE function_name LIKE 'variant_%' AND function_type = 'scalar';
+----
+variant_array_length	[VARIANT, 'VARCHAR[]']	false
+variant_array_length	[VARIANT, VARCHAR]	false
+variant_array_length	[VARIANT]	false
+variant_comparator	[VARIANT]	false
+variant_contains	[VARIANT, VARIANT]	false
+variant_exists	[VARIANT, 'VARCHAR[]']	false
+variant_exists	[VARIANT, VARCHAR]	false
+variant_extract	[VARIANT, UINTEGER]	false
+variant_extract	[VARIANT, VARCHAR]	false
+variant_extract_string	[VARIANT, 'VARCHAR[]']	false
+variant_extract_string	[VARIANT, VARCHAR]	false
+variant_keys	[VARIANT, 'VARCHAR[]']	false
+variant_keys	[VARIANT, VARCHAR]	false
+variant_keys	[VARIANT]	false
+variant_normalize	[VARIANT]	false
+variant_type	[VARIANT, 'VARCHAR[]']	false
+variant_type	[VARIANT, VARCHAR]	false
+variant_type	[VARIANT]	false
+variant_typeof	[VARIANT]	false
+
+# Check the single-description branch, including examples and categories.
+query TTTT
+SELECT parameters, description, examples[1], categories
+FROM duckdb_functions() WHERE function_name = 'variant_contains';
+----
+[variant_haystack, variant_needle]	Returns whether the needle is contained in the haystack, recursively checking nested arrays and objects.	variant_contains({'a': {'b': 42}}::VARIANT, {'b': 42}::VARIANT)	[variant]
+
+# Multiple descriptions must still distinguish the second argument's type.
+query TTT rowsort
+SELECT parameter_types, parameters, description
+FROM duckdb_functions() WHERE function_name = 'variant_extract';
+----
+[VARIANT, UINTEGER]	[input_variant, index]	Returns the entry at `index` from the `input_variant` if it's an ARRAY.
+[VARIANT, VARCHAR]	[input_variant, field]	Returns the `field` from the `input_variant` if it's an OBJECT.
+
+# Check argument count and nested type specificity (VARCHAR versus VARCHAR[]).
+query TT rowsort
+SELECT parameter_types, description
+FROM duckdb_functions() WHERE function_name = 'variant_type';
+----
+[VARIANT, 'VARCHAR[]']	Returns a list of types for the values at each specified path.
+[VARIANT, VARCHAR]	Returns the type of the value at the specified path.
+[VARIANT]	Returns the type of the root `input_variant`.
+
+query I
+SELECT count(*) FROM duckdb_functions()
+WHERE function_name LIKE 'variant_%' AND function_type = 'scalar'
+AND (description IS NULL OR len(examples) = 0 OR categories <> ['variant']);
+----
+0
+
+# Exact descriptions take precedence over ANY; other types still use ANY.
+query TT rowsort
+SELECT parameter_types, description FROM duckdb_functions()
+WHERE function_name = 'hex' AND parameter_types IN (['VARCHAR'], ['BLOB'], ['BIGINT']);
+----
+[BIGINT]	Converts the `value` to `VARCHAR` using hexadecimal representation.
+[BLOB]	Converts `blob` to `VARCHAR` using hexadecimal encoding.
+[VARCHAR]	Converts the `string` to hexadecimal representation.
