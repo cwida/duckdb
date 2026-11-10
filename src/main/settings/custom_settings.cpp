@@ -1794,33 +1794,15 @@ void TempFileEncryptionSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 //===----------------------------------------------------------------------===//
 // Tracked Metrics
 //===----------------------------------------------------------------------===//
-void TrackedMetricsSetting::SetLocal(ClientContext &context, const Value &input) {
+void TrackedMetricsSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 	if (input.IsNull()) {
 		throw InvalidInputException("%s setting cannot be NULL", TrackedMetricsSetting::Name);
 	}
-	auto &config = ClientConfig::GetConfig(context);
-	config.tracked_metrics.clear();
-	if (input.type() == LogicalType::LIST(LogicalType::VARCHAR)) {
-		for (auto &child : ListValue::GetChildren(input)) {
-			config.tracked_metrics.push_back(child.GetValue<string>());
+	for (auto &pattern : ListValue::GetChildren(input)) {
+		if (pattern.IsNull()) {
+			throw InvalidInputException("%s setting cannot contain NULL entries", TrackedMetricsSetting::Name);
 		}
-	} else {
-		throw InvalidInputException("Invalid tracked_metrics type \"%s\", expected LIST(VARCHAR)",
-		                            input.type().ToString());
 	}
-}
-
-void TrackedMetricsSetting::ResetLocal(ClientContext &context) {
-	ClientConfig::GetConfig(context).tracked_metrics = ClientConfig().tracked_metrics;
-}
-
-Value TrackedMetricsSetting::GetSetting(const ClientContext &context) {
-	auto &config = ClientConfig::GetConfig(context);
-	vector<Value> children;
-	for (const auto &pattern : config.tracked_metrics) {
-		children.emplace_back(pattern);
-	}
-	return Value::LIST(LogicalType::VARCHAR, std::move(children));
 }
 
 //===----------------------------------------------------------------------===//

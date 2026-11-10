@@ -1579,8 +1579,11 @@
         "name": "tracked_metrics",
         "description": "A list of metric glob patterns to enable for collection, e.g. ['query.*', 'optimizer.*'].",
         "type": "VARCHAR[]",
-        "scope": "local",
-        "custom_implementation": true
+        "default_scope": "local",
+        "default_value": "['*']",
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "username",
