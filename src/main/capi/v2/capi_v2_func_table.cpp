@@ -570,14 +570,15 @@ static auto CV2TableOfferFilters(ClientContext &context, const CV2TableFunctionD
 	if (filters.empty()) {
 		return;
 	}
-	// A predicate refers to the one column it applies to as column 0; the callback resolves references through the
-	// column list, so each gets the position of its column
+	// A table filter refers to the one column it applies to by a physical reference; the callback is offered column
+	// references, like at optimization time, which it resolves through the column list
 	vector<unique_ptr<Expression>> predicates;
 	for (auto &entry : filters) {
 		auto predicate = entry.second->Copy();
-		ExpressionIterator::EnumerateExpression(predicate, [&](Expression &child) {
-			if (child.GetExpressionClass() == ExpressionClass::BOUND_REF) {
-				child.Cast<BoundReferenceExpression>().IndexMutable() = entry.first;
+		ExpressionIterator::EnumerateExpression(predicate, [&](unique_ptr<Expression> &child) {
+			if (child->GetExpressionClass() == ExpressionClass::BOUND_REF) {
+				child = make_uniq<BoundColumnRefExpression>(child->GetAlias(), child->GetReturnType(),
+				                                            ColumnBinding(TableIndex(0), ProjectionIndex(entry.first)));
 			}
 		});
 		predicates.push_back(std::move(predicate));
