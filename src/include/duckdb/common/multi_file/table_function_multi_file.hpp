@@ -295,6 +295,8 @@ public:
 	//! The names/types the wrapped function bound to for this file
 	vector<Identifier> names;
 	vector<LogicalType> types;
+	//! The position of each of the names, for the statistics of a column
+	ColumnNameIndex name_index;
 	//! The cardinality estimate of the wrapped function for this file (if it has one)
 	optional_idx cardinality;
 	//! The virtual columns that are read, as a map of the index they are projected in to their virtual column id

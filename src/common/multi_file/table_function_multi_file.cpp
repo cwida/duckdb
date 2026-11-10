@@ -109,6 +109,7 @@ void TableFunctionFileReader::BindFunction(ClientContext &context, const TableFu
 	bind_input.multi_file_input = file_input;
 	names.clear();
 	types.clear();
+	name_index.Reset();
 	bind_data = function.bind(context, bind_input, types, names);
 	// a function can describe what it bound in more detail than its names and types - e.g. with the field ids of its
 	// columns, and options that describe the file, which are exposed as the metadata of the reader of the file
@@ -163,12 +164,11 @@ unique_ptr<BaseStatistics> TableFunctionUnionData::GetStatistics(ClientContext &
 	if (!statistics || !bind_data) {
 		return nullptr;
 	}
-	for (idx_t col_idx = 0; col_idx < names.size(); col_idx++) {
-		if (Identifier(names[col_idx]) == name) {
-			return statistics(context, bind_data.get(), col_idx);
-		}
+	auto col_idx = FindColumn(name);
+	if (!col_idx.IsValid()) {
+		return nullptr;
 	}
-	return nullptr;
+	return statistics(context, bind_data.get(), col_idx.GetIndex());
 }
 
 shared_ptr<BaseUnionData> TableFunctionFileReader::GetUnionData(idx_t file_idx) {
@@ -189,12 +189,12 @@ unique_ptr<BaseStatistics> TableFunctionFileReader::GetStatistics(ClientContext 
 	if (!function.statistics || !bind_data) {
 		return nullptr;
 	}
-	for (idx_t col_idx = 0; col_idx < names.size(); col_idx++) {
-		if (names[col_idx] == name) {
-			return function.statistics(context, bind_data.get(), col_idx);
-		}
+	auto col_idx = name_index.Find(
+	    name, names, [](const Identifier &column_name) -> const string & { return column_name.GetIdentifierName(); });
+	if (!col_idx.IsValid()) {
+		return nullptr;
 	}
-	return nullptr;
+	return function.statistics(context, bind_data.get(), col_idx.GetIndex());
 }
 
 unique_ptr<BaseStatistics> TableFunctionFileReader::GetVirtualColumnStatistics(ClientContext &context,

@@ -8,6 +8,12 @@ unique_ptr<BaseStatistics> BaseFileReader::GetStatistics(ClientContext &context,
 	return nullptr;
 }
 
+optional_idx BaseFileReader::FindColumn(const Identifier &name) const {
+	return column_name_index.Find(name, columns, [](const MultiFileColumnDefinition &column) -> const string & {
+		return column.name.GetIdentifierName();
+	});
+}
+
 unique_ptr<BaseStatistics> BaseFileReader::GetVirtualColumnStatistics(ClientContext &context,
                                                                       column_t virtual_column_id) {
 	return nullptr;
@@ -43,6 +49,10 @@ InsertionOrderPreservingMap<Value> BaseFileReader::GetMetadata() const {
 
 unique_ptr<BaseStatistics> BaseUnionData::GetStatistics(ClientContext &context, const Identifier &name) {
 	return nullptr;
+}
+
+optional_idx BaseUnionData::FindColumn(const Identifier &name) const {
+	return column_name_index.Find(name, names, [](const string &column_name) -> const string & { return column_name; });
 }
 
 } // namespace duckdb
