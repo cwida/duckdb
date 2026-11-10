@@ -62,7 +62,6 @@ public:
 	DUCKDB_API vector<string> GetExtensions();
 	DUCKDB_API shared_ptr<ExtensionInfo> GetExtensionInfo(const string &name);
 	DUCKDB_API unique_ptr<ExtensionActiveLoad> BeginLoad(const ExtensionLoadOptions &options);
-	DUCKDB_API void RegisterService(const string &name, void *service);
 	DUCKDB_API void RegisterService(const string &name, void *service, void (*delete_callback)(void *));
 	DUCKDB_API void *GetService(const string &name);
 

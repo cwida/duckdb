@@ -94,10 +94,6 @@ bool ExtensionManager::ExtensionIsLoaded(const string &name) {
 	return info->is_loaded;
 }
 
-void ExtensionManager::RegisterService(const string &name, void *service) {
-	RegisterService(name, service, nullptr);
-}
-
 void ExtensionManager::RegisterService(const string &name, void *service, void (*delete_callback)(void *)) {
 	if (!service) {
 		throw InvalidInputException("Cannot register null extension service '%s'", name);

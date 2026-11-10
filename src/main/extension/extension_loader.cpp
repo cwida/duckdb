@@ -40,10 +40,6 @@ DatabaseInstance &ExtensionLoader::GetDatabaseInstance() const {
 	return db;
 }
 
-void ExtensionLoader::RegisterService(const string &name, void *service) {
-	ExtensionManager::Get(db).RegisterService(name, service);
-}
-
 void ExtensionLoader::RegisterService(const string &name, void *service, void (*delete_callback)(void *)) {
 	ExtensionManager::Get(db).RegisterService(name, service, delete_callback);
 }
