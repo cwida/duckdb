@@ -3223,6 +3223,16 @@ auto Stats::SetCanHaveValid(bool value) -> void {
 	CheckedAPICall(duckdb_v2_stats_set_can_have_valid, handle(), value);
 }
 
+auto Stats::GetValue() const -> Value {
+	duckdb_v2_value_handle out = nullptr;
+	CheckedAPICall(duckdb_v2_stats_get_value, handle(), &out);
+	return detail::HandleFactory::Make<Value>(out);
+}
+
+auto Stats::SetValue(const Value &value) -> void {
+	CheckedAPICall(duckdb_v2_stats_set_value, handle(), value.handle());
+}
+
 //----------------------------------------------------------------------------------------------------------------------
 // Scalar Function
 //----------------------------------------------------------------------------------------------------------------------

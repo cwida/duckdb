@@ -160,13 +160,27 @@ void TableFunctionFileReader::BindFunction(ClientContext &context, const TableFu
 	}
 }
 
+//! Asks the statistics callback of a wrapped function, in whichever form it has, for one column of a file
+static unique_ptr<BaseStatistics> GetFileColumnStatistics(ClientContext &context, table_statistics_t statistics,
+                                                          table_statistics_extended_t statistics_extended,
+                                                          const FunctionData *bind_data, column_t column_id) {
+	if (statistics_extended) {
+		TableFunctionGetStatisticsInput input(bind_data, ColumnIndex(column_id));
+		return statistics_extended(context, input);
+	}
+	if (statistics) {
+		return statistics(context, bind_data, column_id);
+	}
+	return nullptr;
+}
+
 unique_ptr<BaseStatistics> TableFunctionUnionData::GetStatistics(ClientContext &context, const Identifier &name) {
-	if (!statistics || !bind_data) {
+	if ((!statistics && !statistics_extended) || !bind_data) {
 		return nullptr;
 	}
 	for (idx_t col_idx = 0; col_idx < names.size(); col_idx++) {
 		if (Identifier(names[col_idx]) == name) {
-			return statistics(context, bind_data.get(), col_idx);
+			return GetFileColumnStatistics(context, statistics, statistics_extended, bind_data.get(), col_idx);
 		}
 	}
 	return nullptr;
@@ -174,10 +188,10 @@ unique_ptr<BaseStatistics> TableFunctionUnionData::GetStatistics(ClientContext &
 
 unique_ptr<BaseStatistics> TableFunctionUnionData::GetVirtualColumnStatistics(ClientContext &context,
                                                                               column_t virtual_column_id) {
-	if (!statistics || !bind_data) {
+	if ((!statistics && !statistics_extended) || !bind_data) {
 		return nullptr;
 	}
-	return statistics(context, bind_data.get(), virtual_column_id);
+	return GetFileColumnStatistics(context, statistics, statistics_extended, bind_data.get(), virtual_column_id);
 }
 
 shared_ptr<BaseUnionData> TableFunctionFileReader::GetUnionData(idx_t file_idx) {
@@ -187,6 +201,7 @@ shared_ptr<BaseUnionData> TableFunctionFileReader::GetUnionData(idx_t file_idx) 
 	result->cardinality = cardinality;
 	result->bind_data = bind_data;
 	result->statistics = function.statistics;
+	result->statistics_extended = function.statistics_extended;
 	if (file_idx == 0) {
 		// keep the first reader around so we don't need to bind it again
 		result->reader = shared_from_this();
@@ -195,12 +210,13 @@ shared_ptr<BaseUnionData> TableFunctionFileReader::GetUnionData(idx_t file_idx) 
 }
 
 unique_ptr<BaseStatistics> TableFunctionFileReader::GetStatistics(ClientContext &context, const Identifier &name) {
-	if (!function.statistics || !bind_data) {
+	if ((!function.statistics && !function.statistics_extended) || !bind_data) {
 		return nullptr;
 	}
 	for (idx_t col_idx = 0; col_idx < names.size(); col_idx++) {
 		if (names[col_idx] == name) {
-			return function.statistics(context, bind_data.get(), col_idx);
+			return GetFileColumnStatistics(context, function.statistics, function.statistics_extended, bind_data.get(),
+			                               col_idx);
 		}
 	}
 	return nullptr;
@@ -208,10 +224,11 @@ unique_ptr<BaseStatistics> TableFunctionFileReader::GetStatistics(ClientContext 
 
 unique_ptr<BaseStatistics> TableFunctionFileReader::GetVirtualColumnStatistics(ClientContext &context,
                                                                                column_t virtual_column_id) {
-	if (!function.statistics || !bind_data) {
+	if ((!function.statistics && !function.statistics_extended) || !bind_data) {
 		return nullptr;
 	}
-	return function.statistics(context, bind_data.get(), virtual_column_id);
+	return GetFileColumnStatistics(context, function.statistics, function.statistics_extended, bind_data.get(),
+	                               virtual_column_id);
 }
 
 void TableFunctionFileReader::AddVirtualColumn(column_t virtual_column_id) {
@@ -952,7 +969,7 @@ TableFunction TableFunctionMultiFileWrapper::CreateFunction(TableFunction single
 		// the metrics of the scan include those the wrapped function keeps per file
 		result.get_metrics = TableFunctionMultiFileGetMetrics;
 	}
-	if (single_file_function.statistics) {
+	if (single_file_function.statistics || single_file_function.statistics_extended) {
 		// the statistics of the scan are those of its files, combined
 		result.statistics_extended = TableFunctionMultiFileFunction::MultiFileScanStatsExtended;
 	}

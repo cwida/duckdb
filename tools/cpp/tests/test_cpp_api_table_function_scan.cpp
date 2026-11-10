@@ -394,3 +394,50 @@ TEST_CASE("Stable C++API: table function metrics", "[cpp_api]") {
 	REQUIRE(scanned->Get<uint64_t>() == 5);
 	REQUIRE(total->Get<uint64_t>() == 12);
 }
+
+namespace {
+
+void LinesStats(TableFunction::StatsInput &input) {
+	auto &factory = input.GetContext().GetFactory();
+	std::vector<std::pair<std::string, Value>> fields;
+	fields.emplace_back("min", Value::Create(factory, varchar_t("x")));
+	fields.emplace_back("max", Value::Create(factory, varchar_t("z")));
+	input.GetResultStats().SetValue(Value::CreateStruct(factory, fields));
+}
+
+} // namespace
+
+TEST_CASE("Stable C++API: multi-file function uses the stats callback of its table function", "[cpp_api]") {
+	auto db = Instance(":memory:");
+	auto conn = db.Connect();
+	auto &factory = conn.GetFactory();
+
+	const auto directory = std::filesystem::temp_directory_path() / "cpp_api_multi_file_stats";
+	std::filesystem::create_directories(directory);
+	const auto file = (directory / "a.lines").string();
+	std::ofstream(file) << "x\ny\nz\n";
+
+	auto single = TableFunction::Create(factory);
+	single.SetName("cpp_lines_stats");
+	single.GetSignature().AddParameter("file", factory.CreateType(LogicalTypeId::ANY));
+	single.SetBindCallback(LinesBindFunction)
+	    .SetInitGlobalCallback(LinesInitGlobal)
+	    .SetExecCallback(LinesExec)
+	    .SetProjectionPushdown(true)
+	    .SetStatsCallback(LinesStats);
+	conn.Register(single);
+
+	auto multi = MultiFileFunction::Create(factory);
+	multi.SetName("cpp_read_lines_stats")
+	    .SetSingleFileFunction("cpp_lines_stats")
+	    .SetReaderType("Lines")
+	    .SetFileExtension("lines");
+	conn.Register(multi);
+
+	// The file holds x, y and z, which is what the statistics say
+	const auto source = "FROM cpp_read_lines_stats('" + file + "') ";
+	REQUIRE(CollectBigints(conn.Execute("SELECT count(*) " + source + "WHERE line < 'a'")) == std::vector<int64_t> {0});
+	REQUIRE(CollectBigints(conn.Execute("SELECT count(*) " + source + "WHERE line > 'x'")) == std::vector<int64_t> {2});
+
+	std::filesystem::remove_all(directory);
+}

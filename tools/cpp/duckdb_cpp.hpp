@@ -3597,6 +3597,20 @@ public:
 	/// @throws InvalidInputException When the statistics are read-only, such as those of an argument.
 	auto SetCanHaveValid(bool value) -> void;
 
+	/// The statistics as a STRUCT value with one field per known statistic, the shape of the SQL function `stats()`:
+	/// `min` and `max` (values of the column's type), `has_null`, `has_no_null`, `approx_unique`, `child_stats` for
+	/// nested types, ... A field is absent when that statistic is unknown. Unstable API.
+	auto GetValue() const -> Value;
+
+	/// Narrows the statistics from a STRUCT value in the shape `GetValue` returns: a field that is set replaces that
+	/// statistic, a NULL or absent field leaves it unchanged. `{'min': 20, 'max': 30, 'has_null': false}` on an
+	/// INTEGER column reports exactly those bounds and the absence of NULLs. A bound is a value of the column's type,
+	/// or one that casts to it. Every statistic states what can occur: a bound that excludes a value the scan then
+	/// produces, or `has_null: false` for a column with NULLs, produces wrong query results. Unstable API.
+	/// @throws InvalidInputException When the value is not a STRUCT, a field does not exist for the type or does not
+	/// convert, or the statistics are read-only, such as those of an argument.
+	auto SetValue(const Value &value) -> void;
+
 private:
 	explicit Stats(void *impl);
 };

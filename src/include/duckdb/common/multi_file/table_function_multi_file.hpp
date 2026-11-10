@@ -234,6 +234,8 @@ public:
 	shared_ptr<FunctionData> bind_data;
 	//! The statistics callback of the wrapped function, which reads the statistics of this file from its bind data
 	table_statistics_t statistics = nullptr;
+	//! The same, for a wrapped function whose statistics callback takes the extended input
+	table_statistics_extended_t statistics_extended = nullptr;
 
 	optional_idx TryGetCardinalityEstimate() const override {
 		return cardinality;
