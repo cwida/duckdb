@@ -390,12 +390,13 @@ void HTTPTransportManager::ValidateStateLocked(const HTTPTransportManagerState &
 	}
 }
 
-HTTPTransportManager::Reservation HTTPTransportManager::ReserveClientLocked(
-    HTTPTransportManagerState &state, ClientKey key, const string &origin, const HTTPTransportConfig &transport_config,
-    annotated_unique_lock<annotated_mutex> &guard, optional_ptr<ClientContext> context) {
+HTTPTransportManager::Reservation
+HTTPTransportManager::ReserveClientLocked(HTTPTransportManagerState &state, ClientKey key, const string &origin,
+                                          const HTTPTransportConfig &transport_config,
+                                          annotated_unique_lock<annotated_mutex> &guard, const BaseRequest &request) {
 	D_ASSERT(state.reuse_policy != HTTPTransportReusePolicy::CLIENT_FREE);
 	ValidateStateLocked(state);
-	clients.WaitForAdmission(guard, HTTPTransportCapacityGuard::CurrentThreadOwnsCapacity(*this), context);
+	clients.WaitForAdmission(guard, HTTPTransportCapacityGuard::CurrentThreadOwnsCapacity(*this), request);
 	ValidateStateLocked(state);
 
 	key.connection_epoch = state.connection_epoch;
@@ -442,7 +443,7 @@ HTTPTransportManager::Lease HTTPTransportManager::Acquire(Session &session, Base
 	Reservation reservation;
 	{
 		annotated_unique_lock<annotated_mutex> guard(lock);
-		reservation = ReserveClientLocked(state, key, origin, transport_config, guard, request.interrupt_context);
+		reservation = ReserveClientLocked(state, key, origin, transport_config, guard, request);
 	}
 	try {
 		if (reservation.PrepareBucket(origin, transport_config)) {

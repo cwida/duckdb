@@ -10,6 +10,8 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/local_file_system.hpp"
+#include "duckdb/common/numeric_utils.hpp"
+#include "duckdb/common/time_point.hpp"
 #include "duckdb/main/database_file_opener.hpp"
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -529,6 +531,47 @@ static bool WaitForAdmissionWaiters(HTTPTransportManager &manager, idx_t count) 
 		std::this_thread::yield();
 	}
 	return false;
+}
+
+TEST_CASE("HTTP request deadlines expire while waiting for transport capacity", "[http_transport_manager]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	bool with_context = false;
+	SECTION("without a caller context") {
+	}
+	SECTION("with a caller context") {
+		with_context = true;
+	}
+	auto provider = make_shared_ptr<MockHTTPUtil>(HTTPTransportReusePolicy::SHARED);
+	auto manager = HTTPTransportManagerTestHelper::Create(provider, 1);
+	auto holder_session = manager->CreateSession(nullptr, nullptr);
+	auto waiting_session = manager->CreateSession(nullptr, nullptr);
+	BlockMockRequests(*provider->state);
+	auto holder = std::async(std::launch::async, [&]() {
+		return RunManagedRequest(holder_session, holder_session.Parameters(), "https://example.com/");
+	});
+	auto holder_started = WaitForMockRequests(*provider->state, 1);
+	auto waiter = std::async(std::launch::async, [&]() {
+		GetRequestInfo request("https://example.com/", HTTPHeaders(), waiting_session.Parameters(), nullptr, nullptr);
+		request.deadline = NumericCast<idx_t>(TimePoint::GetTickMs() + 500);
+		if (with_context) {
+			request.interrupt_context = con.context.get();
+		}
+		return waiting_session.Request(request);
+	});
+	auto queued = WaitForAdmissionWaiters(*manager, 1);
+	auto completed = waiter.wait_for(std::chrono::seconds(2));
+	auto remaining_waiters = HTTPTransportManagerTestHelper::AdmissionWaiters(*manager);
+	AllowMockRequests(*provider->state, NumericLimits<idx_t>::Maximum());
+	CHECK(holder.get());
+	CHECK_THROWS_AS(waiter.get(), InterruptException);
+	CHECK(holder_started);
+	CHECK(queued);
+	CHECK(completed == std::future_status::ready);
+	CHECK(remaining_waiters == 0);
+	CHECK(provider->state->requests_started == 1);
+	CHECK(RunManagedRequest(waiting_session, waiting_session.Parameters(), "https://example.com/"));
+	CHECK(provider->state->requests_started == 2);
 }
 
 TEST_CASE("HTTP transport manager synchronous session API", "[http_transport_manager]") {

@@ -1,5 +1,4 @@
 #include "duckdb/main/http/http_client_pool.hpp"
-#include "duckdb/main/client_context.hpp"
 
 #include "duckdb/common/exception.hpp"
 
@@ -65,10 +64,8 @@ bool HTTPClientPool::HasAdmissionResource() const {
 }
 
 void HTTPClientPool::WaitForAdmission(annotated_unique_lock<annotated_mutex> &guard, bool owns_capacity,
-                                      optional_ptr<ClientContext> context) {
-	if (context) {
-		context->BlockingInterruptCheck();
-	}
+                                      const BaseRequest &request) {
+	request.InterruptCheck();
 	if (closed) {
 		throw InvalidInputException("HTTP transport manager is closed");
 	}
@@ -84,13 +81,13 @@ void HTTPClientPool::WaitForAdmission(annotated_unique_lock<annotated_mutex> &gu
 		auto ready = [&]() {
 			return closed || (admission_waiters.front().get() == &waiter && HasAdmissionResource());
 		};
-		if (!context) {
+		if (!request.interrupt_context && !request.deadline.IsValid()) {
 			waiter.availability.wait(guard, ready);
 		} else {
 			while (!waiter.availability.wait_for(guard, std::chrono::milliseconds(50), ready)) {
-				context->BlockingInterruptCheck();
+				request.InterruptCheck();
 			}
-			context->BlockingInterruptCheck();
+			request.InterruptCheck();
 		}
 	} catch (...) {
 		RemoveAdmissionWaiter(waiter);

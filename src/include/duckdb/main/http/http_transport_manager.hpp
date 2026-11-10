@@ -145,7 +145,7 @@ private:
 	Lease Acquire(Session &session, BaseRequest &request) DUCKDB_EXCLUDES(lock);
 	Reservation ReserveClientLocked(HTTPTransportManagerState &state, ClientKey key, const string &origin,
 	                                const HTTPTransportConfig &transport_config,
-	                                annotated_unique_lock<annotated_mutex> &guard, optional_ptr<ClientContext> context)
+	                                annotated_unique_lock<annotated_mutex> &guard, const BaseRequest &request)
 	    DUCKDB_REQUIRES(lock);
 	void PrepareClient(Reservation &reservation, HTTPTransportManagerState &state, HTTPParams &params,
 	                   const string &origin) DUCKDB_EXCLUDES(lock);
