@@ -2,8 +2,10 @@
 #include "duckdb/main/capi_v2/capi_v2_function_internal.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
+#include "duckdb/common/multi_file/base_file_reader.hpp"
 #include "duckdb/common/multi_file/multi_file_data.hpp"
 #include "duckdb/common/multi_file/table_function_multi_file.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/execution/partition_info.hpp"
 #include "duckdb/function/partition_stats.hpp"
 #include "duckdb/main/profiler/metrics.hpp"
@@ -82,6 +84,17 @@ public:
 	//! The filters of the query the engine applies to what the function produces, as the position of the scan column
 	//! each applies to and its state. Only for a function that reads the filters.
 	vector<pair<idx_t, unique_ptr<TableFilterState>>> filters;
+	//! A column the multi-file scan wants converted before its filters apply: the position of the scan column it
+	//! produces and the expression doing the conversion, on the columns that follow it in what the function produced
+	struct ConvertedColumn {
+		idx_t position;
+		unique_ptr<Expression> expression;
+		unique_ptr<ExpressionExecutor> executor;
+		unique_ptr<DataChunk> input;
+	};
+	vector<ConvertedColumn> converted_columns;
+	//! What the function produces, in the types of its file, when some columns are converted afterwards
+	unique_ptr<DataChunk> file_chunk;
 
 	// Requested partition columns as declared columns, fixed for the lifetime of the local state's pipeline.
 	const vector<column_t> &PartitionColumns(const OperatorPartitionInfo &partition_info,
@@ -290,8 +303,8 @@ public:
 	void *in_bind_data = nullptr;
 	// The predicates the optimizer offers, borrowed from the engine for the duration of the callback.
 	const vector<unique_ptr<Expression>> *in_filters = nullptr;
-	// What the column references inside the predicates index: the scan's column list at optimization time.
-	const vector<ColumnIndex> *in_column_ids = nullptr;
+	// What the column references inside the predicates index: the scan's columns, as the function sees them.
+	vector<column_t> in_column_ids;
 
 	vector<bool> out_handled;
 };
@@ -522,6 +535,19 @@ static auto CV2TableBind(ClientContext &context, TableFunctionBindInput &input, 
 	return std::move(result);
 }
 
+//! The index the function sees for a column of the scan. A virtual column of a function wrapped in a multi-file
+//! function has an index of its own past the declared columns, and the wrapper tells which virtual column that is.
+static auto CV2ScanColumnIndex(column_t column, optional_ptr<const unordered_map<column_t, column_t>> virtual_columns)
+    -> column_t {
+	if (virtual_columns) {
+		auto entry = virtual_columns->find(column);
+		if (entry != virtual_columns->end()) {
+			return CV2VirtualColumnIndex(entry->second);
+		}
+	}
+	return IsVirtualColumn(column) ? CV2VirtualColumnIndex(column) : column;
+}
+
 //! The declared column behind each vector of the output chunk. With projection pushdown the engine sizes the chunk
 //! to the columns it asked for; without it the chunk always holds every declared column, whatever the engine asked.
 static auto CV2TableScanColumns(const CV2TableFunctionData &bind_data, const TableFunctionInitInput &input)
@@ -531,20 +557,11 @@ static auto CV2TableScanColumns(const CV2TableFunctionData &bind_data, const Tab
 			// the scan only produces rows (e.g. for count(*)) - the function produces them through its first column
 			return {0};
 		}
-		// A virtual column of a function wrapped in a multi-file function has an index of its own past the declared
-		// columns, and the wrapper tells which virtual column that is
 		const auto &virtual_columns = TableFunctionFileInitInput::Get(input).virtual_columns;
 		vector<column_t> columns;
 		columns.reserve(input.column_ids.size());
 		for (auto column : input.column_ids) {
-			if (virtual_columns) {
-				auto entry = virtual_columns->find(column);
-				if (entry != virtual_columns->end()) {
-					columns.push_back(CV2VirtualColumnIndex(entry->second));
-					continue;
-				}
-			}
-			columns.push_back(column >= CV2_VIRTUAL_COLUMN_START ? CV2VirtualColumnIndex(column) : column);
+			columns.push_back(CV2ScanColumnIndex(column, virtual_columns));
 		}
 		return columns;
 	}
@@ -596,7 +613,18 @@ static auto CV2TableFilters(const TableFunctionInitInput &input) -> vector<pair<
 static auto CV2TableOfferFilters(ClientContext &context, const CV2TableFunctionData &bind_data,
                                  const TableFunctionInitInput &input) -> void {
 	const auto &info = *bind_data.info;
+	const auto &file_input = TableFunctionFileInitInput::Get(input);
 	auto filters = CV2TableFilters(input);
+	if (file_input.expression_map) {
+		// the predicate on a converted column is written against the converted values, not those of the file
+		vector<pair<idx_t, Expression *>> on_file_columns;
+		for (auto &entry : filters) {
+			if (file_input.expression_map->find(ProjectionIndex(entry.first)) == file_input.expression_map->end()) {
+				on_file_columns.push_back(entry);
+			}
+		}
+		filters = std::move(on_file_columns);
+	}
 	if (filters.empty()) {
 		return;
 	}
@@ -618,7 +646,9 @@ static auto CV2TableOfferFilters(ClientContext &context, const CV2TableFunctionD
 	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
 	args.in_bind_data = bind_data.handle ? bind_data.handle->GetData() : nullptr;
 	args.in_filters = &predicates;
-	args.in_column_ids = &input.column_indexes;
+	for (auto column : input.column_ids) {
+		args.in_column_ids.push_back(CV2ScanColumnIndex(column, file_input.virtual_columns));
+	}
 	args.out_handled.resize(predicates.size(), false);
 
 	CV2ErrorInfo err = {};
@@ -669,6 +699,62 @@ static auto CV2TableInitGlobal(ClientContext &context, TableFunctionInitInput &i
 	return std::move(result);
 }
 
+//! Prepares the conversions the multi-file scan asks for (see TableFunctionFileInitInput::expression_map). The function
+//! produces the values of its file, and the conversion turns them into the values the filters are written against.
+static auto CV2TableInitConvertedColumns(ClientContext &context, const CV2TableFunctionData &bind_data,
+                                         const TableFunctionInitInput &input, const vector<column_t> &scan_columns,
+                                         CV2TableLocalState &local_state) -> void {
+	const auto &expression_map = TableFunctionFileInitInput::Get(input).expression_map;
+	if (!expression_map || expression_map->empty()) {
+		return;
+	}
+	vector<LogicalType> file_types;
+	for (auto column : scan_columns) {
+		file_types.push_back(IsVirtualColumn(column) ? LogicalType::BIGINT : bind_data.column_types[column]);
+	}
+	for (auto &entry : *expression_map) {
+		const auto position = entry.first.GetIndex();
+		const auto input_count = entry.second.column_indexes.size();
+		if (position + input_count > file_types.size()) {
+			throw InternalException("Converted column %llu of a table function scan is out of range", position);
+		}
+		CV2TableLocalState::ConvertedColumn converted;
+		converted.position = position;
+		converted.expression = entry.second.expression->Copy();
+		converted.executor = make_uniq<ExpressionExecutor>(context, *converted.expression);
+		vector<LogicalType> input_types(file_types.begin() + NumericCast<int64_t>(position),
+		                                file_types.begin() + NumericCast<int64_t>(position + input_count));
+		converted.input = make_uniq<DataChunk>();
+		converted.input->InitializeEmpty(input_types);
+		local_state.converted_columns.push_back(std::move(converted));
+	}
+	local_state.file_chunk = make_uniq<DataChunk>();
+	local_state.file_chunk->Initialize(context, file_types);
+}
+
+//! Produces the converted columns from what the function produced in the types of its file
+static auto CV2TableConvertColumns(CV2TableLocalState &local_state, DataChunk &output) -> void {
+	auto &file_chunk = *local_state.file_chunk;
+	vector<bool> converted_position(output.ColumnCount(), false);
+	for (auto &converted : local_state.converted_columns) {
+		converted_position[converted.position] = true;
+	}
+	for (idx_t i = 0; i < output.ColumnCount(); i++) {
+		if (!converted_position[i]) {
+			output.data[i].Reference(file_chunk.data[i]);
+		}
+	}
+	for (auto &converted : local_state.converted_columns) {
+		auto &converted_input = *converted.input;
+		for (idx_t i = 0; i < converted_input.ColumnCount(); i++) {
+			converted_input.data[i].Reference(file_chunk.data[converted.position + i]);
+		}
+		converted_input.SetCardinality(file_chunk.size());
+		converted.executor->ExecuteExpression(converted_input, output.data[converted.position]);
+	}
+	output.SetCardinality(file_chunk.size());
+}
+
 static auto CV2TableInitLocal(ExecutionContext &context, TableFunctionInitInput &input,
                               GlobalTableFunctionState *global_state) -> unique_ptr<LocalTableFunctionState> {
 	const auto &bind_data = input.bind_data->Cast<CV2TableFunctionData>();
@@ -683,11 +769,13 @@ static auto CV2TableInitLocal(ExecutionContext &context, TableFunctionInitInput 
 			                             TableFilterState::Initialize(context.client, entry.Filter()));
 		}
 	}
+	auto scan_columns = CV2TableScanColumns(bind_data, input);
+	if (info.ReadsFilters()) {
+		CV2TableInitConvertedColumns(context.client, bind_data, input, scan_columns, *result);
+	}
 	if (!info.init_local_cb) {
 		return std::move(result);
 	}
-
-	auto scan_columns = CV2TableScanColumns(bind_data, input);
 
 	CV2TableInitLocalInfo args = {};
 	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
@@ -781,7 +869,13 @@ static auto CV2TableExecBatchOnce(ClientContext &context, TableFunctionInput &in
 static auto CV2TableExecBatch(ClientContext &context, TableFunctionInput &input, DataChunk &output) -> void {
 	auto &local_state = input.local_state->Cast<CV2TableLocalState>();
 	while (true) {
-		CV2TableExecBatchOnce(context, input, output);
+		if (local_state.file_chunk) {
+			local_state.file_chunk->Reset();
+			CV2TableExecBatchOnce(context, input, *local_state.file_chunk);
+			CV2TableConvertColumns(local_state, output);
+		} else {
+			CV2TableExecBatchOnce(context, input, output);
+		}
 		if (local_state.filters.empty() || output.size() == 0) {
 			return;
 		}
@@ -804,6 +898,7 @@ static auto CV2TableExecBatch(ClientContext &context, TableFunctionInput &input,
 		}
 		// Nothing of this batch passed, but an empty chunk means that the batch is exhausted
 		output.Reset();
+		context.InterruptCheck();
 	}
 }
 
@@ -977,7 +1072,9 @@ static auto CV2TableFilterPushdown(ClientContext &context, LogicalGet &get, Func
 	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
 	args.in_bind_data = bind_data.handle ? bind_data.handle->GetData() : nullptr;
 	args.in_filters = &filters;
-	args.in_column_ids = &get.GetColumnIds();
+	for (auto &column : get.GetColumnIds()) {
+		args.in_column_ids.push_back(CV2ScanColumnIndex(column.GetPrimaryIndex(), nullptr));
+	}
 	args.out_handled.resize(filters.size(), false);
 
 	CV2ErrorInfo err = {};
@@ -1731,7 +1828,7 @@ duckdb_v2_table_function_filter_pushdown_get_column_count(duckdb_v2_table_functi
                                                           idx_t *count, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(count);
-	return WithErrorHandler(err, [&]() { *count = Convert(info)->in_column_ids->size(); });
+	return WithErrorHandler(err, [&]() { *count = Convert(info)->in_column_ids.size(); });
 }
 
 DUCKDB_V2_ERROR
@@ -1741,13 +1838,12 @@ duckdb_v2_table_function_filter_pushdown_get_column_index(duckdb_v2_table_functi
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(column_index);
 	return WithErrorHandler(err, [&]() {
-		const auto &columns = *Convert(info)->in_column_ids;
+		const auto &columns = Convert(info)->in_column_ids;
 		if (index >= columns.size()) {
 			throw duckdb::InvalidInputException(
 			    "Index out of bounds in duckdb_v2_table_function_filter_pushdown_get_column_index");
 		}
-		// A function registered here declares no virtual columns, so every entry is a declared column.
-		*column_index = columns[index].GetPrimaryIndex();
+		*column_index = columns[index];
 	});
 }
 

@@ -3,6 +3,7 @@
 #include "duckdb_v2.h"
 #include "test_cpp_api.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <filesystem>
@@ -28,6 +29,12 @@ std::vector<int64_t> CollectBigints(QueryResult result) {
 			out.push_back(view.Data<int64_t>()[view.SelAt(i)]);
 		}
 	}
+	return out;
+}
+
+std::vector<int64_t> CollectSortedBigints(QueryResult result) {
+	auto out = CollectBigints(std::move(result));
+	std::sort(out.begin(), out.end());
 	return out;
 }
 
@@ -57,6 +64,8 @@ struct HintGlobal {
 
 // What the last scan was told about the filters: the declared column of each, and the filter as text
 std::vector<std::pair<idx_t, std::string>> seen_filters;
+// The columns of the filters of every call, for the tests to clear
+std::vector<idx_t> seen_filter_columns;
 
 std::string Render(const TableFunction::FilterPushdownInput &input, const Expression &expression) {
 	switch (expression.GetType()) {
@@ -117,6 +126,7 @@ void HintPushdown(TableFunction::FilterPushdownInput &input) {
 	for (idx_t i = 0; i < input.GetFilterCount(); i++) {
 		auto filter = input.GetFilter(i);
 		seen_filters.emplace_back(FilterColumn(input, filter), Render(input, filter));
+		seen_filter_columns.push_back(seen_filters.back().first);
 	}
 }
 
@@ -128,7 +138,8 @@ void HintExec(TableFunction::ExecInput &input) {
 	auto &bind = input.GetBindData<HintBind>();
 	auto &global = input.GetGlobalState<HintGlobal>();
 	auto chunk = input.GetOutputChunk();
-	const auto produced = std::min<int64_t>(bind.count - global.position, 5);
+	const auto produced = std::min<int64_t>(std::min<int64_t>(bind.count - global.position, 5),
+	                                        static_cast<int64_t>(chunk.GetCapacity()));
 	for (idx_t v = 0; v < input.GetColumnCount(); v++) {
 		auto vector = chunk.GetVector(v);
 		auto *data = vector.GetDataMutable<int64_t>();
@@ -143,14 +154,19 @@ void HintExec(TableFunction::ExecInput &input) {
 
 // ---------------------------------------------------------------------------
 // cpp_lines(file): one VARCHAR column "line", a row per line of the file, and the file_row_number virtual column.
+// The lines of the tests are longer than blob_t::INLINE_LENGTH: an assertion build compiles the engine with
+// DUCKDB_DEBUG_NO_INLINE, whose string_t reads the pointer even for values the API would inline.
 // ---------------------------------------------------------------------------
 
 struct LinesBind {
 	std::vector<std::string> lines;
 };
 struct LinesGlobal {
-	std::atomic<bool> done {false};
+	std::atomic<idx_t> position {0};
 };
+
+// How often the exec callback of cpp_lines was called, over all files
+std::atomic<idx_t> lines_exec_calls {0};
 
 void LinesBindFunction(TableFunction::BindInput &input) {
 	input.AddResultColumn("line", input.GetContext().GetFactory().ParseType("VARCHAR"));
@@ -170,25 +186,28 @@ void LinesInitGlobal(TableFunction::InitGlobalInput &input) {
 void LinesExec(TableFunction::ExecInput &input) {
 	auto &bind = input.GetBindData<LinesBind>();
 	auto &global = input.GetGlobalState<LinesGlobal>();
-	if (global.done.exchange(true)) {
+	lines_exec_calls++;
+	auto chunk = input.GetOutputChunk();
+	const auto start = global.position.fetch_add(chunk.GetCapacity());
+	if (start >= bind.lines.size()) {
 		return;
 	}
-	auto chunk = input.GetOutputChunk();
+	const auto count = std::min<idx_t>(bind.lines.size() - start, chunk.GetCapacity());
 	for (idx_t v = 0; v < input.GetColumnCount(); v++) {
 		auto vector = chunk.GetVector(v);
-		vector.SetSize(bind.lines.size());
+		vector.SetSize(count);
 		const auto column = input.GetColumnIndex(v);
 		if (TableFunction::IsVirtualColumn(column)) {
 			REQUIRE(TableFunction::GetVirtualColumn(column) == TableFunction::VirtualColumn::FILE_ROW_NUMBER);
 			auto *data = vector.GetDataMutable<int64_t>();
-			for (idx_t row = 0; row < bind.lines.size(); row++) {
-				data[row] = static_cast<int64_t>(row);
+			for (idx_t row = 0; row < count; row++) {
+				data[row] = static_cast<int64_t>(start + row);
 			}
 			continue;
 		}
 		REQUIRE(column == 0);
-		for (idx_t row = 0; row < bind.lines.size(); row++) {
-			vector.AssignString(row, bind.lines[row]);
+		for (idx_t row = 0; row < count; row++) {
+			vector.AssignString(row, bind.lines[start + row]);
 		}
 	}
 }
@@ -199,6 +218,7 @@ void LinesExec(TableFunction::ExecInput &input) {
 
 struct MetricsGlobal {
 	std::atomic<idx_t> scanned {0};
+	std::atomic<idx_t> position {0};
 };
 
 std::atomic<bool> metrics_rejected_unknown {false};
@@ -223,17 +243,22 @@ void MetricsInitGlobal(TableFunction::InitGlobalInput &input) {
 
 void MetricsExec(TableFunction::ExecInput &input) {
 	auto &global = input.GetGlobalState<MetricsGlobal>();
-	if (global.scanned.load() > 0) {
+	constexpr idx_t ROWS = 3;
+	auto chunk = input.GetOutputChunk();
+	const auto start = global.position.fetch_add(chunk.GetCapacity());
+	if (start >= ROWS) {
 		return;
 	}
-	global.scanned = 5;
-	auto chunk = input.GetOutputChunk();
+	if (start == 0) {
+		global.scanned = 5;
+	}
+	const auto count = std::min<idx_t>(ROWS - start, chunk.GetCapacity());
 	auto vector = chunk.GetVector(0);
 	auto *data = vector.GetDataMutable<int64_t>();
-	for (int64_t row = 0; row < 3; row++) {
-		data[row] = row;
+	for (idx_t row = 0; row < count; row++) {
+		data[row] = static_cast<int64_t>(start + row);
 	}
-	vector.SetSize(3);
+	vector.SetSize(count);
 }
 
 void MetricsReport(TableFunction::MetricsInput &input) {
@@ -286,7 +311,7 @@ TEST_CASE("Stable C++API: table function sees the filters when the scan starts",
 	REQUIRE(seen_filters.empty());
 
 	// The function produces every row, so it is the engine that leaves the ones that pass
-	REQUIRE(CollectBigints(conn.Execute("SELECT i FROM cpp_hint(10) WHERE i >= 5 AND i < 8")) ==
+	REQUIRE(CollectSortedBigints(conn.Execute("SELECT i FROM cpp_hint(10) WHERE i >= 5 AND i < 8")) ==
 	        std::vector<int64_t> {5, 6, 7});
 	REQUIRE_FALSE(seen_filters.empty());
 	for (auto &filter : seen_filters) {
@@ -323,6 +348,11 @@ TEST_CASE("Stable C++API: table function sees the filters when the scan starts",
 	REQUIRE(CollectBigints(conn.Execute("SELECT i FROM cpp_hint(100) WHERE i = 99")) == std::vector<int64_t> {99});
 	REQUIRE(CollectBigints(conn.Execute("SELECT count(*) FROM cpp_hint(100) WHERE i > 1000")) ==
 	        std::vector<int64_t> {0});
+
+	// A scan whose rows all fail the filters can still be interrupted
+	conn.Execute("SET max_execution_time = 200").Drain();
+	REQUIRE_THROWS_AS(conn.Execute("SELECT count(*) FROM cpp_hint(1000000000000000) WHERE i < 0").Drain(),
+	                  InterruptException);
 }
 
 TEST_CASE("Stable C++API: table function virtual columns need projection pushdown", "[cpp_api]") {
@@ -348,8 +378,8 @@ TEST_CASE("Stable C++API: table function virtual columns", "[cpp_api]") {
 	std::filesystem::create_directories(directory);
 	const auto first = (directory / "a.lines").string();
 	const auto second = (directory / "b.lines").string();
-	std::ofstream(first) << "x\ny\nz\n";
-	std::ofstream(second) << "p\nq\n";
+	std::ofstream(first) << "x is a long line\ny is a long line\nz is a long line\n";
+	std::ofstream(second) << "p is a long line\nq is a long line\n";
 
 	auto single = TableFunction::Create(factory);
 	single.SetName("cpp_lines");
@@ -370,10 +400,11 @@ TEST_CASE("Stable C++API: table function virtual columns", "[cpp_api]") {
 	        std::vector<int64_t> {5});
 	REQUIRE(CollectStrings(conn.Execute("SELECT line || ':' || file_row_number FROM cpp_read_lines(" + files +
 	                                    ") ORDER BY line")) ==
-	        std::vector<std::string> {"p:0", "q:1", "x:0", "y:1", "z:2"});
+	        std::vector<std::string> {"p is a long line:0", "q is a long line:1", "x is a long line:0",
+	                                  "y is a long line:1", "z is a long line:2"});
 	REQUIRE(CollectStrings(conn.Execute("SELECT line FROM cpp_read_lines(" + files +
 	                                    ") WHERE file_row_number = 1 ORDER BY line")) ==
-	        std::vector<std::string> {"q", "y"});
+	        std::vector<std::string> {"q is a long line", "y is a long line"});
 	REQUIRE(CollectBigints(conn.Execute("SELECT max(file_row_number) FROM cpp_read_lines(" + files + ")")) ==
 	        std::vector<int64_t> {2});
 
@@ -412,7 +443,7 @@ TEST_CASE("Stable C++API: table function metrics", "[cpp_api]") {
 	conn.Execute("SET enable_profiling = 'no_output'").Drain();
 	conn.Execute("SET tracked_metrics = ['operator.row_groups_scanned', 'operator.total_row_groups_to_scan']").Drain();
 	conn.EnableProfiling();
-	REQUIRE(CollectBigints(conn.Execute("SELECT i FROM cpp_metrics(12)")) == std::vector<int64_t> {0, 1, 2});
+	REQUIRE(CollectSortedBigints(conn.Execute("SELECT i FROM cpp_metrics(12)")) == std::vector<int64_t> {0, 1, 2});
 
 	auto query_metrics = conn.GetQueryMetrics();
 	auto scan = FindOperator(query_metrics.GetRoot(), "TABLE_SCAN");
@@ -426,13 +457,154 @@ TEST_CASE("Stable C++API: table function metrics", "[cpp_api]") {
 	REQUIRE(metrics_rejected_unknown.load());
 }
 
+TEST_CASE("Stable C++API: filter pushdown sees the index of a virtual column", "[cpp_api]") {
+	auto db = Instance(":memory:");
+	auto conn = db.Connect();
+	auto &factory = conn.GetFactory();
+
+	const auto directory = std::filesystem::temp_directory_path() / "cpp_api_virtual_column_filters";
+	std::filesystem::create_directories(directory);
+	const auto file = (directory / "a.lines").string();
+	std::ofstream(file) << "x is a long line\ny is a long line\nz is a long line\n";
+
+	auto single = TableFunction::Create(factory);
+	single.SetName("cpp_lines_hint");
+	single.GetSignature().AddParameter("file", factory.CreateType(LogicalTypeId::ANY));
+	single.SetBindCallback(LinesBindFunction)
+	    .SetInitGlobalCallback(LinesInitGlobal)
+	    .SetExecCallback(LinesExec)
+	    .SetProjectionPushdown(true)
+	    .SetFilterPushdownCallback(HintPushdown)
+	    .AddVirtualColumn(TableFunction::VirtualColumn::FILE_ROW_NUMBER);
+	conn.Register(single);
+
+	auto multi = MultiFileFunction::Create(factory);
+	multi.SetName("cpp_read_lines_hint")
+	    .SetSingleFileFunction("cpp_lines_hint")
+	    .SetReaderType("Lines")
+	    .SetFileExtension("lines");
+	conn.Register(multi);
+
+	// Scanned directly: the callback runs while the query is optimized and as the scan starts
+	for (auto function : {"cpp_lines_hint", "cpp_read_lines_hint"}) {
+		INFO(function);
+		seen_filter_columns.clear();
+		REQUIRE(CollectStrings(conn.Execute(std::string("SELECT line FROM ") + function + "('" + file +
+		                                    "') WHERE file_row_number = 1")) ==
+		        std::vector<std::string> {"y is a long line"});
+		REQUIRE_FALSE(seen_filter_columns.empty());
+		for (auto column : seen_filter_columns) {
+			REQUIRE(TableFunction::IsVirtualColumn(column));
+			REQUIRE(TableFunction::GetVirtualColumn(column) == TableFunction::VirtualColumn::FILE_ROW_NUMBER);
+		}
+	}
+
+	std::filesystem::remove_all(directory);
+}
+
 namespace {
 
+// ---------------------------------------------------------------------------
+// cpp_numbers(file): one column "i" of the type on the first line of the file, with a row per other line.
+// ---------------------------------------------------------------------------
+
+struct NumbersBind {
+	bool is_bigint = false;
+	std::vector<int64_t> values;
+};
+
+void NumbersBindFunction(TableFunction::BindInput &input) {
+	std::ifstream file(GetFilePath(input.GetConstantArgument(0)));
+	std::string line;
+	std::getline(file, line);
+	NumbersBind bind;
+	bind.is_bigint = line == "BIGINT";
+	input.AddResultColumn("i", input.GetContext().GetFactory().ParseType(line));
+	while (std::getline(file, line)) {
+		bind.values.push_back(std::stoll(line));
+	}
+	input.SetBindData<NumbersBind>(std::move(bind));
+}
+
+void NumbersExec(TableFunction::ExecInput &input) {
+	auto &bind = input.GetBindData<NumbersBind>();
+	auto &global = input.GetGlobalState<LinesGlobal>();
+	auto chunk = input.GetOutputChunk();
+	const auto start = global.position.fetch_add(chunk.GetCapacity());
+	if (start >= bind.values.size()) {
+		return;
+	}
+	const auto count = std::min<idx_t>(bind.values.size() - start, chunk.GetCapacity());
+	auto vector = chunk.GetVector(0);
+	for (idx_t row = 0; row < count; row++) {
+		if (bind.is_bigint) {
+			vector.GetDataMutable<int64_t>()[row] = bind.values[start + row];
+		} else {
+			vector.GetDataMutable<int32_t>()[row] = static_cast<int32_t>(bind.values[start + row]);
+		}
+	}
+	vector.SetSize(count);
+}
+
+} // namespace
+
+TEST_CASE("Stable C++API: filters of a multi-file scan apply to the values in the type of the scan", "[cpp_api]") {
+	auto db = Instance(":memory:");
+	auto conn = db.Connect();
+	auto &factory = conn.GetFactory();
+
+	const auto directory = std::filesystem::temp_directory_path() / "cpp_api_multi_file_filter_types";
+	std::filesystem::create_directories(directory);
+	const auto first = (directory / "a.numbers").string();
+	const auto second = (directory / "b.numbers").string();
+	std::ofstream(first) << "INTEGER\n1\n2\n";
+	std::ofstream(second) << "BIGINT\n3000000000\n5\n";
+
+	auto single = TableFunction::Create(factory);
+	single.SetName("cpp_numbers");
+	single.GetSignature().AddParameter("file", factory.CreateType(LogicalTypeId::ANY));
+	single.SetBindCallback(NumbersBindFunction)
+	    .SetInitGlobalCallback(LinesInitGlobal)
+	    .SetExecCallback(NumbersExec)
+	    .SetProjectionPushdown(true)
+	    .SetFilterPushdownCallback(HintPushdown);
+	conn.Register(single);
+
+	auto multi = MultiFileFunction::Create(factory);
+	multi.SetName("cpp_read_numbers")
+	    .SetSingleFileFunction("cpp_numbers")
+	    .SetReaderType("Numbers")
+	    .SetFileExtension("numbers");
+	conn.Register(multi);
+
+	// The INTEGER file is read as BIGINT, the type of the scan, before the filters apply
+	const auto source = "FROM cpp_read_numbers(['" + first + "', '" + second + "'], union_by_name = true) ";
+	REQUIRE(CollectSortedBigints(conn.Execute("SELECT i " + source)) == std::vector<int64_t> {1, 2, 5, 3000000000});
+	REQUIRE(CollectSortedBigints(conn.Execute("SELECT i " + source + "WHERE i >= 2147483648")) ==
+	        std::vector<int64_t> {3000000000});
+	REQUIRE(CollectSortedBigints(conn.Execute("SELECT i " + source + "WHERE i = 2 OR i = 5")) ==
+	        std::vector<int64_t> {2, 5});
+	REQUIRE(CollectSortedBigints(conn.Execute("SELECT i " + source + "WHERE i < 3")) == std::vector<int64_t> {1, 2});
+	REQUIRE(CollectSortedBigints(conn.Execute("SELECT i " + source + "WHERE i > 1 AND i < 2147483648")) ==
+	        std::vector<int64_t> {2, 5});
+
+	std::filesystem::remove_all(directory);
+}
+
+namespace {
+
+// How often the statistics callback of cpp_lines_stats was called
+std::atomic<idx_t> lines_stats_calls {0};
+
+// The bounds of the lines of the file
 void LinesStats(TableFunction::StatsInput &input) {
+	lines_stats_calls++;
+	auto &bind = input.GetBindData<LinesBind>();
+	auto bounds = std::minmax_element(bind.lines.begin(), bind.lines.end());
 	auto &factory = input.GetContext().GetFactory();
 	std::vector<std::pair<std::string, Value>> fields;
-	fields.emplace_back("min", Value::Create(factory, varchar_t("x")));
-	fields.emplace_back("max", Value::Create(factory, varchar_t("z")));
+	fields.emplace_back("min", Value::Create(factory, varchar_t(*bounds.first)));
+	fields.emplace_back("max", Value::Create(factory, varchar_t(*bounds.second)));
 	input.GetResultStats().SetValue(Value::CreateStruct(factory, fields));
 }
 
@@ -445,8 +617,10 @@ TEST_CASE("Stable C++API: multi-file function uses the stats callback of its tab
 
 	const auto directory = std::filesystem::temp_directory_path() / "cpp_api_multi_file_stats";
 	std::filesystem::create_directories(directory);
-	const auto file = (directory / "a.lines").string();
-	std::ofstream(file) << "x\ny\nz\n";
+	const auto first = (directory / "a.lines").string();
+	const auto second = (directory / "b.lines").string();
+	std::ofstream(first) << "b is a long line\nc is a long line\n";
+	std::ofstream(second) << "x is a long line\ny is a long line\nz is a long line\n";
 
 	auto single = TableFunction::Create(factory);
 	single.SetName("cpp_lines_stats");
@@ -465,10 +639,32 @@ TEST_CASE("Stable C++API: multi-file function uses the stats callback of its tab
 	    .SetFileExtension("lines");
 	conn.Register(multi);
 
-	// The file holds x, y and z, which is what the statistics say
-	const auto source = "FROM cpp_read_lines_stats('" + file + "') ";
-	REQUIRE(CollectBigints(conn.Execute("SELECT count(*) " + source + "WHERE line < 'a'")) == std::vector<int64_t> {0});
-	REQUIRE(CollectBigints(conn.Execute("SELECT count(*) " + source + "WHERE line > 'x'")) == std::vector<int64_t> {2});
+	auto count = [&](const std::string &files, const std::string &predicate) {
+		lines_stats_calls = 0;
+		lines_exec_calls = 0;
+		return CollectBigints(
+		    conn.Execute("SELECT count(*) FROM cpp_read_lines_stats(" + files + ") WHERE line " + predicate));
+	};
+
+	// The statistics rule out the predicate, so no file is scanned
+	const auto one_file = "'" + first + "'";
+	REQUIRE(count(one_file, "> 'd'") == std::vector<int64_t> {0});
+	REQUIRE(lines_stats_calls > 0);
+	REQUIRE(lines_exec_calls == 0);
+	REQUIRE(count(one_file, "> 'b'") == std::vector<int64_t> {2});
+	REQUIRE(lines_exec_calls > 0);
+
+	// The statistics of a scan of several files are those of all of them, which union_by_name opens at bind
+	const auto both_files = "['" + first + "', '" + second + "'], union_by_name = true";
+	REQUIRE(count(both_files, "< 'a'") == std::vector<int64_t> {0});
+	REQUIRE(lines_stats_calls > 0);
+	REQUIRE(lines_exec_calls == 0);
+	REQUIRE(count(both_files, "> 'zz'") == std::vector<int64_t> {0});
+	REQUIRE(lines_exec_calls == 0);
+	REQUIRE(count(both_files, "> 'x'") == std::vector<int64_t> {3});
+	REQUIRE(lines_exec_calls > 0);
+	REQUIRE(count(both_files, "< 'c'") == std::vector<int64_t> {1});
+	REQUIRE(lines_exec_calls > 0);
 
 	std::filesystem::remove_all(directory);
 }

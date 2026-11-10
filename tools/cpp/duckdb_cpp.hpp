@@ -5042,7 +5042,7 @@ public:
 		/// `Expression::GetColumnIndex` indexes.
 		auto GetColumnCount() const -> idx_t;
 		/// Resolves the index a column reference node reports to the declared column (in `BindInput::AddResultColumn`
-		/// order) it refers to.
+		/// order) it refers to, or to the index of a virtual column (see `IsVirtualColumn`).
 		/// @throws InvalidInputException When the index is out of bounds.
 		auto GetColumnIndex(idx_t index) const -> idx_t;
 
