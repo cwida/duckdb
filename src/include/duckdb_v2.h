@@ -4831,12 +4831,17 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_schema_destroy(duckdb_v2_schema_handle *s
 /* --- Types for stats --- */
 
 /*!
- * A borrowed opaque handle to the statistics of an expression or a column. A stats callback receives it for the result
- * it describes and for each of its arguments; it is valid only for the duration of that callback.
+ * An opaque handle to the statistics of an expression or a column: whether it can hold NULLs and non-NULL values, a
+ * minimum and a maximum for numeric and string columns, the statistics of the children of a LIST / ARRAY / STRUCT
+ * column, the shredding of a VARIANT column and the extent of a GEOMETRY column.
  *
- * The statistics of an argument are read-only, and the setters fail on them. The statistics of the result start out
- * unknown, with every kind of value possible, and the callback narrows them through the setters. A callback that leaves
- * the result unchanged tells the engine nothing.
+ * A stats callback receives borrowed statistics for the result it describes and for each of its arguments; they are
+ * valid only for the duration of that callback. The statistics of an argument are read-only, and the setters fail on
+ * them. The statistics of the result start out unknown, with every kind of value possible, and the callback narrows
+ * them through the setters. A callback that leaves the result unchanged tells the engine nothing.
+ *
+ * Statistics created with `duckdb_v2_stats_create()` are owned by the caller: they start out unknown, are narrowed with
+ * the setters, combined with `duckdb_v2_stats_merge()`, and destroyed with `duckdb_v2_stats_destroy()`.
  */
 typedef struct _duckdb_v2_stats {
 	void *internal_ptr;
@@ -4926,6 +4931,189 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_set_can_have_null(duckdb_v2_stats_h
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_set_can_have_valid(duckdb_v2_stats_handle stats, bool value,
                                                                 duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Returns the statistics as a STRUCT value with one field per known statistic, the shape the SQL function `stats()`
+ * shows for the same statistics: `stats(42)` for example gives `{'min': 42, 'max': 42, 'has_null': false,
+ * 'has_no_null': true, 'approx_unique': 1}`. Every field keeps the type of what it describes, so a bound is a value of
+ * the column's type: a DATE for a DATE column, a DECIMAL for a DECIMAL column. Read the fields with
+ * `duckdb_v2_value_get_child_count()` and `duckdb_v2_value_get_child()`, and their names from the struct type
+ * (`duckdb_v2_value_get_logical_type()`, `duckdb_v2_logical_type_get_param()`).
+ *
+ * Every statistics struct has `has_null` and `has_no_null` (whether NULLs and non-NULL values can occur) and, when
+ * known, `approx_unique` (the estimated number of distinct values). The other fields depend on the type, and a field is
+ * absent when that statistic is unknown:
+ *
+ * - numeric types (integers, floating point numbers, DECIMAL, dates, times, timestamps, INTERVAL, UUID, BOOLEAN): `min`
+ * and `max`, values of the column's type;
+ * - VARCHAR and BLOB: `min` and `max` (bounds in binary order, possibly truncated prefixes), `has_unicode`,
+ * `min_string_length`, `max_string_length` and `total_string_length`. A bound holds its bytes as they are: as a VARCHAR
+ * for a VARCHAR column, unless a truncated prefix is not valid UTF-8, in which case it is a BLOB; as a BLOB for a BLOB
+ * column. (`stats()` instead renders string bounds as text, with `\xNN` escapes for bytes outside printable ASCII);
+ * - LIST: `min_list_length`, `max_list_length` and `total_list_length`, and `child_stats`, the statistics struct of the
+ * elements;
+ * - ARRAY: `child_stats`, the statistics struct of the elements;
+ * - STRUCT: `child_stats`, a struct with the statistics of each field by name; a MAP is a LIST of `STRUCT(key, value)`
+ * entries, so its keys and values are `child_stats.child_stats.key` and `child_stats.child_stats.value`;
+ * - TUPLE: `child_stats`, a TUPLE with the statistics struct of each element in order (`stats()` shows it as an array);
+ * - GEOMETRY: `extent`, a struct with the bounding box `x_min`, `x_max`, `y_min`, `y_max` and, when the geometries have
+ * those coordinates, `z_min`, `z_max`, `m_min`, `m_max`; `types`, the list of geometry types the column holds
+ * (`'point'`, `'linestring_z'`, `'polygon_m'`, `'multipoint_zm'`, ...; `stats()` does not show this field); and the
+ * flags `has_empty_geom`, `has_non_empty_geom`, `has_empty_part` and `has_non_empty_part`;
+ * - VARIANT: `shredding_state` (`'SHREDDED'` when the values are stored in a structured layout, `'NOT_SHREDDED'`,
+ * `'INCONSISTENT'` or `'UNINITIALIZED'`), and for a shredded column `fully_shredded` and `partially_shredded`: trees
+ * over the structured layout whose leaves are `{'type': <type name>, 'stats': <statistics struct>}` for the values
+ * shredded on that type, whose arrays are `{'child_stats': <node>}` and whose objects hold a node per field. A node
+ * under `fully_shredded` has every value in the structured layout, so that a filter on it can be answered from its
+ * statistics; a node under `partially_shredded` also has values that fell back to the generic layout.
+ * `{'shredding_state': 'SHREDDED', 'fully_shredded': {'x': {'type': 'INTEGER', 'stats': {'min': 1, 'max': 5,
+ * 'has_null': false, 'has_no_null': true}}}}` describes objects whose field `x` is an INTEGER in [1, 5] throughout.
+ *
+ * The returned value is owned by the caller and must be destroyed via `duckdb_v2_value_destroy()`.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param stats The statistics to read.
+ * @param value Receives the owned STRUCT value.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_get_value(duckdb_v2_stats_handle stats, duckdb_v2_value_handle *value,
+                                                       duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Sets the statistics from a STRUCT value in the shape `duckdb_v2_stats_get_value()` returns: every field whose value
+ * is not NULL replaces that statistic, a NULL field or an absent one leaves it unchanged. The result statistics of a
+ * stats callback start out unknown, so `{'min': 20, 'max': 30, 'has_null': false}` on an INTEGER column reports exactly
+ * those bounds and the absence of NULLs; a nested field such as `child_stats.x` or `extent.z_min` narrows that part
+ * only, and a `fully_shredded` / `partially_shredded` tree replaces the shredding of a VARIANT column as a whole. The
+ * `child_stats` of a TUPLE is a TUPLE (`duckdb_v2_value_create_tuple()`) or a LIST with one statistics struct per
+ * element in order, a NULL element leaving that element's statistics unchanged; an error names an element
+ * `child_stats.element1`, `child_stats.element2`, ...
+ *
+ * The simplest way to build the value is `duckdb_v2_value_create_struct()` over the fields: for the example above the
+ * names `min`, `max` and `has_null` with the values of `duckdb_v2_value_create_int()` and
+ * `duckdb_v2_value_create_bool()`. A bound is a value of the column's type, or one that casts to it: a DATE column
+ * takes `duckdb_v2_value_create_date()` or the VARCHAR `'2024-01-01'`, but not a number. A string bound is taken as it
+ * is: the bytes of a VARCHAR or BLOB value are the bound, nothing in them is interpreted (`'C:\temp'` is the seven
+ * characters it shows), and a bound may be a truncated prefix, as a file format stores them. A geometry `types` list
+ * names the types the column holds with the names `duckdb_v2_stats_get_value()` returns; a shredded `type` is a type
+ * name such as `'INTEGER'` or `'DECIMAL(10, 2)'`.
+ *
+ * The output of the SQL function `stats()` is accepted too: a VARIANT is read as the struct it holds, with the field
+ * values cast as above. Note that `stats()` renders string bounds as text, with `\xNN` escapes for bytes outside
+ * printable ASCII, and that text is the bound it sets; copy exact bounds with `duckdb_v2_stats_get_value()`.
+ *
+ * Each statistic states what can occur: a bound that excludes a value the scan then produces, or `has_null: false` for
+ * a column with NULLs, produces wrong query results.
+ *
+ * Fails with `ERROR_INPUT_INVALID` for a NULL value, a value that is not a STRUCT (or a VARIANT holding one), a field
+ * the statistics of the type do not have, a field whose value does not convert (the message names the field, e.g.
+ * `child_stats.a.min`), or read-only statistics such as those of an argument. A failure leaves the statistics as they
+ * were.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param stats The statistics to set.
+ * @param value The statistics as a STRUCT value, or the output of `stats()`. Borrowed.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_set_value(duckdb_v2_stats_handle stats, duckdb_v2_value_handle value,
+                                                       duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Creates the statistics of a column of the given type through a factory.
+ *
+ * The statistics start out unknown: they claim nothing about the values (NULLs and non-NULL values may occur, no
+ * bounds, and the statistics of the children of a nested type are unknown too). Narrow them with
+ * `duckdb_v2_stats_set_value()`, `duckdb_v2_stats_set_can_have_null()` and `duckdb_v2_stats_set_can_have_valid()`. The
+ * caller owns the returned handle and must destroy it with `duckdb_v2_stats_destroy()`. A stats callback does not need
+ * this: it narrows the result statistics it receives in place.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param factory The factory to create the statistics through.
+ * @param type The type of the column the statistics describe. Borrowed and copied.
+ * @param stats On success, receives the newly created statistics. Owned by the caller.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_create(duckdb_v2_factory_handle factory,
+                                                    duckdb_v2_logical_type_handle type, duckdb_v2_stats_handle *stats,
+                                                    duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Destroys statistics created with `duckdb_v2_stats_create()`, releasing their resources.
+ *
+ * Null-safe: passing a null pointer or null handle is a no-op. The handle is set to null on return to prevent
+ * double-destruction. Fails with `ERROR_INPUT_INVALID` for the borrowed statistics a stats callback receives, which the
+ * engine owns. Statistics that were merged into or assigned to others were copied, so destroying them afterwards does
+ * not affect those.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param stats The statistics to destroy.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_destroy(duckdb_v2_stats_handle *stats);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Merges the statistics of another part of the column into these: afterwards the statistics hold for the values of both
+ * parts together (the bounds widen, NULLs can occur when they can in either, the children are merged, a VARIANT
+ * shredded differently in the two parts becomes inconsistently shredded). This is how the statistics of the row groups
+ * of a file are combined into those of the file. Both must be of the same type; `other` is borrowed and left unchanged.
+ * Fails with `ERROR_INPUT_INVALID` for statistics of different types or read-only statistics.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param stats The statistics to widen.
+ * @param other The statistics of the other part of the column. Borrowed.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_merge(duckdb_v2_stats_handle stats, duckdb_v2_stats_handle other,
+                                                   duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Replaces the statistics with a copy of `other`: afterwards they claim exactly what `other` claims, nothing that was
+ * set before remains. This is how a stats callback hands the engine statistics the function built with
+ * `duckdb_v2_stats_create()`, e.g. combined from the files of a scan with `duckdb_v2_stats_merge()`. Both must be of
+ * the same type; `other` is borrowed and left unchanged. Fails with `ERROR_INPUT_INVALID` for statistics of different
+ * types or read-only statistics.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param stats The statistics to replace.
+ * @param other The statistics to copy. Borrowed.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_assign(duckdb_v2_stats_handle stats, duckdb_v2_stats_handle other,
+                                                    duckdb_v2_error_info_handle *err);
 #endif
 
 /* --- Struct definitions for stats --- */
@@ -8752,6 +8940,28 @@ typedef enum DUCKDB_V2_EXPRESSION_TYPE {
 	DUCKDB_V2_EXPRESSION_TYPE_MAX_ENUM = 0x7FFFFFFF,
 } DUCKDB_V2_EXPRESSION_TYPE;
 
+/*!
+ * What checking a predicate against the statistics of its column found out (`FilterPropagateResult`): whether every row
+ * the statistics describe passes the predicate, none does, or the statistics do not tell.
+ */
+typedef enum DUCKDB_V2_FILTER_PROPAGATE_RESULT {
+	//! The statistics do not decide the predicate.
+	DUCKDB_V2_FILTER_PROPAGATE_RESULT_NO_PRUNING_POSSIBLE = 0,
+
+	//! Every row passes the predicate.
+	DUCKDB_V2_FILTER_PROPAGATE_RESULT_ALWAYS_TRUE = 1,
+
+	//! No row passes the predicate.
+	DUCKDB_V2_FILTER_PROPAGATE_RESULT_ALWAYS_FALSE = 2,
+
+	//! Every row passes the predicate or evaluates it to NULL.
+	DUCKDB_V2_FILTER_PROPAGATE_RESULT_TRUE_OR_NULL = 3,
+
+	//! No row passes the predicate: each evaluates it to false or to NULL.
+	DUCKDB_V2_FILTER_PROPAGATE_RESULT_FALSE_OR_NULL = 4,
+	DUCKDB_V2_FILTER_PROPAGATE_RESULT_MAX_ENUM = 0x7FFFFFFF,
+} DUCKDB_V2_FILTER_PROPAGATE_RESULT;
+
 /* --- Struct forward declarations for expression --- */
 
 /* --- Types for expression --- */
@@ -8963,6 +9173,33 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_expression_function_get_qname(duckdb_v2_e
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_expression_cast_get_mode(duckdb_v2_expression_handle expression,
                                                                 DUCKDB_V2_CAST_MODE *mode,
                                                                 duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Checks a predicate over one column against the statistics of that column (`ExpressionFilter::CheckStatistics`): the
+ * statistics of the column are propagated through the expression - comparisons, conjunctions, IS NULL, IN, casts and
+ * the functions the engine knows the statistics of - to find out whether every row the statistics describe passes the
+ * predicate, none does, or nothing can be told. A table function uses it to skip a row group (or a file) whose
+ * statistics, built with `duckdb_v2_stats_create()`, make a pushed-down filter it did not take over false for every
+ * row. Every column reference of the predicate stands for the column described by `stats`.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param context The context of the query; the statistics of function calls in the predicate are derived through it.
+ * @param expression The predicate: a boolean expression over one column, referenced by its column references.
+ * @param stats The statistics of that column over the rows in question.
+ * @param result Receives what the statistics decide about the predicate.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_expression_check_statistics(duckdb_v2_context_handle context,
+                                                                   duckdb_v2_expression_handle expression,
+                                                                   duckdb_v2_stats_handle stats,
+                                                                   DUCKDB_V2_FILTER_PROPAGATE_RESULT *result,
+                                                                   duckdb_v2_error_info_handle *err);
 #endif
 
 /* --- Struct definitions for expression --- */
@@ -13033,7 +13270,8 @@ typedef struct _duckdb_v2_table_function_partition_data_info {
 /*!
  * A borrowed opaque handle to the arguments supplied to a table function during the "stats" phase of query
  * optimization. The engine invokes the callback once per column the query reads, and the callback can use the handle to
- * narrow the statistics of that column.
+ * find out which column is asked about and to report what it knows about the column's values (its minimum and maximum,
+ * whether it holds NULLs, ...) by narrowing the statistics of that column.
  */
 typedef struct _duckdb_v2_table_function_stats_info {
 	void *internal_ptr;
@@ -13461,9 +13699,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_set_partitioning_callback(
 /*!
  * Sets the optional stats callback of the table function.
  *
- * The stats callback is invoked during query optimization once for each declared column the query reads. Through its
- * `duckdb_v2_table_function_stats_info_handle` it narrows the statistics of that column, which the engine then uses to
- * simplify the query. A function without a stats callback gives the engine no statistics for its columns.
+ * The stats callback is invoked during query optimization once for each declared column the query reads, when the
+ * engine wants to know about the column's values without reading them - e.g. to prune a scan whose filter no value can
+ * satisfy, to answer `min()` / `max()` from the statistics, or to estimate the selectivity of a filter. Through its
+ * `duckdb_v2_table_function_stats_info_handle` the callback narrows the statistics of that column (see
+ * `duckdb_v2_table_function_stats_get_result_stats()`): its minimum and maximum, whether it holds NULLs, the statistics
+ * of the children of a nested column, ... Leaving the statistics unchanged tells the engine nothing about the column.
+ * The statistics must hold for every row the call produces: a bound that excludes a value the scan then produces leads
+ * to wrong results. A function without a stats callback gives the engine no statistics for its columns. The callback is
+ * only asked about whole declared columns, never about virtual columns or about fields extracted from a column.
  *
  * history:
  * - unstable: v2.0.0
@@ -14499,7 +14743,8 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_stats_get_bind_data(
  * Returns which declared column the statistics describe.
  *
  * The result indexes the columns declared with `duckdb_v2_table_function_bind_add_result_column()`, in declaration
- * order.
+ * order. It is never the index of a virtual column or of a field extracted from a column; the callback is not asked
+ * about those.
  *
  * history:
  * - unstable: v2.0.0
@@ -14518,8 +14763,13 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_stats_get_column_index(
 /*!
  * Retrieves the statistics of the column, for the callback to narrow.
  *
- * The statistics start out unknown, with every kind of value possible. They describe every value the scan produces for
- * the column. Borrowed; valid only for the duration of the callback.
+ * The statistics start out unknown, with every kind of value possible, and are of the column's type as the bind
+ * callback declared it. The callback narrows them with `duckdb_v2_stats_set_value()`, from a STRUCT value in the shape
+ * `duckdb_v2_stats_get_value()` returns - e.g. `{'min': 20, 'max': 30, 'has_null': false}` for an INTEGER column, or
+ * the statistics of the fields of a STRUCT column under `child_stats` - and with `duckdb_v2_stats_set_can_have_null()`
+ * / `duckdb_v2_stats_set_can_have_valid()`. Statistics built with `duckdb_v2_stats_create()`, e.g. combined from the
+ * files of a scan with `duckdb_v2_stats_merge()`, are copied in with `duckdb_v2_stats_assign()`. They describe every
+ * value the scan produces for the column. Borrowed; valid only for the duration of the callback.
  *
  * history:
  * - unstable: v2.0.0

@@ -21,6 +21,9 @@ enum class CollationStrength : uint8_t { PRIMARY = 0, SECONDARY = 1, TERTIARY = 
 
 enum class CaseFirst : uint8_t { DEFAULT = 0, LOWER_FIRST = 1, UPPER_FIRST = 2 };
 
+//! The last group of characters that are variable, each group includes the ones before it
+enum class MaxVariable : uint8_t { SPACE = 0, PUNCTUATION = 1, SYMBOL = 2, CURRENCY = 3 };
+
 struct CollationSettings {
 	CollationStrength strength = CollationStrength::TERTIARY;
 	//! Whether to add a separate case level after the secondary level
@@ -28,12 +31,15 @@ struct CollationSettings {
 	CaseFirst case_first = CaseFirst::DEFAULT;
 	//! Whether variable (punctuation, symbol, ...) weights are shifted to the quaternary level
 	bool alternate_shifted = false;
+	//! Which characters are variable when alternate_shifted is set
+	MaxVariable max_variable = MaxVariable::PUNCTUATION;
 	//! Whether secondary weights are compared backwards, as in Canadian French
 	bool backward_secondary = false;
 	//! Whether text that is not in canonical order is normalized before it is collated
 	bool normalization = false;
 };
 
+struct CollationInfo;
 struct CollationTailoring;
 
 //! An index of the code points a locale tailors: a bitmap that rejects the characters it
@@ -91,6 +97,8 @@ public:
 	//! Creates a collator for a collation name such as "de" or "fr_ca", falling back to the
 	//! root collation when the locale is unknown
 	explicit Collator(const string &collation);
+	//! Creates a collator for a BCP 47 language tag such as "sv-SE" or "en-u-ka-shifted"
+	static Collator FromLanguageTag(const string &tag);
 
 	//! Whether a collation with this name exists
 	static bool HasCollation(const string &collation);
@@ -106,6 +114,10 @@ public:
 	}
 
 private:
+	//! Creates a collator for a collation (nullptr for the root collation) with its own settings
+	explicit Collator(const CollationInfo *info);
+	//! Creates a collator for a collation (nullptr for the root collation) with the given settings
+	Collator(const CollationInfo *info, CollationSettings settings_p);
 	//! Fills the table of ASCII characters that map to a single collation element
 	void BuildFastPath();
 	//! Writes the sort key of a string of simple characters, returns false when the string

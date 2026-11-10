@@ -2,6 +2,7 @@
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
+#include "duckdb/storage/statistics/stats_struct_fields.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/vector.hpp"
 
@@ -216,7 +217,7 @@ void ListStats::Deserialize(Deserializer &deserializer, BaseStatistics &base) {
 	list_data.total_list_length = total_list_length.IsValid() ? total_list_length.GetIndex() : 0;
 }
 
-child_list_t<Value> ListStats::ToStruct(const BaseStatistics &stats) {
+child_list_t<Value> ListStats::ToStruct(const BaseStatistics &stats, bool exact) {
 	auto &child_stats = ListStats::GetChildStats(stats);
 	child_list_t<Value> result;
 	auto &list_data = GetDataUnsafe(stats);
@@ -229,8 +230,29 @@ child_list_t<Value> ListStats::ToStruct(const BaseStatistics &stats) {
 	if (list_data.has_total_list_length) {
 		result.emplace_back("total_list_length", Value::UBIGINT(list_data.total_list_length));
 	}
-	result.emplace_back("child_stats", child_stats.ToStruct());
+	result.emplace_back("child_stats", child_stats.ToStruct(exact));
 	return result;
+}
+
+void ListStats::SetFromStruct(BaseStatistics &stats, StatsStructFields &fields) {
+	auto &list_data = GetDataUnsafe(stats);
+	Value field;
+	if (fields.TryGet("min_list_length", LogicalType::UBIGINT, field)) {
+		list_data.has_min_list_length = true;
+		list_data.min_list_length = UBigIntValue::Get(field);
+	}
+	if (fields.TryGet("max_list_length", LogicalType::UBIGINT, field)) {
+		list_data.has_max_list_length = true;
+		list_data.max_list_length = UBigIntValue::Get(field);
+	}
+	if (fields.TryGet("total_list_length", LogicalType::UBIGINT, field)) {
+		list_data.has_total_list_length = true;
+		list_data.total_list_length = UBigIntValue::Get(field);
+	}
+	auto child = fields.Get("child_stats");
+	if (child) {
+		GetChildStats(stats).SetFromStruct(*child, fields.FieldPath("child_stats"));
+	}
 }
 
 void ListStats::Verify(const BaseStatistics &stats, const Vector &vector, const SelectionVector &sel, idx_t count) {
