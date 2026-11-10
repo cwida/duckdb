@@ -32,7 +32,8 @@ bool RadixHTAdaptivity::TryGrow(RadixHTGlobalSinkState &gstate, RadixHTLocalSink
 	if (next_capacity > NumericLimits<idx_t>::Maximum() / sizeof(ht_entry_t)) {
 		return false;
 	}
-	const auto current_size = ht.GetSizeInBytes();
+	// Without a spill plan the arena stays in memory either way, so it does not count against the growth.
+	const auto current_size = gstate.SpillableSize(ht);
 	const auto table_size = next_capacity * sizeof(ht_entry_t);
 	// Grow only when repeated tuple materialization outweighs the larger pointer table.
 	// Without a spill plan, a duplicate row also re-creates its states in the arena, which cannot spill,

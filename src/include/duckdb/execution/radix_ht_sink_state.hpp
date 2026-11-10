@@ -110,6 +110,8 @@ public:
 	}
 	//! Whether the aggregate arena alone approaches the thread memory limit
 	bool StatePressureExceeded(GroupedAggregateHashTable &ht) const;
+	//! HT size without the arena when there is no spill plan: the arena then stays in memory whatever the sink does
+	idx_t SpillableSize(GroupedAggregateHashTable &ht) const;
 
 public:
 	ClientContext &context;
@@ -186,7 +188,7 @@ public:
 	bool spilling = false;
 	//! Sink capacity for this thread
 	idx_t local_sink_capacity;
-	//! Size of the HT after it was last abandoned
+	//! Spillable size of the HT after it was last abandoned
 	idx_t size_after_abandon = 0;
 	//! Data that is abandoned ends up here (only if we're doing external aggregation)
 	unique_ptr<PartitionedTupleData> abandoned_data;
