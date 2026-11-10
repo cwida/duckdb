@@ -2089,6 +2089,8 @@ public:
 	FinalizeRegisterExternalResourceStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
 	FinalizeDestroyExternalResourceStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeDestroyResourceWordsTrampoline(PEGTransformer &transformer,
+	                                                                              GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
 	FinalizeAttachToExternalResourceTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
@@ -3936,8 +3938,12 @@ public:
 	                                                                      const string &string_literal,
 	                                                                      const optional<Identifier> &attach_alias,
 	                                                                      unique_ptr<ParsedExpression> expression);
-	static unique_ptr<SQLStatement> TransformDestroyExternalResourceStmt(PEGTransformer &transformer,
-	                                                                     const Identifier &col_id);
+	static unique_ptr<SQLStatement>
+	TransformDestroyExternalResourceStmt(PEGTransformer &transformer, const Identifier &col_id,
+	                                     optional<Identifier> destroy_external_resource_type);
+	static unique_ptr<SQLStatement> TransformDestroyResourceWords(PEGTransformer &transformer, const Identifier &col_id,
+	                                                              const Identifier &col_id_1,
+	                                                              const vector<Identifier> &col_ids);
 	static unique_ptr<SQLStatement> TransformAttachToExternalResource(
 	    PEGTransformer &transformer, unique_ptr<ExternalResourceOptions> external_resource_source,
 	    const Identifier &attach_alias, const optional<vector<GenericCopyOption>> &attach_options);

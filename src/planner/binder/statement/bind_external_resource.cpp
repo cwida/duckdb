@@ -34,9 +34,10 @@ BoundStatement Binder::Bind(ExternalResourceStatement &stmt) {
 		throw BinderException("EXTERNAL RESOURCE requires a name (AS <name>)");
 	}
 
+	// The resource type is a string literal: the recipe for CREATE / REGISTER, the check for DESTROY (when given).
+	data.type = stmt.type;
 	if (stmt.operation != ExternalResourceOperation::DESTROY) {
-		// CREATE / REGISTER: the resource type is a string literal; only the create params need resolving.
-		data.type = stmt.type;
+		// CREATE / REGISTER: only the create params need resolving.
 		BindExternalResourceParams(stmt.options, data.params);
 		if (stmt.operation == ExternalResourceOperation::REGISTER) {
 			data.handle = BindExternalResourceValue(stmt.handle);

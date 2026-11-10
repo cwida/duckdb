@@ -50,6 +50,9 @@ string ExternalResourceStatement::ToString() const {
 		break;
 	case ExternalResourceOperation::DESTROY:
 		result = "DESTROY EXTERNAL RESOURCE " + SQLIdentifier(name);
+		if (!type.empty()) {
+			result += " WITH TYPE " + SQLString(type);
+		}
 		break;
 	}
 	return result;
