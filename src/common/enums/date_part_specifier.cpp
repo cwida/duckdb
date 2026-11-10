@@ -1,6 +1,7 @@
 #include "duckdb/common/enums/date_part_specifier.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
+#include "duckdb/common/types/string_type.hpp"
 
 namespace duckdb {
 
@@ -131,38 +132,45 @@ static uint8_t DatePartHashChar(char c) {
 	return DATE_PART_ASSO_VALUES[StringUtil::ASCII_TO_LOWER_MAP[static_cast<uint8_t>(c)]];
 }
 
-static bool DatePartEquals(std::string_view input, const char *expected) {
-	for (idx_t i = 0; i < input.size(); i++) {
+static bool DatePartEquals(string_t input, const char *expected) {
+	const auto input_data = input.GetData();
+	const auto input_size = input.GetSize();
+	for (idx_t i = 0; i < input_size; i++) {
 		if (expected[i] == '\0') {
 			return false;
 		}
-		if (StringUtil::ASCII_TO_LOWER_MAP[static_cast<uint8_t>(input[i])] !=
+		if (StringUtil::ASCII_TO_LOWER_MAP[static_cast<uint8_t>(input_data[i])] !=
 		    StringUtil::ASCII_TO_LOWER_MAP[static_cast<uint8_t>(expected[i])]) {
 			return false;
 		}
 	}
-	return expected[input.size()] == '\0';
+	return expected[input_size] == '\0';
 }
 
 } // namespace
 
-bool TryGetDatePartSpecifier(const string &specifier_p, DatePartSpecifier &result) {
-	const auto specifier = std::string_view(specifier_p);
-	if (specifier.empty() || specifier.size() > 15) {
+bool TryGetDatePartSpecifier(const string &specifier, DatePartSpecifier &result) {
+	return TryGetDatePartSpecifier(string_t(specifier), result);
+}
+
+bool TryGetDatePartSpecifier(string_t specifier, DatePartSpecifier &result) {
+	const auto specifier_data = specifier.GetData();
+	const auto specifier_size = specifier.GetSize();
+	if (specifier_size == 0 || specifier_size > 15) {
 		return false;
 	}
 
-	uint32_t hash = static_cast<uint32_t>(specifier.size());
-	if (specifier.size() >= 8) {
-		hash += DatePartHashChar(specifier[7]);
+	uint32_t hash = static_cast<uint32_t>(specifier_size);
+	if (specifier_size >= 8) {
+		hash += DatePartHashChar(specifier_data[7]);
 	}
-	if (specifier.size() >= 3) {
-		hash += DatePartHashChar(specifier[2]);
+	if (specifier_size >= 3) {
+		hash += DatePartHashChar(specifier_data[2]);
 	}
-	if (specifier.size() >= 2) {
-		hash += DatePartHashChar(specifier[1]);
+	if (specifier_size >= 2) {
+		hash += DatePartHashChar(specifier_data[1]);
 	}
-	hash += DatePartHashChar(specifier[0]);
+	hash += DatePartHashChar(specifier_data[0]);
 	if (hash > 100) {
 		return false;
 	}
@@ -179,6 +187,14 @@ DatePartSpecifier GetDatePartSpecifier(const string &specifier) {
 	DatePartSpecifier result;
 	if (!TryGetDatePartSpecifier(specifier, result)) {
 		throw ConversionException("extract specifier \"%s\" not recognized", specifier);
+	}
+	return result;
+}
+
+DatePartSpecifier GetDatePartSpecifier(string_t specifier) {
+	DatePartSpecifier result;
+	if (!TryGetDatePartSpecifier(specifier, result)) {
+		throw ConversionException("extract specifier \"%s\" not recognized", specifier.GetString());
 	}
 	return result;
 }
