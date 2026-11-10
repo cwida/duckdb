@@ -21,7 +21,6 @@
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
-#include "duckdb/planner/operator/logical_join.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_recursive_cte.hpp"
@@ -603,18 +602,9 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		remove.VisitOperator(op.children[0]);
 		return;
 	}
-	case LogicalOperatorType::LOGICAL_FILTER:
-	case LogicalOperatorType::LOGICAL_UNNEST:
-	case LogicalOperatorType::LOGICAL_SAMPLE:
-	case LogicalOperatorType::LOGICAL_LIMIT:
-	case LogicalOperatorType::LOGICAL_TOP_N:
-	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
-		KeepCastsAbove(op.GetColumnBindings());
-		break;
 	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
 	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
-		KeepCastsAboveJoin(op);
 		if (analyze || everything_referenced) {
 			break;
 		}
@@ -662,7 +652,6 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		break;
 	}
 	case LogicalOperatorType::LOGICAL_ANY_JOIN:
-		KeepCastsAboveJoin(op);
 		break;
 	case LogicalOperatorType::LOGICAL_UNION: {
 		auto &setop = op.Cast<LogicalSetOperation>();
@@ -1096,8 +1085,7 @@ void RemoveUnusedColumns::WritePushdownExtractColumns(
 		}
 		D_ASSERT(struct_extract.components.size() > depth);
 		auto &component = struct_extract.components[depth];
-		auto push_cast = component.cast && struct_extract.push_cast;
-		auto &expr = push_cast ? *component.cast : component.extract;
+		auto &expr = component.cast ? *component.cast : component.extract;
 
 		auto return_type = expr->GetReturnType();
 
@@ -1109,7 +1097,7 @@ void RemoveUnusedColumns::WritePushdownExtractColumns(
 		auto &new_expr = expr->Cast<BoundColumnRefExpression>();
 		new_expr.SetReturnType(return_type);
 
-		auto column_index = callback(*entry, push_cast ? &(*component.cast)->GetReturnType() : nullptr);
+		auto column_index = callback(*entry, component.cast ? &(*component.cast)->GetReturnType() : nullptr);
 		new_expr.BindingMutable().column_index = column_index;
 		RecordSecureViewReplacement(old_binding, new_expr.Binding(), std::move(source));
 	}
@@ -1319,8 +1307,6 @@ void RemoveUnusedColumns::RemoveColumnsFromLogicalGet(LogicalGet &get, unique_pt
 	column_index_map<ProjectionIndex> child_map;
 	//! Created bindings per original_column (for pushdown extract verification)
 	unordered_map<idx_t, idx_t> created_bindings;
-	//! Positions of the new columns that apply a cast
-	unordered_set<idx_t> cast_positions;
 
 	// Create "selection vector" that contains all indices of the old 'column_ids' of the LogicalGet
 	//! i.e: This contains all the columns of the table
@@ -1422,9 +1408,6 @@ void RemoveUnusedColumns::RemoveColumnsFromLogicalGet(LogicalGet &get, unique_pt
 				    new_column_ids.emplace_back(std::move(new_index));
 				    original_ids.emplace_back(col_sel_idx);
 			    }
-			    if (cast_type) {
-				    cast_positions.insert(child_entry->second);
-			    }
 			    has_pushdown_extract = true;
 			    return child_entry->second;
 		    });
@@ -1518,82 +1501,9 @@ void RemoveUnusedColumns::RemoveColumnsFromLogicalGet(LogicalGet &get, unique_pt
 		// in scan order
 		if (op_ref->type == LogicalOperatorType::LOGICAL_FILTER) {
 			get.projection_ids.clear();
-			LiftCastsAboveFilter(get, op_ref, cast_positions);
 		}
 		return;
 	}
-}
-
-void RemoveUnusedColumns::LiftCastsAboveFilter(LogicalGet &get, unique_ptr<LogicalOperator> &op_ref,
-                                               const unordered_set<idx_t> &cast_positions) {
-	// the filters evaluate the casts they read on every row anyway, the others must only see the rows that pass
-	auto &filter = op_ref->Cast<LogicalFilter>();
-	unordered_set<idx_t> filter_columns;
-	for (auto &entry : get.table_filters) {
-		filter_columns.insert(entry.GetIndex());
-	}
-	for (const auto &table_filter : get.table_filters.GetMultiColumnFilters()) {
-		auto &expression_filter = ExpressionFilter::GetExpressionFilter(*table_filter, "LiftCastsAboveFilter");
-		for (const auto &column_index : expression_filter.column_indexes) {
-			filter_columns.insert(column_index);
-		}
-	}
-	for (auto &expr : filter.expressions) {
-		ExpressionIterator::EnumerateExpression(expr, [&](Expression &child) {
-			if (child.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
-				return;
-			}
-			auto &binding = child.Cast<BoundColumnRefExpression>().Binding();
-			if (binding.table_index == get.table_index) {
-				filter_columns.insert(binding.column_index);
-			}
-		});
-	}
-	bool lift_any = false;
-	for (auto position : cast_positions) {
-		if (filter_columns.find(position) == filter_columns.end()) {
-			lift_any = true;
-			break;
-		}
-	}
-	if (!lift_any) {
-		return;
-	}
-	// the projection takes over the bindings of the scan, so nothing above has to change
-	auto old_index = get.table_index;
-	auto new_index = binder.GenerateTableIndex();
-	auto column_ids = get.GetColumnIds();
-	vector<unique_ptr<Expression>> expressions;
-	vector<ColumnBinding> old_bindings;
-	vector<ColumnBinding> new_bindings;
-	for (idx_t position = 0; position < column_ids.size(); position++) {
-		auto &column_id = column_ids[position];
-		auto scan_type = get.GetColumnType(column_id);
-		ColumnBinding binding(new_index, ProjectionIndex(position));
-		old_bindings.emplace_back(old_index, ProjectionIndex(position));
-		new_bindings.push_back(binding);
-		if (cast_positions.find(position) == cast_positions.end() ||
-		    filter_columns.find(position) != filter_columns.end()) {
-			expressions.push_back(make_uniq<BoundColumnRefExpression>(scan_type, binding));
-			continue;
-		}
-		// the scan returns the plain field, the projection casts it
-		auto &column_type = get.GetColumnType(ColumnIndex(column_id.GetPrimaryIndex()));
-		column_id.SetPushdownExtractType(column_type, nullptr);
-		auto field = make_uniq<BoundColumnRefExpression>(column_id.GetScanType(), binding);
-		expressions.push_back(BoundCastExpression::AddCastToType(context, std::move(field), scan_type));
-	}
-	get.SetColumnIds(std::move(column_ids));
-	get.table_index = new_index;
-	ColumnBindingReplacer replacer;
-	replacer.AddReplacements(old_bindings, new_bindings);
-	replacer.VisitOperator(filter);
-	auto projection = make_uniq<LogicalProjection>(old_index, std::move(expressions));
-	if (filter.has_estimated_cardinality) {
-		projection->SetEstimatedCardinality(filter.estimated_cardinality);
-	}
-	projection->children.push_back(std::move(op_ref));
-	op_ref = std::move(projection);
 }
 
 CTERefPruner::CTERefPruner(const TableIndex cte_index, const unordered_set<ProjectionIndex> &referenced_columns)
@@ -1647,106 +1557,6 @@ void BaseColumnPruner::SetMode(BaseColumnPrunerMode mode) {
 
 BaseColumnPrunerMode BaseColumnPruner::GetMode() const {
 	return mode;
-}
-
-static void SetLeafType(ColumnIndex &path, const LogicalType &type) {
-	reference<ColumnIndex> leaf(path);
-	while (leaf.get().HasChildren()) {
-		leaf = leaf.get().GetChildIndex(0);
-	}
-	leaf.get().SetType(type);
-}
-
-static void RebuildPaths(ReferencedColumn &column) {
-	column.unique_paths.clear();
-	for (auto &struct_extract : column.struct_extracts) {
-		column.AddPath(struct_extract.extract_path);
-	}
-}
-
-void BaseColumnPruner::KeepCastsAbove(const vector<ColumnBinding> &bindings) {
-	// a cast in the scan would run on the rows that the operator below the reference drops
-	column_binding_set_t binding_set(bindings.begin(), bindings.end());
-	for (auto &entry : column_references) {
-		if (binding_set.find(entry.first) == binding_set.end()) {
-			continue;
-		}
-		auto &column = entry.second;
-		bool paths_changed = false;
-		for (auto &struct_extract : column.struct_extracts) {
-			if (!struct_extract.push_cast) {
-				continue;
-			}
-			struct_extract.push_cast = false;
-			if (!struct_extract.components.back().cast) {
-				continue;
-			}
-			// the path was registered with the type of the cast, it now stands for the plain extract
-			SetLeafType(struct_extract.extract_path, LogicalType());
-			paths_changed = true;
-		}
-		if (paths_changed) {
-			RebuildPaths(column);
-		}
-	}
-}
-
-//! A cast the operator pushes itself runs on every row the scan reads, so the same cast kept above it may as well
-static void PushSharedCasts(ReferencedColumn &column) {
-	auto &pushed = column.struct_extracts.back();
-	if (!pushed.components.back().cast) {
-		return;
-	}
-	bool paths_changed = false;
-	for (auto &struct_extract : column.struct_extracts) {
-		if (struct_extract.push_cast || !struct_extract.components.back().cast) {
-			continue;
-		}
-		auto path = struct_extract.extract_path;
-		SetLeafType(path, (*struct_extract.components.back().cast)->GetReturnType());
-		if (path != pushed.extract_path) {
-			continue;
-		}
-		struct_extract.extract_path = std::move(path);
-		struct_extract.push_cast = true;
-		paths_changed = true;
-	}
-	if (paths_changed) {
-		RebuildPaths(column);
-	}
-}
-
-void RemoveUnusedColumns::KeepCastsAboveJoin(LogicalOperator &op) {
-	// only the inputs whose rows the join can drop need their casts above it
-	auto &join = op.Cast<LogicalJoin>();
-	bool drops_left = true;
-	bool drops_right = true;
-	switch (join.join_type) {
-	case JoinType::LEFT:
-	case JoinType::MARK:
-	case JoinType::SINGLE:
-	case JoinType::RIGHT_SEMI:
-	case JoinType::RIGHT_ANTI:
-		drops_left = false;
-		break;
-	case JoinType::RIGHT:
-	case JoinType::SEMI:
-	case JoinType::ANTI:
-		drops_right = false;
-		break;
-	case JoinType::OUTER:
-		drops_left = false;
-		drops_right = false;
-		break;
-	default:
-		break;
-	}
-	if (drops_left) {
-		KeepCastsAbove(op.children[0]->GetColumnBindings());
-	}
-	if (drops_right) {
-		KeepCastsAbove(op.children[1]->GetColumnBindings());
-	}
 }
 
 bool BaseColumnPruner::HandleStructExtract(unique_ptr<Expression> &expr_p,
@@ -1996,7 +1806,6 @@ void BaseColumnPruner::AddBinding(BoundColumnRefExpression &col, ColumnIndex chi
 	referenced_column.AddPath(child_column);
 	referenced_column.struct_extracts.emplace_back(parent, referenced_column.bindings.size() - 1,
 	                                               std::move(child_column));
-	PushSharedCasts(referenced_column);
 }
 
 void BaseColumnPruner::AddBinding(BoundColumnRefExpression &col) {

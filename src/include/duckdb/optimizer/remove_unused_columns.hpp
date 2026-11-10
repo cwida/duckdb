@@ -52,8 +52,6 @@ public:
 	vector<ReferencedExtractComponent> components;
 	//! The ColumnIndex with a path that matches this struct extract
 	ColumnIndex extract_path;
-	//! Whether the cast on top of the extract may move into the scan
-	bool push_cast = true;
 };
 
 enum class PushdownExtractSupport : uint8_t { UNCHECKED, DISABLED, ENABLED };
@@ -120,8 +118,6 @@ protected:
 	                            reference<ColumnIndex> &path_ref, vector<ReferencedExtractComponent> &expressions);
 	void SetMode(BaseColumnPrunerMode mode);
 	BaseColumnPrunerMode GetMode() const;
-	//! Keeps the casts of the references into the given bindings above the operator visited next, which drops rows
-	void KeepCastsAbove(const vector<ColumnBinding> &bindings);
 
 private:
 	void MergeChildColumns(vector<ColumnIndex> &current_child_columns, ColumnIndex &new_child_column);
@@ -172,11 +168,6 @@ private:
 	void ApplySecureViewReplacements();
 	void RemoveColumnsFromLogicalColumnDataGet(LogicalColumnDataGet &get);
 	void RemoveColumnsFromLogicalGet(LogicalGet &get, unique_ptr<LogicalOperator> &op_ref);
-	//! Lifts the casts the filter above the scan does not read into a projection above the filter
-	void LiftCastsAboveFilter(LogicalGet &get, unique_ptr<LogicalOperator> &op_ref,
-	                          const unordered_set<idx_t> &cast_positions);
-	//! Keeps the casts above the inputs of the join whose rows it can drop
-	void KeepCastsAboveJoin(LogicalOperator &op);
 	void VisitSecureView(LogicalSecureView &view);
 	void CheckPushdownExtract(LogicalOperator &op);
 	void RewriteExpressions(LogicalProjection &proj, idx_t expression_count);
