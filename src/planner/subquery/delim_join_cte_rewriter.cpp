@@ -68,6 +68,7 @@ static BindingReplacementGraph CreateConstructedBindingReplacements(const vector
 static unique_ptr<LogicalOperator> CreateIdentityProjection(Binder &binder, unique_ptr<LogicalOperator> child,
                                                             BindingReplacementGraph &replacements) {
 	auto projection = LogicalProjection::CreateIdentity(binder.GenerateTableIndex(), std::move(child));
+	projection->query_block_boundary = false;
 	projection->ResolveOperatorTypes();
 	auto bindings = projection->children[0]->GetColumnBindings();
 	replacements = CreateConstructedBindingReplacements(bindings, projection->GetColumnBindings());
@@ -2582,11 +2583,17 @@ static bool HasPartitionedRecursiveKeys(LogicalRecursiveCTE &cte) {
 // Decorrelation partitions the RHS by its domain. Only retain this fact for repeatable, locally owned inputs.
 static bool CanRestrictCorrelationDomain(LogicalOperator &op, unordered_set<TableIndex> &local_ctes) {
 	switch (op.type) {
-	case LogicalOperatorType::LOGICAL_GET:
-		if (!op.Cast<LogicalGet>().GetTable()) {
+	case LogicalOperatorType::LOGICAL_GET: {
+		// a table in-out function turns each input row into rows of its own, unless it emits more after its input
+		auto &get = op.Cast<LogicalGet>();
+		auto &function = get.function;
+		const bool row_by_row = function.in_out_function && !function.in_out_function_final &&
+		                        function.stability != FunctionStability::VOLATILE;
+		if (!get.GetTable() && !row_by_row) {
 			return false;
 		}
 		break;
+	}
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE: {
 		auto &cte = op.Cast<LogicalRecursiveCTE>();
 		if (!HasPartitionedRecursiveKeys(cte)) {
@@ -2615,6 +2622,7 @@ static bool CanRestrictCorrelationDomain(LogicalOperator &op, unordered_set<Tabl
 	case LogicalOperatorType::LOGICAL_DUMMY_SCAN:
 	case LogicalOperatorType::LOGICAL_EMPTY_RESULT:
 	case LogicalOperatorType::LOGICAL_EXPRESSION_GET:
+	case LogicalOperatorType::LOGICAL_UNNEST:
 		break;
 	default:
 		return false;

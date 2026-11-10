@@ -1,0 +1,86 @@
+# name: test/optimizer/pushdown/delim_join_cte_filter_pushdown.test
+# description: Filters above a delim join reach its sides before the delim join becomes a CTE
+# group: [pushdown]
+
+require json
+
+statement ok
+CREATE TABLE docs AS
+SELECT i AS id,
+       to_json([{'id': i, 'items': [{'id': j, 'type': CASE WHEN j = 0 THEN 'a' ELSE 'b' END} FOR j IN range(5)]}]) AS doc
+FROM range(4) t(i);
+
+# a filter on the unnested side of an inner lateral join is applied to the unnest output, below the join
+query II
+EXPLAIN (FORMAT compact) SELECT count(*)
+FROM docs, unnest(CAST(docs.doc AS JSON[])) AS t(thread), unnest(CAST(json_extract(thread, '$.items') AS JSON[])) AS i(item)
+WHERE json_extract_string(item, '$.type') = 'a';
+----
+physical_plan	<REGEX>:.*FILTER[^\n]*json_extract_string\(item, '\$\.type'\) = 'a'[^\n]*\n( *PROJECTION[^\n]*\n)* *INOUT_FUNCTION[^\n]*Name: unnest.*
+
+query II
+EXPLAIN (FORMAT compact) SELECT count(*)
+FROM docs, unnest(CAST(docs.doc AS JSON[])) AS t(thread), unnest(CAST(json_extract(thread, '$.items') AS JSON[])) AS i(item)
+WHERE json_extract_string(item, '$.type') = 'a';
+----
+physical_plan	<!REGEX>:.*FILTER[^\n]*json_extract_string\(item[^\n]*\n( *PROJECTION[^\n]*\n)* *HASH_JOIN.*
+
+query I
+SELECT count(*)
+FROM docs, unnest(CAST(docs.doc AS JSON[])) AS t(thread), unnest(CAST(json_extract(thread, '$.items') AS JSON[])) AS i(item)
+WHERE json_extract_string(item, '$.type') = 'a';
+----
+4
+
+# above a LEFT lateral join, the filter has to see the rows without a match, so it stays above the join
+query I
+SELECT count(*)
+FROM docs LEFT JOIN LATERAL unnest(CAST(json_extract(docs.doc, '$[0].items') AS JSON[])) AS i(item) ON true
+WHERE item IS NULL;
+----
+0
+
+statement ok
+CREATE TABLE events AS
+SELECT i AS id, i % 50 AS user_id, i % 3 AS kind,
+       '{"items": ["a' || (i % 7) || '", "b' || (i % 11) || '"]}' AS metadata
+FROM range(3000) t(i);
+
+statement ok
+CREATE VIEW v AS
+WITH valid AS (SELECT id, user_id, metadata FROM events WHERE kind = 0)
+SELECT valid.id, valid.user_id, u.item
+FROM valid, unnest(json_extract_string(valid.metadata, '$.items[*]')) AS u(item);
+
+# a filter on a view with a CTE also restricts the values the lateral unnest runs on
+query II
+EXPLAIN (FORMAT compact) SELECT count(*) FROM (SELECT user_id FROM v WHERE user_id IS NULL) t;
+----
+physical_plan	<!REGEX>:.*HASH_GROUP_BY[^\n]*\n( *PROJECTION[^\n]*\n)* *CTE_SCAN.*
+
+query I
+SELECT count(*) FROM (SELECT user_id FROM v WHERE user_id IS NULL) t;
+----
+0
+
+query II
+SELECT count(*), count(DISTINCT item) FROM (SELECT user_id, item FROM v WHERE user_id = 3) t;
+----
+40	18
+
+# a filter that can throw still runs after a guard inside a subquery, also next to a lateral join
+statement ok
+CREATE TABLE raw AS SELECT * FROM (VALUES (1, '[{"type": "a"}, {"type": "b"}]'), (2, '[{"type": "b"}]'), (3, 'not json')) v(id, doc);
+
+query I
+SELECT count(*) FROM (SELECT * FROM raw WHERE json_valid(doc)) r, unnest(CAST(r.doc AS JSON[])) AS i(item)
+WHERE json_extract_string(r.doc, '$[0].type') = 'a';
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT * FROM raw WHERE json_valid(doc)) r
+WHERE EXISTS (SELECT 1 FROM unnest(CAST(r.doc AS JSON[])) AS i(item) WHERE json_extract_string(item, '$.type') = 'a')
+  AND json_extract_string(r.doc, '$[0].type') = 'a';
+----
+1

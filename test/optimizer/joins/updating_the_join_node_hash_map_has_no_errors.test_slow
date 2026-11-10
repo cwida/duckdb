@@ -7,7 +7,8 @@ require tpch
 statement ok
 call dbgen(sf=0.05);
 
-statement error
+# the join on (SELECT NULL) can be proven empty, and then the subquery that returns several rows never runs
+statement maybe
 SELECT NULL
 FROM main.supplier AS ref_0
 INNER JOIN main.nation

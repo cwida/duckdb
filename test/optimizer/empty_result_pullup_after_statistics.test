@@ -1,0 +1,20 @@
+# name: test/optimizer/empty_result_pullup_after_statistics.test
+# description: A join input that statistics propagation proves empty also empties the join
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t AS SELECT i AS a, i % 5 AS b FROM range(100) t(i);
+
+statement ok
+SET explain_output = 'physical_only';
+
+# a is never NULL, so the right side is empty and the inner join produces no rows without scanning t
+query II
+EXPLAIN (FORMAT compact) SELECT count(*) FROM t JOIN (SELECT b FROM t WHERE a IS NULL) s USING (b);
+----
+physical_plan	<!REGEX>:.*HASH_JOIN.*
+
+query I
+SELECT count(*) FROM t JOIN (SELECT b FROM t WHERE a IS NULL) s USING (b);
+----
+0

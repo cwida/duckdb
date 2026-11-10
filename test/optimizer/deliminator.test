@@ -47,6 +47,10 @@ explain SELECT sum(l_extendedprice) / 7.0 AS avg_yearly FROM lineitem, part WHER
 logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
 
 
+# at SF0.0001 statistics prove Q 20's filters on part and lineitem empty, which would remove the subqueries checked here
+statement ok
+SET disabled_optimizers = 'empty_result_pullup';
+
 # Q 20: join with JoinType::SINGLE (created when pushing down dependent joins) is converted to LEFT
 query II
 explain SELECT s_name, s_address FROM supplier, nation WHERE s_suppkey IN ( SELECT ps_suppkey FROM partsupp WHERE ps_partkey IN ( SELECT p_partkey FROM part WHERE p_name LIKE 'forest%') AND ps_availqty > ( SELECT 0.5 * sum(l_quantity) FROM lineitem WHERE l_partkey = ps_partkey AND l_suppkey = ps_suppkey AND l_shipdate >= CAST('1994-01-01' AS date) AND l_shipdate < CAST('1995-01-01' AS date))) AND s_nationkey = n_nationkey AND n_name = 'CANADA' ORDER BY s_name;
@@ -64,6 +68,9 @@ query II
 explain SELECT s_name, s_address FROM supplier, nation WHERE s_suppkey IN ( SELECT ps_suppkey FROM partsupp WHERE ps_partkey IN ( SELECT p_partkey FROM part WHERE p_name LIKE 'forest%') AND ps_availqty > ( SELECT 0.5 * sum(l_quantity) FROM lineitem WHERE l_partkey = ps_partkey AND l_suppkey = ps_suppkey AND l_shipdate >= CAST('1994-01-01' AS date) AND l_shipdate < CAST('1995-01-01' AS date))) AND s_nationkey = n_nationkey AND n_name = 'CANADA' ORDER BY s_name;
 ----
 logical_opt	<!REGEX>:.*(l_partkey IS NOT DISTINCT FROM l_partkey|l_suppkey IS NOT DISTINCT FROM l_suppkey).*
+
+statement ok
+RESET disabled_optimizers;
 
 # Reduced SQLStorm 6064: a pair-dependent predicate below a reused window CTE remains in the
 # normal decorrelation pipeline and exposes both join keys to the optimizer. MARK is retained
