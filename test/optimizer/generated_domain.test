@@ -175,9 +175,15 @@ statement ok
 CREATE TABLE expansion_guard AS
 SELECT (i=9999)::INTEGER k,CASE WHEN i=9999 THEN 3000000000 ELSE 1 END v FROM range(10000)t(i);
 
+statement ok
+CREATE TABLE expansion_demand(k INTEGER, selected BOOLEAN);
+
+statement ok
+INSERT INTO expansion_demand VALUES (0,true),(1,false);
+
 query II
 SELECT d.k,(SELECT CAST(sum(v) AS INTEGER) FROM expansion_guard f WHERE f.k=d.k)
-FROM (VALUES(0))d(k);
+FROM expansion_demand d WHERE selected;
 ----
 0	9999
 
@@ -195,7 +201,7 @@ FROM (VALUES(0))d(k);
 
 query II
 SELECT d.k,(SELECT max(v) * 4000000000::BIGINT FROM expansion_guard f WHERE f.k=d.k)
-FROM (VALUES(0))d(k);
+FROM expansion_demand d WHERE selected;
 ----
 0	4000000000
 
@@ -242,3 +248,28 @@ FROM scalar_demand d WHERE selected;
 
 statement ok
 RESET disabled_optimizers;
+
+
+# Removing a projected generated join preserves public columns, aliases, duplicates, and NULLs.
+query ITIT
+SELECT * FROM (VALUES(2,'b'),(1,'a'))d(k,s),
+LATERAL(SELECT d.k+1 v,d.s||'!' w)x ORDER BY ALL;
+----
+1	a	2	a!
+2	b	3	b!
+
+query TII
+SELECT x.w,d.k,x.v FROM (VALUES(2,'b'),(1,'a'))d(k,s),
+LATERAL(SELECT d.k+1 v,d.s||'!' w)x ORDER BY ALL;
+----
+a!	1	2
+b!	2	3
+
+query I
+SELECT x.* FROM (VALUES(1),(1),(2),(NULL))d(k),
+LATERAL(SELECT d.k+1 v)x ORDER BY ALL;
+----
+2
+2
+3
+NULL

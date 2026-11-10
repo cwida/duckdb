@@ -15,7 +15,7 @@ statement ok
 USE db
 
 statement ok
-CREATE TABLE t AS (SELECT * FROM range(8192) _(i), LATERAL (select (i*2) as j) ORDER BY i);
+CREATE TABLE t AS (SELECT * FROM range(8192) _(i), LATERAL (select (i*2) as j));
 
 # Work-around for unsetting version info
 statement ok

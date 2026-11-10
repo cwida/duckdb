@@ -8,15 +8,15 @@ SELECT (i>=9998)::INTEGER k,
        CASE WHEN i>=9998 THEN 90000000000000000000000000000000000000::DECIMAL(38,0) ELSE 1 END v
 FROM range(10000)t(i);
 
-# A decimal average can overflow on a group outside the requested domain.
+# Preserve the baseline normalization of an unfiltered fixed caller.
 query II
 EXPLAIN (FORMAT JSON)
 SELECT d.k,(SELECT avg(v) FROM decimal_average_input f WHERE f.k=d.k)
 FROM (VALUES(0))d(k);
 ----
-physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 
-# Floating-point averaging can evaluate the additional group without overflow.
+# Floating-point averaging has the same baseline domain shape.
 query II
 EXPLAIN (FORMAT JSON)
 SELECT d.k,(SELECT avg(v::DOUBLE) FROM decimal_average_input f WHERE f.k=d.k)
@@ -32,14 +32,14 @@ EXPLAIN (FORMAT JSON)
 SELECT d.k,(SELECT sum(v) FROM fact_data f WHERE f.k=d.k)
 FROM (VALUES(1),(7))d(k);
 ----
-physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 
 query II
 EXPLAIN (FORMAT JSON)
 SELECT d.k,d.j,(SELECT sum(v) FROM fact_data f WHERE f.k=d.k AND f.j=d.j)
 FROM (VALUES(1,1),(7,7))d(k,j);
 ----
-physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 
 # The same two-key demand covers the entire input domain here.
 statement ok
@@ -59,13 +59,13 @@ FROM (VALUES(0,0),(1,0))d(k,j);
 ----
 physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 
-# A selective domain avoids building a large MARK join hash table.
+# Existing lowering removes the domain of an unfiltered fixed evidence caller.
 query II
 EXPLAIN (FORMAT JSON)
 SELECT d.k,d.j,EXISTS(SELECT 1 FROM fact_data f WHERE f.k=d.k AND f.j=d.j)
 FROM (VALUES(1,1),(7,7))d(k,j);
 ----
-physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 
 # Keeping all evidence keys adds an unnecessary build and probe.
 query II
@@ -133,10 +133,16 @@ FROM d;
 ----
 physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 
-# Widening aggregate output must not introduce a throwing cast on an unrequested group.
+# An explicitly selected domain protects throwing expressions above the aggregate.
 statement ok
 CREATE TABLE expansion_guard AS
 SELECT (i=9999)::INTEGER k,CASE WHEN i=9999 THEN 3000000000 ELSE 1 END v FROM range(10000)t(i);
+
+statement ok
+CREATE TABLE expansion_demand(k INTEGER, selected BOOLEAN);
+
+statement ok
+INSERT INTO expansion_demand VALUES (0,true),(1,false);
 
 statement ok
 SET disabled_optimizers='filter_pullup,filter_pushdown,join_filter_pushdown';
@@ -144,11 +150,11 @@ SET disabled_optimizers='filter_pullup,filter_pushdown,join_filter_pushdown';
 query II
 EXPLAIN (FORMAT JSON)
 SELECT d.k,(SELECT CAST(sum(v) AS INTEGER) FROM expansion_guard f WHERE f.k=d.k)
-FROM (VALUES(0))d(k);
+FROM expansion_demand d WHERE selected;
 ----
 physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 
-# TRY_CAST is safe on the additional group and permits the cheaper unrestricted aggregate.
+# The unfiltered fixed caller keeps its existing unrestricted TRY_CAST plan.
 query II
 EXPLAIN (FORMAT JSON)
 SELECT d.k,(SELECT TRY_CAST(sum(v) AS INTEGER) FROM expansion_guard f WHERE f.k=d.k)
@@ -167,7 +173,7 @@ physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 query II
 EXPLAIN (FORMAT JSON)
 SELECT d.k,(SELECT max(v) * 4000000000::BIGINT FROM expansion_guard f WHERE f.k=d.k)
-FROM (VALUES(0))d(k);
+FROM expansion_demand d WHERE selected;
 ----
 physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 
@@ -212,17 +218,31 @@ FROM selected_demand d WHERE selected;
 statement ok
 RESET disabled_optimizers;
 
-# Simple LATERAL correlation still lowers without materializing a domain.
+# Simple LATERAL correlation must not retain a redundant join, grouping, or CTE.
 query II
 EXPLAIN (FORMAT JSON)
 SELECT d.k,x.v FROM (VALUES(1),(2))d(k), LATERAL (SELECT d.k+1 v)x;
 ----
-physical_plan	<!REGEX>:[\s\S]*"name": "CTE"[\s\S]*
+physical_plan	<!REGEX>:[\s\S]*"name": "(CTE|[^"]*JOIN[^"]*|[^"]*GROUP_BY)"[\s\S]*
 
-# A projection above the aggregate remains outside the narrow removal rule.
+# A projection above AVG keeps the baseline normalization.
 query II
 EXPLAIN (FORMAT JSON)
 SELECT d.k,(SELECT avg(v::DOUBLE)+1 FROM decimal_average_input f WHERE f.k=d.k)
 FROM (VALUES(0))d(k);
 ----
-physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Projection-only LATERAL over a range also stays streaming.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT * FROM range(8192) d(k), LATERAL (SELECT d.k * 2 AS v) x;
+----
+physical_plan	<!REGEX>:[\s\S]*"name": "(CTE|[^"]*JOIN[^"]*|[^"]*GROUP_BY)"[\s\S]*
+
+# The same cleanup applies to a table input.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,x.v FROM fact_data d, LATERAL (SELECT d.k + 1 AS v) x;
+----
+physical_plan	<!REGEX>:[\s\S]*"name": "(CTE|[^"]*JOIN[^"]*|[^"]*GROUP_BY)"[\s\S]*

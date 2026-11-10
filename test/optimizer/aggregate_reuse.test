@@ -194,7 +194,7 @@ GROUP BY o.k
 1	60
 3	180
 
-# A redundant NULL guard on the domain key does not prevent equivalent materialized payload reuse.
+# A correlated aggregate can reuse an equivalent materialized payload when the producer only adds a unique relation.
 statement ok
 SET delim_join_as_cte = true
 
@@ -239,6 +239,25 @@ EXPLAIN WITH outer_rows AS MATERIALIZED (
   SELECT f.k, min(f.cost) AS cost
   FROM payload_fact f, payload_supplier s, payload_region r
   WHERE s.id = f.supplier_id AND s.region_id = r.id AND r.name = 'EUROPE'
+    AND f.k IN (SELECT k FROM outer_rows)
+  GROUP BY f.k
+)
+SELECT o.name, o.address, o.phone, o.k, o.label, o.cost
+FROM outer_rows o JOIN minimum_cost m ON o.k = m.k AND o.cost = m.cost
+----
+logical_opt	<REGEX>:(?s).*payload_fact.*payload_fact.*
+
+# A redundant NULL guard on the domain key preserves payload reuse.
+query II
+EXPLAIN WITH outer_rows AS MATERIALIZED (
+  SELECT p.k, p.label, f.cost, s.name, s.address, s.phone
+  FROM payload_part p, payload_fact f, payload_supplier s, payload_region r
+  WHERE p.k = f.k AND s.id = f.supplier_id AND s.region_id = r.id
+    AND p.size = 15 AND p.kind = 'BRASS' AND r.name = 'EUROPE'
+), minimum_cost AS (
+  SELECT f.k, min(f.cost) AS cost
+  FROM payload_fact f, payload_supplier s, payload_region r
+  WHERE s.id = f.supplier_id AND s.region_id = r.id AND r.name = 'EUROPE'
     AND f.k IS NOT NULL AND f.k IN (SELECT k FROM outer_rows)
   GROUP BY f.k
 )
@@ -260,7 +279,7 @@ EXPLAIN WITH outer_rows AS MATERIALIZED (
   SELECT f.k, min(f.cost) AS cost
   FROM payload_fact f, payload_supplier s, payload_region r
   WHERE s.id = f.supplier_id AND s.region_id = r.id AND r.name = 'EUROPE'
-    AND f.k IS NOT NULL AND f.k IN (SELECT k FROM outer_rows)
+    AND f.k IN (SELECT k FROM outer_rows)
   GROUP BY f.k
 )
 SELECT o.name, o.address, o.phone, o.k, o.label, o.cost
@@ -281,7 +300,7 @@ WITH outer_rows AS MATERIALIZED (
   SELECT f.k, min(f.cost) AS cost
   FROM payload_fact f, payload_supplier s, payload_region r
   WHERE s.id = f.supplier_id AND s.region_id = r.id AND r.name = 'EUROPE'
-    AND f.k IS NOT NULL AND f.k IN (SELECT k FROM outer_rows)
+    AND f.k IN (SELECT k FROM outer_rows)
   GROUP BY f.k
 )
 SELECT o.name, o.address, o.phone, o.k, o.label, o.cost

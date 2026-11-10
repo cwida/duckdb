@@ -27,6 +27,7 @@
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
+#include "duckdb/planner/operator/logical_materialized_cte.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
 
@@ -911,6 +912,52 @@ TEST_CASE("Relation statistics extraction rejects recurring and cyclic CTEs", "[
 	                                        [&](TableIndex) -> optional_ptr<LogicalOperator> { return cyclic; });
 	REQUIRE_FALSE(cyclic_extractor.Extract(cyclic));
 	REQUIRE(cyclic_extractor.ExtractedOperatorCount() == 1);
+}
+
+TEST_CASE("Materialized CTE extraction restores nested lookup scopes", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto outer_index = TableIndex(30);
+	auto inner_index = TableIndex(40);
+	auto definition = make_uniq<LogicalExpressionGet>(TableIndex(10), vector<LogicalType> {LogicalType::INTEGER},
+	                                                  vector<vector<unique_ptr<Expression>>> {});
+	definition->children.push_back(make_uniq<LogicalDummyScan>(TableIndex(11)));
+	for (int32_t value = 1; value <= 2; value++) {
+		vector<unique_ptr<Expression>> row;
+		row.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(value)));
+		definition->expressions.push_back(std::move(row));
+	}
+	auto outer_ref = make_uniq<LogicalCTERef>(TableIndex(50), outer_index, vector<LogicalType> {LogicalType::INTEGER},
+	                                          vector<Identifier> {Identifier("i")});
+	auto inner_ref = make_uniq<LogicalCTERef>(TableIndex(60), inner_index, vector<LogicalType> {LogicalType::INTEGER},
+	                                          vector<Identifier> {Identifier("i")});
+	auto inner = make_uniq<LogicalMaterializedCTE>(Identifier("inner"), inner_index, 1, std::move(outer_ref),
+	                                               std::move(inner_ref), CTEMaterialize::CTE_MATERIALIZE_ALWAYS);
+	LogicalMaterializedCTE outer(Identifier("outer"), outer_index, 1, std::move(definition), std::move(inner),
+	                             CTEMaterialize::CTE_MATERIALIZE_ALWAYS);
+	auto outside = CreateProjectedDummy(TableIndex(70), TableIndex(80));
+	idx_t outside_lookups = 0;
+	RelationStatsExtractor extractor(*connection.context, [&](TableIndex index) -> optional_ptr<LogicalOperator> {
+		REQUIRE((index == outer_index || index == inner_index));
+		outside_lookups++;
+		return *outside;
+	});
+	auto nested_stats = extractor.Extract(outer);
+	REQUIRE(nested_stats);
+	REQUIRE(nested_stats->cardinality == 2);
+	REQUIRE(nested_stats->MatchesBindings(outer.GetColumnBindings()));
+	REQUIRE(outside_lookups == 0);
+
+	LogicalCTERef outside_outer(TableIndex(90), outer_index, {LogicalType::INTEGER}, {Identifier("i")});
+	LogicalCTERef outside_inner(TableIndex(100), inner_index, {LogicalType::INTEGER}, {Identifier("i")});
+	vector<reference<LogicalCTERef>> outside_references {outside_outer, outside_inner};
+	for (auto &cte_ref : outside_references) {
+		auto stats = extractor.Extract(cte_ref);
+		REQUIRE(stats);
+		REQUIRE(stats->cardinality == 1);
+		REQUIRE(stats->MatchesBindings(cte_ref.get().GetColumnBindings()));
+	}
+	REQUIRE(outside_lookups == 2);
 }
 
 TEST_CASE("SEMI fallback retains fractional cardinalities for enumeration", "[optimizer][relation_statistics]") {

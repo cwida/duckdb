@@ -60,6 +60,7 @@ optional<RelationStats> RelationStatsExtractor::ExtractInternal(LogicalOperator 
 			return {};
 		}
 		auto &cte = op.Cast<LogicalMaterializedCTE>();
+		// An extraction exception invalidates this extractor; restore the outer lookup on normal return.
 		auto outer_callback = cte_callback;
 		cte_callback = [&cte, outer_callback](TableIndex index) -> optional_ptr<LogicalOperator> {
 			if (index == cte.table_index) {

@@ -500,17 +500,22 @@ RestrictionAction DomainCostModel::ChooseRestrictionAction(const DomainRestricti
 	replacement.conditions.emplace_back(condition.GetLHS().Copy(), DomainKey(domain), condition.GetComparisonType());
 	auto restricted = EstimateRestrictionStats(replacement, *input, *new_keys);
 	auto old_input = EstimateRestrictionStats(restriction, *input, *old_keys);
+	auto old_key_rows = static_cast<double>(old_keys->cardinality);
+	auto distinct_key_rows = static_cast<double>(new_keys->cardinality);
+	auto new_producer_work = EstimateFixedDomainWork(key_input_rows, distinct_key_rows) + source_read_write_work;
+	auto new_key_work = distinct_key_rows + new_producer_work;
 	if (!old_input) {
-		return RestrictionAction::KEEP;
+		// Key containment bounds aggregation/probe work; cheaper key production/build can justify replacement.
+		// Missing old selectivity cannot justify removal.
+		return IsCheaper(new_key_work, old_key_rows) ? RestrictionAction::REPLACE : RestrictionAction::KEEP;
 	}
 	// The projections preserve row counts and directly alias this grouping key.
 	auto group_binding = condition.GetLHS().Cast<BoundColumnRefExpression>().Binding();
 	auto input_rows = static_cast<double>(input->cardinality);
 	auto old_input_rows = static_cast<double>(old_input->cardinality);
-	auto distinct_key_rows = static_cast<double>(new_keys->cardinality);
 	// Ignore other removed producer work: its build rows alone are a saving.
 	auto best_work = EstimateAggregateWork(*old_input, group_binding) +
-	                 EstimateSemiJoinWork(input_rows, old_input_rows, static_cast<double>(old_keys->cardinality));
+	                 EstimateSemiJoinWork(input_rows, old_input_rows, old_key_rows);
 	auto action = RestrictionAction::KEEP;
 	auto consider = [&](double work, RestrictionAction alternative) {
 		if (IsCheaper(work, best_work)) {
@@ -521,8 +526,11 @@ RestrictionAction DomainCostModel::ChooseRestrictionAction(const DomainRestricti
 	if (restricted) {
 		consider(EstimateAggregateWork(*restricted, group_binding) +
 		             EstimateSemiJoinWork(input_rows, static_cast<double>(restricted->cardinality), distinct_key_rows) +
-		             EstimateFixedDomainWork(key_input_rows, distinct_key_rows) + source_read_write_work,
+		             new_producer_work,
 		         RestrictionAction::REPLACE);
+	} else {
+		// Containment bounds the new aggregation/probe work by the old work; compare only the changed key costs.
+		consider(best_work - old_key_rows + new_key_work, RestrictionAction::REPLACE);
 	}
 	if (existing.CanRemove()) {
 		// Charge the NULL filter without taking credit for rows it removes.

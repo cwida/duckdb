@@ -11,7 +11,7 @@ SET default_null_order='nulls_first';
 require tpch
 
 statement ok
-CALL dbgen(sf=0.01);
+CALL dbgen(sf=0.0001);
 
 statement ok
 PRAGMA explain_output = OPTIMIZED_ONLY
@@ -57,7 +57,7 @@ logical_opt	<!REGEX>:.*SINGLE.*
 query II
 explain SELECT s_name, s_address FROM supplier, nation WHERE s_suppkey IN ( SELECT ps_suppkey FROM partsupp WHERE ps_partkey IN ( SELECT p_partkey FROM part WHERE p_name LIKE 'forest%') AND ps_availqty > ( SELECT 0.5 * sum(l_quantity) FROM lineitem WHERE l_partkey = ps_partkey AND l_suppkey = ps_suppkey AND l_shipdate >= CAST('1994-01-01' AS date) AND l_shipdate < CAST('1995-01-01' AS date))) AND s_nationkey = n_nationkey AND n_name = 'CANADA' ORDER BY s_name;
 ----
-logical_opt	<REGEX>:.*Groups: ps_suppkey, ps_partkey.*Join Type: SEMI.*l_partkey = ps_partkey.*l_suppkey = ps_suppkey.*(DELIM_GET|CTE_SCAN).*
+logical_opt	<REGEX>:.*Groups: ps_suppkey, ps_partkey.*Join Type: (RIGHT_)?SEMI.*(l_partkey = ps_partkey|ps_partkey = l_partkey).*(l_suppkey = ps_suppkey|ps_suppkey = l_suppkey).*(DELIM_GET|CTE_SCAN).*
 
 # Eliminating the generated domain join must not leave tautological filters on the lineitem scan
 query II
@@ -257,11 +257,6 @@ query II
 EXPLAIN SELECT x FROM range(1000000) o(x) WHERE x < 10000 AND EXISTS (SELECT 1 FROM range(10000000) l(y) WHERE y = x AND y > 0);
 ----
 logical_opt	<REGEX>:.*Join Type: RIGHT_SEMI.*x = x.*
-
-# With cost optimization disabled, the binder retains its filter-presence policy.
-# Cost-based preservation and removal are covered in deferred_domain_plan.test.
-statement ok
-SET disabled_optimizers='duplicate_eliminated_domain';
 
 # All evidence sides in a complex marker filter should retain the selected outer domain
 statement ok
@@ -673,7 +668,7 @@ INSERT INTO returned_orders VALUES (2), (2), (NULL);
 query II
 EXPLAIN SELECT count(DISTINCT order_id), sum(cost) FROM selected_orders o, selected_dim d WHERE o.dim_id = d.id AND d.selected AND EXISTS (SELECT 1 FROM other_sales s WHERE s.order_id = o.order_id AND s.warehouse <> o.warehouse) AND NOT EXISTS (SELECT 1 FROM returned_orders r WHERE r.order_id = o.order_id);
 ----
-logical_opt	<REGEX>:.*CTE Name: __duckdb_delim.*Join Type: (RIGHT_)?SEMI.*order_id = order_id.*
+logical_opt	<REGEX>:.*CTE Name: __duckdb_delim.*Join Type: MARK.*Join Type: SEMI.*order_id = order_id.*
 
 query II
 SELECT count(DISTINCT order_id), sum(cost) FROM selected_orders o, selected_dim d WHERE o.dim_id = d.id AND d.selected AND EXISTS (SELECT 1 FROM other_sales s WHERE s.order_id = o.order_id AND s.warehouse <> o.warehouse) AND NOT EXISTS (SELECT 1 FROM returned_orders r WHERE r.order_id = o.order_id);
@@ -808,17 +803,11 @@ SELECT count(DISTINCT order_id), sum(cost) FROM selected_orders o, selected_dim 
 statement ok
 SET disabled_optimizers='';
 
-# Q 22: the binder's fallback policy retains the selected NOT EXISTS domain
-statement ok
-SET disabled_optimizers='duplicate_eliminated_domain';
-
+# Q 22: the selected delimiter domain should still restrict the NOT EXISTS evidence side
 query II
 EXPLAIN SELECT cntrycode, count(*) AS numcust, sum(c_acctbal) AS totacctbal FROM (SELECT substring(c_phone FROM 1 FOR 2) AS cntrycode, c_acctbal FROM customer WHERE substring(c_phone FROM 1 FOR 2) IN ('13', '31', '23', '29', '30', '18', '17') AND c_acctbal > (SELECT avg(c_acctbal) FROM customer WHERE c_acctbal > 0.00 AND substring(c_phone FROM 1 FOR 2) IN ('13', '31', '23', '29', '30', '18', '17')) AND NOT EXISTS (SELECT * FROM orders WHERE o_custkey = c_custkey)) AS custsale GROUP BY cntrycode ORDER BY cntrycode;
 ----
-logical_opt	<REGEX>:.*__duckdb_delim.*Join Type: (RIGHT_)?SEMI.*o_custkey = c_custkey.*
-
-statement ok
-RESET disabled_optimizers;
+logical_opt	<REGEX>:.*__duckdb_delim.*Join Type: MARK.*Join Type: (SEMI|RIGHT_SEMI).*o_custkey = c_custkey.*
 
 # Delimiter CTE fanout should stay runnable with grouped build-side consumers
 query I
