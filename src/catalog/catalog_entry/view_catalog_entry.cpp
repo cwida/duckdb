@@ -186,10 +186,6 @@ void ViewCatalogEntry::UpdateBinding(const vector<LogicalType> &types_p, const v
 }
 
 string ViewCatalogEntry::ToSQL() const {
-	if (sql.empty()) {
-		//! Return empty sql with view name so pragma view_tables don't complain
-		return sql;
-	}
 	auto info = GetInfo();
 	info->StripCatalogQualification();
 	auto result = info->ToString();
