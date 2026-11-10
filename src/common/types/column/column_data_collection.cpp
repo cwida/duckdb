@@ -1066,8 +1066,10 @@ void ColumnDataCollection::Append(ColumnDataAppendState &state, DataChunk &input
 			for (idx_t vector_idx = 0; vector_idx < types.size(); vector_idx++) {
 				ColumnDataMetaData meta_data(copy_functions[vector_idx], segment, state, chunk_data,
 				                             chunk_data.vector_data[vector_idx]);
+				const auto allocated_before = segment.total_allocated;
 				copy_functions[vector_idx].function(meta_data, state.vector_data[vector_idx], input.data[vector_idx],
 				                                    offset, append_amount);
+				chunk_data.allocation_sizes[vector_idx] += segment.total_allocated - allocated_before;
 			}
 			chunk_data.count += append_amount;
 		}
@@ -1318,6 +1320,10 @@ idx_t ColumnDataChunkCursor::Count() const {
 
 idx_t ColumnDataChunkCursor::AllocationSize() const {
 	return collection.GetSegments()[position.segment_index]->GetChunkAllocationSize(position.chunk_index);
+}
+
+idx_t ColumnDataChunkCursor::AllocationSize(const vector<column_t> &column_ids) const {
+	return collection.GetSegments()[position.segment_index]->GetChunkAllocationSize(position.chunk_index, column_ids);
 }
 
 ColumnDataRowCollection ColumnDataCollection::GetRows() const {
