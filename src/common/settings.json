@@ -413,6 +413,14 @@
         "is_debug": true
     },
     {
+        "name": "debug_force_flush_append_failure",
+        "description": "Force the commit-time flush of transaction-local storage to fail after appending to the table. Can be used for testing commit error recovery.",
+        "type": "BOOLEAN",
+        "default_scope": "global",
+        "default_value": "false",
+        "is_debug": true
+    },
+    {
         "name": "debug_force_mbedtls_unsafe",
         "description": "Enable mbedtls for encryption. Unsafe to use.",
         "type": "BOOLEAN",

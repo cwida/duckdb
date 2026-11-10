@@ -269,6 +269,9 @@ void BoundIndex::ApplyBufferedReplays(const vector<LogicalType> &table_types, Bu
 				IndexAppendInfo append_info(IndexAppendMode::INSERT_DUPLICATES, nullptr);
 				const auto error = Append(table_chunk, row_ids, append_info);
 				if (error.HasError()) {
+					if (error.Type() != ExceptionType::CONSTRAINT) {
+						error.Throw();
+					}
 					throw InternalException("error while applying buffered appends: " + error.Message());
 				}
 				current_row += rows_to_process;
