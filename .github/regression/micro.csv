@@ -55,6 +55,12 @@ benchmark/micro/insert/bulk_insert_commit_batch.benchmark
 benchmark/micro/insert/bulk_insert_commit_parallel.benchmark
 benchmark/micro/insert/bulk_insert_commit_in_memory.benchmark
 benchmark/micro/optimizer/right_semi_distinct_filter.benchmark
+benchmark/micro/optimizer/one_sided_distinct_count_build_side.benchmark
+benchmark/micro/optimizer/one_sided_distinct_count_csv_dimension.benchmark
+benchmark/micro/optimizer/one_sided_distinct_count_join_sequence.benchmark
+benchmark/micro/optimizer/one_sided_distinct_count_repeated_keys.benchmark
+benchmark/micro/optimizer/one_sided_distinct_count_sparse_keys.benchmark
+benchmark/micro/optimizer/one_sided_distinct_count_parquet_dimension.benchmark
 benchmark/micro/order/order_external_after_early_finish.benchmark
 benchmark/micro/json/lateral_json_each.benchmark
 benchmark/micro/pushdown/rowid_in_list.benchmark

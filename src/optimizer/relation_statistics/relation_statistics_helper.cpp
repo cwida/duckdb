@@ -492,8 +492,9 @@ optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(Logica
 
 optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(LogicalAggregate &aggregate,
                                                                           const RelationStats &child_stats,
-                                                                          RelationStatsExtractor &extractor) {
-	return ExtractAggregationStatsInternal(aggregate, child_stats, extractor, false);
+                                                                          RelationStatsExtractor &extractor,
+                                                                          bool use_cached_cardinality) {
+	return ExtractAggregationStatsInternal(aggregate, child_stats, extractor, use_cached_cardinality);
 }
 
 optional<RelationStats> RelationStatisticsHelper::ExtractWindowStats(LogicalWindow &window,
