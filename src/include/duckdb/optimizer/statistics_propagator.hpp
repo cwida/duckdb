@@ -36,6 +36,10 @@ public:
 	                     StatisticsPropagationMode mode = StatisticsPropagationMode::FULL);
 
 	unique_ptr<NodeStatistics> PropagateStatistics(unique_ptr<LogicalOperator> &node_ptr);
+	//! Propagate statistics through a standalone expression, given the statistics of the columns it references
+	unique_ptr<BaseStatistics>
+	PropagateExpressionStatistics(unique_ptr<Expression> &expr,
+	                              column_binding_map_t<unique_ptr<BaseStatistics>> column_statistics);
 
 	column_binding_map_t<unique_ptr<BaseStatistics>> GetStatisticsMap() {
 		return std::move(statistics_map);
@@ -84,6 +88,7 @@ private:
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalLimit &op, unique_ptr<LogicalOperator> &node_ptr);
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalOrder &op, unique_ptr<LogicalOperator> &node_ptr);
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalWindow &op, unique_ptr<LogicalOperator> &node_ptr);
+	unique_ptr<NodeStatistics> PropagateStatistics(LogicalUnnest &op, unique_ptr<LogicalOperator> &node_ptr);
 
 	unique_ptr<NodeStatistics> PropagateChildren(LogicalOperator &node, unique_ptr<LogicalOperator> &node_ptr);
 

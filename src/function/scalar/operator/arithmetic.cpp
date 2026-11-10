@@ -368,6 +368,7 @@ unique_ptr<BaseStatistics> PropagateNumericStats(ClientContext &context, Functio
 			expr.FunctionMutable().SetFunctionCallback(
 			    GetScalarIntegerFunction<BASEOP>(expr.GetReturnType().InternalType()));
 		}
+		expr.FunctionMutable().SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	}
 	auto result = BaseStatistics::CreateEmpty(expr.GetReturnType());
 	if (bignum_tier) {
@@ -509,7 +510,9 @@ void DecimalAddSubtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	if (check_overflow) {
 		bound_function.SetFunctionCallback(GetScalarDecimalFunction<OPOVERFLOWCHECK>(result_type.InternalType()));
 	} else {
+		// the result type holds every result of the operation, so it cannot overflow
 		bound_function.SetFunctionCallback(GetScalarDecimalFunction<OP>(result_type.InternalType()));
+		bound_function.SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	}
 	if (IS_SUBTRACT) {
 		bound_function.SetStatisticsCallback(
@@ -538,6 +541,7 @@ unique_ptr<FunctionData> DeserializeDecimalArithmetic(Deserializer &deserializer
 		bound_function.SetFunctionCallback(GetScalarDecimalFunction<OPOVERFLOWCHECK>(return_type.InternalType()));
 	} else {
 		bound_function.SetFunctionCallback(GetScalarDecimalFunction<OP>(return_type.InternalType()));
+		bound_function.SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	}
 	bound_function.SetStatisticsCallback(nullptr); // TODO we likely dont want to do stats prop again
 	bound_function.SetReturnType(return_type);
@@ -1308,7 +1312,9 @@ void DecimalMultiplyResolveTypes(ResolveScalarFunctionTypesInput &input) {
 		bound_function.SetFunctionCallback(
 		    GetScalarDecimalFunction<DecimalMultiplyOverflowCheck>(result_type.InternalType()));
 	} else {
+		// the result type holds every product of the input types, so the operation cannot overflow
 		bound_function.SetFunctionCallback(GetScalarDecimalFunction<MultiplyOperator>(result_type.InternalType()));
+		bound_function.SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	}
 	bound_function.SetStatisticsCallback(
 	    PropagateNumericStats<TryDecimalMultiply, MultiplyPropagateStatistics, MultiplyOperator>);
@@ -1566,12 +1572,17 @@ unique_ptr<FunctionData> BindBinaryFloatingPoint(BindScalarFunctionInput &input)
 	auto &context = input.GetClientContext();
 	auto &bound_function = input.GetBoundFunction();
 
-	if (Settings::Get<IeeeFloatingPointOpsSetting>(context)) {
+	const auto ieee_ops = Settings::Get<IeeeFloatingPointOpsSetting>(context);
+	const auto null_on_zero = !Settings::Get<ErrorOnDivisionByZeroSetting>(context);
+	if (ieee_ops) {
 		bound_function.SetFunctionCallback(GetScalarBinaryFunction<OP>(bound_function.GetReturnType().InternalType()));
 	} else {
-		auto null_on_zero = !Settings::Get<ErrorOnDivisionByZeroSetting>(context);
 		bound_function.SetFunctionCallback(
 		    GetBinaryFunctionZeroCheck<OP>(bound_function.GetReturnType().InternalType(), null_on_zero));
+	}
+	if (std::is_same<OP, DivideOperator>::value && (ieee_ops || null_on_zero)) {
+		// a division by zero yields inf, nan or NULL instead of raising an error
+		bound_function.SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	}
 	return nullptr;
 }
