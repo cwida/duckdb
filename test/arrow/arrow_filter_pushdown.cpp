@@ -312,7 +312,7 @@ struct Batch {
 	vector<unique_ptr<StructColumn>> records;
 };
 
-// Records the column of every filter the scan asks the producer to apply.
+// Records the columns and the filters the scan asks the producer to apply.
 class RecordingFactory : public ArrowScanFactory {
 public:
 	explicit RecordingFactory(Batch &batch_p) : batch(batch_p) {
@@ -327,6 +327,7 @@ public:
 			}
 		}
 		auto &names = parameters.projected_columns.columns;
+		requested_columns.insert(requested_columns.end(), names.begin(), names.end());
 		auto &record = batch.get().Record(names.empty() ? batch.get().Names() : names);
 		auto wrapper = make_uniq<ArrowArrayStreamWrapper>();
 		AdbcError err {};
@@ -336,6 +337,7 @@ public:
 	}
 
 	vector<string> received_filters;
+	vector<string> requested_columns;
 
 private:
 	reference<Batch> batch;
@@ -343,8 +345,9 @@ private:
 
 // A database with the batch registered as view "t" through the recording factory.
 struct Scan {
-	explicit Scan(Batch &batch) : db(nullptr), con(db), factory(make_shared_ptr<RecordingFactory>(batch)) {
-		con.TableFunction("arrow_scan", {}, {}, factory)->CreateView("t", true, true);
+	explicit Scan(Batch &batch, const string &function = "arrow_scan")
+	    : db(nullptr), con(db), factory(make_shared_ptr<RecordingFactory>(batch)) {
+		con.TableFunction(function, {}, {}, factory)->CreateView("t", true, true);
 	}
 	vector<int32_t> Rows(const string &sql) {
 		auto result = con.Query(sql);
@@ -360,11 +363,37 @@ struct Scan {
 	const vector<string> &ReceivedFilters() const {
 		return factory->received_filters;
 	}
+	const vector<string> &RequestedColumns() const {
+		return factory->requested_columns;
+	}
 
 	DuckDB db;
 	Connection con;
 	shared_ptr<RecordingFactory> factory;
 };
+
+// The scan reads each selected column at its schema position, so the factory must hand out whole batches.
+TEST_CASE("Arrow scan of an unprojected factory asks it for no columns", "[arrow]") {
+	Int32Column x("x", {1, 2, 3});
+	Int32Column y("y", {10, 20, 30});
+	Batch batch({&x, &y});
+
+	SECTION("arrow_scan asks the factory for the selected columns") {
+		Scan scan(batch);
+		REQUIRE(scan.Rows("SELECT y FROM t ORDER BY y") == vector<int32_t> {10, 20, 30});
+		REQUIRE(scan.RequestedColumns() == vector<string> {"y"});
+	}
+
+	SECTION("arrow_scan_unprojected asks it for no columns and no filters") {
+		Scan scan(batch, "arrow_scan_unprojected");
+		REQUIRE(scan.Rows("SELECT count(*) FROM t") == vector<int32_t> {3});
+		REQUIRE(scan.RequestedColumns().empty());
+		REQUIRE(scan.Rows("SELECT y FROM t ORDER BY y") == vector<int32_t> {10, 20, 30});
+		REQUIRE(scan.Rows("SELECT y FROM t WHERE x = 2") == vector<int32_t> {20});
+		REQUIRE(scan.RequestedColumns().empty());
+		REQUIRE(scan.ReceivedFilters().empty());
+	}
+}
 
 TEST_CASE("Arrow filter pushdown - dictionary columns are judged by their value type", "[arrow]") {
 	Int32Column x("x", {1, 2, 3});

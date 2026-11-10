@@ -2,6 +2,7 @@
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/arrow/arrow_appender.hpp"
 #include "duckdb/common/arrow/arrow_converter.hpp"
+#include "duckdb/common/json_document.hpp"
 #include "duckdb/common/types/arrow_string_view_type.hpp"
 
 using namespace duckdb;
@@ -520,6 +521,350 @@ TEST_CASE("duckdb_arrow_scan creates a temporary view in a file-backed database"
 
 	tester.Cleanup();
 	DeleteDatabase(path);
+}
+
+namespace {
+
+void ReleaseBorrowedSchema(ArrowSchema *schema) {
+	schema->release = nullptr;
+}
+
+void ReleaseBorrowedArray(ArrowArray *array) {
+	array->release = nullptr;
+}
+
+// An Arrow stream that hands out its batches once each, in order. It owns the schema and every batch it has not
+// handed out yet.
+struct BatchStream {
+	ArrowSchema schema;
+	duckdb::vector<ArrowArray> batches;
+	idx_t next_batch = 0;
+	ArrowArrayStream stream = {};
+
+	BatchStream(ArrowSchema schema_p, duckdb::vector<ArrowArray> batches_p)
+	    : schema(schema_p), batches(std::move(batches_p)) {
+		stream.get_schema = GetSchema;
+		stream.get_next = GetNext;
+		stream.get_last_error = GetLastError;
+		stream.release = ReleaseStream;
+		stream.private_data = this;
+	}
+	BatchStream(const BatchStream &) = delete;
+	~BatchStream() {
+		for (auto &batch : batches) {
+			if (batch.release) {
+				batch.release(&batch);
+			}
+		}
+		if (schema.release) {
+			schema.release(&schema);
+		}
+	}
+
+	static int GetSchema(ArrowArrayStream *stream, ArrowSchema *out) {
+		auto &self = *static_cast<BatchStream *>(stream->private_data);
+		*out = self.schema;
+		out->release = ReleaseBorrowedSchema;
+		return 0;
+	}
+
+	static int GetNext(ArrowArrayStream *stream, ArrowArray *out) {
+		auto &self = *static_cast<BatchStream *>(stream->private_data);
+		*out = {};
+		if (self.next_batch < self.batches.size()) {
+			*out = self.batches[self.next_batch];
+			self.batches[self.next_batch].release = nullptr;
+			self.next_batch++;
+		}
+		return 0;
+	}
+
+	static const char *GetLastError(ArrowArrayStream *stream) {
+		return nullptr;
+	}
+
+	static void ReleaseStream(ArrowArrayStream *stream) {
+		stream->release = nullptr;
+	}
+};
+
+const char *const PLAIN_BATCHES[] = {
+    "SELECT * FROM (VALUES (1::BIGINT, 'x', 1.5::DOUBLE), (2, 'yy', 2.5), (NULL, NULL, 3.5)) t(a, b, c)",
+    "SELECT * FROM (VALUES (4::BIGINT, 'zzz', NULL::DOUBLE), (5, 'x', 5.5), (6, 'w', 6.5)) t(a, b, c)"};
+
+ArrowSchema PlainSchema(CAPITester &tester) {
+	duckdb_arrow_options arrow_options;
+	duckdb_connection_get_arrow_options(tester.connection, &arrow_options);
+	duckdb_logical_type types[] = {duckdb_create_logical_type(DUCKDB_TYPE_BIGINT),
+	                               duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR),
+	                               duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE)};
+	const char *names[] = {"a", "b", "c"};
+	ArrowSchema schema;
+	REQUIRE(duckdb_to_arrow_schema(arrow_options, types, names, 3, &schema) == nullptr);
+	for (auto &type : types) {
+		duckdb_destroy_logical_type(&type);
+	}
+	duckdb_destroy_arrow_options(&arrow_options);
+	return schema;
+}
+
+// The schema, the array and the stream that duckdb_arrow_array_scan borrows, released together.
+struct ArrayScanInput {
+	ArrowSchema schema;
+	ArrowArray array;
+	ArrowArrayStream *stream = nullptr;
+
+	ArrayScanInput(ArrowSchema schema_p, ArrowArray array_p) : schema(schema_p), array(array_p) {
+	}
+	ArrayScanInput(const ArrayScanInput &) = delete;
+	~ArrayScanInput() {
+		duckdb_destroy_arrow_stream(reinterpret_cast<duckdb_arrow_stream *>(&stream));
+		if (array.release) {
+			array.release(&array);
+		}
+		if (schema.release) {
+			schema.release(&schema);
+		}
+	}
+};
+
+// One Arrow batch per result chunk, so a small vector size splits the rows over several batches.
+duckdb::vector<ArrowArray> QueryToArrowBatches(CAPITester &tester, duckdb::vector<const char *> queries) {
+	duckdb::vector<ArrowArray> batches;
+	duckdb_arrow_options arrow_options;
+	duckdb_connection_get_arrow_options(tester.connection, &arrow_options);
+	for (auto query : queries) {
+		duckdb_result result;
+		REQUIRE(duckdb_query(tester.connection, query, &result) == DuckDBSuccess);
+		while (auto chunk = duckdb_fetch_chunk(result)) {
+			batches.emplace_back();
+			REQUIRE(duckdb_data_chunk_to_arrow(arrow_options, chunk, &batches.back()) == nullptr);
+			duckdb_destroy_data_chunk(&chunk);
+		}
+		duckdb_destroy_result(&result);
+	}
+	duckdb_destroy_arrow_options(&arrow_options);
+	return batches;
+}
+
+string PlanNodeProjections(const JSONValue &node, const string &name) {
+	string result;
+	if (node.IsArray()) {
+		node.IterateArray([&](JSONValue child) {
+			if (result.empty()) {
+				result = PlanNodeProjections(child, name);
+			}
+		});
+		return result;
+	}
+	if (!node.IsObject()) {
+		return string();
+	}
+	auto node_name = node.GetMember("name");
+	if (node_name.IsString() && node_name.GetString() == name) {
+		auto projections = node.GetMember("extra_info").GetMember("Projections");
+		return projections.IsValid() ? projections.ToString() : string();
+	}
+	return PlanNodeProjections(node.GetMember("children"), name);
+}
+
+void RequireMatchesNative(CAPITester &tester, const string &query) {
+	INFO(query);
+	auto scanned = tester.Query(query);
+	auto expected = tester.Query(StringUtil::Replace(query, "FROM t", "FROM native"));
+	REQUIRE_NO_FAIL(*scanned);
+	REQUIRE_NO_FAIL(*expected);
+	REQUIRE(scanned->row_count() == expected->row_count());
+	REQUIRE(scanned->ColumnCount() == expected->ColumnCount());
+	for (idx_t row = 0; row < expected->row_count(); row++) {
+		for (idx_t col = 0; col < expected->ColumnCount(); col++) {
+			REQUIRE(scanned->IsNull(col, row) == expected->IsNull(col, row));
+			if (!expected->IsNull(col, row)) {
+				REQUIRE(scanned->Fetch<string>(col, row) == expected->Fetch<string>(col, row));
+			}
+		}
+	}
+}
+
+// Batches of (a BIGINT, e run-end encoded INTEGER) with the rows (1, 7), (2, 7), (3, NULL), or of
+// (a BIGINT, d run-end encoded BIGINT[2]) with the rows (1, [1, 2]), (2, [1, 2]), (3, [3, 4]).
+struct RunEndEncodedBatch {
+	static constexpr int64_t ROWS = 3;
+
+	int64_t a_values[ROWS] = {1, 2, 3};
+	int32_t run_ends[2] = {2, 3};
+	int32_t e_values[2] = {7, 0};
+	uint8_t e_validity[1] = {0x01};
+	int64_t d_items[4] = {1, 2, 3, 4};
+
+	ArrowSchema a_schema = {}, e_run_ends_schema = {}, e_values_schema = {}, e_schema = {};
+	ArrowSchema d_run_ends_schema = {}, d_item_schema = {}, d_values_schema = {}, d_schema = {};
+	ArrowSchema *e_schema_children[2] = {&e_run_ends_schema, &e_values_schema};
+	ArrowSchema *d_values_schema_children[1] = {&d_item_schema};
+	ArrowSchema *d_schema_children[2] = {&d_run_ends_schema, &d_values_schema};
+	ArrowSchema *with_e_schema_children[2] = {&a_schema, &e_schema};
+	ArrowSchema *with_d_schema_children[2] = {&a_schema, &d_schema};
+
+	const void *a_buffers[2] = {nullptr, a_values};
+	const void *run_ends_buffers[2] = {nullptr, run_ends};
+	const void *e_values_buffers[2] = {e_validity, e_values};
+	const void *d_item_buffers[2] = {nullptr, d_items};
+	const void *no_validity[1] = {nullptr};
+	ArrowArray a = {}, e_run_ends = {}, e_values_array = {}, e = {};
+	ArrowArray d_run_ends = {}, d_items_array = {}, d_values = {}, d = {};
+	ArrowArray *e_children[2] = {&e_run_ends, &e_values_array};
+	ArrowArray *d_values_children[1] = {&d_items_array};
+	ArrowArray *d_children[2] = {&d_run_ends, &d_values};
+	ArrowArray *with_e_children[2] = {&a, &e};
+	ArrowArray *with_d_children[2] = {&a, &d};
+
+	RunEndEncodedBatch() {
+		InitSchema(a_schema, "l", "a");
+		InitSchema(e_run_ends_schema, "i", "run_ends", 0);
+		InitSchema(e_values_schema, "i", "values");
+		InitSchema(e_schema, "+r", "e", ARROW_FLAG_NULLABLE, 2, e_schema_children);
+		InitSchema(d_run_ends_schema, "i", "run_ends", 0);
+		InitSchema(d_item_schema, "l", "item");
+		InitSchema(d_values_schema, "+w:2", "values", ARROW_FLAG_NULLABLE, 1, d_values_schema_children);
+		InitSchema(d_schema, "+r", "d", ARROW_FLAG_NULLABLE, 2, d_schema_children);
+
+		InitArray(a, ROWS, 2, a_buffers);
+		InitArray(e_run_ends, 2, 2, run_ends_buffers);
+		InitArray(e_values_array, 2, 2, e_values_buffers);
+		e_values_array.null_count = 1;
+		InitArray(e, ROWS, 0, nullptr, 2, e_children);
+		InitArray(d_run_ends, 2, 2, run_ends_buffers);
+		InitArray(d_items_array, 4, 2, d_item_buffers);
+		InitArray(d_values, 2, 1, no_validity, 1, d_values_children);
+		InitArray(d, ROWS, 0, nullptr, 2, d_children);
+	}
+	RunEndEncodedBatch(const RunEndEncodedBatch &) = delete;
+
+	static void InitSchema(ArrowSchema &out, const char *format, const char *name, int64_t flags = ARROW_FLAG_NULLABLE,
+	                       int64_t n_children = 0, ArrowSchema **children = nullptr) {
+		out.format = format;
+		out.name = name;
+		out.flags = flags;
+		out.n_children = n_children;
+		out.children = children;
+		out.release = ReleaseBorrowedSchema;
+	}
+
+	static void InitArray(ArrowArray &out, int64_t length, int64_t n_buffers, const void **buffers,
+	                      int64_t n_children = 0, ArrowArray **children = nullptr) {
+		out.length = length;
+		out.n_buffers = n_buffers;
+		out.buffers = buffers;
+		out.n_children = n_children;
+		out.children = children;
+		out.release = ReleaseBorrowedArray;
+	}
+
+	ArrowSchema Schema(bool with_d) {
+		ArrowSchema schema = {};
+		InitSchema(schema, "+s", "", 0, 2, with_d ? with_d_schema_children : with_e_schema_children);
+		return schema;
+	}
+
+	ArrowArray Batch(bool with_d) {
+		ArrowArray batch = {};
+		InitArray(batch, ROWS, 1, no_validity, 2, with_d ? with_d_children : with_e_children);
+		return batch;
+	}
+};
+
+} // namespace
+
+TEST_CASE("duckdb_arrow_scan reads the columns a query selects and keeps its filters", "[capi][arrow]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(
+	    tester.Query(string("CREATE TABLE native AS ") + PLAIN_BATCHES[0] + " UNION ALL " + PLAIN_BATCHES[1]));
+
+	duckdb::vector<string> queries {
+	    "SELECT c FROM t ORDER BY c NULLS LAST",     "SELECT b FROM t ORDER BY b NULLS LAST",
+	    "SELECT c, a FROM t ORDER BY a NULLS LAST",  "SELECT count(*) FROM t WHERE a = 2",
+	    "SELECT a, c FROM t WHERE a > 4 ORDER BY a", "SELECT c FROM t WHERE b = 'x' ORDER BY c",
+	    "SELECT count(*) FROM t WHERE b IS NULL",    "SELECT a FROM t WHERE a IS NOT NULL AND c IS NULL",
+	    "SELECT * FROM t ORDER BY a NULLS LAST"};
+	for (auto &query : queries) {
+		BatchStream batches(PlainSchema(tester), QueryToArrowBatches(tester, {PLAIN_BATCHES[0], PLAIN_BATCHES[1]}));
+		REQUIRE(duckdb_arrow_scan(tester.connection, "t", reinterpret_cast<duckdb_arrow_stream>(&batches.stream)) ==
+		        DuckDBSuccess);
+		RequireMatchesNative(tester, query);
+	}
+
+	BatchStream batches(PlainSchema(tester), QueryToArrowBatches(tester, {PLAIN_BATCHES[0], PLAIN_BATCHES[1]}));
+	REQUIRE(duckdb_arrow_scan(tester.connection, "t", reinterpret_cast<duckdb_arrow_stream>(&batches.stream)) ==
+	        DuckDBSuccess);
+	auto plan = tester.Query("EXPLAIN SELECT b FROM t WHERE a = 2");
+	REQUIRE_NO_FAIL(*plan);
+	auto plan_text = plan->Fetch<string>(1, 0);
+	INFO(plan_text);
+	REQUIRE(StringUtil::Contains(plan_text, "Expression: a = 2"));
+	REQUIRE(!StringUtil::Contains(plan_text, "Filters:"));
+
+	// A projection operator above a scan that reads every column also lists c, so only the scan's own entry counts.
+	plan = tester.Query("EXPLAIN (FORMAT JSON) SELECT c FROM t");
+	REQUIRE_NO_FAIL(*plan);
+	plan_text = plan->Fetch<string>(1, 0);
+	INFO(plan_text);
+	auto plan_json = JSONDocument::Parse(plan_text.c_str(), plan_text.size());
+	REQUIRE(PlanNodeProjections(plan_json->GetRoot(), "ARROW_SCAN_UNPROJECTED") == "\"c\"");
+}
+
+TEST_CASE("duckdb_arrow_array_scan reads the columns a query selects and keeps its filters", "[capi][arrow]") {
+	if (STANDARD_VECTOR_SIZE < 3) {
+		return;
+	}
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(tester.Query(string("CREATE TABLE native AS ") + PLAIN_BATCHES[0]));
+
+	duckdb::vector<string> queries {"SELECT c, b FROM t ORDER BY c", "SELECT count(*) FROM t WHERE a = 2",
+	                                "SELECT c FROM t WHERE b = 'yy'"};
+	for (auto &query : queries) {
+		auto batches = QueryToArrowBatches(tester, {PLAIN_BATCHES[0]});
+		REQUIRE(batches.size() == 1);
+		ArrayScanInput input(PlainSchema(tester), batches[0]);
+		REQUIRE(duckdb_arrow_array_scan(tester.connection, "t", reinterpret_cast<duckdb_arrow_schema>(&input.schema),
+		                                reinterpret_cast<duckdb_arrow_array>(&input.array),
+		                                reinterpret_cast<duckdb_arrow_stream *>(&input.stream)) == DuckDBSuccess);
+		RequireMatchesNative(tester, query);
+	}
+}
+
+TEST_CASE("duckdb_arrow_scan of a run-end encoded column after another column", "[capi][arrow]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE native AS SELECT * FROM (VALUES (1::BIGINT, 7), (2, 7), (3, NULL), "
+	                             "(1, 7), (2, 7), (3, NULL)) t(a, e)"));
+
+	duckdb::vector<string> queries {"SELECT e FROM t ORDER BY e NULLS LAST", "SELECT e, a FROM t ORDER BY a, e",
+	                                "SELECT count(*) FROM t WHERE e IS NULL", "SELECT a FROM t WHERE a > 1 ORDER BY a"};
+	for (auto &query : queries) {
+		RunEndEncodedBatch batch;
+		BatchStream batches(batch.Schema(false), {batch.Batch(false), batch.Batch(false)});
+		REQUIRE(duckdb_arrow_scan(tester.connection, "t", reinterpret_cast<duckdb_arrow_stream>(&batches.stream)) ==
+		        DuckDBSuccess);
+		RequireMatchesNative(tester, query);
+	}
+
+	// d has no conversion: a query that skips it returns its rows, and one that reads it fails instead of crashing.
+	for (auto &query : {"SELECT a FROM t ORDER BY a", "SELECT count(*) FROM t"}) {
+		RunEndEncodedBatch batch;
+		BatchStream batches(batch.Schema(true), {batch.Batch(true), batch.Batch(true)});
+		REQUIRE(duckdb_arrow_scan(tester.connection, "t", reinterpret_cast<duckdb_arrow_stream>(&batches.stream)) ==
+		        DuckDBSuccess);
+		RequireMatchesNative(tester, query);
+	}
+	RunEndEncodedBatch batch;
+	BatchStream batches(batch.Schema(true), {batch.Batch(true), batch.Batch(true)});
+	REQUIRE(duckdb_arrow_scan(tester.connection, "t", reinterpret_cast<duckdb_arrow_stream>(&batches.stream)) ==
+	        DuckDBSuccess);
+	auto result = tester.Query("SELECT d FROM t");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->ErrorMessage(), "RunEndEncoded value type 'ARRAY' not supported yet"));
 }
 
 TEST_CASE("Test C-API Arrow conversion functions", "[capi][arrow]") {
