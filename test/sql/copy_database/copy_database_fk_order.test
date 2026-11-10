@@ -1,0 +1,100 @@
+# name: test/sql/copy_database/copy_database_fk_order.test
+# description: Copy foreign-key dependency chains across schemas in dependency order
+# group: [copy_database]
+
+foreach preserve_order true false
+
+foreach threads 1 4
+
+statement ok
+SET preserve_insertion_order = {preserve_order}
+
+statement ok
+SET threads = {threads}
+
+statement ok
+ATTACH ':memory:' AS source
+
+statement ok
+ATTACH ':memory:' AS target
+
+statement ok
+CREATE SCHEMA source.first
+
+statement ok
+CREATE SCHEMA source.second
+
+# A same-named table in another schema cannot satisfy the dependency on second.parent.
+statement ok
+CREATE TABLE source.first.parent(i INTEGER PRIMARY KEY)
+
+statement ok
+CREATE TABLE source.second.root(i INTEGER PRIMARY KEY)
+
+statement ok
+CREATE TABLE source.second.parent(i INTEGER PRIMARY KEY REFERENCES source.second.root(i))
+
+statement ok
+CREATE TABLE source.second.child(i INTEGER REFERENCES source.second.parent(i))
+
+statement ok
+INSERT INTO source.first.parent VALUES (42)
+
+statement ok
+INSERT INTO source.second.root SELECT i FROM range(10000) t(i)
+
+statement ok
+INSERT INTO source.second.parent SELECT i FROM range(10000) t(i)
+
+statement ok
+INSERT INTO source.second.child SELECT i FROM range(10000) t(i)
+
+statement ok
+INSERT INTO source.second.child VALUES (NULL)
+
+# Splitting schema and data copy must preserve the same dependency order.
+statement ok
+COPY FROM DATABASE source TO target (SCHEMA)
+
+statement ok
+COPY FROM DATABASE source TO target (DATA)
+
+query I
+SELECT i FROM target.first.parent
+----
+42
+
+query II
+SELECT count(*), sum(i) FROM target.second.root
+----
+10000	49995000
+
+query II
+SELECT count(*), sum(i) FROM target.second.parent
+----
+10000	49995000
+
+query II
+SELECT count(*), sum(i) FROM target.second.child
+----
+10001	49995000
+
+statement error
+INSERT INTO target.second.child VALUES (10000)
+----
+Violates foreign key constraint
+
+statement error
+DELETE FROM target.second.parent WHERE i = 42
+----
+Violates foreign key constraint
+
+statement ok
+DETACH target
+
+statement ok
+DETACH source
+
+endloop
+
+endloop

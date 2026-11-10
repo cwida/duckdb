@@ -1,4 +1,6 @@
 #include "duckdb/common/sorting/partitioned_sort.hpp"
+#include "duckdb/common/sorting/sorted_run.hpp"
+#include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/types/value_map.hpp"
 
 namespace duckdb {

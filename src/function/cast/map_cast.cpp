@@ -1,3 +1,4 @@
+#include "duckdb/function/cast/nested_to_varchar_cast.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
@@ -207,8 +208,19 @@ BoundCastInfo DefaultCasts::MapCastSwitch(BindCastInput &input, const LogicalTyp
 		                     ListBoundCastData::InitListLocalState);
 	case LogicalTypeId::VARCHAR: {
 		auto varchar_type = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);
-		return BoundCastInfo(MapToVarcharCast, ListBoundCastData::BindListToListCast(input, source, varchar_type),
-		                     ListBoundCastData::InitListLocalState);
+		auto cast_data = ListBoundCastData::BindListToListCast(input, source, varchar_type);
+		// the entries are cast as STRUCT(key, value)
+		auto entry_cast_data = cast_data->Cast<ListBoundCastData>().child_cast_info.GetCastData();
+		if (entry_cast_data) {
+			auto &struct_cast_data = entry_cast_data->Cast<StructBoundCastData>();
+			D_ASSERT(struct_cast_data.child_cast_info.size() == 2);
+			auto &entry_children = StructType::GetChildTypes(ListType::GetChildType(source));
+			for (idx_t i = 0; i < struct_cast_data.child_cast_info.size(); i++) {
+				NestedToVarcharCast::WrapChildCast(struct_cast_data.child_cast_info[i],
+				                                   entry_children[struct_cast_data.source_indexes[i]].second);
+			}
+		}
+		return BoundCastInfo(MapToVarcharCast, std::move(cast_data), ListBoundCastData::InitListLocalState);
 	}
 	default:
 		return TryVectorNullCast;

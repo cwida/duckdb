@@ -15,6 +15,7 @@ void JSONTransformOptions::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<bool>(102, "error_missing_key", error_missing_key);
 	serializer.WritePropertyWithDefault<bool>(103, "error_unknown_key", error_unknown_key);
 	serializer.WritePropertyWithDefault<bool>(104, "delay_error", delay_error);
+	serializer.WritePropertyWithDefault<JSONKeyMatch>(105, "key_match", key_match, JSONKeyMatch::EXACT);
 }
 
 JSONTransformOptions JSONTransformOptions::Deserialize(Deserializer &deserializer) {
@@ -24,6 +25,7 @@ JSONTransformOptions JSONTransformOptions::Deserialize(Deserializer &deserialize
 	deserializer.ReadPropertyWithDefault<bool>(102, "error_missing_key", result.error_missing_key);
 	deserializer.ReadPropertyWithDefault<bool>(103, "error_unknown_key", result.error_unknown_key);
 	deserializer.ReadPropertyWithDefault<bool>(104, "delay_error", result.delay_error);
+	deserializer.ReadPropertyWithExplicitDefault<JSONKeyMatch>(105, "key_match", result.key_match, JSONKeyMatch::EXACT);
 	return result;
 }
 

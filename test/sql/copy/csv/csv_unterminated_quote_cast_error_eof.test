@@ -1,0 +1,36 @@
+# name: test/sql/copy/csv/csv_unterminated_quote_cast_error_eof.test
+# description: A file ending inside a quoted value that also fails to cast, the value straddling the last buffer
+# group: [csv]
+
+# 2047 rows of "1" and then "abc without a closing quote: with buffer_size=4096 the quoted value straddles the last
+# buffer and the file ends inside it (the file is -text in .gitattributes)
+foreach parallel true false
+
+query II
+SELECT count(*), sum(a) FROM read_csv('data/csv/unterminated_quote_cast_error_eof.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, buffer_size=4096, parallel={parallel}, strict_mode=true, store_rejects=true);
+----
+2047	2047
+
+query IIII
+SELECT line, column_idx, error_type, csv_line FROM reject_errors ORDER BY error_type;
+----
+2048	1	CAST	"abc
+2048	1	UNQUOTED VALUE	"abc
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+statement error
+SELECT * FROM read_csv('data/csv/unterminated_quote_cast_error_eof.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, buffer_size=4096, parallel={parallel}, strict_mode=true);
+----
+Value with unterminated quote found.
+
+query II
+SELECT count(*), sum(a) FROM read_csv('data/csv/unterminated_quote_cast_error_eof.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, buffer_size=4096, parallel={parallel}, strict_mode=false, ignore_errors=true);
+----
+2047	2047
+
+endloop

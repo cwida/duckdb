@@ -30,12 +30,11 @@ public:
 	    : variant(variant_format), client(client) {
 	}
 
-	optional<Value> TryCastAs(const Value &value, const LogicalType &target_type, string *error_message = nullptr,
-	                          bool strict = false) {
+	optional<Value> TryCastAs(const Value &value, const LogicalType &target_type, string *error_message = nullptr) {
 		if (client) {
-			return value.TryCastAs(*client, target_type, error_message, strict);
+			return value.TryCastAs(*client, target_type, error_message);
 		}
-		return value.DefaultTryCastAs(target_type, error_message, strict);
+		return value.DefaultTryCastAs(target_type, error_message);
 	}
 
 public:
@@ -105,8 +104,8 @@ static bool FinalizeErrorMessage(FromVariantConversionData &conversion_data, Vec
 //! bool
 struct VariantBooleanConversion {
 	using type = bool;
-	static bool Convert(const VariantLogicalType type_id, uint32_t byte_offset, const_data_ptr_t value, bool &ret,
-	                    const EmptyConversionPayloadFromVariant &payload, string &error) {
+	static bool Convert(const VariantLogicalType type_id, uint32_t byte_offset, const_data_ptr_t value, idx_t,
+	                    bool &ret, const EmptyConversionPayloadFromVariant &payload, string &error) {
 		if (type_id != VariantLogicalType::BOOL_FALSE && type_id != VariantLogicalType::BOOL_TRUE) {
 			if (error.empty()) {
 				error = StringUtil::Format("Can't convert from VARIANT(%s)", EnumUtil::ToString(type_id));
@@ -122,28 +121,31 @@ struct VariantBooleanConversion {
 template <class T, VariantLogicalType TYPE_ID>
 struct VariantDirectConversion {
 	using type = T;
-	static bool Convert(const VariantLogicalType type_id, uint32_t byte_offset, const_data_ptr_t value, T &ret,
-	                    const EmptyConversionPayloadFromVariant &payload, string &error) {
+	static bool Convert(const VariantLogicalType type_id, uint32_t byte_offset, const_data_ptr_t value, idx_t blob_size,
+	                    T &ret, const EmptyConversionPayloadFromVariant &payload, string &error) {
 		if (type_id != TYPE_ID) {
 			if (error.empty()) {
 				error = StringUtil::Format("Can't convert from VARIANT(%s)", EnumUtil::ToString(type_id));
 			}
 			return false;
 		}
+		VariantUtils::Available(blob_size, byte_offset, sizeof(T));
 		ret = Load<T>(value + byte_offset);
 		return true;
 	}
 
-	static bool Convert(const VariantLogicalType type_id, uint32_t byte_offset, const_data_ptr_t value, T &ret,
-	                    const StringConversionPayload &payload, string &error) {
+	static bool Convert(const VariantLogicalType type_id, uint32_t byte_offset, const_data_ptr_t value, idx_t blob_size,
+	                    T &ret, const StringConversionPayload &payload, string &error) {
 		if (type_id != TYPE_ID) {
 			if (error.empty()) {
 				error = StringUtil::Format("Can't convert from VARIANT(%s)", EnumUtil::ToString(type_id));
 			}
 			return false;
 		}
+		VariantUtils::Available(blob_size, byte_offset, 1);
 		auto ptr = value + byte_offset;
 		auto length = VarintDecode<idx_t>(ptr);
+		VariantUtils::Available(blob_size, NumericCast<uint32_t>(ptr - value), length);
 		ret = StringVector::AddStringOrBlob(payload.vec, reinterpret_cast<const char *>(ptr), length);
 		return true;
 	}
@@ -154,14 +156,15 @@ template <class T>
 struct VariantDecimalConversion {
 	using type = T;
 	static constexpr VariantLogicalType TYPE_ID = VariantLogicalType::DECIMAL;
-	static bool Convert(const VariantLogicalType type_id, uint32_t byte_offset, const_data_ptr_t value, T &ret,
-	                    const DecimalConversionPayloadFromVariant &payload, string &error) {
+	static bool Convert(const VariantLogicalType type_id, uint32_t byte_offset, const_data_ptr_t value, idx_t blob_size,
+	                    T &ret, const DecimalConversionPayloadFromVariant &payload, string &error) {
 		if (type_id != TYPE_ID) {
 			if (error.empty()) {
 				error = StringUtil::Format("Can't convert from VARIANT(%s)", EnumUtil::ToString(type_id));
 			}
 			return false;
 		}
+		VariantUtils::Available(blob_size, byte_offset, 1);
 		auto ptr = value + byte_offset;
 		auto width = VarintDecode<idx_t>(ptr);
 		auto scale = VarintDecode<idx_t>(ptr);
@@ -170,6 +173,7 @@ struct VariantDecimalConversion {
 			error = StringUtil::Format("Can't convert from VARIANT(DECIMAL(%d, %d))", width, scale);
 			return false;
 		}
+		VariantUtils::Available(blob_size, NumericCast<uint32_t>(ptr - value), sizeof(T));
 		ret = Load<T>(ptr);
 		return true;
 	}
@@ -199,17 +203,18 @@ static bool CastVariantToPrimitive(FromVariantConversionData &conversion_data, V
 
 		auto type_id = variant.GetTypeId(row_index, sel[i]);
 		auto byte_offset = variant.GetByteOffset(row_index, sel[i]);
-		auto value_blob_data = const_data_ptr_cast(variant.GetData(row_index).GetData());
+		auto &blob = variant.GetData(row_index);
+		auto value_blob_data = const_data_ptr_cast(blob.GetData());
 		bool converted = false;
 		if (type_id != VariantLogicalType::OBJECT && type_id != VariantLogicalType::ARRAY) {
-			if (OP::Convert(type_id, byte_offset, value_blob_data, result_data[i + offset], payload,
+			if (OP::Convert(type_id, byte_offset, value_blob_data, blob.GetSize(), result_data[i + offset], payload,
 			                conversion_data.error)) {
 				converted = true;
 			}
 		}
 		if (!converted) {
 			auto value = VariantUtils::ConvertVariantToValue(conversion_data.variant, row_index, sel[i]);
-			auto cast_value = conversion_data.TryCastAs(value, target_type, nullptr, true);
+			auto cast_value = conversion_data.TryCastAs(value, target_type);
 			if (!cast_value) {
 				conversion_data.error = StringUtil::Format("Can't convert VARIANT(%s) value '%s'",
 				                                           EnumUtil::ToString(type_id), value.ToString());
@@ -587,15 +592,25 @@ static bool VerifyConvertedMaps(FromVariantConversionData &conversion_data, Vect
 static optional<Value> TryCastVariantValueToMap(FromVariantConversionData &conversion_data, const Value &value,
                                                 const LogicalType &target_type) {
 	auto entry_type = ListType::GetChildType(target_type);
-	auto entries = conversion_data.TryCastAs(value, LogicalType::LIST(entry_type), nullptr, true);
+	auto entries = conversion_data.TryCastAs(value, LogicalType::LIST(entry_type));
 	if (!entries) {
 		return entries;
 	}
 	if (entries->IsNull()) {
 		return Value(target_type);
 	}
+	auto &children = ListValue::GetChildren(*entries);
+	for (auto &child : children) {
+		if (child.IsNull()) {
+			// a NULL entry has no key
+			if (conversion_data.error.empty()) {
+				conversion_data.error = "Map keys can not be NULL.";
+			}
+			return optional<Value>();
+		}
+	}
 	try {
-		return Value::MAP(entry_type, ListValue::GetChildren(*entries));
+		return Value::MAP(entry_type, children);
 	} catch (const InvalidInputException &ex) {
 		// the entries do not form a valid map (e.g. duplicate keys)
 		if (conversion_data.error.empty()) {
@@ -669,7 +684,7 @@ static bool CastVariant(FromVariantConversionData &conversion_data, Vector &resu
 			try {
 				auto cast_value = target_type.id() == LogicalTypeId::MAP
 				                      ? TryCastVariantValueToMap(conversion_data, value, target_type)
-				                      : conversion_data.TryCastAs(value, target_type, nullptr, true);
+				                      : conversion_data.TryCastAs(value, target_type);
 				if (!cast_value) {
 					cast_value = Value(target_type);
 					all_valid = false;
@@ -678,6 +693,13 @@ static bool CastVariant(FromVariantConversionData &conversion_data, Vector &resu
 			} catch (const BinderException &) {
 				// Bind-time exceptions (e.g., incompatible struct layouts) should be treated as conversion failures
 				// Set the value to NULL and mark as failed
+				FlatVector::SetNull(result, offset + i, true);
+				all_valid = false;
+			} catch (const ConversionException &ex) {
+				// strict casts of the converted value (e.g. VARCHAR to an ARRAY of a different size) can throw
+				if (error.empty()) {
+					error = ErrorData(ex).RawMessage();
+				}
 				FlatVector::SetNull(result, offset + i, true);
 				all_valid = false;
 			}
@@ -766,8 +788,8 @@ static bool CastVariant(FromVariantConversionData &conversion_data, Vector &resu
 			    conversion_data, result, sel, offset, count, row, empty_payload);
 		case LogicalTypeId::DECIMAL: {
 			auto physical_type = target_type.InternalType();
-			uint8_t width;
-			uint8_t scale;
+			uint32_t width;
+			uint32_t scale;
 			target_type.GetDecimalProperties(width, scale);
 			DecimalConversionPayloadFromVariant decimal_payload(width, scale);
 

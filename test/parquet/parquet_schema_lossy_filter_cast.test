@@ -1,0 +1,79 @@
+# name: test/parquet/parquet_schema_lossy_filter_cast.test
+# description: Filters on a column that the schema parameter reads with a lossy cast
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT TIMESTAMP_NS '2020-01-01 12:34:56.123456789' AS t) TO '{TEMP_DIR}/lossy_ns.parquet' (FIELD_IDS {t: 1})
+
+statement ok
+COPY (SELECT TIMESTAMP '2020-01-01 12:34:56.123789' AS t) TO '{TEMP_DIR}/lossy_us.parquet' (FIELD_IDS {t: 1})
+
+statement ok
+COPY (SELECT TIME_NS '12:34:56.123456789' AS t) TO '{TEMP_DIR}/lossy_time_ns.parquet' (FIELD_IDS {t: 1})
+
+statement ok
+COPY (SELECT 1.44::DECIMAL(3,2) AS d, 7::INTEGER AS i, 9::BIGINT AS b) TO '{TEMP_DIR}/lossy_decimal.parquet'
+	(FIELD_IDS {d: 1, i: 2, b: 3})
+
+# nanoseconds read as microseconds round
+statement ok
+CREATE VIEW ns_as_us AS FROM read_parquet('{TEMP_DIR}/lossy_ns.parquet',
+	schema = MAP {1: {name: 't', type: 'TIMESTAMP', default_value: NULL}})
+
+query I
+SELECT count(*) FROM ns_as_us WHERE t = TIMESTAMP '2020-01-01 12:34:56.123457'
+----
+1
+
+query I
+SELECT count(*) FROM ns_as_us WHERE t >= TIMESTAMP '2020-01-01 12:34:56.123457'
+----
+1
+
+# microseconds read as milliseconds round
+statement ok
+CREATE VIEW us_as_ms AS FROM read_parquet('{TEMP_DIR}/lossy_us.parquet',
+	schema = MAP {1: {name: 't', type: 'TIMESTAMP_MS', default_value: NULL}})
+
+query I
+SELECT count(*) FROM us_as_ms WHERE t = TIMESTAMP_MS '2020-01-01 12:34:56.124'
+----
+1
+
+query I
+SELECT count(*) FROM us_as_ms a JOIN us_as_ms b ON a.t = b.t
+----
+1
+
+# a time in nanoseconds read as microseconds rounds
+statement ok
+CREATE VIEW time_ns_as_time AS FROM read_parquet('{TEMP_DIR}/lossy_time_ns.parquet',
+	schema = MAP {1: {name: 't', type: 'TIME', default_value: NULL}})
+
+query I
+SELECT count(*) FROM time_ns_as_time WHERE t = TIME '12:34:56.123457'
+----
+1
+
+# a decimal read with a smaller scale rounds, integers do not
+statement ok
+CREATE VIEW narrow_decimal AS FROM read_parquet('{TEMP_DIR}/lossy_decimal.parquet',
+	schema = MAP {1: {name: 'd', type: 'DECIMAL(2,1)', default_value: NULL}, 2: {name: 'i', type: 'BIGINT', default_value: NULL},
+	3: {name: 'b', type: 'INTEGER', default_value: NULL}})
+
+query I
+SELECT count(*) FROM narrow_decimal WHERE d = 1.4
+----
+1
+
+query I
+SELECT count(*) FROM narrow_decimal WHERE i = 7
+----
+1
+
+query I
+SELECT count(*) FROM narrow_decimal WHERE b = 9
+----
+1

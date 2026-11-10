@@ -95,12 +95,13 @@ LEFT JOIN composite_right ON a = x AND b < y;
 ----
 3584
 
-# Expressions without direct column-domain evidence retain the fallback.
+# Expressions without direct column-domain evidence still apply the second condition's domain,
+# bounded by the preserved input.
 query II
 EXPLAIN SELECT * FROM composite_left
 LEFT JOIN composite_right ON a + 1 = x AND b = y;
 ----
-physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[3-9].[0-9][0-9][0-9] rows.*
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~2.048 rows.*
 
 query I
 SELECT count(*) FROM composite_left
@@ -111,7 +112,8 @@ LEFT JOIN composite_right ON a + 1 = x AND b = y;
 statement ok
 SET disabled_optimizers='statistics_propagation';
 
-# The existing composite heuristic excludes broad many-to-many domains.
+# The composite heuristic excludes broad many-to-many domains from the row-count cap, so the
+# independent domains multiply (256 * 256 / 16 = 4096, which is also the exact result).
 statement ok
 CREATE TABLE repeated_left AS
 SELECT (i % 4)::INTEGER a, ((i // 4) % 4)::INTEGER b
@@ -126,13 +128,34 @@ query II
 EXPLAIN SELECT * FROM repeated_left
 LEFT JOIN repeated_right ON a = x AND b = y;
 ----
-physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[1-9][0-9].[0-9][0-9][0-9] rows.*
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~4.096 rows.*
 
 query I
 SELECT count(*) FROM repeated_left
 LEFT JOIN repeated_right ON a = x AND b = y;
 ----
 4096
+
+# A plausible composite row-count cap accounts for the pair's other key component: the second
+# equality must not multiply its domain on top of the applied cap (RHS has 8 rows per key).
+
+statement ok
+CREATE TABLE cap_l AS SELECT (i % 256)::INTEGER a, ((i // 256) % 4)::INTEGER b FROM range(1024) r(i);
+
+statement ok
+CREATE TABLE cap_r AS SELECT (i % 256)::INTEGER x, ((i // 256) % 4)::INTEGER y FROM range(8192) r(i);
+
+query II
+EXPLAIN SELECT * FROM cap_l
+LEFT JOIN cap_r ON a = x AND b = y;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~8.192 rows.*
+
+query I
+SELECT count(*) FROM cap_l
+LEFT JOIN cap_r ON a = x AND b = y;
+----
+8192
 
 # Connected equalities describe one key component, regardless of their order.
 statement ok
@@ -182,6 +205,71 @@ SELECT count(*) FROM connected_left
 LEFT JOIN connected_right ON a = x AND b = y AND a = b;
 ----
 16384
+
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+# Implicit widening casts share the same ON equality component as their underlying columns.
+statement ok
+CREATE TABLE cast_left AS SELECT (i % 10)::INTEGER a, (i % 10)::BIGINT b FROM range(100) t(i);
+
+statement ok
+CREATE TABLE cast_right AS SELECT (i % 10)::BIGINT x FROM range(1000) t(i);
+
+statement ok
+SET disabled_optimizers='statistics_propagation,filter_pushdown,expression_rewriter';
+
+query II
+EXPLAIN SELECT * FROM cast_left l LEFT JOIN cast_right r ON l.a = r.x AND l.b = r.x;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~9,090 rows.*
+
+query II
+EXPLAIN SELECT * FROM cast_left l LEFT JOIN cast_right r ON l.a = r.x AND l.b = r.x AND l.a = l.b;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~9,090 rows.*
+
+query I
+SELECT count(*) FROM cast_left l LEFT JOIN cast_right r ON l.a = r.x AND l.b = r.x AND l.a = l.b;
+----
+10000
+
+# A separate residual equality component contributes once, in either condition order.
+statement ok
+CREATE TABLE residual_left AS
+SELECT (i % 10)::INTEGER a, (i % 10)::BIGINT b, (i % 10)::INTEGER c, (i % 10)::BIGINT d
+FROM range(100) t(i);
+
+query II
+EXPLAIN SELECT * FROM residual_left l LEFT JOIN cast_right r
+ON l.a = r.x AND (l.a = l.b AND (l.c = l.d AND l.d = l.c));
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~1,818 rows.*
+
+query II
+EXPLAIN SELECT * FROM residual_left l LEFT JOIN cast_right r
+ON ((l.d = l.c AND l.b = l.a) AND l.c = l.d) AND r.x = l.a;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~1,818 rows.*
+
+query I
+SELECT count(*) FROM residual_left l LEFT JOIN cast_right r
+ON l.a = r.x AND (l.a = l.b AND (l.c = l.d AND l.d = l.c));
+----
+10000
+
+# OR stays one residual and does not connect the equality keys inside it.
+query II
+EXPLAIN SELECT * FROM residual_left l LEFT JOIN cast_right r
+ON l.a = r.x AND (l.b = r.x OR l.c = l.d) AND l.c = l.d;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~363 rows.*
+
+query I
+SELECT count(*) FROM residual_left l LEFT JOIN cast_right r
+ON l.a = r.x AND (l.b = r.x OR l.c = l.d) AND l.c = l.d;
+----
+10000
 
 statement ok
 SET disabled_optimizers='statistics_propagation';

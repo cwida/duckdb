@@ -24,6 +24,8 @@ public:
 	case_insensitive_set_t colname_keyword_map;
 	case_insensitive_set_t typefunc_keyword_map;
 	case_insensitive_set_t typename_keyword_map;
+	//! Keywords that can be used as a column alias without AS (orthogonal to the other categories)
+	case_insensitive_set_t bare_label_keyword_map;
 };
 
 } // namespace duckdb

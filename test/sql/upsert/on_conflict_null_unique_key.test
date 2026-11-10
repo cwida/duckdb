@@ -1,0 +1,78 @@
+# name: test/sql/upsert/on_conflict_null_unique_key.test
+# description: Rows with a NULL unique key are never dropped by ON CONFLICT / INSERT OR IGNORE
+# group: [upsert]
+
+statement ok
+CREATE TABLE n2(u INT UNIQUE, w INT);
+
+statement ok
+INSERT INTO n2 VALUES (NULL,1),(NULL,2) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT OR IGNORE INTO n2 VALUES (NULL,3),(NULL,4);
+
+query I
+SELECT count(*) FROM n2;
+----
+4
+
+# non-NULL duplicates in the same insert are still deduplicated
+statement ok
+INSERT INTO n2 VALUES (1,10),(1,11),(NULL,5) ON CONFLICT DO NOTHING;
+
+query I
+SELECT count(*) FROM n2 WHERE u = 1;
+----
+1
+
+query I
+SELECT count(*) FROM n2 WHERE u IS NULL;
+----
+5
+
+# composite unique key with a NULL member
+statement ok
+CREATE TABLE c(a INT, b INT, UNIQUE(a, b));
+
+statement ok
+INSERT INTO c VALUES (1,NULL),(1,NULL),(2,3),(2,3) ON CONFLICT DO NOTHING;
+
+query II
+SELECT a, count(*) FROM c GROUP BY a ORDER BY a;
+----
+1	2
+2	1
+
+# primary keys and NOT NULL unique columns cannot be NULL and do not need the NULL handling
+statement ok
+CREATE TABLE pk(i INT PRIMARY KEY, v INT);
+
+query TT
+EXPLAIN INSERT INTO pk VALUES (1, 1) ON CONFLICT DO NOTHING;
+----
+physical_plan	<!REGEX>:.*uuid.*
+
+statement ok
+CREATE TABLE nn(i INT NOT NULL UNIQUE, v INT);
+
+query TT
+EXPLAIN INSERT INTO nn VALUES (1, 1) ON CONFLICT DO NOTHING;
+----
+physical_plan	<!REGEX>:.*uuid.*
+
+statement ok
+INSERT INTO nn VALUES (1, 1), (1, 2), (2, 3) ON CONFLICT DO NOTHING;
+
+query I
+SELECT count(*) FROM nn;
+----
+2
+
+# a nullable unique column still gets it
+statement ok
+CREATE TABLE nu(i INT UNIQUE, v INT);
+
+query TT
+EXPLAIN INSERT INTO nu VALUES (1, 1) ON CONFLICT DO NOTHING;
+----
+physical_plan	<REGEX>:.*uuid.*

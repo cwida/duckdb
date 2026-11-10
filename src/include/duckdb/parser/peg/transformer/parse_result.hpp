@@ -122,7 +122,8 @@ inline const char *ParseResultToString(ParseResultType type) {
 class ParseResult {
 public:
 	explicit ParseResult(ParseResultType type, optional_idx offset, optional_idx length = optional_idx())
-	    : type(type), offset(offset), length(length) {
+	    : type(type), has_offset(offset.IsValid()), has_length(length.IsValid()),
+	      offset(offset.IsValid() ? offset.GetIndex() : 0), length(length.IsValid() ? length.GetIndex() : 0) {
 	}
 	virtual ~ParseResult() = default;
 
@@ -138,14 +139,11 @@ public:
 		return reinterpret_cast<TARGET &>(*this);
 	}
 
-	ParseResultType type;
 	optional_ptr<const CompiledGrammarRule> rule;
+	ParseResultType type;
 	//! Set when a collapsible rule handed this result out in place of its own, so the transformer runs this
 	//! result's rule rather than the one the parent asked for
 	bool collapsed = false;
-	optional_idx offset;
-	//! Source length: for leaf tokens the token length; for composite results the enclosing extent of children
-	optional_idx length;
 
 	void SetRule(const CompiledGrammarRule &rule_p) {
 		rule = rule_p;
@@ -167,23 +165,32 @@ public:
 		return rule;
 	}
 
+	optional_idx GetOffset() const {
+		return has_offset ? optional_idx(offset) : optional_idx();
+	}
+
+	optional_idx GetLength() const {
+		return has_length ? optional_idx(length) : optional_idx();
+	}
+
 	//! Returns the source location [offset, offset+length) of this parse result (length 0 when unknown)
 	QueryLocation GetLocation() const {
-		if (!offset.IsValid()) {
+		if (!has_offset) {
 			return QueryLocation();
 		}
-		return QueryLocation(offset.GetIndex(), length.IsValid() ? length.GetIndex() : 0);
+		return QueryLocation(offset, has_length ? length : 0);
 	}
 
 	//! Grow this result's location so it encloses the given child's location (used to build composite
 	//! locations bottom-up)
 	void EncloseChild(const ParseResult &child) {
 		auto child_location = child.GetLocation();
-		if (!offset.IsValid() || !child_location.IsValid()) {
+		if (!has_offset || !child_location.IsValid()) {
 			return;
 		}
 		auto enclosing = GetLocation().Merge(child_location);
 		length = enclosing.length;
+		has_length = true;
 	}
 
 	virtual void ToStringInternal(std::stringstream &ss, std::unordered_set<const ParseResult *> &visited,
@@ -204,6 +211,12 @@ public:
 	}
 
 private:
+	//! Keep validity flags with the small metadata fields, without narrowing source positions.
+	bool has_offset;
+	bool has_length;
+	idx_t offset;
+	//! For leaf tokens the token length; for composite results the enclosing extent of children.
+	idx_t length;
 	const string *name = nullptr;
 };
 

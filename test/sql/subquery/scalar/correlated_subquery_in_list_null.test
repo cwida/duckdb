@@ -1,0 +1,87 @@
+# name: test/sql/subquery/scalar/correlated_subquery_in_list_null.test
+# description: A correlated scalar subquery used inside an IN list is not null-rejecting when another element matches
+# group: [scalar]
+
+statement ok
+CREATE TABLE t(b BOOLEAN);
+
+statement ok
+INSERT INTO t VALUES (false);
+
+# the subquery yields NULL for b = false, and 1 IN (NULL, 1) is TRUE, so the row must survive
+query I
+SELECT b FROM t WHERE (1 IN ((SELECT max(1) WHERE b), 1)) <> b;
+----
+false
+
+query II
+SELECT b, (1 IN ((SELECT max(1) WHERE b), 1)) <> b AS v FROM t;
+----
+false	true
+
+query I
+SELECT b FROM t WHERE (1 NOT IN ((SELECT max(1) WHERE b), 1)) = b;
+----
+false
+
+query I
+SELECT b FROM t WHERE (1 IN ((SELECT max(1) WHERE b), 1)) = true;
+----
+false
+
+query I
+SELECT b FROM t WHERE (1 IN ((SELECT max(1) WHERE b), 1)) <> false;
+----
+false
+
+query I
+SELECT b FROM t WHERE b <> (1 IN ((SELECT max(1) WHERE b), 1));
+----
+false
+
+query I
+SELECT b FROM t WHERE (1 IN ((SELECT 1 WHERE b), 1)) <> b;
+----
+false
+
+# a genuinely null-rejecting comparison still removes the row
+query I
+SELECT b FROM t WHERE (1 IN ((SELECT max(1) WHERE b), 2)) <> b;
+----
+
+query I
+SELECT b FROM t WHERE ((SELECT max(1) WHERE b) = 1) <> b;
+----
+
+# the deliminator disabled must agree with the default plan
+statement ok
+SET disabled_optimizers='deliminator';
+
+query I
+SELECT b FROM t WHERE (1 IN ((SELECT max(1) WHERE b), 1)) <> b;
+----
+false
+
+query I
+SELECT b FROM t WHERE (1 NOT IN ((SELECT max(1) WHERE b), 1)) = b;
+----
+false
+
+statement ok
+RESET disabled_optimizers;
+
+# more rows: both the matching and the non-matching correlation value
+statement ok
+INSERT INTO t VALUES (true), (NULL);
+
+query II
+SELECT b, (1 IN ((SELECT max(1) WHERE b), 1)) <> b AS v FROM t ORDER BY b NULLS LAST;
+----
+false	true
+true	false
+NULL	NULL
+
+query I
+SELECT b FROM t WHERE (1 IN ((SELECT max(1) WHERE b), 1)) <> b ORDER BY b;
+----
+false

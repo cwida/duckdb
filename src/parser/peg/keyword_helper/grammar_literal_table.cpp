@@ -43,6 +43,7 @@ void GrammarLiteralTable::Register(const string &text, keyword_categories_t cate
 		}
 		auto id = static_cast<uint16_t>(literals.size() + 1);
 		entry = literals.emplace(text, LiteralInfo(id)).first;
+		max_literal_length = MaxValue<idx_t>(max_literal_length, text.size());
 	}
 	entry->second.AddCategories(categories);
 }

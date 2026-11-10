@@ -12,17 +12,21 @@
 #pragma once
 
 #include <mutex>
+#include <shared_mutex>
 
 namespace duckdb {
 
 // Forward declaration for annotated mutex types.
 class annotated_mutex;
+class annotated_shared_mutex;
 
 // Forward declaration for annotated lock types.
 template <typename M>
 class annotated_unique_lock;
 template <typename M>
 class annotated_lock_guard;
+template <typename M>
+class annotated_shared_lock;
 
 namespace internal {
 
@@ -40,6 +44,12 @@ struct standard_impl<::duckdb::annotated_mutex> {
 	using type = std::mutex;
 };
 
+// Specialization for `std::shared_mutex`.
+template <>
+struct standard_impl<::duckdb::annotated_shared_mutex> {
+	using type = std::shared_mutex;
+};
+
 // Type alias for lock types.
 template <typename M>
 using mutex_impl_t = standard_impl_t<M>;
@@ -54,6 +64,12 @@ struct standard_impl<::duckdb::annotated_unique_lock<M>> {
 template <typename M>
 struct standard_impl<::duckdb::annotated_lock_guard<M>> {
 	using type = std::lock_guard<mutex_impl_t<M>>;
+};
+
+// Specialization for `std::shared_lock`.
+template <typename M>
+struct standard_impl<::duckdb::annotated_shared_lock<M>> {
+	using type = std::shared_lock<mutex_impl_t<M>>;
 };
 
 template <typename L>

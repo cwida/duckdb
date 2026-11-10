@@ -1,0 +1,74 @@
+# name: test/sql/order/order_merge_buffer_fallback.test
+# description: Sorts whose run merges go through the buffered merge without a buffer, and through the nested comparison sort of ska_sort's wide-key buckets
+# group: [order]
+
+require notwindows
+
+statement ok
+SET temp_directory = '{TEST_DIR}/order_merge_buffer_tmp';
+
+# Every sort below runs on one thread, so that each table is sorted as a single run with the structure described
+statement ok
+SET threads = 1;
+
+# A single run of 2000 keys gets no merge buffer at all (half of them is below the buffer's minimum), so vergesort
+# merges the two ascending halves it finds with the in-place split-and-rotate fallback of the buffered merge
+statement ok
+CREATE TABLE tiny_wide AS SELECT 'common_prefix' || lpad(((i % 1000) * 2 + i // 1000)::VARCHAR, 6, '0') AS s, i FROM range(2000) t(i);
+
+statement ok
+CREATE TABLE tiny_fixed AS SELECT (i // 1000)::BIGINT AS c, ((i % 1000) * 2 + i // 1000)::BIGINT AS k, i FROM range(2000) t(i);
+
+query II
+SELECT s, i FROM tiny_wide ORDER BY s, i;
+----
+4000 values hashing to e38ee2c3e6e9abfb15ddf0a537149169
+
+query II
+SELECT s, i FROM tiny_wide ORDER BY s DESC, i DESC;
+----
+4000 values hashing to 13a5edab79f073ad0810a7441dfd04c6
+
+query III
+SELECT c, k, i FROM tiny_fixed ORDER BY k, c, i;
+----
+6000 values hashing to f84c0dbb7ca7ee53e568a465597351ee
+
+# 100k keys: one ascending run of 60k that vergesort finds (it looks for runs of at least n / log2(n) = 6250 keys),
+# followed by 40k keys in eight interleaved ascending runs of 5000, which are too short for it. That part goes to the
+# radix sort, where the keys share their first eight bytes, so it lands in one bucket that is sorted by comparison:
+# the nested vergesort (threshold 40000 / 15 = 2666) finds the eight runs and merges them through the same merge
+# buffer, then the outer one merges the result with the 60k run
+statement ok
+CREATE TABLE wide AS
+    SELECT 'common_prefix' || lpad(CASE WHEN i < 60000 THEN i ELSE ((i - 60000) % 5000) * 8 + (i - 60000) // 5000 END::VARCHAR, 6, '0') AS s, i
+    FROM range(100000) t(i);
+
+# The same with a fixed-size 24-byte key: the first column is 2^62 for the 60k run and 0 for the rest, so it takes the
+# first eight bytes of the sort key on its own (the sort key packs columns by their statistics), the radix pass over
+# them leaves one bucket for the second part, and the sorted second part has to be merged in front of the run
+statement ok
+CREATE TABLE fixed AS
+    SELECT CASE WHEN i < 60000 THEN 4611686018427387904 ELSE 0 END::BIGINT AS c,
+           CASE WHEN i < 60000 THEN i ELSE ((i - 60000) % 5000) * 8 + (i - 60000) // 5000 END::BIGINT AS k, i
+    FROM range(100000) t(i);
+
+query II
+SELECT s, i FROM wide ORDER BY s, i;
+----
+200000 values hashing to f1cf28da1424ee2ccf8f8d0dc89afd47
+
+query II
+SELECT s, i FROM wide ORDER BY s DESC, i DESC;
+----
+200000 values hashing to 2d8dd877a3020a9d1b379abffed61014
+
+query III
+SELECT c, k, i FROM fixed ORDER BY c, k, i;
+----
+300000 values hashing to 02391576630b5d7e9897a6f86b15d7d4
+
+query III
+SELECT c, k, i FROM fixed ORDER BY c DESC, k DESC, i DESC;
+----
+300000 values hashing to 2489cc7c53c130ad7352fc0097f16ad7

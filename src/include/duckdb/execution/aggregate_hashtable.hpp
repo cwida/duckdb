@@ -77,7 +77,8 @@ public:
 	GroupedAggregateHashTable(ClientContext &context, Allocator &allocator, vector<LogicalType> group_types,
 	                          vector<LogicalType> payload_types, vector<AggregateObject> aggregates,
 	                          idx_t initial_capacity = InitialCapacity(), idx_t radix_bits = 0,
-	                          TupleDataValidityType group_validity = TupleDataValidityType::CAN_HAVE_NULL_VALUES);
+	                          TupleDataValidityType group_validity = TupleDataValidityType::CAN_HAVE_NULL_VALUES,
+	                          idx_t trailing_region_width = 0);
 	GroupedAggregateHashTable(ClientContext &context, Allocator &allocator, vector<LogicalType> group_types,
 	                          TupleDataValidityType group_validity = TupleDataValidityType::CAN_HAVE_NULL_VALUES);
 	~GroupedAggregateHashTable() override;
@@ -182,6 +183,8 @@ public:
 
 private:
 	ClientContext &context;
+	//! Zeroes the layout's trailing region of freshly created rows so owners find defined bytes
+	void ZeroTrailingRegion(Vector &row_locations, idx_t count) const;
 	//! Efficiently matches groups
 	RowMatcher row_matcher;
 
@@ -232,7 +235,7 @@ private:
 	//! The capacity of the HT. This can be increased using GroupedAggregateHashTable::Resize
 	idx_t capacity;
 	//! The hash map (pointer table) of the HT: allocated data and pointer into it
-	AllocatedData hash_map;
+	HugeAllocation hash_map;
 	ht_entry_t *entries;
 	//! Offset of the hash column in the rows
 	idx_t hash_offset;
@@ -284,7 +287,8 @@ private:
 
 	//! Does the actual group matching / creation
 	idx_t FindOrCreateGroupsInternal(DataChunk &groups, Vector &group_hashes, Vector &addresses,
-	                                 SelectionVector &new_groups);
+	                                 SelectionVector &new_groups,
+	                                 optional_ptr<TupleDataChunkState> source_rows = nullptr);
 	void InitializeLookupState(AggregateHTLookupState &lookup_state) const;
 
 	//! Verify the pointer table of the HT

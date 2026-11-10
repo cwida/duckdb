@@ -155,24 +155,28 @@ static bool GetExpressionWidth(const Expression &expression,
 	return true;
 }
 
-static idx_t GetExclusiveInputWidth(const LogicalProjection &projection, idx_t expression_index,
+//! The number of expressions of the projection that read each binding
+static column_binding_map_t<idx_t> CountReadingExpressions(const LogicalProjection &projection) {
+	column_binding_map_t<idx_t> result;
+	for (auto &expression : projection.expressions) {
+		column_binding_set_t read_bindings;
+		ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+		    *expression, [&](const BoundColumnRefExpression &colref) {
+			    if (colref.Depth() == 0 && read_bindings.insert(colref.Binding()).second) {
+				    result[colref.Binding()]++;
+			    }
+		    });
+	}
+	return result;
+}
+
+//! The width of the bindings that no other expression of the projection reads
+static idx_t GetExclusiveInputWidth(const column_binding_map_t<idx_t> &reading_expressions,
                                     const vector<ExpressionBindingWidth> &binding_widths) {
 	idx_t result = 0;
 	for (auto &binding_width : binding_widths) {
-		auto &binding = binding_width.binding;
-		bool referenced_elsewhere = false;
-		for (idx_t other_index = 0; other_index < projection.expressions.size(); other_index++) {
-			if (other_index == expression_index) {
-				continue;
-			}
-			ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
-			    *projection.expressions[other_index], [&](const BoundColumnRefExpression &colref) {
-				    if (colref.Depth() == 0 && colref.Binding() == binding) {
-					    referenced_elsewhere = true;
-				    }
-			    });
-		}
-		if (referenced_elsewhere) {
+		auto entry = reading_expressions.find(binding_width.binding);
+		if (entry != reading_expressions.end() && entry->second > 1) {
 			continue;
 		}
 		result += binding_width.width;
@@ -280,7 +284,7 @@ static bool TraceProjectionResult(LogicalProjection &projection, const column_bi
 
 static bool FindLiftPlacement(LogicalProjection &projection, idx_t expression_index, const vector<PathStep> &ancestors,
                               const column_binding_map_t<unique_ptr<BaseStatistics>> &statistics_map,
-                              LiftPlacement &result) {
+                              const column_binding_map_t<idx_t> &reading_expressions, LiftPlacement &result) {
 	auto &expression = *projection.expressions[expression_index];
 	if (expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF || expression.IsVolatile() ||
 	    expression.CanThrow() || !projection.children[0]->has_estimated_cardinality) {
@@ -293,7 +297,7 @@ static bool FindLiftPlacement(LogicalProjection &projection, idx_t expression_in
 	if (!GetExpressionWidth(expression, statistics_map, input_width, dependencies)) {
 		return false;
 	}
-	auto exclusive_input_width = GetExclusiveInputWidth(projection, expression_index, dependencies);
+	auto exclusive_input_width = GetExclusiveInputWidth(reading_expressions, dependencies);
 
 	column_binding_set_t current_bindings;
 	current_bindings.insert(source_binding);
@@ -735,9 +739,10 @@ static bool LiftFirstProfitableExpression(Optimizer &optimizer,
 		return false;
 	}
 	auto &projection = op->Cast<LogicalProjection>();
+	auto reading_expressions = CountReadingExpressions(projection);
 	for (idx_t expression_idx = 0; expression_idx < projection.expressions.size(); expression_idx++) {
 		LiftPlacement placement;
-		if (!FindLiftPlacement(projection, expression_idx, ancestors, statistics_map, placement)) {
+		if (!FindLiftPlacement(projection, expression_idx, ancestors, statistics_map, reading_expressions, placement)) {
 			continue;
 		}
 		ApplyLiftPlacement(optimizer, statistics_map, root, placement);
@@ -757,7 +762,7 @@ static optional_idx GetExpressionChild(const Expression &expression, LogicalOper
 
 static bool FindPlacement(LogicalProjection &projection, idx_t expression_index,
                           const column_binding_map_t<unique_ptr<BaseStatistics>> &statistics_map,
-                          ExpressionPlacement &result) {
+                          const column_binding_map_t<idx_t> &reading_expressions, ExpressionPlacement &result) {
 	auto &expression = *projection.expressions[expression_index];
 	if (expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF || expression.IsVolatile() ||
 	    expression.CanThrow() || !projection.children[0]->has_estimated_cardinality) {
@@ -769,7 +774,7 @@ static bool FindPlacement(LogicalProjection &projection, idx_t expression_index,
 	if (!GetExpressionWidth(expression, statistics_map, input_width, input_bindings)) {
 		return false;
 	}
-	auto exclusive_input_width = GetExclusiveInputWidth(projection, expression_index, input_bindings);
+	auto exclusive_input_width = GetExclusiveInputWidth(reading_expressions, input_bindings);
 	idx_t output_width;
 	if (!GetBindingWidth(ColumnBinding(projection.table_index, ProjectionIndex(expression_index)),
 	                     expression.GetReturnType(), statistics_map, output_width)) {
@@ -963,9 +968,10 @@ static void OptimizeOperator(Optimizer &optimizer, column_binding_map_t<unique_p
 	auto &projection = op->Cast<LogicalProjection>();
 	while (true) {
 		PlacementGroup group;
+		auto reading_expressions = CountReadingExpressions(projection);
 		for (idx_t expression_index = 0; expression_index < projection.expressions.size(); expression_index++) {
 			ExpressionPlacement placement;
-			if (!FindPlacement(projection, expression_index, statistics_map, placement)) {
+			if (!FindPlacement(projection, expression_index, statistics_map, reading_expressions, placement)) {
 				continue;
 			}
 			if (group.placements.empty()) {

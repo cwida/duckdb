@@ -1,0 +1,66 @@
+# name: test/sql/aggregate/grouping_sets/grouping_sets_sum_having.test
+# description: Grouping sets with sum and a HAVING clause that cannot be pushed down
+# group: [grouping_sets]
+
+statement ok
+CREATE TABLE t AS SELECT range i, range % 3 g, (range / 4)::DECIMAL(9,2) d FROM range(6);
+
+query II rowsort
+SELECT g, sum(i) FROM t GROUP BY ROLLUP (g) HAVING sum(i) > 1 OR g IS NULL;
+----
+0	3
+1	5
+2	7
+NULL	15
+
+# the sum is rewritten into sum_no_overflow, which the cascade re-binds by name to combine its states
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+query II
+EXPLAIN SELECT g, sum(i) FROM t GROUP BY ROLLUP (g) HAVING sum(i) > 1 OR g IS NULL;
+----
+logical_opt	<REGEX>:.*sum_no_overflow\(i\) EXPORT_STATE.*
+
+query II
+EXPLAIN SELECT g, sum(i) FROM t GROUP BY ROLLUP (g) HAVING sum(i) > 1 OR g IS NULL;
+----
+logical_opt	<REGEX>:.*combine_aggr.*
+
+statement ok
+PRAGMA explain_output = PHYSICAL_ONLY;
+
+query II rowsort
+SELECT g, sum(i::BIGINT) FROM t GROUP BY GROUPING SETS ((g), ()) HAVING sum(i) > 1 OR g IS NULL;
+----
+0	3
+1	5
+2	7
+NULL	15
+
+query III rowsort
+SELECT g, sum(i), avg(i) FROM t GROUP BY CUBE (g) HAVING sum(i) > 1 OR g IS NULL;
+----
+0	3	1.5
+1	5	2.5
+2	7	3.5
+NULL	15	2.5
+
+query III rowsort
+SELECT g, sum(i::INTEGER), sum(d) FROM t GROUP BY ROLLUP (g) HAVING sum(i) > 1 OR g IS NULL;
+----
+0	3	0.75
+1	5	1.25
+2	7	1.75
+NULL	15	3.75
+
+query III rowsort
+SELECT g, i % 2 h, sum(i) FROM t GROUP BY ROLLUP (g, h) HAVING sum(i) > 2 OR g IS NULL;
+----
+0	1	3
+0	NULL	3
+1	0	4
+1	NULL	5
+2	1	5
+2	NULL	7
+NULL	NULL	15

@@ -74,7 +74,7 @@ void ExtensionLoader::UseDefaultSchema(const Identifier &name) {
 		                            loader_info.extension_schema);
 	}
 	if (name == "pg_catalog") {
-		throw InvalidInputException("Cannot set default extension schema to '%s'", name);
+		throw InvalidInputException("Cannot set default extension schema to %s", name);
 	}
 	if (name == DEFAULT_SCHEMA) {
 		loader_info.extension_schema = Identifier::DefaultSchema();
@@ -87,7 +87,7 @@ void ExtensionLoader::AddSchemaToSearchPath(const Identifier &schema_name) const
 	// adds an explicitly set extension schema to the search path
 	if (loader_info.extension_schema != schema_name || schema_name == DEFAULT_SCHEMA ||
 	    loader_info.extension_schema == DEFAULT_SCHEMA) {
-		throw InvalidInputException("Cannot add schema '%s' to search path, first set the extension schema explicitly "
+		throw InvalidInputException("Cannot add schema %s to search path, first set the extension schema explicitly "
 		                            "with UseDefaultSchema()",
 		                            schema_name);
 	}
@@ -97,7 +97,7 @@ void ExtensionLoader::AddSchemaToSearchPath(const Identifier &schema_name) const
 	auto data = CatalogTransaction::GetSystemTransaction(db);
 	auto schema = system_catalog.GetSchema(data, schema_name, OnEntryNotFound::RETURN_NULL);
 	if (!schema) {
-		throw InvalidInputException("Cannot add schema '%s' to search path: schema does not exist. "
+		throw InvalidInputException("Cannot add schema %s to search path: schema does not exist. "
 		                            "Call CreateExtensionSchema() first.",
 		                            schema_name);
 	}
@@ -340,7 +340,7 @@ optional_ptr<CatalogEntry> ExtensionLoader::TryGetFunction(const Identifier &nam
 ScalarFunctionCatalogEntry &ExtensionLoader::GetFunction(const Identifier &name) {
 	auto catalog_entry = TryGetFunction(name);
 	if (!catalog_entry) {
-		throw InvalidInputException("Function with name \"%s\" not found in ExtensionLoader::GetFunction", name);
+		throw InvalidInputException("Function with name %s not found in ExtensionLoader::GetFunction", name);
 	}
 	return catalog_entry->Cast<ScalarFunctionCatalogEntry>();
 }
@@ -352,7 +352,7 @@ optional_ptr<CatalogEntry> ExtensionLoader::TryGetTableFunction(const Identifier
 TableFunctionCatalogEntry &ExtensionLoader::GetTableFunction(const Identifier &name) {
 	auto catalog_entry = TryGetTableFunction(name);
 	if (!catalog_entry) {
-		throw InvalidInputException("Function with name \"%s\" not found in ExtensionLoader::GetTableFunction", name);
+		throw InvalidInputException("Function with name %s not found in ExtensionLoader::GetTableFunction", name);
 	}
 	return catalog_entry->Cast<TableFunctionCatalogEntry>();
 }

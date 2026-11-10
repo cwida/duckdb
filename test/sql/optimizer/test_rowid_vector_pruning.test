@@ -1,0 +1,172 @@
+# name: test/sql/optimizer/test_rowid_vector_pruning.test
+# description: Scans with row id filters only read the vectors that hold the row ids (duckdblabs/bot-issue-tracker#549)
+# group: [optimizer]
+
+require json
+
+# the rows scanned count whole vectors
+require exact_vector_size 2048
+
+load {TEST_DIR}/rowid_vector_pruning.db
+
+statement ok
+SET threads = 1
+
+# 300000 rows in three row groups, row id i holds k = (i * 7919) % 300000 and g = 'geom i'
+statement ok
+CREATE TABLE r (k BIGINT PRIMARY KEY, g VARCHAR, risk BIGINT, zone VARCHAR, score DOUBLE);
+
+statement ok
+INSERT INTO r SELECT (i * 7919) % 300000, 'geom ' || i, i % 7, 'zone ' || (i % 13), i * 0.5 FROM range(300000) t(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET enable_profiling = 'json'
+
+statement ok
+SET tracked_metrics = ['query.total_rows_scanned']
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_in.json'
+
+# row ids at the edges of vectors and row groups
+query II
+SELECT rowid, g FROM r WHERE rowid IN (2047, 2048, 122879, 122880, 299999) ORDER BY rowid
+----
+2047	geom 2047
+2048	geom 2048
+122879	geom 122879
+122880	geom 122880
+299999	geom 299999
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_late.json'
+
+# late materialization finds the three row ids with the index, then scans the vectors that hold them
+query IIIII
+SELECT k, risk, zone, score, length(g) AS d FROM r WHERE k BETWEEN 4242 AND 4300 ORDER BY d DESC, k LIMIT 3
+----
+4242	3	zone 11	147159.0	11
+4243	2	zone 6	105998.5	11
+4244	1	zone 1	64838.0	11
+
+statement ok
+PRAGMA disable_profiling
+
+# the IN list reads four full vectors and the 992 rows of the partial last vector of the table
+# late materialization reads the 59 index hits and the three vectors that hold its row ids
+query II
+SELECT in_list.query.total_rows_scanned, late.query.total_rows_scanned
+FROM '{TEST_DIR}/rowid_vector_pruning_in.json' in_list, '{TEST_DIR}/rowid_vector_pruning_late.json' late
+----
+9184	6203
+
+# one row group whose last vector is partial, row id i holds v = i
+statement ok
+CREATE TABLE s AS SELECT i AS v, 'pad ' || i AS pad FROM range(100001) t(i);
+
+statement ok
+SET enable_profiling = 'json'
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_first.json'
+
+query I
+SELECT v FROM s WHERE rowid = 0
+----
+0
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_first_last.json'
+
+query I
+SELECT v FROM s WHERE rowid IN (0, 100000) ORDER BY v
+----
+0
+100000
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_late_first.json'
+
+query II
+SELECT v, pad FROM s ORDER BY abs(v - 50000) DESC, v LIMIT 1
+----
+0	pad 0
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_late_first_last.json'
+
+query II
+SELECT v, pad FROM s ORDER BY abs(v - 50000) DESC, v LIMIT 2
+----
+0	pad 0
+100000	pad 100000
+
+statement ok
+PRAGMA disable_profiling
+
+# a row id in the first vector reads that vector and skips the partial last vector of 1697 rows
+# a row id in the last vector reads it, late materialization scans the 100001 rows for its row ids first
+query IIII
+SELECT one_id.query.total_rows_scanned, two_ids.query.total_rows_scanned,
+       late_one_id.query.total_rows_scanned, late_two_ids.query.total_rows_scanned
+FROM '{TEST_DIR}/rowid_vector_pruning_first.json' one_id,
+     '{TEST_DIR}/rowid_vector_pruning_first_last.json' two_ids,
+     '{TEST_DIR}/rowid_vector_pruning_late_first.json' late_one_id,
+     '{TEST_DIR}/rowid_vector_pruning_late_first_last.json' late_two_ids
+----
+2048	3745	102049	103746
+
+# segment zonemaps also skip a partial last vector, so a table with one scans as much as the table without it
+statement ok
+SET force_compression = 'uncompressed'
+
+statement ok
+CREATE TABLE seg_partial AS SELECT i AS x, {'a': i} AS st FROM range(100001) t(i);
+
+statement ok
+CREATE TABLE seg_aligned AS SELECT i AS x, {'a': i} AS st FROM range(98304) t(i);
+
+statement ok
+CHECKPOINT
+
+statement ok
+RESET force_compression
+
+statement ok
+SET enable_profiling = 'json'
+
+foreach tbl seg_partial seg_aligned
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_{tbl}_x.json'
+
+query I
+SELECT count(*) FROM {tbl} WHERE x < 10
+----
+10
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_{tbl}_st.json'
+
+query I
+SELECT count(*) FROM {tbl} WHERE st.a < 10
+----
+10
+
+endloop
+
+statement ok
+PRAGMA disable_profiling
+
+query II
+SELECT partial_x.query.total_rows_scanned = aligned_x.query.total_rows_scanned,
+       partial_st.query.total_rows_scanned = aligned_st.query.total_rows_scanned
+FROM '{TEST_DIR}/rowid_vector_pruning_seg_partial_x.json' partial_x,
+     '{TEST_DIR}/rowid_vector_pruning_seg_aligned_x.json' aligned_x,
+     '{TEST_DIR}/rowid_vector_pruning_seg_partial_st.json' partial_st,
+     '{TEST_DIR}/rowid_vector_pruning_seg_aligned_st.json' aligned_st
+----
+true	true

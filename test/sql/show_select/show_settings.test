@@ -48,6 +48,23 @@ DESCRIBE threads
 ----
 <REGEX>:.*Table with name threads does not exist.*
 
+# An empty string literal names neither a setting nor a table (used to trigger an internal error)
+statement error
+SHOW ''
+----
+<REGEX>:.*Expected a table name, but got an empty string.*
+
+# the empty name reaches the binder; statement verification renders it as "" which the parser rejects
+statement error
+DESCRIBE ''
+----
+<REGEX>:.*(Table with name .*does not exist|zero-length delimited identifier).*
+
+statement error
+SUMMARIZE ''
+----
+<REGEX>:.*(Table with name .*does not exist|zero-length delimited identifier).*
+
 # The special MySQL-inherited forms keep working
 statement ok
 SHOW TABLES;

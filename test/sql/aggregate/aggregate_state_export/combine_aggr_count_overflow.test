@@ -1,0 +1,42 @@
+# name: test/sql/aggregate/aggregate_state_export/combine_aggr_count_overflow.test
+# description: Combining aggregate states with a multiplicity that overflows their counts
+# group: [aggregate_state_export]
+
+foreach aggr var_samp var_pop stddev_samp stddev_pop sem kurtosis
+
+statement error
+WITH s AS (SELECT {aggr}(x) EXPORT_STATE st FROM (VALUES (1), (2), (2), (7)) v(x))
+SELECT finalize(combine_aggr(st, 4611686018427387904)) FROM s;
+----
+Overflow in aggregate state combine
+
+endloop
+
+foreach aggr covar_pop covar_samp corr regr_slope
+
+statement error
+WITH s AS (SELECT {aggr}(x, x) EXPORT_STATE st FROM (VALUES (1), (2), (2), (7)) v(x))
+SELECT finalize(combine_aggr(st, 4611686018427387904)) FROM s;
+----
+Overflow in aggregate state combine
+
+endloop
+
+statement error
+WITH s AS (SELECT approx_quantile(x, 0.5) EXPORT_STATE st FROM (VALUES (1), (2), (2), (7)) v(x))
+SELECT finalize(combine_aggr(st, 4611686018427387904)) FROM s;
+----
+Overflow in aggregate state combine
+
+statement error
+WITH s AS (SELECT regr_count(x, x) EXPORT_STATE st FROM (VALUES (1), (2)) v(x))
+SELECT finalize(combine_aggr(st, 2147483648)) FROM s;
+----
+does not fit in the result type
+
+# multiplicities that do not overflow keep working
+query II
+WITH s AS (SELECT var_pop(x) EXPORT_STATE a, regr_count(x, x) EXPORT_STATE b FROM (VALUES (1), (2), (2), (7)) v(x))
+SELECT finalize(combine_aggr(a, 3)), finalize(combine_aggr(b, 3)) FROM s;
+----
+5.5	12

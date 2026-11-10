@@ -1,5 +1,5 @@
 # name: test/sql/storage/compression/fsst/fsst_greedy_long_strings.test
-# description: FSST compresses strings longer than 511 bytes greedily, without chunking
+# description: Persist and read FSST strings longer than 511 bytes
 # group: [fsst]
 
 statement ok
@@ -18,12 +18,24 @@ FROM range(3500) t(i);
 statement ok
 CHECKPOINT db;
 
-mode skip Test is flaky, count sometimes returns 2 instead of 1, requires investigation to re-enable
-
+# The number of segments depends on the trained dictionary.
+# Greedy encoding itself is checked directly in test/common/test_fsst.cpp.
 query I
-SELECT count(*)
+SELECT count(*) > 0
 FROM pragma_storage_info('db.t')
 WHERE column_name = 's'
   AND compression = 'FSST';
 ----
-1
+true
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/fsst_greedy.db' AS db (READ_ONLY);
+
+query II
+SELECT count(*), count(*) FILTER (
+	WHERE s = repeat('x', 510) || 'abcdefghij' || lpad(i::VARCHAR, 8, '0'))
+FROM (SELECT row_number() OVER (ORDER BY s) - 1 AS i, s FROM db.t);
+----
+3500	3500

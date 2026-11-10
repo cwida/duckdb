@@ -1,0 +1,386 @@
+# name: test/sql/copy/return_column_types.test
+# description: test RETURN_COLUMN_TYPES parameter for COPY
+# group: [copy]
+
+require parquet
+
+# An empty result still describes its columns
+query II
+COPY (SELECT 1::BIGINT AS i WHERE false) TO '{TEST_DIR}/return_column_types_empty.csv' (RETURN_COLUMN_TYPES);
+----
+0	[{'name': i, 'type': BIGINT}]
+
+# Parquet, through the batch copy that keeps the insertion order and the parallel copy that doesn't
+foreach preserve_insertion_order true false
+
+statement ok
+SET preserve_insertion_order={preserve_insertion_order};
+
+query II
+COPY (SELECT range::DECIMAL(9,2) AS d FROM range(10)) TO '{TEST_DIR}/return_column_types_{preserve_insertion_order}.parquet' (RETURN_COLUMN_TYPES);
+----
+10	[{'name': d, 'type': 'DECIMAL(9,2)'}]
+
+query III
+COPY (SELECT range::DECIMAL(9,2) AS d FROM range(10)) TO '{TEST_DIR}/return_column_types_files_{preserve_insertion_order}.parquet' (RETURN_FILES, RETURN_COLUMN_TYPES);
+----
+10	<REGEX>:.*return_column_types_files_.*\.parquet.*	[{'name': d, 'type': 'DECIMAL(9,2)'}]
+
+endloop
+
+statement ok
+SET preserve_insertion_order=true;
+
+# RETURN_STATS gets the columns on every file row. The query's partition column is described even though the files
+# don't hold it.
+query IIIIIIII rowsort
+COPY (SELECT range % 2 AS p, range::DECIMAL(9,2) AS d FROM range(10)) TO '{TEST_DIR}/return_column_types_partitioned' (FORMAT PARQUET, PARTITION_BY p, RETURN_STATS, RETURN_COLUMN_TYPES);
+----
+<REGEX>:.*p=0.*	5	<REGEX>:\d+	<REGEX>:\d+	<REGEX>:.*	{p=0}	{row_group_count=1}	[{'name': p, 'type': BIGINT}, {'name': d, 'type': 'DECIMAL(9,2)'}]
+<REGEX>:.*p=1.*	5	<REGEX>:\d+	<REGEX>:\d+	<REGEX>:.*	{p=1}	{row_group_count=1}	[{'name': p, 'type': BIGINT}, {'name': d, 'type': 'DECIMAL(9,2)'}]
+
+# Each type is a TYPE value, the value get_type returns, so the existing functions read it
+query I
+WITH copied AS (COPY (SELECT 1 AS i) TO '{TEST_DIR}/return_column_types_typeof.csv' (RETURN_COLUMN_TYPES))
+SELECT typeof(columns) FROM copied;
+----
+STRUCT("name" VARCHAR, "type" TYPE)[]
+
+query III
+WITH copied AS (COPY (SELECT 1.5::DECIMAL(9,2) AS d, [1, 2]::INTEGER[2] AS a, uuid() AS u) TO '{TEST_DIR}/return_column_types_get_type.csv' (RETURN_COLUMN_TYPES))
+SELECT columns[1].type = get_type(1.5::DECIMAL(9,2)), columns[2].type = get_type([1, 2]::INTEGER[2]),
+       columns[3].type = get_type(uuid())
+FROM copied;
+----
+true	true	true
+
+query II
+WITH copied AS (COPY (SELECT 1.5::DECIMAL(9,2) AS d) TO '{TEST_DIR}/return_column_types_cast.csv' (RETURN_COLUMN_TYPES))
+SELECT columns[1].type::VARCHAR, typeof(columns[1].type) FROM copied;
+----
+DECIMAL(9,2)	TYPE
+
+# Without the option, or with it off, the result is unchanged
+query I
+COPY (SELECT 1 AS i) TO '{TEST_DIR}/return_column_types_off.csv' (RETURN_COLUMN_TYPES false);
+----
+1
+
+statement error
+COPY (SELECT 1 AS i) TO '{TEST_DIR}/return_column_types_error.csv' (RETURN_COLUMN_TYPES 'maybe');
+----
+Copy option "return_column_types" expected an argument of type BOOLEAN
+
+statement error
+COPY (SELECT 1 AS i) TO '{TEST_DIR}/return_column_types_null.csv' (RETURN_COLUMN_TYPES NULL);
+----
+NULL is not supported as a valid option for COPY option "return_column_types"
+
+# The option is for COPY TO only
+statement ok
+CREATE TABLE return_column_types_target (i INTEGER);
+
+statement error
+COPY return_column_types_target FROM '{TEST_DIR}/return_column_types_off.csv' (RETURN_COLUMN_TYPES);
+----
+Option "return_column_types" is not supported for reading - only for writing
+
+# Copying a table describes its columns, or the listed ones in the listed order
+statement ok
+CREATE TABLE return_column_types_tbl (a INTEGER, "My Col" VARCHAR, d DECIMAL(38,10));
+
+statement ok
+INSERT INTO return_column_types_tbl VALUES (1, 'x', 1.5);
+
+query II
+COPY return_column_types_tbl (d, a) TO '{TEST_DIR}/return_column_types_tbl_cols.csv' (RETURN_COLUMN_TYPES);
+----
+1	[{'name': d, 'type': 'DECIMAL(38,10)'}, {'name': a, 'type': INTEGER}]
+
+# A prepared COPY describes the parameter types of each EXECUTE
+statement ok
+PREPARE copy_parameter AS COPY (SELECT $1 AS x) TO '{TEST_DIR}/return_column_types_parameter.csv' (RETURN_COLUMN_TYPES, OVERWRITE);
+
+query II
+EXECUTE copy_parameter(1.5::DECIMAL(5,2));
+----
+1	[{'name': x, 'type': 'DECIMAL(5,2)'}]
+
+query II
+EXECUTE copy_parameter('abc');
+----
+1	[{'name': x, 'type': VARCHAR}]
+
+# A prepared COPY of a table describes the table as it is when executed
+statement ok
+CREATE TABLE return_column_types_altered (a INTEGER);
+
+statement ok
+INSERT INTO return_column_types_altered VALUES (1);
+
+statement ok
+PREPARE copy_altered AS COPY return_column_types_altered TO '{TEST_DIR}/return_column_types_altered.csv' (RETURN_COLUMN_TYPES, OVERWRITE);
+
+query II
+EXECUTE copy_altered;
+----
+1	[{'name': a, 'type': INTEGER}]
+
+statement ok
+ALTER TABLE return_column_types_altered ADD COLUMN b DECIMAL(6,3);
+
+query II
+EXECUTE copy_altered;
+----
+1	[{'name': a, 'type': INTEGER}, {'name': b, 'type': 'DECIMAL(6,3)'}]
+
+# Duplicate names are described as they are written to the file, deduplicated as in a query result
+query II
+COPY (SELECT 1 AS a, 2 AS a, 3 AS a_1) TO '{TEST_DIR}/return_column_types_dedup.csv' (RETURN_COLUMN_TYPES);
+----
+1	[{'name': a, 'type': INTEGER}, {'name': a_1, 'type': INTEGER}, {'name': a_1_1, 'type': INTEGER}]
+
+# Parquet writes HUGEINT and UHUGEINT as DOUBLE, but the columns describe the query
+query II
+COPY (SELECT 1::HUGEINT AS h, 1::UHUGEINT AS uh) TO '{TEST_DIR}/return_column_types_huge.parquet' (RETURN_COLUMN_TYPES);
+----
+1	[{'name': h, 'type': HUGEINT}, {'name': uh, 'type': UHUGEINT}]
+
+query II
+SELECT name, type FROM parquet_schema('{TEST_DIR}/return_column_types_huge.parquet') WHERE name IN ('h', 'uh') ORDER BY name;
+----
+h	DOUBLE
+uh	DOUBLE
+
+# With no rows and WRITE_EMPTY_FILE false, no file is written but the columns are still described
+query II
+COPY (SELECT 1 AS a WHERE false) TO '{TEST_DIR}/return_column_types_skip.parquet' (WRITE_EMPTY_FILE false, RETURN_COLUMN_TYPES);
+----
+0	[{'name': a, 'type': INTEGER}]
+
+query III
+COPY (SELECT 1 AS a WHERE false) TO '{TEST_DIR}/return_column_types_skip_files.parquet' (WRITE_EMPTY_FILE false, RETURN_FILES, RETURN_COLUMN_TYPES);
+----
+0	[]	[{'name': a, 'type': INTEGER}]
+
+# RETURN_STATS returns a row per written file. When no file is written, RETURN_COLUMN_TYPES still returns one row, with a
+# count of 0 and no file statistics, through the batch copy that keeps the insertion order and the parallel copy that
+# doesn't.
+foreach preserve_insertion_order true false
+
+statement ok
+SET preserve_insertion_order={preserve_insertion_order};
+
+query IIIIIIII
+COPY (SELECT 1 AS a WHERE false) TO '{TEST_DIR}/return_column_types_skip_stats_{preserve_insertion_order}.parquet' (WRITE_EMPTY_FILE false, RETURN_STATS, RETURN_COLUMN_TYPES);
+----
+NULL	0	NULL	NULL	NULL	NULL	NULL	[{'name': a, 'type': INTEGER}]
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/return_column_types_skip_stats_{preserve_insertion_order}.parquet');
+----
+0
+
+endloop
+
+statement ok
+SET preserve_insertion_order=true;
+
+# PARTITION_BY writes no file without rows
+query IIIIIIII
+COPY (SELECT 1 AS p, 2 AS v WHERE false) TO '{TEST_DIR}/return_column_types_skip_partitioned' (FORMAT PARQUET, PARTITION_BY (p), RETURN_STATS, RETURN_COLUMN_TYPES);
+----
+NULL	0	NULL	NULL	NULL	NULL	NULL	[{'name': p, 'type': INTEGER}, {'name': v, 'type': INTEGER}]
+
+# Without RETURN_COLUMN_TYPES, RETURN_STATS still returns no row when no file is written
+query IIIIIII
+COPY (SELECT 1 AS a WHERE false) TO '{TEST_DIR}/return_column_types_skip_stats_off.parquet' (WRITE_EMPTY_FILE false, RETURN_STATS);
+----
+
+# Rotated files, which always go through the parallel copy
+statement ok
+SET threads=1;
+
+query IIII
+WITH copied AS (COPY (SELECT range AS v, md5(range::VARCHAR) AS s FROM range(200000)) TO '{TEST_DIR}/return_column_types_rotate' (FORMAT PARQUET, ROW_GROUP_SIZE 10000, ROW_GROUPS_PER_FILE 2, RETURN_STATS, RETURN_COLUMN_TYPES))
+SELECT count(*) > 1, count(columns) = count(*), count(DISTINCT columns), any_value(columns) FROM copied;
+----
+true	true	1	[{'name': v, 'type': BIGINT}, {'name': s, 'type': VARCHAR}]
+
+statement ok
+RESET threads;
+
+require json
+
+# One column of every type, written as CSV, Parquet and JSON: each is described by its name and its type
+statement ok
+CREATE TYPE return_column_types_int AS INTEGER;
+
+statement ok
+CREATE TYPE return_column_types_mood AS ENUM ('sad', 'ok');
+
+foreach format csv parquet json
+
+query II
+WITH copied AS (COPY (
+    SELECT
+        true AS bool_col, 1::TINYINT AS tinyint_col, 1::SMALLINT AS smallint_col, 1::INTEGER AS int_col, 1::BIGINT AS bigint_col,
+        1::HUGEINT AS hugeint_col, 1::UTINYINT AS utinyint_col, 1::USMALLINT AS usmallint_col, 1::UINTEGER AS uint_col,
+        1::UBIGINT AS ubigint_col, 1::UHUGEINT AS uhugeint_col, 1::BIGNUM AS bignum_col, 1.5::FLOAT AS float_col,
+        1.5::DOUBLE AS double_col, 1.5::DECIMAL(4,1) AS dec_4_1, 1.5::DECIMAL(9,4) AS dec_9_4, 1.5::DECIMAL(18,6) AS dec_18_6,
+        1.5::DECIMAL(38,10) AS dec_38_10, 1::DECIMAL(4,0) AS dec_4_0,
+        DATE '2024-01-01' AS date_col, TIME '01:02:03' AS time_col, TIMETZ '01:02:03+00' AS timetz_col,
+        TIMESTAMP '2024-01-01 01:02:03' AS timestamp_col, TIMESTAMP_S '2024-01-01' AS timestamp_s_col,
+        TIMESTAMP_MS '2024-01-01' AS timestamp_ms_col, TIMESTAMP_NS '2024-01-01' AS timestamp_ns_col,
+        TIMESTAMPTZ '2024-01-01 00:00:00+00' AS timestamptz_col, INTERVAL 1 DAY AS interval_col,
+        'x' AS varchar_col, 'x'::BLOB AS blob_col, '101'::BIT AS bit_col, '00000000-0000-0000-0000-000000000001'::UUID AS uuid_col,
+        'ok'::return_column_types_mood AS enum_col, 1::return_column_types_int AS alias_col, '{}'::JSON AS json_col,
+        1::VARIANT AS variant_col, NULL AS null_col,
+        [1, 2] AS list_col, [[1], [2, 3]] AS list_of_list_col, [{'a': 1}] AS list_of_struct_col,
+        [1.5::DECIMAL(5,2)] AS list_of_decimal_col, {'a': 1, 'b': 'x'} AS struct_col, {'a': [1], 'b': ['x']} AS struct_of_list_col,
+        {'o': [MAP {'k': {'d': [1.5::DECIMAL(10,2)]}}]} AS deep_struct_col, (1, 'x') AS tuple_col, MAP {'k': 1} AS map_col,
+        MAP {[1]: {'v': 'x'}} AS map_list_key_col, union_value(n := 1)::UNION(n INTEGER, s VARCHAR) AS union_col,
+        [1, 2, 3]::INTEGER[3] AS array_col, [[1, 2], [3, 4]]::INTEGER[2][2] AS array_of_array_col,
+        [{'x': 1}, {'x': 2}]::STRUCT(x INTEGER)[2] AS array_of_struct_col, [[1, 2]::INTEGER[2]] AS list_of_array_col,
+        [[1], [2, 3]]::INTEGER[][2] AS array_of_list_col
+) TO '{TEST_DIR}/return_column_types_all_types.{format}' (FORMAT {format}, RETURN_COLUMN_TYPES))
+SELECT unnest(columns, recursive := true) FROM copied;
+----
+bool_col	BOOLEAN
+tinyint_col	TINYINT
+smallint_col	SMALLINT
+int_col	INTEGER
+bigint_col	BIGINT
+hugeint_col	HUGEINT
+utinyint_col	UTINYINT
+usmallint_col	USMALLINT
+uint_col	UINTEGER
+ubigint_col	UBIGINT
+uhugeint_col	UHUGEINT
+bignum_col	BIGNUM
+float_col	FLOAT
+double_col	DOUBLE
+dec_4_1	DECIMAL(4,1)
+dec_9_4	DECIMAL(9,4)
+dec_18_6	DECIMAL(18,6)
+dec_38_10	DECIMAL(38,10)
+dec_4_0	DECIMAL(4,0)
+date_col	DATE
+time_col	TIME
+timetz_col	TIME WITH TIME ZONE
+timestamp_col	TIMESTAMP
+timestamp_s_col	TIMESTAMP_S
+timestamp_ms_col	TIMESTAMP_MS
+timestamp_ns_col	TIMESTAMP_NS
+timestamptz_col	TIMESTAMP WITH TIME ZONE
+interval_col	INTERVAL
+varchar_col	VARCHAR
+blob_col	BLOB
+bit_col	BIT
+uuid_col	UUID
+enum_col	ENUM('sad', 'ok')
+alias_col	INTEGER
+json_col	JSON
+variant_col	VARIANT
+null_col	"NULL"
+list_col	INTEGER[]
+list_of_list_col	INTEGER[][]
+list_of_struct_col	STRUCT(a INTEGER)[]
+list_of_decimal_col	DECIMAL(5,2)[]
+struct_col	STRUCT(a INTEGER, b VARCHAR)
+struct_of_list_col	STRUCT(a INTEGER[], b VARCHAR[])
+deep_struct_col	STRUCT(o MAP(VARCHAR, STRUCT(d DECIMAL(10,2)[]))[])
+tuple_col	TUPLE(INTEGER, VARCHAR)
+map_col	MAP(VARCHAR, INTEGER)
+map_list_key_col	MAP(INTEGER[], STRUCT(v VARCHAR))
+union_col	UNION(n INTEGER, s VARCHAR)
+array_col	INTEGER[3]
+array_of_array_col	INTEGER[2][2]
+array_of_struct_col	STRUCT(x INTEGER)[2]
+list_of_array_col	INTEGER[2][]
+array_of_list_col	INTEGER[][2]
+
+endloop
+
+statement error
+COPY (SELECT 1 AS i) TO '{TEST_DIR}/return_column_types_null.json' (RETURN_COLUMN_TYPES NULL);
+----
+COPY (FORMAT JSON) parameter "return_column_types" cannot be NULL
+
+# JSON describes the parameter types of each EXECUTE
+statement ok
+PREPARE copy_json_parameter AS COPY (SELECT $1 AS x) TO '{TEST_DIR}/return_column_types_parameter.json' (RETURN_COLUMN_TYPES, OVERWRITE);
+
+query II
+EXECUTE copy_json_parameter(1.5::DECIMAL(5,2));
+----
+1	[{'name': x, 'type': 'DECIMAL(5,2)'}]
+
+query II
+EXECUTE copy_json_parameter(42);
+----
+1	[{'name': x, 'type': INTEGER}]
+
+# JSON rewrites the query, but binds it once: the option doesn't change what the query does
+statement ok
+CREATE SEQUENCE return_column_types_seq_off;
+
+statement ok
+CREATE SEQUENCE return_column_types_seq_on;
+
+statement ok
+COPY (FROM range(nextval('return_column_types_seq_off'))) TO '{TEST_DIR}/return_column_types_seq_off.json';
+
+statement ok
+COPY (FROM range(nextval('return_column_types_seq_on'))) TO '{TEST_DIR}/return_column_types_seq_on.json' (RETURN_COLUMN_TYPES);
+
+query II
+SELECT (SELECT count(*) FROM '{TEST_DIR}/return_column_types_seq_on.json') = (SELECT count(*) FROM '{TEST_DIR}/return_column_types_seq_off.json'),
+       currval('return_column_types_seq_on') = currval('return_column_types_seq_off');
+----
+true	true
+
+# JSON keeps the partition columns out of the JSON object, but they are described in their place in the query
+foreach write_partition_columns false true
+
+query III
+COPY (SELECT 'x' AS s, range % 2 AS p, range::DECIMAL(9,2) AS d FROM range(4)) TO '{TEST_DIR}/return_column_types_json_partitioned_{write_partition_columns}' (FORMAT JSON, PARTITION_BY (p), WRITE_PARTITION_COLUMNS {write_partition_columns}, RETURN_FILES, RETURN_COLUMN_TYPES);
+----
+4	<REGEX>:.*p=0.*p=1.*	[{'name': s, 'type': VARCHAR}, {'name': p, 'type': BIGINT}, {'name': d, 'type': 'DECIMAL(9,2)'}]
+
+endloop
+
+# DATEFORMAT rewrites the JSON call and the date partition column it formats, but the columns describe the query
+query III
+COPY (SELECT DATE '2024-01-01' + range::INTEGER AS dt, range::DECIMAL(4,1) AS v FROM range(2)) TO '{TEST_DIR}/return_column_types_json_dateformat' (FORMAT JSON, PARTITION_BY (dt), DATEFORMAT '%Y%m%d', RETURN_FILES, RETURN_COLUMN_TYPES);
+----
+2	<REGEX>:.*dt=20240101.*dt=20240102.*	[{'name': dt, 'type': DATE}, {'name': v, 'type': 'DECIMAL(4,1)'}]
+
+# DATEFORMAT and TIMESTAMPFORMAT without PARTITION_BY: the columns describe the query, and the formats still apply
+query II
+COPY (SELECT DATE '2024-01-02' AS dt, TIMESTAMP '2024-01-02 03:04:05' AS ts, 1.5::DECIMAL(4,1) AS v) TO '{TEST_DIR}/return_column_types_json_formats.json' (FORMAT JSON, DATEFORMAT '%Y%m%d', TIMESTAMPFORMAT '%Y/%m/%d %H', RETURN_COLUMN_TYPES);
+----
+1	[{'name': dt, 'type': DATE}, {'name': ts, 'type': TIMESTAMP}, {'name': v, 'type': 'DECIMAL(4,1)'}]
+
+query III
+SELECT dt, ts, v FROM read_json('{TEST_DIR}/return_column_types_json_formats.json', columns := {'dt': 'VARCHAR', 'ts': 'VARCHAR', 'v': 'DOUBLE'});
+----
+20240102	2024/01/02 03	1.5
+
+# Duplicate names are described as JSON writes them
+query II
+COPY (SELECT 1 AS a, 'x' AS a, 3 AS a_1) TO '{TEST_DIR}/return_column_types_duplicates.json' (RETURN_COLUMN_TYPES);
+----
+1	[{'name': a, 'type': INTEGER}, {'name': a_1, 'type': VARCHAR}, {'name': a_1_1, 'type': INTEGER}]
+
+# GeoJSON rewrites the query like JSON, and describes its columns the same way
+query II
+COPY (SELECT 1 AS id, 'POINT (1 2)'::GEOMETRY AS geom, 1.5::DECIMAL(4,1) AS v) TO '{TEST_DIR}/return_column_types.geojson' (FORMAT GEOJSON, RETURN_COLUMN_TYPES);
+----
+1	[{'name': id, 'type': INTEGER}, {'name': geom, 'type': GEOMETRY}, {'name': v, 'type': 'DECIMAL(4,1)'}]
+
+# GeoJSON with PARTITION_BY describes the partition column in its place in the query
+query III
+COPY (SELECT range::INTEGER AS id, 'POINT (1 2)'::GEOMETRY AS geom, range % 2 AS p FROM range(2)) TO '{TEST_DIR}/return_column_types_geojson_partitioned' (FORMAT GEOJSON, PARTITION_BY (p), RETURN_FILES, RETURN_COLUMN_TYPES);
+----
+2	<REGEX>:.*p=0.*p=1.*	[{'name': id, 'type': INTEGER}, {'name': geom, 'type': GEOMETRY}, {'name': p, 'type': BIGINT}]

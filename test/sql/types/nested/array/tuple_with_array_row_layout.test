@@ -1,0 +1,78 @@
+# name: test/sql/types/nested/array/tuple_with_array_row_layout.test
+# description: Materialize TUPLE values that contain an ARRAY in the row layout
+# group: [array]
+
+query I
+SELECT DISTINCT (1, [1]::INT[1]);
+----
+(1, [1])
+
+statement ok
+CREATE TABLE t AS SELECT range i, [range, range + 1]::INT[2] arr FROM range(3);
+
+query I
+SELECT count(*) FROM t t1 JOIN t t2 ON row(1, t1.arr) = row(1, t2.arr);
+----
+3
+
+query II
+SELECT t1.i, row(t2.i, t2.arr) FROM t t1 JOIN t t2 ON t1.i = t2.i ORDER BY t1.i;
+----
+0	(0, [0, 1])
+1	(1, [1, 2])
+2	(2, [2, 3])
+
+query II
+SELECT (i, arr) g, count(*) FROM t GROUP BY g ORDER BY g;
+----
+(0, [0, 1])	1
+(1, [1, 2])	1
+(2, [2, 3])	1
+
+query I
+SELECT row(1, arr) FROM t UNION SELECT row(1, arr) FROM t ORDER BY 1;
+----
+(1, [0, 1])
+(1, [1, 2])
+(1, [2, 3])
+
+query I
+SELECT row(1, arr) FROM t INTERSECT SELECT row(1, arr) FROM t WHERE i > 0 ORDER BY 1;
+----
+(1, [1, 2])
+(1, [2, 3])
+
+query II
+SELECT count(DISTINCT row(1, arr)), first(row(1, arr) ORDER BY i) FROM t;
+----
+3	(1, [0, 1])
+
+query II
+SELECT i, lag(row(1, arr)) OVER (ORDER BY i) FROM t ORDER BY i;
+----
+0	NULL
+1	(1, [0, 1])
+2	(1, [1, 2])
+
+query II
+SELECT i, count(*) OVER (PARTITION BY row(1, arr)) FROM t ORDER BY i;
+----
+0	1
+1	1
+2	1
+
+query I
+SELECT list(DISTINCT row(1, arr) ORDER BY row(1, arr)) FROM t;
+----
+[(1, [0, 1]), (1, [1, 2]), (1, [2, 3])]
+
+# nested: a TUPLE in a LIST, and an ARRAY of TUPLEs containing ARRAYs
+query I
+SELECT DISTINCT [row(1, [1, 2]::INT[2])];
+----
+[(1, [1, 2])]
+
+query I
+SELECT DISTINCT [row('a', [1]::INT[1]), row('b', [2]::INT[1])]::TUPLE(VARCHAR, INT[1])[2];
+----
+[(a, [1]), (b, [2])]

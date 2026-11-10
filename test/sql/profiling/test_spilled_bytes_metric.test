@@ -34,8 +34,9 @@ statement ok
 SET tracked_metrics = ['system.total_bytes_spilled'];
 
 # Sorting ~20M BIGINTs (~160MB) under a 100MB limit forces the sort to spill.
+# first() reads its input in order, so the optimizer keeps the sort below the aggregate.
 statement ok
-SELECT min(i) FROM (SELECT i FROM range(20000000) t(i) ORDER BY i DESC);
+SELECT first(i) FROM (SELECT i FROM range(20000000) t(i) ORDER BY i DESC);
 
 statement ok
 PRAGMA disable_profiling;

@@ -157,7 +157,7 @@ foreach SOURCE struct_strings read_parquet('{TEST_DIR}/struct_json_cast.parquet'
 query II
 EXPLAIN SELECT v.k::JSON FROM {SOURCE};
 ----
-physical_plan	<REGEX>:.*CAST\(v AS JSON\).*Projections: v\.k.*
+physical_plan	<REGEX>:.*Projections: v\.k.*
 
 query ITT
 SELECT id, (v.k::JSON)::VARCHAR, json_type(v.k::JSON)

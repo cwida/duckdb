@@ -1,0 +1,28 @@
+# name: test/sql/aggregate/aggregate_state_export/to_aggregate_state_argument_types.test
+# description: to_aggregate_state with a name or signature that is not a VARCHAR / LIST
+# group: [aggregate_state_export]
+
+query I
+SELECT finalize(to_aggregate_state(1::BIGINT, 'sum'::VARIANT, ['BIGINT']));
+----
+1
+
+statement error
+SELECT finalize(to_aggregate_state({'count': NULL, 'value': NULL::HUGEINT}, 1::VARIANT, ['BIGINT']));
+----
+<REGEX>:Catalog Error.*1.*
+
+statement error
+SELECT finalize(to_aggregate_state(1::BIGINT, 'sum', ['BIGINT']::VARIANT));
+----
+the signature must be a list of types
+
+statement error
+SELECT finalize(to_aggregate_state(1::BIGINT, 'sum', 42));
+----
+<REGEX>:Binder Error: No function matches.*
+
+query I
+SELECT finalize(to_aggregate_state(1::BIGINT, 'sum', ['BIGINT']));
+----
+1

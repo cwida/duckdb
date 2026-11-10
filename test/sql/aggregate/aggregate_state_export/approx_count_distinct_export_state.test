@@ -105,15 +105,15 @@ require parquet
 
 # a state written through Parquet is re-typed with to_aggregate_state and merges as before
 statement ok
-COPY (SELECT i % 7 AS g, approx_count_distinct(i) EXPORT_STATE AS s FROM range(100000) r(i) GROUP BY g) TO '__TEST_DIR__/approx_count_distinct_states.parquet' (FORMAT PARQUET);
+COPY (SELECT i % 7 AS g, approx_count_distinct(i) EXPORT_STATE AS s FROM range(100000) r(i) GROUP BY g) TO '{TEST_DIR}/approx_count_distinct_states.parquet' (FORMAT PARQUET);
 
 query I
-SELECT finalize(combine_aggr(to_aggregate_state(s, 'approx_count_distinct', ['BIGINT']))) FROM '__TEST_DIR__/approx_count_distinct_states.parquet';
+SELECT finalize(combine_aggr(to_aggregate_state(s, 'approx_count_distinct', ['BIGINT']))) FROM '{TEST_DIR}/approx_count_distinct_states.parquet';
 ----
 99467
 
 query II
-SELECT g, finalize(to_aggregate_state(s, 'approx_count_distinct', ['BIGINT'])) FROM '__TEST_DIR__/approx_count_distinct_states.parquet' ORDER BY g LIMIT 3;
+SELECT g, finalize(to_aggregate_state(s, 'approx_count_distinct', ['BIGINT'])) FROM '{TEST_DIR}/approx_count_distinct_states.parquet' ORDER BY g LIMIT 3;
 ----
 0	13844
 1	14708

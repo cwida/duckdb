@@ -35,6 +35,15 @@ USE "trampoline_use_catalog"."main"
 statement ok
 USE "my""db"
 
+statement ok
+USE 'main'
+
+statement ok
+USE 'my"db'
+
+statement ok
+USE 'trampoline_use_catalog'
+
 statement error
 USE temp
 ----

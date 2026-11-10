@@ -471,16 +471,24 @@ ORDER BY q2,q1;
 4567890123456789	-4567890123456789
 123	456
 
-# This PostgreSQL error expectation is not enforced in DuckDB.
-mode skip instable
-
-statement error
+# DuckDB accepts ORDER BY names from either input of a set operation.
+query I
 SELECT q1 FROM int8_tbl EXCEPT SELECT q2 FROM int8_tbl ORDER BY q2 LIMIT 1;
 ----
-<REGEX>:(.*SELECT locking clause is not supported.*|.*syntax error at or near "FOR".*)
 
-mode unskip
+query I
+SELECT q1 FROM (VALUES (3), (1), (2)) lhs(q1)
+EXCEPT SELECT q2 FROM (VALUES (2)) rhs(q2)
+ORDER BY q2 LIMIT 1;
+----
+1
 
+query I
+SELECT q1 FROM (VALUES (3), (1), (2)) lhs(q1)
+EXCEPT SELECT q2 FROM (VALUES (2)) rhs(q2)
+ORDER BY q1 DESC LIMIT 1;
+----
+3
 
 query I
 SELECT q1 FROM int8_tbl EXCEPT (((SELECT q2 FROM int8_tbl ORDER BY q2 LIMIT 1))) ORDER BY 1;

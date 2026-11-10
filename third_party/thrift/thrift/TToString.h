@@ -67,8 +67,8 @@ std::string to_string(const std::map<K, V>& m);
 template <typename T>
 std::string to_string(const std::set<T>& s);
 
-template <typename T>
-std::string to_string(const duckdb::vector<T>& t);
+template <typename T, bool SAFE, typename ALLOCATOR>
+std::string to_string(const duckdb::vector<T, SAFE, ALLOCATOR>& t);
 
 template <typename K, typename V>
 std::string to_string(const typename std::pair<K, V>& v) {
@@ -88,8 +88,8 @@ std::string to_string(const T& beg, const T& end) {
   return o.str();
 }
 
-template <typename T>
-std::string to_string(const duckdb::vector<T>& t) {
+template <typename T, bool SAFE, typename ALLOCATOR>
+std::string to_string(const duckdb::vector<T, SAFE, ALLOCATOR>& t) {
   std::ostringstream o;
   o << "[" << to_string(t.begin(), t.end()) << "]";
   return o.str();

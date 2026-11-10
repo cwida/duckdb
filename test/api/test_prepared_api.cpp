@@ -614,7 +614,7 @@ TEST_CASE("Test prepared statements with extension that can request a rebind", "
 	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE TABLE t1 (c1 INTEGER)"));
 
 	// https://github.com/duckdb/duckdb/pull/11096
-	con.context->registered_state->Insert("test_extension", make_shared_ptr<TestExtensionState>());
+	con.context->GetContext().GetRegisteredState().Insert("test_extension", make_shared_ptr<TestExtensionState>());
 
 	// SelectStatement
 	REQUIRE_NO_FAIL(con.Prepare("SELECT ?")->Execute(42));

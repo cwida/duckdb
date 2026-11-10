@@ -16,6 +16,7 @@
 namespace duckdb {
 class BaseStatistics;
 class Value;
+class StatsStructFields;
 
 enum class VariantStatsShreddingState : uint8_t {
 	//! Uninitialized, not unshredded/shredded
@@ -106,7 +107,9 @@ public:
 	DUCKDB_API static void Serialize(const BaseStatistics &stats, Serializer &serializer);
 	DUCKDB_API static void Deserialize(Deserializer &deserializer, BaseStatistics &base);
 
-	DUCKDB_API static child_list_t<Value> ToStruct(const BaseStatistics &stats);
+	DUCKDB_API static child_list_t<Value> ToStruct(const BaseStatistics &stats, bool exact);
+	//! Sets the parts of the statistics the struct fields describe (the inverse of ToStruct)
+	DUCKDB_API static void SetFromStruct(BaseStatistics &stats, StatsStructFields &fields);
 
 	DUCKDB_API static void Merge(BaseStatistics &stats, const BaseStatistics &other);
 	DUCKDB_API static void Verify(const BaseStatistics &stats, const Vector &vector, const SelectionVector &sel,

@@ -30,7 +30,16 @@ RowNumberColumnReader::RowNumberColumnReader(const ParquetReader &reader, const 
 }
 
 void RowNumberColumnReader::InitializeRead(idx_t row_group_idx_p, idx_t row_group_num_rows,
-                                           const vector<ColumnChunk> &columns, TProtocol &protocol_p) {
+                                           const duckdb_parquet::ColumnChunkList &columns, TProtocol &protocol_p) {
+	// the row numbers are produced from the row count without reading a column chunk - every column chunk has a value
+	// (or NULL) per row, so it cannot have fewer values than the row group has rows
+	for (auto &column : columns) {
+		if (column.__isset.meta_data && column.meta_data.num_values < NumericCast<int64_t>(row_group_num_rows)) {
+			throw DataCorruptionException(
+			    "Failed to read file \"%s\": metadata is corrupt. Column has %lld values but row group has %llu rows",
+			    reader.GetFileName(), column.meta_data.num_values, row_group_num_rows);
+		}
+	}
 	row_group_offset = 0;
 	auto &row_groups = reader.GetFileMetadata()->row_groups;
 	for (idx_t i = 0; i < row_group_idx_p; i++) {
@@ -72,7 +81,7 @@ RowGroupColumnReader::RowGroupColumnReader(const ParquetReader &reader, const Pa
 }
 
 void RowGroupColumnReader::InitializeRead(idx_t row_group_idx_p, idx_t row_group_num_rows,
-                                          const vector<ColumnChunk> &columns, TProtocol &protocol_p) {
+                                          const duckdb_parquet::ColumnChunkList &columns, TProtocol &protocol_p) {
 	row_group_idx = row_group_idx_p;
 }
 

@@ -1,0 +1,334 @@
+# name: test/sql/copy/parquet/writer/parquet_write_compact_vectors.test
+# description: Constant and dictionary vectors reach the parquet column writers without flattening
+# group: [writer]
+
+require parquet
+
+load {TEST_DIR}/parquet_write_compact_vectors.db
+
+statement ok
+SET force_compression='dict_fsst';
+
+statement ok
+CREATE TABLE dict AS
+SELECT i, 'category_' || (i % 16)::VARCHAR || '_padding' AS s,
+       CASE WHEN i % 7 = 0 THEN NULL ELSE 'nullable_' || (i % 5)::VARCHAR END AS ns
+FROM range(100000) t(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET force_compression='auto';
+
+# the same values without compact representations, for comparison
+statement ok
+CREATE TEMP TABLE expected AS
+SELECT i, 'category_' || (i % 16)::VARCHAR || '_padding' AS s,
+       CASE WHEN i % 7 = 0 THEN NULL ELSE 'nullable_' || (i % 5)::VARCHAR END AS ns
+FROM range(100000) t(i);
+
+# dictionary vectors from the storage scan, through every encoding route and with pages splitting vectors
+foreach version v1 v2
+
+foreach dictionary_limit 1 1000000
+
+foreach page_limit 4096 104857600
+
+statement ok
+COPY (SELECT i, s, ns FROM dict) TO '{TEST_DIR}/compact_dict.parquet' (FORMAT PARQUET, PARQUET_VERSION {version}, DICTIONARY_SIZE_LIMIT {dictionary_limit}, DATA_PAGE_SIZE_LIMIT {page_limit});
+
+statement ok
+COPY (SELECT i, s, ns FROM expected) TO '{TEST_DIR}/flat_dict.parquet' (FORMAT PARQUET, PARQUET_VERSION {version}, DICTIONARY_SIZE_LIMIT {dictionary_limit}, DATA_PAGE_SIZE_LIMIT {page_limit});
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/compact_dict.parquet' EXCEPT ALL SELECT * FROM expected)
+	UNION ALL
+	(SELECT * FROM expected EXCEPT ALL SELECT * FROM '{TEST_DIR}/compact_dict.parquet')
+);
+----
+0
+
+# the compact input produces the same column chunks as the flat input
+query I
+SELECT count(*) FROM (
+	(SELECT path_in_schema, encodings, total_uncompressed_size, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/compact_dict.parquet')
+	 EXCEPT ALL
+	 SELECT path_in_schema, encodings, total_uncompressed_size, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/flat_dict.parquet'))
+	UNION ALL
+	(SELECT path_in_schema, encodings, total_uncompressed_size, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/flat_dict.parquet')
+	 EXCEPT ALL
+	 SELECT path_in_schema, encodings, total_uncompressed_size, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/compact_dict.parquet'))
+);
+----
+0
+
+endloop
+
+endloop
+
+endloop
+
+# constant vectors: valid, NULL, numeric, floating point, through each encoding route
+foreach version v1 v2
+
+foreach dictionary_limit 1 1000000
+
+statement ok
+COPY (SELECT 'constant_value' AS s, NULL::VARCHAR AS n, 42::BIGINT AS v, 1.5::DOUBLE AS d, i FROM range(10000) t(i))
+TO '{TEST_DIR}/compact_const.parquet' (FORMAT PARQUET, PARQUET_VERSION {version}, DICTIONARY_SIZE_LIMIT {dictionary_limit});
+
+query IIIIIIII
+SELECT count(*), count(DISTINCT s), min(s), count(n), sum(v), sum(d), count(DISTINCT d), sum(i)
+FROM '{TEST_DIR}/compact_const.parquet';
+----
+10000	1	constant_value	0	420000	15000.0	1	49995000
+
+query TTT
+SELECT path_in_schema, stats_min_value, stats_null_count FROM parquet_metadata('{TEST_DIR}/compact_const.parquet')
+WHERE path_in_schema IN ('s', 'n') ORDER BY path_in_schema;
+----
+n	NULL	10000
+s	constant_value	0
+
+endloop
+
+endloop
+
+# each union branch produces constant vectors of its own value, so a row group holds several distinct values, the
+# dictionary overflows, and the non-dictionary encodings receive constant vectors
+statement ok
+CREATE VIEW branches AS
+SELECT 1::BIGINT AS v, 1.0::DOUBLE AS d, NULL::BIGINT AS nv, 'first' AS s, NULL::DOUBLE AS nd, NULL::VARCHAR AS ns
+FROM range(4096)
+UNION ALL SELECT 2, 2.0, 20, 'second', 2.5, 'two' FROM range(4096)
+UNION ALL SELECT 3, 3.0, NULL, 'third', NULL, NULL FROM range(4096)
+UNION ALL SELECT 4, 4.0, 40, 'fourth', 4.5, 'four' FROM range(4096);
+
+statement ok
+CREATE TEMP TABLE branches_expected AS SELECT * FROM branches;
+
+foreach version v1 v2
+
+foreach page_limit 4096 104857600
+
+statement ok
+COPY branches TO '{TEST_DIR}/compact_branches.parquet'
+(FORMAT PARQUET, PARQUET_VERSION {version}, DICTIONARY_SIZE_LIMIT 1, DATA_PAGE_SIZE_LIMIT {page_limit});
+
+statement ok
+COPY (SELECT * FROM branches_expected ORDER BY v) TO '{TEST_DIR}/flat_branches.parquet'
+(FORMAT PARQUET, PARQUET_VERSION {version}, DICTIONARY_SIZE_LIMIT 1, DATA_PAGE_SIZE_LIMIT {page_limit});
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/compact_branches.parquet' EXCEPT ALL SELECT * FROM branches_expected)
+	UNION ALL
+	(SELECT * FROM branches_expected EXCEPT ALL SELECT * FROM '{TEST_DIR}/compact_branches.parquet')
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+	(SELECT path_in_schema, encodings, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/compact_branches.parquet')
+	 EXCEPT ALL
+	 SELECT path_in_schema, encodings, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/flat_branches.parquet'))
+	UNION ALL
+	(SELECT path_in_schema, encodings, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/flat_branches.parquet')
+	 EXCEPT ALL
+	 SELECT path_in_schema, encodings, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/compact_branches.parquet'))
+);
+----
+0
+
+endloop
+
+endloop
+
+# the v2 route reaches every non-dictionary encoding with constant input
+query TT
+SELECT DISTINCT path_in_schema, encodings FROM parquet_metadata('{TEST_DIR}/compact_branches.parquet') ORDER BY ALL;
+----
+d	BYTE_STREAM_SPLIT
+nd	BYTE_STREAM_SPLIT
+ns	DELTA_LENGTH_BYTE_ARRAY
+nv	DELTA_BINARY_PACKED
+s	DELTA_LENGTH_BYTE_ARRAY
+v	DELTA_BINARY_PACKED
+
+# flat input counts every NaN occurrence in the statistics when the column is dictionary encoded
+statement ok
+CREATE TABLE nan_dict AS
+SELECT CASE i % 4 WHEN 0 THEN 'nan'::DOUBLE WHEN 1 THEN NULL WHEN 2 THEN 'nan'::DOUBLE ELSE 7.0 END AS d
+FROM range(100000) t(i);
+
+statement ok
+COPY nan_dict TO '{TEST_DIR}/compact_nan_dict.parquet';
+
+query III
+SELECT stats_nan_count, stats_null_count, num_values FROM parquet_metadata('{TEST_DIR}/compact_nan_dict.parquet');
+----
+50000	25000	100000
+
+# NaN constants count every row in the nan statistics
+statement ok
+COPY (SELECT 'nan'::DOUBLE AS d FROM range(1000)) TO '{TEST_DIR}/compact_nan.parquet';
+
+query II
+SELECT count(*), count(*) FILTER (WHERE isnan(d)) FROM '{TEST_DIR}/compact_nan.parquet';
+----
+1000	1000
+
+query I
+SELECT stats_nan_count FROM parquet_metadata('{TEST_DIR}/compact_nan.parquet');
+----
+1000
+
+# the page index needs per-page bounds, which dictionary-encoded compact input must keep producing
+statement ok
+COPY (SELECT i, s, ns FROM dict) TO '{TEST_DIR}/compact_dict_pi.parquet'
+(FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+statement ok
+COPY (SELECT i, s, ns FROM expected) TO '{TEST_DIR}/flat_dict_pi.parquet'
+(FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query I
+SELECT count(*) FROM (
+	(SELECT path_in_schema, page_id, first_row_index, num_rows, min_value, max_value, null_count, boundary_order
+	 FROM parquet_page_index('{TEST_DIR}/compact_dict_pi.parquet')
+	 EXCEPT ALL
+	 SELECT path_in_schema, page_id, first_row_index, num_rows, min_value, max_value, null_count, boundary_order
+	 FROM parquet_page_index('{TEST_DIR}/flat_dict_pi.parquet'))
+	UNION ALL
+	(SELECT path_in_schema, page_id, first_row_index, num_rows, min_value, max_value, null_count, boundary_order
+	 FROM parquet_page_index('{TEST_DIR}/flat_dict_pi.parquet')
+	 EXCEPT ALL
+	 SELECT path_in_schema, page_id, first_row_index, num_rows, min_value, max_value, null_count, boundary_order
+	 FROM parquet_page_index('{TEST_DIR}/compact_dict_pi.parquet'))
+);
+----
+0
+
+# every page of a constant column's index carries the constant's bounds
+statement ok
+COPY (SELECT 'constant_value' AS s, 42::BIGINT AS v, i FROM range(100000) t(i))
+TO '{TEST_DIR}/compact_const_pi.parquet' (FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query IIIII
+SELECT count(*) > 1, bool_and(min_value = max_value), min(min_value), max(max_value), sum(null_count)
+FROM parquet_page_index('{TEST_DIR}/compact_const_pi.parquet') WHERE path_in_schema = 's';
+----
+true	true	constant_value	constant_value	0
+
+query IIII
+SELECT count(*) > 1, bool_and(min_value = max_value), min(min_value), max(max_value)
+FROM parquet_page_index('{TEST_DIR}/compact_const_pi.parquet') WHERE path_in_schema = 'v';
+----
+true	true	42	42
+
+# a filtered scan narrows the selection but keeps the full storage dictionary as the child, so entries
+# no row references must not reach the writer dictionary
+statement ok
+COPY (SELECT i, s, ns FROM dict WHERE s <> 'category_3_padding') TO '{TEST_DIR}/compact_filtered.parquet'
+(FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096);
+
+statement ok
+COPY (SELECT i, s, ns FROM expected WHERE s <> 'category_3_padding') TO '{TEST_DIR}/flat_filtered.parquet'
+(FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096);
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/compact_filtered.parquet'
+	 EXCEPT ALL
+	 SELECT * FROM expected WHERE s <> 'category_3_padding')
+	UNION ALL
+	(SELECT * FROM expected WHERE s <> 'category_3_padding'
+	 EXCEPT ALL
+	 SELECT * FROM '{TEST_DIR}/compact_filtered.parquet')
+);
+----
+0
+
+# the unreferenced entry is absent from the file, and the column chunk metadata matches the flat input,
+# where total_uncompressed_size covers the dictionary page
+query II
+SELECT count(*), count(*) FILTER (WHERE s = 'category_3_padding') FROM '{TEST_DIR}/compact_filtered.parquet';
+----
+93750	0
+
+query I
+SELECT count(*) FROM (
+	(SELECT path_in_schema, encodings, total_uncompressed_size, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/compact_filtered.parquet')
+	 EXCEPT ALL
+	 SELECT path_in_schema, encodings, total_uncompressed_size, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/flat_filtered.parquet'))
+	UNION ALL
+	(SELECT path_in_schema, encodings, total_uncompressed_size, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/flat_filtered.parquet')
+	 EXCEPT ALL
+	 SELECT path_in_schema, encodings, total_uncompressed_size, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/compact_filtered.parquet'))
+);
+----
+0
+
+# a row filter that keeps every non-NULL value referenced, through the same comparison
+statement ok
+COPY (SELECT i, s, ns FROM dict WHERE i % 7 <> 0) TO '{TEST_DIR}/compact_rowfiltered.parquet'
+(FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096);
+
+statement ok
+COPY (SELECT i, s, ns FROM expected WHERE i % 7 <> 0) TO '{TEST_DIR}/flat_rowfiltered.parquet'
+(FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096);
+
+query I
+SELECT count(*) FROM (
+	(SELECT path_in_schema, encodings, total_uncompressed_size, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/compact_rowfiltered.parquet')
+	 EXCEPT ALL
+	 SELECT path_in_schema, encodings, total_uncompressed_size, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/flat_rowfiltered.parquet'))
+	UNION ALL
+	(SELECT path_in_schema, encodings, total_uncompressed_size, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/flat_rowfiltered.parquet')
+	 EXCEPT ALL
+	 SELECT path_in_schema, encodings, total_uncompressed_size, stats_min_value, stats_max_value, stats_null_count
+	 FROM parquet_metadata('{TEST_DIR}/compact_rowfiltered.parquet'))
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/compact_rowfiltered.parquet'
+	 EXCEPT ALL
+	 SELECT * FROM expected WHERE i % 7 <> 0)
+	UNION ALL
+	(SELECT * FROM expected WHERE i % 7 <> 0
+	 EXCEPT ALL
+	 SELECT * FROM '{TEST_DIR}/compact_rowfiltered.parquet')
+);
+----
+0
+
+# nested writers keep receiving flat input
+statement ok
+COPY (SELECT [s, s] AS l, {'a': s, 'b': 7} AS st FROM dict) TO '{TEST_DIR}/compact_nested.parquet';
+
+query III
+SELECT count(*), count(DISTINCT l), count(*) FILTER (WHERE st.a = l[1] AND st.b = 7)
+FROM '{TEST_DIR}/compact_nested.parquet';
+----
+100000	16	100000

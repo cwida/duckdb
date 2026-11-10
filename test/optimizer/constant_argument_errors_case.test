@@ -1,0 +1,14 @@
+# name: test/optimizer/constant_argument_errors_case.test
+# description: A CASE condition that cannot be evaluated does not fail planning of unreachable expressions
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(s VARCHAR);
+
+statement ok
+SELECT CASE WHEN ''::DOUBLE > 1 THEN 1 ELSE 2 END FROM t;
+
+statement error
+SELECT CASE WHEN ''::DOUBLE > 1 THEN 1 ELSE 2 END;
+----
+<REGEX>:Conversion Error.*

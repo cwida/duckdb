@@ -34,40 +34,54 @@ struct TryCast {
 	static ConversionException UnimplementedErrorMessage(PhysicalType source, PhysicalType target,
 	                                                     optional_ptr<CastParameters> parameters);
 	static string UnimplementedCastMessage(const LogicalType &source, const LogicalType &target);
+	//! Throws UnimplementedErrorMessage; shared by every unimplemented instantiation
+	[[noreturn]] DUCKDB_API static void ThrowUnimplemented(PhysicalType source, PhysicalType target,
+	                                                       optional_ptr<CastParameters> parameters);
 
 	template <class SRC, class DST>
 	static inline bool Operation(SRC input, DST &result, bool strict = false) {
-		throw UnimplementedErrorMessage(GetTypeId<SRC>(), GetTypeId<DST>(), nullptr);
+		ThrowUnimplemented(GetTypeId<SRC>(), GetTypeId<DST>(), nullptr);
 	}
 };
 
 struct TryCastErrorMessage {
 	template <class SRC, class DST>
 	static inline bool Operation(SRC input, DST &result, CastParameters &parameters) {
-		throw TryCast::UnimplementedErrorMessage(GetTypeId<SRC>(), GetTypeId<DST>(), parameters);
+		TryCast::ThrowUnimplemented(GetTypeId<SRC>(), GetTypeId<DST>(), parameters);
 	}
 };
 
 struct TryCastErrorMessageCommaSeparated {
 	template <class SRC, class DST>
 	static inline bool Operation(SRC input, DST &result, CastParameters &parameters) {
-		throw TryCast::UnimplementedErrorMessage(GetTypeId<SRC>(), GetTypeId<DST>(), parameters);
+		TryCast::ThrowUnimplemented(GetTypeId<SRC>(), GetTypeId<DST>(), parameters);
 	}
 };
 
+//! The message of a failed cast to the physical type target; instantiated per source type only
+template <class SRC>
+static string CastExceptionText(SRC input, PhysicalType target, bool target_is_number) {
+	auto value = ConvertToString::Operation<SRC>(input);
+	if (std::is_same<SRC, string_t>()) {
+		return "Could not convert string '" + value + "' to " + TypeIdToString(target);
+	}
+	if (TypeIsNumber<SRC>() && target_is_number) {
+		return "Type " + TypeIdToString(GetTypeId<SRC>()) + " with value " + value +
+		       " can't be cast because the value is out of range for the destination type " + TypeIdToString(target);
+	}
+	return "Type " + TypeIdToString(GetTypeId<SRC>()) + " with value " + value +
+	       " can't be cast to the destination type " + TypeIdToString(target);
+}
+
 template <class SRC, class DST>
 static string CastExceptionText(SRC input) {
-	if (std::is_same<SRC, string_t>()) {
-		return "Could not convert string '" + ConvertToString::Operation<SRC>(input) + "' to " +
-		       TypeIdToString(GetTypeId<DST>());
-	}
-	if (TypeIsNumber<SRC>() && TypeIsNumber<DST>()) {
-		return "Type " + TypeIdToString(GetTypeId<SRC>()) + " with value " + ConvertToString::Operation<SRC>(input) +
-		       " can't be cast because the value is out of range for the destination type " +
-		       TypeIdToString(GetTypeId<DST>());
-	}
-	return "Type " + TypeIdToString(GetTypeId<SRC>()) + " with value " + ConvertToString::Operation<SRC>(input) +
-	       " can't be cast to the destination type " + TypeIdToString(GetTypeId<DST>());
+	return CastExceptionText<SRC>(input, GetTypeId<DST>(), TypeIsNumber<DST>());
+}
+
+//! Throws for a failed Cast::Operation; the destination types of one source type share the instantiation
+template <class SRC>
+[[noreturn]] static void ThrowCastException(SRC input, PhysicalType target, bool target_is_number) {
+	throw InvalidInputException(CastExceptionText<SRC>(input, target, target_is_number));
 }
 
 template <class SRC>
@@ -92,7 +106,7 @@ struct Cast {
 	static inline DST Operation(SRC input) {
 		DST result;
 		if (!TryCast::Operation(input, result)) {
-			throw InvalidInputException(CastExceptionText<SRC, DST>(input));
+			ThrowCastException<SRC>(input, GetTypeId<DST>(), TypeIsNumber<DST>());
 		}
 		return result;
 	}

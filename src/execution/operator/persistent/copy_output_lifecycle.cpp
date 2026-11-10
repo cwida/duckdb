@@ -19,7 +19,8 @@ CopyOutputLifecycle::~CopyOutputLifecycle() {
 
 CopyOutputOwnership CopyOutputLifecycle::GetOwnership(const string &path) const {
 	auto &fs = FileSystem::GetFileSystem(context);
-	if (fs.FileExists(path) || fs.DirectoryExists(path) || fs.IsPipe(path)) {
+	// checking a remote path costs a request for every output file, so a remote output is kept like an existing one
+	if (fs.IsRemoteFile(path) || fs.FileExists(path) || fs.DirectoryExists(path) || fs.IsPipe(path)) {
 		return CopyOutputOwnership::PRESERVE;
 	}
 	return CopyOutputOwnership::REMOVE_ON_FAILURE;

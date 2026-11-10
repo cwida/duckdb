@@ -1,0 +1,148 @@
+# name: test/sql/optimizer/variant_cast_pushdown_semantics.test
+# description: A cast pushed into the scan of a shredded VARIANT field behaves like the cast of the VARIANT
+# group: [optimizer]
+
+require parquet
+
+require icu
+
+require json
+
+load {TEST_DIR}/variant_cast_pushdown_semantics.db readwrite v1.5.0
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+statement ok
+CREATE TABLE cast_cases AS
+SELECT {
+    'leading_zero': '001',
+    'fractional': '1.5',
+    'boolean_digit': '1',
+    'datetime': '2026-01-01 12:34:56',
+    'enum_value': 'foo',
+    'union_value': 42::INTEGER,
+    'number_text': '42',
+    'small_int': 7::INTEGER,
+    'decimal_value': 1.5::DECIMAL(4, 1),
+    'timestamp_tz': TIMESTAMPTZ '2026-01-01 12:34:56+00'
+}::VARIANT AS v;
+
+statement ok
+COPY cast_cases TO '{TEST_DIR}/variant_cast_semantics_shredded.parquet'
+(SHREDDING {'v': 'STRUCT(leading_zero VARCHAR, fractional VARCHAR, boolean_digit VARCHAR, datetime VARCHAR, enum_value VARCHAR, union_value INTEGER, number_text VARCHAR, small_int INTEGER, decimal_value DECIMAL(4, 1), timestamp_tz TIMESTAMPTZ)'});
+
+statement ok
+COPY cast_cases TO '{TEST_DIR}/variant_cast_semantics_unshredded.parquet' (SHREDDING {'v': 'NULL'});
+
+statement ok
+CHECKPOINT;
+
+# Reopen so the table scan reads the persisted shredded representation
+restart
+
+statement ok
+SET TimeZone = 'UTC';
+
+foreach SOURCE cast_cases read_parquet('{TEST_DIR}/variant_cast_semantics_shredded.parquet') read_parquet('{TEST_DIR}/variant_cast_semantics_unshredded.parquet')
+
+foreach DISABLED_OPTIMIZERS '' 'unused_columns'
+
+statement ok
+SET disabled_optimizers = {DISABLED_OPTIMIZERS};
+
+# Strings are parsed like a regular cast
+query I
+SELECT v.leading_zero::INTEGER FROM {SOURCE};
+----
+1
+
+query I
+SELECT v.fractional::INTEGER FROM {SOURCE};
+----
+2
+
+query I
+SELECT v.boolean_digit::BOOLEAN FROM {SOURCE};
+----
+true
+
+query R
+SELECT v.leading_zero::DOUBLE FROM {SOURCE};
+----
+1.0
+
+query I
+SELECT v.datetime::DATE FROM {SOURCE};
+----
+2026-01-01
+
+query I
+SELECT TRY_CAST(v.fractional AS UTINYINT) FROM {SOURCE};
+----
+2
+
+# A JSON cast serializes the VARIANT instead of parsing the string
+query I
+SELECT v.number_text::JSON FROM {SOURCE};
+----
+"42"
+
+query I
+SELECT v.timestamp_tz::VARCHAR FROM {SOURCE};
+----
+2026-01-01 12:34:56+00
+
+# Casts that exist for the shredded type but not for VARIANT
+statement error
+SELECT CAST(v.enum_value AS ENUM('foo', 'bar')) FROM {SOURCE};
+----
+Unimplemented type for cast (VARIANT -> ENUM('foo', 'bar'))
+
+statement error
+SELECT CAST(v.union_value AS UNION(a INTEGER)) FROM {SOURCE};
+----
+Can't convert VARIANT to 'UNION(a INTEGER)'
+
+# Casts that give the same result for the shredded value and for the VARIANT
+query I
+SELECT v.number_text::INTEGER FROM {SOURCE};
+----
+42
+
+query I
+SELECT v.small_int::INTEGER FROM {SOURCE};
+----
+7
+
+query I
+SELECT v.small_int::BIGINT FROM {SOURCE};
+----
+7
+
+query R
+SELECT v.small_int::DOUBLE FROM {SOURCE};
+----
+7.0
+
+query I
+SELECT v.decimal_value::INTEGER FROM {SOURCE};
+----
+2
+
+query T
+SELECT v.number_text::VARCHAR FROM {SOURCE};
+----
+42
+
+query I
+SELECT v.small_int::INTEGER + 1 FROM {SOURCE} WHERE v.small_int::INTEGER = 7;
+----
+8
+
+endloop
+
+endloop
+
+statement ok
+RESET disabled_optimizers;

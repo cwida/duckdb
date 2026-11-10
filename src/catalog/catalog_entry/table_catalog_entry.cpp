@@ -411,7 +411,9 @@ optional_ptr<CatalogEntry> TableCatalogEntry::GetTrigger(CatalogTransaction tran
 }
 
 bool TableCatalogEntry::DropTrigger(CatalogTransaction transaction, const Identifier &name, bool cascade) {
-	throw NotImplementedException("Triggers are not supported for this table type");
+	// Default: no triggers, so there is nothing to drop. Returning false instead of throwing lets DROP TRIGGER IF
+	// EXISTS be a no-op.
+	return false;
 }
 
 vector<const_reference<TriggerCatalogEntry>> TableCatalogEntry::GetTriggersForEvent(CatalogTransaction transaction,

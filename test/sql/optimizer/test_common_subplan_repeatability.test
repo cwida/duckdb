@@ -1,0 +1,190 @@
+# name: test/sql/optimizer/test_common_subplan_repeatability.test
+# description: Preserve common subplan sharing for repeatable table functions
+# group: [optimizer]
+
+statement ok
+SET explain_output='optimized_only';
+
+statement ok
+CREATE TABLE repeatable_input AS SELECT * FROM (VALUES (1), (1), (NULL::INTEGER)) t(i);
+
+# Repeated bound values retain their scan and window sharing.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM repeat(7, 10) INTERSECT ALL SELECT * FROM repeat(7, 10);
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM repeat(7, 10) INTERSECT ALL SELECT * FROM repeat(7, 10));
+----
+10
+
+# NULL rows still participate in ALL multiplicity.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM repeat(NULL::INTEGER, 3) INTERSECT ALL SELECT * FROM repeat(NULL::INTEGER, 3);
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM repeat(NULL::INTEGER, 3) INTERSECT ALL SELECT * FROM repeat(NULL::INTEGER, 3));
+----
+3
+
+# Nested bound values.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM repeat_row([1,NULL], {'a': 'x'}, num_rows=3) INTERSECT ALL SELECT * FROM repeat_row([1,NULL], {'a': 'x'}, num_rows=3);
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM repeat_row([1,NULL], {'a': 'x'}, num_rows=3) INTERSECT ALL SELECT * FROM repeat_row([1,NULL], {'a': 'x'}, num_rows=3));
+----
+3
+
+# Unnest with duplicates and NULLs.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM unnest([1,1,NULL]) INTERSECT ALL SELECT * FROM unnest([1,1,NULL]);
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM unnest([1,1,NULL]) INTERSECT ALL SELECT * FROM unnest([1,1,NULL]));
+----
+3
+
+# Summary depends only on its input rows.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM summary((SELECT 7 i)) INTERSECT ALL SELECT * FROM summary((SELECT 7 i));
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM summary((SELECT 7 i)) INTERSECT ALL SELECT * FROM summary((SELECT 7 i)));
+----
+1
+
+# Existing range capability.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM range(3) INTERSECT ALL SELECT * FROM range(3);
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM range(3) INTERSECT ALL SELECT * FROM range(3));
+----
+3
+
+# Existing generate_series capability.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM generate_series(1,3) INTERSECT ALL SELECT * FROM generate_series(1,3);
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM generate_series(1,3) INTERSECT ALL SELECT * FROM generate_series(1,3));
+----
+3
+
+# Catalog rows retain duplicates and NULLs.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM repeatable_input INTERSECT ALL SELECT * FROM repeatable_input;
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM repeatable_input INTERSECT ALL SELECT * FROM repeatable_input);
+----
+3
+
+# Empty inputs must remain empty.
+query I
+SELECT count(*) FROM (SELECT * FROM repeat_row(1, num_rows=0) INTERSECT ALL SELECT * FROM repeat_row(1, num_rows=0));
+----
+0
+
+# A repeatable function cannot make its volatile input repeatable. The volatile argument is rejected
+# by the expression admission check rather than the scan guard, so this pins results, not the guard.
+statement ok
+CREATE SEQUENCE repeatability_seq;
+
+query I
+SELECT count(*) FROM (
+    SELECT * FROM unnest([nextval('repeatability_seq')])
+    INTERSECT ALL
+    SELECT * FROM unnest([nextval('repeatability_seq')]));
+----
+0
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT * FROM unnest([nextval('repeatability_seq')])
+INTERSECT ALL
+SELECT * FROM unnest([nextval('repeatability_seq')]);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Contract decision from the PR review: an undeclared parameterized scan is stable within the query, so
+# the guard admits it and the identical calls share.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT * FROM pragma_storage_info('repeatable_input') INTERSECT ALL SELECT * FROM pragma_storage_info('repeatable_input');
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT (SELECT count(*) FROM pragma_storage_info('repeatable_input')) = (SELECT count(*) FROM pragma_storage_info('repeatable_input'));
+----
+true
+
+# Live execution statistics are declared volatile and never share.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT * FROM duckdb_memory() INTERSECT ALL SELECT * FROM duckdb_memory();
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# The capability is also consumed by disjunctive join rewriting.
+query I
+SELECT count(*) FROM unnest([1,1,NULL,3]) a(i)
+JOIN repeat_row(1, num_rows=2) b ON a.i=b.column0 OR a.i=b.column0+2;
+----
+6
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT * FROM unnest([1,1,NULL]::INTEGER[3])
+INTERSECT ALL SELECT * FROM unnest([1,1,NULL]::INTEGER[3]);
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+# Sampling pushed into a table scan is only repeatable with an explicit seed.
+statement ok
+CREATE TABLE repeatability_sample_source AS SELECT i FROM range(10000) t(i);
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT * FROM repeatability_sample_source USING SAMPLE 50% (system)
+INTERSECT ALL
+SELECT * FROM repeatability_sample_source USING SAMPLE 50% (system);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# A seeded sample is repeatable, but sampling pushdown runs after common-subplan discovery, so the
+# sample is still a LOGICAL_SAMPLE operator there and sample subtrees never share today. If sampling
+# pushdown ever moves ahead of common-subplan discovery, only the seeded form may start sharing.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT * FROM repeatability_sample_source USING SAMPLE 50% (system, 42)
+INTERSECT ALL
+SELECT * FROM repeatability_sample_source USING SAMPLE 50% (system, 42);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) = (SELECT count(*) FROM repeatability_sample_source USING SAMPLE 50% (system, 42))
+FROM (
+    SELECT * FROM repeatability_sample_source USING SAMPLE 50% (system, 42)
+    INTERSECT ALL
+    SELECT * FROM repeatability_sample_source USING SAMPLE 50% (system, 42));
+----
+true

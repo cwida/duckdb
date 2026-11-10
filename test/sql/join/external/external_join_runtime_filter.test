@@ -1,0 +1,68 @@
+# name: test/sql/join/external/external_join_runtime_filter.test
+# description: A runtime filter pushed into the probe-side scan must not drop matching rows, whether the build side spills or is misestimated
+# group: [external]
+
+# Both counts below are load-bearing: enough rows that the join spills to disk, few enough distinct keys
+# that a wrongly filtered probe side changes the answer. Raise the key count or lower the row count and
+# the query returns the right result either way, so the test would pass without checking anything.
+
+statement ok
+PRAGMA threads=1
+
+statement ok
+CREATE TABLE b AS SELECT range % 2000 AS k FROM range(1000000)
+
+statement ok
+CREATE TABLE p AS SELECT range % 4000 AS k FROM range(2000000)
+
+query I
+SELECT count(*) FROM p WHERE k IN (SELECT k FROM b)
+----
+1000000
+
+statement ok
+PRAGMA debug_force_external=true
+
+query I
+SELECT count(*) FROM p WHERE k IN (SELECT k FROM b)
+----
+1000000
+
+# An external join sizes its filter from the build estimate before any row arrives, so a misestimate in
+# either direction must stay safe. Both cases below keep debug_force_external on.
+
+# Underestimated: each predicate below passes every row, but the planner reads it as selective, and the
+# join multiplies the two underestimates. The build side then arrives with about 30 times more distinct
+# keys than planned for, saturating the undersized filter - Seal must drop it rather than publish it.
+
+statement ok
+CREATE TABLE u1 AS SELECT range AS k, range::VARCHAR AS s FROM range(200000)
+
+statement ok
+CREATE TABLE u2 AS SELECT range AS k, range::VARCHAR AS s FROM range(200000)
+
+statement ok
+CREATE TABLE u3 AS SELECT range % 200000 AS k FROM range(400000)
+
+query I
+SELECT count(*) FROM u3 JOIN (
+    SELECT x.k FROM (SELECT k, s FROM u1 WHERE s LIKE '%1%' OR s NOT LIKE '%1%') x
+    JOIN (SELECT k, s FROM u2 WHERE s LIKE '%2%' OR s NOT LIKE '%2%') y USING (k)
+) d USING (k)
+----
+400000
+
+# Overestimated: the build estimate comes from a filtered two-million-row range, the actual build side is
+# a thousand keys, and Seal folds the oversized filter down. Every probe row matches a build key, so a
+# single key lost in the fold changes the count.
+
+statement ok
+CREATE TABLE fold_probe AS SELECT (range % 1000) * 2000 AS k FROM range(1000000)
+
+query I
+SELECT count(*) FROM fold_probe WHERE k IN (SELECT range FROM range(2000000) WHERE range % 2000 = 0)
+----
+1000000
+
+statement ok
+PRAGMA debug_force_external=false

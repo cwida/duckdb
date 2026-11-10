@@ -260,6 +260,17 @@ TEST_CASE("Test combinations of set operations", "[relation_api]") {
 	REQUIRE_NOTHROW(result = vunion->Order("j DESC")->Limit(2)->Distinct()->Distinct()->Distinct()->Execute());
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 	REQUIRE(CHECK_COLUMN(result, 1, {10}));
+	// a distinct over a limit with a subquery
+	REQUIRE_NOTHROW(result = con.RelationFromQuery("SELECT i FROM range(3) AS r(i) LIMIT (SELECT 2)")
+	                             ->Distinct()
+	                             ->Order("i")
+	                             ->Execute());
+	REQUIRE(CHECK_COLUMN(result, 0, {0, 1}));
+	REQUIRE_NOTHROW(result = con.RelationFromQuery("SELECT i FROM range(3) AS r(i) LIMIT 2 OFFSET (SELECT 1)")
+	                             ->Distinct()
+	                             ->Order("i")
+	                             ->Execute());
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
 
 	// multiple set ops
 	REQUIRE_NOTHROW(result = vunion->Union(vunion)->Distinct()->Order("1")->Execute());

@@ -1,0 +1,34 @@
+# name: test/sql/copy/csv/csv_comment_quoted_sniff.test
+# description: With a comment option, the sniffer still finds the quote of quoted values that hold the delimiter
+# group: [csv]
+
+statement ok
+COPY (SELECT l FROM (VALUES (1, '# c'), (2, 'object,polygon'), (3, '1,"a, b"'), (4, '2,"c, d"')) t(i, l) ORDER BY i) TO '{TEST_DIR}/comment_quote.csv' (HEADER false, QUOTE '');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/comment_quote.csv', header = true, comment = '#')
+----
+1	a, b
+2	c, d
+
+query III
+SELECT Quote, SkipRows, Columns FROM sniff_csv('{TEST_DIR}/comment_quote.csv', header = true, comment = '#')
+----
+"	0	[{'name': object, 'type': BIGINT}, {'name': polygon, 'type': VARCHAR}]
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/comment_quote.csv', comment = '#')
+----
+1	a, b
+2	c, d
+
+# comments between the rows
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'object,polygon'), (2, '1,"a, b"'), (3, '# c'), (4, '2,"c, d"'), (5, '3,"e, f" # g')) t(i, l) ORDER BY i) TO '{TEST_DIR}/comment_quote_middle.csv' (HEADER false, QUOTE '');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/comment_quote_middle.csv', comment = '#')
+----
+1	a, b
+2	c, d
+3	e, f

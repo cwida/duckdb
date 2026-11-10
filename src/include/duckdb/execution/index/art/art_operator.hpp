@@ -170,7 +170,7 @@ public:
 				if (GateContainsDeletedRow(arena, art, active_node_ptr, key, delete_index_info)) {
 					return ARTConflictType::CONSTRAINT;
 				}
-				throw FatalException("Corrupted unique ART index \"%s\": encountered an existing gated leaf in unique "
+				throw FatalException("Corrupted unique ART index %s: encountered an existing gated leaf in unique "
 				                     "index while inserting",
 				                     art.name);
 			}

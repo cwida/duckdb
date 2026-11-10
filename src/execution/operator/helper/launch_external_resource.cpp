@@ -29,7 +29,8 @@ LaunchedResource ProvisionExternalResource(ClientContext &client, const string &
 	    Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(param_keys), std::move(param_values));
 
 	// Provision on a separate internal connection (the current connection's context lock is held).
-	Connection con(DatabaseInstance::GetDatabase(client));
+	auto callback_con = CreateExternalResourceCallbackConnection(DatabaseInstance::GetDatabase(client), &client);
+	auto &con = *callback_con;
 	// resource_name is forwarded only for observability (it labels the recipe-call log entries).
 	auto name_arg = resource_name.empty() ? string() : ", resource_name := " + Value(resource_name).ToSQLString();
 	// A handle skips create and resolves the given one instead (REGISTER).

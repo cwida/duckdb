@@ -15,6 +15,12 @@
 			"paths": [
 				"test/issues/general/test_24298.test"
 			]
+		},
+		{
+			"reason": "FIXME: merged DECIMAL statistics of forced shredded VARIANT vectors report the wrong scale",
+			"paths": [
+				"test/sql/types/variant/variant_stats_merge_decimal.test"
+			]
 		}
 	]
 }

@@ -76,8 +76,7 @@ public:
 	DUCKDB_API void ReferenceAndSetType(const Vector &other);
 
 	//! Resets a vector from a vector cache.
-	//! This turns the vector back into an empty FlatVector with STANDARD_VECTOR_SIZE entries.
-	//! The VectorCache is used so this can be done without requiring any allocations.
+	//! Returns the cached flat buffer, empty and without allocating its payload.
 	DUCKDB_API void ResetFromCache(const VectorCache &cache);
 
 	//! Creates a reference to a slice of the other vector

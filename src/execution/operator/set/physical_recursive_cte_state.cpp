@@ -3,6 +3,7 @@
 #include "duckdb/common/bit_utils.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/parallel/event.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parallel/pipeline_executor.hpp"
 
@@ -217,7 +218,7 @@ void RecursiveCTEEpochMetrics::RecordPipelineExecution(RecursiveCTEPipelineMetri
 }
 
 RecursiveCTEMetrics::RecursiveCTEMetrics(ClientContext &context, const PhysicalRecursiveCTE &op_p)
-    : logger(context.logger),
+    : logger(context.GetContext().GetLoggerPtr()),
       enabled(logger && logger->ShouldLog(PhysicalOperatorLogType::NAME, PhysicalOperatorLogType::LEVEL)) {
 	if (enabled) {
 		identity = make_uniq<RecursiveCTELogIdentity>(op_p.type, op_p.NextMetricsInvocation());
@@ -407,6 +408,16 @@ void RecursiveCTEMetrics::LogEpochSummary(const RecursiveCTEEpochMetrics &epoch_
 	     {"invariant_build_execute_work_ns", to_string(epoch_metrics.invariant_build_execute_work_ns.load())},
 	     {"invariant_cte_materialization_execute_work_ns",
 	      to_string(epoch_metrics.invariant_cte_materialization_execute_work_ns.load())}});
+}
+
+RecursiveCTEEpochProgress::RecursiveCTEEpochProgress() {
+}
+
+RecursiveCTEEpochProgress::~RecursiveCTEEpochProgress() {
+}
+
+void RecursiveCTEEpochProgress::Reset() {
+	*this = RecursiveCTEEpochProgress();
 }
 
 RecursiveCTESchedulerState::RecursiveCTESchedulerState(shared_ptr<RecursiveExecutorPool> executor_pool_p,

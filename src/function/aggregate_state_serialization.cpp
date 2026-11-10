@@ -146,6 +146,16 @@ static void SerializeField(const LogicalType &type, const AggregateStateField &f
 			// elements are stored directly - build the result LIST vector from each state's linked list
 			// (BuildLists appends to the result's child, writing the list entries at [offset, offset + count))
 			field.list_functions.BuildLists(linked_lists, result, offset);
+			if (field.list_empty_as_empty) {
+				// an empty linked list is an empty group: export it as a non-NULL empty list rather than NULL
+				auto result_entries = FlatVector::GetDataMutable<list_entry_t>(result);
+				for (idx_t i = 0; i < count; i++) {
+					if (FlatVector::IsNull(result, offset + i)) {
+						FlatVector::SetNull(result, offset + i, false);
+						result_entries[offset + i] = {0, 0};
+					}
+				}
+			}
 			break;
 		}
 		// the elements are sort keys: build the physically stored (BLOB) elements into a temporary LIST vector, then
@@ -163,8 +173,11 @@ static void SerializeField(const LogicalType &type, const AggregateStateField &f
 		for (const auto list_entry : physical_list.Values<VectorListType<string_t>>()) {
 			const auto row = offset + list_entry.GetIndex();
 			if (!list_entry.IsValid()) {
-				// an empty linked list is exported as NULL, matching the finalize semantics of list aggregates
-				FlatVector::SetNull(result, row, true);
+				// an empty linked list is exported as NULL, matching the finalize semantics of list aggregates;
+				// the sorted aggregate buffer instead exports an empty group as a non-NULL empty list
+				if (!field.list_empty_as_empty) {
+					FlatVector::SetNull(result, row, true);
+				}
 				result_entries[row] = {child_offset, 0};
 				continue;
 			}

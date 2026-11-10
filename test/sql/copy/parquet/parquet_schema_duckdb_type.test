@@ -1,0 +1,56 @@
+# name: test/sql/copy/parquet/parquet_schema_duckdb_type.test
+# description: parquet_schema reports the type that read_parquet reads each schema element as
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT [1, 2] AS l, {'a': 1, 'b': 'x'} AS s, MAP {'k': [1]} AS m, 42::VARIANT AS v, 'POINT (1 2)'::GEOMETRY AS g)
+TO '{TEMP_DIR}/parquet_schema_duckdb_type.parquet'
+
+query II
+SELECT name, duckdb_type FROM parquet_schema('{TEMP_DIR}/parquet_schema_duckdb_type.parquet')
+----
+duckdb_schema	NULL
+l	INTEGER[]
+list	INTEGER[]
+element	INTEGER
+s	STRUCT(a INTEGER, b VARCHAR)
+a	INTEGER
+b	VARCHAR
+m	MAP(VARCHAR, INTEGER[])
+key_value	MAP(VARCHAR, INTEGER[])
+key	VARCHAR
+value	INTEGER[]
+list	INTEGER[]
+element	INTEGER
+v	VARIANT
+metadata	BLOB
+value	BLOB
+typed_value	INTEGER
+g	GEOMETRY('OGC:CRS84')
+
+# the top-level columns have the types of read_parquet
+query I
+SELECT count(*) FROM (
+	SELECT name, duckdb_type FROM parquet_schema('{TEMP_DIR}/parquet_schema_duckdb_type.parquet')
+	WHERE name IN ('l', 's', 'm', 'v', 'g')
+	EXCEPT
+	SELECT column_name, column_type FROM (DESCRIBE FROM '{TEMP_DIR}/parquet_schema_duckdb_type.parquet')
+)
+----
+0
+
+# a repeated leaf without a LIST annotation is read as a list
+query II
+SELECT duckdb_type, (SELECT typeof(TX_JSON) FROM '{DATA_DIR}/parquet-testing/json_convertedtype.parquet' LIMIT 1)
+FROM parquet_schema('{DATA_DIR}/parquet-testing/json_convertedtype.parquet') WHERE name = 'TX_JSON'
+----
+JSON[]	JSON[]
+
+query II
+SELECT name, duckdb_type FROM (SELECT unnest(parquet_schema, recursive := true)
+FROM parquet_full_metadata('{TEMP_DIR}/parquet_schema_duckdb_type.parquet')) WHERE name IN ('s', 'g')
+----
+s	STRUCT(a INTEGER, b VARCHAR)
+g	GEOMETRY('OGC:CRS84')

@@ -160,6 +160,9 @@ unique_ptr<NodeStatistics> CTableFunctionCardinality(ClientContext &context, con
 }
 
 void CTableFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	for (auto &vector : output.data) {
+		PrepareCAPIVector(vector);
+	}
 	auto &bind_data = data_p.bind_data->Cast<CTableBindData>();
 	auto &global_data = data_p.global_state->Cast<CTableGlobalInitData>();
 	auto &local_data = data_p.local_state->Cast<CTableLocalInitData>();
@@ -183,6 +186,8 @@ duckdb_table_function duckdb_create_table_function() {
 	                                          duckdb::CTableFunctionInit, duckdb::CTableFunctionLocalInit);
 	function->function_info = duckdb::make_shared_ptr<duckdb::CTableFunctionInfo>();
 	function->cardinality = duckdb::CTableFunctionCardinality;
+	// a function registered through the legacy C API makes no stability promise
+	function->stability = duckdb::FunctionStability::VOLATILE;
 	return reinterpret_cast<duckdb_table_function>(function);
 }
 

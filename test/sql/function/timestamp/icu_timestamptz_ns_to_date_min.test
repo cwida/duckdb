@@ -1,0 +1,29 @@
+# name: test/sql/function/timestamp/icu_timestamptz_ns_to_date_min.test
+# description: Casting the lowest TIMESTAMPTZ_NS values to DATE
+# group: [timestamp]
+
+require icu
+
+statement ok
+SET TimeZone='UTC';
+
+query I
+SELECT TIMESTAMPTZ_NS '1677-09-21 00:12:43.145225+00'::DATE;
+----
+1677-09-21
+
+query II
+SELECT TIMESTAMPTZ_NS '1677-09-21 00:12:43.145225+00'::DATE, TIMESTAMPTZ_NS '1677-09-21 00:12:44+00'::DATE;
+----
+1677-09-21	1677-09-21
+
+# values just before midnight floor to the previous day
+query II
+SELECT TIMESTAMPTZ_NS '1969-12-31 23:59:59.999999999+00'::DATE, TIMESTAMPTZ_NS '1970-01-01 00:00:00+00'::DATE;
+----
+1969-12-31	1970-01-01
+
+query I
+SELECT TIMESTAMPTZ_NS '2262-04-11 23:47:16.854775+00'::DATE;
+----
+2262-04-11

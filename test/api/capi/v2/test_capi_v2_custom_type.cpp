@@ -12,23 +12,18 @@ namespace test_capi_v2 {
 
 namespace {
 
-duckdb_v2_identifier_t TypeIdent(const char *s) {
-	return Convert(s);
-}
-
 // Create a custom type on the connection with the given name and base type.
-duckdb_v2_custom_type_handle MakeCustomType(duckdb_v2_connection_handle conn, const char *name,
+duckdb_v2_custom_type_handle MakeCustomType(duckdb_v2_connection_handle conn, std::string_view name,
                                             duckdb_v2_logical_type_handle base) {
 	duckdb_v2_custom_type_handle type = nullptr;
 	REQUIRE(duckdb_v2_custom_type_create(FactoryOf(conn), &type, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name_str = TypeIdent(name);
-	REQUIRE(duckdb_v2_custom_type_set_name(type, &name_str, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_custom_type_set_name(type, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_custom_type_set_base_type(type, base, nullptr) == DUCKDB_V2_ERROR_NONE);
 	return type;
 }
 
 // Run a query producing a single VARCHAR cell.
-std::string QueryText(duckdb_v2_connection_handle conn, const char *sql) {
+std::string QueryText(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_result_handle result = nullptr;
 	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
 	auto chunk = StepChunk(result);
@@ -37,14 +32,14 @@ std::string QueryText(duckdb_v2_connection_handle conn, const char *sql) {
 	duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, nullptr);
 	duckdb_v2_vector_view view {};
 	duckdb_v2_vector_get_view(vec, &view, nullptr);
-	auto out = Convert(Convert(static_cast<const duckdb_v2_bytes *>(view.data)[SelAt(view.sel, 0)]));
+	auto out = std::string(Convert(static_cast<const duckdb_v2_bytes *>(view.data)[SelAt(view.sel, 0)]));
 	duckdb_v2_data_chunk_destroy(&chunk);
 	duckdb_v2_result_destroy(&result);
 	return out;
 }
 
 // Whether a query fails, either at bind time or while its (lazily executed) stream is stepped.
-bool TypeQueryFails(duckdb_v2_connection_handle conn, const char *sql) {
+bool TypeQueryFails(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_result_handle result = nullptr;
 	auto rc = Query(conn, sql, &result);
 	auto status = DUCKDB_V2_RESULT_STEP_STATUS_WAITING;
@@ -124,8 +119,9 @@ TEST_CASE("V2 custom type: registration refusals", "[capi_v2][custom_type]") {
 	{
 		duckdb_v2_custom_type_handle type = nullptr;
 		REQUIRE(duckdb_v2_custom_type_create(fx.factory, &type, nullptr) == DUCKDB_V2_ERROR_NONE);
-		auto name_str = TypeIdent("no_base");
-		REQUIRE(duckdb_v2_custom_type_set_name(type, &name_str, nullptr) == DUCKDB_V2_ERROR_NONE);
+		std::string_view name_str = "no_base";
+		REQUIRE(duckdb_v2_custom_type_set_name(type, name_str.data(), name_str.size(), nullptr) ==
+		        DUCKDB_V2_ERROR_NONE);
 		REQUIRE(duckdb_v2_connection_register_custom_type(fx.conn, type, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 		duckdb_v2_custom_type_destroy(&type);
 	}
@@ -154,12 +150,11 @@ TEST_CASE("V2 custom type: null arguments and destroy null-safety", "[capi_v2][c
 	REQUIRE(duckdb_v2_custom_type_create(fx.factory, &type, nullptr) == DUCKDB_V2_ERROR_NONE);
 	// A view with a null pointer but a non-zero length is rejected; the empty view is a legitimate (empty) name,
 	// which registration then refuses.
-	auto name_str = duckdb_v2_identifier_t {nullptr, 4};
-	REQUIRE(duckdb_v2_custom_type_set_name(type, &name_str, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	auto name_str2 = TypeIdent(nullptr);
-	REQUIRE(duckdb_v2_custom_type_set_name(type, &name_str2, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name_str3 = TypeIdent("x");
-	REQUIRE(duckdb_v2_custom_type_set_name(nullptr, &name_str3, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_custom_type_set_name(type, nullptr, 4, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_custom_type_set_name(type, nullptr, 0, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name_str3 = "x";
+	REQUIRE(duckdb_v2_custom_type_set_name(nullptr, name_str3.data(), name_str3.size(), nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_custom_type_set_base_type(type, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_custom_type_set_base_type(nullptr, integer, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_connection_register_custom_type(fx.conn, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);

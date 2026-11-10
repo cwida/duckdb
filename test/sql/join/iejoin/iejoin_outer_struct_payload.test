@@ -1,0 +1,38 @@
+# name: test/sql/join/iejoin/iejoin_outer_struct_payload.test
+# description: IEJoin outer joins with a residual predicate pad STRUCT and UNION payloads with NULLs
+# group: [iejoin]
+
+statement ok
+CREATE TABLE l AS SELECT range::INT i, {'x': range} t FROM range(1000);
+
+statement ok
+CREATE TABLE r AS SELECT range::INT i, {'y': range, 'z': [range, range]::INT[2]} s, union_value(k := range::INT) u FROM range(1000);
+
+query I
+SELECT count(r.s) FROM l LEFT JOIN r ON l.i < r.i AND l.i + 2 > r.i AND (l.i + r.i) % 7 = 1;
+----
+143
+
+query II
+SELECT count(r.u), count(*) FROM l LEFT JOIN r ON l.i < r.i AND l.i + 2 > r.i AND (l.i + r.i) % 7 = 1;
+----
+143	1000
+
+query II
+SELECT count(l.t), count(*) FROM l RIGHT JOIN r ON l.i < r.i AND l.i + 2 > r.i AND (l.i + r.i) % 7 = 1;
+----
+143	1000
+
+query III
+SELECT count(l.t), count(r.s), count(*) FROM l FULL JOIN r ON l.i < r.i AND l.i + 2 > r.i AND (l.i + r.i) % 7 = 1;
+----
+1000	1000	1857
+
+# the same results with a nested loop join
+statement ok
+SET nested_loop_join_threshold=100000000
+
+query III
+SELECT count(l.t), count(r.s), count(*) FROM l FULL JOIN r ON l.i < r.i AND l.i + 2 > r.i AND (l.i + r.i) % 7 = 1;
+----
+1000	1000	1857

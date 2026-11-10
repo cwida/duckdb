@@ -1,0 +1,36 @@
+# name: test/sql/optimizer/remove_unused_columns_nested_struct_cast.test
+# description: Nested struct child referenced through a sub-path and a cast
+# group: [optimizer]
+
+require json
+
+statement ok
+CREATE TABLE t AS SELECT {'payload': {'x': 1}} AS s FROM range(1);
+
+query IT
+SELECT s.payload.x AS a, s.payload::VARCHAR AS b FROM t;
+----
+1	{'x': 1}
+
+query IT
+SELECT s.payload::VARCHAR AS b, s.payload.x AS a FROM t;
+----
+{'x': 1}	1
+
+query IT
+SELECT s.payload.x AS a, s.payload::JSON AS b FROM t;
+----
+1	{"x":1}
+
+statement ok
+CREATE TABLE t2 AS SELECT {'payload': {'x': {'deep': 1}}} AS s FROM range(1);
+
+query IT
+SELECT s.payload.x.deep AS a, s.payload::VARCHAR AS b FROM t2;
+----
+1	{'x': {'deep': 1}}
+
+query ITI
+SELECT s.payload.x.deep AS a, s.payload::VARCHAR AS b, s.payload.x.deep + 1 AS c FROM t2;
+----
+1	{'x': {'deep': 1}}	2

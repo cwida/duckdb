@@ -1,0 +1,29 @@
+# name: test/sql/storage/checkpoint_system_catalog.test
+# description: CHECKPOINT and pragma_metadata_info on a catalog without storage
+# group: [storage]
+
+statement error
+CHECKPOINT system;
+----
+<REGEX>:Binder Error.*does not have storage.*
+
+statement error
+FORCE CHECKPOINT system;
+----
+<REGEX>:Binder Error.*does not have storage.*
+
+statement error
+CALL checkpoint('system');
+----
+<REGEX>:Binder Error.*does not have storage.*
+
+statement error
+SELECT * FROM pragma_metadata_info('system');
+----
+<REGEX>:Binder Error.*does not have storage.*
+
+statement ok
+SELECT 42;
+
+statement ok
+CHECKPOINT;

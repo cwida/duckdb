@@ -122,7 +122,7 @@ auto Convert(duckdb_v2_arrow_result_handle handle) -> ResultWrapperV2 *;
 //! Submits a borrowed statement in `format`. Throws ResourceInUseException while a statement on the connection is
 //! still running.
 auto ExecuteStatementV2(const shared_ptr<ClientContext> &context, const SQLStatement &statement,
-                        const duckdb_v2_identifier_t *parameter_names, const duckdb_v2_value_handle *parameter_values,
+                        const string_view_array &parameter_names, const duckdb_v2_value_handle *parameter_values,
                         idx_t parameter_count, const char *function_name, shared_ptr<ResultFormat> format)
     -> unique_ptr<ResultWrapperV2>;
 //! Runs a prepared statement. `context` is the session the result holds on to, so it

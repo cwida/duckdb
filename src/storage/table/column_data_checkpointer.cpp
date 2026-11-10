@@ -6,6 +6,7 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/logging/log_manager.hpp"
 #include "duckdb/parser/column_definition.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/storage/table/update_segment.hpp"
@@ -65,8 +66,8 @@ static void CreateIntermediateVector(vector<reference<ColumnCheckpointState>> &s
 	}
 	chunk.Initialize(Allocator::DefaultAllocator(), types);
 	if (type.id() == LogicalTypeId::VALIDITY) {
-		auto data = FlatVector::GetData<bool>(chunk.data[0]);
-		memset((void *)data, 0, sizeof(bool) * STANDARD_VECTOR_SIZE);
+		auto data = FlatVector::GetDataMutable<bool>(chunk.data[0]);
+		memset(data, 0, sizeof(bool) * STANDARD_VECTOR_SIZE);
 	}
 }
 

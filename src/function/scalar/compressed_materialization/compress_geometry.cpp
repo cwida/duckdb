@@ -16,7 +16,13 @@ constexpr auto POINT_XY_COORD_SIZE = sizeof(double) + sizeof(double);
 constexpr auto POINT_XY_BLOB_SIZE = POINT_XY_HEADER_SIZE + POINT_XY_COORD_SIZE;
 
 uhugeint_t GeometryPointCompress(const string_t &input) {
-	D_ASSERT(input.GetSize() == POINT_XY_BLOB_SIZE);
+	// The statistics that lead to this compression can come from a file, so verify that this is a POINT-XY
+	const auto data = const_data_ptr_cast(input.GetData());
+	if (input.GetSize() != POINT_XY_BLOB_SIZE || Load<uint8_t>(data) != 1 ||
+	    Load<uint32_t>(data + sizeof(uint8_t)) != 1) {
+		throw InvalidInputException("Expected only 2D POINT geometries based on the column statistics, but "
+		                            "encountered a different geometry - the statistics might be corrupt");
+	}
 
 	// The 16 coordinate bytes (X, Y) follow the fixed 5-byte WKB header (byte order + type)
 	const auto coords = const_data_ptr_cast(input.GetData()) + POINT_XY_HEADER_SIZE;
@@ -33,7 +39,7 @@ uhugeint_t GeometryPointCompress(const string_t &input) {
 
 void GeometryPointCompressFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, uhugeint_t>(args.data[0], result, GeometryPointCompress,
-	                                             FunctionErrors::CANNOT_ERROR);
+	                                             FunctionErrors::CAN_THROW_RUNTIME_ERROR);
 }
 
 void GeometryPointDecompress(const uhugeint_t &input, const data_ptr_t output) {
@@ -111,7 +117,7 @@ ScalarFunction CMGeometryPointCompressFun::GetFunction() {
 	result.GetSignature().GetParameter(0).SetName("value");
 	result.SetSerializeCallback(CMGeometryPointCompressSerialize);
 	result.SetDeserializeCallback(CMGeometryPointCompressDeserialize);
-	result.SetErrorMode(FunctionErrors::CANNOT_ERROR);
+	result.SetErrorMode(FunctionErrors::CAN_THROW_RUNTIME_ERROR);
 	return result;
 }
 

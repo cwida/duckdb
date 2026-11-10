@@ -1,0 +1,58 @@
+# name: test/sql/parser/drop_qualified_names.test
+# description: DROP TABLE and DROP MACRO TABLE accept schema- and catalog-qualified names
+# group: [parser]
+
+statement ok
+ATTACH ':memory:' AS db2;
+
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE SCHEMA db2.s2;
+
+# only the macro in the referenced schema is dropped
+statement ok
+CREATE MACRO s.tm() AS TABLE SELECT 1 AS x;
+
+statement ok
+CREATE MACRO main.tm() AS TABLE SELECT 2 AS x;
+
+statement ok
+DROP MACRO TABLE s.tm;
+
+query I
+SELECT * FROM tm();
+----
+2
+
+statement ok
+CREATE MACRO db2.s2.tm() AS TABLE SELECT 3 AS x;
+
+statement ok
+DROP MACRO TABLE db2.s2.tm;
+
+statement ok
+DROP MACRO TABLE "main"."tm";
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'tm';
+----
+0
+
+statement ok
+DROP MACRO TABLE IF EXISTS nonexistent_db.nonexistent_schema.tm;
+
+# a scalar macro is not dropped by DROP MACRO TABLE
+statement ok
+CREATE MACRO s.sm(a) AS a + 1;
+
+statement error
+DROP MACRO TABLE s.sm;
+----
+<REGEX>:Catalog Error:.*Table Macro Function with name sm does not exist.*
+
+statement error
+DROP MACRO TABLE s.tm1, s.tm2;
+----
+Can only drop one object at a time

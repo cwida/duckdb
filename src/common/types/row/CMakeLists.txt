@@ -1,6 +1,7 @@
 add_library_unity(
   duckdb_common_types_row
   OBJECT
+  integer_partitioned_tuple_data.cpp
   partitioned_tuple_data.cpp
   tuple_data_allocator.cpp
   tuple_data_collection.cpp

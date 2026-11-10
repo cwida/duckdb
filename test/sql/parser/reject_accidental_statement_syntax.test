@@ -1,0 +1,156 @@
+# name: test/sql/parser/reject_accidental_statement_syntax.test
+# description: Statement syntax the PEG grammar accepted by accident is rejected
+# group: [parser]
+
+# PERSISTENT only applies to secrets
+statement error
+CREATE PERSISTENT TABLE x (a INTEGER);
+----
+PERSISTENT is only supported for CREATE SECRET
+
+statement error
+CREATE PERSISTENT MACRO m() AS 1;
+----
+PERSISTENT is only supported for CREATE SECRET
+
+statement ok
+SET secret_directory='{TEST_DIR}/reject_accidental_statement_syntax';
+
+statement ok
+CREATE TEMPORARY TABLE x (a INTEGER);
+
+statement ok
+CREATE TEMPORARY SECRET s (TYPE http);
+
+statement ok
+CREATE PERSISTENT SECRET p (TYPE http);
+
+query II
+SELECT name, persistent FROM duckdb_secrets() WHERE name = 'p';
+----
+p	true
+
+statement ok
+DROP PERSISTENT SECRET p;
+
+statement error
+DROP SECRET s CASCADE;
+----
+not supported for DROP SECRET
+
+statement error
+DROP SECRET s RESTRICT;
+----
+not supported for DROP SECRET
+
+statement ok
+DROP SECRET s;
+
+# a recursive view needs a column list
+statement error
+CREATE RECURSIVE VIEW v AS SELECT 1;
+----
+requires a column list
+
+statement ok
+CREATE RECURSIVE VIEW v(n) AS SELECT 1 UNION ALL SELECT n + 1 FROM v WHERE n < 3;
+
+query I
+SELECT count(*) FROM v;
+----
+3
+
+# PIVOT needs ON, USING or GROUP BY
+statement ok
+CREATE TABLE t (a INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1), (2), (3);
+
+statement error
+PIVOT t;
+----
+PIVOT requires an ON, USING or GROUP BY clause
+
+query I
+PIVOT t USING count(*);
+----
+3
+
+query I
+PIVOT t GROUP BY a ORDER BY a;
+----
+1
+2
+3
+
+# a constraint name needs a constraint
+statement error
+CREATE TABLE y (a INTEGER CONSTRAINT c);
+----
+Parser Error: syntax error at or near ")"
+
+statement ok
+CREATE TABLE y (a INTEGER CONSTRAINT c NOT NULL, b INTEGER CONSTRAINT d CHECK (b > 0));
+
+# TABLESAMPLE belongs to a table, USING SAMPLE to the whole SELECT
+statement error
+SELECT * FROM t WHERE a > 0 TABLESAMPLE 1 ROWS;
+----
+Parser Error: syntax error at or near "TABLESAMPLE"
+
+statement error
+SELECT a FROM t GROUP BY a TABLESAMPLE 1;
+----
+Parser Error: syntax error at or near "TABLESAMPLE"
+
+statement error
+SELECT a FROM t USING SAMPLE 1 USING SAMPLE 1;
+----
+Parser Error: syntax error at or near "USING"
+
+query I
+SELECT count(*) FROM t TABLESAMPLE 2 ROWS;
+----
+2
+
+query I
+SELECT count(*) FROM t WHERE a > 0 USING SAMPLE 1 ROWS;
+----
+1
+
+query I
+SELECT count(*) FROM range(100) TABLESAMPLE 10 ROWS;
+----
+10
+
+query I
+SELECT count(*) FROM (SELECT * FROM range(100)) TABLESAMPLE 10 ROWS;
+----
+10
+
+query I
+SELECT count(*) FROM VALUES (1), (2), (3) v(x) TABLESAMPLE 1 ROWS;
+----
+1
+
+query I
+SELECT count(*) FROM VALUES (1), (2), (3) TABLESAMPLE 2 ROWS;
+----
+2
+
+# a LATERAL reference cannot be sampled
+statement error
+SELECT count(*) FROM range(3) t, LATERAL (SELECT t.range) s TABLESAMPLE 1 ROWS;
+----
+Parser Error: TABLESAMPLE cannot be applied to a LATERAL subquery
+
+statement error
+SELECT count(*) FROM range(3) t, LATERAL range(t.range) s TABLESAMPLE 1 ROWS;
+----
+Parser Error: TABLESAMPLE cannot be applied to a LATERAL table function
+
+query I
+SELECT count(*) FROM range(3) t, LATERAL (SELECT t.range) s;
+----
+3

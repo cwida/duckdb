@@ -1,0 +1,43 @@
+# name: test/sql/function/list/lambdas/lambda_aggregate_reference.test
+# description: Aggregates inside lambda bodies that reference the lambda parameters
+# group: [lambdas]
+
+statement error
+SELECT [fruit for fruit in ['apple', 'banana'] if string_agg(fruit, 'a')];
+----
+aggregate functions cannot reference lambda parameters
+
+statement error
+SELECT list_filter(['apple', 'banana'], lambda x: count(x) > 0);
+----
+aggregate functions cannot reference lambda parameters
+
+statement error
+SELECT list_transform([1, 2, 3], lambda x: sum(x));
+----
+aggregate functions cannot reference lambda parameters
+
+statement ok
+CREATE TABLE t AS SELECT range i, [range, range + 1] l FROM range(3);
+
+statement error
+SELECT list_transform([1, 2], lambda x: sum(i) FILTER (WHERE i > x)) FROM t;
+----
+aggregate functions cannot reference lambda parameters
+
+statement error
+SELECT list_transform([1, 2], lambda x: list(i ORDER BY i * x)) FROM t;
+----
+aggregate functions cannot reference lambda parameters
+
+# aggregates that do not reference the lambda parameters are computed over the rows of the query
+query I
+SELECT list_transform([1, 2], lambda x: x + sum(i)) FROM t;
+----
+[4, 5]
+
+# lambdas inside the arguments of an aggregate are fine
+query I
+SELECT sum(list_reduce(l, lambda x, y: x + y)) FROM t;
+----
+9

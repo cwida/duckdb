@@ -16,6 +16,7 @@ set(JSON_EXTENSION_FILES
     json_enums.cpp
     json_functions.cpp
     json_scan.cpp
+    json_schema_inference.cpp
     json_serializer.cpp
     json_deserializer.cpp
     serialize_json.cpp

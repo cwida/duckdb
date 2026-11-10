@@ -121,6 +121,19 @@ private:
 	atomic<optional_ptr<RowVersionManager>> version_info;
 };
 
+//! Collects the ids of the rows that a delete actually deleted, but only once rows were skipped (e.g. because they
+//! were matched more than once) - in the common case all input rows are deleted and nothing is collected
+struct DeletedRowIds {
+	explicit DeletedRowIds(const row_t *input_ids) : input_ids(input_ids) {
+	}
+
+	//! The row ids passed to the delete
+	const row_t *input_ids;
+	//! Whether any of the input rows were skipped - only then are the deleted row ids collected
+	bool has_skipped_rows = false;
+	vector<row_t> row_ids;
+};
+
 class RowGroup : public SegmentBase<RowGroup> {
 public:
 	friend class ColumnData;
@@ -181,7 +194,7 @@ public:
 	//! Checks the given set of table filters against the row-group statistics. Returns false if the entire row group
 	//! can be skipped.
 	bool CheckZonemap(optional_ptr<ClientContext> context, ScanFilterInfo &filters, idx_t row_start);
-	//! Checks the given set of table filters against the per-segment statistics. Returns false if any segments were
+	//! Checks the given set of table filters against the zonemaps of their columns. Returns false if any vectors were
 	//! skipped.
 	bool CheckZonemapSegments(CollectionScanState &state);
 	void Scan(ScanOptions options, CollectionScanState &state, DataChunk &result);
@@ -190,8 +203,8 @@ public:
 	void PrefetchScanIO(CollectionScanState &state, idx_t row_count) const;
 	//! Collects the async I/O tasks required to scan the next row_count rows, without performing any I/O
 	vector<unique_ptr<AsyncTask>> CollectScanIOTasks(CollectionScanState &state, idx_t row_count) const;
-	//! Rows of the remaining assignment worth prefetching, trailing vectors the zonemaps reject are left out
-	idx_t PrefetchRowCount(CollectionScanState &state);
+	//! Collects the async I/O tasks of the remaining assignment, leaving out the vectors the zonemaps reject
+	vector<unique_ptr<AsyncTask>> CollectAssignmentIOTasks(CollectionScanState &state) const;
 	//! Prepares the next eligible vector in the assigned range, idempotent, returns false when none remain
 	bool PrepareScan(ScanOptions options, CollectionScanState &state);
 	//! Processes the vector prepared by PrepareScan, clearing the prepared state when the vector is finished
@@ -217,9 +230,10 @@ public:
 	//! Clean up append states that can either be compressed or deleted
 	void CleanupAppend(VisibilityBound lowest_visibility_bound, idx_t start, idx_t count);
 
-	//! Delete the given set of rows in the version manager
+	//! Delete the given set of rows in the version manager - optionally collects the ids of the rows that were deleted
+	//! (input_offset is the position of row_ids in the row ids passed to the collection delete)
 	idx_t Delete(TransactionData transaction, DuckTableEntry &table_entry, row_t *row_ids, idx_t count,
-	             idx_t row_group_start);
+	             idx_t row_group_start, optional_ptr<DeletedRowIds> deleted_ids = nullptr, idx_t input_offset = 0);
 
 	static vector<RowGroupWriteData> WriteToDisk(RowGroupWriteInfo &info,
 	                                             const vector<const_reference<RowGroup>> &row_groups);
@@ -270,7 +284,9 @@ public:
 
 	void NextVector(CollectionScanState &state);
 
-	idx_t DeleteRows(idx_t vector_idx, transaction_t transaction_id, row_t rows[], idx_t count);
+	//! Writes a delete or an update into the version info of the rows (ids[i] - offset) and pushes its undo entry
+	void WriteRows(TransactionData transaction, DuckTableEntry &table_entry, idx_t vector_idx, idx_t base_row,
+	               const row_t ids[], idx_t count, row_t offset, bool is_update, WrittenRows &written);
 	RowVersionManager &GetOrCreateVersionInfo();
 
 	// Serialization
@@ -293,8 +309,10 @@ public:
 	ColumnData &GetRawColumnData(storage_t c) const;
 
 private:
-	//! Registers prefetch candidates for the next row_count rows, returns false when prefetching is not supported
-	bool RegisterScanIO(CollectionScanState &state, idx_t row_count, PrefetchState &prefetch_state) const;
+	//! Registers prefetch candidates for the rows in [start_row, end_row), returns false when prefetching is not
+	//! supported
+	bool RegisterScanIO(CollectionScanState &state, idx_t start_row, idx_t end_row,
+	                    PrefetchState &prefetch_state) const;
 	//! Shared scan-state setup for InitializeScan and InitializeScanWithOffset
 	bool InitializeScanInternal(CollectionScanState &state, SegmentNode<RowGroup> &node, idx_t vector_offset);
 	//! Advances the scan past the current vector, clearing the prepared state

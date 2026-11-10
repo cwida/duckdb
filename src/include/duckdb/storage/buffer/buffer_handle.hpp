@@ -47,6 +47,7 @@ public:
 	}
 	//! Gets the underlying file buffer. Handle must be valid.
 	DUCKDB_API FileBuffer &GetFileBuffer();
+	DUCKDB_API const FileBuffer &GetFileBuffer() const;
 	//! Destroys the buffer handle
 	DUCKDB_API void Destroy();
 

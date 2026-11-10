@@ -1,0 +1,38 @@
+# name: test/sql/aggregate/aggregate_state_export/ordered_export_state_layout.test
+# description: The state layout of an exported ordered aggregate is the one fixed at bind time
+# group: [aggregate_state_export]
+
+query I
+SELECT finalize(count(INTERVAL 1 DAY ORDER BY INTERVAL 1 DAY) EXPORT_STATE) FROM range(3);
+----
+3
+
+statement ok
+SELECT count(INTERVAL 1 DAY ORDER BY INTERVAL 1 DAY) EXPORT_STATE FROM range(3);
+
+query I
+SELECT finalize(string_agg(s, ',' ORDER BY s DESC) EXPORT_STATE) FROM (VALUES ('a'), ('c'), ('b')) t(s);
+----
+c,b,a
+
+query I
+SELECT finalize(list(r ORDER BY r % 2, r DESC) EXPORT_STATE) FROM range(5) t(r);
+----
+[4, 2, 0, 3, 1]
+
+statement ok
+CREATE TABLE x(id INT);
+
+statement ok
+INSERT INTO x VALUES (1), (2);
+
+statement ok
+CREATE TABLE y(s VARCHAR);
+
+statement ok
+INSERT INTO y VALUES ('p'), ('q');
+
+query I
+SELECT finalize(string_agg([y.s, y.s][x.id], ',' ORDER BY [y.s, y.s][x.id]) EXPORT_STATE) FROM x LEFT JOIN y ON true;
+----
+p,p,q,q

@@ -1,0 +1,18 @@
+# name: test/sql/copy/parquet/parquet_deeply_nested_list.test
+# description: Reading a deeply nested LIST column from Parquet must not take exponential time
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[42]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]] v) TO '{TEST_DIR}/deeply_nested_list.parquet' (FORMAT parquet);
+
+query I
+SELECT bool_and(v IS NULL) FROM read_parquet('{TEST_DIR}/deeply_nested_list.parquet');
+----
+false
+
+query I
+SELECT len(v) FROM read_parquet('{TEST_DIR}/deeply_nested_list.parquet');
+----
+1

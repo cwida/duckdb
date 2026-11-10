@@ -3,6 +3,10 @@
 
 namespace duckdb {
 
+void UnifiedVectorFormat::ThrowVectorTypeMismatch(PhysicalType expected) const {
+	throw InternalException("Expected unified vector format of type %s, but found type %s", expected, physical_type);
+}
+
 UnifiedVectorFormat::UnifiedVectorFormat() : sel(nullptr), data(nullptr), physical_type(PhysicalType::INVALID) {
 }
 

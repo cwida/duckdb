@@ -219,7 +219,7 @@ SELECT g, LIST(STRUCT_PACK(a := e, b := e+1)) ls from list_data WHERE g > 2 GROU
 
 # list of list of int
 query IT
-SELECT g2, LIST(le) FROM (SELECT g % 2 g2, LIST(e) le from list_data GROUP BY g ORDER BY g) sq 	GROUP BY g2 ORDER BY g2
+SELECT g2, LIST(le ORDER BY g) FROM (SELECT g % 2 g2, g, LIST(e) le from list_data GROUP BY g) sq 	GROUP BY g2 ORDER BY g2
 ----
 0	[[3, 4, 5]]
 1	[[1, 2], [6], [NULL]]

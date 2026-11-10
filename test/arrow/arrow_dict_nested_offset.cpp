@@ -236,3 +236,56 @@ TEST_CASE("Arrow scan of fixed-size ARRAY(dict int32) with nonzero array offset"
 	                    "SELECT (CASE WHEN r = 0 THEN [NULL, 20, 30] ELSE [10, 20, 30] END)::INT[3] "
 	                    "FROM range(4) t(r)"));
 }
+
+TEST_CASE("Arrow scan of LIST(dict string) whose first chunk holds no list elements", "[arrow]") {
+	// dictionary ['a'], child [0], and lists [] x 2048 followed by ['a']
+	const int32_t dict_offsets[2] = {0, 1};
+	const char dict_data[] = "a";
+	const void *dict_buffers[3] = {nullptr, dict_offsets, dict_data};
+	ArrowSchema dict_schema {};
+	dict_schema.format = "u";
+	dict_schema.release = ReleaseSchema;
+	ArrowArray dict_array {};
+	dict_array.length = 1;
+	dict_array.n_buffers = 3;
+	dict_array.buffers = dict_buffers;
+	dict_array.release = ReleaseArray;
+
+	const int32_t indices[1] = {0};
+	const void *child_buffers[2] = {nullptr, indices};
+	ArrowSchema child_schema {};
+	child_schema.format = "i";
+	child_schema.name = "item";
+	child_schema.flags = 2; // ARROW_FLAG_NULLABLE
+	child_schema.dictionary = &dict_schema;
+	child_schema.release = ReleaseSchema;
+	ArrowArray child_array {};
+	child_array.length = 1;
+	child_array.n_buffers = 2;
+	child_array.buffers = child_buffers;
+	child_array.dictionary = &dict_array;
+	child_array.release = ReleaseArray;
+
+	std::vector<int32_t> offsets(2049, 0);
+	offsets.push_back(1);
+	const void *list_buffers[2] = {nullptr, offsets.data()};
+	ArrowSchema *list_schema_children[1] = {&child_schema};
+	ArrowSchema list_schema {};
+	list_schema.format = "+l";
+	list_schema.name = "l";
+	list_schema.flags = 2;
+	list_schema.n_children = 1;
+	list_schema.children = list_schema_children;
+	list_schema.release = ReleaseSchema;
+	ArrowArray *list_array_children[1] = {&child_array};
+	ArrowArray list_array {};
+	list_array.length = 2049;
+	list_array.n_buffers = 2;
+	list_array.buffers = list_buffers;
+	list_array.n_children = 1;
+	list_array.children = list_array_children;
+	list_array.release = ReleaseArray;
+
+	REQUIRE(ScanMatches(list_schema, list_array,
+	                    "SELECT CASE WHEN r < 2048 THEN [] ELSE ['a'] END::VARCHAR[] FROM range(2049) t(r)"));
+}

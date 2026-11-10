@@ -37,7 +37,7 @@ void ArrayValueFunction(DataChunk &args, ExpressionState &state, Vector &result)
 
 	for (idx_t i = 0; i < num_rows; i++) {
 		for (idx_t j = 0; j < num_columns; j++) {
-			auto val = args.GetValue(j, i).DefaultCastAs(child_type);
+			auto val = args.GetValue(j, i).CastAs(state.GetContext(), child_type);
 			child.SetValue((i * num_columns) + j, val);
 		}
 	}
@@ -95,6 +95,8 @@ ScalarFunction ArrayValueFun::GetFunction() {
 	fun.SetResolveTypesCallback(ArrayValueResolveTypes);
 	fun.GetSignature().AddArgs("args", LogicalType::ANY);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// casting the arguments to the common child type can fail, e.g. for arrays of different sizes
+	fun.SetFallible();
 	return fun;
 }
 

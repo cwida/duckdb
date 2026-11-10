@@ -1,0 +1,123 @@
+# name: test/sql/join/runtime_filter_scheduling.test
+# description: Runtime filter ordering preserves grouped targets and prepared execution
+# group: [join]
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization';
+
+statement ok
+CREATE TABLE probe AS SELECT i AS k,i%7 AS v FROM range(200000) t(i);
+
+statement ok
+CREATE TABLE build(k BIGINT);
+
+statement ok
+INSERT INTO build VALUES (42);
+
+statement ok
+CREATE TABLE second_build AS SELECT 42::BIGINT AS k;
+
+statement ok
+PREPARE grouped_target AS SELECT p.k,p.v FROM (
+    SELECT k,sum(v) v FROM probe GROUP BY k
+) p JOIN build b ON p.k=b.k ORDER BY p.k;
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+query II
+EXECUTE grouped_target;
+----
+42	0
+
+# The filter must reach the scan before it starts feeding the aggregation.
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT p.k,p.v FROM (
+    SELECT k,sum(v) v FROM probe GROUP BY k
+) p JOIN build b ON p.k=b.k ORDER BY p.k;
+----
+analyzed_plan	<REGEX>:(?s).*"Table": "[^"]*[.]probe"[^}]*},\s*"intermediate_rows": 1,.*
+
+query II
+SELECT p.k,p.v FROM (
+    SELECT k,sum(v) v FROM (FROM probe UNION ALL FROM probe) GROUP BY k
+) p JOIN build b ON p.k=b.k;
+----
+42	0
+
+query II
+SELECT p.k,p.v FROM (
+    SELECT k,sum(v) v FROM probe GROUP BY k
+) p JOIN build b ON p.k=b.k
+JOIN second_build c ON p.k=c.k;
+----
+42	0
+
+endloop
+
+statement ok
+DELETE FROM build;
+
+statement ok
+INSERT INTO build VALUES (99),(199999);
+
+query II
+EXECUTE grouped_target;
+----
+99	1
+199999	2
+
+statement ok
+DELETE FROM build;
+
+query II
+EXECUTE grouped_target;
+----
+
+statement ok
+INSERT INTO build VALUES (NULL);
+
+query II
+EXECUTE grouped_target;
+----
+
+statement ok
+INSERT INTO build VALUES (100);
+
+query II
+EXECUTE grouped_target;
+----
+100	2
+
+# General comparison publishers retain their existing build-before-probe behavior.
+query I
+SELECT count(*) FROM (SELECT k,count(*) n FROM probe GROUP BY k) p JOIN build b ON p.k<b.k;
+----
+100
+
+query I
+SELECT count(*) FROM (SELECT k,count(*) n FROM probe GROUP BY k) p
+JOIN (SELECT 10::BIGINT lo,20::BIGINT hi) b ON p.k>b.lo AND p.k<b.hi;
+----
+9
+
+statement ok
+SET nested_loop_join_threshold=0;
+
+statement ok
+SET merge_join_threshold=0;
+
+query I
+SELECT count(*) FROM (
+    SELECT k,count(*) n FROM probe GROUP BY k
+) p JOIN (SELECT i AS lo,i+5 AS hi FROM range(100) t(i)) b ON p.k>b.lo AND p.k<b.hi;
+----
+400
+
+statement ok
+RESET nested_loop_join_threshold;
+
+statement ok
+RESET merge_join_threshold;

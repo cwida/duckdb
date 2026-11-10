@@ -45,7 +45,7 @@ BindResult HavingBinder::BindColumnRef(unique_ptr<ParsedExpression> &expr_ptr, i
 	auto found_alias = column_alias_binder.BindAlias(*this, expr_ptr, depth, root_expression, alias_result);
 	if (found_alias) {
 		if (depth > 0) {
-			throw BinderException("Having clause cannot reference alias \"%s\" in correlated subquery", column_name);
+			throw BinderException("Having clause cannot reference alias %s in correlated subquery", column_name);
 		}
 		return alias_result;
 	}
@@ -60,7 +60,7 @@ BindResult HavingBinder::BindColumnRef(unique_ptr<ParsedExpression> &expr_ptr, i
 	}
 
 	if (depth > 0) {
-		throw BinderException("Having clause cannot reference column \"%s\" in correlated subquery and group by all",
+		throw BinderException("Having clause cannot reference column %s in correlated subquery and group by all",
 		                      column_name);
 	}
 

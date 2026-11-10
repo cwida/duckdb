@@ -26,12 +26,14 @@ bool StatementIterator::Peek() {
 	if (pending_statement) {
 		return true;
 	}
+	parser_start_time = Timestamp::GetCurrentTimestamp();
 	parser_timer.Start();
 	if (!source.Peek()) {
 		parser_timer.Reset();
 		return false;
 	}
 	parser_timer.End();
+	parser_end_time = Timestamp::GetCurrentTimestamp();
 	pending_statement = source.GetStatement();
 	if (!pending_statement) {
 		parser_timer.Reset();
@@ -55,7 +57,7 @@ unique_ptr<SQLStatement> StatementIterator::GetStatementInternal(bool profile_st
 	if (profile_statement) {
 		auto &profiler = QueryProfiler::Get(context);
 		profiler.StartQuery(statement->query, StatementIteratorIsExplainAnalyze(statement.get()));
-		profiler.AddParserTime(parser_timer);
+		profiler.AddParserTime(parser_timer, parser_start_time, parser_end_time);
 	}
 	parser_timer.Reset();
 	return statement;

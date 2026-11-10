@@ -1,0 +1,42 @@
+# name: test/sql/window/test_lead_lag_offset_overflow.test
+# description: LEAD and LAG with offsets whose row index does not fit return the default for every row
+# group: [window]
+
+foreach rows 3 5000
+
+foreach fun lead lag
+
+foreach offset 9223372036854775807 -9223372036854775808 9223372036854775000 -9223372036854775000
+
+query II
+SELECT count(*) = {rows}, count(l) FROM (SELECT {fun}(i, ({offset})::BIGINT) OVER () AS l FROM range({rows}) t(i))
+----
+true	0
+
+query I
+SELECT count(*) FILTER (l = -1) = {rows} FROM (SELECT {fun}(i, ({offset})::BIGINT, -1) OVER () AS l FROM range({rows}) t(i))
+----
+true
+
+query I
+SELECT count(*) FILTER (l = -1) = {rows} FROM (SELECT {fun}(i, ({offset})::BIGINT, -1) OVER (PARTITION BY i % 3) AS l FROM range({rows}) t(i))
+----
+true
+
+# with an argument ordering
+query I
+SELECT count(*) FILTER (l = -1) = {rows} FROM (SELECT {fun}(i, ({offset})::BIGINT, -1 ORDER BY i DESC) OVER () AS l FROM range({rows}) t(i))
+----
+true
+
+# with a non-constant offset
+query I
+SELECT count(*) FILTER (l = -1) = {rows} FROM (SELECT {fun}(i, o, -1) OVER () AS l FROM (SELECT i, ({offset})::BIGINT + 0 * i AS o FROM range({rows}) t(i)))
+----
+true
+
+endloop
+
+endloop
+
+endloop

@@ -11,22 +11,21 @@
 #include "duckdb/storage/checkpoint/row_group_writer.hpp"
 #include "duckdb/storage/checkpoint/table_data_writer.hpp"
 #include "duckdb/storage/checkpoint_manager.hpp"
+#include "duckdb/storage/partial_block_manager.hpp"
 
 namespace duckdb {
 
 class InMemoryCheckpointer final : public CheckpointWriter {
 public:
 	InMemoryCheckpointer(QueryContext context, AttachedDatabase &db, BlockManager &block_manager,
-	                     StorageManager &storage_manager, CheckpointOptions options);
+	                     StorageManager &storage_manager, CheckpointOptions options,
+	                     optional_ptr<ClientContext> checkpoint_context = nullptr);
 
 	void CreateCheckpoint() override;
 
 	MetadataWriter &GetMetadataWriter() override;
 	MetadataManager &GetMetadataManager() override;
 	unique_ptr<TableDataWriter> GetTableDataWriter(TableCatalogEntry &table) override;
-	optional_ptr<ClientContext> GetClientContext() const {
-		return context;
-	}
 	CheckpointOptions GetCheckpointOptions() const {
 		return options;
 	}
@@ -38,7 +37,6 @@ public:
 	void WriteTable(TableCatalogEntry &table, Serializer &serializer) override;
 
 private:
-	optional_ptr<ClientContext> context;
 	PartialBlockManager partial_block_manager;
 	StorageManager &storage_manager;
 	CheckpointOptions options;
@@ -53,7 +51,7 @@ public:
 	                         idx_t total_rows, idx_t next_row_id) override;
 	void FinalizeTable(const TableStatistics &global_stats, DataTableInfo &info, RowGroupCollection &collection,
 	                   const vector<shared_ptr<const IndexStorageInfo>> &index_infos, Serializer &serializer) override;
-	unique_ptr<RowGroupWriter> GetRowGroupWriter(RowGroup &row_group) override;
+	unique_ptr<RowGroupWriter> GetRowGroupWriter() override;
 	unique_ptr<TableIndexWriter> GetTableIndexWriter(StorageVersion version) override;
 	void FlushPartialBlocks() override;
 	CheckpointOptions GetCheckpointOptions() const override;
@@ -81,16 +79,4 @@ private:
 	MemoryStream metadata_writer;
 };
 
-struct InMemoryPartialBlock : public PartialBlock {
-public:
-	InMemoryPartialBlock(ColumnData &data, ColumnSegment &segment, PartialBlockState state,
-	                     BlockManager &block_manager);
-	~InMemoryPartialBlock() override;
-
-public:
-	void Flush(QueryContext context, const idx_t free_space_left) override;
-	void Merge(PartialBlock &other, idx_t offset, idx_t other_size) override;
-	void AddSegmentToTail(ColumnData &data, ColumnSegment &segment, uint32_t offset_in_block) override;
-	void Clear() override;
-};
 } // namespace duckdb

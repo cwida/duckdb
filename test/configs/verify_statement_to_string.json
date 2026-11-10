@@ -7,6 +7,7 @@
       "reason": "Different error message",
       "paths": [
         "test/sql/error/lineitem_errors.test",
+        "test/sql/binder/empty_column_alias.test",
         "test/sql/subquery/scalar/array_order_subquery.test",
         "test/fuzzer/duckfuzz/list_try_cast.test",
         "test/fuzzer/duckfuzz/vector_size_out_of_range.test"
@@ -34,6 +35,12 @@
       "reason": "RESPECT NULLS in Window functions is not stringified as it's the default",
       "paths": [
         "test/sql/window/test_ignore_nulls.test"
+      ]
+    },
+    {
+      "reason": "Error carets point into the printed statement, which wraps a join in parentheses the typed query lacks",
+      "paths": [
+        "test/sql/error/error_location_copied_query.test"
       ]
     }
   ]

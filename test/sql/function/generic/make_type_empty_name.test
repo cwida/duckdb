@@ -1,0 +1,31 @@
+# name: test/sql/function/generic/make_type_empty_name.test
+# description: make_type with an empty type name must raise a regular error, not trip an assertion
+# group: [generic]
+
+statement error
+SELECT make_type('');
+----
+Parser Error: Zero-length identifier in qualified name
+
+statement error
+SELECT make_type('', 1);
+----
+Parser Error: Zero-length identifier in qualified name
+
+# an empty schema component is rejected as well
+statement error
+SELECT make_type('.INTEGER');
+----
+Parser Error: Zero-length identifier in qualified name
+
+# a valid type name still works
+query I
+SELECT make_type('INTEGER');
+----
+INTEGER
+
+# an unknown (non-empty) type name still gives the normal "does not exist" error
+statement error
+SELECT make_type('a');
+----
+<REGEX>:.*does not exist.*

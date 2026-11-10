@@ -74,8 +74,7 @@ template <bool WRITE_DATA>
 void WriteContainerData(VariantVectorData &result, idx_t result_index, uint32_t &blob_offset, idx_t length,
                         idx_t children_offset) {
 	const auto length_varint_size = GetVarintSize(length);
-	const auto child_offset_varint_size =
-	    NumericCast<uint32_t>(length_varint_size ? GetVarintSize(children_offset) : 0);
+	const auto child_offset_varint_size = NumericCast<uint32_t>(length ? GetVarintSize(children_offset) : 0);
 
 	if (WRITE_DATA) {
 		auto &blob_value = result.blob_data[result_index];
@@ -86,7 +85,7 @@ void WriteContainerData(VariantVectorData &result, idx_t result_index, uint32_t 
 		}
 	}
 
-	blob_offset += length_varint_size + child_offset_varint_size;
+	OffsetData::AddBlobOffset(blob_offset, length_varint_size + child_offset_varint_size);
 }
 
 struct ContainerSelectionVectors {

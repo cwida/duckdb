@@ -31,16 +31,27 @@ using duckdb_parquet::FileCryptoMetaData;
 
 enum class ParquetCacheValidity { VALID, INVALID, UNKNOWN };
 
+//! The Thrift file metadata together with the arena that backs all of its strings and vectors
+struct ParquetMetadata {
+	explicit ParquetMetadata(Allocator &allocator) : arena(allocator), file_metadata(arena) {
+	}
+
+	//! Backs all strings and vectors of the Thrift structures - declared first as it must outlive them
+	ArenaAllocator arena;
+	//! Parquet file metadata
+	duckdb_parquet::FileMetaData file_metadata;
+};
+
 class ParquetFileMetadataCache : public ObjectCacheEntry {
 public:
-	ParquetFileMetadataCache(unique_ptr<duckdb_parquet::FileMetaData> file_metadata, CachingFileHandle &handle,
+	ParquetFileMetadataCache(unique_ptr<ParquetMetadata> metadata, CachingFileHandle &handle,
 	                         unique_ptr<GeoParquetFileMetadata> geo_metadata,
 	                         unique_ptr<FileCryptoMetaData> crypto_metadata, string encryption_key_hash,
 	                         idx_t footer_size);
 	~ParquetFileMetadataCache() override = default;
 
-	//! Parquet file metadata
-	unique_ptr<const duckdb_parquet::FileMetaData> metadata;
+	//! Parquet file metadata - declared before the other metadata as that is allocated from its arena
+	unique_ptr<const ParquetMetadata> metadata;
 
 	//! GeoParquet metadata
 	unique_ptr<GeoParquetFileMetadata> geo_metadata;

@@ -1,0 +1,37 @@
+# name: test/optimizer/statistics/statistics_join_ungrouped_aggregate_limit.test
+# description: A join with an ungrouped aggregate over an empty table must not lose its LIMIT
+# group: [statistics]
+
+statement ok
+CREATE TABLE t(a INT);
+
+query I
+SELECT count(*) FROM (SELECT * FROM range(3) r(i), (SELECT count(*) AS n FROM t) WHERE i >= n LIMIT 1)
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT * FROM range(3) r(i) JOIN (SELECT count(*) AS n FROM t) ON i >= n LIMIT 2)
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT * FROM range(3) r(i) POSITIONAL JOIN (SELECT count(*) AS n FROM t) LIMIT 2)
+----
+2
+
+query II
+SELECT * FROM range(3) r(i), (SELECT count(*) AS n FROM t) WHERE i >= n ORDER BY i LIMIT 1
+----
+0	0
+
+# outer and anti joins with an empty side keep the rows of the other side
+query I
+SELECT count(*) FROM (SELECT * FROM range(3) r(i) LEFT JOIN t ON i = t.a LIMIT 1)
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT * FROM range(3) r(i) WHERE i NOT IN (SELECT a FROM t) LIMIT 1)
+----
+1

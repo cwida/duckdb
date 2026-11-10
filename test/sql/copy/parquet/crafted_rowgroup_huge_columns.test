@@ -1,0 +1,15 @@
+# name: test/sql/copy/parquet/crafted_rowgroup_huge_columns.test
+# description: A row group column list longer than the file is rejected without a huge allocation
+# group: [parquet]
+
+require parquet
+
+statement error
+SELECT * FROM parquet_metadata('{DATA_DIR}/parquet-testing/broken/crafted_rowgroup_huge_columns.parquet');
+----
+<REGEX>:.*(Invalid|Corrupt|limit|exceeds).*
+
+statement error
+SELECT * FROM '{DATA_DIR}/parquet-testing/broken/crafted_rowgroup_huge_columns.parquet';
+----
+<REGEX>:.*(Invalid|Corrupt|limit|exceeds).*

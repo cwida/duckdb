@@ -1,0 +1,23 @@
+# name: test/sql/copy/parquet/parquet_encryption_null_key.test
+# description: A NULL key in the Parquet encryption_config is rejected with a regular error
+# group: [parquet]
+
+require parquet
+
+statement error
+COPY (SELECT 1 i) TO '{TEST_DIR}/null_key.parquet' (ENCRYPTION_CONFIG {footer_key: NULL});
+----
+Binder Error: Parquet encryption_config "footer_key" cannot be NULL
+
+statement error
+COPY (SELECT 1 i) TO '{TEST_DIR}/null_key.parquet' (ENCRYPTION_CONFIG {footer_key_value: NULL});
+----
+Binder Error: Parquet encryption_config "footer_key_value" cannot be NULL
+
+statement ok
+COPY (SELECT 1 i) TO '{TEST_DIR}/plain.parquet';
+
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/plain.parquet', encryption_config={footer_key_value: NULL});
+----
+Binder Error: Parquet encryption_config "footer_key_value" cannot be NULL

@@ -132,7 +132,7 @@ void Binder::BuildUnionByNameInfo(BoundSetOperationNode &result) {
 			if (node_name_map.find(col_name) != node_name_map.end()) {
 				throw BinderException(
 				    "UNION (ALL) BY NAME operation doesn't support duplicate names in the SELECT list - "
-				    "the name \"%s\" occurs multiple times",
+				    "the name %s occurs multiple times",
 				    col_name);
 			}
 			if (global_name_set.find(col_name) == global_name_set.end()) {

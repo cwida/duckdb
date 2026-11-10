@@ -1,0 +1,39 @@
+# name: test/sql/create/create_table_as_no_data_limit.test
+# description: CREATE TABLE AS with a LIMIT and WITH NO DATA
+# group: [create]
+
+statement ok
+SET debug_verify_statement='reparse_statement';
+
+statement ok
+CREATE TABLE t1 AS SELECT 1 a LIMIT 1 WITH NO DATA;
+
+query I
+SELECT count(*) FROM t1;
+----
+0
+
+statement ok
+CREATE TABLE t2 AS SELECT range a FROM range(5) ORDER BY a LIMIT 2 OFFSET 1 WITH NO DATA;
+
+query I
+SELECT count(*) FROM t2;
+----
+0
+
+statement ok
+CREATE TABLE t3 AS SELECT 1 a WITH NO DATA;
+
+query I
+SELECT count(*) FROM t3;
+----
+0
+
+# WITH DATA keeps the limit
+statement ok
+CREATE TABLE t4 AS SELECT range a FROM range(5) ORDER BY a LIMIT 2 WITH DATA;
+
+query I
+SELECT count(*) FROM t4;
+----
+2

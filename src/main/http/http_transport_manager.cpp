@@ -6,10 +6,6 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database.hpp"
 
-#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
-#include <sys/resource.h>
-#endif
-
 namespace duckdb {
 
 static constexpr idx_t HTTP_TRANSPORT_MAX_CAPACITY = 256;
@@ -227,23 +223,8 @@ idx_t HTTPTransportManager::CalculateCapacity(idx_t system_concurrency, optional
 	if (!file_descriptor_limit.IsValid()) {
 		return cpu_target;
 	}
-	auto fd_target = MaxValue<idx_t>(file_descriptor_limit.GetIndex() / 8, 1);
+	auto fd_target = FileSystem::GetFileDescriptorShare(file_descriptor_limit.GetIndex());
 	return MinValue<idx_t>(cpu_target, fd_target);
-}
-
-optional_idx HTTPTransportManager::GetFileDescriptorLimit() {
-#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
-	struct rlimit limit;
-	if (getrlimit(RLIMIT_NOFILE, &limit) != 0 || limit.rlim_cur == RLIM_INFINITY) {
-		return optional_idx();
-	}
-	if (limit.rlim_cur >= NumericLimits<idx_t>::Maximum()) {
-		return optional_idx();
-	}
-	return optional_idx(static_cast<idx_t>(limit.rlim_cur));
-#else
-	return optional_idx();
-#endif
 }
 
 bool HTTPTransportManager::AdvanceConnectionEpoch(uint64_t &connection_epoch, bool &reuse_poisoned) noexcept {
@@ -283,7 +264,7 @@ idx_t HTTPTransportManager::AutomaticCapacity(const DBConfig &config) {
 	auto io_concurrency = config.options.async_threads == DConstants::INVALID_INDEX
 	                          ? DBConfig::GetSystemMaxAsyncThreads(fs)
 	                          : config.options.async_threads;
-	return CalculateCapacity(DBConfig::GetSystemMaxThreads(fs), GetFileDescriptorLimit(), io_concurrency);
+	return CalculateCapacity(DBConfig::GetSystemMaxThreads(fs), FileSystem::GetFileDescriptorLimit(), io_concurrency);
 }
 
 idx_t HTTPTransportManager::GetCapacity() const {
@@ -380,7 +361,7 @@ void HTTPTransportManager::SetHTTPUtil(const shared_ptr<HTTPUtil> &new_http_util
 		if (clients.IsClosed()) {
 			throw InvalidInputException("HTTP transport manager is closed");
 		}
-		if (providers.size() == DConstants::INVALID_INDEX) {
+		if (providers.size() == providers.max_size()) {
 			throw InternalException("HTTP provider identifiers exhausted");
 		}
 		old_provider_epoch = current_provider_epoch;

@@ -78,3 +78,12 @@ query I
 SELECT GETVARIABLE('xxx')
 ----
 NULL
+
+# unquoted qualified names are kept
+statement ok
+SET VARIABLE qualified = a.b.c
+
+query I
+SELECT GETVARIABLE('qualified')
+----
+a.b.c

@@ -1,0 +1,61 @@
+# name: test/sql/settings/enable_block_allocator.test
+# description: The block allocator can be toggled globally while existing data remains usable
+# group: [settings]
+
+require skip_reload
+
+query I nosort allocator_default
+SELECT current_setting('enable_block_allocator')
+----
+
+statement ok
+SET enable_block_allocator=true
+
+statement ok
+CREATE TABLE blocks AS SELECT i, repeat('a', 100) AS s FROM range(10000) t(i)
+
+statement ok
+SET enable_block_allocator=false
+
+query I con1
+SELECT current_setting('enable_block_allocator')
+----
+false
+
+statement error
+SET SESSION enable_block_allocator=true
+----
+cannot be set locally
+
+query II con1
+SELECT sum(i), sum(length(s)) FROM blocks
+----
+49995000	1000000
+
+statement ok con1
+INSERT INTO blocks SELECT i, repeat('b', 100) FROM range(10000, 20000) t(i)
+
+statement ok con1
+SET GLOBAL enable_block_allocator=true
+
+query I
+SELECT current_setting('enable_block_allocator')
+----
+true
+
+query II
+SELECT sum(i), sum(length(s)) FROM blocks
+----
+199990000	2000000
+
+statement ok
+SET enable_block_allocator=false
+
+statement ok con1
+RESET enable_block_allocator
+
+query I nosort allocator_default
+SELECT current_setting('enable_block_allocator')
+
+statement ok
+DROP TABLE blocks

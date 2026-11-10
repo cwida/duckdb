@@ -26,6 +26,7 @@
 
 namespace duckdb {
 
+class Context;
 class String;
 class CastFunctionSet;
 struct GetCastFunctionInput;
@@ -166,10 +167,10 @@ public:
 	DUCKDB_API static Value ENUM(uint64_t value, const LogicalType &original_type);
 
 	// Decimal values
-	DUCKDB_API static Value DECIMAL(int16_t value, uint8_t width, uint8_t scale);
-	DUCKDB_API static Value DECIMAL(int32_t value, uint8_t width, uint8_t scale);
-	DUCKDB_API static Value DECIMAL(int64_t value, uint8_t width, uint8_t scale);
-	DUCKDB_API static Value DECIMAL(hugeint_t value, uint8_t width, uint8_t scale);
+	DUCKDB_API static Value DECIMAL(int16_t value, uint32_t width, uint32_t scale);
+	DUCKDB_API static Value DECIMAL(int32_t value, uint32_t width, uint32_t scale);
+	DUCKDB_API static Value DECIMAL(int64_t value, uint32_t width, uint32_t scale);
+	DUCKDB_API static Value DECIMAL(hugeint_t value, uint32_t width, uint32_t scale);
 	//! Create a float Value from a specified value
 	DUCKDB_API static Value FLOAT(float value);
 	//! Create a double Value from a specified value
@@ -264,6 +265,7 @@ public:
 	DUCKDB_API Value CastAs(CastFunctionSet &set, GetCastFunctionInput &get_input, const LogicalType &target_type,
 	                        bool strict = false) const;
 	DUCKDB_API Value CastAs(ClientContext &context, const LogicalType &target_type, bool strict = false) const;
+	DUCKDB_API Value CastAs(Context &context, const LogicalType &target_type, bool strict = false) const;
 	DUCKDB_API Value DefaultCastAs(const LogicalType &target_type, bool strict = false) const;
 	//! Tries to cast this value to another type - returns the result, or nullopt if the cast is not possible.
 	//! Never throws on a failed cast; pass "error_message" to obtain the reason for the failure
@@ -271,6 +273,8 @@ public:
 	                                     const LogicalType &target_type, string *error_message = nullptr,
 	                                     bool strict = false) const;
 	DUCKDB_API optional<Value> TryCastAs(ClientContext &context, const LogicalType &target_type,
+	                                     string *error_message = nullptr, bool strict = false) const;
+	DUCKDB_API optional<Value> TryCastAs(Context &context, const LogicalType &target_type,
 	                                     string *error_message = nullptr, bool strict = false) const;
 	DUCKDB_API optional<Value> DefaultTryCastAs(const LogicalType &target_type, string *error_message = nullptr,
 	                                            bool strict = false) const;

@@ -1,0 +1,90 @@
+# name: test/sql/order/order_string_radix_suffix.test
+# description: Refine large equal-prefix string buckets using suffix bytes
+# group: [order]
+
+statement ok
+SET threads=3;
+
+statement ok
+PRAGMA verify_parallelism;
+
+statement ok
+SET memory_limit='256MB';
+
+statement ok
+SET temp_directory='{TEST_DIR}/string_radix_suffix';
+
+# Independent numeric ranks order the groups, shuffled suffixes, and trailing NULs.
+# Duplicating each value exercises equal-key buckets without requiring stable tie order.
+statement ok
+CREATE TABLE strings AS
+SELECT g::BIGINT*1000000+((i*977)%1024)*10+z AS r,
+       chr(97+g::INTEGER)||repeat('a',p)||lpad(((i*977)%1024)::VARCHAR,4,'0')||repeat(chr(0),z) AS s
+FROM (VALUES (0,0),(1,6),(2,7),(3,8),(4,15),(5,16),(6,64),(7,256),(8,512)) prefixes(g,p),
+     range(1024) suffixes(i), range(4) tails(z), range(2) copies;
+
+# A row outside the initial sample can differ before the proposed common-prefix boundary.
+statement ok
+INSERT INTO strings VALUES
+    (6999999, 'g'||repeat('a',8)||'b'||repeat('a',55)||'0000'),
+    (-1, NULL);
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+query I
+SELECT list(r ORDER BY s NULLS FIRST) = list(r ORDER BY r) FROM strings;
+----
+true
+
+query I
+SELECT list(r ORDER BY s DESC NULLS LAST) = list(r ORDER BY r DESC) FROM strings;
+----
+true
+
+# Sorting only the key exercises the layout with a second cached word.
+query I
+SELECT list(s ORDER BY n) IS NOT DISTINCT FROM (SELECT list(s ORDER BY r) FROM strings)
+FROM (SELECT s, row_number() OVER () AS n FROM (SELECT s FROM strings ORDER BY s NULLS FIRST));
+----
+true
+
+query I
+SELECT list(s ORDER BY n) IS NOT DISTINCT FROM (SELECT list(s ORDER BY r DESC) FROM strings)
+FROM (SELECT s, row_number() OVER () AS n FROM (SELECT s FROM strings ORDER BY s DESC NULLS LAST));
+----
+true
+
+endloop
+
+# Multiple columns and raw BLOB suffixes must preserve the cached prefix and payload.
+foreach prefix 7 15 63 255
+
+statement ok
+CREATE OR REPLACE TABLE binary_strings AS
+SELECT i, i%2 AS g, (i*977)%4096 AS v, (i//4096)%4 AS t,
+       encode(repeat('a',{prefix})) || from_hex(lpad(hex((i*977)%4096),4,'0')) AS b
+FROM range(32768) r(i);
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+query I
+SELECT list(i ORDER BY g DESC, b, t DESC, i) = list(i ORDER BY g DESC, v, t DESC, i)
+FROM binary_strings;
+----
+true
+
+query I
+SELECT list(b ORDER BY n) = (SELECT list(b ORDER BY v) FROM binary_strings)
+FROM (SELECT b, row_number() OVER () AS n FROM (SELECT b FROM binary_strings ORDER BY b));
+----
+true
+
+endloop
+
+endloop

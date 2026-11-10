@@ -1,0 +1,38 @@
+# name: test/sql/settings/concurrent_set_disabled_optimizers.test
+# description: Change disabled_optimizers while other connections plan queries
+# group: [settings]
+
+statement ok
+CREATE TABLE m AS SELECT range i, range % 100 g FROM range(1000);
+
+concurrentloop i 0 6
+
+loop j 0 50
+
+statement ok
+SET GLOBAL disabled_optimizers='expression_rewriter,filter_pushdown,cte_filter_pusher,join_order';
+
+query I
+SELECT count(*) FROM m a WHERE a.i > (SELECT min(b.i) FROM m b WHERE b.g = a.g);
+----
+900
+
+statement ok
+SET GLOBAL disabled_optimizers='';
+
+query I
+SELECT count(*) FROM m a WHERE EXISTS (SELECT 1 FROM m b WHERE b.g = a.g AND b.i < a.i);
+----
+900
+
+endloop
+
+endloop
+
+statement ok
+RESET GLOBAL disabled_optimizers
+
+query I
+SELECT current_setting('disabled_optimizers')
+----
+(empty)

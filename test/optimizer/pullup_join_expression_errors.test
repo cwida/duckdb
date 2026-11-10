@@ -36,3 +36,16 @@ endloop
 
 statement ok
 SET enable_optimizer=true
+
+# Throwing filter referencing another relation must remain above a row-eliminating join
+query I
+SELECT count(*)
+FROM (
+	SELECT a.k, a.v
+	FROM (VALUES (1, 1), (2, 1)) a(k, v)
+	JOIN (VALUES (0), (0), (0), (0)) b(q) ON a.k % 2 = b.q
+) mixed_v
+JOIN (VALUES (1, 0), (2, 1)) c(k, x) USING (k)
+WHERE v // x > 0;
+----
+4

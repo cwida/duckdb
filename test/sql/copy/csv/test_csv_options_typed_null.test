@@ -1,0 +1,56 @@
+# name: test/sql/copy/csv/test_csv_options_typed_null.test
+# description: Typed NULL values in the type and column options of the CSV reader
+# group: [csv]
+
+statement ok
+COPY (SELECT 1 i, 'x' s) TO '{TEMP_DIR}/typed_null_options.csv';
+
+statement error
+SELECT count(*) FROM read_csv('{TEMP_DIR}/typed_null_options.csv', types := ['BIGINT', NULL]);
+----
+cannot have a NULL type
+
+statement error
+SELECT count(*) FROM read_csv('{TEMP_DIR}/typed_null_options.csv', types := NULL::VARCHAR[]);
+----
+cannot be NULL
+
+statement error
+SELECT count(*) FROM read_csv('{TEMP_DIR}/typed_null_options.csv', dtypes := {'i': NULL::VARCHAR});
+----
+cannot have a NULL type
+
+statement error
+SELECT count(*) FROM read_csv('{TEMP_DIR}/typed_null_options.csv', columns := NULL::STRUCT(a VARCHAR));
+----
+columns cannot be NULL
+
+statement error
+SELECT count(*) FROM read_csv('{TEMP_DIR}/typed_null_options.csv', columns := {'a': NULL::VARCHAR});
+----
+columns cannot have a NULL type
+
+statement error
+SELECT count(*) FROM read_csv('{TEMP_DIR}/typed_null_options.csv', auto_type_candidates := NULL::VARCHAR[]);
+----
+auto_type_candidates cannot be NULL
+
+statement error
+SELECT count(*) FROM read_csv('{TEMP_DIR}/typed_null_options.csv', auto_type_candidates := ['BIGINT', NULL]);
+----
+auto_type_candidates cannot contain NULL types
+
+statement error
+SELECT * FROM sniff_csv('{TEMP_DIR}/typed_null_options.csv', types := ['BIGINT', NULL]);
+----
+cannot have a NULL type
+
+statement error
+SELECT * FROM read_single_csv_file('');
+----
+requires a non-empty file name
+
+query II
+SELECT * FROM read_csv('{TEMP_DIR}/typed_null_options.csv', types := ['BIGINT', 'VARCHAR']);
+----
+1	x

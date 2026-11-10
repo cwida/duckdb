@@ -14,6 +14,7 @@
 #include "duckdb/common/types/validity_mask.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/function/compression_function.hpp"
+#include "duckdb/storage/compression/compression_segment_reader.hpp"
 #include "duckdb/storage/compression/standard_compression_state.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 
@@ -161,7 +162,7 @@ public:
 	void Reset();
 	// Write the metadata for the current segment
 	idx_t Serialize(data_ptr_t dest) const;
-	void Deserialize(data_ptr_t src, idx_t container_count);
+	void Deserialize(CompressionSegmentReader reader, idx_t container_count);
 
 private:
 	void AddBitsetContainer();
@@ -400,7 +401,7 @@ public:
 public:
 	virtual void ScanPartial(ValidityMask &result, idx_t result_offset, idx_t to_scan) = 0;
 	virtual void Skip(idx_t count) = 0;
-	virtual void Verify() const = 0;
+	virtual void VerifyWrittenData() const = 0;
 
 public:
 	//! The index of the container
@@ -413,7 +414,7 @@ public:
 
 struct ContainerSegmentScan {
 public:
-	explicit ContainerSegmentScan(data_ptr_t data);
+	explicit ContainerSegmentScan(unsafe_array_ptr<const uint8_t> data);
 	ContainerSegmentScan(const ContainerSegmentScan &other) = delete;
 	ContainerSegmentScan(ContainerSegmentScan &&other) = delete;
 	ContainerSegmentScan &operator=(const ContainerSegmentScan &other) = delete;
@@ -426,64 +427,86 @@ public:
 private:
 	//! The COMPRESSED_SEGMENT_COUNT unsigned bytes indicating for each segment (256 bytes) of the container how many
 	//! values are in the segment
-	uint8_t *segments;
+	unsafe_array_ptr<const uint8_t> segments;
 	uint8_t index;
 	uint8_t count;
 };
 
 //! RUN Container
 
+template <class READER>
 struct RunContainerScanState : public ContainerScanState {
-public:
-	RunContainerScanState(idx_t container_index, idx_t container_size, idx_t count, data_ptr_t data_p);
+	friend READER;
+
+private:
+	RunContainerScanState(idx_t container_index, idx_t container_size, idx_t count);
 
 public:
 	void ScanPartial(ValidityMask &result, idx_t result_offset, idx_t to_scan) override;
 	void Skip(idx_t to_skip) override;
-	void Verify() const override;
 
-protected:
-	virtual void LoadNextRun();
+private:
+	void LoadNextRun() {
+		static_cast<READER &>(*this).LoadNextRunInternal();
+	}
 
-protected:
+private:
 	RunContainerRLEPair run;
 	bool finished = false;
 	idx_t run_index = 0;
 	idx_t count;
-	data_ptr_t data;
 };
 
-struct CompressedRunContainerScanState : public RunContainerScanState {
-public:
-	CompressedRunContainerScanState(idx_t container_index, idx_t container_size, idx_t count, data_ptr_t segments,
-	                                data_ptr_t data);
+struct UncompressedRunContainerScanState : public RunContainerScanState<UncompressedRunContainerScanState> {
+	friend struct RunContainerScanState<UncompressedRunContainerScanState>;
 
-protected:
-	void LoadNextRun() override;
-	void Verify() const override;
+public:
+	UncompressedRunContainerScanState(idx_t container_index, idx_t container_size, idx_t count,
+	                                  unsafe_array_ptr<const RunContainerRLEPair> data);
+
+public:
+	void VerifyWrittenData() const override;
 
 private:
-	data_ptr_t segments;
+	void LoadNextRunInternal();
+
+private:
+	unsafe_array_ptr<const RunContainerRLEPair> data;
+};
+
+struct CompressedRunContainerScanState : public RunContainerScanState<CompressedRunContainerScanState> {
+	friend struct RunContainerScanState<CompressedRunContainerScanState>;
+
+public:
+	CompressedRunContainerScanState(idx_t container_index, idx_t container_size, idx_t count,
+	                                unsafe_array_ptr<const uint8_t> segments, unsafe_array_ptr<const uint8_t> data);
+
+private:
+	void LoadNextRunInternal();
+	void VerifyWrittenData() const override;
+
+private:
+	unsafe_array_ptr<const uint8_t> data;
+	unsafe_array_ptr<const uint8_t> segments;
 	ContainerSegmentScan segment;
 };
 
 //! ARRAY Container
 
-template <bool INVERTED>
+[[noreturn]] void ThrowRoaringInvalidArray();
+
+template <bool INVERTED, class READER>
 struct ArrayContainerScanState : public ContainerScanState {
-public:
-	ArrayContainerScanState(idx_t container_index, idx_t container_size, idx_t count, data_ptr_t data_p)
-	    : ContainerScanState(container_index, container_size), data(data_p), count(count) {
+	friend READER;
+
+private:
+	ArrayContainerScanState(idx_t container_index, idx_t container_size, idx_t count)
+	    : ContainerScanState(container_index, container_size), count(count) {
 	}
 
 public:
-	virtual void LoadNextValue() {
-		if (array_index >= count) {
-			finished = true;
-			return;
-		}
-		value = reinterpret_cast<uint16_t *>(data)[array_index];
-		array_index++;
+	void LoadNextValue() {
+		static_cast<READER &>(*this).LoadNextValueInternal();
 	}
 
 public:
@@ -532,53 +555,86 @@ public:
 		scanned_count = end;
 	}
 
-	void Verify() const override {
-#ifdef DEBUG
-		uint16_t index = 0;
-		auto array = reinterpret_cast<uint16_t *>(data);
-		for (uint16_t i = 0; i < count; i++) {
-			D_ASSERT(!i || array[i] > index);
-			index = array[i];
-		}
-#endif
-	}
-
-protected:
+private:
 	uint16_t value;
-	data_ptr_t data;
 	bool finished = false;
 	const idx_t count;
 	idx_t array_index = 0;
 };
 
 template <bool INVERTED>
-struct CompressedArrayContainerScanState : public ArrayContainerScanState<INVERTED> {
+struct UncompressedArrayContainerScanState
+    : public ArrayContainerScanState<INVERTED, UncompressedArrayContainerScanState<INVERTED>> {
 public:
-	CompressedArrayContainerScanState(idx_t container_index, idx_t container_size, idx_t count, data_ptr_t segments,
-	                                  data_ptr_t data)
-	    : ArrayContainerScanState<INVERTED>(container_index, container_size, count, data), segments(segments),
-	      segment(segments) {
-		D_ASSERT(count >= COMPRESSED_ARRAY_THRESHOLD);
+	UncompressedArrayContainerScanState(idx_t container_index, idx_t container_size, idx_t count,
+	                                    unsafe_array_ptr<const uint16_t> data)
+	    : ArrayContainerScanState<INVERTED, UncompressedArrayContainerScanState<INVERTED>>(container_index,
+	                                                                                       container_size, count),
+	      data(data) {
 	}
 
 public:
-	void LoadNextValue() override {
+	void LoadNextValueInternal() {
 		if (this->array_index >= this->count) {
 			this->finished = true;
 			return;
 		}
-		this->value = segment++;
-		this->value += reinterpret_cast<uint8_t *>(this->data)[this->array_index];
+		const auto next_value = data[this->array_index];
+		if (next_value >= this->container_size || (this->array_index && next_value <= this->value)) {
+			ThrowRoaringInvalidArray();
+		}
+		this->value = next_value;
 		this->array_index++;
 	}
-	void Verify() const override {
+
+	void VerifyWrittenData() const override {
+#ifdef DEBUG
+		uint16_t index = 0;
+		for (uint16_t i = 0; i < this->count; i++) {
+			D_ASSERT(!i || data[i] > index);
+			index = data[i];
+		}
+#endif
+	}
+
+private:
+	unsafe_array_ptr<const uint16_t> data;
+};
+
+template <bool INVERTED>
+struct CompressedArrayContainerScanState
+    : public ArrayContainerScanState<INVERTED, CompressedArrayContainerScanState<INVERTED>> {
+public:
+	CompressedArrayContainerScanState(idx_t container_index, idx_t container_size, idx_t count,
+	                                  unsafe_array_ptr<const uint8_t> segments, unsafe_array_ptr<const uint8_t> data)
+	    : ArrayContainerScanState<INVERTED, CompressedArrayContainerScanState<INVERTED>>(container_index,
+	                                                                                     container_size, count),
+	      data(data), segments(segments), segment(segments) {
+		D_ASSERT(count >= COMPRESSED_ARRAY_THRESHOLD);
+	}
+
+public:
+	void LoadNextValueInternal() {
+		if (this->array_index >= this->count) {
+			this->finished = true;
+			return;
+		}
+		uint16_t next_value = segment++;
+		next_value += data[this->array_index];
+		if (next_value >= this->container_size || (this->array_index && next_value <= this->value)) {
+			ThrowRoaringInvalidArray();
+		}
+		this->value = next_value;
+		this->array_index++;
+	}
+	void VerifyWrittenData() const override {
 #ifdef DEBUG
 		uint16_t index = 0;
 		ContainerSegmentScan verify_segment(segments);
 		for (uint16_t i = 0; i < this->count; i++) {
 			// Get the value
 			uint16_t new_index = verify_segment++;
-			new_index += reinterpret_cast<uint8_t *>(this->data)[i];
+			new_index += data[i];
 
 			D_ASSERT(!i || new_index > index);
 			index = new_index;
@@ -587,7 +643,8 @@ public:
 	}
 
 private:
-	data_ptr_t segments;
+	unsafe_array_ptr<const uint8_t> data;
+	unsafe_array_ptr<const uint8_t> segments;
 	ContainerSegmentScan segment;
 };
 
@@ -595,12 +652,12 @@ private:
 
 struct BitsetContainerScanState : public ContainerScanState {
 public:
-	BitsetContainerScanState(idx_t container_index, idx_t container_size, validity_t *bitset);
+	BitsetContainerScanState(idx_t container_index, idx_t container_size, unsafe_array_ptr<const validity_t> bitset);
 
 public:
 	void ScanPartial(ValidityMask &result_mask, idx_t result_offset, idx_t to_scan) override;
 	void Skip(idx_t to_skip) override;
-	void Verify() const override;
+	void VerifyWrittenData() const override;
 
 public:
 	unsafe_array_ptr<const validity_t> bitset;
@@ -608,13 +665,20 @@ public:
 
 struct RoaringScanState : public SegmentScanState {
 public:
-	explicit RoaringScanState(ColumnSegment &segment);
+	//! The segment layout, as on disk.
+	struct SegmentLayout {
+		CompressionSegmentReader data;
+		CompressionSegmentReader metadata;
+	};
+
+	static SegmentLayout ReadLayout(const BufferHandle &handle, const ColumnSegment &segment);
+
+	explicit RoaringScanState(const QueryContext &context, ColumnSegment &segment);
 
 public:
-	idx_t SkipVector(const ContainerMetadata &metadata);
 	bool UseContainerStateCache(idx_t container_index, idx_t internal_offset);
 	ContainerMetadata GetContainerMetadata(idx_t container_index);
-	data_ptr_t GetStartOfContainerData(idx_t container_index);
+	CompressionSegmentReader GetContainerReader(idx_t container_index, idx_t container_size);
 	ContainerScanState &LoadContainer(idx_t container_index, idx_t internal_offset);
 	void ScanInternal(ContainerScanState &scan_state, idx_t to_scan, ValidityMask &result, idx_t offset);
 	idx_t GetContainerIndex(idx_t start_index, idx_t &offset);
@@ -625,7 +689,7 @@ public:
 	BufferHandle handle;
 	ColumnSegment &segment;
 	unique_ptr<ContainerScanState> current_container;
-	data_ptr_t data_ptr;
+	SegmentLayout layout;
 	ContainerMetadataCollection metadata_collection;
 	vector<ContainerMetadata> container_metadata;
 	vector<idx_t> data_start_position;

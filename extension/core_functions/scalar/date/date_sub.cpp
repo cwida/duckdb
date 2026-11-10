@@ -6,6 +6,7 @@
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/vector_operations/ternary_executor.hpp"
+#include "duckdb/optimizer/statistics_propagator.hpp"
 
 namespace duckdb {
 
@@ -16,6 +17,17 @@ struct DateSub {
 		const auto start = Timestamp::GetEpochMicroSeconds(startdate);
 		const auto end = Timestamp::GetEpochMicroSeconds(enddate);
 		return SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(end, start);
+	}
+
+	template <int64_t MICROS_PER_UNIT>
+	static int64_t SubtractUnits(timestamp_t startdate, timestamp_t enddate) {
+		const auto start = Timestamp::GetEpochMicroSeconds(startdate);
+		const auto end = Timestamp::GetEpochMicroSeconds(enddate);
+		int64_t delta_us;
+		if (TrySubtractOperator::Operation(end, start, delta_us)) {
+			return delta_us / MICROS_PER_UNIT;
+		}
+		return Interval::GetDifferenceInUnits(start, end, MICROS_PER_UNIT);
 	}
 
 	template <class TA, class TB, class TR, class OP>
@@ -101,14 +113,14 @@ struct DateSub {
 	struct DayOperator {
 		template <class TA, class TB, class TR>
 		static inline TR Operation(TA startdate, TB enddate) {
-			return SubtractMicros(startdate, enddate) / Interval::MICROS_PER_DAY;
+			return SubtractUnits<Interval::MICROS_PER_DAY>(startdate, enddate);
 		}
 	};
 
 	struct WeekOperator {
 		template <class TA, class TB, class TR>
 		static inline TR Operation(TA startdate, TB enddate) {
-			return SubtractMicros(startdate, enddate) / Interval::MICROS_PER_WEEK;
+			return SubtractUnits<Interval::MICROS_PER_WEEK>(startdate, enddate);
 		}
 	};
 
@@ -122,28 +134,28 @@ struct DateSub {
 	struct MillisecondsOperator {
 		template <class TA, class TB, class TR>
 		static inline TR Operation(TA startdate, TB enddate) {
-			return SubtractMicros(startdate, enddate) / Interval::MICROS_PER_MSEC;
+			return SubtractUnits<Interval::MICROS_PER_MSEC>(startdate, enddate);
 		}
 	};
 
 	struct SecondsOperator {
 		template <class TA, class TB, class TR>
 		static inline TR Operation(TA startdate, TB enddate) {
-			return SubtractMicros(startdate, enddate) / Interval::MICROS_PER_SEC;
+			return SubtractUnits<Interval::MICROS_PER_SEC>(startdate, enddate);
 		}
 	};
 
 	struct MinutesOperator {
 		template <class TA, class TB, class TR>
 		static inline TR Operation(TA startdate, TB enddate) {
-			return SubtractMicros(startdate, enddate) / Interval::MICROS_PER_MINUTE;
+			return SubtractUnits<Interval::MICROS_PER_MINUTE>(startdate, enddate);
 		}
 	};
 
 	struct HoursOperator {
 		template <class TA, class TB, class TR>
 		static inline TR Operation(TA startdate, TB enddate) {
-			return SubtractMicros(startdate, enddate) / Interval::MICROS_PER_HOUR;
+			return SubtractUnits<Interval::MICROS_PER_HOUR>(startdate, enddate);
 		}
 	};
 };
@@ -455,6 +467,7 @@ ScalarFunctionSet DateSubFun::GetFunctions() {
 	date_sub.SetFallible();
 	date_sub.SetArgProperties(1, ArgProperties().NonIncreasing());
 	date_sub.SetArgProperties(2, ArgProperties().NonDecreasing());
+	date_sub.SetStatisticsCallback(StatisticsPropagator::PropagateFiniteMonotoneBounds);
 	return date_sub;
 }
 

@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/optional_idx.hpp"
 #include "duckdb/execution/physical_operator_states.hpp"
 
 namespace duckdb {
@@ -30,6 +31,9 @@ public:
 	~SortedRunMerger();
 
 public:
+	idx_t PartitionCount() const;
+	idx_t PartitionRowCount(idx_t partition_count) const;
+
 	//===--------------------------------------------------------------------===//
 	// Source Interface
 	//===--------------------------------------------------------------------===//
@@ -50,6 +54,11 @@ public:
 	unique_ptr<SortedRun> GetSortedRun(GlobalSourceState &global_state);
 
 private:
+	template <SortKeyType SORT_KEY_TYPE>
+	optional_idx TemplatedFindSkewedPartitionSplit() const;
+	//! Optional output row rank at which to split a partition with disproportionately large payloads.
+	optional_idx FindSkewedPartitionSplit() const;
+
 	TaskScheduler &scheduler;
 
 public:
@@ -60,6 +69,9 @@ public:
 	const idx_t partition_size;
 	const bool external;
 	const bool is_index_sort;
+
+private:
+	const optional_idx extra_partition_end;
 };
 
 } // namespace duckdb

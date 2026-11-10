@@ -154,7 +154,7 @@ public:
 		vector<unique_ptr<Expression>> args;
 		args.push_back(std::move(avg_child));
 		auto count_arg = args.back()->Copy();
-		expr = function_binder.BindAggregateFunction(std::move(sum_fun), std::move(args));
+		expr = function_binder.BindAggregateFunction(sum_fun, std::move(args));
 
 		return count_arg;
 	}
@@ -419,8 +419,8 @@ private:
 				count_args.push_back(std::move(count_arg));
 			}
 			auto count_fun = GetBuiltinAggregateFunction(optimizer.context, CountFun::Name, count_arg_types);
-			auto count_aggr = function_binder.BindAggregateFunction(std::move(count_fun), std::move(count_args),
-			                                                        nullptr, AggregateType::NON_DISTINCT);
+			auto count_aggr = function_binder.BindAggregateFunction(count_fun, std::move(count_args), nullptr,
+			                                                        AggregateType::NON_DISTINCT);
 
 			rewrite_info.count_idx = aggr.expressions.size();
 			rewrites.emplace(i, std::move(rewrite_info));

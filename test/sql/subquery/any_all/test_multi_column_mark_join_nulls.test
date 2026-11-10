@@ -281,8 +281,8 @@ FROM (VALUES (1, 1), (2, 3)) lhs(a, b);
 ----
 not yet supported
 
-# A single tuple-valued condition is still a correlated multi-column comparison.
-statement error
+# A single tuple-valued equality condition is a struct comparison
+query I
 SELECT row(a, b) = ANY (
 	SELECT s
 	FROM (VALUES (1, row(1, NULL::INT))) rhs(k, s)
@@ -290,4 +290,4 @@ SELECT row(a, b) = ANY (
 )
 FROM (VALUES (1, 1)) lhs(a, b)
 ----
-not yet supported
+false

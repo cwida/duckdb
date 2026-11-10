@@ -1,0 +1,39 @@
+# name: test/sql/copy/parquet/variant_shredded_decimal_scale.test
+# description: a shredded VARIANT DECIMAL column only holds decimals of its scale that fit its width
+# group: [parquet]
+
+require parquet
+
+# the first file shreds DECIMAL(4,1), the second DECIMAL(4,2), rewriting both shreds the first row group's type
+statement ok
+COPY (SELECT (i % 10)::DECIMAL(4,1)::VARIANT AS v FROM range(122880) r(i)) TO '{TEST_DIR}/variant_decimal_scale_1.parquet'
+
+statement ok
+COPY (SELECT (i % 10)::DECIMAL(4,2)::VARIANT AS v FROM range(122880, 200000) r(i)) TO '{TEST_DIR}/variant_decimal_scale_2.parquet'
+
+statement ok
+COPY (SELECT v FROM read_parquet(['{TEST_DIR}/variant_decimal_scale_1.parquet', '{TEST_DIR}/variant_decimal_scale_2.parquet'])) TO '{TEST_DIR}/variant_decimal_scale_merged.parquet'
+
+query III
+SELECT count(*) FILTER (WHERE v::DECIMAL(4,2) = 9.00), max(v::DECIMAL(4,2)), count(DISTINCT v::VARCHAR)
+FROM '{TEST_DIR}/variant_decimal_scale_merged.parquet'
+----
+20000	9.00	20
+
+# a narrower decimal of the same scale is shredded, a wider one keeps a type that fits its value
+statement ok
+COPY (SELECT CASE WHEN i < 122880 THEN (i % 10)::DECIMAL(3,1)::VARIANT ELSE (900 + i % 100)::DECIMAL(4,1)::VARIANT END AS v FROM range(200000) r(i)) TO '{TEST_DIR}/variant_decimal_wider.parquet'
+
+query III
+SELECT count(*) FILTER (WHERE variant_typeof(v) = 'DECIMAL(3, 1)' AND v::DECIMAL(4,1) > 99.9), sum(v::DECIMAL(4,1)), max(v::DECIMAL(4,1))
+FROM '{TEST_DIR}/variant_decimal_wider.parquet'
+----
+0	73779200.0	999.0
+
+statement ok
+COPY (SELECT CASE WHEN i < 122880 THEN (i % 10)::DECIMAL(4,1)::VARIANT ELSE (i % 10)::DECIMAL(3,1)::VARIANT END AS v FROM range(200000) r(i)) TO '{TEST_DIR}/variant_decimal_narrower.parquet'
+
+query II
+SELECT variant_typeof(v), sum(v::DECIMAL(4,1)) FROM '{TEST_DIR}/variant_decimal_narrower.parquet' GROUP BY ALL ORDER BY ALL
+----
+DECIMAL(4, 1)	900000.0

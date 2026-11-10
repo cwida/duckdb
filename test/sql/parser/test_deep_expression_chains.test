@@ -27,6 +27,11 @@ FROM query('SELECT 1' || repeat(' IS NULL', 150))
 Parser Error: Max expression depth limit of 100 exceeded
 
 statement error
+FROM query('SELECT 1 IN (1)' || repeat('::BOOLEAN', 150))
+----
+Parser Error: Max expression depth limit of 100 exceeded
+
+statement error
 FROM query('SELECT ''a''' || repeat(' COLLATE nocase', 150))
 ----
 Parser Error: Max expression depth limit of 100 exceeded
@@ -56,6 +61,11 @@ query I
 FROM query('SELECT ''a''' || repeat('.lower()', 50))
 ----
 a
+
+query I
+FROM query('SELECT 1 IN (1)' || repeat('::BOOLEAN', 50))
+----
+true
 
 query I
 FROM query('SELECT length(''a''' || repeat(' || ''a''', 50) || ')')

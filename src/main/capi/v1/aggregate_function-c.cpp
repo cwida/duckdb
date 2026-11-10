@@ -98,6 +98,7 @@ void CAPIAggregateUpdate(Vector inputs[], AggregateInputData &aggr_input_data, i
 	DataChunk chunk;
 	for (idx_t c = 0; c < input_count; c++) {
 		inputs[c].Flatten();
+		PrepareCAPIVector(inputs[c]);
 		chunk.data.emplace_back(Vector::Ref(inputs[c]));
 	}
 
@@ -134,6 +135,7 @@ void CAPIAggregateCombine(Vector &state, Vector &combined, AggregateInputData &a
 
 void CAPIAggregateFinalize(Vector &state, AggregateFinalizeInputData &aggr_input_data, Vector &result, idx_t count,
                            idx_t offset) {
+	PrepareCAPIVector(result);
 	state.Flatten();
 	auto &bind_data = aggr_input_data.bind_data->Cast<CAggregateFunctionBindData>();
 	auto input_state_data = FlatVector::GetDataMutableUnsafe<duckdb_aggregate_state>(state);
