@@ -45,10 +45,8 @@ string InsertQueryNode::ToString() const {
 	auto values_list = GetValuesList();
 	if (values_list) {
 		D_ASSERT(!default_values);
-		auto saved_alias = values_list->alias;
-		values_list->alias = Identifier(string());
-		result += values_list->ToString();
-		values_list->alias = saved_alias;
+		result += values_list->ValuesToString();
+		result += select_statement->node->ResultModifiersToString();
 	} else if (select_statement) {
 		D_ASSERT(!default_values);
 		result += select_statement->ToString();

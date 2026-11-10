@@ -3,6 +3,10 @@
 namespace duckdb {
 
 string ExpressionListRef::ToString() const {
+	return BaseToString(ValuesToString(), expected_names);
+}
+
+string ExpressionListRef::ValuesToString() const {
 	D_ASSERT(!values.empty());
 	string result = "(VALUES ";
 	for (idx_t row_idx = 0; row_idx < values.size(); row_idx++) {
@@ -20,7 +24,7 @@ string ExpressionListRef::ToString() const {
 		result += ")";
 	}
 	result += ")";
-	return BaseToString(result, expected_names);
+	return result;
 }
 
 bool ExpressionListRef::Equals(const TableRef &other_p) const {

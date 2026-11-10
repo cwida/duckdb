@@ -1,0 +1,189 @@
+# name: test/sql/insert/insert_values_modifiers.test
+# description: ORDER BY, LIMIT and OFFSET on a VALUES source of an INSERT decide which rows are inserted
+# group: [insert]
+
+statement ok
+CREATE TABLE t (a INTEGER);
+
+statement ok
+INSERT INTO t VALUES (3), (1), (2) ORDER BY 1 LIMIT 1;
+
+query I
+SELECT a FROM t;
+----
+1
+
+statement ok
+DELETE FROM t;
+
+statement ok
+INSERT INTO t VALUES (3), (1), (2) ORDER BY 1 DESC LIMIT 2 OFFSET 1;
+
+query I
+SELECT a FROM t ORDER BY a;
+----
+1
+2
+
+statement ok
+DELETE FROM t;
+
+statement ok
+INSERT INTO t VALUES (3), (1), (2) ORDER BY 1 OFFSET 2;
+
+query I
+SELECT a FROM t;
+----
+3
+
+statement ok
+DELETE FROM t;
+
+statement ok
+INSERT INTO t VALUES (4), (3), (1), (2) ORDER BY 1 LIMIT 50 PERCENT;
+
+query I
+SELECT a FROM t ORDER BY a;
+----
+1
+2
+
+statement ok
+DELETE FROM t;
+
+statement ok
+INSERT INTO t VALUES (3), (NULL), (1) ORDER BY 1 NULLS FIRST LIMIT 2;
+
+query I
+SELECT a FROM t ORDER BY a NULLS FIRST;
+----
+NULL
+1
+
+statement ok
+DELETE FROM t;
+
+statement ok
+INSERT INTO t VALUES (2), (1), (2) ORDER BY 1 DESC LIMIT 2;
+
+query I
+SELECT a FROM t;
+----
+2
+2
+
+statement ok
+DELETE FROM t;
+
+statement ok
+INSERT INTO t (VALUES (3), (1), (2)) ORDER BY 1 LIMIT 1;
+
+query I
+SELECT a FROM t;
+----
+1
+
+statement ok
+DELETE FROM t;
+
+query I rowsort
+INSERT INTO t VALUES (3), (1), (2) ORDER BY 1 LIMIT 2 RETURNING a;
+----
+1
+2
+
+statement ok
+DELETE FROM t;
+
+# an INSERT as the body of a common table expression
+query I
+WITH x AS (INSERT INTO t VALUES (3), (1), (2) ORDER BY 1 LIMIT 1 RETURNING a) SELECT a FROM x;
+----
+1
+
+query I
+SELECT a FROM t;
+----
+1
+
+statement ok
+DELETE FROM t;
+
+statement ok
+PREPARE limited AS INSERT INTO t VALUES (3), (1), (2) ORDER BY 1 LIMIT $1;
+
+statement ok
+EXECUTE limited(2);
+
+query I
+SELECT a FROM t ORDER BY a;
+----
+1
+2
+
+statement ok
+DELETE FROM t;
+
+# a WITH clause on the VALUES source, and one before INSERT
+statement ok
+INSERT INTO t WITH c AS (SELECT 1) VALUES (5), (6) ORDER BY 1 DESC LIMIT 1;
+
+statement ok
+WITH c AS (SELECT 1) INSERT INTO t VALUES (8), (7) ORDER BY 1 LIMIT 1;
+
+query I
+SELECT a FROM t ORDER BY a;
+----
+6
+7
+
+statement ok
+DELETE FROM t;
+
+# a column list, and DEFAULT inside the rows
+statement ok
+CREATE TABLE d (a INTEGER, b INTEGER DEFAULT 7);
+
+statement ok
+INSERT INTO d (a) VALUES (3), (1) ORDER BY 1 LIMIT 1;
+
+statement ok
+INSERT INTO d VALUES (4, DEFAULT), (2, 5) ORDER BY 1 LIMIT 1;
+
+query II
+SELECT a, b FROM d ORDER BY a;
+----
+1	7
+2	5
+
+# ON CONFLICT, OR REPLACE and OR IGNORE apply to the limited rows only
+statement ok
+CREATE TABLE u (k INTEGER PRIMARY KEY, v INTEGER);
+
+statement ok
+INSERT INTO u VALUES (1, 10);
+
+statement ok
+INSERT INTO u VALUES (1, 1), (2, 2) ORDER BY 1 DESC LIMIT 1 ON CONFLICT (k) DO UPDATE SET v = excluded.v;
+
+statement ok
+INSERT INTO u AS x VALUES (2, 3), (1, 1) ORDER BY 1 LIMIT 1 ON CONFLICT (k) DO UPDATE SET v = x.v + 100;
+
+query II
+SELECT k, v FROM u ORDER BY k;
+----
+1	110
+2	2
+
+statement ok
+INSERT OR REPLACE INTO u VALUES (2, 20), (3, 30) ORDER BY 1 LIMIT 1;
+
+statement ok
+INSERT OR IGNORE INTO u VALUES (3, 30), (4, 40) ORDER BY 1 DESC LIMIT 1;
+
+query II
+SELECT k, v FROM u ORDER BY k;
+----
+1	110
+2	20
+4	40
