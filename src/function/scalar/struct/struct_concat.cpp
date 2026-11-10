@@ -37,10 +37,6 @@ static unique_ptr<FunctionData> StructConcatBind(BindScalarFunctionInput &input)
 	for (idx_t arg_idx = 0; arg_idx < arguments.size(); arg_idx++) {
 		const auto &arg = arguments[arg_idx];
 
-		if (arg->GetReturnType().id() == LogicalTypeId::UNKNOWN) {
-			throw ParameterNotResolvedException();
-		}
-
 		if (!StructType::IsStruct(arg->GetReturnType())) {
 			throw InvalidInputException("struct_concat: Argument at position \"%d\" is not a STRUCT", arg_idx + 1);
 		}

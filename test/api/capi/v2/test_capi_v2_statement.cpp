@@ -752,14 +752,14 @@ TEST_CASE("V2: sql_statement_get_type is the type before statement rewrites", "[
 
 TEST_CASE("V2: sql_statement_get_text is the statement's own slice", "[capi_v2][sql_statement]") {
 	EnvFixture fx;
-	// Each slice runs from the statement's first token to the next statement's first token,
-	// so terminators, whitespace and comments after a statement belong to it; a leading
-	// comment or separator belongs to nobody.
+	// Each slice starts where the previous statement ended and runs through its own terminators,
+	// so comments and whitespace before a statement belong to it; a separator-only run before the
+	// first statement belongs to nobody, and the last statement runs to the end of the input.
 	auto statements = StmtParseAll(fx.conn, "-- lead\n;select $1;\n\n  select 21 ;;\t-- mid\nSELECT 3; -- tail");
 	REQUIRE(statements.size() == 3);
-	REQUIRE(StmtText(statements[0]) == "select $1;\n\n  ");
-	REQUIRE(StmtText(statements[1]) == "select 21 ;;\t-- mid\n");
-	REQUIRE(StmtText(statements[2]) == "SELECT 3; -- tail");
+	REQUIRE(StmtText(statements[0]) == "select $1;");
+	REQUIRE(StmtText(statements[1]) == "\n\n  select 21 ;;");
+	REQUIRE(StmtText(statements[2]) == "\t-- mid\nSELECT 3; -- tail");
 	for (auto &stmt : statements) {
 		duckdb_v2_sql_statement_destroy(&stmt);
 	}
@@ -772,8 +772,8 @@ TEST_CASE("V2: sql_statement_get_text outlives the input string and the iterator
 	REQUIRE(statements.size() == 2);
 	// The iterator is already destroyed by StmtParseAll; now clobber the caller's buffer too.
 	sql.assign(sql.size(), 'x');
-	REQUIRE(StmtText(statements[0]) == "SELECT 1; ");
-	REQUIRE(StmtText(statements[1]) == "SELECT 2");
+	REQUIRE(StmtText(statements[0]) == "SELECT 1;");
+	REQUIRE(StmtText(statements[1]) == " SELECT 2");
 	for (auto &stmt : statements) {
 		duckdb_v2_sql_statement_destroy(&stmt);
 	}

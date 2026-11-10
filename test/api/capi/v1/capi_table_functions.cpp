@@ -276,6 +276,12 @@ TEST_CASE("Test Table Function named parameters in C API", "[capi]") {
 	result = tester.Query("SELECT * FROM my_multiplier_function(2, col0 := 2, my_parameter := 3)");
 	REQUIRE(result->HasError());
 	REQUIRE(duckdb::StringUtil::Contains(result->ErrorMessage(), "Invalid named parameter \"col0\""));
+	// nor is the synthetic name shown: the signature prints the parameter as its type
+	result = tester.Query("SELECT * FROM my_multiplier_function()");
+	REQUIRE(result->HasError());
+	REQUIRE(duckdb::StringUtil::Contains(result->ErrorMessage(), "my_multiplier_function(BIGINT, "));
+	REQUIRE(duckdb::StringUtil::Contains(result->ErrorMessage(), "Required parameter at position 1 is missing"));
+	REQUIRE(!duckdb::StringUtil::Contains(result->ErrorMessage(), "col0"));
 	// an option that resembles the name is suggested
 	result = tester.Query("SELECT * FROM my_multiplier_function(2, my_paramter := 3)");
 	REQUIRE(result->HasError());

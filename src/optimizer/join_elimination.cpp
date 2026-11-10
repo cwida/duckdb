@@ -13,7 +13,6 @@
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
-#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include <utility>
@@ -40,31 +39,6 @@ void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<Logical
 	VisitOperatorExpressions(op);
 
 	switch (op.type) {
-	case LogicalOperatorType::LOGICAL_DISTINCT: {
-		auto &distinct = op.Cast<LogicalDistinct>();
-		if (distinct.distinct_type != DistinctType::DISTINCT) {
-			break;
-		}
-		column_binding_set_t distinct_group;
-		if (distinct.distinct_targets[0]->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
-			break;
-		}
-		auto table_idx = distinct.distinct_targets[0]->Cast<BoundColumnRefExpression>().Binding().table_index;
-		bool can_add = true;
-		for (auto &target : distinct.distinct_targets) {
-			if (target->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
-				can_add = false;
-				break;
-			}
-			auto &col_ref = target->Cast<BoundColumnRefExpression>();
-			distinct_group.insert(col_ref.Binding());
-			D_ASSERT(table_idx == col_ref.Binding().table_index);
-		}
-		if (can_add) {
-			pipe_info.distinct_groups[table_idx] = std::move(distinct_group);
-		}
-		break;
-	}
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
 		auto &aggr = op.Cast<LogicalAggregate>();
 		if (aggr.grouping_sets.size() > 1) {
@@ -78,6 +52,28 @@ void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<Logical
 		}
 		if (!distinct_group.empty()) {
 			pipe_info.distinct_groups[table_idx] = std::move(distinct_group);
+		}
+		if (aggr.expressions.empty() && !aggr.groups.empty()) {
+			// a pure deduplication (e.g. SELECT DISTINCT) also makes the grouped input columns distinct
+			column_binding_set_t input_group;
+			TableIndex input_index;
+			bool single_input = true;
+			for (auto &group : aggr.groups) {
+				if (group->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+					single_input = false;
+					break;
+				}
+				auto &binding = group->Cast<BoundColumnRefExpression>().Binding();
+				if (!input_group.empty() && binding.table_index != input_index) {
+					single_input = false;
+					break;
+				}
+				input_index = binding.table_index;
+				input_group.insert(binding);
+			}
+			if (single_input) {
+				pipe_info.distinct_groups[input_index] = std::move(input_group);
+			}
 		}
 		break;
 	}

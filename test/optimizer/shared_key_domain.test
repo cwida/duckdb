@@ -1,0 +1,280 @@
+# name: test/optimizer/shared_key_domain.test
+# description: Shared runtime domains preserve lexical owners, key coverage and producer evaluation
+# group: [optimizer]
+
+statement ok
+CREATE TABLE fact_data AS SELECT (i%1000)::INTEGER k,i::BIGINT v FROM range(10000)t(i);
+
+statement ok
+INSERT INTO fact_data VALUES (NULL,4),(NULL,7);
+
+statement ok
+CREATE VIEW fact AS SELECT (k+1000)%1000 k,v FROM fact_data;
+
+statement ok
+CREATE TABLE demand(k INTEGER,label VARCHAR);
+
+statement ok
+INSERT INTO demand VALUES (1,'one'),(2,'two'),(2,'again'),(2000,'missing'),(NULL,'null');
+
+statement ok
+CREATE TABLE low_fact AS SELECT (i%4)::INTEGER k,i::BIGINT v FROM range(10000)t(i);
+
+statement ok
+INSERT INTO low_fact VALUES (NULL,11);
+
+statement ok
+CREATE TABLE all_keys AS SELECT DISTINCT k FROM low_fact;
+
+statement ok
+CREATE SEQUENCE shared_visits;
+
+statement ok
+CREATE SEQUENCE reader_guard_visits;
+
+statement ok
+CREATE SEQUENCE removal_guard_visits;
+
+statement ok
+PREPARE shared_demand AS WITH first AS MATERIALIZED (SELECT * FROM demand), second AS MATERIALIZED (SELECT *
+    FROM first) SELECT d.k,a.s FROM second d LEFT JOIN (SELECT k,sum(v)s FROM fact GROUP BY k)a USING(k) WHERE
+    d.k<=$1 ORDER BY ALL;
+
+# An outer owner remains visible inside another producer
+query II
+WITH d AS MATERIALIZED (SELECT * FROM demand), result AS MATERIALIZED (SELECT d.k,a.s FROM d LEFT JOIN (SELECT
+    k,sum(v)s FROM fact GROUP BY k)a USING(k)) SELECT * FROM result UNION ALL SELECT * FROM result ORDER BY
+    ALL;
+----
+1	45010
+1	45010
+2	45020
+2	45020
+2	45020
+2	45020
+2000	NULL
+2000	NULL
+NULL	NULL
+NULL	NULL
+
+# Multiple sibling consumers retain independent demand and payload
+query TII
+WITH first AS MATERIALIZED (SELECT label,k FROM demand), second AS MATERIALIZED (SELECT * FROM first) SELECT
+    'first',d.k,a.s FROM first d LEFT JOIN (SELECT k,sum(v)s FROM fact GROUP BY k)a USING(k) UNION ALL SELECT
+    'second',d.k,a.s FROM second d LEFT JOIN (SELECT k,sum(v)s FROM fact GROUP BY k)a ON d.k IS NOT DISTINCT
+    FROM a.k ORDER BY ALL;
+----
+first	1	45010
+first	2	45020
+first	2	45020
+first	2000	NULL
+first	NULL	NULL
+second	1	45010
+second	2	45020
+second	2	45020
+second	2000	NULL
+second	NULL	11
+
+# A grouped reader can demand a NULL key that is absent from its shared source.
+query II
+WITH c AS MATERIALIZED (SELECT * FROM (VALUES (1), (2)) v(k))
+SELECT d.k, a.s FROM (SELECT k FROM c GROUP BY ROLLUP(k)) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a ON d.k IS NOT DISTINCT FROM a.k
+ORDER BY ALL;
+----
+1	45010
+2	45020
+NULL	11
+
+# Shadowed CTE names use the bound owner identity
+query TII
+WITH d AS MATERIALIZED (SELECT * FROM demand) SELECT d.label,d.k,a.s FROM d LEFT JOIN (SELECT k,sum(v)s FROM
+    fact GROUP BY k)a USING(k) UNION ALL SELECT d.label,d.k,a.s FROM (WITH d AS MATERIALIZED (SELECT label,k+1
+    k FROM demand) SELECT * FROM d)d LEFT JOIN (SELECT k,sum(v)s FROM fact GROUP BY k)a USING(k) ORDER BY ALL;
+----
+again	2	45020
+again	3	45030
+missing	2000	NULL
+missing	2001	NULL
+null	NULL	NULL
+null	NULL	NULL
+one	1	45010
+one	2	45020
+two	2	45020
+two	3	45030
+
+# A filtered reader stays filtered when moved into a nested local producer
+query TII
+WITH d AS MATERIALIZED (SELECT * FROM demand) SELECT d.label,d.k,a.s FROM d LEFT JOIN (SELECT k,sum(v)s FROM
+    fact GROUP BY k)a USING(k) WHERE d.k=1 ORDER BY ALL;
+----
+one	1	45010
+
+# Runtime replacement preserves demand bags from a filtered shared source
+query III
+WITH d AS MATERIALIZED (SELECT * FROM fact_data) SELECT count(*),sum(d.v),sum(a.s) FROM d LEFT JOIN (SELECT
+    f.k,sum(v)s FROM fact f SEMI JOIN d ON f.k=d.k GROUP BY f.k)a USING(k) WHERE d.k=1;
+----
+10	45010	450100
+
+# Runtime removal preserves ordinary-equality NULL exclusion under a null-safe consumer
+query III
+WITH first AS MATERIALIZED (SELECT * FROM all_keys), d AS MATERIALIZED (SELECT DISTINCT k FROM first) SELECT
+    d.k,a.s,a.n FROM d LEFT JOIN (SELECT f.k,sum(v)s,count(*)n FROM low_fact f SEMI JOIN d ON f.k=d.k GROUP BY
+    f.k)a ON d.k IS NOT DISTINCT FROM a.k ORDER BY ALL;
+----
+0	12495000	2500
+1	12497500	2500
+2	12500000	2500
+3	12502500	2500
+NULL	NULL	NULL
+
+# Null-safe restriction removal retains the NULL group
+query III
+WITH first AS MATERIALIZED (SELECT * FROM all_keys), d AS MATERIALIZED (SELECT DISTINCT k FROM first) SELECT
+    d.k,a.s,a.n FROM d LEFT JOIN (SELECT f.k,sum(v)s,count(*)n FROM low_fact f SEMI JOIN d ON f.k IS NOT
+    DISTINCT FROM d.k GROUP BY f.k)a ON d.k IS NOT DISTINCT FROM a.k ORDER BY ALL;
+----
+0	12495000	2500
+1	12497500	2500
+2	12500000	2500
+3	12502500	2500
+NULL	11	1
+
+# Same-owner different key columns do not prove coverage
+query II
+WITH d AS MATERIALIZED (SELECT k,k+10000 other FROM demand) SELECT d.k,a.s FROM d LEFT JOIN (SELECT
+    f.k,sum(v)s FROM fact f SEMI JOIN (SELECT other k FROM d)old ON f.k=old.k GROUP BY f.k)a USING(k) ORDER BY
+    ALL;
+----
+1	NULL
+2	NULL
+2	NULL
+2000	NULL
+NULL	NULL
+
+# The old RHS filter can remove demanded keys
+query II
+WITH d AS MATERIALIZED (SELECT * FROM demand) SELECT d.k,a.s FROM d LEFT JOIN (SELECT f.k,sum(v)s FROM fact f
+    SEMI JOIN (SELECT k FROM d WHERE k<>2)old ON f.k=old.k GROUP BY f.k)a USING(k) ORDER BY ALL;
+----
+1	45010
+2	NULL
+2	NULL
+2000	NULL
+NULL	NULL
+
+# DISTINCT ON another column need not preserve the key
+query II
+WITH d AS MATERIALIZED (SELECT k,0 other FROM demand) SELECT d.k,a.s FROM d LEFT JOIN (SELECT f.k,sum(v)s FROM
+    fact f SEMI JOIN (SELECT DISTINCT ON(other) k FROM d ORDER BY other,k)old ON f.k=old.k GROUP BY f.k)a
+    USING(k) ORDER BY ALL;
+----
+1	45010
+2	NULL
+2	NULL
+2000	NULL
+NULL	NULL
+
+# DISTINCT with a different collation can discard keys needed by the binary restriction.
+statement ok
+CREATE TABLE collated_fact AS
+SELECT (['A', 'a', 'B', 'b'])[i % 4 + 1] AS k FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE collated_keys AS SELECT DISTINCT k FROM collated_fact;
+
+query II
+WITH d AS MATERIALIZED (SELECT DISTINCT k FROM collated_keys)
+SELECT count(a.n), sum(a.n)
+FROM d LEFT JOIN (
+    SELECT f.k, count(*) AS n FROM collated_fact f
+    SEMI JOIN (SELECT DISTINCT k COLLATE nocase AS k FROM d) old ON f.k = old.k COLLATE "C"
+    GROUP BY f.k
+) a ON d.k IS NOT DISTINCT FROM a.k;
+----
+2	5000
+
+# Empty nested demand remains empty
+query I
+WITH first AS MATERIALIZED (SELECT * FROM demand WHERE k<0), second AS MATERIALIZED (SELECT * FROM first)
+    SELECT count(*) FROM second d LEFT JOIN (SELECT k,sum(v)s FROM fact GROUP BY k)a USING(k);
+----
+0
+
+# Shared volatile payloads are produced once across dependent owners
+query III
+WITH first AS MATERIALIZED (SELECT k,nextval('shared_visits') payload FROM demand), second AS MATERIALIZED
+    (SELECT * FROM first) SELECT count(*),sum(d.payload),sum(a.s) FROM second d LEFT JOIN (SELECT k,sum(v)s
+    FROM fact GROUP BY k)a USING(k);
+----
+5	15	135050
+
+# Every source row was produced once
+query I
+SELECT currval('shared_visits');
+----
+5
+
+# Discarding the last unfiltered reader must not change surviving sequence payloads
+query III
+WITH c AS MATERIALIZED (SELECT i::INTEGER k,nextval('reader_guard_visits') payload FROM range(4)t(i)), d AS
+    MATERIALIZED (SELECT * FROM c WHERE k=2) SELECT d.k,d.payload,a.s FROM d LEFT JOIN (SELECT f.k,sum(v)s
+    FROM (SELECT (k+4)%4 k,v FROM low_fact)f SEMI JOIN c old USING(k) GROUP BY f.k)a USING(k) UNION ALL SELECT
+    k,payload,NULL::HUGEINT FROM c WHERE k=3 ORDER BY ALL;
+----
+2	3	12500000
+3	4	NULL
+
+# The original unfiltered reader still requires four evaluations
+query I
+SELECT currval('reader_guard_visits');
+----
+4
+
+# The removal candidate has the same producer-evaluation guard
+query III
+WITH c AS MATERIALIZED (SELECT i::INTEGER k,nextval('removal_guard_visits') payload FROM range(4)t(i)), d AS
+    MATERIALIZED (SELECT * FROM c WHERE k>=1) SELECT d.k,d.payload,a.s FROM d LEFT JOIN (SELECT f.k,sum(v)s
+    FROM (SELECT (k+4)%4 k,v FROM low_fact)f SEMI JOIN c old USING(k) GROUP BY f.k)a USING(k) ORDER BY ALL;
+----
+1	2	12497500
+2	3	12500000
+3	4	12502500
+
+# Removal must retain all producer evaluations
+query I
+SELECT currval('removal_guard_visits');
+----
+4
+
+# Prepared parameters keep their values through nested owner bindings
+query II
+EXECUTE shared_demand(1);
+----
+1	45010
+
+# The same prepared plan accepts different demand
+query II
+EXECUTE shared_demand(2);
+----
+1	45010
+2	45020
+2	45020
+
+# Recursive sources retain their reference behavior
+query II
+WITH RECURSIVE d(k) AS (VALUES(1) UNION ALL SELECT k+1 FROM d WHERE k<3) SELECT d.k,a.s FROM d LEFT JOIN
+    (SELECT k,sum(v)s FROM fact GROUP BY k)a USING(k) ORDER BY ALL;
+----
+1	45010
+2	45020
+3	45030
+
+# Replacement is considered before the native-filter insertion bailout.
+query III
+WITH c AS MATERIALIZED (SELECT * FROM fact_data), d AS MATERIALIZED (SELECT * FROM c WHERE k=1) SELECT
+    count(*),sum(d.v),sum(a.s) FROM d LEFT JOIN (SELECT f.k,sum(v)s FROM fact_data f SEMI JOIN c old USING(k)
+    GROUP BY f.k)a USING(k);
+----
+10	45010	450100
