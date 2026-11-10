@@ -103,9 +103,11 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 
 	// If we have a function that uses short circuiting, then we can only extract CSEs from the leftmost
 	// side of the argument tree (child_no == 0)
-	switch (expr.GetExpressionClass()) {
-	case ExpressionClass::BOUND_CONJUNCTION:
-	case ExpressionClass::BOUND_CASE: {
+	switch (expr.GetExpressionType()) {
+	case ExpressionType::CONJUNCTION_AND:
+	case ExpressionType::CONJUNCTION_OR:
+	case ExpressionType::CASE_EXPR:
+	case ExpressionType::OPERATOR_COALESCE: {
 		// Save the short circuit reference
 		const auto save_short_circuit = state.short_circuited;
 		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) {
@@ -115,12 +117,10 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 		state.short_circuited = save_short_circuit;
 		break;
 	}
-	case ExpressionClass::BOUND_OPERATOR: {
+	case ExpressionType::OPERATOR_TRY:
+	case ExpressionType::OPERATOR_HAS_ERROR: {
 		const auto save_inside_try = state.inside_try;
-		const auto expression_type = expr.GetExpressionType();
-		if (expression_type == ExpressionType::OPERATOR_TRY || expression_type == ExpressionType::OPERATOR_HAS_ERROR) {
-			state.inside_try = true;
-		}
+		state.inside_try = true;
 		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { CountExpressions(child, state); });
 		state.inside_try = save_inside_try;
 		break;

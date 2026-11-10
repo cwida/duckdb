@@ -1,0 +1,55 @@
+# name: test/sql/optimizer/cse_coalesce_short_circuit.test
+# description: Common subexpressions preserve COALESCE short-circuiting
+# group: [optimizer]
+
+# The common error is only reached after a NULL argument.
+query II
+SELECT coalesce(i%2, error('boom')), coalesce(i%3, error('boom')) FROM range(4) t(i)
+----
+0	0
+1	1
+0	2
+1	0
+
+# The same boundary applies to fallible casts.
+query II
+SELECT coalesce(i%2, ('bad' || i)::INT), coalesce(i%3, ('bad' || i)::INT) FROM range(4) t(i)
+----
+0	0
+1	1
+0	2
+1	0
+
+# A shared third argument must not be evaluated when either preceding argument succeeds.
+query II
+SELECT coalesce(nullif(i%2, 0), i%3, error('boom')),
+       coalesce(nullif(i%3, 0), i%2, error('boom')) FROM range(4) t(i)
+----
+0	0
+1	1
+2	2
+1	1
+
+query II
+SELECT min(coalesce(i%2, error('boom'))), max(coalesce(i%3, error('boom'))) FROM range(4) t(i)
+----
+0	2
+
+# Errors remain observable when all preceding arguments are NULL.
+statement error
+SELECT coalesce(nullif(i%2, 0), error('boom')), coalesce(nullif(i%3, 0), error('boom')) FROM range(4) t(i)
+----
+boom
+
+statement ok
+PREPARE p AS SELECT coalesce($1, error('boom')), coalesce($2, error('boom'))
+
+query II
+EXECUTE p(1, 2)
+----
+1	2
+
+statement error
+EXECUTE p(NULL, 2)
+----
+boom

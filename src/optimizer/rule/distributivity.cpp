@@ -15,15 +15,15 @@ DistributivityRule::DistributivityRule(ExpressionRewriter &rewriter) : Rule(rewr
 }
 
 void DistributivityRule::AddExpressionSet(Expression &expr, expression_set_t &set) {
-	// a volatile conjunct in two branches is two evaluations, so it is never common to the branches
+	// Factoring must not change side effects or evaluate fallible expressions outside their guards.
 	if (expr.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
 		auto &and_expr = expr.Cast<BoundConjunctionExpression>();
 		for (auto &child : and_expr.GetChildrenMutable()) {
-			if (!child->IsVolatile()) {
+			if (!child->IsVolatile() && !child->CanThrow()) {
 				set.insert(*child);
 			}
 		}
-	} else if (!expr.IsVolatile()) {
+	} else if (!expr.IsVolatile() && !expr.CanThrow()) {
 		set.insert(expr);
 	}
 }

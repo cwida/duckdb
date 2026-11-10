@@ -33,7 +33,7 @@ static inline void ExtractConjunctedExpressions(Expression &expression,
 		for (auto &child : conjunction.GetChildren()) {
 			ExtractConjunctedExpressions(*child, expressions);
 		}
-	} else if (!expression.IsVolatile()) {
+	} else if (!expression.IsVolatile() && !expression.CanThrow()) {
 		unordered_set<TableIndex> table_idxs;
 		GetTableIndices(expression, table_idxs);
 		if (table_idxs.size() != 1) {

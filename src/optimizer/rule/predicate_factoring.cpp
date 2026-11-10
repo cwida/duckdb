@@ -36,7 +36,7 @@ static bool ColumnBindingIsvalid(const ColumnBinding &column_binding) {
 }
 
 static bool GetSingleColumnBinding(const Expression &expr, ColumnBinding &column_binding) {
-	if (expr.IsVolatile()) {
+	if (expr.IsVolatile() || expr.CanThrow()) {
 		return false;
 	}
 
