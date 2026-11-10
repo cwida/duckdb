@@ -5,6 +5,10 @@
 # list rather than let position decide.
 AttachToExternalResource <- 'ATTACH' 'TO' ExternalResourceSource AttachAlias AttachOptions?
 ConnectToExternalResource <- 'CONNECT' 'TO' ExternalResourceSource AttachOptions?
-ExternalResourceSource <- ExternalResourceCreateClause / ExternalResourceReferenceClause
+ExternalResourceSource <- ExternalResourceCreateClause / ResourceWordsCreateClause / ExternalResourceReferenceClause / ResourceReferenceClause
 ExternalResourceCreateClause <- 'NEW' 'TEMPORARY' ExternalResourceKeyword StringLiteral ExternalResourceCreationOptions?
 ExternalResourceReferenceClause <- ExternalResourceKeyword ColId
+# The short noun, as in CREATE RESOURCE: "NEW TEMPORARY RESOURCE A B (...)" spells the type as words. A reference
+# has no type to spell, so "RESOURCE <name>" is the long form's "EXTERNAL RESOURCE <name>" with less to type.
+ResourceWordsCreateClause <- 'NEW' 'TEMPORARY' 'RESOURCE' ColId ColId+ ExternalResourceCreationOptions?
+ResourceReferenceClause <- 'RESOURCE' ColId

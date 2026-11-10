@@ -116,7 +116,9 @@ SQLStatement:
     - ConnectToExternalResource
     - ExternalResourceStatement
     - CreateExternalResourceStmt
+    - CreateResourceWords
     - RegisterExternalResourceStmt
+    - RegisterResourceWords
     - DestroyExternalResourceStmt
     - ExtensionRepositoryStatement
     - CreateExtensionRepositoryStmt
@@ -772,7 +774,9 @@ ExternalResourceOptionsPtr:
   rules:
     - ExternalResourceSource
     - ExternalResourceCreateClause
+    - ResourceWordsCreateClause
     - ExternalResourceReferenceClause
+    - ResourceReferenceClause
 
 GenericCopyOptionList:
   type: "vector<GenericCopyOption>"
