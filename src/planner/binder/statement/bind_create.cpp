@@ -498,15 +498,9 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			    });
 		}
 
-		// Constant-fold all default parameter expressions. The folded values are stored with their types: a database
-		// written before wide decimals folds them as the engines of its storage version do
+		// Constant-fold all default parameter expressions
 		identifier_map_t<Value> default_values;
 		identifier_set_t integer_literal_defaults;
-		const bool legacy_decimal_defaults =
-		    !info.temporary && attached.HasStorageManager() &&
-		    StorageManager::IsPriorToVersion(Decimal::WIDE_VERSION_ADDED,
-		                                     attached.GetStorageManager().GetStorageVersion());
-		LegacyDecimalResultTypeScope legacy_scope(context, legacy_decimal_defaults);
 		for (auto &it : function->default_parameters) {
 			auto &param_name = it.first;
 			auto &param_expr = it.second;

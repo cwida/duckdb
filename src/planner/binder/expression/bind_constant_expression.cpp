@@ -6,8 +6,8 @@
 namespace duckdb {
 
 BindResult ExpressionBinder::BindExpression(ConstantExpression &expr, idx_t depth) {
-	// the index keys of a database written before wide decimals type their literals as those engines did
-	auto value = expr.GetLiteral().ToValue(Decimal::MaxLiteralWidth(context));
+	// a literal wider than the max_decimal_width setting binds to DOUBLE
+	auto value = expr.GetLiteral().ToValue(Decimal::MaxWidth(context));
 	return BindResult(make_uniq<BoundConstantExpression>(std::move(value)));
 }
 

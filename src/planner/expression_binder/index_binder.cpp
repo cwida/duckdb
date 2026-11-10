@@ -17,42 +17,8 @@
 #include "duckdb/planner/operator/logical_create_index.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
-#include "duckdb/common/types/decimal.hpp"
-#include "duckdb/main/attached_database.hpp"
-#include "duckdb/storage/storage_manager.hpp"
 
 namespace duckdb {
-
-namespace {
-
-//! The storage version the keys of an index are written with: the version its stored data records (the ART saves
-//! the version it was created under), or the version of the database for an index that is being created. The version
-//! stays with the index when the database is upgraded to a newer storage version, since the stored keys keep their
-//! type.
-static StorageVersion IndexKeyStorageVersion(AttachedDatabase &db, optional_ptr<const IndexStorageInfo> storage_info) {
-	if (storage_info && storage_info->IsValid()) {
-		auto entry = storage_info->options.find("storage_version");
-		if (entry == storage_info->options.end()) {
-			// indexes written before v1.5.0 record no version, all of them predate wide decimals
-			return StorageVersion::INVALID;
-		}
-		return static_cast<StorageVersion>(entry->second.GetValue<uint64_t>());
-	}
-	return db.GetStorageManager().GetStorageVersion();
-}
-
-//! Whether the keys of an index are bound under the decimal rules of the engines before wide decimals. Such an engine
-//! clamps the result of decimal arithmetic to 38 digits and types a literal above 38 digits as DOUBLE, and the keys of
-//! an index it writes have those types: binding the same keys to a wide type here would leave the stored keys
-//! unmatched (a UNIQUE index would accept duplicates). An index of such a storage version therefore binds its keys as
-//! those engines do, in both directions: an index this engine writes into their database is read back by them with
-//! the same key type.
-static bool UsesLegacyDecimalKeys(AttachedDatabase &db, optional_ptr<const IndexStorageInfo> storage_info) {
-	return db.HasStorageManager() &&
-	       StorageManager::IsPriorToVersion(Decimal::WIDE_VERSION_ADDED, IndexKeyStorageVersion(db, storage_info));
-}
-
-} // namespace
 
 IndexBinder::IndexBinder(Binder &binder, ClientContext &context, optional_ptr<TableCatalogEntry> table,
                          optional_ptr<CreateIndexInfo> info)
@@ -76,13 +42,9 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index)
 	// bind the parsed expressions to create unbound expressions
 	vector<unique_ptr<Expression>> unbound_expressions;
 	unbound_expressions.reserve(parsed_expressions.size());
-	{
-		LegacyDecimalResultTypeScope key_scope(context,
-		                                       UsesLegacyDecimalKeys(unbound_index.db, unbound_index.GetStorageInfo()));
-		for (auto &expr : parsed_expressions) {
-			auto copy = expr->Copy();
-			unbound_expressions.push_back(Bind(copy));
-		}
+	for (auto &expr : parsed_expressions) {
+		auto copy = expr->Copy();
+		unbound_expressions.push_back(Bind(copy));
 	}
 
 	CreateIndexInput input(context, unbound_index.table_io_manager, unbound_index.db, create_info.constraint_type,
@@ -160,23 +122,19 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 	auto &properties = binder.GetStatementProperties();
 	const auto statement_requires_rebind = properties.always_require_rebind;
 	vector<unique_ptr<Expression>> expressions;
-	{
-		LegacyDecimalResultTypeScope key_scope(
-		    context, UsesLegacyDecimalKeys(table_entry.ParentCatalog().GetAttached(), nullptr));
-		for (auto &expr : create_index_info->expressions) {
-			properties.always_require_rebind = false;
-			expressions.push_back(Bind(expr));
-			// casts are bound without the binder, so a cast that reads settings such as TimeZone is found in the key
-			if (properties.always_require_rebind || expressions.back()->RequiresRebind()) {
-				throw BinderException("Index keys cannot contain expressions with side effects. They also cannot "
-				                      "depend on settings such as TimeZone.");
-			}
-			// lambda functions need a ClientContext to execute, which appends and deletes do not have
-			auto lambda_function = FindLambdaFunction(*expressions.back());
-			if (lambda_function) {
-				throw BinderException(*lambda_function, "Index keys cannot contain lambda functions such as %s.",
-				                      lambda_function->Function().GetName());
-			}
+	for (auto &expr : create_index_info->expressions) {
+		properties.always_require_rebind = false;
+		expressions.push_back(Bind(expr));
+		// casts are bound without the binder, so a cast that reads settings such as TimeZone is found in the key
+		if (properties.always_require_rebind || expressions.back()->RequiresRebind()) {
+			throw BinderException("Index keys cannot contain expressions with side effects. They also cannot depend on "
+			                      "settings such as TimeZone.");
+		}
+		// lambda functions need a ClientContext to execute, which appends and deletes do not have
+		auto lambda_function = FindLambdaFunction(*expressions.back());
+		if (lambda_function) {
+			throw BinderException(*lambda_function, "Index keys cannot contain lambda functions such as %s.",
+			                      lambda_function->Function().GetName());
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;

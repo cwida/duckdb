@@ -68,13 +68,9 @@ public:
 	//! The widest DECIMAL the session binds: the max_decimal_width setting (at least MAX_WIDTH_INT128, so the
 	//! fixed-size tiers are never bounded by it), or the uint32_t range of the width without a context
 	static uint32_t MaxWidth(optional_ptr<ClientContext> context);
-	//! The widest result of combining decimals, given the widest DECIMAL among the inputs: MaxWidth (or the input
-	//! width when that is wider), except under the legacy rule of databases written before wide decimals (see
-	//! ClientContext::legacy_decimal_result_types), where fixed-size inputs stay within MAX_WIDTH_INT128.
+	//! The widest result of combining decimals, given the widest DECIMAL among the inputs: MaxWidth, or the input
+	//! width when that is wider
 	static uint32_t MaxResultWidth(optional_ptr<ClientContext> context, uint32_t max_input_width);
-	//! The widest DECIMAL a numeric literal binds to, wider literals bind to DOUBLE: MaxWidth, or MAX_WIDTH_INT128
-	//! under the legacy rule, as every literal above 38 digits was a DOUBLE before wide decimals.
-	static uint32_t MaxLiteralWidth(optional_ptr<ClientContext> context);
 	//! Narrows a computed width to MaxWidth, throws when the operation needs a wider DECIMAL
 	static uint32_t CheckedWidth(optional_ptr<ClientContext> context, idx_t width, const string &operation);
 	static string ToString(int16_t value, uint32_t width, uint32_t scale);
@@ -84,18 +80,5 @@ public:
 	//! Formats the unscaled value of a wide decimal (a BIGNUM blob), a long conversion checks for interrupts
 	static string ToString(bignum_t value, uint32_t width, uint32_t scale,
 	                       optional_ptr<ClientContext> context = nullptr);
-};
-
-//! Binds decimal results as the engines before wide decimals did while in scope, when legacy is set: arithmetic and
-//! type combination stay within MAX_WIDTH_INT128 and a literal above 38 digits is a DOUBLE (see
-//! ClientContext::legacy_decimal_result_types)
-class LegacyDecimalResultTypeScope {
-public:
-	LegacyDecimalResultTypeScope(ClientContext &context, bool legacy);
-	~LegacyDecimalResultTypeScope();
-
-private:
-	ClientContext &context;
-	bool previous;
 };
 } // namespace duckdb

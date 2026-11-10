@@ -20,30 +20,7 @@ uint32_t Decimal::MaxWidth(optional_ptr<ClientContext> context) {
 }
 
 uint32_t Decimal::MaxResultWidth(optional_ptr<ClientContext> context, uint32_t max_input_width) {
-	if (max_input_width > MAX_WIDTH_INT128) {
-		// a wide input never existed before wide decimals, its result is not bound by the legacy rule
-		return MaxValue<uint32_t>(MaxWidth(context), max_input_width);
-	}
-	if (context && context->legacy_decimal_result_types) {
-		return MAX_WIDTH_INT128;
-	}
-	return MaxWidth(context);
-}
-
-uint32_t Decimal::MaxLiteralWidth(optional_ptr<ClientContext> context) {
-	if (context && context->legacy_decimal_result_types) {
-		return MAX_WIDTH_INT128;
-	}
-	return MaxWidth(context);
-}
-
-LegacyDecimalResultTypeScope::LegacyDecimalResultTypeScope(ClientContext &context, bool legacy)
-    : context(context), previous(context.legacy_decimal_result_types) {
-	context.legacy_decimal_result_types = legacy;
-}
-
-LegacyDecimalResultTypeScope::~LegacyDecimalResultTypeScope() {
-	context.legacy_decimal_result_types = previous;
+	return MaxValue<uint32_t>(MaxWidth(context), max_input_width);
 }
 
 uint32_t Decimal::CheckedWidth(optional_ptr<ClientContext> context, idx_t width, const string &operation) {

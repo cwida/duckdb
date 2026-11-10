@@ -7,27 +7,21 @@
 statement ok
 ATTACH '{TEST_DIR}/wide_decimal_stored_v140.db' AS old (STORAGE_VERSION 'v1.4.0');
 
-# a macro default folds under the decimal rules of the engines that read the database
-statement ok
+# a macro default is stored folded, with its type: a wide folded type is refused like a wide parameter type
+statement error
 CREATE MACRO old.m(x := 1::DECIMAL(38,0) * 1::DECIMAL(38,0)) AS x;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement ok
+CREATE MACRO old.m(x := (1::DECIMAL(38,0) * 1::DECIMAL(38,0))::DECIMAL(38,0)) AS x;
 
 query II
 SELECT old.m(), typeof(old.m())
 ----
 1	DECIMAL(38,0)
 
-query I
-SELECT typeof(1::DECIMAL(38,0) * 1::DECIMAL(38,0))
-----
-DECIMAL(76,0)
-
-# so a default that overflows those rules is rejected, as those engines reject it
-statement error
-CREATE MACRO old.m_overflow(x := repeat('9', 38)::DECIMAL(38,0) * 10::DECIMAL(38,0)) AS x;
-----
-<REGEX>:.*Overflow in multiplication.*
-
-# a default of an explicitly wide type is refused, like a wide parameter type
+# a default of an explicitly wide type is refused as well
 statement error
 CREATE MACRO old.m_wide(x := 1::DECIMAL(39,0)) AS x;
 ----
@@ -152,9 +146,14 @@ DETACH old;
 statement ok
 ATTACH '{TEST_DIR}/wide_decimal_stored_v200.db' AS old (STORAGE_VERSION 'v2.0.0');
 
-# the folded default of a macro is stored with its type: it folds under the rules of those engines
-statement ok
+# the folded default of a macro is stored with its type, which may not be wide
+statement error
 CREATE MACRO old.m(x := 1::DECIMAL(38,0) * 1::DECIMAL(38,0)) AS x;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement ok
+CREATE MACRO old.m(x := (1::DECIMAL(38,0) * 1::DECIMAL(38,0))::DECIMAL(38,0)) AS x;
 
 query II
 SELECT old.m(), typeof(old.m())

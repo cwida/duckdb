@@ -1,0 +1,82 @@
+# name: test/sql/types/decimal/wide_decimal_index.test
+# description: Index keys with wide decimal arithmetic keep the exact (wide) key type
+# group: [decimal]
+
+# wide decimal keys need the latest storage version, the configs that force the default one on disk cannot hold them
+require no_force_storage
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_index.db' AS new (STORAGE_VERSION 'latest');
+
+statement ok
+CREATE TABLE new.t(a DECIMAL(38,2), b DECIMAL(38,2));
+
+statement ok
+CREATE UNIQUE INDEX i_mul ON new.t((a * b));
+
+statement ok
+CREATE UNIQUE INDEX i_add ON new.t((a + b));
+
+statement ok
+INSERT INTO new.t VALUES (1.5, 2.5), (repeat('9', 36)::DECIMAL(38,2), 10);
+
+query II
+SELECT typeof(a * b), typeof(a + b) FROM new.t LIMIT 1
+----
+DECIMAL(76,4)	DECIMAL(39,2)
+
+# a duplicate product or sum is rejected
+statement error
+INSERT INTO new.t VALUES (0.75, 5);
+----
+<REGEX>:.*Duplicate key.*3\.7500.*
+
+statement error
+INSERT INTO new.t VALUES (1, 3);
+----
+<REGEX>:.*Duplicate key.*4\.00.*
+
+# the index is bound again from storage with the same key type
+statement ok
+CHECKPOINT new;
+
+statement ok
+DETACH new
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_index.db' AS new;
+
+statement error
+INSERT INTO new.t VALUES (0.75, 5);
+----
+<REGEX>:.*Duplicate key.*3\.7500.*
+
+statement ok
+INSERT INTO new.t VALUES (0.5, 0.5);
+
+query II
+SELECT a, b FROM new.t WHERE a * b = 3.75
+----
+1.50	2.50
+
+query II
+SELECT a, b FROM new.t WHERE a + b = 1
+----
+0.50	0.50
+
+query I
+SELECT a * b FROM new.t WHERE a > 1000
+----
+9999999999999999999999999999999999990.0000
+
+query I
+SELECT count(*) FROM new.t
+----
+3
+
+# a generated column of a wide type is stored like a wide column
+statement ok
+CREATE TABLE new.g(a DECIMAL(38,0), b DECIMAL(38,0), c AS (a * b))
+
+statement ok
+DETACH new
