@@ -196,10 +196,8 @@ WHERE m;
 
 query I
 SELECT count(*)
-FROM (
-	SELECT CAST(p.s AS INTEGER) NOT IN (SELECT b FROM fallible_build) AS m
-	FROM fallible_probe p JOIN fallible_filter g ON p.i=g.k
-) q
-WHERE m;
+FROM (fallible_probe p JOIN fallible_filter g ON p.i=g.k)
+JOIN BY (TYPE MARK) fallible_build ON CAST(p.s AS INTEGER) IS NOT DISTINCT FROM b
+WHERE NOT __mark_join_marker;
 ----
 0
