@@ -251,8 +251,8 @@ public:
 	                     unique_ptr<ParquetWriteTransformData> &transform_data,
 	                     const ParquetCdcBoundaries *cdc_boundaries = nullptr);
 	void FlushRowGroup(PreparedRowGroup &row_group);
-	//! Prepares and writes a row group. The copy operators call flush_batch one at a time per file, in file order,
-	//! which content-defined chunking relies on: its chunkers carry state from one row group to the next
+	//! Prepares and writes a row group. The copy operators flush one batch at a time per file, which
+	//! content-defined chunking relies on: its chunkers carry state from one row group to the next
 	void Flush(ColumnDataCollection &buffer, unique_ptr<ParquetWriteTransformData> &transform_data);
 	//! Rolls the content-defined chunker over a row group's values in file order, writing nothing, and
 	//! returns the boundaries that PrepareRowGroup will then cut pages at. The chunker is the only state
