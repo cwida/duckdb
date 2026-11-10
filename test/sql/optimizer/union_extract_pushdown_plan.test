@@ -20,11 +20,34 @@ EXPLAIN SELECT v.k FROM (
 ----
 logical_opt	<!REGEX>:.*variant_extract.*
 
-# An unguarded cast can still be evaluated by a shredded scan.
+# Existing direct native and Parquet scans retain typed extraction pushdown.
+statement ok
+CREATE TABLE native_extract_plan AS SELECT * FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet';
+
+query II
+EXPLAIN SELECT v.k::BIGINT FROM native_extract_plan;
+----
+logical_opt	<!REGEX>:.*CAST.*
+
 query II
 EXPLAIN SELECT v.k::BIGINT FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet';
 ----
 logical_opt	<!REGEX>:.*CAST.*
+
+# Throwing casts remain above a new UNION boundary; the field itself still pushes down.
+query II
+EXPLAIN SELECT v.k::BIGINT FROM (
+    SELECT v FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet'
+    UNION ALL SELECT v FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet');
+----
+logical_opt	<REGEX>:.*CAST.*
+
+query II
+EXPLAIN SELECT v.k::BIGINT FROM (
+    SELECT v FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet'
+    UNION ALL SELECT v FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet');
+----
+logical_opt	<!REGEX>:.*variant_extract.*
 
 # A plain scan must leave a guarded cast inside CASE, even without a union.
 query II

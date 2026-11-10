@@ -1219,6 +1219,9 @@ void RemoveUnusedColumns::RewriteExpressions(LogicalProjection &proj, idx_t expr
 
 bool RemoveUnusedColumns::TryPushdownUnionExtracts(LogicalSetOperation &setop) {
 	D_ASSERT(setop.setop_all && !everything_referenced && mode == RemoveUnusedColumnsMode::APPLY);
+	// Branch scans may discard invisible rows after evaluating a pushed cast. Keep throwing casts at
+	// their original site above the union, while still pushing the field extraction into each branch.
+	PreserveThrowingCasts(setop.GetColumnBindings());
 	setop.ResolveOperatorTypes();
 	auto original_bindings = setop.children[0]->GetColumnBindings();
 	vector<unique_ptr<Expression>> expressions;
@@ -1335,6 +1338,10 @@ void RemoveUnusedColumns::CheckPushdownExtract(LogicalOperator &op) {
 			if (col.supports_pushdown_extract == PushdownExtractSupport::DISABLED) {
 				//! Already explicitly disabled, don't need to check
 				continue;
+			}
+			if (expr.GetReturnType().id() == LogicalTypeId::VARIANT) {
+				// New VARIANT projection routes must not move casts into scans that apply runtime row filters.
+				PreserveThrowingCasts({ColumnBinding(proj.table_index, proj_idx)});
 			}
 			col.supports_pushdown_extract = PushdownExtractSupport::ENABLED;
 		}

@@ -59,7 +59,7 @@ WHERE id = 1;
 
 endloop
 
-# Native visibility selection must happen before evaluating casts on deleted values.
+# New UNION/projection routes must evaluate casts after native visibility selection.
 statement ok
 DELETE FROM cast_rows WHERE id = 2;
 
@@ -72,12 +72,41 @@ FROM (SELECT {FIELD} FROM cast_rows UNION ALL SELECT {FIELD} FROM cast_rows) u;
 1
 1
 
+endloop
+
 query I
-SELECT {FIELD}.k::INTEGER FROM cast_rows;
+SELECT v.k::INTEGER FROM (SELECT v FROM cast_rows);
 ----
 1
 
-endloop
+# The same boundary applies through nested projections and nested extract paths.
+query I rowsort
+SELECT x.k::INTEGER FROM (
+    SELECT v AS x FROM (SELECT v FROM cast_rows UNION ALL SELECT v FROM cast_rows));
+----
+1
+1
+
+statement ok
+CREATE TABLE nested_cast_rows(id INTEGER, v VARIANT);
+
+statement ok
+INSERT INTO nested_cast_rows VALUES (1, {'outer': {'k': 1}}::VARIANT), (2, {'outer': {'k': 'bad'}}::VARIANT);
+
+statement ok
+DELETE FROM nested_cast_rows WHERE id = 2;
+
+query I rowsort
+SELECT x.outer.k::INTEGER FROM (
+    SELECT v AS x FROM nested_cast_rows UNION ALL SELECT v FROM nested_cast_rows);
+----
+1
+1
+
+query I
+SELECT x.k::INTEGER FROM (SELECT v.outer AS x FROM nested_cast_rows);
+----
+1
 
 # A sibling residual filter must not inspect references owned by rewritten union expressions.
 statement ok
