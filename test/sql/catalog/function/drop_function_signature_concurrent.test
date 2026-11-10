@@ -306,3 +306,80 @@ SELECT removed_subject('a'), removed_caller();
 ----
 42	42
 
+# A comment on the subject is a harmless alter: a concurrent dependency commits in either order.
+statement ok
+CREATE MACRO comment_order(x INTEGER) AS x, (x VARCHAR) AS 42;
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+COMMENT ON MACRO comment_order IS 'first';
+
+statement ok con2
+CREATE MACRO comment_order_caller() AS comment_order(1);
+
+statement ok con2
+COMMIT;
+
+statement ok con1
+COMMIT;
+
+query I
+SELECT comment_order_caller();
+----
+1
+
+# A removal on a different macro does not affect a dependency on this one, in either order.
+statement ok
+CREATE MACRO other_subject(x INTEGER) AS x, (x VARCHAR) AS 42;
+
+statement ok
+CREATE MACRO kept_subject(x INTEGER) AS x + 10;
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+DROP MACRO other_subject(VARCHAR);
+
+statement ok con2
+CREATE MACRO kept_caller() AS kept_subject(1);
+
+statement ok con1
+COMMIT;
+
+statement ok con2
+COMMIT;
+
+statement ok
+CREATE OR REPLACE MACRO other_subject(x INTEGER) AS x, (x VARCHAR) AS 42;
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+DROP MACRO other_subject(VARCHAR);
+
+statement ok con2
+CREATE MACRO kept_caller_2() AS kept_subject(2);
+
+statement ok con2
+COMMIT;
+
+statement ok con1
+COMMIT;
+
+query II
+SELECT kept_caller(), kept_caller_2();
+----
+11	12
