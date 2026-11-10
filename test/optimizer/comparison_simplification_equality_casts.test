@@ -134,3 +134,160 @@ SELECT
 FROM f;
 ----
 0	1	1	1	0	2
+
+# BOOLEAN, DECIMAL and UUID -> VARCHAR, BOOLEAN -> integer and DECIMAL of up to 15 digits -> DOUBLE
+statement ok
+CREATE TABLE v AS SELECT * FROM (VALUES
+	(true, 1.50::DECIMAL(4,2), 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::UUID),
+	(false, -2.00::DECIMAL(4,2), '00000000-0000-0000-0000-000000000001'::UUID),
+	(NULL, NULL, NULL)
+) v(b, d, u);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM v
+WHERE b::VARCHAR = 'true' AND d::VARCHAR = '1.50' AND u::VARCHAR IN ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 'abc')
+	AND b = 1 AND d = 1.5::DOUBLE;
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+# only the canonical string or the exact value of a source value can match
+query IIIIIIII
+SELECT
+	count(*) FILTER (WHERE b::VARCHAR IN ('false', 'TRUE', 't', '1')),
+	count(*) FILTER (WHERE b::VARCHAR IS DISTINCT FROM 'TRUE'),
+	count(*) FILTER (WHERE d::VARCHAR IN ('-2.00', '1.5', '01.50', '1.505')),
+	count(*) FILTER (WHERE u::VARCHAR IN ('00000000-0000-0000-0000-000000000001', 'A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11')),
+	count(*) FILTER (WHERE b IN (0, 2)),
+	count(*) FILTER (WHERE b != 2),
+	count(*) FILTER (WHERE d IN (-2e0, 1.499::DOUBLE, 'nan'::DOUBLE)),
+	count(*) FILTER (WHERE d IS NOT DISTINCT FROM 1.5::DOUBLE)
+FROM v;
+----
+1	3	1	1	1	2	1	1
+
+# DECIMAL -> DOUBLE (FLOAT) only if its width fits in the 15 (6) digits the floating type tells apart
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM v WHERE d::DECIMAL(15,2)::DOUBLE = 1.5::DOUBLE AND d::DECIMAL(6,2)::FLOAT = 1.5::FLOAT;
+----
+analyzed_plan	<!REGEX>:.*AS (DOUBLE|FLOAT).*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM v WHERE d::DECIMAL(16,2)::DOUBLE = 1.5::DOUBLE;
+----
+analyzed_plan	<REGEX>:.*AS DOUBLE.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM v WHERE d::DECIMAL(7,2)::FLOAT = 1.5::FLOAT;
+----
+analyzed_plan	<REGEX>:.*AS FLOAT.*
+
+query II
+SELECT
+	count(*) FILTER (WHERE d::DECIMAL(6,2)::FLOAT IN (1.5::FLOAT, 1.501::FLOAT, -2::FLOAT)),
+	count(*) FILTER (WHERE d::DECIMAL(6,2)::FLOAT != 1.501::FLOAT)
+FROM v;
+----
+2	2
+
+# DECIMAL(w,0) -> integer only if the integer type fits all w digits
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a::DECIMAL(10,0)::BIGINT IN (5, 5000000000);
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a::DECIMAL(10,0)::INTEGER = 5;
+----
+analyzed_plan	<REGEX>:.*AS INTEGER.*
+
+query I
+SELECT count(*) FILTER (WHERE a::DECIMAL(10,0)::BIGINT IN (5, 5000000000)) FROM t;
+----
+1
+
+# temporal -> VARCHAR: only the canonical string of a value can match
+statement ok
+CREATE TABLE dt AS SELECT * FROM (VALUES
+	(DATE '2024-01-05', TIME '12:00:00', '12:00:00.123456789'::TIME_NS, TIMESTAMP '2024-01-05 12:00:00.5',
+		'2024-01-05 12:00:00'::TIMESTAMP_S, '2024-01-05 12:00:00.123'::TIMESTAMP_MS,
+		'2024-01-05 12:00:00.123456789'::TIMESTAMP_NS),
+	('infinity'::DATE, TIME '24:00:00', '24:00:00'::TIME_NS, '0044-03-15 (BC) 00:00:00'::TIMESTAMP,
+		'-infinity'::TIMESTAMP_S, '1969-12-31 23:59:59.999'::TIMESTAMP_MS, 'infinity'::TIMESTAMP_NS),
+	(NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+) v(d, t, tn, ts, tsec, tms, ns);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM dt
+WHERE d::VARCHAR = '2024-01-05' AND t::VARCHAR = '12:00:00' AND tn::VARCHAR = '12:00:00.123456789'
+	AND ts::VARCHAR IN ('2024-01-05 12:00:00.5', 'abc') AND tsec::VARCHAR = '2024-01-05 12:00:00'
+	AND tms::VARCHAR = '2024-01-05 12:00:00.123' AND ns::VARCHAR = '2024-01-05 12:00:00.123456789';
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+# each list holds a value of the second row and non-canonical spellings of the first row
+query IIIIIII
+SELECT
+	count(*) FILTER (WHERE d::VARCHAR IN ('infinity', '2024-1-5', '2024-01-05 00:00:00')),
+	count(*) FILTER (WHERE t::VARCHAR IN ('24:00:00', '12:00')),
+	count(*) FILTER (WHERE tn::VARCHAR IN ('24:00:00', '12:00:00.123456789000')),
+	count(*) FILTER (WHERE ts::VARCHAR IN ('0044-03-15 (BC) 00:00:00', '2024-01-05 12:00:00.500', '2024-01-05T12:00:00.5')),
+	count(*) FILTER (WHERE tsec::VARCHAR IN ('-infinity', '2024-01-05 12:00')),
+	count(*) FILTER (WHERE tms::VARCHAR IN ('1969-12-31 23:59:59.999', '2024-01-05 12:00:00.1230')),
+	count(*) FILTER (WHERE ns::VARCHAR != '2024-01-05 12:00:00.123456')
+FROM dt;
+----
+1	1	1	1	1	1	2
+
+# integer and DECIMAL -> wider DECIMAL: only constants that are exactly a source value can match
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a = 5.0;
+----
+analyzed_plan	<REGEX>:.*Filters: a = 5.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM v WHERE d IN (1, 2);
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+# 4.5 and 1.495 round to a value in the table, but do not cast back to themselves
+query IIII
+SELECT
+	count(*) FILTER (WHERE a = 4.5),
+	count(*) FILTER (WHERE a != 4.5),
+	count(*) FILTER (WHERE a IS DISTINCT FROM 4.5),
+	count(*) FILTER (WHERE a IN (4.5, 10.0, -3.0))
+FROM t;
+----
+0	5	6	2
+
+query I
+SELECT count(*) FILTER (WHERE d IN (-2, 1.495::DECIMAL(10,4))) FROM v;
+----
+1
+
+# HUGEINT has values of 39 digits, which do not fit any DECIMAL, so the cast is kept and still throws
+statement ok
+CREATE TABLE hi AS SELECT 170141183460469231731687303715884105727::HUGEINT AS h;
+
+statement error
+SELECT count(*) FROM hi WHERE h::DECIMAL(38,0) = 1::DECIMAL(38,0);
+----
+<REGEX>:Conversion Error.*
+
+# -> VARCHAR is kept for types whose equal values can render differently, and under a collation
+statement ok
+CREATE TABLE ex AS SELECT * FROM (VALUES
+	(INTERVAL 1 MONTH, TIMETZ '12:00:00+01', 1.5::DOUBLE, true),
+	(INTERVAL 30 DAY, TIMETZ '13:00:00+02', '-0.0'::DOUBLE, false)
+) v(i, tz, f, b);
+
+# the second row equals the first in the source type, so applying the comparison to the source would match both
+query IIII
+SELECT
+	count(*) FILTER (WHERE i::VARCHAR = '1 month'),
+	count(*) FILTER (WHERE tz::VARCHAR = '12:00:00+01'),
+	count(*) FILTER (WHERE f::VARCHAR = '0.0'),
+	count(*) FILTER (WHERE b::VARCHAR COLLATE nocase = 'TRUE')
+FROM ex;
+----
+1	1	0	1

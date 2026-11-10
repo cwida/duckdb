@@ -1,0 +1,180 @@
+# name: test/sql/copy/csv/test_block_scan_skip_values.test
+# description: Columns that are not projected are skipped by the block scanner: errors, rejects, null padding and chunk edges stay the same
+# group: [csv]
+
+statement ok
+COPY (SELECT unnest(['1', '2,x'])) TO '{TEST_DIR}/bad_first.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+COPY (SELECT line FROM (SELECT i AS o, i || ',v' || i AS line FROM range(2048) t(i) UNION ALL SELECT 5000, 'x,bad,extra' UNION ALL SELECT 5001, 'notanumber,y' UNION ALL SELECT 5002 + i, (3000 + i) || ',w' FROM range(10) t(i)) ORDER BY o) TO '{TEST_DIR}/bad_after_chunk.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+COPY (SELECT unnest(['1,"q",x', '2,"a""b",y', '3,,z', '4,"open,w', '5,"",v', '6,plain,u', '7', '8,"a",t,extra'])) TO '{TEST_DIR}/mixed.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+COPY (SELECT string_agg(i::VARCHAR, ',') FROM range(300) t(i)) TO '{TEST_DIR}/wide.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+# the first row is removed with ignore_errors, the second is read
+query I
+SELECT a FROM read_csv('{TEST_DIR}/bad_first.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR'}, ignore_errors=true)
+----
+2
+
+# the first row is removed with ignore_errors, only b projected
+query I
+SELECT b FROM read_csv('{TEST_DIR}/bad_first.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR'}, ignore_errors=true)
+----
+x
+
+# rejected rows right after a full chunk, selecting a
+query I
+SELECT a FROM read_csv('{TEST_DIR}/bad_after_chunk.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR'}, ignore_errors=true) ORDER BY ALL LIMIT 5 OFFSET 2044
+----
+2044
+2045
+2046
+2047
+3000
+
+# rejected rows right after a full chunk, selecting b
+query I
+SELECT b FROM read_csv('{TEST_DIR}/bad_after_chunk.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR'}, ignore_errors=true) ORDER BY ALL LIMIT 5 OFFSET 2044
+----
+v996
+v997
+v998
+v999
+w
+
+# rejected rows right after a full chunk, selecting a, b
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/bad_after_chunk.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR'}, ignore_errors=true) ORDER BY ALL LIMIT 5 OFFSET 2044
+----
+2044	v2044
+2045	v2045
+2046	v2046
+2047	v2047
+3000	w
+
+# rejected rows right after a full chunk, counting
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/bad_after_chunk.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR'}, ignore_errors=true)
+----
+2059
+
+# mixed values, selecting a, ignore_errors=true
+query I
+SELECT a FROM read_csv('{TEST_DIR}/mixed.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, ignore_errors=true) ORDER BY ALL
+----
+1
+2
+3
+
+# mixed values, selecting a, null_padding=true, ignore_errors=true
+statement error
+SELECT a FROM read_csv('{TEST_DIR}/mixed.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, null_padding=true, ignore_errors=true) ORDER BY ALL
+----
+CSV Error on Line: 4
+
+# mixed values, selecting a, rejects stored
+statement ok
+CREATE OR REPLACE TEMP TABLE m AS SELECT a FROM read_csv('{TEST_DIR}/mixed.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, store_rejects=true, rejects_table='rej_a', rejects_scan='scan_a')
+
+query IIII
+SELECT line, column_idx, error_type, replace(csv_line, chr(10), '<LF>') FROM rej_a ORDER BY ALL
+----
+4	2	UNQUOTED VALUE	4,"open,w<LF>5,"",v<LF>6,plain,u<LF>7<LF>8,"a",t,extra
+4	4	TOO MANY COLUMNS	4,"open,w<LF>5,"",v<LF>6,plain,u<LF>7<LF>8,"a",t,extra
+
+# mixed values, selecting c, ignore_errors=true
+query I
+SELECT c FROM read_csv('{TEST_DIR}/mixed.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, ignore_errors=true) ORDER BY ALL
+----
+x
+y
+z
+
+# mixed values, selecting c, null_padding=true, ignore_errors=true
+statement error
+SELECT c FROM read_csv('{TEST_DIR}/mixed.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, null_padding=true, ignore_errors=true) ORDER BY ALL
+----
+CSV Error on Line: 4
+
+# mixed values, selecting c, rejects stored
+statement ok
+CREATE OR REPLACE TEMP TABLE m AS SELECT c FROM read_csv('{TEST_DIR}/mixed.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, store_rejects=true, rejects_table='rej_c', rejects_scan='scan_c')
+
+query IIII
+SELECT line, column_idx, error_type, replace(csv_line, chr(10), '<LF>') FROM rej_c ORDER BY ALL
+----
+4	2	UNQUOTED VALUE	4,"open,w<LF>5,"",v<LF>6,plain,u<LF>7<LF>8,"a",t,extra
+4	4	TOO MANY COLUMNS	4,"open,w<LF>5,"",v<LF>6,plain,u<LF>7<LF>8,"a",t,extra
+
+# mixed values, selecting a, c, ignore_errors=true
+query II
+SELECT a, c FROM read_csv('{TEST_DIR}/mixed.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, ignore_errors=true) ORDER BY ALL
+----
+1	x
+2	y
+3	z
+
+# mixed values, selecting a, c, null_padding=true, ignore_errors=true
+statement error
+SELECT a, c FROM read_csv('{TEST_DIR}/mixed.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, null_padding=true, ignore_errors=true) ORDER BY ALL
+----
+CSV Error on Line: 4
+
+# mixed values, selecting a, c, rejects stored
+statement ok
+CREATE OR REPLACE TEMP TABLE m AS SELECT a, c FROM read_csv('{TEST_DIR}/mixed.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, store_rejects=true, rejects_table='rej_a_c', rejects_scan='scan_a_c')
+
+query IIII
+SELECT line, column_idx, error_type, replace(csv_line, chr(10), '<LF>') FROM rej_a_c ORDER BY ALL
+----
+4	2	UNQUOTED VALUE	4,"open,w<LF>5,"",v<LF>6,plain,u<LF>7<LF>8,"a",t,extra
+4	4	TOO MANY COLUMNS	4,"open,w<LF>5,"",v<LF>6,plain,u<LF>7<LF>8,"a",t,extra
+
+# mixed values, selecting b, ignore_errors=true
+query I
+SELECT b FROM read_csv('{TEST_DIR}/mixed.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, ignore_errors=true) ORDER BY ALL
+----
+a"b
+q
+NULL
+
+# mixed values, selecting b, null_padding=true, ignore_errors=true
+statement error
+SELECT b FROM read_csv('{TEST_DIR}/mixed.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, null_padding=true, ignore_errors=true) ORDER BY ALL
+----
+CSV Error on Line: 4
+
+# mixed values, selecting b, rejects stored
+statement ok
+CREATE OR REPLACE TEMP TABLE m AS SELECT b FROM read_csv('{TEST_DIR}/mixed.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, store_rejects=true, rejects_table='rej_b', rejects_scan='scan_b')
+
+query IIII
+SELECT line, column_idx, error_type, replace(csv_line, chr(10), '<LF>') FROM rej_b ORDER BY ALL
+----
+4	2	UNQUOTED VALUE	4,"open,w<LF>5,"",v<LF>6,plain,u<LF>7<LF>8,"a",t,extra
+4	4	TOO MANY COLUMNS	4,"open,w<LF>5,"",v<LF>6,plain,u<LF>7<LF>8,"a",t,extra
+
+# mixed values, strict error
+statement error
+SELECT c FROM read_csv('{TEST_DIR}/mixed.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'})
+----
+CSV Error on Line: 4
+
+# the last of 300 columns
+query I
+SELECT c299 FROM read_csv('{TEST_DIR}/wide.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'c0':'INTEGER','c1':'INTEGER','c2':'INTEGER','c3':'INTEGER','c4':'INTEGER','c5':'INTEGER','c6':'INTEGER','c7':'INTEGER','c8':'INTEGER','c9':'INTEGER','c10':'INTEGER','c11':'INTEGER','c12':'INTEGER','c13':'INTEGER','c14':'INTEGER','c15':'INTEGER','c16':'INTEGER','c17':'INTEGER','c18':'INTEGER','c19':'INTEGER','c20':'INTEGER','c21':'INTEGER','c22':'INTEGER','c23':'INTEGER','c24':'INTEGER','c25':'INTEGER','c26':'INTEGER','c27':'INTEGER','c28':'INTEGER','c29':'INTEGER','c30':'INTEGER','c31':'INTEGER','c32':'INTEGER','c33':'INTEGER','c34':'INTEGER','c35':'INTEGER','c36':'INTEGER','c37':'INTEGER','c38':'INTEGER','c39':'INTEGER','c40':'INTEGER','c41':'INTEGER','c42':'INTEGER','c43':'INTEGER','c44':'INTEGER','c45':'INTEGER','c46':'INTEGER','c47':'INTEGER','c48':'INTEGER','c49':'INTEGER','c50':'INTEGER','c51':'INTEGER','c52':'INTEGER','c53':'INTEGER','c54':'INTEGER','c55':'INTEGER','c56':'INTEGER','c57':'INTEGER','c58':'INTEGER','c59':'INTEGER','c60':'INTEGER','c61':'INTEGER','c62':'INTEGER','c63':'INTEGER','c64':'INTEGER','c65':'INTEGER','c66':'INTEGER','c67':'INTEGER','c68':'INTEGER','c69':'INTEGER','c70':'INTEGER','c71':'INTEGER','c72':'INTEGER','c73':'INTEGER','c74':'INTEGER','c75':'INTEGER','c76':'INTEGER','c77':'INTEGER','c78':'INTEGER','c79':'INTEGER','c80':'INTEGER','c81':'INTEGER','c82':'INTEGER','c83':'INTEGER','c84':'INTEGER','c85':'INTEGER','c86':'INTEGER','c87':'INTEGER','c88':'INTEGER','c89':'INTEGER','c90':'INTEGER','c91':'INTEGER','c92':'INTEGER','c93':'INTEGER','c94':'INTEGER','c95':'INTEGER','c96':'INTEGER','c97':'INTEGER','c98':'INTEGER','c99':'INTEGER','c100':'INTEGER','c101':'INTEGER','c102':'INTEGER','c103':'INTEGER','c104':'INTEGER','c105':'INTEGER','c106':'INTEGER','c107':'INTEGER','c108':'INTEGER','c109':'INTEGER','c110':'INTEGER','c111':'INTEGER','c112':'INTEGER','c113':'INTEGER','c114':'INTEGER','c115':'INTEGER','c116':'INTEGER','c117':'INTEGER','c118':'INTEGER','c119':'INTEGER','c120':'INTEGER','c121':'INTEGER','c122':'INTEGER','c123':'INTEGER','c124':'INTEGER','c125':'INTEGER','c126':'INTEGER','c127':'INTEGER','c128':'INTEGER','c129':'INTEGER','c130':'INTEGER','c131':'INTEGER','c132':'INTEGER','c133':'INTEGER','c134':'INTEGER','c135':'INTEGER','c136':'INTEGER','c137':'INTEGER','c138':'INTEGER','c139':'INTEGER','c140':'INTEGER','c141':'INTEGER','c142':'INTEGER','c143':'INTEGER','c144':'INTEGER','c145':'INTEGER','c146':'INTEGER','c147':'INTEGER','c148':'INTEGER','c149':'INTEGER','c150':'INTEGER','c151':'INTEGER','c152':'INTEGER','c153':'INTEGER','c154':'INTEGER','c155':'INTEGER','c156':'INTEGER','c157':'INTEGER','c158':'INTEGER','c159':'INTEGER','c160':'INTEGER','c161':'INTEGER','c162':'INTEGER','c163':'INTEGER','c164':'INTEGER','c165':'INTEGER','c166':'INTEGER','c167':'INTEGER','c168':'INTEGER','c169':'INTEGER','c170':'INTEGER','c171':'INTEGER','c172':'INTEGER','c173':'INTEGER','c174':'INTEGER','c175':'INTEGER','c176':'INTEGER','c177':'INTEGER','c178':'INTEGER','c179':'INTEGER','c180':'INTEGER','c181':'INTEGER','c182':'INTEGER','c183':'INTEGER','c184':'INTEGER','c185':'INTEGER','c186':'INTEGER','c187':'INTEGER','c188':'INTEGER','c189':'INTEGER','c190':'INTEGER','c191':'INTEGER','c192':'INTEGER','c193':'INTEGER','c194':'INTEGER','c195':'INTEGER','c196':'INTEGER','c197':'INTEGER','c198':'INTEGER','c199':'INTEGER','c200':'INTEGER','c201':'INTEGER','c202':'INTEGER','c203':'INTEGER','c204':'INTEGER','c205':'INTEGER','c206':'INTEGER','c207':'INTEGER','c208':'INTEGER','c209':'INTEGER','c210':'INTEGER','c211':'INTEGER','c212':'INTEGER','c213':'INTEGER','c214':'INTEGER','c215':'INTEGER','c216':'INTEGER','c217':'INTEGER','c218':'INTEGER','c219':'INTEGER','c220':'INTEGER','c221':'INTEGER','c222':'INTEGER','c223':'INTEGER','c224':'INTEGER','c225':'INTEGER','c226':'INTEGER','c227':'INTEGER','c228':'INTEGER','c229':'INTEGER','c230':'INTEGER','c231':'INTEGER','c232':'INTEGER','c233':'INTEGER','c234':'INTEGER','c235':'INTEGER','c236':'INTEGER','c237':'INTEGER','c238':'INTEGER','c239':'INTEGER','c240':'INTEGER','c241':'INTEGER','c242':'INTEGER','c243':'INTEGER','c244':'INTEGER','c245':'INTEGER','c246':'INTEGER','c247':'INTEGER','c248':'INTEGER','c249':'INTEGER','c250':'INTEGER','c251':'INTEGER','c252':'INTEGER','c253':'INTEGER','c254':'INTEGER','c255':'INTEGER','c256':'INTEGER','c257':'INTEGER','c258':'INTEGER','c259':'INTEGER','c260':'INTEGER','c261':'INTEGER','c262':'INTEGER','c263':'INTEGER','c264':'INTEGER','c265':'INTEGER','c266':'INTEGER','c267':'INTEGER','c268':'INTEGER','c269':'INTEGER','c270':'INTEGER','c271':'INTEGER','c272':'INTEGER','c273':'INTEGER','c274':'INTEGER','c275':'INTEGER','c276':'INTEGER','c277':'INTEGER','c278':'INTEGER','c279':'INTEGER','c280':'INTEGER','c281':'INTEGER','c282':'INTEGER','c283':'INTEGER','c284':'INTEGER','c285':'INTEGER','c286':'INTEGER','c287':'INTEGER','c288':'INTEGER','c289':'INTEGER','c290':'INTEGER','c291':'INTEGER','c292':'INTEGER','c293':'INTEGER','c294':'INTEGER','c295':'INTEGER','c296':'INTEGER','c297':'INTEGER','c298':'INTEGER','c299':'INTEGER'})
+----
+299
+
+# rejects table of the rows after a full chunk
+statement ok
+CREATE TEMP TABLE t AS SELECT b FROM read_csv('{TEST_DIR}/bad_after_chunk.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR'}, store_rejects=true, rejects_table='rej_chunk', rejects_scan='scan_chunk')
+
+query IIIIII
+SELECT line, line_byte_position, byte_position, column_idx, error_type, replace(csv_line, chr(10), '<LF>') FROM rej_chunk ORDER BY ALL
+----
+2049	20309	20314	3	TOO MANY COLUMNS	x,bad,extra
