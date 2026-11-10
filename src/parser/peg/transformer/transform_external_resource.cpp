@@ -1,3 +1,5 @@
+#include "duckdb/common/exception/parser_exception.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
@@ -42,10 +44,14 @@ PEGTransformerFactory::TransformRegisterExternalResourceStmt(PEGTransformer &tra
 	return std::move(result);
 }
 
-unique_ptr<SQLStatement> PEGTransformerFactory::TransformDestroyExternalResourceStmt(PEGTransformer &transformer,
-                                                                                     const Identifier &col_id) {
+unique_ptr<SQLStatement>
+PEGTransformerFactory::TransformDestroyExternalResourceStmt(PEGTransformer &transformer, const Identifier &col_id,
+                                                            optional<Identifier> destroy_external_resource_type) {
 	auto result = make_uniq<ExternalResourceStatement>(ExternalResourceOperation::DESTROY);
 	result->name = col_id;
+	if (destroy_external_resource_type) {
+		result->type = destroy_external_resource_type->GetIdentifierName();
+	}
 	return std::move(result);
 }
 
@@ -78,6 +84,36 @@ PEGTransformerFactory::TransformShowExternalResources(PEGTransformer &transforme
 	select_node->select_list.push_back(make_uniq<StarExpression>());
 	select_node->from_table = std::move(table_function);
 	return std::move(select_node);
+}
+
+//! The type spelled as words: `A B C` is 'a:b:c'. Lower-cased, since type names are, and '_' read as '-', since an
+//! identifier cannot carry one; the string form is there for any name this cannot spell.
+static string TypeOfWords(const vector<Identifier> &words) {
+	// A truncated or misspelt long form ("SHOW EXTERNAL RESOURCE") must not read as a type named after the noun.
+	if (StringUtil::CIEquals(words[0].GetIdentifierName(), "EXTERNAL")) {
+		throw ParserException("a resource type spelled as words cannot start with EXTERNAL; the long form, EXTERNAL "
+		                      "RESOURCE, takes the type as a string");
+	}
+	vector<string> parts;
+	for (auto &word : words) {
+		parts.push_back(StringUtil::Replace(StringUtil::Lower(word.GetIdentifierName()), "_", "-"));
+	}
+	return StringUtil::Join(parts, ":");
+}
+
+// DESTROY RESOURCE <words> <name> is DESTROY EXTERNAL RESOURCE <name> WITH TYPE '<words joined>'
+unique_ptr<SQLStatement> PEGTransformerFactory::TransformDestroyResourceWords(PEGTransformer &transformer,
+                                                                              const Identifier &col_id,
+                                                                              const Identifier &col_id_1,
+                                                                              const vector<Identifier> &col_ids) {
+	vector<Identifier> words;
+	words.push_back(col_id);
+	words.push_back(col_id_1);
+	words.insert(words.end(), col_ids.begin(), col_ids.end() - 1);
+	auto result = make_uniq<ExternalResourceStatement>(ExternalResourceOperation::DESTROY);
+	result->name = col_ids.back();
+	result->type = TypeOfWords(words);
+	return std::move(result);
 }
 
 } // namespace duckdb

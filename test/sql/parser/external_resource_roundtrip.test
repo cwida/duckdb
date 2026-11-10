@@ -45,6 +45,27 @@ DESTROY EXTERNAL RESOURCE "MixedCase"
 ----
 Invalid Input Error: external resource "MixedCase" is not registered
 
+# WITH TYPE prints as a string literal; the words form prints as the long form
+statement error
+DESTROY EXTERNAL RESOURCE plain_name WITH TYPE 'aws:ec2:quack'
+----
+Invalid Input Error: external resource "plain_name" is not registered
+
+statement error
+DESTROY EXTERNAL RESOURCE "weird name" WITH TYPE 'aws:ec2:it''s quacky'
+----
+Invalid Input Error: external resource "weird name" is not registered
+
+statement error
+DESTROY EXTERNAL RESOURCE plain_name WITH TYPE quack
+----
+Invalid Input Error: external resource "plain_name" is not registered
+
+statement error
+DESTROY RESOURCE aws ec2 quack_quack "MixedCase"
+----
+Invalid Input Error: external resource "MixedCase" is not registered
+
 # --- CREATE: name plus an option list, with and without option values ---------------------------------
 
 statement error

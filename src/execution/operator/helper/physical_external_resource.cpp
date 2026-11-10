@@ -47,6 +47,11 @@ static void DestroyExternalResource(ClientContext &client, const BoundExternalRe
 	if (!instance) {
 		throw InvalidInputException("external resource \"%s\" is not registered", data.name);
 	}
+	// WITH TYPE: the caller said what they expect to destroy; a mismatch destroys nothing.
+	if (!data.type.empty() && data.type != instance->type) {
+		throw InvalidInputException("external resource \"%s\" is of type \"%s\", not \"%s\"; nothing was destroyed",
+		                            data.name, instance->type, data.type);
+	}
 	// Never blocked by a borrower: DESTROY is what stops the meter, so it cannot depend on a DETACH
 	// that may itself be refused. A stranded resource costs money; a dangling attachment costs nothing.
 	auto &db = DatabaseInstance::GetDatabase(client);

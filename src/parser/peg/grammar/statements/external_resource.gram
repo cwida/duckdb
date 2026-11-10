@@ -1,10 +1,17 @@
 # Every statement about external resources, so the top-level Statement choice carries one entry
 # rather than one per form. SHOW [ALL] EXTERNAL RESOURCES is a query (describe.gram), so it can be a subquery.
-ExternalResourceStatement <- CreateExternalResourceStmt / RegisterExternalResourceStmt / DestroyExternalResourceStmt / AttachToExternalResource / ConnectToExternalResource
+ExternalResourceStatement <- CreateExternalResourceStmt / RegisterExternalResourceStmt / DestroyExternalResourceStmt / DestroyResourceWords / AttachToExternalResource / ConnectToExternalResource
 
 CreateExternalResourceStmt <- 'CREATE' ExternalResourceKeyword StringLiteral AttachAlias? ExternalResourceCreationOptions?
 RegisterExternalResourceStmt <- 'REGISTER' ExternalResourceKeyword StringLiteral AttachAlias? 'FROM' Expression
-DestroyExternalResourceStmt <- 'DESTROY' ExternalResourceKeyword ColId
+# "WITH TYPE 't'" makes DESTROY check the resource's type before tearing anything down: the name alone is a weak
+# handle for a destructive verb. A bare identifier is passed through as the type name, as in SHOW.
+DestroyExternalResourceStmt <- 'DESTROY' ExternalResourceKeyword ColId DestroyExternalResourceType?
+DestroyExternalResourceType <- 'WITH' 'TYPE' ColIdOrString
+# "DESTROY RESOURCE A B r" is "DESTROY EXTERNAL RESOURCE r WITH TYPE 'a:b'": the type spelled as words (two at least,
+# a namespace and a name; lower-cased, joined with ':', '_' read as '-'), then the resource name. A word is a ColId,
+# so a reserved word needs quotes ("table").
+DestroyResourceWords <- 'DESTROY' 'RESOURCE' ColId ColId ColId+
 
 # Syntax only: the keyword pair every singular form repeats.
 ExternalResourceKeyword <- 'EXTERNAL' 'RESOURCE'

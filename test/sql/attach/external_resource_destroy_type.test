@@ -1,0 +1,91 @@
+# name: test/sql/attach/external_resource_destroy_type.test
+# description: DESTROY EXTERNAL RESOURCE r WITH TYPE 't' refuses a resource of another type; DESTROY RESOURCE A B r spells the same
+# group: [attach]
+
+statement ok
+CALL register_external_resource_type('ns:kind-a', kind := 'catalog', create_function := 'noop_create');
+
+statement ok
+CALL register_external_resource_type('ns:kind-b', kind := 'catalog', create_function := 'noop_create');
+
+statement ok
+CALL register_external_resource('ns:kind-a', 'res_a', MAP {'id': 'a'});
+
+statement ok
+CALL register_external_resource('ns:kind-b', 'res_b', MAP {'id': 'b'});
+
+# The wrong type is refused, and the resource stays registered.
+statement error
+DESTROY EXTERNAL RESOURCE res_a WITH TYPE 'ns:kind-b';
+----
+<REGEX>:.*"res_a" is of type "ns:kind-a", not "ns:kind-b".*
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'res_a';
+----
+1
+
+# The right type destroys it.
+statement ok
+DESTROY EXTERNAL RESOURCE res_a WITH TYPE 'ns:kind-a';
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'res_a';
+----
+0
+
+# The type as words: the last word is the resource name, the ones before it the type.
+statement error
+DESTROY RESOURCE NS KIND_A res_b;
+----
+<REGEX>:.*"res_b" is of type "ns:kind-b", not "ns:kind-a".*
+
+statement ok
+DESTROY RESOURCE ns kind_b res_b;
+
+query I
+SELECT count(*) FROM duckdb_external_resources();
+----
+0
+
+# An unregistered name is reported as such, type or not.
+statement error
+DESTROY EXTERNAL RESOURCE nope WITH TYPE 'ns:kind-a';
+----
+<REGEX>:.*"nope" is not registered.*
+
+# A bare identifier is a type name too, as in SHOW ... WITH TYPE.
+statement error
+DESTROY EXTERNAL RESOURCE nope WITH TYPE whatever;
+----
+<REGEX>:.*"nope" is not registered.*
+
+# Without a type, DESTROY is unchanged.
+statement ok
+CALL register_external_resource('ns:kind-a', 'res_c', MAP {'id': 'c'});
+
+statement ok
+DESTROY EXTERNAL RESOURCE res_c;
+
+# The words form needs a type of two words at least before the name.
+statement error
+DESTROY RESOURCE ns res_b;
+----
+<REGEX>:Parser Error.*
+
+# A reserved word is a type word when quoted.
+statement error
+DESTROY RESOURCE ns "table" nope;
+----
+<REGEX>:.*"nope" is not registered.*
+
+statement error
+DESTROY RESOURCE ns table nope;
+----
+<REGEX>:Parser Error.*
+
+# The first type word is never EXTERNAL: that is the long form.
+statement error
+DESTROY RESOURCE external kind_a res_b;
+----
+<REGEX>:Parser Error.*EXTERNAL RESOURCE.*

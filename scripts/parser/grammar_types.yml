@@ -118,6 +118,7 @@ SQLStatement:
     - CreateExternalResourceStmt
     - RegisterExternalResourceStmt
     - DestroyExternalResourceStmt
+    - DestroyResourceWords
     - ExtensionRepositoryStatement
     - CreateExtensionRepositoryStmt
     - DropExtensionRepositoryStmt
@@ -1813,6 +1814,7 @@ IdentifierType:
     - ColId
     - ColIdOrString
     - ShowExternalResourcesType
+    - DestroyExternalResourceType
     - UsingColumnName
     - ColLabelOrString
     - ColLabelIdentifier
