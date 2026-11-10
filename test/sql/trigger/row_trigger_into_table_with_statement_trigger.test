@@ -2,6 +2,8 @@
 # description: A FOR EACH ROW trigger inserts into a table that has a BEFORE INSERT FOR EACH STATEMENT trigger
 # group: [trigger]
 
+require noforcestorage
+
 statement ok
 CREATE TABLE t(a INT);
 
