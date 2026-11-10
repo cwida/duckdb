@@ -2,6 +2,7 @@
 
 #include "duckdb/optimizer/join_order/join_order_operator.hpp"
 #include "duckdb/optimizer/join_order/query_graph.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
@@ -19,6 +20,19 @@ static vector<JoinCondition> Comparison(TableIndex left, TableIndex right, Expre
 	vector<JoinCondition> result;
 	result.emplace_back(Column(left), Column(right), comparison_type);
 	return result;
+}
+
+static unique_ptr<Expression> ThrowingColumn(TableIndex table_index) {
+	auto narrowed = BoundCastExpression::AddDefaultCastToType(Column(table_index), LogicalType::TINYINT);
+	return BoundCastExpression::AddDefaultCastToType(std::move(narrowed), LogicalType::INTEGER);
+}
+
+static unique_ptr<Expression> VolatileColumn(TableIndex table_index) {
+	ScalarFunction function("volatile_column", {LogicalType::INTEGER}, LogicalType::INTEGER, nullptr);
+	function.SetVolatile();
+	vector<unique_ptr<Expression>> arguments;
+	arguments.push_back(Column(table_index));
+	return make_uniq<BoundFunctionExpression>(BoundScalarFunction(function), std::move(arguments), nullptr);
 }
 
 static vector<JoinCondition> NonRejectingDisjunction(TableIndex shared, TableIndex other) {
@@ -126,14 +140,13 @@ TEST_CASE("CD-C preserves operator ownership after simplifying absorbed conflict
 
 TEST_CASE("CD-C splits filtering join predicates only when each satisfies the conflicts", "[optimizer][join_order]") {
 	const auto child_type = GENERATE(JoinOrderOperatorType::SEMI, JoinOrderOperatorType::ANTI);
+	const auto child_on_right = GENERATE(false, true);
 	JoinRelationSetManager set_manager;
 	auto &r0 = set_manager.GetJoinRelation(RelationIndex(0));
 	auto &r1 = set_manager.GetJoinRelation(RelationIndex(1));
 	auto &r2 = set_manager.GetJoinRelation(RelationIndex(2));
 	auto &r3 = set_manager.GetJoinRelation(RelationIndex(3));
 	auto &r0_r1 = set_manager.Union(r0, r1);
-	auto &r2_r3 = set_manager.Union(r2, r3);
-	auto &r0_r1_r2 = set_manager.Union(r0_r1, r2);
 	unordered_map<TableIndex, RelationIndex> relation_mapping;
 	for (idx_t relation_idx = 0; relation_idx < 6; relation_idx++) {
 		relation_mapping[TableIndex(relation_idx)] = RelationIndex(relation_idx);
@@ -142,12 +155,32 @@ TEST_CASE("CD-C splits filtering join predicates only when each satisfies the co
 	auto second_rhs = Column(TableIndex(2));
 	bool residual = false;
 	bool left_region = false;
+	bool partial_requirement = false;
+	bool throwing_child = false;
+	bool volatile_child = false;
 	bool must_apply = true;
 	SECTION("Each predicate contains the required visible input") {
 		must_apply = false;
 	}
-	SECTION("One predicate lacks the requirement") {
+	SECTION("One predicate is external to the filtering subtree") {
 		second_rhs = Column(TableIndex(0));
+		must_apply = false;
+	}
+	SECTION("Predicates touch only parts of the preserved-side requirement") {
+		partial_requirement = true;
+		second_rhs = Column(TableIndex(4));
+	}
+	SECTION("A predicate can throw") {
+		first_lhs = ThrowingColumn(TableIndex(0));
+	}
+	SECTION("A predicate is volatile") {
+		first_lhs = VolatileColumn(TableIndex(0));
+	}
+	SECTION("A filtering condition can throw") {
+		throwing_child = true;
+	}
+	SECTION("A filtering condition is volatile") {
+		volatile_child = true;
 	}
 	SECTION("A binding is unmapped") {
 		relation_mapping.erase(TableIndex(0));
@@ -176,11 +209,26 @@ TEST_CASE("CD-C splits filtering join predicates only when each satisfies the co
 		conditions.emplace_back(Column(TableIndex(1)), std::move(second_rhs), ExpressionType::COMPARE_EQUAL);
 	}
 	vector<unique_ptr<JoinOrderOperator>> operators;
-	operators.push_back(make_uniq<JoinOrderOperator>(
-	    0, child_type, r2, r3, r2_r3, Comparison(TableIndex(2), TableIndex(3), ExpressionType::COMPARE_EQUAL)));
+	auto &preserved = partial_requirement ? set_manager.Union(r2, set_manager.GetJoinRelation(RelationIndex(4))) : r2;
+	auto &filtered = set_manager.Union(preserved, r3);
+	auto &parent_ses = set_manager.Union(r0_r1, preserved);
+	auto child_conditions = Comparison(TableIndex(2), TableIndex(3), ExpressionType::COMPARE_EQUAL);
+	if (partial_requirement) {
+		child_conditions.emplace_back(Column(TableIndex(4)), Column(TableIndex(3)), ExpressionType::COMPARE_EQUAL);
+	}
+	if (throwing_child) {
+		child_conditions[0].LeftReference() = ThrowingColumn(TableIndex(2));
+	}
+	if (volatile_child) {
+		child_conditions[0].LeftReference() = VolatileColumn(TableIndex(2));
+	}
 	operators.push_back(
-	    make_uniq<JoinOrderOperator>(1, JoinOrderOperatorType::INNER, r0_r1, r2_r3, r0_r1_r2, std::move(conditions)));
-	operators[1]->right_operators.push_back(*operators[0]);
+	    make_uniq<JoinOrderOperator>(0, child_type, preserved, r3, filtered, std::move(child_conditions)));
+	operators.push_back(make_uniq<JoinOrderOperator>(1, JoinOrderOperatorType::INNER, child_on_right ? r0_r1 : filtered,
+	                                                 child_on_right ? filtered : r0_r1, parent_ses,
+	                                                 std::move(conditions)));
+	auto &descendants = child_on_right ? operators[1]->right_operators : operators[1]->left_operators;
+	descendants.push_back(*operators[0]);
 	if (left_region) {
 		auto &r4 = set_manager.GetJoinRelation(RelationIndex(4));
 		auto &r5 = set_manager.GetJoinRelation(RelationIndex(5));
@@ -191,6 +239,40 @@ TEST_CASE("CD-C splits filtering join predicates only when each satisfies the co
 	JoinOrderConflictDetector::Build(operators, set_manager, relation_mapping);
 	REQUIRE(JoinOrderConflictDetector::MustApplyAsOperator(*operators[0]));
 	REQUIRE(JoinOrderConflictDetector::MustApplyAsOperator(*operators[1]) == must_apply);
+}
+
+TEST_CASE("Independent predicates must respect every filtering descendant", "[optimizer][join_order]") {
+	const auto child_type = GENERATE(JoinOrderOperatorType::SEMI, JoinOrderOperatorType::ANTI);
+	JoinRelationSetManager set_manager;
+	auto &r0 = set_manager.GetJoinRelation(RelationIndex(0));
+	auto &r1 = set_manager.GetJoinRelation(RelationIndex(1));
+	auto &r2 = set_manager.GetJoinRelation(RelationIndex(2));
+	auto &r3 = set_manager.GetJoinRelation(RelationIndex(3));
+	auto &r4 = set_manager.GetJoinRelation(RelationIndex(4));
+	auto &r5 = set_manager.GetJoinRelation(RelationIndex(5));
+	auto &r2_r3 = set_manager.Union(r2, r3);
+	auto &r4_r5 = set_manager.Union(r4, r5);
+	unordered_map<TableIndex, RelationIndex> relation_mapping;
+	for (idx_t i = 0; i < 6; i++) {
+		relation_mapping[TableIndex(i)] = RelationIndex(i);
+	}
+	vector<unique_ptr<JoinOrderOperator>> operators;
+	operators.push_back(make_uniq<JoinOrderOperator>(
+	    0, child_type, r2, r3, r2_r3, Comparison(TableIndex(2), TableIndex(3), ExpressionType::COMPARE_EQUAL)));
+	operators.push_back(make_uniq<JoinOrderOperator>(
+	    1, child_type, r4, r5, r4_r5, Comparison(TableIndex(4), TableIndex(5), ExpressionType::COMPARE_EQUAL)));
+	auto conditions = Comparison(TableIndex(0), TableIndex(2), ExpressionType::COMPARE_EQUAL);
+	conditions.emplace_back(Column(TableIndex(1)), Column(TableIndex(4)), ExpressionType::COMPARE_EQUAL);
+	conditions.emplace_back(Column(TableIndex(0)), Column(TableIndex(1)), ExpressionType::COMPARE_EQUAL);
+	auto &ses = set_manager.Union(set_manager.Union(r0, r1), set_manager.Union(r2, r4));
+	operators.push_back(make_uniq<JoinOrderOperator>(2, JoinOrderOperatorType::INNER, set_manager.Union(r0, r2_r3),
+	                                                 set_manager.Union(r1, r4_r5), ses, std::move(conditions)));
+	operators[2]->left_operators.push_back(*operators[0]);
+	operators[2]->right_operators.push_back(*operators[1]);
+	JoinOrderConflictDetector::Build(operators, set_manager, relation_mapping);
+	REQUIRE(JoinOrderConflictDetector::MustApplyAsOperator(*operators[0]));
+	REQUIRE(JoinOrderConflictDetector::MustApplyAsOperator(*operators[1]));
+	REQUIRE_FALSE(JoinOrderConflictDetector::MustApplyAsOperator(*operators[2]));
 }
 
 TEST_CASE("CD-C tests conditional associativity against the shared input", "[optimizer][join_order]") {

@@ -63,7 +63,7 @@ struct JoinOrderOperator {
 	//! LEFT ON residuals not covered by a costing predicate or an equivalent equality key.
 	vector<reference<const Expression>> residual_predicates;
 	//! Whether this occurrence must apply its complete conditions together.
-	//! Independent predicates must each satisfy the raw conflicts before simplification.
+	//! Independent predicates must satisfy each filtering dependency or lie outside its subtree.
 	bool must_apply_as_operator = false;
 };
 

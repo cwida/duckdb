@@ -226,9 +226,37 @@ static void SimplifyConflictRules(JoinOrderOperator &op, JoinRelationSetManager 
 	op.right_total_set = set_manager.Intersection(op.total_set, op.right_relations);
 }
 
-static bool ConditionsContainConflictRequirements(const JoinOrderOperator &op,
-                                                  const unordered_map<TableIndex, RelationIndex> &relation_mapping) {
+static bool ConditionsHaveEffects(const JoinOrderOperator &op) {
+	for (auto &condition : op.conditions) {
+		auto &lhs = condition.IsComparison() ? condition.GetLHS() : condition.GetJoinExpression();
+		if (lhs.IsVolatile() || lhs.CanThrow()) {
+			return true;
+		}
+		if (condition.IsComparison() && (condition.GetRHS().IsVolatile() || condition.GetRHS().CanThrow())) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool ConditionsAreIndependent(const JoinOrderOperator &op, JoinRelationSetManager &set_manager,
+                                     const unordered_map<TableIndex, RelationIndex> &relation_mapping) {
 	if (op.conditions.empty()) {
+		return false;
+	}
+	vector<reference<JoinOrderOperator>> filtering_children;
+	for (idx_t side = 0; side < 2; side++) {
+		const auto &children = side == 0 ? op.left_operators : op.right_operators;
+		for (auto &child : children) {
+			if (child.get().type == JoinOrderOperatorType::SEMI || child.get().type == JoinOrderOperatorType::ANTI) {
+				if (ConditionsHaveEffects(child.get())) {
+					return false;
+				}
+				filtering_children.push_back(child);
+			}
+		}
+	}
+	if (ConditionsHaveEffects(op)) {
 		return false;
 	}
 	for (auto &condition : op.conditions) {
@@ -254,14 +282,24 @@ static bool ConditionsContainConflictRequirements(const JoinOrderOperator &op,
 		};
 		collect_bindings(condition.GetLHS());
 		collect_bindings(condition.GetRHS());
-		if (!valid_bindings) {
+		if (!valid_bindings || bindings.empty()) {
 			return false;
 		}
-		for (auto &rule : op.conflict_rules) {
-			for (idx_t relation_idx = 0; relation_idx < rule.requirement.get().count; relation_idx++) {
-				if (!bindings.count(rule.requirement.get().relations[relation_idx])) {
-					return false;
-				}
+		for (auto &child_ref : filtering_children) {
+			auto &child = child_ref.get();
+			auto &requirement = PredicateIntersectionOrInput(set_manager, child.left_relations, child.syntactic_set);
+			bool contains_requirement = true;
+			for (idx_t relation_idx = 0; relation_idx < requirement.count; relation_idx++) {
+				contains_requirement &= bindings.count(requirement.relations[relation_idx]) != 0;
+			}
+			bool touches_child = false;
+			for (auto binding : bindings) {
+				touches_child |=
+				    ContainsRelation(child.left_relations, binding) || ContainsRelation(child.right_relations, binding);
+			}
+			// External predicates can execute independently of the complete filtering join.
+			if (!contains_requirement && touches_child) {
+				return false;
 			}
 		}
 	}
@@ -278,14 +316,16 @@ void JoinOrderConflictDetector::Build(vector<unique_ptr<JoinOrderOperator>> &ope
 	for (auto &op : operators) {
 		D_ASSERT(!JoinRelationSet::Intersects(op->left_relations, op->right_relations));
 		BuildConflictRules(*op, set_manager, relation_mapping);
+		auto has_conflicts = !op->conflict_rules.empty();
 		// Nullable inputs still require the original operator boundary.
-		auto can_split_conditions = op->type == JoinOrderOperatorType::INNER && !has_left_join &&
-		                            !op->conflict_rules.empty() &&
-		                            ConditionsContainConflictRequirements(*op, relation_mapping);
+		auto can_split_conditions = op->type == JoinOrderOperatorType::INNER && !has_left_join && has_conflicts &&
+		                            ConditionsAreIndependent(*op, set_manager, relation_mapping);
+		SimplifyConflictRules(*op, set_manager);
+		can_split_conditions &=
+		    op->conflict_rules.empty() && op->total_set.get().count == op->syntactic_set.get().count;
 		op->must_apply_as_operator =
 		    op->type != JoinOrderOperatorType::CROSS_PRODUCT &&
-		    (op->type != JoinOrderOperatorType::INNER || (!op->conflict_rules.empty() && !can_split_conditions));
-		SimplifyConflictRules(*op, set_manager);
+		    (op->type != JoinOrderOperatorType::INNER || (has_conflicts && !can_split_conditions));
 		D_ASSERT(ContainedInUnion(op->total_set, op->left_relations, op->right_relations));
 #ifdef D_ASSERT_IS_ENABLED
 		for (auto &rule : op->conflict_rules) {

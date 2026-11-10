@@ -10,6 +10,78 @@
 
 using namespace duckdb;
 
+TEST_CASE("External INNER predicates remain available beside a filtering join", "[optimizer][join_order]") {
+	const auto join_type = GENERATE(string("SEMI"), string("ANTI"));
+	const auto threshold = GENERATE(1, 30);
+	DuckDB db;
+	Connection connection(db);
+	for (auto sql :
+	     {"CREATE TABLE country_types AS SELECT i id, i=1 selected FROM range(20) t(i)",
+	      "CREATE TABLE rating_types AS SELECT i id, i=2 selected FROM range(20) t(i)",
+	      "CREATE TABLE countries AS SELECT i%1000 movie_id, (i//1000)%20 type_id, i%3 country FROM range(20000)t(i)",
+	      "CREATE TABLE ratings AS SELECT i%1000 movie_id, (i//1000)%20 type_id FROM range(20000)t(i)"}) {
+		auto result = connection.Query(sql);
+		REQUIRE_NO_FAIL(*result);
+	}
+	auto setting = connection.Query("SET approximate_join_order_threshold=" + to_string(threshold));
+	REQUIRE_NO_FAIL(*setting);
+	const string query = "SELECT count(*) FROM country_types ct, rating_types rt, "
+	                     "(countries c " +
+	                     join_type +
+	                     " JOIN (VALUES(0),(5),(7),(9),(11),(13),(15),(17),(19),(21)) wanted(country) "
+	                     "ON c.country=wanted.country), ratings r "
+	                     "WHERE ct.selected AND rt.selected AND c.movie_id=r.movie_id "
+	                     "AND ct.id=c.type_id AND rt.id=r.type_id";
+	connection.BeginTransaction();
+	Parser parser(*connection.context);
+	parser.ParseQuery(query);
+	Planner planner(*connection.context);
+	planner.CreatePlan(std::move(parser.statements[0]));
+	Optimizer optimizer(*planner.binder, *connection.context);
+	FilterPushdown pushdown(optimizer);
+	auto plan = pushdown.Rewrite(std::move(planner.plan));
+	optional_ptr<LogicalOperator> root = plan.get();
+	while (root->children.size() == 1) {
+		root = root->children[0].get();
+	}
+	JoinOrderOptimizer join_optimizer(*connection.context);
+	QueryGraphManager graph(*connection.context);
+	REQUIRE(graph.Build(join_optimizer, *root));
+	auto stats = graph.relation_manager.GetRelationStats();
+	optional_idx ratings;
+	optional_idx rating_types;
+	for (idx_t i = 0; i < stats.size(); i++) {
+		if (stats[i].table_name == "ratings") {
+			ratings = i;
+		}
+		if (stats[i].table_name == "rating_types") {
+			rating_types = i;
+		}
+	}
+	REQUIRE(ratings.IsValid());
+	REQUIRE(rating_types.IsValid());
+	auto &left = graph.set_manager.GetJoinRelation(RelationIndex(ratings.GetIndex()));
+	auto &right = graph.set_manager.GetJoinRelation(RelationIndex(rating_types.GetIndex()));
+	bool found_independent_edge = false;
+	for (auto &connection_ref : graph.GetQueryGraphEdges().GetConnections(left, right)) {
+		auto &edge = connection_ref.get();
+		if (!edge.join_operator && graph.IsConnectionApplicable(edge, left, right) &&
+		    graph.IsJoinOrderCandidate(edge.join_operator, edge.generated_cross_product, left, right)) {
+			found_independent_edge = true;
+		}
+	}
+	REQUIRE(found_independent_edge);
+	CardinalityEstimator estimator(graph.set_manager, graph.GetPredicateModel());
+	CostModel costs(estimator);
+	PlanEnumerator enumerator(graph, costs, graph.GetQueryGraphEdges());
+	enumerator.InitLeafPlans();
+	REQUIRE(enumerator.SolveJoinOrder());
+	auto result = connection.Query(query);
+	REQUIRE_NO_FAIL(*result);
+	CHECK_COLUMN(result, 0, {join_type == "SEMI" ? 333 : 667});
+	connection.Rollback();
+}
+
 TEST_CASE("Connected hypergraphs can require original cross products", "[optimizer][join_order]") {
 	DuckDB db;
 	Connection connection(db);
