@@ -4,6 +4,7 @@
 #include "duckdb/common/enums/checkpoint_abort.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/thread.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -838,35 +839,46 @@ bool SingleFileStorageManager::BindIndexesForCheckpoint(optional_ptr<ClientConte
 		return !buffered_index_replays;
 	}
 
+	auto checkpoint_sleep_ms = Settings::Get<DebugCheckpointSleepMsSetting>(db.GetDatabase());
+	if (checkpoint_sleep_ms > 0) {
+		ThreadUtil::SleepMs(checkpoint_sleep_ms);
+	}
+
 	// Read-only: a concurrent FORCE CHECKPOINT holds start_transaction_lock while waiting for this checkpoint.
 	auto &transaction = checkpoint_context->transaction;
 	transaction.BeginTransaction();
 	transaction.SetReadOnly();
 
 	// Indexes with buffered replays must be bound, otherwise the checkpoint would lose these operations.
+	ErrorData failure;
+	string failed_table;
 	for (auto &table : tables) {
 		auto &info = *table.get().GetStorage().GetDataTableInfo();
-		const auto must_bind = info.GetIndexes().HasBufferedReplays();
-		if (!must_bind && !explicit_checkpoint) {
+		if (!explicit_checkpoint && !info.GetIndexes().HasBufferedReplays()) {
 			continue;
 		}
 		auto error = TryBindIndexes(info, *checkpoint_context);
-		if (!must_bind || !error.HasError()) {
-			continue;
+		// A failed bind only matters if it leaves buffered replays behind.
+		if (error.HasError() && info.GetIndexes().HasBufferedReplays()) {
+			failure = std::move(error);
+			failed_table = info.GetTableName().GetIdentifierName();
+			break;
 		}
-		if (explicit_checkpoint) {
-			throw InvalidInputException(
-			    "Cannot CHECKPOINT: an index with buffered write-ahead log operations cannot be bound: %s",
-			    error.RawMessage());
-		}
-		DUCKDB_LOG_WARNING(db.GetDatabase(),
-		                   "Skipped the checkpoint of database %s and kept its write-ahead log: an index with "
-		                   "buffered write-ahead log operations cannot be bound: %s",
-		                   db.GetName(), error.RawMessage());
-		return false;
 	}
 	// End the bind transaction: the checkpoint transaction runs on the same connection.
 	transaction.Rollback(nullptr);
+
+	if (failure.HasError()) {
+		auto message = StringUtil::Format("an index on table \"%s\" has buffered operations and cannot be bound: %s",
+		                                  failed_table, failure.RawMessage());
+		if (explicit_checkpoint) {
+			throw Exception(failure.Type(), "Cannot CHECKPOINT: " + message);
+		}
+		// FIXME: every commit that triggers an automatic checkpoint retries the bind until it succeeds
+		DUCKDB_LOG_WARNING(db.GetDatabase(), "Skipped the checkpoint of database %s and kept its write-ahead log: %s",
+		                   db.GetName(), message);
+		return false;
+	}
 	buffered_index_replays = false;
 	return true;
 }
@@ -890,6 +902,10 @@ void SingleFileStorageManager::CreateCheckpoint(QueryContext context, Checkpoint
 		}
 	}
 
+	if (db.GetStorageExtension()) {
+		db.GetStorageExtension()->OnCheckpointStart(db, options);
+	}
+
 	auto &config = DBConfig::Get(db);
 	// We only need to checkpoint if there is anything in the WAL.
 	auto wal_size = GetWALSize();
@@ -905,10 +921,6 @@ void SingleFileStorageManager::CreateCheckpoint(QueryContext context, Checkpoint
 	// Bind before the checkpoint starts: a failure after that invalidates the database.
 	if (should_checkpoint && !BindIndexesForCheckpoint(checkpoint_context, client_context != nullptr)) {
 		should_checkpoint = false;
-	}
-
-	if (db.GetStorageExtension()) {
-		db.GetStorageExtension()->OnCheckpointStart(db, options);
 	}
 
 	if (should_checkpoint) {

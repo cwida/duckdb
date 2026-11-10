@@ -59,7 +59,7 @@ void UnboundIndex::ResetStorage() {
 
 IndexCheckpointResult UnboundIndex::Checkpoint(PartialBlockManager &, StorageVersion) {
 	if (HasBufferedReplays()) {
-		throw InternalException("Cannot checkpoint index %s: it has buffered WAL operations that were not bound",
+		throw InternalException("Cannot checkpoint index %s: it has buffered operations that were not applied",
 		                        GetIndexName());
 	}
 	return {storage_info, nullptr};
