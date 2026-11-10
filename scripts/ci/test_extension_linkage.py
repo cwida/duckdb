@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 @unittest.skipUnless(shutil.which("cmake") and shutil.which("ninja"), "requires CMake and Ninja")
 class ExtensionLinkageTest(unittest.TestCase):
-    def check_linkage(self, static_build):
+    def check_linkage(self, static_build, wasm_source_build=False):
         with tempfile.TemporaryDirectory() as directory:
             build = Path(directory)
             query = build / ".cmake/api/v1/query"
@@ -32,6 +32,7 @@ class ExtensionLinkageTest(unittest.TestCase):
                     "-DBUILD_EXTENSIONS=tpch",
                     "-DSTATICALLY_LINK_EXTENSIONS=core_functions;tpch",
                     f"-DEXTENSION_STATIC_BUILD={int(static_build)}",
+                    f"-DWASM_LOADABLE_EXTENSIONS={int(wasm_source_build)}",
                     "-DENABLE_SANITIZER=OFF",
                     "-DENABLE_UBSAN=OFF",
                 ],
@@ -46,6 +47,20 @@ class ExtensionLinkageTest(unittest.TestCase):
                 target["name"]: json.loads((reply / target["jsonFile"]).read_text())
                 for target in model["configurations"][0]["targets"]
             }
+
+            if wasm_source_build:
+                for name in ("test_extension", "test_loadable_extension"):
+                    target = targets[name]
+                    source = next(
+                        source for source in target["sources"] if Path(source["path"]).name == "test_extension.cpp"
+                    )
+                    includes = target["compileGroups"][source["compileGroupIndex"]]["includes"]
+                    for header in ("duckdb_test/test_bundle.hpp", "sqllogic_test_executor.hpp"):
+                        self.assertTrue(
+                            any((Path(include["path"]) / header).is_file() for include in includes),
+                            f"{name} cannot resolve {header}",
+                        )
+                return
 
             def libraries(name):
                 return " ".join(
@@ -79,6 +94,9 @@ class ExtensionLinkageTest(unittest.TestCase):
 
     def test_static_loadable_includes_duckdb(self):
         self.check_linkage(True)
+
+    def test_wasm_source_build_has_test_runner_headers(self):
+        self.check_linkage(True, wasm_source_build=True)
 
 
 if __name__ == "__main__":

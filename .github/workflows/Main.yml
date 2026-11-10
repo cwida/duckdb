@@ -357,7 +357,7 @@ jobs:
         rm -rf build/relassert
         tar -xzf build/relassert-artifact.tar.gz -C build
         ls -lh build/relassert/duckdb
-        ls -lh build/relassert/extension/test/test.duckdb_extension
+        ls -lh build/relassert/repository/*/*/test.duckdb_extension
         ls -lh build/relassert/test/extensions/duckdb_tests.duckdb_extension
 
     - name: Test

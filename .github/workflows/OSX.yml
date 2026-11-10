@@ -183,6 +183,9 @@ jobs:
             extension_name="$(basename "$library")"
             extension_name="${extension_name#lib}"
             extension_name="${extension_name%_extension.a}"
+            if [[ "$extension_name" == test ]]; then
+              continue
+            fi
             prebuilt_extensions+=("$extension_name")
             loadable_targets+=("${extension_name}_loadable_extension")
           done
@@ -209,14 +212,20 @@ jobs:
               extracted_extension="build/release_${dir_arch}/$extension_path"
               lipo -extract "$lipo_arch" -output "$extracted_extension" "$extension"
               footer_version="$(python3 -c 'import sys; f = open(sys.argv[1], "rb"); f.seek(-352, 2); print(f.read(32).rstrip(b"\0").decode())' "$extension")"
+              extension_version="$(python3 -c 'import sys; f = open(sys.argv[1], "rb"); f.seek(-384, 2); print(f.read(32).rstrip(b"\0").decode())' "$extension")"
               cmake \
                 -DABI_TYPE=CPP \
                 -DEXTENSION="$extracted_extension" \
                 -DPLATFORM_FILE="$extension_build_dir/duckdb_platform_out" \
                 -DVERSION_FIELD="$footer_version" \
-                -DEXTENSION_VERSION=default-version \
+                -DEXTENSION_VERSION="$extension_version" \
                 -DNULL_FILE="$PWD/scripts/null.txt" \
                 -P scripts/append_metadata.cmake
+              if [[ "$extension_path" == extension/test/* ]]; then
+                repository_dir="$extension_build_dir/repository/$footer_version/$platform"
+                mkdir -p "$repository_dir"
+                cp -p "$extracted_extension" "$repository_dir/"
+              fi
             done
 
             for extension in "$extension_build_dir"/repository/*/*/*.duckdb_extension; do

@@ -7,6 +7,9 @@
 // extension/loader/static_extension_autoregister.cpp next to this file to have it called before main.
 // Compile it into the program and put the extension archives before libduckdb_static.a.
 
+#ifndef DUCKDB_STATIC_BUILD
+#define DUCKDB_STATIC_BUILD
+#endif
 #include "duckdb_static_extension.h"
 
 #ifndef DUCKDB_STATIC_EXTENSION_LOADER_API
