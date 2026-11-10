@@ -1,4 +1,5 @@
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/main/settings.hpp"
 
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
@@ -42,7 +43,7 @@ DatabaseInstance &ExtensionLoader::GetDatabaseInstance() const {
 }
 
 void ExtensionLoader::TakeOverProcessWideSettings() const {
-	if (DBConfig::GetConfig(db).options.debug_force_wide_decimal) {
+	if (Settings::Get<DebugForceWideDecimalSetting>(DBConfig::GetConfig(db))) {
 		Decimal::SetForceWide(true);
 	}
 }
