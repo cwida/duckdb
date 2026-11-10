@@ -162,9 +162,6 @@ public:
 
 private:
 	optional_ptr<ClientContext> context;
-	//! Context of the checkpoint transaction, used for catalog lookups during the checkpoint.
-	//! Only set while CreateCheckpoint runs, which owns the connection it belongs to.
-	optional_ptr<ClientContext> checkpoint_context;
 	//! The metadata writer is responsible for writing schema information
 	unique_ptr<MetadataWriter> metadata_writer;
 	//! The table data writer is responsible for writing the DataPointers used by the table chunks

@@ -8,6 +8,7 @@ add_library_unity(
   test_database_size.cpp
   test_revert_append_segments.cpp
   wal_checkpoint_marker.cpp
+  wal_checkpoint_unknown_index_type.cpp
   wal_prescan.cpp
   wal_replay_invalid_info.cpp
   wal_torn_write.cpp)

@@ -1,0 +1,69 @@
+# name: test/sql/storage/wal/wal_replay_unbound_index_attach_autocheckpoint.test
+# description: Test that an automatic checkpoint after re-ATTACH preserves index entries buffered during WAL replay
+# group: [wal]
+
+statement ok
+ATTACH '{TEST_DIR}/wal_replay_unbound_index_attach_autocheckpoint.db' AS db
+
+statement ok
+CREATE TABLE db.t(a INT, b INT);
+
+statement ok
+CREATE UNIQUE INDEX idx ON db.t(a);
+
+statement ok
+CREATE TABLE db.other(x INT);
+
+statement ok
+INSERT INTO db.t SELECT i, i FROM range(100) t(i)
+
+statement ok
+CHECKPOINT db
+
+statement ok
+SET debug_checkpoint_abort='BEFORE_HEADER_NON_FATAL'
+
+statement ok
+SET checkpoint_threshold='999999GB'
+
+# This insert stays in the WAL.
+statement ok
+INSERT INTO db.t VALUES (1000, 1000)
+
+statement maybe
+DETACH db
+----
+Checkpoint aborted before header write (non-fatal) because of PRAGMA checkpoint_abort flag
+
+statement ok
+RESET debug_checkpoint_abort
+
+# WAL replay buffers (1000, 1000) in the unbound index.
+statement ok
+ATTACH '{TEST_DIR}/wal_replay_unbound_index_attach_autocheckpoint.db' AS db
+
+statement ok
+SET checkpoint_threshold='1KB'
+
+# The commit triggers an automatic checkpoint while db.t is untouched and idx is unbound.
+statement ok
+INSERT INTO db.other SELECT range FROM range(10000)
+
+statement ok
+SET checkpoint_threshold='999999GB'
+
+statement ok
+DETACH db
+
+statement ok
+ATTACH '{TEST_DIR}/wal_replay_unbound_index_attach_autocheckpoint.db' AS db
+
+query II
+SELECT * FROM db.t WHERE a = 1000
+----
+1000	1000
+
+statement error
+INSERT INTO db.t VALUES (1000, 0)
+----
+<REGEX>:Constraint Error:.*violates unique constraint.*
