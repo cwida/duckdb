@@ -1,6 +1,6 @@
 #include "core_functions/scalar/string_functions.hpp"
 #include "core_functions/scalar/string_characters.hpp"
-#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/map.hpp"
 #include "duckdb/common/vector.hpp"
 
@@ -10,8 +10,8 @@ namespace duckdb {
 // Can't calculate as trivial modification to levenshtein algorithm
 // as we need to potentially know about earlier in the string
 template <class T>
-static idx_t DamerauLevenshteinDistance(optional_ptr<ClientContext> context, const T *source_str, idx_t source_len,
-                                        const T *target_str, idx_t target_len) {
+static idx_t DamerauLevenshteinDistance(Context &context, const T *source_str, idx_t source_len, const T *target_str,
+                                        idx_t target_len) {
 	// costs associated with each type of edit, to aid readability
 	constexpr uint8_t COST_SUBSTITUTION = 1;
 	constexpr uint8_t COST_INSERTION = 1;
@@ -47,9 +47,7 @@ static idx_t DamerauLevenshteinDistance(optional_ptr<ClientContext> context, con
 	}
 	// loop through string indices - these are offset by 2 from distance indices
 	for (idx_t source_idx = 0; source_idx < source_len; source_idx++) {
-		if (context) {
-			context->InterruptCheck();
-		}
+		context.InterruptCheck();
 		// keeps track of the largest string indices of target string matching current source character
 		// same as DB in LW paper
 		idx_t largest_target_chr_matching;
@@ -86,8 +84,7 @@ static idx_t DamerauLevenshteinDistance(optional_ptr<ClientContext> context, con
 }
 
 //! The distance between the characters of the strings - not their bytes
-static idx_t DamerauLevenshteinDistance(optional_ptr<ClientContext> context, const string_t &source,
-                                        const string_t &target) {
+static idx_t DamerauLevenshteinDistance(Context &context, const string_t &source, const string_t &target) {
 	if (StringIsAscii(source) && StringIsAscii(target)) {
 		return DamerauLevenshteinDistance(context, source.GetData(), source.GetSize(), target.GetData(),
 		                                  target.GetSize());
@@ -98,8 +95,7 @@ static idx_t DamerauLevenshteinDistance(optional_ptr<ClientContext> context, con
 	                                  target_chars.size());
 }
 
-static int64_t DamerauLevenshteinScalarFunction(optional_ptr<ClientContext> context, const string_t source,
-                                                const string_t target) {
+static int64_t DamerauLevenshteinScalarFunction(Context &context, const string_t source, const string_t target) {
 	return (int64_t)DamerauLevenshteinDistance(context, source, target);
 }
 
@@ -107,8 +103,7 @@ static void DamerauLevenshteinFunction(DataChunk &args, ExpressionState &state, 
 	const auto &source_vec = args.data[0];
 	const auto &target_vec = args.data[1];
 
-	// the client context only serves interrupt checks, and index keys are computed without one
-	optional_ptr<ClientContext> context = state.HasContext() ? &state.GetContext() : nullptr;
+	auto &context = state.GetContext();
 	BinaryExecutor::Execute<string_t, string_t, int64_t>(
 	    source_vec, target_vec, result,
 	    [&](string_t source, string_t target) { return DamerauLevenshteinScalarFunction(context, source, target); });

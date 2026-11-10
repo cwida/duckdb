@@ -126,8 +126,8 @@ AttachedDatabase::AttachedDatabase(DatabaseInstance &db, AttachedDatabaseType ty
 	D_ASSERT(type == AttachedDatabaseType::TEMP_DATABASE || type == AttachedDatabaseType::SYSTEM_DATABASE);
 	if (type == AttachedDatabaseType::TEMP_DATABASE) {
 		unordered_map<string, Value> options;
-		auto services = db.Services();
-		AttachOptions attach_options(*services, options, AccessMode::READ_WRITE);
+		auto &services = db.GetContext();
+		AttachOptions attach_options(services, options, AccessMode::READ_WRITE);
 		options["storage_version"] = "latest";
 		storage = make_uniq<SingleFileStorageManager>(*this, string(IN_MEMORY_PATH), attach_options);
 	}
