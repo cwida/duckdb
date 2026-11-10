@@ -5368,11 +5368,12 @@ public:
 			return static_cast<T *>(GetGlobalStateInternal());
 		}
 
-		/// Reports how many row groups the scan has read, out of how many it has found to read. A row group is the
-		/// unit a format lets the scan skip, e.g. a Parquet row group or an ORC stripe.
-		/// @param scanned The number of row groups that were read since the metrics were last collected.
-		/// @param total The number of row groups that were read or skipped, in all.
-		auto SetRowGroups(idx_t scanned, idx_t total) -> void;
+		/// Reports an operator metric of the scan by its profiler name, e.g. "operator.row_groups_scanned" or
+		/// "operator.total_row_groups_to_scan". See `duckdb_v2_table_function_metrics_set` for the accepted names.
+		/// @param name The name of the metric.
+		/// @param value The value since the metrics were last collected ("operator.total_row_groups_to_scan": in all).
+		/// @throws InvalidInputException When the name is not a metric a table function can report.
+		auto SetMetric(std::string_view name, uint64_t value) -> void;
 
 		/// The query's context. Borrowed, valid only for the callback duration.
 		auto GetContext() -> Context &;

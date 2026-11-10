@@ -13313,8 +13313,8 @@ typedef struct _duckdb_v2_table_function_claim_batch_info {
 
 /*!
  * A borrowed opaque handle to the arguments supplied to a table function when the engine collects the metrics of a
- * scan. The "metrics" callback receives this handle and can use it to report what the scan did, e.g. how many row
- * groups it read.
+ * scan. The "metrics" callback receives this handle and can use it to report the operator metrics of the scan, e.g. how
+ * many row groups it read.
  */
 typedef struct _duckdb_v2_table_function_metrics_info {
 	void *internal_ptr;
@@ -14925,25 +14925,34 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_get_global_state(
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!
- * Reports how many row groups the scan has read, out of how many it has found to read.
+ * Reports an operator metric of the scan, by the name DuckDB's profiler uses for it (the names `tracked_metrics`
+ * accepts).
  *
- * A row group is the unit a format lets the scan skip, e.g. a Parquet row group or an ORC stripe. The engine shows the
- * numbers in the metrics of the scan, which tells how much of the data the filters of the query spared. The engine may
- * collect the metrics of a scan more than once, and adds up what it is told: `scanned` is the number of row groups read
- * since the metrics were last collected, `total` is the number of row groups found so far in all.
+ * The metrics a scan can report are counters:
+ * - `operator.rows_scanned`: the rows the scan read.
+ * - `operator.row_groups_scanned`: the row groups the scan read. A row group is the unit a format lets the scan skip,
+ * e.g. a Parquet row group or an ORC stripe.
+ * - `operator.total_row_groups_to_scan`: the row groups the scan read or skipped.
+ * - `operator.bytes_scanned`: the bytes the scan read.
+ *
+ * The engine may collect the metrics of a scan more than once, and adds up what it is told: each value is the amount
+ * since the metrics were last collected, except `operator.total_row_groups_to_scan`, which is the number found so far
+ * in all. Fails for a name that is not one of the above.
  *
  * history:
  * - unstable: v2.0.0
  *
  * @param info The metrics info handle.
- * @param scanned The number of row groups that were read since the metrics were last collected.
- * @param total The number of row groups that were read or skipped, in all.
+ * @param name The name of the metric. Borrowed.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8 and need not be null-terminated.
+ * @param value The value of the metric.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_set_row_groups(
-    duckdb_v2_table_function_metrics_info_handle info, idx_t scanned, idx_t total, duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_set(duckdb_v2_table_function_metrics_info_handle info,
+                                                                  const char *name, idx_t name_length, uint64_t value,
+                                                                  duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
