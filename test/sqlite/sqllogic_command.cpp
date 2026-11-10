@@ -939,7 +939,7 @@ void RestartCommand::ExecuteInternal(ExecuteContext &context) const {
 	// We save the main connection configurations to pass it to the new connection
 	runner.config->options = runner.con->context->db->config.options;
 	runner.config->user_settings = runner.con->context->db->config.user_settings;
-	auto client_config = runner.con->context->config;
+	auto client_config = ClientConfig::GetConfig(*runner.con->context);
 	auto catalog_search_paths = runner.con->context->client_data->catalog_search_path->GetSetPaths();
 	string low_query_writer_path;
 	if (runner.con->context->client_data->log_query_writer) {
@@ -948,7 +948,7 @@ void RestartCommand::ExecuteInternal(ExecuteContext &context) const {
 
 	runner.LoadDatabase(runner.dbpath, load_extensions);
 
-	runner.con->context->config = client_config;
+	ClientConfig::GetConfig(*runner.con->context) = client_config;
 
 	runner.con->BeginTransaction();
 	runner.con->context->client_data->catalog_search_path->Set(catalog_search_paths, CatalogSetPathType::SET_SCHEMAS);

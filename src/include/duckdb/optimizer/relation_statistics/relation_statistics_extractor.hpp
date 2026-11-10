@@ -33,6 +33,7 @@ public:
 
 private:
 	optional<RelationStats> ExtractInternal(LogicalOperator &op);
+	optional<RelationStats> ExtractJoinStats(LogicalOperator &op);
 	optional<RelationStats> ExtractCTERef(LogicalCTERef &cte_ref);
 
 private:

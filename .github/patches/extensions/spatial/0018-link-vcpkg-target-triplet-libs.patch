@@ -1,0 +1,13 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 778726b..a6db5d1 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -14,7 +14,7 @@ if(EMSCRIPTEN)
+   # exported otherwise this solves by basically re-linking (at the moment the
+   # Wasm binary is actually produced)
+   set(DUCKDB_EXTENSION_SPATIAL_LINKED_LIBS
+-      "../../vcpkg_installed/wasm32-emscripten/lib/lib*.a")
++      "../../vcpkg_installed/${VCPKG_TARGET_TRIPLET}/lib/lib*.a")
+ endif()
+ 
+ project(${TARGET_NAME})

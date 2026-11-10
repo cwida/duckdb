@@ -39,6 +39,19 @@ SELECT * FROM t WHERE x = 1 ORDR
 ----
 Did you mean "ORDER"?
 
+# keywords that start an expression are summarised as "an expression" but still get corrected
+statement error
+SELECT CAES WHEN x = 1 THEN 1 ELSE 0 END FROM t
+----
+syntax error at or near "CAES"
+Did you mean "CASE"?
+
+statement error
+SELECT * FROM t WHERE NTO x = 1
+----
+syntax error at or near "NTO"
+Did you mean "NOT"?
+
 # misspelled keyword that was swallowed as an alias - the error is reported on the misspelling
 statement error
 SELECT a FORM t
@@ -175,16 +188,154 @@ SELECT * FROM
 ----
 <REGEX>:.*Expected one of:.*a table name.*
 
-# no hint when the alternatives are too many to be useful
+# a comma repairs the statement even where an alias would be accepted
 statement error
 SELECT 1 2
 ----
-<!REGEX>:.*Expected.*
+Missing ","
+
+# an operator keyword would also parse here (AND, LIKE), but the comma is what is reported
+statement error
+INSERT INTO t VALUES ('Bob' 6, 3)
+----
+syntax error at or near "6"
+Missing ","
 
 statement error
-SELECT 1 2
+CREATE TABLE t2(i INTEGER j INTEGER)
+----
+Missing ","
+
+# the comma is missing before the word that was taken as an alias
+statement error
+SELECT a x::INTEGER FROM t
+----
+syntax error at or near "x"
+Missing ","
+
+# a stray keyword or punctuation whose removal makes the statement parse
+statement error
+SELECT * FROM t WHERE WHERE x = 1
+----
+syntax error at or near "WHERE"
+Unexpected "WHERE"
+
+statement error
+SELECT a,, x FROM t
+----
+Unexpected ","
+
+statement error
+SELECT * FROM t ORDER BY BY x
+----
+Unexpected "BY"
+
+statement error
+INSERT INTO t VALUES (1, 2))
+----
+syntax error at or near ")"
+Unexpected ")"
+
+statement error
+SELECT * FROM t WHERE a = 1 AND AND x = 2
+----
+Unexpected "AND"
+
+# a doubled function name is removed before a comma is guessed
+statement error
+SELECT COUNT COUNT(*) FROM t
+----
+syntax error at or near "COUNT"
+Unexpected "COUNT"
+
+statement error
+SELECT a, upper upper(x) FROM t
+----
+Unexpected "upper"
+
+# a missing comma before a parenthesis is still reported
+statement error
+SELECT 1 (2)
+----
+Missing ","
+
+# a repeated keyword is removed before a comma is guessed
+statement error
+SELECT 1 AS AS b
+----
+syntax error at or near "AS"
+Unexpected "AS"
+
+# the token before the failure is valid, something after it is missing: it is not blamed
+statement error
+SELECT * FROM t WHERE x = 1 AND GROUP BY x
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+SELECT 999 FROM ORDER BY 1
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+SELECT x -> x + FROM t
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+SELECT id, SUM(a) OVER (PARTITION BY ) FROM t
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+SELECT a[1:-] FROM (SELECT [1, 2, 3] a)
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+PREPARE CREATE TABLE t2(i INTEGER)
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+DELETE FROM t AS WHERE a = 42
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+MERGE INTO t AS USING t2 ON true WHEN MATCHED THEN DELETE
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+SELECT * FROM t WHERE x = 1, GROUP BY x
+----
+syntax error at or near ","
+Unexpected ","
+
+# the input simply ended after the keyword, so it is not reported as stray
+statement error
+SELECT * FROM t JOIN;
+----
+<!REGEX>:.*Unexpected.*
+
+# a stray word that is not a keyword is content, not something to drop
+statement error
+SELECT * FROM t WHERE x = 1 foo GROUP BY x
+----
+<!REGEX>:.*Unexpected.*
+
+# two keywords repair this (AND, OR), so nothing is guessed
+statement error
+SELECT * FROM t WHERE a = 1 x = 2
 ----
 <!REGEX>:.*Missing.*
+
+# no hint when the alternatives are too many to be useful
+statement error
+SELECT 1 FROM t WHERE a = 1 2
+----
+<!REGEX>:.*Expected.*
 
 # errors in later statements of a multi-statement query
 statement error

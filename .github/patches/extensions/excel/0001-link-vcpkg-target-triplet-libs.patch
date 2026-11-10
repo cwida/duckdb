@@ -1,0 +1,13 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 981de80..d5bbeb7 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -9,7 +9,7 @@ if (EMSCRIPTEN)
+   # _LINKED_LIBS influences only Wasm compilation
+   # it's unclear why this is needed, but avoid globals to be incorrectly not linked-in
+   # this solves by basically re-linking (at the moment the Wasm binary is actually produced)
+-  set (DUCKDB_EXTENSION_EXCEL_LINKED_LIBS "../../vcpkg_installed/wasm32-emscripten/lib/lib*.a")
++  set (DUCKDB_EXTENSION_EXCEL_LINKED_LIBS "../../vcpkg_installed/${VCPKG_TARGET_TRIPLET}/lib/lib*.a")
+ endif()
+ 
+ # Dependencies from VCPKG

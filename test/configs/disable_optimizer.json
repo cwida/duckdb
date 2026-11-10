@@ -93,7 +93,9 @@
         "test/parquet/utf8_validation_page_index.test",
         "test/sql/copy/parquet/parquet_virtual_file_row_group_number.test",
         "test/sql/copy/parquet/parquet_nan_setting.test",
-        "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test"
+        "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test",
+        "test/sql/optimizer/test_rowid_vector_pruning.test",
+        "test/sql/optimizer/test_rowid_vector_pruning_prefetch.test"
       ]
     },
     {
@@ -125,6 +127,8 @@
         "test/sql/function/generic/test_barrier.test",
         "test/sql/join/asof/test_asof_limit.test",
         "test/sql/optimizer/secure_view_pushdown.test",
+        "test/sql/optimizer/secure_view_join_filter_pushdown.test",
+        "test/sql/optimizer/secure_view_join_order.test",
         "test/sql/optimizer/test_in_rewrite_rule.test",
         "test/optimizer/unused_window_columns.test",
         "test/sql/storage/compression/rle/rle_constant.test",

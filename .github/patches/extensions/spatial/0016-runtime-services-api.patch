@@ -1,0 +1,13 @@
+diff --git a/src/spatial/modules/gdal/gdal_module.cpp b/src/spatial/modules/gdal/gdal_module.cpp
+index a8db1b4..74aed1d 100644
+--- a/src/spatial/modules/gdal/gdal_module.cpp
++++ b/src/spatial/modules/gdal/gdal_module.cpp
+@@ -619,7 +619,7 @@ public:
+ 	}
+ 
+ 	static DuckDBFileSystemPrefix &GetOrCreate(ClientContext &context) {
+-		return *context.registered_state->GetOrCreate<DuckDBFileSystemPrefix>("gdal", context);
++		return *context.GetContext().GetRegisteredState().GetOrCreate<DuckDBFileSystemPrefix>("gdal", context);
+ 	}
+ 
+ private:

@@ -441,16 +441,16 @@ class HashJoinGlobalSinkState : public GlobalSinkState {
 public:
 	HashJoinGlobalSinkState(const PhysicalHashJoin &op_p, ClientContext &context_p)
 	    : context(context_p), op(op_p), num_threads(TaskScheduler::GetScheduler(context).NumberOfThreads()),
-	      temporary_memory_state(TemporaryMemoryManager::Get(context).Register(context)), initial_radix_bits(4),
-	      finalized(false), active_local_states(0), total_size(0), max_partition_size(0), max_partition_count(0),
-	      probe_side_requirement(0), scanned_data(false) {
+	      temporary_memory_state(TemporaryMemoryManager::Get(context.GetContext()).Register(context.GetContext())),
+	      initial_radix_bits(4), finalized(false), active_local_states(0), total_size(0), max_partition_size(0),
+	      max_partition_count(0), probe_side_requirement(0), scanned_data(false) {
 		hash_table = op.InitializeHashTable(context, initial_radix_bits);
 		// Reserve the initial partition buffers before upstream hash tables are finalized.
 		auto minimum_reservation = MinValue(temporary_memory_state->GetMinimumReservation(),
 		                                    GetBuildSpaceRequirement(context, *hash_table, num_threads));
 		temporary_memory_state->SetMinimumReservation(minimum_reservation);
 		temporary_memory_state->SetRemainingSize(minimum_reservation);
-		temporary_memory_state->UpdateReservation(context);
+		temporary_memory_state->UpdateReservation(context.GetContext());
 
 		// Multiple build producers can change dictionaries after the layout has been published.
 		build_side_multi_source = BuildSideHasMultipleSources(op.children[1].get());
@@ -1000,7 +1000,7 @@ static bool FinalizeSingleThreaded(const HashJoinGlobalSinkState &sink, const bo
 	}
 
 	// if we want to verify parallelism, finalize parallel
-	if (sink.context.config.verify_parallelism) {
+	if (ClientConfig::GetConfig(sink.context).verify_parallelism) {
 		return false;
 	}
 
@@ -1520,7 +1520,7 @@ public:
 		sink.temporary_memory_state->SetMinimumReservation(sink.max_partition_size +
 		                                                   sink.hash_table->PointerTableSize(sink.max_partition_count) +
 		                                                   sink.probe_side_requirement);
-		sink.temporary_memory_state->UpdateReservation(executor.context);
+		sink.temporary_memory_state->UpdateReservation(executor.context.GetContext());
 
 		FinalizeExternalRuntimeFilters(sink.context, op, sink);
 
@@ -2084,7 +2084,7 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	// the filter covers the whole build side once Sink is done
 	ht.SealBloomFilter();
 
-	sink.temporary_memory_state->UpdateReservation(context);
+	sink.temporary_memory_state->UpdateReservation(context.GetContext());
 	sink.external = sink.temporary_memory_state->GetReservation() < sink.total_size;
 	if (sink.external) {
 		// For external join we reduce the load factor, this may even prevent the external join altogether
@@ -2098,7 +2098,7 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 		if (temp_total_size < sink.temporary_memory_state->GetReservation()) {
 			// We prevented the external join by reducing the load factor. Update the state accordingly
 			sink.temporary_memory_state->SetMinimumReservation(temp_total_size);
-			sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(context, temp_total_size);
+			sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(context.GetContext(), temp_total_size);
 
 			sink.total_size = temp_total_size;
 			sink.max_partition_size = temp_max_partition_size;
@@ -2485,7 +2485,7 @@ private:
 		probe_chunk_done = 0;
 		external_progress.Reset();
 		probe_count = op.children[0].get().estimated_cardinality;
-		parallel_scan_chunk_count = context.config.verify_parallelism ? 1 : 120;
+		parallel_scan_chunk_count = ClientConfig::GetConfig(context).verify_parallelism ? 1 : 120;
 		full_outer_chunk_idx = DConstants::INVALID_INDEX;
 		full_outer_chunk_count = 0;
 		full_outer_chunk_done = 0;
@@ -2647,8 +2647,8 @@ void HashJoinGlobalSourceState::PrepareBuild(HashJoinGlobalSinkState &sink) {
 	auto &ht = *sink.hash_table;
 
 	// Update remaining size
-	sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(sink.context, ht.GetRemainingSize() +
-	                                                                                    sink.probe_side_requirement);
+	sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(
+	    sink.context.GetContext(), ht.GetRemainingSize() + sink.probe_side_requirement);
 
 	// Try to put the next partitions in the block collection of the HT
 	if (!sink.external || !ht.PrepareExternalFinalize(sink.GetMaxExternalHTSize())) {
@@ -2667,7 +2667,7 @@ void HashJoinGlobalSourceState::PrepareBuild(HashJoinGlobalSinkState &sink) {
 	build_chunk_count = data_collection.ChunkCount();
 	build_chunk_done = 0;
 
-	if (sink.context.config.verify_parallelism) {
+	if (ClientConfig::GetConfig(sink.context).verify_parallelism) {
 		build_chunks_per_thread = 1;
 	} else {
 		if (KeysAreSkewed(sink)) {

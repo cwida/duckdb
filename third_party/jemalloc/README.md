@@ -255,6 +255,23 @@ tcache_enabled_set(tsd_t *tsd, bool enabled) {
 	} else if (was_enabled && !enabled) {
 ```
 
+In `madvise_MADV_DONTNEED_zeroes_pages` in `pages.c`, return instead of falling through when the probe page cannot be
+mapped. The probe runs during allocator bootstrap, and without memory it would `memset` through `MAP_FAILED`.
+Returning 0 marks `MADV_DONTNEED` as faulty: `pages_purge_forced` then reports failure, freed extents are recorded as
+not zeroed, and reuse that needs zeroed pages falls back to `memset`, so zeroing never relies on `MADV_DONTNEED`. The
+flag stays set for the lifetime of the process, which can keep more memory resident than a successful probe would.
+```c++
+	if (addr == MAP_FAILED) {
+		malloc_write("<jemalloc>: Cannot allocate memory for "
+		    "MADV_DONTNEED check\n");
+		if (opt_abort) {
+			abort();
+		}
+		/* DuckDB treats MADV_DONTNEED as faulty without memory to probe it. */
+		return 0;
+	}
+```
+
 Almost no symbols are leaked due to `private_namespace.h`.
 The `exported_symbols_check.py` script still found a few, so these lines need to be added to `private_namespace.h`:
 ```c++
