@@ -1,0 +1,86 @@
+# name: test/optimizer/topn_window_elimination_negative_zero.test
+# description: Top-N window elimination keeps the sign of a zero in a FLOAT or DOUBLE partition column
+# group: [optimizer]
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+statement ok
+CREATE TABLE t AS FROM (VALUES (0.0::DOUBLE, 1, 1), (-0.0::DOUBLE, 2, 1), (1.5::DOUBLE, 3, 2), (-0.0::DOUBLE, 4, 2), (-1.0::DOUBLE, 5, 1), (0.0::DOUBLE, 6, 2)) v(d, x, g);
+
+# the rewrite still applies
+query II
+EXPLAIN SELECT x, d FROM (SELECT x, d, row_number() OVER (PARTITION BY d ORDER BY x) rn FROM t) WHERE rn <= 10;
+----
+logical_opt	<!REGEX>:.*WINDOW.*
+
+# each row keeps its own zero, from a table and from a subquery
+query III
+SELECT x, d::VARCHAR, (1 / d)::VARCHAR FROM (SELECT x, d, row_number() OVER (PARTITION BY d ORDER BY x) rn FROM t) WHERE rn <= 10 ORDER BY x;
+----
+1	0.0	inf
+2	-0.0	-inf
+3	1.5	0.6666666666666666
+4	-0.0	-inf
+5	-1.0	-1.0
+6	0.0	inf
+
+query II
+SELECT x, d::VARCHAR FROM (SELECT x, d, row_number() OVER (PARTITION BY d ORDER BY x) rn FROM (SELECT * FROM t)) WHERE rn <= 10 ORDER BY x;
+----
+1	0.0
+2	-0.0
+3	1.5
+4	-0.0
+5	-1.0
+6	0.0
+
+# only the partition column selected
+query I
+SELECT d::VARCHAR FROM (SELECT d, row_number() OVER (PARTITION BY d ORDER BY x DESC) rn FROM t) WHERE rn <= 2 ORDER BY d, d::VARCHAR;
+----
+-1.0
+-0.0
+0.0
+1.5
+
+# rn = 1 keeps the sign of the row it picks
+query II
+SELECT x, d::VARCHAR FROM (SELECT x, d, row_number() OVER (PARTITION BY d ORDER BY x DESC) rn FROM t) WHERE rn = 1 ORDER BY x;
+----
+3	1.5
+5	-1.0
+6	0.0
+
+query II
+SELECT x, d::VARCHAR FROM (SELECT x, d, row_number() OVER (PARTITION BY d ORDER BY x) rn FROM t) WHERE rn = 1 ORDER BY x;
+----
+1	0.0
+3	1.5
+5	-1.0
+
+# QUALIFY, and a second partition column
+query III
+SELECT x, g, d::VARCHAR FROM t QUALIFY row_number() OVER (PARTITION BY g, d ORDER BY x) <= 10 ORDER BY x;
+----
+1	1	0.0
+2	1	-0.0
+3	2	1.5
+4	2	-0.0
+5	1	-1.0
+6	2	0.0
+
+# REAL
+statement ok
+CREATE TABLE f AS SELECT d::REAL AS d, x FROM t;
+
+query II
+SELECT x, d::VARCHAR FROM (SELECT x, d, row_number() OVER (PARTITION BY d ORDER BY x) rn FROM f) WHERE rn <= 10 ORDER BY x;
+----
+1	0.0
+2	-0.0
+3	1.5
+4	-0.0
+5	-1.0
+6	0.0
+

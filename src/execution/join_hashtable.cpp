@@ -25,6 +25,29 @@ using ScanStructure = JoinHashTable::ScanStructure;
 using ProbeSpill = JoinHashTable::ProbeSpill;
 using ProbeSpillLocalState = JoinHashTable::ProbeSpillLocalAppendState;
 
+const buffer_ptr<DictionaryEntry> &DictionaryOwnershipCache::GetEntry(idx_t column,
+                                                                      const buffer_ptr<DictionaryEntry> &entry) {
+	D_ASSERT(column < column_count);
+	if (!entries) {
+		entries = make_uniq_array<buffer_ptr<DictionaryEntry>>(column_count);
+	}
+	auto &local_entry = entries[column];
+	if (local_entry.get() != entry.get()) {
+		auto owner = make_shared_ptr<DictionaryOwner>(entry);
+		local_entry = buffer_ptr<DictionaryEntry>(owner, entry.get());
+	}
+	return local_entry;
+}
+
+void DictionaryOwnershipCache::Reset() {
+	if (!entries) {
+		return;
+	}
+	for (idx_t i = 0; i < column_count; i++) {
+		entries[i].reset();
+	}
+}
+
 JoinHashTable::SharedState::SharedState()
     : salt_v(LogicalType::UBIGINT), keys_to_compare_sel(STANDARD_VECTOR_SIZE), keys_no_match_sel(STANDARD_VECTOR_SIZE) {
 }
@@ -807,7 +830,7 @@ static inline data_ptr_t InsertRowToEntry(atomic<ht_entry_t> &entry, const data_
 		// If we are not in parallel mode, we can just do the operation without any checks
 		data_ptr_t current_row_pointer = entry.load(std::memory_order_relaxed).GetPointerOrNull();
 		StorePointer(current_row_pointer, row_ptr_to_insert + pointer_offset);
-		entry = desired_entry;
+		entry.store(desired_entry, std::memory_order_relaxed);
 		return nullptr;
 	}
 }
@@ -954,7 +977,7 @@ static void InsertHashesLoop(unsafe_optional_ptr<atomic<ht_entry_t>> entries, Ve
 			bool occupied;
 			while (true) {
 				atomic<ht_entry_t> &atomic_entry = entries.get()[ht_offset];
-				entry = atomic_entry.load(std::memory_order_acquire);
+				entry = atomic_entry.load(PARALLEL ? std::memory_order_acquire : std::memory_order_relaxed);
 				occupied = entry.IsOccupied();
 
 				// condition for incrementing the ht_offset: occupied and row_salt does not match -> move to next entry
@@ -1434,7 +1457,7 @@ ScanStructure::ScanStructure(JoinHashTable &ht_p, TupleDataChunkState &key_state
       chain_match_sel_vector(STANDARD_VECTOR_SIZE), chain_no_match_sel_vector(STANDARD_VECTOR_SIZE),
       found_match(make_unsafe_uniq_array_uninitialized<bool>(STANDARD_VECTOR_SIZE)), ht(ht_p), finished(false),
       is_null(true), rhs_pointers(LogicalType::POINTER), lhs_sel_vector(STANDARD_VECTOR_SIZE), last_match_count(0),
-      last_sel_vector(STANDARD_VECTOR_SIZE) {
+      last_sel_vector(STANDARD_VECTOR_SIZE), dictionary_gather_state(ht.output_columns.size()) {
 	if (ht.residual_predicate) {
 		residual_executor = make_uniq<ExpressionExecutor>(ht.context);
 		residual_executor->AddExpression(*ht.residual_predicate);
@@ -1476,6 +1499,7 @@ ScanStructure::ScanStructure(JoinHashTable &ht_p, TupleDataChunkState &key_state
 }
 
 void ScanStructure::Reset() {
+	dictionary_gather_state.Reset();
 	count = 0;
 	finished = false;
 	is_null = true;
@@ -1698,10 +1722,10 @@ void ScanStructure::GatherResult(Vector &result, const idx_t count, const idx_t 
 }
 
 void JoinHashTable::GatherRHS(Vector &row_ptrs, const SelectionVector &ptr_sel, const idx_t count, DataChunk &result,
-                              idx_t rhs_col_offset) const {
+                              idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const {
 	if (use_dict_emission) {
 		const auto ptrs = FlatVector::GetData<data_ptr_t>(row_ptrs);
-		EmitDictVectors(ptrs, ptr_sel, count, result, rhs_col_offset);
+		EmitDictVectors(ptrs, ptr_sel, count, result, rhs_col_offset, dictionary_state);
 		return;
 	}
 	const auto &result_sel = *FlatVector::IncrementalSelectionVector();
@@ -1722,7 +1746,8 @@ void JoinHashTable::GatherRHS(Vector &row_ptrs, const SelectionVector &ptr_sel, 
 				const auto col_offset = offsets[output_col_idx];
 				// Read the dict index at the width chosen at layout-publication time
 				LoadDictIndices(dict_column->index_width, ptrs, ptr_sel, count, col_offset, build_sel_vec);
-				vector.Dictionary(dict_column->entry, build_sel_vec, count);
+				const auto &entry = dictionary_state.GetEntry(col_idx, dict_column->entry);
+				vector.Dictionary(entry, build_sel_vec, count);
 				continue;
 			}
 		}
@@ -1814,7 +1839,8 @@ void ScanStructure::NextInnerJoin(DataChunk &keys, DataChunk &probe_data, DataCh
 						}
 					}
 					// on the RHS, we need to fetch the data from the hash table
-					ht.GatherRHS(pointers, chain_match_sel_vector, result_count, result, ht.lhs_output_in_probe.size());
+					ht.GatherRHS(pointers, chain_match_sel_vector, result_count, result, ht.lhs_output_in_probe.size(),
+					             dictionary_gather_state);
 
 					AdvancePointers();
 					return;
@@ -1841,7 +1867,7 @@ void ScanStructure::NextInnerJoin(DataChunk &keys, DataChunk &probe_data, DataCh
 		}
 		// 2) gather RHS vectors
 		ht.GatherRHS(rhs_pointers, *FlatVector::IncrementalSelectionVector(), base_count, result,
-		             ht.lhs_output_in_probe.size());
+		             ht.lhs_output_in_probe.size(), dictionary_gather_state);
 	}
 }
 
@@ -2360,7 +2386,7 @@ void JoinHashTable::ScanFullOuter(JoinHTScanState &state, Vector &addresses, Dat
 	}
 
 	// gather the values from the RHS
-	GatherRHS(addresses, sel_vector, found_entries, result, left_column_count);
+	GatherRHS(addresses, sel_vector, found_entries, result, left_column_count, state.dictionary_gather_state);
 	// the result may have no columns, so set the count explicitly
 	result.SetChildCardinality(found_entries);
 }
@@ -2389,7 +2415,7 @@ idx_t JoinHashTable::ScanKeyColumn(Vector &addresses, Vector &result, idx_t colu
 		return 0;
 	}
 	D_ASSERT(result.GetType() == layout_ptr->GetTypes()[column_index]);
-	JoinHTScanState join_ht_state(*data_collection, 0, data_collection->ChunkCount(),
+	JoinHTScanState join_ht_state(*data_collection, 0, data_collection->ChunkCount(), output_columns.size(),
 	                              TupleDataPinProperties::KEEP_EVERYTHING_PINNED);
 	auto key_count = FillWithHTOffsets(join_ht_state, addresses);
 	if (key_count == 0) {
@@ -2840,7 +2866,8 @@ bool JoinHashTable::CanUseDictionaryEmission(const PhysicalHashJoin &op, bool ex
 }
 
 void JoinHashTable::EmitDictVectors(const data_ptr_t *row_ptrs, const SelectionVector &ptr_sel, idx_t count,
-                                    DataChunk &result, idx_t rhs_col_offset) const {
+                                    DataChunk &result, idx_t rhs_col_offset,
+                                    DictionaryOwnershipCache &dictionary_state) const {
 	D_ASSERT(output_columns.size() == dict_arrays.size());
 	SelectionVector build_sel_vec(count);
 	for (idx_t i = 0; i < count; i++) {
@@ -2849,7 +2876,7 @@ void JoinHashTable::EmitDictVectors(const data_ptr_t *row_ptrs, const SelectionV
 	}
 	for (idx_t col_idx = 0; col_idx < output_columns.size(); col_idx++) {
 		auto &vector = result.data[rhs_col_offset + col_idx];
-		vector.Dictionary(dict_arrays[col_idx], build_sel_vec, count);
+		vector.Dictionary(dictionary_state.GetEntry(col_idx, dict_arrays[col_idx]), build_sel_vec, count);
 	}
 }
 
@@ -2864,7 +2891,8 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 	// collect a row pointer per build row; the TDC holds its own BufferHandles for its lifetime,
 	// and FinishEvent has already verified everything is pinned before calling us
 	Vector row_pointer_vector(LogicalType::POINTER, build_count);
-	JoinHTScanState scan_state(collection, 0, collection.ChunkCount(), TupleDataPinProperties::KEEP_EVERYTHING_PINNED);
+	JoinHTScanState scan_state(collection, 0, collection.ChunkCount(), output_columns.size(),
+	                           TupleDataPinProperties::KEEP_EVERYTHING_PINNED);
 	const auto collected = FillWithHTOffsets(scan_state, row_pointer_vector);
 	D_ASSERT(collected == build_count);
 	(void)collected;

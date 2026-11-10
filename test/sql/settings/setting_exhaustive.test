@@ -59,7 +59,7 @@ SET enable_progress_bar=true;
 statement error
 SET GLOBAL enable_progress_bar=true;
 ----
-<REGEX>:Catalog Error.*cannot be set globally.*
+<REGEX>:.*cannot be set as a global variable.*
 
 # explain_output
 foreach explain_output all optimized_only physical_only

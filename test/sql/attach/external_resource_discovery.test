@@ -5,7 +5,7 @@
 # The whole test exercises discovery — the type's `list_function` callback and
 # duckdb_external_resources(discover := true) — which lands in the external-resource discovery part.
 # Skip until that lands (then remove this mode skip / mode unskip).
-# A resource type whose `list` callback enumerates what exists externally (handle/reference/state).
+# A resource type whose `list` callback enumerates what exists externally (handle/name/reference/state).
 statement ok
 CREATE MACRO qk_create(p) AS TABLE SELECT MAP {'id': 'q1'} AS handle;
 
@@ -16,9 +16,9 @@ CREATE MACRO qk_status(h) AS TABLE
 statement ok
 CREATE MACRO qk_list(p) AS TABLE
   SELECT * FROM (VALUES
-    (MAP {'id': 'q1'}, 'ref-q1', 'running'),
-    (MAP {'id': 'q2'}, 'ref-q2', 'running')
-  ) t(handle, reference, state);
+    (MAP {'id': 'q1'}, 'quack-one', 'ref-q1', 'running'),
+    (MAP {'id': 'q2'}, 'quack-two', 'ref-q2', 'running')
+  ) t(handle, name, reference, state);
 
 statement ok
 CALL register_external_resource_type('quack@disco', kind := 'catalog', create_function := 'qk_create',
@@ -41,12 +41,13 @@ SELECT name, type, managed FROM duckdb_external_resources() ORDER BY name;
 mine	quack@disco	true
 
 # SHOW ALL unions in the discovered resources not locally managed: q1 is managed (matched by handle,
-# shown once under its local name), q2 is an orphan (exists externally, not managed here).
+# shown once under its local name), q2 is an orphan (exists externally, not managed here) shown under
+# the name the provider gave it.
 query IITT
 SELECT name, type, managed, state FROM duckdb_external_resources(discover := true) ORDER BY managed DESC, reference;
 ----
 mine	quack@disco	1	NULL
-NULL	quack@disco	0	running
+quack-two	quack@disco	0	running
 
 # The orphan carries the reference the list callback reported.
 query IT

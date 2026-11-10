@@ -31,6 +31,7 @@ add_library_unity(
   cte_runtime_filter_pushdown.cpp
   cte_inlining.cpp
   deliminator.cpp
+  duplicate_eliminated_domain_optimizer.cpp
   multi_stage_aggregate_rewriter.cpp
   expression_heuristics.cpp
   expression_rewriter.cpp

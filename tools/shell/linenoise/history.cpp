@@ -110,6 +110,9 @@ int History::Add(const char *line, idx_t len) {
 			}
 		}
 		linecopy = (char *)malloc((len + replaced_newline_count + 1) * sizeof(char));
+		if (!linecopy) {
+			return 0;
+		}
 		idx_t pos = 0;
 		for (len = 0; line[len]; len++) {
 			if (line[len] == '\r' && line[len + 1] == '\n') {

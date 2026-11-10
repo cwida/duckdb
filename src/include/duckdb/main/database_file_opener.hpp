@@ -22,7 +22,7 @@ class DatabaseInstance;
 
 class DatabaseFileOpener : public FileOpener {
 public:
-	explicit DatabaseFileOpener(DatabaseInstance &db_p) : db(db_p), context(db_p.Services()) {
+	explicit DatabaseFileOpener(DatabaseInstance &db_p) : db(db_p), context(db_p.GetContext()) {
 	}
 
 	Logger &GetLogger() const override {
@@ -38,7 +38,7 @@ public:
 	}
 
 	Context &TryGetContext() override {
-		return *context;
+		return context;
 	}
 
 	optional_ptr<DatabaseInstance> TryGetDatabase() override {
@@ -50,7 +50,7 @@ public:
 
 private:
 	DatabaseInstance &db;
-	shared_ptr<Context> context;
+	Context &context;
 };
 
 class DatabaseFileSystem : public OpenerFileSystem {

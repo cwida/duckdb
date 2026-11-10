@@ -238,7 +238,7 @@ public:
 			result->table_columns = IdentifiersToStrings(names);
 		}
 		result->columns = MultiFileColumnDefinition::ColumnsFromNamesAndTypes(result->names, result->types);
-		result->file_options.VerifyColumnStatistics(result->names, result->types);
+		result->file_options.VerifyColumnStatistics(context.GetContext(), result->names, result->types);
 		return std::move(result);
 	}
 
@@ -311,7 +311,7 @@ public:
 		file_options.auto_detect_hive_partitioning = false;
 
 		for (auto &[option_name, option_values] : input.info.options) {
-			if (multi_file_reader->ParseCopyOption(option_name, option_values, file_options)) {
+			if (multi_file_reader->ParseCopyOption(context.GetContext(), option_name, option_values, file_options)) {
 				continue;
 			}
 			if (interface->ParseCopyOption(context, option_name, option_values, *options, expected_names,
@@ -1154,10 +1154,8 @@ public:
 		auto &column_index = input.column_index;
 
 		optional_ptr<BaseUnionData> file = bind_data.union_readers.empty() ? nullptr : bind_data.union_readers[0].get();
-		if (!file && !bind_data.initial_reader) {
-			return nullptr;
-		}
-		// scanning single file and we have the metadata read already
+		// a scan whose schema was given opens no file at bind - the column_statistics option below still applies
+		const bool opened_a_file = file || bind_data.initial_reader;
 		if (column_index.IsVirtualColumn()) {
 			return nullptr;
 		}
@@ -1167,7 +1165,7 @@ public:
 		auto &file_row_number_idx = bind_data.reader_bind.file_row_number_idx;
 		if (file_row_number_idx.IsValid() && file_row_number_idx.GetIndex() == primary_index) {
 			// the column is read from the row number virtual column of the reader
-			if (bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES) {
+			if (!opened_a_file || bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES) {
 				return nullptr;
 			}
 			return bind_data.initial_reader
@@ -1187,7 +1185,8 @@ public:
 		// statistics the caller gave for the column (the "column_statistics" option) stand in for the files' -
 		// they describe the scan as a whole, which is what the optimizer asks about, where a file's describe one file
 		if (!bind_data.file_options.column_statistics.IsNull()) {
-			auto explicit_stats = bind_data.file_options.GetColumnStatistics(col_name, bind_data.types[primary_index]);
+			auto explicit_stats = bind_data.file_options.GetColumnStatistics(context.GetContext(), col_name,
+			                                                                 bind_data.types[primary_index]);
 			if (explicit_stats) {
 				if (!column_index.IsPushdownExtract()) {
 					return explicit_stats;
@@ -1199,6 +1198,9 @@ public:
 
 		if (!bind_data.file_options.bound_schema.empty() && bind_data.IsGeneratedColumn(primary_index)) {
 			// A physical shadow's bounds do not describe the generated path. Explicit scan statistics above still do.
+			return nullptr;
+		}
+		if (!opened_a_file) {
 			return nullptr;
 		}
 		// NOTE: we do not want to parse the file metadata for the sole purpose of getting column statistics

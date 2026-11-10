@@ -6,6 +6,7 @@
 #include "duckdb/optimizer/join_order/cardinality_estimator.hpp"
 #include "duckdb/optimizer/join_order/cost_model.hpp"
 #include "duckdb/optimizer/join_order/plan_enumerator.hpp"
+#include "duckdb/optimizer/join_order/join_order_source_stats.hpp"
 #include "duckdb/planner/expression/list.hpp"
 #include "duckdb/planner/operator/list.hpp"
 
@@ -21,7 +22,12 @@ JoinOrderOptimizer JoinOrderOptimizer::CreateChildOptimizer() {
 	child_optimizer.delim_scan_stats = delim_scan_stats;
 	child_optimizer.depth = depth + 1;
 	child_optimizer.recursive_cte_indexes = recursive_cte_indexes;
+	child_optimizer.source_stats = source_stats;
 	return child_optimizer;
+}
+
+const shared_ptr<const JoinOrderSourceStats> &JoinOrderOptimizer::GetSourceStats() const {
+	return source_stats;
 }
 
 unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOperator> plan,
@@ -34,6 +40,9 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 
 	// make sure query graph manager has not extracted a relation graph already
 	auto &op = *plan;
+	if (!source_stats) {
+		source_stats = make_shared_ptr<JoinOrderSourceStats>(context, op);
+	}
 
 	// extract the relations that go into the hyper graph.
 	// We optimize the children of any non-reorderable operations we come across.
@@ -66,7 +75,7 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 	}
 	if (!new_logical_plan) {
 		// Keep the original tree when there is nothing to reorder or enumeration cannot complete.
-		new_logical_plan = std::move(plan);
+		new_logical_plan = std::move(plan); // NOLINT: plan is only moved when reconstruction succeeded
 		if (!reorderable && relation_stats.size() == 1) {
 			new_logical_plan->estimated_cardinality = relation_stats.at(0).cardinality;
 			new_logical_plan->has_estimated_cardinality = true;

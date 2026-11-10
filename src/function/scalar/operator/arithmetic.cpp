@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -274,6 +275,7 @@ unique_ptr<BaseStatistics> PropagateNumericStats(ClientContext &context, Functio
 		}
 		expr.FunctionMutable().SetFunctionCallback(
 		    GetScalarIntegerFunction<BASEOP>(expr.GetReturnType().InternalType()));
+		expr.FunctionMutable().SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	}
 	auto result = NumericStats::CreateEmpty(expr.GetReturnType());
 	NumericStats::SetMin(result, new_min);
@@ -403,7 +405,9 @@ void DecimalAddSubtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	if (check_overflow) {
 		bound_function.SetFunctionCallback(GetScalarBinaryFunction<OPOVERFLOWCHECK>(result_type.InternalType()));
 	} else {
+		// the result type holds every result of the operation, so it cannot overflow
 		bound_function.SetFunctionCallback(GetScalarBinaryFunction<OP>(result_type.InternalType()));
+		bound_function.SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	}
 	if (IS_SUBTRACT) {
 		bound_function.SetStatisticsCallback(
@@ -432,6 +436,7 @@ unique_ptr<FunctionData> DeserializeDecimalArithmetic(Deserializer &deserializer
 		bound_function.SetFunctionCallback(GetScalarBinaryFunction<OPOVERFLOWCHECK>(return_type.InternalType()));
 	} else {
 		bound_function.SetFunctionCallback(GetScalarBinaryFunction<OP>(return_type.InternalType()));
+		bound_function.SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	}
 	bound_function.SetStatisticsCallback(nullptr); // TODO we likely dont want to do stats prop again
 	bound_function.SetReturnType(return_type);
@@ -473,27 +478,18 @@ static void BignumAdd(DataChunk &args, ExpressionState &state, Vector &result) {
 
 static void BignumSubtract(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &heap = StringVector::GetStringHeap(result);
-	// negate a copy of the right operand - the input must not be modified, it can e.g. also be the left operand
-	vector<uint8_t> negated_rhs;
-	BinaryExecutor::Execute<bignum_t, bignum_t, string_t>(
-	    args.data[0], args.data[1], result, [&](bignum_t a, bignum_t b) {
-		    const BignumIntermediate lhs(a);
-		    negated_rhs.resize(b.data.GetSize());
-		    memcpy(negated_rhs.data(), b.data.GetData(), b.data.GetSize());
-		    BignumIntermediate rhs(negated_rhs.data(), negated_rhs.size());
-		    rhs.NegateInPlace();
-		    return BignumIntermediate::Add(heap, lhs, rhs);
-	    });
-}
-
-//! The client context (if any) lets long BIGNUM multiplications and divisions check for interrupts
-static optional_ptr<ClientContext> GetBignumArithmeticContext(ExpressionState &state) {
-	return state.HasContext() ? &state.GetContext() : nullptr;
+	BinaryExecutor::Execute<bignum_t, bignum_t, string_t>(args.data[0], args.data[1], result,
+	                                                      [&](bignum_t a, bignum_t b) {
+		                                                      const BignumIntermediate lhs(a);
+		                                                      const BignumIntermediate rhs(b);
+		                                                      // the right operand is subtracted without being copied
+		                                                      return BignumIntermediate::Add(heap, lhs, rhs, true);
+	                                                      });
 }
 
 static void BignumMultiply(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &heap = StringVector::GetStringHeap(result);
-	BignumArithmeticState arithmetic_state(GetBignumArithmeticContext(state));
+	BignumArithmeticState arithmetic_state(state.GetContext());
 	BinaryExecutor::Execute<bignum_t, bignum_t, string_t>(
 	    args.data[0], args.data[1], result, [&](bignum_t a, bignum_t b) {
 		    const BignumIntermediate lhs(a);
@@ -1200,7 +1196,9 @@ void DecimalMultiplyResolveTypes(ResolveScalarFunctionTypesInput &input) {
 		bound_function.SetFunctionCallback(
 		    GetScalarBinaryFunction<DecimalMultiplyOverflowCheck>(result_type.InternalType()));
 	} else {
+		// the result type holds every product of the input types, so the operation cannot overflow
 		bound_function.SetFunctionCallback(GetScalarBinaryFunction<MultiplyOperator>(result_type.InternalType()));
+		bound_function.SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	}
 	bound_function.SetStatisticsCallback(
 	    PropagateNumericStats<TryDecimalMultiply, MultiplyPropagateStatistics, MultiplyOperator>);
@@ -1450,12 +1448,17 @@ unique_ptr<FunctionData> BindBinaryFloatingPoint(BindScalarFunctionInput &input)
 	auto &context = input.GetClientContext();
 	auto &bound_function = input.GetBoundFunction();
 
-	if (Settings::Get<IeeeFloatingPointOpsSetting>(context)) {
+	const auto ieee_ops = Settings::Get<IeeeFloatingPointOpsSetting>(context);
+	const auto null_on_zero = !Settings::Get<ErrorOnDivisionByZeroSetting>(context);
+	if (ieee_ops) {
 		bound_function.SetFunctionCallback(GetScalarBinaryFunction<OP>(bound_function.GetReturnType().InternalType()));
 	} else {
-		auto null_on_zero = !Settings::Get<ErrorOnDivisionByZeroSetting>(context);
 		bound_function.SetFunctionCallback(
 		    GetBinaryFunctionZeroCheck<OP>(bound_function.GetReturnType().InternalType(), null_on_zero));
+	}
+	if (std::is_same<OP, DivideOperator>::value && (ieee_ops || null_on_zero)) {
+		// a division by zero yields inf, nan or NULL instead of raising an error
+		bound_function.SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	}
 	return nullptr;
 }
@@ -1515,7 +1518,7 @@ unique_ptr<BaseStatistics> PropagateIntegerDivideStats(ClientContext &context, F
 template <bool NULL_ON_ZERO, bool MODULO>
 static void BignumDivideOperation(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &heap = StringVector::GetStringHeap(result);
-	BignumArithmeticState arithmetic_state(GetBignumArithmeticContext(state));
+	BignumArithmeticState arithmetic_state(state.GetContext());
 	BinaryExecutor::Execute<bignum_t, bignum_t, string_t>(
 	    args.data[0], args.data[1], result, [&](bignum_t a, bignum_t b) -> optional<string_t> {
 		    const BignumIntermediate lhs(a);

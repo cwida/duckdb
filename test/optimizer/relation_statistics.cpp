@@ -19,6 +19,7 @@
 #include "duckdb/optimizer/relation_statistics/relation_statistics_extractor.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
@@ -26,13 +27,15 @@
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
-#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
+#include "duckdb/planner/operator/logical_limit.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
+#include "duckdb/planner/operator/logical_secure_view.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
 
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/storage/statistics/node_statistics.hpp"
+#include "duckdb/storage/statistics/numeric_stats.hpp"
 
 #include <cmath>
 #include <limits>
@@ -217,6 +220,211 @@ TEST_CASE("Empty multi-relation preserved SEMI remains exact", "[optimizer][rela
 static unique_ptr<Expression> CreateJoinComparison(ColumnBinding left, ColumnBinding right, ExpressionType type) {
 	return BoundComparisonExpression::Create(type, make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, left),
 	                                         make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, right));
+}
+
+TEST_CASE("Join source populations survive changes in relation cardinality", "[optimizer][relation_statistics]") {
+	for (auto current_rows : {idx_t(100000), idx_t(8006)}) {
+		for (auto weak_source : {DistinctCountSource::CARDINALITY, DistinctCountSource::MIN_MAX}) {
+			JoinRelationSetManager sets;
+			JoinPredicateModel model;
+			auto left = ColumnBinding(TableIndex(0), ProjectionIndex(0));
+			auto right = ColumnBinding(TableIndex(1), ProjectionIndex(0));
+			auto &lhs = sets.GetJoinRelation(RelationIndex(0));
+			auto &rhs = sets.GetJoinRelation(RelationIndex(1));
+			auto &joined = sets.Union(lhs, rhs);
+			FilterInfo filter(CreateJoinComparison(left, right, ExpressionType::COMPARE_EQUAL), joined, 0);
+			filter.SetLeftSet(lhs);
+			filter.SetRightSet(rhs);
+			filter.left_binding = left;
+			filter.right_binding = right;
+			auto &predicate = model.RegisterPredicate(filter, JoinPredicateClass::INNER_EQUALITY, left, right);
+			predicate.SetEqualityClassIndex(optional_idx(0));
+			JoinEqualityClass group;
+			group.index = 0;
+			group.columns = {left, right};
+			group.relations = {RelationIndex(0), RelationIndex(1)};
+			group.edges.emplace_back(predicate, RelationIndex(0), RelationIndex(1), left, right);
+			model.AddEqualityClass(std::move(group));
+			auto left_stats = CreateStats({left}, {50}, current_rows);
+			auto right_stats = CreateStats({right}, {10000}, 10000);
+			right_stats.columns[0].total_domain = DistinctCount(20000, weak_source);
+			join_column_sources_t sources;
+			sources.emplace(left, JoinColumnSources({ColumnBinding(TableIndex(10), ProjectionIndex(0)), 100000, 100000,
+			                                         left_stats.columns[0].total_domain}));
+			sources.emplace(right, JoinColumnSources({ColumnBinding(TableIndex(20), ProjectionIndex(0)), 20000, 10000,
+			                                          right_stats.columns[0].total_domain}));
+			sources.at(right).equivalents.push_back({ColumnBinding(TableIndex(30), ProjectionIndex(0)), 200, 100,
+			                                         DistinctCount(200, DistinctCountSource::MIN_MAX)});
+			CardinalityEstimator estimator(sets, model);
+			estimator.Initialize({left_stats, right_stats}, {}, sources);
+			auto expected = weak_source == DistinctCountSource::MIN_MAX ? current_rows : current_rows * 200;
+			REQUIRE(estimator.EstimateCardinality(joined).GetIndex() == expected);
+		}
+	}
+}
+
+TEST_CASE("Synthetic relation rows do not replace a base join domain", "[optimizer][relation_statistics]") {
+	for (auto synthetic_rows : {idx_t(6), idx_t(600)}) {
+		JoinRelationSetManager sets;
+		JoinPredicateModel model;
+		vector<ColumnBinding> bindings;
+		vector<RelationStats> stats;
+		join_column_sources_t sources;
+		JoinEqualityClass group;
+		group.index = 0;
+		vector<unique_ptr<FilterInfo>> filters;
+		vector<idx_t> populations {100000, 20000, synthetic_rows};
+		for (idx_t i = 0; i < populations.size(); i++) {
+			bindings.emplace_back(TableIndex(i), ProjectionIndex(0));
+			stats.push_back(CreateStats({bindings.back()}, {populations[i]}, populations[i]));
+			stats.back().columns[0].total_domain = DistinctCount(populations[i], DistinctCountSource::CARDINALITY);
+			group.columns.insert(bindings.back());
+			group.relations.insert(RelationIndex(i));
+			if (i < 2) {
+				sources.emplace(
+				    bindings.back(),
+				    JoinColumnSources({ColumnBinding(TableIndex(10 + i), ProjectionIndex(0)), populations[i],
+				                       populations[i], stats.back().columns[0].total_domain}));
+			}
+			if (i == 0) {
+				continue;
+			}
+			auto &lhs = sets.GetJoinRelation(RelationIndex(0));
+			auto &rhs = sets.GetJoinRelation(RelationIndex(i));
+			auto filter = make_uniq<FilterInfo>(
+			    CreateJoinComparison(bindings[0], bindings[i], ExpressionType::COMPARE_EQUAL), sets.Union(lhs, rhs), i);
+			filter->SetLeftSet(lhs);
+			filter->SetRightSet(rhs);
+			filter->left_binding = bindings[0];
+			filter->right_binding = bindings[i];
+			auto &predicate =
+			    model.RegisterPredicate(*filter, JoinPredicateClass::INNER_EQUALITY, bindings[0], bindings[i]);
+			predicate.SetEqualityClassIndex(optional_idx(0));
+			group.edges.emplace_back(predicate, RelationIndex(0), RelationIndex(i), bindings[0], bindings[i]);
+			filters.push_back(std::move(filter));
+		}
+		model.AddEqualityClass(std::move(group));
+		CardinalityEstimator estimator(sets, model);
+		estimator.Initialize(stats, {}, sources);
+		auto &base_join = sets.Union(sets.GetJoinRelation(RelationIndex(0)), sets.GetJoinRelation(RelationIndex(1)));
+		REQUIRE(estimator.EstimateCardinality(base_join).GetIndex() == 100000);
+		auto &full_join = sets.Union(base_join, sets.GetJoinRelation(RelationIndex(2)));
+		REQUIRE(estimator.EstimateCardinality(full_join).GetIndex() == 100000);
+	}
+}
+
+TEST_CASE("Min-max uplift counts sources and rejects unknown reliable populations",
+          "[optimizer][relation_statistics]") {
+	for (idx_t provenance : {idx_t(0), idx_t(1), idx_t(2)}) {
+		// Same source alias, independent source, or reliable statistics behind a boundary.
+		JoinRelationSetManager sets;
+		JoinPredicateModel model;
+		vector<ColumnBinding> bindings;
+		vector<RelationStats> stats;
+		join_column_sources_t sources;
+		JoinEqualityClass group;
+		group.index = 0;
+		vector<unique_ptr<FilterInfo>> filters;
+		for (idx_t i = 0; i < 3; i++) {
+			bindings.emplace_back(TableIndex(i), ProjectionIndex(0));
+			stats.push_back(CreateStats({bindings.back()}, {i == 2 ? idx_t(1000) : idx_t(50)}, i == 2 ? 1000 : 10000));
+			if (i == 2) {
+				stats.back().columns[0].total_domain.source = DistinctCountSource::MIN_MAX;
+			}
+			auto origin = provenance == 0 && i == 1 ? idx_t(10) : 10 + i;
+			if (provenance != 2 || i != 1) {
+				sources.emplace(
+				    bindings.back(),
+				    JoinColumnSources({ColumnBinding(TableIndex(origin), ProjectionIndex(0)), stats.back().cardinality,
+				                       stats.back().cardinality, stats.back().columns[0].total_domain}));
+			}
+			group.columns.insert(bindings.back());
+			group.relations.insert(RelationIndex(i));
+			if (i == 0) {
+				continue;
+			}
+			auto &lhs = sets.GetJoinRelation(RelationIndex(0));
+			auto &rhs = sets.GetJoinRelation(RelationIndex(i));
+			auto filter = make_uniq<FilterInfo>(
+			    CreateJoinComparison(bindings[0], bindings[i], ExpressionType::COMPARE_EQUAL), sets.Union(lhs, rhs), i);
+			filter->SetLeftSet(lhs);
+			filter->SetRightSet(rhs);
+			filter->left_binding = bindings[0];
+			filter->right_binding = bindings[i];
+			auto &predicate =
+			    model.RegisterPredicate(*filter, JoinPredicateClass::INNER_EQUALITY, bindings[0], bindings[i]);
+			predicate.SetEqualityClassIndex(optional_idx(0));
+			group.edges.emplace_back(predicate, RelationIndex(0), RelationIndex(i), bindings[0], bindings[i]);
+			filters.push_back(std::move(filter));
+		}
+		model.AddEqualityClass(std::move(group));
+		CardinalityEstimator estimator(sets, model);
+		estimator.Initialize(stats, {}, sources);
+		auto &joined = sets.Union(sets.GetJoinRelation(RelationIndex(0)), sets.GetJoinRelation(RelationIndex(2)));
+		REQUIRE(estimator.EstimateCardinality(joined).GetIndex() == (provenance == 0 ? 10000 : 200000));
+	}
+}
+
+TEST_CASE("Predicate-local fallback domains order competing equality edges", "[optimizer][relation_statistics]") {
+	for (bool reverse_classes : {false, true}) {
+		for (bool reverse_edges : {false, true}) {
+			JoinRelationSetManager sets;
+			JoinPredicateModel model;
+			vector<RelationStats> stats;
+			join_column_sources_t sources;
+			vector<unique_ptr<FilterInfo>> filters;
+			for (idx_t i = 0; i < 3; i++) {
+				auto first = ColumnBinding(TableIndex(i), ProjectionIndex(0));
+				auto second = ColumnBinding(TableIndex(i), ProjectionIndex(1));
+				idx_t rows = i == 2 ? 10 : 1000;
+				stats.push_back(CreateStats({first, second}, {rows, MinValue<idx_t>(rows, 100)}, rows));
+				stats.back().columns[0].total_domain.source = DistinctCountSource::CARDINALITY;
+				stats.back().columns[1].total_domain = DistinctCount(100, DistinctCountSource::MIN_MAX);
+				if (i != 2) {
+					sources.emplace(first, JoinColumnSources({first, idx_t(rows), idx_t(rows),
+					                                          stats.back().columns[0].total_domain}));
+				}
+			}
+			for (idx_t class_index = 0; class_index < 2; class_index++) {
+				auto column = reverse_classes ? 1 - class_index : class_index;
+				JoinEqualityClass group;
+				group.index = class_index;
+				vector<idx_t> targets = column == 0 ? vector<idx_t> {1, 2} : vector<idx_t> {2};
+				if (reverse_edges) {
+					std::reverse(targets.begin(), targets.end());
+				}
+				for (auto target : targets) {
+					auto left = ColumnBinding(TableIndex(0), ProjectionIndex(column));
+					auto right = ColumnBinding(TableIndex(target), ProjectionIndex(column));
+					auto &lhs = sets.GetJoinRelation(RelationIndex(0));
+					auto &rhs = sets.GetJoinRelation(RelationIndex(target));
+					auto filter =
+					    make_uniq<FilterInfo>(CreateJoinComparison(left, right, ExpressionType::COMPARE_EQUAL),
+					                          sets.Union(lhs, rhs), filters.size());
+					filter->SetLeftSet(lhs);
+					filter->SetRightSet(rhs);
+					filter->left_binding = left;
+					filter->right_binding = right;
+					auto &predicate = model.RegisterPredicate(*filter, JoinPredicateClass::INNER_EQUALITY, left, right);
+					predicate.SetEqualityClassIndex(optional_idx(class_index));
+					group.columns.insert(left);
+					group.columns.insert(right);
+					group.relations.insert(RelationIndex(0));
+					group.relations.insert(RelationIndex(target));
+					group.edges.emplace_back(predicate, RelationIndex(0), RelationIndex(target), left, right);
+					filters.push_back(std::move(filter));
+				}
+				model.AddEqualityClass(std::move(group));
+			}
+			CardinalityEstimator estimator(sets, model);
+			estimator.Initialize(stats, {}, sources);
+			auto &base = sets.Union(sets.GetJoinRelation(RelationIndex(0)), sets.GetJoinRelation(RelationIndex(1)));
+			auto &all = sets.Union(base, sets.GetJoinRelation(RelationIndex(2)));
+			REQUIRE(estimator.EstimateCardinality(base).GetIndex() == 1000);
+			// Use domains 1000 and 100 before the redundant local domain of 10.
+			REQUIRE(estimator.EstimateCardinality(all).GetIndex() == 100);
+		}
+	}
 }
 
 TEST_CASE("Join cardinality divides large products before converting to double",
@@ -829,27 +1037,6 @@ TEST_CASE("Grouping sets discard inherited SEMI domain evidence", "[optimizer][r
 	REQUIRE_FALSE(duplicate_groups->columns[0].GetSupportedSemiAntiDomainSize().IsValid());
 }
 
-TEST_CASE("DISTINCT establishes a new statistics source on supported and fallback targets",
-          "[optimizer][relation_statistics]") {
-	auto input = ColumnBinding(TableIndex(10), ProjectionIndex(0));
-	auto child_stats = CreateStats({input}, {10}, 100);
-	child_stats.row_retention = 0.04;
-	LogicalDistinct distinct(DistinctType::DISTINCT);
-	distinct.children.push_back(make_uniq<LogicalDummyScan>(TableIndex(10)));
-	auto ordinary = RelationStatisticsHelper::ExtractDistinctStats(distinct, child_stats);
-	REQUIRE(ordinary);
-	REQUIRE(ordinary->row_retention == 1);
-	REQUIRE(ordinary->cardinality == 10);
-	auto target = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN);
-	target->GetChildrenMutable().push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, input));
-	distinct.distinct_type = DistinctType::DISTINCT_ON;
-	distinct.distinct_targets.push_back(std::move(target));
-	auto fallback = RelationStatisticsHelper::ExtractDistinctStats(distinct, child_stats);
-	REQUIRE(fallback);
-	REQUIRE(fallback->row_retention == 1);
-	REQUIRE(fallback->cardinality == 100);
-}
-
 TEST_CASE("Relation statistics extraction is cached by operator", "[optimizer][relation_statistics]") {
 	DuckDB db;
 	Connection connection(db);
@@ -1063,6 +1250,9 @@ struct CardinalityProviderData : public TableFunctionData {
 	NodeStatistics statistics {0, 0};
 	shared_ptr<idx_t> calls = make_shared_ptr<idx_t>(0);
 	shared_ptr<idx_t> column_calls = make_shared_ptr<idx_t>(0);
+	vector<reference<LogicalGet>> observed_scans;
+	shared_ptr<bool> captured_before_mutation = make_shared_ptr<bool>(true);
+	DistinctCount domain {0, DistinctCountSource::CARDINALITY};
 };
 
 static unique_ptr<LogicalGet> CreateCardinalityProvider(optional_idx estimate, optional_idx maximum) {
@@ -1079,6 +1269,11 @@ static unique_ptr<LogicalGet> CreateCardinalityProvider(optional_idx estimate, o
 	function.cardinality = [](ClientContext &, auto bind_data) -> unique_ptr<NodeStatistics> {
 		auto &data = bind_data->template Cast<CardinalityProviderData>();
 		(*data.calls)++;
+		for (auto &scan : data.observed_scans) {
+			if (scan.get().has_estimated_cardinality) {
+				*data.captured_before_mutation = false;
+			}
+		}
 		return make_uniq<NodeStatistics>(data.statistics);
 	};
 	auto get = make_uniq<LogicalGet>(TableIndex(10), BoundTableFunction(function), std::move(data),
@@ -1146,6 +1341,477 @@ static void CreateStatisticsJoinTables(Connection &connection) {
 	REQUIRE_NO_FAIL(
 	    connection.Query("CREATE TABLE stats_c AS SELECT i::INTEGER z, (i % 10)::INTEGER k FROM range(100) t(i)"));
 	REQUIRE_NO_FAIL(connection.Query("SET disabled_optimizers='join_order'"));
+}
+
+static unique_ptr<LogicalGet> CreateDomainProvider(TableIndex index, idx_t rows, DistinctCount domain) {
+	auto get = CreateCardinalityProvider(rows, rows);
+	get->table_index = index;
+	get->bind_data->Cast<CardinalityProviderData>().domain = domain;
+	get->function.statistics = [](ClientContext &, auto bind_data, column_t) -> unique_ptr<BaseStatistics> {
+		auto &domain = bind_data->template Cast<CardinalityProviderData>().domain;
+		auto result = BaseStatistics::CreateUnknown(LogicalType::INTEGER);
+		if (domain.source == DistinctCountSource::MIN_MAX) {
+			NumericStats::SetMin(result, Value::INTEGER(0));
+			NumericStats::SetMax(result, Value::INTEGER(NumericCast<int32_t>(domain.distinct_count - 1)));
+		} else {
+			result.SetDistinctCount(domain.distinct_count);
+		}
+		return result.ToUnique();
+	};
+	return get;
+}
+
+static unique_ptr<LogicalOperator> CreateContributorJoin(bool projected, idx_t second_domain) {
+	auto first = CreateDomainProvider(TableIndex(10), 10000, DistinctCount(50, DistinctCountSource::HLL));
+	auto second = CreateDomainProvider(TableIndex(20), 10000, DistinctCount(second_domain, DistinctCountSource::HLL));
+	auto first_binding = first->GetColumnBindings()[0];
+	auto inner = make_uniq<LogicalComparisonJoin>(JoinType::INNER);
+	inner->conditions.emplace_back(
+	    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, first_binding),
+	    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, second->GetColumnBindings()[0]),
+	    ExpressionType::COMPARE_EQUAL);
+	inner->children.push_back(std::move(first));
+	inner->children.push_back(std::move(second));
+	unique_ptr<LogicalOperator> left = std::move(inner);
+	if (projected) {
+		vector<unique_ptr<Expression>> expressions;
+		expressions.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, first_binding));
+		expressions.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(1)));
+		auto projection = make_uniq<LogicalProjection>(TableIndex(30), std::move(expressions));
+		projection->children.push_back(std::move(left));
+		left = std::move(projection);
+	}
+	auto dimension = CreateDomainProvider(TableIndex(40), 1000, DistinctCount(1000, DistinctCountSource::MIN_MAX));
+	auto outer = make_uniq<LogicalComparisonJoin>(JoinType::INNER);
+	outer->conditions.emplace_back(
+	    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, left->GetColumnBindings()[0]),
+	    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, dimension->GetColumnBindings()[0]),
+	    ExpressionType::COMPARE_EQUAL);
+	outer->children.push_back(std::move(left));
+	outer->children.push_back(std::move(dimension));
+	return std::move(outer);
+}
+
+TEST_CASE("Projected joins use visible domains and retain independent source guards",
+          "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	for (auto second_domain : {idx_t(50), idx_t(100)}) {
+		for (bool projected : {false, true}) {
+			auto plan = CreateContributorJoin(projected, second_domain);
+			JoinOrderSourceStats snapshot(*connection.context, *plan);
+			auto sources = snapshot.Resolve(*plan->children[0]);
+			auto &lineage = sources.at(plan->children[0]->GetColumnBindings()[0]);
+			REQUIRE(lineage.equivalents.size() == 1);
+			REQUIRE(lineage.direct.binding.table_index == TableIndex(10));
+			REQUIRE(lineage.equivalents[0].binding.table_index == TableIndex(20));
+			snapshot.Resolve(*plan);
+			REQUIRE(
+			    snapshot.Resolve(*plan->children[0]).at(plan->children[0]->GetColumnBindings()[0]).equivalents.size() ==
+			    1);
+			auto expected = idx_t(100000000000) / (second_domain * (projected ? 50 : second_domain));
+			RelationStatsExtractor extractor(*connection.context);
+			auto stats = extractor.Extract(*plan);
+			REQUIRE(stats);
+			REQUIRE(stats->cardinality == expected);
+
+			JoinOrderOptimizer optimizer(*connection.context);
+			RelationStats optimized_stats;
+			auto optimized = optimizer.Optimize(CreateContributorJoin(projected, second_domain), optimized_stats);
+			REQUIRE(optimized_stats.stats_initialized);
+			REQUIRE(optimized_stats.cardinality == expected);
+		}
+	}
+}
+
+TEST_CASE("Aliases created before joins retain hidden contributors", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto plan = CreateContributorJoin(true, 100);
+	auto &outer_projection = plan->children[0]->Cast<LogicalProjection>();
+	auto &inner = outer_projection.children[0]->Cast<LogicalComparisonJoin>();
+	auto original_binding = inner.children[0]->GetColumnBindings()[0];
+	vector<unique_ptr<Expression>> aliases;
+	aliases.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, original_binding));
+	aliases.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, original_binding));
+	auto alias_projection = make_uniq<LogicalProjection>(TableIndex(15), std::move(aliases));
+	alias_projection->children.push_back(std::move(inner.children[0]));
+	inner.children[0] = std::move(alias_projection);
+	inner.conditions[0].GetLHS().Cast<BoundColumnRefExpression>().BindingMutable() =
+	    ColumnBinding(TableIndex(15), ProjectionIndex(0));
+	outer_projection.expressions[0]->Cast<BoundColumnRefExpression>().BindingMutable() =
+	    ColumnBinding(TableIndex(15), ProjectionIndex(1));
+	JoinOrderSourceStats snapshot(*connection.context, *plan);
+	auto sources = snapshot.Resolve(outer_projection);
+	REQUIRE(sources.at(outer_projection.GetColumnBindings()[0]).equivalents.size() == 1);
+	REQUIRE(sources.at(outer_projection.GetColumnBindings()[0]).direct.binding == original_binding);
+	RelationStatsExtractor extractor(*connection.context);
+	auto stats = extractor.Extract(*plan);
+	REQUIRE(stats);
+	REQUIRE(stats->cardinality == 20000000);
+	JoinOrderOptimizer optimizer(*connection.context);
+	RelationStats optimized_stats;
+	plan = optimizer.Optimize(std::move(plan), optimized_stats);
+	REQUIRE(optimized_stats.stats_initialized);
+	REQUIRE(optimized_stats.cardinality == 20000000);
+}
+
+TEST_CASE("Projected source equalities exclude correlated operands", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	for (bool cast : {false, true}) {
+		auto plan = CreateContributorJoin(true, 100);
+		auto &projection = *plan->children[0];
+		auto &join = projection.children[0]->Cast<LogicalComparisonJoin>();
+		auto &condition = join.conditions[0];
+		auto binding = condition.GetLHS().Cast<BoundColumnRefExpression>().Binding();
+		condition.GetLHS().Cast<BoundColumnRefExpression>().DepthMutable() = 1;
+		if (cast) {
+			condition.LeftReference() =
+			    BoundCastExpression::AddDefaultCastToType(std::move(condition.LeftReference()), LogicalType::BIGINT);
+			condition.RightReference() =
+			    BoundCastExpression::AddDefaultCastToType(std::move(condition.RightReference()), LogicalType::BIGINT);
+		}
+		JoinOrderSourceStats snapshot(*connection.context, projection);
+		auto sources = snapshot.Resolve(projection);
+		auto &contributors = sources.at(projection.GetColumnBindings()[0]);
+		REQUIRE(contributors.equivalents.empty());
+		REQUIRE(contributors.direct.binding == binding);
+	}
+}
+
+TEST_CASE("Join source snapshots retain scan populations and resolve relation boundaries",
+          "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	CreateStatisticsJoinTables(connection);
+	REQUIRE_NO_FAIL(connection.Query("ANALYZE"));
+	connection.BeginTransaction();
+	vector<pair<string, idx_t>> cases {
+	    {"SELECT x AS a, x AS b, k + 1 AS c FROM stats_a", 2},
+	    {"SELECT a.x, b.y, a.k + b.k AS c FROM stats_a a JOIN stats_b b USING(k)", 2},
+	    {"SELECT x FROM stats_a WHERE k = 1 ORDER BY x", 1},
+	    {"SELECT a.x, b.y FROM stats_a a LEFT JOIN stats_b b USING(k)", 1},
+	    {"SELECT a.x FROM stats_a a SEMI JOIN stats_b b USING(k)", 1},
+	    {"SELECT * FROM (SELECT x FROM stats_a LIMIT 10)", 0},
+	    {"SELECT x::VARCHAR FROM stats_a", 0},
+	    {"SELECT k, count(*) FROM stats_a GROUP BY k", 0},
+	    {"SELECT x FROM stats_a UNION ALL SELECT y FROM stats_b", 0},
+	    {"SELECT * FROM (VALUES (1), (2), (3)) v(x)", 0},
+	};
+	for (auto &entry : cases) {
+		CAPTURE(entry.first);
+		auto plan = PlanStatisticsQuery(connection, entry.first);
+		JoinOrderSourceStats snapshot(*connection.context, *plan);
+		auto sources = snapshot.Resolve(*plan);
+		REQUIRE(sources.size() == entry.second);
+		for (auto &source : sources) {
+			REQUIRE(source.second.direct.source_cardinality == 1000);
+			for (auto &contributor : source.second.equivalents) {
+				REQUIRE(contributor.source_cardinality == 1000);
+			}
+		}
+	}
+	auto plan = PlanStatisticsQuery(connection, "SELECT x AS a, x AS b FROM stats_a");
+	JoinOrderSourceStats snapshot(*connection.context, *plan);
+	auto sources = snapshot.Resolve(*plan);
+	auto bindings = plan->GetColumnBindings();
+	REQUIRE(sources.at(bindings[0]).equivalents.empty());
+	REQUIRE(sources.at(bindings[1]).equivalents.empty());
+	REQUIRE(sources.at(bindings[0]).direct.binding == sources.at(bindings[1]).direct.binding);
+
+	auto self_join = PlanStatisticsQuery(connection, "SELECT a.x, b.x FROM stats_a a JOIN stats_a b USING(k)");
+	JoinOrderSourceStats self_snapshot(*connection.context, *self_join);
+	auto self_sources = self_snapshot.Resolve(*self_join);
+	auto self_bindings = self_join->GetColumnBindings();
+	REQUIRE(self_sources.at(self_bindings[0]).equivalents.empty());
+	REQUIRE(self_sources.at(self_bindings[1]).equivalents.empty());
+	REQUIRE(self_sources.at(self_bindings[0]).direct.binding.table_index !=
+	        self_sources.at(self_bindings[1]).direct.binding.table_index);
+	vector<pair<string, idx_t>> contributor_cases {
+	    {"SELECT a.k FROM stats_a a JOIN stats_b b USING(k)", 2},
+	    {"SELECT a.k FROM stats_a a, stats_b b WHERE a.k=b.k", 2},
+	    {"SELECT a.k FROM stats_a a JOIN stats_b b ON a.k::BIGINT IS NOT DISTINCT FROM b.k::BIGINT", 2},
+	    {"SELECT a.k FROM stats_a a, stats_b b WHERE a.k=b.k AND b.k=b.y", 3},
+	    {"SELECT a.k FROM stats_a a, stats_b b WHERE a.k=b.k OR a.x=b.y", 1},
+	    {"SELECT a.k FROM stats_a a LEFT JOIN stats_b b USING(k)", 1},
+	    {"SELECT p.a,p.b FROM (SELECT a.k AS a,a.k AS b FROM stats_a a JOIN stats_b b USING(k)) p", 2},
+	    {"SELECT p.b FROM (SELECT k AS a,k AS b FROM stats_a) p JOIN stats_b b ON p.a=b.k", 2},
+	};
+	for (auto &entry : contributor_cases) {
+		CAPTURE(entry.first);
+		auto input = PlanStatisticsQuery(connection, entry.first);
+		JoinOrderSourceStats captured(*connection.context, *input);
+		auto output = captured.Resolve(*input);
+		for (auto &binding : input->GetColumnBindings()) {
+			REQUIRE(output.at(binding).equivalents.size() + 1 == entry.second);
+			column_binding_set_t origins {output.at(binding).direct.binding};
+			for (auto &source : output.at(binding).equivalents) {
+				origins.insert(source.binding);
+			}
+			REQUIRE(origins.size() == entry.second);
+		}
+	}
+	auto computed =
+	    PlanStatisticsQuery(connection, "SELECT p.k FROM (SELECT x%10 AS k FROM stats_a) p JOIN stats_b b USING(k)");
+	JoinOrderSourceStats computed_snapshot(*connection.context, *computed);
+	REQUIRE(computed_snapshot.Resolve(*computed).empty());
+	connection.Rollback();
+}
+
+TEST_CASE("Join source snapshots precede child optimization and reuse provider statistics",
+          "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto scan = CreateCardinalityProvider(100, 1000);
+	auto &data = scan->bind_data->Cast<CardinalityProviderData>();
+	auto calls = data.calls;
+	auto column_calls = data.column_calls;
+	scan->function.statistics = [](ClientContext &, auto bind_data, column_t) -> unique_ptr<BaseStatistics> {
+		auto &data = bind_data->template Cast<CardinalityProviderData>();
+		(*data.column_calls)++;
+		auto result = BaseStatistics::CreateUnknown(LogicalType::INTEGER);
+		result.SetDistinctCount(10);
+		return result.ToUnique();
+	};
+	scan->SetEstimatedCardinality(7);
+	vector<unique_ptr<Expression>> expressions;
+	expressions.push_back(
+	    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, ColumnBinding(TableIndex(10), ProjectionIndex(0))));
+	auto projection = make_uniq<LogicalProjection>(TableIndex(20), std::move(expressions));
+	projection->children.push_back(std::move(scan));
+	JoinOrderOptimizer optimizer(*connection.context);
+	auto plan = optimizer.Optimize(std::move(projection));
+	auto sources = optimizer.GetSourceStats()->Resolve(*plan);
+	REQUIRE(sources.size() == 1);
+	REQUIRE(sources.begin()->second.equivalents.empty());
+	auto &source = sources.begin()->second.direct;
+	REQUIRE(source.source_cardinality == 100);
+	REQUIRE(source.domain.distinct_count == 10);
+	REQUIRE(*column_calls == 1);
+	REQUIRE(*calls == 1);
+	plan->SetEstimatedCardinality(1);
+	REQUIRE(optimizer.GetSourceStats()->Resolve(*plan).begin()->second.direct.source_cardinality == 100);
+}
+
+TEST_CASE("Join source collection visits both subtrees before either is optimized",
+          "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto left = CreateCardinalityProvider(100, 100);
+	auto right = CreateCardinalityProvider(200, 200);
+	right->table_index = TableIndex(11);
+	auto &left_data = left->bind_data->Cast<CardinalityProviderData>();
+	auto &right_data = right->bind_data->Cast<CardinalityProviderData>();
+	left_data.observed_scans = {*left, *right};
+	right_data.observed_scans = {*left, *right};
+	auto left_captured = left_data.captured_before_mutation;
+	auto right_captured = right_data.captured_before_mutation;
+	auto join = make_uniq<LogicalComparisonJoin>(JoinType::INNER);
+	join->conditions.emplace_back(
+	    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, ColumnBinding(TableIndex(10), ProjectionIndex(0))),
+	    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, ColumnBinding(TableIndex(11), ProjectionIndex(0))),
+	    ExpressionType::COMPARE_EQUAL);
+	join->children.push_back(std::move(left));
+	join->children.push_back(std::move(right));
+	JoinOrderOptimizer optimizer(*connection.context);
+	auto plan = optimizer.Optimize(std::move(join));
+	REQUIRE(*left_captured);
+	REQUIRE(*right_captured);
+	REQUIRE(optimizer.GetSourceStats()->Resolve(*plan).size() == 2);
+}
+
+TEST_CASE("Join source provenance respects secure views and scan samples", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	for (bool propagate : {false, true}) {
+		auto input = LogicalProjection::CreateIdentity(TableIndex(20), CreateCardinalityProvider(100, 100));
+		auto view = make_uniq<LogicalSecureView>("source_view", std::move(input));
+		view->propagate_statistics = propagate;
+		auto plan = LogicalProjection::CreateIdentity(TableIndex(30), std::move(view));
+		JoinOrderSourceStats snapshot(*connection.context, *plan);
+		REQUIRE(snapshot.Resolve(*plan).size() == (propagate ? 1 : 0));
+		REQUIRE(snapshot.Resolve(*plan->children[0]).size() == (propagate ? 1 : 0));
+		REQUIRE(snapshot.Resolve(*plan->children[0]->children[0]).size() == 1);
+	}
+	auto scan = CreateCardinalityProvider(100, 100);
+	scan->extra_info.sample_options = make_uniq<SampleOptions>();
+	scan->extra_info.sample_options->sample_size = Value::BIGINT(10);
+	scan->extra_info.sample_options->is_percentage = false;
+	JoinOrderSourceStats snapshot(*connection.context, *scan);
+	REQUIRE(snapshot.FindScanStats(*scan));
+	REQUIRE(snapshot.Resolve(*scan).empty());
+	auto projected = LogicalProjection::CreateIdentity(TableIndex(20), std::move(scan));
+	snapshot.AddPlan(*connection.context, *projected);
+	REQUIRE(snapshot.Resolve(*projected).empty());
+}
+
+class SourceCountingProjection : public LogicalProjection {
+public:
+	SourceCountingProjection(TableIndex index, vector<unique_ptr<Expression>> expressions)
+	    : LogicalProjection(index, std::move(expressions)) {
+	}
+
+	idx_t binding_calls = 0;
+
+public:
+	vector<ColumnBinding> GetColumnBindings() override {
+		binding_calls++;
+		return LogicalProjection::GetColumnBindings();
+	}
+};
+
+TEST_CASE("Join source collection resolves each nested projection once", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	for (bool computed : {false, true}) {
+		auto scan = CreateCardinalityProvider(100, 100);
+		auto calls = scan->bind_data->Cast<CardinalityProviderData>().calls;
+		unique_ptr<LogicalOperator> plan = std::move(scan);
+		vector<reference<SourceCountingProjection>> projections;
+		for (idx_t i = 0; i < 8; i++) {
+			vector<unique_ptr<Expression>> expressions;
+			if (computed && i == 0) {
+				expressions.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(1)));
+			} else {
+				expressions.push_back(
+				    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, plan->GetColumnBindings()[0]));
+			}
+			auto projection = make_uniq<SourceCountingProjection>(TableIndex(20 + i), std::move(expressions));
+			projections.push_back(*projection);
+			projection->children.push_back(std::move(plan));
+			plan = std::move(projection);
+		}
+		for (auto &projection : projections) {
+			projection.get().binding_calls = 0;
+		}
+		JoinOrderSourceStats snapshot(*connection.context, *plan);
+		for (auto &projection : projections) {
+			auto sources = snapshot.Resolve(projection.get());
+			REQUIRE(sources.size() == (computed ? 0 : 1));
+			sources.clear();
+			REQUIRE(snapshot.Resolve(projection.get()).size() == (computed ? 0 : 1));
+			REQUIRE(projection.get().binding_calls == 1);
+		}
+		snapshot.AddPlan(*connection.context, *plan);
+		REQUIRE(*calls == 1);
+		for (auto &projection : projections) {
+			REQUIRE(projection.get().binding_calls == 1);
+		}
+	}
+}
+
+TEST_CASE("Join source summaries support new projections and appended roots without bypassing barriers",
+          "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto first = LogicalProjection::CreateIdentity(TableIndex(20), CreateCardinalityProvider(100, 100));
+	auto &captured = *first;
+	auto calls = first->children[0]->Cast<LogicalGet>().bind_data->Cast<CardinalityProviderData>().calls;
+	JoinOrderSourceStats snapshot(*connection.context, *first);
+	auto projected = LogicalProjection::CreateIdentity(TableIndex(30), std::move(first));
+	REQUIRE(snapshot.Resolve(*projected).begin()->second.direct.source_cardinality == 100);
+	auto limit = make_uniq<LogicalLimit>(BoundLimitNode::ConstantValue(10), BoundLimitNode());
+	limit->children.push_back(std::move(projected));
+	REQUIRE(snapshot.Resolve(*limit).empty());
+	auto outer = LogicalProjection::CreateIdentity(TableIndex(40), std::move(limit));
+	REQUIRE(snapshot.Resolve(*outer).empty());
+	snapshot.AddPlan(*connection.context, *outer);
+	REQUIRE(snapshot.Resolve(*outer).empty());
+	REQUIRE(snapshot.Resolve(captured).begin()->second.direct.source_cardinality == 100);
+	REQUIRE(*calls == 1);
+
+	auto scan = CreateCardinalityProvider(200, 200);
+	scan->table_index = TableIndex(50);
+	auto appended_calls = scan->bind_data->Cast<CardinalityProviderData>().calls;
+	auto appended = LogicalProjection::CreateIdentity(TableIndex(60), std::move(scan));
+	snapshot.AddPlan(*connection.context, *appended);
+	REQUIRE(snapshot.Resolve(*appended).begin()->second.direct.source_cardinality == 200);
+	REQUIRE(snapshot.Resolve(captured).begin()->second.direct.source_cardinality == 100);
+	REQUIRE(*appended_calls == 1);
+	REQUIRE(*calls == 1);
+}
+
+TEST_CASE("Nested read-only join regions share source provider calls", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto plan = unique_ptr<LogicalOperator>(CreateCardinalityProvider(100, 100));
+	vector<shared_ptr<idx_t>> calls, column_calls;
+	for (idx_t i = 0; i < 8; i++) {
+		auto scan = CreateCardinalityProvider(100, 100);
+		scan->table_index = TableIndex(20 + i);
+		auto &data = scan->bind_data->Cast<CardinalityProviderData>();
+		calls.push_back(data.calls);
+		column_calls.push_back(data.column_calls);
+		scan->function.statistics = [](ClientContext &, auto bind_data, column_t) -> unique_ptr<BaseStatistics> {
+			auto &data = bind_data->template Cast<CardinalityProviderData>();
+			(*data.column_calls)++;
+			auto result = BaseStatistics::CreateUnknown(LogicalType::INTEGER);
+			result.SetDistinctCount(10);
+			return result.ToUnique();
+		};
+		auto binding = plan->GetColumnBindings()[0];
+		auto join = make_uniq<LogicalComparisonJoin>(JoinType::INNER);
+		join->conditions.emplace_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, binding),
+		                              make_uniq<BoundColumnRefExpression>(
+		                                  LogicalType::INTEGER, ColumnBinding(scan->table_index, ProjectionIndex(0))),
+		                              ExpressionType::COMPARE_EQUAL);
+		join->children.push_back(std::move(plan));
+		join->children.push_back(std::move(scan));
+		vector<unique_ptr<Expression>> expressions;
+		expressions.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, binding));
+		auto projection = make_uniq<LogicalProjection>(TableIndex(40 + i), std::move(expressions));
+		projection->children.push_back(std::move(join));
+		plan = std::move(projection);
+	}
+	RelationStatsExtractor extractor(*connection.context);
+	REQUIRE(extractor.Extract(*plan));
+	for (idx_t i = 0; i < calls.size(); i++) {
+		REQUIRE(*calls[i] == 1);
+		REQUIRE(*column_calls[i] == 1);
+	}
+	REQUIRE(extractor.Extract(*plan));
+	for (auto &count : column_calls) {
+		REQUIRE(*count == 1);
+	}
+}
+
+TEST_CASE("Join-order UNION grouping reuses the original source snapshot", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto left = CreateCardinalityProvider(100, 100);
+	auto right = CreateCardinalityProvider(100, 100);
+	right->table_index = TableIndex(11);
+	vector<shared_ptr<idx_t>> cardinality_calls, column_calls;
+	vector<reference<LogicalGet>> scans {*left, *right};
+	for (auto &scan : scans) {
+		auto &data = scan.get().bind_data->Cast<CardinalityProviderData>();
+		cardinality_calls.push_back(data.calls);
+		column_calls.push_back(data.column_calls);
+		scan.get().function.statistics = [](ClientContext &, auto bind_data, column_t) -> unique_ptr<BaseStatistics> {
+			auto &data = bind_data->template Cast<CardinalityProviderData>();
+			(*data.column_calls)++;
+			auto result = BaseStatistics::CreateUnknown(LogicalType::INTEGER);
+			result.SetDistinctCount(*data.column_calls == 1 ? 10 : 1);
+			return result.ToUnique();
+		};
+	}
+	auto input = make_uniq<LogicalSetOperation>(TableIndex(30), 1, std::move(left), std::move(right),
+	                                            LogicalOperatorType::LOGICAL_UNION, true);
+	auto aggregate = make_uniq<LogicalAggregate>(TableIndex(40), TableIndex(50), vector<unique_ptr<Expression>> {});
+	aggregate->groups.push_back(
+	    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, ColumnBinding(TableIndex(30), ProjectionIndex(0))));
+	aggregate->grouping_sets.push_back({ProjectionIndex(0)});
+	aggregate->children.push_back(std::move(input));
+	JoinOrderOptimizer optimizer(*connection.context);
+	RelationStats stats;
+	auto plan = optimizer.Optimize(std::move(aggregate), stats);
+	REQUIRE(stats.stats_initialized);
+	REQUIRE(stats.cardinality == 20);
+	for (idx_t i = 0; i < cardinality_calls.size(); i++) {
+		REQUIRE(*cardinality_calls[i] == 1);
+		REQUIRE(*column_calls[i] == 1);
+	}
 }
 
 TEST_CASE("UNION grouping estimates ignore cached arm cardinalities", "[optimizer][relation_statistics]") {
@@ -1272,6 +1938,42 @@ TEST_CASE("Standalone join statistics share estimation without mutating the plan
 	connection.Rollback();
 }
 
+TEST_CASE("Standalone and optimizing join estimates use the same source provenance",
+          "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	CreateStatisticsJoinTables(connection);
+	REQUIRE_NO_FAIL(connection.Query("ANALYZE"));
+	connection.BeginTransaction();
+	for (auto query : {
+	         "SELECT a.x FROM stats_a a JOIN range(500) d(k) USING(k)",
+	         "SELECT a.x FROM (SELECT x,k FROM stats_a) a JOIN range(500) d(k) USING(k)",
+	         "SELECT a.x FROM (SELECT a.x,a.k,a.x%2 AS g FROM stats_a a JOIN stats_c c USING(k)) a "
+	         "JOIN range(500) d(k) USING(k)",
+	         "SELECT a.x FROM stats_a a JOIN (SELECT range AS k FROM range(500) LIMIT 10) d USING(k)",
+	     }) {
+		CAPTURE(query);
+		auto plan = PlanStatisticsQuery(connection, query);
+		auto optimized = PlanStatisticsQuery(connection, query);
+		RelationStats reference;
+		JoinOrderOptimizer optimizer(*connection.context);
+		optimized = optimizer.Optimize(std::move(optimized), reference);
+		REQUIRE(reference.stats_initialized);
+		SetStatisticsTestCardinalities(*plan);
+		MemoryStream before;
+		BinarySerializer::Serialize(*plan, before);
+		RelationStatsExtractor extractor(*connection.context);
+		auto stats = extractor.Extract(*plan);
+		REQUIRE(stats);
+		REQUIRE(stats->cardinality == reference.cardinality);
+		MemoryStream after;
+		BinarySerializer::Serialize(*plan, after);
+		REQUIRE(before.GetPosition() == after.GetPosition());
+		REQUIRE(memcmp(before.GetData(), after.GetData(), before.GetPosition()) == 0);
+	}
+	connection.Rollback();
+}
+
 TEST_CASE("Standalone join estimates preserve positive fractional cardinalities", "[optimizer][relation_statistics]") {
 	DuckDB db;
 	Connection connection(db);
@@ -1350,19 +2052,25 @@ TEST_CASE("Standalone join preparation declines unavailable predicate bindings",
 	DuckDB db;
 	Connection connection(db);
 	for (auto depth : {idx_t(0), idx_t(1)}) {
-		LogicalComparisonJoin join(JoinType::INNER);
-		join.children.push_back(make_uniq<LogicalDummyScan>(TableIndex(10)));
-		join.children.push_back(make_uniq<LogicalDummyScan>(TableIndex(20)));
+		auto join = make_uniq<LogicalComparisonJoin>(JoinType::INNER);
+		join->children.push_back(make_uniq<LogicalDummyScan>(TableIndex(10)));
+		join->children.push_back(make_uniq<LogicalDummyScan>(TableIndex(20)));
 		auto left_binding = ColumnBinding(TableIndex(depth == 0 ? 30 : 10), ProjectionIndex(0));
-		join.conditions.emplace_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, left_binding, depth),
-		                             make_uniq<BoundColumnRefExpression>(
-		                                 LogicalType::INTEGER, ColumnBinding(TableIndex(20), ProjectionIndex(0))),
-		                             ExpressionType::COMPARE_EQUAL);
+		join->conditions.emplace_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, left_binding, depth),
+		                              make_uniq<BoundColumnRefExpression>(
+		                                  LogicalType::INTEGER, ColumnBinding(TableIndex(20), ProjectionIndex(0))),
+		                              ExpressionType::COMPARE_EQUAL);
 		RelationStatsExtractor extractor(*connection.context);
-		auto stats = extractor.Extract(join);
+		auto stats = extractor.Extract(*join);
 		REQUIRE(stats);
 		REQUIRE(stats->cardinality == 1);
-		REQUIRE(stats->MatchesBindings(join.GetColumnBindings()));
+		REQUIRE(stats->MatchesBindings(join->GetColumnBindings()));
+		auto projection = LogicalProjection::CreateIdentity(TableIndex(40), std::move(join));
+		RelationStatsExtractor projected_extractor(*connection.context);
+		auto projected_stats = projected_extractor.Extract(*projection);
+		REQUIRE(projected_stats);
+		REQUIRE(projected_stats->cardinality == 1);
+		REQUIRE(projected_stats->MatchesBindings(projection->GetColumnBindings()));
 	}
 }
 

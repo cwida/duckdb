@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/logging/log_storage.hpp"
 #include "duckdb/logging/log_manager.hpp"
 
@@ -36,6 +37,10 @@ Logger &Logger::Get(const ExecutionContext &execution_context) {
 
 Logger &Logger::Get(const ClientContext &client_context) {
 	return client_context.GetLogger();
+}
+
+Logger &Logger::Get(const Context &context) {
+	return context.GetLogger();
 }
 
 Logger &Logger::Get(const FileOpener &opener) {

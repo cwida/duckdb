@@ -492,8 +492,9 @@ optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(Logica
 
 optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(LogicalAggregate &aggregate,
                                                                           const RelationStats &child_stats,
-                                                                          RelationStatsExtractor &extractor) {
-	return ExtractAggregationStatsInternal(aggregate, child_stats, extractor, false);
+                                                                          RelationStatsExtractor &extractor,
+                                                                          bool use_cached_cardinality) {
+	return ExtractAggregationStatsInternal(aggregate, child_stats, extractor, use_cached_cardinality);
 }
 
 optional<RelationStats> RelationStatisticsHelper::ExtractWindowStats(LogicalWindow &window,
@@ -517,79 +518,6 @@ optional<RelationStats> RelationStatisticsHelper::ExtractWindowStats(LogicalWind
 		}
 	}
 	result.Verify(window.GetColumnBindings());
-	return result;
-}
-
-static optional<DistinctCount> GetDistinctTargetCount(Expression &target, const RelationStats &child_stats,
-                                                      const RelationColumnStatsLookup &child_columns) {
-	switch (target.GetExpressionClass()) {
-	case ExpressionClass::BOUND_COLUMN_REF: {
-		auto column = child_columns.Find(target.Cast<BoundColumnRefExpression>().Binding());
-		return column ? optional<DistinctCount>(column->current_domain) : optional<DistinctCount>();
-	}
-	case ExpressionClass::BOUND_REF: {
-		auto index = target.Cast<BoundReferenceExpression>().Index();
-		return index < child_stats.columns.size() ? optional<DistinctCount>(child_stats.columns[index].current_domain)
-		                                          : optional<DistinctCount>();
-	}
-	case ExpressionClass::BOUND_CONSTANT:
-		return DistinctCount(MinValue<idx_t>(child_stats.cardinality, 1), DistinctCountSource::EXACT);
-	default:
-		return {};
-	}
-}
-
-static optional<ColumnBinding> GetDistinctTargetBinding(Expression &target, const RelationStats &child_stats) {
-	switch (target.GetExpressionClass()) {
-	case ExpressionClass::BOUND_COLUMN_REF:
-		return target.Cast<BoundColumnRefExpression>().Binding();
-	case ExpressionClass::BOUND_REF: {
-		auto index = target.Cast<BoundReferenceExpression>().Index();
-		return index < child_stats.columns.size() ? optional<ColumnBinding>(child_stats.columns[index].binding)
-		                                          : optional<ColumnBinding>();
-	}
-	default:
-		return {};
-	}
-}
-
-optional<RelationStats> RelationStatisticsHelper::ExtractDistinctStats(LogicalDistinct &distinct,
-                                                                       const RelationStats &child_stats) {
-	auto result = ProjectOutputStats(child_stats, distinct);
-	if (!result) {
-		return {};
-	}
-	result->row_retention = 1;
-	vector<DistinctCount> distinct_counts;
-	if (distinct.distinct_targets.empty()) {
-		for (auto &column : child_stats.columns) {
-			distinct_counts.push_back(column.current_domain);
-		}
-	} else {
-		RelationColumnStatsLookup child_columns(child_stats);
-		for (auto &target : distinct.distinct_targets) {
-			auto count = GetDistinctTargetCount(*target, child_stats, child_columns);
-			if (!count) {
-				return result;
-			}
-			distinct_counts.push_back(*count);
-		}
-	}
-	result->cardinality = EstimateDistinctCardinality(distinct_counts, child_stats.cardinality);
-	result->CapCurrentDomainsToCardinality();
-	if (result->columns.size() == 1 && distinct.distinct_targets.empty()) {
-		result->columns[0].semi_anti_join_domain_evidence.MarkUnique();
-	} else if (distinct.distinct_targets.size() == 1) {
-		auto target_binding = GetDistinctTargetBinding(*distinct.distinct_targets[0], child_stats);
-		if (target_binding) {
-			for (auto &column : result->columns) {
-				if (column.binding == *target_binding) {
-					column.semi_anti_join_domain_evidence.MarkUnique();
-					break;
-				}
-			}
-		}
-	}
 	return result;
 }
 

@@ -1,0 +1,246 @@
+# name: test/sql/json/scalar/test_json_arrow_chain_precedence.test
+# description: Arrow chains (-> and ->>) associate to the left and bind tighter than comparisons
+# group: [scalar]
+
+require json
+
+statement ok
+CREATE TABLE t AS SELECT '{"a": {"b": "x", "c": {"d": "y"}}, "s": "abc"}'::JSON AS j;
+
+# the PostgreSQL idiom: compare a nested field extracted with -> and ->>
+query I
+SELECT j->'a'->>'b' = 'x' FROM t;
+----
+true
+
+query I
+SELECT j->'a'->'c'->>'d' = 'y' FROM t;
+----
+true
+
+query I
+SELECT 'x' = j->'a'->>'b' FROM t;
+----
+true
+
+query I
+SELECT j->'a'->>'b' <> 'x' FROM t;
+----
+false
+
+query I
+SELECT j->'a'->>'b' ILIKE 'X%' FROM t;
+----
+true
+
+query I
+SELECT j->'a'->>'b' LIKE 'x%' FROM t;
+----
+true
+
+query I
+SELECT j->'a'->>'b' IN ('x', 'y') FROM t;
+----
+true
+
+query I
+SELECT j->'a'->>'b' NOT IN ('x', 'y') FROM t;
+----
+false
+
+query I
+SELECT j->'a'->>'b' IS NULL FROM t;
+----
+false
+
+query I
+SELECT j->'a'->>'b' IS NOT NULL FROM t;
+----
+true
+
+query I
+SELECT j->'a'->>'b' BETWEEN 'a' AND 'z' FROM t;
+----
+true
+
+query I
+SELECT j->'a'->>'b' || 'z' FROM t;
+----
+xz
+
+query I
+SELECT j->'a'->>'b' = 'x' AND j->>'s' = 'abc' FROM t;
+----
+true
+
+query I
+SELECT j->'a'->>'b' = 'zzz' OR j->>'s' = 'abc' FROM t;
+----
+true
+
+query I
+SELECT NOT j->'a'->>'b' = 'x' FROM t;
+----
+false
+
+query I
+SELECT count(*) FROM t WHERE j->'a'->>'b' = 'x';
+----
+1
+
+query I
+SELECT j->'a'->>'b' FROM t;
+----
+x
+
+query I
+SELECT j->'a'->'c'->>'d' FROM t;
+----
+y
+
+query I
+SELECT j->'a'->'b' FROM t;
+----
+"x"
+
+query I
+SELECT j->>'s' = 'abc' FROM t;
+----
+true
+
+query I
+SELECT j->>'a'->'b' FROM t;
+----
+"x"
+
+query I
+SELECT (j->'a'->>'b') = 'x' FROM t;
+----
+true
+
+query I
+SELECT ('{"a": [1, 2]}'::JSON->'a'->>1)::INTEGER + 1;
+----
+3
+
+query I
+SELECT j->'a'->>'b' = ANY(['x', 'q']) FROM t;
+----
+true
+
+# column operands and operators of every other level around the chain
+query I
+SELECT x -> y ->> 'z' FROM (SELECT '{"k": {"z": 2}}'::JSON x, 'k' y);
+----
+2
+
+query I
+SELECT CASE WHEN j->'a'->>'b' = 'x' THEN 1 END FROM t WHERE j->'a'->>'b' = 'x' ORDER BY j->'a'->>'b';
+----
+1
+
+# -> and ->> bind looser than + and ::, like in PostgreSQL
+statement error
+SELECT j->'a'->>'b'::INT FROM t;
+----
+Could not convert string 'b'
+
+# the chain survives a round trip through the catalog
+statement ok
+CREATE VIEW v AS SELECT j->'a'->>'b' = 'x' AS r FROM t;
+
+query I
+SELECT r FROM v;
+----
+true
+
+query I
+SELECT sql FROM duckdb_views() WHERE view_name = 'v';
+----
+CREATE VIEW v AS SELECT (((j -> 'a') ->> 'b') = 'x') AS r FROM t;
+
+# an explicitly parenthesized operand is kept as the operand
+statement error
+SELECT j->('a'->>'b') FROM t;
+----
+Malformed JSON
+
+# the operand of the last -> extends over the comparison, so this is not a chain
+statement error
+SELECT j->'a' = 'x' FROM t;
+----
+json_extract(JSON, BOOLEAN)
+
+# arrow chains in the lambda body
+query I
+SELECT list_transform([j], lambda x: x->'a'->>'b') FROM t;
+----
+[x]
+
+query I
+SELECT list_filter([j], lambda x: x->'a'->>'b' = 'x') FROM t;
+----
+[{"a": {"b": "x", "c": {"d": "y"}}, "s": "abc"}]
+
+query I
+SELECT list_filter([j], lambda x: x->'a'->>'b' = 'x' AND x->'a'->>'b' <> 'z') = [j] FROM t;
+----
+true
+
+# the deprecated single-arrow lambda keeps its full-expression body
+statement ok
+SET lambda_syntax = 'ENABLE_SINGLE_ARROW';
+
+query I
+SELECT list_transform([1, 2, 3], x -> x + 1 > 2);
+----
+[false, true, true]
+
+query I
+SELECT list_filter([1, 2, 3], x -> x > 1 AND x < 3);
+----
+[2]
+
+query I
+SELECT list_reduce([1, 2, 3], (x, y) -> x + y);
+----
+6
+
+query I
+SELECT list_transform([j], x -> (x->'a'->>'b') = 'x') FROM t;
+----
+[true]
+
+query I
+SELECT j->'a'->>'b' = 'x' FROM t;
+----
+true
+
+query I
+SELECT list_transform([[j]], x -> list_transform(x, y -> (y->'a'->>'b') || '!')) FROM t;
+----
+[[x!]]
+
+query I
+SELECT list_transform([j], lambda x: CASE WHEN x->'a'->>'b' = 'x' THEN x->'a'->'c'->>'d' END) FROM t;
+----
+[y]
+
+# a lambda body that starts with an arrow chain is parsed as a chain, as before
+statement error
+SELECT list_transform([j], x -> x->>'a') FROM t;
+----
+<REGEX>:.*Referenced column "x" not found.*
+
+statement ok
+SET lambda_syntax = 'DISABLE_SINGLE_ARROW';
+
+query I
+SELECT j->'a'->>'b' = 'x' FROM t;
+----
+true
+
+query I
+SELECT list_filter([j], lambda x: x->'a'->>'b' = 'x') IS NOT NULL FROM t;
+----
+true

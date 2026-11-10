@@ -1,0 +1,65 @@
+# name: test/sql/optimizer/struct_extract_cast_filter.test
+# description: A CAST of a struct field that can throw must not be pushed below the operators that filter rows
+# group: [optimizer]
+
+statement ok
+CREATE TABLE dates(s VARCHAR);
+
+statement ok
+INSERT INTO dates VALUES ('2023-01-01'), ('');
+
+statement ok
+CREATE TABLE structs AS SELECT {'d': s} AS g FROM dates;
+
+query I
+WITH extracted AS (
+	SELECT {'d': s} AS g FROM dates
+)
+SELECT g.d::DATE
+FROM extracted
+WHERE CASE WHEN (SELECT 1) = 1
+           THEN length(g.d) > 0 OR (SELECT 1) <> 1
+           ELSE length(g.d) > 0 OR (SELECT 1) <> 1
+      END;
+----
+2023-01-01
+
+query I
+SELECT g.d::DATE FROM structs WHERE length(g.d) > 0
+----
+2023-01-01
+
+query I
+SELECT g.d::DATE FROM structs WHERE length(g.d) > (SELECT 0)
+----
+2023-01-01
+
+query I
+SELECT g.d::DATE FROM structs WHERE g.d IN (SELECT '2023-01-01')
+----
+2023-01-01
+
+query I
+SELECT g.d::DATE FROM (FROM structs ORDER BY g.d DESC LIMIT 1)
+----
+2023-01-01
+
+statement error
+SELECT g.d::DATE FROM structs
+----
+Conversion Error
+
+# a cast that cannot throw is still pushed into the scan
+statement ok
+CREATE TABLE ints AS SELECT {'i': i::INTEGER} AS g FROM range(3) t(i);
+
+query II
+EXPLAIN SELECT g.i::BIGINT FROM ints
+----
+physical_plan	<!REGEX>:.*CAST.*
+
+query I
+SELECT g.i::BIGINT FROM ints WHERE g.i > 0 ORDER BY 1
+----
+1
+2
