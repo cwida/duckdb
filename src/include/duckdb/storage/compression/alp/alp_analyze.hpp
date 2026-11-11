@@ -23,11 +23,12 @@ struct AlpAnalyzeState : public AnalyzeState {
 public:
 	using EXACT_TYPE = typename FloatingToExact<T>::TYPE;
 
-	AlpAnalyzeState(BlockManager &block_manager, bool supports_uncompressed_vectors_p)
-	    : AnalyzeState(block_manager), supports_uncompressed_vectors(supports_uncompressed_vectors_p) {
+	AlpAnalyzeState(BlockManager &block_manager, bool has_fallback)
+	    : AnalyzeState(block_manager), has_fallback(has_fallback) {
 	}
 
-	const bool supports_uncompressed_vectors;
+	//! Flag indicating support for uncompressed storage in case of many exceptions.
+	const bool has_fallback;
 	idx_t vectors_sampled_count = 0;
 	idx_t total_values_count = 0;
 	idx_t vectors_count = 0;
@@ -40,17 +41,14 @@ template <class T>
 unique_ptr<AnalyzeState> AlpInitAnalyze(ColumnData &col_data, PhysicalType type) {
 	auto &block_manager = col_data.GetBlockManager();
 	const auto storage_version = col_data.GetStorageManager().GetStorageVersion();
-	const bool supports_uncompressed_vectors =
-	    !StorageManager::IsPriorToVersion(StorageVersion::V1_5_0, storage_version);
+	const bool has_fallback = !StorageManager::IsPriorToVersion(StorageVersion::V1_5_0, storage_version);
 
-	// Without uncompressed fallback, a worst-case DOUBLE vector needs more than 16 KiB.
-	constexpr idx_t minimum_legacy_block_alloc_size = 32 * 1024;
-	if (!supports_uncompressed_vectors &&
-	    block_manager.GetBlockSize() + block_manager.GetBlockHeaderSize() < minimum_legacy_block_alloc_size) {
+	if (!has_fallback &&
+	    block_manager.GetBlockSize() + block_manager.GetBlockHeaderSize() < AlpConstants::MIN_BLOCK_SIZE) {
 		return nullptr;
 	}
 
-	return make_uniq<AlpAnalyzeState<T>>(block_manager, supports_uncompressed_vectors);
+	return make_uniq<AlpAnalyzeState<T>>(block_manager, has_fallback);
 }
 
 /*
@@ -131,12 +129,12 @@ idx_t AlpFinalAnalyze(AnalyzeState &state) {
 	alp::AlpCompression<T, true>::FindTopKCombinations(analyze_state.rowgroup_sample, compression_data);
 
 	// Encode the sampled vectors to estimate their storage size.
-	idx_t sampled_values = 0;
-	idx_t sampled_bytes = 0;
+	double sampled_values = 0;
+	double sampled_bytes = 0;
 	for (auto &sample : analyze_state.complete_vectors_sampled) {
 		alp::AlpCompression<T, true>::Compress(sample.data(), sample.size(), compression_data);
 		auto vector_size = compression_data.RequiredSpace();
-		if (analyze_state.supports_uncompressed_vectors) {
+		if (analyze_state.has_fallback) {
 			const idx_t uncompressed_size = AlpConstants::EXPONENT_SIZE + sizeof(T) * sample.size();
 			vector_size = MinValue(vector_size, uncompressed_size);
 		}
@@ -150,7 +148,7 @@ idx_t AlpFinalAnalyze(AnalyzeState &state) {
 		return DConstants::INVALID_INDEX;
 	}
 
-	// Extrapolate vector data without scaling segment headers or alignment padding.
+	// Extrapolate sampled set to total count
 	const auto total_values = static_cast<double>(analyze_state.total_values_count);
 	const auto sampling_factor = total_values / sampled_values;
 	auto estimated_size = sampled_bytes * sampling_factor;
@@ -158,7 +156,7 @@ idx_t AlpFinalAnalyze(AnalyzeState &state) {
 	const auto vector_count = std::ceil(total_values / AlpConstants::ALP_VECTOR_SIZE);
 	estimated_size += vector_count * AlpConstants::METADATA_POINTER_SIZE;
 
-	const auto usable_segment_size = state.info.GetBlockSize() - AlpConstants::HEADER_SIZE;
+	const auto usable_segment_size = static_cast<double>(state.info.GetBlockSize() - AlpConstants::HEADER_SIZE);
 	const auto segment_count = std::ceil(estimated_size / usable_segment_size);
 	estimated_size = std::ceil(estimated_size + segment_count * AlpConstants::HEADER_SIZE);
 	if (estimated_size >= static_cast<double>(DConstants::INVALID_INDEX)) {
