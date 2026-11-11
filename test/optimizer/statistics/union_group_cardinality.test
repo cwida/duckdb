@@ -61,7 +61,7 @@ GROUP BY ALL;
 physical_plan	<REGEX>:(?s).*GROUP_BY.*~30 rows.*
 
 # Constant labels do not add independent dimensions within an arm.
-# The cap must not worsen the existing estimate of disjoint, unique inputs.
+# The group count cannot be below the largest grouping-key domain.
 query I
 SELECT count(*) FROM (
     SELECT a,k FROM (SELECT 0 a,k FROM wide UNION ALL SELECT 1,k+1000 FROM wide) t GROUP BY ALL
@@ -74,7 +74,7 @@ EXPLAIN SELECT a,k,count(*)
 FROM (SELECT 0 a,k FROM wide UNION ALL SELECT 1,k+1000 FROM wide) t
 GROUP BY ALL;
 ----
-physical_plan	<REGEX>:(?s).*GROUP_BY.*~1,555 rows.*
+physical_plan	<REGEX>:(?s).*GROUP_BY[^~]*~2,000 rows.*
 
 # Different high-cardinality columns in each arm retain the existing estimate.
 query II

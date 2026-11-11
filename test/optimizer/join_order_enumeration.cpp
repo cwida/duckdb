@@ -99,7 +99,7 @@ TEST_CASE("Connected hypergraphs can require original cross products", "[optimiz
 		        (VALUES (1), (3), (5), (7), (9), (11), (13), (15), (17), (19)) v(j)
 		        ON c.j = v.j),
 		     d
-		WHERE a.i = d.j AND b.i = d.i AND c.i = d.i AND b.i = c.i
+		WHERE (a.i = d.j OR a.i = b.i) AND b.i = d.i AND c.i = d.i AND b.i = c.i
 	)";
 	for (auto threshold : {1, 30}) {
 		auto setting = connection.Query("SET approximate_join_order_threshold=" + to_string(threshold));
@@ -125,6 +125,28 @@ TEST_CASE("Connected hypergraphs can require original cross products", "[optimiz
 		enumerator.InitLeafPlans();
 		// Result correctness alone cannot distinguish successful enumeration from the original-plan fallback.
 		REQUIRE(enumerator.SolveJoinOrder());
+		unordered_set<RelationIndex> relations;
+		for (idx_t i = 0; i < graph.relation_manager.NumRelations(); i++) {
+			relations.insert(RelationIndex(i));
+		}
+		auto &plans = enumerator.GetPlans();
+		auto final_plan = plans.find(graph.set_manager.GetJoinRelation(relations));
+		REQUIRE(final_plan != plans.end());
+		vector<reference<const DPJoinNode>> pending {*final_plan->second};
+		bool found_cross_product = false;
+		while (!pending.empty()) {
+			auto &node = pending.back().get();
+			pending.pop_back();
+			if (node.is_leaf) {
+				continue;
+			}
+			found_cross_product |=
+			    node.generated_cross_product ||
+			    (node.join_operator && node.join_operator->type == JoinOrderOperatorType::CROSS_PRODUCT);
+			pending.emplace_back(*plans.at(node.left_set));
+			pending.emplace_back(*plans.at(node.right_set));
+		}
+		REQUIRE(found_cross_product);
 		auto result = connection.Query(query);
 		REQUIRE_NO_FAIL(*result);
 		CHECK_COLUMN(result, 0, {10});
