@@ -59,14 +59,20 @@ SELECT count(*) FROM bounds WHERE k::SMALLINT IN (SELECT g FROM bound_keys);
 ----
 <REGEX>:Conversion Error:.*out of range.*
 
+# the lower bound on a table whose statistics were never widened above the target type
 statement ok
-DELETE FROM bounds WHERE k = 32768
+CREATE TABLE bounds_low AS SELECT * FROM (VALUES ((-32768)::BIGINT), (0::BIGINT), (32767::BIGINT)) t(k);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM bounds_low WHERE k::SMALLINT IN (SELECT g FROM bound_keys);
+----
+analyzed_plan	<REGEX>:.*optional: \(k IN \(-32768, 7, 32767\)\).*
 
 statement ok
-INSERT INTO bounds VALUES (-32769)
+INSERT INTO bounds_low VALUES (-32769)
 
 statement error
-SELECT count(*) FROM bounds WHERE k::SMALLINT IN (SELECT g FROM bound_keys);
+SELECT count(*) FROM bounds_low WHERE k::SMALLINT IN (SELECT g FROM bound_keys);
 ----
 <REGEX>:Conversion Error:.*out of range.*
 
@@ -154,7 +160,7 @@ SELECT count(*) FROM (SELECT k FROM fits UNION ALL SELECT k FROM wide) u WHERE k
 ----
 <REGEX>:Conversion Error:.*out of range.*
 
-# an optional scan filter is not enforced and does not count as a proof
+# a partially pushed OR filter stays optional on the scan and does not bound the statistics
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM (SELECT * FROM wide WHERE k < 100 OR k = 39999) w
 WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
@@ -172,6 +178,11 @@ CREATE TABLE fits_null AS SELECT k FROM fits UNION ALL SELECT NULL::BIGINT;
 
 statement ok
 CREATE TABLE keys_null AS SELECT g FROM keys UNION ALL SELECT NULL::BIGINT;
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM fits_null f JOIN keys_null n ON f.k::SMALLINT IS NOT DISTINCT FROM n.g::SMALLINT;
+----
+analyzed_plan	<REGEX>:.*\(TRY_CAST\(k AS SMALLINT\) IS NULL\) OR \(TRY_CAST\(k AS SMALLINT\) IN \(.*
 
 query I
 SELECT count(*) FROM fits_null f JOIN keys_null n ON f.k::SMALLINT IS NOT DISTINCT FROM n.g::SMALLINT;

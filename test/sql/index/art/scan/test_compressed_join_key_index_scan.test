@@ -82,4 +82,3 @@ SELECT count(*) = (SELECT count(DISTINCT g) FROM build WHERE hash(id) % 1000000 
 FROM probe WHERE TRY_CAST(k AS SMALLINT) IN (SELECT g::SMALLINT FROM build WHERE hash(id) % 1000000 = 0);
 ----
 true
-
