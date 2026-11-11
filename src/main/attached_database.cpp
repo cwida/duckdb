@@ -286,7 +286,8 @@ void AttachedDatabase::InvokeCloseIfLastReference(shared_ptr<AttachedDatabase> &
 		}
 		attached_db->is_closing = true;
 	}
-	// use_count() is relaxed: drop a copy (acq_rel) to order references other threads dropped without close_lock
+	// use_count() is a relaxed load, so it doesn't order accesses through references dropped without close_lock.
+	// Dropping a copy does (acq_rel decrement, never reaching zero); a fence would too, but TSan ignores fences.
 	auto synchronizing_reference = attached_db;
 	synchronizing_reference.reset();
 	attached_db->Close(close_action);
