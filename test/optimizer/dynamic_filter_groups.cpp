@@ -193,35 +193,42 @@ struct FilterGroupTest {
 	PhysicalTableScan &scan;
 };
 
-TEST_CASE("Runtime IN row policy follows each target's registered PRF", "[dynamic_filter_groups]") {
+TEST_CASE("Runtime IN row policy follows each target's filter eligibility", "[dynamic_filter_groups]") {
 	const auto strings = GENERATE(false, true);
-	const auto register_prf = GENERATE(false, true);
+	const auto eligible_targets = GENERATE(false, true);
+	const auto allow_bloom = GENERATE(false, true);
+	const auto wide_span = GENERATE(false, true);
+	const auto multiple_keys = GENERATE(false, true);
 	const auto build_count = GENERATE(idx_t(2), MinValue<idx_t>(102, STANDARD_VECTOR_SIZE));
 	const auto type = strings ? LogicalType::VARCHAR : LogicalType::INTEGER;
-	if (strings && !PrefixRangeFilter::SupportedType(type)) {
-		return;
-	}
+	const auto prf_supported = PrefixRangeFilter::SupportedType(type);
 	FilterGroupTest test(type);
 	auto &context = *test.con.context;
 	auto &allocator = Allocator::Get(context);
-	const vector<Value> values = strings ? vector<Value> {Value("same-a"), Value("same-z")}
-	                                     : vector<Value> {Value::INTEGER(2), Value::INTEGER(8)};
-	auto &probe = test.plan.Make<PhysicalDummyScan>(vector<LogicalType> {type}, 1);
-	auto &build = test.plan.Make<PhysicalDummyScan>(vector<LogicalType> {type}, build_count);
+	const vector<Value> values =
+	    strings ? vector<Value> {Value(wide_span ? "a" : "same-a"), Value(wide_span ? "z" : "same-z")}
+	            : vector<Value> {Value::INTEGER(2), Value::INTEGER(wide_span ? 2147483647 : 8)};
+	const vector<LogicalType> key_types = multiple_keys ? vector<LogicalType> {type, type} : vector<LogicalType> {type};
+	auto &probe = test.plan.Make<PhysicalDummyScan>(key_types, 1);
+	auto &build = test.plan.Make<PhysicalDummyScan>(key_types, build_count);
 	LogicalComparisonJoin logical(JoinType::SEMI);
-	logical.types = {type};
+	logical.types = key_types;
 	vector<JoinCondition> conditions;
-	conditions.emplace_back(make_uniq<BoundReferenceExpression>(type, 0), make_uniq<BoundReferenceExpression>(type, 0),
-	                        ExpressionType::COMPARE_EQUAL);
+	for (idx_t column = 0; column < key_types.size(); column++) {
+		conditions.emplace_back(make_uniq<BoundReferenceExpression>(type, column),
+		                        make_uniq<BoundReferenceExpression>(type, column), ExpressionType::COMPARE_EQUAL);
+	}
 	auto &join = test.plan.Make<PhysicalHashJoin>(logical, probe, build, std::move(conditions), JoinType::SEMI, 2)
 	                 .Cast<PhysicalHashJoin>();
 	auto ht = join.InitializeHashTable(context, 0);
 	auto layout = make_shared_ptr<TupleDataLayout>();
 	REQUIRE(ht->build_types.empty());
-	layout->Initialize(vector<LogicalType> {type, LogicalType::HASH}, TupleDataValidityType::CAN_HAVE_NULL_VALUES);
+	auto layout_types = key_types;
+	layout_types.push_back(LogicalType::HASH);
+	layout->Initialize(layout_types, TupleDataValidityType::CAN_HAVE_NULL_VALUES);
 	ht->FinishInitWithLayout(std::move(layout));
 	DataChunk keys;
-	keys.Initialize(allocator, {type});
+	keys.Initialize(allocator, key_types);
 	keys.SetChildCardinality(build_count);
 	if (strings) {
 		auto writer = FlatVector::Writer<string_t>(keys.data[0], build_count);
@@ -233,6 +240,9 @@ TEST_CASE("Runtime IN row policy follows each target's registered PRF", "[dynami
 		for (idx_t i = 0; i < build_count; i++) {
 			writer.WriteValue(values[i + 1 == build_count ? 1 : 0].GetValue<int32_t>());
 		}
+	}
+	if (multiple_keys) {
+		keys.data[1].Reference(keys.data[0]);
 	}
 	DataChunk payload;
 	payload.Initialize(allocator, {});
@@ -258,8 +268,8 @@ TEST_CASE("Runtime IN row policy follows each target's registered PRF", "[dynami
 		JoinFilterPushdownFilter info;
 		info.dynamic_filters = make_shared_ptr<DynamicTableFilterSet>();
 		info.columns.push_back(std::move(column));
-		// The second target fails PRF's ratio gate even if the first target registered it.
-		info.estimated_scan_cardinality = (target == 0 || target == 3) && register_prf ? 10000 : 1;
+		// The second target fails the ratio gate even if the first target registered a filter.
+		info.estimated_scan_cardinality = (target == 0 || target == 3) && eligible_targets ? 10000 : 1;
 		pushdown.probe_info.push_back(std::move(info));
 	}
 	auto min_max = make_uniq<DataChunk>();
@@ -268,9 +278,15 @@ TEST_CASE("Runtime IN row policy follows each target's registered PRF", "[dynami
 	min_max->data[0].SetValue(0, values[0]);
 	min_max->data[1].SetValue(0, values[1]);
 	JoinFilterGlobalState global_state;
-	pushdown.FinalizeFilters(context, join, std::move(min_max), *ht, false, true, global_state);
-	REQUIRE(global_state.deferred_runtime_filters.size() == (register_prf ? 2 : 0));
-	if (register_prf) {
+	pushdown.FinalizeFilters(context, join, std::move(min_max), *ht, allow_bloom, true, global_state);
+	const auto expect_prf = eligible_targets && !multiple_keys && !wide_span && prf_supported;
+	const auto expect_bloom = eligible_targets && !multiple_keys && !expect_prf && allow_bloom;
+	REQUIRE(global_state.deferred_runtime_filters.size() == (expect_prf || expect_bloom ? 2 : 0));
+	for (auto &filter : global_state.deferred_runtime_filters) {
+		REQUIRE(filter.type ==
+		        (expect_prf ? DeferredRuntimeFilterType::PREFIX_RANGE : DeferredRuntimeFilterType::BLOOM_FILTER));
+	}
+	if (expect_prf) {
 		REQUIRE(ht->GetPrefixRangeFilter());
 		REQUIRE(ht->GetPrefixRangeFilter()->IsExact() == !strings);
 		REQUIRE_FALSE(ht->GetPrefixRangeFilter()->IsInitialized());
@@ -282,7 +298,8 @@ TEST_CASE("Runtime IN row policy follows each target's registered PRF", "[dynami
 		REQUIRE(snapshot);
 		auto filter = snapshot->TryGetFilterByColumnIndex(ProjectionIndex(0));
 		REQUIRE(filter);
-		const auto pruning_only = target == 2 || ((target == 0 || target == 3) && register_prf && !strings);
+		const auto pruning_only =
+		    target == 2 || ((target == 0 || target == 3) && ((expect_prf && !strings) || expect_bloom));
 		REQUIRE(ExpressionFilter::IsRootNonSelectivityOptionalFilter(*filter) == pruning_only);
 		auto &expression = *filter->Cast<ExpressionFilter>().expr;
 		auto child = ExpressionFilter::GetOptionalFilterChild(expression);
@@ -294,7 +311,7 @@ TEST_CASE("Runtime IN row policy follows each target's registered PRF", "[dynami
 		Vector input(type, 3);
 		FlatVector::SetSize(input, count_t(3));
 		input.SetValue(0, values[0]);
-		input.SetValue(1, strings ? Value("same-b") : Value::INTEGER(5));
+		input.SetValue(1, strings ? Value(wide_span ? "m" : "same-b") : Value::INTEGER(5));
 		input.SetValue(2, values[1]);
 		SelectionVector selected;
 		idx_t count = input.size();
@@ -303,6 +320,10 @@ TEST_CASE("Runtime IN row policy follows each target's registered PRF", "[dynami
 		if (!pruning_only) {
 			REQUIRE(selected.get_index(0) == 0);
 			REQUIRE(selected.get_index(1) == 2);
+		} else {
+			for (idx_t i = 0; i < count; i++) {
+				REQUIRE(selected.get_index(i) == i);
+			}
 		}
 	}
 }

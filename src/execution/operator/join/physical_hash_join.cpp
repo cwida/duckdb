@@ -2060,10 +2060,13 @@ unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeFilters(ClientContext &con
 					}
 				}
 
+				const auto can_use_bloom = !registered_prf && allow_bloom_filters && can_emit_runtime_filters && ht &&
+				                           gstate && CanUseBloomFilter(info, context, op, cmp, ht);
 				bool pushed_in_filter = false;
 				if (CanUseInFilter(context, ht, cmp)) {
-					// Keep IN for pruning when this target registers an exact PRF.
-					const auto filter_rows = !registered_prf || !ht->GetPrefixRangeFilter()->IsExact();
+					// Keep IN for pruning beside an exact PRF or an eligible Bloom filter.
+					const auto filter_rows =
+					    (!registered_prf || !ht->GetPrefixRangeFilter()->IsExact()) && !can_use_bloom;
 					pushed_in_filter =
 					    PushInFilter(context, info, pushdown_column, *ht, op, filter_idx, filter_col_idx, filter_rows);
 				}
@@ -2075,8 +2078,7 @@ unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeFilters(ClientContext &con
 					CreateDynamicMinMaxFilters(op, info, context, pushdown_column, filter_col_idx, cmp, min_val,
 					                           max_val, condition_type, reconstruct_filter_expression, false);
 				}
-				if (allow_bloom_filters && can_emit_runtime_filters && ht && gstate &&
-				    CanUseBloomFilter(info, context, op, cmp, ht)) {
+				if (can_use_bloom) {
 					if (ht->HasPublishableBloomFilter()) {
 						// a complete filter was accumulated during Sink (external joins build it there)
 						DeferRuntimeFilter(DeferredRuntimeFilterType::BLOOM_FILTER, op, info, pushdown_column,
