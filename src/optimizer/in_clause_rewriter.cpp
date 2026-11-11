@@ -189,8 +189,8 @@ unique_ptr<Expression> InClauseRewriter::VisitReplace(BoundOperatorExpression &e
 	                                                                    ColumnBinding(mark_index, ProjectionIndex(0)));
 	if (!is_regular_in) {
 		// NOT IN: invert
-		auto invert = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_NOT, LogicalType::BOOLEAN);
-		invert->GetChildrenMutable().push_back(std::move(result));
+		auto invert =
+		    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_NOT, LogicalType::BOOLEAN, std::move(result));
 		result = std::move(invert);
 	}
 	return result;

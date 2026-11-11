@@ -1029,9 +1029,8 @@ struct GeneratedDomainReplacement {
 				}
 				auto &base_expression =
 				    FindDomainOutput(condition.GetLHS(), domain).IsValid() ? condition.GetRHS() : condition.GetLHS();
-				auto null_check =
-				    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN);
-				null_check->GetChildrenMutable().push_back(base_expression.Copy());
+				auto null_check = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL,
+				                                                     LogicalType::BOOLEAN, base_expression.Copy());
 				filters.push_back(std::move(null_check));
 			}
 			return !domain.has_projection;
@@ -1052,9 +1051,8 @@ struct GeneratedDomainReplacement {
 			if (comparison->GetExpressionType() == ExpressionType::COMPARE_EQUAL &&
 			    left.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF && !left.GetReturnType().IsNested() &&
 			    left.Equals(right)) {
-				auto null_check =
-				    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN);
-				null_check->GetChildrenMutable().push_back(left.Copy());
+				auto null_check = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL,
+				                                                     LogicalType::BOOLEAN, left.Copy());
 				comparison = std::move(null_check);
 			}
 			filters.push_back(std::move(comparison));

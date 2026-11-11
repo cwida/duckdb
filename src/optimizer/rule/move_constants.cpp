@@ -226,8 +226,8 @@ static unique_ptr<Expression> CreateIsNanCall(ClientContext &context, const Expr
 }
 
 static unique_ptr<Expression> CreateNotIsNanGuard(ClientContext &context, const Expression &expr) {
-	auto not_isnan = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_NOT, LogicalType::BOOLEAN);
-	not_isnan->GetChildrenMutable().push_back(CreateIsNanCall(context, expr));
+	auto not_isnan = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_NOT, LogicalType::BOOLEAN,
+	                                                    CreateIsNanCall(context, expr));
 	return std::move(not_isnan);
 }
 

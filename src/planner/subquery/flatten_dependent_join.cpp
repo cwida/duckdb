@@ -1193,11 +1193,9 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownFullOuterJo
 		expressions.push_back(make_uniq<BoundColumnRefExpression>(join_types[position], binding));
 	}
 	for (idx_t i = 0; i < correlated_columns.size(); i++) {
-		auto coalesce =
-		    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_COALESCE, correlated_columns[i].type);
-		coalesce->GetChildrenMutable().push_back(
-		    make_uniq<BoundColumnRefExpression>(correlated_columns[i].type, left_state.bindings[i]));
-		coalesce->GetChildrenMutable().push_back(
+		auto coalesce = make_uniq<BoundOperatorExpression>(
+		    ExpressionType::OPERATOR_COALESCE, correlated_columns[i].type,
+		    make_uniq<BoundColumnRefExpression>(correlated_columns[i].type, left_state.bindings[i]),
 		    make_uniq<BoundColumnRefExpression>(correlated_columns[i].type, right_state.bindings[i]));
 		expressions.push_back(std::move(coalesce));
 	}

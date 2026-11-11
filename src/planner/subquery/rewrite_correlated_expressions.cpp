@@ -90,8 +90,8 @@ unique_ptr<Expression> RewriteCorrelatedAggregates::VisitReplace(BoundColumnRefE
 	auto entry = replacement_map.find(expr.Binding());
 	if (entry != replacement_map.end()) {
 		// Replace this with CASE WHEN the aggregate group is missing THEN EMPTY_RESULT ELSE AGGREGATE END.
-		auto is_null = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN);
-		is_null->GetChildrenMutable().push_back(
+		auto is_null = make_uniq<BoundOperatorExpression>(
+		    ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN,
 		    make_uniq<BoundColumnRefExpression>(LogicalType::BIGINT, entry->second.marker));
 		auto check = std::move(is_null);
 		auto result_if_true = make_uniq<BoundColumnRefExpression>(expr.GetReturnType(), entry->second.empty_result);
