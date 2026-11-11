@@ -1,0 +1,32 @@
+# name: test/sql/pragma/profiling/test_profiling_bytes_scanned_secure_view.test
+# description: Test that a secure view hides query.total_bytes_scanned of the table behind it
+# group: [profiling]
+
+require parquet
+
+require json
+
+statement ok
+COPY (SELECT range AS i, repeat('x', 100) || range AS s FROM range(3 * 2048)) TO '{TEST_DIR}/bytes_scanned_1.parquet' (ROW_GROUP_SIZE 2048);
+
+# a secure view hides how much of the table behind it was scanned, as it does for rows and row groups
+statement ok
+CREATE SECURE VIEW secure_scan AS SELECT i FROM '{TEST_DIR}/bytes_scanned_1.parquet';
+
+statement ok
+CREATE VIEW regular_scan AS SELECT i FROM '{TEST_DIR}/bytes_scanned_1.parquet';
+
+query II
+EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM secure_scan
+----
+analyzed_plan	<REGEX>:[\s\S]*"total_bytes_scanned": 0[\s\S]*
+
+query II
+EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM secure_scan
+----
+analyzed_plan	<!REGEX>:[\s\S]*"bytes_scanned": [1-9][\s\S]*
+
+query II
+EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM regular_scan
+----
+analyzed_plan	<REGEX>:[\s\S]*"total_bytes_scanned": [1-9][\s\S]*

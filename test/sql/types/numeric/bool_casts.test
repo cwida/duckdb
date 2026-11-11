@@ -24,18 +24,20 @@ True
 
 endloop
 
-# decimal with scale = width
+# decimal with scale = width cannot hold true
 foreach type DECIMAL(1,1) DECIMAL(4,4) DECIMAL(8,8) DECIMAL(16,16) DECIMAL(32,32)
 
-statement ok
+statement error
 SELECT b::{type}::VARCHAR FROM booleans
+----
+Could not cast value true to DECIMAL(
 
 # round-trip
 query I
-SELECT b::{type}::bool FROM booleans
+SELECT TRY_CAST(b AS {type})::bool FROM booleans
 ----
 NULL
 False
-True
+NULL
 
 endloop

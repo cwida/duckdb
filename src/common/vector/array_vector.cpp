@@ -150,6 +150,25 @@ buffer_ptr<VectorBuffer> VectorArrayBuffer::ConstantSliceInternal(const LogicalT
 	return result;
 }
 
+buffer_ptr<VectorBuffer> VectorArrayBuffer::ConstantReferenceInternal(const LogicalType &type, idx_t index,
+                                                                      count_t count) const {
+	if (!validity.RowIsValid(index)) {
+		// the elements of a NULL constant array are NULL as well
+		return VectorBuffer::ConstantReferenceInternal(type, index, count);
+	}
+	// the constant holds the elements of the array, flattened from the child
+	SelectionVector child_sel(array_size);
+	for (idx_t elem_idx = 0; elem_idx < array_size; elem_idx++) {
+		child_sel.set_index(elem_idx, index * array_size + elem_idx);
+	}
+	auto result_child = make_uniq<Vector>(Vector::Ref(*child));
+	result_child->Flatten(child_sel, array_size);
+	auto result = make_buffer<VectorArrayBuffer>(std::move(result_child), array_size, capacity_t(1ULL));
+	result->SetVectorType(VectorType::CONSTANT_VECTOR);
+	result->SetVectorSize(count);
+	return result;
+}
+
 void VectorArrayBuffer::ReserveInternal(idx_t new_size) {
 	// resize the validity
 	validity.Resize(new_size);

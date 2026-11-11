@@ -4,14 +4,14 @@
 
 # Both the file types and the outputs match!
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiler.json';
+SET profiling_output = '{TEST_DIR}/profiler.json';
 
 # Now the output doesn't match the file type anymore :(
 statement error
-PRAGMA enable_profiling = 'html';
+SET enable_profiling = 'html';
 ----
 Parser Error: Profiler file type ({TEST_DIR}/profiler.json) must either have the same file extension as the profiling output type (html), or be a '.txt' file. Set 'profiling_output' to a 'html' file or run "RESET profiling_output" first.
 
@@ -21,17 +21,17 @@ RESET profiling_output;
 
 # now we can set it to html
 statement ok
-PRAGMA enable_profiling = 'html';
+SET enable_profiling = 'html';
 
 # txt files always work!
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiler.txt';
+SET profiling_output = '{TEST_DIR}/profiler.txt';
 
 statement ok
-PRAGMA enable_profiling = 'query_tree';
+SET enable_profiling = 'query_tree';
 
 statement ok
-PRAGMA enable_profiling = 'GRAPHVIZ';
+SET enable_profiling = 'GRAPHVIZ';
 
 # RESET
 statement ok
@@ -42,7 +42,7 @@ RESET enable_profiling;
 
 # Setting a JSON out of the box doesn't work because the default output type is 'query_tree'
 statement error
-PRAGMA profiling_output = '{TEST_DIR}/profiler.json';
+SET profiling_output = '{TEST_DIR}/profiler.json';
 ----
 Parser Error: Profiler file type ({TEST_DIR}/profiler.json) must either have the same file extension as the profiling output type (query_tree), or be a '.txt' file. Set "enable_profiling = 'json'" first.
 
@@ -51,12 +51,12 @@ statement ok
 ATTACH '{TEST_DIR}/my_important_database.db';
 
 statement error
-PRAGMA profiling_output = '{TEST_DIR}/my_important_database.db.db';
+SET profiling_output = '{TEST_DIR}/my_important_database.db.db';
 ----
 Parser Error: Invalid output file type: db
 
 # Trying to bypass this by passing a `db` as output type doesn't work either.
 statement error
-PRAGMA enable_profiling = 'db';
+SET enable_profiling = 'db';
 ----
 Invalid Input Error: "db" is not a valid FORMAT argument, valid options are: default, text, query_tree, query_tree_optimizer, no_output, json, html, graphviz, yaml, mermaid

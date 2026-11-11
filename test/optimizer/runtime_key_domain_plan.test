@@ -1,0 +1,187 @@
+# name: test/optimizer/runtime_key_domain_plan.test
+# description: Runtime domains share producers and retain profitable native alternatives
+# group: [optimizer]
+
+statement ok
+CREATE TABLE fact_data AS SELECT (i % 1000)::INTEGER k, i::BIGINT v FROM range(10000) t(i);
+
+statement ok
+CREATE VIEW fact AS SELECT (k + 1000) % 1000 k, v FROM fact_data;
+
+statement ok
+CREATE TABLE demand(k INTEGER, label VARCHAR);
+
+statement ok
+INSERT INTO demand VALUES (1, 'one'), (2, 'two'), (2, 'again'), (NULL, 'null');
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.label, a.s FROM demand d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+physical_plan	<REGEX>:[\s\S]*SEMI[\s\S]*domain_source[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.payload, a.s
+FROM (SELECT label || '!' payload, k renamed FROM demand WHERE k < 3) d
+JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a ON a.k=d.renamed;
+----
+physical_plan	<REGEX>:[\s\S]*SEMI[\s\S]*domain_source[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+WITH d AS MATERIALIZED (SELECT label, k FROM demand)
+SELECT d.label, a.s FROM d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+physical_plan	<REGEX>:[\s\S]*SEMI[\s\S]*
+
+# Existing default materialization is retained through the normal inlining pass.
+query II
+EXPLAIN (FORMAT JSON)
+WITH d AS (SELECT DISTINCT label, k FROM demand)
+SELECT d.label, a.s FROM d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k)
+UNION ALL SELECT label, 0 FROM d;
+----
+physical_plan	<REGEX>:[\s\S]*SEMI[\s\S]*
+
+# Native runtime filters already reduce the scan on an unmodified grouping key.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.label, a.s FROM demand d
+LEFT JOIN (SELECT k, sum(v) s FROM fact_data GROUP BY k) a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
+
+statement ok
+CREATE TABLE low_ndv AS SELECT (i % 2)::INTEGER k, i::BIGINT v FROM range(10000) t(i);
+
+# A small grouping domain does not save enough aggregate work.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.label, a.s FROM demand d
+LEFT JOIN (SELECT (k + 2) % 2 k, sum(v) s FROM low_ndv GROUP BY 1) a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
+
+# An extra unfiltered reader would prevent pushing this filter into the owner.
+query II
+EXPLAIN (FORMAT JSON)
+WITH d AS MATERIALIZED (SELECT i selector, (i % 5)::INTEGER k FROM range(10000) t(i))
+SELECT d.selector, a.s FROM d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k)
+WHERE d.selector < 2;
+----
+physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
+
+statement ok
+CREATE SEQUENCE filtered_visits;
+
+query III
+WITH d AS MATERIALIZED (
+    SELECT i selector, (i % 5)::INTEGER k, nextval('filtered_visits') occurrence FROM range(10000) t(i)
+)
+SELECT count(*), count(d.occurrence), sum(a.s) FROM d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k)
+WHERE d.selector < 2;
+----
+2	2	90010
+
+query I
+SELECT currval('filtered_visits');
+----
+2
+
+query II
+EXPLAIN (FORMAT JSON)
+WITH first AS MATERIALIZED (SELECT * FROM demand),
+     second AS MATERIALIZED (SELECT * FROM first)
+SELECT d.label, a.s FROM second d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+physical_plan	<REGEX>:[\s\S]*SEMI[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.occurrence, a.s FROM (SELECT k, random() occurrence FROM demand) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
+
+# Runtime candidates can introduce a local owner inside an existing producer.
+query II
+EXPLAIN (FORMAT JSON)
+WITH result AS MATERIALIZED (
+    SELECT d.k, a.s FROM demand d
+    LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k)
+)
+SELECT * FROM result UNION ALL SELECT * FROM result;
+----
+physical_plan	<REGEX>:[\s\S]*SEMI[\s\S]*domain_source[\s\S]*
+
+statement ok
+CREATE SEQUENCE late_filter_visits;
+
+# Statistics simplify the residual after the domain pass. A new reader must not block that filter.
+query III
+WITH d AS MATERIALIZED (SELECT i::INTEGER k, nextval('late_filter_visits') p FROM range(10) t(i))
+SELECT d.k, d.p, a.s FROM d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k)
+WHERE d.k > 7 OR a.s > 1e30
+ORDER BY d.k;
+----
+8	1	45080
+9	2	45090
+
+query I
+SELECT currval('late_filter_visits');
+----
+2
+
+statement ok
+CREATE TABLE late_demand AS
+SELECT i::INTEGER k, CASE WHEN i < 5 THEN 'bad' ELSE i::VARCHAR END label FROM range(10) t(i);
+
+# The same late filter protects a fallible expression in an existing owner.
+query III
+WITH d AS MATERIALIZED (SELECT k, label::INTEGER n FROM late_demand)
+SELECT d.k, d.n, a.s FROM d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k)
+WHERE d.k > 7 OR a.s > 1e30
+ORDER BY d.k;
+----
+8	8	45080
+9	9	45090
+
+# Creating a new owner must not force that expression to run on the excluded rows either.
+query III
+SELECT d.k, d.n, a.s FROM (SELECT k, label::INTEGER n FROM late_demand) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k)
+WHERE d.k > 7 OR a.s > 1e30
+ORDER BY d.k;
+----
+8	8	45080
+9	9	45090
+
+# Columnar demand is shared directly, without expanding stored keys into constant expressions.
+statement ok
+CREATE TABLE described_columns AS SELECT 1 a, 2 b, 3 c;
+
+statement ok
+CREATE TABLE name_values AS
+SELECT CASE i % 4 WHEN 0 THEN 'a' WHEN 1 THEN 'b' WHEN 2 THEN 'zz' ELSE 'q' || (i % 997)::VARCHAR END n,
+       i::BIGINT v
+FROM range(50000) t(i);
+
+statement ok
+CREATE VIEW names AS SELECT lower(upper(n)) n, v FROM name_values;
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.column_name, a.s
+FROM (DESCRIBE described_columns) d
+LEFT JOIN (SELECT n, sum(v) s FROM names GROUP BY n) a ON a.n = d.column_name;
+----
+physical_plan	<REGEX>:[\s\S]*COLUMN_DATA_SCAN[\s\S]*SEMI[\s\S]*domain_source[\s\S]*

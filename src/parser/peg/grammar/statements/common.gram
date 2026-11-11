@@ -11,6 +11,7 @@ Statement <-
 	PragmaStatement /
 	CallStatement /
 	InsertStatement /
+	DropMemberStatement /
 	DropStatement /
 	CopyStatement /
 	ExplainStatement /
@@ -57,6 +58,7 @@ FunctionName <- Identifier
 ReservedFunctionName <- Identifier
 ReservedTypeName <- Identifier
 TableFunctionName <- Identifier
+ReservedTableFunctionName <- Identifier
 ConstraintName <- ColIdOrString
 SequenceName <- Identifier
 CollationName <- Identifier
@@ -164,13 +166,14 @@ TypeNameAsQualifiedName <- TypeName
 CatalogReservedSchemaTypeName <- CatalogQualification ReservedSchemaQualification+ ReservedTypeName
 SchemaReservedTypeName <- SchemaQualification ReservedTypeName
 TypeModifiers <- Parens(List(Expression)?)
+NestedType <- TypeVariations ArrayBounds*
 RowType <- RowOrStruct ColIdTypeList?
-SetofType <- 'SETOF' Type
+SetofType <- 'SETOF' NestedType
 UnionType <- 'UNION' ColIdTypeList
 ColIdTypeList <- Parens(List(ColIdType))
-MapType <- 'MAP' Parens(List(Type))?
-TupleType <- 'TUPLE' Parens(List(Type))
-ColIdType <- ColId Type
+MapType <- 'MAP' Parens(List(NestedType))?
+TupleType <- 'TUPLE' Parens(List(NestedType))
+ColIdType <- ColId NestedType
 ArrayBounds <- ArrayKeywordWithBounds / SquareBracketsArray / ArrayKeyword
 ArrayKeyword <- 'ARRAY'
 ArrayKeywordWithBounds <- 'ARRAY' SquareBracketsArray

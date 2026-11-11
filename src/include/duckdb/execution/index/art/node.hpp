@@ -8,9 +8,11 @@
 
 #pragma once
 
+#include "duckdb/common/array_ptr.hpp"
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/execution/index/fixed_size_allocator.hpp"
@@ -149,12 +151,14 @@ public:
 
 	//! Get the child node at byte, if it exists.
 	OptionalNodePtr GetChildNode(const ART &art, const uint8_t byte) const;
+	//! Get the child at byte, if it exists. The caller must retain handle while using the reference.
+	static unsafe_optional_ptr<NodePtr> GetChildMutable(NodeHandle &handle, const uint8_t byte);
 	//! Get the first child node >= byte, if it exists, and update byte.
 	OptionalNodePtr GetNextChildNode(const ART &art, uint8_t &byte) const;
 	//! Get the immutable child at byte.
 	const unsafe_optional_ptr<NodePtr> GetChild(ART &art, const uint8_t byte) const;
 	//! Get the child at byte.
-	unsafe_optional_ptr<NodePtr> GetChildMutable(ART &art, const uint8_t byte, const bool unsafe = false) const;
+	unsafe_optional_ptr<NodePtr> GetChildMutableUnsafe(ART &art, const uint8_t byte, const bool unsafe = false) const;
 	//! Get the first immutable child greater than or equal to the byte.
 	const unsafe_optional_ptr<NodePtr> GetNextChild(ART &art, uint8_t &byte) const;
 	//! Returns true, if the byte exists, else false.

@@ -1,0 +1,64 @@
+# name: test/sql/parser/negative_integer_literal_types.test
+# description: Negative integer literals are typed by the magnitude of the literal, matching the legacy parser
+# group: [parser]
+
+# -2147483648 does not fit INTEGER as a positive literal, so it is a BIGINT
+query I
+SELECT typeof(-2147483648)
+----
+BIGINT
+
+query I
+SELECT -2147483648 * 2
+----
+-4294967296
+
+query I
+SELECT typeof(-2147483647)
+----
+INTEGER
+
+query I
+SELECT typeof(-2_147_483_648)
+----
+BIGINT
+
+query I
+SELECT typeof(2147483648)
+----
+BIGINT
+
+query I
+SELECT typeof(-9223372036854775808)
+----
+BIGINT
+
+query I
+SELECT typeof(-9223372036854775807)
+----
+BIGINT
+
+query I
+SELECT typeof(-170141183460469231731687303715884105728)
+----
+HUGEINT
+
+query I
+SELECT -(2147483648)
+----
+-2147483648
+
+query I
+SELECT typeof(-(2147483648))
+----
+BIGINT
+
+query I
+SELECT typeof(-(-2147483648))
+----
+BIGINT
+
+query I
+SELECT typeof(-128)
+----
+INTEGER

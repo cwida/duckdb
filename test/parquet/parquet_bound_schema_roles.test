@@ -133,3 +133,17 @@ SELECT min(file_row_number), max(file_row_number)
 FROM read_parquet('{TEST_DIR}/bound_path/k=7/custom_roles.parquet', bound_schema={'K':'BIGINT','FILE_ROW_NUMBER':'BIGINT','SOURCE':'VARCHAR','id':'INTEGER'}, filename='source', file_row_number=true, hive_partitioning=true, hive_types={'k':'BIGINT'}, hive_types_autocast=false)
 ----
 0	1
+
+# Hive pruning also resolves differently-cased bound column names as SQL identifiers.
+statement ok
+COPY (SELECT * FROM (VALUES (1, 10), (2, 20)) t(id, k)) TO '{TEST_DIR}/bound_case_pruning' (FORMAT parquet, PARTITION_BY(k))
+
+query I
+SELECT id FROM read_parquet('{TEST_DIR}/bound_case_pruning/*/*.parquet', bound_schema={'K':'INTEGER','id':'INTEGER'}, hive_partitioning=true, hive_types={'k':'INTEGER'}, hive_types_autocast=false) WHERE k=10
+----
+1
+
+query II
+EXPLAIN SELECT id FROM read_parquet('{TEST_DIR}/bound_case_pruning/*/*.parquet', bound_schema={'K':'INTEGER','id':'INTEGER'}, hive_partitioning=true, hive_types={'k':'INTEGER'}, hive_types_autocast=false) WHERE k=10
+----
+physical_plan	<REGEX>:.*File Filters:.*K.*Scanning Files:.*1/2.*

@@ -1,0 +1,18 @@
+# name: test/sql/json/test_execute_serialized_prepared.test
+# description: json_execute_serialized_sql re-executes on every execution of a prepared statement
+# group: [json]
+
+require json
+
+statement ok
+PREPARE p AS SELECT * FROM json_execute_serialized_sql(json_serialize_sql('SELECT 42'));
+
+query I
+EXECUTE p;
+----
+42
+
+query I
+EXECUTE p;
+----
+42

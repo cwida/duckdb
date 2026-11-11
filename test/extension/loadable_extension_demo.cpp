@@ -31,6 +31,8 @@
 #include "duckdb/common/extension_type_info.hpp"
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/parser/sql_statement.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
@@ -913,26 +915,26 @@ struct ArgsKwargsBindData : public FunctionData {
 static unique_ptr<FunctionData> ArgsKwargsBind(BindScalarFunctionInput &input) {
 	auto result = make_uniq<ArgsKwargsBindData>();
 	auto &bound_function = input.GetBoundFunction();
-	auto &names = *input.GetArgumentNames();
-	for (idx_t i = 0; i < names.size(); i++) {
+	const auto argument_count = input.GetArguments().size();
+	for (idx_t i = 0; i < argument_count; i++) {
 		switch (bound_function.GetArgumentParameterKind(i)) {
 		case FunctionParameterKind::VAR_POSITIONAL:
 			result->labels.push_back("*");
 			break;
 		case FunctionParameterKind::POSITIONAL_ONLY:
-			result->labels.push_back("/" + names[i].GetIdentifierName());
+			result->labels.push_back("/" + input.GetArgumentName(i).GetIdentifierName());
 			break;
 		case FunctionParameterKind::VAR_KEYWORD:
-			result->labels.push_back("**" + names[i].GetIdentifierName());
+			result->labels.push_back("**" + input.GetArgumentName(i).GetIdentifierName());
 			break;
 		default:
-			result->labels.push_back(names[i].GetIdentifierName());
+			result->labels.push_back(input.GetArgumentName(i).GetIdentifierName());
 			break;
 		}
 	}
 	result->varargs_count = bound_function.GetVarArgsCount();
 	result->kwargs_count = bound_function.GetKwargsCount();
-	result->kwargs_offset = names.size() - result->kwargs_count;
+	result->kwargs_offset = argument_count - result->kwargs_count;
 	return std::move(result);
 }
 
@@ -1290,6 +1292,68 @@ static void RegisterNamedArgumentFunction(ExtensionLoader &loader) {
 	}
 }
 
+struct InOutKeywordData : public TableFunctionData {
+	Value offset;
+	explicit InOutKeywordData(Value offset_p) : offset(std::move(offset_p)) {
+	}
+	unique_ptr<FunctionData> Copy() const override {
+		return make_uniq<InOutKeywordData>(offset);
+	}
+	bool Equals(const FunctionData &other) const override {
+		return Value::NotDistinctFrom(offset, other.Cast<InOutKeywordData>().offset);
+	}
+};
+
+static unique_ptr<FunctionData> InOutKeywordBind(ClientContext &, TableFunctionBindInput &input,
+                                                 vector<LogicalType> &types, vector<Identifier> &names) {
+	if (input.input_table_types != vector<LogicalType> {LogicalType::BIGINT}) {
+		throw BinderException("Only the positional argument belongs in the input table");
+	}
+	types.push_back(LogicalType::BIGINT);
+	names.emplace_back("value");
+	auto delta = input.named_parameters.at("delta");
+	// Distinguish overloads selected by the keyword's type.
+	if (delta.type().id() == LogicalTypeId::BOOLEAN) {
+		delta = Value::BIGINT(delta.GetValue<bool>() ? 100 : 0);
+	}
+	return make_uniq<InOutKeywordData>(std::move(delta));
+}
+
+static OperatorResultType InOutKeywordExecute(ExecutionContext &, TableFunctionInput &input, DataChunk &arguments,
+                                              DataChunk &output) {
+	const auto &offset = input.bind_data->Cast<InOutKeywordData>().offset;
+	auto values = arguments.data[0].Values<int64_t>();
+	auto writer = FlatVector::Writer<int64_t>(output.data[0], arguments.size());
+	for (auto value : values) {
+		if (!value.IsValid() || offset.IsNull()) {
+			writer.WriteNull();
+			continue;
+		}
+		writer.WriteValue(value.GetValue() + offset.GetValue<int64_t>());
+	}
+	output.SetChildCardinality(arguments.size());
+	return OperatorResultType::NEED_MORE_INPUT;
+}
+
+static void RegisterInOutKeywordFunctions(ExtensionLoader &loader) {
+	FunctionSignature signature;
+	signature.AddPositionalOnly("value", LogicalType::BIGINT);
+	signature.AddKeywordOnly("delta", LogicalType::BIGINT, Value::BIGINT(7));
+	TableFunction function("test_in_out_keywords", std::move(signature), nullptr, InOutKeywordBind);
+	function.in_out_function = InOutKeywordExecute;
+	loader.RegisterFunction(std::move(function));
+	TableFunctionSet overloads("test_in_out_overloaded");
+	for (auto &type : {LogicalType::BIGINT, LogicalType::BOOLEAN}) {
+		FunctionSignature overloaded_signature;
+		overloaded_signature.AddPositionalOnly("value", LogicalType::BIGINT);
+		overloaded_signature.AddKeywordOnly("delta", type);
+		TableFunction overload(std::move(overloaded_signature), nullptr, InOutKeywordBind);
+		overload.in_out_function = InOutKeywordExecute;
+		overloads.AddFunction(std::move(overload));
+	}
+	loader.RegisterFunction(overloads);
+}
+
 //===--------------------------------------------------------------------===//
 // Extension load + setup
 //===--------------------------------------------------------------------===//
@@ -1299,6 +1363,7 @@ DUCKDB_CPP_EXTENSION_ENTRY(loadable_extension_demo, loader) {
 	    ScalarFunction("test_alias_hello", {}, LogicalType::VARCHAR, TestAliasHello));
 
 	RegisterNamedArgumentFunction(loader);
+	RegisterInOutKeywordFunctions(loader);
 	AggregateFunction volatile_aggregate(
 	    "test_volatile_aggregate", {LogicalType::INTEGER}, LogicalType::BIGINT,
 	    AggregateFunction::StateSize<VolatileAggregateState>,

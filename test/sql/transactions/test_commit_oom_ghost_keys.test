@@ -1,0 +1,70 @@
+# name: test/sql/transactions/test_commit_oom_ghost_keys.test
+# description: A COMMIT that runs out of memory while inserting into a primary key index invalidates the database, and its keys are gone after a restart
+# group: [transactions]
+
+require no_alternative_verify
+
+require skip_reload
+
+require no_force_storage
+
+require vector_size 2048
+
+load {TEST_DIR}/commit_oom_ghost_keys.db
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE t (server_id INTEGER, account VARCHAR, n INTEGER, payload VARCHAR, PRIMARY KEY (server_id, account));
+
+statement ok
+INSERT INTO t SELECT 11, 'old' || i, 0, 'x' FROM range(100) r(i);
+
+statement ok
+CHECKPOINT;
+
+# No spilling: the commit must fail once memory_limit is reached.
+statement ok
+SET max_temp_directory_size = '0KB';
+
+statement ok
+INSERT OR REPLACE INTO t SELECT 11, 'old' || i, 1, 'x' FROM range(50) r(i);
+
+statement ok
+BEGIN;
+
+# Long keys: inserting them into the primary key index at commit needs more memory than is left.
+statement ok
+INSERT INTO t SELECT 12, 'key' || i || repeat('k', 1000), 0, 'x' FROM range(20000) r(i);
+
+statement ok
+SET memory_limit = '70MB';
+
+statement error
+COMMIT;
+----
+Failed to commit
+
+# A checkpoint must not persist the partially inserted keys.
+statement error
+CHECKPOINT;
+----
+<REGEX>:.*invalidated.*
+
+restart
+
+# global settings survive a restart in the test runner
+statement ok
+RESET memory_limit;
+
+statement ok
+RESET max_temp_directory_size;
+
+statement ok
+INSERT INTO t SELECT 12, 'key' || i || repeat('k', 1000), 0, 'x' FROM range(20000) r(i);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE server_id = 11) FROM t;
+----
+20100	100

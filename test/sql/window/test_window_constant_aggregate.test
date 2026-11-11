@@ -133,7 +133,7 @@ INSERT INTO issue7353 (Season, Medal, Sex, Ct, Depth) VALUES
 
 # Calculate the max at the level Depth=1 and add to every row
 statement ok
-PRAGMA default_null_order='NULLS LAST';
+SET default_null_order='NULLS LAST';
 
 query IIIIII
 SELECT *, max(Ct) FILTER (WHERE Depth=1) OVER (PARTITION BY Season) as value_depth1 
@@ -200,7 +200,7 @@ ORDER BY ALL
 
 # Test hash group with two partitions and blocks
 statement ok
-pragma threads=2
+SET threads=2
 
 loop i 0 20
 

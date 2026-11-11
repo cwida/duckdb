@@ -1,0 +1,40 @@
+# name: test/sql/copy/copy_order_by_collation.test
+# description: The ORDER_BY option of COPY sorts by the collation of its terms
+# group: [copy]
+
+require parquet
+
+statement ok
+COPY (SELECT * FROM (VALUES ('B'), ('a'), ('C')) v(s)) TO '{TEST_DIR}/copy_order_by_collation.parquet' (FORMAT parquet, ORDER_BY (s COLLATE nocase))
+
+query I
+SELECT list(s ORDER BY file_row_number) FROM read_parquet('{TEST_DIR}/copy_order_by_collation.parquet', file_row_number = true)
+----
+[a, B, C]
+
+statement ok
+COPY (SELECT * FROM (VALUES ('B'), ('a'), ('C')) v(s)) TO '{TEST_DIR}/copy_order_by_collation.parquet' (FORMAT parquet, ORDER_BY (s COLLATE nocase DESC), OVERWRITE)
+
+query I
+SELECT list(s ORDER BY file_row_number) FROM read_parquet('{TEST_DIR}/copy_order_by_collation.parquet', file_row_number = true)
+----
+[C, B, a]
+
+statement ok
+COPY (SELECT * FROM (VALUES ('B'), ('a'), ('C')) v(s)) TO '{TEST_DIR}/copy_order_by_collation.parquet' (FORMAT parquet, ORDER_BY (s), OVERWRITE)
+
+query I
+SELECT list(s ORDER BY file_row_number) FROM read_parquet('{TEST_DIR}/copy_order_by_collation.parquet', file_row_number = true)
+----
+[B, C, a]
+
+statement ok
+SET default_collation = 'nocase'
+
+statement ok
+COPY (SELECT * FROM (VALUES ('B'), ('a'), ('C')) v(s)) TO '{TEST_DIR}/copy_order_by_collation.parquet' (FORMAT parquet, ORDER_BY (s), OVERWRITE)
+
+query I
+SELECT list(s ORDER BY file_row_number) FROM read_parquet('{TEST_DIR}/copy_order_by_collation.parquet', file_row_number = true)
+----
+[a, B, C]

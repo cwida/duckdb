@@ -1,0 +1,57 @@
+# name: test/sql/function/operator/test_comparison_function_call_types.test
+# description: Comparison operators called as functions cast their arguments to a common type
+# group: [operator]
+
+statement error
+SELECT "="([1,2,3], 42)
+----
+Conversion Error
+
+statement error
+SELECT "IS DISTINCT FROM"([1], 1)
+----
+Conversion Error
+
+statement error
+SELECT "<"(MAP{1:2}, [1])
+----
+Cannot compare values of type MAP(INTEGER, INTEGER) and type INTEGER[]
+
+statement error
+SELECT ">="(1, 'x')
+----
+Could not convert string 'x' to INT32
+
+statement error
+SELECT "="({a:1,b:2}, 42)
+----
+Conversion Error
+
+query IIII
+SELECT "="([1,2]::INT[2], [1,2]), "<"({a:1,b:2}, {a:1}), "="(['a'], [1]), "!="(['a'], [1])
+----
+true	true	false	true
+
+query IIIIII
+SELECT "="(1, 1.0), "<"(1, 2::BIGINT), ">="('b', 'a'), "<="(DATE '2000-01-01', TIMESTAMP '2000-01-01 00:00:01'), "IS NOT DISTINCT FROM"(NULL, NULL), "IS DISTINCT FROM"(1, NULL)
+----
+true	true	true	true	true	true
+
+query II
+SELECT "="('a' COLLATE nocase, 'A'), "="(x, 'b') FROM (SELECT 'b'::ENUM('a','b') x)
+----
+true	true
+
+query I
+SELECT count(*) FROM range(10) t(i) WHERE ">"(i, 4.5)
+----
+5
+
+# the default collation is applied to comparisons called as functions as well
+statement ok
+SET default_collation=nocase
+
+query II
+SELECT 'a' = 'A', "="('a', 'A')
+----
+true	true

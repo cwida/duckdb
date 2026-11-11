@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "duckdb/main/context.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/planner/filter/table_filter_function_helpers.hpp"
 
@@ -103,8 +104,8 @@ static unique_ptr<FunctionData> SelectivityOptionalFilterDeserialize(Deserialize
 }
 
 struct SelectivityOptionalFilterLocalState : public FunctionLocalState {
-	SelectivityOptionalFilterLocalState(ClientContext &context, const Expression &child_filter_expr,
-	                                    idx_t n_vectors_to_check, float selectivity_threshold)
+	SelectivityOptionalFilterLocalState(Context &context, const Expression &child_filter_expr, idx_t n_vectors_to_check,
+	                                    float selectivity_threshold)
 	    : stats(n_vectors_to_check, selectivity_threshold), executor(context, child_filter_expr) {
 	}
 

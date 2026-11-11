@@ -85,6 +85,21 @@ statement ok
 explain CHECKPOINT
 
 statement ok
+explain TRUNCATE integers
+
+statement ok
+explain INSTALL json
+
+statement ok
+explain FORCE INSTALL json
+
+statement ok
+explain UPDATE EXTENSIONS
+
+statement ok
+explain UPDATE EXTENSIONS (json)
+
+statement ok
 explain BEGIN TRANSACTION
 
 statement ok

@@ -1,0 +1,33 @@
+# name: test/sql/copy/parquet/parquet_interval_converted_type.test
+# description: The INTERVAL converted type on a column that is not a FIXED_LEN_BYTE_ARRAY of length 12
+# group: [parquet]
+
+require parquet
+
+statement error
+SELECT * FROM parquet_metadata('data/parquet-testing/broken/interval_converted_type.parquet');
+----
+INTERVAL converted type can only be set for value of Type::FIXED_LEN_BYTE_ARRAY of length 12
+
+statement error
+SELECT * FROM parquet_full_metadata('data/parquet-testing/broken/interval_converted_type.parquet');
+----
+INTERVAL converted type can only be set for value of Type::FIXED_LEN_BYTE_ARRAY of length 12
+
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/broken/interval_converted_type.parquet');
+----
+INTERVAL converted type can only be set for value of Type::FIXED_LEN_BYTE_ARRAY of length 12
+
+query I
+SELECT 42;
+----
+42
+
+statement ok
+COPY (SELECT INTERVAL 3 DAY i) TO '{TEMP_DIR}/interval_ok.parquet';
+
+query I
+SELECT i FROM read_parquet('{TEMP_DIR}/interval_ok.parquet');
+----
+3 days

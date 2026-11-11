@@ -176,71 +176,6 @@ void RadixPartitionedTupleData::Initialize() {
 	}
 }
 
-void RadixPartitionedTupleData::ResetAppendState(PartitionedTupleDataAppendState &state,
-                                                 const TupleDataPinProperties properties) const {
-	if (!state.partition_sel.data()) {
-		state.partition_sel.Initialize();
-	}
-	if (!state.reverse_partition_sel.data()) {
-		state.reverse_partition_sel.Initialize();
-	}
-
-	const auto num_partitions = RadixPartitioning::NumberOfPartitions(radix_bits);
-	if (state.partition_pin_states.size() != num_partitions) {
-		state.partition_pin_states.clear();
-		state.partition_pin_states.reserve(num_partitions);
-		for (idx_t i = 0; i < num_partitions; i++) {
-			state.partition_pin_states.emplace_back();
-		}
-	}
-	for (idx_t i = 0; i < num_partitions; i++) {
-		auto &pin_state = state.partition_pin_states[i];
-		pin_state.row_handles.clear();
-		pin_state.heap_handles.clear();
-		partitions[i]->InitializeAppend(pin_state, properties);
-	}
-
-	if (state.chunk_state.column_ids.empty()) {
-		auto column_count = layout.ColumnCount();
-		vector<column_t> column_ids;
-		column_ids.reserve(column_count);
-		for (idx_t col_idx = 0; col_idx < column_count; col_idx++) {
-			column_ids.emplace_back(col_idx);
-		}
-		partitions[0]->InitializeChunkState(state.chunk_state, std::move(column_ids));
-	}
-	state.chunk_state.chunk_lock = nullptr;
-	state.chunk_state.chunk_parts.clear();
-	state.chunk_state.chunk_part_indices.clear();
-
-	if (state.fixed_partition_entries.size() != num_partitions) {
-		state.fixed_partition_entries.resize(num_partitions);
-	}
-}
-
-void RadixPartitionedTupleData::InitializeAppendStateInternal(PartitionedTupleDataAppendState &state,
-                                                              const TupleDataPinProperties properties) const {
-	// Init pin state per partition
-	const auto num_partitions = RadixPartitioning::NumberOfPartitions(radix_bits);
-	state.partition_pin_states.reserve(num_partitions);
-	for (idx_t i = 0; i < num_partitions; i++) {
-		state.partition_pin_states.emplace_back();
-		partitions[i]->InitializeAppend(state.partition_pin_states[i], properties);
-	}
-
-	// Init single chunk state
-	auto column_count = layout.ColumnCount();
-	vector<column_t> column_ids;
-	column_ids.reserve(column_count);
-	for (idx_t col_idx = 0; col_idx < column_count; col_idx++) {
-		column_ids.emplace_back(col_idx);
-	}
-	partitions[0]->InitializeChunkState(state.chunk_state, std::move(column_ids));
-
-	// Initialize fixed-size map
-	state.fixed_partition_entries.resize(RadixPartitioning::NumberOfPartitions(radix_bits));
-}
-
 void RadixPartitionedTupleData::ComputePartitionIndices(PartitionedTupleDataAppendState &state, DataChunk &input,
                                                         const SelectionVector &append_sel, const idx_t append_count) {
 	D_ASSERT(partitions.size() == RadixPartitioning::NumberOfPartitions(radix_bits));
@@ -249,13 +184,21 @@ void RadixPartitionedTupleData::ComputePartitionIndices(PartitionedTupleDataAppe
 }
 
 void RadixPartitionedTupleData::ComputePartitionIndices(Vector &row_locations, idx_t count, Vector &partition_indices,
-                                                        unique_ptr<Vector> &utility_vector) const {
+                                                        unique_ptr<Vector> &utility_vector,
+                                                        const SelectionVector &append_sel) const {
+	if (radix_bits == 0) {
+		// Keep the buffer capacity for subsequent appends from vectors.
+		partition_indices.SetVectorType(VectorType::CONSTANT_VECTOR);
+		partition_indices.SetValue(0, Value::UBIGINT(0));
+		FlatVector::SetSize(partition_indices, count_t(count));
+		return;
+	}
 	if (!utility_vector) {
 		utility_vector = make_uniq<Vector>(LogicalType::HASH);
 	}
 	Vector &intermediate = *utility_vector;
 	intermediate.SetVectorType(VectorType::FLAT_VECTOR);
-	partitions[0]->Gather(row_locations, *FlatVector::IncrementalSelectionVector(), count, hash_col_idx, intermediate,
+	partitions[0]->Gather(row_locations, append_sel, count, hash_col_idx, intermediate,
 	                      *FlatVector::IncrementalSelectionVector(), nullptr);
 	RadixBitsSwitch<ComputePartitionIndicesFunctor, void>(radix_bits, intermediate, partition_indices, count,
 	                                                      *FlatVector::IncrementalSelectionVector(), count);

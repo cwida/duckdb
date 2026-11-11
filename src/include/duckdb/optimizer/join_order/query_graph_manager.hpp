@@ -25,11 +25,12 @@ class QueryGraphEdges;
 
 struct GenerateJoinRelation {
 public:
-	GenerateJoinRelation(optional_ptr<JoinRelationSet> set, unique_ptr<LogicalOperator> op_p);
+	GenerateJoinRelation(optional_ptr<JoinRelationSet> set, unique_ptr<LogicalOperator> op_p, RelationStats stats_p);
 
 public:
 	optional_ptr<JoinRelationSet> set;
 	unique_ptr<LogicalOperator> op;
+	RelationStats stats;
 };
 
 //! The QueryGraphManager manages the process of extracting the reorderable and nonreorderable operations
@@ -42,11 +43,16 @@ public:
 public:
 	//! Extract the join relations, optimizing non-reoderable relations when encountered
 	bool Build(JoinOrderOptimizer &optimizer, LogicalOperator &op);
+	//! Prepare an inner-join region without mutating or enumerating its plan.
+	bool BuildForEstimation(RelationStatsExtractor &extractor, LogicalOperator &op);
+	optional<RelationStats> CombineRelationStats(const vector<ColumnBinding> &bindings,
+	                                             const vector<RelationStats> &relation_stats,
+	                                             idx_t root_cardinality) const;
 	//! Reconstruct the logical plan using the plan found by the plan enumerator
-	unique_ptr<LogicalOperator> Reconstruct(unique_ptr<LogicalOperator> plan);
+	GenerateJoinRelation Reconstruct(unique_ptr<LogicalOperator> plan, const vector<RelationStats> &relation_stats);
 	//! Plan enumerator may not find a full plan and therefore will need to create cross  products to create edges.
 	void CreateQueryGraphCrossProduct(JoinRelationSet &left, JoinRelationSet &right);
-	//! Add the explicit cross-product edges required to connect the predicate graph.
+	//! Admit original cross-product edges when the current hyperedges cannot complete enumeration.
 	bool ActivateRequiredCrossProducts();
 	//! Whether the predicate graph still has disconnected components.
 	bool RequiresCrossProduct() const;
@@ -59,8 +65,13 @@ public:
 	//! Get a reference to the QueryGraphEdges structure that stores edges between nodes and hypernodes.
 	const QueryGraphEdges &GetQueryGraphEdges() const;
 	const JoinPredicateModel &GetPredicateModel() const;
+	const vector<unique_ptr<JoinOrderOperator>> &GetJoinOperators() const;
 
 private:
+	optional<RelationStats> CombineRelationStats(const vector<ColumnBinding> &bindings,
+	                                             const vector<reference<const RelationStats>> &inputs,
+	                                             idx_t root_cardinality) const;
+	void PreparePredicateModel(LogicalOperator &op);
 	void GetColumnBinding(const Expression &expression, ColumnBinding &binding);
 	void GetEquivalenceBinding(const Expression &expression, ColumnBinding &binding);
 
@@ -69,14 +80,15 @@ private:
 
 	//! Build the normalized predicate model after filter endpoints and stats bindings are populated.
 	void BuildPredicateModel();
-	void BuildLeftEqualityPairs();
+	void BuildLeftJoinPredicates();
 	void BuildInnerCompanionSets();
 	void ClearExtractedExpressions();
 	idx_t FindGraphComponent(RelationIndex relation);
 	idx_t GetGraphComponent(RelationIndex relation) const;
 	void ConnectGraphComponents(const JoinRelationSet &left, const JoinRelationSet &right);
 
-	GenerateJoinRelation GenerateJoins(vector<unique_ptr<LogicalOperator>> &extracted_relations, JoinRelationSet &set);
+	GenerateJoinRelation GenerateJoins(vector<unique_ptr<LogicalOperator>> &extracted_relations, JoinRelationSet &set,
+	                                   const vector<RelationStats> &relation_stats);
 
 public:
 	ClientContext &context;

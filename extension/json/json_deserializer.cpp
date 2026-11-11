@@ -3,6 +3,26 @@
 
 namespace duckdb {
 
+namespace {
+
+template <class T>
+T CheckSignedRange(int64_t value, const char *type_name) {
+	if (value < int64_t(NumericLimits<T>::Minimum()) || value > int64_t(NumericLimits<T>::Maximum())) {
+		throw SerializationException("Value %lld is out of range for type '%s'", value, type_name);
+	}
+	return static_cast<T>(value);
+}
+
+template <class T>
+T CheckUnsignedRange(uint64_t value, const char *type_name) {
+	if (value > uint64_t(NumericLimits<T>::Maximum())) {
+		throw SerializationException("Value %llu is out of range for type '%s'", value, type_name);
+	}
+	return static_cast<T>(value);
+}
+
+} // namespace
+
 void JsonDeserializer::OnPropertyBegin(const field_id_t, const char *tag) {
 	current_tag = tag;
 }
@@ -164,7 +184,7 @@ int8_t JsonDeserializer::ReadSignedInt8() {
 	if (!yyjson_is_int(val)) {
 		ThrowTypeError(val, "int8_t");
 	}
-	return NumericCast<int8_t>(yyjson_get_sint(val));
+	return CheckSignedRange<int8_t>(yyjson_get_sint(val), "int8_t");
 }
 
 uint8_t JsonDeserializer::ReadUnsignedInt8() {
@@ -172,7 +192,7 @@ uint8_t JsonDeserializer::ReadUnsignedInt8() {
 	if (!yyjson_is_uint(val)) {
 		ThrowTypeError(val, "uint8_t");
 	}
-	return yyjson_get_uint(val);
+	return CheckUnsignedRange<uint8_t>(yyjson_get_uint(val), "uint8_t");
 }
 
 int16_t JsonDeserializer::ReadSignedInt16() {
@@ -180,7 +200,7 @@ int16_t JsonDeserializer::ReadSignedInt16() {
 	if (!yyjson_is_int(val)) {
 		ThrowTypeError(val, "int16_t");
 	}
-	return NumericCast<int16_t>(yyjson_get_sint(val));
+	return CheckSignedRange<int16_t>(yyjson_get_sint(val), "int16_t");
 }
 
 uint16_t JsonDeserializer::ReadUnsignedInt16() {
@@ -188,7 +208,7 @@ uint16_t JsonDeserializer::ReadUnsignedInt16() {
 	if (!yyjson_is_uint(val)) {
 		ThrowTypeError(val, "uint16_t");
 	}
-	return yyjson_get_uint(val);
+	return CheckUnsignedRange<uint16_t>(yyjson_get_uint(val), "uint16_t");
 }
 
 int32_t JsonDeserializer::ReadSignedInt32() {
@@ -196,7 +216,7 @@ int32_t JsonDeserializer::ReadSignedInt32() {
 	if (!yyjson_is_int(val)) {
 		ThrowTypeError(val, "int32_t");
 	}
-	return NumericCast<int32_t>(yyjson_get_sint(val));
+	return CheckSignedRange<int32_t>(yyjson_get_sint(val), "int32_t");
 }
 
 uint32_t JsonDeserializer::ReadUnsignedInt32() {
@@ -204,7 +224,7 @@ uint32_t JsonDeserializer::ReadUnsignedInt32() {
 	if (!yyjson_is_uint(val)) {
 		ThrowTypeError(val, "uint32_t");
 	}
-	return yyjson_get_uint(val);
+	return CheckUnsignedRange<uint32_t>(yyjson_get_uint(val), "uint32_t");
 }
 
 int64_t JsonDeserializer::ReadSignedInt64() {

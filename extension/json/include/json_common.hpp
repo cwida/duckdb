@@ -9,9 +9,6 @@
 #pragma once
 
 #include "duckdb/common/operator/cast_operators.hpp"
-#include "duckdb/common/operator/decimal_cast_operators.hpp"
-#include "duckdb/common/operator/string_cast.hpp"
-#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "yyjson.hpp"
 
 using namespace duckdb_yyjson; // NOLINT
@@ -49,6 +46,46 @@ struct JSONKeyEquality {
 template <typename T>
 using json_key_map_t = unordered_map<JSONKey, T, JSONKeyHash, JSONKeyEquality>;
 using json_key_set_t = unordered_set<JSONKey, JSONKeyHash, JSONKeyEquality>;
+
+//! Case-insensitive counterparts of JSONKeyHash / JSONKeyEquality for json_key_ci_map_t: keys that differ only in
+//! the case of ASCII letters (A-Z / a-z) are the same key
+struct JSONKeyCaseInsensitiveHash {
+	inline std::size_t operator()(const JSONKey &k) const {
+		// JSONKeyHash is the key's (last 8) raw bytes: setting bit 5 of every byte maps 'A'-'Z' to 'a'-'z'. Other
+		// bytes may collide (e.g. '@' and '`'), which equality sorts out
+		return JSONKeyHash()(k) | static_cast<size_t>(0x2020202020202020ULL);
+	}
+};
+
+struct JSONKeyCaseInsensitiveEquality {
+	inline bool operator()(const JSONKey &a, const JSONKey &b) const {
+		return StringUtil::CIEquals(a.ptr, a.len, b.ptr, b.len);
+	}
+};
+
+template <typename T>
+using json_key_ci_map_t = unordered_map<JSONKey, T, JSONKeyCaseInsensitiveHash, JSONKeyCaseInsensitiveEquality>;
+
+//! JSONKeyHash / JSONKeyEquality, or their case-insensitive counterparts if case_insensitive is set: for maps that
+//! are only used while detecting the schema, where a runtime choice is cheap enough
+struct JSONKeyOptionalCaseHash {
+	bool case_insensitive = false;
+
+	inline std::size_t operator()(const JSONKey &k) const {
+		return case_insensitive ? JSONKeyCaseInsensitiveHash()(k) : JSONKeyHash()(k);
+	}
+};
+
+struct JSONKeyOptionalCaseEquality {
+	bool case_insensitive = false;
+
+	inline bool operator()(const JSONKey &a, const JSONKey &b) const {
+		return case_insensitive ? JSONKeyCaseInsensitiveEquality()(a, b) : JSONKeyEquality()(a, b);
+	}
+};
+
+template <typename T>
+using json_key_optional_case_map_t = unordered_map<JSONKey, T, JSONKeyOptionalCaseHash, JSONKeyOptionalCaseEquality>;
 
 //! The type of a single element of a JSON path
 enum class JSONPathElementType : uint8_t {
@@ -105,6 +142,20 @@ public:
 	static constexpr auto READ_INSITU_FLAG = READ_STOP_FLAG | YYJSON_READ_INSITU;
 	static constexpr auto WRITE_FLAG = YYJSON_WRITE_ALLOW_INF_AND_NAN;
 	static constexpr auto WRITE_PRETTY_FLAG = YYJSON_WRITE_ALLOW_INF_AND_NAN | YYJSON_WRITE_PRETTY;
+
+	//! Whether documents read into these types keep numbers as text (YYJSON_READ_NUMBER_AS_RAW): a DECIMAL needs it
+	static bool NumbersAsRaw(const LogicalType &type);
+	static bool NumbersAsRaw(const vector<LogicalType> &types);
+	//! The flags to read documents with, given NumbersAsRaw
+	static yyjson_read_flag GetReadFlag(yyjson_read_flag flag, bool numbers_as_raw);
+	//! Parses a number kept as text as the default flags would have; false if those keep it as text too (big numbers)
+	static inline bool ReadRawNumber(const char *str, yyjson_val &number) {
+		return yyjson_read_number(str, &number, READ_FLAG, nullptr, nullptr) && !unsafe_yyjson_is_raw(&number);
+	}
+	static inline bool ReadRawNumber(yyjson_val *val, yyjson_val &number) {
+		D_ASSERT(unsafe_yyjson_is_raw(val));
+		return ReadRawNumber(unsafe_yyjson_get_str(val), number);
+	}
 
 public:
 	//! Constant JSON type strings
@@ -374,5 +425,19 @@ struct yyjson_mut_doc_deleter {
 
 using yyjson_doc_ptr = unique_ptr<yyjson_doc, yyjson_doc_deleter>;
 using yyjson_mut_doc_ptr = unique_ptr<yyjson_mut_doc, yyjson_mut_doc_deleter>;
+
+//! Writes values whose numbers were kept as text (NumbersAsRaw) as if read with the default flags (ReadRawNumber)
+class JSONRawNumberWriter {
+public:
+	explicit JSONRawNumberWriter(yyjson_alc *alc) : alc(alc), doc(nullptr) {
+	}
+	string_t Write(yyjson_val *val);
+
+private:
+	yyjson_alc *alc;
+	//! Created by the first value that has a number to parse; holds the mutable copies
+	yyjson_mut_doc *doc;
+	vector<yyjson_mut_val *> containers;
+};
 
 } // namespace duckdb

@@ -30,29 +30,29 @@ SELECT 42;
 42
 
 statement error
-COPY (SELECT 1) TO '__TEST_DIR__/unlimited.parquet' (ROW_GROUP_SIZE_BYTES '-1');
+COPY (SELECT 1) TO '{TEST_DIR}/unlimited.parquet' (ROW_GROUP_SIZE_BYTES '-1');
 ----
 Copy option "ROW_GROUP_SIZE_BYTES" must be a valid size
 
 statement error
-COPY (SELECT 1) TO '__TEST_DIR__/unlimited.parquet' (ROW_GROUP_SIZE_BYTES 18446744073709551615);
+COPY (SELECT 1) TO '{TEST_DIR}/unlimited.parquet' (ROW_GROUP_SIZE_BYTES 18446744073709551615);
 ----
 Copy option "ROW_GROUP_SIZE_BYTES" must be a valid size
 
 statement ok
-COPY (SELECT 1) TO '__TEST_DIR__/unlimited.parquet' (ROW_GROUP_SIZE_BYTES '1MB');
+COPY (SELECT 1) TO '{TEST_DIR}/unlimited.parquet' (ROW_GROUP_SIZE_BYTES '1MB');
 
 statement error
-COPY (SELECT 1) TO '__TEST_DIR__/unlimited.parquet' (FILE_SIZE_BYTES 18446744073709551615);
+COPY (SELECT 1) TO '{TEST_DIR}/unlimited.parquet' (FILE_SIZE_BYTES 18446744073709551615);
 ----
 Copy option "FILE_SIZE_BYTES" must be a valid size
 
 statement error
-COPY (SELECT 1) TO '__TEST_DIR__/unlimited.csv' (FILE_SIZE_BYTES NULL);
+COPY (SELECT 1) TO '{TEST_DIR}/unlimited.csv' (FILE_SIZE_BYTES NULL);
 ----
 NULL is not supported as a valid option for COPY option "FILE_SIZE_BYTES"
 
 statement error
-COPY (SELECT 1) TO '__TEST_DIR__/unlimited.parquet' (ROW_GROUP_SIZE_BYTES NULL);
+COPY (SELECT 1) TO '{TEST_DIR}/unlimited.parquet' (ROW_GROUP_SIZE_BYTES NULL);
 ----
 NULL is not supported as a valid option for COPY option "ROW_GROUP_SIZE_BYTES"

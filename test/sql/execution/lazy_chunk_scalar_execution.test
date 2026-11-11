@@ -1,0 +1,68 @@
+# name: test/sql/execution/lazy_chunk_scalar_execution.test
+# description: Repeated non-nested pipeline outputs with computed, borrowed, and nullable values
+# group: [execution]
+
+statement ok
+SET threads=1
+
+query I
+SELECT true WHERE random() >= 0
+----
+true
+
+query I
+SELECT sum(s) FROM (
+    SELECT sum(i) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) s
+    FROM range(20000) t(i)
+)
+----
+399960001
+
+query I
+SELECT sum(s) FROM (
+    SELECT sum(i) OVER (ORDER BY i RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) s
+    FROM range(20000) t(i)
+)
+----
+1333133340000
+
+statement ok
+CREATE TABLE batches AS SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE i END AS v,
+    CASE WHEN i % 3 = 0 THEN repeat('x', 100) ELSE 'y' END AS s
+FROM range(20000) t(i)
+
+query II
+SELECT sum((v + 3) * 2), sum(length(upper(s) || reverse(s))) FROM batches
+----
+342925710	1360066
+
+query III
+SELECT sum(CASE WHEN i % 2 = 0 THEN v + 1 ELSE v - 1 END),
+       count(TRY((CASE WHEN i % 3 = 0 THEN 'bad' ELSE v::VARCHAR END)::BIGINT)),
+       sum(length(CASE WHEN i % 2 = 0 THEN s || s ELSE reverse(s) END)) FROM batches
+----
+171411429	11428	1020099
+
+query III
+SELECT count(*), sum(a.v), sum(length(b.s)) FROM batches a JOIN batches b ON a.i % 1000 = b.i % 1000
+WHERE a.i % 3 <> 0
+----
+266660	2285485680	9044891
+
+statement ok
+PREPARE repeat_batch AS SELECT sum(v), sum(length(s)) FROM batches WHERE i >= $1
+
+query II
+EXECUTE repeat_batch(0)
+----
+171411429	680033
+
+query II
+EXECUTE repeat_batch(17000)
+----
+47561571	102000
+
+query II
+EXECUTE repeat_batch(0)
+----
+171411429	680033

@@ -6,6 +6,7 @@
 #include "duckdb/common/vector_operations/variadic_executor.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "include/icu-casts.hpp"
 #include "include/icu-datefunc.hpp"
@@ -36,7 +37,7 @@ date_t ICUMakeDate::Operation(Calendar *calendar, timestamp_tz_t instant) {
 	return result;
 }
 
-date_t ICUMakeDate::ToDate(ClientContext &context, timestamp_tz_t instant) {
+date_t ICUMakeDate::ToDate(Context &context, timestamp_tz_t instant) {
 	ICUDateFunc::BindData data(context);
 	return Operation(data.calendar.get(), instant);
 }
@@ -62,8 +63,10 @@ bool ICUMakeDate::CastNsToDate(Vector &source, Vector &result, idx_t count, Cast
 		}
 		// the date only needs the microsecond instant: floor the nanoseconds so no instant moves past midnight
 		const auto nanos = input.value;
-		const auto micros = nanos >= 0 ? nanos / Interval::NANOS_PER_MICRO
-		                               : (nanos - (Interval::NANOS_PER_MICRO - 1)) / Interval::NANOS_PER_MICRO;
+		auto micros = nanos / Interval::NANOS_PER_MICRO;
+		if (nanos % Interval::NANOS_PER_MICRO < 0) {
+			micros--;
+		}
 		return Operation(calendar.get(), timestamp_tz_t(micros));
 	});
 	return true;
@@ -77,7 +80,7 @@ static unique_ptr<ICUDateFunc::CastData> BindCastToDateData(BindCastInput &input
 		throw BinderException("Casting from TIMESTAMP WITH TIME ZONE to DATE without an explicit time zone "
 		                      "has been disabled  - use \"AT TIME ZONE ...\"");
 	}
-	return make_uniq<ICUDateFunc::CastData>(make_uniq<ICUDateFunc::BindData>(*input.context));
+	return ICUDateFunc::BindCastData(input);
 }
 
 BoundCastInfo ICUMakeDate::BindCastToDate(BindCastInput &input, const LogicalType &source, const LogicalType &target) {
@@ -174,6 +177,7 @@ struct ICUMakeTimestampTZFunc : public ICUDateFunc {
 		    .AddParameter("minute", type)
 		    .AddParameter("seconds", LogicalType::DOUBLE);
 		function.SetFallible();
+		function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		function.SetInitStateCallback(InitCalendarCache);
 		return function;
 	}
@@ -190,6 +194,7 @@ struct ICUMakeTimestampTZFunc : public ICUDateFunc {
 		    .AddParameter("seconds", LogicalType::DOUBLE)
 		    .AddParameter("timezone", LogicalType::VARCHAR);
 		function.SetFallible();
+		function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		function.SetInitStateCallback(InitCalendarCache);
 		return function;
 	}

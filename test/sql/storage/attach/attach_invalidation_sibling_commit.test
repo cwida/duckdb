@@ -43,7 +43,7 @@ statement ok con2
 SET auto_checkpoint_skip_wal_threshold=9999999999;
 
 statement ok con2
-PRAGMA debug_checkpoint_abort='before_header';
+SET debug_checkpoint_abort='before_header';
 
 statement error con2
 INSERT INTO a.tbl SELECT range FROM range(10000);

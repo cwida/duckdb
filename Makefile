@@ -567,7 +567,8 @@ TEST_CONFIGS_QUERY_VERIFICATION := \
 	test/configs/verify_statement_serialization.json \
 	test/configs/disable_optimizer.json \
 	test/configs/verification_projection.json \
-	test/configs/verify_column_bindings.json
+	test/configs/verify_column_bindings.json \
+	test/configs/warnings_as_errors.json
 
 TEST_CONFIGS_EXECUTION := \
 	test/configs/internal_vector_serialization.json \
@@ -598,7 +599,6 @@ TEST_CONFIGS_STORAGE_ENGINE := \
 	test/configs/block_verification_latest.json \
 	test/configs/block_size_16kB.json \
 	test/configs/latest_storage_block_size_16kB.json \
-	test/configs/block_allocator_100mib.json \
 	test/configs/compressed_in_memory.json \
 	test/configs/prefetch_all_storage.json \
 	test/configs/force_storage_mmap.json
@@ -703,6 +703,11 @@ release-artifact:
 
 cli-release-artifact:
 	bash scripts/package_release_artifact.sh cli "$(ARTIFACT_SUFFIX)" "$(CLI_BINARY)"
+
+.PHONY: cli-zip-release-artifact
+
+cli-zip-release-artifact:
+	PYTHON="$(PYTHON)" bash scripts/package_release_artifact.sh cli-zip "$(ARTIFACT_SUFFIX)" "$(CLI_BINARY)"
 
 .PHONY: shared-libs-release-artifact
 
@@ -919,6 +924,8 @@ format-parser-grammar: $(FORMAT_SETUP_DEPS)
 		src/parser/peg/transformer/transform_generated_trampoline.cpp \
 		src/parser/peg/compiled_grammar.cpp \
 		src/parser/peg/matcher_factory.cpp \
+		src/parser/peg/peg_rule_id.cpp \
+		src/include/duckdb/parser/peg/peg_rule_id.hpp \
 		src/parser/peg/matcher.cpp | \
 		$(FORMAT_PYTHON) scripts/format.py --files-from - --fix --noconfirm
 

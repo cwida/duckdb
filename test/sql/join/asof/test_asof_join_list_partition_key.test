@@ -1,0 +1,19 @@
+# name: test/sql/join/asof/test_asof_join_list_partition_key.test
+# description: ASOF join with a LIST equality key that is not the first partition key
+# group: [asof]
+
+statement ok
+CREATE TABLE l AS SELECT range id, range t, range % 3 a, [range % 5] b FROM range(1000);
+
+statement ok
+CREATE TABLE r AS SELECT range id, range t, range % 3 a, CASE WHEN range % 7 = 0 THEN NULL ELSE [range % 5] END b FROM range(1000);
+
+query II
+SELECT count(r.id), sum(r.id) FROM l ASOF LEFT JOIN r ON l.a = r.a AND l.b = r.b AND l.t > r.t;
+----
+982	482529
+
+query II
+SELECT count(r.id), sum(r.id) FROM l ASOF LEFT JOIN r ON l.b = r.b AND l.a = r.a AND l.t > r.t;
+----
+982	482529

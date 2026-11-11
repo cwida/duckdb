@@ -537,7 +537,8 @@ string DependencyManager::CollectDependents(CatalogTransaction transaction, cata
 	return result;
 }
 
-void DependencyManager::VerifyExistence(CatalogTransaction transaction, DependencyEntry &object) {
+void DependencyManager::VerifyExistence(CatalogTransaction transaction, CatalogTransaction snapshot_transaction,
+                                        DependencyEntry &object) {
 	auto &subject = object.Subject();
 
 	CatalogEntryInfo info;
@@ -571,8 +572,19 @@ void DependencyManager::VerifyExistence(CatalogTransaction transaction, Dependen
 	if (!subject.flags.IsOwnership() && subject.oid.IsValid() && lookup_result.result &&
 	    lookup_result.result->oid != subject.oid.GetIndex()) {
 		throw DependencyException(
-		    "Could not commit creation of dependency, subject \"%s\" was dropped and re-created by another transaction",
+		    "Could not commit creation of dependency, subject %s was dropped and re-created by another transaction",
 		    object.EntryInfo().name);
+	}
+	// An alter preserves the oid. If the subject changed after this transaction's snapshot, the entry decides
+	// whether the change breaks what the dependent was bound against.
+	if (!subject.flags.IsOwnership() && lookup_result.result &&
+	    lookup_result.result->timestamp >= snapshot_transaction.view.visibility_bound) {
+		auto bound_entry = LookupEntry(snapshot_transaction, info);
+		if (bound_entry && lookup_result.result->InvalidatesDependents(*bound_entry)) {
+			throw DependencyException("Could not commit creation of dependency, subject %s was altered incompatibly "
+			                          "by another transaction",
+			                          object.EntryInfo().name);
+		}
 	}
 }
 

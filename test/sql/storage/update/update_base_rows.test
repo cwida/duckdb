@@ -1,0 +1,121 @@
+# name: test/sql/storage/update/update_base_rows.test
+# description: An update compares each new value with the base value of that row
+# group: [update]
+
+load {TEST_DIR}/update_base_rows.db
+
+statement ok
+CREATE TABLE same_value(i INTEGER);
+
+statement ok
+INSERT INTO same_value VALUES (5), (1), (5);
+
+statement ok
+CHECKPOINT
+
+# the new value equals another row; it must still be written
+statement ok
+UPDATE same_value SET i = 5 WHERE i = 1
+
+query I
+SELECT i FROM same_value ORDER BY rowid
+----
+5
+5
+5
+
+statement ok
+CREATE TABLE swapped(i INTEGER);
+
+statement ok
+INSERT INTO swapped VALUES (10), (20), (30), (40);
+
+statement ok
+CHECKPOINT
+
+# row ids are not in order
+statement ok
+UPDATE swapped SET i = s.v FROM (VALUES (3, 10), (0, 40)) s(id, v) WHERE swapped.rowid = s.id
+
+query I
+SELECT i FROM swapped ORDER BY rowid
+----
+40
+20
+30
+10
+
+statement ok
+CREATE TABLE stats(i INTEGER);
+
+statement ok
+INSERT INTO stats SELECT range FROM range(10);
+
+statement ok
+CHECKPOINT
+
+statement ok
+UPDATE stats SET i = i WHERE i = 3
+
+query III
+SELECT min(i), max(i), count(*) FROM stats
+----
+0	9	10
+
+statement ok
+UPDATE stats SET i = NULL WHERE i = 4
+
+statement ok
+UPDATE stats SET i = 42 WHERE i IS NULL
+
+query I
+SELECT i FROM stats WHERE rowid = 4
+----
+42
+
+statement ok
+CREATE TABLE strings(v VARCHAR);
+
+statement ok
+INSERT INTO strings VALUES ('alpha'), (NULL), ('beta'), ('alpha');
+
+statement ok
+CHECKPOINT
+
+statement ok
+UPDATE strings SET v = v WHERE v = 'alpha'
+
+statement ok
+UPDATE strings SET v = 'gamma' WHERE v IS NULL
+
+query I
+SELECT v FROM strings ORDER BY v NULLS LAST
+----
+alpha
+alpha
+beta
+gamma
+
+statement ok
+CREATE TABLE constants AS SELECT 7 AS i FROM range(4096);
+
+statement ok
+CHECKPOINT
+
+query T
+SELECT DISTINCT compression FROM pragma_storage_info('constants') WHERE column_name = 'i' AND segment_type <> 'VALIDITY'
+----
+Constant
+
+statement ok
+UPDATE constants SET i = 9 WHERE rowid = 3
+
+query I
+SELECT i FROM constants WHERE rowid = 3
+----
+9
+
+query I
+SELECT count(*) FROM constants WHERE i = 7
+----
+4095

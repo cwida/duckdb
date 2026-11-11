@@ -5,10 +5,17 @@
 #include "duckdb/planner/operator/logical_attach.hpp"
 #include "duckdb/planner/expression_binder/table_function_binder.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 
 void Binder::BindExternalResource(ExternalResourceOptions &external_resource) {
+	// Provisioning or borrowing a resource runs the resource type's callbacks and attaches to the endpoint they
+	// hand back, both of which reach outside the database - refused up front, before anything is resolved.
+	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
+		throw PermissionException("External resources are disabled through configuration");
+	}
+
 	// Reference form (`EXTERNAL RESOURCE <name>`): the resource already exists — the physical operator
 	// looks it up in the manager at execution. Nothing to resolve here.
 	if (!external_resource.reference_name.empty()) {
@@ -30,7 +37,7 @@ BoundStatement Binder::Bind(AttachStatement &stmt) {
 	if (stmt.info->parsed_path) {
 		TableFunctionBinder path_binder(*this, context, "Attach", "Attach path");
 		auto bound_path = path_binder.Bind(stmt.info->parsed_path);
-		auto path_val = ExpressionExecutor::EvaluateScalar(context, *bound_path);
+		auto path_val = ExpressionExecutor::EvaluateScalar(context, *bound_path, true);
 		if (path_val.IsNull()) {
 			throw BinderException("ATTACH path expression must not evaluate to NULL");
 		}
@@ -43,7 +50,7 @@ BoundStatement Binder::Bind(AttachStatement &stmt) {
 	unordered_map<string, Value> kv_options;
 	for (auto &entry : stmt.info->parsed_options) {
 		auto bound_expr = option_binder.Bind(entry.second);
-		auto val = ExpressionExecutor::EvaluateScalar(context, *bound_expr);
+		auto val = ExpressionExecutor::EvaluateScalar(context, *bound_expr, true);
 		if (val.IsNull()) {
 			throw BinderException("NULL is not supported as a valid option for ATTACH option \"" + entry.first + "\"");
 		}

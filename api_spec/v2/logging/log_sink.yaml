@@ -77,17 +77,23 @@ callbacks:
         type: LOG_SCOPE
         description: The scope the entry was written in, which decides which of its ids are present.
       type:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The log type the entry was written under, e.g. `QueryLog`. Borrowed for the duration of the call.
+      type_length:
+        type: idx
+        description: The length of `type` in bytes. `type` is not guaranteed to be null-terminated.
       message:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The message of the entry. Borrowed for the duration of the call.
+      message_length:
+        type: idx
+        description: The length of `message` in bytes. `message` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1
@@ -122,7 +128,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   log_sink_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Creates a new log sink through a factory.
 
@@ -153,7 +159,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   log_sink_set_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets the name the logging configuration refers to the log sink by.
 
@@ -164,11 +170,14 @@ functions:
         type: log_sink
         description: The log sink to set the name of.
       name:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The name to set. Borrowed and copied.
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1
@@ -177,7 +186,7 @@ functions:
 
   log_sink_set_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets arbitrary user data on the log sink.
 
@@ -200,7 +209,7 @@ functions:
 
   log_sink_set_write_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets the write callback of the log sink, invoked for every entry the logging configuration directs to the sink.
 
@@ -221,7 +230,7 @@ functions:
 
   log_sink_set_flush_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets the optional flush callback of the log sink, invoked when DuckDB flushes its log, so entries the sink holds
       on to can be written out. When DuckDB flushes is up to DuckDB; entries still held when the instance is destroyed
@@ -247,7 +256,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   log_sink_write_info_get_connection_id:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Retrieves the id of the connection that wrote the entry, as `duckdb_logs` reports it. An entry written for the
       database as a whole has none: `present` then receives false and `id` is left untouched.
@@ -273,7 +282,7 @@ functions:
 
   log_sink_write_info_get_transaction_id:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Retrieves the id of the transaction the entry was written in, as `duckdb_logs` reports it. An entry written
       outside a transaction has none: `present` then receives false and `id` is left untouched.
@@ -299,7 +308,7 @@ functions:
 
   log_sink_write_info_get_query_id:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Retrieves the id of the query the entry was written for, as `duckdb_logs` reports it. An entry written outside
       a query has none: `present` then receives false and `id` is left untouched.
@@ -325,7 +334,7 @@ functions:
 
   log_sink_write_info_get_thread_id:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Retrieves the id of the thread that wrote the entry, as `duckdb_logs` reports it. Only an entry written in the
       thread scope has one: otherwise `present` receives false and `id` is left untouched. The id identifies the
@@ -355,7 +364,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   instance_register_log_sink:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Registers the log sink on the instance, making it available to the logging configuration under its name.
 
@@ -382,7 +391,7 @@ functions:
 
   extension_register_log_sink:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Registers the log sink on the loading extension's instance, making it available to the logging configuration
       under its name.
@@ -408,7 +417,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   log_sink_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Destroys the log sink, releasing its resources.
 

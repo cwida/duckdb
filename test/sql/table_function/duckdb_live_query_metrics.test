@@ -1,0 +1,89 @@
+# name: test/sql/table_function/duckdb_live_query_metrics.test
+# description: duckdb_live_query_metrics() lists each connection's live query counters by metric name
+# group: [table_function]
+
+# the idle checks below follow one connection across statements, which a restart would replace
+require skip_reload
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM duckdb_live_query_metrics());
+----
+connection_id	UBIGINT
+metric_name	VARCHAR
+metric_value	VARIANT
+
+# the metrics marked "live" in metrics.json, with the same names and types as in the final profile
+query II
+SELECT metric_name, variant_typeof(metric_value) FROM duckdb_live_query_metrics()
+WHERE connection_id = current_connection_id() ORDER BY metric_name;
+----
+io.total_bytes_read	UINT64
+io.total_bytes_written	UINT64
+io.total_read_operations	UINT64
+io.total_read_time	DOUBLE
+io.total_write_operations	UINT64
+io.total_write_time	DOUBLE
+system.total_bytes_spilled	UINT64
+system.total_memory_allocated	UINT64
+
+# without profiling, the counters still start from zero for every query
+statement ok
+SELECT count(*) FROM (SELECT DISTINCT range FROM range(3000000));
+
+query I
+SELECT metric_value::UBIGINT < 10000000 FROM duckdb_live_query_metrics()
+WHERE connection_id = current_connection_id() AND metric_name = 'system.total_memory_allocated';
+----
+true
+
+# an idle connection shows the counters of its most recent query; the files are read through the file system
+# in every storage configuration
+statement ok con1
+CREATE TABLE monitored AS SELECT current_connection_id() AS id;
+
+statement ok con1
+COPY (SELECT range AS i FROM range(1000000)) TO '{TEST_DIR}/live_query_metrics_1.csv';
+
+query II con2
+SELECT metric_name, metric_value::DOUBLE > 0 FROM duckdb_live_query_metrics()
+WHERE connection_id = (SELECT id FROM monitored)
+AND metric_name IN ('io.total_bytes_written', 'io.total_write_operations') ORDER BY metric_name;
+----
+io.total_bytes_written	true
+io.total_write_operations	true
+
+statement ok con1
+COPY (SELECT range AS i FROM range(1000000)) TO '{TEST_DIR}/live_query_metrics_2.csv';
+
+statement ok con1
+SELECT sum(i) FROM read_csv('{TEST_DIR}/live_query_metrics_1.csv');
+
+query II con2
+SELECT metric_name, metric_value::DOUBLE > 0 FROM duckdb_live_query_metrics()
+WHERE connection_id = (SELECT id FROM monitored)
+AND metric_name IN ('io.total_bytes_read', 'io.total_read_operations') ORDER BY metric_name;
+----
+io.total_bytes_read	true
+io.total_read_operations	true
+
+# the next query starts its counters from zero
+statement ok con1
+SELECT 42;
+
+query I con2
+SELECT bool_and(metric_value::DOUBLE = 0) FROM duckdb_live_query_metrics()
+WHERE connection_id = (SELECT id FROM monitored) AND metric_name LIKE 'io.%';
+----
+true
+
+# a query that fails keeps the counters of the work it did
+statement error con1
+SELECT sum(CASE WHEN i = 900000 THEN error('boom') ELSE i END) FROM read_csv('{TEST_DIR}/live_query_metrics_2.csv');
+----
+boom
+
+query I con2
+SELECT metric_value::UBIGINT > 0 FROM duckdb_live_query_metrics()
+WHERE connection_id = (SELECT id FROM monitored) AND metric_name = 'io.total_bytes_read';
+----
+true

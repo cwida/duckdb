@@ -1,0 +1,24 @@
+# name: benchmark/micro/parquet/page_index_write_disabled.benchmark
+# description: Writing a Parquet file without the page index (baseline for page_index_write)
+# group: [parquet]
+
+name Page Index Write (disabled)
+group micro
+subgroup parquet
+
+require parquet
+
+load
+CREATE TABLE page_index_write AS
+	SELECT range AS id,
+	       (range * 7919) % 1000000 AS v,
+	       'payload_' || lpad(range::VARCHAR, 9, '0') AS s,
+	       CASE WHEN range % 3 = 0 THEN 'apple' WHEN range % 3 = 1 THEN 'banana' ELSE 'cherry' END AS dict_s,
+	       (range / 7)::DOUBLE AS d
+	FROM range(10000000);
+
+run
+COPY page_index_write TO '${BENCHMARK_DIR}/page_index_write.parquet' (DATA_PAGE_SIZE_LIMIT 1048576, WRITE_PAGE_INDEX false);
+
+result I
+10000000

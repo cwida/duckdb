@@ -1,0 +1,141 @@
+# name: test/optimizer/statistics/monotonicity_annotations.test
+# description: Functions whose results are not monotonic in their arguments must not be annotated as such
+# group: [statistics]
+
+# round with a negative precision returns the input when the rounded value overflows
+query IIII
+SELECT round('inf'::DOUBLE, -1), round('-inf'::DOUBLE, -1), round(1.7976931348623157e308, -20) = 1.7976931348623157e308, round_even(1.7976931348623157e308, -20) = 1.7976931348623157e308
+----
+inf	-inf	true	true
+
+query IIII
+SELECT round(42::DOUBLE, -1000), round('inf'::DOUBLE, -1000), round('-inf'::DOUBLE, -1000), round(42::FLOAT, -1000)
+----
+0.0	inf	-inf	0.0
+
+statement ok
+CREATE TABLE r AS SELECT * FROM (VALUES (1e300::DOUBLE), (1.7976931348623157e308)) t(x);
+
+query I
+SELECT count(*) FROM r WHERE round(x, -20) > 1e299;
+----
+2
+
+statement ok
+CREATE TABLE r2 AS SELECT * FROM (VALUES (1.0::DOUBLE), (1e300), (1.7976931348623157e308)) t(x);
+
+query I
+SELECT count(*) FROM r2 WHERE round(x, -20) > 1;
+----
+2
+
+# adding or subtracting months clamps the day, but keeps the time
+statement ok
+CREATE TABLE ts AS SELECT * FROM (VALUES (TIMESTAMP '2000-01-30 23:00:00'), (TIMESTAMP '2000-01-31 01:00:00')) t(x);
+
+query I
+SELECT x + INTERVAL 1 MONTH FROM ts ORDER BY ALL;
+----
+2000-02-29 01:00:00
+2000-02-29 23:00:00
+
+query I
+SELECT INTERVAL 1 MONTH + x FROM ts ORDER BY ALL;
+----
+2000-02-29 01:00:00
+2000-02-29 23:00:00
+
+statement ok
+CREATE TABLE ts2 AS SELECT * FROM (VALUES (TIMESTAMP '2000-01-30 12:00:00'), (TIMESTAMP '2000-01-31 01:00:00'), (TIMESTAMP '2000-02-01 00:00:00')) t(x);
+
+query I
+SELECT count(*) FROM ts2 WHERE x + INTERVAL 1 MONTH < TIMESTAMP '2000-02-29 06:00:00';
+----
+1
+
+statement ok
+CREATE TABLE ts3 AS SELECT * FROM (VALUES (TIMESTAMP '2000-03-30 23:00:00'), (TIMESTAMP '2000-03-31 01:00:00')) t(x);
+
+query I
+SELECT x - INTERVAL 1 MONTH FROM ts3 ORDER BY ALL;
+----
+2000-02-29 01:00:00
+2000-02-29 23:00:00
+
+query I
+SELECT count(*) FROM ts3 WHERE x - INTERVAL 1 MONTH < TIMESTAMP '2000-02-29 06:00:00';
+----
+1
+
+# DATE +/- INTERVAL is non-decreasing in the DATE
+statement ok
+CREATE TABLE d AS SELECT * FROM (VALUES (DATE '2000-01-30'), (DATE '2000-01-31'), (DATE '2000-02-01')) t(x);
+
+query I
+SELECT count(*) FROM d WHERE x + INTERVAL 1 MONTH = TIMESTAMP '2000-02-29';
+----
+2
+
+query I
+SELECT count(*) FROM d WHERE INTERVAL 1 MONTH + x = TIMESTAMP '2000-02-29';
+----
+2
+
+require icu
+
+statement ok
+SET TimeZone='UTC';
+
+# ICU date_trunc / date_diff for decades, centuries and millennia across the BC/AD boundary
+statement ok
+CREATE TABLE tz AS SELECT * FROM (VALUES ('0001-12-31 (BC)'::TIMESTAMPTZ), (TIMESTAMPTZ '0001-01-01 00:00:00+00')) t(x);
+
+statement ok
+SELECT date_trunc('century', x) FROM tz;
+
+statement ok
+SELECT date_trunc('decade', x), date_trunc('millennium', x) FROM tz;
+
+statement ok
+SELECT date_diff('century', DATE '2000-01-01', x), date_diff('decade', DATE '2000-01-01', x), date_diff('millennium', DATE '2000-01-01', x) FROM tz;
+
+query I
+SELECT count(*) FROM tz WHERE date_trunc('century', x) >= TIMESTAMPTZ '0001-01-01 00:00:00+00';
+----
+1
+
+query I
+SELECT count(*) FROM tz WHERE date_trunc('decade', x) = TIMESTAMPTZ '0001-01-01 00:00:00+00';
+----
+1
+
+# ICU truncates to an era by setting the year to zero, which moves across the BC/AD boundary
+statement ok
+CREATE TABLE eras AS SELECT * FROM (VALUES ('0002-06-01 (BC)'::TIMESTAMPTZ), (TIMESTAMPTZ '0002-06-01 00:00:00+00')) t(x);
+
+statement ok
+SELECT date_trunc('era', x) FROM eras ORDER BY ALL;
+
+query I
+SELECT count(*) FROM eras WHERE date_trunc('era', x) >= TIMESTAMPTZ '0001-01-01 00:00:00+00';
+----
+1
+
+# truncating years before the common era rounds towards zero
+statement ok
+CREATE TABLE b AS SELECT * FROM (VALUES (TIMESTAMP '0151-06-01 (BC)'), (TIMESTAMP '0050-01-01')) t(x);
+
+query I
+SELECT count(*) FROM b WHERE date_trunc('century', x) >= TIMESTAMP '0101-01-01 (BC)';
+----
+2
+
+query I
+SELECT count(*) FROM b WHERE date_trunc('century', x) = TIMESTAMP '0101-01-01 (BC)';
+----
+1
+
+query I
+SELECT count(*) FROM b WHERE date_trunc('century', x::DATE) < DATE '0001-01-01';
+----
+2

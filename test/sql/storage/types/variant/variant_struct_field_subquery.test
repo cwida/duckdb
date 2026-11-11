@@ -1,0 +1,68 @@
+# name: test/sql/storage/types/variant/variant_struct_field_subquery.test
+# description: Mixed struct/variant paths through projections over checkpointed storage
+# group: [variant]
+
+load {TEST_DIR}/variant_struct_field_subquery.db readwrite v1.5.0
+
+# Exercise both shredded and unshredded storage.
+foreach minimum_shredding_size 0 1000000
+
+statement ok
+SET variant_minimum_shredding_size = {minimum_shredding_size};
+
+statement ok
+CREATE OR REPLACE TABLE nested_variant AS
+SELECT i AS id, {'tag': i + 100, 'payload': {'obj': {'a': i, 'b': 'value_' || i}}::VARIANT} AS n
+FROM range(20) t(i);
+
+statement ok
+CREATE OR REPLACE VIEW nested_variant_view AS SELECT * FROM nested_variant;
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query III
+SELECT id, n.payload.obj.a::BIGINT, n.payload.obj.b::VARCHAR
+FROM nested_variant_view WHERE id IN (3, 17) ORDER BY id;
+----
+3	3	value_3
+17	17	value_17
+
+# Distinct cast-parent and child paths must also survive persistent scans.
+foreach source nested_variant nested_variant_view
+
+query II
+SELECT n.payload.obj.a::BIGINT, n.payload.obj::STRUCT(b VARCHAR, a BIGINT)
+FROM {source} WHERE id = 3;
+----
+3	{'b': value_3, 'a': 3}
+
+query II
+SELECT n.payload.obj::STRUCT(b VARCHAR, a BIGINT), n.payload.obj.a::BIGINT
+FROM {source} WHERE id = 3;
+----
+{'b': value_3, 'a': 3}	3
+
+endloop
+
+# A filter on one path and a projection of its sibling.
+query II
+SELECT n.tag, n.payload.obj.b::VARCHAR
+FROM (SELECT * FROM nested_variant) WHERE n.payload.obj.a::BIGINT = 17;
+----
+117	value_17
+
+# The same query also reads a row from transaction-local storage.
+statement ok
+INSERT INTO nested_variant VALUES (20, {'tag': 120, 'payload': {'obj': {'a': 20, 'b': 'value_20'}}::VARIANT});
+
+query III
+SELECT id, n.payload.obj.a::BIGINT, n.payload.obj.b::VARCHAR
+FROM nested_variant_view WHERE id >= 19 ORDER BY id;
+----
+19	19	value_19
+20	20	value_20
+
+endloop

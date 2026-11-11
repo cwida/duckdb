@@ -97,7 +97,7 @@ unique_ptr<FunctionData> VariantBindUtils::VariantPathBind(BindScalarFunctionInp
 		return make_uniq<VariantPathBindData>(CollectPaths(constant_arg, function_name.GetIdentifierName()));
 	}
 
-	throw BinderException("'%s' received an unexpected type for the second argument", function_name);
+	throw BinderException("%s received an unexpected type for the second argument", function_name);
 }
 
 } // namespace duckdb

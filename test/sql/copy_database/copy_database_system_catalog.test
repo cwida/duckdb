@@ -1,0 +1,21 @@
+# name: test/sql/copy_database/copy_database_system_catalog.test
+# description: COPY FROM DATABASE cannot target the system catalog
+# group: [copy_database]
+
+statement ok
+ATTACH ':memory:' AS src;
+
+statement error
+COPY FROM DATABASE src TO system;
+----
+Binder Error: Cannot copy to the system catalog
+
+statement error
+COPY FROM DATABASE src TO system (SCHEMA);
+----
+Binder Error: Cannot copy to the system catalog
+
+query I
+SELECT 42
+----
+42

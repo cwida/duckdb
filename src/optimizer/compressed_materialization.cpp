@@ -363,14 +363,22 @@ CompressedMaterialization::CompressedMaterialization(Optimizer &optimizer_p, Log
 }
 
 void CompressedMaterialization::RebindAncestors(ColumnBindingReplacer &replacer) {
-	// Table indexes are unique to a single operator, so references to the replaced bindings
-	// can only occur in the operators between the compressed operator and the root
+	// Only the materializing operator consumes compressed values. Its ancestors see the
+	// restored output and must retain their expression types, including explicit collations.
+	ColumnBindingReplacer parent_replacer;
+	for (auto &replacement : replacer.replacement_bindings) {
+		parent_replacer.replacement_bindings.emplace_back(replacement.old_binding, replacement.new_binding);
+	}
 	for (auto &ancestor : ancestors) {
 		auto &ancestor_op = ancestor.get();
 		if (replacer.stop_operator && replacer.stop_operator.get() == ancestor_op.get()) {
 			continue;
 		}
-		replacer.VisitOperatorBindings(*ancestor_op);
+		if (ancestor_op.get() == ancestors.back().get().get()) {
+			replacer.VisitOperatorBindings(*ancestor_op);
+		} else {
+			parent_replacer.VisitOperatorBindings(*ancestor_op);
+		}
 	}
 }
 
@@ -440,7 +448,6 @@ void CompressedMaterialization::Compress(unique_ptr<LogicalOperator> &op) {
 	switch (op->type) {
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
-	case LogicalOperatorType::LOGICAL_DISTINCT:
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
 		break;
 	default:
@@ -455,9 +462,6 @@ void CompressedMaterialization::Compress(unique_ptr<LogicalOperator> &op) {
 		break;
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
 		CompressComparisonJoin(op);
-		break;
-	case LogicalOperatorType::LOGICAL_DISTINCT:
-		CompressDistinct(op);
 		break;
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
 		CompressOrder(op);
@@ -545,7 +549,11 @@ void CompressedMaterialization::CreateCompressProjection(unique_ptr<LogicalOpera
 		const auto &old_binding = child_info.bindings_before[col_idx];
 		const auto &new_binding = child_info.bindings_after[col_idx];
 		const auto &new_type = new_types[col_idx];
-		replacement_bindings.emplace_back(old_binding, new_binding, new_type);
+		if (new_type == child_info.types[col_idx]) {
+			replacement_bindings.emplace_back(old_binding, new_binding);
+		} else {
+			replacement_bindings.emplace_back(old_binding, new_binding, new_type);
+		}
 
 		// Remove the old binding from the statistics map
 		statistics_map.erase(old_binding);

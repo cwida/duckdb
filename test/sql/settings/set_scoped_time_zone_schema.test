@@ -1,0 +1,114 @@
+# name: test/sql/settings/set_scoped_time_zone_schema.test
+# description: SET and RESET of TIME ZONE and SCHEMA accept a scope keyword
+# group: [settings]
+
+require icu
+
+statement ok
+SET GLOBAL TIME ZONE 'UTC'
+
+query I
+SELECT current_setting('TimeZone')
+----
+UTC
+
+statement ok
+SET SESSION TIME ZONE 'Europe/Amsterdam'
+
+query I
+SELECT current_setting('TimeZone')
+----
+Europe/Amsterdam
+
+# the reset value depends on the machine, so capture what the plain RESET produces
+statement ok
+RESET TimeZone
+
+statement ok
+CREATE TABLE default_tz AS SELECT current_setting('TimeZone') AS tz
+
+statement ok
+SET SESSION TIME ZONE 'Asia/Tokyo'
+
+statement ok
+RESET SESSION TIME ZONE
+
+query I
+SELECT current_setting('TimeZone') = (SELECT tz FROM default_tz)
+----
+true
+
+statement ok
+SET SESSION TIME ZONE 'Asia/Tokyo'
+
+statement ok
+RESET TIME ZONE
+
+query I
+SELECT current_setting('TimeZone') = (SELECT tz FROM default_tz)
+----
+true
+
+statement ok
+SET SESSION TIME ZONE DEFAULT
+
+statement ok
+SET SESSION TIME ZONE LOCAL
+
+statement error
+SET LOCAL TIME ZONE 'UTC'
+----
+SET LOCAL is not implemented
+
+statement error
+RESET LOCAL TIME ZONE
+----
+RESET LOCAL is not implemented
+
+# a setting that happens to start with a scope keyword still works
+statement ok
+SET SESSION TimeZone = 'UTC'
+
+statement ok
+RESET SESSION TimeZone
+
+statement ok
+CREATE SCHEMA s1;
+
+statement ok
+SET SESSION SCHEMA 's1'
+
+query I
+SELECT current_schema()
+----
+s1
+
+statement ok
+RESET SESSION SCHEMA
+
+query I
+SELECT current_schema()
+----
+main
+
+# after a reset the default catalog may differ per test configuration, so use a schema that exists everywhere
+statement ok
+SET SCHEMA 'main'
+
+statement ok
+RESET SCHEMA
+
+query I
+SELECT current_schema()
+----
+main
+
+statement error
+SET LOCAL SCHEMA 's1'
+----
+SET LOCAL is not implemented
+
+statement error
+SET GLOBAL SCHEMA 's1'
+----
+cannot be set globally

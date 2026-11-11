@@ -2,7 +2,7 @@
 # description: Dropping a column whose name contains a dot frees the blocks of that column only
 # group: [drop_col]
 
-load __TEST_DIR__/drop_col_dotted_name.db
+load {TEST_DIR}/drop_col_dotted_name.db
 
 statement ok
 SET debug_verify_blocks=true

@@ -2,6 +2,7 @@
 
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/main/config.hpp"
 
 namespace duckdb {
@@ -81,6 +82,21 @@ void LogicalJoin::GetExpressionBindings(const Expression &root_expr, unordered_s
 		                                                              D_ASSERT(colref.Depth() == 0);
 		                                                              bindings.insert(colref.Binding().table_index);
 	                                                              });
+}
+
+unique_ptr<LogicalOperator> LogicalJoin::PromoteJoinSide(unique_ptr<LogicalOperator> child,
+                                                         vector<ProjectionIndex> projection_map) {
+	if (projection_map.empty()) {
+		return child;
+	}
+	auto filter = make_uniq<LogicalFilter>();
+	filter->projection_map = std::move(projection_map);
+	filter->children.push_back(std::move(child));
+	if (filter->children[0]->has_estimated_cardinality) {
+		filter->SetEstimatedCardinality(filter->children[0]->estimated_cardinality);
+	}
+	filter->ResolveOperatorTypes();
+	return std::move(filter);
 }
 
 void LogicalJoin::MoveJoinState(LogicalJoin &source, LogicalJoin &target) {

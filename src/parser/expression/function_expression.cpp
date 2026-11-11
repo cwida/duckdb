@@ -158,6 +158,10 @@ void FunctionExpression::Serialize(Serializer &serializer) const {
 		// the catalog/schema properties above cannot represent a nested schema path
 		serializer.WriteProperty<QualifiedName>(210, "qualified_name", qualified_name);
 	}
+
+	if (serializer.ShouldSerialize(StorageVersion::V2_0_0)) {
+		serializer.WritePropertyWithDefault<bool>(211, "is_legacy_function_call", is_legacy_function_call);
+	}
 }
 
 unique_ptr<ParsedExpression> FunctionExpression::Deserialize(Deserializer &deserializer) {
@@ -181,6 +185,10 @@ unique_ptr<ParsedExpression> FunctionExpression::Deserialize(Deserializer &deser
 
 	deserializer.ReadPropertyWithDefault<unique_ptr<ParsedExpression>>(203, "filter", result->filter);
 	auto order_bys = deserializer.ReadPropertyWithDefault<unique_ptr<ResultModifier>>(204, "order_bys");
+	if (order_bys && order_bys->type != ResultModifierType::ORDER_MODIFIER) {
+		throw SerializationException(
+		    "Failed to deserialize FUNCTION expression: order_bys is not an ORDER BY modifier");
+	}
 	result->order_bys = unique_ptr_cast<ResultModifier, OrderModifier>(std::move(order_bys));
 	deserializer.ReadPropertyWithDefault<bool>(205, "distinct", result->distinct);
 	deserializer.ReadPropertyWithDefault<bool>(206, "is_operator", result->is_operator);
@@ -197,6 +205,12 @@ unique_ptr<ParsedExpression> FunctionExpression::Deserialize(Deserializer &deser
 	    deserializer.ReadPropertyWithExplicitDefault<QualifiedName>(210, "qualified_name", QualifiedName());
 	if (!qualified_name.Path().empty()) {
 		result->SetQualifiedName(std::move(qualified_name));
+	}
+
+	bool is_legacy_function_call = false;
+	deserializer.ReadPropertyWithDefault<bool>(211, "is_legacy_function_call", is_legacy_function_call);
+	if (is_legacy_function_call) {
+		result->is_legacy_function_call = true;
 	}
 
 	return std::move(result);

@@ -5,6 +5,7 @@
 #include "duckdb/storage/checkpoint/write_overflow_strings_to_disk.hpp"
 #include "duckdb/storage/compression/compression_segment_reader.hpp"
 #include "duckdb/storage/segment/uncompressed.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/append_state.hpp"
 #include "duckdb/storage/table/column_data_checkpointer.hpp"
 #include "duckdb/storage/table/column_segment.hpp"
@@ -186,18 +187,21 @@ void FixedSizeScan(ColumnSegment &segment, ColumnScanState &state, idx_t scan_co
 }
 
 //===--------------------------------------------------------------------===//
-// Fetch
+// Select
 //===--------------------------------------------------------------------===//
 template <class T>
-void FixedSizeFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
-                       idx_t result_idx) {
-	auto row_index = NumericCast<idx_t>(row_id);
-	auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
-	auto handle = buffer_manager.Pin(state.context, segment.GetBlockHandle());
-	auto reader = CompressionSegmentReader::FromSegment(handle, segment, "fixed-size segment");
+void FixedSizeSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count, Vector &result,
+                     const SelectionVector &sel, idx_t sel_count, idx_t result_offset, ScanVectorType scan_type) {
+	auto &scan_state = state.scan_state->Cast<FixedSizeScanState>();
+	auto start = state.GetPositionInSegment();
 
-	// first fetch the data from the base table
-	FlatVector::GetDataMutable<T>(result)[result_idx] = reader.GetArrayElement<T>(0, segment.count, row_index);
+	auto source_data = scan_state.reader.GetArraySlice<T>(0, start, vector_count);
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto result_data = FlatVector::GetDataMutable<T>(result) + result_offset;
+	for (idx_t i = 0; i < sel_count; i++) {
+		result_data[i] = source_data[sel.get_index(i)];
+	}
 }
 
 //===--------------------------------------------------------------------===//
@@ -279,12 +283,15 @@ idx_t FixedSizeFinalizeAppend(ColumnSegment &segment, BaseStatistics &stats) {
 //===--------------------------------------------------------------------===//
 template <class T, class APPENDER = StandardFixedSizeAppend>
 CompressionFunction FixedSizeGetFunction(PhysicalType data_type) {
-	return CompressionFunction(CompressionType::COMPRESSION_UNCOMPRESSED, data_type, FixedSizeInitAnalyze,
-	                           FixedSizeAnalyze, FixedSizeFinalAnalyze<T>, UncompressedFunctions::InitCompression,
-	                           UncompressedFunctions::Compress, UncompressedFunctions::FinalizeCompress,
-	                           FixedSizeInitScan, FixedSizeScan<T>, FixedSizeScanPartial<T>, FixedSizeFetchRow<T>,
-	                           UncompressedFunctions::EmptySkip, nullptr, FixedSizeInitAppend,
-	                           FixedSizeAppend<T, APPENDER>, FixedSizeFinalizeAppend<T>);
+	auto function =
+	    CompressionFunction(CompressionType::COMPRESSION_UNCOMPRESSED, data_type, FixedSizeInitAnalyze,
+	                        FixedSizeAnalyze, FixedSizeFinalAnalyze<T>, UncompressedFunctions::InitCompression,
+	                        UncompressedFunctions::Compress, UncompressedFunctions::FinalizeCompress, FixedSizeInitScan,
+	                        FixedSizeScan<T>, FixedSizeScanPartial<T>, UncompressedFunctions::EmptySkip, nullptr,
+	                        FixedSizeInitAppend, FixedSizeAppend<T, APPENDER>, FixedSizeFinalizeAppend<T>);
+	function.select = FixedSizeSelect<T>;
+	function.zero_initialize_segments = false;
+	return function;
 }
 
 CompressionFunction FixedSizeUncompressed::GetFunction(PhysicalType data_type) {

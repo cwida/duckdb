@@ -15,7 +15,7 @@ statement ok
 INSERT INTO nullable VALUES (1, 10), (NULL, 20);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 # the CTE definition cannot produce NULL, so the join condition is always true
 query II

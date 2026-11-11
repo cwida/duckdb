@@ -1,0 +1,61 @@
+# name: test/sql/update/update_tuple.test
+# description: Test mixing tuple and single-column assignments in SET
+# group: [update]
+
+statement ok
+CREATE TABLE t1 (a INT, b INT, c INT, d INT, e VARCHAR);
+
+statement ok
+INSERT INTO t1 VALUES (1, 2, 3, 4, 'FIVE')
+
+statement ok
+UPDATE t1
+ SET (a, b) = (10, 20),
+        c = 30,
+     (d, e) = (40, 'SIX')
+
+query IIIII
+SELECT * FROM t1;
+----
+10	20	30	40	SIX
+
+statement error
+UPDATE t1 SET (a, b) = (1, 2), a = 3
+----
+Multiple assignments to same column "a"
+
+statement error
+UPDATE t1 SET (a, b) = (1, 2, 3), c = 3
+----
+expected 2 values, got 3
+
+# ON CONFLICT DO UPDATE
+statement ok
+CREATE TABLE t2 (k INT PRIMARY KEY, a INT, b INT, c INT);
+
+statement ok
+INSERT INTO t2 VALUES (1, 2, 3, 4)
+
+statement ok
+INSERT INTO t2 VALUES (1, 20, 30, 40) ON CONFLICT DO UPDATE SET (a, b) = (excluded.a, excluded.b), c = excluded.c + 1
+
+query IIII
+SELECT * FROM t2;
+----
+1	20	30	41
+
+# MERGE INTO
+statement ok
+CREATE TABLE src (k INT, a INT, b INT, c INT);
+
+statement ok
+INSERT INTO src VALUES (1, 100, 200, 300)
+
+statement ok
+MERGE INTO t2 USING src ON t2.k = src.k
+WHEN MATCHED THEN UPDATE SET a = src.a, (b, c) = (src.b, src.c)
+
+query IIII
+SELECT * FROM t2;
+----
+1	100	200	300

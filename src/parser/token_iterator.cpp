@@ -2,6 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/parser/parser_extension.hpp"
+#include "duckdb/parser/peg/tokenizer/tokenizer.hpp"
 
 namespace duckdb {
 
@@ -15,6 +16,11 @@ TokenIterator::TokenIterator(unique_ptr<vector<MatcherToken>> owned_tokens_p)
 	}
 }
 
+TokenIterator::TokenIterator(TokenizerBehavior &behavior)
+    : TokenIterator(make_uniq<vector<MatcherToken>>(std::move(behavior.tokens))) {
+	source = &behavior.sql;
+}
+
 TokenIterator::TokenIterator(vector<MatcherToken> &tokens_p) : tokens(tokens_p) {
 	// A new root can receive tokens edited since an earlier match.
 	for (auto &token : tokens) {
@@ -22,16 +28,9 @@ TokenIterator::TokenIterator(vector<MatcherToken> &tokens_p) : tokens(tokens_p) 
 	}
 }
 
-TokenIterator::TokenIterator(const TokenIterator &other) : tokens(other.tokens), position(other.position) {
-}
-
 TokenIterator::TokenIterator(TokenIterator &&other) noexcept
-    : owned_tokens(std::move(other.owned_tokens)), tokens(other.tokens), position(other.position) {
-}
-
-bool TokenIterator::AtEnd() const {
-	auto current = Current();
-	return !current || current->type == TokenType::END_OF_INPUT;
+    : owned_tokens(std::move(other.owned_tokens)), tokens(other.tokens), source(other.source),
+      position(other.position) {
 }
 
 bool TokenIterator::HasMoreStatements() const {
@@ -47,14 +46,6 @@ bool TokenIterator::HasMoreStatements() const {
 	return false;
 }
 
-idx_t TokenIterator::Position() const {
-	return position;
-}
-
-idx_t TokenIterator::Size() const {
-	return tokens.size();
-}
-
 idx_t TokenIterator::EndOffset() const {
 	if (tokens.empty()) {
 		return 0;
@@ -63,11 +54,12 @@ idx_t TokenIterator::EndOffset() const {
 	return last_token.offset + last_token.length;
 }
 
-optional_ptr<const MatcherToken> TokenIterator::Current() const {
-	if (position >= tokens.size()) {
-		return nullptr;
+idx_t TokenIterator::ConsumedEndOffset() const {
+	if (position == 0) {
+		return 0;
 	}
-	return tokens[position];
+	auto &last_token = Previous();
+	return last_token.offset + last_token.length;
 }
 
 const MatcherToken &TokenIterator::Previous() const {

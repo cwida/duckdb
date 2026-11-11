@@ -1,0 +1,89 @@
+# name: test/sql/merge/merge_into_subquery_condition_delete.test
+# description: MERGE INTO with a subquery in the join condition reads the deleted rows from the target
+# group: [merge]
+
+statement ok
+CREATE TABLE t2(k INTEGER, w INTEGER, v VARCHAR);
+
+statement ok
+INSERT INTO t2 VALUES (5, 7, 'a'), (6, 8, 'b');
+
+statement ok
+CREATE TABLE t3(id INTEGER);
+
+statement ok
+INSERT INTO t3 VALUES (7);
+
+query III
+MERGE INTO t2 USING (SELECT 5 AS k) sq ON t2.k = sq.k AND t2.w = (SELECT max(id) FROM t3) WHEN MATCHED THEN DELETE RETURNING *;
+----
+5	7	a
+
+query III
+SELECT * FROM t2
+----
+6	8	b
+
+# NOT MATCHED BY SOURCE: the target is the left side of the join
+query III
+MERGE INTO t2 USING (SELECT 6 AS k) sq ON t2.k = sq.k AND t2.w IN (SELECT 8) WHEN MATCHED THEN DELETE WHEN NOT MATCHED BY SOURCE THEN DELETE RETURNING *;
+----
+6	8	b
+
+statement ok
+INSERT INTO t2 VALUES (5, 7, 'a'), (6, 8, 'b');
+
+query III
+MERGE INTO t2 USING (SELECT 5 AS k) sq ON t2.k = sq.k AND t2.w = (SELECT max(id) FROM t3) WHEN MATCHED THEN DELETE WHEN NOT MATCHED BY TARGET THEN INSERT VALUES (sq.k, 0, 'c') RETURNING *;
+----
+5	7	a
+
+query III
+SELECT * FROM t2 ORDER BY ALL
+----
+6	8	b
+
+# deleted keys are removed from the index
+statement ok
+CREATE TABLE p(k INTEGER PRIMARY KEY, w INTEGER);
+
+statement ok
+INSERT INTO p VALUES (1, 5), (2, 6);
+
+statement ok
+CREATE TABLE s(id INTEGER);
+
+statement ok
+INSERT INTO s VALUES (5);
+
+statement ok
+BEGIN
+
+statement ok
+MERGE INTO p USING (SELECT 1 AS k) sq ON p.k = sq.k AND p.w = (SELECT max(id) FROM s) WHEN MATCHED THEN DELETE;
+
+statement ok
+INSERT INTO p VALUES (1, 9);
+
+statement ok
+COMMIT
+
+query II
+SELECT * FROM p ORDER BY k
+----
+1	9
+2	6
+
+statement ok
+CREATE TABLE q(k INTEGER UNIQUE, w INTEGER);
+
+statement ok
+INSERT INTO q VALUES (1, 1);
+
+statement ok
+MERGE INTO q USING (SELECT 1 AS k) sq ON q.k = sq.k AND q.k IN (SELECT 1) WHEN MATCHED THEN DELETE;
+
+query I
+SELECT count(*) FROM q
+----
+0

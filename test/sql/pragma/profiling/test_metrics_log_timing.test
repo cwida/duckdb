@@ -1,0 +1,70 @@
+# name: test/sql/pragma/profiling/test_metrics_log_timing.test
+# description: Timing metrics expose their wall-clock bounds through structured logs
+# group: [profiling]
+
+require noforcestorage
+
+statement ok
+CALL enable_logging('Metrics')
+
+statement ok
+SET tracked_metrics = [
+	'query.sql',
+	'query.total_time',
+	'parser.total_time',
+	'planner.total_time',
+	'optimizer.total_time',
+	'physical_planner.total_time'
+]
+
+statement ok
+SET enable_profiling = 'no_output'
+
+query I
+SELECT sum(i) FROM range(1000) t(i)
+----
+499500
+
+statement ok
+CALL disable_profiling()
+
+query I
+SELECT count(*)
+FROM duckdb_logs_parsed('Metrics')
+WHERE metric IN (
+	'query.total_time',
+	'parser.total_time',
+	'planner.total_time',
+	'optimizer.total_time',
+	'physical_planner.total_time'
+)
+AND (
+	start_time IS NULL
+	OR end_time IS NULL
+	OR start_time > end_time
+)
+----
+0
+
+query I
+SELECT CASE
+	WHEN current_setting('debug_verify_statement') = 'none' THEN count(*) = 5
+	ELSE count(*) > 0
+END
+FROM duckdb_logs_parsed('Metrics')
+WHERE metric IN (
+	'query.total_time',
+	'parser.total_time',
+	'planner.total_time',
+	'optimizer.total_time',
+	'physical_planner.total_time'
+)
+----
+true
+
+query II
+SELECT start_time IS NULL, end_time IS NULL
+FROM duckdb_logs_parsed('Metrics')
+WHERE metric = 'query.sql'
+----
+true	true

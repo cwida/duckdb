@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 
 #include <functional>
@@ -36,11 +37,16 @@ public:
 class BindingReplacementGraph {
 public:
 	ColumnBinding Resolve(ColumnBinding binding) const;
+	//! Find the direct replacement edge for a binding, if any
+	optional_ptr<const ReplacementBinding> Find(ColumnBinding old_binding) const;
 	bool TryAdd(const ReplacementBinding &replacement);
 	void Add(ColumnBinding old_binding, ColumnBinding new_binding);
 	void Add(const ReplacementBinding &replacement);
 	void Merge(const BindingReplacementGraph &replacements);
 	void AddTo(ColumnBindingReplacer &replacer) const;
+	//! Collapse the graph to single edges that resolve into the given output boundary, dropping edges that do not.
+	//! Resolution at any enclosing boundary is unaffected because operators above cannot see bindings dropped here.
+	BindingReplacementGraph ScopedToBoundary(const vector<ColumnBinding> &boundary) const;
 
 	bool Empty() const {
 		return replacement_bindings.empty();
@@ -55,6 +61,8 @@ public:
 private:
 	ReplacementBinding ResolveReplacement(ColumnBinding binding) const;
 	vector<ReplacementBinding> replacement_bindings;
+	//! Index into replacement_bindings by old_binding (unique by construction)
+	column_binding_map_t<idx_t> binding_slots;
 };
 
 //! The ColumnBindingReplacer updates column bindings (e.g., after changing the operator plan), utility for optimizers
@@ -69,9 +77,18 @@ public:
 	virtual void VisitOperatorBindings(LogicalOperator &op);
 	//! Add binding replacements by position
 	void AddReplacements(const vector<ColumnBinding> &old_bindings, const vector<ColumnBinding> &new_bindings);
+	//! Index replacement_bindings by old_binding for O(1) lookup. Only takes effect for replacement lists that
+	//! sequential application cannot chain (no new_binding occurs as an old_binding); otherwise lookups stay linear.
+	//! Call after the replacement list is complete; later list changes invalidate the index.
+	void BuildIndex();
+	//! Apply the replacement list to a single binding (and optionally its type)
+	void Replace(ColumnBinding &binding) const;
+	void Replace(ColumnBinding &binding, LogicalType &type) const;
 
 protected:
 	unique_ptr<Expression> VisitReplace(BoundColumnRefExpression &expr, unique_ptr<Expression> *expr_ptr) override;
+	//! Find the applicable replacement, using the index if one was built
+	optional_ptr<const ReplacementBinding> FindReplacement(ColumnBinding binding) const;
 
 public:
 	//! Do not recurse further than this operator (optional)
@@ -79,6 +96,10 @@ public:
 
 	//! Contains all bindings that need to be updated
 	vector<ReplacementBinding> replacement_bindings;
+
+private:
+	column_binding_map_t<idx_t> replacement_index;
+	bool use_index = false;
 };
 
 //! Like ColumnBindingReplacer, but also updates correlated-column metadata and nested subquery plans.

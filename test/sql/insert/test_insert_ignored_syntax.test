@@ -1,0 +1,48 @@
+# name: test/sql/insert/test_insert_ignored_syntax.test
+# description: Test INSERT INTO statements with ignored syntax
+# group: [insert]
+
+statement ok
+CREATE TABLE strings(i STRING)
+
+statement ok
+INSERT INTO strings OVERRIDING SYSTEM VALUE VALUES (1);
+
+query I
+select * from strings;
+----
+1
+
+statement ok
+INSERT INTO strings OVERRIDING USER VALUE SELECT 2;
+
+query I
+select * from strings;
+----
+1
+2
+
+statement ok
+INSERT INTO strings (i) OVERRIDING SYSTEM VALUE SELECT 'three';
+
+query I
+select * from strings;
+----
+1
+2
+three
+
+statement error
+INSERT INTO strings OVERRIDING VALUE SELECT 3;
+----
+Parser Error
+
+statement error
+INSERT INTO strings OVERRIDING SYSTEM VALUE DEFAULT VALUES;
+----
+OVERRIDING SYSTEM|USER VALUE can not be combined with DEFAULT VALUES
+
+statement error
+INSERT INTO strings OVERRIDING USER VALUE DEFAULT VALUES;
+----
+OVERRIDING SYSTEM|USER VALUE can not be combined with DEFAULT VALUES

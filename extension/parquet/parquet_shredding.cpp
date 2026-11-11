@@ -72,6 +72,11 @@ static ShreddingType ConvertShreddingTypeRecursive(const LogicalType &type) {
 		return ShreddingType(LogicalType(LogicalTypeId::ANY));
 	}
 	if (!type.IsNested()) {
+		// the values are written without further conversion or validation, so types with an alias (e.g., JSON) and
+		// types without a Parquet typed_value representation cannot be shredded on
+		if (type.HasAlias() || type.id() == LogicalTypeId::BIT || type.id() == LogicalTypeId::BIGNUM) {
+			throw BinderException("VARIANT cannot be shredded on type %s in Parquet", type.ToString());
+		}
 		return ShreddingType(type);
 	}
 

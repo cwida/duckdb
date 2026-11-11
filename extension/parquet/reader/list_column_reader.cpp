@@ -214,6 +214,9 @@ ColumnReader &ListColumnReader::GetChildReader() {
 }
 
 void ListColumnReader::ApplyPendingSkips(data_ptr_t define_out, data_ptr_t repeat_out) {
+	if (pending_skips == 0) {
+		return;
+	}
 	ColumnReaderInput empty_input(pending_skips, nullptr, nullptr);
 	ReadInternal<TemplatedListSkipper>(empty_input, nullptr);
 	pending_skips = 0;

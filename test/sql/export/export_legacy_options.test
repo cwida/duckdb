@@ -1,0 +1,92 @@
+# name: test/sql/export/export_legacy_options.test
+# description: EXPORT DATABASE accepts COPY options without parentheses
+# group: [export]
+
+statement ok
+CREATE TABLE t(a INT, b INT);
+
+statement ok
+INSERT INTO t VALUES (1, 2), (NULL, 3);
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/export_delim' DELIMITER '|'
+
+query I
+SELECT replace(rtrim(content, chr(10)), chr(10), ' ') FROM read_text('{TEST_DIR}/export_delim/t.csv')
+----
+a|b 1|2 |3
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/export_delim_as' DELIMITER AS '|' HEADER
+
+query I
+SELECT replace(rtrim(content, chr(10)), chr(10), ' ') FROM read_text('{TEST_DIR}/export_delim_as/t.csv')
+----
+a|b 1|2 |3
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/export_quote' CSV QUOTE '*' FORCE QUOTE *
+
+query I
+SELECT replace(rtrim(content, chr(10)), chr(10), ' ') FROM read_text('{TEST_DIR}/export_quote/t.csv')
+----
+*a*,*b* *1*,*2* ,*3*
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/export_null' NULL 'nil'
+
+query I
+SELECT replace(rtrim(content, chr(10)), chr(10), ' ') FROM read_text('{TEST_DIR}/export_null/t.csv')
+----
+a,b 1,2 nil,3
+
+# the parenthesized form keeps working
+statement ok
+EXPORT DATABASE '{TEST_DIR}/export_parens' (FORMAT CSV, DELIMITER ';')
+
+query I
+SELECT replace(rtrim(content, chr(10)), chr(10), ' ') FROM read_text('{TEST_DIR}/export_parens/t.csv')
+----
+a;b 1;2 ;3
+
+# options can follow an explicit source database
+statement ok
+ATTACH ':memory:' AS db2;
+
+statement ok
+CREATE TABLE db2.t(a INT, b INT);
+
+statement ok
+INSERT INTO db2.t VALUES (1, 2);
+
+statement ok
+EXPORT DATABASE db2 TO '{TEST_DIR}/export_source' DELIMITER '|'
+
+query I
+SELECT replace(rtrim(content, chr(10)), chr(10), ' ') FROM read_text('{TEST_DIR}/export_source/t.csv')
+----
+a|b 1|2
+
+# the exported load script carries the option so IMPORT DATABASE can read the files back
+query I
+SELECT contains(content, 'delimiter ''|''') FROM read_text('{TEST_DIR}/export_delim/load.sql')
+----
+true
+
+statement ok
+DROP TABLE t;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/export_delim'
+
+query II
+SELECT * FROM t ORDER BY a NULLS LAST
+----
+1	2
+NULL	3
+
+# FORMAT must still be passed through the parenthesized list
+statement error
+EXPORT DATABASE '{TEST_DIR}/export_format' FORMAT PARQUET
+----
+Parser Error

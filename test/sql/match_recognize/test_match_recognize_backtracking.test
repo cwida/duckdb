@@ -8,7 +8,7 @@
 # case below is a string of single letter rows, one row per character, with a variable per letter.
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 statement ok
 create table rows_aaaaa(i integer, c varchar);

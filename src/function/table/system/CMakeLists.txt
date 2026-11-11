@@ -21,6 +21,7 @@ add_library_unity(
   duckdb_log.cpp
   duckdb_log_contexts.cpp
   duckdb_indexes.cpp
+  duckdb_live_query_metrics.cpp
   duckdb_memory.cpp
   duckdb_eviction_queues.cpp
   duckdb_metrics.cpp
@@ -34,6 +35,7 @@ add_library_unity(
   duckdb_sequences.cpp
   duckdb_triggers.cpp
   duckdb_settings.cpp
+  system_catalog_scanner.cpp
   duckdb_tables.cpp
   duckdb_temporary_files.cpp
   duckdb_types.cpp

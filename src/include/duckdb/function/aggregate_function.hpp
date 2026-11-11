@@ -63,10 +63,6 @@ class BindAggregateFunctionInput : public BindFunctionInput {
 public:
 	// Defined out-of-line: converting to the BindFunctionInput base requires the complete BoundAggregateFunction.
 	BindAggregateFunctionInput(ClientContext &context_p, BoundAggregateFunction &bound_function_p,
-	                           vector<unique_ptr<Expression>> &arguments_p, const vector<Identifier> &argument_names_p);
-
-	//! Construct without argument names - looking arguments up by name is not available in this case.
-	BindAggregateFunctionInput(ClientContext &context_p, BoundAggregateFunction &bound_function_p,
 	                           vector<unique_ptr<Expression>> &arguments_p);
 
 	BoundAggregateFunction &GetBoundFunction() const {
@@ -529,6 +525,14 @@ protected:
 
 class AggregateFunction : public BaseAggregateFunction, public SimpleFunction { // NOLINT: work-around bug in clang-tidy
 public:
+	static constexpr const FunctionKind KIND = FunctionKind::AGGREGATE;
+	FunctionKind GetKind() const override {
+		return KIND;
+	}
+	//! The properties of the function, for code that only knows it as a SimpleFunction
+	auto GetFunctionProperties() const -> optional_ptr<const FunctionProperties> override {
+		return GetProperties();
+	}
 	static constexpr aggregate_cluster_update_t NoClusterUpdate() {
 		return nullptr;
 	}

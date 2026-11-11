@@ -1,0 +1,56 @@
+# name: test/sql/copy/parquet/parquet_schema_lossy_filter_pushdown.test
+# description: Filters on columns read with a lossy type change are not rewritten into the file type
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT TIMESTAMP '2020-01-01 10:00:00' AS c UNION ALL SELECT TIMESTAMP '2020-01-01') TO '{TEST_DIR}/sc_ts.parquet'
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/sc_ts.parquet', schema=map{'c': {name: 'c', type: 'DATE', default_value: NULL}}) WHERE c = DATE '2020-01-01'
+----
+2
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/sc_ts.parquet', schema=map{'c': {name: 'c', type: 'DATE', default_value: NULL}}) WHERE c IN (DATE '2020-01-01', DATE '2021-01-01')
+----
+2
+
+statement ok
+COPY (SELECT 1.23::DECIMAL(9,4) AS c UNION ALL SELECT 1.2::DECIMAL(9,4)) TO '{TEST_DIR}/sc_dec.parquet'
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/sc_dec.parquet', schema=map{'c': {name: 'c', type: 'DECIMAL(4,1)', default_value: NULL}}) WHERE c = 1.2
+----
+2
+
+statement ok
+COPY (SELECT 2.6::DECIMAL(4,1) AS c) TO '{TEST_DIR}/sc_dec_int.parquet'
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/sc_dec_int.parquet', schema=map{'c': {name: 'c', type: 'INTEGER', default_value: NULL}}) WHERE c = 3
+----
+1
+
+statement ok
+COPY (SELECT '2020-01-01' AS c UNION ALL SELECT '2020-1-1') TO '{TEST_DIR}/sc_varchar.parquet'
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/sc_varchar.parquet', schema=map{'c': {name: 'c', type: 'DATE', default_value: NULL}}) WHERE c = DATE '2020-01-01'
+----
+2
+
+# widening type changes still give the right results
+statement ok
+COPY (SELECT range::INTEGER AS c FROM range(10)) TO '{TEST_DIR}/sc_int.parquet'
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/sc_int.parquet', schema=map{'c': {name: 'c', type: 'BIGINT', default_value: NULL}}) WHERE c >= 5
+----
+5
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/sc_int.parquet', schema=map{'c': {name: 'c', type: 'BIGINT', default_value: NULL}}) WHERE c = 10000000000
+----
+0

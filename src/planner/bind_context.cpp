@@ -181,7 +181,7 @@ string BindContext::GetActualColumnName(const BindingAlias &binding_alias, const
 	ErrorData error;
 	auto binding = GetBinding(binding_alias, error);
 	if (!binding) {
-		throw InternalException("No binding with name \"%s\": %s", binding_alias.GetAlias(), error.RawMessage());
+		throw InternalException("No binding with name %s: %s", binding_alias.GetAlias(), error.RawMessage());
 	}
 	return GetActualColumnName(*binding, column_name);
 }
@@ -455,7 +455,7 @@ BindingAlias GetBindingAlias(ColumnRefExpression &colref) {
 
 BindResult BindContext::BindColumn(ColumnRefExpression &colref, idx_t depth) {
 	if (!colref.IsQualified()) {
-		throw InternalException("Could not bind alias \"%s\"!", colref.GetColumnName());
+		throw InternalException("Could not bind alias %s!", colref.GetColumnName());
 	}
 
 	ErrorData error;
@@ -557,7 +557,7 @@ string CandidateColumnMessage(const vector<Identifier> &candidate_columns, const
 
 void BindContext::GenerateAllColumnExpressions(StarExpression &expr,
                                                vector<unique_ptr<ParsedExpression>> &new_select_list) {
-	if (bindings_list.empty()) {
+	if (bindings_list.empty() && expr.RelationName().empty()) {
 		throw BinderException("* expression without FROM clause!");
 	}
 	StarBindState star_state(new_select_list);
@@ -625,6 +625,21 @@ void BindContext::GenerateAllColumnExpressions(StarExpression &expr,
 		if (!binding) {
 			binding = GetMatchingBinding(expr.RelationName(), expr);
 			if (!binding) {
+				// Expand the nearest enclosing match into column references. Expression binding then
+				// resolves their correlation depth, just as it does for explicit qualified columns.
+				auto &scopes = binder.GetEnclosingScopes();
+				for (idx_t i = scopes.size(); i > 0; i--) {
+					auto &scope_context = scopes[i - 1].get().GetBinder().bind_context;
+					ErrorData scope_error;
+					if (scope_context.GetBinding(expr.RelationName(), scope_error) ||
+					    scope_context.GetMatchingBinding(expr.RelationName(), expr)) {
+						scope_context.GenerateAllColumnExpressions(expr, new_select_list);
+						return;
+					}
+				}
+				if (bindings_list.empty()) {
+					throw BinderException("* expression without FROM clause!");
+				}
 				error.Throw();
 			}
 			is_struct_ref = true;

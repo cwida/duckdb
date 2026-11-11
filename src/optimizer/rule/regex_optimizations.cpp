@@ -173,7 +173,10 @@ unique_ptr<Expression> RegexOptimizationRule::Apply(LogicalOperator &op, vector<
 	}
 	auto regexp_bind_data = root.BindInfo().get()->Cast<RegexpMatchesBindData>();
 
-	auto constant_value = ExpressionExecutor::EvaluateScalar(GetContext(), constant_expr);
+	Value constant_value;
+	if (!ExpressionExecutor::TryEvaluateScalar(GetContext(), constant_expr, constant_value)) {
+		return nullptr;
+	}
 	D_ASSERT(constant_value.type() == constant_expr.GetReturnType());
 
 	duckdb_re2::RE2::Options parsed_options = regexp_bind_data.options;

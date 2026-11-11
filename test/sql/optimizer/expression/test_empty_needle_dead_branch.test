@@ -1,0 +1,56 @@
+# name: test/sql/optimizer/expression/test_empty_needle_dead_branch.test
+# description: Conversion errors in constant arguments of || and contains are deferred until execution
+# group: [expression]
+
+statement ok
+CREATE TABLE t(s VARCHAR);
+
+query I
+SELECT CASE WHEN false THEN 'x' || ''::DOUBLE END;
+----
+NULL
+
+query I
+SELECT s || ''::DOUBLE FROM t;
+----
+
+query I
+SELECT CASE WHEN false THEN contains('x', ''::DOUBLE::VARCHAR) END;
+----
+NULL
+
+query I
+SELECT CASE WHEN false THEN prefix('x', ''::DOUBLE::VARCHAR) END;
+----
+NULL
+
+statement error
+SELECT 'x' || ''::DOUBLE;
+----
+Conversion Error
+
+# issue #28562: contains(list_column, '') should not be folded to TRUE by EmptyNeedleRemovalRule
+query I
+SELECT contains(['a', 'b'], '');
+----
+false
+
+query I
+SELECT contains(['a', '', 'b'], '');
+----
+true
+
+statement ok
+CREATE TABLE list_empty_needle_t(l VARCHAR[]);
+
+statement ok
+INSERT INTO list_empty_needle_t VALUES (['a', 'b']), (['a', '']), (['']), ([]), (NULL);
+
+query I
+SELECT contains(l, '') FROM list_empty_needle_t;
+----
+false
+true
+true
+false
+NULL

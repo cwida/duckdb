@@ -1,0 +1,147 @@
+# name: test/sql/collate/collate_group_by_all.test
+# description: GROUP BY ALL groups collated columns like an explicit GROUP BY
+# group: [collate]
+
+statement ok
+CREATE TABLE t (id BIGINT, c0 VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO t VALUES (0, 'A'), (1, 'a'), (2, 'b'), (3, NULL), (4, NULL);
+
+query II
+SELECT c0, count(*) AS n FROM t GROUP BY ALL ORDER BY n DESC, c0 NULLS LAST;
+----
+A	2
+NULL	2
+b	1
+
+query II
+SELECT c0 AS k, count(*) FROM t GROUP BY ALL ORDER BY k NULLS LAST;
+----
+A	2
+b	1
+NULL	2
+
+query III
+SELECT id > 1 AS big, c0, count(*) FROM t GROUP BY ALL ORDER BY ALL;
+----
+false	A	2
+true	b	1
+true	NULL	2
+
+query II
+SELECT c0 || 'x' AS c, count(*) FROM t GROUP BY ALL ORDER BY ALL;
+----
+Ax	2
+bx	1
+NULL	2
+
+# groups with a subquery or a volatile expression select their own value
+query II
+SELECT (SELECT t) AS s, count(*) FROM (VALUES ('10:00:00+00'::TIMETZ)) v(t) GROUP BY ALL;
+----
+10:00:00+00	1
+
+# a group with a subquery is grouped by its collation
+query II
+SELECT (SELECT c0) AS k, count(*) FROM t GROUP BY ALL ORDER BY ALL;
+----
+A	2
+b	1
+NULL	2
+
+query III
+SELECT id > 1 AS big, (SELECT c0) || 'x' AS k, count(*) FROM t GROUP BY ALL ORDER BY ALL;
+----
+false	Ax	2
+true	bx	1
+true	NULL	2
+
+query III
+SELECT c0 AS x, (SELECT x) AS k, count(*) FROM t GROUP BY ALL ORDER BY ALL;
+----
+A	A	2
+b	b	1
+NULL	NULL	2
+
+statement ok
+PREPARE p AS SELECT (SELECT c0 || $1::VARCHAR) AS k, count(*) FROM t GROUP BY ALL ORDER BY ALL;
+
+query II
+EXECUTE p('x');
+----
+Ax	2
+bx	1
+NULL	2
+
+query II
+EXECUTE p('y');
+----
+Ay	2
+by	1
+NULL	2
+
+statement error
+SELECT (SELECT c0) AS k, count(*) FROM t GROUP BY ALL ORDER BY id;
+----
+<REGEX>:Binder Error:.*column "id" must appear in the GROUP BY clause.*
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II
+SELECT ((nextval('seq') % 2) + i * 0)::VARCHAR COLLATE NOCASE AS k, count(*) FROM range(3) v(i) GROUP BY ALL ORDER BY k;
+----
+0	1
+1	2
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+CREATE SEQUENCE seq2;
+
+query II rowsort
+SELECT (SELECT c0 || (nextval('seq2') * 0)) AS k, count(*) FROM t WHERE id < 2 GROUP BY ALL;
+----
+A0	1
+a0	1
+
+query I
+SELECT currval('seq2');
+----
+2
+
+statement ok
+CREATE TABLE u (c VARCHAR COLLATE NOACCENT.NOCASE);
+
+statement ok
+INSERT INTO u VALUES ('é'), ('E'), ('e');
+
+query I
+SELECT count(*) FROM (SELECT c, count(*) FROM u GROUP BY ALL);
+----
+1
+
+# collated fields of a struct, with a NULL struct and a NULL field
+query II
+SELECT s, count(*) FROM (SELECT CASE WHEN id = 4 THEN NULL ELSE {'k': c0} END AS s FROM t) GROUP BY ALL ORDER BY ALL;
+----
+{'k': A}	2
+{'k': b}	1
+{'k': NULL}	1
+NULL	1
+
+# a collated type that is not a string keeps its value and type
+query III
+SELECT typeof(t), t, count(*) FROM (VALUES ('10:00:00+00'::TIMETZ)) v(t) GROUP BY ALL;
+----
+TIME WITH TIME ZONE	10:00:00+00	1
+
+# a collated expression that is NULL
+query II
+SELECT (c0 || NULL)::VARCHAR COLLATE NOCASE AS n, count(*) FROM t GROUP BY ALL;
+----
+NULL	5

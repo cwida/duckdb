@@ -6,13 +6,13 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA enable_profiling='json'
+SET enable_profiling='json'
 
 statement ok
-PRAGMA profiling_output='{TEST_DIR}/test.txt'
+SET profiling_output='{TEST_DIR}/test.txt'
 
 statement ok
-PRAGMA profiling_mode = detailed
+SET profiling_mode = 'detailed'
 
 statement ok
 CREATE TABLE integers(i INTEGER)
@@ -39,7 +39,7 @@ statement ok
 SELECT CASE a WHEN 42 THEN 100 WHEN 43 THEN 200 ELSE 300 END FROM exprtest
 
 statement ok
-PRAGMA profiling_output='{TEST_DIR}/test_2.txt'
+SET profiling_output='{TEST_DIR}/test_2.txt'
 
 # At least one of the lines should contain the word "Optimizer" to verify that we're getting optimizer timings
 query T

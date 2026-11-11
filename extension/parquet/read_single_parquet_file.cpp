@@ -5,6 +5,7 @@
 #include "parquet_reader.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/once_flag.hpp"
+#include "duckdb/common/operator/add.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 
@@ -35,6 +36,20 @@ struct ReadSingleParquetFileData : public TableFunctionData {
 		if (column_idx < columns.size()) {
 			columns[column_idx].type = expression.return_type;
 		}
+	}
+
+	unique_ptr<FunctionData> Copy() const override {
+		// the copy does not take over the reader the bind opened - its scans open the file themselves
+		auto result = make_uniq<ReadSingleParquetFileData>();
+		result->file = file;
+		result->options = options;
+		result->parquet_names = parquet_names;
+		result->parquet_types = parquet_types;
+		result->columns = columns;
+		result->metadata = metadata;
+		result->cardinality = cardinality;
+		result->projection_expressions = projection_expressions;
+		return std::move(result);
 	}
 
 	//! The reader the bind opened for this file, handed to the first scan of this bind data so that the file does
@@ -267,7 +282,7 @@ static void LoadClaimedRowGroup(ClientContext &context, ReadSingleParquetFileGlo
                                 ReadSingleParquetFileLocalState &lstate) {
 	auto io_result = gstate.reader->ScheduleIO(context, gstate.state, lstate.state);
 	if (io_result.GetResultType() == AsyncResultType::BLOCKED) {
-		io_result.ExecuteTasksSynchronously();
+		io_result.ExecuteTasksSynchronously(context);
 	}
 }
 
@@ -343,7 +358,7 @@ static void ReadSingleParquetFileFunction(ClientContext &context, TableFunctionI
 		case AsyncResultType::BLOCKED:
 			// the reader needs data that is not in memory yet - run the I/O it scheduled and resume. It left
 			// partial data in the chunk that the resumed scan completes, so the chunk is not reset
-			scan_result.ExecuteTasksSynchronously();
+			scan_result.ExecuteTasksSynchronously(context);
 			continue;
 		case AsyncResultType::HAVE_MORE_OUTPUT:
 			if (output.size() == 0) {
@@ -383,7 +398,20 @@ static unique_ptr<NodeStatistics> ReadSingleParquetFileCardinality(ClientContext
 	if (!parquet_data.cardinality.IsValid()) {
 		return nullptr;
 	}
-	return make_uniq<NodeStatistics>(parquet_data.cardinality.GetIndex());
+	auto result = make_uniq<NodeStatistics>(parquet_data.cardinality.GetIndex());
+	if (!parquet_data.metadata) {
+		return result;
+	}
+	// Execution reuses these row groups; the footer's total is not validated against their population.
+	idx_t maximum = 0;
+	for (auto &group : parquet_data.metadata->metadata->file_metadata.row_groups) {
+		if (group.num_rows < 0 || !TryAddOperator::Operation(maximum, static_cast<idx_t>(group.num_rows), maximum)) {
+			return result;
+		}
+	}
+	result->has_max_cardinality = true;
+	result->max_cardinality = maximum;
+	return result;
 }
 
 //! The virtual columns the parquet reader can produce for a file
@@ -395,6 +423,12 @@ static virtual_column_map_t ReadSingleParquetFileVirtualColumns(ClientContext &c
 	result.insert(make_pair(ParquetReader::COLUMN_IDENTIFIER_FILE_ROW_GROUP_NUMBER,
 	                        TableColumn("file_row_group_number", LogicalType::UBIGINT)));
 	return result;
+}
+
+//! The row number within the file identifies a row of a single file
+static vector<column_t> ReadSingleParquetFileRowIdColumns(ClientContext &context,
+                                                          optional_ptr<FunctionData> bind_data) {
+	return {MultiFileReader::COLUMN_IDENTIFIER_FILE_ROW_NUMBER};
 }
 
 //! The statistics of a column of this file, read from its metadata
@@ -417,9 +451,10 @@ static void ReadSingleParquetFileGetMetrics(TableFunctionGetMetricsInput &input)
 		return;
 	}
 	auto &gstate = input.global_state->Cast<ReadSingleParquetFileGlobalState>();
-	// the row groups scanned are drained, so each is reported once; the number to scan is the size of this file,
-	// which our caller reports as-is
+	// the row groups and bytes scanned are drained, so each is reported once; the number to scan is the size of this
+	// file, which our caller reports as-is
 	input.operator_metrics.row_groups_scanned += gstate.state.row_groups_scanned_unreported.exchange(0);
+	input.operator_metrics.bytes_scanned += gstate.state.bytes_scanned_unreported.exchange(0);
 	input.operator_metrics.total_row_groups_to_scan += gstate.state.total_row_groups_to_scan.load();
 }
 
@@ -447,12 +482,13 @@ bool ParquetScanFunction::ProjectionExpressionPushdown(ClientContext &context,
 	}
 	auto &bind_data = input.get.bind_data->CastNoConst<MultiFileBindData>();
 	// Don't do pushdown on custom schema users like Ducklake, or when the schemas of several files are unified
-	if (!bind_data.reader_bind.schema.empty() || !bind_data.union_readers.empty()) {
+	if (!bind_data.reader_bind.schema.empty() || bind_data.file_options.union_by_name) {
 		return false;
 	}
 	// Don't do pushdown with multiple files - the metadata of all but the first file is not available upfront, and
 	// the files may have their columns in a different order
-	if (bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES || !bind_data.initial_reader) {
+	if (bind_data.file_list->GetExpandResult() != FileExpandResult::SINGLE_FILE ||
+	    bind_data.union_readers.size() != 1) {
 		return false;
 	}
 	const auto &column_id = input.get.GetColumnIds()[input.column_index];
@@ -469,19 +505,18 @@ bool ParquetScanFunction::ProjectionExpressionPushdown(ClientContext &context,
 	if (input.get.table_filters.HasFilter(input.column_index)) {
 		return false;
 	}
-	auto &reader = bind_data.initial_reader->Cast<TableFunctionFileReader>();
-	if (!reader.bind_data) {
+	auto &file = bind_data.union_readers[0]->Cast<TableFunctionUnionData>();
+	if (!file.bind_data) {
 		return false;
 	}
-	auto &parquet_data = reader.bind_data->Cast<ReadSingleParquetFileData>();
+	auto &parquet_data = file.bind_data->Cast<ReadSingleParquetFileData>();
 	auto &metadata_reader = parquet_data.GetMetadataReader(context);
 	auto &children = metadata_reader.root_schema->children;
-	if (idx >= children.size() || idx >= bind_data.types.size() || idx >= reader.types.size()) {
+	if (idx >= children.size() || idx >= bind_data.types.size() || idx >= file.types.size()) {
 		return false;
 	}
-	if (!bind_data.file_options.bound_schema.empty() &&
-	    (idx >= reader.columns.size() ||
-	     !bind_data.MatchesPhysicalColumn(idx, reader.columns[idx].name, reader.types[idx]))) {
+	if (idx >= file.names.size() ||
+	    !bind_data.MatchesPhysicalColumn(idx, Identifier(file.names[idx]), file.types[idx])) {
 		// The pushed expression addresses a physical column, before name mapping and conversion.
 		return false;
 	}
@@ -501,12 +536,19 @@ bool ParquetScanFunction::ProjectionExpressionPushdown(ClientContext &context,
 	parquet_data.AddProjectionExpression(idx, expression);
 	bind_data.types[idx] = type;
 	bind_data.columns[idx].type = type;
-	// the reader of the file was bound before the expression was pushed down - update its types
-	reader.types[idx] = type;
-	if (idx < reader.columns.size()) {
-		reader.columns[idx].type = type;
+	file.types[idx] = type;
+	if (bind_data.initial_reader) {
+		// The cached reader was bound before the expression was pushed down.
+		auto &reader = bind_data.initial_reader->Cast<TableFunctionFileReader>();
+		reader.types[idx] = type;
+		if (idx < reader.columns.size()) {
+			reader.columns[idx].type = type;
+		}
 	}
 	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
+	if (data.options.schema_bind_data && data.options.schema_bind_data != file.bind_data) {
+		data.options.schema_bind_data->Cast<ReadSingleParquetFileData>().AddProjectionExpression(idx, expression);
+	}
 	if (idx < data.options.expected_types.size()) {
 		data.options.expected_types[idx] = type;
 	}
@@ -530,6 +572,7 @@ TableFunction ParquetScanFunction::GetSingleFileFunction() {
 	read_parquet.get_metrics = ReadSingleParquetFileGetMetrics;
 	read_parquet.projection_pushdown = true;
 	read_parquet.late_materialization = true;
+	read_parquet.get_row_id_columns = ReadSingleParquetFileRowIdColumns;
 	read_parquet.filter_pushdown = true;
 	read_parquet.filter_prune = true;
 	ParquetScanFunction::AddNamedParameters(read_parquet);
@@ -549,6 +592,7 @@ TableFunctionMultiFileSettings ParquetScanFunction::GetMultiFileSettings() {
 	settings.get_file_columns = ReadSingleParquetFileColumns;
 	// the order the filters are best applied in is learned while reading, and carries over to the next file
 	settings.reuses_local_state = true;
+	settings.reports_bytes_scanned = true;
 	return settings;
 }
 

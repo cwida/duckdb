@@ -85,12 +85,15 @@ arena_ptr<TransformResultValue>
 PEGTransformerFactory::FinalizePivotStatementTrampoline(PEGTransformer &transformer,
                                                         GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	auto &pivot_columns = list_pr.Child<OptionalParseResult>(2);
+	auto &pivot_aggregates = list_pr.Child<OptionalParseResult>(3);
+	auto &pivot_group = list_pr.Child<OptionalParseResult>(4);
+	if (!pivot_columns.HasResult() && !pivot_aggregates.HasResult() && !pivot_group.HasResult()) {
+		throw ParserException("PIVOT requires an ON, USING or GROUP BY clause");
+	}
 	if (!process.child_results[4]) {
 		bool has_parameters = transformer.ParamCount() > process.manual_state;
 		process.SetChildResult(4, transformer.MakeResult<bool>(has_parameters));
-		auto &pivot_columns = list_pr.Child<OptionalParseResult>(2);
-		auto &pivot_aggregates = list_pr.Child<OptionalParseResult>(3);
-		auto &pivot_group = list_pr.Child<OptionalParseResult>(4);
 		bool pushed_child = false;
 		if (pivot_group.HasResult()) {
 			process.PushChild({pivot_group.GetResult()}, 3);
@@ -110,8 +113,6 @@ PEGTransformerFactory::FinalizePivotStatementTrampoline(PEGTransformer &transfor
 	}
 	auto source = process.TakeResult<unique_ptr<TableRef>>(0);
 	auto has_parameters = process.TakeResult<bool>(4);
-	auto &pivot_columns = list_pr.Child<OptionalParseResult>(2);
-	auto &pivot_group = list_pr.Child<OptionalParseResult>(4);
 	auto select_node = make_uniq<SelectNode>();
 	if (!pivot_columns.HasResult()) {
 		select_node->from_table = std::move(source);
@@ -160,7 +161,6 @@ PEGTransformerFactory::FinalizePivotStatementTrampoline(PEGTransformer &transfor
 	select_node->select_list.push_back(make_uniq<StarExpression>());
 	auto pivot_ref = make_uniq<PivotRef>();
 	pivot_ref->source = std::move(source);
-	auto &pivot_aggregates = list_pr.Child<OptionalParseResult>(3);
 	if (pivot_aggregates.HasResult()) {
 		pivot_ref->aggregates = process.TakeResult<vector<unique_ptr<ParsedExpression>>>(2);
 	} else {

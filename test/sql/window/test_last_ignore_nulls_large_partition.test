@@ -1,0 +1,34 @@
+# name: test/sql/window/test_last_ignore_nulls_large_partition.test
+# description: last(... ORDER BY ... IGNORE NULLS) over partitions that use a cascaded merge sort tree
+# group: [window]
+
+query II
+SELECT count(x), count(*) FILTER (x IS DISTINCT FROM m) FROM (
+    SELECT last(CASE WHEN i != 3 THEN i END ORDER BY i IGNORE NULLS)
+           OVER (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) x,
+           max(CASE WHEN i != 3 THEN i END)
+           OVER (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) m
+    FROM range(1, 33000) t(i));
+----
+32999	0
+
+query II
+SELECT count(x), count(*) FILTER (x IS DISTINCT FROM m) FROM (
+    SELECT last(CASE WHEN i % 1000 != 3 THEN i END ORDER BY i DESC IGNORE NULLS)
+           OVER (PARTITION BY i % 2 ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) x,
+           min(CASE WHEN i % 1000 != 3 THEN i END)
+           OVER (PARTITION BY i % 2 ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) m
+    FROM range(1, 100000) t(i));
+----
+99999	0
+
+# many NULLs, including frames without any non-NULL value
+query II
+SELECT count(x), count(*) FILTER (x IS DISTINCT FROM m) FROM (
+    SELECT last(CASE WHEN i % 7 = 0 AND i > 500 THEN i END ORDER BY i IGNORE NULLS)
+           OVER (ORDER BY i ROWS BETWEEN 2000 PRECEDING AND CURRENT ROW) x,
+           max(CASE WHEN i % 7 = 0 AND i > 500 THEN i END)
+           OVER (ORDER BY i ROWS BETWEEN 2000 PRECEDING AND CURRENT ROW) m
+    FROM range(1, 200000) t(i));
+----
+199496	0

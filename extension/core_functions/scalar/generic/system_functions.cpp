@@ -6,7 +6,7 @@
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
-#include "duckdb/transaction/duck_transaction.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 
@@ -16,19 +16,19 @@ namespace {
 
 // current_query
 void CurrentQueryFunction(DataChunk &input, ExpressionState &state, Vector &result) {
-	Value val(state.GetContext().GetCurrentQuery());
+	Value val(state.GetClientContext().GetCurrentQuery());
 	result.Reference(val, count_t(input.size()));
 }
 
 // current_schema
 void CurrentSchemaFunction(DataChunk &input, ExpressionState &state, Vector &result) {
-	Value val(ClientData::Get(state.GetContext()).catalog_search_path->GetDefault().GetSchema());
+	Value val(ClientData::Get(state.GetClientContext()).catalog_search_path->GetDefault().GetSchema());
 	result.Reference(val, count_t(input.size()));
 }
 
 // current_database
 void CurrentDatabaseFunction(DataChunk &input, ExpressionState &state, Vector &result) {
-	Value val(DatabaseManager::GetDefaultDatabase(state.GetContext()));
+	Value val(DatabaseManager::GetDefaultDatabase(state.GetClientContext()));
 	result.Reference(val, count_t(input.size()));
 }
 
@@ -82,7 +82,7 @@ void CurrentSchemasFunction(DataChunk &input, ExpressionState &state, Vector &re
 
 // in_search_path
 void InSearchPathFunction(DataChunk &input, ExpressionState &state, Vector &result) {
-	auto &context = state.GetContext();
+	auto &context = state.GetClientContext();
 	auto &search_path = ClientData::Get(context).catalog_search_path;
 	BinaryExecutor::Execute<string_t, string_t, bool>(
 	    input.data[0], input.data[1], result, [&](string_t db_name, string_t schema_name) {
@@ -93,10 +93,8 @@ void InSearchPathFunction(DataChunk &input, ExpressionState &state, Vector &resu
 
 // txid_current
 void TransactionIdCurrent(DataChunk &input, ExpressionState &state, Vector &result) {
-	auto &context = state.GetContext();
-	auto &catalog = Catalog::GetCatalog(context, DatabaseManager::GetDefaultDatabase(context));
-	auto &transaction = DuckTransaction::Get(context, catalog);
-	auto val = Value::UBIGINT(transaction.start_time);
+	auto &transaction = MetaTransaction::Get(state.GetClientContext());
+	auto val = Value::UBIGINT(transaction.global_transaction_id);
 	result.Reference(val, count_t(input.size()));
 }
 

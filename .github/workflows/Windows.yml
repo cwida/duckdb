@@ -122,7 +122,7 @@ jobs:
       run: |
         ./duckdb.exe -c "PRAGMA platform; PRAGMA version;"
         if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-          # Fail on non-zero major version.
+          # Fail on a zero major version.
           ./duckdb.exe -ascii -noheader -c "SELECT library_version FROM pragma_version() WHERE library_version NOT LIKE 'v0%'" | grep '^v';
         fi
 
@@ -135,13 +135,19 @@ jobs:
         AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_DUCKDB_STAGING_KEY }}
       run: |
         make cli-release-artifact ARTIFACT_SUFFIX=windows-amd64 CLI_BINARY=duckdb.exe
+        make cli-zip-release-artifact ARTIFACT_SUFFIX=windows-amd64 CLI_BINARY=duckdb.exe
         make shared-libs-release-artifact ARTIFACT_SUFFIX=windows-amd64 SHARED_LIBRARIES="src/duckdb.dll src/duckdb.lib"
         make static-libs-release-artifact ARTIFACT_SUFFIX=windows-amd64 STATIC_LIBRARIES="src/duckdb_static.lib src/duckdb_shell.lib src/main/http/duckdb_httplib.lib src/main/extension/duckdb_loadable_extensions.lib extension/*/*_extension.lib"
-        ./scripts/upload-assets-to-staging.sh github_release duckdb-cli-windows-amd64.tar.gz duckdb-shared-libs-windows-amd64.tar.gz duckdb-static-libs-windows-amd64.tar.gz
+        ./scripts/upload-assets-to-staging.sh github_release duckdb-cli-windows-amd64.tar.gz duckdb-cli-windows-amd64.zip duckdb-shared-libs-windows-amd64.tar.gz duckdb-static-libs-windows-amd64.tar.gz
 
     - uses: actions/upload-artifact@v7
       with:
         path: duckdb-cli-windows-amd64.tar.gz
+        archive: false
+
+    - uses: actions/upload-artifact@v7
+      with:
+        path: duckdb-cli-windows-amd64.zip
         archive: false
 
     - uses: actions/upload-artifact@v7
@@ -174,7 +180,7 @@ jobs:
     name: Windows (32 Bit)
     needs:
       - win-release-64
-    if: ${{ github.ref_name == 'main' || github.repository != 'duckdb/duckdb' || inputs.run_all }}
+    if: ${{ inputs.run_all }}
     runs-on: ${{ fromJSON(inputs.runners).windows_2022_x64 || 'windows-2022' }}
     env:
       GEN: ninja
@@ -231,7 +237,7 @@ jobs:
    name: Windows (ARM64)
    needs:
     - win-release-64
-   if: ${{ github.ref_name == 'main' || github.repository != 'duckdb/duckdb' || inputs.run_all }}
+   if: ${{ inputs.run_all }}
    runs-on: windows-2025-vs2026
    env:
      GEN: ninja
@@ -299,13 +305,19 @@ jobs:
          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_DUCKDB_STAGING_KEY }}
        run: |
          make cli-release-artifact ARTIFACT_SUFFIX=windows-arm64 CLI_BINARY=duckdb.exe
+         make cli-zip-release-artifact ARTIFACT_SUFFIX=windows-arm64 CLI_BINARY=duckdb.exe
          make shared-libs-release-artifact ARTIFACT_SUFFIX=windows-arm64 SHARED_LIBRARIES="src/duckdb.dll src/duckdb.lib"
          make static-libs-release-artifact ARTIFACT_SUFFIX=windows-arm64 STATIC_LIBRARIES="src/duckdb_static.lib src/duckdb_shell.lib src/main/http/duckdb_httplib.lib src/main/extension/duckdb_loadable_extensions.lib extension/*/*_extension.lib"
-         ./scripts/upload-assets-to-staging.sh github_release duckdb-cli-windows-arm64.tar.gz duckdb-shared-libs-windows-arm64.tar.gz duckdb-static-libs-windows-arm64.tar.gz
+         ./scripts/upload-assets-to-staging.sh github_release duckdb-cli-windows-arm64.tar.gz duckdb-cli-windows-arm64.zip duckdb-shared-libs-windows-arm64.tar.gz duckdb-static-libs-windows-arm64.tar.gz
 
      - uses: actions/upload-artifact@v7
        with:
          path: duckdb-cli-windows-arm64.tar.gz
+         archive: false
+
+     - uses: actions/upload-artifact@v7
+       with:
+         path: duckdb-cli-windows-arm64.zip
          archive: false
 
      - uses: actions/upload-artifact@v7
@@ -338,6 +350,7 @@ jobs:
      name: MinGW (64 Bit)
      needs:
       - win-release-64
+     if: ${{ inputs.run_all }}
      runs-on: ${{ fromJSON(inputs.runners).windows_2022_x64 || 'windows-2022' }}
      env:
        GEN: ninja

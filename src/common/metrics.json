@@ -34,6 +34,11 @@
 			"description": "Cumulative number of rows scanned by the query",
 			"unit": "rows"
 		},
+		"total_bytes_scanned": {
+			"metric_type": "uint64",
+			"description": "Cumulative compressed size of the Parquet column chunks scanned by the query, however many bytes were read from storage to scan them. Left out if a scan of the query does not count the bytes it scans",
+			"unit": "bytes"
+		},
 		"total_intermediate_size_bytes": {
 			"metric_type": "uint64",
 			"description": "Cumulative size in bytes of all intermediate results produced by the query",
@@ -64,44 +69,52 @@
 		"total_bytes_spilled": {
 			"metric_type": "uint64",
 			"description": "Cumulative bytes written to the temporary (spill) directory",
-			"unit": "bytes"
+			"unit": "bytes",
+			"live": true
 		},
 		"total_memory_allocated": {
 			"metric_type": "uint64",
 			"description": "The total memory allocated by the buffer manager",
-			"unit": "bytes"
+			"unit": "bytes",
+			"live": true
 		}
 	},
 	"io": {
 		"total_bytes_read": {
 			"metric_type": "uint64",
 			"description": "The total amount of bytes read from storage",
-			"unit": "bytes"
+			"unit": "bytes",
+			"live": true
 		},
 		"total_read_operations": {
 			"metric_type": "uint64",
 			"description": "The total number of read operations issued to storage",
-			"unit": "operations"
+			"unit": "operations",
+			"live": true
 		},
 		"total_read_time": {
 			"metric_type": "double",
 			"description": "The total time spent reading from storage",
-			"unit": "seconds"
+			"unit": "seconds",
+			"live": true
 		},
 		"total_bytes_written": {
 			"metric_type": "uint64",
 			"description": "The total amount of bytes written to storage",
-			"unit": "bytes"
+			"unit": "bytes",
+			"live": true
 		},
 		"total_write_operations": {
 			"metric_type": "uint64",
 			"description": "The total number of write operations issued to storage",
-			"unit": "operations"
+			"unit": "operations",
+			"live": true
 		},
 		"total_write_time": {
 			"metric_type": "double",
 			"description": "The total time spent writing to storage",
-			"unit": "seconds"
+			"unit": "seconds",
+			"live": true
 		}
 	},
 	"storage": {
@@ -165,6 +178,15 @@
 			"metric_type": "uint64",
 			"description": "Intermediate size in bytes produced by the operator",
 			"unit": "bytes"
+		},
+		"bytes_scanned": {
+			"metric_type": "uint64",
+			"description": "Compressed size of the Parquet column chunks scanned by the operator",
+			"unit": "bytes"
+		},
+		"name": {
+			"metric_type": "string",
+			"description": "Name of the operator"
 		},
 		"row_groups_scanned": {
 			"metric_type": "uint64",

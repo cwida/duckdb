@@ -24,8 +24,7 @@
 # the type entry takes precedence and their value IS extracted. Keep this list
 # for syntax-only rules and temporary manual exceptions; matcher-provided rules
 # belong in matcher_rule_overrides instead.
-# Note: some entries (e.g. SingleArrowPair,
-# IntervalNumber, Program) also appear in type categories because
+# Note: some entries (e.g. IntervalNumber, Program) also appear in type categories because
 # they are manually implemented and referenced as children by auto-generated
 # rules. The excluded status only suppresses Internal auto-generation.
 #
@@ -81,6 +80,7 @@ SQLStatement:
     - DetachStatement
     - DisconnectStatement
     - DropStatement
+    - DropMemberStatement
     - ExecuteStatement
     - ExplainStatement
     - ExplainableStatements
@@ -97,8 +97,13 @@ SQLStatement:
     - PragmaFunction
     - PrepareStatement
     - ResetStatement
+    - ResetTarget
+    - ResetTimeZone
+    - ResetVariableOrSetting
     - SelectStatement
     - SetStatement
+    - SetKeywordStatement
+    - VariableAssignment
     - TransactionStatement
     - BeginTransaction
     - CommitTransaction
@@ -114,7 +119,6 @@ SQLStatement:
     - CreateExternalResourceStmt
     - RegisterExternalResourceStmt
     - DestroyExternalResourceStmt
-    - ShowExternalResourcesStmt
     - ExtensionRepositoryStatement
     - CreateExtensionRepositoryStmt
     - DropExtensionRepositoryStmt
@@ -151,6 +155,7 @@ QueryNode:
   type: "unique_ptr<QueryNode>"
   by_value: true
   rules:
+    - ShowExternalResources
     - ShowDeprecatedSelect
     - DescribeSelect
     - ShowTables
@@ -218,6 +223,9 @@ AlterInfo:
     - AlterSequenceOptions
     - RenameAlterSequenceOptions
     - SetSequenceOption
+    - DropMember
+    - DropTableFunctionMember
+    - DropFunctionMember
 
 AlterTableInfo:
   type: "unique_ptr<AlterTableInfo>"
@@ -303,9 +311,10 @@ UpdateSetInfo:
   type: "unique_ptr<UpdateSetInfo>"
   by_value: true
   rules:
+    - UpdateSetClauseList
     - UpdateSetClause
     - UpdateSetTuple
-    - UpdateSetElementList
+    - UpdateSetElement
     - UpdateMatchSetClause
     - UpdateMatchSetInfo
 
@@ -349,6 +358,7 @@ SampleOptions:
   by_value: true
   rules:
     - SampleClause
+    - SelectSampleClause
     - SampleEntry
     - SampleEntryFunction
     - SampleEntryCount
@@ -380,7 +390,6 @@ Expression:
     - ColumnDefaultExpr
     - SingleExpression
     - BaseExpression
-    - LambdaArrowExpression
     - LogicalOrExpression
     - LogicalOrExpressionTail
     - ColDefOrExpr
@@ -391,6 +400,8 @@ Expression:
     - ColDefAndExpressionTail
     - LogicalNotExpression
     - IsExpression
+    - ComparisonOperand
+    - NotComparisonOperand
     - IsTest
     - IsLiteral
     - NotNull
@@ -423,6 +434,7 @@ Expression:
     - CollateExpressionTail
     - AtTimeZoneExpression
     - AtTimeZoneExpressionTail
+    - UnaryExpression
     - PrefixExpression
     - ConstantLiteral
     - ColumnReference
@@ -451,10 +463,7 @@ Expression:
     - DotColumnOperator
     - SliceExpression
     - EndSliceBound
-    - EndSliceValue
-    - EndSliceMinus
     - StepSliceBound
-    - SingleArrowPair
     - StarExpression
     - SpecialFunctionExpression
     - CoalesceExpression
@@ -478,6 +487,8 @@ Expression:
     - ForExpression
     - CastExpression
     - CaseExpression
+    - SimpleCaseExpression
+    - SearchedCaseExpression
     - CaseElse
     - TypeLiteral
     - DefaultExpression
@@ -514,6 +525,7 @@ Expression:
     - NoneLiteral
     - NumberLiteral
     - TypeVariations
+    - NestedType
     - TimeType
     - NumericType
     - SimpleNumericType
@@ -645,6 +657,9 @@ ExpressionList:
     - IndirectionList
     - BoundedListExpression
     - SliceBound
+    - SliceUpperBound
+    - MinusStepSliceBound
+    - EndStepSliceBound
     - TargetList
     - PragmaParameters
     - ReturningClause
@@ -774,6 +789,7 @@ GenericCopyOptionList:
     - CopyOptions
     - CopyOptionList
     - SpecializedOptionList
+    - ExportOptions
     - ExplainOptionList
 
 WindowBoundaryExpressionList:
@@ -822,6 +838,8 @@ QualifiedName:
     - SchemaReservedFunctionName
     - CatalogReservedSchemaFunctionName
     - QualifiedTableFunction
+    - CatalogReservedSchemaTableFunctionName
+    - TableFunctionNameAsQualifiedName
     - UseTarget
     - UseTargetCatalogSchema
     - SchemaNameAsUseTarget
@@ -948,6 +966,7 @@ GenericCopyOption:
     - PartitionedByCopyOption
     - SpecializedOption
     - SpecializedOptionTail
+    - CopyLegacyOption
     - SingleOption
     - EncodingOption
     - ForceQuoteOption
@@ -1196,6 +1215,9 @@ Bool:
     - Materialized
     - SampleUnit
     - DropBehavior
+    - TruncateOptions
+    - TruncateAliasOptions
+    - TruncateDropBehavior
     - CascadeDropBehavior
     - RestrictDropBehavior
     - AnyOrAll
@@ -1216,7 +1238,6 @@ Bool:
     - IfNotExists
     - OrReplace
     - InstallAndLoad
-    - ShowAllModifier
     - FunctionTypeMacro
     - FunctionTypeMacroKeyword
     - FunctionTypeFunction
@@ -1254,12 +1275,16 @@ LogicalType:
   by_value: false
   rules:
     - Type
+    - ReturnsType
+    - DropSignatureType
+    - DropSignatureAnyType
 
 LogicalTypeList:
   type: "vector<LogicalType>"
   by_value: false
   rules:
     - TypeList
+    - DropFunctionSignature
 
 TransactionModifierType:
   type: "TransactionModifierType"
@@ -1643,8 +1668,12 @@ BinaryExpressionTail:
 
 overrides:
   # common.gram
-  ColIdType: "pair<Identifier, LogicalType>"
-  ColIdTypeList: "child_list_t<LogicalType>"
+  ColIdType:
+    type: "pair<Identifier, unique_ptr<ParsedExpression>>"
+    by_value: true
+  ColIdTypeList:
+    type: "vector<pair<Identifier, unique_ptr<ParsedExpression>>>"
+    by_value: true
   # create_index.gram
   RelOption:
     type: "pair<Identifier, unique_ptr<ParsedExpression>>"
@@ -1665,12 +1694,21 @@ overrides:
   # expression.gram
   NotExpression:
     type: "vector<bool>"
-    by_value: true
+    by_value: false
   IsDistinctFromTail:
     type: "IsDistinctFromTail"
     by_value: true
   ComparisonExpressionTail:
     type: "ComparisonExpressionTail"
+    by_value: true
+  SimpleCaseWhenOperand:
+    type: "ComparisonExpressionTail"
+    by_value: true
+  SimpleCaseWhenEquals:
+    type: "ComparisonExpressionTail"
+    by_value: true
+  SimpleCaseWhenThen:
+    type: "SimpleCaseCheck"
     by_value: true
   IsExpressionTail:
     type: "IsExpressionTail"
@@ -1690,6 +1728,9 @@ overrides:
   IsOtherOperatorTail:
     type: "IsExpressionTail"
     by_value: true
+  IsCastTail:
+    type: "IsExpressionTail"
+    by_value: true
   BetweenLikeOp:
     type: "BetweenInLikeOperator"
     by_value: true
@@ -1707,6 +1748,30 @@ overrides:
     by_value: true
   OtherOperatorTail:
     type: "OtherOperatorTail"
+    by_value: true
+  AnyAllSubqueryTail:
+    type: "OtherOperatorTail"
+    by_value: true
+  OtherOperatorExpressionTail:
+    type: "OtherOperatorTail"
+    by_value: true
+  SingleArrowTail:
+    type: "OtherOperatorTail"
+    by_value: true
+  ArrowChainTail:
+    type: "OtherOperatorTail"
+    by_value: true
+  DoubleArrowTail:
+    type: "OtherOperatorTail"
+    by_value: true
+  SingleArrowBody:
+    type: "ArrowBody"
+    by_value: true
+  ArrowChainBody:
+    type: "ArrowBody"
+    by_value: true
+  ArrowFullBody:
+    type: "ArrowBody"
     by_value: true
   AdditiveExpressionTail:
     type: "BinaryExpressionTail"
@@ -1742,10 +1807,6 @@ overrides:
   NullsFirstOrLast:
     type: "OrderByNullType"
     default_initializer: "ORDER_DEFAULT"
-  # update.gram
-  UpdateSetElement:
-    type: "pair<string, unique_ptr<ParsedExpression>>"
-    by_value: true
 
 # ---------------------------------------------------------------------------
 # matcher.cpp rule overrides
@@ -1758,6 +1819,7 @@ IdentifierType:
     - AnalyzeKeyword
     - ColId
     - ColIdOrString
+    - ShowExternalResourcesType
     - UsingColumnName
     - ColLabelOrString
     - ColLabelIdentifier
@@ -1798,6 +1860,9 @@ matcher_rule_overrides:
   ReservedIdentifier:
     matcher: reserved_identifier
     suggestion: SUGGEST_VARIABLE
+  BareColLabel:
+    matcher: identifier
+    suggestion: SUGGEST_BARE_LABEL
   CatalogName:
     matcher: identifier
     suggestion: SUGGEST_CATALOG_NAME
@@ -1842,6 +1907,9 @@ matcher_rule_overrides:
   TableFunctionName:
     matcher: identifier
     suggestion: SUGGEST_TABLE_FUNCTION_NAME
+  ReservedTableFunctionName:
+    matcher: reserved_identifier
+    suggestion: SUGGEST_TABLE_FUNCTION_NAME
   TypeName:
     matcher: identifier
     suggestion: SUGGEST_TYPE_NAME
@@ -1877,17 +1945,18 @@ matcher_rule_overrides:
 expression_depth_nesting_rules:
   - SingleExpression
   - Type
+  - NestedType
+  - SubqueryReference
+  - CustomPrefixExpression
 
 expression_depth_chain_rules:
-  - LambdaArrowExpression
-  - LogicalOrExpression
-  - LogicalAndExpression
   - NotExpression
   - IsExpressionContinuation
   - IsDistinctFromExpression
   - ComparisonExpression
   - BetweenInLikeExpression
   - InfixOtherOperatorExpression
+  - ArrowChainBody
   - BitwiseExpression
   - TildeExpression
   - AdditiveExpression
@@ -1905,7 +1974,6 @@ expression_depth_chain_rules:
 collapsible_rules:
   - Expression
   - ColumnDefaultExpr
-  - LambdaArrowExpression
   - LogicalOrExpression
   - ColDefOrExpr
   - LogicalAndExpression
@@ -1918,6 +1986,7 @@ collapsible_rules:
   - OtherOperatorExpression
   - InfixOtherOperatorExpression
   - BitwiseExpression
+  - TildeExpression
   - AdditiveExpression
   - MultiplicativeExpression
   - ExponentiationExpression
@@ -1931,11 +2000,39 @@ collapsible_rules:
 
 packrat_memoized_rules:
   - Expression
+  - TableRef
   - Identifier
   - ColId
   - CatalogQualification
   - SchemaQualification
   - ReservedSchemaQualification
+
+# rule_labels: see Matcher::SetLabel. When a syntax error lists what the parser expected at the failure point,
+# every alternative inside a labelled rule is summarised by the label instead of being spelled out. Only label
+# rules that cannot match empty input and that accept a plain identifier somewhere.
+rule_labels:
+  an expression:
+    - Expression
+    - LogicalOrExpression
+    - LogicalAndExpression
+    - LogicalNotExpression
+    - IsExpression
+    - IsDistinctFromExpression
+    - ComparisonExpression
+    - BetweenInLikeExpression
+    - OtherOperatorExpression
+    - InContainsExpression
+    - BitwiseExpression
+    - AdditiveExpression
+    - MultiplicativeExpression
+    - ExponentiationExpression
+    - CollateExpression
+    - AtTimeZoneExpression
+    - PrefixExpression
+    - BaseExpression
+    - SingleExpression
+  a type:
+    - Type
 
 # ---------------------------------------------------------------------------
 # excluded_rules: no transformer stub generated, no semantic value extracted
@@ -1945,6 +2042,10 @@ packrat_memoized_rules:
 excluded_rules:
   # Syntax only: the 'EXTERNAL' 'RESOURCE' keyword pair, shared by every singular form.
   - ExternalResourceKeyword
+  # Syntax only: OVERRIDING {USER|SYSTEM} VALUE is accepted and ignored.
+  - OverridingClause
+  # Syntax only: CREATE INDEX CONCURRENTLY is accepted and ignored.
+  - IndexConcurrently
   # Suggestion-only: exists so autocomplete offers the special SHOW forms as keywords; parsing of e.g.
   # "SHOW databases" resolves through ShowSettingName (the identifier), which the transformer special-cases.
   - ShowSpecialForm

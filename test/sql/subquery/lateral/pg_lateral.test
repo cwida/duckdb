@@ -273,9 +273,7 @@ where t1.f1 = ss.f1;
 ----
 doh!	4567890123456789	123	4567890123456789	doh!
 
-# FIXME: lateral chain with star
-mode skip instable
-
+# A star can expand an enclosing lateral alias.
 query IIIIIII
 select * from
   text_tbl t1
@@ -297,7 +295,7 @@ select 1 from
 where tt1.f1 = ss1.c0;
 ----
 
-query I
+query IIIIII
 select ss2.* from
   int4_tbl i41
   left join int8_tbl i8
@@ -309,8 +307,6 @@ select ss2.* from
 where ss1.c2 = 0;
 ----
 
-
-mode unskip
 
 query IIII
 select i8.*, ss.v, t.unique2

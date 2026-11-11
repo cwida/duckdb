@@ -1,0 +1,47 @@
+# name: test/sql/copy/parquet/parquet_metadata_prepared.test
+# description: Prepared statements over the Parquet metadata functions can be executed repeatedly
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 1 i) TO '{TEST_DIR}/prepared_metadata.parquet'
+
+statement ok
+PREPARE p AS SELECT row_group_id, row_group_num_rows FROM parquet_metadata('{TEST_DIR}/prepared_metadata.parquet')
+
+query II
+EXECUTE p
+----
+0	1
+
+query II
+EXECUTE p
+----
+0	1
+
+statement ok
+PREPARE s AS SELECT name FROM parquet_schema('{TEST_DIR}/prepared_metadata.parquet') WHERE name = 'i'
+
+query I
+EXECUTE s
+----
+i
+
+query I
+EXECUTE s
+----
+i
+
+statement ok
+PREPARE f AS SELECT num_rows FROM parquet_file_metadata('{TEST_DIR}/prepared_metadata.parquet')
+
+query I
+EXECUTE f
+----
+1
+
+query I
+EXECUTE f
+----
+1

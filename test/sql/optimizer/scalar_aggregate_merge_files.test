@@ -1,0 +1,159 @@
+# name: test/sql/optimizer/scalar_aggregate_merge_files.test
+# description: Sibling scalar aggregates over the same Parquet or CSV scan keep their answers when they are computed in one pass
+# group: [optimizer]
+
+require parquet
+
+require json
+
+# sam_a: the sales table of scalar_aggregate_merge.test; sam_b holds 3000 more rows; sam_sales.csv is sam_a as CSV
+statement ok
+COPY (SELECT
+    (i % 100 + 1)::INTEGER AS q,
+    CASE WHEN i % 17 = 0 THEN NULL ELSE ((i % 1000) / 10)::DECIMAL(7,2) END AS disc,
+    (((i * 7) % 5000) / 100)::DECIMAL(7,2) AS paid,
+    (i % 50)::INTEGER AS k,
+    i AS v,
+    'n' || (i % 7) AS name
+FROM range(5000) r(i)) TO '{TEST_DIR}/sam_a.parquet' (FORMAT parquet);
+
+statement ok
+COPY (SELECT
+    (i % 100 + 1)::INTEGER AS q,
+    CASE WHEN i % 17 = 0 THEN NULL ELSE ((i % 1000) / 10)::DECIMAL(7,2) END AS disc,
+    (((i * 7) % 5000) / 100)::DECIMAL(7,2) AS paid,
+    (i % 50)::INTEGER AS k,
+    i AS v,
+    'n' || (i % 7) AS name
+FROM range(5000, 8000) r(i)) TO '{TEST_DIR}/sam_b.parquet' (FORMAT parquet);
+
+statement ok
+COPY (FROM read_parquet('{TEST_DIR}/sam_a.parquet')) TO '{TEST_DIR}/sam_sales.csv' (FORMAT csv, HEADER);
+
+statement ok
+COPY (FROM read_parquet('{TEST_DIR}/sam_a.parquet')) TO '{TEST_DIR}/sam_sales.json' (FORMAT json);
+
+# sam_bad.csv: x and y count 1 to 30, except that y is not a number where x is a multiple of 7
+statement ok
+COPY (SELECT i AS x, CASE WHEN i % 7 = 0 THEN 'oops' ELSE i::VARCHAR END AS y FROM range(1, 31) r(i)) TO '{TEST_DIR}/sam_bad.csv' (FORMAT csv, HEADER);
+
+statement ok
+CREATE TABLE dim1 AS SELECT i::INTEGER AS dk, CASE WHEN i % 3 = 0 THEN 'a' WHEN i % 3 = 1 THEN 'b' ELSE 'c' END AS dname FROM range(50) r(i);
+
+# one file, each aggregate under its own condition
+query III
+SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_a.parquet') WHERE q < 10) AS a,
+       (SELECT sum(paid) FROM read_parquet('{TEST_DIR}/sam_a.parquet') WHERE q > 90) AS b,
+       (SELECT avg(disc) FROM read_parquet('{TEST_DIR}/sam_a.parquet') WHERE q BETWEEN 30 AND 40) AS c
+----
+450	12557.50	48.36100386100386
+
+# the file named directly
+query III
+SELECT (SELECT count(*) FROM '{TEST_DIR}/sam_a.parquet' WHERE q < 10) AS a,
+       (SELECT sum(paid) FROM '{TEST_DIR}/sam_a.parquet' WHERE q > 90) AS b,
+       (SELECT avg(disc) FROM '{TEST_DIR}/sam_a.parquet' WHERE q BETWEEN 30 AND 40) AS c
+----
+450	12557.50	48.36100386100386
+
+# a glob, and a list of files
+query III
+SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_*.parquet') WHERE q < 10) AS a,
+       (SELECT sum(paid) FROM read_parquet('{TEST_DIR}/sam_*.parquet') WHERE q > 90) AS b,
+       (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_*.parquet')) AS c
+----
+720	19992.00	8000
+
+# the branch without a condition first: its scan reads no column of its own and gains the others' columns
+query III
+SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_*.parquet')) AS c,
+       (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_*.parquet') WHERE q < 10) AS a,
+       (SELECT sum(paid) FROM read_parquet('{TEST_DIR}/sam_*.parquet') WHERE q > 90) AS b
+----
+8000	720	19992.00
+
+query III
+SELECT (SELECT count(*) FROM read_parquet(['{TEST_DIR}/sam_a.parquet', '{TEST_DIR}/sam_b.parquet']) WHERE q < 10) AS a,
+       (SELECT sum(paid) FROM read_parquet(['{TEST_DIR}/sam_a.parquet', '{TEST_DIR}/sam_b.parquet']) WHERE q > 90) AS b,
+       (SELECT count(*) FROM read_parquet(['{TEST_DIR}/sam_a.parquet', '{TEST_DIR}/sam_b.parquet'])) AS c
+----
+720	19992.00	8000
+
+# a CSV file, and a JSON file
+query III
+SELECT (SELECT count(*) FROM read_csv('{TEST_DIR}/sam_sales.csv') WHERE q < 10) AS a,
+       (SELECT max(v) FROM read_csv('{TEST_DIR}/sam_sales.csv') WHERE q > 90) AS b,
+       (SELECT min(k) FROM read_csv('{TEST_DIR}/sam_sales.csv') WHERE q = 7) AS c
+----
+450	4999	6
+
+query III
+SELECT (SELECT count(*) FROM read_json('{TEST_DIR}/sam_sales.json') WHERE q < 10) AS a,
+       (SELECT max(v) FROM read_json('{TEST_DIR}/sam_sales.json') WHERE q > 90) AS b,
+       (SELECT min(k) FROM read_json('{TEST_DIR}/sam_sales.json') WHERE q = 7) AS c
+----
+450	4999	6
+
+# a CSV scan that drops the rows it fails to parse returns a row when every column it reads parses: the count over x
+# alone sees every row, the sum over y only the rows whose y is a number
+query II
+SELECT (SELECT count(*) FROM read_csv('{TEST_DIR}/sam_bad.csv', ignore_errors = true, columns = {'x': 'INTEGER', 'y': 'INTEGER'}) WHERE x > 0) AS a,
+       (SELECT sum(y) FROM read_csv('{TEST_DIR}/sam_bad.csv', ignore_errors = true, columns = {'x': 'INTEGER', 'y': 'INTEGER'}) WHERE x > 10) AS b
+----
+30	347
+
+# the same columns read by both branches: one scan returns the same rows to both
+query II
+SELECT (SELECT count(*) FROM read_csv('{TEST_DIR}/sam_bad.csv', ignore_errors = true, columns = {'x': 'INTEGER', 'y': 'INTEGER'}) WHERE y > 0) AS a,
+       (SELECT sum(y) FROM read_csv('{TEST_DIR}/sam_bad.csv', ignore_errors = true, columns = {'x': 'INTEGER', 'y': 'INTEGER'}) WHERE y > 10) AS b
+----
+26	347
+
+# without ignore_errors a value that fails to parse is an error, whichever branch reads it
+statement error
+SELECT (SELECT count(*) FROM read_csv('{TEST_DIR}/sam_bad.csv', columns = {'x': 'INTEGER', 'y': 'INTEGER'}) WHERE x > 0) AS a,
+       (SELECT sum(y) FROM read_csv('{TEST_DIR}/sam_bad.csv', columns = {'x': 'INTEGER', 'y': 'INTEGER'}) WHERE x > 10) AS b
+----
+<REGEX>:.*Conversion Error.*oops.*
+
+query I
+SELECT (SELECT count(*) FROM read_csv('{TEST_DIR}/sam_bad.csv', columns = {'x': 'INTEGER', 'y': 'INTEGER'}) WHERE x > 0) AS a
+----
+30
+
+# derived tables with DISTINCT aggregates (TPC-DS q28)
+query IIIIII
+SELECT * FROM
+    (SELECT avg(paid) AS a1, count(paid) AS c1, count(DISTINCT paid) AS d1 FROM read_parquet('{TEST_DIR}/sam_a.parquet') WHERE q BETWEEN 1 AND 5) b1,
+    (SELECT avg(paid) AS a2, count(paid) AS c2, count(DISTINCT k) AS d2 FROM read_parquet('{TEST_DIR}/sam_a.parquet') WHERE q BETWEEN 6 AND 10) b2
+----
+24.64	250	250	24.99	250	5
+
+# a file joined with a catalog table, the branches' own predicates on the table (TPC-DS q88)
+query III
+SELECT (SELECT sum(paid) FROM read_parquet('{TEST_DIR}/sam_a.parquet') s, dim1 WHERE s.k = dim1.dk AND dim1.dname = 'a') AS a,
+       (SELECT avg(disc) FROM read_parquet('{TEST_DIR}/sam_a.parquet') s, dim1 WHERE s.k = dim1.dk AND dim1.dname = 'b') AS b,
+       (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_a.parquet') s, dim1 WHERE dim1.dk = s.k AND dim1.dname = 'c') AS c
+----
+42481.00	50.0009375	1600
+
+# different files are different relations
+query II
+SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_a.parquet') WHERE q < 10) AS a,
+       (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_b.parquet') WHERE q < 10) AS b
+----
+450	270
+
+# the file named directly binds parquet_scan, a function of its own next to read_parquet
+query II
+SELECT (SELECT count(*) FROM '{TEST_DIR}/sam_a.parquet' WHERE q < 10) AS a,
+       (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_a.parquet') WHERE q > 90) AS b
+----
+450	500
+
+# the same file read with different options
+query II
+SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_a.parquet') WHERE q < 10) AS a,
+       (SELECT max(file_row_number) FROM read_parquet('{TEST_DIR}/sam_a.parquet', file_row_number := true) WHERE q > 90) AS b
+----
+450	4999

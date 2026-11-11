@@ -9,12 +9,20 @@
 #pragma once
 
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/vector.hpp"
 
 namespace duckdb {
 class DatabaseInstance;
 class ClientContext;
+class Connection;
+
+//! Creates the internal connection that external resource callbacks run on (the caller's context lock is held),
+//! one callback level deeper than the caller - throws when the callbacks are nested too deeply
+DUCKDB_API unique_ptr<Connection> CreateExternalResourceCallbackConnection(DatabaseInstance &db,
+                                                                           optional_ptr<ClientContext> caller);
 
 //! An external resource this instance tracks, registered under a local name (from CREATE/REGISTER EXTERNAL
 //! RESOURCE). `name` is the local alias and the only key enforced here: `(type, handle)` identifies the

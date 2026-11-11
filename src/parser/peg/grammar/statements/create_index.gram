@@ -1,4 +1,4 @@
-CreateIndexStmt <- UniqueIndex? 'INDEX' IfNotExists? IndexName? 'ON' BaseTableName IndexType? Parens(List(IndexElement)) WithList? WhereClause?
+CreateIndexStmt <- UniqueIndex? 'INDEX' IndexConcurrently? IfNotExists? IndexName? 'ON' BaseTableName IndexType? Parens(List(IndexElement)) WithList? WhereClause?
 
 WithList <- 'WITH' RelOptionOrOids
 RelOptionOrOids <- RelOptionList / Oids
@@ -9,6 +9,7 @@ WithOids <- 'WITH'
 WithoutOids <- 'WITHOUT'
 IndexElement <- Expression DescOrAsc? NullsFirstOrLast?
 UniqueIndex <- 'UNIQUE'
+IndexConcurrently <- 'CONCURRENTLY'
 IndexType <- 'USING' Identifier
 RelOption <- RelOptionName RelOptionArgumentOpt?
 RelOptionName <- DottedColLabel / StringLiteral

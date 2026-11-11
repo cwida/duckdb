@@ -87,7 +87,7 @@ public:
 	               unique_ptr<BoundCreateTableInfo> info, idx_t estimated_cardinality, bool parallel);
 
 	//! The table to insert into
-	optional_ptr<DuckTableEntry> insert_table;
+	mutable optional_ptr<DuckTableEntry> insert_table;
 	//! The insert types
 	vector<LogicalType> insert_types;
 	//! The bound constraints for the table
@@ -95,7 +95,7 @@ public:
 	//! If the returning statement is present, return the whole chunk
 	bool return_chunk;
 	//! Table schema, in case of CREATE TABLE AS
-	optional_ptr<SchemaCatalogEntry> schema;
+	mutable optional_ptr<SchemaCatalogEntry> schema;
 	//! Create table info, in case of CREATE TABLE AS
 	unique_ptr<BoundCreateTableInfo> info;
 	//! Whether or not the INSERT can be executed in parallel

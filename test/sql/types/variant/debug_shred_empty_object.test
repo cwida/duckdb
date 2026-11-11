@@ -3,7 +3,7 @@
 # group: [variant]
 
 statement ok
-PRAGMA debug_verify_vector = 'shredded_vector';
+SET debug_verify_vector = 'shredded_vector';
 
 statement ok
 CREATE TABLE variants AS SELECT empty_struct::VARIANT v FROM test_all_types();

@@ -1,0 +1,62 @@
+# name: test/sql/function/list/list_contains_variant.test
+# description: list_contains and list_position find the values that compare equal to the needle
+# group: [list]
+
+query IIIII
+SELECT 1::TINYINT::VARIANT = 1::BIGINT::VARIANT,
+       list_contains([1::TINYINT::VARIANT], 1::BIGINT::VARIANT),
+       list_position([1::TINYINT::VARIANT], 1::BIGINT::VARIANT),
+       list_contains([[1::TINYINT::VARIANT]], [1::BIGINT::VARIANT]),
+       list_contains([{'a': 1::TINYINT::VARIANT}], {'a': 1::BIGINT::VARIANT})
+----
+true	true	1	true	true
+
+query IIIII
+SELECT list_contains([1.00::DECIMAL(5,2)::VARIANT], 1::INTEGER::VARIANT),
+       list_contains([1.5::FLOAT::VARIANT], 1.5::DOUBLE::VARIANT),
+       list_contains([1::UBIGINT::VARIANT], 1::BIGINT::VARIANT),
+       list_contains([1::TINYINT::VARIANT]::VARIANT[1], 1::BIGINT::VARIANT),
+       list_position([2::INTEGER::VARIANT, 'x'::VARIANT, 1::TINYINT::VARIANT], 1::HUGEINT::VARIANT)
+----
+true	true	true	true	3
+
+# values that do not compare equal are not found
+query III
+SELECT list_contains([1::TINYINT::VARIANT], 2::BIGINT::VARIANT), list_contains([1::TINYINT::VARIANT], '1'::VARIANT),
+       list_position([1::TINYINT::VARIANT, NULL], NULL::VARIANT)
+----
+false	false	2
+
+# the aliases
+query IIII
+SELECT array_contains([1::TINYINT::VARIANT], 1::BIGINT::VARIANT), list_has([1::TINYINT::VARIANT], 1::BIGINT::VARIANT),
+       contains([1::TINYINT::VARIANT], 1::BIGINT::VARIANT), array_position([1::TINYINT::VARIANT], 1::BIGINT::VARIANT)
+----
+true	true	true	1
+
+# a filter over more than one vector keeps the rows whose list holds an equal value
+statement ok
+CREATE TABLE t AS SELECT i AS id, [(i % 7)::TINYINT::VARIANT, 'a'::VARIANT] AS tags, (i % 3)::BIGINT::VARIANT AS needle
+FROM range(5000) r(i);
+
+query II
+SELECT count(*) FILTER (WHERE list_contains(tags, needle)), count(*) FILTER (WHERE list_contains(tags, 1::DECIMAL(4,1)::VARIANT))
+FROM t
+----
+716	715
+
+query I
+SELECT count(*) FROM t WHERE list_contains(tags, needle) = (needle IN (SELECT unnest(tags)))
+----
+5000
+
+# intervals at their field limits are found when they compare equal
+query I
+SELECT count(*) FROM (VALUES
+	(INTERVAL '-2147483648 months -2147483648 days -9223372036854775807 microseconds', INTERVAL '-2147483648 months -2147483648 days -9223372036854775806 microseconds'),
+	(INTERVAL '2147483647 months 2147483647 days 9223372036854775806 microseconds', INTERVAL '2147483647 months 2147483647 days 9223372036854775807 microseconds'),
+	(INTERVAL '1 month', INTERVAL '30 days'),
+	(INTERVAL '1 month', INTERVAL '31 days')
+) t(a, b) WHERE list_contains([a], b) IS DISTINCT FROM (a = b)
+----
+0

@@ -1,0 +1,108 @@
+# name: test/parquet/parquet_schema_renamed_struct_filter.test
+# description: Filters on a STRUCT whose fields the schema parameter renames or reorders
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT {'x': 5, 'y': 6}::STRUCT(x INTEGER, y INTEGER) AS c, 1 AS k) TO '{TEMP_DIR}/renamed_struct.parquet'
+
+# x is read as w
+statement ok
+CREATE VIEW renamed AS FROM read_parquet('{TEMP_DIR}/renamed_struct.parquet', schema = map {
+	'c': {name: 'c', type: 'STRUCT(w INTEGER, y INTEGER)', default_value: NULL, children: map {
+		'x': {name: 'w', type: 'INTEGER', default_value: NULL},
+		'y': {name: 'y', type: 'INTEGER', default_value: NULL}}},
+	'k': {name: 'k', type: 'INTEGER', default_value: NULL}})
+
+query I
+SELECT k FROM renamed WHERE c = {'w': 5, 'y': 6}
+----
+1
+
+query I
+SELECT k FROM renamed WHERE c > {'w': 1, 'y': 1}
+----
+1
+
+query I
+SELECT k FROM renamed WHERE c IN ({'w': 5, 'y': 6}, {'w': 7, 'y': 8})
+----
+1
+
+# every field is renamed
+statement ok
+CREATE VIEW all_renamed AS FROM read_parquet('{TEMP_DIR}/renamed_struct.parquet', schema = map {
+	'c': {name: 'c', type: 'STRUCT(w INTEGER, v INTEGER)', default_value: NULL, children: map {
+		'x': {name: 'w', type: 'INTEGER', default_value: NULL},
+		'y': {name: 'v', type: 'INTEGER', default_value: NULL}}},
+	'k': {name: 'k', type: 'INTEGER', default_value: NULL}})
+
+query I
+SELECT k FROM all_renamed WHERE c = {'w': 5, 'v': 6}
+----
+1
+
+# the fields keep their names but change places, which changes the order of a comparison
+statement ok
+CREATE VIEW reordered AS FROM read_parquet('{TEMP_DIR}/renamed_struct.parquet', schema = map {
+	'c': {name: 'c', type: 'STRUCT(y INTEGER, x INTEGER)', default_value: NULL, children: map {
+		'y': {name: 'y', type: 'INTEGER', default_value: NULL},
+		'x': {name: 'x', type: 'INTEGER', default_value: NULL}}},
+	'k': {name: 'k', type: 'INTEGER', default_value: NULL}})
+
+query I
+SELECT k FROM reordered WHERE c = {'y': 6, 'x': 5}
+----
+1
+
+query I
+SELECT k FROM reordered WHERE c > {'y': 5, 'x': 9}
+----
+1
+
+# a renamed field inside a list
+statement ok
+COPY (SELECT [{'x': 5}]::STRUCT(x INTEGER)[] AS l, 1 AS k) TO '{TEMP_DIR}/renamed_list_struct.parquet'
+
+query I
+SELECT k FROM read_parquet('{TEMP_DIR}/renamed_list_struct.parquet', schema = map {
+	'l': {name: 'l', type: 'STRUCT(w INTEGER)[]', default_value: NULL, children: map {
+		'list': {name: 'element', type: 'STRUCT(w INTEGER)', default_value: NULL, children: map {
+			'x': {name: 'w', type: 'INTEGER', default_value: NULL}}}}},
+	'k': {name: 'k', type: 'INTEGER', default_value: NULL}}) WHERE l = [{'w': 5}]
+----
+1
+
+# fields that only change their type
+query I
+SELECT k FROM read_parquet('{TEMP_DIR}/renamed_struct.parquet', schema = map {
+	'c': {name: 'c', type: 'STRUCT(x BIGINT, y BIGINT)', default_value: NULL, children: map {
+		'x': {name: 'x', type: 'BIGINT', default_value: NULL},
+		'y': {name: 'y', type: 'BIGINT', default_value: NULL}}},
+	'k': {name: 'k', type: 'INTEGER', default_value: NULL}}) WHERE c = {'x': 5, 'y': 6}
+----
+1
+
+# a file column that is not a STRUCT
+statement ok
+COPY (SELECT NULL::INTEGER AS c, 1 AS k) TO '{TEMP_DIR}/integer_as_struct.parquet'
+
+query I
+SELECT count(*) FROM read_parquet('{TEMP_DIR}/integer_as_struct.parquet', schema = map {
+	'c': {name: 'c', type: 'STRUCT(x INTEGER)', default_value: NULL},
+	'k': {name: 'k', type: 'INTEGER', default_value: NULL}}) WHERE c = {'x': 5}
+----
+0
+
+# a field read with a lossy cast
+statement ok
+COPY (SELECT {'x': 1.4}::STRUCT(x DOUBLE) AS c, 1 AS k) TO '{TEMP_DIR}/double_field.parquet'
+
+query I
+SELECT k FROM read_parquet('{TEMP_DIR}/double_field.parquet', schema = map {
+	'c': {name: 'c', type: 'STRUCT(x INTEGER)', default_value: NULL, children: map {
+		'x': {name: 'x', type: 'INTEGER', default_value: NULL}}},
+	'k': {name: 'k', type: 'INTEGER', default_value: NULL}}) WHERE c = {'x': 1}
+----
+1

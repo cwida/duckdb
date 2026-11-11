@@ -1,0 +1,160 @@
+{
+  "description": "Run with DuckDB warnings escalated to errors, so tests cannot rely on deprecated behavior (e.g. PRAGMA enable_verification).",
+  "warnings_as_errors": "true",
+  "skip_compiled": "true",
+  "skip_tests": [
+    {
+      "reason": "Tests a warning on purpose, or the behavior with warnings_as_errors disabled",
+      "paths": [
+        "test/logging/warnings_as_errors.test",
+        "test/sql/attach/attach_ducklake_metadata_warning.test",
+        "test/sql/attach/external_resource_show_subquery.test",
+        "test/sql/pragma/test_show_tables.test",
+        "test/sql/settings/pragma_assignment_deprecated.test",
+        "test/sql/settings/setting_null_order.test",
+        "test/sql/settings/setting_order.test",
+        "test/sql/show_select/show_settings.test",
+        "test/sql/show_select/test_show_select.test",
+        "test/sql/storage/storage_option_coverage.test",
+        "test/sql/storage/wal/wal_replay_unbound_index_bind_failure_retryable.test",
+        "test/sql/table_function/warn_deprecated_identifier_conversion.test"
+      ]
+    },
+    {
+      "reason": "Relies on the default logging configuration, which this config changes (logging enabled at WARNING level)",
+      "paths": [
+        "test/sql/logging/logging.test",
+        "test/sql/logging/logging_config_separate_databases.test"
+      ]
+    },
+    {
+      "reason": "Tests the behavior of a deprecated setting",
+      "paths": [
+        "test/issues/general/test_23860.test",
+        "test/issues/general/test_27102.test",
+        "test/issues/rigger/complex_division.test",
+        "test/issues/rigger/division_by_zero_null.test",
+        "test/optimizer/aggregate_reuse.test",
+        "test/optimizer/arithmetic_simplification.test",
+        "test/optimizer/deliminator.test",
+        "test/optimizer/deliminator_nullability.test",
+        "test/optimizer/partial_aggregate_pushdown_throwing_argument.test",
+        "test/sql/aggregate/aggregates/test_arg_min_max.test",
+        "test/sql/binder/legacy_null_type.test",
+        "test/sql/binder/old_implicit_cast.test",
+        "test/sql/binder/old_implicit_cast_template.test",
+        "test/sql/copy/copy_column_identifier_conversion.test",
+        "test/sql/function/numeric/test_fdiv_fmod.test",
+        "test/sql/function/numeric/test_mod.test",
+        "test/sql/function/operator/test_division_by_zero.test",
+        "test/sql/function/string/regex_operators.test",
+        "test/sql/function/string/regex_operators_v1_5_view.test",
+        "test/sql/join/delim_join_reuse.test",
+        "test/sql/join/non_inner_decorrelation_regressions.test",
+        "test/sql/optimizer/divide_zonemap_pruning.test",
+        "test/sql/optimizer/expression/test_nop_arithmetic.test",
+        "test/sql/optimizer/modulo_zonemap_pruning.test",
+        "test/sql/pragma/profiling/test_legacy_metrics_format.test",
+        "test/sql/pragma/profiling/test_profiling_operator_name.test",
+        "test/sql/settings/setting_profiling_mode.test",
+        "test/sql/sql_export/null_safe_mark_roundtrip.test",
+        "test/sql/storage/bc/test_null_stats_v1_5.test",
+        "test/sql/storage/list_length_stats_checkpoint.test",
+        "test/sql/storage/metadata/full_table_metadata_reuse_v7.test",
+        "test/sql/storage/metadata/multi_table_metadata_reuse.test",
+        "test/sql/storage/metadata/partial_column_metadata_reuse_drop_column.test",
+        "test/sql/storage/metadata/partial_column_metadata_reuse_small_block.test",
+        "test/sql/storage/metadata/partial_column_metadata_reuse_v7.test",
+        "test/sql/storage/metadata/unchanged_table_statistics.test",
+        "test/sql/subquery/any_all/test_correlated_cte_in.test",
+        "test/sql/subquery/exists/test_correlated_exists.test",
+        "test/sql/subquery/exists/test_issue_23979.test",
+        "test/sql/subquery/lateral/lateral_empty_grouping_sets.test",
+        "test/sql/subquery/lateral/lateral_left_join.test",
+        "test/sql/types/bignum/test_bignum_divide.test",
+        "test/sql/types/bignum/test_bignum_modulo.test",
+        "test/sql/types/float/ieee_floating_points.test",
+        "test/sql/types/interval/test_interval.test",
+        "test/sql/types/null/test_null.test"
+      ]
+    },
+    {
+      "reason": "Uses the deprecated extension_directory setting",
+      "paths": [
+        "test/extension/install_extension.test",
+        "test/extension/install_extension.test_slow",
+        "test/extension/install_extension_httpfs.test",
+        "test/extension/install_httpfs_https_repository.test",
+        "test/extension/local_extension_coverage.test",
+        "test/sql/attach/external_resource_type_autoload.test",
+        "test/sql/extensions/allowed_directories_install.test",
+        "test/sql/extensions/extension_repository_not_autoloaded.test",
+        "test/sql/logging/http_response_log_redaction.test",
+        "test/sql/logging/http_url_log_redaction.test",
+        "test/sql/peg_parser/transformer/load_statement.test"
+      ]
+    },
+    {
+      "reason": "Reads views stored by an older version with the deprecated lambda arrow syntax",
+      "paths": [
+        "test/sql/attach/attach_lambda_view.test",
+        "test/sql/function/list/lambdas/test_lambda_storage.test",
+        "test/sql/storage/bc/test_slice_bounds_v1_5.test"
+      ]
+    },
+    {
+      "reason": "Expects the error that follows a deprecated identifier conversion",
+      "paths": [
+        "test/sql/copy/csv/read_csv_subquery.test",
+        "test/sql/error/error_position.test",
+        "test/sql/subquery/scalar/correlated_scope_resolution.test"
+      ]
+    },
+    {
+      "reason": "Sets the deprecated lambda_syntax setting",
+      "paths": [
+        "test/sql/function/list/lambdas/arrow/arrow_storage_before_v2.test",
+        "test/sql/function/list/lambdas/arrow/expression_iterator_cases_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/filter_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/lambda_scope_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/lambdas_and_functions_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/lambdas_and_group_by_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/lambdas_and_macros_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/list_comprehension_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/reduce_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/reduce_initial_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/rhs_parameters_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/storage_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/table_functions_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/test_deprecated_lambda.test",
+        "test/sql/function/list/lambdas/arrow/test_lambda_arrow_storage_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/transform_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/transform_with_index_deprecated.test",
+        "test/sql/function/list/lambdas/arrow/warn_deprecated_arrow.test",
+        "test/sql/function/list/lambdas/lambda_dot_calls.test",
+        "test/sql/function/list/lambdas/lambda_dot_calls_json.test",
+        "test/sql/function/list/lambdas/lambda_dot_calls_nested_schema.test",
+        "test/sql/function/list/lambdas/reduce_initial.test_slow",
+        "test/sql/function/list/lambdas/reduce_on_larger_data.test_slow",
+        "test/sql/json/scalar/test_json_arrow_chain_precedence.test"
+      ]
+    },
+    {
+      "reason": "Uses the deprecated profiling_mode setting",
+      "paths": [
+        "test/sql/copy/csv/parallel/csv_parallel_null_option.test",
+        "test/sql/detailed_profiler/test_detailed_profiler.test",
+        "test/sql/parallelism/intraquery/parallel_sample.test",
+        "test/sql/parallelism/intraquery/test_parallel_nested_aggregates.test",
+        "test/sql/parallelism/intraquery/test_persistent_parallelism.test",
+        "test/sql/parallelism/intraquery/test_simple_parallelism.test",
+        "test/sql/parallelism/intraquery/test_verify_parallelism.test",
+        "test/sql/pragma/profiling/call_enable_profiling_function.test",
+        "test/sql/pragma/profiling/test_all_profiling_settings.test",
+        "test/sql/pragma/profiling/test_custom_profiling_optimizer_settings.test",
+        "test/sql/pragma/profiling/test_default_profiling_settings.test",
+        "test/sql/pragma/profiling/test_duckdb_profiling_settings_function.test"
+      ]
+    }
+  ]
+}

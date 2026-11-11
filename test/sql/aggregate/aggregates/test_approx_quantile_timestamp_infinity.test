@@ -1,0 +1,45 @@
+# name: test/sql/aggregate/aggregates/test_approx_quantile_timestamp_infinity.test
+# description: approx_quantile over timestamps returns the infinities instead of values beyond them
+# group: [aggregates]
+
+query II
+SELECT approx_quantile('-infinity'::TIMESTAMP, 0.25), approx_quantile('infinity'::TIMESTAMP, 0.25)
+----
+-infinity	infinity
+
+query I
+SELECT approx_quantile('-infinity'::TIMESTAMP, 0.25)::VARCHAR
+----
+-infinity
+
+query I
+SELECT approx_quantile(t, [0.1, 0.9]) FROM (VALUES ('-infinity'::TIMESTAMP), ('infinity'::TIMESTAMP)) v(t)
+----
+[-infinity, infinity]
+
+query I
+SELECT approx_quantile('-infinity'::TIMESTAMPTZ, 0.5) = '-infinity'::TIMESTAMPTZ
+----
+true
+
+statement ok
+CREATE TABLE t AS SELECT approx_quantile('-infinity'::TIMESTAMP, 0.5) q
+
+query II
+SELECT q, q = '-infinity'::TIMESTAMP FROM t
+----
+-infinity	true
+
+statement ok
+SUMMARIZE (SELECT '-infinity'::TIMESTAMP ti)
+
+# finite timestamps are unchanged
+query I
+SELECT approx_quantile(t, 0.5) FROM (VALUES (TIMESTAMP '2020-01-01'), (TIMESTAMP '2020-01-02'), (TIMESTAMP '2020-01-03')) v(t)
+----
+2020-01-02 00:00:00
+
+query I
+SELECT approx_quantile(t, [0.0, 1.0]) FROM (VALUES (TIMESTAMP '2020-01-01'), (TIMESTAMP '2020-01-03')) v(t)
+----
+['2020-01-01 00:00:00', '2020-01-03 00:00:00']

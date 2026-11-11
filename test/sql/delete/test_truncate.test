@@ -49,3 +49,77 @@ query I
 SELECT COUNT(*) FROM a;
 ----
 1
+
+statement ok
+INSERT INTO a VALUES (42);
+
+# the alias is accepted and ignored
+statement ok
+TRUNCATE a AS ignored_alias
+
+query I
+SELECT COUNT(*) FROM a;
+----
+0
+
+statement ok
+INSERT INTO a VALUES (42);
+
+# RESTRICT is the default behavior
+statement ok
+TRUNCATE TABLE a RESTRICT
+
+query I
+SELECT COUNT(*) FROM a;
+----
+0
+
+statement ok
+INSERT INTO a VALUES (42);
+
+statement ok
+TRUNCATE a AS ignored_alias RESTRICT
+
+query I
+SELECT COUNT(*) FROM a;
+----
+0
+
+statement ok
+INSERT INTO a VALUES (42);
+
+# CASCADE is not supported
+statement error
+TRUNCATE a CASCADE
+----
+Not implemented Error: TRUNCATE ... CASCADE is not implemented
+
+statement error
+TRUNCATE TABLE a ignored_alias CASCADE
+----
+Not implemented Error: TRUNCATE ... CASCADE is not implemented
+
+query I
+SELECT COUNT(*) FROM a;
+----
+1
+
+# a quoted alias is not a drop behavior
+statement ok
+TRUNCATE a "cascade"
+
+query I
+SELECT COUNT(*) FROM a;
+----
+0
+
+statement ok
+INSERT INTO a VALUES (42);
+
+statement ok
+TRUNCATE a AS restrict
+
+query I
+SELECT COUNT(*) FROM a;
+----
+0

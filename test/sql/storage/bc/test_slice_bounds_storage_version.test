@@ -1,0 +1,91 @@
+# name: test/sql/storage/bc/test_slice_bounds_storage_version.test
+# description: Test that open-ended slices (x[2:], x[:2]) round-trip through v1.5 and v2.0 storage
+# group: [bc]
+
+foreach storage_version v1.5.0 v2.0.0
+
+statement ok
+ATTACH '{TEST_DIR}/slice_bounds_{storage_version}.db' AS db (STORAGE_VERSION '{storage_version}')
+
+statement ok
+CREATE VIEW db.v_slice AS SELECT [1, 2, 3][2:] AS a, [1, 2, 3][:2] AS b, 'abcdef'[2:] AS c, 'abcdef'[:3] AS d, [1, 2, 3, 4, 5][:-:2] AS e, [1, 2, 3, 4, 5][2:-:2] AS f, [1, 2, 3][:] AS g
+
+statement ok
+CREATE VIEW db.v_lambda AS SELECT list_transform([[1, 2, 3], [4, 5, 6]], lambda x: x[2:]) AS a
+
+# explicit bounds and empty lists outside of a slice are left alone
+statement ok
+CREATE VIEW db.v_explicit AS SELECT [1, 2, 3][1:2] AS a, []::INTEGER[] AS b, [1, 2, 3][list_value():2] AS c
+
+statement ok
+CREATE MACRO db.m_tail(l) AS l[2:]
+
+statement ok
+CREATE MACRO db.m_head(l) AS TABLE SELECT l[:2] AS r
+
+statement ok
+CREATE TABLE db.t (a VARCHAR, d VARCHAR DEFAULT ('abcdef'[2:]), g VARCHAR GENERATED ALWAYS AS (a[2:]), CHECK (a[:1] <> 'x'))
+
+statement ok
+DETACH db
+
+statement ok
+ATTACH '{TEST_DIR}/slice_bounds_{storage_version}.db' AS db
+
+query IIIIIII
+FROM db.v_slice
+----
+[2, 3]	[1, 2]	bcdef	abc	[1, 3, 5]	[2, 4]	[1, 2, 3]
+
+query I
+FROM db.v_lambda
+----
+[[2, 3], [5, 6]]
+
+query III
+FROM db.v_explicit
+----
+[1, 2]	[]	[1, 2]
+
+query I
+SELECT db.m_tail([1, 2, 3])
+----
+[2, 3]
+
+query I
+FROM db.m_head([1, 2, 3])
+----
+[1, 2]
+
+statement ok
+INSERT INTO db.t (a) VALUES ('hello')
+
+statement error
+INSERT INTO db.t (a) VALUES ('xyz')
+----
+CHECK constraint failed
+
+query III
+FROM db.t
+----
+hello	bcdef	ello
+
+statement ok
+DETACH db
+
+endloop
+
+# objects in the main database are read back by older versions in the storage compatibility test
+statement ok
+CREATE TABLE t_slice (l INTEGER[], s VARCHAR, g VARCHAR GENERATED ALWAYS AS (s[2:]))
+
+statement ok
+INSERT INTO t_slice VALUES ([1, 2, 3], 'abcdef')
+
+statement ok
+CREATE VIEW v_slice AS SELECT l[2:] AS a, l[:2] AS b, s[:3] AS c, l[:-:2] AS d, list_transform([l], lambda x: x[2:]) AS e FROM t_slice
+
+query IIIII
+FROM v_slice
+----
+[2, 3]	[1, 2]	abc	[1, 3]	[[2, 3]]

@@ -5,7 +5,7 @@
 # make sure no illegal left join reordering happens
 
 statement ok
-pragma disabled_optimizers='build_side_probe_side';
+SET disabled_optimizers='build_side_probe_side';
 
 statement ok
 create table t1 as from values (0), (1), (2), (3), (NULL) t(a);

@@ -1,0 +1,26 @@
+# name: test/sql/function/list/lambdas/reduce_alias_initial_value_type.test
+# description: The aliases of list_reduce widen the accumulator to the type of the lambda result like list_reduce
+# group: [lambdas]
+
+query IIII
+SELECT reduce([1.0, 2.0, 3.0], lambda x, y: x + y, 100), array_reduce([1.0, 2.0, 3.0], lambda x, y: x + y, 100), list_reduce([1.0, 2.0, 3.0], lambda x, y: x + y, 100), reduce([1.5, 2.5], lambda x, y: x + y, 100);
+----
+106.0	106.0	106.0	104.0
+
+query II
+SELECT reduce([1, 1000, 3], lambda x, y: x + y, 100), reduce([1, 1e308, 3], lambda x, y: x + y, 100);
+----
+1104	1e+308
+
+query I
+SELECT reduce([1.0, 2.5], lambda x, y: x + y);
+----
+3.5
+
+query I
+SELECT reduce(l, lambda x, y: x + y, 100) FROM (VALUES ([1.5, 2.5]), ([0.5]), (NULL), ([])) t(l) ORDER BY ALL;
+----
+100
+100.5
+104.0
+NULL

@@ -1,0 +1,24 @@
+# name: benchmark/micro/optimizer/one_sided_distinct_count_csv_dimension.benchmark
+# description: IN subquery joining native date keys with NDV statistics to a CSV date dimension with row counts only
+# group: [optimizer]
+
+name One-Sided Distinct Count CSV Dimension
+group micro
+subgroup optimizer
+
+load
+CREATE TABLE store_sales AS SELECT 2450816 + i // 5486 AS ss_sold_date_sk FROM range(10000000) t(i);
+CREATE TABLE store_returns AS SELECT 2450820 + i // 9985 AS sr_returned_date_sk FROM range(20000000) t(i);
+COPY (SELECT 2415022 + range AS d_date_sk, year(DATE '1900-01-02' + range::INTEGER) AS d_year FROM range(73049)) TO '${BENCHMARK_DIR}/one_sided_distinct_count_date_dim.csv' (HEADER);
+
+run
+SELECT count(*)
+FROM store_returns
+WHERE sr_returned_date_sk IN (
+	SELECT ss_sold_date_sk
+	FROM store_sales
+	JOIN read_csv('${BENCHMARK_DIR}/one_sided_distinct_count_date_dim.csv') d ON store_sales.ss_sold_date_sk = d.d_date_sk
+	WHERE d.d_year = 2000);
+
+result I
+3654510

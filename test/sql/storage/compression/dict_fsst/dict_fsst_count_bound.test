@@ -1,0 +1,58 @@
+# name: test/sql/storage/compression/dict_fsst/dict_fsst_count_bound.test
+# description: FSST_ONLY dictionaries can have more entries than bytes in a small block
+# group: [dict_fsst]
+
+require vector_size 2048
+
+statement ok
+SET threads = 1;
+
+statement ok
+SET storage_compatibility_version = 'latest';
+
+statement ok
+ATTACH '{TEST_DIR}/dict_fsst_count_bound.db' AS db (BLOCK_SIZE 16384);
+
+statement ok
+SET force_compression = 'dict_fsst';
+
+statement ok
+CREATE TABLE db.t(s VARCHAR);
+
+# Fill with unique strings so encoding switches to FSST_ONLY.
+statement ok
+INSERT INTO db.t SELECT lpad(i::VARCHAR, 15, '0') || 'x' FROM range(1200) t(i);
+
+# Empty strings then add entries with only packed length bits.
+statement ok
+INSERT INTO db.t SELECT '' FROM range(20000);
+
+statement ok
+CHECKPOINT db;
+
+query II
+SELECT count(*), count(DISTINCT s) FROM db.t;
+----
+21200	1201
+
+query I
+SELECT count(*) > 0
+FROM pragma_storage_info('db.t', include_segment_info = true)
+WHERE segment_type = 'VARCHAR' AND compression = 'DICT_FSST'
+  AND segment_info LIKE 'FSST_ONLY:%' AND count > 16384;
+----
+true
+
+statement ok
+DETACH db;
+
+statement ok
+ATTACH '{TEST_DIR}/dict_fsst_count_bound.db' AS db (READ_ONLY);
+
+query II
+SELECT count(*), count(DISTINCT s) FROM db.t;
+----
+21200	1201
+
+statement ok
+DETACH db;

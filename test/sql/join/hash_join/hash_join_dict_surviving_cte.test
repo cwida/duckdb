@@ -63,12 +63,19 @@ FROM probe p JOIN (
 5000	175
 
 # Blocking single-input operators materialize the mixed producers before the build.
+# The optimizer would drop a sort below a join, so keep it for this query.
+statement ok
+SET disabled_optimizers = 'redundant_order';
+
 query II
 WITH c AS MATERIALIZED (FROM mixed_dictionaries)
 SELECT count(*), count(DISTINCT b.label)
 FROM probe p JOIN (SELECT * FROM c ORDER BY k) b ON p.k=b.k
 ----
 10000	325
+
+statement ok
+SET disabled_optimizers = '';
 
 query II
 WITH c AS MATERIALIZED (FROM mixed_dictionaries)

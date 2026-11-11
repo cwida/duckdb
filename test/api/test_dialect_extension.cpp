@@ -57,10 +57,9 @@ private:
 };
 
 static vector<MatcherToken> Tokenize(const Tokenizer &tokenizer, const string &sql) {
-	vector<MatcherToken> tokens;
-	TokenizerBehavior behavior(sql, tokens);
+	TokenizerBehavior behavior(sql);
 	tokenizer.TokenizeInput(behavior);
-	return tokens;
+	return std::move(behavior.tokens);
 }
 
 TEST_CASE("Register and select a dialect extension", "[api][dialect_extension]") {
@@ -111,4 +110,91 @@ TEST_CASE("Dialect tokenizer hooks are opt-in", "[api][dialect_extension]") {
 	auto hooked_string = Tokenize(hook_tokenizer, "'a\\'b'");
 	REQUIRE(default_string.size() > 2);
 	REQUIRE(hooked_string[0].text == "'a\\'b'");
+}
+
+class TerminatorTokenizerBehavior final : public TokenizerBehavior {
+public:
+	TerminatorTokenizerBehavior(const string &sql, bool autocomplete)
+	    : TokenizerBehavior(sql), autocomplete(autocomplete) {
+	}
+	TokenType GetTerminator() const override {
+		return autocomplete ? TokenType::END_OF_INPUT_AUTOCOMPLETE : TokenType::END_OF_INPUT;
+	}
+
+private:
+	bool autocomplete;
+};
+
+TEST_CASE("Tokenizer preserves delimiters and incomplete input across long runs", "[api][dialect_extension]") {
+	EmptyKeywordHelper helper;
+	Tokenizer tokenizer(helper);
+	HookTokenizer escaped_tokenizer(helper, true, true, false);
+	for (idx_t length : {0, 1, 7, 8, 9, 31, 32, 33, 39, 40, 41, 63, 64, 65, 127, 128, 129, 4096}) {
+		const string padding(length, 'a');
+		for (bool autocomplete : {false, true}) {
+			const auto terminator = autocomplete ? TokenType::END_OF_INPUT_AUTOCOMPLETE : TokenType::END_OF_INPUT;
+			for (auto &literal : {"'" + padding + "''b'", "E'" + padding + "\\'b'", "\"" + padding + "\"\"b\"",
+			                      "`" + padding + "``b`", "$tag$" + padding + "$wrong$b$tag$"}) {
+				auto sql = literal + " 42";
+				TerminatorTokenizerBehavior behavior(sql, autocomplete);
+				auto &tokens = behavior.tokens;
+				REQUIRE(tokenizer.TokenizeInput(behavior) == autocomplete);
+				REQUIRE(tokens.size() == 3);
+				REQUIRE(tokens[0].text == literal);
+				REQUIRE(tokens[0].offset == 0);
+				REQUIRE(tokens[0].length == literal.size());
+				REQUIRE_FALSE(tokens[0].unterminated);
+				REQUIRE(tokens[1].text == "42");
+				REQUIRE(tokens[1].offset == literal.size() + 1);
+				REQUIRE(tokens[2].type == terminator);
+			}
+			{
+				auto sql = "'" + padding + "\\'b' 42";
+				TerminatorTokenizerBehavior behavior(sql, autocomplete);
+				auto &tokens = behavior.tokens;
+				REQUIRE(escaped_tokenizer.TokenizeInput(behavior) == autocomplete);
+				REQUIRE(tokens.size() == 3);
+				REQUIRE(tokens[0].text == sql.substr(0, sql.size() - 3));
+				REQUIRE(tokens[1].text == "42");
+				REQUIRE(tokens.back().type == terminator);
+			}
+			{
+				auto sql = "1 /*" + padding + "/*nested*/" + padding + "*/\n2 ";
+				TerminatorTokenizerBehavior behavior(sql, autocomplete);
+				auto &tokens = behavior.tokens;
+				REQUIRE(tokenizer.TokenizeInput(behavior) == autocomplete);
+				REQUIRE(tokens.size() == 3);
+				REQUIRE(tokens[0].text == "1");
+				REQUIRE(tokens[1].text == "2");
+				REQUIRE(tokens[1].preceded_by_newline);
+				REQUIRE(tokens[1].preceded_by_block_comment);
+				REQUIRE(tokens.back().type == terminator);
+			}
+			for (auto &ending : {"", "\n", "\r"}) {
+				auto sql = "--" + padding + ending;
+				TerminatorTokenizerBehavior behavior(sql, autocomplete);
+				auto &tokens = behavior.tokens;
+				bool clean = ending[0] != '\0';
+				REQUIRE(tokenizer.TokenizeInput(behavior) == (clean && autocomplete));
+				REQUIRE(tokens.size() == 1);
+				REQUIRE(tokens.back().type == (clean ? terminator : TokenType::END_OF_INPUT));
+			}
+			for (auto &sql : {"/*" + padding, "$tag$" + padding + "$ta"}) {
+				TerminatorTokenizerBehavior behavior(sql, autocomplete);
+				auto &tokens = behavior.tokens;
+				REQUIRE_FALSE(tokenizer.TokenizeInput(behavior));
+				REQUIRE(tokens.back().type == TokenType::END_OF_INPUT);
+			}
+			{
+				auto sql = "'" + padding;
+				TerminatorTokenizerBehavior behavior(sql, autocomplete);
+				auto &tokens = behavior.tokens;
+				REQUIRE(tokenizer.TokenizeInput(behavior) == autocomplete);
+				REQUIRE(tokens.size() == 2);
+				REQUIRE(tokens[0].text == sql);
+				REQUIRE(tokens[0].unterminated);
+				REQUIRE(tokens.back().type == terminator);
+			}
+		}
+	}
 }

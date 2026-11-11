@@ -99,3 +99,64 @@ NULL
 NULL
 NULL
 NULL
+
+# Constant input must be NULL for every group size, type and magnitude (issue #27211):
+# the raw sums of powers left rounding noise in the variance.
+foreach val 69.6::DECIMAL(7,2) 123456.78::DECIMAL(10,2) 123456.78::DOUBLE -123456.78::DOUBLE 1e-6::DOUBLE 1e12::DOUBLE
+
+query II
+SELECT count(*) FILTER (ku IS NOT NULL), count(*) FILTER (kp IS NOT NULL) FROM (
+    SELECT n, kurtosis(x) AS ku, kurtosis_pop(x) AS kp
+    FROM (SELECT {val} AS x, n FROM range(1, 1001) r(n), range(0, 1001) k(k) WHERE k < n)
+    GROUP BY n
+)
+----
+0	0
+
+endloop
+
+# a small but real variance on large magnitudes must not be mistaken for zero
+query II
+SELECT kurtosis(x), kurtosis_pop(x) FROM (VALUES (1000000.0), (1000000.0), (1000000.0), (1000000.001)) t(x)
+----
+4.0	-0.666667
+
+# the result does not depend on the number of threads
+statement ok
+CREATE TABLE kurt_groups AS
+SELECT n % 8 AS g,
+       (CASE WHEN n % 8 < 4 THEN 123456.78 ELSE 123456.78 + ((n * 7919) % 13) * ((n * 7919) % 13) END)::DOUBLE AS x
+FROM range(200000) r(n);
+
+statement ok
+PRAGMA verify_parallelism
+
+query III
+SELECT g, kurtosis(x), kurtosis_pop(x) FROM kurt_groups GROUP BY g ORDER BY g
+----
+0	NULL	NULL
+1	NULL	NULL
+2	NULL	NULL
+3	NULL	NULL
+4	-0.847144	-0.847214
+5	-0.847357	-0.847427
+6	-0.847351	-0.847421
+7	-0.847125	-0.847196
+
+statement ok
+PRAGMA disable_verify_parallelism
+
+statement ok
+SET threads=1
+
+query III
+SELECT g, kurtosis(x), kurtosis_pop(x) FROM kurt_groups GROUP BY g ORDER BY g
+----
+0	NULL	NULL
+1	NULL	NULL
+2	NULL	NULL
+3	NULL	NULL
+4	-0.847144	-0.847214
+5	-0.847357	-0.847427
+6	-0.847351	-0.847421
+7	-0.847125	-0.847196

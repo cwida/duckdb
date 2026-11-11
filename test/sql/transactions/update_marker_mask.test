@@ -1,0 +1,783 @@
+# name: test/sql/transactions/update_marker_mask.test
+# description: The writes into a vector keep their ids in its bitmask while its rows hold at most two different ids
+# group: [transactions]
+
+require vector_size 2048
+
+load {TEST_DIR}/update_marker_mask.db
+
+statement ok
+SET debug_skip_checkpoint_on_commit = true;
+
+statement ok
+CREATE TABLE t (id INTEGER, a INTEGER);
+
+statement ok
+INSERT INTO t SELECT i, 0 FROM range(3000) t(i);
+
+# each section writes into its own table, whose vectors hold no ids yet
+statement ok
+CREATE TABLE t2 AS FROM t;
+
+statement ok
+CREATE TABLE t3 AS FROM t;
+
+statement ok
+CREATE TABLE t4 AS FROM t;
+
+statement ok
+CREATE TABLE t6 AS FROM t;
+
+statement ok
+CREATE TABLE t7 AS FROM t;
+
+statement ok
+CREATE TABLE t8 AS FROM t;
+
+statement ok
+CREATE TABLE t9 AS FROM t;
+
+statement ok
+CREATE TABLE t10 AS FROM t;
+
+statement ok
+CREATE TABLE t11 AS FROM t;
+
+# two updates of one transaction into the same vector, seen by an older snapshot
+statement ok con3
+BEGIN
+
+query I con3
+SELECT COUNT(*) FROM t
+----
+3000
+
+statement ok con4
+BEGIN
+
+query I con4
+SELECT COUNT(*) FROM t
+----
+3000
+
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE t SET a = 1 WHERE id IN (3, 5)
+
+statement ok con1
+UPDATE t SET a = 1 WHERE id IN (7, 9)
+
+statement ok con1
+UPDATE t SET a = 2 WHERE id = 3
+
+statement ok con1
+COMMIT
+
+statement error con3
+UPDATE t SET a = 3 WHERE id = 9
+----
+Conflict on update
+
+statement ok con3
+ROLLBACK
+
+statement error con4
+DELETE FROM t WHERE id = 3
+----
+Conflict on tuple deletion
+
+statement ok con4
+ROLLBACK
+
+# an update and a delete of one transaction, rolled back
+statement ok con3
+BEGIN
+
+query I con3
+SELECT COUNT(*) FROM t2
+----
+3000
+
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE t2 SET a = 4 WHERE id IN (11, 13)
+
+statement ok con1
+DELETE FROM t2 WHERE id IN (13, 15)
+
+query I con1
+SELECT COUNT(*) FROM t2
+----
+2998
+
+statement ok con1
+ROLLBACK
+
+statement ok con3
+UPDATE t2 SET a = 5 WHERE id IN (11, 13, 15)
+
+statement ok con3
+COMMIT
+
+query II
+SELECT id, a FROM t2 WHERE id IN (3, 7, 9, 11, 13, 15) ORDER BY id
+----
+3	0
+7	0
+9	0
+11	5
+13	5
+15	5
+
+# writes of two transactions into the same vector
+statement ok con3
+BEGIN
+
+query I con3
+SELECT COUNT(*) FROM t3
+----
+3000
+
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con1
+UPDATE t3 SET a = 6 WHERE id = 17
+
+statement ok con2
+DELETE FROM t3 WHERE id = 19
+
+statement error con2
+UPDATE t3 SET a = 6 WHERE id = 17
+----
+Conflict on update
+
+statement ok con2
+ROLLBACK
+
+statement ok con1
+COMMIT
+
+statement error con3
+DELETE FROM t3 WHERE id = 17
+----
+Conflict on tuple deletion
+
+statement ok con3
+ROLLBACK
+
+# a partial delete of two statements, committed
+statement ok con3
+BEGIN
+
+query I con3
+SELECT COUNT(*) FROM t4
+----
+3000
+
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM t4 WHERE id < 100
+
+statement ok con1
+DELETE FROM t4 WHERE id >= 100 AND id < 200
+
+statement ok con1
+COMMIT
+
+query I
+SELECT COUNT(*) FROM t4
+----
+2800
+
+query I con3
+SELECT COUNT(*) FROM t4
+----
+3000
+
+statement error con3
+UPDATE t4 SET a = 7 WHERE id = 150
+----
+Conflict on update
+
+statement ok con3
+ROLLBACK
+
+# a transaction that writes all rows of the vector piecewise and deletes one of them, rolled back
+statement ok con3
+BEGIN
+
+query I con3
+SELECT COUNT(*) FROM t6
+----
+3000
+
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE t6 SET a = 9 WHERE id < 1000
+
+statement ok con1
+UPDATE t6 SET a = 9 WHERE id >= 1000 AND id < 2048
+
+statement ok con1
+DELETE FROM t6 WHERE id = 2047
+
+statement error con2
+DELETE FROM t6 WHERE id = 5
+----
+Conflict on tuple deletion
+
+statement ok con1
+ROLLBACK
+
+statement ok con3
+UPDATE t6 SET a = 10 WHERE id IN (5, 1500)
+
+statement ok con3
+COMMIT
+
+query II
+SELECT COUNT(*), SUM(a) FROM t6
+----
+3000	20
+
+# a transaction that writes all rows of the vector piecewise, committed
+statement ok con3
+BEGIN
+
+query I con3
+SELECT COUNT(*) FROM t7
+----
+3000
+
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE t7 SET a = 11 WHERE id < 1000
+
+statement ok con1
+UPDATE t7 SET a = 11 WHERE id >= 1000 AND id < 2048
+
+statement ok con1
+COMMIT
+
+statement error con3
+DELETE FROM t7 WHERE id = 2047
+----
+Conflict on tuple deletion
+
+statement ok con3
+ROLLBACK
+
+query II
+SELECT COUNT(*), SUM(a) FROM t7
+----
+3000	22528
+
+# writes over a committed update of the vector that older snapshots do not see keep the update in the other rows
+statement ok con3
+BEGIN
+
+statement ok con4
+BEGIN
+
+statement ok con5
+BEGIN
+
+query I con3
+SELECT COUNT(*) FROM t8
+----
+3000
+
+query I con4
+SELECT COUNT(*) FROM t8
+----
+3000
+
+query I con5
+SELECT COUNT(*) FROM t8
+----
+3000
+
+statement ok
+UPDATE t8 SET a = 1 WHERE id < 2048
+
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM t8 WHERE id < 10
+
+statement error con3
+UPDATE t8 SET a = 2 WHERE id = 100
+----
+Conflict on update
+
+statement ok con3
+ROLLBACK
+
+statement ok con1
+ROLLBACK
+
+# the rolled back delete gives the rows the committed update back
+statement error con4
+DELETE FROM t8 WHERE id = 5
+----
+Conflict on tuple deletion
+
+statement ok con4
+ROLLBACK
+
+statement ok con1
+UPDATE t8 SET a = 3 WHERE id < 10
+
+statement error con5
+UPDATE t8 SET a = 4 WHERE id = 2000
+----
+Conflict on update
+
+statement ok con5
+ROLLBACK
+
+statement ok
+UPDATE t8 SET a = 5 WHERE id = 100
+
+query II
+SELECT COUNT(*), SUM(a) FROM t8
+----
+3000	2072
+
+# a transaction that updates all rows of the vector piecewise over a committed update, rolled back
+statement ok con3
+BEGIN
+
+query I con3
+SELECT COUNT(*) FROM t9
+----
+3000
+
+statement ok
+UPDATE t9 SET a = 1 WHERE id < 2048
+
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE t9 SET a = 2 WHERE id < 1000
+
+statement ok con1
+UPDATE t9 SET a = 2 WHERE id >= 1000 AND id < 2048
+
+statement error con2
+DELETE FROM t9 WHERE id = 5
+----
+Conflict on tuple deletion
+
+statement ok con1
+ROLLBACK
+
+statement error con3
+UPDATE t9 SET a = 3 WHERE id = 1500
+----
+Conflict on update
+
+statement ok con3
+ROLLBACK
+
+statement ok
+UPDATE t9 SET a = 3 WHERE id = 1500
+
+query II
+SELECT COUNT(*), SUM(a) FROM t9
+----
+3000	2050
+
+statement ok
+CHECKPOINT
+
+query II
+SELECT COUNT(*), SUM(a) FROM t8
+----
+3000	2072
+
+query II
+SELECT COUNT(*), SUM(a) FROM t9
+----
+3000	2050
+
+# a delete of all rows of a vector whose rows held different ids, reverted on commit and rolled back
+statement ok
+UPDATE t10 SET a = 1 WHERE id < 10
+
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE t10 SET a = 2 WHERE id >= 10 AND id < 20
+
+statement ok con1
+DELETE FROM t10 WHERE id < 2048
+
+# an open transaction keeps the test runner from restarting, and replaying the WAL, while commits fail
+statement ok con2
+BEGIN
+
+statement ok
+SET GLOBAL debug_force_commit_failure = true
+
+statement error con1
+COMMIT
+----
+Forced commit failure
+
+statement ok
+SET GLOBAL debug_force_commit_failure = false
+
+statement ok con2
+ROLLBACK
+
+# once the checkpoint drops the committed markers, the rows hold no id of the reverted transaction
+statement ok
+CHECKPOINT
+
+statement ok
+UPDATE t10 SET a = 3 WHERE id = 1500
+
+query II
+SELECT COUNT(*), SUM(a) FROM t10
+----
+3000	13
+
+# an update of all rows of a vector, a delete of some of them and another update of others in one transaction, rolled
+# back and committed
+statement ok con3
+BEGIN
+
+query I con3
+SELECT COUNT(*) FROM t11
+----
+3000
+
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE t11 SET a = 1 WHERE id < 2048
+
+statement ok con1
+DELETE FROM t11 WHERE id < 2048 AND id % 10 = 0
+
+statement ok con1
+UPDATE t11 SET a = 2 WHERE id < 2048 AND id % 10 = 1
+
+query II con1
+SELECT COUNT(*), SUM(a) FROM t11
+----
+2795	2048
+
+statement ok con1
+ROLLBACK
+
+query II
+SELECT COUNT(*), SUM(a) FROM t11
+----
+3000	0
+
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE t11 SET a = 1 WHERE id < 2048
+
+statement ok con1
+DELETE FROM t11 WHERE id < 2048 AND id % 10 = 0
+
+statement ok con1
+UPDATE t11 SET a = 2 WHERE id < 2048 AND id % 10 = 1
+
+statement ok con1
+COMMIT
+
+query II
+SELECT COUNT(*), SUM(a) FROM t11
+----
+2795	2048
+
+statement error con3
+UPDATE t11 SET a = 3 WHERE id = 1
+----
+Conflict on update
+
+statement ok con3
+ROLLBACK
+
+statement ok
+UPDATE t11 SET a = 3 WHERE id = 1
+
+query II
+SELECT COUNT(*), SUM(a) FROM t11
+----
+2795	2049
+
+# deletes loaded from disk: each vector holds them in its mask
+statement ok
+CREATE TABLE d1 AS SELECT i AS id, 0 AS a FROM range(4096) t(i);
+
+statement ok
+DELETE FROM d1 WHERE id % 10 = 0;
+
+statement ok
+CHECKPOINT;
+
+restart
+
+statement ok con1
+BEGIN
+
+query II con1
+SELECT COUNT(*), SUM(a) FROM d1
+----
+3686	0
+
+statement ok
+UPDATE d1 SET a = 1;
+
+query II
+SELECT COUNT(*), SUM(a) FROM d1
+----
+3686	3686
+
+# an older snapshot still reads the old values and conflicts with the update
+query II con1
+SELECT COUNT(*), SUM(a) FROM d1
+----
+3686	0
+
+statement error con1
+UPDATE d1 SET a = 2 WHERE id = 1
+----
+Conflict on update
+
+statement ok con1
+ROLLBACK
+
+# a rolled back update of all rows that are not deleted
+statement ok
+BEGIN
+
+statement ok
+UPDATE d1 SET a = 5;
+
+statement ok
+ROLLBACK
+
+query II
+SELECT COUNT(*), SUM(a) FROM d1
+----
+3686	3686
+
+statement ok
+UPDATE d1 SET a = 2 WHERE id = 1;
+
+statement ok
+DELETE FROM d1 WHERE id = 2;
+
+query II
+SELECT COUNT(*), SUM(a) FROM d1
+----
+3685	3686
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query II
+SELECT COUNT(*), SUM(a) FROM d1
+----
+3685	3686
+
+# the mask holds the uncommitted deletes of another transaction, as many rows as the update writes
+statement ok
+CREATE TABLE d2 AS SELECT i AS id, 0 AS a FROM range(2048) t(i);
+
+statement ok con2
+BEGIN
+
+statement ok con2
+DELETE FROM d2 WHERE id % 2 = 0
+
+statement ok
+UPDATE d2 SET a = 1 WHERE id % 2 = 1;
+
+statement ok con2
+ROLLBACK
+
+query II
+SELECT COUNT(*), SUM(a) FROM d2
+----
+2048	1024
+
+statement ok
+UPDATE d2 SET a = 2 WHERE id = 0;
+
+statement ok
+UPDATE d2 SET a = 2 WHERE id = 1;
+
+query II
+SELECT COUNT(*), SUM(a) FROM d2
+----
+2048	1027
+
+# the same, but the deletes commit
+statement ok
+CREATE TABLE d3 AS SELECT i AS id, 0 AS a FROM range(2048) t(i);
+
+statement ok con2
+BEGIN
+
+statement ok con2
+DELETE FROM d3 WHERE id % 2 = 0
+
+statement ok
+UPDATE d3 SET a = 1 WHERE id % 2 = 1;
+
+statement ok con2
+COMMIT
+
+query II
+SELECT COUNT(*), SUM(a) FROM d3
+----
+1024	1024
+
+statement ok
+UPDATE d3 SET a = 2 WHERE id = 1;
+
+query II
+SELECT COUNT(*), SUM(a) FROM d3
+----
+1024	1025
+
+# one transaction deletes rows of a vector and then updates all others, rolled back and committed
+statement ok
+CREATE TABLE d4 AS SELECT i AS id, 0 AS a FROM range(2048) t(i);
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM d4 WHERE id % 3 = 0;
+
+statement ok
+UPDATE d4 SET a = 1;
+
+query II
+SELECT COUNT(*), SUM(a) FROM d4
+----
+1365	1365
+
+statement ok
+ROLLBACK
+
+query II
+SELECT COUNT(*), SUM(a) FROM d4
+----
+2048	0
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM d4 WHERE id % 3 = 0;
+
+statement ok
+UPDATE d4 SET a = 1;
+
+statement ok
+COMMIT
+
+query II
+SELECT COUNT(*), SUM(a) FROM d4
+----
+1365	1365
+
+statement ok
+UPDATE d4 SET a = 2 WHERE id = 1;
+
+query II
+SELECT COUNT(*), SUM(a) FROM d4
+----
+1365	1366
+
+# one transaction updates all rows that are not deleted and then deletes some of them, rolled back and committed
+statement ok
+CREATE TABLE d5 AS SELECT i AS id, 0 AS a FROM range(2048) t(i);
+
+statement ok
+DELETE FROM d5 WHERE id % 3 = 0;
+
+statement ok
+CHECKPOINT;
+
+restart
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE d5 SET a = 1;
+
+statement ok
+DELETE FROM d5 WHERE id % 3 = 1;
+
+query II
+SELECT COUNT(*), SUM(a) FROM d5
+----
+682	682
+
+statement ok
+ROLLBACK
+
+query II
+SELECT COUNT(*), SUM(a) FROM d5
+----
+1365	0
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE d5 SET a = 1;
+
+statement ok
+DELETE FROM d5 WHERE id % 3 = 1;
+
+statement ok
+COMMIT
+
+query II
+SELECT COUNT(*), SUM(a) FROM d5
+----
+682	682
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query II
+SELECT COUNT(*), SUM(a) FROM d5
+----
+682	682

@@ -3,7 +3,7 @@
 # group: [optimizer]
 
 statement ok
-PRAGMA explain_output = 'OPTIMIZED_ONLY';
+SET explain_output = 'OPTIMIZED_ONLY';
 
 statement ok
 CREATE TABLE t AS SELECT range AS i FROM range(1000000);

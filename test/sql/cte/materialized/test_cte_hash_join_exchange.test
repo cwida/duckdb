@@ -6,7 +6,7 @@ statement ok
 SET disabled_optimizers='join_order,build_side_probe_side';
 
 statement ok
-PRAGMA threads=4;
+SET threads=4;
 
 # A CTE can directly feed the hash join build side.
 query I
@@ -271,7 +271,7 @@ EXECUTE cte_hash_join;
 endloop
 
 statement ok
-PRAGMA threads=1;
+SET threads=1;
 
 statement ok
 SET memory_limit='64MB';

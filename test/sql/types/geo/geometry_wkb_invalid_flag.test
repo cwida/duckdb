@@ -1,0 +1,33 @@
+# name: test/sql/types/geo/geometry_wkb_invalid_flag.test
+# description: WKB geometries with a type code whose dimension flag is not 0-3 are rejected
+# group: [geo]
+
+# 0x0FA1 = 4001: POINT with flag 4
+statement error
+SELECT from_hex('01A10F0000000000000000F03F0000000000000040')::GEOMETRY;
+----
+Unsupported geometry flag 4 in WKB
+
+query I
+SELECT TRY_CAST(from_hex('01A10F0000000000000000F03F0000000000000040') AS GEOMETRY);
+----
+NULL
+
+statement error
+SELECT from_hex('01A10F0000000000000000F03F0000000000000040')::GEOMETRY && 'POINT(1 2)';
+----
+Unsupported geometry flag 4 in WKB
+
+statement ok
+CREATE TABLE g(geom GEOMETRY);
+
+statement error
+INSERT INTO g VALUES (from_hex('01A10F0000000000000000F03F0000000000000040'));
+----
+Unsupported geometry flag 4 in WKB
+
+# 0x0BB9 = 3001: POINT ZM is still accepted
+query I
+SELECT st_astext(from_hex('01B90B0000000000000000F03F000000000000004000000000000008400000000000001040')::GEOMETRY);
+----
+POINT ZM (1 2 3 4)

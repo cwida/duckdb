@@ -3,6 +3,7 @@
 #include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
+#include "duckdb/main/secret/secret.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/storage/data_pointer.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
@@ -333,6 +334,30 @@ TEST_CASE("Test window expression type survives serialization", "[serialization]
 			stream.Rewind();
 			auto copy = BinaryDeserializer::Deserialize<ParsedExpression>(stream);
 			REQUIRE(copy->GetExpressionType() == expr->GetExpressionType());
+		}
+	}
+}
+
+TEST_CASE("Test KeyValueSecret deserialization validates redact_keys", "[serialization]") {
+	for (bool valid : {true, false}) {
+		Allocator allocator;
+		MemoryStream stream(allocator);
+		BinarySerializer serializer(stream);
+		serializer.Begin();
+		auto map_type = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::ANY);
+		serializer.WriteProperty(201, "secret_map", Value::MAP(ListType::GetChildType(map_type), vector<Value>()));
+		auto redact_keys = valid ? Value::LIST(LogicalType::VARCHAR, vector<Value>()) : Value::INTEGER(42);
+		serializer.WriteProperty(202, "redact_keys", redact_keys);
+		serializer.End();
+		stream.Rewind();
+
+		BinaryDeserializer deserializer(stream);
+		deserializer.Begin();
+		BaseSecret base({"s3://"}, Identifier("s3"), Identifier("config"), Identifier("name"));
+		if (valid) {
+			REQUIRE_NOTHROW(KeyValueSecret::Deserialize<KeyValueSecret>(deserializer, base));
+		} else {
+			REQUIRE_THROWS_AS(KeyValueSecret::Deserialize<KeyValueSecret>(deserializer, base), SerializationException);
 		}
 	}
 }

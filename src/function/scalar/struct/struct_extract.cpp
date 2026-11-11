@@ -28,7 +28,41 @@ static void StructExtractFunction(DataChunk &args, ExpressionState &state, Vecto
 
 enum class StructExtractKey : uint8_t { NAME, INDEX, INDEX_AT };
 
-//! Validates the struct argument - the extracted entry and the return type are resolved in the bind
+//! Looks up the entry with the given name, returns its index and sets the type of the entry
+static idx_t ResolveStructEntryByName(const LogicalType &struct_type, const string &key_str, LogicalType &entry_type) {
+	auto &struct_children = StructType::GetChildTypes(struct_type);
+	if (key_str.empty()) {
+		throw BinderException("Key name for struct_extract must not be empty");
+	}
+	auto key = Identifier(key_str);
+	for (idx_t i = 0; i < struct_children.size(); i++) {
+		if (struct_children[i].first == key) {
+			entry_type = struct_children[i].second;
+			return i;
+		}
+	}
+	vector<string> candidates;
+	candidates.reserve(struct_children.size());
+	for (auto &struct_child : struct_children) {
+		candidates.emplace_back(struct_child.first);
+	}
+	auto closest_settings = StringUtil::TopNJaroWinkler(candidates, key);
+	auto message = StringUtil::CandidatesMessage(closest_settings, "Candidate Entries");
+	throw BinderException("Could not find key %s in struct\n%s", key, message);
+}
+
+//! Looks up the entry with the given (1-based) index, returns its (0-based) index and sets the type of the entry
+static idx_t ResolveStructEntryByIndex(const LogicalType &struct_type, int64_t index, LogicalType &entry_type) {
+	auto &struct_children = StructType::GetChildTypes(struct_type);
+	if (index <= 0 || idx_t(index) > struct_children.size()) {
+		throw BinderException("Key index %lld for struct_extract out of range - expected an index between 1 and %llu",
+		                      index, struct_children.size());
+	}
+	entry_type = struct_children[NumericCast<idx_t>(index - 1)].second;
+	return NumericCast<idx_t>(index - 1);
+}
+
+//! Validates the struct argument and resolves the extracted entry type when the key is a constant
 template <StructExtractKey KEY>
 static void StructExtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &bound_function = input.GetBoundFunction();
@@ -37,7 +71,9 @@ static void StructExtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	if (child_type.id() == LogicalTypeId::UNKNOWN) {
 		throw ParameterNotResolvedException();
 	}
-	D_ASSERT(StructType::IsStruct(child_type));
+	if (!StructType::IsStruct(child_type)) {
+		throw BinderException("struct_extract can only be used on a STRUCT, not on %s", child_type.ToString());
+	}
 	if (StructType::GetChildTypes(child_type).empty()) {
 		throw BinderException("Can't extract something from an empty struct");
 	}
@@ -50,60 +86,41 @@ static void StructExtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
 		    "struct_extract with an integer key can only be used on unnamed structs, use a string key instead");
 	}
 	bound_function.GetArguments()[0] = child_type;
+
+	// resolve the return type here, so that it is also known (and the key is validated) for NULL structs
+	auto key_val = input.TryGetConstant(1);
+	if (!key_val || key_val->IsNull()) {
+		return;
+	}
+	LogicalType entry_type;
+	if (KEY == StructExtractKey::NAME) {
+		ResolveStructEntryByName(child_type, key_val->GetValue<string>(), entry_type);
+	} else {
+		ResolveStructEntryByIndex(child_type, key_val->GetValue<int64_t>(), entry_type);
+	}
+	bound_function.SetReturnType(std::move(entry_type));
 }
 
 static unique_ptr<FunctionData> StructExtractBind(BindScalarFunctionInput &input) {
 	auto &bound_function = input.GetBoundFunction();
-	auto &struct_children = StructType::GetChildTypes(bound_function.GetArguments()[0]);
-
 	auto key_val = input.GetNonNullConstant(1);
 	D_ASSERT(key_val.type().id() == LogicalTypeId::VARCHAR);
-	auto &key_str = StringValue::Get(key_val);
-	if (key_str.empty()) {
-		throw BinderException("Key name for struct_extract must not be empty");
-	}
-	auto key = Identifier(key_str);
 
 	LogicalType return_type;
-	idx_t key_index = 0;
-	bool found_key = false;
-
-	for (size_t i = 0; i < struct_children.size(); i++) {
-		auto &child = struct_children[i];
-		if (child.first == key) {
-			found_key = true;
-			key_index = i;
-			return_type = child.second;
-			break;
-		}
-	}
-
-	if (!found_key) {
-		vector<string> candidates;
-		candidates.reserve(struct_children.size());
-		for (auto &struct_child : struct_children) {
-			candidates.emplace_back(struct_child.first);
-		}
-		auto closest_settings = StringUtil::TopNJaroWinkler(candidates, key);
-		auto message = StringUtil::CandidatesMessage(closest_settings, "Candidate Entries");
-		throw BinderException("Could not find key %s in struct\n%s", key, message);
-	}
-
+	auto key_index = ResolveStructEntryByName(bound_function.GetArguments()[0], StringValue::Get(key_val), return_type);
 	bound_function.SetReturnType(std::move(return_type));
 	return StructExtractAtFun::GetBindData(key_index);
 }
 
 static unique_ptr<FunctionData> StructExtractBindIndex(BindScalarFunctionInput &input) {
 	auto &bound_function = input.GetBoundFunction();
-	auto &struct_children = StructType::GetChildTypes(bound_function.GetArguments()[0]);
 	Value key_val = input.GetConstant(1);
-	auto index = key_val.GetValue<int64_t>();
-	if (index <= 0 || idx_t(index) > struct_children.size()) {
-		throw BinderException("Key index %lld for struct_extract out of range - expected an index between 1 and %llu",
-		                      index, struct_children.size());
-	}
-	bound_function.SetReturnType(struct_children[NumericCast<idx_t>(index - 1)].second);
-	return StructExtractAtFun::GetBindData(NumericCast<idx_t>(index - 1));
+
+	LogicalType return_type;
+	auto key_index =
+	    ResolveStructEntryByIndex(bound_function.GetArguments()[0], key_val.GetValue<int64_t>(), return_type);
+	bound_function.SetReturnType(std::move(return_type));
+	return StructExtractAtFun::GetBindData(key_index);
 }
 
 static unique_ptr<BaseStatistics> PropagateStructExtractStats(ClientContext &context, FunctionStatisticsInput &input) {

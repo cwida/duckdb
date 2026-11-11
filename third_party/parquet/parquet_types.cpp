@@ -681,8 +681,10 @@ std::string to_string(const BoundaryOrder::type& val) {
 SizeStatistics::~SizeStatistics() noexcept {
 }
 
-SizeStatistics::SizeStatistics() noexcept
-   : unencoded_byte_array_data_bytes(0) {
+SizeStatistics::SizeStatistics(const allocator_type &alloc) noexcept
+   : unencoded_byte_array_data_bytes(0),
+     repetition_level_histogram(alloc),
+     definition_level_histogram(alloc) {
 }
 
 void SizeStatistics::__set_unencoded_byte_array_data_bytes(const int64_t val) {
@@ -690,12 +692,12 @@ void SizeStatistics::__set_unencoded_byte_array_data_bytes(const int64_t val) {
 __isset.unencoded_byte_array_data_bytes = true;
 }
 
-void SizeStatistics::__set_repetition_level_histogram(const duckdb::vector<int64_t> & val) {
+void SizeStatistics::__set_repetition_level_histogram(const ParquetVector<int64_t> & val) {
   this->repetition_level_histogram = val;
 __isset.repetition_level_histogram = true;
 }
 
-void SizeStatistics::__set_definition_level_histogram(const duckdb::vector<int64_t> & val) {
+void SizeStatistics::__set_definition_level_histogram(const ParquetVector<int64_t> & val) {
   this->definition_level_histogram = val;
 __isset.definition_level_histogram = true;
 }
@@ -801,7 +803,7 @@ uint32_t SizeStatistics::write(::apache::thrift::protocol::TProtocol* oprot) con
     xfer += oprot->writeFieldBegin("repetition_level_histogram", ::apache::thrift::protocol::T_LIST, 2);
     {
       xfer += oprot->writeListBegin(::apache::thrift::protocol::T_I64, static_cast<uint32_t>(this->repetition_level_histogram.size()));
-      duckdb::vector<int64_t> ::const_iterator _iter10;
+      ParquetVector<int64_t> ::const_iterator _iter10;
       for (_iter10 = this->repetition_level_histogram.begin(); _iter10 != this->repetition_level_histogram.end(); ++_iter10)
       {
         xfer += oprot->writeI64((*_iter10));
@@ -814,7 +816,7 @@ uint32_t SizeStatistics::write(::apache::thrift::protocol::TProtocol* oprot) con
     xfer += oprot->writeFieldBegin("definition_level_histogram", ::apache::thrift::protocol::T_LIST, 3);
     {
       xfer += oprot->writeListBegin(::apache::thrift::protocol::T_I64, static_cast<uint32_t>(this->definition_level_histogram.size()));
-      duckdb::vector<int64_t> ::const_iterator _iter11;
+      ParquetVector<int64_t> ::const_iterator _iter11;
       for (_iter11 = this->definition_level_histogram.begin(); _iter11 != this->definition_level_histogram.end(); ++_iter11)
       {
         xfer += oprot->writeI64((*_iter11));
@@ -828,25 +830,29 @@ uint32_t SizeStatistics::write(::apache::thrift::protocol::TProtocol* oprot) con
   return xfer;
 }
 
-void swap(SizeStatistics &a, SizeStatistics &b) {
-  using ::std::swap;
-  swap(a.unencoded_byte_array_data_bytes, b.unencoded_byte_array_data_bytes);
-  swap(a.repetition_level_histogram, b.repetition_level_histogram);
-  swap(a.definition_level_histogram, b.definition_level_histogram);
-  swap(a.__isset, b.__isset);
+SizeStatistics::SizeStatistics(const SizeStatistics& o)
+   : unencoded_byte_array_data_bytes(o.unencoded_byte_array_data_bytes),
+     repetition_level_histogram(o.repetition_level_histogram),
+     definition_level_histogram(o.definition_level_histogram),
+     __isset(o.__isset) {
 }
-
-SizeStatistics::SizeStatistics(const SizeStatistics& other12) {
-  unencoded_byte_array_data_bytes = other12.unencoded_byte_array_data_bytes;
-  repetition_level_histogram = other12.repetition_level_histogram;
-  definition_level_histogram = other12.definition_level_histogram;
-  __isset = other12.__isset;
+SizeStatistics::SizeStatistics(const SizeStatistics& o, const allocator_type &alloc)
+   : unencoded_byte_array_data_bytes(o.unencoded_byte_array_data_bytes),
+     repetition_level_histogram(o.repetition_level_histogram, alloc),
+     definition_level_histogram(o.definition_level_histogram, alloc),
+     __isset(o.__isset) {
 }
-SizeStatistics::SizeStatistics(SizeStatistics&& other13) noexcept {
-  unencoded_byte_array_data_bytes = other13.unencoded_byte_array_data_bytes;
-  repetition_level_histogram = std::move(other13.repetition_level_histogram);
-  definition_level_histogram = std::move(other13.definition_level_histogram);
-  __isset = other13.__isset;
+SizeStatistics::SizeStatistics(SizeStatistics&& o) noexcept
+   : unencoded_byte_array_data_bytes(o.unencoded_byte_array_data_bytes),
+     repetition_level_histogram(std::move(o.repetition_level_histogram)),
+     definition_level_histogram(std::move(o.definition_level_histogram)),
+     __isset(o.__isset) {
+}
+SizeStatistics::SizeStatistics(SizeStatistics&& o, const allocator_type &alloc)
+   : unencoded_byte_array_data_bytes(o.unencoded_byte_array_data_bytes),
+     repetition_level_histogram(std::move(o.repetition_level_histogram), alloc),
+     definition_level_histogram(std::move(o.definition_level_histogram), alloc),
+     __isset(o.__isset) {
 }
 SizeStatistics& SizeStatistics::operator=(const SizeStatistics& other14) {
   unencoded_byte_array_data_bytes = other14.unencoded_byte_array_data_bytes;
@@ -855,7 +861,7 @@ SizeStatistics& SizeStatistics::operator=(const SizeStatistics& other14) {
   __isset = other14.__isset;
   return *this;
 }
-SizeStatistics& SizeStatistics::operator=(SizeStatistics&& other15) noexcept {
+SizeStatistics& SizeStatistics::operator=(SizeStatistics&& other15) {
   unencoded_byte_array_data_bytes = other15.unencoded_byte_array_data_bytes;
   repetition_level_histogram = std::move(other15.repetition_level_histogram);
   definition_level_histogram = std::move(other15.definition_level_histogram);
@@ -1160,7 +1166,8 @@ void BoundingBox::printTo(std::ostream& out) const {
 GeospatialStatistics::~GeospatialStatistics() noexcept {
 }
 
-GeospatialStatistics::GeospatialStatistics() noexcept {
+GeospatialStatistics::GeospatialStatistics(const allocator_type &alloc) noexcept
+   : geospatial_types(alloc) {
 }
 
 void GeospatialStatistics::__set_bbox(const BoundingBox& val) {
@@ -1168,7 +1175,7 @@ void GeospatialStatistics::__set_bbox(const BoundingBox& val) {
 __isset.bbox = true;
 }
 
-void GeospatialStatistics::__set_geospatial_types(const duckdb::vector<int32_t> & val) {
+void GeospatialStatistics::__set_geospatial_types(const ParquetVector<int32_t> & val) {
   this->geospatial_types = val;
 __isset.geospatial_types = true;
 }
@@ -1254,7 +1261,7 @@ uint32_t GeospatialStatistics::write(::apache::thrift::protocol::TProtocol* opro
     xfer += oprot->writeFieldBegin("geospatial_types", ::apache::thrift::protocol::T_LIST, 2);
     {
       xfer += oprot->writeListBegin(::apache::thrift::protocol::T_I32, static_cast<uint32_t>(this->geospatial_types.size()));
-      duckdb::vector<int32_t> ::const_iterator _iter25;
+      ParquetVector<int32_t> ::const_iterator _iter25;
       for (_iter25 = this->geospatial_types.begin(); _iter25 != this->geospatial_types.end(); ++_iter25)
       {
         xfer += oprot->writeI32((*_iter25));
@@ -1268,22 +1275,25 @@ uint32_t GeospatialStatistics::write(::apache::thrift::protocol::TProtocol* opro
   return xfer;
 }
 
-void swap(GeospatialStatistics &a, GeospatialStatistics &b) {
-  using ::std::swap;
-  swap(a.bbox, b.bbox);
-  swap(a.geospatial_types, b.geospatial_types);
-  swap(a.__isset, b.__isset);
+GeospatialStatistics::GeospatialStatistics(const GeospatialStatistics& o)
+   : bbox(o.bbox),
+     geospatial_types(o.geospatial_types),
+     __isset(o.__isset) {
 }
-
-GeospatialStatistics::GeospatialStatistics(const GeospatialStatistics& other26) {
-  bbox = other26.bbox;
-  geospatial_types = other26.geospatial_types;
-  __isset = other26.__isset;
+GeospatialStatistics::GeospatialStatistics(const GeospatialStatistics& o, const allocator_type &alloc)
+   : bbox(o.bbox),
+     geospatial_types(o.geospatial_types, alloc),
+     __isset(o.__isset) {
 }
-GeospatialStatistics::GeospatialStatistics(GeospatialStatistics&& other27) noexcept {
-  bbox = std::move(other27.bbox);
-  geospatial_types = std::move(other27.geospatial_types);
-  __isset = other27.__isset;
+GeospatialStatistics::GeospatialStatistics(GeospatialStatistics&& o) noexcept
+   : bbox(std::move(o.bbox)),
+     geospatial_types(std::move(o.geospatial_types)),
+     __isset(o.__isset) {
+}
+GeospatialStatistics::GeospatialStatistics(GeospatialStatistics&& o, const allocator_type &alloc)
+   : bbox(std::move(o.bbox)),
+     geospatial_types(std::move(o.geospatial_types), alloc),
+     __isset(o.__isset) {
 }
 GeospatialStatistics& GeospatialStatistics::operator=(const GeospatialStatistics& other28) {
   bbox = other28.bbox;
@@ -1291,7 +1301,7 @@ GeospatialStatistics& GeospatialStatistics::operator=(const GeospatialStatistics
   __isset = other28.__isset;
   return *this;
 }
-GeospatialStatistics& GeospatialStatistics::operator=(GeospatialStatistics&& other29) noexcept {
+GeospatialStatistics& GeospatialStatistics::operator=(GeospatialStatistics&& other29) {
   bbox = std::move(other29.bbox);
   geospatial_types = std::move(other29.geospatial_types);
   __isset = other29.__isset;
@@ -1309,25 +1319,25 @@ void GeospatialStatistics::printTo(std::ostream& out) const {
 Statistics::~Statistics() noexcept {
 }
 
-Statistics::Statistics() noexcept
-   : max(),
-     min(),
+Statistics::Statistics(const allocator_type &alloc) noexcept
+   : max(alloc),
+     min(alloc),
      null_count(0),
      distinct_count(0),
-     max_value(),
-     min_value(),
+     max_value(alloc),
+     min_value(alloc),
      is_max_value_exact(0),
      is_min_value_exact(0),
      nan_count(0) {
 }
 
 void Statistics::__set_max(const std::string& val) {
-  this->max = val;
+  this->max.assign(val.data(), val.size());
 __isset.max = true;
 }
 
 void Statistics::__set_min(const std::string& val) {
-  this->min = val;
+  this->min.assign(val.data(), val.size());
 __isset.min = true;
 }
 
@@ -1342,12 +1352,12 @@ __isset.distinct_count = true;
 }
 
 void Statistics::__set_max_value(const std::string& val) {
-  this->max_value = val;
+  this->max_value.assign(val.data(), val.size());
 __isset.max_value = true;
 }
 
 void Statistics::__set_min_value(const std::string& val) {
-  this->min_value = val;
+  this->min_value.assign(val.data(), val.size());
 __isset.min_value = true;
 }
 
@@ -1395,7 +1405,7 @@ uint32_t Statistics::read(::apache::thrift::protocol::TProtocol* iprot) {
     {
       case 1:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readBinary(this->max);
+          xfer += ReadParquetBinary(iprot, this->max);
           this->__isset.max = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -1403,7 +1413,7 @@ uint32_t Statistics::read(::apache::thrift::protocol::TProtocol* iprot) {
         break;
       case 2:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readBinary(this->min);
+          xfer += ReadParquetBinary(iprot, this->min);
           this->__isset.min = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -1427,7 +1437,7 @@ uint32_t Statistics::read(::apache::thrift::protocol::TProtocol* iprot) {
         break;
       case 5:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readBinary(this->max_value);
+          xfer += ReadParquetBinary(iprot, this->max_value);
           this->__isset.max_value = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -1435,7 +1445,7 @@ uint32_t Statistics::read(::apache::thrift::protocol::TProtocol* iprot) {
         break;
       case 6:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readBinary(this->min_value);
+          xfer += ReadParquetBinary(iprot, this->min_value);
           this->__isset.min_value = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -1484,12 +1494,12 @@ uint32_t Statistics::write(::apache::thrift::protocol::TProtocol* oprot) const {
 
   if (this->__isset.max) {
     xfer += oprot->writeFieldBegin("max", ::apache::thrift::protocol::T_STRING, 1);
-    xfer += oprot->writeBinary(this->max);
+    xfer += WriteParquetBinary(oprot, this->max);
     xfer += oprot->writeFieldEnd();
   }
   if (this->__isset.min) {
     xfer += oprot->writeFieldBegin("min", ::apache::thrift::protocol::T_STRING, 2);
-    xfer += oprot->writeBinary(this->min);
+    xfer += WriteParquetBinary(oprot, this->min);
     xfer += oprot->writeFieldEnd();
   }
   if (this->__isset.null_count) {
@@ -1504,12 +1514,12 @@ uint32_t Statistics::write(::apache::thrift::protocol::TProtocol* oprot) const {
   }
   if (this->__isset.max_value) {
     xfer += oprot->writeFieldBegin("max_value", ::apache::thrift::protocol::T_STRING, 5);
-    xfer += oprot->writeBinary(this->max_value);
+    xfer += WriteParquetBinary(oprot, this->max_value);
     xfer += oprot->writeFieldEnd();
   }
   if (this->__isset.min_value) {
     xfer += oprot->writeFieldBegin("min_value", ::apache::thrift::protocol::T_STRING, 6);
-    xfer += oprot->writeBinary(this->min_value);
+    xfer += WriteParquetBinary(oprot, this->min_value);
     xfer += oprot->writeFieldEnd();
   }
   if (this->__isset.is_max_value_exact) {
@@ -1532,43 +1542,53 @@ uint32_t Statistics::write(::apache::thrift::protocol::TProtocol* oprot) const {
   return xfer;
 }
 
-void swap(Statistics &a, Statistics &b) {
-  using ::std::swap;
-  swap(a.max, b.max);
-  swap(a.min, b.min);
-  swap(a.null_count, b.null_count);
-  swap(a.distinct_count, b.distinct_count);
-  swap(a.max_value, b.max_value);
-  swap(a.min_value, b.min_value);
-  swap(a.is_max_value_exact, b.is_max_value_exact);
-  swap(a.is_min_value_exact, b.is_min_value_exact);
-  swap(a.nan_count, b.nan_count);
-  swap(a.__isset, b.__isset);
+Statistics::Statistics(const Statistics& o)
+   : max(o.max),
+     min(o.min),
+     null_count(o.null_count),
+     distinct_count(o.distinct_count),
+     max_value(o.max_value),
+     min_value(o.min_value),
+     is_max_value_exact(o.is_max_value_exact),
+     is_min_value_exact(o.is_min_value_exact),
+     nan_count(o.nan_count),
+     __isset(o.__isset) {
 }
-
-Statistics::Statistics(const Statistics& other30) {
-  max = other30.max;
-  min = other30.min;
-  null_count = other30.null_count;
-  distinct_count = other30.distinct_count;
-  max_value = other30.max_value;
-  min_value = other30.min_value;
-  is_max_value_exact = other30.is_max_value_exact;
-  is_min_value_exact = other30.is_min_value_exact;
-  nan_count = other30.nan_count;
-  __isset = other30.__isset;
+Statistics::Statistics(const Statistics& o, const allocator_type &alloc)
+   : max(o.max, alloc),
+     min(o.min, alloc),
+     null_count(o.null_count),
+     distinct_count(o.distinct_count),
+     max_value(o.max_value, alloc),
+     min_value(o.min_value, alloc),
+     is_max_value_exact(o.is_max_value_exact),
+     is_min_value_exact(o.is_min_value_exact),
+     nan_count(o.nan_count),
+     __isset(o.__isset) {
 }
-Statistics::Statistics(Statistics&& other31) noexcept {
-  max = std::move(other31.max);
-  min = std::move(other31.min);
-  null_count = other31.null_count;
-  distinct_count = other31.distinct_count;
-  max_value = std::move(other31.max_value);
-  min_value = std::move(other31.min_value);
-  is_max_value_exact = other31.is_max_value_exact;
-  is_min_value_exact = other31.is_min_value_exact;
-  nan_count = other31.nan_count;
-  __isset = other31.__isset;
+Statistics::Statistics(Statistics&& o) noexcept
+   : max(std::move(o.max)),
+     min(std::move(o.min)),
+     null_count(o.null_count),
+     distinct_count(o.distinct_count),
+     max_value(std::move(o.max_value)),
+     min_value(std::move(o.min_value)),
+     is_max_value_exact(o.is_max_value_exact),
+     is_min_value_exact(o.is_min_value_exact),
+     nan_count(o.nan_count),
+     __isset(o.__isset) {
+}
+Statistics::Statistics(Statistics&& o, const allocator_type &alloc)
+   : max(std::move(o.max), alloc),
+     min(std::move(o.min), alloc),
+     null_count(o.null_count),
+     distinct_count(o.distinct_count),
+     max_value(std::move(o.max_value), alloc),
+     min_value(std::move(o.min_value), alloc),
+     is_max_value_exact(o.is_max_value_exact),
+     is_min_value_exact(o.is_min_value_exact),
+     nan_count(o.nan_count),
+     __isset(o.__isset) {
 }
 Statistics& Statistics::operator=(const Statistics& other32) {
   max = other32.max;
@@ -1583,7 +1603,7 @@ Statistics& Statistics::operator=(const Statistics& other32) {
   __isset = other32.__isset;
   return *this;
 }
-Statistics& Statistics::operator=(Statistics&& other33) noexcept {
+Statistics& Statistics::operator=(Statistics&& other33) {
   max = std::move(other33.max);
   min = std::move(other33.min);
   null_count = other33.null_count;
@@ -3385,12 +3405,12 @@ void VariantType::printTo(std::ostream& out) const {
 GeometryType::~GeometryType() noexcept {
 }
 
-GeometryType::GeometryType() noexcept
-   : crs() {
+GeometryType::GeometryType(const allocator_type &alloc) noexcept
+   : crs(alloc) {
 }
 
 void GeometryType::__set_crs(const std::string& val) {
-  this->crs = val;
+  this->crs.assign(val.data(), val.size());
 __isset.crs = true;
 }
 std::ostream& operator<<(std::ostream& out, const GeometryType& obj)
@@ -3423,7 +3443,7 @@ uint32_t GeometryType::read(::apache::thrift::protocol::TProtocol* iprot) {
     {
       case 1:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readString(this->crs);
+          xfer += ReadParquetString(iprot, this->crs);
           this->__isset.crs = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -3448,7 +3468,7 @@ uint32_t GeometryType::write(::apache::thrift::protocol::TProtocol* oprot) const
 
   if (this->__isset.crs) {
     xfer += oprot->writeFieldBegin("crs", ::apache::thrift::protocol::T_STRING, 1);
-    xfer += oprot->writeString(this->crs);
+    xfer += WriteParquetString(oprot, this->crs);
     xfer += oprot->writeFieldEnd();
   }
   xfer += oprot->writeFieldStop();
@@ -3456,26 +3476,28 @@ uint32_t GeometryType::write(::apache::thrift::protocol::TProtocol* oprot) const
   return xfer;
 }
 
-void swap(GeometryType &a, GeometryType &b) {
-  using ::std::swap;
-  swap(a.crs, b.crs);
-  swap(a.__isset, b.__isset);
+GeometryType::GeometryType(const GeometryType& o)
+   : crs(o.crs),
+     __isset(o.__isset) {
 }
-
-GeometryType::GeometryType(const GeometryType& other110) {
-  crs = other110.crs;
-  __isset = other110.__isset;
+GeometryType::GeometryType(const GeometryType& o, const allocator_type &alloc)
+   : crs(o.crs, alloc),
+     __isset(o.__isset) {
 }
-GeometryType::GeometryType(GeometryType&& other111) noexcept {
-  crs = std::move(other111.crs);
-  __isset = other111.__isset;
+GeometryType::GeometryType(GeometryType&& o) noexcept
+   : crs(std::move(o.crs)),
+     __isset(o.__isset) {
+}
+GeometryType::GeometryType(GeometryType&& o, const allocator_type &alloc)
+   : crs(std::move(o.crs), alloc),
+     __isset(o.__isset) {
 }
 GeometryType& GeometryType::operator=(const GeometryType& other112) {
   crs = other112.crs;
   __isset = other112.__isset;
   return *this;
 }
-GeometryType& GeometryType::operator=(GeometryType&& other113) noexcept {
+GeometryType& GeometryType::operator=(GeometryType&& other113) {
   crs = std::move(other113.crs);
   __isset = other113.__isset;
   return *this;
@@ -3491,13 +3513,13 @@ void GeometryType::printTo(std::ostream& out) const {
 GeographyType::~GeographyType() noexcept {
 }
 
-GeographyType::GeographyType() noexcept
-   : crs(),
+GeographyType::GeographyType(const allocator_type &alloc) noexcept
+   : crs(alloc),
      algorithm(SafeEnumCast<EdgeInterpolationAlgorithm>(_EdgeInterpolationAlgorithm_VALUES_TO_NAMES, 0)) {
 }
 
 void GeographyType::__set_crs(const std::string& val) {
-  this->crs = val;
+  this->crs.assign(val.data(), val.size());
 __isset.crs = true;
 }
 
@@ -3535,7 +3557,7 @@ uint32_t GeographyType::read(::apache::thrift::protocol::TProtocol* iprot) {
     {
       case 1:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readString(this->crs);
+          xfer += ReadParquetString(iprot, this->crs);
           this->__isset.crs = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -3570,7 +3592,7 @@ uint32_t GeographyType::write(::apache::thrift::protocol::TProtocol* oprot) cons
 
   if (this->__isset.crs) {
     xfer += oprot->writeFieldBegin("crs", ::apache::thrift::protocol::T_STRING, 1);
-    xfer += oprot->writeString(this->crs);
+    xfer += WriteParquetString(oprot, this->crs);
     xfer += oprot->writeFieldEnd();
   }
   if (this->__isset.algorithm) {
@@ -3583,22 +3605,25 @@ uint32_t GeographyType::write(::apache::thrift::protocol::TProtocol* oprot) cons
   return xfer;
 }
 
-void swap(GeographyType &a, GeographyType &b) {
-  using ::std::swap;
-  swap(a.crs, b.crs);
-  swap(a.algorithm, b.algorithm);
-  swap(a.__isset, b.__isset);
+GeographyType::GeographyType(const GeographyType& o)
+   : crs(o.crs),
+     algorithm(o.algorithm),
+     __isset(o.__isset) {
 }
-
-GeographyType::GeographyType(const GeographyType& other115) {
-  crs = other115.crs;
-  algorithm = other115.algorithm;
-  __isset = other115.__isset;
+GeographyType::GeographyType(const GeographyType& o, const allocator_type &alloc)
+   : crs(o.crs, alloc),
+     algorithm(o.algorithm),
+     __isset(o.__isset) {
 }
-GeographyType::GeographyType(GeographyType&& other116) noexcept {
-  crs = std::move(other116.crs);
-  algorithm = other116.algorithm;
-  __isset = other116.__isset;
+GeographyType::GeographyType(GeographyType&& o) noexcept
+   : crs(std::move(o.crs)),
+     algorithm(o.algorithm),
+     __isset(o.__isset) {
+}
+GeographyType::GeographyType(GeographyType&& o, const allocator_type &alloc)
+   : crs(std::move(o.crs), alloc),
+     algorithm(o.algorithm),
+     __isset(o.__isset) {
 }
 GeographyType& GeographyType::operator=(const GeographyType& other117) {
   crs = other117.crs;
@@ -3606,7 +3631,7 @@ GeographyType& GeographyType::operator=(const GeographyType& other117) {
   __isset = other117.__isset;
   return *this;
 }
-GeographyType& GeographyType::operator=(GeographyType&& other118) noexcept {
+GeographyType& GeographyType::operator=(GeographyType&& other118) {
   crs = std::move(other118.crs);
   algorithm = other118.algorithm;
   __isset = other118.__isset;
@@ -3624,7 +3649,9 @@ void GeographyType::printTo(std::ostream& out) const {
 LogicalType::~LogicalType() noexcept {
 }
 
-LogicalType::LogicalType() noexcept {
+LogicalType::LogicalType(const allocator_type &alloc) noexcept
+   : GEOMETRY(alloc),
+     GEOGRAPHY(alloc) {
 }
 
 void LogicalType::__set_STRING(const StringType& val) {
@@ -3982,67 +4009,85 @@ uint32_t LogicalType::write(::apache::thrift::protocol::TProtocol* oprot) const 
   return xfer;
 }
 
-void swap(LogicalType &a, LogicalType &b) {
-  using ::std::swap;
-  swap(a.STRING, b.STRING);
-  swap(a.MAP, b.MAP);
-  swap(a.LIST, b.LIST);
-  swap(a.ENUM, b.ENUM);
-  swap(a.DECIMAL, b.DECIMAL);
-  swap(a.DATE, b.DATE);
-  swap(a.TIME, b.TIME);
-  swap(a.TIMESTAMP, b.TIMESTAMP);
-  swap(a.INTEGER, b.INTEGER);
-  swap(a.UNKNOWN, b.UNKNOWN);
-  swap(a.JSON, b.JSON);
-  swap(a.BSON, b.BSON);
-  swap(a.UUID, b.UUID);
-  swap(a.FLOAT16, b.FLOAT16);
-  swap(a.VARIANT, b.VARIANT);
-  swap(a.GEOMETRY, b.GEOMETRY);
-  swap(a.GEOGRAPHY, b.GEOGRAPHY);
-  swap(a.__isset, b.__isset);
+LogicalType::LogicalType(const LogicalType& o)
+   : STRING(o.STRING),
+     MAP(o.MAP),
+     LIST(o.LIST),
+     ENUM(o.ENUM),
+     DECIMAL(o.DECIMAL),
+     DATE(o.DATE),
+     TIME(o.TIME),
+     TIMESTAMP(o.TIMESTAMP),
+     INTEGER(o.INTEGER),
+     UNKNOWN(o.UNKNOWN),
+     JSON(o.JSON),
+     BSON(o.BSON),
+     UUID(o.UUID),
+     FLOAT16(o.FLOAT16),
+     VARIANT(o.VARIANT),
+     GEOMETRY(o.GEOMETRY),
+     GEOGRAPHY(o.GEOGRAPHY),
+     __isset(o.__isset) {
 }
-
-LogicalType::LogicalType(const LogicalType& other119) {
-  STRING = other119.STRING;
-  MAP = other119.MAP;
-  LIST = other119.LIST;
-  ENUM = other119.ENUM;
-  DECIMAL = other119.DECIMAL;
-  DATE = other119.DATE;
-  TIME = other119.TIME;
-  TIMESTAMP = other119.TIMESTAMP;
-  INTEGER = other119.INTEGER;
-  UNKNOWN = other119.UNKNOWN;
-  JSON = other119.JSON;
-  BSON = other119.BSON;
-  UUID = other119.UUID;
-  FLOAT16 = other119.FLOAT16;
-  VARIANT = other119.VARIANT;
-  GEOMETRY = other119.GEOMETRY;
-  GEOGRAPHY = other119.GEOGRAPHY;
-  __isset = other119.__isset;
+LogicalType::LogicalType(const LogicalType& o, const allocator_type &alloc)
+   : STRING(o.STRING),
+     MAP(o.MAP),
+     LIST(o.LIST),
+     ENUM(o.ENUM),
+     DECIMAL(o.DECIMAL),
+     DATE(o.DATE),
+     TIME(o.TIME),
+     TIMESTAMP(o.TIMESTAMP),
+     INTEGER(o.INTEGER),
+     UNKNOWN(o.UNKNOWN),
+     JSON(o.JSON),
+     BSON(o.BSON),
+     UUID(o.UUID),
+     FLOAT16(o.FLOAT16),
+     VARIANT(o.VARIANT),
+     GEOMETRY(o.GEOMETRY, alloc),
+     GEOGRAPHY(o.GEOGRAPHY, alloc),
+     __isset(o.__isset) {
 }
-LogicalType::LogicalType(LogicalType&& other120) noexcept {
-  STRING = std::move(other120.STRING);
-  MAP = std::move(other120.MAP);
-  LIST = std::move(other120.LIST);
-  ENUM = std::move(other120.ENUM);
-  DECIMAL = std::move(other120.DECIMAL);
-  DATE = std::move(other120.DATE);
-  TIME = std::move(other120.TIME);
-  TIMESTAMP = std::move(other120.TIMESTAMP);
-  INTEGER = std::move(other120.INTEGER);
-  UNKNOWN = std::move(other120.UNKNOWN);
-  JSON = std::move(other120.JSON);
-  BSON = std::move(other120.BSON);
-  UUID = std::move(other120.UUID);
-  FLOAT16 = std::move(other120.FLOAT16);
-  VARIANT = std::move(other120.VARIANT);
-  GEOMETRY = std::move(other120.GEOMETRY);
-  GEOGRAPHY = std::move(other120.GEOGRAPHY);
-  __isset = other120.__isset;
+LogicalType::LogicalType(LogicalType&& o) noexcept
+   : STRING(std::move(o.STRING)),
+     MAP(std::move(o.MAP)),
+     LIST(std::move(o.LIST)),
+     ENUM(std::move(o.ENUM)),
+     DECIMAL(std::move(o.DECIMAL)),
+     DATE(std::move(o.DATE)),
+     TIME(std::move(o.TIME)),
+     TIMESTAMP(std::move(o.TIMESTAMP)),
+     INTEGER(std::move(o.INTEGER)),
+     UNKNOWN(std::move(o.UNKNOWN)),
+     JSON(std::move(o.JSON)),
+     BSON(std::move(o.BSON)),
+     UUID(std::move(o.UUID)),
+     FLOAT16(std::move(o.FLOAT16)),
+     VARIANT(std::move(o.VARIANT)),
+     GEOMETRY(std::move(o.GEOMETRY)),
+     GEOGRAPHY(std::move(o.GEOGRAPHY)),
+     __isset(o.__isset) {
+}
+LogicalType::LogicalType(LogicalType&& o, const allocator_type &alloc)
+   : STRING(std::move(o.STRING)),
+     MAP(std::move(o.MAP)),
+     LIST(std::move(o.LIST)),
+     ENUM(std::move(o.ENUM)),
+     DECIMAL(std::move(o.DECIMAL)),
+     DATE(std::move(o.DATE)),
+     TIME(std::move(o.TIME)),
+     TIMESTAMP(std::move(o.TIMESTAMP)),
+     INTEGER(std::move(o.INTEGER)),
+     UNKNOWN(std::move(o.UNKNOWN)),
+     JSON(std::move(o.JSON)),
+     BSON(std::move(o.BSON)),
+     UUID(std::move(o.UUID)),
+     FLOAT16(std::move(o.FLOAT16)),
+     VARIANT(std::move(o.VARIANT)),
+     GEOMETRY(std::move(o.GEOMETRY), alloc),
+     GEOGRAPHY(std::move(o.GEOGRAPHY), alloc),
+     __isset(o.__isset) {
 }
 LogicalType& LogicalType::operator=(const LogicalType& other121) {
   STRING = other121.STRING;
@@ -4065,7 +4110,7 @@ LogicalType& LogicalType::operator=(const LogicalType& other121) {
   __isset = other121.__isset;
   return *this;
 }
-LogicalType& LogicalType::operator=(LogicalType&& other122) noexcept {
+LogicalType& LogicalType::operator=(LogicalType&& other122) {
   STRING = std::move(other122.STRING);
   MAP = std::move(other122.MAP);
   LIST = std::move(other122.LIST);
@@ -4113,16 +4158,17 @@ void LogicalType::printTo(std::ostream& out) const {
 SchemaElement::~SchemaElement() noexcept {
 }
 
-SchemaElement::SchemaElement() noexcept
+SchemaElement::SchemaElement(const allocator_type &alloc) noexcept
    : type(SafeEnumCast<Type>(_Type_VALUES_TO_NAMES, 0)),
      type_length(0),
      repetition_type(SafeEnumCast<FieldRepetitionType>(_FieldRepetitionType_VALUES_TO_NAMES, 0)),
-     name(),
+     name(alloc),
      num_children(0),
      converted_type(SafeEnumCast<ConvertedType>(_ConvertedType_VALUES_TO_NAMES, 0)),
      scale(0),
      precision(0),
-     field_id(0) {
+     field_id(0),
+     logicalType(alloc) {
 }
 
 void SchemaElement::__set_type(const Type::type val) {
@@ -4141,7 +4187,7 @@ __isset.repetition_type = true;
 }
 
 void SchemaElement::__set_name(const std::string& val) {
-  this->name = val;
+  this->name.assign(val.data(), val.size());
 }
 
 void SchemaElement::__set_num_children(const int32_t val) {
@@ -4232,7 +4278,7 @@ uint32_t SchemaElement::read(::apache::thrift::protocol::TProtocol* iprot) {
         break;
       case 4:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readString(this->name);
+          xfer += ReadParquetString(iprot, this->name);
           isset_name = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -4323,7 +4369,7 @@ uint32_t SchemaElement::write(::apache::thrift::protocol::TProtocol* oprot) cons
     xfer += oprot->writeFieldEnd();
   }
   xfer += oprot->writeFieldBegin("name", ::apache::thrift::protocol::T_STRING, 4);
-  xfer += oprot->writeString(this->name);
+  xfer += WriteParquetString(oprot, this->name);
   xfer += oprot->writeFieldEnd();
 
   if (this->__isset.num_children) {
@@ -4361,46 +4407,57 @@ uint32_t SchemaElement::write(::apache::thrift::protocol::TProtocol* oprot) cons
   return xfer;
 }
 
-void swap(SchemaElement &a, SchemaElement &b) {
-  using ::std::swap;
-  swap(a.type, b.type);
-  swap(a.type_length, b.type_length);
-  swap(a.repetition_type, b.repetition_type);
-  swap(a.name, b.name);
-  swap(a.num_children, b.num_children);
-  swap(a.converted_type, b.converted_type);
-  swap(a.scale, b.scale);
-  swap(a.precision, b.precision);
-  swap(a.field_id, b.field_id);
-  swap(a.logicalType, b.logicalType);
-  swap(a.__isset, b.__isset);
+SchemaElement::SchemaElement(const SchemaElement& o)
+   : type(o.type),
+     type_length(o.type_length),
+     repetition_type(o.repetition_type),
+     name(o.name),
+     num_children(o.num_children),
+     converted_type(o.converted_type),
+     scale(o.scale),
+     precision(o.precision),
+     field_id(o.field_id),
+     logicalType(o.logicalType),
+     __isset(o.__isset) {
 }
-
-SchemaElement::SchemaElement(const SchemaElement& other126) {
-  type = other126.type;
-  type_length = other126.type_length;
-  repetition_type = other126.repetition_type;
-  name = other126.name;
-  num_children = other126.num_children;
-  converted_type = other126.converted_type;
-  scale = other126.scale;
-  precision = other126.precision;
-  field_id = other126.field_id;
-  logicalType = other126.logicalType;
-  __isset = other126.__isset;
+SchemaElement::SchemaElement(const SchemaElement& o, const allocator_type &alloc)
+   : type(o.type),
+     type_length(o.type_length),
+     repetition_type(o.repetition_type),
+     name(o.name, alloc),
+     num_children(o.num_children),
+     converted_type(o.converted_type),
+     scale(o.scale),
+     precision(o.precision),
+     field_id(o.field_id),
+     logicalType(o.logicalType, alloc),
+     __isset(o.__isset) {
 }
-SchemaElement::SchemaElement(SchemaElement&& other127) noexcept {
-  type = other127.type;
-  type_length = other127.type_length;
-  repetition_type = other127.repetition_type;
-  name = std::move(other127.name);
-  num_children = other127.num_children;
-  converted_type = other127.converted_type;
-  scale = other127.scale;
-  precision = other127.precision;
-  field_id = other127.field_id;
-  logicalType = std::move(other127.logicalType);
-  __isset = other127.__isset;
+SchemaElement::SchemaElement(SchemaElement&& o) noexcept
+   : type(o.type),
+     type_length(o.type_length),
+     repetition_type(o.repetition_type),
+     name(std::move(o.name)),
+     num_children(o.num_children),
+     converted_type(o.converted_type),
+     scale(o.scale),
+     precision(o.precision),
+     field_id(o.field_id),
+     logicalType(std::move(o.logicalType)),
+     __isset(o.__isset) {
+}
+SchemaElement::SchemaElement(SchemaElement&& o, const allocator_type &alloc)
+   : type(o.type),
+     type_length(o.type_length),
+     repetition_type(o.repetition_type),
+     name(std::move(o.name), alloc),
+     num_children(o.num_children),
+     converted_type(o.converted_type),
+     scale(o.scale),
+     precision(o.precision),
+     field_id(o.field_id),
+     logicalType(std::move(o.logicalType), alloc),
+     __isset(o.__isset) {
 }
 SchemaElement& SchemaElement::operator=(const SchemaElement& other128) {
   type = other128.type;
@@ -4416,7 +4473,7 @@ SchemaElement& SchemaElement::operator=(const SchemaElement& other128) {
   __isset = other128.__isset;
   return *this;
 }
-SchemaElement& SchemaElement::operator=(SchemaElement&& other129) noexcept {
+SchemaElement& SchemaElement::operator=(SchemaElement&& other129) {
   type = other129.type;
   type_length = other129.type_length;
   repetition_type = other129.repetition_type;
@@ -4450,11 +4507,12 @@ void SchemaElement::printTo(std::ostream& out) const {
 DataPageHeader::~DataPageHeader() noexcept {
 }
 
-DataPageHeader::DataPageHeader() noexcept
+DataPageHeader::DataPageHeader(const allocator_type &alloc) noexcept
    : num_values(0),
      encoding(SafeEnumCast<Encoding>(_Encoding_VALUES_TO_NAMES, 0)),
      definition_level_encoding(SafeEnumCast<Encoding>(_Encoding_VALUES_TO_NAMES, 0)),
-     repetition_level_encoding(SafeEnumCast<Encoding>(_Encoding_VALUES_TO_NAMES, 0)) {
+     repetition_level_encoding(SafeEnumCast<Encoding>(_Encoding_VALUES_TO_NAMES, 0)),
+     statistics(alloc) {
 }
 
 void DataPageHeader::__set_num_values(const int32_t val) {
@@ -4606,31 +4664,37 @@ uint32_t DataPageHeader::write(::apache::thrift::protocol::TProtocol* oprot) con
   return xfer;
 }
 
-void swap(DataPageHeader &a, DataPageHeader &b) {
-  using ::std::swap;
-  swap(a.num_values, b.num_values);
-  swap(a.encoding, b.encoding);
-  swap(a.definition_level_encoding, b.definition_level_encoding);
-  swap(a.repetition_level_encoding, b.repetition_level_encoding);
-  swap(a.statistics, b.statistics);
-  swap(a.__isset, b.__isset);
+DataPageHeader::DataPageHeader(const DataPageHeader& o)
+   : num_values(o.num_values),
+     encoding(o.encoding),
+     definition_level_encoding(o.definition_level_encoding),
+     repetition_level_encoding(o.repetition_level_encoding),
+     statistics(o.statistics),
+     __isset(o.__isset) {
 }
-
-DataPageHeader::DataPageHeader(const DataPageHeader& other133) {
-  num_values = other133.num_values;
-  encoding = other133.encoding;
-  definition_level_encoding = other133.definition_level_encoding;
-  repetition_level_encoding = other133.repetition_level_encoding;
-  statistics = other133.statistics;
-  __isset = other133.__isset;
+DataPageHeader::DataPageHeader(const DataPageHeader& o, const allocator_type &alloc)
+   : num_values(o.num_values),
+     encoding(o.encoding),
+     definition_level_encoding(o.definition_level_encoding),
+     repetition_level_encoding(o.repetition_level_encoding),
+     statistics(o.statistics, alloc),
+     __isset(o.__isset) {
 }
-DataPageHeader::DataPageHeader(DataPageHeader&& other134) noexcept {
-  num_values = other134.num_values;
-  encoding = other134.encoding;
-  definition_level_encoding = other134.definition_level_encoding;
-  repetition_level_encoding = other134.repetition_level_encoding;
-  statistics = std::move(other134.statistics);
-  __isset = other134.__isset;
+DataPageHeader::DataPageHeader(DataPageHeader&& o) noexcept
+   : num_values(o.num_values),
+     encoding(o.encoding),
+     definition_level_encoding(o.definition_level_encoding),
+     repetition_level_encoding(o.repetition_level_encoding),
+     statistics(std::move(o.statistics)),
+     __isset(o.__isset) {
+}
+DataPageHeader::DataPageHeader(DataPageHeader&& o, const allocator_type &alloc)
+   : num_values(o.num_values),
+     encoding(o.encoding),
+     definition_level_encoding(o.definition_level_encoding),
+     repetition_level_encoding(o.repetition_level_encoding),
+     statistics(std::move(o.statistics), alloc),
+     __isset(o.__isset) {
 }
 DataPageHeader& DataPageHeader::operator=(const DataPageHeader& other135) {
   num_values = other135.num_values;
@@ -4641,7 +4705,7 @@ DataPageHeader& DataPageHeader::operator=(const DataPageHeader& other135) {
   __isset = other135.__isset;
   return *this;
 }
-DataPageHeader& DataPageHeader::operator=(DataPageHeader&& other136) noexcept {
+DataPageHeader& DataPageHeader::operator=(DataPageHeader&& other136) {
   num_values = other136.num_values;
   encoding = other136.encoding;
   definition_level_encoding = other136.definition_level_encoding;
@@ -4902,14 +4966,15 @@ void DictionaryPageHeader::printTo(std::ostream& out) const {
 DataPageHeaderV2::~DataPageHeaderV2() noexcept {
 }
 
-DataPageHeaderV2::DataPageHeaderV2() noexcept
+DataPageHeaderV2::DataPageHeaderV2(const allocator_type &alloc) noexcept
    : num_values(0),
      num_nulls(0),
      num_rows(0),
      encoding(SafeEnumCast<Encoding>(_Encoding_VALUES_TO_NAMES, 0)),
      definition_levels_byte_length(0),
      repetition_levels_byte_length(0),
-     is_compressed(true) {
+     is_compressed(true),
+     statistics(alloc) {
 }
 
 void DataPageHeaderV2::__set_num_values(const int32_t val) {
@@ -5113,40 +5178,49 @@ uint32_t DataPageHeaderV2::write(::apache::thrift::protocol::TProtocol* oprot) c
   return xfer;
 }
 
-void swap(DataPageHeaderV2 &a, DataPageHeaderV2 &b) {
-  using ::std::swap;
-  swap(a.num_values, b.num_values);
-  swap(a.num_nulls, b.num_nulls);
-  swap(a.num_rows, b.num_rows);
-  swap(a.encoding, b.encoding);
-  swap(a.definition_levels_byte_length, b.definition_levels_byte_length);
-  swap(a.repetition_levels_byte_length, b.repetition_levels_byte_length);
-  swap(a.is_compressed, b.is_compressed);
-  swap(a.statistics, b.statistics);
-  swap(a.__isset, b.__isset);
+DataPageHeaderV2::DataPageHeaderV2(const DataPageHeaderV2& o)
+   : num_values(o.num_values),
+     num_nulls(o.num_nulls),
+     num_rows(o.num_rows),
+     encoding(o.encoding),
+     definition_levels_byte_length(o.definition_levels_byte_length),
+     repetition_levels_byte_length(o.repetition_levels_byte_length),
+     is_compressed(o.is_compressed),
+     statistics(o.statistics),
+     __isset(o.__isset) {
 }
-
-DataPageHeaderV2::DataPageHeaderV2(const DataPageHeaderV2& other147) {
-  num_values = other147.num_values;
-  num_nulls = other147.num_nulls;
-  num_rows = other147.num_rows;
-  encoding = other147.encoding;
-  definition_levels_byte_length = other147.definition_levels_byte_length;
-  repetition_levels_byte_length = other147.repetition_levels_byte_length;
-  is_compressed = other147.is_compressed;
-  statistics = other147.statistics;
-  __isset = other147.__isset;
+DataPageHeaderV2::DataPageHeaderV2(const DataPageHeaderV2& o, const allocator_type &alloc)
+   : num_values(o.num_values),
+     num_nulls(o.num_nulls),
+     num_rows(o.num_rows),
+     encoding(o.encoding),
+     definition_levels_byte_length(o.definition_levels_byte_length),
+     repetition_levels_byte_length(o.repetition_levels_byte_length),
+     is_compressed(o.is_compressed),
+     statistics(o.statistics, alloc),
+     __isset(o.__isset) {
 }
-DataPageHeaderV2::DataPageHeaderV2(DataPageHeaderV2&& other148) noexcept {
-  num_values = other148.num_values;
-  num_nulls = other148.num_nulls;
-  num_rows = other148.num_rows;
-  encoding = other148.encoding;
-  definition_levels_byte_length = other148.definition_levels_byte_length;
-  repetition_levels_byte_length = other148.repetition_levels_byte_length;
-  is_compressed = other148.is_compressed;
-  statistics = std::move(other148.statistics);
-  __isset = other148.__isset;
+DataPageHeaderV2::DataPageHeaderV2(DataPageHeaderV2&& o) noexcept
+   : num_values(o.num_values),
+     num_nulls(o.num_nulls),
+     num_rows(o.num_rows),
+     encoding(o.encoding),
+     definition_levels_byte_length(o.definition_levels_byte_length),
+     repetition_levels_byte_length(o.repetition_levels_byte_length),
+     is_compressed(o.is_compressed),
+     statistics(std::move(o.statistics)),
+     __isset(o.__isset) {
+}
+DataPageHeaderV2::DataPageHeaderV2(DataPageHeaderV2&& o, const allocator_type &alloc)
+   : num_values(o.num_values),
+     num_nulls(o.num_nulls),
+     num_rows(o.num_rows),
+     encoding(o.encoding),
+     definition_levels_byte_length(o.definition_levels_byte_length),
+     repetition_levels_byte_length(o.repetition_levels_byte_length),
+     is_compressed(o.is_compressed),
+     statistics(std::move(o.statistics), alloc),
+     __isset(o.__isset) {
 }
 DataPageHeaderV2& DataPageHeaderV2::operator=(const DataPageHeaderV2& other149) {
   num_values = other149.num_values;
@@ -5160,7 +5234,7 @@ DataPageHeaderV2& DataPageHeaderV2::operator=(const DataPageHeaderV2& other149) 
   __isset = other149.__isset;
   return *this;
 }
-DataPageHeaderV2& DataPageHeaderV2::operator=(DataPageHeaderV2&& other150) noexcept {
+DataPageHeaderV2& DataPageHeaderV2::operator=(DataPageHeaderV2&& other150) {
   num_values = other150.num_values;
   num_nulls = other150.num_nulls;
   num_rows = other150.num_rows;
@@ -5913,11 +5987,13 @@ void BloomFilterHeader::printTo(std::ostream& out) const {
 PageHeader::~PageHeader() noexcept {
 }
 
-PageHeader::PageHeader() noexcept
+PageHeader::PageHeader(const allocator_type &alloc) noexcept
    : type(SafeEnumCast<PageType>(_PageType_VALUES_TO_NAMES, 0)),
      uncompressed_page_size(0),
      compressed_page_size(0),
-     crc(0) {
+     crc(0),
+     data_page_header(alloc),
+     data_page_header_v2(alloc) {
 }
 
 void PageHeader::__set_type(const PageType::type val) {
@@ -6118,40 +6194,49 @@ uint32_t PageHeader::write(::apache::thrift::protocol::TProtocol* oprot) const {
   return xfer;
 }
 
-void swap(PageHeader &a, PageHeader &b) {
-  using ::std::swap;
-  swap(a.type, b.type);
-  swap(a.uncompressed_page_size, b.uncompressed_page_size);
-  swap(a.compressed_page_size, b.compressed_page_size);
-  swap(a.crc, b.crc);
-  swap(a.data_page_header, b.data_page_header);
-  swap(a.index_page_header, b.index_page_header);
-  swap(a.dictionary_page_header, b.dictionary_page_header);
-  swap(a.data_page_header_v2, b.data_page_header_v2);
-  swap(a.__isset, b.__isset);
+PageHeader::PageHeader(const PageHeader& o)
+   : type(o.type),
+     uncompressed_page_size(o.uncompressed_page_size),
+     compressed_page_size(o.compressed_page_size),
+     crc(o.crc),
+     data_page_header(o.data_page_header),
+     index_page_header(o.index_page_header),
+     dictionary_page_header(o.dictionary_page_header),
+     data_page_header_v2(o.data_page_header_v2),
+     __isset(o.__isset) {
 }
-
-PageHeader::PageHeader(const PageHeader& other180) {
-  type = other180.type;
-  uncompressed_page_size = other180.uncompressed_page_size;
-  compressed_page_size = other180.compressed_page_size;
-  crc = other180.crc;
-  data_page_header = other180.data_page_header;
-  index_page_header = other180.index_page_header;
-  dictionary_page_header = other180.dictionary_page_header;
-  data_page_header_v2 = other180.data_page_header_v2;
-  __isset = other180.__isset;
+PageHeader::PageHeader(const PageHeader& o, const allocator_type &alloc)
+   : type(o.type),
+     uncompressed_page_size(o.uncompressed_page_size),
+     compressed_page_size(o.compressed_page_size),
+     crc(o.crc),
+     data_page_header(o.data_page_header, alloc),
+     index_page_header(o.index_page_header),
+     dictionary_page_header(o.dictionary_page_header),
+     data_page_header_v2(o.data_page_header_v2, alloc),
+     __isset(o.__isset) {
 }
-PageHeader::PageHeader(PageHeader&& other181) noexcept {
-  type = other181.type;
-  uncompressed_page_size = other181.uncompressed_page_size;
-  compressed_page_size = other181.compressed_page_size;
-  crc = other181.crc;
-  data_page_header = std::move(other181.data_page_header);
-  index_page_header = std::move(other181.index_page_header);
-  dictionary_page_header = std::move(other181.dictionary_page_header);
-  data_page_header_v2 = std::move(other181.data_page_header_v2);
-  __isset = other181.__isset;
+PageHeader::PageHeader(PageHeader&& o) noexcept
+   : type(o.type),
+     uncompressed_page_size(o.uncompressed_page_size),
+     compressed_page_size(o.compressed_page_size),
+     crc(o.crc),
+     data_page_header(std::move(o.data_page_header)),
+     index_page_header(std::move(o.index_page_header)),
+     dictionary_page_header(std::move(o.dictionary_page_header)),
+     data_page_header_v2(std::move(o.data_page_header_v2)),
+     __isset(o.__isset) {
+}
+PageHeader::PageHeader(PageHeader&& o, const allocator_type &alloc)
+   : type(o.type),
+     uncompressed_page_size(o.uncompressed_page_size),
+     compressed_page_size(o.compressed_page_size),
+     crc(o.crc),
+     data_page_header(std::move(o.data_page_header), alloc),
+     index_page_header(std::move(o.index_page_header)),
+     dictionary_page_header(std::move(o.dictionary_page_header)),
+     data_page_header_v2(std::move(o.data_page_header_v2), alloc),
+     __isset(o.__isset) {
 }
 PageHeader& PageHeader::operator=(const PageHeader& other182) {
   type = other182.type;
@@ -6165,7 +6250,7 @@ PageHeader& PageHeader::operator=(const PageHeader& other182) {
   __isset = other182.__isset;
   return *this;
 }
-PageHeader& PageHeader::operator=(PageHeader&& other183) noexcept {
+PageHeader& PageHeader::operator=(PageHeader&& other183) {
   type = other183.type;
   uncompressed_page_size = other183.uncompressed_page_size;
   compressed_page_size = other183.compressed_page_size;
@@ -6195,17 +6280,17 @@ void PageHeader::printTo(std::ostream& out) const {
 KeyValue::~KeyValue() noexcept {
 }
 
-KeyValue::KeyValue() noexcept
-   : key(),
-     value() {
+KeyValue::KeyValue(const allocator_type &alloc) noexcept
+   : key(alloc),
+     value(alloc) {
 }
 
 void KeyValue::__set_key(const std::string& val) {
-  this->key = val;
+  this->key.assign(val.data(), val.size());
 }
 
 void KeyValue::__set_value(const std::string& val) {
-  this->value = val;
+  this->value.assign(val.data(), val.size());
 __isset.value = true;
 }
 std::ostream& operator<<(std::ostream& out, const KeyValue& obj)
@@ -6239,7 +6324,7 @@ uint32_t KeyValue::read(::apache::thrift::protocol::TProtocol* iprot) {
     {
       case 1:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readString(this->key);
+          xfer += ReadParquetString(iprot, this->key);
           isset_key = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -6247,7 +6332,7 @@ uint32_t KeyValue::read(::apache::thrift::protocol::TProtocol* iprot) {
         break;
       case 2:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readString(this->value);
+          xfer += ReadParquetString(iprot, this->value);
           this->__isset.value = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -6273,12 +6358,12 @@ uint32_t KeyValue::write(::apache::thrift::protocol::TProtocol* oprot) const {
   xfer += oprot->writeStructBegin("KeyValue");
 
   xfer += oprot->writeFieldBegin("key", ::apache::thrift::protocol::T_STRING, 1);
-  xfer += oprot->writeString(this->key);
+  xfer += WriteParquetString(oprot, this->key);
   xfer += oprot->writeFieldEnd();
 
   if (this->__isset.value) {
     xfer += oprot->writeFieldBegin("value", ::apache::thrift::protocol::T_STRING, 2);
-    xfer += oprot->writeString(this->value);
+    xfer += WriteParquetString(oprot, this->value);
     xfer += oprot->writeFieldEnd();
   }
   xfer += oprot->writeFieldStop();
@@ -6286,22 +6371,25 @@ uint32_t KeyValue::write(::apache::thrift::protocol::TProtocol* oprot) const {
   return xfer;
 }
 
-void swap(KeyValue &a, KeyValue &b) {
-  using ::std::swap;
-  swap(a.key, b.key);
-  swap(a.value, b.value);
-  swap(a.__isset, b.__isset);
+KeyValue::KeyValue(const KeyValue& o)
+   : key(o.key),
+     value(o.value),
+     __isset(o.__isset) {
 }
-
-KeyValue::KeyValue(const KeyValue& other184) {
-  key = other184.key;
-  value = other184.value;
-  __isset = other184.__isset;
+KeyValue::KeyValue(const KeyValue& o, const allocator_type &alloc)
+   : key(o.key, alloc),
+     value(o.value, alloc),
+     __isset(o.__isset) {
 }
-KeyValue::KeyValue(KeyValue&& other185) noexcept {
-  key = std::move(other185.key);
-  value = std::move(other185.value);
-  __isset = other185.__isset;
+KeyValue::KeyValue(KeyValue&& o) noexcept
+   : key(std::move(o.key)),
+     value(std::move(o.value)),
+     __isset(o.__isset) {
+}
+KeyValue::KeyValue(KeyValue&& o, const allocator_type &alloc)
+   : key(std::move(o.key), alloc),
+     value(std::move(o.value), alloc),
+     __isset(o.__isset) {
 }
 KeyValue& KeyValue::operator=(const KeyValue& other186) {
   key = other186.key;
@@ -6309,7 +6397,7 @@ KeyValue& KeyValue::operator=(const KeyValue& other186) {
   __isset = other186.__isset;
   return *this;
 }
-KeyValue& KeyValue::operator=(KeyValue&& other187) noexcept {
+KeyValue& KeyValue::operator=(KeyValue&& other187) {
   key = std::move(other187.key);
   value = std::move(other187.value);
   __isset = other187.__isset;
@@ -6639,28 +6727,35 @@ void PageEncodingStats::printTo(std::ostream& out) const {
 ColumnMetaData::~ColumnMetaData() noexcept {
 }
 
-ColumnMetaData::ColumnMetaData() noexcept
+ColumnMetaData::ColumnMetaData(const allocator_type &alloc) noexcept
    : type(SafeEnumCast<Type>(_Type_VALUES_TO_NAMES, 0)),
+     encodings(alloc),
+     path_in_schema(alloc),
      codec(SafeEnumCast<CompressionCodec>(_CompressionCodec_VALUES_TO_NAMES, 0)),
      num_values(0),
      total_uncompressed_size(0),
      total_compressed_size(0),
+     key_value_metadata(alloc),
      data_page_offset(0),
      index_page_offset(0),
      dictionary_page_offset(0),
+     statistics(alloc),
+     encoding_stats(alloc),
      bloom_filter_offset(0),
-     bloom_filter_length(0) {
+     bloom_filter_length(0),
+     size_statistics(alloc),
+     geospatial_statistics(alloc) {
 }
 
 void ColumnMetaData::__set_type(const Type::type val) {
   this->type = val;
 }
 
-void ColumnMetaData::__set_encodings(const duckdb::vector<Encoding::type> & val) {
+void ColumnMetaData::__set_encodings(const ParquetVector<Encoding::type> & val) {
   this->encodings = val;
 }
 
-void ColumnMetaData::__set_path_in_schema(const duckdb::vector<std::string> & val) {
+void ColumnMetaData::__set_path_in_schema(const ParquetVector<ParquetString> & val) {
   this->path_in_schema = val;
 }
 
@@ -6680,7 +6775,7 @@ void ColumnMetaData::__set_total_compressed_size(const int64_t val) {
   this->total_compressed_size = val;
 }
 
-void ColumnMetaData::__set_key_value_metadata(const duckdb::vector<KeyValue> & val) {
+void ColumnMetaData::__set_key_value_metadata(const ParquetVector<KeyValue> & val) {
   this->key_value_metadata = val;
 __isset.key_value_metadata = true;
 }
@@ -6704,7 +6799,7 @@ void ColumnMetaData::__set_statistics(const Statistics& val) {
 __isset.statistics = true;
 }
 
-void ColumnMetaData::__set_encoding_stats(const duckdb::vector<PageEncodingStats> & val) {
+void ColumnMetaData::__set_encoding_stats(const ParquetVector<PageEncodingStats> & val) {
   this->encoding_stats = val;
 __isset.encoding_stats = true;
 }
@@ -6807,7 +6902,7 @@ uint32_t ColumnMetaData::read(::apache::thrift::protocol::TProtocol* iprot) {
             uint32_t _i209;
             for (_i209 = 0; _i209 < _size205; ++_i209)
             {
-              xfer += iprot->readString(this->path_in_schema[_i209]);
+              xfer += ReadParquetString(iprot, this->path_in_schema[_i209]);
             }
             xfer += iprot->readListEnd();
           }
@@ -6994,7 +7089,7 @@ uint32_t ColumnMetaData::write(::apache::thrift::protocol::TProtocol* oprot) con
   xfer += oprot->writeFieldBegin("encodings", ::apache::thrift::protocol::T_LIST, 2);
   {
     xfer += oprot->writeListBegin(::apache::thrift::protocol::T_I32, static_cast<uint32_t>(this->encodings.size()));
-    duckdb::vector<Encoding::type> ::const_iterator _iter221;
+    ParquetVector<Encoding::type> ::const_iterator _iter221;
     for (_iter221 = this->encodings.begin(); _iter221 != this->encodings.end(); ++_iter221)
     {
       xfer += oprot->writeI32(static_cast<int32_t>((*_iter221)));
@@ -7006,10 +7101,10 @@ uint32_t ColumnMetaData::write(::apache::thrift::protocol::TProtocol* oprot) con
   xfer += oprot->writeFieldBegin("path_in_schema", ::apache::thrift::protocol::T_LIST, 3);
   {
     xfer += oprot->writeListBegin(::apache::thrift::protocol::T_STRING, static_cast<uint32_t>(this->path_in_schema.size()));
-    duckdb::vector<std::string> ::const_iterator _iter222;
+    ParquetVector<ParquetString> ::const_iterator _iter222;
     for (_iter222 = this->path_in_schema.begin(); _iter222 != this->path_in_schema.end(); ++_iter222)
     {
-      xfer += oprot->writeString((*_iter222));
+      xfer += WriteParquetString(oprot, (*_iter222));
     }
     xfer += oprot->writeListEnd();
   }
@@ -7035,7 +7130,7 @@ uint32_t ColumnMetaData::write(::apache::thrift::protocol::TProtocol* oprot) con
     xfer += oprot->writeFieldBegin("key_value_metadata", ::apache::thrift::protocol::T_LIST, 8);
     {
       xfer += oprot->writeListBegin(::apache::thrift::protocol::T_STRUCT, static_cast<uint32_t>(this->key_value_metadata.size()));
-      duckdb::vector<KeyValue> ::const_iterator _iter223;
+      ParquetVector<KeyValue> ::const_iterator _iter223;
       for (_iter223 = this->key_value_metadata.begin(); _iter223 != this->key_value_metadata.end(); ++_iter223)
       {
         xfer += (*_iter223).write(oprot);
@@ -7067,7 +7162,7 @@ uint32_t ColumnMetaData::write(::apache::thrift::protocol::TProtocol* oprot) con
     xfer += oprot->writeFieldBegin("encoding_stats", ::apache::thrift::protocol::T_LIST, 13);
     {
       xfer += oprot->writeListBegin(::apache::thrift::protocol::T_STRUCT, static_cast<uint32_t>(this->encoding_stats.size()));
-      duckdb::vector<PageEncodingStats> ::const_iterator _iter224;
+      ParquetVector<PageEncodingStats> ::const_iterator _iter224;
       for (_iter224 = this->encoding_stats.begin(); _iter224 != this->encoding_stats.end(); ++_iter224)
       {
         xfer += (*_iter224).write(oprot);
@@ -7101,67 +7196,85 @@ uint32_t ColumnMetaData::write(::apache::thrift::protocol::TProtocol* oprot) con
   return xfer;
 }
 
-void swap(ColumnMetaData &a, ColumnMetaData &b) {
-  using ::std::swap;
-  swap(a.type, b.type);
-  swap(a.encodings, b.encodings);
-  swap(a.path_in_schema, b.path_in_schema);
-  swap(a.codec, b.codec);
-  swap(a.num_values, b.num_values);
-  swap(a.total_uncompressed_size, b.total_uncompressed_size);
-  swap(a.total_compressed_size, b.total_compressed_size);
-  swap(a.key_value_metadata, b.key_value_metadata);
-  swap(a.data_page_offset, b.data_page_offset);
-  swap(a.index_page_offset, b.index_page_offset);
-  swap(a.dictionary_page_offset, b.dictionary_page_offset);
-  swap(a.statistics, b.statistics);
-  swap(a.encoding_stats, b.encoding_stats);
-  swap(a.bloom_filter_offset, b.bloom_filter_offset);
-  swap(a.bloom_filter_length, b.bloom_filter_length);
-  swap(a.size_statistics, b.size_statistics);
-  swap(a.geospatial_statistics, b.geospatial_statistics);
-  swap(a.__isset, b.__isset);
+ColumnMetaData::ColumnMetaData(const ColumnMetaData& o)
+   : type(o.type),
+     encodings(o.encodings),
+     path_in_schema(o.path_in_schema),
+     codec(o.codec),
+     num_values(o.num_values),
+     total_uncompressed_size(o.total_uncompressed_size),
+     total_compressed_size(o.total_compressed_size),
+     key_value_metadata(o.key_value_metadata),
+     data_page_offset(o.data_page_offset),
+     index_page_offset(o.index_page_offset),
+     dictionary_page_offset(o.dictionary_page_offset),
+     statistics(o.statistics),
+     encoding_stats(o.encoding_stats),
+     bloom_filter_offset(o.bloom_filter_offset),
+     bloom_filter_length(o.bloom_filter_length),
+     size_statistics(o.size_statistics),
+     geospatial_statistics(o.geospatial_statistics),
+     __isset(o.__isset) {
 }
-
-ColumnMetaData::ColumnMetaData(const ColumnMetaData& other225) {
-  type = other225.type;
-  encodings = other225.encodings;
-  path_in_schema = other225.path_in_schema;
-  codec = other225.codec;
-  num_values = other225.num_values;
-  total_uncompressed_size = other225.total_uncompressed_size;
-  total_compressed_size = other225.total_compressed_size;
-  key_value_metadata = other225.key_value_metadata;
-  data_page_offset = other225.data_page_offset;
-  index_page_offset = other225.index_page_offset;
-  dictionary_page_offset = other225.dictionary_page_offset;
-  statistics = other225.statistics;
-  encoding_stats = other225.encoding_stats;
-  bloom_filter_offset = other225.bloom_filter_offset;
-  bloom_filter_length = other225.bloom_filter_length;
-  size_statistics = other225.size_statistics;
-  geospatial_statistics = other225.geospatial_statistics;
-  __isset = other225.__isset;
+ColumnMetaData::ColumnMetaData(const ColumnMetaData& o, const allocator_type &alloc)
+   : type(o.type),
+     encodings(o.encodings, alloc),
+     path_in_schema(o.path_in_schema, alloc),
+     codec(o.codec),
+     num_values(o.num_values),
+     total_uncompressed_size(o.total_uncompressed_size),
+     total_compressed_size(o.total_compressed_size),
+     key_value_metadata(o.key_value_metadata, alloc),
+     data_page_offset(o.data_page_offset),
+     index_page_offset(o.index_page_offset),
+     dictionary_page_offset(o.dictionary_page_offset),
+     statistics(o.statistics, alloc),
+     encoding_stats(o.encoding_stats, alloc),
+     bloom_filter_offset(o.bloom_filter_offset),
+     bloom_filter_length(o.bloom_filter_length),
+     size_statistics(o.size_statistics, alloc),
+     geospatial_statistics(o.geospatial_statistics, alloc),
+     __isset(o.__isset) {
 }
-ColumnMetaData::ColumnMetaData(ColumnMetaData&& other226) noexcept {
-  type = other226.type;
-  encodings = std::move(other226.encodings);
-  path_in_schema = std::move(other226.path_in_schema);
-  codec = other226.codec;
-  num_values = other226.num_values;
-  total_uncompressed_size = other226.total_uncompressed_size;
-  total_compressed_size = other226.total_compressed_size;
-  key_value_metadata = std::move(other226.key_value_metadata);
-  data_page_offset = other226.data_page_offset;
-  index_page_offset = other226.index_page_offset;
-  dictionary_page_offset = other226.dictionary_page_offset;
-  statistics = std::move(other226.statistics);
-  encoding_stats = std::move(other226.encoding_stats);
-  bloom_filter_offset = other226.bloom_filter_offset;
-  bloom_filter_length = other226.bloom_filter_length;
-  size_statistics = std::move(other226.size_statistics);
-  geospatial_statistics = std::move(other226.geospatial_statistics);
-  __isset = other226.__isset;
+ColumnMetaData::ColumnMetaData(ColumnMetaData&& o) noexcept
+   : type(o.type),
+     encodings(std::move(o.encodings)),
+     path_in_schema(std::move(o.path_in_schema)),
+     codec(o.codec),
+     num_values(o.num_values),
+     total_uncompressed_size(o.total_uncompressed_size),
+     total_compressed_size(o.total_compressed_size),
+     key_value_metadata(std::move(o.key_value_metadata)),
+     data_page_offset(o.data_page_offset),
+     index_page_offset(o.index_page_offset),
+     dictionary_page_offset(o.dictionary_page_offset),
+     statistics(std::move(o.statistics)),
+     encoding_stats(std::move(o.encoding_stats)),
+     bloom_filter_offset(o.bloom_filter_offset),
+     bloom_filter_length(o.bloom_filter_length),
+     size_statistics(std::move(o.size_statistics)),
+     geospatial_statistics(std::move(o.geospatial_statistics)),
+     __isset(o.__isset) {
+}
+ColumnMetaData::ColumnMetaData(ColumnMetaData&& o, const allocator_type &alloc)
+   : type(o.type),
+     encodings(std::move(o.encodings), alloc),
+     path_in_schema(std::move(o.path_in_schema), alloc),
+     codec(o.codec),
+     num_values(o.num_values),
+     total_uncompressed_size(o.total_uncompressed_size),
+     total_compressed_size(o.total_compressed_size),
+     key_value_metadata(std::move(o.key_value_metadata), alloc),
+     data_page_offset(o.data_page_offset),
+     index_page_offset(o.index_page_offset),
+     dictionary_page_offset(o.dictionary_page_offset),
+     statistics(std::move(o.statistics), alloc),
+     encoding_stats(std::move(o.encoding_stats), alloc),
+     bloom_filter_offset(o.bloom_filter_offset),
+     bloom_filter_length(o.bloom_filter_length),
+     size_statistics(std::move(o.size_statistics), alloc),
+     geospatial_statistics(std::move(o.geospatial_statistics), alloc),
+     __isset(o.__isset) {
 }
 ColumnMetaData& ColumnMetaData::operator=(const ColumnMetaData& other227) {
   type = other227.type;
@@ -7184,7 +7297,7 @@ ColumnMetaData& ColumnMetaData::operator=(const ColumnMetaData& other227) {
   __isset = other227.__isset;
   return *this;
 }
-ColumnMetaData& ColumnMetaData::operator=(ColumnMetaData&& other228) noexcept {
+ColumnMetaData& ColumnMetaData::operator=(ColumnMetaData&& other228) {
   type = other228.type;
   encodings = std::move(other228.encodings);
   path_in_schema = std::move(other228.path_in_schema);
@@ -7309,16 +7422,17 @@ void EncryptionWithFooterKey::printTo(std::ostream& out) const {
 EncryptionWithColumnKey::~EncryptionWithColumnKey() noexcept {
 }
 
-EncryptionWithColumnKey::EncryptionWithColumnKey() noexcept
-   : key_metadata() {
+EncryptionWithColumnKey::EncryptionWithColumnKey(const allocator_type &alloc) noexcept
+   : path_in_schema(alloc),
+     key_metadata(alloc) {
 }
 
-void EncryptionWithColumnKey::__set_path_in_schema(const duckdb::vector<std::string> & val) {
+void EncryptionWithColumnKey::__set_path_in_schema(const ParquetVector<ParquetString> & val) {
   this->path_in_schema = val;
 }
 
 void EncryptionWithColumnKey::__set_key_metadata(const std::string& val) {
-  this->key_metadata = val;
+  this->key_metadata.assign(val.data(), val.size());
 __isset.key_metadata = true;
 }
 std::ostream& operator<<(std::ostream& out, const EncryptionWithColumnKey& obj)
@@ -7361,7 +7475,7 @@ uint32_t EncryptionWithColumnKey::read(::apache::thrift::protocol::TProtocol* ip
             uint32_t _i237;
             for (_i237 = 0; _i237 < _size233; ++_i237)
             {
-              xfer += iprot->readString(this->path_in_schema[_i237]);
+              xfer += ReadParquetString(iprot, this->path_in_schema[_i237]);
             }
             xfer += iprot->readListEnd();
           }
@@ -7372,7 +7486,7 @@ uint32_t EncryptionWithColumnKey::read(::apache::thrift::protocol::TProtocol* ip
         break;
       case 2:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readBinary(this->key_metadata);
+          xfer += ReadParquetBinary(iprot, this->key_metadata);
           this->__isset.key_metadata = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -7400,10 +7514,10 @@ uint32_t EncryptionWithColumnKey::write(::apache::thrift::protocol::TProtocol* o
   xfer += oprot->writeFieldBegin("path_in_schema", ::apache::thrift::protocol::T_LIST, 1);
   {
     xfer += oprot->writeListBegin(::apache::thrift::protocol::T_STRING, static_cast<uint32_t>(this->path_in_schema.size()));
-    duckdb::vector<std::string> ::const_iterator _iter238;
+    ParquetVector<ParquetString> ::const_iterator _iter238;
     for (_iter238 = this->path_in_schema.begin(); _iter238 != this->path_in_schema.end(); ++_iter238)
     {
-      xfer += oprot->writeString((*_iter238));
+      xfer += WriteParquetString(oprot, (*_iter238));
     }
     xfer += oprot->writeListEnd();
   }
@@ -7411,7 +7525,7 @@ uint32_t EncryptionWithColumnKey::write(::apache::thrift::protocol::TProtocol* o
 
   if (this->__isset.key_metadata) {
     xfer += oprot->writeFieldBegin("key_metadata", ::apache::thrift::protocol::T_STRING, 2);
-    xfer += oprot->writeBinary(this->key_metadata);
+    xfer += WriteParquetBinary(oprot, this->key_metadata);
     xfer += oprot->writeFieldEnd();
   }
   xfer += oprot->writeFieldStop();
@@ -7419,22 +7533,25 @@ uint32_t EncryptionWithColumnKey::write(::apache::thrift::protocol::TProtocol* o
   return xfer;
 }
 
-void swap(EncryptionWithColumnKey &a, EncryptionWithColumnKey &b) {
-  using ::std::swap;
-  swap(a.path_in_schema, b.path_in_schema);
-  swap(a.key_metadata, b.key_metadata);
-  swap(a.__isset, b.__isset);
+EncryptionWithColumnKey::EncryptionWithColumnKey(const EncryptionWithColumnKey& o)
+   : path_in_schema(o.path_in_schema),
+     key_metadata(o.key_metadata),
+     __isset(o.__isset) {
 }
-
-EncryptionWithColumnKey::EncryptionWithColumnKey(const EncryptionWithColumnKey& other239) {
-  path_in_schema = other239.path_in_schema;
-  key_metadata = other239.key_metadata;
-  __isset = other239.__isset;
+EncryptionWithColumnKey::EncryptionWithColumnKey(const EncryptionWithColumnKey& o, const allocator_type &alloc)
+   : path_in_schema(o.path_in_schema, alloc),
+     key_metadata(o.key_metadata, alloc),
+     __isset(o.__isset) {
 }
-EncryptionWithColumnKey::EncryptionWithColumnKey(EncryptionWithColumnKey&& other240) noexcept {
-  path_in_schema = std::move(other240.path_in_schema);
-  key_metadata = std::move(other240.key_metadata);
-  __isset = other240.__isset;
+EncryptionWithColumnKey::EncryptionWithColumnKey(EncryptionWithColumnKey&& o) noexcept
+   : path_in_schema(std::move(o.path_in_schema)),
+     key_metadata(std::move(o.key_metadata)),
+     __isset(o.__isset) {
+}
+EncryptionWithColumnKey::EncryptionWithColumnKey(EncryptionWithColumnKey&& o, const allocator_type &alloc)
+   : path_in_schema(std::move(o.path_in_schema), alloc),
+     key_metadata(std::move(o.key_metadata), alloc),
+     __isset(o.__isset) {
 }
 EncryptionWithColumnKey& EncryptionWithColumnKey::operator=(const EncryptionWithColumnKey& other241) {
   path_in_schema = other241.path_in_schema;
@@ -7442,7 +7559,7 @@ EncryptionWithColumnKey& EncryptionWithColumnKey::operator=(const EncryptionWith
   __isset = other241.__isset;
   return *this;
 }
-EncryptionWithColumnKey& EncryptionWithColumnKey::operator=(EncryptionWithColumnKey&& other242) noexcept {
+EncryptionWithColumnKey& EncryptionWithColumnKey::operator=(EncryptionWithColumnKey&& other242) {
   path_in_schema = std::move(other242.path_in_schema);
   key_metadata = std::move(other242.key_metadata);
   __isset = other242.__isset;
@@ -7460,7 +7577,8 @@ void EncryptionWithColumnKey::printTo(std::ostream& out) const {
 ColumnCryptoMetaData::~ColumnCryptoMetaData() noexcept {
 }
 
-ColumnCryptoMetaData::ColumnCryptoMetaData() noexcept {
+ColumnCryptoMetaData::ColumnCryptoMetaData(const allocator_type &alloc) noexcept
+   : ENCRYPTION_WITH_COLUMN_KEY(alloc) {
 }
 
 void ColumnCryptoMetaData::__set_ENCRYPTION_WITH_FOOTER_KEY(const EncryptionWithFooterKey& val) {
@@ -7548,22 +7666,25 @@ uint32_t ColumnCryptoMetaData::write(::apache::thrift::protocol::TProtocol* opro
   return xfer;
 }
 
-void swap(ColumnCryptoMetaData &a, ColumnCryptoMetaData &b) {
-  using ::std::swap;
-  swap(a.ENCRYPTION_WITH_FOOTER_KEY, b.ENCRYPTION_WITH_FOOTER_KEY);
-  swap(a.ENCRYPTION_WITH_COLUMN_KEY, b.ENCRYPTION_WITH_COLUMN_KEY);
-  swap(a.__isset, b.__isset);
+ColumnCryptoMetaData::ColumnCryptoMetaData(const ColumnCryptoMetaData& o)
+   : ENCRYPTION_WITH_FOOTER_KEY(o.ENCRYPTION_WITH_FOOTER_KEY),
+     ENCRYPTION_WITH_COLUMN_KEY(o.ENCRYPTION_WITH_COLUMN_KEY),
+     __isset(o.__isset) {
 }
-
-ColumnCryptoMetaData::ColumnCryptoMetaData(const ColumnCryptoMetaData& other243) {
-  ENCRYPTION_WITH_FOOTER_KEY = other243.ENCRYPTION_WITH_FOOTER_KEY;
-  ENCRYPTION_WITH_COLUMN_KEY = other243.ENCRYPTION_WITH_COLUMN_KEY;
-  __isset = other243.__isset;
+ColumnCryptoMetaData::ColumnCryptoMetaData(const ColumnCryptoMetaData& o, const allocator_type &alloc)
+   : ENCRYPTION_WITH_FOOTER_KEY(o.ENCRYPTION_WITH_FOOTER_KEY),
+     ENCRYPTION_WITH_COLUMN_KEY(o.ENCRYPTION_WITH_COLUMN_KEY, alloc),
+     __isset(o.__isset) {
 }
-ColumnCryptoMetaData::ColumnCryptoMetaData(ColumnCryptoMetaData&& other244) noexcept {
-  ENCRYPTION_WITH_FOOTER_KEY = std::move(other244.ENCRYPTION_WITH_FOOTER_KEY);
-  ENCRYPTION_WITH_COLUMN_KEY = std::move(other244.ENCRYPTION_WITH_COLUMN_KEY);
-  __isset = other244.__isset;
+ColumnCryptoMetaData::ColumnCryptoMetaData(ColumnCryptoMetaData&& o) noexcept
+   : ENCRYPTION_WITH_FOOTER_KEY(std::move(o.ENCRYPTION_WITH_FOOTER_KEY)),
+     ENCRYPTION_WITH_COLUMN_KEY(std::move(o.ENCRYPTION_WITH_COLUMN_KEY)),
+     __isset(o.__isset) {
+}
+ColumnCryptoMetaData::ColumnCryptoMetaData(ColumnCryptoMetaData&& o, const allocator_type &alloc)
+   : ENCRYPTION_WITH_FOOTER_KEY(std::move(o.ENCRYPTION_WITH_FOOTER_KEY)),
+     ENCRYPTION_WITH_COLUMN_KEY(std::move(o.ENCRYPTION_WITH_COLUMN_KEY), alloc),
+     __isset(o.__isset) {
 }
 ColumnCryptoMetaData& ColumnCryptoMetaData::operator=(const ColumnCryptoMetaData& other245) {
   ENCRYPTION_WITH_FOOTER_KEY = other245.ENCRYPTION_WITH_FOOTER_KEY;
@@ -7571,7 +7692,7 @@ ColumnCryptoMetaData& ColumnCryptoMetaData::operator=(const ColumnCryptoMetaData
   __isset = other245.__isset;
   return *this;
 }
-ColumnCryptoMetaData& ColumnCryptoMetaData::operator=(ColumnCryptoMetaData&& other246) noexcept {
+ColumnCryptoMetaData& ColumnCryptoMetaData::operator=(ColumnCryptoMetaData&& other246) {
   ENCRYPTION_WITH_FOOTER_KEY = std::move(other246.ENCRYPTION_WITH_FOOTER_KEY);
   ENCRYPTION_WITH_COLUMN_KEY = std::move(other246.ENCRYPTION_WITH_COLUMN_KEY);
   __isset = other246.__isset;
@@ -7589,18 +7710,20 @@ void ColumnCryptoMetaData::printTo(std::ostream& out) const {
 ColumnChunk::~ColumnChunk() noexcept {
 }
 
-ColumnChunk::ColumnChunk() noexcept
-   : file_path(),
+ColumnChunk::ColumnChunk(const allocator_type &alloc) noexcept
+   : file_path(alloc),
      file_offset(0LL),
+     meta_data(alloc),
      offset_index_offset(0),
      offset_index_length(0),
      column_index_offset(0),
      column_index_length(0),
-     encrypted_column_metadata() {
+     crypto_metadata(alloc),
+     encrypted_column_metadata(alloc) {
 }
 
 void ColumnChunk::__set_file_path(const std::string& val) {
-  this->file_path = val;
+  this->file_path.assign(val.data(), val.size());
 __isset.file_path = true;
 }
 
@@ -7639,7 +7762,7 @@ __isset.crypto_metadata = true;
 }
 
 void ColumnChunk::__set_encrypted_column_metadata(const std::string& val) {
-  this->encrypted_column_metadata = val;
+  this->encrypted_column_metadata.assign(val.data(), val.size());
 __isset.encrypted_column_metadata = true;
 }
 std::ostream& operator<<(std::ostream& out, const ColumnChunk& obj)
@@ -7673,7 +7796,7 @@ uint32_t ColumnChunk::read(::apache::thrift::protocol::TProtocol* iprot) {
     {
       case 1:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readString(this->file_path);
+          xfer += ReadParquetString(iprot, this->file_path);
           this->__isset.file_path = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -7737,7 +7860,7 @@ uint32_t ColumnChunk::read(::apache::thrift::protocol::TProtocol* iprot) {
         break;
       case 9:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readBinary(this->encrypted_column_metadata);
+          xfer += ReadParquetBinary(iprot, this->encrypted_column_metadata);
           this->__isset.encrypted_column_metadata = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -7764,7 +7887,7 @@ uint32_t ColumnChunk::write(::apache::thrift::protocol::TProtocol* oprot) const 
 
   if (this->__isset.file_path) {
     xfer += oprot->writeFieldBegin("file_path", ::apache::thrift::protocol::T_STRING, 1);
-    xfer += oprot->writeString(this->file_path);
+    xfer += WriteParquetString(oprot, this->file_path);
     xfer += oprot->writeFieldEnd();
   }
   xfer += oprot->writeFieldBegin("file_offset", ::apache::thrift::protocol::T_I64, 2);
@@ -7803,7 +7926,7 @@ uint32_t ColumnChunk::write(::apache::thrift::protocol::TProtocol* oprot) const 
   }
   if (this->__isset.encrypted_column_metadata) {
     xfer += oprot->writeFieldBegin("encrypted_column_metadata", ::apache::thrift::protocol::T_STRING, 9);
-    xfer += oprot->writeBinary(this->encrypted_column_metadata);
+    xfer += WriteParquetBinary(oprot, this->encrypted_column_metadata);
     xfer += oprot->writeFieldEnd();
   }
   xfer += oprot->writeFieldStop();
@@ -7811,43 +7934,53 @@ uint32_t ColumnChunk::write(::apache::thrift::protocol::TProtocol* oprot) const 
   return xfer;
 }
 
-void swap(ColumnChunk &a, ColumnChunk &b) {
-  using ::std::swap;
-  swap(a.file_path, b.file_path);
-  swap(a.file_offset, b.file_offset);
-  swap(a.meta_data, b.meta_data);
-  swap(a.offset_index_offset, b.offset_index_offset);
-  swap(a.offset_index_length, b.offset_index_length);
-  swap(a.column_index_offset, b.column_index_offset);
-  swap(a.column_index_length, b.column_index_length);
-  swap(a.crypto_metadata, b.crypto_metadata);
-  swap(a.encrypted_column_metadata, b.encrypted_column_metadata);
-  swap(a.__isset, b.__isset);
+ColumnChunk::ColumnChunk(const ColumnChunk& o)
+   : file_path(o.file_path),
+     file_offset(o.file_offset),
+     meta_data(o.meta_data),
+     offset_index_offset(o.offset_index_offset),
+     offset_index_length(o.offset_index_length),
+     column_index_offset(o.column_index_offset),
+     column_index_length(o.column_index_length),
+     crypto_metadata(o.crypto_metadata),
+     encrypted_column_metadata(o.encrypted_column_metadata),
+     __isset(o.__isset) {
 }
-
-ColumnChunk::ColumnChunk(const ColumnChunk& other247) {
-  file_path = other247.file_path;
-  file_offset = other247.file_offset;
-  meta_data = other247.meta_data;
-  offset_index_offset = other247.offset_index_offset;
-  offset_index_length = other247.offset_index_length;
-  column_index_offset = other247.column_index_offset;
-  column_index_length = other247.column_index_length;
-  crypto_metadata = other247.crypto_metadata;
-  encrypted_column_metadata = other247.encrypted_column_metadata;
-  __isset = other247.__isset;
+ColumnChunk::ColumnChunk(const ColumnChunk& o, const allocator_type &alloc)
+   : file_path(o.file_path, alloc),
+     file_offset(o.file_offset),
+     meta_data(o.meta_data, alloc),
+     offset_index_offset(o.offset_index_offset),
+     offset_index_length(o.offset_index_length),
+     column_index_offset(o.column_index_offset),
+     column_index_length(o.column_index_length),
+     crypto_metadata(o.crypto_metadata, alloc),
+     encrypted_column_metadata(o.encrypted_column_metadata, alloc),
+     __isset(o.__isset) {
 }
-ColumnChunk::ColumnChunk(ColumnChunk&& other248) noexcept {
-  file_path = std::move(other248.file_path);
-  file_offset = other248.file_offset;
-  meta_data = std::move(other248.meta_data);
-  offset_index_offset = other248.offset_index_offset;
-  offset_index_length = other248.offset_index_length;
-  column_index_offset = other248.column_index_offset;
-  column_index_length = other248.column_index_length;
-  crypto_metadata = std::move(other248.crypto_metadata);
-  encrypted_column_metadata = std::move(other248.encrypted_column_metadata);
-  __isset = other248.__isset;
+ColumnChunk::ColumnChunk(ColumnChunk&& o) noexcept
+   : file_path(std::move(o.file_path)),
+     file_offset(o.file_offset),
+     meta_data(std::move(o.meta_data)),
+     offset_index_offset(o.offset_index_offset),
+     offset_index_length(o.offset_index_length),
+     column_index_offset(o.column_index_offset),
+     column_index_length(o.column_index_length),
+     crypto_metadata(std::move(o.crypto_metadata)),
+     encrypted_column_metadata(std::move(o.encrypted_column_metadata)),
+     __isset(o.__isset) {
+}
+ColumnChunk::ColumnChunk(ColumnChunk&& o, const allocator_type &alloc)
+   : file_path(std::move(o.file_path), alloc),
+     file_offset(o.file_offset),
+     meta_data(std::move(o.meta_data), alloc),
+     offset_index_offset(o.offset_index_offset),
+     offset_index_length(o.offset_index_length),
+     column_index_offset(o.column_index_offset),
+     column_index_length(o.column_index_length),
+     crypto_metadata(std::move(o.crypto_metadata), alloc),
+     encrypted_column_metadata(std::move(o.encrypted_column_metadata), alloc),
+     __isset(o.__isset) {
 }
 ColumnChunk& ColumnChunk::operator=(const ColumnChunk& other249) {
   file_path = other249.file_path;
@@ -7862,7 +7995,7 @@ ColumnChunk& ColumnChunk::operator=(const ColumnChunk& other249) {
   __isset = other249.__isset;
   return *this;
 }
-ColumnChunk& ColumnChunk::operator=(ColumnChunk&& other250) noexcept {
+ColumnChunk& ColumnChunk::operator=(ColumnChunk&& other250) {
   file_path = std::move(other250.file_path);
   file_offset = other250.file_offset;
   meta_data = std::move(other250.meta_data);
@@ -7894,15 +8027,17 @@ void ColumnChunk::printTo(std::ostream& out) const {
 RowGroup::~RowGroup() noexcept {
 }
 
-RowGroup::RowGroup() noexcept
-   : total_byte_size(0),
+RowGroup::RowGroup(const allocator_type &alloc) noexcept
+   : columns(alloc),
+     total_byte_size(0),
      num_rows(0),
+     sorting_columns(alloc),
      file_offset(0),
      total_compressed_size(0),
      ordinal(0) {
 }
 
-void RowGroup::__set_columns(const duckdb::vector<ColumnChunk> & val) {
+void RowGroup::__set_columns(const ParquetVector<ColumnChunk> & val) {
   this->columns = val;
 }
 
@@ -7914,7 +8049,7 @@ void RowGroup::__set_num_rows(const int64_t val) {
   this->num_rows = val;
 }
 
-void RowGroup::__set_sorting_columns(const duckdb::vector<SortingColumn> & val) {
+void RowGroup::__set_sorting_columns(const ParquetVector<SortingColumn> & val) {
   this->sorting_columns = val;
 __isset.sorting_columns = true;
 }
@@ -8070,7 +8205,7 @@ uint32_t RowGroup::write(::apache::thrift::protocol::TProtocol* oprot) const {
   xfer += oprot->writeFieldBegin("columns", ::apache::thrift::protocol::T_LIST, 1);
   {
     xfer += oprot->writeListBegin(::apache::thrift::protocol::T_STRUCT, static_cast<uint32_t>(this->columns.size()));
-    duckdb::vector<ColumnChunk> ::const_iterator _iter261;
+    ParquetVector<ColumnChunk> ::const_iterator _iter261;
     for (_iter261 = this->columns.begin(); _iter261 != this->columns.end(); ++_iter261)
     {
       xfer += (*_iter261).write(oprot);
@@ -8091,7 +8226,7 @@ uint32_t RowGroup::write(::apache::thrift::protocol::TProtocol* oprot) const {
     xfer += oprot->writeFieldBegin("sorting_columns", ::apache::thrift::protocol::T_LIST, 4);
     {
       xfer += oprot->writeListBegin(::apache::thrift::protocol::T_STRUCT, static_cast<uint32_t>(this->sorting_columns.size()));
-      duckdb::vector<SortingColumn> ::const_iterator _iter262;
+      ParquetVector<SortingColumn> ::const_iterator _iter262;
       for (_iter262 = this->sorting_columns.begin(); _iter262 != this->sorting_columns.end(); ++_iter262)
       {
         xfer += (*_iter262).write(oprot);
@@ -8120,37 +8255,45 @@ uint32_t RowGroup::write(::apache::thrift::protocol::TProtocol* oprot) const {
   return xfer;
 }
 
-void swap(RowGroup &a, RowGroup &b) {
-  using ::std::swap;
-  swap(a.columns, b.columns);
-  swap(a.total_byte_size, b.total_byte_size);
-  swap(a.num_rows, b.num_rows);
-  swap(a.sorting_columns, b.sorting_columns);
-  swap(a.file_offset, b.file_offset);
-  swap(a.total_compressed_size, b.total_compressed_size);
-  swap(a.ordinal, b.ordinal);
-  swap(a.__isset, b.__isset);
+RowGroup::RowGroup(const RowGroup& o)
+   : columns(o.columns),
+     total_byte_size(o.total_byte_size),
+     num_rows(o.num_rows),
+     sorting_columns(o.sorting_columns),
+     file_offset(o.file_offset),
+     total_compressed_size(o.total_compressed_size),
+     ordinal(o.ordinal),
+     __isset(o.__isset) {
 }
-
-RowGroup::RowGroup(const RowGroup& other263) {
-  columns = other263.columns;
-  total_byte_size = other263.total_byte_size;
-  num_rows = other263.num_rows;
-  sorting_columns = other263.sorting_columns;
-  file_offset = other263.file_offset;
-  total_compressed_size = other263.total_compressed_size;
-  ordinal = other263.ordinal;
-  __isset = other263.__isset;
+RowGroup::RowGroup(const RowGroup& o, const allocator_type &alloc)
+   : columns(o.columns, alloc),
+     total_byte_size(o.total_byte_size),
+     num_rows(o.num_rows),
+     sorting_columns(o.sorting_columns, alloc),
+     file_offset(o.file_offset),
+     total_compressed_size(o.total_compressed_size),
+     ordinal(o.ordinal),
+     __isset(o.__isset) {
 }
-RowGroup::RowGroup(RowGroup&& other264) noexcept {
-  columns = std::move(other264.columns);
-  total_byte_size = other264.total_byte_size;
-  num_rows = other264.num_rows;
-  sorting_columns = std::move(other264.sorting_columns);
-  file_offset = other264.file_offset;
-  total_compressed_size = other264.total_compressed_size;
-  ordinal = other264.ordinal;
-  __isset = other264.__isset;
+RowGroup::RowGroup(RowGroup&& o) noexcept
+   : columns(std::move(o.columns)),
+     total_byte_size(o.total_byte_size),
+     num_rows(o.num_rows),
+     sorting_columns(std::move(o.sorting_columns)),
+     file_offset(o.file_offset),
+     total_compressed_size(o.total_compressed_size),
+     ordinal(o.ordinal),
+     __isset(o.__isset) {
+}
+RowGroup::RowGroup(RowGroup&& o, const allocator_type &alloc)
+   : columns(std::move(o.columns), alloc),
+     total_byte_size(o.total_byte_size),
+     num_rows(o.num_rows),
+     sorting_columns(std::move(o.sorting_columns), alloc),
+     file_offset(o.file_offset),
+     total_compressed_size(o.total_compressed_size),
+     ordinal(o.ordinal),
+     __isset(o.__isset) {
 }
 RowGroup& RowGroup::operator=(const RowGroup& other265) {
   columns = other265.columns;
@@ -8163,7 +8306,7 @@ RowGroup& RowGroup::operator=(const RowGroup& other265) {
   __isset = other265.__isset;
   return *this;
 }
-RowGroup& RowGroup::operator=(RowGroup&& other266) noexcept {
+RowGroup& RowGroup::operator=(RowGroup&& other266) {
   columns = std::move(other266.columns);
   total_byte_size = other266.total_byte_size;
   num_rows = other266.num_rows;
@@ -8527,14 +8670,16 @@ void PageLocation::printTo(std::ostream& out) const {
 OffsetIndex::~OffsetIndex() noexcept {
 }
 
-OffsetIndex::OffsetIndex() noexcept {
+OffsetIndex::OffsetIndex(const allocator_type &alloc) noexcept
+   : page_locations(alloc),
+     unencoded_byte_array_data_bytes(alloc) {
 }
 
-void OffsetIndex::__set_page_locations(const duckdb::vector<PageLocation> & val) {
+void OffsetIndex::__set_page_locations(const ParquetVector<PageLocation> & val) {
   this->page_locations = val;
 }
 
-void OffsetIndex::__set_unencoded_byte_array_data_bytes(const duckdb::vector<int64_t> & val) {
+void OffsetIndex::__set_unencoded_byte_array_data_bytes(const ParquetVector<int64_t> & val) {
   this->unencoded_byte_array_data_bytes = val;
 __isset.unencoded_byte_array_data_bytes = true;
 }
@@ -8629,7 +8774,7 @@ uint32_t OffsetIndex::write(::apache::thrift::protocol::TProtocol* oprot) const 
   xfer += oprot->writeFieldBegin("page_locations", ::apache::thrift::protocol::T_LIST, 1);
   {
     xfer += oprot->writeListBegin(::apache::thrift::protocol::T_STRUCT, static_cast<uint32_t>(this->page_locations.size()));
-    duckdb::vector<PageLocation> ::const_iterator _iter289;
+    ParquetVector<PageLocation> ::const_iterator _iter289;
     for (_iter289 = this->page_locations.begin(); _iter289 != this->page_locations.end(); ++_iter289)
     {
       xfer += (*_iter289).write(oprot);
@@ -8642,7 +8787,7 @@ uint32_t OffsetIndex::write(::apache::thrift::protocol::TProtocol* oprot) const 
     xfer += oprot->writeFieldBegin("unencoded_byte_array_data_bytes", ::apache::thrift::protocol::T_LIST, 2);
     {
       xfer += oprot->writeListBegin(::apache::thrift::protocol::T_I64, static_cast<uint32_t>(this->unencoded_byte_array_data_bytes.size()));
-      duckdb::vector<int64_t> ::const_iterator _iter290;
+      ParquetVector<int64_t> ::const_iterator _iter290;
       for (_iter290 = this->unencoded_byte_array_data_bytes.begin(); _iter290 != this->unencoded_byte_array_data_bytes.end(); ++_iter290)
       {
         xfer += oprot->writeI64((*_iter290));
@@ -8656,22 +8801,25 @@ uint32_t OffsetIndex::write(::apache::thrift::protocol::TProtocol* oprot) const 
   return xfer;
 }
 
-void swap(OffsetIndex &a, OffsetIndex &b) {
-  using ::std::swap;
-  swap(a.page_locations, b.page_locations);
-  swap(a.unencoded_byte_array_data_bytes, b.unencoded_byte_array_data_bytes);
-  swap(a.__isset, b.__isset);
+OffsetIndex::OffsetIndex(const OffsetIndex& o)
+   : page_locations(o.page_locations),
+     unencoded_byte_array_data_bytes(o.unencoded_byte_array_data_bytes),
+     __isset(o.__isset) {
 }
-
-OffsetIndex::OffsetIndex(const OffsetIndex& other291) {
-  page_locations = other291.page_locations;
-  unencoded_byte_array_data_bytes = other291.unencoded_byte_array_data_bytes;
-  __isset = other291.__isset;
+OffsetIndex::OffsetIndex(const OffsetIndex& o, const allocator_type &alloc)
+   : page_locations(o.page_locations, alloc),
+     unencoded_byte_array_data_bytes(o.unencoded_byte_array_data_bytes, alloc),
+     __isset(o.__isset) {
 }
-OffsetIndex::OffsetIndex(OffsetIndex&& other292) noexcept {
-  page_locations = std::move(other292.page_locations);
-  unencoded_byte_array_data_bytes = std::move(other292.unencoded_byte_array_data_bytes);
-  __isset = other292.__isset;
+OffsetIndex::OffsetIndex(OffsetIndex&& o) noexcept
+   : page_locations(std::move(o.page_locations)),
+     unencoded_byte_array_data_bytes(std::move(o.unencoded_byte_array_data_bytes)),
+     __isset(o.__isset) {
+}
+OffsetIndex::OffsetIndex(OffsetIndex&& o, const allocator_type &alloc)
+   : page_locations(std::move(o.page_locations), alloc),
+     unencoded_byte_array_data_bytes(std::move(o.unencoded_byte_array_data_bytes), alloc),
+     __isset(o.__isset) {
 }
 OffsetIndex& OffsetIndex::operator=(const OffsetIndex& other293) {
   page_locations = other293.page_locations;
@@ -8679,7 +8827,7 @@ OffsetIndex& OffsetIndex::operator=(const OffsetIndex& other293) {
   __isset = other293.__isset;
   return *this;
 }
-OffsetIndex& OffsetIndex::operator=(OffsetIndex&& other294) noexcept {
+OffsetIndex& OffsetIndex::operator=(OffsetIndex&& other294) {
   page_locations = std::move(other294.page_locations);
   unencoded_byte_array_data_bytes = std::move(other294.unencoded_byte_array_data_bytes);
   __isset = other294.__isset;
@@ -8697,19 +8845,25 @@ void OffsetIndex::printTo(std::ostream& out) const {
 ColumnIndex::~ColumnIndex() noexcept {
 }
 
-ColumnIndex::ColumnIndex() noexcept
-   : boundary_order(SafeEnumCast<BoundaryOrder>(_BoundaryOrder_VALUES_TO_NAMES, 0)) {
+ColumnIndex::ColumnIndex(const allocator_type &alloc) noexcept
+   : null_pages(alloc),
+     min_values(alloc),
+     max_values(alloc),
+     boundary_order(SafeEnumCast<BoundaryOrder>(_BoundaryOrder_VALUES_TO_NAMES, 0)),
+     null_counts(alloc),
+     repetition_level_histograms(alloc),
+     definition_level_histograms(alloc) {
 }
 
-void ColumnIndex::__set_null_pages(const duckdb::vector<bool> & val) {
+void ColumnIndex::__set_null_pages(const ParquetVector<bool> & val) {
   this->null_pages = val;
 }
 
-void ColumnIndex::__set_min_values(const duckdb::vector<std::string> & val) {
+void ColumnIndex::__set_min_values(const ParquetVector<ParquetString> & val) {
   this->min_values = val;
 }
 
-void ColumnIndex::__set_max_values(const duckdb::vector<std::string> & val) {
+void ColumnIndex::__set_max_values(const ParquetVector<ParquetString> & val) {
   this->max_values = val;
 }
 
@@ -8717,17 +8871,17 @@ void ColumnIndex::__set_boundary_order(const BoundaryOrder::type val) {
   this->boundary_order = val;
 }
 
-void ColumnIndex::__set_null_counts(const duckdb::vector<int64_t> & val) {
+void ColumnIndex::__set_null_counts(const ParquetVector<int64_t> & val) {
   this->null_counts = val;
 __isset.null_counts = true;
 }
 
-void ColumnIndex::__set_repetition_level_histograms(const duckdb::vector<int64_t> & val) {
+void ColumnIndex::__set_repetition_level_histograms(const ParquetVector<int64_t> & val) {
   this->repetition_level_histograms = val;
 __isset.repetition_level_histograms = true;
 }
 
-void ColumnIndex::__set_definition_level_histograms(const duckdb::vector<int64_t> & val) {
+void ColumnIndex::__set_definition_level_histograms(const ParquetVector<int64_t> & val) {
   this->definition_level_histograms = val;
 __isset.definition_level_histograms = true;
 }
@@ -8774,7 +8928,9 @@ uint32_t ColumnIndex::read(::apache::thrift::protocol::TProtocol* iprot) {
             uint32_t _i299;
             for (_i299 = 0; _i299 < _size295; ++_i299)
             {
-              xfer += iprot->readBool(this->null_pages[_i299]);
+              bool _null_page;
+              xfer += iprot->readBool(_null_page);
+              this->null_pages[_i299] = _null_page;
             }
             xfer += iprot->readListEnd();
           }
@@ -8794,7 +8950,7 @@ uint32_t ColumnIndex::read(::apache::thrift::protocol::TProtocol* iprot) {
             uint32_t _i304;
             for (_i304 = 0; _i304 < _size300; ++_i304)
             {
-              xfer += iprot->readBinary(this->min_values[_i304]);
+              xfer += ReadParquetBinary(iprot, this->min_values[_i304]);
             }
             xfer += iprot->readListEnd();
           }
@@ -8814,7 +8970,7 @@ uint32_t ColumnIndex::read(::apache::thrift::protocol::TProtocol* iprot) {
             uint32_t _i309;
             for (_i309 = 0; _i309 < _size305; ++_i309)
             {
-              xfer += iprot->readBinary(this->max_values[_i309]);
+              xfer += ReadParquetBinary(iprot, this->max_values[_i309]);
             }
             xfer += iprot->readListEnd();
           }
@@ -8921,7 +9077,7 @@ uint32_t ColumnIndex::write(::apache::thrift::protocol::TProtocol* oprot) const 
   xfer += oprot->writeFieldBegin("null_pages", ::apache::thrift::protocol::T_LIST, 1);
   {
     xfer += oprot->writeListBegin(::apache::thrift::protocol::T_BOOL, static_cast<uint32_t>(this->null_pages.size()));
-    duckdb::vector<bool> ::const_iterator _iter326;
+    ParquetVector<bool> ::const_iterator _iter326;
     for (_iter326 = this->null_pages.begin(); _iter326 != this->null_pages.end(); ++_iter326)
     {
       xfer += oprot->writeBool((*_iter326));
@@ -8933,10 +9089,10 @@ uint32_t ColumnIndex::write(::apache::thrift::protocol::TProtocol* oprot) const 
   xfer += oprot->writeFieldBegin("min_values", ::apache::thrift::protocol::T_LIST, 2);
   {
     xfer += oprot->writeListBegin(::apache::thrift::protocol::T_STRING, static_cast<uint32_t>(this->min_values.size()));
-    duckdb::vector<std::string> ::const_iterator _iter327;
+    ParquetVector<ParquetString> ::const_iterator _iter327;
     for (_iter327 = this->min_values.begin(); _iter327 != this->min_values.end(); ++_iter327)
     {
-      xfer += oprot->writeBinary((*_iter327));
+      xfer += WriteParquetBinary(oprot, (*_iter327));
     }
     xfer += oprot->writeListEnd();
   }
@@ -8945,10 +9101,10 @@ uint32_t ColumnIndex::write(::apache::thrift::protocol::TProtocol* oprot) const 
   xfer += oprot->writeFieldBegin("max_values", ::apache::thrift::protocol::T_LIST, 3);
   {
     xfer += oprot->writeListBegin(::apache::thrift::protocol::T_STRING, static_cast<uint32_t>(this->max_values.size()));
-    duckdb::vector<std::string> ::const_iterator _iter328;
+    ParquetVector<ParquetString> ::const_iterator _iter328;
     for (_iter328 = this->max_values.begin(); _iter328 != this->max_values.end(); ++_iter328)
     {
-      xfer += oprot->writeBinary((*_iter328));
+      xfer += WriteParquetBinary(oprot, (*_iter328));
     }
     xfer += oprot->writeListEnd();
   }
@@ -8962,7 +9118,7 @@ uint32_t ColumnIndex::write(::apache::thrift::protocol::TProtocol* oprot) const 
     xfer += oprot->writeFieldBegin("null_counts", ::apache::thrift::protocol::T_LIST, 5);
     {
       xfer += oprot->writeListBegin(::apache::thrift::protocol::T_I64, static_cast<uint32_t>(this->null_counts.size()));
-      duckdb::vector<int64_t> ::const_iterator _iter329;
+      ParquetVector<int64_t> ::const_iterator _iter329;
       for (_iter329 = this->null_counts.begin(); _iter329 != this->null_counts.end(); ++_iter329)
       {
         xfer += oprot->writeI64((*_iter329));
@@ -8975,7 +9131,7 @@ uint32_t ColumnIndex::write(::apache::thrift::protocol::TProtocol* oprot) const 
     xfer += oprot->writeFieldBegin("repetition_level_histograms", ::apache::thrift::protocol::T_LIST, 6);
     {
       xfer += oprot->writeListBegin(::apache::thrift::protocol::T_I64, static_cast<uint32_t>(this->repetition_level_histograms.size()));
-      duckdb::vector<int64_t> ::const_iterator _iter330;
+      ParquetVector<int64_t> ::const_iterator _iter330;
       for (_iter330 = this->repetition_level_histograms.begin(); _iter330 != this->repetition_level_histograms.end(); ++_iter330)
       {
         xfer += oprot->writeI64((*_iter330));
@@ -8988,7 +9144,7 @@ uint32_t ColumnIndex::write(::apache::thrift::protocol::TProtocol* oprot) const 
     xfer += oprot->writeFieldBegin("definition_level_histograms", ::apache::thrift::protocol::T_LIST, 7);
     {
       xfer += oprot->writeListBegin(::apache::thrift::protocol::T_I64, static_cast<uint32_t>(this->definition_level_histograms.size()));
-      duckdb::vector<int64_t> ::const_iterator _iter331;
+      ParquetVector<int64_t> ::const_iterator _iter331;
       for (_iter331 = this->definition_level_histograms.begin(); _iter331 != this->definition_level_histograms.end(); ++_iter331)
       {
         xfer += oprot->writeI64((*_iter331));
@@ -9002,37 +9158,45 @@ uint32_t ColumnIndex::write(::apache::thrift::protocol::TProtocol* oprot) const 
   return xfer;
 }
 
-void swap(ColumnIndex &a, ColumnIndex &b) {
-  using ::std::swap;
-  swap(a.null_pages, b.null_pages);
-  swap(a.min_values, b.min_values);
-  swap(a.max_values, b.max_values);
-  swap(a.boundary_order, b.boundary_order);
-  swap(a.null_counts, b.null_counts);
-  swap(a.repetition_level_histograms, b.repetition_level_histograms);
-  swap(a.definition_level_histograms, b.definition_level_histograms);
-  swap(a.__isset, b.__isset);
+ColumnIndex::ColumnIndex(const ColumnIndex& o)
+   : null_pages(o.null_pages),
+     min_values(o.min_values),
+     max_values(o.max_values),
+     boundary_order(o.boundary_order),
+     null_counts(o.null_counts),
+     repetition_level_histograms(o.repetition_level_histograms),
+     definition_level_histograms(o.definition_level_histograms),
+     __isset(o.__isset) {
 }
-
-ColumnIndex::ColumnIndex(const ColumnIndex& other332) {
-  null_pages = other332.null_pages;
-  min_values = other332.min_values;
-  max_values = other332.max_values;
-  boundary_order = other332.boundary_order;
-  null_counts = other332.null_counts;
-  repetition_level_histograms = other332.repetition_level_histograms;
-  definition_level_histograms = other332.definition_level_histograms;
-  __isset = other332.__isset;
+ColumnIndex::ColumnIndex(const ColumnIndex& o, const allocator_type &alloc)
+   : null_pages(o.null_pages, alloc),
+     min_values(o.min_values, alloc),
+     max_values(o.max_values, alloc),
+     boundary_order(o.boundary_order),
+     null_counts(o.null_counts, alloc),
+     repetition_level_histograms(o.repetition_level_histograms, alloc),
+     definition_level_histograms(o.definition_level_histograms, alloc),
+     __isset(o.__isset) {
 }
-ColumnIndex::ColumnIndex(ColumnIndex&& other333) noexcept {
-  null_pages = std::move(other333.null_pages);
-  min_values = std::move(other333.min_values);
-  max_values = std::move(other333.max_values);
-  boundary_order = other333.boundary_order;
-  null_counts = std::move(other333.null_counts);
-  repetition_level_histograms = std::move(other333.repetition_level_histograms);
-  definition_level_histograms = std::move(other333.definition_level_histograms);
-  __isset = other333.__isset;
+ColumnIndex::ColumnIndex(ColumnIndex&& o) noexcept
+   : null_pages(std::move(o.null_pages)),
+     min_values(std::move(o.min_values)),
+     max_values(std::move(o.max_values)),
+     boundary_order(o.boundary_order),
+     null_counts(std::move(o.null_counts)),
+     repetition_level_histograms(std::move(o.repetition_level_histograms)),
+     definition_level_histograms(std::move(o.definition_level_histograms)),
+     __isset(o.__isset) {
+}
+ColumnIndex::ColumnIndex(ColumnIndex&& o, const allocator_type &alloc)
+   : null_pages(std::move(o.null_pages), alloc),
+     min_values(std::move(o.min_values), alloc),
+     max_values(std::move(o.max_values), alloc),
+     boundary_order(o.boundary_order),
+     null_counts(std::move(o.null_counts), alloc),
+     repetition_level_histograms(std::move(o.repetition_level_histograms), alloc),
+     definition_level_histograms(std::move(o.definition_level_histograms), alloc),
+     __isset(o.__isset) {
 }
 ColumnIndex& ColumnIndex::operator=(const ColumnIndex& other334) {
   null_pages = other334.null_pages;
@@ -9045,7 +9209,7 @@ ColumnIndex& ColumnIndex::operator=(const ColumnIndex& other334) {
   __isset = other334.__isset;
   return *this;
 }
-ColumnIndex& ColumnIndex::operator=(ColumnIndex&& other335) noexcept {
+ColumnIndex& ColumnIndex::operator=(ColumnIndex&& other335) {
   null_pages = std::move(other335.null_pages);
   min_values = std::move(other335.min_values);
   max_values = std::move(other335.max_values);
@@ -9073,19 +9237,19 @@ void ColumnIndex::printTo(std::ostream& out) const {
 AesGcmV1::~AesGcmV1() noexcept {
 }
 
-AesGcmV1::AesGcmV1() noexcept
-   : aad_prefix(),
-     aad_file_unique(),
+AesGcmV1::AesGcmV1(const allocator_type &alloc) noexcept
+   : aad_prefix(alloc),
+     aad_file_unique(alloc),
      supply_aad_prefix(0) {
 }
 
 void AesGcmV1::__set_aad_prefix(const std::string& val) {
-  this->aad_prefix = val;
+  this->aad_prefix.assign(val.data(), val.size());
 __isset.aad_prefix = true;
 }
 
 void AesGcmV1::__set_aad_file_unique(const std::string& val) {
-  this->aad_file_unique = val;
+  this->aad_file_unique.assign(val.data(), val.size());
 __isset.aad_file_unique = true;
 }
 
@@ -9123,7 +9287,7 @@ uint32_t AesGcmV1::read(::apache::thrift::protocol::TProtocol* iprot) {
     {
       case 1:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readBinary(this->aad_prefix);
+          xfer += ReadParquetBinary(iprot, this->aad_prefix);
           this->__isset.aad_prefix = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -9131,7 +9295,7 @@ uint32_t AesGcmV1::read(::apache::thrift::protocol::TProtocol* iprot) {
         break;
       case 2:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readBinary(this->aad_file_unique);
+          xfer += ReadParquetBinary(iprot, this->aad_file_unique);
           this->__isset.aad_file_unique = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -9164,12 +9328,12 @@ uint32_t AesGcmV1::write(::apache::thrift::protocol::TProtocol* oprot) const {
 
   if (this->__isset.aad_prefix) {
     xfer += oprot->writeFieldBegin("aad_prefix", ::apache::thrift::protocol::T_STRING, 1);
-    xfer += oprot->writeBinary(this->aad_prefix);
+    xfer += WriteParquetBinary(oprot, this->aad_prefix);
     xfer += oprot->writeFieldEnd();
   }
   if (this->__isset.aad_file_unique) {
     xfer += oprot->writeFieldBegin("aad_file_unique", ::apache::thrift::protocol::T_STRING, 2);
-    xfer += oprot->writeBinary(this->aad_file_unique);
+    xfer += WriteParquetBinary(oprot, this->aad_file_unique);
     xfer += oprot->writeFieldEnd();
   }
   if (this->__isset.supply_aad_prefix) {
@@ -9182,25 +9346,29 @@ uint32_t AesGcmV1::write(::apache::thrift::protocol::TProtocol* oprot) const {
   return xfer;
 }
 
-void swap(AesGcmV1 &a, AesGcmV1 &b) {
-  using ::std::swap;
-  swap(a.aad_prefix, b.aad_prefix);
-  swap(a.aad_file_unique, b.aad_file_unique);
-  swap(a.supply_aad_prefix, b.supply_aad_prefix);
-  swap(a.__isset, b.__isset);
+AesGcmV1::AesGcmV1(const AesGcmV1& o)
+   : aad_prefix(o.aad_prefix),
+     aad_file_unique(o.aad_file_unique),
+     supply_aad_prefix(o.supply_aad_prefix),
+     __isset(o.__isset) {
 }
-
-AesGcmV1::AesGcmV1(const AesGcmV1& other336) {
-  aad_prefix = other336.aad_prefix;
-  aad_file_unique = other336.aad_file_unique;
-  supply_aad_prefix = other336.supply_aad_prefix;
-  __isset = other336.__isset;
+AesGcmV1::AesGcmV1(const AesGcmV1& o, const allocator_type &alloc)
+   : aad_prefix(o.aad_prefix, alloc),
+     aad_file_unique(o.aad_file_unique, alloc),
+     supply_aad_prefix(o.supply_aad_prefix),
+     __isset(o.__isset) {
 }
-AesGcmV1::AesGcmV1(AesGcmV1&& other337) noexcept {
-  aad_prefix = std::move(other337.aad_prefix);
-  aad_file_unique = std::move(other337.aad_file_unique);
-  supply_aad_prefix = other337.supply_aad_prefix;
-  __isset = other337.__isset;
+AesGcmV1::AesGcmV1(AesGcmV1&& o) noexcept
+   : aad_prefix(std::move(o.aad_prefix)),
+     aad_file_unique(std::move(o.aad_file_unique)),
+     supply_aad_prefix(o.supply_aad_prefix),
+     __isset(o.__isset) {
+}
+AesGcmV1::AesGcmV1(AesGcmV1&& o, const allocator_type &alloc)
+   : aad_prefix(std::move(o.aad_prefix), alloc),
+     aad_file_unique(std::move(o.aad_file_unique), alloc),
+     supply_aad_prefix(o.supply_aad_prefix),
+     __isset(o.__isset) {
 }
 AesGcmV1& AesGcmV1::operator=(const AesGcmV1& other338) {
   aad_prefix = other338.aad_prefix;
@@ -9209,7 +9377,7 @@ AesGcmV1& AesGcmV1::operator=(const AesGcmV1& other338) {
   __isset = other338.__isset;
   return *this;
 }
-AesGcmV1& AesGcmV1::operator=(AesGcmV1&& other339) noexcept {
+AesGcmV1& AesGcmV1::operator=(AesGcmV1&& other339) {
   aad_prefix = std::move(other339.aad_prefix);
   aad_file_unique = std::move(other339.aad_file_unique);
   supply_aad_prefix = other339.supply_aad_prefix;
@@ -9229,19 +9397,19 @@ void AesGcmV1::printTo(std::ostream& out) const {
 AesGcmCtrV1::~AesGcmCtrV1() noexcept {
 }
 
-AesGcmCtrV1::AesGcmCtrV1() noexcept
-   : aad_prefix(),
-     aad_file_unique(),
+AesGcmCtrV1::AesGcmCtrV1(const allocator_type &alloc) noexcept
+   : aad_prefix(alloc),
+     aad_file_unique(alloc),
      supply_aad_prefix(0) {
 }
 
 void AesGcmCtrV1::__set_aad_prefix(const std::string& val) {
-  this->aad_prefix = val;
+  this->aad_prefix.assign(val.data(), val.size());
 __isset.aad_prefix = true;
 }
 
 void AesGcmCtrV1::__set_aad_file_unique(const std::string& val) {
-  this->aad_file_unique = val;
+  this->aad_file_unique.assign(val.data(), val.size());
 __isset.aad_file_unique = true;
 }
 
@@ -9279,7 +9447,7 @@ uint32_t AesGcmCtrV1::read(::apache::thrift::protocol::TProtocol* iprot) {
     {
       case 1:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readBinary(this->aad_prefix);
+          xfer += ReadParquetBinary(iprot, this->aad_prefix);
           this->__isset.aad_prefix = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -9287,7 +9455,7 @@ uint32_t AesGcmCtrV1::read(::apache::thrift::protocol::TProtocol* iprot) {
         break;
       case 2:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readBinary(this->aad_file_unique);
+          xfer += ReadParquetBinary(iprot, this->aad_file_unique);
           this->__isset.aad_file_unique = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -9320,12 +9488,12 @@ uint32_t AesGcmCtrV1::write(::apache::thrift::protocol::TProtocol* oprot) const 
 
   if (this->__isset.aad_prefix) {
     xfer += oprot->writeFieldBegin("aad_prefix", ::apache::thrift::protocol::T_STRING, 1);
-    xfer += oprot->writeBinary(this->aad_prefix);
+    xfer += WriteParquetBinary(oprot, this->aad_prefix);
     xfer += oprot->writeFieldEnd();
   }
   if (this->__isset.aad_file_unique) {
     xfer += oprot->writeFieldBegin("aad_file_unique", ::apache::thrift::protocol::T_STRING, 2);
-    xfer += oprot->writeBinary(this->aad_file_unique);
+    xfer += WriteParquetBinary(oprot, this->aad_file_unique);
     xfer += oprot->writeFieldEnd();
   }
   if (this->__isset.supply_aad_prefix) {
@@ -9338,25 +9506,29 @@ uint32_t AesGcmCtrV1::write(::apache::thrift::protocol::TProtocol* oprot) const 
   return xfer;
 }
 
-void swap(AesGcmCtrV1 &a, AesGcmCtrV1 &b) {
-  using ::std::swap;
-  swap(a.aad_prefix, b.aad_prefix);
-  swap(a.aad_file_unique, b.aad_file_unique);
-  swap(a.supply_aad_prefix, b.supply_aad_prefix);
-  swap(a.__isset, b.__isset);
+AesGcmCtrV1::AesGcmCtrV1(const AesGcmCtrV1& o)
+   : aad_prefix(o.aad_prefix),
+     aad_file_unique(o.aad_file_unique),
+     supply_aad_prefix(o.supply_aad_prefix),
+     __isset(o.__isset) {
 }
-
-AesGcmCtrV1::AesGcmCtrV1(const AesGcmCtrV1& other340) {
-  aad_prefix = other340.aad_prefix;
-  aad_file_unique = other340.aad_file_unique;
-  supply_aad_prefix = other340.supply_aad_prefix;
-  __isset = other340.__isset;
+AesGcmCtrV1::AesGcmCtrV1(const AesGcmCtrV1& o, const allocator_type &alloc)
+   : aad_prefix(o.aad_prefix, alloc),
+     aad_file_unique(o.aad_file_unique, alloc),
+     supply_aad_prefix(o.supply_aad_prefix),
+     __isset(o.__isset) {
 }
-AesGcmCtrV1::AesGcmCtrV1(AesGcmCtrV1&& other341) noexcept {
-  aad_prefix = std::move(other341.aad_prefix);
-  aad_file_unique = std::move(other341.aad_file_unique);
-  supply_aad_prefix = other341.supply_aad_prefix;
-  __isset = other341.__isset;
+AesGcmCtrV1::AesGcmCtrV1(AesGcmCtrV1&& o) noexcept
+   : aad_prefix(std::move(o.aad_prefix)),
+     aad_file_unique(std::move(o.aad_file_unique)),
+     supply_aad_prefix(o.supply_aad_prefix),
+     __isset(o.__isset) {
+}
+AesGcmCtrV1::AesGcmCtrV1(AesGcmCtrV1&& o, const allocator_type &alloc)
+   : aad_prefix(std::move(o.aad_prefix), alloc),
+     aad_file_unique(std::move(o.aad_file_unique), alloc),
+     supply_aad_prefix(o.supply_aad_prefix),
+     __isset(o.__isset) {
 }
 AesGcmCtrV1& AesGcmCtrV1::operator=(const AesGcmCtrV1& other342) {
   aad_prefix = other342.aad_prefix;
@@ -9365,7 +9537,7 @@ AesGcmCtrV1& AesGcmCtrV1::operator=(const AesGcmCtrV1& other342) {
   __isset = other342.__isset;
   return *this;
 }
-AesGcmCtrV1& AesGcmCtrV1::operator=(AesGcmCtrV1&& other343) noexcept {
+AesGcmCtrV1& AesGcmCtrV1::operator=(AesGcmCtrV1&& other343) {
   aad_prefix = std::move(other343.aad_prefix);
   aad_file_unique = std::move(other343.aad_file_unique);
   supply_aad_prefix = other343.supply_aad_prefix;
@@ -9385,7 +9557,9 @@ void AesGcmCtrV1::printTo(std::ostream& out) const {
 EncryptionAlgorithm::~EncryptionAlgorithm() noexcept {
 }
 
-EncryptionAlgorithm::EncryptionAlgorithm() noexcept {
+EncryptionAlgorithm::EncryptionAlgorithm(const allocator_type &alloc) noexcept
+   : AES_GCM_V1(alloc),
+     AES_GCM_CTR_V1(alloc) {
 }
 
 void EncryptionAlgorithm::__set_AES_GCM_V1(const AesGcmV1& val) {
@@ -9473,22 +9647,25 @@ uint32_t EncryptionAlgorithm::write(::apache::thrift::protocol::TProtocol* oprot
   return xfer;
 }
 
-void swap(EncryptionAlgorithm &a, EncryptionAlgorithm &b) {
-  using ::std::swap;
-  swap(a.AES_GCM_V1, b.AES_GCM_V1);
-  swap(a.AES_GCM_CTR_V1, b.AES_GCM_CTR_V1);
-  swap(a.__isset, b.__isset);
+EncryptionAlgorithm::EncryptionAlgorithm(const EncryptionAlgorithm& o)
+   : AES_GCM_V1(o.AES_GCM_V1),
+     AES_GCM_CTR_V1(o.AES_GCM_CTR_V1),
+     __isset(o.__isset) {
 }
-
-EncryptionAlgorithm::EncryptionAlgorithm(const EncryptionAlgorithm& other344) {
-  AES_GCM_V1 = other344.AES_GCM_V1;
-  AES_GCM_CTR_V1 = other344.AES_GCM_CTR_V1;
-  __isset = other344.__isset;
+EncryptionAlgorithm::EncryptionAlgorithm(const EncryptionAlgorithm& o, const allocator_type &alloc)
+   : AES_GCM_V1(o.AES_GCM_V1, alloc),
+     AES_GCM_CTR_V1(o.AES_GCM_CTR_V1, alloc),
+     __isset(o.__isset) {
 }
-EncryptionAlgorithm::EncryptionAlgorithm(EncryptionAlgorithm&& other345) noexcept {
-  AES_GCM_V1 = std::move(other345.AES_GCM_V1);
-  AES_GCM_CTR_V1 = std::move(other345.AES_GCM_CTR_V1);
-  __isset = other345.__isset;
+EncryptionAlgorithm::EncryptionAlgorithm(EncryptionAlgorithm&& o) noexcept
+   : AES_GCM_V1(std::move(o.AES_GCM_V1)),
+     AES_GCM_CTR_V1(std::move(o.AES_GCM_CTR_V1)),
+     __isset(o.__isset) {
+}
+EncryptionAlgorithm::EncryptionAlgorithm(EncryptionAlgorithm&& o, const allocator_type &alloc)
+   : AES_GCM_V1(std::move(o.AES_GCM_V1), alloc),
+     AES_GCM_CTR_V1(std::move(o.AES_GCM_CTR_V1), alloc),
+     __isset(o.__isset) {
 }
 EncryptionAlgorithm& EncryptionAlgorithm::operator=(const EncryptionAlgorithm& other346) {
   AES_GCM_V1 = other346.AES_GCM_V1;
@@ -9496,7 +9673,7 @@ EncryptionAlgorithm& EncryptionAlgorithm::operator=(const EncryptionAlgorithm& o
   __isset = other346.__isset;
   return *this;
 }
-EncryptionAlgorithm& EncryptionAlgorithm::operator=(EncryptionAlgorithm&& other347) noexcept {
+EncryptionAlgorithm& EncryptionAlgorithm::operator=(EncryptionAlgorithm&& other347) {
   AES_GCM_V1 = std::move(other347.AES_GCM_V1);
   AES_GCM_CTR_V1 = std::move(other347.AES_GCM_CTR_V1);
   __isset = other347.__isset;
@@ -9514,18 +9691,23 @@ void EncryptionAlgorithm::printTo(std::ostream& out) const {
 FileMetaData::~FileMetaData() noexcept {
 }
 
-FileMetaData::FileMetaData() noexcept
+FileMetaData::FileMetaData(const allocator_type &alloc) noexcept
    : version(0),
+     schema(alloc),
      num_rows(0),
-     created_by(),
-     footer_signing_key_metadata() {
+     row_groups(alloc),
+     key_value_metadata(alloc),
+     created_by(alloc),
+     column_orders(alloc),
+     encryption_algorithm(alloc),
+     footer_signing_key_metadata(alloc) {
 }
 
 void FileMetaData::__set_version(const int32_t val) {
   this->version = val;
 }
 
-void FileMetaData::__set_schema(const duckdb::vector<SchemaElement> & val) {
+void FileMetaData::__set_schema(const ParquetVector<SchemaElement> & val) {
   this->schema = val;
 }
 
@@ -9533,21 +9715,21 @@ void FileMetaData::__set_num_rows(const int64_t val) {
   this->num_rows = val;
 }
 
-void FileMetaData::__set_row_groups(const duckdb::vector<RowGroup> & val) {
+void FileMetaData::__set_row_groups(const ParquetVector<RowGroup> & val) {
   this->row_groups = val;
 }
 
-void FileMetaData::__set_key_value_metadata(const duckdb::vector<KeyValue> & val) {
+void FileMetaData::__set_key_value_metadata(const ParquetVector<KeyValue> & val) {
   this->key_value_metadata = val;
 __isset.key_value_metadata = true;
 }
 
 void FileMetaData::__set_created_by(const std::string& val) {
-  this->created_by = val;
+  this->created_by.assign(val.data(), val.size());
 __isset.created_by = true;
 }
 
-void FileMetaData::__set_column_orders(const duckdb::vector<ColumnOrder> & val) {
+void FileMetaData::__set_column_orders(const ParquetVector<ColumnOrder> & val) {
   this->column_orders = val;
 __isset.column_orders = true;
 }
@@ -9558,7 +9740,7 @@ __isset.encryption_algorithm = true;
 }
 
 void FileMetaData::__set_footer_signing_key_metadata(const std::string& val) {
-  this->footer_signing_key_metadata = val;
+  this->footer_signing_key_metadata.assign(val.data(), val.size());
 __isset.footer_signing_key_metadata = true;
 }
 std::ostream& operator<<(std::ostream& out, const FileMetaData& obj)
@@ -9671,7 +9853,7 @@ uint32_t FileMetaData::read(::apache::thrift::protocol::TProtocol* iprot) {
         break;
       case 6:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readString(this->created_by);
+          xfer += ReadParquetString(iprot, this->created_by);
           this->__isset.created_by = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -9707,7 +9889,7 @@ uint32_t FileMetaData::read(::apache::thrift::protocol::TProtocol* iprot) {
         break;
       case 9:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readBinary(this->footer_signing_key_metadata);
+          xfer += ReadParquetBinary(iprot, this->footer_signing_key_metadata);
           this->__isset.footer_signing_key_metadata = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -9745,7 +9927,7 @@ uint32_t FileMetaData::write(::apache::thrift::protocol::TProtocol* oprot) const
   xfer += oprot->writeFieldBegin("schema", ::apache::thrift::protocol::T_LIST, 2);
   {
     xfer += oprot->writeListBegin(::apache::thrift::protocol::T_STRUCT, static_cast<uint32_t>(this->schema.size()));
-    duckdb::vector<SchemaElement> ::const_iterator _iter368;
+    ParquetVector<SchemaElement> ::const_iterator _iter368;
     for (_iter368 = this->schema.begin(); _iter368 != this->schema.end(); ++_iter368)
     {
       xfer += (*_iter368).write(oprot);
@@ -9761,7 +9943,7 @@ uint32_t FileMetaData::write(::apache::thrift::protocol::TProtocol* oprot) const
   xfer += oprot->writeFieldBegin("row_groups", ::apache::thrift::protocol::T_LIST, 4);
   {
     xfer += oprot->writeListBegin(::apache::thrift::protocol::T_STRUCT, static_cast<uint32_t>(this->row_groups.size()));
-    duckdb::vector<RowGroup> ::const_iterator _iter369;
+    ParquetVector<RowGroup> ::const_iterator _iter369;
     for (_iter369 = this->row_groups.begin(); _iter369 != this->row_groups.end(); ++_iter369)
     {
       xfer += (*_iter369).write(oprot);
@@ -9774,7 +9956,7 @@ uint32_t FileMetaData::write(::apache::thrift::protocol::TProtocol* oprot) const
     xfer += oprot->writeFieldBegin("key_value_metadata", ::apache::thrift::protocol::T_LIST, 5);
     {
       xfer += oprot->writeListBegin(::apache::thrift::protocol::T_STRUCT, static_cast<uint32_t>(this->key_value_metadata.size()));
-      duckdb::vector<KeyValue> ::const_iterator _iter370;
+      ParquetVector<KeyValue> ::const_iterator _iter370;
       for (_iter370 = this->key_value_metadata.begin(); _iter370 != this->key_value_metadata.end(); ++_iter370)
       {
         xfer += (*_iter370).write(oprot);
@@ -9785,14 +9967,14 @@ uint32_t FileMetaData::write(::apache::thrift::protocol::TProtocol* oprot) const
   }
   if (this->__isset.created_by) {
     xfer += oprot->writeFieldBegin("created_by", ::apache::thrift::protocol::T_STRING, 6);
-    xfer += oprot->writeString(this->created_by);
+    xfer += WriteParquetString(oprot, this->created_by);
     xfer += oprot->writeFieldEnd();
   }
   if (this->__isset.column_orders) {
     xfer += oprot->writeFieldBegin("column_orders", ::apache::thrift::protocol::T_LIST, 7);
     {
       xfer += oprot->writeListBegin(::apache::thrift::protocol::T_STRUCT, static_cast<uint32_t>(this->column_orders.size()));
-      duckdb::vector<ColumnOrder> ::const_iterator _iter371;
+      ParquetVector<ColumnOrder> ::const_iterator _iter371;
       for (_iter371 = this->column_orders.begin(); _iter371 != this->column_orders.end(); ++_iter371)
       {
         xfer += (*_iter371).write(oprot);
@@ -9808,7 +9990,7 @@ uint32_t FileMetaData::write(::apache::thrift::protocol::TProtocol* oprot) const
   }
   if (this->__isset.footer_signing_key_metadata) {
     xfer += oprot->writeFieldBegin("footer_signing_key_metadata", ::apache::thrift::protocol::T_STRING, 9);
-    xfer += oprot->writeBinary(this->footer_signing_key_metadata);
+    xfer += WriteParquetBinary(oprot, this->footer_signing_key_metadata);
     xfer += oprot->writeFieldEnd();
   }
   xfer += oprot->writeFieldStop();
@@ -9816,43 +9998,53 @@ uint32_t FileMetaData::write(::apache::thrift::protocol::TProtocol* oprot) const
   return xfer;
 }
 
-void swap(FileMetaData &a, FileMetaData &b) {
-  using ::std::swap;
-  swap(a.version, b.version);
-  swap(a.schema, b.schema);
-  swap(a.num_rows, b.num_rows);
-  swap(a.row_groups, b.row_groups);
-  swap(a.key_value_metadata, b.key_value_metadata);
-  swap(a.created_by, b.created_by);
-  swap(a.column_orders, b.column_orders);
-  swap(a.encryption_algorithm, b.encryption_algorithm);
-  swap(a.footer_signing_key_metadata, b.footer_signing_key_metadata);
-  swap(a.__isset, b.__isset);
+FileMetaData::FileMetaData(const FileMetaData& o)
+   : version(o.version),
+     schema(o.schema),
+     num_rows(o.num_rows),
+     row_groups(o.row_groups),
+     key_value_metadata(o.key_value_metadata),
+     created_by(o.created_by),
+     column_orders(o.column_orders),
+     encryption_algorithm(o.encryption_algorithm),
+     footer_signing_key_metadata(o.footer_signing_key_metadata),
+     __isset(o.__isset) {
 }
-
-FileMetaData::FileMetaData(const FileMetaData& other372) {
-  version = other372.version;
-  schema = other372.schema;
-  num_rows = other372.num_rows;
-  row_groups = other372.row_groups;
-  key_value_metadata = other372.key_value_metadata;
-  created_by = other372.created_by;
-  column_orders = other372.column_orders;
-  encryption_algorithm = other372.encryption_algorithm;
-  footer_signing_key_metadata = other372.footer_signing_key_metadata;
-  __isset = other372.__isset;
+FileMetaData::FileMetaData(const FileMetaData& o, const allocator_type &alloc)
+   : version(o.version),
+     schema(o.schema, alloc),
+     num_rows(o.num_rows),
+     row_groups(o.row_groups, alloc),
+     key_value_metadata(o.key_value_metadata, alloc),
+     created_by(o.created_by, alloc),
+     column_orders(o.column_orders, alloc),
+     encryption_algorithm(o.encryption_algorithm, alloc),
+     footer_signing_key_metadata(o.footer_signing_key_metadata, alloc),
+     __isset(o.__isset) {
 }
-FileMetaData::FileMetaData(FileMetaData&& other373) noexcept {
-  version = other373.version;
-  schema = std::move(other373.schema);
-  num_rows = other373.num_rows;
-  row_groups = std::move(other373.row_groups);
-  key_value_metadata = std::move(other373.key_value_metadata);
-  created_by = std::move(other373.created_by);
-  column_orders = std::move(other373.column_orders);
-  encryption_algorithm = std::move(other373.encryption_algorithm);
-  footer_signing_key_metadata = std::move(other373.footer_signing_key_metadata);
-  __isset = other373.__isset;
+FileMetaData::FileMetaData(FileMetaData&& o) noexcept
+   : version(o.version),
+     schema(std::move(o.schema)),
+     num_rows(o.num_rows),
+     row_groups(std::move(o.row_groups)),
+     key_value_metadata(std::move(o.key_value_metadata)),
+     created_by(std::move(o.created_by)),
+     column_orders(std::move(o.column_orders)),
+     encryption_algorithm(std::move(o.encryption_algorithm)),
+     footer_signing_key_metadata(std::move(o.footer_signing_key_metadata)),
+     __isset(o.__isset) {
+}
+FileMetaData::FileMetaData(FileMetaData&& o, const allocator_type &alloc)
+   : version(o.version),
+     schema(std::move(o.schema), alloc),
+     num_rows(o.num_rows),
+     row_groups(std::move(o.row_groups), alloc),
+     key_value_metadata(std::move(o.key_value_metadata), alloc),
+     created_by(std::move(o.created_by), alloc),
+     column_orders(std::move(o.column_orders), alloc),
+     encryption_algorithm(std::move(o.encryption_algorithm), alloc),
+     footer_signing_key_metadata(std::move(o.footer_signing_key_metadata), alloc),
+     __isset(o.__isset) {
 }
 FileMetaData& FileMetaData::operator=(const FileMetaData& other374) {
   version = other374.version;
@@ -9867,7 +10059,7 @@ FileMetaData& FileMetaData::operator=(const FileMetaData& other374) {
   __isset = other374.__isset;
   return *this;
 }
-FileMetaData& FileMetaData::operator=(FileMetaData&& other375) noexcept {
+FileMetaData& FileMetaData::operator=(FileMetaData&& other375) {
   version = other375.version;
   schema = std::move(other375.schema);
   num_rows = other375.num_rows;
@@ -9899,8 +10091,9 @@ void FileMetaData::printTo(std::ostream& out) const {
 FileCryptoMetaData::~FileCryptoMetaData() noexcept {
 }
 
-FileCryptoMetaData::FileCryptoMetaData() noexcept
-   : key_metadata() {
+FileCryptoMetaData::FileCryptoMetaData(const allocator_type &alloc) noexcept
+   : encryption_algorithm(alloc),
+     key_metadata(alloc) {
 }
 
 void FileCryptoMetaData::__set_encryption_algorithm(const EncryptionAlgorithm& val) {
@@ -9908,7 +10101,7 @@ void FileCryptoMetaData::__set_encryption_algorithm(const EncryptionAlgorithm& v
 }
 
 void FileCryptoMetaData::__set_key_metadata(const std::string& val) {
-  this->key_metadata = val;
+  this->key_metadata.assign(val.data(), val.size());
 __isset.key_metadata = true;
 }
 std::ostream& operator<<(std::ostream& out, const FileCryptoMetaData& obj)
@@ -9950,7 +10143,7 @@ uint32_t FileCryptoMetaData::read(::apache::thrift::protocol::TProtocol* iprot) 
         break;
       case 2:
         if (ftype == ::apache::thrift::protocol::T_STRING) {
-          xfer += iprot->readBinary(this->key_metadata);
+          xfer += ReadParquetBinary(iprot, this->key_metadata);
           this->__isset.key_metadata = true;
         } else {
           xfer += iprot->skip(ftype);
@@ -9981,7 +10174,7 @@ uint32_t FileCryptoMetaData::write(::apache::thrift::protocol::TProtocol* oprot)
 
   if (this->__isset.key_metadata) {
     xfer += oprot->writeFieldBegin("key_metadata", ::apache::thrift::protocol::T_STRING, 2);
-    xfer += oprot->writeBinary(this->key_metadata);
+    xfer += WriteParquetBinary(oprot, this->key_metadata);
     xfer += oprot->writeFieldEnd();
   }
   xfer += oprot->writeFieldStop();
@@ -9989,22 +10182,25 @@ uint32_t FileCryptoMetaData::write(::apache::thrift::protocol::TProtocol* oprot)
   return xfer;
 }
 
-void swap(FileCryptoMetaData &a, FileCryptoMetaData &b) {
-  using ::std::swap;
-  swap(a.encryption_algorithm, b.encryption_algorithm);
-  swap(a.key_metadata, b.key_metadata);
-  swap(a.__isset, b.__isset);
+FileCryptoMetaData::FileCryptoMetaData(const FileCryptoMetaData& o)
+   : encryption_algorithm(o.encryption_algorithm),
+     key_metadata(o.key_metadata),
+     __isset(o.__isset) {
 }
-
-FileCryptoMetaData::FileCryptoMetaData(const FileCryptoMetaData& other376) {
-  encryption_algorithm = other376.encryption_algorithm;
-  key_metadata = other376.key_metadata;
-  __isset = other376.__isset;
+FileCryptoMetaData::FileCryptoMetaData(const FileCryptoMetaData& o, const allocator_type &alloc)
+   : encryption_algorithm(o.encryption_algorithm, alloc),
+     key_metadata(o.key_metadata, alloc),
+     __isset(o.__isset) {
 }
-FileCryptoMetaData::FileCryptoMetaData(FileCryptoMetaData&& other377) noexcept {
-  encryption_algorithm = std::move(other377.encryption_algorithm);
-  key_metadata = std::move(other377.key_metadata);
-  __isset = other377.__isset;
+FileCryptoMetaData::FileCryptoMetaData(FileCryptoMetaData&& o) noexcept
+   : encryption_algorithm(std::move(o.encryption_algorithm)),
+     key_metadata(std::move(o.key_metadata)),
+     __isset(o.__isset) {
+}
+FileCryptoMetaData::FileCryptoMetaData(FileCryptoMetaData&& o, const allocator_type &alloc)
+   : encryption_algorithm(std::move(o.encryption_algorithm), alloc),
+     key_metadata(std::move(o.key_metadata), alloc),
+     __isset(o.__isset) {
 }
 FileCryptoMetaData& FileCryptoMetaData::operator=(const FileCryptoMetaData& other378) {
   encryption_algorithm = other378.encryption_algorithm;
@@ -10012,7 +10208,7 @@ FileCryptoMetaData& FileCryptoMetaData::operator=(const FileCryptoMetaData& othe
   __isset = other378.__isset;
   return *this;
 }
-FileCryptoMetaData& FileCryptoMetaData::operator=(FileCryptoMetaData&& other379) noexcept {
+FileCryptoMetaData& FileCryptoMetaData::operator=(FileCryptoMetaData&& other379) {
   encryption_algorithm = std::move(other379.encryption_algorithm);
   key_metadata = std::move(other379.key_metadata);
   __isset = other379.__isset;

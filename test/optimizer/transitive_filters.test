@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 ### constant comparison [=, >, >=] followed by j >= i #########################
 query II
@@ -162,44 +162,40 @@ EXPLAIN SELECT * FROM (VALUES(1),(2),(3)) tbl(a) WHERE a <= 2 AND a >= 2;
 logical_opt	<!REGEX>:.*EMPTY_RESULT.*
 
 
-# FIXME - disabled because of bugs in the filter combiner
-mode skip instable
-
 ### Complex transitive filters #################################################
-#columns i and j correspond to columns: col0 and col1 in the optimized logical plan
-#columns k and l correspond to columns: col2 and col3 in the optimized logical plan
-#columns A and B are used to solve column name conflits
 
-#check for the transivity j < 5001 and k > 4999
+# Infer both bounds across the join, irrespective of the rendered child order.
 query II
 EXPLAIN SELECT * FROM (VALUES(5000,5000)) tbl1(i,j), (VALUES(NULL, NULL, 5000, 5000)) tbl2(A, B, k,l) WHERE i>4999 AND j<=l AND k>=i AND l<5001;
 ----
-logical_opt	<REGEX>:(((.*\(col3 < 5001\).*)(.*\(col2 > 4999\).*))|((.*\(col2 > 4999\).*)(.*\(col3\) < 5001.*)))
+logical_opt	<REGEX>:.*(j < 5001.*k > 4999|k > 4999.*j < 5001).*
 
-#logical_opt	<REGEX>:(((.*\(col1 < 5001\).*)(.*\(col2 > 4999\).*))|((.*\(col2 > 4999\).*)(.*\(col1\) < 5001.*)))
-
-#check for the transivity j > 4999 and k > 4999
-# SHOULD STIL PASS
+# Propagate the lower bound through a chain.
 query II
 EXPLAIN SELECT * FROM (VALUES(5000,5000)) tbl1(i,j), (VALUES(NULL, NULL, 5000, 5000)) tbl2(A, B, k,l) WHERE i>4999 AND j>=i AND k>=j;
 ----
-logical_opt	<REGEX>:(((.*\(col1 > 4999\).*)(.*\(col2 > 4999\).*))|((.*\(col2 > 4999\).*)(.*\(col1 > 4999\).*)))
+logical_opt	<REGEX>:.*(j > 4999.*k > 4999|k > 4999.*j > 4999).*
 
-#check for the transivity j > 4999 and k > 4999
+# Reordering the comparisons must still infer both bounds.
 query II
 EXPLAIN SELECT * FROM (VALUES(5000,5000)) tbl1(i,j), (VALUES(NULL, NULL, 5000, 5000)) tbl2(A, B, k,l) WHERE i>4999 AND k>=j AND j>=i;
 ----
-logical_opt	<REGEX>:(((.*\(col1 > 4999\).*)(.*\(col2 > 4999\).*))|((.*\(col2 > 4999\).*)(.*\(col1 > 4999\).*)))
+logical_opt	<REGEX>:.*(j > 4999.*k > 4999|k > 4999.*j > 4999).*
 
-#check for the transivity j > 4999 and k > 4999 and l > 4999
+# Carry the lower bound to both columns on the other side of the join.
 query II
 EXPLAIN SELECT * FROM (VALUES(5000,5000)) tbl1(i,j), (VALUES(NULL, NULL, 5000, 5000)) tbl2(A, B, k,l) WHERE i>4999 AND k>=j AND j>=i AND l>=k;
 ----
-logical_opt	<REGEX>:((.*\(col2 > 4999\).*)(.*\(col3 > 4999\).*)|(.*\(col3 > 4999\).*)(.*\(col2 > 4999\).*))
+logical_opt	<REGEX>:.*(k > 4999.*l > 4999|l > 4999.*k > 4999).*
 
-#check for the transivity j < 4999 and k < 4999 and l < 4999
+# Upper bounds propagate in the same way.
 query II
 EXPLAIN SELECT * FROM (VALUES(5000,5000)) tbl1(i,j), (VALUES(NULL, NULL, 5000, 5000)) tbl2(A, B, k,l) WHERE i<4999 AND k<=j AND j<=i AND l<=k;
 ----
-logical_opt	<REGEX>:((.*\(col2 < 4999\).*)(.*\(col3 < 4999\).*)|(.*\(col3 < 4999\).*)(.*\(col2 < 4999\).*))
+logical_opt	<REGEX>:.*(k < 4999.*l < 4999|l < 4999.*k < 4999).*
 
+# A column is not mirrored onto itself, which would duplicate the filter.
+query II
+EXPLAIN SELECT * FROM (VALUES(2)) tbl(i) WHERE i < 1 AND abs(i) = 1;
+----
+logical_opt	<!REGEX>:.*abs\(i\) = 1.*abs\(i\) = 1.*

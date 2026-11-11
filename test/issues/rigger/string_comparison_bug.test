@@ -210,9 +210,6 @@ statement ok
 SELECT * FROM t0 WHERE (('NN')<((t0.rowid NOT IN (t0.c1)))::VARCHAR);
 
 statement ok
-PRAGMA disable_verification
-
-statement ok
 PRAGMA disable_optimizer
 
 statement error

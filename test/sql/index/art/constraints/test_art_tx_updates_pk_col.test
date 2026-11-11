@@ -37,20 +37,18 @@ SELECT id, payload, rowid FROM tbl WHERE id = 1;
 ----
 1	first payload	0
 
-# Locally update the payload.
+# Updating the payload runs into a write-write conflict with con1's delete of the old row.
 
 statement ok
 BEGIN;
 
-statement ok
+statement error
 UPDATE tbl SET payload = 'second payload' WHERE id = 1;
-
-# Transaction-local state.
-
-query II
-SELECT id, payload FROM tbl WHERE id = 1;
 ----
-1	second payload
+Conflict on update
+
+statement ok
+ROLLBACK;
 
 # Transaction-local state.
 
@@ -65,22 +63,6 @@ SELECT id, payload FROM tbl WHERE id = 1;
 1	new payload
 
 statement ok con1
-COMMIT;
-
-# We only see the local changes.
-
-query III
-SELECT id, payload, rowid FROM tbl WHERE id = 1;
-----
-1	second payload	0
-
-query III
-SELECT id, payload, rowid FROM tbl WHERE id = 3;
-----
-
-# This runs into a write-write conflict on commit and rolls back.
-
-statement ok
 COMMIT;
 
 # The result are the committed changes of con1.

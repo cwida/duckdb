@@ -2,12 +2,23 @@
 # description: Test the sum_no_overflow aggregate function
 # group: [aggregates]
 
-statement error
+# binding sum_no_overflow by name delegates to the regular sum
+query I
 SELECT sum_no_overflow(42)
 ----
-internal use only
+42
 
-statement error
+query I
 SELECT sum_no_overflow(42.5)
 ----
-internal use only
+42.5
+
+query II
+SELECT typeof(sum_no_overflow(42::BIGINT)), typeof(sum_no_overflow(42.5))
+----
+HUGEINT	DECIMAL(38,1)
+
+query I
+SELECT sum_no_overflow(i::SMALLINT) FROM range(10) t(i)
+----
+45

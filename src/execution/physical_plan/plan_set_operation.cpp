@@ -39,6 +39,24 @@ static JoinCondition CreateNotDistinctComparison(ClientContext &context, const L
 	return cond;
 }
 
+//! The types to compare the columns of EXCEPT / INTERSECT with - a collation of either side applies (as for UNION)
+static vector<LogicalType> GetComparisonTypes(ClientContext &context, const LogicalSetOperation &op,
+                                              const vector<LogicalType> &left_types,
+                                              const vector<LogicalType> &right_types) {
+	// the types only differ in their collations here, but a collation can be missing from a child (e.g. when the
+	// projection applying a COLLATE was removed) or from the operator (it takes the types of the left child)
+	vector<LogicalType> types;
+	for (idx_t i = 0; i < left_types.size(); i++) {
+		auto type = LogicalType::ForceMaxLogicalType(context, left_types[i], right_types[i]);
+		// the operator types can be outdated (e.g. compressed children), only take a collation from them
+		if (i < op.types.size() && op.types[i].id() == type.id()) {
+			type = LogicalType::ForceMaxLogicalType(context, op.types[i], type);
+		}
+		types.push_back(std::move(type));
+	}
+	return types;
+}
+
 PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalSetOperation &op) {
 	ArenaLinkedList<reference<PhysicalOperator>> children(physical_plan->ArenaRef());
 	for (auto &child : op.children) {
@@ -63,7 +81,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalSetOperation &op) {
 		}
 		auto &left = children[0];
 		auto &right = children[1];
-		auto &types = left.get().GetTypes();
+		auto types = GetComparisonTypes(context, op, left.get().GetTypes(), right.get().GetTypes());
 		vector<JoinCondition> conditions;
 		// create equality condition for all columns
 		for (idx_t i = 0; i < types.size(); i++) {

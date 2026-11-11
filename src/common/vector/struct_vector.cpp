@@ -172,6 +172,22 @@ buffer_ptr<VectorBuffer> VectorStructBuffer::ConstantSliceInternal(const Logical
 	return result;
 }
 
+buffer_ptr<VectorBuffer> VectorStructBuffer::ConstantReferenceInternal(const LogicalType &type, idx_t index,
+                                                                       count_t count) const {
+	if (!validity.RowIsValid(index)) {
+		// the children of a NULL constant struct are NULL as well
+		return VectorBuffer::ConstantReferenceInternal(type, index, count);
+	}
+	vector<Vector> result_children;
+	for (auto &child : children) {
+		result_children.emplace_back(child.GetType(), ConstantReference(child, index, count));
+	}
+	auto result = make_buffer<VectorStructBuffer>(std::move(result_children), capacity_t(1ULL));
+	result->SetVectorType(VectorType::CONSTANT_VECTOR);
+	result->SetVectorSize(count);
+	return result;
+}
+
 void VectorStructBuffer::ToUnifiedFormat(UnifiedVectorFormat &format) const {
 	if (vector_type == VectorType::CONSTANT_VECTOR) {
 		format.sel = ConstantVector::ZeroSelectionVector(Size(), format.owned_sel);
@@ -218,6 +234,10 @@ Value VectorStructBuffer::GetValue(const LogicalType &type, idx_t index) const {
 		}
 		auto tag = tag_val.GetValue<union_tag_t>();
 		// member is at tag + 1 (tag is child 0)
+		if (static_cast<idx_t>(tag) + 1 >= children.size()) {
+			throw DataCorruptionException("Union tag (%d) is out of bounds for a union with %d members", tag,
+			                              children.size() - 1);
+		}
 		auto value = children[tag + 1].GetValue(index);
 		auto members = UnionType::CopyMemberTypes(type);
 		return Value::UNION(members, tag, std::move(value));

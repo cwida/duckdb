@@ -1,0 +1,29 @@
+# name: test/sql/upsert/upsert_conflict_key_type_json.test
+# description: A JSON conflict key is compared without resolving the type name again
+# group: [upsert]
+
+require json
+
+statement ok
+CREATE TABLE t9 (k JSON PRIMARY KEY);
+
+statement ok
+INSERT INTO t9 VALUES ('1');
+
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE TYPE s.JSON AS INTEGER;
+
+statement ok
+SET search_path = 's,main';
+
+statement ok
+INSERT INTO t9 SELECT '1.4' ON CONFLICT DO NOTHING;
+
+query I
+SELECT k FROM t9 ORDER BY k
+----
+1
+1.4

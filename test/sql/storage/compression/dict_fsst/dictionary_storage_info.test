@@ -6,7 +6,7 @@
 load {TEST_DIR}/test_dictionary.db readwrite v1.3.0
 
 statement ok
-PRAGMA force_compression = 'dict_fsst'
+SET force_compression = 'dict_fsst'
 
 statement ok
 CREATE TABLE test (a VARCHAR, b VARCHAR);

@@ -1,0 +1,16 @@
+# name: benchmark/micro/list/unnest_repeated_long_string.benchmark
+# description: UNNEST that repeats a 64 MiB string of its input row over 32 output chunks (duckdblabs/bot-issue-tracker#638)
+# group: [list]
+
+name Unnest Repeated Long String
+group micro
+subgroup list
+
+load
+CREATE TABLE t AS SELECT repeat('x', 64 * 1024 * 1024) AS s;
+
+run
+SELECT count(*), sum(length(s)) FROM (SELECT s, unnest(range(65536)) FROM t);
+
+result II
+65536	4398046511104

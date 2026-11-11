@@ -1,0 +1,58 @@
+# name: test/sql/storage/compression/rle/rle_select_run_boundaries.test
+# description: RLE selections preserve scan position across runs, vectors and segments
+# group: [rle]
+
+require vector_size 2048
+
+statement ok
+SET threads=1;
+
+statement ok
+ATTACH '{TEST_DIR}/rle_select_run_boundaries.db' AS db (BLOCK_SIZE 16384);
+
+foreach run_length 1 2 7 2047 2048 2049 65535
+
+statement ok
+CREATE TABLE db.runs_{run_length}(id INTEGER, value BIGINT USING COMPRESSION rle, nullable BIGINT USING COMPRESSION rle);
+
+statement ok
+INSERT INTO db.runs_{run_length} SELECT i, (i//{run_length})%100, CASE WHEN i%13=0 THEN NULL ELSE (i//{run_length})%100 END FROM range(131077) t(i);
+
+endloop
+
+statement ok
+CHECKPOINT db;
+
+statement ok
+DETACH db;
+
+statement ok
+ATTACH '{TEST_DIR}/rle_select_run_boundaries.db' AS db;
+
+foreach run_length 1 2 7 2047 2048 2049 65535
+
+query I
+SELECT bool_and(compression='RLE') FROM pragma_storage_info('db.runs_{run_length}') WHERE column_name IN ('value', 'nullable') AND segment_type='BIGINT';
+----
+true
+
+foreach stride 1 2 16 2048
+
+# Dense and sparse selections, including the last row of each full vector.
+query III
+SELECT count(*)=131077//{stride}, bool_and(value=(id//{run_length})%100), bool_and(nullable IS NOT DISTINCT FROM CASE WHEN id%13=0 THEN NULL ELSE (id//{run_length})%100 END) FROM db.runs_{run_length} WHERE id%{stride}={stride}-1;
+----
+true	true	true
+
+endloop
+
+# Skip whole vectors, then select both ends of the following vectors.
+query III
+SELECT count(*), bool_and(value=(id//{run_length})%100), bool_and(nullable IS NOT DISTINCT FROM CASE WHEN id%13=0 THEN NULL ELSE (id//{run_length})%100 END) FROM db.runs_{run_length} WHERE id%8192>=4096 AND (id%2048=0 OR id%2048=2047);
+----
+64	true	true
+
+endloop
+
+statement ok
+DETACH db;

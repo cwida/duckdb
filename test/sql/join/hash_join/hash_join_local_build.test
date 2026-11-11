@@ -1,0 +1,34 @@
+# name: test/sql/join/hash_join/hash_join_local_build.test
+# description: Parallel hash construction with skewed and empty radix partitions
+# group: [hash_join]
+
+statement ok
+PRAGMA verify_parallelism
+
+statement ok
+PRAGMA disable_optimizer
+
+statement ok
+CREATE TABLE build AS SELECT 'key-' || (i % 7)::VARCHAR k, i FROM range(500000) t(i)
+
+foreach threads 1 2 4 8
+
+statement ok
+SET threads={threads}
+
+query II
+SELECT count(*), sum(b.i)
+FROM (VALUES ('key-0'), ('key-3'), ('absent')) p(k) JOIN build b USING(k)
+----
+142858	35714428571
+
+endloop
+
+statement ok
+PRAGMA enable_optimizer
+
+statement ok
+PRAGMA disable_verify_parallelism
+
+statement ok
+RESET threads

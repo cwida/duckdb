@@ -8,7 +8,7 @@ SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 # test some expressions which have side effects can not push down
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II
 explain select rnd from (select random()) as t(rnd) where rnd < 0.5;

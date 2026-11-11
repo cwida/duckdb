@@ -104,7 +104,7 @@ ATTACH '{TEST_DIR}/cast_expr_collate.db' AS colldb (READ_ONLY);
 query I
 SELECT generation_expression FROM duckdb_columns() WHERE table_name = 'coll' AND column_name = 'g';
 ----
-CAST(x AS VARCHAR COLLATE NOCASE)
+CAST(x AS VARCHAR('NOCASE'))
 
 # the collation is not just rendered, it is still applied to the generated column
 query I

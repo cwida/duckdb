@@ -1,0 +1,32 @@
+# name: test/sql/json/scalar/test_json_path_quoted_keys.test
+# description: Quoted keys in JSON paths
+# group: [scalar]
+
+require json
+
+# a quoted "*" is a regular key, an unquoted one is a wildcard
+query I
+SELECT json_extract('{"*":1,"b":2}', '$."*"');
+----
+1
+
+query I
+SELECT json_extract('{"*":1,"b":2}', '$.*');
+----
+[1, 2]
+
+# other quoted keys are unchanged
+query I
+SELECT json_extract('{"a b":1,"c":2}', '$."a b"');
+----
+1
+
+query I
+SELECT json_extract('{"a":{"b":3}}', '$."a"."b"');
+----
+3
+
+query I
+SELECT json_extract('{"a":{"b":3}}', '$..b');
+----
+[3]

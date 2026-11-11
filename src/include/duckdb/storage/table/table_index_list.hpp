@@ -61,10 +61,9 @@ public:
 	                       optional_idx active_checkpoint = optional_idx());
 	//! Removes an index entry from the list of index entries and release any storage the index owns.
 	void RemoveIndex(idx_t index_oid);
-	//! Returns shared ownership of the stable logical index entry matching the name.
-	shared_ptr<IndexEntry> FindEntry(const Identifier &name) const;
 	//! Returns the entry matching the index OID.
 	shared_ptr<IndexEntry> FindEntry(const IndexEntry &index) const;
+	shared_ptr<IndexEntry> FindEntry(idx_t index_oid) const;
 	//! Binds unbound indexes possibly present after loading an extension.
 	void Bind(ClientContext &context, DataTableInfo &table_info, const optional<string> &index_type = {});
 	//! Returns true, if there are no index entries.

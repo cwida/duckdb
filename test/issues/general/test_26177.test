@@ -1,0 +1,112 @@
+# name: test/issues/general/test_26177.test
+# description: MERGE with WHEN NOT MATCHED BY SOURCE and a subquery in ON that is correlated with the source
+# group: [general]
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, v INT);
+
+statement ok
+CREATE TABLE s (id INT, v INT);
+
+statement ok
+INSERT INTO s VALUES (1, 11);
+
+loop i 0 2
+
+statement ok
+DELETE FROM t;
+
+statement ok
+INSERT INTO t VALUES (1, 10), (2, 20);
+
+statement ok
+MERGE INTO t USING s ON t.id = s.id AND EXISTS (SELECT 1 FROM s s2 WHERE s2.id = s.id) WHEN NOT MATCHED BY SOURCE THEN DELETE;
+
+query II
+SELECT * FROM t ORDER BY id;
+----
+1	10
+
+statement ok
+UPDATE t SET v = 10;
+
+statement ok
+INSERT INTO t VALUES (3, 30);
+
+statement ok
+MERGE INTO t USING s ON t.id = s.id AND s.v > (SELECT min(s2.v) - 1 FROM s s2 WHERE s2.id = s.id)
+WHEN MATCHED THEN UPDATE SET v = s.v WHEN NOT MATCHED BY SOURCE THEN UPDATE SET v = 0;
+
+query II
+SELECT * FROM t ORDER BY id;
+----
+1	11
+3	0
+
+# several source rows, for which the subquery decides differently, and all three kinds of actions
+statement ok
+DELETE FROM t;
+
+statement ok
+INSERT INTO t VALUES (1, 10), (2, 20), (3, 30);
+
+statement ok
+INSERT INTO s VALUES (3, 31), (4, 41);
+
+statement ok
+MERGE INTO t USING s ON t.id = s.id AND EXISTS (SELECT 1 FROM s s2 WHERE s2.id = s.id AND s2.v > 20)
+WHEN MATCHED THEN UPDATE SET v = s.v WHEN NOT MATCHED BY SOURCE THEN DELETE
+WHEN NOT MATCHED THEN INSERT VALUES (s.id + 100, s.v);
+
+query II
+SELECT * FROM t ORDER BY id;
+----
+3	31
+101	11
+104	41
+
+# a correlated subquery in an action, and one nested in another in the join condition
+statement ok
+DELETE FROM t;
+
+statement ok
+INSERT INTO t VALUES (1, 10), (2, 20), (3, 30);
+
+statement ok
+MERGE INTO t USING s ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET v = (SELECT count(*) FROM s s2 WHERE s2.id <= s.id) WHEN NOT MATCHED BY SOURCE THEN DELETE;
+
+query II
+SELECT * FROM t ORDER BY id;
+----
+1	1
+3	2
+
+statement ok
+MERGE INTO t USING s ON t.id = s.id
+AND EXISTS (SELECT 1 FROM s s2 WHERE s2.id = s.id AND EXISTS (SELECT 1 FROM s s3 WHERE s3.v = s.v AND s3.v > 20))
+WHEN NOT MATCHED BY SOURCE THEN DELETE;
+
+query II
+SELECT * FROM t ORDER BY id;
+----
+3	2
+
+# a correlated subquery in the condition of an action
+statement ok
+MERGE INTO t USING s ON t.id = s.id
+WHEN MATCHED AND EXISTS (SELECT 1 FROM s s2 WHERE s2.id = s.id AND s2.v > 20) THEN UPDATE SET v = -1
+WHEN NOT MATCHED BY SOURCE THEN DELETE;
+
+query II
+SELECT * FROM t ORDER BY id;
+----
+3	-1
+
+statement ok
+DELETE FROM s WHERE id > 1;
+
+statement ok
+SET disabled_optimizers = 'common_subplan';
+
+endloop

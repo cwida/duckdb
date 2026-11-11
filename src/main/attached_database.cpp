@@ -56,20 +56,21 @@ string AttachOptions::OptionSetting(const string &name) {
 	return lower;
 }
 
-AttachOptions::AttachOptions(const unordered_map<string, Value> &attach_options, const AccessMode default_access_mode)
+AttachOptions::AttachOptions(Context &context, const unordered_map<string, Value> &attach_options,
+                             const AccessMode default_access_mode)
     : access_mode(default_access_mode) {
 	for (auto &entry : attach_options) {
 		auto access_mode_option = ACCESS_MODE_OPTIONS.find(entry.first);
 		if (access_mode_option != ACCESS_MODE_OPTIONS.end()) {
 			// Extract the access mode; the option reads inverted for the readwrite spellings.
-			auto value = BooleanValue::Get(entry.second.DefaultCastAs(LogicalType::BOOLEAN));
+			auto value = BooleanValue::Get(entry.second.CastAs(context, LogicalType::BOOLEAN));
 			access_mode = value == access_mode_option->second ? AccessMode::READ_ONLY : AccessMode::READ_WRITE;
 			continue;
 		}
 
 		if (entry.first == "recovery_mode") {
 			// Extract the recovery mode.
-			auto mode_str = StringValue::Get(entry.second.DefaultCastAs(LogicalType::VARCHAR));
+			auto mode_str = StringValue::Get(entry.second.CastAs(context, LogicalType::VARCHAR));
 			recovery_mode = EnumUtil::FromString<RecoveryMode>(mode_str);
 			continue;
 		}
@@ -78,17 +79,17 @@ AttachOptions::AttachOptions(const unordered_map<string, Value> &attach_options,
 			// Extract the database type. Normalize case so that
 			// `TYPE sqlite` and `TYPE 'SQLite'` are equivalent.
 			// `TYPE sqlite` and `TYPE 'sqlite3'` are NOT equivalent, aliasing to be applied on comparison
-			db_type = StringUtil::Lower(StringValue::Get(entry.second.DefaultCastAs(LogicalType::VARCHAR)));
+			db_type = StringUtil::Lower(StringValue::Get(entry.second.CastAs(context, LogicalType::VARCHAR)));
 			continue;
 		}
 
 		if (entry.first == "default_table") {
-			default_table = QualifiedName::Parse(StringValue::Get(entry.second.DefaultCastAs(LogicalType::VARCHAR)));
+			default_table = QualifiedName::Parse(StringValue::Get(entry.second.CastAs(context, LogicalType::VARCHAR)));
 			continue;
 		}
 
 		if (entry.first == "hidden") {
-			auto is_hidden = BooleanValue::Get(entry.second.DefaultCastAs(LogicalType::BOOLEAN));
+			auto is_hidden = BooleanValue::Get(entry.second.CastAs(context, LogicalType::BOOLEAN));
 			if (is_hidden) {
 				visibility = AttachVisibility::HIDDEN;
 			}
@@ -96,7 +97,7 @@ AttachOptions::AttachOptions(const unordered_map<string, Value> &attach_options,
 		}
 
 		if (entry.first == "vacuum_rebuild_indexes") {
-			const auto threshold = UBigIntValue::Get(entry.second.DefaultCastAs(LogicalType::UBIGINT));
+			const auto threshold = UBigIntValue::Get(entry.second.CastAs(context, LogicalType::UBIGINT));
 			try {
 				vacuum_rebuild_indexes_threshold = threshold;
 			} catch (InternalException &e) {
@@ -125,7 +126,8 @@ AttachedDatabase::AttachedDatabase(DatabaseInstance &db, AttachedDatabaseType ty
 	D_ASSERT(type == AttachedDatabaseType::TEMP_DATABASE || type == AttachedDatabaseType::SYSTEM_DATABASE);
 	if (type == AttachedDatabaseType::TEMP_DATABASE) {
 		unordered_map<string, Value> options;
-		AttachOptions attach_options(options, AccessMode::READ_WRITE);
+		auto &services = db.GetContext();
+		AttachOptions attach_options(services, options, AccessMode::READ_WRITE);
 		options["storage_version"] = "latest";
 		storage = make_uniq<SingleFileStorageManager>(*this, string(IN_MEMORY_PATH), attach_options);
 	}
@@ -271,7 +273,7 @@ void AttachedDatabase::InvokeCloseIfLastReference(shared_ptr<AttachedDatabase> &
 		close_action = DatabaseCloseAction::CHECKPOINT;
 	} else if (checkpoint_on_detach == CheckpointOnDetach::DISABLED) {
 		close_action = DatabaseCloseAction::SKIP_CHECKPOINT;
-	} else if (!DBConfig::GetConfig(context).options.checkpoint_on_shutdown) {
+	} else if (!Settings::Get<CheckpointOnShutdownSetting>(context)) {
 		close_action = DatabaseCloseAction::SKIP_CHECKPOINT;
 	}
 
@@ -412,7 +414,7 @@ void AttachedDatabase::Close(const DatabaseCloseAction action) {
 				should_checkpoint = true;
 			} else if (action == DatabaseCloseAction::TRY_CHECKPOINT) {
 				auto &config = DBConfig::GetConfig(db);
-				should_checkpoint = config.options.checkpoint_on_shutdown;
+				should_checkpoint = Settings::Get<CheckpointOnShutdownSetting>(config);
 			}
 			if (should_checkpoint) {
 				CheckpointOptions options;

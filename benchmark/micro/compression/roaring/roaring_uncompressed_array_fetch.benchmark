@@ -1,0 +1,29 @@
+# name: benchmark/micro/compression/roaring/roaring_uncompressed_array_fetch.benchmark
+# description: Fetch Roaring validity with three null positions per container
+# group: [roaring]
+
+name Roaring FetchRow Uncompressed Array
+group roaring
+storage persistent v1.5.0
+
+# Fetch every row individually before applying the filter.
+init
+SET debug_force_fetch_row = true;
+
+load
+SET force_compression = 'roaring';
+CREATE TABLE tbl AS
+SELECT CASE WHEN i % 2048 IN (17, 701, 1403) THEN NULL ELSE 1337::BIGINT END AS a
+FROM range(2097152) t(i);
+CHECKPOINT;
+
+assert I
+SELECT DISTINCT compression FROM pragma_storage_info('tbl') WHERE column_name = 'a' AND segment_type = 'VALIDITY';
+----
+Roaring
+
+run
+SELECT count(*) FROM tbl WHERE a IS NOT NULL;
+
+result I
+2094080
