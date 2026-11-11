@@ -12,6 +12,79 @@
 
 using namespace duckdb;
 
+TEST_CASE("Prefix range exactness follows the configured representation", "[filter][prefix_range]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &context = *con.context;
+	constexpr idx_t MAX_BITS = 64;
+
+	SECTION("Numeric span below the budget is exact") {
+		auto filter = PrefixRangeFilter::CreatePrefixRangeFilter(LogicalType::BIGINT);
+		filter->Initialize(context, 2, Value::BIGINT(0), Value::BIGINT(MAX_BITS - 1), MAX_BITS);
+		REQUIRE(filter->IsExact());
+		REQUIRE_FALSE(filter->IsInitialized());
+
+		Vector keys(LogicalType::BIGINT, 2);
+		{
+			auto writer = FlatVector::Writer<int64_t>(keys, 2);
+			writer.WriteValue(0);
+			writer.WriteValue(MAX_BITS - 1);
+		}
+		auto state = filter->InitializeBuildState(context);
+		filter->InsertKeys(keys, *state);
+		filter->MergeBuildState(*state);
+		REQUIRE(filter->IsExact());
+		Vector probe(Value::BIGINT(1), count_t(1));
+		SelectionVector selection(1);
+		REQUIRE(filter->LookupKeys(probe, selection, 1) == 0);
+	}
+
+	SECTION("Numeric span at the budget has collisions") {
+		auto filter = PrefixRangeFilter::CreatePrefixRangeFilter(LogicalType::BIGINT);
+		filter->Initialize(context, 2, Value::BIGINT(0), Value::BIGINT(MAX_BITS), MAX_BITS);
+		REQUIRE_FALSE(filter->IsExact());
+		REQUIRE_FALSE(filter->IsInitialized());
+
+		Vector keys(LogicalType::BIGINT, 2);
+		{
+			auto writer = FlatVector::Writer<int64_t>(keys, 2);
+			writer.WriteValue(0);
+			writer.WriteValue(MAX_BITS);
+		}
+		auto state = filter->InitializeBuildState(context);
+		filter->InsertKeys(keys, *state);
+		filter->MergeBuildState(*state);
+		REQUIRE_FALSE(filter->IsExact());
+		Vector probe(Value::BIGINT(1), count_t(1));
+		SelectionVector selection(1);
+		REQUIRE(filter->LookupKeys(probe, selection, 1) == 1);
+	}
+
+	SECTION("Unshifted string prefixes still have collisions") {
+		if (!PrefixRangeFilter::SupportedType(LogicalType::VARCHAR)) {
+			return;
+		}
+		auto filter = PrefixRangeFilter::CreatePrefixRangeFilter(LogicalType::VARCHAR);
+		filter->Initialize(context, 2, Value("same-a"), Value("same-z"), MAX_BITS);
+		REQUIRE_FALSE(filter->IsExact());
+		REQUIRE_FALSE(filter->IsInitialized());
+
+		Vector keys(LogicalType::VARCHAR, 2);
+		{
+			auto writer = FlatVector::Writer<string_t>(keys, 2);
+			writer.WriteValue(string_t("same-a"));
+			writer.WriteValue(string_t("same-z"));
+		}
+		auto state = filter->InitializeBuildState(context);
+		filter->InsertKeys(keys, *state);
+		filter->MergeBuildState(*state);
+		REQUIRE_FALSE(filter->IsExact());
+		Vector probe(Value("same-b"), count_t(1));
+		SelectionVector selection(1);
+		REQUIRE(filter->LookupKeys(probe, selection, 1) == 1);
+	}
+}
+
 // A concurrent append can grow a scanned column past the row count captured at scan init, so the
 // filter can be handed a vector holding more rows than count. The caller sizes result_sel to count
 // only, so a lookup that runs to the end of the vector writes past the end of result_sel. That race

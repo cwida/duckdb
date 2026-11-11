@@ -42,6 +42,7 @@
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/planner/table_filter_set.hpp"
+#include "duckdb/planner/table_filter_state.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/temporary_memory_manager.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -1532,8 +1533,15 @@ public:
 bool JoinFilterPushdownInfo::CanUseInFilter(const ClientContext &context, optional_ptr<JoinHashTable> ht,
                                             const ExpressionType &cmp) const {
 	auto dynamic_or_filter_threshold = Settings::Get<DynamicOrFilterThresholdSetting>(context);
-	return ht && ht->Count() > 1 && ht->Count() <= dynamic_or_filter_threshold &&
-	       (cmp == ExpressionType::COMPARE_EQUAL || cmp == ExpressionType::COMPARE_NOT_DISTINCT_FROM);
+	if (!ht || ht->Count() <= 1 || dynamic_or_filter_threshold == 0 ||
+	    (cmp != ExpressionType::COMPARE_EQUAL && cmp != ExpressionType::COMPARE_NOT_DISTINCT_FROM)) {
+		return false;
+	}
+	if (ht->Count() <= dynamic_or_filter_threshold) {
+		return true;
+	}
+	static constexpr idx_t MAX_IN_FILTER_BUILD_BYTES = 256 * 1024;
+	return ht->Count() <= STANDARD_VECTOR_SIZE && ht->SizeInBytes() <= MAX_IN_FILTER_BUILD_BYTES;
 }
 
 bool JoinFilterPushdownInfo::CanUseBloomFilter(const JoinFilterPushdownFilter &info, const ClientContext &context,
@@ -1838,15 +1846,15 @@ static unique_ptr<Expression> CreateJoinFilterComparisonExpression(
 
 bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilterPushdownFilter &info,
                                           const JoinFilterPushdownColumn &column, JoinHashTable &ht,
-                                          const PhysicalOperator &op, idx_t filter_idx,
-                                          ProjectionIndex filter_col_idx) const {
+                                          const PhysicalOperator &op, idx_t filter_idx, ProjectionIndex filter_col_idx,
+                                          bool filter_rows) const {
 	// Generate an IN filter by scanning the build-side key column.
 	auto build_idx = join_condition[filter_idx];
 	const auto &runtime_type = ht.conditions[build_idx].GetLHS().GetReturnType();
 	Vector tuples_addresses(LogicalType::POINTER, ht.Count());
 	Vector build_vector(ht.layout_ptr->GetTypes()[build_idx], ht.Count());
 	auto key_count = ht.ScanKeyColumn(tuples_addresses, build_vector, build_idx);
-	if (key_count == 0) {
+	if (key_count == 0 || key_count != ht.Count()) {
 		return false;
 	}
 
@@ -1867,6 +1875,7 @@ bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilt
 		filter_input = make_uniq<BoundReferenceExpression>(column.storage_type, idx_t(0));
 	}
 
+	const auto threshold = Settings::Get<DynamicOrFilterThresholdSetting>(context);
 	value_set_t unique_ht_values;
 	for (idx_t k = 0; k < key_count; k++) {
 		auto value = build_vector.GetValue(k).DefaultTryCastAs(filter_input_type);
@@ -1877,6 +1886,9 @@ bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilt
 			continue;
 		}
 		unique_ht_values.insert(std::move(*value));
+		if (unique_ht_values.size() > threshold) {
+			return false;
+		}
 	}
 	vector<Value> in_list(unique_ht_values.begin(), unique_ht_values.end());
 
@@ -1887,6 +1899,16 @@ bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilt
 
 	auto in_expr = ExpressionFilter::CreateInExpression(std::move(filter_input), std::move(in_list));
 	in_expr = RetainRuntimeFilterNulls(std::move(in_expr), std::move(null_check_input));
+	if (filter_rows && column.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION) {
+		auto filter = CreateSelectivityOptionalExpressionFilter(std::move(in_expr), column.storage_type,
+		                                                        SelectivityOptionalFilterType::IN);
+		if (ExpressionFilterExecutor::TryCreate(*filter->expr)) {
+			info.dynamic_filters->PushFilter(op, filter_col_idx, std::move(filter));
+			return true;
+		}
+		auto &function = filter->expr->Cast<BoundFunctionExpression>();
+		in_expr = std::move(function.BindInfo()->Cast<SelectivityOptionalFilterFunctionData>().child_filter_expr);
+	}
 	auto filter = make_uniq<ExpressionFilter>(CreateOptionalFilterExpression(std::move(in_expr), column.storage_type));
 	info.dynamic_filters->PushFilter(op, filter_col_idx, std::move(filter));
 	return true;
@@ -2017,32 +2039,36 @@ unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeFilters(ClientContext &con
 				const auto can_emit_prf = allow_prefix_range_filters && can_emit_runtime_filters && gstate &&
 				                          CanUsePrefixRangeFilter(info, context, op, ht, cmp) && can_compute_span;
 
-				bool pushed_in_filter = false;
-				if (CanUseInFilter(context, ht, cmp)) {
-					pushed_in_filter =
-					    PushInFilter(context, info, pushdown_column, *ht, op, filter_idx, filter_col_idx);
-				}
-
 				static constexpr idx_t SMALL_EXACT_PRF_BITS = 1ULL << 26;
-				if (can_emit_prf && span < SMALL_EXACT_PRF_BITS &&
-				    TryRegisterPrefixRangeFilter(info, context, *ht, op, pushdown_column, filter_col_idx,
-				                                 min_val_before_cast, max_val_before_cast, SMALL_EXACT_PRF_BITS,
-				                                 *gstate)) {
-					continue;
+				bool registered_prf = false;
+				if (can_emit_prf && span < SMALL_EXACT_PRF_BITS) {
+					registered_prf = TryRegisterPrefixRangeFilter(info, context, *ht, op, pushdown_column,
+					                                              filter_col_idx, min_val_before_cast,
+					                                              max_val_before_cast, SMALL_EXACT_PRF_BITS, *gstate);
 				}
 
-				if (can_emit_prf) {
+				if (can_emit_prf && !registered_prf) {
 					auto build_count = ht->Count();
 					if (build_count == 0) {
 						build_count = ht->GetSinkCollection().Count();
 					}
 					const auto bloom_filter_bits = BloomFilterBitBudget(build_count);
-					if (span <= bloom_filter_bits &&
-					    TryRegisterPrefixRangeFilter(info, context, *ht, op, pushdown_column, filter_col_idx,
-					                                 min_val_before_cast, max_val_before_cast, bloom_filter_bits,
-					                                 *gstate)) {
-						continue;
+					if (span <= bloom_filter_bits) {
+						registered_prf = TryRegisterPrefixRangeFilter(info, context, *ht, op, pushdown_column,
+						                                              filter_col_idx, min_val_before_cast,
+						                                              max_val_before_cast, bloom_filter_bits, *gstate);
 					}
+				}
+
+				bool pushed_in_filter = false;
+				if (CanUseInFilter(context, ht, cmp)) {
+					// Keep IN for pruning when this target registers an exact PRF.
+					const auto filter_rows = !registered_prf || !ht->GetPrefixRangeFilter()->IsExact();
+					pushed_in_filter =
+					    PushInFilter(context, info, pushdown_column, *ht, op, filter_idx, filter_col_idx, filter_rows);
+				}
+				if (registered_prf) {
+					continue;
 				}
 
 				if (!pushed_in_filter) {

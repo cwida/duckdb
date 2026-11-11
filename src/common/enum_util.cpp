@@ -6105,19 +6105,20 @@ const StringUtil::EnumStringLiteral *GetSelectivityOptionalFilterTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(SelectivityOptionalFilterType::MIN_MAX), "MIN_MAX" },
 		{ static_cast<uint32_t>(SelectivityOptionalFilterType::BF), "BF" },
-		{ static_cast<uint32_t>(SelectivityOptionalFilterType::PRF), "PRF" }
+		{ static_cast<uint32_t>(SelectivityOptionalFilterType::PRF), "PRF" },
+		{ static_cast<uint32_t>(SelectivityOptionalFilterType::IN), "IN" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<SelectivityOptionalFilterType>(SelectivityOptionalFilterType value) {
-	return StringUtil::EnumToString(GetSelectivityOptionalFilterTypeValues(), 3, "SelectivityOptionalFilterType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetSelectivityOptionalFilterTypeValues(), 4, "SelectivityOptionalFilterType", static_cast<uint32_t>(value));
 }
 
 template<>
 SelectivityOptionalFilterType EnumUtil::FromString<SelectivityOptionalFilterType>(const char *value) {
-	return static_cast<SelectivityOptionalFilterType>(StringUtil::StringToEnum(GetSelectivityOptionalFilterTypeValues(), 3, "SelectivityOptionalFilterType", value));
+	return static_cast<SelectivityOptionalFilterType>(StringUtil::StringToEnum(GetSelectivityOptionalFilterTypeValues(), 4, "SelectivityOptionalFilterType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetSequenceInfoValues() {

@@ -1,0 +1,108 @@
+# name: test/sql/join/inner/runtime_in_filter_complete_build.test
+# description: Runtime IN filters collect complete duplicate-heavy builds and reset between executions
+# group: [inner]
+
+require parquet
+
+require vector_size 102
+
+# Keep the duplicate-heavy rows in the hash build.
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side,compressed_materialization,partial_aggregate_pushdown';
+
+statement ok
+CREATE TABLE native_probe AS
+SELECT (i%100)::VARCHAR county, (i%10)::INTEGER state FROM range(10000) t(i);
+
+statement ok
+COPY native_probe TO '{TEST_DIR}/runtime_in_probe.parquet';
+
+statement ok
+CREATE VIEW parquet_probe AS SELECT * FROM read_parquet('{TEST_DIR}/runtime_in_probe.parquet');
+
+statement ok
+CREATE TABLE build(county VARCHAR, state INTEGER);
+
+foreach storage native parquet
+
+# The last row contributes a fourth key; all four must be retained.
+statement ok
+INSERT INTO build
+SELECT CASE WHEN i=101 THEN '99' ELSE (i%3)::VARCHAR END,
+       CASE WHEN i=101 THEN 9 ELSE (i%3)::INTEGER END
+FROM range(102) t(i);
+
+statement ok
+PREPARE runtime_in_query AS
+SELECT count(*) FROM {storage}_probe p JOIN build b ON p.county=b.county AND p.state=b.state;
+
+query I
+EXECUTE runtime_in_query;
+----
+10200
+
+query II
+EXPLAIN ANALYZE SELECT count(*)
+FROM {storage}_probe p JOIN build b ON p.county=b.county AND p.state=b.state;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic.*Filters:.*county.*IN.*
+
+# Reject a distinct set above the configured limit without publishing a prefix.
+statement ok
+SET dynamic_or_filter_threshold=2;
+
+query I
+EXECUTE runtime_in_query;
+----
+10200
+
+statement ok
+RESET dynamic_or_filter_threshold;
+
+statement ok
+DELETE FROM build;
+
+# The default collection budget does not inspect an arbitrarily large build.
+statement ok
+INSERT INTO build SELECT (i%3)::VARCHAR, (i%3)::INTEGER FROM range(5000) t(i);
+
+query I
+EXECUTE runtime_in_query;
+----
+500000
+
+statement ok
+DELETE FROM build;
+
+query I
+EXECUTE runtime_in_query;
+----
+0
+
+statement ok
+INSERT INTO build SELECT NULL, NULL FROM range(102);
+
+query I
+EXECUTE runtime_in_query;
+----
+0
+
+statement ok
+DELETE FROM build;
+
+# A different complete key set replaces the earlier filters.
+statement ok
+INSERT INTO build SELECT (7+i%3)::VARCHAR, (7+i%3)::INTEGER FROM range(102) t(i);
+
+query I
+EXECUTE runtime_in_query;
+----
+10200
+
+statement ok
+DELETE FROM build;
+
+statement ok
+DEALLOCATE runtime_in_query;
+
+endloop

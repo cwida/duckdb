@@ -123,7 +123,7 @@ public:
 private:
 	bool PushInFilter(ClientContext &context, const JoinFilterPushdownFilter &info,
 	                  const JoinFilterPushdownColumn &column, JoinHashTable &ht, const PhysicalOperator &op,
-	                  idx_t filter_idx, ProjectionIndex filter_col_idx) const;
+	                  idx_t filter_idx, ProjectionIndex filter_col_idx, bool filter_rows) const;
 
 	void DeferRuntimeFilter(DeferredRuntimeFilterType type, const PhysicalOperator &op,
 	                        const JoinFilterPushdownFilter &info, const JoinFilterPushdownColumn &column,

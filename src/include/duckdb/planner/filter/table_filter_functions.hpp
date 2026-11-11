@@ -60,7 +60,7 @@ struct SelectivityOptionalFilterState final : public TableFilterState {
 	}
 };
 
-enum class SelectivityOptionalFilterType : uint8_t { MIN_MAX = 0, BF = 1, PRF = 3 };
+enum class SelectivityOptionalFilterType : uint8_t { MIN_MAX = 0, BF = 1, PRF = 3, IN = 4 };
 
 void GetThresholdAndVectorsToCheck(SelectivityOptionalFilterType type, float &selectivity_threshold,
                                    idx_t &n_vectors_to_check);
@@ -203,6 +203,8 @@ public:
 	                         idx_t count) const = 0;
 	virtual FilterPropagateResult LookupRange(const Value &lower_bound, const Value &upper_bound) const = 0;
 	virtual bool IsInitialized() const = 0;
+	//! Whether the configured representation has collision-free non-NULL membership.
+	virtual bool IsExact() const = 0;
 	static bool SupportedType(const LogicalType &type);
 	static unique_ptr<PrefixRangeFilter> CreatePrefixRangeFilter(const LogicalType &key_type);
 	static bool TryComputeSpan(const Value &lower_bound, const Value &upper_bound, uhugeint_t &result);
