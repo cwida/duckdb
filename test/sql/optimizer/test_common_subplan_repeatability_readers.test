@@ -37,23 +37,38 @@ SELECT count(*) FROM (SELECT * FROM read_json('{TEST_DIR}/repeatability_rows.jso
 ----
 100
 
-# Common subplan sharing additionally requires a serializable scan identity. The multi-file wrapper
-# has no bind-data serializers and MultiFileBindData opts out of the statement cache, so these scans
-# are still rejected by LogicalGet::SupportSerialization. If the readers gain real serialization
-# callbacks, sharing becomes reachable and these expectations should flip deliberately.
+# read_parquet and read_json have no bind-data serialization callbacks at all on their multi-file
+# wrapper function (TableFunctionMultiFileWrapper::CreateFunction does not forward .serialize from
+# the wrapped single-file function, and neither JSONFunctions::GetJSONTableFunction nor
+# ParquetScanFunction::GetMultiFileFunction re-adds one), so the common-subplan optimizer identifies
+# two identical calls solely from their equal positional parameters (duckdb/duckdb#28218). Sharing no
+# longer depends on MultiFileBindData::SupportStatementCache(), which instead governs a separate
+# concern - whether a *prepared statement* must always be rebound so a later execution picks up newly
+# matching files (see Binder::SetAlwaysRequireRebind). That rebind requirement has no bearing on
+# whether two scans inside one already-bound plan read the same, already-resolved input.
 query II
 EXPLAIN (FORMAT JSON) SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet') INTERSECT ALL SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet');
 ----
-logical_opt	<!REGEX>:.*__common_subplan_.*
+logical_opt	<REGEX>:.*__common_subplan_.*
 
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM read_json('{TEST_DIR}/repeatability_rows.json') INTERSECT ALL SELECT * FROM read_json('{TEST_DIR}/repeatability_rows.json');
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+# read_csv is different: ReadCSVTableFunction::GetFunction() explicitly re-adds .serialize/.deserialize
+# callbacks (CSVReaderSerialize/CSVReaderDeserialize in read_csv.cpp) on top of the multi-file wrapper,
+# and both unconditionally throw NotImplementedException. That makes HasSerializationCallbacks() true,
+# which bypasses the "equal positional parameters" identity check entirely and routes read_csv into an
+# actual PlanSignature::Create() attempt to serialize the bind data - which throws, is caught, and
+# yields no signature. read_csv therefore does not share, in baseline or patched DuckDB alike; this is
+# a separate, pre-existing limitation unrelated to #28218, and this fix does not change it.
 query II
 EXPLAIN (FORMAT JSON) SELECT * FROM read_csv('{TEST_DIR}/repeatability_rows.csv') INTERSECT ALL SELECT * FROM read_csv('{TEST_DIR}/repeatability_rows.csv');
 ----
 logical_opt	<!REGEX>:.*__common_subplan_.*
 
-# A store_rejects CSV scan declares the same within-query stability as any other CSV scan - reject recording
-# reflects the executions of the optimized scan, and sharing would write the rejects once. Sharing is still
-# blocked by the scan identity guard above, like the plain read_csv scans.
+# A store_rejects CSV scan is unaffected either way - it is still a CSV scan, so it still does not share.
 statement ok
 COPY (SELECT * FROM (VALUES ('1'), ('oops'), ('3')) t(k)) TO '{TEST_DIR}/repeatability_rejects.csv' (FORMAT csv, HEADER);
 
@@ -69,3 +84,83 @@ query II
 EXPLAIN (FORMAT JSON) SELECT * FROM read_csv('{TEST_DIR}/repeatability_rejects.csv', columns={'k': 'INTEGER'}, header=true, auto_detect=false, store_rejects=true) INTERSECT ALL SELECT * FROM read_csv('{TEST_DIR}/repeatability_rejects.csv', columns={'k': 'INTEGER'}, header=true, auto_detect=false, store_rejects=true);
 ----
 logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Different Parquet files must not be merged, even though both calls share the same multi-file wrapper identity.
+statement ok
+CREATE TABLE reader_rows_2 AS SELECT i, (i + 1) % 3 AS j FROM range(100) t(i);
+
+statement ok
+COPY reader_rows_2 TO '{TEST_DIR}/repeatability_rows_2.parquet' (FORMAT parquet);
+
+query I
+SELECT count(*) FROM (SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet') INTERSECT ALL SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows_2.parquet'));
+----
+0
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet') INTERSECT ALL SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows_2.parquet');
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Different filters on the same Parquet file must not be merged either.
+query I
+SELECT count(*) FROM (
+    SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet') WHERE i < 50
+    INTERSECT ALL
+    SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet') WHERE i >= 50);
+----
+0
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet') WHERE i < 50 INTERSECT ALL SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet') WHERE i >= 50;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# A glob over multiple Parquet files is still a single, shareable scan identity when both references
+# expand to the same pattern.
+statement ok
+COPY reader_rows TO '{TEST_DIR}/glob_part1.parquet' (FORMAT parquet);
+
+statement ok
+COPY reader_rows TO '{TEST_DIR}/glob_part2.parquet' (FORMAT parquet);
+
+query I
+SELECT count(*) FROM (SELECT * FROM read_parquet('{TEST_DIR}/glob_part*.parquet') INTERSECT ALL SELECT * FROM read_parquet('{TEST_DIR}/glob_part*.parquet'));
+----
+200
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM read_parquet('{TEST_DIR}/glob_part*.parquet') INTERSECT ALL SELECT * FROM read_parquet('{TEST_DIR}/glob_part*.parquet');
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+# An explicit file list identifies the same scan as the equivalent glob expansion result, but these are
+# different call forms (list literal vs. glob pattern) with different serialized parameters, so they are
+# not required to be recognized as the same scan - only that neither form corrupts results.
+query I
+SELECT count(*) FROM (SELECT * FROM read_parquet(['{TEST_DIR}/glob_part1.parquet', '{TEST_DIR}/glob_part2.parquet']) INTERSECT ALL SELECT * FROM read_parquet(['{TEST_DIR}/glob_part1.parquet', '{TEST_DIR}/glob_part2.parquet']));
+----
+200
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM read_parquet(['{TEST_DIR}/glob_part1.parquet', '{TEST_DIR}/glob_part2.parquet']) INTERSECT ALL SELECT * FROM read_parquet(['{TEST_DIR}/glob_part1.parquet', '{TEST_DIR}/glob_part2.parquet']);
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+# Prepared statements must still rebind and observe newly-matching files (freshness is unaffected by
+# within-query sharing, since it is a property of rebinding, not of the shared signature).
+statement ok
+PREPARE glob_scan AS SELECT count(*) FROM read_parquet('{TEST_DIR}/glob_part*.parquet');
+
+query I
+EXECUTE glob_scan;
+----
+200
+
+statement ok
+COPY reader_rows TO '{TEST_DIR}/glob_part3.parquet' (FORMAT parquet);
+
+query I
+EXECUTE glob_scan;
+----
+300
