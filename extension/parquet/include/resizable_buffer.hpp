@@ -209,7 +209,8 @@ private:
 		// Unpinned reuse is overwritten anyway; allocate fresh instead of reloading a spilled block.
 		if (PrepareResize(new_size) || (new_size > 0 && block_handle && !handle.IsValid())) {
 			// Keep header+payload a power of two so BlockAllocator's cache can recycle it instead of purging to the OS.
-			alloc_len = NextPowerOfTwo(new_size + Storage::DEFAULT_BLOCK_HEADER_SIZE) - Storage::DEFAULT_BLOCK_HEADER_SIZE;
+			alloc_len =
+			    NextPowerOfTwo(new_size + Storage::DEFAULT_BLOCK_HEADER_SIZE) - Storage::DEFAULT_BLOCK_HEADER_SIZE;
 			handle.Destroy();
 			block_handle.reset(); // release before allocating, so old and new aren't counted at once
 			handle = buffer_manager.Allocate(MemoryTag::PARQUET_READER, alloc_len, false);

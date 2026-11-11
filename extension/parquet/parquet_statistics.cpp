@@ -1389,7 +1389,8 @@ void ParquetBloomFilter::Shrink(Allocator &allocator, idx_t new_block_count) {
 	D_ASSERT(new_block_count > 0 && block_count % new_block_count == 0);
 	auto folded = AllocateBloomFilter(allocator, new_block_count * sizeof(ParquetBloomBlock));
 	array_ptr<ParquetBloomBlock> source(reinterpret_cast<ParquetBloomBlock *>(data->GetCurrentLoc()), block_count);
-	array_ptr<ParquetBloomBlock> target(reinterpret_cast<ParquetBloomBlock *>(folded->GetCurrentLoc()), new_block_count);
+	array_ptr<ParquetBloomBlock> target(reinterpret_cast<ParquetBloomBlock *>(folded->GetCurrentLoc()),
+	                                    new_block_count);
 	const auto factor = block_count / new_block_count;
 	for (idx_t i = 0; i < new_block_count; i++) {
 		auto &merged = target[i];
