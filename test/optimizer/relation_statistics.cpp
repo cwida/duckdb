@@ -1248,6 +1248,57 @@ TEST_CASE("Large cardinality estimates saturate and preserve integer bounds", "[
 	        maximum - 1);
 }
 
+TEST_CASE("Complete group counts retain marginal domains", "[optimizer][relation_statistics]") {
+	for (auto source : {DistinctCountSource::EXACT, DistinctCountSource::HLL, DistinctCountSource::MIN_MAX,
+	                    DistinctCountSource::CARDINALITY}) {
+		for (idx_t rows : {idx_t(0), idx_t(1), idx_t(50), idx_t(10000)}) {
+			vector<DistinctCount> domains {{50, source}};
+			auto previous = RelationStatisticsHelper::EstimateDistinctCardinality(domains, rows);
+			domains.emplace_back(1, source);
+			REQUIRE(RelationStatisticsHelper::EstimateDistinctCardinality(domains, rows) == previous);
+			for (idx_t count : {idx_t(2), idx_t(10), idx_t(10000)}) {
+				domains.emplace_back(count, source);
+				auto estimate = RelationStatisticsHelper::EstimateDistinctCardinality(domains, rows);
+				REQUIRE(estimate >= previous);
+				REQUIRE(estimate >= MinValue(count, rows));
+				REQUIRE(estimate <= rows);
+				previous = estimate;
+			}
+		}
+	}
+}
+
+TEST_CASE("Implicit full grouping sets preserve complete group statistics", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto key = ColumnBinding(TableIndex(10), ProjectionIndex(0));
+	auto extra = ColumnBinding(TableIndex(10), ProjectionIndex(1));
+	auto child_stats = CreateStats({key, extra}, {5, 5000}, 5000);
+	LogicalAggregate aggregate(TableIndex(20), TableIndex(30), vector<unique_ptr<Expression>>());
+	aggregate.groups.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, key));
+	auto key_only = RelationStatisticsHelper::ExtractAggregationStats(aggregate, child_stats, *connection.context);
+	REQUIRE(key_only);
+	REQUIRE(key_only->cardinality == 5);
+	REQUIRE(key_only->columns[0].GetSupportedSemiAntiDomainSize().GetIndex() == 5);
+
+	aggregate.groups.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, extra));
+	auto implicit = RelationStatisticsHelper::ExtractAggregationStats(aggregate, child_stats, *connection.context);
+	REQUIRE(implicit);
+	REQUIRE(implicit->cardinality == 5000);
+	REQUIRE_FALSE(implicit->columns[0].GetSupportedSemiAntiDomainSize().IsValid());
+	REQUIRE(implicit->columns[0].total_domain.distinct_count == 5);
+	REQUIRE(implicit->columns[0].total_domain.source == DistinctCountSource::EXACT);
+	REQUIRE(implicit->columns[1].current_domain.distinct_count == 5000);
+
+	aggregate.grouping_sets.emplace_back();
+	aggregate.grouping_sets[0].insert(ProjectionIndex(0));
+	aggregate.grouping_sets[0].insert(ProjectionIndex(1));
+	auto explicit_set = RelationStatisticsHelper::ExtractAggregationStats(aggregate, child_stats, *connection.context);
+	REQUIRE(explicit_set);
+	REQUIRE(explicit_set->cardinality == implicit->cardinality);
+	REQUIRE(explicit_set->columns[0].total_domain.distinct_count == implicit->columns[0].total_domain.distinct_count);
+}
+
 struct CardinalityProviderData : public TableFunctionData {
 	NodeStatistics statistics {0, 0};
 	shared_ptr<idx_t> calls = make_shared_ptr<idx_t>(0);

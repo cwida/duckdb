@@ -619,27 +619,27 @@ static optional_ptr<LogicalOperator> DEFindCTEDefinition(LogicalOperator &op, Ta
 }
 
 static bool DERefineCollapse(ClientContext &context, LogicalOperator &root, LogicalComparisonJoin &join,
-                             const vector<ColumnBinding> (&join_keys)[2], idx_t effective_ndv,
-                             idx_t (&input_domains)[2]) {
+                             const DoubleEagerSide (&sides)[2], idx_t (&lower_cardinalities)[2]) {
 	RelationStatsExtractor extractor(context, [&](TableIndex index) { return DEFindCTEDefinition(root, index); });
 	bool sufficient_collapse = false;
 	for (idx_t side = 0; side < 2; side++) {
-		auto &input_domain = input_domains[side];
-		input_domain = effective_ndv;
 		auto stats = extractor.Extract(*join.children[side]);
 		if (!stats) {
 			return false;
 		}
-		for (auto &key : join_keys[side]) {
-			auto column = stats->GetColumnStats(key);
-			if (!column) {
+		vector<idx_t> groups;
+		for (auto &group : sides[side].groups) {
+			auto column = stats->FindColumn(group->Cast<BoundColumnRefExpression>().Binding());
+			if (!column.IsValid()) {
 				return false;
 			}
-			// A join selectivity fallback does not establish a small key domain.
-			input_domain = MaxValue(input_domain, column->current_domain.distinct_count);
+			groups.push_back(column.GetIndex());
 		}
-		const auto cardinality = static_cast<double>(MaxValue<idx_t>(join.children[side]->estimated_cardinality, 1));
-		sufficient_collapse |= DEHasSufficientCollapse(cardinality, static_cast<double>(input_domain));
+		const auto cardinality = stats->cardinality;
+		lower_cardinalities[side] = RelationStatisticsHelper::EstimateGroupCardinality(*join.children[side], *stats,
+		                                                                               std::move(groups), extractor);
+		sufficient_collapse |=
+		    DEHasSufficientCollapse(static_cast<double>(cardinality), static_cast<double>(lower_cardinalities[side]));
 	}
 	return sufficient_collapse;
 }
@@ -754,14 +754,14 @@ static bool DEBuildLowerSides(Optimizer &optimizer, const LogicalAggregate &aggr
 }
 
 static void DECreateLowerAggregates(LogicalComparisonJoin &join, DoubleEagerSide (&sides)[2],
-                                    const idx_t (&input_domains)[2], unique_ptr<LogicalAggregate> (&lower)[2]) {
+                                    const idx_t (&lower_cardinalities)[2], unique_ptr<LogicalAggregate> (&lower)[2]) {
 	for (idx_t s = 0; s < 2; s++) {
 		lower[s] =
 		    make_uniq<LogicalAggregate>(sides[s].group_index, sides[s].aggregate_index, std::move(sides[s].aggregates));
 		lower[s]->groups = std::move(sides[s].groups);
 		lower[s]->children.push_back(std::move(join.children[s]));
 		lower[s]->ResolveOperatorTypes();
-		lower[s]->SetEstimatedCardinality(input_domains[s]);
+		lower[s]->SetEstimatedCardinality(lower_cardinalities[s]);
 	}
 }
 
@@ -888,18 +888,18 @@ bool PartialAggregatePushdown::TryDoubleEagerPushdown(unique_ptr<LogicalOperator
 		return false;
 	}
 
-	idx_t input_domains[2];
-	if (!DERefineCollapse(optimizer.context, *plan, join, join_keys, effective_ndv, input_domains)) {
-		return false;
-	}
-
 	DoubleEagerSide sides[2];
 	if (!DEBuildLowerSides(optimizer, aggr, aggregates, side_bindings, join_keys, join_key_types, sides)) {
 		return false;
 	}
 
+	idx_t lower_cardinalities[2];
+	if (!DERefineCollapse(optimizer.context, *plan, join, sides, lower_cardinalities)) {
+		return false;
+	}
+
 	unique_ptr<LogicalAggregate> lower[2];
-	DECreateLowerAggregates(join, sides, input_domains, lower);
+	DECreateLowerAggregates(join, sides, lower_cardinalities, lower);
 
 	ColumnBinding cnt_binding[2];
 	LogicalType cnt_type[2];

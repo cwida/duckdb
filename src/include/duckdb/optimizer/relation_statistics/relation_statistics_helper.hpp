@@ -79,6 +79,9 @@ public:
 	                                   const RelationStats &right, RelationStats &result);
 	static idx_t CardinalityFromDouble(double cardinality);
 	static idx_t EstimateDistinctCardinality(const vector<DistinctCount> &distinct_counts, idx_t input_cardinality);
+	static idx_t EstimateGroupCardinality(LogicalOperator &input, const RelationStats &input_stats,
+	                                      vector<idx_t> groups, RelationStatsExtractor &extractor,
+	                                      bool use_cached_cardinality = false);
 	static DistinctCount EstimateCurrentDomain(const DistinctCount &current_domain, idx_t input_cardinality,
 	                                           idx_t output_cardinality);
 	static void ApplyCardinality(RelationStats &stats, idx_t output_cardinality);

@@ -226,14 +226,20 @@ idx_t RelationStatisticsHelper::EstimateDistinctCardinality(const vector<Distinc
 		return MinValue(distinct_counts[0].distinct_count, input_cardinality);
 	}
 	double product = 1;
+	idx_t largest_domain = 1;
+	idx_t varying_groups = 0;
 	for (auto &distinct_count : distinct_counts) {
 		product *= static_cast<double>(MaxValue<idx_t>(distinct_count.distinct_count, 1));
+		largest_domain = MaxValue(largest_domain, distinct_count.distinct_count);
+		varying_groups += distinct_count.distinct_count > 1;
 	}
-	product *= pow(0.95, static_cast<double>(distinct_counts.size() - 1));
+	if (varying_groups <= 1) {
+		return MinValue(largest_domain, input_cardinality);
+	}
+	product *= pow(0.95, static_cast<double>(varying_groups - 1));
 	const auto multiplier = 1.0 - exp(-static_cast<double>(input_cardinality) / product);
 	const auto estimate = multiplier == 0 ? static_cast<double>(input_cardinality) : product * multiplier;
-	auto result = MinValue(CardinalityFromDouble(estimate), input_cardinality);
-	return input_cardinality > 0 ? MaxValue<idx_t>(result, 1) : 0;
+	return MinValue(MaxValue(CardinalityFromDouble(estimate), largest_domain), input_cardinality);
 }
 
 DistinctCount RelationStatisticsHelper::EstimateCurrentDomain(const DistinctCount &current_domain,
@@ -391,13 +397,32 @@ static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> gr
 	return optional_idx(result);
 }
 
+idx_t RelationStatisticsHelper::EstimateGroupCardinality(LogicalOperator &input, const RelationStats &input_stats,
+                                                         vector<idx_t> groups, RelationStatsExtractor &extractor,
+                                                         bool use_cached_cardinality) {
+	vector<DistinctCount> counts;
+	for (auto index : groups) {
+		auto count = input_stats.columns[index].current_domain;
+		count.distinct_count = MaxValue<idx_t>(count.distinct_count, 1);
+		counts.push_back(count);
+	}
+	auto estimate = EstimateDistinctCardinality(counts, input_stats.cardinality);
+	auto union_groups =
+	    EstimateUnionGroups(input, std::move(groups), input_stats.cardinality, extractor, use_cached_cardinality);
+	if (union_groups.IsValid()) {
+		// Per-arm domain products avoid inventing cross-arm combinations of grouping keys.
+		estimate = MinValue(estimate, union_groups.GetIndex());
+	}
+	return estimate;
+}
+
 static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate &aggregate,
                                                                const RelationStats &child_stats,
                                                                RelationStatsExtractor &extractor,
                                                                bool use_cached_cardinality) {
 	RelationColumnStatsLookup child_columns(child_stats);
 	vector<DistinctCount> cardinality_counts;
-	for (auto &grouping_set : aggregate.grouping_sets) {
+	auto get_set_counts = [&](const GroupingSet &grouping_set) {
 		vector<DistinctCount> set_counts;
 		for (auto group_idx : grouping_set) {
 			auto &group = aggregate.GetGroupExpression(group_idx);
@@ -406,7 +431,7 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 			}
 			auto column = child_columns.Find(group.Cast<BoundColumnRefExpression>().Binding());
 			if (!column) {
-				return {};
+				return false;
 			}
 			auto count = column->current_domain;
 			count.distinct_count = MaxValue<idx_t>(count.distinct_count, 1);
@@ -414,6 +439,22 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 		}
 		if (set_counts.size() > cardinality_counts.size()) {
 			cardinality_counts = std::move(set_counts);
+		}
+		return true;
+	};
+	if (aggregate.grouping_sets.empty()) {
+		GroupingSet full_set;
+		for (idx_t i = 0; i < aggregate.groups.size(); i++) {
+			full_set.insert(ProjectionIndex(i));
+		}
+		if (!get_set_counts(full_set)) {
+			return {};
+		}
+	} else {
+		for (auto &grouping_set : aggregate.grouping_sets) {
+			if (!get_set_counts(grouping_set)) {
+				return {};
+			}
 		}
 	}
 
@@ -426,19 +467,16 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 	result.stats_initialized = true;
 	auto bindings = aggregate.GetColumnBindings();
 	auto preserves_group_evidence =
-	    aggregate.grouping_sets.size() == 1 && aggregate.grouping_sets[0].size() == aggregate.groups.size();
+	    aggregate.grouping_sets.empty() ||
+	    (aggregate.grouping_sets.size() == 1 && aggregate.grouping_sets[0].size() == aggregate.groups.size());
 	if (preserves_group_evidence && !aggregate.groups.empty() && aggregate.children.size() == 1 &&
 	    cardinality_counts.size() == aggregate.groups.size()) {
 		vector<idx_t> groups;
 		for (auto &group : aggregate.groups) {
 			groups.push_back(child_stats.FindColumn(group->Cast<BoundColumnRefExpression>().Binding()).GetIndex());
 		}
-		auto union_groups = EstimateUnionGroups(*aggregate.children[0], std::move(groups), child_stats.cardinality,
-		                                        extractor, use_cached_cardinality);
-		if (union_groups.IsValid()) {
-			// Per-arm domain products avoid inventing cross-arm combinations of grouping keys.
-			result.cardinality = MinValue(result.cardinality, union_groups.GetIndex());
-		}
+		result.cardinality = RelationStatisticsHelper::EstimateGroupCardinality(
+		    *aggregate.children[0], child_stats, std::move(groups), extractor, use_cached_cardinality);
 	}
 	for (idx_t group_idx = 0; group_idx < aggregate.groups.size(); group_idx++) {
 		auto &group = *aggregate.groups[group_idx];
@@ -459,8 +497,7 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 			current_domain =
 			    child_stats.GetColumnStats(group.Cast<BoundColumnRefExpression>().Binding())->current_domain;
 		}
-		if (aggregate.groups.size() == 1 && aggregate.grouping_sets.size() == 1 &&
-		    aggregate.grouping_sets[0].size() == 1 && aggregate.grouping_sets[0].count(ProjectionIndex(0)) > 0) {
+		if (aggregate.groups.size() == 1 && preserves_group_evidence) {
 			semi_anti_join_domain_evidence.MarkUnique();
 		}
 		result.columns.emplace_back(bindings[result.columns.size()], distinct_count, current_domain,

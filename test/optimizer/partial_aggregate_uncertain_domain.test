@@ -1,5 +1,5 @@
 # name: test/optimizer/partial_aggregate_uncertain_domain.test
-# description: Cost partial aggregation from input key domains rather than fallback join selectivity
+# description: Cost partial aggregation from complete groups rather than fallback join selectivity
 # group: [optimizer]
 
 require parquet
@@ -20,6 +20,9 @@ statement ok
 CREATE TABLE small_native AS SELECT i % 10 AS k FROM range(100) t(i)
 
 statement ok
+CREATE TABLE arms_native AS SELECT i % 500 AS k, i % 500 AS g FROM range(5000) t(i)
+
+statement ok
 ANALYZE
 
 statement ok
@@ -35,6 +38,9 @@ statement ok
 COPY small_native TO '{TEST_DIR}/pap_small.parquet' (FORMAT PARQUET)
 
 statement ok
+COPY arms_native TO '{TEST_DIR}/pap_arms.parquet' (FORMAT PARQUET)
+
+statement ok
 CREATE VIEW unique_parquet AS FROM read_parquet('{TEST_DIR}/pap_unique.parquet')
 
 statement ok
@@ -45,6 +51,9 @@ CREATE VIEW asymmetric_parquet AS FROM read_parquet('{TEST_DIR}/pap_asymmetric.p
 
 statement ok
 CREATE VIEW small_parquet AS FROM read_parquet('{TEST_DIR}/pap_small.parquet')
+
+statement ok
+CREATE VIEW arms_parquet AS FROM read_parquet('{TEST_DIR}/pap_arms.parquet')
 
 foreach storage native parquet
 
@@ -150,7 +159,25 @@ GROUP BY a.tag
 ----
 physical_plan	<REGEX>:.*combine_aggr.*
 
-# Computed grouping expressions retain the existing aggregation heuristic.
+# Group columns on both inputs must be included in the estimated reduction.
+query II
+SELECT count(*), sum(n) FROM (
+	SELECT a.tag, b.tag, count(*) AS n
+	FROM repeated_{storage} a JOIN repeated_{storage} b USING (k)
+	GROUP BY a.tag, b.tag
+)
+----
+500000	500000
+
+query II
+EXPLAIN
+SELECT a.tag, b.tag, count(*)
+FROM repeated_{storage} a JOIN repeated_{storage} b USING (k)
+GROUP BY a.tag, b.tag
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+# Unknown expression domains must not predict a reduction from the join keys alone.
 query II
 SELECT count(*), sum(n) FROM (
 	SELECT a.g, b.g, count(*) AS n
@@ -168,7 +195,7 @@ FROM (SELECT k, tag % 7 AS g FROM repeated_{storage}) a
 JOIN (SELECT k, tag % 11 AS g FROM repeated_{storage}) b USING (k)
 GROUP BY a.g, b.g
 ----
-physical_plan	<REGEX>:.*combine_aggr.*
+physical_plan	<!REGEX>:.*combine_aggr.*
 
 # Extra groups on one input do not change the other input's join-key domain.
 query III
@@ -187,5 +214,29 @@ FROM asymmetric_{storage} a JOIN small_{storage} b USING (k)
 GROUP BY a.g
 ----
 physical_plan	<REGEX>:.*combine_aggr.*
+
+# Group combinations from separate UNION arms are not independent.
+statement ok
+CREATE VIEW union_{storage} AS
+SELECT k, 0::BIGINT AS g FROM arms_{storage}
+UNION ALL
+SELECT 0::BIGINT AS k, g FROM arms_{storage}
+
+query II
+EXPLAIN
+SELECT a.g, b.g, count(*)
+FROM union_{storage} a JOIN union_{storage} b USING (k)
+GROUP BY a.g, b.g
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+SELECT count(*), sum(n) FROM (
+	SELECT a.g, b.g, count(*) AS n
+	FROM union_{storage} a JOIN union_{storage} b USING (k)
+	GROUP BY a.g, b.g
+)
+----
+250000	25150000
 
 endloop
