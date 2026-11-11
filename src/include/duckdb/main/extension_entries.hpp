@@ -1442,6 +1442,7 @@ static constexpr ExtensionEntry EXTENSION_SETTINGS[] = {
     {"iceberg_enable_scan_serialization", "iceberg"},
     {"iceberg_equality_delete_fast_filter", "iceberg"},
     {"iceberg_logging_post_body_truncate_limit", "iceberg"},
+    {"iceberg_max_reserved_manifest_entries", "iceberg"},
     {"iceberg_metadata_log_clock_skew_ms", "iceberg"},
     {"iceberg_test_force_token_expiry", "iceberg"},
     {"iceberg_unsafe_skip_puffin_verification", "iceberg"},

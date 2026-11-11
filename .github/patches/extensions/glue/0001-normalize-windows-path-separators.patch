@@ -1,13 +1,15 @@
 diff --git a/src/core/hive_location.cpp b/src/core/hive_location.cpp
-index 1ac64c3..6b1069c 100644
+index ac04004..5e7a3cb 100644
 --- a/src/core/hive_location.cpp
 +++ b/src/core/hive_location.cpp
-@@ -1,12 +1,24 @@
+@@ -1,5 +1,6 @@
  #include "core/hive_location.hpp"
  
 +#include "duckdb/common/algorithm.hpp"
+ #include "duckdb/common/file_system.hpp"
+ #include "duckdb/common/multi_file/multi_file_list.hpp"
  #include "duckdb/common/hive_partitioning.hpp"
- #include "duckdb/common/string_util.hpp"
+@@ -7,8 +8,19 @@
  
  namespace duckdb {
  
@@ -29,10 +31,10 @@ index 1ac64c3..6b1069c 100644
  	auto scheme = StringUtil::Lower(result.substr(0, 6));
  	if (scheme == "s3a://" || scheme == "s3n://") {
 diff --git a/src/include/core/hive_location.hpp b/src/include/core/hive_location.hpp
-index 3a23105..9ecb5a6 100644
+index 85014ba..ac6109b 100644
 --- a/src/include/core/hive_location.hpp
 +++ b/src/include/core/hive_location.hpp
-@@ -9,6 +9,8 @@ namespace duckdb {
+@@ -12,6 +12,8 @@ class MultiFileList;
  //! A location to compare with other locations: s3a://, s3n:// and S3:// name the same bucket and key as s3://, and a
  //! trailing slash is dropped. Only for comparing; files are listed and read at the location as registered.
  string ComparableLocation(const string &location);
@@ -42,7 +44,7 @@ index 3a23105..9ecb5a6 100644
  bool LocationsOverlap(const string &a, const string &b);
  //! The hive directory of a partition relative to its table: <key>=<value>/..., escaped, with a Glue value of
 diff --git a/src/planning/hive_multi_file_reader.cpp b/src/planning/hive_multi_file_reader.cpp
-index 9a3d09f..77f7b85 100644
+index 11e35b9..2f300f8 100644
 --- a/src/planning/hive_multi_file_reader.cpp
 +++ b/src/planning/hive_multi_file_reader.cpp
 @@ -273,10 +273,12 @@ string HiveScanInfo::Describe() const {
