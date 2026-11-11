@@ -1,0 +1,32 @@
+# name: test/sql/alter/add_col/test_add_col_volatile_default_order.test
+# description: ADD COLUMN and ALTER TYPE compute a volatile expression in row order, also over many row groups
+# group: [add_col]
+
+statement ok
+SET threads=4
+
+statement ok
+CREATE TABLE t AS SELECT i FROM range(1000000) t(i)
+
+statement ok
+CREATE SEQUENCE seq
+
+# IF NOT EXISTS fills the column with the default directly instead of through an UPDATE
+statement ok
+ALTER TABLE t ADD COLUMN IF NOT EXISTS id BIGINT DEFAULT nextval('seq')
+
+query I
+SELECT COUNT(*) FILTER (id <> i + 1) FROM t
+----
+0
+
+statement ok
+CREATE SEQUENCE seq2
+
+statement ok
+ALTER TABLE t ALTER id TYPE VARCHAR USING (nextval('seq2') + 10)::VARCHAR
+
+query I
+SELECT COUNT(*) FILTER (id::BIGINT <> i + 11) FROM t
+----
+0

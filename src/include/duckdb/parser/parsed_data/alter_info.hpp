@@ -64,6 +64,8 @@ public:
 	bool allow_internal;
 	//! Determine whether to skip Bind
 	AlterBindMode bind_mode = AlterBindMode::BIND_ON_ALTER;
+	//! Leave the column that an ADD COLUMN or ALTER TYPE computes to the caller, see DataTable::GetColumnRewrite
+	bool defer_column_rewrite = false;
 	//! New dependencies for the altered entry (set during binding)
 	unique_ptr<LogicalDependencyList> new_dependencies;
 
@@ -99,6 +101,8 @@ public:
 	AlterEntryData GetAlterEntryData() const;
 	bool IsAddPrimaryKey() const;
 	bool IsAddUniqueConstraint() const;
+	//! Whether the ALTER computes a column of the table (ADD COLUMN, ALTER TYPE and the struct field changes)
+	bool RewritesColumn() const;
 	DatabaseModificationType GetModifications() const;
 
 protected:

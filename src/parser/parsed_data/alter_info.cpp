@@ -62,4 +62,20 @@ bool AlterInfo::IsAddPrimaryKey() const {
 	return constraint_info.constraint->Cast<UniqueConstraint>().IsPrimaryKey();
 }
 
+bool AlterInfo::RewritesColumn() const {
+	if (type != AlterType::ALTER_TABLE) {
+		return false;
+	}
+	switch (Cast<AlterTableInfo>().alter_table_type) {
+	case AlterTableType::ADD_COLUMN:
+	case AlterTableType::ALTER_COLUMN_TYPE:
+	case AlterTableType::ADD_FIELD:
+	case AlterTableType::REMOVE_FIELD:
+	case AlterTableType::RENAME_FIELD:
+		return true;
+	default:
+		return false;
+	}
+}
+
 } // namespace duckdb

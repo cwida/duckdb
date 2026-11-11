@@ -7,6 +7,7 @@ add_library_unity(
   column_checkpoint_state.cpp
   column_data_checkpointer.cpp
   column_data.cpp
+  column_rewrite.cpp
   column_segment.cpp
   geo_column_data.cpp
   array_column_data.cpp

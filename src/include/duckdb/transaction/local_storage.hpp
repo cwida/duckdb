@@ -20,13 +20,10 @@ class Allocator;
 class BoundConstraint;
 class Catalog;
 class CollectionScanState;
-class ColumnDefinition;
 class DataChunk;
 class DataTable;
 class DuckTableEntry;
 class DuckTransaction;
-class Expression;
-class ExpressionExecutor;
 class RowGroupCollection;
 class StorageCommitState;
 class Transaction;
@@ -42,15 +39,9 @@ class LocalTableStorage : public enable_shared_from_this<LocalTableStorage> {
 public:
 	// Create a new LocalTableStorage
 	explicit LocalTableStorage(Context &context, DataTable &table);
-	//! Create a LocalTableStorage from an ALTER TYPE.
-	LocalTableStorage(ClientContext &context, DataTable &new_data_table, LocalTableStorage &parent,
-	                  const idx_t alter_column_index, const LogicalType &target_type,
-	                  const vector<StorageIndex> &bound_columns, Expression &cast_expr, TransactionData transaction);
-	//! Create a LocalTableStorage from a DROP COLUMN.
-	LocalTableStorage(DataTable &new_data_table, LocalTableStorage &parent, const idx_t drop_column_index);
-	// Create a LocalTableStorage from an ADD COLUMN
-	LocalTableStorage(ClientContext &context, DataTable &table, LocalTableStorage &parent, ColumnDefinition &new_column,
-	                  ExpressionExecutor &default_executor);
+	//! Create a LocalTableStorage from an ADD COLUMN, DROP COLUMN or ALTER TYPE, with the collection the ALTER built.
+	LocalTableStorage(DataTable &new_data_table, LocalTableStorage &parent,
+	                  shared_ptr<RowGroupCollection> new_collection, optional_idx replaced_column);
 	~LocalTableStorage();
 
 	Context &context;
@@ -212,11 +203,15 @@ public:
 	idx_t AddedRows(DataTable &table);
 	vector<PartitionStatistics> GetPartitionStats(DataTable &table, TransactionData transaction) const;
 
-	void AddColumn(ClientContext &context, DataTable &old_dt, DataTable &new_dt, ColumnDefinition &new_column,
-	               ExpressionExecutor &default_executor);
+	//! The rows the transaction appended to table, if any; writer is set if their new column can be written
+	optional_ptr<RowGroupCollection> PrepareAlter(DataTable &table, DataTable &new_dt,
+	                                              unique_ptr<OptimisticDataWriter> &writer);
 	void DropColumn(DataTable &old_dt, DataTable &new_dt, const idx_t drop_column_index);
-	void ChangeType(ClientContext &context, DataTable &old_dt, DataTable &new_dt, idx_t changed_idx,
-	                const LogicalType &target_type, const vector<StorageIndex> &bound_columns, Expression &cast_expr);
+	//! Moves the appended rows over to new_dt with the collection an ALTER built, freeing replaced_column's blocks
+	void AlterStorage(DataTable &old_dt, DataTable &new_dt, shared_ptr<RowGroupCollection> new_collection,
+	                  optional_idx replaced_column);
+	//! Refers the rows the transaction appended to the table of the entry to that entry
+	void SetTableEntry(DuckTableEntry &entry);
 
 	void MoveStorage(DataTable &old_dt, DataTable &new_dt);
 	void FetchChunk(DataTable &table, const Vector &row_ids, idx_t count, const vector<StorageIndex> &col_ids,
@@ -249,9 +244,6 @@ private:
 private:
 	//! Flushes the local rows into the shared table and indexes; invalidates the database if they cannot be restored
 	void Flush(DataTable &table, LocalTableStorage &storage, optional_ptr<StorageCommitState> commit_state);
-	//! Replaces the storage of a table version that an ALTER replaced by the storage alter creates from it
-	void AlterStorage(DataTable &old_dt, DataTable &new_dt,
-	                  const std::function<shared_ptr<LocalTableStorage>(LocalTableStorage &)> &alter);
 };
 
 } // namespace duckdb

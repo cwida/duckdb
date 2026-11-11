@@ -1,0 +1,27 @@
+# name: test/sql/alter/alter_type/test_alter_type_concurrent_failure.test_slow
+# description: Concurrent ALTERs that fail to compute their column leave the table writable
+# group: [alter_type]
+
+statement ok
+CREATE TABLE t AS SELECT CASE WHEN i = 1999999 THEN 'x' ELSE i::VARCHAR END AS v FROM range(2000000) t(i)
+
+# each ALTER fails on the last row, or conflicts with one that is still computing its column
+concurrentloop k 0 4
+
+statement error
+ALTER TABLE t ALTER v TYPE BIGINT
+----
+<REGEX>:.*(Could not convert|write-write conflict).*
+
+endloop
+
+statement ok con2
+INSERT INTO t VALUES ('1')
+
+statement ok con3
+UPDATE t SET v = 'y' WHERE v = 'x'
+
+query II
+SELECT COUNT(*), COUNT(*) FILTER (v = 'y') FROM t
+----
+2000001	1

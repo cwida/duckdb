@@ -1,0 +1,65 @@
+# name: test/sql/alter/alter_type/test_alter_type_failure.test
+# description: A failed ALTER TYPE aborts its transaction, whose rollback leaves the table as it was
+# group: [alter_type]
+
+require json
+
+statement ok
+CREATE TABLE t AS SELECT i::VARCHAR AS v FROM range(300000) t(i)
+
+statement ok
+INSERT INTO t VALUES ('x')
+
+statement ok con1
+BEGIN
+
+statement error con1
+ALTER TABLE t ALTER v TYPE BIGINT
+----
+Could not convert
+
+# the transaction is aborted, so the table version without its column is never read
+statement error con1
+SELECT COUNT(*) FROM t
+----
+Current transaction is aborted
+
+statement ok con1
+ROLLBACK
+
+# the rollback leaves the table writable for everyone
+statement ok con2
+INSERT INTO t VALUES ('y')
+
+query I
+SELECT COUNT(*) FROM t
+----
+300002
+
+# a parser error does not invalidate a transaction under this policy, but one from computing the column does
+statement ok
+CREATE TABLE j AS SELECT '{}'::JSON AS j FROM range(10)
+
+statement ok con1
+SET default_transaction_invalidation_policy='SYNTACTIC_ERRORS_DO_NOT_INVALIDATE'
+
+statement ok con1
+BEGIN
+
+statement error con1
+ALTER TABLE j ALTER j TYPE VARCHAR USING json_deserialize_sql(j)
+----
+Error parsing json
+
+statement error con1
+SELECT COUNT(*) FROM j
+----
+Current transaction is aborted
+
+statement ok con1
+ROLLBACK
+
+query II
+SELECT COUNT(*), typeof(ANY_VALUE(j)) FROM j
+----
+10	JSON

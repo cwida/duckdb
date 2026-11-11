@@ -205,7 +205,6 @@ void OptimisticDataWriter::WriteColumn(RowGroup &row_group, idx_t column_idx) {
 	for (auto &column : table.Columns()) {
 		compression_types.push_back(column.CompressionType());
 	}
-	// the tasks of a parallel ALTER share the partial block manager, as those of a checkpoint do
 	RowGroupWriteInfo info(*partial_manager, compression_types);
 	row_group.WriteColumnToDisk(info, column_idx);
 }
