@@ -664,7 +664,7 @@ void ART::DisownStorage(IndexLock &index_lock) {
 	for (auto &allocator : *allocators) {
 		allocator->DisownBuffers();
 	}
-	root_ptr.Clear();
+	tree.Clear();
 }
 
 idx_t ART::TryDelete(IndexLock &state, DataChunk &entries, Vector &row_ids, optional_ptr<SelectionVector> deleted_sel,

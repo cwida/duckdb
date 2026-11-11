@@ -523,7 +523,7 @@ void PrimitiveColumnWriter::FinalizeWrite(ColumnWriterState &state_p) {
 
 	// write the individual pages to disk
 	const bool write_page_index = writer.WritePageIndex();
-	ParquetPageIndexEntry page_index(writer.GetMetadataArena());
+	ParquetPageIndexEntry page_index;
 	idx_t first_row_index = 0;
 	idx_t total_uncompressed_size = 0;
 	for (auto &write_info : state.write_info) {

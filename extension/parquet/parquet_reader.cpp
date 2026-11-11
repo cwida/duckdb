@@ -2136,7 +2136,7 @@ void ParquetReader::PreparePageIndexInternal(ClientContext &context, ParquetRead
 	for (idx_t i = 0; i < filter_columns.size(); i++) {
 		auto &filter_column = filter_columns[i];
 		auto &column_chunk = group.columns[filter_column.column_chunk_idx];
-		duckdb_parquet::ColumnIndex column_index(state.page_index.arena);
+		duckdb_parquet::ColumnIndex column_index;
 		ParquetPageIndexUtils::ReadColumnIndex(*state.thrift_file_proto, column_chunk, column_index);
 		if (!ParquetPageIndexUtils::ColumnIndexIsValid(column_index, column_index.null_pages.size())) {
 			continue;
@@ -2167,7 +2167,7 @@ void ParquetReader::PreparePageIndexInternal(ClientContext &context, ParquetRead
 		if (!ParquetPageIndexUtils::HasOffsetIndex(column_chunk)) {
 			continue;
 		}
-		auto offset_index = make_uniq<duckdb_parquet::OffsetIndex>(state.page_index.arena);
+		auto offset_index = make_uniq<duckdb_parquet::OffsetIndex>();
 		ParquetPageIndexUtils::ReadOffsetIndex(*state.thrift_file_proto, column_chunk, *offset_index);
 		if (!ParquetPageIndexUtils::OffsetIndexIsValid(*offset_index, row_group_num_rows, file_size, column_chunk)) {
 			continue;

@@ -987,14 +987,9 @@ private:
 		duckdb_parquet::ColumnIndex column_index;
 		bool has_offset_index = false;
 		duckdb_parquet::OffsetIndex offset_index;
-
-		explicit ColumnChunkPageIndex(ArenaAllocator &arena) : column_index(arena), offset_index(arena) {
-		}
 	};
 
 	vector<ParquetColumnSchema> column_schemas;
-	//! Backs the Thrift page index objects of the file
-	ArenaAllocator arena {Allocator::DefaultAllocator()};
 	//! The column chunks that have a page index, in file order
 	vector<ColumnChunkPageIndex> chunks;
 	idx_t total_rows = 0;
@@ -1098,7 +1093,7 @@ void ParquetPageIndexProcessor::InitializeInternal(ClientContext &context, Parqu
 		trans.Prefetch(index_begin, index_end - index_begin);
 		for (idx_t column_idx = 0; column_idx < row_group.columns.size(); column_idx++) {
 			auto &column = row_group.columns[column_idx];
-			ColumnChunkPageIndex chunk(arena);
+			ColumnChunkPageIndex chunk;
 			chunk.row_group_idx = row_group_idx;
 			chunk.column_idx = column_idx;
 			chunk.first_row = total_rows;
@@ -1149,8 +1144,7 @@ void ParquetPageIndexProcessor::ReadRow(vector<reference<Vector>> &output, idx_t
 	output[2].get().Append(Value::BIGINT(NumericCast<int64_t>(chunk.column_idx)));
 	// path_in_schema
 	output[3].get().Append(
-	    Value(StringUtil::Join(column.meta_data.path_in_schema, ", ",
-	                           [](const duckdb_parquet::ParquetString &part) { return string(part); })));
+	    Value(StringUtil::Join(column.meta_data.path_in_schema, ", ", [](const string &part) { return part; })));
 	// page_id
 	output[4].get().Append(Value::BIGINT(NumericCast<int64_t>(page_idx)));
 

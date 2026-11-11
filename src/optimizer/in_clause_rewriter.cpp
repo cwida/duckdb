@@ -63,7 +63,7 @@ unique_ptr<LogicalOperator> InClauseRewriter::Rewrite(unique_ptr<LogicalOperator
 void InClauseRewriter::VisitExpression(unique_ptr<Expression> *expression) {
 	auto &expr = **expression;
 	const auto expression_type = expr.GetExpressionType();
-	if (expression_type == ExpressionType::OPERATOR_TRY || expression_type == ExpressionType::OPERATOR_HAS_ERROR) {
+	if (expression_type == ExpressionType::OPERATOR_TRY) {
 		// an IN below an error capture must stay an expression, the mark join would raise outside the capture
 		return;
 	}

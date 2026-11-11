@@ -273,7 +273,7 @@ void SecretManager::ThrowIfSecretCreationDisabled(DatabaseInstance &db, const Id
 unique_ptr<SecretEntry> SecretManager::CreateSecret(ClientContext &context, const CreateSecretInput &input) {
 	// Note that a context is required for CreateSecret, as the CreateSecretFunction expects one
 	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
-	ThrowIfSecretCreationDisabled(transaction.db, input.type, input.provider);
+	ThrowIfSecretCreationDisabled(*transaction.db, input.type, input.provider);
 	InitializeSecrets(transaction);
 
 	// Make a copy to set the provider to default if necessary
@@ -303,7 +303,7 @@ unique_ptr<SecretEntry> SecretManager::CreateSecret(ClientContext &context, cons
 }
 
 BoundStatement SecretManager::BindCreateSecret(CatalogTransaction transaction, CreateSecretInput &info) {
-	ThrowIfSecretCreationDisabled(transaction.db, info.type, info.provider);
+	ThrowIfSecretCreationDisabled(*transaction.db, info.type, info.provider);
 	if (info.persist_type == SecretPersistType::TRANSACTION || info.storage_type == TRANSACTION_STORAGE_NAME) {
 		throw BinderException("Transaction-scoped secrets cannot be created through SQL");
 	}

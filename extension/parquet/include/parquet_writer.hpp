@@ -90,9 +90,6 @@ struct ParquetBloomFilterEntry {
 
 //! The page index of one column chunk, buffered until the footer is written
 struct ParquetPageIndexEntry {
-	explicit ParquetPageIndexEntry(ArenaAllocator &arena) : column_index(arena), offset_index(arena) {
-	}
-
 	idx_t row_group_idx = 0;
 	idx_t column_idx = 0;
 	//! The ColumnIndex is only written when every page has (or needs no) min/max statistics
@@ -300,10 +297,6 @@ public:
 
 	void BufferBloomFilter(idx_t col_idx, unique_ptr<ParquetBloomFilter> bloom_filter);
 	void BufferPageIndex(idx_t col_idx, ParquetPageIndexEntry page_index);
-	//! The arena that backs the Thrift metadata of the file, including the page indexes
-	ArenaAllocator &GetMetadataArena() {
-		return metadata_arena;
-	}
 	void SetWrittenStatistics(CopyFunctionFileStatistics &written_stats);
 	void FlushColumnStats(idx_t col_idx, duckdb_parquet::ColumnChunk &chunk,
 	                      optional_ptr<ColumnWriterStatistics> writer_stats);

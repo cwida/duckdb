@@ -12,7 +12,6 @@
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/unique_ptr.hpp"
-#include "duckdb/storage/arena_allocator.hpp"
 #include "duckdb/common/vector.hpp"
 #include "parquet_types.h"
 
@@ -37,8 +36,6 @@ struct ParquetPageRowRange {
 
 //! The page index (ColumnIndex / OffsetIndex) of the column chunks of one row group that a scan uses
 struct ParquetRowGroupPageIndex {
-	//! Backs the Thrift page index objects of the current row group
-	ArenaAllocator arena {Allocator::DefaultAllocator()};
 	//! The OffsetIndex per column chunk of the row group (empty entries for chunks without one)
 	vector<unique_ptr<duckdb_parquet::OffsetIndex>> offset_indexes;
 	//! The rows of the row group that may match the filters, sorted and non-overlapping
@@ -47,7 +44,6 @@ struct ParquetRowGroupPageIndex {
 	void Reset() {
 		offset_indexes.clear();
 		row_ranges.clear();
-		arena.Reset();
 	}
 	bool HasOffsetIndex(idx_t column_chunk_idx) const {
 		return column_chunk_idx < offset_indexes.size() && offset_indexes[column_chunk_idx];

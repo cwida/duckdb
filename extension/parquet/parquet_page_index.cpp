@@ -124,7 +124,6 @@ void ParquetPageIndexUtils::FilterPages(const ParquetColumnSchema &schema,
 	D_ASSERT(ColumnIndexIsValid(column_index, page_count));
 	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "ParquetPageIndexUtils::FilterPages");
 	result.assign(page_count, true);
-	ArenaAllocator stats_arena(Allocator::DefaultAllocator());
 	for (idx_t page_idx = 0; page_idx < page_count; page_idx++) {
 		unique_ptr<BaseStatistics> stats;
 		const bool has_null_count = column_index.__isset.null_counts;
@@ -135,7 +134,7 @@ void ParquetPageIndexUtils::FilterPages(const ParquetColumnSchema &schema,
 			stats->Set(StatsInfo::CANNOT_HAVE_VALID_VALUES);
 		} else {
 			// the bounds of a page are stored like the bounds of a column chunk, but may be truncated
-			duckdb_parquet::Statistics page_stats(stats_arena);
+			duckdb_parquet::Statistics page_stats;
 			page_stats.__set_min_value(column_index.min_values[page_idx]);
 			page_stats.__set_max_value(column_index.max_values[page_idx]);
 			if (has_null_count) {
