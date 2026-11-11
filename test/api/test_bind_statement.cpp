@@ -506,6 +506,8 @@ TEST_CASE("BindStatement runs the post bind hooks once, and the bind_statement v
 	REQUIRE(post_bind_count.load() - before == 3);
 }
 
+// An InternalException aborts the process when DUCKDB_CRASH_ON_ASSERT is set.
+#ifndef DUCKDB_CRASH_ON_ASSERT
 enum class DisagreeingHook { RENAME, RETYPE, REBIND, FAIL_BIND_ONLY, FAIL_WITH_TWO_TYPES };
 
 static DisagreeingHook disagreeing_hook = DisagreeingHook::RENAME;
@@ -547,8 +549,6 @@ static void DisagreeingPostBind(PlannerExtensionInput &input, BoundStatement &st
 }
 
 TEST_CASE("The bind_statement verification reports two plannings that disagree", "[api][bind_statement]") {
-#ifndef DUCKDB_CRASH_ON_ASSERT
-	// An InternalException aborts the process when DUCKDB_CRASH_ON_ASSERT is set.
 	DBConfig config;
 	PlannerExtension extension;
 	extension.post_bind_function = DisagreeingPostBind;
@@ -581,8 +581,8 @@ TEST_CASE("The bind_statement verification reports two plannings that disagree",
 	unique_ptr<QueryResult> result = run(DisagreeingHook::RENAME);
 	REQUIRE(CHECK_COLUMN(result, 0, {42}));
 	REQUIRE(disagreeing_hook_calls.load() == 1);
-#endif
 }
+#endif
 
 struct ClientCallbackError : public std::runtime_error {
 	using std::runtime_error::runtime_error;
@@ -628,4 +628,27 @@ TEST_CASE("A client's own exception from a bind callback leaves BindStatement as
 	// An engine bind error still leaves as the engine's exception.
 	REQUIRE_THROWS_AS(BindOne(con, "SELECT * FROM no_such_table"), Exception);
 	REQUIRE_THROWS_WITH(BindOne(con, "SELECT * FROM no_such_table"), Catch::Contains("\"exception_type\":\"Catalog\""));
+}
+
+TEST_CASE("A client exception of any type ends the autocommit transaction of a bind", "[api][bind_statement]") {
+	DuckDB db(nullptr);
+	DBConfig::GetConfig(*db.instance).replacement_scans.emplace_back(ThrowingReplacementScan);
+	Connection con(db);
+	Connection other(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(a INTEGER)"));
+
+	// The Relation route binds through the transaction wrapper, which must end the transaction it began.
+	REQUIRE_THROWS_AS(con.RelationFromQuery("SELECT * FROM client_unwind"), ClientUnwind);
+	REQUIRE(!con.context->transaction.HasActiveTransaction());
+	REQUIRE_NO_FAIL(other.Query("INSERT INTO t VALUES (1)"));
+	REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 1);
+	REQUIRE_THROWS_AS(con.RelationFromQuery("SELECT * FROM client_frame"), ClientCallbackError);
+	REQUIRE(!con.context->transaction.HasActiveTransaction());
+
+	// In an explicit transaction such an exception aborts it, as a standard exception does under the default policy.
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	REQUIRE_THROWS_AS(con.RelationFromQuery("SELECT * FROM client_unwind"), ClientUnwind);
+	REQUIRE(con.Query("SELECT 1")->HasError());
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 1);
 }

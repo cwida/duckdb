@@ -1,6 +1,8 @@
 #include "test_capi_v2.hpp"
 
 #include "duckdb/common/enums/statement_type.hpp"
+#include "duckdb/function/replacement_scan.hpp"
+#include "duckdb/main/config.hpp"
 
 #include <vector>
 
@@ -857,6 +859,39 @@ TEST_CASE("V2: statement_bind describes a statement that only the planning after
 	REQUIRE(duckdb_v2_statement_bind(fx.conn, prepare, &out, nullptr, nullptr) == DUCKDB_V2_ERROR_QUERY_BINDER);
 	REQUIRE(out == nullptr);
 	duckdb_v2_sql_statement_destroy(&prepare);
+}
+
+static duckdb::unique_ptr<duckdb::TableRef> ThrowingStandardScan(duckdb::ClientContext &,
+                                                                 duckdb::ReplacementScanInput &input,
+                                                                 duckdb::optional_ptr<duckdb::ReplacementScanData>) {
+	if (input.table_name == "client_frame") {
+		throw std::runtime_error("lookup failed in the client");
+	}
+	return nullptr;
+}
+
+TEST_CASE("V2: statement_bind reports a callback's standard exception with its message as the raw text",
+          "[capi_v2][sql_statement]") {
+	EnvFixture fx;
+	auto &con = *reinterpret_cast<duckdb::Connection *>(fx.conn);
+	duckdb::DBConfig::GetConfig(*con.context).replacement_scans.emplace_back(ThrowingStandardScan);
+
+	auto stmt = StmtParseOne(fx.conn, "SELECT * FROM client_frame");
+	duckdb_v2_schema_handle out = nullptr;
+	duckdb_v2_error_info_handle err = nullptr;
+	REQUIRE(duckdb_v2_statement_bind(fx.conn, stmt, &out, nullptr, &err) == DUCKDB_V2_ERROR_API);
+	REQUIRE(out == nullptr);
+	const char *text = nullptr;
+	idx_t text_length = 0;
+	REQUIRE(duckdb_v2_error_info_get_text(err, &text, &text_length) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(std::string(text, text_length) == "lookup failed in the client");
+	const char *raw = nullptr;
+	idx_t raw_length = 0;
+	REQUIRE(duckdb_v2_error_info_get_raw_text(err, &raw, &raw_length) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(raw != nullptr);
+	REQUIRE(std::string(raw, raw_length) == "lookup failed in the client");
+	duckdb_v2_error_info_destroy(&err);
+	duckdb_v2_sql_statement_destroy(&stmt);
 }
 
 TEST_CASE("V2: sql_statement parameter names answer before the catalog can", "[capi_v2][sql_statement]") {

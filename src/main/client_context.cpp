@@ -675,7 +675,8 @@ StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> stateme
 			    }
 			    bind_error = std::move(error);
 		    } catch (...) {
-			    // A client's own exception, raised in a callback such as a replacement scan, leaves as the same object
+			    // Any other exception, a client callback's or an extension hook's, leaves as the same object as from
+			    // the Relation route; table function and function binds wrap theirs as engine errors before this point
 			    foreign_error = std::current_exception();
 		    }
 	    },
@@ -1350,10 +1351,7 @@ void ClientContext::RunFunctionInTransactionInternal(ClientContextLock &lock, co
 		transaction.BeginTransaction();
 		interrupt_state = ClientInterruptState::NOT_INTERRUPTED;
 	}
-	try {
-		fun();
-	} catch (std::exception &ex) {
-		ErrorData error(ex);
+	auto end_on_error = [&](ErrorData error) {
 		bool invalidates_transaction = true;
 		if (!ErrorInvalidatesTransaction(error.Type())) {
 			// standard exceptions don't invalidate the transaction
@@ -1367,6 +1365,15 @@ void ClientContext::RunFunctionInTransactionInternal(ClientContextLock &lock, co
 		} else if (invalidates_transaction) {
 			ValidChecker::Invalidate(ActiveTransaction(), error.RawMessage());
 		}
+	};
+	try {
+		fun();
+	} catch (std::exception &ex) {
+		end_on_error(ErrorData(ex));
+		throw;
+	} catch (...) {
+		// A client's exception type need not derive from std::exception, and the transaction begun here must end
+		end_on_error(ErrorData(ExceptionType::INVALID, "An exception of an unknown type was thrown"));
 		throw;
 	}
 	if (require_new_transaction) {

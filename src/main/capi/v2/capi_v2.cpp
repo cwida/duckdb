@@ -268,8 +268,10 @@ auto RenderCaughtError(DUCKDB_V2_ERROR &code, string &text, optional<string> &ra
 		} catch (const std::bad_alloc &) {
 			code = DUCKDB_V2_ERROR_RESOURCE_OUT_OF_MEMORY;
 			text = "Out of memory.";
+			raw_message = text;
 		} catch (const std::exception &ex) {
 			text = ex.what() ? ex.what() : "An unknown error occurred.";
+			raw_message = text;
 		} catch (...) {
 			text = "An unknown error occurred.";
 		}
