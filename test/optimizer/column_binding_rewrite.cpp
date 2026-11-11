@@ -230,3 +230,37 @@ TEST_CASE("Indexed column binding replacer matches sequential application", "[op
 	chaining.Replace(binding);
 	REQUIRE(binding == binding_c);
 }
+
+TEST_CASE("Graph-backed binding replacement resolves current edges and types", "[optimizer][bindings]") {
+	auto binding_a = ColumnBinding(TableIndex(0), ProjectionIndex(0));
+	auto binding_b = ColumnBinding(TableIndex(1), ProjectionIndex(0));
+	auto binding_c = ColumnBinding(TableIndex(2), ProjectionIndex(0));
+	auto untouched = ColumnBinding(TableIndex(3), ProjectionIndex(0));
+	BindingReplacementGraph graph;
+	graph.Add(ReplacementBinding(binding_a, binding_b, LogicalType::BIGINT));
+	CorrelatedColumnBindingReplacer replacer(graph);
+	auto binding = binding_a;
+	auto type = LogicalType(LogicalType::INTEGER);
+	replacer.Replace(binding, type);
+	REQUIRE(binding == binding_b);
+	REQUIRE(type == LogicalType::BIGINT);
+
+	graph.Add(ReplacementBinding(binding_b, binding_c, LogicalType::VARCHAR));
+	binding = binding_a;
+	replacer.Replace(binding);
+	REQUIRE(binding == binding_c);
+	binding = binding_a;
+	replacer.Replace(binding, type);
+	REQUIRE(binding == binding_c);
+	REQUIRE(type == LogicalType::VARCHAR);
+	binding = untouched;
+	replacer.Replace(binding, type);
+	REQUIRE(binding == untouched);
+	REQUIRE(type == LogicalType::VARCHAR);
+
+	LogicalFilter filter(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, binding_a));
+	ColumnBindingRewrite::ApplyToOperatorBindings(filter, graph);
+	auto &expression = filter.expressions[0]->Cast<BoundColumnRefExpression>();
+	REQUIRE(expression.Binding() == binding_c);
+	REQUIRE(expression.GetReturnType() == LogicalType::VARCHAR);
+}

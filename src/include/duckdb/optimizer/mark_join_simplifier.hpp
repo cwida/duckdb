@@ -12,7 +12,7 @@
 
 namespace duckdb {
 
-class LogicalFilter;
+class BindingReplacementGraph;
 class NotNullExpressionAnalyzer;
 class Optimizer;
 
@@ -23,8 +23,10 @@ public:
 	void Optimize(unique_ptr<LogicalOperator> &plan);
 
 private:
-	void Rewrite(unique_ptr<LogicalOperator> &op, LogicalOperator &root, NotNullExpressionAnalyzer &nullability);
-	bool TrySimplify(LogicalFilter &filter, LogicalOperator &root, NotNullExpressionAnalyzer &nullability);
+	void Rewrite(unique_ptr<LogicalOperator> &op, NotNullExpressionAnalyzer &nullability,
+	             BindingReplacementGraph &replacements);
+	bool TrySimplify(unique_ptr<LogicalOperator> &op, NotNullExpressionAnalyzer &nullability,
+	                 BindingReplacementGraph &replacements);
 
 private:
 	Optimizer &optimizer;

@@ -19,11 +19,10 @@ ReplacementBinding::ReplacementBinding(ColumnBinding old_binding, ColumnBinding 
 
 ReplacementBinding BindingReplacementGraph::ResolveReplacement(ColumnBinding binding) const {
 	ReplacementBinding result(binding, binding);
-	column_binding_set_t visited;
-	while (visited.insert(result.new_binding).second) {
-		auto replacement = Find(result.new_binding);
-		if (!replacement) {
-			return result;
+	idx_t traversed_edges = 0;
+	while (auto replacement = Find(result.new_binding)) {
+		if (++traversed_edges > replacement_bindings.size()) {
+			throw InternalException("Cyclic column binding replacements");
 		}
 		result.new_binding = replacement->new_binding;
 		if (replacement->replace_type) {
@@ -31,7 +30,7 @@ ReplacementBinding BindingReplacementGraph::ResolveReplacement(ColumnBinding bin
 			result.new_type = replacement->new_type;
 		}
 	}
-	throw InternalException("Cyclic column binding replacements");
+	return result;
 }
 
 optional_ptr<const ReplacementBinding> BindingReplacementGraph::Find(ColumnBinding old_binding) const {
@@ -108,8 +107,13 @@ void BindingReplacementGraph::AddTo(ColumnBindingReplacer &replacer) const {
 ColumnBindingReplacer::ColumnBindingReplacer() {
 }
 
+ColumnBindingReplacer::ColumnBindingReplacer(const BindingReplacementGraph &replacements)
+    : replacement_graph(replacements) {
+}
+
 void ColumnBindingReplacer::AddReplacements(const vector<ColumnBinding> &old_bindings,
                                             const vector<ColumnBinding> &new_bindings) {
+	D_ASSERT(!replacement_graph);
 	if (old_bindings.size() != new_bindings.size()) {
 		throw InternalException("Column binding replacement lists must have the same size");
 	}
@@ -122,6 +126,7 @@ void ColumnBindingReplacer::AddReplacements(const vector<ColumnBinding> &old_bin
 }
 
 void ColumnBindingReplacer::BuildIndex() {
+	D_ASSERT(!replacement_graph);
 	replacement_index.clear();
 	use_index = false;
 	column_binding_map_t<idx_t> index;
@@ -150,6 +155,11 @@ optional_ptr<const ReplacementBinding> ColumnBindingReplacer::FindReplacement(Co
 }
 
 void ColumnBindingReplacer::Replace(ColumnBinding &binding) const {
+	if (replacement_graph) {
+		D_ASSERT(replacement_bindings.empty());
+		binding = replacement_graph->Resolve(binding);
+		return;
+	}
 	if (use_index) {
 		auto replacement = FindReplacement(binding);
 		if (replacement) {
@@ -165,6 +175,15 @@ void ColumnBindingReplacer::Replace(ColumnBinding &binding) const {
 }
 
 void ColumnBindingReplacer::Replace(ColumnBinding &binding, LogicalType &type) const {
+	if (replacement_graph) {
+		D_ASSERT(replacement_bindings.empty());
+		auto replacement = replacement_graph->ResolveReplacement(binding);
+		binding = replacement.new_binding;
+		if (replacement.replace_type) {
+			type = replacement.new_type;
+		}
+		return;
+	}
 	if (use_index) {
 		auto replacement = FindReplacement(binding);
 		if (replacement) {
@@ -215,6 +234,15 @@ void ColumnBindingReplacer::VisitOperatorBindings(LogicalOperator &op) {
 
 unique_ptr<Expression> ColumnBindingReplacer::VisitReplace(BoundColumnRefExpression &expr,
                                                            unique_ptr<Expression> *expr_ptr) {
+	if (replacement_graph) {
+		D_ASSERT(replacement_bindings.empty());
+		auto replacement = replacement_graph->ResolveReplacement(expr.Binding());
+		expr.BindingMutable() = replacement.new_binding;
+		if (replacement.replace_type) {
+			expr.SetReturnType(replacement.new_type);
+		}
+		return nullptr;
+	}
 	if (use_index) {
 		auto replacement = FindReplacement(expr.Binding());
 		if (replacement) {
@@ -301,9 +329,7 @@ void ColumnBindingRewrite::ApplyToOperatorBindings(LogicalOperator &op, const Bi
 	if (replacements.Empty()) {
 		return;
 	}
-	CorrelatedColumnBindingReplacer replacer;
-	replacements.AddTo(replacer);
-	replacer.BuildIndex();
+	CorrelatedColumnBindingReplacer replacer(replacements);
 	replacer.VisitOperatorBindings(op);
 }
 

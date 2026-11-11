@@ -144,8 +144,9 @@ static void SimplifyNullSafeSemiJoinConditions(NotNullExpressionAnalyzer &analyz
 	}
 }
 
-bool MarkJoinSimplifier::TrySimplify(LogicalFilter &filter, LogicalOperator &root,
-                                     NotNullExpressionAnalyzer &nullability) {
+bool MarkJoinSimplifier::TrySimplify(unique_ptr<LogicalOperator> &op, NotNullExpressionAnalyzer &nullability,
+                                     BindingReplacementGraph &replacements) {
+	auto &filter = op->Cast<LogicalFilter>();
 	if (filter.children[0]->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
 		return false;
 	}
@@ -194,42 +195,51 @@ bool MarkJoinSimplifier::TrySimplify(LogicalFilter &filter, LogicalOperator &roo
 				expressions.push_back(make_uniq<BoundColumnRefExpression>(join.types[col_idx], old_bindings[col_idx]));
 			}
 		}
-		join.join_type = target_type;
-		join.mark_types.clear();
 		filter.expressions.erase_at(i);
-		if (target_type == JoinType::SEMI) {
-			SimplifyNullSafeSemiJoinConditions(nullability, join);
-		}
 		auto projection = make_uniq<LogicalProjection>(optimizer.binder.GenerateTableIndex(), std::move(expressions));
-		projection->children.push_back(std::move(filter.children[0]));
-		CorrelatedColumnBindingReplacer replacer;
-		replacer.AddReplacements(old_bindings, projection->GetColumnBindings());
-		replacer.BuildIndex();
-		replacer.stop_operator = projection.get();
-		filter.children[0] = std::move(projection);
-		replacer.VisitOperator(root);
+		BindingReplacementGraph local_replacements;
+		auto new_bindings = projection->GetColumnBindings();
+		for (idx_t col_idx = 0; col_idx < old_bindings.size(); col_idx++) {
+			if (!local_replacements.Find(old_bindings[col_idx])) {
+				local_replacements.Add(old_bindings[col_idx], new_bindings[col_idx]);
+			}
+		}
+		ColumnBindingRewrite::RewriteChild(
+		    op, 0, [&](unique_ptr<LogicalOperator> &child, BindingReplacementGraph &child_replacements) {
+			    join.join_type = target_type;
+			    join.mark_types.clear();
+			    if (target_type == JoinType::SEMI) {
+				    SimplifyNullSafeSemiJoinConditions(nullability, join);
+			    }
+			    projection->children.push_back(std::move(child));
+			    child = std::move(projection);
+			    child_replacements.Merge(local_replacements);
+		    });
+		replacements.Merge(local_replacements);
 		return true;
 	}
 	return false;
 }
 
-void MarkJoinSimplifier::Rewrite(unique_ptr<LogicalOperator> &op, LogicalOperator &root,
-                                 NotNullExpressionAnalyzer &nullability) {
+void MarkJoinSimplifier::Rewrite(unique_ptr<LogicalOperator> &op, NotNullExpressionAnalyzer &nullability,
+                                 BindingReplacementGraph &replacements) {
 	for (auto &child : op->children) {
-		Rewrite(child, root, nullability);
+		Rewrite(child, nullability, replacements);
 	}
-	if (op->type != LogicalOperatorType::LOGICAL_FILTER) {
-		return;
-	}
-	auto &filter = op->Cast<LogicalFilter>();
-	if (TrySimplify(filter, root, nullability) && filter.expressions.empty() && !filter.HasProjectionMap()) {
-		op = std::move(filter.children[0]);
+	// Visit original consumers before adding their enclosing conversion's replacement edges.
+	ColumnBindingRewrite::ApplyToOperatorBindings(*op, replacements);
+	if (op->type == LogicalOperatorType::LOGICAL_FILTER && TrySimplify(op, nullability, replacements)) {
+		auto &filter = op->Cast<LogicalFilter>();
+		if (filter.expressions.empty() && !filter.HasProjectionMap()) {
+			op = std::move(filter.children[0]);
+		}
 	}
 }
 
 void MarkJoinSimplifier::Optimize(unique_ptr<LogicalOperator> &plan) {
 	NotNullExpressionAnalyzer nullability(optimizer.context, *plan);
-	Rewrite(plan, *plan, nullability);
+	BindingReplacementGraph replacements;
+	Rewrite(plan, nullability, replacements);
 }
 
 } // namespace duckdb
