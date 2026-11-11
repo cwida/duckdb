@@ -533,6 +533,40 @@ static long double BignumSumToLongDouble(const BignumIntermediate &value) {
 	return value.is_negative ? -result : result;
 }
 
+//! The digits a quotient carries beyond the 17 significant digits of a DOUBLE, so that the quotient and a sticky
+//! digit for a nonzero remainder round to the DOUBLE nearest to the exact average
+static constexpr idx_t AVERAGE_GUARD_DIGITS = 40;
+
+//! The average as the DOUBLE nearest to the exact quotient: the sum is scaled up by enough digits for the quotient to
+//! carry the guard digits beyond those of the count, a nonzero remainder (which lies strictly between two quotients)
+//! is kept as a trailing nonzero digit, and the decimal text is parsed once, so the result is rounded once
+static double BignumExactAverage(const BignumIntermediate &sum, uint64_t count, uint32_t scale) {
+	StringHeap heap;
+	BignumArithmeticState state;
+	const idx_t extra_digits = AVERAGE_GUARD_DIGITS + std::to_string(count).size();
+	const string power_blob = DecimalHelper<bignum_t>::PowerOfTen(extra_digits);
+	const bignum_t power_value {string_t(power_blob)};
+	const BignumIntermediate power(power_value);
+	const bignum_t scaled_value {BignumIntermediate::Multiply(heap, state, sum, power)};
+	const BignumIntermediate scaled_sum(scaled_value);
+	const string count_blob = DecimalHelper<bignum_t>::FromInteger(uhugeint_t(count));
+	const bignum_t count_value {string_t(count_blob)};
+	const BignumIntermediate divisor(count_value);
+	string_t quotient;
+	string_t remainder;
+	if (!BignumIntermediate::TryDivMod(heap, state, scaled_sum, divisor, quotient, remainder)) {
+		throw InternalException("avg: division of the wide decimal sum by the count failed");
+	}
+	auto text = Bignum::BignumToVarchar(bignum_t(quotient));
+	text += DecimalHelper<bignum_t>::IsZero(bignum_t(remainder)) ? "0" : "1";
+	text += "e-" + std::to_string(idx_t(scale) + extra_digits + 1);
+	double result;
+	if (!TryCast::Operation(string_t(text), result, false)) {
+		throw InternalException("avg: could not convert the wide decimal average '%s' to a DOUBLE", text);
+	}
+	return result;
+}
+
 struct BignumAverageOperation {
 	template <class STATE>
 	static void Initialize(STATE &state) {
@@ -582,22 +616,10 @@ struct BignumAverageOperation {
 			target = sum / divident;
 			return;
 		}
-		// beyond the range of a long double the exact sum is divided by the count first, so that the average of
-		// values near the DOUBLE range stays finite; the remainder adds the fraction of the quotient
+		// beyond the range of a long double (a sum or a scale factor near the DOUBLE range) the exact sum is divided
+		// by the count instead, so that the average stays finite and a subnormal average keeps its value
 		auto &bind_data = finalize_data.input.bind_data->Cast<AverageDecimalBindData>();
-		StringHeap heap;
-		BignumArithmeticState arithmetic_state;
-		const string count_blob = DecimalHelper<bignum_t>::FromInteger(uhugeint_t(state.count));
-		const bignum_t count_value {string_t(count_blob)};
-		const BignumIntermediate count(count_value);
-		string_t quotient;
-		string_t remainder;
-		if (!BignumIntermediate::TryDivMod(heap, arithmetic_state, state.value, count, quotient, remainder)) {
-			throw InternalException("avg: division of the wide decimal sum by the count failed");
-		}
-		target = DecimalHelper<bignum_t>::ToDouble(bignum_t(quotient), bind_data.decimal_scale) +
-		         DecimalHelper<bignum_t>::ToDouble(bignum_t(remainder), bind_data.decimal_scale) /
-		             static_cast<double>(state.count);
+		target = BignumExactAverage(state.value, state.count, bind_data.decimal_scale);
 	}
 
 	static bool IgnoreNull() {
