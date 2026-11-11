@@ -91,9 +91,6 @@ physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 statement ok
 SET ieee_floating_point_ops = false;
 
-statement ok
-SET error_on_division_by_zero = true;
-
 query II
 EXPLAIN (FORMAT JSON)
 SELECT d.k, a.s, a.av FROM (VALUES (1), (2)) d(k)
@@ -103,9 +100,6 @@ physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 
 statement ok
 RESET ieee_floating_point_ops;
-
-statement ok
-RESET error_on_division_by_zero;
 
 # The implicit-bitstring bailout deliberately covers the whole query.
 query II
