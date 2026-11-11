@@ -752,10 +752,10 @@ static auto CV2TableConvertColumns(CV2TableLocalState &local_state, DataChunk &o
 		for (idx_t i = 0; i < converted_input.ColumnCount(); i++) {
 			converted_input.data[i].Reference(file_chunk.data[converted.position + i]);
 		}
-		converted_input.SetCardinality(file_chunk.size());
+		converted_input.SetChildCardinality(file_chunk.size());
 		converted.executor->ExecuteExpression(converted_input, output.data[converted.position]);
 	}
-	output.SetCardinality(file_chunk.size());
+	output.SetChildCardinality(file_chunk.size());
 }
 
 static auto CV2TableInitLocal(ExecutionContext &context, TableFunctionInitInput &input,
