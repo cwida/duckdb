@@ -132,6 +132,7 @@ void AllocatorBulkDeallocationFlushThresholdSetting::OnSet(SettingCallbackInfo &
 		throw InvalidInputException("%s setting cannot be NULL", AllocatorBulkDeallocationFlushThresholdSetting::Name);
 	}
 	auto threshold = DBConfig::ParseMemoryLimitOrMaximum(input.ToString());
+	input = Value(StringUtil::BytesToHumanReadableString(threshold));
 	if (info.db) {
 		BufferManager::GetBufferManager(*info.db).GetBufferPool().SetAllocatorBulkDeallocationFlushThreshold(threshold);
 	}
@@ -386,7 +387,9 @@ void CheckpointThresholdSetting::OnSet(SettingCallbackInfo &info, Value &input) 
 	if (input.IsNull()) {
 		throw InvalidInputException("%s setting cannot be NULL", CheckpointThresholdSetting::Name);
 	}
-	info.config.options.checkpoint_wal_size = DBConfig::ParseMemoryLimitOrMaximum(input.ToString());
+	auto threshold = DBConfig::ParseMemoryLimitOrMaximum(input.ToString());
+	info.config.options.checkpoint_wal_size = threshold;
+	input = Value(StringUtil::BytesToHumanReadableString(threshold));
 }
 
 //===----------------------------------------------------------------------===//
@@ -622,15 +625,15 @@ void DisabledCompressionMethodsSetting::OnSet(SettingCallbackInfo &info, Value &
 		}
 		disabled_compression_methods.push_back(compression_type);
 	}
+	info.config.SetDisabledCompressionMethods(disabled_compression_methods);
 	string normalized;
-	for (auto &method : disabled_compression_methods) {
+	for (auto &method : info.config.GetDisabledCompressionMethods()) {
 		if (!normalized.empty()) {
 			normalized += ",";
 		}
 		normalized += CompressionTypeToString(method);
 	}
 	input = Value(normalized);
-	info.config.SetDisabledCompressionMethods(disabled_compression_methods);
 }
 
 //===----------------------------------------------------------------------===//
@@ -889,15 +892,23 @@ static LogicalType ParseForceVariantShredding(const string &input, bool allow_un
 }
 
 void ForceVariantShredding::OnSet(SettingCallbackInfo &info, Value &input) {
-	if (input.IsNull() || input.type().id() != LogicalTypeId::VARCHAR) {
+	if (input.IsNull()) {
+		throw InvalidInputException("%s setting cannot be NULL", ForceVariantShredding::Name);
+	}
+	if (input.type().id() != LogicalTypeId::VARCHAR) {
 		throw InvalidInputException("The argument to 'force_variant_shredding' should be of type VARCHAR, not %s",
 		                            input.type().ToString());
 	}
-	ParseForceVariantShredding(StringValue::Get(input), info.is_reset);
+	input = Value(ParseForceVariantShredding(StringValue::Get(input), info.is_reset).ToString());
 }
 
 LogicalType DBConfig::GetForceVariantShredding() const {
-	return ParseForceVariantShredding(Settings::Get<ForceVariantShredding>(*this));
+	// the setting stores the expanded shredding type
+	auto shredding = Settings::Get<ForceVariantShredding>(*this);
+	if (StringUtil::CIEquals(shredding, ForceVariantShredding::DefaultValue)) {
+		return LogicalType::INVALID;
+	}
+	return UnboundType::TryParseAndDefaultBind(shredding);
 }
 
 //===----------------------------------------------------------------------===//
@@ -906,6 +917,11 @@ LogicalType DBConfig::GetForceVariantShredding() const {
 void ExtensionDirectoriesSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 	if (input.IsNull()) {
 		throw InvalidInputException("%s setting cannot be NULL", ExtensionDirectoriesSetting::Name);
+	}
+	for (auto &directory : ListValue::GetChildren(input)) {
+		if (directory.IsNull()) {
+			throw InvalidInputException("%s setting elements cannot be NULL", ExtensionDirectoriesSetting::Name);
+		}
 	}
 }
 

@@ -128,7 +128,6 @@ struct DBConfigOptions {
 	identifier_map_t<Value> user_options;
 	//! The set of unrecognized (other) options
 	identifier_map_t<Value> unrecognized_options;
-	//! Metadata from DuckDB callers
 	//! HTTP proxy host (defaults to the HTTP_PROXY environment variable when unset)
 	string http_proxy;
 	//! The default block header size for new duckdb database files.
