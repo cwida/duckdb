@@ -5,12 +5,6 @@
   "inherit_skip_tests": "test/configs/stats_dependent_tests.json",
   "skip_tests": [
     {
-      "reason": "Checks activation of partial aggregation from input grouping domains.",
-      "paths": [
-        "test/optimizer/partial_aggregate_uncertain_domain.test"
-      ]
-    },
-    {
       "reason": "Checks MARK conversion plan shapes and its optimizer gate.",
       "paths": [
         "test/optimizer/mark_join_simplifier.test",
