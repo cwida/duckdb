@@ -6,10 +6,11 @@
 namespace duckdb {
 
 BoundColumnRefExpression::BoundColumnRefExpression(Identifier alias_p, LogicalType type, ColumnBinding binding,
-                                                   idx_t depth)
+                                                   idx_t depth, QueryLocation location)
     : Expression(ExpressionType::BOUND_COLUMN_REF, ExpressionClass::BOUND_COLUMN_REF, std::move(type)),
       binding(binding), depth(depth) {
 	this->alias = std::move(alias_p);
+	query_location = location;
 }
 
 BoundColumnRefExpression::BoundColumnRefExpression(LogicalType type, ColumnBinding binding, idx_t depth)

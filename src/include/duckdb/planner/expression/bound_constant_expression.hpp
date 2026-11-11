@@ -19,6 +19,7 @@ public:
 
 public:
 	explicit BoundConstantExpression(Value value);
+	BoundConstantExpression(Value value, Identifier alias, QueryLocation location = QueryLocation());
 
 public:
 	const Value &GetValue() const {

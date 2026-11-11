@@ -74,10 +74,7 @@ static unique_ptr<Expression> AddCastToTypeInternal(unique_ptr<Expression> expr,
 		return expr;
 	} else if (expr->GetExpressionClass() == ExpressionClass::BOUND_DEFAULT) {
 		D_ASSERT(target_type.IsValid());
-		auto result = make_uniq<BoundDefaultExpression>(target_type);
-		result->SetAlias(expr->GetAlias());
-		result->SetQueryLocation(expr->GetQueryLocation());
-		expr = std::move(result);
+		expr = make_uniq<BoundDefaultExpression>(target_type, expr->GetAlias(), expr->GetQueryLocation());
 	}
 	if (!target_type.IsValid()) {
 		return expr;
