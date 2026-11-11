@@ -89,14 +89,47 @@ SELECT coalesce('0.5'::DECIMAL(99,1), 0::DECIMAL(99,0)) AS c, typeof(c)
 ----
 0.5	DECIMAL(100,1)
 
-# a literal beyond the bound binds as a DOUBLE, as every literal beyond 38 digits did before wide decimals
+# a literal beyond the bound is refused like a wider type, it never binds to another type whose value differs
 statement ok
 SET max_decimal_width = 50;
 
-query II
-SELECT typeof(123456789012345678901234567890123456789012345.5), typeof(1234567890123456789012345678901234567890123456789012345678901234567890.5)
+query I
+SELECT typeof(123456789012345678901234567890123456789012345.5)
 ----
-DECIMAL(46,1)	DOUBLE
+DECIMAL(46,1)
+
+statement error
+SELECT 1234567890123456789012345678901234567890123456789012345678901234567890.5
+----
+Decimal literal of 71 digits exceeds the maximum DECIMAL width of 50 (SET max_decimal_width to allow wider decimals)
+
+statement error
+SELECT -1234567890123456789012345678901234567890123456789012345678901234567890.5
+----
+Decimal literal of 71 digits exceeds the maximum DECIMAL width of 50
+
+# a view over wide literals fails when the setting is lowered below their width instead of changing its result
+statement ok
+CREATE VIEW lv AS SELECT 1234567890123456789012345678901234567890.5 = 1234567890123456789012345678901234567890.0 AS same;
+
+query I
+SELECT same FROM lv
+----
+false
+
+statement ok
+SET max_decimal_width = 38;
+
+statement error
+SELECT same FROM lv
+----
+Decimal literal of 41 digits exceeds the maximum DECIMAL width of 38
+
+# an exponent makes the literal a DOUBLE, whatever its length
+query I
+SELECT typeof(1234567890123456789012345678901234567890123456789012345678901234567890.5e0)
+----
+DOUBLE
 
 # a column created under a larger bound still reads, operations that need a wider result are refused
 statement ok
