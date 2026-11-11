@@ -2,6 +2,7 @@
 
 #include "duckdb/function/lambda_functions.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_lambda_expression.hpp"
 
@@ -10,7 +11,7 @@ namespace duckdb {
 namespace {
 
 struct ReduceExecuteInfo {
-	ReduceExecuteInfo(LambdaFunctions::LambdaInfo &info, ClientContext &context)
+	ReduceExecuteInfo(LambdaFunctions::LambdaInfo &info, Context &context)
 	    : context(context), left_slice(make_uniq<Vector>(Vector::Ref(*info.child_vector))) {
 		if (info.has_initial) {
 			initial_value_offset = 0;
@@ -62,7 +63,7 @@ struct ReduceExecuteInfo {
 	};
 
 	ValidityMask active_rows;
-	ClientContext &context;
+	Context &context;
 	unique_ptr<Vector> left_slice;
 	unique_ptr<Vector> accumulator_cast;
 	unique_ptr<ExpressionExecutor> expr_executor;

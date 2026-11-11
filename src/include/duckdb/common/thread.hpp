@@ -27,10 +27,10 @@ using thread_id = uint64_t;
 
 namespace duckdb {
 
-class ClientContext;
+class Context;
 
 struct ThreadUtil {
-	static void SleepMs(idx_t ms, optional_ptr<ClientContext> context = nullptr);
+	static void SleepMs(idx_t ms, optional_ptr<Context> context = nullptr);
 	static void SleepMicroSeconds(idx_t micros);
 	static thread_id GetThreadId();
 	static string GetThreadIdString();

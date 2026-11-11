@@ -6,7 +6,7 @@
 namespace duckdb {
 
 static timestamp_t GetTransactionTimestamp(ExpressionState &state) {
-	return MetaTransaction::Get(state.GetContext()).start_timestamp;
+	return MetaTransaction::Get(state.GetClientContext()).start_timestamp;
 }
 
 static void CurrentTimestampFunction(DataChunk &input, ExpressionState &state, Vector &result) {

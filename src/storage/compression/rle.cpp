@@ -668,11 +668,13 @@ void RLEFilter(ColumnSegment &segment, ColumnScanState &state, idx_t vector_coun
 //===--------------------------------------------------------------------===//
 template <class T, bool WRITE_STATISTICS = true>
 CompressionFunction GetRLEFunction(PhysicalType data_type) {
-	return CompressionFunction(CompressionType::COMPRESSION_RLE, data_type, RLEInitAnalyze<T>, RLEAnalyze<T>,
+	CompressionFunction result(CompressionType::COMPRESSION_RLE, data_type, RLEInitAnalyze<T>, RLEAnalyze<T>,
 	                           RLEFinalAnalyze<T>, RLEInitCompression<T, WRITE_STATISTICS>,
 	                           RLECompress<T, WRITE_STATISTICS>, RLEFinalizeCompress<T, WRITE_STATISTICS>,
 	                           RLEInitScan<T>, RLEScan<T>, RLEScanPartial<T>, RLESkip<T>, nullptr, nullptr, nullptr,
 	                           nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, RLESelect<T>, RLEFilter<T>);
+	result.zero_initialize_segments = false;
+	return result;
 }
 
 CompressionFunction RLEFun::GetFunction(PhysicalType type) {
