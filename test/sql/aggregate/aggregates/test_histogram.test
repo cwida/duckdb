@@ -202,3 +202,20 @@ SELECT histogram(v)::VARCHAR FROM d;
 
 statement ok
 SET enable_optimizer=true;
+
+# raw histogram states (via the window self-join) combined into rows copied from another thread's hash table
+statement ok
+RESET debug_force_external;
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE parallel_hist AS SELECT i % 20000 AS g, md5(((i % 20000 + i // 20000) % 31)::VARCHAR) AS s
+FROM range(200000) r(i);
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT g, histogram(s) OVER (PARTITION BY g) h FROM parallel_hist) w
+JOIN (SELECT g, histogram(s) h FROM parallel_hist GROUP BY g) r USING (g) WHERE w.h != r.h;
+----
+0
