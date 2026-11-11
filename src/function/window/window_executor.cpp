@@ -26,7 +26,7 @@ WindowExecutor::WindowExecutor(BoundWindowExpression &wexpr, WindowSharedExpress
 			wexpr.WindowFunction()->GetSharing(*this, shared);
 		} else {
 			//	If no one overrides, assume the arguments are only needed at evaluate time
-			for (auto &child : wexpr.GetChildrenMutable()) {
+			for (auto &child : wexpr.GetChildren()) {
 				child_idx.emplace_back(shared.RegisterEvaluate(child));
 			}
 		}

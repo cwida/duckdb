@@ -430,7 +430,7 @@ static void PushTryIntoBareSubqueryItem(SubqueryExpression &subquery_expr) {
 //! flattened subplan and referenced as a column, so the TRY input and its HAS_ERROR probe observe one
 //! consistent value.
 BindResult ExpressionBinder::BindTrySubquery(OperatorExpression &op, idx_t depth) {
-	D_ASSERT(op.GetChildrenMutable().size() == 1);
+	D_ASSERT(op.GetChildren().size() == 1);
 	auto &subquery_expr = op.GetChildrenMutable()[0]->Cast<SubqueryExpression>();
 	D_ASSERT(subquery_expr.GetSubqueryType() == SubqueryType::SCALAR);
 	CheckTrySubqueryNode(subquery_expr, op);

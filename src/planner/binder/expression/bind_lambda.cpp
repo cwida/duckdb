@@ -83,7 +83,7 @@ BindResult ExpressionBinder::BindExpression(LambdaExpression &expr, idx_t depth,
 		// The arrow_expr now might contain bound nodes.
 		// Restore the original expression.
 		if (bind_result.HasError()) {
-			D_ASSERT(arrow_expr.GetChildrenMutable().size() == 2);
+			D_ASSERT(arrow_expr.GetChildren().size() == 2);
 			expr.LeftMutable() = std::move(arrow_expr.GetChildrenMutable()[0]);
 			expr.RightMutable() = std::move(arrow_expr.GetChildrenMutable()[1]);
 		}

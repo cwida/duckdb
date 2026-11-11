@@ -67,7 +67,7 @@ void StatisticsPropagator::SimplifyConstantOrNull(vector<unique_ptr<Expression>>
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundConjunctionExpression &expr,
                                                                      unique_ptr<Expression> &expr_ptr) {
 	auto is_and = expr.GetExpressionType() == ExpressionType::CONJUNCTION_AND;
-	for (idx_t expr_idx = 0; expr_idx < expr.GetChildrenMutable().size(); expr_idx++) {
+	for (idx_t expr_idx = 0; expr_idx < expr.GetChildren().size(); expr_idx++) {
 		auto &child = expr.GetChildrenMutable()[expr_idx];
 		auto stats = PropagateExpression(child);
 		if (!child->IsFoldable()) {
@@ -114,11 +114,11 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundConjun
 	if (is_and) {
 		SimplifyConstantOrNull(expr.GetChildrenMutable());
 	}
-	if (expr.GetChildrenMutable().empty()) {
+	if (expr.GetChildren().empty()) {
 		// if there are no children left, replace the conjunction with TRUE (for AND) or FALSE (for OR)
 		expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(is_and));
 		return PropagateExpression(expr_ptr);
-	} else if (expr.GetChildrenMutable().size() == 1) {
+	} else if (expr.GetChildren().size() == 1) {
 		// if there is one child left, replace the conjunction with that one child
 		expr_ptr = std::move(expr.GetChildrenMutable()[0]);
 	}
