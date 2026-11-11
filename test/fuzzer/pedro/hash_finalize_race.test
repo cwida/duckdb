@@ -6,7 +6,7 @@ statement ok
 CREATE SEQUENCE t4;
 
 statement ok
-PRAGMA DEBUG_FORCE_EXTERNAL=1;
+SET DEBUG_FORCE_EXTERNAL=1;
 
 loop i 0 10
 

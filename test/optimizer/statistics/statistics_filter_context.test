@@ -26,7 +26,7 @@ statement ok
 CHECKPOINT;
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # price > 100 is FALSE or NULL from statistics. In filter context it cannot make the OR pass, so the
 # address-only predicate is pushed below the join before the large IN clause becomes a MARK join.

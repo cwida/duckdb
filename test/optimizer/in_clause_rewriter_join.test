@@ -15,7 +15,7 @@ statement ok
 INSERT INTO in_right VALUES (1), (2), (11);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # A large IN clause nested in a cross-table predicate is rewritten to a MARK join
 query II

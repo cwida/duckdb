@@ -4,7 +4,7 @@
 load {TEST_DIR}/null_filter_dict_fsst.db readwrite v1.4.2
 
 statement ok
-pragma force_compression='DICT_FSST';
+SET force_compression='DICT_FSST';
 
 statement ok
 CREATE OR REPLACE TABLE t1(type VARCHAR, id VARCHAR, problem VARCHAR);

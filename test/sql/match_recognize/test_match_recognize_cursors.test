@@ -3,10 +3,7 @@
 # group: [match_recognize]
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
-pragma threads=1
+SET threads=1
 
 # A condition that depends on the match is decided against the collected rows themselves rather than
 # against a copy of them, so the rows it reads have to survive being read out of order, across the
@@ -68,7 +65,7 @@ SELECT count(*), sum(n) FROM (
 
 # the rows of one partition are read while another thread reads another partition's
 statement ok
-pragma threads=4;
+SET threads=4;
 
 query III
 SELECT count(*), sum(n), sum(hash(c)) FROM (
@@ -83,4 +80,4 @@ SELECT count(*), sum(n), sum(hash(c)) FROM (
 43543	195811	304588192825445155531597
 
 statement ok
-pragma threads=1;
+SET threads=1;

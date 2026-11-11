@@ -5,13 +5,13 @@
 require no_alternative_verify
 
 statement ok
-PRAGMA memory_limit='100MB'
+SET memory_limit='100MB'
 
 statement ok
-PRAGMA temp_directory=''
+SET temp_directory=''
 
 statement ok
-PRAGMA max_temp_directory_size='0B'
+SET max_temp_directory_size='0B'
 
 statement ok
 SET operator_memory_limit='1MB'
@@ -95,7 +95,7 @@ statement ok
 RESET operator_memory_limit
 
 statement ok
-PRAGMA memory_limit='1GB'
+SET memory_limit='1GB'
 
 query I
 SELECT COUNT(*) = 0

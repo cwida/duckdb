@@ -9,7 +9,7 @@
 # all the results should stay the same
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 statement ok
 CREATE TABLE integers AS SELECT i, i j FROM range(1000000) tbl(i) UNION ALL SELECT NULL i, range j FROM range(1000000)

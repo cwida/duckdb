@@ -18,10 +18,10 @@ CHECKPOINT;
 
 # Verify expression statistics pruning reduces scanned rows.
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/statistics_filter_pruning_int_profile.json';
+SET profiling_output = '{TEST_DIR}/statistics_filter_pruning_int_profile.json';
 
 statement ok
 SET tracked_metrics = ['query.total_rows_scanned'];
@@ -92,10 +92,10 @@ statement ok
 CHECKPOINT;
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/statistics_filter_pruning_double_profile.json';
+SET profiling_output = '{TEST_DIR}/statistics_filter_pruning_double_profile.json';
 
 statement ok
 SET tracked_metrics = ['query.total_rows_scanned'];
@@ -144,10 +144,10 @@ statement ok
 CHECKPOINT;
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/statistics_filter_pruning_struct_profile.json';
+SET profiling_output = '{TEST_DIR}/statistics_filter_pruning_struct_profile.json';
 
 statement ok
 SET tracked_metrics = ['query.total_rows_scanned'];
@@ -183,10 +183,10 @@ EXPLAIN SELECT count(*) FROM stats_filter_prune_struct WHERE struct_extract(a, '
 physical_plan	<REGEX>:.*EMPTY_RESULT.*
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/statistics_filter_pruning_struct_extract_at_profile.json';
+SET profiling_output = '{TEST_DIR}/statistics_filter_pruning_struct_extract_at_profile.json';
 
 statement ok
 SET tracked_metrics = ['query.total_rows_scanned'];

@@ -18,7 +18,7 @@ SET profiling_renderer_settings = MAP {'max_extra_lines': 3, 'expand_all': NULL:
 cannot be NULL
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement error
 SET profiling_renderer_settings = MAP {'max_extra_lines': NULL::INTEGER};

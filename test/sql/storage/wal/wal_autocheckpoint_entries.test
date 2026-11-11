@@ -129,10 +129,10 @@ statement ok
 DETACH entry_count_db;
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/wal_replay.json';
+SET profiling_output = '{TEST_DIR}/wal_replay.json';
 
 statement ok
 SET tracked_metrics = ['storage.wal_replay_entry_count'];

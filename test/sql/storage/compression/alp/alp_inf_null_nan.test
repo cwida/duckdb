@@ -9,7 +9,7 @@ foreach compression uncompressed alp
 # Set the compression algorithm
 
 statement ok
-pragma force_compression='{compression}'
+SET force_compression='{compression}'
 
 # Create tables
 

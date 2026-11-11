@@ -30,7 +30,7 @@ class Tokenizer;
 
 class TokenizerBehavior {
 public:
-	TokenizerBehavior(const string &sql, vector<MatcherToken> &tokens);
+	explicit TokenizerBehavior(const string &sql);
 	virtual ~TokenizerBehavior() = default;
 
 public:
@@ -47,7 +47,7 @@ public:
 
 public:
 	const string &sql;
-	vector<MatcherToken> &tokens;
+	vector<MatcherToken> tokens;
 	bool has_block_comment = false;
 	idx_t last_block_comment_position = 0;
 };

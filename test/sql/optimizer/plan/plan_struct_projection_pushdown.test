@@ -14,7 +14,7 @@ statement ok
 COPY struct_pushdown_test TO '{TEST_DIR}/struct_pushdown_test.parquet'
 
 statement ok
-PRAGMA explain_output = 'PHYSICAL_ONLY';
+SET explain_output = 'PHYSICAL_ONLY';
 
 foreach source struct_pushdown_test read_parquet('{TEST_DIR}/struct_pushdown_test.parquet')
 
