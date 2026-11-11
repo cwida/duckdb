@@ -31,7 +31,8 @@
 
 namespace duckdb {
 
-Planner::Planner(ClientContext &context) : binder(Binder::CreateBinder(context)), context(context) {
+Planner::Planner(ClientContext &context, PlanningMode mode)
+    : binder(Binder::CreateBinder(context)), context(context), mode(mode) {
 }
 
 static void RenderSQLExplain(unique_ptr<LogicalOperator> &op, ClientContext &context, Binder &binder) {
@@ -247,7 +248,7 @@ void Planner::CreatePlan(SQLStatement &statement) {
 			throw;
 		}
 	}
-	if (this->plan) {
+	if (this->plan && mode == PlanningMode::FULL) {
 		auto max_tree_depth = Settings::Get<MaxExpressionDepthSetting>(context);
 		CheckTreeDepth(*plan, max_tree_depth);
 
@@ -265,7 +266,9 @@ void Planner::CreatePlan(SQLStatement &statement) {
 	this->properties.parameter_count = parameter_count;
 	properties.bound_all_parameters = !bound_parameters.rebind && parameters_resolved;
 
-	Planner::VerifyPlan(context, plan, bound_parameters.GetParametersPtr());
+	if (mode == PlanningMode::FULL) {
+		Planner::VerifyPlan(context, plan, bound_parameters.GetParametersPtr());
+	}
 
 	// set up a map of parameter number -> value entries
 	for (auto &kv : bound_parameters.GetParameters()) {

@@ -66,6 +66,7 @@ class Connection;
 class PhysicalTransaction;
 class RegisteredStateManager;
 struct TransactionInfo;
+enum class PlanningMode : uint8_t;
 
 //! A statement parameter: identifier ($1 -> "1"), binding index, and inferred type (UNKNOWN if not inferred).
 struct StatementParameter {
@@ -372,6 +373,9 @@ private:
 	//! several is refused with the given message
 	unique_ptr<SQLStatement> ExpandSingleStatementInternal(ClientContextLock &lock, unique_ptr<SQLStatement> statement,
 	                                                       const char *refusal);
+	//! The signature of a statement that does not expand, planned in the given mode inside the active transaction
+	StatementSignature PlanSignature(unique_ptr<SQLStatement> statement, PlanningMode mode,
+	                                 optional_ptr<identifier_map_t<BoundParameterData>> parameter_values);
 	//! A verification that runs a statement of its own, like a prepared or an explained copy, is skipped when
 	//! allow_nested_statements is false
 	void StatementVerification(ClientContextLock &lock, unique_ptr<SQLStatement> &statement,

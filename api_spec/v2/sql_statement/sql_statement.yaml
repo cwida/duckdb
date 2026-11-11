@@ -214,7 +214,10 @@ functions:
       query, claims no cursor, reuses an active transaction read-only, and runs
       alongside a paused stream. It is single-consumer like the stepping
       functions, so bind concurrently only on a second connection.
-      Prepare-time errors — binder, catalog, preprocessing — surface here. A
+      Bind errors (binder, catalog, preprocessing) surface here; errors of the
+      planning after the bind (the plan depth limit, a correlated subquery or a
+      trigger body that decorrelation refuses) surface when the statement is
+      executed. A
       statement that expands into a group (a dynamic PIVOT, or
       statement-expanding DDL such as ALTER ADD COLUMN with a non-constant
       DEFAULT) has a schema known only at execution, and is reported with

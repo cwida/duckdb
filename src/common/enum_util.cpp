@@ -234,6 +234,7 @@
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/planner/logical_operator_repeatability.hpp"
 #include "duckdb/planner/logical_plan_verification_result.hpp"
+#include "duckdb/planner/planner.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/buffer/buffer_pool_reservation.hpp"
@@ -1895,19 +1896,20 @@ const StringUtil::EnumStringLiteral *GetDebugStatementVerificationValues() {
 		{ static_cast<uint32_t>(DebugStatementVerification::PREPARED_STATEMENT), "PREPARED_STATEMENT" },
 		{ static_cast<uint32_t>(DebugStatementVerification::EXPLAIN_STATEMENT), "EXPLAIN_STATEMENT" },
 		{ static_cast<uint32_t>(DebugStatementVerification::EXPLAIN_SQL), "EXPLAIN_SQL" },
-		{ static_cast<uint32_t>(DebugStatementVerification::EXPLAIN_SQL_STRICT), "EXPLAIN_SQL_STRICT" }
+		{ static_cast<uint32_t>(DebugStatementVerification::EXPLAIN_SQL_STRICT), "EXPLAIN_SQL_STRICT" },
+		{ static_cast<uint32_t>(DebugStatementVerification::BIND_STATEMENT), "BIND_STATEMENT" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<DebugStatementVerification>(DebugStatementVerification value) {
-	return StringUtil::EnumToString(GetDebugStatementVerificationValues(), 8, "DebugStatementVerification", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetDebugStatementVerificationValues(), 9, "DebugStatementVerification", static_cast<uint32_t>(value));
 }
 
 template<>
 DebugStatementVerification EnumUtil::FromString<DebugStatementVerification>(const char *value) {
-	return static_cast<DebugStatementVerification>(StringUtil::StringToEnum(GetDebugStatementVerificationValues(), 8, "DebugStatementVerification", value));
+	return static_cast<DebugStatementVerification>(StringUtil::StringToEnum(GetDebugStatementVerificationValues(), 9, "DebugStatementVerification", value));
 }
 
 const StringUtil::EnumStringLiteral *GetDebugVectorVerificationValues() {
@@ -5294,6 +5296,24 @@ const char* EnumUtil::ToChars<PipelineScheduleStageType>(PipelineScheduleStageTy
 template<>
 PipelineScheduleStageType EnumUtil::FromString<PipelineScheduleStageType>(const char *value) {
 	return static_cast<PipelineScheduleStageType>(StringUtil::StringToEnum(GetPipelineScheduleStageTypeValues(), 5, "PipelineScheduleStageType", value));
+}
+
+const StringUtil::EnumStringLiteral *GetPlanningModeValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(PlanningMode::FULL), "FULL" },
+		{ static_cast<uint32_t>(PlanningMode::BIND_ONLY), "BIND_ONLY" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<PlanningMode>(PlanningMode value) {
+	return StringUtil::EnumToString(GetPlanningModeValues(), 2, "PlanningMode", static_cast<uint32_t>(value));
+}
+
+template<>
+PlanningMode EnumUtil::FromString<PlanningMode>(const char *value) {
+	return static_cast<PlanningMode>(StringUtil::StringToEnum(GetPlanningModeValues(), 2, "PlanningMode", value));
 }
 
 const StringUtil::EnumStringLiteral *GetPragmaTypeValues() {

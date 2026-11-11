@@ -608,6 +608,35 @@ unique_ptr<PreparedStatement> ClientContext::Prepare(unique_ptr<SQLStatement> st
 	}
 }
 
+StatementSignature ClientContext::PlanSignature(unique_ptr<SQLStatement> statement, PlanningMode mode,
+                                                optional_ptr<identifier_map_t<BoundParameterData>> parameter_values) {
+	StatementSignature signature;
+	auto named_param_map = statement->named_param_map;
+	Planner planner(*this, mode);
+	if (parameter_values) {
+		for (auto &value : *parameter_values) {
+			planner.parameter_data.emplace(value.first, BoundParameterData(value.second));
+		}
+	}
+	planner.CreatePlan(std::move(statement));
+	signature.names = planner.names;
+	signature.types = planner.types;
+	signature.properties = std::move(planner.properties);
+	// Parameter types from the bound parameter map (as in PreparedStatementData::TryGetType).
+	// An un-anchored parameter (e.g. SELECT $1) gets no value_map entry, so its
+	// type stays UNKNOWN; do not assume every parameter is present.
+	for (auto &entry : named_param_map) {
+		LogicalType type(LogicalTypeId::UNKNOWN);
+		auto it = planner.value_map.find(entry.first);
+		if (it != planner.value_map.end()) {
+			type = it->second->return_type.id() != LogicalTypeId::INVALID ? it->second->return_type
+			                                                              : it->second->GetValue().type();
+		}
+		signature.parameters.push_back({entry.first, entry.second, std::move(type)});
+	}
+	return signature;
+}
+
 StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> statement) {
 	auto lock = LockContext();
 	StatementSignature signature;
@@ -634,25 +663,7 @@ StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> stateme
 				    signature.metadata_deferred = true;
 				    return;
 			    }
-			    auto bound = std::move(expanded.statements[0]);
-			    auto named_param_map = bound->named_param_map;
-			    Planner planner(*this);
-			    planner.CreatePlan(std::move(bound));
-			    signature.names = planner.names;
-			    signature.types = planner.types;
-			    signature.properties = std::move(planner.properties);
-			    // Parameter types from the bound parameter map (as in PreparedStatementData::TryGetType).
-			    // An un-anchored parameter (e.g. SELECT $1) gets no value_map entry, so its
-			    // type stays UNKNOWN; do not assume every parameter is present.
-			    for (auto &entry : named_param_map) {
-				    LogicalType type(LogicalTypeId::UNKNOWN);
-				    auto it = planner.value_map.find(entry.first);
-				    if (it != planner.value_map.end()) {
-					    type = it->second->return_type.id() != LogicalTypeId::INVALID ? it->second->return_type
-					                                                                  : it->second->GetValue().type();
-				    }
-				    signature.parameters.push_back({entry.first, entry.second, std::move(type)});
-			    }
+			    signature = PlanSignature(std::move(expanded.statements[0]), PlanningMode::BIND_ONLY, nullptr);
 		    } catch (const std::exception &ex) {
 			    ErrorData error(ex);
 			    // Binding is read-only: a recoverable bind error changed nothing, so leave

@@ -562,6 +562,7 @@ TEST_CONFIGS_QUERY_VERIFICATION := \
 	test/configs/verify_statement_to_string.json \
 	test/configs/verify_statement_explain.json \
 	test/configs/verify_statement_prepare.json \
+	test/configs/verify_statement_bind.json \
 	test/configs/verify_serializer.json \
 	test/configs/verify_stats.json \
 	test/configs/verify_statement_serialization.json \

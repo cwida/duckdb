@@ -1,0 +1,40 @@
+{
+  "description": "Run with debug_verify_statement set to bind_statement - planning each statement in the bind only and the full planning mode and comparing their signatures",
+  "on_init": "SET debug_verify_statement='bind_statement';",
+  "skip_compiled": "true",
+  "skip_tests": [
+    {
+      "reason": "Extra binds log their warnings and contexts again",
+      "paths": [
+        "test/sql/logging/logging.test",
+        "test/sql/logging/logging_context_ids.test",
+        "test/sql/logging/logging_csv.test",
+        "test/sql/logging/logging_file_truncate_rewrite.test",
+        "test/sql/logging/logging_types.test",
+        "test/sql/logging/test_logging_function.test",
+        "test/sql/types/decimal/decimal_values_warning.test"
+      ]
+    },
+    {
+      "reason": "Binding a table function whose argument calls nextval advances the sequence, which the read-only planning transaction cannot commit; BindStatement and Prepare fail the same way",
+      "paths": [
+        "test/issues/general/test_26175_bind_once.test",
+        "test/sql/copy/return_column_types.test",
+        "test/sql/optimizer/test_common_subplan_repeatability.test",
+        "test/sql/optimizer/test_common_subplan_repeatability_json.test"
+      ]
+    },
+    {
+      "reason": "Extra binds read the file's schema again, which the I/O metrics count",
+      "paths": [
+        "test/sql/copy/parquet/parquet_prefetch_overlapping_ranges.test"
+      ]
+    },
+    {
+      "reason": "The verification binds before the statement's deadline starts, so it does not interrupt an expansion that only the deadline bounds",
+      "paths": [
+        "test/sql/settings/max_execution_time_nested_expansion.test"
+      ]
+    }
+  ]
+}
