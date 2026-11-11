@@ -13,6 +13,7 @@
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/types/value.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/function/aggregate_state.hpp"
 #include "duckdb/function/aggregate_state_layout.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
@@ -21,6 +22,15 @@
 #include <utility>
 
 namespace duckdb {
+
+struct AggregateStatisticsInput;
+
+struct SumAccumulatorBounds {
+	hugeint_t min;
+	hugeint_t max;
+
+	static optional<SumAccumulatorBounds> TryGet(const AggregateStatisticsInput &input);
+};
 
 struct RepeatedStateValue {
 	template <class T>
