@@ -1,0 +1,208 @@
+# name: test/sql/optimizer/join_filter_cast_proof.test
+# description: Join filters compare the raw key when the scan statistics prove the casts of the probe key value-preserving
+# group: [optimizer]
+
+statement ok
+SET dynamic_or_filter_threshold = 100
+
+statement ok
+CREATE TABLE fits AS SELECT i::BIGINT AS k FROM range(30000) r(i);
+
+statement ok
+ALTER TABLE fits ADD PRIMARY KEY (k);
+
+statement ok
+CREATE TABLE keys AS SELECT (i * 997 % 30000)::BIGINT AS g FROM range(20) r(i);
+
+statement ok
+CREATE TABLE wide AS SELECT i::BIGINT AS k FROM range(30000) r(i) UNION ALL SELECT 40000::BIGINT;
+
+# a user cast whose input fits the target type
+query II
+EXPLAIN ANALYZE SELECT k FROM fits WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*optional: \(k IN \(.*
+
+query II
+SELECT count(*), sum(k) FROM fits WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+20	189430
+
+# a user cast over a key outside the target type keeps raising
+statement error
+SELECT count(*) FROM wide WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+# the exact boundaries of the target type are proven
+statement ok
+CREATE TABLE bounds AS SELECT * FROM (VALUES ((-32768)::BIGINT), (0::BIGINT), (32767::BIGINT)) t(k);
+
+statement ok
+CREATE TABLE bound_keys AS SELECT * FROM (VALUES ((-32768)::SMALLINT), (7::SMALLINT), (32767::SMALLINT)) t(g);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM bounds WHERE k::SMALLINT IN (SELECT g FROM bound_keys);
+----
+analyzed_plan	<REGEX>:.*optional: \(k IN \(-32768, 7, 32767\)\).*
+
+query I
+SELECT count(*) FROM bounds WHERE k::SMALLINT IN (SELECT g FROM bound_keys);
+----
+2
+
+statement ok
+INSERT INTO bounds VALUES (32768)
+
+statement error
+SELECT count(*) FROM bounds WHERE k::SMALLINT IN (SELECT g FROM bound_keys);
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+statement ok
+DELETE FROM bounds WHERE k = 32768
+
+statement ok
+INSERT INTO bounds VALUES (-32769)
+
+statement error
+SELECT count(*) FROM bounds WHERE k::SMALLINT IN (SELECT g FROM bound_keys);
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+# transaction-local rows widen the statistics
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO fits VALUES (40000)
+
+statement error
+SELECT count(*) FROM fits WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE fits SET k = 40000 WHERE k = 1
+
+statement error
+SELECT count(*) FROM fits WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+statement ok
+ROLLBACK
+
+# a DML CTE writes rows the main scan reads after the statistics were taken
+statement error
+WITH ins AS MATERIALIZED (INSERT INTO fits VALUES (40000) RETURNING k)
+SELECT count(*) FROM fits WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+statement error
+WITH upd AS MATERIALIZED (UPDATE fits SET k = 40000 WHERE k = 1 RETURNING k)
+SELECT count(*) FROM fits WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+query I
+SELECT count(*) FROM fits WHERE k >= 30000;
+----
+0
+
+# a prepared statement executed after a key outside the target type is inserted
+statement ok
+CREATE TABLE prepared_keys AS SELECT * FROM fits;
+
+statement ok
+PREPARE proof AS SELECT count(*) FROM prepared_keys WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+
+query I
+EXECUTE proof
+----
+20
+
+statement ok
+INSERT INTO prepared_keys VALUES (40000)
+
+statement error
+EXECUTE proof
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+# each UNION ALL child is proven on its own scan
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM (SELECT k FROM fits UNION ALL SELECT k FROM fits) u
+WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+analyzed_plan	<REGEX>:.*optional: \(k IN \(.*optional: \(k IN \(.*
+
+query I
+SELECT count(*) FROM (SELECT k FROM fits UNION ALL SELECT k FROM fits) u WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+40
+
+statement error
+SELECT count(*) FROM (SELECT k FROM fits UNION ALL SELECT k FROM wide) u WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+# an optional scan filter is not enforced and does not count as a proof
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM (SELECT * FROM wide WHERE k < 100 OR k = 39999) w
+WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+analyzed_plan	<REGEX>:.*optional: \(\(k < 100\) OR \(k = 39999\)\).*TRY_CAST\(k AS SMALLINT\) IS NULL.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM wide WHERE k < 100 OR k = 39999) w WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+1
+
+# IS NOT DISTINCT FROM keeps the reconstruction: NULL keys match NULL keys
+statement ok
+CREATE TABLE fits_null AS SELECT k FROM fits UNION ALL SELECT NULL::BIGINT;
+
+statement ok
+CREATE TABLE keys_null AS SELECT g FROM keys UNION ALL SELECT NULL::BIGINT;
+
+query I
+SELECT count(*) FROM fits_null f JOIN keys_null n ON f.k::SMALLINT IS NOT DISTINCT FROM n.g::SMALLINT;
+----
+21
+
+# inequality joins use the range filters
+query I
+SELECT count(*) FROM fits f JOIN keys n ON f.k::SMALLINT < n.g::SMALLINT;
+----
+189430
+
+statement error
+SELECT count(*) FROM wide f JOIN keys n ON f.k::SMALLINT < n.g::SMALLINT;
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+# the filter values must fit the storage type: a negative key cannot be compared against an unsigned column, so the
+# cast is reconstructed and the filters are still emitted
+statement ok
+CREATE TABLE unsigned_keys AS SELECT i::UINTEGER AS k FROM range(30000) r(i);
+
+statement ok
+CREATE TABLE negative_keys AS SELECT (i * 997 % 30000)::INTEGER - 5 AS g FROM range(20) r(i);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM unsigned_keys WHERE k::INTEGER IN (SELECT g FROM negative_keys);
+----
+analyzed_plan	<REGEX>:.*TRY_CAST\(k AS INTEGER\) IN \(-5, .*PRF.*
+
+query I
+SELECT count(*) FROM unsigned_keys WHERE k::INTEGER IN (SELECT g FROM negative_keys);
+----
+19

@@ -66,14 +66,18 @@ public:
 	//! Compare two sets of statistics and return whether the comparison is always true or false
 	static FilterPropagateResult PropagateComparison(const BaseStatistics &left, const BaseStatistics &right,
 	                                                 ExpressionType comparison);
-	//! Update filter statistics from a filter with a constant
-	static void UpdateFilterStatistics(BaseStatistics &input, ExpressionType comparison_type, const Value &constant);
 	//! Update filter statistics from a TableFilter
 	static void UpdateFilterStatistics(BaseStatistics &input, const TableFilter &filter);
+	//! The statistics the table function of a scan reports for a column, or nullptr
+	static unique_ptr<BaseStatistics> GetScanColumnStatistics(ClientContext &context, LogicalGet &get,
+	                                                          const ColumnIndex &column_index);
+
+private:
+	//! Update filter statistics from a filter with a constant
+	static void UpdateFilterStatistics(BaseStatistics &input, ExpressionType comparison_type, const Value &constant);
 	//! Update filter statistics from an ExpressionFilter expression
 	static void UpdateExpressionFilterStatistics(BaseStatistics &input, const Expression &expr);
 
-private:
 	//! Propagate statistics through an operator
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalOperator &node, unique_ptr<LogicalOperator> &node_ptr);
 
