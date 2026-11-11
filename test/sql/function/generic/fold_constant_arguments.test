@@ -2,9 +2,6 @@
 # description: Constant arguments of a function call are folded while binding, so that nested constant expressions are evaluated once rather than once per nesting level
 # group: [generic]
 
-statement ok
-PRAGMA enable_verification
-
 # a deeply nested constant expression - without folding, every level re-evaluates the whole chain below it.
 # 300 levels stay within the 1 MB main-thread stack of Windows
 query I

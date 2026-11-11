@@ -3,7 +3,7 @@
 # group: [delete]
 
 statement ok
-PRAGMA threads=8
+SET threads=8
 
 # the committed rows give the scan enough threads to also scan the local rows in parallel
 loop iteration 0 5

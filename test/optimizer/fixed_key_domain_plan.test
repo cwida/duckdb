@@ -1,0 +1,158 @@
+# name: test/optimizer/fixed_key_domain_plan.test
+# description: Fixed-key domain restriction fires only when its local work estimate improves
+# group: [optimizer]
+
+statement ok
+CREATE TABLE fact AS SELECT (i % 1000)::INTEGER k, i::BIGINT v FROM range(10000) t(i);
+
+statement ok
+CREATE VIEW projected_fact AS SELECT (k + 1000) % 1000 k, v FROM fact;
+
+# Implicit bitstring bounds depend on statistics for the full input population.
+query II rowsort
+SELECT d.k, bit_length(a.bits)
+FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (SELECT k, bitstring_agg(k) bits FROM fact GROUP BY k) a USING(k);
+----
+1	1000
+2	1000
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.s FROM (VALUES (1), (2), (2)) d(k)
+LEFT JOIN (SELECT k, sum(v) s FROM projected_fact GROUP BY k) a USING(k);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# A restriction join cannot preserve the input order required by DISTINCT ON.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.v FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (
+    SELECT DISTINCT ON(k) k, v FROM (SELECT * FROM projected_fact ORDER BY v DESC)
+) a USING(k) ORDER BY d.k;
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# A constant key above a closed DISTINCT does not require materializing its volatile payload.
+statement ok
+CREATE SEQUENCE domain_probe_visits;
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, d.payload, a.s
+FROM (
+    SELECT 1::INTEGER k, nextval('domain_probe_visits') payload
+    FROM (SELECT DISTINCT x FROM (VALUES (10), (20)) t(x)) q
+) d
+LEFT JOIN (SELECT k, sum(v) s FROM projected_fact GROUP BY k) a USING(k);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# A single native AVG has no computed output projection at this stage.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.av FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (SELECT k, avg(v) av FROM projected_fact GROUP BY k) a USING(k);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Runtime filters can already restrict this scan; do not charge that saving twice.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.s FROM (VALUES (1), (2), (2)) d(k)
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Restricting almost the entire input costs more than the saved aggregate work.
+statement ok
+CREATE TABLE tiny_data AS SELECT (i % 2)::INTEGER k, i v FROM range(10) t(i);
+
+statement ok
+CREATE VIEW tiny AS SELECT (k + 2) % 2 k, v FROM tiny_data;
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.s FROM (VALUES (0), (1)) d(k)
+LEFT JOIN (SELECT k, sum(v) s FROM tiny GROUP BY k) a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# The division introduced by SUM/AVG sharing cannot throw with IEEE semantics.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.s, a.av FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (SELECT k, sum(v) s, avg(v) av FROM projected_fact GROUP BY k) a USING(k);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# A potentially throwing output projection still prevents restriction.
+statement ok
+SET ieee_floating_point_ops = false;
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.s, a.av FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (SELECT k, sum(v) s, avg(v) av FROM projected_fact GROUP BY k) a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+statement ok
+RESET ieee_floating_point_ops;
+
+# The implicit-bitstring bailout deliberately covers the whole query.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.s FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (SELECT k, sum(v) s FROM projected_fact GROUP BY k) a USING(k)
+UNION ALL
+SELECT 0, bit_length(bitstring_agg(k)) FROM fact;
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Non-throwing residuals retain their comparison after the domain restriction.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.s FROM (VALUES (1, 40000), (2, 30000)) d(k, threshold)
+LEFT JOIN (SELECT k, sum(v) s FROM projected_fact GROUP BY k) a ON d.k=a.k AND a.s>d.threshold;
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# The bailout preserves the implicit bitstring bounds and the demanded bit values.
+query IIII rowsort
+SELECT d.k, bit_length(a.bits), bit_count(a.bits), get_bit(a.bits, d.k)
+FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (SELECT k, bitstring_agg(k) bits FROM projected_fact GROUP BY k) a USING(k);
+----
+1	1000	1	1
+2	1000	1	1
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.bits FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (SELECT k, bitstring_agg(k) bits FROM projected_fact GROUP BY k) a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Explicit bounds allow insertion.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.bits FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (SELECT k, bitstring_agg(k, 0, 999) bits FROM projected_fact GROUP BY k) a USING(k);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.bits FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (SELECT k, bitstring_agg(k) bits FROM fact GROUP BY k) a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.s FROM (SELECT k FROM fact LIMIT 2) d
+LEFT JOIN (SELECT k, sum(v) s FROM projected_fact GROUP BY k) a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*

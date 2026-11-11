@@ -23,12 +23,20 @@ args = parser.parse_args()
 test_list = [
     'test/sql/index/art/storage/test_art_checkpoint.test',
     'test/sql/storage/compression/simple_compression.test',
+    'test/sql/storage/compression/compression_padding_initialization.test',
+    'test/sql/storage/compression/uncompressed/string_gap_reused_memory.test',
+    'test/sql/index/art/storage/art_reloaded_buffer_initialization.test',
     'test/sql/storage/delete/test_store_deletes.test',
     'test/sql/storage/mix/test_update_delete_string.test',
     'test/sql/storage/nested/struct_of_lists_unaligned.test',
     'test/sql/storage/test_store_integers.test',
     'test/sql/storage/test_store_nulls_strings.test',
     'test/sql/storage/update/test_store_null_updates.test',
+]
+
+# tests that write non-deterministic files, which check for unwritten bytes themselves when run with --one-initialize
+one_initialize_test_list = [
+    'test/sql/storage/compression/fsst/fsst_uncompacted_gap_initialization.test',
 ]
 
 
@@ -49,11 +57,25 @@ def run_test(args):
 
 
 header_size = 4096 * 3
-block_size = 262144
+default_block_alloc_size = 262144
 checksum_size = 8
+# the main header contains a random database identifier, which also changes the main header checksum
+random_header_ranges = [(0, checksum_size), (124, 140)]
+block_alloc_size_offset = 4096 + checksum_size + 4 * 8
 
 
-def handle_error(i, standard_db, zero_init_db, standard_data, zero_data):
+def is_random_header_byte(i):
+    return any(start <= i < end for start, end in random_header_ranges)
+
+
+def get_block_alloc_size(data):
+    if len(data) < block_alloc_size_offset + 8:
+        return default_block_alloc_size
+    block_alloc_size = int.from_bytes(data[block_alloc_size_offset : block_alloc_size_offset + 8], 'little')
+    return block_alloc_size if block_alloc_size > 0 else default_block_alloc_size
+
+
+def handle_error(i, block_alloc_size, standard_db, zero_init_db, standard_data, zero_data):
     print("------------------------------------------------------------------")
     print(f"FAIL - Mismatch between one-initialized and zero-initialized databases at byte position {i}")
     print("------------------------------------------------------------------")
@@ -62,13 +84,14 @@ def handle_error(i, standard_db, zero_init_db, standard_data, zero_data):
     if i < header_size:
         print("This byte is in the initial headers of the file")
     else:
-        byte_pos = (i - header_size) % block_size
+        byte_pos = (i - header_size) % block_alloc_size
+        block_id = (i - header_size) // block_alloc_size
         if byte_pos >= checksum_size:
             print(
-                f"This byte is in block id {(i - header_size) // block_size} at byte position {byte_pos - checksum_size} (position {byte_pos} including the block checksum)"
+                f"This byte is in block id {block_id} at byte position {byte_pos - checksum_size} (position {byte_pos} including the block checksum)"
             )
         else:
-            print(f"This byte is in block id {(i - header_size) // block_size} at byte position {byte_pos}")
+            print(f"This byte is in block id {block_id} at byte position {byte_pos}")
             print("This is in the checksum part of the block")
     print("------------------------------------------------------------------")
     print(
@@ -86,21 +109,21 @@ def compare_database(standard_db, zero_init_db):
             f"FAIL - Length mismatch between database {standard_db} ({str(len(standard_data))}) and {zero_init_db} ({str(len(zero_data))})"
         )
         return False
-    found_error = None
+    block_alloc_size = get_block_alloc_size(zero_data)
+    checksum_error = None
     for i in range(len(standard_data)):
-        if standard_data[i] != zero_data[i]:
-            if i > header_size:
-                byte_pos = (i - header_size) % block_size
-                if byte_pos <= 8:
-                    # different checksum, skip because it does not tell us anything!
-                    if found_error is None:
-                        found_error = i
-                    continue
-            handle_error(i, standard_db, zero_init_db, standard_data[i], zero_data[i])
-            return False
-    if found_error is not None:
-        i = found_error
-        handle_error(i, standard_db, zero_init_db, standard_data[i], zero_data[i])
+        if standard_data[i] == zero_data[i] or is_random_header_byte(i):
+            continue
+        if i >= header_size and (i - header_size) % block_alloc_size < checksum_size:
+            # a differing block checksum only tells us the block payload differs, report the payload first
+            if checksum_error is None:
+                checksum_error = i
+            continue
+        handle_error(i, block_alloc_size, standard_db, zero_init_db, standard_data[i], zero_data[i])
+        return False
+    if checksum_error is not None:
+        i = checksum_error
+        handle_error(i, block_alloc_size, standard_db, zero_init_db, standard_data[i], zero_data[i])
         return False
     print("Success!")
     return True
@@ -171,6 +194,10 @@ for test in test_list:
     run_test(zero_init_args)
     if not compare_files(args.standard_dir, args.zero_init_dir):
         success = False
+
+for test in one_initialize_test_list:
+    print(f"Running test {test} in one-initialize mode")
+    run_test([args.unittest, '--one-initialize', '--single-threaded', test])
 
 clear_directories(test_dirs)
 

@@ -18,6 +18,8 @@
 namespace duckdb {
 
 class CastFunctionSet;
+class Context;
+struct GetCastFunctionInput;
 class BaseStatistics;
 struct FunctionLocalState;
 struct BoundCastInfo;
@@ -173,6 +175,9 @@ public:
 	bool HasStatisticsCallback() const {
 		return statistics;
 	}
+	bool HasSameStatisticsCallback(const BoundCastInfo &other) const {
+		return statistics && statistics == other.statistics;
+	}
 	void SetStatisticsCallback(cast_statistics_t new_statistics) {
 		statistics = new_statistics;
 	}
@@ -196,7 +201,10 @@ private:
 
 struct BindCastInput {
 	DUCKDB_API BindCastInput(CastFunctionSet &function_set, optional_ptr<BindCastInfo> info,
-	                         optional_ptr<ClientContext> context);
+	                         GetCastFunctionInput &get_input);
+
+	//! The services of the cast - throws for the default casts, which have none
+	DUCKDB_API Context &GetContext();
 
 	CastFunctionSet &function_set;
 	optional_ptr<BindCastInfo> info;
@@ -207,6 +215,9 @@ struct BindCastInput {
 
 public:
 	DUCKDB_API BoundCastInfo GetCastFunction(const LogicalType &source, const LogicalType &target);
+
+private:
+	optional_ptr<Context> services;
 };
 
 struct DefaultCasts {

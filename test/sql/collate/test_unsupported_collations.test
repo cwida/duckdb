@@ -41,6 +41,6 @@ CREATE TABLE collate_test(s VARCHAR COLLATE 'hello')
 Parser Error: syntax error at or near "'hello'"
 
 statement error
-PRAGMA default_collation='blabla'
+SET default_collation='blabla'
 ----
 Catalog Error: Collation with name blabla does not exist!

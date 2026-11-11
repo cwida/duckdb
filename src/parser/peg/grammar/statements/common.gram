@@ -11,6 +11,7 @@ Statement <-
 	PragmaStatement /
 	CallStatement /
 	InsertStatement /
+	DropMemberStatement /
 	DropStatement /
 	CopyStatement /
 	ExplainStatement /
@@ -57,6 +58,7 @@ FunctionName <- Identifier
 ReservedFunctionName <- Identifier
 ReservedTypeName <- Identifier
 TableFunctionName <- Identifier
+ReservedTableFunctionName <- Identifier
 ConstraintName <- ColIdOrString
 SequenceName <- Identifier
 CollationName <- Identifier

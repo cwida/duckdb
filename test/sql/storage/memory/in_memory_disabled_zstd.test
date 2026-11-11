@@ -8,7 +8,7 @@ statement ok
 use db2;
 
 statement ok
-pragma force_compression='zstd';
+SET force_compression='zstd';
 
 statement ok
 create table tbl as

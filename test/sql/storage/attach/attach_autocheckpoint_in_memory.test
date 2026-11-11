@@ -20,7 +20,7 @@ statement ok
 SET wal_autocheckpoint = '1B';
 
 statement ok
-PRAGMA debug_checkpoint_abort = 'IN_MEMORY_CHECKPOINT';
+SET debug_checkpoint_abort = 'IN_MEMORY_CHECKPOINT';
 
 statement error
 INSERT INTO m.tbl SELECT range::INTEGER FROM range(10);
@@ -33,7 +33,7 @@ SELECT COUNT(*) FROM m.tbl;
 <REGEX>:IO Error: Database "m" has been invalidated because checkpointing failed. It is an in-memory database, so its data cannot be recovered.*
 
 statement ok
-PRAGMA debug_checkpoint_abort = 'NONE';
+SET debug_checkpoint_abort = 'NONE';
 
 statement ok
 DETACH m;

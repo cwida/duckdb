@@ -1,0 +1,45 @@
+# name: test/sql/parser/qualified_table_function_reserved_keyword.test
+# description: A reserved keyword can name a table function after a qualification
+# group: [parser]
+
+statement ok
+CREATE SCHEMA g
+
+statement ok
+CREATE MACRO g.describe(x) AS TABLE SELECT x AS v
+
+statement ok
+CREATE MACRO g.summarize(x) AS TABLE SELECT x AS v
+
+statement ok
+CREATE MACRO g.show(x) AS TABLE SELECT x AS v
+
+statement ok
+CREATE MACRO g.pivot(x) AS TABLE SELECT x AS v
+
+statement ok
+CREATE MACRO g.unpivot(x) AS TABLE SELECT x AS v
+
+query I
+FROM g.describe('a') UNION ALL FROM g.summarize('b') UNION ALL FROM g.show('c') UNION ALL FROM g.pivot('d')
+UNION ALL FROM g.unpivot('e') ORDER BY ALL
+----
+a
+b
+c
+d
+e
+
+statement ok
+ATTACH ':memory:' AS db
+
+statement ok
+CREATE SCHEMA db.g
+
+statement ok
+CREATE MACRO db.g.describe(x) AS TABLE SELECT x AS v
+
+query I
+SELECT * FROM db.g.describe('f')
+----
+f

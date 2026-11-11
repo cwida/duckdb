@@ -5,7 +5,7 @@
 require parquet
 
 statement ok
-PRAGMA threads=4;
+SET threads=4;
 
 # 8 partitions, 20000 rows: the partition column statistics are [0, 7]
 statement ok

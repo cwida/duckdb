@@ -29,7 +29,7 @@ SELECT * FROM explicit_quote ORDER BY ALL
 
 
 statement ok
-pragma threads=2
+SET threads=2
 
 # The double quotes inside unquoted JSON fields do not require a CSV quote character.
 statement ok

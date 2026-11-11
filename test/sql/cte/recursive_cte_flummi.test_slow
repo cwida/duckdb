@@ -319,7 +319,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output='physical_only';
+SET explain_output='physical_only';
 
 query II
 EXPLAIN SELECT * FROM query(getvariable('flummi_sql'));

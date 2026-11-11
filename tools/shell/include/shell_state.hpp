@@ -141,6 +141,8 @@ struct MetadataCommand {
 	const char *description;
 	idx_t match_size;
 	const char *extra_description;
+	//! Pass the remainder of the line as one argument instead of splitting it into words
+	bool raw_arguments;
 };
 
 struct ShellColumnInfo {

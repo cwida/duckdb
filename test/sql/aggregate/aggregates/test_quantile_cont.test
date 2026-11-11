@@ -192,7 +192,7 @@ SELECT quantile_cont(r, 0.1, 50) FROM quantile
 <REGEX>:.*Binder Error: No function matches.*'quantile_cont.*
 
 statement ok
-pragma threads=4
+SET threads=4
 
 statement ok
 PRAGMA verify_parallelism

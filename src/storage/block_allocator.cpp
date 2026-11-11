@@ -542,7 +542,14 @@ BlockAllocator::~BlockAllocator() {
 		annotated_lock_guard<annotated_mutex> guard(lifetime_state->lock);
 		lifetime_state->alive = false;
 	}
-	GetBlockAllocatorThreadLocalState(*this).Clear();
+	// creating the state of a thread that has none, or re-initializing it for this allocator, allocates
+	if (ThreadHasLocalState()) {
+		try {
+			GetBlockAllocatorThreadLocalState(*this).Clear();
+		} catch (...) {
+			// Not allowed to throw in destructor!
+		}
+	}
 	if (IsInitialized()) {
 		try {
 			FreeVirtualMemory(pool_base, pool_size);
@@ -699,6 +706,13 @@ void BlockAllocator::FreeData(const data_ptr_t pointer, const idx_t size) const 
 		return;
 	}
 	D_ASSERT(size == block_size);
+	if (!ThreadHasLocalState()) {
+		// creating the state of a thread that only frees allocates and registers a thread_local destructor, which
+		// glibc aborts on when memory is exhausted: hand the block to the global pool directly
+		AddRetention(1, RetentionTimeMillis());
+		touched->q.enqueue(GetBlockID(pointer));
+		return;
+	}
 	GetBlockAllocatorThreadLocalState(*this).Free(pointer);
 }
 

@@ -11,10 +11,10 @@ statement ok
 DROP TABLE IF EXISTS temperatures;
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 statement ok
-PRAGMA force_compression='alp';
+SET force_compression='alp';
 
 statement ok
 CREATE TABLE temperatures (
@@ -33,7 +33,7 @@ create table reference_temperatures (
 );
 
 statement ok
-PRAGMA force_compression='uncompressed';
+SET force_compression='uncompressed';
 
 statement ok
 INSERT INTO reference_temperatures SELECT temp from 'https://github.com/duckdb/duckdb-data/releases/download/v1.0/city_temperature.parquet' t(temp), range(1);

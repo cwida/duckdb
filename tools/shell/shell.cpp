@@ -2788,56 +2788,56 @@ MetadataResult ShellState::ToggleTimer(ShellState &state, const vector<string> &
 **
 ** Return 1 on error, 2 to exit, and 0 otherwise.
 */
+static void SkipSpaces(const string &zLine, idx_t &pos) {
+	while (pos < zLine.size() && ShellState::IsSpace(zLine[pos])) {
+		pos++;
+	}
+}
+
+//! Parse one, optionally quoted, dot command argument starting at pos
+static string ParseMetaCommandArgument(const string &zLine, idx_t &pos) {
+	string arg;
+	if (zLine[pos] == '\'' || zLine[pos] == '"') {
+		// quoted argument - scan until next quote
+		auto quote = zLine[pos];
+		// skip over the initial quote
+		pos++;
+
+		while (pos < zLine.size() && zLine[pos] != quote) {
+			if (zLine[pos] == '\\' && quote == '"' && pos + 1 < zLine.size()) {
+				// skip over any escaped characters
+				arg += zLine[pos++];
+			}
+			arg += zLine[pos++];
+		}
+		if (pos < zLine.size()) {
+			// skip over the final quote
+			pos++;
+		}
+		if (quote == '"') {
+			arg = resolve_backslashes(arg);
+		}
+	} else {
+		// unquoted argument - scan until the next space
+		while (pos < zLine.size() && !ShellState::IsSpace(zLine[pos])) {
+			arg += zLine[pos];
+			pos++;
+		}
+		arg = resolve_backslashes(arg);
+	}
+	return arg;
+}
+
 int ShellState::DoMetaCommand(const string &zLine) {
 	int rc = 0;
 	vector<string> args;
 	// skip initial dot
 	idx_t pos = 1;
-	while (pos < zLine.size()) {
-		// skip initial spaces
-		while (pos < zLine.size() && IsSpace(zLine[pos])) {
-			pos++;
-		}
-		if (pos >= zLine.size()) {
-			break;
-		}
-		string arg;
-		if (zLine[pos] == '\'' || zLine[pos] == '"') {
-			// quoted argument - scan until next quote
-			auto quote = zLine[pos];
-			// skip over the initial quote
-			pos++;
-
-			while (pos < zLine.size() && zLine[pos] != quote) {
-				if (zLine[pos] == '\\' && quote == '"' && pos + 1 < zLine.size()) {
-					// skip over any escaped characters
-					arg += zLine[pos++];
-				}
-				arg += zLine[pos++];
-			}
-			if (pos < zLine.size()) {
-				// skip over the final quote
-				pos++;
-			}
-			if (quote == '"') {
-				arg = resolve_backslashes(arg);
-			}
-		} else {
-			// unquoted argument - scan until the next space
-			while (pos < zLine.size() && !IsSpace(zLine[pos])) {
-				arg += zLine[pos];
-				pos++;
-			}
-			arg = resolve_backslashes(arg);
-		}
-		args.push_back(std::move(arg));
-	}
-
-	/* Process the input line.
-	 */
-	if (args.empty()) {
+	SkipSpaces(zLine, pos);
+	if (pos >= zLine.size()) {
 		return 0; /* no tokens, no error */
 	}
+	args.push_back(ParseMetaCommandArgument(zLine, pos));
 	ClearTempFile();
 
 	string error_msg;
@@ -2848,6 +2848,18 @@ int ShellState::DoMetaCommand(const string &zLine) {
 		rc = 1;
 	} else {
 		auto &command = *metadata_command;
+		SkipSpaces(zLine, pos);
+		if (command.raw_arguments) {
+			// e.g. a command line for .shell - the system shell does its own quoting
+			if (pos < zLine.size()) {
+				args.push_back(zLine.substr(pos));
+			}
+		} else {
+			while (pos < zLine.size()) {
+				args.push_back(ParseMetaCommandArgument(zLine, pos));
+				SkipSpaces(zLine, pos);
+			}
+		}
 		MetadataResult result = MetadataResult::PRINT_USAGE;
 		try {
 			if (!command.callback) {

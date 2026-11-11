@@ -3,7 +3,7 @@
 # group: [insert]
 
 statement ok
-PRAGMA preserve_insertion_order=false
+SET preserve_insertion_order=false
 
 query I
 CREATE TABLE integers AS SELECT * FROM range(1000000) tbl(i);

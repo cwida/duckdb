@@ -97,6 +97,55 @@ def test_deprecated_shell_log_storage(shell):
     result = test.run()
     result.check_stdout("WARNING:")
     result.check_stdout("The log sink 'shell_log_storage' has been renamed to 'shell_log_sink'")
+    # the deprecated name still selects the shell's sink
+    result.check_not_exist("The logging settings have been changed")
+
+
+def test_keeping_shell_log_sink_does_not_warn(shell):
+    test = (
+        ShellTest(shell)
+        .statement("CALL enable_logging(level = 'warning');")
+        .statement("CALL enable_logging(level = 'info', sink = 'shell_log_sink');")
+    )
+
+    result = test.run()
+    result.check_not_exist("The logging settings have been changed")
+
+
+@pytest.mark.parametrize(
+    "statement",
+    ["CALL enable_logging(level = 'error');", "CALL enable_logging('QueryLog');"],
+)
+def test_dropping_warnings_from_shell_log_sink_warns(shell, statement):
+    test = ShellTest(shell).statement(statement)
+
+    result = test.run()
+    result.check_stdout("The logging settings have been changed")
+
+
+def test_dropping_warnings_from_added_shell_log_sink_warns(shell):
+    test = (
+        ShellTest(shell)
+        .statement("SET logging_sink = 'memory';")
+        .statement("CALL add_log_sink('shell_log_sink');")
+        .statement("CALL enable_logging(level = 'error');")
+    )
+
+    result = test.run()
+    result.check_stdout("The logging settings have been changed")
+
+
+def test_switching_main_sink_with_added_shell_log_sink_does_not_warn(shell):
+    # the added shell sink keeps printing warnings when the main log sink changes
+    test = (
+        ShellTest(shell)
+        .statement("SET logging_sink = 'memory';")
+        .statement("CALL add_log_sink('shell_log_sink');")
+        .statement("CALL enable_logging(sink = 'stdout');")
+    )
+
+    result = test.run()
+    result.check_not_exist("The logging settings have been changed")
 
 
 def test_enable_shell_log_sink(shell):

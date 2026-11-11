@@ -1,3 +1,4 @@
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/execution/index/bound_index.hpp"
 
 #include "duckdb/common/array.hpp"
@@ -22,7 +23,7 @@ BoundIndex::BoundIndex(const Identifier &name, const string &index_type, IndexCo
                        const vector<column_t> &column_ids, TableIOManager &table_io_manager,
                        const vector<unique_ptr<Expression>> &unbound_expressions_p, AttachedDatabase &db)
     : Index(column_ids, table_io_manager, db), name(name), index_type(index_type),
-      index_constraint_type(index_constraint_type) {
+      index_constraint_type(index_constraint_type), executor(db.GetDatabase()) {
 	for (auto &expr : unbound_expressions_p) {
 		types.push_back(expr->GetReturnType().InternalType());
 		logical_types.push_back(expr->GetReturnType());
@@ -269,6 +270,9 @@ void BoundIndex::ApplyBufferedReplays(const vector<LogicalType> &table_types, Bu
 				IndexAppendInfo append_info(IndexAppendMode::INSERT_DUPLICATES, nullptr);
 				const auto error = Append(table_chunk, row_ids, append_info);
 				if (error.HasError()) {
+					if (error.Type() != ExceptionType::CONSTRAINT) {
+						error.Throw();
+					}
 					throw InternalException("error while applying buffered appends: " + error.Message());
 				}
 				current_row += rows_to_process;

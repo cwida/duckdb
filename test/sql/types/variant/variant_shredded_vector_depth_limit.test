@@ -16,7 +16,7 @@ SELECT CASE WHEN i = 3 THEN '1' ELSE repeat('[', 500) || '1' || repeat(']', 500)
 FROM range(4) t(i);
 
 statement ok
-PRAGMA debug_verify_vector = 'shredded_vector';
+SET debug_verify_vector = 'shredded_vector';
 
 query I
 SELECT s::JSON::VARIANT IS NOT NULL FROM j ORDER BY i;

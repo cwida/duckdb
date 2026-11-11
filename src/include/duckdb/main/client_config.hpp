@@ -47,21 +47,12 @@ struct ClientConfig {
 	//! The file to save query profiling information to, instead of printing it to the console
 	//! (empty = print to console)
 	string profiler_save_location;
-	//! Glob patterns for tracked_metrics (controls which metrics are gathered and displayed).
-	//! Default "*" means all metrics are tracked.
-	vector<string> tracked_metrics = {"*"};
 	//! Settings that are passed to the renderer of the profiler output (e.g. 'maximum_render_width' for the text
 	//! renderer). Settings that are not recognized by the active renderer are ignored.
 	unordered_map<string, Value> profiling_renderer_settings;
 
 	//! system-wide progress bar disable.
 	const char *system_progress_bar_disable_reason = nullptr;
-	//! If the progress bar is enabled or not.
-	bool enable_progress_bar = false;
-	//! If the print of the progress bar is enabled
-	bool print_progress_bar = true;
-	//! The wait time before showing the progress bar
-	int wait_time = 2000;
 
 	//! Force parallelism of small tables, used for testing
 	bool verify_parallelism = false;

@@ -6,7 +6,7 @@
 load {TEST_DIR}/list_dictionary.db
 
 statement ok
-PRAGMA force_compression='dictionary'
+SET force_compression='dictionary'
 
 statement ok
 CREATE TABLE test (a VARCHAR[]);

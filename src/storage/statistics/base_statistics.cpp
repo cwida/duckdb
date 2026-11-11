@@ -7,6 +7,7 @@
 #include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
 #include "duckdb/storage/statistics/array_stats.hpp"
+#include "duckdb/storage/statistics/stats_struct_fields.hpp"
 
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
@@ -474,29 +475,29 @@ BaseStatistics BaseStatistics::Deserialize(Deserializer &deserializer) {
 	return stats;
 }
 
-Value BaseStatistics::ToStruct() const {
+Value BaseStatistics::ToStruct(bool exact) const {
 	child_list_t<Value> children;
 	switch (GetStatsType()) {
 	case StatisticsType::NUMERIC_STATS:
 		children = NumericStats::ToStruct(*this);
 		break;
 	case StatisticsType::STRING_STATS:
-		children = StringStats::ToStruct(*this);
+		children = StringStats::ToStruct(*this, exact);
 		break;
 	case StatisticsType::LIST_STATS:
-		children = ListStats::ToStruct(*this);
+		children = ListStats::ToStruct(*this, exact);
 		break;
 	case StatisticsType::STRUCT_STATS:
-		children = StructStats::ToStruct(*this);
+		children = StructStats::ToStruct(*this, exact);
 		break;
 	case StatisticsType::ARRAY_STATS:
-		children = ArrayStats::ToStruct(*this);
+		children = ArrayStats::ToStruct(*this, exact);
 		break;
 	case StatisticsType::GEOMETRY_STATS:
-		children = GeometryStats::ToStruct(*this);
+		children = GeometryStats::ToStruct(*this, exact);
 		break;
 	case StatisticsType::VARIANT_STATS:
-		children = VariantStats::ToStruct(*this);
+		children = VariantStats::ToStruct(*this, exact);
 		break;
 	default:
 		break;
@@ -511,6 +512,46 @@ Value BaseStatistics::ToStruct() const {
 
 string BaseStatistics::ToString() const {
 	return ToStruct().ToString();
+}
+
+void BaseStatistics::SetFromStruct(const Value &value, const string &path) {
+	StatsStructFields fields(value, path);
+	Value field;
+	if (fields.TryGet("has_null", LogicalType::BOOLEAN, field)) {
+		has_null = BooleanValue::Get(field);
+	}
+	if (fields.TryGet("has_no_null", LogicalType::BOOLEAN, field)) {
+		has_no_null = BooleanValue::Get(field);
+	}
+	if (fields.TryGet("approx_unique", LogicalType::UBIGINT, field)) {
+		distinct_count = UBigIntValue::Get(field);
+	}
+	switch (GetStatsType()) {
+	case StatisticsType::NUMERIC_STATS:
+		NumericStats::SetFromStruct(*this, fields);
+		break;
+	case StatisticsType::STRING_STATS:
+		StringStats::SetFromStruct(*this, fields);
+		break;
+	case StatisticsType::LIST_STATS:
+		ListStats::SetFromStruct(*this, fields);
+		break;
+	case StatisticsType::STRUCT_STATS:
+		StructStats::SetFromStruct(*this, fields);
+		break;
+	case StatisticsType::ARRAY_STATS:
+		ArrayStats::SetFromStruct(*this, fields);
+		break;
+	case StatisticsType::GEOMETRY_STATS:
+		GeometryStats::SetFromStruct(*this, fields);
+		break;
+	case StatisticsType::VARIANT_STATS:
+		VariantStats::SetFromStruct(*this, fields);
+		break;
+	default:
+		break;
+	}
+	fields.VerifyAllRead(type);
 }
 
 void BaseStatistics::Verify(const Vector &vector, const SelectionVector &sel, idx_t count,

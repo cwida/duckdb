@@ -385,9 +385,6 @@ limit 1;
 ----
 {"argv":["VARCHAR"],"dag":{"dag_size":"VARCHAR","tasks":{"load_oscar":{"status":"VARCHAR","type":"VARCHAR","upstream":"VARCHAR","products":{"nb":"VARCHAR"}},"load_weather":{"status":"VARCHAR","type":"VARCHAR","upstream":"VARCHAR","products":{"nb":"VARCHAR"}},"compress":{"status":"VARCHAR","type":"VARCHAR","upstream":{"load_oscar":"VARCHAR"},"products":{"nb":"VARCHAR"}}}}}
 
-statement ok
-pragma disable_verification
-
 # test that we can read a JSON list that spans more than one buffer size
 # the JSON is 55 bytes, and the minimum buffer size is 32MB
 # let's do 50k to be safe

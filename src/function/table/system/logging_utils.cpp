@@ -62,11 +62,22 @@ static void EnableLogging(ClientContext &context, TableFunctionInput &data, Data
 		                   GetSinkParameterName(parameter));
 	}
 
-	DUCKDB_LOG_WARNING(context, "The logging settings have been changed so you may lose warnings printed in the CLI.\n"
-	                            "To continue printing warnings to the console, set sink='shell_log_sink'.\n"
-	                            "For more info see https://duckdb.org/docs/current/operations_manual/logging/overview.")
-
 	auto &log_manager = context.db->GetLogManager();
+
+	// warnings stop being printed in the CLI when they no longer reach the shell's sink
+	static constexpr const char *SHELL_LOG_SINK = "shell_log_sink";
+	static constexpr const char *DEPRECATED_SHELL_LOG_SINK = "shell_log_storage";
+	// an added shell sink keeps receiving the log entries when the main log sink changes
+	const bool leaves_shell_sink = StringUtil::CIEquals(log_manager.GetConfig().storage, SHELL_LOG_SINK) &&
+	                               !StringUtil::CIEquals(bind_data.config.storage, SHELL_LOG_SINK) &&
+	                               !StringUtil::CIEquals(bind_data.config.storage, DEPRECATED_SHELL_LOG_SINK);
+	const bool drops_warnings = bind_data.config.level > LogLevel::LOG_WARNING || !bind_data.log_types_to_set.empty();
+	if (log_manager.IsLogSinkEnabled(SHELL_LOG_SINK) && (leaves_shell_sink || drops_warnings)) {
+		DUCKDB_LOG_WARNING(context,
+		                   "The logging settings have been changed so you may lose warnings printed in the CLI.\n"
+		                   "To continue printing warnings to the console, set sink='shell_log_sink'.\n"
+		                   "For more info see https://duckdb.org/docs/current/operations_manual/logging/overview.")
+	}
 
 	// a prepared call can run after the sink it was bound against changed
 	VerifyFileSinkPath(log_manager, bind_data.config.storage, bind_data.sink_config);

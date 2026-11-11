@@ -17,6 +17,8 @@
 
 namespace duckdb {
 
+struct string_t;
+
 enum class DatePartSpecifier : uint8_t {
 	//	BIGINT values
 	YEAR,
@@ -61,5 +63,7 @@ inline bool IsBigintDatepart(DatePartSpecifier part_code) {
 
 DUCKDB_API bool TryGetDatePartSpecifier(const string &specifier, DatePartSpecifier &result);
 DUCKDB_API DatePartSpecifier GetDatePartSpecifier(const string &specifier);
+DUCKDB_API bool TryGetDatePartSpecifier(string_t specifier, DatePartSpecifier &result);
+DUCKDB_API DatePartSpecifier GetDatePartSpecifier(string_t specifier);
 
 } // namespace duckdb

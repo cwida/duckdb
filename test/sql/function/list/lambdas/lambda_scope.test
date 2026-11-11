@@ -2,9 +2,6 @@
 # description: Test the scoping of lambda variables.
 # group: [lambdas]
 
-statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
 # Lambda parameters have precedence over columns.
 
 statement ok
