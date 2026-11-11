@@ -89,8 +89,15 @@ static const DefaultMacro internal_macros[] = {
      "'timestamptz' when 'TIME WITH TIME ZONE' then 'timetz' when 'SMALLINT' then 'int2' when 'INTEGER' then 'int4' "
      "when 'BIGINT' then 'int8' when 'BOOLEAN' then 'bool' else lower(logical_type) end"},
     {"pg_catalog", "format_type",
-     "(type_oid, typemod) AS (select format_pg_type(logical_type, type_name) from duckdb_types() t where "
-     "t.type_oid=type_oid) || case when typemod>0 then concat('(', typemod//1000, ',', typemod%1000, ')') else '' end"},
+     "(type_oid, typemod) AS (select format_pg_type(t.logical_type, t.type_name) from (select d.logical_type, "
+     "d.type_name, case when d.internal then coalesce(map_type_id_to_pg_oid(d.type_oid), d.type_oid + 16384) else "
+     "d.type_oid end pg_oid from duckdb_types() d where d.type_oid IS NOT NULL) t where t.pg_oid=type_oid) || case "
+     "when typemod>0 then concat('(', typemod//1000, ',', typemod%1000, ')') else '' end"},
+    // map the id of a built-in type (its LogicalTypeId) to the PostgreSQL oid that map_to_pg_oid gives its name
+    {"pg_catalog", "map_type_id_to_pg_oid",
+     "(type_id) AS case type_id when 10 then 16 when 12 then 21 when 13 then 23 when 14 then 20 when 15 then 1082 when "
+     "16 then 1083 when 19 then 1114 when 21 then 1700 when 22 then 700 when 23 then 701 when 25 then 1043 when 26 "
+     "then 17 when 27 then 1186 when 32 then 1184 when 34 then 1266 when 36 then 1560 when 54 then 2950 else null end"},
     {"pg_catalog", "map_to_pg_oid",
      "(type_name) AS case type_name when 'bool' then 16 when 'int16' then 21 when 'int' then 23 when 'bigint' then 20 "
      "when 'date' then 1082 when 'time' then 1083 when 'datetime' then 1114 when 'dec' then 1700 when 'float' then 700 "
@@ -248,8 +255,7 @@ unique_ptr<CreateMacroInfo> DefaultFunctionGenerator::CreateInternalMacroInfo(co
 		}
 	}
 	bind_info->macros = std::move(macro_info.macros);
-	bind_info->SetQualifiedName(
-	    QualifiedName({Identifier(default_macro.schema)}, Identifier(default_macro.name)));
+	bind_info->SetQualifiedName(QualifiedName({Identifier(default_macro.schema)}, Identifier(default_macro.name)));
 	bind_info->temporary = true;
 	bind_info->internal = true;
 	return bind_info;

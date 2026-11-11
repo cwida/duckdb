@@ -3,7 +3,7 @@
 # group: [pedro]
 
 statement ok
-PRAGMA MEMORY_LIMIT='10MB';
+SET MEMORY_LIMIT='10MB';
 
 statement ok
 SET threads=8;
@@ -12,7 +12,7 @@ statement ok
 SELECT ((SELECT 1::VARCHAR) EXCEPT (SELECT ('\xF1\x85\x96\xBA'::BLOB)::VARCHAR GROUP BY 1 ORDER BY 1));
 
 statement ok
-PRAGMA MEMORY_LIMIT='8MB';
+SET MEMORY_LIMIT='8MB';
 
 statement error
 SELECT t0.*, min(1 ORDER BY *) FROM (VALUES ('1')) t0(c0) GROUP BY ALL;

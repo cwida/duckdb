@@ -6,7 +6,7 @@ statement ok
 CREATE TABLE varchars AS SELECT * FROM (VALUES ('Mark'), ('Hannes'), ('World')) tbl(v);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # no unicode
 query II

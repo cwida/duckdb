@@ -4,9 +4,6 @@
 
 # NOTE: some of these tests are directly taken from the Presto Array Function examples
 
-statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
 # test NULLs and simple cases
 
 query II

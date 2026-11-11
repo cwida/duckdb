@@ -464,9 +464,9 @@ void SQLAutoCompleteFunction(ClientContext &context, TableFunctionInput &data_p,
 
 static unique_ptr<SQLTokenizeFunctionData> GenerateTokens(ClientContext &context, const string &sql) {
 	auto compiled_grammar = CompiledGrammar::Get(context);
-	vector<MatcherToken> tokens;
-	HighlightTokenizerBehavior behavior(sql, tokens);
+	HighlightTokenizerBehavior behavior(sql);
 	compiled_grammar->GetTokenizer().TokenizeInput(behavior);
+	auto &tokens = behavior.tokens;
 
 	// use the parser to annotate any tokens
 	vector<MatcherSuggestion> suggestions;
@@ -550,23 +550,22 @@ static duckdb::unique_ptr<FunctionData> CheckPEGParserBind(ClientContext &contex
 
 	const auto sql = StringValue::Get(input.inputs[0]);
 
-	vector<MatcherToken> root_tokens;
 	string clean_sql;
 	const string &sql_ref = Parser::StripUnicodeSpaces(sql, clean_sql) ? clean_sql : sql;
-	ParserTokenizerBehavior behavior(sql_ref, root_tokens);
+	ParserTokenizerBehavior behavior(sql_ref);
 	auto compiled_grammar = CompiledGrammar::Get(context);
 	if (!compiled_grammar->GetTokenizer().TokenizeInput(behavior)) {
 		return nullptr;
 	}
 
-	if (root_tokens.empty()) {
+	if (behavior.tokens.empty()) {
 		return nullptr;
 	}
 
 	vector<MatcherSuggestion> suggestions;
 	ParseResultAllocator parse_allocator;
 	idx_t max_token_index = 0;
-	TokenIterator token_iterator(root_tokens);
+	TokenIterator token_iterator(behavior);
 	auto identifier_case_mode = Settings::Get<PreserveIdentifierCaseSetting>(context);
 	ArenaAllocator process_allocator(Allocator::DefaultAllocator());
 	MatchContext match_context(suggestions, parse_allocator, process_allocator, max_token_index,
@@ -577,7 +576,7 @@ static duckdb::unique_ptr<FunctionData> CheckPEGParserBind(ClientContext &contex
 	process_allocator.FreeAll();
 	// `+ 1` accounts for the EOI sentinel — the matcher walk may report success without
 	// consuming it.
-	if (!match_result.IsSuccess() || state.token_iterator.Position() + 1 < root_tokens.size()) {
+	if (!match_result.IsSuccess() || state.token_iterator.Position() + 1 < token_iterator.Size()) {
 		auto error_token = string("<eof>");
 		auto current = state.token_iterator.Current();
 		if (current && current->type != TokenType::END_OF_INPUT &&
@@ -585,14 +584,14 @@ static duckdb::unique_ptr<FunctionData> CheckPEGParserBind(ClientContext &contex
 			error_token = current->text;
 		}
 		string token_list;
-		for (idx_t i = 0; i < root_tokens.size(); i++) {
+		for (idx_t i = 0; i < token_iterator.Size(); i++) {
 			if (!token_list.empty()) {
 				token_list += "\n";
 			}
 			if (i < 10) {
 				token_list += " ";
 			}
-			token_list += to_string(i) + ":" + root_tokens[i].text;
+			token_list += to_string(i) + ":" + token_iterator.GetToken(i).text;
 		}
 		throw BinderException(
 		    "Failed to parse query \"%s\" - did not consume all tokens (got to token %d - %s)\nTokens:\n%s", sql,
@@ -681,6 +680,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 		    .Add("max_file_suggestion_count", LogicalType::UBIGINT)
 		    .Add("max_exact_suggestion_count", LogicalType::UBIGINT);
 	});
+	// the bind captures a filesystem and catalog suggestion snapshot that the call arguments do not identify
+	auto_complete_fun.stability = FunctionStability::VOLATILE;
 	loader.RegisterFunction(auto_complete_fun);
 
 	TableFunction check_peg_parser_fun("check_peg_parser",

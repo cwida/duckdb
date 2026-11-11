@@ -3,7 +3,7 @@
 # group: [match_recognize]
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 statement ok
 create table ev(g integer, i integer, v integer);
@@ -196,7 +196,7 @@ create table parallel_input as
     SELECT (i // 7)::INTEGER AS p, i::INTEGER AS i, (hash(i) % 5)::INTEGER AS v FROM range(0, 7000) t(i);
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 query III
 SELECT count(*), sum(len), max(len) FROM parallel_input MATCH_RECOGNIZE(
@@ -208,7 +208,7 @@ SELECT count(*), sum(len), max(len) FROM parallel_input MATCH_RECOGNIZE(
 912	2082	5
 
 statement ok
-pragma threads=4;
+SET threads=4;
 
 query III
 SELECT count(*), sum(len), max(len) FROM parallel_input MATCH_RECOGNIZE(
@@ -220,7 +220,7 @@ SELECT count(*), sum(len), max(len) FROM parallel_input MATCH_RECOGNIZE(
 912	2082	5
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 # the matcher's state is not part of the result, so a second clause over the first sees only x
 query II

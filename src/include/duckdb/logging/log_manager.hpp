@@ -33,9 +33,14 @@ public:
 	void Initialize();
 
 	DUCKDB_API static LogManager &Get(ClientContext &context);
-	unique_ptr<Logger> CreateLogger(LoggingContext context, bool thread_safe = true, bool mutable_settings = false);
+	unique_ptr<Logger> CreateLogger(const LoggingContext &context, bool thread_safe = true,
+	                                bool mutable_settings = false);
+	//! Creates a logger from the snapshot without locking, unless the config changed since the snapshot was taken
+	unique_ptr<Logger> CreateLogger(const LoggingContext &context, const LogConfigSnapshot &snapshot);
+	//! Refreshes the snapshot if the config changed since it was taken, and creates a logger from it
+	unique_ptr<Logger> CreateLogger(const LoggingContext &context, LogConfigSnapshot &snapshot);
 
-	RegisteredLoggingContext RegisterLoggingContext(LoggingContext &context);
+	RegisteredLoggingContext RegisterLoggingContext(const LoggingContext &context);
 
 	DUCKDB_API bool RegisterLogStorage(const string &name, shared_ptr<LogStorage> &storage);
 
@@ -75,7 +80,7 @@ public:
 	DUCKDB_API void RegisterDefaultLogTypes();
 
 protected:
-	RegisteredLoggingContext RegisterLoggingContextInternal(LoggingContext &context);
+	RegisteredLoggingContext RegisterLoggingContextInternal(const LoggingContext &context);
 
 	// This is to be called by the Loggers only, it does not verify log_level and log_type
 	void WriteLogEntry(timestamp_t, const char *log_type, LogLevel log_level, const char *log_message,
@@ -83,25 +88,33 @@ protected:
 	// This allows efficiently pushing a cached set of log entries into the log manager
 	void FlushCachedLogEntries(DataChunk &chunk, const RegisteredLoggingContext &context);
 
-	void SetLogStorageInternal(DatabaseInstance &db, const string &storage_name);
+	//! Switches the log storage and sets the storage of new_config accordingly
+	void SetLogStorageInternal(DatabaseInstance &db, LogConfig &new_config, const string &storage_name)
+	    DUCKDB_REQUIRES(lock);
 
-	optional_ptr<const LogType> LookupLogTypeInternal(const string &type);
+	optional_ptr<const LogType> LookupLogTypeInternal(const string &type) DUCKDB_REQUIRES(lock);
 
-	void SetConfigInternal(LogConfig config);
+	//! The only way to change the config: publishes it to the global logger and to newly created loggers
+	void SetConfigInternal(LogConfig new_config) DUCKDB_REQUIRES(lock);
+	unique_ptr<Logger> CreateLoggerInternal(const LoggingContext &context,
+	                                        const shared_ptr<const LogConfig> &logger_config);
 
 protected:
-	mutex lock;
-	LogConfig config;
+	annotated_mutex lock;
+	//! Shared by the created loggers; replaced only by SetConfigInternal
+	shared_ptr<const LogConfig> config DUCKDB_GUARDED_BY(lock);
+	//! Incremented whenever config is replaced, invalidating the snapshots of it
+	PaddedAtomic<idx_t> config_version {0};
 
 	shared_ptr<Logger> global_logger;
-	shared_ptr<LogStorage> log_storage;
+	shared_ptr<LogStorage> log_storage DUCKDB_GUARDED_BY(lock);
 	DatabaseInstance &db_instance;
 
-	idx_t next_registered_logging_context_index = 0;
+	PaddedAtomic<idx_t> next_registered_logging_context_index {0};
 
 	// Any additional LogStorages registered (by extensions for example)
-	case_insensitive_map_t<shared_ptr<LogStorage>> registered_log_storages;
-	case_insensitive_map_t<unique_ptr<LogType>> registered_log_types;
+	case_insensitive_map_t<shared_ptr<LogStorage>> registered_log_storages DUCKDB_GUARDED_BY(lock);
+	case_insensitive_map_t<unique_ptr<LogType>> registered_log_types DUCKDB_GUARDED_BY(lock);
 };
 
 } // namespace duckdb

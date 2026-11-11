@@ -56,7 +56,7 @@ statement ok
 SET variant_minimum_shredding_size = 0;
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 query II
 EXPLAIN ANALYZE SELECT COUNT(*) FROM probe_direct_variant JOIN build_direct_variant ON probe_direct_variant.a = build_direct_variant.b;

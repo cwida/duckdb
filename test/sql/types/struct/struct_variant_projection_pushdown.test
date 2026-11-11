@@ -60,7 +60,7 @@ SELECT id, x.p, x.v.missing FROM (SELECT id, s AS x FROM t WHERE id < 2) ORDER B
 
 # The field read is pulled through the projection into the scan
 statement ok
-pragma explain_output = optimized_only
+SET explain_output = 'optimized_only'
 
 query II
 EXPLAIN SELECT x.v.k FROM (SELECT s AS x FROM t);

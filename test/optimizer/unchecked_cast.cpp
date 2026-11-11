@@ -24,7 +24,7 @@ struct CastCounts {
 
 static BoundCastInfo GetDefaultCast(const LogicalType &source, const LogicalType &target) {
 	CastFunctionSet function_set;
-	GetCastFunctionInput input;
+	auto input = GetCastFunctionInput::Default();
 	return function_set.GetCastFunction(source, target, input);
 }
 

@@ -16,7 +16,7 @@ SELECT COUNT(*), MIN(i), MAX(i), SUM(i) FROM parquet_scan('{DATA_DIR}/parquet-te
 2002	42	1041	1083084
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 query IIII
 SELECT COUNT(*), MIN(i), MAX(i), SUM(i) FROM parquet_scan('{DATA_DIR}/parquet-testing/manyrowgroups.parquet') t(i)

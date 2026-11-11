@@ -121,11 +121,6 @@ SELECT COUNT(*) FROM small_table USING SAMPLE 1 ROWS (system);
 ----
 1
 
-# The following cases disable verification because CTE / window subquery sampling
-# can hit scheduler limitations under the statement verifier.
-statement ok
-PRAGMA disable_verification;
-
 # System sampling over a CTE (non-simple table ref)
 query I
 WITH base AS (

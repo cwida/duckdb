@@ -596,11 +596,13 @@ arena_choose_hard(tsd_t *tsd, bool internal) {
 				arena = arena_init_locked(tsd_tsdn(tsd),
 				    choose[j], &arena_config_default);
 				if (arena == NULL) {
-					malloc_mutex_unlock(tsd_tsdn(tsd),
-					    &arenas_lock);
-					return NULL;
+					/* DuckDB shares arena 0 without memory for a new one. */
+					choose[j] = 0;
+					arena = arena_get(tsd_tsdn(tsd), 0,
+					    false);
+				} else {
+					is_new_arena[j] = true;
 				}
-				is_new_arena[j] = true;
 				if (!!j == internal) {
 					ret = arena;
 				}
@@ -4283,12 +4285,13 @@ jemalloc_constructor(void) {
 	if (bgt_count == 0) {
 		bgt_count = 1;
 	}
-	// decay is in ms
+	// decay is in ms. muzzy_decay_ms is 0 (jemalloc's default), so purged pages go back with MADV_DONTNEED, never
+	// MADV_FREE: x86 kernels without f7491d7c81db discard MADV_FREE'd huge pages written again (CVE-2026-97945)
 	unsigned long long decay = DUCKDB_JEMALLOC_DECAY * 1000;
 #ifdef DEBUG
-	snprintf(JE_MALLOC_CONF_BUFFER, JE_MALLOC_CONF_BUFFER_SIZE, "junk:true,oversize_threshold:268435456,dirty_decay_ms:%llu,muzzy_decay_ms:%llu,narenas:%llu,max_background_threads:%llu", decay, decay, narenas, bgt_count);
+	snprintf(JE_MALLOC_CONF_BUFFER, JE_MALLOC_CONF_BUFFER_SIZE, "junk:true,oversize_threshold:268435456,dirty_decay_ms:%llu,muzzy_decay_ms:0,narenas:%llu,max_background_threads:%llu", decay, narenas, bgt_count);
 #else
-	snprintf(JE_MALLOC_CONF_BUFFER, JE_MALLOC_CONF_BUFFER_SIZE, "oversize_threshold:268435456,dirty_decay_ms:%llu,muzzy_decay_ms:%llu,narenas:%llu,max_background_threads:%llu", decay, decay, narenas, bgt_count);
+	snprintf(JE_MALLOC_CONF_BUFFER, JE_MALLOC_CONF_BUFFER_SIZE, "oversize_threshold:268435456,dirty_decay_ms:%llu,muzzy_decay_ms:0,narenas:%llu,max_background_threads:%llu", decay, narenas, bgt_count);
 #endif
 	je_malloc_conf = JE_MALLOC_CONF_BUFFER;
 	malloc_init();

@@ -5,6 +5,26 @@
   "inherit_skip_tests": "test/configs/stats_dependent_tests.json",
   "skip_tests": [
     {
+      "reason": "Checks the plan of an executed query through the profiler output.",
+      "paths": [
+        "test/optimizer/partial_aggregate_pushdown_serialized_plan.test"
+      ]
+    },
+    {
+      "reason": "Checks the plans the scalar aggregate merge produces.",
+      "paths": [
+        "test/sql/optimizer/scalar_aggregate_merge_files_plan.test",
+        "test/sql/optimizer/scalar_aggregate_merge_plan.test",
+        "test/sql/optimizer/scalar_aggregate_merge_tpcds_plan.test"
+      ]
+    },
+    {
+      "reason": "Rejecting corrupt Parquet geometry statistics requires optimizer statistics propagation.",
+      "paths": [
+        "test/parquet/corrupt/geometry_add_wkb_type_oob.test"
+      ]
+    },
+    {
       "reason": "Counts the evaluations of volatile filters that only the optimizer pushes down or keeps above.",
       "paths": [
         "test/optimizer/pushdown/volatile_filter_aggregate_distinct.test"
@@ -23,6 +43,12 @@
       ]
     },
     {
+      "reason": "Checks common sub-expression extraction performed by the optimizer.",
+      "paths": [
+        "test/sql/optimizer/cse_volatile_aggregate_filter.test"
+      ]
+    },
+    {
       "reason": "Checks filter reordering performed by the optimizer.",
       "paths": [
         "test/optimizer/struct_cast_can_throw_reordering.test"
@@ -31,6 +57,7 @@
     {
       "reason": "Checks evaluation counts after optimizer filter pushdown.",
       "paths": [
+        "test/sql/table_function/external_resources_where_pruning.test",
         "test/optimizer/pushdown/lateral_projection_evaluation.test",
         "test/optimizer/pushdown/cte_domain_join_filter.test"
       ]
@@ -54,6 +81,7 @@
         "test/sql/optimizer/false_or_null_segment_pruning.test",
         "test/sql/optimizer/struct_segment_pruning.test",
         "test/sql/optimizer/list_contains_row_group_pruning.test",
+        "test/sql/optimizer/list_transform_row_group_pruning.test",
         "test/sql/copy/parquet/list_contains_row_group_pruning.test",
         "test/sql/optimizer/map_extract_row_group_pruning.test",
         "test/sql/copy/parquet/map_extract_row_group_pruning.test",
@@ -68,8 +96,12 @@
         "test/sql/copy/parquet/page_index/page_index_cache.test",
         "test/sql/copy/parquet/page_index/page_index_cache_disabled.test",
         "test/sql/copy/parquet/page_index/page_index_cache_budget.test",
+        "test/parquet/utf8_validation_page_index.test",
         "test/sql/copy/parquet/parquet_virtual_file_row_group_number.test",
-        "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test"
+        "test/sql/copy/parquet/parquet_nan_setting.test",
+        "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test",
+        "test/sql/optimizer/test_rowid_vector_pruning.test",
+        "test/sql/optimizer/test_rowid_vector_pruning_prefetch.test"
       ]
     },
     {
@@ -101,6 +133,8 @@
         "test/sql/function/generic/test_barrier.test",
         "test/sql/join/asof/test_asof_limit.test",
         "test/sql/optimizer/secure_view_pushdown.test",
+        "test/sql/optimizer/secure_view_join_filter_pushdown.test",
+        "test/sql/optimizer/secure_view_join_order.test",
         "test/sql/optimizer/test_in_rewrite_rule.test",
         "test/optimizer/unused_window_columns.test",
         "test/sql/storage/compression/rle/rle_constant.test",
@@ -124,8 +158,10 @@
       "reason": "Time-out without optimizer.",
       "paths": [
         "test/optimizer/join_dependent_filter.test",
+        "test/optimizer/joins/inequality_only_join_order.test",
         "test/optimizer/joins/no_duplicate_elimination_join.test",
         "test/optimizer/joins/tpcds_nofail.test",
+        "test/sql/optimizer/scalar_aggregate_merge_tpcds.test",
         "test/sql/limit/test_limit0.test",
         "test/sql/optimizer/plan/test_filter_pushdown_large.test",
         "test/optimizer/joins/denominator_cardinality_estimation.test"
@@ -148,6 +184,8 @@
     {
       "reason": "Parquet prefetch strategies and I/O metrics require optimizer rewrites.",
       "paths": [
+        "test/sql/copy/parquet/bloom_filter_coalesced_memory.test_slow",
+        "test/sql/copy/parquet/bloom_filter_coalesced_reads.test",
         "test/sql/copy/parquet/parquet_prefetch_first_group_cost.test",
         "test/sql/copy/parquet/parquet_prefetch_overlapping_ranges.test",
         "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test",
@@ -235,6 +273,17 @@
         "test/sql/sql_export/recursive_state.test",
         "test/sql/sql_export/single_child_union.test"
       ]
+    },
+    {
+      "reason": "Without the optimizer the CTE is not inlined, so the serialized statement executes once instead of per recursive iteration.",
+      "paths": [
+        "test/sql/json/test_execute_serialized_reexecute.test"
+      ]
+    },
+    {
+      "reason": "Without optimizer cardinality estimates the probe consumer is kept materialized by cost, so no cycle demotion occurs.",
+      "paths": [
+        "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"      ]
     }
   ]
 }

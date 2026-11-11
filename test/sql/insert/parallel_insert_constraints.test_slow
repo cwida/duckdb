@@ -62,6 +62,6 @@ statement ok
 DROP TABLE integers_pk;
 
 statement ok
-PRAGMA preserve_insertion_order=false
+SET preserve_insertion_order=false
 
 endloop

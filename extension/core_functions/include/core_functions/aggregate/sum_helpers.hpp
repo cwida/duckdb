@@ -12,6 +12,8 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/common/types/value.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/function/aggregate_state.hpp"
 #include "duckdb/function/aggregate_state_layout.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
@@ -20,6 +22,15 @@
 #include <utility>
 
 namespace duckdb {
+
+struct AggregateStatisticsInput;
+
+struct SumAccumulatorBounds {
+	hugeint_t min;
+	hugeint_t max;
+
+	static optional<SumAccumulatorBounds> TryGet(const AggregateStatisticsInput &input);
+};
 
 struct RepeatedStateValue {
 	template <class T>
@@ -66,11 +77,19 @@ struct RepeatedStateValue {
 	}
 };
 
+//! Neumaier summation: the exact rounding error of each addition (TwoSum) is accumulated in err
+//! The compensated sum is summed - err
 static inline void KahanAddInternal(double input, double &summed, double &err) {
-	double diff = input - err;
-	double newval = summed + diff;
-	err = (newval - summed) - diff;
+	double newval = summed + input;
+	double input_part = newval - summed;
+	double rounding = (summed - (newval - input_part)) + (input - input_part);
+	err -= rounding;
 	summed = newval;
+}
+
+static inline double KahanFinalize(double summed, double err) {
+	// once the sum overflows the error term is meaningless (inf - inf)
+	return Value::IsFinite(summed) ? summed - err : summed;
 }
 
 template <class T>
@@ -101,7 +120,7 @@ struct KahanSumState {
 	void Combine(const KahanSumState &other) {
 		this->is_set = other.is_set || this->is_set;
 		KahanAddInternal(other.value, this->value, this->err);
-		KahanAddInternal(-other.err, this->value, this->err);
+		this->err += other.err;
 	}
 };
 
@@ -162,14 +181,9 @@ struct AddToHugeint {
 		result.lower += value;
 		// now handle overflows
 		int overflow = result.lower < value;
-		// we consider two situations:
-		// (1) input[idx] is positive, and current value is lower than value: overflow
-		// (2) input[idx] is negative, and current value is higher than value: underflow
-		if (!(overflow ^ positive)) {
-			// in the case of an overflow or underflow we either increment or decrement the upper base
-			// positive: +1, negative: -1
-			result.upper += -1 + 2 * positive;
-		}
+		D_ASSERT(positive == 0 || positive == 1);
+		// Add the unsigned carry and the sign extension of the input.
+		result.upper += overflow + positive - 1;
 	}
 
 	template <class STATE, class T>
@@ -278,7 +292,7 @@ inline LogicalType BindDecimalArgument(ClientContext &context, unique_ptr<Expres
 	if (type.id() == LogicalTypeId::DECIMAL) {
 		return type;
 	}
-	uint8_t width, scale;
+	uint32_t width, scale;
 	if (!type.GetDecimalProperties(width, scale)) {
 		throw BinderException("%s: cannot compute the DECIMAL aggregate of type %s", function_name, type.ToString());
 	}

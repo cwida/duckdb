@@ -14,7 +14,19 @@ BaseScanner::BaseScanner(shared_ptr<CSVBufferManager> buffer_manager_p, shared_p
                          shared_ptr<CSVFileScan> csv_file_scan_p, const CSVIterator &iterator_p)
     : csv_file_scan(std::move(csv_file_scan_p)), sniffing(sniffing_p), error_handler(std::move(error_handler_p)),
       state_machine(std::move(state_machine_p)), states(), buffer_manager(std::move(buffer_manager_p)),
-      iterator(iterator_p), skipper(state_machine->transition_array.stop_patterns) {
+      iterator(iterator_p), skipper(state_machine->transition_array.stop_patterns),
+      block_scan(state_machine->transition_array.block_scan),
+      block_delimiter(state_machine->state_machine_options.delimiter.GetValue().empty()
+                          ? 0
+                          : static_cast<uint8_t>(state_machine->state_machine_options.delimiter.GetValue()[0])),
+      block_delimiter_bytes(state_machine->state_machine_options.delimiter.GetValue()),
+      block_multi_byte_delimiter(block_delimiter_bytes.size() > 1),
+      block_quote(static_cast<uint8_t>(state_machine->state_machine_options.quote.GetValue())),
+      block_crlf(state_machine->state_machine_options.new_line.GetValue() == NewLineIdentifier::CARRY_ON),
+      block_cr(state_machine->state_machine_options.new_line.GetValue() == NewLineIdentifier::SINGLE_R),
+      block_escape_is_quote(block_quote != '\0' && state_machine->state_machine_options.escape.GetValue() ==
+                                                       state_machine->state_machine_options.quote.GetValue()),
+      block_comment(static_cast<uint8_t>(state_machine->state_machine_options.comment.GetValue())) {
 	D_ASSERT(buffer_manager);
 	D_ASSERT(state_machine);
 	// Initialize current buffer handle

@@ -7,7 +7,7 @@ require vector_size 2048
 load {TEST_DIR}/rle_many_repeated.db
 
 statement ok
-PRAGMA force_compression = 'rle'
+SET force_compression = 'rle'
 
 statement ok
 CREATE TABLE test_rle (a BIGINT);

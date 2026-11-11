@@ -31,7 +31,10 @@
         "test/sql/types/geo/geometry_from_wkb_stats.test",
         "test/sql/types/geo/geometry_vertex_extract.test",
         "test/optimizer/statistics/statistics_filter_pruning.test",
-        "test/sql/pragma/profiling/test_custom_profiling_row_group_metrics_local_storage.test"
+        "test/sql/optimizer/statistics/list_length_stats_propagation.test",
+        "test/sql/storage/list_length_stats_checkpoint.test",
+        "test/sql/pragma/profiling/test_custom_profiling_row_group_metrics_local_storage.test",
+        "test/sql/optimizer/test_rowid_vector_pruning.test"
       ]
     },
     {
@@ -111,6 +114,12 @@
       "reason": "FIXME: the rendered SQL of a DISTINCT aggregate over a collated argument fails to rebind with a collation mismatch",
       "paths": [
         "test/sql/collate/collate_distinct_aggregate_icu.test"
+      ]
+    },
+    {
+      "reason": "The internal EXPLAIN and the generated SQL change the pipelines of the probes, so their logging context spans differ",
+      "paths": [
+        "test/sql/table_function/range_lateral_threads.test"
       ]
     },
     {

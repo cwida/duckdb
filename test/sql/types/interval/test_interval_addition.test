@@ -323,3 +323,23 @@ SELECT id, lhs - rhs FROM issue1998 ORDER BY 1
 2	167 days 15:00:59
 3	157 days 15:35:31
 4	49 days 08:27:18
+
+# Test promotion rules aren't confused.
+statement ok
+CREATE TABLE generated_data_table (
+    id BIGINT,
+    timmestamp_s_col TIMESTAMP_S,
+    timmestamp_ms_col TIMESTAMP_MS,
+    timmestamp_us_col TIMESTAMP,
+);
+
+statement ok
+INSERT INTO generated_data_table
+SELECT
+    seq AS id,
+    TIMESTAMP_S '2025-01-01 00:00:00' + to_seconds(cast(seq AS INTEGER)) as timmestamp_s_col,
+    TIMESTAMP_MS '2025-01-01 00:00:00' + to_seconds(cast(seq AS INTEGER)) as timmestamp_ms_col,
+    TIMESTAMP '2025-01-01 00:00:00' + to_seconds(cast(seq AS INTEGER)) as timmestamp_us_col,
+FROM generate_series(1, 100) AS t(seq);
+
+

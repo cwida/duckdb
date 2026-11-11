@@ -12,6 +12,7 @@
 
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
+#include "duckdb/common/type_visitor.hpp"
 
 #include "duckdb/function/cast/variant/to_variant.hpp"
 
@@ -233,13 +234,15 @@ static bool CastToVARIANT(Vector &source, Vector &result, idx_t count, CastParam
 	auto &keys_entry = ListVector::GetChildMutable(keys);
 
 	//! Initialize the dictionary
-	OrderedOwningStringMap<uint32_t> dictionary(StringVector::GetStringAllocator(keys_entry));
+	OrderedOwningStringMap<uint32_t> dictionary;
+	auto &keys_arena = StringVector::GetStringAllocator(keys_entry);
 	SelectionVector keys_selvec;
 	ToVariantSourceData source_data(source, count);
 
 	{
 		VariantVectorData variant_data(result);
-		ToVariantGlobalResultData result_data(variant_data, offsets, dictionary, keys_selvec, local_data.allocator);
+		ToVariantGlobalResultData result_data(variant_data, offsets, dictionary, keys_arena, keys_selvec,
+		                                      local_data.allocator);
 		if (!GatherOffsetsAndSizes(source_data, result_data, count)) {
 			return false;
 		}
@@ -251,7 +254,8 @@ static bool CastToVARIANT(Vector &source, Vector &result, idx_t count, CastParam
 
 	{
 		VariantVectorData variant_data(result);
-		ToVariantGlobalResultData result_data(variant_data, offsets, dictionary, keys_selvec, local_data.allocator);
+		ToVariantGlobalResultData result_data(variant_data, offsets, dictionary, keys_arena, keys_selvec,
+		                                      local_data.allocator);
 		if (!WriteVariantResultData(source_data, result_data, count)) {
 			return false;
 		}
@@ -276,6 +280,10 @@ static bool CastToVARIANT(Vector &source, Vector &result, idx_t count, CastParam
 
 BoundCastInfo DefaultCasts::ImplicitToVariantCast(BindCastInput &input, const LogicalType &source,
                                                   const LogicalType &target) {
+	if (TypeVisitor::Contains(source, LogicalTypeId::TYPE)) {
+		//! TYPE has no VARIANT representation - only NULL values can be cast
+		return TryVectorNullCast;
+	}
 	return BoundCastInfo(variant::CastToVARIANT, make_uniq<variant::VariantCastData>(source),
 	                     variant::CastToVariantLocalState);
 }

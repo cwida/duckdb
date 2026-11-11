@@ -1,0 +1,342 @@
+# name: test/sql/aggregate/aggregates/test_filter_clause_sharing.test
+# description: Aggregates whose FILTER clauses are shared: a filter is evaluated once per chunk and its selection is reused
+# group: [aggregates]
+
+require 64bit
+
+statement ok
+PRAGMA verify_parallelism
+
+foreach threads 1 8
+
+statement ok
+SET threads={threads}
+
+statement ok
+CREATE OR REPLACE TABLE t AS SELECT i::INTEGER AS i, (i % 7)::INTEGER AS g, CASE WHEN i % 5 = 0 THEN NULL ELSE (i % 100)::INTEGER END AS q, ((i * 3) % 11)::INTEGER AS v, CASE WHEN i % 3 = 0 THEN NULL ELSE 'k' || (i % 4) END AS s FROM range(100000) tbl(i)
+
+statement ok
+CREATE OR REPLACE TABLE b AS SELECT i::INTEGER AS i, i % 2 = 0 AS flag, CASE WHEN i % 3 = 0 THEN NULL ELSE i % 5 = 0 END AS nflag FROM range(1000) tbl(i)
+
+# ungrouped
+# identical filters shared by several aggregates (count(*), count(col), sum, avg, min, max)
+query IIIIRII
+SELECT count(*) FILTER (WHERE q BETWEEN 1 AND 20), count(q) FILTER (WHERE q BETWEEN 1 AND 20), count(s) FILTER (WHERE q BETWEEN 1 AND 20), sum(v) FILTER (WHERE q BETWEEN 1 AND 20), avg(v) FILTER (WHERE q BETWEEN 1 AND 20), min(i) FILTER (WHERE q BETWEEN 1 AND 20), max(i) FILTER (WHERE q BETWEEN 1 AND 20) FROM t
+----
+16000	16000	10667	80000	5.0	1	99919
+
+# the same results through a WHERE clause
+query IIIIRII
+SELECT count(*), count(q), count(s), sum(v), avg(v), min(i), max(i) FROM t WHERE q BETWEEN 1 AND 20
+----
+16000	16000	10667	80000	5.0	1	99919
+
+# five ranges, three aggregates each
+query IRIIRIIRIIRIIRI
+SELECT count(*) FILTER (WHERE q BETWEEN 1 AND 20), avg(v) FILTER (WHERE q BETWEEN 1 AND 20), sum(i) FILTER (WHERE q BETWEEN 1 AND 20), count(*) FILTER (WHERE q BETWEEN 21 AND 40), avg(v) FILTER (WHERE q BETWEEN 21 AND 40), sum(i) FILTER (WHERE q BETWEEN 21 AND 40), count(*) FILTER (WHERE q BETWEEN 41 AND 60), avg(v) FILTER (WHERE q BETWEEN 41 AND 60), sum(i) FILTER (WHERE q BETWEEN 41 AND 60), count(*) FILTER (WHERE q BETWEEN 61 AND 80), avg(v) FILTER (WHERE q BETWEEN 61 AND 80), sum(i) FILTER (WHERE q BETWEEN 61 AND 80), count(*) FILTER (WHERE q BETWEEN 81 AND 100), avg(v) FILTER (WHERE q BETWEEN 81 AND 100), sum(i) FILTER (WHERE q BETWEEN 81 AND 100) FROM t
+----
+16000	5.0	799360000	16000	5.0005	799680000	16000	4.999625	800000000	16000	5.000125	800320000	16000	4.9999375	800640000
+
+# one of the ranges through a WHERE clause
+query IRI
+SELECT count(*), avg(v), sum(i) FROM t WHERE q BETWEEN 61 AND 80
+----
+16000	5.000125	800320000
+
+# the same with a WHERE clause on the filtered column
+query IIIII
+SELECT count(*) FILTER (WHERE q BETWEEN 1 AND 20), sum(v) FILTER (WHERE q BETWEEN 1 AND 20), count(*) FILTER (WHERE q BETWEEN 21 AND 40), sum(v) FILTER (WHERE q BETWEEN 21 AND 40), count(*) FROM t WHERE q BETWEEN 1 AND 40
+----
+16000	80000	16000	80008	32000
+
+# NULL filter values exclude the row
+query IIIIIII
+SELECT count(*) FILTER (WHERE q > 50), count(*) FILTER (WHERE q IS NULL), count(*) FILTER (WHERE NULL), sum(v) FILTER (WHERE NULL), count(*) FILTER (WHERE q > 50 OR q IS NULL), count(q) FILTER (WHERE q > 50 OR q IS NULL), count(*) FROM t
+----
+40000	20000	0	NULL	60000	40000	100000
+
+# filters on different columns mixed with unfiltered aggregates
+query IIIIIIIII
+SELECT sum(v), sum(v) FILTER (WHERE s = 'k1'), sum(v) FILTER (WHERE v > 5), sum(v) FILTER (WHERE s = 'k1' AND v > 5), count(*), count(*) FILTER (WHERE s = 'k1'), max(q) FILTER (WHERE s = 'k1'), min(q) FILTER (WHERE v > 5), count(s) FILTER (WHERE v > 5) FROM t
+----
+499997	83346	363632	60617	100000	16667	97	1	30302
+
+# the same child under different filters and different children under the same filter
+query IIIRIIII
+SELECT sum(v) FILTER (WHERE q < 50), sum(v) FILTER (WHERE q >= 50), sum(i) FILTER (WHERE q < 50), avg(v) FILTER (WHERE q < 50), sum(v) FILTER (WHERE q < 50) * 2, sum(v + 1) FILTER (WHERE q < 50), max(v + 1) FILTER (WHERE q < 50), sum(v + 1) FILTER (WHERE q >= 50) FROM t
+----
+200004	199999	1999000000	5.0001	400008	240004	11	239999
+
+# filter and child read the same columns
+query IIRI
+SELECT sum(q) FILTER (WHERE q + v > 60), count(*) FILTER (WHERE q + v > 60), avg(q + v) FILTER (WHERE q + v > 60), sum(q + v) FILTER (WHERE q + v > 60) FROM t
+----
+2765491	35637	82.83124280943963	2951857
+
+# a filter that shares a sub-expression with the children and is repeated
+query IIIII
+SELECT sum(v * 2) FILTER (WHERE v * 2 > 10), count(*) FILTER (WHERE v * 2 > 10), max(v * 2) FILTER (WHERE v * 2 > 10), sum(v * 2), sum(v * 2) FILTER (WHERE v * 2 > 10 AND q IS NOT NULL) FROM t
+----
+727264	45454	20	999994	581824
+
+# the same through a WHERE clause
+query III
+SELECT sum(v * 2), count(*), max(v * 2) FROM t WHERE v * 2 > 10
+----
+727264	45454	20
+
+# boolean columns as filters, including NULLs
+query IIIIIII
+SELECT count(*) FILTER (WHERE flag), count(*) FILTER (WHERE nflag), count(*) FILTER (WHERE NOT nflag), sum(i) FILTER (WHERE flag), sum(i) FILTER (WHERE nflag), sum(i) FILTER (WHERE flag AND nflag), count(*) FROM b
+----
+500	133	533	249500	66335	32670	1000
+
+# DISTINCT aggregates with and without filters next to regular ones
+query IIIIIII
+SELECT count(DISTINCT g) FILTER (WHERE q < 50), count(DISTINCT g), count(DISTINCT v) FILTER (WHERE q < 50), sum(DISTINCT v) FILTER (WHERE q < 50), count(DISTINCT s) FILTER (WHERE q < 50), count(*) FILTER (WHERE q < 50), sum(v) FILTER (WHERE q < 50) FROM t
+----
+7	7	11	55	4	40000	200004
+
+# the same through a WHERE clause
+query IIIIII
+SELECT count(DISTINCT g), count(DISTINCT v), sum(DISTINCT v), count(DISTINCT s), count(*), sum(v) FROM t WHERE q < 50
+----
+7	11	55	4	40000	200004
+
+# volatile children are not shared
+statement ok
+CREATE OR REPLACE SEQUENCE s
+
+query II
+SELECT sum(nextval('s')) FILTER (WHERE i = 0), max(nextval('s')) FILTER (WHERE i = 0) FROM range(1) t(i)
+----
+1	2
+
+# volatile filters are not shared: the two filters draw 20 sequence values of which the 10 smallest pass
+statement ok
+CREATE OR REPLACE SEQUENCE s2
+
+query I
+SELECT count(*) FILTER (WHERE nextval('s2') <= 10) + count(i) FILTER (WHERE nextval('s2') <= 10) FROM range(10) t(i)
+----
+10
+
+query I
+SELECT currval('s2')
+----
+20
+
+# a deterministic sub-expression of volatile filters is shared, the volatile filters themselves are not
+statement ok
+CREATE OR REPLACE TABLE h AS SELECT i, repeat(i::VARCHAR, 32) AS s FROM range(20000) t(i)
+
+query IIII
+SELECT count(*) FILTER (WHERE sha256(s) < '8' AND random() < 2.0), sum(i) FILTER (WHERE sha256(s) < '8' AND random() < 2.0), count(*) FILTER (WHERE sha256(s) < '8'), sum(i) FILTER (WHERE sha256(s) < '8') FROM h
+----
+10056	100093689	10056	100093689
+
+query II
+SELECT count(*), sum(i) FROM h WHERE sha256(s) < '8'
+----
+10056	100093689
+
+# deterministic children and filters are shared
+query III
+SELECT list(i * 2) FILTER (WHERE i < 10), sum(i * 2) FILTER (WHERE i < 10), count(i * 2) FILTER (WHERE i < 10) FROM range(100) t(i)
+----
+[0, 2, 4, 6, 8, 10, 12, 14, 16, 18]	90	10
+
+# filters that differ only in a constant share their sub-expression
+query IIII
+SELECT count(*) FILTER (WHERE (i * 7) % 100 < 25), count(*) FILTER (WHERE (i * 7) % 100 < 50), count(*) FILTER (WHERE (i * 7) % 100 < 75), sum(i) FILTER (WHERE (i * 7) % 100 < 50 AND i % 2 = 0) FROM range(1000) t(i)
+----
+250	500	750	124500
+
+# no rows pass the filter
+query IIII
+SELECT count(*) FILTER (WHERE i < 0), sum(i) FILTER (WHERE i < 0), count(*) FILTER (WHERE i >= 0), sum(i) FILTER (WHERE i >= 0) FROM range(1000) t(i)
+----
+0	NULL	1000	499500
+
+# grouped: perfect hash and hash aggregate
+foreach threshold 0 32
+
+statement ok
+SET perfect_ht_threshold={threshold}
+
+# identical filters shared by several aggregates
+query IIIIIRII
+SELECT g, count(*) FILTER (WHERE q BETWEEN 1 AND 20), count(q) FILTER (WHERE q BETWEEN 1 AND 20), count(s) FILTER (WHERE q BETWEEN 1 AND 20), sum(v) FILTER (WHERE q BETWEEN 1 AND 20), avg(v) FILTER (WHERE q BETWEEN 1 AND 20), min(i) FILTER (WHERE q BETWEEN 1 AND 20), max(i) FILTER (WHERE q BETWEEN 1 AND 20) FROM t GROUP BY g ORDER BY g
+----
+0	2285	2285	1525	11434	5.003938730853392	7	99918
+1	2286	2286	1523	11430	5.0	1	99919
+2	2285	2285	1520	11416	4.996061269146608	2	99913
+3	2286	2286	1522	11430	5.0	3	99914
+4	2286	2286	1525	11433	5.001312335958005	4	99908
+5	2286	2286	1526	11427	4.998687664041995	12	99916
+6	2286	2286	1526	11430	5.0	6	99917
+
+# the same results through a WHERE clause
+query IIIIIRII
+SELECT g, count(*), count(q), count(s), sum(v), avg(v), min(i), max(i) FROM t WHERE q BETWEEN 1 AND 20 GROUP BY g ORDER BY g
+----
+0	2285	2285	1525	11434	5.003938730853392	7	99918
+1	2286	2286	1523	11430	5.0	1	99919
+2	2285	2285	1520	11416	4.996061269146608	2	99913
+3	2286	2286	1522	11430	5.0	3	99914
+4	2286	2286	1525	11433	5.001312335958005	4	99908
+5	2286	2286	1526	11427	4.998687664041995	12	99916
+6	2286	2286	1526	11430	5.0	6	99917
+
+# several filters, mixed with unfiltered aggregates
+query IIIIIIIIII
+SELECT g, count(*), count(*) FILTER (WHERE q BETWEEN 1 AND 20), sum(v) FILTER (WHERE q BETWEEN 1 AND 20), count(*) FILTER (WHERE q BETWEEN 21 AND 40), sum(v) FILTER (WHERE q BETWEEN 21 AND 40), sum(v) FILTER (WHERE s = 'k1'), count(*) FILTER (WHERE q IS NULL), count(*) FILTER (WHERE NULL), sum(v) FROM t GROUP BY g ORDER BY g
+----
+0	14286	2285	11434	2286	11431	11897	2858	0	71439
+1	14286	2286	11430	2285	11434	11913	2857	0	71430
+2	14286	2285	11416	2286	11431	11906	2857	0	71421
+3	14286	2286	11430	2286	11423	11917	2857	0	71434
+4	14286	2286	11433	2286	11439	11913	2857	0	71436
+5	14285	2286	11427	2286	11431	11902	2857	0	71419
+6	14285	2286	11430	2285	11419	11898	2857	0	71418
+
+# the same child under different filters and different children under the same filter
+query IIIIRII
+SELECT g, sum(v) FILTER (WHERE q < 50), sum(v) FILTER (WHERE q >= 50), sum(i) FILTER (WHERE q < 50), avg(v) FILTER (WHERE q < 50), sum(v + 1) FILTER (WHERE q < 50), max(v + 1) FILTER (WHERE q < 50) FROM t GROUP BY g ORDER BY g
+----
+0	28577	28577	285585769	5.001225061253063	34291	11
+1	28584	28557	285571387	5.001574803149606	34299	11
+2	28564	28571	285557150	4.998949947497375	34278	11
+3	28567	28577	285642863	4.998600174978128	34282	11
+4	28573	28576	285528531	5.000525026251313	34287	11
+5	28575	28564	285614339	5.000875043752187	34289	11
+6	28564	28577	285499961	4.998949947497375	34278	11
+
+# a filter that shares a sub-expression with the children and with the group
+query IIIII
+SELECT g * 2 AS g2, sum(v * 2) FILTER (WHERE v * 2 > 10 AND g * 2 < 8), count(*) FILTER (WHERE v * 2 > 10 AND g * 2 < 8), max(v * 2) FILTER (WHERE v * 2 > 10 AND g * 2 < 8), sum(v * 2) FROM t GROUP BY g2 ORDER BY g2
+----
+0	103920	6495	20	142878
+2	103908	6494	20	142860
+4	103872	6492	20	142842
+6	103900	6494	20	142868
+8	NULL	0	NULL	142872
+10	NULL	0	NULL	142838
+12	NULL	0	NULL	142836
+
+# DISTINCT aggregates with filters
+query IIIIIII
+SELECT g, count(DISTINCT v) FILTER (WHERE q < 50), sum(DISTINCT v) FILTER (WHERE q < 50), count(DISTINCT s) FILTER (WHERE q < 50), count(DISTINCT v), count(*) FILTER (WHERE q < 50), sum(v) FILTER (WHERE q < 50) FROM t GROUP BY g ORDER BY g
+----
+0	11	55	4	11	5714	28577
+1	11	55	4	11	5715	28584
+2	11	55	4	11	5714	28564
+3	11	55	4	11	5715	28567
+4	11	55	4	11	5714	28573
+5	11	55	4	11	5714	28575
+6	11	55	4	11	5714	28564
+
+# the same through a WHERE clause
+query IIIIII
+SELECT g, count(DISTINCT v), sum(DISTINCT v), count(DISTINCT s), count(*), sum(v) FROM t WHERE q < 50 GROUP BY g ORDER BY g
+----
+0	11	55	4	5714	28577
+1	11	55	4	5715	28584
+2	11	55	4	5714	28564
+3	11	55	4	5715	28567
+4	11	55	4	5714	28573
+5	11	55	4	5714	28575
+6	11	55	4	5714	28564
+
+# many groups: the per-group results add up to the ungrouped ones
+query IIIIII
+SELECT count(*), sum(c), sum(s1), sum(s2), sum(n), sum(d) FROM (SELECT i % 1000 AS k, count(*) FILTER (WHERE q BETWEEN 1 AND 20) c, sum(v) FILTER (WHERE q BETWEEN 1 AND 20) s1, sum(v) FILTER (WHERE q BETWEEN 21 AND 40) s2, count(*) FILTER (WHERE q IS NULL) n, count(DISTINCT v) FILTER (WHERE q BETWEEN 1 AND 20) d FROM t GROUP BY k)
+----
+1000	16000	80000	80008	20000	1760
+
+# grouping sets
+query IIIII
+SELECT g, count(*) FILTER (WHERE q < 50), sum(v) FILTER (WHERE q < 50), count(*) FILTER (WHERE q >= 50), sum(v) FILTER (WHERE q < 50) FROM t GROUP BY ROLLUP(g) ORDER BY g NULLS LAST
+----
+0	5714	28577	5714	28577
+1	5715	28584	5714	28584
+2	5714	28564	5715	28564
+3	5715	28567	5714	28567
+4	5714	28573	5715	28573
+5	5714	28575	5714	28575
+6	5714	28564	5714	28564
+NULL	40000	200004	40000	200004
+
+endloop
+
+endloop
+
+# hundreds of filtered aggregates, one FILTER per key as a PIVOT produces them
+statement ok
+CREATE OR REPLACE TABLE many AS SELECT (i % 300)::INTEGER AS k, ((i // 300) % 10)::INTEGER AS g, (hash(i) % 1000)::INTEGER AS v FROM range(6000) tbl(i)
+
+statement ok
+CREATE MACRO filtered(aggr, n) AS list_aggregate(list_transform(range(n), lambda i: format(aggr || ' FILTER (WHERE k = {})', i)), 'string_agg', ', ')
+
+# ungrouped: the columns hold the per-key results of a GROUP BY
+query I
+SELECT [*COLUMNS(*)] = (SELECT list(m ORDER BY k) FROM (SELECT k, max(v) m FROM many GROUP BY k)) FROM query('SELECT ' || filtered('max(v)', 300) || ' FROM many')
+----
+true
+
+query I
+SELECT [*COLUMNS(*)] = (SELECT list(d ORDER BY k) FROM (SELECT k, count(DISTINCT v) d FROM many WHERE k < 50 GROUP BY k)) FROM query('SELECT ' || filtered('count(DISTINCT v)', 50) || ' FROM many')
+----
+true
+
+query III
+SELECT list_sum(l), list_min(l), len(l) FROM (SELECT [*COLUMNS(*)] AS l FROM query('SELECT ' || filtered('count(*)', 300) || ' FROM many'))
+----
+6000	20	300
+
+# grouped: perfect hash and hash aggregate
+foreach threshold 0 32
+
+statement ok
+SET perfect_ht_threshold={threshold}
+
+query I
+WITH f AS (SELECT g, [*COLUMNS(* EXCLUDE g)] AS l FROM query('SELECT g, ' || filtered('max(v)', 300) || ' FROM many GROUP BY g')), r AS (SELECT g, list(m ORDER BY k) AS l FROM (SELECT g, k, max(v) m FROM many GROUP BY g, k) GROUP BY g) SELECT count(*) FROM f JOIN r USING (g, l)
+----
+10
+
+# two aggregates per filter
+query I
+WITH f AS (SELECT g, [*COLUMNS(* EXCLUDE g)] AS l FROM query('SELECT g, ' || filtered('max(v)', 300) || ', ' || filtered('sum(v)', 300) || ' FROM many GROUP BY g')), r AS (SELECT g, list(x ORDER BY n, k) AS l FROM (SELECT g, k, 0 AS n, max(v) AS x FROM many GROUP BY g, k UNION ALL SELECT g, k, 1, sum(v) FROM many GROUP BY g, k) GROUP BY g) SELECT count(*) FROM f JOIN r USING (g, l)
+----
+10
+
+query I
+WITH f AS (SELECT g, [*COLUMNS(* EXCLUDE g)] AS l FROM query('SELECT g, ' || filtered('count(DISTINCT v)', 50) || ' FROM many GROUP BY g')), r AS (SELECT g, list(d ORDER BY k) AS l FROM (SELECT g, k, count(DISTINCT v) d FROM many WHERE k < 50 GROUP BY g, k) GROUP BY g) SELECT count(*) FROM f JOIN r USING (g, l)
+----
+10
+
+query I
+SELECT count(*) FROM (SELECT g, [*COLUMNS(* EXCLUDE g)] AS l FROM query('SELECT g, ' || filtered('count(*)', 300) || ' FROM many GROUP BY g')) WHERE list_sum(l) = 600 AND list_min(l) = 2 AND len(l) = 300
+----
+10
+
+endloop
+
+# a filter that requires ordered execution is evaluated serially
+statement ok
+SET threads=1
+
+statement ok
+CREATE TABLE ordered_input AS SELECT i FROM range(1000000) t(i)
+
+statement ok
+SET threads=8
+
+statement ok
+CREATE SEQUENCE seq
+
+query I
+SELECT count(*) FILTER (WHERE nextval('seq') = i + 1) FROM ordered_input
+----
+1000000

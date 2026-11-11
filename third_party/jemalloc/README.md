@@ -211,6 +211,67 @@ guard around `#include <unwind.h>`.
 #define _Unwind_Backtrace JEMALLOC_TEST_HOOK(_Unwind_Backtrace, test_hooks_libc_hook)
 ```
 
+In `arena_choose_hard` in `jemalloc.c`, share arena 0 when a new arena cannot be initialized, instead of returning
+`NULL`. Its callers pass the result on as an arena (`tcache_arena_associate` locks a mutex inside it), so a thread that
+starts without memory for an arena would crash.
+```c++
+				arena = arena_init_locked(tsd_tsdn(tsd),
+				    choose[j], &arena_config_default);
+				if (arena == NULL) {
+					/* DuckDB shares arena 0 without memory for a new one. */
+					choose[j] = 0;
+					arena = arena_get(tsd_tsdn(tsd), 0,
+					    false);
+				} else {
+					is_new_arena[j] = true;
+				}
+```
+
+In `tcache.c`, disable the tcache of a thread when `tsd_tcache_data_init` cannot allocate its bins, instead of leaving
+it enabled and uninitialized (`tcache_flush` then reads its bins), and do not enable it again in `tcache_enabled_set`.
+```c++
+static bool
+tsd_tcache_data_init(tsd_t *tsd, arena_t *arena,
+    const cache_bin_info_t tcache_bin_info[TCACHE_NBINS_MAX]) {
+	assert(tcache_bin_info != NULL);
+	if (tsd_tcache_data_init_impl(tsd, arena, tcache_bin_info)) {
+		/* DuckDB goes on without a tcache without memory for its bins. */
+		tsd_tcache_enabled_set(tsd, false);
+		tsd_slow_update(tsd);
+		return true;
+	}
+	return false;
+}
+
+void
+tcache_enabled_set(tsd_t *tsd, bool enabled) {
+	bool was_enabled = tsd_tcache_enabled_get(tsd);
+
+	if (!was_enabled && enabled) {
+		if (tsd_tcache_data_init(tsd, NULL,
+		    tcache_get_default_ncached_max())) {
+			enabled = false;
+		}
+	} else if (was_enabled && !enabled) {
+```
+
+In `madvise_MADV_DONTNEED_zeroes_pages` in `pages.c`, return instead of falling through when the probe page cannot be
+mapped. The probe runs during allocator bootstrap, and without memory it would `memset` through `MAP_FAILED`.
+Returning 0 marks `MADV_DONTNEED` as faulty: `pages_purge_forced` then reports failure, freed extents are recorded as
+not zeroed, and reuse that needs zeroed pages falls back to `memset`, so zeroing never relies on `MADV_DONTNEED`. The
+flag stays set for the lifetime of the process, which can keep more memory resident than a successful probe would.
+```c++
+	if (addr == MAP_FAILED) {
+		malloc_write("<jemalloc>: Cannot allocate memory for "
+		    "MADV_DONTNEED check\n");
+		if (opt_abort) {
+			abort();
+		}
+		/* DuckDB treats MADV_DONTNEED as faulty without memory to probe it. */
+		return 0;
+	}
+```
+
 Almost no symbols are leaked due to `private_namespace.h`.
 The `exported_symbols_check.py` script still found a few, so these lines need to be added to `private_namespace.h`:
 ```c++

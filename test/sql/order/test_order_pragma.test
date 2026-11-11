@@ -18,7 +18,7 @@ SELECT a FROM test ORDER BY a
 
 # we can change the default with a pragma
 statement ok
-PRAGMA default_order='DESCENDING'
+SET default_order='DESCENDING'
 
 query I
 SELECT a FROM test ORDER BY a
@@ -28,7 +28,7 @@ SELECT a FROM test ORDER BY a
 11
 
 statement ok
-PRAGMA default_order='ASC'
+SET default_order='ASC'
 
 statement error
 PRAGMA default_order())
@@ -36,7 +36,7 @@ PRAGMA default_order())
 <REGEX>:Parser Error.*syntax error.*
 
 statement error
-PRAGMA default_order='UNKNOWN'
+SET default_order='UNKNOWN'
 ----
 <REGEX>:Invalid Input Error.*Unrecognized parameter for option.*
 

@@ -46,7 +46,18 @@ public:
 	}
 
 public:
-	case_insensitive_map_t<VariantAnalyzeData> fields;
+	VariantAnalyzeData &GetOrCreateField(const string_t &name) {
+		auto entry = fields.find(name);
+		if (entry != fields.end()) {
+			return entry->second;
+		}
+		return fields[field_names.AddBlob(name)];
+	}
+
+public:
+	case_insensitive_string_map_t<VariantAnalyzeData> fields;
+	//! Owns the keys of 'fields'
+	StringHeap field_names;
 };
 
 struct ArrayAnalyzeData {

@@ -191,7 +191,7 @@ true
 
 # the collation comes from the setting rather than from the type
 statement ok
-PRAGMA default_collation=NOCASE
+SET default_collation='NOCASE'
 
 query I
 SELECT {'x': 'b'} = {'x': 'B'}

@@ -239,6 +239,7 @@ public:
 		return cardinality;
 	}
 	unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, const Identifier &name) override;
+	unique_ptr<BaseStatistics> GetVirtualColumnStatistics(ClientContext &context, column_t virtual_column_id) override;
 };
 
 //! Reads a single file by binding and executing the wrapped table function over that file
@@ -415,6 +416,7 @@ public:
 	                MultiFileBindData &bind_data) override;
 	void CombineSchemas(ClientContext &context, const vector<shared_ptr<BaseUnionData>> &union_data, bool union_by_name,
 	                    vector<LogicalType> &return_types, vector<Identifier> &names) override;
+	void ReadFilesForStatistics(ClientContext &context, MultiFileBindData &bind_data) override;
 	void FinalizeBindData(MultiFileBindData &multi_file_data) override;
 	void GetVirtualColumns(ClientContext &context, MultiFileBindData &bind_data, virtual_column_map_t &result) override;
 	unique_ptr<GlobalTableFunctionState> InitializeGlobalState(ClientContext &context, MultiFileBindData &bind_data,

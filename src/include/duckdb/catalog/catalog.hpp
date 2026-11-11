@@ -47,7 +47,7 @@ struct CreateTypeInfo;
 struct CreateTableInfo;
 struct DatabaseSize;
 struct MetadataBlockInfo;
-struct SchemaScanFilters;
+class SchemaScanFilters;
 
 class AttachedDatabase;
 class ClientContext;
@@ -523,6 +523,7 @@ protected:
 	AttachedDatabase &db;
 
 	//! (optionally) a default table to query for `SELECT * FROM <catalog_name>;`
+	mutable mutex default_table_lock;
 	Identifier default_table;
 	Identifier default_table_schema;
 

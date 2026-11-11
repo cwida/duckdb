@@ -80,7 +80,7 @@ SET disabled_optimizers = '';
 
 # This query only gets a second pruner run when it is planned as a late materialization
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 query II
 EXPLAIN SELECT (v.ms::STRUCT(b VARCHAR, a VARCHAR)).b FROM nested_extract ORDER BY v.id LIMIT 1
@@ -88,7 +88,7 @@ EXPLAIN SELECT (v.ms::STRUCT(b VARCHAR, a VARCHAR)).b FROM nested_extract ORDER 
 logical_opt	<REGEX>:.*rowid = rowid.*
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY
+SET explain_output = 'PHYSICAL_ONLY'
 
 # Without a cast there is nothing to re-push, so the extract still reaches the leaf. A guard that is
 # too broad would keep every result correct, so only the scan projection can show it.

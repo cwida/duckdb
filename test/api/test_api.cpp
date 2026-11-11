@@ -189,6 +189,21 @@ TEST_CASE("Test temp_directory defaults", "[api][.]") {
 	}
 }
 
+TEST_CASE("Test max_temp_directory_size set at startup is enforced", "[api]") {
+	auto config = GetTestConfig();
+	config->SetOptionByName("temp_directory", TestCreatePath("max_temp_directory_size_startup"));
+	config->SetOptionByName("max_temp_directory_size", "0KiB");
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("PRAGMA memory_limit='4MB'"));
+
+	// the table does not fit in memory, so it has to be offloaded, which the limit does not allow
+	auto result = con.Query("CREATE TABLE t AS SELECT random() FROM range(1000000)");
+	REQUIRE(result->HasError());
+	REQUIRE(result->GetErrorType() == ExceptionType::OUT_OF_MEMORY);
+	REQUIRE(StringUtil::Contains(result->GetError(), "failed to offload data block"));
+}
+
 TEST_CASE("Test parallel usage of single client", "[api][.]") {
 	auto db = make_uniq<DuckDB>(nullptr);
 	auto conn = make_uniq<Connection>(*db);

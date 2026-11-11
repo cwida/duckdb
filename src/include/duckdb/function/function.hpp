@@ -48,8 +48,10 @@ struct PragmaInfo;
 enum class FunctionNullHandling : uint8_t { DEFAULT_NULL_HANDLING = 0, SPECIAL_HANDLING = 1 };
 //! The stability of the function, used by the optimizer
 //! CONSISTENT              -> this function always returns the same result when given the same input, no variance
-//! CONSISTENT_WITHIN_QUERY -> this function returns the same result WITHIN the same query/transaction
-//!                            but the result might change across queries (e.g. NOW(), CURRENT_TIME)
+//! CONSISTENT_WITHIN_QUERY -> this function returns the same result for the same input WITHIN the same query, but the
+//!                            result might change across queries (e.g. NOW(), or functions whose bind reads settings
+//!                            such as TimeZone). The optimizer treats it as consistent, statements that call it are
+//!                            bound again at every execution, and index keys cannot contain it
 //! VOLATILE                -> the result of this function might change per row (e.g. RANDOM())
 enum class FunctionStability : uint8_t { CONSISTENT = 0, VOLATILE = 1, CONSISTENT_WITHIN_QUERY = 2 };
 
@@ -152,6 +154,15 @@ public:
 		}
 	}
 
+	//! A positional-only parameter declared without a name. It is named "col<index>" internally, as every parameter
+	//! needs one, but prints as its bare type: the name was never declared, so a caller cannot use it
+	static FunctionParameter Unnamed(LogicalType type, idx_t index) {
+		FunctionParameter result(Identifier(StringUtil::Format("col%d", index)), std::move(type), {},
+		                         FunctionParameterKind::POSITIONAL_ONLY);
+		result.named = false;
+		return result;
+	}
+
 	string ToString() const;
 
 	bool operator==(const FunctionParameter &other) const;
@@ -162,6 +173,11 @@ public:
 	}
 	auto SetName(Identifier name_p) -> void {
 		name = std::move(name_p);
+		named = true;
+	}
+	//! Whether the parameter was declared with a name, see Unnamed
+	auto IsNamed() const -> bool {
+		return named;
 	}
 
 	auto GetType() const -> const LogicalType & {
@@ -202,6 +218,7 @@ private:
 	LogicalType type;
 	shared_ptr<Value> default_value;
 	FunctionParameterKind kind;
+	bool named = true;
 };
 
 //! An option a function receives through its "**kwargs" parameter
@@ -341,11 +358,10 @@ public:
 		parameters.emplace_back(std::move(name), std::move(type), std::move(default_value), kind);
 		return *this;
 	}
-	//! Adds a positional-only parameter named "col<N>", after its position - a caller cannot pass it by a name that
-	//! was never declared
+	//! Adds a positional-only parameter declared without a name, see FunctionParameter::Unnamed
 	auto AddParameter(LogicalType type) -> FunctionSignature & {
-		auto name = Identifier(StringUtil::Format("col%d", parameters.size()));
-		return AddPositionalOnly(std::move(name), std::move(type));
+		parameters.push_back(FunctionParameter::Unnamed(std::move(type), parameters.size()));
+		return *this;
 	}
 	auto AddKeywordOnly(Identifier name, LogicalType type, optional<Value> default_value = {}) -> FunctionSignature & {
 		return AddParameter(std::move(name), std::move(type), std::move(default_value),

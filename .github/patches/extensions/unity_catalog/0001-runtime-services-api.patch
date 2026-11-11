@@ -1,0 +1,22 @@
+diff --git a/src/uc_api.cpp b/src/uc_api.cpp
+index 35ae3c4..9797f02 100644
+--- a/src/uc_api.cpp
++++ b/src/uc_api.cpp
+@@ -86,7 +86,7 @@ static unique_ptr<HTTPResponse> MakeRequestResp(ClientContext &ctx, const string
+ 	EnsureHttpfsExtension(db);
+ 	auto &http_util = HTTPUtil::Get(*db);
+ 	auto params = http_util.InitializeParameters(*db, url);
+-	params->logger = ctx.logger;
++	params->logger = ctx.GetContext().GetLoggerPtr();
+ 
+ 	HTTPHeaders hdrs(*ctx.db);
+ 	AuthenticateViaBearerToken(hdrs, token);
+@@ -146,7 +146,7 @@ static void CancelPlan(ClientContext &ctx, const string &scan_plan_endpoint, con
+ 		auto db = ctx.db;
+ 		auto &http_util = HTTPUtil::Get(*db);
+ 		auto params = http_util.InitializeParameters(*db, url);
+-		params->logger = ctx.logger;
++		params->logger = ctx.GetContext().GetLoggerPtr();
+ 		HTTPHeaders hdrs(*ctx.db);
+ 		AuthenticateViaBearerToken(hdrs, token);
+ 		DeleteRequestInfo req(url, hdrs, *params);

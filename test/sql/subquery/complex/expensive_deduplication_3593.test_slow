@@ -36,10 +36,6 @@ ORDER BY k;
 0	80
 1	81
 
-# disable verification for these queries, they are too slow to run without the deduplication
-statement ok
-PRAGMA disable_verification
-
 query I
 SELECT
 (

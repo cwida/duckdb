@@ -44,7 +44,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT struct_pack(d := d) AS s FROM fact, dim WHERE fact.k = dim.k AND dim.k > 100;

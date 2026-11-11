@@ -15,7 +15,7 @@ static void AgeFunctionStandard(DataChunk &input, ExpressionState &state, Vector
 	//	plain TZ when ICU is not loaded, we implement this in UTC (like everything else)
 	//	To get the PG behaviour, we overload these functions in ICU for TSTZ arguments.
 	auto current_date = Timestamp::FromDatetime(
-	    Timestamp::GetDate(MetaTransaction::Get(state.GetContext()).start_timestamp), dtime_t(0));
+	    Timestamp::GetDate(MetaTransaction::Get(state.GetClientContext()).start_timestamp), dtime_t(0));
 
 	UnaryExecutor::Execute<timestamp_t, interval_t>(input.data[0], result,
 	                                                [&](timestamp_t input) -> optional<interval_t> {
@@ -44,6 +44,8 @@ ScalarFunctionSet AgeFun::GetFunctions() {
 	ScalarFunctionSet age("age");
 	ScalarFunction standard_fun({}, LogicalType::INTERVAL, AgeFunctionStandard);
 	standard_fun.GetSignature().AddParameter("timestamp", LogicalType::TIMESTAMP);
+	// the age is taken at the start of the transaction
+	standard_fun.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 	age.AddFunction(standard_fun);
 	ScalarFunction binary_fun({}, LogicalType::INTERVAL, AgeFunction);
 	binary_fun.GetSignature()

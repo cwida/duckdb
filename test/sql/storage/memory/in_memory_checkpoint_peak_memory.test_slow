@@ -1,0 +1,50 @@
+# name: test/sql/storage/memory/in_memory_checkpoint_peak_memory.test_slow
+# description: In-memory checkpoints release each table's old data before preparing the next table.
+# group: [memory]
+
+statement ok
+SET threads=4;
+
+statement ok
+SET temp_directory='';
+
+statement ok
+SET checkpoint_threshold='1TB';
+
+statement ok
+SET memory_limit='1GB';
+
+statement ok
+ATTACH ':memory:' AS m (COMPRESS true);
+
+loop i 0 4
+
+statement ok
+CREATE TABLE m.t{i} AS SELECT hash(range + {i}*2) AS a, hash(range + {i}*2 + 1) AS b FROM range(4000000);
+
+statement ok
+SET VARIABLE checksum_{i} = (SELECT bit_xor(hash(a, b)) FROM m.t{i});
+
+endloop
+
+# Enough for the original tables plus one replacement, but not replacements of all four at once.
+statement ok
+SET memory_limit='450MB';
+
+statement ok
+CHECKPOINT m;
+
+loop i 0 4
+
+query II
+SELECT count(*), bit_xor(hash(a, b)) = getvariable('checksum_{i}') FROM m.t{i};
+----
+4000000	true
+
+endloop
+
+statement ok
+CHECKPOINT m;
+
+statement ok
+DETACH m;

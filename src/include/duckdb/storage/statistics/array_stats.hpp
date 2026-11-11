@@ -20,6 +20,7 @@ class Vector;
 class Serializer;
 class Deserializer;
 class Value;
+class StatsStructFields;
 
 struct ArrayStats {
 	DUCKDB_API static void Construct(BaseStatistics &stats);
@@ -33,7 +34,9 @@ struct ArrayStats {
 	DUCKDB_API static void Serialize(const BaseStatistics &stats, Serializer &serializer);
 	DUCKDB_API static void Deserialize(Deserializer &deserializer, BaseStatistics &base);
 
-	DUCKDB_API static child_list_t<Value> ToStruct(const BaseStatistics &stats);
+	DUCKDB_API static child_list_t<Value> ToStruct(const BaseStatistics &stats, bool exact);
+	//! Sets the parts of the statistics the struct fields describe (the inverse of ToStruct)
+	DUCKDB_API static void SetFromStruct(BaseStatistics &stats, StatsStructFields &fields);
 
 	DUCKDB_API static void Merge(BaseStatistics &stats, const BaseStatistics &other,
 	                             StatsMergeType merge_type = StatsMergeType::MERGE_STATS);

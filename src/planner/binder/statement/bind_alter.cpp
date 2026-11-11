@@ -106,6 +106,9 @@ static void BindAlterTypes(Binder &binder, AlterStatement &stmt) {
 			break;
 		}
 	}
+	for (auto &type : stmt.info->GetTypesToBind()) {
+		binder.BindLogicalType(type.get());
+	}
 }
 
 BoundStatement Binder::Bind(AlterStatement &stmt) {
@@ -148,9 +151,27 @@ BoundStatement Binder::Bind(AlterStatement &stmt) {
 			view.BindView(context);
 		}
 	} else {
-		// For any other ALTER, we retrieve the catalog entry directly.
-		EntryLookupInfo lookup_info(stmt.info->GetCatalogType(), stmt.info->GetQualifiedName());
-		entry = entry_retriever.GetEntry(lookup_info, stmt.info->if_not_found);
+		// For any other ALTER, we retrieve the catalog entry directly, trying each type the alter accepts
+		auto lookup_types = stmt.info->GetEntryLookupTypes();
+		EntryLookupInfo lookup_info(lookup_types[0], stmt.info->GetQualifiedName());
+		if (lookup_types.size() == 1) {
+			entry = entry_retriever.GetEntry(lookup_info, stmt.info->if_not_found);
+		} else {
+			for (auto &lookup_type : lookup_types) {
+				EntryLookupInfo type_lookup(lookup_type, stmt.info->GetQualifiedName());
+				entry = entry_retriever.GetEntry(type_lookup, OnEntryNotFound::RETURN_NULL);
+				if (entry) {
+					break;
+				}
+			}
+			if (!entry) {
+				// a missing entry is reported for the first type
+				entry = entry_retriever.GetEntry(lookup_info, stmt.info->if_not_found);
+			}
+		}
+		if (entry) {
+			stmt.info->SetResolvedEntryType(entry->type);
+		}
 	}
 
 	auto &properties = GetStatementProperties();
@@ -168,7 +189,7 @@ BoundStatement Binder::Bind(AlterStatement &stmt) {
 
 	// Bind types in the same catalog as the entry
 	auto type_binder = Binder::CreateBinder(context, *this);
-	type_binder->SetSearchPath(catalog, stmt.info->GetQualifiedName().Schema());
+	type_binder->SetSearchPath(catalog, stmt.info->GetQualifiedName().SchemaPath());
 
 	BindAlterTypes(*type_binder, stmt);
 

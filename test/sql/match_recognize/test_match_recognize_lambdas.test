@@ -2,9 +2,6 @@
 # description: MATCH_RECOGNIZE - lambda scopes, and matcher state a lambda captures
 # group: [match_recognize]
 
-statement ok
-PRAGMA enable_verification
-
 # A lambda names its own parameters, and a name it binds is not the input's to compute below this
 # clause. What the name means is the ordinary binder's to decide, here as anywhere else.
 

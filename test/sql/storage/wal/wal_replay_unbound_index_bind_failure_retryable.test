@@ -1,0 +1,122 @@
+# name: test/sql/storage/wal/wal_replay_unbound_index_bind_failure_retryable.test
+# description: A failed index bind skips the automatic checkpoint only while buffered replays remain
+# group: [wal]
+
+require skip_reload
+
+load {TEST_DIR}/wal_replay_unbound_index_failed_bind.db
+
+statement ok
+CREATE TEMP MACRO tnorm(s) AS lower(s);
+
+statement ok
+CREATE TABLE t(k VARCHAR);
+
+statement ok
+CREATE INDEX idx ON t((tnorm(k)));
+
+statement ok
+INSERT INTO t VALUES ('a'), ('b');
+
+statement ok
+CHECKPOINT;
+
+restart
+
+# the temporary macro is gone, so binding the index fails
+statement error
+INSERT INTO t VALUES ('z');
+----
+tnorm
+
+statement ok
+SET wal_autocheckpoint = '0B';
+
+# the index has no buffered replays: the automatic checkpoint does not bind it and runs
+statement ok
+CREATE TABLE other AS SELECT 1 AS i;
+
+query I
+SELECT wal_size FROM pragma_database_size();
+----
+0 bytes
+
+# with buffered replays, a failed bind keeps the WAL, and a later bind applies them
+
+load {TEST_DIR}/wal_replay_unbound_index_failed_bind_replays.db
+
+statement ok
+CREATE TEMP MACRO tnorm(s) AS lower(s);
+
+statement ok
+CREATE TABLE t(k VARCHAR);
+
+statement ok
+CREATE INDEX idx ON t((tnorm(k)));
+
+statement ok
+INSERT INTO t VALUES ('a'), ('b');
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET wal_autocheckpoint = '1TB';
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+INSERT INTO t VALUES ('c');
+
+statement ok
+DELETE FROM t WHERE k = 'a';
+
+# the WAL replay buffers the insert and delete in the unbound index
+restart
+
+statement error
+INSERT INTO t VALUES ('z');
+----
+tnorm
+
+statement ok
+SET wal_autocheckpoint = '0B';
+
+# the automatic checkpoint cannot bind the index, so it is skipped and the WAL is kept
+statement ok
+CREATE TABLE other AS SELECT 1 AS i;
+
+query I
+SELECT wal_size <> '0 bytes' FROM pragma_database_size();
+----
+true
+
+# an explicit checkpoint fails instead
+statement error
+CHECKPOINT;
+----
+Cannot CHECKPOINT
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+restart
+
+statement ok
+CREATE TEMP MACRO tnorm(s) AS lower(s);
+
+query I
+SELECT k FROM t ORDER BY k;
+----
+b
+c
+
+# deleting every row fails if the index lacks the replayed insert
+statement ok
+DELETE FROM t;
+
+query II
+SELECT count(*), (SELECT count(*) FROM other) FROM t;
+----
+0	1

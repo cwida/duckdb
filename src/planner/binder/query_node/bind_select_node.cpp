@@ -73,9 +73,12 @@ BoundLimitNode Binder::BindLimitValue(OrderBinder &order_binder, unique_ptr<Pars
 			return BoundLimitNode::ExpressionValue(std::move(bound_limit));
 		}
 	}
-	if (expr->IsFoldable()) {
+
+	Value constant;
+	// if evaluation throws, evaluate at runtime instead, so it only fails if the LIMIT operator receives rows
+	if (expr->IsFoldable() && ExpressionExecutor::TryEvaluateScalar(context, *expr, constant)) {
 		//! this is a constant
-		auto val = ExpressionExecutor::EvaluateScalar(context, *expr).CastAs(context, target_type);
+		auto val = constant.CastAs(context, target_type);
 		if (is_percentage) {
 			D_ASSERT(!is_offset);
 			double percentage_val;
@@ -204,7 +207,7 @@ void Binder::PrepareModifiers(OrderBinder &order_binder, QueryNode &statement, B
 					}
 				}
 			}
-			if (config.options.debug_order_verification == DebugOrderVerification::CREATE_SORT_KEY) {
+			if (Settings::Get<DebugOrderVerificationSetting>(context) == DebugOrderVerification::CREATE_SORT_KEY) {
 				// When this verification is enabled, replace ORDER BY x, y with ORDER BY create_sort_key(x, y)
 				// note that we don't enable this during actual verification since it doesn't always work
 				// e.g. it breaks EXPLAIN output on queries
@@ -345,8 +348,20 @@ void Binder::BindModifiers(BoundQueryNode &result, TableIndex table_index, const
 		switch (bound_mod->type) {
 		case ResultModifierType::DISTINCT_MODIFIER: {
 			auto &distinct = bound_mod->Cast<BoundDistinctModifier>();
+			if (distinct.distinct_type == DistinctType::DISTINCT) {
+				// DISTINCT covers every result column: the targets were prepared before the select list was bound,
+				// and an UNNEST of a struct expands an entry into several columns
+				distinct.target_distincts.clear();
+				for (idx_t i = 0; i < result.types.size(); i++) {
+					distinct.target_distincts.push_back(make_uniq<BoundColumnRefExpression>(
+					    names[i], sql_types[i], ColumnBinding(table_index, ProjectionIndex(i))));
+				}
+			}
 			// set types of distinct targets
 			for (auto &expr : distinct.target_distincts) {
+				if (expr->GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+					continue;
+				}
 				expr = FinalizeBindOrderExpression(std::move(expr), table_index, names, sql_types, bind_state);
 				if (!expr) {
 					throw InternalException("DISTINCT ON ORDER BY ALL not supported");
@@ -387,10 +402,10 @@ void Binder::BindModifiers(BoundQueryNode &result, TableIndex table_index, const
 					order.orders.emplace_back(order_type, null_order, std::move(expr));
 				}
 			}
-			auto &config = DBConfig::GetConfig(context);
+			auto order_verification = Settings::Get<DebugOrderVerificationSetting>(context);
 			for (auto &order_node : order.orders) {
 				auto &expr = order_node.expression;
-				if (config.options.debug_order_verification == DebugOrderVerification::VARIANT &&
+				if (order_verification == DebugOrderVerification::VARIANT &&
 				    expr->GetReturnType().id() != LogicalTypeId::VARIANT) {
 					// when this verification is enabled, cast every ORDER BY expression to VARIANT (the
 					// PushCollation below then routes ordering through the VARIANT comparator) to verify it

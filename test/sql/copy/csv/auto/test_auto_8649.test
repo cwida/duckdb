@@ -7,7 +7,7 @@ PRAGMA verify_parallelism
 
 # Sample
 query I
-SELECT * FROM read_csv_auto("{DATA_DIR}/csv/dim0.csv") ;
+SELECT * FROM read_csv_auto('{DATA_DIR}/csv/dim0.csv') ;
 ----
 T
 0

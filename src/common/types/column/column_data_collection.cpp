@@ -17,6 +17,7 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/main/client_context.hpp"
 
 namespace duckdb {
 
@@ -80,6 +81,11 @@ ColumnDataCollection::ColumnDataCollection(shared_ptr<ColumnDataAllocator> alloc
 
 ColumnDataCollection::ColumnDataCollection(ClientContext &context, vector<LogicalType> types_p,
                                            ColumnDataAllocatorType type, ColumnDataCollectionLifetime lifetime)
+    : ColumnDataCollection(context.GetContext(), std::move(types_p), type, lifetime) {
+}
+
+ColumnDataCollection::ColumnDataCollection(Context &context, vector<LogicalType> types_p, ColumnDataAllocatorType type,
+                                           ColumnDataCollectionLifetime lifetime)
     : ColumnDataCollection(make_shared_ptr<ColumnDataAllocator>(context, type, lifetime), std::move(types_p)) {
 }
 

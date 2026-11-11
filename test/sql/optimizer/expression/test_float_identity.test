@@ -3,7 +3,7 @@
 # group: [expression]
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 foreach type FLOAT DOUBLE
 

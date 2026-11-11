@@ -376,7 +376,7 @@ bool CatalogSet::AlterEntry(CatalogTransaction transaction, const Identifier &na
 	unique_ptr<CatalogEntry> entry_to_destroy;
 	if (transaction.transaction) {
 		// serialize the AlterInfo into a temporary buffer
-		MemoryStream stream(Allocator::Get(*transaction.db));
+		MemoryStream stream(Allocator::Get(transaction.db));
 		BinarySerializer serializer(stream);
 		serializer.Begin();
 		serializer.WriteProperty(100, "column_name", alter_info.GetColumnName());
@@ -464,7 +464,8 @@ bool CatalogSet::DropEntry(ClientContext &context, const Identifier &name, bool 
 }
 
 //! Verify that the object referenced by the dependency still exists when we commit the dependency
-void CatalogSet::VerifyExistenceOfDependency(transaction_t commit_id, CatalogEntry &entry) {
+void CatalogSet::VerifyExistenceOfDependency(transaction_t commit_id, VisibilityBound visibility_bound,
+                                             CatalogEntry &entry) {
 	auto &duck_catalog = GetCatalog();
 
 	// Make sure that we don't see any uncommitted changes
@@ -473,18 +474,19 @@ void CatalogSet::VerifyExistenceOfDependency(transaction_t commit_id, CatalogEnt
 	// This will allow us to see all committed changes made before this COMMIT happened
 	CatalogTransaction commit_transaction(duck_catalog.GetDatabase(), transaction_id,
 	                                      VisibilityBound::Through(commit_id));
+	// Earlier writes in this transaction have already received their commit timestamp.
+	CatalogTransaction snapshot_transaction(duck_catalog.GetDatabase(), commit_id, visibility_bound);
 
 	D_ASSERT(entry.type == CatalogType::DEPENDENCY_ENTRY);
 	auto &dep = entry.Cast<DependencyEntry>();
-	duck_catalog.GetDependencyManager()->VerifyExistence(commit_transaction, dep);
+	duck_catalog.GetDependencyManager()->VerifyExistence(commit_transaction, snapshot_transaction, dep);
 }
 
 //! Verify that no dependencies creations were committed since our transaction started, that reference the entry we're
 //! dropping
-void CatalogSet::CommitDrop(transaction_t commit_id, VisibilityBound visibility_bound, CatalogEntry &entry) {
+void CatalogSet::VerifyCommitDrop(transaction_t commit_id, VisibilityBound visibility_bound, CatalogEntry &entry) {
 	auto &duck_catalog = GetCatalog();
 
-	entry.OnDrop();
 	// Make sure that we don't see any uncommitted changes
 	auto transaction_id = MAX_TRANSACTION_ID;
 	D_ASSERT(IsCommitted(commit_id));
@@ -493,6 +495,11 @@ void CatalogSet::CommitDrop(transaction_t commit_id, VisibilityBound visibility_
 	                                      VisibilityBound::Before(commit_id));
 
 	duck_catalog.GetDependencyManager()->VerifyCommitDrop(commit_transaction, visibility_bound, entry);
+}
+
+void CatalogSet::CommitDrop(transaction_t commit_id, VisibilityBound visibility_bound, CatalogEntry &entry) {
+	entry.OnDrop();
+	VerifyCommitDrop(commit_id, visibility_bound, entry);
 }
 
 DuckCatalog &CatalogSet::GetCatalog() {

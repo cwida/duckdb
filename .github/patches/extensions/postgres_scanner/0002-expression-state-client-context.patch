@@ -1,0 +1,21 @@
+diff --git a/src/postgres_pin_connection.cpp b/src/postgres_pin_connection.cpp
+--- a/src/postgres_pin_connection.cpp
++++ b/src/postgres_pin_connection.cpp
+@@ -14,7 +14,7 @@
+ 	auto catalog_name_strt = UnifiedVectorFormat::GetData<string_t>(catalog_name_data)[0];
+ 	string catalog_name(catalog_name_strt.GetData(), catalog_name_strt.GetSize());
+ 
+-	auto &catalog = PostgresUtils::GetCatalogByName(state.GetContext(), catalog_name);
++	auto &catalog = PostgresUtils::GetCatalogByName(state.GetClientContext(), catalog_name);
+ 	auto &pool = catalog.GetConnectionPool();
+ 
+ 	auto conn = pool.ForceAcquire();
+@@ -47,7 +47,7 @@
+ 	}
+ 	auto conn_id = UnifiedVectorFormat::GetData<uint64_t>(conn_id_data)[0];
+ 
+-	auto &catalog = PostgresUtils::GetCatalogByName(state.GetContext(), catalog_name);
++	auto &catalog = PostgresUtils::GetCatalogByName(state.GetClientContext(), catalog_name);
+ 	{ auto conn = catalog.GetConnectionPool().UnpinConnection(conn_id); }
+ 
+ 	auto &result_validity = FlatVector::ValidityMutable(result);

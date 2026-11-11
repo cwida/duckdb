@@ -8,7 +8,7 @@ require no_latest_storage
 load {TEST_DIR}/test_dictionary.db readwrite v1.0.0
 
 statement ok
-PRAGMA force_compression = 'fsst'
+SET force_compression = 'fsst'
 
 statement ok
 CREATE TABLE test (a VARCHAR, b VARCHAR);

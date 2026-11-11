@@ -1,0 +1,35 @@
+# name: test/sql/optimizer/scalar_aggregate_merge_tpcds.test
+# description: TPC-DS q9, q28, q88 and q90 keep their answers with their scalar aggregates merged
+# group: [optimizer]
+
+require tpcds
+
+statement ok
+SET default_null_order='postgres'
+
+statement ok
+CALL dsdgen(sf=0.01)
+
+# the SF0.01 tables are small and the test is about the rewrite: merge over every table that has a row
+statement ok
+SET scalar_aggregate_merge_threshold = 1
+
+query I
+PRAGMA tpcds(9, sf=0.01)
+----
+<FILE>:extension/tpcds/dsdgen/answers/sf0.01/09.csv
+
+query I
+PRAGMA tpcds(28, sf=0.01)
+----
+<FILE>:extension/tpcds/dsdgen/answers/sf0.01/28.csv
+
+query I
+PRAGMA tpcds(88, sf=0.01)
+----
+<FILE>:extension/tpcds/dsdgen/answers/sf0.01/88.csv
+
+query I
+PRAGMA tpcds(90, sf=0.01)
+----
+<FILE>:extension/tpcds/dsdgen/answers/sf0.01/90.csv

@@ -11,7 +11,7 @@ require tpch
 
 # First test: detailed compression ratio
 statement ok
-PRAGMA force_compression='fsst'
+SET force_compression='fsst'
 
 # Uncompressed size per value: 10 chars + 4 bytes for dict offset = 14
 # Compressed size per values: 2 bytes for 2 symbols (BEEPBOOP) and (-{num}) + 0.25 byte = 2.25 bytes per value
@@ -29,7 +29,7 @@ SELECT DISTINCT lower(compression) FROM pragma_storage_info('test_compressed') w
 fsst
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 CREATE TABLE test_uncompressed AS SELECT concat('BEEPBOOP-', (i%3)::VARCHAR) AS i FROM range(0, 1250000) tbl(i);
@@ -61,7 +61,7 @@ statement ok
 CALL dbgen(sf=0.1)
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 CREATE TABLE l_comment_uncompressed AS SELECT l_comment FROM lineitem;
@@ -70,7 +70,7 @@ statement ok
 checkpoint
 
 statement ok
-PRAGMA force_compression='fsst'
+SET force_compression='fsst'
 
 statement ok
 CREATE TABLE l_comment_compressed AS SELECT l_comment FROM lineitem;

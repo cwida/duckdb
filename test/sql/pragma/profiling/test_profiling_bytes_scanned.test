@@ -6,6 +6,10 @@ require parquet
 
 require json
 
+# the counters are checked per scan, so sibling scalar subqueries over one file must each keep their own scan
+statement ok
+SET disabled_optimizers = 'scalar_aggregate_merge';
+
 # three row groups per file; i ascends, so a filter on it skips row groups by their statistics
 statement ok
 COPY (SELECT range AS i, repeat('x', 100) || range AS s FROM range(3 * 2048)) TO '{TEST_DIR}/bytes_scanned_1.parquet' (ROW_GROUP_SIZE 2048);
@@ -25,10 +29,10 @@ SELECT count(DISTINCT file_name), count(DISTINCT row_group_id) FROM chunks;
 
 # one column: its chunk in every row group
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_one_column.json';
+SET profiling_output = '{TEST_DIR}/bytes_scanned_one_column.json';
 
 statement ok
 SET tracked_metrics = ['query.total_bytes_scanned'];
@@ -47,10 +51,10 @@ true
 
 # two columns: both chunks in every row group
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_two_columns.json';
+SET profiling_output = '{TEST_DIR}/bytes_scanned_two_columns.json';
 
 statement ok
 SET tracked_metrics = ['query.total_bytes_scanned', 'operator.bytes_scanned', 'operator.type'];
@@ -90,10 +94,10 @@ SELECT count(*) FROM chunks WHERE file_name LIKE '%_1.parquet' AND col = 'i' AND
 1
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_skipped.json';
+SET profiling_output = '{TEST_DIR}/bytes_scanned_skipped.json';
 
 statement ok
 SET tracked_metrics = ['query.total_bytes_scanned'];
@@ -112,10 +116,10 @@ true
 
 # several files
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_glob.json';
+SET profiling_output = '{TEST_DIR}/bytes_scanned_glob.json';
 
 statement ok
 SET tracked_metrics = ['query.total_bytes_scanned'];
@@ -134,10 +138,10 @@ true
 
 # a file scanned twice counts twice
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_twice.json';
+SET profiling_output = '{TEST_DIR}/bytes_scanned_twice.json';
 
 statement ok
 SET tracked_metrics = ['query.total_bytes_scanned', 'operator.bytes_scanned', 'operator.type'];
@@ -175,22 +179,19 @@ EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.par
 analyzed_plan	<REGEX>:[\s\S]*"bytes_scanned": [1-9][\s\S]*
 
 # a query with a scan that doesn't count the bytes it scans leaves the total out, rather than undercounting
-statement ok
-COPY (SELECT range AS i FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_uncounted.csv';
-
 query II
-EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_uncounted.csv'
+EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM native
 ----
 analyzed_plan	<!REGEX>:[\s\S]*bytes_scanned[\s\S]*
 
 query II
 EXPLAIN ANALYZE (FORMAT json)
-SELECT sum(p.i) FROM '{TEST_DIR}/bytes_scanned_1.parquet' p JOIN '{TEST_DIR}/bytes_scanned_uncounted.csv' c USING (i)
+SELECT sum(p.i) FROM '{TEST_DIR}/bytes_scanned_1.parquet' p JOIN native n USING (i)
 ----
 analyzed_plan	<!REGEX>:[\s\S]*"total_bytes_scanned"[\s\S]*
 
 query II
 EXPLAIN ANALYZE (FORMAT json)
-SELECT sum(p.i) FROM '{TEST_DIR}/bytes_scanned_1.parquet' p JOIN '{TEST_DIR}/bytes_scanned_uncounted.csv' c USING (i)
+SELECT sum(p.i) FROM '{TEST_DIR}/bytes_scanned_1.parquet' p JOIN native n USING (i)
 ----
 analyzed_plan	<REGEX>:[\s\S]*"bytes_scanned": [1-9][\s\S]*

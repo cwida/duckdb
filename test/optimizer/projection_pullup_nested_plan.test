@@ -1,0 +1,29 @@
+# name: test/optimizer/projection_pullup_nested_plan.test
+# description: Moving a computed projection still visits projections below its child join
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(i INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1), (20);
+
+# Compression would introduce its own projections below the joins.
+statement ok
+SET disabled_optimizers = 'compressed_materialization';
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+SET explain_output = 'optimized_only';
+
+# Pulling length above the outer join must also remove the inner column-reference projections.
+query II
+EXPLAIN SELECT p.x, z.i
+FROM (
+	SELECT length(a.i::VARCHAR) x, a.i
+	FROM (SELECT i FROM t) a JOIN (SELECT i FROM t) b USING (i)
+) p JOIN t z USING (i);
+----
+logical_opt	<!REGEX>:(?s).*JOIN.*PROJECTION.*

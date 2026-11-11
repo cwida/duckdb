@@ -1,0 +1,42 @@
+# name: test/sql/function/list/lambdas/lambda_dot_calls_nested_schema.test
+# description: Dot calls with nested schema paths and lambda parameters named like the path head.
+# group: [lambdas]
+
+statement ok
+SET lambda_syntax='DISABLE_SINGLE_ARROW'
+
+# nested schemas require v2 storage, so they live in an attached in-memory catalog
+
+statement ok
+ATTACH ':memory:' AS nested_db;
+
+statement ok
+USE nested_db;
+
+statement ok
+CREATE SCHEMA n1;
+
+statement ok
+CREATE SCHEMA n1.n2;
+
+statement ok
+CREATE MACRO n1.n2.times_ten(v) AS v * 10;
+
+# nested schema paths resolve through the path, with and without a parameter named like the path head
+
+query I
+SELECT list_transform([3], lambda n1: n1.n2.times_ten(n1));
+----
+[30]
+
+query I
+SELECT list_transform([3], lambda z: n1.n2.times_ten(z));
+----
+[30]
+
+# the catalog spelled on top of the nested path, with the parameter named like the catalog
+
+query I
+SELECT list_transform([3], lambda nested_db: nested_db.n1.n2.times_ten(nested_db));
+----
+[30]

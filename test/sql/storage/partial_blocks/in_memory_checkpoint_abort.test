@@ -1,0 +1,62 @@
+# name: test/sql/storage/partial_blocks/in_memory_checkpoint_abort.test
+# description: In-memory checkpoint failures invalidate the database and allow safe teardown.
+# group: [partial_blocks]
+
+foreach compression true false
+
+statement ok
+SET checkpoint_threshold='1TB';
+
+statement ok
+ATTACH ':memory:' AS m (COMPRESS {compression});
+
+statement ok
+CREATE TABLE m.a(k BIGINT PRIMARY KEY, v VARCHAR);
+
+statement ok
+INSERT INTO m.a SELECT range, 'value-' || range::VARCHAR FROM range(128);
+
+statement ok
+CREATE TABLE m.b(k BIGINT, v VARCHAR);
+
+statement ok
+INSERT INTO m.b SELECT range, 'value-' || range::VARCHAR FROM range(128);
+
+statement ok
+SET debug_checkpoint_abort='in_memory_checkpoint';
+
+# Abort after a table has been checkpointed and published.
+statement error
+CHECKPOINT m;
+----
+In-memory checkpoint aborted
+
+statement ok
+SET debug_checkpoint_abort='none';
+
+statement error
+SELECT count(*) FROM m.a;
+----
+has been invalidated
+
+statement ok
+DETACH m;
+
+statement ok
+ATTACH ':memory:' AS m (COMPRESS {compression});
+
+statement ok
+CREATE TABLE m.a AS SELECT range AS k FROM range(128);
+
+statement ok
+CHECKPOINT m;
+
+query II
+SELECT count(*), sum(k) FROM m.a;
+----
+128	8128
+
+statement ok
+DETACH m;
+
+endloop

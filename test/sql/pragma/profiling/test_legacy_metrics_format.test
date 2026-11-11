@@ -7,10 +7,10 @@ require json
 # Test that legacy_metrics_format produces flat root-level keys.
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['query.total_time', 'query.cpu_time', 'query.sql', 'query.total_intermediate_rows', 'query.total_rows_scanned', 'operator.type', 'operator.timing', 'operator.intermediate_rows'];
@@ -55,10 +55,10 @@ SELECT children[1].operator_type, children[1].operator_timing FROM metrics_outpu
 # Test that switching back to non-legacy format works.
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['query.total_time', 'operator.type', 'operator.timing'];

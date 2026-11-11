@@ -1,0 +1,198 @@
+# name: test/sql/cte/recursive_cte_key_finalized_values.test
+# description: Materialized finalized values of keyed recursive state stay correct across reads, updates and reuse
+# group: [cte]
+
+statement ok
+SET max_execution_time=10000;
+
+# A touched key whose comparator suppresses the next iteration must still publish its new value: the recurring
+# scan of a later iteration and the final result read the materialized values, not the frontier.
+
+statement ok
+CREATE TABLE collated_input(k INTEGER, v VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO collated_input VALUES (1, 'a'), (2, 'x');
+
+query IT
+WITH RECURSIVE t(k, v) USING KEY (k) AS (
+	SELECT k, v FROM collated_input
+	UNION
+	SELECT k, upper(v) FROM t WHERE k = 1
+)
+SELECT k, v FROM t ORDER BY k;
+----
+1	A
+2	x
+
+# Values that compare equal but differ in representation refresh on touch: -0.0 and 0.0 are not distinct,
+# so the frontier stops, yet the touched key must expose the latest stored value through the final drain.
+
+query IR
+WITH RECURSIVE t(k, v) USING KEY (k, first(v)) AS (
+	SELECT 1, -0.0::DOUBLE
+	UNION
+	SELECT k, 0.0::DOUBLE FROM t WHERE k = 1
+)
+SELECT k, v = 0.0 FROM t;
+----
+1	true
+
+# The all-new candidate-reuse path: every iteration creates only new keys, so the commit forwards the
+# candidates as the frontier. The next iteration's recurring scan and the final result must read the
+# candidate values as the finalized values of those keys.
+
+query II
+WITH RECURSIVE t(k, v) USING KEY (k, first(v)) AS (
+	SELECT 0, 0
+	UNION
+	SELECT n.k + 1, n.v + r.cnt FROM t n, (SELECT count(*)::INTEGER AS cnt FROM recurring.t) r WHERE n.k < 2500
+)
+SELECT count(*), max(v) > 0 FROM t;
+----
+2501	true
+
+# The changed-candidate reuse path: every iteration updates every existing key, so the commit may forward
+# the candidates. Reads of the next iteration must see the updated values.
+
+query II
+WITH RECURSIVE t(k, v) USING KEY (k, min(v)) AS (
+	SELECT i, 10000 FROM range(4000) r(i)
+	UNION
+	SELECT k, v - 1 FROM t WHERE v > 10000 - 4
+)
+SELECT count(*), min(v) FROM t;
+----
+4000	9996
+
+# Duplicate direct key probes read the same frozen key more than once in an iteration with exact values.
+
+query III
+WITH RECURSIVE
+base(k, w) AS (SELECT i % 3, i FROM range(12) r(i)),
+t(k, v) USING KEY (k, sum(v)) AS (
+	SELECT k, 1 FROM base
+	UNION
+	SELECT b.k, r.v FROM base b JOIN recurring.t r USING (k) WHERE r.v < 20
+)
+SELECT count(*), min(v), max(v) FROM t;
+----
+3	20	20
+
+# String payloads churn through the owned arena: long, non-inlined values rewritten every iteration must
+# stay exact across many iterations, including after replaced bytes are reclaimed.
+
+query III
+WITH RECURSIVE t(k, v, iter) USING KEY (k, last(v), max(iter)) AS (
+	SELECT i, repeat('x', 600) || i::VARCHAR, 0 FROM range(500) r(i)
+	UNION
+	SELECT k, repeat(chr(97 + (iter % 26)), 600) || k::VARCHAR, iter + 1 FROM t WHERE iter < 12
+)
+SELECT count(*), count(DISTINCT length(v)), bool_and(v = repeat('l', 600) || k::VARCHAR)::INTEGER
+FROM t;
+----
+500	3	1
+
+# NULL transitions: a value becoming NULL and leaving NULL again must track through the validity bytes.
+
+query III
+WITH RECURSIVE t(k, v, iter) USING KEY (k, last(v), max(iter)) AS (
+	SELECT 1, 42, 0
+	UNION
+	SELECT k, CASE WHEN iter = 0 THEN NULL ELSE 7 END, iter + 1 FROM t WHERE iter < 2
+)
+SELECT k, v, iter FROM t;
+----
+1	7	2
+
+# Sixteen-byte payload slots: HUGEINT values survive the round trip through the finalized region.
+
+query II
+WITH RECURSIVE t(k, v) USING KEY (k, sum(v)) AS (
+	SELECT i % 7, 42::HUGEINT FROM range(14) r(i)
+	UNION
+	SELECT k, 1::HUGEINT FROM t WHERE v < 0
+)
+SELECT count(*), count(DISTINCT v) FROM t;
+----
+7	1
+
+# Key-only recursion has no payload aggregates, reserves no finalized-value region, and must still run
+# with assertions enabled.
+
+query I
+WITH RECURSIVE t(k) USING KEY (k) AS (
+	SELECT i FROM range(5) r(i)
+	UNION
+	SELECT (k + 1) % 7 FROM t
+)
+SELECT count(*) FROM t;
+----
+7
+
+# A collated KEY column carries a hidden representative aggregate, so the key's display value flows
+# through a finalized VARCHAR slot.
+
+query TI
+WITH RECURSIVE t(k, v) USING KEY (k, max(v)) AS (
+	SELECT 'aa' COLLATE NOCASE AS k, 1 AS v
+	UNION
+	SELECT 'AA', v + 1 FROM t WHERE v < 4
+)
+SELECT upper(k), v FROM t;
+----
+AA	4
+
+# Byte-equal refreshes across arena compaction: half the keys toggle between two long strings each
+# iteration until replaced bytes outweigh the live ones and the arena compacts, the other half refresh
+# with identical bytes and keep their stored string. Compaction migrates both halves, so the recurring
+# scan, the direct key probes and the final drain must read intact values afterwards.
+
+query IIII
+WITH RECURSIVE t(k, v, iter) USING KEY (k, last(v), max(iter)) AS (
+	SELECT i, repeat(CASE WHEN i < 600 THEN 'a' ELSE 'e' END, 400), 0 FROM range(1200) r(i)
+	UNION
+	SELECT n.k,
+	       CASE WHEN n.k < 600 THEN repeat(CASE WHEN n.iter % 2 = 0 THEN 'b' ELSE 'a' END, 400)
+	            ELSE repeat('e', 400) END,
+	       n.iter + 1
+	FROM t n JOIN recurring.t r USING (k)
+	WHERE n.iter < 6
+)
+SELECT count(*), count(DISTINCT v), min(length(v)), max(length(v)) FROM t;
+----
+1200	2	400	400
+
+# Long strings through min and max: both directions of the comparison survive the finalized region.
+
+query III
+WITH RECURSIVE t(k, lo, hi) USING KEY (k, min(lo), max(hi)) AS (
+	SELECT i % 50, repeat('m', 60) || lpad(i::VARCHAR, 6, '0'), repeat('m', 60) || lpad(i::VARCHAR, 6, '0')
+	FROM range(500) r(i)
+	UNION
+	SELECT k, repeat('a', 60) || lpad(k::VARCHAR, 6, '0'), repeat('z', 60) || lpad(k::VARCHAR, 6, '0')
+	FROM t WHERE lo NOT LIKE 'a%'
+)
+SELECT count(*), count_if(lo LIKE 'a%' AND length(lo) = 66), count_if(hi LIKE 'z%' AND length(hi) = 66)
+FROM t;
+----
+50	50	50
+
+# The finalized strings allocate through the buffer allocator, so they stay inside the memory limit's
+# accounting while the recursion runs.
+
+statement ok
+SET memory_limit='96MB';
+
+query II
+WITH RECURSIVE t(k, v, iter) USING KEY (k, last(v), max(iter)) AS (
+	SELECT i, repeat('m', 200) || i::VARCHAR, 0 FROM range(20000) r(i)
+	UNION
+	SELECT k, repeat(chr((97 + ((k + iter) % 5))::INTEGER), 200) || k::VARCHAR, iter + 1 FROM t WHERE iter < 4
+)
+SELECT count(*), bool_and(v = repeat(chr((97 + ((k + 3) % 5))::INTEGER), 200) || k::VARCHAR)::INTEGER FROM t;
+----
+20000	1
+
+statement ok
+RESET memory_limit;

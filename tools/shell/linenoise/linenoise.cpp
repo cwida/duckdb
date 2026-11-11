@@ -171,7 +171,11 @@ bool Linenoise::CompleteLine(KeyPress &next_key) {
 			// instead we display the list of suggestions
 			// but first, complete up to the longest common prefix (like shell behavior)
 			auto &first = completions[0].completion;
+			// only consider the completed part - the text after the cursor is shared by all completions
 			idx_t common_len = first.size();
+			for (auto &completion : completions) {
+				common_len = MinValue<idx_t>(common_len, completion.cursor_pos);
+			}
 			for (idx_t i = 1; i < completions.size(); i++) {
 				auto &other = completions[i].completion;
 				idx_t min_len = MinValue<idx_t>(common_len, other.size());
@@ -183,11 +187,12 @@ bool Linenoise::CompleteLine(KeyPress &next_key) {
 				}
 				common_len = j;
 			}
-			if (common_len > (idx_t)len) {
-				// there is a common prefix longer than the current input - apply it
-				int nwritten = snprintf(buf, buflen, "%.*s", (int)common_len, first.c_str());
-				pos = nwritten;
-				len = nwritten;
+			if (common_len > (idx_t)pos) {
+				// there is a common prefix longer than the input before the cursor - apply it
+				string suffix(buf + pos, len - pos);
+				int nwritten = snprintf(buf, buflen, "%.*s%s", (int)common_len, first.c_str(), suffix.c_str());
+				len = MinValue<idx_t>((idx_t)nwritten, buflen - 1);
+				pos = MinValue<idx_t>(common_len, len);
 			}
 			completion_idx = optional_idx();
 			render_completion_suggestion = true;
@@ -291,7 +296,10 @@ bool Linenoise::CompleteLine(KeyPress &next_key) {
 			}
 			/* Update buffer and return */
 			int nwritten = snprintf(buf, buflen, "%s", accepted_completion.completion.c_str());
-			pos = accepted_completion.cursor_pos;
+			if (nwritten > (int)buflen - 1) {
+				nwritten = (int)buflen - 1;
+			}
+			pos = MinValue<idx_t>(accepted_completion.cursor_pos, nwritten);
 			len = nwritten;
 		}
 	}
@@ -794,7 +802,6 @@ void Linenoise::EditSwapCharacter() {
 	if (pos == 0 || len < 2) {
 		return;
 	}
-	char temp_buffer[128];
 	if (pos + 1 > len) {
 		pos = PrevChar();
 	}
@@ -802,9 +809,9 @@ void Linenoise::EditSwapCharacter() {
 	int next_pos = NextChar();
 	int prev_char_size = pos - prev_pos;
 	int cur_char_size = next_pos - pos;
-	memcpy(temp_buffer, buf + prev_pos, prev_char_size);
+	std::string temp_buffer(buf + prev_pos, prev_char_size);
 	memmove(buf + prev_pos, buf + pos, cur_char_size);
-	memcpy(buf + prev_pos + cur_char_size, temp_buffer, prev_char_size);
+	memcpy(buf + prev_pos + cur_char_size, temp_buffer.c_str(), prev_char_size);
 	pos = next_pos;
 	RefreshLine();
 }
@@ -950,6 +957,10 @@ void Linenoise::AcceptSearch() {
 		auto match = search_matches[search_index];
 		auto history_entry = History::GetEntry(match.history_index);
 		auto history_len = strlen(history_entry);
+		if (history_len >= buflen) {
+			CancelSearch();
+			return;
+		}
 		memcpy(buf, history_entry, history_len);
 		buf[history_len] = '\0';
 		pos = match.match_end;

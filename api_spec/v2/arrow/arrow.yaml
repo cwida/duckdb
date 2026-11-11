@@ -292,13 +292,19 @@ functions:
         const: true
         description: An array of `count` column types. May be NULL only when `count` is 0.
       names:
-        type: str
-        indirection: 1
+        type: char
+        indirection: 2
         const: true
         kind: IN
         description: |
           An array of `count` column names, parallel to `types`. Each name must be valid UTF-8.
           May be NULL only when `count` is 0.
+      names_lengths:
+        type: idx
+        indirection: 1
+        const: true
+        kind: IN
+        description: Byte lengths of the entries in `names`; element i is the length of `names[i]`. May be NULL only when `names` is NULL.
       count:
         type: idx
         description: The number of columns, being the length of both `types` and `names`.
@@ -456,11 +462,17 @@ functions:
         type: sql_statement
         description: The statement to execute. Not consumed.
       parameter_names:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
         const: true
         kind: IN
         description: Optional. As in `[[statement_execute]]`.
+      parameter_names_lengths:
+        type: idx
+        indirection: 1
+        const: true
+        kind: IN
+        description: Byte lengths of the entries in `parameter_names`; element i is the length of `parameter_names[i]`. May be NULL only when `parameter_names` is NULL.
       parameter_values:
         type: value
         indirection: 1
@@ -497,11 +509,17 @@ functions:
         type: prepared_statement
         description: The prepared statement to execute. Not consumed.
       parameter_names:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
         const: true
         kind: IN
         description: Optional. As in `[[prepared_statement_execute]]`.
+      parameter_names_lengths:
+        type: idx
+        indirection: 1
+        const: true
+        kind: IN
+        description: Byte lengths of the entries in `parameter_names`; element i is the length of `parameter_names[i]`. May be NULL only when `parameter_names` is NULL.
       parameter_values:
         type: value
         indirection: 1
