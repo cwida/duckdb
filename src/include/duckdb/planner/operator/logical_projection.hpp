@@ -24,6 +24,8 @@ public:
 	LogicalProjection(TableIndex table_index, vector<unique_ptr<Expression>> select_list);
 
 	TableIndex table_index;
+	//! Whether this projection ends a query block, so filters that can throw from above must stay above it
+	bool query_block_boundary = true;
 
 public:
 	//! Projects every column of the child unchanged
