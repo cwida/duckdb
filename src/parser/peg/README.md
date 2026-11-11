@@ -121,7 +121,7 @@ Lines starting with `#` are comments:
 ```
 # Expression precedence levels
 # LEVEL 1 (Lowest)
-Expression <- LambdaArrowExpression
+Expression <- LogicalOrExpression
 ```
 
 ### Keywords

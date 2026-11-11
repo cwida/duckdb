@@ -647,6 +647,21 @@ bool Interval::TryAdd(timestamp_t left, interval_t right, timestamp_t &result) {
 	return Timestamp::TryFromDatetime(new_date, new_time, result);
 }
 
+bool Interval::TryAdd(timestamp_ns_t ns, interval_t interval, timestamp_ns_t &result) {
+	if (!ns.IsFinite()) {
+		result = ns;
+		return true;
+	}
+	timestamp_t us;
+	int64_t nanos;
+	const auto precision = ns.PRECISION / us.PRECISION;
+	Timestamp::SplitTime(ns.value, precision, us.value, nanos);
+	if (!Interval::TryAdd(us, interval, us)) {
+		return false;
+	}
+	return Timestamp::TryCombineUnits(us.value, nanos, precision, result.value);
+}
+
 dtime_t Interval::Add(dtime_t left, interval_t right, date_t &date) {
 	int64_t diff = right.micros - ((right.micros / Interval::MICROS_PER_DAY) * Interval::MICROS_PER_DAY);
 	left += diff;
@@ -674,6 +689,13 @@ timestamp_t Interval::Add(timestamp_t left, interval_t right) {
 	auto new_date = Interval::Add(date, right);
 	auto new_time = Interval::Add(time, right, new_date);
 	return Timestamp::FromDatetime(new_date, new_time);
+}
+
+timestamp_ns_t Interval::Add(timestamp_ns_t ns, interval_t interval) {
+	if (!TryAdd(ns, interval, ns)) {
+		throw OutOfRangeException("Cannot add interval to timestamp_ns");
+	}
+	return ns;
 }
 
 } // namespace duckdb

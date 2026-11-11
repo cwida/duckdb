@@ -321,6 +321,11 @@ static LogicalPlanSQLExportResult ExportMergeNode(LogicalMergeInto &op, LogicalP
 					set_info->columns.push_back(op.table.GetColumns().GetColumn(bound_action->columns[i]).Name());
 					set_info->expressions.push_back(std::move(value.GetValue()));
 				}
+				if (set_info->columns.empty()) {
+					// an update without assignments is expressed as DO NOTHING
+					action->action_type = MergeActionType::MERGE_DO_NOTHING;
+					break;
+				}
 				action->update_info = std::move(set_info);
 				break;
 			}

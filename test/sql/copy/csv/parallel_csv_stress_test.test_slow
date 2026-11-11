@@ -23,6 +23,7 @@ insert into skipped_tests values
 	('data/csv/test/invalid_utf_complex.csv'),
 	('data/csv/test/invalid_utf_header.csv'),
 	('data/csv/test/invalid_utf_list.csv'),
+	('data/csv/test/invalid_utf_nested.csv'),
 	('data/csv/test/invalid_utf_quoted.csv'),
 	('data/csv/test/invalid_utf_quoted_nl.csv')
 

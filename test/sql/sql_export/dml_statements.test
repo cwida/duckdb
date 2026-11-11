@@ -366,6 +366,27 @@ SELECT a FROM d ORDER BY a LIMIT 1;
 statement ok
 RESET debug_verify_statement;
 
+# INSERT OR REPLACE with only key columns exports a MERGE with DO NOTHING instead of an empty SET
+statement ok
+CREATE TABLE dml_key_only(k INTEGER PRIMARY KEY, v INTEGER);
+
+statement ok
+INSERT INTO dml_key_only VALUES (1, 10);
+
+query TT
+EXPLAIN (SQL) INSERT OR REPLACE INTO dml_key_only(k) VALUES (1), (2);
+----
+sql	<REGEX>:(?s).*WHEN\s+MATCHED\s+THEN\s+DO\s+NOTHING\s+WHEN\s+NOT\s+MATCHED\s+THEN\s+INSERT.*
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+statement ok
+INSERT OR REPLACE INTO dml_key_only(k) VALUES (1), (2);
+
+statement ok
+RESET debug_verify_statement;
+
 # an ON CONFLICT insert binds to MERGE INTO, which SQL does not accept as a CTE body
 statement error
 EXPLAIN (SQL) WITH ups AS (INSERT INTO dml_keyed VALUES (1,'x') ON CONFLICT DO NOTHING RETURNING a) SELECT * FROM ups;

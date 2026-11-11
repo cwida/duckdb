@@ -1,0 +1,13 @@
+# name: test/sql/types/bignum/test_bignum_negate_compare.test
+# description: Compare against a negated BIGNUM that is computed at runtime
+# group: [bignum]
+
+statement ok
+CREATE TABLE numbers AS SELECT i, s::BIGNUM AS v, '170141183460469231731687303715884105728'::BIGNUM AS m FROM (VALUES (1, '-18446744073709551616'), (2, '-170141183460469231731687303715884105728'), (3, '-340282366920938463463374607431768211456')) t(i, s)
+
+query III
+SELECT i, v > -m, v = -m FROM numbers ORDER BY i
+----
+1	true	false
+2	false	true
+3	false	false

@@ -1,0 +1,164 @@
+# name: test/sql/catalog/nested_schema_ctas.test
+# description: CTAS into a nested schema next to a sibling schema with the same leaf name
+# group: [catalog]
+
+statement ok
+ATTACH ':memory:' AS otherdb;
+
+statement ok
+CREATE SCHEMA otherdb.frontier;
+
+statement ok
+CREATE TABLE otherdb.frontier.t AS SELECT 99 AS n;
+
+statement ok
+CREATE SCHEMA otherdb.p;
+
+statement ok
+CREATE SCHEMA otherdb.p.frontier;
+
+statement ok
+CREATE TABLE otherdb.p.frontier.t AS SELECT 42 AS n;
+
+query I
+SELECT n FROM otherdb.p.frontier.t;
+----
+42
+
+# the sibling table keeps its own rows, no cross-contamination in either direction
+query I
+SELECT n FROM otherdb.frontier.t;
+----
+99
+
+# INSERT INTO resolves the nested table
+statement ok
+INSERT INTO otherdb.p.frontier.t VALUES (43);
+
+query I
+SELECT n FROM otherdb.p.frontier.t ORDER BY n;
+----
+42
+43
+
+query I
+SELECT n FROM otherdb.frontier.t;
+----
+99
+
+# sibling schema created after the nested one
+statement ok
+ATTACH ':memory:' AS db2;
+
+statement ok
+CREATE SCHEMA db2.q;
+
+statement ok
+CREATE SCHEMA db2.q.leaf;
+
+statement ok
+CREATE TABLE db2.q.leaf.t AS SELECT 1 AS n;
+
+statement ok
+CREATE SCHEMA db2.leaf;
+
+statement ok
+CREATE TABLE db2.leaf.t AS SELECT 2 AS n;
+
+query I
+SELECT n FROM db2.q.leaf.t;
+----
+1
+
+query I
+SELECT n FROM db2.leaf.t;
+----
+2
+
+# deeper nesting with the same leaf name on every level
+statement ok
+CREATE SCHEMA db2.leaf.leaf;
+
+statement ok
+CREATE TABLE db2.leaf.leaf.t AS SELECT 3 AS n;
+
+query I
+SELECT n FROM db2.leaf.leaf.t;
+----
+3
+
+query I
+SELECT n FROM db2.leaf.t;
+----
+2
+
+# CTAS with IF NOT EXISTS must look at the nested schema, not the sibling:
+# db2.leaf.s exists, db2.q.leaf.s does not, so this must create and fill the nested table
+statement ok
+CREATE TABLE db2.leaf.s AS SELECT 99 AS n;
+
+statement ok
+CREATE TABLE IF NOT EXISTS db2.q.leaf.s AS SELECT 7 AS n;
+
+query I
+SELECT n FROM db2.leaf.s;
+----
+99
+
+query I
+SELECT n FROM db2.q.leaf.s;
+----
+7
+
+# conversely, IF NOT EXISTS on an existing nested table stays a no-op
+statement ok
+CREATE TABLE IF NOT EXISTS db2.q.leaf.s AS SELECT 8 AS n;
+
+query I
+SELECT n FROM db2.q.leaf.s;
+----
+7
+
+# OR REPLACE replaces the nested table only
+statement ok
+CREATE OR REPLACE TABLE db2.q.leaf.t AS SELECT 11 AS n;
+
+query I
+SELECT n FROM db2.q.leaf.t;
+----
+11
+
+query I
+SELECT n FROM db2.leaf.t;
+----
+2
+
+# protection: unqualified CTAS targets the first search-path schema even when a
+# same-named table exists in a later one
+statement ok
+CREATE SCHEMA db2.s1;
+
+statement ok
+CREATE SCHEMA db2.s2;
+
+statement ok
+CREATE TABLE db2.s2.u AS SELECT 99 AS n;
+
+statement ok
+USE db2;
+
+statement ok
+SET search_path='s1,s2';
+
+statement ok
+CREATE TABLE u AS SELECT 42 AS n;
+
+query I
+SELECT n FROM db2.s1.u;
+----
+42
+
+query I
+SELECT n FROM db2.s2.u;
+----
+99

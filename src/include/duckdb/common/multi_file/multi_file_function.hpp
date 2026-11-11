@@ -1144,11 +1144,8 @@ public:
 		auto &bind_data = input.bind_data->Cast<MultiFileBindData>();
 		auto &column_index = input.column_index;
 
-		if (!bind_data.initial_reader) {
-			// no reader
-			return nullptr;
-		}
-		// scanning single file and we have the metadata read already
+		// a scan whose schema was given opens no file at bind - the column_statistics option below still applies
+		const bool opened_a_file = bind_data.initial_reader != nullptr;
 		if (column_index.IsVirtualColumn()) {
 			return nullptr;
 		}
@@ -1158,7 +1155,7 @@ public:
 		auto &file_row_number_idx = bind_data.reader_bind.file_row_number_idx;
 		if (file_row_number_idx.IsValid() && file_row_number_idx.GetIndex() == primary_index) {
 			// the column is read from the row number virtual column of the reader
-			if (bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES) {
+			if (!opened_a_file || bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES) {
 				return nullptr;
 			}
 			return bind_data.initial_reader->GetVirtualColumnStatistics(
@@ -1190,27 +1187,39 @@ public:
 			// A physical shadow's bounds do not describe the generated path. Explicit scan statistics above still do.
 			return nullptr;
 		}
+		if (!opened_a_file) {
+			return nullptr;
+		}
 		// NOTE: we do not want to parse the file metadata for the sole purpose of getting column statistics
 		const bool multiple_files = bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES;
 		if (multiple_files && !bind_data.file_options.union_by_name) {
 			// multiple files, but no union_by_name: no luck!
 			return nullptr;
 		}
-		auto result = bind_data.initial_reader->GetStatistics(context, col_name);
-		if (result && !bind_data.file_options.bound_schema.empty() &&
-		    !bind_data.MatchesPhysicalColumn(primary_index, col_name, result->GetType())) {
-			// Check the whole root before interpreting an extracted child's positional statistics.
-			return nullptr;
-		}
-		if (result && multiple_files) {
-			for (idx_t i = 1; i < bind_data.union_readers.size(); i++) {
-				auto &union_reader = *bind_data.union_readers[i];
-				auto stats = union_reader.GetStatistics(context, col_name);
-				if (!stats || result->GetType() != stats->GetType()) {
-					return nullptr;
-				}
-				result->Merge(*stats);
+		unique_ptr<BaseStatistics> result;
+		try {
+			result = bind_data.initial_reader->GetStatistics(context, col_name);
+			if (result && !bind_data.file_options.bound_schema.empty() &&
+			    !bind_data.MatchesPhysicalColumn(primary_index, col_name, result->GetType())) {
+				// Check the whole root before interpreting an extracted child's positional statistics.
+				return nullptr;
 			}
+			if (result && multiple_files) {
+				for (idx_t i = 1; i < bind_data.union_readers.size(); i++) {
+					auto &union_reader = *bind_data.union_readers[i];
+					auto stats = union_reader.GetStatistics(context, col_name);
+					if (!stats || result->GetType() != stats->GetType()) {
+						return nullptr;
+					}
+					result->Merge(*stats);
+				}
+			}
+		} catch (std::exception &ex) {
+			// undecodable statistics of one of multiple files just mean there are none - the data may still read fine
+			if (!multiple_files || ErrorData(ex).Type() == ExceptionType::INTERRUPT) {
+				throw;
+			}
+			return nullptr;
 		}
 		if (!result || !column_index.IsPushdownExtract()) {
 			return result;
