@@ -168,7 +168,8 @@ unique_ptr<CatalogEntry> MacroCatalogEntry::AlterEntry(CatalogTransaction transa
 	if (!temporary && attached.HasStorageManager() && !attached.IsTemporary()) {
 		auto &storage_manager = attached.GetStorageManager();
 		const auto since = StorageCompatibility::FromString("v2.1.0").storage_version;
-		if (!storage_manager.InMemory() && storage_manager.GetStorageVersion() < since) {
+		// a committed record replays regardless of the version in the file header
+		if (storage_manager.IsLoaded() && !storage_manager.InMemory() && storage_manager.GetStorageVersion() < since) {
 			string msg = macro_info.alter_macro_type == AlterMacroType::ADD_OVERLOAD ? "Adding" : "Dropping";
 			msg += " a single overload is only supported for storage versions v2.1.0 and higher.\n";
 			msg += "Use an in-memory database, ATTACH with (STORAGE_VERSION v2.1.0), or a TEMP macro";

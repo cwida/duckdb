@@ -174,3 +174,50 @@ query T
 SELECT typeof(up.main.m());
 ----
 VARCHAR
+
+statement ok
+DETACH up;
+
+# member alters committed after an uncheckpointed in-place upgrade replay on a reopen without the
+# version: the WAL holds what the upgraded database accepted
+statement ok
+ATTACH '{TEST_DIR}/language_function_upgrade_members.db' AS upm (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE TABLE upm.main.t(i INTEGER);
+
+statement ok
+CHECKPOINT upm;
+
+statement ok
+DETACH upm;
+
+statement ok
+ATTACH '{TEST_DIR}/language_function_upgrade_members.db' AS upm (STORAGE_VERSION 'v2.1.0');
+
+statement ok
+CREATE FUNCTION upm.main.f() LANGUAGE otherlang AS 'one';
+
+statement ok
+CREATE FUNCTION upm.main.f(x INTEGER) LANGUAGE otherlang AS 'two';
+
+statement ok
+CREATE OR REPLACE FUNCTION upm.main.f(x INTEGER) LANGUAGE otherlang AS 'three';
+
+statement ok
+DETACH upm;
+
+statement ok
+ATTACH '{TEST_DIR}/language_function_upgrade_members.db' AS upm;
+
+query TT rowsort
+SELECT parameter_types, macro_definition FROM duckdb_functions() WHERE database_name = 'upm' AND function_name = 'f';
+----
+[INTEGER]	three
+[]	one
+
+# a new member alter on the reopened database is still gated on its storage version
+statement error
+CREATE FUNCTION upm.main.f(x VARCHAR) LANGUAGE otherlang AS 'four';
+----
+<REGEX>:.*only supported for storage versions v2\.1\.0 and higher.*
