@@ -1491,10 +1491,10 @@ TEST_CASE("Aliases created before joins retain hidden contributors", "[optimizer
 	auto alias_projection = make_uniq<LogicalProjection>(TableIndex(15), std::move(aliases));
 	alias_projection->children.push_back(std::move(inner.children[0]));
 	inner.children[0] = std::move(alias_projection);
-	inner.conditions[0].GetLHS().Cast<BoundColumnRefExpression>().BindingMutable() =
-	    ColumnBinding(TableIndex(15), ProjectionIndex(0));
-	outer_projection.expressions[0]->Cast<BoundColumnRefExpression>().BindingMutable() =
-	    ColumnBinding(TableIndex(15), ProjectionIndex(1));
+	inner.conditions[0].LeftReference() = inner.conditions[0].GetLHS().Cast<BoundColumnRefExpression>().WithBinding(
+	    ColumnBinding(TableIndex(15), ProjectionIndex(0)));
+	outer_projection.expressions[0] = outer_projection.expressions[0]->Cast<BoundColumnRefExpression>().WithBinding(
+	    ColumnBinding(TableIndex(15), ProjectionIndex(1)));
 	JoinOrderSourceStats snapshot(*connection.context, *plan);
 	auto sources = snapshot.Resolve(outer_projection);
 	REQUIRE(sources.at(outer_projection.GetColumnBindings()[0]).equivalents.size() == 1);
@@ -1519,7 +1519,7 @@ TEST_CASE("Projected source equalities exclude correlated operands", "[optimizer
 		auto &join = projection.children[0]->Cast<LogicalComparisonJoin>();
 		auto &condition = join.conditions[0];
 		auto binding = condition.GetLHS().Cast<BoundColumnRefExpression>().Binding();
-		condition.GetLHS().Cast<BoundColumnRefExpression>().DepthMutable() = 1;
+		condition.LeftReference() = condition.GetLHS().Cast<BoundColumnRefExpression>().WithDepth(1);
 		if (cast) {
 			condition.LeftReference() = BoundCastExpression::AddCastToType(
 			    *connection.context, std::move(condition.LeftReference()), LogicalType::BIGINT);
