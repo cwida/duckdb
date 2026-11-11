@@ -561,7 +561,7 @@ void PrimitiveColumnWriter::FinalizeWrite(ColumnWriterState &state_p) {
 		writer.BufferPageIndex(state.col_idx, std::move(page_index));
 	}
 	if (state.bloom_filter && !HasDictionary(state) &&
-	    state.bloom_filter->Get()->len * MIN_COMPRESSED_TO_FILTER_RATIO >
+	    state.bloom_filter->Get()->GetLength() * MIN_COMPRESSED_TO_FILTER_RATIO >
 	        NumericCast<idx_t>(column_chunk.meta_data.total_compressed_size)) {
 		state.bloom_filter.reset();
 	}
