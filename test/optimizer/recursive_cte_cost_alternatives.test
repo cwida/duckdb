@@ -129,6 +129,10 @@ WITH RECURSIVE c(id, g, depth) AS (
 )
 SELECT count(*), sum(id) FROM c;
 
+# The compound build runs about 2 s optimized and 6 s with assertions, so give loaded assert runners headroom
+statement ok
+SET max_execution_time=60000;
+
 loop threshold 0 2
 
 statement ok
