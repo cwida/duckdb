@@ -35,7 +35,7 @@ Planner::Planner(ClientContext &context) : binder(Binder::CreateBinder(context))
 }
 
 static void RenderSQLExplain(unique_ptr<LogicalOperator> &op, ClientContext &context, Binder &binder) {
-	if (op->type == LogicalOperatorType::LOGICAL_PREPARE || op->type == LogicalOperatorType::LOGICAL_EXECUTE) {
+	if (op->type == LogicalOperatorType::LOGICAL_PREPARE) {
 		for (auto &child : op->children) {
 			RenderSQLExplain(child, context, binder);
 		}
