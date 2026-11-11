@@ -4,8 +4,45 @@
 
 namespace duckdb {
 
+void ColumnNameIndex::Build(const vector<MultiFileColumnDefinition> &columns) {
+	positions.clear();
+	for (idx_t i = 0; i < columns.size(); i++) {
+		positions.emplace(columns[i].name, i);
+	}
+}
+
+void ColumnNameIndex::Build(const vector<Identifier> &names) {
+	positions.clear();
+	for (idx_t i = 0; i < names.size(); i++) {
+		positions.emplace(names[i], i);
+	}
+}
+
+void ColumnNameIndex::Build(const vector<string> &names) {
+	positions.clear();
+	for (idx_t i = 0; i < names.size(); i++) {
+		positions.emplace(Identifier(names[i]), i);
+	}
+}
+
+optional_idx ColumnNameIndex::Find(const Identifier &name) const {
+	auto entry = positions.find(name);
+	if (entry == positions.end()) {
+		return optional_idx();
+	}
+	return entry->second;
+}
+
 unique_ptr<BaseStatistics> BaseFileReader::GetStatistics(ClientContext &context, const Identifier &name) {
 	return nullptr;
+}
+
+optional_idx BaseFileReader::FindColumn(const Identifier &name) const {
+	auto position = column_name_index.Find(name);
+	// a stale index would point at another column
+	D_ASSERT(!position.IsValid() ||
+	         (position.GetIndex() < columns.size() && columns[position.GetIndex()].name == name));
+	return position;
 }
 
 unique_ptr<BaseStatistics> BaseFileReader::GetVirtualColumnStatistics(ClientContext &context,
@@ -43,6 +80,12 @@ InsertionOrderPreservingMap<Value> BaseFileReader::GetMetadata() const {
 
 unique_ptr<BaseStatistics> BaseUnionData::GetStatistics(ClientContext &context, const Identifier &name) {
 	return nullptr;
+}
+
+optional_idx BaseUnionData::FindColumn(const Identifier &name) const {
+	auto position = column_name_index.Find(name);
+	D_ASSERT(!position.IsValid() || (position.GetIndex() < names.size() && names[position.GetIndex()] == name));
+	return position;
 }
 
 } // namespace duckdb

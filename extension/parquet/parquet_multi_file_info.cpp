@@ -568,6 +568,7 @@ shared_ptr<BaseUnionData> ParquetReader::GetUnionData(idx_t file_idx) {
 		result->names.push_back(column.name.GetIdentifierName());
 		result->types.push_back(column.type);
 	}
+	result->column_name_index.Build(result->names);
 
 	result->options = parquet_options;
 	result->metadata = metadata;

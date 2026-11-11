@@ -1,0 +1,63 @@
+# name: test/sql/copy/parquet/union_by_name_statistics_lookup.test
+# description: Statistics of a union_by_name scan find each column by name in every file, whatever its position or case
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 1 AS a, 'x' AS b, 10 AS c) TO '{TEST_DIR}/ubn_stats_lookup_0.parquet'
+
+# the same columns, reversed and in upper case
+statement ok
+COPY (SELECT 20 AS C, 'y' AS B, 2 AS A) TO '{TEST_DIR}/ubn_stats_lookup_1.parquet'
+
+# one column missing, and one that only this file has
+statement ok
+COPY (SELECT 30 AS c, 3 AS a, 'z' AS d) TO '{TEST_DIR}/ubn_stats_lookup_2.parquet'
+
+query IIII
+SELECT * FROM read_parquet(['{TEST_DIR}/ubn_stats_lookup_0.parquet', '{TEST_DIR}/ubn_stats_lookup_1.parquet', '{TEST_DIR}/ubn_stats_lookup_2.parquet'], union_by_name=true) ORDER BY a
+----
+1	x	10	NULL
+2	y	20	NULL
+3	NULL	30	z
+
+# the statistics are the merge of all files: a is 1..3, c is 10..30, b/d are missing from some files
+query IIIIII
+SELECT min(a), max(a), min(b), max(b), min(c), max(c) FROM read_parquet(['{TEST_DIR}/ubn_stats_lookup_0.parquet', '{TEST_DIR}/ubn_stats_lookup_1.parquet', '{TEST_DIR}/ubn_stats_lookup_2.parquet'], union_by_name=true)
+----
+1	3	x	y	10	30
+
+# a filter the merged statistics prove always true is dropped from the scan
+query II
+EXPLAIN SELECT a, c FROM read_parquet(['{TEST_DIR}/ubn_stats_lookup_0.parquet', '{TEST_DIR}/ubn_stats_lookup_1.parquet', '{TEST_DIR}/ubn_stats_lookup_2.parquet'], union_by_name=true) WHERE a >= 1 AND c <= 30
+----
+physical_plan	<!REGEX>:.*Filters.*
+
+# a filter the merged statistics prove always false yields an empty result
+query II
+EXPLAIN SELECT a, c FROM read_parquet(['{TEST_DIR}/ubn_stats_lookup_0.parquet', '{TEST_DIR}/ubn_stats_lookup_1.parquet', '{TEST_DIR}/ubn_stats_lookup_2.parquet'], union_by_name=true) WHERE a > 3
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+# a filter the statistics of the first file alone would prove false still reads the other files
+query III
+SELECT a, b, c FROM read_parquet(['{TEST_DIR}/ubn_stats_lookup_0.parquet', '{TEST_DIR}/ubn_stats_lookup_1.parquet', '{TEST_DIR}/ubn_stats_lookup_2.parquet'], union_by_name=true) WHERE a > 1 ORDER BY a
+----
+2	y	20
+3	NULL	30
+
+# a column that is missing from one of the files has no file statistics there, so no filter is dropped for it
+query I
+SELECT d FROM read_parquet(['{TEST_DIR}/ubn_stats_lookup_0.parquet', '{TEST_DIR}/ubn_stats_lookup_1.parquet', '{TEST_DIR}/ubn_stats_lookup_2.parquet'], union_by_name=true) WHERE d = 'z'
+----
+z
+
+# the statistics of a column the first files have but a later file lacks are dropped, not kept from those
+# files - with b's x..y from the first two files retained, b >= 'x' would look always true and keep the row
+# where b is NULL
+query I
+SELECT a FROM read_parquet(['{TEST_DIR}/ubn_stats_lookup_0.parquet', '{TEST_DIR}/ubn_stats_lookup_1.parquet', '{TEST_DIR}/ubn_stats_lookup_2.parquet'], union_by_name=true) WHERE b >= 'x' ORDER BY a
+----
+1
+2

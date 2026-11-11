@@ -140,9 +140,12 @@ void ColumnDataCollectionSegment::AllocateNewChunk() {
 	ChunkMetaData meta_data;
 	meta_data.count = 0;
 	meta_data.vector_data.reserve(types.size());
+	meta_data.allocation_sizes.reserve(types.size());
 	for (idx_t i = 0; i < types.size(); i++) {
+		const auto allocated_before = total_allocated;
 		auto vector_idx = AllocateVector(types[i], meta_data);
 		meta_data.vector_data.push_back(vector_idx);
+		meta_data.allocation_sizes.push_back(total_allocated - allocated_before);
 	}
 	chunk_data.push_back(std::move(meta_data));
 }
@@ -323,6 +326,16 @@ idx_t ColumnDataCollectionSegment::GetChunkAllocationSize(const idx_t chunk_idx)
 	return total_allocated - last_chunk_total_allocated;
 }
 
+idx_t ColumnDataCollectionSegment::GetChunkAllocationSize(const idx_t chunk_idx,
+                                                          const vector<column_t> &column_ids) const {
+	const auto &allocation_sizes = chunk_data[chunk_idx].allocation_sizes;
+	idx_t result = 0;
+	for (const auto &column_id : column_ids) {
+		result += allocation_sizes[column_id];
+	}
+	return result;
+}
+
 void ColumnDataCollectionSegment::FetchChunk(idx_t chunk_idx, DataChunk &result) {
 	vector<column_t> column_ids;
 	column_ids.reserve(types.size());
@@ -344,6 +357,11 @@ void ColumnDataCollectionSegment::Verify() {
 	idx_t total_count = 0;
 	for (idx_t i = 0; i < chunk_data.size(); i++) {
 		total_count += chunk_data[i].count;
+		idx_t allocation_size = 0;
+		for (const auto &column_size : chunk_data[i].allocation_sizes) {
+			allocation_size += column_size;
+		}
+		D_ASSERT(allocation_size == GetChunkAllocationSize(i));
 	}
 	D_ASSERT(total_count == this->count);
 #endif
