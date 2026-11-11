@@ -63,6 +63,10 @@ using duckdb_parquet::Encoding;
 using duckdb_parquet::PageType;
 using duckdb_parquet::Type;
 
+void ByteBuffer::ThrowOutOfBuffer() {
+	throw std::runtime_error("Out of buffer");
+}
+
 const uint64_t ParquetDecodeUtils::BITPACK_MASKS[] = {0,
                                                       1,
                                                       3,

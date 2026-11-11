@@ -100,9 +100,12 @@ public:
 
 	void Available(const idx_t req_len) const {
 		if (!CheckAvailable(req_len)) {
-			throw std::runtime_error("Out of buffer");
+			ThrowOutOfBuffer();
 		}
 	}
+
+	// Out of line so the throw does not stop Available from inlining.
+	[[noreturn]] static void ThrowOutOfBuffer();
 
 	bool CheckAvailable(const idx_t req_len) const {
 		return req_len <= len - offset;
