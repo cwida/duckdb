@@ -1,0 +1,35 @@
+# name: test/sql/optimizer/statistics/struct_all_null_short_circuit.test
+# description: DEFAULT_NULL_HANDLING nested functions with all-NULL inputs
+# group: [statistics]
+
+statement ok
+PRAGMA enable_verification
+
+# all-NULL struct: struct_extract returns NULL
+query I
+SELECT struct_extract(NULL::STRUCT(a INTEGER, b VARCHAR), 'a') IS NULL;
+----
+true
+
+# struct_pack with NULL fields returns a non-NULL struct with NULL fields
+query I
+SELECT struct_pack(a := NULL::INTEGER, b := NULL::VARCHAR) IS NULL;
+----
+false
+
+query I
+SELECT struct_extract(struct_pack(a := NULL::INTEGER, b := NULL::VARCHAR), 'a') IS NULL;
+----
+true
+
+# partially NULL struct
+query I
+SELECT struct_extract(struct_pack(a := 42, b := NULL::VARCHAR), 'a');
+----
+42
+
+# list_extract from an all-NULL list
+query I
+SELECT list_extract(NULL::INTEGER[], 1) IS NULL;
+----
+true
