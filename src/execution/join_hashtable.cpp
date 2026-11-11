@@ -54,7 +54,9 @@ JoinHashTable::SharedState::SharedState()
 
 JoinHashTable::ProbeState::ProbeState()
     : SharedState(), ht_offsets_and_salts_v(LogicalType::UBIGINT), hashes_dense_v(LogicalType::HASH),
-      non_empty_sel(STANDARD_VECTOR_SIZE) {
+      non_empty_sel(STANDARD_VECTOR_SIZE), rows_to_probe_sel(STANDARD_VECTOR_SIZE),
+      loaded_entries(make_unsafe_uniq_array_uninitialized<ht_entry_t>(STANDARD_VECTOR_SIZE)),
+      probe_outcomes(make_unsafe_uniq_array_uninitialized<uint8_t>(STANDARD_VECTOR_SIZE)) {
 }
 
 JoinHashTable::ProbeDictionaryState::ProbeDictionaryState()
@@ -233,72 +235,87 @@ idx_t GetOptionalIndex(optional_ptr<const SelectionVector> sel, const idx_t idx)
 	return HAS_SEL ? sel->get_index(idx) : idx;
 }
 
-static void AddPointerToCompare(SelectionVector &compare_sel, const ht_entry_t &entry, data_ptr_t *row_ptr_insert_to,
-                                idx_t *ht_offsets_and_salts, idx_t row_ht_offset, idx_t &keys_to_compare_count,
-                                const idx_t &row_index) {
-	compare_sel.set_index(keys_to_compare_count, row_index);
-	row_ptr_insert_to[row_index] = entry.GetPointer();
-	// If the key does not match, we have to continue linear probing, we need to store the ht_offset and the salt
-	// for this element based on the row_index. We can't get the offset from the hash as we already might have
-	// some linear probing steps when arriving here.
-	ht_offsets_and_salts[row_index] = row_ht_offset | entry.GetSaltWithNulls();
-	keys_to_compare_count += 1;
+// Outcome of probing one entry: 0 = empty, 1 = salt match (compare keys), 2 = other salt (probe the next entry)
+template <bool USE_SALTS>
+static uint8_t ProbeOutcome(const ht_entry_t entry, const idx_t offset_and_salt) {
+	const bool occupied = entry.IsOccupied();
+	// an empty entry reads as salt 0, so a match also needs occupied
+	const bool match = occupied && (!USE_SALTS || entry.GetSalt() == ht_entry_t::ExtractSalt(offset_and_salt));
+	// match implies occupied, so occupied - match is occupied && salt mismatch
+	return UnsafeNumericCast<uint8_t>(match + 2 * (occupied - match));
 }
 
-template <bool USE_SALTS, bool HAS_SEL>
+// Append the row to keys_to_compare_sel on a salt match and to rows_to_probe_sel on another salt
+static inline void AppendRow(const uint8_t outcome, const sel_t row_index, SelectionVector &keys_to_compare_sel,
+                             idx_t &keys_to_compare_n, SelectionVector &rows_to_probe_sel, idx_t &rows_to_probe_n) {
+	keys_to_compare_sel.set_index(keys_to_compare_n, row_index);
+	keys_to_compare_n += outcome & 1;
+	rows_to_probe_sel.set_index(rows_to_probe_n, row_index);
+	rows_to_probe_n += outcome >> 1;
+}
+
+// Linear probing in passes: load all entries, then check them. The load pass only does loads, so
+// many of them are in flight at once. Rows that hit another salt go to the next round with the following slot.
+template <bool USE_SALTS, bool HAS_ROW_SEL>
 static idx_t ProbeForPointersInternal(JoinHashTable::ProbeState &state, JoinHashTable &ht,
                                       unsafe_optional_ptr<ht_entry_t> entries, Vector &pointers_result_v,
-                                      optional_ptr<const SelectionVector> row_sel, idx_t &count) {
-	auto hashes_dense = FlatVector::GetDataMutable<hash_t>(state.hashes_dense_v);
+                                      const optional_ptr<const SelectionVector> row_sel, idx_t &count) {
+	D_ASSERT(count <= STANDARD_VECTOR_SIZE);
+	const auto hashes_dense = FlatVector::GetDataMutable<hash_t>(state.hashes_dense_v); // flattened before -> dense
 	const auto bitmask = ht.bitmask;
 
-	const auto row_ptr_insert_to = FlatVector::GetDataMutable<data_ptr_t>(pointers_result_v);
-	const auto ht_offsets_and_salts = FlatVector::GetDataMutable<idx_t>(state.ht_offsets_and_salts_v);
-	idx_t keys_to_compare_count = 0;
-
+	// dense loop to have many inflight independent requests
+	const auto loaded = state.loaded_entries.get();
 	for (idx_t i = 0; i < count; i++) {
 		PrefetchHashTableEntry(i, count,
 		                       [&](idx_t next_idx) { return &entries.get()[hashes_dense[next_idx] & bitmask]; });
-		auto row_hash = hashes_dense[i]; // hashes have been flattened before -> always access dense
-		auto row_ht_offset = row_hash & bitmask;
-
-		if (USE_SALTS) {
-			// increment the ht_offset of the entry as long as the next entry is occupied and salt does not match
-			while (true) {
-				const ht_entry_t entry = entries.get()[row_ht_offset];
-				const bool occupied = entry.IsOccupied();
-
-				// the entry is empty -> no match possible
-				if (!occupied) {
-					break;
-				}
-
-				const hash_t row_salt = ht_entry_t::ExtractSalt(row_hash);
-				const bool salt_match = entry.GetSalt() == row_salt;
-				if (salt_match) {
-					// we know that the entry is occupied and the salt matches -> compare the keys
-					auto row_index = GetOptionalIndex<HAS_SEL>(row_sel, i);
-					AddPointerToCompare(state.keys_to_compare_sel, entry, row_ptr_insert_to, ht_offsets_and_salts,
-					                    row_ht_offset, keys_to_compare_count, row_index);
-					break;
-				}
-
-				// full and salt do not match -> continue probing
-				IncrementAndWrap(row_ht_offset, bitmask);
-			}
-		} else {
-			const ht_entry_t entry = entries.get()[row_ht_offset];
-			const bool occupied = entry.IsOccupied();
-			if (occupied) {
-				// the entry is occupied -> compare the keys
-				auto row_index = GetOptionalIndex<HAS_SEL>(row_sel, i);
-				AddPointerToCompare(state.keys_to_compare_sel, entry, row_ptr_insert_to, ht_offsets_and_salts,
-				                    row_ht_offset, keys_to_compare_count, row_index);
-			}
-		}
+		loaded[i] = entries.get()[hashes_dense[i] & bitmask];
 	}
 
-	return keys_to_compare_count;
+	// check pass without selection vectors, so it can be vectorized
+	const auto offset_and_salt_mask = bitmask | ht_entry_t::SALT_MASK;
+	const auto result_pointers = FlatVector::GetDataMutable<data_ptr_t>(pointers_result_v);
+	const auto result_offsets_and_salts = FlatVector::GetDataMutable<idx_t>(state.ht_offsets_and_salts_v);
+	const auto outcomes = state.probe_outcomes.get();
+	for (idx_t i = 0; i < count; i++) {
+		const auto row_index = GetOptionalIndex<HAS_ROW_SEL>(row_sel, i);
+		const auto entry = loaded[i];
+		const auto offset_and_salt = hashes_dense[i] & offset_and_salt_mask;
+		result_pointers[row_index] = entry.GetPointerOrNull();
+		result_offsets_and_salts[row_index] = offset_and_salt;
+		outcomes[i] = ProbeOutcome<USE_SALTS>(entry, offset_and_salt);
+	}
+
+	// based on the outcome, append rows to keys_to_compare_sel or rows_to_probe_sel
+	auto &keys_to_compare_sel = state.keys_to_compare_sel;
+	auto &rows_to_probe_sel = state.rows_to_probe_sel;
+	idx_t keys_to_compare_n = 0;
+	idx_t rows_to_probe_n = 0;
+	for (idx_t i = 0; i < count; i++) {
+		const auto row_index = UnsafeNumericCast<sel_t>(GetOptionalIndex<HAS_ROW_SEL>(row_sel, i));
+		AppendRow(outcomes[i], row_index, keys_to_compare_sel, keys_to_compare_n, rows_to_probe_sel, rows_to_probe_n);
+	}
+
+	// Same passes for the kept rows, one slot further each round.
+	while (rows_to_probe_n > 0) {
+		// again load the next slot of every row independently, so many cache misses overlap
+		for (idx_t i = 0; i < rows_to_probe_n; i++) {
+			const auto row_index = rows_to_probe_sel.get_index(i);
+			IncrementAndWrap(result_offsets_and_salts[row_index], offset_and_salt_mask);
+			loaded[i] = entries.get()[result_offsets_and_salts[row_index] & bitmask];
+		}
+
+		idx_t next_rows_to_probe_n = 0;
+		for (idx_t i = 0; i < rows_to_probe_n; i++) {
+			const auto row_index = UnsafeNumericCast<sel_t>(rows_to_probe_sel.get_index(i));
+			const auto outcome = ProbeOutcome<USE_SALTS>(loaded[i], result_offsets_and_salts[row_index]);
+			result_pointers[row_index] = loaded[i].GetPointerOrNull();
+			AppendRow(outcome, row_index, keys_to_compare_sel, keys_to_compare_n, rows_to_probe_sel,
+			          next_rows_to_probe_n);
+		}
+		rows_to_probe_n = next_rows_to_probe_n;
+	}
+	return keys_to_compare_n;
 }
 
 /// for each entry, do linear probing until
