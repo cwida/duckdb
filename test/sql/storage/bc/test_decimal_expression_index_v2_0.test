@@ -2,6 +2,9 @@
 # description: An index whose decimal key binds to a wide type in a database written before wide decimals is refused
 # group: [bc]
 
+# The databases are written with a vector size of 2048.
+require vector_size 2048
+
 # data/storage/decimal_expression_index_v1_4_0.db.gz and decimal_expression_index_v2_0_0.db.gz were written by a DuckDB
 # before wide decimals (v2.1.0-dev93298) at storage versions v1.4.0 and v2.0.0, with:
 #   CREATE TABLE t (a DECIMAL(38,2), b DECIMAL(38,2));
