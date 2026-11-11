@@ -27,6 +27,7 @@ class ClientContext;
 
 struct DataTableInfo;
 class DataTable;
+class DuckTableEntry;
 struct DeleteInfo;
 struct UpdateInfo;
 
@@ -99,6 +100,8 @@ public:
 private:
 	void CommitEntryDrop(CatalogEntry &entry, data_ptr_t extra_data, CommitInfo &info);
 	void CommitDelete(DeleteInfo &info, transaction_t old_id);
+	//! Throws if another transaction altered or dropped the table
+	void VerifyTableNotModified(DuckTableEntry &table, bool check_pending_alter = false);
 
 private:
 	DuckTransaction &transaction;

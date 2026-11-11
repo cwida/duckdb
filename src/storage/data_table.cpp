@@ -194,36 +194,42 @@ DataTable::DataTable(ClientContext &context, DataTable &parent, idx_t changed_id
     : db(parent.db), info(parent.info), version(DataTableVersion::MAIN_TABLE) {
 	auto &transaction = DuckTransaction::Get(context, db);
 	auto &local_storage = LocalStorage::Get(transaction);
-	// prevent any tuples from being added to the parent
-	lock_guard<mutex> parent_lock(parent.append_lock);
-	for (auto &column_def : parent.column_definitions) {
-		column_definitions.emplace_back(column_def.Copy());
-	}
+	{
+		lock_guard<mutex> parent_lock(parent.append_lock);
+		for (auto &column_def : parent.column_definitions) {
+			column_definitions.emplace_back(column_def.Copy());
+		}
 
-	// Bind all indexes.
-	info->BindIndexes(context);
+		// Bind all indexes.
+		info->BindIndexes(context);
 
-	// first check if there are any indexes that exist that point to the changed column
-	for (const auto column_id : info->indexes.GetIndexedColumns()) {
-		if (column_id == changed_idx) {
-			throw CatalogException("Cannot change the type of this column: an index depends on it!");
+		// first check if there are any indexes that exist that point to the changed column
+		for (const auto column_id : info->indexes.GetIndexedColumns()) {
+			if (column_id == changed_idx) {
+				throw CatalogException("Cannot change the type of this column: an index depends on it!");
+			}
 		}
 	}
 
 	// change the type in this DataTable
 	column_definitions[changed_idx].SetType(target_type);
 
-	// set up the statistics for the table
-	// the column that had its type changed will have the new statistics computed during conversion
-	// mark the parent altered before reading, so a concurrent modification conflicts instead of
-	// being dropped by the rewrite
+	// mark under the commit lock, so each commit is either read by the rewrite or conflicts
+	auto &transaction_manager = DuckTransactionManager::Get(db);
 	auto previous_version = parent.version.load();
-	parent.version = DataTableVersion::ALTERED;
+	transaction_t last_commit;
+	{
+		auto commit_lock = transaction_manager.LockCommits();
+		parent.version = DataTableVersion::ALTERED;
+		last_commit = transaction_manager.GetLastCommit();
+	}
 	try {
+		// prevent any tuples from being added to the parent
+		lock_guard<mutex> parent_lock(parent.append_lock);
+
+		// the column that had its type changed will have the new statistics computed during conversion
 		// read at the commits seen so far, not at this transaction's older snapshot
-		auto &transaction_manager = DuckTransactionManager::Get(db);
-		TransactionData rewrite_visibility(transaction.GetTransactionId(),
-		                                   VisibilityBound::Through(transaction_manager.GetLastCommit()));
+		TransactionData rewrite_visibility(transaction.GetTransactionId(), VisibilityBound::Through(last_commit));
 		row_groups = parent.row_groups->AlterType(context, changed_idx, target_type, bound_columns, cast_expr,
 		                                          rewrite_visibility);
 

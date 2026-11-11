@@ -56,6 +56,10 @@ public:
 	transaction_t GetLastCommit() const {
 		return last_commit;
 	}
+	//! Blocks commits while held
+	unique_lock<mutex> LockCommits() {
+		return unique_lock<mutex>(transaction_lock);
+	}
 	//! Wait until every published commit is durable. Called under the commit lock, so no new commit can
 	//! enter its sync window and the wait is bounded by the syncs in flight
 	void WaitForDurability();
