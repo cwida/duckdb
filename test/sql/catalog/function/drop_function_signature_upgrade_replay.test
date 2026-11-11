@@ -58,13 +58,14 @@ statement ok
 ATTACH '{TEST_DIR}/drop_function_signature_upgrade.db' AS u (STORAGE_VERSION 'v2.1.0');
 
 statement ok
-CREATE MACRO u.f(x INTEGER) AS x + 1, (x VARCHAR) AS 42, (x DATE) AS 43;
+CREATE MACRO u.f(x INTEGER) AS x + 1, (x VARCHAR) AS 42, (x DATE) AS 43, (x BOOLEAN) AS 44;
 
 statement ok
 DROP MACRO u.f(VARCHAR);
 
+# the replayed record carries IF EXISTS
 statement ok
-DROP MACRO IF EXISTS u.f(DOUBLE);
+DROP MACRO IF EXISTS u.f(BOOLEAN);
 
 statement ok
 DROP MACRO u.f(DATE);
@@ -88,6 +89,11 @@ SELECT u.f('a');
 
 statement error
 SELECT u.f(DATE '2024-01-01');
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+statement error
+SELECT u.f(true);
 ----
 <REGEX>:.*does not support the supplied arguments.*
 
@@ -117,5 +123,15 @@ SELECT u.f(1), u.g('a'), i FROM u.t;
 
 statement error
 SELECT u.f('a');
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+statement error
+SELECT u.f(DATE '2024-01-01');
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+statement error
+SELECT u.f(true);
 ----
 <REGEX>:.*does not support the supplied arguments.*
