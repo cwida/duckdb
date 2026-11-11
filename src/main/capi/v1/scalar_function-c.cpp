@@ -184,7 +184,7 @@ unique_ptr<FunctionLocalState> CScalarFunctionInit(ExpressionState &state, const
 
 	auto result = make_uniq<CScalarFunctionLocalState>();
 	if (info.init) {
-		auto &context = state.GetContext();
+		auto &context = state.GetClientContext();
 		auto &c_bind_data = bind_data->Cast<CScalarFunctionBindData>();
 		CScalarFunctionInternalInitInfo init_info(context, c_bind_data, *result);
 		info.init(ToCScalarFunctionInitInfo(init_info));

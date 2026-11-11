@@ -34,26 +34,26 @@ TEST_CASE("Test Context", "[api]") {
 		REQUIRE(result.GetValue<int64_t>() == 12345);
 	}
 	SECTION("services created from a DatabaseInstance") {
-		auto context = db.instance->Services();
-		REQUIRE(!context->IsClient());
-		REQUIRE(!context->TryGetClientContext());
-		REQUIRE(!context->TryGetQueryProfiler());
-		REQUIRE(!context->TryGetClientConfig());
-		REQUIRE(&context->GetDatabase() == db.instance.get());
+		auto &services = db.instance->GetContext();
+		REQUIRE(!services.IsClient());
+		REQUIRE(!services.TryGetClientContext());
+		REQUIRE(!services.TryGetQueryProfiler());
+		REQUIRE(!services.TryGetClientConfig());
+		REQUIRE(&services.GetDatabase() == db.instance.get());
 		Value result;
-		auto lookup = context->TryGetCurrentSetting(Identifier("max_execution_time"), result);
+		auto lookup = services.TryGetCurrentSetting(Identifier("max_execution_time"), result);
 		bool found = lookup;
 		REQUIRE(found);
 		// the connection-local SET is not visible through the database-wide services
 		REQUIRE(result.GetValue<int64_t>() == 0);
-		(void)context->GetLogger();
-		(void)context->GetFileSystem();
-		(void)context->GetMetricsManager();
-		(void)context->GetTaskScheduler();
+		(void)services.GetLogger();
+		(void)services.GetFileSystem();
+		(void)services.GetMetricsManager();
+		(void)services.GetTaskScheduler();
 	}
 	SECTION("TaskExecutor from services") {
-		auto context = db.instance->Services();
-		TaskExecutor executor(*context);
+		auto &services = db.instance->GetContext();
+		TaskExecutor executor(services);
 		executor.WorkOnTasks();
 	}
 	SECTION("QueryContext holds services") {

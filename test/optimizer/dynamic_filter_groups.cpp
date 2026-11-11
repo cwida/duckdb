@@ -49,9 +49,9 @@ TEST_CASE("Disjunctive scan filters preserve selection, validity and repeated ex
 		conjunction->GetChildrenMutable().push_back(comparison(ExpressionType::COMPARE_LESSTHAN, 7));
 		expression = std::move(conjunction);
 	}
-	ExpressionFilterState state(*con.context, *expression);
+	ExpressionFilterState state(con.context->GetContext(), *expression);
 	REQUIRE(state.fast_executor);
-	ExpressionFilterState fallback(*con.context, *expression);
+	ExpressionFilterState fallback(con.context->GetContext(), *expression);
 	fallback.fast_executor.reset();
 	auto check = [&](Vector &input, SelectionVector &selection, idx_t &count) {
 		SelectionVector expected(selection);

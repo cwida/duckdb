@@ -5,6 +5,7 @@
 #include "duckdb/execution/operator/set/physical_recursive_cte_union_state.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/parallel/pipeline_executor.hpp"
 
 #include <cmath>
 

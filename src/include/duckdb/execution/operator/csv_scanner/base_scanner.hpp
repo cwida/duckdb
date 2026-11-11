@@ -93,6 +93,19 @@ public:
 		return states.states[1] == state;
 	}
 
+	//! Results that materialize values override these, so the block scan skips the values nobody asked for
+	template <class T>
+	static inline bool CanSkipValue(const T &result) {
+		return false;
+	}
+	template <class T>
+	static inline void SkipValue(T &result, const idx_t buffer_pos) {
+	}
+	template <class T>
+	static inline bool AddRowWithoutValue(T &result, const idx_t buffer_pos) {
+		return false;
+	}
+
 	//! Variable to keep information regarding quoted and escaped values
 	bool quoted = false;
 	//! If the current quoted value is unquoted
@@ -349,7 +362,11 @@ protected:
 		states.states[0] = before;
 		states.states[1] = CSVState::DELIMITER;
 		iterator.pos.buffer_pos = at;
-		T::AddValue(result, at);
+		if (T::CanSkipValue(result)) {
+			T::SkipValue(result, at);
+		} else {
+			T::AddValue(result, at);
+		}
 	}
 
 	//! The row end at `at`, `before` is the state before it. Returns true when the result is full
@@ -359,7 +376,7 @@ protected:
 		states.states[0] = before;
 		states.states[1] = crlf ? CSVState::CARRIAGE_RETURN : CSVState::RECORD_SEPARATOR;
 		iterator.pos.buffer_pos = at;
-		const bool full = T::AddRow(result, at);
+		const bool full = T::CanSkipValue(result) ? T::AddRowWithoutValue(result, at) : T::AddRow(result, at);
 		lines_read++;
 		if (full) {
 			iterator.pos.buffer_pos = at + 1;

@@ -3,6 +3,7 @@
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/function/cast/bound_cast_data.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 
@@ -87,7 +88,7 @@ static unique_ptr<Expression> AddCastToTypeInternal(unique_ptr<Expression> expr,
 unique_ptr<Expression> BoundCastExpression::AddDefaultCastToType(unique_ptr<Expression> expr,
                                                                  const LogicalType &target_type, bool try_cast) {
 	CastFunctionSet default_set;
-	GetCastFunctionInput get_input;
+	auto get_input = GetCastFunctionInput::Default();
 	get_input.query_location = expr->GetQueryLocation();
 	return AddCastToTypeInternal(std::move(expr), target_type, default_set, get_input, try_cast,
 	                             CastBindSource::DEFAULT);
@@ -280,47 +281,75 @@ bool BoundCastExpression::CastIsInvertible(const LogicalType &source_type, const
 	return true;
 }
 
+static bool IsExactNumeric(const LogicalType &type) {
+	return type.IsIntegral() || type.id() == LogicalTypeId::DECIMAL;
+}
+
+//! Whether an integral or DECIMAL source fits in the digits10 of the floating target, so that distinct source values
+//! stay distinct floating values
+static bool IsLosslessExactNumericToFloatingCast(const LogicalType &source_type, const LogicalType &target_type) {
+	uint32_t width, scale;
+	if (!IsExactNumeric(source_type) || !source_type.GetDecimalProperties(width, scale)) {
+		return false;
+	}
+	switch (target_type.id()) {
+	case LogicalTypeId::DOUBLE:
+		return width <= std::numeric_limits<double>::digits10;
+	case LogicalTypeId::FLOAT:
+		return width <= std::numeric_limits<float>::digits10;
+	default:
+		return false;
+	}
+}
+
 bool BoundCastExpression::IsLosslessIntegralToFloatingCast(const LogicalType &source_type,
                                                            const LogicalType &target_type) {
-	if (target_type.id() == LogicalTypeId::DOUBLE) {
-		switch (source_type.id()) {
-		case LogicalTypeId::TINYINT:
-		case LogicalTypeId::SMALLINT:
-		case LogicalTypeId::INTEGER:
-		case LogicalTypeId::UTINYINT:
-		case LogicalTypeId::USMALLINT:
-		case LogicalTypeId::UINTEGER:
-			return true;
-		default:
-			return false;
-		}
+	return source_type.IsIntegral() && IsLosslessExactNumericToFloatingCast(source_type, target_type);
+}
+
+//! Whether every value of the type has a unique VARCHAR representation that casts back to the same value
+static bool HasCanonicalVarcharRepresentation(const LogicalType &type) {
+	if (type.IsIntegral()) {
+		return true;
 	}
-	if (target_type.id() == LogicalTypeId::FLOAT) {
-		switch (source_type.id()) {
-		case LogicalTypeId::TINYINT:
-		case LogicalTypeId::SMALLINT:
-		case LogicalTypeId::UTINYINT:
-		case LogicalTypeId::USMALLINT:
-			return true;
-		default:
-			return false;
-		}
+	// unlike CastIsInvertible, TZ types are excluded: equal TIME_TZ values with different offsets render differently,
+	// and the rendering of TIMESTAMP_TZ depends on the TimeZone setting
+	switch (type.id()) {
+	case LogicalTypeId::BOOLEAN:
+	case LogicalTypeId::DECIMAL:
+	case LogicalTypeId::UUID:
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIME:
+	case LogicalTypeId::TIME_NS:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+		return true;
+	default:
+		return false;
 	}
-	return false;
 }
 
 bool BoundCastExpression::CastIsInvertibleForEquality(const LogicalType &source_type, const LogicalType &target_type) {
-	if (source_type.IsIntegral()) {
-		if (target_type.id() == LogicalTypeId::VARCHAR) {
-			// a collation can make distinct strings equal
-			return StringType::GetCollation(target_type).empty();
-		}
-		if (IsLosslessIntegralToFloatingCast(source_type, target_type)) {
-			return true;
-		}
-		return target_type.IsIntegral() && CastIsInvertible(source_type, target_type);
+	if (target_type.id() == LogicalTypeId::VARCHAR) {
+		// a collation can make distinct strings equal
+		return HasCanonicalVarcharRepresentation(source_type) && StringType::GetCollation(target_type).empty();
 	}
-	return source_type.id() == LogicalTypeId::FLOAT && target_type.id() == LogicalTypeId::DOUBLE;
+	if (IsExactNumeric(source_type) && IsExactNumeric(target_type)) {
+		return CastIsInvertible(source_type, target_type);
+	}
+	if (IsLosslessExactNumericToFloatingCast(source_type, target_type)) {
+		return true;
+	}
+	switch (source_type.id()) {
+	case LogicalTypeId::BOOLEAN:
+		return target_type.IsIntegral();
+	case LogicalTypeId::FLOAT:
+		return target_type.id() == LogicalTypeId::DOUBLE;
+	default:
+		return false;
+	}
 }
 
 optional<Value> BoundCastExpression::TryInvertConstant(ClientContext &context, const BoundFunctionExpression &cast_expr,
