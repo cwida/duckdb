@@ -26,6 +26,8 @@ public:
 
 public:
 	vector<const_reference<PhysicalOperator>> GetChildren() const override;
+	//! Report the executed plan's sources, so an order-preserving result can be collected in parallel.
+	vector<const_reference<PhysicalOperator>> GetSources() const override;
 
 public:
 	void BuildPipelines(Pipeline &current, MetaPipeline &meta_pipeline) override;

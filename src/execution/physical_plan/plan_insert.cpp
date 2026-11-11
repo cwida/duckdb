@@ -1,5 +1,6 @@
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/execution/operator/helper/physical_execute.hpp"
 #include "duckdb/execution/operator/persistent/physical_insert.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/planner/operator/logical_insert.hpp"
@@ -15,6 +16,10 @@
 namespace duckdb {
 
 OrderPreservationType PhysicalPlanGenerator::OrderPreservationRecursive(PhysicalOperator &op) {
+	if (op.type == PhysicalOperatorType::EXECUTE) {
+		// PhysicalExecute has no children: look into the executed plan, or an ORDER BY in it is missed.
+		return OrderPreservationRecursive(op.Cast<PhysicalExecute>().plan);
+	}
 	if (op.IsSource()) {
 		return op.SourceOrder();
 	}
