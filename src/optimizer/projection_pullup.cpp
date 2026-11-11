@@ -74,12 +74,6 @@ void ProjectionPullup::InsertProjectionBelowOp(unique_ptr<LogicalOperator> &op, 
 
 void ProjectionPullup::RemoveProjection(unique_ptr<LogicalOperator> &op, LogicalProjection &proj,
                                         vector<ColumnBinding> &proj_bindings) {
-	// Keep the binding barrier that lets column pruning stop at DISTINCT.
-	if (proj.children[0]->type == LogicalOperatorType::LOGICAL_DISTINCT) {
-		ProjectionPullup next(optimizer, root);
-		next.Optimize(proj.children[0]);
-		return;
-	}
 	ColumnBindingReplacer replacer;
 	for (idx_t i = 0; i < proj.expressions.size(); i++) {
 		if (proj.expressions[i]->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
@@ -383,6 +377,9 @@ void ProjectionPullup::VisitOperator(unique_ptr<LogicalOperator> &op) {
 	if (op->type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY &&
 	    op->children[0]->type == LogicalOperatorType::LOGICAL_PROJECTION) {
 		auto &projection = op->children[0]->Cast<LogicalProjection>();
+		if (projection.children[0]->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+			return;
+		}
 		for (auto &expr : projection.expressions) {
 			if (expr->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF &&
 			    expr->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
