@@ -74,11 +74,45 @@ struct EnqueueOnThreadExit {
 	}
 };
 
+struct FailingQueueTraits : SmallQueueTraits<std::size_t> {
+	static uint32_t allocations_until_failure;
+	static uint32_t allocation_count;
+
+	static void *malloc(size_t bytes) {
+		allocation_count++;
+		if (allocations_until_failure > 0 && --allocations_until_failure == 0) {
+			return nullptr;
+		}
+		return std::malloc(bytes);
+	}
+};
+
+uint32_t FailingQueueTraits::allocations_until_failure = 0;
+uint32_t FailingQueueTraits::allocation_count = 0;
+
 } // namespace
 
 TEST_CASE("Concurrent queue padding preserves custom allocation and producer lifetime", "[concurrentqueue]") {
 	CheckQueueTraits<std::size_t>();
 	CheckQueueTraits<uint8_t>();
+}
+
+TEST_CASE("Concurrent queue retries a failed initial implicit index allocation", "[concurrentqueue]") {
+	duckdb_moodycamel::ConcurrentQueue<uint64_t, FailingQueueTraits> queue(0);
+	uint64_t input[] = {42, 84};
+	uint64_t output[2];
+	// Create the producer, but fail its initial index allocation.
+	FailingQueueTraits::allocations_until_failure = 2;
+	CHECK_FALSE(queue.try_enqueue_bulk(input, 2));
+	CHECK(FailingQueueTraits::allocations_until_failure == 0);
+	const auto allocations = FailingQueueTraits::allocation_count;
+	CHECK_FALSE(queue.try_enqueue_bulk(input, 2));
+	CHECK(FailingQueueTraits::allocation_count == allocations);
+	REQUIRE(queue.enqueue_bulk(input, 2));
+	REQUIRE(queue.try_dequeue_bulk(output, 2) == 2);
+	CHECK(output[0] == input[0]);
+	CHECK(output[1] == input[1]);
+	CHECK_FALSE(queue.try_dequeue(output[0]));
 }
 
 TEST_CASE("Concurrent queue accepts enqueue from thread-local destructors", "[concurrentqueue]") {
