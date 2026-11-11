@@ -5,6 +5,7 @@
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/generic_common.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/optimizer/aggregate_rewrite_helper.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/optimizer/optimizer.hpp"

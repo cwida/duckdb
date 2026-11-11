@@ -11,6 +11,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/client_config.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/profiler_extension.hpp"
 
 namespace duckdb {
