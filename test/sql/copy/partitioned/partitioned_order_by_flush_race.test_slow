@@ -8,7 +8,7 @@ statement ok
 SET debug_force_external=true;
 
 statement ok
-PRAGMA threads=6;
+SET threads=6;
 
 statement ok
 SET partitioned_write_flush_threshold=2048;

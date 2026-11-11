@@ -6,9 +6,9 @@ DistinctCount::DistinctCount(idx_t distinct_count, DistinctCountSource source)
     : distinct_count(distinct_count), source(source) {
 }
 
-void SemiAntiJoinDomainEvidence::TightenFilterDomainBound(idx_t bound) {
-	if (!filter_domain_bound.IsValid() || bound < filter_domain_bound.GetIndex()) {
-		filter_domain_bound = optional_idx(bound);
+void SemiAntiJoinDomainEvidence::TightenDomainBound(idx_t bound) {
+	if (!domain_bound.IsValid() || bound < domain_bound.GetIndex()) {
+		domain_bound = optional_idx(bound);
 	}
 }
 
@@ -17,12 +17,12 @@ void SemiAntiJoinDomainEvidence::MarkUnique() {
 }
 
 void SemiAntiJoinDomainEvidence::Invalidate() {
-	filter_domain_bound = optional_idx();
+	domain_bound = optional_idx();
 	is_unique = false;
 }
 
-optional_idx SemiAntiJoinDomainEvidence::GetFilterDomainBound() const {
-	return filter_domain_bound;
+optional_idx SemiAntiJoinDomainEvidence::GetDomainBound() const {
+	return domain_bound;
 }
 
 optional_idx SemiAntiJoinDomainEvidence::GetSupportedDomainSize(idx_t current_domain) const {
@@ -30,9 +30,9 @@ optional_idx SemiAntiJoinDomainEvidence::GetSupportedDomainSize(idx_t current_do
 	if (is_unique) {
 		result = optional_idx(current_domain);
 	}
-	if (filter_domain_bound.IsValid()) {
-		result = optional_idx(result.IsValid() ? MinValue(result.GetIndex(), filter_domain_bound.GetIndex())
-		                                       : filter_domain_bound.GetIndex());
+	if (domain_bound.IsValid()) {
+		result = optional_idx(result.IsValid() ? MinValue(result.GetIndex(), domain_bound.GetIndex())
+		                                       : domain_bound.GetIndex());
 	}
 	return result;
 }

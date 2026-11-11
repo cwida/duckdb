@@ -11,7 +11,7 @@ require vector_size 2048
 load {TEST_DIR}/test_bitpacking.db
 
 statement ok
-PRAGMA force_compression = 'bitpacking'
+SET force_compression = 'bitpacking'
 
 statement ok
 CREATE TABLE test (a INTEGER, b INTEGER);
@@ -49,7 +49,7 @@ WHERE segment_type NOT IN ('VALIDITY')
 CONSTANT: 9, DELTA_FOR: 1
 
 statement ok
-PRAGMA force_bitpacking_mode = 'delta_for'
+SET force_bitpacking_mode = 'delta_for'
 
 statement error
 SET SESSION force_bitpacking_mode = 'delta_for'

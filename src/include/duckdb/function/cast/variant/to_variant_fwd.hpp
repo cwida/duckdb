@@ -47,16 +47,17 @@ public:
 struct ToVariantGlobalResultData {
 public:
 	ToVariantGlobalResultData(VariantVectorData &variant, DataChunk &offsets,
-	                          OrderedOwningStringMap<uint32_t> &dictionary, SelectionVector &keys_selvec,
-	                          Allocator &allocator)
-	    : variant(variant), offsets(offsets), dictionary(dictionary), keys_selvec(keys_selvec), allocator(allocator) {
+	                          OrderedOwningStringMap<uint32_t> &dictionary, ArenaAllocator &keys_arena,
+	                          SelectionVector &keys_selvec, Allocator &allocator)
+	    : variant(variant), offsets(offsets), dictionary(dictionary), keys_arena(keys_arena), keys_selvec(keys_selvec),
+	      allocator(allocator) {
 	}
 
 public:
 	uint32_t GetOrCreateIndex(const string_t &key) {
 		auto unsorted_idx = dictionary.size();
 		//! This will later be remapped to the sorted idx (see FinalizeVariantKeys in 'to_variant.cpp')
-		return dictionary.emplace(std::make_pair(key, unsorted_idx)).first->second;
+		return dictionary.emplace(std::make_pair(key, unsorted_idx), keys_arena).first->second;
 	}
 
 public:
@@ -64,6 +65,8 @@ public:
 	DataChunk &offsets;
 	//! The dictionary to populate with the (unique and sorted) keys
 	OrderedOwningStringMap<uint32_t> &dictionary;
+	//! The result's keys arena, the dictionary's keys are allocated in
+	ArenaAllocator &keys_arena;
 	//! The selection vector to populate with mapping from keys index -> dictionary index
 	SelectionVector &keys_selvec;
 	//! Allocator for temporary conversion memory (e.g. JSON parsing), tracked by DuckDB's memory accounting

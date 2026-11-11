@@ -56,8 +56,8 @@ void CV2Instance::Attach(const string &path, const Identifier &name,
 		if (attach_options) {
 			info.options = attach_options->options;
 		}
-		auto services = instance.Services();
-		AttachOptions options(*services, info.options, instance.config.options.access_mode);
+		auto &services = instance.GetContext();
+		AttachOptions options(services, info.options, instance.config.options.access_mode);
 		options.original_path = path;
 		if (options.db_type.empty()) {
 			DBPathAndType::ExtractExtensionPrefix(info.path, options.db_type);

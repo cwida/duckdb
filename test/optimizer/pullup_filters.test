@@ -3,7 +3,7 @@
 # group: [optimizer]
 
 statement ok
-PRAGMA explain_output = 'PHYSICAL_ONLY'
+SET explain_output = 'PHYSICAL_ONLY'
 
 statement ok
 SET disabled_optimizers TO 'common_subplan'
@@ -98,7 +98,7 @@ create table lineitem as select range % 10 l_orderkey from range(100)
 # so we should see lineitem first in the regex, and then 2x orders (deeper because joined first)
 
 statement ok
-PRAGMA explain_output='OPTIMIZED_ONLY'
+SET explain_output='OPTIMIZED_ONLY'
 
 query II
 explain

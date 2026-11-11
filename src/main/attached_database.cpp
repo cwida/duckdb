@@ -126,8 +126,8 @@ AttachedDatabase::AttachedDatabase(DatabaseInstance &db, AttachedDatabaseType ty
 	D_ASSERT(type == AttachedDatabaseType::TEMP_DATABASE || type == AttachedDatabaseType::SYSTEM_DATABASE);
 	if (type == AttachedDatabaseType::TEMP_DATABASE) {
 		unordered_map<string, Value> options;
-		auto services = db.Services();
-		AttachOptions attach_options(*services, options, AccessMode::READ_WRITE);
+		auto &services = db.GetContext();
+		AttachOptions attach_options(services, options, AccessMode::READ_WRITE);
 		options["storage_version"] = "latest";
 		storage = make_uniq<SingleFileStorageManager>(*this, string(IN_MEMORY_PATH), attach_options);
 	}
@@ -273,7 +273,7 @@ void AttachedDatabase::InvokeCloseIfLastReference(shared_ptr<AttachedDatabase> &
 		close_action = DatabaseCloseAction::CHECKPOINT;
 	} else if (checkpoint_on_detach == CheckpointOnDetach::DISABLED) {
 		close_action = DatabaseCloseAction::SKIP_CHECKPOINT;
-	} else if (!DBConfig::GetConfig(context).options.checkpoint_on_shutdown) {
+	} else if (!Settings::Get<CheckpointOnShutdownSetting>(context)) {
 		close_action = DatabaseCloseAction::SKIP_CHECKPOINT;
 	}
 
@@ -414,7 +414,7 @@ void AttachedDatabase::Close(const DatabaseCloseAction action) {
 				should_checkpoint = true;
 			} else if (action == DatabaseCloseAction::TRY_CHECKPOINT) {
 				auto &config = DBConfig::GetConfig(db);
-				should_checkpoint = config.options.checkpoint_on_shutdown;
+				should_checkpoint = Settings::Get<CheckpointOnShutdownSetting>(config);
 			}
 			if (should_checkpoint) {
 				CheckpointOptions options;

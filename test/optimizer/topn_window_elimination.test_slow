@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 statement ok
 CREATE TABLE tbl AS SELECT * FROM VALUES (0, {'x': 0}, 0), (0, {'x': 1}, 1), (1, {'x': 2}, 2), (null, {'x': 3}, 3), (null, {'x': 4}, 4), t(grp, a, b)

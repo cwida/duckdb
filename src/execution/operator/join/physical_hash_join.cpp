@@ -977,22 +977,28 @@ SinkCombineResultType PhysicalHashJoin::Combine(ExecutionContext &context, Opera
 // Finalize
 //===--------------------------------------------------------------------===//
 
-static constexpr idx_t PARALLEL_CONSTRUCT_THRESHOLD = 1048576;
-static constexpr double SKEW_SINGLE_THREADED_THRESHOLD = 0.33;
+struct HashJoinBuildConfig {
+	static constexpr idx_t PARALLEL_CONSTRUCT_THRESHOLD = 1048576;
+	static constexpr idx_t SMALL_PARALLEL_CONSTRUCT_THRESHOLD = 65536;
+	static constexpr idx_t SMALL_PARALLEL_MIN_THREADS = 4;
+	static constexpr double SKEW_SINGLE_THREADED_THRESHOLD = 0.33;
+	static constexpr double SMALL_BUILD_SKEW_THRESHOLD = 0.20;
+};
 
 //! If the data is very skewed (many of the exact same key), our finalize will become slow,
 //! due to completely slamming the same atomic using compare-and-swaps.
 //! We can detect this because we partition the data, and go for a single-threaded finalize instead.
-static bool KeysAreSkewed(const HashJoinGlobalSinkState &sink) {
+static bool KeysAreSkewed(const HashJoinGlobalSinkState &sink,
+                          double threshold = HashJoinBuildConfig::SKEW_SINGLE_THREADED_THRESHOLD) {
 	const auto max_partition_ht_size =
 	    sink.max_partition_size + sink.hash_table->PointerTableSize(sink.max_partition_count);
 	const auto skew = static_cast<double>(max_partition_ht_size) / static_cast<double>(sink.total_size);
-	return skew > SKEW_SINGLE_THREADED_THRESHOLD;
+	return skew > threshold;
 }
 
 //! If we have only one thread, always finalize single-threaded. Otherwise, we finalize in parallel if we
-//! have more than 1M rows or if we want to verify parallelism.
-static bool FinalizeSingleThreaded(const HashJoinGlobalSinkState &sink, const bool consider_skew) {
+//! have at least 1M rows, an unskewed medium input with enough threads, or want to verify parallelism.
+static bool FinalizeSingleThreaded(const HashJoinGlobalSinkState &sink) {
 	// if only one thread, finalize single-threaded
 	const auto num_threads = NumericCast<idx_t>(sink.num_threads);
 	if (num_threads == 1) {
@@ -1004,14 +1010,15 @@ static bool FinalizeSingleThreaded(const HashJoinGlobalSinkState &sink, const bo
 		return false;
 	}
 
-	// finalize single-threaded if we have less than 1M rows
 	const auto &ht = *sink.hash_table;
-	const bool ht_is_small = ht.Count() < PARALLEL_CONSTRUCT_THRESHOLD;
-
-	if (consider_skew) {
-		return ht_is_small || KeysAreSkewed(sink);
+	if (ht.Count() >= HashJoinBuildConfig::PARALLEL_CONSTRUCT_THRESHOLD) {
+		return false;
 	}
-	return ht_is_small;
+	if (num_threads < HashJoinBuildConfig::SMALL_PARALLEL_MIN_THREADS ||
+	    ht.Count() < HashJoinBuildConfig::SMALL_PARALLEL_CONSTRUCT_THRESHOLD) {
+		return true;
+	}
+	return KeysAreSkewed(sink, HashJoinBuildConfig::SMALL_BUILD_SKEW_THRESHOLD);
 }
 
 static idx_t GetTupleWidth(const vector<LogicalType> &types, bool &all_constant) {
@@ -1284,7 +1291,7 @@ public:
 	vector<shared_ptr<Task>> GetTasks() {
 		auto &ht = *sink.hash_table;
 		auto &data_collection = ht.GetDataCollection();
-		const bool parallel = !FinalizeSingleThreaded(sink, false) && ht.GetRadixBits() != 0;
+		const bool parallel = !FinalizeSingleThreaded(sink) && ht.GetRadixBits() != 0;
 		const auto partitions = RadixPartitioning::NumberOfPartitions(ht.GetRadixBits());
 		queue = make_uniq<JoinBuildQueue>(partitions);
 		if (!parallel) {
@@ -1388,10 +1395,10 @@ void HashJoinGlobalSinkState::ScheduleFinalize(Pipeline &pipeline, Event &event)
 		hash_table->finalized = true;
 		return;
 	}
-	hash_table->AllocatePointerTable(!external && !FinalizeSingleThreaded(*this, false));
+	hash_table->AllocatePointerTable(!external && !FinalizeSingleThreaded(*this));
 
 	auto new_init_event = make_shared_ptr<HashJoinTableInitEvent>(pipeline, *this);
-	if (FinalizeSingleThreaded(*this, false)) {
+	if (FinalizeSingleThreaded(*this)) {
 		new_init_event->ExecuteDirectly();
 		auto new_finalize_event = make_shared_ptr<HashJoinFinalizeEvent>(pipeline, *this);
 		new_finalize_event->ExecuteDirectly();
@@ -2254,6 +2261,10 @@ public:
 
 public:
 	void Finalize(const PhysicalOperator &op, ExecutionContext &context) override {
+		scan_structure.dictionary_gather_state.Reset();
+		if (perfect_hash_join_state) {
+			perfect_hash_join_state->Finalize(op, context);
+		}
 		context.thread.profiler.Flush(op);
 	}
 
@@ -2873,8 +2884,9 @@ void HashJoinLocalSourceState::ExternalScanHT(HashJoinGlobalSinkState &sink, Has
 	D_ASSERT(local_stage == HashJoinSourceStage::SCAN_HT);
 
 	if (!full_outer_scan_state) {
-		full_outer_scan_state = make_uniq<JoinHTScanState>(sink.hash_table->GetDataCollection(),
-		                                                   full_outer_chunk_idx_from, full_outer_chunk_idx_to);
+		full_outer_scan_state =
+		    make_uniq<JoinHTScanState>(sink.hash_table->GetDataCollection(), full_outer_chunk_idx_from,
+		                               full_outer_chunk_idx_to, sink.hash_table->output_columns.size());
 		full_outer_chunks_reported = 0;
 	}
 	sink.hash_table->ScanFullOuter(*full_outer_scan_state, addresses, chunk);

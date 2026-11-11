@@ -125,16 +125,12 @@ public:
 
 	// Assign from shared_ptr copy
 	shared_ptr<T, SAFE> &operator=(const shared_ptr<T, SAFE> &other) noexcept {
-		if (this == &other) {
-			return *this;
-		}
-		// Create a new shared_ptr using the copy constructor, then swap out the ownership to *this
-		shared_ptr(other).swap(*this);
+		internal = other.internal;
 		return *this;
 	}
 	template <class U, typename std::enable_if<compatible_with_t<U, T>::value, int>::type = 0>
 	shared_ptr<T> &operator=(const shared_ptr<U> &other) {
-		shared_ptr(other).swap(*this);
+		internal = other.internal;
 		return *this;
 	}
 

@@ -12,7 +12,7 @@ require block_size 262144
 load {TEST_DIR}/test_alp.db readwrite v1.4.0
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 # This parquet file generates numerous ALP exceptions, which previously resulted in the compressed data being larger than the original. Our implementation of ALP now uses an uncompressed mode to handle this scenario.
 statement ok
@@ -27,7 +27,7 @@ SELECT compression FROM pragma_storage_info('uncompressed_table') WHERE segment_
 
 # Now create a duplicate of this table, compressed with ALP instead
 statement ok
-PRAGMA force_compression='alp'
+SET force_compression='alp'
 
 statement ok
 create table alp_table as select * from uncompressed_table;

@@ -10,7 +10,7 @@ SELECT * FROM repeat_row(0, num_rows=3)
 0
 
 query IIII
-SELECT * FROM repeat_row(NULL, 1, "52", true, num_rows=2)
+SELECT * FROM repeat_row(NULL, 1, '52', true, num_rows=2)
 ----
 NULL	1	52	true
 NULL	1	52	true

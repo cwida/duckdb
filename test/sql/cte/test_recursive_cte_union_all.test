@@ -72,9 +72,6 @@ with recursive t as (select 1 as x union all select sum(x+1) AS x from t where x
 # this requires CTE inlining, which enable_verification disables
 require no_alternative_verify
 
-statement ok
-PRAGMA disable_verification
-
 # infinite aggregate function: will result in timeout if pipelining is not implemented
 query I
 with recursive t as (select 1 as x union all select sum(x+1) AS x from t where x < 3)

@@ -3,19 +3,19 @@
 # group: [intraquery]
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 statement ok
 PRAGMA verify_parallelism
 
 statement ok
-PRAGMA enable_profiling='json'
+SET enable_profiling='json'
 
 statement ok
-PRAGMA profiling_output='{TEST_DIR}/test.json'
+SET profiling_output='{TEST_DIR}/test.json'
 
 statement ok
-PRAGMA profiling_mode = detailed
+SET profiling_mode = 'detailed'
 
 statement ok
 CREATE TABLE integers AS SELECT * FROM range(50000) tbl(i)

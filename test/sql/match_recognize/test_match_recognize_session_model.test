@@ -19,7 +19,7 @@
 require json
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 statement ok
 CREATE TABLE events(

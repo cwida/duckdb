@@ -8,7 +8,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
 CREATE TABLE integers(i INTEGER, j INTEGER);
@@ -42,7 +42,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 query II
 EXPLAIN ANALYZE SELECT i, j FROM integers WHERE i = 1;
@@ -65,7 +65,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
 DROP INDEX i_index;
@@ -82,7 +82,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 # Test a multi-column index expression.
 
@@ -111,7 +111,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 query II
 SELECT i, j FROM integers WHERE i + j = 2;
@@ -138,7 +138,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
 CREATE TABLE integers(i INTEGER, j INTEGER);
@@ -167,7 +167,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 query II
 SELECT i, j FROM integers WHERE j + i = 2;
@@ -196,7 +196,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
 CREATE TABLE integers(i INTEGER, j INTEGER);
@@ -213,7 +213,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement error
 INSERT INTO integers VALUES (1, 1);

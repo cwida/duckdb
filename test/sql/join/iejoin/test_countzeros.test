@@ -8,7 +8,7 @@ SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 require no_alternative_verify
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 statement ok 
 set merge_join_threshold=0;

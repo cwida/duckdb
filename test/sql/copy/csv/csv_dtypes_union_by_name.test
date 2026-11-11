@@ -31,14 +31,14 @@ COPY ubn3 TO '{TEST_DIR}/ubn3.csv' WITH (DELIMITER ',');
 
 query III
 SELECT typeof(a), typeof(b), typeof(c)
-FROM  read_csv_auto('{TEST_DIR}/ubn*.csv', UNION_BY_NAME=TRUE, dtypes={'c': TINYINT})
+FROM  read_csv_auto('{TEST_DIR}/ubn*.csv', UNION_BY_NAME=TRUE, dtypes={'c': 'TINYINT'})
 LIMIT 1;
 ----
 BIGINT	BIGINT	TINYINT
 
 query III
 SELECT typeof(a), typeof(b), typeof(c)
-FROM  read_csv_auto('{TEST_DIR}/ubn*.csv', UNION_BY_NAME=TRUE, dtypes={'c': TINYINT, 'A': DOUBLE})
+FROM  read_csv_auto('{TEST_DIR}/ubn*.csv', UNION_BY_NAME=TRUE, dtypes={'c': 'TINYINT', 'A': 'DOUBLE'})
 LIMIT 1;
 ----
 DOUBLE	BIGINT	TINYINT
@@ -46,21 +46,21 @@ DOUBLE	BIGINT	TINYINT
 # unrecognized in any file
 statement error
 SELECT typeof(a), typeof(b), typeof(c)
-FROM  read_csv_auto('{TEST_DIR}/ubn*.csv', UNION_BY_NAME=TRUE, dtypes={'xxx': TINYINT})
+FROM  read_csv_auto('{TEST_DIR}/ubn*.csv', UNION_BY_NAME=TRUE, dtypes={'xxx': 'TINYINT'})
 LIMIT 1;
 ----
 xxx
 
 statement error
 SELECT typeof(a), typeof(b), typeof(c)
-FROM  read_csv_auto('{TEST_DIR}/ubn*.csv', UNION_BY_NAME=TRUE, dtypes={'c': TINYINT, 'A': DOUBLE, 'C': FLOAT})
+FROM  read_csv_auto('{TEST_DIR}/ubn*.csv', UNION_BY_NAME=TRUE, dtypes={'c': 'TINYINT', 'A': 'DOUBLE', 'C': 'FLOAT'})
 LIMIT 1;
 ----
 Duplicate
 
 statement error
 SELECT typeof(a), typeof(b), typeof(c)
-FROM  read_csv_auto('{TEST_DIR}/ubn*.csv', UNION_BY_NAME=TRUE, dtypes={'c': TINYINT, 'A': DOUBLE, 'xZX': FLOAT})
+FROM  read_csv_auto('{TEST_DIR}/ubn*.csv', UNION_BY_NAME=TRUE, dtypes={'c': 'TINYINT', 'A': 'DOUBLE', 'xZX': 'FLOAT'})
 LIMIT 1;
 ----
 xZX

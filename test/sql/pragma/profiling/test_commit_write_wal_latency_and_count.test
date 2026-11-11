@@ -31,10 +31,10 @@ statement ok
 UPDATE wal_latency.tbl SET v = id;
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/wal_commit.json';
+SET profiling_output = '{TEST_DIR}/wal_commit.json';
 
 statement ok
 SET tracked_metrics = ['storage.commit_local_storage_latency', 'storage.write_to_wal_latency'];
@@ -65,7 +65,7 @@ statement ok
 DETACH wal_latency;
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/wal_replay.json';
+SET profiling_output = '{TEST_DIR}/wal_replay.json';
 
 statement ok
 SET tracked_metrics = ['storage.wal_replay_entry_count', 'storage.attach_replay_wal_latency'];
@@ -74,7 +74,7 @@ statement ok
 SET profiling_coverage='ALL';
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
 ATTACH '{TEST_DIR}/wal_latency.db' AS wal_latency;

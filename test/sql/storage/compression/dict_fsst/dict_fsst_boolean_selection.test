@@ -9,7 +9,7 @@ load {TEST_DIR}/dict_fsst_boolean_selection.db readwrite v2.0.0
 foreach cardinality 16 4096
 
 statement ok
-PRAGMA force_compression='DICT_FSST'
+SET force_compression='DICT_FSST'
 
 statement ok
 CREATE TABLE values_{cardinality} AS

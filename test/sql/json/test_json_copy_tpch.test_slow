@@ -10,7 +10,7 @@ statement ok
 set threads=4
 
 statement ok
-PRAGMA temp_directory='{TEST_DIR}/json_copy_tpch.tmp'
+SET temp_directory='{TEST_DIR}/json_copy_tpch.tmp'
 
 statement ok
 start transaction

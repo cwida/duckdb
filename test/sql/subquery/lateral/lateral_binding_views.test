@@ -6,7 +6,7 @@ statement ok
 copy (select date '2000-01-01' as dt) to '{TEST_DIR}/datetest.csv';
 
 statement ok
-create view v1 as select * from read_csv('{TEST_DIR}/datetest.csv', columns={'dt': date});
+create view v1 as select * from read_csv('{TEST_DIR}/datetest.csv', columns={'dt': 'date'});
 
 query I
 from v1

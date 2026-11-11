@@ -6,7 +6,7 @@ foreach forced false true
 
 # This forces 64 bit trees when true
 statement ok
-PRAGMA debug_force_external={forced}
+SET debug_force_external={forced}
 
 # SelectNth
 statement ok

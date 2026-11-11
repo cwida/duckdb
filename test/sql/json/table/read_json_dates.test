@@ -6,7 +6,7 @@ require json
 
 # issue #6774
 query I
-select * from read_json_auto('{DATA_DIR}/json/simple_timestamp.json', columns={"ts": "TIMESTAMP[]"});
+select * from read_json_auto('{DATA_DIR}/json/simple_timestamp.json', columns={"ts": 'TIMESTAMP[]'});
 ----
 ['2022-06-01 06:41:58', '2021-08-21 08:26:55.5', '2009-11-15 21:58:54.636']
 
