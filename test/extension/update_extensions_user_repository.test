@@ -34,10 +34,11 @@ UPDATE EXTENSIONS
 ----
 json	my_repo	NO_UPDATE_AVAILABLE	<REGEX>:.+	<REGEX>:.+
 
-query IIIII
+# updating a single extension only looks at the flat folder for now
+statement error
 UPDATE EXTENSIONS (json)
 ----
-json	my_repo	NO_UPDATE_AVAILABLE	<REGEX>:.+	<REGEX>:.+
+Failed to update the extension 'json', the extension is not installed!
 
 # the update reinstalls into the per-repository folder
 query I
@@ -56,22 +57,22 @@ UPDATE EXTENSIONS
 json	{LOCAL_EXTENSION_REPO}	NO_UPDATE_AVAILABLE	<REGEX>:.+	<REGEX>:.+
 json	my_repo	NO_UPDATE_AVAILABLE	<REGEX>:.+	<REGEX>:.+
 
-query IIIII rowsort
+query IIIII
 UPDATE EXTENSIONS (json)
 ----
 json	{LOCAL_EXTENSION_REPO}	NO_UPDATE_AVAILABLE	<REGEX>:.+	<REGEX>:.+
-json	my_repo	NO_UPDATE_AVAILABLE	<REGEX>:.+	<REGEX>:.+
 
 statement error
 UPDATE EXTENSIONS (foobar)
 ----
 Failed to update the extension 'foobar', the extension is not installed!
 
-# forbidding repositories distrusts them: only the flat copy is updated
+# forbidding repositories distrusts them: only the flat copy is updated, the copy from my_repo is reported
 statement ok
 SET allow_extension_repositories='forbidden'
 
-query IIIII
+query IIIII rowsort
 UPDATE EXTENSIONS
 ----
 json	{LOCAL_EXTENSION_REPO}	NO_UPDATE_AVAILABLE	<REGEX>:.+	<REGEX>:.+
+json	my_repo	REPOSITORY_NOT_TRUSTED	<REGEX>:.+	<REGEX>:.+
