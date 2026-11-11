@@ -47,7 +47,6 @@ OUTCOME_MISSING_BASE = "missing_base"
 @dataclass
 class BenchmarkResult:
     benchmark: str
-    initial_measurement: Optional[BenchmarkMeasurement] = None
     measurement: Optional[BenchmarkMeasurement] = None
     old_failure: Optional[str] = None
     new_failure: Optional[str] = None
@@ -205,13 +204,11 @@ def failed_benchmark_result(
     benchmark: str,
     old_failure: Optional[str],
     new_failure: Optional[str],
-    initial_measurement: Optional[BenchmarkMeasurement],
     initial_runs: int,
     confirmation_runs: int,
 ) -> BenchmarkResult:
     return BenchmarkResult(
         benchmark=benchmark,
-        initial_measurement=initial_measurement,
         old_failure=old_failure,
         new_failure=new_failure,
         initial_runs=initial_runs,
@@ -256,7 +253,7 @@ def run_fixed_benchmark(
     if old_failure or new_failure:
         if benchmark_not_found(old_failure) and not new_failure:
             return missing_base_benchmark_result(benchmark, old_failure, len(new_timings))
-        return failed_benchmark_result(benchmark, old_failure, new_failure, None, run_count, 0)
+        return failed_benchmark_result(benchmark, old_failure, new_failure, run_count, 0)
 
     measurement = benchmark_measurement(old_timings, new_timings)
     if verbose:
@@ -266,7 +263,6 @@ def run_fixed_benchmark(
         )
     return BenchmarkResult(
         benchmark=benchmark,
-        initial_measurement=measurement,
         measurement=measurement,
         initial_runs=run_count,
         outcome=measurement_outcome(measurement),
@@ -287,7 +283,7 @@ def run_adaptive_benchmark(
     if old_failure or new_failure:
         if benchmark_not_found(old_failure) and not new_failure:
             return missing_base_benchmark_result(benchmark, old_failure, len(new_initial))
-        return failed_benchmark_result(benchmark, old_failure, new_failure, None, initial_count, 0)
+        return failed_benchmark_result(benchmark, old_failure, new_failure, initial_count, 0)
 
     initial_measurement = benchmark_measurement(old_initial, new_initial)
     is_candidate = not within_noise(initial_measurement)
@@ -302,7 +298,6 @@ def run_adaptive_benchmark(
     if not is_candidate:
         return BenchmarkResult(
             benchmark=benchmark,
-            initial_measurement=initial_measurement,
             measurement=initial_measurement,
             initial_runs=initial_count,
             outcome=measurement_outcome(initial_measurement),
@@ -322,7 +317,6 @@ def run_adaptive_benchmark(
             benchmark,
             old_failure,
             new_failure,
-            initial_measurement,
             initial_count,
             confirmation_count,
         )
@@ -335,7 +329,6 @@ def run_adaptive_benchmark(
         )
     return BenchmarkResult(
         benchmark=benchmark,
-        initial_measurement=initial_measurement,
         measurement=measurement,
         initial_runs=initial_count,
         confirmation_runs=confirmation_count,
@@ -975,11 +968,7 @@ def main() -> int:
     ]
     missing_base_names = [display_names[result.benchmark] for result in missing_base]
     rows.sort(key=row_sort_key)
-    geomean_measurements = [
-        result.initial_measurement if args.samples is None else result.measurement
-        for result in results
-        if (result.initial_measurement if args.samples is None else result.measurement) is not None
-    ]
+    geomean_measurements = [result.measurement for result in results if result.measurement is not None]
     old_geomean = geomean([measurement.old_timing for measurement in geomean_measurements])
     new_geomean = geomean([measurement.new_timing for measurement in geomean_measurements])
     gate_failed = geomean_regressed(old_geomean, new_geomean)
@@ -997,7 +986,7 @@ def main() -> int:
     )
     print_failure_summary(execution_failures)
     if args.samples is None:
-        sample_text = f"(initial {INITIAL_RUNS} samples)"
+        sample_text = "(adaptive samples)"
     elif args.early_stop:
         sample_text = f"(up to {rounded_samples} samples)"
     else:
