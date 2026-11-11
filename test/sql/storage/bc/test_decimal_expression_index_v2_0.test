@@ -28,33 +28,39 @@ SELECT typeof(a + b) FROM old.t
 ----
 DECIMAL(39,2)
 
+query I
+SELECT count(*) FROM old.t WHERE a + b = 4
+----
+1
+
 # the index on the plain column binds, the index on the sum is refused instead of accepting a duplicate
 statement error
 INSERT INTO old.t VALUES (1, 3)
 ----
-<REGEX>:.*Cannot bind index "ix" on table "t": its key .* binds to DECIMAL\(39,2\), but the index was stored at storage version v(1\.4\.0|2\.0\.0), whose engines bind decimal keys within 38 digits.*DROP INDEX "ix" and CREATE it again.*
+<REGEX>:.*Cannot bind index "ix" on table "t": its key expression .* binds to DECIMAL\(39,2\), but the index was stored at storage version v(1\.4\.0|2\.0\.0), whose engines bind decimal keys within 38 digits.*DROP INDEX "ix" and CREATE it again.*
 
 statement error
 INSERT INTO old.t VALUES (1.5, 0)
 ----
 <REGEX>:.*Cannot bind index "ix".*
 
-query I
-SELECT count(*) FROM old.t WHERE a + b = 4
-----
-1
-
-# the index is dropped and created again: in this storage version the key has to stay within 38 digits
+# the index is dropped and created again: in this storage version every part of the key has to stay within 38 digits,
+# a cast of the wide sum is not enough, since the engines of that version compute the sum within 38 digits
 statement ok
 DROP INDEX old.ix
 
 statement error
 CREATE UNIQUE INDEX ix ON old.t ((a + b))
 ----
-<REGEX>:.*DECIMAL index keys wider than 38 digits are not supported in storage versions prior to v2.1.0.*
+<REGEX>:.*DECIMAL index key expressions wider than 38 digits are not supported in storage versions prior to v2.1.0.*
+
+statement error
+CREATE UNIQUE INDEX ix ON old.t (((a + b)::DECIMAL(38,2)))
+----
+<REGEX>:.*DECIMAL index key expressions wider than 38 digits are not supported in storage versions prior to v2.1.0.*
 
 statement ok
-CREATE UNIQUE INDEX ix ON old.t (((a + b)::DECIMAL(38,2)))
+CREATE UNIQUE INDEX ix ON old.t ((a::DECIMAL(37,2) + b::DECIMAL(37,2)))
 
 statement error
 INSERT INTO old.t VALUES (1, 3)
@@ -88,6 +94,63 @@ statement error
 INSERT INTO old.t VALUES (1, 3)
 ----
 <REGEX>:.*Duplicate key.*4\.00.*
+
+statement ok
+DETACH old
+
+endloop
+
+# data/storage/decimal_coalesce_index_v1_4_0.db.gz and decimal_coalesce_index_v2_0_0.db.gz were written by DuckDB
+# 2.0.0 at storage versions v1.4.0 and v2.0.0, with:
+#   CREATE TABLE t (a DECIMAL(38,0), b DECIMAL(38,1));
+#   CREATE UNIQUE INDEX ix ON t ((coalesce(a, b)::DECIMAL(38,1)));
+#   INSERT INTO t VALUES (NULL, 0.1);
+# The key binds to DECIMAL(38,1) in both engines, but that engine computed COALESCE in DECIMAL(38,0) and stored the key
+# 0.0, while this engine computes it in the wide DECIMAL(39,1) and gets 0.1: a wide intermediate is refused as well
+
+unzip data/storage/decimal_coalesce_index_v1_4_0.db.gz {TEST_DIR}/decimal_coalesce_index_v1_4_0.db
+
+unzip data/storage/decimal_coalesce_index_v2_0_0.db.gz {TEST_DIR}/decimal_coalesce_index_v2_0_0.db
+
+foreach version v1_4_0 v2_0_0
+
+statement ok
+ATTACH '{TEST_DIR}/decimal_coalesce_index_{version}.db' AS old
+
+query II
+SELECT typeof(coalesce(a, b)::DECIMAL(38,1)), typeof(coalesce(a, b)) FROM old.t
+----
+DECIMAL(38,1)	DECIMAL(39,1)
+
+statement error
+INSERT INTO old.t VALUES (NULL, 0.1)
+----
+<REGEX>:.*Cannot bind index "ix" on table "t": its key expression .* binds to DECIMAL\(39,1\), but the index was stored at storage version v(1\.4\.0|2\.0\.0).*
+
+query I
+SELECT count(*) FROM old.t
+----
+1
+
+# the same key cannot be created again at this storage version, since the engines of that version compute it otherwise
+statement ok
+DROP INDEX old.ix
+
+statement error
+CREATE UNIQUE INDEX ix ON old.t ((coalesce(a, b)::DECIMAL(38,1)))
+----
+<REGEX>:.*DECIMAL index key expressions wider than 38 digits are not supported in storage versions prior to v2.1.0.*
+
+statement ok
+CREATE UNIQUE INDEX ix ON old.t ((coalesce(a::DECIMAL(37,0), b)))
+
+statement error
+INSERT INTO old.t VALUES (NULL, 0.1)
+----
+<REGEX>:.*Duplicate key.*0\.1.*
+
+statement ok
+INSERT INTO old.t VALUES (NULL, 0.2)
 
 statement ok
 DETACH old
