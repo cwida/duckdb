@@ -622,7 +622,8 @@ TableRef:
     - SubqueryReference
     - BaseTableRef
     - ParensTableRef
-    - CallSubquery
+    - JoinedTableRef
+    - JoinedTableRefChain
     - ValuesRef
     - MergeIntoUsingClause
     - UpdateTarget
@@ -2002,6 +2003,7 @@ collapsible_rules:
 packrat_memoized_rules:
   - Expression
   - TableRef
+  - ParensTableRef
   - Identifier
   - ColId
   - CatalogQualification

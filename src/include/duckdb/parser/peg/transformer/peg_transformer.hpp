@@ -2403,8 +2403,8 @@ public:
 	                                                                   GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeParensTableRefTrampoline(PEGTransformer &transformer,
 	                                                                        GeneratedTransformProcess &process);
-	static arena_ptr<TransformResultValue> FinalizeCallSubqueryTrampoline(PEGTransformer &transformer,
-	                                                                      GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeJoinedTableRefChainTrampoline(PEGTransformer &transformer,
+	                                                                             GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeTablePivotClauseTrampoline(PEGTransformer &transformer,
 	                                                                          GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeTablePivotClauseBodyTrampoline(PEGTransformer &transformer,
@@ -4292,11 +4292,9 @@ public:
 	                                                    unique_ptr<TableRef> table_ref,
 	                                                    const optional<TableAlias> &table_alias,
 	                                                    optional<unique_ptr<SampleOptions>> sample_clause);
-	static unique_ptr<TableRef> TransformCallSubquery(PEGTransformer &transformer,
-	                                                  const optional<Identifier> &table_alias_colon,
-	                                                  unique_ptr<SQLStatement> call_statement,
-	                                                  const optional<TableAlias> &table_alias,
-	                                                  optional<unique_ptr<SampleOptions>> sample_clause);
+	static unique_ptr<TableRef> TransformJoinedTableRefChain(PEGTransformer &transformer,
+	                                                         unique_ptr<TableRef> inner_table_ref,
+	                                                         vector<unique_ptr<TableRef>> join_or_pivot);
 	static unique_ptr<TableRef> TransformTablePivotClause(PEGTransformer &transformer,
 	                                                      unique_ptr<TableRef> table_pivot_clause_body,
 	                                                      const optional<TableAlias> &table_alias);

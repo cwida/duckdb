@@ -5949,7 +5949,7 @@ static const TransformChildPlan FRAME_CHILDREN_437[] = {{PEGRuleId::SampleClause
                                                          false,
                                                          {0, TRANSFORM_PATH_END, 0},
                                                          {0, TRANSFORM_PATH_END, 0}},
-                                                        {PEGRuleId::TableRef,
+                                                        {PEGRuleId::JoinedTableRef,
                                                          TransformChildKind::REQUIRED,
                                                          1,
                                                          1,
@@ -5964,35 +5964,21 @@ static const TransformChildPlan FRAME_CHILDREN_437[] = {{PEGRuleId::SampleClause
                                                          {0, TRANSFORM_PATH_END, 0},
                                                          {0, TRANSFORM_PATH_END, 0}}};
 static const TransformFramePlan FRAME_PLAN_452 = {FRAME_CHILDREN_437, 4, 4, false, 0, {}};
-static const TransformChildPlan FRAME_CHILDREN_438[] = {{PEGRuleId::SampleClause,
-                                                         TransformChildKind::OPTIONAL,
-                                                         3,
-                                                         3,
+static const TransformChildPlan FRAME_CHILDREN_438[] = {{PEGRuleId::JoinOrPivot,
+                                                         TransformChildKind::REPEAT,
+                                                         1,
+                                                         1,
                                                          false,
                                                          {0, TRANSFORM_PATH_END, 0},
                                                          {0, TRANSFORM_PATH_END, 0}},
-                                                        {PEGRuleId::TableAlias,
-                                                         TransformChildKind::OPTIONAL,
-                                                         2,
-                                                         2,
-                                                         false,
-                                                         {0, TRANSFORM_PATH_END, 0},
-                                                         {0, TRANSFORM_PATH_END, 0}},
-                                                        {PEGRuleId::CallStatement,
+                                                        {PEGRuleId::InnerTableRef,
                                                          TransformChildKind::REQUIRED,
-                                                         1,
-                                                         1,
-                                                         false,
-                                                         {1, TRANSFORM_PATH_END, 0},
-                                                         {0, TRANSFORM_PATH_END, 0}},
-                                                        {PEGRuleId::TableAliasColon,
-                                                         TransformChildKind::OPTIONAL,
                                                          0,
                                                          0,
                                                          false,
                                                          {0, TRANSFORM_PATH_END, 0},
                                                          {0, TRANSFORM_PATH_END, 0}}};
-static const TransformFramePlan FRAME_PLAN_453 = {FRAME_CHILDREN_438, 4, 4, false, 0, {}};
+static const TransformFramePlan FRAME_PLAN_453 = {FRAME_CHILDREN_438, 2, 2, true, 0, {}};
 static const TransformChildPlan FRAME_CHILDREN_439[] = {{PEGRuleId::TableAlias,
                                                          TransformChildKind::OPTIONAL,
                                                          2,
@@ -6467,7 +6453,7 @@ static const TransformChildPlan FRAME_CHILDREN_465[] = {{PEGRuleId::SampleClause
                                                          false,
                                                          {0, TRANSFORM_PATH_END, 0},
                                                          {0, TRANSFORM_PATH_END, 0}},
-                                                        {PEGRuleId::TableRef,
+                                                        {PEGRuleId::JoinedTableRef,
                                                          TransformChildKind::REQUIRED,
                                                          0,
                                                          0,
@@ -8984,8 +8970,10 @@ static const TransformFrameOps GENERATED_FRAME_OPS[] = {
      &PEGTransformerFactory::FinalizeValuesRefTrampoline, &FRAME_PLAN_451},
     {"ParensTableRef", &PEGTransformerFactory::InitializePlannedTrampoline,
      &PEGTransformerFactory::FinalizeParensTableRefTrampoline, &FRAME_PLAN_452},
-    {"CallSubquery", &PEGTransformerFactory::InitializePlannedTrampoline,
-     &PEGTransformerFactory::FinalizeCallSubqueryTrampoline, &FRAME_PLAN_453},
+    {"JoinedTableRef", &PEGTransformerFactory::InitializePlannedChoiceTrampoline,
+     &PEGTransformerFactory::FinalizePassthroughTrampoline, &FRAME_PLAN_1},
+    {"JoinedTableRefChain", &PEGTransformerFactory::InitializePlannedTrampoline,
+     &PEGTransformerFactory::FinalizeJoinedTableRefChainTrampoline, &FRAME_PLAN_453},
     {"JoinOrPivot", &PEGTransformerFactory::InitializePlannedChoiceTrampoline,
      &PEGTransformerFactory::FinalizePassthroughTrampoline, &FRAME_PLAN_1},
     {"TablePivotClause", &PEGTransformerFactory::InitializePlannedTrampoline,
@@ -18109,7 +18097,7 @@ PEGTransformerFactory::FinalizeParensTableRefTrampoline(PEGTransformer &transfor
 	if (process.child_results[0]) {
 		table_alias_colon = process.TakeResult<Identifier>(0);
 	}
-	auto table_ref = process.TakeResult<unique_ptr<TableRef>>(1);
+	auto joined_table_ref = process.TakeResult<unique_ptr<TableRef>>(1);
 	optional<TableAlias> table_alias {};
 	if (process.child_results[2]) {
 		table_alias = process.TakeResult<TableAlias>(2);
@@ -18118,28 +18106,25 @@ PEGTransformerFactory::FinalizeParensTableRefTrampoline(PEGTransformer &transfor
 	if (process.child_results[3]) {
 		sample_clause = process.TakeResult<unique_ptr<SampleOptions>>(3);
 	}
-	auto result = TransformParensTableRef(transformer, table_alias_colon, std::move(table_ref), table_alias,
+	auto result = TransformParensTableRef(transformer, table_alias_colon, std::move(joined_table_ref), table_alias,
 	                                      std::move(sample_clause));
 	return transformer.MakeResult<unique_ptr<TableRef>>(std::move(result));
 }
 
 arena_ptr<TransformResultValue>
-PEGTransformerFactory::FinalizeCallSubqueryTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process) {
-	optional<Identifier> table_alias_colon {};
-	if (process.child_results[0]) {
-		table_alias_colon = process.TakeResult<Identifier>(0);
+PEGTransformerFactory::FinalizeJoinedTableRefChainTrampoline(PEGTransformer &transformer,
+                                                             GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	auto &dynamic_repeat_pr = list_pr.GetChild(1).Cast<RepeatParseResult>();
+	auto dynamic_repeat_children = dynamic_repeat_pr.GetChildren();
+	auto dynamic_child_count = dynamic_repeat_children.size();
+	auto inner_table_ref = process.TakeResult<unique_ptr<TableRef>>(0);
+	vector<unique_ptr<TableRef>> join_or_pivot;
+	join_or_pivot.reserve(dynamic_child_count);
+	for (idx_t i = 1; i < 1 + dynamic_child_count; i++) {
+		join_or_pivot.push_back(process.TakeResult<unique_ptr<TableRef>>(i));
 	}
-	auto call_statement = process.TakeResult<unique_ptr<SQLStatement>>(1);
-	optional<TableAlias> table_alias {};
-	if (process.child_results[2]) {
-		table_alias = process.TakeResult<TableAlias>(2);
-	}
-	optional<unique_ptr<SampleOptions>> sample_clause {};
-	if (process.child_results[3]) {
-		sample_clause = process.TakeResult<unique_ptr<SampleOptions>>(3);
-	}
-	auto result = TransformCallSubquery(transformer, table_alias_colon, std::move(call_statement), table_alias,
-	                                    std::move(sample_clause));
+	auto result = TransformJoinedTableRefChain(transformer, std::move(inner_table_ref), std::move(join_or_pivot));
 	return transformer.MakeResult<unique_ptr<TableRef>>(std::move(result));
 }
 
@@ -18648,12 +18633,12 @@ PEGTransformerFactory::FinalizeNearestBaseTableRefTrampoline(PEGTransformer &tra
 arena_ptr<TransformResultValue>
 PEGTransformerFactory::FinalizeNearestParensTableRefTrampoline(PEGTransformer &transformer,
                                                                GeneratedTransformProcess &process) {
-	auto table_ref = process.TakeResult<unique_ptr<TableRef>>(0);
+	auto joined_table_ref = process.TakeResult<unique_ptr<TableRef>>(0);
 	optional<unique_ptr<SampleOptions>> sample_clause {};
 	if (process.child_results[1]) {
 		sample_clause = process.TakeResult<unique_ptr<SampleOptions>>(1);
 	}
-	auto result = TransformNearestParensTableRef(transformer, std::move(table_ref), std::move(sample_clause));
+	auto result = TransformNearestParensTableRef(transformer, std::move(joined_table_ref), std::move(sample_clause));
 	return transformer.MakeResult<unique_ptr<TableRef>>(std::move(result));
 }
 
