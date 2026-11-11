@@ -371,6 +371,7 @@ private:
 public:
 	LightweightSemaphore(ssize_t initialCount = 0, int maxSpins = 10000) : m_count(initialCount), m_maxSpins(maxSpins)
 	{
+		(void)m_padding;
 		assert(initialCount >= 0);
 		assert(maxSpins >= 0);
 	}
