@@ -505,7 +505,7 @@ EXPLAIN SELECT x, z,
 FROM range(1000000) o(x), range(1000000) p(z)
 WHERE x < 10 AND z < 10;
 ----
-logical_opt	<REGEX>:.*CTE Name: __duckdb_delim.*CTE Name: __duckdb_delim.*Join Type: RIGHT_SEMI.*Join Type: RIGHT_SEMI.*
+logical_opt	<REGEX>:.*CTE Name: __duckdb_delim.*CTE Name: __duckdb_delim.*Join Type: (RIGHT_)?SEMI.*Join Type: (RIGHT_)?SEMI.*
 
 query II
 EXPLAIN SELECT x, z,

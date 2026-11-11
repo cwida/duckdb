@@ -77,10 +77,6 @@ string OptimizerTypeToString(OptimizerType type) {
 	throw InternalException("Invalid optimizer type");
 }
 
-idx_t GetOptimizerCount() {
-	return sizeof(internal_optimizer_types) / sizeof(DefaultOptimizerType) - 1;
-}
-
 vector<string> ListAllOptimizers() {
 	vector<string> result;
 	for (idx_t i = 0; internal_optimizer_types[i].name; i++) {

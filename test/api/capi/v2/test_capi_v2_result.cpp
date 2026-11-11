@@ -1955,7 +1955,8 @@ TEST_CASE("V2: result_render_box on an execution error consumes the result and r
           "[capi_v2][query_result]") {
 	EnvFixture fx;
 	duckdb_v2_result_handle r = nullptr;
-	// Execution is lazy: render_box raises the error when it consumes the stream.
+	// Execution is lazy: error() (volatile, so never folded) throws only when the
+	// stream is stepped, i.e. inside render_box's materialize loop.
 	REQUIRE(Query(fx.conn, "SELECT error('boom render') FROM range(5) t(i)", &r) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(r != nullptr);
 

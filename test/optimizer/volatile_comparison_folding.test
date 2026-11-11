@@ -171,11 +171,10 @@ EXPLAIN SELECT * FROM range(10) t(i) WHERE random() >= 0.25 AND random() <= 0.75
 ----
 logical_opt	<!REGEX>:.*BETWEEN.*
 
-# Non-fallible repeated comparisons can still be factored.
 query II
-EXPLAIN SELECT * FROM range(10) t(i) WHERE (i > 2 AND i % 2 = 0) OR (i > 2 AND i % 3 = 0)
+EXPLAIN SELECT * FROM range(10) t(i) WHERE (i * 3 > 2 AND i % 2 = 0) OR (i * 3 > 2 AND i % 3 = 0)
 ----
-logical_opt	<REGEX>:.*\(\(i % 2\) = 0\) OR \(\(i % 3\) = 0\).*i > 2.*
+logical_opt	<REGEX>:.*\(\(i % 2\) = 0\) OR \(\(i % 3\) = 0\).*\(i \* 3\) > 2.*
 
 query II
 EXPLAIN SELECT * FROM range(10) t(i) WHERE (random() < 0.5 AND i % 2 = 0) OR (random() < 0.5 AND i % 3 = 0)

@@ -97,7 +97,7 @@ static string OptimizerMetricName(const string &optimizer) {
 idx_t MetricsManager::GetMetricCount() const {
 	lock_guard<mutex> guard(registered_metrics_lock);
 	idx_t count = sizeof(internal_metrics) / sizeof(MetricDescriptor) - 1;
-	count += GetOptimizerCount();
+	count += ListAllOptimizers().size();
 	count += registered_metrics.size();
 	return count;
 }
@@ -113,10 +113,9 @@ vector<MetricInfo> MetricsManager::GetAllMetrics() const {
 		info.unit = internal_metrics[i].unit;
 		result.push_back(std::move(info));
 	}
-	// Optimizer metrics are generated at runtime from the registered optimizers.
+	// Optimizer metrics are generated at runtime from the list of optimizers.
 	for (auto &optimizer : ListAllOptimizers()) {
-		auto opt_type = OptimizerTypeFromString(optimizer);
-		string opt_name = StringUtil::Lower(EnumUtil::ToString(opt_type));
+		string opt_name = StringUtil::Lower(EnumUtil::ToString(OptimizerTypeFromString(optimizer)));
 		MetricInfo info;
 		info.name = "optimizer." + opt_name;
 		info.metric_type = "double";
