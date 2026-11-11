@@ -1113,6 +1113,21 @@ vector<string> DBConfig::GetAllowedPaths() const {
 	return vector<string>(options.allowed_paths.begin(), options.allowed_paths.end());
 }
 
+//! Whether a remote path has a dot segment (also percent-encoded) that the server could resolve
+static bool HasRemoteDotSegment(const string &path) {
+	if (!FileSystem::IsRemoteFile(path) && Path::FromString(path).IsLocal()) {
+		// local paths are canonicalized
+		return false;
+	}
+	auto lower_path = StringUtil::Lower(path);
+	for (auto &segment : StringUtil::Split(lower_path, '/')) {
+		if (segment == "." || segment == ".." || StringUtil::Contains(segment, "%2e")) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool DBConfig::CanAccessFile(const string &input_path, FileType type, optional_ptr<FileOpener> opener) {
 	if (Settings::Get<EnableExternalAccessSetting>(*this)) {
 		// all external access is allowed
@@ -1128,6 +1143,10 @@ bool DBConfig::CanAccessFile(const string &input_path, FileType type, optional_p
 
 	if (options.allowed_directories.empty()) {
 		// no prefix directories specified
+		return false;
+	}
+	if (HasRemoteDotSegment(path)) {
+		// remote paths are not normalized, so a dot segment could leave the allowed directory
 		return false;
 	}
 	if (type == FileType::FILE_TYPE_DIR) {
