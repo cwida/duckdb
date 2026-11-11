@@ -105,8 +105,8 @@ idx_t ListColumnReader::ReadInternal(ColumnReaderInput &input, optional_ptr<Vect
 		// check if we have any overflow from a previous read
 		if (overflow_child_count == 0) {
 			// we don't: read elements from the child reader
-			child_defines.zero();
-			child_repeats.zero();
+			child_defines.Zero();
+			child_repeats.Zero();
 			// we don't know in advance how many values to read because of the beautiful repetition/definition setup
 			// we just read (up to) a vector from the child column, and see if we have read enough
 			// if we have not read enough, we read another vector
@@ -200,10 +200,10 @@ ListColumnReader::ListColumnReader(const ParquetReader &reader, const ParquetCol
                                    unique_ptr<ColumnReader> child_column_reader_p)
     : ColumnReader(reader, schema), child_column_reader(std::move(child_column_reader_p)),
       read_cache(reader.allocator, ListType::GetChildType(Type())), read_vector(read_cache), overflow_child_count(0) {
-	child_defines.resize(reader.allocator, STANDARD_VECTOR_SIZE);
-	child_repeats.resize(reader.allocator, STANDARD_VECTOR_SIZE);
-	child_defines_ptr = (uint8_t *)child_defines.ptr;
-	child_repeats_ptr = (uint8_t *)child_repeats.ptr;
+	child_defines.Resize(reader.allocator, STANDARD_VECTOR_SIZE);
+	child_repeats.Resize(reader.allocator, STANDARD_VECTOR_SIZE);
+	child_defines_ptr = (uint8_t *)child_defines.GetCurrentLoc();
+	child_repeats_ptr = (uint8_t *)child_repeats.GetCurrentLoc();
 	if (child_column_reader) {
 		child_column_reader->SetParent(*this);
 	}
