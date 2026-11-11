@@ -146,8 +146,11 @@ public:
 	string GetUnsupportedTypeReason(const LogicalType &type) const;
 	//! Throws when a column type cannot be stored at the storage version of this database
 	void CheckTypeIsSupported(const LogicalType &type) const;
-	//! Why a type written to the catalog holds a DECIMAL wider than this storage version stores, empty when it does not
-	string GetUnsupportedDecimalWidthReason(const LogicalType &type) const;
+	//! Whether a type holds a DECIMAL stored as a BIGNUM blob, the argument types of aggregate states included
+	static bool ContainsWideDecimal(const LogicalType &type);
+	//! Why a type written to the catalog holds a DECIMAL wider than this storage version stores, empty when it does
+	//! not; the subject names what is stored (columns, index keys)
+	string GetUnsupportedDecimalWidthReason(const LogicalType &type, const string &subject = "columns") const;
 	//! Throws when a type written to the catalog holds a DECIMAL wider than this storage version stores
 	void CheckDecimalWidthIsSupported(const LogicalType &type) const;
 	//! Throws when a stored expression casts to a DECIMAL wider than this storage version stores: below v2.0.0 a CAST

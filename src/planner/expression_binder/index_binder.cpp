@@ -18,8 +18,82 @@
 #include "duckdb/planner/operator/logical_create_index.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/common/types/decimal.hpp"
+#include "duckdb/main/attached_database.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 
 namespace duckdb {
+
+namespace {
+
+//! The storage version the keys of an index are written with: the version its stored data records (the ART saves the
+//! version it was created under, an index written before v1.5.0 records none), or the version of the database for an
+//! index that is being created. The version stays with the index when the database is upgraded to a newer storage
+//! version, since the stored keys keep their types.
+StorageVersion IndexKeyStorageVersion(AttachedDatabase &db, optional_ptr<const IndexStorageInfo> storage_info) {
+	if (storage_info && storage_info->IsValid()) {
+		auto entry = storage_info->options.find("storage_version");
+		if (entry == storage_info->options.end()) {
+			return StorageVersion::INVALID;
+		}
+		return static_cast<StorageVersion>(entry->second.GetValue<uint64_t>());
+	}
+	return db.GetStorageManager().GetStorageVersion();
+}
+
+//! Whether the keys of an index of the storage version are bound within 38 digits: the engines of the storage versions
+//! before wide decimals bind every decimal key that way, and the keys they store have those types
+bool KeysPredateWideDecimals(StorageVersion key_version) {
+	return StorageManager::IsPriorToVersion(Decimal::WIDE_VERSION_ADDED, key_version);
+}
+
+//! The first key of a wide decimal type, if any
+optional_ptr<const Expression> FindWideDecimalKey(const vector<unique_ptr<Expression>> &keys) {
+	for (auto &key : keys) {
+		if (StorageManager::ContainsWideDecimal(key->GetReturnType())) {
+			return key.get();
+		}
+	}
+	return nullptr;
+}
+
+//! A stored index whose key binds to a wide type here was written with keys of another type: binding it would leave
+//! the stored keys unmatched (a UNIQUE index would accept duplicates), so it is refused until it is created again
+void CheckStoredKeyTypes(const UnboundIndex &unbound_index, const vector<unique_ptr<Expression>> &keys) {
+	const auto key_version = IndexKeyStorageVersion(unbound_index.db, unbound_index.GetStorageInfo());
+	if (!KeysPredateWideDecimals(key_version)) {
+		return;
+	}
+	auto wide_key = FindWideDecimalKey(keys);
+	if (!wide_key) {
+		return;
+	}
+	auto &name = unbound_index.GetIndexName();
+	throw BinderException(
+	    "Cannot bind index %s on table %s: its key %s binds to %s, but the index was stored at "
+	    "storage version %s, whose engines bind decimal keys within %d digits, so the stored keys have "
+	    "another type. DROP INDEX %s and CREATE it again, with the key cast to a DECIMAL of at most %d "
+	    "digits or after upgrading the database to storage version %s or later",
+	    name, unbound_index.GetTableName(), wide_key->ToString(), wide_key->GetReturnType().ToString(),
+	    GetStorageVersionName(key_version, false), Decimal::MAX_WIDTH_INT128, name, Decimal::MAX_WIDTH_INT128,
+	    GetStorageVersionName(Decimal::WIDE_VERSION_ADDED, false));
+}
+
+//! The keys of a new index are stored at the storage version of its database: a wide decimal key is refused where that
+//! version cannot hold it, like a wide column, so that the engines of that version read the index with the key types
+//! they bind
+void CheckNewKeyTypes(AttachedDatabase &db, const vector<unique_ptr<Expression>> &keys) {
+	if (!db.HasStorageManager() || !KeysPredateWideDecimals(IndexKeyStorageVersion(db, nullptr))) {
+		return;
+	}
+	auto wide_key = FindWideDecimalKey(keys);
+	if (wide_key) {
+		throw InvalidInputException(
+		    db.GetStorageManager().GetUnsupportedDecimalWidthReason(wide_key->GetReturnType(), "index keys"));
+	}
+}
+
+} // namespace
 
 IndexBinder::IndexBinder(Binder &binder, ClientContext &context, optional_ptr<TableCatalogEntry> table,
                          optional_ptr<CreateIndexInfo> info)
@@ -94,6 +168,7 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index)
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;
+	CheckStoredKeyTypes(unbound_index, unbound_expressions);
 
 	CreateIndexInput input(context, unbound_index.table_io_manager, unbound_index.db, create_info.constraint_type,
 	                       create_info.GetIndexName(), create_info.column_ids, unbound_expressions, storage_info,
@@ -162,6 +237,7 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;
+	CheckNewKeyTypes(table_entry.ParentCatalog().GetAttached(), expressions);
 
 	auto &get = plan->Cast<LogicalGet>();
 	InitCreateIndexInfo(get, *create_index_info);

@@ -296,13 +296,13 @@ static string UnsupportedAtStorageVersion(AttachedDatabase &db, StorageVersion s
 	                          GetStorageVersionName(storage_version, false));
 }
 
-static string WideDecimalUnsupportedReason(AttachedDatabase &db, StorageVersion storage_version) {
-	auto what = StringUtil::Format("DECIMAL columns wider than %d digits", Decimal::MAX_WIDTH_INT128);
+static string WideDecimalUnsupportedReason(AttachedDatabase &db, StorageVersion storage_version,
+                                           const string &subject) {
+	auto what = StringUtil::Format("DECIMAL %s wider than %d digits", subject, Decimal::MAX_WIDTH_INT128);
 	return UnsupportedAtStorageVersion(db, storage_version, what, Decimal::WIDE_VERSION_ADDED);
 }
 
-//! Whether a type holds a DECIMAL stored as a BIGNUM blob, the argument types of aggregate states included
-static bool ContainsWideDecimal(const LogicalType &logical_type) {
+bool StorageManager::ContainsWideDecimal(const LogicalType &logical_type) {
 	return TypeVisitor::Contains(logical_type, [&](const LogicalType &type) {
 		if (type.IsAggregateState()) {
 			for (auto &argument_type : AggregateStateArgumentTypes(type)) {
@@ -353,7 +353,7 @@ string StorageManager::GetUnsupportedTypeReason(const LogicalType &logical_type)
 		case LogicalTypeId::DECIMAL:
 			// decimals wider than 38 digits are stored as BIGNUM blobs, which older engines cannot read
 			if (storage_version < Decimal::WIDE_VERSION_ADDED && Decimal::IsWide(DecimalType::GetWidth(type))) {
-				reason = WideDecimalUnsupportedReason(db, storage_version);
+				reason = WideDecimalUnsupportedReason(db, storage_version, "columns");
 			}
 			break;
 		case LogicalTypeId::VARIANT:
@@ -390,12 +390,12 @@ void StorageManager::CheckTypeIsSupported(const LogicalType &type) const {
 	}
 }
 
-string StorageManager::GetUnsupportedDecimalWidthReason(const LogicalType &type) const {
+string StorageManager::GetUnsupportedDecimalWidthReason(const LogicalType &type, const string &subject) const {
 	const auto storage_version = GetStorageVersion();
 	if (storage_version >= Decimal::WIDE_VERSION_ADDED || !ContainsWideDecimal(type)) {
 		return string();
 	}
-	return WideDecimalUnsupportedReason(db, storage_version);
+	return WideDecimalUnsupportedReason(db, storage_version, subject);
 }
 
 void StorageManager::CheckDecimalWidthIsSupported(const LogicalType &type) const {
