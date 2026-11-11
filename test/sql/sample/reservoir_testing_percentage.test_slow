@@ -5,7 +5,7 @@
 loop i 1 8
 
 statement ok
-pragma threads={i};
+SET threads={i};
 
 statement ok
 CREATE or replace TABLE t1 as select range a, [1, a, 2] b, a::VARCHAR || 'ducktastic' c, get_current_timestamp() c from range(1000);

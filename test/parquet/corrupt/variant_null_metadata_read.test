@@ -1,0 +1,17 @@
+# name: test/parquet/corrupt/variant_null_metadata_read.test
+# description: Reject NULL metadata for a non-NULL Parquet VARIANT object
+# group: [corrupt]
+
+require parquet
+
+# Rows 0 and 2 have NULL metadata but a non-NULL binary object value.
+statement error
+SELECT * FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/variant_null_metadata_read.parquet');
+----
+Data Corruption Error: VARIANT metadata cannot be NULL
+
+# Field extraction must reject the missing metadata too.
+statement error
+SELECT v.key FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/variant_null_metadata_read.parquet');
+----
+Data Corruption Error: VARIANT metadata cannot be NULL

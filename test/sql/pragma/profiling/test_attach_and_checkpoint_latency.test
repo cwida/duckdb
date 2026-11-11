@@ -32,10 +32,10 @@ statement ok
 CREATE TABLE profile_fs.tbl AS SELECT range AS id FROM range(100_000);
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profile_fs.json';
+SET profiling_output = '{TEST_DIR}/profile_fs.json';
 
 statement ok
 SET tracked_metrics = ['storage.waiting_to_attach_latency', 'storage.attach_load_storage_latency', 'storage.attach_replay_wal_latency', 'storage.checkpoint_latency'];
@@ -69,7 +69,7 @@ statement ok
 DETACH profile_fs;
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
 ATTACH '{TEST_DIR}/profile_fs.db';

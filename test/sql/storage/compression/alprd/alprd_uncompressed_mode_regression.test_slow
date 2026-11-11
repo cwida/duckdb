@@ -11,7 +11,7 @@ require parquet
 load {TEST_DIR}/test_alprd_regression_v1_4_0.db readwrite v1.4.0
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 # This parquet file generates numerous ALP exceptions, which, under certain circumstances
 # (depends on default block and vector size), previously resulted in the compressed data being larger than the original.
@@ -24,7 +24,7 @@ checkpoint;
 
 # Now create a duplicate of this table, compressed with ALP instead
 statement ok
-PRAGMA force_compression='alprd'
+SET force_compression='alprd'
 
 statement ok
 CREATE TABLE alprd_v1_4_0 AS SELECT * FROM original_data;
@@ -59,7 +59,7 @@ SELECT
 load {TEST_DIR}/test_alprd_regression_v1_5_0.db readwrite v1.5.0
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 CREATE TABLE original_data AS SELECT x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x FROM read_parquet("data/parquet-testing/alp_exceptions.parquet") t(x);
@@ -69,7 +69,7 @@ checkpoint;
 
 # Now create a duplicate of this table, compressed with ALP instead
 statement ok
-PRAGMA force_compression='alprd'
+SET force_compression='alprd'
 
 statement ok
 CREATE TABLE alprd_v1_5_0 AS SELECT * FROM original_data;

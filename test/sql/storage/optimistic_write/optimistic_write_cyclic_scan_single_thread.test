@@ -7,7 +7,7 @@ require skip_reload
 load {TEST_DIR}/optimistic_write_cyclic_scan_single_thread.db
 
 statement ok
-PRAGMA threads=1;
+SET threads=1;
 
 # flush every completed row group deterministically
 statement ok

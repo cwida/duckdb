@@ -5,9 +5,6 @@
 require parquet
 
 statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
-statement ok
 CREATE TABLE tmp AS SELECT range AS id FROM range(10);
 
 # create a parquet file

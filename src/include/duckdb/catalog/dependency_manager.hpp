@@ -132,7 +132,8 @@ private:
 	                  catalog_entry_vector_t &order, bool allow_internal);
 	void ReorderEntries(catalog_entry_vector_t &entries, CatalogTransaction transaction, bool allow_internal);
 	void AddObject(CatalogTransaction transaction, CatalogEntry &object, const LogicalDependencyList &dependencies);
-	void VerifyExistence(CatalogTransaction transaction, DependencyEntry &object);
+	void VerifyExistence(CatalogTransaction transaction, CatalogTransaction snapshot_transaction,
+	                     DependencyEntry &object);
 	void VerifyCommitDrop(CatalogTransaction transaction, VisibilityBound visibility_bound, CatalogEntry &object);
 	//! Returns the objects that should be dropped alongside the object
 	catalog_entry_set_t CheckDropDependencies(CatalogTransaction transaction, CatalogEntry &object, bool cascade);

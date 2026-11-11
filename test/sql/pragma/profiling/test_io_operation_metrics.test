@@ -24,10 +24,10 @@ statement ok
 COPY (SELECT i AS a, i * 2 AS b FROM range(100000) t(i)) TO '{TEST_DIR}/read_ops_src.csv';
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/read_ops_profile.json';
+SET profiling_output = '{TEST_DIR}/read_ops_profile.json';
 
 statement ok
 SET tracked_metrics = ['io.*'];

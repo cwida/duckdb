@@ -4,6 +4,7 @@
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/enums/wal_type.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
 #include "duckdb/parser/parsed_data/transaction_info.hpp"
 #include "test_helpers.hpp"
@@ -28,7 +29,7 @@ static void TestReplayInvalidAlterInfo(const string &name, unique_ptr<ParseInfo>
 
 	LocalFileSystem lfs;
 	config->options.checkpoint_wal_size = idx_t(-1);
-	config->options.checkpoint_on_shutdown = false;
+	config->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
 	DeleteDatabase(storage_database);
 	{
 		DuckDB db(storage_database, config.get());

@@ -3,7 +3,7 @@
 # group: [plan]
 
 statement ok
-pragma explain_output='optimized_only'
+SET explain_output='optimized_only'
 
 statement ok
 set disabled_optimizers to 'build_side_probe_side';

@@ -306,7 +306,7 @@ VALUES
 
 # Parallel combine with UTF-8 strings (use-after-free bug in Combine)
 statement ok
-PRAGMA threads=4;
+SET threads=4;
 
 statement ok
 CREATE TABLE mode_utf8 AS
@@ -318,3 +318,21 @@ SELECT count(*) FROM (SELECT g, mode(v) AS m FROM mode_utf8 GROUP BY g)
 WHERE m IN ('চৌদ্দগ্রাম', 'São Paulo', '東京都', 'Região Geográfica');
 ----
 100001
+
+# raw mode/entropy states (via the window self-join) combined into rows copied from another thread's hash table
+statement ok
+RESET debug_force_external;
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE parallel_mode AS SELECT i % 20000 AS g,
+	md5((CASE WHEN i // 20000 < 6 THEN i % 20000 % 7 ELSE (i % 20000 + i // 20000) % 31 + 7 END)::VARCHAR) AS s
+FROM range(200000) r(i);
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT g, mode(s) OVER (PARTITION BY g) m, entropy(s) OVER (PARTITION BY g) e FROM parallel_mode) w
+JOIN (SELECT g, mode(s) m, entropy(s) e FROM parallel_mode GROUP BY g) r USING (g) WHERE w.m != r.m OR abs(w.e - r.e) > 1e-9;
+----
+0

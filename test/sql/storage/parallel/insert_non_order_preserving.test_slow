@@ -5,7 +5,7 @@
 load {TEST_DIR}/insert_non_order_preserving.db
 
 statement ok
-PRAGMA preserve_insertion_order=false
+SET preserve_insertion_order=false
 
 query I
 CREATE TABLE integers AS SELECT * FROM range(10000000) tbl(i);

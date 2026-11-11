@@ -5,7 +5,7 @@
 require vector_size 2048
 
 statement ok
-PRAGMA threads=4;
+SET threads=4;
 
 statement ok
 CREATE TABLE cte_parallel_left AS SELECT i FROM range(600000) tbl(i);
@@ -189,7 +189,7 @@ SELECT count(*) FROM cte_parallel_empty;
 
 # The batch scan remains valid when the pipeline has only one executor.
 statement ok
-PRAGMA threads=1;
+SET threads=1;
 
 query I
 CREATE TABLE cte_single_thread AS

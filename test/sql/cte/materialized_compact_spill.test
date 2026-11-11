@@ -9,7 +9,7 @@ require block_size 262144
 load {TEST_DIR}/compact_spill.db
 
 statement ok
-PRAGMA force_compression='dict_fsst'
+SET force_compression='dict_fsst'
 
 # non-inlined dictionary values so the spill exercises the dictionary string heap repair
 statement ok

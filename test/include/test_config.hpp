@@ -70,6 +70,7 @@ public:
 	bool RunStorageFuzzer();
 	bool GetSummarizeFailures();
 	bool GetSkipCompiledTests();
+	bool GetWarningsAsErrors();
 	DebugVectorVerification GetVectorVerification();
 	DebugInitialize GetDebugInitialize();
 	ExtensionAutoLoadingMode GetExtensionAutoLoadingMode();

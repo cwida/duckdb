@@ -90,6 +90,23 @@ SELECT count(*), min(i), max(i) FROM t WHERE j > 5000
 ----
 5691	2501	8191
 
+# A partially matching partition after fully matching ones must discard their precomputed values.
+query III
+SELECT count(*), min(i), max(i) FROM t WHERE j <= 5000
+----
+2501	0	2500
+
+# Fully matching and fully excluded partitions can still be precomputed together.
+query II
+EXPLAIN SELECT count(*), min(i), max(i) FROM t WHERE i <= 4095
+----
+physical_plan	<!REGEX>:.*UNGROUPED_AGGREGATE.*
+
+query III
+SELECT count(*), min(i), max(i) FROM t WHERE i <= 4095
+----
+4096	0	4095
+
 # Filter that excludes all data
 query III
 SELECT count(*), min(i), max(i) FROM t WHERE i > 99999

@@ -29,6 +29,7 @@
 #include "duckdb/planner/operator/logical_cteref.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_limit.hpp"
+#include "duckdb/planner/operator/logical_materialized_cte.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_secure_view.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
@@ -997,7 +998,7 @@ TEST_CASE("Projection and window preserve the statistics source", "[optimizer][r
 	auto child_stats = CreateStats({input}, {10}, 100);
 	child_stats.row_retention = 0.04;
 	child_stats.columns[0].total_domain = DistinctCount(100, DistinctCountSource::EXACT);
-	child_stats.columns[0].semi_anti_join_domain_evidence.TightenFilterDomainBound(10);
+	child_stats.columns[0].semi_anti_join_domain_evidence.TightenDomainBound(10);
 	auto projection = CreateProjectedDummy(TableIndex(10), TableIndex(20));
 	auto projected =
 	    RelationStatisticsHelper::ExtractProjectionStats(projection->Cast<LogicalProjection>(), child_stats);
@@ -1018,7 +1019,7 @@ TEST_CASE("Grouping sets discard inherited SEMI domain evidence", "[optimizer][r
 	auto input = ColumnBinding(TableIndex(10), ProjectionIndex(0));
 	auto child_stats = CreateStats({input}, {1}, 1);
 	child_stats.columns[0].semi_anti_join_domain_evidence.MarkUnique();
-	child_stats.columns[0].semi_anti_join_domain_evidence.TightenFilterDomainBound(1);
+	child_stats.columns[0].semi_anti_join_domain_evidence.TightenDomainBound(1);
 	LogicalAggregate aggregate(TableIndex(20), TableIndex(30), vector<unique_ptr<Expression>>());
 	aggregate.groups.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, input));
 	aggregate.grouping_sets.emplace_back();
@@ -1059,7 +1060,7 @@ TEST_CASE("Delim SEMI and ANTI joins use domain coverage", "[optimizer][relation
 	auto right_stats = CreateStats({right_binding}, {100}, 100);
 	right_stats.columns[0].total_domain = DistinctCount(1000, DistinctCountSource::EXACT);
 	right_stats.row_retention = 0.1;
-	right_stats.columns[0].semi_anti_join_domain_evidence.TightenFilterDomainBound(100);
+	right_stats.columns[0].semi_anti_join_domain_evidence.TightenDomainBound(100);
 	LogicalComparisonJoin delim_join(JoinType::SEMI, LogicalOperatorType::LOGICAL_DELIM_JOIN);
 	delim_join.conditions.emplace_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, left_binding),
 	                                   make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, right_binding),
@@ -1120,6 +1121,59 @@ TEST_CASE("Relation statistics extraction rejects recurring and cyclic CTEs", "[
 	                                        [&](TableIndex) -> optional_ptr<LogicalOperator> { return cyclic; });
 	REQUIRE_FALSE(cyclic_extractor.Extract(cyclic));
 	REQUIRE(cyclic_extractor.ExtractedOperatorCount() == 1);
+}
+
+TEST_CASE("Materialized CTE extraction restores nested lookup scopes", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto outer_index = TableIndex(30);
+	auto inner_index = TableIndex(40);
+	auto definition = make_uniq<LogicalExpressionGet>(TableIndex(10), vector<LogicalType> {LogicalType::INTEGER},
+	                                                  vector<vector<unique_ptr<Expression>>> {});
+	definition->children.push_back(make_uniq<LogicalDummyScan>(TableIndex(11)));
+	for (int32_t value = 1; value <= 2; value++) {
+		vector<unique_ptr<Expression>> row;
+		row.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(value)));
+		definition->expressions.push_back(std::move(row));
+	}
+	auto outer_ref = make_uniq<LogicalCTERef>(TableIndex(50), outer_index, vector<LogicalType> {LogicalType::INTEGER},
+	                                          vector<Identifier> {Identifier("i")});
+	auto inner_ref = make_uniq<LogicalCTERef>(TableIndex(60), inner_index, vector<LogicalType> {LogicalType::INTEGER},
+	                                          vector<Identifier> {Identifier("i")});
+	auto inner = make_uniq<LogicalMaterializedCTE>(Identifier("inner"), inner_index, 1, std::move(outer_ref),
+	                                               std::move(inner_ref), CTEMaterialize::CTE_MATERIALIZE_ALWAYS);
+	LogicalMaterializedCTE outer(Identifier("outer"), outer_index, 1, std::move(definition), std::move(inner),
+	                             CTEMaterialize::CTE_MATERIALIZE_ALWAYS);
+	auto outside = CreateProjectedDummy(TableIndex(70), TableIndex(80));
+	idx_t outside_lookups = 0;
+	RelationStatsExtractor extractor(*connection.context, [&](TableIndex index) -> optional_ptr<LogicalOperator> {
+		REQUIRE((index == outer_index || index == inner_index));
+		outside_lookups++;
+		return *outside;
+	});
+	auto nested_stats = extractor.Extract(outer);
+	REQUIRE(nested_stats);
+	REQUIRE(nested_stats->cardinality == 2);
+	REQUIRE(nested_stats->MatchesBindings(outer.GetColumnBindings()));
+	REQUIRE(outside_lookups == 0);
+
+	auto source_stats = make_shared_ptr<JoinOrderSourceStats>(*connection.context, outer);
+	RelationStatsExtractor inherited_extractor(*connection.context, source_stats);
+	auto inherited_stats = inherited_extractor.Extract(outer);
+	REQUIRE(inherited_stats);
+	REQUIRE(inherited_stats->cardinality == 2);
+	REQUIRE(inherited_stats->MatchesBindings(outer.GetColumnBindings()));
+
+	LogicalCTERef outside_outer(TableIndex(90), outer_index, {LogicalType::INTEGER}, {Identifier("i")});
+	LogicalCTERef outside_inner(TableIndex(100), inner_index, {LogicalType::INTEGER}, {Identifier("i")});
+	vector<reference<LogicalCTERef>> outside_references {outside_outer, outside_inner};
+	for (auto &cte_ref : outside_references) {
+		auto stats = extractor.Extract(cte_ref);
+		REQUIRE(stats);
+		REQUIRE(stats->cardinality == 1);
+		REQUIRE(stats->MatchesBindings(cte_ref.get().GetColumnBindings()));
+	}
+	REQUIRE(outside_lookups == 2);
 }
 
 TEST_CASE("SEMI fallback retains fractional cardinalities for enumeration", "[optimizer][relation_statistics]") {
@@ -1215,9 +1269,9 @@ TEST_CASE("Shared key filters restrict domains only with supported input statist
 				auto right_stats = CreateStats({b}, {bound}, 100);
 				left_stats.columns[0].total_domain = DistinctCount(10, DistinctCountSource::MIN_MAX);
 				right_stats.columns[0].total_domain = DistinctCount(10, source);
-				left_stats.columns[0].semi_anti_join_domain_evidence.TightenFilterDomainBound(1);
+				left_stats.columns[0].semi_anti_join_domain_evidence.TightenDomainBound(1);
 				if (filter_both) {
-					right_stats.columns[0].semi_anti_join_domain_evidence.TightenFilterDomainBound(bound);
+					right_stats.columns[0].semi_anti_join_domain_evidence.TightenDomainBound(bound);
 				} else {
 					// A modeled current domain or uniqueness is not an explicit filter restriction.
 					right_stats.columns[0].semi_anti_join_domain_evidence.MarkUnique();

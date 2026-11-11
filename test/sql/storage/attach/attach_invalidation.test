@@ -40,7 +40,7 @@ statement ok
 INSERT INTO a.tbl VALUES (10);
 
 statement ok
-PRAGMA debug_checkpoint_abort = '{abort_mode}';
+SET debug_checkpoint_abort = '{abort_mode}';
 
 # the failing checkpoint is scoped to "a"
 statement error
@@ -103,7 +103,7 @@ SET immediate_transaction_mode = false;
 
 # detach + reattach clears the invalidation and recovers committed data from the WAL
 statement ok
-PRAGMA debug_checkpoint_abort = 'none';
+SET debug_checkpoint_abort = 'none';
 
 statement ok
 DETACH a;
@@ -121,7 +121,7 @@ statement ok
 SET wal_autocheckpoint = '1KB';
 
 statement ok
-PRAGMA debug_checkpoint_abort = '{abort_mode}';
+SET debug_checkpoint_abort = '{abort_mode}';
 
 statement error
 INSERT INTO a.tbl SELECT (range + 1000)::INTEGER FROM range(10000);
@@ -139,7 +139,7 @@ SELECT COUNT(*) FROM b.tbl;
 2
 
 statement ok
-PRAGMA debug_checkpoint_abort = 'none';
+SET debug_checkpoint_abort = 'none';
 
 statement ok
 DETACH a;

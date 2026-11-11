@@ -479,39 +479,6 @@ SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'seq_mark';
 ----
 NULL
 
-# identity projection maps from decorrelation stay valid for strategies requiring empty maps
-statement ok
-SET nested_loop_join_threshold = 1000000;
-
-statement ok
-SET delim_join_as_cte = false;
-
-query II
-SELECT o.k, q.x
-FROM (VALUES (1), (2)) o(k), LATERAL (
-    SELECT v.x
-    FROM (SELECT o.k + 2 AS x) v
-    ASOF SEMI JOIN (VALUES (4)) r(ts) ON v.x >= r.ts
-) q ORDER BY ALL;
-----
-2	4
-
-query II
-SELECT o.k, q.x
-FROM (VALUES (1), (2)) o(k), LATERAL (
-    SELECT v.x
-    FROM (SELECT o.k + 2 AS x) v
-    ASOF ANTI JOIN (VALUES (4)) r(ts) ON [v.x] >= [r.ts]
-) q ORDER BY ALL;
-----
-1	3
-
-statement ok
-RESET nested_loop_join_threshold;
-
-statement ok
-RESET delim_join_as_cte;
-
 # operand ownership does not imply eager evaluation: a correlated probe operand keeps
 # its computation at the join and only its outer references move into the probe child,
 # so an empty build input never evaluates it
@@ -733,3 +700,40 @@ query I
 SELECT currval('seq_probe_domain');
 ----
 3
+
+# delim_join_as_cte is deprecated: the remaining statements opt out of warnings_as_errors
+statement ok
+SET warnings_as_errors=false;
+
+# identity projection maps from decorrelation stay valid for strategies requiring empty maps
+statement ok
+SET nested_loop_join_threshold = 1000000;
+
+statement ok
+SET delim_join_as_cte = false;
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF SEMI JOIN (VALUES (4)) r(ts) ON v.x >= r.ts
+) q ORDER BY ALL;
+----
+2	4
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF ANTI JOIN (VALUES (4)) r(ts) ON [v.x] >= [r.ts]
+) q ORDER BY ALL;
+----
+1	3
+
+statement ok
+RESET nested_loop_join_threshold;
+
+statement ok
+RESET delim_join_as_cte;

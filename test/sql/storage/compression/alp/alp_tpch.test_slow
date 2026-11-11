@@ -8,10 +8,10 @@ load {TEST_DIR}/test_alp.db
 
 # This needs to be single-threaded to be consistent (because of floating point issues)
 statement ok
-pragma threads=1
+SET threads=1
 
 statement ok
-PRAGMA force_compression='alp';
+SET force_compression='alp';
 
 statement ok
 call dbgen(sf=1, suffix='_original');

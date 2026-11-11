@@ -5,7 +5,7 @@
 load {TEST_DIR}/join_filter_pushdown_bloom_cast.db
 
 statement ok
-PRAGMA force_compression='rle';
+SET force_compression='rle';
 
 statement ok
 SET disabled_optimizers='join_order,build_side_probe_side';

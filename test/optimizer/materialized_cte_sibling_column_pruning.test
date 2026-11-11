@@ -20,7 +20,7 @@ SET disabled_optimizers = {disabled};
 # Check both planning stages without depending on the complete plan shape.
 
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 query II
 EXPLAIN SELECT b.value
@@ -43,7 +43,7 @@ WHERE a.k = 1;
 logical_opt	<!REGEX>:.*unused_payload.*
 
 statement ok
-PRAGMA explain_output='physical_only';
+SET explain_output='physical_only';
 
 query II
 EXPLAIN SELECT b.value

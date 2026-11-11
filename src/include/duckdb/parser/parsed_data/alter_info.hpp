@@ -29,7 +29,8 @@ enum class AlterType : uint8_t {
 	SET_COMMENT = 7,
 	SET_COLUMN_COMMENT = 8,
 	ALTER_DATABASE = 9,
-	ALTER_SCHEMA = 10
+	ALTER_SCHEMA = 10,
+	ALTER_MACRO = 11
 };
 
 enum class AlterBindMode { BIND_ON_ALTER, SKIP_BINDING };
@@ -95,6 +96,12 @@ public:
 	virtual Identifier GetColumnName() const {
 		return Identifier();
 	};
+	//! Types the binder resolves against the altered entry's catalog and schema
+	virtual vector<reference<LogicalType>> GetTypesToBind();
+	//! The catalog types the altered entry may have, tried in order when binding
+	virtual vector<CatalogType> GetEntryLookupTypes() const;
+	//! Records the type of the entry the binder resolved, for an alter that accepts several
+	virtual void SetResolvedEntryType(CatalogType type);
 
 	AlterEntryData GetAlterEntryData() const;
 	bool IsAddPrimaryKey() const;

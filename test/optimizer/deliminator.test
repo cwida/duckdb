@@ -14,7 +14,7 @@ statement ok
 CALL dbgen(sf=0.0001);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 # Q 02: join with JoinType::SINGLE (created when pushing down dependent joins) is converted to LEFT
 query II
@@ -57,7 +57,7 @@ logical_opt	<!REGEX>:.*SINGLE.*
 query II
 explain SELECT s_name, s_address FROM supplier, nation WHERE s_suppkey IN ( SELECT ps_suppkey FROM partsupp WHERE ps_partkey IN ( SELECT p_partkey FROM part WHERE p_name LIKE 'forest%') AND ps_availqty > ( SELECT 0.5 * sum(l_quantity) FROM lineitem WHERE l_partkey = ps_partkey AND l_suppkey = ps_suppkey AND l_shipdate >= CAST('1994-01-01' AS date) AND l_shipdate < CAST('1995-01-01' AS date))) AND s_nationkey = n_nationkey AND n_name = 'CANADA' ORDER BY s_name;
 ----
-logical_opt	<REGEX>:.*Groups: ps_suppkey, ps_partkey.*Join Type: SEMI.*l_partkey = ps_partkey.*l_suppkey = ps_suppkey.*(DELIM_GET|CTE_SCAN).*
+logical_opt	<REGEX>:.*Groups: ps_suppkey, ps_partkey.*Join Type: (RIGHT_)?SEMI.*(l_partkey = ps_partkey|ps_partkey = l_partkey).*(l_suppkey = ps_suppkey|ps_suppkey = l_suppkey).*(DELIM_GET|CTE_SCAN).*
 
 # Eliminating the generated domain join must not leave tautological filters on the lineitem scan
 query II
@@ -505,7 +505,7 @@ EXPLAIN SELECT x, z,
 FROM range(1000000) o(x), range(1000000) p(z)
 WHERE x < 10 AND z < 10;
 ----
-logical_opt	<REGEX>:.*CTE Name: __duckdb_delim.*CTE Name: __duckdb_delim.*Join Type: RIGHT_SEMI.*Join Type: RIGHT_SEMI.*
+logical_opt	<REGEX>:.*CTE Name: __duckdb_delim.*CTE Name: __duckdb_delim.*Join Type: (RIGHT_)?SEMI.*Join Type: (RIGHT_)?SEMI.*
 
 query II
 EXPLAIN SELECT x, z,
@@ -528,7 +528,7 @@ WHERE x < 10 AND z < 10
 		OR EXISTS (SELECT 1 FROM range(1000000000) c(y) WHERE y = o.x)
 	);
 ----
-logical_opt	<REGEX>:.*CTE Name: __duckdb_delim.*CTE Name: __duckdb_delim.*Join Type: RIGHT_SEMI.*Join Type: RIGHT_SEMI.*
+logical_opt	<REGEX>:.*CTE Name: __duckdb_delim.*CTE Name: __duckdb_delim.*Join Type: (RIGHT_)?SEMI.*Join Type: (RIGHT_)?SEMI.*
 
 query II
 EXPLAIN SELECT count(*)
