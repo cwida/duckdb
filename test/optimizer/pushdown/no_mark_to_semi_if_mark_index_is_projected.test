@@ -55,7 +55,7 @@ WHERE parentExists;
 ----
 
 statement ok
-PRAGMA explain_output='optimized_only'
+SET explain_output='optimized_only'
 
 query II
 EXPLAIN

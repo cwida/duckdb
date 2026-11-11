@@ -30,10 +30,10 @@ statement ok
 CHECKPOINT acp_db;
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/acp_before.json';
+SET profiling_output = '{TEST_DIR}/acp_before.json';
 
 statement ok
 SET tracked_metrics = ['storage.checkpoint_latency', 'io.total_bytes_written', 'storage.commit_local_storage_latency', 'storage.write_to_wal_latency'];
@@ -64,10 +64,10 @@ statement ok
 SET wal_autocheckpoint_entries=1;
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/acp_after.json';
+SET profiling_output = '{TEST_DIR}/acp_after.json';
 
 # This INSERT should trigger auto-checkpoint on commit.
 statement ok

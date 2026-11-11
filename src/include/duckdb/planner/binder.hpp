@@ -61,6 +61,7 @@ class LogicalVacuum;
 
 class ColumnList;
 class ExternalDependency;
+class FunctionArgument;
 class FunctionSignature;
 class TableFunction;
 class BoundTableFunction;
@@ -97,6 +98,8 @@ struct TrySubqueryPlanIndexes {
 	bool recorded = false;
 	//! The select list projection
 	TableIndex projection_index;
+	//! The projection that restores the select list above the aggregate of a DISTINCT, only set for DISTINCT
+	TableIndex distinct_index;
 	//! The prune projection above the result modifiers, only set when pruning is needed
 	TableIndex prune_index;
 	//! The aggregate node of the select node
@@ -608,6 +611,9 @@ private:
 	BoundStatement BindNode(CopyQueryNode &node);
 
 	unique_ptr<LogicalOperator> VisitQueryNode(BoundQueryNode &node, unique_ptr<LogicalOperator> root);
+	//! Plans a DISTINCT (ON) as an aggregate that groups on the targets and takes the first value of other columns
+	unique_ptr<LogicalOperator> PlanDistinct(BoundDistinctModifier &distinct, optional_ptr<BoundOrderModifier> order,
+	                                         unique_ptr<LogicalOperator> root);
 	unique_ptr<LogicalOperator> CreatePlan(BoundSelectNode &statement);
 	unique_ptr<LogicalOperator> CreatePlan(BoundSetOperationNode &node);
 	unique_ptr<LogicalOperator> CreatePlan(BoundQueryNode &node);
@@ -640,8 +646,7 @@ private:
 
 	unique_ptr<BoundAtClause> BindAtClause(optional_ptr<AtClause> at_clause);
 
-	bool BindTableFunctionParameters(TableFunctionCatalogEntry &table_function,
-	                                 vector<unique_ptr<ParsedExpression>> &expressions,
+	bool BindTableFunctionParameters(TableFunctionCatalogEntry &table_function, vector<FunctionArgument> &arguments,
 	                                 vector<unique_ptr<Expression>> &positional_arguments,
 	                                 vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments,
 	                                 BoundStatement &subquery, bool &table_in_out, ErrorData &error);

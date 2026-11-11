@@ -938,8 +938,8 @@ def generate_class_code(class_entry: SerializableClass):
                     entry.name,
                     entry.id,
                     type_name,
-                    entry.has_default,
-                    entry.default,
+                    entry.has_default or entry.deserialize_default is not None,
+                    (entry.deserialize_default if entry.deserialize_default is not None else entry.default),
                     entry.status,
                     class_entry.pointer_type,
                 )

@@ -1,0 +1,71 @@
+# name: test/sql/settings/default_grammar_extensions.test
+# description: default_grammar_extensions is a validated global list
+# group: [settings]
+
+statement ok
+SELECT * FROM duckdb_settings() WHERE name = 'default_grammar_extensions'
+
+query I
+SELECT value FROM duckdb_settings() WHERE name = 'default_grammar_extensions'
+----
+[]
+
+# the named grammar extensions must be registered
+statement error
+SET GLOBAL default_grammar_extensions = ['no_such_grammar']
+----
+<REGEX>:.*Can't set 'default_grammar_extensions'.*no_such_grammar.*
+
+# a failed SET leaves the default unchanged
+query I
+SELECT value FROM duckdb_settings() WHERE name = 'default_grammar_extensions'
+----
+[]
+
+statement error
+SET GLOBAL default_grammar_extensions = 42
+----
+<REGEX>:.*cast.*
+
+statement error
+SET GLOBAL default_grammar_extensions = ['dup', 'dup']
+----
+<REGEX>:.*duplicate value.*
+
+statement error
+SET GLOBAL default_grammar_extensions = [NULL]
+----
+<REGEX>:.*cannot be NULL.*
+
+# the setting has no session scope
+statement error
+SET SESSION default_grammar_extensions = []
+----
+<REGEX>:.*
+
+# plain SET resolves to the global scope for a global setting
+statement error
+SET default_grammar_extensions = ['still_no_such_grammar']
+----
+<REGEX>:.*Can't set 'default_grammar_extensions'.*
+
+# an empty list and NULL clear the default
+statement ok
+SET GLOBAL default_grammar_extensions = []
+
+statement ok
+SET GLOBAL default_grammar_extensions = NULL
+
+statement ok
+RESET GLOBAL default_grammar_extensions
+
+query I
+SELECT value FROM duckdb_settings() WHERE name = 'default_grammar_extensions'
+----
+[]
+
+# the session setting shares the element validation
+statement error
+SET active_grammar_extensions = [NULL]
+----
+<REGEX>:.*'active_grammar_extensions' list values cannot be NULL.*

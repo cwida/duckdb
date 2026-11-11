@@ -8,7 +8,7 @@ statement ok
 CALL dsdgen(sf=1, suffix='_original')
 
 statement ok
-PRAGMA default_null_order='NULLS LAST'
+SET default_null_order='NULLS LAST'
 
 statement ok
 SET preserve_insertion_order=false;

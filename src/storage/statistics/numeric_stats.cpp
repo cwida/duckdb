@@ -8,6 +8,7 @@
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
+#include "duckdb/storage/statistics/stats_struct_fields.hpp"
 
 #include <limits>
 
@@ -690,6 +691,16 @@ child_list_t<Value> NumericStats::ToStruct(const BaseStatistics &stats) {
 		result.emplace_back("max", NumericStats::MaxOrNull(stats));
 	}
 	return result;
+}
+
+void NumericStats::SetFromStruct(BaseStatistics &stats, StatsStructFields &fields) {
+	Value bound;
+	if (fields.TryGet("min", stats.GetType(), bound)) {
+		SetMin(stats, bound);
+	}
+	if (fields.TryGet("max", stats.GetType(), bound)) {
+		SetMax(stats, bound);
+	}
 }
 
 [[noreturn]] static void ThrowStatisticsMismatch(const char *message, const BaseStatistics &stats,

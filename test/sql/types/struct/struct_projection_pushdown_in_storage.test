@@ -45,7 +45,7 @@ SELECT i.a, i.c FROM test_structs where col == 'test'
 NULL	NULL
 
 statement ok
-pragma explain_output = optimized_only
+SET explain_output = 'optimized_only'
 
 # The 'struct_extract' expression is entirely removed
 query II

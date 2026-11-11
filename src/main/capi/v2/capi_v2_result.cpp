@@ -395,7 +395,7 @@ auto ExecutePreparedStatementV2(const shared_ptr<ClientContext> &context, Prepar
 }
 
 auto ExecuteStatementV2(const shared_ptr<ClientContext> &context, const SQLStatement &statement,
-                        const duckdb_v2_identifier_t *parameter_names, const duckdb_v2_value_handle *parameter_values,
+                        const string_view_array &parameter_names, const duckdb_v2_value_handle *parameter_values,
                         idx_t parameter_count, const char *function_name, shared_ptr<ResultFormat> format)
     -> unique_ptr<ResultWrapperV2> {
 	auto wrapper = make_uniq<ResultWrapperV2>();
@@ -431,7 +431,7 @@ auto ExecuteStatementV2(const shared_ptr<ClientContext> &context, const SQLState
 using namespace duckdb::capiv2;
 
 DUCKDB_V2_ERROR duckdb_v2_statement_execute(duckdb_v2_connection_handle conn, duckdb_v2_sql_statement_handle statement,
-                                            const duckdb_v2_identifier_t *parameter_names,
+                                            const char **parameter_names, const idx_t *parameter_names_lengths,
                                             const duckdb_v2_value_handle *parameter_values, idx_t parameter_count,
                                             duckdb_v2_result_handle *out_result, duckdb_v2_error_info_handle *err) {
 	// The refusals here never reach the engine and leave the statement intact
@@ -444,9 +444,11 @@ DUCKDB_V2_ERROR duckdb_v2_statement_execute(duckdb_v2_connection_handle conn, du
 		return NullArgumentError(err, __func__, "parameter_values");
 	}
 	return WithErrorHandler(err, [&]() {
-		*out_result = Convert(ExecuteStatementV2(Convert(conn)->context, *Convert(statement), parameter_names,
-		                                         parameter_values, parameter_count, __func__, nullptr)
-		                          .release());
+		*out_result =
+		    Convert(ExecuteStatementV2(Convert(conn)->context, *Convert(statement),
+		                               string_view_array(parameter_names, parameter_names_lengths, parameter_count),
+		                               parameter_values, parameter_count, __func__, nullptr)
+		                .release());
 	});
 }
 
@@ -458,16 +460,16 @@ DUCKDB_V2_ERROR duckdb_v2_result_drain(duckdb_v2_result_handle result, idx_t *ou
 }
 
 DUCKDB_V2_ERROR duckdb_v2_result_render_box(duckdb_v2_result_handle *result, idx_t max_rows, idx_t max_width,
-                                            idx_t max_col_width, const duckdb_v2_str *null_value, idx_t render_mode,
-                                            idx_t limit, duckdb_v2_text_sink_fn sink, void *user_data,
-                                            duckdb_v2_error_info_handle *err) {
+                                            idx_t max_col_width, const char *null_value, idx_t null_value_length,
+                                            idx_t render_mode, idx_t limit, duckdb_v2_text_sink_fn sink,
+                                            void *user_data, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(result);
 	DUCKDB_CHECK_ARG(*result);
 	DUCKDB_CHECK_ARG(sink);
 	// Validate the view arguments before consuming the result, so an
 	// argument rejection leaves the caller's result intact (as the null-arg
 	// rejections above do).
-	DUCKDB_CHECK_ARG(null_value);
+	DUCKDB_CHECK_STR_ARG(null_value, null_value_length);
 	return WithErrorHandler(err, [&]() {
 		if (render_mode > 1) {
 			throw duckdb::InvalidInputException("render_mode must be 0 (rows) or 1 (columns)");
@@ -498,8 +500,8 @@ DUCKDB_V2_ERROR duckdb_v2_result_render_box(duckdb_v2_result_handle *result, idx
 		if (max_col_width != 0) {
 			config.max_col_width = max_col_width;
 		}
-		if (null_value->len) {
-			config.null_value = std::string(null_value->ptr, null_value->len);
+		if (null_value_length) {
+			config.null_value = std::string(Convert(null_value, null_value_length));
 		}
 		config.render_mode = render_mode == 1 ? duckdb::RenderMode::COLUMNS : duckdb::RenderMode::ROWS;
 		// The caller's query-side LIMIT: when the materialized result fills it, the
@@ -516,7 +518,7 @@ DUCKDB_V2_ERROR duckdb_v2_result_render_box(duckdb_v2_result_handle *result, idx
 		}
 
 		auto text = renderer.ToString(render_context, names, data);
-		InvokeTextSink(sink, Convert(text), user_data);
+		InvokeTextSink(sink, text, user_data);
 	});
 }
 

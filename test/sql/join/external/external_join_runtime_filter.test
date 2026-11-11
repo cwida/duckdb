@@ -7,7 +7,7 @@
 # the query returns the right result either way, so the test would pass without checking anything.
 
 statement ok
-PRAGMA threads=1
+SET threads=1
 
 statement ok
 CREATE TABLE b AS SELECT range % 2000 AS k FROM range(1000000)
@@ -21,7 +21,7 @@ SELECT count(*) FROM p WHERE k IN (SELECT k FROM b)
 1000000
 
 statement ok
-PRAGMA debug_force_external=true
+SET debug_force_external=true
 
 query I
 SELECT count(*) FROM p WHERE k IN (SELECT k FROM b)
@@ -65,4 +65,4 @@ SELECT count(*) FROM fold_probe WHERE k IN (SELECT range FROM range(2000000) WHE
 1000000
 
 statement ok
-PRAGMA debug_force_external=false
+SET debug_force_external=false

@@ -16,7 +16,7 @@ statement ok
 set variable dataset_size = 122880;
 
 statement ok
-PRAGMA force_compression='BitPacking'
+SET force_compression='BitPacking'
 
 statement ok
 CALL enable_logging(level='trace')
@@ -47,7 +47,7 @@ where
 15900
 
 statement ok
-PRAGMA force_compression='roaring'
+SET force_compression='roaring'
 
 statement ok
 set enable_logging=true;

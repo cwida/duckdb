@@ -1,5 +1,6 @@
 #include "duckdb/common/types/column/column_data_allocator.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 
 #include "duckdb/common/radix_partitioning.hpp"
 #include "duckdb/common/types/column/column_data_collection_segment.hpp"
@@ -25,17 +26,22 @@ ColumnDataAllocator::ColumnDataAllocator(BufferManager &buffer_manager, ColumnDa
 
 ColumnDataAllocator::ColumnDataAllocator(ClientContext &context, ColumnDataAllocatorType allocator_type,
                                          ColumnDataCollectionLifetime lifetime)
+    : ColumnDataAllocator(context.GetContext(), allocator_type, lifetime) {
+}
+
+ColumnDataAllocator::ColumnDataAllocator(Context &context, ColumnDataAllocatorType allocator_type,
+                                         ColumnDataCollectionLifetime lifetime)
     : type(allocator_type) {
 	switch (type) {
 	case ColumnDataAllocatorType::BUFFER_MANAGER_ALLOCATOR:
 	case ColumnDataAllocatorType::HYBRID:
-		alloc.buffer_manager = &BufferManager::GetBufferManager(context);
+		alloc.buffer_manager = &context.GetBufferManager();
 		if (lifetime == ColumnDataCollectionLifetime::THROW_ERROR_AFTER_DATABASE_CLOSES) {
-			managed_result_set = ResultSetManager::Get(context).Add(*this);
+			managed_result_set = ResultSetManager::Get(context.GetDatabase()).Add(*this);
 		}
 		break;
 	case ColumnDataAllocatorType::IN_MEMORY_ALLOCATOR:
-		alloc.allocator = &Allocator::Get(context);
+		alloc.allocator = &Allocator::Get(context.GetDatabase());
 		break;
 	default:
 		throw InternalException("Unrecognized column data allocator type");

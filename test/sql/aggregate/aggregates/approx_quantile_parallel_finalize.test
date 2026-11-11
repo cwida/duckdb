@@ -9,7 +9,7 @@
 # ("Attempted to access index -1 within vector of size N" out of quantile()).
 
 statement ok
-PRAGMA threads=8;
+SET threads=8;
 
 statement ok
 CREATE TABLE t AS SELECT i % 5000 AS g, (i * 7919) % 997 AS v FROM range(120000) r(i);

@@ -6,10 +6,10 @@
 require httpfs
 
 statement ok
-PRAGMA memory_limit='400M'
+SET memory_limit='400M'
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 statement ok
 SET temp_directory='{TEST_DIR}/temp.tmp'
@@ -19,7 +19,7 @@ SET temp_file_encryption=true;
 
 # Force PhysicalAsOfJoin
 statement ok
-PRAGMA asof_loop_join_threshold = 0;
+SET asof_loop_join_threshold = 0;
 
 foreach cipher GCM CTR
 

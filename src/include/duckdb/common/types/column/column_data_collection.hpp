@@ -15,6 +15,7 @@ namespace duckdb {
 class BufferManager;
 class BlockHandle;
 class ClientContext;
+class Context;
 struct ColumnDataCopyFunction;
 class ColumnDataAllocator;
 class ColumnDataCollection;
@@ -45,6 +46,11 @@ public:
 	//! Constructs either an in-memory or a buffer-managed column data collection
 	DUCKDB_API
 	ColumnDataCollection(ClientContext &context, vector<LogicalType> types,
+	                     ColumnDataAllocatorType type = ColumnDataAllocatorType::BUFFER_MANAGER_ALLOCATOR,
+	                     ColumnDataCollectionLifetime lifetime = ColumnDataCollectionLifetime::REGULAR);
+	//! Constructs either an in-memory or a buffer-managed column data collection
+	DUCKDB_API
+	ColumnDataCollection(Context &context, vector<LogicalType> types,
 	                     ColumnDataAllocatorType type = ColumnDataAllocatorType::BUFFER_MANAGER_ALLOCATOR,
 	                     ColumnDataCollectionLifetime lifetime = ColumnDataCollectionLifetime::REGULAR);
 	//! Creates a column data collection that inherits the blocks to write to. This allows blocks to be shared

@@ -2,7 +2,7 @@
 # group: [dict_fsst]
 
 statement ok
-pragma force_compression='dict_fsst';
+SET force_compression='dict_fsst';
 
 # ---- For small strings we should trigger DICT_FSST encoding ----
 

@@ -73,10 +73,10 @@ SET threads=1;
 
 # disable spilling so the memory limit actually bites
 statement ok
-PRAGMA temp_directory='';
+SET temp_directory='';
 
 statement ok
-PRAGMA max_temp_directory_size='0B';
+SET max_temp_directory_size='0B';
 
 # a vector of 2048 blobs needs over 100MB of overflow buffers and does not fit in
 # this limit, while the handful of rows the queries below return needs 50KB each

@@ -5,6 +5,12 @@
   "inherit_skip_tests": "test/configs/stats_dependent_tests.json",
   "skip_tests": [
     {
+      "reason": "Checks the plan of an executed query through the profiler output.",
+      "paths": [
+        "test/optimizer/partial_aggregate_pushdown_serialized_plan.test"
+      ]
+    },
+    {
       "reason": "Checks the plans the scalar aggregate merge produces.",
       "paths": [
         "test/sql/optimizer/scalar_aggregate_merge_files_plan.test",
@@ -93,7 +99,9 @@
         "test/parquet/utf8_validation_page_index.test",
         "test/sql/copy/parquet/parquet_virtual_file_row_group_number.test",
         "test/sql/copy/parquet/parquet_nan_setting.test",
-        "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test"
+        "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test",
+        "test/sql/optimizer/test_rowid_vector_pruning.test",
+        "test/sql/optimizer/test_rowid_vector_pruning_prefetch.test"
       ]
     },
     {

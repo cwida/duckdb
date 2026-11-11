@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 # Issue #22849: a payload that is a scalar function of a base column (parse_filename(path))
 # was rebuilt by the rowid semi-join as the raw base column, dropping the function.
@@ -249,6 +249,32 @@ b	9	n4
 
 statement ok
 SET disabled_optimizers = ''
+
+# A cast chain spread over stacked projections must not be collapsed into a single cast
+statement ok
+CREATE TABLE t_27812(id INT, val INT, p2 INT, ord INT);
+
+statement ok
+INSERT INTO t_27812 VALUES (1, 42, 10, 1);
+
+query III
+SELECT id, val_norm, p2
+FROM (
+    SELECT id, val_norm, p2,
+           ROW_NUMBER() OVER (PARTITION BY id ORDER BY ord ASC) AS rn
+    FROM (
+        SELECT id, CAST(val_b AS INT) AS val_norm, p2, ord
+        FROM (
+            SELECT id, CAST(val AS BOOLEAN) AS val_b, p2, ord
+            FROM t_27812
+        ) s1
+        WHERE p2 > 0
+    ) s2
+    WHERE val_norm + p2 > 0
+) s3
+WHERE rn <= 1;
+----
+1	1	10
 
 require icu
 

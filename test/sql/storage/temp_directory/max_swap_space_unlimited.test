@@ -8,7 +8,7 @@ statement ok
 set temp_directory='{TEST_DIR}/max_swap_space_reached'
 
 statement ok
-PRAGMA max_temp_directory_size='-1';
+SET max_temp_directory_size='-1';
 
 query I
 select current_setting('max_temp_directory_size')

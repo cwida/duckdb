@@ -62,7 +62,10 @@
         "test/sql/progress/test_verify_progress.test",
         "test/sql/copy/partitioned/partitioned_write_backpressure.test",
         "test/sql/copy/parquet/read_ahead/readahead_memory_limit.test",
-        "test/sql/copy/parquet/parquet_write_repeated_lists.test"
+        "test/sql/copy/parquet/parquet_write_repeated_lists.test",
+        "test/sql/cte/materialized/cte_runtime_filter_sibling_dependencies.test",
+        "test/sql/cte/recursive_cte_key_finalized_values.test",
+        "test/sql/cte/recursive_cte_key_finalize_owned_state.test"
       ]
     },
     {
@@ -91,6 +94,7 @@
         "test/sql/alter/alter_type/alter_type_distinct_stats.test",
         "test/issues/general/test_24049.test",
         "test/optimizer/joins/fkpk_composite_key_ce.test",
+        "test/optimizer/joins/one_sided_distinct_count_domain.test",
         "test/optimizer/partitioned_execution_coverage.test",
         "test/optimizer/projection_placement.test",
         "test/optimizer/statistics/statistics_count_not_null_pruning.test",
@@ -102,7 +106,18 @@
         "test/sql/storage/distinct_statistics_sample.test",
         "test/optimizer/statistics/statistics_early_join_range.test",
         "test/optimizer/joins/left_join_reordering/left_join_composite_domain.test",
-        "test/optimizer/joins/not_equal_join_cardinality_estimation.test"
+        "test/optimizer/joins/not_equal_join_cardinality_estimation.test",
+        "test/optimizer/joins/integer_range_selectivity_floor.test",
+        "test/optimizer/joins/range_join_cardinality_estimation.test",
+        "test/optimizer/joins/unsupported_conjunct_selectivity.test",
+        "test/optimizer/projection_pullup_nested_plan.test",
+        "test/optimizer/statistics/current_domain_cardinality.test",
+        "test/optimizer/statistics/current_domain_join.test",
+        "test/optimizer/statistics/current_domain_semi_anti.test",
+        "test/optimizer/statistics/right_semi_join_filter.test",
+        "test/optimizer/statistics/union_selected_cardinality.test",
+        "test/sql/optimizer/secure_view_join_filter_pushdown.test",
+        "test/sql/optimizer/test_common_subplan_matching_plan.test"
       ]
     },
     {
@@ -125,7 +140,14 @@
         "test/sql/sql_export/call_values.test",
         "test/sql/match_recognize/test_match_recognize_cursors.test",
         "test/sql/match_recognize/test_match_recognize_composition.test",
-        "test/sql/index/art/storage/test_art_checkpoint_retains_clean_buffers.test"
+        "test/sql/index/art/storage/test_art_checkpoint_retains_clean_buffers.test",
+        "test/sql/copy/parquet/bloom_filter_coalesced_reads.test",
+        "test/sql/copy/parquet/bloom_filter_fallback.test",
+        "test/sql/copy/parquet/bloom_filter_fallback_types.test",
+        "test/sql/copy/partitioned/integer_partitioned_write.test",
+        "test/sql/storage/compression/dict_fsst/dict_fsst_boolean_selection.test",
+        "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test",
+        "test/sql/storage/compression/select_fixed_size.test"
       ]
     }
   ]

@@ -83,7 +83,9 @@ struct ConstantVector {
 	DUCKDB_API static const SelectionVector *ZeroSelectionVector();
 	//! Turns "vector" into a constant vector by referencing a value
 	DUCKDB_API static void Reference(Vector &vector, const Value &value, count_t count);
-	//! Turns "vector" into a constant vector by referencing a value within the source vector
+	//! Turns "vector" into a constant vector by referencing a value within the source vector. A string or a list
+	//! shares the data of the source, which has to stay valid while the constant is used, as for a slice. A shredded
+	//! source is flattened in place first, so that its constants share the unshredded data
 	DUCKDB_API static void Reference(Vector &vector, count_t count, const Vector &source, idx_t position,
 	                                 idx_t source_count);
 

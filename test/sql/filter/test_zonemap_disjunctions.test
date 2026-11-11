@@ -3,7 +3,7 @@
 # group: [filter]
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 # Cross multiple row groups without requiring several GB of table data.
 statement ok

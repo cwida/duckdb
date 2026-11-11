@@ -1,0 +1,61 @@
+# name: test/sql/storage/wal/wal_replay_unbound_index_bind_failure_no_replays.test
+# description: A failed bind of an index without buffered replays does not block the checkpoint
+# group: [wal]
+
+require skip_reload
+
+load {TEST_DIR}/wal_replay_unbound_index_bind_failure_no_replays.db
+
+statement ok
+CREATE TABLE t(k INTEGER);
+
+statement ok
+CREATE INDEX x ON t(k);
+
+statement ok
+INSERT INTO t VALUES (1), (2), (3);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET wal_autocheckpoint = '1TB';
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+INSERT INTO t VALUES (4), (5);
+
+statement ok
+CREATE TEMP MACRO m(v) AS v;
+
+# y is created after the insert, so it already contains the inserted rows
+statement ok
+CREATE INDEX y ON t((m(k)));
+
+# the WAL replay buffers the insert in x only
+restart
+
+# binds x and applies its replays, then fails to bind y, which has none
+statement ok
+CHECKPOINT;
+
+query I
+SELECT wal_size FROM pragma_database_size();
+----
+0 bytes
+
+restart
+
+statement ok
+CREATE TEMP MACRO m(v) AS v;
+
+# deleting every row fails if an index lacks one of them
+statement ok
+DELETE FROM t;
+
+query I
+SELECT count(*) FROM t;
+----
+0

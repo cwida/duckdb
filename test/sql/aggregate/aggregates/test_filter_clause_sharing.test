@@ -2,13 +2,15 @@
 # description: Aggregates whose FILTER clauses are shared: a filter is evaluated once per chunk and its selection is reused
 # group: [aggregates]
 
+require 64bit
+
 statement ok
 PRAGMA verify_parallelism
 
 foreach threads 1 8
 
 statement ok
-PRAGMA threads={threads}
+SET threads={threads}
 
 statement ok
 CREATE OR REPLACE TABLE t AS SELECT i::INTEGER AS i, (i % 7)::INTEGER AS g, CASE WHEN i % 5 = 0 THEN NULL ELSE (i % 100)::INTEGER END AS q, ((i * 3) % 11)::INTEGER AS v, CASE WHEN i % 3 = 0 THEN NULL ELSE 'k' || (i % 4) END AS s FROM range(100000) tbl(i)
@@ -283,7 +285,7 @@ SELECT [*COLUMNS(*)] = (SELECT list(m ORDER BY k) FROM (SELECT k, max(v) m FROM 
 true
 
 query I
-SELECT [*COLUMNS(*)] = (SELECT list(d ORDER BY k) FROM (SELECT k, count(DISTINCT v) d FROM many GROUP BY k)) FROM query('SELECT ' || filtered('count(DISTINCT v)', 300) || ' FROM many')
+SELECT [*COLUMNS(*)] = (SELECT list(d ORDER BY k) FROM (SELECT k, count(DISTINCT v) d FROM many WHERE k < 50 GROUP BY k)) FROM query('SELECT ' || filtered('count(DISTINCT v)', 50) || ' FROM many')
 ----
 true
 

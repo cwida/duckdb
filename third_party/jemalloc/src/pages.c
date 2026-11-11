@@ -79,6 +79,8 @@ static int madvise_MADV_DONTNEED_zeroes_pages(void)
 		if (opt_abort) {
 			abort();
 		}
+		/* DuckDB treats MADV_DONTNEED as faulty without memory to probe it. */
+		return 0;
 	}
 
 	memset(addr, 'A', size);

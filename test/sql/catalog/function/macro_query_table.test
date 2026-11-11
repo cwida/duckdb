@@ -9,19 +9,19 @@ statement ok
 create table integers as from range(100) t(i)
 
 query I
-SELECT min_from_tbl(integers, i)
+SELECT min_from_tbl('integers', i)
 ----
 0
 
 # column does not exist
 statement error
-SELECT min_from_tbl(integers, k)
+SELECT min_from_tbl('integers', k)
 ----
 not found in FROM clause
 
 # table does not exist
 statement error
-SELECT min_from_tbl(integers2, i)
+SELECT min_from_tbl('integers2', i)
 ----
 Table with name integers2 does not exist
 

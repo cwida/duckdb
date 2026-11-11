@@ -14,7 +14,7 @@ create TABLE {tbl}_struct as select {tbl}_normal {tbl} from {tbl}_normal;
 endloop
 
 statement ok
-pragma explain_output = 'OPTIMIZED_ONLY';
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # --- Create views ----
 

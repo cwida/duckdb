@@ -4,7 +4,6 @@
 #include "duckdb/common/enums/memory_tag.hpp"
 #include "duckdb/common/enums/storage_block_prefetch.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/set.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/query_profiler.hpp"
@@ -64,7 +63,7 @@ unique_ptr<FileBuffer> StandardBufferManager::ConstructManagedBuffer(idx_t size,
 		// non re-usable buffer (or mmap-backed, which we cannot rewrite): allocate a new buffer
 		result = make_uniq<FileBuffer>(BlockAllocator::Get(db), type, size, block_header_size);
 	}
-	result->Initialize(DBConfig::GetConfig(db).options.debug_initialize);
+	result->Initialize(Settings::Get<DebugInitializeSetting>(db));
 	return result;
 }
 
@@ -446,9 +445,13 @@ void StandardBufferManager::AddToEvictionQueue(shared_ptr<BlockHandle> &handle) 
 
 void StandardBufferManager::VerifyZeroReaders(BlockLock &lock, shared_ptr<BlockHandle> &handle) {
 #ifdef DUCKDB_DEBUG_DESTROY_BLOCKS
+	auto &buffer = handle->GetMemory().GetBuffer(lock);
+	// A failed persistence write can leave an empty, moved-from buffer.
+	if (buffer->Size() == 0) {
+		return;
+	}
 	unique_ptr<FileBuffer> replacement_buffer;
 	auto &block_allocator = BlockAllocator::Get(db);
-	auto &buffer = handle->GetMemory().GetBuffer(lock);
 	auto block_header_size = buffer->GetHeaderSize();
 	auto alloc_size = buffer->AllocSize() - block_header_size;
 	if (handle->GetMemory().GetBufferType() == FileBufferType::BLOCK) {
@@ -554,8 +557,9 @@ void StandardBufferManager::WriteTemporaryBuffer(QueryContext context, MemoryTag
 	if (buffer.AllocSize() == GetBlockAllocSize()) {
 		idx_t eviction_size = temporary_directory.handle->GetTempFile().WriteTemporaryBuffer(context, block_id, buffer);
 		evicted_data_per_tag[uint8_t(tag)] += eviction_size;
-		if (context.GetClientContext()) {
-			QueryProfiler::Get(*context.GetClientContext()).TrackBytesSpilled(eviction_size);
+		auto profiler = Context::TryGetQueryProfiler(context.GetContext());
+		if (profiler) {
+			profiler->TrackBytesSpilled(eviction_size);
 		}
 		return;
 	}
@@ -603,8 +607,9 @@ void StandardBufferManager::WriteTemporaryBuffer(QueryContext context, MemoryTag
 		throw;
 	}
 	evicted_data_per_tag[uint8_t(tag)] += buffer.AllocSize();
-	if (context.GetClientContext()) {
-		QueryProfiler::Get(*context.GetClientContext()).TrackBytesSpilled(buffer.AllocSize() + header_size);
+	auto profiler = Context::TryGetQueryProfiler(context.GetContext());
+	if (profiler) {
+		profiler->TrackBytesSpilled(buffer.AllocSize() + header_size);
 	}
 }
 
@@ -915,6 +920,10 @@ void HugeAllocation::Reset() {
 BufferAllocator &BufferAllocator::Get(ClientContext &context) {
 	auto &manager = StandardBufferManager::GetBufferManager(context);
 	return manager.GetBufferAllocator();
+}
+
+BufferAllocator &BufferAllocator::Get(Context &context) {
+	return Get(context.GetDatabase());
 }
 
 BufferAllocator &BufferAllocator::Get(DatabaseInstance &db) {

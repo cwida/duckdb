@@ -1,0 +1,31 @@
+diff --git a/src/postgres_extension.cpp b/src/postgres_extension.cpp
+index 9560218..012d850 100644
+--- a/src/postgres_extension.cpp
++++ b/src/postgres_extension.cpp
+@@ -55,7 +55,7 @@ public:
+ class PostgresExtensionCallback : public ExtensionCallback {
+ public:
+ 	void OnConnectionOpened(ClientContext &context) override {
+-		context.registered_state->Insert("postgres_extension", make_shared_ptr<PostgresExtensionState>());
++		context.GetContext().GetRegisteredState().Insert("postgres_extension", make_shared_ptr<PostgresExtensionState>());
+ 	}
+ };
+ 
+@@ -79,7 +79,7 @@ static void SetPostgresConnectionLimit(ClientContext &context, SetScope scope, V
+ 	optional_ptr<const ConfigurationOption> option;
+ 	auto setting_index = config.TryGetSettingIndex("pg_pool_max_connections", option);
+ 	if (setting_index.IsValid()) {
+-		context.config.user_settings.SetUserSetting(setting_index.GetIndex(), parameter);
++		ClientConfig::GetConfig(context).user_settings.SetUserSetting(setting_index.GetIndex(), parameter);
+ 	}
+ }
+ 
+@@ -298,7 +298,7 @@ static void LoadInternal(ExtensionLoader &loader) {
+ 
+ 	ExtensionCallback::Register(config, make_shared_ptr<PostgresExtensionCallback>());
+ 	for (auto &connection : ConnectionManager::Get(loader.GetDatabaseInstance()).GetConnectionList()) {
+-		connection->registered_state->Insert("postgres_extension", make_shared_ptr<PostgresExtensionState>());
++		connection->GetContext().GetRegisteredState().Insert("postgres_extension", make_shared_ptr<PostgresExtensionState>());
+ 	}
+ 
+ 	auto &instance = loader.GetDatabaseInstance();

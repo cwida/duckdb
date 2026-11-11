@@ -26,7 +26,7 @@ statement ok
 SET wal_autocheckpoint = '1KB';
 
 statement ok
-PRAGMA debug_checkpoint_abort = 'before_header_non_fatal';
+SET debug_checkpoint_abort = 'before_header_non_fatal';
 
 statement error
 INSERT INTO nw.tbl SELECT range::INTEGER FROM range(10000);
@@ -34,7 +34,7 @@ INSERT INTO nw.tbl SELECT range::INTEGER FROM range(10000);
 <REGEX>:.*Failed to commit.*Checkpoint failed for database "nw".*
 
 statement ok
-PRAGMA debug_checkpoint_abort = 'none';
+SET debug_checkpoint_abort = 'none';
 
 statement ok
 DETACH nw;

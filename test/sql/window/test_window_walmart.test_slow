@@ -9,7 +9,7 @@ statement ok
 insert into data select * from read_csv_auto('test/sql/window/walmart.csv.gz');
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 statement ok
   SELECT

@@ -90,6 +90,8 @@ Slow tests should use `.test_slow` extension instead of `.test`.
 
 Do not add `PRAGMA enable_verification` to tests - it should no longer be used in new tests.
 
+Tests must not emit DuckDB warnings (e.g. from deprecated pragmas or settings). The `test/configs/warnings_as_errors.json` config (`--warnings-as-errors`) fails any statement that logs a warning; tests that check a warning on purpose should `SET enable_logging=true; SET warnings_as_errors=true;` and expect the warning with `statement error`.
+
 Do not loop over `enable_optimizer` (or similar settings) in tests - tests are already run with optimizers disabled through the `configs/disable_optimizer.json` config.
 
 ## Code Formatting

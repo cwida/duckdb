@@ -19,10 +19,10 @@ statement ok
 CREATE VIEW v_mark AS SELECT f.id, f.customer_id, EXISTS (SELECT 1 FROM UNNEST(f.dim_ids) AS u(dim_id) WHERE u.dim_id = 8) AS has8 FROM facts f;
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEMP_DIR}/view_filter_single.json';
+SET profiling_output = '{TEMP_DIR}/view_filter_single.json';
 
 query II
 SELECT id, dim_names FROM v_single WHERE customer_id = 7 AND id = 1007;
@@ -30,7 +30,7 @@ SELECT id, dim_names FROM v_single WHERE customer_id = 7 AND id = 1007;
 1007	[name 7, name 8]
 
 statement ok
-PRAGMA profiling_output = '{TEMP_DIR}/view_filter_mark.json';
+SET profiling_output = '{TEMP_DIR}/view_filter_mark.json';
 
 query II
 SELECT id, has8 FROM v_mark WHERE customer_id = 7 AND id = 1007;

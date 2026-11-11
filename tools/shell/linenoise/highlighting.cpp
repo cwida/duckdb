@@ -43,11 +43,11 @@ static tokenType convertToken(TokenType token_type) {
 static vector<highlightToken> GetParseTokens(char *buf, size_t len) {
 	string sql(buf, len);
 	vector<highlightToken> tokens;
-	vector<MatcherToken> matcher_tokens;
-	HighlightTokenizerBehavior behavior(sql, matcher_tokens);
+	HighlightTokenizerBehavior behavior(sql);
 	auto &keyword_helper = DuckDBKeywordHelper::Instance();
 	Tokenizer tokenizer(keyword_helper);
 	tokenizer.TokenizeInput(behavior);
+	auto &matcher_tokens = behavior.tokens;
 	vector<SimplifiedToken> result;
 	result.reserve(matcher_tokens.size());
 	for (auto &token : matcher_tokens) {

@@ -1,0 +1,30 @@
+# name: test/sql/subquery/scalar/test_correlated_aggregate_correlation_key_plan.test
+# description: Plan pins for scalar subqueries correlating on an outer-claimed aggregate
+# group: [scalar]
+
+statement ok
+CREATE TABLE t(v BIGINT);
+
+statement ok
+INSERT INTO t VALUES (1), (2), (NULL);
+
+statement ok
+CREATE TABLE s(w BIGINT);
+
+statement ok
+INSERT INTO s VALUES (1);
+
+statement ok
+SET explain_output='optimized_only';
+
+# the inner correlation key is the materialized count column, not an expression
+query II
+EXPLAIN SELECT v, (SELECT (SELECT count(p)) FROM (SELECT s.w AS p FROM s WHERE s.w = t.v) sc0) FROM t;
+----
+logical_opt	<REGEX>:.*Join Type: SINGLE.*Conditions:.*count\(p\) (=|IS NOT DISTINCT FROM) count\(p\).*
+
+# single-level correlated aggregates keep their plain outer-column correlation key
+query II
+EXPLAIN SELECT v, (SELECT count(w) FROM s WHERE s.w = t.v) FROM t;
+----
+logical_opt	<REGEX>:.*Join Type: SINGLE.*Conditions: v (=|IS NOT DISTINCT FROM) v.*

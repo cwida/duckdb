@@ -77,7 +77,7 @@ SourceResultType PhysicalConnect::GetDataInternal(ExecutionContext &context, Dat
 			ApplyLaunchedResource(launched, attach_info);
 
 			auto &config = DBConfig::GetConfig(client);
-			AttachOptions options(attach_info.options, config.options.access_mode);
+			AttachOptions options(client.GetContext(), attach_info.options, config.options.access_mode);
 			options.visibility = AttachVisibility::HIDDEN;
 			options.ephemeral = true;
 			if (owns_resource) {
@@ -123,7 +123,7 @@ SourceResultType PhysicalConnect::GetDataInternal(ExecutionContext &context, Dat
 		attach_info.options = info->options;
 
 		auto &config = DBConfig::GetConfig(client);
-		AttachOptions options(attach_info.options, config.options.access_mode);
+		AttachOptions options(client.GetContext(), attach_info.options, config.options.access_mode);
 		options.visibility = AttachVisibility::HIDDEN;
 		options.ephemeral = true;
 		options.original_path = attach_info.path;

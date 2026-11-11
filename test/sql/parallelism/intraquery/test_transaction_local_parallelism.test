@@ -5,7 +5,7 @@
 load {TEST_DIR}/transaction_local_parallelism.db
 
 statement ok
-PRAGMA threads=8
+SET threads=8
 
 foreach parallelism_pragma disable_verify_parallelism verify_parallelism
 

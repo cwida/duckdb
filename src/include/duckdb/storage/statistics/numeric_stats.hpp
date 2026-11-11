@@ -24,6 +24,7 @@ class BaseStatistics;
 struct SelectionVector;
 class Vector;
 class Value;
+class StatsStructFields;
 
 struct NumericStatsData {
 	//! Whether or not the value has a max value
@@ -86,9 +87,11 @@ struct NumericStats {
 	DUCKDB_API static void Deserialize(Deserializer &deserializer, BaseStatistics &stats);
 
 	DUCKDB_API static child_list_t<Value> ToStruct(const BaseStatistics &stats);
+	//! Sets the parts of the statistics the struct fields describe (the inverse of ToStruct)
+	DUCKDB_API static void SetFromStruct(BaseStatistics &stats, StatsStructFields &fields);
 
 	template <class T>
-	static inline void UpdateValue(T new_value, T &min, T &max) {
+	static inline void UpdateValue(const T &new_value, T &min, T &max) {
 		min = Min::Operation(new_value, min);
 		max = Max::Operation(new_value, max);
 		if constexpr (std::is_floating_point_v<T>) {

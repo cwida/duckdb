@@ -490,6 +490,10 @@ void ParquetRowGroupMetadataProcessor::ReadRow(vector<reference<Vector>> &output
 	idx_t row_group_idx = row_idx / column_schemas.size();
 
 	auto &row_group = meta_data->row_groups[row_group_idx];
+	if (row_group.columns.size() != column_schemas.size()) {
+		throw DataCorruptionException("Parquet row group %llu column count mismatch (expected %llu, found %llu)",
+		                              row_group_idx, column_schemas.size(), row_group.columns.size());
+	}
 
 	auto &column = row_group.columns[col_idx];
 	auto &column_schema = column_schemas[col_idx];

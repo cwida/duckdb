@@ -31,7 +31,7 @@ statement ok
 ANALYZE jf_build;
 
 statement ok
-PRAGMA explain_output='physical_only';
+SET explain_output='physical_only';
 
 # jf_build is wide enough that the normal build-side cost prefers jf_probe.
 # The filter on jf_build can generate a dynamic filter for the large jf_probe scan,
