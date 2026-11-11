@@ -1,0 +1,1 @@
+SELECT any_value(NULL ORDER BY c38 ASC) FROM t2;

@@ -1,0 +1,1 @@
+SELECT a FROM (VALUES (1),(2),(3)) t(a) INTERSECT SELECT unnest([2,3,4]);

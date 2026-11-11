@@ -1,0 +1,1 @@
+CREATE TABLE db1.tbl(i INTEGER);

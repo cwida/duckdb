@@ -1,0 +1,1 @@
+INSERT INTO t1 AS t0(c0) VALUES(4);

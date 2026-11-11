@@ -1,0 +1,1 @@
+UPDATE t0 SET c0 = 5 WHERE c0 = 0 RETURNING rowid;

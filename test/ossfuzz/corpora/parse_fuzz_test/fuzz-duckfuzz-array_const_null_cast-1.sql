@@ -1,0 +1,1 @@
+INSERT INTO tbl VALUES (0), (255), (NULL);

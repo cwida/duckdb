@@ -1,0 +1,1 @@
+SELECT strptime(NULL,'p') IS DISTINCT FROM DATE '-543572-1-1';

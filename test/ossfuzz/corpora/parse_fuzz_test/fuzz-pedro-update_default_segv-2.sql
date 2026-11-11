@@ -1,0 +1,1 @@
+CREATE TABLE t1(c4 UUID, c0 REAL AS(0));

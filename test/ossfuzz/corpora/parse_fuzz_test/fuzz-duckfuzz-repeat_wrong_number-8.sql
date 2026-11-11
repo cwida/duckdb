@@ -1,0 +1,1 @@
+SELECT NULL FROM repeat(1050, -128);

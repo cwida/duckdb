@@ -1,0 +1,1 @@
+INSERT INTO t0 VALUES (1) RETURNING sum(c0) as rowid;

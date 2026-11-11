@@ -1,0 +1,1 @@
+SELECT * FROM (SELECT NULL LIMIT rank_dense() OVER ());

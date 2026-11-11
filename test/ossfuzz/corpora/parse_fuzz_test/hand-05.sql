@@ -1,0 +1,1 @@
+SELECT json_extract('{"a": [1,2,3]}', '$.a[1]'), json_valid('[]'), to_json([1,2,3]);

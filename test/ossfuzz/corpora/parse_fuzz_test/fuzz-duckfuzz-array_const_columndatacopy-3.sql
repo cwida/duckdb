@@ -1,0 +1,1 @@
+SELECT TRY_CAST(uuid AS STRUCT(b VARCHAR[3])) FROM uuids;

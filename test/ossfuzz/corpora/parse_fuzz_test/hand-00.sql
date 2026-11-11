@@ -1,0 +1,1 @@
+EXPLAIN SELECT * FROM range(1000) t(i) WHERE i % 7 = 3;

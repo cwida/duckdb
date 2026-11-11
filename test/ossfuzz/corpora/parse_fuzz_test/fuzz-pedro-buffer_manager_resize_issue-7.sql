@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX i1 ON t2 (c1);

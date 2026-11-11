@@ -1,0 +1,1 @@
+SET scalar_subquery_error_on_multiple_rows=false;

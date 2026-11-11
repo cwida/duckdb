@@ -1,0 +1,1 @@
+INSERT INTO integers VALUES ([42, 999, NULL, NULL, -42]);

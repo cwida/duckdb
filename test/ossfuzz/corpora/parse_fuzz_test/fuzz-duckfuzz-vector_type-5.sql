@@ -1,0 +1,1 @@
+INSERT INTO fuu VALUES (42, NULL), (43, NULL);

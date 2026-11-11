@@ -1,0 +1,1 @@
+ALTER TABLE t0 DROP COLUMN rowid;

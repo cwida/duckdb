@@ -1,0 +1,1 @@
+SELECT mode(1) FILTER (0);

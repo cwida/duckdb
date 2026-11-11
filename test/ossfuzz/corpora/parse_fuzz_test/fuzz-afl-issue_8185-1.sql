@@ -1,0 +1,1 @@
+SELECT * FROM v0 WHERE v2 <= 2 AND v2 <= v1 AND v1 < v2 ORDER BY v1 DESC ;

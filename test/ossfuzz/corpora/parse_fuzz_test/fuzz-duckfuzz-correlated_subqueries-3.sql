@@ -1,0 +1,11 @@
+SELECT
+NULL
+FROM main.all_types AS ref_0
+WHERE
+EXISTS(
+	SELECT EXISTS(
+		  SELECT NULL
+		  FROM main.all_types AS ref_3
+		  WHERE EXISTS(SELECT NULL WHERE ref_3."varchar")
+	)
+	FROM (SELECT NULL WHERE EXISTS(SELECT NULL WHERE ref_0."varchar")));

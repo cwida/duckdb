@@ -1,0 +1,1 @@
+SELECT NULL FROM (SELECT ref_0."int" AS c3 FROM main.all_types AS ref_0 RIGHT JOIN main.all_types AS ref_1 INNER JOIN main.all_types AS ref_2 ON ((ref_1."int" = ref_2."int")) INNER JOIN main.all_types AS ref_3 ON ((ref_2.tinyint = ref_3.tinyint)) ON ((ref_2."varchar" ~~* ref_3."varchar")) WHERE (ref_2."smallint" IS NOT NULL)) AS subq_0;

@@ -1,0 +1,8 @@
+SELECT c02
+FROM (
+	v00 AS t1
+	NATURAL JOIN
+	v00 AS t2 ),
+	( v00 AS ta04
+	SEMI JOIN v00 AS ta05
+	USING ( c02 ) ) ;

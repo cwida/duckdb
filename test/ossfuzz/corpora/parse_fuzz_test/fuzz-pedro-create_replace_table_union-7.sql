@@ -1,0 +1,2 @@
+type View
+endloop;

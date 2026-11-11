@@ -1,0 +1,1 @@
+SELECT CAST('1' COLLATE "nocase" AS INT);

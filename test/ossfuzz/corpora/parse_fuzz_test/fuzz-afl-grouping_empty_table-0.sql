@@ -1,0 +1,1 @@
+CREATE TABLE t0(c1 INT);

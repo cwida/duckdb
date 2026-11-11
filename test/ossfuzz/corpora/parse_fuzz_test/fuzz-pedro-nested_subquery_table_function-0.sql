@@ -1,0 +1,1 @@
+SELECT 1 FROM range((SELECT 1) - 0);

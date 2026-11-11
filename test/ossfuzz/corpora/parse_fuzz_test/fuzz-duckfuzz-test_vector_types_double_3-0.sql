@@ -1,0 +1,1 @@
+FROM test_vector_types(CAST(NULL AS DOUBLE[3]), CAST(NULL AS DOUBLE[3]));

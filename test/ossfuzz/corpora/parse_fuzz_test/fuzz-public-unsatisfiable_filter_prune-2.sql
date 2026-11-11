@@ -1,0 +1,1 @@
+SELECT c0 FROM t0 WHERE (((CASE t0.c0 WHEN t0.c0 THEN t0.c0 END ) BETWEEN 1 AND t0.c0)AND(t0.c0 <= 0)) ;

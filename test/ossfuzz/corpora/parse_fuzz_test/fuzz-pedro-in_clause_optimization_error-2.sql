@@ -1,0 +1,1 @@
+SELECT 0 FROM t0 WHERE ? IN (1);

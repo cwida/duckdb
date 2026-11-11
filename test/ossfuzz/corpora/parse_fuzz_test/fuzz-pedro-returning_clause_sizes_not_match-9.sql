@@ -1,0 +1,1 @@
+UPDATE test SET x=0 WHERE x = 1 RETURNING *;

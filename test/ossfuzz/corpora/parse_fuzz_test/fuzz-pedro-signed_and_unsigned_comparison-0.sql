@@ -1,0 +1,4 @@
+CREATE TABLE t1 (
+	c1 UINT32,
+	c2 INT32
+);

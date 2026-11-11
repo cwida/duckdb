@@ -1,0 +1,1 @@
+SELECT c1, c2, NULL FROM integers ORDER BY #10;

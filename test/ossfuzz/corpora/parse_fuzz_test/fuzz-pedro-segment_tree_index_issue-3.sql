@@ -1,0 +1,1 @@
+INSERT INTO t0 VALUES (1);

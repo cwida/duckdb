@@ -1,0 +1,1 @@
+FROM tbl LIMIT (EXISTS(SELECT 42))%;

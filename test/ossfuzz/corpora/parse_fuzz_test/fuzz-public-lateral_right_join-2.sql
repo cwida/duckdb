@@ -1,0 +1,1 @@
+SELECT * FROM tbl, LATERAL (SELECT tbl.c01 AS lat_c01) AS subq CROSS JOIN tbl AS t1 RIGHT JOIN tbl AS t2 USING (c02);

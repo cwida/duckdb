@@ -1,0 +1,1 @@
+SELECT sum(c2) c0 FROM (SELECT 1) t1(c2) HAVING (SELECT c0);

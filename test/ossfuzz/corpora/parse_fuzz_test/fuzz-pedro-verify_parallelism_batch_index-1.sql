@@ -1,0 +1,1 @@
+CREATE TABLE t0 AS VALUES (1), (2), (3);

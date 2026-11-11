@@ -1,0 +1,1 @@
+PRAGMA debug_force_no_cross_product=1;

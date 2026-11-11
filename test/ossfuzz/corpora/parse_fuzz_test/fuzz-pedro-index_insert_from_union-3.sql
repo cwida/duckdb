@@ -1,0 +1,1 @@
+INSERT INTO t2 SELECT 2 FROM range(10);

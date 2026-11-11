@@ -1,0 +1,1 @@
+SELECT mode((c0, 0)) FROM (SELECT 1 c0), (SELECT 2);

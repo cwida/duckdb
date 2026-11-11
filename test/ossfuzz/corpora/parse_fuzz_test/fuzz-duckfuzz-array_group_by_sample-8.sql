@@ -1,0 +1,1 @@
+SELECT c50 FROM array_tbl_three_level GROUP BY ALL USING SAMPLE 3 ORDER BY ALL;

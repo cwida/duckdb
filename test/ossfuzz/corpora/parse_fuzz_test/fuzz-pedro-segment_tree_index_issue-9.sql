@@ -1,0 +1,1 @@
+CREATE TABLE fk_integers(id INTEGER REFERENCES t0(c1));

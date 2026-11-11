@@ -1,0 +1,1 @@
+ALTER TABLE t1 ADD c1 INT;

@@ -1,0 +1,1 @@
+SELECT c1, #2 FROM integers GROUP BY ALL;

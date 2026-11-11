@@ -1,0 +1,1 @@
+CREATE TABLE v0 ( v1 INTEGER ) ;

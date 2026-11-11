@@ -1,0 +1,1 @@
+SELECT c1 FROM t1 GROUP BY 'hello', ROLLUP (c1) ORDER BY 1;

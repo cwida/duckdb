@@ -1,0 +1,1 @@
+SELECT * FROM (SELECT 1) JOIN t1 ON random();

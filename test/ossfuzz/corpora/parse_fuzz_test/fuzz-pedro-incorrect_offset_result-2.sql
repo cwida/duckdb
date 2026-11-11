@@ -1,0 +1,1 @@
+SELECT c0 FROM t0 WHERE ((c0 + c1) = 2) OFFSET 10;

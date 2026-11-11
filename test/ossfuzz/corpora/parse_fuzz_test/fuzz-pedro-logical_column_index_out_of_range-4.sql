@@ -1,0 +1,1 @@
+SELECT 1 FROM t1 t2(c1) NATURAL LEFT JOIN t0, t2 t1(c0) WHERE t2.c2 >= c0;

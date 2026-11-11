@@ -1,0 +1,1 @@
+UPDATE t2 SET c2 = 2 RETURNING *;

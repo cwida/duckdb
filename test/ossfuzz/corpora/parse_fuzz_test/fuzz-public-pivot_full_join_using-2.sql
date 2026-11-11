@@ -1,0 +1,1 @@
+PIVOT t1 FULL JOIN t2 USING ( c01 ) ON c01;

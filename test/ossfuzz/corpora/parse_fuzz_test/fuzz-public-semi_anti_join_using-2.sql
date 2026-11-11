@@ -1,0 +1,1 @@
+SELECT c01 FROM ( v00 AS ta03 SEMI JOIN ( v00 AS ta04 JOIN v00 AS ta05 USING ( c01 ) ) ON 42 ) ;

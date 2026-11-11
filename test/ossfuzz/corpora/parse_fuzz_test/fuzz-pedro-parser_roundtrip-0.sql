@@ -1,0 +1,1 @@
+SELECT BLOB '\x27';

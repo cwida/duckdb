@@ -1,0 +1,1 @@
+TRUNCATE t1;

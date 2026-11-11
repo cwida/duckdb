@@ -1,0 +1,1 @@
+CREATE INDEX i1 ON t0 (c1, CAST('c' AS INT));

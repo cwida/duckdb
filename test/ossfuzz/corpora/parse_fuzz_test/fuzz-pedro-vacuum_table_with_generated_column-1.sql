@@ -1,0 +1,1 @@
+ANALYZE test(x, x);

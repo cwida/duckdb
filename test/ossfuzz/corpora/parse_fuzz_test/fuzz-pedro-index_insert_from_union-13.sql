@@ -1,0 +1,1 @@
+SELECT * FROM t2 WHERE c1<2;

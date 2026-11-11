@@ -1,0 +1,1 @@
+CREATE INDEX i2 ON t4 (c3);

@@ -1,0 +1,1 @@
+CREATE TABLE fuu (i INTEGER, j INTEGER);

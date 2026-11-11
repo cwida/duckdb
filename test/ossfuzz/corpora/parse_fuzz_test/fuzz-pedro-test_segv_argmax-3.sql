@@ -1,0 +1,1 @@
+INSERT INTO t1(c0,c1) VALUES ('test2',52);

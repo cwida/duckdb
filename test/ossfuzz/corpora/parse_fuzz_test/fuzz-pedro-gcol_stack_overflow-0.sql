@@ -1,0 +1,1 @@
+CREATE TABLE t0 (c2 AS (c0) VIRTUAL, c0 INT);

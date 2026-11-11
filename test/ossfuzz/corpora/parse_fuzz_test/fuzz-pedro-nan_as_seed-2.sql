@@ -1,0 +1,1 @@
+SETSEED accepts seed values;

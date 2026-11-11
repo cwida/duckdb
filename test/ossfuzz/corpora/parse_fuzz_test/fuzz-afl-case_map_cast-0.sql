@@ -1,0 +1,1 @@
+SELECT TRUE WHERE CASE MAP { } WHEN 'abc' [ ('any_string' IN (NULL::VARCHAR)): ] THEN TRUE END ;

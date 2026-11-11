@@ -1,0 +1,1 @@
+SELECT list_transform([1,2,3], x -> x * 2), struct_pack(a := 1, b := 'x'), map([1],[2]);

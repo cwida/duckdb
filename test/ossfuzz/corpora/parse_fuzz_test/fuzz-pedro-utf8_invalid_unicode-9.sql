@@ -1,0 +1,1 @@
+SELECT decode('\xA0ABCDEFGHIJKL'::BLOB, 'ignore')::VARCHAR;

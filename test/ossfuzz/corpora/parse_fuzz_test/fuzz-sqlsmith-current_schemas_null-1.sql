@@ -1,0 +1,1 @@
+INSERT INTO booleans VALUES(NULL);

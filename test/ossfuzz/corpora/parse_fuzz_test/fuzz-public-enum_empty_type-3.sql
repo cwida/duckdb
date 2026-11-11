@@ -1,0 +1,1 @@
+CREATE TYPE f AS M();

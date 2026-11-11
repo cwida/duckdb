@@ -1,0 +1,1 @@
+PRAGMA disable_checkpoint_on_shutdown;

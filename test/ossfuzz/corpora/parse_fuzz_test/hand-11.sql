@@ -1,0 +1,1 @@
+CREATE TABLE t(i INTEGER); INSERT INTO t VALUES (1),(NULL),(3); SELECT count(i), max(i) FROM t; DROP TABLE t;

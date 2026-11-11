@@ -1,0 +1,1 @@
+SELECT (SELECT avg(0)) c0, (SELECT 0 OFFSET c0 + 1);

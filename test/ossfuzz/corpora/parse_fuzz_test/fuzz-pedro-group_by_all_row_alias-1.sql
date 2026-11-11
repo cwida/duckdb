@@ -1,0 +1,1 @@
+SELECT c1 c2, ROW(t0.c1, c2) FROM t0 GROUP BY ALL;

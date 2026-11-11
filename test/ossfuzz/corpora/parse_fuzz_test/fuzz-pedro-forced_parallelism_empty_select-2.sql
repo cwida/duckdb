@@ -1,0 +1,1 @@
+SELECT c1 FROM t0 WHERE (c0 + c1) = 2;

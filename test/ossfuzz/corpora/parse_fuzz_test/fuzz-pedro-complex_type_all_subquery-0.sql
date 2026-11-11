@@ -1,0 +1,1 @@
+VALUES((0, 0) = ALL(SELECT 2));

@@ -1,0 +1,1 @@
+SELECT * FROM t1, t0 INNER JOIN (SELECT t1.c1 AS col0) ON true;

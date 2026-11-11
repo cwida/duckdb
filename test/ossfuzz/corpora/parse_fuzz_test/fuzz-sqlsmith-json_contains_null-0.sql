@@ -1,0 +1,1 @@
+SELECT json_contains(NULL::VARCHAR, NULL::VARCHAR);

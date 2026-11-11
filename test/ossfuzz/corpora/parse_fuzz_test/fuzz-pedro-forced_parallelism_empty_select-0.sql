@@ -1,0 +1,1 @@
+PRAGMA verify_parallelism;

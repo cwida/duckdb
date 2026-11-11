@@ -1,0 +1,1 @@
+UPDATE t0 SET c1 = 0 FROM t2 JOIN t1 ON (c1);

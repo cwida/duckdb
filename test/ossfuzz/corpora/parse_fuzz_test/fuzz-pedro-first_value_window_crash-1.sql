@@ -1,0 +1,1 @@
+SELECT first_value((1 || mode() WITHIN GROUP (ORDER BY 1)) IGNORE NULLS) OVER () FROM t1;

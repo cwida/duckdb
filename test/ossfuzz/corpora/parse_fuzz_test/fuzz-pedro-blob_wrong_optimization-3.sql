@@ -1,0 +1,1 @@
+SELECT 1 FROM t1 WHERE '\x96'::BLOB IN (1);

@@ -1,0 +1,1 @@
+SELECT 'abc' COLLATE "de-x-icu" < 'abd', unnest(['a','b']) WITH ORDINALITY;

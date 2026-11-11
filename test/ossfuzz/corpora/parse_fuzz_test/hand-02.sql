@@ -1,0 +1,1 @@
+PRAGMA table_info('duckdb_tables'); PRAGMA database_size; PRAGMA version;

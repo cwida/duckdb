@@ -1,0 +1,1 @@
+SELECT count(*) c1 HAVING EXISTS (SELECT 1 FROM t1 WHERE c1 = c0);

@@ -1,0 +1,1 @@
+CREATE TABLE tbl(id INTEGER PRIMARY KEY DEFAULT 1, payload INTEGER DEFAULT nextval('seq'));

@@ -1,0 +1,1 @@
+SELECT 1 FROM (VALUES (1),(2),(NULL),(4)) t0(c0) WHERE c0 BETWEEN 3 AND (CAST('inf' AS REAL) - 2);

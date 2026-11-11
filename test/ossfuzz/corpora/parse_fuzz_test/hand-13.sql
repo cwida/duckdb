@@ -1,0 +1,1 @@
+SELECT crc32('abc'), hash(42), bit_count(255), greatest(1,2,3);

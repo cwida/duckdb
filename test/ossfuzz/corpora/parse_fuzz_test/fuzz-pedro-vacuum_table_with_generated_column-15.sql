@@ -1,0 +1,1 @@
+PRAGMA disable_verify_parallelism;

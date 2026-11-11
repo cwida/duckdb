@@ -1,0 +1,1 @@
+DETACH db1;

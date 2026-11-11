@@ -1,0 +1,1 @@
+EXECUTE p (random());

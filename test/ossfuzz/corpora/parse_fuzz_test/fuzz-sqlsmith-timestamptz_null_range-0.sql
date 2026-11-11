@@ -1,0 +1,6 @@
+SELECT NULL FROM (
+	SELECT 4767 
+	FROM generate_series(CAST('290309-12-22 (BC) 00:00:00+00' AS TIMESTAMP WITH TIME ZONE), NULL, NULL) 
+	  AS t6(c1, c2, c3, c4, c5)
+	) 
+	AS t64;

@@ -1,0 +1,1 @@
+SELECT 1 WHERE '23:' > ALL(SELECT '0') BETWEEN false AND true;

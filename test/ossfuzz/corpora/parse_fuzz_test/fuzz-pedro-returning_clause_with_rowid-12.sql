@@ -1,0 +1,1 @@
+DELETE FROM t0 WHERE c0 = 0 RETURNING rowid;

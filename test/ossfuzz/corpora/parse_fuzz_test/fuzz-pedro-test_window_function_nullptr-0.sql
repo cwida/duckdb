@@ -1,0 +1,1 @@
+PRAGMA DEBUG_WINDOW_MODE='separate';

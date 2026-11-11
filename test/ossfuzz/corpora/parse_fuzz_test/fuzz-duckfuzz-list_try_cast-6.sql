@@ -1,0 +1,1 @@
+SELECT TRY_CAST(v AS INTEGER[]) FROM strings;

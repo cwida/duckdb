@@ -1,0 +1,1 @@
+CREATE INDEX i0 ON t0 USING ART ((c0 + c1));

@@ -1,0 +1,1 @@
+SELECT 1 FROM (SELECT 1) t0(c0) GROUP BY CUBE (1) HAVING (currval('seq') IS NULL);

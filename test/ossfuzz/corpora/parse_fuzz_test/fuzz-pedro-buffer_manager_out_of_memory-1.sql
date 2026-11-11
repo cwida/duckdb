@@ -1,0 +1,1 @@
+SET threads=8;

@@ -1,0 +1,1 @@
+CREATE TABLE s3.integers(i INTEGER);

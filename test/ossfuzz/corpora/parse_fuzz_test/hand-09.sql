@@ -1,0 +1,1 @@
+SELECT date_part('week', DATE '2021-06-01'), strftime(TIMESTAMP '2021-06-01', '%a %d %W');

@@ -1,0 +1,1 @@
+SELECT t0.*, min(1 ORDER BY COLUMNS(*)) FROM (VALUES ('1')) t0(c0) GROUP BY ALL;

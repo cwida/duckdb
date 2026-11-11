@@ -1,0 +1,1 @@
+INSERT INTO t VALUES (1, 100);

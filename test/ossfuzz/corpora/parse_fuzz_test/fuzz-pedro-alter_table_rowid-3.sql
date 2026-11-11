@@ -1,0 +1,1 @@
+ALTER TABLE t0 RENAME rowid TO ups;

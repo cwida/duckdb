@@ -1,0 +1,1 @@
+SET order_by_non_integer_literal=true;

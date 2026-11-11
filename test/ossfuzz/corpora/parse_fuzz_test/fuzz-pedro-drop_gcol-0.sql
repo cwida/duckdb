@@ -1,0 +1,1 @@
+CREATE TABLE t0 (c0 INT AS (0), c1 INT, CHECK(c1 > 0));

@@ -1,0 +1,1 @@
+SELECT 65536::{float_type}::USMALLINT;

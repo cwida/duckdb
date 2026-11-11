@@ -1,0 +1,1 @@
+SELECT test FROM test;

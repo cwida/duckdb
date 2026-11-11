@@ -1,0 +1,1 @@
+SELECT * FROM (t1 JOIN t1 t2 USING (c0)), (SELECT 42);

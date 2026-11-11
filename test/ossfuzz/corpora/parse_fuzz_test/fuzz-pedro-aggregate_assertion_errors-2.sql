@@ -1,0 +1,1 @@
+SELECT entropy(1 ORDER BY 1) FROM t1;

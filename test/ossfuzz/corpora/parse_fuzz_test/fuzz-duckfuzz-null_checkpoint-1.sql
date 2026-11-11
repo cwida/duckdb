@@ -1,0 +1,1 @@
+Database cannot be NULL;

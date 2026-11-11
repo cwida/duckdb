@@ -1,0 +1,4 @@
+CREATE TABLE t1 (
+	c0 VARCHAR,
+	c1 TINYINT
+);

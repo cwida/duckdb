@@ -1,0 +1,1 @@
+CREATE TABLE tbl (c01 INT, c02 VARCHAR);

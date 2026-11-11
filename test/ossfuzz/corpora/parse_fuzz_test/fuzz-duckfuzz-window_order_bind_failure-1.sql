@@ -1,0 +1,2 @@
+SELECT lead(#1) OVER (PARTITION BY 2378 ORDER BY ((c70 BETWEEN c90 AND c19) AND c51) ASC NULLS FIRST RANGE BETWEEN CURRENT ROW AND c7 FOLLOWING)
+FROM all_types AS t91(c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63, c64, c65, c66, c67, c68, c69, c70, c71, c72, c73, c74, c75, c76, c77, c78, c79, c80, c81, c82, c83, c84, c85, c86, c87, c88, c89, c90);

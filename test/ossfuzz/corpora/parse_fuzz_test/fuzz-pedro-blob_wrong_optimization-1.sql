@@ -1,0 +1,1 @@
+CREATE VIEW t1(c1, c0) AS (SELECT 1, max(c0) FROM t0);

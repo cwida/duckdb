@@ -1,0 +1,1 @@
+SELECT (VALUES(1 != ALL(SELECT 2)));

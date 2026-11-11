@@ -1,0 +1,1 @@
+INSERT INTO t0(c1) VALUES (NULL), ('a'),('-801673450963');
