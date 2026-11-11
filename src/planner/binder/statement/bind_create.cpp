@@ -1,4 +1,6 @@
 #include "duckdb/catalog/catalog_entry/macro_catalog_entry.hpp"
+#include "duckdb/parser/parsed_data/alter_macro_info.hpp"
+#include "duckdb/planner/operator/logical_alter.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/trigger_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
@@ -703,20 +705,30 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		}
 	}
 
-	auto &schema = BindCreateSchema(info);
-	if (has_language_members && base.macros.size() == 1) {
-		// a member for an existing language entry becomes an overload alter, like a function overload
-		auto existing = schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::MACRO_ENTRY,
-		                                base.GetQualifiedName().Name());
-		if (existing && existing->type == CatalogType::MACRO_ENTRY) {
-			auto &existing_macro = existing->Cast<MacroCatalogEntry>();
-			if (!existing_macro.macros.empty() && existing_macro.macros[0]->type == MacroType::LANGUAGE_MACRO) {
-				base.member_on_conflict = base.on_conflict;
-				base.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
-			}
-		}
+	return BindCreateSchema(info);
+}
+
+//! A single language member for an existing language entry of that name binds to an overload alter of the entry
+static unique_ptr<AlterInfo> TryBindLanguageOverloadAdd(ClientContext &context, SchemaCatalogEntry &schema,
+                                                        CreateMacroInfo &info) {
+	if (info.macros.size() != 1 || info.macros[0]->type != MacroType::LANGUAGE_MACRO) {
+		return nullptr;
 	}
-	return schema;
+	auto &name = info.GetQualifiedName().Name();
+	auto existing = schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::MACRO_ENTRY, name);
+	if (!existing || existing->type != CatalogType::MACRO_ENTRY) {
+		return nullptr;
+	}
+	auto &existing_macro = existing->Cast<MacroCatalogEntry>();
+	if (existing_macro.macros.empty() || existing_macro.macros[0]->type != MacroType::LANGUAGE_MACRO) {
+		return nullptr;
+	}
+	// the alter keeps the entry's dependencies: a language member records none at CREATE
+	D_ASSERT(info.dependencies.Set().empty());
+	AlterEntryData data(schema.GetQualifiedName(name), OnEntryNotFound::THROW_EXCEPTION);
+	auto result = make_uniq<AddMacroOverloadInfo>(data, std::move(info.macros[0]), info.on_conflict);
+	result->descriptions = std::move(info.descriptions);
+	return std::move(result);
 }
 
 LogicalType Binder::BindLogicalType(const ParsedExpression &type_expr) {
@@ -1025,6 +1037,11 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 	}
 	case CatalogType::MACRO_ENTRY: {
 		auto &schema = BindCreateFunctionInfo(*stmt.info);
+		auto overload_add = TryBindLanguageOverloadAdd(context, schema, stmt.info->Cast<CreateMacroInfo>());
+		if (overload_add) {
+			result.plan = make_uniq<LogicalAlter>(std::move(overload_add));
+			break;
+		}
 		auto logical_create =
 		    make_uniq<LogicalCreate>(LogicalOperatorType::LOGICAL_CREATE_MACRO, std::move(stmt.info), &schema);
 		result.plan = std::move(logical_create);

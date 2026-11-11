@@ -1,7 +1,6 @@
 #include "duckdb/parser/parsed_data/create_macro_info.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
-#include "duckdb/parser/parsed_data/alter_macro_info.hpp"
 
 namespace duckdb {
 
@@ -48,20 +47,7 @@ unique_ptr<CreateInfo> CreateMacroInfo::Copy() const {
 		result->macros.push_back(macro->Copy());
 	}
 	result->SetFunctionName(GetFunctionName());
-	result->member_on_conflict = member_on_conflict;
 	CopyFunctionProperties(*result);
-	return std::move(result);
-}
-
-unique_ptr<AlterInfo> CreateMacroInfo::GetAlterInfo() const {
-	if (macros.size() != 1 || macros[0]->type != MacroType::LANGUAGE_MACRO) {
-		return CreateFunctionInfo::GetAlterInfo();
-	}
-	auto result = make_uniq<AddMacroOverloadInfo>(AlterEntryData(GetQualifiedName(), OnEntryNotFound::THROW_EXCEPTION),
-	                                              macros[0]->Copy(), member_on_conflict);
-	result->descriptions = descriptions;
-	// an internal definition, registered by an extension, may extend an internal entry
-	result->allow_internal = internal;
 	return std::move(result);
 }
 

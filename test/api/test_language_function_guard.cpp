@@ -117,6 +117,13 @@ TEST_CASE("ValidateCreate publishes documentation through the create view", "[ap
 	REQUIRE(CHECK_COLUMN(result, 0, {"doclang doc"}));
 }
 
+static unique_ptr<MacroFunction> DateMember() {
+	auto member = make_uniq<LanguageMacroFunction>("intlang", "date member");
+	member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("x")));
+	member->types.push_back(LogicalType::DATE);
+	return std::move(member);
+}
+
 TEST_CASE("Member mutations respect internal entry protection", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -153,23 +160,20 @@ TEST_CASE("Member mutations respect internal entry protection", "[api]") {
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 	REQUIRE_NO_FAIL(con.Query("DROP FUNCTION internal_fun"));
 
-	// reaching the schema entry directly with a non-internal overload add is rejected: the add is an
-	// alter of the entry and the internal protection applies to it
-	CreateMacroInfo add_info(CatalogType::MACRO_ENTRY);
-	add_info.SetFunctionName(Identifier("internal_fun"));
-	add_info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
-	auto date_member = make_uniq<LanguageMacroFunction>("intlang", "date member");
-	date_member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("x")));
-	date_member->types.push_back(LogicalType::DATE);
-	add_info.macros.push_back(std::move(date_member));
-	auto add_data = CatalogTransaction::GetSystemTransaction(*db.instance);
-	bool add_threw = false;
-	try {
-		schema.CreateFunction(add_data, add_info);
-	} catch (std::exception &ex) {
-		add_threw = StringUtil::Contains(ex.what(), "internal system entry");
-	}
-	REQUIRE(add_threw);
+	// a direct CREATE on the schema never merges into the existing entry, even with internal authority
+	CreateMacroInfo create_info(CatalogType::MACRO_ENTRY);
+	create_info.SetFunctionName(Identifier("internal_fun"));
+	create_info.internal = true;
+	create_info.macros.push_back(DateMember());
+	auto create_data = CatalogTransaction::GetSystemTransaction(*db.instance);
+	REQUIRE_THROWS_WITH(schema.CreateFunction(create_data, create_info), Catch::Matchers::Contains("already exists"));
+
+	// an overload add is an alter of the entry, and the internal protection applies to it
+	AlterEntryData add_data(QualifiedName(Identifier(), Identifier::DefaultSchema(), Identifier("internal_fun")),
+	                        OnEntryNotFound::THROW_EXCEPTION);
+	AddMacroOverloadInfo add_info(add_data, DateMember(), OnCreateConflict::ERROR_ON_CONFLICT);
+	auto add_transaction = CatalogTransaction::GetSystemTransaction(*db.instance);
+	REQUIRE_THROWS_WITH(schema.Alter(add_transaction, add_info), Catch::Matchers::Contains("internal system entry"));
 
 	// the entry is untouched and still callable
 	result = con.Query("SELECT internal_fun(1), internal_fun('a'::VARCHAR)");
@@ -190,18 +194,12 @@ TEST_CASE("Member mutations respect internal entry protection", "[api]") {
 	REQUIRE(threw);
 	con.Rollback();
 
-	// an extension registering internal members one at a time adds them as overloads, like function
-	// overloads: the internal info carries the authority the guard checks
-	CreateMacroInfo readd_info(CatalogType::MACRO_ENTRY);
-	readd_info.SetFunctionName(Identifier("internal_fun"));
-	readd_info.internal = true;
-	readd_info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
-	auto readd_member = make_uniq<LanguageMacroFunction>("intlang", "date member");
-	readd_member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("x")));
-	readd_member->types.push_back(LogicalType::DATE);
-	readd_info.macros.push_back(std::move(readd_member));
-	auto readd_data = CatalogTransaction::GetSystemTransaction(*db.instance);
-	schema.CreateFunction(readd_data, readd_info);
+	// an extension registering internal members one at a time adds them as overload alters that carry
+	// the authority the guard checks, like function overloads
+	AddMacroOverloadInfo readd_info(add_data, DateMember(), OnCreateConflict::ERROR_ON_CONFLICT);
+	readd_info.allow_internal = true;
+	auto readd_transaction = CatalogTransaction::GetSystemTransaction(*db.instance);
+	schema.Alter(readd_transaction, readd_info);
 	result = con.Query("SELECT internal_fun(DATE '2020-01-01'), internal_fun('a'::VARCHAR)");
 	REQUIRE(CHECK_COLUMN(result, 0, {"date member"}));
 	REQUIRE(CHECK_COLUMN(result, 1, {"varchar member"}));
