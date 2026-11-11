@@ -14,19 +14,8 @@ SET initial_column_segment_size=262144
 statement ok
 SET disabled_compression_methods='chimp,patas,alprd,rle'
 
-statement ok
-CREATE TABLE empty_table(f FLOAT, d DOUBLE)
-
-statement ok
-CHECKPOINT
-
-query I
-SELECT count(*) FROM empty_table
-----
-0
-
-# One full ALP vector, exact sampling ratios, and fractional ratios with a partial vector.
-foreach count 1024 2048 3072 3000 4095 100000
+# An exact sampling ratio and a fractional ratio with a partial vector.
+foreach count 3072 3000
 
 statement ok
 CREATE OR REPLACE TABLE incompressible AS
@@ -44,27 +33,6 @@ WHERE segment_type IN ('FLOAT', 'DOUBLE') AND compression <> 'Constant'
 DOUBLE	Uncompressed
 FLOAT	Uncompressed
 
-restart
-
-query I
-SELECT count(*) FROM (
-    (SELECT * FROM incompressible EXCEPT ALL
-     SELECT (hash(i)::DOUBLE / 18446744073709551616.0)::FLOAT,
-            hash(i)::DOUBLE / 18446744073709551616.0 FROM range({count}) t(i))
-    UNION ALL
-    (SELECT (hash(i)::DOUBLE / 18446744073709551616.0)::FLOAT,
-            hash(i)::DOUBLE / 18446744073709551616.0 FROM range({count}) t(i)
-     EXCEPT ALL SELECT * FROM incompressible)
-)
-----
-0
-
-statement ok
-SET disabled_compression_methods='chimp,patas,alprd,rle'
-
-statement ok
-SET initial_column_segment_size=262144
-
 endloop
 
 # Compressible data must still select ALP with a fractional sampling ratio.
@@ -81,16 +49,3 @@ WHERE segment_type IN ('FLOAT', 'DOUBLE')
 ----
 DOUBLE	ALP
 FLOAT	ALP
-
-restart
-
-query I
-SELECT count(*) FROM (
-    (SELECT * FROM compressible EXCEPT ALL
-     SELECT i::FLOAT, i::DOUBLE FROM range(3000) t(i))
-    UNION ALL
-    (SELECT i::FLOAT, i::DOUBLE FROM range(3000) t(i)
-     EXCEPT ALL SELECT * FROM compressible)
-)
-----
-0

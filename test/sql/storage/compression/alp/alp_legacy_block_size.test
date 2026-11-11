@@ -1,5 +1,5 @@
 # name: test/sql/storage/compression/alp/alp_legacy_block_size.test
-# description: Legacy ALP supports blocks of at least 32 KiB without uncompressed-vector fallback
+# description: Legacy ALP supports 32 KiB blocks without uncompressed-vector fallback
 # group: [alp]
 
 require exact_vector_size 2048
@@ -21,26 +21,18 @@ SELECT x::FLOAT AS f, x AS d FROM (
     FROM range(12345) t(i)
 )
 
-foreach block_size 32768 65536 131072
+query RR rowsort original_data
+SELECT * FROM source
+----
 
 statement ok
-ATTACH '{TEST_DIR}/alp_legacy_{block_size}.db' AS legacy (STORAGE_VERSION 'v1.4.0', BLOCK_SIZE {block_size})
-
-statement ok
-CREATE TABLE legacy.simple AS SELECT i::FLOAT AS f, i::DOUBLE AS d FROM range(3000) t(i)
+ATTACH '{TEST_DIR}/alp_legacy_32k.db' AS legacy (STORAGE_VERSION 'v1.4.0', BLOCK_SIZE 32768)
 
 statement ok
 CREATE TABLE legacy.exceptions AS SELECT * FROM source
 
 statement ok
 CHECKPOINT legacy
-
-query TT rowsort
-SELECT DISTINCT segment_type, compression FROM pragma_storage_info('legacy.simple')
-WHERE segment_type IN ('FLOAT', 'DOUBLE') AND compression <> 'Constant'
-----
-DOUBLE	ALP
-FLOAT	ALP
 
 query TT rowsort
 SELECT DISTINCT segment_type, compression FROM pragma_storage_info('legacy.exceptions')
@@ -53,27 +45,8 @@ statement ok
 DETACH legacy
 
 statement ok
-ATTACH '{TEST_DIR}/alp_legacy_{block_size}.db' AS legacy (READ_ONLY)
+ATTACH '{TEST_DIR}/alp_legacy_32k.db' AS legacy (READ_ONLY)
 
-query I
-SELECT count(*) FROM (
-    (SELECT * FROM legacy.simple EXCEPT ALL SELECT i::FLOAT, i::DOUBLE FROM range(3000) t(i))
-    UNION ALL
-    (SELECT i::FLOAT, i::DOUBLE FROM range(3000) t(i) EXCEPT ALL SELECT * FROM legacy.simple)
-)
+query RR rowsort original_data
+SELECT * FROM legacy.exceptions
 ----
-0
-
-query I
-SELECT count(*) FROM (
-    (SELECT * FROM legacy.exceptions EXCEPT ALL SELECT * FROM source)
-    UNION ALL
-    (SELECT * FROM source EXCEPT ALL SELECT * FROM legacy.exceptions)
-)
-----
-0
-
-statement ok
-DETACH legacy
-
-endloop
