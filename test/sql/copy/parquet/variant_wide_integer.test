@@ -1,0 +1,61 @@
+# name: test/sql/copy/parquet/variant_wide_integer.test
+# description: VARIANT integers beyond INT64 are written as DECIMAL(38,0), larger ones are rejected
+# group: [parquet]
+
+require parquet
+
+# UINT64 values that fit an INT64 stay INT64, the rest becomes a DECIMAL(38,0)
+statement ok
+COPY (
+	SELECT {'a': x}::VARIANT AS v
+	FROM (VALUES (1::UBIGINT), (9223372036854775808::UBIGINT), (18446744073709551615::UBIGINT)) t(x)
+) TO '{TEST_DIR}/variant_wide_uint64.parquet'
+
+query II
+SELECT variant_typeof(v.a), v.a::UHUGEINT FROM '{TEST_DIR}/variant_wide_uint64.parquet' ORDER BY 2
+----
+INT64	1
+DECIMAL(38, 0)	9223372036854775808
+DECIMAL(38, 0)	18446744073709551615
+
+# INT128 values that fit an INT64 stay INT64, the rest becomes a DECIMAL(38,0)
+statement ok
+COPY (
+	SELECT {'a': x}::VARIANT AS v
+	FROM (VALUES ((-9223372036854775809)::HUGEINT), (92233720368547758080::HUGEINT)) t(x)
+) TO '{TEST_DIR}/variant_wide_int128.parquet'
+
+query II
+SELECT variant_typeof(v.a), v.a::HUGEINT FROM '{TEST_DIR}/variant_wide_int128.parquet' ORDER BY 2
+----
+DECIMAL(38, 0)	-9223372036854775809
+DECIMAL(38, 0)	92233720368547758080
+
+# UINT128 values above INT64_MAX are written as a DECIMAL(38,0) as well
+statement ok
+COPY (
+	SELECT {'a': x}::VARIANT AS v
+	FROM (VALUES (18446744073709551616::UHUGEINT), (99999999999999999999999999999999999999::UHUGEINT)) t(x)
+) TO '{TEST_DIR}/variant_wide_uint128.parquet'
+
+query II
+SELECT variant_typeof(v.a), v.a::UHUGEINT FROM '{TEST_DIR}/variant_wide_uint128.parquet' ORDER BY 2
+----
+DECIMAL(38, 0)	18446744073709551616
+DECIMAL(38, 0)	99999999999999999999999999999999999999
+
+# DECIMAL(38,0) is the widest integer the Parquet VARIANT encoding has, larger values are rejected
+statement error
+COPY (SELECT {'a': 100000000000000000000000000000000000000::HUGEINT}::VARIANT AS v) TO '{TEST_DIR}/variant_wide_too_large.parquet'
+----
+<REGEX>:Invalid Input Error: Can't convert VARIANT of type 'INT128' to Parquet VARIANT.*
+
+statement error
+COPY (SELECT {'a': (-100000000000000000000000000000000000000)::HUGEINT}::VARIANT AS v) TO '{TEST_DIR}/variant_wide_too_large.parquet'
+----
+<REGEX>:Invalid Input Error: Can't convert VARIANT of type 'INT128' to Parquet VARIANT.*
+
+statement error
+COPY (SELECT {'a': 340282366920938463463374607431768211455::UHUGEINT}::VARIANT AS v) TO '{TEST_DIR}/variant_wide_too_large.parquet'
+----
+<REGEX>:Invalid Input Error: Can't convert VARIANT of type 'UINT128' to Parquet VARIANT.*

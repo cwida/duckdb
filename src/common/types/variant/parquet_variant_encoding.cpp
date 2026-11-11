@@ -18,6 +18,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/hugeint.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/optional_idx.hpp"
@@ -240,6 +241,52 @@ vector<idx_t> GetChildIndices(const UnifiedVariantVectorData &variant, idx_t row
 	return child_indices;
 }
 
+//! The size of a DECIMAL(38, 0) encoded value: the scale byte and the 16 byte payload
+static constexpr idx_t WIDE_INTEGER_DECIMAL_SIZE = 1 + sizeof(hugeint_t);
+
+//! INT128, UINT64 and UINT128 are written as an INT64 if their value fits one, and as a DECIMAL(38, 0) otherwise - the
+//! widest integer the Parquet VARIANT encoding has
+static bool WideIntegerFitsInt64(hugeint_t value) {
+	return value >= hugeint_t(NumericLimits<int64_t>::Minimum()) &&
+	       value <= hugeint_t(NumericLimits<int64_t>::Maximum());
+}
+
+[[noreturn]] static void ThrowWideIntegerTooLarge(VariantLogicalType type_id) {
+	throw InvalidInputException(
+	    "Can't convert VARIANT of type '%s' to Parquet VARIANT - the value does not fit a DECIMAL(38, 0)",
+	    EnumUtil::ToString(type_id));
+}
+
+//! Loads the value of a wide integer, throwing if it does not fit a DECIMAL(38, 0)
+static hugeint_t GetWideIntegerValue(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_index,
+                                     VariantLogicalType type_id) {
+	auto ptr = const_data_ptr_cast(variant.GetData(row).GetData()) + variant.GetByteOffset(row, values_index);
+	hugeint_t value;
+	switch (type_id) {
+	case VariantLogicalType::UINT64:
+		value = hugeint_t(0, Load<uint64_t>(ptr));
+		break;
+	case VariantLogicalType::UINT128: {
+		auto unsigned_value = Load<uhugeint_t>(ptr);
+		if (unsigned_value.upper > static_cast<uint64_t>(NumericLimits<int64_t>::Maximum())) {
+			// the value is above 2^127 - 1, so it does not fit a hugeint_t at all
+			ThrowWideIntegerTooLarge(type_id);
+		}
+		value = hugeint_t(static_cast<int64_t>(unsigned_value.upper), unsigned_value.lower);
+		break;
+	}
+	default:
+		D_ASSERT(type_id == VariantLogicalType::INT128);
+		value = Load<hugeint_t>(ptr);
+		break;
+	}
+	const auto &limit = Hugeint::POWERS_OF_TEN[Decimal::MAX_WIDTH_DECIMAL];
+	if (value >= limit || value <= -limit) {
+		ThrowWideIntegerTooLarge(type_id);
+	}
+	return value;
+}
+
 static idx_t AnalyzeValueData(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_index,
                               vector<uint32_t> &offsets, optional_ptr<ParquetVariantShreddingState> shredding_state) {
 	idx_t total_size = 0;
@@ -389,12 +436,16 @@ static idx_t AnalyzeValueData(const UnifiedVariantVectorData &variant, idx_t row
 		total_size += sizeof(int32_t);
 		break;
 	case VariantLogicalType::UINT32:
-	case VariantLogicalType::UINT64:
-	case VariantLogicalType::UINT128:
-	case VariantLogicalType::INT128:
-		// try to store as int64_t - fail if it doesn't fit
+		// store as int64_t
 		total_size += sizeof(int64_t);
 		break;
+	case VariantLogicalType::UINT64:
+	case VariantLogicalType::UINT128:
+	case VariantLogicalType::INT128: {
+		auto value = GetWideIntegerValue(variant, row, values_index, type_id);
+		total_size += WideIntegerFitsInt64(value) ? sizeof(int64_t) : WIDE_INTEGER_DECIMAL_SIZE;
+		break;
+	}
 	case VariantLogicalType::INTERVAL:
 	case VariantLogicalType::BIGNUM:
 	case VariantLogicalType::BITSTRING:
@@ -433,15 +484,6 @@ struct VariantSimpleConversion {
 	static void CopyValue(const_data_ptr_t source, data_ptr_t target) {
 		auto src = Load<SRC>(source);
 		Store(static_cast<T>(src), target);
-	}
-};
-
-template <class SRC>
-struct VariantTryConvert {
-	template <class T>
-	static void CopyValue(const_data_ptr_t source, data_ptr_t target) {
-		auto src = Load<SRC>(source);
-		Store(Cast::Operation<SRC, T>(src), target);
 	}
 };
 
@@ -608,17 +650,22 @@ static void WritePrimitiveValueData(const UnifiedVariantVectorData &variant, idx
 		CopySimplePrimitiveData<int64_t, VariantSimpleConversion<uint32_t>>(variant, value_data, row, values_index);
 		break;
 	case VariantLogicalType::UINT64:
-		WritePrimitiveTypeHeader<VariantPrimitiveType::INT64>(value_data);
-		CopySimplePrimitiveData<int64_t, VariantTryConvert<uint64_t>>(variant, value_data, row, values_index);
-		break;
 	case VariantLogicalType::UINT128:
-		WritePrimitiveTypeHeader<VariantPrimitiveType::INT64>(value_data);
-		CopySimplePrimitiveData<int64_t, VariantTryConvert<uhugeint_t>>(variant, value_data, row, values_index);
+	case VariantLogicalType::INT128: {
+		auto value = GetWideIntegerValue(variant, row, values_index, type_id);
+		if (WideIntegerFitsInt64(value)) {
+			WritePrimitiveTypeHeader<VariantPrimitiveType::INT64>(value_data);
+			Store<int64_t>(static_cast<int64_t>(value.lower), value_data);
+			value_data += sizeof(int64_t);
+		} else {
+			WritePrimitiveTypeHeader<VariantPrimitiveType::DECIMAL16>(value_data);
+			Store<int8_t>(0, value_data);
+			value_data++;
+			Store<hugeint_t>(value, value_data);
+			value_data += sizeof(hugeint_t);
+		}
 		break;
-	case VariantLogicalType::INT128:
-		WritePrimitiveTypeHeader<VariantPrimitiveType::INT64>(value_data);
-		CopySimplePrimitiveData<int64_t, VariantTryConvert<hugeint_t>>(variant, value_data, row, values_index);
-		break;
+	}
 	case VariantLogicalType::INTERVAL:
 	case VariantLogicalType::BIGNUM:
 	case VariantLogicalType::BITSTRING:

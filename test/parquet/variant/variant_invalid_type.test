@@ -23,12 +23,25 @@ FROM '{TEST_DIR}/invalid_parquet_variant.parquet'
 
 endloop
 
-# these values are converted to INT64 - if the values are too big this conversion fails
+# values that do not fit an INT64 are converted to DECIMAL(38, 0) instead
 foreach unsupported_type ubigint uhugeint hugeint
 
-statement error
-copy (select '18446744073709551615'::{unsupported_type}::VARIANT) to '{TEST_DIR}/out_of_range_variant.parquet';
+statement ok
+copy (select '9223372036854775808'::{unsupported_type}::VARIANT as v) to '{TEST_DIR}/out_of_range_variant.parquet';
+
+query II
+select v, variant_typeof(v) from '{TEST_DIR}/out_of_range_variant.parquet';
 ----
-value is out of range
+9223372036854775808	DECIMAL(38, 0)
+
+endloop
+
+# values that do not fit a DECIMAL(38, 0) cannot be converted
+foreach unsupported_type uhugeint hugeint
+
+statement error
+copy (select '100000000000000000000000000000000000000'::{unsupported_type}::VARIANT) to '{TEST_DIR}/too_large_variant.parquet';
+----
+<REGEX>:Invalid Input Error: Can't convert VARIANT of type '.*' to Parquet VARIANT.*
 
 endloop
