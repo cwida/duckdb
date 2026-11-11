@@ -748,7 +748,8 @@ void VariantColumnData::ShredVariantData(const Vector &input, Vector &output, id
 	ListVector::SetListSize(values, 0);
 
 	auto &keys_entry = ListVector::GetChildMutable(keys);
-	OrderedOwningStringMap<uint32_t> dictionary(StringVector::GetStringAllocator(keys_entry));
+	OrderedOwningStringMap<uint32_t> dictionary;
+	auto &keys_arena = StringVector::GetStringAllocator(keys_entry);
 	SelectionVector keys_selvec;
 	keys_selvec.Initialize(original_keys_size);
 
@@ -775,7 +776,7 @@ void VariantColumnData::ShredVariantData(const Vector &input, Vector &output, id
 		auto &values_list_entry = variant_data.values_data[row];
 		values_list_entry.offset = ListVector::GetListSize(values);
 
-		VariantNormalizerState normalizer_state(row, variant_data, dictionary, keys_selvec);
+		VariantNormalizerState normalizer_state(row, variant_data, dictionary, keys_arena, keys_selvec);
 		for (idx_t i = 0; i < unshredded_values.size(); i++) {
 			auto &unshredded_value = unshredded_values[i];
 			auto value_index = unshredded_value.source_value_index;

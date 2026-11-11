@@ -29,14 +29,15 @@ public:
 
 struct SemiAntiJoinDomainEvidence {
 public:
-	void TightenFilterDomainBound(idx_t bound);
+	//! A bound established by predicates or a closed input, independent of estimated row retention.
+	void TightenDomainBound(idx_t bound);
 	void MarkUnique();
 	void Invalidate();
 	optional_idx GetSupportedDomainSize(idx_t current_domain) const;
-	optional_idx GetFilterDomainBound() const;
+	optional_idx GetDomainBound() const;
 
 private:
-	optional_idx filter_domain_bound;
+	optional_idx domain_bound;
 	bool is_unique = false;
 };
 

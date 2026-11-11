@@ -13,10 +13,10 @@ statement ok
 SET debug_verify_serializer = true
 
 statement ok
-PRAGMA enable_profiling = 'json'
+SET enable_profiling = 'json'
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/serialized_plan.json'
+SET profiling_output = '{TEST_DIR}/serialized_plan.json'
 
 statement ok
 SELECT a, b, sum(price - discount) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
