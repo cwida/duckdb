@@ -583,3 +583,49 @@ TEST_CASE("The bind_statement verification reports two plannings that disagree",
 	REQUIRE(disagreeing_hook_calls.load() == 1);
 #endif
 }
+
+struct ClientCallbackError : public std::runtime_error {
+	using std::runtime_error::runtime_error;
+};
+
+struct ClientUnwind {};
+
+static unique_ptr<TableRef> ThrowingReplacementScan(ClientContext &context, ReplacementScanInput &input,
+                                                    optional_ptr<ReplacementScanData> data) {
+	if (input.table_name == "client_frame") {
+		throw ClientCallbackError("lookup failed in the client");
+	}
+	if (input.table_name == "client_unwind") {
+		throw ClientUnwind();
+	}
+	return nullptr;
+}
+
+TEST_CASE("A client's own exception from a bind callback leaves BindStatement as the same object",
+          "[api][bind_statement]") {
+	DuckDB db(nullptr);
+	DBConfig::GetConfig(*db.instance).replacement_scans.emplace_back(ThrowingReplacementScan);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(a INTEGER)"));
+
+	// Autocommit: the bind's own transaction ends and the connection stays usable.
+	REQUIRE_THROWS_AS(BindOne(con, "SELECT * FROM client_frame"), ClientCallbackError);
+	REQUIRE_THROWS_WITH(BindOne(con, "SELECT * FROM client_frame"), Catch::Equals("lookup failed in the client"));
+	REQUIRE_THROWS_AS(BindOne(con, "SELECT * FROM client_unwind"), ClientUnwind);
+	REQUIRE(!con.context->transaction.HasActiveTransaction());
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (1)"));
+	REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 1);
+
+	// Explicit transaction: as for an engine bind error, the transaction stays usable and commits its work.
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (2)"));
+	REQUIRE_THROWS_AS(BindOne(con, "SELECT * FROM client_frame"), ClientCallbackError);
+	REQUIRE_THROWS_AS(BindOne(con, "SELECT * FROM client_unwind"), ClientUnwind);
+	REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 2);
+	REQUIRE_NO_FAIL(con.Query("COMMIT"));
+	REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 2);
+
+	// An engine bind error still leaves as the engine's exception.
+	REQUIRE_THROWS_AS(BindOne(con, "SELECT * FROM no_such_table"), Exception);
+	REQUIRE_THROWS_WITH(BindOne(con, "SELECT * FROM no_such_table"), Catch::Contains("\"exception_type\":\"Catalog\""));
+}

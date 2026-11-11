@@ -641,6 +641,7 @@ StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> stateme
 	auto lock = LockContext();
 	StatementSignature signature;
 	ErrorData bind_error;
+	std::exception_ptr foreign_error;
 	RunFunctionInTransactionInternal(
 	    *lock,
 	    [&]() {
@@ -664,7 +665,7 @@ StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> stateme
 				    return;
 			    }
 			    signature = PlanSignature(std::move(expanded.statements[0]), PlanningMode::BIND_ONLY, nullptr);
-		    } catch (const std::exception &ex) {
+		    } catch (const Exception &ex) {
 			    ErrorData error(ex);
 			    // Binding is read-only: a recoverable bind error changed nothing, so leave
 			    // the caller's transaction intact (rethrow after the wrapper). A database-
@@ -673,9 +674,15 @@ StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> stateme
 				    throw;
 			    }
 			    bind_error = std::move(error);
+		    } catch (...) {
+			    // A client's own exception, raised in a callback such as a replacement scan, leaves as the same object
+			    foreign_error = std::current_exception();
 		    }
 	    },
 	    false);
+	if (foreign_error) {
+		std::rethrow_exception(foreign_error);
+	}
 	if (bind_error.HasError()) {
 		bind_error.Throw();
 	}
