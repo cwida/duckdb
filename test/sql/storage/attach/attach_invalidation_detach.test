@@ -139,7 +139,7 @@ statement ok con1
 INSERT INTO b.t VALUES (1);
 
 statement ok con2
-PRAGMA debug_checkpoint_abort = 'before_wal_flush';
+SET debug_checkpoint_abort = 'before_wal_flush';
 
 statement error con2
 INSERT INTO a.t VALUES (3);
@@ -147,7 +147,7 @@ INSERT INTO a.t VALUES (3);
 <REGEX>:FATAL Error: Simulated crash before WAL_FLUSH write.*
 
 statement ok con2
-PRAGMA debug_checkpoint_abort = 'none';
+SET debug_checkpoint_abort = 'none';
 
 statement error con1
 SELECT COUNT(*) FROM a.t;

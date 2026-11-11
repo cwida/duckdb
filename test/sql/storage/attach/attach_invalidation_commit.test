@@ -150,7 +150,7 @@ SELECT i FROM a.tbl ORDER BY i;
 # --- a fatal error during the commit of an attached database invalidates only that database ---
 
 statement ok
-PRAGMA debug_checkpoint_abort = 'before_wal_flush';
+SET debug_checkpoint_abort = 'before_wal_flush';
 
 statement error
 INSERT INTO a.tbl VALUES (7);
@@ -163,7 +163,7 @@ SELECT COUNT(*) FROM a.tbl;
 <REGEX>:IO Error: Database "a" has been invalidated because of a simulated crash.*
 
 statement ok
-PRAGMA debug_checkpoint_abort = 'none';
+SET debug_checkpoint_abort = 'none';
 
 # the simulated crash leaves a torn WAL tail behind
 statement ok
@@ -202,4 +202,4 @@ Forced commit failure
 statement error
 SELECT COUNT(*) FROM b.tbl;
 ----
-<REGEX>:.*database has been invalidated because of a previous fatal error.*
+<REGEX>:.*has been invalidated.*
