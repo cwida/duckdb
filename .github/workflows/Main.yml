@@ -1288,6 +1288,7 @@ jobs:
       DUCKDB_VERSION: ${{ needs.prepare.outputs.duckdb_version }}
       DUCKDB_COMMIT: ${{ needs.prepare.outputs.duckdb_commit }}
       TSAN_OPTIONS: suppressions=.sanitizer-thread-suppressions.txt:external_symbolizer_path=/usr/bin/llvm-symbolizer
+      EXTENSION_STATIC_BUILD: 0
       DUCKDB_TEST_DESCRIPTION: 'Tests run with thread sanitizer.'
 
     steps:

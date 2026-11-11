@@ -1356,23 +1356,21 @@ if(PREBUILT_BINARY)
                    src/main/extension/local_extension_repository)
 
   foreach(
-    DUCKDB_PREBUILT_LINK_LIBRARY
-    duckdb_fastpforlib
-    duckdb_fmt
-    duckdb_fsst
-    duckdb_hyperloglog
-    duckdb_mbedtls
-    duckdb_miniz
-    duckdb_re2
-    duckdb_skiplistlib
-    duckdb_utf8proc
-    duckdb_yyjson
-    duckdb_zstd)
-    if(NOT TARGET ${DUCKDB_PREBUILT_LINK_LIBRARY})
-      add_library(${DUCKDB_PREBUILT_LINK_LIBRARY} INTERFACE IMPORTED GLOBAL)
-      target_link_libraries(${DUCKDB_PREBUILT_LINK_LIBRARY}
-                            INTERFACE duckdb_static)
-    endif()
+    DUCKDB_PREBUILT_THIRD_PARTY
+    fastpforlib
+    fmt
+    fsst
+    hyperloglog
+    mbedtls
+    miniz
+    re2
+    skiplist
+    utf8proc
+    yyjson
+    zstd)
+    add_subdirectory(
+      third_party/${DUCKDB_PREBUILT_THIRD_PARTY}
+      third_party/${DUCKDB_PREBUILT_THIRD_PARTY} EXCLUDE_FROM_ALL)
   endforeach()
 
   add_subdirectory(tools)
@@ -1387,7 +1385,7 @@ duckdb_link_deferred_extension_libraries()
 
 if(NOT EXTENSION_CONFIG_BUILD)
   if(PREBUILT_BINARY)
-    message(STATUS "Skipping third_party/ because PREBUILT_BINARY is set")
+    message(STATUS "Prebuilt DuckDB helper libraries are built on demand")
   else()
     add_third_party(fastpforlib)
     add_third_party(fmt)

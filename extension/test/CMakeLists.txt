@@ -37,16 +37,18 @@ add_library(
 target_include_directories(test_debug_fs_extension
                            PRIVATE "${DEBUG_FS_DIRECTORY}/include")
 
-build_extension_library(test HOST_BOUND test_extension.cpp
-                        $<TARGET_OBJECTS:test_debug_fs_extension>)
+build_extension_library(
+  test test_extension.cpp $<TARGET_OBJECTS:test_debug_fs_extension>
+  $<TARGET_OBJECTS:test_sqlite_runner>)
 foreach(TEST_TARGET test_extension test_loadable_extension)
   target_include_directories(
     ${TEST_TARGET}
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}"
             "${PROJECT_SOURCE_DIR}/test/sqlite")
-  target_link_libraries(${TEST_TARGET} test_helpers test_sqlite_runner
-                        duckdb_re2)
+  target_link_libraries(${TEST_TARGET} test_helpers duckdb_re2)
 endforeach()
-if(WIN32)
+if(EXTENSION_STATIC_BUILD
+   AND NOT EMSCRIPTEN
+   AND NOT WASM_LOADABLE_EXTENSIONS)
   link_extension_libraries(test_loadable_extension "")
 endif()
