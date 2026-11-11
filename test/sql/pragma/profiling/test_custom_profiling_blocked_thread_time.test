@@ -5,16 +5,16 @@
 require json
 
 statement ok
-PRAGMA threads = 4;
+SET threads = 4;
 
 statement ok
 CREATE TABLE bigdata AS SELECT i AS col_a, i AS col_b FROM range(0, 10000) tbl(i);
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['system.blocked_thread_time'];

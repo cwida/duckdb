@@ -7,7 +7,7 @@ require skip_reload
 load {TEST_DIR}/incomplete_checkpoint.db
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
 CREATE SCHEMA s1;
@@ -24,7 +24,7 @@ CHECKPOINT;
 # We abort the CHECKPOINT after writing to the free list.
 
 statement ok
-PRAGMA DEBUG_CHECKPOINT_ABORT = 'after_free_list_write';
+SET DEBUG_CHECKPOINT_ABORT = 'after_free_list_write';
 
 statement ok
 CREATE SCHEMA s3;

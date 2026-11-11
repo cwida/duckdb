@@ -24,10 +24,10 @@ statement ok
 CREATE TABLE profile_fs.tbl AS SELECT range AS id FROM range(10000);
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profile_fs.json';
+SET profiling_output = '{TEST_DIR}/profile_fs.json';
 
 statement ok
 SET tracked_metrics = ['io.total_bytes_read', 'io.total_bytes_written'];
@@ -62,10 +62,10 @@ statement ok
 DETACH profile_fs;
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profile_fs.json';
+SET profiling_output = '{TEST_DIR}/profile_fs.json';
 
 statement ok
 SET tracked_metrics = ['io.total_bytes_read', 'io.total_bytes_written'];

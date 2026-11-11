@@ -2,9 +2,6 @@
 # description: Casting a zero DECIMAL with a large scale to FLOAT/DOUBLE must yield +0.0 (oss-fuzz: uninitialized sign)
 # group: [decimal]
 
-statement ok
-PRAGMA enable_verification
-
 # a scale beyond the exact power-of-ten range takes the slow (digit-based) conversion path
 query IIII
 SELECT CAST(0::DECIMAL(38, 30) AS DOUBLE), signbit(CAST(0::DECIMAL(38, 30) AS DOUBLE)),

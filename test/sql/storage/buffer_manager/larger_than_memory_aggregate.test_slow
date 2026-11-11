@@ -6,7 +6,7 @@
 load {TEST_DIR}/larger_than_memory_aggregate.db
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 SET memory_limit='10000000b'

@@ -30,7 +30,7 @@ statement ok
 INSERT INTO t2 VALUES (1, 1, 1, 1);
 
 statement ok
-PRAGMA debug_force_no_cross_product=true
+SET debug_force_no_cross_product=true
 
 statement ok
 EXPLAIN
@@ -67,7 +67,7 @@ WHERE
   t1.c1 + t2.c2 + t3.c3= 3 * t4.c4
 
 statement ok
-PRAGMA debug_force_no_cross_product=false
+SET debug_force_no_cross_product=false
 
 statement ok
 with

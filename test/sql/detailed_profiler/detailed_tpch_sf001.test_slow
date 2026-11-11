@@ -8,10 +8,10 @@ statement ok
 PRAGMA enable_profiling
 
 statement ok
-PRAGMA profiling_output='{TEST_DIR}/test.txt'
+SET profiling_output='{TEST_DIR}/test.txt'
 
 statement ok
-PRAGMA profiling_mode = detailed
+SET profiling_mode = 'detailed'
 
 statement ok
 CALL dbgen(sf=0.01);

@@ -57,10 +57,10 @@ EXPLAIN (ANALYZE, FORMAT JSON) SELECT SUM(i) FROM integers;
 analyzed_plan	<REGEX>:.*"sql": ".*SELECT SUM\(i\) FROM integers.*".*
 
 statement ok
-PRAGMA enable_profiling='json'
+SET enable_profiling='json'
 
 statement ok
-PRAGMA profiling_output='{TEST_DIR}/test.json'
+SET profiling_output='{TEST_DIR}/test.json'
 
 statement ok
 SELECT 42
@@ -73,7 +73,7 @@ SELECT * FROM read_csv('{TEST_DIR}/test.json', columns={'json': 'VARCHAR'}, sep=
 ----
 
 statement ok
-PRAGMA enable_profiling='json'
+SET enable_profiling='json'
 
 query II
 EXPLAIN ANALYZE SELECT SUM(i) FROM integers
@@ -84,7 +84,7 @@ statement ok
 PRAGMA disable_profiling
 
 statement ok
-PRAGMA profiling_output='{TEST_DIR}/test_2.json'
+SET profiling_output='{TEST_DIR}/test_2.json'
 
 query I nosort json_output
 SELECT * FROM read_csv('{TEST_DIR}/test.json', columns={'json': 'VARCHAR'}, sep='🦆');
@@ -107,7 +107,7 @@ analyzed_plan	<REGEX>:.+\*\*EXPLAIN_ANALYZE\*\*.*
 
 # Make sure that EXPLAIN ANALYZE still works when no output is specified
 statement ok
-PRAGMA enable_profiling = 'no_output';
+SET enable_profiling = 'no_output';
 
 query II
 EXPLAIN ANALYZE SELECT 42;

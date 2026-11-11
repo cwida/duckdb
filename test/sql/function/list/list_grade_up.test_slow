@@ -3,10 +3,10 @@
 # group: [list]
 
 statement ok
-PRAGMA default_order='ASC';
+SET default_order='ASC';
 
 statement ok
-PRAGMA default_null_order='NULLS FIRST';
+SET default_null_order='NULLS FIRST';
 
 query I
 SELECT list_grade_up(NULL::INT[]);

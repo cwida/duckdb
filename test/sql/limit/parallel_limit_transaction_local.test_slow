@@ -3,7 +3,7 @@
 # group: [limit]
 
 statement ok
-PRAGMA threads=8
+SET threads=8
 
 statement ok
 CREATE TABLE integers AS SELECT * FROM range(5000000) tbl(i);

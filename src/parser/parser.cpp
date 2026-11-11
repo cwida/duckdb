@@ -287,11 +287,10 @@ void Parser::ParseQuery(const string &query_p) {
 	// PEG parser: tokenize, then peel one TopLevelStatement at a time. On per-statement PEG
 	// failure, hand the rest of the query to parse_function extensions; the extension reports
 	// how many bytes it consumed and we advance the token cursor past them.
-	auto owned_tokens = make_uniq<vector<MatcherToken>>();
-	ParserTokenizerBehavior behavior(query, *owned_tokens);
+	ParserTokenizerBehavior behavior(query);
 	auto &tokenizer = GetGrammar().GetTokenizer();
 	tokenizer.TokenizeInput(behavior);
-	TokenIterator token_iterator(std::move(owned_tokens));
+	TokenIterator token_iterator(behavior);
 	// A statement's text starts where the previous one ended, so comments and whitespace before its
 	// first token belong to it; the last statement runs to the end of the input.
 	idx_t stmt_start = 0;
@@ -429,8 +428,7 @@ bool Parser::IsQueryComplete(const string &query_p) {
 		return true;
 	}
 	auto &grammar = GetGrammar();
-	auto owned_tokens = make_uniq<vector<MatcherToken>>();
-	CompletenessTokenizerBehavior behavior(query, *owned_tokens);
+	CompletenessTokenizerBehavior behavior(query);
 	grammar.GetTokenizer().TokenizeInput(behavior);
 	if (behavior.fatal_token) {
 		// no continuation can repair the input - submit it so the error surfaces
@@ -441,7 +439,7 @@ bool Parser::IsQueryComplete(const string &query_p) {
 	}
 	// the final statement must be terminated by a top-level semicolon
 	bool terminated = false;
-	for (auto &token : *owned_tokens) {
+	for (auto &token : behavior.tokens) {
 		switch (token.type) {
 		case TokenType::END_OF_INPUT:
 		case TokenType::END_OF_INPUT_AUTOCOMPLETE:
@@ -458,7 +456,7 @@ bool Parser::IsQueryComplete(const string &query_p) {
 	if (!terminated) {
 		return false;
 	}
-	TokenIterator token_iterator(std::move(owned_tokens));
+	TokenIterator token_iterator(behavior);
 	while (!token_iterator.AtEnd()) {
 		// match one TopLevelStatement without transforming it - statements that match but cannot be
 		// transformed classify as complete either way, and the transformer can expand matched input
@@ -506,10 +504,10 @@ bool Parser::IsQueryComplete(const string &query_p) {
 
 vector<SimplifiedToken> Parser::Tokenize(const string &query) {
 	auto &keyword_helper = DuckDBKeywordHelper::Instance();
-	vector<MatcherToken> tokens;
-	HighlightTokenizerBehavior behavior(query, tokens);
+	HighlightTokenizerBehavior behavior(query);
 	Tokenizer tokenizer(keyword_helper);
 	tokenizer.TokenizeInput(behavior);
+	auto &tokens = behavior.tokens;
 
 	vector<SimplifiedToken> result;
 	result.reserve(tokens.size());

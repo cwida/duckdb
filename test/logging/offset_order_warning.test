@@ -50,3 +50,10 @@ SELECT i FROM t OFFSET 5;
 # but not with LIMIT only
 statement ok
 SELECT i FROM t LIMIT 5;
+
+# OFFSET 0 skips nothing, so the order does not matter
+statement ok
+SELECT i FROM t LIMIT 5 OFFSET 0;
+
+statement ok
+SELECT i % 3, COUNT(*) FROM t GROUP BY 1 OFFSET 0;

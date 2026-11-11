@@ -8,7 +8,7 @@ require block_size 262144
 load {TEST_DIR}/null_overflow_string_memory.db
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 SET threads=1
@@ -40,10 +40,10 @@ SET threads=1
 
 # disable spilling so the memory limit actually bites (OVERFLOW_STRINGS is non-spillable regardless)
 statement ok
-PRAGMA temp_directory=''
+SET temp_directory=''
 
 statement ok
-PRAGMA max_temp_directory_size='0B'
+SET max_temp_directory_size='0B'
 
 # a single 2MB value needs a few MB to scan; the bug re-reads the 2MB overflow string once per
 # trailing NULL, needing ~STANDARD_VECTOR_SIZE (2048) * 2MB ~= 4GB, so it OOMs under this limit

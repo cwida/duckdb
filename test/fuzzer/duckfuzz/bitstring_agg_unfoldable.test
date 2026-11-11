@@ -18,9 +18,6 @@ SELECT bitstring_agg(i, 0, (100 + random())::BIGINT) FROM range(10) t(i);
 ----
 must be a constant expression
 
-statement ok
-PRAGMA disable_verification
-
 statement error
 SELECT bitstring_agg(i, 0, 3) FROM range(10) t(i);
 ----

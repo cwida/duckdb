@@ -5,7 +5,7 @@
 require httpfs
 
 statement ok
-pragma threads=16
+SET threads=16
 
 # 5% nulls
 statement ok

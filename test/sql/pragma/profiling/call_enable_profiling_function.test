@@ -5,7 +5,7 @@
 require json
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/test.txt'
+SET profiling_output = '{TEST_DIR}/test.txt'
 
 #########################################################################################################################
 #            disable_profiling()
