@@ -339,8 +339,9 @@ vector<ExtensionUpdateResult> ExtensionHelper::UpdateExtensions(ClientContext &c
 
 	// scan the install directories for installed extensions
 	auto ext_directories = ExtensionHelper::GetInstalledExtensionDirectories(db, fs);
-	for (auto ext_directory : ext_directories) {
-		fs.ListFiles(ext_directory, [&](const string &path, bool is_directory) {
+	for (auto const &ext_directory : ext_directories) {
+		string ext_directory_path = ext_directory.path;
+		fs.ListFiles(ext_directory_path, [&](const string &path, bool is_directory) {
 			if (!ExtensionHelper::IsInstalledExtensionFile(path)) {
 				return;
 			}
@@ -350,7 +351,7 @@ vector<ExtensionUpdateResult> ExtensionHelper::UpdateExtensions(ClientContext &c
 
 			seen_extensions.insert(Identifier(extension_name));
 
-			result.push_back(UpdateExtensionInternal(context, db, fs, fs.JoinPath(ext_directory, path), extension_name));
+			result.push_back(UpdateExtensionInternal(context, db, fs, fs.JoinPath(ext_directory_path, path), extension_name));
 		});
 	}
 #endif
