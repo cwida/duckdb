@@ -748,7 +748,7 @@ unique_ptr<FunctionData> ResolveDecimalRoundPrecision(ClientContext &context, Bo
 			argument_type = LogicalType::DECIMAL(result_width, scale);
 		}
 	} else {
-		if (round_value >= (int32_t)scale) {
+		if (NumericCast<uint32_t>(round_value) >= scale) {
 			// if round_value is bigger than or equal to scale we do nothing
 			bound_function.SetFunctionCallback(ScalarFunction::NopFunction);
 			target_scale = scale;

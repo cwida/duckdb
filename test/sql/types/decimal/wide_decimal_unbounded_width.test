@@ -162,6 +162,12 @@ SELECT round(('1' || repeat('0', 299))::DECIMAL(300,0), -2000000000), trunc(('-1
 ----
 0	0	0
 
+# a precision at or above the scale keeps the type, a scale beyond the INTEGER range is rounded like any other
+query III
+SELECT typeof(round(NULL::DECIMAL(2147483648,2147483648), 0)), typeof(round(NULL::DECIMAL(2147483648,2147483648), 2147483647)), typeof(round(NULL::DECIMAL(2147483648,2147483647), 2147483647))
+----
+DECIMAL(2147483648,0)	DECIMAL(2147483648,2147483647)	DECIMAL(2147483648,2147483647)
+
 # aggregates
 statement ok
 CREATE TABLE wide(i INTEGER, d DECIMAL(300,100));
