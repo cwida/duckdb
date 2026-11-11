@@ -61,8 +61,6 @@ private:
 	static void ConcatNode4WasGate(ART &art, NodePtr &node4_ptr, const NodePtr child_ptr, uint8_t byte);
 	static void ConcatChildIsGate(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, const NodePtr child_ptr,
 	                              uint8_t byte);
-	static void ConcatOutsideGate(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, const NodePtr child_ptr,
-	                              uint8_t byte);
 
 	Prefix Append(ART &art, const uint8_t byte);
 	void Append(ART &art, NodePtr other_ptr);

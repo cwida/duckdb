@@ -161,10 +161,15 @@ void Prefix::ConcatInternal(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, c
 				// The parent only contained the Node4, so we can now inline 'all the way up',
 				// and the gate is no longer nested.
 				while (parent_ptr.GetType() == NType::PREFIX) {
-					Prefix prefix(art, parent_ptr, true);
-					auto temp_ptr = *prefix.child_slot;
+					NodePtr next_ptr;
+					{
+						// Release the prefix handle before freeing its node,
+						// which may destroy the allocator buffer.
+						PrefixHandle prefix(NodeHandle(art, parent_ptr));
+						next_ptr = prefix.Child(art);
+					}
 					NodePtr::FreeNode(art, parent_ptr);
-					parent_ptr = temp_ptr;
+					parent_ptr = next_ptr;
 				}
 				parent_ptr = child_ptr;
 				return;
@@ -185,8 +190,8 @@ void Prefix::ConcatInternal(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, c
 			return;
 		}
 
-		auto prefix = NewInternal(art, node4_ptr, &byte, 1, 0);
-		*prefix.child_slot = child_ptr;
+		auto prefix = PrefixHandle::NewInternal(art, node4_ptr, &byte, 1, 0);
+		prefix.Child(art) = child_ptr;
 		return;
 	}
 
@@ -206,12 +211,12 @@ void Prefix::ConcatInternal(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, c
 	}
 
 	// The child is not inlined, and the parent is not a prefix.
-	auto prefix = NewInternal(art, node4_ptr, &byte, 1, 0);
+	auto prefix = PrefixHandle::NewInternal(art, node4_ptr, &byte, 1, 0);
 	if (child_ptr.GetType() == NType::PREFIX) {
-		prefix.Append(art, child_ptr);
+		PrefixHandle::Append(art, std::move(prefix), child_ptr);
 		return;
 	}
-	*prefix.child_slot = child_ptr;
+	prefix.Child(art) = child_ptr;
 }
 
 void Prefix::ConcatNode4WasGate(ART &art, NodePtr &node4_ptr, const NodePtr child_ptr, uint8_t byte) {
