@@ -80,6 +80,10 @@ INSERT INTO t VALUES ('z');
 ----
 tnorm
 
+# the skipped automatic checkpoint logs a warning
+statement ok
+SET warnings_as_errors = false
+
 statement ok
 SET wal_autocheckpoint = '0B';
 
