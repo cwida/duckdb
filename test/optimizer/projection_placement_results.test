@@ -65,6 +65,57 @@ ORDER BY ALL;
 1	ab
 2	NULL
 
+# Aggregate argument placement preserves duplicate, NULL and empty lists
+statement ok
+CREATE TABLE placement_result_lists(i INTEGER, l INTEGER[]);
+
+statement ok
+INSERT INTO placement_result_lists VALUES (1, [3, NULL, 1]), (2, []), (3, NULL), (4, [2, 1]), (5, [4, 2]);
+
+statement ok
+CREATE TABLE placement_result_list_fact AS SELECT i % 5 + 1 AS i, i AS v FROM range(1000) t(i);
+
+query III
+SELECT count(*), sum(s[1]), count(s[1])
+FROM (SELECT i, list_sort(l) AS s FROM placement_result_lists) d
+JOIN placement_result_list_fact USING (i);
+----
+1000	800	600
+
+query IIII
+SELECT i, count(*), sum(s[1]), sum(i) FILTER (WHERE i % 2 = 0)
+FROM (SELECT i, list_sort(l) AS s FROM placement_result_lists) d
+JOIN placement_result_list_fact USING (i)
+GROUP BY i ORDER BY i;
+----
+1	200	200	NULL
+2	200	NULL	400
+3	200	NULL	NULL
+4	200	200	800
+5	200	400	NULL
+
+# A rejected two-sided argument stays with its aggregate
+query II
+SELECT sum(s[1]), sum(d.i + f.v)
+FROM (SELECT i, list_sort(l) AS s FROM placement_result_lists) d
+JOIN placement_result_list_fact f USING (i);
+----
+800	502500
+
+# Unsupported variable-width child lists keep their existing result semantics
+statement ok
+CREATE TABLE placement_result_nested(i INTEGER, l INTEGER[][], s VARCHAR[]);
+
+statement ok
+INSERT INTO placement_result_nested VALUES (1, [[2], [1, 2]], ['b', 'a']), (2, [], []), (3, NULL, NULL);
+
+query II
+SELECT sum(len(sorted_l[1])), sum(len(sorted_s[1]))
+FROM (SELECT i, list_sort(l) AS sorted_l, list_sort(s) AS sorted_s FROM placement_result_nested) d
+JOIN placement_result_list_fact USING (i);
+----
+400	200
+
 # A projection that cannot cross UNNEST must not be retried indefinitely
 query I
 SELECT sum(length(s))
