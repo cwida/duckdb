@@ -1,0 +1,43 @@
+# name: test/sql/trigger/trigger_body_leading_cte.test
+# description: A FOR EACH ROW trigger body whose target has BEFORE statement triggers plans as a correlated subquery with leading independent CTEs
+# group: [trigger]
+
+require noforcestorage
+
+# A FOR EACH ROW trigger body runs as a correlated subquery numbering the firing rows; each BEFORE statement trigger on
+# the table the body writes puts a leading independent CTE in it.
+statement ok
+CREATE TABLE out(k VARCHAR, v INTEGER)
+
+statement ok
+CREATE TABLE s(id INTEGER)
+
+statement ok
+CREATE TABLE r(id INTEGER)
+
+statement ok
+CREATE TRIGGER s0 BEFORE INSERT ON s FOR EACH STATEMENT INSERT INTO out SELECT 'before', count(*) FROM s
+
+statement ok
+CREATE TRIGGER s1 BEFORE INSERT ON s FOR EACH STATEMENT INSERT INTO out SELECT 'before1', count(*) FROM s
+
+statement ok
+CREATE TRIGGER r1 AFTER INSERT ON r FOR EACH ROW INSERT INTO s SELECT NEW.id + 100
+
+statement ok
+INSERT INTO r VALUES (1), (2), (2), (NULL)
+
+query I
+SELECT id FROM s ORDER BY ALL
+----
+101
+102
+102
+NULL
+
+# Each BEFORE statement trigger fires once for the outer INSERT, before any row body writes into s.
+query II
+SELECT k, v FROM out ORDER BY ALL
+----
+before	0
+before1	0
