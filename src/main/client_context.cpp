@@ -675,9 +675,8 @@ StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> stateme
 			    }
 			    bind_error = std::move(error);
 		    } catch (...) {
-			    // Any other exception object, a client callback's, an extension hook's or the engine's own
-			    // std::bad_alloc, leaves as the object thrown, where Query and Prepare would report it as an engine
-			    // error
+			    // Any exception that is not the engine's leaves as the object thrown, where Query and Prepare would
+			    // report a standard one as an engine error
 			    foreign_error = std::current_exception();
 		    }
 	    },
