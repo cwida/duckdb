@@ -1,0 +1,105 @@
+# name: test/sql/cte/recursive_cte_key_finalize_owned_state.test
+# description: Frozen keyed payloads preserve owned strings and aggregate state across reads and updates
+# group: [cte]
+
+statement ok
+SET max_execution_time=10000;
+
+statement ok
+CREATE MACRO owned_state_key_count() AS greatest(current_setting('standard_vector_size')::BIGINT, 16) * 8;
+
+foreach caching true false
+
+statement ok
+SET enable_caching_operators={caching};
+
+foreach threads 1 8
+
+statement ok
+SET threads={threads};
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# string_agg returns a reference to its non-inline state string.
+# Varied probes first grow each value from 64 to 129 bytes. Constant probes then read the same frozen state
+# and grow every value to 259 bytes. Observing last_probe keeps the computed key projection.
+query III
+WITH RECURSIVE t(k, s, phase, last_probe) USING KEY (k, string_agg(s), max(phase)) AS (
+	SELECT i, repeat('a', 64), 0, i FROM range(owned_state_key_count()) r(i)
+	UNION ALL
+	SELECT n.k, r.s, n.phase+1, n.lookup_key
+	FROM (
+		SELECT k, phase, CASE WHEN phase=0 THEN k ELSE 7::BIGINT END AS lookup_key
+		FROM t WHERE phase<2
+	) n
+	JOIN recurring.t r ON r.k=n.lookup_key
+)
+SELECT count(*)=owned_state_key_count(),
+       bool_and(s=repeat('a', 64) || ',' || repeat('a', 64) || ',' || repeat('a', 64) || ',' || repeat('a', 64)),
+       bool_and(phase=2 AND last_probe=7)
+FROM t;
+----
+1	1	1
+
+statement ok
+CALL disable_logging();
+
+query IIIII
+SELECT count(*)=1,
+       bool_and(info.direct_probe_rows::UBIGINT=owned_state_key_count()*2),
+       bool_and(info.direct_probe_matches::UBIGINT=owned_state_key_count()*2),
+       bool_and(info.recurring_scan_rows::UBIGINT=0),
+       bool_and(info.partial_probe_chain_visits::UBIGINT=0)
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalRecursiveCTE' AND event='RuntimeMetrics';
+----
+1	1	1	1	1
+
+# Each accumulated BIGNUM is read before its next update.
+# The values are 2^64, 0, 257, -1, and 1. The final seen value is the preceding frozen value, -1.
+query III
+WITH RECURSIVE t(k, v, phase, seen) USING KEY (k, sum(v), max(phase)) AS (
+	SELECT i, '18446744073709551616'::BIGNUM, 0, '' FROM range(128) r(i)
+	UNION ALL
+	SELECT n.k,
+	       CASE n.phase WHEN 0 THEN '-18446744073709551616'
+	                    WHEN 1 THEN '257' WHEN 2 THEN '-258' ELSE '2' END::BIGNUM,
+	       n.phase+1, r.v::VARCHAR
+	FROM t n JOIN recurring.t r USING (k)
+	WHERE n.phase<4
+)
+SELECT count(*)=128, bool_and(v::VARCHAR='1'), bool_and(phase=4 AND seen='-1')
+FROM t;
+----
+1	1	1
+
+# Reading a string top-N heap leaves it valid for later inserts, including with vector size 2.
+# Three original rows each insert b after reading [a, c, e], so the three smallest values are [a, b, b].
+query TIT
+WITH RECURSIVE t(k, v, phase, seen) USING KEY (k, min(v, 3), max(phase)) AS (
+	SELECT 0, letter || repeat('x', 64), 0, '' FROM (VALUES ('a'), ('c'), ('e')) s(letter)
+	UNION ALL
+	SELECT n.k, 'b' || repeat('x', 64), 1, left(r.v[1], 1)
+	FROM t n JOIN recurring.t r USING (k)
+	WHERE n.phase=0
+)
+SELECT list_transform(v, lambda x: left(x, 1)), phase, seen FROM t;
+----
+[a, b, b]	1	a
+
+endloop
+
+endloop
+
+statement ok
+RESET enable_caching_operators;
+
+statement ok
+RESET threads;
+
+statement ok
+RESET max_execution_time;

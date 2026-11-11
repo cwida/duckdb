@@ -8,7 +8,7 @@ namespace duckdb {
 //////////////////
 // Base UUID
 //////////////////
-bool BaseUUID::FromString(const string &str, hugeint_t &result, bool strict) {
+bool BaseUUID::FromString(string_t str, hugeint_t &result, bool strict) {
 	auto hex2char = [](char ch) -> unsigned char {
 		if (ch >= '0' && ch <= '9') {
 			return UnsafeNumericCast<unsigned char>(ch - '0');
@@ -25,24 +25,25 @@ bool BaseUUID::FromString(const string &str, hugeint_t &result, bool strict) {
 		return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
 	};
 
-	if (str.empty()) {
+	const auto data = str.GetData();
+	const auto size = str.GetSize();
+	if (size == 0) {
 		return false;
 	}
 	idx_t has_braces = 0;
-	if (str.front() == '{') {
+	if (data[0] == '{') {
 		has_braces = 1;
 	}
-	if (has_braces && str.back() != '}') {
+	if (has_braces && data[size - 1] != '}') {
 		return false;
 	}
 
 	if (strict) {
 		// 32 characters and 4 hyphens
-		if (str.length() != 36) {
+		if (size != 36) {
 			return false;
 		}
-		const auto c_str = str.c_str();
-		if (c_str[8] != '-' || c_str[13] != '-' || c_str[18] != '-' || c_str[23] != '-') {
+		if (data[8] != '-' || data[13] != '-' || data[18] != '-' || data[23] != '-') {
 			return false;
 		}
 	}
@@ -50,17 +51,17 @@ bool BaseUUID::FromString(const string &str, hugeint_t &result, bool strict) {
 	result.lower = 0;
 	result.upper = 0;
 	size_t count = 0;
-	for (size_t i = has_braces; i < str.size() - has_braces; ++i) {
-		if (str[i] == '-') {
+	for (size_t i = has_braces; i < size - has_braces; ++i) {
+		if (data[i] == '-') {
 			continue;
 		}
-		if (count >= 32 || !is_hex(str[i])) {
+		if (count >= 32 || !is_hex(data[i])) {
 			return false;
 		}
 		if (count >= 16) {
-			result.lower = (result.lower << 4) | hex2char(str[i]);
+			result.lower = (result.lower << 4) | hex2char(data[i]);
 		} else {
-			result.upper = (result.upper << 4) | hex2char(str[i]);
+			result.upper = (result.upper << 4) | hex2char(data[i]);
 		}
 		count++;
 	}

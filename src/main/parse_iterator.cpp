@@ -113,9 +113,9 @@ bool ParseIterator::PeekInternal() {
 		current_statement = std::move((*overridden_statements)[override_cursor++]);
 		return true;
 	}
-	if (!parser) {
-		parser = make_uniq<Parser>(options);
-	}
+	// parser options can change between statements of the same input (SET statements such as
+	// integer_division or active_grammar_extensions), so each statement gets a parser with fresh options
+	Parser parser(options);
 	EnsureTokenized();
 	// Walk the token cursor through the cached `tokens`, calling Parser::ParseTopLevelStatement
 	// repeatedly. A nullptr return with cursor advanced means a separator-only TopLevelStatement
@@ -126,31 +126,16 @@ bool ParseIterator::PeekInternal() {
 			exhausted = true;
 			return false;
 		}
-		unique_ptr<SQLStatement> stmt;
-		try {
-			stmt = parser->ParseTopLevelStatement(*token_iterator);
-		} catch (ParserException &) {
-			// Mirror Parser::ParseQuery's parse_function-extension fallback so extensions like
-			// `quack` can claim a segment that PEG couldn't parse.
-			stmt = parser->TryParseExtensionStatement(*token_iterator, sql);
-			if (!stmt) {
-				throw;
-			}
-		}
+		auto stmt = parser.ParseTopLevelStatement(*token_iterator, sql);
+		// ParseTopLevelStatement doesn't populate stmt->query (it operates on tokens, not the
+		// source string). Mirror Parser::ParseQuery's slicing: a statement's text starts where the
+		// previous one ended and runs through its own terminators, so comments before a statement
+		// belong to it; the last statement runs to the end of the input.
+		idx_t stmt_start = next_statement_offset;
+		idx_t stmt_end = token_iterator->AtEnd() ? sql.size() : token_iterator->ConsumedEndOffset();
+		next_statement_offset = stmt_end;
 		if (stmt) {
-			// ParseTopLevelStatement doesn't populate stmt->query (it operates on tokens, not the
-			// source string). Mirror Parser::ParseQuery's per-statement post-processing: extend from
-			// the statement's start to the next statement's start (or end of input) so the trailing
-			// `;` and inter-statement whitespace end up inside stmt->query — downstream consumers
-			// (logging, error reporting, EXPLAIN) rely on that shape.
-			idx_t stmt_loc = stmt->stmt_location.offset;
-			idx_t end_loc = sql.size();
-			if (auto current = token_iterator->Current()) {
-				if (current->type != TokenType::END_OF_INPUT) {
-					end_loc = current->offset;
-				}
-			}
-			stmt->query = sql.substr(stmt_loc, end_loc - stmt_loc);
+			stmt->query = sql.substr(stmt_start, stmt_end - stmt_start);
 			stmt->stmt_location = QueryLocation(0, stmt->query.size());
 			if (stmt->type == StatementType::CREATE_STATEMENT) {
 				auto &create = stmt->Cast<CreateStatement>();
@@ -171,12 +156,11 @@ void ParseIterator::EnsureTokenized() {
 	if (!token_iterator) {
 		// Tokenize the full input once. Subsequent Peek/HasMore calls walk through the iterator;
 		// we never re-tokenize. Tokenization is grammar-free.
-		auto owned_tokens = make_uniq<vector<MatcherToken>>();
-		ParserTokenizerBehavior behavior(sql, *owned_tokens);
+		ParserTokenizerBehavior behavior(sql);
 		auto compiled_grammar = CompiledGrammar::Get(context);
 		auto &tokenizer = compiled_grammar->GetTokenizer();
 		tokenizer.TokenizeInput(behavior);
-		token_iterator = make_uniq<TokenIterator>(std::move(owned_tokens));
+		token_iterator = make_uniq<TokenIterator>(behavior);
 	}
 }
 

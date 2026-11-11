@@ -5,12 +5,12 @@
 require json
 
 statement error
-PRAGMA custom_profiling_settings='}}}}}}';
+SET custom_profiling_settings='}}}}}}';
 ----
 <REGEX>:Catalog Error:.*custom_profiling_settings.*
 
 statement error
-PRAGMA configure_profiling='{"INVALID_SETTING": "true"}';
+SET configure_profiling='{"INVALID_SETTING": "true"}';
 ----
 <REGEX>:Catalog Error:.*configure_profiling.*
 

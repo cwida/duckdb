@@ -23,7 +23,7 @@ ORDER BY x;
 7
 
 statement ok
-PRAGMA explain_output='optimized_only'
+SET explain_output='optimized_only'
 
 # Computed materialized outputs must not be copied into the combined consumer filter
 query II

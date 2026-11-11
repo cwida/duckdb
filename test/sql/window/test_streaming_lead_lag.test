@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 query TT
 EXPLAIN
@@ -290,3 +290,35 @@ FROM t;
 0	1
 1	2
 2	NULL
+
+# lag/lead with an offset or default that cannot be evaluated
+statement ok
+CREATE TABLE ints(i INTEGER);
+
+# a failing offset or default does not fail on an empty table
+query I
+SELECT lag(i, CAST('a' AS BIGINT)) OVER () FROM ints;
+----
+
+query I
+SELECT lead(i, 1, CAST('a' AS BIGINT)) OVER () FROM ints;
+----
+
+statement ok
+INSERT INTO ints VALUES (0), (1), (2);
+
+# doesn't fail when a filter removes all rows
+query I
+SELECT lag(i, 1 // 0) OVER () FROM ints WHERE i > 10;
+----
+
+# once a row reaches the window, the error surfaces
+statement error
+SELECT lag(i, CAST('a' AS BIGINT)) OVER () FROM ints;
+----
+<REGEX>:Conversion Error.*
+
+statement error
+SELECT lead(i, 1, CAST('a' AS BIGINT)) OVER () FROM ints;
+----
+<REGEX>:Conversion Error.*

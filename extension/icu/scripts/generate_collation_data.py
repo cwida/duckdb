@@ -189,6 +189,8 @@ class RootTable:
         self.prefixes = {}  # (code point, ...) -> [CollationElement], first cp is the prefix
         self.compressible = [False] * 256
         self.variable_top = 0
+        # reorder group ("SPACE", "PUNCTUATION", ...) -> (its first primary, whether that starts a new lead byte)
+        self.group_starts = {}
         self.han_order = []
         self.anchors = {}  # "first regular" -> CollationElement
         self.lead_byte_scripts = {}  # lead byte -> [script or group name]
@@ -249,6 +251,11 @@ def parse_fractional_uca(text):
         codepoints = tuple(int(cp, 16) for cp in left.replace("|", " ").split())
         # FDD0/FDD1 entries are boundary markers used when building tailorings
         if codepoints[0] in (0xFDD0, 0xFDD1):
+            # e.g. "FDD1 263A; [0C 02 02, 05, 05] # SYMBOL first primary starts new lead byte"
+            comment = line.split("#", 1)[1] if "#" in line else ""
+            if codepoints[0] == 0xFDD1 and "first primary" in comment:
+                group = comment.split()[0]
+                table.group_starts[group] = (parse_ces(right)[0].primary, "starts new lead byte" in comment)
             continue
         elements = parse_ces(right)
         if is_prefix:
@@ -1948,6 +1955,20 @@ def fetch_collation_listing():
     return result
 
 
+def variable_top_primaries(table):
+    """The last variable primary for maxVariable space, punct, symbol and currency, ending each group as ICU does."""
+    groups = ["SPACE", "PUNCTUATION", "SYMBOL", "CURRENCY", "DIGIT"]
+    tops = []
+    for next_group in groups[1:]:
+        primary, new_lead_byte = table.group_starts[next_group]
+        start = (primary >> 24) << 8 if new_lead_byte else primary >> 16
+        tops.append((start << 16) - 1)
+    # maxVariable=punct is the default, FractionalUCA.txt names its end as [variable top]
+    if tops[1] != table.variable_top:
+        raise ValueError("punctuation ends at 0x%08X, but [variable top] is 0x%08X" % (tops[1], table.variable_top))
+    return tops
+
+
 def write_collation_data(path, table, builder, stage1, stage2, han_range_list, normalization, tailorings, sources):
     """Writes the compressed tables and the metadata the loader needs to find them."""
     names = sorted(tailorings)
@@ -2014,7 +2035,10 @@ def write_collation_data(path, table, builder, stage1, stage2, han_range_list, n
     out.append("};")
     out.append("")
     out.append("const uint32_t collation_count = %d;" % len(registered))
-    out.append("const uint32_t variable_top_primary = 0x%08X;" % table.variable_top)
+    out.append(
+        "const uint32_t variable_top_primaries[] = {%s};"
+        % ", ".join("0x%08X" % top for top in variable_top_primaries(table))
+    )
     out.append("")
     out.append("} // namespace collation")
     out.append("} // namespace duckdb")

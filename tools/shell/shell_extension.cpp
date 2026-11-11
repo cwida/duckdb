@@ -26,7 +26,7 @@ namespace duckdb {
 
 static void GetEnvFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &heap = StringVector::GetStringHeap(result);
-	auto &os_util = OSUtil::Get(*state.GetContext().db);
+	auto &os_util = OSUtil::Get(state.GetContext().GetDatabase());
 	UnaryExecutor::Execute<string_t, string_t>(
 	    args.data[0], result, [&](string_t input) { return heap.AddString(os_util.GetEnv(input.GetString())); });
 }
@@ -133,7 +133,7 @@ void ShellExtension::Load(ExtensionLoader &loader) {
 	planner_ext.post_bind_function = duckdb::ShellPostBind;
 	PlannerExtension::Register(config, planner_ext);
 
-	// opt-in grammar: the CLI enables it via SET active_grammar_extensions=['shell'] when it opens a database
+	// opt-in grammar: the CLI enables it via CALL add_grammar_extension('shell') when it opens a database
 	GrammarExtension::Register(loader.GetDatabaseInstance(), make_shared_ptr<ShellGrammarExtension>());
 
 	// highlight the CLI profiler "query_tree" output

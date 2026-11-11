@@ -37,6 +37,17 @@ Value VectorFSSTStringBuffer::GetValue(const LogicalType &type, idx_t index) con
 	}
 }
 
+buffer_ptr<VectorBuffer> VectorFSSTStringBuffer::ConstantReferenceInternal(const LogicalType &type, idx_t index,
+                                                                           count_t count) const {
+	// the compressed string cannot be shared, so the constant holds the decompressed string
+	auto source_index = UnsafeNumericCast<sel_t>(index);
+	SelectionVector sel(&source_index, 1);
+	auto result = FlattenSliceInternal(type, sel, 1);
+	result->SetVectorType(VectorType::CONSTANT_VECTOR);
+	result->SetVectorSize(count);
+	return result;
+}
+
 buffer_ptr<VectorBuffer> VectorFSSTStringBuffer::FlattenSliceInternal(const LogicalType &type,
                                                                       const SelectionVector &sel, idx_t count) const {
 	auto result = make_buffer<VectorStringBuffer>(capacity_t(count));

@@ -1,0 +1,35 @@
+# name: test/sql/storage/compression/roaring/roaring_corrupt_container_count.test
+# description: Reject inflated Roaring container counts that exceed the available data
+# group: [roaring]
+
+require vector_size 2048
+
+require block_size 262144
+
+unzip data/storage/corrupt/roaring_corrupt_container_count.db.gz {TEST_DIR}/roaring_corrupt_container_count.db
+
+load {TEST_DIR}/roaring_corrupt_container_count.db readonly
+
+statement ok
+USE roaring_corrupt_container_count
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='b' AND compression='Roaring' LIMIT 1;
+----
+Roaring
+
+# The constant data column lets the read reach its Roaring validity segment.
+statement error
+SELECT sum(b) FROM t;
+----
+Data Corruption Error: Corrupted Roaring container data: attempted to read past the end of the segment
+
+restart
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT sum(b) FROM t;
+----
+Data Corruption Error: Corrupted Roaring container data: attempted to read past the end of the segment

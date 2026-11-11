@@ -1,0 +1,34 @@
+# name: test/optimizer/statistics/large_join_cardinality.test
+# description: Join estimates divide overflowing intermediate products before converting to a row count
+# group: [statistics]
+
+statement ok
+SET explain_output='optimized_only';
+
+# Each range has 2^60 distinct values. The 20-way equality join still has 2^60 rows.
+# Match the root's final cardinality field, rather than a leaf's range estimate.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT t0.k
+FROM range(1152921504606846976) t0(k)
+JOIN range(1152921504606846976) t1(k) ON t0.k=t1.k
+JOIN range(1152921504606846976) t2(k) ON t1.k=t2.k
+JOIN range(1152921504606846976) t3(k) ON t2.k=t3.k
+JOIN range(1152921504606846976) t4(k) ON t3.k=t4.k
+JOIN range(1152921504606846976) t5(k) ON t4.k=t5.k
+JOIN range(1152921504606846976) t6(k) ON t5.k=t6.k
+JOIN range(1152921504606846976) t7(k) ON t6.k=t7.k
+JOIN range(1152921504606846976) t8(k) ON t7.k=t8.k
+JOIN range(1152921504606846976) t9(k) ON t8.k=t9.k
+JOIN range(1152921504606846976) t10(k) ON t9.k=t10.k
+JOIN range(1152921504606846976) t11(k) ON t10.k=t11.k
+JOIN range(1152921504606846976) t12(k) ON t11.k=t12.k
+JOIN range(1152921504606846976) t13(k) ON t12.k=t13.k
+JOIN range(1152921504606846976) t14(k) ON t13.k=t14.k
+JOIN range(1152921504606846976) t15(k) ON t14.k=t15.k
+JOIN range(1152921504606846976) t16(k) ON t15.k=t16.k
+JOIN range(1152921504606846976) t17(k) ON t16.k=t17.k
+JOIN range(1152921504606846976) t18(k) ON t17.k=t18.k
+JOIN range(1152921504606846976) t19(k) ON t18.k=t19.k;
+----
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"1152921504606846976"\s*}\s*}\s*\]\s*$

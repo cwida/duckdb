@@ -44,7 +44,7 @@ Could not convert string
 statement error
 SELECT ARRAY[ARRAY[1], ARRAY['hello']]
 ----
-Binder Error: Cannot deduce template type
+<REGEX>:Binder Error: No function matches.*Cannot deduce template type.*
 
 # array casts
 query I

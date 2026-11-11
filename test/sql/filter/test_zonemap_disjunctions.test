@@ -3,7 +3,7 @@
 # group: [filter]
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 # Cross multiple row groups without requiring several GB of table data.
 statement ok
@@ -24,10 +24,11 @@ select count(*) from t where (a > 500 and b = 3) or (a > 7000 and b = 2)
 ----
 499
 
+# the lower bounds of the disjuncts (a > 500, a > 400, a > 300, a > 600) merge into their union a > 300
 query II
 explain select count(*) from t where (a > 500 AND b = 3) OR (a > 400) OR (a > 300 AND b=4) OR (a > 600 AND a > 300)
 ----
-physical_plan	<REGEX>:.*Filters:.*a > 500.*a > 400.*a > 300.*a > 600.*
+physical_plan	<REGEX>:.*Filters: a > 300.*
 
 
 query I

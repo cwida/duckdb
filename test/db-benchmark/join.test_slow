@@ -5,7 +5,7 @@
 require httpfs
 
 statement ok
-pragma threads=16
+SET threads=16
 
 statement ok
 CREATE TABLE x AS SELECT * FROM read_csv_auto('https://github.com/duckdb/duckdb-data/releases/download/v1.0/J1_1e7_NA_0_0.csv.gz');

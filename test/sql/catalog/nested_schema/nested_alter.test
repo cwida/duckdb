@@ -195,3 +195,68 @@ db2	b	tt2
 
 statement ok
 USE memory;
+
+# Regression for https://github.com/duckdb/duckdb/issues/27663: COMMENT ON on entries whose
+# schema path is deeper than one level (catalog + nested schemas) was rejected at parse time with
+# "Too many qualifications found" while SELECT / CREATE TABLE / ALTER TABLE accepted the same paths.
+
+statement ok
+CREATE SCHEMA deep;
+
+statement ok
+CREATE SCHEMA deep.mid;
+
+statement ok
+CREATE SCHEMA deep.mid.bottom;
+
+statement ok
+CREATE TABLE deep.mid.bottom.t (id INTEGER);
+
+statement ok
+CREATE VIEW deep.mid.v AS SELECT 1 AS id;
+
+statement ok
+CREATE SEQUENCE deep.mid.seq;
+
+# 4-part, no catalog: deep.mid.bottom.t
+
+statement ok
+COMMENT ON TABLE deep.mid.bottom.t IS 'deep table';
+
+query I
+SELECT comment FROM duckdb_tables() WHERE table_name = 't' AND schema_name = 'bottom';
+----
+deep table
+
+statement ok
+COMMENT ON COLUMN deep.mid.bottom.t.id IS 'deep column';
+
+query I
+SELECT comment FROM duckdb_columns() WHERE column_name = 'id' AND table_name = 't' AND schema_name = 'bottom';
+----
+deep column
+
+# 5-part, with explicit catalog
+
+statement ok
+COMMENT ON VIEW memory.deep.mid.v IS 'deep view';
+
+query I
+SELECT comment FROM duckdb_views() WHERE view_name = 'v';
+----
+deep view
+
+statement ok
+COMMENT ON SEQUENCE deep.mid.seq IS 'deep sequence';
+
+query I
+SELECT comment FROM duckdb_sequences() WHERE sequence_name = 'seq' AND schema_name = 'mid';
+----
+deep sequence
+
+# still rejected when the entry does not exist
+
+statement error
+COMMENT ON TABLE deep.mid.nope.t IS 'x';
+----
+<REGEX>:.*does not exist.*

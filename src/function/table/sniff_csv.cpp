@@ -1,4 +1,5 @@
 #include "duckdb/function/built_in_functions.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/execution/operator/csv_scanner/csv_reader_options.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/execution/operator/csv_scanner/sniffer/csv_sniffer.hpp"
@@ -81,7 +82,7 @@ static unique_ptr<FunctionData> CSVSniffBind(ClientContext &context, TableFuncti
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("Comment");
 	// 6. Skip Rows
-	return_types.emplace_back(LogicalType::UINTEGER);
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("SkipRows");
 	// 7. Has Header
 	return_types.emplace_back(LogicalType::BOOLEAN);
@@ -186,7 +187,8 @@ static void CSVSniffFunction(ClientContext &context, TableFunctionInput &data_p,
 	str_opt = sniffer_options.dialect_options.state_machine_options.comment.FormatValue();
 	output.data[4].Append(Value(str_opt));
 	// 6. Skip Rows
-	output.data[5].Append(Value::UINTEGER(NumericCast<uint32_t>(sniffer_options.dialect_options.skip_rows.GetValue())));
+	auto skip_rows = sniffer_options.dialect_options.skip_rows.GetValue();
+	output.data[5].Append(Value::UBIGINT(skip_rows));
 	// 7. Has Header
 	auto has_header = Value::BOOLEAN(sniffer_options.dialect_options.header.GetValue());
 	output.data[6].Append(has_header);
@@ -198,8 +200,8 @@ static void CSVSniffFunction(ClientContext &context, TableFunctionInput &data_p,
 		child_list_t<Value> struct_children {{"name", sniffer_result.names[i]},
 		                                     {"type", {sniffer_result.return_types[i].ToString()}}};
 		values.emplace_back(Value::STRUCT(struct_children));
-		columns << "'" << sniffer_result.names[i].GetIdentifierName() << "': '"
-		        << sniffer_result.return_types[i].ToString() << "'";
+		columns << SQLString::ToString(sniffer_result.names[i].GetIdentifierName()) << ": "
+		        << SQLString::ToString(sniffer_result.return_types[i].ToString());
 		if (i != sniffer_result.return_types.size() - 1) {
 			columns << separator;
 		}
@@ -241,7 +243,7 @@ static void CSVSniffFunction(ClientContext &context, TableFunctionInput &data_p,
 	std::ostringstream csv_read;
 
 	// Base, Path and auto_detect=false
-	csv_read << "FROM read_csv('" << files[0].path << "'" << separator << "auto_detect=false" << separator;
+	csv_read << "FROM read_csv(" << SQLString::ToString(files[0].path) << separator << "auto_detect=false" << separator;
 	// 10.1. Delimiter
 	if (!sniffer_options.dialect_options.state_machine_options.delimiter.IsSetByUser()) {
 		csv_read << "delim="

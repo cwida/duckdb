@@ -1,0 +1,739 @@
+# name: test/sql/subquery/lateral/lateral_join_condition_operands.test
+# description: Outer references inside join condition operands bind to the owning child's domain state
+# group: [lateral]
+
+statement ok
+CREATE TABLE probes AS SELECT range % 7 AS k, range AS x FROM range(200);
+
+statement ok
+CREATE TABLE prices AS SELECT range * 3 AS ts, range AS p FROM range(50);
+
+# run the comparison blocks under both ASOF strategies
+foreach threshold 0 64
+
+statement ok
+SET asof_loop_join_threshold={threshold};
+
+# outer reference in the right operand, correlated left child
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + o.k
+) q ORDER BY ALL;
+----
+1	3	2
+2	4	2
+
+# outer reference in the right operand, both children uncorrelated
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (VALUES (4)) v(x)
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + o.k
+) q ORDER BY ALL;
+----
+1	4	2
+2	4	2
+
+# the matching partitions per domain for RIGHT ASOF as well
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (VALUES (4)) v(x)
+    ASOF RIGHT JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + o.k
+) q ORDER BY ALL;
+----
+1	4	2
+1	NULL	0
+2	4	2
+2	NULL	0
+
+# outer reference in the left operand, correlated right child
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (VALUES (4)) v(x)
+    ASOF JOIN (SELECT o.k * 2 AS ts) r
+        ON v.x - o.k >= r.ts
+) q ORDER BY ALL;
+----
+1	4	2
+
+# both children correlated, outer reference in the left operand
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (SELECT o.k * 2 AS ts) r
+        ON v.x - o.k >= r.ts
+) q ORDER BY ALL;
+----
+1	3	2
+
+# outer references in both operands, both children uncorrelated
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (VALUES (4)) v(x)
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x - o.k >= r.ts + o.k - o.k
+) q ORDER BY ALL;
+----
+1	4	2
+2	4	2
+
+# oracle: explicit correlation of the probe side gives the same per-domain matches
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x, o.k AS k) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x - v.k >= r.ts
+) q ORDER BY ALL;
+----
+1	3	2
+2	4	2
+
+# LEFT ASOF pads unmatched domains per domain
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (5)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF LEFT JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + o.k * 2
+) q ORDER BY ALL;
+----
+1	3	0
+5	7	NULL
+
+# equality condition next to the correlated inequality
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x, 10 AS g) v
+    ASOF JOIN (VALUES (10, 0), (10, 2), (11, 2)) r(g, ts)
+        ON v.g = r.g AND v.x >= r.ts + o.k
+) q ORDER BY ALL;
+----
+1	3	2
+2	4	2
+
+# strict inequality
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x > r.ts + o.k
+) q ORDER BY ALL;
+----
+1	3	0
+2	4	0
+
+# reversed inequality direction
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x <= r.ts + o.k
+) q ORDER BY ALL;
+----
+1	3	2
+2	4	2
+
+# a NULL domain value still matches through the null-safe domain keys
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (NULL)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT coalesce(o.k, 0) + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + coalesce(o.k, 0)
+) q ORDER BY ALL;
+----
+1	3	2
+NULL	2	2
+
+# NULL outer value inside the comparison disables the match, INNER drops the domain
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (NULL)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT coalesce(o.k, 0) + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + o.k
+) q ORDER BY ALL;
+----
+1	3	2
+
+# duplicate outer rows keep their multiplicity
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + o.k
+) q ORDER BY ALL;
+----
+1	3	2
+1	3	2
+2	4	2
+
+# depth-two reference inside the right operand
+query III
+SELECT p.g, s.k, s.ts
+FROM (VALUES (10), (20)) p(g), LATERAL (
+    SELECT o.k, q.ts
+    FROM (VALUES (1), (2)) o(k), LATERAL (
+        SELECT r.ts
+        FROM (SELECT o.k + 2 AS x) v
+        ASOF JOIN (VALUES (0), (2)) r(ts)
+            ON v.x >= r.ts + o.k - p.g + p.g
+    ) q
+) s ORDER BY ALL;
+----
+10	1	2
+10	2	2
+20	1	2
+20	2	2
+
+# protection: correlated child without condition correlation
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts
+) q ORDER BY ALL;
+----
+1	3	2
+2	4	2
+
+# protection: uncorrelated ASOF inside LATERAL
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (VALUES (3)) v(x)
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts
+) q ORDER BY ALL;
+----
+1	3	2
+2	3	2
+
+# scalar subquery variant routes through the SINGLE join path
+query II
+SELECT o.k, (
+    SELECT r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + o.k
+) AS ts
+FROM (VALUES (1), (2)) o(k) ORDER BY ALL;
+----
+1	2
+2	2
+
+# larger per-domain oracle comparison
+query I
+WITH direct AS (
+    SELECT o.k, o.x, q.ts, q.p
+    FROM probes o, LATERAL (
+        SELECT r.ts, r.p FROM (SELECT o.x + 1 AS x) v
+        ASOF JOIN prices r ON v.x >= r.ts + o.k
+    ) q
+), oracle AS (
+    SELECT o.k, o.x, r.ts, r.p
+    FROM probes o, prices r
+    WHERE o.x + 1 >= r.ts + o.k
+      AND r.ts = (SELECT max(r2.ts) FROM prices r2 WHERE o.x + 1 >= r2.ts + o.k)
+)
+SELECT count(*) FROM (
+    (SELECT * FROM direct EXCEPT ALL SELECT * FROM oracle)
+    UNION ALL
+    (SELECT * FROM oracle EXCEPT ALL SELECT * FROM direct)
+);
+----
+0
+
+endloop
+
+statement ok
+RESET asof_loop_join_threshold;
+
+# the recursive member path runs with the default strategy: the sorted ASOF
+# operator is not supported inside recursive CTEs
+# the same shape behind an ordinary recursive CTE member
+query II
+WITH RECURSIVE rec(k, n) AS (
+    SELECT k, 0 FROM (VALUES (1), (2)) o(k)
+    UNION ALL
+    SELECT rec.k, q.ts
+    FROM rec, LATERAL (
+        SELECT r.ts
+        FROM (SELECT rec.k + 2 AS x) v
+        ASOF JOIN (VALUES (0), (2)) r(ts)
+            ON v.x >= r.ts + rec.k
+    ) q
+    WHERE rec.n = 0
+)
+SELECT k, n FROM rec WHERE n > 0 ORDER BY ALL;
+----
+1	2
+2	2
+
+
+# window-based debug strategy over timestamp keys
+statement ok
+SET debug_asof_iejoin=true;
+
+query II
+SELECT o.k, q.ts::VARCHAR
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT r.ts
+    FROM (SELECT TIMESTAMP '2000-01-01' + to_days(o.k + 2) AS t) v
+    ASOF JOIN (VALUES (TIMESTAMP '2000-01-01'), (TIMESTAMP '2000-01-03')) r(ts)
+        ON v.t >= r.ts + to_days(o.k)
+) q ORDER BY ALL;
+----
+1	2000-01-03 00:00:00
+2	2000-01-03 00:00:00
+
+statement ok
+SET debug_asof_iejoin=false;
+
+# a volatile condition operand evaluates once per owning child row per domain
+statement ok
+CREATE SEQUENCE seq_operand START 1;
+
+statement ok
+SET asof_loop_join_threshold=0;
+
+query I
+SELECT q.ts
+FROM (VALUES (1), (1), (1)) o(k), LATERAL (
+    SELECT r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (VALUES (2)) r(ts)
+        ON v.x >= r.ts + nextval('seq_operand')
+) q;
+----
+2
+
+query I
+SELECT currval('seq_operand');
+----
+3
+
+statement ok
+RESET asof_loop_join_threshold;
+
+# nested joins normalizing the same descendant binding
+query IIII
+SELECT o.k, q.x, q.a, q.b
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT l.x, r.ts AS a, s.ts AS b
+    FROM (VALUES (4)) l(x)
+    ASOF JOIN (VALUES (1)) r(ts) ON l.x - o.k >= r.ts
+    ASOF JOIN (VALUES (2)) s(ts) ON l.x - o.k >= s.ts
+) q ORDER BY ALL;
+----
+1	4	1	2
+2	4	1	2
+
+# correlated probe of a generated MARK join
+query II
+SELECT o.k, q.matches
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT (l.i + o.k) IN (SELECT x FROM (VALUES (2)) b(x)) AS matches
+    FROM (VALUES (1)) l(i)
+) q ORDER BY ALL;
+----
+1	true
+2	false
+
+# ASOF SEMI and ANTI lower to regular comparison joins: the pruning left map
+# must survive the nested loop strategy
+statement ok
+SET nested_loop_join_threshold = 1000000;
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT l.x FROM (VALUES (3)) l(x)
+    ASOF SEMI JOIN (VALUES (2)) r(ts) ON l.x - o.k >= r.ts
+) q ORDER BY ALL;
+----
+1	3
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT l.x FROM (VALUES (3)) l(x)
+    ASOF ANTI JOIN (VALUES (2)) r(ts) ON l.x - o.k >= r.ts
+) q ORDER BY ALL;
+----
+2	3
+
+# the evaluation-domain rule also holds for ordinary comparison joins
+statement ok
+CREATE SEQUENCE seq_domain START 1;
+
+query I
+SELECT count(*)
+FROM (VALUES (1), (1), (1)) o(k), LATERAL (
+    SELECT r.ts FROM (SELECT o.k + 2 AS x) v
+    JOIN (VALUES (2)) r(ts) ON v.x >= r.ts + nextval('seq_domain')
+) q;
+----
+1
+
+query I
+SELECT currval('seq_domain');
+----
+3
+
+statement ok
+RESET nested_loop_join_threshold;
+
+# a pruned right payload survives the nested loop and blockwise strategies
+statement ok
+SET nested_loop_join_threshold = 1000000;
+
+statement ok
+CREATE SEQUENCE seq_rhs START 1;
+
+query II
+SELECT l.x, r.y
+FROM (VALUES (10)) l(x)
+JOIN (VALUES (2)) r(y)
+    ON l.x > r.y + nextval('seq_rhs');
+----
+10	2
+
+statement ok
+CREATE SEQUENCE seq_bw START 1;
+
+query II
+SELECT l.x, r.y
+FROM (VALUES ([10])) l(x)
+JOIN (VALUES (2)) r(y)
+    ON l.x > [r.y + nextval('seq_bw')];
+----
+[10]	2
+
+# protection: a volatile build operand next to a generated CTE exchange
+statement ok
+CREATE SEQUENCE seq_cte START 1;
+
+query III
+SELECT l.x, r.y, s.z
+FROM (VALUES ('a')) l(x)
+JOIN (VALUES (10)) r(y)
+    ON length(l.x) < r.y + nextval('seq_cte')
+FULL OUTER JOIN (VALUES (1)) s(z)
+    ON (SELECT length(l.x) + s.z) = 2;
+----
+a	10	1
+
+statement ok
+RESET nested_loop_join_threshold;
+
+# a MARK probe with both correlation and volatility keeps its empty-build laziness
+statement ok
+CREATE SEQUENCE seq_mark START 1;
+
+query II
+SELECT o.k, q.matches
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT (l.i + o.k + nextval('seq_mark')) IN (
+        SELECT i FROM range(1) b(i) WHERE i < 0
+    ) AS matches
+    FROM (VALUES (1)) l(i)
+) q ORDER BY ALL;
+----
+1	false
+2	false
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'seq_mark';
+----
+NULL
+
+# operand ownership does not imply eager evaluation: a correlated probe operand keeps
+# its computation at the join and only its outer references move into the probe child,
+# so an empty build input never evaluates it
+query II
+SELECT o.k, q.x
+FROM (VALUES ('bad')) o(k), LATERAL (
+    SELECT l.x
+    FROM (VALUES (1)) l(x)
+    ASOF ANTI JOIN range(0) r(y)
+        ON l.x + o.k::BIGINT >= r.y
+) q;
+----
+bad	1
+
+# the same laziness holds for probe rows padded by an empty LEFT build
+# the build-probe swap may turn this probe into the build input, whose operands main
+# evaluates during the sink, so the intended probe-side plan is pinned explicitly
+statement ok
+SET disabled_optimizers = 'build_side_probe_side';
+
+query III
+SELECT o.k, q.x, q.y
+FROM (VALUES ('bad')) o(k), LATERAL (
+    SELECT l.x, r.y
+    FROM (VALUES (1)) l(x)
+    LEFT JOIN range(0) r(y) ON l.x + o.k::BIGINT > r.y
+) q;
+----
+bad	1	NULL
+
+statement ok
+RESET disabled_optimizers;
+
+# build operands are retained at the join as well: input swapping and the blockwise
+# join can skip them, so an empty probe input never evaluates them either
+statement ok
+CREATE SEQUENCE seq_build_lazy START 1;
+
+query II
+SELECT l.x, r.y
+FROM range(0) l(x)
+FULL JOIN (VALUES ('bad')) r(y)
+    ON [l.x] > [r.y::BIGINT + nextval('seq_build_lazy')];
+----
+NULL	bad
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'seq_build_lazy';
+----
+NULL
+
+# a volatile probe operand over an empty build input never evaluates
+statement ok
+CREATE SEQUENCE seq_probe_lazy START 1;
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1)) o(k), LATERAL (
+    SELECT l.x FROM (VALUES (1)) l(x)
+    ASOF ANTI JOIN range(0) r(y)
+        ON l.x + nextval('seq_probe_lazy') + o.k >= r.y
+) q;
+----
+1	1
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'seq_probe_lazy';
+----
+NULL
+
+# piecewise merge joins emit full child layouts: pruning projection maps go through
+# the shared projection fallback
+statement ok
+SET nested_loop_join_threshold = 0;
+
+# a volatile probe operand stays at the join under the merge strategy
+statement ok
+CREATE SEQUENCE seq_pmj_probe START 1;
+
+query II
+SELECT l.x, r.y
+FROM (VALUES (10::BIGINT)) l(x)
+JOIN (VALUES (2::BIGINT)) r(y)
+    ON l.x + nextval('seq_pmj_probe') > r.y;
+----
+10	2
+
+# a volatile build operand also stays at the join and is keyed once per build row
+statement ok
+CREATE SEQUENCE seq_pmj_build START 1;
+
+query II
+SELECT l.x, r.y
+FROM (VALUES (10::BIGINT)) l(x)
+JOIN (VALUES (2::BIGINT)) r(y)
+    ON l.x > r.y + nextval('seq_pmj_build');
+----
+10	2
+
+query I
+SELECT currval('seq_pmj_build');
+----
+1
+
+# unmatched probe rows after the fallback projection
+statement ok
+CREATE SEQUENCE seq_pmj_left START 1;
+
+query II
+SELECT l.x, r.y
+FROM (VALUES (10::BIGINT), (1::BIGINT)) l(x)
+LEFT JOIN (VALUES (2::BIGINT)) r(y)
+    ON l.x > r.y + nextval('seq_pmj_left')
+ORDER BY ALL;
+----
+1	NULL
+10	2
+
+# a RIGHT join flips to LEFT at plan time with the retained operand on the new probe
+statement ok
+CREATE SEQUENCE seq_pmj_right START 1;
+
+query II
+SELECT l.x, r.y
+FROM (VALUES (10::BIGINT)) l(x)
+RIGHT JOIN (VALUES (2::BIGINT), (20::BIGINT)) r(y)
+    ON l.x > r.y + nextval('seq_pmj_right') * 0
+ORDER BY ALL;
+----
+10	2
+NULL	20
+
+# the FULL join right scan path emits unmatched build rows
+statement ok
+CREATE SEQUENCE seq_pmj_full START 1;
+
+query II
+SELECT l.x, r.y
+FROM (VALUES (10::BIGINT), (1::BIGINT)) l(x)
+FULL JOIN (VALUES (2::BIGINT), (20::BIGINT)) r(y)
+    ON l.x > r.y + nextval('seq_pmj_full') * 0
+ORDER BY ALL;
+----
+1	NULL
+10	2
+NULL	20
+
+# matched, unmatched and empty-input ASOF SEMI/ANTI output paths under the merge strategy
+query II
+SELECT o.k, q.n
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT l.n FROM (VALUES (3, 'payload')) l(x, n)
+    ASOF SEMI JOIN (VALUES (2)) r(ts) ON l.x - o.k >= r.ts
+) q ORDER BY ALL;
+----
+1	payload
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT l.x FROM (VALUES (3)) l(x)
+    ASOF ANTI JOIN (VALUES (2)) r(ts) ON l.x - o.k >= r.ts
+) q ORDER BY ALL;
+----
+2	3
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT l.x FROM (VALUES (3)) l(x)
+    ASOF ANTI JOIN (SELECT 2 AS ts WHERE 1=0) r ON l.x - o.k >= r.ts
+) q ORDER BY ALL;
+----
+1	3
+2	3
+
+# a correlated probe of a quantified range comparison routes through the extremum rewrite
+query II
+SELECT o.k, q.matches
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT (l.i + o.k) > ANY (SELECT x FROM (VALUES (2)) b(x)) AS matches
+    FROM (VALUES (1)) l(i)
+) q ORDER BY ALL;
+----
+1	false
+2	true
+
+statement ok
+RESET nested_loop_join_threshold;
+
+# five-row inputs choose the merge strategy with default settings
+statement ok
+CREATE SEQUENCE seq_pmj_default START 1;
+
+query I
+SELECT count(*) FROM (SELECT range::BIGINT AS x FROM range(5)) l
+JOIN (SELECT range::BIGINT AS y FROM range(5)) r
+    ON l.x > r.y + nextval('seq_pmj_default') * 0;
+----
+10
+
+# a volatile probe operand kept at the join still pins the probe input to the
+# correlation domain: each outer row draws its own sequence value
+statement ok
+CREATE SEQUENCE seq_probe_domain START 1;
+
+query I
+SELECT count(*)
+FROM (VALUES (1), (1), (1)) o(k), LATERAL (
+    SELECT r.y
+    FROM (VALUES (0)) l(x)
+    JOIN (SELECT o.k AS y) r
+        ON l.x + nextval('seq_probe_domain') = r.y
+) q;
+----
+1
+
+query I
+SELECT currval('seq_probe_domain');
+----
+3
+
+# delim_join_as_cte is deprecated: the remaining statements opt out of warnings_as_errors
+statement ok
+SET warnings_as_errors=false;
+
+# identity projection maps from decorrelation stay valid for strategies requiring empty maps
+statement ok
+SET nested_loop_join_threshold = 1000000;
+
+statement ok
+SET delim_join_as_cte = false;
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF SEMI JOIN (VALUES (4)) r(ts) ON v.x >= r.ts
+) q ORDER BY ALL;
+----
+2	4
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF ANTI JOIN (VALUES (4)) r(ts) ON [v.x] >= [r.ts]
+) q ORDER BY ALL;
+----
+1	3
+
+statement ok
+RESET nested_loop_join_threshold;
+
+statement ok
+RESET delim_join_as_cte;

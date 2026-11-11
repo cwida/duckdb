@@ -673,6 +673,8 @@ void PhysicalMergeInto::BuildPipelines(Pipeline &current, MetaPipeline &meta_pip
 		if (!action->op) {
 			continue;
 		}
+		action->op->op_state.reset();
+		action->op->sink_state.reset();
 		auto &action_meta_pipeline = meta_pipeline.CreateChildMetaPipeline(current, *action->op);
 		action_meta_pipeline.Build(action->op->children[0].get());
 		auto &action_pipeline = action_meta_pipeline.GetBasePipeline();

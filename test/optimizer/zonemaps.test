@@ -3,7 +3,7 @@
 # group: [optimizer]
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 statement ok
 create temporary table t as select range a, length(range::varchar) b, mod(range,10000) c, 5::BIGINT d, 10000 e from range(100000);
@@ -45,7 +45,7 @@ select count(*) from t where b in (1, 3) ;
 query II
 explain select count(*) from t where b = 1 or b = 3 ;
 ----
-physical_plan	<REGEX>:.*Filters:.*optional:.*b = 1.*OR.*b = 3.*
+physical_plan	<REGEX>:.*Filters:.*optional:.*b IN.*1, 3.*
 
 query I
 select count(*) from t where b = 1 or b = 3 ;
@@ -145,174 +145,174 @@ INSERT INTO test SELECT range, range, range, range, range / 2.0, range / 2.0, ra
 
 # 5.1) Flipping filters
 query II
-explain select count(*) from test where (2 < a and 7 > a) or (a >5 and a < 6)
+explain select count(*) from test where (2 < a and 7 > a) or (a > 8 and a < 10)
 ----
-physical_plan	<REGEX>:.*Filters:.*2 < a.*7 > a.*OR.*a > 5.*a < 6.*
+physical_plan	<REGEX>:.*Filters:.*2 < a.*7 > a.*OR.*a > 8.*a < 10.*
 
 query I
-select count(*) from test where (2 < a and 7 > a) or (a >5 and a < 6)
-----
-4
-
-query II
-explain select count(*) from test where (2 < a and a < 7) or (a >5 and a < 6)
-----
-physical_plan	<REGEX>:.*Filters:.*2 < a.*a < 7.*OR.*a > 5.*a < 6.*
-
-query I
-select count(*) from test where (2 < a and a < 7) or (a >5 and a < 6)
-----
-4
-
-query II
-explain select count(*) from test where (a >=2 and 7 > a)  or (a >5 and a < 6)
-----
-physical_plan	<REGEX>:.*Filters:.*a >= 2.*7 > a.*OR.*a > 5.*a < 6.*
-
-query I
-select count(*) from test where (a >=2 and 7 > a)  or (a >5 and a < 6)
+select count(*) from test where (2 < a and 7 > a) or (a > 8 and a < 10)
 ----
 5
 
 query II
-explain select count(*) from test where (4=a) or (a >5 and a < 6)
+explain select count(*) from test where (2 < a and a < 7) or (a > 8 and a < 10)
 ----
-physical_plan	<REGEX>:.*Filters:.*4 = a.*OR.*a > 5.*a < 6.*
+physical_plan	<REGEX>:.*Filters:.*2 < a.*a < 7.*OR.*a > 8.*a < 10.*
 
 query I
-select count(*) from test where (4=a) or (a >5 and a < 6)
+select count(*) from test where (2 < a and a < 7) or (a > 8 and a < 10)
 ----
-1
+5
+
+query II
+explain select count(*) from test where (a >=2 and 7 > a)  or (a > 8 and a < 10)
+----
+physical_plan	<REGEX>:.*Filters:.*a >= 2.*7 > a.*OR.*a > 8.*a < 10.*
+
+query I
+select count(*) from test where (a >=2 and 7 > a)  or (a > 8 and a < 10)
+----
+6
+
+query II
+explain select count(*) from test where (4=a) or (a > 8 and a < 10)
+----
+physical_plan	<REGEX>:.*Filters:.*4 = a.*OR.*a > 8.*a < 10.*
+
+query I
+select count(*) from test where (4=a) or (a > 8 and a < 10)
+----
+2
 
 # 5.2) Strict and inclusive boundaries across integer, floating and string types.
 
 foreach col a b c d
 
 query II
-EXPLAIN SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} < 7) OR ({col} > 5 AND {col} < 6);
+EXPLAIN SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} < 7) OR ({col} > 8 AND {col} < 10);
 ----
-physical_plan	<REGEX>:.*Filters:.*[abcd] >= 2.*[abcd] < 7.*OR.*[abcd] > 5.*[abcd] < 6.*
+physical_plan	<REGEX>:.*Filters:.*[abcd] >= 2.*[abcd] < 7.*OR.*[abcd] > 8.*[abcd] < 10.*
 
 query I
-SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} < 7) OR ({col} > 5 AND {col} < 6);
-----
-5
-
-query II
-EXPLAIN SELECT count(*) FROM test WHERE ({col} > 2 AND {col} < 7) OR ({col} > 5 AND {col} < 6);
-----
-physical_plan	<REGEX>:.*Filters:.*[abcd] > 2.*[abcd] < 7.*OR.*[abcd] > 5.*[abcd] < 6.*
-
-query I
-SELECT count(*) FROM test WHERE ({col} > 2 AND {col} < 7) OR ({col} > 5 AND {col} < 6);
-----
-4
-
-query II
-EXPLAIN SELECT count(*) FROM test WHERE ({col} > 2 AND {col} <= 7) OR ({col} > 5 AND {col} < 6);
-----
-physical_plan	<REGEX>:.*Filters:.*[abcd] > 2.*[abcd] <= 7.*OR.*[abcd] > 5.*[abcd] < 6.*
-
-query I
-SELECT count(*) FROM test WHERE ({col} > 2 AND {col} <= 7) OR ({col} > 5 AND {col} < 6);
-----
-5
-
-query II
-EXPLAIN SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} <= 7) OR ({col} > 5 AND {col} < 6);
-----
-physical_plan	<REGEX>:.*Filters:.*[abcd] >= 2.*[abcd] <= 7.*OR.*[abcd] > 5.*[abcd] < 6.*
-
-query I
-SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} <= 7) OR ({col} > 5 AND {col} < 6);
+SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} < 7) OR ({col} > 8 AND {col} < 10);
 ----
 6
+
+query II
+EXPLAIN SELECT count(*) FROM test WHERE ({col} > 2 AND {col} < 7) OR ({col} > 8 AND {col} < 10);
+----
+physical_plan	<REGEX>:.*Filters:.*[abcd] > 2.*[abcd] < 7.*OR.*[abcd] > 8.*[abcd] < 10.*
+
+query I
+SELECT count(*) FROM test WHERE ({col} > 2 AND {col} < 7) OR ({col} > 8 AND {col} < 10);
+----
+5
+
+query II
+EXPLAIN SELECT count(*) FROM test WHERE ({col} > 2 AND {col} <= 7) OR ({col} > 8 AND {col} < 10);
+----
+physical_plan	<REGEX>:.*Filters:.*[abcd] > 2.*[abcd] <= 7.*OR.*[abcd] > 8.*[abcd] < 10.*
+
+query I
+SELECT count(*) FROM test WHERE ({col} > 2 AND {col} <= 7) OR ({col} > 8 AND {col} < 10);
+----
+6
+
+query II
+EXPLAIN SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} <= 7) OR ({col} > 8 AND {col} < 10);
+----
+physical_plan	<REGEX>:.*Filters:.*[abcd] >= 2.*[abcd] <= 7.*OR.*[abcd] > 8.*[abcd] < 10.*
+
+query I
+SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} <= 7) OR ({col} > 8 AND {col} < 10);
+----
+7
 
 endloop
 
 foreach col e f
 
 query II
-EXPLAIN SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} < 7) OR ({col} > 5 AND {col} < 6);
+EXPLAIN SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} < 7) OR ({col} > 8 AND {col} < 10);
 ----
-physical_plan	<REGEX>:.*Filters:.*[ef] >= 2[.]0.*[ef] < 7[.]0.*OR.*[ef] > 5[.]0.*[ef] < 6[.]0.*
+physical_plan	<REGEX>:.*Filters:.*[ef] >= 2[.]0.*[ef] < 7[.]0.*OR.*[ef] > 8[.]0.*[ef] < 10[.]0.*
 
 query I
-SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} < 7) OR ({col} > 5 AND {col} < 6);
+SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} < 7) OR ({col} > 8 AND {col} < 10);
 ----
-10
+13
 
 query II
-EXPLAIN SELECT count(*) FROM test WHERE ({col} > 2 AND {col} < 7) OR ({col} > 5 AND {col} < 6);
+EXPLAIN SELECT count(*) FROM test WHERE ({col} > 2 AND {col} < 7) OR ({col} > 8 AND {col} < 10);
 ----
-physical_plan	<REGEX>:.*Filters:.*[ef] > 2[.]0.*[ef] < 7[.]0.*OR.*[ef] > 5[.]0.*[ef] < 6[.]0.*
+physical_plan	<REGEX>:.*Filters:.*[ef] > 2[.]0.*[ef] < 7[.]0.*OR.*[ef] > 8[.]0.*[ef] < 10[.]0.*
 
 query I
-SELECT count(*) FROM test WHERE ({col} > 2 AND {col} < 7) OR ({col} > 5 AND {col} < 6);
+SELECT count(*) FROM test WHERE ({col} > 2 AND {col} < 7) OR ({col} > 8 AND {col} < 10);
 ----
-9
+12
 
 query II
-EXPLAIN SELECT count(*) FROM test WHERE ({col} > 2 AND {col} <= 7) OR ({col} > 5 AND {col} < 6);
+EXPLAIN SELECT count(*) FROM test WHERE ({col} > 2 AND {col} <= 7) OR ({col} > 8 AND {col} < 10);
 ----
-physical_plan	<REGEX>:.*Filters:.*[ef] > 2[.]0.*[ef] <= 7[.]0.*OR.*[ef] > 5[.]0.*[ef] < 6[.]0.*
+physical_plan	<REGEX>:.*Filters:.*[ef] > 2[.]0.*[ef] <= 7[.]0.*OR.*[ef] > 8[.]0.*[ef] < 10[.]0.*
 
 query I
-SELECT count(*) FROM test WHERE ({col} > 2 AND {col} <= 7) OR ({col} > 5 AND {col} < 6);
+SELECT count(*) FROM test WHERE ({col} > 2 AND {col} <= 7) OR ({col} > 8 AND {col} < 10);
 ----
-10
+13
 
 query II
-EXPLAIN SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} <= 7) OR ({col} > 5 AND {col} < 6);
+EXPLAIN SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} <= 7) OR ({col} > 8 AND {col} < 10);
 ----
-physical_plan	<REGEX>:.*Filters:.*[ef] >= 2[.]0.*[ef] <= 7[.]0.*OR.*[ef] > 5[.]0.*[ef] < 6[.]0.*
+physical_plan	<REGEX>:.*Filters:.*[ef] >= 2[.]0.*[ef] <= 7[.]0.*OR.*[ef] > 8[.]0.*[ef] < 10[.]0.*
 
 query I
-SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} <= 7) OR ({col} > 5 AND {col} < 6);
+SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} <= 7) OR ({col} > 8 AND {col} < 10);
 ----
-11
+14
 
 endloop
 
 query II
-EXPLAIN SELECT count(*) FROM test WHERE (g >= '2' AND g < '7') OR (g > '5' AND g < '6');
+EXPLAIN SELECT count(*) FROM test WHERE (g >= '2' AND g < '7') OR (g >= '1' AND g <= '10');
 ----
-physical_plan	<REGEX>:.*Filters:.*g >= '2'.*g < '7'.*OR.*g > '5'.*g < '6'.*
+physical_plan	<REGEX>:.*Filters:.*g >= '2'.*g < '7'.*OR.*g >= '1'.*g <= '10'.*
 
 query I
-SELECT count(*) FROM test WHERE (g >= '2' AND g < '7') OR (g > '5' AND g < '6');
+SELECT count(*) FROM test WHERE (g >= '2' AND g < '7') OR (g >= '1' AND g <= '10');
 ----
-8
+10
 
 query II
-EXPLAIN SELECT count(*) FROM test WHERE (g > '2' AND g < '7') OR (g > '5' AND g < '6');
+EXPLAIN SELECT count(*) FROM test WHERE (g > '2' AND g < '7') OR (g >= '1' AND g <= '10');
 ----
-physical_plan	<REGEX>:.*Filters:.*g > '2'.*g < '7'.*OR.*g > '5'.*g < '6'.*
+physical_plan	<REGEX>:.*Filters:.*g > '2'.*g < '7'.*OR.*g >= '1'.*g <= '10'.*
 
 query I
-SELECT count(*) FROM test WHERE (g > '2' AND g < '7') OR (g > '5' AND g < '6');
-----
-7
-
-query II
-EXPLAIN SELECT count(*) FROM test WHERE (g > '2' AND g <= '7') OR (g > '5' AND g < '6');
-----
-physical_plan	<REGEX>:.*Filters:.*g > '2'.*g <= '7'.*OR.*g > '5'.*g < '6'.*
-
-query I
-SELECT count(*) FROM test WHERE (g > '2' AND g <= '7') OR (g > '5' AND g < '6');
-----
-8
-
-query II
-EXPLAIN SELECT count(*) FROM test WHERE (g >= '2' AND g <= '7') OR (g > '5' AND g < '6');
-----
-physical_plan	<REGEX>:.*Filters:.*g >= '2'.*g <= '7'.*OR.*g > '5'.*g < '6'.*
-
-query I
-SELECT count(*) FROM test WHERE (g >= '2' AND g <= '7') OR (g > '5' AND g < '6');
+SELECT count(*) FROM test WHERE (g > '2' AND g < '7') OR (g >= '1' AND g <= '10');
 ----
 9
+
+query II
+EXPLAIN SELECT count(*) FROM test WHERE (g > '2' AND g <= '7') OR (g >= '1' AND g <= '10');
+----
+physical_plan	<REGEX>:.*Filters:.*g > '2'.*g <= '7'.*OR.*g >= '1'.*g <= '10'.*
+
+query I
+SELECT count(*) FROM test WHERE (g > '2' AND g <= '7') OR (g >= '1' AND g <= '10');
+----
+10
+
+query II
+EXPLAIN SELECT count(*) FROM test WHERE (g >= '2' AND g <= '7') OR (g >= '1' AND g <= '10');
+----
+physical_plan	<REGEX>:.*Filters:.*g >= '2'.*g <= '7'.*OR.*g >= '1'.*g <= '10'.*
+
+query I
+SELECT count(*) FROM test WHERE (g >= '2' AND g <= '7') OR (g >= '1' AND g <= '10');
+----
+11
 
 # 5.3) Casting
 statement ok

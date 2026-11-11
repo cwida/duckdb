@@ -47,18 +47,28 @@ idx_t StructColumnData::GetMaxEntry() {
 	return validity->GetMaxEntry();
 }
 
-FilterPropagateResult StructColumnData::CheckZonemap(ColumnScanState &state, TableFilter &filter,
-                                                     optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) {
-	if (state.expression_state) {
-		checked_segment = nullptr;
+FilterPropagateResult StructColumnData::CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+                                                     optional_idx &checked_end) {
+	if (state.expression_state || filter.IsAlwaysTrue()) {
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	}
 	if (state.storage_index.IsPushdownExtract()) {
 		auto children = GetStructChildren(state);
 		D_ASSERT(children.size() == 1);
-		return children[0].col.CheckZonemap(children[0].state, filter, checked_segment);
+		return children[0].col.CheckZonemap(children[0].state, filter, checked_end);
 	}
-	return CheckValidityZonemap(state, filter, checked_segment, *validity);
+	return CheckValidityZonemap(state, filter, checked_end, *validity);
+}
+
+FilterPropagateResult StructColumnData::CheckZonemapAt(ColumnScanState &state, const ScanFilter &filter, idx_t row,
+                                                       optional_idx &checked_end) {
+	if (state.expression_state || !state.storage_index.IsPushdownExtract()) {
+		// the scan judges null checks on the validity child
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+	auto children = GetStructChildren(state);
+	D_ASSERT(children.size() == 1);
+	return children[0].col.CheckZonemapAt(children[0].state, filter, row, checked_end);
 }
 
 vector<StructColumnData::StructColumnDataChild> StructColumnData::GetStructChildren(ColumnScanState &state) const {
@@ -80,14 +90,15 @@ vector<StructColumnData::StructColumnDataChild> StructColumnData::GetStructChild
 	return res;
 }
 
-void StructColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
-	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], rows);
+void StructColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                          idx_t end_row) {
+	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], start_row, end_row);
 	auto struct_children = GetStructChildren(scan_state);
 	for (auto &child : struct_children) {
 		if (!child.should_scan) {
 			continue;
 		}
-		child.col.InitializePrefetch(prefetch_state, child.state, rows);
+		child.col.InitializePrefetch(prefetch_state, child.state, start_row, end_row);
 	}
 }
 
@@ -225,11 +236,13 @@ void StructColumnData::Skip(ColumnScanState &state, idx_t count) {
 
 void StructColumnData::InitializeAppend(ColumnAppendState &state) {
 	ColumnAppendState validity_append;
+	validity_append.transient = state.transient;
 	validity->InitializeAppend(validity_append);
 	state.child_appends.push_back(std::move(validity_append));
 
 	for (auto &sub_column : sub_columns) {
 		ColumnAppendState child_append;
+		child_append.transient = state.transient;
 		sub_column->InitializeAppend(child_append);
 		state.child_appends.push_back(std::move(child_append));
 	}
@@ -268,24 +281,6 @@ void StructColumnData::RevertAppend(row_t new_count) {
 		sub_column->RevertAppend(new_count);
 	}
 	this->count = UnsafeNumericCast<idx_t>(new_count);
-}
-
-idx_t StructColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	// fetch validity mask
-	auto &child_entries = StructVector::GetEntries(result);
-	// insert any child states that are required
-	for (idx_t i = state.child_states.size(); i < child_entries.size() + 1; i++) {
-		ColumnScanState child_state(state.parent);
-		child_state.scan_options = state.scan_options;
-		state.child_states.push_back(std::move(child_state));
-	}
-	// fetch the validity state
-	idx_t scan_count = validity->Fetch(state.child_states[0], row_id, result);
-	// fetch the sub-column states
-	for (idx_t i = 0; i < child_entries.size(); i++) {
-		sub_columns[i]->Fetch(state.child_states[i + 1], row_id, child_entries[i]);
-	}
-	return scan_count;
 }
 
 void StructColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,

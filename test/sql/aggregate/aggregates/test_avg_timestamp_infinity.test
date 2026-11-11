@@ -1,0 +1,142 @@
+# name: test/sql/aggregate/aggregates/test_avg_timestamp_infinity.test
+# description: avg of timestamps and dates that include infinity is that infinity
+# group: [aggregates]
+
+query I
+SELECT avg(ts) FROM (VALUES ('-infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);
+----
+-infinity
+
+query I
+SELECT avg(ts) FROM (VALUES ('infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);
+----
+infinity
+
+# both infinities have no average, as for DOUBLE it is NaN
+query I
+SELECT avg(ts) FROM (VALUES ('infinity'::TIMESTAMP), ('-infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);
+----
+NULL
+
+# which SUMMARIZE shows instead of failing
+query II
+SELECT column_name, avg FROM (SUMMARIZE (SELECT * FROM (VALUES ('infinity'::TIMESTAMP), ('-infinity'::TIMESTAMP)) t(ts)));
+----
+ts	NULL
+
+query I
+SELECT avg(d) FROM (VALUES ('-infinity'::DATE), (DATE '2000-01-01')) t(d);
+----
+-infinity
+
+query I
+SELECT avg(ts)::VARCHAR FROM (VALUES ('-infinity'::TIMESTAMP), (TIMESTAMP '290309-12-22 (BC) 00:00:00')) t(ts);
+----
+-infinity
+
+query I
+SELECT avg(ts)::VARCHAR FROM (VALUES ('infinity'::TIMESTAMPTZ), (TIMESTAMPTZ '2000-01-01 00:00:00+00')) t(ts);
+----
+infinity
+
+# finite timestamps average as before
+query I
+SELECT avg(ts) FROM (VALUES (TIMESTAMP '2000-01-01'), (TIMESTAMP '2000-01-03'), (NULL)) t(ts);
+----
+2000-01-02 00:00:00
+
+query I
+SELECT avg(ts) FROM (VALUES (NULL::TIMESTAMP)) t(ts);
+----
+NULL
+
+# constant input
+query II
+SELECT avg('infinity'::TIMESTAMP), avg(TIMESTAMP '2000-01-01') FROM range(3000);
+----
+infinity	2000-01-01 00:00:00
+
+# DISTINCT and ordered aggregates
+query III
+SELECT avg(DISTINCT ts), avg(ts ORDER BY ts DESC), avg(DISTINCT ts) FILTER (ts < TIMESTAMP '2001-01-01')
+FROM (VALUES ('infinity'::TIMESTAMP), ('infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01'), ('-infinity'::TIMESTAMP)) t(ts);
+----
+NULL	NULL	-infinity
+
+# many rows in groups, with infinities in different row groups that threads combine
+statement ok
+SET threads=4
+
+statement ok
+CREATE TABLE many AS SELECT i % 3 AS g, CASE WHEN i = 1 THEN '-infinity'::TIMESTAMP WHEN i IN (399997, 399998) THEN 'infinity'::TIMESTAMP ELSE TIMESTAMP '2000-01-01' + INTERVAL (i) SECOND END AS ts FROM range(400000) t(i);
+
+query II
+SELECT g, avg(ts) FROM many GROUP BY g ORDER BY g;
+----
+0	2000-01-03 07:33:19.5
+1	NULL
+2	infinity
+
+query II
+SELECT avg(ts), avg(ts) FILTER (g <> 1) FROM many;
+----
+NULL	infinity
+
+# window frames that move past infinities, wide enough that the segment tree combines its nodes
+query IIII
+SELECT CASE WHEN a IS NULL THEN 'NULL' WHEN isfinite(a) THEN 'finite' ELSE a::VARCHAR END AS kind, count(*), min(i), max(i)
+FROM (
+	SELECT i, avg(ts) OVER (ORDER BY i ROWS BETWEEN 80 PRECEDING AND CURRENT ROW) AS a
+	FROM (SELECT i, CASE WHEN i = 50 THEN 'infinity'::TIMESTAMP WHEN i = 120 THEN '-infinity'::TIMESTAMP ELSE TIMESTAMP '2000-01-01' + INTERVAL (i) HOUR END AS ts FROM range(200) t(i))
+)
+GROUP BY kind ORDER BY min(i);
+----
+finite	50	0	49
+infinity	70	50	119
+NULL	11	120	130
+-infinity	69	131	199
+
+query II
+SELECT i, avg(ts) OVER (ORDER BY i ROWS BETWEEN 80 PRECEDING AND CURRENT ROW) AS a
+FROM (SELECT i, CASE WHEN i = 50 THEN 'infinity'::TIMESTAMP WHEN i = 120 THEN '-infinity'::TIMESTAMP ELSE TIMESTAMP '2000-01-01' + INTERVAL (i) HOUR END AS ts FROM range(200) t(i))
+QUALIFY i = 49;
+----
+49	2000-01-02 00:30:00
+
+# a window frame that moves past an infinity
+query II
+SELECT i, avg(ts) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
+FROM (VALUES (1, TIMESTAMP '2000-01-01'), (2, '-infinity'::TIMESTAMP), (3, TIMESTAMP '2000-01-03'), (4, TIMESTAMP '2000-01-05')) t(i, ts)
+ORDER BY i;
+----
+1	2000-01-01 00:00:00
+2	-infinity
+3	-infinity
+4	2000-01-04 00:00:00
+
+# a frame over the whole partition, and a DISTINCT frame
+query III
+SELECT i, avg(ts) OVER (PARTITION BY i % 2), avg(DISTINCT ts) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
+FROM (VALUES (1, TIMESTAMP '2000-01-01'), (2, '-infinity'::TIMESTAMP), (3, TIMESTAMP '2000-01-03'), (4, TIMESTAMP '2000-01-05')) t(i, ts)
+ORDER BY i;
+----
+1	2000-01-02 00:00:00	2000-01-01 00:00:00
+2	-infinity	-infinity
+3	2000-01-02 00:00:00	-infinity
+4	-infinity	2000-01-04 00:00:00
+
+# the same results through exported and finalized states
+statement ok
+SET debug_verify_aggregate_state_export=true
+
+query II
+SELECT g, avg(ts) FROM many GROUP BY g ORDER BY g;
+----
+0	2000-01-03 07:33:19.5
+1	NULL
+2	infinity
+
+query II
+SELECT avg(d), avg(d) FILTER (d > DATE '1999-01-01') FROM (VALUES ('-infinity'::DATE), (DATE '2000-01-01'), (DATE '2000-01-03')) t(d);
+----
+-infinity	2000-01-02 00:00:00

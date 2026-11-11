@@ -3,7 +3,7 @@
 # group: [plan]
 
 statement ok
-pragma explain_output='optimized_only'
+SET explain_output='optimized_only'
 
 query II
 explain with recursive t(x) as (

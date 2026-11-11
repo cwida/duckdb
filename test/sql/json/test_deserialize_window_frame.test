@@ -1,0 +1,24 @@
+# name: test/sql/json/test_deserialize_window_frame.test
+# description: json_deserialize_sql rejects invalid window frame boundaries
+# group: [json]
+
+require json
+
+statement ok
+CREATE TABLE t(a INTEGER, b INTEGER);
+
+statement error
+SELECT json_deserialize_sql(replace(json_serialize_sql('SELECT row_number() OVER (ORDER BY b ROWS BETWEEN 2 PRECEDING AND 1 FOLLOWING) FROM t'), '"end":"EXPR_FOLLOWING_ROWS"', '"end":"INVALID"'));
+----
+<REGEX>:Serialization Error.*invalid frame end boundary.*
+
+statement error
+SELECT json_deserialize_sql(replace(json_serialize_sql('SELECT row_number() OVER (ORDER BY b ROWS BETWEEN 2 PRECEDING AND 1 FOLLOWING) FROM t'), '"start":"EXPR_PRECEDING_ROWS"', '"start":"INVALID"'));
+----
+<REGEX>:Serialization Error.*invalid frame start boundary.*
+
+# valid frames, including a named window, round-trip
+query I
+SELECT json_deserialize_sql(json_serialize_sql('SELECT sum(a) OVER w, sum(a) OVER (ORDER BY b ROWS BETWEEN 2 PRECEDING AND 1 FOLLOWING) FROM t WINDOW w AS (PARTITION BY b)'));
+----
+SELECT sum(a) OVER (PARTITION BY b), sum(a) OVER (ORDER BY b ROWS BETWEEN 2 PRECEDING AND 1 FOLLOWING) FROM t

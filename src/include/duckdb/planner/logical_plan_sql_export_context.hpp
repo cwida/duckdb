@@ -21,6 +21,7 @@ struct LogicalPlanSQLExportSource {
 	reference<LogicalOperator> op;
 	Identifier name;
 	LogicalPlanSQLExportRelation relation;
+	CTEMaterialize materialized = CTEMaterialize::CTE_MATERIALIZE_ALWAYS;
 };
 
 class LogicalPlanSQLExportContext {

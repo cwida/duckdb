@@ -16,6 +16,10 @@ public:
 	using original = std::shared_ptr<T>;
 	using element_type = typename original::element_type;
 	using weak_type = weak_ptr<T, SAFE>;
+#if defined(_LIBCPP_VERSION)
+	// libc++ relocates elements of this type with memcpy when the typedef names the class itself
+	using __trivially_relocatable = shared_ptr; // NOLINT: libc++ extension point
+#endif
 
 private:
 	static inline void AssertNotNull(const bool null) {
@@ -121,16 +125,12 @@ public:
 
 	// Assign from shared_ptr copy
 	shared_ptr<T, SAFE> &operator=(const shared_ptr<T, SAFE> &other) noexcept {
-		if (this == &other) {
-			return *this;
-		}
-		// Create a new shared_ptr using the copy constructor, then swap out the ownership to *this
-		shared_ptr(other).swap(*this);
+		internal = other.internal;
 		return *this;
 	}
 	template <class U, typename std::enable_if<compatible_with_t<U, T>::value, int>::type = 0>
 	shared_ptr<T> &operator=(const shared_ptr<U> &other) {
-		shared_ptr(other).swap(*this);
+		internal = other.internal;
 		return *this;
 	}
 

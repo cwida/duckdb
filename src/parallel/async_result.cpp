@@ -3,6 +3,7 @@
 #include "duckdb/parallel/async_result.hpp"
 #include "duckdb/parallel/interrupt.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
+#include "duckdb/parallel/task_executor.hpp"
 #include "duckdb/execution/executor.hpp"
 #include "duckdb/execution/physical_table_scan_enum.hpp"
 #include "duckdb/logging/log_type.hpp"
@@ -149,6 +150,48 @@ void AsyncResult::ExecuteTasksSynchronously() {
 
 	async_tasks.clear();
 
+	result_type = AsyncResultType::HAVE_MORE_OUTPUT;
+}
+
+//! Runs one AsyncTask as a task of a TaskExecutor
+class ExecutorAsyncTask : public BaseExecutorTask {
+public:
+	ExecutorAsyncTask(TaskExecutor &executor, unique_ptr<AsyncTask> task_p)
+	    : BaseExecutorTask(executor), task(std::move(task_p)) {
+	}
+
+	void ExecuteTask() override {
+		task->Execute();
+	}
+
+	string TaskType() const override {
+		return "ExecutorAsyncTask";
+	}
+
+private:
+	unique_ptr<AsyncTask> task;
+};
+
+void AsyncResult::ExecuteTasksSynchronously(ClientContext &context) {
+	if (result_type != AsyncResultType::BLOCKED) {
+		throw InternalException("AsyncResult::ExecuteTasksSynchronously called on non BLOCKED AsyncResult");
+	}
+	if (async_tasks.empty()) {
+		throw InternalException("AsyncResult::ExecuteTasksSynchronously called with no available tasks");
+	}
+	if (async_tasks.size() == 1) {
+		async_tasks[0]->Execute();
+	} else {
+		// the tasks are independent (they run concurrently when scheduled on the pool): run them side by side
+		DUCKDB_LOG(context, AsyncTaskScheduleLogType, "SYNCHRONOUS_" + EnumUtil::ToString(pool_type),
+		           async_tasks.size());
+		TaskExecutor executor(context, pool_type);
+		for (auto &async_task : async_tasks) {
+			executor.ScheduleTask(make_uniq<ExecutorAsyncTask>(executor, std::move(async_task)));
+		}
+		executor.WorkOnTasks();
+	}
+	async_tasks.clear();
 	result_type = AsyncResultType::HAVE_MORE_OUTPUT;
 }
 

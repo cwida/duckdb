@@ -1,0 +1,16 @@
+# name: test/parquet/corrupt/footer_len_overflow.test
+# description: Reject footer lengths that overflow 32-bit framing arithmetic
+# group: [corrupt]
+
+require parquet
+
+# The stored footer length is 0xFFFFFFF5, so adding twelve in uint32_t wraps to one.
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/corrupt/footer_len_overflow.parquet');
+----
+Footer length error
+
+statement error
+SELECT * FROM parquet_metadata('data/parquet-testing/corrupt/footer_len_overflow.parquet');
+----
+Footer length error

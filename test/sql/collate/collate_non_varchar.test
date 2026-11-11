@@ -3,7 +3,7 @@
 # group: [collate]
 
 statement ok
-PRAGMA default_collation=NOCASE;
+SET default_collation='NOCASE';
 
 query I
 select typeof(x) from (select 1::INT as x group by x);

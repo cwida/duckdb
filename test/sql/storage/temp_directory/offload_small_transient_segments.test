@@ -1,0 +1,75 @@
+# name: test/sql/storage/temp_directory/offload_small_transient_segments.test
+# description: Small transient segments of an in-memory table, including nested and validity columns, can be offloaded
+# group: [temp_directory]
+
+# the memory limit below is calibrated for the default 256KB block size
+require block_size 262144
+
+# too slow with tiny vectors
+require vector_size 2048
+
+statement ok
+SET temp_directory='{TEST_DIR}/offload_small_transient_segments'
+
+statement ok
+SET memory_limit='32MB'
+
+statement ok
+SET threads=4
+
+statement ok
+CREATE TABLE t AS
+SELECT i,
+       CASE WHEN i % 7 = 0 THEN NULL ELSE i::INTEGER END AS j,
+       {'a': i, 'b': CASE WHEN i % 3 = 0 THEN NULL ELSE i * 2 END} AS s,
+       [i, CASE WHEN i % 5 = 0 THEN NULL ELSE i + 1 END] AS l
+FROM range(8000000) t(i);
+
+query IIIIIII
+SELECT COUNT(*), SUM(i), COUNT(j), SUM(j), COUNT(s.b), SUM(s.b), SUM(list_sum(l)) FROM t
+----
+8000000	31999996000000	6857142	27428564571429	5333333	42666661333334	57600002400000
+
+query I
+SELECT COUNT(*) FROM t WHERE (j IS NULL) != (i % 7 = 0) OR (s.b IS NULL) != (i % 3 = 0) OR (l[2] IS NULL) != (i % 5 = 0)
+----
+0
+
+statement ok
+DROP TABLE t
+
+statement ok
+SET threads=1
+
+statement ok
+CREATE TABLE wide AS
+SELECT ((i + 0) % 100)::TINYINT AS c0,
+       ((i + 1) % 100)::TINYINT AS c1,
+       ((i + 2) % 100)::TINYINT AS c2,
+       ((i + 3) % 100)::TINYINT AS c3,
+       ((i + 4) % 100)::TINYINT AS c4,
+       ((i + 5) % 100)::TINYINT AS c5,
+       ((i + 6) % 100)::TINYINT AS c6,
+       ((i + 7) % 100)::TINYINT AS c7,
+       ((i + 8) % 100)::TINYINT AS c8,
+       ((i + 9) % 100)::TINYINT AS c9,
+       ((i + 10) % 100)::TINYINT AS c10,
+       ((i + 11) % 100)::TINYINT AS c11,
+       ((i + 12) % 100)::TINYINT AS c12,
+       ((i + 13) % 100)::TINYINT AS c13,
+       ((i + 14) % 100)::TINYINT AS c14,
+       ((i + 15) % 100)::TINYINT AS c15,
+       ((i + 16) % 100)::TINYINT AS c16,
+       ((i + 17) % 100)::TINYINT AS c17,
+       ((i + 18) % 100)::TINYINT AS c18,
+       ((i + 19) % 100)::TINYINT AS c19
+FROM range(8000000) t(i);
+
+# only the first segments of the first row group stay in memory, so the limit can go down to 2MB
+statement ok
+SET memory_limit='2MB'
+
+query III
+SELECT COUNT(*), SUM(c0), SUM(c19) FROM wide
+----
+8000000	396000000	396000000

@@ -165,7 +165,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output = 'OPTIMIZED_ONLY';
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT regexp_replace(s, '^(foo)-(.*)$', '\2', 'i')

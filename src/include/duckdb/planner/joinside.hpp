@@ -69,6 +69,13 @@ public:
 		return comparison;
 	}
 
+	void SetComparisonType(ExpressionType type) {
+		if (!IsComparison()) {
+			throw InternalException("SetComparisonType used on a JoinCondition that is not a left/right comparison");
+		}
+		comparison = type;
+	}
+
 	void Swap() {
 		if (!IsComparison()) {
 			throw InternalException("Swap used on a JoinCondition that is not a left/right comparison");

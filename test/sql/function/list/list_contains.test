@@ -211,7 +211,27 @@ SELECT list_contains([NULL, 0],1)
 query T
 SELECT list_contains([],NULL)
 ----
+false
+
+query TTTT
+SELECT contains([], NULL), list_contains([]::VARCHAR[], NULL), list_contains([1], NULL), list_contains(NULL::INT[], NULL)
+----
+false	false	NULL	NULL
+
+query T
+SELECT list_contains(l, x) FROM (VALUES ([]::INT[], NULL::INT), ([1], NULL), (NULL, 1), ([], 1)) t(l, x)
+----
+false
 NULL
+NULL
+false
+
+# a constant list with a non-constant needle: an empty list never contains NULL, a list of only NULLs gives NULL
+query TTT
+SELECT x, list_contains([]::INT[], x), list_contains([NULL]::INT[], x) FROM (SELECT CASE WHEN i = 0 THEN NULL ELSE i END AS x FROM range(2) t(i)) ORDER BY x NULLS FIRST
+----
+NULL	false	NULL
+1	false	false
 
 query T
 SELECT list_contains([NULL,7], 7)
@@ -236,7 +256,7 @@ SELECT list_contains(1,1)
 ----
 
 statement ok
-PRAGMA debug_force_external=true
+SET debug_force_external=true
 
 loop i 0 2
 
@@ -264,7 +284,7 @@ statement ok
 DROP TABLE test0
 
 statement ok
-PRAGMA debug_force_external=false
+SET debug_force_external=false
 
 endloop
 
@@ -363,7 +383,7 @@ SELECT list_contains([[1,2,3],NULL],NULL)
 NULL
 
 statement ok
-PRAGMA debug_force_external=true
+SET debug_force_external=true
 
 loop i 0 2
 
@@ -391,7 +411,7 @@ statement ok
 DROP TABLE test0
 
 statement ok
-PRAGMA debug_force_external=false
+SET debug_force_external=false
 
 endloop
 
@@ -454,3 +474,56 @@ query I
 SELECT list_filter(l1, lambda x: list_contains(l2, x)) FROM list_of_list;
 ----
 []
+
+# Empty list with NULL needle: map_contains matches list_contains for constant and non-constant needles.
+
+query I
+SELECT map_contains(map([]::INT[], []::INT[]), NULL::INT);
+----
+false
+
+query I
+SELECT map_contains(empty_map, needle) FROM (VALUES (map([]::INT[], []::INT[]), NULL::INT)) inputs(empty_map, needle);
+----
+false
+
+query I
+SELECT map_contains(empty_map, needle) FROM (VALUES (map([]::VARCHAR[], []::INT[]), NULL::VARCHAR COLLATE NOCASE)) inputs(empty_map, needle);
+----
+false
+
+query I
+SELECT map_contains(m, NULL::INT) FROM (VALUES (map([1], [1]))) t(m);
+----
+NULL
+
+statement ok
+SET debug_verification_mode = 'verify_functions';
+
+query I
+SELECT map_contains(empty_map, needle) FROM (VALUES (map([]::INT[], []::INT[]), NULL::INT)) inputs(empty_map, needle);
+----
+false
+
+statement ok
+RESET debug_verification_mode;
+
+# Volatile and throwing needles are not dropped for an empty list.
+
+statement ok
+CREATE SEQUENCE empty_list_seq;
+
+query I
+SELECT list_contains([]::BIGINT[], nextval('empty_list_seq'));
+----
+false
+
+query I
+SELECT nextval('empty_list_seq');
+----
+2
+
+statement error
+SELECT list_contains([]::INT[], needle::INT) FROM (VALUES ('x')) inputs(needle);
+----
+Conversion Error

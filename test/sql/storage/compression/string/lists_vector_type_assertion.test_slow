@@ -8,10 +8,10 @@ statement ok
 SET enable_fsst_vectors='true'
 
 statement ok
-pragma threads=1
+SET threads=1
 
 statement ok
-PRAGMA force_compression='fsst'
+SET force_compression='fsst'
 
 statement ok
 CREATE TABLE test (l VARCHAR[]);

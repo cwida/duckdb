@@ -6,6 +6,18 @@
   "inherit_skip_tests": "test/configs/force_storage.json",
   "skip_tests": [
     {
+      "reason": "The metadata cache of the database does not survive the restart between statements.",
+      "paths": [
+        "test/sql/copy/parquet/parquet_glob_cache_list.test"
+      ]
+    },
+    {
+      "reason": "The default of the column calls list_value of core_functions, which is not loaded while the WAL is replayed at the restart.",
+      "paths": [
+        "test/sql/alter/struct/add_col_struct_column_default.test"
+      ]
+    },
+    {
       "reason": "In-memory external resource type registry is instance-scoped and does not survive database restarts.",
       "paths": [
         "test/sql/table_function/external_resource_types.test",
@@ -14,6 +26,9 @@
         "test/sql/table_function/external_resource_logging.test",
         "test/sql/table_function/external_resource_discovery.test",
         "test/sql/table_function/external_resource_discovery_error.test",
+        "test/sql/table_function/external_resource_callback_recursion.test",
+        "test/sql/table_function/external_resources_type_pruning.test",
+        "test/sql/table_function/external_resources_where_pruning.test",
         "test/sql/attach/external_resource_discovery.test"
       ]
     },
@@ -36,19 +51,17 @@
       ]
     },
     {
-      "reason": "Doesn't OOM when restarting",
-      "paths": [
-        "test/sql/storage/temp_directory/offloading_block_files.test_slow"
-      ]
-    },
-    {
       "reason": "Logging setting doesn't survive restarts",
       "paths": [
+        "test/sql/copy/parquet/bloom_filter_coalesced_memory.test_slow",
+        "test/sql/copy/parquet/bloom_filter_coalesced_reads.test",
         "test/sql/storage/compression/zstd/zstd_compression_ratio.test_slow",
         "test/sql/logging/logging_memory_after_truncate.test",
         "test/sql/logging/physical_operator_logging.test_slow",
         "test/sql/cte/recursive_cte_logging.test",
         "test/sql/cte/recursive_cte_invariant_build_logging.test",
+        "test/sql/optimizer/test_common_subplan_repeatability_logging.test",
+        "test/sql/cte/recursive_cte_key_finalize_owned_state.test",
         "test/sql/cte/recursive_cte_parallel_output_publication.test",
         "test/logging/warnings_as_errors.test",
         "test/logging/offset_order_warning.test",
@@ -66,11 +79,23 @@
         "test/sql/copy/parquet/parquet_prefetch_cost_model.test",
         "test/sql/copy/parquet/parquet_prefetch_cost_model_remote.test",
         "test/sql/copy/parquet/parquet_expression_filter_pruning.test",
+        "test/sql/copy/parquet/page_index/page_index_read.test",
+        "test/sql/copy/parquet/page_index/page_index_prefetch.test",
+        "test/sql/copy/parquet/page_index/page_index_reference.test",
+        "test/sql/copy/parquet/page_index/page_index_robustness.test",
+        "test/sql/copy/parquet/page_index/page_index_cache.test",
+        "test/sql/copy/parquet/page_index/page_index_cache_disabled.test",
+        "test/sql/copy/parquet/page_index/page_index_cache_budget.test",
+        "test/parquet/utf8_validation_page_index.test",
         "test/sql/copy/parquet/read_ahead/readahead_depth_learning.test",
         "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test",
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning_nulls_first.test",
+        "test/sql/copy/parquet/read_ahead/recheck_prefetch_log.test",
         "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test_slow",
         "test/sql/copy/parquet/read_ahead/readahead_io_budget.test_slow",
+        "test/sql/copy/parquet/read_ahead/readahead_budget_growth.test",
         "test/sql/parallelism/async_task_schedule_pool.test",
+        "test/sql/parallelism/async_task_synchronous_batch.test",
         "test/sql/storage/prefetch/async_native_scan_pool.test",
         "test/sql/storage/prefetch/async_native_scan_read_ahead.test",
         "test/sql/storage/prefetch/prefetch_run_size_cap.test",
@@ -118,7 +143,11 @@
     {
       "reason": "total_string_length requires exact per-row-group stats; force_restart causes persistent row groups with unloaded columns where only bound-expansion is possible, making the stat unknown.",
       "paths": [
+        "test/sql/storage/list_length_stats.test",
+        "test/sql/storage/list_length_stats_checkpoint.test",
+        "test/sql/optimizer/statistics/list_length_stats_propagation.test",
         "test/sql/storage/total_string_length_repeated_insert.test",
+        "test/sql/storage/total_string_length_multi_row_group.test",
         "test/sql/storage/compression/dictionary/total_string_length_dictionary.test"
       ]
     },
@@ -151,7 +180,16 @@
         "test/sql/attach/external_resource_logging.test",
         "test/sql/attach/external_resource_option_collision.test",
         "test/sql/attach/external_resource_attach_failure.test",
-        "test/sql/attach/external_resource_null_handle.test"
+        "test/sql/attach/external_resource_null_handle.test",
+        "test/sql/attach/external_resource_show_subquery.test",
+        "test/sql/attach/external_resource_show_with_type.test",
+        "test/sql/attach/external_resource_external_access.test"
+      ]
+    },
+    {
+      "reason": "Asserts the in-memory operator log, which does not survive the forced restarts.",
+      "paths": [
+        "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"
       ]
     }
   ]

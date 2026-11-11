@@ -15,7 +15,7 @@ statement ok
 INSERT INTO in_right VALUES (1), (2), (11);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # A large IN clause nested in a cross-table predicate is rewritten to a MARK join
 query II
@@ -74,3 +74,26 @@ endloop
 
 statement ok
 SET disabled_optimizers = '';
+
+statement ok
+CREATE SEQUENCE in_seq START 2;
+
+query I
+SELECT nextval('in_seq') IN (1, 2);
+----
+true
+
+query I
+SELECT currval('in_seq');
+----
+2
+
+query I
+SELECT nextval('in_seq') NOT IN (1, 2);
+----
+true
+
+query I
+SELECT currval('in_seq');
+----
+3

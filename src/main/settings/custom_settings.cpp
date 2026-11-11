@@ -312,7 +312,7 @@ void AllowedConfigsSetting::ResetGlobal(DatabaseInstance *db, DBConfig &config) 
 Value AllowedConfigsSetting::GetSetting(const ClientContext &context) {
 	auto &config = DBConfig::GetConfig(context);
 	vector<Value> configs;
-	for (auto &cfg : config.options.allowed_configs) {
+	for (auto &cfg : config.GetAllowedConfigs()) {
 		configs.emplace_back(cfg);
 	}
 	return Value::LIST(LogicalType::VARCHAR, std::move(configs));
@@ -389,6 +389,17 @@ Value AllowedPathsSetting::GetSetting(const ClientContext &context) {
 		allowed_paths.emplace_back(dir);
 	}
 	return Value::LIST(LogicalType::VARCHAR, std::move(allowed_paths));
+}
+
+//===----------------------------------------------------------------------===//
+// Buffer Manager Track Eviction Timestamps
+//===----------------------------------------------------------------------===//
+void BufferManagerTrackEvictionTimestampsSetting::OnSet(SettingCallbackInfo &info, Value &input) {
+	// the buffer pool reads the setting once, when the database starts
+	if (info.db) {
+		throw InvalidInputException("Cannot change %s setting while database is running",
+		                            BufferManagerTrackEvictionTimestampsSetting::Name);
+	}
 }
 
 //===----------------------------------------------------------------------===//
@@ -496,6 +507,96 @@ void DefaultOrderSetting::OnSet(SettingCallbackInfo &, Value &input) {
 	}
 }
 
+//! Parse a grammar extension list value: VARCHAR[] without duplicates
+static vector<string> ParseGrammarExtensionList(const char *setting_name, const Value &input) {
+	if (input.type().id() != LogicalTypeId::LIST) {
+		throw InvalidInputException("'%s' setting value should be of type VARCHAR[], not %s", setting_name,
+		                            input.type().ToString());
+	}
+	case_insensitive_set_t distinct_names;
+	vector<string> names;
+	for (auto &val : ListValue::GetChildren(input)) {
+		if (val.IsNull()) {
+			throw InvalidInputException("'%s' list values cannot be NULL", setting_name);
+		}
+		if (val.type().id() != LogicalTypeId::VARCHAR) {
+			throw InvalidInputException("'%s' list values should be of type VARCHAR, not %s", setting_name,
+			                            val.type().ToString());
+		}
+		auto val_str = val.GetValue<string>();
+		if (!distinct_names.insert(val_str).second) {
+			throw InvalidInputException("'%s' list contains duplicate value '%s'", setting_name, val_str);
+		}
+		names.emplace_back(std::move(val_str));
+	}
+	return names;
+}
+
+//! Reject names that do not match a registered grammar extension
+static void ValidateGrammarExtensionsExist(const char *setting_name, const ExtensionCallbackManager &callback_manager,
+                                           const vector<string> &names) {
+	vector<string> missing;
+	for (auto &ext : names) {
+		if (!callback_manager.FindGrammarExtension(ext)) {
+			missing.push_back(ext);
+		}
+	}
+	if (!missing.empty()) {
+		throw InvalidInputException("Can't set '%s', the following extensions don't exist: %s", setting_name,
+		                            StringUtil::Join(missing, ","));
+	}
+}
+
+//===----------------------------------------------------------------------===//
+// Default Grammar Extensions
+//===----------------------------------------------------------------------===//
+void DefaultGrammarExtensionsSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &input) {
+	if (input.IsNull()) {
+		config.default_grammar_extensions.atomic_store(shared_ptr<const vector<string>>());
+		return;
+	}
+	// a broken database default must never exist: a session whose parser fails to compose cannot
+	// even parse the SET that would fix it, so the named extensions are validated here, which
+	// requires a running database (startup configuration cannot LOAD the extensions first anyway)
+	if (!db) {
+		throw InvalidConfigurationException(
+		    "'default_grammar_extensions' can only be set on a running database: the named grammar extensions must "
+		    "be registered when the setting is set");
+	}
+	auto names = ParseGrammarExtensionList("default_grammar_extensions", input);
+	ValidateGrammarExtensionsExist("default_grammar_extensions", config.GetCallbackManager(), names);
+	if (names.empty()) {
+		config.default_grammar_extensions.atomic_store(shared_ptr<const vector<string>>());
+		return;
+	}
+	// compose eagerly, like the session setting: a selection that fails to compile errors here and
+	// leaves the default unchanged, so sessions never meet a default they cannot parse with. The
+	// result is deliberately discarded, a session compiles the selection on a parser-cache miss:
+	// this runs under the config lock, and the parser cache's lock is held through the extension
+	// callbacks, which may themselves read locked configuration from the parse path
+	vector<reference<GrammarExtension>> selected;
+	for (auto &name : names) {
+		selected.emplace_back(*config.GetCallbackManager().FindGrammarExtension(name));
+	}
+	CompiledGrammar::Create(selected);
+	config.default_grammar_extensions.atomic_store(make_shared_ptr<const vector<string>>(std::move(names)));
+}
+
+void DefaultGrammarExtensionsSetting::ResetGlobal(DatabaseInstance *db, DBConfig &config) {
+	config.default_grammar_extensions.atomic_store(shared_ptr<const vector<string>>());
+}
+
+Value DefaultGrammarExtensionsSetting::GetSetting(const ClientContext &context) {
+	auto default_extensions = DBConfig::GetConfig(context).default_grammar_extensions.atomic_load();
+	vector<Value> values;
+	if (default_extensions) {
+		for (auto &extension : *default_extensions) {
+			values.push_back(extension);
+		}
+	}
+	return Value::LIST(LogicalType::VARCHAR, std::move(values));
+}
+
 //===----------------------------------------------------------------------===//
 // Default Secret Storage
 //===----------------------------------------------------------------------===//
@@ -581,7 +682,8 @@ void DisabledFilesystemsSetting::ResetGlobal(DatabaseInstance *db_p, DBConfig &c
 }
 
 Value DisabledFilesystemsSetting::GetSetting(const ClientContext &context) {
-	return Value("");
+	auto &fs = FileSystem::GetFileSystem(*context.db);
+	return Value(StringUtil::Join(fs.GetDisabledFileSystems(), ","));
 }
 
 //===----------------------------------------------------------------------===//
@@ -832,7 +934,7 @@ void ForceVariantShredding::ResetGlobal(DatabaseInstance *db, DBConfig &config) 
 
 Value ForceVariantShredding::GetSetting(const ClientContext &context) {
 	auto &config = DBConfig::GetConfig(context);
-	return Value(config.options.force_variant_shredding.ToString());
+	return Value(config.GetForceVariantShredding().ToString());
 }
 
 //===----------------------------------------------------------------------===//
@@ -1005,50 +1107,34 @@ Value EnableProfilingSetting::GetSetting(const ClientContext &context) {
 	return Value(config.profiler_print_format);
 }
 
+//! The progress bar settings are per connection: setting them without a client context (e.g. on a DBConfig) fails
+static ClientContext &GetProgressBarSettingContext(SettingCallbackInfo &info, const char *setting_name) {
+	if (!info.context) {
+		throw InvalidInputException("Could not set option \"%s\" as a global option", setting_name);
+	}
+	return *info.context;
+}
+
 //===----------------------------------------------------------------------===//
 // Enable Progress Bar Print
 //===----------------------------------------------------------------------===//
-void EnableProgressBarPrintSetting::SetLocal(ClientContext &context, const Value &input) {
+void EnableProgressBarPrintSetting::OnSet(SettingCallbackInfo &info, Value &input) {
+	auto &context = GetProgressBarSettingContext(info, EnableProgressBarPrintSetting::Name);
 	if (input.IsNull()) {
 		throw InvalidInputException("enable_progress_bar_print setting cannot be NULL");
 	}
-	if (input.type().id() != LogicalTypeId::BOOLEAN) {
-		throw InvalidInputException("enable_progress_bar_print setting must be a boolean value");
-	}
-	auto &config = ClientConfig::GetConfig(context);
-	ProgressBar::SystemOverrideCheck(config);
-	config.print_progress_bar = input.GetValue<bool>();
-}
-
-void EnableProgressBarPrintSetting::ResetLocal(ClientContext &context) {
-	auto &config = ClientConfig::GetConfig(context);
-	ProgressBar::SystemOverrideCheck(config);
-	config.print_progress_bar = ClientConfig().print_progress_bar;
-}
-
-Value EnableProgressBarPrintSetting::GetSetting(const ClientContext &context) {
-	return Value::BOOLEAN(ClientConfig::GetConfig(context).print_progress_bar);
+	ProgressBar::SystemOverrideCheck(ClientConfig::GetConfig(context));
 }
 
 //===----------------------------------------------------------------------===//
 // Enable Progress Bar
 //===----------------------------------------------------------------------===//
-bool EnableProgressBarSetting::OnLocalSet(ClientContext &context, const Value &input) {
+void EnableProgressBarSetting::OnSet(SettingCallbackInfo &info, Value &input) {
+	auto &context = GetProgressBarSettingContext(info, EnableProgressBarSetting::Name);
 	if (input.IsNull()) {
 		throw InvalidInputException("enable_progress_bar setting cannot be NULL");
 	}
-	if (input.type().id() != LogicalTypeId::BOOLEAN) {
-		throw InvalidInputException("enable_progress_bar setting must be a boolean value");
-	}
-	auto &config = ClientConfig::GetConfig(context);
-	ProgressBar::SystemOverrideCheck(config);
-	return true;
-}
-
-bool EnableProgressBarSetting::OnLocalReset(ClientContext &context) {
-	auto &config = ClientConfig::GetConfig(context);
-	ProgressBar::SystemOverrideCheck(config);
-	return true;
+	ProgressBar::SystemOverrideCheck(ClientConfig::GetConfig(context));
 }
 
 //===----------------------------------------------------------------------===//
@@ -1507,29 +1593,20 @@ Value ProfilingCoverageSetting::GetSetting(const ClientContext &context) {
 //===----------------------------------------------------------------------===//
 // Progress Bar Time
 //===----------------------------------------------------------------------===//
-void ProgressBarTimeSetting::SetLocal(ClientContext &context, const Value &input) {
+void ProgressBarTimeSetting::OnSet(SettingCallbackInfo &info, Value &input) {
+	auto &context = GetProgressBarSettingContext(info, ProgressBarTimeSetting::Name);
+	ProgressBar::SystemOverrideCheck(ClientConfig::GetConfig(context));
+	if (info.is_reset) {
+		ClientConfig::GetConfig(context).user_settings.ClearSetting(EnableProgressBarSetting::SettingIndex);
+		return;
+	}
 	if (input.IsNull()) {
 		throw InvalidInputException("%s setting cannot be NULL", ProgressBarTimeSetting::Name);
 	}
-	auto &config = ClientConfig::GetConfig(context);
-	ProgressBar::SystemOverrideCheck(config);
-	auto wait_time = input.GetValue<int32_t>();
-	if (wait_time < 0) {
+	if (input.GetValue<int32_t>() < 0) {
 		throw InvalidInputException("%s setting cannot be negative", ProgressBarTimeSetting::Name);
 	}
-	config.wait_time = wait_time;
-	config.enable_progress_bar = true;
-}
-
-void ProgressBarTimeSetting::ResetLocal(ClientContext &context) {
-	auto &config = ClientConfig::GetConfig(context);
-	ProgressBar::SystemOverrideCheck(config);
-	config.wait_time = ClientConfig().wait_time;
-	config.enable_progress_bar = ClientConfig().enable_progress_bar;
-}
-
-Value ProgressBarTimeSetting::GetSetting(const ClientContext &context) {
-	return Value::BIGINT(ClientConfig::GetConfig(context).wait_time);
+	Settings::Set<EnableProgressBarSetting>(context, SetScope::SESSION, Value::BOOLEAN(true));
 }
 
 //===----------------------------------------------------------------------===//
@@ -1703,33 +1780,15 @@ void TempFileEncryptionSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 //===----------------------------------------------------------------------===//
 // Tracked Metrics
 //===----------------------------------------------------------------------===//
-void TrackedMetricsSetting::SetLocal(ClientContext &context, const Value &input) {
+void TrackedMetricsSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 	if (input.IsNull()) {
 		throw InvalidInputException("%s setting cannot be NULL", TrackedMetricsSetting::Name);
 	}
-	auto &config = ClientConfig::GetConfig(context);
-	config.tracked_metrics.clear();
-	if (input.type() == LogicalType::LIST(LogicalType::VARCHAR)) {
-		for (auto &child : ListValue::GetChildren(input)) {
-			config.tracked_metrics.push_back(child.GetValue<string>());
+	for (auto &pattern : ListValue::GetChildren(input)) {
+		if (pattern.IsNull()) {
+			throw InvalidInputException("%s setting cannot contain NULL entries", TrackedMetricsSetting::Name);
 		}
-	} else {
-		throw InvalidInputException("Invalid tracked_metrics type \"%s\", expected LIST(VARCHAR)",
-		                            input.type().ToString());
 	}
-}
-
-void TrackedMetricsSetting::ResetLocal(ClientContext &context) {
-	ClientConfig::GetConfig(context).tracked_metrics = ClientConfig().tracked_metrics;
-}
-
-Value TrackedMetricsSetting::GetSetting(const ClientContext &context) {
-	auto &config = ClientConfig::GetConfig(context);
-	vector<Value> children;
-	for (const auto &pattern : config.tracked_metrics) {
-		children.emplace_back(pattern);
-	}
-	return Value::LIST(LogicalType::VARCHAR, std::move(children));
 }
 
 //===----------------------------------------------------------------------===//
@@ -1839,11 +1898,18 @@ void WarningsAsErrorsSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 	if (input.IsNull()) {
 		throw InvalidInputException("%s setting cannot be NULL", WarningsAsErrorsSetting::Name);
 	}
+	if (!input.GetValue<bool>()) {
+		return;
+	}
+	if (!info.context) {
+		throw InvalidInputException(
+		    "Cannot set 'warnings_as_errors=true' in the startup config; no logger is available yet. To "
+		    "solve, run: 'SET enable_logging=true;' and 'SET warnings_as_errors=true;' after startup");
+	}
 	auto &log_manager = LogManager::Get(*info.context);
-	if (input == Value(true) && !log_manager.GetConfig().enabled) {
-		throw Exception(
-		    ExceptionType::SETTINGS,
-		    "Can not set 'warnings_as_errors=true'; no logger is available. To solve, run: 'SET enable_logging=true;'");
+	if (!log_manager.GetConfig().enabled) {
+		throw InvalidInputException(
+		    "Cannot set 'warnings_as_errors=true'; no logger is available. To solve, run: 'SET enable_logging=true;'");
 	}
 }
 
@@ -1934,6 +2000,14 @@ Value CurrentDialectSetting::GetSetting(const ClientContext &context) {
 	return Value();
 }
 
+//! Clear the session selection: the database-wide default (if any) applies again and the grammar is
+//! recomposed lazily on the next parse, so clearing always succeeds even when the database default
+//! is currently broken (the parse-time error then names the global setting)
+static void ClearActiveGrammarExtensions(ClientConfig &client_config) {
+	client_config.active_grammar_extensions.atomic_store(shared_ptr<const vector<string>>());
+	client_config.cached_grammar.atomic_store(shared_ptr<CachedSessionGrammar>());
+}
+
 void ActiveGrammarExtensionsSetting::SetLocal(ClientContext &context, const Value &input) {
 	if (!OnLocalSet(context, input)) {
 		return;
@@ -1941,54 +2015,22 @@ void ActiveGrammarExtensionsSetting::SetLocal(ClientContext &context, const Valu
 	auto &client_config = ClientConfig::GetConfig(context);
 
 	if (input.IsNull()) {
-		client_config.active_grammar_extensions.clear();
-		client_config.cached_grammar.reset();
+		ClearActiveGrammarExtensions(client_config);
 		return;
 	}
 
 	auto &config = DatabaseInstance::GetDatabase(context).config;
 	auto &callback_manager = config.GetCallbackManager();
-	case_insensitive_set_t distinct_names;
-	vector<string> selected_extensions;
-	if (input.type().id() != LogicalTypeId::LIST) {
-		throw InvalidInputException("'active_grammar_extensions' setting value should be of type VARCHAR[], not %s",
-		                            input.type().ToString());
-	}
-	auto &list_input = ListValue::GetChildren(input);
-	for (auto &val : list_input) {
-		if (val.type().id() != LogicalTypeId::VARCHAR) {
-			throw InvalidInputException("'active_grammar_extensions' list values should be of type VARCHAR, not %s",
-			                            val.type().ToString());
-		}
-		auto val_str = val.GetValue<string>();
-		if (!distinct_names.insert(val_str).second) {
-			throw InvalidInputException("'active_grammar_extensions' list contains duplicate value '%s'", val_str);
-		}
-		selected_extensions.emplace_back(std::move(val_str));
-	}
-
-	vector<string> missing;
-	for (auto &ext : selected_extensions) {
-		auto extension = callback_manager.FindGrammarExtension(ext);
-		if (!extension) {
-			missing.push_back(ext);
-		}
-	}
-	if (!missing.empty()) {
-		auto missing_list = StringUtil::Join(missing, ",");
-		throw InvalidInputException("Can't set 'active_grammar_extensions', the following extensions don't exist: %s",
-		                            missing_list);
-	}
-	if (selected_extensions.empty()) {
-		client_config.active_grammar_extensions.clear();
-		client_config.cached_grammar.reset();
-		return;
-	}
-
-	auto compiled_grammar =
-	    DatabaseInstance::GetDatabase(context).GetParserCache().GetMatcher(context, selected_extensions);
-	client_config.active_grammar_extensions = std::move(selected_extensions);
-	client_config.cached_grammar = std::move(compiled_grammar);
+	auto selected_extensions = ParseGrammarExtensionList("active_grammar_extensions", input);
+	ValidateGrammarExtensionsExist("active_grammar_extensions", callback_manager, selected_extensions);
+	// compose eagerly: a grammar that fails to compile errors at SET time, leaving the setting unchanged
+	auto registry_version = callback_manager.GrammarRegistryVersion();
+	auto compiled_grammar = CompiledGrammar::ComposeSessionGrammar(context, selected_extensions);
+	auto selection = make_shared_ptr<const vector<string>>(std::move(selected_extensions));
+	auto snapshot = make_shared_ptr<CachedSessionGrammar>(
+	    CachedSessionGrammar {std::move(compiled_grammar), registry_version, selection});
+	client_config.active_grammar_extensions.atomic_store(selection);
+	client_config.cached_grammar.atomic_store(snapshot);
 }
 
 void ActiveGrammarExtensionsSetting::ResetLocal(ClientContext &context) {
@@ -1996,8 +2038,7 @@ void ActiveGrammarExtensionsSetting::ResetLocal(ClientContext &context) {
 		return;
 	}
 	auto &client_config = ClientConfig::GetConfig(context);
-	client_config.active_grammar_extensions.clear();
-	client_config.cached_grammar.reset();
+	ClearActiveGrammarExtensions(client_config);
 }
 
 bool ActiveGrammarExtensionsSetting::OnLocalSet(ClientContext &context, const Value &input) {
@@ -2010,10 +2051,12 @@ bool ActiveGrammarExtensionsSetting::OnLocalReset(ClientContext &context) {
 
 Value ActiveGrammarExtensionsSetting::GetSetting(const ClientContext &context) {
 	auto &client_config = ClientConfig::GetConfig(context);
-	auto &active_extensions = client_config.active_grammar_extensions;
+	auto active_extensions = client_config.active_grammar_extensions.atomic_load();
 	vector<Value> values;
-	for (auto &extension : active_extensions) {
-		values.push_back(extension);
+	if (active_extensions) {
+		for (auto &extension : *active_extensions) {
+			values.push_back(extension);
+		}
 	}
 	return Value::LIST(LogicalType::VARCHAR, std::move(values));
 }
@@ -2021,66 +2064,11 @@ Value ActiveGrammarExtensionsSetting::GetSetting(const ClientContext &context) {
 //===----------------------------------------------------------------------===//
 // Deprecated Settings
 //===----------------------------------------------------------------------===//
-//! Settings below are still honored, but are scheduled for removal. Setting one emits a deprecation warning;
-//! resetting it back to its default does not.
-static void WarnDeprecatedSetting(SettingCallbackInfo &info, const char *name) {
-	if (info.is_reset) {
-		return;
-	}
-	auto message = StringUtil::Format("The '%s' setting is deprecated and will be removed in a future release.", name);
-	if (info.context) {
-		DUCKDB_LOG_WARNING(*info.context, message);
-	} else if (info.db) {
-		DUCKDB_LOG_WARNING(*info.db, message);
-	}
-}
-
-void DelimJoinAsCteSetting::OnSet(SettingCallbackInfo &info, Value &) {
-	WarnDeprecatedSetting(info, DelimJoinAsCteSetting::Name);
-}
-
-void EnableObjectCacheSetting::OnSet(SettingCallbackInfo &info, Value &) {
-	WarnDeprecatedSetting(info, EnableObjectCacheSetting::Name);
-}
-
-void ErrorOnDivisionByZeroSetting::OnSet(SettingCallbackInfo &info, Value &) {
-	WarnDeprecatedSetting(info, ErrorOnDivisionByZeroSetting::Name);
-}
-
-void ExperimentalMetadataReuseSetting::OnSet(SettingCallbackInfo &info, Value &) {
-	WarnDeprecatedSetting(info, ExperimentalMetadataReuseSetting::Name);
-}
-
-void ForceColumnMetadataReuseSetting::OnSet(SettingCallbackInfo &info, Value &) {
-	WarnDeprecatedSetting(info, ForceColumnMetadataReuseSetting::Name);
-}
-
-void LegacyDisableNullTypeSetting::OnSet(SettingCallbackInfo &info, Value &) {
-	WarnDeprecatedSetting(info, LegacyDisableNullTypeSetting::Name);
-}
-
-void LegacyMetricsFormatSetting::OnSet(SettingCallbackInfo &info, Value &) {
-	WarnDeprecatedSetting(info, LegacyMetricsFormatSetting::Name);
-}
-
-void ProduceArrowStringViewSetting::OnSet(SettingCallbackInfo &info, Value &) {
-	WarnDeprecatedSetting(info, ProduceArrowStringViewSetting::Name);
-}
-
-void ExtensionDirectorySetting::OnSet(SettingCallbackInfo &info, Value &) {
-	WarnDeprecatedSetting(info, ExtensionDirectorySetting::Name);
-}
-
-void OldImplicitCastingSetting::OnSet(SettingCallbackInfo &info, Value &) {
-	WarnDeprecatedSetting(info, OldImplicitCastingSetting::Name);
-}
-
 void RegexMatchOperatorSemanticsSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 	if (input.IsNull()) {
 		throw InvalidInputException("regex_match_operator_semantics setting cannot be NULL");
 	}
 	EnumUtil::FromString<RegexMatchOperatorSemantics>(StringValue::Get(input));
-	WarnDeprecatedSetting(info, RegexMatchOperatorSemanticsSetting::Name);
 }
 
 void TableFunctionIdentifierConversionSetting::OnSet(SettingCallbackInfo &info, Value &input) {
@@ -2088,6 +2076,5 @@ void TableFunctionIdentifierConversionSetting::OnSet(SettingCallbackInfo &info, 
 		throw InvalidInputException("table_function_identifier_conversion setting cannot be NULL");
 	}
 	EnumUtil::FromString<TableFunctionIdentifierConversion>(StringValue::Get(input));
-	WarnDeprecatedSetting(info, TableFunctionIdentifierConversionSetting::Name);
 }
 } // namespace duckdb

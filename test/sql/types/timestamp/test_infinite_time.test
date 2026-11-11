@@ -206,17 +206,27 @@ FROM specials;
 ----
 [-infinity, '1970-01-01 00:00:00', infinity]	[-infinity, '1970-01-01 00:00:00+00', infinity]	[-infinity, 1970-01-01, infinity]
 
-query III
+# fractional ranks would interpolate with the infinities, which raises instead of computing with the sentinels
+
+statement error
 SELECT QUANTILE_CONT(ts, 0.25), QUANTILE_CONT(tstz, 0.25), QUANTILE_CONT(dt, 0.25)
 FROM specials;
 ----
-144170-06-28 (BC) 09:59:32.612097	144170-06-28 (BC) 09:59:32.612097+00	144170-06-28 (BC) 09:59:32.612097
+Cannot interpolate infinite TIMESTAMP values
 
-query III
+statement error
 SELECT QUANTILE_CONT(ts, [0.25, 0.5, 0.75]), QUANTILE_CONT(tstz, [0.25, 0.5, 0.75]), QUANTILE_CONT(dt, [0.25, 0.5, 0.75])
 FROM specials;
 ----
-['144170-06-28 (BC) 09:59:32.612097', '1970-01-01 00:00:00', '148108-07-06 14:00:27.387904']	['144170-06-28 (BC) 09:59:32.612097+00', '1970-01-01 00:00:00+00', '148108-07-06 14:00:27.387904+00']	['144170-06-28 (BC) 09:59:32.612097', '1970-01-01 00:00:00', '148108-07-06 14:00:27.387904']
+Cannot interpolate infinite TIMESTAMP values
+
+# integral ranks pick an element directly and pass the sentinels through
+
+query III
+SELECT QUANTILE_CONT(ts, [0.0, 0.5, 1.0]), QUANTILE_CONT(tstz, [0.0, 0.5, 1.0]), QUANTILE_CONT(dt, [0.0, 0.5, 1.0])
+FROM specials;
+----
+[-infinity, '1970-01-01 00:00:00', infinity]	[-infinity, '1970-01-01 00:00:00+00', infinity]	[-infinity, '1970-01-01 00:00:00', infinity]
 
 query III
 SELECT MAD(ts), MAD(tstz), MAD(dt)

@@ -2,15 +2,67 @@
 #include "core_functions/aggregate/sum_helpers.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/bignum.hpp"
+#include "duckdb/common/bignum_limbs.hpp"
+#include "duckdb/common/types/bignum.hpp"
+#include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/function/function_binder.hpp"
 
 namespace duckdb {
+
+optional<SumAccumulatorBounds> SumAccumulatorBounds::TryGet(const AggregateStatisticsInput &input) {
+	if (!input.node_stats || !input.node_stats->has_max_cardinality) {
+		return {};
+	}
+	auto &numeric_stats = input.child_stats[0];
+	if (!NumericStats::HasMinMax(numeric_stats)) {
+		return {};
+	}
+	hugeint_t min_value;
+	hugeint_t max_value;
+	switch (numeric_stats.GetType().InternalType()) {
+	case PhysicalType::BOOL:
+		min_value = NumericStats::Min(numeric_stats).GetValueUnsafe<bool>() ? 1 : 0;
+		max_value = NumericStats::Max(numeric_stats).GetValueUnsafe<bool>() ? 1 : 0;
+		break;
+	case PhysicalType::INT16:
+		min_value = NumericStats::Min(numeric_stats).GetValueUnsafe<int16_t>();
+		max_value = NumericStats::Max(numeric_stats).GetValueUnsafe<int16_t>();
+		break;
+	case PhysicalType::INT32:
+		min_value = NumericStats::Min(numeric_stats).GetValueUnsafe<int32_t>();
+		max_value = NumericStats::Max(numeric_stats).GetValueUnsafe<int32_t>();
+		break;
+	case PhysicalType::INT64:
+		min_value = NumericStats::Min(numeric_stats).GetValueUnsafe<int64_t>();
+		max_value = NumericStats::Max(numeric_stats).GetValueUnsafe<int64_t>();
+		break;
+	case PhysicalType::INT128:
+		min_value = NumericStats::Min(numeric_stats).GetValueUnsafe<hugeint_t>();
+		max_value = NumericStats::Max(numeric_stats).GetValueUnsafe<hugeint_t>();
+		break;
+	default:
+		return {};
+	}
+	if (min_value > max_value) {
+		return {};
+	}
+	const auto max_count = Hugeint::Convert(input.node_stats->max_cardinality);
+	SumAccumulatorBounds bounds;
+	if (!Hugeint::TryMultiply(min_value, max_count, bounds.min) ||
+	    !Hugeint::TryMultiply(max_value, max_count, bounds.max)) {
+		return {};
+	}
+	bounds.min = MinValue(min_value, bounds.min);
+	bounds.max = MaxValue(max_value, bounds.max);
+	return bounds;
+}
 
 namespace {
 
@@ -217,7 +269,7 @@ struct KahanSumOperation : public BaseSumOperation<KahanSumSetOperation, KahanAd
 		if (!state.is_set) {
 			finalize_data.ReturnNull();
 		} else {
-			target = state.value;
+			target = KahanFinalize(state.value, state.err);
 		}
 	}
 };
@@ -250,22 +302,27 @@ struct DecimalSumOperation : public OP {
 //! Binds the regular sum that sum_no_overflow is a specialized implementation of
 pair<BoundAggregateFunction, unique_ptr<FunctionData>> BindLogicalSum(ClientContext &context,
                                                                       vector<unique_ptr<Expression>> &arguments) {
-	vector<LogicalType> argument_types;
-	for (auto &argument : arguments) {
-		argument_types.push_back(argument->GetReturnType());
-	}
 	auto &entry = Catalog::GetEntry<AggregateFunctionCatalogEntry>(
 	    context, QualifiedName(Identifier::SystemCatalog(), Identifier::DefaultSchema(), Identifier("sum")));
+	vector<pair<Identifier, unique_ptr<Expression>>> keyword_args;
+	auto selection = FunctionBinder::SelectFunction(context, entry.functions, {arguments, keyword_args});
+	if (!selection.IsSuccess()) {
+		selection.GetError().Throw();
+	}
 	FunctionBinder binder(context);
-	return binder.ResolveFunction(entry.functions.GetFunctionByArguments(context, argument_types), arguments);
+	return binder.ResolveAggregateFunction(selection.GetBinding(), arguments, keyword_args);
 }
 
 void SumNoOverflowSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
                             const BoundAggregateFunction &function) {
-	return;
+	// record whether the implementation was installed without a statistics proof (bound by name)
+	serializer.WritePropertyWithDefault<bool>(100, "fallible",
+	                                          function.GetErrorMode() == FunctionErrors::CAN_THROW_RUNTIME_ERROR);
 }
 
 unique_ptr<FunctionData> SumNoOverflowDeserialize(Deserializer &deserializer, BoundAggregateFunction &function) {
+	bool fallible = false;
+	deserializer.ReadPropertyWithExplicitDefault<bool>(100, "fallible", fallible, false);
 	auto &context = deserializer.Get<ClientContext &>();
 	auto &return_type = deserializer.Get<const LogicalType &>();
 	auto &children = deserializer.Get<const const_expression_list_t &>();
@@ -280,6 +337,9 @@ unique_ptr<FunctionData> SumNoOverflowDeserialize(Deserializer &deserializer, Bo
 	logical.first.ReplaceImplementation(function);
 	function = std::move(logical.first);
 	function.SetReturnType(return_type);
+	if (fallible) {
+		function.SetFallible();
+	}
 	return nullptr;
 }
 
@@ -333,6 +393,8 @@ unique_ptr<FunctionData> SumNoOverflowBind(BindAggregateFunctionInput &input) {
 	auto logical = BindLogicalSum(input.GetClientContext(), arguments);
 	if (parameter_type.id() != LogicalTypeId::DECIMAL) {
 		logical.first.ReplaceImplementation(GetSumAggregateNoOverflow(parameter_type.InternalType()));
+		// bound by name there is no statistics proof that the int64 accumulator cannot overflow
+		logical.first.SetFallible();
 	}
 	function = std::move(logical.first);
 	return std::move(logical.second);
@@ -340,46 +402,19 @@ unique_ptr<FunctionData> SumNoOverflowBind(BindAggregateFunctionInput &input) {
 
 unique_ptr<BaseStatistics> SumPropagateStats(ClientContext &context, BoundAggregateExpression &expr,
                                              AggregateStatisticsInput &input) {
-	if (!input.node_stats || !input.node_stats->has_max_cardinality) {
-		return nullptr;
-	}
 	auto &numeric_stats = input.child_stats[0];
-	if (!NumericStats::HasMinMax(numeric_stats)) {
-		return nullptr;
-	}
 	auto internal_type = numeric_stats.GetType().InternalType();
-	hugeint_t max_negative = 0;
-	hugeint_t max_positive = 0;
-	switch (internal_type) {
-	case PhysicalType::BOOL:
-		max_negative = NumericStats::Min(numeric_stats).GetValueUnsafe<bool>() ? 1 : 0;
-		max_positive = NumericStats::Max(numeric_stats).GetValueUnsafe<bool>() ? 1 : 0;
-		break;
-	case PhysicalType::INT16:
-		max_negative = NumericStats::Min(numeric_stats).GetValueUnsafe<int16_t>();
-		max_positive = NumericStats::Max(numeric_stats).GetValueUnsafe<int16_t>();
-		break;
-	case PhysicalType::INT32:
-		max_negative = NumericStats::Min(numeric_stats).GetValueUnsafe<int32_t>();
-		max_positive = NumericStats::Max(numeric_stats).GetValueUnsafe<int32_t>();
-		break;
-	case PhysicalType::INT64:
-		max_negative = NumericStats::Min(numeric_stats).GetValueUnsafe<int64_t>();
-		max_positive = NumericStats::Max(numeric_stats).GetValueUnsafe<int64_t>();
-		break;
-	case PhysicalType::INT128:
-		max_negative = NumericStats::Min(numeric_stats).GetValueUnsafe<hugeint_t>();
-		max_positive = NumericStats::Max(numeric_stats).GetValueUnsafe<hugeint_t>();
-		break;
-	default:
-		throw InternalException("Unsupported type for propagate sum stats");
+	auto bounds = SumAccumulatorBounds::TryGet(input);
+	if (internal_type == PhysicalType::INT128) {
+		bool cannot_overflow = bounds.has_value();
+		if (cannot_overflow && expr.GetReturnType().id() == LogicalTypeId::DECIMAL) {
+			const auto decimal_limit = Hugeint::POWERS_OF_TEN[Decimal::MAX_WIDTH_DECIMAL];
+			cannot_overflow = bounds->min > -decimal_limit && bounds->max < decimal_limit;
+		}
+		expr.FunctionMutable().SetErrorMode(cannot_overflow ? FunctionErrors::CANNOT_ERROR
+		                                                    : FunctionErrors::CAN_THROW_RUNTIME_ERROR);
 	}
-
-	const auto max_card = Hugeint::Convert(input.node_stats->max_cardinality);
-	hugeint_t wide_negative = 0;
-	hugeint_t wide_positive = 0;
-	if (!Hugeint::TryMultiply(max_negative, max_card, wide_negative) ||
-	    !Hugeint::TryMultiply(max_positive, max_card, wide_positive)) {
+	if (!bounds) {
 		return nullptr;
 	}
 
@@ -387,17 +422,15 @@ unique_ptr<BaseStatistics> SumPropagateStats(ClientContext &context, BoundAggreg
 	// swap in.
 	const bool has_no_overflow_variant = internal_type == PhysicalType::INT32 || internal_type == PhysicalType::INT64;
 	const bool sum_fits_in_int64 =
-	    wide_negative > NumericLimits<int64_t>::Minimum() && wide_positive < NumericLimits<int64_t>::Maximum();
+	    bounds->min > NumericLimits<int64_t>::Minimum() && bounds->max < NumericLimits<int64_t>::Maximum();
 	if (has_no_overflow_variant && sum_fits_in_int64) {
 		expr.FunctionMutable().ReplaceImplementation(GetSumAggregateNoOverflow(internal_type));
 	}
 
 	// Propagate stats.
-	auto sum_min = max_negative <= 0 ? wide_negative : max_negative;
-	auto sum_max = max_positive >= 0 ? wide_positive : max_positive;
 	auto result = NumericStats::CreateEmpty(expr.GetReturnType()).ToUnique();
-	NumericStats::SetMin(*result, Value::HUGEINT(sum_min));
-	NumericStats::SetMax(*result, Value::HUGEINT(sum_max));
+	NumericStats::SetMin(*result, Value::HUGEINT(bounds->min));
+	NumericStats::SetMax(*result, Value::HUGEINT(bounds->max));
 	result->Set(StatsInfo::CAN_HAVE_NULL_AND_VALID_VALUES);
 	return result;
 }
@@ -446,6 +479,7 @@ AggregateFunction GetSumAggregate(PhysicalType type) {
 		function.GetSignature().GetParameter(0).SetName("arg");
 		function.SetStatisticsCallback(SumPropagateStats);
 		function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
+		function.SetFallible(); // adding HUGEINT values to the HUGEINT accumulator throws on overflow
 		return function;
 	}
 	default:
@@ -470,8 +504,13 @@ AggregateFunction GetDecimalSumAggregate(PhysicalType type) {
 		return GetDecimalSumAggregate<int32_t, SumToHugeintOperation>(LogicalType::INTEGER);
 	case PhysicalType::INT64:
 		return GetDecimalSumAggregate<int64_t, SumToHugeintOperation>(LogicalType::BIGINT);
-	case PhysicalType::INT128:
-		return GetDecimalSumAggregate<hugeint_t, HugeintSumOperation>(LogicalType::HUGEINT);
+	case PhysicalType::INT128: {
+		auto function = GetDecimalSumAggregate<hugeint_t, HugeintSumOperation>(LogicalType::HUGEINT);
+		// wide decimal sums overflow the HUGEINT accumulator and the DECIMAL(38) bound in finalize - narrower
+		// widths accumulate at most 2^64 values of less than 10^18, which stays below both limits
+		function.SetFallible();
+		return function;
+	}
 	default:
 		// the sum of smaller decimals is accumulated in an int64_t, which always fits in a DECIMAL(38)
 		return GetSumAggregate(type);
@@ -492,13 +531,80 @@ unique_ptr<FunctionData> BindDecimalSum(BindAggregateFunctionInput &input) {
 
 struct BignumState {
 	bool is_set;
-	BignumIntermediate value;
+	//! Whether the sum has outgrown the hugeint_t accumulator and lives in the arena-allocated wide value
+	bool is_wide;
+	//! The sum while it fits a hugeint_t
+	hugeint_t small;
+	//! The sum once it does not
+	BignumIntermediate wide;
 };
 
 struct BignumOperation {
+	//! The magnitude of an input of at most 16 bytes as a hugeint_t; false when it does not fit
+	static bool TryGetSmall(const BignumIntermediate &input, hugeint_t &result) {
+		if (input.size > 2 * BignumLimb::BYTES) {
+			return false;
+		}
+		const int64_t end = input.size;
+		uint64_t lo = BignumLimb::LoadAbsolute(input.data, input.is_negative, end);
+		uint64_t hi =
+		    BignumLimb::LoadAbsolute(input.data, input.is_negative, end - static_cast<int64_t>(BignumLimb::BYTES));
+		if (hi >> 63) {
+			// a magnitude of 2^127 or more
+			return false;
+		}
+		if (input.is_negative) {
+			// two's complement of the magnitude
+			hi = ~hi + (lo == 0);
+			lo = ~lo + 1;
+		}
+		result = hugeint_t(static_cast<int64_t>(hi), lo);
+		return true;
+	}
+
+	//! Writes a hugeint_t as a BIGNUM blob and returns its size; blob needs room for 16 + header bytes
+	static idx_t EncodeSmall(hugeint_t value, char *blob) {
+		const bool is_negative = value.upper < 0;
+		uint64_t hi = static_cast<uint64_t>(value.upper);
+		uint64_t lo = value.lower;
+		if (is_negative) {
+			hi = ~hi + (lo == 0);
+			lo = ~lo + 1;
+		}
+		const idx_t byte_count = BignumLimb::ByteCount(hi, lo);
+		Bignum::SetHeader(blob, byte_count, is_negative);
+		BignumLimb::StoreMagnitude(reinterpret_cast<data_ptr_t>(blob + Bignum::BIGNUM_HEADER_SIZE), byte_count, hi, lo,
+		                           is_negative);
+		return byte_count + Bignum::BIGNUM_HEADER_SIZE;
+	}
+
+	//! Adds a hugeint_t to the wide value
+	static void AddSmallToWide(BignumState &state, hugeint_t value, ArenaAllocator &allocator) {
+		char blob[2 * BignumLimb::BYTES + Bignum::BIGNUM_HEADER_SIZE];
+		const auto size = EncodeSmall(value, blob);
+		BignumIntermediate rhs(reinterpret_cast<uint8_t *>(blob), size);
+		state.wide.AddInPlace(allocator, rhs);
+	}
+
+	//! Moves the sum from the hugeint_t accumulator to the wide value
+	static void Widen(BignumState &state, ArenaAllocator &allocator) {
+		D_ASSERT(!state.is_wide);
+		state.wide.Initialize(allocator);
+		AddSmallToWide(state, state.small, allocator);
+		state.is_wide = true;
+	}
+
 	template <class INPUT_TYPE, class STATE, class OP>
 	static void ConstantOperation(STATE &state, const INPUT_TYPE &input, AggregateUnaryInput &unary_input,
 	                              idx_t count) {
+		hugeint_t value;
+		hugeint_t total;
+		if (!state.is_wide && TryGetSmall(BignumIntermediate(input), value) &&
+		    Hugeint::TryMultiply(value, hugeint_t(static_cast<int64_t>(count)), total) &&
+		    Hugeint::TryAddInPlace(state.small, total)) {
+			state.is_set = true;
+			return;
+		}
 		for (idx_t i = 0; i < count; i++) {
 			Operation<INPUT_TYPE, STATE, OP>(state, input, unary_input);
 		}
@@ -506,12 +612,16 @@ struct BignumOperation {
 
 	template <class INPUT_TYPE, class STATE, class OP>
 	static void Operation(STATE &state, const INPUT_TYPE &input, AggregateUnaryInput &unary_input) {
-		if (!state.is_set) {
-			state.is_set = true;
-			state.value.Initialize(unary_input.input.allocator);
+		const BignumIntermediate rhs(input);
+		state.is_set = true;
+		if (!state.is_wide) {
+			hugeint_t value;
+			if (TryGetSmall(rhs, value) && Hugeint::TryAddInPlace(state.small, value)) {
+				return;
+			}
+			Widen(state, unary_input.input.allocator);
 		}
-		BignumIntermediate rhs(input);
-		state.value.AddInPlace(unary_input.input.allocator, rhs);
+		state.wide.AddInPlace(unary_input.input.allocator, rhs);
 	}
 
 	template <class STATE, class OP>
@@ -520,18 +630,34 @@ struct BignumOperation {
 			return;
 		}
 		if (!target.is_set) {
-			target.value.Initialize(input.allocator);
+			// the target is still zero: a plain add, the small sum is copied, the wide one needs its own allocation
 			target.is_set = true;
 		}
-		target.value.AddInPlace(input.allocator, source.value);
+		if (!target.is_wide) {
+			if (!source.is_wide && Hugeint::TryAddInPlace(target.small, source.small)) {
+				return;
+			}
+			Widen(target, input.allocator);
+		}
+		if (source.is_wide) {
+			target.wide.AddInPlace(input.allocator, source.wide);
+		} else {
+			AddSmallToWide(target, source.small, input.allocator);
+		}
 	}
 
 	template <class TARGET_TYPE, class STATE>
 	static void Finalize(STATE &state, TARGET_TYPE &target, AggregateFinalizeData &finalize_data) {
+		// the state is only read: it is exported while other threads may still read it
 		if (!state.is_set) {
 			finalize_data.ReturnNull();
+		} else if (state.is_wide) {
+			target = state.wide.ToBignum(finalize_data.input.allocator);
 		} else {
-			target = state.value.ToBignum(finalize_data.input.allocator);
+			auto blob = reinterpret_cast<char *>(
+			    finalize_data.input.allocator.Allocate(2 * BignumLimb::BYTES + Bignum::BIGNUM_HEADER_SIZE));
+			const auto size = EncodeSmall(state.small, blob);
+			target = bignum_t(string_t(blob, UnsafeNumericCast<uint32_t>(size)));
 		}
 	}
 

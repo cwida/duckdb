@@ -2,6 +2,7 @@
 
 #include "duckdb/common/array.hpp"
 #include "duckdb/common/types/row/tuple_data_layout.hpp"
+#include "duckdb/execution/ht_entry.hpp"
 
 namespace duckdb {
 
@@ -284,12 +285,8 @@ private:
 			const bool found = bit & (position < MISS_BIT);
 			found_match[i] = found;
 			match_count += found;
-#if defined(__GNUC__) || defined(__clang__)
-			constexpr idx_t PREFETCH_DISTANCE = 64;
-			if (i + PREFETCH_DISTANCE < keys.size()) {
-				__builtin_prefetch(&directory[MembershipWord(positions[i + PREFETCH_DISTANCE])], 0, 3);
-			}
-#endif
+			PrefetchHashTableEntry(i, keys.size(),
+			                       [&](idx_t next_idx) { return &directory[MembershipWord(positions[next_idx])]; });
 		}
 		return match_count;
 	}

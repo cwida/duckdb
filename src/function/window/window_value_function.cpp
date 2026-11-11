@@ -123,7 +123,7 @@ void WindowValueLocalState::Finalizer(ExecutionContext &context, CollectionPtr c
 	if (local_value) {
 		auto &value_state = local_value->Cast<WindowIndexTreeLocalState>();
 		value_state.Finalize(context, sink.interrupt_state);
-		value_state.index_tree.Build();
+		value_state.index_tree.Build(context.client);
 	}
 
 	// Prepare to scan
@@ -347,7 +347,7 @@ void WindowLeadLagLocalState::Finalizer(ExecutionContext &context, CollectionPtr
 	if (local_row) {
 		auto &row_state = local_row->Cast<WindowMergeSortTreeLocalState>();
 		row_state.Finalize(context, sink.interrupt_state);
-		row_state.window_tree.Build();
+		row_state.window_tree.Build(context.client);
 	}
 }
 
@@ -363,11 +363,11 @@ public:
 			if (offset_expr->HasParameter() || !offset_expr->IsFoldable()) {
 				return false;
 			}
-			auto offset_value = ExpressionExecutor::EvaluateScalar(client, *offset_expr);
-			if (offset_value.IsNull()) {
+			Value offset_value;
+			if (!ExpressionExecutor::TryEvaluateScalar(client, *offset_expr, offset_value) || offset_value.IsNull()) {
 				return false;
 			}
-			auto bigint_value = offset_value.DefaultTryCastAs(LogicalType::BIGINT);
+			auto bigint_value = offset_value.TryCastAs(client, LogicalType::BIGINT);
 			if (!bigint_value) {
 				return false;
 			}
@@ -394,8 +394,11 @@ public:
 		if (default_expr && (default_expr->HasParameter() || !default_expr->IsFoldable())) {
 			return false;
 		}
-		auto dflt_value = ExpressionExecutor::EvaluateScalar(client, *default_expr);
-		auto cast_value = dflt_value.DefaultTryCastAs(wexpr.GetReturnType());
+		Value dflt_value;
+		if (!ExpressionExecutor::TryEvaluateScalar(client, *default_expr, dflt_value)) {
+			return false;
+		}
+		auto cast_value = dflt_value.TryCastAs(client, wexpr.GetReturnType());
 		if (!cast_value) {
 			return false;
 		}
@@ -610,6 +613,7 @@ WindowFunction LeadFun::GetTypedFunction(const LogicalType &type, idx_t nargs) {
 	if (nargs > 2) {
 		func.GetSignature().GetParameter(2).SetType(type);
 	}
+	func.GetSignature().SetReturnType(type);
 	return func;
 }
 
@@ -1086,11 +1090,11 @@ public:
 		if (nth_expr && (nth_expr->HasParameter() || !nth_expr->IsFoldable())) {
 			return false;
 		}
-		auto nth_value = ExpressionExecutor::EvaluateScalar(client, *nth_expr);
-		if (nth_value.IsNull()) {
+		Value nth_value;
+		if (!ExpressionExecutor::TryEvaluateScalar(client, *nth_expr, nth_value) || nth_value.IsNull()) {
 			return false;
 		}
-		auto bigint_value = nth_value.DefaultTryCastAs(LogicalType::BIGINT);
+		auto bigint_value = nth_value.TryCastAs(client, LogicalType::BIGINT);
 		if (!bigint_value) {
 			return false;
 		}

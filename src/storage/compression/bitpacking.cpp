@@ -26,6 +26,10 @@ namespace duckdb {
 
 constexpr const idx_t BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
 static constexpr const idx_t BITPACKING_METADATA_GROUP_SIZE = STANDARD_VECTOR_SIZE > 512 ? STANDARD_VECTOR_SIZE : 2048;
+//! Scan tuning limit in values, independent of the on-disk algorithm group size.
+static constexpr idx_t BITPACKING_SCAN_BATCH_SIZE = 128;
+static_assert(BITPACKING_SCAN_BATCH_SIZE % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE == 0,
+              "Bitpacking scan batches must contain complete algorithm groups");
 
 typedef struct {
 	BitpackingMode mode;
@@ -305,6 +309,16 @@ public:
 			OP::WriteConstant(maximum, compression_buffer_idx, data_ptr, all_invalid);
 			total_size += sizeof(T) + sizeof(bitpacking_metadata_encoded_t);
 			return true;
+		}
+
+		// values in compression_buffer are not overwritten when they are invalid, so set them to minimum such that they
+		// are packed as 0 instead.
+		if (has_invalid && has_valid) {
+			for (idx_t i = 0; i < compression_buffer_idx; i++) {
+				if (!compression_buffer_validity[i]) {
+					compression_buffer[i] = minimum;
+				}
+			}
 		}
 
 		CalculateFORStats();
@@ -593,7 +607,7 @@ public:
 
 		// Asserting things are still sane here
 		if (!CanStore(0, 0)) {
-			throw InternalException("Error in bitpacking size calculation");
+			InternalException::Throw("Error in bitpacking size calculation");
 		}
 
 		if (unaligned_offset != metadata_offset) {
@@ -726,29 +740,30 @@ public:
 			offset += advance_count;
 		}
 
-		//! Returns the packed algorithm group containing the current row offset.
-		unsafe_array_ptr<const uint8_t> GetAlgorithmGroup() const {
+		//! Unpack complete groups, starting with the group containing offset.
+		//! An unaligned offset only permits one group; its padding may extend beyond count.
+		void UnpackAlgorithmGroups(unsafe_array_ptr<T> target) const {
 			D_ASSERT(!AtEnd());
-			D_ASSERT(width > 0);
-			if (!payload) {
-				throw InternalException("Bitpacking algorithm group has no payload");
-			}
-			auto algorithm_group_index = offset / BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
-			D_ASSERT(algorithm_group_index < algorithm_group_count);
-			auto algorithm_group_offset = algorithm_group_index * algorithm_group_size;
-			return payload->SubArray(algorithm_group_offset, algorithm_group_size);
-		}
-
-		//! Unpacks the algorithm group at the current row offset.
-		void UnpackAlgorithmGroup(T *target, bool skip_sign_extend) const {
 			D_ASSERT(metadata.mode == BitpackingMode::FOR || metadata.mode == BitpackingMode::DELTA_FOR);
+			D_ASSERT(target.size() > 0);
+			D_ASSERT(target.size() % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE == 0);
+			auto groups = target.size() / BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
+			auto algorithm_group_index = offset / BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
+			D_ASSERT(offset % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE == 0 || groups == 1);
+			D_ASSERT(algorithm_group_index < algorithm_group_count);
+			D_ASSERT(groups <= algorithm_group_count - algorithm_group_index);
 			if (width == 0) {
-				std::fill(target, target + BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE, T(0));
+				std::fill(target.data(), target.data() + target.size(), T(0));
 				return;
 			}
-			auto algorithm_group = GetAlgorithmGroup();
-			BitpackingPrimitives::UnPackBlock<T>(data_ptr_cast(target), algorithm_group.data(), width,
-			                                     skip_sign_extend);
+			if (!payload) {
+				InternalException::Throw("Bitpacking algorithm group has no payload");
+			}
+			auto algorithm_group_offset = algorithm_group_index * algorithm_group_size;
+			auto packed_groups = payload->SubArray(algorithm_group_offset, groups * algorithm_group_size);
+			// FOR residuals are non-negative, so they never need sign extension.
+			BitpackingPrimitives::UnPackBuffer<T>(data_ptr_cast(target.data()), packed_groups.data(), target.size(),
+			                                      width, true);
 		}
 	};
 
@@ -922,8 +937,6 @@ public:
 	}
 
 	void Skip(idx_t skip_count) {
-		bool skip_sign_extend = true;
-
 		if (IsFinished()) {
 			if (skip_count > 0) {
 				ThrowBitpackingReadPastEnd();
@@ -995,7 +1008,8 @@ public:
 				    MinValue(skip_count - skipped,
 				             BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE - offset_in_compression_group);
 
-				current_group.UnpackAlgorithmGroup(decompression_buffer, skip_sign_extend);
+				current_group.UnpackAlgorithmGroups(
+				    unsafe_array_ptr<T>(decompression_buffer, BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE));
 
 				unsafe_array_ptr<T_S> decompression_values(reinterpret_cast<T_S *>(decompression_buffer),
 				                                           BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE);
@@ -1039,9 +1053,6 @@ void BitpackingScanPartial(ColumnSegment &segment, ColumnScanState &state, idx_t
 
 	T *result_data = FlatVector::GetDataMutable<T>(result);
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-
-	//! Because FOR offsets all our values to be 0 or above, we can always skip sign extension here
-	bool skip_sign_extend = true;
 
 	if (scan_state.IsInitial()) {
 		scan_state.LoadGroup(0);
@@ -1091,17 +1102,20 @@ void BitpackingScanPartial(ColumnSegment &segment, ColumnScanState &state, idx_t
 		D_ASSERT(current_group.metadata.mode == BitpackingMode::FOR ||
 		         current_group.metadata.mode == BitpackingMode::DELTA_FOR);
 
-		idx_t to_scan = MinValue<idx_t>(scan_count - scanned, BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE -
-		                                                          offset_in_compression_group);
-		to_scan = MinValue(to_scan, current_group.Remaining());
+		idx_t to_scan = MinValue<idx_t>(scan_count - scanned, current_group.Remaining());
 		T *current_result_ptr = result_data + result_offset + scanned;
 
-		if (to_scan == BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE && offset_in_compression_group == 0) {
-			// Decompress directly into result vector
-			current_group.UnpackAlgorithmGroup(current_result_ptr, skip_sign_extend);
+		if (offset_in_compression_group == 0 && to_scan >= BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE) {
+			// Decode complete algorithm groups together, then apply the frame once to the batch.
+			to_scan -= to_scan % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
+			to_scan = MinValue<idx_t>(to_scan, BITPACKING_SCAN_BATCH_SIZE);
+			current_group.UnpackAlgorithmGroups(unsafe_array_ptr<T>(current_result_ptr, to_scan));
 		} else {
+			to_scan = MinValue<idx_t>(to_scan, BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE -
+			                                       offset_in_compression_group);
 			// Decompress compression algorithm to buffer
-			current_group.UnpackAlgorithmGroup(scan_state.decompression_buffer, skip_sign_extend);
+			current_group.UnpackAlgorithmGroups(unsafe_array_ptr<T>(
+			    scan_state.decompression_buffer, BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE));
 
 			memcpy(current_result_ptr, scan_state.decompression_buffer + offset_in_compression_group,
 			       to_scan * sizeof(T));
@@ -1136,64 +1150,119 @@ void BitpackingScan(ColumnSegment &segment, ColumnScanState &state, idx_t scan_c
 }
 
 //===--------------------------------------------------------------------===//
-// Fetch
+// Select
 //===--------------------------------------------------------------------===//
 template <class T, class T_U = typename MakeUnsigned<T>::type>
-void BitpackingFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
-                        idx_t result_idx) {
-	D_ASSERT(row_id >= 0);
-	auto row_index = NumericCast<idx_t>(row_id);
-	D_ASSERT(row_index < segment.count);
-	auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
-	auto handle = buffer_manager.Pin(state.context, segment.GetBlockHandle());
-	BitpackingScanState<T> scan_state(std::move(handle), segment);
-	scan_state.Skip(row_index);
+void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count, Vector &result,
+                      const SelectionVector &sel, idx_t sel_count, idx_t result_offset, ScanVectorType scan_type) {
+	auto &scan_state = state.scan_state->Cast<BitpackingScanState<T>>();
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	T *result_data = FlatVector::GetDataMutable<T>(result) + result_offset;
 
-	if (!scan_state.HasCurrentGroup()) {
-		ThrowBitpackingReadPastEnd();
+	idx_t previous_index = 0;
+	auto next_index = [&](idx_t sel_idx) {
+		const idx_t index = sel.get_index(sel_idx);
+		if (index < previous_index) {
+			InternalException::Throw("Error in BitpackingSelect - selection vector indices are not ordered");
+		}
+		previous_index = index;
+		return index;
+	};
+
+	idx_t pos = 0;
+	idx_t i = 0;
+	while (i < sel_count) {
+		const idx_t target = next_index(i);
+		D_ASSERT(target >= pos && target < vector_count);
+		scan_state.Skip(target - pos);
+		pos = target;
+		if (!scan_state.HasCurrentGroup()) {
+			ThrowBitpackingReadPastEnd();
+		}
+		if (scan_state.GetCurrentGroup().AtEnd()) {
+			if (scan_state.GetCurrentGroup().index + 1 >= scan_state.group_count) {
+				ThrowBitpackingReadPastEnd();
+			}
+			scan_state.LoadGroup(scan_state.GetCurrentGroup().index + 1);
+		}
+		auto &group = scan_state.GetCurrentGroup();
+		// rows [pos, run_end) are served by the same (partial) decode
+		idx_t run_end = pos + group.Remaining();
+		switch (group.metadata.mode) {
+		case BitpackingMode::CONSTANT:
+			for (; i < sel_count && next_index(i) < run_end; i++) {
+				result_data[i] = group.constant;
+			}
+			break;
+		case BitpackingMode::CONSTANT_DELTA:
+			for (; i < sel_count && next_index(i) < run_end; i++) {
+				idx_t multiplier = group.offset + (sel.get_index(i) - pos);
+				// Operands read from disk can contain any T value, so use defined wrapping.
+				result_data[i] = static_cast<T>((static_cast<T_U>(group.constant) * multiplier) +
+				                                static_cast<T_U>(group.frame_of_reference));
+			}
+			break;
+		case BitpackingMode::FOR: {
+			const idx_t offset_in_algorithm_group =
+			    group.offset % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
+			run_end = MinValue<idx_t>(run_end, pos + BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE -
+			                                       offset_in_algorithm_group);
+			group.UnpackAlgorithmGroups(unsafe_array_ptr<T>(scan_state.decompression_buffer,
+			                                                BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE));
+			for (; i < sel_count && next_index(i) < run_end; i++) {
+				T_U value = static_cast<T_U>(
+				    scan_state.decompression_buffer[offset_in_algorithm_group + (sel.get_index(i) - pos)]);
+				result_data[i] = static_cast<T>(value + static_cast<T_U>(group.frame_of_reference));
+			}
+			break;
+		}
+		default: {
+			D_ASSERT(group.metadata.mode == BitpackingMode::DELTA_FOR);
+			const idx_t offset_in_algorithm_group =
+			    group.offset % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
+			run_end = MinValue<idx_t>(run_end, pos + BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE -
+			                                       offset_in_algorithm_group);
+			group.UnpackAlgorithmGroups(unsafe_array_ptr<T>(scan_state.decompression_buffer,
+			                                                BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE));
+			auto deltas = reinterpret_cast<const T_U *>(scan_state.decompression_buffer) + offset_in_algorithm_group;
+			const T_U frame = static_cast<T_U>(group.frame_of_reference);
+			T_U carry = static_cast<T_U>(group.delta_offset);
+			const idx_t first = i;
+			// prefix-sum the deltas up to each selected row, emitting the running value
+			idx_t cur = pos;
+			for (; i < sel_count && next_index(i) < run_end; i++) {
+				const idx_t selected = sel.get_index(i);
+				for (; cur <= selected; cur++) {
+					carry += deltas[cur - pos] + frame;
+				}
+				result_data[i] = static_cast<T>(carry);
+			}
+			if (scan_state.is_bool) {
+				VerifyBooleanValues(result_data + first, i - first);
+			}
+			group.delta_offset = static_cast<T>(carry);
+			group.Advance(cur - pos);
+			pos = cur;
+			if (group.AtEnd() && group.index + 1 == scan_state.group_count) {
+				scan_state.Finish();
+			}
+			continue;
+		}
+		}
+		// move the group offset to the last selected row so that it matches 'pos'
+		const idx_t last_row = sel.get_index(i - 1);
+		group.Advance(last_row - pos);
+		pos = last_row;
 	}
-	auto &group = scan_state.GetCurrentGroup();
-	D_ASSERT(!group.AtEnd());
-
-	D_ASSERT(result.GetVectorType() == VectorType::FLAT_VECTOR);
-	T *result_data = FlatVector::GetDataMutable<T>(result);
-	T *current_result_ptr = result_data + result_idx;
-
-	if (group.metadata.mode == BitpackingMode::CONSTANT) {
-		*current_result_ptr = group.constant;
-		return;
-	}
-
-	if (group.metadata.mode == BitpackingMode::CONSTANT_DELTA) {
-		// Operands read from disk can contain any T value, so use defined wrapping.
-		idx_t multiplier = group.offset;
-		*current_result_ptr = static_cast<T>((static_cast<T_U>(group.constant) * multiplier) +
-		                                     static_cast<T_U>(group.frame_of_reference));
-		return;
-	}
-
-	D_ASSERT(group.metadata.mode == BitpackingMode::FOR || group.metadata.mode == BitpackingMode::DELTA_FOR);
-
-	idx_t offset_in_compression_group = group.offset % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
-
-	// FOR residuals are non-negative.
-	bool skip_sign_extend = true;
-
-	group.UnpackAlgorithmGroup(scan_state.decompression_buffer, skip_sign_extend);
-
-	// Use unsigned arithmetic to avoid signed overflow on corrupt data.
-	T_U value = static_cast<T_U>(scan_state.decompression_buffer[offset_in_compression_group]);
-	value += static_cast<T_U>(group.frame_of_reference);
-
-	if (group.metadata.mode == BitpackingMode::DELTA_FOR) {
-		value += static_cast<T_U>(group.delta_offset);
-	}
-	*current_result_ptr = static_cast<T>(value);
-	if (scan_state.is_bool) {
-		VerifyBooleanValues(current_result_ptr, 1);
+	// leave the scan state positioned at the end of the vector
+	if (vector_count > pos) {
+		scan_state.Skip(vector_count - pos);
 	}
 }
 
+//===--------------------------------------------------------------------===//
+// Skip
+//===--------------------------------------------------------------------===//
 template <class T>
 void BitpackingSkip(ColumnSegment &segment, ColumnScanState &state, idx_t skip_count) {
 	if (skip_count == 0) {
@@ -1236,8 +1305,10 @@ CompressionFunction GetBitpackingFunction(PhysicalType data_type) {
 	    CompressionType::COMPRESSION_BITPACKING, data_type, BitpackingInitAnalyze<T>, BitpackingAnalyze<T>,
 	    BitpackingFinalAnalyze<T>, BitpackingInitCompression<T, WRITE_STATISTICS>,
 	    BitpackingCompress<T, WRITE_STATISTICS>, BitpackingFinalizeCompress<T, WRITE_STATISTICS>, BitpackingInitScan<T>,
-	    BitpackingScan<T>, BitpackingScanPartial<T>, BitpackingFetchRow<T>, BitpackingSkip<T>);
+	    BitpackingScan<T>, BitpackingScanPartial<T>, BitpackingSkip<T>);
+	bitpacking.select = BitpackingSelect<T>;
 	bitpacking.get_segment_info = BitpackingGetSegmentInfo<T>;
+	bitpacking.zero_initialize_segments = false;
 	return bitpacking;
 }
 

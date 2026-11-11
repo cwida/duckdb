@@ -207,7 +207,7 @@ SELECT approx_quantile(r, 'nan'::FLOAT) FROM quantile
 cannot be NaN
 
 statement ok
-pragma threads=4
+SET threads=4
 
 statement ok
 PRAGMA verify_parallelism
@@ -289,6 +289,21 @@ SELECT reservoir_quantile(r, r)  from quantile
 statement error
 SELECT reservoir_quantile(r, NULL)  from quantile
 ----
+
+statement error
+SELECT reservoir_quantile(r, NULL::DOUBLE[]) from quantile
+----
+RESERVOIR_QUANTILE QUANTILE parameter cannot be NULL
+
+statement error
+SELECT reservoir_quantile(r, NULL::DOUBLE[], 100) from quantile
+----
+RESERVOIR_QUANTILE QUANTILE parameter cannot be NULL
+
+statement error
+SELECT reservoir_quantile(r, NULL::DOUBLE[]) OVER () from quantile
+----
+RESERVOIR_QUANTILE QUANTILE parameter cannot be NULL
 
 statement error
 SELECT reservoir_quantile(r, 'nan'::DOUBLE)  from quantile

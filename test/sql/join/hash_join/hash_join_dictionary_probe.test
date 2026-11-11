@@ -6,7 +6,7 @@
 load {TEST_DIR}/dictionary_probe.db
 
 statement ok
-PRAGMA force_compression='dictionary'
+SET force_compression='dictionary'
 
 statement ok
 CREATE OR REPLACE TABLE dim (k VARCHAR PRIMARY KEY, name VARCHAR);

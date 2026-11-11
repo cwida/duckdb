@@ -65,10 +65,11 @@ inline void VariantBuilderAppendBytes(string &blob, const_data_ptr_t data, idx_t
 	blob.append(const_char_ptr_cast(data), size);
 }
 
-inline uint32_t VariantBuilderGetOrCreateIndex(OrderedOwningStringMap<uint32_t> &dictionary, const string_t &key) {
+inline uint32_t VariantBuilderGetOrCreateIndex(OrderedOwningStringMap<uint32_t> &dictionary, ArenaAllocator &keys_arena,
+                                               const string_t &key) {
 	auto unsorted_idx = dictionary.size();
 	//! This will later be remapped to the sorted idx (see FinalizeVariantKeys in 'to_variant.cpp')
-	return dictionary.emplace(std::make_pair(key, unsorted_idx)).first->second;
+	return dictionary.emplace(std::make_pair(key, unsorted_idx), keys_arena).first->second;
 }
 
 //! The physical storage type of a DECIMAL of the given width (matches VariantDecimalData::GetPhysicalType)
@@ -85,7 +86,8 @@ inline PhysicalType VariantDecimalPhysicalType(uint32_t width) {
 
 //! Accumulates the canonical representation of a single chunk while traversing the source once.
 struct VariantBuilder {
-	explicit VariantBuilder(OrderedOwningStringMap<uint32_t> &dictionary) : dictionary(dictionary) {
+	VariantBuilder(OrderedOwningStringMap<uint32_t> &dictionary, ArenaAllocator &keys_arena)
+	    : dictionary(dictionary), keys_arena(keys_arena) {
 	}
 
 	//! values: (type_id, byte_offset) in pre-order
@@ -100,6 +102,8 @@ struct VariantBuilder {
 	string blob;
 	//! maps a key string to its (unsorted) dictionary index, owned by the result's keys vector
 	OrderedOwningStringMap<uint32_t> &dictionary;
+	//! the result's keys arena, the dictionary's keys are allocated in
+	ArenaAllocator &keys_arena;
 
 	static constexpr idx_t INIT_NESTING_DEPTH = 8;
 
@@ -153,7 +157,7 @@ struct VariantBuilder {
 		for (idx_t i = 0; i < n; i++) {
 			child_value_ids[block + i] = LocalValue();
 			child_key_ids[block + i] = LocalKey();
-			key_slots.push_back(VariantBuilderGetOrCreateIndex(dictionary, key_fn(i)));
+			key_slots.push_back(VariantBuilderGetOrCreateIndex(dictionary, keys_arena, key_fn(i)));
 			emit_fn(i);
 		}
 	}
@@ -291,8 +295,8 @@ struct VariantBuilder {
 		case LogicalTypeId::DECIMAL: {
 			variant_type = VariantLogicalType::DECIMAL;
 			auto &type = primitive.type();
-			uint8_t width;
-			uint8_t scale;
+			uint32_t width;
+			uint32_t scale;
 			type.GetDecimalProperties(width, scale);
 			VariantBuilderAppendVarint(blob, width);
 			VariantBuilderAppendVarint(blob, scale);
@@ -484,7 +488,7 @@ struct VariantBuilder {
 	void AssignObjectChild(idx_t block, idx_t i, string_t key) {
 		child_value_ids[block + i] = LocalValue();
 		child_key_ids[block + i] = LocalKey();
-		key_slots.push_back(VariantBuilderGetOrCreateIndex(dictionary, key));
+		key_slots.push_back(VariantBuilderGetOrCreateIndex(dictionary, keys_arena, key));
 	}
 
 	void AssignArrayChild(idx_t block, idx_t i) {
@@ -629,8 +633,8 @@ void BuildVariant(SOURCE &source, idx_t count, Vector &result) {
 
 	//! The dictionary is backed by the keys vector's string allocator so the finalized keys are owned
 	//! by the result (see FinalizeVariantKeys).
-	OrderedOwningStringMap<uint32_t> dictionary(StringVector::GetStringAllocator(keys_entry));
-	VariantBuilder builder(dictionary);
+	OrderedOwningStringMap<uint32_t> dictionary;
+	VariantBuilder builder(dictionary, StringVector::GetStringAllocator(keys_entry));
 
 	vector<list_entry_t> keys_entries(count);
 	vector<list_entry_t> children_entries(count);

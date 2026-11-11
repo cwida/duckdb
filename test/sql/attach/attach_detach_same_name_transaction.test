@@ -30,29 +30,37 @@ SELECT * FROM a.tbl
 ----
 2
 
-# a database the transaction has done work on (changes or reads) cannot be detached, so its name is never freed
+# a database the transaction has written to can be detached and its name attached again, but the transaction
+# cannot write to a second database
 statement ok
 BEGIN
 
 statement ok
-ATTACH '__TEST_DIR__/detach_same_name_modified.db' AS b
+ATTACH '{TEST_DIR}/detach_same_name_modified.db' AS b
 
 statement ok
 CREATE TABLE b.tbl AS SELECT 1 AS i
 
-statement error
+statement ok
 DETACH b
+
+statement ok
+ATTACH ':memory:' AS b
+
+statement error
+CREATE TABLE b.tbl AS SELECT 2 AS i
 ----
-outstanding work
+a single transaction can only write to a single attached database
 
 statement ok
 ROLLBACK
 
+# a database the transaction has read can be detached and its name used for another database
 statement ok
 BEGIN
 
 statement ok
-ATTACH '__TEST_DIR__/detach_same_name_read.db' AS c
+ATTACH '{TEST_DIR}/detach_same_name_read.db' AS c
 
 statement ok
 CREATE TABLE c.tbl AS SELECT 1 AS i
@@ -68,10 +76,32 @@ SELECT * FROM c.tbl
 ----
 1
 
-statement error
+statement ok
 DETACH c
-----
-outstanding work
 
 statement ok
-ROLLBACK
+ATTACH ':memory:' AS c
+
+statement ok
+CREATE TABLE c.tbl AS SELECT 2 AS i
+
+query I
+SELECT * FROM c.tbl
+----
+2
+
+statement ok
+COMMIT
+
+query I
+SELECT * FROM c.tbl
+----
+2
+
+statement ok
+ATTACH '{TEST_DIR}/detach_same_name_read.db' AS c_file
+
+query I
+SELECT * FROM c_file.tbl
+----
+1

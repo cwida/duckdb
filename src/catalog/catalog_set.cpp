@@ -12,6 +12,7 @@
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/catalog/catalog_entry/dependency/dependency_entry.hpp"
+#include "duckdb/common/set.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
@@ -375,7 +376,7 @@ bool CatalogSet::AlterEntry(CatalogTransaction transaction, const Identifier &na
 	unique_ptr<CatalogEntry> entry_to_destroy;
 	if (transaction.transaction) {
 		// serialize the AlterInfo into a temporary buffer
-		MemoryStream stream(Allocator::Get(*transaction.db));
+		MemoryStream stream(Allocator::Get(transaction.db));
 		BinarySerializer serializer(stream);
 		serializer.Begin();
 		serializer.WriteProperty(100, "column_name", alter_info.GetColumnName());
@@ -463,7 +464,8 @@ bool CatalogSet::DropEntry(ClientContext &context, const Identifier &name, bool 
 }
 
 //! Verify that the object referenced by the dependency still exists when we commit the dependency
-void CatalogSet::VerifyExistenceOfDependency(transaction_t commit_id, CatalogEntry &entry) {
+void CatalogSet::VerifyExistenceOfDependency(transaction_t commit_id, VisibilityBound visibility_bound,
+                                             CatalogEntry &entry) {
 	auto &duck_catalog = GetCatalog();
 
 	// Make sure that we don't see any uncommitted changes
@@ -472,18 +474,19 @@ void CatalogSet::VerifyExistenceOfDependency(transaction_t commit_id, CatalogEnt
 	// This will allow us to see all committed changes made before this COMMIT happened
 	CatalogTransaction commit_transaction(duck_catalog.GetDatabase(), transaction_id,
 	                                      VisibilityBound::Through(commit_id));
+	// Earlier writes in this transaction have already received their commit timestamp.
+	CatalogTransaction snapshot_transaction(duck_catalog.GetDatabase(), commit_id, visibility_bound);
 
 	D_ASSERT(entry.type == CatalogType::DEPENDENCY_ENTRY);
 	auto &dep = entry.Cast<DependencyEntry>();
-	duck_catalog.GetDependencyManager()->VerifyExistence(commit_transaction, dep);
+	duck_catalog.GetDependencyManager()->VerifyExistence(commit_transaction, snapshot_transaction, dep);
 }
 
 //! Verify that no dependencies creations were committed since our transaction started, that reference the entry we're
 //! dropping
-void CatalogSet::CommitDrop(transaction_t commit_id, VisibilityBound visibility_bound, CatalogEntry &entry) {
+void CatalogSet::VerifyCommitDrop(transaction_t commit_id, VisibilityBound visibility_bound, CatalogEntry &entry) {
 	auto &duck_catalog = GetCatalog();
 
-	entry.OnDrop();
 	// Make sure that we don't see any uncommitted changes
 	auto transaction_id = MAX_TRANSACTION_ID;
 	D_ASSERT(IsCommitted(commit_id));
@@ -492,6 +495,11 @@ void CatalogSet::CommitDrop(transaction_t commit_id, VisibilityBound visibility_
 	                                      VisibilityBound::Before(commit_id));
 
 	duck_catalog.GetDependencyManager()->VerifyCommitDrop(commit_transaction, visibility_bound, entry);
+}
+
+void CatalogSet::CommitDrop(transaction_t commit_id, VisibilityBound visibility_bound, CatalogEntry &entry) {
+	entry.OnDrop();
+	VerifyCommitDrop(commit_id, visibility_bound, entry);
 }
 
 DuckCatalog &CatalogSet::GetCatalog() {
@@ -553,14 +561,28 @@ CatalogEntry &CatalogSet::GetEntryForTransaction(CatalogTransaction transaction,
 
 SimilarCatalogEntry CatalogSet::SimilarEntry(CatalogTransaction transaction, const Identifier &name) {
 	unique_lock<mutex> lock(catalog_lock);
-	CreateDefaultEntries(transaction, lock);
+
+	// Score the names of default entries that have not been created yet without creating them: creating a default
+	// view parses and binds its SQL, which is far more work than an error suggestion needs.
+	// The candidates are visited in map order, so ties resolve as they would if the defaults had been created.
+	set<Identifier, IdentifierCompare> candidates;
+	for (auto &kv : map.Entries()) {
+		candidates.insert(kv.first);
+	}
+	if (defaults && !defaults->created_all_entries) {
+		for (auto &default_entry : defaults->GetDefaultEntries()) {
+			if (!map.GetEntry(default_entry)) {
+				candidates.insert(default_entry);
+			}
+		}
+	}
 
 	SimilarCatalogEntry result;
-	for (auto &kv : map.Entries()) {
-		auto entry_score = StringUtil::SimilarityRating(kv.first.GetIdentifierName(), name.GetIdentifierName());
+	for (auto &candidate : candidates) {
+		auto entry_score = StringUtil::SimilarityRating(candidate.GetIdentifierName(), name.GetIdentifierName());
 		if (entry_score > result.score) {
 			result.score = entry_score;
-			result.name = Identifier(kv.first.GetIdentifierName());
+			result.name = Identifier(candidate.GetIdentifierName());
 		}
 	}
 	return result;

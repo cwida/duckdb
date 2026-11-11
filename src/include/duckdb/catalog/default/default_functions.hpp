@@ -27,6 +27,8 @@ public:
 	SchemaCatalogEntry &schema;
 
 	DUCKDB_API static unique_ptr<CreateMacroInfo> CreateInternalMacroInfo(const DefaultMacro &default_macro);
+	//! Whether the built-in macro list defines a macro of this name in this schema
+	static bool IsDefaultMacro(const Identifier &schema, const Identifier &name);
 
 public:
 	unique_ptr<CatalogEntry> CreateDefaultEntry(ClientContext &context, const Identifier &entry_name) override;

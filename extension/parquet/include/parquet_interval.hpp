@@ -11,6 +11,7 @@
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/numeric_utils.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/common/types/interval.hpp"
 #include "zstd/common/xxhash.hpp"
 
@@ -32,9 +33,20 @@ struct ParquetIntervalUtils {
 		Store<uint32_t>(NumericCast<uint32_t>(micros / Interval::MICROS_PER_MSEC), target + sizeof(uint32_t) * 2);
 	}
 
-	static uint64_t HashNormalized(const interval_t &interval) {
+	//! The hash DuckDB adds to the bloom filters of intervals (normalized-v1), of the normalized interval with its
+	//! whole days in the days field. Normalizing can saturate and leave a part negative or above a day, so this does
+	//! not use Encode. There is no hash for a negative part, as Parquet stores no negative intervals
+	static optional<uint64_t> TryHashNormalized(const interval_t &interval) {
+		const auto normalized = interval.Normalize();
+		const auto days = int64_t(normalized.days) + normalized.micros / Interval::MICROS_PER_DAY;
+		const auto micros = normalized.micros % Interval::MICROS_PER_DAY;
+		if (normalized.months < 0 || days < 0 || micros < 0) {
+			return nullopt;
+		}
 		data_t bytes[PARQUET_INTERVAL_SIZE];
-		Encode(interval.Normalize(), bytes);
+		Store<uint32_t>(UnsafeNumericCast<uint32_t>(normalized.months), bytes);
+		Store<uint32_t>(UnsafeNumericCast<uint32_t>(days), bytes + sizeof(uint32_t));
+		Store<uint32_t>(UnsafeNumericCast<uint32_t>(micros / Interval::MICROS_PER_MSEC), bytes + sizeof(uint32_t) * 2);
 		return duckdb_zstd::XXH64(bytes, sizeof(bytes), 0);
 	}
 };

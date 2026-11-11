@@ -1,0 +1,44 @@
+# name: test/sql/aggregate/aggregates/approx_quantile_ns_infinity.test
+# description: approx_quantile keeps the infinities of TIMESTAMP_NS and TIMESTAMPTZ_NS infinite, as for TIMESTAMP
+# group: [aggregates]
+
+query III
+SELECT approx_quantile(TIMESTAMP_NS '-infinity', 0.5), approx_quantile(TIMESTAMPTZ_NS '-infinity', 0.5), approx_quantile(TIMESTAMP '-infinity', 0.5);
+----
+-infinity	-infinity	-infinity
+
+# the result is the sentinel itself, not a value below it
+query III
+SELECT approx_quantile(TIMESTAMP_NS '-infinity', 0.5) < TIMESTAMP_NS '-infinity', isfinite(approx_quantile(TIMESTAMP_NS '-infinity', 0.5)), epoch_ns(approx_quantile(TIMESTAMP_NS '-infinity', 0.5));
+----
+false	false	NULL
+
+query II
+SELECT approx_quantile(TIMESTAMP_NS 'infinity', 0.5), approx_quantile(ts, 0.5) FROM (VALUES (TIMESTAMP_NS '-infinity'), (TIMESTAMP_NS '-infinity')) t(ts);
+----
+infinity	-infinity
+
+query II
+SELECT approx_quantile(TIMESTAMPTZ_NS 'infinity', 0.5), approx_quantile(TIMESTAMPTZ_NS '-infinity', 0.5) = TIMESTAMPTZ_NS '-infinity';
+----
+infinity	true
+
+# finite values keep their results
+query II
+SELECT approx_quantile(TIMESTAMP_NS '2000-01-01 00:00:00', 0.5), approx_quantile(TIMESTAMPTZ_NS '2000-01-01 00:00:00+00', 0.5) = TIMESTAMPTZ_NS '2000-01-01 00:00:00+00';
+----
+2000-01-01 00:00:00	true
+
+query I
+SELECT approx_quantile(ts, [0.0, 0.5, 1.0]) FROM (VALUES (TIMESTAMP_NS '-infinity'), (TIMESTAMP_NS '2000-01-01 00:00:00'), (TIMESTAMP_NS 'infinity')) t(ts);
+----
+[-infinity, '2000-01-01 00:00:00', infinity]
+
+# SUMMARIZE over a column of -infinity
+statement ok
+CREATE TABLE ninf AS SELECT * FROM (VALUES (TIMESTAMP_NS '-infinity'), (TIMESTAMP_NS '-infinity')) t(ts);
+
+query IIII
+SELECT avg, q25, q50, q75 FROM (SUMMARIZE ninf);
+----
+-infinity	-infinity	-infinity	-infinity

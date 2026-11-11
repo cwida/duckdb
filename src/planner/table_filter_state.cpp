@@ -1,6 +1,9 @@
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/planner/table_filter_state.hpp"
 #include "duckdb/common/operator/comparison_operators.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/common/vector_operations/selection_helpers.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
@@ -15,12 +18,12 @@ namespace duckdb {
 static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expression &expression,
                                                                   bool inside_selectivity_optional);
 
-static void InitializeExecutor(ClientContext &context, const Expression &expression, ExpressionFilterState &state) {
+static void InitializeExecutor(Context &context, const Expression &expression, ExpressionFilterState &state) {
 	state.executor = make_uniq<ExpressionExecutor>(context);
 	state.executor->AddExpression(expression);
 }
 
-ExpressionFilterState::ExpressionFilterState(ClientContext &context, const Expression &expression) {
+ExpressionFilterState::ExpressionFilterState(Context &context, const Expression &expression) {
 	can_throw = expression.CanThrow();
 	fast_executor = TryCreateFastExecutor(expression, false);
 	InitializeExecutor(context, expression, *this);
@@ -58,6 +61,75 @@ public:
 	}
 };
 
+class ConjunctionOrFilterExecutor final : public ExpressionFilterExecutor {
+public:
+	explicit ConjunctionOrFilterExecutor(vector<unique_ptr<ExpressionFilterExecutor>> children_p)
+	    : children(std::move(children_p)), input_sel(STANDARD_VECTOR_SIZE), child_input(STANDARD_VECTOR_SIZE),
+	      result_sel(STANDARD_VECTOR_SIZE), merge_sel(STANDARD_VECTOR_SIZE) {
+	}
+
+	idx_t FilterSelection(SelectionVector &sel, Vector &vector, idx_t scan_count,
+	                      idx_t &approved_tuple_count) override {
+		if (approved_tuple_count == 0) {
+			return 0;
+		}
+		if (approved_tuple_count > input_sel.Capacity()) {
+			input_sel.Initialize(approved_tuple_count);
+			child_input.Initialize(approved_tuple_count);
+			result_sel.Initialize(approved_tuple_count);
+			merge_sel.Initialize(approved_tuple_count);
+		}
+		const auto has_selection = sel.IsSet();
+		if (has_selection) {
+			for (idx_t i = 0; i < approved_tuple_count; i++) {
+				input_sel.set_index(i, sel.get_index(i));
+			}
+		}
+		idx_t result_count = 0;
+		for (auto &child : children) {
+			SelectionVector child_sel;
+			if (has_selection) {
+				for (idx_t i = 0; i < approved_tuple_count; i++) {
+					child_input.set_index(i, input_sel.get_index(i));
+				}
+				child_sel.Initialize(child_input);
+			}
+			auto child_count = approved_tuple_count;
+			child->FilterSelection(child_sel, vector, scan_count, child_count);
+			if (child_count == approved_tuple_count) {
+				if (has_selection) {
+					sel.Initialize(input_sel);
+				}
+				return approved_tuple_count;
+			}
+			// Scan filters preserve ordered selections; merge without repeating overlapping matches.
+			idx_t left = 0;
+			idx_t right = 0;
+			idx_t merged_count = 0;
+			while (left < result_count || right < child_count) {
+				auto left_index = left < result_count ? result_sel.get_index(left) : scan_count;
+				auto right_index = right < child_count ? child_sel.get_index(right) : scan_count;
+				auto index = MinValue(left_index, right_index);
+				merge_sel.set_index(merged_count++, index);
+				left += left_index == index;
+				right += right_index == index;
+			}
+			std::swap(result_sel, merge_sel);
+			result_count = merged_count;
+		}
+		sel.Initialize(result_sel);
+		approved_tuple_count = result_count;
+		return result_count;
+	}
+
+private:
+	vector<unique_ptr<ExpressionFilterExecutor>> children;
+	SelectionVector input_sel;
+	SelectionVector child_input;
+	SelectionVector result_sel;
+	SelectionVector merge_sel;
+};
+
 class ComparisonFilterExecutor final : public ExpressionFilterExecutor {
 public:
 	ComparisonFilterExecutor(ExpressionType comparison_type_p, Value constant_p)
@@ -93,7 +165,21 @@ private:
 		auto data = UnifiedVectorFormat::GetData<T>(vdata);
 		auto &mask = vdata.validity;
 		idx_t result_count = 0;
-		for (idx_t i = 0; i < approved_tuple_count; i++) {
+		idx_t i = 0;
+		if constexpr (UseBooleanSelectionBatch<T>() && !CAN_HAVE_NULL) {
+			if (!sel.IsSet() && !vdata.sel->IsSet()) {
+				array_ptr<sel_t> output(result_sel.data(), result_sel.Capacity());
+				for (; i + 64 <= approved_tuple_count; i += 64) {
+					bool matches[64];
+					for (idx_t j = 0; j < 64; j++) {
+						matches[j] = OP::Operation(data[i + j], predicate);
+					}
+					auto destination = output.SubArray(result_count, 64);
+					result_count += SelectionVector::SelectFromBoolean(matches, nullptr, 64, destination, {}, i);
+				}
+			}
+		}
+		for (; i < approved_tuple_count; i++) {
 			auto idx = sel.get_index(i);
 			auto vector_idx = vdata.sel->get_index(idx);
 			bool comparison_result =
@@ -129,7 +215,7 @@ private:
 		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
 			return SelectOperation<T, LessThanEquals>(vdata, sel, approved_tuple_count);
 		default:
-			throw InternalException("Unsupported comparison type for comparison filter executor");
+			InternalException::Throw("Unsupported comparison type for comparison filter executor");
 		}
 	}
 
@@ -166,7 +252,7 @@ private:
 		case PhysicalType::VARCHAR:
 			return SelectTyped<string_t>(vdata, sel, approved_tuple_count);
 		default:
-			throw InternalException("Unsupported physical type for comparison filter executor");
+			InternalException::Throw("Unsupported physical type for comparison filter executor");
 		}
 	}
 
@@ -239,6 +325,9 @@ public:
 
 		const auto hash_capacity = sel.IsSet() ? scan_count : approved_tuple_count;
 		PrepareCapacity(hash_capacity);
+		if (sel.IsSet() && sel.data() == bloom_sel.data()) {
+			bloom_sel.Initialize(current_capacity);
+		}
 		if (sel.IsSet()) {
 			VectorOperations::Hash(vector, hashes, sel, approved_tuple_count);
 			if (hashes.GetVectorType() == VectorType::FLAT_VECTOR) {
@@ -382,6 +471,9 @@ public:
 		}
 
 		PrepareCapacity(approved_tuple_count);
+		if (sel.IsSet() && sel.data() == local_sel.data()) {
+			local_sel.Initialize(current_capacity);
+		}
 		const auto has_selection = sel.IsSet();
 		const auto result_count = has_selection ? filter->LookupKeys(vector, sel, local_sel, approved_tuple_count)
 		                                        : filter->LookupKeys(vector, local_sel, approved_tuple_count);
@@ -582,7 +674,8 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expressi
 	case ExpressionClass::BOUND_FUNCTION:
 		return TryCreateFunctionExecutor(expression.Cast<BoundFunctionExpression>(), inside_selectivity_optional);
 	case ExpressionClass::BOUND_CONJUNCTION: {
-		if (expression.GetExpressionType() != ExpressionType::CONJUNCTION_AND) {
+		if (expression.GetExpressionType() != ExpressionType::CONJUNCTION_AND &&
+		    expression.GetExpressionType() != ExpressionType::CONJUNCTION_OR) {
 			return nullptr;
 		}
 		auto &conjunction = expression.Cast<BoundConjunctionExpression>();
@@ -594,7 +687,10 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expressi
 			}
 			children.push_back(std::move(child_executor));
 		}
-		return make_uniq<ConjunctionAndFilterExecutor>(std::move(children));
+		if (expression.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
+			return make_uniq<ConjunctionAndFilterExecutor>(std::move(children));
+		}
+		return make_uniq<ConjunctionOrFilterExecutor>(std::move(children));
 	}
 	default:
 		return nullptr;
@@ -603,7 +699,7 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expressi
 
 unique_ptr<TableFilterState> TableFilterState::Initialize(ClientContext &context, const TableFilter &filter) {
 	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "TableFilterState::Initialize");
-	return make_uniq<ExpressionFilterState>(context, *expr_filter.expr);
+	return make_uniq<ExpressionFilterState>(context.GetContext(), *expr_filter.expr);
 }
 
 } // namespace duckdb

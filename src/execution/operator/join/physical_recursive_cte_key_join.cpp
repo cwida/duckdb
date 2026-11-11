@@ -4,7 +4,7 @@
 #include "duckdb/common/row_operations/row_operations.hpp"
 #include "duckdb/execution/aggregate_hashtable.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte.hpp"
-#include "duckdb/execution/operator/set/physical_recursive_cte_state.hpp"
+#include "duckdb/execution/operator/set/physical_recursive_cte_keyed_state.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 
 namespace duckdb {
@@ -146,7 +146,7 @@ public:
 	}
 
 	OperatorResultType Execute(DataChunk &input, DataChunk &output, const RecursiveCTEKeyJoinLayout &layout,
-	                           RecursiveCTEState &recursive_state);
+	                           RecursiveCTEKeyedState &recursive_state);
 
 	bool SupportsReuse() const override {
 		return true;
@@ -161,14 +161,14 @@ public:
 private:
 	template <bool COLLECT_METRICS>
 	OperatorResultType ExecuteInternal(DataChunk &input, DataChunk &output, const RecursiveCTEKeyJoinLayout &layout,
-	                                   RecursiveCTEState &recursive_state);
+	                                   RecursiveCTEKeyedState &recursive_state);
 	void BindHashTable(GroupedAggregateHashTable &hash_table);
 	RecursiveCTEKeyJoinResult ProbeCompleteKey(DataChunk &input, const RecursiveCTEKeyJoinLayout &layout,
-	                                           RecursiveCTEState &recursive_state);
+	                                           RecursiveCTEKeyedState &recursive_state);
 	RecursiveCTEKeyJoinResult ProbePartialKey(DataChunk &input, const RecursiveCTEKeyJoinLayout &layout,
-	                                          RecursiveCTEState &recursive_state);
+	                                          RecursiveCTEKeyedState &recursive_state);
 	void ExtractProbeKeys(DataChunk &input, const RecursiveCTEKeyJoinLayout &layout);
-	void FinalizeStateRows(RecursiveCTEState &recursive_state, idx_t match_count);
+	void FinalizeStateRows(RecursiveCTEKeyedState &recursive_state, idx_t match_count);
 	void EmitResult(DataChunk &input, DataChunk &output, const RecursiveCTEKeyJoinLayout &layout, idx_t match_count);
 
 private:
@@ -262,7 +262,7 @@ void RecursiveCTEKeyJoinState::BindHashTable(GroupedAggregateHashTable &hash_tab
 
 RecursiveCTEKeyJoinResult RecursiveCTEKeyJoinState::ProbeCompleteKey(DataChunk &input,
                                                                      const RecursiveCTEKeyJoinLayout &layout,
-                                                                     RecursiveCTEState &recursive_state) {
+                                                                     RecursiveCTEKeyedState &recursive_state) {
 	ExtractProbeKeys(input, layout);
 	const auto current_probe_count = SelectValidProbeKeys(probe_keys, layout, key_formats, valid_probe_sel);
 	if (current_probe_count == 0) {
@@ -302,7 +302,7 @@ RecursiveCTEKeyJoinResult RecursiveCTEKeyJoinState::ProbeCompleteKey(DataChunk &
 
 RecursiveCTEKeyJoinResult RecursiveCTEKeyJoinState::ProbePartialKey(DataChunk &input,
                                                                     const RecursiveCTEKeyJoinLayout &layout,
-                                                                    RecursiveCTEState &recursive_state) {
+                                                                    RecursiveCTEKeyedState &recursive_state) {
 	const auto &state_key_indices = layout.StateKeyIndices();
 	auto &index = recursive_state.GetPartialKeyIndex(state_key_indices);
 	auto &match_chunk_state = hash_table_state->match_chunk_state;
@@ -439,7 +439,7 @@ void RecursiveCTEKeyJoinState::ExtractProbeKeys(DataChunk &input, const Recursiv
 	probe_key_executor->Execute(raw_probe_keys, probe_keys);
 }
 
-void RecursiveCTEKeyJoinState::FinalizeStateRows(RecursiveCTEState &recursive_state, idx_t match_count) {
+void RecursiveCTEKeyJoinState::FinalizeStateRows(RecursiveCTEKeyedState &recursive_state, idx_t match_count) {
 	state_keys.CheckCardinality(match_count);
 	recursive_state.FinalizeStateRows(row_state, matched_addresses, state_keys, aggregate_rows, state_rows);
 }
@@ -474,7 +474,7 @@ void RecursiveCTEKeyJoinState::EmitResult(DataChunk &input, DataChunk &output, c
 template <bool COLLECT_METRICS>
 OperatorResultType RecursiveCTEKeyJoinState::ExecuteInternal(DataChunk &input, DataChunk &output,
                                                              const RecursiveCTEKeyJoinLayout &layout,
-                                                             RecursiveCTEState &recursive_state) {
+                                                             RecursiveCTEKeyedState &recursive_state) {
 	const auto lookup_start =
 	    COLLECT_METRICS ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
 	BindHashTable(recursive_state.GetHashTable());
@@ -522,7 +522,7 @@ OperatorResultType RecursiveCTEKeyJoinState::ExecuteInternal(DataChunk &input, D
 
 OperatorResultType RecursiveCTEKeyJoinState::Execute(DataChunk &input, DataChunk &output,
                                                      const RecursiveCTEKeyJoinLayout &layout,
-                                                     RecursiveCTEState &recursive_state) {
+                                                     RecursiveCTEKeyedState &recursive_state) {
 	if (recursive_state.GetMetrics().Enabled()) {
 		return ExecuteInternal<true>(input, output, layout, recursive_state);
 	}
@@ -536,7 +536,7 @@ OperatorResultType PhysicalRecursiveCTEKeyJoin::ExecuteInternal(ExecutionContext
 	if (!state_scan.recursive_cte || !state_scan.recursive_cte->sink_state) {
 		throw InternalException("USING KEY direct probe has no recursive state");
 	}
-	auto &recursive_state = state_scan.recursive_cte->sink_state->Cast<RecursiveCTEState>();
+	auto &recursive_state = state_scan.recursive_cte->sink_state->Cast<RecursiveCTEKeyedState>();
 	return state_p.Cast<RecursiveCTEKeyJoinState>().Execute(input, chunk, layout, recursive_state);
 }
 

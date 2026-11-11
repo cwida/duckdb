@@ -48,6 +48,12 @@ def resolve_version(explicit_version: str = "", alpha_run_number: str = "") -> s
     return f"v{base_version}.{patch_version}-dev{commit_count()}"
 
 
+def is_release_build(version: str) -> bool:
+    if VERSION_PATTERN.fullmatch(version) is None:
+        raise ValueError(f"Invalid DuckDB version '{version}'")
+    return "-rc" not in version and "-dev" not in version
+
+
 def environment_version(explicit_version: str = "") -> str:
     return explicit_version or os.getenv("DUCKDB_VERSION", "") or os.getenv("OVERRIDE_GIT_DESCRIBE", "")
 
@@ -80,6 +86,7 @@ def main() -> None:
     if args.github_output:
         print(f"duckdb_commit={commit}")
         print(f"duckdb_version={version}")
+        print(f"is_release_build={'true' if is_release_build(version) else 'false'}")
     else:
         print(version)
 

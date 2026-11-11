@@ -3,7 +3,7 @@
 #include "duckdb/common/multi_file/multi_file_reader.hpp"
 #include "json_functions.hpp"
 #include "json_scan.hpp"
-#include "json_structure.hpp"
+#include "json_schema_inference.hpp"
 #include "json_transform.hpp"
 #include "duckdb/parallel/task_executor.hpp"
 
@@ -70,7 +70,7 @@ public:
 		auto &context = auto_detect_state.context;
 		auto &files = auto_detect_state.files;
 		auto &json_data = auto_detect_state.json_data;
-		auto json_reader = make_shared_ptr<JSONReader>(context, json_data.options, files[file_idx].path);
+		auto json_reader = make_shared_ptr<JSONReader>(context, json_data.options, files[file_idx]);
 		if (auto_detect_state.sampled_readers[file_idx]) {
 			throw InternalException("Reader for file %llu was already created", file_idx);
 		}
@@ -119,6 +119,8 @@ public:
 			node.RefineCandidateTypes(scan_state.values, next, string_vector, allocator,
 			                          auto_detect_state.date_format_map, user_specified_timestamp_format);
 		}
+		// release the current buffer, otherwise the sampled reader keeps it alive after the bind
+		scan_state.ClearBufferHandle();
 		auto_detect_state.total_file_size += file_size;
 		auto_detect_state.bytes_scanned += total_read_size;
 		auto_detect_state.tuples_scanned += total_tuple_count;
@@ -241,8 +243,8 @@ unique_ptr<JSONStructureNode> JSONScan::DetectStructure(ClientContext &context, 
                                                         const vector<OpenFileInfo> &files,
                                                         vector<shared_ptr<JSONReader>> &sampled_readers) {
 	MutableDateFormatMap date_format_map(*json_data.date_format_map);
-	auto node = make_uniq<JSONStructureNode>();
 	auto &options = json_data.options;
+	auto node = make_uniq<JSONStructureNode>(options.case_insensitive_keys);
 	auto file_count = MinValue<idx_t>(options.maximum_sample_files, files.size());
 	sampled_readers.resize(files.empty() ? 0 : files.size());
 
@@ -250,7 +252,11 @@ unique_ptr<JSONStructureNode> JSONScan::DetectStructure(ClientContext &context, 
 	const auto num_threads = TaskScheduler::GetScheduler(context).NumberOfThreads();
 	const auto files_per_task = (file_count + num_threads - 1) / num_threads;
 	const auto num_tasks = (file_count + files_per_task - 1) / files_per_task;
-	vector<JSONStructureNode> task_nodes(num_tasks);
+	vector<JSONStructureNode> task_nodes;
+	task_nodes.reserve(num_tasks);
+	for (idx_t task_idx = 0; task_idx < num_tasks; task_idx++) {
+		task_nodes.emplace_back(options.case_insensitive_keys);
+	}
 
 	// Same idea as in union_by_name.hpp
 	TaskExecutor executor(context);

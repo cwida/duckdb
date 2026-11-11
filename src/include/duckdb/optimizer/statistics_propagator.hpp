@@ -26,6 +26,7 @@ class ClientContext;
 class LogicalOperator;
 class TableFilter;
 struct BoundOrderByNode;
+struct FunctionStatisticsInput;
 
 enum class StatisticsPropagationMode : uint8_t { FILTER_SIMPLIFICATION, FULL };
 
@@ -35,6 +36,10 @@ public:
 	                     StatisticsPropagationMode mode = StatisticsPropagationMode::FULL);
 
 	unique_ptr<NodeStatistics> PropagateStatistics(unique_ptr<LogicalOperator> &node_ptr);
+	//! Propagate statistics through a standalone expression, given the statistics of the columns it references
+	unique_ptr<BaseStatistics>
+	PropagateExpressionStatistics(unique_ptr<Expression> &expr,
+	                              column_binding_map_t<unique_ptr<BaseStatistics>> column_statistics);
 
 	column_binding_map_t<unique_ptr<BaseStatistics>> GetStatisticsMap() {
 		return std::move(statistics_map);
@@ -55,6 +60,9 @@ public:
 	static unique_ptr<BaseStatistics> PropagateMonotoneBounds(ClientContext &context,
 	                                                          const BoundFunctionExpression &func,
 	                                                          const vector<BaseStatistics> &child_stats);
+	//! Statistics callback for monotone functions that return NULL for infinite arguments
+	DUCKDB_API static unique_ptr<BaseStatistics> PropagateFiniteMonotoneBounds(ClientContext &context,
+	                                                                           FunctionStatisticsInput &input);
 	//! Compare two sets of statistics and return whether the comparison is always true or false
 	static FilterPropagateResult PropagateComparison(const BaseStatistics &left, const BaseStatistics &right,
 	                                                 ExpressionType comparison);
@@ -80,6 +88,7 @@ private:
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalLimit &op, unique_ptr<LogicalOperator> &node_ptr);
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalOrder &op, unique_ptr<LogicalOperator> &node_ptr);
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalWindow &op, unique_ptr<LogicalOperator> &node_ptr);
+	unique_ptr<NodeStatistics> PropagateStatistics(LogicalUnnest &op, unique_ptr<LogicalOperator> &node_ptr);
 
 	unique_ptr<NodeStatistics> PropagateChildren(LogicalOperator &node, unique_ptr<LogicalOperator> &node_ptr);
 
@@ -141,6 +150,11 @@ private:
 	unique_ptr<BaseStatistics> PropagateExpression(BoundOperatorExpression &expr, unique_ptr<Expression> &expr_ptr);
 
 	unique_ptr<BaseStatistics> PropagateComparison(BoundFunctionExpression &expr, unique_ptr<Expression> &expr_ptr);
+	enum class ComparisonContext { SCALAR, JOIN };
+	//! Simplify distinctness when NULL cannot affect the comparison's result in this context
+	static ExpressionType SimplifyDistinctComparison(ExpressionType comparison, optional_ptr<const BaseStatistics> left,
+	                                                 optional_ptr<const BaseStatistics> right,
+	                                                 ComparisonContext context);
 
 	//! Try to execute aggregates using only the statistics if possible
 	void TryExecuteAggregates(LogicalAggregate &op, unique_ptr<LogicalOperator> &node_ptr);
@@ -174,6 +188,8 @@ private:
 	unique_ptr<NodeStatistics> node_stats;
 	//! Whether statistics changed which relations a filter depends on
 	bool filter_bindings_changed = false;
+	//! Whether propagated statistics are attached to the expressions as verification statistics
+	bool attach_verification_stats = true;
 	//! The chain of operators from the root down to the operator currently being propagated
 	vector<reference<unique_ptr<LogicalOperator>>> propagation_path;
 };

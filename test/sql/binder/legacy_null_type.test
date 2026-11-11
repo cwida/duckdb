@@ -12,3 +12,14 @@ query I
 SELECT TYPEOF(c) FROM t
 ----
 INTEGER
+
+# a NULL table function argument still matches a VARCHAR parameter
+statement error
+SELECT * FROM query(NULL);
+----
+Binder Error: Cannot use NULL as function argument
+
+statement error
+SELECT * FROM query_table(NULL);
+----
+Binder Error: Cannot use NULL as function argument

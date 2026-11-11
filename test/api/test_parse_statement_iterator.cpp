@@ -198,6 +198,26 @@ TEST_CASE("ParseIterator: semicolons in strings and comments handled", "[api][pa
 	REQUIRE(DrainParse(with_comments).size() == 2);
 }
 
+TEST_CASE("ParseIterator: comments before a statement are part of its query text", "[api][parse_iterator]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &ctx = *con.context;
+
+	const string sql = "/* lead */ SELECT 1; -- between\nSELECT 2 /* tail */;;  ";
+	ParseIterator it(ctx, sql);
+	auto stmts = DrainParse(it);
+	REQUIRE(stmts.size() == 2);
+	REQUIRE(stmts[0]->query == "/* lead */ SELECT 1;");
+	REQUIRE(stmts[1]->query == " -- between\nSELECT 2 /* tail */;;  ");
+
+	// Parser::ParseQuery slices the same way
+	Parser parser(ctx);
+	parser.ParseQuery(sql);
+	REQUIRE(parser.statements.size() == 2);
+	REQUIRE(parser.statements[0]->query == stmts[0]->query);
+	REQUIRE(parser.statements[1]->query == stmts[1]->query);
+}
+
 //===--------------------------------------------------------------------===//
 // StatementIterator (Peek = "more input?", Get = the next user statement)
 //===--------------------------------------------------------------------===//
@@ -326,6 +346,21 @@ TEST_CASE("StatementIterator: movable", "[api][statement_iterator]") {
 	REQUIRE_FALSE(moved.Peek());
 }
 
+TEST_CASE("StatementIterator: a SET reaches the later statements of the same string", "[api][statement_iterator]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	// the default division of two integers is a float division
+	auto result = con.Query("SELECT 2/4");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {0.5}));
+
+	// a SET between the statements of one string changes how the later statements parse
+	result = con.Query("SET integer_division=true; SELECT 2/4");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {0}));
+}
+
 TEST_CASE("StatementIterator: a statement the engine expands is yielded as written", "[api][statement_iterator]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -343,5 +378,5 @@ TEST_CASE("StatementIterator: a statement the engine expands is yielded as writt
 	REQUIRE(stmts[3]->type == StatementType::TRANSACTION_STATEMENT);
 	REQUIRE(stmts[4]->type == StatementType::MULTI_STATEMENT);
 	REQUIRE(stmts[5]->type == StatementType::TRANSACTION_STATEMENT);
-	REQUIRE(stmts[1]->query == "ALTER TABLE t ADD COLUMN r DOUBLE DEFAULT random(); ");
+	REQUIRE(stmts[1]->query == " ALTER TABLE t ADD COLUMN r DOUBLE DEFAULT random();");
 }

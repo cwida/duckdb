@@ -189,6 +189,21 @@ TEST_CASE("Test temp_directory defaults", "[api][.]") {
 	}
 }
 
+TEST_CASE("Test max_temp_directory_size set at startup is enforced", "[api]") {
+	auto config = GetTestConfig();
+	config->SetOptionByName("temp_directory", TestCreatePath("max_temp_directory_size_startup"));
+	config->SetOptionByName("max_temp_directory_size", "0KiB");
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("PRAGMA memory_limit='4MB'"));
+
+	// the table does not fit in memory, so it has to be offloaded, which the limit does not allow
+	auto result = con.Query("CREATE TABLE t AS SELECT random() FROM range(1000000)");
+	REQUIRE(result->HasError());
+	REQUIRE(result->GetErrorType() == ExceptionType::OUT_OF_MEMORY);
+	REQUIRE(StringUtil::Contains(result->GetError(), "failed to offload data block"));
+}
+
 TEST_CASE("Test parallel usage of single client", "[api][.]") {
 	auto db = make_uniq<DuckDB>(nullptr);
 	auto conn = make_uniq<Connection>(*db);
@@ -528,6 +543,31 @@ TEST_CASE("Test prepare dependencies with multiple connections", "[catalog]") {
 	REQUIRE_NO_FAIL(con3->Query("COMMIT"));
 }
 
+TEST_CASE("Extract the plan of joins the optimizer rewrites", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE a AS SELECT 1 AS id, DATE '2025-01-01' AS dt"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE r AS SELECT 1 AS id, DATE '2024-01-01' AS rd, NULL::DATE AS fd"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE p (pid BIGINT PRIMARY KEY)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE knows (p1 BIGINT, p2 BIGINT, PRIMARY KEY (p1, p2))"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE interest (pid BIGINT, tag BIGINT, PRIMARY KEY (pid, tag))"));
+	const vector<string> queries {
+	    "SELECT a.id FROM a JOIN r ON r.id = a.id WHERE r.rd <= a.dt",
+	    "SELECT a.id FROM a JOIN r ON r.id = a.id WHERE r.fd IS NULL OR r.fd > a.dt",
+	    // an ANTI join that closes a join cycle
+	    "SELECT count(i.tag) FROM p AS p1 JOIN knows AS k1 ON k1.p1 = p1.pid JOIN knows AS k2 ON k1.p2 = k2.p1 "
+	    "JOIN p AS p3 ON k2.p2 = p3.pid JOIN interest AS i ON i.pid = p3.pid "
+	    "ANTI JOIN knows AS k3 ON k3.p1 = p1.pid AND k3.p2 = p3.pid"};
+	for (auto &query : queries) {
+		auto plan = con.ExtractPlan(query);
+		REQUIRE(plan);
+		auto result = con.Query(query);
+		REQUIRE_NO_FAIL(*result);
+		REQUIRE(plan->types == result->GetTypes());
+	}
+}
+
 TEST_CASE("Test connection API", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -616,6 +656,41 @@ TEST_CASE("Test parser tokenize", "[api]") {
 	// The end-of-input sentinel is not a token: nothing starts at or past the input length.
 	REQUIRE(tokens.back().start < sql.size());
 	REQUIRE(tokens.size() == expected.size());
+}
+
+TEST_CASE("Test parser tokenize of words the grammar matches literally", "[api]") {
+	// REPOSITORY, PREFIX, PUBLIC and KEYS are in none of the keyword lists, the grammar matches them literally;
+	// highlighting shows them as keywords, while names and quoted identifiers stay identifiers
+	string sql = "CREATE EXTENSION REPOSITORY r WITH PREFIX 'p' USING PUBLIC KEYS [\"prefix\"]";
+	auto tokens = Parser::Tokenize(sql);
+
+	using T = SimplifiedTokenType;
+	vector<pair<T, idx_t>> expected {
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 0},          // CREATE
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 7},          // EXTENSION
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 17},         // REPOSITORY
+	    {T::SIMPLIFIED_TOKEN_IDENTIFIER, 28},      // r
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 30},         // WITH
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 35},         // PREFIX
+	    {T::SIMPLIFIED_TOKEN_STRING_CONSTANT, 42}, // 'p'
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 46},         // USING
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 52},         // PUBLIC
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 59},         // KEYS
+	    {T::SIMPLIFIED_TOKEN_OPERATOR, 64},        // [
+	    {T::SIMPLIFIED_TOKEN_IDENTIFIER, 65},      // "prefix"
+	};
+	REQUIRE(tokens.size() >= expected.size());
+	for (idx_t i = 0; i < expected.size(); i++) {
+		REQUIRE(tokens[i].type == expected[i].first);
+		REQUIRE(tokens[i].start == expected[i].second);
+	}
+
+	// the grammar also matches the quotes of quoted identifiers literally: an unfinished one stays an identifier
+	for (auto &unfinished : {"\"", "`", "SELECT \""}) {
+		auto unfinished_tokens = Parser::Tokenize(unfinished);
+		REQUIRE(!unfinished_tokens.empty());
+		REQUIRE(unfinished_tokens.back().type == T::SIMPLIFIED_TOKEN_IDENTIFIER);
+	}
 }
 
 TEST_CASE("Test opening an invalid database file", "[api]") {
@@ -1036,6 +1111,54 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 		// Cleanup
 		context.ClearInterrupt();
 		REQUIRE_NO_FAIL(con.Query("DROP TABLE suppress_test"));
+	}
+}
+
+TEST_CASE("Test internal connections follow the interrupts of their base client", "[api]") {
+	DuckDB db;
+	Connection con(db);
+	auto child = Connection::CreateInternal(*con.context);
+	auto grandchild = Connection::CreateInternal(*child.context);
+	REQUIRE(grandchild.context->base_context == con.context);
+	REQUIRE(grandchild.context->internal_depth == 2);
+
+	SECTION("Interrupting the base interrupts every internal connection") {
+		con.context->Interrupt();
+		REQUIRE(child.context->IsInterrupted());
+		REQUIRE(grandchild.context->IsInterrupted());
+		REQUIRE_THROWS(grandchild.context->InterruptCheck());
+		con.context->ClearInterrupt();
+		REQUIRE(!grandchild.context->IsInterrupted());
+	}
+
+	SECTION("Interrupting an internal connection does not interrupt the base") {
+		child.context->Interrupt();
+		REQUIRE(!con.context->IsInterrupted());
+		child.context->ClearInterrupt();
+	}
+
+	SECTION("The base client's query deadline applies to internal connections while it is set") {
+		REQUIRE_NOTHROW(grandchild.context->BlockingInterruptCheck());
+		// a deadline in the past, as a base query that ran out of time would leave it
+		con.context->query_deadline = 1;
+		REQUIRE_THROWS(grandchild.context->BlockingInterruptCheck());
+		REQUIRE_THROWS(child.context->BlockingInterruptCheck());
+		con.context->query_deadline.SetInvalid();
+		REQUIRE_NOTHROW(grandchild.context->BlockingInterruptCheck());
+	}
+
+	SECTION("A query running on behalf of the base stops when the base is interrupted") {
+		REQUIRE_NO_FAIL(
+		    con.Query("CREATE MACRO slow_deleter(h) AS TABLE SELECT sum(i) AS s FROM range(100000000000) t(i)"));
+		auto start = std::chrono::steady_clock::now();
+		std::thread interrupter([&]() {
+			std::this_thread::sleep_for(std::chrono::milliseconds(200));
+			con.Interrupt();
+		});
+		auto result = con.Query("FROM destroy_external_resource('slow_deleter', 1)");
+		interrupter.join();
+		REQUIRE(result->HasError());
+		REQUIRE(std::chrono::steady_clock::now() - start < std::chrono::seconds(30));
 	}
 }
 

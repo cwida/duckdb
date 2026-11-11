@@ -100,12 +100,12 @@ void ParquetMultiFileInfo::BindReader(ClientContext &context, vector<LogicalType
 	    context, return_types, names, *bind_data.file_list, bind_data, *parquet_bind.options, bind_data.file_options);
 }
 
-static bool GetBooleanArgument(const Identifier &key, const vector<Value> &option_values) {
+static bool GetBooleanArgument(Context &context, const Identifier &key, const vector<Value> &option_values) {
 	if (option_values.empty()) {
 		return true;
 	}
 	string error_message;
-	auto boolean_value = option_values[0].DefaultTryCastAs(LogicalType::BOOLEAN, &error_message);
+	auto boolean_value = option_values[0].TryCastAs(context, LogicalType::BOOLEAN, &error_message);
 	if (!boolean_value) {
 		throw InvalidInputException("Unable to cast \"%s\" to BOOLEAN for Parquet option %s",
 		                            option_values[0].ToString(), key);
@@ -212,7 +212,7 @@ GetCachedPartitionStats(ClientContext &context, const vector<ParquetMetadataCach
 
 	// all caches are valid! we can return the partition stats
 	for (auto &cache : cached_metadata) {
-		ParquetReader::GetPartitionStats(*cache.metadata->metadata, result);
+		ParquetReader::GetPartitionStats(cache.metadata->metadata->file_metadata, result);
 	}
 	return result;
 }
@@ -224,14 +224,18 @@ static vector<PartitionStatistics> ParquetMultiFileGetPartitionStats(ClientConte
 	auto &bind_data = input.bind_data->Cast<MultiFileBindData>();
 	if (bind_data.file_list->GetExpandResult() == FileExpandResult::SINGLE_FILE) {
 		auto result = TableFunctionMultiFileWrapper::GetPartitionStats(context, input);
-		if (!bind_data.file_options.bound_schema.empty()) {
-			// Column accessors address physical ordinals and types, not the mapped output or generated roles.
-			const bool identity =
-			    bind_data.initial_reader && bind_data.HasIdentityMapping(bind_data.initial_reader->GetColumns());
-			if (!identity) {
-				for (auto &partition : result) {
-					partition.partition_row_group.reset();
-				}
+		// Column accessors address physical ordinals and types, not the mapped output or generated roles.
+		bool identity = false;
+		if (bind_data.initial_reader) {
+			identity = bind_data.HasIdentityMapping(bind_data.initial_reader->GetColumns());
+		} else if (!bind_data.union_readers.empty()) {
+			auto &file = *bind_data.union_readers[0];
+			identity = bind_data.HasIdentityMapping(
+			    MultiFileColumnDefinition::ColumnsFromNamesAndTypes(StringsToIdentifiers(file.names), file.types));
+		}
+		if (!identity) {
+			for (auto &partition : result) {
+				partition.partition_row_group.reset();
 			}
 		}
 		return result;
@@ -257,7 +261,8 @@ void ParquetScanFunction::AddNamedParameters(TableFunction &table_function) {
 		    .Add("can_have_nan", LogicalType::BOOLEAN)
 		    .Add("prefetch_strategy", LogicalType::VARCHAR)
 		    .Add("utf8_validation", LogicalType::VARCHAR)
-		    .Add("int96_as", LogicalType::VARCHAR);
+		    .Add("int96_as", LogicalType::VARCHAR)
+		    .Add("maximum_files_for_stats", LogicalType::UBIGINT);
 	};
 	// the multi-file function already declares options of its own - the single-file function declares none
 	auto &signature = table_function.GetSignature();
@@ -309,7 +314,7 @@ bool ParquetMultiFileInfo::ParseCopyOption(ClientContext &context, const Identif
 		return true;
 	}
 	if (key == "binary_as_string") {
-		options.binary_as_string = GetBooleanArgument(key, values);
+		options.binary_as_string = GetBooleanArgument(context.GetContext(), key, values);
 		return true;
 	}
 	if (key == "debug_use_openssl") {
@@ -326,7 +331,7 @@ bool ParquetMultiFileInfo::ParseCopyOption(ClientContext &context, const Identif
 		if (values.size() != 1) {
 			throw BinderException("Parquet can_have_nan cannot be empty!");
 		}
-		options.can_have_nan = GetBooleanArgument(key, values);
+		options.can_have_nan = GetBooleanArgument(context.GetContext(), key, values);
 		return true;
 	}
 	if (key == "prefetch_strategy") {
@@ -466,16 +471,12 @@ unique_ptr<NodeStatistics> ParquetMultiFileInfo::GetCardinality(ClientContext &c
 		idx_t cardinality = 0;
 		for (auto &cache : caches) {
 			// note: since this is just an estimate we don't need to look at whether or not the cache is valid
-			cardinality += cache.metadata->metadata->num_rows;
+			cardinality += cache.metadata->metadata->file_metadata.num_rows;
 		}
 		return make_uniq<NodeStatistics>(cardinality);
 	}
 	// we don't have any scan data - check if we can get some intel from the file list
 	// in particular - if we have file sizes, we try to estimate rows per file from the file size
-	MultiFileListScanData scan_data;
-	scan_data.scan_type = MultiFileListScanType::FETCH_IF_AVAILABLE;
-	bind_data.file_list->InitializeScan(scan_data);
-	OpenFileInfo file;
 	idx_t initial_cardinality = MaxValue<idx_t>(parquet_data.initial_file_cardinality, 1ULL);
 	idx_t estimated_bytes_per_row = parquet_data.initial_file_data_size / initial_cardinality;
 	// for very small cardinalities, compression doesn't really work well
@@ -486,33 +487,10 @@ unique_ptr<NodeStatistics> ParquetMultiFileInfo::GetCardinality(ClientContext &c
 	}
 	estimated_bytes_per_row = MaxValue<idx_t>(estimated_bytes_per_row, 10ULL);
 
-	idx_t files_with_sizes = 0;
-	idx_t estimated_file_row_count = 0;
-	while (bind_data.file_list->Scan(scan_data, file)) {
-		if (!file.extended_info) {
-			// no extended info
-			estimated_file_row_count = 0;
-			break;
-		}
-		idx_t current_file_size;
-		if (!file.extended_info->TryGetOption("file_size", current_file_size)) {
-			// no file size available
-			estimated_file_row_count = 0;
-			break;
-		}
-		// we have the file size - estimate row count based on estimated bytes per row
-		files_with_sizes++;
-		idx_t rows_in_this_file = MaxValue<idx_t>(current_file_size / estimated_bytes_per_row, 1ULL);
-		estimated_file_row_count += rows_in_this_file;
-	}
-	idx_t per_file_cardinality;
-	if (estimated_file_row_count > 0) {
-		// use estimate based on file sizes
-		per_file_cardinality = estimated_file_row_count / files_with_sizes;
-	} else {
-		// no estimate based on file sizes - use initial file cardinality
-		per_file_cardinality = parquet_data.initial_file_cardinality;
-	}
+	// use the estimate based on file sizes; without one, the initial file cardinality
+	auto estimated_rows_per_file = bind_data.file_list->EstimateRowsPerFile(estimated_bytes_per_row);
+	idx_t per_file_cardinality =
+	    estimated_rows_per_file.IsValid() ? estimated_rows_per_file.GetIndex() : parquet_data.initial_file_cardinality;
 	// if we have several files, our cardinality estimate can be way off if our initial file is ~empty
 	// we set the minimum per file cardinality to 1000 just to avoid greatly underestimating
 	idx_t min_per_file_cardinality = 1000ULL;
@@ -641,8 +619,13 @@ AsyncResult ParquetReader::Scan(ClientContext &context, GlobalTableFunctionState
 		}
 	}
 #endif
+	auto &gstate = gstate_p.Cast<ParquetReadGlobalState>();
 	auto &local_state = local_state_p.Cast<ParquetReadLocalState>();
-	return Process(context, local_state.scan_state, chunk);
+	// a row group's bytes are counted when its scan starts, in Process
+	auto bytes_before = local_state.scan_state.bytes_scanned;
+	auto result = Process(context, local_state.scan_state, chunk);
+	gstate.bytes_scanned_unreported += local_state.scan_state.bytes_scanned - bytes_before;
+	return result;
 }
 
 unique_ptr<MultiFileReaderInterface> ParquetMultiFileInfo::Copy() {

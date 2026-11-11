@@ -12,7 +12,7 @@ statement ok
 CREATE TABLE integers2 AS SELECT * FROM (VALUES (4), (5), (6)) tbl(i);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # inner join
 # join cannot match

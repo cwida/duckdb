@@ -30,7 +30,7 @@ create type test_result as UNION(
 );
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 statement ok
 CREATE TABLE test(id INTEGER PRIMARY KEY, col VARCHAR)

@@ -915,6 +915,7 @@ void AddArgMinMaxNFunction(AggregateFunctionSet &set) {
 	    .AddParameter("arg", LogicalTypeId::ANY)
 	    .AddParameter("val", LogicalTypeId::ANY)
 	    .AddParameter("N", LogicalType::BIGINT);
+	function.SetFallible(); // the update callback rejects NULL and out-of-range n values at runtime
 
 	set.AddFunction(function);
 }

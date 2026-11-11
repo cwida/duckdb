@@ -142,6 +142,48 @@ WHERE constraint_schema = 'scheme' AND check_clause LIKE 'CHECK%'
 ----
 True
 
+# a CHECK appears once, whatever the number of columns it references
+statement ok
+CREATE TABLE scheme.check_columns (a INTEGER NOT NULL, b INTEGER NOT NULL UNIQUE, CHECK (a > 0 AND b > 0), CHECK (1 = 1), CHECK (a < b), CHECK (a < b));
+
+query II
+SELECT constraint_name, check_clause
+FROM information_schema.check_constraints
+WHERE constraint_schema = 'scheme' AND constraint_name LIKE 'check_columns%'
+ORDER BY ALL
+----
+check_columns_a_b_check	CHECK(((a > 0) AND (b > 0)))
+check_columns_a_b_check	CHECK((a < b))
+check_columns_a_b_check	CHECK((a < b))
+check_columns_a_not_null	a IS NOT NULL
+check_columns_b_not_null	b IS NOT NULL
+check_columns_check	CHECK((1 = 1))
+
+statement ok
+DROP TABLE scheme.check_columns
+
+# constraints of an attached database are listed with its catalog
+statement ok
+ATTACH ':memory:' AS check_db;
+
+statement ok
+CREATE SCHEMA check_db.scheme;
+
+statement ok
+CREATE TABLE check_db.scheme.check_columns (a INTEGER, b INTEGER NOT NULL, CHECK (1 = 1));
+
+query IIII
+SELECT constraint_catalog, constraint_schema, constraint_name, check_clause
+FROM information_schema.check_constraints
+WHERE constraint_catalog = 'check_db'
+ORDER BY ALL
+----
+check_db	scheme	check_columns_b_not_null	b IS NOT NULL
+check_db	scheme	check_columns_check	CHECK((1 = 1))
+
+statement ok
+DETACH check_db
+
 statement ok
 CREATE OR REPLACE VIEW scheme.emp_dept_view AS SELECT emp.*, dept.dept_name FROM scheme.emp JOIN scheme.dept ON emp.dept_id = dept.dept_id;
 

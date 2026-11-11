@@ -50,6 +50,13 @@ struct interval_t { // NOLINT
 		return !(*this == right);
 	}
 
+	//! True when the raw (months, days, micros) fields are identical, without normalizing first. Unlike operator==
+	//! (which falls back to a normalized comparison, so INTERVAL 1 MONTH == INTERVAL 30 DAY), this is a strict
+	//! field-wise test: two intervals that are only equal after normalization are not the same here.
+	inline bool SameFields(const interval_t &right) const {
+		return months == right.months && days == right.days && micros == right.micros;
+	}
+
 	inline bool operator>(const interval_t &right) const {
 		const auto &left = *this;
 		int64_t lmonths, ldays, lmicros;
@@ -156,6 +163,9 @@ public:
 
 	//! Returns the exact difference between two timestamps (days and seconds)
 	static interval_t GetDifference(timestamp_t timestamp_1, timestamp_t timestamp_2);
+	//! Returns the number of whole units of micros_per_unit from start_us to end_us, also when their difference in
+	//! microseconds does not fit an int64
+	DUCKDB_API static int64_t GetDifferenceInUnits(int64_t start_us, int64_t end_us, int64_t micros_per_unit);
 
 	//! Returns the inverted interval
 	static interval_t Invert(interval_t interval);
@@ -164,10 +174,14 @@ public:
 	static date_t Add(date_t left, interval_t right);
 	//! Add an interval to a timestamp
 	static timestamp_t Add(timestamp_t left, interval_t right);
+	//! Add an interval to a timestamp(ns)
+	static timestamp_ns_t Add(timestamp_ns_t left, interval_t right);
 	//! Add an interval to a date, returns false instead of throwing if the result is out of range
 	static bool TryAdd(date_t left, interval_t right, date_t &result);
 	//! Add an interval to a timestamp, returns false instead of throwing if the result is out of range
 	static bool TryAdd(timestamp_t left, interval_t right, timestamp_t &result);
+	//! Add an interval to a timestamp(ns), returns false instead of throwing if the result is out of range
+	static bool TryAdd(timestamp_ns_t left, interval_t right, timestamp_ns_t &result);
 	//! Add an interval to a time. In case the time overflows or underflows, modify the date by the overflow.
 	//! For example if we go from 23:00 to 02:00, we add a day to the date
 	static dtime_t Add(dtime_t left, interval_t right, date_t &date);

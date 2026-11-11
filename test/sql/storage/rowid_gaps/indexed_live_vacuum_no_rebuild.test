@@ -77,10 +77,10 @@ statement ok
 SET tracked_metrics = ['storage.total_vacuum_time', 'storage.checkpoint_latency', 'query.total_time'];
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/rowid_gap_live_vacuum_no_rebuild.json';
+SET profiling_output = '{TEST_DIR}/rowid_gap_live_vacuum_no_rebuild.json';
 
 statement ok
 FORCE CHECKPOINT rowid_gap_live_vacuum;

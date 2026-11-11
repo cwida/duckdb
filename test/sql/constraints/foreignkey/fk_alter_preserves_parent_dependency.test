@@ -85,7 +85,7 @@ Constraint Error
 
 # the dependency edge must also survive a checkpoint and a restart
 statement ok
-ATTACH '__TEST_DIR__/fk_dep.db' AS fkdb
+ATTACH '{TEST_DIR}/fk_dep.db' AS fkdb
 
 statement ok
 CREATE TABLE fkdb.parent(id INTEGER PRIMARY KEY, val TEXT)
@@ -103,7 +103,7 @@ statement ok
 DETACH fkdb
 
 statement ok
-ATTACH '__TEST_DIR__/fk_dep.db' AS fkdb
+ATTACH '{TEST_DIR}/fk_dep.db' AS fkdb
 
 statement error
 ALTER TABLE fkdb.parent RENAME TO parent2

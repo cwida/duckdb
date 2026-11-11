@@ -184,7 +184,7 @@ unique_ptr<FunctionLocalState> CScalarFunctionInit(ExpressionState &state, const
 
 	auto result = make_uniq<CScalarFunctionLocalState>();
 	if (info.init) {
-		auto &context = state.GetContext();
+		auto &context = state.GetClientContext();
 		auto &c_bind_data = bind_data->Cast<CScalarFunctionBindData>();
 		CScalarFunctionInternalInitInfo init_info(context, c_bind_data, *result);
 		info.init(ToCScalarFunctionInitInfo(init_info));
@@ -196,12 +196,16 @@ unique_ptr<FunctionLocalState> CScalarFunctionInit(ExpressionState &state, const
 }
 
 void CAPIScalarFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+	PrepareCAPIVector(result);
 	auto &function = state.expr.Cast<BoundFunctionExpression>();
 	auto &bind_info = function.BindInfo();
 	auto &c_bind_info = bind_info->Cast<CScalarFunctionBindData>();
 	auto &c_local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<CScalarFunctionLocalState>();
 
 	input.Flatten();
+	for (auto &vector : input.data) {
+		PrepareCAPIVector(vector);
+	}
 	auto c_input = reinterpret_cast<duckdb_data_chunk>(&input);
 	auto c_result = reinterpret_cast<duckdb_vector>(&result);
 

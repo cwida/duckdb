@@ -2,9 +2,6 @@
 # description: Test list_reduce function with an intial value
 # group: [lambdas]
 
-statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
 query I
 SELECT list_reduce([1, 2, 3], lambda x, y: x + y, 100);
 ----

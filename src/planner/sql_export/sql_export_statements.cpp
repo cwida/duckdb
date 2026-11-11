@@ -190,7 +190,7 @@ LogicalPlanSQLExportResult SQLExportStatementHelpers::ExportCopyToNode(LogicalCo
 	if (op.preserve_order != PreserveOrderType::AUTOMATIC) {
 		set_option("preserve_order", Value::BOOLEAN(op.preserve_order == PreserveOrderType::PRESERVE_ORDER));
 	}
-	switch (op.return_type) {
+	switch (GetCopyFunctionBaseReturnType(op.return_type)) {
 	case CopyFunctionReturnType::CHANGED_ROWS_AND_FILE_LIST:
 		set_option("return_files", Value::BOOLEAN(true));
 		break;
@@ -199,6 +199,9 @@ LogicalPlanSQLExportResult SQLExportStatementHelpers::ExportCopyToNode(LogicalCo
 		break;
 	default:
 		break;
+	}
+	if (CopyFunctionReturnsColumnTypes(op.return_type)) {
+		set_option("return_column_types", Value::BOOLEAN(true));
 	}
 	info->select_statement = std::move(child.GetValue().query);
 	auto node = make_uniq<CopyQueryNode>(std::move(info));

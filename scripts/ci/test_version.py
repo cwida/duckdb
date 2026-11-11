@@ -57,6 +57,12 @@ class TestVersion(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid DuckDB version"):
             version.resolve_version("2.0.0")
 
+    def test_release_build(self):
+        self.assertTrue(version.is_release_build("v2.0.0"))
+        self.assertTrue(version.is_release_build("v2.0.0-alpha42"))
+        self.assertFalse(version.is_release_build("v2.0.0-rc1"))
+        self.assertFalse(version.is_release_build("v2.0.0-dev42"))
+
     def test_invalid_release_version(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             version_file = Path(temp_dir) / "release_version.txt"

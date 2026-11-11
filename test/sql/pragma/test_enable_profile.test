@@ -10,7 +10,7 @@ Parser Error: syntax error at or near ")"
 
 
 statement error
-PRAGMA enable_profiling='unsupported'
+SET enable_profiling='unsupported'
 ----
 Invalid Input Error: "unsupported" is not a valid FORMAT argument, valid options are: default, text, query_tree, query_tree_optimizer, no_output, json, html, graphviz, yaml, mermaid
 
@@ -19,15 +19,15 @@ PRAGMA profiling_output
 ----
 
 statement ok
-PRAGMA enable_profiling='json'
+SET enable_profiling='json'
 
 # select the location of where to save the profiling output (instead of printing to stdout)
 statement ok
-PRAGMA profiling_output='test.json'
+SET profiling_output='test.json'
 
 # but we can clear it again
 statement ok
-PRAGMA profiling_output=''
+SET profiling_output=''
 
 # enable and disable profiling
 statement ok

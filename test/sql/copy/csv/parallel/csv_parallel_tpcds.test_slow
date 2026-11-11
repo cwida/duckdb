@@ -5,7 +5,7 @@
 require tpcds
 
 statement ok
-pragma threads=4
+SET threads=4
 
 statement ok
 CALL dsdgen(sf=1, suffix='_og');
@@ -35,7 +35,7 @@ select count (*) from (SELECT * FROM {tpcds_tbl}_og EXCEPT SELECT * FROM {tpcds_
 endloop
 
 statement ok
-PRAGMA default_null_order='NULLS LAST'
+SET default_null_order='NULLS LAST'
 
 # check table counts
 query T

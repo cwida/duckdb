@@ -495,30 +495,14 @@ int64_t Date::ExtractJulianDay(date_t date) {
 	return date.days - JULIAN_EPOCH;
 }
 
+//! 1 for a Monday to 7 for a Sunday, also for a day number outside of the DATE range
+static int32_t GetISODayOfTheWeek(int64_t days) {
+	// day 0 is 1970-01-01, a Thursday
+	return int32_t(((days % 7) + 10) % 7) + 1;
+}
+
 int32_t Date::ExtractISODayOfTheWeek(date_t date) {
-	// date of 0 is 1970-01-01, which was a Thursday (4)
-	// -7 = 4
-	// -6 = 5
-	// -5 = 6
-	// -4 = 7
-	// -3 = 1
-	// -2 = 2
-	// -1 = 3
-	// 0  = 4
-	// 1  = 5
-	// 2  = 6
-	// 3  = 7
-	// 4  = 1
-	// 5  = 2
-	// 6  = 3
-	// 7  = 4
-	if (date.days < 0) {
-		// negative date: start off at 4 and cycle downwards
-		return UnsafeNumericCast<int32_t>((7 - ((-int64_t(date.days) + 3) % 7)));
-	} else {
-		// positive date: start off at 4 and cycle upwards
-		return UnsafeNumericCast<int32_t>(((int64_t(date.days) + 3) % 7) + 1);
-	}
+	return GetISODayOfTheWeek(date.days);
 }
 
 template <typename T>
@@ -534,10 +518,20 @@ static T PythonDivMod(const T &x, const T &y, T &r) {
 	return quo;
 }
 
-static date_t GetISOWeekOne(int32_t year) {
-	const auto first_day = Date::FromDate(year, 1, 1); /* ord of 1/1 */
+//! The day number of January 1 of the year, which for the first year comes before the first date
+static int64_t GetJanuaryFirst(int32_t year) {
+	date_t first_day;
+	if (Date::TryFromDate(year, 1, 1, first_day)) {
+		return first_day.days;
+	}
+	// the calendar repeats every 400 years
+	return int64_t(Date::FromDate(year + Date::YEAR_INTERVAL, 1, 1).days) - Date::DAYS_PER_YEAR_INTERVAL;
+}
+
+static int64_t GetISOWeekOne(int32_t year) {
+	const auto first_day = GetJanuaryFirst(year); /* ord of 1/1 */
 	/* 0 if 1/1 is a Monday, 1 if a Tue, etc. */
-	const auto first_weekday = Date::ExtractISODayOfTheWeek(first_day) - 1;
+	const auto first_weekday = GetISODayOfTheWeek(first_day) - 1;
 	/* ordinal of closest Monday at or before 1/1 */
 	auto week1_monday = first_day - first_weekday;
 
@@ -552,16 +546,17 @@ static int32_t GetISOYearWeek(const date_t date, int32_t &year) {
 	int32_t month, day;
 	Date::Convert(date, year, month, day);
 	auto week1_monday = GetISOWeekOne(year);
-	auto week = PythonDivMod((date.days - week1_monday.days), 7, day);
+	int64_t remainder;
+	auto week = PythonDivMod<int64_t>(date.days - week1_monday, 7, remainder);
 	if (week < 0) {
 		week1_monday = GetISOWeekOne(--year);
-		week = PythonDivMod((date.days - week1_monday.days), 7, day);
-	} else if (week >= 52 && date >= GetISOWeekOne(year + 1)) {
+		week = PythonDivMod<int64_t>(date.days - week1_monday, 7, remainder);
+	} else if (week >= 52 && date.days >= GetISOWeekOne(year + 1)) {
 		++year;
 		week = 0;
 	}
 
-	return week + 1;
+	return UnsafeNumericCast<int32_t>(week + 1);
 }
 
 void Date::ExtractISOYearWeek(date_t date, int32_t &year, int32_t &week) {
@@ -590,7 +585,7 @@ int32_t Date::ExtractWeekNumberRegular(date_t date, bool monday_first) {
 	    (Date::IsLeapYear(year) ? Date::CUMULATIVE_LEAP_DAYS[month] : Date::CUMULATIVE_DAYS[month]) + day;
 	// now figure out the first monday or sunday of the year
 	// what day is January 1st?
-	auto day_of_jan_first = Date::ExtractISODayOfTheWeek(Date::FromDate(year, 1, 1));
+	auto day_of_jan_first = GetISODayOfTheWeek(GetJanuaryFirst(year));
 	// monday = 1, sunday = 7
 	int32_t first_week_start;
 	if (monday_first) {

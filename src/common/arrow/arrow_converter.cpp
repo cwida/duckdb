@@ -242,7 +242,7 @@ void SetArrowFormat(DuckDBArrowSchemaHolder &root_holder, ArrowSchema &child, co
 		child.format = "tin";
 		break;
 	case LogicalTypeId::DECIMAL: {
-		uint8_t width, scale, bit_width;
+		uint32_t width, scale, bit_width;
 		if (options.arrow_output_version <= ArrowFormatVersion::V1_4) {
 			// Before version 1.4 all decimals were int128
 			bit_width = 128;

@@ -19,7 +19,7 @@ create table t1 as from VALUES
 	t(a, b);
 
 statement ok
-pragma explain_output=OPTIMIZED_ONLY
+SET explain_output='OPTIMIZED_ONLY'
 
 statement ok
 create view window_with_filter as select a,  b, LEAD(b) OVER (partition by a) as lead from t1 where a != 'C';

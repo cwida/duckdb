@@ -8,7 +8,6 @@
 
 #pragma once
 
-#include "duckdb/common/string_util.hpp"
 #include "duckdb/function/function.hpp"
 
 #include <algorithm>
@@ -25,11 +24,10 @@ struct CAPIFunctionSignature {
 		SetParameters(signature, std::move(parameters));
 	}
 
-	//! Adds a positional-only parameter named "col<N>", after the existing positional-only ones
+	//! Adds a positional-only parameter declared without a name, after the existing positional-only ones
 	static void AddPositionalOnly(FunctionSignature &signature, LogicalType type) {
-		auto name = Identifier(StringUtil::Format("col%d", signature.GetPositionalOnlyParameterCount()));
 		AddParameter(signature,
-		             FunctionParameter(std::move(name), std::move(type), {}, FunctionParameterKind::POSITIONAL_ONLY));
+		             FunctionParameter::Unnamed(std::move(type), signature.GetPositionalOnlyParameterCount()));
 	}
 
 	//! Replaces the "*args" by one of the given type, or removes it if the type is INVALID. A named argument the

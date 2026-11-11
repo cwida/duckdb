@@ -14,7 +14,10 @@
 #include "duckdb/parser/statement/update_statement.hpp"
 #include "duckdb/parser/query_node/update_query_node.hpp"
 #include "duckdb/parser/tableref/expressionlistref.hpp"
+#include "duckdb/parser/peg/matcher.hpp"
+#include "duckdb/parser/peg/parser_packrat.hpp"
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
+#include "duckdb/parser/peg/syntax_error.hpp"
 #include "duckdb/parser/peg/tokenizer/parser_tokenizer.hpp"
 #include "duckdb/parser/peg/tokenizer/highlight_tokenizer.hpp"
 #include "utf8proc_wrapper.hpp"
@@ -56,7 +59,8 @@ static bool ReplaceUnicodeSpaces(const string &query, string &new_query, vector<
 	idx_t prev = 0;
 	for (auto &usp : unicode_spaces) {
 		new_query += query.substr(prev, usp.pos - prev);
-		new_query += " ";
+		// Keep byte offsets aligned with the original query for diagnostics.
+		new_query.append(usp.bytes, ' ');
 		prev = usp.pos + usp.bytes;
 	}
 	new_query += query.substr(prev, query.size() - prev);
@@ -283,33 +287,26 @@ void Parser::ParseQuery(const string &query_p) {
 	// PEG parser: tokenize, then peel one TopLevelStatement at a time. On per-statement PEG
 	// failure, hand the rest of the query to parse_function extensions; the extension reports
 	// how many bytes it consumed and we advance the token cursor past them.
-	auto owned_tokens = make_uniq<vector<MatcherToken>>();
-	ParserTokenizerBehavior behavior(query, *owned_tokens);
+	ParserTokenizerBehavior behavior(query);
 	auto &tokenizer = GetGrammar().GetTokenizer();
 	tokenizer.TokenizeInput(behavior);
-	TokenIterator token_iterator(std::move(owned_tokens));
+	TokenIterator token_iterator(behavior);
+	// A statement's text starts where the previous one ended, so comments and whitespace before its
+	// first token belong to it; the last statement runs to the end of the input.
+	idx_t stmt_start = 0;
 	while (token_iterator.Current()) {
-		try {
-			auto stmt = ParseTopLevelStatement(token_iterator);
-			if (stmt) {
-				statements.push_back(std::move(stmt));
-			}
-		} catch (ParserException &e) {
-			auto ext_stmt = TryParseExtensionStatement(token_iterator, query);
-			if (!ext_stmt) {
-				throw;
-			}
-			statements.push_back(std::move(ext_stmt));
+		auto stmt = ParseTopLevelStatement(token_iterator, query);
+		auto stmt_end = token_iterator.ConsumedEndOffset();
+		if (stmt) {
+			stmt->stmt_location = QueryLocation(stmt_start, stmt_end - stmt_start);
+			statements.push_back(std::move(stmt));
 		}
+		stmt_start = stmt_end;
 	}
 
 	if (!statements.empty()) {
-		for (idx_t i = 0; i + 1 < statements.size(); i++) {
-			auto start = statements[i]->stmt_location.offset;
-			statements[i]->stmt_location = QueryLocation(start, statements[i + 1]->stmt_location.offset - start);
-		}
-		statements.back()->stmt_location = QueryLocation(statements.back()->stmt_location.offset,
-		                                                 query.size() - statements.back()->stmt_location.offset);
+		auto &last_location = statements.back()->stmt_location;
+		last_location = QueryLocation(last_location.offset, query.size() - last_location.offset);
 		for (auto &statement : statements) {
 			statement->query = query.substr(statement->stmt_location.offset, statement->stmt_location.length);
 			statement->stmt_location = QueryLocation(0, statement->query.size());
@@ -364,20 +361,153 @@ unique_ptr<SQLStatement> Parser::TryParseExtensionStatement(TokenIterator &token
 	return nullptr;
 }
 
-unique_ptr<SQLStatement> Parser::ParseTopLevelStatement(TokenIterator &token_iterator) {
+unique_ptr<SQLStatement> Parser::ParseTopLevelStatement(TokenIterator &token_iterator, const string &query) {
 	if (!token_iterator.Current()) {
 		return nullptr;
 	}
 	auto &compiled_grammar = GetGrammar();
-	return PEGTransformerFactory::TransformTopLevelStatement(token_iterator, options, compiled_grammar);
+	idx_t statement_start = token_iterator.Position();
+	optional_idx failure_index;
+	unique_ptr<SQLStatement> stmt;
+	try {
+		stmt =
+		    PEGTransformerFactory::TransformTopLevelStatement(token_iterator, options, compiled_grammar, failure_index);
+	} catch (ParserException &) {
+		// the statement matched but could not be transformed - an extension may still claim it
+		token_iterator.SetPosition(statement_start);
+		auto ext_stmt = TryParseExtensionStatement(token_iterator, query);
+		if (!ext_stmt) {
+			throw;
+		}
+		return ext_stmt;
+	}
+	if (!failure_index.IsValid()) {
+		return stmt;
+	}
+	auto ext_stmt = TryParseExtensionStatement(token_iterator, query);
+	if (ext_stmt) {
+		return ext_stmt;
+	}
+	// composing the detailed error re-parses the statement, so only do it once the error is final
+	throw PEGSyntaxError::Create(token_iterator, statement_start, failure_index.GetIndex(), compiled_grammar, options);
+}
+
+//! Tokenizes like ParserTokenizerBehavior, but pushes unterminated trailing tokens with their
+//! `unterminated` flag set instead of throwing - completeness checks treat them as "needs more input".
+class CompletenessTokenizerBehavior : public TokenizerBehavior {
+public:
+	using TokenizerBehavior::TokenizerBehavior;
+
+	//! The input ended inside a block comment or dollar-quoted string - the token itself may be
+	//! dropped from the stream (comments), so the flag has to be recorded here
+	bool unterminated_input = false;
+	//! The input holds a token the parser tokenizer rejects outright - no continuation can repair it
+	bool fatal_token = false;
+
+	void PushToken(idx_t start, idx_t end, TokenType type, bool unterminated = false) override {
+		if (unterminated) {
+			unterminated_input = true;
+		}
+		if (ParserTokenizerBehavior::IsEmptyQuotedIdentifier(sql, start, end, type)) {
+			fatal_token = true;
+		}
+		TokenizerBehavior::PushToken(start, end, type, unterminated);
+	}
+
+	void OnStatementEnd(idx_t pos) override {
+		tokens.emplace_back(";", pos, TokenType::TERMINATOR);
+	}
+};
+
+bool Parser::IsQueryComplete(const string &query_p) {
+	string query;
+	try {
+		query = NormalizeSQLString(query_p);
+	} catch (ParserException &) {
+		// invalid UTF-8 - submit the input so the error surfaces
+		return true;
+	}
+	auto &grammar = GetGrammar();
+	CompletenessTokenizerBehavior behavior(query);
+	grammar.GetTokenizer().TokenizeInput(behavior);
+	if (behavior.fatal_token) {
+		// no continuation can repair the input - submit it so the error surfaces
+		return true;
+	}
+	if (behavior.unterminated_input) {
+		return false;
+	}
+	// the final statement must be terminated by a top-level semicolon
+	bool terminated = false;
+	for (auto &token : behavior.tokens) {
+		switch (token.type) {
+		case TokenType::END_OF_INPUT:
+		case TokenType::END_OF_INPUT_AUTOCOMPLETE:
+			break;
+		default:
+			if (token.unterminated) {
+				// the input ends inside a string, quoted identifier, comment or dollar-quoted string
+				return false;
+			}
+			terminated = token.type == TokenType::TERMINATOR;
+			break;
+		}
+	}
+	if (!terminated) {
+		return false;
+	}
+	TokenIterator token_iterator(behavior);
+	while (!token_iterator.AtEnd()) {
+		// match one TopLevelStatement without transforming it - statements that match but cannot be
+		// transformed classify as complete either way, and the transformer can expand matched input
+		vector<MatcherSuggestion> suggestions;
+		ParseResultAllocator parse_result_allocator;
+		ArenaAllocator process_allocator(Allocator::DefaultAllocator());
+		ArenaAllocator packrat_allocator(Allocator::DefaultAllocator());
+		ParserPackratCache packrat_cache(packrat_allocator, token_iterator.Position(), token_iterator.Size());
+		idx_t max_token_index = token_iterator.Position();
+		MatchContext match_context(suggestions, parse_result_allocator, process_allocator, max_token_index,
+		                           MatchMode::BUILD_PARSE_RESULT, options.identifier_case_mode, &packrat_cache);
+		MatchState state(token_iterator, match_context);
+		bool success = false;
+		try {
+			auto match_result = grammar.TopLevelStatementMatcher().MatchParseResult(state);
+			success = match_result.IsSuccess();
+			if (!success) {
+				auto index = MinValue<idx_t>(state.GetMaxTokenIndex(), token_iterator.Size() - 1);
+				if (token_iterator.GetToken(index).type == TokenType::END_OF_INPUT) {
+					// the parse failed at the end of the input - more input can complete the statement
+					return false;
+				}
+			}
+		} catch (ParserException &) {
+			// the matcher rejected the input outright, e.g. a malformed numeric literal
+		}
+		if (success) {
+			token_iterator.SetPosition(state.token_iterator);
+			continue;
+		}
+		// a parse_function extension may claim the rejected segment, as in ParseQuery
+		try {
+			auto ext_stmt = TryParseExtensionStatement(token_iterator, query);
+			if (ext_stmt) {
+				continue;
+			}
+		} catch (ParserException &) {
+			// the extension rejected the segment with an error of its own
+		}
+		// rejected mid-input - submit it so the error surfaces on execution
+		return true;
+	}
+	return true;
 }
 
 vector<SimplifiedToken> Parser::Tokenize(const string &query) {
 	auto &keyword_helper = DuckDBKeywordHelper::Instance();
-	vector<MatcherToken> tokens;
-	HighlightTokenizerBehavior behavior(query, tokens);
+	HighlightTokenizerBehavior behavior(query);
 	Tokenizer tokenizer(keyword_helper);
 	tokenizer.TokenizeInput(behavior);
+	auto &tokens = behavior.tokens;
 
 	vector<SimplifiedToken> result;
 	result.reserve(tokens.size());
@@ -390,6 +520,11 @@ vector<SimplifiedToken> Parser::Tokenize(const string &query) {
 		switch (token.type) {
 		case TokenType::KEYWORD:
 			simplified.type = SimplifiedTokenType::SIMPLIFIED_TOKEN_KEYWORD;
+			break;
+		case TokenType::IDENTIFIER:
+			simplified.type = keyword_helper.IsGrammarWord(token.text)
+			                      ? SimplifiedTokenType::SIMPLIFIED_TOKEN_KEYWORD
+			                      : SimplifiedTokenType::SIMPLIFIED_TOKEN_IDENTIFIER;
 			break;
 		case TokenType::STRING_LITERAL:
 			simplified.type = SimplifiedTokenType::SIMPLIFIED_TOKEN_STRING_CONSTANT;
