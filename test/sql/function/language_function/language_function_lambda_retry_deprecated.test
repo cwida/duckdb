@@ -1,0 +1,26 @@
+# name: test/sql/function/language_function/language_function_lambda_retry_deprecated.test
+# description: A failed arrow lambda interpretation rebinds a language function call
+# group: [language_function]
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+# language functions need storage v2.1.0
+load {TEST_DIR}/language_function_lambda_retry_deprecated.db readwrite v2.1.0
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/language_function_demo.duckdb_extension';
+
+# a failed lambda interpretation retries binding the same call tree: the original call must stay
+# rebindable after member selection (selection runs on a copy)
+statement ok
+SET lambda_syntax = 'ENABLE_SINGLE_ARROW';
+
+statement ok
+CREATE FUNCTION retry_fun(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '1';
+
+statement error
+SELECT list_transform(retry_fun(1), x -> x);
+----
+<REGEX>:.*(Invalid LIST argument|not found).*

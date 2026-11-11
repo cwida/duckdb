@@ -114,6 +114,7 @@
     {
       "reason": "Sets the deprecated lambda_syntax setting",
       "paths": [
+        "test/sql/function/language_function/language_function_lambda_retry_deprecated.test",
         "test/sql/function/list/lambdas/arrow/arrow_storage_before_v2.test",
         "test/sql/function/list/lambdas/arrow/expression_iterator_cases_deprecated.test",
         "test/sql/function/list/lambdas/arrow/filter_deprecated.test",
