@@ -795,6 +795,19 @@ static data_ptr_t LoadPointer(const const_data_ptr_t &source) {
 	return cast_uint64_to_pointer(Load<uint64_t>(source));
 }
 
+//! Load an entry that another thread may be inserting into at the same time. On 32-bit targets an 8-byte atomic
+//! load is not necessarily a single instruction (the MSVC STL implements it with __iso_volatile_load64, which
+//! clang-cl compiles to two 32-bit loads on x86), so a plain load can observe a half-written entry. A compare-exchange
+//! reads the entry atomically everywhere and leaves it unchanged.
+static inline ht_entry_t LoadEntryConcurrent(atomic<ht_entry_t> &entry) {
+	if (sizeof(data_ptr_t) >= sizeof(ht_entry_t)) {
+		return entry.load(std::memory_order_acquire);
+	}
+	ht_entry_t expected;
+	entry.compare_exchange_strong(expected, expected, std::memory_order_acquire, std::memory_order_acquire);
+	return expected;
+}
+
 //! If we consider to insert into an entry we expect to be empty, if it was filled in the meantime the insert will not
 //! happen and we need to return the pointer to the to row with which the new entry would have collided. In any other
 //! case we return a nullptr
@@ -816,7 +829,7 @@ static inline data_ptr_t InsertRowToEntry(atomic<ht_entry_t> &entry, const data_
 			return expected_entry.GetPointerOrNull();
 		} else {
 			// At this point we know that the keys match, so we can try to insert until we succeed
-			ht_entry_t expected_entry = entry.load(std::memory_order_acquire);
+			ht_entry_t expected_entry = LoadEntryConcurrent(entry);
 			D_ASSERT(expected_entry.IsOccupied());
 			do {
 				data_ptr_t current_row_pointer = expected_entry.GetPointer();
@@ -977,7 +990,7 @@ static void InsertHashesLoop(unsafe_optional_ptr<atomic<ht_entry_t>> entries, Ve
 			bool occupied;
 			while (true) {
 				atomic<ht_entry_t> &atomic_entry = entries.get()[ht_offset];
-				entry = atomic_entry.load(PARALLEL ? std::memory_order_acquire : std::memory_order_relaxed);
+				entry = PARALLEL ? LoadEntryConcurrent(atomic_entry) : atomic_entry.load(std::memory_order_relaxed);
 				occupied = entry.IsOccupied();
 
 				// condition for incrementing the ht_offset: occupied and row_salt does not match -> move to next entry
