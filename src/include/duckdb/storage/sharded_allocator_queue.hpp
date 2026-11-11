@@ -69,8 +69,8 @@ public:
 		bool track_count = false;
 
 	private:
-		template <class ENQUEUE, class OVERFLOW>
-		bool EnqueueInternal(idx_t size, ENQUEUE enqueue, OVERFLOW enqueue_overflow) {
+		template <class ENQUEUE, class ENQUEUE_OVERFLOW>
+		bool EnqueueInternal(idx_t size, ENQUEUE enqueue, ENQUEUE_OVERFLOW enqueue_overflow) {
 			if (track_count) {
 				count.fetch_add(size, std::memory_order_relaxed);
 			}
@@ -95,8 +95,8 @@ public:
 			}
 			return false;
 		}
-		template <class DEQUEUE, class OVERFLOW>
-		idx_t TryDequeueInternal(DEQUEUE dequeue, OVERFLOW dequeue_overflow) {
+		template <class DEQUEUE, class DEQUEUE_OVERFLOW>
+		idx_t TryDequeueInternal(DEQUEUE dequeue, DEQUEUE_OVERFLOW dequeue_overflow) {
 			if (track_count && count.load(std::memory_order_relaxed) == 0) {
 				return 0;
 			}
