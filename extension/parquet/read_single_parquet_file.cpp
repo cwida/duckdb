@@ -224,6 +224,7 @@ static unique_ptr<GlobalTableFunctionState> ReadSingleParquetFileInitGlobal(Clie
 		reader.column_ids.push_back(MultiFileLocalColumnId(local_id));
 		column_indexes.push_back(column_index.RemapRootIndex(local_id));
 		reader.columns.emplace_back(virtual_entry->second.name.GetIdentifierName(), virtual_entry->second.type);
+		reader.column_name_index.Build(reader.columns);
 		reader.AddVirtualColumn(virtual_id);
 	}
 	reader.column_indexes = std::move(column_indexes);
