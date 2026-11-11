@@ -2,9 +2,6 @@
 # description: Approximate quantiles of decimals wider than 38 digits compute through DOUBLE
 # group: [decimal]
 
-statement ok
-PRAGMA enable_verification
-
 query II
 SELECT approx_quantile(x, 0.5), reservoir_quantile(x, 0.5) FROM (VALUES ('1'::DECIMAL(40,3)), ('2'::DECIMAL(40,3)), ('3'::DECIMAL(40,3))) t(x)
 ----

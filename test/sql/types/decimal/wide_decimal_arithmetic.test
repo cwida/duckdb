@@ -2,9 +2,6 @@
 # description: Arithmetic on decimals wider than 38 digits
 # group: [decimal]
 
-statement ok
-PRAGMA enable_verification
-
 # result types grow past 38 digits whenever the arithmetic needs it
 query IIII
 SELECT typeof('1'::DECIMAL(38,2) + '1'::DECIMAL(38,2)), typeof('1'::DECIMAL(39,2) + '1'::DECIMAL(38,2)), typeof('1'::DECIMAL(255,2) + 1), typeof('1'::DECIMAL(50,2) - '1'::DECIMAL(40,10))

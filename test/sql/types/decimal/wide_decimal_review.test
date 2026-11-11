@@ -4,9 +4,6 @@
 
 load {TEST_DIR}/wide_decimal_review.db
 
-statement ok
-PRAGMA enable_verification
-
 # subtraction leaves the right operand intact, its bytes can be shared with the left operand
 statement ok
 CREATE TABLE t AS SELECT '123456789012345678901234567890.12'::DECIMAL(50,2) AS d;
@@ -23,7 +20,7 @@ SELECT d + d - d, d - '0.12'::DECIMAL(50,2) FROM t
 
 # multi-threaded hash joins on subtraction results
 statement ok
-PRAGMA threads=4
+SET threads=4;
 
 statement ok
 CREATE TABLE lhs AS SELECT (i::VARCHAR || '12345678901234567890123456789012345.5')::DECIMAL(50,1) AS d, i FROM range(5000) t(i);

@@ -5,7 +5,7 @@
 load {TEST_DIR}/compressed_materialization_numeric.db
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # three row groups of integers, each stored in its own representation
 statement ok
@@ -133,7 +133,7 @@ CHECKPOINT;
 restart
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query III
 SELECT stats(n)['representation'], stats(n)['exact_min'], stats(n)['exact_max'] FROM t LIMIT 1;

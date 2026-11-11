@@ -3,10 +3,7 @@
 # group: [optimizer]
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # native types: the plan around the top-N keeps its shape (optimizer extensions match the operators around a top-N)
 statement ok

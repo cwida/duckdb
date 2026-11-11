@@ -3,7 +3,7 @@
 # group: [numeric]
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # the probe side spans three row groups of INTEGER keys, the build side is a narrow range of SMALLINT keys
 statement ok

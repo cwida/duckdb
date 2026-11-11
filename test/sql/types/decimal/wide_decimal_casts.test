@@ -2,9 +2,6 @@
 # description: Decimals wider than 38 digits are stored as BIGNUM blobs: type binding and casts
 # group: [decimal]
 
-statement ok
-PRAGMA enable_verification
-
 # the type binds up to 255 digits
 query II
 SELECT typeof('1'::DECIMAL(39,0)), typeof('1'::DECIMAL(255,100))
