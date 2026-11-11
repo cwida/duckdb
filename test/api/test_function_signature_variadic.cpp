@@ -130,6 +130,35 @@ TEST_CASE("Positional-only parameters combine with the other kinds", "[api][scal
 	REQUIRE_THROWS(ordered.Verify());
 }
 
+TEST_CASE("A parameter declared without a name prints as its type", "[api][scalar_function]") {
+	// a signature built from types alone: positional-only, and the names it needs internally are not shown
+	FunctionSignature sig({LogicalType::VARCHAR, LogicalType::INTEGER}, LogicalType::BIGINT);
+	REQUIRE(sig.GetParameter(0).GetKind() == FunctionParameterKind::POSITIONAL_ONLY);
+	REQUIRE(!sig.GetParameter(0).IsNamed());
+	REQUIRE(sig.GetParameter(0).GetName() == "col0");
+	REQUIRE(sig.GetParameter(1).GetName() == "col1");
+	REQUIRE(sig.ToString() == "(VARCHAR, INTEGER) -> BIGINT");
+
+	// nothing shown before the "/" means nothing for it to close, with or without parameters after it
+	sig.AddKwargs("kwargs", LogicalType::ANY);
+	REQUIRE(sig.ToString() == "(VARCHAR, INTEGER, **kwargs ANY) -> BIGINT");
+	FunctionSignature keyword_only;
+	keyword_only.AddParameter(LogicalType::VARCHAR);
+	keyword_only.AddKeywordOnly("kw", LogicalType::INTEGER);
+	REQUIRE(keyword_only.ToString() == "(VARCHAR, *, kw INTEGER)");
+
+	// a named positional-only parameter among them brings the "/" back
+	FunctionSignature mixed;
+	mixed.AddParameter(LogicalType::VARCHAR);
+	mixed.AddPositionalOnly("n", LogicalType::INTEGER);
+	REQUIRE(mixed.ToString() == "(VARCHAR, n INTEGER, /)");
+
+	// naming the parameter afterwards shows the name
+	sig.GetParameter(0).SetName("path");
+	REQUIRE(sig.GetParameter(0).IsNamed());
+	REQUIRE(sig.ToString() == "(path VARCHAR, INTEGER, /, **kwargs ANY) -> BIGINT");
+}
+
 TEST_CASE("Positional-only parameters must come first", "[api][scalar_function]") {
 	using Kind = FunctionParameterKind;
 	auto i32 = LogicalType::INTEGER;

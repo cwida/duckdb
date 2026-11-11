@@ -3,7 +3,7 @@
 # group: [pushdown]
 
 statement ok
-pragma explain_output = optimized_only
+SET explain_output = 'optimized_only'
 
 statement ok
 CREATE  TABLE  t2(c1 INTEGER);

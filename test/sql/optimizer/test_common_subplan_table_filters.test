@@ -45,7 +45,7 @@ x	3
 y	3
 
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 # Different table filters must not be extracted as a common subplan
 query II

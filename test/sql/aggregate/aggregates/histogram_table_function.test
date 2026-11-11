@@ -15,7 +15,7 @@ statement ok
 insert into integers values (84);
 
 query II
-SELECT * FROM histogram_values(integers, i, bin_count := 2)
+SELECT * FROM histogram_values('integers', i, bin_count := 2)
 ----
 60	1
 80	0
@@ -23,7 +23,7 @@ SELECT * FROM histogram_values(integers, i, bin_count := 2)
 
 # missing column
 statement error
-SELECT * FROM histogram_values(integers, k)
+SELECT * FROM histogram_values('integers', k)
 ----
 <REGEX>:.*Binder Error.*not found in FROM clause.*
 
@@ -31,7 +31,7 @@ statement ok
 INSERT INTO integers FROM range(127)
 
 query II
-SELECT * FROM histogram_values(integers, i, bin_count => 10, technique => 'equi-width')
+SELECT * FROM histogram_values('integers', i, bin_count => 10, technique => 'equi-width')
 ----
 12	13
 25	13
@@ -45,7 +45,7 @@ SELECT * FROM histogram_values(integers, i, bin_count => 10, technique => 'equi-
 126	13
 
 query II
-SELECT bin, count FROM histogram(integers, i, bin_count := 10, technique := 'equi-width')
+SELECT bin, count FROM histogram('integers', i, bin_count := 10, technique := 'equi-width')
 ----
 x <= 12	13
 12 < x <= 25	13
@@ -62,20 +62,20 @@ statement ok
 INSERT INTO integers VALUES (99999999)
 
 query II
-SELECT COUNT(*), AVG(count) FROM histogram_values(integers, i, technique := 'equi-height')
+SELECT COUNT(*), AVG(count) FROM histogram_values('integers', i, technique := 'equi-height')
 ----
 10	13
 
 # sample integers
 query II
-SELECT * FROM histogram_values(integers, i%2, technique := 'sample')
+SELECT * FROM histogram_values('integers', i%2, technique := 'sample')
 ----
 0	66
 1	64
 
 # varchar
 query II
-SELECT * FROM histogram_values(integers, (i%2)::VARCHAR)
+SELECT * FROM histogram_values('integers', (i%2)::VARCHAR)
 ----
 0	66
 1	64
@@ -85,19 +85,19 @@ SELECT * FROM histogram_values(integers, (i%2)::VARCHAR)
 
 # varchar does not work with equi-width-bins
 statement error
-SELECT * FROM histogram_values(integers, (i%2)::VARCHAR, technique := 'equi-width')
+SELECT * FROM histogram_values('integers', (i%2)::VARCHAR, technique := 'equi-width')
 ----
 <REGEX>:.*Binder Error.*Unsupported type "VARCHAR" for equi_width_bins.*
 
 # but it works with equi-height
 query II
-SELECT COUNT(*), AVG(count)  FROM histogram_values(integers, i::VARCHAR, technique := 'equi-height')
+SELECT COUNT(*), AVG(count)  FROM histogram_values('integers', i::VARCHAR, technique := 'equi-height')
 ----
 10	13.0
 
 # histogram with ranges
 query II
-SELECT COUNT(bin), AVG(count) FROM histogram(integers, i::VARCHAR, technique := 'equi-height')
+SELECT COUNT(bin), AVG(count) FROM histogram('integers', i::VARCHAR, technique := 'equi-height')
 ----
 10	13
 
@@ -109,20 +109,35 @@ statement ok
 insert into booleans select case when i%4=0 then true else false end from range(100) t(i)
 
 query II
-SELECT * FROM histogram_values(booleans, b::INTEGER)
+SELECT * FROM histogram_values('booleans', b::INTEGER)
 ----
 0	75
 1	25
 
 query II
-SELECT * FROM histogram_values(booleans, b) ORDER BY bin
+SELECT * FROM histogram_values('booleans', b) ORDER BY bin
 ----
 false	75
 true	25
 
 # lists
 query II
-SELECT * FROM histogram_values(integers, [i%2]) ORDER BY bin
+SELECT * FROM histogram_values('integers', [i%2]) ORDER BY bin
 ----
 [0]	66
 [1]	64
+
+# dates - equi_width_bins keeps DATE bins, so the histogram keys stay DATE
+statement ok
+create table dates(d date);
+
+statement ok
+insert into dates select date '2020-01-01' + interval (r*7) day from range(20) t(r)
+
+query II
+SELECT bin, count FROM histogram_values('dates', d, bin_count := 4)
+----
+2020-02-04	5
+2020-03-07	5
+2020-04-10	5
+2020-05-13	5

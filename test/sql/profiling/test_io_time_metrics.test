@@ -10,10 +10,10 @@ require no_vector_verification
 
 # writing a parquet file issues storage writes, which are timed
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/io_time_write.json';
+SET profiling_output = '{TEST_DIR}/io_time_write.json';
 
 statement ok
 SET tracked_metrics = ['io.total_bytes_written', 'io.total_write_time'];
@@ -33,10 +33,10 @@ true	true
 
 # reading it back issues storage reads, which are timed
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/io_time_read.json';
+SET profiling_output = '{TEST_DIR}/io_time_read.json';
 
 statement ok
 SET tracked_metrics = ['io.total_bytes_read', 'io.total_read_time'];

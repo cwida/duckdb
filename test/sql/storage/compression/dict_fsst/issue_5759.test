@@ -5,7 +5,7 @@
 load {TEST_DIR}/issue_5759.db readwrite v1.3.0
 
 statement ok
-pragma force_compression='dict_fsst'
+SET force_compression='dict_fsst'
 
 # With many short and a few small strings, the sample calculation would overflow
 statement ok

@@ -36,7 +36,7 @@ SELECT COUNT(*) FROM read_csv_auto('{DATA_DIR}/csv/nullpadding_commas.csv', null
 2500
 
 query I
-SELECT COUNT(*) FROM read_csv('{DATA_DIR}/csv/nullpadding_commas.csv', sep=',',  columns={'a': INT, 'b': INT, 'c': INT, 'd': INT}, ignore_errors=True, null_padding=False)
+SELECT COUNT(*) FROM read_csv('{DATA_DIR}/csv/nullpadding_commas.csv', sep=',',  columns={'a': 'INT', 'b': 'INT', 'c': 'INT', 'd': 'INT'}, ignore_errors=True, null_padding=False)
 ----
 2492
 

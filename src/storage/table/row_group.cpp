@@ -259,7 +259,7 @@ void RowGroup::InitializeEmpty(const vector<LogicalType> &types, ColumnDataType 
 void ColumnScanState::PushDownCast(const LogicalType &original_type, const LogicalType &cast_type) {
 	D_ASSERT(context.Valid());
 	D_ASSERT(!expression_state);
-	auto &client_context = *Context::TryGetClientContext(context.GetServices());
+	auto &client_context = *context.GetClientContext();
 
 	auto input = make_uniq<BoundReferenceExpression>(original_type, 0ULL);
 	auto cast_expression = BoundCastExpression::AddCastToType(client_context, std::move(input), cast_type);
@@ -384,7 +384,7 @@ void CollectionScanState::Initialize(const QueryContext &context_p, const vector
 
 bool RowGroup::InitializeScanInternal(CollectionScanState &state, SegmentNode<RowGroup> &node, idx_t vector_offset) {
 	auto &filters = state.GetFilterInfo();
-	if (!CheckZonemap(Context::TryGetClientContext(state.context.GetServices()), filters, node.GetRowStart())) {
+	if (!CheckZonemap(state.context.GetClientContext(), filters, node.GetRowStart())) {
 		return false;
 	}
 	if (!RefersToSameObject(node.GetNode(), *this)) {
@@ -1062,12 +1062,6 @@ void RowGroup::ProcessPreparedScan(ScanOptions options, CollectionScanState &sta
 				col_data.Filter(transaction, state.vector_index, state.column_scans[scan_idx], result_vector, sel,
 				                approved_tuple_count, filter.filter, table_filter_state);
 			}
-			for (auto &table_filter : filter_list) {
-				if (table_filter.IsAlwaysTrue()) {
-					continue;
-				}
-				result.data[table_filter.scan_column_index].Slice(sel, approved_tuple_count);
-			}
 		}
 		if (approved_tuple_count == 0) {
 			// all rows were filtered out by the table filters
@@ -1085,6 +1079,15 @@ void RowGroup::ProcessPreparedScan(ScanOptions options, CollectionScanState &sta
 			filter_info.EndFilter(filter_state);
 			FinishVector(state);
 			return;
+		}
+		if (has_filters) {
+			// Slice only columns that will be returned. Empty chunks are reset above without allocating dictionaries.
+			for (auto &table_filter : filter_info.GetFilterList()) {
+				if (table_filter.IsAlwaysTrue()) {
+					continue;
+				}
+				result.data[table_filter.scan_column_index].Slice(sel, approved_tuple_count);
+			}
 		}
 		//! Now we use the selection vector to fetch data for the other columns.
 		for (idx_t i = 0; i < column_ids.size(); i++) {
@@ -1500,7 +1503,9 @@ shared_ptr<ColumnData> RowGroup::CheckpointColumn(const RowGroup &row_group, idx
 	// FIXME: we should get rid of the checkpoint state statistics - and instead use the stats in the ColumnData
 	// directly
 	auto stats = checkpoint_state->GetStatistics();
-	result_col->MergeStatistics(*stats);
+	if (result_col.get() != &column) {
+		result_col->MergeStatistics(*stats);
+	}
 
 	write_data.statistics.push_back(stats->Copy());
 	write_data.states.push_back(std::move(checkpoint_state));

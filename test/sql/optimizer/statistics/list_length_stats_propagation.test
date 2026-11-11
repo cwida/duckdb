@@ -1,0 +1,186 @@
+# name: test/sql/optimizer/statistics/list_length_stats_propagation.test
+# description: Test that length/array_length propagate list length statistics
+# group: [statistics]
+
+statement ok
+CREATE TABLE same_length(l INT[]);
+
+statement ok
+INSERT INTO same_length VALUES ([1, 2, 3]), (NULL), ([4, 5, 6]);
+
+# equal min and max list length turn into a constant_or_null
+query II
+EXPLAIN SELECT length(l) FROM same_length
+----
+physical_plan	<REGEX>:.*constant_or_null\(3, l\).*
+
+query I
+SELECT length(l) FROM same_length
+----
+3
+NULL
+3
+
+query I
+SELECT array_length(l) FROM same_length
+----
+3
+NULL
+3
+
+query II
+SELECT s.min, s.max FROM (SELECT stats(length(l)) s FROM same_length LIMIT 1)
+----
+3	3
+
+# different lengths: the bounds are propagated but the call stays
+statement ok
+CREATE TABLE diff_length(l INT[]);
+
+statement ok
+INSERT INTO diff_length VALUES ([1, 2]), ([1, 2, 3, 4]), ([]);
+
+query II
+EXPLAIN SELECT length(l) FROM diff_length
+----
+physical_plan	<!REGEX>:.*constant_or_null.*
+
+query II
+SELECT s.min, s.max FROM (SELECT stats(length(l)) s FROM diff_length LIMIT 1)
+----
+0	4
+
+# the bounds make the filter always false
+query I
+SELECT count(*) FROM diff_length WHERE length(l) > 4
+----
+0
+
+# only empty lists
+statement ok
+CREATE TABLE empty_lists(l INT[]);
+
+statement ok
+INSERT INTO empty_lists SELECT [] FROM range(10);
+
+query I
+SELECT sum(length(l)) FROM empty_lists
+----
+0
+
+query II
+EXPLAIN SELECT length(l) FROM empty_lists
+----
+physical_plan	<REGEX>:.*constant_or_null\(0, l\).*
+
+# nested lists
+statement ok
+CREATE TABLE nested(l INT[][]);
+
+statement ok
+INSERT INTO nested VALUES ([[1], [2, 3]]), ([[4], []]);
+
+query I
+SELECT length(l) FROM nested
+----
+2
+2
+
+query I
+SELECT length(l[1]) FROM nested
+----
+1
+1
+
+# constants
+query I
+SELECT length([1, 2, 3])
+----
+3
+
+# arrays are unaffected
+query I
+SELECT length([1, 2, 3]::INT[3])
+----
+3
+
+# list_concat adds up the lengths of its inputs
+statement ok
+CREATE TABLE concat_t(a INT[], b INT[]);
+
+statement ok
+INSERT INTO concat_t VALUES ([1, 2], [3]), ([4, 5], [6]);
+
+query I
+SELECT length(list_concat(a, b)) FROM concat_t
+----
+3
+3
+
+query I
+SELECT length(a || b) FROM concat_t
+----
+3
+3
+
+query II
+SELECT s.min, s.max FROM (SELECT stats(length(list_concat(list_concat(a, b), a))) s FROM concat_t LIMIT 1)
+----
+5	5
+
+query II
+EXPLAIN SELECT length(list_concat(a, b)) FROM concat_t
+----
+physical_plan	<REGEX>:.*constant_or_null\(3, .*
+
+# NULL lists are skipped by list_concat
+statement ok
+INSERT INTO concat_t VALUES (NULL, [7, 8, 9]), ([10], NULL);
+
+query I
+SELECT length(list_concat(a, b)) FROM concat_t
+----
+3
+3
+3
+1
+
+query II
+SELECT s.min, s.max FROM (SELECT stats(length(list_concat(a, b))) s FROM concat_t LIMIT 1)
+----
+0	5
+
+# flatten adds up the lengths of the inner lists
+statement ok
+CREATE TABLE flatten_t(j INT[][]);
+
+statement ok
+INSERT INTO flatten_t VALUES ([[1, 2], [3, 4]]), ([[5, 6], [7, 8]]);
+
+query I
+SELECT length(flatten(j)) FROM flatten_t
+----
+4
+4
+
+query II
+EXPLAIN SELECT length(flatten(j)) FROM flatten_t
+----
+physical_plan	<REGEX>:.*constant_or_null\(4, .*
+
+statement ok
+INSERT INTO flatten_t VALUES ([[1], NULL, [2, 3, 4]]), ([]), ([[]]);
+
+query I
+SELECT length(flatten(j)) FROM flatten_t
+----
+4
+4
+4
+0
+0
+
+query II
+SELECT s.min, s.max FROM (SELECT stats(length(flatten(j))) s FROM flatten_t LIMIT 1)
+----
+0	9

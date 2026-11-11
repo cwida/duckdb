@@ -44,7 +44,7 @@ unique_ptr<Expression> ContainsToInClauseRule::Apply(LogicalOperator &op, vector
 	vector<Value> non_null_elements;
 	for (const auto &elem : ListValue::GetChildren(list_val)) {
 		if (!elem.IsNull()) {
-			non_null_elements.emplace_back(elem.DefaultCastAs(child_type));
+			non_null_elements.emplace_back(elem.CastAs(GetContext(), child_type));
 		}
 	}
 

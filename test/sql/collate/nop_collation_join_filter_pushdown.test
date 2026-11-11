@@ -3,7 +3,7 @@
 # group: [collate]
 
 statement ok
-PRAGMA explain_output='optimized_only'
+SET explain_output='optimized_only'
 
 statement ok
 SET disabled_optimizers TO 'column_lifetime,compressed_materialization';

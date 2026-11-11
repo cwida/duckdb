@@ -20,16 +20,17 @@ namespace duckdb {
 // In-Memory Checkpoint Writer
 //===--------------------------------------------------------------------===//
 InMemoryCheckpointer::InMemoryCheckpointer(QueryContext context, AttachedDatabase &db, BlockManager &block_manager,
-                                           StorageManager &storage_manager, CheckpointOptions options_p)
-    : CheckpointWriter(db, context),
-      partial_block_manager(GetServices(), block_manager, PartialBlockType::IN_MEMORY_CHECKPOINT),
+                                           StorageManager &storage_manager, CheckpointOptions options_p,
+                                           optional_ptr<ClientContext> checkpoint_context)
+    : CheckpointWriter(db, context, checkpoint_context),
+      partial_block_manager(GetContext(), block_manager, PartialBlockType::IN_MEMORY_CHECKPOINT),
       storage_manager(storage_manager), options(options_p) {
 }
 
 void InMemoryCheckpointer::CreateCheckpoint() {
 	auto &transaction_manager = DuckTransactionManager::Get(db);
 	// appends that run alongside the checkpoint start new row groups, index changes go to the checkpoint deltas
-	ActiveCheckpointWrapper active_checkpoint(GetServices(), db, transaction_manager);
+	ActiveCheckpointWrapper active_checkpoint(GetCheckpointContext(), db, transaction_manager);
 	{
 		unique_lock<mutex> commit_lock;
 		if (!options.commit_lock) {
@@ -118,7 +119,7 @@ optional_ptr<MetadataManager> InMemoryRowGroupWriter::GetMetadataManager() {
 }
 
 InMemoryTableDataWriter::InMemoryTableDataWriter(InMemoryCheckpointer &checkpoint_manager, TableCatalogEntry &table)
-    : TableDataWriter(table, checkpoint_manager.GetServices()), checkpoint_manager(checkpoint_manager) {
+    : TableDataWriter(table, checkpoint_manager.GetContext()), checkpoint_manager(checkpoint_manager) {
 }
 
 void InMemoryTableDataWriter::WriteUnchangedTable(MetaBlockPointer pointer,
@@ -133,7 +134,7 @@ void InMemoryTableDataWriter::FinalizeTable(const TableStatistics &global_stats,
 	// nop: no need to write anything
 }
 
-unique_ptr<RowGroupWriter> InMemoryTableDataWriter::GetRowGroupWriter(RowGroup &row_group) {
+unique_ptr<RowGroupWriter> InMemoryTableDataWriter::GetRowGroupWriter() {
 	return make_uniq<InMemoryRowGroupWriter>(*this, table, checkpoint_manager.GetPartialBlockManager(),
 	                                         checkpoint_manager);
 }

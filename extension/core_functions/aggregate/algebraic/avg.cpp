@@ -6,6 +6,7 @@
 #include "duckdb/common/likely.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/planner/expression.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 
 namespace duckdb {
 
@@ -500,6 +501,14 @@ static AggregateFunction NameXParameter(AggregateFunction fun) {
 	return fun;
 }
 
+unique_ptr<BaseStatistics> AveragePropagateStats(ClientContext &context, BoundAggregateExpression &expr,
+                                                 AggregateStatisticsInput &input) {
+	auto bounds = SumAccumulatorBounds::TryGet(input);
+	expr.FunctionMutable().SetErrorMode(bounds ? FunctionErrors::CANNOT_ERROR
+	                                           : FunctionErrors::CAN_THROW_RUNTIME_ERROR);
+	return nullptr;
+}
+
 AggregateFunction GetAverageAggregate(PhysicalType type) {
 	switch (type) {
 	case PhysicalType::INT16: {
@@ -522,6 +531,7 @@ AggregateFunction GetAverageAggregate(PhysicalType type) {
 		    AggregateFunction::UnaryAggregate<AvgState<hugeint_t>, hugeint_t, double, HugeintAverageOperation>(
 		        LogicalType::HUGEINT, LogicalType::DOUBLE);
 		function.SetFallible(); // adding HUGEINT values to the HUGEINT accumulator throws on overflow
+		function.SetStatisticsCallback(AveragePropagateStats);
 		return NameXParameter(std::move(function));
 	}
 	case PhysicalType::INTERVAL: {
@@ -548,6 +558,35 @@ unique_ptr<FunctionData> BindDecimalAvg(BindAggregateFunctionInput &input) {
 	    Hugeint::Cast<double>(Hugeint::POWERS_OF_TEN[DecimalType::GetScale(decimal_type)]));
 }
 
+AggregateFunction GetTimestampAverage() {
+	auto timestamp_avg =
+	    AggregateFunction::UnaryAggregate<AvgState<hugeint_t>, int64_t, int64_t, TimestampAverageOperation>(
+	        LogicalType::TIMESTAMP, LogicalType::TIMESTAMP);
+	timestamp_avg.GetSignature().GetParameter(0).SetName("x");
+	timestamp_avg.SetStructStateExport(TimestampAverageStateLayout);
+	return timestamp_avg;
+}
+
+//! Averages the argument as a TIMESTAMP, whose range holds every ordinary date of the lower precisions
+unique_ptr<FunctionData> BindWidenedTimestampAvg(BindAggregateFunctionInput &input) {
+	auto &function = input.GetBoundFunction();
+	function.ReplaceImplementation(GetTimestampAverage());
+	function.SetName("avg");
+	function.GetArguments()[0] = LogicalType::TIMESTAMP;
+	function.SetReturnType(LogicalType::TIMESTAMP);
+	return nullptr;
+}
+
+//! Without an overload of their own, TIMESTAMP_S, TIMESTAMP_MS and DATE would widen to TIMESTAMP_NS, the cheapest
+//! implicit cast, whose range is far smaller than theirs
+AggregateFunction GetWidenedTimestampAverage(const LogicalType &type) {
+	// stub function, the bind sets the TIMESTAMP implementation and the argument type it casts to
+	AggregateFunction fun({}, LogicalType::TIMESTAMP, nullptr, nullptr, nullptr, nullptr, nullptr,
+	                      FunctionNullHandling::DEFAULT_NULL_HANDLING, nullptr, BindWidenedTimestampAvg);
+	fun.GetSignature().AddParameter("x", type);
+	return fun;
+}
+
 } // namespace
 
 AggregateFunctionSet AvgFun::GetFunctions() {
@@ -568,12 +607,10 @@ AggregateFunctionSet AvgFun::GetFunctions() {
 	numeric_avg.GetSignature().GetParameter(0).SetName("x");
 	avg.AddFunction(numeric_avg);
 
-	auto timestamp_avg =
-	    AggregateFunction::UnaryAggregate<AvgState<hugeint_t>, int64_t, int64_t, TimestampAverageOperation>(
-	        LogicalType::TIMESTAMP, LogicalType::TIMESTAMP);
-	timestamp_avg.GetSignature().GetParameter(0).SetName("x");
-	timestamp_avg.SetStructStateExport(TimestampAverageStateLayout);
-	avg.AddFunction(timestamp_avg);
+	avg.AddFunction(GetTimestampAverage());
+	for (auto &type : {LogicalType::TIMESTAMP_S, LogicalType::TIMESTAMP_MS, LogicalType::DATE}) {
+		avg.AddFunction(GetWidenedTimestampAverage(type));
+	}
 
 	auto timestamp_tz_avg =
 	    AggregateFunction::UnaryAggregate<AvgState<hugeint_t>, int64_t, int64_t, TimestampAverageOperation>(

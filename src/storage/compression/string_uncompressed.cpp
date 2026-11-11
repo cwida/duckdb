@@ -236,17 +236,20 @@ idx_t UncompressedStringStorage::FinalizeAppend(ColumnSegment &segment, BaseStat
 	// compute the total size required to store this segment
 	auto offset_size = DICTIONARY_HEADER_SIZE + segment.count * sizeof(int32_t);
 	auto total_size = offset_size + dict.size;
+	D_ASSERT(total_size <= segment.SegmentSize());
+	auto dataptr = handle.GetDataMutable() + segment.GetBlockOffset();
 
 	CompressionInfo info(segment.GetBlockHandle()->GetBlockManager());
 	if (total_size >= info.GetCompactionFlushLimit()) {
 		// the block is full enough, don't bother moving around the dictionary
+		// the whole segment is persisted, so clear the gap between the offsets and the dictionary
+		memset(dataptr + offset_size, 0, segment.SegmentSize() - total_size);
 		return segment.SegmentSize();
 	}
 
 	// the block has space left: figure out how much space we can save
 	auto move_amount = segment.SegmentSize() - total_size;
 	// move the dictionary so it lines up exactly with the offsets
-	auto dataptr = handle.GetDataMutable() + segment.GetBlockOffset();
 	memmove(dataptr + offset_size, dataptr + dict.end - dict.size, dict.size);
 	dict.end -= move_amount;
 	D_ASSERT(dict.end == total_size);
@@ -285,7 +288,7 @@ void UncompressedStringStorage::VisitBlockIds(const ColumnSegment &segment, Bloc
 //===--------------------------------------------------------------------===//
 CompressionFunction StringUncompressed::GetFunction(PhysicalType data_type) {
 	D_ASSERT(data_type == PhysicalType::VARCHAR);
-	return CompressionFunction(
+	CompressionFunction result(
 	    CompressionType::COMPRESSION_UNCOMPRESSED, data_type, UncompressedStringStorage::StringInitAnalyze,
 	    UncompressedStringStorage::StringAnalyze, UncompressedStringStorage::StringFinalAnalyze,
 	    UncompressedFunctions::InitCompression, UncompressedFunctions::Compress,
@@ -296,6 +299,8 @@ CompressionFunction StringUncompressed::GetFunction(PhysicalType data_type) {
 	    UncompressedStringStorage::FinalizeAppend, UncompressedStringStorage::StringRevertAppend,
 	    UncompressedStringStorage::SerializeState, UncompressedStringStorage::DeserializeState,
 	    UncompressedStringStorage::VisitBlockIds, UncompressedStringInitPrefetch, UncompressedStringStorage::Select);
+	result.zero_initialize_segments = false;
+	return result;
 }
 
 //===--------------------------------------------------------------------===//

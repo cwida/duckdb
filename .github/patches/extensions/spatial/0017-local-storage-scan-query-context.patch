@@ -1,0 +1,15 @@
+diff --git a/src/spatial/index/rtree/rtree_index_scan.cpp b/src/spatial/index/rtree/rtree_index_scan.cpp
+index 2356e22..a120fdf 100644
+--- a/src/spatial/index/rtree/rtree_index_scan.cpp
++++ b/src/spatial/index/rtree/rtree_index_scan.cpp
+@@ -296,8 +296,8 @@ static unique_ptr<LocalTableFunctionState> RTreeIndexScanInitLocal(ExecutionCont
+ 	if (g_state.mode == RTreeIndexScanGlobalState::ScanMode::INDEX_SCAN) {
+ 		// Setup the scan state for the local storage
+ 		auto &local_storage = LocalStorage::Get(context.client, bind_data.table.catalog);
+-		local_storage.InitializeScan(bind_data.table.GetStorage(), result->local_storage_state.local_state,
+-		                             input.filters);
++		local_storage.InitializeScan(context.client, bind_data.table.GetStorage(),
++		                             result->local_storage_state.local_state, input.filters);
+ 	} else {
+ 		// Fallback table scan: grab the first range to scan (this also covers the transaction-local storage)
+ 		bind_data.table.GetStorage().NextParallelScan(context.client, g_state.table_scan_state,

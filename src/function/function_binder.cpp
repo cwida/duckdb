@@ -393,7 +393,7 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		}
 		if (!filled) {
 			// This parameter cannot be filled by the call, so this function cannot be a match.
-			mismatch(FunctionMismatch::MissingParameter {i, param.GetName()});
+			mismatch(FunctionMismatch::MissingParameter {i, param.IsNamed() ? param.GetName() : Identifier()});
 		}
 	}
 
@@ -424,7 +424,7 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		}
 	}
 
-	if (mismatches > 0) {
+	if (reason) {
 		// the wrong shape is further away than arguments that cannot be cast, of which there are at most this many
 		return FunctionMismatch(overload, std::move(function), received_count + mismatches, std::move(*reason));
 	}
@@ -446,26 +446,19 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		}
 	}
 
-	FunctionBinding binding;
-	binding.overload = overload;
-	binding.function = function;
+	auto get_parameter_index = [&](idx_t i) {
+		if (i >= received_positional_count) {
+			auto by_name = sig.GetParameterIndexByName(call.GetArgument(i).name);
+			return by_name.IsValid() ? by_name.GetIndex() : kwargs_idx.GetIndex();
+		}
+		return i < accepted_positional_count ? i : args_idx.GetIndex();
+	};
+
 	idx_t cost = 0;
 	bool has_unknown_argument = false;
-	vector<bool> filled(sig.GetParameterCount(), false);
 	for (idx_t i = 0; i < received_count; i++) {
-		auto &argument = call.GetArgument(i);
-		auto &arg_type = argument.type;
+		auto &arg_type = call.GetArgument(i).type;
 		const bool is_named = i >= received_positional_count;
-		idx_t param_idx;
-		if (is_named) {
-			auto by_name = sig.GetParameterIndexByName(argument.name);
-			param_idx = by_name.IsValid() ? by_name.GetIndex() : kwargs_idx.GetIndex();
-		} else {
-			param_idx = i < accepted_positional_count ? i : args_idx.GetIndex();
-		}
-		binding.argument_to_parameters.push_back(param_idx);
-		filled[param_idx] = true;
-
 		if (!is_named && arg_type.id() == LogicalTypeId::UNKNOWN) {
 			has_unknown_argument = true;
 			continue;
@@ -473,6 +466,7 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		if (explicit_casts) {
 			continue;
 		}
+		auto param_idx = get_parameter_index(i);
 		int64_t cast_cost = ImplicitCastCost(context, arg_type, sig.GetParameter(param_idx).GetType());
 		if (cast_cost < 0) {
 			mismatch(FunctionMismatch::IncompatibleArgument {i, sig.GetParameter(param_idx).GetType()});
@@ -480,18 +474,31 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		}
 		cost += static_cast<idx_t>(cast_cost);
 	}
-	if (mismatches > 0) {
+	if (reason) {
 		return FunctionMismatch(overload, std::move(function), mismatches, std::move(*reason));
 	}
 
+	// Only candidates whose casts match need a materialized argument-to-parameter mapping.
+	FunctionBinding binding;
+	binding.overload = overload;
+	binding.function = function;
+	binding.argument_to_parameters.reserve(received_count);
+	for (idx_t i = 0; i < received_count; i++) {
+		binding.argument_to_parameters.push_back(get_parameter_index(i));
+	}
 	binding.return_type = sig.GetReturnType();
 	bool is_templated = binding.return_type.IsTemplated();
+	binding.parameter_types.reserve(sig.GetParameterCount());
 	for (auto &param : sig.GetParameters()) {
 		binding.parameter_types.push_back(param.GetType());
 		is_templated = is_templated || param.GetType().IsTemplated();
 	}
 	if (is_templated) {
 		// the shape and the casts match, so a template that cannot be deduced is the closest miss there is
+		vector<bool> filled(sig.GetParameterCount(), false);
+		for (auto param_idx : binding.argument_to_parameters) {
+			filled[param_idx] = true;
+		}
 		auto template_mismatch = DeduceTemplates(context, sig, call, filled, binding);
 		if (template_mismatch) {
 			return FunctionMismatch(overload, std::move(function), 0, std::move(*template_mismatch));
@@ -522,7 +529,10 @@ FunctionBindResult FunctionBinder::SelectFunction(optional_ptr<ClientContext> co
 		auto match = MatchOverload(context, overload, functions.GetSharedOverload(overload), call, explicit_casts);
 		auto binding = std::get_if<FunctionBinding>(&match);
 		if (!binding) {
-			mismatches.push_back(std::move(std::get<FunctionMismatch>(match)));
+			// Once an overload matches, unsuccessful candidates cannot contribute to the result or diagnostics.
+			if (cheapest.empty()) {
+				mismatches.push_back(std::move(std::get<FunctionMismatch>(match)));
+			}
 			continue;
 		}
 
@@ -997,6 +1007,10 @@ void FunctionBinder::CastToFunctionArguments(const Identifier &function_name, ve
 			    "Function %s returned a STRING_LITERAL or INTEGER_LITERAL type - return an explicit type instead",
 			    function_name);
 		}
+		if (children[i]->GetReturnType().id() == LogicalTypeId::UNKNOWN && !target_type.IsComplete()) {
+			// bind callbacks only see concrete types - an unresolved parameter is bound again at EXECUTE
+			throw ParameterNotResolvedException();
+		}
 		target_type.Verify();
 		// don't cast lambda children, their slot only ever holds a placeholder
 		if (children[i]->GetReturnType().id() == LogicalTypeId::LAMBDA) {
@@ -1014,9 +1028,9 @@ void FunctionBinder::CastToFunctionArguments(const Identifier &function_name, ve
 		// except for one special case: if the function accepts ANY argument
 		// in that case we don't add a cast
 		if (cast_result == LogicalTypeComparisonResult::DIFFERENT_TYPES) {
-			if (target_has_any && children[i]->GetReturnType().id() != LogicalTypeId::UNKNOWN) {
+			if (target_has_any) {
 				// a type that is not concrete cannot be cast to (e.g. a NULL or a VARIANT passed to LIST(ANY)) - the
-				// function has to handle the argument as-is. Unresolved parameters are still assigned the type.
+				// function has to handle the argument as-is
 				continue;
 			}
 			if (IsIncompleteCastTarget(target_type)) {

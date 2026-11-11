@@ -13,7 +13,7 @@ require vector_size 2048
 # preserved keeps the sort's working set within the limit so it spills to disk
 # rather than failing with an out-of-memory error.
 statement ok
-PRAGMA temp_directory = '{TEST_DIR}/spilled_bytes_tmp';
+SET temp_directory = '{TEST_DIR}/spilled_bytes_tmp';
 
 statement ok
 SET threads = 1;
@@ -22,13 +22,13 @@ statement ok
 SET preserve_insertion_order = false;
 
 statement ok
-PRAGMA memory_limit = '100MB';
+SET memory_limit = '100MB';
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/spilled_bytes.json';
+SET profiling_output = '{TEST_DIR}/spilled_bytes.json';
 
 statement ok
 SET tracked_metrics = ['system.total_bytes_spilled'];

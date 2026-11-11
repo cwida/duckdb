@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-pragma explain_output='OPTIMIZED_ONLY'
+SET explain_output='OPTIMIZED_ONLY'
 
 query I
 SELECT * FROM (SELECT 1) lhs
@@ -20,7 +20,7 @@ EXPLAIN SELECT * FROM (SELECT 1) lhs
 EXCEPT
 SELECT * FROM (SELECT 1 WHERE 1=0) rhs
 ----
-logical_opt	<REGEX>:.*DISTINCT.*
+logical_opt	<REGEX>:.*AGGREGATE.*
 
 query II
 EXPLAIN SELECT * FROM (SELECT 1) lhs

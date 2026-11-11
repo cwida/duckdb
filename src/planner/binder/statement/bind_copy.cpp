@@ -60,7 +60,9 @@ void IsFormatExtensionKnown(const string &format) {
 identifier_map_t<CopyOption> Binder::GetFullCopyOptionsList(const CopyFunction &function, CopyOptionMode mode) {
 	identifier_map_t<CopyOption> copy_options;
 	CopyOptionsInput input(copy_options);
-	function.copy_options(context, input);
+	if (function.copy_options) {
+		function.copy_options(context, input);
+	}
 
 	// first erase all options that don't match this type
 	if (mode != CopyOptionMode::READ_WRITE) {
@@ -463,7 +465,7 @@ BoundStatement Binder::BindCopyTo(CopyStatement &stmt, const CopyFunction &funct
 			if (option_values.empty()) {
 				throw BinderException("BATCH_SIZE_BYTES/ROW_GROUP_SIZE_BYTES cannot be empty");
 			}
-			parsed_options.batch_size_bytes = ParseBytesArg(option_name, option_values[0]);
+			parsed_options.batch_size_bytes = ParseBytesArg(context.GetContext(), option_name, option_values[0]);
 		} else if (option_name == "file_size_bytes") {
 			if (option_values.empty()) {
 				throw BinderException("FILE_SIZE_BYTES cannot be empty");
@@ -471,7 +473,7 @@ BoundStatement Binder::BindCopyTo(CopyStatement &stmt, const CopyFunction &funct
 			if (!function.file_size_bytes) {
 				throw BinderException("FILE_SIZE_BYTES not implemented for %s", function.name);
 			}
-			parsed_options.file_size_bytes = ParseBytesArg(option_name, option_values[0]);
+			parsed_options.file_size_bytes = ParseBytesArg(context.GetContext(), option_name, option_values[0]);
 		} else if (option_name == "batches_per_file" || option_name == "row_groups_per_file") {
 			if (option_values.empty()) {
 				throw BinderException("BATCHES_PER_FILE/ROW_GROUPS_PER_FILE cannot be empty");
@@ -805,10 +807,8 @@ void Binder::BindCopyFormat(CopyInfo &info) {
 }
 
 void Binder::BindCopyOptions(CopyInfo &info, const CopyFunction &function) {
-	identifier_map_t<CopyOption> copy_options;
-	if (function.copy_options) {
-		copy_options = GetFullCopyOptionsList(function, CopyOptionMode::READ_WRITE);
-	}
+	// formats without their own option list still take the generic ones, such as PARTITION_BY
+	auto copy_options = GetFullCopyOptionsList(function, CopyOptionMode::READ_WRITE);
 	unique_ptr<ParsedExpression> partition_path;
 	for (auto &[option_name, option_expr] : info.parsed_options) {
 		if (option_name == "partition_path") {

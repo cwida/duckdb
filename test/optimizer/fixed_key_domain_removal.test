@@ -1,0 +1,145 @@
+# name: test/optimizer/fixed_key_domain_removal.test
+# description: Removing a local restriction preserves demanded groups and NULL behavior
+# group: [optimizer]
+
+statement ok
+CREATE TABLE small_domain AS SELECT (i%2)::INTEGER k, i::BIGINT v FROM range(10000) t(i);
+
+statement ok
+INSERT INTO small_domain VALUES (NULL,4),(NULL,7),(1,NULL);
+
+# Duplicate demand and ordinary equality leave NULL demand unmatched.
+query III
+SELECT d.k,a.s,a.n FROM (VALUES(0),(1),(1),(NULL))d(k)
+LEFT JOIN (SELECT f.k,sum(v)s,count(v)n FROM small_domain f
+ SEMI JOIN (SELECT DISTINCT k FROM (VALUES(0),(1),(NULL))keys(k))old USING(k) GROUP BY f.k)a USING(k)
+ORDER BY d.k NULLS FIRST;
+----
+NULL	NULL	NULL
+0	24995000	5000
+1	25000000	5000
+1	25000000	5000
+
+# Key-dependent and ancestor SUM callbacks do not change demanded results.
+query I
+SELECT sum(a.s) FROM (VALUES (0), (1)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(f.k) s FROM small_domain f
+    SEMI JOIN (SELECT DISTINCT k FROM (VALUES (0), (1)) keys(k)) old USING(k) GROUP BY f.k
+) a USING(k);
+----
+5001
+
+# Ordinary restriction must retain NULL exclusion for a null-safe consumer.
+query II
+SELECT d.k,a.s FROM (VALUES(0),(1),(NULL))d(k)
+LEFT JOIN (SELECT f.k,sum(v)s FROM small_domain f
+ SEMI JOIN (SELECT DISTINCT k FROM (VALUES(0),(1),(NULL))keys(k))old USING(k) GROUP BY f.k)a
+ON d.k IS NOT DISTINCT FROM a.k ORDER BY d.k NULLS FIRST;
+----
+NULL	NULL
+0	24995000
+1	25000000
+
+# A null-safe restriction can expose its NULL group.
+query II
+SELECT d.k,a.s FROM (VALUES(0),(1),(NULL))d(k)
+LEFT JOIN (SELECT f.k,sum(v)s FROM small_domain f
+ SEMI JOIN (SELECT DISTINCT k FROM (VALUES(0),(1),(NULL))keys(k))old ON f.k IS NOT DISTINCT FROM old.k GROUP BY f.k)a
+ON d.k IS NOT DISTINCT FROM a.k ORDER BY d.k NULLS FIRST;
+----
+NULL	11
+0	24995000
+1	25000000
+
+# A demanded key absent from the old domain cannot become visible.
+query II
+SELECT d.k,a.s FROM (VALUES(0),(1),(2))d(k)
+LEFT JOIN (SELECT f.k,sum(v)s FROM small_domain f
+ SEMI JOIN (SELECT DISTINCT k FROM (VALUES(0),(NULL))keys(k))old USING(k) GROUP BY f.k)a USING(k) ORDER BY d.k;
+----
+0	24995000
+1	NULL
+2	NULL
+
+# Payload aliases and COUNT output retain their bindings.
+query III
+SELECT d.k,a.s,a.n FROM (VALUES(0),(1),(NULL))d(k)
+LEFT JOIN (SELECT key_alias,sum(payload)s,count(*)n FROM
+ (SELECT f.v payload,f.k key_alias FROM small_domain f SEMI JOIN (SELECT DISTINCT k FROM (VALUES(0),(1),(NULL))keys(k))old USING(k)) f
+ GROUP BY key_alias)a ON d.k=a.key_alias ORDER BY d.k NULLS FIRST;
+----
+NULL	NULL	NULL
+0	24995000	5000
+1	25000000	5001
+
+# The path gaining rows must not evaluate a computed payload.
+query II
+SELECT d.k,a.s FROM (VALUES(0),(1))d(k)
+LEFT JOIN (SELECT f.k,sum(v*v)s FROM small_domain f SEMI JOIN (SELECT DISTINCT k FROM (VALUES(0),(1))keys(k))old USING(k) GROUP BY f.k)a USING(k) ORDER BY d.k;
+----
+0	166616670000
+1	166666665000
+
+statement ok
+PREPARE remove_domain AS
+SELECT d.k,a.s FROM (VALUES($1::INTEGER),($2::INTEGER))d(k)
+LEFT JOIN (SELECT f.k,sum(v)s FROM small_domain f
+ SEMI JOIN (SELECT DISTINCT k FROM (VALUES($1::INTEGER),($2::INTEGER))keys(k))old USING(k) GROUP BY f.k)a USING(k) ORDER BY d.k NULLS FIRST;
+
+query II
+EXECUTE remove_domain(0,1);
+----
+0	24995000
+1	25000000
+
+query II
+EXECUTE remove_domain(NULL,1);
+----
+NULL	NULL
+1	25000000
+
+# Missing groups still complete COUNT to zero at the consumer.
+query II
+SELECT d.k,coalesce(a.n,0) FROM (VALUES(0),(1),(2))d(k)
+LEFT JOIN (SELECT f.k,count(*)n FROM small_domain f
+ SEMI JOIN (SELECT DISTINCT k FROM (VALUES(0),(1),(2))keys(k))old USING(k) GROUP BY f.k)a USING(k) ORDER BY d.k;
+----
+0	5000
+1	5001
+2	0
+
+query II
+SELECT d.k,a.s FROM (VALUES(0))d(k)
+LEFT JOIN (SELECT f.k,sum(v)s FROM small_domain f
+ SEMI JOIN (SELECT 0 k WHERE false)old USING(k) GROUP BY f.k)a USING(k);
+----
+0	NULL
+
+query II
+SELECT d.k,a.s FROM (SELECT 0 k WHERE false)d
+LEFT JOIN (SELECT f.k,sum(v)s FROM small_domain f
+ SEMI JOIN (SELECT DISTINCT k FROM (VALUES(0),(1))keys(k))old USING(k) GROUP BY f.k)a USING(k);
+----
+
+statement ok
+CREATE TABLE string_domain AS SELECT CASE WHEN i%2=0 THEN 'a' ELSE 'b' END k,i::BIGINT v FROM range(1000)t(i);
+
+query II
+SELECT d.k,a.s FROM (VALUES('a'),('b'))d(k)
+LEFT JOIN (SELECT f.k,sum(v)s FROM string_domain f
+ SEMI JOIN (SELECT DISTINCT k FROM (VALUES('a'),('b'))keys(k))old USING(k) GROUP BY f.k)a USING(k) ORDER BY d.k;
+----
+a	249500
+b	250000
+
+statement ok
+CREATE TABLE decimal_domain AS SELECT (i%2)::DECIMAL(8,2) k,i::BIGINT v FROM range(1000)t(i);
+
+query II
+SELECT d.k,a.s FROM (VALUES(0::DECIMAL(8,2)),(1::DECIMAL(8,2)))d(k)
+LEFT JOIN (SELECT f.k,sum(v)s FROM decimal_domain f
+ SEMI JOIN (SELECT DISTINCT k FROM (VALUES(0::DECIMAL(8,2)),(1::DECIMAL(8,2)))keys(k))old USING(k) GROUP BY f.k)a USING(k) ORDER BY d.k;
+----
+0.00	249500
+1.00	250000

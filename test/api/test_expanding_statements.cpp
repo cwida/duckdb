@@ -1097,7 +1097,7 @@ TEST_CASE("Registered states see one QueryBegin and QueryEnd per group", "[api][
 	Connection con(db);
 	CreateSales(con);
 	auto counter =
-	    con.context->Services().GetRegisteredState().GetOrCreate<QueryCounter>("expanding_statements_query_counter");
+	    con.context->GetContext().GetRegisteredState().GetOrCreate<QueryCounter>("expanding_statements_query_counter");
 
 	auto handle = SubmitGroup(con, SALES_PIVOT);
 	handle->Complete();
@@ -1113,7 +1113,7 @@ TEST_CASE("Registered states see a StatementBegin and StatementEnd per statement
 	CreateSales(con);
 	CreateNumbers(con, 10);
 	auto recorder =
-	    con.context->Services().GetRegisteredState().GetOrCreate<StatementRecorder>("expanding_statements_recorder");
+	    con.context->GetContext().GetRegisteredState().GetOrCreate<StatementRecorder>("expanding_statements_recorder");
 
 	SECTION("a single statement") {
 		REQUIRE_NO_FAIL(con.Query("SELECT 42"));

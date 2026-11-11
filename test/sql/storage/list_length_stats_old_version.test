@@ -1,0 +1,28 @@
+# name: test/sql/storage/list_length_stats_old_version.test
+# description: Test that list length statistics are not written for storage versions that do not support them
+# group: [storage]
+
+load {TEST_DIR}/list_length_stats_old_version.db readwrite v2.0.0
+
+statement ok
+CREATE TABLE t(l INT[]);
+
+statement ok
+INSERT INTO t SELECT range(2 + i % 4) FROM range(1000) t(i);
+
+statement ok
+CHECKPOINT
+
+restart
+
+# the fields are unknown after reloading
+query III
+SELECT s.min_list_length IS NULL, s.max_list_length IS NULL, s.total_list_length IS NULL FROM (SELECT stats(l) s FROM t LIMIT 1)
+----
+true	true	true
+
+# the child stats are still present
+query I
+SELECT s.child_stats.max FROM (SELECT stats(l) s FROM t LIMIT 1)
+----
+4

@@ -12,7 +12,7 @@ statement ok
 set temp_directory='';
 
 statement ok
-PRAGMA memory_limit='3MB'
+SET memory_limit='3MB'
 
 # --- Set by default to 0 when temp_directory is empty ---
 

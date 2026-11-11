@@ -10,7 +10,7 @@ require vector_size 2048
 require no_vector_verification
 
 statement ok
-PRAGMA force_compression = 'rle'
+SET force_compression = 'rle'
 
 # simple RLE with few values
 statement ok

@@ -326,11 +326,12 @@ static unique_ptr<FunctionData> ParquetWriteBind(ClientContext &context, CopyFun
 			}
 			bind_data->data_page_size_limit = val;
 		} else if (option_name == "write_bloom_filter") {
-			bind_data->enable_bloom_filters = BooleanValue::Get(option_values[0].DefaultCastAs(LogicalType::BOOLEAN));
+			bind_data->enable_bloom_filters = BooleanValue::Get(option_values[0].CastAs(context, LogicalType::BOOLEAN));
 		} else if (option_name == "bloom_filter_fallback_max_bytes") {
-			bind_data->bloom_filter_fallback_max_bytes = ParseBytesArg(option_name, option_values[0]);
+			bind_data->bloom_filter_fallback_max_bytes =
+			    ParseBytesArg(context.GetContext(), option_name, option_values[0]);
 		} else if (option_name == "write_page_index") {
-			bind_data->write_page_index = BooleanValue::Get(option_values[0].DefaultCastAs(LogicalType::BOOLEAN));
+			bind_data->write_page_index = BooleanValue::Get(option_values[0].CastAs(context, LogicalType::BOOLEAN));
 		} else if (option_name == "bloom_filter_false_positive_ratio") {
 			auto val = option_values[0].GetValue<double>();
 			if (!(val > 0 && val <= 1)) {
@@ -370,7 +371,7 @@ static unique_ptr<FunctionData> ParquetWriteBind(ClientContext &context, CopyFun
 			}
 		} else if (option_name == "write_timestamp_as_int96") {
 			bind_data->write_timestamp_as_int96 =
-			    BooleanValue::Get(option_values[0].DefaultCastAs(LogicalType::BOOLEAN));
+			    BooleanValue::Get(option_values[0].CastAs(context, LogicalType::BOOLEAN));
 		} else if (option_name == "timestamp_is_adjusted_to_utc") {
 			bind_data->timestamp_is_adjusted_to_utc =
 			    EnumUtil::FromString<TimeStampIsAdjustedToUTC>(StringUtil::Upper(option_values[0].ToString()));
@@ -1004,7 +1005,7 @@ static bool IsExtensionGeometryType(const LogicalType &type, ClientContext &cont
 	if (type.GetAlias() != "GEOMETRY") {
 		return false;
 	}
-	return GeoParquetFileMetadata::IsGeoParquetConversionEnabled(context.Services());
+	return GeoParquetFileMetadata::IsGeoParquetConversionEnabled(context.GetContext());
 }
 
 static vector<unique_ptr<Expression>> ParquetWriteSelect(CopyToSelectInput &input) {

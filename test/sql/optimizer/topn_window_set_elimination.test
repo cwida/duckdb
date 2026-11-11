@@ -29,7 +29,7 @@ CREATE OR REPLACE MACRO nextValue(time_serie, ts_col, value_col, ts) AS TABLE (
 
 statement ok
 from range(1,5) as t(days),
-nextValue(timeseries, date, value, '2026-03-29 05:33:11.822+08'::timestamp - INTERVAL (days) DAY)
+nextValue('timeseries', date, value, '2026-03-29 05:33:11.822+08'::timestamp - INTERVAL (days) DAY)
 limit 5;
 
 # Propagate casts

@@ -15,14 +15,20 @@
 
 namespace duckdb {
 struct SimpleToken;
+class TokenizerBehavior;
 
 //! Iterates over an already-tokenized query. A root iterator can own its tokens; child iterators
 //! reference the same tokens and carry an independent position for speculative parsing.
 class TokenIterator {
 public:
 	DUCKDB_API explicit TokenIterator(unique_ptr<vector<MatcherToken>> owned_tokens);
+	//! Takes ownership of the tokens the behavior produced (leaving its vector empty) and keeps a pointer to
+	//! `behavior.sql`, so Source() is always the string their offsets index into. That string has to outlive the
+	//! iterator and its children, the behavior itself does not.
+	DUCKDB_API explicit TokenIterator(TokenizerBehavior &behavior);
 	DUCKDB_API explicit TokenIterator(vector<MatcherToken> &tokens);
-	DUCKDB_API TokenIterator(const TokenIterator &other) : tokens(other.tokens), position(other.position) {
+	DUCKDB_API TokenIterator(const TokenIterator &other)
+	    : tokens(other.tokens), source(other.source), position(other.position) {
 	}
 	DUCKDB_API TokenIterator(TokenIterator &&other) noexcept;
 	TokenIterator &operator=(const TokenIterator &) = delete;
@@ -40,6 +46,12 @@ public:
 		return tokens.size();
 	}
 	DUCKDB_API idx_t EndOffset() const;
+	//! Byte offset just past the last consumed token, or 0 if no token has been consumed yet
+	DUCKDB_API idx_t ConsumedEndOffset() const;
+	//! The text the tokens were cut from (token offsets index into it), when built from a TokenizerBehavior
+	DUCKDB_API optional_ptr<const string> Source() const {
+		return source;
+	}
 
 	DUCKDB_API optional_ptr<const MatcherToken> Current() const {
 		if (position >= tokens.size()) {
@@ -67,6 +79,7 @@ public:
 private:
 	unique_ptr<vector<MatcherToken>> owned_tokens;
 	vector<MatcherToken> &tokens;
+	optional_ptr<const string> source;
 	idx_t position = 0;
 };
 

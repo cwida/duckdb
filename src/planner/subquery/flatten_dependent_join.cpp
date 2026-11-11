@@ -150,6 +150,29 @@ bool FlattenDependentJoins::RequiresDomain(LogicalOperator &op) const {
 	return access.correlated || (!perform_delim && access.volatile_expression);
 }
 
+bool FlattenDependentJoins::JoinOperandRequiresDomain(LogicalOperator &op, idx_t side) const {
+	// condition operands keep their computation at the join for evaluation-timing reasons,
+	// so a volatile operand is invisible to RequiresDomain on the owning child subtree; it
+	// still pins that child to the domain under the same rule as a volatile child expression
+	if (perform_delim) {
+		return false;
+	}
+	if (op.type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN && op.type != LogicalOperatorType::LOGICAL_ASOF_JOIN) {
+		return false;
+	}
+	auto &join = op.Cast<LogicalComparisonJoin>();
+	for (auto &cond : join.conditions) {
+		if (!cond.IsComparison()) {
+			continue;
+		}
+		auto &operand = side == 0 ? cond.GetLHS() : cond.GetRHS();
+		if (operand.IsVolatile()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 optional_ptr<const ColumnBinding> FlattenDependentJoins::GetCorrelatedBase(const ColumnBinding &binding) const {
 	auto entry = correlated_aliases.find(binding);
 	if (entry == correlated_aliases.end()) {
@@ -555,8 +578,21 @@ vector<optional_idx> FlattenDependentJoins::GetCTERefCorrelatedPositions(const L
 void FlattenDependentJoins::AddCTERefJoinConditions(LogicalComparisonJoin &join, const LogicalCTERef &cteref,
                                                     const vector<optional_idx> &positions,
                                                     const vector<ColumnBinding> &state) const {
+	optional_idx identity;
+	auto cte_entry = binder.recursive_ctes.find(cteref.cte_index);
+	if (cte_entry != binder.recursive_ctes.end()) {
+		auto &columns = cte_entry->second->Cast<LogicalCTE>().correlated_columns;
+		auto delim_index = columns.GetDelimIndex();
+		if (delim_index < columns.size()) {
+			auto index = GetCorrelatedIndex(columns[delim_index].binding);
+			if (index.IsValid() && positions[index.GetIndex()].IsValid()) {
+				identity = index;
+			}
+		}
+	}
 	for (idx_t i = 0; i < positions.size(); i++) {
-		if (!positions[i].IsValid()) {
+		// The CTE's row identity determines all its correlation payloads.
+		if (!positions[i].IsValid() || (identity.IsValid() && i != identity.GetIndex())) {
 			continue;
 		}
 		JoinCondition cond(make_uniq<BoundColumnRefExpression>(
@@ -1195,8 +1231,8 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
                                                                           vector<ColumnBinding> state) {
 	auto join_type = plan->Cast<LogicalJoin>().join_type;
 	D_ASSERT(plan->children.size() == 2);
-	bool left_requires_domain = RequiresDomain(*plan->children[0]);
-	bool right_requires_domain = RequiresDomain(*plan->children[1]);
+	bool left_requires_domain = RequiresDomain(*plan->children[0]) || JoinOperandRequiresDomain(*plan, 0);
+	bool right_requires_domain = RequiresDomain(*plan->children[1]) || JoinOperandRequiresDomain(*plan, 1);
 
 	// An ASOF join selects at most one match per left row from its entire right input. If the right input
 	// varies per domain, the left input must carry the domain too, so the selection partitions per domain.
@@ -1459,15 +1495,6 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownSetOperatio
 	return result;
 }
 
-FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownDistinct(unique_ptr<LogicalOperator> &plan,
-                                                                              bool propagate_null_values,
-                                                                              vector<ColumnBinding> state) {
-	auto result = PushDownChild(plan, propagate_null_values, std::move(state), false);
-	auto &distinct = plan->Cast<LogicalDistinct>();
-	AppendCorrelatedColumns(distinct.distinct_targets, result.bindings, false);
-	return result;
-}
-
 FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownExpressionGet(unique_ptr<LogicalOperator> &plan,
                                                                                    bool propagate_null_values,
                                                                                    vector<ColumnBinding> state) {
@@ -1716,9 +1743,6 @@ FlattenDependentJoins::PushDownCorrelatedNodeInternal(unique_ptr<LogicalOperator
 	case LogicalOperatorType::LOGICAL_INTERSECT:
 	case LogicalOperatorType::LOGICAL_UNION: {
 		return PushDownSetOperation(plan, std::move(state));
-	}
-	case LogicalOperatorType::LOGICAL_DISTINCT: {
-		return PushDownDistinct(plan, propagate_null_values, std::move(state));
 	}
 	case LogicalOperatorType::LOGICAL_EXPRESSION_GET: {
 		// emits its expression rows once per child row

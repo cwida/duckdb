@@ -1,0 +1,11 @@
+# name: test/parquet/corrupt/boolean_dba_null.test
+# description: Reject DELTA_BYTE_ARRAY encoding for a Boolean column
+# group: [corrupt]
+
+require parquet
+
+# The page declares one Boolean value but reconstructs an empty DELTA_BYTE_ARRAY buffer.
+statement error
+SELECT * FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/boolean_dba_null.parquet');
+----
+DELTA_BYTE_ARRAY encoding is only supported for BYTE_ARRAY or FIXED_LEN_BYTE_ARRAY data

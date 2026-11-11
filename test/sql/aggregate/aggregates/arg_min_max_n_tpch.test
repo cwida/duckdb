@@ -44,7 +44,7 @@ statement ok
 SET disabled_optimizers = 'top_n_window_elimination'
 
 query II nosort top_resultset
-SELECT * FROM compute_top_k(lineitem, l_returnflag, l_orderkey, 3);
+SELECT * FROM compute_top_k('lineitem', l_returnflag, l_orderkey, 3);
 
 query II nosort top_resultset
 SELECT l_returnflag, max(l_orderkey, 3) FROM lineitem GROUP BY ALL ORDER BY ALL;
@@ -62,7 +62,7 @@ GROUP BY ALL
 ORDER BY ALL;
 
 query II nosort bottom_resultset
-SELECT * FROM compute_bottom_k(lineitem, l_returnflag, l_orderkey, 3);
+SELECT * FROM compute_bottom_k('lineitem', l_returnflag, l_orderkey, 3);
 
 query II nosort bottom_resultset
 SELECT l_returnflag, min(l_orderkey, 3) FROM lineitem GROUP BY ALL ORDER BY ALL;

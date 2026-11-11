@@ -3,7 +3,7 @@
 # group: [optimizer]
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # x runs from -50 to 149 so that no range bound is pruned by the column statistics; one NULL row
 statement ok

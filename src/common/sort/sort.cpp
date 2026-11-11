@@ -161,7 +161,7 @@ class SortGlobalSinkState : public GlobalSinkState {
 public:
 	explicit SortGlobalSinkState(ClientContext &context)
 	    : num_threads(TaskScheduler::GetScheduler(context).NumberOfThreads()),
-	      temporary_memory_state(TemporaryMemoryManager::Get(context.Services()).Register(context.Services())),
+	      temporary_memory_state(TemporaryMemoryManager::Get(context.GetContext()).Register(context.GetContext())),
 	      sorted_tuples(0), sunk_tuples(0), external(Settings::Get<DebugForceExternalSetting>(context)), total_count(0),
 	      partition_size(0) {
 	}
@@ -193,7 +193,7 @@ public:
 		}
 
 		// Send the request
-		temporary_memory_state->SetRemainingSizeAndUpdateReservation(context.Services(), request);
+		temporary_memory_state->SetRemainingSizeAndUpdateReservation(context.GetContext(), request);
 
 		// If we got less than we required, we have to go external
 		if (temporary_memory_state->GetReservation() < required) {

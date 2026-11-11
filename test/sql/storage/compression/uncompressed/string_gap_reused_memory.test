@@ -1,0 +1,52 @@
+# name: test/sql/storage/compression/uncompressed/string_gap_reused_memory.test
+# description: Uncompressed string segments must not persist stale buffer contents in their unused gap
+# group: [uncompressed]
+
+foreach row_count 200 240 480
+
+statement ok
+ATTACH '{TEST_DIR}/string_gap_reused_memory_{row_count}.db' AS db
+
+statement ok
+SET threads=1
+
+statement ok
+SET enable_block_allocator=true
+
+statement ok
+SET force_compression='uncompressed'
+
+statement ok
+CREATE TEMP TABLE donor AS SELECT repeat('DONOR_MARKER_STRING', 50) || i::VARCHAR AS s FROM range(10000) r(i)
+
+statement ok
+DROP TABLE donor
+
+# Exercise compacted segments, uncompacted segments, and multiple segments.
+statement ok
+CREATE TABLE db.t AS SELECT repeat('A', 1000) || i::VARCHAR AS s FROM range({row_count}) r(i)
+
+statement ok
+CHECKPOINT db
+
+# Close the file so that it can be read
+statement ok
+DETACH db
+
+query I
+SELECT strpos(hex(content), hex('DONOR_MARKER_STRING')) FROM read_blob('{TEST_DIR}/string_gap_reused_memory_{row_count}.db')
+----
+0
+
+statement ok
+ATTACH '{TEST_DIR}/string_gap_reused_memory_{row_count}.db' AS db
+
+query I
+SELECT count(*) = {row_count} AND bool_and(s = repeat('A', 1000) || rowid::VARCHAR) FROM db.t
+----
+true
+
+statement ok
+DETACH db
+
+endloop

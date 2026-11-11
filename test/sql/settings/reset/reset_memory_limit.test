@@ -4,7 +4,7 @@
 
 # Disable temp directory so the buffer manager cannot spill to disk
 statement ok
-PRAGMA temp_directory='';
+SET temp_directory='';
 
 # Set an impossibly low limit
 statement ok

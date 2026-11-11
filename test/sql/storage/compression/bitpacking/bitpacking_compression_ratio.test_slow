@@ -16,10 +16,10 @@ load {TEST_DIR}/test_bitpacking.db
 # Ratio ~= 975x
 # However, because this completely fills up a block and we do not support block sharing yet, we waste a lot of space
 statement ok
-PRAGMA force_compression='bitpacking'
+SET force_compression='bitpacking'
 
 statement ok
-PRAGMA force_bitpacking_mode='constant'
+SET force_bitpacking_mode='constant'
 
 statement ok
 CREATE TABLE test_bitpacked AS SELECT (i//119000::INT64)::INT64 AS i FROM range(0, 120000000) tbl(i);
@@ -28,7 +28,7 @@ statement ok
 checkpoint
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 CREATE TABLE test_uncompressed AS SELECT i::INT64 FROM range(0, 120000000) tbl(i);
@@ -64,10 +64,10 @@ drop table test_uncompressed;
 # Total uncompressed bytes = 120000*8 = 960000
 # Expected Ratio ~= 800x
 statement ok
-PRAGMA force_compression='bitpacking'
+SET force_compression='bitpacking'
 
 statement ok
-PRAGMA force_bitpacking_mode='constant_delta'
+SET force_bitpacking_mode='constant_delta'
 
 statement ok
 CREATE TABLE test_bitpacked AS SELECT i::INT64 AS i FROM range(0, 120000000) tbl(i);
@@ -76,7 +76,7 @@ statement ok
 checkpoint
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 CREATE TABLE test_uncompressed AS SELECT i::INT64 AS i FROM range(0, 120000000) tbl(i);
@@ -115,10 +115,10 @@ drop table test_uncompressed;
 # Total uncompressed bytes = 120000*8 = 960000
 # Expected Ratio ~= 58x
 statement ok
-PRAGMA force_compression='bitpacking'
+SET force_compression='bitpacking'
 
 statement ok
-PRAGMA force_bitpacking_mode='delta_for'
+SET force_bitpacking_mode='delta_for'
 
 statement ok
 CREATE TABLE test_bitpacked AS SELECT i//2::INT64 AS i FROM range(0, 120000000) tbl(i);
@@ -127,7 +127,7 @@ statement ok
 checkpoint
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 CREATE TABLE test_uncompressed AS SELECT i AS i FROM range(0, 120000000) tbl(i);
@@ -166,10 +166,10 @@ drop table test_uncompressed;
 # Total uncompressed bytes = 120000*8 = 960000
 # Expected Ratio ~= 60x
 statement ok
-PRAGMA force_compression='bitpacking'
+SET force_compression='bitpacking'
 
 statement ok
-PRAGMA force_bitpacking_mode='for'
+SET force_bitpacking_mode='for'
 
 statement ok
 CREATE TABLE test_bitpacked AS SELECT i%2::INT64 AS i FROM range(0, 120000000) tbl(i);
@@ -178,7 +178,7 @@ statement ok
 checkpoint
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 CREATE TABLE test_uncompressed AS SELECT i::INT64 AS i FROM range(0, 120000000) tbl(i);
@@ -211,13 +211,13 @@ drop table test_bitpacked;
 drop table test_uncompressed;
 
 statement ok
-PRAGMA force_bitpacking_mode='auto'
+SET force_bitpacking_mode='auto'
 
 # Assert that all supported types do in fact compress
 foreach type int8 int16 int32 int64 uint8 uint16 uint32 uint64 decimal(4,1) decimal(8,1) decimal(12,1) decimal(18,1) bool
 
 statement ok
-PRAGMA force_compression='uncompressed';
+SET force_compression='uncompressed';
 
 statement ok
 CREATE TABLE test_uncompressed AS SELECT (i%2)::{type} FROM range(0, 2500000) tbl(i);
@@ -226,7 +226,7 @@ statement ok
 checkpoint
 
 statement ok
-PRAGMA force_compression='bitpacking'
+SET force_compression='bitpacking'
 
 statement ok
 CREATE TABLE test_bitpacked AS SELECT (i%2)::{type} FROM range(0, 2500000) tbl(i);

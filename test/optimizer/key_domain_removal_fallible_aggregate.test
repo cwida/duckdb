@@ -1,0 +1,46 @@
+# name: test/optimizer/key_domain_removal_fallible_aggregate.test
+# description: Removing an aggregate restriction must not run fallible aggregates on groups it excluded
+# group: [optimizer]
+
+statement ok
+CREATE TABLE f_data AS SELECT (i % 2)::INTEGER k, 1::HUGEINT v FROM range(10000) t(i);
+
+statement ok
+INSERT INTO f_data VALUES (2, 170141183460469231731687303715884105727::HUGEINT), (2, 170141183460469231731687303715884105727::HUGEINT);
+
+# The computed key keeps the consumer's runtime join filter away from the scan.
+statement ok
+CREATE VIEW f AS SELECT (k + 3) % 3 k, v FROM f_data;
+
+query II
+SELECT d.k, a.s FROM (VALUES (0), (1)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s FROM f SEMI JOIN (SELECT DISTINCT k FROM (VALUES (0), (1)) keys(k)) old USING (k) GROUP BY f.k
+) a USING (k)
+ORDER BY d.k;
+----
+0	5000
+1	5000
+
+statement ok
+CREATE TABLE low_data AS SELECT (i % 4)::INTEGER k, 1::HUGEINT v FROM range(10000) t(i);
+
+statement ok
+INSERT INTO low_data VALUES (4, 170141183460469231731687303715884105727::HUGEINT), (4, 170141183460469231731687303715884105727::HUGEINT);
+
+statement ok
+CREATE TABLE all_keys AS SELECT DISTINCT k FROM low_data WHERE k < 4;
+
+statement ok
+CREATE VIEW low_fact AS SELECT (k + 5) % 5 k, v FROM low_data;
+
+query II
+WITH first AS MATERIALIZED (SELECT * FROM all_keys), d AS MATERIALIZED (SELECT DISTINCT k FROM first)
+SELECT d.k, a.s FROM d
+LEFT JOIN (SELECT f.k, sum(v) s FROM low_fact f SEMI JOIN d ON f.k = d.k GROUP BY f.k) a ON d.k = a.k
+ORDER BY ALL;
+----
+0	2500
+1	2500
+2	2500
+3	2500

@@ -16,10 +16,10 @@ statement ok
 USE db2;
 
 statement ok
-pragma force_compression='zstd';
+SET force_compression='zstd';
 
 statement ok
-pragma checkpoint_threshold='1gb';
+SET checkpoint_threshold='1gb';
 
 statement ok
 set zstd_min_string_length=1;

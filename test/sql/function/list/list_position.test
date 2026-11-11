@@ -292,7 +292,7 @@ SELECT list_position(1,1)
 ----
 
 statement ok
-PRAGMA debug_force_external=true
+SET debug_force_external=true
 
 loop i 0 2
 
@@ -320,7 +320,7 @@ statement ok
 DROP TABLE test0
 
 statement ok
-PRAGMA debug_force_external=false
+SET debug_force_external=false
 
 endloop
 
@@ -441,7 +441,7 @@ statement ok
 DROP TABLE test0;
 
 statement ok
-PRAGMA debug_force_external=true
+SET debug_force_external=true
 
 loop i 0 2
 
@@ -487,7 +487,7 @@ statement ok
 DROP TABLE test0
 
 statement ok
-PRAGMA debug_force_external=false
+SET debug_force_external=false
 
 endloop
 

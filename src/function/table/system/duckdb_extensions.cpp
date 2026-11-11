@@ -256,7 +256,10 @@ void DuckDBExtensionsFunction(ClientContext &context, TableFunctionInput &data_p
 
 void DuckDBExtensionsFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunctionSet functions("duckdb_extensions");
-	functions.AddFunction(TableFunction({}, DuckDBExtensionsFunction, DuckDBExtensionsBind, DuckDBExtensionsInit));
+	TableFunction extensions_fun({}, DuckDBExtensionsFunction, DuckDBExtensionsBind, DuckDBExtensionsInit);
+	// reads installed and loaded extension state, which autoloading can change while a query executes
+	extensions_fun.stability = FunctionStability::VOLATILE;
+	functions.AddFunction(std::move(extensions_fun));
 	set.AddFunction(functions);
 }
 
