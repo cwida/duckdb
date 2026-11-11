@@ -11,7 +11,6 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/client_config.hpp"
-#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/profiler_extension.hpp"
 
 namespace duckdb {
@@ -98,7 +97,7 @@ unique_ptr<TreeRenderer> TreeRenderer::CreateRenderer(ClientContext &context, co
 	}
 	auto renderer = CreateRenderer(name);
 	if (renderer) {
-		renderer->Configure(context.GetContext(), ClientConfig::GetConfig(context).profiling_renderer_settings);
+		renderer->Configure(ClientConfig::GetConfig(context).profiling_renderer_settings);
 	}
 	return renderer;
 }

@@ -8,8 +8,6 @@
 #include "duckdb/common/types/geometry_crs.hpp"
 #include "duckdb/common/types/string_type.hpp"
 #include "duckdb/common/types/vector.hpp"
-#include "duckdb/main/context.hpp"
-#include "duckdb/main/database.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/parser/parsed_data/create_type_info.hpp"
 
@@ -118,12 +116,12 @@ LogicalType BindTypeByNameV2(ClientContext &context, const QualifiedName &name, 
 		}
 	}
 	auto &type_entry = entry->Cast<TypeCatalogEntry>();
-	return type_entry.constructors.Bind(context.GetContext(), type_entry.user_type, args);
+	return type_entry.constructors.Bind(context, type_entry.user_type, args);
 }
 
 // Binds a built-in type by name, without a client: constructors that consult the catalog (collations, coordinate
 // systems) skip that check or refuse.
-LogicalType BindBuiltinTypeV2(DatabaseInstance &db, const QualifiedName &name, const vector<TypeArgument> &args) {
+LogicalType BindBuiltinTypeV2(const QualifiedName &name, const vector<TypeArgument> &args) {
 	if (name.Path().size() > 1) {
 		throw InvalidInputException("a qualified type name requires a catalog: use the factory of a connection or a "
 		                            "context");
@@ -133,7 +131,7 @@ LogicalType BindBuiltinTypeV2(DatabaseInstance &db, const QualifiedName &name, c
 	for (auto &arg : args) {
 		params.emplace_back(arg.GetName(), arg.GetValue());
 	}
-	auto type = DefaultTypeGenerator::TryDefaultBind(db.GetContext(), name.Name().GetIdentifierName(), params);
+	auto type = DefaultTypeGenerator::TryDefaultBind(name.Name().GetIdentifierName(), params);
 	if (type.id() == LogicalTypeId::INVALID) {
 		throw InvalidInputException("type \"%s\" is not a built-in type", name.Name().GetIdentifierName());
 	}
@@ -143,7 +141,7 @@ LogicalType BindBuiltinTypeV2(DatabaseInstance &db, const QualifiedName &name, c
 // Binds a type by name in the factory's scope: the client's catalog, or the built-in types only.
 LogicalType BindTypeV2(CV2Factory &factory, const QualifiedName &name, const vector<TypeArgument> &args) {
 	if (!factory.TryGetClientContext()) {
-		return BindBuiltinTypeV2(factory.GetDatabase(), name, args);
+		return BindBuiltinTypeV2(name, args);
 	}
 	LogicalType result;
 	factory.WithTransaction([&](ClientContext &context) { result = BindTypeByNameV2(context, name, args); });

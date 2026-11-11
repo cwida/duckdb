@@ -2,7 +2,6 @@
 
 #include "duckdb/common/exception/binder_exception.hpp"
 #include "duckdb/function/function_binder.hpp"
-#include "duckdb/main/context.hpp"
 
 namespace duckdb {
 
@@ -95,8 +94,8 @@ string ArgumentName(const Identifier &name, idx_t position) {
 }
 
 //! Cast a modifier to the type its parameter declares. Overload selection already established the cast is possible.
-Value CastArgument(const type_argument_cast_t &cast, const Identifier &type_name, const string &arg_name,
-                   const Value &value, const LogicalType &target, QueryLocation location) {
+Value CastArgument(const Identifier &type_name, const string &arg_name, const Value &value, const LogicalType &target,
+                   QueryLocation location) {
 	if (value.IsNull()) {
 		throw BinderException(location, "Type parameter %s for type %s cannot be NULL", arg_name, type_name);
 	}
@@ -104,7 +103,7 @@ Value CastArgument(const type_argument_cast_t &cast, const Identifier &type_name
 		return value;
 	}
 	string error;
-	auto result = cast(value, target, error);
+	auto result = value.DefaultTryCastAs(target, &error);
 	if (!result) {
 		throw BinderException(location,
 		                      "Type parameter %s for type %s must be of type %s, but %s could not be converted: %s",
@@ -116,9 +115,8 @@ Value CastArgument(const type_argument_cast_t &cast, const Identifier &type_name
 //! Reorder the call arguments into the constructor's declared parameter order, filling in defaults, and cast every
 //! value to the type its parameter declares. Any argument beyond the declared parameters is appended in call order
 //! with its name preserved.
-vector<TypeArgument> NormalizeArguments(const type_argument_cast_t &cast, const Identifier &type_name,
-                                        const TypeConstructor &constructor, const vector<TypeArgument> &arguments,
-                                        QueryLocation type_location) {
+vector<TypeArgument> NormalizeArguments(const Identifier &type_name, const TypeConstructor &constructor,
+                                        const vector<TypeArgument> &arguments, QueryLocation type_location) {
 	const auto &sig = constructor.GetSignature();
 	const auto param_count = sig.GetPositionalParameterCount();
 
@@ -173,7 +171,7 @@ vector<TypeArgument> NormalizeArguments(const type_argument_cast_t &cast, const 
 		}
 		auto arg_name = ArgumentName(param.GetName(), i);
 		result.emplace_back(param.GetName().GetIdentifierName(),
-		                    CastArgument(cast, type_name, arg_name, *value, param.GetType(), location), location);
+		                    CastArgument(type_name, arg_name, *value, param.GetType(), location), location);
 	}
 
 	for (auto &entry : varargs) {
@@ -183,7 +181,7 @@ vector<TypeArgument> NormalizeArguments(const type_argument_cast_t &cast, const 
 		// a named modifier is received by "**kwargs", an unnamed one by "*args"
 		auto param = arg.HasName() ? sig.GetKwargs() : sig.GetArgs();
 		auto &target = param ? param->GetType() : LogicalType::ANY;
-		result.emplace_back(arg.GetName(), CastArgument(cast, type_name, arg_name, arg.GetValue(), target, location),
+		result.emplace_back(arg.GetName(), CastArgument(type_name, arg_name, arg.GetValue(), target, location),
 		                    location);
 	}
 	return result;
@@ -195,28 +193,8 @@ string TypeConstructor::ToString() const {
 	return ConstructorToString(GetName(), *this);
 }
 
-optional_ptr<ClientContext> BindLogicalTypeInput::TryGetClientContext() const {
-	return Context::TryGetClientContext(context);
-}
-
-LogicalType TypeConstructorSet::Bind(Context &context, const LogicalType &base_type,
+LogicalType TypeConstructorSet::Bind(optional_ptr<ClientContext> context, const LogicalType &base_type,
                                      const vector<TypeArgument> &arguments, QueryLocation query_location) const {
-	auto cast = [&](const Value &value, const LogicalType &target, string &error) {
-		return value.TryCastAs(context, target, &error);
-	};
-	return BindInternal(context, cast, base_type, arguments, query_location);
-}
-
-LogicalType TypeConstructorSet::BindBuiltin(const LogicalType &base_type, const vector<TypeArgument> &arguments) const {
-	auto cast = [](const Value &value, const LogicalType &target, string &error) {
-		return value.DefaultTryCastAs(target, &error);
-	};
-	return BindInternal(nullptr, cast, base_type, arguments, QueryLocation());
-}
-
-LogicalType TypeConstructorSet::BindInternal(optional_ptr<Context> context, const type_argument_cast_t &cast,
-                                             const LogicalType &base_type, const vector<TypeArgument> &arguments,
-                                             QueryLocation query_location) const {
 	D_ASSERT(!functions.empty());
 
 	// Fast path for the common case: a single constructor taking no modifiers, which is every type that is not
@@ -248,8 +226,7 @@ LogicalType TypeConstructorSet::BindInternal(optional_ptr<Context> context, cons
 	}
 
 	// The candidates are selected with the regular function machinery - its errors name the call, not a function
-	auto client_context = Context::TryGetClientContext(context);
-	auto selection = FunctionBinder::SelectFunction(client_context, *this, {positional, named});
+	auto selection = FunctionBinder::SelectFunction(context, *this, {positional, named});
 	if (!selection) {
 		ErrorData error = selection.GetError();
 		error.AddQueryLocation(query_location);
@@ -258,7 +235,7 @@ LogicalType TypeConstructorSet::BindInternal(optional_ptr<Context> context, cons
 	auto constructor_ptr = selection.GetBinding().GetFunction<TypeConstructor>();
 	auto &constructor = *constructor_ptr;
 
-	auto modifiers = NormalizeArguments(cast, name, constructor, arguments, query_location);
+	auto modifiers = NormalizeArguments(name, constructor, arguments, query_location);
 	BindLogicalTypeInput input {context, base_type, modifiers, query_location};
 	return constructor.GetBindFunction()(input);
 }

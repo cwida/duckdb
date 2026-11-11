@@ -18,7 +18,6 @@
 namespace duckdb {
 
 class ClientContext;
-class Context;
 class QueryProfiler;
 class ProfilingNode;
 struct ProfilerPrintFormat;
@@ -65,7 +64,7 @@ public:
 	//! Generic configuration of the renderer: passes renderer settings (e.g. from the "profiling_renderer_settings"
 	//! setting) to the renderer. Renderers override this to handle the settings they support, and throw on invalid
 	//! setting values. Unrecognized settings are ignored - they may be intended for a different renderer.
-	virtual void Configure(Context &context, const unordered_map<string, Value> &settings) {
+	virtual void Configure(const unordered_map<string, Value> &settings) {
 	}
 
 	virtual bool UsesRawKeyNames() {

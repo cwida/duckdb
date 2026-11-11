@@ -1,6 +1,5 @@
 #include "duckdb/main/capi_v2/capi_v2_internal.hpp"
 #include "duckdb/main/config.hpp"
-#include "duckdb/main/context.hpp"
 
 namespace duckdb::capiv2 {
 
@@ -93,8 +92,7 @@ public:
 		ExtensionOption option;
 		option.description = description;
 		option.type = option_type;
-		option.default_value =
-		    default_value.IsNull() ? Value(option_type) : default_value.CastAs(target.GetContext(), option_type);
+		option.default_value = default_value.IsNull() ? Value(option_type) : default_value.DefaultCastAs(option_type);
 		option.default_scope = scope;
 		option.supports_global = supports_global;
 		option.supports_session = supports_session;

@@ -1514,7 +1514,7 @@ void ProfilingRendererSettingsSetting::SetLocal(ClientContext &context, const Va
 	// eagerly configure the renderer of the current profiler format to validate the setting values
 	auto renderer = QueryProfiler::Get(context).GetRenderer();
 	if (renderer) {
-		renderer->Configure(context.GetContext(), new_settings);
+		renderer->Configure(new_settings);
 	}
 	config.profiling_renderer_settings = std::move(new_settings);
 }
@@ -1535,8 +1535,7 @@ Value ProfilingRendererSettingsSetting::GetSetting(const ClientContext &context)
 	vector<Value> values;
 	for (auto &name : setting_names) {
 		keys.emplace_back(name);
-		auto &setting = config.profiling_renderer_settings.at(name);
-		values.push_back(setting.CastAs(context.GetContext(), LogicalType::VARCHAR));
+		values.push_back(config.profiling_renderer_settings.at(name).DefaultCastAs(LogicalType::VARCHAR));
 	}
 	return Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(keys), std::move(values));
 }

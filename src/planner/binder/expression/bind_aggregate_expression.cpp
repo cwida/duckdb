@@ -4,7 +4,6 @@
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/generic_common.hpp"
-#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
@@ -326,7 +325,7 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 	// attach the ORDER BY before the state export: an ordered aggregate's exported type depends on the ORDER BY keys
 	aggregate->GetOrderBysMutable() = std::move(order_bys);
 	if (aggr.ExportState()) {
-		aggregate = ExportAggregateFunction::Bind(context.GetContext(), std::move(aggregate));
+		aggregate = ExportAggregateFunction::Bind(std::move(aggregate));
 	}
 
 	// check for all the aggregates if this aggregate already exists

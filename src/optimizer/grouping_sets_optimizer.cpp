@@ -5,7 +5,6 @@
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/generic_common.hpp"
-#include "duckdb/main/client_context.hpp"
 #include "duckdb/optimizer/aggregate_rewrite_helper.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
@@ -289,8 +288,7 @@ bool GroupingSetsOptimizer::TryRewriteGroupingSets(unique_ptr<LogicalOperator> &
 			// bind the aggregates
 			for (auto &expr : aggr.expressions) {
 				auto aggregate_copy = unique_ptr_cast<Expression, BoundAggregateExpression>(expr->Copy());
-				auto export_aggregate =
-				    ExportAggregateFunction::Bind(optimizer.context.GetContext(), std::move(aggregate_copy));
+				auto export_aggregate = ExportAggregateFunction::Bind(std::move(aggregate_copy));
 				if (!export_aggregate->GetReturnType().IsAggregateState()) {
 					return false;
 				}

@@ -2,7 +2,6 @@
 #include "duckdb/main/capi_v2/capi_v2_function_internal.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
 #include "duckdb/function/table_macro_function.hpp"
-#include "duckdb/main/context.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/parsed_data/create_macro_info.hpp"
@@ -57,7 +56,7 @@ public:
 			if (parameter.HasDefaultValue()) {
 				auto default_value = *parameter.GetDefaultValue();
 				if (parameter_type.id() != LogicalTypeId::UNKNOWN) {
-					default_value = default_value.CastAs(target.GetContext(), parameter_type);
+					default_value = default_value.DefaultCastAs(parameter_type);
 				}
 				auto default_expr = ConstantExpression::FromValue(default_value);
 				default_expr->SetAlias(parameter_name);

@@ -106,8 +106,8 @@ BindResult ExpressionBinder::BindExpression(TypeExpression &type_expr, idx_t dep
 	};
 
 	// Select the matching constructor and call it
-	auto result_type = type_entry.constructors.Bind(context.GetContext(), type_entry.user_type, bound_parameters,
-	                                                type_expr.GetQueryLocation());
+	auto result_type =
+	    type_entry.constructors.Bind(context, type_entry.user_type, bound_parameters, type_expr.GetQueryLocation());
 
 	// Return the resulting type!
 	auto result_expr = make_uniq<BoundConstantExpression>(Value::TYPE(result_type));

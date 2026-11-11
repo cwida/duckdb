@@ -20,8 +20,6 @@
 #include "duckdb/function/cast_rules.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/main/client_context.hpp"
-#include "duckdb/main/context.hpp"
-#include "duckdb/main/database.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/common/types/type_manager.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
@@ -1423,10 +1421,7 @@ void LogicalType::Serialize(Serializer &serializer) const {
 	//    write itself as an old-style USER type.
 	if (id() == LogicalTypeId::UNBOUND && !serializer.ShouldSerialize(StorageVersion::V1_5_0)) {
 		try {
-			// the database being written to, if known, provides the casts for the type modifiers
-			auto catalog = serializer.GetSerializationData().TryGet<Catalog>();
-			auto bound_type = catalog ? UnboundType::TryDefaultBind(catalog->GetDatabase().GetContext(), *this)
-			                          : UnboundType::TryDefaultBind(*this);
+			auto bound_type = UnboundType::TryDefaultBind(*this);
 			if (bound_type.id() != LogicalTypeId::INVALID && bound_type.id() != LogicalTypeId::UNBOUND) {
 				bound_type.Serialize(serializer);
 				return;
@@ -2163,7 +2158,7 @@ LogicalType UnboundType::TryParseAndDefaultBind(const string &type_str) {
 	}
 }
 
-static LogicalType TryDefaultBindTypeExpression(optional_ptr<Context> context, const ParsedExpression &expr) {
+static LogicalType TryDefaultBindTypeExpression(const ParsedExpression &expr) {
 	if (expr.GetExpressionType() != ExpressionType::TYPE) {
 		throw InvalidInputException("Cannot default bind unbound type with non-type expression");
 	}
@@ -2177,7 +2172,7 @@ static LogicalType TryDefaultBindTypeExpression(optional_ptr<Context> context, c
 	for (auto &arg : args) {
 		switch (arg->GetExpressionType()) {
 		case ExpressionType::TYPE: {
-			auto type = TryDefaultBindTypeExpression(context, *arg);
+			auto type = TryDefaultBindTypeExpression(*arg);
 			bound_args.emplace_back(arg->GetAlias().GetIdentifierName(), Value::TYPE(type));
 		} break;
 		case ExpressionType::VALUE_CONSTANT: {
@@ -2191,8 +2186,7 @@ static LogicalType TryDefaultBindTypeExpression(optional_ptr<Context> context, c
 	}
 
 	// Try to bind as far as we can
-	auto result = context ? DefaultTypeGenerator::TryDefaultBind(*context, name.GetIdentifierName(), bound_args)
-	                      : DefaultTypeGenerator::TryDefaultBind(name.GetIdentifierName(), bound_args);
+	auto result = DefaultTypeGenerator::TryDefaultBind(name.GetIdentifierName(), bound_args);
 	if (result.id() != LogicalTypeId::INVALID) {
 		return result;
 	}
@@ -2203,28 +2197,16 @@ static LogicalType TryDefaultBindTypeExpression(optional_ptr<Context> context, c
 	// return LogicalType::INVALID;
 }
 
-static LogicalType TryDefaultBindType(optional_ptr<Context> context, const LogicalType &unbound_type) {
+LogicalType UnboundType::TryDefaultBind(const LogicalType &unbound_type) {
 	if (!unbound_type.IsUnbound()) {
 		return unbound_type;
 	}
 	auto &expr = UnboundType::GetTypeExpression(unbound_type);
-	return TryDefaultBindTypeExpression(context, *expr);
-}
-
-LogicalType UnboundType::TryDefaultBind(const LogicalType &unbound_type) {
-	return TryDefaultBindType(nullptr, unbound_type);
-}
-
-LogicalType UnboundType::TryDefaultBind(Context &context, const LogicalType &unbound_type) {
-	return TryDefaultBindType(context, unbound_type);
+	return TryDefaultBindTypeExpression(*expr);
 }
 
 LogicalType UnboundType::TryDefaultBind(const ParsedExpression &type_expr) {
-	return TryDefaultBindTypeExpression(nullptr, type_expr);
-}
-
-LogicalType UnboundType::TryDefaultBind(Context &context, const ParsedExpression &type_expr) {
-	return TryDefaultBindTypeExpression(context, type_expr);
+	return TryDefaultBindTypeExpression(type_expr);
 }
 
 //===--------------------------------------------------------------------===//
