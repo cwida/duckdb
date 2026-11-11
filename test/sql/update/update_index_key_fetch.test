@@ -184,7 +184,7 @@ SELECT count(*), sum(a), count(DISTINCT d), max(d) FROM g;
 statement ok
 ROLLBACK
 
-# UPDATE ... FROM with duplicate row-ids deduplicates them before fetching the old keys
+# UPDATE ... FROM with duplicate row-ids
 statement ok
 CREATE TABLE src AS SELECT i % 100 AS k FROM range(3000) r(i);
 
@@ -197,7 +197,7 @@ INSERT INTO h SELECT i, i, i FROM range(100) r(i);
 query I
 UPDATE h SET k = h.k + 1000 FROM src WHERE h.k = src.k;
 ----
-100
+3000
 
 query IIII
 SELECT count(*), min(k), max(k), sum(w) FROM h;

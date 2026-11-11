@@ -74,7 +74,6 @@
 #include "duckdb/common/enums/result_lifetime.hpp"
 #include "duckdb/common/enums/result_ordering.hpp"
 #include "duckdb/common/enums/row_group_append_mode.hpp"
-#include "duckdb/common/enums/row_id_handling.hpp"
 #include "duckdb/common/enums/set_operation_type.hpp"
 #include "duckdb/common/enums/set_scope.hpp"
 #include "duckdb/common/enums/set_type.hpp"
@@ -5930,25 +5929,6 @@ const char* EnumUtil::ToChars<RowGroupAppendMode>(RowGroupAppendMode value) {
 template<>
 RowGroupAppendMode EnumUtil::FromString<RowGroupAppendMode>(const char *value) {
 	return static_cast<RowGroupAppendMode>(StringUtil::StringToEnum(GetRowGroupAppendModeValues(), 3, "RowGroupAppendMode", value));
-}
-
-const StringUtil::EnumStringLiteral *GetRowIdHandlingValues() {
-	static constexpr StringUtil::EnumStringLiteral values[] {
-		{ static_cast<uint32_t>(RowIdHandling::ASSUME_UNIQUE), "ASSUME_UNIQUE" },
-		{ static_cast<uint32_t>(RowIdHandling::KEEP_FIRST), "KEEP_FIRST" },
-		{ static_cast<uint32_t>(RowIdHandling::ERROR), "ERROR" }
-	};
-	return values;
-}
-
-template<>
-const char* EnumUtil::ToChars<RowIdHandling>(RowIdHandling value) {
-	return StringUtil::EnumToString(GetRowIdHandlingValues(), 3, "RowIdHandling", static_cast<uint32_t>(value));
-}
-
-template<>
-RowIdHandling EnumUtil::FromString<RowIdHandling>(const char *value) {
-	return static_cast<RowIdHandling>(StringUtil::StringToEnum(GetRowIdHandlingValues(), 3, "RowIdHandling", value));
 }
 
 const StringUtil::EnumStringLiteral *GetSampleMethodValues() {
