@@ -108,7 +108,8 @@
         "test/parquet/timens_parquet.test",
         "test/sql/types/time/test_time_ns.test",
         "test/sql/copy/parquet/int96_as.test",
-        "test/sql/function/timestamp/test_icu_time_bucket_timestamptz_ns.test"
+        "test/sql/function/timestamp/test_icu_time_bucket_timestamptz_ns.test",
+        "test/sql/types/timestamp/timestamptz_ns_timestamptz_comparison.test"
       ]
     },
     {
