@@ -115,6 +115,9 @@ SET prefer_range_joins=false;
 statement ok
 CREATE TABLE threshold_build_d AS SELECT i AS z, i % 2 AS g FROM range(100) t(i);
 
+# The three-input walk needs minutes at tiny vector sizes
+require vector_size 2048
+
 statement ok
 CREATE VIEW three_input_walk AS
 WITH RECURSIVE c(id, g, depth) AS (
