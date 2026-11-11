@@ -4851,9 +4851,20 @@ string PhysicalCopyToFile::GetTrimmedPath(ClientContext &context, const string &
 	return trimmed_path;
 }
 
-void PhysicalCopyToFile::MoveTmpFile(ClientContext &context, const string &tmp_file_path) {
+static void CheckImplicitOverwriteTargetWritable(FileSystem &fs, const string &file_path) {
+	if (fs.IsRemoteFile(file_path) || !fs.FileExists(file_path)) {
+		return;
+	}
+	fs.OpenFile(file_path, FileFlags::FILE_FLAGS_WRITE);
+}
+
+void PhysicalCopyToFile::MoveTmpFile(ClientContext &context, const string &tmp_file_path,
+                                     CopyOverwriteMode overwrite_mode) {
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto file_path = GetNonTmpFile(context, tmp_file_path);
+	if (overwrite_mode == CopyOverwriteMode::COPY_ERROR_ON_CONFLICT) {
+		CheckImplicitOverwriteTargetWritable(fs, file_path);
+	}
 	fs.MoveFile(tmp_file_path, file_path);
 }
 
@@ -5130,7 +5141,7 @@ SinkFinalizeType PhysicalCopyToFile::Finalize(Pipeline &pipeline, Event &event, 
 		D_ASSERT(!partition_output);
 		D_ASSERT(!file_size_bytes.IsValid());
 		D_ASSERT(!Rotate());
-		MoveTmpFile(context, file_path);
+		MoveTmpFile(context, file_path, overwrite_mode);
 	}
 	gstate.MarkSuccessful();
 

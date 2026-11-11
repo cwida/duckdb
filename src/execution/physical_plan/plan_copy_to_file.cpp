@@ -49,6 +49,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCopyToFile &op, Physi
 		auto &cast_copy = copy.Cast<PhysicalBatchCopyToFile>();
 		cast_copy.file_path = op.file_path;
 		cast_copy.use_tmp_file = op.use_tmp_file;
+		cast_copy.overwrite_mode = op.overwrite_mode;
 		cast_copy.children.push_back(plan);
 		cast_copy.return_type = op.return_type;
 		cast_copy.query_names = op.query_names;

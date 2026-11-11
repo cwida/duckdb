@@ -46,7 +46,7 @@ public:
 
 public:
 	static string GetTrimmedPath(ClientContext &context, const string &file_path);
-	static void MoveTmpFile(ClientContext &context, const string &tmp_file_path);
+	static void MoveTmpFile(ClientContext &context, const string &tmp_file_path, CopyOverwriteMode overwrite_mode);
 	static string GetNonTmpFile(ClientContext &context, const string &tmp_file_path);
 	static void ReturnStatistics(Context &context, DataChunk &chunk, CopyToFileInfo &written_file_info);
 	//! Adds the RETURN_STATS row of a COPY that wrote no file, so that RETURN_COLUMN_TYPES can still return the types
