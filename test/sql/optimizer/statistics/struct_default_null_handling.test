@@ -1,4 +1,4 @@
-# name: test/sql/optimizer/statistics/struct_all_null_short_circuit.test
+# name: test/sql/optimizer/statistics/struct_default_null_handling.test
 # description: DEFAULT_NULL_HANDLING nested functions with all-NULL inputs
 # group: [statistics]
 
