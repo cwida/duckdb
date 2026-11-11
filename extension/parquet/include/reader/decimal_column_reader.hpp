@@ -65,8 +65,8 @@ struct WideDecimalParquetValueConversion {
 
 	template <bool CHECKED>
 	static void PlainSkip(ByteBuffer &plain_data, ColumnReader &reader) {
-		uint32_t decimal_len = FIXED_LENGTH ? reader.Schema().type_length : plain_data.read<uint32_t>();
-		plain_data.inc(decimal_len);
+		uint32_t decimal_len = FIXED_LENGTH ? reader.Schema().type_length : plain_data.Read<uint32_t>();
+		plain_data.Inc(decimal_len);
 	}
 
 	static bool PlainAvailable(const ByteBuffer &plain_data, const idx_t count) {
@@ -88,14 +88,14 @@ struct WideDecimalFromIntegerConversion {
 	template <bool CHECKED>
 	static void PlainSkip(ByteBuffer &plain_data, ColumnReader &reader) {
 		if (CHECKED) {
-			plain_data.inc(sizeof(PARQUET_TYPE));
+			plain_data.Inc(sizeof(PARQUET_TYPE));
 		} else {
-			plain_data.unsafe_inc(sizeof(PARQUET_TYPE));
+			plain_data.UnsafeInc(sizeof(PARQUET_TYPE));
 		}
 	}
 
 	static bool PlainAvailable(const ByteBuffer &plain_data, const idx_t count) {
-		return plain_data.check_available(count * sizeof(PARQUET_TYPE));
+		return plain_data.CheckAvailable(count * sizeof(PARQUET_TYPE));
 	}
 
 	static idx_t PlainConstantSize() {
@@ -161,7 +161,7 @@ public:
 template <class PARQUET_TYPE>
 template <bool CHECKED>
 string_t WideDecimalFromIntegerConversion<PARQUET_TYPE>::PlainRead(ByteBuffer &plain_data, ColumnReader &reader) {
-	auto value = CHECKED ? plain_data.read<PARQUET_TYPE>() : plain_data.unsafe_read<PARQUET_TYPE>();
+	auto value = CHECKED ? plain_data.Read<PARQUET_TYPE>() : plain_data.UnsafeRead<PARQUET_TYPE>();
 	auto blob = BignumDecimal::FromInteger(hugeint_t(value));
 	auto &wide_reader = reader.Cast<WideDecimalColumnReader>();
 	D_ASSERT(wide_reader.current_result);
@@ -175,11 +175,11 @@ string_t WideDecimalParquetValueConversion<FIXED_LENGTH>::PlainRead(ByteBuffer &
 	if (FIXED_LENGTH) {
 		byte_len = reader.Schema().type_length;
 	} else {
-		byte_len = plain_data.read<uint32_t>();
+		byte_len = plain_data.Read<uint32_t>();
 	}
-	plain_data.available(byte_len);
-	auto blob = ParquetDecimalUtils::ReadWideDecimalValue(const_data_ptr_cast(plain_data.ptr), byte_len);
-	plain_data.inc(byte_len);
+	plain_data.Available(byte_len);
+	auto blob = ParquetDecimalUtils::ReadWideDecimalValue(const_data_ptr_cast(plain_data.GetCurrentLoc()), byte_len);
+	plain_data.Inc(byte_len);
 	auto &wide_reader = reader.Cast<WideDecimalColumnReader>();
 	D_ASSERT(wide_reader.current_result);
 	return StringVector::AddStringOrBlob(*wide_reader.current_result, blob.data(), blob.size());
