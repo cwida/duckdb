@@ -23,6 +23,14 @@ public:
 	~CopyBatchSlicer();
 
 public:
+	//! The fixed-width contribution, excluding tuple headers and variable payloads.
+	idx_t GetFixedRowBytes() const {
+		return fixed_row_bytes;
+	}
+	//! Fixed bytes per written row, when sizing needs no values from the input.
+	optional_idx FixedRowSize() const {
+		return batch_size_bytes.IsValid() && layout.AllConstant() ? optional_idx(fixed_row_bytes) : optional_idx();
+	}
 	//! Computes row sizes, including fixed-width values and variable payloads.
 	const Vector &ComputeRowSizes(DataChunk &chunk);
 	//! Returns the next slice and advances offset, reusing row sizes until the chunk is exhausted.

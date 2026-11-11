@@ -1,0 +1,44 @@
+# name: test/sql/optimizer/topn_window_elimination_computed_filter.test
+# description: top_n_window_elimination must not treat an expression over ROW_NUMBER as the row number (issue #27811)
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(id INT, val INT, ord INT);
+
+statement ok
+INSERT INTO t VALUES (1, 5, 1), (1, 6, 2);
+
+# rn2 is row_number + 10, so rn2 <= 1 matches nothing. The rewrite must not drop the + 10.
+query III
+WITH cte AS MATERIALIZED (
+    SELECT id,
+           val + 100 AS v,
+           (ROW_NUMBER() OVER (PARTITION BY id ORDER BY ord ASC)) + 10 AS rn2
+    FROM t
+)
+SELECT id, v, rn2 FROM cte WHERE rn2 <= 1;
+----
+
+# rn2 <= 11 keeps the first row, whose row number is 11, and drops the second.
+query III
+WITH cte AS MATERIALIZED (
+    SELECT id,
+           val + 100 AS v,
+           (ROW_NUMBER() OVER (PARTITION BY id ORDER BY ord ASC)) + 10 AS rn2
+    FROM t
+)
+SELECT id, v, rn2 FROM cte WHERE rn2 <= 11 ORDER BY rn2;
+----
+1	105	11
+
+# A filter on ROW_NUMBER itself still returns that row.
+query III
+WITH cte AS MATERIALIZED (
+    SELECT id,
+           val + 100 AS v,
+           ROW_NUMBER() OVER (PARTITION BY id ORDER BY ord ASC) AS rn
+    FROM t
+)
+SELECT id, v, rn FROM cte WHERE rn <= 1 ORDER BY rn;
+----
+1	105	1

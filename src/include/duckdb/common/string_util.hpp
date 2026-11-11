@@ -18,6 +18,7 @@
 #include "duckdb/common/exception/parser_exception.hpp"
 
 #include <cstring>
+#include <string_view>
 
 namespace duckdb {
 
@@ -116,20 +117,20 @@ public:
 	}
 
 	//! Returns true if the needle string exists in the haystack
-	DUCKDB_API static bool Contains(const string &haystack, const string &needle);
-	DUCKDB_API static bool Contains(const string &haystack, const char &needle_char);
+	DUCKDB_API static bool Contains(std::string_view haystack, std::string_view needle);
+	DUCKDB_API static bool Contains(std::string_view haystack, const char &needle_char);
 
 	//! Returns the position of needle string within the haystack
-	DUCKDB_API static optional_idx Find(const string &haystack, const string &needle);
+	DUCKDB_API static optional_idx Find(std::string_view haystack, std::string_view needle);
 
 	//! Returns true if the target string starts with the given prefix
-	DUCKDB_API static bool StartsWith(const string &str, const string &prefix);
+	DUCKDB_API static bool StartsWith(std::string_view str, std::string_view prefix);
 
 	//! Returns true if the target string ends with the given suffix
-	DUCKDB_API static bool EndsWith(const string &str, const string &suffix);
+	DUCKDB_API static bool EndsWith(std::string_view str, std::string_view suffix);
 
 	//! Returns the size in bytes of the longest common prefix
-	DUCKDB_API static idx_t GetCommonPrefixSize(const string &left, const string &right);
+	DUCKDB_API static idx_t GetCommonPrefixSize(std::string_view left, std::string_view right);
 
 	//! Replaces a prefix with its exclusive upper bound in byte order
 	DUCKDB_API static bool FindNextPrefix(string &prefix);
@@ -185,6 +186,8 @@ public:
 	DUCKDB_API static idx_t ToUnsigned(const string &str);
 	DUCKDB_API static int64_t ToSigned(const string &str);
 	DUCKDB_API static double ToDouble(const string &str);
+	//! Format a double like printf "%f", independent of the C++ standard library
+	DUCKDB_API static string ToString(double value);
 
 	template <class T>
 	static string ToString(const vector<T> &input, const string &separator) {
@@ -236,23 +239,23 @@ public:
 	DUCKDB_API static bool IsUpper(const string &str);
 
 	//! Case insensitive hash
-	DUCKDB_API static uint64_t CIHash(const string &str);
+	DUCKDB_API static uint64_t CIHash(std::string_view str);
 	DUCKDB_API static uint64_t CIHash(const char *str, idx_t size);
 
 	//! Case insensitive equals
-	DUCKDB_API static bool CIEquals(const string &l1, const string &l2);
+	DUCKDB_API static bool CIEquals(std::string_view l1, std::string_view l2);
 
-	//! Case insensitive equals (null-terminated strings)
+	//! Case insensitive equals (explicit lengths, no null terminator required)
 	DUCKDB_API static bool CIEquals(const char *l1, idx_t l1_size, const char *l2, idx_t l2_size);
 
 	//! Case insensitive starts-with
-	DUCKDB_API static bool CIStartsWith(const string &str, const string &prefix);
+	DUCKDB_API static bool CIStartsWith(std::string_view str, std::string_view prefix);
 
 	//! Case insensitive ends-with
-	DUCKDB_API static bool CIEndsWith(const string &str, const string &suffix);
+	DUCKDB_API static bool CIEndsWith(std::string_view str, std::string_view suffix);
 
 	//! Case insensitive compare
-	DUCKDB_API static bool CILessThan(const string &l1, const string &l2);
+	DUCKDB_API static bool CILessThan(std::string_view l1, std::string_view l2);
 
 	//! Case insensitive find, returns DConstants::INVALID_INDEX if not found
 	DUCKDB_API static idx_t CIFind(vector<string> &vec, const string &str);

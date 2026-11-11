@@ -1026,7 +1026,7 @@ public:
 			}
 			const auto multiplicity = multiplicity_data[multiplicity_idx];
 			if (multiplicity < 0) {
-				throw InvalidInputException("combine_aggr multiplicity must be non-negative");
+				InvalidInputException::Throw("combine_aggr multiplicity must be non-negative");
 			}
 			if (multiplicity == 0) {
 				continue;

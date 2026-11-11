@@ -239,13 +239,13 @@ void CSVLogStorage::FlushChunk(LoggingTargetTable table, DataChunk &chunk) {
 
 void BufferingLogStorage::UpdateConfigInternal(DatabaseInstance &db, case_insensitive_map_t<Value> &config) {
 	for (const auto &it : config) {
-		if (StringUtil::Lower(it.first) == "buffer_size") {
+		if (StringUtil::CIEquals(it.first, "buffer_size")) {
 			buffer_limit = it.second.GetValue<uint64_t>();
 			ResetAllBuffers();
-		} else if (StringUtil::Lower(it.first) == "only_flush_on_full_buffer") {
+		} else if (StringUtil::CIEquals(it.first, "only_flush_on_full_buffer")) {
 			// This is a debug option used during testing. It disables the manual
 			only_flush_on_full_buffer = it.second.GetValue<bool>();
-		} else if (StringUtil::Lower(it.first) == "normalize") {
+		} else if (StringUtil::CIEquals(it.first, "normalize")) {
 			throw InternalException("'normalize' setting should be handled in child class");
 		} else {
 			throw InvalidInputException("Unrecognized log storage config option for storage: '%s': '%s'",

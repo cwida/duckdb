@@ -9,12 +9,12 @@ require block_size 262144
 load {TEST_DIR}/bitpacking_uncompressible.db
 
 statement ok
-PRAGMA force_compression='bitpacking'
+SET force_compression='bitpacking'
 
 foreach bitpacking_mode delta_for for constant_delta constant
 
 statement ok
-PRAGMA force_bitpacking_mode='{bitpacking_mode}'
+SET force_bitpacking_mode='{bitpacking_mode}'
 
 # simple compression with few values
 statement ok
@@ -43,7 +43,7 @@ endloop
 # Do the same thing and confirm we don't bitpack here
 
 statement ok
-PRAGMA force_compression='none'
+SET force_compression='none'
 
 # simple compression with few values
 statement ok

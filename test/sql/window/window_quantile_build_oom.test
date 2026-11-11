@@ -24,7 +24,7 @@ CREATE TABLE t AS
 # The limit sits below the build peak with the folded quantile fraction stored as a
 # compact constant column, which is about 34MB smaller than its flat materialization.
 statement ok
-SET memory_limit = '360MB';
+SET memory_limit = '240MB';
 
 statement error
 SELECT sum(q)
@@ -46,7 +46,7 @@ FROM (
 62814506.5
 
 statement ok
-SET memory_limit = '425MB';
+SET memory_limit = '240MB';
 
 statement error
 SELECT sum(q)

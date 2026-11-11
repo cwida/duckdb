@@ -1,0 +1,32 @@
+# name: test/sql/collate/icu_sort_key_language_tags.test
+# description: icu_sort_key applies the collation keywords of a BCP 47 language tag, and falls back from a locale to its language
+# group: [collate]
+
+require icu
+
+query II
+SELECT icu_sort_key('Ab', 'und-u-ks-level1') = icu_sort_key('ab', 'und-u-ks-level1'),
+       icu_sort_key('a-b', 'en-u-ka-shifted') = icu_sort_key('ab', 'en-u-ka-shifted');
+----
+true	true
+
+# kv sets the last group that ka-shifted ignores: spaces, punctuation (the default), symbols or currency symbols
+query IIII
+SELECT string_agg(s, ' ' ORDER BY s) FILTER (WHERE icu_sort_key(s, 'en-u-ka-shifted-kv-space') = icu_sort_key('ab', 'en-u-ka-shifted-kv-space')),
+       string_agg(s, ' ' ORDER BY s) FILTER (WHERE icu_sort_key(s, 'en-u-ka-shifted') = icu_sort_key('ab', 'en-u-ka-shifted')),
+       string_agg(s, ' ' ORDER BY s) FILTER (WHERE icu_sort_key(s, 'en-u-ka-shifted-kv-symbol') = icu_sort_key('ab', 'en-u-ka-shifted-kv-symbol')),
+       string_agg(s, ' ' ORDER BY s) FILTER (WHERE icu_sort_key(s, 'en-u-ka-shifted-kv-currency') = icu_sort_key('ab', 'en-u-ka-shifted-kv-currency'))
+FROM (VALUES ('a b'), ('a-b'), ('a+b'), ('a$b'), ('a1b')) t(s);
+----
+a b	a b a-b	a b a+b a-b	a b a$b a+b a-b
+
+# sv_SE has no collation of its own and uses the Swedish one, which sorts ä after z
+query I
+SELECT string_agg(s, ',' ORDER BY icu_sort_key(s, 'sv_SE')) FROM (VALUES ('z'), ('ä'), ('a')) t(s);
+----
+a,z,ä
+
+statement error
+SELECT icu_sort_key('a10', 'en-u-kn-true');
+----
+Not implemented Error: The collation keyword "kn"

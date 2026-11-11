@@ -50,11 +50,19 @@ static void VerifyFileStoragePath(LogManager &log_manager, const string &storage
 static void EnableLogging(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto bind_data = data.bind_data->Cast<EnableLoggingBindData>();
 
-	DUCKDB_LOG_WARNING(context, "The logging settings have been changed so you may lose warnings printed in the CLI.\n"
-	                            "To continue printing warnings to the console, set storage='shell_log_storage'.\n"
-	                            "For more info see https://duckdb.org/docs/current/operations_manual/logging/overview.")
-
 	auto &log_manager = context.db->GetLogManager();
+
+	// warnings stop being printed in the CLI when they no longer reach the shell's storage
+	static constexpr const char *SHELL_LOG_STORAGE = "shell_log_storage";
+	const bool leaves_shell_storage = !StringUtil::CIEquals(bind_data.config.storage, SHELL_LOG_STORAGE);
+	const bool drops_warnings = bind_data.config.level > LogLevel::LOG_WARNING || !bind_data.log_types_to_set.empty();
+	if (StringUtil::CIEquals(log_manager.GetConfig().storage, SHELL_LOG_STORAGE) &&
+	    (leaves_shell_storage || drops_warnings)) {
+		DUCKDB_LOG_WARNING(context,
+		                   "The logging settings have been changed so you may lose warnings printed in the CLI.\n"
+		                   "To continue printing warnings to the console, set storage='shell_log_storage'.\n"
+		                   "For more info see https://duckdb.org/docs/current/operations_manual/logging/overview.")
+	}
 
 	// a prepared call can run after the storage it was bound against changed
 	VerifyFileStoragePath(log_manager, bind_data.config.storage, bind_data.storage_config);
@@ -220,12 +228,16 @@ void EnableLoggingFun::RegisterFunction(BuiltinFunctions &set) {
 		        .Add("storage_buffer_size", LogicalType::UBIGINT);
 	    });
 
+	// reconfigures the log storage per execution
+	enable_fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(enable_fun);
 
 	auto disable_fun = TableFunction("disable_logging", {}, DisableLogging, BindDisableLogging, nullptr, nullptr);
+	disable_fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(disable_fun);
 
 	auto truncate_fun = TableFunction("truncate_duckdb_logs", {}, TruncateLogs, BindTruncateLogs, nullptr, nullptr);
+	truncate_fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(truncate_fun);
 }
 

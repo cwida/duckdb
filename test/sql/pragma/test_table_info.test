@@ -105,7 +105,7 @@ create table t1 (
 );
 
 query IIIIII
-SELECT * FROM pragma_table_info(t1);
+SELECT * FROM pragma_table_info('t1');
 ----
 0	c1	INTEGER	false	NULL	false
 1	c2	INTEGER	false	CAST((c1 + 1) AS INTEGER)	false

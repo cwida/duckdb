@@ -8,7 +8,7 @@ SELECT * FROM (SELECT SUM(i) FROM range(100000000000) tbl(i)) LIMIT 0;
 ----
 
 statement ok
-PRAGMA explain_output='OPTIMIZED_ONLY'
+SET explain_output='OPTIMIZED_ONLY'
 
 query II nosort emptyset
 EXPLAIN SELECT * FROM (SELECT SUM(i) FROM range(100000000000) tbl(i)) LIMIT 0;

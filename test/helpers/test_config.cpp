@@ -92,6 +92,7 @@ static const TestConfigOption test_config_options[] = {
          LogicalType::STRUCT({{"reason", LogicalType::VARCHAR}, {"paths", LogicalType::LIST(LogicalType::VARCHAR)}})),
      nullptr},
     {"skip_compiled", "Skip compiled tests", LogicalType::BOOLEAN, nullptr},
+    {"warnings_as_errors", "Fail any statement that logs a DuckDB warning", LogicalType::BOOLEAN, nullptr},
     {"skip_error_messages", "Skip compiled tests", LogicalType::LIST(LogicalType::VARCHAR), nullptr},
     {"sort_style", "Default sort style if none is configured in the test (none, rowsort, valuesort)",
      LogicalType::VARCHAR, TestConfiguration::CheckSortStyle},
@@ -166,7 +167,7 @@ void TestConfiguration::UpdateEnvironment() {
 
 	// XXX: UUID used by ducklake to avoid collisions, is there a better way?
 	test_env["TEST_UUID"] = test_uuid;
-	test_env["BUILD_DIR"] = string(DUCKDB_BUILD_DIRECTORY);
+	test_env["BUILD_DIR"] = TestBuildDirectory();
 	test_env["WORKING_DIR"] = working_dir; // can be overridden per runner
 	// DATA_DIR: an explicit override (--data-dir / DUCKDB_TEST_DATA_DIR / config data_dir) is read fresh
 	// here, so it survives cwd changes -- an absolute/remote value stays put, a relative value is resolved
@@ -758,6 +759,10 @@ bool TestConfiguration::GetSummarizeFailures() {
 
 bool TestConfiguration::GetSkipCompiledTests() {
 	return GetOptionOrDefault("skip_compiled", false);
+}
+
+bool TestConfiguration::GetWarningsAsErrors() {
+	return GetOptionOrDefault("warnings_as_errors", false);
 }
 
 string TestConfiguration::GetStorageVersion() {

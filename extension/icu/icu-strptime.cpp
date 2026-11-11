@@ -295,6 +295,7 @@ struct ICUStrptime : public ICUDateFunc {
 				bound_function.SetFunctionCallback(function);
 				bound_function.SetInitStateCallback(InitCalendarCache);
 				bound_function.SetReturnType(has_ns ? LogicalType::TIMESTAMP_TZ_NS : LogicalType::TIMESTAMP_TZ);
+				bound_function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 				return make_uniq<ICUStrptimeBindData>(context, format);
 			}
 		} else if (format_value.type() == LogicalType::LIST(LogicalType::VARCHAR)) {
@@ -323,14 +324,14 @@ struct ICUStrptime : public ICUDateFunc {
 				bound_function.SetFunctionCallback(function);
 				bound_function.SetInitStateCallback(InitCalendarCache);
 				bound_function.SetReturnType(has_ns ? LogicalType::TIMESTAMP_TZ_NS : LogicalType::TIMESTAMP_TZ);
+				bound_function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 				return make_uniq<ICUStrptimeBindData>(context, formats);
 			}
 		}
 
 		// Fall back to faster, non-TZ parsing
 		bound_function.SetBindCallback(bind_strptime);
-		auto argument_names = input.GetArgumentNames();
-		BindScalarFunctionInput new_input(context, bound_function, arguments, *argument_names,
+		BindScalarFunctionInput new_input(context, bound_function, arguments,
 		                                  input.HasBinder() ? &input.GetBinder() : nullptr);
 		return bound_function.GetBindCallback()(new_input);
 	}
@@ -512,7 +513,7 @@ struct ICUStrptime : public ICUDateFunc {
 			throw InternalException("Missing context for VARCHAR to TIME/TIMESTAMPTZ cast.");
 		}
 
-		auto cast_data = make_uniq<CastData>(make_uniq<BindData>(*input.context));
+		auto cast_data = BindCastData(input);
 
 		switch (target.id()) {
 		case LogicalTypeId::TIMESTAMP_TZ:
@@ -656,6 +657,7 @@ struct ICUStrftime : public ICUDateFunc {
 		set.AddFunction(tstz_ns_fun);
 		// throws for unsupported format specifiers
 		set.SetFallible();
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(set);
 	}
 
@@ -719,7 +721,7 @@ struct ICUStrftime : public ICUDateFunc {
 			throw InternalException("Missing context for TIMESTAMPTZ to VARCHAR cast.");
 		}
 
-		auto cast_data = make_uniq<CastData>(make_uniq<BindData>(*input.context));
+		auto cast_data = BindCastData(input);
 
 		switch (source.id()) {
 		case LogicalTypeId::TIMESTAMP_TZ:

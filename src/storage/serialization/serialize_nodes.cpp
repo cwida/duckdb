@@ -250,6 +250,9 @@ ColumnDefinition ColumnDefinition::Deserialize(Deserializer &deserializer) {
 	deserializer.ReadProperty<duckdb::CompressionType>(104, "compression_type", result.compression_type);
 	deserializer.ReadPropertyWithExplicitDefault<Value>(105, "comment", result.comment, Value());
 	deserializer.ReadPropertyWithExplicitDefault<InsertionOrderPreservingMap<string>>(106, "tags", result.tags, InsertionOrderPreservingMap<string>());
+	if (result.Generated() && !result.HasGeneratedExpression()) {
+		throw SerializationException("Failed to deserialize: generated column has no expression");
+	}
 	return result;
 }
 
@@ -433,6 +436,7 @@ Literal Literal::Deserialize(Deserializer &deserializer) {
 	deserializer.ReadProperty<LiteralKind>(100, "kind", result.kind);
 	deserializer.ReadPropertyWithDefault<string>(101, "text", result.text);
 	result.Verify();
+	deserializer.CheckAllowed(result.kind);
 	return result;
 }
 
@@ -659,7 +663,9 @@ void SampleOptions::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<bool>(101, "is_percentage", is_percentage);
 	serializer.WriteProperty<SampleMethod>(102, "method", method);
 	serializer.WritePropertyWithDefault<int64_t>(103, "seed", GetSeed());
-	serializer.WritePropertyWithDefault<bool>(104, "repeatable", repeatable);
+	if (serializer.ShouldSerialize(StorageVersion::V2_0_0)) {
+		serializer.WritePropertyWithDefault<bool>(104, "repeatable", repeatable, seed.IsValid());
+	}
 	serializer.WritePropertyWithDefault<double>(105, "sample_rate", sample_rate, -1.0);
 }
 
@@ -672,7 +678,7 @@ unique_ptr<SampleOptions> SampleOptions::Deserialize(Deserializer &deserializer)
 	result->sample_size = sample_size;
 	result->is_percentage = is_percentage;
 	result->method = method;
-	deserializer.ReadPropertyWithDefault<bool>(104, "repeatable", result->repeatable);
+	deserializer.ReadPropertyWithExplicitDefault<bool>(104, "repeatable", result->repeatable, result->seed.IsValid());
 	deserializer.ReadPropertyWithExplicitDefault<double>(105, "sample_rate", result->sample_rate, -1.0);
 	result->Verify();
 	return result;

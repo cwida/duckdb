@@ -1,0 +1,84 @@
+# name: test/optimizer/domain_accumulator_bounds.test
+# description: Prove aggregate domain expansion safe with declared decimals and cross-product row bounds
+# group: [optimizer]
+
+statement ok
+CREATE TABLE returns AS SELECT (i % 100)::INTEGER customer, (i % 10)::INTEGER store, 1 date_key, (i % 100)::DECIMAL(7,2) amount FROM range(10000) t(i);
+
+# Deliberately non-unique: the proof must account for join multiplication.
+statement ok
+CREATE TABLE dates AS SELECT 1 date_key, 2000 d_year FROM range(10);
+
+statement ok
+CREATE TABLE stores AS SELECT i store, i < 5 chosen FROM range(10) t(i);
+
+statement ok
+CREATE TABLE customers AS SELECT i customer FROM range(100) t(i);
+
+statement ok
+CREATE VIEW bounded_totals AS
+SELECT customer, store, sum(amount) total
+FROM returns JOIN dates USING (date_key) WHERE d_year = 2000
+GROUP BY customer, store;
+
+query I
+WITH totals AS MATERIALIZED (SELECT * FROM bounded_totals)
+SELECT sum(total)::BIGINT FROM totals outer_total
+JOIN stores USING (store) JOIN customers USING (customer)
+WHERE chosen AND total > (SELECT 1.2 * avg(total) FROM totals inner_total WHERE inner_total.store = outer_total.store);
+----
+1540000
+
+query I
+WITH totals AS MATERIALIZED (
+    SELECT customer, store, sum(amount) total
+    FROM returns CROSS JOIN dates WHERE d_year = 2000 GROUP BY customer, store
+)
+SELECT sum(total)::BIGINT FROM totals outer_total
+JOIN stores USING (store) JOIN customers USING (customer)
+WHERE chosen AND total > (SELECT 1.2 * avg(total) FROM totals inner_total WHERE inner_total.store = outer_total.store);
+----
+1540000
+
+statement ok
+INSERT INTO returns VALUES (100, NULL, 1, 1), (NULL, NULL, 1, NULL);
+
+query I
+WITH totals AS MATERIALIZED (SELECT * FROM bounded_totals)
+SELECT sum(total)::BIGINT FROM totals outer_total
+JOIN stores USING (store) JOIN customers USING (customer)
+WHERE chosen AND total > (SELECT 1.2 * avg(total) FROM totals inner_total WHERE inner_total.store = outer_total.store);
+----
+1540000
+
+# Wide decimal aggregates retain the requested results.
+statement ok
+CREATE TABLE wide_bounded_returns AS SELECT * REPLACE (amount::DECIMAL(38,2) AS amount) FROM returns;
+
+statement ok
+CREATE VIEW wide_bounded_totals AS
+SELECT customer, store, sum(amount) total
+FROM wide_bounded_returns JOIN dates USING (date_key) WHERE d_year = 2000
+GROUP BY customer, store;
+
+query I
+WITH totals AS MATERIALIZED (SELECT * FROM wide_bounded_totals)
+SELECT sum(total)::BIGINT FROM totals outer_total
+JOIN stores USING (store) JOIN customers USING (customer)
+WHERE chosen AND total > (SELECT 1.2 * avg(total) FROM totals inner_total WHERE inner_total.store = outer_total.store);
+----
+1540000
+
+# The excluded store would overflow AVG's HUGEINT accumulator. Declared wide decimals cannot prove safety.
+statement ok
+CREATE TABLE wide_returns (customer INTEGER, store INTEGER, amount DECIMAL(38,0));
+
+statement ok
+INSERT INTO wide_returns VALUES (0,0,1), (1,1,90000000000000000000000000000000000000), (2,1,90000000000000000000000000000000000000);
+
+query I
+WITH totals AS MATERIALIZED (SELECT customer, store, sum(amount) total FROM wide_returns GROUP BY customer, store)
+SELECT sum(total)::BIGINT FROM totals outer_total
+WHERE store=0 AND total > (SELECT 0.5 * avg(total) FROM totals inner_total WHERE inner_total.store = outer_total.store);
+----
+1

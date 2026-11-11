@@ -40,7 +40,7 @@ struct DecimalAvgOperation {
 	template <class INPUT, class STATE, class OP>
 	static void Operation(STATE &state, const INPUT &input, AggregateUnaryInput &) {
 		if (!Hugeint::TryAddInPlace(state.sum, hugeint_t(input))) {
-			throw OutOfRangeException("decimal_average: intermediate sum overflowed HUGEINT range");
+			OutOfRangeException::Throw("decimal_average: intermediate sum overflowed HUGEINT range");
 		}
 		state.count++;
 	}
@@ -55,7 +55,7 @@ struct DecimalAvgOperation {
 	template <class STATE, class OP>
 	static void Combine(const STATE &source, STATE &target, AggregateInputData &) {
 		if (!Hugeint::TryAddInPlace(target.sum, source.sum)) {
-			throw OutOfRangeException("decimal_average: intermediate sum overflowed HUGEINT range during combine");
+			OutOfRangeException::Throw("decimal_average: intermediate sum overflowed HUGEINT range during combine");
 		}
 		target.count += source.count;
 	}
@@ -111,8 +111,14 @@ struct DecimalAvgOperation {
 
 template <class INPUT_TYPE>
 static AggregateFunction MakeDecimalAvgFunction(const LogicalType &input_type, const LogicalType &return_type) {
-	return AggregateFunction::UnaryAggregate<DecimalAvgState, INPUT_TYPE, INPUT_TYPE, DecimalAvgOperation<INPUT_TYPE>>(
-	    input_type, return_type);
+	auto function =
+	    AggregateFunction::UnaryAggregate<DecimalAvgState, INPUT_TYPE, INPUT_TYPE, DecimalAvgOperation<INPUT_TYPE>>(
+	        input_type, return_type);
+	if (std::is_same<INPUT_TYPE, hugeint_t>::value) {
+		// adding DECIMAL(38) values to the HUGEINT accumulator throws on overflow
+		function.SetFallible();
+	}
+	return function;
 }
 
 static unique_ptr<FunctionData> BindDecimalAverage(BindAggregateFunctionInput &input) {
@@ -130,8 +136,8 @@ static unique_ptr<FunctionData> BindDecimalAverage(BindAggregateFunctionInput &i
 		                            input_type.ToString());
 	}
 
-	uint8_t width = DecimalType::GetWidth(input_type);
-	uint8_t scale = DecimalType::GetScale(input_type);
+	uint32_t width = DecimalType::GetWidth(input_type);
+	uint32_t scale = DecimalType::GetScale(input_type);
 	auto return_type = LogicalType::DECIMAL(width, scale);
 
 	auto name = function.GetName();

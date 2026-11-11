@@ -1,0 +1,67 @@
+# name: test/sql/catalog/nested_schema/nested_view_function_catalog.test
+# description: A view keeps the nested schema path of a function called with its catalog (duckdblabs/bot-issue-tracker#675)
+# group: [nested_schema]
+
+# an in-memory default database allows nested schemas under every storage version
+statement ok
+ATTACH ':memory:' AS mem;
+
+statement ok
+ATTACH '{TEST_DIR}/nested_view_function_catalog.db' AS db (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+USE db;
+
+statement ok
+CREATE SCHEMA p;
+
+statement ok
+CREATE SCHEMA p.s;
+
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE MACRO p.s.f() AS 11;
+
+statement ok
+CREATE MACRO s.f() AS 22;
+
+statement ok
+CREATE VIEW v_nested AS SELECT db.p.s.f() AS y;
+
+statement ok
+CREATE VIEW v_top AS SELECT db.s.f() AS y;
+
+statement ok
+CREATE VIEW v_window AS SELECT db.main.row_number() OVER () AS r;
+
+query II
+SELECT view_name, sql FROM duckdb_views() WHERE database_name = 'db' AND view_name LIKE 'v\_%' ESCAPE '\' ORDER BY view_name;
+----
+v_nested	CREATE VIEW v_nested AS SELECT p.s.f() AS y;
+v_top	CREATE VIEW v_top AS SELECT s.f() AS y;
+v_window	CREATE VIEW v_window AS SELECT main.row_number() OVER () AS r;
+
+query III
+SELECT (SELECT y FROM v_nested), (SELECT y FROM v_top), (SELECT r FROM v_window);
+----
+11	22	1
+
+# the views keep working when the database is attached under a different alias
+statement ok
+USE mem;
+
+statement ok
+DETACH db;
+
+statement ok
+ATTACH '{TEST_DIR}/nested_view_function_catalog.db' AS other;
+
+statement ok
+USE other;
+
+query III
+SELECT (SELECT y FROM v_nested), (SELECT y FROM v_top), (SELECT r FROM v_window);
+----
+11	22	1

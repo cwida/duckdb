@@ -79,6 +79,23 @@ public:
 	string GetMaxValue() override {
 		return HasStats() ? GetStats(max) : string();
 	}
+
+	void Merge(const ColumnWriterStatistics &other_p) override {
+		auto &other = other_p.Cast<FixedDecimalStatistics>();
+		if (!(other.min <= other.max)) {
+			return;
+		}
+		Update(other.min);
+		Update(other.max);
+	}
+	int CompareMin(const ColumnWriterStatistics &other_p) const override {
+		auto &other = other_p.Cast<FixedDecimalStatistics>();
+		return min < other.min ? -1 : (min > other.min ? 1 : 0);
+	}
+	int CompareMax(const ColumnWriterStatistics &other_p) const override {
+		auto &other = other_p.Cast<FixedDecimalStatistics>();
+		return max < other.max ? -1 : (max > other.max ? 1 : 0);
+	}
 };
 
 FixedDecimalColumnWriter::FixedDecimalColumnWriter(ParquetWriter &writer, ParquetColumnSchema &&column_schema,

@@ -57,6 +57,10 @@ struct StringSplitter {
 		auto input_size = input.GetSize();
 		auto delim_data = delim.GetData();
 		auto delim_size = delim.GetSize();
+		if (input_size == 0 && delim_size == 0) {
+			// an empty delimiter splits into the characters, and an empty string has none
+			return 0;
+		}
 		idx_t list_idx = 0;
 		idx_t start = 0;
 		while (start < input_size) {

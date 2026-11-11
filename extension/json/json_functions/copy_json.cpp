@@ -236,8 +236,8 @@ static BoundStatement CopyToJSONPlanInternal(Binder &binder, CopyStatement &stmt
 			if (!option_values.empty() && option_values.back().IsNull()) {
 				ThrowJSONCopyNullException(format, option_name);
 			}
-			array_output =
-			    option_values.empty() || BooleanValue::Get(option_values.back().DefaultCastAs(LogicalTypeId::BOOLEAN));
+			array_output = option_values.empty() ||
+			               BooleanValue::Get(option_values.back().CastAs(binder.context, LogicalTypeId::BOOLEAN));
 		} else if (is_geojson && (option_name == "geometry_column" || option_name == "id_column")) {
 			// NULL explicitly unsets these, so unlike the other options a NULL value is meaningful here
 			if (option_values.size() != 1) {

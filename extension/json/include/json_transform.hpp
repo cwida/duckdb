@@ -40,6 +40,9 @@ public:
 
 	//! Whether to delay the error when transforming (e.g., when non-strict casting or reading from file)
 	bool delay_error = false;
+	//! Whether the documents keep numbers as text (JSONCommon::NumbersAsRaw): nested values become strings through
+	//! JSONRawNumberWriter, so that they read the same as without the DECIMAL column
+	bool numbers_as_raw = false;
 	//! Date format used for parsing (can be NULL)
 	optional_ptr<const DateFormatMap> date_format_map = nullptr;
 	//! String to store errors in

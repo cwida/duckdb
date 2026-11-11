@@ -62,7 +62,8 @@ bool CSVSniffer::TryCastVector(Vector &parse_chunk_col, idx_t size, const Logica
 	}
 	// target type is not varchar: perform a cast
 	string error_message;
-	return VectorOperations::DefaultTryCast(parse_chunk_col, dummy_result, size, &error_message, true);
+	return VectorOperations::TryCast(buffer_manager->context, parse_chunk_col, dummy_result, size, &error_message,
+	                                 true);
 }
 
 void CSVSniffer::RefineTypes() {

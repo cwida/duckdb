@@ -10,7 +10,7 @@ statement ok
 USE db1
 
 statement ok
-PRAGMA force_compression='fsst'
+SET force_compression='fsst'
 
 # Mostly-empty rows keep the dictionary tiny while the length index buffer fills the block,
 # pushing the FSST symbol table to the very end of the segment. The serialized symbol table is

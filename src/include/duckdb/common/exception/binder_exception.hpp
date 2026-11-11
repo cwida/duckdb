@@ -58,7 +58,7 @@ public:
 	static BinderException NoMatchingFunction(const Identifier &catalog_name, const Identifier &schema_name,
 	                                          const Identifier &name, const vector<LogicalType> &arguments,
 	                                          const vector<pair<Identifier, LogicalType>> &named_arguments,
-	                                          const vector<string> &candidates);
+	                                          const vector<string> &candidates, const string &message);
 	static BinderException Unsupported(ParsedExpression &expr, const string &message);
 };
 

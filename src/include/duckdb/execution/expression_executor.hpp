@@ -17,6 +17,8 @@
 namespace duckdb {
 class Allocator;
 class ClientContext;
+class Context;
+class DatabaseInstance;
 class ExecutionContext;
 
 //! ExpressionExecutor is responsible for executing a set of expressions and storing the result in a data chunk
@@ -24,10 +26,18 @@ class ExpressionExecutor {
 	friend class BoundIndex;
 
 public:
+	DUCKDB_API explicit ExpressionExecutor(Context &context);
+	DUCKDB_API ExpressionExecutor(Context &context, const Expression *expression);
+	DUCKDB_API ExpressionExecutor(Context &context, const Expression &expression);
+	DUCKDB_API ExpressionExecutor(Context &context, const vector<unique_ptr<Expression>> &expressions);
 	DUCKDB_API explicit ExpressionExecutor(ClientContext &context);
 	DUCKDB_API ExpressionExecutor(ClientContext &context, const Expression *expression);
 	DUCKDB_API ExpressionExecutor(ClientContext &context, const Expression &expression);
 	DUCKDB_API ExpressionExecutor(ClientContext &context, const vector<unique_ptr<Expression>> &expressions);
+	//! Creates an executor with database-wide services only (no client context)
+	DUCKDB_API explicit ExpressionExecutor(DatabaseInstance &db);
+	DUCKDB_API ExpressionExecutor(DatabaseInstance &db, const Expression &expression);
+	DUCKDB_API ExpressionExecutor(DatabaseInstance &db, const vector<unique_ptr<Expression>> &expressions);
 	ExpressionExecutor(ExpressionExecutor &&) = delete;
 
 	//! The expressions of the executor
@@ -37,9 +47,12 @@ public:
 	DataChunk *chunk = nullptr;
 
 public:
-	bool HasContext();
-	ClientContext &GetContext();
-	optional_ptr<ClientContext> GetContextPtr();
+	Context &GetContext();
+	//! Whether or not the executor runs in the context of a client
+	bool HasClientContext();
+	//! The client context - throws if the executor has no client context
+	ClientContext &GetClientContext();
+	optional_ptr<ClientContext> TryGetClientContext();
 	Allocator &GetAllocator();
 
 	//! Add an expression to the set of to-be-executed expressions of the executor
@@ -76,10 +89,14 @@ public:
 
 	//! Execute the expression with index `expr_idx` and store the result in the result vector
 	DUCKDB_API void ExecuteExpression(idx_t expr_idx, Vector &result);
+	//! Execute the expression with index `expr_idx` on the rows in 'sel'; the result holds those 'count' rows
+	DUCKDB_API void ExecuteExpression(idx_t expr_idx, Vector &result, const SelectionVector &sel, idx_t count);
 	//! Evaluate a scalar expression and fold it into a single value
+	DUCKDB_API static Value EvaluateScalar(Context &context, const Expression &expr, bool allow_unfoldable = false);
 	DUCKDB_API static Value EvaluateScalar(ClientContext &context, const Expression &expr,
 	                                       bool allow_unfoldable = false);
 	//! Try to evaluate a scalar expression and fold it into a single value, returns false if an exception is thrown
+	DUCKDB_API static bool TryEvaluateScalar(Context &context, const Expression &expr, Value &result);
 	DUCKDB_API static bool TryEvaluateScalar(ClientContext &context, const Expression &expr, Value &result);
 
 	//! Initialize the state of a given expression
@@ -130,6 +147,11 @@ protected:
 	             Vector &result);
 	void Execute(const BoundParameterExpression &expr, ExpressionState *state, const SelectionVector *sel, idx_t count,
 	             Vector &result);
+	//! Evaluate the child of TRY or HAS_ERROR, capturing execution errors. Returns true when the whole
+	//! vector evaluated without an error. Otherwise the child is evaluated per row: values holds the child
+	//! value, or NULL for a failing row, and error_flags (if given) flags the failing rows.
+	bool ExecuteErrorCapture(const Expression &child, ExpressionState &child_state, const SelectionVector *sel,
+	                         idx_t count, Vector &values, optional_ptr<Vector> error_flags);
 	void Execute(const BoundReferenceExpression &expr, ExpressionState *state, const SelectionVector *sel, idx_t count,
 	             Vector &result);
 
@@ -153,16 +175,10 @@ protected:
 	void FillSwitch(const Vector &vector, Vector &result, const SelectionVector &sel, sel_t count);
 
 private:
-	//! Client context
-	optional_ptr<ClientContext> context;
+	Context &context;
 	//! The states of the expression executor; this holds any intermediates and temporary states of expressions
 	vector<unique_ptr<ExpressionExecutorState>> states;
 	//! The vector verification (debug setting)
 	DebugVectorVerification debug_vector_verification = DebugVectorVerification::NONE;
-
-private:
-	// it is possible to create an expression executor without a ClientContext - but it should be avoided
-	DUCKDB_API ExpressionExecutor();
-	DUCKDB_API explicit ExpressionExecutor(const vector<unique_ptr<Expression>> &exprs);
 };
 } // namespace duckdb

@@ -1,0 +1,134 @@
+# name: test/sql/copy/parquet/page_index/page_index_cache_disabled.test
+# description: The page index is read once per file when it fits one coalesced read, and per row group otherwise, without relying on the external file cache
+# group: [page_index]
+
+require parquet
+
+require vector_size 2048
+
+statement ok
+SET threads = 1;
+
+# three row groups, BIGINT pages of 512 rows, a payload column with its own pages
+statement ok
+CREATE TABLE data AS
+	SELECT range AS id, (range * 7919) % 100000 AS v, 'p' || (range % 5000)::VARCHAR AS payload
+	FROM range(300000);
+
+statement ok
+COPY data TO '{TEST_DIR}/page_index_once.parquet' (ROW_GROUP_SIZE 100000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+statement ok
+COPY data TO '{TEST_DIR}/page_index_per_group.parquet' (ROW_GROUP_SIZE 100000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+statement ok
+COPY data TO '{TEST_DIR}/page_index_cached.parquet' (ROW_GROUP_SIZE 100000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+# the byte span of the page index: from the first ColumnIndex to the end of the last OffsetIndex
+statement ok
+CREATE MACRO index_span(f) AS TABLE
+	SELECT min(least(column_index_offset, offset_index_offset)) AS span_begin,
+	       max(greatest(column_index_offset + column_index_length, offset_index_offset + offset_index_length)) AS span_end
+	FROM parquet_metadata(f);
+
+# bytes of the reads that lie inside that span (the footer read starts in it but runs past it)
+statement ok
+CREATE MACRO index_bytes_read(f) AS (
+	SELECT coalesce(sum(bytes), 0)
+	FROM duckdb_logs_parsed('FileSystem'), index_span(f)
+	WHERE op = 'READ' AND parse_filename(path) = parse_filename(f) AND pos >= span_begin AND pos + bytes <= span_end);
+
+query I
+SELECT span_end - span_begin > 0 FROM index_span('{TEST_DIR}/page_index_once.parquet');
+----
+true
+
+# no cache: a scan that touches every row group reads the page index exactly once, as a single read of the whole span,
+# when the span fits the coalescing gap
+statement ok
+SET enable_external_file_cache = false;
+
+statement ok
+SET parquet_prefetch_column_gap = 1048576;
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query III
+SELECT count(*), min(id), max(id) FROM '{TEST_DIR}/page_index_once.parquet' WHERE id IN (42, 142000, 242000)
+----
+3	42	242000
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT index_bytes_read('{TEST_DIR}/page_index_once.parquet') = span_end - span_begin FROM index_span('{TEST_DIR}/page_index_once.parquet');
+----
+true
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem'), index_span('{TEST_DIR}/page_index_once.parquet')
+WHERE op = 'READ' AND parse_filename(path) = 'page_index_once.parquet' AND pos = span_begin AND bytes = span_end - span_begin;
+----
+1
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# with the gap pinned below the index size, a lookup reads only the indexes of its own row group: the ColumnIndex of the
+# filter column and the OffsetIndexes of the scanned columns, in separate reads because they are further apart
+statement ok
+SET parquet_prefetch_column_gap = 16384;
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query III
+SELECT id, v, payload FROM '{TEST_DIR}/page_index_per_group.parquet' WHERE id = 42
+----
+42	32598	p42
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT index_bytes_read('{TEST_DIR}/page_index_per_group.parquet') BETWEEN
+       (SELECT column_index_length FROM parquet_metadata('{TEST_DIR}/page_index_per_group.parquet') WHERE row_group_id = 0 AND column_id = 0) AND
+       (SELECT sum(column_index_length + offset_index_length) FROM parquet_metadata('{TEST_DIR}/page_index_per_group.parquet') WHERE row_group_id = 0);
+----
+true
+
+query I
+SELECT index_bytes_read('{TEST_DIR}/page_index_per_group.parquet') < span_end - span_begin FROM index_span('{TEST_DIR}/page_index_per_group.parquet');
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# with the cache the same single read of the whole span ends up cached, so later queries on the file find it there
+statement ok
+SET enable_external_file_cache = true;
+
+statement ok
+SET cache_local_files = true;
+
+statement ok
+SET parquet_prefetch_column_gap = 1048576;
+
+query III
+SELECT id, v, payload FROM '{TEST_DIR}/page_index_cached.parquet' WHERE id = 42
+----
+42	32598	p42
+
+query I
+SELECT min(location) <= span_begin AND max(location + nr_bytes) >= span_end AND sum(nr_bytes) >= span_end - span_begin
+FROM duckdb_external_file_cache(), index_span('{TEST_DIR}/page_index_cached.parquet')
+WHERE parse_filename(path) = 'page_index_cached.parquet' AND location < span_end AND location + nr_bytes > span_begin
+GROUP BY span_begin, span_end;
+----
+true
+
+statement ok
+RESET parquet_prefetch_column_gap;

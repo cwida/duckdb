@@ -1,0 +1,101 @@
+# name: test/sql/transactions/test_commit_flush_append_failure.test
+# description: A failed commit-time flush invalidates the database and leaves no partial state behind
+# group: [transactions]
+
+require skip_reload
+
+load {TEST_DIR}/commit_flush_append_failure.db
+
+# Copy path: appends to a non-empty table are copied row by row at commit.
+
+statement ok
+CREATE TABLE pk (k INTEGER PRIMARY KEY, v VARCHAR);
+
+statement ok
+INSERT INTO pk VALUES (1, 'a'), (2, 'b');
+
+# the restart below replays the WAL with the debug setting still enabled
+statement ok
+CHECKPOINT;
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO pk VALUES (3, 'c'), (4, 'd');
+
+statement ok
+SET debug_force_flush_append_failure = true;
+
+statement error
+COMMIT;
+----
+Forced flush append failure
+
+statement error
+SELECT count(*) FROM pk;
+----
+<REGEX>:.*invalidated.*
+
+restart
+
+# global settings survive a restart in the test runner
+statement ok
+SET debug_force_flush_append_failure = false;
+
+# The failed commit must not have persisted any rows or index keys.
+query II
+SELECT count(*), max(k) FROM pk;
+----
+2	2
+
+statement ok
+INSERT INTO pk VALUES (3, 'c2'), (4, 'd2');
+
+statement error
+INSERT INTO pk VALUES (3, 'dup');
+----
+violates primary key constraint
+
+statement ok
+CHECKPOINT;
+
+query II
+SELECT count(*), max(k) FROM pk;
+----
+4	4
+
+# Merge path: a bulk append (at least one full row group, no deletes) moves the local row groups
+# over directly instead of copying.
+
+statement ok
+CREATE TABLE m (k INTEGER PRIMARY KEY);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO m SELECT i FROM range(122880) r(i);
+
+statement ok
+SET debug_force_flush_append_failure = true;
+
+statement error
+COMMIT;
+----
+Forced flush append failure
+
+statement error
+SELECT count(*) FROM m;
+----
+<REGEX>:.*invalidated.*
+
+restart
+
+statement ok
+SET debug_force_flush_append_failure = false;
+
+query I
+SELECT count(*) FROM m;
+----
+0

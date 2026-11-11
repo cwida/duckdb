@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/common/stack_checker.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception/binder_exception.hpp"
@@ -34,12 +35,17 @@ class ScalarFunctionCatalogEntry;
 class AggregateFunctionCatalogEntry;
 class WindowFunctionCatalogEntry;
 class ScalarMacroCatalogEntry;
+class MacroFunction;
 class ScalarMacroFunction;
 class CatalogEntry;
 class SimpleFunction;
 class HavingBinder;
 class ColumnAliasBinder;
+class LogicalOperator;
+class LogicalProjection;
+class LogicalAggregate;
 
+struct TrySubqueryPlanIndexes;
 struct DummyBinding;
 struct SelectBindState;
 
@@ -251,6 +257,12 @@ public:
 	//! Continues the expression depth of the binder this one binds a nested expression for
 	void ContinueStackDepth(const ExpressionBinder &parent);
 
+	//! While set, scalar subqueries bound by this binder are lowered with an exposed error flag, which
+	//! the TRY subquery lowering of the enclosing select node consumes
+	void SetTransportTryErrors(bool transport) {
+		transport_try_errors = transport;
+	}
+
 private:
 	//! Current stack depth
 	idx_t stack_depth = DConstants::INVALID_INDEX;
@@ -280,6 +292,23 @@ protected:
 	                                  vector<unique_ptr<Expression>> children);
 	BindResult BindExpression(ParameterExpression &expr, idx_t depth);
 	BindResult BindExpression(SubqueryExpression &expr, idx_t depth);
+	//! Rewrite a call that resolved to the built-in has_error into the HAS_ERROR operator and bind that
+	BindResult BindHasErrorFunction(FunctionExpression &function, idx_t depth, unique_ptr<ParsedExpression> &expr_ptr);
+	//! Bind TRY over a scalar subquery as an ordinary subquery, then lower the TRY onto its bound plan
+	BindResult BindTrySubquery(OperatorExpression &op, idx_t depth);
+	//! Throw when the subquery is not a plain SELECT node, the only shape the TRY lowering covers
+	void CheckTrySubqueryNode(const SubqueryExpression &subquery_expr, const ParsedExpression &location);
+	//! Lower TRY onto the maskable positions of a bound subquery plan, before the subquery is flattened.
+	//! With expose_error_flag the output column becomes a struct of the masked value and the error flag,
+	//! so the use site can re-raise captured errors. Returns the resulting output type, or an empty
+	//! optional when the shape is not coverable and tolerant allows falling back to the plain subquery.
+	optional<LogicalType> LowerTrySubquery(const ParsedExpression &location, const TrySubqueryPlanIndexes &indexes,
+	                                       LogicalOperator &root, bool expose_error_flag, bool tolerant);
+	//! Wrap the inputs of the gated aggregates in TRY and aggregate HAS_ERROR probes over them.
+	//! Sets gate to a column reference to the probe aggregate, or to nullptr when the aggregates have no
+	//! inputs. Returns false when a shape cannot be gated and strict is unset (throws otherwise).
+	bool GateTryAggregates(const ParsedExpression &location, LogicalAggregate &aggregate,
+	                       const vector<idx_t> &aggregate_positions, bool strict, unique_ptr<Expression> &gate);
 	BindResult BindPositionalReference(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression);
 
 	void TransformCapturedLambdaColumn(unique_ptr<Expression> &original, unique_ptr<Expression> &replacement,
@@ -314,8 +343,8 @@ protected:
 	                             unique_ptr<ParsedExpression> &expr_ptr);
 	void FindAggregateExprs(unique_ptr<ParsedExpression> &expr, vector<reference<unique_ptr<ParsedExpression>>> &exprs);
 	void UnfoldWindowMacroExpression(unique_ptr<ParsedExpression> &expr, ScalarMacroFunction &macro_def);
-	void UnfoldMacroExpression(FunctionExpression &function, ScalarMacroCatalogEntry &macro_func,
-	                           unique_ptr<ParsedExpression> &expr, idx_t depth);
+	MacroFunction &UnfoldMacroExpression(FunctionExpression &function, ScalarMacroCatalogEntry &macro_func,
+	                                     unique_ptr<ParsedExpression> &expr, idx_t depth);
 
 	virtual string UnsupportedAggregateMessage();
 	virtual string UnsupportedWindowMessage();
@@ -329,6 +358,10 @@ protected:
 	ClientContext &context;
 	vector<BoundColumnReferenceInfo> bound_columns;
 	bool inside_try = false;
+	//! Set while binding the subquery of a TRY, so the subquery binder knows TRY is lowered onto its plan
+	bool bind_try_subquery = false;
+	//! Set while binding the select item of a TRY subquery, see SetTransportTryErrors
+	bool transport_try_errors = false;
 
 	BindResult TryBindLambdaOrJson(FunctionExpression &function, idx_t depth, CatalogEntry &func,
 	                               const LambdaSyntaxType syntax_type);

@@ -1,5 +1,5 @@
 # name: test/sql/collate/collation_invalid_utf8.test
-# description: COLLATE comparisons on strings with invalid UTF-8 (code points beyond U+10FFFF) must not read out of bounds in the collation tables
+# description: COLLATE comparisons on strings with invalid UTF-8 (code points beyond U+10FFFF) throw a data corruption error
 # group: [collate]
 
 require icu
@@ -32,72 +32,22 @@ SET disabled_optimizers='statistics_propagation';
 statement ok
 LOAD icu
 
-query I
+statement error
 SELECT s1 COLLATE de = 'x' COLLATE de FROM t
 ----
-false
-false
-false
-false
-false
-false
-false
-false
-false
-false
+Data Corruption Error: Invalid UTF-8 in collation input
 
-query I
+statement error
 SELECT s2 COLLATE de = 'x' COLLATE de FROM t
 ----
-false
-false
-false
-false
-false
-false
-false
-false
-false
-false
+Data Corruption Error: Invalid UTF-8 in collation input
 
-query I
-SELECT s1 COLLATE de = s1 COLLATE de FROM t
+statement error
+SELECT icu_sort_key(s1, 'en') FROM t
 ----
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
+Data Corruption Error: Invalid UTF-8 in collation input
 
-query I
-SELECT s2 COLLATE de = s2 COLLATE de FROM t
+statement error
+SELECT icu_sort_key(s2, 'en') FROM t
 ----
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-
-query I
-SELECT s1 COLLATE de = s2 COLLATE de FROM t
-----
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
+Data Corruption Error: Invalid UTF-8 in collation input

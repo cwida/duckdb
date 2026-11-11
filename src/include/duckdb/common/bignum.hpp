@@ -14,11 +14,12 @@
 #include "duckdb/common/optional_ptr.hpp"
 #include <stdint.h>
 #include "duckdb/common/types/string_type.hpp"
+#include "duckdb/common/bignum_limbs.hpp"
 
 namespace duckdb {
 class StringHeap;
 class ArenaAllocator;
-class ClientContext;
+class Context;
 
 struct bignum_t {
 	string_t data;
@@ -46,24 +47,22 @@ enum AbsoluteNumberComparison : uint8_t {
 	SMALLER = 2,
 };
 
-//! A bignum magnitude is handled as base 2^32 digits
-using digit_t = uint32_t;
-using twodigit_t = uint64_t;
-
 //! Per-vector scratch digit buffers and interrupt-check state for BIGNUM multiplication and division
 struct BignumArithmeticState {
-	explicit BignumArithmeticState(optional_ptr<ClientContext> context = nullptr) : context(context) {
+	explicit BignumArithmeticState(Context &context_p) : context(context_p) {
 	}
 
-	optional_ptr<ClientContext> context;
+	Context &context;
 	//! Digit operations performed since the last interrupt check
 	idx_t work_since_interrupt_check = 0;
-	unsafe_vector<digit_t> lhs_digits;
-	unsafe_vector<digit_t> rhs_digits;
-	unsafe_vector<digit_t> result_digits;
-	unsafe_vector<digit_t> remainder_digits;
-	unsafe_vector<digit_t> normalized_dividend;
-	unsafe_vector<digit_t> normalized_divisor;
+	unsafe_vector<bignum_digit_t> lhs_digits;
+	unsafe_vector<bignum_digit_t> rhs_digits;
+	unsafe_vector<bignum_digit_t> result_digits;
+	//! Scratch digits of the Karatsuba multiplication, sized once per vector for the largest product so far
+	unsafe_vector<bignum_digit_t> karatsuba_scratch;
+	unsafe_vector<bignum_digit_t> remainder_digits;
+	unsafe_vector<bignum_digit_t> normalized_dividend;
+	unsafe_vector<bignum_digit_t> normalized_divisor;
 };
 
 struct BignumIntermediate {
@@ -92,10 +91,12 @@ struct BignumIntermediate {
 	//! In case we have unnecessary extra 0's or 1's in our bignum we trim them
 	static idx_t Trim(data_ptr_t data, uint32_t &size, bool is_negative);
 	void Trim();
-	//! Add a BignumIntermediate to another BignumIntermediate, equivalent of a +=
-	void AddInPlace(ArenaAllocator &allocator, const BignumIntermediate &rhs);
-	//! Adds two BignumIntermediates and returns a string_t result, equivalent of a +
-	static string_t Add(StringHeap &heap, const BignumIntermediate &lhs, const BignumIntermediate &rhs);
+	//! Add a BignumIntermediate to another BignumIntermediate, equivalent of a += (or a -= with negate_rhs)
+	void AddInPlace(ArenaAllocator &allocator, const BignumIntermediate &rhs, bool negate_rhs = false);
+	//! Adds two BignumIntermediates and returns a string_t result, equivalent of a + (or a - with negate_rhs: the
+	//! right operand takes part with its sign flipped, without being modified or copied)
+	static string_t Add(StringHeap &heap, const BignumIntermediate &lhs, const BignumIntermediate &rhs,
+	                    bool negate_rhs = false);
 	//! Multiplies two BignumIntermediates and returns a string_t result, equivalent of a *
 	static string_t Multiply(StringHeap &heap, BignumArithmeticState &state, const BignumIntermediate &lhs,
 	                         const BignumIntermediate &rhs);
@@ -106,8 +107,8 @@ struct BignumIntermediate {
 	//! Negates a value, e.g., -x
 	string_t Negate(StringHeap &heap) const;
 	void NegateInPlace();
-	//! Exports to a bignum, either arena allocated
-	bignum_t ToBignum(ArenaAllocator &allocator);
+	//! Exports to an arena-allocated bignum, trimmed on the way out; the intermediate itself is left as it is
+	bignum_t ToBignum(ArenaAllocator &allocator) const;
 	//! Check if an over/underflow has occurred
 	static bool OverOrUnderflow(data_ptr_t data, idx_t size, bool is_negative);
 	bool OverOrUnderflow() const;

@@ -482,11 +482,11 @@ TEST_CASE("Stable C++API: table function filter pushdown", "[cpp_api]") {
 
 	claim_seen.clear();
 	REQUIRE(CollectBigints(conn.Execute(
-	            "SELECT count(*) FROM cpp_claim(100) WHERE (i = 1 OR i IS NULL) AND TRY_CAST(i AS VARCHAR) = '1'")) ==
+	            "SELECT count(*) FROM cpp_claim(100) WHERE (i = 1 OR i IS NULL) AND TRY_CAST(i AS DOUBLE) = 1.0")) ==
 	        std::vector<int64_t> {1});
 	std::sort(claim_seen.begin(), claim_seen.end());
 	claim_seen.erase(std::unique(claim_seen.begin(), claim_seen.end()), claim_seen.end());
-	REQUIRE(claim_seen == std::vector<std::string> {"=(try_cast(col0)::VARCHAR, 1)", "or(=(col0, 1), is_null(col0))"});
+	REQUIRE(claim_seen == std::vector<std::string> {"=(try_cast(col0)::DOUBLE, 1.0)", "or(=(col0, 1), is_null(col0))"});
 }
 
 TEST_CASE("Stable C++API: expression accessors refuse other node types and errors propagate", "[cpp_api]") {

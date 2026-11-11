@@ -1,0 +1,24 @@
+# name: benchmark/micro/pushdown/rowid_in_list.benchmark
+# description: A row id IN list reads the vectors that hold its row ids
+# group: [pushdown]
+
+name RowIdInList
+group micro
+subgroup pushdown
+
+require tpch
+
+cache tpch_sf1.duckdb
+
+load
+CALL dbgen(sf=1);
+
+run
+SELECT l_orderkey, l_linenumber, l_shipdate, l_comment FROM lineitem WHERE rowid IN (500, 1000000, 2000100, 3100000, 5999000) ORDER BY rowid
+
+result IIII
+487	2	1992-10-19	oss the unusual pinto beans. reg
+999939	6	1997-02-13	s wake fluffily alongside
+1999623	3	1994-12-14	r the inst
+3100260	3	1992-12-31	fily quickly bold pinto beans.
+5997767	5	1994-09-16	ding to the fluffily bold dugouts. i

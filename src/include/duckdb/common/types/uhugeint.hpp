@@ -39,7 +39,7 @@ public:
 	static uhugeint_t Convert(T value) {
 		uhugeint_t result;
 		if (!TryConvert(value, result)) { // LCOV_EXCL_START
-			throw OutOfRangeException(double(value), GetTypeId<T>(), GetTypeId<uhugeint_t>());
+			OutOfRangeException::ThrowConversion(double(value), GetTypeId<T>(), GetTypeId<uhugeint_t>());
 		} // LCOV_EXCL_STOP
 		return result;
 	}
@@ -184,6 +184,8 @@ template <>
 DUCKDB_API bool Uhugeint::TryCast(uhugeint_t input, float &result);
 template <>
 DUCKDB_API bool Uhugeint::TryCast(uhugeint_t input, double &result);
+template <>
+DUCKDB_API bool Uhugeint::TryCast(uhugeint_t input, long double &result);
 
 template <>
 bool Uhugeint::TryConvert(int8_t value, uhugeint_t &result);

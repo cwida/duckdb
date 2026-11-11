@@ -3,7 +3,7 @@
 # group: [window]
 
 statement ok
-PRAGMA threads=10
+SET threads=10
 
 statement ok
 create table df as 

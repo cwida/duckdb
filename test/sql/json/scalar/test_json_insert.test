@@ -4,9 +4,6 @@
 
 require json
 
-statement ok
-pragma enable_verification
-
 # Basic: insert new key into object
 query T
 SELECT json_insert('{"a":1}', '$.b', '2')

@@ -1,4 +1,5 @@
 #include "duckdb/common/types/uhugeint.hpp"
+#include "duckdb/common/bit_utils.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/algorithm.hpp"
@@ -317,9 +318,13 @@ bool Uhugeint::TryAddInPlace(uhugeint_t &lhs, uhugeint_t rhs) {
 }
 
 bool Uhugeint::TrySubtractInPlace(uhugeint_t &lhs, uhugeint_t rhs) {
-	uint64_t new_upper = lhs.upper - rhs.upper - ((lhs.lower - rhs.lower) > lhs.lower);
-	bool no_overflow = !(new_upper > lhs.upper);
-	lhs.lower -= rhs.lower;
+	uint64_t new_lower = lhs.lower - rhs.lower;
+	uint64_t borrow = new_lower > lhs.lower;
+	uint64_t new_upper = lhs.upper - rhs.upper - borrow;
+	// the result is out of range exactly when rhs > lhs, i.e. when the upper half underflows
+	// either directly or through the borrow of the lower half
+	bool no_overflow = !(rhs.upper > lhs.upper || (rhs.upper == lhs.upper && borrow));
+	lhs.lower = new_lower;
 	lhs.upper = new_upper;
 	return no_overflow;
 }
@@ -403,23 +408,40 @@ bool Uhugeint::TryCast(uhugeint_t input, hugeint_t &result) {
 	return true;
 }
 
-template <>
-bool Uhugeint::TryCast(uhugeint_t input, float &result) {
-	double dbl_result;
-	Uhugeint::TryCast(input, dbl_result);
-	result = (float)dbl_result;
+template <class REAL_T>
+bool CastUhugeintToFloating(uhugeint_t input, REAL_T &result) {
+	static constexpr REAL_T TWO_TO_THE_64 = REAL_T(18446744073709551616.0);
+	if (std::numeric_limits<REAL_T>::digits >= 64) {
+		// Both halves convert exactly, so the sum is the only rounding.
+		result = REAL_T(input.upper) * TWO_TO_THE_64 + REAL_T(input.lower);
+		return true;
+	}
+	if (input.upper == 0) {
+		result = REAL_T(input.lower);
+		return true;
+	}
+	// The top 64 bits with every lower bit folded into the last one round to the mantissa as the whole value does.
+	const auto leading = CountZeros<uint64_t>::Leading(input.upper);
+	// The lower half shifts in two steps because a shift by 64, when leading is 0, is undefined.
+	const uint64_t top =
+	    (input.upper << leading) | ((input.lower >> 1) >> (63 - leading)) | uint64_t((input.lower << leading) != 0);
+	result = REAL_T(top) * REAL_T(uint64_t(1) << (63 - leading)) * REAL_T(2);
 	return true;
 }
 
-template <class REAL_T>
-bool CastUhugeintToFloating(uhugeint_t input, REAL_T &result) {
-	result = REAL_T(input.lower) + REAL_T(input.upper) * REAL_T(NumericLimits<uint64_t>::Maximum());
-	return true;
+template <>
+bool Uhugeint::TryCast(uhugeint_t input, float &result) {
+	return CastUhugeintToFloating<float>(input, result);
 }
 
 template <>
 bool Uhugeint::TryCast(uhugeint_t input, double &result) {
 	return CastUhugeintToFloating<double>(input, result);
+}
+
+template <>
+bool Uhugeint::TryCast(uhugeint_t input, long double &result) {
+	return CastUhugeintToFloating<long double>(input, result);
 }
 
 template <class DST>
@@ -512,8 +534,9 @@ bool ConvertFloatingToUhugeint(REAL_T value, uhugeint_t &result) {
 	if (value < 0 || value >= 340282366920938463463374607431768211456.0) {
 		return false;
 	}
-	result.lower = (uint64_t)fmod(value, REAL_T(NumericLimits<uint64_t>::Maximum()));
-	result.upper = (uint64_t)(value / REAL_T(NumericLimits<uint64_t>::Maximum()));
+	static constexpr REAL_T TWO_TO_THE_64 = REAL_T(18446744073709551616.0);
+	result.lower = static_cast<uint64_t>(std::fmod(value, TWO_TO_THE_64));
+	result.upper = static_cast<uint64_t>(value / TWO_TO_THE_64);
 	return true;
 }
 

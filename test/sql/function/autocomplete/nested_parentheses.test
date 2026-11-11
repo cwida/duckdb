@@ -1,0 +1,18 @@
+# name: test/sql/function/autocomplete/nested_parentheses.test
+# description: sql_auto_complete on unbalanced parentheses does not backtrack exponentially
+# group: [autocomplete]
+
+require autocomplete
+
+statement ok
+SET max_execution_time=20000;
+
+query I
+SELECT count(*) > 0 FROM sql_auto_complete(repeat('(', 25));
+----
+true
+
+query I
+SELECT count(*) > 0 FROM sql_auto_complete('SELECT ' || repeat('(', 25));
+----
+true

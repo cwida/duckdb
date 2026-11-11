@@ -10,7 +10,7 @@ statement ok
 PRAGMA verify_parallelism;
 
 statement ok
-PRAGMA threads=4;
+SET threads=4;
 
 statement ok
 CREATE TABLE test2 as SELECT i as a, (i*2) as b, power(i,2) as c from range(0,10) tbl(i);
@@ -190,7 +190,7 @@ SELECT COUNT(*) >= 1 FROM GLOB('{TEST_DIR}/pto/basename_????????-????-4???-????-
 true
 
 statement ok
-PRAGMA threads=1;
+SET threads=1;
 
 # Test where overwrite_or_ignore param has no value -> will be true -> overwrite previous test
 statement ok

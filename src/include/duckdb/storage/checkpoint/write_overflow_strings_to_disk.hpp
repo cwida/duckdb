@@ -8,10 +8,12 @@
 
 #pragma once
 
+#include "duckdb/storage/buffer/buffer_handle.hpp"
 #include "duckdb/storage/checkpoint/string_checkpoint_state.hpp"
-#include "duckdb/storage/partial_block_manager.hpp"
 
 namespace duckdb {
+
+class PartialBlockManager;
 
 class WriteOverflowStringsToDisk : public OverflowStringWriter {
 public:

@@ -1,0 +1,109 @@
+# name: test/sql/export/export_exhausted_sequence.test
+# description: EXPORT DATABASE writes an exhausted sequence with an out-of-range START, which IMPORT DATABASE accepts
+# group: [export]
+
+# a non-cycling sequence can be created past its range, which leaves it exhausted, as after it returned its last value
+statement ok
+CREATE SEQUENCE past_up MAXVALUE 3 START 5
+
+statement error
+SELECT nextval('past_up')
+----
+reached maximum value of sequence "past_up" (3)
+
+statement ok
+CREATE SEQUENCE past_down INCREMENT BY -1 MINVALUE -3 MAXVALUE 0 START -5
+
+statement error
+SELECT nextval('past_down')
+----
+reached minimum value of sequence "past_down" (-3)
+
+# a cycling sequence has no exhausted state, so an out-of-range START is still rejected
+statement error
+CREATE SEQUENCE cyc MAXVALUE 3 START 5 CYCLE
+----
+START value (5) cannot be greater than MAXVALUE (3)
+
+statement error
+CREATE SEQUENCE cyc INCREMENT BY -1 MINVALUE -3 MAXVALUE 0 START -5 CYCLE
+----
+START value (-5) cannot be less than MINVALUE (-3)
+
+statement ok
+DROP SEQUENCE past_up
+
+statement ok
+DROP SEQUENCE past_down
+
+# the export and import round-trip
+statement ok
+BEGIN TRANSACTION
+
+# an ascending sequence that returned its last value
+statement ok
+CREATE SEQUENCE up MAXVALUE 3
+
+statement ok
+SELECT nextval('up') FROM range(3)
+
+# a descending sequence
+statement ok
+CREATE SEQUENCE down INCREMENT BY -1 MINVALUE -3 MAXVALUE 0 START 0
+
+statement ok
+SELECT nextval('down') FROM range(4)
+
+# an exhausted sequence in another schema with a quoted name
+statement ok
+CREATE SCHEMA s2
+
+statement ok
+CREATE SEQUENCE s2."my seq" MAXVALUE 2
+
+statement ok
+SELECT nextval('s2."my seq"') FROM range(2)
+
+# a sequence that still has values left
+statement ok
+CREATE SEQUENCE live MAXVALUE 100
+
+statement ok
+SELECT nextval('live') FROM range(3)
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/export_exhausted_sequence'
+
+# the exhausted ascending sequence is written with a START past its maximum
+query I
+SELECT contains(content, 'CREATE SEQUENCE up INCREMENT BY 1 MINVALUE 1 MAXVALUE 3 START 4 NO CYCLE;') FROM read_text('{TEST_DIR}/export_exhausted_sequence/schema.sql')
+----
+true
+
+statement ok
+ROLLBACK
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/export_exhausted_sequence'
+
+# the imported sequences are exhausted again
+statement error
+SELECT nextval('up')
+----
+reached maximum value of sequence "up" (3)
+
+statement error
+SELECT nextval('down')
+----
+reached minimum value of sequence "down" (-3)
+
+statement error
+SELECT nextval('s2."my seq"')
+----
+reached maximum value of sequence "my seq" (2)
+
+# the sequence that still had values continues where it was
+query I
+SELECT nextval('live')
+----
+4

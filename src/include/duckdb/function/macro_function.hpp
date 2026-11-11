@@ -43,6 +43,8 @@ public:
 	InsertionOrderPreservingMap<unique_ptr<ParsedExpression>, Identifier, identifier_map_t<idx_t>> default_parameters;
 	//! The types of the parameters
 	vector<LogicalType> types;
+	//! The declared return type, UNKNOWN when none was declared: the member's result is cast to it
+	LogicalType return_type = LogicalType::UNKNOWN;
 
 public:
 	virtual ~MacroFunction() {
@@ -65,6 +67,9 @@ public:
 	                   vector<unique_ptr<ParsedExpression>> &positional_arguments,
 	                   InsertionOrderPreservingMap<unique_ptr<ParsedExpression>, Identifier, identifier_map_t<idx_t>>
 	                       &named_arguments);
+
+	//! Whether this member's parameter types equal the given type list exactly (ANY names an untyped slot)
+	bool MatchesSignature(const vector<LogicalType> &signature) const;
 
 	virtual string ToSQL() const;
 

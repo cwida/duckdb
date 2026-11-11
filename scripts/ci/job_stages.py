@@ -83,6 +83,7 @@ class JobSelection:
     enabled_jobs: list[str]
     save_cache: bool
     reduced_ci_mode: str
+    windows_full_matrix: bool
     extension_opt_in_archs: str = ""
     optimized_release: bool = False
     runners: dict[str, str] = field(default_factory=dict)
@@ -99,6 +100,7 @@ class JobSelectionInput:
     skip_tests: bool
     changed_keys: set[str]
     reduced_ci_mode: str
+    run_all: bool
     runners: dict[str, str] = field(default_factory=dict)
     runner_provider: str = ""
 
@@ -113,6 +115,14 @@ def extension_opt_in_archs(selection_input: JobSelectionInput) -> str:
     if selection_input.event_name == "pull_request" and "extensions" in selection_input.changed_keys:
         return "windows_arm64;linux_arm64_musl"
     return ""
+
+
+def windows_full_matrix(selection_input: JobSelectionInput) -> bool:
+    if selection_input.ref_name == selection_input.default_branch or selection_input.repository != "duckdb/duckdb":
+        return True
+    if selection_input.event_name == "pull_request":
+        return "extensions" in selection_input.changed_keys
+    return selection_input.run_all
 
 
 def enabled_jobs(selection_input: JobSelectionInput, reduced_ci_mode: str) -> list[str]:
@@ -303,6 +313,7 @@ def compute_job_selection(selection_input: JobSelectionInput) -> JobSelection:
         enabled_jobs=selected_jobs,
         save_cache=should_save_cache(selection_input),
         reduced_ci_mode=reduced_ci_mode,
+        windows_full_matrix=windows_full_matrix(selection_input),
         extension_opt_in_archs=extension_opt_in_archs(selection_input),
         optimized_release=optimized_release,
         runners=runners,
@@ -316,6 +327,7 @@ def write_outputs(selection: JobSelection, out: TextIO, *, include_matrices: boo
     out.write(f"save_cache={'true' if selection.save_cache else 'false'}\n")
     out.write(f"optimized_release={'true' if selection.optimized_release else 'false'}\n")
     out.write(f"reduced_ci_mode={selection.reduced_ci_mode}\n")
+    out.write(f"windows_full_matrix={'true' if selection.windows_full_matrix else 'false'}\n")
     out.write(f"extension_opt_in_archs={selection.extension_opt_in_archs}\n")
     out.write(f"runners={json.dumps(selection.runners, separators=(',', ':'))}\n")
     if include_matrices:
@@ -332,6 +344,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-tests", default="false")
     parser.add_argument("--changed-keys", default="")
     parser.add_argument("--reduced-ci-mode", required=True)
+    parser.add_argument("--run-all", required=True)
     parser.add_argument("--runners", required=True)
     parser.add_argument("--runner-provider", required=True)
     return parser.parse_args()
@@ -390,6 +403,7 @@ def main() -> int:
         skip_tests=parse_bool(args.skip_tests),
         changed_keys=parse_changed_keys(args.changed_keys),
         reduced_ci_mode=args.reduced_ci_mode,
+        run_all=parse_bool(args.run_all),
         runners=parse_runners(args.runners),
         runner_provider=args.runner_provider,
     )

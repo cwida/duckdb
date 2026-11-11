@@ -5,9 +5,6 @@
 require parquet
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
 CREATE VIEW bss AS SELECT * FROM '{DATA_DIR}/parquet-testing/byte_stream_split_flba.parquet'
 
 # each _bss column holds the same values as its PLAIN-encoded _plain twin

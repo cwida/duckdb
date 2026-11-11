@@ -12,7 +12,7 @@ statement ok
 INSERT INTO integers VALUES (1), (2), (3)
 
 statement ok
-PRAGMA explain_output = 'OPTIMIZED_ONLY';
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # all of these are identical, i.e. this gets folded into a single count aggregate
 query II

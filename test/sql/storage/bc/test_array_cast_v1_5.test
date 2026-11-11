@@ -1,0 +1,55 @@
+# name: test/sql/storage/bc/test_array_cast_v1_5.test
+# description: Test that casts to a fixed-size array stored by v1.5 can be written back in the v1.5 format
+# group: [bc]
+
+# data/storage/array_cast_v1_5.db.gz was written by DuckDB v1.5.6 with storage version v1.5.1, which stores the size of
+# FLOAT[3] as a BIGINT value
+require vector_size 2048
+
+unzip data/storage/array_cast_v1_5.db.gz {TEST_DIR}/array_cast_v1_5.db
+
+statement ok
+ATTACH '{TEST_DIR}/array_cast_v1_5.db' AS old
+
+query I
+SELECT sql FROM duckdb_views() WHERE database_name = 'old' AND view_name = 'v'
+----
+CREATE VIEW v AS SELECT CAST(e AS FLOAT[3]) AS x FROM t;
+
+# a checkpoint writes the view, the macro, the default, the generated column and the CHECK back in the v1.5 format
+statement ok
+CREATE TABLE old.unrelated (i INTEGER)
+
+statement ok
+CHECKPOINT old
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/array_cast_v1_5.db' AS old
+
+query II
+SELECT v.x, w.x FROM old.v, old.w WHERE v.x = w.x[1] ORDER BY ALL
+----
+[1.0, 2.0, 3.0]	[[1.0, 2.0, 3.0]]
+[4.0, 5.0, 6.0]	[[4.0, 5.0, 6.0]]
+
+query I
+SELECT old.main.m([1, 2, 3])
+----
+[1.0, 2.0, 3.0]
+
+statement ok
+INSERT INTO old.g (e) VALUES ([1, 2, 3])
+
+statement error
+INSERT INTO old.g (e) VALUES ([1, 2])
+----
+Cannot cast list with length 2 to array with length 3
+
+query III
+FROM old.g ORDER BY ALL
+----
+[1.0, 2.0, 3.0]	[0.0, 0.0, 0.0]	[1.0, 2.0, 3.0]
+[7.0, 8.0, 9.0]	[0.0, 0.0, 0.0]	[7.0, 8.0, 9.0]

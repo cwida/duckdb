@@ -1,0 +1,88 @@
+# name: test/extension/test_table_in_out_named_args.test
+# description: Correlated table-in/out functions retain named scalar options
+# group: [extension]
+
+require skip_reload
+
+require notmingw
+
+require allow_unsigned_extensions
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension';
+
+# Explicit options stay separate from the positional input columns.
+query I
+SELECT r.value FROM (VALUES (1), (2)) t(x), LATERAL test_in_out_keywords(t.x, delta => 4) r ORDER BY r.value;
+----
+5
+6
+
+# Legacy named-argument syntax also casts the option to its declared type.
+query I
+SELECT r.value FROM (VALUES (1), (2)) t(x), test_in_out_keywords(t.x, delta = '4') r ORDER BY r.value;
+----
+5
+6
+
+# Omitted options use their defaults.
+query I
+SELECT r.value FROM (VALUES (1), (2)) t(x), LATERAL test_in_out_keywords(t.x) r ORDER BY r.value;
+----
+8
+9
+
+query I
+SELECT count(*) FILTER (WHERE r.value IS NULL) FROM (VALUES (1), (2)) t(x), LATERAL test_in_out_keywords(t.x, delta => NULL) r;
+----
+2
+
+statement error
+SELECT * FROM (VALUES (1)) t(x), test_in_out_keywords(t.x, typo => 1);
+----
+Invalid named parameter "typo" for function test_in_out_keywords
+
+statement error
+SELECT * FROM (VALUES (1)) t(x), test_in_out_keywords(t.x, delta => t.x);
+----
+The function only supports literals as parameters.
+
+statement error
+SELECT * FROM (VALUES (1)) t(x), test_in_out_keywords(t.x, delta => 'wrong');
+----
+Could not convert string 'wrong' to INT64
+
+statement error
+SELECT * FROM (VALUES (1)) t(x), test_in_out_keywords(t.x, delta => 1, delta => 2);
+----
+Duplicate named argument "delta"
+
+statement error
+SELECT * FROM (VALUES (1)) t(x), test_in_out_keywords(delta => 1, t.x);
+----
+Unnamed parameters cannot come after named parameters
+
+statement error
+SELECT * FROM (VALUES (1)) t(x), test_in_out_keywords(t.x, delta => (SELECT 4));
+----
+cannot contain subqueries
+
+statement ok
+PREPARE keyword_input AS SELECT r.value FROM (VALUES (1)) t(x), test_in_out_keywords(t.x, delta => $1) r;
+
+query I
+EXECUTE keyword_input(10);
+----
+11
+
+# Named options participate in overload selection.
+query I
+SELECT r.value FROM (VALUES (1)) t(x), test_in_out_overloaded(t.x, delta => 4::BIGINT) r;
+----
+5
+
+# A comparison inside a named argument remains part of the option's value.
+query I
+SELECT r.value FROM (VALUES (1)) t(x), test_in_out_overloaded(t.x, delta => (1 = 1)) r;
+----
+101

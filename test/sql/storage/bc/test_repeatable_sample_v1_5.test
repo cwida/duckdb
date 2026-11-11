@@ -1,0 +1,48 @@
+# name: test/sql/storage/bc/test_repeatable_sample_v1_5.test
+# description: Test that a REPEATABLE sample in a view stored by v1.5 stays repeatable
+# group: [bc]
+
+# data/storage/repeatable_sample_v1_5.db.gz was written by DuckDB v1.5.6, which stores the seed of a sample but not
+# whether it is repeatable
+require vector_size 2048
+
+unzip data/storage/repeatable_sample_v1_5.db.gz {TEST_DIR}/repeatable_sample_v1_5.db
+
+statement ok
+ATTACH '{TEST_DIR}/repeatable_sample_v1_5.db' AS old
+
+loop i 0 3
+
+query III
+FROM old.v
+----
+2580	6	13103557
+
+endloop
+
+# a checkpoint writes the views back in the v1.5 format
+statement ok
+CREATE VIEW old.v2 AS SELECT count(*), min(x), sum(x) FROM old.t TABLESAMPLE BERNOULLI (25 PERCENT) REPEATABLE (42)
+
+statement ok
+CHECKPOINT old
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/repeatable_sample_v1_5.db' AS old
+
+loop i 0 3
+
+query III
+FROM old.v
+----
+2580	6	13103557
+
+query III
+FROM old.v2
+----
+2580	6	13103557
+
+endloop

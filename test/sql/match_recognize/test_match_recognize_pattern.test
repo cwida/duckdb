@@ -3,7 +3,7 @@
 # group: [match_recognize]
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 statement ok
 create table seq(i integer, v integer);

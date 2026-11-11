@@ -554,17 +554,30 @@ void SortedRun::Finalize(bool external) {
 	SortSwitch(context, *key_data, is_index_sort);
 
 	if (external) {
-		// Reorder variable-size portion of keys and/or payload data (if necessary)
-		const auto sort_key_type = key_data->GetLayout().GetSortKeyType();
-		if (!SortKeyUtils::IsConstantSize(sort_key_type) || SortKeyUtils::HasPayload(sort_key_type)) {
-			Reorder(context, key_data, payload_data);
-		} else {
-			// This ensures keys are unpinned even if they are constant size and have no payload
-			key_data->Unpin();
-		}
+		ReorderForExternal();
 	}
 
 	finalized = true;
+}
+
+void SortedRun::MakeExternal() {
+	D_ASSERT(finalized);
+	if (!external) {
+		ReorderForExternal();
+	}
+}
+
+void SortedRun::ReorderForExternal() {
+	D_ASSERT(!external);
+	// Reorder variable-size portion of keys and/or payload data (if necessary)
+	const auto sort_key_type = key_data->GetLayout().GetSortKeyType();
+	if (!SortKeyUtils::IsConstantSize(sort_key_type) || SortKeyUtils::HasPayload(sort_key_type)) {
+		Reorder(context, key_data, payload_data);
+	} else {
+		// This ensures keys are unpinned even if they are constant size and have no payload
+		key_data->Unpin();
+	}
+	external = true;
 }
 
 static void DestroyData(TupleDataCollection &data, const idx_t tuple_idx_begin, const idx_t tuple_idx_end) {

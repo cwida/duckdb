@@ -19,10 +19,10 @@ INSERT INTO peers VALUES
 	(4, 2, 20, true),
 	(5, 3, 30, true)
 
-foreach windowmode "window" "combine" "separate"
+foreach windowmode 'window' 'combine' 'separate'
 
 statement ok
-PRAGMA debug_window_mode={windowmode}
+SET debug_window_mode={windowmode}
 
 # Reported FILTER and EXCLUDE CURRENT ROW interaction
 query IRR

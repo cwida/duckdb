@@ -13,6 +13,9 @@
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/optional.hpp"
 #include "duckdb/common/optional_idx.hpp"
+#include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/pair.hpp"
+#include "duckdb/common/vector.hpp"
 #include "duckdb/common/shared_ptr_ipp.hpp"
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/thread_annotation.hpp"
@@ -107,11 +110,20 @@ public:
 	idx_t GetCachedFileCount() const;
 
 	//! Get the blocks covering [location, location + nr_bytes), creating empty blocks for the missing bytes.
-	vector<shared_ptr<CacheBlock>> AcquireBlocks(CachedFile &cached_file, idx_t location, idx_t nr_bytes,
-	                                             idx_t max_block_size);
+	//! Within absorb_ranges ([begin, end) pairs), every smaller cached block is re-fetched with the gaps around it
+	//! when that saves a request; elsewhere only blocks below an eighth of max_block_size are
+	vector<shared_ptr<CacheBlock>>
+	AcquireBlocks(CachedFile &cached_file, idx_t location, idx_t nr_bytes, idx_t max_block_size,
+	              optional_ptr<const vector<pair<idx_t, idx_t>>> absorb_ranges = nullptr);
 	//! Drop all blocks of a file, e.g. because the file changed. Readers keep the blocks they hold.
 	void DropBlocks(CachedFile &cached_file);
 	idx_t GetContentGeneration(CachedFile &cached_file);
+	//! The number of cached blocks smaller than max_block_size that overlap [location, location + nr_bytes) and whose
+	//! data is still available (resident or spilled, not evicted)
+	static idx_t CountSmallAvailableBlocks(CachedFile &cached_file, idx_t location, idx_t nr_bytes,
+	                                       idx_t max_block_size);
+	//! Whether [location, location + nr_bytes) is fully covered by cached blocks whose data is still available
+	static bool IsRangeAvailable(CachedFile &cached_file, idx_t location, idx_t nr_bytes);
 
 	BufferManager &GetBufferManager() const;
 	//! Gets the shared cached file for the given path, creating it if not yet present.

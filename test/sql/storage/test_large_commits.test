@@ -8,11 +8,11 @@ load {TEST_DIR}/large_commits.db
 foreach compression <compression>
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 # set checkpoint threshold
 statement ok
-PRAGMA wal_autocheckpoint='10KB'
+SET wal_autocheckpoint='10KB'
 
 statement ok
 CREATE TABLE test(i INTEGER);

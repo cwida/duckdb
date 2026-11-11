@@ -14,7 +14,7 @@ the name "a" occurs multiple times
 statement error
 SELECT {'a': 1, 'a': 2}
 ----
-Duplicate named argument "a" in function call to "struct_pack"
+Duplicate named argument "a" in 'struct_pack'
 
 statement ok
 CREATE SEQUENCE seq_max START 1 MAXVALUE 2

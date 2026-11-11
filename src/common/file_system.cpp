@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/file_system.hpp"
 
 #include "duckdb/common/checksum.hpp"
@@ -103,8 +104,7 @@ FileSystem::~FileSystem() {
 }
 
 FileSystem &FileSystem::GetFileSystem(ClientContext &context) {
-	auto &client_data = ClientData::Get(context);
-	return *client_data.client_file_system;
+	return context.GetContext().GetFileSystem();
 }
 
 bool PathMatched(const string &path, const string &sub_path) {
@@ -747,6 +747,10 @@ void FileSystem::SetDisabledFileSystems(const vector<string> &names) {
 	throw NotImplementedException("%s: Can't disable file systems on a non-virtual file system", GetName());
 }
 
+vector<string> FileSystem::GetDisabledFileSystems() {
+	return vector<string>();
+}
+
 bool FileSystem::SubSystemIsDisabled(const string &name) {
 	throw NotImplementedException("%s: Non-virtual file system does not have subsystems", GetName());
 }
@@ -842,16 +846,23 @@ int64_t FileHandle::Read(void *buffer, idx_t nr_bytes) {
 	return file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes));
 }
 
+static optional_ptr<QueryProfiler> GetTrackingProfiler(bool track_io, const QueryContext &context) {
+	if (!track_io || !context.Valid()) {
+		return nullptr;
+	}
+	return context.GetContext()->TryGetQueryProfiler();
+}
+
 int64_t FileHandle::Read(QueryContext context, void *buffer, idx_t nr_bytes) {
-	const bool track = track_io && context.GetClientContext();
+	auto profiler = GetTrackingProfiler(track_io, context);
+	const bool track = profiler != nullptr;
 	const auto start = track ? TimePoint::Tick() : TimePoint();
 	// A sequential read can return fewer bytes than requested (e.g. at EOF), so track the bytes
 	// actually read rather than the requested amount.
 	auto bytes_read = file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes));
 	if (track) {
 		const auto elapsed_us = NumericCast<idx_t>(start.ElapsedMicros());
-		QueryProfiler::Get(*context.GetClientContext())
-		    .TrackBytesRead(UnsafeNumericCast<idx_t>(bytes_read), elapsed_us);
+		profiler->TrackBytesRead(UnsafeNumericCast<idx_t>(bytes_read), elapsed_us);
 	}
 
 	return bytes_read;
@@ -866,13 +877,13 @@ int64_t FileHandle::Write(void *buffer, idx_t nr_bytes) {
 }
 
 int64_t FileHandle::Write(QueryContext context, void *buffer, idx_t nr_bytes) {
-	const bool track = track_io && context.GetClientContext();
+	auto profiler = GetTrackingProfiler(track_io, context);
+	const bool track = profiler != nullptr;
 	const auto start = track ? TimePoint::Tick() : TimePoint();
 	auto bytes_written = file_system.Write(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes));
 	if (bytes_written > 0 && track) {
 		const auto elapsed_us = NumericCast<idx_t>(start.ElapsedMicros());
-		QueryProfiler::Get(*context.GetClientContext())
-		    .TrackBytesWritten(UnsafeNumericCast<idx_t>(bytes_written), elapsed_us);
+		profiler->TrackBytesWritten(UnsafeNumericCast<idx_t>(bytes_written), elapsed_us);
 	}
 
 	return bytes_written;
@@ -883,22 +894,24 @@ void FileHandle::Read(void *buffer, idx_t nr_bytes, idx_t location) {
 }
 
 void FileHandle::Read(QueryContext context, void *buffer, idx_t nr_bytes, idx_t location) {
-	const bool track = track_io && context.GetClientContext();
+	auto profiler = GetTrackingProfiler(track_io, context);
+	const bool track = profiler != nullptr;
 	const auto start = track ? TimePoint::Tick() : TimePoint();
 	file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes), location);
 	if (track) {
 		const auto elapsed_us = NumericCast<idx_t>(start.ElapsedMicros());
-		QueryProfiler::Get(*context.GetClientContext()).TrackBytesRead(nr_bytes, elapsed_us);
+		profiler->TrackBytesRead(nr_bytes, elapsed_us);
 	}
 }
 
 void FileHandle::Write(QueryContext context, void *buffer, idx_t nr_bytes, idx_t location) {
-	const bool track = track_io && context.GetClientContext();
+	auto profiler = GetTrackingProfiler(track_io, context);
+	const bool track = profiler != nullptr;
 	const auto start = track ? TimePoint::Tick() : TimePoint();
 	file_system.Write(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes), location);
 	if (track) {
 		const auto elapsed_us = NumericCast<idx_t>(start.ElapsedMicros());
-		QueryProfiler::Get(*context.GetClientContext()).TrackBytesWritten(nr_bytes, elapsed_us);
+		profiler->TrackBytesWritten(nr_bytes, elapsed_us);
 	}
 }
 
@@ -995,9 +1008,9 @@ void FileHandle::TryAddLogger(FileOpener &opener) {
 		return;
 	}
 
-	auto context = opener.TryGetClientContext();
-	if (context && Logger::Get(*context).ShouldLog(FileSystemLogType::NAME, FileSystemLogType::LEVEL)) {
-		logger = context->logger;
+	auto &context = opener.TryGetContext();
+	if (context.IsClient() && context.GetLogger().ShouldLog(FileSystemLogType::NAME, FileSystemLogType::LEVEL)) {
+		logger = context.GetLoggerPtr();
 		return;
 	}
 

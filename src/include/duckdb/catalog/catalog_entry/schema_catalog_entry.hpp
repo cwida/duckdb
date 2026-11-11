@@ -37,6 +37,14 @@ struct CreateCopyFunctionInfo;
 struct CreateTypeInfo;
 
 struct DropInfo;
+class EntryScanFilters;
+
+//! Parameters of a schema scan: the entry type, the per-entry callback and any filters pushed down on the entries.
+struct SchemaScanInfo {
+	CatalogType type;
+	const std::function<void(CatalogEntry &)> &callback;
+	optional_ptr<const EntryScanFilters> filter;
+};
 
 //! A schema in the catalog
 class SchemaCatalogEntry : public InCatalogEntry {
@@ -71,6 +79,9 @@ public:
 	                             const std::function<void(CatalogEntry &)> &callback);
 	//! Scan the specified catalog set, invoking the callback method for every committed entry
 	virtual void Scan(CatalogType type, const std::function<void(CatalogEntry &)> &callback) = 0;
+	//! Scan the entries of `info.type`, filtered by `info.filter`. An override may return a superset of the matches, so
+	//! callers that need exact results re-check them.
+	DUCKDB_API virtual void Scan(ClientContext &context, SchemaScanInfo &info);
 	//! Visit this schema and its descendants in depth-first, parent-before-child order.
 	DUCKDB_API void ScanSchemaTree(CatalogTransaction transaction,
 	                               const std::function<void(SchemaCatalogEntry &)> &callback);

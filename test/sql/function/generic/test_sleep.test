@@ -94,10 +94,10 @@ NULL
 require json
 
 statement ok
-PRAGMA enable_profiling = 'json'
+SET enable_profiling = 'json'
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/sleep_nested_profiling.json'
+SET profiling_output = '{TEST_DIR}/sleep_nested_profiling.json'
 
 statement ok
 SELECT sleep_ms(sleep_ms(50)) FROM range(1)
