@@ -129,9 +129,10 @@ bool CTEBindState::IsBound() const {
 void CTEBindState::Bind(CTEBinding &binding, Binder &referencing_binder) {
 	// we are lazily binding the CTE
 	// we need to bind it as if we were binding it during PrepareCTE
-	query_binder = Binder::CreateBinder(parent_binder.context, parent_binder);
-	// carry the reference site's recursion depth so that lazy CTE binds count against max_expression_depth
-	query_binder->InheritBinderDepth(referencing_binder);
+	// the reference site is passed as the recursion parent, not the lexical parent, so that lazy CTE binds
+	// count against max_expression_depth while the CTE body still resolves in the defining scope
+	query_binder =
+	    Binder::CreateBinder(parent_binder.context, parent_binder, BinderType::REGULAR_BINDER, referencing_binder);
 	query_binder->SetCanContainNulls(true);
 
 	// we clear any expression binders that were added in the mean-time, to ensure we are not binding to any newly added

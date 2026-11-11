@@ -247,8 +247,11 @@ class Binder : public enable_shared_from_this<Binder> {
 	friend class RecursiveDependentJoinPlanner;
 
 public:
+	//! Create a binder. recursion_parent, if given, is a binder whose native bind recursion this binder continues
+	//! without being its lexical parent - used when a lazily bound CTE is bound from a reference site
 	DUCKDB_API static shared_ptr<Binder> CreateBinder(ClientContext &context, optional_ptr<Binder> parent = nullptr,
-	                                                  BinderType binder_type = BinderType::REGULAR_BINDER);
+	                                                  BinderType binder_type = BinderType::REGULAR_BINDER,
+	                                                  optional_ptr<Binder> recursion_parent = nullptr);
 
 	//! The client context
 	ClientContext &context;
@@ -351,8 +354,6 @@ public:
 
 	//! Find all candidate common table expression by name; returns empty vector if none exists
 	optional_ptr<CTEBinding> GetCTEBinding(const BindingAlias &name);
-	//! Raise the native recursion depth to at least that of the given binder
-	void InheritBinderDepth(const Binder &other);
 
 	//! Add the view to the set of currently bound views - used for detecting recursive view definitions
 	void AddBoundView(ViewCatalogEntry &view);
@@ -765,7 +766,8 @@ private:
 	bool DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_ptr<LogicalOperator> &root);
 
 private:
-	Binder(ClientContext &context, shared_ptr<Binder> parent, BinderType binder_type);
+	Binder(ClientContext &context, shared_ptr<Binder> parent, BinderType binder_type,
+	       optional_ptr<Binder> recursion_parent);
 };
 
 } // namespace duckdb
