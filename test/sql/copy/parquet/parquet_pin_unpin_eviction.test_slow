@@ -87,7 +87,7 @@ FROM (
     SELECT count(*) AS cnt, sum(id) AS id_sum, sum(length(high_card)) AS str_len_sum,
            min(high_card) AS str_min, max(high_card) AS str_max, sum(val) AS val_sum,
            sum(length(low_card)) AS lc_len_sum, min(low_card) AS lc_min, max(low_card) AS lc_max
-    FROM '{TEST_DIR}/${file}.parquet'
+    FROM '{TEST_DIR}/{file}.parquet'
 ) AS a, expected AS e;
 ----
 true
@@ -96,6 +96,3 @@ endloop
 
 statement ok
 SET memory_limit = '-1';
-
-statement ok
-SET temp_directory = '';
