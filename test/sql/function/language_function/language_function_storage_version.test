@@ -204,6 +204,13 @@ CREATE FUNCTION upm.main.f(x INTEGER) LANGUAGE otherlang AS 'two';
 statement ok
 CREATE OR REPLACE FUNCTION upm.main.f(x INTEGER) LANGUAGE otherlang AS 'three';
 
+# a member drop record replays as well
+statement ok
+CREATE FUNCTION upm.main.f(x DATE) LANGUAGE otherlang AS 'dropped';
+
+statement ok
+DROP FUNCTION upm.main.f(DATE);
+
 statement ok
 DETACH upm;
 
@@ -216,8 +223,19 @@ SELECT parameter_types, macro_definition FROM duckdb_functions() WHERE database_
 [INTEGER]	three
 []	one
 
-# a new member alter on the reopened database is still gated on its storage version
+# a new member on the reopened database is rejected by the CREATE binder's storage check
 statement error
 CREATE FUNCTION upm.main.f(x VARCHAR) LANGUAGE otherlang AS 'four';
 ----
 <REGEX>:.*only supported for storage versions v2\.1\.0 and higher.*
+
+# a member drop at statement time reaches the overload alter gate, which still applies after the replay
+statement error
+DROP FUNCTION upm.main.f(INTEGER);
+----
+<REGEX>:.*Dropping a single overload is only supported for storage versions v2\.1\.0 and higher.*
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE database_name = 'upm' AND function_name = 'f';
+----
+2
