@@ -2,8 +2,7 @@
 
 namespace duckdb {
 
-HighlightTokenizerBehavior::HighlightTokenizerBehavior(const string &sql, vector<MatcherToken> &tokens)
-    : TokenizerBehavior(sql, tokens) {
+HighlightTokenizerBehavior::HighlightTokenizerBehavior(const string &sql) : TokenizerBehavior(sql) {
 }
 
 void HighlightTokenizerBehavior::PushToken(idx_t start, idx_t end, TokenType type, bool unterminated) {
