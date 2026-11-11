@@ -1,0 +1,124 @@
+# name: test/sql/index/art/scan/test_compressed_join_key_index_scan.test
+# description: A join filter pushed through a compressed materialization cast keeps the ART index scan
+# group: [scan]
+
+# small build side: compressed materialization compresses the join keys in debug builds only
+statement ok
+CREATE TABLE t AS SELECT i::BIGINT AS k FROM range(100000) r(i);
+
+statement ok
+ALTER TABLE t ADD PRIMARY KEY (k);
+
+statement ok
+CREATE TABLE keys AS SELECT (i * 997 % 30000)::BIGINT AS g FROM range(20) r(i);
+
+query II
+EXPLAIN ANALYZE SELECT k FROM t WHERE k IN (SELECT g FROM keys);
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query II
+EXPLAIN ANALYZE SELECT k FROM t WHERE k IN (SELECT g FROM keys);
+----
+analyzed_plan	<!REGEX>:.*TRY_CAST.*
+
+query II
+SELECT count(*), sum(k) FROM t WHERE k IN (SELECT g FROM keys);
+----
+20	189430
+
+# a build side estimated above the compression threshold (1.2M rows through an unknown-selectivity filter)
+# but holding only a few keys: the keys are compressed in release builds as well
+statement ok
+CREATE TABLE probe AS SELECT i::BIGINT AS k FROM range(2000000) t(i);
+
+statement ok
+ALTER TABLE probe ADD PRIMARY KEY (k);
+
+statement ok
+CREATE TABLE build AS SELECT (i % 30000)::BIGINT AS g, i AS id FROM range(6000000) t(i);
+
+statement ok
+SET explain_output = 'physical_only';
+
+# compressed materialization still narrows both join keys
+query II
+EXPLAIN SELECT k FROM probe WHERE k IN (SELECT g FROM build WHERE hash(id) % 1000000 = 0);
+----
+physical_plan	<REGEX>:.*SEMI.*CAST\(#0 AS SMALLINT\).*CAST\(#0 AS SMALLINT\).*
+
+# the IN filter lands on the raw key, without the cast-error retention of a user cast
+query II
+EXPLAIN ANALYZE SELECT k FROM probe WHERE k IN (SELECT g FROM build WHERE hash(id) % 1000000 = 0);
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*optional: \(k IN \(.*
+
+query II
+EXPLAIN ANALYZE SELECT k FROM probe WHERE k IN (SELECT g FROM build WHERE hash(id) % 1000000 = 0);
+----
+analyzed_plan	<!REGEX>:.*TRY_CAST\(k AS SMALLINT\) IS NULL.*
+
+query I
+SELECT (SELECT count(*) FROM probe WHERE k IN (SELECT g FROM build WHERE hash(id) % 1000000 = 0)) =
+       (SELECT count(DISTINCT g) FROM build WHERE hash(id) % 1000000 = 0);
+----
+true
+
+query I
+SELECT (SELECT sum(k) FROM probe WHERE k IN (SELECT g FROM build WHERE hash(id) % 1000000 = 0)) =
+       (SELECT sum(DISTINCT g) FROM build WHERE hash(id) % 1000000 = 0);
+----
+true
+
+# a user cast that can fail keeps raising its error: its rows are not filtered below the cast
+statement error
+SELECT count(*) FROM probe WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM build WHERE hash(id) % 1000000 = 0);
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+# a user TRY_CAST keeps its reconstructed filter: it never errors and only fitting keys match
+query I
+SELECT count(*) = (SELECT count(DISTINCT g) FROM build WHERE hash(id) % 1000000 = 0)
+FROM probe WHERE TRY_CAST(k AS SMALLINT) IN (SELECT g::SMALLINT FROM build WHERE hash(id) % 1000000 = 0);
+----
+true
+
+# a user cast whose input fits the target type: the IN filter lands on the raw key as well
+statement ok
+CREATE TABLE fits AS SELECT i::BIGINT AS k FROM range(30000) r(i);
+
+statement ok
+ALTER TABLE fits ADD PRIMARY KEY (k);
+
+query II
+EXPLAIN ANALYZE SELECT k FROM fits WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*optional: \(k IN \(.*
+
+query II
+SELECT count(*), sum(k) FROM fits WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+20	189430
+
+# once a key outside the target type is visible, the user cast raises again
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO fits VALUES (40000)
+
+statement error
+SELECT count(*) FROM fits WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+statement ok
+ROLLBACK
+
+statement ok
+INSERT INTO fits VALUES (40000)
+
+statement error
+SELECT count(*) FROM fits WHERE k::SMALLINT IN (SELECT g::SMALLINT FROM keys);
+----
+<REGEX>:Conversion Error:.*out of range.*
