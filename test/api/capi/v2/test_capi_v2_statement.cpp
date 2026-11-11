@@ -826,6 +826,39 @@ TEST_CASE("V2: sql_statement parameter names are statement_bind's, in its order"
 	}
 }
 
+TEST_CASE("V2: statement_bind describes a statement that only the planning after the bind refuses",
+          "[capi_v2][sql_statement]") {
+	EnvFixture fx;
+	auto run = [&](std::string_view sql) {
+		auto stmt = StmtParseOne(fx.conn, sql);
+		duckdb_v2_result_handle r = nullptr;
+		auto rc = duckdb_v2_statement_execute(fx.conn, stmt, nullptr, nullptr, nullptr, 0, &r, nullptr);
+		duckdb_v2_result_destroy(&r);
+		duckdb_v2_sql_statement_destroy(&stmt);
+		return rc;
+	};
+	ExecSQL(fx.conn, "CREATE TABLE t (a INTEGER, b INTEGER)");
+	ExecSQL(fx.conn, "CREATE TABLE u (a INTEGER, b VARCHAR)");
+	std::string_view refused = "SELECT * FROM t WHERE EXISTS (SELECT * FROM u POSITIONAL JOIN (SELECT t.a) s)";
+
+	// Decorrelation refuses the subquery after the bind, so bind describes the statement and execute refuses it.
+	auto stmt = StmtParseOne(fx.conn, refused);
+	duckdb_v2_schema_handle out = nullptr;
+	REQUIRE(duckdb_v2_statement_bind(fx.conn, stmt, &out, nullptr, nullptr) == DUCKDB_V2_ERROR_NONE);
+	idx_t count = 0;
+	REQUIRE(duckdb_v2_schema_get_count(out, &count, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(count == 2);
+	duckdb_v2_schema_destroy(&out);
+	duckdb_v2_sql_statement_destroy(&stmt);
+	REQUIRE(run(refused) == DUCKDB_V2_ERROR_QUERY_BINDER);
+
+	// A PREPARE plans its inner statement in full when it is bound, so bind refuses it.
+	auto prepare = StmtParseOne(fx.conn, "PREPARE p AS " + std::string(refused));
+	REQUIRE(duckdb_v2_statement_bind(fx.conn, prepare, &out, nullptr, nullptr) == DUCKDB_V2_ERROR_QUERY_BINDER);
+	REQUIRE(out == nullptr);
+	duckdb_v2_sql_statement_destroy(&prepare);
+}
+
 TEST_CASE("V2: sql_statement parameter names answer before the catalog can", "[capi_v2][sql_statement]") {
 	EnvFixture fx;
 	auto statements = StmtParseAll(fx.conn, "CREATE TABLE t (i INTEGER); INSERT INTO t VALUES ($v)");

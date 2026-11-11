@@ -8,6 +8,7 @@
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/planner_extension.hpp"
 #include <atomic>
 
@@ -503,4 +504,82 @@ TEST_CASE("BindStatement runs the post bind hooks once, and the bind_statement v
 	before = post_bind_count.load();
 	REQUIRE_NO_FAIL(con.Query("SELECT 42"));
 	REQUIRE(post_bind_count.load() - before == 3);
+}
+
+enum class DisagreeingHook { RENAME, RETYPE, REBIND, FAIL_BIND_ONLY, FAIL_WITH_TWO_TYPES };
+
+static DisagreeingHook disagreeing_hook = DisagreeingHook::RENAME;
+static std::atomic<idx_t> disagreeing_hook_calls {0};
+
+// Under the bind_statement verification the full planning binds first and the bind only planning second.
+static void DisagreeingPostBind(PlannerExtensionInput &input, BoundStatement &statement) {
+	auto call = ++disagreeing_hook_calls;
+	switch (disagreeing_hook) {
+	case DisagreeingHook::RENAME:
+		if (call == 2) {
+			statement.names[0] = Identifier("renamed");
+		}
+		break;
+	case DisagreeingHook::RETYPE:
+		if (call == 2) {
+			statement.types[0] = LogicalType::VARCHAR;
+		}
+		break;
+	case DisagreeingHook::REBIND:
+		if (call == 2) {
+			input.binder.GetStatementProperties().always_require_rebind = true;
+		}
+		break;
+	case DisagreeingHook::FAIL_BIND_ONLY:
+		if (call == 2) {
+			throw BinderException("refused in the second planning");
+		}
+		break;
+	case DisagreeingHook::FAIL_WITH_TWO_TYPES:
+		if (call == 1) {
+			throw BinderException("refused in the first planning");
+		}
+		if (call == 2) {
+			throw InvalidInputException("refused in the second planning");
+		}
+		break;
+	}
+}
+
+TEST_CASE("The bind_statement verification reports two plannings that disagree", "[api][bind_statement]") {
+#ifndef DUCKDB_CRASH_ON_ASSERT
+	// An InternalException aborts the process when DUCKDB_CRASH_ON_ASSERT is set.
+	DBConfig config;
+	PlannerExtension extension;
+	extension.post_bind_function = DisagreeingPostBind;
+	PlannerExtension::Register(config, extension);
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET debug_verify_statement='bind_statement'"));
+
+	auto run = [&](DisagreeingHook hook) {
+		disagreeing_hook = hook;
+		disagreeing_hook_calls = 0;
+		return con.Query("SELECT 42 AS x");
+	};
+	auto require_internal = [&](unique_ptr<QueryResult> result, const string &message) {
+		REQUIRE(result->HasError());
+		REQUIRE(result->GetErrorType() == ExceptionType::INTERNAL);
+		REQUIRE(StringUtil::Contains(result->GetError(), message));
+	};
+	require_internal(run(DisagreeingHook::RENAME), "Bind only planning reports different names than full planning");
+	require_internal(run(DisagreeingHook::RETYPE), "Bind only planning reports different types than full planning");
+	require_internal(run(DisagreeingHook::REBIND),
+	                 "Bind only planning reports different always require rebind than full planning");
+	require_internal(run(DisagreeingHook::FAIL_BIND_ONLY),
+	                 "Bind only planning failed where full planning succeeded: Binder Error: refused in the second "
+	                 "planning");
+	require_internal(run(DisagreeingHook::FAIL_WITH_TWO_TYPES), "Bind only planning failed with");
+
+	// Without the verification the statement plans once, so the hook changes nothing that is compared.
+	REQUIRE_NO_FAIL(con.Query("SET debug_verify_statement='none'"));
+	unique_ptr<QueryResult> result = run(DisagreeingHook::RENAME);
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	REQUIRE(disagreeing_hook_calls.load() == 1);
+#endif
 }

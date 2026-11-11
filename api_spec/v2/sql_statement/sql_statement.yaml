@@ -217,7 +217,8 @@ functions:
       Bind errors (binder, catalog, preprocessing) surface here; errors of the
       planning after the bind (the plan depth limit, a correlated subquery or a
       trigger body that decorrelation refuses) surface when the statement is
-      executed. A
+      executed, except in a PREPARE statement, which plans the statement it
+      prepares in full and so reports them here. A
       statement that expands into a group (a dynamic PIVOT, or
       statement-expanding DDL such as ALTER ADD COLUMN with a non-constant
       DEFAULT) has a schema known only at execution, and is reported with

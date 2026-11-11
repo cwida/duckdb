@@ -92,38 +92,7 @@ static string SignatureDifference(const StatementSignature &full, const Statemen
 			return "parameter " + parameter.identifier.GetIdentifierName();
 		}
 	}
-	auto &lhs = full.properties;
-	auto &rhs = bind_only.properties;
-	if (lhs.read_databases != rhs.read_databases) {
-		return "read databases";
-	}
-	if (lhs.modified_databases.size() != rhs.modified_databases.size()) {
-		return "modified databases";
-	}
-	for (auto &modified : lhs.modified_databases) {
-		auto entry = rhs.modified_databases.find(modified.first);
-		if (entry == rhs.modified_databases.end() || entry->second.identity != modified.second.identity ||
-		    !entry->second.modifications.Contains(modified.second.modifications) ||
-		    !modified.second.modifications.Contains(entry->second.modifications)) {
-			return "modified databases";
-		}
-	}
-	if (lhs.requires_valid_transaction != rhs.requires_valid_transaction) {
-		return "requires valid transaction";
-	}
-	if (lhs.bound_all_parameters != rhs.bound_all_parameters) {
-		return "bound all parameters";
-	}
-	if (lhs.return_type != rhs.return_type) {
-		return "return type";
-	}
-	if (lhs.parameter_count != rhs.parameter_count) {
-		return "parameter count";
-	}
-	if (lhs.always_require_rebind != rhs.always_require_rebind) {
-		return "always require rebind";
-	}
-	return string();
+	return full.properties.Difference(bind_only.properties);
 }
 
 //! Swap in a statement produced by verification, carrying over the source text of the statement the user

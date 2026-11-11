@@ -178,6 +178,24 @@ static bool VerifyPlannedExpressions(const LogicalOperator &plan) {
 	}
 	return true;
 }
+//! What the signature of a planned statement reads from its bind
+struct BindSignatureState {
+	BindSignatureState(Binder &binder, BoundParameterMap &parameters)
+	    : properties(binder.GetStatementProperties()), rebind(parameters.rebind) {
+		for (auto &entry : parameters.GetParameters()) {
+			parameter_types.emplace(entry.first, entry.second->return_type);
+		}
+	}
+
+	bool operator==(const BindSignatureState &other) const {
+		return properties.Difference(other.properties).empty() && parameter_types == other.parameter_types &&
+		       rebind == other.rebind;
+	}
+
+	StatementProperties properties;
+	identifier_map_t<LogicalType> parameter_types;
+	bool rebind;
+};
 #endif
 
 static void RunPreBindExtensions(ClientContext &context, Binder &binder, SQLStatement &statement) {
@@ -249,6 +267,10 @@ void Planner::CreatePlan(SQLStatement &statement) {
 		}
 	}
 	if (this->plan && mode == PlanningMode::FULL) {
+#ifdef D_ASSERT_IS_ENABLED
+		// The bind only mode skips these passes, so they must not change what the signature reads
+		BindSignatureState bind_state(*binder, bound_parameters);
+#endif
 		auto max_tree_depth = Settings::Get<MaxExpressionDepthSetting>(context);
 		CheckTreeDepth(*plan, max_tree_depth);
 
@@ -261,6 +283,9 @@ void Planner::CreatePlan(SQLStatement &statement) {
 		D_ASSERT(!ContainsDependentJoin(*this->plan));
 		D_ASSERT(VerifyPlannedExpressions(*this->plan));
 		D_ASSERT(VerifyCanonicalComparisonJoins(*this->plan));
+#ifdef D_ASSERT_IS_ENABLED
+		D_ASSERT(BindSignatureState(*binder, bound_parameters) == bind_state);
+#endif
 	}
 	this->properties = binder->GetStatementProperties();
 	this->properties.parameter_count = parameter_count;

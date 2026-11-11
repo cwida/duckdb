@@ -16,7 +16,7 @@
       ]
     },
     {
-      "reason": "Binding a table function whose argument calls nextval advances the sequence, which the read-only planning transaction cannot commit; BindStatement and Prepare fail the same way",
+      "reason": "Binding a table function whose argument calls nextval advances the sequence once per planning: in autocommit the read-only planning transaction cannot commit that (BindStatement fails the same way, and Prepare also invalidates the database), and inside a transaction the sequence moves three times instead of once",
       "paths": [
         "test/issues/general/test_26175_bind_once.test",
         "test/sql/copy/return_column_types.test",
