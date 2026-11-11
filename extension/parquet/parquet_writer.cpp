@@ -583,15 +583,6 @@ ParquetWriter::ParquetWriter(ClientContext &context, FileSystem &fs, ParquetWrit
 		}
 	}
 
-	bloom_filter_fallback_memory =
-	    make_shared_ptr<ParquetBloomFilterMemory>(options.bloom_filter_fallback_max_bytes, [this]() {
-		    auto batch_guard = writer->StartBatch();
-		    {
-			    lock_guard<mutex> glock(lock);
-			    FlushBloomFilters();
-		    }
-		    batch_guard.Finish();
-	    });
 	InitializeColumnWriters();
 }
 
@@ -614,8 +605,9 @@ void ParquetWriter::InitializeColumnWriters() {
 		    context, *this, path_in_schema, types[i], Identifier(unique_names[i]), allow_geometry, &options.field_ids,
 		    &options.shredding_types, 0, 1, can_have_nulls));
 		auto &column_writer = *column_writers.back();
-		column_writer.bloom_filter_fallback =
-		    options.enable_bloom_filters && !options.encryption_config && column_writer.SupportsBloomFilterFallback();
+		column_writer.bloom_filter_fallback = options.enable_bloom_filters && !options.encryption_config &&
+		                                      options.bloom_filter_fallback_size_threshold > 0 &&
+		                                      column_writer.SupportsBloomFilterFallback();
 	}
 }
 
@@ -777,6 +769,7 @@ void ParquetWriter::PrepareRowGroup(ColumnDataCollection &raw_buffer, PreparedRo
 	}
 
 	auto &states = result.states;
+	result.fallback_filter_bytes_remaining = options.bloom_filter_fallback_size_threshold;
 	// iterate over each of the columns of the chunk collection and write them
 	D_ASSERT(buffer.ColumnCount() == column_writers.size());
 	for (idx_t col_idx = 0; col_idx < buffer.ColumnCount(); col_idx += COLUMNS_PER_PASS) {
@@ -788,6 +781,7 @@ void ParquetWriter::PrepareRowGroup(ColumnDataCollection &raw_buffer, PreparedRo
 			column_ids.emplace_back(col_idx + i);
 			col_writers.emplace_back(*column_writers[column_ids.back()]);
 			write_states.emplace_back(col_writers.back().get().InitializeWriteState(row_group));
+			write_states.back()->fallback_filter_bytes_remaining = &result.fallback_filter_bytes_remaining;
 		}
 
 		for (auto &chunk : buffer.Chunks(column_ids)) {
@@ -924,6 +918,9 @@ void ParquetWriter::FlushRowGroup(PreparedRowGroup &prepared) {
 		// append the row group to the file metadata
 		file_meta_data.row_groups.push_back(row_group);
 		file_meta_data.num_rows += row_group.num_rows;
+		if (buffered_fallback_filter_bytes > options.bloom_filter_fallback_size_threshold) {
+			FlushBloomFilters();
+		}
 	}
 	batch_guard.Finish();
 }
@@ -1499,14 +1496,13 @@ void ParquetWriter::FlushBloomFilters() {
 		column_chunk.meta_data.bloom_filter_offset = NumericCast<int64_t>(writer->GetTotalWritten());
 
 		auto bloom_filter_header_size = Write(filter_header);
-		// the async writer accounts for the bytes it queues, so the filter no longer needs the budget
-		bloom_filter_entry.bloom_filter->ReleaseReservation();
 		WriteData(make_uniq<ParquetBloomFilterWriteBuffer>(std::move(bloom_filter_entry.bloom_filter)));
 
 		column_chunk.meta_data.__isset.bloom_filter_length = true;
 		column_chunk.meta_data.bloom_filter_length = NumericCast<int32_t>(bloom_filter_header_size + bloom_filter_size);
 	}
 	bloom_filters.clear();
+	buffered_fallback_filter_bytes = 0;
 }
 
 void ParquetWriter::Finalize() {
@@ -1597,9 +1593,12 @@ void ParquetWriter::BufferPageIndex(idx_t col_idx, ParquetPageIndexEntry page_in
 	page_indexes.push_back(std::move(page_index));
 }
 
-void ParquetWriter::BufferBloomFilter(idx_t col_idx, unique_ptr<ParquetBloomFilter> bloom_filter) {
+void ParquetWriter::BufferBloomFilter(idx_t col_idx, unique_ptr<ParquetBloomFilter> bloom_filter, bool fallback) {
 	if (options.encryption_config) {
 		return;
+	}
+	if (fallback) {
+		buffered_fallback_filter_bytes += bloom_filter->Get()->len;
 	}
 	ParquetBloomFilterEntry new_entry;
 	new_entry.bloom_filter = std::move(bloom_filter);

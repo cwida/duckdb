@@ -89,6 +89,7 @@ struct PreparedRowGroup {
 	duckdb_parquet::RowGroup row_group;
 	vector<unique_ptr<ColumnWriterState>> states;
 	PreparedParquetLayout layout;
+	idx_t fallback_filter_bytes_remaining = 0;
 };
 
 struct ParquetBloomFilterEntry {
@@ -199,8 +200,8 @@ struct ParquetWriterOptions {
 	bool write_page_index;
 	//! Maximum ratio of false-positives to allow in the written bloom filter
 	double bloom_filter_false_positive_ratio;
-	//! Per-file budget for fallback filters, including concurrent construction and scratch space
-	idx_t bloom_filter_fallback_max_bytes = ParquetBloomFilterMemory::DEFAULT_LIMIT;
+	//! Per-row-group budget for building fallback filters, and the buffered size at which they are flushed
+	idx_t bloom_filter_fallback_size_threshold = ParquetBloomFilter::DEFAULT_FALLBACK_SIZE_THRESHOLD;
 	//! For the given 'codec', the compression level to use
 	int64_t compression_level;
 	//! Parquet version to use, higher versions enable more advanced compression modes
@@ -274,9 +275,6 @@ public:
 	double BloomFilterFalsePositiveRatio() const {
 		return options.bloom_filter_false_positive_ratio;
 	}
-	shared_ptr<ParquetBloomFilterMemory> BloomFilterFallbackMemory() const {
-		return bloom_filter_fallback_memory;
-	}
 	int64_t CompressionLevel() const {
 		return options.compression_level;
 	}
@@ -312,7 +310,7 @@ public:
 	                              optional_ptr<duckdb_parquet::Type::type> type = nullptr,
 	                              bool write_timestamp_as_int96 = false);
 
-	void BufferBloomFilter(idx_t col_idx, unique_ptr<ParquetBloomFilter> bloom_filter);
+	void BufferBloomFilter(idx_t col_idx, unique_ptr<ParquetBloomFilter> bloom_filter, bool fallback);
 	void BufferPageIndex(idx_t col_idx, ParquetPageIndexEntry page_index);
 	//! The arena that backs the Thrift metadata of the file, including the page indexes
 	ArenaAllocator &GetMetadataArena() {
@@ -356,7 +354,7 @@ private:
 
 	unique_ptr<GeoParquetFileMetadata> geoparquet_data;
 	vector<ParquetBloomFilterEntry> bloom_filters;
-	shared_ptr<ParquetBloomFilterMemory> bloom_filter_fallback_memory;
+	idx_t buffered_fallback_filter_bytes = 0;
 	vector<ParquetPageIndexEntry> page_indexes;
 
 	optional_ptr<CopyFunctionFileStatistics> written_stats;
