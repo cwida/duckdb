@@ -83,7 +83,7 @@ void RemoveIndexInputSlot(unique_ptr<Expression> &expr) {
 	                                                [&](unique_ptr<Expression> &child) {
 		                                                auto &ref = child->Cast<BoundReferenceExpression>();
 		                                                D_ASSERT(ref.Index() > 0);
-		                                                ref.IndexMutable()--;
+		                                                child = ref.WithIndex(ref.Index() - 1);
 	                                                });
 }
 

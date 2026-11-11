@@ -94,7 +94,7 @@ static void NormalizeLegacyExpression(unique_ptr<Expression> &expr) {
 		    owned_expr = make_uniq<BoundReferenceExpression>(col_ref.GetAlias(), col_ref.GetReturnType(), 0ULL);
 	    });
 	ExpressionIterator::VisitExpressionMutable<BoundReferenceExpression>(
-	    expr, [](BoundReferenceExpression &ref, unique_ptr<Expression> &owned_expr) { ref.IndexMutable() = 0; });
+	    expr, [](BoundReferenceExpression &ref, unique_ptr<Expression> &owned_expr) { owned_expr = ref.WithIndex(0); });
 }
 
 static unique_ptr<TableFilter> TrySerializeComparisonToLegacyFilter(const BoundFunctionExpression &comparison) {

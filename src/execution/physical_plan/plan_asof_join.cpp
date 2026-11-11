@@ -109,16 +109,14 @@ optional_ptr<PhysicalOperator> PhysicalPlanGenerator::PlanAsOfLoopJoin(LogicalCo
 		const auto lhs_width = probe_types.size();
 		const auto rhs_width = build_types.size();
 
-		ExpressionIterator::EnumerateExpression(predicate, [&](Expression &child) {
-			if (child.GetExpressionClass() == ExpressionClass::BOUND_REF) {
-				auto &ref = child.Cast<BoundReferenceExpression>();
-				if (ref.Index() < lhs_width) {
-					ref.IndexMutable() = ref.Index() + rhs_width;
-				} else {
-					ref.IndexMutable() = ref.Index() - lhs_width;
-				}
-			}
-		});
+		ExpressionIterator::VisitExpressionMutable<BoundReferenceExpression>(
+		    predicate, [&](BoundReferenceExpression &ref, unique_ptr<Expression> &expr) {
+			    if (ref.Index() < lhs_width) {
+				    expr = ref.WithIndex(ref.Index() + rhs_width);
+			    } else {
+				    expr = ref.WithIndex(ref.Index() - lhs_width);
+			    }
+		    });
 
 		join_op.conditions.emplace_back(std::move(predicate));
 	}
