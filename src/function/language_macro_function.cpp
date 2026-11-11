@@ -70,9 +70,10 @@ void LanguageFunctionCreateInfo::VerifyMemberState() const {
 			signature_changed = state.parameter_type_identities[i] != SerializedTypeIdentity(member.types[i]);
 		}
 		if (signature_changed) {
-			throw InternalException("The language binder for \"%s\" changed a resolved signature of %s() during "
-			                        "validation, which is not allowed",
-			                        member.Cast<LanguageMacroFunction>().language, GetFunctionName());
+			// an extension bug, not a broken database: fail the CREATE without invalidating the instance
+			throw InvalidInputException("The language binder for \"%s\" changed a resolved signature of %s() "
+			                            "during validation, which is not allowed",
+			                            member.Cast<LanguageMacroFunction>().language, GetFunctionName());
 		}
 	}
 }

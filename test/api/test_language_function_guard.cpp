@@ -377,9 +377,6 @@ TEST_CASE("Metadata on an undeclared RETURNS type is rejected at the catalog bou
 	REQUIRE_THROWS(schema.CreateFunction(data, direct_info));
 }
 
-// the guard raises InternalException, which aborts the process when DUCKDB_CRASH_ON_ASSERT is set
-#ifndef DUCKDB_CRASH_ON_ASSERT
-
 //! Build a type the way only the raw C++ constructor can: a parameterless (INVALID) info carrying
 //! extension metadata, which LogicalType normalizes to the serializable GENERIC representation
 static LogicalType RawConstructedType(LogicalTypeId id, int32_t modifier) {
@@ -412,6 +409,11 @@ TEST_CASE("A raw-constructed type representation stays visible to the identity f
 	auto result = con.Query(std::move(statement));
 	REQUIRE_FAIL(result);
 	REQUIRE(StringUtil::Contains(result->GetError(), "changed a resolved signature"));
+	// a misbehaving binder fails its CREATE only, the database stays usable
+	REQUIRE(result->GetErrorType() == ExceptionType::INVALID_INPUT);
+	REQUIRE_NO_FAIL(con.Query("SELECT 42"));
+	Connection other(db);
+	REQUIRE_NO_FAIL(other.Query("SELECT 42"));
 }
 
 TEST_CASE("An ANY target type mutation through a returned type copy is rejected", "[api]") {
@@ -570,5 +572,3 @@ TEST_CASE("A nested type metadata mutation through a returned type copy is rejec
 	REQUIRE_FAIL(result);
 	REQUIRE(StringUtil::Contains(result->GetError(), "changed a resolved signature"));
 }
-
-#endif
