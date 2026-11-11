@@ -795,17 +795,17 @@ static data_ptr_t LoadPointer(const const_data_ptr_t &source) {
 	return cast_uint64_to_pointer(Load<uint64_t>(source));
 }
 
-//! Load an entry that another thread may be inserting into at the same time. On 32-bit targets an 8-byte atomic
-//! load is not necessarily a single instruction (the MSVC STL implements it with __iso_volatile_load64, which
-//! clang-cl compiles to two 32-bit loads on x86), so a plain load can observe a half-written entry. A compare-exchange
-//! reads the entry atomically everywhere and leaves it unchanged.
+//! Load an entry that another thread may be inserting into at the same time. The MSVC STL implements the 8-byte
+//! atomic load on 32-bit x86 with __iso_volatile_load64, which clang-cl lowers to two 32-bit moves, so a plain load
+//! there can observe a half-written entry. The compare-exchange is one read-modify-write that preserves the value.
 static inline ht_entry_t LoadEntryConcurrent(atomic<ht_entry_t> &entry) {
-	if (sizeof(data_ptr_t) >= sizeof(ht_entry_t)) {
-		return entry.load(std::memory_order_acquire);
-	}
+#if defined(_MSC_VER) && defined(_M_IX86)
 	ht_entry_t expected;
 	entry.compare_exchange_strong(expected, expected, std::memory_order_acquire, std::memory_order_acquire);
 	return expected;
+#else
+	return entry.load(std::memory_order_acquire);
+#endif
 }
 
 //! If we consider to insert into an entry we expect to be empty, if it was filled in the meantime the insert will not
