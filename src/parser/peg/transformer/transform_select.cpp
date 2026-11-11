@@ -137,6 +137,8 @@ unique_ptr<SelectStatement> PEGTransformerFactory::TransformSelectSetOpChain(
 		auto setop_result = std::move(tail.first);
 		auto right_select = std::move(tail.second);
 		if (chain_node) {
+			// modifiers and CTEs are attached by SelectStatementInternal, after the chain has been built
+			D_ASSERT(select->node->modifiers.empty() && select->node->cte_map.map.empty());
 			auto &existing = select->node->Cast<SetOperationNode>();
 			if (existing.setop_type == setop_result->setop_type && existing.setop_all == setop_result->setop_all &&
 			    (existing.setop_type == SetOperationType::UNION ||
