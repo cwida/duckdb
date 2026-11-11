@@ -2025,7 +2025,7 @@ TEST_CASE("Join-order UNION grouping reuses the original source snapshot", "[opt
 	}
 }
 
-TEST_CASE("UNION grouping estimates ignore cached arm cardinalities", "[optimizer][relation_statistics]") {
+TEST_CASE("UNION grouping estimates ignore operator arm cardinalities", "[optimizer][relation_statistics]") {
 	DuckDB db;
 	Connection connection(db);
 	auto input = make_uniq<LogicalSetOperation>(TableIndex(30), 1, make_uniq<LogicalDummyScan>(TableIndex(10)),
@@ -2038,9 +2038,9 @@ TEST_CASE("UNION grouping estimates ignore cached arm cardinalities", "[optimize
 	aggregate.children.push_back(std::move(input));
 
 	auto bindings = aggregate.GetColumnBindings();
-	for (auto cached_cardinality : {idx_t(0), idx_t(1000)}) {
+	for (auto operator_cardinality : {idx_t(0), idx_t(1000)}) {
 		for (auto &arm : aggregate.children[0]->children) {
-			arm->SetEstimatedCardinality(cached_cardinality);
+			arm->SetEstimatedCardinality(operator_cardinality);
 		}
 		RelationStatsExtractor extractor(*connection.context);
 		auto stats = extractor.Extract(aggregate);
@@ -2050,7 +2050,7 @@ TEST_CASE("UNION grouping estimates ignore cached arm cardinalities", "[optimize
 		REQUIRE(extractor.ExtractedOperatorCount() == 4);
 		for (auto &arm : aggregate.children[0]->children) {
 			REQUIRE(arm->has_estimated_cardinality);
-			REQUIRE(arm->estimated_cardinality == cached_cardinality);
+			REQUIRE(arm->estimated_cardinality == operator_cardinality);
 		}
 		REQUIRE_FALSE(aggregate.has_estimated_cardinality);
 		REQUIRE_FALSE(aggregate.children[0]->has_estimated_cardinality);

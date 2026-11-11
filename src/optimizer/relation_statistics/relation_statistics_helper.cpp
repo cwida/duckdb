@@ -347,7 +347,7 @@ struct UnionGroupEstimate {
 };
 
 static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> groups, idx_t maximum,
-                                        RelationStatsExtractor &extractor, bool use_cached_cardinality) {
+                                        RelationStatsExtractor &extractor, bool use_operator_cardinality) {
 	static constexpr idx_t MAX_GROUPINGS_PER_OPERATOR = 64;
 	reference_map_t<LogicalOperator, map<vector<idx_t>, UnionGroupEstimate>> estimates;
 	vector<UnionGroupInput> pending;
@@ -422,8 +422,8 @@ static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> gr
 				if (!stats) {
 					return {};
 				}
-				auto cardinality = use_cached_cardinality && op.has_estimated_cardinality ? op.estimated_cardinality
-				                                                                          : stats->cardinality;
+				auto cardinality = use_operator_cardinality && op.has_estimated_cardinality ? op.estimated_cardinality
+				                                                                            : stats->cardinality;
 				estimate.cardinality = MinValue<idx_t>(cardinality, 1);
 				for (auto index : entry.second) {
 					auto domain = MaxValue<idx_t>(stats->columns[index].current_domain.distinct_count, 1);
@@ -464,7 +464,7 @@ static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> gr
 
 idx_t RelationStatisticsHelper::EstimateGroupCardinality(LogicalOperator &input, const RelationStats &input_stats,
                                                          vector<idx_t> groups, RelationStatsExtractor &extractor,
-                                                         bool use_cached_cardinality) {
+                                                         bool use_operator_cardinality) {
 	vector<DistinctCount> counts;
 	for (auto index : groups) {
 		auto count = input_stats.columns[index].current_domain;
@@ -473,7 +473,7 @@ idx_t RelationStatisticsHelper::EstimateGroupCardinality(LogicalOperator &input,
 	}
 	auto estimate = EstimateDistinctCardinality(counts, input_stats.cardinality);
 	auto union_groups =
-	    EstimateUnionGroups(input, std::move(groups), input_stats.cardinality, extractor, use_cached_cardinality);
+	    EstimateUnionGroups(input, std::move(groups), input_stats.cardinality, extractor, use_operator_cardinality);
 	if (union_groups.IsValid()) {
 		// Per-arm domain products avoid inventing cross-arm combinations of grouping keys.
 		estimate = MinValue(estimate, union_groups.GetIndex());
@@ -484,7 +484,7 @@ idx_t RelationStatisticsHelper::EstimateGroupCardinality(LogicalOperator &input,
 static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate &aggregate,
                                                                const RelationStats &child_stats,
                                                                RelationStatsExtractor &extractor,
-                                                               bool use_cached_cardinality) {
+                                                               bool use_operator_cardinality) {
 	RelationColumnStatsLookup child_columns(child_stats);
 	vector<DistinctCount> cardinality_counts;
 	auto get_set_counts = [&](const GroupingSet &grouping_set) {
@@ -541,7 +541,7 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 			groups.push_back(child_stats.FindColumn(group->Cast<BoundColumnRefExpression>().Binding()).GetIndex());
 		}
 		result.cardinality = RelationStatisticsHelper::EstimateGroupCardinality(
-		    *aggregate.children[0], child_stats, std::move(groups), extractor, use_cached_cardinality);
+		    *aggregate.children[0], child_stats, std::move(groups), extractor, use_operator_cardinality);
 	}
 	for (idx_t group_idx = 0; group_idx < aggregate.groups.size(); group_idx++) {
 		auto &group = *aggregate.groups[group_idx];
@@ -595,8 +595,8 @@ optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(Logica
 optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(LogicalAggregate &aggregate,
                                                                           const RelationStats &child_stats,
                                                                           RelationStatsExtractor &extractor,
-                                                                          bool use_cached_cardinality) {
-	return ExtractAggregationStatsInternal(aggregate, child_stats, extractor, use_cached_cardinality);
+                                                                          bool use_operator_cardinality) {
+	return ExtractAggregationStatsInternal(aggregate, child_stats, extractor, use_operator_cardinality);
 }
 
 optional<RelationStats> RelationStatisticsHelper::ExtractWindowStats(LogicalWindow &window,

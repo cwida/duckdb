@@ -2852,7 +2852,6 @@ void DelimJoinCTERewriter::Rewrite(Binder &binder, unique_ptr<LogicalOperator> &
 }
 
 void DelimJoinCTERewriter::Rewrite(unique_ptr<LogicalOperator> &plan) {
-	cte_deliminator_enabled = cte_deliminator_enabled && !plan->CTEContainsDML();
 	marker_indexes.clear();
 	preserve_marker_indexes.clear();
 	preserve_nested_marker_indexes.clear();

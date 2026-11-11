@@ -1638,12 +1638,12 @@ void JoinFilterPushdownInfo::DeferRuntimeFilter(DeferredRuntimeFilterType type, 
 	gstate.deferred_runtime_filters.push_back({type, &op, info.dynamic_filters, column, filter_col_idx});
 }
 
-bool JoinFilterPushdownInfo::TryRegisterPrefixRangeFilter(const JoinFilterPushdownFilter &info, ClientContext &context,
-                                                          JoinHashTable &ht, const PhysicalOperator &op,
-                                                          const JoinFilterPushdownColumn &column,
-                                                          ProjectionIndex filter_col_idx, const Value &min_val,
-                                                          const Value &max_val, idx_t max_bits,
-                                                          JoinFilterGlobalState &gstate) const {
+void JoinFilterPushdownInfo::RegisterPrefixRangeFilter(const JoinFilterPushdownFilter &info, ClientContext &context,
+                                                       JoinHashTable &ht, const PhysicalOperator &op,
+                                                       const JoinFilterPushdownColumn &column,
+                                                       ProjectionIndex filter_col_idx, const Value &min_val,
+                                                       const Value &max_val, idx_t max_bits,
+                                                       JoinFilterGlobalState &gstate) const {
 	if (!ht.GetPrefixRangeFilter()) {
 		const auto key_type = ht.conditions[0].GetLHS().GetReturnType();
 		auto prefix_filter = PrefixRangeFilter::CreatePrefixRangeFilter(key_type);
@@ -1653,7 +1653,6 @@ bool JoinFilterPushdownInfo::TryRegisterPrefixRangeFilter(const JoinFilterPushdo
 	}
 
 	DeferRuntimeFilter(DeferredRuntimeFilterType::PREFIX_RANGE, op, info, column, filter_col_idx, gstate);
-	return true;
 }
 
 unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeMinMax(JoinFilterGlobalState &gstate) const {
@@ -1847,7 +1846,7 @@ static unique_ptr<Expression> CreateJoinFilterComparisonExpression(
 bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilterPushdownFilter &info,
                                           const JoinFilterPushdownColumn &column, JoinHashTable &ht,
                                           const PhysicalOperator &op, idx_t filter_idx, ProjectionIndex filter_col_idx,
-                                          bool filter_rows) const {
+                                          InFilterMode mode) const {
 	// Generate an IN filter by scanning the build-side key column.
 	auto build_idx = join_condition[filter_idx];
 	const auto &runtime_type = ht.conditions[build_idx].GetLHS().GetReturnType();
@@ -1899,15 +1898,12 @@ bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilt
 
 	auto in_expr = ExpressionFilter::CreateInExpression(std::move(filter_input), std::move(in_list));
 	in_expr = RetainRuntimeFilterNulls(std::move(in_expr), std::move(null_check_input));
-	if (filter_rows && column.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION) {
+	if (mode == InFilterMode::ADAPTIVE_ROW_FILTERING && column.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION &&
+	    ExpressionFilterExecutor::TryCreate(*in_expr)) {
 		auto filter = CreateSelectivityOptionalExpressionFilter(std::move(in_expr), column.storage_type,
 		                                                        SelectivityOptionalFilterType::IN);
-		if (ExpressionFilterExecutor::TryCreate(*filter->expr)) {
-			info.dynamic_filters->PushFilter(op, filter_col_idx, std::move(filter));
-			return true;
-		}
-		auto &function = filter->expr->Cast<BoundFunctionExpression>();
-		in_expr = std::move(function.BindInfo()->Cast<SelectivityOptionalFilterFunctionData>().child_filter_expr);
+		info.dynamic_filters->PushFilter(op, filter_col_idx, std::move(filter));
+		return true;
 	}
 	auto filter = make_uniq<ExpressionFilter>(CreateOptionalFilterExpression(std::move(in_expr), column.storage_type));
 	info.dynamic_filters->PushFilter(op, filter_col_idx, std::move(filter));
@@ -2041,22 +2037,19 @@ unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeFilters(ClientContext &con
 
 				static constexpr idx_t SMALL_EXACT_PRF_BITS = 1ULL << 26;
 				bool registered_prf = false;
-				if (can_emit_prf && span < SMALL_EXACT_PRF_BITS) {
-					registered_prf = TryRegisterPrefixRangeFilter(info, context, *ht, op, pushdown_column,
-					                                              filter_col_idx, min_val_before_cast,
-					                                              max_val_before_cast, SMALL_EXACT_PRF_BITS, *gstate);
-				}
-
-				if (can_emit_prf && !registered_prf) {
-					auto build_count = ht->Count();
-					if (build_count == 0) {
-						build_count = ht->GetSinkCollection().Count();
+				if (can_emit_prf) {
+					auto max_bits = SMALL_EXACT_PRF_BITS;
+					if (span >= max_bits) {
+						auto build_count = ht->Count();
+						if (build_count == 0) {
+							build_count = ht->GetSinkCollection().Count();
+						}
+						max_bits = BloomFilterBitBudget(build_count);
 					}
-					const auto bloom_filter_bits = BloomFilterBitBudget(build_count);
-					if (span <= bloom_filter_bits) {
-						registered_prf = TryRegisterPrefixRangeFilter(info, context, *ht, op, pushdown_column,
-						                                              filter_col_idx, min_val_before_cast,
-						                                              max_val_before_cast, bloom_filter_bits, *gstate);
+					if (span <= max_bits) {
+						RegisterPrefixRangeFilter(info, context, *ht, op, pushdown_column, filter_col_idx,
+						                          min_val_before_cast, max_val_before_cast, max_bits, *gstate);
+						registered_prf = true;
 					}
 				}
 
@@ -2064,11 +2057,13 @@ unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeFilters(ClientContext &con
 				                           gstate && CanUseBloomFilter(info, context, op, cmp, ht);
 				bool pushed_in_filter = false;
 				if (CanUseInFilter(context, ht, cmp)) {
-					// Keep IN for pruning beside an exact PRF or an eligible Bloom filter.
-					const auto filter_rows =
-					    (!registered_prf || !ht->GetPrefixRangeFilter()->IsExact()) && !can_use_bloom;
+					// String prefixes can leave false positives that a small IN filter removes.
+					const auto prefer_prf =
+					    registered_prf && runtime_filter_input_type.InternalType() != PhysicalType::VARCHAR;
+					const auto mode =
+					    prefer_prf || can_use_bloom ? InFilterMode::PRUNING_ONLY : InFilterMode::ADAPTIVE_ROW_FILTERING;
 					pushed_in_filter =
-					    PushInFilter(context, info, pushdown_column, *ht, op, filter_idx, filter_col_idx, filter_rows);
+					    PushInFilter(context, info, pushdown_column, *ht, op, filter_idx, filter_col_idx, mode);
 				}
 				if (registered_prf) {
 					continue;

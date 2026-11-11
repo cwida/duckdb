@@ -582,26 +582,11 @@ struct DoubleEagerHeuristics {
 	static constexpr idx_t MIN_LARGE_COLLAPSE = 8;
 };
 
-static bool DEHasSufficientCollapse(double cardinality, double ndv) {
-	const auto effective_ndv = MaxValue<idx_t>(RelationStatisticsHelper::CardinalityFromDouble(ndv), 1);
-	const auto min_collapse = effective_ndv <= DoubleEagerHeuristics::MAX_SMALL_GROUP_COUNT
+static bool DEHasSufficientCollapse(idx_t cardinality, idx_t group_count) {
+	const auto min_collapse = group_count <= DoubleEagerHeuristics::MAX_SMALL_GROUP_COUNT
 	                              ? DoubleEagerHeuristics::MIN_SMALL_COLLAPSE
 	                              : DoubleEagerHeuristics::MIN_LARGE_COLLAPSE;
-	return cardinality >= static_cast<double>(min_collapse) * ndv;
-}
-
-static bool DEEstimateCollapse(const LogicalComparisonJoin &join, idx_t &effective_ndv) {
-	if (!join.has_estimated_cardinality || !join.children[0]->has_estimated_cardinality ||
-	    !join.children[1]->has_estimated_cardinality) {
-		return false;
-	}
-	const auto c0 = static_cast<double>(MaxValue<idx_t>(join.children[0]->estimated_cardinality, 1));
-	const auto c1 = static_cast<double>(MaxValue<idx_t>(join.children[1]->estimated_cardinality, 1));
-	const auto cj = static_cast<double>(MaxValue<idx_t>(join.estimated_cardinality, 1));
-	double ndv = MaxValue<double>(1.0, (c0 * c1) / cj);
-	ndv = MinValue<double>(ndv, MinValue<double>(c0, c1));
-	effective_ndv = MaxValue<idx_t>(RelationStatisticsHelper::CardinalityFromDouble(ndv), 1);
-	return DEHasSufficientCollapse(c0, ndv) && DEHasSufficientCollapse(c1, ndv);
+	return cardinality > 0 && cardinality / min_collapse >= group_count;
 }
 
 static optional_ptr<LogicalOperator> DEFindCTEDefinition(LogicalOperator &op, TableIndex index) {
@@ -618,10 +603,16 @@ static optional_ptr<LogicalOperator> DEFindCTEDefinition(LogicalOperator &op, Ta
 	return nullptr;
 }
 
-static bool DERefineCollapse(ClientContext &context, LogicalOperator &root, LogicalComparisonJoin &join,
-                             const DoubleEagerSide (&sides)[2], idx_t (&lower_cardinalities)[2]) {
+static bool DEEstimateCollapse(ClientContext &context, LogicalOperator &root, LogicalComparisonJoin &join,
+                               const DoubleEagerSide (&sides)[2], idx_t (&lower_cardinalities)[2],
+                               idx_t &join_cardinality) {
+	if (!join.has_estimated_cardinality) {
+		return false;
+	}
 	RelationStatsExtractor extractor(context, [&](TableIndex index) { return DEFindCTEDefinition(root, index); });
+	// One side can reduce join work even when the other retains every group.
 	bool sufficient_collapse = false;
+	double retained_fraction = 1;
 	for (idx_t side = 0; side < 2; side++) {
 		auto stats = extractor.Extract(*join.children[side]);
 		if (!stats) {
@@ -638,9 +629,13 @@ static bool DERefineCollapse(ClientContext &context, LogicalOperator &root, Logi
 		const auto cardinality = stats->cardinality;
 		lower_cardinalities[side] = RelationStatisticsHelper::EstimateGroupCardinality(*join.children[side], *stats,
 		                                                                               std::move(groups), extractor);
-		sufficient_collapse |=
-		    DEHasSufficientCollapse(static_cast<double>(cardinality), static_cast<double>(lower_cardinalities[side]));
+		sufficient_collapse |= DEHasSufficientCollapse(cardinality, lower_cardinalities[side]);
+		retained_fraction *= static_cast<double>(lower_cardinalities[side]) / MaxValue<idx_t>(cardinality, 1);
 	}
+	// Scale the join estimate by grouping reduction without interpreting its selectivity as an NDV.
+	const auto cross_product = static_cast<double>(lower_cardinalities[0]) * lower_cardinalities[1];
+	join_cardinality = RelationStatisticsHelper::CardinalityFromDouble(
+	    MinValue(cross_product, static_cast<double>(join.estimated_cardinality) * retained_fraction));
 	return sufficient_collapse;
 }
 
@@ -778,7 +773,7 @@ static void DEGetCountBindings(const DoubleEagerSide (&sides)[2], const unique_p
 static unique_ptr<LogicalComparisonJoin> DECreateJoin(DoubleEagerSide (&sides)[2],
                                                       const vector<ColumnBinding> (&join_keys)[2],
                                                       const vector<LogicalType> (&join_key_types)[2],
-                                                      unique_ptr<LogicalAggregate> (&lower)[2], idx_t effective_ndv) {
+                                                      unique_ptr<LogicalAggregate> (&lower)[2], idx_t cardinality) {
 	auto new_join = make_uniq<LogicalComparisonJoin>(JoinType::INNER);
 	auto lower_key_expr = [&](idx_t s, idx_t k) {
 		auto binding = sides[s].group_map.at(join_keys[s][k]);
@@ -790,9 +785,7 @@ static unique_ptr<LogicalComparisonJoin> DECreateJoin(DoubleEagerSide (&sides)[2
 	new_join->children.push_back(std::move(lower[0]));
 	new_join->children.push_back(std::move(lower[1]));
 	new_join->ResolveOperatorTypes();
-	const auto c0 = static_cast<double>(new_join->children[0]->estimated_cardinality);
-	const auto c1 = static_cast<double>(new_join->children[1]->estimated_cardinality);
-	new_join->SetEstimatedCardinality(RelationStatisticsHelper::CardinalityFromDouble((c0 * c1) / effective_ndv));
+	new_join->SetEstimatedCardinality(cardinality);
 	return new_join;
 }
 
@@ -868,11 +861,6 @@ bool PartialAggregatePushdown::TryDoubleEagerPushdown(unique_ptr<LogicalOperator
 		return false;
 	}
 
-	idx_t effective_ndv;
-	if (!DEEstimateCollapse(join, effective_ndv)) {
-		return false;
-	}
-
 	unordered_set<TableIndex> side_bindings[2];
 	LogicalJoin::GetTableReferences(*join.children[0], side_bindings[0]);
 	LogicalJoin::GetTableReferences(*join.children[1], side_bindings[1]);
@@ -894,7 +882,8 @@ bool PartialAggregatePushdown::TryDoubleEagerPushdown(unique_ptr<LogicalOperator
 	}
 
 	idx_t lower_cardinalities[2];
-	if (!DERefineCollapse(optimizer.context, *plan, join, sides, lower_cardinalities)) {
+	idx_t join_cardinality;
+	if (!DEEstimateCollapse(optimizer.context, *plan, join, sides, lower_cardinalities, join_cardinality)) {
 		return false;
 	}
 
@@ -906,7 +895,7 @@ bool PartialAggregatePushdown::TryDoubleEagerPushdown(unique_ptr<LogicalOperator
 	idx_t lower_group_count[2];
 	DEGetCountBindings(sides, lower, cnt_binding, cnt_type, lower_group_count);
 
-	auto new_join = DECreateJoin(sides, join_keys, join_key_types, lower, effective_ndv);
+	auto new_join = DECreateJoin(sides, join_keys, join_key_types, lower, join_cardinality);
 
 	vector<unique_ptr<Expression>> upper_aggregates;
 	if (!DECreateUpperAggregates(optimizer, aggregates, sides, *new_join, cnt_binding, cnt_type, lower_group_count,

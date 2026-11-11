@@ -13,6 +13,7 @@
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
+#include "duckdb/planner/subquery/has_volatile_expressions.hpp"
 
 namespace duckdb {
 
@@ -168,7 +169,7 @@ bool MarkJoinSimplifier::TrySimplify(unique_ptr<LogicalOperator> &op, NotNullExp
 			continue;
 		}
 		// Reordering the converted join can change which rows evaluate volatile expressions.
-		if (filter.HasVolatileExpressionsIgnoringError()) {
+		if (HasVolatileExpressionsIgnoringError(filter)) {
 			return false;
 		}
 		for (auto &condition : join.conditions) {

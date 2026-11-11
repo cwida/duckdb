@@ -340,10 +340,6 @@ public:
 		return initialized;
 	}
 
-	bool IsExact() const {
-		return shift == 0;
-	}
-
 	bool IsDense() const {
 		return dense;
 	}
@@ -483,10 +479,6 @@ public:
 		return bitmap.IsInitialized();
 	}
 
-	bool IsExact() const override {
-		return bitmap.IsExact();
-	}
-
 private:
 	PrefixRangeBitmap<Comparable> bitmap;
 };
@@ -560,10 +552,6 @@ public:
 
 	bool IsInitialized() const override {
 		return bitmap.IsInitialized();
-	}
-
-	bool IsExact() const override {
-		return false;
 	}
 
 private:

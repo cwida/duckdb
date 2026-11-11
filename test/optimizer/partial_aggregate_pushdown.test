@@ -71,23 +71,23 @@ GROUP BY d_a, d_b, d_c, d_d
 ----
 physical_plan	<REGEX>:.*combine_aggr.*
 
-# Grouping only by the dimension join key does not make a second aggregate pass worthwhile.
+# Repeated fact keys permit pre-aggregation even when dimension keys are unique.
 query II
 EXPLAIN
 SELECT dim.dim_key, sum(measure)
 FROM fact JOIN dim ON fact.dim_key = dim.dim_key
 GROUP BY dim.dim_key
 ----
-physical_plan	<!REGEX>:.*combine_aggr.*
+physical_plan	<REGEX>:.*combine_aggr.*
 
-# Replacing one grouping key with another does not offset an extra aggregate pass.
+# The same reduction remains available when grouping by another dimension column.
 query II
 EXPLAIN
 SELECT d_a, sum(measure)
 FROM fact JOIN dim USING (dim_key)
 GROUP BY d_a
 ----
-physical_plan	<!REGEX>:.*combine_aggr.*
+physical_plan	<REGEX>:.*combine_aggr.*
 
 # Preserved-side LEFT/RIGHT joins remain correct when equal-width grouping skips pushdown.
 statement ok

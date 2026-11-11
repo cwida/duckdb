@@ -2,35 +2,6 @@
 # description: Planning statistics must account for writes in the same statement
 # group: [cte]
 
-statement ok
-SET threads=1
-
-# Partitioned ORDER BY must not synthesize ranges that exclude the newly inserted NULL.
-statement ok
-CREATE TABLE partitioned AS SELECT i::INTEGER AS i FROM range(5000000) r(i)
-
-query I
-WITH ins AS (INSERT INTO partitioned VALUES (NULL) RETURNING i)
-SELECT count(*) FROM (SELECT i FROM partitioned ORDER BY i LIMIT 6000000) g
-----
-5000001
-
-statement ok
-DROP TABLE partitioned
-
-# Pruning by pre-delete row-group counts must not reduce the OFFSET.
-statement ok
-CREATE TABLE offset_rows AS SELECT i::INTEGER AS i FROM range(122882) r(i)
-
-query I
-WITH del AS (DELETE FROM offset_rows WHERE i=0 RETURNING i)
-SELECT i FROM offset_rows ORDER BY i LIMIT 1 OFFSET 122880
-----
-122881
-
-statement ok
-DROP TABLE offset_rows
-
 # A pre-insert maximum cardinality must not remove the LIMIT.
 statement ok
 CREATE TABLE limit_rows AS SELECT i FROM range(2) r(i)

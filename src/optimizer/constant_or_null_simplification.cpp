@@ -52,13 +52,6 @@ static bool ConstantOrNullInputsAreNotNull(LogicalOperator &input, BoundFunction
 
 	// Folding is only valid when the NULL-preserving inputs cannot be NULL.
 	for (idx_t child_idx = 1; child_idx < children.size(); ++child_idx) {
-		if (children[child_idx]->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
-			auto &constant = children[child_idx]->Cast<BoundConstantExpression>().GetValue();
-			if (!constant.IsNull()) {
-				continue;
-			}
-		}
-
 		if (!analyzer.IsNotNull(input, *children[child_idx])) {
 			return false;
 		}

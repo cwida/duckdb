@@ -12,7 +12,7 @@
 
 using namespace duckdb;
 
-TEST_CASE("Prefix range exactness follows the configured representation", "[filter][prefix_range]") {
+TEST_CASE("Prefix range membership collisions follow the configured representation", "[filter][prefix_range]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	auto &context = *con.context;
@@ -21,7 +21,6 @@ TEST_CASE("Prefix range exactness follows the configured representation", "[filt
 	SECTION("Numeric span below the budget is exact") {
 		auto filter = PrefixRangeFilter::CreatePrefixRangeFilter(LogicalType::BIGINT);
 		filter->Initialize(context, 2, Value::BIGINT(0), Value::BIGINT(MAX_BITS - 1), MAX_BITS);
-		REQUIRE(filter->IsExact());
 		REQUIRE_FALSE(filter->IsInitialized());
 
 		Vector keys(LogicalType::BIGINT, 2);
@@ -33,7 +32,6 @@ TEST_CASE("Prefix range exactness follows the configured representation", "[filt
 		auto state = filter->InitializeBuildState(context);
 		filter->InsertKeys(keys, *state);
 		filter->MergeBuildState(*state);
-		REQUIRE(filter->IsExact());
 		Vector probe(Value::BIGINT(1), count_t(1));
 		SelectionVector selection(1);
 		REQUIRE(filter->LookupKeys(probe, selection, 1) == 0);
@@ -42,7 +40,6 @@ TEST_CASE("Prefix range exactness follows the configured representation", "[filt
 	SECTION("Numeric span at the budget has collisions") {
 		auto filter = PrefixRangeFilter::CreatePrefixRangeFilter(LogicalType::BIGINT);
 		filter->Initialize(context, 2, Value::BIGINT(0), Value::BIGINT(MAX_BITS), MAX_BITS);
-		REQUIRE_FALSE(filter->IsExact());
 		REQUIRE_FALSE(filter->IsInitialized());
 
 		Vector keys(LogicalType::BIGINT, 2);
@@ -54,7 +51,6 @@ TEST_CASE("Prefix range exactness follows the configured representation", "[filt
 		auto state = filter->InitializeBuildState(context);
 		filter->InsertKeys(keys, *state);
 		filter->MergeBuildState(*state);
-		REQUIRE_FALSE(filter->IsExact());
 		Vector probe(Value::BIGINT(1), count_t(1));
 		SelectionVector selection(1);
 		REQUIRE(filter->LookupKeys(probe, selection, 1) == 1);
@@ -66,7 +62,6 @@ TEST_CASE("Prefix range exactness follows the configured representation", "[filt
 		}
 		auto filter = PrefixRangeFilter::CreatePrefixRangeFilter(LogicalType::VARCHAR);
 		filter->Initialize(context, 2, Value("same-a"), Value("same-z"), MAX_BITS);
-		REQUIRE_FALSE(filter->IsExact());
 		REQUIRE_FALSE(filter->IsInitialized());
 
 		Vector keys(LogicalType::VARCHAR, 2);
@@ -78,7 +73,6 @@ TEST_CASE("Prefix range exactness follows the configured representation", "[filt
 		auto state = filter->InitializeBuildState(context);
 		filter->InsertKeys(keys, *state);
 		filter->MergeBuildState(*state);
-		REQUIRE_FALSE(filter->IsExact());
 		Vector probe(Value("same-b"), count_t(1));
 		SelectionVector selection(1);
 		REQUIRE(filter->LookupKeys(probe, selection, 1) == 1);

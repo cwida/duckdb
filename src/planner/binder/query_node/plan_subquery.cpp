@@ -26,6 +26,7 @@
 #include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/planner/subquery/flatten_dependent_join.hpp"
+#include "duckdb/planner/subquery/has_volatile_expressions.hpp"
 #include "duckdb/common/enums/logical_operator_type.hpp"
 #include "duckdb/planner/operator/logical_dependent_join.hpp"
 #include "duckdb/planner/subquery/recursive_dependent_join_planner.hpp"
@@ -450,7 +451,7 @@ static bool PerformDelimOnType(const LogicalType &type) {
 
 static bool PerformDuplicateElimination(Binder &binder, CorrelatedColumns &correlated_columns,
                                         optional_ptr<LogicalOperator> dependent_plan = nullptr) {
-	bool perform_delim = !dependent_plan || !dependent_plan->HasVolatileExpressionsIgnoringError();
+	bool perform_delim = !dependent_plan || !HasVolatileExpressionsIgnoringError(*dependent_plan);
 	if (perform_delim && !Settings::Get<EnableOptimizerSetting>(binder.context)) {
 		// if optimizations are disabled we always do a delim join
 		return true;
@@ -482,7 +483,7 @@ static unique_ptr<Expression> PlanCorrelatedSubquery(Binder &binder, BoundSubque
 	// Preserve the existing duplicate-elimination path for deterministic ANY queries. Volatile ANY queries require
 	// row identity for the same reason as other correlated subqueries: sharing one result between equal outer values
 	// changes their evaluation cardinality.
-	bool perform_delim = expr.GetSubqueryType() == SubqueryType::ANY && !plan->HasVolatileExpressionsIgnoringError()
+	bool perform_delim = expr.GetSubqueryType() == SubqueryType::ANY && !HasVolatileExpressionsIgnoringError(*plan)
 	                         ? true
 	                         : PerformDuplicateElimination(binder, correlated_columns, plan);
 	D_ASSERT(expr.IsCorrelated());

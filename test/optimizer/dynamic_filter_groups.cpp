@@ -288,7 +288,6 @@ TEST_CASE("Runtime IN row policy follows each target's filter eligibility", "[dy
 	}
 	if (expect_prf) {
 		REQUIRE(ht->GetPrefixRangeFilter());
-		REQUIRE(ht->GetPrefixRangeFilter()->IsExact() == !strings);
 		REQUIRE_FALSE(ht->GetPrefixRangeFilter()->IsInitialized());
 	} else {
 		REQUIRE_FALSE(ht->GetPrefixRangeFilter());
