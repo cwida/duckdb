@@ -66,7 +66,18 @@ WHERE extension_name='json' ORDER BY installed_from = 'my_repo'
 false	true	false
 true	true	true
 
-# forbidding repositories distrusts them: their folders are not listed, but the loaded extension still is
+# dropping the repository keeps its installed files listed, and the loaded copy stays installed
+statement ok
+DROP EXTENSION REPOSITORY my_repo
+
+query IIII
+SELECT installed_from = 'my_repo', installed, loaded, install_path = '' FROM duckdb_extensions()
+WHERE extension_name='json' ORDER BY installed_from = 'my_repo'
+----
+false	true	false	false
+true	true	true	false
+
+# forbidding repositories only affects loading: the installed files are still listed
 statement ok
 SET allow_extension_repositories='forbidden'
 
@@ -75,4 +86,4 @@ SELECT installed_from = 'my_repo', installed, loaded, install_path = '' FROM duc
 WHERE extension_name='json' ORDER BY installed_from = 'my_repo'
 ----
 false	true	false	false
-true	false	true	true
+true	true	true	false

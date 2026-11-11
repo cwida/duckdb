@@ -152,22 +152,24 @@ vector<InstalledExtensionDirectory> ExtensionHelper::GetInstalledExtensionDirect
 		result.push_back({directory, string()});
 	}
 
-	// Check for user-provided repositories: distrusted ones are skipped, and so are all of them if one is unreadable
-	vector<ExtensionRepository> user_provided_repos;
-	if (ExtensionRepositoryManager::TrustsExistingRepositories(db)) {
-		try {
-			user_provided_repos = ExtensionRepositoryManager::GetRepositories(db, fs);
-		} catch (std::exception &) {
-			user_provided_repos.clear();
-		}
-	}
+	// Per-repository install folders are discovered on disk, independent of whether their repository is trusted
 	for (auto &directory : extension_directories) {
 		auto repositories_directory = fs.JoinPath(directory, "repositories");
-		for (const auto &repo : user_provided_repos) {
-			auto repo_full_path = fs.JoinPath(repositories_directory, repo.name);
-			if (fs.DirectoryExists(repo_full_path)) {
-				result.push_back({repo_full_path, repo.name});
+		if (!fs.DirectoryExists(repositories_directory)) {
+			continue;
+		}
+		vector<string> repository_names;
+		fs.ListFiles(repositories_directory, [&](const string &name, bool is_directory) {
+			string normalized;
+			if (!is_directory || !ExtensionRepositoryManager::TryNormalizeRepositoryName(name, normalized) ||
+			    normalized != name || !ExtensionRepository::TryGetRepositoryUrl(name).empty()) {
+				return;
 			}
+			repository_names.push_back(name);
+		});
+		std::sort(repository_names.begin(), repository_names.end());
+		for (auto &name : repository_names) {
+			result.push_back({fs.JoinPath(repositories_directory, name), name});
 		}
 	}
 	return result;
