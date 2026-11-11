@@ -116,7 +116,6 @@ SQLStatement:
     - CreateExternalResourceStmt
     - RegisterExternalResourceStmt
     - DestroyExternalResourceStmt
-    - ShowExternalResourcesStmt
     - ExtensionRepositoryStatement
     - CreateExtensionRepositoryStmt
     - DropExtensionRepositoryStmt
@@ -153,6 +152,8 @@ QueryNode:
   type: "unique_ptr<QueryNode>"
   by_value: true
   rules:
+    - ShowExternalResourceTypes
+    - ShowExternalResources
     - ShowDeprecatedSelect
     - DescribeSelect
     - ShowTables
@@ -1198,7 +1199,6 @@ Bool:
     - IfNotExists
     - OrReplace
     - InstallAndLoad
-    - ShowAllModifier
     - FunctionTypeMacro
     - FunctionTypeMacroKeyword
     - FunctionTypeFunction
@@ -1767,6 +1767,7 @@ IdentifierType:
     - AnalyzeKeyword
     - ColId
     - ColIdOrString
+    - ShowExternalResourcesType
     - UsingColumnName
     - ColLabelOrString
     - ColLabelIdentifier
