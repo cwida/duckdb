@@ -115,8 +115,6 @@ public:
 protected:
 	void Destructor();
 	virtual void FlushInternal(ColumnDataCollection &collection) = 0;
-	//! The client context of the appender - throws if the connection was closed
-	virtual shared_ptr<ClientContext> LockContext() = 0;
 	void InitializeChunk();
 	void FlushChunk();
 
@@ -179,7 +177,6 @@ private:
 
 protected:
 	void FlushInternal(ColumnDataCollection &collection) override;
-	shared_ptr<ClientContext> LockContext() override;
 	Value GetDefaultValue(idx_t column);
 };
 
@@ -202,7 +199,6 @@ private:
 
 protected:
 	void FlushInternal(ColumnDataCollection &collection) override;
-	shared_ptr<ClientContext> LockContext() override;
 };
 
 class InternalAppender : public BaseAppender {
@@ -219,7 +215,6 @@ public:
 
 protected:
 	void FlushInternal(ColumnDataCollection &collection) override;
-	shared_ptr<ClientContext> LockContext() override;
 };
 
 template <>

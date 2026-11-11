@@ -57,9 +57,8 @@ public:
 	explicit CV2CustomOption(DatabaseInstance &db) : db(db) {
 	}
 
-	//! Validates the configuration and registers the option on `target`. The default value is cast with `client`'s
-	//! casts if given (casts registered through the C API need a client), else with the database's.
-	void Register(DatabaseInstance &target, optional_ptr<ClientContext> client = nullptr) {
+	//! Validates the configuration and registers the option on `target`.
+	void Register(DatabaseInstance &target) {
 		CheckRegistrationTarget(db, target, "custom option");
 		if (name.empty()) {
 			throw InvalidInputException("Option name cannot be empty.");
@@ -94,7 +93,8 @@ public:
 		ExtensionOption option;
 		option.description = description;
 		option.type = option_type;
-		option.default_value = CastDefaultValue(target, client, option_type);
+		option.default_value =
+		    default_value.IsNull() ? Value(option_type) : default_value.CastAs(target.GetContext(), option_type);
 		option.default_scope = scope;
 		option.supports_global = supports_global;
 		option.supports_session = supports_session;
@@ -104,20 +104,6 @@ public:
 		option_info->type = option_type;
 		option.info = std::move(option_info);
 		config.AddExtensionOption(name, std::move(option));
-	}
-
-private:
-	Value CastDefaultValue(DatabaseInstance &target, optional_ptr<ClientContext> client,
-	                       const LogicalType &option_type) const {
-		if (default_value.IsNull()) {
-			return Value(option_type);
-		}
-		if (!client) {
-			return default_value.CastAs(target.GetContext(), option_type);
-		}
-		Value result;
-		client->RunFunctionInTransaction([&]() { result = default_value.CastAs(*client, option_type); });
-		return result;
 	}
 
 public:
@@ -293,10 +279,7 @@ DUCKDB_V2_ERROR duckdb_v2_connection_register_custom_option(duckdb_v2_connection
                                                             duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(conn);
 	DUCKDB_CHECK_ARG(option);
-	return WithErrorHandler(err, [&]() {
-		auto &context = *Convert(conn)->context;
-		Convert(option)->Register(*context.db, context);
-	});
+	return WithErrorHandler(err, [&]() { Convert(option)->Register(*Convert(conn)->context->db); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_extension_register_custom_option(duckdb_v2_extension_handle extension,

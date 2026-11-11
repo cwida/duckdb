@@ -7,7 +7,6 @@
 #include "duckdb/common/operator/decimal_cast_operators.hpp"
 #include "duckdb/common/operator/string_cast.hpp"
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
@@ -315,14 +314,6 @@ void BaseAppender::Append(Value value) { // NOLINT: template stuff
 	AppendValue(value);
 }
 
-//! Built-in types use the built-in casts, so that every append path agrees with the row-wise appends
-static bool UseBuiltinCast(const LogicalType &source, const LogicalType &target) {
-	auto is_extension_type = [](const LogicalType &type) {
-		return type.HasAlias() || type.HasExtensionInfo();
-	};
-	return !TypeVisitor::Contains(source, is_extension_type) && !TypeVisitor::Contains(target, is_extension_type);
-}
-
 void duckdb::BaseAppender::Append(DataChunk &target, const Value &value, idx_t col, idx_t row) {
 	if (col >= target.ColumnCount()) {
 		InvalidInputException::Throw("Too many appends for chunk!");
@@ -330,15 +321,8 @@ void duckdb::BaseAppender::Append(DataChunk &target, const Value &value, idx_t c
 	if (value.type() == target.GetTypes()[col]) {
 		target.data[col].SetValue(row, value);
 	} else {
-		auto target_type = target.GetTypes()[col];
 		string error_msg;
-		optional<Value> new_value;
-		if (UseBuiltinCast(value.type(), target_type)) {
-			new_value = value.DefaultTryCastAs(target_type, &error_msg);
-		} else {
-			auto client_context = LockContext();
-			new_value = value.TryCastAs(client_context->GetContext(), target_type, &error_msg);
-		}
+		auto new_value = value.DefaultTryCastAs(target.GetTypes()[col], &error_msg);
 		if (new_value) {
 			target.data[col].SetValue(row, *new_value);
 		} else {
@@ -388,7 +372,6 @@ void BaseAppender::AppendDataChunk(DataChunk &chunk_p) {
 	cast_chunk.Initialize(allocator, appender_types, MaxValue<idx_t>(size, STANDARD_VECTOR_SIZE));
 	cast_chunk.SetChildCardinality(size);
 
-	shared_ptr<ClientContext> client_context;
 	for (idx_t i = 0; i < count; i++) {
 		if (chunk_p.data[i].GetType() == appender_types[i]) {
 			cast_chunk.data[i].Reference(chunk_p.data[i]);
@@ -396,16 +379,7 @@ void BaseAppender::AppendDataChunk(DataChunk &chunk_p) {
 		}
 
 		string error_msg;
-		bool success;
-		if (UseBuiltinCast(chunk_p.data[i].GetType(), appender_types[i])) {
-			success = VectorOperations::DefaultTryCast(chunk_p.data[i], cast_chunk.data[i], size, &error_msg);
-		} else {
-			if (!client_context) {
-				client_context = LockContext();
-			}
-			success = VectorOperations::TryCast(client_context->GetContext(), chunk_p.data[i], cast_chunk.data[i], size,
-			                                    &error_msg);
-		}
+		auto success = VectorOperations::DefaultTryCast(chunk_p.data[i], cast_chunk.data[i], size, &error_msg);
 		if (!success) {
 			throw InvalidInputException("type mismatch in AppendDataChunk, expected %s, got %s for column %d",
 			                            appender_types[i].ToString(), chunk_p.data[i].GetType().ToString(), i);
@@ -639,14 +613,6 @@ string Appender::ConstructQuery(TableDescription &description_p, const Identifie
 	return query;
 }
 
-shared_ptr<ClientContext> Appender::LockContext() {
-	auto context_ref = context.lock();
-	if (!context_ref) {
-		throw InvalidInputException("Appender: Attempting to append data to a closed connection");
-	}
-	return context_ref;
-}
-
 void Appender::FlushInternal(ColumnDataCollection &collection) {
 	auto context_ref = context.lock();
 	if (!context_ref) {
@@ -753,14 +719,6 @@ QueryAppender::QueryAppender(Connection &con, string query_p, vector<LogicalType
 QueryAppender::~QueryAppender() {
 }
 
-shared_ptr<ClientContext> QueryAppender::LockContext() {
-	auto context_ref = context.lock();
-	if (!context_ref) {
-		throw InvalidInputException("Attempting to append query appender data on a closed connection");
-	}
-	return context_ref;
-}
-
 void QueryAppender::FlushInternal(ColumnDataCollection &collection) {
 	auto context_ref = context.lock();
 	if (!context_ref) {
@@ -785,10 +743,6 @@ InternalAppender::InternalAppender(ClientContext &context_p, TableCatalogEntry &
 
 InternalAppender::~InternalAppender() {
 	Destructor();
-}
-
-shared_ptr<ClientContext> InternalAppender::LockContext() {
-	return context.shared_from_this();
 }
 
 void InternalAppender::FlushInternal(ColumnDataCollection &collection) {
