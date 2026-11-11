@@ -16,6 +16,7 @@
         "test/sql/show_select/show_settings.test",
         "test/sql/show_select/test_show_select.test",
         "test/sql/storage/storage_option_coverage.test",
+        "test/sql/storage/wal/wal_replay_unbound_index_bind_failure_retryable.test",
         "test/sql/table_function/warn_deprecated_identifier_conversion.test"
       ]
     },
@@ -37,6 +38,7 @@
         "test/optimizer/arithmetic_simplification.test",
         "test/optimizer/deliminator.test",
         "test/optimizer/deliminator_nullability.test",
+        "test/optimizer/partial_aggregate_pushdown_throwing_argument.test",
         "test/sql/aggregate/aggregates/test_arg_min_max.test",
         "test/sql/binder/legacy_null_type.test",
         "test/sql/binder/old_implicit_cast.test",

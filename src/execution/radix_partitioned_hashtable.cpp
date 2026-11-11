@@ -1357,6 +1357,10 @@ ProgressData RadixPartitionedHashTable::GetProgress(ClientContext &, GlobalSinkS
 	auto &sink = sink_p.Cast<RadixHTGlobalSinkState>();
 	auto &gstate = gstate_p.Cast<RadixHTGlobalSourceState>();
 
+	if (sink.count_before_combining == 0) {
+		return ProgressData {gstate.finished ? 1.0 : 0.0, 1.0, false};
+	}
+
 	// Get partition combine progress, weigh it 2x
 	ProgressData progress;
 	for (auto &partition : sink.partitions) {

@@ -11,7 +11,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint = '1TB';
 
 statement ok
 ATTACH '{TEST_DIR}/concurrent_member_{storage_version}.db' AS mdb (STORAGE_VERSION '{storage_version}');
@@ -139,7 +139,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint = '1TB';
 
 statement ok
 ATTACH '{TEST_DIR}/concurrent_member_{storage_version}.db' AS mdb;

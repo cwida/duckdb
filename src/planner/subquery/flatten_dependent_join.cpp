@@ -578,8 +578,21 @@ vector<optional_idx> FlattenDependentJoins::GetCTERefCorrelatedPositions(const L
 void FlattenDependentJoins::AddCTERefJoinConditions(LogicalComparisonJoin &join, const LogicalCTERef &cteref,
                                                     const vector<optional_idx> &positions,
                                                     const vector<ColumnBinding> &state) const {
+	optional_idx identity;
+	auto cte_entry = binder.recursive_ctes.find(cteref.cte_index);
+	if (cte_entry != binder.recursive_ctes.end()) {
+		auto &columns = cte_entry->second->Cast<LogicalCTE>().correlated_columns;
+		auto delim_index = columns.GetDelimIndex();
+		if (delim_index < columns.size()) {
+			auto index = GetCorrelatedIndex(columns[delim_index].binding);
+			if (index.IsValid() && positions[index.GetIndex()].IsValid()) {
+				identity = index;
+			}
+		}
+	}
 	for (idx_t i = 0; i < positions.size(); i++) {
-		if (!positions[i].IsValid()) {
+		// The CTE's row identity determines all its correlation payloads.
+		if (!positions[i].IsValid() || (identity.IsValid() && i != identity.GetIndex())) {
 			continue;
 		}
 		JoinCondition cond(make_uniq<BoundColumnRefExpression>(
