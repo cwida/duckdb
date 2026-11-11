@@ -5,6 +5,10 @@
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/cast/vector_cast_helpers.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/parser/parsed_data/create_type_info.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 
 using namespace duckdb;
 
@@ -301,36 +305,106 @@ static bool AppenderBigintToTinyintCast(Vector &source, Vector &result, idx_t co
 	return VectorCastHelpers::TemplatedCastLoop<int64_t, int8_t, AppenderOffsetCast>(source, result, count, parameters);
 }
 
-TEST_CASE("Test appender casts use the registered cast functions", "[api]") {
+//! A chunk holding the BIGINTs 0, 1, 2
+static void InitializeBigintChunk(DataChunk &chunk) {
+	chunk.Initialize(Allocator::DefaultAllocator(), {LogicalType::BIGINT});
+	auto writer = FlatVector::Writer<int64_t>(chunk.data[0], 3);
+	for (int64_t i = 0; i < 3; i++) {
+		writer.WriteValue(i);
+	}
+	chunk.CheckCardinality(3);
+}
+
+TEST_CASE("Test appender casts to extension types use the registered cast functions", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	auto &casts = DBConfig::GetConfig(*con.context).GetCastFunctions();
-	casts.RegisterCastFunction(LogicalType::BIGINT, LogicalType::TINYINT, BoundCastInfo(AppenderBigintToTinyintCast));
+	// an extension type: an alias registered in the system catalog, like the C API custom types
+	auto offset_type = LogicalType(LogicalType::TINYINT).WithAlias("offset_tinyint");
+	con.context->RunFunctionInTransaction([&]() {
+		CreateTypeInfo info("offset_tinyint", offset_type);
+		info.temporary = true;
+		info.internal = true;
+		Catalog::GetSystemCatalog(*con.context).CreateType(*con.context, info);
+	});
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE offsets(i offset_tinyint)"));
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE tinyints(i TINYINT)"));
+	{
+		Appender appender(con, "offsets");
+		REQUIRE(appender.GetActiveTypes()[0] == offset_type);
+	}
+	// both the extension type and the built-in pair get a cast that adds one
+	auto &casts = DBConfig::GetConfig(*con.context).GetCastFunctions();
+	casts.RegisterCastFunction(LogicalType::BIGINT, offset_type, BoundCastInfo(AppenderBigintToTinyintCast));
+	casts.RegisterCastFunction(LogicalType::BIGINT, LogicalType::TINYINT, BoundCastInfo(AppenderBigintToTinyintCast));
 
 	DataChunk chunk;
-	chunk.Initialize(Allocator::DefaultAllocator(), {LogicalType::BIGINT});
-	for (idx_t i = 0; i < 3; i++) {
-		chunk.SetValue(0, i, Value::BIGINT(NumericCast<int64_t>(i)));
-	}
-	chunk.SetCardinality(3);
-
+	InitializeBigintChunk(chunk);
 	SECTION("Appender") {
-		Appender appender(con, "tinyints");
+		Appender appender(con, "offsets");
 		appender.AppendDataChunk(chunk);
 		appender.Close();
+		Appender tinyint_appender(con, "tinyints");
+		tinyint_appender.AppendDataChunk(chunk);
+		tinyint_appender.Close();
 	}
 	SECTION("Query appender") {
-		QueryAppender appender(con, "INSERT INTO tinyints SELECT * FROM appended_data", {LogicalType::TINYINT});
+		QueryAppender appender(con, "INSERT INTO offsets SELECT * FROM appended_data", {offset_type});
 		appender.AppendDataChunk(chunk);
 		appender.Close();
+		QueryAppender tinyint_appender(con, "INSERT INTO tinyints SELECT * FROM appended_data", {LogicalType::TINYINT});
+		tinyint_appender.AppendDataChunk(chunk);
+		tinyint_appender.Close();
 	}
-	auto result = con.Query("SELECT i FROM tinyints ORDER BY i");
+	auto result = con.Query("SELECT i::TINYINT FROM offsets ORDER BY i");
 	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, 3}));
+	// built-in types keep the built-in casts
+	result = con.Query("SELECT i FROM tinyints ORDER BY i");
+	REQUIRE(CHECK_COLUMN(result, 0, {0, 1, 2}));
 
-	Appender appender(con, "tinyints");
+	Appender appender(con, "offsets");
 	DataChunk target;
-	target.Initialize(Allocator::DefaultAllocator(), {LogicalType::TINYINT});
+	target.Initialize(Allocator::DefaultAllocator(), {offset_type, LogicalType::TINYINT});
+	target.SetChildCardinality(1);
 	appender.Append(target, Value::BIGINT(41), 0, 0);
-	REQUIRE(target.GetValue(0, 0) == Value::TINYINT(42));
+	appender.Append(target, Value::BIGINT(41), 1, 0);
+	REQUIRE(target.GetValue(0, 0).GetValue<int8_t>() == 42);
+	REQUIRE(target.GetValue(1, 0) == Value::TINYINT(41));
+}
+
+TEST_CASE("Test appender stores the same TIMESTAMPTZ on every append path", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET TimeZone='America/New_York'"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE tstz(ts TIMESTAMPTZ)"));
+	const string midnight = "2024-01-01 00:00:00";
+	auto midnight_ts = Timestamp::FromString(midnight, false);
+
+	Appender appender(con, "tstz");
+	// row-wise appends
+	appender.BeginRow();
+	appender.Append(midnight.c_str());
+	appender.EndRow();
+	appender.BeginRow();
+	appender.Append(midnight_ts);
+	appender.EndRow();
+	appender.AppendRow(Value(midnight));
+	appender.AppendRow(Value::TIMESTAMP(midnight_ts));
+	// data chunk appends
+	DataChunk varchar_chunk;
+	varchar_chunk.Initialize(Allocator::DefaultAllocator(), {LogicalType::VARCHAR});
+	varchar_chunk.SetChildCardinality(1);
+	varchar_chunk.data[0].SetValue(0, Value(midnight));
+	appender.AppendDataChunk(varchar_chunk);
+	DataChunk timestamp_chunk;
+	timestamp_chunk.Initialize(Allocator::DefaultAllocator(), {LogicalType::TIMESTAMP});
+	timestamp_chunk.SetChildCardinality(1);
+	timestamp_chunk.data[0].SetValue(0, Value::TIMESTAMP(midnight_ts));
+	appender.AppendDataChunk(timestamp_chunk);
+	appender.Close();
+
+	REQUIRE_NO_FAIL(con.Query("SET TimeZone='UTC'"));
+	auto result = con.Query("SELECT ts::VARCHAR FROM tstz");
+	REQUIRE(CHECK_COLUMN(result, 0,
+	                     {"2024-01-01 00:00:00+00", "2024-01-01 00:00:00+00", "2024-01-01 00:00:00+00",
+	                      "2024-01-01 00:00:00+00", "2024-01-01 00:00:00+00", "2024-01-01 00:00:00+00"}));
 }

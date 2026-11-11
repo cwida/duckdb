@@ -83,6 +83,9 @@ struct BindLogicalTypeInput {
 
 //! The type to bind type modifiers to a type
 typedef LogicalType (*bind_logical_type_function_t)(BindLogicalTypeInput &input);
+//! Casts a type modifier to the type of its parameter, setting the error on failure
+using type_argument_cast_t =
+    std::function<optional<Value>(const Value &value, const LogicalType &target, string &error)>;
 
 //! A single overload of a type constructor: a signature describing the modifiers it accepts, plus the callback that
 //! turns them into a LogicalType. The arguments handed to the callback are already matched against the signature.
@@ -134,11 +137,9 @@ public:
 	DUCKDB_API LogicalType BindBuiltin(const LogicalType &base_type, const vector<TypeArgument> &arguments) const;
 
 private:
-	using argument_cast_t =
-	    std::function<optional<Value>(const Value &value, const LogicalType &target, string &error)>;
-
-	LogicalType BindInternal(optional_ptr<Context> context, const argument_cast_t &cast, const LogicalType &base_type,
-	                         const vector<TypeArgument> &arguments, QueryLocation query_location) const;
+	LogicalType BindInternal(optional_ptr<Context> context, const type_argument_cast_t &cast,
+	                         const LogicalType &base_type, const vector<TypeArgument> &arguments,
+	                         QueryLocation query_location) const;
 };
 
 } // namespace duckdb

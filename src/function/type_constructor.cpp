@@ -94,11 +94,9 @@ string ArgumentName(const Identifier &name, idx_t position) {
 	return StringUtil::Format("%s", name);
 }
 
-using ArgumentCast = std::function<optional<Value>(const Value &value, const LogicalType &target, string &error)>;
-
 //! Cast a modifier to the type its parameter declares. Overload selection already established the cast is possible.
-Value CastArgument(const ArgumentCast &cast, const Identifier &type_name, const string &arg_name, const Value &value,
-                   const LogicalType &target, QueryLocation location) {
+Value CastArgument(const type_argument_cast_t &cast, const Identifier &type_name, const string &arg_name,
+                   const Value &value, const LogicalType &target, QueryLocation location) {
 	if (value.IsNull()) {
 		throw BinderException(location, "Type parameter %s for type %s cannot be NULL", arg_name, type_name);
 	}
@@ -118,7 +116,7 @@ Value CastArgument(const ArgumentCast &cast, const Identifier &type_name, const 
 //! Reorder the call arguments into the constructor's declared parameter order, filling in defaults, and cast every
 //! value to the type its parameter declares. Any argument beyond the declared parameters is appended in call order
 //! with its name preserved.
-vector<TypeArgument> NormalizeArguments(const ArgumentCast &cast, const Identifier &type_name,
+vector<TypeArgument> NormalizeArguments(const type_argument_cast_t &cast, const Identifier &type_name,
                                         const TypeConstructor &constructor, const vector<TypeArgument> &arguments,
                                         QueryLocation type_location) {
 	const auto &sig = constructor.GetSignature();
@@ -216,7 +214,7 @@ LogicalType TypeConstructorSet::BindBuiltin(const LogicalType &base_type, const 
 	return BindInternal(nullptr, cast, base_type, arguments, QueryLocation());
 }
 
-LogicalType TypeConstructorSet::BindInternal(optional_ptr<Context> context, const argument_cast_t &cast,
+LogicalType TypeConstructorSet::BindInternal(optional_ptr<Context> context, const type_argument_cast_t &cast,
                                              const LogicalType &base_type, const vector<TypeArgument> &arguments,
                                              QueryLocation query_location) const {
 	D_ASSERT(!functions.empty());
