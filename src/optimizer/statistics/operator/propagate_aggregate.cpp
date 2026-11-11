@@ -475,6 +475,9 @@ void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_p
 			case FilterPropagateResult::FILTER_ALWAYS_FALSE:
 				break;
 			default:
+				// Bail out early: partial precomputation is disabled due to unstable row-group indices (PR #24962).
+				return;
+
 				need_to_scan = true;
 				scan_partition_indices.push_back(partition_idx);
 				break;
