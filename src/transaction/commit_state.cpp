@@ -5,7 +5,6 @@
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/duck_schema_entry.hpp"
 #include "duckdb/catalog/catalog_entry/trigger_catalog_entry.hpp"
-#include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/type_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/dependency/dependency_entry.hpp"
@@ -292,10 +291,13 @@ void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &info)
 		if (new_entry.type == CatalogType::DEPENDENCY_ENTRY) {
 			auto &dep = new_entry.Cast<DependencyEntry>();
 			if (dep.Side() == DependencyEntryType::SUBJECT) {
-				new_entry.set->VerifyExistenceOfDependency(commit_id, new_entry);
+				new_entry.set->VerifyExistenceOfDependency(commit_id, transaction.view.visibility_bound, new_entry);
 			}
 		} else if (new_entry.type == CatalogType::DELETED_ENTRY && old_entry.set) {
 			old_entry.set->CommitDrop(commit_id, transaction.view.visibility_bound, old_entry);
+		} else if (old_entry.set && new_entry.InvalidatesDependents(old_entry)) {
+			// an alter that breaks what dependents rely on must not race a dependency created meanwhile, like a drop
+			old_entry.set->VerifyCommitDrop(commit_id, transaction.view.visibility_bound, old_entry);
 		}
 		// Grab a write lock on the catalog
 		auto &duck_catalog = catalog.Cast<DuckCatalog>();

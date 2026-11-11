@@ -8,7 +8,7 @@ statement ok
 create table random as select hash(range + 42) % 10_000_000 rand from range(10_000_000)
 
 statement ok
-pragma threads=4
+SET threads=4
 
 statement ok
 create table t1 (c0 bigint, c1 bigint, c2 bigint, c3 varchar)
@@ -27,7 +27,7 @@ statement ok
 set disabled_optimizers to 'compressed_materialization'
 
 statement ok
-pragma memory_limit='1.5GB'
+SET memory_limit='1.5GB'
 
 query I
 select count(*) from (select distinct * from t1)

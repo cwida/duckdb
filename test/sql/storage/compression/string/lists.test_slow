@@ -18,10 +18,10 @@ statement ok
 USE db_v13
 
 statement ok
-pragma threads=1
+SET threads=1
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 statement ok
 CREATE TABLE test (id INTEGER, l VARCHAR[]);

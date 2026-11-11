@@ -3,7 +3,7 @@
 # group: [statistics]
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 statement ok
 CREATE TABLE events(user_id INTEGER NOT NULL, session_id INTEGER, device_type VARCHAR, event_type VARCHAR);

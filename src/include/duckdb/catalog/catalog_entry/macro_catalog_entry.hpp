@@ -29,6 +29,13 @@ public:
 public:
 	unique_ptr<CreateInfo> GetInfo() const override;
 
+	unique_ptr<CatalogEntry> AlterEntry(CatalogTransaction transaction, AlterInfo &info) override;
+	//! A dependent may have bound any overload, so losing one invalidates it. Overloads are only ever removed by an
+	//! alter, so a lower count than any earlier version means one was removed in between
+	bool InvalidatesDependents(const CatalogEntry &previous) const override;
+
+	//! The index of the member a parameter type list names, invalid when none matches
+	optional_idx FindMember(const vector<LogicalType> &signature) const;
 	string ToSQL() const override;
 };
 

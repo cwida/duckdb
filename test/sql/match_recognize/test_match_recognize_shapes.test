@@ -8,7 +8,7 @@
 # on the shape of the series rather than on the particular values.
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 statement ok
 create table signal_log(device varchar, day integer, level integer);

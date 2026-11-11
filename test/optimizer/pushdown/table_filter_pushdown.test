@@ -12,7 +12,7 @@ statement ok
 INSERT INTO integers VALUES (5, 5, 5), (10, 10, 10)
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # complex filter cannot be entirely pushed down
 query II
@@ -159,7 +159,7 @@ statement ok
 create temporary table t as select range a, range % 10 b, mod(range,10000) c, 5 d, 10000 e from range(100);
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 query II
 explain select count(*) from t where b <=3 and b>=0;
@@ -175,7 +175,7 @@ statement ok
 INSERT INTO  test_time VALUES ('00:01:00','00:01:00','00:01:00'),('00:10:00','00:10:00','00:10:00'),('01:00:00','00:10:00','01:00:00'),(NULL,NULL,NULL)
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT count(*) from test_time where a ='00:01:00'
@@ -191,7 +191,7 @@ statement ok
 INSERT INTO  test_bool VALUES (TRUE,TRUE),(TRUE,FALSE),(FALSE,TRUE),(NULL,NULL)
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT i FROM test_bool where j = TRUE
@@ -207,7 +207,7 @@ statement ok
 INSERT INTO  test_timestamps VALUES (NOW()::TIMESTAMP), (NOW()::TIMESTAMP - INTERVAL 10 YEARS);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT * FROM test_timestamps where ts >= NOW()::TIMESTAMP - INTERVAL 1 YEAR;

@@ -1,0 +1,73 @@
+# name: test/optimizer/domain_scan_key_source.test
+# description: A filtered join input supplies aggregate domain keys without changing bags or residual predicates
+# group: [optimizer]
+
+statement ok
+CREATE TABLE fact AS SELECT (i % 100)::INTEGER k, (i // 100)::DOUBLE v FROM range(10000) t(i);
+
+statement ok
+INSERT INTO fact VALUES (NULL, 1), (NULL, 10);
+
+statement ok
+CREATE TABLE dimension AS SELECT i::INTEGER k, i < 5 AS selected FROM range(100) t(i);
+
+statement ok
+INSERT INTO dimension VALUES (0, true), (NULL, true);
+
+# The duplicate dimension row must duplicate the contribution of key zero.
+query I
+SELECT sum(f.v)::BIGINT
+FROM fact f, dimension d
+WHERE f.k = d.k AND d.selected
+  AND f.v < (SELECT 0.2 * avg(inner_fact.v) FROM fact inner_fact WHERE inner_fact.k = d.k);
+----
+270
+
+# NULL-safe keys retain the NULL group, including its residual comparison.
+query I
+SELECT sum(f.v)::BIGINT
+FROM fact f, dimension d
+WHERE f.k IS NOT DISTINCT FROM d.k AND d.selected
+  AND f.v < (
+      SELECT 0.2 * avg(inner_fact.v) FROM fact inner_fact
+      WHERE inner_fact.k IS NOT DISTINCT FROM d.k
+  );
+----
+271
+
+statement ok
+PREPARE selected_domain AS
+SELECT sum(f.v)::BIGINT
+FROM fact f, dimension d
+WHERE f.k = d.k AND d.k < $1
+  AND f.v < (SELECT 0.2 * avg(inner_fact.v) FROM fact inner_fact WHERE inner_fact.k = d.k);
+
+query I
+EXECUTE selected_domain(3);
+----
+180
+
+query I
+EXECUTE selected_domain(6);
+----
+315
+
+# A cast in another join condition must not start evaluating on excluded groups.
+statement ok
+CREATE TABLE text_data AS
+SELECT (i % 2)::INTEGER k, CASE WHEN i % 2 = 0 THEN '1' ELSE 'x' END v FROM range(3) t(i);
+
+statement ok
+CREATE VIEW text_fact AS SELECT (k + 2) % 2 k, v FROM text_data;
+
+query IT
+SELECT d.k, a.s FROM (VALUES (0, 5), (0, 6)) d(k, v)
+LEFT JOIN (
+    SELECT f.k, max(v) s FROM text_fact f
+    SEMI JOIN (SELECT DISTINCT k FROM (VALUES (0)) keys(k)) old USING (k)
+    GROUP BY f.k
+) a ON d.k = a.k AND d.v > a.s::INTEGER
+ORDER BY ALL;
+----
+0	1
+0	1

@@ -9,10 +9,7 @@ require skip_reload
 require allow_unsigned_extensions
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
-
-statement ok
-PRAGMA disable_verification;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 statement ok
 LOAD '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension';

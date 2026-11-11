@@ -5,7 +5,7 @@
 load {TEST_DIR}/dict_fsst_cdc.db
 
 statement ok
-PRAGMA force_compression='dict_fsst'
+SET force_compression='dict_fsst'
 
 # a low-NDV string column, a NULL-bearing low-NDV column, and a short inlined low-NDV column
 statement ok

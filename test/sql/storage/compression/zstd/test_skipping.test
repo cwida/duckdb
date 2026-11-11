@@ -7,7 +7,7 @@ SET storage_compatibility_version='v1.2.0'
 load {TEST_DIR}/zstd_vector_skipping.db
 
 statement ok
-pragma force_compression='zstd';
+SET force_compression='zstd';
 
 set seed 0.42
 

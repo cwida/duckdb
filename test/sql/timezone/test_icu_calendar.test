@@ -114,7 +114,7 @@ SELECT TIMESTAMPTZ '-276069-9-30 0:0:00 America/Whitehorse';
 
 # Issue #5237
 statement ok
-PRAGMA CALENDAR='japanese';
+SET CALENDAR='japanese';
 
 # The TIMETZ cast is not valid (checked against PG)
 statement error

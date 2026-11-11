@@ -14,7 +14,7 @@
 # with "Attempted to access index 0 within vector of size 0".
 
 statement ok
-PRAGMA threads=2
+SET threads=2
 
 # Run the racing query many times in a single session. Before the fix this is highly likely
 # to fail (and once it does, the database is invalidated and every subsequent statement fails).

@@ -3,6 +3,7 @@
 #include "duckdb/execution/index/art/art.hpp"
 #include "duckdb/execution/index/index_type_set.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/settings.hpp"
 #include "test_helpers.hpp"
 
 using namespace duckdb;
@@ -29,7 +30,7 @@ void RequireWALEmpty(Connection &con, const bool empty) {
 TEST_CASE("Checkpoint buffered replays of an index type that is not loaded", "[storage][wal]") {
 	auto config = GetTestConfig();
 	config->options.checkpoint_wal_size = idx_t(-1);
-	config->options.checkpoint_on_shutdown = false;
+	config->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
 
 	auto database_path = TestCreatePath("checkpoint_unknown_index_type");
 	DeleteDatabase(database_path);

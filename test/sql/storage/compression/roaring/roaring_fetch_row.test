@@ -12,7 +12,7 @@ CREATE TABLE test (
 );
 
 statement ok
-pragma force_compression='roaring'
+SET force_compression='roaring'
 
 # Array Container
 statement ok

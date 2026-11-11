@@ -5,9 +5,6 @@
 require json
 
 statement ok
-PRAGMA disable_object_cache;
-
-statement ok
 SET threads=8;
 
 statement ok

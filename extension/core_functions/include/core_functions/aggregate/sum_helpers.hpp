@@ -15,6 +15,7 @@
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/types/value.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/function/aggregate_state.hpp"
 #include "duckdb/function/aggregate_state_layout.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
@@ -64,6 +65,15 @@ struct BignumAggregates {
 		memcpy(ptr, blob.GetData(), size);
 		return BignumIntermediate(ptr, size);
 	}
+};
+
+struct AggregateStatisticsInput;
+
+struct SumAccumulatorBounds {
+	hugeint_t min;
+	hugeint_t max;
+
+	static optional<SumAccumulatorBounds> TryGet(const AggregateStatisticsInput &input);
 };
 
 struct RepeatedStateValue {
@@ -215,14 +225,9 @@ struct AddToHugeint {
 		result.lower += value;
 		// now handle overflows
 		int overflow = result.lower < value;
-		// we consider two situations:
-		// (1) input[idx] is positive, and current value is lower than value: overflow
-		// (2) input[idx] is negative, and current value is higher than value: underflow
-		if (!(overflow ^ positive)) {
-			// in the case of an overflow or underflow we either increment or decrement the upper base
-			// positive: +1, negative: -1
-			result.upper += -1 + 2 * positive;
-		}
+		D_ASSERT(positive == 0 || positive == 1);
+		// Add the unsigned carry and the sign extension of the input.
+		result.upper += overflow + positive - 1;
 	}
 
 	template <class STATE, class T>

@@ -5,20 +5,20 @@
 foreach compression rle dictionary bitpacking fsst
 
 statement ok
-PRAGMA disabled_compression_methods='{compression}'
+SET disabled_compression_methods='{compression}'
 
 endloop
 
 statement error
-PRAGMA disabled_compression_methods='uncompressed,rle'
+SET disabled_compression_methods='uncompressed,rle'
 ----
 cannot be disabled
 
 statement ok
-PRAGMA disabled_compression_methods='dictionary,rle'
+SET disabled_compression_methods='dictionary,rle'
 
 statement error
-PRAGMA disabled_compression_methods='xzx'
+SET disabled_compression_methods='xzx'
 ----
 unrecognized value
 

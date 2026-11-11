@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 statement ok
 CREATE TABLE integers AS SELECT * FROM (VALUES (1), (2), (3)) tbl(i);
@@ -96,11 +96,6 @@ query I
 SELECT * FROM integers WHERE (COALESCE(i, 4, 17)=3);
 ----
 3
-
-# Verification compares results, which are different for random().
-
-statement ok
-PRAGMA disable_verification
 
 # COALESCE without statistics.
 

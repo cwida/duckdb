@@ -194,7 +194,7 @@ SELECT count(*) FROM t;
 
 # the functions stay consistent within a query, so the optimizer keeps rewriting and pruning their filters
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 statement ok
 CREATE TABLE days AS SELECT TIMESTAMPTZ '2000-01-01 00:00:00+00' + i * INTERVAL '1 day' AS ts FROM range(10000) r(i);

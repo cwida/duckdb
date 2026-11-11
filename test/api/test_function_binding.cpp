@@ -52,6 +52,47 @@ static string GetErrorMessage(const FunctionBindResult &selection) {
 	return selection.GetError().RawMessage();
 }
 
+TEST_CASE("Argument mapping preserves defaults, templates and keyword restrictions", "[api][function_binding]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	FunctionSignature sig;
+	sig.AddParameter("a", LogicalType::TEMPLATE("T"));
+	sig.AddParameter("b", LogicalType::TEMPLATE("T"), Value::BIGINT(0));
+	sig.SetReturnType(LogicalType::TEMPLATE("T"));
+	ScalarFunctionSet set("mapping");
+	set.AddFunction(ScalarFunction("mapping", std::move(sig), NoopExec));
+
+	// Both parameters are supplied: the default must not participate in template deduction.
+	auto selection = FunctionBinder::SelectFunction(*con.context, set, {LogicalType::INTEGER, LogicalType::INTEGER});
+	REQUIRE(selection.IsSuccess());
+	REQUIRE(selection.GetBinding().return_type == LogicalType::INTEGER);
+	const vector<idx_t> identity {0, 1};
+	REQUIRE(selection.GetBinding().argument_to_parameters == identity);
+
+	// An omitted parameter still contributes its default to template deduction.
+	selection = FunctionBinder::SelectFunction(*con.context, set, {LogicalType::INTEGER});
+	REQUIRE(selection.IsSuccess());
+	REQUIRE(selection.GetBinding().return_type == LogicalType::BIGINT);
+
+	vector<LogicalType> no_positional;
+	vector<pair<Identifier, LogicalType>> reversed {{"b", LogicalType::BIGINT}, {"a", LogicalType::INTEGER}};
+	selection = FunctionBinder::SelectFunction(*con.context, set, {no_positional, reversed});
+	REQUIRE(selection.IsSuccess());
+	const vector<idx_t> reordered {1, 0};
+	REQUIRE(selection.GetBinding().argument_to_parameters == reordered);
+	REQUIRE(selection.GetBinding().return_type == LogicalType::BIGINT);
+
+	// Equal argument and parameter counts do not make a keyword-only parameter positional.
+	FunctionSignature keyword_sig;
+	keyword_sig.AddParameter("a", LogicalType::INTEGER);
+	keyword_sig.AddKeywordOnly("b", LogicalType::INTEGER, Value::INTEGER(0));
+	keyword_sig.SetReturnType(LogicalType::INTEGER);
+	ScalarFunctionSet keyword_set("keyword");
+	keyword_set.AddFunction(ScalarFunction("keyword", std::move(keyword_sig), NoopExec));
+	selection = FunctionBinder::SelectFunction(*con.context, keyword_set, {LogicalType::INTEGER, LogicalType::INTEGER});
+	REQUIRE(GetMismatches(selection)[0].GetType() == FunctionMismatch::Type::TOO_MANY_ARGUMENTS);
+}
+
 TEST_CASE("Selecting a function maps every argument to the parameter that receives it", "[api][function_binding]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -72,6 +113,31 @@ TEST_CASE("Selecting a function maps every argument to the parameter that receiv
 	                                          LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::ANY};
 	REQUIRE(binding.parameter_types == expected_types);
 	REQUIRE(binding.return_type == LogicalType::INTEGER);
+}
+
+TEST_CASE("Overload selection keeps cheaper later matches and equal-cost ambiguities", "[api][function_binding]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	ScalarFunctionSet set("costs");
+	for (auto &type : {LogicalType::BIGINT, LogicalType::INTEGER, LogicalType::DOUBLE}) {
+		FunctionSignature sig;
+		sig.AddParameter("a", type);
+		sig.SetReturnType(type);
+		set.AddFunction(ScalarFunction("costs", std::move(sig), NoopExec));
+	}
+	auto selection = FunctionBinder::SelectFunction(*con.context, set, {LogicalType::INTEGER});
+	REQUIRE(selection.IsSuccess());
+	REQUIRE(selection.GetBinding().GetOverloadIndex() == 1);
+	REQUIRE(selection.GetBinding().GetFunction().GetSignature().GetReturnType() == LogicalType::INTEGER);
+
+	// A later equally good overload must still be retained.
+	FunctionSignature sig;
+	sig.AddParameter("a", LogicalType::INTEGER);
+	sig.SetReturnType(LogicalType::BIGINT);
+	set.AddFunction(ScalarFunction("costs", std::move(sig), NoopExec));
+	selection = FunctionBinder::SelectFunction(*con.context, set, {LogicalType::INTEGER});
+	REQUIRE(!selection.IsSuccess());
+	REQUIRE(selection.GetError().GetType() == FunctionBindError::Type::AMBIGUOUS_MATCH);
 }
 
 TEST_CASE("Selecting a function deduces the templates of the overload", "[api][function_binding]") {

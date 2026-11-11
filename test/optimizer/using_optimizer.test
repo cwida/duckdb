@@ -3,7 +3,7 @@
 # group: [optimizer]
 
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 statement ok
 create table a as select 42 as i, 80 as j;
