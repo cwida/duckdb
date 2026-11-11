@@ -9,7 +9,6 @@ add_library_unity(
   test_cast.cpp
   test_checked_integer.cpp
   test_checksum.cpp
-  test_concurrentqueue.cpp
   test_dictionary_hash_cache.cpp
   test_vector_hash.cpp
   test_column_data_allocator.cpp
@@ -71,6 +70,10 @@ add_library_unity(
   test_lazy_vector.cpp
   test_musl_stack_size.cpp)
 
+# Keep macOS Mach headers isolated from other tests' using directives.
+add_library(test_concurrentqueue OBJECT test_concurrentqueue.cpp)
+
 set(UNITTEST_OBJECT_FILES
     ${UNITTEST_OBJECT_FILES} $<TARGET_OBJECTS:test_common>
+    $<TARGET_OBJECTS:test_concurrentqueue>
     PARENT_SCOPE)
