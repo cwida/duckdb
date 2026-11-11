@@ -52,8 +52,8 @@ DataTableInfo::DataTableInfo(AttachedDatabase &db, shared_ptr<TableIOManager> ta
 	D_ASSERT(!this->schema_path.empty());
 }
 
-void DataTableInfo::BindIndexes(ClientContext &context, const optional<string> &index_type) {
-	indexes.Bind(context, *this, index_type);
+void DataTableInfo::BindIndexes(ClientContext &context, const optional<string> &index_type, bool skip_mismatched_keys) {
+	indexes.Bind(context, *this, index_type, skip_mismatched_keys);
 }
 
 bool DataTableInfo::IsTemporary() const {

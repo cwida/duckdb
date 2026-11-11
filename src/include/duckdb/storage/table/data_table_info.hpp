@@ -26,8 +26,10 @@ public:
 	              Identifier table);
 
 	//! Bind unknown indexes throwing an exception if binding fails.
-	//! Only binds the specified index type, or all if no type is specified.
-	void BindIndexes(ClientContext &context, const optional<string> &index_type = {});
+	//! Only binds the specified index type, or all if no type is specified. With skip_mismatched_keys, an index
+	//! whose stored keys bind to other types here is left unbound instead of refused.
+	void BindIndexes(ClientContext &context, const optional<string> &index_type = {},
+	                 bool skip_mismatched_keys = false);
 
 	//! Whether or not the table is temporary
 	bool IsTemporary() const;

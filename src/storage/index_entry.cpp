@@ -356,9 +356,10 @@ void IndexEntry::Retire() {
 	bind_state = IndexBindState::RETIRED;
 }
 
-unique_ptr<BoundIndex> IndexEntry::Bind(IndexBinder &binder, const vector<LogicalType> &table_types) {
+unique_ptr<BoundIndex> IndexEntry::Bind(IndexBinder &binder, const vector<LogicalType> &table_types,
+                                        bool skip_mismatched_keys) {
 	auto entry_lock = lock.GetExclusiveLock();
-	return owned_index->Cast<UnboundIndex>().Bind(binder, table_types);
+	return owned_index->Cast<UnboundIndex>().Bind(binder, table_types, skip_mismatched_keys);
 }
 
 void IndexEntry::CommitBind(unique_ptr<BoundIndex> bound_index) {

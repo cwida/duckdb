@@ -1,5 +1,5 @@
 # name: test/sql/storage/bc/test_decimal_expression_index_v2_0.test
-# description: An index whose decimal key binds to a wide type in a database written before wide decimals is refused
+# description: An index whose decimal key binds to a wide type in a database written before wide decimals is refused by writes and skipped by reads
 # group: [bc]
 
 # The databases are written with a vector size of 2048.
@@ -28,6 +28,12 @@ SELECT typeof(a + b) FROM old.t
 ----
 DECIMAL(39,2)
 
+# a read does not need the index: a filtered scan leaves it unbound and uses the other index or a table scan
+query II
+SELECT a, b FROM old.t WHERE a = 1.5
+----
+1.50	2.50
+
 query I
 SELECT count(*) FROM old.t WHERE a + b = 4
 ----
@@ -43,6 +49,11 @@ statement error
 INSERT INTO old.t VALUES (1.5, 0)
 ----
 <REGEX>:.*Cannot bind index "ix".*
+
+query II
+SELECT a, b FROM old.t WHERE a = 1.5
+----
+1.50	2.50
 
 # the index is dropped and created again: in this storage version every part of the key has to stay within 38 digits,
 # a cast of the wide sum is not enough, since the engines of that version compute the sum within 38 digits
@@ -100,6 +111,30 @@ DETACH old
 
 endloop
 
+# a read-only database cannot drop the index, its filtered reads work without it
+unzip data/storage/decimal_expression_index_v2_0_0.db.gz {TEST_DIR}/decimal_expression_index_read_only.db
+
+statement ok
+ATTACH '{TEST_DIR}/decimal_expression_index_read_only.db' AS ro (READ_ONLY)
+
+query II
+SELECT a, b FROM ro.t WHERE a = 1.5
+----
+1.50	2.50
+
+query I
+SELECT count(*) FROM ro.t WHERE a + b = 4
+----
+1
+
+query I
+SELECT count(*) FROM ro.t
+----
+1
+
+statement ok
+DETACH ro
+
 # data/storage/decimal_coalesce_index_v1_4_0.db.gz and decimal_coalesce_index_v2_0_0.db.gz were written by DuckDB
 # 2.0.0 at storage versions v1.4.0 and v2.0.0, with:
 #   CREATE TABLE t (a DECIMAL(38,0), b DECIMAL(38,1));
@@ -131,6 +166,11 @@ query I
 SELECT count(*) FROM old.t
 ----
 1
+
+query I
+SELECT b FROM old.t WHERE b = 0.1
+----
+0.1
 
 # the same key cannot be created again at this storage version, since the engines of that version compute it otherwise
 statement ok
@@ -171,6 +211,11 @@ statement error
 INSERT INTO up.t VALUES (1, 3)
 ----
 <REGEX>:.*Cannot bind index "ix" on table "t".*
+
+query II
+SELECT a, b FROM up.t WHERE a = 1.5
+----
+1.50	2.50
 
 statement ok
 DROP INDEX up.ix

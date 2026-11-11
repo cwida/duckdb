@@ -155,7 +155,7 @@ static bool IsValidIndexExpression(Binder &binder, const Expression &expr, Error
 	return true;
 }
 
-unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index) {
+unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index, bool skip_mismatched_keys) {
 	auto &index_type_name = unbound_index.GetIndexType();
 	// Do we know the type of this index now?
 	auto index_type = context.db->config.GetIndexTypes().FindByName(index_type_name);
@@ -187,6 +187,9 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index)
 	properties.always_require_rebind = statement_requires_rebind;
 	auto mismatched_key = FindMismatchedStoredKey(unbound_index, unbound_expressions);
 	if (mismatched_key) {
+		if (skip_mismatched_keys) {
+			return nullptr;
+		}
 		ThrowMismatchedStoredKey(unbound_index, *mismatched_key);
 	}
 
