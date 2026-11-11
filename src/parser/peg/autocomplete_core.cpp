@@ -164,9 +164,8 @@ bool ReplaceUnicodeSpaces(const string &query, string &new_query, const vector<U
 
 class AutoCompleteTokenizerBehavior : public TokenizerBehavior {
 public:
-	AutoCompleteTokenizerBehavior(const string &sql, vector<MatcherToken> &tokens,
-	                              vector<MatcherSuggestion> &suggestions_p)
-	    : TokenizerBehavior(sql, tokens), suggestions(suggestions_p) {
+	AutoCompleteTokenizerBehavior(const string &sql, vector<MatcherSuggestion> &suggestions_p)
+	    : TokenizerBehavior(sql), suggestions(suggestions_p) {
 		last_pos = 0;
 	}
 
@@ -199,21 +198,20 @@ vector<AutoCompleteSuggestion> GenerateAutoCompleteSuggestions(AutoCompleteCatal
                                                                AutoCompleteParameters &parameters) {
 	// tokenize the input
 	auto compiled_grammar = provider.GetCompiledGrammar();
-	vector<MatcherToken> tokens;
 	vector<MatcherSuggestion> suggestions;
 	ParseResultAllocator parse_allocator;
 	idx_t max_token_index = 0;
 	vector<UnicodeSpace> unicode_spaces;
 	string clean_sql;
 	const string &sql_ref = Parser::StripUnicodeSpaces(sql, clean_sql) ? clean_sql : sql;
-	AutoCompleteTokenizerBehavior behavior(sql_ref, tokens, suggestions);
+	AutoCompleteTokenizerBehavior behavior(sql_ref, suggestions);
 	if (!compiled_grammar->GetTokenizer().TokenizeInput(behavior)) {
 		return {};
 	}
 	if (suggestions.empty()) {
 		// no suggestions found during tokenizing
 		// run the root matcher
-		TokenIterator token_iterator(tokens);
+		TokenIterator token_iterator(behavior);
 		ArenaAllocator process_allocator(Allocator::DefaultAllocator());
 		// memoize match results so backtracking over unbalanced input stays polynomial
 		ArenaAllocator packrat_allocator(Allocator::DefaultAllocator());

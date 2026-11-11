@@ -94,10 +94,10 @@ SQLFormatter::SQLFormatter(const FormatterConfig &config) : config(config) {
 
 vector<MatcherToken> SQLFormatter::Tokenize(const string &sql) {
 	auto &keyword_helper = DuckDBKeywordHelper::Instance();
-	vector<MatcherToken> tokens;
-	HighlightTokenizerBehavior behavior(sql, tokens);
+	HighlightTokenizerBehavior behavior(sql);
 	Tokenizer tokenizer(keyword_helper);
 	tokenizer.TokenizeInput(behavior);
+	auto tokens = std::move(behavior.tokens);
 	if (!tokens.empty()) {
 		auto back_type = tokens.back().type;
 		if (back_type == TokenType::END_OF_INPUT || back_type == TokenType::END_OF_INPUT_AUTOCOMPLETE) {
