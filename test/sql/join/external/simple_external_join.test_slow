@@ -24,10 +24,10 @@ pragma verify_parallelism
 
 # with 1 thread we can do a tighter memory limit
 statement ok
-pragma threads=1
+SET threads=1
 
 statement ok
-pragma memory_limit='100mb'
+SET memory_limit='100mb'
 
 query I
 select count(*) from t1, t2 where i = j
@@ -36,7 +36,7 @@ select count(*) from t1, t2 where i = j
 
 # now with more threads
 statement ok
-pragma threads=4
+SET threads=4
 
 query I
 select count(*) from t1, t2 where i = j
@@ -45,11 +45,11 @@ select count(*) from t1, t2 where i = j
 
 # now trigger repartitioning
 statement ok
-pragma debug_force_external=true
+SET debug_force_external=true
 
 # we need more memory for repartitioning
 statement ok
-pragma memory_limit='250mb'
+SET memory_limit='250mb'
 
 query I
 select count(*) from t1, t2 where i = j
@@ -57,11 +57,11 @@ select count(*) from t1, t2 where i = j
 100000
 
 statement ok
-pragma debug_force_external=false
+SET debug_force_external=false
 
 # higher memory limit for this because the strings are so large
 statement ok
-pragma memory_limit='200mb'
+SET memory_limit='200mb'
 
 # add some strings that are longer than Storage::BLOCK_SIZE
 statement ok

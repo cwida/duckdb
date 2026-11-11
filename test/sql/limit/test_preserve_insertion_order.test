@@ -22,15 +22,6 @@ SELECT * FROM integers LIMIT 5
 1
 1
 
-query I
-SELECT * FROM integers LIMIT 5 OFFSET 500000
-----
-1
-1
-1
-1
-1
-
 statement ok
 CREATE TABLE integers2 AS SELECT * FROM range(1000000) tbl(i)
 
@@ -58,3 +49,16 @@ SELECT * FROM integers2 WHERE i IN (337, 195723, 442578, 994375) LIMIT 4
 337
 442578
 994375
+
+# OFFSET on an unordered input is intended here
+statement ok
+SET warnings_as_errors=false
+
+query I
+SELECT * FROM integers LIMIT 5 OFFSET 500000
+----
+1
+1
+1
+1
+1

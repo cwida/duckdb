@@ -12,7 +12,7 @@ copy (FROM test UNION ALL select 'NULL' as a, 'NULL' as b) to '{TEST_DIR}/null-p
 
 query II
 select * 
-from parquet_scan('{TEST_DIR}/null-parquet/**/*.parquet', hive_partitioning=1, hive_types={'a': INT})
+from parquet_scan('{TEST_DIR}/null-parquet/**/*.parquet', hive_partitioning=1, hive_types={'a': 'INT'})
 ORDER BY ALL
 ----
 0	0
@@ -35,7 +35,7 @@ copy (FROM test2 UNION ALL select 'NULL' as a, 'NULL' as b, 'NULL' as c) to '{TE
 
 query III
 select * 
-from parquet_scan('{TEST_DIR}/null-parquet/**/*.parquet', hive_partitioning=1, hive_types={'a': INT})
+from parquet_scan('{TEST_DIR}/null-parquet/**/*.parquet', hive_partitioning=1, hive_types={'a': 'INT'})
 ORDER BY ALL
 ----
 0	0	0
@@ -61,7 +61,7 @@ copy (select 1 as c) to '{TEST_DIR}/hive-default-partition-test/a=__HIVE_DEFAULT
 
 query III
 select *
-from parquet_scan('{TEST_DIR}/hive-default-partition-test/a=__HIVE_DEFAULT_PARTITION__/b=__HIVE_DEFAULT_PARTITION__/data.parquet', hive_partitioning=1, hive_types={'a': INT, 'b': INT})
+from parquet_scan('{TEST_DIR}/hive-default-partition-test/a=__HIVE_DEFAULT_PARTITION__/b=__HIVE_DEFAULT_PARTITION__/data.parquet', hive_partitioning=1, hive_types={'a': 'INT', 'b': 'INT'})
 ORDER BY ALL
 ----
 1	NULL	NULL
@@ -94,7 +94,7 @@ copy test_null_write to '{TEST_DIR}/hive-null-write-test' (PARTITION_BY (a,b), F
 # Verify we can read the data back (proves __HIVE_DEFAULT_PARTITION__ is used and read correctly)
 query III
 select *
-from parquet_scan('{TEST_DIR}/hive-null-write-test/**/*.parquet', hive_partitioning=1, hive_types={'a': INT, 'b': INT})
+from parquet_scan('{TEST_DIR}/hive-null-write-test/**/*.parquet', hive_partitioning=1, hive_types={'a': 'INT', 'b': 'INT'})
 ORDER BY ALL
 ----
 1	NULL	NULL

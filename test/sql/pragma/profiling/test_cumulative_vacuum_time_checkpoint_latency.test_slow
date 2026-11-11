@@ -16,7 +16,7 @@ statement ok
 PRAGMA disable_profiling;
 
 statement ok
-PRAGMA force_compression = 'uncompressed';
+SET force_compression = 'uncompressed';
 
 statement ok
 SET max_vacuum_tasks = 1000;
@@ -45,10 +45,10 @@ statement ok
 DELETE FROM single_thread_vacuum.tbl WHERE id % 2 = 0;
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/single_thread_vacuum_latency.json';
+SET profiling_output = '{TEST_DIR}/single_thread_vacuum_latency.json';
 
 statement ok
 SET tracked_metrics = ['storage.total_vacuum_time', 'storage.checkpoint_latency'];

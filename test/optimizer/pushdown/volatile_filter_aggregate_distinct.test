@@ -125,7 +125,7 @@ SELECT count(*) FROM (SELECT a FROM dd INTERSECT SELECT a FROM dd) q WHERE nextv
 # filters that are not volatile are still pushed below the DISTINCT and the GROUP BY
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT * FROM (SELECT DISTINCT a FROM dd) q WHERE nextval('s6') <= 9 AND a >= 2;

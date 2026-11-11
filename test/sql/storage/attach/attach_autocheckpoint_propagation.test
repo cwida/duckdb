@@ -20,7 +20,7 @@ statement ok
 SET wal_autocheckpoint_entries = 1;
 
 statement ok
-PRAGMA debug_checkpoint_abort = 'before_header_non_fatal';
+SET debug_checkpoint_abort = 'before_header_non_fatal';
 
 statement error
 INSERT INTO a.tbl VALUES (1), (2), (3);
@@ -33,7 +33,7 @@ SELECT COUNT(*) FROM a.tbl;
 <REGEX>:IO Error: Database "a" has been invalidated because checkpointing failed.*
 
 statement ok
-PRAGMA debug_checkpoint_abort = 'none';
+SET debug_checkpoint_abort = 'none';
 
 statement ok
 DETACH a;

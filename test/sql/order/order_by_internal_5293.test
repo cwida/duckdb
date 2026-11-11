@@ -16,7 +16,7 @@ create table t1 as from VALUES
 	t(a, b);
 
 statement ok
-PRAGMA disabled_optimizers='compressed_materialization';
+SET disabled_optimizers='compressed_materialization';
 
 statement ok
 from t1 order by a

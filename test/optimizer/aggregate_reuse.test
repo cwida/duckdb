@@ -21,7 +21,7 @@ statement ok
 INSERT INTO reuse_fact VALUES (1, 10, 1), (1, 20, 2), (2, 5, 3), (3, 40, 4), (3, 50, 5), (4, NULL, 6)
 
 statement ok
-PRAGMA explain_output = 'physical_only'
+SET explain_output = 'physical_only'
 
 # The baseline scans the fact table once for the SEMI join and again for the outer aggregate.
 statement ok
@@ -224,7 +224,7 @@ statement ok
 INSERT INTO payload_fact VALUES (1, 10, 7), (1, 20, 5), (1, 30, 1), (2, 10, 9), (2, 20, 9), (3, 10, 2)
 
 statement ok
-PRAGMA explain_output = 'optimized_only'
+SET explain_output = 'optimized_only'
 
 statement ok
 SET disabled_optimizers = 'aggregate_reuse'

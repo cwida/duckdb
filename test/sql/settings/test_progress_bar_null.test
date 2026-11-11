@@ -4,36 +4,36 @@
 
 # Test NULL value for enable_progress_bar
 statement error
-PRAGMA enable_progress_bar=null;
+SET enable_progress_bar=null;
 ----
 Invalid Input Error: enable_progress_bar setting cannot be NULL
 
 # Test NULL value for enable_progress_bar_print
 statement error
-PRAGMA enable_progress_bar_print=null;
+SET enable_progress_bar_print=null;
 ----
 Invalid Input Error: enable_progress_bar_print setting cannot be NULL
 
 # Test valid boolean values still work
 statement ok
-PRAGMA enable_progress_bar=true;
+SET enable_progress_bar=true;
 
 statement ok
-PRAGMA enable_progress_bar=false;
+SET enable_progress_bar=false;
 
 statement ok
-PRAGMA enable_progress_bar_print=true;
+SET enable_progress_bar_print=true;
 
 statement ok
-PRAGMA enable_progress_bar_print=false;
+SET enable_progress_bar_print=false;
 
 # Test invalid string value (cast error)
 statement error
-PRAGMA enable_progress_bar='invalid';
+SET enable_progress_bar='invalid';
 ----
 Invalid Input Error: Failed to cast value
 
 statement error
-PRAGMA enable_progress_bar_print='invalid';
+SET enable_progress_bar_print='invalid';
 ----
 Invalid Input Error: Failed to cast value

@@ -7,7 +7,7 @@
 # sample data is the Ticker partition of 4.3, "Example of ONE ROW PER MATCH".
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 statement ok
 CREATE TABLE Ticker(Symbol VARCHAR, Tradeday DATE, Price INTEGER);

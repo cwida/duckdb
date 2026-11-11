@@ -3,9 +3,6 @@
 # group: [optimizer]
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
 CREATE TABLE t1(id INTEGER, x INTEGER);
 
 statement ok

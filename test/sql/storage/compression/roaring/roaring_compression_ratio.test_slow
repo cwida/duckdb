@@ -20,7 +20,7 @@ set variable dataset_size = 120_000_000;
 # Total uncompressed bytes = (60 * 256) = 15360 bytes
 # Expected Ratio ~= 2.8x
 statement ok
-PRAGMA force_compression='roaring'
+SET force_compression='roaring'
 
 statement ok
 CREATE TABLE test_roaring AS SELECT case when i%25=0 then 1337 else null end FROM range(getvariable('dataset_size')) tbl(i);
@@ -29,7 +29,7 @@ statement ok
 checkpoint
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 CREATE TABLE test_uncompressed AS SELECT case when i%25=0 then 1337 else null end FROM range(getvariable('dataset_size')) tbl(i);
@@ -97,7 +97,7 @@ drop table test_uncompressed;
 # Total uncompressed bytes = (60 * 256) = 15360 bytes
 # Expected Ratio ~= 10.15x
 statement ok
-PRAGMA force_compression='roaring'
+SET force_compression='roaring'
 
 statement ok
 CREATE TABLE test_roaring AS SELECT case when i = 0 or (i % 512 != 0 and (i % 512) < 350 or (i % 512) > 450) then null else 1337 end FROM range(0, getvariable('dataset_size')) tbl(i);
@@ -106,7 +106,7 @@ statement ok
 checkpoint
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 CREATE TABLE test_uncompressed AS SELECT case when i = 0 or (i % 512 != 0 and (i % 512) < 350 or (i % 512) > 450) then null else 1337 end FROM range(0, getvariable('dataset_size')) tbl(i);
@@ -162,7 +162,7 @@ drop table test_uncompressed;
 # Total uncompressed bytes = (60 * 256) = 15360 bytes
 # Expected Ratio ~= 7.5x
 statement ok
-PRAGMA force_compression='roaring'
+SET force_compression='roaring'
 
 statement ok
 CREATE TABLE test_roaring AS SELECT case when i%3=0 then 1337 else null end FROM range(getvariable('dataset_size')) tbl(i);
@@ -171,7 +171,7 @@ statement ok
 checkpoint
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 CREATE TABLE test_uncompressed AS SELECT case when i%3=0 then 1337 else null end FROM range(getvariable('dataset_size')) tbl(i);

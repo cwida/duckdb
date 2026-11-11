@@ -11,7 +11,7 @@ select
 from read_csv('{DATA_DIR}/csv/hebere.csv.gz',
         delim='\t',
         header=0,
-        columns={field1: varchar, field2: varchar, datum: varchar},
+        columns={field1: 'varchar', field2: 'varchar', datum: 'varchar'},
         compression='gzip',
         ignore_errors=0,
         auto_detect = false)

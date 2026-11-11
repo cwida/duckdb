@@ -8,7 +8,7 @@ load {TEST_DIR}/test_store_integers.db
 foreach compression <compression>
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 # create a database and insert values
 statement ok

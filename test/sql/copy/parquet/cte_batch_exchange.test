@@ -5,7 +5,7 @@
 require parquet
 
 statement ok
-PRAGMA threads=4;
+SET threads=4;
 
 statement ok
 CREATE TABLE cte_parquet_source AS SELECT i FROM range(1000000) t(i);

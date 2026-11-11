@@ -3,7 +3,7 @@
 # group: [left_join_reordering]
 
 statement ok
-pragma disabled_optimizers='build_side_probe_side';
+SET disabled_optimizers='build_side_probe_side';
 
 # t1(a): {1,2,3,4}   t2(b): {1,2,3}   t3(c): {2,3,4}   t4(d): {2,3}
 

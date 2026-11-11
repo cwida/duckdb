@@ -9,7 +9,7 @@ require httpfs
 load {TEST_DIR}/test_bitpacking.db
 
 statement ok
-pragma force_compression='bitpacking'
+SET force_compression='bitpacking'
 
 statement ok
 CREATE OR REPLACE TABLE toy_table AS

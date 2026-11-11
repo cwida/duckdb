@@ -306,7 +306,7 @@ VALUES
 
 # Parallel combine with UTF-8 strings (use-after-free bug in Combine)
 statement ok
-PRAGMA threads=4;
+SET threads=4;
 
 statement ok
 CREATE TABLE mode_utf8 AS

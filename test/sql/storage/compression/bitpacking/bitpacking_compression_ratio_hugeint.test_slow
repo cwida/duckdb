@@ -11,10 +11,10 @@ load {TEST_DIR}/test_bitpacking.db
 #### CONSTANT MODE:
 # Ratio ~= 1000x
 statement ok
-PRAGMA force_compression='bitpacking'
+SET force_compression='bitpacking'
 
 statement ok
-PRAGMA force_bitpacking_mode='constant'
+SET force_bitpacking_mode='constant'
 
 statement ok
 CREATE TABLE test_bitpacked AS SELECT (i//119000::INT64)::HUGEINT AS i FROM range(0, 120000000) tbl(i);
@@ -23,7 +23,7 @@ statement ok
 checkpoint
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 CREATE TABLE test_uncompressed AS SELECT i::HUGEINT FROM range(0, 120000000) tbl(i);
@@ -55,10 +55,10 @@ drop table test_uncompressed;
 #### CONSTANT DELTA MODE:
 # Expected Ratio ~= 800x
 statement ok
-PRAGMA force_compression='bitpacking'
+SET force_compression='bitpacking'
 
 statement ok
-PRAGMA force_bitpacking_mode='constant_delta'
+SET force_bitpacking_mode='constant_delta'
 
 statement ok
 CREATE TABLE test_bitpacked AS SELECT i::HUGEINT AS i FROM range(0, 120000000) tbl(i);
@@ -67,7 +67,7 @@ statement ok
 checkpoint
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 CREATE TABLE test_uncompressed AS SELECT i::HUGEINT AS i FROM range(0, 120000000) tbl(i);
@@ -102,10 +102,10 @@ drop table test_uncompressed;
 #### DELTA FOR MODE:
 # Expected Ratio ~= 50x
 statement ok
-PRAGMA force_compression='bitpacking'
+SET force_compression='bitpacking'
 
 statement ok
-PRAGMA force_bitpacking_mode='delta_for'
+SET force_bitpacking_mode='delta_for'
 
 statement ok
 CREATE TABLE test_bitpacked AS SELECT i//2::HUGEINT AS i FROM range(0, 120000000) tbl(i);
@@ -114,7 +114,7 @@ statement ok
 checkpoint
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 CREATE TABLE test_uncompressed AS SELECT i AS i FROM range(0, 120000000) tbl(i);
@@ -149,10 +149,10 @@ drop table test_uncompressed;
 # FOR MODE:
 # Expected Ratio ~= 95x
 statement ok
-PRAGMA force_compression='bitpacking'
+SET force_compression='bitpacking'
 
 statement ok
-PRAGMA force_bitpacking_mode='for'
+SET force_bitpacking_mode='for'
 
 statement ok
 CREATE TABLE test_bitpacked AS SELECT i%2::HUGEINT AS i FROM range(0, 120000000) tbl(i);
@@ -161,7 +161,7 @@ statement ok
 checkpoint
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 statement ok
 CREATE TABLE test_uncompressed AS SELECT i::HUGEINT AS i FROM range(0, 120000000) tbl(i);

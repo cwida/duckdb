@@ -38,7 +38,7 @@ SELECT SUM(i + 1), SUM(i + 2), SUM(i + 3), SUM(i + 4) FROM integer_nulls;
 
 # check that we did the rewrite using explain
 statement ok
-pragma explain_output='optimized_only'
+SET explain_output='optimized_only'
 
 query II
 EXPLAIN SELECT SUM(i + 1), SUM(i + 2), SUM(i + 3), SUM(i + 4) FROM integers
@@ -110,7 +110,7 @@ SELECT
 FROM range(100);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # TPC-H Q1 - we rewrite all avg to sum divided by count(*)
 query II

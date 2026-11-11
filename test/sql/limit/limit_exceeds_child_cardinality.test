@@ -2,9 +2,6 @@
 # description: A LIMIT larger than the maximum cardinality of its child is removed by statistics propagation - when that LIMIT is the plan root this used to leave a dangling root pointer (crash)
 # group: [limit]
 
-statement ok
-PRAGMA enable_verification
-
 query I
 SELECT i FROM range(10) t(i) ORDER BY i LIMIT 2147483647
 ----

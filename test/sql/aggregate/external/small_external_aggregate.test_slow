@@ -38,7 +38,7 @@ statement ok
 set threads=4
 
 statement ok
-pragma memory_limit='400mb'
+SET memory_limit='400mb'
 
 query I
 select count(*) from (select distinct * from t1)

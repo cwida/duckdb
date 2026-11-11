@@ -28,10 +28,10 @@ statement ok
 CHECKPOINT checkpoint_prof;
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/cp_noop.json';
+SET profiling_output = '{TEST_DIR}/cp_noop.json';
 
 statement ok
 SET tracked_metrics = ['storage.checkpoint_latency', 'query.total_time'];
@@ -55,10 +55,10 @@ statement ok
 INSERT INTO checkpoint_prof.tbl SELECT range + 100000, range % 100 FROM range(10000);
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/cp_first.json';
+SET profiling_output = '{TEST_DIR}/cp_first.json';
 
 statement ok
 CHECKPOINT checkpoint_prof;
@@ -78,10 +78,10 @@ statement ok
 INSERT INTO checkpoint_prof.tbl SELECT range + 200000, range % 100 FROM range(10000);
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/cp_second.json';
+SET profiling_output = '{TEST_DIR}/cp_second.json';
 
 statement ok
 CHECKPOINT checkpoint_prof;
@@ -116,11 +116,11 @@ INSERT INTO checkpoint_prof.tbl SELECT range + (2000000 + {threadid} * 10000 + {
 
 onlyif threadid=0
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 onlyif threadid=0
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/cp_concurrent_{x}.json';
+SET profiling_output = '{TEST_DIR}/cp_concurrent_{x}.json';
 
 onlyif threadid=0
 statement maybe
