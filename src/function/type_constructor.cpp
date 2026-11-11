@@ -185,8 +185,8 @@ vector<TypeArgument> NormalizeArguments(const ArgumentCast &cast, const Identifi
 		// a named modifier is received by "**kwargs", an unnamed one by "*args"
 		auto param = arg.HasName() ? sig.GetKwargs() : sig.GetArgs();
 		auto &target = param ? param->GetType() : LogicalType::ANY;
-		result.emplace_back(arg.GetName(),
-		                    CastArgument(cast, type_name, arg_name, arg.GetValue(), target, location), location);
+		result.emplace_back(arg.GetName(), CastArgument(cast, type_name, arg_name, arg.GetValue(), target, location),
+		                    location);
 	}
 	return result;
 }

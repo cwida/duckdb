@@ -298,8 +298,7 @@ struct AppenderOffsetCast {
 };
 
 static bool AppenderBigintToTinyintCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
-	return VectorCastHelpers::TemplatedCastLoop<int64_t, int8_t, AppenderOffsetCast>(source, result, count,
-	                                                                                 parameters);
+	return VectorCastHelpers::TemplatedCastLoop<int64_t, int8_t, AppenderOffsetCast>(source, result, count, parameters);
 }
 
 TEST_CASE("Test appender casts use the registered cast functions", "[api]") {
