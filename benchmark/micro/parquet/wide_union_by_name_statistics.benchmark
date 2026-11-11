@@ -1,0 +1,30 @@
+# name: benchmark/micro/parquet/wide_union_by_name_statistics.benchmark
+# description: Column statistics of a wide union_by_name scan - every column is looked up by name in every file
+# group: [parquet]
+
+name Wide Union By Name Statistics
+group micro
+subgroup parquet
+
+require parquet
+
+load
+CREATE TABLE wide AS
+SELECT * FROM (
+	PIVOT (SELECT i, 'c' || lpad(j::VARCHAR, 4, '0') AS col, i * j AS v FROM range(400) t(i), range(2000) s(j))
+	ON col USING first(v) GROUP BY i
+);
+COPY (SELECT * EXCLUDE (i) FROM wide WHERE i % 8 = 0) TO '${BENCHMARK_DIR}/wide_union_by_name_0.parquet';
+COPY (SELECT * EXCLUDE (i) FROM wide WHERE i % 8 = 1) TO '${BENCHMARK_DIR}/wide_union_by_name_1.parquet';
+COPY (SELECT * EXCLUDE (i) FROM wide WHERE i % 8 = 2) TO '${BENCHMARK_DIR}/wide_union_by_name_2.parquet';
+COPY (SELECT * EXCLUDE (i) FROM wide WHERE i % 8 = 3) TO '${BENCHMARK_DIR}/wide_union_by_name_3.parquet';
+COPY (SELECT * EXCLUDE (i) FROM wide WHERE i % 8 = 4) TO '${BENCHMARK_DIR}/wide_union_by_name_4.parquet';
+COPY (SELECT * EXCLUDE (i) FROM wide WHERE i % 8 = 5) TO '${BENCHMARK_DIR}/wide_union_by_name_5.parquet';
+COPY (SELECT * EXCLUDE (i) FROM wide WHERE i % 8 = 6) TO '${BENCHMARK_DIR}/wide_union_by_name_6.parquet';
+COPY (SELECT * EXCLUDE (i) FROM wide WHERE i % 8 = 7) TO '${BENCHMARK_DIR}/wide_union_by_name_7.parquet';
+
+run
+SELECT sum(list_sum([*COLUMNS(*)])) FROM read_parquet('${BENCHMARK_DIR}/wide_union_by_name_*.parquet', union_by_name=true);
+
+result I
+159520200000

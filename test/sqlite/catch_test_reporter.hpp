@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/set.hpp"
 #include "test_reporter.hpp"
 
 namespace duckdb {
@@ -21,6 +22,10 @@ public:
 	void Skip(const string &reason) override;
 	void Assertion() override;
 	string CurrentTestName() override;
+
+private:
+	//! Catch retains filename pointers for deferred reports.
+	set<string> failure_files;
 };
 
 } // namespace duckdb

@@ -234,6 +234,8 @@ public:
 	idx_t Count() const;
 	//! The allocated bytes of the current chunk
 	idx_t AllocationSize() const;
+	//! The allocated bytes of selected columns of the current chunk
+	idx_t AllocationSize(const vector<column_t> &column_ids) const;
 
 private:
 	const ColumnDataCollection &collection;

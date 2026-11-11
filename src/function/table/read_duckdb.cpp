@@ -241,6 +241,7 @@ DuckDBReader::DuckDBReader(ClientContext &context_p, OpenFileInfo file_p, const 
 		// create the child column definitions as well, so that STRUCT children are mapped by name
 		columns.push_back(MultiFileColumnDefinition::CreateFromNameAndType(col.Name(), col.Type()));
 	}
+	column_name_index.Build(columns);
 	column_count = columns.size();
 	schema_name = table.ParentSchema().name;
 	table_name = table.name;
@@ -489,6 +490,7 @@ shared_ptr<BaseUnionData> DuckDBReader::GetUnionData(idx_t file_idx) {
 		result->names.push_back(column.name.GetIdentifierName());
 		result->types.push_back(column.type);
 	}
+	result->column_name_index.Build(result->names);
 	result->reader = shared_from_this();
 	return std::move(result);
 }

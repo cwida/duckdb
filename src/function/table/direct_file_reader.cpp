@@ -15,6 +15,7 @@ DirectFileReader::DirectFileReader(OpenFileInfo file_p, const LogicalType &type)
 	columns.push_back(MultiFileColumnDefinition("content", type));
 	columns.push_back(MultiFileColumnDefinition("size", LogicalType::BIGINT));
 	columns.push_back(MultiFileColumnDefinition("last_modified", LogicalType::TIMESTAMP_TZ));
+	column_name_index.Build(columns);
 }
 
 DirectFileReader::~DirectFileReader() {

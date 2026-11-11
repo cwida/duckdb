@@ -704,17 +704,11 @@ unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(const Identifier &name)
 	if (!can_use_metadata_statistics) {
 		return nullptr;
 	}
-	idx_t file_col_idx;
-	for (file_col_idx = 0; file_col_idx < columns.size(); file_col_idx++) {
-		if (columns[file_col_idx].name == name) {
-			break;
-		}
-	}
-	if (file_col_idx == columns.size()) {
+	auto file_col_idx = FindColumn(name);
+	if (!file_col_idx.IsValid()) {
 		return nullptr;
 	}
-
-	return ReadStatisticsInternal(*GetFileMetadata(), *root_schema, parquet_options, file_col_idx);
+	return ReadStatisticsInternal(*GetFileMetadata(), *root_schema, parquet_options, file_col_idx.GetIndex());
 }
 
 unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(ClientContext &context, ParquetOptions parquet_options,
@@ -749,20 +743,12 @@ unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(ClientContext &context,
 	if (!CanUseParquetMetadataStatistics(context, union_data.metadata, union_data.options)) {
 		return nullptr;
 	}
-	const auto &col_names = union_data.names;
-
-	idx_t file_col_idx;
-	for (file_col_idx = 0; file_col_idx < col_names.size(); file_col_idx++) {
-		if (col_names[file_col_idx] == name) {
-			break;
-		}
-	}
-	if (file_col_idx == col_names.size()) {
+	auto file_col_idx = union_data.FindColumn(name);
+	if (!file_col_idx.IsValid()) {
 		return nullptr;
 	}
-
 	return ReadStatisticsInternal(*union_data.metadata->metadata, *union_data.root_schema, union_data.options,
-	                              file_col_idx);
+	                              file_col_idx.GetIndex());
 }
 
 static bool IsFullyShredded(const BaseStatistics &variant_stats, const ColumnIndex &column_index) {
@@ -1395,6 +1381,7 @@ void ParquetReader::InitializeSchema(ClientContext &context) {
 		auto &element = root_schema->children[i];
 		columns.push_back(ParseColumnDefinition(*file_meta_data, element));
 	}
+	column_name_index.Build(columns);
 }
 
 void ParquetReader::AddVirtualColumn(column_t virtual_column_id) {
