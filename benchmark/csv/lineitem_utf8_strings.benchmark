@@ -1,0 +1,20 @@
+# name: benchmark/csv/lineitem_utf8_strings.benchmark
+# description: Read the five string columns of lineitem written as CSV with the vowels of every string value replaced by accented letters, so nearly every block holds non-ASCII bytes
+# group: [csv]
+
+name CSV Lineitem UTF-8 Strings
+group csv
+
+require tpch
+
+cache lineitem_sf1_utf8.csv
+
+load
+CALL dbgen(sf=1);
+COPY (SELECT l_orderkey, l_partkey, l_suppkey, l_linenumber, l_quantity, l_extendedprice, l_discount, l_tax, translate(l_returnflag, 'AEIOUaeiou', 'ÄËÏÖÜäëïöü') AS l_returnflag, translate(l_linestatus, 'AEIOUaeiou', 'ÄËÏÖÜäëïöü') AS l_linestatus, l_shipdate, l_commitdate, l_receiptdate, translate(l_shipinstruct, 'AEIOUaeiou', 'ÄËÏÖÜäëïöü') AS l_shipinstruct, translate(l_shipmode, 'AEIOUaeiou', 'ÄËÏÖÜäëïöü') AS l_shipmode, translate(l_comment, 'AEIOUaeiou', 'ÄËÏÖÜäëïöü') AS l_comment FROM lineitem) TO '${BENCHMARK_DIR}/lineitem_sf1_utf8.csv' (FORMAT CSV, DELIMITER '|', HEADER false);
+
+run
+SELECT count(l_returnflag) + count(l_linestatus) + count(l_shipinstruct) + count(l_shipmode) + count(l_comment) FROM read_csv('${BENCHMARK_DIR}/lineitem_sf1_utf8.csv', delim='|', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'l_orderkey':'BIGINT','l_partkey':'BIGINT','l_suppkey':'BIGINT','l_linenumber':'INTEGER','l_quantity':'DECIMAL(15,2)','l_extendedprice':'DECIMAL(15,2)','l_discount':'DECIMAL(15,2)','l_tax':'DECIMAL(15,2)','l_returnflag':'VARCHAR','l_linestatus':'VARCHAR','l_shipdate':'DATE','l_commitdate':'DATE','l_receiptdate':'DATE','l_shipinstruct':'VARCHAR','l_shipmode':'VARCHAR','l_comment':'VARCHAR'});
+
+result I
+30006075
