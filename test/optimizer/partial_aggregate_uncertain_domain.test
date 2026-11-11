@@ -239,4 +239,54 @@ SELECT count(*), sum(n) FROM (
 ----
 250000	25150000
 
+# The same correlated group domains survive two references to one materialized producer.
+query II
+EXPLAIN
+WITH v AS MATERIALIZED (SELECT * FROM union_{storage})
+SELECT a.g, b.g, count(*)
+FROM v a JOIN v b USING (k)
+GROUP BY a.g, b.g
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query III
+WITH v AS MATERIALIZED (SELECT * FROM union_{storage})
+SELECT count(*), sum(n), count(*) FILTER (
+	WHERE n <> 100 + 100*(ag=0)::INTEGER + 100*(bg=0)::INTEGER + 50000*(ag=0 AND bg=0)::INTEGER
+) FROM (
+	SELECT a.g ag, b.g bg, count(*) n
+	FROM v a JOIN v b USING (k)
+	GROUP BY a.g, b.g
+)
+----
+250000	25150000	0
+
+# A nested materialized owner exposes its continuation, with reordered output positions.
+query II
+EXPLAIN
+WITH v AS MATERIALIZED (
+	WITH x AS MATERIALIZED (SELECT g AS label, k AS key FROM union_{storage})
+	SELECT key AS k, label AS g FROM x
+)
+SELECT a.g, b.g, count(*)
+FROM v a JOIN v b USING (k)
+GROUP BY a.g, b.g
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query III
+WITH v AS MATERIALIZED (
+	WITH x AS MATERIALIZED (SELECT g AS label, k AS key FROM union_{storage})
+	SELECT key AS k, label AS g FROM x
+)
+SELECT count(*), sum(n), count(*) FILTER (
+	WHERE n <> 100 + 100*(ag=0)::INTEGER + 100*(bg=0)::INTEGER + 50000*(ag=0 AND bg=0)::INTEGER
+) FROM (
+	SELECT a.g ag, b.g bg, count(*) n
+	FROM v a JOIN v b USING (k)
+	GROUP BY a.g, b.g
+)
+----
+250000	25150000	0
+
 endloop
