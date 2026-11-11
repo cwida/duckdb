@@ -8,10 +8,10 @@ require skip_reload
 
 # Test ATTACH.
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profile_attach.json';
+SET profiling_output = '{TEST_DIR}/profile_attach.json';
 
 statement ok
 SET profiling_coverage='ALL';
@@ -36,7 +36,7 @@ true	true
 # Test CREATE TABLE.
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
 SET profiling_coverage='ALL';
@@ -61,7 +61,7 @@ true	true
 # Test INSERT.
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
 SET profiling_coverage='ALL';
@@ -86,7 +86,7 @@ true	true
 # Test CREATE INDEX.
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
 SET profiling_coverage='ALL';
@@ -111,7 +111,7 @@ true	true
 # Test DETACH.
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
 SET profiling_coverage='ALL';

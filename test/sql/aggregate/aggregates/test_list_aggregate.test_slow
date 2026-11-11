@@ -7,7 +7,7 @@ SET default_null_order='nulls_first';
 
 # this is underspecified for parallelism because the order in the list() aggr is arbitrary then
 statement ok
-PRAGMA threads=1
+SET threads=1
 
 statement ok
 CREATE TABLE list_extract_test(i INTEGER, g INTEGER);
@@ -38,7 +38,7 @@ SELECT g, LIST_EXTRACT(LIST(i), 3) FROM list_extract_test GROUP BY g ORDER BY AL
 
 # Use ORDER BY, which is robust to parallelism
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 query I
 with t as (

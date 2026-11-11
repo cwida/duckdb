@@ -2127,10 +2127,9 @@ TEST_CASE("Deep leading list chains retain heap-owned state through exceptions",
 }
 
 static vector<MatcherToken> TokenizeFirstSetTestInput(const CompiledGrammar &grammar, const string &sql) {
-	vector<MatcherToken> tokens;
-	ParserTokenizerBehavior behavior(sql, tokens);
+	ParserTokenizerBehavior behavior(sql);
 	grammar.GetTokenizer().TokenizeInput(behavior);
-	return tokens;
+	return std::move(behavior.tokens);
 }
 
 TEST_CASE("Tokenizer assigns FIRST set token classes", "[api][grammar_extension]") {
@@ -3525,4 +3524,62 @@ TEST_CASE("Generated list finalization validates its tree before consuming child
 			REQUIRE(*values == expected);
 		}
 	}
+}
+
+//! SOURCE_TEXT (<select>) returns the select's text as written, which only the query text itself still contains.
+class SourceTextTransformProcess final : public TransformProcess {
+public:
+	SourceTextTransformProcess(PEGTransformer &transformer_p, ParseResult &parse_result_p)
+	    : transformer(transformer_p), parse_result(parse_result_p) {
+	}
+
+	TransformStep Resume(arena_ptr<TransformResultValue> child_result) override {
+		D_ASSERT(!child_result);
+		auto source = transformer.token_iterator.Source();
+		if (!source) {
+			throw InternalException("SOURCE_TEXT needs the query text");
+		}
+		auto &list = parse_result.Cast<ListParseResult>();
+		auto open = list.GetChild(1).GetOffset().GetIndex() + 1;
+		auto close = list.GetChild(3).GetOffset().GetIndex();
+		auto select_node = make_uniq<SelectNode>();
+		select_node->select_list.push_back(ConstantExpression::String(source->substr(open, close - open)));
+		select_node->from_table = make_uniq<EmptyTableRef>();
+		unique_ptr<SQLStatement> statement = make_uniq<SelectStatement>();
+		statement->Cast<SelectStatement>().node = std::move(select_node);
+		return TransformStep::Complete(transformer.MakeResult<unique_ptr<SQLStatement>>(std::move(statement)));
+	}
+
+private:
+	PEGTransformer &transformer;
+	ParseResult &parse_result;
+};
+
+class SourceTextGrammarExtension final : public GrammarExtension {
+public:
+	SourceTextGrammarExtension() : GrammarExtension("source_text", "SOURCE_TEXT (<select>)") {
+	}
+
+	vector<GrammarChange> GetChanges() const override {
+		vector<GrammarChange> changes;
+		changes.push_back(GrammarChange::AddRule(
+		    "SourceTextStatement <- 'SOURCE_TEXT' '(' SelectStatementInternal ')'",
+		    [](PEGTransformer &transformer, ParseResult &parse_result) -> arena_ptr<TransformProcess> {
+			    return transformer.MakeProcess<SourceTextTransformProcess>(transformer, parse_result);
+		    }));
+		changes.push_back(GrammarChange::PrependChoice("Statement", "SourceTextStatement"));
+		return changes;
+	}
+};
+
+TEST_CASE("Grammar extension transforms can read the query text", "[api][grammar_extension]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	GrammarExtension::Register(*db.instance, make_shared_ptr<SourceTextGrammarExtension>());
+	REQUIRE_NO_FAIL(*con.Query("SET active_grammar_extensions = ['source_text']"));
+
+	const string body = "SELECT 42 /* kept */\n-- also kept\n";
+	auto result = con.Query("/* leading */ SOURCE_TEXT (" + body + ")");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Collection().GetValue(0, 0) == Value(body));
 }

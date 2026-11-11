@@ -6,7 +6,7 @@ statement ok
 CREATE TYPE mood AS ENUM ('happy', 'sad', 'angry')
 
 query I
-FROM read_csv('{DATA_DIR}/csv/enum_type.csv', types=[mood])
+FROM read_csv('{DATA_DIR}/csv/enum_type.csv', types=['mood'])
 ----
 sad
 happy

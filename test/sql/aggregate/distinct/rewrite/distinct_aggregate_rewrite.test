@@ -339,9 +339,6 @@ ORDER BY GROUPING(course), GROUPING(type), course, type NULLS FIRST;
 EXPORT_STATE is not supported for DISTINCT aggregates
 
 statement ok
-PRAGMA disable_verification
-
-statement ok
 CREATE SEQUENCE distinct_rewrite_seq_count START 1;
 
 statement ok
@@ -411,7 +408,7 @@ SELECT currval('distinct_rewrite_seq_grouping_sets');
 3
 
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 # Q16 uses explicit deduplication followed by a regular count; the ORDER BY label remains SQL-level text
 query II

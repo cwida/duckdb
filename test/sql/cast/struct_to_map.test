@@ -162,7 +162,7 @@ LIMIT 5;
 
 # Make sure nothing breaks if we change the vector type
 statement ok
-pragma debug_verify_vector='dictionary_expression'
+SET debug_verify_vector='dictionary_expression'
 
 query I
 SELECT TRY_CAST(col AS MAP(VARCHAR, integer))
@@ -179,7 +179,7 @@ LIMIT 5;
 NULL
 
 statement ok
-pragma debug_verify_vector='none'
+SET debug_verify_vector='none'
 
 # Single field struct
 query I

@@ -9,9 +9,6 @@ statement ok
 INSERT INTO times VALUES ('00:01:20'), ('20:08:10.998'), ('20:08:10.33'), ('20:08:10.001'), (NULL)
 
 statement ok
-PRAGMA disable_verification
-
-statement ok
 CREATE TABLE expected_result AS FROM (VALUES
 	('microseconds', 0, 59999999),
 	('milliseconds', 0, 59999),

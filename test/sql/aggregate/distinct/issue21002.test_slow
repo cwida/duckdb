@@ -5,7 +5,7 @@
 require noforcestorage
 
 statement ok
-PRAGMA memory_limit='1GB'
+SET memory_limit='1GB'
 
 statement ok
 CREATE TABLE abc AS SELECT md5(random()::VARCHAR) AS n FROM range(100000000)

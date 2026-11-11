@@ -2,7 +2,7 @@
 # group: [pedro]
 
 statement ok
-PRAGMA debug_force_no_cross_product=1;
+SET debug_force_no_cross_product=1;
 
 # Requires cross-product but 'force_no_cross_product' is enabled
 statement error

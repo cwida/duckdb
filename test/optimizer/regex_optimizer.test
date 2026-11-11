@@ -6,7 +6,7 @@ statement ok
 CREATE TABLE test(s VARCHAR);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 statement ok
 INSERT INTO test VALUES ('aaa');

@@ -10,7 +10,7 @@ PRAGMA verify_parallelism
 
 # we run this with an uneven amount of threads to force the merge sort to have an odd amount of blocks to merge
 statement ok
-PRAGMA threads=3
+SET threads=3
 
 statement ok
 SET default_null_order='nulls_first';
@@ -21,10 +21,10 @@ foreach pragma true false
 foreach mem 50 500
 
 statement ok
-PRAGMA debug_force_external={pragma}
+SET debug_force_external={pragma}
 
 statement ok
-PRAGMA memory_limit='{mem}MB'
+SET memory_limit='{mem}MB'
 
 statement ok
 create table test as (select range i from range(100000));

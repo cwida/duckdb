@@ -103,9 +103,6 @@ SELECT * FROM ctenames;
 
 require no_alternative_verify
 
-statement ok
-PRAGMA disable_verification
-
 query II
 WITH RECURSIVE fib AS (
       SELECT 1 AS n,

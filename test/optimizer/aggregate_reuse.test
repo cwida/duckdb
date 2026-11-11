@@ -21,7 +21,7 @@ statement ok
 INSERT INTO reuse_fact VALUES (1, 10, 1), (1, 20, 2), (2, 5, 3), (3, 40, 4), (3, 50, 5), (4, NULL, 6)
 
 statement ok
-PRAGMA explain_output = 'physical_only'
+SET explain_output = 'physical_only'
 
 # The baseline scans the fact table once for the SEMI join and again for the outer aggregate.
 statement ok
@@ -224,7 +224,7 @@ statement ok
 INSERT INTO payload_fact VALUES (1, 10, 7), (1, 20, 5), (1, 30, 1), (2, 10, 9), (2, 20, 9), (3, 10, 2)
 
 statement ok
-PRAGMA explain_output = 'optimized_only'
+SET explain_output = 'optimized_only'
 
 statement ok
 SET disabled_optimizers = 'aggregate_reuse'
@@ -249,6 +249,25 @@ logical_opt	<REGEX>:(?s).*payload_fact.*payload_fact.*
 
 statement ok
 RESET disabled_optimizers
+
+# A redundant NULL guard on the domain key preserves payload reuse.
+query II
+EXPLAIN WITH outer_rows AS MATERIALIZED (
+  SELECT p.k, p.label, f.cost, s.name, s.address, s.phone
+  FROM payload_part p, payload_fact f, payload_supplier s, payload_region r
+  WHERE p.k = f.k AND s.id = f.supplier_id AND s.region_id = r.id
+    AND p.size = 15 AND p.kind = 'BRASS' AND r.name = 'EUROPE'
+), minimum_cost AS (
+  SELECT f.k, min(f.cost) AS cost
+  FROM payload_fact f, payload_supplier s, payload_region r
+  WHERE s.id = f.supplier_id AND s.region_id = r.id AND r.name = 'EUROPE'
+    AND f.k IS NOT NULL AND f.k IN (SELECT k FROM outer_rows)
+  GROUP BY f.k
+)
+SELECT o.name, o.address, o.phone, o.k, o.label, o.cost
+FROM outer_rows o JOIN minimum_cost m ON o.k = m.k AND o.cost = m.cost
+----
+logical_opt	<!REGEX>:(?s).*payload_fact.*payload_fact.*
 
 query II
 EXPLAIN WITH outer_rows AS MATERIALIZED (

@@ -15,6 +15,8 @@ SET parquet_metadata_cache = true;
 # make it unlikely that every rewrite falls into another second than the write before it
 loop i 0 3
 
+sleep 20 milliseconds
+
 statement ok
 COPY (SELECT {i}::INTEGER AS x) TO '{TEST_DIR}/rewrite_metadata.parquet' (USE_TMP_FILE false);
 
@@ -48,6 +50,8 @@ statement ok
 SET cache_local_files = true;
 
 loop i 0 3
+
+sleep 20 milliseconds
 
 statement ok
 COPY (SELECT {i}::INTEGER AS x) TO '{TEST_DIR}/rewrite_contents.parquet' (USE_TMP_FILE false);

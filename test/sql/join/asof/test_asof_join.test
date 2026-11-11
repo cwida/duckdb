@@ -31,7 +31,7 @@ insert into trades values ('2020-01-01 00:00:03', 1);
 foreach threshold 0 32
 
 statement ok
-PRAGMA asof_loop_join_threshold = {threshold};
+SET asof_loop_join_threshold = {threshold};
 
 query III
 SELECT t.*, p.price

@@ -28,3 +28,29 @@ statement error
 SELECT 'x' || ''::DOUBLE;
 ----
 Conversion Error
+
+# issue #28562: contains(list_column, '') should not be folded to TRUE by EmptyNeedleRemovalRule
+query I
+SELECT contains(['a', 'b'], '');
+----
+false
+
+query I
+SELECT contains(['a', '', 'b'], '');
+----
+true
+
+statement ok
+CREATE TABLE list_empty_needle_t(l VARCHAR[]);
+
+statement ok
+INSERT INTO list_empty_needle_t VALUES (['a', 'b']), (['a', '']), (['']), ([]), (NULL);
+
+query I
+SELECT contains(l, '') FROM list_empty_needle_t;
+----
+false
+true
+true
+false
+NULL

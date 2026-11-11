@@ -3,7 +3,7 @@
 # group: [optimizer]
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 statement ok
 create temporary table t as select range a, length(range::varchar) b, mod(range,10000) c, 5::BIGINT d, 10000 e from range(100000);

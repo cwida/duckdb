@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA threads=1;
+SET threads=1;
 
 statement ok
 SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization';

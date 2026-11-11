@@ -9,7 +9,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
 CREATE TABLE tbl(a BIGINT, b INT AS (2*a), c VARCHAR, d DOUBLE, e as (d + 2), f TIMESTAMP);

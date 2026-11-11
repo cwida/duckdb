@@ -3,7 +3,7 @@
 # group: [sample]
 
 statement ok
-PRAGMA memory_limit='100MB'
+SET memory_limit='100MB'
 
 # a 50% reservoir sample of 300MB of strings does not fit in the 100MB limit
 statement error

@@ -32,6 +32,12 @@ StatisticsPropagator::StatisticsPropagator(Optimizer &optimizer_p, unique_ptr<Lo
 	root->ResolveOperatorTypes();
 }
 
+unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpressionStatistics(
+    unique_ptr<Expression> &expr, column_binding_map_t<unique_ptr<BaseStatistics>> column_statistics) {
+	statistics_map = std::move(column_statistics);
+	return PropagateExpression(expr);
+}
+
 void StatisticsPropagator::ReplaceWithEmptyResult(unique_ptr<LogicalOperator> &node) {
 	node = make_uniq<LogicalEmptyResult>(std::move(node));
 }

@@ -1,4 +1,5 @@
 #include "duckdb/common/types/hugeint.hpp"
+#include "duckdb/common/operator/add.hpp"
 #include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -306,14 +307,43 @@ void StatisticsPropagator::MultiplyCardinalities(unique_ptr<NodeStatistics> &sta
 unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalJoin &join,
                                                                      unique_ptr<LogicalOperator> &node_ptr) {
 	// first propagate through the children of the join
-	node_stats = PropagateStatistics(join.children[0]);
-	for (idx_t child_idx = 1; child_idx < join.children.size(); child_idx++) {
-		auto child_stats = PropagateStatistics(join.children[child_idx]);
-		if (!child_stats) {
-			node_stats = nullptr;
-		} else if (node_stats) {
-			MultiplyCardinalities(node_stats, *child_stats);
+	auto left_stats = PropagateStatistics(join.children[0]);
+	auto right_stats = PropagateStatistics(join.children[1]);
+	switch (join.join_type) {
+	case JoinType::SEMI:
+	case JoinType::ANTI:
+	case JoinType::MARK:
+	case JoinType::SINGLE:
+		node_stats = std::move(left_stats);
+		break;
+	case JoinType::RIGHT_SEMI:
+	case JoinType::RIGHT_ANTI:
+		node_stats = std::move(right_stats);
+		break;
+	default:
+		if (left_stats && right_stats && left_stats->has_max_cardinality && right_stats->has_max_cardinality) {
+			idx_t unmatched_rows = 0;
+			if (join.join_type == JoinType::LEFT) {
+				right_stats->max_cardinality = MaxValue<idx_t>(right_stats->max_cardinality, 1);
+			} else if (join.join_type == JoinType::RIGHT) {
+				left_stats->max_cardinality = MaxValue<idx_t>(left_stats->max_cardinality, 1);
+			} else if (join.join_type == JoinType::OUTER) {
+				if (!TryAddOperator::Operation(left_stats->max_cardinality, right_stats->max_cardinality,
+				                               unmatched_rows)) {
+					left_stats.reset();
+				}
+			}
+			if (left_stats) {
+				MultiplyCardinalities(left_stats, *right_stats);
+				if (left_stats) {
+					left_stats->max_cardinality = MaxValue(left_stats->max_cardinality, unmatched_rows);
+				}
+			}
+		} else {
+			left_stats.reset();
 		}
+		node_stats = std::move(left_stats);
+		break;
 	}
 
 	auto join_type = join.join_type;
@@ -392,20 +422,21 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalPosi
 	D_ASSERT(join.type == LogicalOperatorType::LOGICAL_POSITIONAL_JOIN);
 
 	// first propagate through the children of the join
-	node_stats = PropagateStatistics(join.children[0]);
+	auto join_stats = PropagateStatistics(join.children[0]);
 	for (idx_t child_idx = 1; child_idx < join.children.size(); child_idx++) {
 		auto child_stats = PropagateStatistics(join.children[child_idx]);
 		if (!child_stats) {
-			node_stats = nullptr;
-		} else if (node_stats) {
-			if (!node_stats->has_estimated_cardinality || !child_stats->has_estimated_cardinality ||
-			    !node_stats->has_max_cardinality || !child_stats->has_max_cardinality) {
-				node_stats = nullptr;
+			join_stats = nullptr;
+		} else if (join_stats) {
+			if (!join_stats->has_estimated_cardinality || !child_stats->has_estimated_cardinality ||
+			    !join_stats->has_max_cardinality || !child_stats->has_max_cardinality) {
+				join_stats = nullptr;
 			} else {
-				MaxCardinalities(node_stats, *child_stats);
+				MaxCardinalities(join_stats, *child_stats);
 			}
 		}
 	}
+	node_stats = std::move(join_stats);
 
 	// No conditions.
 

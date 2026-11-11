@@ -3,7 +3,7 @@
 # group: [intraquery]
 
 statement ok
-PRAGMA threads=16
+SET threads=16
 
 statement ok
 create table varchars as select i::varchar i from range(1000000) tbl(i);

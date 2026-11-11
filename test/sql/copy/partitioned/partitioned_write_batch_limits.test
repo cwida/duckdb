@@ -5,7 +5,7 @@
 require parquet
 
 statement ok
-PRAGMA threads=1;
+SET threads=1;
 
 # a flush threshold equal to the partition size: the planned batches are prepared one by one, so every batch is a row group
 statement ok
@@ -95,7 +95,7 @@ SELECT count(*) FROM (FROM ordered_bytes EXCEPT ALL SELECT p, v, s FROM parquet_
 
 # the same two shapes with several threads
 statement ok
-PRAGMA threads=4;
+SET threads=4;
 
 statement ok
 COPY byte_input TO '{TEST_DIR}/batch_limit_bytes4' (FORMAT PARQUET, PARTITION_BY (p), COMPRESSION uncompressed, ROW_GROUP_SIZE_BYTES 16384);

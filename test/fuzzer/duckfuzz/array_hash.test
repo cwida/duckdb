@@ -2,7 +2,7 @@
 # group: [duckfuzz]
 
 statement ok
-PRAGMA threads = 1
+SET threads = 1
 
 # Duckfuzz Issue #1434
 # Caused by not calculating the correct number of child elements when hashing a constant array vector.

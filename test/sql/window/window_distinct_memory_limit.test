@@ -8,7 +8,7 @@ statement ok
 SET threads={threads}
 
 statement ok
-PRAGMA memory_limit='64MB'
+SET memory_limit='64MB'
 
 # the DISTINCT aggregate builds two merge sort trees and one aggregate state per tree node,
 # which does not fit in the limit

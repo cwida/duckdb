@@ -9,7 +9,7 @@ statement ok
 INSERT INTO test VALUES ('aaa');
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # no special symbols optimization: aaa -> S=a
 query I nosort nosymbols

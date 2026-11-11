@@ -5,10 +5,10 @@
 require json
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/failed_query_profile.json';
+SET profiling_output = '{TEST_DIR}/failed_query_profile.json';
 
 statement error
 SELECT CASE WHEN i = 5000 THEN error('boom') END FROM range(10000) t(i);
@@ -26,10 +26,10 @@ true	true
 
 # a query that fails before planning must not leave the previous profile behind
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/failed_prepare_profile.json';
+SET profiling_output = '{TEST_DIR}/failed_prepare_profile.json';
 
 statement ok
 SELECT 42;
@@ -49,10 +49,10 @@ error
 
 # the next successful query gets its own profile
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/after_failure_profile.json';
+SET profiling_output = '{TEST_DIR}/after_failure_profile.json';
 
 statement ok
 SELECT 43;
@@ -67,10 +67,10 @@ true
 
 # a profile that cannot be written does not replace the error of the query that failed
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/no_such_directory/profile.json';
+SET profiling_output = '{TEST_DIR}/no_such_directory/profile.json';
 
 statement error
 SELECT CASE WHEN i = 5000 THEN error('boom') END FROM range(10000) t(i);

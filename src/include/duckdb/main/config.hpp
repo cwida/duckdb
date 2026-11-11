@@ -115,15 +115,6 @@ struct DBConfigOptions {
 	bool use_temporary_directory = true;
 	//! Directory to store temporary structures that do not fit in memory
 	string temporary_directory;
-	//! Whether or not to invoke filesystem trim on free blocks after checkpoint. This will reclaim
-	//! space for sparse files, on platforms that support it.
-	bool trim_free_blocks = false;
-	//! Record timestamps of buffer manager unpin() events. Usable by custom eviction policies.
-	bool buffer_manager_track_eviction_timestamps = false;
-	//! Force checkpoint when CHECKPOINT is called or on shutdown, even if no changes have been made
-	bool force_checkpoint = false;
-	//! Run a checkpoint on successful shutdown and delete the WAL, to leave only a single database file behind
-	bool checkpoint_on_shutdown = true;
 	//! Serialize the metadata on checkpoint with compatibility for a given DuckDB version.
 	StorageCompatibility storage_compatibility = StorageCompatibility::Default();
 	//! Initialize the database with the standard set of DuckDB functions
@@ -139,10 +130,6 @@ struct DBConfigOptions {
 	case_insensitive_map_t<Value> set_variable_defaults;
 	//! Additional directories to store extension binaries in
 	vector<string> extension_directories;
-	//! Debug setting - how to initialize  blocks in the storage layer when allocating
-	DebugInitialize debug_initialize = DebugInitialize::NO_INITIALIZE;
-	//! Debug setting - how to verify ORDER BY results (e.g. by rewriting ORDER BY into create_sort_key)
-	DebugOrderVerification debug_order_verification = DebugOrderVerification::NONE;
 	//! The set of user-provided options
 	identifier_map_t<Value> user_options;
 	//! The set of unrecognized (other) options
@@ -157,8 +144,6 @@ struct DBConfigOptions {
 	string http_proxy;
 	//! The default block header size for new duckdb database files.
 	idx_t default_block_header_size = DEFAULT_BLOCK_HEADER_STORAGE_SIZE;
-	//!  Whether or not to abort if a serialization exception is thrown during WAL playback (when reading truncated WAL)
-	bool abort_on_wal_failure = false;
 	//! Paths that are explicitly allowed, even if enable_external_access is false
 	unordered_set<string> allowed_paths;
 	//! Environment variables the embedder configures itself from, readable with OSUtil::GetEnvUnrestricted

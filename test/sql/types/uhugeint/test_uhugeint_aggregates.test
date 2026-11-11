@@ -24,7 +24,7 @@ SELECT g, MIN(h), MAX(h), SUM(h), FIRST(h), LAST(h) FROM hugeints GROUP BY g ORD
 
 # first aggr gets confused otherwise
 statement ok
-PRAGMA threads=1
+SET threads=1
 
 # ungrouped aggregate
 query II

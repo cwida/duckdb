@@ -5,7 +5,7 @@
 require parquet
 
 statement ok
-PRAGMA threads=16;
+SET threads=16;
 
 # A low threshold makes every state flush after a few chunks. Each flush is followed by a fresh round of
 # threads joining the next state while the threshold is already being crossed again, so the join and the

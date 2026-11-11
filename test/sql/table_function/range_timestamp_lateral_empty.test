@@ -11,9 +11,6 @@
 # as does the scalar range() (the one returning a LIST) when unnested.
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
 CREATE TABLE t AS
 SELECT i, TIMESTAMP '2024-01-01' + INTERVAL (i * 60) SECOND AS ts
 FROM generate_series(0, 9) s(i);

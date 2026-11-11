@@ -5,7 +5,7 @@
 load {TEST_DIR}/rle_signed_zero.db
 
 statement ok
-PRAGMA force_compression='rle'
+SET force_compression='rle'
 
 statement ok
 CREATE TABLE t AS SELECT * FROM (VALUES (-0e0::DOUBLE), (0e0::DOUBLE), (1.0)) tbl(x);

@@ -91,9 +91,6 @@ SELECT WEEKOFYEAR(d) FROM dates;
 ----
 
 statement ok
-PRAGMA disable_verification
-
-statement ok
 INSERT INTO dates VALUES (DATE '1992-01-01'), (DATE '2000-12-31');
 
 statement ok

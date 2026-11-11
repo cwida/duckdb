@@ -5,7 +5,7 @@
 load {TEST_DIR}/test_roaring.db readwrite v1.2.0
 
 statement ok
-PRAGMA force_compression='roaring'
+SET force_compression='roaring'
 
 # simple compression with few values
 statement ok

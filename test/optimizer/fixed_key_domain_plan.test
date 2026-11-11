@@ -79,12 +79,27 @@ LEFT JOIN (SELECT k, sum(v) s FROM tiny GROUP BY k) a USING(k);
 ----
 physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 
+# The division introduced by SUM/AVG sharing cannot throw with IEEE semantics.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.s, a.av FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (SELECT k, sum(v) s, avg(v) av FROM projected_fact GROUP BY k) a USING(k);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# A potentially throwing output projection still prevents restriction.
+statement ok
+SET ieee_floating_point_ops = false;
+
 query II
 EXPLAIN (FORMAT JSON)
 SELECT d.k, a.s, a.av FROM (VALUES (1), (2)) d(k)
 LEFT JOIN (SELECT k, sum(v) s, avg(v) av FROM projected_fact GROUP BY k) a USING(k);
 ----
 physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+statement ok
+RESET ieee_floating_point_ops;
 
 # The implicit-bitstring bailout deliberately covers the whole query.
 query II
@@ -96,13 +111,13 @@ SELECT 0, bit_length(bitstring_agg(k)) FROM fact;
 ----
 physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 
-# Arbitrary residuals have a separate evaluation/cost contract.
+# Non-throwing residuals retain their comparison after the domain restriction.
 query II
 EXPLAIN (FORMAT JSON)
 SELECT d.k, a.s FROM (VALUES (1, 40000), (2, 30000)) d(k, threshold)
 LEFT JOIN (SELECT k, sum(v) s FROM projected_fact GROUP BY k) a ON d.k=a.k AND a.s>d.threshold;
 ----
-physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 
 # The bailout preserves the implicit bitstring bounds and the demanded bit values.
 query IIII rowsort
