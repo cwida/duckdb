@@ -2943,6 +2943,9 @@ bool JoinHashTable::CanUseDictionaryEmission(const PhysicalHashJoin &op, bool ex
 	if (Count() == 0) {
 		return false;
 	}
+	if (probe_cardinality < Count()) {
+		return false;
+	}
 	const auto perfect_dictionary_lookup = CanUsePerfectDictionaryLookup();
 	if (!perfect_dictionary_lookup && probe_cardinality < DictionaryEmissionActivation::MIN_PROBE_ROWS) {
 		return false;

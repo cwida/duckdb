@@ -139,11 +139,38 @@ ON p.k IS NOT DISTINCT FROM b.k ORDER BY p.k NULLS LAST;
 NULL
 
 statement ok
+CREATE TABLE wide_bigint(k BIGINT);
+
+statement ok
+INSERT INTO wide_bigint VALUES (-9223372036854775808),(9223372036854775807),(NULL);
+
+query T
+SELECT p.k::VARCHAR FROM wide_bigint p JOIN wide_bigint b
+ON p.k IS NOT DISTINCT FROM b.k ORDER BY p.k NULLS LAST;
+----
+-9223372036854775808
+9223372036854775807
+NULL
+
+statement ok
+CREATE TABLE full_tinyint AS SELECT i::TINYINT k FROM range(-128,128) t(i);
+
+query II
+SELECT count(*),sum(p.k) FROM full_tinyint p SEMI JOIN full_tinyint b USING(k);
+----
+256	-128
+
+query I
+SELECT count(*) FROM full_tinyint p ANTI JOIN full_tinyint b USING(k);
+----
+0
+
+statement ok
 CALL disable_logging();
 
 query I
 SELECT NOT getvariable('check_perfect_activation') OR
-    list_sort(list(info['backend'])) = ['direct','direct','hash']
+    list_sort(list(info['backend'])) = ['bitmap','bitmap','direct','direct','hash','hash']
 FROM duckdb_logs_parsed('PhysicalOperator')
 WHERE class='PhysicalHashJoin' AND event='Lookup';
 ----

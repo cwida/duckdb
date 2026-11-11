@@ -135,3 +135,34 @@ FROM (SELECT id, k IN (SELECT k FROM bitmap_build) AS matched FROM selected_bitm
 JOIN expected_bitmap_probe e USING (id);
 ----
 true
+
+# INT64_MIN is one past this domain after unsigned subtraction, where the NULL slot lives.
+statement ok
+SET disabled_optimizers='compressed_materialization,join_filter_pushdown,join_order,build_side_probe_side,statistics_propagation';
+
+statement ok
+SET VARIABLE high_bitmap_base = 9223372036837998592::BIGINT;
+
+statement ok
+CREATE TABLE high_bitmap_build AS
+SELECT i * 64 + getvariable('high_bitmap_base') k FROM range(262144) t(i)
+UNION ALL SELECT 9223372036854775807::BIGINT
+UNION ALL SELECT NULL;
+
+statement ok
+CREATE TABLE high_bitmap_probe AS
+SELECT i * 104729 % 16777216 + getvariable('high_bitmap_base') k FROM range(4353) t(i)
+UNION ALL SELECT (-9223372036854775808)::BIGINT
+UNION ALL SELECT 9223372036854775807::BIGINT
+UNION ALL SELECT NULL;
+
+query I
+SELECT count(*) FROM high_bitmap_probe p SEMI JOIN high_bitmap_build b ON p.k IS NOT DISTINCT FROM b.k;
+----
+71
+
+query II
+SELECT count(*),count(*) FILTER (WHERE p.k = -9223372036854775808)
+FROM high_bitmap_probe p ANTI JOIN high_bitmap_build b ON p.k IS NOT DISTINCT FROM b.k;
+----
+4285	1

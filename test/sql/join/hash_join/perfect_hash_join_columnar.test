@@ -45,6 +45,12 @@ SELECT count(*),sum(b.n) FROM range(5000) p(i) JOIN b ON (p.i%2)*2=b.k;
 ----
 5000	25000
 
+# A small probe keeps row lookup instead of materializing the whole build as a dictionary.
+query ITI
+SELECT p.k,b.v,b.n FROM (VALUES (2::BIGINT)) p(k) JOIN b ON p.k=b.k;
+----
+2	two	NULL
+
 statement ok
 CALL disable_logging();
 
@@ -57,7 +63,7 @@ true
 
 query I
 SELECT NOT getvariable('check_perfect_activation') OR
-       list_sort(list(info['total_probe_matches']::UBIGINT)) = [2,3,2500,5000]
+       list_sort(list(info['total_probe_matches']::UBIGINT)) = [1,2,3,2500,5000]
 FROM duckdb_logs_parsed('PhysicalOperator')
 WHERE class='PhysicalHashJoin' AND event='GetData';
 ----
