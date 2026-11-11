@@ -269,7 +269,7 @@ SELECT count(*) FROM duckdb_extension_repositories() WHERE prefix='http://evil.e
 statement error
 SET allow_extension_repositories='undecided'
 ----
-<REGEX>:.*can only be changed from 'undecided'.*
+<REGEX>:.*can only be tightened.*
 
 # existing repositories are still listed and trusted
 query I
@@ -309,9 +309,9 @@ DROP EXTENSION REPOSITORY acme
 statement error
 SET allow_extension_repositories='allowed'
 ----
-<REGEX>:.*can only be changed from 'undecided'.*
+<REGEX>:.*can only be tightened.*
 
 statement error
 SET allow_extension_repositories='undecided'
 ----
-<REGEX>:.*can only be changed from 'undecided'.*
+<REGEX>:.*can only be tightened.*

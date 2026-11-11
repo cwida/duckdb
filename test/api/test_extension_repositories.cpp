@@ -1,4 +1,5 @@
 #include "catch.hpp"
+#include "duckdb/common/file_system.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/main/extension.hpp"
@@ -198,6 +199,76 @@ TEST_CASE("Test that adding trusted extension repositories must be opted into", 
 		                       OTHER_PUBLIC_KEY)));
 		REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "other", OTHER_PUBLIC_KEY));
 	}
+}
+
+static void WriteTextFile(const string &path, const string &contents) {
+	auto fs = FileSystem::CreateLocal();
+	auto handle = fs->OpenFile(path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+	handle->Write(QueryContext(), (void *)contents.data(), contents.size(), 0);
+	handle->Sync();
+}
+
+TEST_CASE("Test that a repository resolved from its host does not need the opt-in", "[api]") {
+	auto repository_directory = TestCreatePath("extension_repositories_from_host");
+	auto hosts = TestCreatePath("extension_repositories_from_host_hosts");
+	auto prefix = TestCreatePath("extension_repositories_from_host_prefix");
+	auto fs = FileSystem::CreateLocal();
+	fs->CreateDirectory(hosts);
+	fs->CreateDirectory(prefix);
+	// the host's file names the prefix; the prefix serves the key
+	auto host_dir = fs->JoinPath(hosts, "listed.example");
+	fs->CreateDirectory(host_dir);
+	fs->CreateDirectory(fs->JoinPath(host_dir, ".well-known"));
+	WriteTextFile(fs->JoinPath(fs->JoinPath(host_dir, ".well-known"), "duckdb-extension-repo.json"),
+	              StringUtil::Format("{\"version\": 1, \"repository_url\": \"%s\"}", prefix));
+	fs->CreateDirectory(fs->JoinPath(prefix, ".well-known"));
+	WriteTextFile(fs->JoinPath(fs->JoinPath(prefix, ".well-known"), "duckdb-extension-repo.json"),
+	              StringUtil::Format("{\"version\": 1, \"repository_url\": \"%s\", \"signature_keys\": [\"%s\"]}",
+	                                 prefix, TEST_PUBLIC_KEY));
+
+	DBConfig config;
+	config.SetOptionByName("extension_repository_directory", repository_directory);
+	config.SetOptionByName("debug_extension_repository_host_base", hosts);
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	// 'undecided': a repository by prefix is refused, one resolved from its host is accepted
+	REQUIRE_FAIL(con.Query(StringUtil::Format("CREATE EXTENSION REPOSITORY by_prefix WITH PREFIX '%s'", prefix)));
+	REQUIRE_NO_FAIL(con.Query("CREATE EXTENSION REPOSITORY listed.example"));
+	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", TEST_PUBLIC_KEY));
+	REQUIRE_FAIL(con.Query("CREATE EXTENSION REPOSITORY unlisted.example"));
+
+	// 'known_hosts' keeps trusting the repository resolved from its host, 'forbidden' forbids the form as well
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='known_hosts'"));
+	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", TEST_PUBLIC_KEY));
+	REQUIRE_NO_FAIL(con.Query("DROP EXTENSION REPOSITORY listed.example"));
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='forbidden'"));
+	REQUIRE_FAIL(con.Query("CREATE EXTENSION REPOSITORY listed.example"));
+}
+
+TEST_CASE("Test that 'known_hosts' distrusts the repositories added by prefix", "[api]") {
+	auto repository_directory = TestCreatePath("extension_repositories_known_hosts");
+
+	DBConfig config;
+	config.SetOptionByName("extension_repository_directory", repository_directory);
+	config.SetOptionByName("allow_extension_repositories", "allowed");
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
+	    "CREATE EXTENSION REPOSITORY acme WITH PREFIX 'http://acme.com' USING PUBLIC KEY '%s'", TEST_PUBLIC_KEY)));
+	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "acme", TEST_PUBLIC_KEY));
+
+	// a repository added by prefix is distrusted under 'known_hosts', like under 'forbidden'; it stays listed
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='known_hosts'"));
+	REQUIRE(!KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "acme", TEST_PUBLIC_KEY));
+	REQUIRE(UserRepositoryCount(con) == 1);
+
+	// the ratchet: 'known_hosts' cannot go back to 'allowed' or 'undecided', only on to 'forbidden'
+	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='allowed'"));
+	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='undecided'"));
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='forbidden'"));
+	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='known_hosts'"));
 }
 
 TEST_CASE("Test that the extension repository directory is a startup-only trust anchor", "[api]") {

@@ -97,6 +97,27 @@ Failed to read the metadata file of the extension repository
 statement ok
 DROP EXTENSION REPOSITORY IF EXISTS parsed_data_repo
 
+# the host form prints without a prefix; hosts are read from an empty directory here, so the statement fails before
+# any network access
+statement ok
+SET debug_extension_repository_host_base='{TEST_DIR}/no_hosts'
+
+statement error
+CREATE OR REPLACE EXTENSION REPOSITORY parsed_data.example
+----
+<REGEX>:.*does not serve a metadata file.*
+
+statement error
+CREATE EXTENSION REPOSITORY IF NOT EXISTS "parsed-data.example"
+----
+<REGEX>:.*does not serve a metadata file.*
+
+statement ok
+RESET debug_extension_repository_host_base
+
+statement ok
+DROP EXTENSION REPOSITORY IF EXISTS "parsed-data.example"
+
 # Trigger variants
 statement ok
 DROP TABLE IF EXISTS parsed_data_trigger_target

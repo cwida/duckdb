@@ -58,7 +58,7 @@
     },
     {
         "name": "allow_extension_repositories",
-        "description": "Whether custom trusted extension repositories are 'allowed', 'forbidden' (which also distrusts existing repositories) or 'undecided' (the default: blocks adding new repositories, but keeps trusting existing ones). While the database is running the setting can only move from 'undecided' to 'allowed' or 'forbidden', or from 'allowed' to 'forbidden'.",
+        "description": "Whether custom trusted extension repositories are 'allowed', 'known_hosts' (only repositories resolved from their host can be added, and only those are trusted), 'forbidden' (which also distrusts existing repositories) or 'undecided' (the default: blocks adding repositories by prefix, allows the ones resolved from their host with CREATE EXTENSION REPOSITORY <host> without a prefix, and keeps trusting existing ones). While the database is running the setting can only be tightened: 'undecided' -> 'allowed' -> 'known_hosts' -> 'forbidden'.",
         "type": "VARCHAR",
         "scope": "global",
         "default_value": "undecided",
@@ -375,6 +375,14 @@
         "type": "UBIGINT",
         "scope": "global",
         "default_value": "0",
+        "is_debug": true
+    },
+    {
+        "name": "debug_extension_repository_host_base",
+        "description": "Where the host of CREATE EXTENSION REPOSITORY <host> (no prefix) is reached: '<base>/<host>' instead of 'https://<host>'. Empty (the default) reaches the host itself. For tests.",
+        "type": "VARCHAR",
+        "scope": "global",
+        "default_value": "",
         "is_debug": true
     },
     {

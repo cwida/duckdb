@@ -191,12 +191,14 @@ void AllowCommunityExtensionsSetting::OnSet(SettingCallbackInfo &info, Value &in
 // Allow Extension Repositories
 //===----------------------------------------------------------------------===//
 // Ordering of the access levels, independent of the enum's numeric values: while the database is running the setting
-// can only move to a lower level ('undecided' -> 'allowed' -> 'forbidden')
+// can only move to a lower level ('undecided' -> 'allowed' -> 'known_hosts' -> 'forbidden')
 static int ExtensionRepositoryAccessLevel(ExtensionRepositoryAccess access) {
 	switch (access) {
 	case ExtensionRepositoryAccess::UNDECIDED:
-		return 2;
+		return 3;
 	case ExtensionRepositoryAccess::ALLOWED:
+		return 2;
+	case ExtensionRepositoryAccess::KNOWN_HOSTS:
 		return 1;
 	default: // FORBIDDEN
 		return 0;
@@ -218,8 +220,8 @@ void AllowExtensionRepositoriesSetting::OnSet(SettingCallbackInfo &info, Value &
 	// within a session
 	auto current_access = ExtensionRepositoryManager::GetAccess(*info.db);
 	if (ExtensionRepositoryAccessLevel(new_access) > ExtensionRepositoryAccessLevel(current_access)) {
-		throw InvalidInputException("allow_extension_repositories can only be changed from 'undecided' to 'allowed' or "
-		                            "'forbidden', or from 'allowed' to 'forbidden', while the database is running");
+		throw InvalidInputException("allow_extension_repositories can only be tightened while the database is running: "
+		                            "'undecided' -> 'allowed' -> 'known_hosts' -> 'forbidden'");
 	}
 }
 
