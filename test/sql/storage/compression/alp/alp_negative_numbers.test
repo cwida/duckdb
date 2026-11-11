@@ -6,7 +6,7 @@
 load {TEST_DIR}/test_alp.db
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 # Create a table with random doubles of limited precision compressed as Uncompressed
 # This data should achieve x6 compression ratio
@@ -23,7 +23,7 @@ SELECT compression FROM pragma_storage_info('random_double') WHERE segment_type 
 
 # Now create a duplicate of this table, compressed with ALP instead
 statement ok
-PRAGMA force_compression='alp'
+SET force_compression='alp'
 
 statement ok
 create table random_alp_double as select * from random_double;

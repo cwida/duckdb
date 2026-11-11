@@ -47,13 +47,13 @@ operator_memory_limit	NULL	VARCHAR
 # test that operator_memory_limit causes OOM for operators that check GetOperatorMemoryLimit()
 # while memory_limit (hard cap) is set high enough to not interfere
 statement ok
-PRAGMA memory_limit='100MB'
+SET memory_limit='100MB'
 
 statement ok
-PRAGMA temp_directory=''
+SET temp_directory=''
 
 statement ok
-PRAGMA max_temp_directory_size='0B'
+SET max_temp_directory_size='0B'
 
 statement ok
 SET operator_memory_limit='1MB'

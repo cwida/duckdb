@@ -3,12 +3,12 @@
 # group: [csv]
 
 statement error
-FROM read_csv('{DATA_DIR}/csv/timestamp_tz.csv', dtypes = [TIMESTAMPTZ]);
+FROM read_csv('{DATA_DIR}/csv/timestamp_tz.csv', dtypes = ['TIMESTAMPTZ']);
 ----
 Could not convert string "1/1/2020" to 'TIMESTAMP WITH TIME ZONE'
 
 query I
-FROM read_csv('{DATA_DIR}/csv/timestamp_tz.csv', dtypes = [TIMESTAMPTZ], timestampformat = '%d/%m/%Y');
+FROM read_csv('{DATA_DIR}/csv/timestamp_tz.csv', dtypes = ['TIMESTAMPTZ'], timestampformat = '%d/%m/%Y');
 ----
 2020-01-01 00:00:00+00
 2020-01-01 00:00:00+00
@@ -24,7 +24,7 @@ INSERT INTO test SELECT * FROM '{DATA_DIR}/csv/timestamp_tz.csv';
 Could not convert string "1/1/2020" to 'TIMESTAMP WITH TIME ZONE'
 
 statement ok
-INSERT INTO test SELECT * FROM  read_csv('{DATA_DIR}/csv/timestamp_tz.csv', dtypes = [TIMESTAMPTZ], timestampformat = '%d/%m/%Y');
+INSERT INTO test SELECT * FROM  read_csv('{DATA_DIR}/csv/timestamp_tz.csv', dtypes = ['TIMESTAMPTZ'], timestampformat = '%d/%m/%Y');
 
 query I
 FROM test

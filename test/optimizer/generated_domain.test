@@ -1,0 +1,307 @@
+# name: test/optimizer/generated_domain.test
+# description: Generated domains preserve composite keys, filters and output bags
+# group: [optimizer]
+
+# Widening a decimal average can overflow its accumulator in an unrequested group.
+statement ok
+CREATE TABLE decimal_average_input AS
+SELECT (i>=9998)::INTEGER k,
+       CASE WHEN i>=9998 THEN 90000000000000000000000000000000000000::DECIMAL(38,0) ELSE 1 END v
+FROM range(10000)t(i);
+
+statement ok
+CREATE TABLE average_demand(k INTEGER, selected BOOLEAN);
+
+statement ok
+INSERT INTO average_demand VALUES (0,true),(1,false);
+
+query IR
+SELECT d.k,(SELECT avg(v) FROM decimal_average_input f WHERE f.k=d.k)
+FROM average_demand d WHERE selected;
+----
+0	1.0
+
+query IR
+SELECT d.k,(SELECT avg(v::DOUBLE) FROM decimal_average_input f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+0	1.0
+
+query IR
+SELECT d.k,(SELECT avg(v::DOUBLE)+1 FROM decimal_average_input f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+0	2.0
+
+statement ok
+CREATE TABLE facts(k INTEGER, j INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO facts VALUES (1,1,10),(1,1,20),(1,2,5),(2,1,7),(3,3,11),(NULL,1,13),(1,NULL,17),(NULL,NULL,19),(2147483647,1,7);
+
+statement ok
+CREATE TABLE demand(k INTEGER, j INTEGER);
+
+statement ok
+INSERT INTO demand VALUES (1,1),(1,1),(1,2),(2,2),(NULL,1),(1,NULL),(NULL,NULL);
+
+# Ordinary comparisons exclude NULL keys; duplicate callers remain duplicate.
+query III rowsort
+SELECT d.k,d.j,(SELECT sum(v) FROM facts f WHERE f.k=d.k AND f.j=d.j)
+FROM demand d;
+----
+1	1	30
+1	1	30
+1	2	5
+1	NULL	NULL
+2	2	NULL
+NULL	1	NULL
+NULL	NULL	NULL
+
+query III rowsort
+SELECT d.k,d.j,(SELECT sum(v) FROM facts f
+WHERE f.k IS NOT DISTINCT FROM d.k AND f.j IS NOT DISTINCT FROM d.j)
+FROM demand d;
+----
+1	1	30
+1	1	30
+1	2	5
+1	NULL	17
+2	2	NULL
+NULL	1	13
+NULL	NULL	19
+
+# The domain predicate must not evaluate the unrelated overflowing fact key.
+query III rowsort
+SELECT d.k,d.j,(SELECT sum(f.v) FROM facts f
+JOIN (SELECT d.j b,d.k a WHERE d.k+d.j>2) keys ON f.k=keys.a AND f.j=keys.b)
+FROM demand d;
+----
+1	1	NULL
+1	1	NULL
+1	2	5
+1	NULL	NULL
+2	2	NULL
+NULL	1	NULL
+NULL	NULL	NULL
+
+# The filter/cross-product lowering uses the same key coverage proof.
+query III rowsort
+SELECT d.k,d.j,(SELECT sum(f.v) FROM facts f,
+(SELECT d.j b,d.k a WHERE d.k+d.j>2) keys WHERE f.k=keys.a AND f.j=keys.b)
+FROM demand d;
+----
+1	1	NULL
+1	1	NULL
+1	2	5
+1	NULL	NULL
+2	2	NULL
+NULL	1	NULL
+NULL	NULL	NULL
+
+query III rowsort
+SELECT d.k,d.j,EXISTS(SELECT * FROM facts f WHERE f.k=d.k AND f.j=d.j AND v>15)
+FROM demand d;
+----
+1	1	true
+1	1	true
+1	2	false
+1	NULL	false
+2	2	false
+NULL	1	false
+NULL	NULL	false
+
+query II rowsort
+SELECT d.k,d.j FROM demand d
+WHERE NOT EXISTS(SELECT 1 FROM facts f WHERE f.k=d.k AND f.j=d.j);
+----
+1	NULL
+2	2
+NULL	1
+NULL	NULL
+
+# Copied/inlined definitions and shadowed names retain their own bindings.
+query III rowsort
+WITH keys AS MATERIALIZED (SELECT * FROM demand)
+SELECT d.k,d.j,(WITH keys AS NOT MATERIALIZED (SELECT j b,k a,v FROM facts)
+SELECT sum(v) FROM keys WHERE a=d.k AND b=d.j)
+FROM keys d WHERE d.k=1;
+----
+1	1	30
+1	1	30
+1	2	5
+1	NULL	NULL
+
+statement ok
+PREPARE generated_domain AS SELECT d.k,d.j,(SELECT sum(v) FROM facts f WHERE f.k=d.k AND f.j=d.j)
+FROM demand d WHERE d.k=$1 ORDER BY ALL;
+
+query III
+EXECUTE generated_domain(1);
+----
+1	1	30
+1	1	30
+1	2	5
+1	NULL	NULL
+
+query III
+EXECUTE generated_domain(2);
+----
+2	2	NULL
+
+query I
+SELECT count(*) FROM demand d WHERE k<0 AND EXISTS(SELECT 1 FROM facts f WHERE f.k=d.k AND f.j=d.j);
+----
+0
+
+# A throwing domain predicate must not be copied onto unrelated fact keys.
+statement ok
+CREATE TABLE text_demand(k VARCHAR, selected BOOLEAN);
+
+statement ok
+INSERT INTO text_demand VALUES ('1',true),('2',false);
+
+statement ok
+CREATE TABLE text_facts(k VARCHAR, v INTEGER);
+
+statement ok
+INSERT INTO text_facts VALUES ('1',10),('2',20),('bad',99);
+
+# Both join forms must keep this predicate on the demand, where all keys are numeric.
+query TI rowsort
+SELECT d.k,(SELECT sum(f.v) FROM text_facts f,
+(SELECT d.k k WHERE CAST(d.k AS INTEGER)>0) keys WHERE f.k=keys.k)
+FROM text_demand d;
+----
+1	10
+2	20
+
+query TI rowsort
+SELECT d.k,(SELECT sum(f.v) FROM text_facts f
+JOIN (SELECT d.k k WHERE CAST(d.k AS INTEGER)>0) keys ON f.k=keys.k)
+FROM text_demand d;
+----
+1	10
+2	20
+
+statement ok
+SET disabled_optimizers='filter_pullup,filter_pushdown,join_filter_pushdown';
+
+# A computed domain output must not be evaluated on unrelated fact keys.
+query TI rowsort
+SELECT d.k,(SELECT sum(f.v+keys.n) FROM text_facts f,
+(SELECT d.k k,CAST(d.k AS INTEGER) n) keys WHERE f.k=keys.k)
+FROM text_demand d;
+----
+1	11
+2	22
+
+query TI
+SELECT d.k,(SELECT sum(f.v) FROM text_facts f
+JOIN (SELECT d.k k WHERE CAST(d.k AS INTEGER)>0) keys ON f.k=keys.k)
+FROM text_demand d WHERE selected;
+----
+1	10
+
+statement ok
+CREATE TABLE expansion_guard AS
+SELECT (i=9999)::INTEGER k,CASE WHEN i=9999 THEN 3000000000 ELSE 1 END v FROM range(10000)t(i);
+
+statement ok
+CREATE TABLE expansion_demand(k INTEGER, selected BOOLEAN);
+
+statement ok
+INSERT INTO expansion_demand VALUES (0,true),(1,false);
+
+query II
+SELECT d.k,(SELECT CAST(sum(v) AS INTEGER) FROM expansion_guard f WHERE f.k=d.k)
+FROM expansion_demand d WHERE selected;
+----
+0	9999
+
+query II
+SELECT d.k,(SELECT TRY_CAST(sum(v) AS INTEGER) FROM expansion_guard f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+0	9999
+
+query IR
+SELECT d.k,(SELECT max(v)::DOUBLE * 1e308 FROM expansion_guard f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+0	1e308
+
+query II
+SELECT d.k,(SELECT max(v) * 4000000000::BIGINT FROM expansion_guard f WHERE f.k=d.k)
+FROM expansion_demand d WHERE selected;
+----
+0	4000000000
+
+statement ok
+RESET disabled_optimizers;
+
+# An intermediate keyed join does not necessarily reject all unrequested groups.
+# A later scalar lookup must not see duplicate rows for a group outside the demand.
+statement ok
+CREATE TABLE scalar_facts(k INTEGER, v BIGINT);
+
+statement ok
+INSERT INTO scalar_facts VALUES (0,1),(1,1);
+
+statement ok
+CREATE TABLE scalar_demand(k INTEGER, selected BOOLEAN);
+
+statement ok
+INSERT INTO scalar_demand VALUES (0,true),(1,false);
+
+statement ok
+CREATE TABLE scalar_keys(k INTEGER);
+
+statement ok
+INSERT INTO scalar_keys VALUES (0),(1);
+
+statement ok
+CREATE TABLE scalar_lookup(k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO scalar_lookup VALUES (0,1),(1,1),(1,2);
+
+statement ok
+SET disabled_optimizers='join_filter_pushdown';
+
+query II
+SELECT d.k,(SELECT max(grouped.total)
+FROM (SELECT f.k,sum(f.v) total FROM scalar_facts f WHERE f.k=d.k GROUP BY f.k) grouped
+JOIN scalar_keys keys ON keys.k=grouped.k
+WHERE (SELECT v FROM scalar_lookup lookup WHERE lookup.k=grouped.k)>0)
+FROM scalar_demand d WHERE selected;
+----
+0	1
+
+statement ok
+RESET disabled_optimizers;
+
+
+# Removing a projected generated join preserves public columns, aliases, duplicates, and NULLs.
+query ITIT
+SELECT * FROM (VALUES(2,'b'),(1,'a'))d(k,s),
+LATERAL(SELECT d.k+1 v,d.s||'!' w)x ORDER BY ALL;
+----
+1	a	2	a!
+2	b	3	b!
+
+query TII
+SELECT x.w,d.k,x.v FROM (VALUES(2,'b'),(1,'a'))d(k,s),
+LATERAL(SELECT d.k+1 v,d.s||'!' w)x ORDER BY ALL;
+----
+a!	1	2
+b!	2	3
+
+query I
+SELECT x.* FROM (VALUES(1),(1),(2),(NULL))d(k),
+LATERAL(SELECT d.k+1 v)x ORDER BY ALL;
+----
+2
+2
+3
+NULL

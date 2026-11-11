@@ -8,7 +8,7 @@ statement ok
 SET variant_minimum_shredding_size = 0;
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 # variant shredded on INTEGER (with a NULL mixed in)
 statement ok
@@ -48,7 +48,7 @@ statement ok
 SET variant_minimum_shredding_size = 0;
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 # sorting a variant payload column compresses it to the shredded type (and back)
 query II

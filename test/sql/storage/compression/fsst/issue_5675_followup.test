@@ -7,7 +7,7 @@ load {TEST_DIR}/issue_5675_followup.db readwrite v1.0.0
 require parquet
 
 statement ok
-pragma threads=1
+SET threads=1
 
 statement ok
 CREATE TABLE TEST (col VARCHAR);
@@ -23,7 +23,7 @@ END FROM range(0,2214) tbl(i);
 
 # Now create our FSST table
 statement ok
-pragma force_compression='fsst';
+SET force_compression='fsst';
 
 statement ok
 CREATE TABLE TEST2 as SELECT * FROM TEST;

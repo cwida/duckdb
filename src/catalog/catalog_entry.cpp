@@ -116,6 +116,10 @@ void CatalogEntry::Verify(Catalog &catalog_p) {
 void CatalogEntry::Rollback(CatalogEntry &prev_entry) {
 }
 
+bool CatalogEntry::InvalidatesDependents(const CatalogEntry &previous) const {
+	return false;
+}
+
 void CatalogEntry::OnDrop() {
 }
 

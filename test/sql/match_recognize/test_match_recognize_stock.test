@@ -9,7 +9,7 @@
 require parquet
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 statement ok
 create table quotes as select * from 'data/match_recognize/dax.parquet';

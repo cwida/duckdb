@@ -6,13 +6,13 @@
 load {TEST_DIR}/test_rle_nulls_edge_case.db
 
 statement ok
-PRAGMA force_compression = 'rle'
+SET force_compression = 'rle'
 
 statement ok
 BEGIN;
 
 statement ok
-PRAGMA force_compression='RLE';
+SET force_compression='RLE';
 
 statement ok
 CREATE TABLE integers(i INTEGER);

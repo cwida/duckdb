@@ -142,6 +142,16 @@ SELECT count(*) FROM (SELECT i, count(*) FROM range(500000) t(i) GROUP BY i)
 ----
 500000
 
+# empty grouping sets emit rows without scanning hash table partitions
+statement ok
+CREATE TABLE empty_groups(i INTEGER)
+
+query I
+SELECT 1 FROM empty_groups GROUP BY GROUPING SETS ((),(),(i)) HAVING true
+----
+1
+1
+
 # table scans report progress within a row group
 query I
 SELECT sum(i) FROM (SELECT i FROM integers LIMIT 100000 OFFSET 10)

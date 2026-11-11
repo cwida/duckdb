@@ -15,7 +15,7 @@ NULL	15
 
 # the sum is rewritten into sum_no_overflow, which the cascade re-binds by name to combine its states
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT g, sum(i) FROM t GROUP BY ROLLUP (g) HAVING sum(i) > 1 OR g IS NULL;
@@ -28,7 +28,7 @@ EXPLAIN SELECT g, sum(i) FROM t GROUP BY ROLLUP (g) HAVING sum(i) > 1 OR g IS NU
 logical_opt	<REGEX>:.*combine_aggr.*
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 query II rowsort
 SELECT g, sum(i::BIGINT) FROM t GROUP BY GROUPING SETS ((g), ()) HAVING sum(i) > 1 OR g IS NULL;

@@ -12,7 +12,7 @@ statement ok
 CHECKPOINT;
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # Keep the conjunction together so the NULL check protects the cast.
 statement ok

@@ -226,7 +226,7 @@ analyzed_plan	<REGEX>:.*Row Groups Scanned: 3 / 3.*
 
 # Multi-column OR filters are canonical across equivalent subplans
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 query II
 EXPLAIN SELECT count(*) FROM t WHERE x < 100 OR s > '00008000'

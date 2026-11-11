@@ -31,10 +31,10 @@ INSERT INTO local_pruned VALUES
 	(5), (6), (7), (8), (9);
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['operator.row_groups_scanned', 'operator.total_row_groups_to_scan', 'operator.type', 'query.total_row_groups_scanned', 'query.total_row_groups_to_scan'];

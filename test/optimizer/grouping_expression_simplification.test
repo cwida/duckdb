@@ -6,7 +6,7 @@ statement ok
 CREATE TABLE test(t timestamp);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query I nosort year
 EXPLAIN SELECT COUNT(*) FROM test GROUP BY EXTRACT(year from t)

@@ -32,13 +32,13 @@ INSERT INTO probe0 VALUES
 foreach debug False True
 
 statement ok 
-PRAGMA debug_asof_iejoin={debug}
+SET debug_asof_iejoin={debug}
 
 # Check NLJ results against both
 foreach threshold 0 32
 
 statement ok
-PRAGMA asof_loop_join_threshold = {threshold};
+SET asof_loop_join_threshold = {threshold};
 
 #
 # Strictly Greater Than

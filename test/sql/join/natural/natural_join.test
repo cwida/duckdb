@@ -296,9 +296,6 @@ select * from (values (1)) t1(i) join (values (1)) t2(i) on (t1.i=t2.i) natural 
 ----
 <REGEX>:.*Binder Error.*Ambiguous reference to column name.*
 
-statement ok
-PRAGMA disable_verification
-
 # column name appears more than once on right side of the natural join
 statement error
 select * from (values (1)) t1(i) natural join ((values (1)) t2(i)  join (values (1)) t3(i) on (t2.i=t3.i))

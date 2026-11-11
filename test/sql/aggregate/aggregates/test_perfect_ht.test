@@ -6,7 +6,7 @@ statement ok
 SET default_null_order='nulls_first';
 
 statement ok
-PRAGMA perfect_ht_threshold=20;
+SET perfect_ht_threshold=20;
 
 foreach type INTEGER UINTEGER BIGINT UBIGINT
 
@@ -75,9 +75,6 @@ SELECT COUNT(DISTINCT i), MIN(i), MAX(i), SUM(i) / COUNT(i) FROM (SELECT t::SMAL
 65535	-32767	32767	0
 
 # test result ordering of perfect HT
-statement ok
-PRAGMA disable_verification
-
 statement ok
 create table dates as select date '1992-01-01' + concat(i, ' months')::interval as d from range(100) tbl(i);
 

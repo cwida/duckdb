@@ -41,7 +41,7 @@ create table large_build as from values
 foreach threshold 0 32
 
 statement ok
-PRAGMA asof_loop_join_threshold = {threshold};
+SET asof_loop_join_threshold = {threshold};
 
 query I
 select a from (select * from small_probe, child_join where c=sp_const) asof join large_build on (lb_const = sp_const and a < b) order by a;

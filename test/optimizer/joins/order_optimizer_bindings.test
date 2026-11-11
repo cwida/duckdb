@@ -5,7 +5,7 @@
 foreach threshold 0 30
 
 statement ok
-PRAGMA approximate_join_order_threshold = {threshold};
+SET approximate_join_order_threshold = {threshold};
 
 query IIII
 SELECT * FROM summary((select 5)) tbl1(i) JOIN summary((select 5)) tbl2(i) ON tbl1.i=tbl2.i;

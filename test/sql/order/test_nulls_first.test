@@ -102,7 +102,7 @@ NULL
 
 # changed default now
 statement ok
-PRAGMA default_null_order='NULLS LAST'
+SET default_null_order='NULLS LAST'
 
 query I
 SELECT * FROM integers ORDER BY i
@@ -111,7 +111,7 @@ SELECT * FROM integers ORDER BY i
 NULL
 
 statement ok
-PRAGMA default_null_order='NULLS FIRST'
+SET default_null_order='NULLS FIRST'
 
 statement error
 PRAGMA default_null_order())
@@ -119,7 +119,7 @@ PRAGMA default_null_order())
 <REGEX>:Parser Error.*syntax error.*
 
 statement error
-PRAGMA default_null_order='UNKNOWN'
+SET default_null_order='UNKNOWN'
 ----
 <REGEX>:Parser Error.*Unrecognized parameter for option.*
 

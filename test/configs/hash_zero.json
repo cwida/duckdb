@@ -146,7 +146,8 @@
         "test/sql/copy/parquet/bloom_filter_fallback_types.test",
         "test/sql/copy/partitioned/integer_partitioned_write.test",
         "test/sql/storage/compression/dict_fsst/dict_fsst_boolean_selection.test",
-        "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test"
+        "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test",
+        "test/sql/storage/compression/select_fixed_size.test"
       ]
     }
   ]

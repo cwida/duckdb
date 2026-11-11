@@ -6,6 +6,6 @@ statement ok
 PRAGMA verify_parallelism
 
 query I
-SELECT count(*) FROM read_csv_auto("{DATA_DIR}/csv/auto/product_codes_HS17_V202301.csv.gz", quote = '"', comment='', delim = ',') ;
+SELECT count(*) FROM read_csv_auto('{DATA_DIR}/csv/auto/product_codes_HS17_V202301.csv.gz', quote = '"', comment='', delim = ',') ;
 ----
 5384
