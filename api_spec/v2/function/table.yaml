@@ -621,8 +621,12 @@ functions:
       Sets the optional metrics callback of the table function.
 
       The metrics callback is invoked when the engine collects the metrics of the scan, e.g. when profiling is
-      enabled, and can report what the scan did through its `[[table_function_metrics_info]]`. It may be invoked
-      while the scan is still running.
+      enabled, and can report what the scan did through its `[[table_function_metrics_info]]`.
+
+      DuckDB does not synchronize the callback with the scan: each thread that scanned invokes it when it finishes,
+      so it can run while other threads still scan and while other threads invoke it. The global state it reads is
+      shared with those threads, so the function must synchronize what the callback reads from it, e.g. by keeping
+      counters in atomics and reading them with an exchange, so that each amount is reported once.
     parameters:
       function:
         type: table_function

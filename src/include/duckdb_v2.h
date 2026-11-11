@@ -13678,8 +13678,12 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_add_virtual_column(duckdb_
  * Sets the optional metrics callback of the table function.
  *
  * The metrics callback is invoked when the engine collects the metrics of the scan, e.g. when profiling is enabled, and
- * can report what the scan did through its `duckdb_v2_table_function_metrics_info_handle`. It may be invoked while the
- * scan is still running.
+ * can report what the scan did through its `duckdb_v2_table_function_metrics_info_handle`.
+ *
+ * DuckDB does not synchronize the callback with the scan: each thread that scanned invokes it when it finishes, so it
+ * can run while other threads still scan and while other threads invoke it. The global state it reads is shared with
+ * those threads, so the function must synchronize what the callback reads from it, e.g. by keeping counters in atomics
+ * and reading them with an exchange, so that each amount is reported once.
  *
  * history:
  * - unstable: v2.0.0
