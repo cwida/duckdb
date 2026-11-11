@@ -376,7 +376,8 @@ bool CatalogSet::AlterEntry(CatalogTransaction transaction, const Identifier &na
 	unique_ptr<CatalogEntry> entry_to_destroy;
 	if (transaction.transaction) {
 		// serialize the AlterInfo into a temporary buffer: it is read back in memory and written to the WAL with the
-		// database's own options, so it must round-trip everything an alter can carry
+		// database's own options, so it must round-trip everything an alter can carry. This copy no longer rejects
+		// content the database's storage version cannot represent: such feature gates belong in AlterEntry
 		MemoryStream stream(Allocator::Get(transaction.db));
 		SerializationOptions options;
 		options.storage_compatibility = StorageCompatibility::Latest();
