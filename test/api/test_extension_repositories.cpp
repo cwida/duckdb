@@ -494,3 +494,105 @@ TEST_CASE("Test that duckdb_extensions lists extensions installed from user-prov
 	REQUIRE(ExtensionRows(con, "dns").size() == 3);
 	REQUIRE(ExtensionRows(con, "json").size() == 2);
 }
+
+// Copy a loadable extension into the flat folder (empty folder_repository) or a per-repository subfolder, with the
+// .info an install from repository_name writes
+static string CopyInstalledExtension(DatabaseInstance &db, const string &source, const string &name,
+                                     const string &folder_repository, const string &repository_name,
+                                     const string &version) {
+	auto fs = FileSystem::CreateLocal();
+	string dir = ExtensionHelper::ExtensionDirectory(db, *fs);
+	if (!folder_repository.empty()) {
+		dir = fs->JoinPath(fs->JoinPath(dir, "repositories"), folder_repository);
+	}
+	fs->CreateDirectoriesRecursive(dir);
+
+	auto source_handle = fs->OpenFile(source, FileFlags::FILE_FLAGS_READ);
+	auto size = source_handle->GetFileSize();
+	auto buffer = make_unsafe_uniq_array<data_t>(size);
+	source_handle->Read(buffer.get(), size);
+	string ext_path = fs->JoinPath(dir, name + ".duckdb_extension");
+	WriteExtensionFile(*fs, ext_path, buffer.get(), size);
+
+	MemoryStream stream;
+	BinarySerializer::Serialize(UserRepositoryInstallInfo(repository_name, version), stream);
+	WriteExtensionFile(*fs, ext_path + ".info", stream.GetData(), stream.GetPosition());
+	return ext_path;
+}
+
+// "in_repository_folder|loaded" per row, the flat row first
+static vector<string> LoadedRows(Connection &con, const string &name) {
+	auto result = con.Query("SELECT loaded, "
+	                        "replace(install_path, '\\', '/') LIKE '%/repositories/%' AS in_repository "
+	                        "FROM duckdb_extensions() WHERE extension_name = $1 ORDER BY in_repository",
+	                        name);
+	REQUIRE_NO_FAIL(*result);
+	vector<string> rows;
+	for (auto &row : result->Collection().Rows()) {
+		rows.push_back(row.GetValue(1).ToString() + "|" + row.GetValue(0).ToString());
+	}
+	return rows;
+}
+
+TEST_CASE("Test that duckdb_extensions marks the copy that was loaded", "[api]") {
+	auto repository_directory = TestCreatePath("ext_repo_loaded_copy");
+	auto extension_directory = TestCreatePath("ext_repo_loaded_copy_ext");
+	auto fs = FileSystem::CreateLocal();
+	auto demo = fs->JoinPath(TestBuildDirectory(), "test/extension/loadable_extension_demo.duckdb_extension");
+	if (!fs->FileExists(demo)) {
+		return;
+	}
+	const string name = "loadable_extension_demo";
+
+	auto make_db = [&]() {
+		DBConfig config;
+		config.SetOptionByName("extension_repository_directory", repository_directory);
+		config.SetOptionByName("extension_directory", extension_directory);
+		config.SetOptionByName("allow_extension_repositories", "allowed");
+		config.SetOptionByName("allow_unsigned_extensions", true);
+		return make_uniq<DuckDB>(nullptr, &config);
+	};
+
+	// the .info version has to match the binary
+	string version;
+	string repository_path;
+	{
+		auto db = make_db();
+		Connection con(*db);
+		REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
+		    "CREATE EXTENSION REPOSITORY my_repo WITH PREFIX 'http://my_repo.com' USING PUBLIC KEY '%s'",
+		    TEST_PUBLIC_KEY)));
+		REQUIRE_NO_FAIL(con.Query(StringUtil::Format("LOAD '%s'", demo)));
+		auto result = con.Query("SELECT extension_version FROM duckdb_extensions() WHERE extension_name = $1", name);
+		REQUIRE_NO_FAIL(*result);
+		version = result->Collection().GetValue(0, 0).ToString();
+
+		// the same extension installed from my_repo, and a copy of it in the flat folder
+		repository_path = CopyInstalledExtension(*db->instance, demo, name, "my_repo", "my_repo", version);
+		CopyInstalledExtension(*db->instance, demo, name, "", "my_repo", version);
+	}
+
+	// a bare load resolves the flat copy, even though both .info files record my_repo
+	{
+		auto db = make_db();
+		Connection con(*db);
+		REQUIRE_NO_FAIL(con.Query("LOAD " + name));
+		REQUIRE(LoadedRows(con, name) == vector<string> {"false|true", "true|false"});
+	}
+
+	// loading from the repository resolves the copy in its folder
+	{
+		auto db = make_db();
+		Connection con(*db);
+		REQUIRE_NO_FAIL(con.Query("LOAD " + name + " FROM my_repo"));
+		REQUIRE(LoadedRows(con, name) == vector<string> {"false|false", "true|true"});
+	}
+
+	// loading the repository copy by its path marks that copy
+	{
+		auto db = make_db();
+		Connection con(*db);
+		REQUIRE_NO_FAIL(con.Query(StringUtil::Format("LOAD '%s'", repository_path)));
+		REQUIRE(LoadedRows(con, name) == vector<string> {"false|false", "true|true"});
+	}
+}

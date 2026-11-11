@@ -80,6 +80,7 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 
 	// Firstly, we go over all Default Extensions: duckdb_extensions always prints those, installed/loaded or not
 	map<ExtensionKey, ExtensionInformation> installed_extensions;
+	unordered_map<string, ExtensionKey> installed_paths;
 	auto extension_count = ExtensionHelper::DefaultExtensionCount();
 	auto alias_count = ExtensionHelper::ExtensionAliasCount();
 	for (idx_t i = 0; i < extension_count; i++) {
@@ -143,6 +144,7 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 			}
 
 			ExtensionKey key(info.name, directory.repository);
+			installed_paths[fs.CanonicalizePath(info.file_path)] = key;
 			auto entry = installed_extensions.find(key);
 			if (entry == installed_extensions.end()) {
 				installed_extensions[key] = std::move(info);
@@ -175,16 +177,9 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 		auto &ext_data = *ext_info;
 
 		ExtensionKey key(ext_name, string());
-		if (ext_data.install_info && ext_data.install_info->repository_type == ExtensionRepositoryType::USER_PROVIDED &&
-		    !ext_data.install_info->repository_name.empty()) {
-			auto &repository_name = ext_data.install_info->repository_name;
-			ExtensionKey repository_key(ext_name, repository_name);
-			auto flat_entry = installed_extensions.find(key);
-			bool flat_from_repository = flat_entry != installed_extensions.end() && flat_entry->second.installed &&
-			                            flat_entry->second.installed_from == repository_name;
-			if (installed_extensions.find(repository_key) != installed_extensions.end() || !flat_from_repository) {
-				key = repository_key;
-			}
+		auto installed_path = installed_paths.find(ext_data.file_path);
+		if (!ext_data.file_path.empty() && installed_path != installed_paths.end()) {
+			key = installed_path->second;
 		}
 		if (auto &ext_install_info = ext_data.install_info) {
 			auto entry = installed_extensions.find(key);
@@ -196,9 +191,6 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 				info.extension_version = ext_install_info->version;
 				info.installed = ext_install_info->mode == ExtensionInstallMode::STATICALLY_LINKED;
 				info.install_mode = ext_install_info->mode;
-				if (!key.second.empty()) {
-					info.installed_from = key.second;
-				}
 				if (ext_data.install_info->mode == ExtensionInstallMode::STATICALLY_LINKED && info.file_path.empty()) {
 					info.file_path = "(BUILT-IN)";
 				}
