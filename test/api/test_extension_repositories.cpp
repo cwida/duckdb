@@ -624,8 +624,7 @@ static vector<string> UpdateRows(Connection &con, const string &statement) {
 
 TEST_CASE("Test that UPDATE EXTENSIONS updates extensions installed from user-provided repositories", "[api]") {
 	auto fs = FileSystem::CreateLocal();
-	auto demo_extension =
-	    fs->JoinPath(TestBuildDirectory(), "test/extension/loadable_extension_demo.duckdb_extension");
+	auto demo_extension = fs->JoinPath(TestBuildDirectory(), "test/extension/loadable_extension_demo.duckdb_extension");
 	if (!fs->FileExists(demo_extension)) {
 		WARN("loadable_extension_demo is not built, skipping");
 		return;
