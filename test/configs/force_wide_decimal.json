@@ -65,6 +65,8 @@
 			"reason": "Wide decimals carry string statistics, arithmetic on them propagates no numeric min/max",
 			"paths": [
 				"test/optimizer/partial_aggregate_pushdown_throwing_argument.test",
+				"test/optimizer/generated_domain_plan.test",
+				"test/optimizer/statistics/statistics_join_aggregate_bounds.test",
 				"test/sql/optimizer/modulo_zonemap_pruning.test",
 				"test/sql/optimizer/list_transform_row_group_pruning.test",
 				"test/sql/types/decimal/wide_decimal_statistics.test",
