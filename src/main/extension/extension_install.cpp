@@ -149,7 +149,7 @@ vector<InstalledExtensionDirectory> ExtensionHelper::GetInstalledExtensionDirect
 	auto extension_directories = GetExtensionDirectoryPath(db, fs);
 	vector<InstalledExtensionDirectory> result;
 	for (auto &directory : extension_directories) {
-		result.push_back({directory, string()});
+		result.push_back({directory, string(), directory});
 	}
 
 	// Per-repository install folders are discovered on disk, independent of whether their repository is trusted
@@ -169,7 +169,7 @@ vector<InstalledExtensionDirectory> ExtensionHelper::GetInstalledExtensionDirect
 		});
 		std::sort(repository_names.begin(), repository_names.end());
 		for (auto &name : repository_names) {
-			result.push_back({fs.JoinPath(repositories_directory, name), name});
+			result.push_back({fs.JoinPath(repositories_directory, name), name, directory});
 		}
 	}
 	return result;
@@ -239,7 +239,7 @@ unique_ptr<ExtensionInstallInfo> ExtensionHelper::InstallExtension(DatabaseInsta
 	// Install is currently a no-op
 	return nullptr;
 #endif
-	string local_path = ExtensionDirectory(db, fs);
+	string local_path = options.extension_directory.empty() ? ExtensionDirectory(db, fs) : options.extension_directory;
 	return InstallExtensionInternal(db, fs, local_path, extension, options);
 }
 
@@ -251,7 +251,7 @@ unique_ptr<ExtensionInstallInfo> ExtensionHelper::InstallExtension(ClientContext
 #endif
 	auto &db = DatabaseInstance::GetDatabase(context);
 	auto &fs = FileSystem::GetFileSystem(context);
-	string local_path = ExtensionDirectory(context);
+	string local_path = options.extension_directory.empty() ? ExtensionDirectory(context) : options.extension_directory;
 	return InstallExtensionInternal(db, fs, local_path, extension, options, context);
 }
 
