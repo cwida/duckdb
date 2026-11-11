@@ -42,6 +42,12 @@ void DeltaByteArrayDecoder::ReadDbpData(Allocator &allocator, ResizeableBuffer &
 }
 
 void DeltaByteArrayDecoder::InitializePage() {
+	auto &schema = reader.Schema();
+	if (schema.parquet_type != duckdb_parquet::Type::BYTE_ARRAY &&
+	    schema.parquet_type != duckdb_parquet::Type::FIXED_LEN_BYTE_ARRAY) {
+		throw DataCorruptionException(
+		    "DELTA_BYTE_ARRAY encoding is only supported for BYTE_ARRAY or FIXED_LEN_BYTE_ARRAY data");
+	}
 	auto &block = *reader.block;
 	auto &allocator = reader.reader.allocator;
 	idx_t prefix_count, suffix_count;
@@ -67,7 +73,6 @@ void DeltaByteArrayDecoder::InitializePage() {
 	// Decode DELTA_BYTE_ARRAY into plain Parquet page format
 	// Plain format for BYTE_ARRAY: [4-byte length][data] repeated
 	// Plain format for FIXED_LEN_BYTE_ARRAY: [data] repeated (no length prefix)
-	auto &schema = reader.Schema();
 	bool is_fixed_len = (schema.parquet_type == duckdb_parquet::Type::FIXED_LEN_BYTE_ARRAY);
 	idx_t fixed_len = is_fixed_len ? schema.type_length : 0;
 

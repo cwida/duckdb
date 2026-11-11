@@ -985,7 +985,7 @@ void CardinalityEstimator::RestrictFilterDomains(const vector<RelationStats> &re
 				break;
 			}
 			auto &column = relation_stats[binding.table_index.index].columns[binding.column_index.GetIndex()];
-			auto bound = column.semi_anti_join_domain_evidence.GetFilterDomainBound();
+			auto bound = column.semi_anti_join_domain_evidence.GetDomainBound();
 			// Unknown-NDV filters need their scan selectivities refined before shrinking the join domain.
 			if (!bound.IsValid() || column.total_domain.source == DistinctCountSource::CARDINALITY) {
 				all_filtered = false;

@@ -174,10 +174,10 @@ statement ok
 RESET profiling_renderer_settings
 
 statement ok
-PRAGMA enable_profiling = 'html'
+SET enable_profiling = 'html'
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/tree_renderer_profile.html'
+SET profiling_output = '{TEST_DIR}/tree_renderer_profile.html'
 
 query I
 SELECT 42 WHERE 'left<&' <> 'right>' /* renderer comment */
@@ -205,10 +205,10 @@ statement ok
 COPY (SELECT i FROM range(10) t(i)) TO '{TEST_DIR}/tree_renderer_input.csv' (HEADER)
 
 statement ok
-PRAGMA enable_profiling = 'compact'
+SET enable_profiling = 'compact'
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/tree_renderer_compact.txt'
+SET profiling_output = '{TEST_DIR}/tree_renderer_compact.txt'
 
 query I
 SELECT count(*) FROM read_csv_auto('{TEST_DIR}/tree_renderer_input.csv')
@@ -224,10 +224,10 @@ SELECT contains(content, 'read=') FROM read_text('{TEST_DIR}/tree_renderer_compa
 true
 
 statement ok
-PRAGMA enable_profiling = 'compact'
+SET enable_profiling = 'compact'
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/tree_renderer_compact_write.txt'
+SET profiling_output = '{TEST_DIR}/tree_renderer_compact_write.txt'
 
 statement ok
 COPY (SELECT i FROM range(10) t(i)) TO '{TEST_DIR}/tree_renderer_output.csv'

@@ -11,16 +11,16 @@ profiling_output
 tracked_metrics
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 statement ok
-PRAGMA profiling_output='{TEST_DIR}/test_profiling_output.json';
+SET profiling_output='{TEST_DIR}/test_profiling_output.json';
 
 statement ok
-PRAGMA profiling_coverage='ALL';
+SET profiling_coverage='ALL';
 
 statement ok
-PRAGMA profiling_mode='DETAILED';
+SET profiling_mode='DETAILED';
 
 statement ok
 SET tracked_metrics = ['query.cpu_time'];

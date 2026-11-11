@@ -6,7 +6,7 @@ statement ok
 PRAGMA enable_profiling
 
 statement ok
-PRAGMA profile_output='{TEST_DIR}/out.txt';
+SET profile_output='{TEST_DIR}/out.txt';
 
 statement ok
 CREATE TABLE t0(c0 INTEGER);

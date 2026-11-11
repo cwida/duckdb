@@ -138,7 +138,7 @@ statement ok
 SET disabled_optimizers='statistics_propagation';
 
 statement ok
-PRAGMA explain_output='OPTIMIZED_ONLY';
+SET explain_output='OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT * FROM single_scan

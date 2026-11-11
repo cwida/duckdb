@@ -6,25 +6,13 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 # basic DISTINCT with LIMIT
 query I
 SELECT COUNT(*) FROM (SELECT DISTINCT i % 100 FROM range(1000000) t(i) LIMIT 10)
 ----
 10
-
-# DISTINCT with LIMIT and OFFSET
-query I
-SELECT COUNT(*) FROM (SELECT DISTINCT i % 100 FROM range(1000000) t(i) LIMIT 5 OFFSET 3)
-----
-5
-
-# EXPLAIN: DISTINCT + LIMIT + OFFSET shows LIMITED_DISTINCT
-query II
-EXPLAIN SELECT DISTINCT i % 100 FROM range(1000000) t(i) LIMIT 5 OFFSET 3
-----
-physical_plan	<REGEX>:.*LIMITED_DISTINCT.*
 
 # limit larger than number of distinct values
 query I
@@ -172,3 +160,19 @@ query II
 EXPLAIN SELECT DISTINCT i % 100 AS v FROM range(1000000) t(i) ORDER BY v LIMIT 10
 ----
 physical_plan	<REGEX>:.*TOP_N.*
+
+# OFFSET on an unordered input is intended here
+statement ok
+SET warnings_as_errors=false
+
+# DISTINCT with LIMIT and OFFSET
+query I
+SELECT COUNT(*) FROM (SELECT DISTINCT i % 100 FROM range(1000000) t(i) LIMIT 5 OFFSET 3)
+----
+5
+
+# EXPLAIN: DISTINCT + LIMIT + OFFSET shows LIMITED_DISTINCT
+query II
+EXPLAIN SELECT DISTINCT i % 100 FROM range(1000000) t(i) LIMIT 5 OFFSET 3
+----
+physical_plan	<REGEX>:.*LIMITED_DISTINCT.*

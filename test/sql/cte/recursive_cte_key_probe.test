@@ -9,7 +9,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output='physical_only';
+SET explain_output='physical_only';
 
 # A canonical complete-key inner join uses the physical state probe.
 query II

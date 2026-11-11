@@ -3,7 +3,7 @@
 # group: [table_function]
 
 statement error
-SELECT * FROM read_csv(thisishopefullyanonexistentfile)
+SELECT * FROM read_csv('thisishopefullyanonexistentfile')
 ----
 No files found that match the pattern
 

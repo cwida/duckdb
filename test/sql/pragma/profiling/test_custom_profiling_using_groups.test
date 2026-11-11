@@ -9,10 +9,10 @@ require json
 
 # Test wildcard: all metrics
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['*'];
@@ -56,10 +56,10 @@ FROM metrics_output;
 
 # Test query.* glob: query metrics only
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['query.*'];
@@ -88,10 +88,10 @@ FROM metrics_output;
 
 # Test system.* glob: system metrics only
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['system.*'];
@@ -119,10 +119,10 @@ FROM metrics_output;
 
 # Test storage.* glob: storage metrics only
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['storage.*'];
@@ -148,10 +148,10 @@ false
 
 # Test operator.* glob: operator metrics only
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['operator.*'];
@@ -181,10 +181,10 @@ FROM (
 
 # Test optimizer.* glob: individual optimizer timings only
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['optimizer.*'];
@@ -208,10 +208,10 @@ SELECT optimizer FROM metrics_output;
 
 # Test combined globs: optimizer.* and parser.*
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['optimizer.*', 'parser.*', 'physical_planner.*', 'planner.*'];
@@ -247,10 +247,10 @@ FROM metrics_output;
 
 # Test multiple globs combined
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['io.*', 'operator.*', 'query.*', 'storage.*', 'system.*'];
@@ -289,10 +289,10 @@ FROM metrics_output;
 
 # Test phase timing globs combined with execution
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['optimizer.*', 'parser.*', 'physical_planner.*', 'planner.*', 'system.*', 'storage.*'];

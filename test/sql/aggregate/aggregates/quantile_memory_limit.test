@@ -3,7 +3,7 @@
 # group: [aggregates]
 
 statement ok
-PRAGMA memory_limit='300MB'
+SET memory_limit='300MB'
 
 # 20M buffered values (160MB) plus the flattened copy (next power of two, 268MB) do not fit in the limit
 statement error

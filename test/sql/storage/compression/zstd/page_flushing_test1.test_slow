@@ -76,7 +76,7 @@ insert into tbl select 'bbbbaaaa' from range(2047)
 # ------------------------
 
 statement ok
-pragma force_compression='zstd'
+SET force_compression='zstd'
 
 statement ok
 checkpoint

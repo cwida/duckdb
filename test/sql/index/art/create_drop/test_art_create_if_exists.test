@@ -3,7 +3,7 @@
 # group: [create_drop]
 
 statement ok
-PRAGMA immediate_transaction_mode = True;
+SET immediate_transaction_mode = True;
 
 statement ok
 CREATE TABLE tbl AS SELECT range AS i FROM range(100);

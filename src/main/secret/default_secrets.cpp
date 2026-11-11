@@ -1,4 +1,8 @@
 #include "duckdb/main/secret/default_secrets.hpp"
+
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/os_util.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 
 namespace duckdb {
@@ -58,30 +62,22 @@ vector<CreateSecretFunction> CreateHTTPSecretFunctions::GetDefaultSecretFunction
 	return result;
 }
 
-static const char *TryGetEnv(const char *name) {
-	const char *res = std::getenv(name);
-	if (res) {
-		return res;
+//! Reads a proxy setting from the process environment into the secret, trying the lowercase name before the uppercase
+static void TrySetValueFromEnv(OSUtil &os_util, KeyValueSecret &secret, const string &name) {
+	string value;
+	if (os_util.GetEnv(name, value) || os_util.GetEnv(StringUtil::Upper(name), value)) {
+		secret.secret_map[Identifier(name)] = Value(value);
 	}
-	return std::getenv(StringUtil::Upper(name).c_str());
 }
 
 unique_ptr<BaseSecret> CreateHTTPSecretFunctions::CreateHTTPSecretFromEnv(ClientContext &context,
                                                                           CreateSecretInput &input) {
 	auto secret = make_uniq<KeyValueSecret>(input.scope, input.type, input.provider, input.name);
 
-	auto http_proxy = TryGetEnv("http_proxy");
-	if (http_proxy) {
-		secret->secret_map["http_proxy"] = Value(http_proxy);
-	}
-	auto http_proxy_password = TryGetEnv("http_proxy_password");
-	if (http_proxy_password) {
-		secret->secret_map["http_proxy_password"] = Value(http_proxy_password);
-	}
-	auto http_proxy_username = TryGetEnv("http_proxy_username");
-	if (http_proxy_username) {
-		secret->secret_map["http_proxy_username"] = Value(http_proxy_username);
-	}
+	auto &os_util = OSUtil::Get(*context.db);
+	TrySetValueFromEnv(os_util, *secret, "http_proxy");
+	TrySetValueFromEnv(os_util, *secret, "http_proxy_password");
+	TrySetValueFromEnv(os_util, *secret, "http_proxy_username");
 
 	// Allow overwrites
 	secret->TrySetValue("verify_ssl", input);

@@ -7,7 +7,7 @@ require parquet
 require vector_size 2048
 
 statement ok
-PRAGMA threads=1;
+SET threads=1;
 
 statement ok
 SET partitioned_write_flush_threshold=2048;

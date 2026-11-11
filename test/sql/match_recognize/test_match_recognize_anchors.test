@@ -3,7 +3,7 @@
 # group: [match_recognize]
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 # ^ and $ hold at the ends of the partition and take no row of their own, so they say where a match
 # may begin and end rather than what it matches.

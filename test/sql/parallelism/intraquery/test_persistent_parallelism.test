@@ -8,10 +8,10 @@ statement ok
 PRAGMA enable_profiling
 
 statement ok
-PRAGMA profiling_output='{TEST_DIR}/test.txt'
+SET profiling_output='{TEST_DIR}/test.txt'
 
 statement ok
-PRAGMA profiling_mode = detailed
+SET profiling_mode = 'detailed'
 
 statement ok
 BEGIN TRANSACTION
@@ -35,7 +35,7 @@ SELECT MIN(i), MAX(i) FROM integers
 restart
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 statement ok
 PRAGMA verify_parallelism

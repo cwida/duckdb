@@ -34,6 +34,6 @@ SELECT compression FROM pragma_storage_info('temperatures_float') WHERE segment_
 
 # Verify that the compression method is deprecated
 statement error
-pragma force_compression='patas'
+SET force_compression='patas'
 ----
 deprecated
