@@ -171,3 +171,29 @@ query I
 SELECT bit_position('010'::BIT, '1101110101011101'::BIT)
 ----
 7
+
+# a partial match must not hide a later match
+query I
+SELECT bit_position('0011'::BIT, '000011'::BIT)
+----
+3
+
+query I
+SELECT bit_position('011'::BIT, '0011'::BIT)
+----
+2
+
+query I
+SELECT bit_position('1101'::BIT, '11101'::BIT)
+----
+2
+
+query I
+SELECT bit_position('111'::BIT, '11011'::BIT)
+----
+0
+
+query I
+SELECT bit_position('11'::BIT, '1'::BIT)
+----
+0

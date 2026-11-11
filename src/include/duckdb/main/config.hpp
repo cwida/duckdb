@@ -10,6 +10,7 @@
 
 #include "duckdb/storage/storage_info.hpp"
 #include "duckdb/common/allocator.hpp"
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/cgroups.hpp"
 #include "duckdb/common/common.hpp"
@@ -96,6 +97,12 @@ struct DBConfigOptions {
 	string default_autoinstall_repository;
 	//! The maximum memory used by the database system (in bytes). Default: 80% of System available memory
 	idx_t maximum_memory = DConstants::INVALID_INDEX;
+	//! Initial permission to allocate from the fixed-size block pool.
+#ifdef __MINGW32__
+	bool enable_block_allocator = false;
+#else
+	bool enable_block_allocator = true;
+#endif
 	//! The maximum size of the 'temp_directory' folder when set (in bytes). Default: 90% of available disk space.
 	idx_t maximum_swap_space = DConstants::INVALID_INDEX;
 	//! The maximum amount of CPU threads used by the database system. Default: all available.
@@ -108,15 +115,6 @@ struct DBConfigOptions {
 	bool use_temporary_directory = true;
 	//! Directory to store temporary structures that do not fit in memory
 	string temporary_directory;
-	//! Whether or not to invoke filesystem trim on free blocks after checkpoint. This will reclaim
-	//! space for sparse files, on platforms that support it.
-	bool trim_free_blocks = false;
-	//! Record timestamps of buffer manager unpin() events. Usable by custom eviction policies.
-	bool buffer_manager_track_eviction_timestamps = false;
-	//! Force checkpoint when CHECKPOINT is called or on shutdown, even if no changes have been made
-	bool force_checkpoint = false;
-	//! Run a checkpoint on successful shutdown and delete the WAL, to leave only a single database file behind
-	bool checkpoint_on_shutdown = true;
 	//! Serialize the metadata on checkpoint with compatibility for a given DuckDB version.
 	StorageCompatibility storage_compatibility = StorageCompatibility::Default();
 	//! Initialize the database with the standard set of DuckDB functions
@@ -132,10 +130,6 @@ struct DBConfigOptions {
 	case_insensitive_map_t<Value> set_variable_defaults;
 	//! Additional directories to store extension binaries in
 	vector<string> extension_directories;
-	//! Debug setting - how to initialize  blocks in the storage layer when allocating
-	DebugInitialize debug_initialize = DebugInitialize::NO_INITIALIZE;
-	//! Debug setting - how to verify ORDER BY results (e.g. by rewriting ORDER BY into create_sort_key)
-	DebugOrderVerification debug_order_verification = DebugOrderVerification::NONE;
 	//! The set of user-provided options
 	identifier_map_t<Value> user_options;
 	//! The set of unrecognized (other) options
@@ -150,18 +144,16 @@ struct DBConfigOptions {
 	string http_proxy;
 	//! The default block header size for new duckdb database files.
 	idx_t default_block_header_size = DEFAULT_BLOCK_HEADER_STORAGE_SIZE;
-	//!  Whether or not to abort if a serialization exception is thrown during WAL playback (when reading truncated WAL)
-	bool abort_on_wal_failure = false;
 	//! Paths that are explicitly allowed, even if enable_external_access is false
 	unordered_set<string> allowed_paths;
+	//! Environment variables the embedder configures itself from, readable with OSUtil::GetEnvUnrestricted
+	unordered_set<string> configuration_env;
 	//! Directories that are explicitly allowed, even if enable_external_access is false
 	set<string> allowed_directories;
 	//! Additional configuration options that are allowed to be changed even when the configuration is locked
 	identifier_set_t allowed_configs;
 	//! The log configuration
 	LogConfig log_config = LogConfig();
-	//! Physical memory that the block allocator is allowed to use (this memory is never freed and cannot be reduced)
-	idx_t block_allocator_size = 0;
 	//! Memory limit for the write buffer per row group (optional)
 	optional_idx write_buffer_row_group_memory_limit;
 	//! Whether to print bindings when printing the plan (debug mode only)
@@ -170,6 +162,45 @@ struct DBConfigOptions {
 	static DebugVerificationMode global_verification_mode; // NOLINT: debug setting
 
 	bool operator==(const DBConfigOptions &other) const;
+};
+
+//! The replacement scans of a database. Scans can be registered while queries are being bound, so the list is
+//! guarded by a lock and the binder iterates over a snapshot.
+class ReplacementScanList {
+public:
+	ReplacementScanList() = default;
+	ReplacementScanList(ReplacementScanList &&other) noexcept {
+		lock_guard<mutex> guard(other.lock);
+		scans = std::move(other.scans);
+	}
+	ReplacementScanList &operator=(ReplacementScanList &&other) noexcept {
+		if (this != &other) {
+			lock_guard<mutex> other_guard(other.lock);
+			lock_guard<mutex> guard(lock);
+			scans = std::move(other.scans);
+		}
+		return *this;
+	}
+
+	template <class... ARGS>
+	void emplace_back(ARGS &&... args) { // NOLINT
+		auto scan = make_shared_ptr<ReplacementScan>(std::forward<ARGS>(args)...);
+		lock_guard<mutex> guard(lock);
+		scans.push_back(std::move(scan));
+	}
+	void push_back(ReplacementScan scan) { // NOLINT
+		auto shared_scan = make_shared_ptr<ReplacementScan>(std::move(scan));
+		lock_guard<mutex> guard(lock);
+		scans.push_back(std::move(shared_scan));
+	}
+	vector<shared_ptr<ReplacementScan>> Snapshot() const {
+		lock_guard<mutex> guard(lock);
+		return scans;
+	}
+
+private:
+	mutable mutex lock;
+	vector<shared_ptr<ReplacementScan>> scans;
 };
 
 struct DBConfig {
@@ -183,7 +214,7 @@ public:
 	DUCKDB_API ~DBConfig();
 
 	//! Replacement table scans are automatically attempted when a table name cannot be found in the schema
-	vector<ReplacementScan> replacement_scans;
+	ReplacementScanList replacement_scans;
 
 	//! The FileSystem to use, can be overwritten to allow for injecting custom file systems for testing purposes (e.g.
 	//! RamFS or something similar)
@@ -212,6 +243,10 @@ public:
 	shared_ptr<DatabaseFilePathManager> path_manager;
 	//! Database configuration variables as controlled by SET
 	GlobalUserSettings user_settings;
+	//! The grammar extensions sessions parse with when active_grammar_extensions is not set: an
+	//! immutable snapshot replaced on SET GLOBAL and loaded atomically because sessions read it at
+	//! parse time without the config lock (nullptr when unset)
+	shared_ptr<const vector<string>> default_grammar_extensions;
 
 public:
 	DUCKDB_API static DBConfig &GetConfig(ClientContext &context);
@@ -220,6 +255,10 @@ public:
 	DUCKDB_API static const DBConfig &GetConfig(const ClientContext &context);
 	DUCKDB_API static const DBConfig &GetConfig(const DatabaseInstance &db);
 	DUCKDB_API static vector<ConfigurationOption> GetOptions();
+	//! The amount of unflushed row group data after which the optimistic writer flushes (reads under the config lock)
+	DUCKDB_API idx_t GetWriteBufferMemoryLimit() const;
+	//! A copy of the configured extension directories (read under the config lock)
+	DUCKDB_API vector<string> GetExtensionDirectories() const;
 	DUCKDB_API static vector<ConfigurationAlias> GetAliases();
 	DUCKDB_API static idx_t GetOptionCount();
 	DUCKDB_API static idx_t GetAliasCount();
@@ -320,16 +359,26 @@ public:
 	//! Returns the default value of an option
 	static SettingLookupResult TryGetDefaultValue(optional_ptr<const ConfigurationOption> option, Value &result);
 
-	bool CanAccessFile(const string &path, FileType type);
+	//! The opener (if any) is used to expand "~" using the connection-specific home_directory
+	bool CanAccessFile(const string &path, FileType type, optional_ptr<FileOpener> opener = nullptr);
 	void AddAllowedConfig(const Identifier &config_name);
 	void AddAllowedDirectory(const string &path);
 	void AddAllowedPath(const string &path);
+	//! Replace / reset the allowed directories and paths as a whole (under the lock that guards them)
+	void SetAllowedDirectories(const vector<string> &paths);
+	void SetAllowedPaths(const vector<string> &paths);
+	void ResetAllowedDirectories();
+	void ResetAllowedPaths();
+	//! Whether the given optimizer is disabled (disabled_optimizers)
+	DUCKDB_API bool IsOptimizerDisabled(OptimizerType type) const;
+	DUCKDB_API set<OptimizerType> GetDisabledOptimizers() const;
+	DUCKDB_API void SetDisabledOptimizers(set<OptimizerType> disabled_optimizers);
 	//! Allows a database file and its WAL files, so a database can be opened while external access is disabled.
 	//! Only possible through API calls, not SQL calls.
 	void AddAllowedDatabasePath(const string &database_path);
 	vector<string> GetAllowedDirectories() const;
 	vector<string> GetAllowedPaths() const;
-	string SanitizeAllowedPath(const string &path) const;
+	string SanitizeAllowedPath(const string &path, optional_ptr<FileOpener> opener = nullptr) const;
 	ExtensionCallbackManager &GetCallbackManager();
 	const ExtensionCallbackManager &GetCallbackManager() const;
 
@@ -337,14 +386,22 @@ public:
 	HTTPUtil &GetHTTPUtil() const;
 	//! Replace how external extensions are installed and loaded, before the database runs queries
 	DUCKDB_API void SetExternalExtensionProvider(const shared_ptr<ExternalExtensionProvider> &new_provider);
+	//! Returns a copy of the forced variant shredding type (INVALID if unset), safe to call while it is being modified
+	DUCKDB_API LogicalType GetForceVariantShredding() const;
+	//! Returns a copy of the allowed_configs set, safe to call while it is being modified
+	DUCKDB_API identifier_set_t GetAllowedConfigs() const;
 	DUCKDB_API ExternalExtensionProvider &GetExternalExtensionProvider() const;
 	DUCKDB_API HTTPTransportManager &GetHTTPTransportManager();
 	DUCKDB_API const HTTPTransportManager &GetHTTPTransportManager() const;
 
 private:
-	mutable mutex config_lock;
+	mutable std::recursive_mutex config_lock;
 	//! Guards allowed_paths and allowed_directories, which a running instance can extend while files are being opened
 	mutable mutex allowed_paths_lock;
+	//! Guards disabled_optimizers, which can be changed while other connections plan queries
+	mutable mutex disabled_optimizers_lock;
+	//! Whether disabled_optimizers is non-empty
+	atomic<bool> has_disabled_optimizers {false};
 	unique_ptr<CompressionFunctionSet> compression_functions;
 	unique_ptr<EncodingFunctionSet> encoding_functions;
 	unique_ptr<ArrowTypeExtensionSet> arrow_extensions;

@@ -1,0 +1,52 @@
+# name: test/issues/general/test_26328.test
+# description: Reading a CSV whose rows have more fields than the columns projects them across buffer boundaries
+# group: [general]
+
+statement ok
+COPY (SELECT 'a' AS col1, 'b' AS col2, 'cccccccccccccccc' AS extra) TO '{TEST_DIR}/extra_column.csv' (HEADER);
+
+query I
+SELECT col1 FROM read_csv('{TEST_DIR}/extra_column.csv', columns = {'col1': 'VARCHAR', 'col2': 'VARCHAR'}, header = true,
+	auto_detect = false, strict_mode = false, buffer_size = 20);
+----
+a
+
+query II
+SELECT col1, col2 FROM read_csv('{TEST_DIR}/extra_column.csv', columns = {'col1': 'VARCHAR', 'col2': 'VARCHAR'},
+	header = true, auto_detect = false, strict_mode = false, buffer_size = 20);
+----
+a	b
+
+statement error
+SELECT col1 FROM read_csv('{TEST_DIR}/extra_column.csv', columns = {'col1': 'VARCHAR', 'col2': 'VARCHAR'}, header = true,
+	auto_detect = false, buffer_size = 20);
+----
+Expected Number of Columns: 2 Found: 3
+
+# several extra fields, and values of every column crossing the buffer boundaries
+statement ok
+COPY (
+	SELECT i::VARCHAR AS col1, 'b' || i AS col2, repeat('c', i % 13) AS e1, 'd' AS e2, repeat('e', i % 7) AS e3
+	FROM range(500) t(i)
+) TO '{TEST_DIR}/extra_columns.csv' (HEADER);
+
+query III
+SELECT count(*), sum(col1::INTEGER), count(DISTINCT col2) FROM read_csv('{TEST_DIR}/extra_columns.csv',
+	columns = {'col1': 'VARCHAR', 'col2': 'VARCHAR'}, header = true, auto_detect = false, strict_mode = false,
+	buffer_size = 40);
+----
+500	124750	500
+
+query II
+SELECT count(*), sum(col1::INTEGER) FROM read_csv('{TEST_DIR}/extra_columns.csv',
+	columns = {'col1': 'VARCHAR', 'col2': 'VARCHAR'}, header = true, auto_detect = false, ignore_errors = true,
+	buffer_size = 40);
+----
+0	NULL
+
+query I
+SELECT sum(col2[2:]::INTEGER) FROM read_csv('{TEST_DIR}/extra_columns.csv',
+	columns = {'col1': 'VARCHAR', 'col2': 'VARCHAR'}, header = true, auto_detect = false, strict_mode = false,
+	buffer_size = 40);
+----
+124750

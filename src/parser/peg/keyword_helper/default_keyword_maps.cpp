@@ -8,6 +8,7 @@ static constexpr keyword_categories_t KEYWORD_RESERVED = keyword_categories_t::C
 static constexpr keyword_categories_t KEYWORD_TYPE_FUNC = keyword_categories_t::CreateCategory(2);
 static constexpr keyword_categories_t KEYWORD_COL_NAME = keyword_categories_t::CreateCategory(3);
 static constexpr keyword_categories_t KEYWORD_TYPE_NAME = keyword_categories_t::CreateCategory(4);
+static constexpr keyword_categories_t KEYWORD_BARE_LABEL = keyword_categories_t::CreateCategory(5);
 
 LiteralInfo DefaultKeywordMaps::LookupKeyword(const string &text, uint16_t literal_id) const {
 	keyword_categories_t flags;
@@ -26,11 +27,16 @@ LiteralInfo DefaultKeywordMaps::LookupKeyword(const string &text, uint16_t liter
 	if (typename_keyword_map.count(text)) {
 		flags |= KEYWORD_TYPE_NAME;
 	}
+	if (bare_label_keyword_map.count(text)) {
+		flags |= KEYWORD_BARE_LABEL;
+	}
 	return LiteralInfo(literal_id, flags);
 }
 
 keyword_categories_t DefaultKeywordMaps::GetIdentifierMask(SuggestionState type) {
 	switch (type) {
+	case SuggestionState::SUGGEST_BARE_LABEL:
+		return KEYWORD_BARE_LABEL;
 	case SuggestionState::SUGGEST_TYPE_NAME:
 		return KEYWORD_UNRESERVED | KEYWORD_TYPE_NAME;
 	case SuggestionState::SUGGEST_SCALAR_FUNCTION_NAME:

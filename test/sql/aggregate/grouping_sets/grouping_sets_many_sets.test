@@ -1,0 +1,40 @@
+# name: test/sql/aggregate/grouping_sets/grouping_sets_many_sets.test
+# description: Queries with many grouping sets
+# group: [grouping_sets]
+
+require 64bit
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE t AS SELECT i % 2 c0, i % 3 c1, i % 4 c2, i % 5 c3, i % 6 c4, i % 7 c5, i % 8 c6, i % 9 c7, i % 10 c8, i % 11 c9, i % 12 c10, i % 13 c11, i FROM range(100) r(i);
+
+# every grouping set sums all rows
+query I
+SELECT sum(s) FROM (SELECT sum(i) s FROM t GROUP BY CUBE (c0,c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11));
+----
+20275200
+
+query I
+SELECT count(DISTINCT g) FROM (SELECT grouping(c0,c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11) g FROM t GROUP BY CUBE (c0,c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11));
+----
+4096
+
+query III
+SELECT c0, c1, sum(i) FROM t GROUP BY ROLLUP (c0, c1) ORDER BY ALL;
+----
+0	0	816
+0	1	784
+0	2	850
+0	NULL	2450
+1	0	867
+1	1	833
+1	2	800
+1	NULL	2500
+NULL	NULL	4950
+
+statement error
+SELECT count(*) FROM (SELECT 1 c0, 1 c1, 1 c2, 1 c3, 1 c4, 1 c5, 1 c6, 1 c7, 1 c8, 1 c9, 1 c10, 1 c11, 1 c12, 1 c13, 1 c14) t GROUP BY GROUPING SETS (CUBE (c0,c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14), CUBE (c0,c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14), CUBE (c0,c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14));
+----
+Maximum grouping set count of 65535 exceeded

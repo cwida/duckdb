@@ -27,11 +27,11 @@ SELECT 999/008.09_91.;
 ----
 <REGEX>:.*(Parser|Invalid Input|Conversion) Error.*
 
-# a multi-dot literal without an underscore keeps failing cleanly
+# a multi-dot literal without an underscore is a syntax error
 statement error
 SELECT 1.2.3;
 ----
-<REGEX>:.*(Invalid Input|Conversion) Error.*
+Parser Error: syntax error at or near "1.2.3"
 
 # valid numeric literals (including digit separators and a trailing dot) are unaffected
 query IIIIII

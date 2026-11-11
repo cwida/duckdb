@@ -247,13 +247,13 @@ unique_ptr<ExportAggregateBindData> BindExportedAggregate(ClientContext &context
 	}
 	auto &aggr_entry = func.Cast<AggregateFunctionCatalogEntry>();
 
-	ErrorData error;
 	FunctionBinder function_binder(context);
-	auto best_function = function_binder.BindFunction(aggr_entry.name, aggr_entry.functions, argument_types, error);
-	if (!best_function.IsValid()) {
-		throw BinderException("Could not re-bind exported aggregate %s: %s", function_name, error.Message());
+	auto best_function = FunctionBinder::SelectFunction(context, aggr_entry.functions, argument_types);
+	if (!best_function.IsSuccess()) {
+		throw BinderException("Could not re-bind exported aggregate %s: %s", function_name,
+		                      best_function.GetError().Message());
 	}
-	const auto &aggr = aggr_entry.functions.GetFunctionByOffset(best_function.GetIndex());
+	const auto aggr = best_function.GetBinding().GetFunction<AggregateFunction>();
 	const auto &signature = aggr->GetSignature();
 	for (idx_t arg_idx = 0; arg_idx < argument_types.size(); arg_idx++) {
 		if (argument_types[arg_idx].id() != LogicalTypeId::ANY) {
@@ -284,7 +284,9 @@ unique_ptr<ExportAggregateBindData> BindExportedAggregate(ClientContext &context
 		}
 	}
 
-	auto [bound_aggr, bind_info] = function_binder.ResolveFunction(aggr, args);
+	vector<pair<Identifier, unique_ptr<Expression>>> keyword_args;
+	auto [bound_aggr, bind_info] =
+	    function_binder.ResolveAggregateFunction(best_function.GetBinding(), args, keyword_args);
 
 	const auto &bound_args = bound_aggr.GetArguments();
 	bool signature_matches = bound_args.size() == argument_types.size();
@@ -754,10 +756,14 @@ unique_ptr<FunctionData> BindToAggregateState(INPUT &input) {
 			                      "constant");
 		}
 	}
-	auto function_name_val = input.GetNonNullConstant(1);
+	// the arguments are not yet cast to the parameter types when binding
+	auto function_name_val = input.GetNonNullConstant(1).CastAs(input.GetClientContext(), LogicalType::VARCHAR);
 	auto function_name = StringValue::Get(function_name_val);
 
 	auto signature_val = input.GetNonNullConstant(2);
+	if (signature_val.type().id() != LogicalTypeId::LIST) {
+		throw BinderException("to_aggregate_state: the signature must be a list of types");
+	}
 	// the signature lists all of the argument types in order
 	vector<LogicalType> argument_types;
 	for (auto &arg : ListValue::GetChildren(signature_val)) {
@@ -773,7 +779,7 @@ unique_ptr<FunctionData> BindToAggregateState(INPUT &input) {
 	}
 	for (auto &entry : constant_parameters) {
 		// cast each constant to the argument type declared in the signature
-		entry.second = entry.second.DefaultCastAs(argument_types[entry.first]);
+		entry.second = entry.second.CastAs(context, argument_types[entry.first]);
 	}
 
 	auto bind_data = BindExportedAggregate(context, function_name, argument_types, constant_parameters);
@@ -905,6 +911,20 @@ unique_ptr<ParsedExpression> ExportAggregateFunction::StateToSQL(const LogicalTy
 	return make_uniq<FunctionExpression>(QualifiedName("system", "main", "to_aggregate_state"), std::move(arguments));
 }
 
+void ExportAggregateFunction::GetSortedStateOrders(const LogicalType &state_type,
+                                                   vector<SortedAggregateStateOrder> &orders) {
+	auto ext_info = state_type.GetExtensionInfo();
+	if (!ext_info || state_type.id() != LogicalTypeId::LIST) {
+		throw InternalException("GetSortedStateOrders called on a state type that is not an ordered aggregate state");
+	}
+	auto order_entry = ext_info->properties.find("order_bys");
+	if (order_entry == ext_info->properties.end()) {
+		throw InternalException("GetSortedStateOrders called on a state type that is not an ordered aggregate state");
+	}
+	auto &buffer_struct = ListType::GetChildType(state_type);
+	ParseOrderBys(order_entry->second, StructType::GetChildTypes(buffer_struct).size(), orders);
+}
+
 void ExportAggregateFunction::SetStateExport(BoundAggregateExpression &aggregate, LogicalType state_layout) {
 	auto &bound_function = aggregate.FunctionMutable();
 	// functions with an explicit export callback use it as the finalize; others use the field-based serialization
@@ -927,13 +947,13 @@ ExportAggregateFunction::Bind(unique_ptr<BoundAggregateExpression> child_aggrega
 		throw BinderException("Cannot use EXPORT_STATE for non-combinable function %s", bound_function.GetName());
 	}
 	if (bound_function.HasExportAggregateStateCallback() != bound_function.HasImportAggregateStateCallback()) {
-		throw InternalException("Aggregate function \"%s\" must define either both or neither of the "
+		throw InternalException("Aggregate function %s must define either both or neither of the "
 		                        "export_aggregate_state/import_aggregate_state callbacks",
 		                        bound_function.GetName());
 	}
 	if (!bound_function.HasGetStateTypeCallback()) {
 		throw NotImplementedException(
-		    "Aggregate function \"%s\" does not have a state type callback defined - cannot export state",
+		    "Aggregate function %s does not have a state type callback defined - cannot export state",
 		    bound_function.GetName());
 	}
 	D_ASSERT(bound_function.HasStateSizeCallback());
@@ -1025,6 +1045,8 @@ AggregateFunction CombineAggrFun::GetFunction() {
 	                                  CombineAggrBind, nullptr, nullptr, nullptr);
 	function.GetSignature().AddParameter("arg", LogicalTypeId::ANY);
 	function.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// importing states validates them, and the underlying combine can throw (e.g. mismatched approx_top_k k values)
+	function.SetFallible();
 	return function;
 }
 
@@ -1036,6 +1058,8 @@ AggregateFunctionSet CombineAggrFun::GetFunctions() {
 	                                  CombineAggrBind, nullptr, nullptr, nullptr);
 	repeated.GetSignature().AddParameter("arg", LogicalTypeId::ANY).AddParameter("multiplicities", LogicalType::BIGINT);
 	repeated.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// importing states validates them, and the repeated combine throws on multiplicity overflow
+	repeated.SetFallible();
 	set.AddFunction(std::move(repeated));
 	return set;
 }

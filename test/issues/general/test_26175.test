@@ -1,0 +1,131 @@
+# name: test/issues/general/test_26175.test
+# description: INSERT with ON CONFLICT, OR IGNORE or OR REPLACE checks its column list and values like a plain INSERT
+# group: [general]
+
+statement ok
+CREATE TABLE w (i INT UNIQUE, j INT, g AS (j * 2));
+
+statement error
+INSERT INTO w (zz) SELECT 1 ON CONFLICT DO NOTHING;
+----
+Table "w" does not have a column with name "zz"
+
+statement error
+INSERT INTO w (r) SELECT 1 ON CONFLICT (i) DO UPDATE SET j = 0;
+----
+Table "w" does not have a column with name "r"
+
+statement error
+INSERT OR IGNORE INTO w (i) SELECT 5, 6;
+----
+expected 1 columns but 2 values were supplied
+
+statement error
+INSERT OR IGNORE INTO w (i, j) SELECT 5;
+----
+expected 2 columns but 1 values were supplied
+
+statement error
+INSERT OR IGNORE INTO w SELECT 5, 6, 7;
+----
+table "w" has 2 columns but 3 values were supplied
+
+statement error
+INSERT INTO w (g) VALUES (4) ON CONFLICT DO NOTHING;
+----
+Cannot insert into a generated column
+
+statement error
+INSERT INTO w (g) SELECT 4 ON CONFLICT DO NOTHING;
+----
+Cannot insert into a generated column
+
+statement error
+INSERT INTO w (i, i) VALUES (1, 2) ON CONFLICT DO NOTHING;
+----
+Duplicate column name
+
+statement error
+INSERT INTO w (i) VALUES (1, 2) ON CONFLICT DO NOTHING;
+----
+expected 1 columns but 2 values were supplied
+
+statement error
+INSERT OR REPLACE INTO w (zz) SELECT 1;
+----
+Table "w" does not have a column with name "zz"
+
+query III
+SELECT * FROM w;
+----
+
+# valid statements still work, with and without a column list, prepared, from a CTE, and with DEFAULT
+statement ok
+INSERT INTO w (j, i) SELECT 2, 1 ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT OR REPLACE INTO w (i, j) SELECT 1, 3;
+
+statement ok
+INSERT INTO w SELECT 2, 4 ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO w (i, j) VALUES (3, DEFAULT) ON CONFLICT DO NOTHING;
+
+statement ok
+PREPARE upsert AS INSERT INTO w (i, j) SELECT ?, ? ON CONFLICT DO UPDATE SET j = excluded.j;
+
+statement ok
+EXECUTE upsert(2, 5);
+
+statement ok
+INSERT INTO w (i, j) WITH src AS (SELECT 4 AS a, 6 AS b) SELECT a, b FROM src ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO w BY NAME SELECT 5 AS i ON CONFLICT DO NOTHING;
+
+query III
+SELECT * FROM w ORDER BY i;
+----
+1	3	6
+2	5	10
+3	NULL	NULL
+4	6	12
+5	NULL	NULL
+
+# BY NAME takes neither a VALUES list nor a column list, as for a plain INSERT
+statement error
+INSERT INTO w BY NAME VALUES (1) ON CONFLICT DO NOTHING;
+----
+INSERT BY NAME can only be used when inserting from a SELECT statement
+
+statement error
+INSERT INTO w BY NAME (i) SELECT 1 AS i ON CONFLICT DO NOTHING;
+----
+INSERT BY NAME cannot be combined with an explicit column list
+
+statement error
+INSERT INTO w BY NAME DEFAULT VALUES ON CONFLICT DO NOTHING;
+----
+INSERT BY NAME cannot be combined with with DEFAULT VALUES
+
+# RETURNING from a SELECT source, and a prepared statement rebound after the table changed
+query II
+INSERT INTO w (i, j) SELECT 1, 7 ON CONFLICT DO UPDATE SET j = excluded.j RETURNING i, j;
+----
+1	7
+
+statement ok
+PREPARE upsert_select AS INSERT INTO w (i, j) SELECT ?, ? ON CONFLICT DO UPDATE SET j = excluded.j;
+
+statement ok
+ALTER TABLE w ADD COLUMN k INT DEFAULT 9;
+
+statement ok
+EXECUTE upsert_select(6, 8);
+
+query IIII
+SELECT * FROM w WHERE i IN (1, 6) ORDER BY i;
+----
+1	7	14	9
+6	8	16	9

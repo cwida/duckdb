@@ -7,55 +7,55 @@ require json
 require parquet
 
 statement ok
-COPY (SELECT 1 i) TO '__TEST_DIR__/r.json'
+COPY (SELECT 1 i) TO '{TEST_DIR}/r.json'
 
 statement error
-SELECT * FROM read_json('__TEST_DIR__/r.json', records := 1)
+SELECT * FROM read_json('{TEST_DIR}/r.json', records := 1)
 ----
 "records" parameter must be a string
 
 statement error
-SELECT * FROM read_json('__TEST_DIR__/r.json', records := [1])
+SELECT * FROM read_json('{TEST_DIR}/r.json', records := [1])
 ----
 "records" parameter must be a string
 
 statement error
-SELECT * FROM read_ndjson('__TEST_DIR__/r.json', records := {'a': 1})
+SELECT * FROM read_ndjson('{TEST_DIR}/r.json', records := {'a': 1})
 ----
 "records" parameter must be a string
 
 query I
-SELECT i FROM read_json('__TEST_DIR__/r.json', records := true)
+SELECT i FROM read_json('{TEST_DIR}/r.json', records := true)
 ----
 1
 
 query I
-SELECT i FROM read_json('__TEST_DIR__/r.json', records := 'auto')
+SELECT i FROM read_json('{TEST_DIR}/r.json', records := 'auto')
 ----
 1
 
 statement ok
-COPY (SELECT 1 i) TO '__TEST_DIR__/r.csv'
+COPY (SELECT 1 i) TO '{TEST_DIR}/r.csv'
 
 statement error
-SELECT * FROM read_csv('__TEST_DIR__/r.csv', buffer_size := -1)
+SELECT * FROM read_csv('{TEST_DIR}/r.csv', buffer_size := -1)
 ----
 Buffer Size option must be higher than 0
 
 statement error
-SELECT * FROM sniff_csv('__TEST_DIR__/r.csv', buffer_size := -1)
+SELECT * FROM sniff_csv('{TEST_DIR}/r.csv', buffer_size := -1)
 ----
 Buffer Size option must be higher than 0
 
 statement error
-SELECT * FROM read_csv('__TEST_DIR__/r.csv', hive_types := {})
+SELECT * FROM read_csv('{TEST_DIR}/r.csv', hive_types := {})
 ----
 'hive_types' must specify the type of at least one column
 
 statement ok
-COPY (SELECT 1 i) TO '__TEST_DIR__/r.parquet'
+COPY (SELECT 1 i) TO '{TEST_DIR}/r.parquet'
 
 statement error
-SELECT * FROM read_parquet('__TEST_DIR__/r.parquet', hive_types := {})
+SELECT * FROM read_parquet('{TEST_DIR}/r.parquet', hive_types := {})
 ----
 'hive_types' must specify the type of at least one column

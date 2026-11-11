@@ -1,0 +1,11 @@
+# name: test/sql/json/test_serialized_decimal_no_type_info.test
+# description: json_execute_serialized_sql rejects a DECIMAL value without type info
+# group: [json]
+
+require json
+
+# DECIMAL without type info
+statement error
+CALL json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"COLUMN_REF","type":"COLUMN_REF","alias":"","query_location":7,"query_location_length":1,"column_names":["i"]}],"from_table":{"type":"TABLE_FUNCTION","alias":"t","sample":null,"query_location":14,"query_location_length":14,"function":{"class":"FUNCTION","type":"FUNCTION","alias":"","query_location":18446744073709551615,"query_location_length":0,"function_name":"range","schema":"","filter":null,"order_bys":{"type":"ORDER_MODIFIER","orders":[]},"distinct":false,"is_operator":false,"export_state":false,"catalog":"","arguments":[{"name":"","expression":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":20,"query_location_length":2,"literal":{"kind":"INTEGER","text":"50"}}}],"qualified_name":{"path":["range"]}},"column_name_alias":["i"],"with_ordinality":"WITHOUT_ORDINALITY"},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":{"sample_size":{"type":{"id":"DECIMAL","type_info":null},"is_null":false,"value":10},"is_percentage":false,"method":"Reservoir","seed":-1,"repeatable":false,"sample_rate":-1.0},"qualify":null},"named_param_map":[]}]}');
+----
+<REGEX>:.*DECIMAL is missing its type info.*

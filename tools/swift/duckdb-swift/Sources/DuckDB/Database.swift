@@ -65,7 +65,7 @@ private let registeredStaticExtensions: Void = {
 ///   // handle error
 /// }
 /// ```
-public final class Database: Sendable {
+public final class Database: @unchecked Sendable {
   
   /// Duck DB database store type
   public enum Store {

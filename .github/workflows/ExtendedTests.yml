@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config: [force_storage, force_storage_restart, latest_storage, block_verification, wal_verification, no_local_filesystem, block_size_16kB, latest_storage_block_size_16kB, block_allocator_100mib, variant_vector, compressed_in_memory, prefetch_all_storage, transformer_trampoline_style]
+        config: [force_storage, force_storage_restart, latest_storage, block_verification, wal_verification, no_local_filesystem, block_size_16kB, latest_storage_block_size_16kB, variant_vector, compressed_in_memory, prefetch_all_storage, transformer_trampoline_style]
     env:
       BASE_BRANCH: ${{ github.base_ref || 'main' }}
 

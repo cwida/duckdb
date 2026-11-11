@@ -1,0 +1,129 @@
+# name: test/issues/general/test_24204.test
+# description: Test filters on a physical filename column when the virtual filename column is renamed
+# group: [general]
+
+require parquet
+
+statement ok
+COPY (
+	SELECT 'foo' AS name, 42 AS number, '/physical/thing1' AS filename
+) TO '{TEST_DIR}/issue_24204_parquet_1.parquet';
+
+statement ok
+COPY (
+	SELECT 'bar' AS name, 101 AS number, '/physical/thing2' AS filename
+) TO '{TEST_DIR}/issue_24204_parquet_2.parquet';
+
+statement ok
+CREATE VIEW issue_24204_parquet AS
+SELECT *
+FROM read_parquet(
+	'{TEST_DIR}/issue_24204_parquet_*.parquet',
+	filename = 'source_file'
+);
+
+query I
+SELECT name
+FROM issue_24204_parquet
+WHERE filename = '/physical/thing1';
+----
+foo
+
+query I
+SELECT name
+FROM issue_24204_parquet
+WHERE source_file = '{TEST_DIR}/issue_24204_parquet_1.parquet';
+----
+foo
+
+query II
+EXPLAIN SELECT name
+FROM issue_24204_parquet
+WHERE filename = '/physical/thing1';
+----
+physical_plan	<!REGEX>:.*File Filters:.*
+
+query II
+EXPLAIN SELECT name
+FROM issue_24204_parquet
+WHERE source_file = '{TEST_DIR}/issue_24204_parquet_1.parquet';
+----
+physical_plan	<REGEX>:.*File Filters:.*source_file.*Scanning Files:.*1/2.*
+
+statement ok
+CREATE TABLE issue_24204_table AS
+SELECT name
+FROM read_parquet(
+	'{TEST_DIR}/issue_24204_parquet_*.parquet',
+	filename = 'source_file'
+)
+WHERE filename = '/physical/thing1';
+
+query I
+SELECT count(*) FROM issue_24204_table;
+----
+1
+
+statement ok
+COPY (
+	SELECT 'foo' AS name, '/physical/thing1' AS filename
+) TO '{TEST_DIR}/issue_24204_csv_1.csv' (HEADER);
+
+statement ok
+COPY (
+	SELECT 'bar' AS name, '/physical/thing2' AS filename
+) TO '{TEST_DIR}/issue_24204_csv_2.csv' (HEADER);
+
+statement ok
+CREATE VIEW issue_24204_csv AS
+SELECT *
+FROM read_csv_auto(
+	'{TEST_DIR}/issue_24204_csv_*.csv',
+	filename = 'source_file'
+);
+
+query I
+SELECT name
+FROM issue_24204_csv
+WHERE filename = '/physical/thing1';
+----
+foo
+
+# A stored column aliased to the configured filename name must remain a stored column.
+query I
+SELECT name
+FROM read_parquet('{TEST_DIR}/issue_24204_parquet_*.parquet', filename = 'source_file') t(name, number, source_file, path)
+WHERE source_file = '/physical/thing1';
+----
+foo
+
+# Renaming the generated column through a table alias must preserve file pruning.
+query II
+EXPLAIN SELECT name
+FROM read_parquet('{TEST_DIR}/issue_24204_parquet_*.parquet', filename = 'source_file') t(name, number, source_file, path)
+WHERE path = '{TEST_DIR}/issue_24204_parquet_1.parquet';
+----
+physical_plan	<REGEX>:.*File Filters:.*path.*Scanning Files:.*1/2.*
+
+# Bound output names can differ in case and position from the configured filename column.
+statement ok
+CREATE TEMP VIEW issue_24204_bound AS
+SELECT *
+FROM read_parquet(
+	'{TEST_DIR}/issue_24204_parquet_*.parquet',
+	filename = 'SoUrCe',
+	hive_partitioning = false,
+	bound_schema = {'SOURCE': 'VARCHAR', 'filename': 'VARCHAR', 'name': 'VARCHAR', 'number': 'INTEGER'}
+);
+
+query II
+SELECT name, filename FROM issue_24204_bound
+WHERE source = '{TEST_DIR}/issue_24204_parquet_1.parquet';
+----
+foo	/physical/thing1
+
+query II
+EXPLAIN SELECT name FROM issue_24204_bound
+WHERE source = '{TEST_DIR}/issue_24204_parquet_1.parquet';
+----
+physical_plan	<REGEX>:.*File Filters:.*SOURCE.*Scanning Files:.*1/2.*

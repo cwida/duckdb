@@ -2,7 +2,7 @@
 # description: Scans of a LIST column concurrent with storage-modifying statements must not read offset[-1] in Skip
 # group: [storage]
 
-load __TEST_DIR__/concurrent_list_skip_scan.db
+load {TEST_DIR}/concurrent_list_skip_scan.db
 
 statement ok
 SET threads=4
@@ -25,7 +25,7 @@ SELECT count(*), max(length(s)), sum(len(l)) FROM t WHERE id % 3 = 0
 ----
 
 statement maybe
-DELETE FROM t WHERE id % 7 = ${k} % 7
+DELETE FROM t WHERE id % 7 = {k} % 7
 ----
 
 statement maybe
@@ -41,11 +41,11 @@ INSERT INTO t SELECT i, i::VARCHAR, [i::INT] FROM range(20000) r(i)
 ----
 
 statement maybe
-CREATE OR REPLACE TABLE tmp_${threadid} AS SELECT * FROM t WHERE id < 1000
+CREATE OR REPLACE TABLE tmp_{threadid} AS SELECT * FROM t WHERE id < 1000
 ----
 
 statement maybe
-DROP TABLE IF EXISTS tmp_${threadid}
+DROP TABLE IF EXISTS tmp_{threadid}
 ----
 
 statement maybe

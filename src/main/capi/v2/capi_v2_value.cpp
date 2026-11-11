@@ -128,16 +128,14 @@ Value BuildDecimal(const duckdb_v2_hugeint_t *in_value, uint8_t width, uint8_t s
 
 // BIT carries a mandatory padding-header byte, BIGNUM a header plus at least
 // one magnitude byte; anything shorter is not addressable storage.
-Value BuildBit(const duckdb_v2_str *in_value) {
-	auto bytes = Convert(in_value);
+Value BuildBit(std::string_view bytes) {
 	if (bytes.empty()) {
 		throw InvalidInputException("the BIT wire form carries a mandatory padding header byte");
 	}
 	return Value::BIT(const_data_ptr_cast(bytes.data()), bytes.size());
 }
 
-Value BuildBignum(const duckdb_v2_str *in_value) {
-	auto bytes = Convert(in_value);
+Value BuildBignum(std::string_view bytes) {
 	if (bytes.size() <= Bignum::BIGNUM_HEADER_SIZE) {
 		throw InvalidInputException("the BIGNUM storage form requires more than " +
 		                            std::to_string(Bignum::BIGNUM_HEADER_SIZE) + " bytes");
@@ -276,19 +274,21 @@ DUCKDB_V2_ERROR duckdb_v2_value_get_double(duckdb_v2_value_handle value, double 
 	return WithErrorHandler(err, [&]() { *out = ReadAs<double>(value, duckdb::LogicalTypeId::DOUBLE); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_value_get_varchar(duckdb_v2_value_handle value, duckdb_v2_str *out,
+DUCKDB_V2_ERROR duckdb_v2_value_get_varchar(duckdb_v2_value_handle value, const char **out, idx_t *out_length,
                                             duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(out);
+	DUCKDB_CHECK_ARG(out_length);
 	return WithErrorHandler(err, [&]() {
 		RequireTypedValue(value, duckdb::LogicalTypeId::VARCHAR);
-		*out = Convert(duckdb::StringValue::Get(*Convert(value)));
+		SetStringOut(out, out_length, duckdb::StringValue::Get(*Convert(value)));
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_value_get_blob(duckdb_v2_value_handle value, duckdb_v2_str *out,
+DUCKDB_V2_ERROR duckdb_v2_value_get_blob(duckdb_v2_value_handle value, const char **out, idx_t *out_length,
                                          duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(value);
 	DUCKDB_CHECK_ARG(out);
+	DUCKDB_CHECK_ARG(out_length);
 	return WithErrorHandler(err, [&]() {
 		auto &v = *Convert(value);
 		// The byte-string reader: BLOB plus the kinds whose payload is opaque
@@ -302,7 +302,7 @@ DUCKDB_V2_ERROR duckdb_v2_value_get_blob(duckdb_v2_value_handle value, duckdb_v2
 		if (v.IsNull()) {
 			throw duckdb::InvalidInputException("duckdb_v2_value_get_blob: value is NULL");
 		}
-		*out = Convert(duckdb::StringValue::Get(v));
+		SetStringOut(out, out_length, duckdb::StringValue::Get(v));
 	});
 }
 
@@ -341,8 +341,8 @@ DUCKDB_V2_ERROR duckdb_v2_value_get_decimal(duckdb_v2_value_handle value, duckdb
 		RequireTypedValue(value, duckdb::LogicalTypeId::DECIMAL);
 		auto &v = *Convert(value);
 		auto &type = v.type();
-		*out_width = duckdb::DecimalType::GetWidth(type);
-		*out_scale = duckdb::DecimalType::GetScale(type);
+		*out_width = duckdb::NumericCast<uint8_t>(duckdb::DecimalType::GetWidth(type));
+		*out_scale = duckdb::NumericCast<uint8_t>(duckdb::DecimalType::GetScale(type));
 		// The storage tier follows from the width; widen it to the one form the
 		// caller always gets back.
 		switch (type.InternalType()) {
@@ -553,20 +553,23 @@ DUCKDB_V2_ERROR duckdb_v2_value_create_double(duckdb_v2_factory_handle factory, 
 	return WithErrorHandler(err, [&]() { *out_value = Emit(duckdb::Value::DOUBLE(in_value)); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_value_create_varchar(duckdb_v2_factory_handle factory, const duckdb_v2_str *in_value,
-                                               duckdb_v2_value_handle *out_value, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_value_create_varchar(duckdb_v2_factory_handle factory, const char *in_value,
+                                               idx_t in_value_length, duckdb_v2_value_handle *out_value,
+                                               duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(factory);
 	DUCKDB_CHECK_ARG(out_value);
 	*out_value = nullptr;
-	return WithErrorHandler(err, [&]() { *out_value = Emit(duckdb::Value(Convert(in_value))); });
+	return WithErrorHandler(err, [&]() { *out_value = Emit(duckdb::Value(Convert(in_value, in_value_length))); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_value_create_blob(duckdb_v2_factory_handle factory, const duckdb_v2_str *in_value,
-                                            duckdb_v2_value_handle *out_value, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_value_create_blob(duckdb_v2_factory_handle factory, const char *in_value,
+                                            idx_t in_value_length, duckdb_v2_value_handle *out_value,
+                                            duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(factory);
 	DUCKDB_CHECK_ARG(out_value);
 	*out_value = nullptr;
-	return WithErrorHandler(err, [&]() { *out_value = Emit(duckdb::Value::BLOB_RAW(std::string(Convert(in_value)))); });
+	return WithErrorHandler(
+	    err, [&]() { *out_value = Emit(duckdb::Value::BLOB_RAW(std::string(Convert(in_value, in_value_length)))); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_value_create_null(duckdb_v2_factory_handle factory, duckdb_v2_logical_type_handle type,
@@ -713,20 +716,22 @@ DUCKDB_V2_ERROR duckdb_v2_value_create_uuid(duckdb_v2_factory_handle factory, co
 	return WithErrorHandler(err, [&]() { *out_value = Emit(duckdb::Value::UUID(Convert(in_value))); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_value_create_bit(duckdb_v2_factory_handle factory, const duckdb_v2_str *in_value,
-                                           duckdb_v2_value_handle *out_value, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_value_create_bit(duckdb_v2_factory_handle factory, const char *in_value,
+                                           idx_t in_value_length, duckdb_v2_value_handle *out_value,
+                                           duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(factory);
 	DUCKDB_CHECK_ARG(out_value);
 	*out_value = nullptr;
-	return WithErrorHandler(err, [&]() { *out_value = Emit(BuildBit(in_value)); });
+	return WithErrorHandler(err, [&]() { *out_value = Emit(BuildBit(Convert(in_value, in_value_length))); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_value_create_bignum(duckdb_v2_factory_handle factory, const duckdb_v2_str *in_value,
-                                              duckdb_v2_value_handle *out_value, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_value_create_bignum(duckdb_v2_factory_handle factory, const char *in_value,
+                                              idx_t in_value_length, duckdb_v2_value_handle *out_value,
+                                              duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(factory);
 	DUCKDB_CHECK_ARG(out_value);
 	*out_value = nullptr;
-	return WithErrorHandler(err, [&]() { *out_value = Emit(BuildBignum(in_value)); });
+	return WithErrorHandler(err, [&]() { *out_value = Emit(BuildBignum(Convert(in_value, in_value_length))); });
 }
 
 // ---------------------------------------------------------------------------
@@ -791,7 +796,7 @@ duckdb::Value BuildArray(CV2Factory &factory, duckdb_v2_logical_type_handle chil
 	return duckdb::Value::ARRAY(type, std::move(values));
 }
 
-duckdb::Value BuildStruct(const duckdb_v2_identifier_t *names, const duckdb_v2_value_handle *children,
+duckdb::Value BuildStruct(const char **names, const idx_t *names_lengths, const duckdb_v2_value_handle *children,
                           idx_t field_count) {
 	if (field_count > 0 && !names) {
 		throw duckdb::InvalidInputException("'names' cannot be null when field_count > 0");
@@ -801,11 +806,9 @@ duckdb::Value BuildStruct(const duckdb_v2_identifier_t *names, const duckdb_v2_v
 	// rather than resolved across the fields.
 	duckdb::child_list_t<duckdb::Value> fields;
 	fields.reserve(field_count);
+	string_view_array name_views(names, names_lengths, field_count);
 	for (idx_t i = 0; i < field_count; i++) {
-		if (!names[i].ptr && names[i].len > 0) {
-			throw duckdb::InvalidInputException("field names cannot be null");
-		}
-		fields.emplace_back(std::string(ConvertIdentifierName(names[i])), std::move(values[i]));
+		fields.emplace_back(std::string(name_views[i]), std::move(values[i]));
 	}
 	return duckdb::Value::STRUCT(std::move(fields));
 }
@@ -852,13 +855,15 @@ DUCKDB_V2_ERROR duckdb_v2_value_create_array(duckdb_v2_factory_handle factory, d
 	    err, [&]() { *out_value = Emit(BuildArray(*Convert(factory), child_type, children, child_count)); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_value_create_struct(duckdb_v2_factory_handle factory, const duckdb_v2_identifier_t *names,
-                                              const duckdb_v2_value_handle *children, idx_t field_count,
-                                              duckdb_v2_value_handle *out_value, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_value_create_struct(duckdb_v2_factory_handle factory, const char **names,
+                                              const idx_t *names_lengths, const duckdb_v2_value_handle *children,
+                                              idx_t field_count, duckdb_v2_value_handle *out_value,
+                                              duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(factory);
 	DUCKDB_CHECK_ARG(out_value);
 	*out_value = nullptr;
-	return WithErrorHandler(err, [&]() { *out_value = Emit(BuildStruct(names, children, field_count)); });
+	return WithErrorHandler(err,
+	                        [&]() { *out_value = Emit(BuildStruct(names, names_lengths, children, field_count)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_value_create_tuple(duckdb_v2_factory_handle factory, const duckdb_v2_value_handle *children,

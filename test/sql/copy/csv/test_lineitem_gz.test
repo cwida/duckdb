@@ -1,35 +1,26 @@
 # name: test/sql/copy/csv/test_lineitem_gz.test
-# description: Test small memory limit on gzipped csv files
+# description: Stream repeated gzip CSV inputs under a small memory limit
 # group: [csv]
-
-# No way CI can handle this
-mode skip instable
-
 
 require tpch
 
 statement ok
-CALL dbgen(sf=10);
+SET threads=2;
 
 statement ok
-copy lineitem to '{TEST_DIR}/lineitem1.csv.gz'
+CALL dbgen(sf=0.01);
 
 statement ok
-set memory_limit='32gb';
+COPY lineitem TO '{TEST_DIR}/lineitem.csv.gz' (FORMAT CSV, COMPRESSION GZIP, HEADER);
 
-# Run it over 50 TPCHs
-query I
-select count(*) from read_csv([
-'{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz',
-'{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz',
-'{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz',
-'{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz',
-'{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz',
-'{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz',
-'{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz',
-'{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz',
-'{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz',
-'{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz','{TEST_DIR}/lineitem1.csv.gz'
-]);
+statement ok
+SET memory_limit='32MiB';
+
+# Keep all 50 inputs, including their multiplicity. Small reader buffers keep
+# the scan within the memory limit while crossing many gzip/CSV buffer boundaries.
+query II
+SELECT count(*), sum(l_orderkey) = 50 * (SELECT sum(l_orderkey) FROM lineitem)
+FROM read_csv(list_transform(range(50), lambda i: '{TEST_DIR}/lineitem.csv.gz'),
+              buffer_size=1048576, max_line_size=65536);
 ----
-0
+3008750	true

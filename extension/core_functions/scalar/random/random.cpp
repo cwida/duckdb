@@ -77,9 +77,9 @@ void RandomFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 
 unique_ptr<FunctionLocalState> RandomInitLocalState(ExpressionState &state, const BoundFunctionExpression &expr,
                                                     FunctionData *bind_data) {
-	auto &random_engine = RandomEngine::Get(state.GetContext());
+	auto &random_engine = RandomEngine::Get(state.GetClientContext());
 	lock_guard<mutex> guard(random_engine.lock);
-	return make_uniq<RandomLocalState>(random_engine.NextRandomInteger64());
+	return make_uniq<RandomLocalState>(random_engine.NextSeed());
 }
 
 void GenerateUUIDv4Function(DataChunk &args, ExpressionState &state, Vector &result) {

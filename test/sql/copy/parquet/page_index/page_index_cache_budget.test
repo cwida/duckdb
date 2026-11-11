@@ -1,0 +1,76 @@
+# name: test/sql/copy/parquet/page_index/page_index_cache_budget.test
+# description: A probed column chunk is read whole only when a page misses the cache and the chunk fits the memory budget
+# group: [page_index]
+
+require parquet
+
+statement ok
+SET threads = 1;
+
+statement ok
+SET cache_local_files = true;
+
+statement ok
+SET parquet_prefetch_column_gap = 0;
+
+# one row group, one 16 MB column chunk of 4 KB pages
+statement ok
+COPY (SELECT range AS id FROM range(2000000)) TO '{TEST_DIR}/page_index_cache_budget.parquet' (ROW_GROUP_SIZE 2000000, DATA_PAGE_SIZE_LIMIT 4096, COMPRESSION uncompressed, WRITE_PAGE_INDEX true);
+
+statement ok
+CREATE MACRO bytes_read(f) AS (SELECT coalesce(sum(bytes), 0) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'READ' AND parse_filename(path) = f);
+
+statement ok
+SET memory_limit = '8MB';
+
+# four pages end up in the cache
+query I
+SELECT id FROM '{TEST_DIR}/page_index_cache_budget.parquet' WHERE id IN (100000, 400000, 800000, 1200000) ORDER BY id;
+----
+100000
+400000
+800000
+1200000
+
+statement ok
+CALL enable_logging('FileSystem');
+
+# the same probe is served from the cache: no page misses, so the chunk is not read whole
+query I
+SELECT id FROM '{TEST_DIR}/page_index_cache_budget.parquet' WHERE id IN (100000, 400000, 800000, 1200000) ORDER BY id;
+----
+100000
+400000
+800000
+1200000
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT bytes_read('page_index_cache_budget.parquet')
+----
+0
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('FileSystem');
+
+# a probe of a fifth page misses, but the 16 MB chunk does not fit a quarter of the 8 MB limit: a page-sized read
+query I
+SELECT id FROM '{TEST_DIR}/page_index_cache_budget.parquet' WHERE id = 1600000;
+----
+1600000
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT bytes_read('page_index_cache_budget.parquet') < 1048576
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs();

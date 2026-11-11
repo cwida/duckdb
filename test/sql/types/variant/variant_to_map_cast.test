@@ -45,3 +45,26 @@ NULL
 NULL
 {c=3}
 NULL
+
+# a NULL entry has no key
+query I
+SELECT TRY_CAST(x AS MAP(VARCHAR, INT)) FROM (VALUES ([NULL]::VARIANT), (1::VARIANT)) t(x);
+----
+NULL
+NULL
+
+query I
+SELECT TRY_CAST(x AS MAP(VARCHAR, INT)) FROM (VALUES ([{'key': 'a', 'value': 1}, NULL]::VARIANT), ([{'key': 'b', 'value': 2}]::VARIANT)) t(x);
+----
+NULL
+{b=2}
+
+statement error
+SELECT CAST(x AS MAP(VARCHAR, INT)) FROM (VALUES ([{'key': 'b', 'value': 2}]::VARIANT), ([NULL]::VARIANT)) t(x);
+----
+Map keys can not be NULL
+
+statement error
+SELECT CAST([NULL]::VARIANT AS MAP(VARCHAR, INT))
+----
+Conversion Error

@@ -8,7 +8,7 @@
 #include "duckdb/execution/operator/join/physical_range_join.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/types/column/column_data_scan_states.hpp"
-#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
 
 namespace duckdb {
 
@@ -28,9 +28,7 @@ public:
 	//! Read a typed cell
 	const T &operator[](idx_t row_idx) {
 		auto index = Seek(row_idx);
-		const auto &source = chunk.data[0];
-		const auto data_ptr = reinterpret_cast<const T *>(FlatVector::GetData<VECTOR_TYPE>(source));
-		return data_ptr[index];
+		return reinterpret_cast<const T &>((*values)[index].GetValueUnsafe());
 	}
 
 private:
@@ -45,12 +43,17 @@ private:
 	}
 	//! Scan the next chunk
 	inline bool Scan() {
-		return collection.Scan(state, chunk);
+		if (!collection.Scan(state, chunk)) {
+			return false;
+		}
+		values = make_uniq<VectorIterator<VECTOR_TYPE>>(chunk.data[0]);
+		return true;
 	}
 	//! Seek to the given row
 	inline idx_t Seek(idx_t row_idx) {
 		if (!RowIsVisible(row_idx)) {
 			collection.Seek(row_idx, state, chunk);
+			values = make_uniq<VectorIterator<VECTOR_TYPE>>(chunk.data[0]);
 		}
 		return RowOffset(row_idx);
 	}
@@ -61,6 +64,8 @@ private:
 	ColumnDataScanState state;
 	//! The data chunk read into
 	DataChunk chunk;
+	//! Cell access into the page, rebuilt per page load - scans can return constant and dictionary vectors
+	unique_ptr<VectorIterator<VECTOR_TYPE>> values;
 };
 
 struct IEJoinUnion {

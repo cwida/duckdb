@@ -1,0 +1,307 @@
+# name: test/sql/catalog/system_functions/system_catalog_entry_pushdown.test
+# description: Filter pushdown on the entry identity columns (table_name/table_oid, view_name/view_oid) of duckdb_tables(), duckdb_views() and duckdb_columns()
+# group: [system_functions]
+
+# The fixture and expected output name the default catalog 'memory'.
+require noforcestorage
+
+# Fixture: two attached in-memory catalogs; in each, schema s1 holds tables t1 and t1b and view v1, schema s2 holds
+# table t2 and view v2; plus a table in memory.main.
+
+statement ok
+CREATE TABLE memory.main.mem_t(i INTEGER);
+
+statement ok
+ATTACH ':memory:' AS db1;
+
+statement ok
+ATTACH ':memory:' AS db2;
+
+foreach db db1 db2
+
+statement ok
+CREATE SCHEMA {db}.s1;
+
+statement ok
+CREATE SCHEMA {db}.s2;
+
+statement ok
+CREATE TABLE {db}.s1.t1(i INTEGER);
+
+statement ok
+CREATE TABLE {db}.s1.t1b(i INTEGER, j VARCHAR);
+
+statement ok
+CREATE VIEW {db}.s1.v1 AS SELECT 1 AS c1;
+
+statement ok
+CREATE TABLE {db}.s2.t2(i INTEGER);
+
+statement ok
+CREATE VIEW {db}.s2.v2 AS SELECT 2 AS c2;
+
+endloop
+
+# ------------------------------------------------------------------------------------------------
+# 1. duckdb_tables(): every predicate shape on table_name / table_oid, row-level
+# ------------------------------------------------------------------------------------------------
+
+# equality on table_name
+query III
+SELECT database_name, schema_name, table_name FROM duckdb_tables() WHERE table_name = 't1' ORDER BY ALL;
+----
+db1	s1	t1
+db2	s1	t1
+
+# schema and entry identity together
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'db1' AND schema_name = 's1' AND table_name = 't1';
+----
+t1
+
+# lower() wrapper
+query I
+SELECT count(*) FROM duckdb_tables() WHERE lower(table_name) = 't1';
+----
+2
+
+# IN
+query I
+SELECT count(*) FROM duckdb_tables() WHERE table_name IN ('t1', 't1b');
+----
+4
+
+# LIKE
+query I
+SELECT count(*) FROM duckdb_tables() WHERE table_name LIKE 't1%';
+----
+4
+
+# <>
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'db1' AND table_name <> 't1' ORDER BY ALL;
+----
+t1b
+t2
+
+# table_oid equality: oids are unique across the attached catalogs, exactly one row
+query II
+SELECT database_name, table_name FROM duckdb_tables()
+WHERE table_oid = (SELECT table_oid FROM duckdb_tables() WHERE database_name = 'db1' AND schema_name = 's1' AND table_name = 't1');
+----
+db1	t1
+
+# conflicting equalities: no table can match
+query I
+SELECT table_name FROM duckdb_tables() WHERE table_name = 't1' AND table_name = 't1b';
+----
+
+# NULL constant: no rows, no error
+query I
+SELECT table_name FROM duckdb_tables() WHERE table_name = NULL;
+----
+
+# entry predicate together with a non-identity predicate
+query I
+SELECT count(*) FROM duckdb_tables() WHERE table_name = 't1' AND NOT temporary;
+----
+2
+
+# a view's name on duckdb_tables: the entry is found but dropped by the type check
+query I
+SELECT count(*) FROM duckdb_tables() WHERE table_name = 'v1';
+----
+0
+
+# ------------------------------------------------------------------------------------------------
+# 2. duckdb_views(): view_name / view_oid
+# ------------------------------------------------------------------------------------------------
+
+query III
+SELECT database_name, schema_name, view_name FROM duckdb_views() WHERE view_name = 'v1' ORDER BY ALL;
+----
+db1	s1	v1
+db2	s1	v1
+
+query I
+SELECT count(*) FROM duckdb_views() WHERE lower(view_name) = 'v1';
+----
+2
+
+query I
+SELECT count(*) FROM duckdb_views() WHERE view_name IN ('v1', 'v2');
+----
+4
+
+query II
+SELECT database_name, view_name FROM duckdb_views()
+WHERE view_oid = (SELECT view_oid FROM duckdb_views() WHERE database_name = 'db1' AND schema_name = 's1' AND view_name = 'v1');
+----
+db1	v1
+
+query I
+SELECT view_name FROM duckdb_views() WHERE view_name = 'v1' AND view_name = 'v2';
+----
+
+query I
+SELECT view_name FROM duckdb_views() WHERE view_name = NULL;
+----
+
+# a table's name on duckdb_views: zero rows
+query I
+SELECT count(*) FROM duckdb_views() WHERE view_name = 't1';
+----
+0
+
+# ------------------------------------------------------------------------------------------------
+# 3. duckdb_columns(): schema-level and entry-level pushdown
+# ------------------------------------------------------------------------------------------------
+
+# one table's columns, in column order
+query II
+SELECT column_name, data_type FROM duckdb_columns()
+WHERE database_name = 'db1' AND schema_name = 's1' AND table_name = 't1b' ORDER BY column_index;
+----
+i	INTEGER
+j	VARCHAR
+
+# schema-level pushdown alone
+query II
+SELECT table_name, column_name FROM duckdb_columns() WHERE database_name = 'db1' AND schema_name = 's2' ORDER BY ALL;
+----
+t2	i
+v2	c2
+
+# table_name only: both catalogs
+query III
+SELECT database_name, schema_name, column_name FROM duckdb_columns() WHERE table_name = 't1' ORDER BY ALL;
+----
+db1	s1	i
+db2	s1	i
+
+# a view's columns via table_name
+query II
+SELECT column_name, data_type FROM duckdb_columns() WHERE database_name = 'db1' AND table_name = 'v1';
+----
+c1	INTEGER
+
+# a non-identity predicate on a projection-less function is re-applied above the scan
+query I
+SELECT count(*) FROM duckdb_columns() WHERE column_name = 'j';
+----
+2
+
+# identity and non-identity predicates together
+query I
+SELECT database_name FROM duckdb_columns() WHERE table_name = 't1b' AND data_type = 'VARCHAR' ORDER BY ALL;
+----
+db1
+db2
+
+# the default view adds WHERE NOT internal above the scan
+query I
+SELECT count(*) FROM duckdb_columns WHERE table_name = 't1b';
+----
+4
+
+# information_schema.columns through the view chain
+query I
+SELECT column_name FROM information_schema.columns
+WHERE table_catalog = 'db1' AND table_schema = 's1' AND table_name = 't1b' ORDER BY ordinal_position;
+----
+i
+j
+
+# ------------------------------------------------------------------------------------------------
+# 4. Unchanged behaviors
+# ------------------------------------------------------------------------------------------------
+
+query I
+SHOW TABLES FROM db1.s1;
+----
+t1
+t1b
+v1
+
+query I
+SELECT name FROM (SHOW ALL TABLES) WHERE database = 'db1' ORDER BY name;
+----
+t1
+t1b
+t2
+v1
+v2
+
+# join filter on table_oid (the SHOW ALL TABLES shape): the join re-checks it
+query I
+SELECT t.table_name FROM duckdb_tables t JOIN duckdb_columns c ON t.table_oid = c.table_oid
+WHERE t.database_name = 'db1' AND c.column_name = 'i' ORDER BY t.table_name;
+----
+t1
+t1b
+t2
+
+# WITH ORDINALITY: the optimizer does not push the filter
+query I
+SELECT table_name FROM duckdb_tables() WITH ORDINALITY WHERE table_name = 't1' ORDER BY ALL;
+----
+t1
+t1
+
+# volatile predicate: not pushed
+query I
+SELECT count(*) FROM duckdb_tables() WHERE table_name = uuid()::VARCHAR;
+----
+0
+
+# ------------------------------------------------------------------------------------------------
+# 5. EXPLAIN: entry identity predicates are table filters on the scan
+# ------------------------------------------------------------------------------------------------
+
+query II
+EXPLAIN SELECT schema_name FROM duckdb_tables() WHERE table_name = 't1';
+----
+physical_plan	<REGEX>:.*Filters:.*table_name.*t1.*
+
+query II
+EXPLAIN SELECT schema_name FROM duckdb_tables() WHERE lower(table_name) = 't1';
+----
+physical_plan	<REGEX>:.*Filters:.*lower\(table_name\).*t1.*
+
+query II
+EXPLAIN SELECT column_name FROM duckdb_columns() WHERE schema_name = 's1';
+----
+physical_plan	<REGEX>:.*Filters:.*schema_name.*s1.*
+
+query II
+EXPLAIN SELECT column_name FROM duckdb_columns() WHERE table_name = 't1';
+----
+physical_plan	<REGEX>:.*Filters:.*table_name.*t1.*
+
+# a non-identity predicate is not
+query II
+EXPLAIN SELECT table_name FROM duckdb_columns() WHERE column_name = 'i';
+----
+physical_plan	<!REGEX>:.*Filters:.*
+
+# ------------------------------------------------------------------------------------------------
+# 6. EXPLAIN ANALYZE: entry counters
+# ------------------------------------------------------------------------------------------------
+
+# s1 holds t1, t1b and v1; the name filter leaves one. The denominator is what the schema returned: the default
+# Scan already applies the filters, so it equals the numerator unless a catalog override returns more.
+query II
+EXPLAIN ANALYZE SELECT table_name FROM duckdb_tables() WHERE database_name = 'db1' AND schema_name = 's1' AND table_name = 't1';
+----
+analyzed_plan	<REGEX>:.*Entries Scanned: 1/.*
+
+query II
+EXPLAIN ANALYZE SELECT view_name FROM duckdb_views() WHERE database_name = 'db1' AND schema_name = 's1' AND view_name = 'v1';
+----
+analyzed_plan	<REGEX>:.*Entries Scanned: 1/.*
+
+# no entry filter: every entry of the schema is scanned
+query II
+EXPLAIN ANALYZE SELECT table_name FROM duckdb_tables() WHERE database_name = 'db1' AND schema_name = 's1';
+----
+analyzed_plan	<REGEX>:.*Entries Scanned: 3/3.*

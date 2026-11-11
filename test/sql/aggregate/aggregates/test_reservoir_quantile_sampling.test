@@ -1,0 +1,25 @@
+# name: test/sql/aggregate/aggregates/test_reservoir_quantile_sampling.test
+# description: reservoir_quantile samples from the whole input and not only the first rows
+# group: [aggregates]
+
+query I
+SELECT reservoir_quantile(x, 0.5) BETWEEN 400000 AND 600000 FROM range(1000000) t(x);
+----
+true
+
+query I
+SELECT reservoir_quantile(x, 0.5, 1000) BETWEEN 400000 AND 600000 FROM range(1000000) t(x);
+----
+true
+
+query I
+SELECT list_aggregate(reservoir_quantile(x, [0.1, 0.9], 1000), 'min') > 50000 AND
+       list_aggregate(reservoir_quantile(x, [0.1, 0.9], 1000), 'max') > 800000 FROM range(1000000) t(x);
+----
+true
+
+# inputs smaller than the reservoir are not sampled
+query I
+SELECT reservoir_quantile(x, 0.5) FROM range(10) t(x);
+----
+4

@@ -1,0 +1,16 @@
+# name: benchmark/micro/optimizer/redundant_order_group_by.benchmark
+# description: ORDER BY in a subquery below a GROUP BY is removed by the optimizer (issue #27563)
+# group: [optimizer]
+
+name Redundant Order Group By
+group micro
+subgroup optimizer
+
+load
+CREATE TABLE t AS SELECT range % 1000 AS g, range AS v FROM range(30000000) ORDER BY hash(range);
+
+run
+SELECT count(*) FROM (SELECT g, count(*), max(v) FROM (SELECT g, v FROM t ORDER BY v) GROUP BY g);
+
+result I
+1000

@@ -1,4 +1,5 @@
 #include "duckdb/storage/compression/standard_compression_state.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/column_data_checkpointer.hpp"
 
 namespace duckdb {
@@ -10,7 +11,8 @@ CompressionState::CompressionState(ColumnDataCheckpointData &checkpoint_data_p, 
 
 unique_ptr<ColumnSegment> CompressionState::CreateNewSegment() {
 	return ColumnSegment::CreateTransientSegment(checkpoint_data.GetDatabase(), function, checkpoint_data.GetType(),
-	                                             info.GetBlockSize(), info.GetBlockManager());
+	                                             info.GetBlockSize(), info.GetBlockManager(),
+	                                             function.zero_initialize_segments);
 }
 
 const LogicalType &CompressionState::GetType() {

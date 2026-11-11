@@ -1,0 +1,46 @@
+# name: test/sql/pivot/unpivot_exclude_nulls_name_clash.test
+# description: UNPIVOT EXCLUDE NULLS filters the unpivoted value even if its name collides with another column
+# group: [pivot]
+
+statement ok
+CREATE TABLE w(id INT, a INT, b INT, g INT);
+
+statement ok
+INSERT INTO w VALUES (1, 10, NULL, NULL), (2, NULL, 5, 7);
+
+# VALUE name collides with a source column
+query IITI
+SELECT id, g, n, g_1 FROM (UNPIVOT w ON a, b INTO NAME n VALUE g) ORDER BY ALL;
+----
+1	NULL	a	10
+2	7	b	5
+
+# VALUE name collides with the id column
+query ITI
+SELECT id, n, id_1 FROM (UNPIVOT w ON a, b INTO NAME n VALUE id) ORDER BY ALL;
+----
+1	a	10
+2	b	5
+
+# NAME and VALUE use the same name
+query IITI
+SELECT id, g, n, n_1 FROM (UNPIVOT w ON a, b INTO NAME n VALUE n) ORDER BY ALL;
+----
+1	NULL	a	10
+2	7	b	5
+
+# INCLUDE NULLS is unchanged
+query IITI
+SELECT id, g, n, g_1 FROM (SELECT * FROM w UNPIVOT INCLUDE NULLS (g FOR n IN (a, b))) ORDER BY ALL;
+----
+1	NULL	a	10
+1	NULL	b	NULL
+2	7	a	NULL
+2	7	b	5
+
+# no collision
+query ITI
+SELECT id, name, value FROM (UNPIVOT w ON a, b) ORDER BY ALL;
+----
+1	a	10
+2	b	5

@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/types/column/column_data_consumer.hpp"
@@ -18,6 +19,7 @@
 #include "duckdb/common/types/row/tuple_data_layout.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/unique_ptr.hpp"
+#include "duckdb/common/vector/dictionary_vector.hpp"
 #include "duckdb/execution/aggregate_hashtable.hpp"
 #include "duckdb/execution/ht_entry.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
@@ -33,14 +35,39 @@ struct ClientConfig;
 struct ResidualPredicateInfo;
 class PhysicalHashJoin;
 
+//! Each producer has its own refcounts; emitted vectors retain the original dictionaries through these owners.
+class DictionaryOwnershipCache {
+public:
+	explicit DictionaryOwnershipCache(idx_t column_count) : column_count(column_count) {
+	}
+
+	const buffer_ptr<DictionaryEntry> &GetEntry(idx_t column, const buffer_ptr<DictionaryEntry> &entry);
+	void Reset();
+
+private:
+	struct DictionaryOwner {
+		explicit DictionaryOwner(const buffer_ptr<DictionaryEntry> &entry) : entry(entry) {
+		}
+
+		buffer_ptr<DictionaryEntry> entry;
+	};
+
+	const idx_t column_count;
+	//! Allocated once on first use; resetting owners does not invalidate references to these slots.
+	unique_array<buffer_ptr<DictionaryEntry>> entries;
+};
+
 struct JoinHTScanState {
 public:
 	JoinHTScanState(TupleDataCollection &collection, idx_t chunk_idx_from, idx_t chunk_idx_to,
+	                idx_t output_column_count,
 	                TupleDataPinProperties properties = TupleDataPinProperties::ALREADY_PINNED)
-	    : iterator(collection, properties, chunk_idx_from, chunk_idx_to, false), offset_in_chunk(0), chunks_done(0) {
+	    : iterator(collection, properties, chunk_idx_from, chunk_idx_to, false),
+	      dictionary_gather_state(output_column_count), offset_in_chunk(0), chunks_done(0) {
 	}
 
 	TupleDataChunkIterator iterator;
+	DictionaryOwnershipCache dictionary_gather_state;
 	idx_t offset_in_chunk;
 	//! The number of chunks that have been scanned entirely
 	idx_t chunks_done;
@@ -170,8 +197,9 @@ public:
 		idx_t last_match_count;
 		SelectionVector last_sel_vector;
 
-		// thread-local probe match count, flushed to ht.total_probe_matches once per thread to avoid contention
+		// Thread-local probe match count, flushed when the current chunk's pointer scan is exhausted.
 		idx_t local_probe_matches = 0;
+		DictionaryOwnershipCache dictionary_gather_state;
 
 		explicit ScanStructure(JoinHashTable &ht, TupleDataChunkState &key_state);
 		void Reset();
@@ -318,7 +346,10 @@ public:
 	//! Combines the partitions in sink_collection into data_collection, as if it were not partitioned
 	void Unpartition();
 	//! Allocate the pointer table for the probe
-	void AllocatePointerTable();
+	void AllocatePointerTable(bool use_radix_layout = false);
+	idx_t GetBucketShift() const {
+		return bucket_shift;
+	}
 	//! Initialize the pointer table for the probe
 	void InitializePointerTable(idx_t entry_idx_from, idx_t entry_idx_to);
 	//! Finalize the build of the HT, constructing the actual hash table and making the HT ready for probing.
@@ -348,11 +379,11 @@ public:
 	//! Emit dictionary vectors for row_ptrs[ptr_sel[0..count)]; pass
 	//! *FlatVector::IncrementalSelectionVector() when row_ptrs is already compacted
 	void EmitDictVectors(const data_ptr_t *row_ptrs, const SelectionVector &ptr_sel, idx_t count, DataChunk &result,
-	                     idx_t rhs_col_offset) const;
+	                     idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const;
 	//! Emit RHS output columns for matched rows row_ptrs[ptr_sel[0..count)] into result starting at
 	//! result column rhs_col_offset; routes through EmitDictVectors when use_dict_emission is active.
 	void GatherRHS(Vector &row_ptrs, const SelectionVector &ptr_sel, const idx_t count, DataChunk &result,
-	               idx_t rhs_col_offset) const;
+	               idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const;
 	//! Follow the chain pointer; when USE_DICT_EMISSION, resolves via aux_next_ptrs
 	template <bool USE_DICT_EMISSION>
 	inline data_ptr_t GetNextPointer(data_ptr_t row_ptr) const {
@@ -457,8 +488,8 @@ public:
 	bool single_join_error_on_multiple_rows = true;
 	//! Whether or not to perform deduplication based on join_keys when building ht
 	bool insert_duplicate_keys = true;
-	//! Number of probe matches
-	atomic<idx_t> total_probe_matches {0};
+	//! Number of probe matches, isolated from immutable probe metadata.
+	PaddedAtomic<idx_t> total_probe_matches {0};
 	//! Residual predicate to evaluate during probing
 	optional_ptr<Expression> residual_predicate;
 	//! Residual predicate mapping info
@@ -548,16 +579,23 @@ private:
 	unique_ptr<TupleDataCollection> data_collection;
 
 	//! The hash map of the HT, created after finalization
-	AllocatedData hash_map;
+	HugeAllocation hash_map;
+	//! Shift to align fully resident buckets with radix partitions; zero selects the external/low-bit layout.
+	idx_t bucket_shift = 0;
 	//! Whether or not NULL values are considered equal in each of the comparisons
 	vector<bool> null_values_are_equal;
 	//! An empty tuple that's a "dead end", can be used to stop chains early
 	unsafe_unique_array<data_t> dead_end;
 
-	//! Whether or not to use a bloom filter will be determined by the operator
-	BloomFilter bloom_filter;
+	//! Bloom filter over the join keys. An external join fills it during Sink, an in-memory join during
+	//! finalize. Shared by every thread-local hash table of this operator, and shared again with any scan it
+	//! gets published to, so it outlives a reset of this table
+	shared_ptr<BloomFilter> bloom_filter;
+	//! Unpublished filter kept from a previous recursive iteration so finalize can reuse its allocation.
+	//! Only ever set on the global hash table, never on the thread-local ones that share bloom_filter
+	shared_ptr<BloomFilter> recycled_bloom_filter;
+	//! Whether finalize should build the bloom filter from the materialized build side
 	bool should_build_bloom_filter = false;
-	idx_t bloom_filter_init_count = 0;
 
 	unique_ptr<PrefixRangeFilter> prefix_range_filter;
 	bool should_build_prefix_range_filter = false;
@@ -639,13 +677,32 @@ public:
 		return PointerTableCapacity(count) * sizeof(data_ptr_t);
 	}
 
+	void SetBloomFilter(shared_ptr<BloomFilter> filter) {
+		bloom_filter = std::move(filter);
+	}
+	//! Requests a filter built during finalize, from the materialized build side (in-memory joins only)
 	void SetBuildBloomFilter(const bool should_build) {
 		this->should_build_bloom_filter = should_build;
 	}
-	void PrepareBloomFilterForFinalize();
 
-	BloomFilter &GetBloomFilter() {
+	shared_ptr<BloomFilter> GetBloomFilter() {
 		return bloom_filter;
+	}
+	//! Hands an unpublished filter from a previous recursive iteration to the finalize-built filter path
+	void SetRecycledBloomFilter(shared_ptr<BloomFilter> filter) {
+		// a null argument would drop a parked filter; callers must only hand over live, unpublished filters
+		D_ASSERT(filter && !filter->IsPublished());
+		recycled_bloom_filter = std::move(filter);
+	}
+	//! Marks the bloom filter complete. The reference stays, because the thread-local tables hold it too
+	void SealBloomFilter() {
+		if (bloom_filter) {
+			bloom_filter->Seal(context);
+		}
+	}
+	//! Whether the filter is complete and rejects enough for pushing it into a scan to pay off
+	bool HasPublishableBloomFilter() const {
+		return bloom_filter && bloom_filter->IsSealed() && bloom_filter->IsUseful();
 	}
 
 	void SetPrefixRangeFilter(unique_ptr<PrefixRangeFilter> filter) {

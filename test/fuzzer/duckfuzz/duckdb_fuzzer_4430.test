@@ -5,22 +5,43 @@
 statement ok
 ATTACH '{TEST_DIR}/duckdb_fuzzer_4430.db' AS db1
 
-# Write case: forbid DETACH after a write to db1 in the same transaction
+# DETACH after a write to db1, then attach another file under the same name in the same transaction
 statement ok
 BEGIN
 
 statement ok
 CREATE TABLE db1.tbl(i INTEGER)
 
-statement error
+statement ok
 DETACH db1
+
+statement ok
+ATTACH IF NOT EXISTS '{TEST_DIR}/duckdb_fuzzer_4430_other.db' AS db1
+
+# the transaction has already written to the detached database
+statement error
+CREATE TABLE db1.tbl2(i INTEGER)
 ----
-Cannot detach database "db1"
+a single transaction can only write to a single attached database
 
 statement ok
 ROLLBACK
 
-# Read case: forbid DETACH after a read from db1 in the same transaction
+# the rollback undoes the second ATTACH and the CREATE TABLE, not the DETACH
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'db1'
+----
+0
+
+statement ok
+ATTACH '{TEST_DIR}/duckdb_fuzzer_4430.db' AS db1
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'db1'
+----
+0
+
+# DETACH after a read from db1 in the same transaction
 statement ok
 CREATE TABLE db1.tbl(i INTEGER)
 
@@ -31,10 +52,13 @@ query I
 SELECT * FROM db1.tbl
 ----
 
-statement error
+statement ok
 DETACH db1
-----
-Cannot detach database "db1"
 
 statement ok
-ROLLBACK
+COMMIT
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'db1'
+----
+0

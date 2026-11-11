@@ -85,7 +85,7 @@ public:
 	}
 
 	template <class T, class... ARGS>
-	shared_ptr<T> GetOrCreate(const string &key, ARGS &&... args) {
+	shared_ptr<T> GetOrCreate(const string &key, ARGS &&...args) {
 		const lock_guard<mutex> lock(lock_mutex);
 
 		// Check non-evictable entries first
@@ -159,7 +159,7 @@ public:
 	}
 
 	template <class T, class... ARGS>
-	shared_ptr<T> GetOrCreateWithTypePrefix(const string &key, ARGS &&... args) {
+	shared_ptr<T> GetOrCreateWithTypePrefix(const string &key, ARGS &&...args) {
 		return GetOrCreate<T>(MakeCacheKey<T>(key), std::forward<ARGS>(args)...);
 	}
 
@@ -197,6 +197,10 @@ public:
 		const lock_guard<mutex> lock(lock_mutex);
 		return lru_cache.EvictToReduceAtLeast(target_bytes);
 	}
+
+	//! Evict LRU entries until the buffer pool fits memory_limit.
+	//! Return false if evictable entries run out before reaching the limit.
+	bool EvictToMemoryLimit(idx_t memory_limit);
 
 private:
 	//! Build the internal cache key for a typed entry by namespacing the caller-provided key with the entry's

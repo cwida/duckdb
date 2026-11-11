@@ -1,0 +1,99 @@
+# name: test/sql/storage/bc/test_slice_bounds_v1_5.test
+# description: Test reading open-ended slices (x[2:], x[:2]) stored by v1.5
+# group: [bc]
+
+# data/storage/slice_bounds_v1_5.db.gz was written by DuckDB v1.5.6.
+require vector_size 2048
+
+unzip data/storage/slice_bounds_v1_5.db.gz {TEST_DIR}/slice_bounds_v1_5.db
+
+statement ok
+ATTACH '{TEST_DIR}/slice_bounds_v1_5.db' AS old
+
+query IIIIIIII
+FROM old.v_slice
+----
+[2, 3]	[1, 2]	bcdef	abc	[1, 3, 5]	[1, 3]	[2, 4]	[1, 2, 3]
+
+query IIII
+FROM old.v_slice_tbl
+----
+[2, 3, 4, 5]	[1, 2]	cdef	ab
+NULL	NULL	NULL	NULL
+
+query II
+FROM old.v_lambda_arrow
+----
+[[2, 3], [5, 6]]	[ab, de]
+
+query II
+FROM old.v_lambda_python
+----
+[[2, 3], [5, 6]]	[ab, de]
+
+# an empty list outside of a slice stays an empty list
+query II
+FROM old.v_empty_list
+----
+[]	[1, 2]
+
+query I
+SELECT old.m_tail([1, 2, 3])
+----
+[2, 3]
+
+query I
+FROM old.m_head([1, 2, 3])
+----
+[1, 2]
+
+statement ok
+INSERT INTO old.t_default (b) VALUES (1)
+
+query II
+FROM old.t_default
+----
+bcdef	1
+
+statement ok
+INSERT INTO old.t_generated VALUES ('hello')
+
+query II
+FROM old.t_generated
+----
+hello	ello
+
+statement ok
+INSERT INTO old.t_check VALUES ('abc')
+
+statement error
+INSERT INTO old.t_check VALUES ('xyz')
+----
+CHECK constraint failed
+
+query I
+FROM old.t_check
+----
+abc
+
+# the objects keep working after being written back by the current version
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/slice_bounds_v1_5.db' AS old
+
+query IIIIIIII
+FROM old.v_slice
+----
+[2, 3]	[1, 2]	bcdef	abc	[1, 3, 5]	[1, 3]	[2, 4]	[1, 2, 3]
+
+query I
+SELECT old.m_tail('abcdef')
+----
+bcdef
+
+query II
+FROM old.t_generated
+----
+hello	ello

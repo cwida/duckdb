@@ -5,10 +5,12 @@
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/parser/statement/multi_statement.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/planner/binder.hpp"
 
 namespace duckdb {
 
-static unique_ptr<SubqueryRef> ParseSubquery(const string &query, ClientContext &context, const string &err_msg) {
+static unique_ptr<SubqueryRef> ParseSubquery(const string &query, TableFunctionBindInput &input, ClientContext &context,
+                                             const string &err_msg) {
 	Parser parser(context);
 	parser.ParseQuery(query);
 	if (parser.statements.size() != 1) {
@@ -16,6 +18,16 @@ static unique_ptr<SubqueryRef> ParseSubquery(const string &query, ClientContext 
 	}
 
 	auto &stmt = parser.statements[0];
+	// a parameter that only appears inside the string is invisible to the prepared statement and never gets a value
+	if (input.binder && input.binder->GetBindingMode() == BindingMode::PREPARE) {
+		for (auto &entry : stmt->named_param_map) {
+			if (!input.binder->StatementHasParameter(entry.first)) {
+				throw BinderException("Prepared statement parameter \"$%s\" only appears inside query(): declare it in "
+				                      "the outer statement as well, or use getvariable() to read a variable",
+				                      entry.first.GetIdentifierName());
+			}
+		}
+	}
 
 	if (stmt->type == StatementType::SELECT_STATEMENT) {
 		// Regular SELECT statement
@@ -77,6 +89,11 @@ static string UnionTablesQuery(TableFunctionBindInput &input) {
 		if (children.empty()) {
 			throw InvalidInputException("Input list is empty");
 		}
+		for (auto &child : children) {
+			if (child.IsNull()) {
+				throw BinderException("Cannot use NULL as function argument");
+			}
+		}
 		result += "FROM " + TableReference(children[0].ToString());
 		for (size_t i = 1; i < children.size(); ++i) {
 			result += union_all_clause + TableReference(children[i].ToString());
@@ -88,14 +105,17 @@ static string UnionTablesQuery(TableFunctionBindInput &input) {
 }
 
 static unique_ptr<TableRef> QueryBindReplace(ClientContext &context, TableFunctionBindInput &input) {
+	if (input.inputs[0].IsNull()) {
+		throw BinderException("Cannot use NULL as function argument");
+	}
 	auto query = input.inputs[0].ToString();
-	auto subquery_ref = ParseSubquery(query, context, "Expected a single SELECT statement");
+	auto subquery_ref = ParseSubquery(query, input, context, "Expected a single SELECT statement");
 	return std::move(subquery_ref);
 }
 
 static unique_ptr<TableRef> TableBindReplace(ClientContext &context, TableFunctionBindInput &input) {
 	auto query = UnionTablesQuery(input);
-	auto subquery_ref = ParseSubquery(query, context, "Expected a table or a list with tables as input");
+	auto subquery_ref = ParseSubquery(query, input, context, "Expected a table or a list with tables as input");
 	return std::move(subquery_ref);
 }
 

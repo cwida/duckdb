@@ -37,6 +37,11 @@ VectorStringBuffer::VectorStringBuffer(Allocator &allocator, capacity_t capacity
 	buffer_type = VectorBufferType::STRING_BUFFER;
 }
 
+VectorStringBuffer::VectorStringBuffer(AllocatedData allocation, capacity_t capacity)
+    : StandardVectorBuffer(std::move(allocation), capacity, sizeof(string_t)) {
+	buffer_type = VectorBufferType::STRING_BUFFER;
+}
+
 VectorStringBuffer::VectorStringBuffer(capacity_t capacity) : StandardVectorBuffer(capacity, sizeof(string_t)) {
 	buffer_type = VectorBufferType::STRING_BUFFER;
 }
@@ -91,6 +96,7 @@ void VectorStringBuffer::CopyInternal(const Vector &source, const SelectionVecto
 }
 
 void VectorStringBuffer::SetValue(const LogicalType &type, idx_t index, const Value &val) {
+	EnsureDataAllocated();
 	if (!val.IsNull() && val.type() != type) {
 		SetValue(type, index, val.DefaultCastAs(type));
 		return;
@@ -138,7 +144,7 @@ void VectorStringBuffer::VerifyInternal(const LogicalType &type, const Selection
 
 buffer_ptr<VectorBuffer> VectorStringBuffer::SliceInternal(const LogicalType &type, idx_t offset, idx_t end) {
 	auto type_size = GetTypeIdSize(type.InternalType());
-	auto offset_ptr = data_ptr + type_size * offset;
+	auto offset_ptr = data_ptr ? data_ptr + type_size * offset : nullptr;
 	auto count = count_t(end - offset);
 	auto result = make_buffer<VectorStringBuffer>(offset_ptr, count);
 	result->GetValidityMask().Slice(validity, offset, count);
@@ -147,9 +153,11 @@ buffer_ptr<VectorBuffer> VectorStringBuffer::SliceInternal(const LogicalType &ty
 }
 
 buffer_ptr<VectorBuffer> VectorStringBuffer::ConstantSliceInternal(const LogicalType &type, count_t count) {
-	auto result = make_buffer<VectorStringBuffer>(data_ptr, count);
+	// a constant has one physical entry - the logical count is tracked separately from the physical capacity
+	auto result = make_buffer<VectorStringBuffer>(data_ptr, count_t(1ULL));
 	result->GetValidityMask().Set(0, validity.RowIsValid(0));
 	result->SetVectorType(VectorType::CONSTANT_VECTOR);
+	result->SetVectorSize(count);
 	result->AddAuxiliaryData(make_uniq<VectorBufferHolder>(shared_from_this()));
 	return result;
 }

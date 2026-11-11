@@ -1,0 +1,20 @@
+# name: test/optimizer/constant_argument_errors_like_regex.test
+# description: A constant LIKE or regex pattern that cannot be evaluated does not fail binding or planning of unreachable expressions
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(s VARCHAR);
+
+statement ok
+SELECT CASE WHEN false THEN s LIKE ''::DOUBLE::VARCHAR END FROM t;
+
+statement ok
+SELECT CASE WHEN false THEN 'a' LIKE ''::DOUBLE::VARCHAR END;
+
+statement ok
+SELECT CASE WHEN false THEN regexp_matches(s, 'a'||''::DOUBLE) END FROM t;
+
+statement error
+SELECT s LIKE ''::DOUBLE::VARCHAR FROM t UNION ALL SELECT 'a' LIKE ''::DOUBLE::VARCHAR;
+----
+<REGEX>:Conversion Error.*

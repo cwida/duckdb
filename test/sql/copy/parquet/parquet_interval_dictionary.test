@@ -1,0 +1,63 @@
+# name: test/sql/copy/parquet/parquet_interval_dictionary.test
+# description: Keep intervals that are equal only after normalization in separate Parquet dictionary entries
+# group: [parquet]
+
+require parquet
+
+# the two spellings compare equal, because a month normalizes to 30 days
+query I
+SELECT INTERVAL '1 month 2 days' = INTERVAL '32 days'
+----
+true
+
+# they are not interchangeable: date arithmetic gives a different answer for each
+query II
+SELECT (DATE '2024-01-31' + INTERVAL '1 month 2 days')::VARCHAR,
+       (DATE '2024-01-31' + INTERVAL '32 days')::VARCHAR
+----
+2024-03-02 00:00:00	2024-03-03 00:00:00
+
+# both insertion orders: whichever spelling reaches the dictionary first used to be written for every row
+statement ok
+CREATE OR REPLACE TABLE iv_a AS
+SELECT CASE WHEN i % 2 = 0 THEN INTERVAL '1 month 2 days' ELSE INTERVAL '32 days' END AS iv
+FROM range(2000) t(i)
+
+statement ok
+CREATE OR REPLACE TABLE iv_b AS
+SELECT CASE WHEN i % 2 = 0 THEN INTERVAL '32 days' ELSE INTERVAL '1 month 2 days' END AS iv
+FROM range(2000) t(i)
+
+foreach version V1 V2
+
+foreach first a b
+
+statement ok
+COPY iv_{first} TO '{TEST_DIR}/iv_{first}_{version}.parquet'
+(FORMAT PARQUET, PARQUET_VERSION {version})
+
+query II
+SELECT iv::VARCHAR, count(*)
+FROM read_parquet('{TEST_DIR}/iv_{first}_{version}.parquet')
+GROUP BY 1 ORDER BY 1
+----
+1 month 2 days	1000
+32 days	1000
+
+query I
+SELECT bool_and(encodings = CASE WHEN '{version}' = 'V1' THEN 'PLAIN_DICTIONARY' ELSE 'RLE_DICTIONARY' END)
+FROM parquet_metadata('{TEST_DIR}/iv_{first}_{version}.parquet') WHERE path_in_schema = 'iv'
+----
+true
+
+# the round trip has to preserve both spellings, not just the counts
+query I
+SELECT DISTINCT (DATE '2024-01-31' + iv)::VARCHAR
+FROM read_parquet('{TEST_DIR}/iv_{first}_{version}.parquet') ORDER BY 1
+----
+2024-03-02 00:00:00
+2024-03-03 00:00:00
+
+endloop
+
+endloop

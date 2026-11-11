@@ -10,7 +10,7 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformInsertStatement(
     PEGTransformer &transformer, optional<CommonTableExpressionMap> with_clause,
     const optional<OnConflictAction> &or_action, unique_ptr<BaseTableRef> insert_target,
     const optional<InsertColumnOrder> &by_name_or_position, const optional<vector<string>> &insert_column_list,
-    InsertValues insert_values, optional<unique_ptr<OnConflictInfo>> on_conflict_clause,
+    bool has_overriding_clause, InsertValues insert_values, optional<unique_ptr<OnConflictInfo>> on_conflict_clause,
     optional<vector<unique_ptr<ParsedExpression>>> returning_clause) {
 	auto result = make_uniq<InsertStatement>();
 	auto &node = *result->node;
@@ -25,6 +25,10 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformInsertStatement(
 	if (!node.columns.empty() && insert_values.default_values) {
 		throw ParserException(
 		    "You can not provide both a column list and DEFAULT VALUES, please remove one of the two");
+	}
+	if (has_overriding_clause && insert_values.default_values) {
+		throw ParserException("OVERRIDING SYSTEM|USER VALUE can not be combined with DEFAULT VALUES, "
+		                      "please remove one of the two");
 	}
 	if (insert_values.default_values) {
 		node.default_values = true;

@@ -33,6 +33,9 @@ PEGTransformerFactory::TransformCreateStatement(PEGTransformer &transformer, con
 		}
 		conflict_policy = OnCreateConflict::REPLACE_ON_CONFLICT;
 	}
+	if (temporary && *temporary == SecretPersistType::PERSISTENT && result->info->type != CatalogType::SECRET_ENTRY) {
+		throw ParserException("PERSISTENT is only supported for CREATE SECRET");
+	}
 	if (result->info->type == CatalogType::SECRET_ENTRY) {
 		auto &secret_info = result->info->Cast<CreateSecretInfo>();
 		secret_info.persist_type = temporary ? *temporary : SecretPersistType::DEFAULT;
@@ -107,9 +110,22 @@ PEGTransformerFactory::TransformCreateTableAs(PEGTransformer &transformer, optio
 	}
 	result.select_statement = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(statement));
 	if (with_data && *with_data) {
-		auto limit_modifier = make_uniq<LimitModifier>();
-		limit_modifier->limit = ConstantExpression::Integer(0);
-		result.select_statement->node->modifiers.push_back(std::move(limit_modifier));
+		// WITH NO DATA: limit the query to zero rows - an existing LIMIT is replaced
+		auto &modifiers = result.select_statement->node->modifiers;
+		optional_ptr<LimitModifier> existing_limit;
+		for (auto &modifier : modifiers) {
+			if (modifier->type == ResultModifierType::LIMIT_MODIFIER) {
+				existing_limit = modifier->Cast<LimitModifier>();
+			}
+		}
+		if (existing_limit) {
+			existing_limit->limit = ConstantExpression::Integer(0);
+			existing_limit->offset = nullptr;
+		} else {
+			auto limit_modifier = make_uniq<LimitModifier>();
+			limit_modifier->limit = ConstantExpression::Integer(0);
+			modifiers.push_back(std::move(limit_modifier));
+		}
 	}
 	return result;
 }

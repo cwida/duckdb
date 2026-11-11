@@ -32,6 +32,13 @@ public:
 	virtual optional_ptr<GeometryStatsData> GetGeoStats();
 	virtual void WriteGeoStats(duckdb_parquet::GeospatialStatistics &stats);
 
+	//! Folds the statistics of another accumulator of the same type into this one (page statistics -> column chunk)
+	virtual void Merge(const ColumnWriterStatistics &other);
+	//! Compares the minimum (maximum) of two accumulators of the same type that both have statistics:
+	//! negative if this is smaller, zero if equal, positive if larger (used to derive the page index boundary order)
+	virtual int CompareMin(const ColumnWriterStatistics &other) const;
+	virtual int CompareMax(const ColumnWriterStatistics &other) const;
+
 public:
 	template <class TARGET>
 	TARGET &Cast() {
@@ -71,6 +78,27 @@ public:
 	string GetMaxValue() override {
 		return HasStats() ? string(char_ptr_cast(&max), sizeof(T)) : string();
 	}
+
+	void Merge(const ColumnWriterStatistics &other_p) override {
+		auto &other = other_p.Cast<NumericStatisticsState<SRC, T, OP>>();
+		if (!(other.min <= other.max)) {
+			return;
+		}
+		if (LessThan::Operation(other.min, min)) {
+			min = other.min;
+		}
+		if (GreaterThan::Operation(other.max, max)) {
+			max = other.max;
+		}
+	}
+	int CompareMin(const ColumnWriterStatistics &other_p) const override {
+		auto &other = other_p.Cast<NumericStatisticsState<SRC, T, OP>>();
+		return LessThan::Operation(min, other.min) ? -1 : (GreaterThan::Operation(min, other.min) ? 1 : 0);
+	}
+	int CompareMax(const ColumnWriterStatistics &other_p) const override {
+		auto &other = other_p.Cast<NumericStatisticsState<SRC, T, OP>>();
+		return LessThan::Operation(max, other.max) ? -1 : (GreaterThan::Operation(max, other.max) ? 1 : 0);
+	}
 };
 
 template <class SRC, class T, class OP>
@@ -87,6 +115,10 @@ public:
 	}
 	idx_t GetNaNCount() override {
 		return nan_count;
+	}
+	void Merge(const ColumnWriterStatistics &other_p) override {
+		NumericStatisticsState<SRC, T, OP>::Merge(other_p);
+		nan_count += other_p.Cast<FloatingPointStatisticsState<SRC, T, OP>>().nan_count;
 	}
 };
 
@@ -229,6 +261,42 @@ public:
 	bool MaxIsExact() override {
 		return !max_truncated;
 	}
+
+	void Merge(const ColumnWriterStatistics &other_p) override {
+		auto &other = other_p.Cast<StringStatisticsState>();
+		if (other.failed_truncate) {
+			failed_truncate = true;
+			has_stats = false;
+			min = string();
+			max = string();
+			return;
+		}
+		if (failed_truncate || !other.has_stats) {
+			return;
+		}
+		// a truncated bound stays a valid bound of the merged range, only its exactness is lost
+		if (!has_stats || LessThan::Operation(string_t(other.min), string_t(min))) {
+			min = other.min;
+			min_truncated = other.min_truncated;
+		}
+		if (!has_stats || GreaterThan::Operation(string_t(other.max), string_t(max))) {
+			max = other.max;
+			max_truncated = other.max_truncated;
+		}
+		has_stats = true;
+	}
+	int CompareMin(const ColumnWriterStatistics &other_p) const override {
+		auto &other = other_p.Cast<StringStatisticsState>();
+		return LessThan::Operation(string_t(min), string_t(other.min))
+		           ? -1
+		           : (GreaterThan::Operation(string_t(min), string_t(other.min)) ? 1 : 0);
+	}
+	int CompareMax(const ColumnWriterStatistics &other_p) const override {
+		auto &other = other_p.Cast<StringStatisticsState>();
+		return LessThan::Operation(string_t(max), string_t(other.max))
+		           ? -1
+		           : (GreaterThan::Operation(string_t(max), string_t(other.max)) ? 1 : 0);
+	}
 };
 
 struct ParquetUUIDTargetType {
@@ -259,6 +327,28 @@ public:
 	string GetMaxValue() override {
 		return HasStats() ? string(char_ptr_cast(max.bytes), ParquetUUIDTargetType::PARQUET_UUID_SIZE) : string();
 	}
+
+	void Merge(const ColumnWriterStatistics &other_p) override {
+		auto &other = other_p.Cast<UUIDStatisticsState>();
+		if (!other.has_stats) {
+			return;
+		}
+		if (!has_stats || memcmp(other.min.bytes, min.bytes, ParquetUUIDTargetType::PARQUET_UUID_SIZE) < 0) {
+			min = other.min;
+		}
+		if (!has_stats || memcmp(other.max.bytes, max.bytes, ParquetUUIDTargetType::PARQUET_UUID_SIZE) > 0) {
+			max = other.max;
+		}
+		has_stats = true;
+	}
+	int CompareMin(const ColumnWriterStatistics &other_p) const override {
+		auto &other = other_p.Cast<UUIDStatisticsState>();
+		return memcmp(min.bytes, other.min.bytes, ParquetUUIDTargetType::PARQUET_UUID_SIZE);
+	}
+	int CompareMax(const ColumnWriterStatistics &other_p) const override {
+		auto &other = other_p.Cast<UUIDStatisticsState>();
+		return memcmp(max.bytes, other.max.bytes, ParquetUUIDTargetType::PARQUET_UUID_SIZE);
+	}
 };
 
 class GeoStatisticsState final : public ColumnWriterStatistics {
@@ -280,6 +370,14 @@ public:
 	}
 	optional_ptr<GeometryStatsData> GetGeoStats() override {
 		return geo_stats;
+	}
+	void Merge(const ColumnWriterStatistics &other_p) override {
+		auto &other = other_p.Cast<GeoStatisticsState>();
+		if (!other.has_stats) {
+			return;
+		}
+		geo_stats.Merge(other.geo_stats);
+		has_stats = true;
 	}
 	void WriteGeoStats(duckdb_parquet::GeospatialStatistics &stats) override {
 		const auto &types = geo_stats.types;
@@ -307,7 +405,8 @@ public:
 		}
 
 		stats.__isset.geospatial_types = true;
-		stats.geospatial_types = types.ToWKBList();
+		auto wkb_types = types.ToWKBList();
+		stats.geospatial_types.assign(wkb_types.begin(), wkb_types.end());
 	}
 };
 

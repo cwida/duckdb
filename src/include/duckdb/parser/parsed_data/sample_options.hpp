@@ -41,6 +41,8 @@ public:
 	void Serialize(Serializer &serializer) const;
 	static unique_ptr<SampleOptions> Deserialize(Deserializer &deserializer);
 	int64_t GetSeed() const;
+	//! Throws if the sample size is not a valid percentage or row count
+	void Verify() const;
 };
 
 } // namespace duckdb

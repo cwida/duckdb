@@ -1,0 +1,28 @@
+# name: test/issues/general/test_26797_parquet.test
+# description: TIMESTAMP values below the first midnight of the range round-trip through Parquet
+# group: [general]
+
+require parquet
+
+statement ok
+COPY (SELECT * FROM (VALUES
+	(1, make_timestamp(-9223372036854775807 - 1)),
+	(2, make_timestamp(-9223372022400000001)),
+	(3, make_timestamp(9223372036854775806))) v(i, ts)) TO '{TEST_DIR}/test_26797.parquet';
+
+query II
+SELECT i, ts FROM '{TEST_DIR}/test_26797.parquet' ORDER BY i;
+----
+1	290309-12-21 (BC) 19:59:05.224192
+2	290309-12-21 (BC) 23:59:59.999999
+3	294247-01-10 04:00:54.775806
+
+query II
+SELECT min(ts), max(ts) FROM '{TEST_DIR}/test_26797.parquet';
+----
+290309-12-21 (BC) 19:59:05.224192	294247-01-10 04:00:54.775806
+
+query II
+SELECT stats_min, stats_max FROM parquet_metadata('{TEST_DIR}/test_26797.parquet') WHERE path_in_schema = 'ts';
+----
+290309-12-21 (BC) 19:59:05.224192	294247-01-10 04:00:54.775806

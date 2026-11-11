@@ -72,17 +72,15 @@ struct MakeTimeOperator {
 	static RESULT_TYPE Operation(HH hh, MM mm, SS ss) {
 		auto hh_32 = Cast::Operation<HH, int32_t>(hh);
 		auto mm_32 = Cast::Operation<MM, int32_t>(mm);
-		// Have to check this separately because safe casting of DOUBLE => INT32 can round.
-		int32_t ss_32 = 0;
-		if (ss < 0 || ss > Interval::SECS_PER_MINUTE) {
-			ss_32 = Cast::Operation<SS, int32_t>(ss);
-		} else {
-			ss_32 = LossyNumericCast<int32_t>(ss);
+		if (!std::isfinite(static_cast<double>(ss))) {
+			throw ConversionException("Time out of range: seconds must be a finite number");
 		}
+		// Truncate the seconds: safe casting of DOUBLE => INT32 rounds.
+		auto ss_32 = Cast::Operation<SS, int32_t>(std::floor(ss));
 		auto micros = LossyNumericCast<int32_t>(std::round((ss - ss_32) * Interval::MICROS_PER_SEC));
 
 		if (!Time::IsValidTime(hh_32, mm_32, ss_32, micros)) {
-			throw ConversionException("Time out of range: %d:%d:%d.%d", hh_32, mm_32, ss_32, micros);
+			throw ConversionException("Time out of range: %d:%d:%d.%06d", hh_32, mm_32, ss_32, micros);
 		}
 		return Time::FromTime(hh_32, mm_32, ss_32, micros);
 	}

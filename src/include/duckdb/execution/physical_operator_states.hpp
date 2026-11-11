@@ -82,6 +82,10 @@ public:
 	}
 
 	SinkFinalizeType state;
+	//! Upper bound on the workers the next rescheduled execution runs with, set before Reset is called
+	optional_idx reschedule_worker_limit;
+	//! Whether exactly one producer pipeline feeds this sink in the rescheduled execution
+	bool reschedule_single_producer = false;
 
 	virtual bool SupportsReuse() const {
 		return false;
@@ -91,6 +95,11 @@ public:
 		annotated_lock_guard<annotated_mutex> guard(lock);
 		ResetBlocking();
 		state = SinkFinalizeType::READY;
+	}
+
+	//! Called when the rescheduled execution's actual worker count is known, before any data flows.
+	//! Only called for sinks with a single producer pipeline, where no other producer can interfere.
+	virtual void AdjustRescheduledWorkers(ClientContext &context, idx_t scheduled_workers) {
 	}
 
 	template <class TARGET>

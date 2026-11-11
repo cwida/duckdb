@@ -4,6 +4,7 @@
 #include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/common/serializer/varint.hpp"
+#include "duckdb/function/scalar/variant_utils.hpp"
 
 #include <algorithm>
 
@@ -28,31 +29,125 @@ namespace {
 
 //! Decode the (length-prefixed) string payload of a value at the given byte offset in the blob
 string_t DecodeStringData(const string_t &blob, uint32_t byte_offset) {
-	auto ptr = const_data_ptr_cast(blob.GetData()) + byte_offset;
+	auto blob_size = blob.GetSize();
+	VariantUtils::Available(blob_size, byte_offset, 1);
+	auto data = const_data_ptr_cast(blob.GetData());
+	auto ptr = data + byte_offset;
 	auto length = VarintDecode<uint32_t>(ptr);
+	VariantUtils::Available(blob_size, NumericCast<idx_t>(ptr - data), length);
 	return string_t(reinterpret_cast<const char *>(ptr), length);
 }
 
 //! Decode the (width, scale, value pointer) of a DECIMAL value at the given byte offset
 VariantDecimalData DecodeDecimalData(const string_t &blob, uint32_t byte_offset) {
-	auto ptr = const_data_ptr_cast(blob.GetData()) + byte_offset;
+	auto blob_size = blob.GetSize();
+	VariantUtils::Available(blob_size, byte_offset, 1);
+	auto data = const_data_ptr_cast(blob.GetData());
+	auto ptr = data + byte_offset;
 	auto width = VarintDecode<uint32_t>(ptr);
 	auto scale = VarintDecode<uint32_t>(ptr);
+	VariantUtils::Available(blob_size, NumericCast<idx_t>(ptr - data), 0);
 	return VariantDecimalData(width, scale, ptr);
 }
 
 //! Decode the (child_count, children_idx) of an OBJECT/ARRAY value at the given byte offset
 VariantNestedData DecodeNestedData(const string_t &blob, uint32_t byte_offset) {
-	auto ptr = const_data_ptr_cast(blob.GetData()) + byte_offset;
+	auto blob_size = blob.GetSize();
+	VariantUtils::Available(blob_size, byte_offset, 1);
+	auto data = const_data_ptr_cast(blob.GetData());
+	auto ptr = data + byte_offset;
 	VariantNestedData result;
 	result.child_count = VarintDecode<uint32_t>(ptr);
-	result.children_idx = result.child_count ? VarintDecode<uint32_t>(ptr) : 0;
+	if (result.child_count) {
+		VariantUtils::Available(blob_size, NumericCast<idx_t>(ptr - data), 1);
+		result.children_idx = VarintDecode<uint32_t>(ptr);
+	} else {
+		result.children_idx = 0;
+	}
 	return result;
 }
 
 //! Whether the value at logical position 'index' of a shredded layer is valid (non-NULL)
 bool ShreddedIsValid(const ShreddedVariantIterator &node, idx_t index) {
 	return node.unified.validity.RowIsValid(node.unified.sel->get_index(index));
+}
+
+//! Resolve the type_id of a shredded layer up-front - it is the same for every value of the layer,
+//! except for BOOLEAN (which is BOOL_TRUE or BOOL_FALSE per value) and the layers that are never read
+//! as a scalar value (LIST/ARRAY/STRUCT), which are handled structurally by the iterator.
+VariantLogicalType ResolveShreddedTypeId(const LogicalType &type, bool &resolved) {
+	resolved = true;
+	switch (type.id()) {
+	case LogicalTypeId::TINYINT:
+		return VariantLogicalType::INT8;
+	case LogicalTypeId::SMALLINT:
+		return VariantLogicalType::INT16;
+	case LogicalTypeId::INTEGER:
+		return VariantLogicalType::INT32;
+	case LogicalTypeId::BIGINT:
+		return VariantLogicalType::INT64;
+	case LogicalTypeId::HUGEINT:
+		return VariantLogicalType::INT128;
+	case LogicalTypeId::UTINYINT:
+		return VariantLogicalType::UINT8;
+	case LogicalTypeId::USMALLINT:
+		return VariantLogicalType::UINT16;
+	case LogicalTypeId::UINTEGER:
+		return VariantLogicalType::UINT32;
+	case LogicalTypeId::UBIGINT:
+		return VariantLogicalType::UINT64;
+	case LogicalTypeId::UHUGEINT:
+		return VariantLogicalType::UINT128;
+	case LogicalTypeId::FLOAT:
+		return VariantLogicalType::FLOAT;
+	case LogicalTypeId::DOUBLE:
+		return VariantLogicalType::DOUBLE;
+	case LogicalTypeId::DECIMAL:
+		return VariantLogicalType::DECIMAL;
+	case LogicalTypeId::VARCHAR:
+		return VariantLogicalType::VARCHAR;
+	case LogicalTypeId::BLOB:
+		return VariantLogicalType::BLOB;
+	case LogicalTypeId::UUID:
+		return VariantLogicalType::UUID;
+	case LogicalTypeId::DATE:
+		return VariantLogicalType::DATE;
+	case LogicalTypeId::TIME:
+		return VariantLogicalType::TIME_MICROS;
+	case LogicalTypeId::TIME_NS:
+		return VariantLogicalType::TIME_NANOS;
+	case LogicalTypeId::TIME_TZ:
+		return VariantLogicalType::TIME_MICROS_TZ;
+	case LogicalTypeId::TIMESTAMP_SEC:
+		return VariantLogicalType::TIMESTAMP_SEC;
+	case LogicalTypeId::TIMESTAMP_MS:
+		return VariantLogicalType::TIMESTAMP_MILIS;
+	case LogicalTypeId::TIMESTAMP:
+		return VariantLogicalType::TIMESTAMP_MICROS;
+	case LogicalTypeId::TIMESTAMP_NS:
+		return VariantLogicalType::TIMESTAMP_NANOS;
+	case LogicalTypeId::TIMESTAMP_TZ:
+		return VariantLogicalType::TIMESTAMP_MICROS_TZ;
+	case LogicalTypeId::TIMESTAMP_TZ_NS:
+		return VariantLogicalType::TIMESTAMP_NANOS_TZ;
+	case LogicalTypeId::INTERVAL:
+		return VariantLogicalType::INTERVAL;
+	case LogicalTypeId::BIGNUM:
+		return VariantLogicalType::BIGNUM;
+	case LogicalTypeId::BIT:
+		return VariantLogicalType::BITSTRING;
+	case LogicalTypeId::GEOMETRY:
+		return VariantLogicalType::GEOMETRY;
+	case LogicalTypeId::STRUCT:
+		return VariantLogicalType::OBJECT;
+	case LogicalTypeId::LIST:
+		return VariantLogicalType::ARRAY;
+	case LogicalTypeId::BOOLEAN:
+		// BOOLEAN resolves to BOOL_TRUE / BOOL_FALSE per value
+	default:
+		resolved = false;
+		return VariantLogicalType::VARIANT_NULL;
+	}
 }
 
 } // namespace
@@ -87,6 +182,8 @@ VariantIterator::VariantIterator(const Vector &unshredded_vec, const Vector &shr
 void ShreddedVariantIterator::Build(const Vector &vec) {
 	vec.ToUnifiedFormat(unified);
 	logical_type = vec.GetType();
+	type_size = GetTypeIdSize(unified.physical_type);
+	type_id = ResolveShreddedTypeId(logical_type, has_fixed_type_id);
 
 	switch (vec.GetType().InternalType()) {
 	case PhysicalType::LIST:
@@ -283,78 +380,17 @@ VariantNode VariantNode::ResolveShredded(const VariantIterator &state, const Shr
 // Type resolution
 //===--------------------------------------------------------------------===//
 static VariantLogicalType ShreddedTypeId(const ShreddedVariantIterator &content, idx_t index) {
-	auto &type = content.logical_type;
-	switch (type.id()) {
-	case LogicalTypeId::STRUCT:
-		return VariantLogicalType::OBJECT;
-	case LogicalTypeId::LIST:
-		return VariantLogicalType::ARRAY;
-	case LogicalTypeId::BOOLEAN:
-		return content.unified.GetData<bool>()[content.unified.sel->get_index(index)] ? VariantLogicalType::BOOL_TRUE
-		                                                                              : VariantLogicalType::BOOL_FALSE;
-	case LogicalTypeId::TINYINT:
-		return VariantLogicalType::INT8;
-	case LogicalTypeId::SMALLINT:
-		return VariantLogicalType::INT16;
-	case LogicalTypeId::INTEGER:
-		return VariantLogicalType::INT32;
-	case LogicalTypeId::BIGINT:
-		return VariantLogicalType::INT64;
-	case LogicalTypeId::HUGEINT:
-		return VariantLogicalType::INT128;
-	case LogicalTypeId::UTINYINT:
-		return VariantLogicalType::UINT8;
-	case LogicalTypeId::USMALLINT:
-		return VariantLogicalType::UINT16;
-	case LogicalTypeId::UINTEGER:
-		return VariantLogicalType::UINT32;
-	case LogicalTypeId::UBIGINT:
-		return VariantLogicalType::UINT64;
-	case LogicalTypeId::UHUGEINT:
-		return VariantLogicalType::UINT128;
-	case LogicalTypeId::FLOAT:
-		return VariantLogicalType::FLOAT;
-	case LogicalTypeId::DOUBLE:
-		return VariantLogicalType::DOUBLE;
-	case LogicalTypeId::DECIMAL:
-		return VariantLogicalType::DECIMAL;
-	case LogicalTypeId::VARCHAR:
-		return VariantLogicalType::VARCHAR;
-	case LogicalTypeId::BLOB:
-		return VariantLogicalType::BLOB;
-	case LogicalTypeId::UUID:
-		return VariantLogicalType::UUID;
-	case LogicalTypeId::DATE:
-		return VariantLogicalType::DATE;
-	case LogicalTypeId::TIME:
-		return VariantLogicalType::TIME_MICROS;
-	case LogicalTypeId::TIME_NS:
-		return VariantLogicalType::TIME_NANOS;
-	case LogicalTypeId::TIME_TZ:
-		return VariantLogicalType::TIME_MICROS_TZ;
-	case LogicalTypeId::TIMESTAMP_SEC:
-		return VariantLogicalType::TIMESTAMP_SEC;
-	case LogicalTypeId::TIMESTAMP_MS:
-		return VariantLogicalType::TIMESTAMP_MILIS;
-	case LogicalTypeId::TIMESTAMP:
-		return VariantLogicalType::TIMESTAMP_MICROS;
-	case LogicalTypeId::TIMESTAMP_NS:
-		return VariantLogicalType::TIMESTAMP_NANOS;
-	case LogicalTypeId::TIMESTAMP_TZ:
-		return VariantLogicalType::TIMESTAMP_MICROS_TZ;
-	case LogicalTypeId::TIMESTAMP_TZ_NS:
-		return VariantLogicalType::TIMESTAMP_NANOS_TZ;
-	case LogicalTypeId::INTERVAL:
-		return VariantLogicalType::INTERVAL;
-	case LogicalTypeId::BIGNUM:
-		return VariantLogicalType::BIGNUM;
-	case LogicalTypeId::BIT:
-		return VariantLogicalType::BITSTRING;
-	case LogicalTypeId::GEOMETRY:
-		return VariantLogicalType::GEOMETRY;
-	default:
-		throw NotImplementedException("Shredded VARIANT type '%s' is not supported by VariantNode", type.ToString());
+	if (!content.has_fixed_type_id) {
+		// BOOLEAN is the only layer whose type_id depends on the value
+		if (content.logical_type.id() == LogicalTypeId::BOOLEAN) {
+			return content.unified.GetData<bool>()[content.unified.sel->get_index(index)]
+			           ? VariantLogicalType::BOOL_TRUE
+			           : VariantLogicalType::BOOL_FALSE;
+		}
+		throw NotImplementedException("Shredded VARIANT type '%s' is not supported by VariantNode",
+		                              content.logical_type.ToString());
 	}
+	return content.type_id;
 }
 
 VariantLogicalType VariantNode::GetTypeId() const {
@@ -380,8 +416,7 @@ const_data_ptr_t VariantNode::GetDataPointer() const {
 	}
 	D_ASSERT(kind == Kind::SHREDDED);
 	auto &content = *shredded_format;
-	auto type_size = GetTypeIdSize(content.unified.physical_type);
-	return content.unified.data + content.unified.sel->get_index(shredded_index) * type_size;
+	return content.unified.data + content.unified.sel->get_index(shredded_index) * content.type_size;
 }
 
 string_t VariantNode::GetString() const {
@@ -402,8 +437,7 @@ VariantDecimalData VariantNode::GetDecimal() const {
 	auto &type = content.logical_type;
 	auto width = DecimalType::GetWidth(type);
 	auto scale = DecimalType::GetScale(type);
-	auto type_size = GetTypeIdSize(content.unified.physical_type);
-	auto value_ptr = content.unified.data + content.unified.sel->get_index(shredded_index) * type_size;
+	auto value_ptr = content.unified.data + content.unified.sel->get_index(shredded_index) * content.type_size;
 	return VariantDecimalData(width, scale, value_ptr);
 }
 

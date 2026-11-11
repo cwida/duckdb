@@ -1,0 +1,23 @@
+# name: test/sql/aggregate/aggregates/test_quantile_timestamp_exact.test
+# description: Interpolated quantiles of timestamps and times are exact
+# group: [aggregates]
+
+query I
+SELECT median(x)::VARCHAR FROM (VALUES (TIMESTAMP_NS '2024-01-01 00:00:00.000000001'), (TIMESTAMP_NS '2024-01-01 00:00:00.000000001')) t(x);
+----
+2024-01-01 00:00:00.000000001
+
+query I
+SELECT median(x)::VARCHAR FROM (VALUES (TIMESTAMP '294247-01-10 04:00:54'), (TIMESTAMP '294247-01-10 04:00:54')) t(x);
+----
+294247-01-10 04:00:54
+
+query I
+SELECT quantile_cont(x, 0.25)::VARCHAR FROM (VALUES (TIMESTAMP '2024-01-01 00:00:00'), (TIMESTAMP '2024-01-01 00:00:10')) t(x);
+----
+2024-01-01 00:00:02.5
+
+query I
+SELECT median(x)::VARCHAR FROM (VALUES (TIME '12:34:56.123457'), (TIME '12:34:56.123457')) t(x);
+----
+12:34:56.123457

@@ -29,6 +29,9 @@ struct OperatorMetrics {
 	idx_t rows_scanned;
 	idx_t row_groups_scanned;
 	idx_t total_row_groups_to_scan;
+	idx_t bytes_scanned;
+	//! Whether the scan reports bytes_scanned at all - otherwise the metric is left out rather than reported as 0
+	bool bytes_scanned_reported;
 
 	profiler_metrics_t GetMetrics(const GatheredMetrics &info) const;
 	void ResetMetrics() {
@@ -40,6 +43,8 @@ struct OperatorMetrics {
 		rows_scanned = 0;
 		row_groups_scanned = 0;
 		total_row_groups_to_scan = 0;
+		bytes_scanned = 0;
+		bytes_scanned_reported = false;
 		operator_type = PhysicalOperatorType::INVALID;
 		extra_info.clear();
 	}

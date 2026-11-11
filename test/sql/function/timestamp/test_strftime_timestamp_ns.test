@@ -393,3 +393,26 @@ NULL
 23:50:01
 12:01:55
 10:10:10
+
+# %n followed by other specifiers
+query I
+SELECT strftime(TIMESTAMP '2020-01-01 00:00:00.123456', '%n|')
+----
+123456000|
+
+query I
+SELECT strftime(DATE '2020-01-01', '%n%n')
+----
+000000000000000000
+
+query I
+SELECT strftime(TIMESTAMP_NS '2020-01-01 00:00:00.123456789', '%n %Y')
+----
+123456789 2020
+
+query I
+SELECT strftime(TIMESTAMP '2020-01-01 00:00:00.123456' + to_microseconds(i), '%n|%n|%f|%g') FROM range(3) t(i) ORDER BY 1
+----
+123456000|123456000|123456|123
+123457000|123457000|123457|123
+123458000|123458000|123458|123

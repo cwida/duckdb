@@ -18,17 +18,13 @@ namespace test_capi_v2 {
 
 namespace {
 
-duckdb_v2_identifier_t CastIdent(const char *s) {
-	return duckdb_v2_identifier_t {s, std::strlen(s)};
-}
-
 // The mode the last cast callback ran in, latched for the test to assert on.
 DUCKDB_V2_CAST_MODE last_cast_mode = DUCKDB_V2_CAST_MODE_MAX_ENUM;
 
 void FailCast(duckdb_v2_error_info_handle *err, DUCKDB_V2_ERROR code, const std::string &message) {
 	duckdb_v2_error_info_set_code(*err, code);
-	auto text_str = Convert(message);
-	duckdb_v2_error_info_set_text(*err, &text_str);
+	auto text_str = std::string_view(message);
+	duckdb_v2_error_info_set_text(*err, text_str.data(), text_str.size());
 }
 
 // Clears the output vector's validity bit for row `index`.
@@ -142,11 +138,12 @@ void VarcharToTemp(duckdb_v2_cast_function_exec_info_handle info, duckdb_v2_cont
 		}
 		auto text = Convert(in[idx]);
 		int32_t parsed = 0;
-		if (!ParseTemperature(text.ptr, text.len, parsed)) {
+		if (!ParseTemperature(text.data(), text.size(), parsed)) {
 			if (SetOutputNull(args.output, i, err) != DUCKDB_V2_ERROR_NONE) {
 				return;
 			}
-			FailCast(err, DUCKDB_V2_ERROR_TYPE_CONVERSION, "Could not convert '" + Convert(text) + "' to TEMPERATURE");
+			FailCast(err, DUCKDB_V2_ERROR_TYPE_CONVERSION,
+			         "Could not convert '" + std::string(text) + "' to TEMPERATURE");
 			continue;
 		}
 		out[i] = parsed;
@@ -160,15 +157,15 @@ void NoopCast(duckdb_v2_cast_function_exec_info_handle, duckdb_v2_context_handle
 duckdb_v2_logical_type_handle RegisterTemperatureType(EnvFixture &fx, duckdb_v2_logical_type_handle integer) {
 	duckdb_v2_custom_type_handle custom = nullptr;
 	REQUIRE(duckdb_v2_custom_type_create(fx.factory, &custom, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name_str = CastIdent("TEMPERATURE");
-	REQUIRE(duckdb_v2_custom_type_set_name(custom, &name_str, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name_str = "TEMPERATURE";
+	REQUIRE(duckdb_v2_custom_type_set_name(custom, name_str.data(), name_str.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_custom_type_set_base_type(custom, integer, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_connection_register_custom_type(fx.conn, custom, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_custom_type_destroy(&custom);
 
 	duckdb_v2_logical_type_handle temperature = nullptr;
-	REQUIRE(duckdb_v2_factory_create_type_with_alias(fx.factory, integer, &name_str, &temperature, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_factory_create_type_with_alias(fx.factory, integer, name_str.data(), name_str.size(),
+	                                                 &temperature, nullptr) == DUCKDB_V2_ERROR_NONE);
 	return temperature;
 }
 
@@ -205,7 +202,7 @@ void RegisterTemperatureCasts(duckdb_v2_connection_handle conn, duckdb_v2_logica
 }
 
 // Run a query producing a single VARCHAR cell.
-std::string CastQueryText(duckdb_v2_connection_handle conn, const char *sql) {
+std::string CastQueryText(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_result_handle result = nullptr;
 	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
 	auto chunk = StepChunk(result);
@@ -214,7 +211,7 @@ std::string CastQueryText(duckdb_v2_connection_handle conn, const char *sql) {
 	duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, nullptr);
 	duckdb_v2_vector_view view {};
 	duckdb_v2_vector_get_view(vec, &view, nullptr);
-	auto out = Convert(Convert(static_cast<const duckdb_v2_bytes *>(view.data)[SelAt(view.sel, 0)]));
+	auto out = std::string(Convert(static_cast<const duckdb_v2_bytes *>(view.data)[SelAt(view.sel, 0)]));
 	duckdb_v2_data_chunk_destroy(&chunk);
 	duckdb_v2_result_destroy(&result);
 	return out;
@@ -222,7 +219,7 @@ std::string CastQueryText(duckdb_v2_connection_handle conn, const char *sql) {
 
 // Runs a query to exhaustion, returning the code the failure surfaced with (execution is lazy, so a runtime
 // failure only shows up while stepping).
-DUCKDB_V2_ERROR CastQueryError(duckdb_v2_connection_handle conn, const char *sql) {
+DUCKDB_V2_ERROR CastQueryError(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_result_handle result = nullptr;
 	auto rc = Query(conn, sql, &result);
 	if (rc != DUCKDB_V2_ERROR_NONE) {
@@ -277,12 +274,12 @@ void RegisterReading(duckdb_v2_connection_handle conn, duckdb_v2_logical_type_ha
                      duckdb_v2_logical_type_handle integer) {
 	duckdb_v2_scalar_function_handle function = nullptr;
 	REQUIRE(duckdb_v2_scalar_function_create(FactoryOf(conn), &function, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name = Convert("reading");
-	REQUIRE(duckdb_v2_scalar_function_set_name(function, &name, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name = "reading";
+	REQUIRE(duckdb_v2_scalar_function_set_name(function, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_function_signature_handle sig = nullptr;
 	REQUIRE(duckdb_v2_scalar_function_get_signature(function, &sig, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name_str = CastIdent("t");
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &name_str, temperature, nullptr,
+	std::string_view name_str = "t";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, name_str.data(), name_str.size(), temperature, nullptr,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, integer, nullptr) == DUCKDB_V2_ERROR_NONE);

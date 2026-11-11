@@ -27,7 +27,7 @@ public:
 	      miniblock_index(number_of_miniblocks_per_block - 1), list_of_bitwidths_of_miniblocks(nullptr),
 	      miniblock_offset(number_of_values_in_a_miniblock),
 	      unpacked_data_offset(BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE) {
-		if (!(block_size_in_values % number_of_miniblocks_per_block == 0 &&
+		if (!(block_size_in_values % number_of_miniblocks_per_block == 0 && number_of_values_in_a_miniblock > 0 &&
 		      number_of_values_in_a_miniblock % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE == 0)) {
 			throw InvalidInputException("Parquet file has invalid block sizes for DELTA_BINARY_PACKED");
 		}
@@ -62,6 +62,9 @@ public:
 	void Finalize() {
 		if (miniblock_offset == number_of_values_in_a_miniblock) {
 			return;
+		}
+		if (miniblock_offset > number_of_values_in_a_miniblock) {
+			throw InvalidInputException("Parquet file has invalid miniblocks for DELTA_BINARY_PACKED");
 		}
 		auto data = make_unsafe_uniq_array<int64_t>(number_of_values_in_a_miniblock);
 		GetBatchInternal<int64_t>(data_ptr_cast(data.get()), number_of_values_in_a_miniblock - miniblock_offset);

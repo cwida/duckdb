@@ -2,9 +2,10 @@
 # description: Test autoloading of encodings.
 # group: [extension]
 
-mode skip instable
-
 require-env LOCAL_EXTENSION_REPO
+
+statement ok
+set extension_directory='{TEST_DIR}/encodings_extensions';
 
 statement ok
 set autoload_known_extensions=false
@@ -26,5 +27,20 @@ set autoinstall_known_extensions=true
 statement ok
 set autoinstall_extension_repository='{LOCAL_EXTENSION_REPO}';
 
-statement ok
-FROM read_csv('{DATA_DIR}/csv/test/test.csv', encoding = 'shift_jis')
+query TI
+SELECT "名前", "年齢"
+FROM read_csv('{DATA_DIR}/csv/encodings/shift_jis.csv', encoding = 'shift_jis', header = true)
+WHERE "名前" IN ('山田', '佐藤', '鈴木')
+ORDER BY "年齢";
+----
+佐藤	28
+山田	30
+鈴木	32
+
+query III
+SELECT (SELECT count(*) FROM read_csv('{DATA_DIR}/csv/encodings/shift_jis.csv', encoding = 'shift_jis', header = true)),
+       installed, loaded
+FROM duckdb_extensions()
+WHERE extension_name='encodings';
+----
+20	true	true

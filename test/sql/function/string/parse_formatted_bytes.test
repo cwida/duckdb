@@ -242,10 +242,10 @@ SELECT parse_formatted_bytes('18446744073709 KB');
 18446744073709000
 
 # decimal units reach 2^64 below the naive max/multiplier boundary
-statement error
+query I
 SELECT parse_formatted_bytes('18446744073709551 KB');
 ----
-Invalid Input Error: Memory value out of range: value is too large
+18446744073709551000
 
 statement error
 SELECT parse_formatted_bytes('18446744073709552 KB');

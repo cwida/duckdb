@@ -1,0 +1,22 @@
+# name: test/sql/function/timestamp/date_trunc_fixed_overflow.test
+# description: date_trunc with fixed-width parts near the minimum timestamp
+# group: [timestamp]
+
+foreach part day hour minute second
+
+statement error
+SELECT date_trunc('{part}', make_timestamp(-9223372036854775806));
+----
+<REGEX>:Conversion Error.*Date out of range.*
+
+endloop
+
+query I
+SELECT date_trunc('day', TIMESTAMP '2020-01-01 12:34:56');
+----
+2020-01-01 00:00:00
+
+query I
+SELECT date_trunc('hour', TIMESTAMP '1900-01-01 12:34:56');
+----
+1900-01-01 12:00:00

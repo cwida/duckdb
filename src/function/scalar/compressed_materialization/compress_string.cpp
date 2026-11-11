@@ -1,4 +1,6 @@
 #include "duckdb/common/bswap.hpp"
+#include "duckdb/main/context.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/function/scalar/compressed_materialization_functions.hpp"
 #include "duckdb/function/scalar/compressed_materialization_utils.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
@@ -15,8 +17,14 @@ string StringCompressFunctionName(const LogicalType &result_type) {
 
 template <idx_t LENGTH>
 inline void TemplatedReverseMemCpy(const data_ptr_t &__restrict dest, const const_data_ptr_t &__restrict src) {
-	for (idx_t i = 0; i < LENGTH; i++) {
-		dest[i] = src[LENGTH - 1 - i];
+	idx_t offset = 0;
+	if (LENGTH > sizeof(uint64_t)) {
+		for (; offset + sizeof(uint32_t) <= LENGTH; offset += sizeof(uint32_t)) {
+			Store<uint32_t>(BSwap(Load<uint32_t>(src + LENGTH - offset - sizeof(uint32_t))), dest + offset);
+		}
+	}
+	for (; offset < LENGTH; offset++) {
+		dest[offset] = src[LENGTH - offset - 1];
 	}
 }
 
@@ -75,7 +83,7 @@ inline uint8_t StringCompress(const string_t &input) {
 template <class RESULT_TYPE>
 void StringCompressFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, RESULT_TYPE>(
-	    args.data[0], result, StringCompress<RESULT_TYPE>,
+	    args.data[0], result, [](const string_t &input) { return StringCompress<RESULT_TYPE>(input); },
 #if defined(D_ASSERT_IS_ENABLED)
 	    FunctionErrors::CAN_THROW_RUNTIME_ERROR); // Can only throw a runtime error when assertions are enabled
 #else
@@ -114,7 +122,7 @@ string StringDecompressFunctionName() {
 
 struct StringDecompressLocalState : public FunctionLocalState {
 public:
-	explicit StringDecompressLocalState(ClientContext &context) : allocator(Allocator::Get(context)) {
+	explicit StringDecompressLocalState(Context &context) : allocator(Allocator::Get(context.GetDatabase())) {
 	}
 
 	static unique_ptr<FunctionLocalState> Init(ExpressionState &state, const BoundFunctionExpression &expr,

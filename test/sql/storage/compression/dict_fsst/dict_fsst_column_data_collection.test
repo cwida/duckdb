@@ -1,0 +1,192 @@
+# name: test/sql/storage/compression/dict_fsst/dict_fsst_column_data_collection.test
+# description: Dictionary vectors from storage through materializing operators
+# group: [dict_fsst]
+
+load {TEST_DIR}/dict_fsst_cdc.db
+
+statement ok
+PRAGMA force_compression='dict_fsst'
+
+# a low-NDV string column, a NULL-bearing low-NDV column, and a short inlined low-NDV column
+statement ok
+CREATE TABLE t AS
+SELECT i,
+       'dictionary_value_' || (i % 100) AS d,
+       CASE WHEN i % 11 = 0 THEN NULL ELSE 'n' || (i % 7) END AS n,
+       CASE i % 3 WHEN 0 THEN 'AIR' WHEN 1 THEN 'MAIL' ELSE 'SHIP' END AS mode
+FROM range(300000) t(i)
+
+statement ok
+CHECKPOINT
+
+# pipeline-dependent materialized CTE over the dictionary columns
+query IIIIIII
+WITH m AS MATERIALIZED (SELECT i, d, n, mode FROM t)
+SELECT count(*), count(DISTINCT d), min(d), max(d), count(n), count(DISTINCT n), count(DISTINCT mode)
+FROM m JOIN (SELECT max(i) AS mi FROM m) x ON m.i <= x.mi
+----
+300000	100	dictionary_value_0	dictionary_value_99	272727	7	3
+
+# the dictionary form survives a hop through a second collection
+query IIII
+WITH m1 AS MATERIALIZED (SELECT i, d, n FROM t),
+     m2 AS MATERIALIZED (SELECT i, d, n FROM m1)
+SELECT count(*), count(DISTINCT d), count(n), count(DISTINCT n)
+FROM m2 JOIN (SELECT max(i) AS mi FROM m2) x ON m2.i <= x.mi
+----
+300000	100	272727	7
+
+# every row keeps its own value: spot check an exact row through the materialization
+query III
+WITH m AS MATERIALIZED (SELECT i, d, mode FROM t)
+SELECT i, d, mode FROM m JOIN (SELECT max(i) AS mi FROM m) x ON m.i <= x.mi
+WHERE i IN (0, 123457) ORDER BY i
+----
+0	dictionary_value_0	AIR
+123457	dictionary_value_57	MAIL
+
+# window functions materialize their input payloads
+query IIII
+SELECT count(ld), count(DISTINCT ld), min(ld), max(ld)
+FROM (SELECT lag(d) OVER (ORDER BY i) AS ld FROM t)
+----
+299999	100	dictionary_value_0	dictionary_value_99
+
+query II
+SELECT count(ln), count(DISTINCT ln) FROM (SELECT lag(n) OVER (ORDER BY i) AS ln FROM t)
+----
+272726	7
+
+# cross product rescanning a materialized dictionary-compressed side
+query III
+SELECT count(*), count(t.d), count(DISTINCT t.d)
+FROM range(3) l(x), (SELECT d FROM t LIMIT 50000) t
+----
+150000	150000	100
+
+# dictionary columns mixed with flat chunks in the same collection
+query IIII
+WITH m AS MATERIALIZED (
+	SELECT i, d FROM t WHERE i < 5000
+	UNION ALL
+	SELECT i + 300000, 'flat_' || i FROM range(3000) u(i)
+	UNION ALL
+	SELECT i + 400000, d FROM t WHERE i >= 5000 AND i < 8000
+)
+SELECT count(*), count(DISTINCT d), min(d), max(d)
+FROM m JOIN (SELECT max(i) AS mi FROM m) x ON m.i <= x.mi
+----
+11000	3100	dictionary_value_0	flat_999
+
+# distinct over a materialized dictionary column
+query II
+WITH m AS MATERIALIZED (SELECT d, n FROM t)
+SELECT count(*), min(d) FROM (SELECT DISTINCT d, n FROM m)
+----
+800	dictionary_value_0
+
+# dictionary columns carried through a recursive CTE
+query IIII
+WITH RECURSIVE r(i, d) AS (
+	SELECT i, d FROM t WHERE i < 2500
+	UNION ALL
+	SELECT i + 2500, d FROM r WHERE i < 5000
+)
+SELECT count(*), count(DISTINCT d), min(d), max(d) FROM r
+----
+7500	100	dictionary_value_0	dictionary_value_99
+
+# updates return their rows through collection-based sinks
+query I
+UPDATE t SET d = d || '_u' WHERE i % 50000 = 0
+----
+6
+
+query II
+SELECT count(*), count(DISTINCT d) FROM t WHERE d LIKE '%_u'
+----
+6	1
+
+# the MODE and quantile window cursors page dictionary vectors directly: a majority value wins
+# every moving frame, and a single thread pins the scan order so the counts are exact
+statement ok
+CREATE TABLE t2 AS SELECT i,
+	CASE WHEN i % 3 = 0 THEN 'minor_' || (i % 97) ELSE 'majority_payload_value' END AS x,
+	CASE WHEN i % 11 = 0 THEN NULL WHEN i % 3 = 0 THEN 'minor_' || (i % 97) ELSE 'majority_payload_value' END AS xn
+FROM range(100000) t(i)
+
+statement ok
+CHECKPOINT
+
+statement ok
+SET threads=1
+
+query II
+SELECT count(*), count(*) FILTER (WHERE m = 'majority_payload_value')
+FROM (SELECT mode(x) OVER (ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) AS m FROM t2)
+----
+100000	99998
+
+query II
+SELECT count(*), count(*) FILTER (WHERE m = 'majority_payload_value')
+FROM (SELECT median(x) OVER (ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) AS m FROM t2)
+----
+100000	99999
+
+# NULL dictionary entries exercise the cursor validity checks (wide frames keep the skip list)
+query II
+SELECT count(m), count(*) FILTER (WHERE m = 'majority_payload_value')
+FROM (SELECT median(xn) OVER (ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) AS m FROM t2)
+----
+99999	99999
+
+query II
+SELECT count(m), count(*) FILTER (WHERE m = 'majority_payload_value')
+FROM (SELECT mode(xn) OVER (ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) AS m FROM t2)
+----
+99999	99999
+
+# a narrow frame selects the quantile sort tree, the NULL entries run its nullable build
+query II
+SELECT count(m), count(*) FILTER (WHERE m = 'majority_payload_value')
+FROM (SELECT median(xn) OVER (ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS m FROM t2)
+----
+99999	93939
+
+# a FILTER clause runs the filtered sort tree build over the dictionary pages
+query III
+SELECT count(m), count(DISTINCT m), count(*) FILTER (WHERE m LIKE 'minor%')
+FROM (SELECT median(x) FILTER (WHERE i % 3 = 0) OVER (ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS m FROM t2)
+----
+100000	97	100000
+
+# a two-entry dictionary (one value plus NULL) stays within the compact limit at every vector size
+statement ok
+CREATE TABLE t3 AS SELECT i,
+	CASE WHEN i % 11 = 0 THEN NULL ELSE 'only_dictionary_payload_value' END AS xs
+FROM range(50000) t(i)
+
+statement ok
+CHECKPOINT
+
+query II
+SELECT count(m), count(*) FILTER (WHERE m = 'only_dictionary_payload_value')
+FROM (SELECT mode(xs) OVER (ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) AS m FROM t3)
+----
+49999	49999
+
+# the skip list (wide frame) and the sort tree (narrow frame) both page the two-entry dictionary
+query II
+SELECT count(m), count(*) FILTER (WHERE m = 'only_dictionary_payload_value')
+FROM (SELECT median(xs) OVER (ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) AS m FROM t3)
+----
+49999	49999
+
+query II
+SELECT count(m), count(*) FILTER (WHERE m = 'only_dictionary_payload_value')
+FROM (SELECT median(xs) OVER (ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS m FROM t3)
+----
+49999	49999
+
+statement ok
+RESET threads

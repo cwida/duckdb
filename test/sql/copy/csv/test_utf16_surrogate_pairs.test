@@ -1,0 +1,57 @@
+# name: test/sql/copy/csv/test_utf16_surrogate_pairs.test
+# description: UTF-16 surrogate pairs (characters outside the BMP) are decoded
+# group: [csv]
+
+statement ok
+COPY (SELECT from_hex('fffe760061006c00750065000a006100620063006400650066006700680069006a006b006c006d003dd800de0a00')) TO '{TEST_DIR}/utf16_pair.csv' (FORMAT BLOB)
+
+query I
+SELECT value FROM read_csv('{TEST_DIR}/utf16_pair.csv', encoding = 'utf-16')
+----
+abcdefghijklm😀
+
+loop bs 23 40
+
+query I
+SELECT value FROM read_csv('{TEST_DIR}/utf16_pair.csv', encoding = 'utf-16', buffer_size = {bs})
+----
+abcdefghijklm😀
+
+endloop
+
+statement ok
+COPY (SELECT from_hex('fffe760061006c00750065000a003dd800de3dd800de780079007a003dd800de0a00')) TO '{TEST_DIR}/utf16_pair2.csv' (FORMAT BLOB)
+
+loop bs 23 40
+
+query I
+SELECT value FROM read_csv('{TEST_DIR}/utf16_pair2.csv', encoding = 'utf-16', buffer_size = {bs})
+----
+😀😀xyz😀
+
+endloop
+
+# lone high surrogate, lone low surrogate and truncated pair
+statement ok
+COPY (SELECT from_hex('fffe760061006c00750065000a00610062003dd863000a00')) TO '{TEST_DIR}/utf16_lone_high.csv' (FORMAT BLOB)
+
+statement error
+FROM read_csv('{TEST_DIR}/utf16_lone_high.csv', encoding = 'utf-16')
+----
+File is not utf-16 encoded
+
+statement ok
+COPY (SELECT from_hex('fffe760061006c00750065000a006100620000de63000a00')) TO '{TEST_DIR}/utf16_lone_low.csv' (FORMAT BLOB)
+
+statement error
+FROM read_csv('{TEST_DIR}/utf16_lone_low.csv', encoding = 'utf-16')
+----
+File is not utf-16 encoded
+
+statement ok
+COPY (SELECT from_hex('fffe760061006c00750065000a00610062003dd8')) TO '{TEST_DIR}/utf16_truncated.csv' (FORMAT BLOB)
+
+statement error
+FROM read_csv('{TEST_DIR}/utf16_truncated.csv', encoding = 'utf-16')
+----
+File is not utf-16 encoded

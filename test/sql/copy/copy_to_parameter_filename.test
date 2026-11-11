@@ -1,0 +1,29 @@
+# name: test/sql/copy/copy_to_parameter_filename.test
+# description: COPY TO with a prepared statement parameter as the filename
+# group: [copy]
+
+statement ok
+PREPARE q AS COPY (SELECT 42 AS x) TO $1 (FORMAT csv);
+
+statement error
+EXECUTE q(42);
+----
+Binder Error: Unsupported parameter type for filename
+
+statement error
+EXECUTE q('00000000-0000-0000-0000-000000000000'::UUID);
+----
+Binder Error: Unsupported parameter type for filename
+
+statement error
+EXECUTE q(NULL::VARCHAR);
+----
+NULL is not supported as a valid option
+
+statement ok
+EXECUTE q('{TEMP_DIR}/copy_to_parameter.csv');
+
+query I
+SELECT x FROM read_csv('{TEMP_DIR}/copy_to_parameter.csv');
+----
+42

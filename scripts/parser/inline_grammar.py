@@ -20,6 +20,7 @@ FILENAME_TO_CATEGORY = {
     "column_name_keyword.list": "COL_NAME_KEYWORD",
     "func_name_keyword.list": "TYPE_FUNC_NAME_KEYWORD",
     "type_name_keyword.list": "TYPE_FUNC_NAME_KEYWORD",
+    "bare_label_keyword.list": "BARE_LABEL_KEYWORD",
 }
 
 # Maps category names to their C++ map variable names
@@ -29,6 +30,7 @@ CPP_MAP_NAMES = {
     "COL_NAME_KEYWORD": "colname_keyword_map",
     "TYPE_FUNC_NAME_KEYWORD": "typefunc_keyword_map",
     "TYPE_NAME_KEYWORD": "typename_keyword_map",
+    "BARE_LABEL_KEYWORD": "bare_label_keyword_map",
 }
 
 
@@ -50,7 +52,8 @@ def write_keyword_map(keyword_sets):
         f.write("\tauto &unreserved_keyword_map = keyword_maps.unreserved_keyword_map;\n")
         f.write("\tauto &colname_keyword_map = keyword_maps.colname_keyword_map;\n")
         f.write("\tauto &typefunc_keyword_map = keyword_maps.typefunc_keyword_map;\n")
-        f.write("\tauto &typename_keyword_map = keyword_maps.typename_keyword_map;\n\n")
+        f.write("\tauto &typename_keyword_map = keyword_maps.typename_keyword_map;\n")
+        f.write("\tauto &bare_label_keyword_map = keyword_maps.bare_label_keyword_map;\n\n")
 
         num_categories = len(keyword_sets)
         for i, (category, keywords) in enumerate(keyword_sets.items()):
@@ -352,6 +355,14 @@ def load_all_rules():
             keyword_sets[category].add(kw)
             if filepath.name == "type_name_keyword.list":
                 keyword_sets["TYPE_NAME_KEYWORD"].add(kw)
+
+    # the bare-label classification is orthogonal: every entry must also be an unreserved or column-name keyword
+    bare_label_candidates = keyword_sets["UNRESERVED_KEYWORD"] | keyword_sets["COL_NAME_KEYWORD"]
+    invalid_bare_labels = sorted(keyword_sets["BARE_LABEL_KEYWORD"] - bare_label_candidates)
+    for kw in invalid_bare_labels:
+        print(f"Bare label keyword '{kw}' is not an unreserved or column-name keyword")
+    if invalid_bare_labels:
+        exit(1)
 
     with open(statements_dir / "common.gram", 'r') as f:
         file_content = f.read()

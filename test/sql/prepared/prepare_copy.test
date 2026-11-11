@@ -32,3 +32,43 @@ query I
 select i from '{TEST_DIR}/res2.csv' tbl(i);
 ----
 42
+
+statement ok
+CREATE TABLE t (a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1, 2);
+
+statement ok
+PREPARE q3 AS COPY (SELECT * FROM t) TO '{TEST_DIR}/res3.csv' (FORMAT CSV, DELIMITER ?);
+
+statement ok
+EXECUTE q3('|');
+
+query I
+SELECT trim(replace(content, chr(10), ' ')) FROM read_text('{TEST_DIR}/res3.csv');
+----
+a|b 1|2
+
+statement ok
+PREPARE q4 AS COPY t TO '{TEST_DIR}/res4.csv' (FORMAT CSV, HEADER $1, DELIMITER $2);
+
+statement ok
+EXECUTE q4(false, ';');
+
+query I
+SELECT trim(replace(content, chr(10), ' ')) FROM read_text('{TEST_DIR}/res4.csv');
+----
+1;2
+
+statement ok
+PREPARE q5 AS COPY t FROM '{TEST_DIR}/res3.csv' (FORMAT CSV, DELIMITER ?);
+
+statement ok
+EXECUTE q5('|');
+
+query II
+SELECT * FROM t ORDER BY ALL;
+----
+1	2
+1	2

@@ -1,0 +1,363 @@
+# name: test/sql/subquery/scalar/correlated_grouped_expression.test
+# description: A correlated subquery can reference an expression the enclosing query groups by
+# group: [scalar]
+
+statement ok
+CREATE TABLE orders(order_id INT, created_at TIMESTAMP);
+
+statement ok
+INSERT INTO orders VALUES (1, '2024-01-01 10:00'), (2, '2024-01-01 12:00'), (3, '2024-01-02 09:00'), (4, NULL);
+
+statement ok
+CREATE TABLE stores(day DATE, is_open INT);
+
+statement ok
+INSERT INTO stores VALUES ('2024-01-01', 1), ('2024-01-01', 1), ('2024-01-02', 0);
+
+query III
+SELECT o.created_at::date AS day, count(*) AS orders,
+       (SELECT sum(s.is_open) FROM stores s WHERE s.day = o.created_at::date) AS open_stores
+FROM orders o
+GROUP BY 1
+ORDER BY 1 NULLS LAST;
+----
+2024-01-01	2	2
+2024-01-02	1	0
+NULL	1	NULL
+
+statement ok
+CREATE TABLE t(x INT);
+
+statement ok
+INSERT INTO t VALUES (-1), (1), (1), (2), (NULL);
+
+query II
+SELECT x::BIGINT, (SELECT x::BIGINT) FROM t GROUP BY 1 ORDER BY 1 NULLS LAST;
+----
+-1	-1
+1	1
+2	2
+NULL	NULL
+
+query II
+SELECT abs(x), (SELECT abs(x)) FROM t GROUP BY 1 ORDER BY 1 NULLS LAST;
+----
+1	1
+2	2
+NULL	NULL
+
+query II
+SELECT x + 1, (SELECT x + 1) FROM t GROUP BY 1 ORDER BY 1 NULLS LAST;
+----
+0	0
+2	2
+3	3
+NULL	NULL
+
+query II
+SELECT x::BIGINT, (SELECT 1 WHERE x::BIGINT > 0) FROM t GROUP BY 1 ORDER BY 1 NULLS LAST;
+----
+-1	NULL
+1	1
+2	1
+NULL	NULL
+
+# the group is nested inside a larger expression
+query II
+SELECT x::BIGINT, (SELECT x::BIGINT * 10 + 1) FROM t GROUP BY 1 ORDER BY 1 NULLS LAST;
+----
+-1	-9
+1	11
+2	21
+NULL	NULL
+
+query II
+SELECT x::BIGINT, (SELECT x::BIGINT) FROM t GROUP BY x::BIGINT ORDER BY 1 NULLS LAST;
+----
+-1	-1
+1	1
+2	2
+NULL	NULL
+
+query II
+SELECT x::BIGINT AS g, (SELECT x::BIGINT) FROM t GROUP BY g ORDER BY 1 NULLS LAST;
+----
+-1	-1
+1	1
+2	2
+NULL	NULL
+
+# qualified references
+query II
+SELECT t.x::BIGINT, (SELECT t.x::BIGINT) FROM t GROUP BY 1 ORDER BY 1 NULLS LAST;
+----
+-1	-1
+1	1
+2	2
+NULL	NULL
+
+# two levels of nesting
+query II
+SELECT x::BIGINT, (SELECT (SELECT x::BIGINT)) FROM t GROUP BY 1 ORDER BY 1 NULLS LAST;
+----
+-1	-1
+1	1
+2	2
+NULL	NULL
+
+# HAVING with a subquery referencing the group
+query I
+SELECT x::BIGINT FROM t GROUP BY 1 HAVING (SELECT x::BIGINT > 0) ORDER BY 1;
+----
+1
+2
+
+# an inner column of the same name shadows the outer one, so the expression is not the group
+statement ok
+CREATE TABLE u(x INT);
+
+statement ok
+INSERT INTO u VALUES (5);
+
+query II
+SELECT x::BIGINT, (SELECT x::BIGINT FROM u) FROM t GROUP BY 1 ORDER BY 1 NULLS LAST;
+----
+-1	5
+1	5
+2	5
+NULL	5
+
+# an expression that mixes the group with inner columns
+query II
+SELECT x::BIGINT, (SELECT max(t.x::BIGINT + u.x) FROM u) FROM t GROUP BY 1 ORDER BY 1 NULLS LAST;
+----
+-1	4
+1	6
+2	7
+NULL	NULL
+
+# an expression that is not grouped by still cannot reference the ungrouped column
+statement error
+SELECT x::BIGINT, (SELECT x::INTEGER) FROM t GROUP BY 1;
+----
+must appear in the GROUP BY clause
+
+statement error
+SELECT x::BIGINT, (SELECT abs(x)) FROM t GROUP BY 1;
+----
+must appear in the GROUP BY clause
+
+# lambda parameters are not columns of the enclosing query
+query II
+SELECT x::BIGINT, (SELECT list_transform([1, 2], lambda x: x::BIGINT)) FROM t GROUP BY 1 ORDER BY 1 NULLS LAST;
+----
+-1	[1, 2]
+1	[1, 2]
+2	[1, 2]
+NULL	[1, 2]
+
+# grouping sets: the group is NULL in the sets that do not contain it
+query III
+SELECT x::BIGINT, count(*), (SELECT x::BIGINT) FROM t GROUP BY ROLLUP(1) ORDER BY 1 NULLS LAST, 2;
+----
+-1	1	-1
+1	2	1
+2	1	2
+NULL	1	NULL
+NULL	5	NULL
+
+query IIII
+SELECT x::BIGINT, abs(x), (SELECT x::BIGINT), (SELECT abs(x)) FROM t GROUP BY GROUPING SETS ((1), (2)) ORDER BY 1 NULLS LAST, 2 NULLS LAST;
+----
+-1	NULL	-1	NULL
+1	NULL	1	NULL
+2	NULL	2	NULL
+NULL	1	NULL	1
+NULL	2	NULL	2
+NULL	NULL	NULL	NULL
+NULL	NULL	NULL	NULL
+
+# collated group
+statement ok
+CREATE TABLE strs(s VARCHAR);
+
+statement ok
+INSERT INTO strs VALUES ('a'), ('B'), ('b'), (NULL);
+
+query III
+SELECT lower(s) COLLATE NOCASE AS g, count(*), (SELECT lower(s) COLLATE NOCASE) FROM strs GROUP BY 1 ORDER BY 1 NULLS LAST;
+----
+a	1	a
+b	2	b
+NULL	1	NULL
+
+# ---------------------------------------------------------------------------
+# result correctness: the subquery must see the value of the group of each output row
+# ---------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE sales(id INT, ts TIMESTAMP, region VARCHAR, amount INT);
+
+statement ok
+INSERT INTO sales VALUES
+ (1, '2024-01-01 08:00', 'east', 10), (2, '2024-01-01 17:00', 'east', 20), (3, '2024-01-01 12:00', 'west', 30),
+ (4, '2024-01-02 09:00', 'east', 40), (5, '2024-01-02 20:00', 'west', 50), (6, '2024-01-02 21:00', 'west', 60),
+ (7, '2024-01-03 10:00', 'east', 70), (8, NULL, 'east', 80), (9, '2024-01-03 11:00', NULL, 90);
+
+statement ok
+CREATE TABLE targets(day DATE, region VARCHAR, target INT);
+
+statement ok
+INSERT INTO targets VALUES
+ ('2024-01-01', 'east', 25), ('2024-01-01', 'west', 35), ('2024-01-02', 'east', 45), ('2024-01-02', 'west', 100),
+ ('2024-01-03', 'east', 60), ('2024-01-03', 'west', 10), (NULL, 'east', 1);
+
+# two group expressions, both used in the subquery's WHERE
+query IIII
+SELECT s.ts::DATE AS day, upper(s.region) AS r, sum(s.amount) AS total,
+       (SELECT t.target FROM targets t WHERE t.day = s.ts::DATE AND upper(t.region) = upper(s.region)) AS target
+FROM sales s GROUP BY 1, 2 ORDER BY 1 NULLS LAST, 2 NULLS LAST;
+----
+2024-01-01	EAST	30	25
+2024-01-01	WEST	30	35
+2024-01-02	EAST	40	45
+2024-01-02	WEST	110	100
+2024-01-03	EAST	70	60
+2024-01-03	NULL	90	NULL
+NULL	EAST	80	NULL
+
+# aggregates over several matching rows, and a comparison against the group
+query IIII
+SELECT ts::DATE AS day, count(*) AS n,
+       (SELECT sum(t.target) FROM targets t WHERE t.day = ts::DATE) AS day_target,
+       (SELECT count(*) FROM targets t WHERE t.day < ts::DATE) AS earlier_days
+FROM sales GROUP BY 1 ORDER BY 1 NULLS LAST;
+----
+2024-01-01	3	60	0
+2024-01-02	3	145	2
+2024-01-03	2	70	4
+NULL	1	NULL	0
+
+# HAVING compares an outer aggregate against a correlated subquery over the group
+query II
+SELECT ts::DATE AS day, sum(amount) AS total
+FROM sales GROUP BY 1
+HAVING sum(amount) > (SELECT sum(t.target) FROM targets t WHERE t.day = ts::DATE)
+ORDER BY 1;
+----
+2024-01-02	150
+2024-01-03	160
+
+# rows with different values fall into the same group: the subquery sees the group value, not a row value
+query IIIII
+SELECT s.amount // 25 AS bucket, count(*) AS n, list(s.id ORDER BY s.id) AS ids,
+       (SELECT s.amount // 25 * 25) AS lower_bound,
+       (SELECT count(*) FROM sales s2 WHERE s2.amount // 25 = s.amount // 25) AS same_bucket
+FROM sales s GROUP BY 1 ORDER BY 1;
+----
+0	2	[1, 2]	0	2
+1	2	[3, 4]	25	2
+2	3	[5, 6, 7]	50	3
+3	2	[8, 9]	75	2
+
+# many rows per group
+query IIIII
+SELECT i % 5 AS k, count(*) AS n, sum(i) AS s,
+       (SELECT sum(j) FROM range(10) r(j) WHERE j % 5 = i % 5) AS other_sum,
+       (SELECT list(j ORDER BY j) FROM range(10) r(j) WHERE j % 5 = i % 5) AS other_list
+FROM range(100) t(i) GROUP BY 1 ORDER BY 1;
+----
+0	20	950	5	[0, 5]
+1	20	970	7	[1, 6]
+2	20	990	9	[2, 7]
+3	20	1010	11	[3, 8]
+4	20	1030	13	[4, 9]
+
+# EXISTS, IN and ANY subqueries over the groups
+query IIIII
+SELECT s.ts::DATE AS day, upper(s.region) AS r,
+       EXISTS (SELECT 1 FROM targets t WHERE t.day = s.ts::DATE AND t.target > 40) AS big_target,
+       s.ts::DATE IN (SELECT t.day FROM targets t WHERE upper(t.region) = upper(s.region)) AS has_target,
+       upper(s.region) = ANY (SELECT upper(t.region) FROM targets t WHERE t.day = s.ts::DATE) AS region_target
+FROM sales s GROUP BY 1, 2 ORDER BY 1 NULLS LAST, 2 NULLS LAST;
+----
+2024-01-01	EAST	false	true	true
+2024-01-01	WEST	false	true	true
+2024-01-02	EAST	true	true	true
+2024-01-02	WEST	true	true	true
+2024-01-03	EAST	true	true	true
+2024-01-03	NULL	true	false	NULL
+NULL	EAST	false	NULL	false
+
+# group expression over a join
+query IIIII
+SELECT s.ts::DATE AS day, t.region, sum(s.amount) AS total, max(t.target) AS target,
+       (SELECT count(*) FROM targets t2 WHERE t2.day = s.ts::DATE) AS targets_that_day
+FROM sales s JOIN targets t ON t.day = s.ts::DATE AND t.region = s.region
+GROUP BY 1, 2 ORDER BY 1, 2;
+----
+2024-01-01	east	30	25	2
+2024-01-01	west	30	35	2
+2024-01-02	east	40	45	2
+2024-01-02	west	110	100	2
+2024-01-03	east	70	60	2
+
+# ROLLUP: the subquery sees NULL for a group that is rolled up
+query IIII
+SELECT s.ts::DATE AS day, upper(s.region) AS r, sum(s.amount) AS total,
+       (SELECT sum(t.target) FROM targets t WHERE t.day IS NOT DISTINCT FROM s.ts::DATE AND upper(t.region) IS NOT DISTINCT FROM upper(s.region)) AS target
+FROM sales s WHERE s.ts IS NOT NULL AND s.region IS NOT NULL
+GROUP BY ROLLUP(1, 2) ORDER BY 1 NULLS LAST, 2 NULLS LAST;
+----
+2024-01-01	EAST	30	25
+2024-01-01	WEST	30	35
+2024-01-01	NULL	60	NULL
+2024-01-02	EAST	40	45
+2024-01-02	WEST	110	100
+2024-01-02	NULL	150	NULL
+2024-01-03	EAST	70	60
+2024-01-03	NULL	70	NULL
+NULL	NULL	280	NULL
+
+# grouping by the alias, ordering by the subquery result
+query II
+SELECT ts::DATE AS day, (SELECT t.target FROM targets t WHERE t.day = ts::DATE AND t.region = 'east') AS east_target
+FROM sales GROUP BY day ORDER BY east_target NULLS LAST;
+----
+2024-01-01	25
+2024-01-02	45
+2024-01-03	60
+NULL	NULL
+
+# the subquery itself groups, keyed on the outer group
+query II
+SELECT ts::DATE AS day,
+       (SELECT list(t.target ORDER BY t.target) FROM targets t WHERE t.day = ts::DATE GROUP BY t.day) AS targets
+FROM sales GROUP BY 1 ORDER BY 1 NULLS LAST;
+----
+2024-01-01	[25, 35]
+2024-01-02	[45, 100]
+2024-01-03	[10, 60]
+NULL	NULL
+
+# the nested subquery's column resolves in the inner scope, so the expression does not match the outer group
+query I
+SELECT (SELECT x + (SELECT y) FROM (SELECT 100 AS y) u)
+FROM (SELECT 1 AS x, 2 AS y) t
+GROUP BY x, x + (SELECT y);
+----
+101
+
+# a subquery hidden in a macro also resolves in the inner scope
+statement ok
+CREATE TABLE lookup AS SELECT 2 AS v;
+
+statement ok
+CREATE MACRO lookup_v() AS (SELECT v FROM lookup);
+
+query I
+SELECT (WITH lookup AS (SELECT 100 AS v) SELECT x + lookup_v())
+FROM (VALUES (1)) t(x)
+GROUP BY x, x + lookup_v();
+----
+101

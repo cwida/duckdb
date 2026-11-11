@@ -97,3 +97,81 @@ ORDER BY c1;
 4	010	1	NULL
 5	110	0	110
 6	NULL	NULL	NULL
+
+# The argument ordering must not change the result when it agrees with the window ordering
+# on the data, even when it is not a syntactic prefix of it.
+
+statement ok
+CREATE TABLE issue25699(id INTEGER, x VARCHAR);
+
+statement ok
+INSERT INTO issue25699 VALUES (1, 'b'), (2, 'a');
+
+query IIII
+SELECT
+	id,
+	x,
+	LEAD(x ORDER BY x DESC, id DESC) OVER w,
+	LEAD(x ORDER BY x DESC, id ASC) OVER w
+FROM issue25699
+WINDOW w AS (ORDER BY x DESC, id ASC ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING)
+ORDER BY id;
+----
+1	b	a	a
+2	a	NULL	NULL
+
+# Frames that do not contain the own row: the offset is counted from the frame edge.
+
+statement ok
+CREATE TABLE leadlag_frames(id INTEGER, x VARCHAR);
+
+statement ok
+INSERT INTO leadlag_frames VALUES (1, 'e'), (2, 'd'), (3, 'c'), (4, 'b'), (5, 'a');
+
+query IIIIIIIII
+SELECT
+	id,
+	LEAD(x ORDER BY x DESC, id ASC, id ASC) OVER w1,
+	LEAD(x, 2 ORDER BY x DESC, id ASC, id ASC) OVER w1,
+	LEAD(x, 0 ORDER BY x DESC, id ASC, id ASC) OVER w1,
+	LAG(x ORDER BY x DESC, id ASC, id ASC) OVER w1,
+	LEAD(x ORDER BY x DESC, id ASC, id ASC) OVER w2,
+	LAG(x ORDER BY x DESC, id ASC, id ASC) OVER w2,
+	LEAD(x ORDER BY x DESC, id ASC, id ASC) OVER w3,
+	LAG(x, 2 ORDER BY x DESC, id ASC, id ASC) OVER w3
+FROM leadlag_frames
+WINDOW w1 AS (ORDER BY x DESC, id ASC ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING),
+       w2 AS (ORDER BY x DESC, id ASC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
+       w3 AS (ORDER BY x DESC, id ASC ROWS BETWEEN 2 FOLLOWING AND 4 FOLLOWING)
+ORDER BY id;
+----
+1	d	c	e	NULL	NULL	NULL	c	NULL
+2	c	b	d	NULL	NULL	e	b	NULL
+3	b	a	c	NULL	NULL	d	a	NULL
+4	a	NULL	b	NULL	NULL	c	NULL	NULL
+5	NULL	NULL	a	NULL	NULL	b	NULL	NULL
+
+# The same results must come out of the shared-ordering fast path.
+
+query IIIIIIIII
+SELECT
+	id,
+	LEAD(x ORDER BY x DESC, id ASC) OVER w1,
+	LEAD(x, 2 ORDER BY x DESC, id ASC) OVER w1,
+	LEAD(x, 0 ORDER BY x DESC, id ASC) OVER w1,
+	LAG(x ORDER BY x DESC, id ASC) OVER w1,
+	LEAD(x ORDER BY x DESC, id ASC) OVER w2,
+	LAG(x ORDER BY x DESC, id ASC) OVER w2,
+	LEAD(x ORDER BY x DESC, id ASC) OVER w3,
+	LAG(x, 2 ORDER BY x DESC, id ASC) OVER w3
+FROM leadlag_frames
+WINDOW w1 AS (ORDER BY x DESC, id ASC ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING),
+       w2 AS (ORDER BY x DESC, id ASC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
+       w3 AS (ORDER BY x DESC, id ASC ROWS BETWEEN 2 FOLLOWING AND 4 FOLLOWING)
+ORDER BY id;
+----
+1	d	c	e	NULL	NULL	NULL	c	NULL
+2	c	b	d	NULL	NULL	e	b	NULL
+3	b	a	c	NULL	NULL	d	a	NULL
+4	a	NULL	b	NULL	NULL	c	NULL	NULL
+5	NULL	NULL	a	NULL	NULL	b	NULL	NULL

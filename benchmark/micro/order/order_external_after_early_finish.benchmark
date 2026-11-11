@@ -1,0 +1,31 @@
+# name: benchmark/micro/order/order_external_after_early_finish.benchmark
+# description: Sort that goes external while the thread scanning the last, wide row group sinks, after the other threads finished their runs in memory
+# group: [order]
+
+name Order By (external after early finish)
+group micro
+subgroup order
+
+cache order_external_after_early_finish.duckdb
+
+load
+CREATE TABLE t AS
+SELECT hash(i) AS k,
+       CASE WHEN i < 64 * 122880
+            THEN md5(i::VARCHAR) || md5((i + 1)::VARCHAR) || md5((i + 2)::VARCHAR) || md5((i + 3)::VARCHAR)
+            ELSE repeat(md5(i::VARCHAR), 200)
+       END AS p
+FROM range(65 * 122880) r(i);
+
+init
+set threads=8;
+set temp_directory='${BENCHMARK_DIR}/order_external_after_early_finish.duckdb.tmp';
+set memory_limit='4GB';
+
+run
+SELECT k, strlen(p) FROM (SELECT k, p FROM t ORDER BY k LIMIT 3 OFFSET 7987197)
+
+result II
+18446740747662269625	128
+18446741099613652814	128
+18446742070018747821	128

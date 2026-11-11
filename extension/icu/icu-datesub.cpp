@@ -4,6 +4,7 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/enums/date_part_specifier.hpp"
 #include "duckdb/common/operator/subtract.hpp"
+#include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
 namespace duckdb {
@@ -30,16 +31,25 @@ struct ICUCalendarSub : public ICUDateFunc {
 		return SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(end_date.value, start_date.value);
 	}
 
+	template <int64_t MICROS_PER_UNIT>
+	static int64_t SubtractUnits(timestamp_tz_t start_date, timestamp_tz_t end_date) {
+		int64_t delta_us;
+		if (TrySubtractOperator::Operation(end_date.value, start_date.value, delta_us)) {
+			return delta_us / MICROS_PER_UNIT;
+		}
+		return Interval::GetDifferenceInUnits(start_date.value, end_date.value, MICROS_PER_UNIT);
+	}
+
 	static int64_t SubtractMillisecond(Calendar *calendar, timestamp_tz_t start_date, timestamp_tz_t end_date) {
-		return SubtractMicrosecond(calendar, start_date, end_date) / Interval::MICROS_PER_MSEC;
+		return SubtractUnits<Interval::MICROS_PER_MSEC>(start_date, end_date);
 	}
 
 	static int64_t SubtractSecond(Calendar *calendar, timestamp_tz_t start_date, timestamp_tz_t end_date) {
-		return SubtractMicrosecond(calendar, start_date, end_date) / Interval::MICROS_PER_SEC;
+		return SubtractUnits<Interval::MICROS_PER_SEC>(start_date, end_date);
 	}
 
 	static int64_t SubtractMinute(Calendar *calendar, timestamp_tz_t start_date, timestamp_tz_t end_date) {
-		return SubtractMicrosecond(calendar, start_date, end_date) / Interval::MICROS_PER_MINUTE;
+		return SubtractUnits<Interval::MICROS_PER_MINUTE>(start_date, end_date);
 	}
 
 	static int64_t SubtractHour(Calendar *calendar, timestamp_tz_t start_date, timestamp_tz_t end_date) {
@@ -157,8 +167,10 @@ struct ICUCalendarSub : public ICUDateFunc {
 		set.AddFunction(GetFunction<timestamp_tz_t>(LogicalType::TIMESTAMP_TZ));
 		// throws for unrecognized part specifiers and for dates that overflow the timestamp range
 		set.SetFallible();
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		set.SetArgProperties(1, ArgProperties().NonIncreasing());
 		set.SetArgProperties(2, ArgProperties().NonDecreasing());
+		set.SetStatisticsCallback(StatisticsPropagator::PropagateFiniteMonotoneBounds);
 		loader.RegisterFunction(set);
 	}
 };
@@ -209,6 +221,20 @@ ICUDateFunc::part_sub_t ICUDateFunc::SubtractFactory(DatePartSpecifier type) {
 // MS-SQL differences can be computed using ICU by truncating both arguments
 // to the desired part precision and then applying ICU subtraction/difference
 struct ICUCalendarDiff : public ICUDateFunc {
+	static unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input) {
+		auto part_value = input.TryGetConstant(0);
+		if (part_value && !part_value->IsNull()) {
+			DatePartSpecifier part;
+			if (TryGetDatePartSpecifier(part_value->GetValue<string>(), part) &&
+			    (part == DatePartSpecifier::DECADE || part == DatePartSpecifier::CENTURY ||
+			     part == DatePartSpecifier::MILLENNIUM)) {
+				// date_diff is not monotone for these parts because ICU years skip year 0 at the BC/AD boundary
+				input.GetBoundFunction().SetArgProperties({});
+			}
+		}
+		return ICUDateFunc::Bind(input);
+	}
+
 	static int64_t DifferenceEra(Calendar *calendar, timestamp_tz_t start_date, timestamp_tz_t end_date) {
 		SetTime(calendar, start_date);
 		const auto start_era = ExtractField(calendar, CAL_ERA);
@@ -327,8 +353,10 @@ struct ICUCalendarDiff : public ICUDateFunc {
 		set.AddFunction(GetFunction<timestamp_tz_ns_t>(LogicalType::TIMESTAMP_TZ_NS));
 		// throws for unrecognized part specifiers and for dates that overflow the timestamp range
 		set.SetFallible();
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		set.SetArgProperties(1, ArgProperties().NonIncreasing());
 		set.SetArgProperties(2, ArgProperties().NonDecreasing());
+		set.SetStatisticsCallback(StatisticsPropagator::PropagateFiniteMonotoneBounds);
 		loader.RegisterFunction(set);
 	}
 };

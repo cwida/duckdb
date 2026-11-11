@@ -1,0 +1,136 @@
+# name: test/sql/parser/reject_accidental_expression_syntax.test
+# description: Expression syntax the grammar accepted by accident is rejected
+# group: [parser]
+
+# NOT before an operator that is already negated
+statement error
+SELECT 'a' NOT !~~ 'b';
+----
+already negated
+
+statement error
+SELECT 'a' NOT !~~* 'b';
+----
+already negated
+
+statement error
+SELECT 'a' NOT !~ 'b';
+----
+already negated
+
+statement error
+SELECT 'a' NOT !~* 'b';
+----
+already negated
+
+query IIIII
+SELECT 'a' NOT LIKE 'b', 'a' NOT ILIKE 'b', 'a' NOT GLOB 'b', 'a' NOT SIMILAR TO 'b', 'a' !~~ 'b';
+----
+true	true	true	true	true
+
+# the "-" end of a slice is only a placeholder in front of a step
+statement error
+SELECT a[1:-] FROM (SELECT [1, 2, 3] a);
+----
+Parser Error: syntax error at or near "]"
+
+statement error
+SELECT a[:-] FROM (SELECT [1, 2, 3] a);
+----
+Parser Error: syntax error at or near "]"
+
+query IIII
+SELECT a[:-:2], a[2:-1], a[:-2], a[-2:] FROM (SELECT [1, 2, 3] a);
+----
+[1, 3]	[2, 3]	[1, 2]	[2, 3]
+
+# named arguments of a function call have no type
+statement error
+SELECT abs(x INT := 1);
+----
+Parser Error: syntax error at or near "INT"
+
+statement error
+SELECT * FROM range(x INT := 3);
+----
+Parser Error: syntax error at or near "INT"
+
+statement ok
+CREATE TEMP MACRO m(a INT := 1) AS a + 1;
+
+query II
+SELECT m(), m(a := 5);
+----
+2	6
+
+# a number has at most one dot, and none in its exponent
+statement error
+SELECT 1.2.3;
+----
+Parser Error: syntax error at or near "1.2.3"
+
+statement error
+SELECT 1..2;
+----
+Parser Error: syntax error at or near "1..2"
+
+statement error
+SELECT .5.;
+----
+Parser Error: syntax error at or near ".5."
+
+# a dot after such a number does not start a method call or field access
+statement error
+SELECT 1.5.abs();
+----
+Parser Error: syntax error at or near "1.5."
+
+statement error
+SELECT 1e5.abs();
+----
+Parser Error: syntax error at or near "1e5."
+
+statement error
+SELECT 1..abs();
+----
+Parser Error: syntax error at or near "1.."
+
+statement error
+SELECT 1.5.x;
+----
+Parser Error: syntax error at or near "1.5."
+
+query IIIIII
+SELECT 1.5, .5, 1., 1e5, 1.5e-3, 1_000.5;
+----
+1.5	0.5	1	100000.0	0.0015	1000.5
+
+# a prefixed string literal is not an alias
+statement error
+SELECT 'abc' x'41';
+----
+Parser Error: syntax error at or near "x'41'"
+
+statement error
+SELECT 1 e'ab';
+----
+Parser Error: syntax error at or near "e'ab'"
+
+statement ok
+CREATE TABLE t (a INTEGER);
+
+statement error
+SELECT * FROM t x'41';
+----
+Parser Error: syntax error at or near "x'41'"
+
+query IIII
+SELECT x'41', e'ab', b'101', n'abc';
+----
+A	ab	101	abc
+
+# an empty IN list is accepted on purpose: () is an empty tuple, so membership is false
+query II
+SELECT 1 IN (), 1 NOT IN ();
+----
+false	true

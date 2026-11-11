@@ -1,0 +1,33 @@
+# name: test/sql/alter/alter_table_if_exists_tostring.test
+# description: ALTER TABLE IF EXISTS keeps IF EXISTS when the statement is printed and parsed again
+# group: [alter]
+
+statement ok
+SET debug_verify_statement='reparse_statement';
+
+statement ok
+ALTER TABLE IF EXISTS nope ADD CONSTRAINT c CHECK (a > 0);
+
+statement ok
+ALTER TABLE IF EXISTS nope ADD PRIMARY KEY (a);
+
+statement ok
+ALTER TABLE IF EXISTS nope SET PARTITIONED BY (a);
+
+statement ok
+ALTER TABLE IF EXISTS nope RESET PARTITIONED BY;
+
+statement ok
+ALTER TABLE IF EXISTS nope SET SORTED BY (a);
+
+statement ok
+ALTER TABLE IF EXISTS nope SET (opt = 1);
+
+statement ok
+ALTER TABLE IF EXISTS nope RESET (opt);
+
+# without IF EXISTS the table must exist
+statement error
+ALTER TABLE nope ADD PRIMARY KEY (a);
+----
+Catalog Error: Table with name nope does not exist

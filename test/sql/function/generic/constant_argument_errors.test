@@ -1,0 +1,69 @@
+# name: test/sql/function/generic/constant_argument_errors.test
+# description: Errors in optional constant arguments are deferred until execution
+# group: [generic]
+
+foreach type TINYINT SMALLINT INTEGER BIGINT HUGEINT
+
+# Negation must not evaluate an unused argument while resolving its type.
+query I
+SELECT COALESCE(42::{type}, -(1::{type} // 0::{type}));
+----
+42
+
+query I
+SELECT CASE WHEN count(*) = 1 THEN 42::{type} ELSE -(1::{type} // 0::{type}) END;
+----
+42
+
+query I
+SELECT TRY(-(1::{type} // 0::{type}));
+----
+NULL
+
+# A reached argument still raises the original error.
+statement error
+SELECT COALESCE(NULL::{type}, -(1::{type} // 0::{type}));
+----
+Division by zero
+
+endloop
+
+query I
+SELECT COALESCE(42, -CAST('not-an-integer' AS INTEGER));
+----
+42
+
+statement error
+SELECT -CAST('not-an-integer' AS INTEGER);
+----
+Could not convert string
+
+# String and list functions also inspect optional constant arguments.
+query T
+SELECT COALESCE('kept', substring('abc', 1 // 0));
+----
+kept
+
+query I
+SELECT COALESCE(42, list_extract([1, 2], 1 // 0));
+----
+42
+
+statement error
+SELECT substring('abc', 1 // 0);
+----
+Division by zero
+
+statement error
+SELECT list_extract([1, 2], 1 // 0);
+----
+Division by zero
+
+# Binding and planning succeed even when execution will fail.
+statement ok
+PREPARE failing_negation AS SELECT -(1 // 0);
+
+statement error
+EXECUTE failing_negation;
+----
+Division by zero

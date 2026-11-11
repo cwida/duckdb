@@ -1,0 +1,29 @@
+# name: test/sql/table_function/range_cardinality_extremes.test
+# description: Cardinality estimates of empty and very large ranges
+# group: [table_function]
+
+query I
+SELECT count(*) FROM range(TIMESTAMP '1992-01-01', TIMESTAMP '1992-12-31', INTERVAL '-1 MONTH') t1, range(3) t2;
+----
+0
+
+query I
+SELECT count(*) FROM range(TIMESTAMP '1992-12-31', TIMESTAMP '1992-01-01', INTERVAL '1 MONTH') t1, range(3) t2;
+----
+0
+
+query I
+SELECT count(*) FROM generate_series(TIMESTAMP '1992-12-31', TIMESTAMP '1992-01-01', INTERVAL '1 day') t1, range(3) t2;
+----
+0
+
+statement ok
+EXPLAIN SELECT count(*) FROM range(-9223372036854775808, 9223372036854775807) t1, range(2) t2;
+
+statement ok
+EXPLAIN SELECT count(*) FROM range(-9223372036854775808, 9223372036854775807) t1, range(-9223372036854775808, 9223372036854775807) t2;
+
+query I
+SELECT count(*) FROM range(TIMESTAMP '1992-01-01', TIMESTAMP '1992-12-31', INTERVAL '1 MONTH') t1, range(3) t2;
+----
+36

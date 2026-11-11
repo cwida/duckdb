@@ -1,0 +1,56 @@
+# name: test/sql/types/timestamp/test_timestamp_round_to_lower_precision_overflow.test
+# description: Casting a near-maximum timestamp to a lower precision must not round past the representable range
+# group: [timestamp]
+
+statement error
+SELECT TIMESTAMP '294247-01-10 04:00:54.775806'::TIMESTAMP_S
+----
+Conversion Error
+
+statement error
+SELECT TIMESTAMP '294247-01-10 04:00:54.775806'::TIMESTAMP_MS
+----
+Conversion Error
+
+query I
+SELECT TRY_CAST(TIMESTAMP '294247-01-10 04:00:54.775806' AS TIMESTAMP_S) IS NULL
+----
+true
+
+query I
+SELECT TRY_CAST(TIMESTAMP '294247-01-10 04:00:54.775806' AS TIMESTAMP_S)::VARCHAR
+----
+NULL
+
+query I
+SELECT TRY_CAST(TIMESTAMP '294247-01-10 04:00:54.775806' AS TIMESTAMP_MS) IS NULL
+----
+true
+
+statement error
+SELECT TIMESTAMP '294247-01-10 04:00:54.6'::TIMESTAMP_S::TIMESTAMPTZ
+----
+Conversion Error
+
+# a value that rounds within range is still converted
+query I
+SELECT TIMESTAMP '294247-01-10 04:00:54'::TIMESTAMP_S::VARCHAR
+----
+294247-01-10 04:00:54
+
+# the TIMESTAMPTZ source path is affected the same way
+statement error
+SELECT TIMESTAMPTZ '294247-01-10 04:00:54.775806+00'::TIMESTAMP_S
+----
+Conversion Error
+
+# down-scaling a near-maximum nanosecond timestamp stays within the microsecond range and must still convert
+query I
+SELECT TIMESTAMP_NS '2262-04-11 23:47:16.854775806'::TIMESTAMP::VARCHAR
+----
+2262-04-11 23:47:16.854776
+
+query I
+SELECT TIMESTAMP_NS '2262-04-11 23:47:16.854775806'::TIMESTAMP_MS::VARCHAR
+----
+2262-04-11 23:47:16.855

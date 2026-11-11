@@ -16,9 +16,8 @@ DatabaseHandle::DatabaseHandle(unique_ptr<MemoryMappedFile> mmap_handle_p) : mma
 //! file uses the settings of the session that attached it (http_proxy, ca_cert_file, ...) and reports its requests to
 //! that session's logger. Without a client, the database-wide file system only sees global settings.
 static FileSystem &GetDatabaseFileSystem(QueryContext context, AttachedDatabase &db) {
-	auto client_context = context.GetClientContext();
-	if (client_context) {
-		return FileSystem::GetFileSystem(*client_context);
+	if (context.Valid()) {
+		return context.GetContext()->GetFileSystem();
 	}
 	return FileSystem::Get(db);
 }

@@ -151,6 +151,9 @@ void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
 		auto &col = col_ref.get();
 		auto set_id = equivalence_set_map.find(col)->second;
 		for (auto &item : equivalence_map[set_id]) {
+			if (item.get().Equals(col)) {
+				continue;
+			}
 			callback(ExpressionIterator::ReplaceExpression(filter, col, item.get()));
 		}
 	}
@@ -337,6 +340,53 @@ static bool SupportedFilterComparison(ExpressionType expression_type) {
 		return true;
 	default:
 		return false;
+	}
+}
+
+optional_ptr<const Expression> FilterCombiner::GetComparedExpression(const Expression &filter) {
+	const auto filter_type = filter.GetExpressionType();
+	// BETWEEN and IN compare their first child with the others
+	const bool compares_first_child =
+	    filter_type == ExpressionType::COMPARE_BETWEEN || filter_type == ExpressionType::COMPARE_IN;
+	if ((!SupportedFilterComparison(filter_type) && !compares_first_child) || filter.IsVolatile()) {
+		return nullptr;
+	}
+	optional_ptr<const Expression> compared;
+	bool valid = true;
+	idx_t child_idx = 0;
+	ExpressionIterator::EnumerateChildren(filter, [&](const Expression &child) {
+		if (!child.IsFoldable()) {
+			valid = valid && !compared && (!compares_first_child || child_idx == 0);
+			compared = &child;
+		}
+		child_idx++;
+	});
+	return valid ? compared : nullptr;
+}
+
+void FilterCombiner::GenerateJoinFilters(const vector<JoinCondition> &conditions,
+                                         const vector<reference<const Expression>> &filters, JoinSide target_side,
+                                         const std::function<void(unique_ptr<Expression> filter)> &callback) {
+	D_ASSERT(target_side == JoinSide::LEFT || target_side == JoinSide::RIGHT);
+	for (auto &cond : conditions) {
+		// a comparison with constants is false for NULL, so NOT DISTINCT FROM acts as equality for it
+		if (!cond.IsComparison() || (cond.GetComparisonType() != ExpressionType::COMPARE_EQUAL &&
+		                             cond.GetComparisonType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM)) {
+			continue;
+		}
+		auto &source = target_side == JoinSide::LEFT ? cond.GetRHS() : cond.GetLHS();
+		auto &target = target_side == JoinSide::LEFT ? cond.GetLHS() : cond.GetRHS();
+		// the join evaluates both sides once per row, a generated filter must not evaluate them differently
+		if (source.IsVolatile() || target.IsVolatile() || target.CanThrow() || source.IsFoldable() ||
+		    target.IsFoldable()) {
+			continue;
+		}
+		for (auto &filter : filters) {
+			auto compared = GetComparedExpression(filter.get());
+			if (compared && compared->Equals(source)) {
+				callback(ExpressionIterator::ReplaceExpression(filter.get(), source, target));
+			}
+		}
 	}
 }
 
@@ -781,9 +831,15 @@ FilterPushdownResult FilterCombiner::TryPushdownOrClause(TableFilterSet &table_f
 			    CreateComparisonExpression(*column_ref, comparison_type, const_val->GetValue()));
 		}
 	}
-	if (only_equalities && equality_column &&
-	    TryPushdownDenseInFilter(table_filters, *equality_column, equality_values)) {
-		return FilterPushdownResult::PUSHED_DOWN_FULLY;
+	if (only_equalities && equality_column) {
+		if (TryPushdownDenseInFilter(table_filters, *equality_column, equality_values)) {
+			return FilterPushdownResult::PUSHED_DOWN_FULLY;
+		}
+		// Push the same filter as for `col IN (...)`, which index scans can use.
+		auto in_expr = ExpressionFilter::CreateInExpression(CreateFilterTargetExpression(*equality_column),
+		                                                    std::move(equality_values));
+		table_filters.PushFilter(proj_id, CreateOptionalExpressionFilter(std::move(in_expr), col_type));
+		return FilterPushdownResult::PUSHED_DOWN_PARTIALLY;
 	}
 	table_filters.PushFilter(proj_id, CreateOptionalExpressionFilter(std::move(conj_filter), col_type));
 	return FilterPushdownResult::PUSHED_DOWN_PARTIALLY;
@@ -802,7 +858,19 @@ static bool IsLessThan(ExpressionType type) {
 //! Margins: 2h for DST ambiguity (TIMESTAMP<->TIMESTAMPTZ), 24h for time-of-day loss, 1s for rounding loss.
 static int64_t GetTemporalCastMargin(LogicalTypeId source, LogicalTypeId target) {
 	if (source == target) {
-		return 0;
+		switch (source) {
+		case LogicalTypeId::DATE:
+		case LogicalTypeId::TIMESTAMP:
+		case LogicalTypeId::TIMESTAMP_TZ:
+		case LogicalTypeId::TIMESTAMP_NS:
+		case LogicalTypeId::TIMESTAMP_TZ_NS:
+		case LogicalTypeId::TIMESTAMP_MS:
+		case LogicalTypeId::TIMESTAMP_SEC:
+			return 0;
+		default:
+			// non-temporal types with the same id can differ (e.g. UNION or DECIMAL types)
+			return -1;
+		}
 	}
 	switch (source) {
 	case LogicalTypeId::TIMESTAMP:
@@ -1138,7 +1206,6 @@ FilterResult FilterCombiner::AddBoundComparisonFilter(Expression &expr) {
 		return ret;
 	} else {
 		// comparison between two non-scalars
-		// only handle comparisons for now
 		if (expr.GetExpressionType() != ExpressionType::COMPARE_EQUAL) {
 			return FilterResult::UNSUPPORTED;
 		}
@@ -1182,7 +1249,8 @@ FilterResult FilterCombiner::AddBoundComparisonFilter(Expression &expr) {
 }
 
 FilterResult FilterCombiner::AddFilter(Expression &expr) {
-	if (expr.HasParameter()) {
+	// every occurrence of a volatile expression is its own evaluation, so it cannot share an equivalence set
+	if (expr.HasParameter() || expr.IsVolatile()) {
 		return FilterResult::UNSUPPORTED;
 	}
 	if (expr.IsFoldable()) {
@@ -1191,7 +1259,7 @@ FilterResult FilterCombiner::AddFilter(Expression &expr) {
 		if (!ExpressionExecutor::TryEvaluateScalar(context, expr, result)) {
 			return FilterResult::UNSUPPORTED;
 		}
-		result = result.DefaultCastAs(LogicalType::BOOLEAN);
+		result = result.CastAs(context, LogicalType::BOOLEAN);
 		// check if the filter passes
 		if (result.IsNull() || !BooleanValue::Get(result)) {
 			// the filter does not pass the scalar test, create an empty result
@@ -1293,47 +1361,18 @@ FilterResult FilterCombiner::AddFilter(Expression &expr) {
 	return FilterResult::UNSUPPORTED;
 }
 
-/*
- * Create and add new transitive filters from a two non-scalar filter such as j > i, j >= i, j < i, and j <= i
- * It's missing to create another method to add transitive filters from scalar filters, e.g, i > 10
- */
+// Infer constant bounds from comparisons between non-scalar expressions.
 FilterResult FilterCombiner::AddTransitiveFilters(BoundFunctionExpression &comparison, bool is_root) {
 	if (!IsGreaterThan(comparison.GetExpressionType()) && !IsLessThan(comparison.GetExpressionType())) {
 		return FilterResult::UNSUPPORTED;
 	}
+	// Derived bounds must not duplicate volatile or throwing expressions.
+	if (comparison.IsVolatile() || comparison.CanThrow()) {
+		return FilterResult::UNSUPPORTED;
+	}
 	// get the LHS and RHS nodes
 	auto &left_node = GetNode(*BoundComparisonExpression::LeftMutable(comparison));
-	reference<Expression> right_node = GetNode(*BoundComparisonExpression::RightMutable(comparison));
-	// In case with filters like CAST(i) = j and i = 5 we replace the COLUMN_REF i with the constant 5
-	do {
-		if (right_node.get().GetExpressionType() != ExpressionType::OPERATOR_CAST) {
-			break;
-		}
-		auto &bound_cast_expr = right_node.get().Cast<BoundFunctionExpression>();
-		if (BoundCastExpression::Child(bound_cast_expr).GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
-			break;
-		}
-		auto &col_ref = BoundCastExpression::Child(bound_cast_expr).Cast<BoundColumnRefExpression>();
-		for (auto &stored_exp : stored_expressions) {
-			const_reference<Expression> expr = stored_exp.first;
-			if (expr.get().GetExpressionType() == ExpressionType::OPERATOR_CAST) {
-				expr = BoundCastExpression::Child(right_node.get().Cast<BoundFunctionExpression>());
-			}
-			if (expr.get().GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
-				continue;
-			}
-			auto &st_col_ref = expr.get().Cast<BoundColumnRefExpression>();
-			if (st_col_ref.Binding() != col_ref.Binding()) {
-				continue;
-			}
-			if (bound_cast_expr.GetReturnType() != stored_exp.second->GetReturnType()) {
-				continue;
-			}
-			BoundCastExpression::ChildMutable(bound_cast_expr) = stored_exp.second->Copy();
-			right_node = GetNode(*BoundCastExpression::ChildMutable(bound_cast_expr));
-			break;
-		}
-	} while (false);
+	auto &right_node = GetNode(*BoundComparisonExpression::RightMutable(comparison));
 
 	if (left_node.Equals(right_node)) {
 		return FilterResult::UNSUPPORTED;

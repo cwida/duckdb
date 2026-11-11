@@ -1,0 +1,41 @@
+# name: test/sql/types/struct/tuple_old_storage_attach.test
+# description: A v1.0.0 database with unnamed STRUCT columns can be attached, but TUPLE columns cannot be created in it
+# group: [struct]
+
+require vector_size 2048
+
+unzip data/storage/tuple_v1_0_0.db.gz {TEST_DIR}/tuple_v1_0_0.db
+
+statement ok
+ATTACH '{TEST_DIR}/tuple_v1_0_0.db' AS old
+
+query II
+SELECT typeof(a), a FROM old.t ORDER BY ALL
+----
+TUPLE(INTEGER, VARCHAR)	(1, a)
+TUPLE(INTEGER, VARCHAR)	(2, b)
+
+query II
+SELECT typeof(s), s FROM old.e
+----
+TUPLE(INTEGER)	(1,)
+
+# existing tables stay usable
+statement ok
+INSERT INTO old.e VALUES ((2,))
+
+# but no new TUPLE columns can be created
+statement error
+CREATE TABLE old.t2(a TUPLE(INTEGER))
+----
+TUPLE columns are not supported in storage versions prior to v2.0.0
+
+statement error
+CREATE TABLE old.t2 AS SELECT (1, 2) AS a
+----
+TUPLE columns are not supported in storage versions prior to v2.0.0
+
+statement error
+ALTER TABLE old.e ADD COLUMN b TUPLE(INTEGER)
+----
+TUPLE columns are not supported in storage versions prior to v2.0.0

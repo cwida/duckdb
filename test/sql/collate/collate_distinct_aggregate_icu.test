@@ -1,0 +1,57 @@
+# name: test/sql/collate/collate_distinct_aggregate_icu.test
+# description: DISTINCT aggregates retain original strings when deduplicating on ICU comparison keys
+# group: [collate]
+
+require icu
+
+statement ok
+SET debug_verify_serializer = true;
+
+# ICU regards composed and decomposed umlauts as equal. Keep one original spelling, not the BLOB key.
+query III
+SELECT count(DISTINCT s COLLATE de), len(list(DISTINCT s COLLATE de)), len(list(DISTINCT s))
+FROM (VALUES ('ä'), ('ä'), ('Z')) t(s);
+----
+2	2	3
+
+# The representative is intentionally unspecified, but it must be an original input.
+query I
+SELECT count(*)
+FROM (SELECT unnest(list(DISTINCT s COLLATE de)) AS s
+      FROM (VALUES ('ä'), ('ä'), ('Z')) t(s)) result
+WHERE s COLLATE "binary" IN ('ä', 'ä', 'Z');
+----
+2
+
+query TT
+SELECT list(DISTINCT s COLLATE de ORDER BY s COLLATE de),
+       string_agg(DISTINCT s COLLATE de, ',' ORDER BY s COLLATE de)
+FROM (VALUES ('GÖTHE'), ('Z'), ('GÖTHE')) t(s);
+----
+[GÖTHE, Z]	GÖTHE,Z
+
+# Rebinding and restoring the source type is also required for collated fields in nested values.
+query III
+SELECT count(DISTINCT row(s COLLATE de)), len(list(DISTINCT row(s COLLATE de))),
+       len(list(DISTINCT row(s)))
+FROM (VALUES ('ä'), ('ä'), ('Z')) t(s);
+----
+2	2	3
+
+# A default collation applies to values, while COUNT's already-bound BLOB keys remain keys.
+statement ok
+SET default_collation = 'de';
+
+query III
+SELECT count(DISTINCT s), len(list(DISTINCT s)), len(list(DISTINCT row(s)))
+FROM (VALUES ('ä'), ('ä'), ('Z')) t(s);
+----
+2	2	2
+
+query T
+SELECT list(DISTINCT s ORDER BY s) FROM (VALUES ('GÖTHE'), ('Z'), ('GÖTHE')) t(s);
+----
+[GÖTHE, Z]
+
+statement ok
+SET default_collation = 'binary';

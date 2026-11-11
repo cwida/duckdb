@@ -1,0 +1,153 @@
+# name: test/sql/json/table/read_json_parallel_buffers.test
+# description: Newline-delimited JSON read in parallel gives the same rows whether a file fits in one buffer or needs several
+# group: [table]
+
+require json
+
+statement ok
+SET threads=4
+
+query II
+SELECT * FROM read_json('{DATA_DIR}/json/example_n.ndjson', format='newline_delimited', columns={id: 'INTEGER', name: 'VARCHAR'}) ORDER BY id
+----
+1	O Brother, Where Art Thou?
+2	Home for the Holidays
+3	The Firm
+4	Broadcast News
+5	Raising Arizona
+
+query II
+SELECT * FROM read_json('{DATA_DIR}/json/example_n.ndjson', format='newline_delimited', columns={id: 'INTEGER', name: 'VARCHAR'}, maximum_object_size=64) ORDER BY id
+----
+1	O Brother, Where Art Thou?
+2	Home for the Holidays
+3	The Firm
+4	Broadcast News
+5	Raising Arizona
+
+query II
+SELECT * FROM read_json('{DATA_DIR}/json/example_rn.ndjson', format='newline_delimited', columns={id: 'INTEGER', name: 'VARCHAR'}) ORDER BY id
+----
+1	O Brother, Where Art Thou?
+2	Home for the Holidays
+3	The Firm
+4	Broadcast News
+5	Raising Arizona
+
+query II
+SELECT * FROM read_json('{DATA_DIR}/json/example_rn.ndjson', format='newline_delimited', columns={id: 'INTEGER', name: 'VARCHAR'}, maximum_object_size=64) ORDER BY id
+----
+1	O Brother, Where Art Thou?
+2	Home for the Holidays
+3	The Firm
+4	Broadcast News
+5	Raising Arizona
+
+query II
+SELECT * FROM read_json('{DATA_DIR}/json/example_n.ndjson', maximum_object_size=64) ORDER BY id
+----
+1	O Brother, Where Art Thou?
+2	Home for the Holidays
+3	The Firm
+4	Broadcast News
+5	Raising Arizona
+
+statement ok
+COPY (SELECT range AS a FROM range(1000)) TO '{TEST_DIR}/parallel_buffers_records.ndjson' (FORMAT json)
+
+query IIII
+SELECT count(*), sum(a), min(a), max(a) FROM read_json('{TEST_DIR}/parallel_buffers_records.ndjson', format='newline_delimited', columns={a: 'INTEGER'})
+----
+1000	499500	0	999
+
+query IIII
+SELECT count(*), sum(a), min(a), max(a) FROM read_json('{TEST_DIR}/parallel_buffers_records.ndjson', format='newline_delimited', columns={a: 'INTEGER'}, maximum_object_size=64)
+----
+1000	499500	0	999
+
+statement ok
+COPY (SELECT 100 + range AS a FROM range(18)) TO '{TEST_DIR}/parallel_buffers_aligned.ndjson' (FORMAT json)
+
+query IIII
+SELECT count(*), sum(a), min(a), max(a) FROM read_json('{TEST_DIR}/parallel_buffers_aligned.ndjson', format='newline_delimited', columns={a: 'INTEGER'}, maximum_object_size=64)
+----
+18	1953	100	117
+
+statement ok
+COPY (SELECT unnest(range(100, 111) || [1000]) AS a) TO '{TEST_DIR}/parallel_buffers_newline_last.ndjson' (FORMAT json)
+
+query IIII
+SELECT count(*), sum(a), min(a), max(a) FROM read_json('{TEST_DIR}/parallel_buffers_newline_last.ndjson', format='newline_delimited', columns={a: 'INTEGER'}, maximum_object_size=64)
+----
+12	2155	100	1000
+
+query I
+SELECT count(*) FROM read_json('{DATA_DIR}/json/empty.ndjson', format='newline_delimited', columns={a: 'INTEGER'})
+----
+0
+
+query I
+SELECT count(*) FROM read_json('{DATA_DIR}/json/whitespace_only.json', format='newline_delimited', columns={a: 'INTEGER'})
+----
+0
+
+query I
+SELECT count(*) FROM read_json('{DATA_DIR}/json/whitespace_only.json', format='newline_delimited', columns={a: 'INTEGER'}, maximum_object_size=64)
+----
+0
+
+statement error
+SELECT * FROM read_json('{DATA_DIR}/json/unterminated_quotes.ndjson', format='newline_delimited', columns={id: 'INTEGER', name: 'VARCHAR'})
+----
+Malformed JSON in file "{DATA_DIR}/json/unterminated_quotes.ndjson", at byte 26 in line 4: unexpected control character in string.
+
+statement error
+SELECT * FROM read_json('{DATA_DIR}/json/unterminated_quotes.ndjson', format='newline_delimited', columns={id: 'INTEGER', name: 'VARCHAR'}, maximum_object_size=64)
+----
+Malformed JSON in file "{DATA_DIR}/json/unterminated_quotes.ndjson", at byte 26 in line 4: unexpected control character in string.
+
+statement error
+SELECT * FROM read_json('{DATA_DIR}/json/malformed_last_line.ndjson', format='newline_delimited', columns={a: 'INTEGER'})
+----
+Malformed JSON in file "{DATA_DIR}/json/malformed_last_line.ndjson", at byte 6 in line 4: unexpected end of data.
+
+statement error
+SELECT * FROM read_json('{DATA_DIR}/json/malformed_last_line.ndjson', format='newline_delimited', columns={a: 'INTEGER'}, maximum_object_size=64)
+----
+Malformed JSON in file "{DATA_DIR}/json/malformed_last_line.ndjson", at byte 6 in line 4: unexpected end of data.
+
+query I
+SELECT a FROM read_json('{DATA_DIR}/json/malformed_last_line.ndjson', format='newline_delimited', columns={a: 'INTEGER'}, ignore_errors=true) ORDER BY a NULLS LAST
+----
+1
+2
+NULL
+
+query I
+SELECT a FROM read_json('{DATA_DIR}/json/malformed_last_line.ndjson', format='newline_delimited', columns={a: 'INTEGER'}, maximum_object_size=64, ignore_errors=true) ORDER BY a NULLS LAST
+----
+1
+2
+NULL
+
+loop i 0 40
+
+statement ok
+COPY (SELECT {i} * 100 + range AS id FROM range(50)) TO '{TEST_DIR}/parallel_buffers_many_{i}.ndjson' (FORMAT json)
+
+endloop
+
+query II
+SELECT count(*), sum(id) FROM read_json('{TEST_DIR}/parallel_buffers_many_*.ndjson', format='newline_delimited', columns={id: 'BIGINT'})
+----
+2000	3949000
+
+query II
+SELECT count(*), sum(id) FROM read_json('{TEST_DIR}/parallel_buffers_many_*.ndjson', format='newline_delimited', columns={id: 'BIGINT'}, maximum_object_size=64)
+----
+2000	3949000
+
+query II
+SELECT count(*), sum(id) FROM read_json('{TEST_DIR}/parallel_buffers_many_*.ndjson')
+----
+2000	3949000

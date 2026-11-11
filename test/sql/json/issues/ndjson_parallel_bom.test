@@ -1,0 +1,92 @@
+# name: test/sql/json/issues/ndjson_parallel_bom.test
+# description: A newline-delimited file with a UTF-8 BOM read in parallel parts (duckdblabs/bot-issue-tracker#586)
+# group: [issues]
+
+require json
+
+# a BOM, then 5000 lines of about 4 KB, more than a buffer of 16 MiB holds, so lines cross from one part to the next
+statement ok
+COPY (
+	SELECT CASE WHEN i = 0 THEN from_hex('EFBBBF') ELSE ''::BLOB END
+	       || encode(to_json({'a': i, 's': repeat('x', 4096)})::VARCHAR || chr(10))
+	FROM range(5000) t(i) ORDER BY i
+) TO '{TEST_DIR}/bom_parts.jsonl' (FORMAT BLOB);
+
+statement ok
+COPY (SELECT content FROM read_blob('{TEST_DIR}/bom_parts.jsonl')) TO '{TEST_DIR}/bom_parts.jsonl.gz' (FORMAT BLOB, COMPRESSION 'gzip');
+
+statement ok
+SET threads = 4;
+
+query IIII
+SELECT count(*), count(DISTINCT a), sum(a), sum(length(s))
+FROM read_ndjson('{TEST_DIR}/bom_parts.jsonl', columns = {a: 'INTEGER', s: 'VARCHAR'});
+----
+5000	5000	12497500	20480000
+
+query II
+SELECT count(*), sum(a) FROM read_json('{TEST_DIR}/bom_parts.jsonl', format = 'newline_delimited', columns = {a: 'INTEGER', s: 'VARCHAR'});
+----
+5000	12497500
+
+query I
+SELECT count(*) FROM read_json_objects('{TEST_DIR}/bom_parts.jsonl', format = 'newline_delimited');
+----
+5000
+
+# a compressed file, which is read in parts without seeking
+query IIII
+SELECT count(*), count(DISTINCT a), sum(a), sum(length(s))
+FROM read_ndjson('{TEST_DIR}/bom_parts.jsonl.gz', columns = {a: 'INTEGER', s: 'VARCHAR'});
+----
+5000	5000	12497500	20480000
+
+# a small file, read in one part
+statement ok
+COPY (SELECT from_hex('EFBBBF') || encode('{"a":1}' || chr(10) || '{"a":2}' || chr(10))) TO '{TEST_DIR}/bom_small.jsonl' (FORMAT BLOB);
+
+query II
+SELECT count(*), sum(a) FROM read_ndjson('{TEST_DIR}/bom_small.jsonl');
+----
+2	3
+
+statement ok
+SET threads = 1;
+
+query II
+SELECT count(*), sum(a) FROM read_ndjson('{TEST_DIR}/bom_parts.jsonl', columns = {a: 'INTEGER', s: 'VARCHAR'});
+----
+5000	12497500
+
+# a file that is only a BOM, or a BOM and a newline
+statement ok
+SET threads = 4;
+
+statement ok
+COPY (SELECT from_hex('EFBBBF')) TO '{TEST_DIR}/only_bom.jsonl' (FORMAT BLOB);
+
+statement ok
+COPY (SELECT from_hex('EFBBBF0A')) TO '{TEST_DIR}/bom_newline.jsonl' (FORMAT BLOB);
+
+query II
+SELECT (SELECT count(*) FROM read_ndjson('{TEST_DIR}/only_bom.jsonl', columns = {a: 'INTEGER'})), (SELECT count(*) FROM read_ndjson('{TEST_DIR}/bom_newline.jsonl', columns = {a: 'INTEGER'}));
+----
+0	0
+
+# a value of one byte without a newline after it, with and without a BOM, plain and compressed
+statement ok
+COPY (SELECT from_hex('EFBBBF31')) TO '{TEST_DIR}/bom_one_byte.jsonl' (FORMAT BLOB);
+
+statement ok
+COPY (SELECT from_hex('EFBBBF31')) TO '{TEST_DIR}/bom_one_byte.jsonl.gz' (FORMAT BLOB, COMPRESSION 'gzip');
+
+statement ok
+COPY (SELECT from_hex('31')) TO '{TEST_DIR}/one_byte.jsonl' (FORMAT BLOB);
+
+query IIII
+SELECT (SELECT list(json) FROM read_json_objects('{TEST_DIR}/bom_one_byte.jsonl', format = 'newline_delimited')),
+	(SELECT list(json) FROM read_json_objects('{TEST_DIR}/bom_one_byte.jsonl.gz', format = 'newline_delimited')),
+	(SELECT list(json) FROM read_json_objects('{TEST_DIR}/one_byte.jsonl', format = 'newline_delimited')),
+	(SELECT list(a) FROM read_ndjson('{TEST_DIR}/bom_one_byte.jsonl', records = false, columns = {a: 'INTEGER'}));
+----
+[1]	[1]	[1]	[1]

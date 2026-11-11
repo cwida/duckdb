@@ -5,6 +5,8 @@
 statement ok
 SET threads=1;
 
+# Keep every aggregate state type and hash-table mode in the fast suite. The slow variant also
+# crosses the run-length, input-block and dense-transition matrices.
 foreach threshold 0 12
 
 statement ok
@@ -12,43 +14,37 @@ SET perfect_ht_threshold={threshold};
 
 foreach type INTEGER BIGINT HUGEINT DOUBLE DECIMAL(18,2)
 
-foreach run_length 1 7 8 65 64
+foreach run_length 1 65 64
 
-foreach block 1 512 4096
-
-foreach dense_start 8192 20000
-
-# A 129-row tail still reaches clustering and exercises a partial validity word.
 foreach row_count 16513 16391
 
 statement ok
 CREATE OR REPLACE TABLE clustered_inputs AS
 SELECT i, CASE WHEN i%257=0 THEN NULL ELSE (i//{run_length})%8 END AS g,
-       (i//{block})%7 AS day,
+       (i//4096)%7 AS day,
        CASE WHEN (i//{run_length})%8=7 OR i%31=0 THEN NULL ELSE i%101-50 END::{type} AS v
 FROM range({row_count}) t(i);
 
-# FILTER forces the reference aggregates through the scatter path.
 statement ok
 CREATE OR REPLACE TABLE scatter_result AS SELECT g,
-       sum(v*1) FILTER (WHERE i>={dense_start} OR day=0) AS s0,
-       sum(v*2) FILTER (WHERE i>={dense_start} OR day=1) AS s1,
-       sum(v*3) FILTER (WHERE i>={dense_start} OR day=2) AS s2,
-       sum(v*4) FILTER (WHERE i>={dense_start} OR day=3) AS s3,
-       sum(v*5) FILTER (WHERE i>={dense_start} OR day=4) AS s4,
-       sum(v*6) FILTER (WHERE i>={dense_start} OR day=5) AS s5,
-       sum(v*7) FILTER (WHERE i>={dense_start} OR day=6) AS s6
+       sum(v*1) FILTER (WHERE i>=20000 OR day=0) AS s0,
+       sum(v*2) FILTER (WHERE i>=20000 OR day=1) AS s1,
+       sum(v*3) FILTER (WHERE i>=20000 OR day=2) AS s2,
+       sum(v*4) FILTER (WHERE i>=20000 OR day=3) AS s3,
+       sum(v*5) FILTER (WHERE i>=20000 OR day=4) AS s4,
+       sum(v*6) FILTER (WHERE i>=20000 OR day=5) AS s5,
+       sum(v*7) FILTER (WHERE i>=20000 OR day=6) AS s6
 FROM clustered_inputs GROUP BY g;
 
 statement ok
 CREATE OR REPLACE TABLE clustered_result AS SELECT g,
-       sum(CASE WHEN i>={dense_start} OR day=0 THEN v*1 END) AS s0,
-       sum(CASE WHEN i>={dense_start} OR day=1 THEN v*2 END) AS s1,
-       sum(CASE WHEN i>={dense_start} OR day=2 THEN v*3 END) AS s2,
-       sum(CASE WHEN i>={dense_start} OR day=3 THEN v*4 END) AS s3,
-       sum(CASE WHEN i>={dense_start} OR day=4 THEN v*5 END) AS s4,
-       sum(CASE WHEN i>={dense_start} OR day=5 THEN v*6 END) AS s5,
-       sum(CASE WHEN i>={dense_start} OR day=6 THEN v*7 END) AS s6
+       sum(CASE WHEN i>=20000 OR day=0 THEN v*1 END) AS s0,
+       sum(CASE WHEN i>=20000 OR day=1 THEN v*2 END) AS s1,
+       sum(CASE WHEN i>=20000 OR day=2 THEN v*3 END) AS s2,
+       sum(CASE WHEN i>=20000 OR day=3 THEN v*4 END) AS s3,
+       sum(CASE WHEN i>=20000 OR day=4 THEN v*5 END) AS s4,
+       sum(CASE WHEN i>=20000 OR day=5 THEN v*6 END) AS s5,
+       sum(CASE WHEN i>=20000 OR day=6 THEN v*7 END) AS s6
 FROM clustered_inputs GROUP BY g;
 
 query I
@@ -59,14 +55,6 @@ SELECT count(*) FROM (
 );
 ----
 0
-
-# Bound WAL replay when the test configuration restarts after every statement.
-statement ok
-CHECKPOINT;
-
-endloop
-
-endloop
 
 endloop
 
@@ -79,14 +67,13 @@ endloop
 statement ok
 RESET perfect_ht_threshold;
 
-# NULL-only inputs still create groups, and a NULL key remains a separate group.
+# The final matrix entry matches the fixture used by these focused edge cases.
 query IIII
 SELECT g, sum(v), sum(v*2), count(*) FROM clustered_inputs WHERE g=7 OR g IS NULL GROUP BY g ORDER BY g NULLS LAST;
 ----
 7	NULL	NULL	2048
 NULL	-2	-4	64
 
-# Mixed capability and filtered/distinct states keep their own input/address offsets.
 query I
 WITH a AS (
     SELECT g, sum(CASE WHEN day=0 THEN v END), sum(CASE WHEN day=1 THEN v END),
@@ -107,7 +94,6 @@ SELECT count(*) FROM (
 ----
 0
 
-# Constant inputs and large sums retain the original NULL and accumulator semantics.
 query IIII
 SELECT g, sum(NULL::BIGINT), sum(3), count(*)
 FROM (VALUES (1),(1),(NULL),(NULL)) t(g) GROUP BY g ORDER BY g NULLS LAST;
@@ -123,13 +109,11 @@ FROM (SELECT i, (i//64)%2 AS g FROM range(8192) t(i)) t GROUP BY g ORDER BY g;
 0	9216000000000000000000	-9216000000000000000000
 1	9216000000000000000000	-9216000000000000000000
 
-# An empty input does not create groups.
 query I
 SELECT count(*) FROM (SELECT g,sum(v),sum(v*2) FROM clustered_inputs WHERE FALSE GROUP BY g);
 ----
 0
 
-# Other NULL-skipping clustered kernels preserve values and input order.
 query I
 WITH a AS (
     SELECT g, min(CASE WHEN i%7=0 THEN v END) AS lo,
@@ -150,7 +134,6 @@ SELECT count(*) FROM (
 ----
 0
 
-# Filtering retains dictionary selections; materializing gives the flat reference.
 statement ok
 CREATE TABLE dictionary_inputs AS
 SELECT i, (i//64)%8 AS g, CASE WHEN i%7=0 THEN i%101-50 END::INTEGER AS v

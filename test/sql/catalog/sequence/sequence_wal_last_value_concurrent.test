@@ -1,0 +1,51 @@
+# name: test/sql/catalog/sequence/sequence_wal_last_value_concurrent.test
+# description: The WAL record for a sequence is a consistent snapshot of the committing transaction
+# group: [sequence]
+
+statement ok
+SET storage_compatibility_version = 'v2.0.0';
+
+load {TEST_DIR}/sequence_wal_last_value.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
+
+statement ok
+CREATE SEQUENCE s;
+
+statement ok con1
+BEGIN
+
+query I con1
+SELECT nextval('s');
+----
+1
+
+statement ok con2
+BEGIN
+
+query I con2
+SELECT nextval('s') FROM range(3) ORDER BY 1;
+----
+2
+3
+4
+
+statement ok con1
+COMMIT
+
+# con2 never commits, so only the first transaction's sequence usage is persisted
+restart
+
+query I
+SELECT currval('s');
+----
+1
+
+query I
+SELECT nextval('s');
+----
+2

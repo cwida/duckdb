@@ -1,0 +1,107 @@
+# name: test/sql/attach/attach_detach_same_name_transaction.test
+# description: Attach a database under the name of a database detached in the same transaction
+# group: [attach]
+
+statement ok
+BEGIN
+
+statement ok
+ATTACH ':memory:' AS a
+
+statement ok
+DETACH a
+
+statement ok
+ATTACH ':memory:' AS a
+
+statement ok
+CREATE TABLE a.tbl AS SELECT 2 AS i
+
+query I
+SELECT * FROM a.tbl
+----
+2
+
+statement ok
+COMMIT
+
+query I
+SELECT * FROM a.tbl
+----
+2
+
+# a database the transaction has written to can be detached and its name attached again, but the transaction
+# cannot write to a second database
+statement ok
+BEGIN
+
+statement ok
+ATTACH '{TEST_DIR}/detach_same_name_modified.db' AS b
+
+statement ok
+CREATE TABLE b.tbl AS SELECT 1 AS i
+
+statement ok
+DETACH b
+
+statement ok
+ATTACH ':memory:' AS b
+
+statement error
+CREATE TABLE b.tbl AS SELECT 2 AS i
+----
+a single transaction can only write to a single attached database
+
+statement ok
+ROLLBACK
+
+# a database the transaction has read can be detached and its name used for another database
+statement ok
+BEGIN
+
+statement ok
+ATTACH '{TEST_DIR}/detach_same_name_read.db' AS c
+
+statement ok
+CREATE TABLE c.tbl AS SELECT 1 AS i
+
+statement ok
+COMMIT
+
+statement ok
+BEGIN
+
+query I
+SELECT * FROM c.tbl
+----
+1
+
+statement ok
+DETACH c
+
+statement ok
+ATTACH ':memory:' AS c
+
+statement ok
+CREATE TABLE c.tbl AS SELECT 2 AS i
+
+query I
+SELECT * FROM c.tbl
+----
+2
+
+statement ok
+COMMIT
+
+query I
+SELECT * FROM c.tbl
+----
+2
+
+statement ok
+ATTACH '{TEST_DIR}/detach_same_name_read.db' AS c_file
+
+query I
+SELECT * FROM c_file.tbl
+----
+1

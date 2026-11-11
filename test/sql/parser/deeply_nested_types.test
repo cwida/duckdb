@@ -1,0 +1,72 @@
+# name: test/sql/parser/deeply_nested_types.test
+# description: Deeply nested type expressions bind within the expression depth limit and error beyond it
+# group: [parser]
+
+statement ok
+SET max_expression_depth=1000;
+
+foreach depth 1 10 100
+
+query I
+FROM query('SELECT (NULL::' || repeat('MAP(INTEGER, ', {depth}) || 'INTEGER' || repeat(')', {depth}) || ') IS NULL');
+----
+true
+
+query I
+FROM query('SELECT (NULL::' || repeat('STRUCT(a ', {depth}) || 'INTEGER' || repeat(')', {depth}) || ') IS NULL');
+----
+true
+
+query I
+FROM query('SELECT (NULL::' || repeat('UNION(u ', {depth}) || 'INTEGER' || repeat(')', {depth}) || ') IS NULL');
+----
+true
+
+query I
+FROM query('SELECT (NULL::' || repeat('TUPLE(', {depth}) || 'INTEGER' || repeat(')', {depth}) || ') IS NULL');
+----
+true
+
+endloop
+
+# every nesting level counts towards the limit, whichever type it is
+query I
+FROM query('SELECT (NULL::' || repeat('MAP(INTEGER, STRUCT(a ', 100) || 'INTEGER[]' || repeat('))', 100) || ') IS NULL');
+----
+true
+
+foreach depth 1000 2000
+
+statement error
+FROM query('SELECT (NULL::' || repeat('MAP(INTEGER, ', {depth}) || 'INTEGER' || repeat(')', {depth}) || ') IS NULL');
+----
+<REGEX>:.*Max expression depth limit of 1000 exceeded.*
+
+statement error
+FROM query('SELECT (NULL::' || repeat('STRUCT(a ', {depth}) || 'INTEGER' || repeat(')', {depth}) || ') IS NULL');
+----
+<REGEX>:.*Max expression depth limit of 1000 exceeded.*
+
+statement error
+FROM query('SELECT (NULL::' || repeat('MAP(INTEGER, STRUCT(a ', {depth}) || 'INTEGER[]' || repeat('))', {depth}) || ') IS NULL');
+----
+<REGEX>:.*Max expression depth limit of 1000 exceeded.*
+
+endloop
+
+# the limit follows the setting
+statement ok
+SET max_expression_depth=100;
+
+statement error
+FROM query('SELECT (NULL::' || repeat('MAP(INTEGER, ', 200) || 'INTEGER' || repeat(')', 200) || ') IS NULL');
+----
+<REGEX>:.*Max expression depth limit of 100 exceeded.*
+
+statement ok
+SET max_expression_depth=1000;
+
+query I
+SELECT typeof(NULL::MAP(INTEGER, STRUCT(a UNION(u TUPLE(INTEGER[], VARCHAR))))[]);
+----
+MAP(INTEGER, STRUCT(a UNION(u TUPLE(INTEGER[], VARCHAR))))[]

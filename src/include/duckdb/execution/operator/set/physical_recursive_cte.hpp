@@ -17,13 +17,20 @@
 
 namespace duckdb {
 
+class PhysicalRecursiveCTE;
 class RecursiveCTEState;
+class RecursiveCTEUnionState;
+class RecursiveCTEKeyedState;
 class RecursiveCTEMetrics;
 struct RecursiveExecutorPool;
 struct RecursiveCTEPipelineSchedulePlan;
 class PhysicalColumnDataScan;
 class Pipeline;
 class PipelineExecutor;
+class InterruptState;
+
+//! Result of driving one recursive epoch
+enum class RecursiveEpochResult : uint8_t { COMPLETE, BLOCKED };
 
 class RecursiveCTEPartialKeySpec {
 public:
@@ -38,6 +45,35 @@ public:
 
 private:
 	vector<idx_t> indices;
+};
+
+//! How the recursion combines member rows with what it has already produced
+enum class RecursiveCTEMode : uint8_t {
+	//! Member rows are deduplicated against everything produced so far; new rows form the next frontier
+	UNION,
+	//! Every member row is a result row and part of the next frontier
+	UNION_ALL,
+	//! Member rows update per-key aggregate states; keys whose finalized payload changed form the next frontier
+	KEY_UNION,
+	//! Member rows update per-key aggregate states; every candidate is part of the next frontier
+	KEY_UNION_ALL
+};
+
+//! Properties of a USING KEY payload that follow from the plan; derived once when the operator is built
+struct RecursiveCTEKeyedProperties {
+	//! Every payload aggregate combines and is order-independent, so workers may pre-aggregate fan-in locally
+	bool can_preaggregate = false;
+	//! A candidate row of a new key equals its finalized state row, so candidates can serve as the next frontier
+	bool can_reuse_new_group_candidates = false;
+	//! The same holds for keys whose payload changed, which needs plain keys and payloads without SQL comparisons
+	bool can_reuse_changed_group_candidates = false;
+	//! Some payload column compares through a SQL-level expression rather than by value
+	bool has_payload_comparisons = false;
+	//! Every aggregate result fits a fixed-width or string slot, so the commit can materialize the finalized values
+	//! per group and reads consume them without invoking aggregate callbacks
+	bool materialize_finalized_values = false;
+
+	static RecursiveCTEKeyedProperties Derive(const PhysicalRecursiveCTE &op);
 };
 
 struct RecursiveCTEReferenceInfo {
@@ -57,26 +93,36 @@ public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::RECURSIVE_CTE;
 	using executor_cache_t = reference_map_t<Pipeline, vector<unique_ptr<PipelineExecutor>>>;
 	friend class RecursiveCTEState;
+	friend class RecursiveCTEUnionState;
+	friend class RecursiveCTEKeyedState;
 	friend class RecursiveCTEMetrics;
 
 public:
 	PhysicalRecursiveCTE(PhysicalPlan &physical_plan, Identifier ctename, TableIndex table_index,
-	                     vector<LogicalType> types, bool union_all, PhysicalOperator &top, PhysicalOperator &bottom,
-	                     idx_t estimated_cardinality);
+	                     vector<LogicalType> types, RecursiveCTEMode mode, PhysicalOperator &top,
+	                     PhysicalOperator &bottom, idx_t estimated_cardinality);
 	~PhysicalRecursiveCTE() override;
 
 	Identifier ctename;
 	TableIndex table_index;
 	// Flag if recurring table is referenced, if not we do not copy ht into ColumnDataCollection
 	bool ref_recurring;
-	bool union_all;
+	RecursiveCTEMode mode;
 	shared_ptr<ColumnDataCollection> working_table;
 	shared_ptr<MetaPipeline> recursive_meta_pipeline;
+
+	bool UsingKey() const {
+		return mode == RecursiveCTEMode::KEY_UNION || mode == RecursiveCTEMode::KEY_UNION_ALL;
+	}
+	bool UnionAll() const {
+		return mode == RecursiveCTEMode::UNION_ALL || mode == RecursiveCTEMode::KEY_UNION_ALL;
+	}
 
 	//===--------------------------------------------------------------------===//
 	// Additionally required for using-key recursive CTE to normal CTE.
 	//===--------------------------------------------------------------------===//
-	bool using_key = false;
+	//! Plan-time properties of the payload aggregates
+	RecursiveCTEKeyedProperties keyed;
 	// Contains the result of the key variant
 	shared_ptr<ColumnDataCollection> recurring_table;
 	// Contains the types of the payload and key columns.
@@ -137,7 +183,11 @@ public:
 	vector<const_reference<PhysicalOperator>> GetSources() const override;
 
 private:
-	void ExecuteRecursivePipelines(ExecutionContext &context) const;
+	//! Drives one recursive epoch. BLOCKED means the epoch suspended on blocked inner work: the
+	//! caller must return SourceResultType::BLOCKED and will be re-entered through the given
+	//! interrupt state once the blocking work completes. The epoch resumes where it stopped.
+	RecursiveEpochResult ExecuteRecursivePipelines(ExecutionContext &context,
+	                                               const InterruptState &interrupt_state) const;
 	idx_t NextMetricsInvocation() const;
 
 private:
@@ -181,7 +231,7 @@ public:
 
 private:
 	SourceResultType GetDataFromState(DataChunk &chunk, OperatorSourceInput &input,
-	                                  RecursiveCTEState &recursive_state) const;
+	                                  RecursiveCTEKeyedState &recursive_state) const;
 };
 
 } // namespace duckdb

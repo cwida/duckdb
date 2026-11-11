@@ -6,6 +6,9 @@ statement ok
 CREATE TABLE wide_description AS FROM query(
 	'SELECT ' || array_to_string(['NULL::BIGINT AS c' || i FOR i IN range(2050)], ', '));
 
+statement ok
+CREATE TABLE empty_t(c0 INTEGER);
+
 foreach optimizer '' 'unused_columns'
 
 statement ok
@@ -99,6 +102,27 @@ SELECT count(*) FROM (SELECT 1 FROM (DESCRIBE SELECT 1 AS a, 2 AS b) UNION ALL S
 
 query I
 SELECT count(*) FROM (SELECT DISTINCT 1 FROM (DESCRIBE SELECT 1 AS a, 2 AS b));
+----
+1
+
+# An aggregate without groups or aggregates produces a single row, even over empty input.
+query I
+SELECT count(*) FROM (SELECT 1 FROM (DESCRIBE SELECT 1 AS a, 2 AS b) HAVING true);
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT 1 FROM range(3) HAVING true);
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT 1 FROM range(0) HAVING true);
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT 1 FROM empty_t HAVING true);
 ----
 1
 

@@ -1,12 +1,18 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/types/bit.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
+#include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/storage/statistics/string_stats.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
+#include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/function/scalar/string_functions.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "utf8proc.hpp"
@@ -161,6 +167,31 @@ void ArrayLengthFunction(DataChunk &args, ExpressionState &state, Vector &result
 	}
 }
 
+unique_ptr<BaseStatistics> ListLengthPropagateStats(ClientContext &context, FunctionStatisticsInput &input) {
+	auto &list_stats = input.child_stats[0];
+	if (list_stats.GetStatsType() != StatisticsType::LIST_STATS) {
+		return nullptr;
+	}
+	auto min_length = ListStats::MinListLength(list_stats);
+	auto max_length = ListStats::MaxListLength(list_stats);
+	if (!min_length.IsValid() || !max_length.IsValid()) {
+		return nullptr;
+	}
+	auto result = NumericStats::CreateEmpty(input.expr.GetReturnType());
+	NumericStats::SetMin(result, Value::BIGINT(NumericCast<int64_t>(min_length.GetIndex())));
+	NumericStats::SetMax(result, Value::BIGINT(NumericCast<int64_t>(max_length.GetIndex())));
+	result.CopyValidity(list_stats);
+	if (min_length.GetIndex() == max_length.GetIndex() && input.expr_ptr) {
+		// all lists have the same length, so the result is that length unless the list is NULL
+		vector<unique_ptr<Expression>> children;
+		children.push_back(
+		    make_uniq<BoundConstantExpression>(Value::BIGINT(NumericCast<int64_t>(min_length.GetIndex()))));
+		children.push_back(std::move(input.expr.GetChildrenMutable()[0]));
+		*input.expr_ptr = BindBuiltinScalarExpression(context, ConstantOrNullFun::Name, std::move(children));
+	}
+	return result.ToUnique();
+}
+
 void ArrayOrListLengthResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &bound_function = input.GetBoundFunction();
 	auto &argument = input.GetArgument(0);
@@ -220,13 +251,24 @@ void ArrayLengthBinaryFunction(DataChunk &args, ExpressionState &state, Vector &
 	auto &dimensions = data.dimensions;
 	auto max_dimension = static_cast<int64_t>(dimensions.size());
 
-	UnaryExecutor::Execute<int64_t, int64_t>(dimension, result, [&](int64_t dimension) {
-		if (dimension < 1 || dimension > max_dimension) {
-			throw OutOfRangeException(StringUtil::Format(
-			    "array_length dimension '%lld' out of range (min: '1', max: '%lld')", dimension, max_dimension));
+	// the result is NULL for NULL arrays
+	const auto count = args.size();
+	auto array_validity = args.data[0].Validity();
+	auto dimension_values = dimension.Values<int64_t>();
+	auto writer = FlatVector::Writer<int64_t>(result, count);
+	for (idx_t i = 0; i < count; i++) {
+		auto entry = dimension_values[i];
+		if (!array_validity.IsValid(i) || !entry.IsValid()) {
+			writer.WriteNull();
+			continue;
 		}
-		return dimensions[UnsafeNumericCast<idx_t>(dimension - 1)];
-	});
+		auto dim = entry.GetValue();
+		if (dim < 1 || dim > max_dimension) {
+			throw OutOfRangeException(StringUtil::Format(
+			    "array_length dimension '%lld' out of range (min: '1', max: '%lld')", dim, max_dimension));
+		}
+		writer.WriteValue(dimensions[UnsafeNumericCast<idx_t>(dim - 1)]);
+	}
 }
 
 void ArrayOrListLengthBinaryResolveTypes(ResolveScalarFunctionTypesInput &input) {
@@ -285,6 +327,7 @@ ScalarFunctionSet LengthFun::GetFunctions() {
 
 	ScalarFunction list_fun({}, LogicalType::BIGINT, nullptr);
 	list_fun.SetResolveTypesCallback(ArrayOrListLengthResolveTypes);
+	list_fun.SetStatisticsCallback(ListLengthPropagateStats);
 	list_fun.GetSignature().AddParameter("list", LogicalType::LIST(LogicalType::ANY));
 	length.AddFunction(list_fun);
 
@@ -305,6 +348,7 @@ ScalarFunctionSet ArrayLengthFun::GetFunctions() {
 
 	ScalarFunction unary({}, LogicalType::BIGINT, nullptr);
 	unary.SetResolveTypesCallback(ArrayOrListLengthResolveTypes);
+	unary.SetStatisticsCallback(ListLengthPropagateStats);
 	unary.GetSignature().AddParameter("list", LogicalType::LIST(LogicalType::ANY));
 	array_length.AddFunction(unary);
 

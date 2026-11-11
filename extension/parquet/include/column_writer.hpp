@@ -27,6 +27,7 @@
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/vector.hpp"
+#include "parquet_arena.h"
 
 namespace duckdb_parquet {
 class RowGroup;
@@ -176,7 +177,11 @@ public:
 
 	virtual bool TryExportPreparedShreddingType(ShreddingType &result) const;
 
-	virtual idx_t FinalizeSchema(vector<duckdb_parquet::SchemaElement> &schemas) = 0;
+	virtual bool SupportsBloomFilterFallback() const {
+		return false;
+	}
+
+	virtual idx_t FinalizeSchema(duckdb_parquet::SchemaElementList &schemas) = 0;
 
 	//! Create the column writer for a specific type recursively
 	static unique_ptr<ColumnWriter> CreateWriterRecursive(ClientContext &context, ParquetWriter &writer,
@@ -201,6 +206,11 @@ public:
 	//! Called after all data has been passed to Analyze
 	virtual void FinalizeAnalyze(ColumnWriterState &state) {
 		throw NotImplementedException("Writer does not need analysis");
+	}
+
+	//! Whether Analyze and Write accept constant and dictionary vectors as the top-level column input
+	virtual bool HandlesCompactVectors() const {
+		return false;
 	}
 
 	virtual void Prepare(ColumnWriterState &state, ColumnWriterState *parent, Vector &vector, idx_t count,
@@ -240,6 +250,7 @@ public:
 	ParquetColumnSchema column_schema;
 	vector<Identifier> schema_path;
 	bool can_have_nulls;
+	bool bloom_filter_fallback = false;
 
 protected:
 	vector<unique_ptr<ColumnWriter>> child_writers;

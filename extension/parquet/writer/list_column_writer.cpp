@@ -182,7 +182,7 @@ const ColumnWriter &ListColumnWriter::GetChildWriter() const {
 	return *child_writers[0];
 }
 
-idx_t ListColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> &schemas) {
+idx_t ListColumnWriter::FinalizeSchema(duckdb_parquet::SchemaElementList &schemas) {
 	idx_t schema_idx = schemas.size();
 
 	auto &schema = column_schema;
@@ -196,7 +196,8 @@ idx_t ListColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> &sc
 	// set up the two schema elements for the list
 	// for some reason we only set the converted type in the OPTIONAL element
 	// first an OPTIONAL element
-	duckdb_parquet::SchemaElement optional_element;
+	schemas.emplace_back();
+	auto &optional_element = schemas.back();
 	optional_element.repetition_type = null_type;
 	optional_element.num_children = 1;
 	optional_element.converted_type = (type.id() == LogicalTypeId::MAP) ? ConvertedType::MAP : ConvertedType::LIST;
@@ -209,17 +210,16 @@ idx_t ListColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> &sc
 		optional_element.__isset.field_id = true;
 		optional_element.field_id = NumericCast<int32_t>(field_id.GetIndex());
 	}
-	schemas.push_back(std::move(optional_element));
 
 	if (type.id() != LogicalTypeId::MAP) {
-		duckdb_parquet::SchemaElement repeated_element;
+		schemas.emplace_back();
+		auto &repeated_element = schemas.back();
 		repeated_element.repetition_type = FieldRepetitionType::REPEATED;
 		repeated_element.__isset.num_children = true;
 		repeated_element.__isset.type = false;
 		repeated_element.__isset.repetition_type = true;
 		repeated_element.num_children = 1;
 		repeated_element.name = "list";
-		schemas.push_back(std::move(repeated_element));
 	} else {
 		//! When we're describing a MAP, we skip the dummy "list" element
 		//! Instead, the "key_value" struct will be marked as REPEATED

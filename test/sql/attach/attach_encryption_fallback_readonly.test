@@ -2,8 +2,6 @@
 # description: Ensure the fallback crypto implementation is read-only
 # group: [attach]
 
-mode skip instable
-
 require vector_size 2048
 
 load {TEST_DIR}/tmp.db
@@ -17,15 +15,19 @@ set autoinstall_known_extensions=false
 statement ok
 set autoload_known_extensions=false
 
+statement ok
+COPY (SELECT content FROM read_blob('data/attach_test/encrypted_gcm_key=abcde.db'))
+TO '{TEST_DIR}/encrypted_gcm.db' (FORMAT BLOB);
+
 # First we try to read an encrypted database
 statement error
-ATTACH 'data/attach_test/encrypted_gcm_key=abcde.db' as enc (ENCRYPTION_KEY 'abcde', ENCRYPTION_CIPHER 'GCM');
+ATTACH '{TEST_DIR}/encrypted_gcm.db' as enc (ENCRYPTION_KEY 'abcde', ENCRYPTION_CIPHER 'GCM');
 ----
 Invalid Configuration Error:  DuckDB currently has a read-only crypto module loaded
 
 # It works again by setting READONLY
 statement ok
-ATTACH 'data/attach_test/encrypted_gcm_key=abcde.db' as enc (ENCRYPTION_KEY 'abcde', ENCRYPTION_CIPHER 'GCM', READ_ONLY);
+ATTACH '{TEST_DIR}/encrypted_gcm.db' as enc (ENCRYPTION_KEY 'abcde', ENCRYPTION_CIPHER 'GCM', READ_ONLY);
 
 query I
 FROM enc.test ORDER BY value
@@ -35,6 +37,11 @@ FROM enc.test ORDER BY value
 2
 3
 4
+
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE extension_name='httpfs' AND loaded;
+----
+0
 
 statement ok
 DETACH enc
@@ -67,7 +74,7 @@ SET force_mbedtls_unsafe = 'false'
 require httpfs
 
 statement ok
-ATTACH 'data/attach_test/encrypted_gcm_key=abcde.db' as enc (ENCRYPTION_KEY 'abcde', ENCRYPTION_CIPHER 'GCM');
+ATTACH '{TEST_DIR}/encrypted_gcm.db' as enc (ENCRYPTION_KEY 'abcde', ENCRYPTION_CIPHER 'GCM');
 
 query I
 FROM enc.test ORDER BY value

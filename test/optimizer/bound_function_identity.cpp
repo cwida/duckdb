@@ -187,7 +187,7 @@ TEST_CASE("Optimizer-introduced constant_or_null keeps its definition", "[optimi
 	con.BeginTransaction();
 	auto functions = PlanIdentityFunctions(con, "SELECT i * 0 FROM integers");
 	auto &fun = RequireIdentityFunction(functions, "constant_or_null");
-	// the bind derives the return type from the leading constant
+	// the return type is the type of the leading constant
 	REQUIRE(fun.return_type == LogicalType::INTEGER);
 	REQUIRE(fun.arguments.size() == 2);
 	con.Rollback();

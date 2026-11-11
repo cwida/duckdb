@@ -1,0 +1,18 @@
+# name: test/sql/attach/attach_mmap_reserve_size_range.test
+# description: ATTACH rejects an out of range MMAP_RESERVE_SIZE
+# group: [attach]
+
+statement error
+ATTACH '{TEST_DIR}/mmap_reserve_range.db' AS x (IO_MODE 'MMAP', MMAP_RESERVE_SIZE '-1');
+----
+Binder Error: MMAP_RESERVE_SIZE "-1" is out of range
+
+statement error
+ATTACH '{TEST_DIR}/mmap_reserve_range.db' AS x (IO_MODE 'MMAP', MMAP_RESERVE_SIZE 'none');
+----
+Binder Error: MMAP_RESERVE_SIZE "none" is out of range
+
+query I
+SELECT 42
+----
+42

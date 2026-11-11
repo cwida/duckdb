@@ -1,4 +1,5 @@
 #include "core_functions/scalar/string_functions.hpp"
+#include "core_functions/scalar/string_characters.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 
 #include <ctype.h>
@@ -6,10 +7,8 @@
 
 namespace duckdb {
 
-static int64_t MismatchesScalarFunction(Vector &result, const string_t str, string_t tgt) {
-	idx_t str_len = str.GetSize();
-	idx_t tgt_len = tgt.GetSize();
-
+template <class T>
+static int64_t Mismatches(const T *str_str, idx_t str_len, const T *tgt_str, idx_t tgt_len) {
 	if (str_len != tgt_len) {
 		throw InvalidInputException("Mismatch Function: Strings must be of equal length!");
 	}
@@ -18,8 +17,6 @@ static int64_t MismatchesScalarFunction(Vector &result, const string_t str, stri
 	}
 
 	idx_t mismatches = 0;
-	auto str_str = str.GetData();
-	auto tgt_str = tgt.GetData();
 
 	for (idx_t idx = 0; idx < str_len; ++idx) {
 		if (str_str[idx] != tgt_str[idx]) {
@@ -27,6 +24,16 @@ static int64_t MismatchesScalarFunction(Vector &result, const string_t str, stri
 		}
 	}
 	return (int64_t)mismatches;
+}
+
+//! The number of positions at which the characters of the strings differ - not their bytes
+static int64_t MismatchesScalarFunction(Vector &result, const string_t str, string_t tgt) {
+	if (StringIsAscii(str) && StringIsAscii(tgt)) {
+		return Mismatches(str.GetData(), str.GetSize(), tgt.GetData(), tgt.GetSize());
+	}
+	auto str_chars = GetStringCharacters(str);
+	auto tgt_chars = GetStringCharacters(tgt);
+	return Mismatches(str_chars.data(), str_chars.size(), tgt_chars.data(), tgt_chars.size());
 }
 
 static void MismatchesFunction(DataChunk &args, ExpressionState &state, Vector &result) {

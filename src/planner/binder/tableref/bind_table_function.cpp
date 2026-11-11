@@ -24,18 +24,54 @@ namespace duckdb {
 
 enum class TableFunctionBindType { STANDARD_TABLE_FUNCTION, TABLE_IN_OUT_FUNCTION, TABLE_PARAMETER_FUNCTION };
 
+//! Recognize named arguments before deciding whether a call has a table input.
+static bool NamedArgumentShaped(const FunctionArgument &argument) {
+	if (argument.HasName()) {
+		return true;
+	}
+	auto &expression = argument.GetExpression();
+	if (expression.GetExpressionType() == ExpressionType::SUBQUERY) {
+		return false;
+	}
+	if (expression.GetExpressionType() == ExpressionType::COMPARE_EQUAL) {
+		auto &comparison = expression.Cast<ComparisonExpression>();
+		return comparison.Left().GetExpressionType() == ExpressionType::COLUMN_REF &&
+		       !comparison.Left().Cast<ColumnRefExpression>().IsQualified();
+	}
+	return !expression.GetAlias().empty();
+}
+
+//! True when a real table input remains once the named arguments are set aside.
+static bool HasTableInputBesidesNamedArguments(const vector<FunctionArgument> &arguments) {
+	for (auto &argument : arguments) {
+		if (!NamedArgumentShaped(argument) && !argument.GetExpression().IsScalar()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static TableFunctionBindType GetTableFunctionBindType(TableFunctionCatalogEntry &table_function,
-                                                      vector<unique_ptr<ParsedExpression>> &expressions) {
+                                                      const vector<FunctionArgument> &arguments) {
 	// first check if all expressions are scalar
 	// if they are we always bind as a standard table function
 	bool all_scalar = true;
-	for (auto &expr : expressions) {
-		if (!expr->IsScalar()) {
+	for (auto &argument : arguments) {
+		if (!argument.GetExpression().IsScalar()) {
 			all_scalar = false;
 			break;
 		}
 	}
 	if (all_scalar) {
+		for (idx_t function_idx = 0; function_idx < table_function.functions.Size(); function_idx++) {
+			const auto &function = *table_function.functions.GetFunctionByOffset(function_idx);
+			for (auto &param : function.GetSignature().GetParameters()) {
+				if (param.GetType().id() == LogicalTypeId::TABLE) {
+					throw BinderException("Table function %s requires a subquery as its TABLE parameter",
+					                      table_function.name);
+				}
+			}
+		}
 		return TableFunctionBindType::STANDARD_TABLE_FUNCTION;
 	}
 	// if we have non-scalar parameters - we need to look at the function definition to decide how to bind
@@ -55,20 +91,20 @@ static TableFunctionBindType GetTableFunctionBindType(TableFunctionCatalogEntry 
 		} else if (function.function || function.bind_replace || function.bind_operator) {
 			has_standard_table_function = true;
 		} else {
-			throw InternalException("Function \"%s\" has neither in_out_function nor function defined",
+			throw InternalException("Function %s has neither in_out_function nor function defined",
 			                        table_function.name);
 		}
 	}
 	if (has_table_parameter) {
 		if (table_function.functions.Size() != 1) {
 			throw InternalException(
-			    "Function \"%s\" has a TABLE parameter, and multiple function overloads - this is not supported",
+			    "Function %s has a TABLE parameter, and multiple function overloads - this is not supported",
 			    table_function.name);
 		}
 		return TableFunctionBindType::TABLE_PARAMETER_FUNCTION;
 	}
 	if (has_in_out_function && has_standard_table_function) {
-		throw InternalException("Function \"%s\" is both an in_out_function and a table function", table_function.name);
+		throw InternalException("Function %s is both an in_out_function and a table function", table_function.name);
 	}
 	return has_in_out_function ? TableFunctionBindType::TABLE_IN_OUT_FUNCTION
 	                           : TableFunctionBindType::STANDARD_TABLE_FUNCTION;
@@ -85,24 +121,23 @@ void Binder::BindTableInTableOutFunction(vector<unique_ptr<ParsedExpression>> &e
 	MoveCorrelatedExpressions(*binder);
 }
 
-bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_function,
-                                         vector<unique_ptr<ParsedExpression>> &expressions,
+bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_function, vector<FunctionArgument> &arguments,
                                          vector<unique_ptr<Expression>> &positional_arguments,
                                          vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments,
                                          BoundStatement &subquery, bool &table_in_out, ErrorData &error) {
-	auto bind_type = GetTableFunctionBindType(table_function, expressions);
-	if (bind_type == TableFunctionBindType::TABLE_IN_OUT_FUNCTION) {
-		// bind table in-out function - its arguments are the columns of the subquery, so there is nothing to fold
-		BindTableInTableOutFunction(expressions, subquery);
-		table_in_out = true;
-		return true;
+	auto bind_type = GetTableFunctionBindType(table_function, arguments);
+	// Named arguments alone do not make an otherwise scalar call table-in-out.
+	if (bind_type == TableFunctionBindType::TABLE_IN_OUT_FUNCTION && !HasTableInputBesidesNamedArguments(arguments)) {
+		bind_type = TableFunctionBindType::STANDARD_TABLE_FUNCTION;
 	}
+	vector<unique_ptr<ParsedExpression>> input_expressions;
 	bool seen_subquery = false;
-	for (auto &child : expressions) {
-		Identifier parameter_name;
+	for (auto &argument : arguments) {
+		auto &child = argument.GetExpressionMutable();
+		Identifier parameter_name = argument.GetName();
 
-		// hack to make named parameters work
-		if (child->GetExpressionType() == ExpressionType::COMPARE_EQUAL) {
+		// Explicit argument names take precedence over the legacy name = expression form.
+		if (parameter_name.empty() && child->GetExpressionType() == ExpressionType::COMPARE_EQUAL) {
 			// comparison, check if the LHS is a columnref
 			auto &comp = child->Cast<ComparisonExpression>();
 			if (comp.Left().GetExpressionType() == ExpressionType::COLUMN_REF) {
@@ -112,11 +147,21 @@ bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_functi
 					child = std::move(comp.RightMutable());
 				}
 			}
-		} else if (!child->GetAlias().empty()) {
+		} else if (parameter_name.empty() && !child->GetAlias().empty() &&
+		           !(bind_type == TableFunctionBindType::TABLE_IN_OUT_FUNCTION &&
+		             child->GetExpressionType() == ExpressionType::SUBQUERY)) {
 			// <name> => <expression> will set the alias of <expression> to <name>
 			parameter_name = child->GetAlias();
 		}
-		if (bind_type == TableFunctionBindType::TABLE_PARAMETER_FUNCTION &&
+		if (bind_type == TableFunctionBindType::TABLE_IN_OUT_FUNCTION && parameter_name.empty()) {
+			if (!named_arguments.empty()) {
+				error = ErrorData("Unnamed parameters cannot come after named parameters");
+				return false;
+			}
+			input_expressions.push_back(std::move(child));
+			continue;
+		}
+		if (bind_type == TableFunctionBindType::TABLE_PARAMETER_FUNCTION && parameter_name.empty() &&
 		    child->GetExpressionType() == ExpressionType::SUBQUERY) {
 			D_ASSERT(table_function.functions.Size() == 1);
 			const auto &fun = *table_function.functions.GetFunctionByOffset(0);
@@ -140,7 +185,11 @@ bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_functi
 		}
 
 		TableFunctionBinder binder(*this, context, table_function.name.GetIdentifierName());
+		// a NULL argument keeps the NULL type, so that it can still match any overload
+		auto prev_can_contain_nulls = CanContainNulls();
+		SetCanContainNulls(true);
 		auto expr = binder.Bind(child);
+		SetCanContainNulls(prev_can_contain_nulls);
 		if (expr->HasParameter()) {
 			throw ParameterNotResolvedException();
 		}
@@ -161,6 +210,12 @@ bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_functi
 		} else {
 			named_arguments.emplace_back(parameter_name, std::move(expr));
 		}
+	}
+	if (bind_type == TableFunctionBindType::TABLE_IN_OUT_FUNCTION) {
+		// Positional arguments vary with each input row. Named options remain scalar
+		// bind-time arguments and must not become extra columns in that input table.
+		BindTableInTableOutFunction(input_expressions, subquery);
+		table_in_out = true;
 	}
 	return true;
 }
@@ -230,7 +285,7 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 	auto constexpr ordinality_name = "ordinality";
 	string ordinality_column_name = ordinality_name;
 	optional_idx ordinality_column_id;
-	// the function binder has placed them already, but not for a table in-out call or a direct bind
+	// the function binder has placed them already, but a direct bind may not have done so
 	table_function.GetSignature().FillNamedDefaults(context, named_parameters);
 	table_function.SetCallArguments(parameters, named_parameters);
 	if (table_function.bind || table_function.bind_replace || table_function.bind_operator) {
@@ -244,14 +299,13 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 				}
 				new_plan->ResolveOperatorTypes();
 				if (new_plan->types.size() != return_names.size()) {
-					throw InternalException("Failed to bind \"%s\": return_types/names must have same size",
+					throw InternalException("Failed to bind %s: return_types/names must have same size",
 					                        table_function.GetName());
 				}
 				for (auto &binding : new_plan->GetColumnBindings()) {
 					if (binding.table_index != bind_index) {
-						throw InternalException(
-						    "Failed to bind \"%s\": root bind index must be the passed in bind index",
-						    table_function.GetName());
+						throw InternalException("Failed to bind %s: root bind index must be the passed in bind index",
+						                        table_function.GetName());
 					}
 				}
 				auto setof_column_name = ApplyPostgresSetofAliasCompatibility(table_function, ref, return_names);
@@ -277,7 +331,7 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 			}
 		}
 		if (!table_function.bind) {
-			throw BinderException("Failed to bind \"%s\": nullptr returned from bind_replace without bind function",
+			throw BinderException("Failed to bind %s: nullptr returned from bind_replace without bind function",
 			                      table_function.GetName());
 		}
 		bind_data = table_function.bind(context, bind_input, return_types, return_names);
@@ -303,18 +357,17 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 			}
 		}
 	} else {
-		throw InvalidInputException("Cannot call function \"%s\" directly - it has no bind function",
+		throw InvalidInputException("Cannot call function %s directly - it has no bind function",
 		                            table_function.GetName());
 	}
 	if (bind_data && !bind_data->SupportStatementCache()) {
 		SetAlwaysRequireRebind();
 	}
 	if (return_types.size() != return_names.size()) {
-		throw InternalException("Failed to bind \"%s\": return_types/names must have same size",
-		                        table_function.GetName());
+		throw InternalException("Failed to bind %s: return_types/names must have same size", table_function.GetName());
 	}
 	if (return_types.empty()) {
-		throw InternalException("Failed to bind \"%s\": Table function must return at least one column",
+		throw InternalException("Failed to bind %s: Table function must return at least one column",
 		                        table_function.GetName());
 	}
 	auto setof_column_name = ApplyPostgresSetofAliasCompatibility(table_function, ref, return_names);
@@ -414,12 +467,15 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	// it names an attached database, and otherwise the outermost schema of a (possibly nested) schema path.
 	EntryLookupInfo table_function_lookup(CatalogType::TABLE_FUNCTION_ENTRY, QualifiedName(fexpr.FunctionName()),
 	                                      error_context);
-	auto bound_name = BindTableName(fexpr.GetQualifiedName());
+	auto bound_name = BindTableName(entry_retriever, fexpr.GetQualifiedName());
 	auto &func_catalog =
 	    *GetCatalogEntry(EntryLookupInfo(table_function_lookup, bound_name), OnEntryNotFound::THROW_EXCEPTION);
 
 	if (func_catalog.type == CatalogType::TABLE_MACRO_ENTRY) {
 		auto &macro_func = func_catalog.Cast<TableMacroCatalogEntry>();
+		if (!func_catalog.ParentCatalog().IsSystemCatalog()) {
+			GetStatementProperties().RegisterDBRead(func_catalog.ParentCatalog(), context);
+		}
 		auto query_node = BindTableMacro(fexpr, macro_func, 0);
 		D_ASSERT(query_node);
 
@@ -457,31 +513,25 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	bool table_in_out = false;
 	ErrorData error;
 
-	vector<unique_ptr<ParsedExpression>> children;
-	for (auto &child : fexpr.GetArgumentsMutable()) {
-		children.push_back(std::move(child.GetExpressionMutable()));
-	}
-
-	if (!BindTableFunctionParameters(function, children, positional_arguments, named_arguments, subquery, table_in_out,
-	                                 error)) {
+	if (!BindTableFunctionParameters(function, fexpr.GetArgumentsMutable(), positional_arguments, named_arguments,
+	                                 subquery, table_in_out, error)) {
 		error.AddQueryLocation(ref);
 		error.Throw();
 	}
 
 	// selection, named-argument checking, folding and casting all happen in the function binder
 	FunctionBinder function_binder(*this);
-	vector<Value> parameters;
-	named_argument_map_t named_parameters;
-	auto best_function_idx =
-	    table_in_out ? function_binder.BindTableInOutFunction(function.name, function.functions, subquery.types, error)
-	                 : function_binder.BindFunction(function.name, function.functions, positional_arguments,
-	                                                named_arguments, parameters, named_parameters, error);
-	if (!best_function_idx.IsValid()) {
+	auto resolved =
+	    table_in_out
+	        ? function_binder.BindTableInOutFunction(function.functions, subquery.types, named_arguments, error)
+	        : function_binder.BindTableFunction(function.functions, positional_arguments, named_arguments, error);
+	if (!resolved) {
 		error.AddQueryLocation(ref);
 		error.Throw();
 	}
-	// copied out of the set: BindTableFunctionInternal fills in the bound return types
-	BoundTableFunction table_function(function.functions.GetFunctionByOffset(best_function_idx.GetIndex()));
+	auto &table_function = resolved->function;
+	auto &parameters = resolved->parameters;
+	auto &named_parameters = resolved->named_parameters;
 
 	vector<LogicalType> input_table_types;
 	vector<Identifier> input_table_names;

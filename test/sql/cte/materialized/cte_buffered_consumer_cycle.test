@@ -1,0 +1,42 @@
+# name: test/sql/cte/materialized/cte_buffered_consumer_cycle.test
+# description: A direct CTE consumer must not wait on a buffered consumer fed by another direct consumer
+# group: [materialized]
+
+# On regression this query deadlocks idle, so bound it. SET max_execution_time cannot abort a fully
+# parked schedule, only an interrupt can.
+set query_timeout 60
+
+statement ok
+CREATE TABLE t(a INTEGER, b VARCHAR);
+
+statement ok
+INSERT INTO t VALUES (0, '0'), (1, '1');
+
+statement ok
+CREATE TABLE u(a INTEGER);
+
+statement ok
+INSERT INTO u SELECT 1 FROM range(1000);
+
+statement ok
+SET threads=4;
+
+query II
+SELECT count(nullif((SELECT min(1) FROM t t2 WHERE t2.a >= u.a), 1)) AS c1, count(CASE WHEN NOT EXISTS ((SELECT 1, 1, 1, 1 FROM (SELECT 1 WHERE false) WHERE NOT EXISTS (SELECT t.b)) EXCEPT ALL (SELECT 1, 1, t.a, 1)) THEN 1 END) AS c2 FROM u, t;
+----
+0	2000
+
+# The hang path requires decorrelation to produce a CTE with a buffered consumer. Pin that topology so a
+# planner change cannot silently stop exercising it.
+query II
+EXPLAIN ANALYZE SELECT count(nullif((SELECT min(1) FROM t t2 WHERE t2.a >= u.a), 1)) AS c1, count(CASE WHEN NOT EXISTS ((SELECT 1, 1, 1, 1 FROM (SELECT 1 WHERE false) WHERE NOT EXISTS (SELECT t.b)) EXCEPT ALL (SELECT 1, 1, t.a, 1)) THEN 1 END) AS c2 FROM u, t;
+----
+analyzed_plan	<REGEX>:.*Fanout Mode: BUFFERED.*
+
+statement ok
+SET threads=1;
+
+query II
+SELECT count(nullif((SELECT min(1) FROM t t2 WHERE t2.a >= u.a), 1)) AS c1, count(CASE WHEN NOT EXISTS ((SELECT 1, 1, 1, 1 FROM (SELECT 1 WHERE false) WHERE NOT EXISTS (SELECT t.b)) EXCEPT ALL (SELECT 1, 1, t.a, 1)) THEN 1 END) AS c2 FROM u, t;
+----
+0	2000

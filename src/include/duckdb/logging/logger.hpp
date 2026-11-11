@@ -19,6 +19,7 @@ class DatabaseInstance;
 class DataChunk;
 class LogManager;
 class ColumnDataCollection;
+class Context;
 class ThreadContext;
 class FileOpener;
 class LogStorage;
@@ -83,6 +84,7 @@ public:
 	DUCKDB_API static Logger &Get(const ThreadContext &thread_context);
 	DUCKDB_API static Logger &Get(const ExecutionContext &execution_context);
 	DUCKDB_API static Logger &Get(const ClientContext &client_context);
+	DUCKDB_API static Logger &Get(const Context &context);
 	DUCKDB_API static Logger &Get(const FileOpener &opener);
 	DUCKDB_API static Logger &Get(const DatabaseInstance &db);
 	DUCKDB_API static Logger &Get(const shared_ptr<Logger> &logger);
@@ -96,7 +98,7 @@ public:
 	DUCKDB_API virtual bool IsMutable() {
 		return false;
 	};
-	DUCKDB_API virtual void UpdateConfig(LogConfig &new_config) {
+	DUCKDB_API virtual void UpdateConfig(const LogConfig &new_config) {
 		throw InternalException("Cannot update the config of this logger!");
 	}
 	DUCKDB_API virtual const LogConfig &GetConfig() const = 0;
@@ -111,8 +113,7 @@ protected:
 // Thread-safe logger
 class ThreadSafeLogger : public Logger {
 public:
-	explicit ThreadSafeLogger(LogConfig &config_p, LoggingContext &context_p, LogManager &manager);
-	explicit ThreadSafeLogger(LogConfig &config_p, RegisteredLoggingContext context_p, LogManager &manager);
+	ThreadSafeLogger(shared_ptr<const LogConfig> config_p, RegisteredLoggingContext context_p, LogManager &manager);
 
 	// Main Logger API
 	bool ShouldLog(const char *log_type, LogLevel log_level) override;
@@ -123,12 +124,11 @@ public:
 		return true;
 	}
 	const LogConfig &GetConfig() const override {
-		return config;
+		return *config;
 	}
 
 protected:
-	const LogConfig config;
-	mutex lock;
+	const shared_ptr<const LogConfig> config;
 	const RegisteredLoggingContext context;
 };
 
@@ -159,8 +159,8 @@ protected:
 // Thread-safe Logger with mutable log settings
 class MutableLogger : public Logger {
 public:
-	explicit MutableLogger(LogConfig &config_p, LoggingContext &context_p, LogManager &manager);
-	explicit MutableLogger(LogConfig &config_p, RegisteredLoggingContext context_p, LogManager &manager);
+	explicit MutableLogger(const LogConfig &config_p, LoggingContext &context_p, LogManager &manager);
+	explicit MutableLogger(const LogConfig &config_p, RegisteredLoggingContext context_p, LogManager &manager);
 
 	// Main Logger API
 	bool ShouldLog(const char *log_type, LogLevel log_level) override;
@@ -176,7 +176,7 @@ public:
 	const LogConfig &GetConfig() const override {
 		return config;
 	}
-	void UpdateConfig(LogConfig &new_config) override;
+	void UpdateConfig(const LogConfig &new_config) override;
 
 protected:
 	// Atomics for lock-free log setting checks

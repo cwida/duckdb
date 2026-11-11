@@ -47,6 +47,7 @@ struct CreateTypeInfo;
 struct CreateTableInfo;
 struct DatabaseSize;
 struct MetadataBlockInfo;
+class SchemaScanFilters;
 
 class AttachedDatabase;
 class ClientContext;
@@ -301,6 +302,11 @@ public:
 	          OnEntryNotFound if_not_found);
 	//! Scans all the schemas in the system one-by-one, invoking the callback for each entry
 	DUCKDB_API virtual void ScanSchemas(ClientContext &context, std::function<void(SchemaCatalogEntry &)> callback) = 0;
+	//! The schemas a system catalog scan (duckdb_tables, duckdb_views) visits in this catalog, given the filters
+	//! pushed down on the schema identity columns. Lists every schema and keeps those the filters accept. A catalog
+	//! may override this to avoid the listing; it must return every schema the filters accept and may return more.
+	DUCKDB_API virtual vector<reference<SchemaCatalogEntry>> GetSchemasForScan(ClientContext &context,
+	                                                                           const SchemaScanFilters &filters);
 
 	//! Gets the entry described by the (optionally catalog/schema-qualified) EntryLookupInfo. If the entry does not
 	//! exist behavior depends on OnEntryNotFound
@@ -517,6 +523,7 @@ protected:
 	AttachedDatabase &db;
 
 	//! (optionally) a default table to query for `SELECT * FROM <catalog_name>;`
+	mutable mutex default_table_lock;
 	Identifier default_table;
 	Identifier default_table_schema;
 

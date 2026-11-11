@@ -1,5 +1,6 @@
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/vector_iterator.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 #include "core_functions/scalar/string_functions.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/common/local_file_system.hpp"
@@ -105,126 +106,111 @@ static idx_t SplitPath(string_t input, const string &sep, CB &&emit) {
 	return list_idx;
 }
 
-static void ReadOptionalArgs(DataChunk &args, Vector &sep, Vector &trim, const bool &front_trim) {
+//! The optional separator and trim_extension arguments - NULL values use the default options
+struct PathOptionArguments {
+	optional_ptr<const Vector> separator;
+	optional_ptr<const Vector> trim_extension;
+};
+
+static PathOptionArguments GetPathOptionArguments(DataChunk &args, const bool front_trim) {
+	PathOptionArguments result;
 	switch (args.ColumnCount()) {
-	case 1: {
+	case 1:
 		// use default values
 		break;
-	}
-	case 2: {
-		UnifiedVectorFormat sec_arg;
-		args.data[1].ToUnifiedFormat(sec_arg);
-		if (sec_arg.validity.RowIsValid(0)) { // if not NULL
-			switch (args.data[1].GetType().id()) {
-			case LogicalTypeId::VARCHAR: {
-				sep.Reinterpret(args.data[1]);
-				break;
-			}
-			case LogicalTypeId::BOOLEAN: { // parse_path and parse_driname won't get in here
-				trim.Reinterpret(args.data[1]);
-				break;
-			}
-			default:
-				throw InvalidInputException("Invalid argument type");
-			}
+	case 2:
+		switch (args.data[1].GetType().id()) {
+		case LogicalTypeId::VARCHAR:
+			result.separator = args.data[1];
+			break;
+		case LogicalTypeId::BOOLEAN: // parse_path and parse_dirname won't get in here
+			result.trim_extension = args.data[1];
+			break;
+		default:
+			throw InvalidInputException("Invalid argument type");
 		}
 		break;
-	}
-	case 3: {
-		if (!front_trim) {
-			// set trim_extension
-			UnifiedVectorFormat sec_arg;
-			args.data[1].ToUnifiedFormat(sec_arg);
-			if (sec_arg.validity.RowIsValid(0)) {
-				trim.Reinterpret(args.data[1]);
-			}
-			UnifiedVectorFormat third_arg;
-			args.data[2].ToUnifiedFormat(third_arg);
-			if (third_arg.validity.RowIsValid(0)) {
-				sep.Reinterpret(args.data[2]);
-			}
-		} else {
+	case 3:
+		if (front_trim) {
 			throw InvalidInputException("Invalid number of arguments");
 		}
+		result.trim_extension = args.data[1];
+		result.separator = args.data[2];
 		break;
-	}
 	default:
 		throw InvalidInputException("Invalid number of arguments");
+	}
+	return result;
+}
+
+template <class OP>
+static void ExecutePathFunction(DataChunk &args, Vector &result, const bool front_trim, OP &&op) {
+	const auto count = args.size();
+	auto options = GetPathOptionArguments(args, front_trim);
+	Vector default_separator(string_t("default"), count_t(count));
+	Vector default_trim_extension(Value::BOOLEAN(false), count_t(count));
+	auto paths = args.data[0].Values<string_t>();
+	auto separators = (options.separator ? *options.separator : default_separator).Values<string_t>();
+	auto trim_extensions = (options.trim_extension ? *options.trim_extension : default_trim_extension).Values<bool>();
+
+	auto writer = FlatVector::Writer<string_t>(result, count);
+	for (idx_t i = 0; i < count; i++) {
+		auto path = paths[i];
+		if (!path.IsValid()) {
+			writer.WriteNull();
+			continue;
+		}
+		auto separator = separators[i];
+		auto sep = GetSeparator(separator.IsValid() ? separator.GetValue() : string_t("default"));
+		auto trim_extension = trim_extensions[i];
+		writer.WriteValue(op(path.GetValue(), sep, trim_extension.IsValid() && trim_extension.GetValue()));
 	}
 }
 
 template <bool FRONT_TRIM>
 static void TrimPathFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	// set default values
-	const Vector &path = args.data[0];
-	Vector separator(string_t("default"), count_t(args.size()));
-	Vector trim_extension(Value::BOOLEAN(false), count_t(args.size()));
-	ReadOptionalArgs(args, separator, trim_extension, FRONT_TRIM);
+	ExecutePathFunction(args, result, FRONT_TRIM, [&](const string_t &input, const string &sep, bool trim_extension) {
+		auto data = input.GetData();
+		auto input_size = input.GetSize();
 
-	TernaryExecutor::Execute<string_t, string_t, bool, string_t>(
-	    path, separator, trim_extension, result, [&](string_t &inputs, string_t input_sep, bool trim_extension) {
-		    auto data = inputs.GetData();
-		    auto input_size = inputs.GetSize();
-		    auto sep = GetSeparator(input_sep.GetString());
-
-		    // find the beginning idx and the size of the result string
-		    idx_t begin = 0;
-		    idx_t new_size = input_size;
-		    if (FRONT_TRIM) { // left trim
-			    auto pos = Find(data, input_size, sep);
-			    if (pos == 0) { // path starts with separator
-				    pos = 1;
-			    }
-			    new_size = (IsIdxValid(pos, input_size)) ? pos : 0;
-		    } else { // right trim
-			    auto idx_last_sep = FindLast(data, input_size, sep);
-			    if (IsIdxValid(idx_last_sep, input_size)) {
-				    begin = idx_last_sep + 1;
-			    }
-			    if (trim_extension) {
-				    auto idx_extension_sep = FindLast(data, input_size, ".");
-				    if (begin <= idx_extension_sep && IsIdxValid(idx_extension_sep, input_size)) {
-					    new_size = idx_extension_sep;
-				    }
-			    }
-		    }
-		    // copy the trimmed string
-		    D_ASSERT(begin <= new_size);
-		    auto target = StringVector::EmptyString(result, new_size - begin);
-		    auto output = target.GetDataWriteable();
-		    memcpy(output, data + begin, new_size - begin);
-
-		    target.Finalize();
-		    return target;
-	    });
+		// find the beginning idx and the size of the result string
+		idx_t begin = 0;
+		idx_t new_size = input_size;
+		if (FRONT_TRIM) { // left trim
+			auto pos = Find(data, input_size, sep);
+			if (pos == 0) { // path starts with separator
+				pos = 1;
+			}
+			new_size = (IsIdxValid(pos, input_size)) ? pos : 0;
+		} else { // right trim
+			auto idx_last_sep = FindLast(data, input_size, sep);
+			if (IsIdxValid(idx_last_sep, input_size)) {
+				begin = idx_last_sep + 1;
+			}
+			if (trim_extension) {
+				auto idx_extension_sep = FindLast(data, input_size, ".");
+				if (begin <= idx_extension_sep && IsIdxValid(idx_extension_sep, input_size)) {
+					new_size = idx_extension_sep;
+				}
+			}
+		}
+		D_ASSERT(begin <= new_size);
+		return string_t(data + begin, UnsafeNumericCast<uint32_t>(new_size - begin));
+	});
 }
 
 static void ParseDirpathFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	// set default values
-	const Vector &path = args.data[0];
-	Vector separator(string_t("default"), count_t(args.size()));
-	Vector trim_extension(Value::BOOLEAN(false), count_t(args.size()));
-	ReadOptionalArgs(args, separator, trim_extension, true);
+	ExecutePathFunction(args, result, true, [&](const string_t &input, const string &sep, bool) {
+		auto path = input.GetData();
+		auto path_size = input.GetSize();
 
-	auto &heap = StringVector::GetStringHeap(result);
-	BinaryExecutor::Execute<string_t, string_t, string_t>(
-	    path, separator, result, [&](string_t input_path, string_t input_sep) {
-		    auto path = input_path.GetData();
-		    auto path_size = input_path.GetSize();
-		    auto sep = GetSeparator(input_sep.GetString());
-
-		    auto last_sep = FindLast(path, path_size, sep);
-		    if (last_sep == 0 && path_size == 1) {
-			    last_sep = 1;
-		    }
-		    idx_t new_size = (IsIdxValid(last_sep, path_size)) ? last_sep : 0;
-
-		    auto target = heap.EmptyString(new_size);
-		    auto output = target.GetDataWriteable();
-		    memcpy(output, path, new_size);
-		    target.Finalize();
-		    return target;
-	    });
+		auto last_sep = FindLast(path, path_size, sep);
+		if (last_sep == 0 && path_size == 1) {
+			last_sep = 1;
+		}
+		idx_t new_size = (IsIdxValid(last_sep, path_size)) ? last_sep : 0;
+		return string_t(path, UnsafeNumericCast<uint32_t>(new_size));
+	});
 }
 
 static void ParsePathFunction(DataChunk &args, ExpressionState &state, Vector &result) {

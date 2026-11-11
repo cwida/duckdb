@@ -74,7 +74,7 @@ public:
 				return current_ptr.GetRowId() == rowid.GetRowId();
 			}
 			case NType::LEAF: {
-				throw InternalException("Invalid node type (LEAF) for ARTOperator::NestedLookup.");
+				throw InternalException("Invalid node type (LEAF) for ARTOperator::LookupInLeaf.");
 			}
 			case NType::NODE_7_LEAF:
 			case NType::NODE_15_LEAF:
@@ -110,7 +110,10 @@ public:
 					depth++;
 				}
 				current_ptr = child_ptr;
+				break;
 			}
+			default:
+				throw InternalException("Invalid node type for ARTOperator::LookupInLeaf: %d.", type);
 			}
 		}
 		return false;
@@ -136,10 +139,8 @@ public:
 				return ARTConflictType::NO_CONFLICT;
 			}
 
-			if (key.len == 0) {
-				Leaf::New(node_ptr, row_id.GetRowId());
-				return ARTConflictType::NO_CONFLICT;
-			}
+			// Empty keys (NULLs) must be filtered by callers.
+			D_ASSERT(key.len != 0);
 			auto chain = PrefixHandle::New(art, key, depth, key.len);
 			Leaf::New(chain.tail.Child(art), row_id.GetRowId());
 			node_ptr = chain.root_ptr;
@@ -172,7 +173,7 @@ public:
 				if (GateContainsDeletedRow(arena, art, active_node_ptr, key, delete_index_info)) {
 					return ARTConflictType::CONSTRAINT;
 				}
-				throw FatalException("Corrupted unique ART index \"%s\": encountered an existing gated leaf in unique "
+				throw FatalException("Corrupted unique ART index %s: encountered an existing gated leaf in unique "
 				                     "index while inserting",
 				                     art.name);
 			}

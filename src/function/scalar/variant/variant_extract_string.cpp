@@ -54,13 +54,15 @@ private:
 
 static void VariantExtractStringFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	string error;
-	ConvertedJSONHolder holder(BufferAllocator::Get(state.GetContext()));
+	ConvertedJSONHolder holder(state.GetAllocator());
 	VariantPathFunction::Execute<string_t>(input, state, result, VariantStringWriter(holder, error));
 }
 
 ScalarFunctionSet VariantExtractStringFun::GetFunctions() {
-	return VariantPathFunction::CreateFunctionSet("variant_extract_string", VariantExtractStringFunction,
-	                                              LogicalType::VARCHAR, false);
+	auto functions = VariantPathFunction::CreateFunctionSet("variant_extract_string", VariantExtractStringFunction,
+	                                                        LogicalType::VARCHAR, false);
+	functions.SetFallible();
+	return functions;
 }
 
 } // namespace duckdb

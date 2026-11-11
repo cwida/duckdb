@@ -233,6 +233,42 @@ private:
 		}
 	}
 
+#if !DUCKDB_SMALLER_BINARY(aggregate_executor_flat)
+	template <class STATE_TYPE, class A_TYPE, class B_TYPE, class OP>
+	static inline void BinaryFlatLoop(const A_TYPE *__restrict adata, AggregateInputData &aggr_input_data,
+	                                  const B_TYPE *__restrict bdata, STATE_TYPE **__restrict states, idx_t count,
+	                                  const ValidityMask &avalidity, const ValidityMask &bvalidity) {
+		AggregateBinaryInput input(aggr_input_data, avalidity, bvalidity);
+		if (OP::IgnoreNull() && (avalidity.CanHaveNull() || bvalidity.CanHaveNull())) {
+			const auto entry_count = ValidityMask::EntryCount(count);
+			for (idx_t entry_idx = 0; entry_idx < entry_count; entry_idx++) {
+				auto validity_entry = avalidity.GetValidityEntry(entry_idx) & bvalidity.GetValidityEntry(entry_idx);
+				const auto start = entry_idx * ValidityMask::BITS_PER_VALUE;
+				const auto next = MinValue<idx_t>(start + ValidityMask::BITS_PER_VALUE, count);
+				if (ValidityMask::AllValid(validity_entry)) {
+					for (idx_t i = start; i < next; i++) {
+						input.lidx = input.ridx = i;
+						OP::template Operation<A_TYPE, B_TYPE, STATE_TYPE, OP>(*states[i], adata[i], bdata[i], input);
+					}
+				} else {
+					validity_entry &= ValidityMask::EntryWithValidBits(next - start);
+					while (validity_entry) {
+						const auto i = start + CountZeros<validity_t>::Trailing(validity_entry);
+						input.lidx = input.ridx = i;
+						OP::template Operation<A_TYPE, B_TYPE, STATE_TYPE, OP>(*states[i], adata[i], bdata[i], input);
+						validity_entry &= validity_entry - 1;
+					}
+				}
+			}
+		} else {
+			for (idx_t i = 0; i < count; i++) {
+				input.lidx = input.ridx = i;
+				OP::template Operation<A_TYPE, B_TYPE, STATE_TYPE, OP>(*states[i], adata[i], bdata[i], input);
+			}
+		}
+	}
+#endif
+
 	template <class STATE_TYPE, class A_TYPE, class B_TYPE, class OP>
 	static inline void BinaryScatterLoop(const A_TYPE *__restrict adata, AggregateInputData &aggr_input_data,
 	                                     const B_TYPE *__restrict bdata, STATE_TYPE **__restrict states, idx_t count,
@@ -812,6 +848,16 @@ public:
 
 	template <class STATE_TYPE, class A_TYPE, class B_TYPE, class OP>
 	static void BinaryScatter(AggregateInputData &aggr_input_data, Vector &a, Vector &b, Vector &states, idx_t count) {
+#if !DUCKDB_SMALLER_BINARY(aggregate_executor_flat)
+		if (OP::IgnoreNull() && a.GetVectorType() == VectorType::FLAT_VECTOR &&
+		    b.GetVectorType() == VectorType::FLAT_VECTOR && states.GetVectorType() == VectorType::FLAT_VECTOR) {
+			BinaryFlatLoop<STATE_TYPE, A_TYPE, B_TYPE, OP>(FlatVector::GetData<A_TYPE>(a), aggr_input_data,
+			                                               FlatVector::GetData<B_TYPE>(b),
+			                                               FlatVector::GetDataMutable<STATE_TYPE *>(states), count,
+			                                               FlatVector::Validity(a), FlatVector::Validity(b));
+			return;
+		}
+#endif
 		UnifiedVectorFormat adata, bdata, sdata;
 
 		a.ToUnifiedFormat(adata);
@@ -980,7 +1026,7 @@ public:
 			}
 			const auto multiplicity = multiplicity_data[multiplicity_idx];
 			if (multiplicity < 0) {
-				throw InvalidInputException("combine_aggr multiplicity must be non-negative");
+				InvalidInputException::Throw("combine_aggr multiplicity must be non-negative");
 			}
 			if (multiplicity == 0) {
 				continue;

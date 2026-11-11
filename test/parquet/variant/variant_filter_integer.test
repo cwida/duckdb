@@ -1,0 +1,180 @@
+# name: test/parquet/variant/variant_filter_integer.test
+# description: Filtering over a fully shredded integer Parquet VARIANT
+# group: [variant]
+
+require parquet
+
+statement ok
+SET threads=1
+
+# values that fit in every integer type, including the trailing-zero cases
+foreach type TINYINT SMALLINT INTEGER BIGINT
+
+statement ok
+COPY (
+	SELECT CASE WHEN i % 97 = 0 THEN NULL ELSE abs(i % 60 - 30)::{type} END::VARIANT AS v
+	FROM range(5000) t(i)
+) TO '{TEST_DIR}/variant_filter_integer_{type}.parquet' (
+	SHREDDING {v: '{type}'}
+)
+
+query I
+SELECT DISTINCT vector_type(v) FROM '{TEST_DIR}/variant_filter_integer_{type}.parquet'
+----
+SHREDDED_VECTOR
+
+# the filter result must agree with comparing the casted values
+query I
+SELECT count(*) FILTER (WHERE
+	((v > 5) IS DISTINCT FROM ((v)::{type} > 5)) OR
+	((v >= 5) IS DISTINCT FROM ((v)::{type} >= 5)) OR
+	((v < 5) IS DISTINCT FROM ((v)::{type} < 5)) OR
+	((v <= 5) IS DISTINCT FROM ((v)::{type} <= 5)) OR
+	((v = 5) IS DISTINCT FROM ((v)::{type} = 5)) OR
+	((v <> 5) IS DISTINCT FROM ((v)::{type} <> 5)) OR
+	((v BETWEEN 5 AND 20) IS DISTINCT FROM ((v)::{type} BETWEEN 5 AND 20)))
+FROM '{TEST_DIR}/variant_filter_integer_{type}.parquet'
+----
+0
+
+query II
+SELECT v, count(*) FROM '{TEST_DIR}/variant_filter_integer_{type}.parquet' WHERE v > 25 GROUP BY 1 ORDER BY 1
+----
+26	166
+27	165
+28	165
+29	165
+30	83
+
+# ordering must agree with numeric ordering
+query I
+SELECT list(v ORDER BY v) = list(v ORDER BY (v)::{type})
+FROM '{TEST_DIR}/variant_filter_integer_{type}.parquet'
+----
+true
+
+endloop
+
+foreach type TINYINT SMALLINT INTEGER BIGINT
+
+statement ok
+COPY (
+	SELECT CASE WHEN i % 97 = 0 THEN NULL ELSE (abs(i % 60 - 30) * -1)::{type} END::VARIANT AS v
+	FROM range(5000) t(i)
+) TO '{TEST_DIR}/variant_filter_negative_{type}.parquet' (
+	SHREDDING {v: '{type}'}
+)
+
+query I
+SELECT count(*) FILTER (WHERE
+	((v > -5) IS DISTINCT FROM ((v)::{type} > -5)) OR
+	((v < -5) IS DISTINCT FROM ((v)::{type} < -5)) OR
+	((v = -5) IS DISTINCT FROM ((v)::{type} = -5)) OR
+	((v BETWEEN -20 AND -5) IS DISTINCT FROM ((v)::{type} BETWEEN -20 AND -5)))
+FROM '{TEST_DIR}/variant_filter_negative_{type}.parquet'
+----
+0
+
+query II
+SELECT v, count(*) FROM '{TEST_DIR}/variant_filter_negative_{type}.parquet' WHERE v < -25 GROUP BY 1 ORDER BY 1
+----
+-30	83
+-29	165
+-28	165
+-27	165
+-26	166
+
+endloop
+
+# magnitude extremes - these keys are longer than the 12 byte inline string limit
+statement ok
+COPY (
+	SELECT (CASE i
+		WHEN 0 THEN NULL
+		WHEN 1 THEN -9223372036854775808
+		WHEN 2 THEN 9223372036854775807
+		WHEN 3 THEN -1000000000000000000
+		WHEN 4 THEN 1000000000000000000
+		ELSE ((i * 1000003) % 2000) - 1000 END)::BIGINT::VARIANT AS v
+	FROM range(5000) t(i)
+) TO '{TEST_DIR}/variant_filter_wide.parquet' (
+	SHREDDING {v: 'BIGINT'}
+)
+
+query I
+SELECT count(*) FILTER (WHERE
+	((v > 100) IS DISTINCT FROM ((v)::BIGINT > 100)) OR
+	((v < -100) IS DISTINCT FROM ((v)::BIGINT < -100)) OR
+	((v = 9223372036854775807) IS DISTINCT FROM ((v)::BIGINT = 9223372036854775807)))
+FROM '{TEST_DIR}/variant_filter_wide.parquet'
+----
+0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_wide.parquet' WHERE v > 100
+----
+2100
+
+query II
+SELECT v, count(*) FROM '{TEST_DIR}/variant_filter_wide.parquet' WHERE v >= 9223372036854775807 GROUP BY 1
+----
+9223372036854775807	1
+
+query II
+SELECT v, count(*) FROM '{TEST_DIR}/variant_filter_wide.parquet' WHERE v <= -9223372036854775808 GROUP BY 1
+----
+-9223372036854775808	1
+
+
+# not fully shredded: the strings end up in the unshredded component and sort after all numbers
+statement ok
+COPY (
+	SELECT CASE WHEN i % 3 = 0 THEN ((i % 60)::VARCHAR)::VARIANT ELSE ((i % 60)::BIGINT)::VARIANT END AS v
+	FROM range(5000) t(i)
+) TO '{TEST_DIR}/variant_filter_partial.parquet' (
+	SHREDDING {v: 'BIGINT'}
+)
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_partial.parquet' WHERE v > 25
+----
+3576
+
+query II
+SELECT count(*) FILTER (WHERE v = 7), count(*) FILTER (WHERE v = '7')
+FROM '{TEST_DIR}/variant_filter_partial.parquet'
+----
+84	0
+
+# unshredded
+statement ok
+COPY (
+	SELECT CASE WHEN i % 2 = 0 THEN ((i % 60)::BIGINT)::VARIANT ELSE ('x_' || (i % 60))::VARIANT END AS v
+	FROM range(5000) t(i)
+) TO '{TEST_DIR}/variant_filter_unshredded.parquet'
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_unshredded.parquet' WHERE v > 25
+----
+3911
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_unshredded.parquet' WHERE v = 'x_7'
+----
+84
+
+# NULL handling
+query II
+SELECT count(*) FILTER (WHERE v IS NULL), count(*) FILTER (WHERE v IS NOT NULL)
+FROM '{TEST_DIR}/variant_filter_wide.parquet'
+----
+1	4999
+
+# multiple files at once
+query I
+SELECT count(*) FROM read_parquet([
+	'{TEST_DIR}/variant_filter_integer_BIGINT.parquet',
+	'{TEST_DIR}/variant_filter_negative_BIGINT.parquet'
+]) WHERE v < -25
+----
+744

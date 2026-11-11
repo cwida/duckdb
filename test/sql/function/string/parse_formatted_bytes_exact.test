@@ -1,0 +1,28 @@
+# name: test/sql/function/string/parse_formatted_bytes_exact.test
+# description: parse_formatted_bytes is exact for integer values
+# group: [string]
+
+query I
+SELECT parse_formatted_bytes('9007199254740993 B');
+----
+9007199254740993
+
+query I
+SELECT parse_formatted_bytes('18446744073709551615 B');
+----
+18446744073709551615
+
+query IIII
+SELECT parse_formatted_bytes('1 GB'), parse_formatted_bytes('2 KiB'), parse_formatted_bytes('1.5 KB'), parse_formatted_bytes('1e3 B');
+----
+1000000000	2048	1500	1000
+
+statement error
+SELECT parse_formatted_bytes('18446744073709551615 KB');
+----
+<REGEX>:.*out of range.*
+
+statement error
+SELECT parse_formatted_bytes('18446744073709551616 B');
+----
+<REGEX>:.*out of range.*

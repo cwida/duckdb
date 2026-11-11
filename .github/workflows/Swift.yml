@@ -6,6 +6,8 @@ on:
         type: string
       duckdb_version:
         type: string
+      is_release_build:
+        type: boolean
       runner_macos_arm64:
         type: string
       runner_provider:
@@ -31,7 +33,7 @@ jobs:
           - 'iOS Simulator,name=iPhone 16'
           - 'tvOS Simulator,name=Apple TV 4K (at 1080p) (3nd generation)'
         isRelease:
-          - ${{ github.ref == 'refs/heads/main' }}
+          - ${{ inputs.is_release_build }}
         exclude:
           - isRelease: false
             destination: 'iOS Simulator,name=iPhone 16'

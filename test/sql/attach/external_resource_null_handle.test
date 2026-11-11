@@ -1,0 +1,41 @@
+# name: test/sql/attach/external_resource_null_handle.test
+# description: External resources cannot be registered with a NULL handle
+# group: [attach]
+
+statement ok
+CREATE SEQUENCE cseq;
+
+statement ok
+CREATE SEQUENCE dseq;
+
+statement ok
+CREATE MACRO c1(p) AS TABLE SELECT CASE WHEN nextval('cseq') > 0 THEN NULL::MAP(VARCHAR, VARCHAR) END AS handle;
+
+statement ok
+CREATE MACRO d1(h) AS TABLE SELECT nextval('dseq') AS status;
+
+statement ok
+CREATE MACRO s1(h) AS TABLE SELECT 'ready' AS state, MAP {'uri': ':memory:', 'attached_db_type': 'duckdb'} AS result;
+
+statement ok
+CALL register_external_resource_type('t', kind := 'catalog', create_function := 'c1', status_function := 's1', destroy_function := 'd1');
+
+statement error
+CREATE EXTERNAL RESOURCE 't' AS r;
+----
+returned a NULL handle
+
+statement error
+FROM create_external_resource('t');
+----
+returned a NULL handle
+
+statement error
+CALL register_external_resource('t', 'n1', NULL);
+----
+the handle must not be NULL
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name IN ('r', 'n1');
+----
+0

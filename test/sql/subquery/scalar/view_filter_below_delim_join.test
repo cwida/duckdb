@@ -1,0 +1,104 @@
+# name: test/sql/subquery/scalar/view_filter_below_delim_join.test
+# description: A filter on a view with a correlated subquery in its select list runs before the subquery (issue #26510)
+# group: [scalar]
+
+require json
+
+statement ok
+CREATE TABLE facts AS SELECT i AS id, (i % 25) AS customer_id, [ (i % 50), ((i + 1) % 50) ] AS dim_ids FROM range(10000) r(i);
+
+statement ok
+CREATE TABLE dims AS SELECT i AS dim_id, 'name ' || i AS name FROM range(50) r(i);
+
+# a scalar subquery becomes a SINGLE join
+statement ok
+CREATE VIEW v_single AS SELECT f.id, f.customer_id, (SELECT list(d.name ORDER BY d.name) FROM UNNEST(f.dim_ids) AS u(dim_id) JOIN dims d ON d.dim_id = u.dim_id) AS dim_names FROM facts f;
+
+# EXISTS becomes a MARK join
+statement ok
+CREATE VIEW v_mark AS SELECT f.id, f.customer_id, EXISTS (SELECT 1 FROM UNNEST(f.dim_ids) AS u(dim_id) WHERE u.dim_id = 8) AS has8 FROM facts f;
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEMP_DIR}/view_filter_single.json';
+
+query II
+SELECT id, dim_names FROM v_single WHERE customer_id = 7 AND id = 1007;
+----
+1007	[name 7, name 8]
+
+statement ok
+PRAGMA profiling_output = '{TEMP_DIR}/view_filter_mark.json';
+
+query II
+SELECT id, has8 FROM v_mark WHERE customer_id = 7 AND id = 1007;
+----
+1007	true
+
+statement ok
+PRAGMA disable_profiling;
+
+# the subquery only unnests the list of the one row that passes the filter
+foreach kind single mark
+
+query I
+SELECT sum((value->>'intermediate_rows')::BIGINT) FROM read_text('{TEMP_DIR}/view_filter_{kind}.json'), json_tree(content) WHERE value->>'type' IN ('INOUT_FUNCTION', 'UNNEST')
+----
+2
+
+endloop
+
+query II
+SELECT id, dim_names FROM v_single WHERE customer_id = 7 AND id >= 9900 ORDER BY id LIMIT 2;
+----
+9907	[name 7, name 8]
+9932	[name 32, name 33]
+
+query II
+SELECT id, has8 FROM v_mark WHERE customer_id = 7 AND id >= 9900 ORDER BY id LIMIT 2;
+----
+9907	true
+9932	false
+
+# NULL elements, empty and NULL lists, and filters on the subquery results
+statement ok
+CREATE TABLE edge AS SELECT * FROM (VALUES (1, 7, [8, NULL]), (2, 7, [1, NULL]), (3, 7, []), (4, 7, NULL), (5, 8, [8])) t(id, customer_id, dim_ids);
+
+statement ok
+CREATE VIEW v_edge AS SELECT e.id, e.customer_id, 8 IN (SELECT u.dim_id FROM UNNEST(e.dim_ids) AS u(dim_id)) AS in8, 8 NOT IN (SELECT u.dim_id FROM UNNEST(e.dim_ids) AS u(dim_id)) AS not_in8, (SELECT max(u.dim_id) FROM UNNEST(e.dim_ids) AS u(dim_id)) AS max_dim FROM edge e;
+
+query IIII
+SELECT id, in8, not_in8, max_dim FROM v_edge WHERE customer_id = 7 ORDER BY id;
+----
+1	true	false	8
+2	NULL	NULL	1
+3	false	true	NULL
+4	false	true	NULL
+
+query I
+SELECT id FROM v_edge WHERE customer_id = 7 AND (in8 OR max_dim = 1) ORDER BY id;
+----
+1
+2
+
+query I
+SELECT id FROM v_edge WHERE customer_id = 7 AND in8 IS NULL;
+----
+2
+
+query I
+SELECT id FROM v_edge WHERE id + coalesce(max_dim, 0) = 9 AND customer_id = 7;
+----
+1
+
+query I
+SELECT id FROM v_edge WHERE customer_id = 8 AND not_in8;
+----
+
+query I
+SELECT id FROM v_edge WHERE customer_id = 7 AND not_in8 ORDER BY id;
+----
+3
+4

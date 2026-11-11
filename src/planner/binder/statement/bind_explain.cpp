@@ -1,4 +1,6 @@
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/parser/parsed_data/create_table_info.hpp"
+#include "duckdb/parser/statement/create_statement.hpp"
 #include "duckdb/parser/statement/explain_statement.hpp"
 #include "duckdb/planner/operator/logical_explain.hpp"
 #include "duckdb/common/tree_renderer.hpp"
@@ -14,10 +16,19 @@ BoundStatement Binder::Bind(ExplainStatement &stmt) {
 		case StatementType::UPDATE_STATEMENT:
 		case StatementType::DELETE_STATEMENT:
 		case StatementType::MERGE_INTO_STATEMENT:
+		case StatementType::COPY_STATEMENT:
 			break;
+		case StatementType::CREATE_STATEMENT: {
+			auto &info = *stmt.stmt->Cast<CreateStatement>().info;
+			if (info.type == CatalogType::TABLE_ENTRY && info.Cast<CreateTableInfo>().query) {
+				break;
+			}
+			throw NotImplementedException("EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE, "
+			                              "MERGE INTO, CREATE TABLE ... AS and COPY ... TO statements only");
+		}
 		default:
-			throw NotImplementedException(
-			    "EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE and MERGE INTO statements only");
+			throw NotImplementedException("EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE, "
+			                              "MERGE INTO, CREATE TABLE ... AS and COPY ... TO statements only");
 		}
 	}
 

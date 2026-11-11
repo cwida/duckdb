@@ -1,0 +1,46 @@
+# name: test/sql/pivot/pivot_value_collisions.test
+# description: Combinations of pivot values that join to the same name are kept apart
+# group: [pivot]
+
+statement ok
+SET pivot_filter_threshold=1
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES ('x_y', 'z', 1), ('x', 'y_z', 10)) t(a, b, v)
+
+query II
+SELECT x_y_z, x_y_z_1 FROM (PIVOT t ON a, b USING sum(v))
+----
+10	1
+
+query III
+SELECT v, x_y_z, x_y_z_1 FROM (PIVOT t ON a, b USING sum(v) GROUP BY v) ORDER BY v
+----
+1	NULL	1
+10	10	NULL
+
+# NULL and the string 'NULL'
+statement ok
+CREATE TABLE n AS SELECT * FROM (VALUES (NULL, 1), ('NULL', 10), ('a', 100)) t(a, v)
+
+query III
+SELECT * FROM (PIVOT n ON a IN (NULL, 'NULL', 'a') USING sum(v))
+----
+1	10	100
+
+statement ok
+RESET pivot_filter_threshold
+
+# above the default threshold
+statement ok
+CREATE TABLE t2 AS SELECT * FROM (VALUES ('x_y', 'z', 1), ('x', 'y_z', 10)) t(a, b, v) UNION ALL SELECT 'p' || r, 'q', 0 FROM range(20) t(r)
+
+query II
+SELECT x_y_z, x_y_z_1 FROM (PIVOT t2 ON a, b USING sum(v))
+----
+10	1
+
+query I
+SELECT p3_q FROM (PIVOT t2 ON a, b USING sum(v))
+----
+0

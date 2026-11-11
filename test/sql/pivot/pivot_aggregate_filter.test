@@ -1,0 +1,31 @@
+# name: test/sql/pivot/pivot_aggregate_filter.test
+# description: PIVOT keeps the FILTER clause of the aggregate
+# group: [pivot]
+
+statement ok
+CREATE TABLE t(k INT, y VARCHAR, v INT);
+
+statement ok
+INSERT INTO t VALUES (1,'p',1),(1,'p',12),(1,'q',5),(2,'p',20);
+
+query III
+SELECT * FROM (PIVOT t ON y USING sum(v) FILTER (WHERE v>1) GROUP BY k) ORDER BY k;
+----
+1	12	5
+2	20	NULL
+
+query III
+SELECT * FROM (PIVOT t ON y IN ('p', 'q') USING sum(v) FILTER (WHERE v>1) GROUP BY k) ORDER BY k;
+----
+1	12	5
+2	20	NULL
+
+# the list based pivot implementation keeps the filter as well
+statement ok
+SET pivot_filter_threshold=0;
+
+query III
+SELECT * FROM (PIVOT t ON y IN ('p', 'q') USING sum(v) FILTER (WHERE v>1) GROUP BY k) ORDER BY k;
+----
+1	12	5
+2	20	NULL

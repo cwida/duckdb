@@ -74,6 +74,13 @@ string ParsedExtensionMetaData::GetInvalidMetadataError() {
 			    "The file was built for DuckDB C API version '%s', but we can only load extensions "
 			    "built for DuckDB C API 'v%lld.x.y' or 'v%lld.x.y'.",
 			    duckdb_capi_version, DUCKDB_EXTENSION_API_VERSION_MAJOR, DUCKDB_EXTENSION_API_V2_VERSION_MAJOR);
+		} else if (major == DUCKDB_EXTENSION_API_V2_VERSION_MAJOR) {
+			// no V2 function is stable yet, so a V2 extension loads only when pinned to this DuckDB version
+			result +=
+			    StringUtil::Format("The file was built for DuckDB C API version '%s', but the V2 C API has no stable "
+			                       "surface yet: only V2 extensions built specifically for this version of DuckDB can "
+			                       "be loaded.",
+			                       duckdb_capi_version);
 		} else if (!VersioningUtils::IsSupportedCAPIVersion(major, minor, patch)) {
 			const auto max_minor = major == DUCKDB_EXTENSION_API_VERSION_MAJOR ? DUCKDB_EXTENSION_API_VERSION_MINOR
 			                                                                   : DUCKDB_EXTENSION_API_V2_VERSION_MINOR;

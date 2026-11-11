@@ -26,7 +26,7 @@ SELECT MAP([[1, 2, 3], [0], [123]], [1.0, 2.1, 4.9])::MAP(VARCHAR[], TINYINT)
 statement error
 SELECT MAP([1, 2, 'hi'::VARCHAR], [1.0, 2.1, 4.9])::MAP(VARCHAR, TINYINT)
 ----
-Binder Error: Cannot deduce template type
+<REGEX>:Binder Error: No function matches.*Cannot deduce template type.*
 
 query I
 SELECT MAP([1, 2, 3], ['A', 'B', 'C'])::MAP(TINYINT, VARCHAR)

@@ -1,0 +1,29 @@
+# name: benchmark/micro/compression/roaring/roaring_compressed_run_fetch.benchmark
+# description: Fetch Roaring validity with 64 sixteen-row null runs per container
+# group: [roaring]
+
+name Roaring FetchRow Compressed Run
+group roaring
+storage persistent v1.5.0
+
+# Fetch every row individually before applying the filter.
+init
+SET debug_force_fetch_row = true;
+
+load
+SET force_compression = 'roaring';
+CREATE TABLE tbl AS
+SELECT CASE WHEN i % 32 < 16 THEN NULL ELSE 1337::BIGINT END AS a
+FROM range(1048576) t(i);
+CHECKPOINT;
+
+assert I
+SELECT DISTINCT compression FROM pragma_storage_info('tbl') WHERE column_name = 'a' AND segment_type = 'VALIDITY';
+----
+Roaring
+
+run
+SELECT count(*) FROM tbl WHERE a IS NOT NULL;
+
+result I
+524288

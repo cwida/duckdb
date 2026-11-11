@@ -1,0 +1,33 @@
+# name: test/sql/function/date/week_parts_minimum_date.test
+# description: Week-based date parts of dates in the first year, whose January 1 comes before the first date
+# group: [date]
+
+# 5877642 BC repeats the calendar of 359, which is 14695 cycles of 400 years later
+query IIIII
+SELECT weekofyear(d), isoyear(d), yearweek(d), week(d), strftime(d, '%U %W %V')
+FROM (VALUES (DATE '5877642-06-25 (BC)'), (DATE '0359-06-25')) t(d) ORDER BY d;
+----
+26	-5877641	-587764126	26	25 25 26
+26	359	35926	26	25 25 26
+
+query III
+SELECT date_part('week', d), date_part('isoyear', d), date_part('yearweek', d)
+FROM (VALUES (DATE '5877642-06-25 (BC)'), (DATE '5877642-12-31 (BC)'), (DATE '5881580-07-10')) t(d) ORDER BY d;
+----
+26	-5877641	-587764126
+53	-5877641	-587764153
+28	5881580	588158028
+
+query I
+SELECT date_part(['week', 'isoyear', 'yearweek'], DATE '5877642-06-25 (BC)');
+----
+{'week': 26, 'isoyear': -5877641, 'yearweek': -587764126}
+
+# the first days of the next year belong to the last ISO week of the first year
+query IIIII
+SELECT d, isoyear(d), weekofyear(d), yearweek(d), strftime(d, '%U %W')
+FROM (VALUES (DATE '5877641-01-01 (BC)'), (DATE '5877641-01-03 (BC)'), (DATE '5877641-01-04 (BC)')) t(d) ORDER BY d;
+----
+5877641-01-01 (BC)	-5877641	53	-587764153	00 00
+5877641-01-03 (BC)	-5877641	53	-587764153	01 00
+5877641-01-04 (BC)	-5877640	1	-587764001	01 01

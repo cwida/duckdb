@@ -47,8 +47,7 @@ static void MapLegacyTableFilterKeys(LogicalGet &get) {
 		optional_idx projection_index;
 		for (idx_t i = 0; i < column_ids.size(); i++) {
 			auto &column_index = column_ids[i];
-			if (column_index.HasPrimaryIndex() && !column_index.IsPushdownExtract() &&
-			    column_index.GetPrimaryIndex() == table_column) {
+			if (column_index.HasPrimaryIndex() && column_index.GetPrimaryIndex() == table_column) {
 				projection_index = i;
 				break;
 			}
@@ -434,7 +433,7 @@ unique_ptr<LogicalOperator> LogicalGet::Deserialize(Deserializer &deserializer) 
 		vector<LogicalType> bind_return_types;
 		vector<Identifier> bind_names;
 		if (!function.bind) {
-			throw InternalException("Table function \"%s\" has neither bind nor (de)serialize", function.GetName());
+			throw InternalException("Table function %s has neither bind nor (de)serialize", function.GetName());
 		}
 		bind_data = function.bind(context, input, bind_return_types, bind_names);
 		if (result->ordinality_idx.IsValid()) {

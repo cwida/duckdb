@@ -21,6 +21,7 @@ struct LogicalPlanSQLExportSource {
 	reference<LogicalOperator> op;
 	Identifier name;
 	LogicalPlanSQLExportRelation relation;
+	CTEMaterialize materialized = CTEMaterialize::CTE_MATERIALIZE_ALWAYS;
 };
 
 class LogicalPlanSQLExportContext {
@@ -45,6 +46,11 @@ public:
 	LogicalPlanVerificationResult<LogicalPlanSQLExportedChild>
 	ExportChild(LogicalOperator &child, const LogicalPlanVerificationPath &path,
 	            const vector<LogicalPlanSQLExportSource> &sources);
+	//! Export a plan root inside the given source scope. A RETURNING root exports as its statement,
+	//! aliasing the RETURNING items with the given output names, or positionally without them.
+	LogicalPlanVerificationResult<LogicalPlanSQLExportedChild>
+	ExportRoot(LogicalOperator &root, const LogicalPlanVerificationPath &path,
+	           const vector<LogicalPlanSQLExportSource> &sources, const optional<vector<Identifier>> &output_names);
 	LogicalPlanVerificationResult<unique_ptr<ParsedExpression>>
 	ExportExpression(const LogicalOperator &op, const vector<reference<const Expression>> &expressions,
 	                 idx_t expression_ordinal, const BoundExpressionSQLExportContext &expression_context,
