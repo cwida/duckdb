@@ -348,14 +348,22 @@ struct UnionGroupEstimate {
 
 static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> groups, idx_t maximum,
                                         RelationStatsExtractor &extractor, bool use_cached_cardinality) {
+	static constexpr idx_t MAX_GROUPINGS_PER_OPERATOR = 64;
 	reference_map_t<LogicalOperator, map<vector<idx_t>, UnionGroupEstimate>> estimates;
 	vector<UnionGroupInput> pending;
+	std::sort(groups.begin(), groups.end());
 	pending.emplace_back(input, std::move(groups));
 	bool found_union = false;
 	while (!pending.empty()) {
 		auto &entry = pending.back();
 		auto &op = entry.first.get();
-		auto inserted = estimates[op].emplace(entry.second, UnionGroupEstimate());
+		auto &operator_estimates = estimates[op];
+		if (operator_estimates.size() >= MAX_GROUPINGS_PER_OPERATOR &&
+		    operator_estimates.find(entry.second) == operator_estimates.end()) {
+			// Shared CTEs can reach one producer with exponentially many distinct groupings.
+			return {};
+		}
+		auto inserted = operator_estimates.emplace(entry.second, UnionGroupEstimate());
 		auto &estimate = inserted.first->second;
 		if (inserted.second) {
 			auto bindings = op.GetColumnBindings();
@@ -380,6 +388,7 @@ static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> gr
 					mapped.push_back(idx_t(match - child_bindings.begin()));
 				}
 				if (mapped.size() == entry.second.size()) {
+					std::sort(mapped.begin(), mapped.end());
 					estimate.children.emplace_back(*op.children[0], std::move(mapped));
 				}
 			} else if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {

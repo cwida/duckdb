@@ -2157,6 +2157,91 @@ TEST_CASE("UNION group refinement counts shared CTE arms without expanding the D
 	}
 }
 
+TEST_CASE("UNION group refinement bounds changing mappings through shared CTEs", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	for (auto depth : {idx_t(4), idx_t(12)}) {
+		for (auto different_subsets : {false, true}) {
+			CAPTURE(depth, different_subsets);
+			const auto width = 2 * depth + 1;
+			idx_t next_index = 100;
+			vector<LogicalType> types(width, LogicalType::INTEGER);
+			vector<Identifier> names;
+			for (idx_t column = 0; column < width; column++) {
+				names.emplace_back("k" + to_string(column));
+			}
+			auto cte_ref = [&](idx_t definition) {
+				return make_uniq<LogicalCTERef>(TableIndex(next_index++), TableIndex(definition), types, names);
+			};
+			vector<vector<unique_ptr<Expression>>> rows;
+			for (idx_t row_index = 0; row_index < 2; row_index++) {
+				vector<unique_ptr<Expression>> row;
+				for (idx_t column = 0; column < width; column++) {
+					row.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(NumericCast<int32_t>(row_index))));
+				}
+				rows.push_back(std::move(row));
+			}
+			vector<unique_ptr<LogicalOperator>> definitions;
+			definitions.push_back(make_uniq<LogicalExpressionGet>(TableIndex(next_index++), types, std::move(rows)));
+			for (idx_t step = 1; step <= depth; step++) {
+				auto arm = [&](bool alternate) {
+					auto ref = cte_ref(step - 1);
+					vector<unique_ptr<Expression>> expressions;
+					for (idx_t column = 0; column < width; column++) {
+						auto source_column = column;
+						if (alternate) {
+							if (column == step) {
+								source_column = depth + step;
+							} else if (column == depth + step) {
+								source_column = step;
+							}
+						}
+						expressions.push_back(make_uniq<BoundColumnRefExpression>(
+						    LogicalType::INTEGER, ColumnBinding(ref->table_index, ProjectionIndex(source_column))));
+					}
+					auto projection = make_uniq<LogicalProjection>(TableIndex(next_index++), std::move(expressions));
+					projection->children.push_back(std::move(ref));
+					return projection;
+				};
+				auto left = arm(false);
+				auto right = arm(true);
+				definitions.push_back(make_uniq<LogicalSetOperation>(TableIndex(next_index++), width, std::move(left),
+				                                                     std::move(right),
+				                                                     LogicalOperatorType::LOGICAL_UNION, true));
+			}
+			auto input = cte_ref(depth);
+			const auto refined_cardinality = idx_t(1) << (depth + 1);
+			const auto input_cardinality = 3 * refined_cardinality;
+			auto stats =
+			    CreateStats(input->GetColumnBindings(), vector<idx_t>(width, input_cardinality), input_cardinality);
+			vector<idx_t> groups;
+			for (idx_t column = 0; column < (different_subsets ? depth + 1 : width); column++) {
+				groups.push_back(column);
+			}
+			idx_t lookups = 0;
+			RelationStatsExtractor extractor(*connection.context,
+			                                 [&](TableIndex index) -> optional_ptr<LogicalOperator> {
+				                                 REQUIRE(index.index < definitions.size());
+				                                 lookups++;
+				                                 return *definitions[index.index];
+			                                 });
+			auto estimate = RelationStatisticsHelper::EstimateGroupCardinality(*input, stats, groups, extractor);
+			if (different_subsets && depth == 12) {
+				// Abandon the whole refinement instead of using a partially visited UNION.
+				REQUIRE(estimate == input_cardinality);
+			} else {
+				REQUIRE(estimate == refined_cardinality);
+			}
+			if (different_subsets) {
+				REQUIRE(lookups < 1024);
+			} else {
+				REQUIRE(lookups == 2 * depth + 1);
+			}
+			REQUIRE(extractor.ExtractedOperatorCount() == 1);
+		}
+	}
+}
+
 TEST_CASE("UNION group refinement rejects unresolved and cyclic CTE layouts", "[optimizer][relation_statistics]") {
 	DuckDB db;
 	Connection connection(db);
