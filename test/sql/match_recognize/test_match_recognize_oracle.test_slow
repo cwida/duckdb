@@ -12,7 +12,7 @@
 # and a NULL.
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 statement ok
 CREATE TABLE ticks (sym VARCHAR(4), ts INTEGER, price INTEGER);

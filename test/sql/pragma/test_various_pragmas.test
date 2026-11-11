@@ -15,10 +15,10 @@ statement ok
 PRAGMA disable_verify_parallelism
 
 statement ok
-PRAGMA explain_output='all'
+SET explain_output='all'
 
 statement error
-PRAGMA explain_output='unknown'
+SET explain_output='unknown'
 ----
 <REGEX>:.*Not implemented Error.*unrecognized value.*
 
@@ -35,14 +35,14 @@ statement ok
 PRAGMA disable_print_progress_bar
 
 statement ok
-PRAGMA debug_checkpoint_abort='none'
+SET debug_checkpoint_abort='none'
 
 statement error
-PRAGMA debug_checkpoint_abort='unknown'
+SET debug_checkpoint_abort='unknown'
 ----
 <REGEX>:.*Not implemented Error.*unrecognized value.*
 
 statement error
-pragma explain_output =null;
+SET explain_output =null;
 ----
 Invalid Input Error: explain_output setting cannot be NULL

@@ -3,7 +3,7 @@
 # group: [group]
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 statement ok
 SET debug_force_external=true;

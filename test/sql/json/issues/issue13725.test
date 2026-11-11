@@ -9,28 +9,28 @@ require notwindows
 
 query III
 select *
-from read_json_objects('{DATA_DIR}/json/13725/month=*/*.json', hive_partitioning = true, format = auto, hive_types = {'month': int}, filename = true)
+from read_json_objects('{DATA_DIR}/json/13725/month=*/*.json', hive_partitioning = true, format = 'auto', hive_types = {'month': 'int'}, filename = true)
 where month = 7;
 ----
 {"hello": "there"}	{DATA_DIR}/json/13725/month=07/mytest.json	7
 
 query I
 select count(*)
-from read_json_objects('{DATA_DIR}/json/13725/month=*/*.json', hive_partitioning = true, format = auto, hive_types = {'month': int}, filename = true)
+from read_json_objects('{DATA_DIR}/json/13725/month=*/*.json', hive_partitioning = true, format = 'auto', hive_types = {'month': 'int'}, filename = true)
 where month = 7;
 ----
 1
 
 query III
 select *
-from read_json('{DATA_DIR}/json/13725/month=*/*.json', hive_partitioning = true, format = auto, hive_types = {'month': int}, filename = true)
+from read_json('{DATA_DIR}/json/13725/month=*/*.json', hive_partitioning = true, format = 'auto', hive_types = {'month': 'int'}, filename = true)
 where month = 7;
 ----
 there	{DATA_DIR}/json/13725/month=07/mytest.json	7
 
 query I
 select count(*)
-from read_json('{DATA_DIR}/json/13725/month=*/*.json', hive_partitioning = true, format = auto, hive_types = {'month': int}, filename = true)
+from read_json('{DATA_DIR}/json/13725/month=*/*.json', hive_partitioning = true, format = 'auto', hive_types = {'month': 'int'}, filename = true)
 where month = 7;
 ----
 1

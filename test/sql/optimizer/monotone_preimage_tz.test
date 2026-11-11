@@ -5,7 +5,7 @@
 require icu
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 statement ok
 SET TimeZone = 'UTC';

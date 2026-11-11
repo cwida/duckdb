@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/main/connection.hpp"
@@ -94,7 +95,7 @@ static void JsonSerializeFunction(DataChunk &args, ExpressionState &state, Vecto
 		yyjson_mut_doc_set_root(doc, result_obj);
 
 		try {
-			Parser parser(state.GetContext());
+			Parser parser(state.GetClientContext());
 			parser.ParseQuery(input.GetString());
 
 			auto statements_arr = yyjson_mut_arr(doc);
@@ -106,7 +107,7 @@ static void JsonSerializeFunction(DataChunk &args, ExpressionState &state, Vecto
 				auto &select = statement->Cast<SelectStatement>();
 
 				auto options = make_uniq<SerializationOptions>();
-				options->storage_compatibility = state.GetContext().db->config.options.storage_compatibility;
+				options->storage_compatibility = state.GetContext().GetDatabase().config.options.storage_compatibility;
 				auto json = JsonSerializer::Serialize(select, doc, info.skip_if_null, info.skip_if_empty,
 				                                      info.skip_if_default, *options);
 
@@ -260,7 +261,7 @@ ScalarFunctionSet JSONFunctions::GetDeserializeSqlFunction() {
 // JSON EXECUTE SERIALIZED SQL (PRAGMA)
 //----------------------------------------------------------------------
 static string ExecuteJsonSerializedSqlPragmaFunction(ClientContext &context, const FunctionParameters &parameters) {
-	JSONFunctionLocalState local_state(context);
+	JSONFunctionLocalState local_state(context.GetContext());
 	auto alc = local_state.json_allocator->GetYYAlc();
 
 	if (parameters.values[0].IsNull()) {
@@ -306,7 +307,7 @@ struct ExecuteSqlTableFunction {
 
 	static unique_ptr<FunctionData> Bind(ClientContext &context, TableFunctionBindInput &input,
 	                                     vector<LogicalType> &return_types, vector<Identifier> &names) {
-		JSONFunctionLocalState local_state(context);
+		JSONFunctionLocalState local_state(context.GetContext());
 		auto alc = local_state.json_allocator->GetYYAlc();
 
 		auto result = make_uniq<BindData>();

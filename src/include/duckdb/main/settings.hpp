@@ -539,6 +539,20 @@ struct AutoloadKnownExtensionsSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
+struct BufferManagerTrackEvictionTimestampsSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "buffer_manager_track_eviction_timestamps";
+	static constexpr const char *Description =
+	    "Record timestamps of buffer manager unpin() events. Usable by custom eviction policies.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
 struct CacheLocalFilesSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "cache_local_files";
@@ -579,6 +593,19 @@ struct CheckpointOnDetachSetting {
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
+struct CheckpointOnShutdownSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "checkpoint_on_shutdown";
+	static constexpr const char *Description = "Whether to run a checkpoint on successful shutdown and delete the WAL, "
+	                                           "to leave only a single database file behind.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "true";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
 struct CheckpointThresholdSetting {
@@ -655,9 +682,9 @@ struct DebugAbortOnWalFailureSetting {
 	static constexpr const char *InputType = "BOOLEAN";
 	static constexpr bool IsDebug = true;
 	static constexpr bool IsDeprecated = false;
-	static void SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &parameter);
-	static void ResetGlobal(DatabaseInstance *db, DBConfig &config);
-	static Value GetSetting(const ClientContext &context);
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
 struct DebugAsofIejoinSetting {
@@ -785,6 +812,19 @@ struct ForceBitpackingModeSetting {
 	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
+struct DebugForceCheckpointSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "debug_force_checkpoint";
+	static constexpr const char *Description =
+	    "Force a checkpoint when CHECKPOINT is called or on shutdown, even if no changes have been made.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = true;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct DebugForceCommitFailureSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "debug_force_commit_failure";
@@ -831,6 +871,19 @@ struct DebugForceFetchRowSetting {
 	static constexpr bool IsDeprecated = false;
 	static constexpr const char *DefaultValue = "false";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
+struct DebugForceFlushAppendFailureSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "debug_force_flush_append_failure";
+	static constexpr const char *Description = "Force the commit-time flush of transaction-local storage to fail after "
+	                                           "appending to the table. Can be used for testing commit error recovery.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = true;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
@@ -898,6 +951,20 @@ struct DebugForceWalFsyncFailureSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
+struct DebugInitializeSetting {
+	using RETURN_TYPE = DebugInitialize;
+	static constexpr const char *Name = "debug_initialize";
+	static constexpr const char *Description = "How to initialize blocks in the storage layer when allocating "
+	                                           "(NO_INITIALIZE, DEBUG_ZERO_INITIALIZE or DEBUG_ONE_INITIALIZE).";
+	static constexpr const char *InputType = "VARCHAR";
+	static constexpr bool IsDebug = true;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "NO_INITIALIZE";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
 struct DebugLocalFileSystemDelayMsSetting {
 	using RETURN_TYPE = idx_t;
 	static constexpr const char *Name = "debug_local_file_system_delay_ms";
@@ -918,9 +985,10 @@ struct DebugOrderVerificationSetting {
 	static constexpr const char *InputType = "VARCHAR";
 	static constexpr bool IsDebug = true;
 	static constexpr bool IsDeprecated = false;
-	static void SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &parameter);
-	static void ResetGlobal(DatabaseInstance *db, DBConfig &config);
-	static Value GetSetting(const ClientContext &context);
+	static constexpr const char *DefaultValue = "NONE";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
 struct DebugPhysicalTableScanExecutionStrategySetting {
@@ -1489,11 +1557,10 @@ struct EnableProgressBarSetting {
 	static constexpr const char *InputType = "BOOLEAN";
 	static constexpr bool IsDebug = false;
 	static constexpr bool IsDeprecated = false;
-	static void SetLocal(ClientContext &context, const Value &parameter);
-	static void ResetLocal(ClientContext &context);
-	static bool OnLocalSet(ClientContext &context, const Value &input);
-	static bool OnLocalReset(ClientContext &context);
-	static Value GetSetting(const ClientContext &context);
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
 struct EnableProgressBarPrintSetting {
@@ -1504,9 +1571,10 @@ struct EnableProgressBarPrintSetting {
 	static constexpr const char *InputType = "BOOLEAN";
 	static constexpr bool IsDebug = false;
 	static constexpr bool IsDeprecated = false;
-	static void SetLocal(ClientContext &context, const Value &parameter);
-	static void ResetLocal(ClientContext &context);
-	static Value GetSetting(const ClientContext &context);
+	static constexpr const char *DefaultValue = "true";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
 struct EnableViewDependenciesSetting {
@@ -2455,9 +2523,10 @@ struct ProgressBarTimeSetting {
 	static constexpr const char *InputType = "BIGINT";
 	static constexpr bool IsDebug = false;
 	static constexpr bool IsDeprecated = false;
-	static void SetLocal(ClientContext &context, const Value &parameter);
-	static void ResetLocal(ClientContext &context);
-	static Value GetSetting(const ClientContext &context);
+	static constexpr const char *DefaultValue = "2000";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
 struct ReadAheadDepthSetting {
@@ -2701,6 +2770,19 @@ struct TrackedMetricsSetting {
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
+struct TrimFreeBlocksSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "trim_free_blocks";
+	static constexpr const char *Description = "Whether to invoke filesystem trim on free blocks after checkpoint. "
+	                                           "This reclaims space for sparse files, on platforms that support it.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
 struct UsernameSetting {

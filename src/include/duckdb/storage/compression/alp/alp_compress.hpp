@@ -211,7 +211,9 @@ public:
 		//! We compact the block if the space used is less than a threshold
 		const auto used_space_percentage =
 		    static_cast<float>(metadata_offset + bytes_used_by_metadata) / static_cast<float>(total_segment_size);
+		const auto data_end = UsedSpace();
 		if (used_space_percentage < AlpConstants::COMPACT_BLOCK_THRESHOLD) {
+			memset(dataptr + data_end, 0, metadata_offset - data_end);
 #ifdef DEBUG
 			//! Copy the first 4 bytes of the metadata
 			AlpConstants::METADATA_POINTER_TYPE verify_bytes;
@@ -223,6 +225,8 @@ public:
 			D_ASSERT(verify_bytes == *(AlpConstants::METADATA_POINTER_TYPE *)(dataptr + metadata_offset));
 #endif
 			total_segment_size = metadata_offset + bytes_used_by_metadata;
+		} else {
+			memset(dataptr + data_end, 0, info.GetBlockSize() - bytes_used_by_metadata - data_end);
 		}
 
 		// Store the offset to the end of metadata (to be used as a backwards pointer in decoding)

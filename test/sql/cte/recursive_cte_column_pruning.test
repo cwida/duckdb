@@ -3,7 +3,7 @@
 # group: [cte]
 
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 # The unused wide payload and its recursive expression disappear from the optimized plan.
 query II
@@ -28,7 +28,7 @@ SELECT a FROM r;
 logical_opt	<!REGEX>:.*(repeat|b \+ 1).*
 
 statement ok
-PRAGMA explain_output='all';
+SET explain_output='all';
 
 query I
 WITH RECURSIVE t(i, unused) AS (
@@ -150,7 +150,7 @@ SELECT max(i), currval('recursive_member_pruning_sequence') FROM t;
 
 # Analysis and mutation use the same traversal through projections, aggregates, UNIONs, and materialized CTE readers.
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 query II
 EXPLAIN WITH RECURSIVE t(i, payload, unused) AS (
@@ -198,14 +198,14 @@ SELECT i, payload FROM t ORDER BY i;
 2	20
 3	30
 
-# Recursive liveness analysis must not prune a SHOW-backed chunk scan before reaching its fixed point.
+# Recursive liveness analysis must not prune a DESCRIBE-backed chunk scan before reaching its fixed point.
 query I
 WITH RECURSIVE t(i, payload) AS (
 	SELECT 1, 'x'
 	UNION ALL
 	SELECT i + length(payload), columns.column_type
 	FROM t
-	CROSS JOIN (SHOW SELECT 42::INTEGER AS value) columns
+	CROSS JOIN (DESCRIBE SELECT 42::INTEGER AS value) columns
 	WHERE i < 3
 )
 SELECT i FROM t ORDER BY i;

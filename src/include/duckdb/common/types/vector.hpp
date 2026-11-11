@@ -197,7 +197,10 @@ public:
 	inline const buffer_ptr<VectorBuffer> &GetBufferRef() const {
 		return buffer;
 	}
-	void SetBuffer(buffer_ptr<VectorBuffer> buffer_p) {
+	void SetBuffer(const buffer_ptr<VectorBuffer> &buffer_p) {
+		buffer = buffer_p;
+	}
+	void SetBuffer(buffer_ptr<VectorBuffer> &&buffer_p) {
 		buffer = std::move(buffer_p);
 	}
 

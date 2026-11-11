@@ -18,6 +18,7 @@
 #include "duckdb/parser/constraints/list.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
@@ -873,6 +874,20 @@ unique_ptr<LogicalOperator> DuckCatalog::BindCreateIndex(Binder &binder, CreateS
 	return index_binder.BindCreateIndex(binder.context, std::move(create_index_info), table, std::move(plan), nullptr);
 }
 
+//! The literal of a CREATE SECRET type or provider without evaluating it, empty when it is not a plain literal
+static string SecretLiteral(const unique_ptr<ParsedExpression> &expr) {
+	if (!expr) {
+		return string();
+	}
+	if (expr->GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
+		return StringUtil::Lower(expr->Cast<ConstantExpression>().GetLiteral().ToValue().ToString());
+	}
+	if (expr->GetExpressionType() == ExpressionType::COLUMN_REF) {
+		return StringUtil::Lower(expr->Cast<ColumnRefExpression>().GetName().GetIdentifierName());
+	}
+	return string();
+}
+
 BoundStatement Binder::Bind(CreateStatement &stmt) {
 	BoundStatement result;
 	result.names = {"Count"};
@@ -1046,6 +1061,11 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 		return_type = StatementReturnType::QUERY_RESULT;
 
 		auto &info = stmt.info->Cast<CreateSecretInfo>();
+
+		// Refuse before any option expression runs, so a refused statement has no side effects
+		SecretManager::ThrowIfSecretCreationDisabled(DatabaseInstance::GetDatabase(context),
+		                                             Identifier(SecretLiteral(info.type)),
+		                                             Identifier(SecretLiteral(info.provider)));
 
 		// We need to execute all expressions in the CreateSecretInfo to construct a CreateSecretInput
 		ConstantBinder default_binder(*this, context, "Secret Parameter");

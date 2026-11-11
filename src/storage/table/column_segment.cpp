@@ -49,11 +49,16 @@ unique_ptr<ColumnSegment> ColumnSegment::CreatePersistentSegment(DatabaseInstanc
 unique_ptr<ColumnSegment> ColumnSegment::CreateTransientSegment(DatabaseInstance &db,
                                                                 const CompressionFunction &function,
                                                                 const LogicalType &type, const idx_t segment_size,
-                                                                BlockManager &block_manager) {
+                                                                BlockManager &block_manager, bool zero_initialize) {
 	// Allocate a buffer for the uncompressed segment.
 	auto &buffer_manager = BufferManager::GetBufferManager(db);
 	D_ASSERT(&buffer_manager == &block_manager.buffer_manager);
 	auto block = buffer_manager.RegisterTransientMemory(segment_size, block_manager);
+	// we want to zero initialize segments that end up on disk
+	if (zero_initialize) {
+		auto handle = buffer_manager.Pin(block);
+		memset(handle.GetDataMutable(), 0, segment_size);
+	}
 
 	return make_uniq<ColumnSegment>(db, std::move(block), ColumnSegmentType::TRANSIENT, 0U, function,
 	                                BaseStatistics::CreateEmpty(type), INVALID_BLOCK, 0U, segment_size);
@@ -494,7 +499,9 @@ idx_t ColumnSegment::FilterSelection(SelectionVector &sel, Vector &vector, Unifi
 idx_t ColumnSegment::FilterSelection(SelectionVector &sel, Vector &vector, TableFilterState &filter_state,
                                      idx_t scan_count, idx_t &approved_tuple_count) {
 	auto &state = filter_state.Cast<ExpressionFilterState>();
-	if (state.fast_executor && scan_count <= STANDARD_VECTOR_SIZE) {
+	if (state.fast_executor &&
+	    (scan_count <= STANDARD_VECTOR_SIZE || (vector.GetVectorType() == VectorType::FLAT_VECTOR &&
+	                                            !vector.GetType().IsNested() && scan_count <= vector.size()))) {
 		return state.fast_executor->FilterSelection(sel, vector, scan_count, approved_tuple_count);
 	}
 	return ExecuteExpressionFilterSelection(sel, vector, state, scan_count, approved_tuple_count);

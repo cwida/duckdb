@@ -8,7 +8,7 @@ namespace duckdb {
 struct VariantNormalizerState {
 public:
 	VariantNormalizerState(idx_t result_row, VariantVectorData &source, OrderedOwningStringMap<uint32_t> &dictionary,
-	                       SelectionVector &keys_selvec);
+	                       ArenaAllocator &keys_arena, SelectionVector &keys_selvec);
 
 public:
 	data_ptr_t GetDestination();
@@ -22,6 +22,7 @@ public:
 
 	VariantVectorData &source;
 	OrderedOwningStringMap<uint32_t> &dictionary;
+	ArenaAllocator &keys_arena;
 	SelectionVector &keys_selvec;
 
 	uint64_t keys_offset;

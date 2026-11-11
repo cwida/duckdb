@@ -13,7 +13,7 @@ SET debug_verify_serializer=true;
 # answers are generated from postgres
 # hence check with NULLS LAST flag
 statement ok
-PRAGMA default_null_order='postgres'
+SET default_null_order='postgres'
 
 statement ok
 CALL dsdgen(sf=0.01)

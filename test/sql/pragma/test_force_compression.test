@@ -5,11 +5,11 @@
 foreach compression none uncompressed rle dictionary pfor bitpacking fsst dict_fsst
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 endloop
 
 statement error
-PRAGMA force_compression='unknown'
+SET force_compression='unknown'
 ----
 unrecognized value

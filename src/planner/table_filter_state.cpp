@@ -1,3 +1,5 @@
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/planner/table_filter_state.hpp"
 #include "duckdb/common/operator/comparison_operators.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
@@ -16,12 +18,12 @@ namespace duckdb {
 static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expression &expression,
                                                                   bool inside_selectivity_optional);
 
-static void InitializeExecutor(ClientContext &context, const Expression &expression, ExpressionFilterState &state) {
+static void InitializeExecutor(Context &context, const Expression &expression, ExpressionFilterState &state) {
 	state.executor = make_uniq<ExpressionExecutor>(context);
 	state.executor->AddExpression(expression);
 }
 
-ExpressionFilterState::ExpressionFilterState(ClientContext &context, const Expression &expression) {
+ExpressionFilterState::ExpressionFilterState(Context &context, const Expression &expression) {
 	can_throw = expression.CanThrow();
 	fast_executor = TryCreateFastExecutor(expression, false);
 	InitializeExecutor(context, expression, *this);
@@ -323,6 +325,9 @@ public:
 
 		const auto hash_capacity = sel.IsSet() ? scan_count : approved_tuple_count;
 		PrepareCapacity(hash_capacity);
+		if (sel.IsSet() && sel.data() == bloom_sel.data()) {
+			bloom_sel.Initialize(current_capacity);
+		}
 		if (sel.IsSet()) {
 			VectorOperations::Hash(vector, hashes, sel, approved_tuple_count);
 			if (hashes.GetVectorType() == VectorType::FLAT_VECTOR) {
@@ -466,6 +471,9 @@ public:
 		}
 
 		PrepareCapacity(approved_tuple_count);
+		if (sel.IsSet() && sel.data() == local_sel.data()) {
+			local_sel.Initialize(current_capacity);
+		}
 		const auto has_selection = sel.IsSet();
 		const auto result_count = has_selection ? filter->LookupKeys(vector, sel, local_sel, approved_tuple_count)
 		                                        : filter->LookupKeys(vector, local_sel, approved_tuple_count);
@@ -691,7 +699,7 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expressi
 
 unique_ptr<TableFilterState> TableFilterState::Initialize(ClientContext &context, const TableFilter &filter) {
 	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "TableFilterState::Initialize");
-	return make_uniq<ExpressionFilterState>(context, *expr_filter.expr);
+	return make_uniq<ExpressionFilterState>(context.GetContext(), *expr_filter.expr);
 }
 
 } // namespace duckdb

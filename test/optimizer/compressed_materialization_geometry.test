@@ -6,7 +6,7 @@
 load {TEST_DIR}/compressed_materialization_geometry.db readwrite v1.5.0
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 # Only non-empty POINT-XY geometries (with some NULLs mixed in) -> compressible to UHUGEINT
 statement ok
@@ -46,7 +46,7 @@ CHECKPOINT
 restart
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 # The POINT-XY column gets compressed to a UHUGEINT and decompressed back to GEOMETRY
 query II

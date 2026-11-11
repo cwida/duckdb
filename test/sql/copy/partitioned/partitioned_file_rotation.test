@@ -7,7 +7,7 @@ require parquet
 require vector_size 2048
 
 statement ok
-PRAGMA threads=4;
+SET threads=4;
 
 statement ok
 CREATE TABLE partitioned_rotation_source AS

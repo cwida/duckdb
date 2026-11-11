@@ -1,0 +1,58 @@
+# name: test/sql/storage/compression/rle/rle_large_comparison_filter.test
+# description: Comparisons filter native RLE run dictionaries larger than a vector
+# group: [rle]
+
+load {TEST_DIR}/rle_large_comparison_filter.db
+
+statement ok
+CREATE TABLE t (id BIGINT, v TINYINT USING COMPRESSION rle, keep SMALLINT USING COMPRESSION rle)
+
+statement ok
+INSERT INTO t SELECT i, CASE WHEN i%13=0 THEN NULL ELSE i%97-48 END, (i%11=0)::SMALLINT FROM range(131079) r(i)
+
+statement ok
+CHECKPOINT
+
+restart
+
+# TINYINT fits enough runs even in 16 KiB blocks. Each run covers at most two rows.
+query I
+SELECT count(*)>0 FROM pragma_storage_info('t') WHERE column_name='v' AND compression='RLE' AND count>4096
+----
+true
+
+query II
+SELECT count(*), sum(id) FROM t WHERE v=17
+----
+1247	81783864
+
+query II
+SELECT count(*), sum(id) FROM t WHERE v<>0
+----
+119749	7848305117
+
+query II
+SELECT count(*), sum(id) FROM t WHERE v<40
+----
+109773	7194234561
+
+query II
+SELECT count(*), sum(id) FROM t WHERE keep=1 AND v>=-40
+----
+10093	661549559
+
+# Compound predicates also filter large run dictionaries.
+query II
+SELECT count(*), sum(id) FROM t WHERE v BETWEEN -3 AND 7
+----
+13718	898942561
+
+query II
+SELECT count(*), sum(id) FROM t WHERE v=-48 OR v=48
+----
+2495	163555497
+
+query II
+SELECT count(*), sum(id) FROM t WHERE v IS NULL
+----
+10083	660769239

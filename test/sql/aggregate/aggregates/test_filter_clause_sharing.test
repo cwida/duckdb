@@ -10,7 +10,7 @@ PRAGMA verify_parallelism
 foreach threads 1 8
 
 statement ok
-PRAGMA threads={threads}
+SET threads={threads}
 
 statement ok
 CREATE OR REPLACE TABLE t AS SELECT i::INTEGER AS i, (i % 7)::INTEGER AS g, CASE WHEN i % 5 = 0 THEN NULL ELSE (i % 100)::INTEGER END AS q, ((i * 3) % 11)::INTEGER AS v, CASE WHEN i % 3 = 0 THEN NULL ELSE 'k' || (i % 4) END AS s FROM range(100000) tbl(i)

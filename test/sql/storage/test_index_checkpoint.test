@@ -6,7 +6,7 @@ load {TEST_DIR}/index_checkpoint.db
 
 # ensure we do not checkpoint early
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
 CREATE TABLE t2 (i INTEGER, uid VARCHAR);

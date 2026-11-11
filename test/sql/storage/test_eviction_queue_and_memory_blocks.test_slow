@@ -6,7 +6,7 @@ statement ok
 SET debug_eviction_queue_sleep_micro_seconds = 10;
 
 statement ok
-PRAGMA memory_limit = '1GB';
+SET memory_limit = '1GB';
 
 concurrentloop x 0 10
 

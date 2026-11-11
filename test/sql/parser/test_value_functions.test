@@ -28,10 +28,6 @@ SELECT user FROM (VALUES (42)) user(x)
 {'x': 42}
 
 # run all SQL value functions
-# need to run without verification since CURRENT_TIME etc break verification
-statement ok
-PRAGMA disable_verification
-
 require icu
 
 foreach value_function current_catalog current_date current_schema current_role current_time current_timestamp current_user localtime localtimestamp session_user user

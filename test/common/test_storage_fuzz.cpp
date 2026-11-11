@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/common.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/common/local_file_system.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
@@ -353,8 +354,8 @@ TEST_CASE("fuzzed storage test", "[storage][.]") {
 	// DuckDB Configurations
 	duckdb::DBConfig config;
 	config.SetOptionByName("debug_skip_checkpoint_on_commit", true);
-	config.options.trim_free_blocks = true;
-	config.options.checkpoint_on_shutdown = false;
+	config.SetOption(TrimFreeBlocksSetting::SettingIndex, Value::BOOLEAN(true));
+	config.SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
 
 	std::string file_path = TestCreatePath("pig.db");
 

@@ -1,0 +1,12 @@
+diff --git a/src/storage/ducklake_initializer.cpp b/src/storage/ducklake_initializer.cpp
+--- a/src/storage/ducklake_initializer.cpp
++++ b/src/storage/ducklake_initializer.cpp
+@@ -154,7 +154,7 @@
+ 		}
+ 		auto wait_ms = retry_config.WaitMs(attempt, MAX_WAIT_MS - waited_ms);
+ #ifndef DUCKDB_NO_THREADS
+-		ThreadUtil::SleepMs(wait_ms, context);
++		ThreadUtil::SleepMs(wait_ms, context.GetContext());
+ #endif
+ 		waited_ms += wait_ms;
+ 		RestartMetadataTransaction(transaction);

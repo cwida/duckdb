@@ -8,7 +8,7 @@ load {TEST_DIR}/array_compression.db
 foreach compression <compression>
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 statement ok
 CREATE TABLE tbl1 AS SELECT array_value(1,NULL,3)
