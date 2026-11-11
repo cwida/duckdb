@@ -182,6 +182,7 @@ public:
 	double first_distinct_count = 0;
 	double max_distinct_count = 0;
 	bool has_distinct_count = false;
+	bool has_floored_domain = false;
 };
 
 struct LogicalJoinStats {
@@ -203,7 +204,6 @@ struct CardinalityEstimatorState {
 	reference_map_t<JoinRelationSet, CardinalityValue> inner_selectivities;
 	reference_map_t<JoinRelationSet, CardinalityValue> cardinalities;
 	vector<reference<FilterInfo>> residual_filters;
-	reference_set_t<JoinRelationSet> floored_join_pairs;
 };
 
 CardinalityEstimator::CardinalityEstimator(JoinRelationSetManager &set_manager,
@@ -536,7 +536,7 @@ bool CardinalityEstimator::ApplyJoinPairCap(CardinalityValue &target_selectivity
 	}
 	if (cap > 0 && first_d < cap && first_d > 0) {
 		// A row-count proxy for a composite key must not undo an uncertain-domain floor.
-		if (!state->floored_join_pairs.count(join_pair)) {
+		if (!stats.has_floored_domain) {
 			target_selectivity = target_selectivity * CardinalityValue(first_d) / CardinalityValue(cap);
 		}
 		first_d = cap;
@@ -599,13 +599,14 @@ enum class SelectivityEdgeKind : uint8_t {
 	OTHER
 };
 
-static bool EquivalenceGroupApplied(FilterInfoWithTotalDomains &edge, const unordered_set<idx_t> &applied_groups) {
+static bool EquivalenceGroupApplied(FilterInfoWithTotalDomains &edge,
+                                    const unordered_map<idx_t, bool> &applied_groups) {
 	auto equality_class_index = edge.GetPredicate().GetEqualityClassIndex();
 	return equality_class_index.IsValid() && applied_groups.count(equality_class_index.GetIndex()) > 0;
 }
 
 static SelectivityEdgeKind ClassifySelectivityEdge(FilterInfoWithTotalDomains &edge,
-                                                   const unordered_set<idx_t> &applied_groups) {
+                                                   const unordered_map<idx_t, bool> &applied_groups) {
 	if (EquivalenceGroupApplied(edge, applied_groups)) {
 		return SelectivityEdgeKind::REDUNDANT_TRANSITIVE_EQUALITY;
 	}
@@ -624,7 +625,8 @@ static bool CanIncrementExistingJoin(SelectivityEdgeKind kind) {
 }
 
 static void RegisterEqualityJoinPair(FilterInfoWithTotalDomains &edge, JoinRelationSetManager &set_manager,
-                                     reference_map_t<JoinRelationSet, CompositeJoinPairStats> &join_pair_stats) {
+                                     reference_map_t<JoinRelationSet, CompositeJoinPairStats> &join_pair_stats,
+                                     bool has_floored_equivalence) {
 	if (!edge.IsInnerEquality()) {
 		return;
 	}
@@ -632,16 +634,39 @@ static void RegisterEqualityJoinPair(FilterInfoWithTotalDomains &edge, JoinRelat
 	if (!join_pair) {
 		return;
 	}
-	join_pair_stats[*join_pair].RegisterDistinctCount(edge.GetDistinctCount());
+	auto &stats = join_pair_stats[*join_pair];
+	stats.RegisterDistinctCount(edge.GetDistinctCount());
+	if (has_floored_equivalence && edge.RequiresSelectivityFloor()) {
+		stats.has_floored_domain = true;
+	}
 }
 
 struct SelectivityState {
 	vector<SelectivitySubgraph> subgraphs;
-	unordered_set<idx_t> applied_equivalence_groups;
+	//! The value records whether an applied edge in this class used the selectivity floor.
+	unordered_map<idx_t, bool> applied_equivalence_groups;
 	reference_map_t<JoinRelationSet, CompositeJoinPairStats> join_pair_stats;
 	reference_set_t<JoinRelationSet> capped_join_pairs;
 	unordered_set<idx_t> unused_edge_tdoms;
 };
+
+static void RegisterFlooredContribution(FilterInfoWithTotalDomains &edge, JoinRelationSetManager &set_manager,
+                                        SelectivityState &state) {
+	if (!edge.RequiresSelectivityFloor()) {
+		return;
+	}
+	auto equality_class = edge.GetPredicate().GetEqualityClassIndex();
+	if (equality_class.IsValid()) {
+		state.applied_equivalence_groups[equality_class.GetIndex()] = true;
+	}
+	auto pair = GetEqualityJoinPair(edge, set_manager);
+	if (!pair && edge.GetPredicate().HasDisjointJoinEndpoints() && edge.GetPredicate().GetSet().count == 2) {
+		pair = edge.GetPredicate().GetSet();
+	}
+	if (pair) {
+		state.join_pair_stats[*pair].has_floored_domain = true;
+	}
+}
 
 static bool SelectivitySubgraphComplete(SelectivityState &state, JoinRelationSet &set) {
 	return state.subgraphs.size() == 1 && state.subgraphs.at(0).relations &&
@@ -670,10 +695,12 @@ void CardinalityEstimator::ProcessSelectivityEdge(FilterInfoWithTotalDomains &ed
 	}
 
 	auto equality_class_index = edge.GetPredicate().GetEqualityClassIndex();
+	bool has_floored_equivalence = false;
 	if (equality_class_index.IsValid()) {
-		state.applied_equivalence_groups.insert(equality_class_index.GetIndex());
+		has_floored_equivalence =
+		    state.applied_equivalence_groups.emplace(equality_class_index.GetIndex(), false).first->second;
 	}
-	RegisterEqualityJoinPair(edge, set_manager, state.join_pair_stats);
+	RegisterEqualityJoinPair(edge, set_manager, state.join_pair_stats, has_floored_equivalence);
 
 	auto edge_left_set = GetEdgeEndpoint(edge, set_manager, true);
 	auto edge_right_set = GetEdgeEndpoint(edge, set_manager, false);
@@ -696,6 +723,7 @@ void CardinalityEstimator::CreateSelectivitySubgraph(FilterInfoWithTotalDomains 
                                                      JoinRelationSet &edge_right_set, SelectivityState &state) {
 	auto left_subgraph = SelectivitySubgraph();
 	auto selectivity = CalculateInnerJoinSelectivity(CardinalityValue(1), edge);
+	RegisterFlooredContribution(edge, set_manager, state);
 	left_subgraph.relations = &set_manager.Union(edge_left_set, edge_right_set);
 	left_subgraph.selectivity = selectivity;
 	ApplyCompositeJoinPairCaps(left_subgraph.selectivity, *left_subgraph.relations, state.join_pair_stats,
@@ -725,6 +753,7 @@ void CardinalityEstimator::ExtendSelectivitySubgraph(idx_t subgraph_index, Filte
 	}
 
 	auto selectivity = CalculateInnerJoinSelectivity(left_subgraph->selectivity, edge);
+	RegisterFlooredContribution(edge, set_manager, state);
 	left_subgraph->relations = &set_manager.Union(*left_subgraph->relations, *right_subgraph.relations);
 	left_subgraph->selectivity = selectivity;
 	ApplyCompositeJoinPairCaps(left_subgraph->selectivity, *left_subgraph->relations, state.join_pair_stats,
@@ -739,6 +768,7 @@ void CardinalityEstimator::MergeSelectivitySubgraphs(const vector<idx_t> &subgra
 	auto subgraph_to_delete = &state.subgraphs.at(subgraph_connections.at(1));
 	auto selectivity =
 	    CalculateInnerJoinSelectivity(subgraph_to_merge_into->selectivity * subgraph_to_delete->selectivity, edge);
+	RegisterFlooredContribution(edge, set_manager, state);
 	subgraph_to_merge_into->relations =
 	    &set_manager.Union(*subgraph_to_merge_into->relations, *subgraph_to_delete->relations);
 	subgraph_to_merge_into->selectivity = selectivity;
@@ -956,17 +986,6 @@ void CardinalityEstimator::Initialize(const vector<RelationStats> &relations,
 		}
 	}
 	std::stable_sort(state->edges.begin(), state->edges.end(), SortEdges);
-	for (auto &edge : state->edges) {
-		if (edge.RequiresSelectivityFloor()) {
-			auto pair = GetEqualityJoinPair(edge, set_manager);
-			if (!pair && edge.GetPredicate().HasDisjointJoinEndpoints() && edge.GetPredicate().GetSet().count == 2) {
-				pair = edge.GetPredicate().GetSet();
-			}
-			if (pair) {
-				state->floored_join_pairs.insert(*pair);
-			}
-		}
-	}
 	for (auto &op : operators) {
 		D_ASSERT(op->index == state->operators.size());
 		state->operators.push_back(*op);
