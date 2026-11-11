@@ -23,34 +23,33 @@ struct AlpAnalyzeState : public AnalyzeState {
 public:
 	using EXACT_TYPE = typename FloatingToExact<T>::TYPE;
 
-	explicit AlpAnalyzeState(BlockManager &block_manager) : AnalyzeState(block_manager), compression_data() {
+	AlpAnalyzeState(BlockManager &block_manager, bool supports_uncompressed_vectors_p)
+	    : AnalyzeState(block_manager), supports_uncompressed_vectors(supports_uncompressed_vectors_p) {
 	}
 
+	const bool supports_uncompressed_vectors;
 	idx_t vectors_sampled_count = 0;
 	idx_t total_values_count = 0;
 	idx_t vectors_count = 0;
 	vector<vector<T>> rowgroup_sample;
 	vector<vector<T>> complete_vectors_sampled;
 	alp::AlpCompressionData<T, true> compression_data;
-	StorageVersion storage_version = StorageVersion::INVALID;
 };
 
 template <class T>
 unique_ptr<AnalyzeState> AlpInitAnalyze(ColumnData &col_data, PhysicalType type) {
-	auto &storage_manager = col_data.GetStorageManager();
 	auto &block_manager = col_data.GetBlockManager();
-	const auto storage_version = storage_manager.GetStorageVersion();
+	const auto storage_version = col_data.GetStorageManager().GetStorageVersion();
+	const bool supports_uncompressed_vectors =
+	    !StorageManager::IsPriorToVersion(StorageVersion::V1_5_0, storage_version);
 
-	if (block_manager.GetBlockSize() + block_manager.GetBlockHeaderSize() < DEFAULT_BLOCK_ALLOC_SIZE) {
-		if (StorageManager::IsPriorToVersion(StorageVersion::V1_5_0, storage_version)) {
-			// Before v1.5.0, blocks cannot use uncompressed-vector fallback
-			return nullptr;
-		}
+	if (!supports_uncompressed_vectors &&
+	    block_manager.GetBlockSize() + block_manager.GetBlockHeaderSize() < DEFAULT_BLOCK_ALLOC_SIZE) {
+		// Before v1.5.0, blocks cannot use uncompressed-vector fallback
+		return nullptr;
 	}
 
-	auto state = make_uniq<AlpAnalyzeState<T>>(block_manager);
-	state->storage_version = storage_version;
-	return unique_ptr<AnalyzeState>(std::move(state));
+	return make_uniq<AlpAnalyzeState<T>>(block_manager, supports_uncompressed_vectors);
 }
 
 /*
@@ -125,48 +124,46 @@ bool AlpAnalyze(AnalyzeState &state, const Vector &input) {
 template <class T>
 idx_t AlpFinalAnalyze(AnalyzeState &state) {
 	auto &analyze_state = state.Cast<AlpAnalyzeState<T>>();
+	auto &compression_data = analyze_state.compression_data;
 
-	// Finding the Top K combinations of Exponent and Factor
-	alp::AlpCompression<T, true>::FindTopKCombinations(analyze_state.rowgroup_sample, analyze_state.compression_data);
+	// Find the top combinations of exponent and factor.
+	alp::AlpCompression<T, true>::FindTopKCombinations(analyze_state.rowgroup_sample, compression_data);
 
-	// Encode the entire sampled vectors to estimate a compression size
-	idx_t compressed_values = 0;
-	idx_t compressed_bytes = 0;
-	for (auto &vector_to_compress : analyze_state.complete_vectors_sampled) {
-		alp::AlpCompression<T, true>::Compress(vector_to_compress.data(), vector_to_compress.size(),
-		                                       analyze_state.compression_data);
-		const idx_t uncompressed_size = AlpConstants::EXPONENT_SIZE + sizeof(T) * vector_to_compress.size();
-		const idx_t compressed_size = analyze_state.compression_data.RequiredSpace();
-		const bool should_compress =
-		    compressed_size < uncompressed_size ||
-		    StorageManager::IsPriorToVersion(StorageVersion::V1_5_0, analyze_state.storage_version);
+	// Encode the sampled vectors to estimate their storage size.
+	idx_t sampled_values = 0;
+	idx_t sampled_bytes = 0;
+	for (auto &sample : analyze_state.complete_vectors_sampled) {
+		alp::AlpCompression<T, true>::Compress(sample.data(), sample.size(), compression_data);
+		auto vector_size = compression_data.RequiredSpace();
+		if (analyze_state.supports_uncompressed_vectors) {
+			const idx_t uncompressed_size = AlpConstants::EXPONENT_SIZE + sizeof(T) * sample.size();
+			vector_size = MinValue(vector_size, uncompressed_size);
+		}
 
-		const idx_t vector_size = should_compress ? compressed_size : uncompressed_size;
-
-		compressed_bytes += vector_size;
-		analyze_state.compression_data.Reset();
-
-		compressed_values += vector_to_compress.size();
+		sampled_bytes += vector_size;
+		sampled_values += sample.size();
+		compression_data.Reset();
 	}
 
-	if (compressed_values == 0) {
+	if (sampled_values == 0) {
 		return DConstants::INVALID_INDEX;
 	}
 
 	// Extrapolate vector data without scaling segment headers or alignment padding.
-	const auto factor_of_sampling =
-	    static_cast<double>(analyze_state.total_values_count) / static_cast<double>(compressed_values);
-	const auto vector_count =
-	    std::ceil(static_cast<double>(analyze_state.total_values_count) / AlpConstants::ALP_VECTOR_SIZE);
-	const auto estimated_size =
-	    static_cast<double>(compressed_bytes) * factor_of_sampling + vector_count * AlpConstants::METADATA_POINTER_SIZE;
-	const auto segment_count =
-	    std::ceil(estimated_size / static_cast<double>(state.info.GetBlockSize() - AlpConstants::HEADER_SIZE));
-	const auto final_analyze_size = std::ceil(estimated_size + segment_count * AlpConstants::HEADER_SIZE);
-	if (final_analyze_size >= static_cast<double>(DConstants::INVALID_INDEX)) {
+	const auto total_values = static_cast<double>(analyze_state.total_values_count);
+	const auto sampling_factor = total_values / sampled_values;
+	auto estimated_size = sampled_bytes * sampling_factor;
+
+	const auto vector_count = std::ceil(total_values / AlpConstants::ALP_VECTOR_SIZE);
+	estimated_size += vector_count * AlpConstants::METADATA_POINTER_SIZE;
+
+	const auto usable_segment_size = state.info.GetBlockSize() - AlpConstants::HEADER_SIZE;
+	const auto segment_count = std::ceil(estimated_size / usable_segment_size);
+	estimated_size = std::ceil(estimated_size + segment_count * AlpConstants::HEADER_SIZE);
+	if (estimated_size >= static_cast<double>(DConstants::INVALID_INDEX)) {
 		return DConstants::INVALID_INDEX;
 	}
-	return AlignValue(LossyNumericCast<idx_t>(final_analyze_size));
+	return AlignValue(LossyNumericCast<idx_t>(estimated_size));
 }
 
 } // namespace duckdb
