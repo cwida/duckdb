@@ -29,15 +29,11 @@ int64_t BaseSecret::MatchScore(const string &path) const {
 			continue;
 		}
 		// Authority-only URI scopes have an implicit trailing slash.
-		auto scheme_end = prefix.find("://");
-		bool has_uri_scheme =
-		    scheme_end != string::npos && scheme_end > 0 && prefix.find_first_of("/\\") == scheme_end + 1;
-		if (has_uri_scheme) {
-			auto authority_start = scheme_end + 3;
-			bool authority_only =
-			    authority_start < prefix.size() && prefix.find_first_of("/\\?#", authority_start) == string::npos;
+		auto authority = StringUtil::GetURIAuthority(prefix);
+		bool authority_only = !authority.empty() && prefix.size() == prefix.find("://") + 3 + authority.size();
+		if (authority_only) {
 			bool at_authority_boundary = path.size() == prefix.size() || path[prefix.size()] == '/';
-			if (authority_only && !at_authority_boundary) {
+			if (!at_authority_boundary) {
 				continue;
 			}
 		}
