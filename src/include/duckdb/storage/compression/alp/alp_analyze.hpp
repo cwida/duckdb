@@ -43,9 +43,10 @@ unique_ptr<AnalyzeState> AlpInitAnalyze(ColumnData &col_data, PhysicalType type)
 	const bool supports_uncompressed_vectors =
 	    !StorageManager::IsPriorToVersion(StorageVersion::V1_5_0, storage_version);
 
+	// Without uncompressed fallback, a worst-case DOUBLE vector needs more than 16 KiB.
+	constexpr idx_t minimum_legacy_block_alloc_size = 32 * 1024;
 	if (!supports_uncompressed_vectors &&
-	    block_manager.GetBlockSize() + block_manager.GetBlockHeaderSize() < DEFAULT_BLOCK_ALLOC_SIZE) {
-		// Before v1.5.0, blocks cannot use uncompressed-vector fallback
+	    block_manager.GetBlockSize() + block_manager.GetBlockHeaderSize() < minimum_legacy_block_alloc_size) {
 		return nullptr;
 	}
 
