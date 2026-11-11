@@ -8,6 +8,7 @@ PhysicalExecute::PhysicalExecute(PhysicalPlan &physical_plan, PhysicalOperator &
                                  shared_ptr<PreparedStatementData> prepared)
     : PhysicalOperator(physical_plan, PhysicalOperatorType::EXECUTE, plan.types, idx_t(-1)), plan(plan),
       prepared(std::move(prepared)) {
+	children.push_back(plan);
 }
 
 vector<const_reference<PhysicalOperator>> PhysicalExecute::GetChildren() const {
