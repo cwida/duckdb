@@ -607,10 +607,8 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 			if (cond.GetRHS().GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 				continue;
 			}
-			if (cond.GetLHS().Cast<BoundColumnRefExpression>().GetReturnType().IsFloating()) {
-				continue;
-			}
-			if (cond.GetRHS().Cast<BoundColumnRefExpression>().GetReturnType().IsFloating()) {
+			if (!Optimizer::EqualityImpliesBitwiseIdentity(cond.GetLHS().GetReturnType()) ||
+			    !Optimizer::EqualityImpliesBitwiseIdentity(cond.GetRHS().GetReturnType())) {
 				continue;
 			}
 			// comparison join between two bound column refs
