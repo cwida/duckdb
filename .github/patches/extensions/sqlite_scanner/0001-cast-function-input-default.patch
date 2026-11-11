@@ -1,0 +1,22 @@
+diff --git a/src/sqlite_functions.cpp b/src/sqlite_functions.cpp
+index 9b10c8f..df29909 100644
+--- a/src/sqlite_functions.cpp
++++ b/src/sqlite_functions.cpp
+@@ -243,7 +243,7 @@ struct SQLiteCast {
+ 	      text_cast(SQLiteGetTextCast(source_type, target_type)),
+ 	      function(set.GetCastFunction(source_type, target_type, get_input)) {
+ 		if (function.HasInitLocalState()) {
+-			CastLocalStateParameters parameters(get_input.context, function.GetCastData());
++			CastLocalStateParameters parameters(get_input.client_context, function.GetCastData());
+ 			local_state = function.InitLocalState(parameters);
+ 		}
+ 	}
+@@ -271,7 +271,7 @@ struct SQLiteCast {
+ 	//! The cast of SQLite text, if there is one
+ 	sqlite_text_cast_t text_cast;
+ 	CastFunctionSet set;
+-	GetCastFunctionInput get_input;
++	GetCastFunctionInput get_input = GetCastFunctionInput::Default();
+ 	BoundCastInfo function;
+ 	unique_ptr<FunctionLocalState> local_state;
+ };
