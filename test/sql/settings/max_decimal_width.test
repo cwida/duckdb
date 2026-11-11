@@ -151,6 +151,76 @@ SELECT d * d FROM wide
 ----
 Multiplication needs a DECIMAL of 600 digits, the maximum DECIMAL width is 100
 
+statement error
+SELECT d + d FROM wide
+----
+Addition needs a DECIMAL of 301 digits, the maximum DECIMAL width is 100
+
+statement error
+SELECT sum(d) FROM wide
+----
+The sum needs a DECIMAL of 320 digits, the maximum DECIMAL width is 100
+
+# the setting bounds the types a query constructs, not the types of the columns it has: comparing, combining and
+# aggregating a column within its own width needs no wider type
+query I
+SELECT count(*) FROM wide WHERE d = d
+----
+1
+
+query IIII
+SELECT typeof(coalesce(d, d)), typeof(CASE WHEN d > 0 THEN d ELSE NULL END), typeof(coalesce(d, 1::DECIMAL(50,0))), typeof(coalesce(d, 1))
+FROM wide
+----
+DECIMAL(300,100)	DECIMAL(300,100)	DECIMAL(300,100)	DECIMAL(300,100)
+
+query III
+SELECT max(d) = min(d), typeof(max(d)), round(max(d), 2) FROM wide
+----
+true	DECIMAL(300,100)	1.00
+
+query I
+SELECT typeof(d) FROM (SELECT d FROM wide UNION ALL SELECT d FROM wide) LIMIT 1
+----
+DECIMAL(300,100)
+
+query I
+SELECT count(*) FROM wide w1 JOIN wide w2 ON w1.d = w2.d
+----
+1
+
+# combining two columns into a type wider than both is refused like any other wider result
+statement ok
+SET max_decimal_width = 4294967295;
+
+statement ok
+CREATE TABLE wide2 AS SELECT '1'::DECIMAL(250,200) AS e;
+
+statement ok
+SET max_decimal_width = 100;
+
+statement error
+SELECT coalesce(d, e) FROM wide, wide2
+----
+Combining DECIMAL(300,100) and DECIMAL(250,200) needs a DECIMAL of 400 digits, the maximum DECIMAL width is 100
+
+statement ok
+SET max_decimal_width = 4294967295;
+
+statement ok
+CREATE TABLE w (d DECIMAL(5000,10));
+
+statement ok
+INSERT INTO w VALUES (1);
+
+statement ok
+SET max_decimal_width = 1000;
+
+query II
+SELECT count(*), typeof(max(d)) FROM w WHERE d = d
+----
+1	DECIMAL(5000,10)
+
 # values below 38 act as 38: the fixed-size tiers are never bounded and results stay within 38 digits, as before wide
 # decimals
 statement ok

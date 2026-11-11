@@ -459,8 +459,9 @@ LogicalType DecimalArithmeticResultType(ClientContext &context, const vector<Log
 		check_overflow = true;
 		required_width = width_limit;
 	}
-	return LogicalType::DECIMAL(Decimal::CheckedWidth(context, required_width, IS_MODULO ? "Modulo" : "Addition"),
-	                            max_scale);
+	return LogicalType::DECIMAL(
+	    Decimal::CheckedWidth(context, required_width, max_decimal_width, IS_MODULO ? "Modulo" : "Addition"),
+	    max_scale);
 }
 
 //! Resolves the types of a decimal addition, subtraction or modulo, returns whether overflow checks are required
@@ -1276,7 +1277,7 @@ LogicalType DecimalMultiplyResultType(ClientContext &context, const vector<Logic
 		check_overflow = true;
 		result_width = width_limit;
 	}
-	return LogicalType::DECIMAL(Decimal::CheckedWidth(context, result_width, "Multiplication"),
+	return LogicalType::DECIMAL(Decimal::CheckedWidth(context, result_width, max_decimal_width, "Multiplication"),
 	                            NumericCast<uint32_t>(result_scale));
 }
 

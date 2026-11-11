@@ -25,16 +25,16 @@ uint32_t Decimal::MaxResultWidth(optional_ptr<ClientContext> context, uint32_t m
 	return MaxValue<uint32_t>(MaxWidth(context), max_input_width);
 }
 
-uint32_t Decimal::CheckedWidth(optional_ptr<ClientContext> context, idx_t width, const string &operation) {
+uint32_t Decimal::CheckedWidth(optional_ptr<ClientContext> context, idx_t width, uint32_t max_input_width,
+                               const string &operation) {
 	if (width > NumericLimits<uint32_t>::Maximum()) {
 		throw OutOfRangeException("%s needs a DECIMAL of %llu digits, the width of a DECIMAL is at most %u", operation,
 		                          width, NumericLimits<uint32_t>::Maximum());
 	}
-	const auto max_width = MaxWidth(context);
-	if (width > max_width) {
+	if (width > MaxResultWidth(context, max_input_width)) {
 		throw OutOfRangeException("%s needs a DECIMAL of %llu digits, the maximum DECIMAL width is %u (SET "
 		                          "max_decimal_width to allow wider decimals)",
-		                          operation, width, max_width);
+		                          operation, width, MaxWidth(context));
 	}
 	return NumericCast<uint32_t>(width);
 }

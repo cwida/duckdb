@@ -80,8 +80,10 @@ public:
 	//! The widest result of combining decimals, given the widest DECIMAL among the inputs: MaxWidth, or the input
 	//! width when that is wider
 	static uint32_t MaxResultWidth(optional_ptr<ClientContext> context, uint32_t max_input_width);
-	//! Narrows a computed width to MaxWidth, throws when the operation needs a wider DECIMAL
-	static uint32_t CheckedWidth(optional_ptr<ClientContext> context, idx_t width, const string &operation);
+	//! Narrows a computed result width, throws when the operation needs a DECIMAL beyond MaxResultWidth: the setting
+	//! bounds the types an operation constructs, never the types of the inputs it already has
+	static uint32_t CheckedWidth(optional_ptr<ClientContext> context, idx_t width, uint32_t max_input_width,
+	                             const string &operation);
 	static string ToString(int16_t value, uint32_t width, uint32_t scale);
 	static string ToString(int32_t value, uint32_t width, uint32_t scale);
 	static string ToString(int64_t value, uint32_t width, uint32_t scale);

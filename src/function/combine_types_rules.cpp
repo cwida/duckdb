@@ -145,15 +145,15 @@ static bool CombineEqualDecimal(LogicalTypeResolver &logical_type_resolver, cons
 	auto extra_width = MaxValue<uint32_t>(extra_width_left, extra_width_right);
 	auto scale = MaxValue<uint32_t>(DecimalType::GetScale(left), DecimalType::GetScale(right));
 	idx_t width = idx_t(extra_width) + scale;
-	const idx_t width_limit = Decimal::MaxResultWidth(
-	    logical_type_resolver.context, MaxValue<uint32_t>(DecimalType::GetWidth(left), DecimalType::GetWidth(right)));
+	const auto max_input_width = MaxValue<uint32_t>(DecimalType::GetWidth(left), DecimalType::GetWidth(right));
+	const idx_t width_limit = Decimal::MaxResultWidth(logical_type_resolver.context, max_input_width);
 	if (width > width_limit && !Decimal::IsWide(width_limit)) {
 		// the result does not fit the fixed-size tiers: truncate the scale
 		width = width_limit;
 		scale = NumericCast<uint32_t>(width - extra_width);
 	}
-	// a wide result is never truncated, a result beyond the maximum width is an error
-	result = LogicalType::DECIMAL(Decimal::CheckedWidth(logical_type_resolver.context, width,
+	// a wide result is never truncated, a result wider than the inputs and the maximum width is an error
+	result = LogicalType::DECIMAL(Decimal::CheckedWidth(logical_type_resolver.context, width, max_input_width,
 	                                                    "Combining " + left.ToString() + " and " + right.ToString()),
 	                              scale);
 	return true;

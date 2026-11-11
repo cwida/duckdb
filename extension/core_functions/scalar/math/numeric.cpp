@@ -721,7 +721,7 @@ unique_ptr<FunctionData> ResolveDecimalRoundPrecision(ClientContext &context, Bo
 			// a fixed-size decimal stays in the fixed-size tiers (a carry out of 38 digits overflows), a wide decimal
 			// grows by the carry digit
 			if (Decimal::IsWide(width)) {
-				result_width = Decimal::CheckedWidth(context, idx_t(result_width) + 1, "Rounding");
+				result_width = Decimal::CheckedWidth(context, idx_t(result_width) + 1, width, "Rounding");
 			} else if (result_width < Decimal::MAX_WIDTH_INT128) {
 				result_width++;
 			}
