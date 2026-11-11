@@ -482,3 +482,96 @@ TEST_CASE("Test that duckdb_extensions lists extensions installed from user-prov
 	REQUIRE(ExtensionRows(con, "dns") == vector<string> {"true|false|REPOSITORY|community|v0|NULL|dns.duckdb_extension"});
 	REQUIRE(ExtensionRows(con, "json").size() == 1);
 }
+
+// Copy a file into the reserved '.duckdb_extension' domain, as an install does
+static void CopyExtensionFile(FileSystem &fs, const string &source, const string &target) {
+	auto handle = fs.OpenFile(source, FileFlags::FILE_FLAGS_READ);
+	auto size = handle->GetFileSize();
+	auto buffer = make_unsafe_uniq_array<data_t>(size);
+	handle->Read(buffer.get(), size, 0);
+	WriteExtensionFile(fs, target, buffer.get(), size);
+}
+
+// One "extension|repository|result|previous version|current version" string per row
+static vector<string> UpdateRows(Connection &con, const string &statement) {
+	auto result = con.Query(statement);
+	REQUIRE_NO_FAIL(*result);
+	vector<string> rows;
+	for (auto &row : result->Collection().Rows()) {
+		vector<string> values;
+		for (idx_t c = 0; c < result->ColumnCount(); c++) {
+			values.push_back(row.GetValue(c).ToString());
+		}
+		rows.push_back(StringUtil::Join(values, "|"));
+	}
+	std::sort(rows.begin(), rows.end());
+	return rows;
+}
+
+TEST_CASE("Test that UPDATE EXTENSIONS updates extensions installed from user-provided repositories", "[api]") {
+	auto fs = FileSystem::CreateLocal();
+	auto demo_extension =
+	    fs->JoinPath(TestBuildDirectory(), "test/extension/loadable_extension_demo.duckdb_extension");
+	if (!fs->FileExists(demo_extension)) {
+		WARN("loadable_extension_demo is not built, skipping");
+		return;
+	}
+	auto repository_directory = TestCreatePath("ext_repo_update");
+	auto extension_directory = TestCreatePath("ext_repo_update_ext");
+
+	// a local repository serving the demo extension, in the <prefix>/<version>/<platform>/ layout
+	auto prefix = TestCreatePath("ext_repo_update_prefix");
+	auto served_directory =
+	    fs->JoinPath(fs->JoinPath(prefix, ExtensionHelper::GetVersionDirectoryName()), DuckDB::Platform());
+	fs->CreateDirectoriesRecursive(served_directory);
+	CopyExtensionFile(*fs, demo_extension, fs->JoinPath(served_directory, "loadable_extension_demo.duckdb_extension"));
+
+	DBConfig config;
+	config.SetOptionByName("extension_repository_directory", repository_directory);
+	config.SetOptionByName("extension_directory", extension_directory);
+	config.SetOptionByName("allow_extension_repositories", "allowed");
+	config.SetOptionByName("allow_unsigned_extensions", true);
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	// the reproducer: install and load from a user-provided repository, then update
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
+	    "CREATE EXTENSION REPOSITORY my_repo WITH PREFIX '%s' USING PUBLIC KEY '%s'", prefix, TEST_PUBLIC_KEY)));
+	REQUIRE_NO_FAIL(con.Query("INSTALL loadable_extension_demo FROM my_repo"));
+	REQUIRE_NO_FAIL(con.Query("LOAD loadable_extension_demo FROM my_repo"));
+
+	const string repo_row = "loadable_extension_demo|my_repo|NO_UPDATE_AVAILABLE|default-version|default-version";
+	REQUIRE(UpdateRows(con, "UPDATE EXTENSIONS") == vector<string> {repo_row});
+	REQUIRE(UpdateRows(con, "UPDATE EXTENSIONS (loadable_extension_demo)") == vector<string> {repo_row});
+
+	// the update reinstalls into the per-repository folder, not the flat one
+	auto flat_directory = ExtensionHelper::ExtensionDirectory(*db.instance, *fs);
+	auto flat_path = fs->JoinPath(flat_directory, "loadable_extension_demo.duckdb_extension");
+	auto repo_path = fs->JoinPath(fs->JoinPath(fs->JoinPath(flat_directory, "repositories"), "my_repo"),
+	                              "loadable_extension_demo.duckdb_extension");
+	REQUIRE(fs->FileExists(repo_path));
+	REQUIRE(!fs->FileExists(flat_path));
+
+	// a copy in the flat folder that records my_repo as its origin, as the reproducer's mv creates, is updated from
+	// my_repo as well. With both copies present, each one is updated
+	CopyExtensionFile(*fs, repo_path, flat_path);
+	CopyExtensionFile(*fs, repo_path + ".info", flat_path + ".info");
+	REQUIRE(UpdateRows(con, "UPDATE EXTENSIONS") == vector<string> {repo_row, repo_row});
+	REQUIRE(UpdateRows(con, "UPDATE EXTENSIONS (loadable_extension_demo)") == vector<string> {repo_row, repo_row});
+	fs->RemoveFile(flat_path);
+	fs->RemoveFile(flat_path + ".info");
+
+	// a folder that no repository backs is not updated
+	StageUserRepoExtension(*db.instance, "stray_ext", "not_a_repository");
+	auto stray = con.Query("UPDATE EXTENSIONS (stray_ext)");
+	REQUIRE(stray->HasError());
+	REQUIRE(StringUtil::Contains(stray->GetError(), "the extension is not installed"));
+	REQUIRE(UpdateRows(con, "UPDATE EXTENSIONS") == vector<string> {repo_row});
+
+	// once repositories are forbidden, their folders are skipped rather than failing the update
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='forbidden'"));
+	REQUIRE(UpdateRows(con, "UPDATE EXTENSIONS").empty());
+	auto forbidden = con.Query("UPDATE EXTENSIONS (loadable_extension_demo)");
+	REQUIRE(forbidden->HasError());
+	REQUIRE(StringUtil::Contains(forbidden->GetError(), "the extension is not installed"));
+}

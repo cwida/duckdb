@@ -1,0 +1,77 @@
+# name: test/extension/update_extensions_user_repository.test
+# description: UPDATE EXTENSIONS updates extensions installed from a user-provided repository
+# group: [extension]
+
+# json must be available in the LOCAL_EXTENSION_REPO
+require-env LOCAL_EXTENSION_REPO
+
+require json
+
+statement ok
+SET extension_directory='{TEST_DIR}/update_extensions_user_repository'
+
+statement ok
+SET extension_repository_directory='{TEST_DIR}/update_extensions_user_repository_repos'
+
+# the local repository backs the user-provided repository; the test runner allows unsigned extensions
+statement ok
+CREATE EXTENSION REPOSITORY my_repo WITH PREFIX '{LOCAL_EXTENSION_REPO}' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
+
+# nothing installed yet
+query IIIII
+UPDATE EXTENSIONS
+----
+
+statement ok
+INSTALL json FROM my_repo
+
+statement ok
+LOAD json FROM my_repo
+
+# the extension from my_repo is listed and updated from my_repo
+query IIIII
+UPDATE EXTENSIONS
+----
+json	my_repo	NO_UPDATE_AVAILABLE	<REGEX>:.+	<REGEX>:.+
+
+query IIIII
+UPDATE EXTENSIONS (json)
+----
+json	my_repo	NO_UPDATE_AVAILABLE	<REGEX>:.+	<REGEX>:.+
+
+# the update reinstalls into the per-repository folder
+query I
+SELECT install_path LIKE '%_repositories_my_repo_json.duckdb_extension' FROM duckdb_extensions()
+WHERE extension_name='json' AND installed_from='my_repo'
+----
+true
+
+# with a copy in the flat folder as well, both copies are updated, each from its own repository
+statement ok
+FORCE INSTALL json FROM '{LOCAL_EXTENSION_REPO}'
+
+query IIIII rowsort
+UPDATE EXTENSIONS
+----
+json	{LOCAL_EXTENSION_REPO}	NO_UPDATE_AVAILABLE	<REGEX>:.+	<REGEX>:.+
+json	my_repo	NO_UPDATE_AVAILABLE	<REGEX>:.+	<REGEX>:.+
+
+query IIIII rowsort
+UPDATE EXTENSIONS (json)
+----
+json	{LOCAL_EXTENSION_REPO}	NO_UPDATE_AVAILABLE	<REGEX>:.+	<REGEX>:.+
+json	my_repo	NO_UPDATE_AVAILABLE	<REGEX>:.+	<REGEX>:.+
+
+statement error
+UPDATE EXTENSIONS (foobar)
+----
+Failed to update the extension 'foobar', the extension is not installed!
+
+# forbidding repositories distrusts them: only the flat copy is updated
+statement ok
+SET allow_extension_repositories='forbidden'
+
+query IIIII
+UPDATE EXTENSIONS
+----
+json	{LOCAL_EXTENSION_REPO}	NO_UPDATE_AVAILABLE	<REGEX>:.+	<REGEX>:.+
