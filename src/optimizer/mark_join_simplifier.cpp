@@ -167,7 +167,7 @@ bool MarkJoinSimplifier::TrySimplify(LogicalFilter &filter, LogicalOperator &roo
 			continue;
 		}
 		// Reordering the converted join can change which rows evaluate volatile expressions.
-		if (filter.HasVolatileExpressions()) {
+		if (filter.HasVolatileExpressionsIgnoringError()) {
 			return false;
 		}
 		for (auto &condition : join.conditions) {

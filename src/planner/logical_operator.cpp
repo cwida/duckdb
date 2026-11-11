@@ -10,8 +10,10 @@
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/tree_renderer.hpp"
+#include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/operator/list.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_join.hpp"
@@ -145,22 +147,53 @@ bool LogicalOperator::CTEContainsDML() const {
 	return false;
 }
 
-bool LogicalOperator::HasVolatileExpressions() const {
+static bool IsVolatileIgnoringError(const Expression &expr) {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::BOUND_FUNCTION: {
+		auto &function = expr.Cast<BoundFunctionExpression>().Function();
+		if (function.HasBindLambdaCallback() ||
+		    (function.GetStability() == FunctionStability::VOLATILE && !ErrorFun::IsError(function))) {
+			return expr.IsVolatile();
+		}
+		break;
+	}
+	case ExpressionClass::BOUND_CASE:
+	case ExpressionClass::BOUND_CONJUNCTION:
+	case ExpressionClass::BOUND_OPERATOR:
+		break;
+	default:
+		return expr.IsVolatile();
+	}
 	bool is_volatile = false;
-	LogicalOperatorVisitor::EnumerateExpressions(*this, [&](const unique_ptr<Expression> *expression) {
-		if ((*expression)->IsVolatile()) {
+	ExpressionIterator::EnumerateChildren(
+	    expr, [&](const Expression &child) { is_volatile = is_volatile || IsVolatileIgnoringError(child); });
+	return is_volatile;
+}
+
+static bool HasVolatileExpressionsInternal(const LogicalOperator &op, bool ignore_error) {
+	bool is_volatile = false;
+	LogicalOperatorVisitor::EnumerateExpressions(op, [&](const unique_ptr<Expression> *expression) {
+		if (ignore_error ? IsVolatileIgnoringError(**expression) : (*expression)->IsVolatile()) {
 			is_volatile = true;
 		}
 	});
 	if (is_volatile) {
 		return true;
 	}
-	for (auto &child : children) {
-		if (child && child->HasVolatileExpressions()) {
+	for (auto &child : op.children) {
+		if (child && HasVolatileExpressionsInternal(*child, ignore_error)) {
 			return true;
 		}
 	}
 	return false;
+}
+
+bool LogicalOperator::HasVolatileExpressions() const {
+	return HasVolatileExpressionsInternal(*this, false);
+}
+
+bool LogicalOperator::HasVolatileExpressionsIgnoringError() const {
+	return HasVolatileExpressionsInternal(*this, true);
 }
 
 void LogicalOperator::ResolveOperatorTypes() {

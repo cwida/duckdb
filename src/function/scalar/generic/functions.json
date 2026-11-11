@@ -19,7 +19,8 @@
         "parameters": "message",
         "description": "Throws the given error message",
         "example": "error('access_mode')",
-        "type": "scalar_function"
+        "type": "scalar_function",
+        "extra_functions": ["static bool IsError(const BoundScalarFunction &function);"]
     },
     {
         "name": "has_error",

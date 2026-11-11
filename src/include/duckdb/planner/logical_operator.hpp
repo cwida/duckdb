@@ -75,6 +75,8 @@ public:
 	bool CTEContainsDML() const;
 	//! Returns true if this operator or any of its descendants contains a volatile expression
 	bool HasVolatileExpressions() const;
+	//! Like HasVolatileExpressions, but ignores error()'s own volatility.
+	bool HasVolatileExpressionsIgnoringError() const;
 
 	virtual string GetName() const;
 	virtual InsertionOrderPreservingMap<string> ParamsToString() const;
