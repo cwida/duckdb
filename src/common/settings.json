@@ -738,6 +738,13 @@
         "default_value": "false"
     },
     {
+        "name": "disable_view_catalog_stripping",
+        "description": "Disables stripping the view's own catalog qualifier from stored view definitions. When enabled, ambiguous catalog/schema references keep working, but views may not survive re-attaching the database under a different alias.",
+        "type": "BOOLEAN",
+        "default_scope": "local",
+        "default_value": "false"
+    },
+    {
         "name": "disabled_compression_methods",
         "description": "Disable a specific, comma-separated set of compression methods.",
         "type": "VARCHAR",

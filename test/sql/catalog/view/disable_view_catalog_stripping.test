@@ -1,0 +1,120 @@
+# name: test/sql/catalog/view/disable_view_catalog_stripping.test
+# description: Views keep their catalog-qualified references when catalog stripping is disabled
+# group: [view]
+
+query I
+SELECT current_setting('disable_view_catalog_stripping')
+----
+false
+
+statement ok
+ATTACH ':memory:' AS db;
+
+statement ok
+ATTACH ':memory:' AS s;
+
+statement ok
+CREATE SCHEMA db.db;
+
+statement ok
+CREATE SCHEMA db.s;
+
+statement ok
+CREATE TABLE db.db.t AS SELECT 1 AS x;
+
+statement ok
+CREATE TABLE db.s.u AS SELECT 2 AS y;
+
+statement ok
+SET disable_view_catalog_stripping = true;
+
+# a schema that shares a name with the view's own catalog
+statement ok
+CREATE VIEW db.db.v AS SELECT x FROM db.db.t;
+
+# a schema that shares a name with another attached catalog
+statement ok
+CREATE VIEW db.main.w AS SELECT y FROM db.s.u;
+
+query I
+SELECT * FROM db.db.v;
+----
+1
+
+query I
+SELECT * FROM db.main.w;
+----
+2
+
+# the catalog qualifiers are kept in the stored view definition
+query I
+SELECT count(*) FROM duckdb_views()
+WHERE view_name IN ('v', 'w') AND (sql LIKE '%db.db.t%' OR sql LIKE '%db.s.u%');
+----
+2
+
+# a qualified macro whose schema shares a name with an attached catalog
+statement ok
+CREATE SCHEMA s.db;
+
+statement ok
+CREATE MACRO s.db.f() AS 42;
+
+statement ok
+CREATE VIEW s.main.v3 AS SELECT s.db.f() AS z;
+
+query I
+SELECT * FROM s.main.v3;
+----
+42
+
+# a qualified table macro
+statement ok
+CREATE MACRO s.db.tf(x) AS TABLE SELECT x AS v;
+
+statement ok
+CREATE VIEW s.main.v5 AS SELECT * FROM s.db.tf(7);
+
+query I
+SELECT * FROM s.main.v5;
+----
+7
+
+# a qualified macro in a nested schema
+statement ok
+CREATE SCHEMA s.db.child;
+
+statement ok
+CREATE MACRO s.db.child.g() AS 99;
+
+statement ok
+CREATE VIEW s.main.v6 AS SELECT s.db.child.g() AS z;
+
+query I
+SELECT * FROM s.main.v6;
+----
+99
+
+# a nested schema path whose first component shares a name with an attached catalog
+statement ok
+ATTACH ':memory:' AS s1;
+
+statement ok
+CREATE SCHEMA db.s1;
+
+statement ok
+CREATE SCHEMA db.s1.s2;
+
+statement ok
+CREATE TABLE db.s1.s2.t AS SELECT 7 AS i;
+
+statement ok
+CREATE VIEW db.s1.s2.v4 AS SELECT i FROM db.s1.s2.t;
+
+query I
+SELECT * FROM db.s1.s2.v4;
+----
+7
+
+statement ok
+RESET disable_view_catalog_stripping;

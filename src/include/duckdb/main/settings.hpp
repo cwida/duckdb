@@ -1328,6 +1328,21 @@ struct DisableTimestamptzCastsSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
+struct DisableViewCatalogStrippingSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "disable_view_catalog_stripping";
+	static constexpr const char *Description =
+	    "Disables stripping the view's own catalog qualifier from stored view definitions. When enabled, ambiguous "
+	    "catalog/schema references keep working, but views may not survive re-attaching the database under a different "
+	    "alias. This also affects macros.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct DisabledCompressionMethodsSetting {
 	using RETURN_TYPE = string;
 	static constexpr const char *Name = "disabled_compression_methods";

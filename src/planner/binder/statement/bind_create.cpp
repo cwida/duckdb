@@ -368,9 +368,9 @@ void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const
 
 void Binder::BindCreateViewInfo(CreateViewInfo &base) {
 	// references to the view's own catalog are resolved through the view's search path anyway - drop the qualifier so
-	// the view keeps working when the database is attached under a different alias
+	// the view keeps working when the database is attached under a different alias (unless this is disabled)
 	auto &view_catalog = base.GetQualifiedName().Catalog();
-	if (base.query && !view_catalog.empty()) {
+	if (base.query && !view_catalog.empty() && !Settings::Get<DisableViewCatalogStrippingSetting>(context)) {
 		RemotePushdownOptimizer::StripCatalogName(*base.query, view_catalog);
 	}
 	if (base.binding_mode == CreateViewBindingMode::SKIP_BINDING) {
