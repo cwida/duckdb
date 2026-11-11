@@ -168,8 +168,6 @@ unique_ptr<LogicalOperator> WindowFusion::OptimizeInternal(unique_ptr<LogicalOpe
 	}
 	D_ASSERT(child.get().type == LogicalOperatorType::LOGICAL_WINDOW);
 	auto &window = child.get().Cast<LogicalWindow>();
-
-	D_ASSERT(window.expressions.size() == 1);
 	auto &wexpr = window.expressions[0]->Cast<BoundWindowExpression>();
 
 	// Restrict to implemented cases
