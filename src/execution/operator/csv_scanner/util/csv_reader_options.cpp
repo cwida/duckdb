@@ -590,6 +590,9 @@ bool StoreUserDefinedParameter(const Identifier &option) {
 	return true;
 }
 
+//! A buffer sized by a user maximum line size holds this many lines of that size
+static constexpr idx_t LINES_PER_BUFFER = 16;
+
 void CSVReaderOptions::Verify(MultiFileOptions &file_options) {
 	if (rejects_table_name.IsSetByUser() && !store_rejects.GetValue() && store_rejects.IsSetByUser()) {
 		throw BinderException("REJECTS_TABLE option is only supported when store_rejects is not manually set to false");
@@ -627,8 +630,8 @@ void CSVReaderOptions::Verify(MultiFileOptions &file_options) {
 		// If the max line size is set by the user and bigger than we have by default, we make it part of our buffer
 		// size decision.
 		idx_t buffer_size;
-		if (!TryMultiplyOperator::Operation<idx_t, idx_t, idx_t>(CSVBuffer::ROWS_PER_BUFFER,
-		                                                         maximum_line_size.GetValue(), buffer_size)) {
+		if (!TryMultiplyOperator::Operation<idx_t, idx_t, idx_t>(LINES_PER_BUFFER, maximum_line_size.GetValue(),
+		                                                         buffer_size)) {
 			throw BinderException("MAX_LINE_SIZE option was set to %d, which is too large",
 			                      maximum_line_size.GetValue());
 		}

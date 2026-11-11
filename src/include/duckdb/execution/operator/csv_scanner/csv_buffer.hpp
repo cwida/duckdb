@@ -91,13 +91,8 @@ public:
 		return block && (!random_access || !block->GetMemory().IsUnloaded());
 	}
 
-	//! The default size of a buffer. With the block header and the sector alignment of the buffer manager the
-	//! allocation is exactly 32 MiB, a power of two the block allocator's allocation cache keeps for reuse, so freed
-	//! buffers are handed to the next scan thread without new page faults
+	//! With the block header and alignment the allocation is exactly 32 MiB, a size the allocation cache reuses
 	static constexpr idx_t CSV_BUFFER_SIZE = 33550336;
-	//! A buffer holds this many rows of the maximum line size when the user sets a larger maximum line size
-	static constexpr idx_t ROWS_PER_BUFFER = 16;
-	static constexpr idx_t MIN_ROWS_PER_BUFFER = 4;
 
 	bool last_buffer = false;
 
