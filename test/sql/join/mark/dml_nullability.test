@@ -102,3 +102,24 @@ endloop
 
 statement ok
 RESET delim_join_as_cte;
+
+statement ok
+CREATE TABLE semi_probe AS SELECT * FROM (VALUES (NULL::INTEGER), (1), (9)) t(i);
+
+statement ok
+CREATE TABLE semi_build AS SELECT 2 AS i;
+
+# The TRUE-only conversion must retain NULL-safe comparison after the write.
+query I
+WITH ins AS (INSERT INTO semi_build VALUES (NULL), (1), (1), (3) RETURNING i)
+SELECT p.i FROM semi_probe p JOIN BY(TYPE MARK) semi_build b
+ON p.i IS NOT DISTINCT FROM b.i WHERE __mark_join_marker ORDER BY p.i NULLS FIRST;
+----
+NULL
+1
+
+# Filtering the consumer does not truncate the unreferenced DML producer.
+query I
+SELECT count(*) FROM semi_build;
+----
+5

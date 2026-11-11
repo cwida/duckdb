@@ -224,13 +224,13 @@ void Optimizer::RunBuiltInOptimizers() {
 		plan = filter_pushdown.Rewrite(std::move(plan));
 	});
 
-	if (!plan->CTEContainsDML()) {
-		// Expose filtering joins before choosing aggregate key domains.
-		RunOptimizer(OptimizerType::MARK_JOIN_SIMPLIFIER, [&]() {
-			MarkJoinSimplifier mark_simplifier(*this);
-			mark_simplifier.Optimize(plan);
-		});
+	// Expose filtering joins before choosing aggregate key domains.
+	RunOptimizer(OptimizerType::MARK_JOIN_SIMPLIFIER, [&]() {
+		MarkJoinSimplifier mark_simplifier(*this);
+		mark_simplifier.Optimize(plan);
+	});
 
+	if (!plan->CTEContainsDML()) {
 		RunOptimizer(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN, [&]() {
 			DuplicateEliminatedDomainOptimizer domain_optimizer(*this);
 			domain_optimizer.Optimize(plan);
@@ -258,12 +258,10 @@ void Optimizer::RunBuiltInOptimizers() {
 	});
 
 	// removes any redundant DelimGets/DelimJoins
-	if (!plan->CTEContainsDML()) {
-		RunOptimizer(OptimizerType::DELIMINATOR, [&]() {
-			Deliminator deliminator(context);
-			plan = deliminator.Optimize(std::move(plan));
-		});
-	}
+	RunOptimizer(OptimizerType::DELIMINATOR, [&]() {
+		Deliminator deliminator(context);
+		plan = deliminator.Optimize(std::move(plan));
+	});
 
 	// rewrite aggregates over multiple grouping sets (ROLLUP/CUBE/GROUPING SETS) into explicit aggregate plans
 	RunOptimizer(OptimizerType::GROUPING_SETS, [&]() {
@@ -300,12 +298,10 @@ void Optimizer::RunBuiltInOptimizers() {
 	});
 
 	// IN-clause rewriting and delim elimination can expose more filtered markers.
-	if (!plan->CTEContainsDML()) {
-		RunOptimizer(OptimizerType::MARK_JOIN_SIMPLIFIER, [&]() {
-			MarkJoinSimplifier mark_simplifier(*this);
-			mark_simplifier.Optimize(plan);
-		});
-	}
+	RunOptimizer(OptimizerType::MARK_JOIN_SIMPLIFIER, [&]() {
+		MarkJoinSimplifier mark_simplifier(*this);
+		mark_simplifier.Optimize(plan);
+	});
 
 	// Pull up projection from joins
 	RunOptimizer(OptimizerType::PROJECTION_PULLUP, [&]() {
