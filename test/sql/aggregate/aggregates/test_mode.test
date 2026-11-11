@@ -324,7 +324,7 @@ statement ok
 RESET debug_force_external;
 
 statement ok
-PRAGMA threads=4;
+SET threads=4;
 
 statement ok
 CREATE TABLE parallel_mode AS SELECT i % 20000 AS g,
