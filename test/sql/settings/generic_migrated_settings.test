@@ -3,12 +3,11 @@
 # group: [settings]
 
 # defaults
-query IIIII
-SELECT current_setting('debug_verification_mode'), current_setting('profiling_coverage'),
-       current_setting('debug_force_variant_shredding'), current_setting('checkpoint_threshold'),
-       current_setting('allocator_bulk_deallocation_flush_threshold')
+query IIII
+SELECT current_setting('profiling_coverage'), current_setting('debug_force_variant_shredding'),
+       current_setting('checkpoint_threshold'), current_setting('allocator_bulk_deallocation_flush_threshold')
 ----
-NONE	SELECT	INVALID	16.0 MiB	512.0 MiB
+SELECT	INVALID	16.0 MiB	512.0 MiB
 
 query IIIII
 SELECT current_setting('disabled_optimizers'), current_setting('disabled_compression_methods'),
