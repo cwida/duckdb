@@ -2320,17 +2320,16 @@ void ScanStructure::NextSingleJoin(DataChunk &keys, DataChunk &probe_data, DataC
 		// advance pointers for those rows
 		AdvancePointers(result_sel, result_count);
 
-		// now resolve the predicates
-		idx_t match_count = ResolvePredicates(keys, probe_data, chain_match_sel_vector, nullptr);
-		if (match_count > 0) {
-			// we found at least one duplicate row - throw
-			throw InvalidInputException(
-			    "More than one row returned by a subquery used as an expression - scalar subqueries can only "
-			    "return a single row.\n\nUse \"SET scalar_subquery_error_on_multiple_rows=false\" to revert to "
-			    "previous behavior of returning a random row.");
+		while (this->count > 0) {
+			idx_t match_count = ResolvePredicates(keys, probe_data, chain_match_sel_vector, nullptr);
+			if (match_count > 0) {
+				throw InvalidInputException(
+				    "More than one row returned by a subquery used as an expression - scalar subqueries can only "
+				    "return a single row.\n\nUse \"SET scalar_subquery_error_on_multiple_rows=false\" to revert to "
+				    "previous behavior of returning a random row.");
+			}
+			AdvancePointers();
 		}
-
-		this->count = 0;
 	}
 }
 
