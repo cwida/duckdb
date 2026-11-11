@@ -12,6 +12,7 @@
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/common/enums/optimizer_type.hpp"
+#include "duckdb/common/type_visitor.hpp"
 
 #include <functional>
 
@@ -53,6 +54,21 @@ private:
 
 public:
 	// helper functions
+	static bool EqualityImpliesBitwiseIdentity(const LogicalType &type) {
+		return !TypeVisitor::Contains(type, [](const LogicalType &t) {
+			switch (t.id()) {
+			case LogicalTypeId::FLOAT:
+			case LogicalTypeId::DOUBLE:
+			case LogicalTypeId::INTERVAL:
+			case LogicalTypeId::VARIANT:
+				return true;
+			case LogicalTypeId::VARCHAR:
+				return !StringType::GetCollation(t).empty();
+			default:
+				return false;
+			}
+		});
+	}
 	unique_ptr<Expression> BindScalarFunction(const Identifier &name, unique_ptr<Expression> c1);
 	unique_ptr<Expression> BindScalarFunction(const Identifier &name, unique_ptr<Expression> c1,
 	                                          unique_ptr<Expression> c2);
