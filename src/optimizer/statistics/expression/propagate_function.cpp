@@ -1,4 +1,3 @@
-#include "duckdb/common/types.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
 
 #include "duckdb/execution/expression_executor.hpp"
