@@ -123,12 +123,20 @@ static void ComputeGroupLocation(const Vector &group, Value &min, uintptr_t *add
 	}
 }
 
+static inline void CheckGroupInRange(uint64_t group, idx_t total_groups) {
+	if (group >= total_groups) {
+		throw DataCorruptionException("Perfect hash aggregate: aggregate group %llu exceeded total groups %llu.", group,
+		                              total_groups);
+	}
+}
+
 void PerfectAggregateHashTable::AddChunk(DataChunk &groups, DataChunk &payload) {
+	const auto row_count = groups.size();
 	// first we need to find the location in the HT of each of the groups
-	FlatVector::SetSize(addresses, groups.size());
+	FlatVector::SetSize(addresses, row_count);
 	auto address_data = FlatVector::GetDataMutable<uintptr_t>(addresses);
 	// zero-initialize the address data
-	memset(address_data, 0, groups.size() * sizeof(uintptr_t));
+	memset(address_data, 0, row_count * sizeof(uintptr_t));
 	D_ASSERT(groups.ColumnCount() == group_minima.size());
 
 	// Compute raw group ids first; convert them to state pointers below if needed.
@@ -138,19 +146,16 @@ void PerfectAggregateHashTable::AddChunk(DataChunk &groups, DataChunk &payload) 
 		ComputeGroupLocation(groups.data[i], group_minima[i], address_data, current_shift);
 	}
 
+	// evaluate every aggregate filter once for this chunk
+	filter_set.ApplyFilters(payload);
 	if (AddChunkClustered(address_data, payload)) {
 		return;
 	}
 
 	// Non-clustered path: convert group ids to state pointers and update aggregates.
-	for (idx_t i = 0; i < groups.size(); i++) {
+	for (idx_t i = 0; i < row_count; i++) {
 		const auto group = address_data[i];
-		if (group >= total_groups) {
-			throw InvalidInputException("Perfect hash aggregate: aggregate group %llu exceeded total groups %llu. This "
-			                            "likely means that the statistics in your data source are corrupt.\n* PRAGMA "
-			                            "disable_optimizer to disable optimizations that rely on correct statistics",
-			                            group, total_groups);
-		}
+		CheckGroupInRange(group, total_groups);
 		group_is_set[group] = true;
 		address_data[i] = uintptr_t(data) + group * tuple_size;
 	}
@@ -162,7 +167,7 @@ void PerfectAggregateHashTable::AddChunk(DataChunk &groups, DataChunk &payload) 
 		auto &aggregate = aggregates[aggr_idx];
 		if (aggregate.filter) {
 			RowOperations::UpdateFilteredStates(row_state, filter_set.GetFilterData(aggr_idx), aggregate, addresses,
-			                                    payload, payload_idx);
+			                                    payload_idx);
 		} else {
 			RowOperations::UpdateStates(row_state, aggregate, addresses, payload, payload_idx);
 		}
@@ -192,6 +197,7 @@ bool PerfectAggregateHashTable::AddChunkClustered(uintptr_t *address_data, DataC
 		return false;
 	}
 	clustered.InitializeStates([&](uint64_t gid) {
+		CheckGroupInRange(gid, total_groups);
 		auto group_id = static_cast<idx_t>(gid);
 		group_is_set[group_id] = true;
 		return data + group_id * tuple_size;
@@ -200,8 +206,18 @@ bool PerfectAggregateHashTable::AddChunkClustered(uintptr_t *address_data, DataC
 	// When all aggregates are clustered-aware, we can skip maintaining per-tuple addresses.
 	bool skip_addresses = clustered_state.all_clustered;
 	if (!skip_addresses) {
+		// The clusterer masks group ids, but per-row addresses use the raw ids.
+		uintptr_t combined_groups = 0;
 		for (idx_t i = 0; i < count; i++) {
-			address_data[i] = uintptr_t(data) + address_data[i] * tuple_size;
+			auto group = address_data[i];
+			combined_groups |= group;
+			address_data[i] = uintptr_t(data) + group * tuple_size;
+		}
+		// total_groups is a power of two, so OR preserves any out-of-range bit.
+		// Reject invalid integer addresses before any aggregate dereferences them.
+		if (combined_groups >= total_groups) {
+			throw DataCorruptionException("Perfect hash aggregate: aggregate group exceeded total groups %llu.",
+			                              total_groups);
 		}
 	}
 

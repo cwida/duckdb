@@ -228,7 +228,6 @@ bool OuterJoinSimplification::TryConvertLeftToAntiJoin(LogicalComparisonJoin &jo
 			continue;
 		}
 		join.join_type = JoinType::ANTI;
-		MarkEliminatedNullColumns(right_bindings);
 		return true;
 	}
 	return false;
@@ -302,9 +301,12 @@ void OuterJoinSimplification::VisitInnerOrSemiJoin(LogicalComparisonJoin &join, 
 
 void OuterJoinSimplification::VisitOuterJoin(LogicalComparisonJoin &join, LogicalOperator &op) {
 	if (TryConvertLeftToAntiJoin(join)) {
+		auto right_bindings = GetRightBindings(join);
 		AddRequiredColumns(join.conditions);
 		EraseNullRequiredColumns(*join.children[1]);
 		VisitOperatorChildren(op);
+		// only operators above the join see the right side as NULL, not the right child itself
+		MarkEliminatedNullColumns(right_bindings);
 		return;
 	}
 

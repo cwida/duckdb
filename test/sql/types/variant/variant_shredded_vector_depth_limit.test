@@ -1,0 +1,35 @@
+# name: test/sql/types/variant/variant_shredded_vector_depth_limit.test
+# description: Shredded vector verification leaves a vector unshredded when any of its values is nested too deep
+# group: [variant]
+
+require json
+
+statement ok
+CREATE TABLE j AS
+SELECT CASE WHEN i = 0 THEN '1' ELSE repeat('[', 500) || '1' || repeat(']', 500) END AS s, i
+FROM range(4) t(i);
+
+# the deep values come first here
+statement ok
+CREATE TABLE k AS
+SELECT CASE WHEN i = 3 THEN '1' ELSE repeat('[', 500) || '1' || repeat(']', 500) END AS s, i
+FROM range(4) t(i);
+
+statement ok
+PRAGMA debug_verify_vector = 'shredded_vector';
+
+query I
+SELECT s::JSON::VARIANT IS NOT NULL FROM j ORDER BY i;
+----
+true
+true
+true
+true
+
+query I
+SELECT s::JSON::VARIANT IS NOT NULL FROM k;
+----
+true
+true
+true
+true

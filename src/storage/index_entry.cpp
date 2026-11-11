@@ -445,7 +445,7 @@ void IndexEntry::Rebuild(const IndexRebuildScan &scan) {
 	IndexRebuildAppend append = [&](DataChunk &chunk, Vector &row_ids) {
 		auto error = bound_index.Append(chunk, row_ids);
 		if (error.HasError()) {
-			throw InternalException("Failed to rebuild index '%s' after vacuum: %s", bound_index.GetIndexName(),
+			throw InternalException("Failed to rebuild index %s after vacuum: %s", bound_index.GetIndexName(),
 			                        error.Message());
 		}
 	};

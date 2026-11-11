@@ -1,0 +1,108 @@
+# name: test/sql/join/hash_join/hash_join_nested_key_after_constant_key.test
+# description: A nested join key after constant keys hashes every row that survives the NULL key filter
+# group: [hash_join]
+
+# the UNNEST passthrough columns i, l, a, s, e, ll and m are constant vectors, and the NULL x rows are dropped before hashing
+statement ok
+CREATE TABLE t AS
+SELECT [NULL, 1, 1] AS front, [1, NULL, 1] AS mid, [1, 1, NULL] AS back, 7 AS i, [5, NULL] AS l,
+       [5, 6]::INTEGER[2] AS a, {'k': [5]} AS s, []::INTEGER[] AS e, [[5], [6, NULL]] AS ll,
+       MAP {'a': 1} AS m
+
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT unnest(front) AS x, i, l FROM t) p JOIN (SELECT unnest(front) AS x, i, l FROM t) q
+ON p.i = q.i AND p.l = q.l AND p.x = q.x
+----
+physical_plan	<REGEX>:.*Hash Join.*
+
+query I
+SELECT count(*)
+FROM (SELECT unnest(front) AS x, i, l FROM t) p JOIN (SELECT unnest(front) AS x, i, l FROM t) q
+ON p.i = q.i AND p.l = q.l AND p.x = q.x
+----
+4
+
+query I
+SELECT count(*)
+FROM (SELECT unnest(mid) AS x, i, l FROM t) p JOIN (SELECT unnest(mid) AS x, i, l FROM t) q
+ON p.i = q.i AND p.l = q.l AND p.x = q.x
+----
+4
+
+query I
+SELECT count(*)
+FROM (SELECT unnest(back) AS x, i, l FROM t) p JOIN (SELECT unnest(back) AS x, i, l FROM t) q
+ON p.i = q.i AND p.l = q.l AND p.x = q.x
+----
+4
+
+query I
+SELECT count(*)
+FROM (SELECT unnest(front) AS x, i, l FROM t) p JOIN (SELECT unnest(front) AS x, i, l FROM t) q
+ON p.i IS NOT DISTINCT FROM q.i AND p.l IS NOT DISTINCT FROM q.l AND p.x = q.x
+----
+4
+
+query I
+SELECT count(*)
+FROM (SELECT unnest(front) AS x, i, a FROM t) p JOIN (SELECT unnest(front) AS x, i, a FROM t) q
+ON p.i = q.i AND p.a = q.a AND p.x = q.x
+----
+4
+
+query I
+SELECT count(*)
+FROM (SELECT unnest(front) AS x, i, s FROM t) p JOIN (SELECT unnest(front) AS x, i, s FROM t) q
+ON p.i = q.i AND p.s = q.s AND p.x = q.x
+----
+4
+
+# an empty list combines nothing into the hash, so each row keeps the hash of the constant keys before it
+query I
+SELECT count(*)
+FROM (SELECT unnest(front) AS x, i, e FROM t) p JOIN (SELECT unnest(front) AS x, i, e FROM t) q
+ON p.i = q.i AND p.e = q.e AND p.x = q.x
+----
+4
+
+query I
+SELECT count(*)
+FROM (SELECT unnest(front) AS x, i, ll FROM t) p JOIN (SELECT unnest(front) AS x, i, ll FROM t) q
+ON p.i = q.i AND p.ll = q.ll AND p.x = q.x
+----
+4
+
+query I
+SELECT count(*)
+FROM (SELECT unnest(front) AS x, i, m FROM t) p JOIN (SELECT unnest(front) AS x, i, m FROM t) q
+ON p.i = q.i AND p.m = q.m AND p.x = q.x
+----
+4
+
+# a flat probe side against the constant build keys
+query I
+SELECT count(*)
+FROM (VALUES (NULL, 7, [5, NULL]), (1, 7, [5, NULL]), (1, 7, [5, NULL]), (1, 8, [5, NULL])) p(x, i, l)
+JOIN (SELECT unnest(front) AS x, i, l FROM t) q
+ON p.i = q.i AND p.l = q.l AND p.x = q.x
+----
+4
+
+query III
+SELECT p.x, q.x, count(*)
+FROM (SELECT unnest(front) AS x, i, l FROM t) p LEFT JOIN (SELECT unnest(front) AS x, i, l FROM t) q
+ON p.i = q.i AND p.l = q.l AND p.x = q.x
+GROUP BY ALL
+ORDER BY ALL
+----
+1	1	4
+NULL	NULL	1
+
+# the build side keeps its NULL key rows here, so only the probe side hashes through a selection
+query I
+SELECT count(*)
+FROM (SELECT unnest(front) AS x, i, l FROM t) p FULL JOIN (SELECT unnest(front) AS x, i, l FROM t) q
+ON p.i = q.i AND p.l = q.l AND p.x = q.x
+----
+6

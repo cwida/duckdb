@@ -1,0 +1,49 @@
+# name: test/sql/types/struct/struct_extract_variant.test
+# description: struct_extract / struct_extract_at on a non-STRUCT (e.g. VARIANT) must not trip an assertion
+# group: [struct]
+
+require json
+
+# a non-NULL VARIANT argument reaches the bind and must raise a Binder Error instead of tripping an assertion
+statement error
+SELECT struct_extract(1::VARIANT, 'a');
+----
+<REGEX>:.*(Binder|Conversion|Invalid Input) Error.*
+
+statement error
+SELECT struct_extract('{"a":1}'::JSON::VARIANT, 'a');
+----
+<REGEX>:.*(Binder|Conversion|Invalid Input) Error.*
+
+statement error
+SELECT struct_extract_at(1::VARIANT, 1);
+----
+<REGEX>:.*(Binder|Conversion|Invalid Input) Error.*
+
+statement error
+SELECT struct_extract_at('{"a":1}'::JSON::VARIANT, 1);
+----
+<REGEX>:.*(Binder|Conversion|Invalid Input) Error.*
+
+# a NULL VARIANT is rejected by its type as well
+statement error
+SELECT struct_extract(NULL::VARIANT, 'a');
+----
+Binder Error: struct_extract can only be used on a STRUCT, not on VARIANT
+
+statement error
+SELECT struct_extract_at(NULL::VARIANT, 1);
+----
+Binder Error: struct_extract can only be used on a STRUCT, not on VARIANT
+
+# the VARIANT-aware path still works
+query I
+SELECT variant_extract(1::VARIANT, 'a') IS NULL;
+----
+true
+
+# struct_extract on an actual STRUCT still works
+query I
+SELECT struct_extract({'a': 42}, 'a');
+----
+42

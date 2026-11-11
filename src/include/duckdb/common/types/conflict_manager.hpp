@@ -11,6 +11,8 @@
 #include "duckdb/common/identifier.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/vector.hpp"
+#include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/execution/index/art/art.hpp"
 
 namespace duckdb {
@@ -18,6 +20,9 @@ namespace duckdb {
 class Index;
 class IndexEntry;
 class ConflictInfo;
+class DataTable;
+class DuckTransaction;
+class LocalStorage;
 
 enum class ConflictManagerMode : uint8_t {
 	SCAN, // Gather conflicts without throwing a constraint exception.

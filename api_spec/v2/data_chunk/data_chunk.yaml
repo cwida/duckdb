@@ -21,7 +21,7 @@ functions:
   # -----------------------------------------------------------------------
   data_chunk_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates an empty data chunk with the given column types, drawing its allocator from a factory.
 
@@ -58,7 +58,7 @@ functions:
 
   data_chunk_copy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a deep copy of a data chunk, drawing its allocator from a factory.
 
@@ -88,7 +88,7 @@ functions:
   # -----------------------------------------------------------------------
   data_chunk_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys a data chunk handle.
 
@@ -106,7 +106,7 @@ functions:
 
   data_chunk_clear:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-12" ]
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
     description: |
       Empties a data chunk so it can be filled again.
 
@@ -129,7 +129,7 @@ functions:
 
   data_chunk_get_size:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: Returns the row count of a data chunk.
     role: getter
     belongs_to: data_chunk
@@ -175,7 +175,7 @@ functions:
 
   data_chunk_get_vector_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the number of vectors in a data chunk.
 
@@ -200,7 +200,7 @@ functions:
 
   data_chunk_get_vector:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows the vector at the given index in a data chunk.
 

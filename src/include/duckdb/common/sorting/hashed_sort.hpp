@@ -62,6 +62,7 @@ public:
 	SortedRunPtr GetSortedRun(ClientContext &client, idx_t hash_bin, OperatorSourceInput &source) const override;
 
 	const ChunkRows &GetHashGroups(GlobalSourceState &global_state) const override;
+	unique_ptr<TupleDataCollection> TryTakeSinglePartition(idx_t hash_bin, GlobalSourceState &source) const override;
 
 	void RegisterHyperLogLog(LocalSinkState &local_state, ParallelHyperLogLogLocalState &hll_state) const override;
 
@@ -83,6 +84,13 @@ public:
 	idx_t partition_key_count = 0;
 	//! Whether single-key hash groups can skip sorting
 	bool can_bypass_single_key_sort = false;
+	//! Whether hash groups are keyed on the value of a single integer partition column (every group single-key)
+	bool integer_partitioning = false;
+	//! The smallest partition key value and the number of key values when integer partitioning
+	Value integer_partition_min;
+	idx_t integer_partition_count = 0;
+	//! Whether single-key hash groups are detected while sinking
+	bool track_single_keys = false;
 	//! Are we creating a dummy payload column?
 	bool force_payload = false;
 	// Key columns that must be computed

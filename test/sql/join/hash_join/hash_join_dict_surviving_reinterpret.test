@@ -1,0 +1,23 @@
+# name: test/sql/join/hash_join/hash_join_dict_surviving_reinterpret.test
+# description: A global dictionary that a function reinterprets per chunk keeps accumulating in the chunk cache
+# group: [hash_join]
+
+statement ok
+CREATE TABLE build AS SELECT i AS k, ('POINT(' || i || ' 0)')::GEOMETRY AS g FROM range(20000) t(i);
+
+statement ok
+CREATE TABLE probe AS SELECT i % 20000 AS k FROM range(40000) t(i);
+
+statement ok
+CREATE TABLE sel AS SELECT ST_SetCRS(('POINT(' || i || ' 0)')::GEOMETRY, 'OGC:CRS84') AS g FROM range(10) t(i);
+
+# ST_SetCRS reinterprets the dictionary of the join output to a GEOMETRY type with a CRS
+query I
+SELECT count(*) FROM (SELECT ST_SetCRS(b.g, 'OGC:CRS84') AS x FROM probe p JOIN build b ON p.k = b.k) j JOIN sel s ON j.x = s.g;
+----
+20
+
+query I
+SELECT count(*) FROM (SELECT ST_SetCRS(b.g, 'OGC:CRS84') AS x FROM probe p JOIN build b ON p.k = b.k) j JOIN sel s ON j.x::VARCHAR = s.g::VARCHAR;
+----
+20

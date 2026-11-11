@@ -1,0 +1,55 @@
+# name: test/optimizer/case_simplification_errors.test
+# description: CASE simplification defers errors in unused conditions
+# group: [optimizer]
+
+# The first condition is not foldable, but it prevents evaluation of the second.
+query T
+SELECT CASE WHEN count(*) = 1 THEN 'first' WHEN 1 // 0 = 0 THEN 'unreachable' ELSE 'last' END;
+----
+first
+
+# An entire CASE expression can be unused by its parent.
+query I
+SELECT COALESCE(1, CASE WHEN 1 // 0 = 0 THEN count(*) ELSE 2 END);
+----
+1
+
+query I
+SELECT CASE WHEN count(*) = 1 THEN [42] ELSE CASE WHEN 1 // 0 = 0 THEN [1] ELSE [2] END END;
+----
+[42]
+
+query I
+SELECT CASE WHEN count(*) = 1 THEN 42 WHEN CAST('not-a-boolean' AS BOOLEAN) THEN 1 ELSE 2 END;
+----
+42
+
+# Simplifying surrounding constant conditions must retain the failing condition.
+query I
+SELECT CASE WHEN NULL THEN 0 WHEN count(*) = 1 THEN 42 WHEN 1 // 0 = 0 THEN 1 WHEN false THEN 2 WHEN true THEN 3 ELSE 4 END;
+----
+42
+
+statement error
+SELECT CASE WHEN NULL THEN 0 WHEN count(*) = 0 THEN 42 WHEN 1 // 0 = 0 THEN 1 WHEN false THEN 2 WHEN true THEN 3 ELSE 4 END;
+----
+Division by zero
+
+statement error
+SELECT CASE WHEN count(*) = 0 THEN 42 WHEN CAST('not-a-boolean' AS BOOLEAN) THEN 1 ELSE 2 END;
+----
+Could not convert string
+
+# TRY catches an error when execution reaches the condition.
+query I
+SELECT TRY(CASE WHEN cnt = 0 THEN 42 WHEN 1 // 0 = 0 THEN 1 ELSE 2 END) FROM (SELECT count(*) AS cnt);
+----
+NULL
+
+statement ok
+PREPARE failing_case AS SELECT CASE WHEN 1 // 0 = 0 THEN 1 ELSE 2 END;
+
+statement error
+EXECUTE failing_case;
+----
+Division by zero

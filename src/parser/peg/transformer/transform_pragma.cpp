@@ -1,3 +1,4 @@
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/parser/statement/pragma_statement.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
@@ -38,6 +39,12 @@ PEGTransformerFactory::TransformPragmaAssign(PEGTransformer &transformer, const 
 	identifier_set_t sqlite_compat_pragmas {"table_info"};
 	if (sqlite_compat_pragmas.find(info.name) != sqlite_compat_pragmas.end()) {
 		return std::move(result);
+	}
+	if (transformer.options.context) {
+		DUCKDB_LOG_WARNING(*transformer.options.context,
+		                   "Using \"PRAGMA %s=...\" to set a setting is deprecated and will be removed in a future "
+		                   "release, use \"SET %s=...\" instead.",
+		                   info.name.GetIdentifierName(), info.name.GetIdentifierName());
 	}
 	auto set_statement = make_uniq<SetVariableStatement>(info.name, std::move(info.parameters[0]), SetScope::AUTOMATIC);
 	return std::move(set_statement);

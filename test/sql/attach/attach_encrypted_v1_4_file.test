@@ -1,0 +1,36 @@
+# name: test/sql/attach/attach_encrypted_v1_4_file.test
+# description: An encrypted database written by DuckDB 1.4 keeps v1.4.0 when written without STORAGE_VERSION
+# group: [attach]
+
+# the database file was written with vector size 2048
+require exact_vector_size 2048
+
+statement ok
+SET force_mbedtls_unsafe = true
+
+statement ok
+COPY (SELECT content FROM read_blob('data/attach_test/encrypted_gcm_key=abcde.db'))
+TO '{TEST_DIR}/encrypted_v1_4.db' (FORMAT BLOB);
+
+statement ok
+ATTACH '{TEST_DIR}/encrypted_v1_4.db' AS enc (ENCRYPTION_KEY 'abcde')
+
+statement ok
+INSERT INTO enc.test VALUES (5)
+
+statement ok
+CHECKPOINT enc
+
+statement ok
+DETACH enc
+
+statement ok
+ATTACH '{TEST_DIR}/encrypted_v1_4.db' AS enc (ENCRYPTION_KEY 'abcde')
+
+query II
+SELECT sum(value), (SELECT tags['storage_version'] FROM duckdb_databases() WHERE database_name = 'enc') FROM enc.test
+----
+15	v1.4.0+
+
+statement ok
+DETACH enc

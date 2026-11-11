@@ -1,0 +1,97 @@
+# name: test/sql/storage/compression/select_across_segments.test
+# description: Select across compressed segments with independent validity boundaries
+# group: [compression]
+
+require vector_size 2048
+
+statement ok
+ATTACH '{TEST_DIR}/select_across_segments.db' AS db (BLOCK_SIZE 16384, STORAGE_VERSION 'v1.4.0');
+
+statement ok
+SET threads=1;
+
+statement ok
+CREATE MACRO expected_string(i) AS CASE WHEN i%13=0 THEN NULL ELSE repeat(md5((i//127)::VARCHAR),8) END;
+
+foreach compression uncompressed dict_fsst
+
+statement ok
+CREATE TABLE db.strings_{compression}(id INTEGER, value VARCHAR USING COMPRESSION {compression});
+
+statement ok
+INSERT INTO db.strings_{compression} SELECT i, expected_string(i) FROM range(20000) t(i);
+
+endloop
+
+# Unique non-NULL strings exercise the FSST_ONLY mode of DICT_FSST.
+statement ok
+CREATE TABLE db.unique_strings(id INTEGER, value VARCHAR USING COMPRESSION dict_fsst);
+
+statement ok
+INSERT INTO db.unique_strings SELECT i, repeat(md5(i::VARCHAR),8) FROM range(6000) t(i);
+
+statement ok
+CREATE TABLE db.numbers(id INTEGER, value INTEGER USING COMPRESSION rle);
+
+statement ok
+INSERT INTO db.numbers SELECT i, CASE WHEN i%13=0 THEN NULL ELSE (i//2)%1000 END FROM range(20000) t(i);
+
+statement ok
+CHECKPOINT db;
+
+foreach tbl strings_uncompressed strings_dict_fsst unique_strings numbers
+
+query I
+SELECT count(*) > 1 AND bool_or(start%2048 != 0) FROM pragma_storage_info('db.{tbl}') WHERE column_name='value' AND segment_type != 'VALIDITY';
+----
+true
+
+endloop
+
+statement ok
+DETACH db;
+
+statement ok
+ATTACH '{TEST_DIR}/select_across_segments.db' AS db;
+
+foreach compression uncompressed dict_fsst
+
+# The ends of each vector cross segment boundaries, skipping interior segments.
+# Retain the output while subsequent vectors reset the scan state.
+statement ok
+CREATE TEMP TABLE retained_{compression} AS SELECT * FROM db.strings_{compression} WHERE id%2048<70 OR id%2048>=2046;
+
+# Leave the tail unselected, then resume within its segment in the next vector.
+query II
+SELECT count(*), bool_and(value IS NOT DISTINCT FROM expected_string(id)) FROM db.strings_{compression} WHERE id%2048=0;
+----
+10	true
+
+endloop
+
+query II
+SELECT count(*), bool_and(value=repeat(md5(id::VARCHAR),8)) FROM db.unique_strings WHERE id%2048<70 OR id%2048>=2046;
+----
+214	true
+
+query II
+SELECT count(*), bool_and(value IS NOT DISTINCT FROM CASE WHEN id%13=0 THEN NULL ELSE (id//2)%1000 END) FROM db.numbers WHERE id%2048<70 OR id%2048>=2046;
+----
+718	true
+
+query II
+SELECT count(*), bool_and(value IS NOT DISTINCT FROM CASE WHEN id%13=0 THEN NULL ELSE (id//2)%1000 END) FROM db.numbers WHERE id%2048=0;
+----
+10	true
+
+statement ok
+DETACH db;
+
+foreach compression uncompressed dict_fsst
+
+query II
+SELECT count(*), bool_and(value IS NOT DISTINCT FROM expected_string(id)) FROM retained_{compression};
+----
+718	true
+
+endloop

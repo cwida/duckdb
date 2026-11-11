@@ -183,15 +183,9 @@ void BoundAggregateFunction::ReplaceImplementation(const AggregateFunction &func
 
 BindAggregateFunctionInput::BindAggregateFunctionInput(ClientContext &context_p,
                                                        BoundAggregateFunction &bound_function_p,
-                                                       vector<unique_ptr<Expression>> &arguments_p,
-                                                       const vector<Identifier> &argument_names_p)
-    : BindFunctionInput(context_p, bound_function_p, arguments_p, &argument_names_p), bound_function(bound_function_p) {
-}
-
-BindAggregateFunctionInput::BindAggregateFunctionInput(ClientContext &context_p,
-                                                       BoundAggregateFunction &bound_function_p,
                                                        vector<unique_ptr<Expression>> &arguments_p)
-    : BindFunctionInput(context_p, bound_function_p, arguments_p, nullptr), bound_function(bound_function_p) {
+    : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p),
+      bound_function(bound_function_p) {
 }
 
 } // namespace duckdb

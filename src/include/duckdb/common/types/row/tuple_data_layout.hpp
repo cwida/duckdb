@@ -28,9 +28,13 @@ public:
 	TupleDataLayout Copy() const;
 
 public:
-	//! Initializes the TupleDataLayout with the specified types and aggregates to an empty TupleDataLayout
+	//! Initializes the TupleDataLayout with the specified types and aggregates to an empty TupleDataLayout.
+	//! An optional trailing region reserves owner-managed bytes at the end of every row, after the aggregate
+	//! states. The region is opaque to the layout: hashing, comparison, column and aggregate offsets never
+	//! reach it, and whole-row moves carry it along with the row.
 	void Initialize(vector<LogicalType> types_p, Aggregates aggregates_p, TupleDataValidityType validity_type,
-	                TupleDataNestednessType nestedness_type = TupleDataNestednessType::TOP_LEVEL_LAYOUT);
+	                TupleDataNestednessType nestedness_type = TupleDataNestednessType::TOP_LEVEL_LAYOUT,
+	                idx_t trailing_region_width = 0);
 	//! Initializes the TupleDataLayout with the specified types to an empty TupleDataLayout
 	void Initialize(vector<LogicalType> types, TupleDataValidityType validity_type,
 	                TupleDataNestednessType nestedness_type = TupleDataNestednessType::TOP_LEVEL_LAYOUT);
@@ -113,6 +117,15 @@ public:
 	inline idx_t GetHeapSizeOffset() const {
 		return heap_size_offset;
 	}
+	//! Returns the width of the owner-managed trailing region (0 unless requested at initialization)
+	inline idx_t GetTrailingRegionWidth() const {
+		return trailing_region_width;
+	}
+	//! Returns the offset of the owner-managed trailing region within each row
+	inline idx_t GetTrailingRegionOffset() const {
+		D_ASSERT(trailing_region_width > 0);
+		return trailing_region_offset;
+	}
 	//! Returns whether any of the aggregates have a destructor
 	inline bool HasDestructor() const {
 		return !aggr_destructor_idxs.empty();
@@ -152,6 +165,9 @@ private:
 	vector<idx_t> sort_skippable_bytes;
 	//! The width of the entire row
 	idx_t row_width;
+	//! The width and offset of the owner-managed trailing region
+	idx_t trailing_region_width;
+	idx_t trailing_region_offset;
 	//! The offsets to the columns and aggregate data in each row
 	vector<idx_t> offsets;
 	//! Whether all columns in this layout are constant size

@@ -20,8 +20,12 @@ public:
 
 public:
 	explicit StatementNode(SQLStatement &stmt_p);
+	//! A node that owns the statement it represents (e.g. reconstructed by the SQL exporter)
+	explicit StatementNode(unique_ptr<SQLStatement> stmt_p);
 
 	SQLStatement &stmt;
+	//! Set when this node owns the referenced statement
+	unique_ptr<SQLStatement> owned_statement;
 
 public:
 	//! Convert the query node to a string

@@ -1,0 +1,30 @@
+# name: test/sql/copy/csv/csv_quoted_newline_after_boundary.test
+# description: The first line after a buffer boundary is a quoted value that starts with a newline
+# group: [csv]
+
+statement ok
+COPY (SELECT 'a,b' || chr(10) || repeat('y', 26) || ',1' || chr(10) || repeat('z', 31) || ',2' || chr(10) || '"' || chr(10) || 'ab",3' || chr(10) || '"c",4') TO '{TEST_DIR}/qnl.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query II
+SELECT a = chr(10) || 'ab', b FROM read_csv('{TEST_DIR}/qnl.csv', buffer_size=64, max_line_size=64) WHERE b >= 3 ORDER BY b
+----
+true	3
+false	4
+
+loop buf 40 67
+
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/qnl.csv', buffer_size={buf}, max_line_size={buf}) WHERE b = 3 AND a = chr(10) || 'ab'
+----
+1
+
+endloop
+
+loop buf 68 81
+
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/qnl.csv', buffer_size={buf}, max_line_size={buf}) WHERE b = 3 AND a = chr(10) || 'ab'
+----
+1
+
+endloop

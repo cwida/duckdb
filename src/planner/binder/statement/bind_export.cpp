@@ -46,10 +46,11 @@ string SanitizeExportIdentifier(const Identifier &str) {
 	return result;
 }
 
-bool ReferencedTableIsOrdered(const Identifier &referenced_table, catalog_entry_vector_t &ordered) {
+bool ReferencedTableIsOrdered(const TableCatalogEntry &referencing_table, const Identifier &referenced_table,
+                              catalog_entry_vector_t &ordered) {
 	for (auto &entry : ordered) {
 		auto &table_entry = entry.get().Cast<TableCatalogEntry>();
-		if (table_entry.name == referenced_table) {
+		if (&table_entry.ParentSchema() == &referencing_table.ParentSchema() && table_entry.name == referenced_table) {
 			// The referenced table is already ordered
 			return true;
 		}
@@ -79,7 +80,7 @@ void ScanForeignKeyTable(catalog_entry_vector_t &ordered, catalog_entry_vector_t
 				// This table references a table, don't move it yet
 				move_to_ordered = false;
 				break;
-			} else if (!ReferencedTableIsOrdered(fk.info.table, ordered)) {
+			} else if (!ReferencedTableIsOrdered(table_entry, fk.info.table, ordered)) {
 				// The table that it references isn't ordered yet
 				move_to_ordered = false;
 				break;
@@ -156,6 +157,7 @@ BoundStatement Binder::Bind(ExportStatement &stmt) {
 	result.names = {"Success"};
 
 	BindCopyFormat(*stmt.info);
+	stmt.info->format = StringUtil::Lower(stmt.info->format);
 
 	// lookup the format in the catalog
 	auto &copy_function = Catalog::GetEntry<CopyFunctionCatalogEntry>(
@@ -196,7 +198,7 @@ BoundStatement Binder::Bind(ExportStatement &stmt) {
 			}
 			auto &fk = constraint->Cast<ForeignKeyConstraint>();
 			if (fk.info.type == ForeignKeyType::FK_TYPE_SELF_REFERENCE_TABLE) {
-				throw BinderException("Failed to export database: table \"%s\" has a self-referencing foreign key "
+				throw BinderException("Failed to export database: table %s has a self-referencing foreign key "
 				                      "constraint which is currently not supported for exporting",
 				                      table.name);
 			}

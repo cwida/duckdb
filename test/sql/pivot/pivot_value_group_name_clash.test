@@ -1,0 +1,26 @@
+# name: test/sql/pivot/pivot_value_group_name_clash.test
+# description: A pivot value named like a GROUP BY column does not return the group key
+# group: [pivot]
+
+statement ok
+CREATE TABLE t2 AS SELECT 'g' || (i % 3) AS g, 'c' || i AS c, i AS v FROM range(30) r(i);
+
+statement ok
+INSERT INTO t2 VALUES ('g0', 'g', 1000);
+
+query II
+SELECT g, "g_1" FROM (PIVOT t2 ON c USING sum(v) GROUP BY g) ORDER BY g;
+----
+g0	1000
+g1	NULL
+g2	NULL
+
+statement ok
+SET pivot_filter_threshold=100;
+
+query II
+SELECT g, "g_1" FROM (PIVOT t2 ON c USING sum(v) GROUP BY g) ORDER BY g;
+----
+g0	1000
+g1	NULL
+g2	NULL

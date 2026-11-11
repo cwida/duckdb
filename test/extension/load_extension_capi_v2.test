@@ -31,9 +31,9 @@ CONNECTION	INFO	cpp_api_demo loaded, parsed STRUCT(a INTEGER, b VARCHAR)
 
 # The macro functions the entrypoint registered, and the ones it was refused
 query I
-SELECT message FROM duckdb_logs WHERE type = 'CppApiDemo' AND message LIKE 'cpp_demo_%' ORDER BY message;
+SELECT replace(message, chr(10), ' ') FROM duckdb_logs WHERE type = 'CppApiDemo' AND message LIKE 'cpp_demo_%' ORDER BY message;
 ----
-cpp_demo_bad_body refused: Parser Error: syntax error at or near "+"
+cpp_demo_bad_body refused: Parser Error: syntax error at end of input Expected one of: "ALL", "ANY", "SOME", an expression
 cpp_demo_named_only refused: Invalid Input Error: The parameters of a macro function can always be passed by position or by name, so "x" must be a standard parameter.
 cpp_demo_no_body refused: Invalid Input Error: A body must be set for the macro function.
 cpp_demo_not_a_query refused: Invalid Input Error: The body of a table macro function must be a single SELECT query.

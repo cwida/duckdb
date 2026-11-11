@@ -10,7 +10,7 @@ void QueryResultNotifier::Notify() {
 	if (!callback) {
 		return;
 	}
-	// The callback runs on engine threads, which user code must not tear down
+	// The callback is a wake-up, not part of the query: its failure must not change the query's outcome
 	try {
 		callback();
 	} catch (...) { // NOLINT

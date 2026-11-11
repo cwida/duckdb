@@ -58,11 +58,35 @@ SELECT typeof(list_extract(NULL::INT[], 1)), typeof(array_extract(NULL::DATE[3],
 ----
 INTEGER	DATE	HUGEINT	STRUCT(x INTEGER, a VARCHAR)
 
-# functions that only resolve their return type in the bind callback still fold to an untyped NULL
-query II
-SELECT typeof(struct_extract(NULL::STRUCT(a DATE), 'a')), typeof(union_extract(NULL::UNION(a DATE, b INT), 'a'))
+query I
+SELECT typeof(struct_extract(NULL::STRUCT(a DATE), 'a'))
 ----
-"NULL"	"NULL"
+DATE
+
+# functions that only resolve their return type in the bind callback still fold to an untyped NULL
+query I
+SELECT typeof(union_extract(NULL::UNION(a DATE, b INT), 'a'))
+----
+"NULL"
+
+# constant_or_null has the type of its leading constant, also when a typed NULL argument folds it
+query IIIII
+SELECT typeof(constant_or_null(true, 1)), typeof(constant_or_null(true, NULL::INT)), typeof(constant_or_null(1::BIGINT, 2, NULL::VARCHAR)), typeof(constant_or_null(NULL::DATE, 1)), typeof(constant_or_null([1, 2], NULL::INT[]))
+----
+BOOLEAN	BOOLEAN	BIGINT	DATE	INTEGER[]
+
+query II
+SELECT constant_or_null(true, NULL::INT), constant_or_null(NULL::DATE, 1)
+----
+NULL	NULL
+
+statement ok
+CREATE TABLE folded_constant_or_null AS SELECT constant_or_null(1::BIGINT, NULL::INT) AS c, constant_or_null({'a': 'x'}, NULL::INT) AS s
+
+query II
+SELECT typeof(c), typeof(s) FROM folded_constant_or_null
+----
+BIGINT	STRUCT(a VARCHAR)
 
 query III
 SELECT typeof(list_concat(NULL::INT[], [1::BIGINT])), typeof(array_slice(NULL::INT[3], 1, 2)), typeof(map_extract(NULL::MAP(INT, DATE), 1))
@@ -175,6 +199,11 @@ query IIII
 SELECT typeof(NULL || 'z'), typeof([1] || NULL), typeof(NULL || NULL), typeof(list_extract(NULL, 1))
 ----
 "NULL"	"NULL"	"NULL"	VARCHAR
+
+query I
+SELECT typeof(constant_or_null(true, NULL))
+----
+"NULL"
 
 # functions with a known return type still fold typed NULLs without binding
 query IIII

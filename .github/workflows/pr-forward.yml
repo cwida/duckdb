@@ -25,13 +25,17 @@ permissions:
 
 jobs:
   forward:
-    # issue_comment fires for issues too — only forward comments on PRs. For a
-    # workflow_run, only forward runs that came from a PR (skip pushes to branches).
-    # Other event kinds carry no such payload, so the guard passes them through.
+    # Skip events pr-tracker ignores *before* a runner is assigned, so they never
+    # take a slot from CI: comments on issues, CI runs from branch pushes, draft
+    # conversions, and labels that don't move a card (contains() ignores case,
+    # so `Ready For Review` / `changes requested` spellings all match).
     if: >-
       ${{ (github.event_name != 'issue_comment' || github.event.issue.pull_request != null)
           && (github.event_name != 'workflow_run'
-              || contains(fromJSON('["pull_request","pull_request_target"]'), github.event.workflow_run.event)) }}
+              || contains(fromJSON('["pull_request","pull_request_target"]'), github.event.workflow_run.event))
+          && github.event.action != 'converted_to_draft'
+          && (!contains(fromJSON('["labeled","unlabeled"]'), github.event.action)
+              || contains(fromJSON('["changes requested","do not review","ready for review"]'), github.event.label.name)) }}
     runs-on: ubuntu-latest
     steps:
       - uses: duckdb/duckdb-ci/pr-tracker/forward@main

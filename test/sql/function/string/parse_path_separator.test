@@ -80,3 +80,34 @@ WHERE parse_path('a/b\c', separator) IS DISTINCT FROM
 	CASE i % 3 WHEN 0 THEN ['a', 'b\c'] WHEN 1 THEN ['a/b', 'c'] ELSE ['a', 'b', 'c'] END;
 ----
 0
+
+# per-row separator and trim options in parse_dirname, parse_dirpath and parse_filename
+query IIII
+SELECT sep, parse_dirname('a/b\c.txt', sep), parse_dirpath('a/b\c.txt', sep), parse_filename('a/b\c.txt', sep)
+FROM (VALUES (1, NULL), (2, 'backslash'), (3, 'forward_slash')) v(id, sep) ORDER BY id
+----
+NULL	a	a/b	c.txt
+backslash	a/b	a/b	c.txt
+forward_slash	a	a	b\c.txt
+
+query IIII
+SELECT sep, parse_dirname('a/b\c.txt', sep), parse_dirpath('a/b\c.txt', sep), parse_filename('a/b\c.txt', sep)
+FROM (VALUES (1, 'backslash'), (2, NULL), (3, 'forward_slash')) v(id, sep) ORDER BY id
+----
+backslash	a/b	a/b	c.txt
+NULL	a	a/b	c.txt
+forward_slash	a	a	b\c.txt
+
+query II
+SELECT id, parse_filename('a/b\c.txt', trim, sep) FROM (VALUES (1, NULL, 'backslash'), (2, true, NULL), (3, true, 'backslash'), (4, false, 'forward_slash')) v(id, trim, sep) ORDER BY id
+----
+1	c.txt
+2	c
+3	c
+4	b\c.txt
+
+query I
+SELECT parse_dirname(p, 'backslash') FROM (VALUES ('a\b'), (NULL)) v(p)
+----
+a
+NULL

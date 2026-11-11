@@ -1,0 +1,74 @@
+# name: test/sql/join/asof/test_asof_join_key_types.test
+# description: ASOF JOIN equality conditions on keys of various types
+# group: [asof]
+
+statement ok
+CREATE TABLE l AS SELECT i AS g, i - 1 AS ts FROM range(2000) r(i);
+
+statement ok
+CREATE TABLE r AS SELECT i AS g, i AS ts FROM range(2000) r(i);
+
+# every left row precedes the right row of its group, so nothing matches
+query I
+SELECT count(*) FROM l ASOF JOIN r ON l.g = r.g AND l.ts >= r.ts;
+----
+0
+
+query I
+SELECT count(*) FROM l ASOF JOIN r ON row(l.g, 1) = row(r.g, 1) AND l.ts >= r.ts;
+----
+0
+
+query I
+SELECT count(*) FROM l ASOF JOIN r ON union_value(k := l.g) = union_value(k := r.g) AND l.ts >= r.ts;
+----
+0
+
+query I
+SELECT count(*) FROM l ASOF JOIN r ON MAP {repeat('a', 20) || l.g: 1} = MAP {repeat('a', 20) || r.g: 1} AND l.ts >= r.ts;
+----
+0
+
+query I
+SELECT count(*) FROM l ASOF JOIN r ON l.g::VARIANT = r.g::VARIANT AND l.ts >= r.ts;
+----
+0
+
+query I
+SELECT count(*) FROM l ASOF JOIN r ON ('\x00' || l.g::VARCHAR)::BLOB = ('\x00' || r.g::VARCHAR)::BLOB AND l.ts >= r.ts;
+----
+0
+
+query I
+SELECT count(*) FROM l ASOF JOIN r ON ('POINT(' || l.g || ' 0)')::GEOMETRY = ('POINT(' || r.g || ' 0)')::GEOMETRY AND l.ts >= r.ts;
+----
+0
+
+query I
+SELECT count(*) FROM l ASOF JOIN r ON l.g::BIT = r.g::BIT AND l.ts >= r.ts;
+----
+0
+
+# with matches: every right row precedes the left row of its group
+statement ok
+CREATE TABLE l2 AS SELECT i AS g, i + 1 AS ts FROM range(2000) r(i);
+
+query II
+SELECT count(*), count(*) FILTER (l2.g <> r.g) FROM l2 ASOF JOIN r ON row(l2.g, 1) = row(r.g, 1) AND l2.ts >= r.ts;
+----
+2000	0
+
+query II
+SELECT count(*), count(*) FILTER (l2.g <> r.g) FROM l2 ASOF JOIN r ON union_value(k := l2.g) = union_value(k := r.g) AND l2.ts >= r.ts;
+----
+2000	0
+
+query II
+SELECT count(*), count(*) FILTER (l2.g <> r.g) FROM l2 ASOF JOIN r ON ('\x00' || l2.g::VARCHAR)::BLOB = ('\x00' || r.g::VARCHAR)::BLOB AND l2.ts >= r.ts;
+----
+2000	0
+
+query II
+SELECT count(*), count(*) FILTER (l2.g <> r.g) FROM l2 ASOF JOIN r ON l2.g::VARIANT = r.g::VARIANT AND l2.ts >= r.ts;
+----
+2000	0

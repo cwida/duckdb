@@ -1,0 +1,56 @@
+# name: test/sql/order/order_string_word_boundaries.test
+# description: Variable-size string keys across inline and word boundaries
+# group: [order]
+
+statement ok
+SET threads=3;
+
+statement ok
+PRAGMA verify_parallelism;
+
+statement ok
+SET memory_limit='64MB';
+
+statement ok
+SET temp_directory='{TEST_DIR}/string_word_boundaries';
+
+# Longer 'a' prefixes sort first, followed by the separator, digits, and trailing NULs.
+# The numeric rank gives an independent ordering using fixed-size keys.
+statement ok
+CREATE TABLE strings AS
+SELECT (64-p)::BIGINT*100000+j*10000+i*10+z AS r,
+       repeat('a',p)||c||lpad(i::VARCHAR,4,'0')||repeat(chr(0),z) AS s
+FROM (VALUES (0),(6),(7),(8),(14),(15),(16),(23),(24),(31),(32),(63),(64)) prefixes(p),
+     (VALUES (0,'b'),(1,'é'),(2,'🙂')) separators(j,c),
+     range(16) digits(i), range(10) zeros(z);
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+# String keys with a numeric payload.
+query I
+SELECT list(r ORDER BY s) = list(r ORDER BY r) FROM strings;
+----
+true
+
+query I
+SELECT list(r ORDER BY s DESC) = list(r ORDER BY r DESC) FROM strings;
+----
+true
+
+# The inner sort only projects its key, exercising the layout without a payload.
+query I
+SELECT list(s ORDER BY n) = (SELECT list(s ORDER BY r) FROM strings)
+FROM (SELECT s, row_number() OVER () AS n FROM (SELECT s FROM strings ORDER BY s));
+----
+true
+
+query I
+SELECT list(s ORDER BY n) = (SELECT list(s ORDER BY r DESC) FROM strings)
+FROM (SELECT s, row_number() OVER () AS n FROM (SELECT s FROM strings ORDER BY s DESC));
+----
+true
+
+endloop

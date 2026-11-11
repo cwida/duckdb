@@ -152,6 +152,34 @@ EXPLAIN ANALYZE SELECT d FROM last_day_db.t WHERE last_day(d) = DATE '2025-02-28
 ----
 analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
 
+# date_diff and epoch_ns prune through their statistics callback when a row group holds more than one value
+statement ok
+CREATE TABLE last_day_db.two AS
+SELECT CASE WHEN range < 2048 THEN DATE '2025-01-15' WHEN range < 4096 THEN DATE '2025-02-15'
+            ELSE DATE '2025-03-15' END + (range % 2)::INTEGER AS d,
+       d::TIMESTAMP_NS AS ns
+FROM range(6144);
+
+query I
+SELECT count(*) FROM last_day_db.two WHERE date_diff('day', DATE '2025-01-01', d) > 60;
+----
+2048
+
+query II
+EXPLAIN ANALYZE SELECT d FROM last_day_db.two WHERE date_diff('day', DATE '2025-01-01', d) > 60;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM last_day_db.two WHERE epoch_ns(ns) > epoch_ns(TIMESTAMP_NS '2025-03-01');
+----
+2048
+
+query II
+EXPLAIN ANALYZE SELECT ns FROM last_day_db.two WHERE epoch_ns(ns) > epoch_ns(TIMESTAMP_NS '2025-03-01');
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
 # Rounding 10.2, 20.2, and 60.2 leaves only the third row group above 50.
 statement ok
 ATTACH '{TEST_DIR}/round_even_prune.duckdb' AS round_even_db (ROW_GROUP_SIZE 2048);

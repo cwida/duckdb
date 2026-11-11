@@ -1,6 +1,8 @@
 #include "duckdb/common/map.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "core_functions/scalar/string_functions.hpp"
+#include "core_functions/scalar/string_characters.hpp"
+#include "duckdb/common/unordered_set.hpp"
 
 #include <bitset>
 #include <ctype.h>
@@ -27,13 +29,28 @@ static double JaccardSimilarity(const string_t &str, const string_t &txt) {
 	if (str.GetSize() < 1 || txt.GetSize() < 1) {
 		throw InvalidInputException("Jaccard Function: An argument too short!");
 	}
-	std::bitset<MAX_SIZE> m_str, m_txt;
+	idx_t size_intersect;
+	idx_t size_union;
+	if (StringIsAscii(str) && StringIsAscii(txt)) {
+		std::bitset<MAX_SIZE> m_str, m_txt;
 
-	m_str = GetSet(str);
-	m_txt = GetSet(txt);
+		m_str = GetSet(str);
+		m_txt = GetSet(txt);
 
-	idx_t size_intersect = (m_str & m_txt).count();
-	idx_t size_union = (m_str | m_txt).count();
+		size_intersect = (m_str & m_txt).count();
+		size_union = (m_str | m_txt).count();
+	} else {
+		// the sets of characters - not of bytes
+		auto str_chars = GetStringCharacters(str);
+		auto txt_chars = GetStringCharacters(txt);
+		unordered_set<int32_t> str_set(str_chars.begin(), str_chars.end());
+		unordered_set<int32_t> txt_set(txt_chars.begin(), txt_chars.end());
+		size_intersect = 0;
+		for (auto &character : str_set) {
+			size_intersect += txt_set.count(character);
+		}
+		size_union = str_set.size() + txt_set.size() - size_intersect;
+	}
 
 	return static_cast<double>(size_intersect) / static_cast<double>(size_union);
 }

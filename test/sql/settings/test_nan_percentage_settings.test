@@ -1,0 +1,30 @@
+# name: test/sql/settings/test_nan_percentage_settings.test
+# description: Percentage settings reject NaN
+# group: [settings]
+
+statement error
+SET memory_limit='nan%';
+----
+Invalid Input Error: Unable to parse valid percentage
+
+statement error
+SET max_memory='nan%';
+----
+Invalid Input Error: Unable to parse valid percentage
+
+statement error
+SET index_scan_percentage='nan'::DOUBLE;
+----
+Invalid Input Error: the index scan percentage must be within [0, 1]
+
+# valid values still work
+statement ok
+SET index_scan_percentage=0.5;
+
+statement ok
+RESET index_scan_percentage;
+
+query I
+SELECT 42;
+----
+42

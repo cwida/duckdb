@@ -1,0 +1,15 @@
+# name: test/sql/pivot/pivot_identical_aggregates_names.test
+# description: PIVOT with identical aggregates under different names
+# group: [pivot]
+
+require no_alternative_verify
+
+statement error
+PIVOT (SELECT 'k' || (r % 21) a, r v FROM range(42) t(r)) ON a USING sum(v) AS x, sum(v) AS y;
+----
+Binder Error: PIVOT: identical aggregates must have the same name
+
+query II
+SELECT k0_x, k0_y FROM (PIVOT (SELECT 'k' || (r % 21) a, r v FROM range(42) t(r)) ON a USING sum(v) AS x, max(v) AS y);
+----
+21	21

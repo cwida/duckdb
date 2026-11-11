@@ -56,6 +56,31 @@ bool SampleOptions::Equals(SampleOptions *a, SampleOptions *b) {
 	return true;
 }
 
+void SampleOptions::Verify() const {
+	Value size = sample_size;
+	if (size.IsNull()) {
+		throw SerializationException("Sample size cannot be NULL");
+	}
+	if (is_percentage) {
+		if (!size.DefaultTryCastAs(LogicalType::DOUBLE)) {
+			throw SerializationException("Sample size must be a number");
+		}
+		auto percentage = size.GetValue<double>();
+		if (!(percentage >= 0 && percentage <= 100)) {
+			throw SerializationException("Sample percentage %f out of range, must be between 0 and 100", percentage);
+		}
+	} else {
+		if (!size.DefaultTryCastAs(LogicalType::BIGINT)) {
+			throw SerializationException("Sample size must be a number");
+		}
+		auto rows = size.GetValue<int64_t>();
+		if (rows < 0 || rows > int64_t(MAX_SAMPLE_ROWS)) {
+			throw SerializationException("Sample rows %lld out of range, must be between 0 and %lld", rows,
+			                             int64_t(MAX_SAMPLE_ROWS));
+		}
+	}
+}
+
 int64_t SampleOptions::GetSeed() const {
 	if (seed.IsValid()) {
 		return static_cast<int64_t>(seed.GetIndex());

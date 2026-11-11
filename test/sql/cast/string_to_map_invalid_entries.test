@@ -1,5 +1,5 @@
 # name: test/sql/cast/string_to_map_invalid_entries.test
-# description: TRY_CAST of VARCHAR to MAP with null keys or missing values
+# description: TRY_CAST of VARCHAR to MAP with null keys, duplicate keys or missing values
 # group: [cast]
 
 query I
@@ -34,3 +34,28 @@ statement error
 SELECT CAST('{null=1,k=2}' AS MAP(VARCHAR, INTEGER));
 ----
 can't be cast to the destination type
+
+query I
+SELECT TRY_CAST('{a=1,a=2}' AS MAP(VARCHAR, INTEGER));
+----
+NULL
+
+# keys that only become duplicates after casting
+query I
+SELECT TRY_CAST('{1=a,01=b}' AS MAP(INTEGER, VARCHAR));
+----
+NULL
+
+query I
+SELECT TRY_CAST(s AS MAP(VARCHAR, INTEGER)) FROM (VALUES ('{a=1,a=2}'), ('{b=1}'), (NULL), ('{x=1,y=2,x=3}'), ('{x=1,y=2}')) t(s);
+----
+NULL
+{b=1}
+NULL
+NULL
+{x=1, y=2}
+
+statement error
+SELECT CAST('{a=1,a=2}' AS MAP(VARCHAR, INTEGER));
+----
+Map keys must be unique

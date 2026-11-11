@@ -1,0 +1,81 @@
+# name: test/sql/types/struct/struct_variant_projection_pushdown.test
+# description: Extract a VARIANT field nested in a STRUCT through a projection
+# group: [struct]
+
+load {TEST_DIR}/struct_variant_projection_pushdown.db readwrite v1.5.0
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+statement ok
+CREATE TABLE t AS SELECT range AS id, {'p': range, 'v': {'k': range * 10, 'n': {'x': range}}::VARIANT} AS s FROM range(3);
+
+query II
+SELECT id, x.v.k FROM (SELECT id, s AS x FROM t) ORDER BY id;
+----
+0	0
+1	10
+2	20
+
+query II
+SELECT id, x.v.n.x FROM (SELECT id, s AS x FROM t) ORDER BY id;
+----
+0	0
+1	1
+2	2
+
+# Two fields of one VARIANT, and a VARIANT next to one of its fields
+query III
+SELECT id, x.v.k, x.v.n.x FROM (SELECT id, s AS x FROM t) ORDER BY id;
+----
+0	0	0
+1	10	1
+2	20	2
+
+query III
+SELECT id, x.v, x.v.k FROM (SELECT id, s AS x FROM t WHERE id < 2) ORDER BY id;
+----
+0	{'k': 0, 'n': {'x': 0}}	0
+1	{'k': 10, 'n': {'x': 1}}	10
+
+# A cast on the field, as a projection and as a filter
+query II
+SELECT id, x.v.k::INTEGER + 1 FROM (SELECT id, s AS x FROM t) ORDER BY id;
+----
+0	1
+1	11
+2	21
+
+query I
+SELECT id FROM (SELECT id, s AS x FROM t) WHERE x.v.k::INTEGER > 5 ORDER BY id;
+----
+1
+2
+
+query III
+SELECT id, x.p, x.v.missing FROM (SELECT id, s AS x FROM t WHERE id < 2) ORDER BY id;
+----
+0	0	NULL
+1	1	NULL
+
+# The field read is pulled through the projection into the scan
+statement ok
+pragma explain_output = optimized_only
+
+query II
+EXPLAIN SELECT x.v.k FROM (SELECT s AS x FROM t);
+----
+logical_opt	<!REGEX>:.*variant_extract.*
+
+# Same over shredded storage
+statement ok
+checkpoint
+
+restart
+
+query II
+SELECT id, x.v.k::INTEGER + 1 FROM (SELECT id, s AS x FROM t) ORDER BY id;
+----
+0	1
+1	11
+2	21

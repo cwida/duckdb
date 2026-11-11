@@ -1,0 +1,20 @@
+# name: test/sql/types/struct/remap_struct_nested_default.test
+# description: remap_struct reorders the fields of a nested struct default to the target type
+# group: [struct]
+
+query I
+SELECT remap_struct({a: 1}, NULL::STRUCT(a INT, s STRUCT(p INT, q INT)), {a:'a'}, {s: {q: 7, p: 5}});
+----
+{'a': 1, 's': {'p': 5, 'q': 7}}
+
+query I
+SELECT remap_struct(x, NULL::STRUCT(a INT, s STRUCT(p INT, q INT)), {a:'a'}, {s: {q: 7, p: 5}}) FROM (VALUES ({a: 1}), (NULL), ({a: 3})) t(x);
+----
+{'a': 1, 's': {'p': 5, 'q': 7}}
+NULL
+{'a': 3, 's': {'p': 5, 'q': 7}}
+
+query I
+SELECT remap_struct({a: 1}, NULL::STRUCT(a INT, s STRUCT(p INT, q VARCHAR)), {a:'a'}, {s: {q: 'hello', p: 5}});
+----
+{'a': 1, 's': {'p': 5, 'q': hello}}

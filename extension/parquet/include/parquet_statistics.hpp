@@ -20,6 +20,9 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/vector.hpp"
+#include "duckdb/common/mutex.hpp"
+
+#include <functional>
 
 namespace duckdb_apache {
 namespace thrift {
@@ -46,6 +49,7 @@ using duckdb_parquet::SchemaElement;
 
 struct LogicalType;
 struct ParquetColumnSchema;
+struct ParquetOptions;
 class ResizeableBuffer;
 
 enum class ParquetIntervalBloomFilterVersion : uint8_t { NONE, NORMALIZED_V1 };
@@ -57,12 +61,14 @@ struct ParquetStatisticsUtils {
 	static constexpr const char *INTERVAL_BLOOM_FILTER_VALUE = "normalized-v1";
 
 	static unique_ptr<BaseStatistics> TransformColumnStatistics(const ParquetColumnSchema &reader,
-	                                                            const vector<ColumnChunk> &columns, bool can_have_nan);
+	                                                            const duckdb_parquet::ColumnChunkList &columns,
+	                                                            const ParquetOptions &parquet_options);
 
+	//! can_have_nan is not taken from the options, as page statistics allow NaN whatever the option says
 	static unique_ptr<BaseStatistics>
 	TransformParquetStatistics(const LogicalType &type, const ParquetColumnSchema &schema,
-	                           const duckdb_parquet::Statistics &parquet_stats, bool can_have_nan,
-	                           optional_ptr<const ColumnChunk> column_chunk = nullptr);
+	                           const duckdb_parquet::Statistics &parquet_stats, const ParquetOptions &parquet_options,
+	                           bool can_have_nan, optional_ptr<const ColumnChunk> column_chunk = nullptr);
 
 	//! Whether the column can contain NaN values - uses nan_count if present, otherwise the can_have_nan option
 	static bool CanHaveNaN(const duckdb_parquet::Statistics &parquet_stats, bool can_have_nan);
@@ -76,6 +82,7 @@ struct ParquetStatisticsUtils {
 	GetBloomFilterHashStrategy(const ParquetColumnSchema &schema,
 	                           ParquetIntervalBloomFilterVersion interval_bloom_filter_version);
 
+	static bool HasBloomFilterConstants(const TableFilter &filter, ParquetBloomFilterHashStrategy hash_strategy);
 	static bool BloomFilterExcludes(const TableFilter &filter, const duckdb_parquet::ColumnMetaData &column_meta_data,
 	                                duckdb_apache::thrift::protocol::TProtocol &file_proto, Allocator &allocator,
 	                                const ParquetColumnSchema &schema, ParquetBloomFilterHashStrategy hash_strategy);
@@ -88,21 +95,50 @@ private:
 	                                  const std::string &stats);
 };
 
+class ParquetBloomFilterMemory {
+public:
+	static constexpr idx_t DEFAULT_LIMIT = 64ULL * 1024 * 1024;
+
+	ParquetBloomFilterMemory(idx_t limit_p, std::function<void()> make_room_p)
+	    : limit(limit_p), make_room(std::move(make_room_p)) {
+	}
+	//! When the budget is exhausted, calls make_room once to free buffered filters and retries
+	bool TryReserve(idx_t bytes);
+	void Release(idx_t bytes);
+
+private:
+	bool TryReserveInternal(idx_t bytes);
+
+private:
+	mutex lock;
+	idx_t used = 0;
+	idx_t limit;
+	std::function<void()> make_room;
+};
+
 class ParquetBloomFilter {
 	static constexpr const idx_t DEFAULT_BLOCK_COUNT = 32; // 4k filter
 
 public:
-	ParquetBloomFilter(idx_t num_entries, double bloom_filter_false_positive_ratio);
 	ParquetBloomFilter(unique_ptr<ResizeableBuffer> data_p);
+	~ParquetBloomFilter();
+	static unique_ptr<ParquetBloomFilter> Create(Allocator &allocator, idx_t num_entries, double target);
+	static optional_idx EstimateSize(idx_t num_entries, double target);
+	static unique_ptr<ParquetBloomFilter> TryCreate(Allocator &allocator, idx_t num_entries, double target,
+	                                                const shared_ptr<ParquetBloomFilterMemory> &memory);
 	void FilterInsert(uint64_t x);
 	bool FilterCheck(uint64_t x);
-	void Shrink(idx_t new_block_count);
+	void Shrink(Allocator &allocator, idx_t new_block_count);
+	void FoldToTarget(Allocator &allocator, double target);
+	void ReleaseReservation();
 	double OneRatio();
 	ResizeableBuffer *Get();
 
 private:
 	unique_ptr<ResizeableBuffer> data;
 	idx_t block_count;
+	shared_ptr<ParquetBloomFilterMemory> memory;
+	idx_t reserved_bytes = 0;
 };
 
 // see https://github.com/apache/parquet-format/blob/master/BloomFilter.md

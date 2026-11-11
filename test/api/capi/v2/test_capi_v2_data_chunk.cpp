@@ -250,12 +250,12 @@ TEST_CASE("V2: VARCHAR direct reads (inlined + pointer forms)", "[capi_v2][data_
 
 	const duckdb_v2_varchar_t *arr = static_cast<const duckdb_v2_varchar_t *>(view.data);
 
-	duckdb_v2_str s0 = Convert(arr[SelAt(view.sel, 0)]);
-	REQUIRE(s0.len == 5);
+	std::string_view s0 = Convert(arr[SelAt(view.sel, 0)]);
+	REQUIRE(s0.size() == 5);
 	REQUIRE(s0 == "short");
 
-	duckdb_v2_str s1 = Convert(arr[SelAt(view.sel, 1)]);
-	REQUIRE(s1.len == 50);
+	std::string_view s1 = Convert(arr[SelAt(view.sel, 1)]);
+	REQUIRE(s1.size() == 50);
 	REQUIRE(s1 == std::string(50, 'x'));
 
 	duckdb_v2_data_chunk_destroy(&chunk);
@@ -291,9 +291,9 @@ TEST_CASE("V2: BLOB direct reads (inlined + pointer forms)", "[capi_v2][data_chu
 
 	const duckdb_v2_blob_t *arr = static_cast<const duckdb_v2_blob_t *>(view.data);
 	const duckdb_v2_bytes &short_form = arr[SelAt(view.sel, 0)];
-	duckdb_v2_str b = Convert(short_form);
-	const uint8_t *data = reinterpret_cast<const uint8_t *>(b.ptr);
-	REQUIRE(b.len == 4);
+	std::string_view b = Convert(short_form);
+	const uint8_t *data = reinterpret_cast<const uint8_t *>(b.data());
+	REQUIRE(b.size() == 4);
 	REQUIRE(short_form.value.inlined.length <= DUCKDB_V2_BYTES_INLINE_LENGTH); // inlined form
 	REQUIRE(data[0] == 0xDE);
 	REQUIRE(data[1] == 0xAD);
@@ -301,8 +301,8 @@ TEST_CASE("V2: BLOB direct reads (inlined + pointer forms)", "[capi_v2][data_chu
 	REQUIRE(data[3] == 0xEF);
 
 	const duckdb_v2_bytes &long_form = arr[SelAt(view.sel, 1)];
-	duckdb_v2_str b1 = Convert(long_form);
-	REQUIRE(b1.len == 15);
+	std::string_view b1 = Convert(long_form);
+	REQUIRE(b1.size() == 15);
 	REQUIRE(long_form.value.inlined.length > DUCKDB_V2_BYTES_INLINE_LENGTH); // pointer form
 	REQUIRE(b1 == "ABCDEFGHIJKLMNO");
 
@@ -336,16 +336,16 @@ TEST_CASE("V2: BIT via the transparent split", "[capi_v2][data_chunk]") {
 	const duckdb_v2_bit_t *arr = static_cast<const duckdb_v2_bit_t *>(view.data);
 
 	// Row 0: '11111111'. The storage is [padding_byte, data...].
-	duckdb_v2_str c0 = Convert(arr[SelAt(view.sel, 0)]);
-	const uint8_t *b0 = reinterpret_cast<const uint8_t *>(c0.ptr);
-	REQUIRE(c0.len == 2); // padding byte + one data byte
-	REQUIRE(b0[0] == 0);  // padding = 0
+	std::string_view c0 = Convert(arr[SelAt(view.sel, 0)]);
+	const uint8_t *b0 = reinterpret_cast<const uint8_t *>(c0.data());
+	REQUIRE(c0.size() == 2); // padding byte + one data byte
+	REQUIRE(b0[0] == 0);     // padding = 0
 	REQUIRE(b0[1] == 0xFF);
 
 	// Row 1: '101' → 3 bits, padding 5.
-	duckdb_v2_str c1 = Convert(arr[SelAt(view.sel, 1)]);
-	const uint8_t *b1 = reinterpret_cast<const uint8_t *>(c1.ptr);
-	REQUIRE(c1.len == 2);
+	std::string_view c1 = Convert(arr[SelAt(view.sel, 1)]);
+	const uint8_t *b1 = reinterpret_cast<const uint8_t *>(c1.data());
+	REQUIRE(c1.size() == 2);
 	REQUIRE(b1[0] == 5);
 	// Bit-position contract: bit n lives at data[(n+padding)/8], MSB-first.
 	// For '101' (padding=5), positions 5, 6, 7 of the data byte are the bits.
@@ -390,16 +390,16 @@ TEST_CASE("V2: BIGNUM via bignum_decode (positive + negative)", "[capi_v2][data_
 
 	// Row 0: 2^128 - 1 = 16 bytes of 0xFF, positive. Size it first.
 	auto storage0 = Convert(arr[SelAt(view.sel, 0)]);
-	const auto *bytes0 = reinterpret_cast<const uint8_t *>(storage0.ptr);
+	const auto *bytes0 = reinterpret_cast<const uint8_t *>(storage0.data());
 	idx_t mag0_len = 0;
 	bool neg0 = true;
-	REQUIRE(duckdb_v2_bignum_decode(bytes0, storage0.len, nullptr, 0, &mag0_len, &neg0, nullptr) ==
+	REQUIRE(duckdb_v2_bignum_decode(bytes0, storage0.size(), nullptr, 0, &mag0_len, &neg0, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE_FALSE(neg0);
 	REQUIRE(mag0_len == 16);
 
 	std::vector<uint8_t> mag0(mag0_len);
-	REQUIRE(duckdb_v2_bignum_decode(bytes0, storage0.len, mag0.data(), mag0.size(), &mag0_len, &neg0, nullptr) ==
+	REQUIRE(duckdb_v2_bignum_decode(bytes0, storage0.size(), mag0.data(), mag0.size(), &mag0_len, &neg0, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(mag0_len == 16);
 	for (idx_t i = 0; i < mag0_len; i++) {
@@ -412,8 +412,8 @@ TEST_CASE("V2: BIGNUM via bignum_decode (positive + negative)", "[capi_v2][data_
 	uint8_t mag1[8] = {0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA};
 	idx_t mag1_len = 0;
 	bool neg1 = false;
-	REQUIRE(duckdb_v2_bignum_decode(reinterpret_cast<const uint8_t *>(storage1.ptr), storage1.len, mag1, sizeof(mag1),
-	                                &mag1_len, &neg1, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_bignum_decode(reinterpret_cast<const uint8_t *>(storage1.data()), storage1.size(), mag1,
+	                                sizeof(mag1), &mag1_len, &neg1, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(neg1);
 	REQUIRE(mag1_len == 2);
 	REQUIRE(mag1[0] == 0x01);
@@ -1189,7 +1189,7 @@ TEST_CASE("V2: data_chunk outlives result + connection + database", "[capi_v2][d
 		duckdb_v2_instance_handle instance = nullptr;
 		duckdb_v2_connection_handle conn = nullptr;
 		duckdb_v2_environment_create(&env, nullptr);
-		OpenInstance(env, duckdb_v2_str {nullptr, 0}, &instance, nullptr);
+		OpenInstance(env, std::string_view(), &instance, nullptr);
 		duckdb_v2_connection_create(instance, &conn, nullptr);
 
 		duckdb_v2_result_handle r = nullptr;
@@ -1385,6 +1385,21 @@ TEST_CASE("V2: data_chunk_clear empties a chunk for reuse", "[capi_v2][data_chun
 	static_cast<int32_t *>(data)[0] = 42;
 	REQUIRE(duckdb_v2_data_chunk_get_size(chunk, &size, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(size == 1);
+
+	{
+		duckdb::Vector input(duckdb::Value::INTEGER(7), duckdb::count_t(1));
+		input.Flatten();
+		duckdb::SelectionVector sel(1);
+		sel.set_index(0, 0);
+		duckdb::Vector dictionary(input, sel, 1);
+		auto source = reinterpret_cast<duckdb_v2_vector_handle>(&dictionary);
+		REQUIRE(duckdb_v2_vector_reference(vec, source, nullptr) == DUCKDB_V2_ERROR_NONE);
+	}
+	REQUIRE(duckdb_v2_data_chunk_clear(chunk, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_vector_get_vector_type(vec, &type, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(type == DUCKDB_V2_VECTOR_TYPE_FLAT);
+	REQUIRE(duckdb_v2_vector_get_data_mutable(vec, &data, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(data != nullptr);
 
 	REQUIRE(duckdb_v2_data_chunk_clear(nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	duckdb_v2_data_chunk_destroy(&chunk);

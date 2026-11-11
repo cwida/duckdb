@@ -59,6 +59,20 @@ bool CastExpressionMatcher::Match(Expression &expr_p, vector<reference<Expressio
 	return matcher->Match(*BoundCastExpression::ChildMutable(expr), bindings);
 }
 
+bool NotExpressionMatcher::Match(Expression &expr_p, vector<reference<Expression>> &bindings) {
+	if (!ExpressionMatcher::Match(expr_p, bindings)) {
+		return false;
+	}
+	auto &children = expr_p.Cast<BoundOperatorExpression>().GetChildrenMutable();
+	if (children.size() != 1) {
+		return false;
+	}
+	if (!child) {
+		return true;
+	}
+	return child->Match(*children[0], bindings);
+}
+
 bool InClauseExpressionMatcher::Match(Expression &expr_p, vector<reference<Expression>> &bindings) {
 	if (!ExpressionMatcher::Match(expr_p, bindings)) {
 		return false;

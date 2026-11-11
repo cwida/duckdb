@@ -332,9 +332,13 @@ BoundExpressionSQLExportState::BuildAggregateCall(const BoundAggregateExpression
 	auto order_bys = make_uniq<OrderModifier>();
 	if (expression.GetOrderBys()) {
 		for (auto &order : expression.GetOrderBys()->orders) {
-			order_bys->orders.emplace_back(order.type, order.null_order,
-			                               SQLExportHelpers::OrderExpression(order.expression->GetReturnType(),
-			                                                                 std::move(children[child_index++])));
+			auto &child = children[child_index++];
+			if (SQLExportHelpers::IsConstantOrderKey(*order.expression, *child)) {
+				continue;
+			}
+			order_bys->orders.emplace_back(
+			    order.type, order.null_order,
+			    SQLExportHelpers::OrderExpression(order.expression->GetReturnType(), std::move(child)));
 		}
 	}
 	result->FilterMutable() = std::move(filter);

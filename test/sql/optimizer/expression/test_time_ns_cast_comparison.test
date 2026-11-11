@@ -1,0 +1,40 @@
+# name: test/sql/optimizer/expression/test_time_ns_cast_comparison.test
+# description: Comparisons through the rounding cast from TIME_NS to TIME
+# group: [expression]
+
+statement ok
+CREATE TABLE times AS SELECT TIME_NS '12:34:56.123456789' AS t
+
+query II
+SELECT t::TIME, count(*) FILTER (WHERE t::TIME = TIME '12:34:56.123457') FROM times GROUP BY ALL
+----
+12:34:56.123457	1
+
+query I
+SELECT count(*) FROM times WHERE t::TIME = TIME '12:34:56.123457'
+----
+1
+
+query I
+SELECT count(*) FROM times WHERE t::TIME >= TIME '12:34:56.123457'
+----
+1
+
+# the constant of a TIME column cast to TIME_NS does not always fit in a TIME
+statement ok
+CREATE TABLE hours AS SELECT TIME '12:00:00' + i * INTERVAL 1 HOUR AS t FROM range(5) r(i)
+
+query I
+SELECT count(*) FROM hours WHERE t::TIME_NS = TIME_NS '13:00:00.000000001'
+----
+0
+
+query I
+SELECT count(*) FROM hours WHERE t::TIME_NS > TIME_NS '12:59:59.9999999'
+----
+4
+
+query I
+SELECT count(*) FROM hours WHERE t::TIME_NS < TIME_NS '13:00:00.0000004'
+----
+2

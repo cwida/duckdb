@@ -1,0 +1,14 @@
+# name: benchmark/micro/optimizer/correlated_exists_planning.benchmark
+# description: Planning many correlated EXISTS over a wide table (DelimJoinCTERewriter binding rewrites)
+# group: [optimizer]
+
+name Correlated Exists Planning
+group micro
+subgroup optimizer
+
+load
+CREATE TABLE t(k INT, c0 INT, c1 INT, c2 INT, c3 INT, c4 INT, c5 INT, c6 INT, c7 INT, c8 INT, c9 INT, c10 INT, c11 INT, c12 INT, c13 INT, c14 INT, c15 INT, c16 INT, c17 INT, c18 INT, c19 INT, c20 INT, c21 INT, c22 INT, c23 INT, c24 INT, c25 INT, c26 INT, c27 INT, c28 INT, c29 INT, c30 INT, c31 INT, c32 INT, c33 INT, c34 INT, c35 INT, c36 INT, c37 INT, c38 INT, c39 INT, c40 INT, c41 INT, c42 INT, c43 INT, c44 INT, c45 INT, c46 INT, c47 INT, c48 INT, c49 INT, c50 INT, c51 INT, c52 INT, c53 INT, c54 INT, c55 INT, c56 INT, c57 INT, c58 INT, c59 INT, c60 INT, c61 INT, c62 INT, c63 INT, c64 INT, c65 INT, c66 INT, c67 INT, c68 INT, c69 INT, c70 INT, c71 INT, c72 INT, c73 INT, c74 INT, c75 INT, c76 INT, c77 INT, c78 INT, c79 INT, c80 INT, c81 INT, c82 INT, c83 INT, c84 INT, c85 INT, c86 INT, c87 INT, c88 INT, c89 INT, c90 INT, c91 INT, c92 INT, c93 INT, c94 INT, c95 INT, c96 INT, c97 INT, c98 INT, c99 INT);
+CREATE TABLE s(k INT, v INT);
+
+run
+EXPLAIN SELECT t.*, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c0) AS e0, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c1) AS e1, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c2) AS e2, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c3) AS e3, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c4) AS e4, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c5) AS e5, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c6) AS e6, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c7) AS e7, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c8) AS e8, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c9) AS e9, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c10) AS e10, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c11) AS e11, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c12) AS e12, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c13) AS e13, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c14) AS e14, EXISTS (SELECT 1 FROM s WHERE s.k = t.k AND s.v > t.c15) AS e15 FROM t

@@ -15,7 +15,7 @@ BindResult ExpressionBinder::BindExpression(CollateExpression &expr, idx_t depth
 	if (child->HasParameter()) {
 		throw ParameterNotResolvedException();
 	}
-	if (child->GetReturnType().id() != LogicalTypeId::VARCHAR) {
+	if (child->GetReturnType().id() != LogicalTypeId::VARCHAR || child->GetReturnType().IsJSONType()) {
 		throw BinderException(child->GetQueryLocation(), "collations are only supported for type varchar");
 	}
 	// Validate the collation, but don't use it

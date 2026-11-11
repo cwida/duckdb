@@ -1,0 +1,23 @@
+# name: test/sql/aggregate/aggregates/test_decimal_aggregate_named_argument.test
+# description: avg / sum with named arguments of non-DECIMAL types
+# group: [aggregates]
+
+query III
+SELECT avg(x := 1), avg(x := i), sum(arg := 1) FROM range(3) t(i)
+----
+1.0	1.0	3
+
+query III
+SELECT avg(x := 1::TINYINT), avg(x := 1::UBIGINT), sum(arg := i::HUGEINT) FROM range(3) t(i)
+----
+1.0	1.0	3
+
+statement error
+SELECT avg(x := 1::VARIANT) FROM range(3)
+----
+Binder Error
+
+query IIII
+SELECT avg(x := 1.5::DECIMAL(4,1)), sum(arg := 2.5), avg(i), sum(i) FROM range(3) t(i)
+----
+1.5	7.5	1.0	3

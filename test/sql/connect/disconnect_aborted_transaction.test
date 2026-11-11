@@ -1,0 +1,64 @@
+# name: test/sql/connect/disconnect_aborted_transaction.test
+# description: A failure while CONNECT-ed aborts the local transaction when it runs in a transaction of the local one
+# group: [connect]
+
+require quack
+
+require httpfs
+
+statement ok
+SET VARIABLE server_uri = (SELECT concat('''', listen_uri, '''') FROM quack_serve('quack:127.0.0.1:0', token='test_token'));
+
+set variable server_uri <variable:server_uri>
+
+statement ok
+CREATE TABLE remote_t (i INT);
+
+statement ok
+CREATE TABLE local_t (i INT);
+
+statement ok
+ATTACH {server_uri} AS qk (TOKEN 'test_token');
+
+statement ok
+BEGIN;
+
+# the local transaction starts a transaction on the connected database
+statement ok
+INSERT INTO qk.remote_t VALUES (1);
+
+statement ok
+INSERT INTO local_t VALUES (1);
+
+statement ok
+CONNECT qk;
+
+# the statements run in that transaction
+query I
+SELECT count(*) FROM remote_t;
+----
+1
+
+statement error
+SELECT error('boom');
+----
+boom
+
+statement ok
+DISCONNECT;
+
+statement error
+SELECT count(*) FROM local_t;
+----
+Current transaction is aborted
+
+statement ok
+ROLLBACK;
+
+query II
+SELECT (SELECT count(*) FROM local_t), (SELECT count(*) FROM remote_t);
+----
+0	0
+
+statement ok
+CALL quack_stop({server_uri});

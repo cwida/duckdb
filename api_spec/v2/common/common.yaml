@@ -155,30 +155,6 @@ handles:
       instance's factory knows only the built-in types and casts, with
       default settings, and refuses anything that needs a catalog.
 structs:
-  str:
-    description: |
-      A borrowed, length-delimited string view: `ptr` points at `len` bytes of
-      character data. The bytes are NOT guaranteed to be null-terminated and
-      may contain interior null bytes, so always honor `len` rather than
-      scanning for a terminator. The view never owns its bytes; the function
-      that produced it documents how long they live (typically "valid until the
-      owning handle is destroyed"). `{NULL, 0}` is the canonical empty view,
-      and `ptr` must not be dereferenced when `len` is 0. Not to be confused
-      with `bytes`, the transparent 16-byte *storage* format for a
-      variable-size value in a vector.
-
-      Functions take an input view as a `const str *`, which must not be
-      NULL; a NULL pointer, or a view whose `ptr` is NULL while `len` is
-      nonzero, fails with ERROR_INPUT_INVALID. Point at a `{NULL, 0}` view to
-      pass an empty string.
-
-      Text inputs, such as VARCHAR values and names, must contain valid UTF-8.
-      The caller is responsible for ensuring this; API functions do not
-      necessarily validate the input.
-      Binary inputs, such as BLOB values, do not require valid UTF-8.
-    fields:
-      - {name: ptr, type: char, pointer: 1, const: true}
-      - {name: len, type: idx}
   bytes:
     description: |
       16-byte storage for a variable-size, byte-backed value: VARCHAR, BLOB,
@@ -215,10 +191,10 @@ callbacks:
       Receives text produced by DuckDB
 
       Invoked exactly once per producing call, with the complete text in a
-      single view.
+      single call.
 
-      The view is borrowed for the duration of the call only. Copy what you
-      need before returning, and do not retain `text` or `text->ptr`. The bytes are NOT guaranteed to be null-terminated.
+      The text is borrowed for the duration of the call only. Copy what you
+      need before returning, and do not retain `text`. The bytes are NOT guaranteed to be null-terminated.
 
       `err` is a live error slot, never NULL. Populate it with
       `[[error_info_set_code]]` / `[[error_info_set_text]]` to signal failure to DuckDB. Do not destroy it yourself.
@@ -228,11 +204,14 @@ callbacks:
     return_type: void
     parameters:
       text:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
-        description: Borrowed view of the complete text. Valid only until the sink returns.
+        description: The complete text, borrowed. Valid only until the sink returns.
+      text_length:
+        type: idx
+        description: The length of `text` in bytes. `text` is not guaranteed to be null-terminated.
       user_data:
         type: void
         indirection: 1
@@ -302,18 +281,6 @@ aliases:
   bignum:
     underlying: bytes
     description: BIGNUM storage. Decode via `[[bignum_decode]]`.
-  identifier:
-    underlying: str
-    description: |
-      A borrowed name view with the same layout as str, marking a string
-      DuckDB treats as a SQL identifier: one matched case-insensitively.
-      Compare two identifiers case-insensitively rather than byte for byte, and
-      render one into SQL through the identifier-quoting entry point rather
-      than embedding it raw. The catalog preserves casing; some registries
-      (config settings) canonicalize to lowercase.
-
-      An identifier passed into the API must be valid UTF-8; otherwise the
-      call fails with `ERROR_INPUT_INVALID`.
 constants:
   BYTES_INLINE_LENGTH:
     value: 12

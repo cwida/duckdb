@@ -242,6 +242,26 @@ buffer_ptr<VectorBuffer> VectorBuffer::SliceWithCache(SelCache &cache, const Log
 	return Slice(type, sel, count);
 }
 
+buffer_ptr<VectorBuffer> VectorBuffer::ConstantReference(const Vector &source, idx_t index, count_t count) {
+	if (source.GetVectorType() == VectorType::SHREDDED_VECTOR) {
+		// unshred the source in place once, so that the constants of its rows share the unshredded data
+		source.Flatten();
+	}
+	auto &buffer = source.Buffer();
+	// a constant holds its entry at index zero
+	auto entry_index = buffer.GetVectorType() == VectorType::CONSTANT_VECTOR ? 0 : index;
+	auto result = buffer.ConstantReferenceInternal(source.GetType(), entry_index, count);
+	D_ASSERT(result->GetVectorType() == VectorType::CONSTANT_VECTOR);
+	D_ASSERT(result->Size() == count);
+	return result;
+}
+
+buffer_ptr<VectorBuffer> VectorBuffer::ConstantReferenceInternal(const LogicalType &type, idx_t index,
+                                                                 count_t count) const {
+	Vector result(GetValue(type, index), count);
+	return result.GetBufferRef();
+}
+
 buffer_ptr<VectorBuffer> VectorBuffer::SliceInternal(const LogicalType &type, idx_t offset, idx_t end) {
 	// we can slice the data directly only for standard vectors
 	// for non-flat vectors slice using a selection vector instead
@@ -338,18 +358,17 @@ void VectorBuffer::Copy(const Vector &source_p, const SelectionVector &source_se
 			finished = true;
 			break;
 		default: {
-			// for exotic types we flatten followed by copying - only the copied range [source_offset, source_count)
-			// is flattened, as e.g. list functions copy the children of every list at a different offset
-			D_ASSERT(source_count >= source_offset);
-			const auto range_count = source_count - source_offset;
-			SelectionVector range_sel(range_count);
-			for (idx_t i = 0; i < range_count; i++) {
+			// for exotic types we flatten followed by copying - only the copied rows are flattened, as e.g. list
+			// functions copy the children of every list at a different offset, and the selection vector might only
+			// cover the copied rows
+			D_ASSERT(source_count >= source_offset + copy_count);
+			SelectionVector range_sel(copy_count);
+			for (idx_t i = 0; i < copy_count; i++) {
 				range_sel.set_index(i, sel.get_index(source_offset + i));
 			}
 			Vector flattened_vector(Vector::Ref(source));
-			flattened_vector.Flatten(range_sel, range_count);
-			Copy(flattened_vector, *FlatVector::IncrementalSelectionVector(), range_count, 0, target_offset,
-			     copy_count);
+			flattened_vector.Flatten(range_sel, copy_count);
+			Copy(flattened_vector, *FlatVector::IncrementalSelectionVector(), copy_count, 0, target_offset, copy_count);
 			return;
 		}
 		}

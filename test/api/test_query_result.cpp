@@ -607,6 +607,34 @@ TEST_CASE("A custom collector refuses a submission with a notify callback", "[ap
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));
 }
 
+TEST_CASE("A custom collector refuses a notify callback when the result statement of an expanding statement starts",
+          "[api][query_result]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &config = ClientConfig::GetConfig(*con.context);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE sales(city VARCHAR, year INTEGER, amount INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO sales VALUES ('ams', 2023, 10), ('rtm', 2024, 40)"));
+	DrainWatchdog watchdog(con);
+
+	std::atomic<idx_t> notifications {0};
+	QueryParameters parameters;
+	parameters.notify_callback = [&notifications]() {
+		notifications++;
+	};
+	{
+		auto setting = UseTestStreamingCollector(config);
+		auto refused = con.Submit("PIVOT sales ON year USING sum(amount)", parameters);
+		REQUIRE(refused->HasError());
+		REQUIRE(refused->GetErrorType() == ExceptionType::INVALID_INPUT);
+		REQUIRE(StringUtil::Contains(refused->GetError(),
+		                             "A notify callback cannot be combined with a custom result collector"));
+		// The type creation ran before the PIVOT reached the collector, so its end rang for a query that is refused
+		REQUIRE(notifications.load() > 0);
+	}
+	auto next = con.Query("SELECT 42");
+	REQUIRE(CHECK_COLUMN(next, 0, {42}));
+}
+
 TEST_CASE("A collector hook that hands back the default sink accepts a format", "[api][query_result]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -959,13 +987,13 @@ TEST_CASE("A query whose begin failed does not hold the connection", "[api][quer
 	Connection con(db);
 	// The debug build's state checks that every query end follows its own begin, which a begin hook that throws
 	// breaks whichever hook runs first
-	con.context->registered_state->Remove("debug_client_context_state");
-	con.context->registered_state->Insert("failing_query_begin", make_shared_ptr<FailingQueryBegin>());
+	con.context->GetContext().GetRegisteredState().Remove("debug_client_context_state");
+	con.context->GetContext().GetRegisteredState().Insert("failing_query_begin", make_shared_ptr<FailingQueryBegin>());
 
 	auto failed = con.Query("SELECT 42");
 	REQUIRE(failed->HasError());
 	REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
-	con.context->registered_state->Remove("failing_query_begin");
+	con.context->GetContext().GetRegisteredState().Remove("failing_query_begin");
 
 	auto next = con.Query("SELECT 42");
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));

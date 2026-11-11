@@ -1,0 +1,45 @@
+# name: test/sql/copy/csv/test_strict_crlf_rows.test
+# description: Rows of a \r\n file are read when strict_mode and new_line='\r\n' are both set
+# group: [csv]
+
+statement ok
+COPY (SELECT range AS a, range * 2 AS b FROM range(5)) TO '{TEST_DIR}/strict_crlf.csv' (FORMAT CSV, HEADER, NEW_LINE '\r\n');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/strict_crlf.csv', new_line='\r\n', strict_mode=true)
+----
+0	0
+1	2
+2	4
+3	6
+4	8
+
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/strict_crlf.csv', new_line='\r\n', strict_mode=true, header=true, columns={'a':'BIGINT','b':'BIGINT'}, auto_detect=false)
+----
+5
+
+# the same file in parallel, with boundaries inside rows and one splitting a carriage return from its line feed
+statement ok
+COPY (SELECT range AS a, range * 2 AS b FROM range(100000)) TO '{TEST_DIR}/strict_crlf_big.csv' (FORMAT CSV, HEADER, NEW_LINE '\r\n');
+
+foreach buffer_size 100000 100001 100002
+
+query III
+SELECT count(*), min(a), max(b) FROM read_csv('{TEST_DIR}/strict_crlf_big.csv', new_line='\r\n', strict_mode=true, buffer_size={buffer_size})
+----
+100000	0	199998
+
+endloop
+
+# a header line that ends in a lone carriage return does not swallow the first byte of the data
+query II
+SELECT * FROM read_csv('data/csv/lone_cr_header.csv', new_line='\r\n', strict_mode=true, header=true, columns={'a':'INTEGER','b':'INTEGER'}, auto_detect=false)
+----
+1	2
+
+# a lone carriage return is still an error in strict mode
+statement error
+SELECT * FROM read_csv('data/csv/one_r_two.csv', new_line='\r\n', strict_mode=true, header=false)
+----
+Disable the parser's strict mode (strict_mode=false) to allow reading rows that do not comply with the CSV standard.

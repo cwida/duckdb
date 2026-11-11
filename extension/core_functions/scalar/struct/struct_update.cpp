@@ -92,9 +92,8 @@ static unique_ptr<FunctionData> StructUpdateBind(BindScalarFunctionInput &input)
 	vector<idx_t> field_indexes(arguments.size() - 1);
 
 	// Record the names of the fields that are updated
-	auto &names = *input.GetArgumentNames();
 	for (idx_t arg_idx = 1; arg_idx < arguments.size(); arg_idx++) {
-		incoming_children.emplace(names[arg_idx], arg_idx);
+		incoming_children.emplace(input.GetArgumentName(arg_idx), arg_idx);
 	}
 
 	for (idx_t field_idx = 0; field_idx < existing_children.size(); field_idx++) {
@@ -106,7 +105,7 @@ static unique_ptr<FunctionData> StructUpdateBind(BindScalarFunctionInput &input)
 		} else {
 			// Update the struct with the new data of the same name
 			auto arg_idx = update->second;
-			new_children.emplace_back(make_pair(names[arg_idx], arguments[arg_idx]->GetReturnType()));
+			new_children.emplace_back(make_pair(input.GetArgumentName(arg_idx), arguments[arg_idx]->GetReturnType()));
 			is_new_field[arg_idx] = false;
 			field_indexes[arg_idx - 1] = field_idx;
 		}
@@ -116,7 +115,7 @@ static unique_ptr<FunctionData> StructUpdateBind(BindScalarFunctionInput &input)
 	for (idx_t arg_idx = 1; arg_idx < arguments.size(); arg_idx++) {
 		if (is_new_field[arg_idx]) {
 			field_indexes[arg_idx - 1] = new_children.size();
-			new_children.emplace_back(make_pair(names[arg_idx], arguments[arg_idx]->GetReturnType()));
+			new_children.emplace_back(make_pair(input.GetArgumentName(arg_idx), arguments[arg_idx]->GetReturnType()));
 		}
 	}
 

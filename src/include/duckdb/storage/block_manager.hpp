@@ -9,7 +9,9 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/enums/memory_tag.hpp"
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/query_context.hpp"
@@ -101,18 +103,21 @@ public:
 	//! Truncate the underlying database file after a checkpoint
 	virtual void Truncate();
 
-	//! Register a block with the given block id in the base file
-	shared_ptr<BlockHandle> RegisterBlock(block_id_t block_id);
+	//! Register a block with the given block id in the base file, an already registered block must have the same tag
+	shared_ptr<BlockHandle> RegisterBlock(block_id_t block_id, MemoryTag tag = MemoryTag::BASE_TABLE);
 	//! Convert an existing in-memory buffer into a persistent disk-backed block
 	//! If mode is set to destructive (default) - the old_block will be destroyed as part of this method
 	//! This can only be safely used when there is no other (lingering) usage of old_block
 	//! If there is concurrent usage of the block elsewhere - use the THREAD_SAFE mode which creates an extra copy
+	//! Unless a tag is given, keep old_block's tag, except IN_MEMORY_TABLE becomes BASE_TABLE.
 	shared_ptr<BlockHandle> ConvertToPersistent(QueryContext context, block_id_t block_id,
 	                                            shared_ptr<BlockHandle> old_block, BufferHandle old_handle,
-	                                            ConvertToPersistentMode mode = ConvertToPersistentMode::DESTRUCTIVE);
+	                                            ConvertToPersistentMode mode = ConvertToPersistentMode::DESTRUCTIVE,
+	                                            optional<MemoryTag> tag = nullopt);
 	shared_ptr<BlockHandle> ConvertToPersistent(QueryContext context, block_id_t block_id,
 	                                            shared_ptr<BlockHandle> old_block,
-	                                            ConvertToPersistentMode mode = ConvertToPersistentMode::DESTRUCTIVE);
+	                                            ConvertToPersistentMode mode = ConvertToPersistentMode::DESTRUCTIVE,
+	                                            optional<MemoryTag> tag = nullopt);
 
 	void UnregisterPersistentBlock(BlockHandle &block);
 	//! UnregisterBlock, only accepts non-temporary block ids

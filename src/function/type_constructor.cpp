@@ -85,28 +85,6 @@ string ConstructorToString(const Identifier &type_name, const TypeConstructor &c
 	return type_name.GetIdentifierName() + "(" + StringUtil::Join(parts, ", ") + ")";
 }
 
-//! The type parameters of the call being bound, as (VARCHAR, INTEGER)
-string ArgumentsToString(const vector<TypeArgument> &arguments) {
-	vector<string> parts;
-	for (auto &arg : arguments) {
-		string part;
-		if (arg.HasName()) {
-			part = arg.GetName() + " := ";
-		}
-		parts.push_back(part + arg.GetType().ToString());
-	}
-	return "(" + StringUtil::Join(parts, ", ") + ")";
-}
-
-string CandidateList(const Identifier &type_name, const vector<shared_ptr<const TypeConstructor>> &constructors,
-                     const vector<idx_t> &offsets) {
-	string result = "\n\tCandidate definitions:";
-	for (auto offset : offsets) {
-		result += "\n\t" + ConstructorToString(type_name, *constructors[offset]);
-	}
-	return result;
-}
-
 //! How a modifier is referred to in errors: by its parameter name where it has one, by its position otherwise.
 string ArgumentName(const Identifier &name, idx_t position) {
 	if (name.empty()) {
@@ -161,19 +139,12 @@ vector<TypeArgument> NormalizeArguments(const Identifier &type_name, const TypeC
 		positional_count++;
 	}
 
-	identifier_set_t seen_names;
 	for (idx_t i = 0; i < arguments.size(); i++) {
 		auto &arg = arguments[i];
 		if (!arg.HasName()) {
 			continue;
 		}
 		auto name = Identifier(arg.GetName());
-		if (seen_names.find(name) != seen_names.end()) {
-			throw BinderException(arg.GetQueryLocation(), "Duplicate type parameter %s for type %s", arg.GetName(),
-			                      type_name);
-		}
-		seen_names.insert(name);
-
 		auto param_idx = sig.GetParameterIndexByName(name);
 		if (!param_idx.IsValid()) {
 			// not a declared parameter - it can only be a named vararg
@@ -218,6 +189,10 @@ vector<TypeArgument> NormalizeArguments(const Identifier &type_name, const TypeC
 
 } // namespace
 
+string TypeConstructor::ToString() const {
+	return ConstructorToString(GetName(), *this);
+}
+
 LogicalType TypeConstructorSet::Bind(optional_ptr<ClientContext> context, const LogicalType &base_type,
                                      const vector<TypeArgument> &arguments, QueryLocation query_location) const {
 	D_ASSERT(!functions.empty());
@@ -250,29 +225,15 @@ LogicalType TypeConstructorSet::Bind(optional_ptr<ClientContext> context, const 
 		}
 	}
 
-	// The candidates are selected with the regular function machinery, but reported in terms of types - a type is
-	// not a function, and "no function matches" reads as a mistake rather than as a bad type.
-	ErrorData error;
-	auto candidates = FunctionOverloads::Candidates(context, name, *this, positional, named, error);
-	if (candidates.empty()) {
-		vector<idx_t> all;
-		for (idx_t i = 0; i < functions.size(); i++) {
-			all.push_back(i);
-		}
-		if (arguments.empty()) {
-			throw BinderException(query_location, "Type %s requires type parameters%s", name,
-			                      CandidateList(name, functions, all));
-		}
-		throw BinderException(query_location, "Type %s does not accept type parameters %s%s", name,
-		                      ArgumentsToString(arguments), CandidateList(name, functions, all));
+	// The candidates are selected with the regular function machinery - its errors name the call, not a function
+	auto selection = FunctionBinder::SelectFunction(context, *this, {positional, named});
+	if (!selection) {
+		ErrorData error = selection.GetError();
+		error.AddQueryLocation(query_location);
+		error.Throw();
 	}
-	if (candidates.size() > 1) {
-		throw BinderException(query_location,
-		                      "Could not choose a definition of type %s for the type parameters %s. In order to "
-		                      "select one, please add explicit type casts.%s",
-		                      name, ArgumentsToString(arguments), CandidateList(name, functions, candidates));
-	}
-	auto &constructor = *GetFunctionByOffset(candidates[0]);
+	auto constructor_ptr = selection.GetBinding().GetFunction<TypeConstructor>();
+	auto &constructor = *constructor_ptr;
 
 	auto modifiers = NormalizeArguments(name, constructor, arguments, query_location);
 	BindLogicalTypeInput input {context, base_type, modifiers, query_location};

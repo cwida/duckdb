@@ -5,7 +5,9 @@
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
 
 #include <cctype>
@@ -14,13 +16,41 @@
 namespace duckdb {
 static_assert(sizeof(dtime_t) == sizeof(int64_t), "dtime_t was padded");
 
+static bool OnlySpaceRemains(const char *buf, idx_t len, idx_t &pos) {
+	while (pos < len && StringUtil::CharacterIsSpace(buf[pos])) {
+		pos++;
+	}
+	return pos == len;
+}
+
+//	The offset is Z or ±HH[:MM[:SS]] (PG claims they don't support :SS but they do...)
+static bool TryParseOffsetSuffix(const char *buf, idx_t len, idx_t &pos, int32_t &offset, bool &has_offset) {
+	has_offset = !OnlySpaceRemains(buf, len, pos);
+	int hh = 0;
+	int mm = 0;
+	int ss = 0;
+	if (has_offset && buf[pos] == 'Z') {
+		pos++;
+	} else if (has_offset && !Timestamp::TryParseUTCOffset(buf, pos, len, hh, mm, ss)) {
+		return false;
+	}
+
+	//	Offsets are in seconds in the open interval (-16:00:00, +16:00:00)
+	offset = ((hh * Interval::MINS_PER_HOUR) + mm) * Interval::SECS_PER_MINUTE + ss;
+	if (offset < dtime_tz_t::MIN_OFFSET || offset > dtime_tz_t::MAX_OFFSET) {
+		return false;
+	}
+	return OnlySpaceRemains(buf, len, pos);
+}
+
 // string format is hh:mm:ss.microsecondsZ
 // microseconds and Z are optional
 // ISO 8601
 
 bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &result, bool strict,
-                              optional_ptr<int32_t> nanos) {
-	int32_t hour = -1, min = -1, sec = -1, micros = -1;
+                              optional_ptr<int32_t> nanos, bool negative) {
+	int64_t hour = -1;
+	int32_t min = -1, sec = -1, micros = -1;
 	pos = 0;
 
 	if (len == 0) {
@@ -42,9 +72,9 @@ bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &r
 		return false;
 	}
 
-	// Allow up to 9 digit hours to support intervals
+	// Allow up to 10 digit interval hours
 	hour = 0;
-	for (int32_t digits = 9; pos < len && StringUtil::CharacterIsDigit(buf[pos]); ++pos) {
+	for (int32_t digits = 10; pos < len && StringUtil::CharacterIsDigit(buf[pos]); ++pos) {
 		if (digits-- > 0) {
 			hour = hour * 10 + (buf[pos] - '0');
 		} else {
@@ -121,25 +151,29 @@ bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &r
 		}
 	}
 
-	// in strict mode, check remaining string for non-space characters
-	if (strict) {
-		// skip trailing spaces
-		while (pos < len && StringUtil::CharacterIsSpace(buf[pos])) {
-			pos++;
-		}
-		// check position. if end was not reached, non-space chars remaining
-		if (pos < len) {
-			return false;
-		}
+	if (strict && !OnlySpaceRemains(buf, len, pos)) {
+		return false;
 	}
 
-	result = Time::FromTime(hour, min, sec, micros);
+	// a negative interval accumulates below zero, so its minimum fits
+	int64_t time_micros;
+	auto sub_hour_micros = Time::FromTime(0, min, sec, micros).value;
+	if (negative) {
+		if (!TryMultiplyOperator::Operation(hour, -Interval::MICROS_PER_HOUR, time_micros) ||
+		    !TrySubtractOperator::Operation(time_micros, sub_hour_micros, time_micros)) {
+			return false;
+		}
+	} else if (!TryMultiplyOperator::Operation(hour, Interval::MICROS_PER_HOUR, time_micros) ||
+	           !TryAddOperator::Operation(time_micros, sub_hour_micros, time_micros)) {
+		return false;
+	}
+	result = dtime_t(time_micros);
 	return true;
 }
 
 bool Time::TryConvertInterval(const char *buf, idx_t len, idx_t &pos, dtime_t &result, bool strict,
-                              optional_ptr<int32_t> nanos) {
-	return Time::TryConvertInternal(buf, len, pos, result, strict, nanos);
+                              optional_ptr<int32_t> nanos, bool negative) {
+	return Time::TryConvertInternal(buf, len, pos, result, strict, nanos, negative);
 }
 
 bool Time::TryConvertTime(const char *buf, idx_t len, idx_t &pos, dtime_t &result, bool strict,
@@ -156,6 +190,12 @@ bool Time::TryConvertTime(const char *buf, idx_t len, idx_t &pos, dtime_t &resul
 				return true;
 			}
 		}
+		return false;
+	}
+	// a TIME drops a UTC offset, as the TIMESTAMP cast does; a strict parse has already rejected one
+	int32_t offset;
+	bool has_offset;
+	if (!TryParseOffsetSuffix(buf, len, pos, offset, has_offset)) {
 		return false;
 	}
 	return result.value <= Interval::MICROS_PER_DAY;
@@ -185,38 +225,9 @@ bool Time::TryConvertTimeTZ(const char *buf, idx_t len, idx_t &pos, dtime_tz_t &
 		return false;
 	}
 
-	// skip optional whitespace before offset
-	while (pos < len && StringUtil::CharacterIsSpace(buf[pos])) {
-		pos++;
-	}
-
-	//	Get the ±HH[:MM[:SS]] part
-	//	(PG claims they don't support :SS but they do...)
-	int hh = 0;
-	int mm = 0;
-	int ss = 0;
-	has_offset = (pos < len);
-	if (has_offset && !Timestamp::TryParseUTCOffset(buf, pos, len, hh, mm, ss)) {
+	int32_t offset;
+	if (!TryParseOffsetSuffix(buf, len, pos, offset, has_offset)) {
 		return false;
-	}
-
-	//	Offsets are in seconds in the open interval (-16:00:00, +16:00:00)
-	int32_t offset = ((hh * Interval::MINS_PER_HOUR) + mm) * Interval::SECS_PER_MINUTE + ss;
-
-	if (offset < dtime_tz_t::MIN_OFFSET || offset > dtime_tz_t::MAX_OFFSET) {
-		return false;
-	}
-
-	// in strict mode, check remaining string for non-space characters
-	if (strict) {
-		// skip trailing spaces
-		while (pos < len && StringUtil::CharacterIsSpace(buf[pos])) {
-			pos++;
-		}
-		// check position. if end was not reached, non-space chars remaining
-		if (pos < len) {
-			return false;
-		}
 	}
 
 	result = dtime_tz_t(time_part, offset);
@@ -263,10 +274,11 @@ string Time::ToString(dtime_t time) {
 	return string(buffer.get(), length);
 }
 
-string Time::ToUTCOffset(int hour_offset, int minute_offset) {
-	dtime_t time((hour_offset * Interval::MINS_PER_HOUR + minute_offset) * Interval::MICROS_PER_MINUTE);
+string Time::ToUTCOffset(int hour_offset, int minute_offset, int second_offset) {
+	dtime_t time(((hour_offset * Interval::MINS_PER_HOUR + minute_offset) * Interval::SECS_PER_MINUTE + second_offset) *
+	             Interval::MICROS_PER_SEC);
 
-	char buffer[1 + 2 + 1 + 2];
+	char buffer[1 + 2 + 1 + 2 + 1 + 2];
 	idx_t length = 0;
 	buffer[length++] = (time.value < 0 ? '-' : '+');
 	time.value = std::abs(time.value);
@@ -276,9 +288,14 @@ string Time::ToUTCOffset(int hour_offset, int minute_offset) {
 
 	TimeToStringCast::FormatTwoDigits(buffer + length, time_units[0]);
 	length += 2;
-	if (time_units[1]) {
+	if (time_units[1] || time_units[2]) {
 		buffer[length++] = ':';
 		TimeToStringCast::FormatTwoDigits(buffer + length, time_units[1]);
+		length += 2;
+	}
+	if (time_units[2]) {
+		buffer[length++] = ':';
+		TimeToStringCast::FormatTwoDigits(buffer + length, time_units[2]);
 		length += 2;
 	}
 

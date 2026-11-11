@@ -65,12 +65,9 @@ void OuterJoinMarker::ConstructLeftJoinResult(DataChunk &left, DataChunk &result
 	}
 	D_ASSERT(count == STANDARD_VECTOR_SIZE);
 	SelectionVector remaining_sel(STANDARD_VECTOR_SIZE);
-	idx_t remaining_count = 0;
-	for (idx_t i = 0; i < left.size(); i++) {
-		if (!found_match[i]) {
-			remaining_sel.set_index(remaining_count++, i);
-		}
-	}
+	auto true_count = SelectionVector::SelectFromBoolean(
+	    found_match.get(), nullptr, left.size(), {}, array_ptr<sel_t>(remaining_sel.data(), remaining_sel.Capacity()));
+	auto remaining_count = left.size() - true_count;
 	if (remaining_count > 0) {
 		result.Slice(left, remaining_sel, remaining_count);
 		for (idx_t idx = left.ColumnCount(); idx < result.ColumnCount(); idx++) {

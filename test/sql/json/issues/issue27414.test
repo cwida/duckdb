@@ -1,0 +1,18 @@
+# name: test/sql/json/issues/issue27414.test
+# description: Issue #27414 - the shrunk auto-detect buffer is not reused for reads that need the full buffer capacity
+# group: [issues]
+
+require json
+
+statement ok
+COPY (SELECT '2026-01-02 03:04:05' AS date, 'log text' AS log) TO '{TEST_DIR}/issue27414.json' (FORMAT json);
+
+query II
+SELECT * FROM read_ndjson('{TEST_DIR}/issue27414.json', ignore_errors=true);
+----
+2026-01-02 03:04:05	log text
+
+query II
+SELECT * FROM read_json('{TEST_DIR}/issue27414.json');
+----
+2026-01-02 03:04:05	log text

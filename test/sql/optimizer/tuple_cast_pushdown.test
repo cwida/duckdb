@@ -1,0 +1,49 @@
+# name: test/sql/optimizer/tuple_cast_pushdown.test
+# description: TUPLE casts with non-throwing children are not throw-able, so filters over them push down
+# group: [optimizer]
+
+# TUPLE is an unnamed STRUCT - same physical layout, positional child matching, and the same shared struct
+# cast operators. A TUPLE cast with non-throwing children cannot throw, just like the equivalent STRUCT cast,
+# so a filter built on it must be pushed down to the scan (CastCanThrow used to classify every TUPLE cast as
+# fallible, which blocked the pushdown).
+
+statement ok
+CREATE TABLE tt_tuple AS SELECT row(range::INTEGER) AS t, struct_pack(a := range::INTEGER) AS s FROM range(1000);
+
+# TUPLE(BIGINT) <- row(INTEGER): INTEGER -> BIGINT cannot throw, so the filter must be pushed to the scan
+query II
+EXPLAIN SELECT * FROM (SELECT t FROM tt_tuple) p WHERE CAST(p.t AS TUPLE(BIGINT)) = row(1::BIGINT);
+----
+physical_plan	<REGEX>:(?s).*Seq Scan.*Filters:.*CAST\(t AS TUPLE\(BIGINT\)\).*
+
+# the equivalent filter over a named STRUCT was already pushed down
+query II
+EXPLAIN SELECT * FROM (SELECT s FROM tt_tuple) p WHERE CAST(p.s AS STRUCT(a BIGINT)) = struct_pack(a := 1::BIGINT);
+----
+physical_plan	<REGEX>:(?s).*Seq Scan.*Filters:.*CAST\(s AS STRUCT\(a BIGINT\)\).*
+
+# results are correct with the pushed filter
+query I
+SELECT count(*) FROM (SELECT t FROM tt_tuple) p WHERE CAST(p.t AS TUPLE(BIGINT)) = row(1::BIGINT);
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT s FROM tt_tuple) p WHERE CAST(p.s AS STRUCT(a BIGINT)) = struct_pack(a := 1::BIGINT);
+----
+1
+
+# negative control: a TUPLE cast with a throwing child (VARCHAR -> INTEGER) still cannot be pushed down,
+# it must stay in a Filter node above the scan
+statement ok
+CREATE TABLE tt_bad AS SELECT row(range::VARCHAR) AS t FROM range(1000);
+
+query II
+EXPLAIN SELECT * FROM (SELECT t FROM tt_bad) p WHERE CAST(p.t AS TUPLE(BIGINT)) = row(1::BIGINT);
+----
+physical_plan	<REGEX>:(?s).*Filter.*Expression:.*CAST\(t AS TUPLE\(BIGINT\)\).*
+
+query I
+SELECT count(*) FROM (SELECT t FROM tt_bad) p WHERE CAST(p.t AS TUPLE(BIGINT)) = row(1::BIGINT);
+----
+1

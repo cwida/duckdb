@@ -1,0 +1,47 @@
+# name: test/sql/aggregate/tiled_aggregate_initialization.test
+# description: Batched aggregate initialization handles selected groups and partial batches
+# group: [aggregate]
+
+statement ok
+SET disabled_optimizers='compressed_materialization'
+
+foreach threshold 0 32
+
+statement ok
+SET perfect_ht_threshold={threshold}
+
+foreach n 0 1 127 128 129 2047 2048 2049 4097
+
+statement ok
+CREATE OR REPLACE TABLE initialization_input AS
+SELECT i, (i // 3)::INTEGER AS g,
+       CASE WHEN i % 3 != 1 THEN (i // 3)::INTEGER END AS v
+FROM range(3 * {n}) t(i)
+
+query I
+WITH actual AS (
+    SELECT g, count(*) AS rows, count(v) AS valid, sum(v) AS total,
+           min(v) AS lo, max(v) AS hi, product((i % 3 + 1)::DOUBLE) AS p, list(v ORDER BY i) AS values,
+           string_agg(v::VARCHAR, ',' ORDER BY i) AS text
+    FROM initialization_input GROUP BY g
+), expected AS (
+    SELECT g::INTEGER AS g, 3::BIGINT AS rows, 2::BIGINT AS valid,
+           (2 * g)::HUGEINT AS total, g::INTEGER AS lo, g::INTEGER AS hi, 6::DOUBLE AS p,
+           [g::INTEGER, NULL, g::INTEGER] AS values,
+           g::VARCHAR || ',' || g::VARCHAR AS text
+    FROM range({n}) t(g)
+)
+SELECT count(*) FROM (
+    (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
+    UNION ALL
+    (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual)
+) differences
+----
+0
+
+endloop
+
+endloop
+
+statement ok
+DROP TABLE initialization_input

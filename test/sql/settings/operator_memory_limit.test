@@ -82,6 +82,10 @@ SELECT i, SUM(i) OVER (PARTITION BY i % 100000 ORDER BY i) FROM range(5000000) t
 ----
 Out of Memory
 
+# Use one worker for the low-memory success cases.
+statement ok
+SET threads=1
+
 # streaming operations succeed - they dont check GetOperatorMemoryLimit()
 # this same query fails with memory_limit='1MB' but succeeds here
 statement ok
@@ -99,6 +103,17 @@ SELECT SUM(i) FROM range(1000000) t(i)
 499999500000
 
 # small GROUP BY - hash table fits in budget
+# Exercise both sink strategies and the initial partition counts.
+foreach operator_limit 1MB 6MB
+
+statement ok
+SET operator_memory_limit='{operator_limit}'
+
+foreach threads 1 2 3 4 8
+
+statement ok
+SET threads={threads}
+
 query II
 SELECT i % 10 as g, COUNT(*) FROM range(1000000) t(i) GROUP BY 1 ORDER BY 1
 ----
@@ -112,6 +127,24 @@ SELECT i % 10 as g, COUNT(*) FROM range(1000000) t(i) GROUP BY 1 ORDER BY 1
 7	100000
 8	100000
 9	100000
+
+# Preserve the minimum working set after the table fills and starts spilling.
+# Keep tuple metadata below the memory limit with small vectors.
+query III
+SELECT COUNT(*), MIN(n), MAX(n)
+FROM (SELECT i % 20000 AS g, COUNT(*) AS n FROM range(100000) t(i) GROUP BY g)
+----
+20000	5	5
+
+endloop
+
+endloop
+
+statement ok
+SET operator_memory_limit='1MB'
+
+statement ok
+RESET threads
 
 # small ORDER BY - fits in budget
 query I

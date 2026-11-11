@@ -95,6 +95,9 @@ static void ReplaceInOperator(unique_ptr<ParsedExpression> &expr, expression_lis
 	// Replace children
 	expression_list_t new_children;
 	for (auto &child : operator_expr.GetChildrenMutable()) {
+		if (star_list.empty() && StarExpression::IsColumnsUnpacked(*child)) {
+			throw BinderException("*COLUMNS() expanded to zero columns, which is not supported in this place");
+		}
 		AddChild(child, new_children, star_list, star, regex);
 	}
 	operator_expr.GetChildrenMutable() = std::move(new_children);

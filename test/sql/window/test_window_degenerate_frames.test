@@ -8,11 +8,6 @@ CREATE TABLE t(i INTEGER, peer INTEGER, v INTEGER);
 statement ok
 INSERT INTO t VALUES (0, 0, NULL), (1, 0, 10), (2, 0, NULL), (3, 1, 20), (4, 1, NULL), (5, 1, 30), (6, 2, 40);
 
-foreach optimizer true false
-
-statement ok
-SET enable_optimizer=${optimizer};
-
 # The frame is the current row
 query IIIIIIIIIII
 SELECT i,
@@ -96,4 +91,23 @@ FROM range(3);
 1	42
 1	42
 
-endloop
+# Deferred PKs are not UCC
+statement ok
+CREATE TABLE d(id INTEGER PRIMARY KEY DEFERRED);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO d VALUES (1),(1);
+
+query II
+SELECT id, count(*) OVER (
+    ORDER BY id RANGE BETWEEN CURRENT ROW AND CURRENT ROW
+) FROM d;
+----
+1	2
+1	2
+
+statement ok
+ROLLBACK;

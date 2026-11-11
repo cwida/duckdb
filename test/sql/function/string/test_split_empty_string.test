@@ -1,0 +1,26 @@
+# name: test/sql/function/string/test_split_empty_string.test
+# description: Splitting an empty string by an empty delimiter gives no characters
+# group: [string]
+
+query IIII
+SELECT a, str_split(a, '') AS s, len(str_split(a, '')) AS n, string_split(a, '') FROM UNNEST(['foo', '', NULL]) AS t(a) ORDER BY n NULLS LAST;
+----
+(empty)	[]	0	[]
+foo	[f, o, o]	3	[f, o, o]
+NULL	NULL	NULL	NULL
+
+query II
+SELECT regexp_split_to_array('', ''), regexp_split_to_array('ab', '');
+----
+[]	[a, b]
+
+# a delimiter that is not empty still gives the empty string
+query II
+SELECT str_split('', ','), regexp_split_to_array('', ',');
+----
+['']	['']
+
+query I
+SELECT count(*) FROM (SELECT regexp_split_to_table('', ''));
+----
+0

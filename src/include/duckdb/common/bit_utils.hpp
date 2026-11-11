@@ -42,7 +42,7 @@ struct CountZeros<uint64_t> {
 		value |= value >> 32;
 		auto result = 63 - index64msb[(value * debruijn64msb) >> 58];
 #ifdef __clang__
-		D_ASSERT(result == static_cast<uint64_t>(__builtin_clzl(value_in)));
+		D_ASSERT(result == static_cast<uint64_t>(__builtin_clzll(value_in)));
 #endif
 		return result;
 	}
@@ -50,6 +50,9 @@ struct CountZeros<uint64_t> {
 		if (!value_in) {
 			return 64;
 		}
+#if defined(__GNUC__) || defined(__clang__)
+		return static_cast<idx_t>(__builtin_ctzll(value_in));
+#else
 		uint64_t value = value_in;
 
 		static constexpr uint64_t index64lsb[] = {63, 0,  58, 1,  59, 47, 53, 2,  60, 39, 48, 27, 54, 33, 42, 3,
@@ -58,10 +61,8 @@ struct CountZeros<uint64_t> {
 		                                          56, 45, 25, 31, 35, 16, 9,  12, 44, 24, 15, 8,  23, 7,  6,  5};
 		constexpr uint64_t debruijn64lsb = 0x07EDD5E59A4E28C2ULL;
 		auto result = index64lsb[((value & -value) * debruijn64lsb) >> 58];
-#ifdef __clang__
-		D_ASSERT(result == static_cast<uint64_t>(__builtin_ctzl(value_in)));
-#endif
 		return result;
+#endif
 	}
 };
 

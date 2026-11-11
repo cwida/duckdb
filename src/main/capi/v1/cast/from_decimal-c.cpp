@@ -31,7 +31,7 @@ bool CastDecimalCInternal(duckdb_result *source, duckdb_string &result, idx_t co
 		result_string = duckdb::StringCastFromDecimal::Operation<hugeint_t>(source_value, width, scale, heap);
 		break;
 	default:
-		throw duckdb::InternalException("Unimplemented internal type for decimal");
+		InternalException::Throw("Unimplemented internal type for decimal");
 	}
 	result.data = reinterpret_cast<char *>(duckdb_malloc(sizeof(char) * (result_string.GetSize() + 1)));
 	if (!result.data) {
@@ -45,7 +45,7 @@ bool CastDecimalCInternal(duckdb_result *source, duckdb_string &result, idx_t co
 
 template <class INTERNAL_TYPE>
 duckdb_hugeint FetchInternals(void *source_address) {
-	throw duckdb::NotImplementedException("FetchInternals not implemented for internal type");
+	NotImplementedException::Throw("FetchInternals not implemented for internal type");
 }
 
 template <>
@@ -108,7 +108,10 @@ duckdb_hugeint FetchInternals<hugeint_t>(void *source_address) {
 template <>
 bool CastDecimalCInternal(duckdb_result *source, duckdb_decimal &result, idx_t col, idx_t row) {
 	auto result_data = (duckdb::DuckDBResultData *)source->internal_data;
-	result_data->result->GetTypes()[col].GetDecimalProperties(result.width, result.scale);
+	uint32_t width, scale;
+	result_data->result->GetTypes()[col].GetDecimalProperties(width, scale);
+	result.width = duckdb::NumericCast<uint8_t>(width);
+	result.scale = duckdb::NumericCast<uint8_t>(scale);
 	auto source_address = UnsafeFetchPtr<hugeint_t>(source, col, row);
 
 	if (result.width > duckdb::Decimal::MAX_WIDTH_INT64) {

@@ -6,6 +6,13 @@ require parquet
 
 require skip_reload
 
+# Keep parallel reader buffers within the fixed memory budget.
+statement ok
+SET threads=8;
+
+statement ok
+SET threads=4;
+
 statement ok
 SET external_file_cache_spill=true;
 
@@ -73,6 +80,13 @@ SELECT sum(a) - (SELECT sum(hash(i)) FROM range(12000000) t(i)) FROM read_parque
 
 # remote cache blocks above the block size are marked for spilling instead of dropping
 require httpfs
+
+# drop the metadata of the many small local blocks, which alone exceeds the tiny memory limit below
+statement ok
+SET enable_external_file_cache=false;
+
+statement ok
+SET enable_external_file_cache=true;
 
 query IRR
 SELECT count(*), min(temp), max(temp)

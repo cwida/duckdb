@@ -1,0 +1,19 @@
+# name: test/sql/copy/parquet/concurrent_add_parquet_key.test
+# description: Concurrently adding parquet keys from multiple connections
+# group: [parquet]
+
+require parquet
+
+concurrentloop i 0 4
+
+loop j 0 10
+
+statement ok
+PRAGMA add_parquet_key('k{i}_{j}', '0123456789112345');
+
+statement ok
+PRAGMA add_parquet_key('shared', '0123456789112345');
+
+endloop
+
+endloop

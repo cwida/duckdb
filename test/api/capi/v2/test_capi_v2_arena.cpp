@@ -188,7 +188,7 @@ TEST_CASE("V2: empty string is inlined", "[capi_v2][arena]") {
 
 	for (auto *s : {&a, &b}) {
 		REQUIRE(IsInlined(*s));
-		REQUIRE(Convert(*s).len == 0);
+		REQUIRE(Convert(*s).size() == 0);
 	}
 }
 
@@ -223,16 +223,16 @@ TEST_CASE("V2: BLOB with embedded nulls (inline + heap)", "[capi_v2][arena]") {
 	REQUIRE(duckdb_v2_vector_get_view(fixture.vec, &view, nullptr) == DUCKDB_V2_ERROR_NONE);
 	auto *arr = static_cast<const duckdb_v2_blob_t *>(view.data);
 
-	duckdb_v2_str out = Convert(arr[0]);
-	auto *out_data = reinterpret_cast<const uint8_t *>(out.ptr);
-	REQUIRE(out.len == 5);
+	std::string_view out = Convert(arr[0]);
+	auto *out_data = reinterpret_cast<const uint8_t *>(out.data());
+	REQUIRE(out.size() == 5);
 	REQUIRE(out_data[0] == 0xDE);
 	REQUIRE(out_data[2] == 0x00);
 	REQUIRE(out_data[4] == 0xEF);
 
 	out = Convert(arr[1]);
-	out_data = reinterpret_cast<const uint8_t *>(out.ptr);
-	REQUIRE(out.len == 20);
+	out_data = reinterpret_cast<const uint8_t *>(out.data());
+	REQUIRE(out.size() == 20);
 	REQUIRE(out_data[0] == 0xDE);
 	REQUIRE(out_data[5] == 0x00);
 	REQUIRE(out_data[10] == 0xAD);

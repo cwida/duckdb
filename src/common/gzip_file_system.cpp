@@ -178,6 +178,7 @@ void MiniZStreamWrapper::Initialize(QueryContext context, CompressedFile &file, 
 			data_start += GZipConsumeString(context, *file.child_handle);
 		}
 		file.child_handle->Seek(data_start);
+		file.AddConsumedBytes(data_start);
 		// stream is now set to beginning of payload data
 		InitializeInflator();
 	}
@@ -238,8 +239,8 @@ bool MiniZStreamWrapper::ReadNextMemberHeader(StreamData &sd) {
 			}
 			state_bytes_remaining = NumericCast<idx_t>((uint8_t)gzip_xlen[0] | (uint8_t)gzip_xlen[1] << 8);
 			if (gzip_header_size + state_bytes_remaining >= GZIP_HEADER_MAXSIZE) {
-				throw InternalException("Extra field resulting in GZIP header larger than defined maximum (%d)",
-				                        GZIP_HEADER_MAXSIZE);
+				throw DataCorruptionException("Extra field resulting in GZIP header larger than defined maximum (%d)",
+				                              GZIP_HEADER_MAXSIZE);
 			}
 			read_state = GZipReadState::EXTRA_DATA;
 			break;
@@ -265,8 +266,8 @@ bool MiniZStreamWrapper::ReadNextMemberHeader(StreamData &sd) {
 				auto c = *sd.in_buff_start++;
 				gzip_header_size++;
 				if (gzip_header_size >= GZIP_HEADER_MAXSIZE) {
-					throw InternalException("Filename resulting in GZIP header larger than defined maximum (%d)",
-					                        GZIP_HEADER_MAXSIZE);
+					throw DataCorruptionException("Filename resulting in GZIP header larger than defined maximum (%d)",
+					                              GZIP_HEADER_MAXSIZE);
 				}
 				if (c == '\0') {
 					read_state = GZipReadState::DEFLATE;

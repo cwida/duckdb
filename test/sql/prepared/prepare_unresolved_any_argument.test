@@ -1,0 +1,48 @@
+# name: test/sql/prepared/prepare_unresolved_any_argument.test
+# description: Untyped parameters passed to functions whose bind callbacks inspect the argument types
+# group: [prepared]
+
+statement ok
+PREPARE concat_structs AS SELECT struct_concat($1, {'b': 2}) AS s;
+
+query I
+EXECUTE concat_structs({'a': 1});
+----
+{'a': 1, 'b': 2}
+
+statement ok
+PREPARE insert_struct AS SELECT struct_insert($1, b := $2) AS s;
+
+query I
+EXECUTE insert_struct({'a': 1}, 'x');
+----
+{'a': 1, 'b': x}
+
+statement ok
+PREPARE zip_lists AS SELECT list_zip($1, [10, 20]) AS z;
+
+query I
+EXECUTE zip_lists([1, 2]);
+----
+[(1, 10), (2, 20)]
+
+statement ok
+SET VARIABLE my_var = 42;
+
+statement ok
+PREPARE get_var AS SELECT getvariable($1) AS v;
+
+query I
+EXECUTE get_var('my_var');
+----
+42
+
+statement error
+EXECUTE concat_structs(1);
+----
+<REGEX>:.*Invalid Input Error: struct_concat: Argument at position "1" is not a STRUCT.*
+
+statement error
+EXECUTE zip_lists('abc');
+----
+<REGEX>:.*Binder Error: Parameter type needs to be List.*

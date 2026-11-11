@@ -1,0 +1,329 @@
+# name: test/sql/optimizer/join_condition_verification_stats.test
+# description: Verification statistics of join conditions cannot claim NOT NULL or narrowed bounds after an earlier condition
+# group: [optimizer]
+
+statement ok
+SET debug_verify_stats=true
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+# the statistics propagation narrows the column statistics after each join condition (both sides become NOT NULL
+# and their bounds narrow to the overlap) for the join output and the later conditions, but every condition is
+# evaluated over candidate pairs that still hold the NULLs and the values the earlier conditions reject: the
+# verification statistics of the condition expressions (t1.n + 1, a cast of t1.n) are derived from the input
+# statistics before any condition narrows them
+
+statement ok
+CREATE TABLE dec_small(n DECIMAL(10,2));
+
+statement ok
+INSERT INTO dec_small VALUES (1.5), (NULL), (0), (-7.5);
+
+query I
+SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+6
+
+query II
+SELECT t1.n, t2.n FROM dec_small t1 JOIN dec_small t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n ORDER BY ALL;
+----
+-7.50	-7.50
+0.00	-7.50
+0.00	0.00
+1.50	-7.50
+1.50	0.00
+1.50	1.50
+
+# three conditions, the later two derived from the key
+query I
+SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n AND t1.n * 2 >= t2.n;
+----
+5
+
+# the join conditions written as a WHERE clause take the same path
+query I
+SELECT count(*) FROM dec_small t1, dec_small t2 WHERE t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+6
+
+# the arithmetic on the right side
+query I
+SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON t1.n >= t2.n AND t1.n >= t2.n - 1;
+----
+6
+
+# a LEFT JOIN with a disjunction stays a comparison join: the disjunction is a non-comparison condition
+# next to the comparison, evaluated by the nested loop join
+query II
+EXPLAIN SELECT count(*) FROM dec_small t1 LEFT JOIN dec_small t2 ON t1.n >= t2.n AND (t1.n + 1 >= t2.n OR t2.n < -100);
+----
+physical_plan	<REGEX>:.*NESTED_LOOP_JOIN.*
+
+query I
+SELECT count(*) FROM dec_small t1 LEFT JOIN dec_small t2 ON t1.n >= t2.n AND (t1.n + 1 >= t2.n OR t2.n < -100);
+----
+7
+
+# a condition without a comparison between the sides is an any-join: a blockwise nested loop join
+query II
+EXPLAIN SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON (t1.n >= t2.n AND t1.n + 1 >= t2.n) IS TRUE;
+----
+physical_plan	<REGEX>:.*BLOCKWISE_NL_JOIN.*
+
+query I
+SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON (t1.n >= t2.n AND t1.n + 1 >= t2.n) IS TRUE;
+----
+6
+
+query II
+EXPLAIN SELECT count(*) FROM dec_small t1 LEFT JOIN dec_small t2 ON t1.n + 1 >= t2.n OR t2.n IS NULL;
+----
+physical_plan	<REGEX>:.*BLOCKWISE_NL_JOIN.*
+
+query I
+SELECT count(*) FROM dec_small t1 LEFT JOIN dec_small t2 ON t1.n + 1 >= t2.n OR t2.n IS NULL;
+----
+10
+
+query II
+EXPLAIN SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON t1.n >= t2.n OR t1.n IS NULL;
+----
+physical_plan	<REGEX>:.*BLOCKWISE_NL_JOIN.*
+
+query I
+SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON t1.n >= t2.n OR t1.n IS NULL;
+----
+10
+
+# wider decimal
+statement ok
+CREATE TABLE dec_wide(n DECIMAL(18,3));
+
+statement ok
+INSERT INTO dec_wide VALUES (1.5), (NULL), (0), (-7.5);
+
+query I
+SELECT count(*) FROM dec_wide t1 JOIN dec_wide t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+6
+
+query I
+SELECT count(*) FROM dec_wide t1 LEFT JOIN dec_wide t2 ON t1.n >= t2.n AND (t1.n + 1 >= t2.n OR t2.n < -100);
+----
+7
+
+# integers: a cast of the key in the later condition
+statement ok
+CREATE TABLE ints(n INTEGER);
+
+statement ok
+INSERT INTO ints VALUES (1), (NULL), (0), (-7);
+
+query I
+SELECT count(*) FROM ints t1 JOIN ints t2 ON t1.n >= t2.n AND t1.n::BIGINT >= t2.n;
+----
+6
+
+query I
+SELECT count(*) FROM ints t1 JOIN ints t2 ON t1.n >= t2.n AND t1.n::BIGINT >= t2.n::BIGINT;
+----
+6
+
+query I
+SELECT count(*) FROM ints t1 JOIN ints t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+6
+
+query I
+SELECT count(*) FROM ints t1 LEFT JOIN ints t2 ON t1.n >= t2.n AND (t1.n::BIGINT >= t2.n OR t2.n < -100);
+----
+7
+
+# NULLs on one side only
+statement ok
+CREATE TABLE no_nulls(n DECIMAL(10,2));
+
+statement ok
+INSERT INTO no_nulls VALUES (1.5), (0), (-7.5);
+
+query I
+SELECT count(*) FROM dec_small t1 JOIN no_nulls t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+6
+
+query I
+SELECT count(*) FROM no_nulls t1 JOIN dec_small t2 ON t1.n >= t2.n AND t1.n >= t2.n - 1;
+----
+6
+
+# larger tables: the later condition is also evaluated over the NULL rows by the hash join and the range joins
+statement ok
+CREATE TABLE big_a AS SELECT i AS k, CASE WHEN i % 7 = 0 THEN NULL ELSE i END::DECIMAL(10,2) AS n FROM range(2000) t(i);
+
+statement ok
+CREATE TABLE big_b AS SELECT i AS k, CASE WHEN i % 5 = 0 THEN NULL ELSE i END::DECIMAL(10,2) AS n FROM range(2000) t(i);
+
+query II
+EXPLAIN SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*Join Type: INNER.*
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+1372
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.n = t2.n AND t1.n::DECIMAL(18,3) >= t2.n;
+----
+1372
+
+# the range conditions after the equality
+query II
+EXPLAIN SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.k = t2.k AND t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*Join Type: INNER.*
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.k = t2.k AND t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+1372
+
+# semi join: the build side evaluates the cast of the key over its NULL rows
+query II
+EXPLAIN SELECT count(*) FROM big_a t1 SEMI JOIN big_b t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*Join Type: SEMI.*
+
+query I
+SELECT count(*) FROM big_a t1 SEMI JOIN big_b t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+1372
+
+query I
+SELECT count(*) FROM big_a t1 SEMI JOIN big_b t2 ON t1.n = t2.n AND t1.n::DECIMAL(18,3) >= t2.n;
+----
+1372
+
+query II
+EXPLAIN SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+physical_plan	<REGEX>:.*IE_JOIN.*
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+1371658
+
+query II
+EXPLAIN SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.n >= t2.n AND (t1.n + 1 >= t2.n OR t2.n < -100);
+----
+physical_plan	<REGEX>:.*PIECEWISE_MERGE_JOIN.*
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.n >= t2.n AND (t1.n + 1 >= t2.n OR t2.n < -100);
+----
+1371658
+
+# below the merge join threshold the two range conditions take the piecewise merge join
+statement ok
+CREATE TABLE mid_a AS SELECT CASE WHEN i % 7 = 0 THEN NULL ELSE i END::DECIMAL(10,2) AS n FROM range(200) t(i);
+
+statement ok
+CREATE TABLE mid_b AS SELECT CASE WHEN i % 5 = 0 THEN NULL ELSE i END::DECIMAL(10,2) AS n FROM range(200) t(i);
+
+query II
+EXPLAIN SELECT count(*) FROM mid_a t1 JOIN mid_b t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+physical_plan	<REGEX>:.*PIECEWISE_MERGE_JOIN.*
+
+query I
+SELECT count(*) FROM mid_a t1 JOIN mid_b t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+13715
+
+query I
+SELECT count(*) FROM mid_a t1 LEFT JOIN mid_b t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+13744
+
+# the narrowed bounds: the first condition narrows lhs.n to the range of rhs.n, so lhs.n + 1 is propagated as
+# [1.00, 2.50] while the join evaluates it over all rows of lhs
+statement ok
+CREATE TABLE lhs(n DECIMAL(10,2));
+
+statement ok
+CREATE TABLE rhs(n DECIMAL(10,2));
+
+statement ok
+INSERT INTO lhs VALUES (-7.5), (0), (1.5), (NULL);
+
+statement ok
+INSERT INTO rhs VALUES (0), (1.5), (NULL);
+
+query I
+SELECT count(*) FROM lhs JOIN rhs ON lhs.n >= rhs.n AND lhs.n + 1 >= rhs.n;
+----
+3
+
+# a hash join whose sides cover different ranges: the equality narrows t1.n to the range of t2.n
+statement ok
+CREATE TABLE big_c AS SELECT i AS k, CASE WHEN i % 5 = 0 THEN NULL ELSE i + 1000 END::DECIMAL(10,2) AS n FROM range(2000) t(i);
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_c t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+686
+
+# without the optimizers that filter the inputs from the join statistics the narrowed bounds reach the join
+statement ok
+SET disabled_optimizers = 'filter_pushdown,join_order,build_side_probe_side,join_filter_pushdown,expression_rewriter';
+
+query II
+EXPLAIN SELECT count(*) FROM lhs JOIN rhs ON lhs.n >= rhs.n AND lhs.n + 1 >= rhs.n;
+----
+physical_plan	<REGEX>:.*NESTED_LOOP_JOIN.*
+
+query I
+SELECT count(*) FROM lhs JOIN rhs ON lhs.n >= rhs.n AND lhs.n + 1 >= rhs.n;
+----
+3
+
+query II
+EXPLAIN SELECT count(*) FROM big_a t1 JOIN big_c t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*Join Type: INNER.*
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_c t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+686
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_c t2 ON t1.n = t2.n AND t1.n::DECIMAL(18,3) >= t2.n;
+----
+686
+
+query II
+EXPLAIN SELECT count(*) FROM big_a t1 SEMI JOIN big_c t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*Join Type: SEMI.*
+
+query I
+SELECT count(*) FROM big_a t1 SEMI JOIN big_c t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+686
+
+query II
+EXPLAIN SELECT count(*) FROM big_a t1 JOIN big_c t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+physical_plan	<REGEX>:.*IE_JOIN.*
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_c t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+342972
+
+statement ok
+SET disabled_optimizers = '';

@@ -21,6 +21,7 @@ namespace duckdb {
 class LogicalAggregate;
 class LogicalComparisonJoin;
 class LogicalCTERef;
+class LogicalDependentJoin;
 class LogicalExpressionGet;
 class LogicalJoin;
 
@@ -69,9 +70,13 @@ private:
 	void InvalidateAccessCache();
 	//! Checks whether a subtree must be evaluated in this flattener's active domain.
 	bool RequiresDomain(LogicalOperator &op) const;
+	//! Checks whether a join's condition operands owned by the given side pin that child to the domain.
+	bool JoinOperandRequiresDomain(LogicalOperator &op, idx_t side) const;
 	SubtreeAccess GetSubtreeAccess(LogicalOperator &op) const;
 	idx_t GetDelimKeyIndex(idx_t index) const;
 
+	//! propagate_null_values: everything above cannot distinguish one row with all-NULL original columns from
+	//! no row at all. Must be cleared when descending below any operator that breaks that equivalence.
 	UnnestingState PushDownCorrelatedNode(unique_ptr<LogicalOperator> &plan, bool propagate_null_values = true);
 	UnnestingState PushDownCorrelatedNode(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                                      vector<ColumnBinding> state);
@@ -113,6 +118,7 @@ private:
 	                             vector<ColumnBinding> state, bool rewrite_parent = true, idx_t child_idx = 0);
 	UnnestingState FinalizeDependentJoin(unique_ptr<LogicalOperator> &plan, UnnestingState outer_state,
 	                                     const UnnestingState &right_state, DependentJoinOutput output);
+	void MaterializeCorrelatedAggregateRewrites(LogicalDependentJoin &op, UnnestingState &outer_state);
 	UnnestingState AttachDelimToIndependentJoinLeft(unique_ptr<LogicalOperator> &plan);
 	UnnestingState PushDownSingleCorrelatedChild(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                                             vector<ColumnBinding> state, bool correlated_left);
@@ -131,7 +137,6 @@ private:
 	UnnestingState PushDownWindow(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                              vector<ColumnBinding> state);
 	UnnestingState PushDownSetOperation(unique_ptr<LogicalOperator> &plan, vector<ColumnBinding> state);
-	UnnestingState PushDownDistinct(unique_ptr<LogicalOperator> &plan, vector<ColumnBinding> state);
 	UnnestingState PushDownExpressionGet(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                                     vector<ColumnBinding> state);
 	UnnestingState PushDownDML(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,

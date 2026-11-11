@@ -8,7 +8,7 @@ statement ok
 SET threads=4;
 
 statement ok
-SET memory_limit='256MB';
+SET memory_limit='16MB';
 
 statement ok
 SET temp_directory='{TEST_DIR}/aggregate_state_spilling';
@@ -16,11 +16,11 @@ SET temp_directory='{TEST_DIR}/aggregate_state_spilling';
 statement ok
 SET preserve_insertion_order=false;
 
-# 1M groups x 800 byte payloads is roughly 800MB of state, far above the limit
+# 62500 groups x 800 byte payloads is roughly 50MB of state, far above the limit
 query I
 SELECT count(*) FROM (
     SELECT k, first(wide) AS w
-    FROM (SELECT i % 1000000 AS k, repeat(md5((i % 1000000)::VARCHAR), 25) AS wide FROM range(2000000) t(i)) s1
+    FROM (SELECT i % 62500 AS k, repeat(md5((i % 62500)::VARCHAR), 25) AS wide FROM range(125000) t(i)) s1
     GROUP BY k
 ) s2
 WHERE w != repeat(md5(k::VARCHAR), 25);
@@ -31,7 +31,7 @@ WHERE w != repeat(md5(k::VARCHAR), 25);
 query I
 SELECT count(*) FROM (
     SELECT k, last(wide) AS w
-    FROM (SELECT i % 1000000 AS k, repeat(md5((i % 1000000)::VARCHAR), 25) AS wide FROM range(2000000) t(i)) s1
+    FROM (SELECT i % 62500 AS k, repeat(md5((i % 62500)::VARCHAR), 25) AS wide FROM range(125000) t(i)) s1
     GROUP BY k
 ) s2
 WHERE w != repeat(md5(k::VARCHAR), 25);
@@ -42,7 +42,7 @@ WHERE w != repeat(md5(k::VARCHAR), 25);
 query I
 SELECT count(*) FROM (
     SELECT k, min(wide) AS w
-    FROM (SELECT i % 1000000 AS k, repeat(md5((i % 1000000)::VARCHAR), 25) AS wide FROM range(2000000) t(i)) s1
+    FROM (SELECT i % 62500 AS k, repeat(md5((i % 62500)::VARCHAR), 25) AS wide FROM range(125000) t(i)) s1
     GROUP BY k
 ) s2
 WHERE w != repeat(md5(k::VARCHAR), 25);
@@ -53,7 +53,7 @@ WHERE w != repeat(md5(k::VARCHAR), 25);
 query I
 SELECT count(*) FROM (
     SELECT k, string_agg(wide, ',') AS w
-    FROM (SELECT i % 500000 AS k, repeat(md5((i % 500000)::VARCHAR), 25) AS wide FROM range(1000000) t(i)) s1
+    FROM (SELECT i % 31250 AS k, repeat(md5((i % 31250)::VARCHAR), 25) AS wide FROM range(62500) t(i)) s1
     GROUP BY k
 ) s2
 WHERE w != repeat(md5(k::VARCHAR), 25) || ',' || repeat(md5(k::VARCHAR), 25);

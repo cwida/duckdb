@@ -1,0 +1,31 @@
+# name: test/sql/types/variant/variant_to_array_try_cast.test
+# description: Casting a VARIANT holding a string to an ARRAY that the string does not fit
+# group: [variant]
+
+query I
+SELECT TRY_CAST('hello'::VARIANT AS INT[2]);
+----
+NULL
+
+query I
+SELECT TRY_CAST(v AS INT[2]) FROM (VALUES ('[1, 2]'::VARIANT), ('[1, 2, 3]'::VARIANT), ('hello'::VARIANT), ([3, 4]::VARIANT)) t(v);
+----
+[1, 2]
+NULL
+NULL
+[3, 4]
+
+statement error
+SELECT CAST('hello'::VARIANT AS INT[2]);
+----
+<REGEX>:Conversion Error.*
+
+statement error
+SELECT CAST('[1, 2, 3]'::VARIANT AS INT[2]);
+----
+<REGEX>:Conversion Error.*
+
+query I
+SELECT 42;
+----
+42

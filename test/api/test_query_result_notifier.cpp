@@ -5,10 +5,14 @@
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/set.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/execution/executor.hpp"
+#include "duckdb/execution/operator/helper/physical_result_collector.hpp"
 #include "duckdb/main/buffered_data/buffered_data.hpp"
+#include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_context_state.hpp"
 #include "duckdb/main/query_result_stream.hpp"
+#include "duckdb/parallel/task.hpp"
 #include "result_wait_helpers.hpp"
 
 #include <atomic>
@@ -130,6 +134,21 @@ public:
 	void QueryBegin(ClientContext &context) override {
 		throw InvalidInputException("the query begin hook failed");
 	}
+};
+
+//! A blocked task whose wake throws, as a reschedule that runs out of memory does
+class FailingWake : public Task {
+public:
+	TaskExecutionResult Execute(TaskExecutionMode mode) override {
+		return TaskExecutionResult::TASK_FINISHED;
+	}
+	void Reschedule() override {
+		called = true;
+		throw InvalidInputException("reschedule failed");
+	}
+
+public:
+	bool called = false;
 };
 
 //! A consumer that only waits on notifications needs background workers, whatever the machine's core count
@@ -307,6 +326,9 @@ TEST_CASE("Later undecided parks do not ring", "[api][query_result_notifier]") {
 		std::this_thread::sleep_for(std::chrono::microseconds(100));
 	}
 	REQUIRE(handle->Poll() == QueryResultState::READY);
+	// The first park rings after it registers, so wait for that ring rather than rely on how Close ends the query
+	idx_t seen = 0;
+	REQUIRE(channel.Wait(seen));
 	// Closing drains every task before the query ends, so every park that registered has finished ringing. Until the
 	// decision no unit is appended and execution cannot end, so nothing else can ring
 	handle->Close();
@@ -385,6 +407,68 @@ TEST_CASE("An interrupt a worker observes wakes a waiting consumer", "[api][quer
 	REQUIRE(StringUtil::Contains(handle->GetError(), "INTERRUPT"));
 
 	con.context->ClearInterrupt();
+	RequireUsable(con);
+}
+
+TEST_CASE("A deadline a worker observes wakes a waiting consumer", "[api][query_result_notifier]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	UseWorkers(con);
+	REQUIRE_NO_FAIL(con.Query("SET max_execution_time=200"));
+	DrainWatchdog watchdog(con);
+
+	NotifyChannel channel;
+	auto handle = SubmitNotifying(con, "SELECT sum(i) FROM range(100000000000) t(i)", channel);
+	handle->Materialize();
+	// A retained aggregate rings nothing before it ends, so the first ring is the error, whenever a worker ran into it
+	idx_t seen = 0;
+	REQUIRE(channel.Wait(seen));
+	REQUIRE(handle->Poll() == QueryResultState::EXECUTION_ERROR);
+	REQUIRE(StringUtil::Contains(handle->GetError(), "maximum execution time"));
+	REQUIRE_NO_FAIL(con.Query("SET max_execution_time=0"));
+	RequireUsable(con);
+}
+
+TEST_CASE("An error whose interruption fails still wakes a waiting consumer", "[api][query_result_notifier]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	// No worker threads: every task runs inside this thread's ExecuteTask, so nothing else touches the result sink
+	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+	optional_ptr<PhysicalOperator> sink;
+	auto &config = ClientConfig::GetConfig(*con.context);
+	ScopedConfigSetting setting(
+	    config,
+	    [&](ClientConfig &config) {
+		    config.get_result_collector = [&](ClientContext &context, PreparedStatementData &data) {
+			    auto collector = PhysicalResultCollector::GetResultCollector(context, data);
+			    sink = collector.get();
+			    return collector;
+		    };
+	    },
+	    [](ClientConfig &config) { config.get_result_collector = nullptr; });
+
+	NotifyChannel channel;
+	auto handle = SubmitNotifying(con, "SELECT 42", channel);
+	Deadline deadline;
+	while (handle->ExecuteTask() != QueryResultState::READY) {
+		REQUIRE(!deadline.Passed());
+	}
+	REQUIRE(sink);
+	// Interrupting the pipelines wakes this task, and its wake throws
+	auto failed_wake = make_shared_ptr<FailingWake>();
+	{
+		lock_guard<mutex> operator_guard(sink->lock);
+		REQUIRE(sink->sink_state);
+		annotated_lock_guard<annotated_mutex> state_guard(sink->sink_state->lock);
+		InterruptState interrupt {weak_ptr<Task>(failed_wake)};
+		REQUIRE(sink->sink_state->BlockTask(interrupt));
+	}
+	auto before = channel.Count();
+	Executor::Get(*con.context).PushTaskError("boom");
+	REQUIRE(failed_wake->called);
+	REQUIRE(channel.Count() > before);
+	REQUIRE(handle->Poll() == QueryResultState::EXECUTION_ERROR);
+	REQUIRE(StringUtil::Contains(handle->GetError(), "boom"));
 	RequireUsable(con);
 }
 
@@ -509,14 +593,15 @@ TEST_CASE("A query that fails to begin keeps no copy of the callback", "[api][qu
 	};
 	// The debug build's state checks that every query end follows its own begin, which a begin hook that throws
 	// breaks whichever hook runs first
-	con.context->registered_state->Remove("debug_client_context_state");
-	con.context->registered_state->Insert("throwing_query_begin", make_shared_ptr<ThrowingQueryBegin>());
+	con.context->GetContext().GetRegisteredState().Remove("debug_client_context_state");
+	con.context->GetContext().GetRegisteredState().Insert("throwing_query_begin",
+	                                                      make_shared_ptr<ThrowingQueryBegin>());
 	auto failed = con.Submit("SELECT 42", parameters);
 	REQUIRE(failed->HasError());
 	REQUIRE(StringUtil::Contains(failed->GetError(), "the query begin hook failed"));
 	// Ours and the copy in the parameters: the engine holds none
 	REQUIRE(captured.use_count() == 2);
-	con.context->registered_state->Remove("throwing_query_begin");
+	con.context->GetContext().GetRegisteredState().Remove("throwing_query_begin");
 	RequireUsable(con);
 }
 

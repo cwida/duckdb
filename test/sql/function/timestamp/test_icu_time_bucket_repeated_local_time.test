@@ -1,0 +1,29 @@
+# name: test/sql/function/timestamp/test_icu_time_bucket_repeated_local_time.test
+# description: time_bucket with a time zone when the bucket boundary is a local time that occurs twice
+# group: [timestamp]
+
+require icu
+
+statement ok
+SET TimeZone='UTC'
+
+query II
+SELECT time_bucket(INTERVAL '1 month', TIMESTAMPTZ '2026-11-01 04:21:00+00', 'America/Havana') AS b, b <= TIMESTAMPTZ '2026-11-01 04:21:00+00'
+----
+2026-11-01 04:00:00+00	true
+
+query I
+SELECT time_bucket(INTERVAL '1 day', TIMESTAMPTZ '1892-07-03 12:00:00+00', 'Pacific/Apia') <= TIMESTAMPTZ '1892-07-03 12:00:00+00'
+----
+true
+
+# every bucket starts at or before its timestamp, and less than one bucket width before it
+query I
+SELECT count(*) FROM (
+	SELECT ts, tz, w, time_bucket(w, ts, tz) b
+	FROM range(TIMESTAMPTZ '2026-10-24 00:00:00+00', TIMESTAMPTZ '2026-11-10 00:00:00+00', INTERVAL '1 hour') r(ts),
+	     (VALUES ('America/Havana'), ('Europe/Amsterdam'), ('America/New_York'), ('Australia/Lord_Howe'), ('Pacific/Apia')) z(tz),
+	     (VALUES (INTERVAL '1 day'), (INTERVAL '1 month'), (INTERVAL '2 days')) i(w)
+) WHERE b > ts OR ts - b >= w + INTERVAL '2 days'
+----
+0

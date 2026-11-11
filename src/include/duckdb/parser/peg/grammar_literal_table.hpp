@@ -26,6 +26,9 @@ public:
 	}
 
 	LiteralInfo Lookup(const string &text) const {
+		if (text.size() > max_literal_length) {
+			return LiteralInfo();
+		}
 		auto entry = literals.find(text);
 		return entry == literals.end() ? LiteralInfo() : entry->second;
 	}
@@ -35,6 +38,7 @@ private:
 
 private:
 	const uint64_t cache_id;
+	idx_t max_literal_length = 0;
 	case_insensitive_map_t<LiteralInfo> literals;
 };
 

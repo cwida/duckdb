@@ -93,20 +93,21 @@ struct ValueConverter {
 	template <typename T>
 	static Value VisitDecimal(T val, uint32_t width, uint32_t scale) {
 		if (std::is_same<T, int16_t>::value) {
-			return Value::DECIMAL(val, static_cast<uint8_t>(width), static_cast<uint8_t>(scale));
+			return Value::DECIMAL(val, width, scale);
 		} else if (std::is_same<T, int32_t>::value) {
-			return Value::DECIMAL(val, static_cast<uint8_t>(width), static_cast<uint8_t>(scale));
+			return Value::DECIMAL(val, width, scale);
 		} else if (std::is_same<T, int64_t>::value) {
-			return Value::DECIMAL(val, static_cast<uint8_t>(width), static_cast<uint8_t>(scale));
+			return Value::DECIMAL(val, width, scale);
 		} else if (std::is_same<T, hugeint_t>::value) {
-			return Value::DECIMAL(val, static_cast<uint8_t>(width), static_cast<uint8_t>(scale));
+			return Value::DECIMAL(val, width, scale);
 		} else {
 			throw InternalException("Unhandled decimal type");
 		}
 	}
 
-	static Value VisitArray(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data) {
-		auto array_items = VariantVisitor<ValueConverter>::VisitArrayItems(variant, row, nested_data);
+	static Value VisitArray(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data,
+	                        idx_t depth) {
+		auto array_items = VariantVisitor<ValueConverter>::VisitArrayItems(variant, row, nested_data, depth);
 		if (array_items.empty()) {
 			return Value::LIST(LogicalType::VARIANT(), std::move(array_items));
 		}
@@ -119,8 +120,9 @@ struct ValueConverter {
 		return Value::LIST(child_type, std::move(array_items));
 	}
 
-	static Value VisitObject(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data) {
-		auto object_children = VariantVisitor<ValueConverter>::VisitObjectItems(variant, row, nested_data);
+	static Value VisitObject(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data,
+	                         idx_t depth) {
+		auto object_children = VariantVisitor<ValueConverter>::VisitObjectItems(variant, row, nested_data, depth);
 		if (object_children.size() == 1 && object_children[0].first.empty()) {
 			// an empty key can't be a STRUCT member name (it would become a TUPLE) - use a MAP instead
 			auto &child = object_children[0].second;

@@ -1,6 +1,7 @@
 #include "duckdb/common/operator/convert_to_string.hpp"
 #include "duckdb/common/operator/string_cast.hpp"
 #include "duckdb/common/types/string_heap.hpp"
+#include "duckdb/common/types/bignum.hpp"
 
 namespace duckdb {
 
@@ -93,6 +94,11 @@ string ConvertToString::Operation(timestamp_tz_ns_t input) {
 template <>
 string ConvertToString::Operation(string_t input) {
 	return input.GetString();
+}
+
+template <>
+string ConvertToString::Operation(bignum_t input) {
+	return Bignum::BignumToVarchar(input);
 }
 
 } // namespace duckdb

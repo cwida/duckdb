@@ -1,0 +1,390 @@
+# name: test/sql/optimizer/modulo_zonemap_pruning.test
+# description: Statistics propagation and row group pruning for modulo expressions
+# group: [optimizer]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+statement ok
+CREATE TABLE integers(i INTEGER, j INTEGER);
+
+statement ok
+INSERT INTO integers VALUES (1, 3), (10, 7);
+
+# i in [1, 10], 3 in [3, 3]: i % 3 in [0, 2]
+query IIII
+SELECT s.min, s.max, s.has_null, s.has_no_null FROM (SELECT STATS(i % 3) s FROM integers LIMIT 1);
+----
+0	2	false	true
+
+# negative constant divisors give the same bound
+query II
+SELECT s.min, s.max FROM (SELECT STATS(i % -3) s FROM integers LIMIT 1);
+----
+0	2
+
+# every dividend is smaller than every divisor: the result is the dividend itself
+query II
+SELECT s.min, s.max FROM (SELECT STATS(i % 100) s FROM integers LIMIT 1);
+----
+1	10
+
+# a column divisor in [3, 7]: i % j in [0, 6]
+query II
+SELECT s.min, s.max FROM (SELECT STATS(i % j) s FROM integers LIMIT 1);
+----
+0	6
+
+# the dividend is bounded by both its own range and the divisor
+query II
+SELECT s.min, s.max FROM (SELECT STATS(j % i) s FROM integers LIMIT 1);
+----
+0	7
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(3 % i) s FROM integers LIMIT 1);
+----
+0	3
+
+# a dividend without statistics is still bounded by the divisor
+query IIII
+SELECT s.min, s.max, s.has_null, s.has_no_null FROM (SELECT STATS(hash(i) % 8) s FROM integers LIMIT 1);
+----
+0	7	true	true
+
+query IIII
+SELECT s.min, s.max, s.has_null, s.has_no_null FROM (SELECT STATS(hash(i)::BIGINT % 8) s FROM integers LIMIT 1);
+----
+-7	7	true	true
+
+# a floating-point dividend without statistics may be infinite or NaN: no bounds
+query II
+SELECT s.min, s.max FROM (SELECT STATS(hash(i)::DOUBLE % 8) s FROM integers LIMIT 1);
+----
+NULL	NULL
+
+# impossible filters fold away
+query II
+EXPLAIN SELECT count(*) FROM integers WHERE i % 3 > 5;
+----
+logical_opt	<REGEX>:.*EMPTY_RESULT.*
+
+query II
+EXPLAIN SELECT count(*) FROM integers WHERE i % 3 < 0;
+----
+logical_opt	<REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT count(*) FROM integers WHERE i % 3 > 5;
+----
+0
+
+# a negative dividend keeps its sign: i in [-5, 10] -> i % 3 in [-2, 2]
+statement ok
+INSERT INTO integers VALUES (-5, 3);
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(i % 3) s FROM integers LIMIT 1);
+----
+-2	2
+
+query I
+SELECT i % 3 FROM integers ORDER BY i;
+----
+-2
+1
+1
+
+# a divisor range that contains zero raises by default, so no statistics are derived
+statement ok
+INSERT INTO integers VALUES (4, 0);
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(i % j) s FROM integers LIMIT 1);
+----
+NULL	NULL
+
+statement error
+SELECT i % j FROM integers;
+----
+<REGEX>:.*Division by zero.*
+
+# without error_on_division_by_zero the bounds are derived and the NULL is accounted for
+statement ok
+SET error_on_division_by_zero=false;
+
+query IIII
+SELECT s.min, s.max, s.has_null, s.has_no_null FROM (SELECT STATS(i % j) s FROM integers LIMIT 1);
+----
+-5	6	true	true
+
+query I
+SELECT i % j FROM integers ORDER BY i;
+----
+-2
+1
+NULL
+3
+
+# a divisor that is always zero gives no statistics
+query II
+SELECT s.min, s.max FROM (SELECT STATS(i % 0) s FROM integers LIMIT 1);
+----
+NULL	NULL
+
+query I
+SELECT count(*) FROM integers WHERE i % 0 = 1;
+----
+0
+
+statement ok
+SET error_on_division_by_zero=true;
+
+# the minimum value as divisor must not be negated
+statement ok
+CREATE TABLE extremes(b BIGINT, t TINYINT, bd BIGINT, td TINYINT);
+
+statement ok
+INSERT INTO extremes VALUES (-9223372036854775808, -128, -9223372036854775808, -128), (9223372036854775807, 127, -1, -1);
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(b % bd) s FROM extremes LIMIT 1);
+----
+-9223372036854775808	9223372036854775807
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(t % td) s FROM extremes LIMIT 1);
+----
+-128	127
+
+query II
+SELECT b % bd, t % td FROM extremes ORDER BY b;
+----
+0	0
+0	0
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(t % -1) s FROM extremes LIMIT 1);
+----
+0	0
+
+query I
+SELECT t % -1 FROM extremes ORDER BY t;
+----
+0
+0
+
+# -128 % 127 = -1 and 127 % 127 = 0 fit in the derived range
+query II
+SELECT s.min, s.max FROM (SELECT STATS(t % 127) s FROM extremes LIMIT 1);
+----
+-126	126
+
+query I
+SELECT t % 127 FROM extremes ORDER BY t;
+----
+-1
+0
+
+# unsigned types: u in [5, 200], u % 7 in [0, 6]
+statement ok
+CREATE TABLE unsigned(u UTINYINT, h UHUGEINT, b UBIGINT);
+
+statement ok
+INSERT INTO unsigned VALUES (5, 5, 5), (200, 340282366920938463463374607431768211455, 18446744073709551615);
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(u % 7::UTINYINT) s FROM unsigned LIMIT 1);
+----
+0	6
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(u % 250::UTINYINT) s FROM unsigned LIMIT 1);
+----
+5	200
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(h % 1000::UHUGEINT) s FROM unsigned LIMIT 1);
+----
+0	999
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(b % 1000::UBIGINT) s FROM unsigned LIMIT 1);
+----
+0	999
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(5::UBIGINT % b) s FROM unsigned LIMIT 1);
+----
+0	5
+
+query I
+SELECT h % 1000::UHUGEINT FROM unsigned ORDER BY h;
+----
+5
+455
+
+# hugeint
+query II
+SELECT s.min, s.max FROM (SELECT STATS(i::HUGEINT % 3) s FROM integers LIMIT 1);
+----
+-2	2
+
+# decimal: d in [1.50, 9.75], d % 2.00 in [0.00, 1.99]
+statement ok
+CREATE TABLE decimals(d DECIMAL(5, 2));
+
+statement ok
+INSERT INTO decimals VALUES (1.50), (9.75);
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(d % 2.00) s FROM decimals LIMIT 1);
+----
+0.00	1.99
+
+query I
+SELECT d % 2.00 FROM decimals ORDER BY d;
+----
+1.50
+1.75
+
+# doubles: x in [1.5, 9.5], x % 2.5 in [0.0, 2.5]
+statement ok
+CREATE TABLE doubles(x DOUBLE, y DOUBLE);
+
+statement ok
+INSERT INTO doubles VALUES (1.5, 0.5), (9.5, 2.5);
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(x % 2.5) s FROM doubles LIMIT 1);
+----
+0.0	2.5
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(x % -100.0) s FROM doubles LIMIT 1);
+----
+1.5	9.5
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(x % y) s FROM doubles LIMIT 1);
+----
+0.0	2.5
+
+query II
+EXPLAIN SELECT count(*) FROM doubles WHERE x % 2.5 > 3;
+----
+logical_opt	<REGEX>:.*EMPTY_RESULT.*
+
+# a divisor range that contains zero yields NaN under IEEE semantics: no statistics
+statement ok
+INSERT INTO doubles VALUES (4.0, 0.0);
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(x % y) s FROM doubles LIMIT 1);
+----
+NULL	NULL
+
+query I
+SELECT x % y FROM doubles ORDER BY x;
+----
+0.0
+nan
+2.0
+
+# with NULL on division by zero the bounds are derived again
+statement ok
+SET ieee_floating_point_ops=false;
+
+statement ok
+SET error_on_division_by_zero=false;
+
+query IIII
+SELECT s.min, s.max, s.has_null, s.has_no_null FROM (SELECT STATS(x % y) s FROM doubles LIMIT 1);
+----
+0.0	2.5	true	true
+
+query I
+SELECT x % y FROM doubles ORDER BY x;
+----
+0.0
+NULL
+2.0
+
+statement ok
+SET ieee_floating_point_ops=true;
+
+statement ok
+SET error_on_division_by_zero=true;
+
+# a non-finite dividend gives no statistics
+statement ok
+INSERT INTO doubles VALUES ('infinity', 2.0);
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(x % 2.0) s FROM doubles LIMIT 1);
+----
+NULL	NULL
+
+# row group pruning
+statement ok
+ATTACH '{TEST_DIR}/modulo_zonemap_pruning.duckdb' AS db (ROW_GROUP_SIZE 2048);
+
+statement ok
+USE db;
+
+# 6144 rows -> 3 row groups of 2048 rows.
+statement ok
+CREATE TABLE modulo_pruning AS
+SELECT i::INTEGER AS i
+FROM range(6144) r(i);
+
+# i % 10 is in [0, 9] for the whole table: the filter folds away before any row group is looked at
+query II
+EXPLAIN SELECT count(*) FROM modulo_pruning WHERE i % 10 = 10;
+----
+logical_opt	<REGEX>:.*EMPTY_RESULT.*
+
+# only the first row group has values below 100000, where i % 100000 = i
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM modulo_pruning WHERE i % 100000 < 100;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM modulo_pruning WHERE i % 100000 < 100;
+----
+100
+
+# the remainder is below the divisor: only the last row group has divisors above 5000
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM modulo_pruning WHERE 6000 % (i + 1) > 5000;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM modulo_pruning WHERE 6000 % (i + 1) > 5000;
+----
+144
+
+# the middle row group's divisor range contains zero: it is scanned and raises
+statement error
+SELECT count(*) FROM modulo_pruning WHERE 6144 % (i - 3000) = 123456;
+----
+<REGEX>:.*Division by zero.*
+
+# without the error the middle row group derives bounds plus a NULL, so only the last row group can match
+statement ok
+SET error_on_division_by_zero=false;
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM modulo_pruning WHERE 6144 % (i - 3000) = 3000;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM modulo_pruning WHERE 6144 % (i - 3000) = 3000;
+----
+0

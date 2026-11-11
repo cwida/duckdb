@@ -2,11 +2,6 @@
 # description: Test the maximum swap space.
 # group: [temp_directory]
 
-# FIXME: This is a significant regression because we no longer evict "tiny buffers", of which we're
-# FIXME: allocating plenty here.
-# FIXME: I am skipping the test temporarily because if fails for a bunch of configurations.
-mode skip unsupported
-
 require noforcestorage
 
 require skip_reload
@@ -20,6 +15,10 @@ require vector_size 2048
 # Set a temp_directory to offload data
 statement ok
 set temp_directory='{TEST_DIR}/max_swap_space_reached'
+
+# Use uncompressed, nonconstant data to make the spill budgets independent of encoding choices.
+statement ok
+SET force_compression='uncompressed';
 
 # Ensure the temp_directory is used
 statement ok
@@ -35,7 +34,7 @@ CREATE OR REPLACE TABLE t2 AS SELECT random() FROM range(1000000);
 failed to offload data block
 
 query I
-select "size" from duckdb_temporary_files()
+SELECT coalesce(sum("size"), 0) FROM duckdb_temporary_files();
 ----
 0
 
@@ -54,8 +53,9 @@ CREATE OR REPLACE TABLE t2 AS SELECT random() FROM range(1000000);
 failed to offload data block
 
 query I
-select "size" from duckdb_temporary_files()
+SELECT coalesce(sum("size"), 0) FROM duckdb_temporary_files();
 ----
+0
 
 statement ok
 set max_temp_directory_size='4MB'
@@ -66,21 +66,34 @@ pragma threads=2;
 statement ok
 set preserve_insertion_order=true;
 
-# This is 1600000 bytes of DOUBLE data, which is roughly 6.1 blocks
-# Because our memory limit is set at 4MiB (16 blocks) this works
+# These 200000 doubles fit within the memory budget.
 statement ok
 CREATE OR REPLACE TABLE t2 AS SELECT random() FROM range(200000);
 
-# When we increase the size to 2400000 bytes of DOUBLE data (9.1 blocks) this errors
+# One million uncompressed doubles exceed the combined memory and swap budgets.
 statement error
-CREATE OR REPLACE TABLE t2 AS SELECT * FROM range(1000000);
+CREATE OR REPLACE TABLE t2 AS SELECT random() FROM range(1000000);
 ----
 failed to offload data block
 
+# The failed replacement must preserve the previous table.
 query I
-SELECT CASE WHEN sum("size") > 1000000 THEN true ELSE CONCAT('Expected size 1000000, but got ', sum("size"))::UNION(msg VARCHAR, b BOOLEAN) END FROM duckdb_temporary_files();
+SELECT count(*) FROM t2;
 ----
-true
+200000
+
+# Keep a table larger than the memory budget alive so the lower-limit checks
+# exercise occupied swap space, independently of cleanup after the failed CREATE.
+statement ok
+SET max_temp_directory_size='16MiB';
+
+statement ok
+CREATE OR REPLACE TABLE t2 AS SELECT random() FROM range(1000000);
+
+query II
+SELECT sum("size") > 1048576, sum("size") <= 16777216 FROM duckdb_temporary_files();
+----
+true	true
 
 # Cannot lower the limit
 statement error
@@ -97,7 +110,15 @@ exceeds the new limit
 query I
 select current_setting('max_temp_directory_size')
 ----
-3.8 MiB
+16.0 MiB
+
+statement ok
+DROP TABLE t2;
+
+query I
+SELECT coalesce(sum("size"), 0) FROM duckdb_temporary_files();
+----
+0
 
 statement ok
 set max_temp_directory_size='2550KiB'

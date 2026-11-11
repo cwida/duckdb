@@ -15,7 +15,7 @@ DropEntries <-
 DropTrigger <- 'TRIGGER' IfExists? TriggerName 'ON' BaseTableName
 
 DropTable <- TableOrView IfExists? List(BaseTableName)
-DropTableFunction <- CommentMacroTable IfExists? List(TableFunctionName)
+DropTableFunction <- CommentMacroTable IfExists? List(QualifiedTableFunction)
 DropFunction <- FunctionTypeMacro IfExists? List(FunctionIdentifier)
 DropSchema <- 'SCHEMA' IfExists? List(QualifiedName)
 DropIndex <- 'INDEX' IfExists? List(QualifiedIndexName)

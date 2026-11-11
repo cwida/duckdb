@@ -57,3 +57,34 @@ SELECT array_length(array_value(array_value(1, 2, 2), array_value(3, 4, 3)), 0);
 ----
 Out of Range Error: array_length dimension '0' out of range (min: '1', max: '2')
 
+
+# NULL arrays have a NULL length
+statement ok
+CREATE TABLE null_arrays AS SELECT * FROM (VALUES (1, [1, 2]::INT[2]), (2, NULL), (3, [3, 4]::INT[2])) v(id, a);
+
+query IIII
+SELECT id, array_length(a), array_length(a, 1), array_length(a::INT[], 1) FROM null_arrays ORDER BY id;
+----
+1	2	2	2
+2	NULL	NULL	NULL
+3	2	2	2
+
+query II
+SELECT id, generate_subscripts(a, 1) FROM null_arrays ORDER BY ALL;
+----
+1	1
+1	2
+3	1
+3	2
+
+query I
+SELECT array_length(a, NULL) FROM null_arrays ORDER BY id;
+----
+NULL
+NULL
+NULL
+
+statement error
+SELECT array_length(a, 2) FROM null_arrays;
+----
+out of range

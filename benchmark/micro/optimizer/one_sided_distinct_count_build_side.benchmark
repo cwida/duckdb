@@ -1,0 +1,23 @@
+# name: benchmark/micro/optimizer/one_sided_distinct_count_build_side.benchmark
+# description: IN subquery joining a fact with few distinct date keys to a date range without NDV statistics
+# group: [optimizer]
+
+name One-Sided Distinct Count Build Side
+group micro
+subgroup optimizer
+
+load
+CREATE TABLE inv AS SELECT ((i // 38315) * 7)::SMALLINT AS date_sk FROM range(10000000) t(i);
+CREATE TABLE sales AS SELECT ((i // 19158) * 7)::SMALLINT AS date_sk FROM range(5000000) t(i);
+
+run
+SELECT count(*)
+FROM sales
+WHERE sales.date_sk IN (
+	SELECT inv.date_sk
+	FROM inv
+	JOIN (SELECT range AS k, range // 7 AS week FROM range(73049)) d ON inv.date_sk = d.k
+	WHERE d.week = 3);
+
+result I
+19158

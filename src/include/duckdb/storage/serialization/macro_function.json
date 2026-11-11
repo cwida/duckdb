@@ -28,6 +28,13 @@
         "type": "vector<LogicalType>",
         "default": "vector<LogicalType>()",
         "version": "v1.4.0"
+      },
+      {
+        "id": 104,
+        "name": "return_type",
+        "type": "LogicalType",
+        "default": "LogicalType(LogicalTypeId::UNKNOWN)",
+        "version": "v2.1.0"
       }
     ],
     "finalize_deserialization": [

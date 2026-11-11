@@ -1,0 +1,43 @@
+# name: test/sql/copy/parquet/read_ahead/readahead_file_descriptor_limit_threads.test
+# description: Low file descriptor budgets work with threads and concurrent scans
+# group: [read_ahead]
+
+require parquet
+
+require skip_reload
+
+statement ok
+SET async_threads=72
+
+foreach suffix a b
+
+statement ok
+COPY (SELECT i % 64 AS p, i AS v FROM range(65536) t(i))
+TO '{TEST_DIR}/readahead_fd_threads_{suffix}' (FORMAT parquet, PARTITION_BY (p))
+
+endloop
+
+statement ok
+SET debug_file_descriptor_limit=64
+
+# More files than the open-file budget force a threaded scan through descriptor backpressure.
+statement ok
+SET threads=16
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/readahead_fd_threads_a/**/*.parquet')
+----
+65536
+
+# Concurrent scans share the same process-wide budget.
+statement ok
+SET threads=8
+
+query I
+SELECT count(*) FROM (
+	SELECT v FROM read_parquet('{TEST_DIR}/readahead_fd_threads_a/**/*.parquet')
+	UNION ALL
+	SELECT v FROM read_parquet('{TEST_DIR}/readahead_fd_threads_b/**/*.parquet')
+)
+----
+131072

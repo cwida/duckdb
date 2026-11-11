@@ -1,0 +1,116 @@
+# name: test/sql/catalog/sequence/sequence_derive_last_value_v1_5_storage.test
+# description: Derive the last value of sequences loaded from a v1.5 storage format, which does not store it
+# group: [sequence]
+
+require skip_reload
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
+
+statement ok
+ATTACH '{TEST_DIR}/sequence_last_value_v1_5.db' AS v15 (STORAGE_VERSION 'v1.5.0');
+
+statement ok
+ATTACH '{TEST_DIR}/sequence_last_value_v2_0.db' AS v20 (STORAGE_VERSION 'v2.0.0');
+
+foreach db v15 v20
+
+statement ok
+CREATE SEQUENCE {db}.seq_incr INCREMENT BY 5 START WITH 10;
+
+statement ok
+CREATE SEQUENCE {db}.seq_desc INCREMENT BY -2 START WITH -3;
+
+statement ok
+CREATE SEQUENCE {db}.seq_cycle MAXVALUE 3 CYCLE;
+
+statement ok
+CREATE SEQUENCE {db}.seq_unused;
+
+statement ok
+CREATE SEQUENCE {db}.seq_setval;
+
+query III
+SELECT max(nextval('{db}.seq_incr')), min(nextval('{db}.seq_desc')), max(nextval('{db}.seq_cycle')) FROM range(3)
+----
+20	-7	3
+
+query I
+SELECT setval('{db}.seq_setval', 5, false)
+----
+5
+
+endloop
+
+loop i 0 2
+
+# the first iteration replays the WAL, the second one loads the checkpoint
+statement ok
+DETACH v15
+
+statement ok
+DETACH v20
+
+statement ok
+ATTACH '{TEST_DIR}/sequence_last_value_v1_5.db' AS v15
+
+statement ok
+ATTACH '{TEST_DIR}/sequence_last_value_v2_0.db' AS v20
+
+foreach db v15 v20
+
+query II
+SELECT currval('{db}.seq_incr'), currval('{db}.seq_desc')
+----
+20	-7
+
+statement error
+SELECT currval('{db}.seq_unused')
+----
+currval: sequence is not yet defined in this session
+
+endloop
+
+# the counter of a cycled sequence wrapped around, so its last value cannot be derived
+statement error
+SELECT currval('v15.seq_cycle')
+----
+currval: sequence is not yet defined in this session
+
+query I
+SELECT currval('v20.seq_cycle')
+----
+3
+
+# v1.5 cannot tell a setval without is_called apart from a nextval
+query I
+SELECT currval('v15.seq_setval')
+----
+4
+
+statement error
+SELECT currval('v20.seq_setval')
+----
+currval: sequence is not yet defined in this session
+
+statement ok
+CHECKPOINT v15
+
+statement ok
+CHECKPOINT v20
+
+endloop
+
+# the counters continue where they left off
+query III
+SELECT nextval('v15.seq_incr'), nextval('v15.seq_desc'), nextval('v15.seq_cycle')
+----
+25	-9	1
+
+query I
+SELECT currval('v15.seq_cycle')
+----
+1

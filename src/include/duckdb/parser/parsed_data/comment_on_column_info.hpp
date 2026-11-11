@@ -24,6 +24,10 @@ public:
 
 public:
 	SetColumnCommentInfo();
+	SetColumnCommentInfo(QualifiedName qualified_name, Identifier column_name, Value comment_value,
+	                     OnEntryNotFound if_not_found);
+	//! Compatibility overload for callers that build the qualification from separate parts (e.g. the legacy
+	//! parser extension); the qualification is stored as a three-component path.
 	SetColumnCommentInfo(Identifier catalog, Identifier schema, Identifier name, Identifier column_name,
 	                     Value comment_value, OnEntryNotFound if_not_found);
 

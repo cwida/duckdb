@@ -9,6 +9,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/bound_result_modifier.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/expression_binder/relation_binder.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/main/config.hpp"
 
@@ -21,6 +22,33 @@ Value ConvertVectorToValue(vector<Value> set) {
 		return Value::LIST(LogicalType::BOOLEAN, std::move(set));
 	}
 	return Value::LIST(std::move(set));
+}
+
+idx_t ParseBytesArg(Context &context, const Identifier &name, const Value &arg) {
+	if (arg.IsNull()) {
+		throw BinderException("NULL is not supported as a valid option for COPY option \"%s\"",
+		                      StringUtil::Upper(name.GetIdentifierName()));
+	}
+	optional_idx result;
+	if (arg.type().id() == LogicalTypeId::VARCHAR) {
+		result = DBConfig::ParseMemoryLimit(arg.ToString());
+	} else {
+		auto cast_arg = arg.TryCastAs(context, LogicalType::UBIGINT);
+		if (!cast_arg) {
+			throw BinderException("Unable to parse bytes from \"%s\" for copy option \"%s\" ", arg.ToString(),
+			                      StringUtil::Upper(name.GetIdentifierName()));
+		}
+		auto bytes = cast_arg->GetValue<idx_t>();
+		if (bytes != DConstants::INVALID_INDEX) {
+			result = bytes;
+		}
+	}
+	if (!result.IsValid()) {
+		// e.g. '-1' or 'none', which ParseMemoryLimit parses as unlimited
+		throw BinderException("Copy option \"%s\" must be a valid size, not \"%s\"",
+		                      StringUtil::Upper(name.GetIdentifierName()), arg.ToString());
+	}
+	return result.GetIndex();
 }
 
 vector<bool> ParseColumnList(const vector<Value> &set, const vector<Identifier> &names, const Identifier &option_name) {
@@ -139,10 +167,12 @@ vector<BoundOrderByNode> BindOrderByNodes(Binder &binder, TableIndex table_index
                                           vector<OrderByNode> &orders) {
 	auto child_binder = Binder::CreateBinder(binder.context, &binder);
 	child_binder->bind_context.AddGenericBinding(table_index, alias, names, types);
-	ExpressionBinder expr_binder(*child_binder, binder.context);
+	RelationBinder expr_binder(*child_binder, binder.context, "ORDER_BY");
 	vector<BoundOrderByNode> bound_orders;
 	for (auto &order : orders) {
-		bound_orders.emplace_back(order.type, order.null_order, expr_binder.Bind(order.expression));
+		auto expression = expr_binder.Bind(order.expression);
+		ExpressionBinder::PushCollation(binder.context, expression, expression->GetReturnType());
+		bound_orders.emplace_back(order.type, order.null_order, std::move(expression));
 	}
 	return bound_orders;
 }

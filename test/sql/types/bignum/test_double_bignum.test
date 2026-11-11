@@ -48,4 +48,4 @@ select 100000::double::bignum
 query I
 select 100000.595::double::bignum
 ----
-100000
+100001

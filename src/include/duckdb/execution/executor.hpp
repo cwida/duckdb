@@ -36,6 +36,7 @@ class Task;
 struct PipelineEventStack;
 struct ProducerToken;
 struct ScheduleEventData;
+struct PipelineSchedule;
 
 class Executor {
 	friend class Pipeline;
@@ -76,6 +77,9 @@ public:
 
 	//! Push a new error
 	void PushError(ErrorData exception);
+	//! Push the error of a task, which reports an out of memory error when memory runs out while recording it
+	void PushTaskError(const std::exception &ex);
+	void PushTaskError(const char *message);
 
 	ErrorData GetError();
 
@@ -155,7 +159,8 @@ private:
 	bool ResultStoreCanPark();
 	void InitializeInternal(PhysicalOperator &physical_plan);
 
-	void ScheduleEvents(const vector<shared_ptr<MetaPipeline>> &meta_pipelines);
+	void ScheduleEvents(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
+	                    unique_ptr<PipelineSchedule> resolved_schedule = nullptr);
 	void ScheduleEventsInternal(ScheduleEventData &event_data);
 
 	static void VerifyScheduledEvents(const vector<shared_ptr<Event>> &events);
@@ -163,6 +168,10 @@ private:
 	                                          vector<bool> &visited, vector<bool> &recursion_stack);
 
 	bool NextExecutor();
+	//! Interrupt the execution of the pipelines of this executor after an error
+	void InterruptPipelines();
+	//! Interrupt them from a task, where an exception would end the process
+	void TryInterruptPipelines();
 	//! The state to report when this thread has no task to run
 	QueryResultState IdleState();
 	//! Cancel all tasks and throw the recorded error

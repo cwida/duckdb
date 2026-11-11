@@ -7,7 +7,7 @@ module: factory
 functions:
   instance_get_factory:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-07" ]
+      - [ "unstable", "v2.0.0", "2026-10-07" ]
     description: |
       Borrows the factory of an instance.
 
@@ -37,7 +37,7 @@ functions:
 
   connection_get_factory:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-07" ]
+      - [ "unstable", "v2.0.0", "2026-10-07" ]
     description: |
       Borrows the factory of a connection.
 
@@ -66,7 +66,7 @@ functions:
 
   context_get_factory:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-07" ]
+      - [ "unstable", "v2.0.0", "2026-10-07" ]
     description: |
       Borrows the factory of a context.
 

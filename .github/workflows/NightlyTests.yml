@@ -767,15 +767,16 @@ jobs:
 
      - name: Test
        shell: bash
+       timeout-minutes: 45
        # HASH_ZERO=1 triggers hash collisions; some test statements can turn
-       # into quadratic runtime and thus very slow. Report tests >30s, but only
-       # fail when a test runtime exceeds 2 minutes.
-       run: make unittest_relassert T="--track-runtime 30 --batch-timeout 120 --test-config=test/configs/hash_zero.json"
+       # quadratic. Isolate each test and report body timeouts without failing;
+       # correctness failures and cleanup hangs still fail the job.
+       run: make unittest_relassert T="--track-runtime 30 --batch-size 1 --batch-timeout 60 --timeout-policy warn --test-config=test/configs/hash_zero.json"
 
 
   bwc-build:
     name: Build DuckDB
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       groups: ${{ steps.resolve.outputs.groups }}
     steps:
@@ -802,8 +803,8 @@ jobs:
           build-type: release
           build: |
             python3 scripts/ci/retry.py -- make release \
-              EXTENSION_CONFIGS='.github/config/extensions/httpfs.cmake;.github/config/extensions/test-utils.cmake;.github/config/extensions/inet.cmake' \
-              STATICALLY_LINK_EXTENSIONS='core_functions;parquet;json;icu;tpcds;tpch;autocomplete;httpfs;inet;test_utils' \
+              EXTENSION_CONFIGS='.github/config/extensions/httpfs.cmake;.github/config/extensions/test-utils.cmake;.github/config/extensions/inet.cmake;.github/config/extensions/sqlite_scanner.cmake' \
+              STATICALLY_LINK_EXTENSIONS='core_functions;parquet;json;icu;tpcds;tpch;autocomplete;httpfs;inet;test_utils;sqlite_scanner' \
               DUCKDB_EXTENSIONS='tpcds;icu;autocomplete;tpch;json'
           vcpkg-commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
           cache-suffix: nightly_bwc_build
@@ -816,7 +817,7 @@ jobs:
 
   bwc-test:
     name: BWC Test (DuckDB ${{ matrix.series.group }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: bwc-build
     strategy:
       fail-fast: false

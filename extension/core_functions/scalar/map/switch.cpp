@@ -122,6 +122,8 @@ ScalarFunctionSet SwitchFun::GetFunctions() {
 			switch_expression.GetSignature().AddParameter(param.first, param.second);
 		}
 		switch_expression.SetBindExpressionCallback(SwitchBindExpression);
+		// switch is rewritten into a CASE expression, so NULL arguments do not make the result NULL
+		switch_expression.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 		func_set.AddFunction(std::move(switch_expression));
 	}
 

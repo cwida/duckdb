@@ -38,6 +38,7 @@ private:
 
 	// Token helpers
 	static vector<MatcherToken> Tokenize(const string &sql);
+	static bool IsParameterStart(const vector<MatcherToken> &tokens, idx_t token_idx);
 	static bool SkipNonCodeToken(const vector<MatcherToken> &tokens, idx_t &token_idx, idx_t &pos);
 
 	// Token lookahead helpers
@@ -107,6 +108,13 @@ vector<MatcherToken> SQLFormatter::Tokenize(const string &sql) {
 	return tokens;
 }
 
+bool SQLFormatter::IsParameterStart(const vector<MatcherToken> &tokens, idx_t token_idx) {
+	return tokens[token_idx].type == TokenType::OPERATOR && tokens[token_idx].text == "$" &&
+	       token_idx + 1 < tokens.size() &&
+	       (tokens[token_idx + 1].type == TokenType::IDENTIFIER || tokens[token_idx + 1].type == TokenType::KEYWORD ||
+	        tokens[token_idx + 1].type == TokenType::NUMBER_LITERAL);
+}
+
 bool SQLFormatter::SkipNonCodeToken(const vector<MatcherToken> &tokens, idx_t &token_idx, idx_t &pos) {
 	while (token_idx < tokens.size() && tokens[token_idx].offset + tokens[token_idx].length <= pos) {
 		token_idx++;
@@ -117,6 +125,12 @@ bool SQLFormatter::SkipNonCodeToken(const vector<MatcherToken> &tokens, idx_t &t
 	auto &token = tokens[token_idx];
 	if (token.offset > pos) {
 		return false;
+	}
+	// Keep parameters opaque in the later text-based formatting passes.
+	if (IsParameterStart(tokens, token_idx)) {
+		auto &name = tokens[++token_idx];
+		pos = name.offset + name.length - 1;
+		return true;
 	}
 	bool quoted_identifier =
 	    token.type == TokenType::IDENTIFIER && !token.text.empty() && (token.text[0] == '"' || token.text[0] == '`');
@@ -700,6 +714,24 @@ string SQLFormatter::FormatMultiline(const string &sql, const vector<MatcherToke
 			result += "::";
 			at_line_start = false;
 			i++;
+			continue;
+		}
+
+		// A parameter is one lexical unit for formatting. In particular, a keyword
+		// used as its name must not become a clause or have its case changed.
+		if (IsParameterStart(tokens, i)) {
+			if (after_clause) {
+				write_newline();
+				write_indent(content_indent());
+				after_clause = false;
+			} else {
+				write_space();
+			}
+			result += "$" + tokens[i + 1].text;
+			at_line_start = false;
+			prev_was_keyword = false;
+			prev_keyword.clear();
+			i += 2;
 			continue;
 		}
 

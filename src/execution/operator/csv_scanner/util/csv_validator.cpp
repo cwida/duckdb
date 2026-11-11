@@ -30,7 +30,7 @@ void ThreadLines::Verify() const {
 				continue;
 			}
 			if (last_end_pos + error_margin < line_info.second.start_pos ||
-			    line_info.second.start_pos < last_end_pos - error_margin) {
+			    line_info.second.start_pos + error_margin < last_end_pos) {
 				std::ostringstream error;
 				error << "The Parallel CSV Reader currently does not support a full read on this file." << '\n';
 				error << "To correctly parse this file, please run with the single threaded error (i.e., parallel = "

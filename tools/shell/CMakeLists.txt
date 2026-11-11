@@ -104,6 +104,22 @@ set_target_properties(shell PROPERTIES OUTPUT_NAME duckdb)
 set_target_properties(shell PROPERTIES RUNTIME_OUTPUT_DIRECTORY
                                        ${PROJECT_BINARY_DIR})
 
+if(NOT WIN32)
+  configure_file("${PROJECT_SOURCE_DIR}/scripts/samply_profile_launcher.py.in"
+                 "${PROJECT_BINARY_DIR}/profile" @ONLY)
+  file(
+    CHMOD
+    "${PROJECT_BINARY_DIR}/profile"
+    PERMISSIONS
+    OWNER_READ
+    OWNER_WRITE
+    OWNER_EXECUTE
+    GROUP_READ
+    GROUP_EXECUTE
+    WORLD_READ
+    WORLD_EXECUTE)
+endif()
+
 duckdb_codesign_for_debugging(shell)
 
 install(TARGETS shell RUNTIME DESTINATION "${INSTALL_BIN_DIR}")

@@ -114,6 +114,9 @@ struct VariantPathSelection {
 };
 
 struct VariantUtils {
+	//! Throws a DataCorruptionException unless 'size' bytes are available in a blob of 'blob_size' starting at
+	//! 'offset'; shared by every call site that decodes a byte_offset/varint-length pair out of a VARIANT blob
+	DUCKDB_API static void Available(idx_t blob_size, idx_t offset, idx_t size);
 	DUCKDB_API static bool IsNestedType(const UnifiedVariantVectorData &variant, idx_t row, uint32_t value_index);
 	DUCKDB_API static VariantDecimalData DecodeDecimalData(const UnifiedVariantVectorData &variant, idx_t row,
 	                                                       uint32_t value_index);
@@ -152,6 +155,8 @@ struct VariantUtils {
 
 	//! Whether or not a type is natively supported in variant
 	DUCKDB_API static bool VariantSupportsType(const LogicalType &type);
+	//! Whether casting a value shredded as "shredded_type" to "target" gives the same result as casting the VARIANT
+	DUCKDB_API static bool ShreddedCastMatchesVariantCast(const LogicalType &shredded_type, const LogicalType &target);
 
 	//! Build a canonical (unshredded) VARIANT vector by traversing a variant directly through a
 	//! VariantIterator - avoids materializing the intermediate vector<VariantValue> tree

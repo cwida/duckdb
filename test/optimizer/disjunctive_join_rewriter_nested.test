@@ -1,0 +1,93 @@
+# name: test/optimizer/disjunctive_join_rewriter_nested.test
+# description: Preserve schemas and multiplicity through nested disjunctive joins
+# group: [optimizer]
+
+query IIIIII
+SELECT *
+FROM (VALUES (1, 2)) a(x, y)
+LEFT JOIN (VALUES (1, 2)) b(x, y) ON a.x = b.x OR a.y = b.y
+LEFT JOIN (VALUES (1, 2)) c(x, y) ON a.x = c.x OR a.y = c.y;
+----
+1	2	1	2	1	2
+
+query IIIIII
+SELECT *
+FROM (VALUES (1, 2)) a(x, y)
+JOIN (VALUES (1, 2)) b(x, y) ON a.x = b.x OR a.y = b.y
+JOIN (VALUES (1, 2)) c(x, y) ON a.x = c.x OR a.y = c.y;
+----
+1	2	1	2	1	2
+
+statement ok
+CREATE TABLE l(id INTEGER, a INTEGER, b INTEGER, s VARCHAR, d DATE);
+
+statement ok
+INSERT INTO l VALUES
+    (1, 1, 10, 'one', DATE '2020-01-01'),
+    (2, 2, 20, 'two', DATE '2020-02-02'),
+    (3, NULL, 30, 'three', NULL);
+
+statement ok
+CREATE TABLE r(id INTEGER, a INTEGER, b INTEGER, s VARCHAR, d DATE);
+
+statement ok
+INSERT INTO r VALUES
+    (11, 1, 10, 'eleven', DATE '2021-01-01'),
+    (12, 9, 20, 'twelve', DATE '2021-02-02'),
+    (13, NULL, 99, 'thirteen', NULL),
+    (13, NULL, 99, 'thirteen', NULL);
+
+query TITT rowsort
+SELECT x.d, x.id, y.s, x.s
+FROM (
+    SELECT l.d, l.id, r.b, l.a, l.s
+    FROM l LEFT JOIN r ON l.a = r.a OR l.b = r.b
+) x
+LEFT JOIN (
+    SELECT r.s, r.b, l.a, r.d
+    FROM r LEFT JOIN l ON r.a = l.a OR r.b = l.b
+) y ON x.a = y.a OR x.b = y.b;
+----
+2020-01-01	1	eleven	one
+2020-02-02	2	twelve	two
+NULL	3	NULL	three
+
+query III rowsort
+SELECT l.id, r.id, c.id
+FROM l
+RIGHT JOIN r ON l.a = r.a OR l.b = r.b
+FULL JOIN l c ON r.a = c.a OR r.b = c.b;
+----
+1	11	1
+2	12	2
+NULL	13	NULL
+NULL	13	NULL
+NULL	NULL	3
+
+query I
+SELECT count(*)
+FROM (SELECT l.* FROM l CROSS JOIN (VALUES (1), (2)) copies(n)) x
+FULL JOIN r ON x.a = r.a OR x.b = r.b;
+----
+8
+
+statement ok
+SET disabled_optimizers = 'statistics_propagation';
+
+query TITT rowsort
+SELECT x.d, x.id, y.s, x.s
+FROM (
+    SELECT l.d, l.id, r.b, l.a, l.s
+    FROM l LEFT JOIN r ON l.a = r.a OR l.b = r.b
+) x
+LEFT JOIN (
+    SELECT r.s, r.b, l.a, r.d
+    FROM r LEFT JOIN l ON r.a = l.a OR r.b = l.b
+) y ON x.a = y.a OR x.b = y.b;
+----
+2020-01-01	1	eleven	one
+2020-02-02	2	twelve	two
+NULL	3	NULL	three
+
+statement ok
+RESET disabled_optimizers;

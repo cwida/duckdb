@@ -358,34 +358,18 @@ idx_t Bit::BitCount(bitstring_t bits) {
 }
 
 idx_t Bit::BitPosition(bitstring_t substring, bitstring_t bits) {
-	const char *buf = bits.GetData();
-	auto len = bits.GetSize();
+	auto bits_len = BitLength(bits);
 	auto substr_len = BitLength(substring);
-	idx_t substr_idx = 0;
-
-	for (idx_t bit_idx = GetBitPadding(bits); bit_idx < 8; bit_idx++) {
-		idx_t bit = buf[1] & (1 << (7 - bit_idx)) ? 1 : 0;
-		if (bit == GetBit(substring, substr_idx)) {
-			substr_idx++;
-			if (substr_idx == substr_len) {
-				return (bit_idx - GetBitPadding(bits)) - substr_len + 2;
-			}
-		} else {
-			substr_idx = 0;
-		}
+	if (substr_len > bits_len) {
+		return 0;
 	}
-
-	for (idx_t byte_idx = 2; byte_idx < len; byte_idx++) {
-		for (idx_t bit_idx = 0; bit_idx < 8; bit_idx++) {
-			idx_t bit = buf[byte_idx] & (1 << (7 - bit_idx)) ? 1 : 0;
-			if (bit == GetBit(substring, substr_idx)) {
-				substr_idx++;
-				if (substr_idx == substr_len) {
-					return (((byte_idx - 1) * 8) + bit_idx - GetBitPadding(bits)) - substr_len + 2;
-				}
-			} else {
-				substr_idx = 0;
-			}
+	for (idx_t start = 0; start + substr_len <= bits_len; start++) {
+		idx_t substr_idx = 0;
+		while (substr_idx < substr_len && GetBit(bits, start + substr_idx) == GetBit(substring, substr_idx)) {
+			substr_idx++;
+		}
+		if (substr_idx == substr_len) {
+			return start + 1;
 		}
 	}
 	return 0;

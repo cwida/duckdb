@@ -1,0 +1,73 @@
+# name: test/sql/error/test_try_constant_regex.test
+# description: TRY suppresses the error of an invalid constant regular expression
+# group: [error]
+
+statement ok
+CREATE TABLE t AS SELECT 'abc' AS s, '(' AS pat;
+
+query I
+SELECT TRY(regexp_matches(s, pat)) FROM t;
+----
+NULL
+
+query I
+SELECT TRY(regexp_matches('abc', '('));
+----
+NULL
+
+query I
+SELECT TRY(regexp_matches(s, '(')) FROM t;
+----
+NULL
+
+query IIIII
+SELECT TRY(regexp_full_match(s, '(')), TRY(regexp_replace(s, '(', 'x')), TRY(regexp_extract(s, '(')),
+       TRY(regexp_extract_all(s, '(')), TRY(regexp_split_to_array(s, '(')) FROM t;
+----
+NULL	NULL	NULL	NULL	NULL
+
+# a valid pattern is unaffected
+query I
+SELECT TRY(regexp_matches(s, 'b')) FROM t;
+----
+true
+
+# the error is only suppressed inside of TRY
+statement error
+SELECT regexp_matches(s, '(') FROM t;
+----
+Invalid Input Error: missing ): (
+
+statement error
+SELECT regexp_matches('abc', '(');
+----
+Invalid Input Error: missing ): (
+
+statement error
+SELECT regexp_replace(s, '(', 'x') FROM t;
+----
+Invalid Input Error: missing ): (
+
+statement ok
+CREATE TABLE e(s VARCHAR);
+
+statement error
+SELECT regexp_matches(s, '(') FROM e;
+----
+Invalid Input Error: missing ): (
+
+# the error of a function inside of TRY is thrown when it is evaluated
+query I
+SELECT TRY(CASE WHEN s = 'x' THEN regexp_matches(s, '(') ELSE true END) FROM t;
+----
+true
+
+query I
+SELECT TRY(CASE WHEN s = 'abc' THEN regexp_matches(s, '(') ELSE true END) FROM t;
+----
+NULL
+
+query I
+SELECT coalesce(TRY(regexp_matches(s, '(')), false) FROM t;
+----
+false

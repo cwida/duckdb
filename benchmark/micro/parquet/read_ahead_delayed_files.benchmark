@@ -1,0 +1,19 @@
+# name: benchmark/micro/parquet/read_ahead_delayed_files.benchmark
+# description: Automatic read-ahead over many Parquet files when every file operation waits 10 ms, as remote storage does
+# group: [parquet]
+
+name Read-Ahead Delayed Files
+group micro
+subgroup parquet
+
+require parquet
+
+load
+COPY (SELECT range AS i, range % 64 AS part, (range % 5)::VARCHAR AS segment FROM range(12800000)) TO '${BENCHMARK_DIR}/read_ahead_delayed' (FORMAT parquet, PARTITION_BY part, ROW_GROUP_SIZE 20000, OVERWRITE_OR_IGNORE);
+SET GLOBAL debug_local_file_system_delay_ms=10;
+
+run
+SELECT count(*) FROM read_parquet('${BENCHMARK_DIR}/read_ahead_delayed/*/*.parquet') WHERE segment = '1'
+
+result I
+2560000
