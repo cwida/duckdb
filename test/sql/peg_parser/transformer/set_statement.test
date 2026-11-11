@@ -18,7 +18,7 @@ Catalog Error: SET search_path: No catalog + schema named "app2" found.
 statement error
 SET GLOBAL enable_progress_bar=true;
 ----
-Catalog Error: option "enable_progress_bar" cannot be set globally
+Invalid Input Error: Setting "enable_progress_bar" cannot be set as a global variable - it can only be set per session
 
 statement ok
 RESET threads;

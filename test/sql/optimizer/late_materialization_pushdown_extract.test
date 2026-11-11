@@ -37,7 +37,7 @@ SET disabled_optimizers = '';
 
 # The query must actually be executed as a late materialization (rowid equality join)
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 query II
 EXPLAIN SELECT s, x FROM lm_pushdown_extract WHERE s.a = 1 ORDER BY id LIMIT 1
@@ -45,7 +45,7 @@ EXPLAIN SELECT s, x FROM lm_pushdown_extract WHERE s.a = 1 ORDER BY id LIMIT 1
 logical_opt	<!REGEX>:.*COMPARISON_JOIN.*rowid = rowid.*
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY
+SET explain_output = 'PHYSICAL_ONLY'
 
 # A filter that references multiple extracted fields cannot be pushed back into the scan,
 # it stays as a LogicalFilter on top of the scan. The scan then falls back to outputting

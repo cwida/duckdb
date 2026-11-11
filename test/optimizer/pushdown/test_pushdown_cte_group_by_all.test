@@ -11,7 +11,7 @@ from generate_series(99) t(i)
 select i, i % 10 as group_1;
 
 statement ok
-pragma explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 
 query II

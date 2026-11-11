@@ -4,7 +4,7 @@
 
 # no force storage otherwise test to check scanned tupls fails
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 statement ok
 create table t1 as select range a, 'foo' || (range%100)::VARCHAR b, 100000-range c, timestamp '1992-01-01' + interval (range * 20) minute d from range(900000);

@@ -50,7 +50,7 @@ SELECT my_cool_filename FROM read_parquet('{DATA_DIR}/parquet-testing/enum.parqu
 {DATA_DIR}/parquet-testing/enum.parquet
 
 query I
-SELECT my_cool_filename FROM read_parquet('{DATA_DIR}/parquet-testing/enum.parquet', filename=my_cool_filename) LIMIT 1
+SELECT my_cool_filename FROM read_parquet('{DATA_DIR}/parquet-testing/enum.parquet', filename='my_cool_filename') LIMIT 1
 ----
 {DATA_DIR}/parquet-testing/enum.parquet
 

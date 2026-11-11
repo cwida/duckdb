@@ -21,7 +21,7 @@ statement ok
 EXPLAIN delete from integers where i=1;
 
 statement ok
-pragma explain_output='optimized_only'
+SET explain_output='optimized_only'
 
 query II
 EXPLAIN (FORMAT JSON) SELECT SUM(i) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);

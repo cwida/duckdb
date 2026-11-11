@@ -397,20 +397,33 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
                                                                bool use_cached_cardinality) {
 	RelationColumnStatsLookup child_columns(child_stats);
 	vector<DistinctCount> cardinality_counts;
+	auto add_group = [&](const Expression &group, vector<DistinctCount> &counts) {
+		if (group.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+			return true;
+		}
+		auto column = child_columns.Find(group.Cast<BoundColumnRefExpression>().Binding());
+		if (!column) {
+			return false;
+		}
+		auto count = column->current_domain;
+		count.distinct_count = MaxValue<idx_t>(count.distinct_count, 1);
+		counts.push_back(count);
+		return true;
+	};
+	// An absent grouping-set list denotes the single set containing all groups.
+	if (aggregate.grouping_sets.empty()) {
+		for (auto &group : aggregate.groups) {
+			if (!add_group(*group, cardinality_counts)) {
+				return {};
+			}
+		}
+	}
 	for (auto &grouping_set : aggregate.grouping_sets) {
 		vector<DistinctCount> set_counts;
 		for (auto group_idx : grouping_set) {
-			auto &group = aggregate.GetGroupExpression(group_idx);
-			if (group.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
-				continue;
-			}
-			auto column = child_columns.Find(group.Cast<BoundColumnRefExpression>().Binding());
-			if (!column) {
+			if (!add_group(aggregate.GetGroupExpression(group_idx), set_counts)) {
 				return {};
 			}
-			auto count = column->current_domain;
-			count.distinct_count = MaxValue<idx_t>(count.distinct_count, 1);
-			set_counts.push_back(count);
 		}
 		if (set_counts.size() > cardinality_counts.size()) {
 			cardinality_counts = std::move(set_counts);
@@ -426,7 +439,8 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 	result.stats_initialized = true;
 	auto bindings = aggregate.GetColumnBindings();
 	auto preserves_group_evidence =
-	    aggregate.grouping_sets.size() == 1 && aggregate.grouping_sets[0].size() == aggregate.groups.size();
+	    aggregate.grouping_sets.empty() ||
+	    (aggregate.grouping_sets.size() == 1 && aggregate.grouping_sets[0].size() == aggregate.groups.size());
 	if (preserves_group_evidence && !aggregate.groups.empty() && aggregate.children.size() == 1 &&
 	    cardinality_counts.size() == aggregate.groups.size()) {
 		vector<idx_t> groups;
@@ -459,8 +473,7 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 			current_domain =
 			    child_stats.GetColumnStats(group.Cast<BoundColumnRefExpression>().Binding())->current_domain;
 		}
-		if (aggregate.groups.size() == 1 && aggregate.grouping_sets.size() == 1 &&
-		    aggregate.grouping_sets[0].size() == 1 && aggregate.grouping_sets[0].count(ProjectionIndex(0)) > 0) {
+		if (aggregate.groups.size() == 1 && preserves_group_evidence) {
 			semi_anti_join_domain_evidence.MarkUnique();
 		}
 		result.columns.emplace_back(bindings[result.columns.size()], distinct_count, current_domain,
@@ -492,8 +505,9 @@ optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(Logica
 
 optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(LogicalAggregate &aggregate,
                                                                           const RelationStats &child_stats,
-                                                                          RelationStatsExtractor &extractor) {
-	return ExtractAggregationStatsInternal(aggregate, child_stats, extractor, false);
+                                                                          RelationStatsExtractor &extractor,
+                                                                          bool use_cached_cardinality) {
+	return ExtractAggregationStatsInternal(aggregate, child_stats, extractor, use_cached_cardinality);
 }
 
 optional<RelationStats> RelationStatisticsHelper::ExtractWindowStats(LogicalWindow &window,

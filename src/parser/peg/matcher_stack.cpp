@@ -783,7 +783,8 @@ MatchStep MatchStack::ExecuteInternal(optional_ptr<MatchStack> stack, MatchStack
 			break;
 		}
 		}
-		if (has_child) {
+		D_ASSERT(!has_child || next);
+		if (has_child && next) {
 			if (SINGLE_STEP) {
 				return MatchStep::Child(*next);
 			}

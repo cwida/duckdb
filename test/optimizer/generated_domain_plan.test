@@ -1,0 +1,337 @@
+# name: test/optimizer/generated_domain_plan.test
+# description: Generated-domain normalization and conservative restriction removal
+# group: [optimizer]
+
+statement ok
+CREATE TABLE decimal_average_input AS
+SELECT (i>=9998)::INTEGER k,
+       CASE WHEN i>=9998 THEN 90000000000000000000000000000000000000::DECIMAL(38,0) ELSE 1 END v
+FROM range(10000)t(i);
+
+# This unfiltered caller relies on optimizer filtering to avoid overflowing an unused group.
+query IR
+SELECT d.k,(SELECT avg(v) FROM decimal_average_input f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+0	1.0
+
+# Preserve the baseline normalization of an unfiltered fixed caller.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT avg(v) FROM decimal_average_input f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Floating-point averaging has the same baseline domain shape.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT avg(v::DOUBLE) FROM decimal_average_input f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+statement ok
+CREATE TABLE fact_data AS SELECT (i%1000)::INTEGER k,(i%13)::INTEGER j,i v FROM range(10000)t(i);
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT sum(v) FROM fact_data f WHERE f.k=d.k)
+FROM (VALUES(1),(7))d(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,d.j,(SELECT sum(v) FROM fact_data f WHERE f.k=d.k AND f.j=d.j)
+FROM (VALUES(1,1),(7,7))d(k,j);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# The same two-key demand covers the entire input domain here.
+statement ok
+CREATE TABLE low_domain AS SELECT (i%2)::INTEGER k,0::INTEGER j,i v FROM range(10000)t(i);
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT sum(v) FROM low_domain f WHERE f.k=d.k)
+FROM (VALUES(0),(1))d(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,d.j,(SELECT sum(v) FROM low_domain f WHERE f.k=d.k AND f.j=d.j)
+FROM (VALUES(0,0),(1,0))d(k,j);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Existing lowering removes the domain of an unfiltered fixed evidence caller.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,d.j,EXISTS(SELECT 1 FROM fact_data f WHERE f.k=d.k AND f.j=d.j)
+FROM (VALUES(1,1),(7,7))d(k,j);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Keeping all evidence keys adds an unnecessary build and probe.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,d.j,EXISTS(SELECT 1 FROM low_domain f WHERE f.k=d.k AND f.j=d.j)
+FROM (VALUES(0,0),(1,0))d(k,j);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# SELECT * exposes the correlation key under two different projection aliases.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,d.j,EXISTS(SELECT * FROM low_domain f WHERE f.k=d.k AND f.j=d.j)
+FROM (VALUES(0,0),(1,0))d(k,j);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Each generated owner contains the previous evidence query.
+statement ok
+CREATE TABLE evidence_callers(k INTEGER);
+
+statement ok
+INSERT INTO evidence_callers VALUES (0),(1);
+
+statement ok
+CREATE TABLE other_evidence AS SELECT * FROM low_domain;
+
+statement ok
+CREATE TABLE third_evidence AS SELECT * FROM low_domain;
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k FROM evidence_callers d
+WHERE EXISTS(SELECT * FROM low_domain f WHERE f.k=d.k)
+AND (EXISTS(SELECT * FROM other_evidence f WHERE f.k=d.k)
+     OR EXISTS(SELECT * FROM third_evidence f WHERE f.k=d.k));
+----
+physical_plan	<!REGEX>:[\s\S]*"Groups"[\s\S]*
+
+query I rowsort
+SELECT d.k FROM evidence_callers d
+WHERE EXISTS(SELECT * FROM low_domain f WHERE f.k=d.k)
+AND (EXISTS(SELECT * FROM other_evidence f WHERE f.k=d.k)
+     OR EXISTS(SELECT * FROM third_evidence f WHERE f.k=d.k));
+----
+0
+1
+
+# Other readers still need this producer after the optional domains disappear.
+query II
+EXPLAIN (FORMAT JSON)
+WITH d AS MATERIALIZED (SELECT * FROM (VALUES(0),(1))t(k))
+SELECT d.k,(SELECT sum(v) FROM low_domain f WHERE f.k=d.k),
+       (SELECT count(*) FROM d e WHERE e.k=d.k)
+FROM d;
+----
+physical_plan	<REGEX>:[\s\S]*"CTE Name": "d"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+WITH d AS MATERIALIZED (SELECT * FROM (VALUES(0),(1))t(k))
+SELECT d.k,(SELECT sum(v) FROM low_domain f WHERE f.k=d.k),
+       (SELECT count(*) FROM d e WHERE e.k=d.k)
+FROM d;
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# An explicitly selected domain protects throwing expressions above the aggregate.
+statement ok
+CREATE TABLE expansion_guard AS
+SELECT (i=9999)::INTEGER k,CASE WHEN i=9999 THEN 3000000000 ELSE 1 END v FROM range(10000)t(i);
+
+statement ok
+CREATE TABLE expansion_demand(k INTEGER, selected BOOLEAN);
+
+statement ok
+INSERT INTO expansion_demand VALUES (0,true),(1,false);
+
+statement ok
+SET disabled_optimizers='filter_pullup,filter_pushdown,join_filter_pushdown';
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT CAST(sum(v) AS INTEGER) FROM expansion_guard f WHERE f.k=d.k)
+FROM expansion_demand d WHERE selected;
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# The unfiltered fixed caller keeps its existing unrestricted TRY_CAST plan.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT TRY_CAST(sum(v) AS INTEGER) FROM expansion_guard f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Floating-point overflow produces infinity; integer multiplication can throw.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT max(v)::DOUBLE * 1e308 FROM expansion_guard f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT max(v) * 4000000000::BIGINT FROM expansion_guard f WHERE f.k=d.k)
+FROM expansion_demand d WHERE selected;
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+statement ok
+RESET disabled_optimizers;
+
+# Implicit bitstring bounds retain the existing statistics contract.
+statement ok
+CREATE TABLE bit_keys(k INTEGER);
+
+statement ok
+INSERT INTO bit_keys VALUES (2),(4),(6);
+
+query I
+SELECT bit_length((SELECT bitstring_agg(k) FROM bit_keys i WHERE i.k=o.k))
+FROM (SELECT 2 k)o;
+----
+5
+
+# Missing per-key selectivity for a filtered table is not proof that its domain is unselective.
+statement ok
+CREATE TABLE selected_demand AS SELECT (i%1000)::INTEGER k,(i%13)::INTEGER j,i<2 selected
+FROM range(1000)t(i);
+
+statement ok
+SET disabled_optimizers='join_filter_pushdown';
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,d.j,(SELECT sum(v) FROM fact_data f WHERE f.k=d.k AND f.j=d.j)
+FROM selected_demand d WHERE selected;
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+query III rowsort
+SELECT d.k,d.j,(SELECT sum(v) FROM fact_data f WHERE f.k=d.k AND f.j=d.j)
+FROM selected_demand d WHERE selected;
+----
+0	0	0
+1	1	1
+
+statement ok
+RESET disabled_optimizers;
+
+# Simple LATERAL correlation must not retain a redundant join, grouping, or CTE.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,x.v FROM (VALUES(1),(2))d(k), LATERAL (SELECT d.k+1 v)x;
+----
+physical_plan	<!REGEX>:[\s\S]*"name": "(CTE|[^"]*JOIN[^"]*|[^"]*GROUP_BY)"[\s\S]*
+
+# A projection above AVG keeps the baseline normalization.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT avg(v::DOUBLE)+1 FROM decimal_average_input f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Projection-only LATERAL over a range also stays streaming.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT * FROM range(8192) d(k), LATERAL (SELECT d.k * 2 AS v) x;
+----
+physical_plan	<!REGEX>:[\s\S]*"name": "(CTE|[^"]*JOIN[^"]*|[^"]*GROUP_BY)"[\s\S]*
+
+# The same cleanup applies to a table input.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,x.v FROM fact_data d, LATERAL (SELECT d.k + 1 AS v) x;
+----
+physical_plan	<!REGEX>:[\s\S]*"name": "(CTE|[^"]*JOIN[^"]*|[^"]*GROUP_BY)"[\s\S]*
+
+# Declared accumulator bounds remove the generated delimiter CTE.
+statement ok
+CREATE TABLE returns AS SELECT (i % 100)::INTEGER customer, (i % 10)::INTEGER store, 1 date_key, (i % 100)::DECIMAL(7,2) amount FROM range(10000) t(i);
+
+# Deliberately non-unique: the proof must account for join multiplication.
+statement ok
+CREATE TABLE dates AS SELECT 1 date_key, 2000 d_year FROM range(10);
+
+statement ok
+CREATE TABLE stores AS SELECT i store, i < 5 chosen FROM range(10) t(i);
+
+statement ok
+CREATE TABLE customers AS SELECT i customer FROM range(100) t(i);
+
+statement ok
+CREATE VIEW bounded_totals AS
+SELECT customer, store, sum(amount) total
+FROM returns JOIN dates USING (date_key) WHERE d_year = 2000
+GROUP BY customer, store;
+
+query II
+EXPLAIN (FORMAT JSON)
+WITH totals AS MATERIALIZED (SELECT * FROM bounded_totals)
+SELECT sum(total)::BIGINT FROM totals outer_total
+JOIN stores USING (store) JOIN customers USING (customer)
+WHERE chosen AND total > (SELECT 1.2 * avg(total) FROM totals inner_total WHERE inner_total.store = outer_total.store);
+----
+physical_plan	<!REGEX>:[\s\S]*"CTE Name": "__duckdb_delim_[\s\S]*
+
+statement ok
+INSERT INTO returns VALUES (100, NULL, 1, 1), (NULL, NULL, 1, NULL);
+
+# The same shape retains its restriction when wide decimals prevent the safety proof.
+statement ok
+CREATE TABLE wide_bounded_returns AS SELECT * REPLACE (amount::DECIMAL(38,2) AS amount) FROM returns;
+
+statement ok
+CREATE VIEW wide_bounded_totals AS
+SELECT customer, store, sum(amount) total
+FROM wide_bounded_returns JOIN dates USING (date_key) WHERE d_year = 2000
+GROUP BY customer, store;
+
+query II
+EXPLAIN (FORMAT JSON)
+WITH totals AS MATERIALIZED (SELECT * FROM wide_bounded_totals)
+SELECT sum(total)::BIGINT FROM totals outer_total
+JOIN stores USING (store) JOIN customers USING (customer)
+WHERE chosen AND total > (SELECT 1.2 * avg(total) FROM totals inner_total WHERE inner_total.store = outer_total.store);
+----
+physical_plan	<REGEX>:[\s\S]*"CTE Name": "__duckdb_delim_[\s\S]*
+
+# A filtered scan replaces the generated CTE while retaining the aggregate restriction.
+statement ok
+CREATE TABLE fact AS SELECT (i % 100)::INTEGER k, (i // 100)::DOUBLE v FROM range(10000) t(i);
+
+statement ok
+INSERT INTO fact VALUES (NULL, 1), (NULL, 10);
+
+statement ok
+CREATE TABLE dimension AS SELECT i::INTEGER k, i < 5 AS selected FROM range(100) t(i);
+
+statement ok
+INSERT INTO dimension VALUES (0, true), (NULL, true);
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT sum(f.v)::BIGINT
+FROM fact f, dimension d
+WHERE f.k = d.k AND d.selected
+  AND f.v < (SELECT 0.2 * avg(inner_fact.v) FROM fact inner_fact WHERE inner_fact.k = d.k);
+----
+physical_plan	<!REGEX>:[\s\S]*"name": "CTE_SCAN"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT sum(f.v)::BIGINT
+FROM fact f, dimension d
+WHERE f.k = d.k AND d.selected
+  AND f.v < (SELECT 0.2 * avg(inner_fact.v) FROM fact inner_fact WHERE inner_fact.k = d.k);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*

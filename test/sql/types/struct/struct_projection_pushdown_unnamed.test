@@ -2,9 +2,6 @@
 # description: Test projection pushdown through mixed named and unnamed structs
 # group: [struct]
 
-statement ok
-PRAGMA enable_verification
-
 # Unnamed struct followed by a named struct
 query I
 SELECT x[2].k

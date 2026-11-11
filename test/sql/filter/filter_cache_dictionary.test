@@ -7,10 +7,10 @@ load {TEST_DIR}/filter_cache_dictionary.db
 
 # single-threaded so one filter operator state spans the whole scan and sees the segment boundaries
 statement ok
-PRAGMA threads=1
+SET threads=1
 
 statement ok
-PRAGMA force_compression='dictionary'
+SET force_compression='dictionary'
 
 # no pushdown so a real filter operator remains, feeding the dictionary column into its cache
 statement ok

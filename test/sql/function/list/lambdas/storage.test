@@ -4,9 +4,6 @@
 
 load {TEST_DIR}/lambda_storage.db
 
-statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
 # create macros containing a lambda functions
 
 statement ok

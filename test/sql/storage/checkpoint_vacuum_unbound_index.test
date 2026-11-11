@@ -1,0 +1,64 @@
+# name: test/sql/storage/checkpoint_vacuum_unbound_index.test
+# description: Test that an explicit CHECKPOINT binds unbound indexes, so that it can vacuum their tables
+# group: [storage]
+
+require skip_reload
+
+load {TEST_DIR}/checkpoint_vacuum_unbound_index.db
+
+# the test runner defaults to checkpoint_threshold=0 - use the product default
+statement ok
+SET checkpoint_threshold='16MB'
+
+statement ok
+CREATE TABLE t AS SELECT i FROM range(491520) r(i)
+
+statement ok
+CREATE INDEX idx ON t(i)
+
+statement ok
+CHECKPOINT
+
+statement ok con2
+BEGIN TRANSACTION
+
+statement ok con2
+SELECT count(*) FROM t
+
+statement ok
+DELETE FROM t WHERE i % 2 = 0
+
+# A concurrent reader forces a concurrent checkpoint: the deletes are persisted, but not vacuumed.
+statement ok
+CHECKPOINT
+
+statement ok con2
+COMMIT
+
+query I
+SELECT count(DISTINCT row_group_id) FROM pragma_storage_info('t')
+----
+4
+
+restart
+
+# After the restart, the index is unbound and has no buffered WAL operations.
+statement ok
+CREATE TABLE other(x INT)
+
+statement ok
+INSERT INTO other VALUES (1)
+
+# The CHECKPOINT binds idx, so that it can vacuum t.
+statement ok
+CHECKPOINT
+
+query II
+SELECT (SELECT count(DISTINCT row_group_id) FROM pragma_storage_info('t')), (SELECT max(rowid) FROM t)
+----
+2	368639
+
+query I
+SELECT count(*) FROM t WHERE i = 4097
+----
+1

@@ -8,7 +8,7 @@ SET storage_compatibility_version='v1.2.0'
 load {TEST_DIR}/reclaim_space_overflow_strings.db
 
 statement ok
-PRAGMA force_compression='ZSTD';
+SET force_compression='ZSTD';
 
 statement ok
 PRAGMA force_checkpoint;

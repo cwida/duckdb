@@ -38,7 +38,7 @@ WORLD
 hello
 
 statement ok
-PRAGMA default_collation=NOCASE;
+SET default_collation='NOCASE';
 
 query I rowsort
 SELECT x FROM t GROUP BY 1;

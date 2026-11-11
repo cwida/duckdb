@@ -10,7 +10,7 @@ statement ok
 CREATE TABLE strings(s VARCHAR);
 
 statement ok
-pragma force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 # load large strings into the table iteratively
 loop it 0 10

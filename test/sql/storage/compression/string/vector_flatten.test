@@ -11,7 +11,7 @@ statement ok
 SET enable_fsst_vectors = true
 
 statement ok
-PRAGMA force_compression = 'fsst'
+SET force_compression = 'fsst'
 
 statement ok
 CREATE TABLE source (

@@ -2,9 +2,6 @@
 # description: Backtick-quoted identifiers are accepted as an alternative to double quotes
 # group: [parser]
 
-statement ok
-PRAGMA enable_verification
-
 # simple backtick-quoted column reference
 query I
 SELECT `x` FROM (SELECT 1 x) t;

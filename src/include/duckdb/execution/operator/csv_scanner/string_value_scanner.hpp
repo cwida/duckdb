@@ -221,8 +221,8 @@ public:
 	CSVIterator &iterator;
 	//! Line position of the current line
 	FullLinePosition current_line_position;
-	//! Used for CSV line reconstruction on flushed errors
-	unordered_map<idx_t, FullLinePosition> line_positions_per_row;
+	//! Used for CSV line reconstruction on flushed errors, one entry per row of the result
+	vector<FullLinePosition> line_positions_per_row;
 	bool added_last_line = false;
 	bool quoted_new_line = false;
 
@@ -275,6 +275,13 @@ public:
 	static inline void AddValue(StringValueResult &result, const idx_t buffer_pos);
 	//! Adds a Row to the result
 	static inline bool AddRow(StringValueResult &result, const idx_t buffer_pos);
+	//! Whether the current column is not projected, so its value needs no reading
+	static inline bool CanSkipValue(const StringValueResult &result) {
+		return result.projecting_columns && result.cur_col_id < result.number_of_columns &&
+		       !result.projected_columns[result.cur_col_id];
+	}
+	static inline void SkipValue(StringValueResult &result, const idx_t buffer_pos);
+	static inline bool AddRowWithoutValue(StringValueResult &result, const idx_t buffer_pos);
 	//! Behavior when hitting an invalid state
 	static inline void InvalidState(StringValueResult &result);
 	//! Handles QuotedNewline State
@@ -283,6 +290,12 @@ public:
 	//! Handles EmptyLine states
 	static inline bool EmptyLine(StringValueResult &result, const idx_t buffer_pos);
 	inline bool AddRowInternal();
+	//! The bookkeeping of a value that is not projected
+	inline void SkipValueInternal();
+	//! Moves last_position past the newline that ends the row at buffer_pos
+	inline void SetLastPositionAfterNewline(idx_t buffer_pos);
+	//! Keeps the position of the current row for the error messages of Flush
+	inline void StoreLinePosition();
 	//! Marks the columns of a borked row that were never written as NULL
 	void InvalidateUnwrittenColumns(idx_t first_unwritten_col);
 	//! Force the throw of a Unicode error

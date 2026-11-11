@@ -3,10 +3,10 @@
 # group: [sqlserver]
 
 statement ok
-PRAGMA default_null_order='NULLS LAST'
+SET default_null_order='NULLS LAST'
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 statement ok
 PRAGMA verify_parallelism

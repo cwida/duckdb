@@ -3,7 +3,7 @@
 # group: [match_recognize]
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 # PERMUTE(A, B) stands for every order its parts can be matched in, tried in the order the list is
 # written: PERMUTE(A, B) is (A B | B A), so A B is preferred where both fit.

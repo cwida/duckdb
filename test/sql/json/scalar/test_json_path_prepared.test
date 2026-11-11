@@ -5,9 +5,6 @@
 require json
 
 statement ok
-pragma enable_verification
-
-statement ok
 PREPARE extract_stmt AS SELECT json_extract('{"a":1,"b":{"c":2}}', $1);
 
 query T

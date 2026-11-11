@@ -5,10 +5,10 @@
 require json
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['operator.extra_info', 'operator.intermediate_rows', 'operator.timing', 'query.total_time'];
@@ -57,10 +57,10 @@ query.total_rows_scanned
 # Re-enabled profiling.
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SELECT unnest(['Maia', 'Thijs', 'Mark', 'Hannes', 'Tom', 'Max', 'Carlo', 'Sam', 'Tania']) AS names ORDER BY random();
@@ -123,10 +123,10 @@ statement ok
 SET tracked_metrics = [];
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output_no_query.json';
+SET profiling_output = '{TEST_DIR}/profiling_output_no_query.json';
 
 statement ok
 SELECT unnest(['Maia', 'Thijs', 'Mark', 'Hannes', 'Tom', 'Max', 'Carlo', 'Sam', 'Tania']) AS names ORDER BY random();

@@ -290,6 +290,7 @@ CompressionFunction FixedSizeGetFunction(PhysicalType data_type) {
 	                        FixedSizeScan<T>, FixedSizeScanPartial<T>, UncompressedFunctions::EmptySkip, nullptr,
 	                        FixedSizeInitAppend, FixedSizeAppend<T, APPENDER>, FixedSizeFinalizeAppend<T>);
 	function.select = FixedSizeSelect<T>;
+	function.zero_initialize_segments = false;
 	return function;
 }
 

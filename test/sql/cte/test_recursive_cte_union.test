@@ -80,9 +80,6 @@ with recursive t as (select 1 as x union select x+(SELECT 1) from t where x < 3)
 # this requires CTE inlining, which enable_verification disables
 require no_alternative_verify
 
-statement ok
-PRAGMA disable_verification
-
 # hash join
 query I
 with recursive t as (select 1 as x union all select * from (select x from t where x < 5) tbl(i) join (select 1) tbl2(i) using (i)) select * from t limit 3;

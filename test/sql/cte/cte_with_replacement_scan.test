@@ -14,3 +14,11 @@ WITH '{TEST_DIR}/df.parquet' AS (
 SELECT * FROM '{TEST_DIR}/df.parquet';
 ----
 42
+
+query I
+WITH RECURSIVE '{TEST_DIR}/df.parquet' AS (
+	SELECT answer FROM '{TEST_DIR}/df.parquet'
+)
+SELECT * FROM '{TEST_DIR}/df.parquet';
+----
+42

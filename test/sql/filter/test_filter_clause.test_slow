@@ -422,7 +422,7 @@ where i < 5 ORDER BY sq
 4
 
 statement ok
-PRAGMA perfect_ht_threshold=0
+SET perfect_ht_threshold=0
 
 endloop
 

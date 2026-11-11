@@ -15,7 +15,7 @@ CREATE TABLE hist_t AS SELECT range AS v FROM range(100);
 # a default table macro: its body uses generate_series (shadowed above), assert actual bin values
 
 query II
-SELECT bin, count FROM histogram_values(hist_t, v) ORDER BY bin LIMIT 3;
+SELECT bin, count FROM histogram_values('hist_t', v) ORDER BY bin LIMIT 3;
 ----
 10	11
 20	10
@@ -24,7 +24,7 @@ SELECT bin, count FROM histogram_values(hist_t, v) ORDER BY bin LIMIT 3;
 # equi-height quantile positions come from the shadowed generate_series, assert values
 
 query II
-SELECT bin, count FROM histogram_values(hist_t, v, technique := 'equi-height') ORDER BY bin LIMIT 3;
+SELECT bin, count FROM histogram_values('hist_t', v, technique := 'equi-height') ORDER BY bin LIMIT 3;
 ----
 9	10
 19	10
@@ -49,7 +49,7 @@ statement ok
 CREATE MACRO "/"(a, b) AS 0.5;
 
 query II
-SELECT bin, count FROM histogram_values(hist_t, v, technique := 'equi-height') ORDER BY bin LIMIT 3;
+SELECT bin, count FROM histogram_values('hist_t', v, technique := 'equi-height') ORDER BY bin LIMIT 3;
 ----
 9	10
 19	10

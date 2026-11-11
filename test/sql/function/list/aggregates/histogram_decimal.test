@@ -3,7 +3,7 @@
 # group: [aggregates]
 
 query II
-WITH cte AS (FROM (VALUES (0.0), (9.9)) df(l_orderkey)) SELECT * FROM histogram_values(cte, l_orderkey)
+WITH cte AS (FROM (VALUES (0.0), (9.9)) df(l_orderkey)) SELECT * FROM histogram_values('cte', l_orderkey)
 ----
 1.0	1
 2.0	0
