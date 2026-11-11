@@ -222,3 +222,70 @@ SELECT min(i), max(i) FROM huge.t;
 
 statement ok
 DETACH huge;
+
+# a cut bound stays within the range of the type: the pad of the omitted bytes could carry a maximum above the
+# largest value of the width (or a negative minimum below the smallest), such a bound is the limit of the range
+statement ok
+CREATE TABLE frac(i INTEGER, d DECIMAL(112,112));
+
+statement ok
+INSERT INTO frac VALUES (1, ('0.' || repeat('9', 112))::DECIMAL(112,112)), (2, ('0.' || repeat('0', 111) || '1')::DECIMAL(112,112)), (3, NULL);
+
+query IIII
+SELECT s.max = ('0.' || repeat('9', 112))::DECIMAL(112,112), s.max::VARCHAR = '.' || repeat('9', 112), s.min = ('0.' || repeat('0', 111) || '1')::DECIMAL(112,112), s.max_exact FROM (SELECT STATS(d) s FROM frac LIMIT 1);
+----
+true	true	true	false
+
+statement ok
+INSERT INTO frac VALUES (4, ('-0.' || repeat('9', 112))::DECIMAL(112,112)), (5, ('-0.' || repeat('0', 111) || '1')::DECIMAL(112,112));
+
+query IIII
+SELECT s.min = ('-0.' || repeat('9', 112))::DECIMAL(112,112), s.min::VARCHAR = '-.' || repeat('9', 112), s.min_exact, s.max_exact FROM (SELECT STATS(d) s FROM frac LIMIT 1);
+----
+true	true	false	false
+
+statement ok
+CHECKPOINT;
+
+query II
+SELECT min(d) = ('-0.' || repeat('9', 112))::DECIMAL(112,112), max(d) = ('0.' || repeat('9', 112))::DECIMAL(112,112) FROM frac;
+----
+true	true
+
+# the bounds prune and keep every row that the filter keeps
+query I
+SELECT i FROM frac WHERE d > ('0.' || repeat('9', 111) || '8')::DECIMAL(112,112)
+----
+1
+
+query I
+SELECT i FROM frac WHERE d < ('-0.' || repeat('9', 111) || '8')::DECIMAL(112,112)
+----
+4
+
+query I
+SELECT count(*) FROM frac WHERE d = ('0.' || repeat('9', 112))::DECIMAL(112,112) OR d = ('-0.' || repeat('9', 112))::DECIMAL(112,112)
+----
+2
+
+query I
+SELECT count(*) FROM frac WHERE d = ('0.' || repeat('9', 111) || '8')::DECIMAL(112,112)
+----
+0
+
+query III
+SELECT count(*), min(d) < 0, max(d) > 0 FROM frac WHERE d >= ('-0.' || repeat('9', 112))::DECIMAL(112,112) AND d <= ('0.' || repeat('9', 112))::DECIMAL(112,112)
+----
+4	true	true
+
+# with an integer digit the cut maximum lies above the values but within the type, and the type prints it in full
+statement ok
+CREATE TABLE int_digit(d DECIMAL(112,111));
+
+statement ok
+INSERT INTO int_digit VALUES (('0.' || repeat('9', 111))::DECIMAL(112,111)), (('-0.' || repeat('9', 111))::DECIMAL(112,111));
+
+query IIIII
+SELECT s.max > ('0.' || repeat('9', 111))::DECIMAL(112,111), s.max < 1.1, s.min < ('-0.' || repeat('9', 111))::DECIMAL(112,111), s.min > -1.1, s.max::VARCHAR LIKE '1.0000%' FROM (SELECT STATS(d) s FROM int_digit LIMIT 1);
+----
+true	true	true	true	true

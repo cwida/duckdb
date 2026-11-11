@@ -3,6 +3,7 @@
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/types/bignum.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
 
@@ -138,22 +139,48 @@ string BignumStats::MaxBlob(const BaseStatistics &stats) {
 	return PadBound(GetDataUnsafe(stats).max, false);
 }
 
+//! The largest magnitude of a DECIMAL of the width, 10^width - 1, as a BIGNUM blob with the given sign
+static string WidthLimitBlob(uint32_t width, bool negative) {
+	const auto power = DecimalHelper<bignum_t>::PowerOfTen(width);
+	// the magnitude bytes follow the header of the (positive) power, one is borrowed from the least significant byte up
+	vector<uint8_t> magnitude(power.begin() + Bignum::BIGNUM_HEADER_SIZE, power.end());
+	for (idx_t i = magnitude.size(); i > 0; i--) {
+		if (magnitude[i - 1]-- != 0) {
+			break;
+		}
+	}
+	idx_t start = 0;
+	while (start + 1 < magnitude.size() && magnitude[start] == 0) {
+		start++;
+	}
+	return Bignum::FromByteArray(magnitude.data() + start, magnitude.size() - start, negative);
+}
+
+//! The value of a bound: the pad of a cut bound can carry it beyond the range of the type (a max bound above the
+//! largest value of the width, a negative min bound below the smallest), such a bound is the limit of the range itself
+static Value BoundValue(const LogicalType &type, const string &blob, bool is_min) {
+	const auto width = DecimalType::GetWidth(type);
+	const auto scale = DecimalType::GetScale(type);
+	const bignum_t value {string_t(blob)};
+	if (DecimalHelper<bignum_t>::FitsWidth(value, width)) {
+		return Value::DECIMAL(value, width, scale);
+	}
+	const auto limit = WidthLimitBlob(width, is_min);
+	return Value::DECIMAL(bignum_t(string_t(limit)), width, scale);
+}
+
 Value BignumStats::Min(const BaseStatistics &stats) {
 	if (!HasMinMax(stats)) {
 		throw InternalException("BignumStats::Min called but no min value was found");
 	}
-	auto &type = stats.GetType();
-	auto blob = MinBlob(stats);
-	return Value::DECIMAL(bignum_t(string_t(blob)), DecimalType::GetWidth(type), DecimalType::GetScale(type));
+	return BoundValue(stats.GetType(), MinBlob(stats), true);
 }
 
 Value BignumStats::Max(const BaseStatistics &stats) {
 	if (!HasMinMax(stats)) {
 		throw InternalException("BignumStats::Max called but no max value was found");
 	}
-	auto &type = stats.GetType();
-	auto blob = MaxBlob(stats);
-	return Value::DECIMAL(bignum_t(string_t(blob)), DecimalType::GetWidth(type), DecimalType::GetScale(type));
+	return BoundValue(stats.GetType(), MaxBlob(stats), false);
 }
 
 void BignumStats::SetMin(BaseStatistics &stats, string_t blob) {

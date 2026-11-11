@@ -14,9 +14,10 @@ INSERT INTO wide SELECT i, (repeat('9', 200) || '.' || repeat('9', 100))::DECIMA
 statement ok
 INSERT INTO wide VALUES (3, NULL), (4, '-1.5');
 
-# the unscaled values are longer than a bound, so the column carries cut min/max bounds that enclose the values
+# the unscaled values are longer than a bound, so the column carries cut min/max bounds that enclose the values; the
+# largest value of the type is cut as well, its bound is clamped to that value (the pad would carry it beyond the type)
 query IIIIII
-SELECT s.min < '-1.5'::DECIMAL(300,100), s.max > (repeat('9', 200) || '.' || repeat('9', 100))::DECIMAL(300,100), s.min_exact, s.max_exact, s.has_null, s.has_no_null FROM (SELECT STATS(d) s FROM wide LIMIT 1);
+SELECT s.min < '-1.5'::DECIMAL(300,100), s.max = (repeat('9', 200) || '.' || repeat('9', 100))::DECIMAL(300,100), s.min_exact, s.max_exact, s.has_null, s.has_no_null FROM (SELECT STATS(d) s FROM wide LIMIT 1);
 ----
 true	true	false	false	true	true
 
