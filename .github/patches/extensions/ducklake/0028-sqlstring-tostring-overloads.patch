@@ -1,0 +1,14 @@
+diff --git a/src/storage/ducklake_metadata_manager.cpp b/src/storage/ducklake_metadata_manager.cpp
+index ea4b5dc7..b88580ce 100644
+--- a/src/storage/ducklake_metadata_manager.cpp
++++ b/src/storage/ducklake_metadata_manager.cpp
+@@ -2144,7 +2144,8 @@ string DuckLakeMetadataManager::BuildBucketPartitionPruningClause(DuckLakeTableE
+ 			// LCOV_EXCL_STOP
+ 		}
+ 
+-		auto in_list = StringUtil::Join(bucket_values, bucket_values.size(), ", ", SQLString::ToString);
++		auto in_list = StringUtil::Join(bucket_values, bucket_values.size(), ", ",
++		                                [](const string &value) { return SQLString::ToString(value); });
+ 		string clause =
+ 		    StringUtil::Format("data.data_file_id IN (SELECT data_file_id FROM %s "
+ 		                       "WHERE table_id = %d AND partition_key_index = %d AND partition_value IN (%s))",
