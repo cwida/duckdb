@@ -45,6 +45,12 @@ public:
 	idx_t &DepthMutable() {
 		return depth;
 	}
+	//! Create a column reference with a different binding
+	unique_ptr<Expression> WithBinding(ColumnBinding new_binding) const;
+	//! Create a column reference with a different binding and depth
+	unique_ptr<Expression> WithBinding(ColumnBinding new_binding, idx_t new_depth) const;
+	//! Create a column reference with a different depth
+	unique_ptr<Expression> WithDepth(idx_t new_depth) const;
 
 	string ToString() const override;
 	Identifier GetName() const override;

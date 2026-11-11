@@ -66,15 +66,12 @@ unique_ptr<Expression> RewriteCorrelatedExpressions::VisitReplace(BoundColumnRef
 	D_ASSERT(current_entry != current_binding_map.end());
 	auto original_binding = expr.Binding();
 	if (original_binding == current_entry->second) {
-		expr.DepthMutable() = 0;
-		return nullptr;
+		return expr.WithDepth(0);
 	}
-	expr.BindingMutable() = current_entry->second;
-	RegisterCorrelatedBinding(original_binding, expr.Binding());
+	RegisterCorrelatedBinding(original_binding, current_entry->second);
 	// The current representative is produced inside the converted algebra. Once a
 	// reference points at it, it is local regardless of the original binder depth.
-	expr.DepthMutable() = 0;
-	return nullptr;
+	return expr.WithBinding(current_entry->second, 0);
 }
 
 RewriteCorrelatedAggregates::RewriteCorrelatedAggregates(

@@ -384,7 +384,7 @@ private:
 	unique_ptr<Expression> VisitReplace(BoundColumnRefExpression &expr, unique_ptr<Expression> *) override {
 		const auto entry = aggregate_map.find(expr.Binding());
 		if (entry != aggregate_map.end()) {
-			expr.BindingMutable() = entry->second;
+			return expr.WithBinding(entry->second);
 		}
 		return nullptr;
 	}

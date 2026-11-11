@@ -86,7 +86,7 @@ void UnnestRewriterPlanUpdater::VisitExpression(unique_ptr<Expression> *expressi
 		auto &bound_column_ref = expr->Cast<BoundColumnRefExpression>();
 		for (idx_t i = 0; i < replace_bindings.size(); i++) {
 			if (bound_column_ref.Binding() == replace_bindings[i].old_binding) {
-				bound_column_ref.BindingMutable() = replace_bindings[i].new_binding;
+				expr = bound_column_ref.WithBinding(replace_bindings[i].new_binding);
 				break;
 			}
 		}
@@ -222,9 +222,8 @@ void UnnestRewriter::FindCandidates(unique_ptr<LogicalOperator> &root, unique_pt
 				auto unnest_expr = make_uniq<BoundUnnestExpression>(unnest_get->types[i]);
 				unnest_expr->ChildMutable() =
 				    BoundCastExpression::AddArrayCastToList(context, proj.expressions[col_bind.column_index]->Copy());
-				bind_col.BindingMutable() = ColumnBinding(unnest_get_index, bind_col.Binding().column_index);
 				auto unnest_proj_idx = ColumnBinding::PushExpression(unnest->expressions, std::move(unnest_expr));
-				ColumnBinding new_column_ref(bind_col.Binding().table_index, unnest_proj_idx);
+				ColumnBinding new_column_ref(unnest_get_index, unnest_proj_idx);
 				auto unnest_ref = make_uniq<BoundColumnRefExpression>(bind_col.GetAlias(), unnest_get->types[i],
 				                                                      new_column_ref, bind_col.Depth());
 				proj.expressions[col_bind.column_index] = std::move(unnest_ref);
@@ -291,9 +290,8 @@ static bool ConvertCTETableInOutUnnest(ClientContext &context, unique_ptr<Logica
 		auto unnest_expr = make_uniq<BoundUnnestExpression>(unnest_get->types[i]);
 		unnest_expr->ChildMutable() =
 		    BoundCastExpression::AddArrayCastToList(context, proj.expressions[col_bind.column_index]->Copy());
-		bind_col.BindingMutable() = ColumnBinding(unnest_get_index, bind_col.Binding().column_index);
 		auto unnest_proj_idx = ColumnBinding::PushExpression(unnest->expressions, std::move(unnest_expr));
-		ColumnBinding new_column_ref(bind_col.Binding().table_index, unnest_proj_idx);
+		ColumnBinding new_column_ref(unnest_get_index, unnest_proj_idx);
 		auto unnest_ref = make_uniq<BoundColumnRefExpression>(bind_col.GetAlias(), unnest_get->types[i], new_column_ref,
 		                                                      bind_col.Depth());
 		proj.expressions[col_bind.column_index] = std::move(unnest_ref);

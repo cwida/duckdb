@@ -77,31 +77,31 @@ static void CollectReferencedProjections(LogicalProjection &proj, const Expressi
 
 static void ReplaceFilterBindings(LogicalProjection &proj, unique_ptr<Expression> &expr, TableIndex lower_table_index,
                                   const vector<ProjectionIndex> &lower_projection_indexes) {
-	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-	    expr, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &) {
+	expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+	    std::move(expr), [&](const BoundColumnRefExpression &colref) {
 		    D_ASSERT(colref.Depth() == 0);
 		    D_ASSERT(colref.Binding().table_index == proj.table_index);
 		    const auto projection_index = lower_projection_indexes[colref.Binding().column_index];
 		    D_ASSERT(projection_index.IsValid());
-		    colref.BindingMutable() = ColumnBinding(lower_table_index, projection_index);
+		    return colref.WithBinding(ColumnBinding(lower_table_index, projection_index));
 	    });
 }
 
 static void AddPassThroughColumns(unique_ptr<Expression> &expr, TableIndex lower_table_index,
                                   vector<unique_ptr<Expression>> &lower_expressions,
                                   column_binding_map_t<ProjectionIndex> &pass_through_indexes) {
-	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-	    expr, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &colref_expr) {
+	expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+	    std::move(expr), [&](const BoundColumnRefExpression &colref) -> unique_ptr<Expression> {
 		    if (colref.Depth() != 0) {
-			    return;
+			    return nullptr;
 		    }
 		    auto entry = pass_through_indexes.find(colref.Binding());
 		    if (entry == pass_through_indexes.end()) {
 			    const auto projection_index = ProjectionIndex(lower_expressions.size());
 			    entry = pass_through_indexes.emplace(colref.Binding(), projection_index).first;
-			    lower_expressions.push_back(colref_expr->Copy());
+			    lower_expressions.push_back(colref.Copy());
 		    }
-		    colref.BindingMutable() = ColumnBinding(lower_table_index, entry->second);
+		    return colref.WithBinding(ColumnBinding(lower_table_index, entry->second));
 	    });
 }
 

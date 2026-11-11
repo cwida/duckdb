@@ -240,21 +240,21 @@ void HivePartitioning::ApplyFiltersToFileList(ClientContext &context, vector<Ope
 		}
 		auto retained = filters[i]->Copy();
 		bool representable = true;
-		ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-		    retained, [&](auto &column, unique_ptr<Expression> &) {
+		retained = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+		    std::move(retained), [&](const BoundColumnRefExpression &column) -> unique_ptr<Expression> {
 			    auto binding = column.Binding();
 			    if (column.Depth() != 0 || binding.table_index != table_index ||
 			        binding.column_index.GetIndex() >= info.column_indexes.size()) {
 				    representable = false;
-				    return;
+				    return nullptr;
 			    }
 			    auto &index = info.column_indexes[binding.column_index.GetIndex()];
 			    if (index.IsVirtualColumn() || index.IsPushdownExtract() || index.HasType()) {
 				    representable = false;
-				    return;
+				    return nullptr;
 			    }
-			    column.BindingMutable() = ColumnBinding(TableIndex(ExtraOperatorInfo::FILE_FILTER_TABLE_INDEX),
-			                                            ProjectionIndex(index.GetPrimaryIndex()));
+			    return column.WithBinding(ColumnBinding(TableIndex(ExtraOperatorInfo::FILE_FILTER_TABLE_INDEX),
+			                                            ProjectionIndex(index.GetPrimaryIndex())));
 		    });
 		if (!representable) {
 			info.extra_info.file_filter_expressions.reset();

@@ -366,23 +366,23 @@ static bool RewriteFilterThroughProjections(unique_ptr<Expression> &expr,
                                             const vector<reference<LogicalProjection>> &projections) {
 	for (auto &projection : projections) {
 		bool can_push = true;
-		ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-		    expr, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &) {
+		expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+		    std::move(expr), [&](const BoundColumnRefExpression &colref) -> unique_ptr<Expression> {
 			    if (colref.Depth() != 0) {
 				    can_push = false;
-				    return;
+				    return nullptr;
 			    }
 			    auto &projected = projection.get().GetExpression(colref.Binding());
 			    if (projected.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 				    can_push = false;
-				    return;
+				    return nullptr;
 			    }
 			    auto &input = projected.Cast<BoundColumnRefExpression>();
 			    if (input.Depth() != 0) {
 				    can_push = false;
-				    return;
+				    return nullptr;
 			    }
-			    colref.BindingMutable() = input.Binding();
+			    return colref.WithBinding(input.Binding());
 		    });
 		if (!can_push) {
 			return false;

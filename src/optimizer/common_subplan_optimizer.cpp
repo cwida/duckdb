@@ -928,9 +928,9 @@ private:
 			} else {
 				auto &source = *expression_sources.at(binding.table_index);
 				auto expression = source.expressions[binding.column_index]->Copy();
-				ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-				    expression, [&](BoundColumnRefExpression &ref, unique_ptr<Expression> &) {
-					    ref.BindingMutable() = source.input->Expose(ref.Binding());
+				expression = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+				    std::move(expression), [&](const BoundColumnRefExpression &ref) {
+					    return ref.WithBinding(source.input->Expose(ref.Binding()));
 				    });
 				result = ColumnBinding(GetExpressionOutputTableIndex(source.op),
 				                       ProjectionIndex(source.op.expressions.size()));
@@ -1297,9 +1297,9 @@ private:
 		unordered_set<idx_t> used_indexes;
 		for (idx_t i = 0; i < op->expressions.size(); i++) {
 			auto expression = op->expressions[i]->Copy();
-			ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-			    expression, [&](BoundColumnRefExpression &ref, unique_ptr<Expression> &) {
-				    ref.BindingMutable() = GetCanonicalBinding(ref.Binding());
+			expression = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+			    std::move(expression), [&](const BoundColumnRefExpression &ref) {
+				    return ref.WithBinding(GetCanonicalBinding(ref.Binding()));
 			    });
 			idx_t index = 0;
 			for (; index < expressions.size(); index++) {

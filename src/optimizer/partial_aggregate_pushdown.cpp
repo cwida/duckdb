@@ -1214,7 +1214,7 @@ unique_ptr<Expression> PartialAggregatePushdown::VisitReplace(BoundColumnRefExpr
                                                               unique_ptr<Expression> *expr_ptr) {
 	auto entry = replacement_map.find(expr.Binding());
 	if (entry != replacement_map.end()) {
-		expr.BindingMutable() = entry->second;
+		return expr.WithBinding(entry->second);
 	}
 	return nullptr;
 }

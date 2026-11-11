@@ -541,7 +541,7 @@ unique_ptr<Expression> AggregateReuseOptimizer::VisitReplace(BoundColumnRefExpre
                                                              unique_ptr<Expression> *expression_ptr) {
 	auto entry = replacement_map.find(expression.Binding());
 	if (entry != replacement_map.end()) {
-		expression.BindingMutable() = entry->second;
+		return expression.WithBinding(entry->second);
 	}
 	return nullptr;
 }
