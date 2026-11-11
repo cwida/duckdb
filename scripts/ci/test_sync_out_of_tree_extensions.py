@@ -30,6 +30,10 @@ def configure(build_dir, *arguments):
     )
 
 
+def git(repo, *args):
+    return subprocess.check_output(['git', '-C', str(repo), *args], stderr=subprocess.PIPE, text=True).strip()
+
+
 class ExtensionSyncTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -351,9 +355,6 @@ class ExtensionSyncTest(unittest.TestCase):
             GIT_COMMITTER_EMAIL='test@example.com',
         )
 
-        def git(repo, *args):
-            return subprocess.check_output(['git', '-C', str(repo), *args], stderr=subprocess.PIPE, text=True).strip()
-
         def repo(name):
             directory = self.root / name
             directory.mkdir()
@@ -402,16 +403,11 @@ class ExtensionSyncTest(unittest.TestCase):
         checkout = self.root / 'example'
         checkout.mkdir()
 
-        def git(*args):
-            return subprocess.check_output(
-                ['git', '-C', str(checkout), *args], stderr=subprocess.PIPE, text=True
-            ).strip()
-
         def commit(message):
-            git('commit', '--allow-empty', '-m', message)
-            return git('rev-parse', 'HEAD')
+            git(checkout, 'commit', '--allow-empty', '-m', message)
+            return git(checkout, 'rev-parse', 'HEAD')
 
-        git('init')
+        git(checkout, 'init')
         root_patch = commit('0000-root.patch')
         config_dir = self.root / 'configs'
         config_dir.mkdir()
@@ -441,9 +437,6 @@ class ExtensionSyncTest(unittest.TestCase):
             GIT_COMMITTER_NAME='Extension Sync Test',
             GIT_COMMITTER_EMAIL='test@example.com',
         )
-
-        def git(repo, *args):
-            return subprocess.check_output(['git', '-C', str(repo), *args], stderr=subprocess.PIPE, text=True).strip()
 
         def repo(name):
             directory = self.root / name
