@@ -1,0 +1,12 @@
+# name: test/parquet/corrupt/boolean_plain_truncated.test
+# description: Reject a PLAIN Boolean value beyond the end of the payload
+# group: [corrupt]
+
+require parquet
+
+# The page declares nine Boolean values but contains only one byte.
+# Reading the ninth value must fail before consuming the page's guard byte.
+statement error
+SELECT * FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/boolean_plain_truncated.parquet');
+----
+Out of buffer
