@@ -1,0 +1,11 @@
+# name: test/sql/types/bignum/test_bignum_negate_comparison.test
+# description: Negating a BIGNUM finalizes the prefix used by comparisons
+# group: [bignum]
+
+statement ok
+CREATE TABLE numbers AS SELECT s::BIGNUM AS v, n::BIGNUM AS negated FROM (VALUES ('0', '0'), ('1', '-1'), ('170141183460469231731687303715884105728', '-170141183460469231731687303715884105728'), ('-340282366920938463463374607431768211456', '340282366920938463463374607431768211456')) t(s, n)
+
+query III
+SELECT count(*), count(*) FILTER (-v = negated), count(*) FILTER (-v < negated OR -v > negated) FROM numbers
+----
+4	4	0

@@ -269,6 +269,7 @@ string_t BignumIntermediate::Negate(StringHeap &heap) const {
 		}
 	}
 
+	target.Finalize();
 	return target;
 }
 
