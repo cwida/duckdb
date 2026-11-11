@@ -4,6 +4,9 @@
 
 require parquet
 
+# Tiny vectors split the aggregate's spilled data into so many chunks that their unspillable metadata exceeds the limit
+require vector_size 2048
+
 statement ok
 PRAGMA threads=8;
 
