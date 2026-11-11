@@ -21,8 +21,7 @@ void PhysicalReset::ResetExtensionVariable(ExecutionContext &context, DBConfig &
 		config.ResetOption(extension_option);
 	} else {
 		auto &client_config = ClientConfig::GetConfig(context.client);
-		auto setting_index = extension_option.setting_index.GetIndex();
-		client_config.user_settings.SetUserSetting(setting_index, extension_option.default_value);
+		client_config.user_settings.ClearSetting(extension_option.setting_index.GetIndex());
 	}
 }
 
