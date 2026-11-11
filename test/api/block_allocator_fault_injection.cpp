@@ -3,12 +3,16 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+#include <string>
 #include <thread>
 #include <vector>
 #include <sys/mman.h>
+#include <sys/prctl.h>
+#include <unistd.h>
 
 // Link wrapping confines failures to this executable's allocator implementation.
 static thread_local bool reject_malloc = false;
@@ -213,7 +217,15 @@ static void CheckPoolOwnership() {
 	}
 }
 
-int main() {
+int main(int argc, char **argv) {
+	Check(argc == 1 || argc == 2, "expected an optional parent process ID");
+	if (argc == 2) {
+		Check(prctl(PR_SET_PDEATHSIG, SIGKILL) == 0, "parent-death signal registration");
+		// The test process may have exited before signal registration.
+		if (std::to_string(getppid()) != argv[1]) {
+			return 1;
+		}
+	}
 	CheckAbandonedInitialization();
 	CheckPoolOwnership();
 	std::puts("BlockAllocator allocation-failure checks passed");
