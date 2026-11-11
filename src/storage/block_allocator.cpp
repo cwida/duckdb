@@ -1,4 +1,5 @@
 #include "duckdb/storage/block_allocator.hpp"
+#include "duckdb/storage/sharded_allocator_queue.hpp"
 
 #include "duckdb/common/allocator.hpp"
 #include "duckdb/common/types/uuid.hpp"
@@ -214,95 +215,6 @@ static idx_t AllocatorLocalShard(const idx_t count) {
 	return count == 1 ? 0 : (TaskScheduler::GetEstimatedCPUId() / 4) % count;
 }
 
-template <class T>
-class ShardedAllocatorQueue {
-public:
-	struct alignas(64) Shard {
-		bool Enqueue(T value) {
-			return EnqueueInternal(1, [&] { return q.enqueue(value); });
-		}
-		template <class ITERATOR>
-		bool EnqueueBulk(ITERATOR begin, idx_t size) {
-			return EnqueueInternal(size, [&] { return q.enqueue_bulk(begin, size); });
-		}
-		bool TryDequeue(T &value) {
-			return TryDequeueInternal([&] { return idx_t(q.try_dequeue(value)); }) != 0;
-		}
-		template <class ITERATOR>
-		idx_t TryDequeueBulk(ITERATOR begin, idx_t size) {
-			return TryDequeueInternal([&] { return q.try_dequeue_bulk(begin, size); });
-		}
-		idx_t SizeApprox() const {
-			return track_count ? count.load(std::memory_order_relaxed) : q.size_approx();
-		}
-
-		bool track_count = false;
-
-	private:
-		template <class ENQUEUE>
-		bool EnqueueInternal(idx_t size, ENQUEUE enqueue) {
-			if (track_count) {
-				count.fetch_add(size, std::memory_order_relaxed);
-			}
-			try {
-				if (enqueue()) {
-					return true;
-				}
-			} catch (...) {
-				if (track_count) {
-					count.fetch_sub(size, std::memory_order_relaxed);
-				}
-				throw;
-			}
-			if (track_count) {
-				count.fetch_sub(size, std::memory_order_relaxed);
-			}
-			return false;
-		}
-		template <class DEQUEUE>
-		idx_t TryDequeueInternal(DEQUEUE dequeue) {
-			if (track_count && count.load(std::memory_order_relaxed) == 0) {
-				return 0;
-			}
-			const auto obtained = dequeue();
-			if (track_count && obtained > 0) {
-				count.fetch_sub(obtained, std::memory_order_relaxed);
-			}
-			return obtained;
-		}
-
-		duckdb_moodycamel::ConcurrentQueue<T> q;
-		alignas(64) atomic<idx_t> count {0};
-	};
-
-public:
-	explicit ShardedAllocatorQueue(idx_t count, bool track_count = false) : queues(count) {
-		D_ASSERT(count > 0);
-		for (auto &queue : queues) {
-			queue.track_count = track_count;
-		}
-	}
-	idx_t Count() const {
-		return queues.size();
-	}
-	idx_t LocalShard() const {
-		return AllocatorLocalShard(Count());
-	}
-	Shard &Get(idx_t shard) {
-		return queues[shard];
-	}
-	idx_t SizeApprox() const {
-		idx_t count = 0;
-		for (auto &queue : queues) {
-			count += queue.SizeApprox();
-		}
-		return count;
-	}
-
-private:
-	vector<Shard> queues;
-};
-
 struct BlockQueue {
 	BlockQueue(idx_t blocks, idx_t shards)
 	    : blocks_per_shard(MaxValue<idx_t>(1, blocks / shards + (blocks % shards != 0))),
@@ -310,6 +222,16 @@ struct BlockQueue {
 	             blocks > blocks_per_shard) {
 	}
 
+	void ReserveOverflow(idx_t blocks) {
+		for (idx_t shard = 0; shard < queues.Count(); shard++) {
+			queues.Get(shard).ReserveOverflow(MinValue(blocks_per_shard, blocks - shard * blocks_per_shard));
+		}
+	}
+	void ReleaseOverflow() {
+		for (idx_t shard = 0; shard < queues.Count(); shard++) {
+			queues.Get(shard).ReserveOverflow(0);
+		}
+	}
 	idx_t Home(uint32_t block) const {
 		return block / blocks_per_shard;
 	}
@@ -726,7 +648,7 @@ private:
 
 private:
 	idx_t LocalShard() const {
-		return buckets[0]->queues.LocalShard();
+		return AllocatorLocalShard(buckets[0]->queues.Count());
 	}
 
 	Allocator &allocator;
@@ -806,6 +728,8 @@ bool BlockAllocator::InitializePool() const {
 	unsafe_unique_ptr<BlockQueue> queue;
 	try {
 		queue = make_unsafe_uniq<BlockQueue>(DivBlockSize(pool_size), touched->queues.Count());
+		queue->ReserveOverflow(DivBlockSize(pool_size));
+		touched->ReserveOverflow(DivBlockSize(pool_size));
 		uint32_t block_ids[STANDARD_VECTOR_SIZE];
 		const auto count = DivBlockSize(pool_size);
 		for (idx_t block_id = 0; block_id < count; block_id += STANDARD_VECTOR_SIZE) {
@@ -814,17 +738,20 @@ bool BlockAllocator::InitializePool() const {
 				block_ids[i] = NumericCast<uint32_t>(block_id + i);
 			}
 			if (!queue->EnqueueBulk(block_ids, next)) {
+				touched->ReleaseOverflow();
 				pool_state.store(PoolState::UNAVAILABLE, std::memory_order_release);
 				return false;
 			}
 		}
 	} catch (const std::bad_alloc &) {
+		touched->ReleaseOverflow();
 		pool_state.store(PoolState::UNAVAILABLE, std::memory_order_release);
 		return false;
 	}
 
 	const auto pointer = AllocateVirtualMemory(pool_size);
 	if (!pointer) {
+		touched->ReleaseOverflow();
 		pool_state.store(PoolState::UNAVAILABLE, std::memory_order_release);
 		return false;
 	}
@@ -856,7 +783,7 @@ idx_t BlockAllocator::DivBlockSize(const idx_t n) const {
 }
 
 idx_t BlockAllocator::GetLocalPoolShard() const {
-	return touched->queues.LocalShard();
+	return AllocatorLocalShard(touched->queues.Count());
 }
 
 uint32_t BlockAllocator::GetBlockID(const data_ptr_t pointer) const {

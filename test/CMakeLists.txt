@@ -71,6 +71,46 @@ endif()
 
 add_executable(unittest unittest.cpp ${UNITTEST_OBJECT_FILES})
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
+   AND NOT CMAKE_CROSSCOMPILING
+   AND CMAKE_SIZEOF_VOID_P EQUAL 8
+   AND ENABLE_UNITTEST_CPP_TESTS
+   AND TARGET duckdb)
+  # Exercise real allocator failures without installing hooks in the library.
+  add_executable(
+    block_allocator_fault_injection api/block_allocator_fault_injection.cpp
+                                    ../src/storage/block_allocator.cpp)
+  target_link_libraries(block_allocator_fault_injection duckdb pthread)
+  target_link_options(
+    block_allocator_fault_injection
+    PRIVATE
+    -Wl,--wrap=malloc
+    -Wl,--wrap=_Znwm
+    -Wl,--wrap=_ZdlPv
+    -Wl,--wrap=_ZdlPvm
+    -Wl,--wrap=mmap)
+  if(CMAKE_VERSION VERSION_LESS 3.20)
+    set(allocator_probe_stamp
+        "${CMAKE_CFG_INTDIR}/block_allocator_fault_injection.stamp")
+    set(allocator_probe_executable
+        $<TARGET_FILE:block_allocator_fault_injection>)
+  else()
+    set(allocator_probe_stamp "block_allocator_fault_injection-$<CONFIG>.stamp")
+    set(allocator_probe_executable
+        $<OUTPUT_CONFIG:$<TARGET_FILE:block_allocator_fault_injection>>)
+  endif()
+  add_custom_command(
+    OUTPUT "${allocator_probe_stamp}"
+    COMMAND ${CMAKE_COMMAND} -E env "${allocator_probe_executable}"
+    COMMAND ${CMAKE_COMMAND} -E touch "${allocator_probe_stamp}"
+    DEPENDS "${allocator_probe_executable}"
+    COMMENT "Checking BlockAllocator allocation-failure ownership"
+    VERBATIM)
+  add_custom_target(check_block_allocator_fault_injection
+                    DEPENDS "${allocator_probe_stamp}")
+  add_dependencies(unittest check_block_allocator_fault_injection)
+endif()
+
 # Enable best-effort stack traces for fatal signals in the test runner without
 # enabling stack traces for every DuckDB exception.
 if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT MUSL_ENABLED) OR APPLE)
