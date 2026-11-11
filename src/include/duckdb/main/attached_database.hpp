@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "duckdb/common/atomic.hpp"
+#include "duckdb/common/mutex.hpp"
 #include "duckdb/common/optional.hpp"
 #include "duckdb/common/prefetched_file_data.hpp"
 #include "duckdb/main/config.hpp"
@@ -164,6 +166,18 @@ public:
 	bool IsInitialDatabase() const;
 	void SetInitialDatabase();
 	void SetReadOnlyDatabase();
+	//! One-way latch: flip a read-write database to read-only at runtime. This is an SQL-level write gate: after the
+	//! flip, new statements can no longer register writes against this attached database entry. The latch only gates
+	//! the entry, not the file: there is no unlatch statement, but DETACH followed by re-ATTACH creates a new,
+	//! writable entry, so in an untrusted-SQL setting the latch must be combined with disabling ATTACH/DETACH
+	//! (e.g. SET enable_external_access = false plus SET lock_configuration = true). The storage layer itself stays
+	//! open read-write - the OS file lock is unchanged, and CHECKPOINT on a latched database still writes to the file
+	//! (unlike a genuine READ_ONLY attach, where it is a no-op) - and a write transaction admitted in the window just
+	//! before the flip can still commit afterwards. Attempts a checkpoint after the flip; throws (and reverts) if the
+	//! calling transaction has pending changes on the database or other write transactions are active (for
+	//! storage-extension catalogs this active-write-transaction check does not apply). Returns false if already
+	//! read-only.
+	bool LatchReadOnly(ClientContext &context);
 	void OnDetach(ClientContext &context);
 	RecoveryMode GetRecoveryMode() const {
 		return recovery_mode;
@@ -212,7 +226,10 @@ private:
 	unique_ptr<StorageManager> storage;
 	unique_ptr<Catalog> catalog;
 	unique_ptr<TransactionManager> transaction_manager;
-	AttachedDatabaseType type;
+	//! Atomic: LatchReadOnly can flip this to READ_ONLY_DATABASE while other threads read it
+	atomic<AttachedDatabaseType> type;
+	//! Serializes LatchReadOnly calls, so a concurrent latch cannot observe a mid-flight flip that later reverts
+	mutex latch_lock;
 	optional_ptr<Catalog> parent_catalog;
 	optional_ptr<StorageExtension> storage_extension;
 	RecoveryMode recovery_mode = RecoveryMode::DEFAULT;

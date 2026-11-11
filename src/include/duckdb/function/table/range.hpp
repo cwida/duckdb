@@ -17,6 +17,10 @@ struct CheckpointFunction {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
+struct LatchReadOnlyFunction {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
 struct GlobTableFunction {
 	static void RegisterFunction(BuiltinFunctions &set);
 };

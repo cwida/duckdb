@@ -4,6 +4,7 @@
 #include "duckdb/catalog/duck_catalog.hpp"
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/enums/checkpoint_on_detach.hpp"
+#include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/database_manager.hpp"
@@ -14,6 +15,7 @@
 #include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 #include "duckdb/storage/storage_manager.hpp"
+#include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/transaction/duck_transaction_manager.hpp"
 #include "duckdb/main/database_path_and_type.hpp"
 #include "duckdb/main/valid_checker.hpp"
@@ -140,12 +142,9 @@ AttachedDatabase::AttachedDatabase(DatabaseInstance &db, AttachedDatabaseType ty
 AttachedDatabase::AttachedDatabase(DatabaseInstance &db, Catalog &catalog_p, Identifier name_p, string file_path_p,
                                    AttachOptions &options)
     : CatalogEntry(CatalogType::DATABASE_ENTRY, catalog_p, std::move(name_p)), db(db), validity(db),
+      type(options.access_mode == AccessMode::READ_ONLY ? AttachedDatabaseType::READ_ONLY_DATABASE
+                                                        : AttachedDatabaseType::READ_WRITE_DATABASE),
       parent_catalog(&catalog_p), close_lock(make_shared_ptr<mutex>()) {
-	if (options.access_mode == AccessMode::READ_ONLY) {
-		type = AttachedDatabaseType::READ_ONLY_DATABASE;
-	} else {
-		type = AttachedDatabaseType::READ_WRITE_DATABASE;
-	}
 	recovery_mode = options.recovery_mode;
 	visibility = options.visibility;
 	ephemeral = options.ephemeral;
@@ -169,12 +168,9 @@ AttachedDatabase::AttachedDatabase(DatabaseInstance &db, Catalog &catalog_p, Ide
 AttachedDatabase::AttachedDatabase(DatabaseInstance &db, Catalog &catalog_p, StorageExtension &storage_extension_p,
                                    ClientContext &context, Identifier name_p, AttachInfo &info, AttachOptions &options)
     : CatalogEntry(CatalogType::DATABASE_ENTRY, catalog_p, std::move(name_p)), db(db), validity(db),
+      type(options.access_mode == AccessMode::READ_ONLY ? AttachedDatabaseType::READ_ONLY_DATABASE
+                                                        : AttachedDatabaseType::READ_WRITE_DATABASE),
       parent_catalog(&catalog_p), storage_extension(&storage_extension_p), close_lock(make_shared_ptr<mutex>()) {
-	if (options.access_mode == AccessMode::READ_ONLY) {
-		type = AttachedDatabaseType::READ_ONLY_DATABASE;
-	} else {
-		type = AttachedDatabaseType::READ_WRITE_DATABASE;
-	}
 	recovery_mode = options.recovery_mode;
 	visibility = options.visibility;
 	ephemeral = options.ephemeral;
@@ -375,6 +371,69 @@ void AttachedDatabase::SetInitialDatabase() {
 
 void AttachedDatabase::SetReadOnlyDatabase() {
 	type = AttachedDatabaseType::READ_ONLY_DATABASE;
+}
+
+bool AttachedDatabase::LatchReadOnly(ClientContext &context) {
+	// serialize latch attempts - a concurrent latch must not observe a mid-flight flip that later reverts
+	lock_guard<mutex> latch_guard(latch_lock);
+	if (IsReadOnly()) {
+		// the latch is idempotent - latching an already read-only database is a no-op
+		return false;
+	}
+	if (IsSystem() || IsTemporary()) {
+		throw InvalidInputException("Cannot latch database \"%s\" to read-only: only regular databases can be latched",
+		                            GetName().GetIdentifierName());
+	}
+	if (!transaction_manager->IsDuckTransactionManager()) {
+		// extension catalog (e.g. a storage extension): the latch closes the SQL-level write gate only. The
+		// extension's own storage/transaction manager is not informed of the flip, in-flight extension
+		// transactions are unaffected, and the active-write-transaction check below does not apply.
+		SetReadOnlyDatabase();
+		return true;
+	}
+	auto &duck_tm = transaction_manager->Cast<DuckTransactionManager>();
+	{
+		// The calling transaction itself may have pending changes on this database - report that specifically,
+		// instead of the generic concurrent-conflict errors below.
+		auto current = Transaction::TryGet(context, *this);
+		if (current && current->Cast<DuckTransaction>().ChangesMade()) {
+			throw TransactionException(
+			    "Cannot latch database \"%s\" to read-only: the current transaction has pending changes on it",
+			    GetName().GetIdentifierName());
+		}
+	}
+	{
+		// Pre-check: the shared vacuum lock is held by insert/delete transactions, but also by index scans and
+		// checkpoints. If it cannot be taken exclusively, some concurrent operation is in flight and the caller
+		// should retry. Update/DDL transactions are rejected by Checkpoint() below instead.
+		auto vacuum_lock = duck_tm.TryGetVacuumLock();
+		if (!vacuum_lock) {
+			throw TransactionException(
+			    "Cannot latch database \"%s\" to read-only: concurrent operations prevent latching, retry later",
+			    GetName().GetIdentifierName());
+		}
+	}
+	// close the SQL-level write gate: after this, no new statement can register writes against this attached
+	// database entry. The gate covers the entry only - DETACH followed by re-ATTACH creates a new, writable
+	// entry, so in an untrusted-SQL setting the latch must be combined with disabling ATTACH/DETACH
+	// (e.g. SET enable_external_access = false plus SET lock_configuration = true). The storage layer stays
+	// open read-write (the OS file lock is unchanged and CHECKPOINT still writes to the file), and a write
+	// transaction admitted in the window before this flip can still commit afterwards - its data is preserved
+	// in the WAL, it is just not covered by the checkpoint below.
+	SetReadOnlyDatabase();
+	try {
+		// attempt to checkpoint so the on-disk state is up to date;
+		// this throws if other write transactions are active - the latch fails and the type is restored
+		transaction_manager->Checkpoint(context, false);
+	} catch (TransactionException &) {
+		type = AttachedDatabaseType::READ_WRITE_DATABASE;
+		throw TransactionException("Cannot latch database \"%s\" to read-only: there are active write transactions",
+		                           GetName().GetIdentifierName());
+	} catch (...) {
+		type = AttachedDatabaseType::READ_WRITE_DATABASE;
+		throw;
+	}
+	return true;
 }
 
 void AttachedDatabase::OnDetach(ClientContext &context) {

@@ -1,0 +1,259 @@
+# name: test/sql/storage/latch_database_read_only.test
+# description: One-way runtime read-only latch on a database
+# group: [storage]
+
+# the latch is runtime-only state - reloading the database from disk would silently drop it
+require skip_reload
+
+load {TEST_DIR}/latch_ro.db
+
+statement ok
+CREATE TABLE t AS SELECT 42 AS i;
+
+statement ok
+CREATE MACRO answer() AS TABLE SELECT i FROM t;
+
+# a write prepared before the latch, executed after it (below)
+statement ok
+PREPARE ins AS INSERT INTO t VALUES (99);
+
+# the bare form latches the current database; `latched` reports that this call flipped the database
+query I
+CALL latch_database_read_only();
+----
+true
+
+# reads still work, including objects created pre-latch
+query I
+SELECT * FROM answer();
+----
+42
+
+# the database now reports as read-only
+query I
+SELECT readonly FROM duckdb_databases() WHERE database_name = 'latch_ro';
+----
+true
+
+# writes are rejected with the same error as ATTACH (READ_ONLY)
+statement error
+CREATE TABLE t2 (i INTEGER);
+----
+read-only
+
+statement error
+INSERT INTO t VALUES (1);
+----
+read-only
+
+statement error
+DROP TABLE t;
+----
+read-only
+
+# a prepared write created before the latch fails at execution time
+statement error
+EXECUTE ins;
+----
+read-only
+
+# temp objects remain writable, as in -readonly mode
+statement ok
+CREATE TEMPORARY TABLE tmp (i INTEGER);
+
+statement ok
+INSERT INTO tmp VALUES (1);
+
+# the latch is idempotent - a second call reports that nothing was flipped
+query I
+CALL latch_database_read_only();
+----
+false
+
+# CHECKPOINT of a latched database still succeeds - the storage layer stays open read-write
+statement ok
+CHECKPOINT;
+
+# the latch also works on attached databases, by name
+statement ok
+ATTACH '{TEST_DIR}/latch_ro_other.db' AS other;
+
+statement ok
+CREATE TABLE other.x AS SELECT 7 AS i;
+
+statement ok
+CALL latch_database_read_only('other');
+
+statement error
+INSERT INTO other.x VALUES (8);
+----
+read-only
+
+query I
+SELECT i FROM other.x;
+----
+7
+
+# in-memory databases can be latched too; the result column is named `latched`
+statement ok
+ATTACH ':memory:' AS mem;
+
+statement ok
+CREATE TABLE mem.m AS SELECT 1 AS i;
+
+query I
+SELECT latched FROM latch_database_read_only('mem');
+----
+true
+
+query I
+SELECT i FROM mem.m;
+----
+1
+
+statement error
+INSERT INTO mem.m VALUES (2);
+----
+read-only
+
+# system/temp databases cannot be latched
+statement error
+CALL latch_database_read_only('temp');
+----
+only regular databases
+
+statement error
+CALL latch_database_read_only('system');
+----
+only regular databases
+
+# the latch is runtime state, not a transactional change - rolling back the surrounding
+# transaction does not undo it
+statement ok
+ATTACH ':memory:' AS mem2;
+
+statement ok
+CREATE TABLE mem2.z (i INTEGER);
+
+statement ok
+BEGIN;
+
+query I
+CALL latch_database_read_only('mem2');
+----
+true
+
+statement ok
+ROLLBACK;
+
+statement error
+INSERT INTO mem2.z VALUES (1);
+----
+read-only
+
+query I
+SELECT readonly FROM duckdb_databases() WHERE database_name = 'mem2';
+----
+true
+
+# the calling transaction's own pending changes block the latch with a specific error
+statement ok
+ATTACH ':memory:' AS mem3;
+
+statement ok
+CREATE TABLE mem3.w (i INTEGER);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO mem3.w VALUES (1);
+
+statement error
+CALL latch_database_read_only('mem3');
+----
+the current transaction has pending changes on it
+
+statement ok
+ROLLBACK;
+
+# the failed latch left the database writable
+statement ok
+INSERT INTO mem3.w VALUES (2);
+
+# a write transaction with local changes blocks the latch
+statement ok
+ATTACH '{TEST_DIR}/latch_ro_third.db' AS third;
+
+statement ok
+CREATE TABLE third.y (i INTEGER);
+
+statement ok
+INSERT INTO third.y VALUES (0);
+
+# an in-flight UPDATE is rejected by the checkpoint attempt
+statement ok con1
+BEGIN;
+
+statement ok con1
+UPDATE third.y SET i = 1;
+
+statement error con2
+CALL latch_database_read_only('third');
+----
+there are active write transactions
+
+statement ok con1
+ROLLBACK;
+
+# an in-flight INSERT holds the shared vacuum lock and is rejected by the pre-check
+statement ok con1
+BEGIN;
+
+statement ok con1
+INSERT INTO third.y VALUES (2);
+
+statement error con2
+CALL latch_database_read_only('third');
+----
+concurrent operations prevent latching
+
+statement ok con1
+COMMIT;
+
+statement ok con2
+CALL latch_database_read_only('third');
+
+# documented behavior: the latch gates the attached database entry only. DETACH followed by
+# re-ATTACH creates a new, writable entry - this is why untrusted-SQL setups must also disable
+# ATTACH/DETACH (SET enable_external_access = false plus SET lock_configuration = true).
+statement ok
+ATTACH '{TEST_DIR}/latch_ro_bypass.db' AS bypass;
+
+statement ok
+CREATE TABLE bypass.b AS SELECT 1 AS i;
+
+query I
+CALL latch_database_read_only('bypass');
+----
+true
+
+statement error
+INSERT INTO bypass.b VALUES (2);
+----
+read-only
+
+statement ok
+DETACH bypass;
+
+statement ok
+ATTACH '{TEST_DIR}/latch_ro_bypass.db' AS bypass;
+
+statement ok
+INSERT INTO bypass.b VALUES (2);
+
+# after a restart the database is writable again - the latch is per-process, like -readonly
+restart
+
+statement ok
+CREATE TABLE t3 (i INTEGER);
