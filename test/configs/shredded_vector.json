@@ -4,6 +4,12 @@
 	"skip_compiled": "true",
 	"skip_tests": [
 		{
+			"reason": "Forcing every vector to be shredded walks all 40000 nesting levels on this branch, which lacks main's visitor nesting limit (8e76724ad84, 5dfd2d2ef1f), and times out",
+			"paths": [
+				"test/sql/copy/parquet/variant_deep_nesting.test"
+			]
+		},
+		{
 			"reason": "These tests need one shredded and one unshredded row group in the same table, which forcing every vector to be shredded takes away",
 			"paths": [
 				"test/sql/storage/types/variant/variant_object_key_order_shredded.test",
