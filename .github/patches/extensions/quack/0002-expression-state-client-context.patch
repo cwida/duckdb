@@ -1,0 +1,12 @@
+diff --git a/src/quack_extension.cpp b/src/quack_extension.cpp
+--- a/src/quack_extension.cpp
++++ b/src/quack_extension.cpp
+@@ -103,7 +103,7 @@
+ 
+ static void QuackConnectionIdFunc(const DataChunk &args, ExpressionState &state, Vector &result) {
+ 	auto catalog_name = args.GetValue(0, 0);
+-	auto &quack_catalog = QuackCatalog::GetQuackCatalog(state.GetContext(), catalog_name);
++	auto &quack_catalog = QuackCatalog::GetQuackCatalog(state.GetClientContext(), catalog_name);
+ 	result.SetValue(0, Value(quack_catalog.GetConnectionId()));
+ }
+ 

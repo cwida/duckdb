@@ -1,4 +1,6 @@
 #include "duckdb/common/bswap.hpp"
+#include "duckdb/main/context.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/function/scalar/compressed_materialization_functions.hpp"
 #include "duckdb/function/scalar/compressed_materialization_utils.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
@@ -120,7 +122,7 @@ string StringDecompressFunctionName() {
 
 struct StringDecompressLocalState : public FunctionLocalState {
 public:
-	explicit StringDecompressLocalState(ClientContext &context) : allocator(Allocator::Get(context)) {
+	explicit StringDecompressLocalState(Context &context) : allocator(Allocator::Get(context.GetDatabase())) {
 	}
 
 	static unique_ptr<FunctionLocalState> Init(ExpressionState &state, const BoundFunctionExpression &expr,
