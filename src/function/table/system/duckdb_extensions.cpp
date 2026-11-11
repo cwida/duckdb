@@ -175,8 +175,7 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 		auto &ext_data = *ext_info;
 
 		ExtensionKey key(ext_name, string());
-		if (ext_data.install_info &&
-		    ext_data.install_info->repository_type == ExtensionRepositoryType::USER_PROVIDED &&
+		if (ext_data.install_info && ext_data.install_info->repository_type == ExtensionRepositoryType::USER_PROVIDED &&
 		    !ext_data.install_info->repository_name.empty()) {
 			auto &repository_name = ext_data.install_info->repository_name;
 			ExtensionKey repository_key(ext_name, repository_name);

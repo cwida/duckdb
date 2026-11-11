@@ -396,12 +396,11 @@ static ExtensionInstallInfo UserRepositoryInstallInfo(const string &repository_n
 
 // One "installed|loaded|install_mode|installed_from|version|fingerprint|path suffix" string per row of the extension
 static vector<string> ExtensionRows(Connection &con, const string &name) {
-	auto result = con.Query(
-	    "SELECT installed, loaded, install_mode, installed_from, extension_version, "
-	    "coalesce(signature_key_fingerprint, 'NULL'), "
-	    "regexp_extract(replace(install_path, '\\', '/'), '(repositories/[^/]+/)?[^/]*$') "
-	    "FROM duckdb_extensions() WHERE extension_name = $1",
-	    name);
+	auto result = con.Query("SELECT installed, loaded, install_mode, installed_from, extension_version, "
+	                        "coalesce(signature_key_fingerprint, 'NULL'), "
+	                        "regexp_extract(replace(install_path, '\\', '/'), '(repositories/[^/]+/)?[^/]*$') "
+	                        "FROM duckdb_extensions() WHERE extension_name = $1",
+	                        name);
 	REQUIRE_NO_FAIL(*result);
 	vector<string> rows;
 	for (auto &row : result->Collection().Rows()) {
@@ -425,16 +424,18 @@ TEST_CASE("Test that duckdb_extensions lists extensions installed from user-prov
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 
-	REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
-	    "CREATE EXTENSION REPOSITORY my_repo WITH PREFIX 'http://my_repo.com' USING PUBLIC KEY '%s'", TEST_PUBLIC_KEY)));
+	REQUIRE_NO_FAIL(con.Query(
+	    StringUtil::Format("CREATE EXTENSION REPOSITORY my_repo WITH PREFIX 'http://my_repo.com' USING PUBLIC KEY '%s'",
+	                       TEST_PUBLIC_KEY)));
 	REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
 	    "CREATE EXTENSION REPOSITORY other WITH PREFIX 'http://other.com' USING PUBLIC KEY '%s'", OTHER_PUBLIC_KEY)));
 	REQUIRE(ExtensionRows(con, "dns").empty());
 
 	// INSTALL dns FROM my_repo writes to the per-repository subfolder: the row reports the repository by name
 	StageInstalledExtension(*db.instance, "dns", "my_repo", UserRepositoryInstallInfo("my_repo", "v1"));
-	REQUIRE(ExtensionRows(con, "dns") ==
-	        vector<string> {"true|false|REPOSITORY|my_repo|v1|sha256:my_repo|repositories/my_repo/dns.duckdb_extension"});
+	REQUIRE(
+	    ExtensionRows(con, "dns") ==
+	    vector<string> {"true|false|REPOSITORY|my_repo|v1|sha256:my_repo|repositories/my_repo/dns.duckdb_extension"});
 
 	// rows are keyed by name and repository: a copy in the flat folder and in another repository each get a row
 	ExtensionInstallInfo community_info;
@@ -453,7 +454,8 @@ TEST_CASE("Test that duckdb_extensions lists extensions installed from user-prov
 	StageInstalledExtension(*db.instance, "json", "my_repo", UserRepositoryInstallInfo("my_repo", "v1"));
 	auto json_rows = ExtensionRows(con, "json");
 	REQUIRE(json_rows.size() == 2);
-	REQUIRE(json_rows[1] == "true|false|REPOSITORY|my_repo|v1|sha256:my_repo|repositories/my_repo/json.duckdb_extension");
+	REQUIRE(json_rows[1] ==
+	        "true|false|REPOSITORY|my_repo|v1|sha256:my_repo|repositories/my_repo/json.duckdb_extension");
 
 	// moving the files to the flat folder, as the reproducer does, keeps the origin recorded in the .info
 	StageInstalledExtension(*db.instance, "moved_ext", "", UserRepositoryInstallInfo("my_repo", "v1"));
@@ -473,12 +475,14 @@ TEST_CASE("Test that duckdb_extensions lists extensions installed from user-prov
 		string garbage = "not json";
 		handle->Write((void *)garbage.data(), garbage.size());
 	}
-	REQUIRE(ExtensionRows(con, "dns") == vector<string> {"true|false|REPOSITORY|community|v0|NULL|dns.duckdb_extension"});
+	REQUIRE(ExtensionRows(con, "dns") ==
+	        vector<string> {"true|false|REPOSITORY|community|v0|NULL|dns.duckdb_extension"});
 	fs->RemoveFile(broken_path);
 	REQUIRE(ExtensionRows(con, "dns").size() == 3);
 
 	// once repositories are forbidden they are distrusted, so their folders are no longer listed
 	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='forbidden'"));
-	REQUIRE(ExtensionRows(con, "dns") == vector<string> {"true|false|REPOSITORY|community|v0|NULL|dns.duckdb_extension"});
+	REQUIRE(ExtensionRows(con, "dns") ==
+	        vector<string> {"true|false|REPOSITORY|community|v0|NULL|dns.duckdb_extension"});
 	REQUIRE(ExtensionRows(con, "json").size() == 1);
 }
