@@ -22,7 +22,7 @@ statement ok
 INSERT INTO t VALUES (1);
 
 # ordering 1: the index commits while the replacing transaction holds an older snapshot.
-# The replacement is a drop+create, its commit must fail against the newly created index.
+# The replacement is an alter that changes a member, its commit must fail against the newly created index.
 statement ok con1
 BEGIN;
 
@@ -55,7 +55,7 @@ statement ok
 DROP INDEX ix;
 
 # ordering 2: the replacement commits while the index-creating transaction holds an older snapshot.
-# The index was compiled against the replaced definition, so its commit must fail instead.
+# The index was compiled against the replaced member, so its commit must fail instead.
 statement ok con2
 BEGIN;
 
@@ -71,7 +71,7 @@ CREATE UNIQUE INDEX ix ON t((i + delta()));
 statement error con2
 COMMIT;
 ----
-<REGEX>:.*Could not commit creation of dependency, subject "delta" was dropped and re-created by another transaction.*
+<REGEX>:.*Could not commit creation of dependency, subject "delta" was altered incompatibly by another transaction.*
 
 query I
 SELECT delta();
@@ -90,7 +90,7 @@ CREATE UNIQUE INDEX ix ON t((i + delta()));
 statement error
 CREATE OR REPLACE FUNCTION delta() RETURNS INTEGER LANGUAGE testlang AS '3';
 ----
-<REGEX>:.*Dependency Error.*index "ix" depends on macro function "delta".*
+<REGEX>:.*Dependency Error.*Cannot alter entry "delta" because there are entries that depend on it.*
 
 statement ok
 DROP INDEX ix;
@@ -105,7 +105,7 @@ CREATE UNIQUE INDEX ix_tx ON t((i + delta()));
 statement error
 CREATE OR REPLACE FUNCTION delta() RETURNS INTEGER LANGUAGE testlang AS '9';
 ----
-<REGEX>:.*index "ix_tx" depends on macro function "delta".*
+<REGEX>:.*Cannot alter entry "delta" because there are entries that depend on it.*
 
 statement ok
 ROLLBACK;

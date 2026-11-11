@@ -13,9 +13,7 @@
 
 namespace duckdb {
 
-class MacroCatalogEntry;
 struct CreateLanguageInfo;
-struct CreateMacroInfo;
 
 //! A schema in the catalog
 class DuckSchemaEntry : public SchemaCatalogEntry {
@@ -69,9 +67,6 @@ public:
 	optional_ptr<CatalogEntry> CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) override;
 	//! Register a function language (transient, extensions register these at load into the system catalog)
 	optional_ptr<CatalogEntry> CreateLanguage(CatalogTransaction transaction, CreateLanguageInfo &info);
-	//! Add one language member to an existing overload set, replacing the entry as a whole
-	optional_ptr<CatalogEntry> AddLanguageFunctionMember(CatalogTransaction transaction, CreateMacroInfo &info,
-	                                                     MacroCatalogEntry &existing);
 	optional_ptr<CatalogEntry> CreateCoordinateSystem(CatalogTransaction transaction,
 	                                                  CreateCoordinateSystemInfo &info) override;
 	optional_ptr<CatalogEntry> CreateType(CatalogTransaction transaction, CreateTypeInfo &info) override;

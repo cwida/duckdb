@@ -24,7 +24,7 @@ CREATE FUNCTION f(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '2';
 statement ok
 CREATE VIEW v AS SELECT f() AS x;
 
-# a member drop is an alter of the entry: a registered dependent blocks it, whichever member it names
+# member mutations are alters of the entry: a registered dependent blocks them, whichever member they name
 statement error
 DROP FUNCTION f(INTEGER);
 ----
@@ -33,14 +33,14 @@ DROP FUNCTION f(INTEGER);
 statement error
 CREATE FUNCTION f(a INTEGER, b INTEGER) RETURNS INTEGER LANGUAGE testlang AS '3';
 ----
-<REGEX>:.*view "v" depends on macro function "f".*
+<REGEX>:.*Cannot alter entry "f" because there are entries that depend on it.*
 
 statement error
 CREATE OR REPLACE FUNCTION f() RETURNS INTEGER LANGUAGE testlang AS '10';
 ----
-<REGEX>:.*view "v" depends on macro function "f".*
+<REGEX>:.*Cannot alter entry "f" because there are entries that depend on it.*
 
-# protection test: a plain macro behaves identically under a view dependency
+# protection test: OR REPLACE of a plain macro still replaces the whole entry and keeps the drop error
 statement ok
 CREATE MACRO pm(a) AS a + 1;
 

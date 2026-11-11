@@ -10,10 +10,13 @@
 
 #include "duckdb/parser/parsed_data/alter_info.hpp"
 #include "duckdb/common/types.hpp"
+#include "duckdb/common/enums/on_create_conflict.hpp"
+#include "duckdb/function/macro_function.hpp"
+#include "duckdb/parser/parsed_data/create_function_info.hpp"
 
 namespace duckdb {
 
-enum class AlterMacroType : uint8_t { INVALID = 0, REMOVE_OVERLOAD = 1 };
+enum class AlterMacroType : uint8_t { INVALID = 0, REMOVE_OVERLOAD = 1, ADD_OVERLOAD = 2 };
 
 //===--------------------------------------------------------------------===//
 // Alter Macro
@@ -60,6 +63,32 @@ public:
 
 private:
 	RemoveMacroOverloadInfo();
+};
+
+//===--------------------------------------------------------------------===//
+// AddMacroOverloadInfo
+//===--------------------------------------------------------------------===//
+struct AddMacroOverloadInfo : public AlterMacroInfo {
+	AddMacroOverloadInfo(const AlterEntryData &data, unique_ptr<MacroFunction> member,
+	                     OnCreateConflict member_on_conflict);
+	~AddMacroOverloadInfo() override;
+
+	//! The member to add to the existing overload set
+	unique_ptr<MacroFunction> member;
+	//! How the member treats an existing overload it conflicts with
+	OnCreateConflict member_on_conflict;
+	//! Documentation published for the member, in-memory like all function descriptions
+	vector<FunctionDescription> descriptions;
+
+public:
+	unique_ptr<AlterInfo> Copy() const override;
+	string ToString() const override;
+
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<AlterMacroInfo> Deserialize(Deserializer &deserializer);
+
+private:
+	AddMacroOverloadInfo();
 };
 
 } // namespace duckdb

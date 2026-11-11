@@ -24,17 +24,16 @@ CREATE UNIQUE INDEX ix ON t((i + delta()));
 statement ok
 INSERT INTO t VALUES (1);
 
-# the index pins the whole entry: every member mutation is a drop+create and is blocked like a
-# macro replacement, and the error names the blocking dependent
+# the index pins the whole entry: every member mutation is an alter of the entry and is blocked
 statement error
 CREATE OR REPLACE FUNCTION delta() RETURNS INTEGER LANGUAGE testlang AS '2';
 ----
-<REGEX>:.*index "ix" depends on macro function "delta".*
+<REGEX>:.*Cannot alter entry "delta" because there are entries that depend on it.*
 
 statement error
 CREATE FUNCTION delta(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '9';
 ----
-<REGEX>:.*index "ix" depends on macro function "delta".*
+<REGEX>:.*Cannot alter entry "delta" because there are entries that depend on it.*
 
 statement error
 DROP FUNCTION delta;
@@ -77,7 +76,7 @@ DROP INDEX ix;
 statement error
 CREATE OR REPLACE FUNCTION delta() RETURNS INTEGER LANGUAGE testlang AS '2';
 ----
-<REGEX>:.*index "ix2" depends on macro function "delta".*
+<REGEX>:.*Cannot alter entry "delta" because there are entries that depend on it.*
 
 # dropping the last index releases the function
 statement ok

@@ -17,9 +17,13 @@ struct CreateMacroInfo : public CreateFunctionInfo {
 	explicit CreateMacroInfo(CatalogType type);
 
 	vector<unique_ptr<MacroFunction>> macros;
+	//! With ALTER_ON_CONFLICT: how an added language member treats an overload it conflicts with
+	OnCreateConflict member_on_conflict = OnCreateConflict::ERROR_ON_CONFLICT;
 
 public:
 	unique_ptr<CreateInfo> Copy() const override;
+	//! Adds a single language member to the existing entry as an overload
+	unique_ptr<AlterInfo> GetAlterInfo() const override;
 
 	string ToString() const override;
 	DUCKDB_API void Serialize(Serializer &serializer) const override;

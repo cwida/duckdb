@@ -1,4 +1,5 @@
 #include "duckdb/parser/parsed_data/alter_macro_info.hpp"
+#include "duckdb/parser/parsed_data/create_macro_info.hpp"
 
 namespace duckdb {
 
@@ -77,6 +78,38 @@ string RemoveMacroOverloadInfo::ToString() const {
 	}
 	result += ");";
 	return result;
+}
+
+//===--------------------------------------------------------------------===//
+// AddMacroOverloadInfo
+//===--------------------------------------------------------------------===//
+AddMacroOverloadInfo::AddMacroOverloadInfo()
+    : AlterMacroInfo(AlterMacroType::ADD_OVERLOAD), member_on_conflict(OnCreateConflict::ERROR_ON_CONFLICT) {
+}
+
+AddMacroOverloadInfo::AddMacroOverloadInfo(const AlterEntryData &data, unique_ptr<MacroFunction> member_p,
+                                           OnCreateConflict member_on_conflict)
+    : AlterMacroInfo(AlterMacroType::ADD_OVERLOAD, data, CatalogType::MACRO_ENTRY), member(std::move(member_p)),
+      member_on_conflict(member_on_conflict) {
+}
+
+AddMacroOverloadInfo::~AddMacroOverloadInfo() {
+}
+
+unique_ptr<AlterInfo> AddMacroOverloadInfo::Copy() const {
+	auto result = make_uniq<AddMacroOverloadInfo>(GetAlterEntryData(), member->Copy(), member_on_conflict);
+	result->descriptions = descriptions;
+	result->allow_internal = allow_internal;
+	return std::move(result);
+}
+
+string AddMacroOverloadInfo::ToString() const {
+	// the alter is how a CREATE on an existing overload set executes: render that statement
+	CreateMacroInfo create_info(CatalogType::MACRO_ENTRY);
+	create_info.SetQualifiedName(GetQualifiedName());
+	create_info.on_conflict = member_on_conflict;
+	create_info.macros.push_back(member->Copy());
+	return create_info.ToString();
 }
 
 } // namespace duckdb

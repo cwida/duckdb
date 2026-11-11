@@ -16,6 +16,9 @@
 
 namespace duckdb {
 
+struct RemoveMacroOverloadInfo;
+struct AddMacroOverloadInfo;
+
 //! A macro function in the catalog
 class MacroCatalogEntry : public FunctionEntry {
 public:
@@ -39,6 +42,10 @@ public:
 	//! Remove the descriptions documenting a member's signature (untyped parameters are documented as ANY)
 	static void RemoveMemberDescriptions(vector<FunctionDescription> &descriptions, const MacroFunction &member);
 	string ToSQL() const override;
+
+private:
+	unique_ptr<CatalogEntry> RemoveOverload(RemoveMacroOverloadInfo &remove_info);
+	unique_ptr<CatalogEntry> AddOverload(AddMacroOverloadInfo &add_info);
 };
 
 } // namespace duckdb

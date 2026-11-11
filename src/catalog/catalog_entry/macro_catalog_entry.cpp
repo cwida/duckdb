@@ -8,6 +8,8 @@
 #include "duckdb/common/storage_compatibility.hpp"
 #include "duckdb/function/language_macro_function.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/serializer/binary_serializer.hpp"
+#include "duckdb/common/serializer/memory_stream.hpp"
 
 namespace duckdb {
 
@@ -128,8 +130,32 @@ string MacroCatalogEntry::ToSQL() const {
 	return create_info->ToString();
 }
 
+static string SerializedMemberIdentity(const MacroFunction &member) {
+	MemoryStream stream;
+	SerializationOptions options;
+	options.storage_compatibility = StorageCompatibility::Latest();
+	BinarySerializer serializer(stream, options);
+	serializer.Begin();
+	serializer.WriteProperty(100, "member", member);
+	serializer.End();
+	return string(char_ptr_cast(stream.GetData()), stream.GetPosition());
+}
+
 bool MacroCatalogEntry::InvalidatesDependents(const CatalogEntry &previous) const {
-	return previous.type == type && previous.Cast<MacroCatalogEntry>().macros.size() > macros.size();
+	if (previous.type != type) {
+		return false;
+	}
+	// any change to the member set can change what a dependent's call resolves to or computes
+	auto &previous_macros = previous.Cast<MacroCatalogEntry>().macros;
+	if (previous_macros.size() != macros.size()) {
+		return true;
+	}
+	for (idx_t i = 0; i < macros.size(); i++) {
+		if (SerializedMemberIdentity(*previous_macros[i]) != SerializedMemberIdentity(*macros[i])) {
+			return true;
+		}
+	}
+	return false;
 }
 
 unique_ptr<CatalogEntry> MacroCatalogEntry::AlterEntry(CatalogTransaction transaction, AlterInfo &info) {
@@ -137,21 +163,29 @@ unique_ptr<CatalogEntry> MacroCatalogEntry::AlterEntry(CatalogTransaction transa
 		return CatalogEntry::AlterEntry(transaction, info);
 	}
 	auto &macro_info = info.Cast<AlterMacroInfo>();
-	if (macro_info.alter_macro_type != AlterMacroType::REMOVE_OVERLOAD) {
-		throw InternalException("Unsupported ALTER MACRO type");
-	}
-	auto &remove_info = macro_info.Cast<RemoveMacroOverloadInfo>();
 	// releases before v2.1.0 do not know the ALTER_MACRO WAL record, like the RETURNS declarations
 	auto &attached = ParentCatalog().GetAttached();
 	if (!temporary && attached.HasStorageManager() && !attached.IsTemporary()) {
 		auto &storage_manager = attached.GetStorageManager();
 		const auto since = StorageCompatibility::FromString("v2.1.0").storage_version;
 		if (!storage_manager.InMemory() && storage_manager.GetStorageVersion() < since) {
-			string msg = "Dropping a single overload is only supported for storage versions v2.1.0 and higher.\n";
+			string msg = macro_info.alter_macro_type == AlterMacroType::ADD_OVERLOAD ? "Adding" : "Dropping";
+			msg += " a single overload is only supported for storage versions v2.1.0 and higher.\n";
 			msg += "Use an in-memory database, ATTACH with (STORAGE_VERSION v2.1.0), or a TEMP macro";
 			throw CatalogException(msg);
 		}
 	}
+	switch (macro_info.alter_macro_type) {
+	case AlterMacroType::REMOVE_OVERLOAD:
+		return RemoveOverload(macro_info.Cast<RemoveMacroOverloadInfo>());
+	case AlterMacroType::ADD_OVERLOAD:
+		return AddOverload(macro_info.Cast<AddMacroOverloadInfo>());
+	default:
+		throw InternalException("Unsupported ALTER MACRO type");
+	}
+}
+
+unique_ptr<CatalogEntry> MacroCatalogEntry::RemoveOverload(RemoveMacroOverloadInfo &remove_info) {
 	auto member_idx = FindMember(remove_info.signature);
 	if (!member_idx.IsValid()) {
 		if (remove_info.if_not_found == OnEntryNotFound::RETURN_NULL) {
@@ -178,6 +212,88 @@ unique_ptr<CatalogEntry> MacroCatalogEntry::AlterEntry(CatalogTransaction transa
 	new_info.macros.erase(new_info.macros.begin() + NumericCast<int64_t>(member_idx.GetIndex()));
 	new_info.temporary = temporary;
 	// the entry keeps its registered dependencies: AlterObject carries them over when the alter brings no new list
+	auto function = MacroCatalogEntry::Create(ParentCatalog(), schema, new_info);
+	function->internal = internal;
+	return std::move(function);
+}
+
+unique_ptr<CatalogEntry> MacroCatalogEntry::AddOverload(AddMacroOverloadInfo &add_info) {
+	D_ASSERT(add_info.member->type == MacroType::LANGUAGE_MACRO);
+	auto &new_member = add_info.member->Cast<LanguageMacroFunction>();
+	// members that can resolve the same call as the new signature
+	vector<idx_t> conflicts;
+	for (idx_t member_idx = 0; member_idx < macros.size(); member_idx++) {
+		if (macros[member_idx]->ConflictsWith(new_member)) {
+			conflicts.push_back(member_idx);
+		}
+	}
+	optional_idx replaced;
+	switch (add_info.member_on_conflict) {
+	case OnCreateConflict::IGNORE_ON_CONFLICT:
+		if (!conflicts.empty()) {
+			// IF NOT EXISTS skips at member granularity, before any other check, like CREATE MACRO IF NOT EXISTS
+			return nullptr;
+		}
+		break;
+	case OnCreateConflict::ERROR_ON_CONFLICT:
+		if (!conflicts.empty()) {
+			throw CatalogException("An overload of function %s with signature %s already exists: it conflicts with "
+			                       "the existing overload %s%s",
+			                       name, new_member.SignatureToString(), name,
+			                       macros[conflicts[0]]->SignatureToString());
+		}
+		break;
+	case OnCreateConflict::REPLACE_ON_CONFLICT:
+		if (conflicts.size() > 1) {
+			string conflict_list;
+			for (auto conflict_idx : conflicts) {
+				if (!conflict_list.empty()) {
+					conflict_list += ", ";
+				}
+				conflict_list += name.GetIdentifierName() + macros[conflict_idx]->SignatureToString();
+			}
+			throw CatalogException("Cannot replace: the signature %s%s conflicts with several existing overloads "
+			                       "(%s). Drop them first with DROP FUNCTION %s(TYPE, ...)",
+			                       name, new_member.SignatureToString(), conflict_list, name);
+		}
+		if (conflicts.size() == 1) {
+			// OR REPLACE replaces the single conflicting member and leaves siblings untouched
+			replaced = conflicts[0];
+		}
+		break;
+	default:
+		throw InternalException("Unsupported conflict behavior for a language function overload");
+	}
+	// every member that stays must share the new member's language, so OR REPLACE can switch the
+	// language of a single-member entry
+	for (idx_t member_idx = 0; member_idx < macros.size(); member_idx++) {
+		if (replaced.IsValid() && member_idx == replaced.GetIndex()) {
+			continue;
+		}
+		auto &member = *macros[member_idx];
+		if (member.type != MacroType::LANGUAGE_MACRO) {
+			throw CatalogException("Cannot add a LANGUAGE overload to %s: the name already belongs to a macro", name);
+		}
+		auto &member_language = member.Cast<LanguageMacroFunction>().language;
+		if (!StringUtil::CIEquals(member_language, new_member.language)) {
+			throw CatalogException("Cannot create function %s in language \"%s\": the name already belongs to a "
+			                       "function in language \"%s\", overloads of one name share one language",
+			                       name, new_member.language, member_language);
+		}
+	}
+	auto new_info_base = GetInfo();
+	auto &new_info = new_info_base->Cast<CreateMacroInfo>();
+	if (replaced.IsValid()) {
+		// descriptions are member-owned: a replaced member's documentation leaves with it
+		RemoveMemberDescriptions(new_info.descriptions, *new_info.macros[replaced.GetIndex()]);
+		new_info.macros[replaced.GetIndex()] = add_info.member->Copy();
+	} else {
+		new_info.macros.push_back(add_info.member->Copy());
+	}
+	for (auto &description : add_info.descriptions) {
+		new_info.descriptions.push_back(description);
+	}
+	new_info.temporary = temporary;
 	auto function = MacroCatalogEntry::Create(ParentCatalog(), schema, new_info);
 	function->internal = internal;
 	return std::move(function);

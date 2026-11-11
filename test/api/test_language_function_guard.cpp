@@ -153,16 +153,23 @@ TEST_CASE("Member mutations respect internal entry protection", "[api]") {
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 	REQUIRE_NO_FAIL(con.Query("DROP FUNCTION internal_fun"));
 
-	// reaching the schema entry directly with a non-internal overload add is rejected: the member
-	// rewrite is a drop+create and the internal protection applies to it
+	// reaching the schema entry directly with a non-internal overload add is rejected: the add is an
+	// alter of the entry and the internal protection applies to it
 	CreateMacroInfo add_info(CatalogType::MACRO_ENTRY);
 	add_info.SetFunctionName(Identifier("internal_fun"));
+	add_info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
 	auto date_member = make_uniq<LanguageMacroFunction>("intlang", "date member");
 	date_member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("x")));
 	date_member->types.push_back(LogicalType::DATE);
 	add_info.macros.push_back(std::move(date_member));
 	auto add_data = CatalogTransaction::GetSystemTransaction(*db.instance);
-	REQUIRE_THROWS(schema.CreateFunction(add_data, add_info));
+	bool add_threw = false;
+	try {
+		schema.CreateFunction(add_data, add_info);
+	} catch (std::exception &ex) {
+		add_threw = StringUtil::Contains(ex.what(), "internal system entry");
+	}
+	REQUIRE(add_threw);
 
 	// the entry is untouched and still callable
 	result = con.Query("SELECT internal_fun(1), internal_fun('a'::VARCHAR)");
@@ -183,11 +190,12 @@ TEST_CASE("Member mutations respect internal entry protection", "[api]") {
 	REQUIRE(threw);
 	con.Rollback();
 
-	// an extension registering internal members one at a time still merges: the internal info
-	// carries the authority the guard checks
+	// an extension registering internal members one at a time adds them as overloads, like function
+	// overloads: the internal info carries the authority the guard checks
 	CreateMacroInfo readd_info(CatalogType::MACRO_ENTRY);
 	readd_info.SetFunctionName(Identifier("internal_fun"));
 	readd_info.internal = true;
+	readd_info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
 	auto readd_member = make_uniq<LanguageMacroFunction>("intlang", "date member");
 	readd_member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("x")));
 	readd_member->types.push_back(LogicalType::DATE);

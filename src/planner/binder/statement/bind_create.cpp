@@ -1,3 +1,4 @@
+#include "duckdb/catalog/catalog_entry/macro_catalog_entry.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/trigger_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
@@ -702,7 +703,20 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		}
 	}
 
-	return BindCreateSchema(info);
+	auto &schema = BindCreateSchema(info);
+	if (has_language_members && base.macros.size() == 1) {
+		// a member for an existing language entry becomes an overload alter, like a function overload
+		auto existing = schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::MACRO_ENTRY,
+		                                base.GetQualifiedName().Name());
+		if (existing && existing->type == CatalogType::MACRO_ENTRY) {
+			auto &existing_macro = existing->Cast<MacroCatalogEntry>();
+			if (!existing_macro.macros.empty() && existing_macro.macros[0]->type == MacroType::LANGUAGE_MACRO) {
+				base.member_on_conflict = base.on_conflict;
+				base.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+			}
+		}
+	}
+	return schema;
 }
 
 LogicalType Binder::BindLogicalType(const ParsedExpression &type_expr) {
