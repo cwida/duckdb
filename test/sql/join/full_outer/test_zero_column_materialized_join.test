@@ -90,3 +90,16 @@ SELECT count(*) FROM range(10000) r(i) WHERE 0 NOT IN (SELECT 1 FROM range(10000
 10000
 
 endloop
+
+# Keep a zero-column ungrouped aggregate on the probe side of a SEMI join
+statement ok
+SET disabled_optimizers='unused_columns,statistics_propagation,build_side_probe_side';
+
+query I
+SELECT 0 FROM t1 HAVING 0 IN (SELECT 0 FROM t1);
+----
+0
+
+query I
+SELECT 0 FROM t1 HAVING 1 IN (SELECT 0 FROM t1);
+----
