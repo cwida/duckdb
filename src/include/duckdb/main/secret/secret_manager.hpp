@@ -105,6 +105,9 @@ public:
 	//! Static Helper Functions
 	DUCKDB_API static SecretManager &Get(ClientContext &context);
 	DUCKDB_API static SecretManager &Get(DatabaseInstance &db);
+	//! Throws when enable_external_access is false; type and provider only decorate the message and may be empty
+	DUCKDB_API static void ThrowIfSecretCreationDisabled(DatabaseInstance &db, const Identifier &type,
+	                                                     const Identifier &provider);
 
 	// Initialize the secret manager with the DB instance
 	DUCKDB_API void Initialize(DatabaseInstance &db);
