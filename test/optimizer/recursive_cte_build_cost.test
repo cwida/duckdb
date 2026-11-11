@@ -36,7 +36,7 @@ SELECT * FROM walk_result;
 require noforcestorage
 
 statement ok
-PRAGMA explain_output='physical_only';
+SET explain_output='physical_only';
 
 # Both independent scans belong to the same build; expanding the frontier produces five million rows.
 query II

@@ -11,7 +11,7 @@ statement ok
 SET threads = 2;
 
 statement ok
-PRAGMA explain_output='physical_only';
+SET explain_output='physical_only';
 
 statement ok
 SET VARIABLE K = 30;

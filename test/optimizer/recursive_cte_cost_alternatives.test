@@ -74,7 +74,7 @@ SELECT * FROM dependency_walk_result;
 require noforcestorage
 
 statement ok
-PRAGMA explain_output='physical_only';
+SET explain_output='physical_only';
 
 loop threshold 0 2
 
