@@ -8,6 +8,7 @@ add_library_unity(
   join_node.cpp
   join_order_operator.cpp
   join_order_optimizer.cpp
+  join_order_source_stats.cpp
   cardinality_estimator.cpp
   cost_model.cpp
   plan_enumerator.cpp

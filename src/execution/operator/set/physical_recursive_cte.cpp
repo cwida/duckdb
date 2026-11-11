@@ -5,6 +5,7 @@
 #include "duckdb/execution/operator/set/physical_recursive_cte_union_state.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/parallel/pipeline_executor.hpp"
 
 #include <cmath>
 
@@ -91,7 +92,8 @@ SinkCombineResultType PhysicalRecursiveCTE::Combine(ExecutionContext &context, O
 SourceResultType PhysicalRecursiveCTE::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                                        OperatorSourceInput &input) const {
 	auto &gstate = sink_state->Cast<RecursiveCTEState>();
-	return gstate.GetData(context, chunk, input.global_state.Cast<RecursiveCTEGlobalSourceState>());
+	return gstate.GetData(context, chunk, input.global_state.Cast<RecursiveCTEGlobalSourceState>(),
+	                      input.interrupt_state);
 }
 
 unique_ptr<GlobalSourceState> PhysicalRecursiveCTE::GetGlobalSourceState(ClientContext &context) const {

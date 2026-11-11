@@ -61,6 +61,14 @@ public:
 		return *this;
 	}
 
+	weak_ptr &operator=(weak_ptr &&other) noexcept {
+		if (this == &other) {
+			return *this;
+		}
+		internal = std::move(other.internal);
+		return *this;
+	}
+
 	template <class U, typename std::enable_if<compatible_with_t<U, T>::value, int>::type = 0>
 	weak_ptr &operator=(const shared_ptr<U, SAFE> &ptr) {
 		internal = ptr.internal;

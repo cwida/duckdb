@@ -27,6 +27,7 @@
 #include "duckdb/planner/expression_binder/check_binder.hpp"
 #include "duckdb/planner/expression_binder/constant_binder.hpp"
 #include "duckdb/planner/table_filter.hpp"
+#include "duckdb/storage/checkpoint/pending_publication.hpp"
 #include "duckdb/storage/checkpoint/table_data_writer.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/append_state.hpp"
@@ -277,7 +278,7 @@ void DataTable::InitializeScan(ClientContext &context, DuckTransaction &transact
 	auto &local_storage = LocalStorage::Get(transaction);
 	state.Initialize(column_ids, context, table_filters);
 	row_groups->InitializeScan(context, state.table_state, column_ids, table_filters);
-	local_storage.InitializeScan(*this, state.local_state, table_filters);
+	local_storage.InitializeScan(context, *this, state.local_state, table_filters);
 }
 
 void DataTable::InitializeScanWithOffset(DuckTransaction &transaction, TableScanState &state,
@@ -525,7 +526,7 @@ void DataTable::Fetch(DuckTransaction &transaction, DataChunk &result, const vec
 	D_ASSERT(result.size() == committed_count);
 
 	// Fetch local rows into a separate chunk.
-	auto &allocator = Allocator::Get(local_storage.GetServices().GetDatabase());
+	auto &allocator = Allocator::Get(local_storage.GetContext().GetDatabase());
 	DataChunk local_chunk;
 	local_chunk.Initialize(allocator, result.GetTypes());
 	Vector local_row_ids(row_identifiers, local_sel, local_count);
@@ -806,7 +807,7 @@ void DataTable::VerifyNewConstraint(LocalStorage &local_storage, DataTable &pare
 		throw NotImplementedException("FIXME: ALTER COLUMN with such constraint is not supported yet");
 	}
 
-	parent.row_groups->VerifyNewConstraint(local_storage.GetServices(), local_storage.GetTransaction(), parent,
+	parent.row_groups->VerifyNewConstraint(local_storage.GetContext(), local_storage.GetTransaction(), parent,
 	                                       constraint);
 	local_storage.VerifyNewConstraint(parent, constraint);
 }
@@ -1587,6 +1588,39 @@ unique_ptr<BlockingSample> DataTable::GetSample() {
 //===--------------------------------------------------------------------===//
 // Checkpoint
 //===--------------------------------------------------------------------===//
+namespace {
+
+class PendingRowGroupCollectionPublication final : public PendingPublication {
+public:
+	PendingRowGroupCollectionPublication(shared_ptr<DataTable> table_p, CollectionCheckpointResult result_p,
+	                                     TableStatistics checkpoint_stats_p)
+	    : table(std::move(table_p)), result(std::move(result_p)), checkpoint_stats(std::move(checkpoint_stats_p)) {
+		D_ASSERT(table);
+	}
+
+	const TableStatistics &GetStatistics() const {
+		return checkpoint_stats;
+	}
+
+	void Publish() override {
+		table->PublishCheckpoint(std::move(result), checkpoint_stats);
+	}
+
+private:
+	//! Keep the collection's owner alive until the prepared state is released.
+	shared_ptr<DataTable> table;
+	CollectionCheckpointResult result;
+	TableStatistics checkpoint_stats;
+};
+
+} // namespace
+
+void DataTable::PublishCheckpoint(CollectionCheckpointResult result, TableStatistics &checkpoint_stats) {
+	lock_guard<mutex> lock(append_lock);
+	row_groups->InstallCheckpoint(std::move(result), checkpoint_stats);
+	row_groups->SetRowGroupAppendMode(RowGroupAppendMode::SUGGEST_NEW);
+}
+
 void DataTable::Checkpoint(TableDataWriter &writer, Serializer &serializer) {
 	TableStatistics global_stats;
 	CollectionCheckpointSnapshot snapshot;
@@ -1594,21 +1628,29 @@ void DataTable::Checkpoint(TableDataWriter &writer, Serializer &serializer) {
 		lock_guard<mutex> lock(append_lock);
 		snapshot = row_groups->SnapshotForCheckpoint(writer);
 	}
+
 	// checkpoint each individual row group
 	auto result = row_groups->Checkpoint(writer, global_stats, snapshot);
-	{
-		lock_guard<mutex> lock(append_lock);
-		row_groups->InstallCheckpoint(std::move(result), global_stats);
-		row_groups->SetRowGroupAppendMode(RowGroupAppendMode::SUGGEST_NEW);
-	}
-	if (writer.GetRebuildIndexes()) {
-		MetricsTimer timer;
-		auto profiler = writer.GetServices().TryGetQueryProfiler();
-		if (profiler) {
-			timer = profiler->StartTimer<MetricStorageTotalVacuumTime>();
+	auto publication =
+	    make_uniq<PendingRowGroupCollectionPublication>(shared_from_this(), std::move(result), std::move(global_stats));
+	const auto &checkpoint_stats = publication->GetStatistics();
+	if (writer.CanDeferPublication()) {
+		D_ASSERT(!writer.RowIdsChanged() ||
+		         writer.GetCheckpointOptions().type != CheckpointType::CONCURRENT_CHECKPOINT);
+		D_ASSERT(!writer.GetRebuildIndexes());
+		writer.AddPendingPublication(std::move(publication));
+	} else {
+		// we cannot defer the publish of the collection when rebuilding needs it immediately
+		publication->Publish();
+		if (writer.GetRebuildIndexes()) {
+			MetricsTimer timer;
+			auto profiler = writer.GetContext().TryGetQueryProfiler();
+			if (profiler) {
+				timer = profiler->StartTimer<MetricStorageTotalVacuumTime>();
+			}
+			RebuildIndexes();
+			timer.EndTimer();
 		}
-		RebuildIndexes();
-		timer.EndTimer();
 	}
 
 	const auto storage_version = serializer.GetOptions().storage_compatibility.storage_version;
@@ -1619,7 +1661,7 @@ void DataTable::Checkpoint(TableDataWriter &writer, Serializer &serializer) {
 		index_infos = info->GetIndexes().Checkpoint(*index_writer);
 	}
 
-	writer.FinalizeTable(global_stats, *info, *row_groups, index_infos, serializer);
+	writer.FinalizeTable(checkpoint_stats, *info, *row_groups, index_infos, serializer);
 }
 
 void DataTable::CommitDropColumn(const idx_t column_index, CommitDropState &drop_state) {

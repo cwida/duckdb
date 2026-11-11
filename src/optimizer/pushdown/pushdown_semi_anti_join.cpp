@@ -25,8 +25,8 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSemiAntiJoin(unique_ptr<Logi
 		right_pushdown.GenerateFilters();
 	}
 	// push all current filters down the left side
-	op->children[0] = Rewrite(std::move(op->children[0]));
-	op->children[1] = right_pushdown.Rewrite(std::move(op->children[1]));
+	RewriteChild(*op, 0);
+	right_pushdown.RewriteChild(*op, 1);
 
 	bool left_empty = op->children[0]->type == LogicalOperatorType::LOGICAL_EMPTY_RESULT;
 	bool right_empty = op->children[1]->type == LogicalOperatorType::LOGICAL_EMPTY_RESULT;

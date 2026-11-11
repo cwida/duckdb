@@ -58,6 +58,8 @@ public:
 
 	//! Whether the user has opted in to adding external extension repositories
 	static ExtensionRepositoryAccess GetAccess(DatabaseInstance &db);
+	//! Whether the repositories that were already created are trusted: their extensions can be installed and loaded
+	static bool TrustsExistingRepositories(DatabaseInstance &db);
 	//! Parse the access value of the allow_extension_repositories setting (throws on an invalid value)
 	static ExtensionRepositoryAccess ParseAccess(const string &value);
 	//! The string representation of an access value, as used by the allow_extension_repositories setting

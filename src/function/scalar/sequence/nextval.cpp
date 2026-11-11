@@ -74,7 +74,7 @@ unique_ptr<FunctionLocalState> NextValLocalFunction(ExpressionState &state, cons
 	if (!bind_data) {
 		return nullptr;
 	}
-	auto &context = state.GetContext();
+	auto &context = state.GetClientContext();
 	auto &info = bind_data->Cast<NextvalBindData>();
 	auto &sequence = info.sequence;
 	auto &transaction = DuckTransaction::Get(context, sequence.catalog);

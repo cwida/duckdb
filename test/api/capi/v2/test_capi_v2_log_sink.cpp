@@ -45,8 +45,8 @@ void DestroyStore(void *ptr) {
 }
 
 void StoreWrite(duckdb_v2_log_sink_write_info_handle info, void *user_data, int64_t timestamp,
-                DUCKDB_V2_LOG_LEVEL level, DUCKDB_V2_LOG_SCOPE scope, const duckdb_v2_str *type,
-                const duckdb_v2_str *message, duckdb_v2_error_info_handle *err) {
+                DUCKDB_V2_LOG_LEVEL level, DUCKDB_V2_LOG_SCOPE scope, const char *type, idx_t type_length,
+                const char *message, idx_t message_length, duckdb_v2_error_info_handle *err) {
 	auto &store = *static_cast<Store *>(user_data);
 	if (store.fail_writes) {
 		duckdb_v2_error_info_set_code(*err, DUCKDB_V2_ERROR_INPUT_INVALID);
@@ -56,8 +56,8 @@ void StoreWrite(duckdb_v2_log_sink_write_info_handle info, void *user_data, int6
 	stored.timestamp = timestamp;
 	stored.level = level;
 	stored.scope = scope;
-	stored.type = Convert(*type);
-	stored.message = Convert(*message);
+	stored.type = std::string(type, type_length);
+	stored.message = std::string(message, message_length);
 	idx_t id = 0;
 	if (duckdb_v2_log_sink_write_info_get_connection_id(info, &id, &stored.has_connection_id, err) !=
 	        DUCKDB_V2_ERROR_NONE ||
@@ -76,8 +76,8 @@ duckdb_v2_log_sink_handle MakeSink(duckdb_v2_factory_handle factory, const char 
 	duckdb_v2_log_sink_handle sink = nullptr;
 	REQUIRE(duckdb_v2_log_sink_create(factory, &sink, nullptr) == DUCKDB_V2_ERROR_NONE);
 	if (name) {
-		auto name_str = Convert(name);
-		REQUIRE(duckdb_v2_log_sink_set_name(sink, &name_str, nullptr) == DUCKDB_V2_ERROR_NONE);
+		std::string_view name_str = name;
+		REQUIRE(duckdb_v2_log_sink_set_name(sink, name_str.data(), name_str.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 	}
 	REQUIRE(duckdb_v2_log_sink_set_write_callback(sink, StoreWrite, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_log_sink_set_flush_callback(sink, StoreFlush, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -94,11 +94,10 @@ DUCKDB_V2_ERROR RegisterSink(duckdb_v2_instance_handle instance, duckdb_v2_log_s
 	return rc;
 }
 
-void LogTest(duckdb_v2_connection_handle conn, const char *message) {
-	auto type = Convert(TEST_LOG_TYPE);
-	auto message_str = Convert(message);
-	REQUIRE(duckdb_v2_connection_log(conn, DUCKDB_V2_LOG_LEVEL_WARNING, &type, &message_str, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
+void LogTest(duckdb_v2_connection_handle conn, std::string_view message) {
+	auto type = std::string_view(TEST_LOG_TYPE);
+	REQUIRE(duckdb_v2_connection_log(conn, DUCKDB_V2_LOG_LEVEL_WARNING, type.data(), type.size(), message.data(),
+	                                 message.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 }
 
 // The entries of our own log type, as the store saw them.
@@ -122,10 +121,10 @@ TEST_CASE("V2 log sink: entries reach the write callback", "[capi_v2][log_sink]"
 	REQUIRE(RunSql(fx.conn, "SET logging_storage = 'v2_store'") == DUCKDB_V2_ERROR_NONE);
 
 	LogTest(fx.conn, "from a connection");
-	auto type = Convert(TEST_LOG_TYPE);
-	auto message = Convert("from the instance");
-	REQUIRE(duckdb_v2_instance_log(fx.instance, DUCKDB_V2_LOG_LEVEL_ERROR, &type, &message, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
+	auto type = std::string_view(TEST_LOG_TYPE);
+	std::string_view message = "from the instance";
+	REQUIRE(duckdb_v2_instance_log(fx.instance, DUCKDB_V2_LOG_LEVEL_ERROR, type.data(), type.size(), message.data(),
+	                               message.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	auto entries = TestEntries(*store);
 	REQUIRE(entries.size() == 2);
@@ -219,8 +218,8 @@ TEST_CASE("V2 log sink: registration validates the sink", "[capi_v2][log_sink]")
 	SECTION("a write callback is required") {
 		duckdb_v2_log_sink_handle sink = nullptr;
 		REQUIRE(duckdb_v2_log_sink_create(fx.factory, &sink, nullptr) == DUCKDB_V2_ERROR_NONE);
-		auto name = Convert("no_callback");
-		REQUIRE(duckdb_v2_log_sink_set_name(sink, &name, nullptr) == DUCKDB_V2_ERROR_NONE);
+		std::string_view name = "no_callback";
+		REQUIRE(duckdb_v2_log_sink_set_name(sink, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 		REQUIRE(RegisterSink(fx.instance, sink) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	}
 	SECTION("built-in names are taken") {
@@ -234,7 +233,7 @@ TEST_CASE("V2 log sink: registration validates the sink", "[capi_v2][log_sink]")
 	}
 	SECTION("a sink registers only on its factory's instance") {
 		duckdb_v2_instance_handle other = nullptr;
-		REQUIRE(OpenInstance(fx.env, duckdb_v2_str {nullptr, 0}, &other, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(OpenInstance(fx.env, std::string_view(), &other, nullptr) == DUCKDB_V2_ERROR_NONE);
 		REQUIRE(RegisterSink(other, MakeSink(fx.factory, "foreign", nullptr)) == DUCKDB_V2_ERROR_INPUT_INVALID);
 		duckdb_v2_instance_destroy(&other);
 	}

@@ -159,11 +159,11 @@ SELECT TRY_CAST('["a", "b", "c"]'::JSON AS INT[])
 ----
 [NULL, NULL, NULL]
 
-# map keys cannot be NULL
-statement error
+# map keys cannot be NULL, so the whole map becomes NULL
+query I
 SELECT TRY_CAST('{"duck":42}'::JSON AS MAP(INTEGER, INTEGER))
 ----
-Conversion Error
+NULL
 
 # but values can
 query I

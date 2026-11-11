@@ -18,14 +18,10 @@ namespace test_capi_v2 {
 
 namespace {
 
-duckdb_v2_identifier_t PragmaIdent(const char *s) {
-	return duckdb_v2_identifier_t {s, std::strlen(s)};
-}
-
 void FailPragma(duckdb_v2_error_info_handle *err, DUCKDB_V2_ERROR code, const std::string &message) {
 	duckdb_v2_error_info_set_code(*err, code);
-	auto text_str = Convert(message);
-	duckdb_v2_error_info_set_text(*err, &text_str);
+	auto text_str = std::string_view(message);
+	duckdb_v2_error_info_set_text(*err, text_str.data(), text_str.size());
 }
 
 // Reads the argument at `index` as a string, through its constant value.
@@ -49,8 +45,8 @@ bool ArgText(duckdb_v2_function_bind_info_handle info, idx_t index, std::string 
 
 void SetQuery(duckdb_v2_pragma_function_query_info_handle result, const std::string &sql,
               duckdb_v2_error_info_handle *err) {
-	auto sql_str = Convert(sql);
-	duckdb_v2_pragma_function_query_set_query(result, &sql_str, err);
+	auto sql_str = std::string_view(sql);
+	duckdb_v2_pragma_function_query_set_query(result, sql_str.data(), sql_str.size(), err);
 }
 
 // PRAGMA answer -> SELECT '42'
@@ -84,10 +80,11 @@ void LabelQuery(duckdb_v2_function_bind_info_handle info, duckdb_v2_pragma_funct
 		FailPragma(err, DUCKDB_V2_ERROR_INPUT_INVALID, "unexpected argument counts");
 		return;
 	}
-	auto prefix_name = PragmaIdent("prefix");
+	std::string_view prefix_name = "prefix";
 	idx_t prefix_index = 0;
 	bool found = false;
-	if (duckdb_v2_function_bind_get_arg_index(info, &prefix_name, &prefix_index, &found, err) != DUCKDB_V2_ERROR_NONE) {
+	if (duckdb_v2_function_bind_get_arg_index(info, prefix_name.data(), prefix_name.size(), &prefix_index, &found,
+	                                          err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
 	if (!found || prefix_index != 1) {
@@ -157,13 +154,12 @@ void BumpExec(duckdb_v2_function_bind_info_handle info, duckdb_v2_context_handle
 }
 
 // Builds a pragma with the given name and callbacks; the caller adds parameters and registers it.
-duckdb_v2_pragma_function_handle MakePragma(duckdb_v2_factory_handle factory, const char *name,
+duckdb_v2_pragma_function_handle MakePragma(duckdb_v2_factory_handle factory, std::string_view name,
                                             duckdb_v2_pragma_function_query_callback_fn query,
                                             duckdb_v2_pragma_function_exec_callback_fn exec) {
 	duckdb_v2_pragma_function_handle function = nullptr;
 	REQUIRE(duckdb_v2_pragma_function_create(factory, &function, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name_str = PragmaIdent(name);
-	REQUIRE(duckdb_v2_pragma_function_set_name(function, &name_str, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_pragma_function_set_name(function, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 	if (query) {
 		REQUIRE(duckdb_v2_pragma_function_set_query_callback(function, query, nullptr) == DUCKDB_V2_ERROR_NONE);
 	}
@@ -186,7 +182,7 @@ DUCKDB_V2_ERROR RegisterPragmaError(duckdb_v2_connection_handle conn, duckdb_v2_
 }
 
 // Run a query producing a single VARCHAR cell.
-std::string PragmaQueryText(duckdb_v2_connection_handle conn, const char *sql) {
+std::string PragmaQueryText(duckdb_v2_connection_handle conn, std::string_view sql) {
 	QueryResult result;
 	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
 	auto chunk = StepChunk(result);
@@ -195,29 +191,30 @@ std::string PragmaQueryText(duckdb_v2_connection_handle conn, const char *sql) {
 	duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, nullptr);
 	duckdb_v2_vector_view view {};
 	duckdb_v2_vector_get_view(vec, &view, nullptr);
-	auto out = Convert(Convert(static_cast<const duckdb_v2_bytes *>(view.data)[SelAt(view.sel, 0)]));
+	auto out = std::string(Convert(static_cast<const duckdb_v2_bytes *>(view.data)[SelAt(view.sel, 0)]));
 	duckdb_v2_data_chunk_destroy(&chunk);
 	return out;
 }
 
 // Runs a query to exhaustion, returning its row count.
-idx_t PragmaQueryRows(duckdb_v2_connection_handle conn, const char *sql) {
+idx_t PragmaQueryRows(duckdb_v2_connection_handle conn, std::string_view sql) {
 	QueryResult result;
 	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
 	return DrainRowCount(result);
 }
 
 // The code a query fails with, along with its message.
-DUCKDB_V2_ERROR PragmaQueryError(duckdb_v2_connection_handle conn, const char *sql, std::string &message) {
+DUCKDB_V2_ERROR PragmaQueryError(duckdb_v2_connection_handle conn, std::string_view sql, std::string &message) {
 	duckdb_v2_error_info_handle err = nullptr;
 	QueryResult result;
 	auto rc = Query(conn, sql, &result, &err);
 	if (rc == DUCKDB_V2_ERROR_NONE) {
 		DrainRowCount(result);
 	} else {
-		duckdb_v2_str text = {nullptr, 0};
-		duckdb_v2_error_info_get_text(err, &text);
-		message = Convert(text);
+		const char *text = nullptr;
+		idx_t text_length = 0;
+		duckdb_v2_error_info_get_text(err, &text, &text_length);
+		message = std::string(text, text_length);
 	}
 	duckdb_v2_error_info_destroy(&err);
 	return rc;
@@ -243,16 +240,17 @@ TEST_CASE("V2 pragma: a query pragma receives its arguments", "[capi_v2][pragma_
 	REQUIRE(duckdb_v2_pragma_function_get_signature(function, &sig, nullptr) == DUCKDB_V2_ERROR_NONE);
 	auto integer = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
 	auto varchar = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR);
-	auto n_name = PragmaIdent("n");
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &n_name, integer, nullptr,
+	std::string_view n_name = "n";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, n_name.data(), n_name.size(), integer, nullptr,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_value_handle default_prefix = nullptr;
-	auto x = Convert("x");
-	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, &x, &default_prefix, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto prefix_name = PragmaIdent("prefix");
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &prefix_name, varchar, default_prefix,
-	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_NAMED_ONLY,
+	std::string_view x = "x";
+	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, x.data(), x.size(), &default_prefix, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	std::string_view prefix_name = "prefix";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, prefix_name.data(), prefix_name.size(), varchar,
+	                                                   default_prefix, DUCKDB_V2_FUNCTION_PARAMETER_KIND_NAMED_ONLY,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_value_destroy(&default_prefix);
 	duckdb_v2_logical_type_destroy(&varchar);
@@ -280,8 +278,8 @@ TEST_CASE("V2 pragma: an exec pragma runs for its side effects", "[capi_v2][prag
 	duckdb_v2_function_signature_handle sig = nullptr;
 	REQUIRE(duckdb_v2_pragma_function_get_signature(function, &sig, nullptr) == DUCKDB_V2_ERROR_NONE);
 	auto bigint = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
-	auto amounts_name = PragmaIdent("amounts");
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &amounts_name, bigint, nullptr,
+	std::string_view amounts_name = "amounts";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, amounts_name.data(), amounts_name.size(), bigint, nullptr,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_POSITIONAL_VARIADIC,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_logical_type_destroy(&bigint);
@@ -365,8 +363,9 @@ TEST_CASE("V2 pragma: documentation is reported by duckdb_functions()", "[capi_v
 	auto function = MakePragma(fx.factory, "answer", AnswerQuery, nullptr);
 	duckdb_v2_function_docs_handle docs = nullptr;
 	REQUIRE(duckdb_v2_pragma_function_get_docs(function, &docs, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto description = Convert("Returns the answer");
-	REQUIRE(duckdb_v2_function_docs_set_description(docs, &description, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view description = "Returns the answer";
+	REQUIRE(duckdb_v2_function_docs_set_description(docs, description.data(), description.size(), nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	RegisterPragma(fx.conn, function);
 
 	REQUIRE(PragmaQueryText(fx.conn, "SELECT function_type || ': ' || description FROM duckdb_functions() "

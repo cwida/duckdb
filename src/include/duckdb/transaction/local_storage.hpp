@@ -11,6 +11,7 @@
 #include "duckdb/storage/table/table_index_list.hpp"
 #include "duckdb/storage/optimistic_data_writer.hpp"
 #include "duckdb/common/error_data.hpp"
+#include "duckdb/common/query_context.hpp"
 #include "duckdb/common/reference_map.hpp"
 
 namespace duckdb {
@@ -40,7 +41,7 @@ struct TransactionData;
 class LocalTableStorage : public enable_shared_from_this<LocalTableStorage> {
 public:
 	// Create a new LocalTableStorage
-	explicit LocalTableStorage(Context &services, DataTable &table);
+	explicit LocalTableStorage(Context &context, DataTable &table);
 	//! Create a LocalTableStorage from an ALTER TYPE.
 	LocalTableStorage(ClientContext &context, DataTable &new_data_table, LocalTableStorage &parent,
 	                  const idx_t alter_column_index, const LogicalType &target_type,
@@ -52,7 +53,7 @@ public:
 	                  ExpressionExecutor &default_executor);
 	~LocalTableStorage();
 
-	Context &services;
+	Context &context;
 
 	reference<DataTable> table_ref;
 	//! The DuckTableEntry visible to this transaction that references table_ref.
@@ -81,7 +82,9 @@ public:
 	bool is_dropped = false;
 
 public:
-	void InitializeScan(CollectionScanState &state, optional_ptr<TableFilterSet> table_filters = nullptr);
+	//! Initialize a scan; the context of the scanning query is used for pushed down casts and zonemap checks
+	void InitializeScan(const QueryContext &context, CollectionScanState &state,
+	                    optional_ptr<TableFilterSet> table_filters = nullptr);
 	//! Write a new row group to disk (if possible)
 	void WriteNewRowGroup(idx_t flushed_row_group_idx);
 	void FlushBlocks();
@@ -96,8 +99,10 @@ public:
 	void Rollback();
 	idx_t EstimatedSize() const;
 
-	void AppendToIndexes(DuckTransaction &transaction, TableAppendState &append_state);
-	void AppendToTable(DuckTransaction &transaction, TableAppendState &append_state);
+	//! Appends to the table's indexes at commit. A returned error means the indexes were restored.
+	ErrorData AppendToIndexes(DuckTransaction &transaction, TableAppendState &append_state);
+	//! Appends to the table at commit. A returned error means the table and its indexes were restored.
+	ErrorData AppendToTable(DuckTransaction &transaction, TableAppendState &append_state);
 	ErrorData AppendToIndexes(DuckTransaction &transaction, RowGroupCollection &source, TableIndexList &index_list,
 	                          const vector<LogicalType> &table_types, row_t &start_row);
 	//! Removes the rows of this storage that were appended to the indexes of the table at [row_start, row_end)
@@ -127,7 +132,7 @@ public:
 	reference_map_t<const DataTable, shared_ptr<LocalTableStorage>> MoveEntries();
 	vector<shared_ptr<LocalTableStorage>> GetEntries() const;
 	optional_ptr<LocalTableStorage> GetStorage(const DataTable &table) const;
-	LocalTableStorage &GetOrCreateStorage(Context &services, DataTable &table);
+	LocalTableStorage &GetOrCreateStorage(Context &context, DataTable &table);
 	idx_t EstimatedSize() const;
 	bool IsEmpty() const;
 	void InsertEntry(DataTable &table, shared_ptr<LocalTableStorage> entry);
@@ -148,14 +153,15 @@ public:
 	};
 
 public:
-	explicit LocalStorage(Context &services, DuckTransaction &transaction);
+	explicit LocalStorage(Context &context, DuckTransaction &transaction);
 
 	static LocalStorage &Get(DuckTransaction &transaction);
 	static LocalStorage &Get(ClientContext &context, AttachedDatabase &db);
 	static LocalStorage &Get(ClientContext &context, Catalog &catalog);
 
 	//! Initialize a scan of the local storage
-	void InitializeScan(DataTable &table, CollectionScanState &state, optional_ptr<TableFilterSet> table_filters);
+	void InitializeScan(const QueryContext &context, DataTable &table, CollectionScanState &state,
+	                    optional_ptr<TableFilterSet> table_filters);
 	//! Scan
 	void Scan(CollectionScanState &state, const vector<StorageIndex> &column_ids, DataChunk &result);
 
@@ -220,8 +226,8 @@ public:
 
 	void VerifyNewConstraint(DataTable &parent, const BoundConstraint &constraint);
 
-	Context &GetServices() const {
-		return services;
+	Context &GetContext() const {
+		return context;
 	}
 	DuckTransaction &GetTransaction() const {
 		return transaction;
@@ -233,12 +239,13 @@ public:
 	}
 
 private:
-	Context &services;
+	Context &context;
 	DuckTransaction &transaction;
 	LocalTableManager table_manager;
 	bool synced_flushed_blocks = false;
 
 private:
+	//! Flushes the local rows into the shared table and indexes; invalidates the database if they cannot be restored
 	void Flush(DataTable &table, LocalTableStorage &storage, optional_ptr<StorageCommitState> commit_state);
 };
 

@@ -42,8 +42,8 @@ void DeltaByteArrayDecoder::ReadDbpData(BACKING &backing, ResizeableBuffer &buff
 }
 
 template void DeltaByteArrayDecoder::ReadDbpData<ResizeableBuffer::SizedBacking>(ResizeableBuffer::SizedBacking &,
-                                                                                 ResizeableBuffer &,
-                                                                                 ResizeableBuffer &, idx_t &);
+                                                                                 ResizeableBuffer &, ResizeableBuffer &,
+                                                                                 idx_t &);
 
 void DeltaByteArrayDecoder::InitializePage() {
 	auto &block = *reader.block;
@@ -123,12 +123,13 @@ void DeltaByteArrayDecoder::InitializePage() {
 			output += sizeof(uint32_t);
 		}
 
-		memcpy(output, prev_value.data(), prefix_len);
 		block.Available(suffix_len);
-		memcpy(output + prefix_len, block.GetCurrentLoc(), suffix_len);
+		if (value_len > 0) {
+			memcpy(output, prev_value.data(), prefix_len);
+			memcpy(output + prefix_len, block.GetCurrentLoc(), suffix_len);
+			memcpy(prev_value.data(), output, value_len);
+		}
 		block.Inc(suffix_len);
-
-		memcpy(prev_value.data(), output, value_len);
 		prev_len = value_len;
 		output += value_len;
 	}

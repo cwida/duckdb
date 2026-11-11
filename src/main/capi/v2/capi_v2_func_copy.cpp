@@ -843,12 +843,12 @@ static auto GetColumnType(INFO &args, idx_t index, const char *function) -> duck
 }
 
 template <class INFO>
-static auto GetColumnName(INFO &args, idx_t index, const char *function) -> duckdb_v2_identifier_t {
+static auto GetColumnName(INFO &args, idx_t index, const char *function) -> const auto & {
 	const auto &names = *args.in_names;
 	if (index >= names.size()) {
 		throw InvalidInputException("Index out of bounds in %s", function);
 	}
-	return Convert(names[index]);
+	return names[index];
 }
 
 template <class INFO>
@@ -897,20 +897,21 @@ DUCKDB_V2_ERROR duckdb_v2_copy_function_create(duckdb_v2_factory_handle factory,
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_copy_function_set_name(duckdb_v2_copy_function_handle function, const duckdb_v2_str *name,
-                                                 duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_copy_function_set_name(duckdb_v2_copy_function_handle function, const char *name,
+                                                 idx_t name_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(function);
-	DUCKDB_CHECK_ARG(name);
-	return WithErrorHandler(err, [&]() { Convert(function)->name = duckdb::Identifier(ConvertIdentifierName(name)); });
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	return WithErrorHandler(
+	    err, [&]() { Convert(function)->name = duckdb::Identifier(ConvertIdentifierName(name, name_length)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_copy_function_set_file_extension(duckdb_v2_copy_function_handle function,
-                                                           const duckdb_v2_str *extension,
+                                                           const char *extension, idx_t extension_length,
                                                            duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(function);
-	DUCKDB_CHECK_ARG(extension);
+	DUCKDB_CHECK_STR_ARG(extension, extension_length);
 	return WithErrorHandler(err, [&]() {
-		duckdb::string value(extension->ptr, extension->len);
+		duckdb::string value(Convert(extension, extension_length));
 		if (!value.empty() && value[0] == '.') {
 			throw duckdb::InvalidInputException("The file extension of a copy function is set without its leading dot, "
 			                                    "e.g. \"parquet\" rather than \".parquet\".");
@@ -996,11 +997,12 @@ DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_set_bind_data(duckdb_v2_copy_to_bind_info
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_get_file_path(duckdb_v2_copy_to_bind_info_handle info, duckdb_v2_str *path,
-                                                     duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_get_file_path(duckdb_v2_copy_to_bind_info_handle info, const char **path,
+                                                     idx_t *path_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(path);
-	return WithErrorHandler(err, [&]() { *path = Convert(*Convert(info)->in_file_path); });
+	DUCKDB_CHECK_ARG(path_length);
+	return WithErrorHandler(err, [&]() { SetStringOut(path, path_length, *Convert(info)->in_file_path); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_get_column_count(duckdb_v2_copy_to_bind_info_handle info, idx_t *count,
@@ -1021,11 +1023,14 @@ DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_get_column_type(duckdb_v2_copy_to_bind_in
 }
 
 DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_get_column_name(duckdb_v2_copy_to_bind_info_handle info, idx_t index,
-                                                       duckdb_v2_identifier_t *name, duckdb_v2_error_info_handle *err) {
+                                                       const char **name, idx_t *name_length,
+                                                       duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(name);
-	return WithErrorHandler(
-	    err, [&]() { *name = GetColumnName(*Convert(info), index, "duckdb_v2_copy_to_bind_get_column_name"); });
+	DUCKDB_CHECK_ARG(name_length);
+	return WithErrorHandler(err, [&]() {
+		SetStringOut(name, name_length, GetColumnName(*Convert(info), index, "duckdb_v2_copy_to_bind_get_column_name"));
+	});
 }
 
 DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_get_option_count(duckdb_v2_copy_to_bind_info_handle info, idx_t *count,
@@ -1036,11 +1041,14 @@ DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_get_option_count(duckdb_v2_copy_to_bind_i
 }
 
 DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_get_option_name(duckdb_v2_copy_to_bind_info_handle info, idx_t index,
-                                                       duckdb_v2_identifier_t *name, duckdb_v2_error_info_handle *err) {
+                                                       const char **name, idx_t *name_length,
+                                                       duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_ARG(name_length);
 	return WithErrorHandler(err, [&]() {
-		*name = Convert(*GetOption(*Convert(info), index, "duckdb_v2_copy_to_bind_get_option_name").first);
+		SetStringOut(name, name_length,
+		             *GetOption(*Convert(info), index, "duckdb_v2_copy_to_bind_get_option_name").first);
 	});
 }
 
@@ -1096,11 +1104,12 @@ DUCKDB_V2_ERROR duckdb_v2_copy_to_init_get_bind_data(duckdb_v2_copy_to_init_info
 	return WithErrorHandler(err, [&]() { *data = Convert(info)->in_bind_data; });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_copy_to_init_get_file_path(duckdb_v2_copy_to_init_info_handle info, duckdb_v2_str *path,
-                                                     duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_copy_to_init_get_file_path(duckdb_v2_copy_to_init_info_handle info, const char **path,
+                                                     idx_t *path_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(path);
-	return WithErrorHandler(err, [&]() { *path = Convert(*Convert(info)->in_file_path); });
+	DUCKDB_CHECK_ARG(path_length);
+	return WithErrorHandler(err, [&]() { SetStringOut(path, path_length, *Convert(info)->in_file_path); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_copy_to_init_set_init_data(duckdb_v2_copy_to_init_info_handle info, duckdb_v2_opaque *data,
@@ -1274,11 +1283,12 @@ DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_set_bind_data(duckdb_v2_copy_from_bind_
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_get_file_path(duckdb_v2_copy_from_bind_info_handle info, duckdb_v2_str *path,
-                                                       duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_get_file_path(duckdb_v2_copy_from_bind_info_handle info, const char **path,
+                                                       idx_t *path_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(path);
-	return WithErrorHandler(err, [&]() { *path = Convert(*Convert(info)->in_file_path); });
+	DUCKDB_CHECK_ARG(path_length);
+	return WithErrorHandler(err, [&]() { SetStringOut(path, path_length, *Convert(info)->in_file_path); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_get_column_count(duckdb_v2_copy_from_bind_info_handle info, idx_t *count,
@@ -1299,12 +1309,15 @@ DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_get_column_type(duckdb_v2_copy_from_bin
 }
 
 DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_get_column_name(duckdb_v2_copy_from_bind_info_handle info, idx_t index,
-                                                         duckdb_v2_identifier_t *name,
+                                                         const char **name, idx_t *name_length,
                                                          duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(name);
-	return WithErrorHandler(
-	    err, [&]() { *name = GetColumnName(*Convert(info), index, "duckdb_v2_copy_from_bind_get_column_name"); });
+	DUCKDB_CHECK_ARG(name_length);
+	return WithErrorHandler(err, [&]() {
+		SetStringOut(name, name_length,
+		             GetColumnName(*Convert(info), index, "duckdb_v2_copy_from_bind_get_column_name"));
+	});
 }
 
 DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_get_option_count(duckdb_v2_copy_from_bind_info_handle info, idx_t *count,
@@ -1315,12 +1328,14 @@ DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_get_option_count(duckdb_v2_copy_from_bi
 }
 
 DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_get_option_name(duckdb_v2_copy_from_bind_info_handle info, idx_t index,
-                                                         duckdb_v2_identifier_t *name,
+                                                         const char **name, idx_t *name_length,
                                                          duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_ARG(name_length);
 	return WithErrorHandler(err, [&]() {
-		*name = Convert(*GetOption(*Convert(info), index, "duckdb_v2_copy_from_bind_get_option_name").first);
+		SetStringOut(name, name_length,
+		             *GetOption(*Convert(info), index, "duckdb_v2_copy_from_bind_get_option_name").first);
 	});
 }
 

@@ -64,7 +64,7 @@ public:
 			const auto path_val = ExpressionExecutor::EvaluateScalar(context, *arguments[1]);
 			if (!path_val.IsNull()) {
 				constant = true;
-				path = path_val.DefaultCastAs(LogicalType::VARCHAR).GetValue<string>();
+				path = path_val.CastAs(context, LogicalType::VARCHAR).GetValue<string>();
 			}
 		}
 		return make_uniq<JSONModifyFunctionData>(constant, std::move(path));

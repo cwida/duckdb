@@ -3,9 +3,6 @@
 # group: [materialized]
 
 statement ok
-SET max_execution_time=10000;
-
-statement ok
 SET disabled_optimizers='cte_filter_pusher';
 
 statement ok
@@ -19,6 +16,10 @@ CREATE TABLE b AS SELECT i AS g FROM range(100,300) t(i);
 
 statement ok
 CREATE TABLE c AS SELECT i AS g FROM range(500,700) t(i);
+
+# Bound CTE execution without timing the fixture loads.
+statement ok
+SET max_execution_time=60000;
 
 statement ok
 PREPARE consumers AS
@@ -80,7 +81,13 @@ statement ok
 RESET debug_force_external;
 
 statement ok
+SET max_execution_time=0;
+
+statement ok
 DELETE FROM b;
+
+statement ok
+SET max_execution_time=60000;
 
 query II
 EXECUTE consumers;
@@ -88,7 +95,13 @@ EXECUTE consumers;
 NULL	NULL
 
 statement ok
+SET max_execution_time=0;
+
+statement ok
 INSERT INTO b SELECT i FROM range(120,140) t(i);
+
+statement ok
+SET max_execution_time=60000;
 
 query II
 EXECUTE consumers;
@@ -103,6 +116,9 @@ statement ok
 SET disabled_optimizers='cte_filter_pusher,build_side_probe_side';
 
 statement ok
+SET max_execution_time=0;
+
+statement ok
 CREATE OR REPLACE TABLE facts AS SELECT i%200000 AS k,i AS v FROM range(400000) t(i);
 
 statement ok
@@ -114,6 +130,9 @@ CREATE OR REPLACE TABLE b AS SELECT 100100+i AS g FROM range(200) t(i);
 statement ok
 CREATE OR REPLACE TABLE c AS SELECT i AS g FROM range(100500,100700) t(i);
 
+statement ok
+SET max_execution_time=60000;
+
 query II
 EXPLAIN (ANALYZE, FORMAT JSON)
 WITH p AS MATERIALIZED (SELECT d.g,sum(f.v) v FROM facts f JOIN dates d USING(k) GROUP BY d.g)
@@ -124,7 +143,13 @@ JOIN (SELECT p.* FROM p JOIN c USING(g)) y ON x.g=y.g-400;
 analyzed_plan	<REGEX>:(?s).*"Table": "[^"]*[.]dates"(?:[^}]*"Dynamic Filters": "[^"]* OR [^"]*"[^}]*},\s*"intermediate_rows": (?:[4-9][0-9]{2}|[1-9][0-9]{3,4}|1[0-9]{5}),|(?:,\s*"(?:Type|Projections|Estimated Cardinality)":\s*(?:"[^"]*"|\[[^]]*\]))+\s*},\s*"intermediate_rows": 200000,).*
 
 statement ok
+SET max_execution_time=0;
+
+statement ok
 INSERT INTO b SELECT 100100+i%200 FROM range(999800) t(i);
+
+statement ok
+SET max_execution_time=60000;
 
 # At one million rows the producer retains its sibling coordination waits.
 query II

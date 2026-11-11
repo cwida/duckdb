@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
@@ -79,7 +80,7 @@ void UnnestOperatorState::PrepareInput(DataChunk &input, const vector<unique_ptr
 	executor.Execute(input, list_data);
 
 	// verify incoming lists
-	list_data.Verify(executor.GetContextPtr());
+	list_data.Verify(executor.GetContext().GetDatabase());
 	D_ASSERT(input.size() == list_data.size());
 	D_ASSERT(list_data.ColumnCount() == select_list.size());
 	D_ASSERT(list_vector_data.size() == list_data.ColumnCount());

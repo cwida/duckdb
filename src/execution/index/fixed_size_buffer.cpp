@@ -46,7 +46,7 @@ FixedSizeBuffer::FixedSizeBuffer(BlockManager &block_manager, const idx_t segmen
     : block_manager(block_manager), readers(0), segment_count(segment_count), allocation_size(allocation_size),
       dirty(false), vacuum(false), loaded(false), block_pointer(block_pointer) {
 	D_ASSERT(block_pointer.IsValid());
-	block_handle = block_manager.RegisterBlock(block_pointer.block_id, MemoryTag::ART_INDEX);
+	block_handle = block_manager.RegisterBlock(block_pointer.block_id, MemoryTag::BASE_TABLE);
 	D_ASSERT(block_handle->BlockId() < MAXIMUM_BLOCK);
 }
 
@@ -104,10 +104,12 @@ shared_ptr<FixedSizeBuffer> FixedSizeBuffer::Persist(PartialBlockManager &partia
 	auto result = make_shared_ptr<FixedSizeBuffer>(block_manager, segment_count, new_allocation_size);
 	auto new_block_pointer =
 	    partial_block_manager.Write(*result, buffer_handle, NumericCast<uint32_t>(new_allocation_size));
-	D_ASSERT(new_block_pointer);
+	if (!new_block_pointer) {
+		throw InternalException("failed to write FixedSizeBuffer to a partial block");
+	}
 	// Checkpoint metadata is collected before shared partial blocks are flushed.
 	result->block_pointer = *new_block_pointer;
-	result->block_handle = block_manager.RegisterBlock(new_block_pointer->block_id, MemoryTag::ART_INDEX);
+	result->block_handle = block_manager.RegisterBlock(new_block_pointer->block_id, MemoryTag::BASE_TABLE);
 	return result;
 }
 
@@ -134,6 +136,7 @@ void FixedSizeBuffer::LoadFromDisk() {
 	auto new_buffer_handle = buffer_manager.Allocate(MemoryTag::ART_INDEX, &block_manager, false);
 	new_block_handle = new_buffer_handle.GetBlockHandle();
 	memcpy(new_buffer_handle.GetDataMutable(), pinned_buffer_handle.Ptr() + block_pointer.offset, allocation_size);
+	memset(new_buffer_handle.GetDataMutable() + allocation_size, 0, block_size - allocation_size);
 
 	buffer_handle = std::move(new_buffer_handle);
 	block_handle = std::move(new_block_handle);

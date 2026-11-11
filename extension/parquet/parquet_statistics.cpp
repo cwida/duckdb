@@ -1310,7 +1310,7 @@ unique_ptr<ParquetBloomFilter> ParquetBloomFilter::Create(Allocator &allocator, 
 }
 
 unique_ptr<ParquetBloomFilter> ParquetBloomFilter::TryCreate(Allocator &allocator, idx_t num_entries, double target,
-                                                             shared_ptr<ParquetBloomFilterMemory> memory) {
+                                                             const shared_ptr<ParquetBloomFilterMemory> &memory) {
 	if (!num_entries) {
 		return nullptr;
 	}

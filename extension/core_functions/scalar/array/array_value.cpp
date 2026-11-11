@@ -37,7 +37,7 @@ void ArrayValueFunction(DataChunk &args, ExpressionState &state, Vector &result)
 
 	for (idx_t i = 0; i < num_rows; i++) {
 		for (idx_t j = 0; j < num_columns; j++) {
-			auto val = args.GetValue(j, i).DefaultCastAs(child_type);
+			auto val = args.GetValue(j, i).CastAs(state.GetContext(), child_type);
 			child.SetValue((i * num_columns) + j, val);
 		}
 	}

@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/storage/block_manager.hpp"
@@ -78,7 +79,7 @@ TEST_CASE("Metadata of a file for older versions has no next pointers into free 
 	config->SetOptionByName("storage_compatibility_version", Value(storage_version));
 	// only the explicit checkpoints below write the file, automatic ones would rewrite the tables this relies on
 	config->options.checkpoint_wal_size = idx_t(1) << 40;
-	config->options.checkpoint_on_shutdown = false;
+	config->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
 	const idx_t table_count = 9;
 	// the database that creates the file drops the first tables, the database that opens it again drops the others
 	const idx_t dropped_before_reopen = 4;

@@ -1,0 +1,76 @@
+# name: test/sql/settings/generic_list_setting.test
+# description: Test generic settings with a list type (tracked_metrics)
+# group: [settings]
+
+query I
+SELECT current_setting('tracked_metrics')
+----
+[*]
+
+statement ok
+SET tracked_metrics=['query.*', 'optimizer.*']
+
+query I
+SELECT current_setting('tracked_metrics')
+----
+[query.*, optimizer.*]
+
+statement ok
+SET tracked_metrics=[]
+
+query I
+SELECT len(current_setting('tracked_metrics'))
+----
+0
+
+statement ok
+RESET tracked_metrics
+
+query I
+SELECT current_setting('tracked_metrics')
+----
+[*]
+
+statement error
+SET tracked_metrics=NULL
+----
+tracked_metrics setting cannot be NULL
+
+statement error
+SET tracked_metrics=['query.*', NULL]
+----
+tracked_metrics setting cannot contain NULL entries
+
+# enable_profiling validates the metrics like SET tracked_metrics, and the connection stays usable
+statement error
+CALL enable_profiling(['query.*', NULL], format := 'no_output');
+----
+tracked_metrics setting cannot contain NULL entries
+
+query I
+SELECT 42
+----
+42
+
+statement ok
+RESET tracked_metrics
+
+statement ok
+PRAGMA disable_profiling
+
+# the setting can also be set globally
+statement ok
+SET GLOBAL tracked_metrics=['optimizer.*']
+
+query I
+SELECT current_setting('tracked_metrics')
+----
+[optimizer.*]
+
+statement ok
+RESET GLOBAL tracked_metrics
+
+query I
+SELECT current_setting('tracked_metrics')
+----
+[*]

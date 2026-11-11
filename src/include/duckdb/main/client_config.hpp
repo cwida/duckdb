@@ -27,6 +27,14 @@ class PreparedStatementData;
 struct CompiledGrammar;
 struct ReplacementScan;
 
+//! The grammar a session parses with, together with the grammar registry version and the effective
+//! selection snapshot (session or database default, compared by identity) it was composed from
+struct CachedSessionGrammar {
+	shared_ptr<CompiledGrammar> grammar;
+	idx_t registry_version;
+	shared_ptr<const vector<string>> selection;
+};
+
 typedef std::function<unique_ptr<PhysicalOperator>(ClientContext &context, PreparedStatementData &data)>
     get_result_collector_t;
 
@@ -39,21 +47,12 @@ struct ClientConfig {
 	//! The file to save query profiling information to, instead of printing it to the console
 	//! (empty = print to console)
 	string profiler_save_location;
-	//! Glob patterns for tracked_metrics (controls which metrics are gathered and displayed).
-	//! Default "*" means all metrics are tracked.
-	vector<string> tracked_metrics = {"*"};
 	//! Settings that are passed to the renderer of the profiler output (e.g. 'maximum_render_width' for the text
 	//! renderer). Settings that are not recognized by the active renderer are ignored.
 	unordered_map<string, Value> profiling_renderer_settings;
 
 	//! system-wide progress bar disable.
 	const char *system_progress_bar_disable_reason = nullptr;
-	//! If the progress bar is enabled or not.
-	bool enable_progress_bar = false;
-	//! If the print of the progress bar is enabled
-	bool print_progress_bar = true;
-	//! The wait time before showing the progress bar
-	int wait_time = 2000;
 
 	//! Force parallelism of small tables, used for testing
 	bool verify_parallelism = false;
@@ -88,10 +87,16 @@ struct ClientConfig {
 	get_result_collector_t get_result_collector = nullptr;
 
 	optional<string> current_dialect;
-	//! The (ordered) list of grammar extensions currently used by the parser
-	vector<string> active_grammar_extensions;
-	//! The compiled grammar active for the connection
-	shared_ptr<CompiledGrammar> cached_grammar;
+	//! The (ordered) list of explicitly activated grammar extensions: nullptr means not set (the
+	//! database default applies), a non-null empty list is an explicit opt-out. An immutable
+	//! snapshot replaced on SET/RESET and loaded atomically because parsing can run without the
+	//! client context lock
+	shared_ptr<const vector<string>> active_grammar_extensions;
+	//! The grammar composed for the connection; recomposed lazily when unset or stale. The snapshot
+	//! is immutable and stored/loaded atomically (see active_grammar_extensions); its validity is
+	//! keyed on the registry version and the selection identity, so a parse that raced a SET cannot
+	//! install a grammar that passes as composed from the new selection
+	shared_ptr<CachedSessionGrammar> cached_grammar;
 	//! The grammar of the database this client is CONNECT-ed to; unset when not connected
 	shared_ptr<CompiledGrammar> connected_grammar;
 
