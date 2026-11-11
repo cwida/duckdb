@@ -385,14 +385,7 @@ void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &joi
 		pushdown_info->probe_info.push_back(std::move(get_filter));
 	}
 
-	// Even if we cannot find any table sources in which we can push down filters,
-	// we still initialize the aggregate states so that we have the possibility of doing a perfect hash join
-	// TODO: Can ExpressionType::COMPARE_NOT_DISTINCT_FROM be used with perfect hash joins?
-	const auto compute_aggregates_anyway =
-	    join.join_type == JoinType::INNER && join.conditions.size() == 1 && pushdown_info->join_condition.size() == 1 &&
-	    join.conditions[0].IsComparison() && join.conditions[0].GetComparisonType() == ExpressionType::COMPARE_EQUAL &&
-	    TypeIsIntegral(join.conditions[0].GetRHS().GetReturnType().InternalType());
-	if (pushdown_info->probe_info.empty() && !compute_aggregates_anyway) {
+	if (pushdown_info->probe_info.empty()) {
 		// no table sources found in which we can push down filters
 		return;
 	}
@@ -415,10 +408,8 @@ void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &joi
 			pushdown_info->min_max_aggregates.push_back(std::move(aggr_expr));
 		}
 	}
-	if (!pushdown_info->probe_info.empty()) {
-		const idx_t child_idx = join.children[1]->type == LogicalOperatorType::LOGICAL_DELIM_GET ? 0 : 1;
-		pushdown_info->build_side_has_filter = IsFiltering(join.children[child_idx]);
-	}
+	const idx_t child_idx = join.children[1]->type == LogicalOperatorType::LOGICAL_DELIM_GET ? 0 : 1;
+	pushdown_info->build_side_has_filter = IsFiltering(join.children[child_idx]);
 
 	// set up the filter pushdown in the join itself
 	join.filter_pushdown = std::move(pushdown_info);
