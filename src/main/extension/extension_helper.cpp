@@ -337,20 +337,22 @@ vector<ExtensionUpdateResult> ExtensionHelper::UpdateExtensions(ClientContext &c
 #ifndef WASM_LOADABLE_EXTENSIONS
 	identifier_set_t seen_extensions;
 
-	// scan the install directory for installed extensions
-	auto ext_directory = ExtensionHelper::ExtensionDirectory(db, fs);
-	fs.ListFiles(ext_directory, [&](const string &path, bool is_directory) {
-		if (!ExtensionHelper::IsInstalledExtensionFile(path)) {
-			return;
-		}
+	// scan the install directories for installed extensions
+	auto ext_directories = ExtensionHelper::GetInstalledExtensionDirectories(db, fs);
+	for (auto ext_directory : ext_directories) {
+		fs.ListFiles(ext_directory, [&](const string &path, bool is_directory) {
+			if (!ExtensionHelper::IsInstalledExtensionFile(path)) {
+				return;
+			}
 
-		auto extension_file_name = StringUtil::GetFileName(path);
-		auto extension_name = StringUtil::Split(extension_file_name, ".")[0];
+			auto extension_file_name = StringUtil::GetFileName(path);
+			auto extension_name = StringUtil::Split(extension_file_name, ".")[0];
 
-		seen_extensions.insert(Identifier(extension_name));
+			seen_extensions.insert(Identifier(extension_name));
 
-		result.push_back(UpdateExtensionInternal(context, db, fs, fs.JoinPath(ext_directory, path), extension_name));
-	});
+			result.push_back(UpdateExtensionInternal(context, db, fs, fs.JoinPath(ext_directory, path), extension_name));
+		});
+	}
 #endif
 
 	return result;
