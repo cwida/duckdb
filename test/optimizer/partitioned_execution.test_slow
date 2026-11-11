@@ -36,7 +36,7 @@ FROM test;
 ----
 
 statement ok
-pragma explain_output='optimized_only'
+SET explain_output='optimized_only'
 
 # this optimizer splits pipelines based on the number of active threads
 # if there are many pipelines, we want larger splits to achieve good parallel CPU utilization

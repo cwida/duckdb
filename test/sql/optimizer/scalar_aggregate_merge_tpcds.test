@@ -5,7 +5,7 @@
 require tpcds
 
 statement ok
-PRAGMA default_null_order='postgres'
+SET default_null_order='postgres'
 
 statement ok
 CALL dsdgen(sf=0.01)

@@ -7,7 +7,7 @@ require vector_size 2048
 load {TEST_DIR}/force_rle.db
 
 statement ok
-PRAGMA force_compression = 'rle'
+SET force_compression = 'rle'
 
 statement ok
 CREATE TABLE test_rle (a INTEGER);

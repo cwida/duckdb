@@ -8,15 +8,15 @@ statement ok
 call dbgen(sf=0.1);
 
 statement ok
-PRAGMA temp_directory='{TEST_DIR}/window_spooling'
+SET temp_directory='{TEST_DIR}/window_spooling'
 
 # Force paging
 statement ok
-PRAGMA memory_limit='100MB'
+SET memory_limit='100MB'
 
 # Limit threads to improve stability
 statement ok
-PRAGMA threads=4;
+SET threads=4;
 
 # MODE is very unstable on this data
 query III

@@ -91,10 +91,10 @@ set threads=1;
 
 # filtering on a single row group reads only that one (1) and considers all 5 (skips 4)
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['operator.row_groups_scanned', 'operator.total_row_groups_to_scan', 'operator.type'];
@@ -128,10 +128,10 @@ SELECT scanned, total - scanned AS skipped FROM parquet_scan_row_groups;
 # reading multiple non-contiguous row groups (IN (1, 3)) reads ONLY those two row
 # groups and skips the other three
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['operator.row_groups_scanned', 'operator.total_row_groups_to_scan', 'operator.type'];
@@ -150,10 +150,10 @@ SELECT scanned, total - scanned AS skipped FROM parquet_scan_row_groups;
 # without a row-group filter, all row groups are read and none are skipped
 # (sum forces reading the column data - count(*) would be answered from metadata)
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['operator.row_groups_scanned', 'operator.total_row_groups_to_scan', 'operator.type'];

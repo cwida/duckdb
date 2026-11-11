@@ -1,0 +1,72 @@
+# name: test/sql/index/art/storage/art_reloaded_buffer_initialization.test
+# description: Growing a reloaded ART buffer must not persist stale bytes from its uncopied tail
+# group: [storage]
+
+statement ok
+ATTACH '{TEST_DIR}/art_reloaded_buffer_initialization.db' AS db
+
+statement ok
+SET threads=1
+
+statement ok
+SET enable_block_allocator=true
+
+statement ok
+SET force_compression='uncompressed'
+
+statement ok
+CREATE TABLE db.keys (k BIGINT PRIMARY KEY)
+
+statement ok
+INSERT INTO db.keys SELECT i * 7919 FROM range(50000) r(i)
+
+statement ok
+CHECKPOINT db
+
+# Reload partially filled index buffers into memory previously occupied by the donor.
+statement ok
+CREATE TEMP TABLE donor AS SELECT repeat('Q', 1000) AS s FROM range(10000) r(i)
+
+statement ok
+DROP TABLE donor
+
+statement ok
+INSERT INTO db.keys SELECT (i + 100000) * 7919 FROM range(5000) r(i)
+
+statement ok
+CHECKPOINT db
+
+# Close the file so that it can be read
+statement ok
+DETACH db
+
+query I
+SELECT strpos(hex(content), repeat(hex('Q'), 5)) FROM read_blob('{TEST_DIR}/art_reloaded_buffer_initialization.db')
+----
+0
+
+statement ok
+ATTACH '{TEST_DIR}/art_reloaded_buffer_initialization.db' AS db
+
+query II
+SELECT count(*), count(DISTINCT k) FROM db.keys
+----
+55000	55000
+
+query I
+SELECT k FROM db.keys WHERE k = 7919
+----
+7919
+
+query I
+SELECT k FROM db.keys WHERE k = 100000 * 7919
+----
+791900000
+
+statement error
+INSERT INTO db.keys VALUES (7919)
+----
+Duplicate key
+
+statement ok
+DETACH db

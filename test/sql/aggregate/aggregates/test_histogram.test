@@ -179,7 +179,7 @@ SELECT histogram(DISTINCT e) FILTER (WHERE g < 3)::VARCHAR FROM hist_data;
 {1=1, 2=1, 3=1, 4=1, 5=1}
 
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 # exact histograms use visible aggregate stages and reconstruct the map in a projection
 query II

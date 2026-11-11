@@ -12,7 +12,7 @@ statement ok
 create table t_right as select range b from range(10000000);
 
 statement ok
-pragma explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 query II
 explain select * from t_left, (select * from t_right limit 10000) where a = b;

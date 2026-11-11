@@ -3,7 +3,7 @@
 # group: [optimizer]
 
 statement ok
-pragma disabled_optimizers='expression_rewriter';
+SET disabled_optimizers='expression_rewriter';
 
 statement ok
 CREATE TABLE t(n_name VARCHAR);

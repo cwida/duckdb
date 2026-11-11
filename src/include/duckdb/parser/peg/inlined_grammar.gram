@@ -11,6 +11,7 @@ Statement <-
 	PragmaStatement /
 	CallStatement /
 	InsertStatement /
+	DropMemberStatement /
 	DropStatement /
 	CopyStatement /
 	ExplainStatement /
@@ -1541,6 +1542,10 @@ DescRule <- 'DESC'
 DetachStatement <- 'DETACH' Database? IfExists? CatalogName
 
 DropStatement <- 'DROP' DropEntries DropBehavior?
+DropMemberStatement <- 'DROP' DropMember DropBehavior?
+DropMember <- DropTableFunctionMember / DropFunctionMember
+DropTableFunctionMember <- CommentMacroTable IfExists? QualifiedTableFunction DropFunctionSignature
+DropFunctionMember <- FunctionTypeMacro IfExists? FunctionIdentifier DropFunctionSignature
 
 DropEntries <-
 	DropTable /
@@ -1559,6 +1564,9 @@ DropTrigger <- 'TRIGGER' IfExists? TriggerName 'ON' BaseTableName
 DropTable <- TableOrView IfExists? List(BaseTableName)
 DropTableFunction <- CommentMacroTable IfExists? List(QualifiedTableFunction)
 DropFunction <- FunctionTypeMacro IfExists? List(FunctionIdentifier)
+DropFunctionSignature <- Parens(List(DropSignatureType)?)
+DropSignatureType <- DropSignatureAnyType / Type
+DropSignatureAnyType <- 'ANY'
 DropSchema <- 'SCHEMA' IfExists? List(QualifiedName)
 DropIndex <- 'INDEX' IfExists? List(QualifiedIndexName)
 QualifiedIndexName <- CatalogReservedSchemaIndex / SchemaReservedIndex / QualifiedIndexNameString
@@ -1602,6 +1610,7 @@ ExplainableStatements <-
     CreateStatement /
     DeallocateStatement /
     DeleteStatement /
+    DropMemberStatement /
     DropStatement /
     ExecuteStatement /
     InsertStatement /

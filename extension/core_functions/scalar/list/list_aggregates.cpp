@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "core_functions/aggregate/nested_functions.hpp"
 #include "core_functions/scalar/list_functions.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -84,7 +85,7 @@ ListAggregatesBindData::~ListAggregatesBindData() {
 }
 
 struct ListAggregatesLocalState : public FunctionLocalState {
-	ListAggregatesLocalState(ClientContext &context, optional_ptr<FunctionData> bind_data)
+	ListAggregatesLocalState(Context &context, optional_ptr<FunctionData> bind_data)
 	    : arena_allocator(BufferAllocator::Get(context)) {
 		if (!bind_data) {
 			return;

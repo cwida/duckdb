@@ -1,0 +1,38 @@
+# name: test/sql/settings/global_only_generic_settings.test
+# description: Database-wide generic settings read through the DBConfig cannot be set per session
+# group: [settings]
+
+foreach setting checkpoint_on_shutdown trim_free_blocks debug_force_checkpoint debug_abort_on_wal_failure buffer_manager_track_eviction_timestamps
+
+statement error
+SET SESSION {setting} = false;
+----
+cannot be set as a session variable - it can only be set globally
+
+endloop
+
+statement error
+SET SESSION debug_initialize = 'DEBUG_ZERO_INITIALIZE';
+----
+cannot be set as a session variable - it can only be set globally
+
+# a global change is visible from the session and reported as global
+statement ok
+SET GLOBAL checkpoint_on_shutdown = false;
+
+query II
+SELECT value, scope FROM duckdb_settings() WHERE name = 'checkpoint_on_shutdown';
+----
+false	GLOBAL
+
+statement ok
+RESET GLOBAL checkpoint_on_shutdown;
+
+query I
+SELECT current_setting('checkpoint_on_shutdown');
+----
+true
+
+# debug_order_verification is read per connection by the binder, so it keeps its session scope
+statement ok
+SET SESSION debug_order_verification = 'NONE';

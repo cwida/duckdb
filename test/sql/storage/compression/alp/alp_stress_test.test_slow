@@ -6,7 +6,7 @@ load {TEST_DIR}/alp_min_max.db
 foreach type DOUBLE FLOAT
 
 statement ok
-pragma force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 # Create the initial data to start with (without this Constant compression will be used at first)
 statement ok
@@ -19,7 +19,7 @@ foreach compression ALP Uncompressed
 
 # Ensure the correct compression is used
 statement ok
-pragma force_compression='{compression}'
+SET force_compression='{compression}'
 
 # Setup
 statement ok
@@ -51,7 +51,7 @@ foreach compression ALP Uncompressed
 
 # Ensure the correct compression is used
 statement ok
-pragma force_compression='{compression}'
+SET force_compression='{compression}'
 
 # Insert a single value into the table
 statement ok

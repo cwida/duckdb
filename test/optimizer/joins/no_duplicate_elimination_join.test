@@ -3,7 +3,7 @@
 # group: [joins]
 
 statement ok
-pragma debug_force_no_cross_product=true;
+SET debug_force_no_cross_product=true;
 
 statement ok
 Create table test0 as select * from range(1000);

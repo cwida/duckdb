@@ -1,0 +1,59 @@
+# name: test/sql/storage/corrupt/index_corrupt_expression.test
+# description: Persisted index expressions must satisfy creation-time validation
+# group: [corrupt]
+
+require exact_vector_size 2048
+
+statement ok
+CREATE TABLE volatile_key(i INTEGER)
+
+statement error
+CREATE INDEX volatile_index ON volatile_key((i || vector_type(i::VARCHAR)))
+----
+Binder Error: Index keys cannot contain expressions with side effects
+
+# Created with these tables and indexes, then patched with the block checksum updated:
+# CREATE TABLE integers(i INTEGER)
+# CREATE INDEX i_index ON integers(i, (i || char_length('my_var')))
+# CREATE TABLE volatile_key(i INTEGER)
+# CREATE INDEX volatile_index ON volatile_key((i || from_binary(i::VARCHAR)))
+# CREATE TABLE lambda_key(l VARCHAR[])
+# CREATE INDEX lambda_index ON lambda_key((list_contains(l, 'a' COLLATE "binary")))
+# char_length -> getvariable, from_binary -> vector_type, and binary -> nocase in the stored SQL and AST.
+unzip data/storage/corrupt/index_corrupt_expression.db.gz {TEST_DIR}/index_corrupt_expression.db
+
+statement ok
+ATTACH '{TEST_DIR}/index_corrupt_expression.db' AS db2
+
+statement ok
+SET VARIABLE my_var = 'secret'
+
+# Indexes are bound lazily when the table is modified.
+statement error
+INSERT INTO db2.integers VALUES (1)
+----
+Data Corruption Error: Invalid index "i_index": Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone.
+
+statement ok
+DETACH db2
+
+statement ok
+ATTACH '{TEST_DIR}/index_corrupt_expression.db' AS db2
+
+# Volatile functions need not require rebinding or a client context to execute.
+statement error
+INSERT INTO db2.volatile_key VALUES (1)
+----
+Data Corruption Error: Invalid index "volatile_index": Index keys cannot contain expressions with side effects
+
+statement ok
+DETACH db2
+
+statement ok
+ATTACH '{TEST_DIR}/index_corrupt_expression.db' AS db2
+
+# Binding the collated comparison introduces a lambda function.
+statement error
+INSERT INTO db2.lambda_key VALUES (['a'])
+----
+Data Corruption Error: Invalid index "lambda_index": Index keys cannot contain lambda functions such as "list_transform"

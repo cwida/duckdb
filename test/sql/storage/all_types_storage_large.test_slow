@@ -7,7 +7,7 @@ load {TEST_DIR}/all_types_storage.db readwrite v2.0.0
 foreach compression <compression>
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 statement ok
 CREATE TABLE all_types AS SELECT * FROM test_all_types();

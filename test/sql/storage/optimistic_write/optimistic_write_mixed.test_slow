@@ -11,7 +11,7 @@ to '{TEST_DIR}/external_ids_generated.parquet';
 load {TEST_DIR}/external_ids.db
 
 statement ok
-PRAGMA force_compression='uncompressed';
+SET force_compression='uncompressed';
 
 statement ok
 SET threads = 48;
