@@ -377,36 +377,29 @@ FlattenDependentJoins::DecorrelateSubtreeInternal(unique_ptr<LogicalOperator> &p
 				output.right_payload.erase(right_entry);
 			}
 		}
-		auto left_child_requires_domain = RequiresDomain(*plan->children[0]);
-		auto requires_full_rhs_decorrelation = left_child_requires_domain || op.join_type != JoinType::SINGLE;
-
 		// Phase 1: prepare the left side in the current flattener context.
 		auto outer_state = PrepareDependentJoinLeft(plan, propagate_null_values, std::move(state));
 		// Phase 2: push the active correlated state through the right subtree in a child flattener.
 		FlattenDependentJoins child_flatten(binder, op.correlated_columns, op.perform_delim, op.any_join, this);
 		child_flatten.AddReplacementAliases(outer_state.replacement_graph);
 
-		unique_ptr<LogicalOperator> detached_cte = nullptr;
-		if (plan->children[1]->type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
+		// Leading CTEs before the first one that needs this join's domain are evaluated once, above the join.
+		vector<unique_ptr<LogicalOperator>> detached_ctes;
+		while (plan->children[1]->type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
 			auto &cte_ref = plan->children[1]->Cast<LogicalMaterializedCTE>();
-			if (!child_flatten.RequiresDomain(*cte_ref.children[0])) {
-				detached_cte = std::move(plan->children[1]);
-				plan->children[1] = std::move(detached_cte->children[1]);
-				// the definition is outside this join's domain, but may contain dependent joins of its own
-				auto old_definition_bindings = detached_cte->children[0]->GetColumnBindings();
-				auto definition_state = DecorrelateIndependentSubtree(detached_cte->children[0]);
-				ColumnBindingRewrite::ApplyToChild(detached_cte, 0, std::move(old_definition_bindings),
-				                                   definition_state.replacement_graph);
-				// the domain probe above cached access entries for definition operators this replaced
-				child_flatten.InvalidateAccessCache();
-				if (requires_full_rhs_decorrelation) {
-					auto result = DecorrelateSubtree(plan, propagate_null_values, std::move(outer_state.bindings));
-					result.replacement_graph.Merge(outer_state.replacement_graph);
-					detached_cte->children[1] = std::move(plan);
-					plan = std::move(detached_cte);
-					return result;
-				}
+			if (child_flatten.RequiresDomain(*cte_ref.children[0])) {
+				break;
 			}
+			auto detached_cte = std::move(plan->children[1]);
+			plan->children[1] = std::move(detached_cte->children[1]);
+			// the definition is outside this join's domain, but may contain dependent joins of its own
+			auto old_definition_bindings = detached_cte->children[0]->GetColumnBindings();
+			auto definition_state = DecorrelateIndependentSubtree(detached_cte->children[0]);
+			ColumnBindingRewrite::ApplyToChild(detached_cte, 0, std::move(old_definition_bindings),
+			                                   definition_state.replacement_graph);
+			// the domain probe above cached access entries for definition operators this replaced
+			child_flatten.InvalidateAccessCache();
+			detached_ctes.push_back(std::move(detached_cte));
 		}
 
 		auto old_right_bindings = plan->children[1]->GetColumnBindings();
@@ -421,9 +414,9 @@ FlattenDependentJoins::DecorrelateSubtreeInternal(unique_ptr<LogicalOperator> &p
 		// Phase 3: finalize the current dependent join using the state produced on the right.
 		auto result = FinalizeDependentJoin(plan, std::move(outer_state), right_state, std::move(output));
 
-		if (detached_cte) {
-			detached_cte->children[1] = std::move(plan);
-			plan = std::move(detached_cte);
+		for (auto it = detached_ctes.rbegin(); it != detached_ctes.rend(); ++it) {
+			(*it)->children[1] = std::move(plan);
+			plan = std::move(*it);
 		}
 		return result;
 	}

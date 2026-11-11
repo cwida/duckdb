@@ -226,6 +226,7 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 		if (return_chunk) {
 			// (re)reference all output columns first, then validate + set the cardinality. mock_chunk is not reset
 			// here, but with return_chunk the update projects every table column, so all columns are referenced.
+			D_ASSERT(columns.size() == mock_chunk.ColumnCount());
 			for (idx_t i = 0; i < columns.size(); i++) {
 				mock_chunk.data[columns[i].index].Reference(update_chunk.data[i]);
 			}
@@ -302,6 +303,7 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 
 	// Arrange the columns in the standard table order, then validate + set the cardinality from the referenced
 	// columns. The del+insert path projects every table column (it re-inserts the full row), so all are referenced.
+	D_ASSERT(columns.size() == mock_chunk.ColumnCount());
 	for (idx_t i = 0; i < columns.size(); i++) {
 		mock_chunk.data[columns[i].index].Reference(update_chunk.data[i]);
 	}

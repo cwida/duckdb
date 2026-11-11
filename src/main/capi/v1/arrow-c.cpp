@@ -495,7 +495,8 @@ duckdb_state Ingest(duckdb_connection connection, const char *table_name, struct
 			return DuckDBError;
 		}
 		auto factory = duckdb::make_shared_ptr<CArrowScanFactory>(*input);
-		cconn->TableFunction("arrow_scan", {}, {}, std::move(factory))
+		// The factory hands out the caller's batches unchanged, so it can neither project nor filter them
+		cconn->TableFunction("arrow_scan_unprojected", {}, {}, std::move(factory))
 		    ->CreateView(duckdb::Identifier(table_name), true, true);
 	} catch (...) { // LCOV_EXCL_START
 		// Tried covering this in tests, but it proved harder than expected. At the time of writing:

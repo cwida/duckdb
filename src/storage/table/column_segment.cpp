@@ -498,6 +498,12 @@ idx_t ColumnSegment::FilterSelection(SelectionVector &sel, Vector &vector, Unifi
 
 idx_t ColumnSegment::FilterSelection(SelectionVector &sel, Vector &vector, TableFilterState &filter_state,
                                      idx_t scan_count, idx_t &approved_tuple_count) {
+#ifdef D_ASSERT_IS_ENABLED
+	// executors size their per row buffers by scan_count and write at the selected positions
+	for (idx_t i = 0; i < approved_tuple_count; i++) {
+		D_ASSERT(sel.get_index(i) < scan_count);
+	}
+#endif
 	auto &state = filter_state.Cast<ExpressionFilterState>();
 	if (state.fast_executor &&
 	    (scan_count <= STANDARD_VECTOR_SIZE || (vector.GetVectorType() == VectorType::FLAT_VECTOR &&

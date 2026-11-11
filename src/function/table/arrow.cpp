@@ -56,6 +56,15 @@ unique_ptr<FunctionData> ArrowTableFunction::ArrowScanBindDumb(ClientContext &co
 	return bind_data;
 }
 
+unique_ptr<FunctionData> ArrowTableFunction::ArrowScanBindUnprojected(ClientContext &context,
+                                                                      TableFunctionBindInput &input,
+                                                                      vector<LogicalType> &return_types,
+                                                                      vector<Identifier> &names) {
+	auto bind_data = ArrowScanBind(context, input, return_types, names);
+	bind_data->Cast<ArrowScanFunctionData>().producer_projects = false;
+	return bind_data;
+}
+
 unique_ptr<FunctionData> ArrowTableFunction::ArrowScanBind(ClientContext &context, TableFunctionBindInput &input,
                                                            vector<LogicalType> &return_types,
                                                            vector<Identifier> &names) {
@@ -85,8 +94,11 @@ unique_ptr<ArrowArrayStreamWrapper> ProduceArrowScan(const ArrowScanFunctionData
 	for (idx_t idx = 0; idx < column_ids.size(); idx++) {
 		auto col_idx = column_ids[idx];
 		if (col_idx != COLUMN_IDENTIFIER_ROW_ID) {
-			auto &schema = *function.schema_root.arrow_schema.children[col_idx];
 			arrow_types.at(col_idx)->ThrowIfInvalid();
+			if (!function.producer_projects) {
+				continue;
+			}
+			auto &schema = *function.schema_root.arrow_schema.children[col_idx];
 			parameters.projected_columns.projection_map[idx] = schema.name;
 			parameters.projected_columns.columns.emplace_back(schema.name);
 			parameters.projected_columns.filter_to_col[idx] = col_idx;
@@ -188,11 +200,11 @@ void ArrowTableFunction::ArrowScanFunction(ClientContext &context, TableFunction
 	if (global_state.CanRemoveFilterColumns()) {
 		state.all_columns.Reset();
 		state.all_columns.SetChildCardinality(output_size);
-		ArrowToDuckDB(state, data.arrow_table.GetColumns(), state.all_columns);
+		ArrowToDuckDB(state, data.arrow_table.GetColumns(), state.all_columns, data.producer_projects);
 		output.ReferenceColumns(state.all_columns, global_state.projection_ids);
 	} else {
 		output.SetChildCardinality(output_size);
-		ArrowToDuckDB(state, data.arrow_table.GetColumns(), output);
+		ArrowToDuckDB(state, data.arrow_table.GetColumns(), output, data.producer_projects);
 	}
 
 	output.Verify(context);
@@ -353,6 +365,19 @@ void ArrowTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	arrow_dumb.filter_prune = false;
 	arrow_dumb.parallelism = TableFunctionParallelism::SEQUENTIAL;
 	set.AddFunction(arrow_dumb);
+
+	// For a factory that hands out every batch whole: the scan still converts only the selected columns, and every
+	// filter runs above it.
+	TableFunction arrow_unprojected("arrow_scan_unprojected", {}, ArrowScanFunction, ArrowScanBindUnprojected,
+	                                ArrowScanInitGlobal, ArrowScanInitLocal);
+	arrow_unprojected.stability = FunctionStability::VOLATILE;
+	arrow_unprojected.cardinality = ArrowScanCardinality;
+	arrow_unprojected.get_partition_data = ArrowGetPartitionData;
+	arrow_unprojected.projection_pushdown = true;
+	arrow_unprojected.filter_pushdown = false;
+	arrow_unprojected.filter_prune = false;
+	arrow_unprojected.parallelism = TableFunctionParallelism::SEQUENTIAL;
+	set.AddFunction(arrow_unprojected);
 }
 
 void BuiltinFunctions::RegisterArrowFunctions() {

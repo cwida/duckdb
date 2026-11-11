@@ -1,0 +1,230 @@
+# name: test/sql/subquery/scalar/correlated_leading_cte.test
+# description: A correlated subquery whose body starts with CTEs independent of its outer rows
+# group: [scalar]
+
+statement ok
+CREATE TABLE integers(i INTEGER)
+
+statement ok
+INSERT INTO integers VALUES (1), (2), (2), (3), (NULL)
+
+# A volatile subquery numbers the outer rows instead of deduplicating their values, so equal values stay apart.
+query II
+SELECT i, EXISTS (WITH c AS MATERIALIZED (SELECT 2 AS x) SELECT x FROM c WHERE x = i1.i AND random() >= 0) FROM integers i1 ORDER BY ALL
+----
+1	false
+2	true
+2	true
+3	false
+NULL	false
+
+query II
+SELECT i, i IN (WITH c AS MATERIALIZED (SELECT 1 AS x) SELECT x + i1.i - 1 + (random() * 0)::INT FROM c) FROM integers i1 ORDER BY ALL
+----
+1	true
+2	true
+2	true
+3	true
+NULL	NULL
+
+query II
+SELECT i, y FROM integers i1, LATERAL (WITH c AS MATERIALIZED (SELECT 10 AS x) SELECT x + i1.i + (random() * 0)::INT AS y FROM c) ORDER BY ALL
+----
+1	11
+2	12
+2	12
+3	13
+NULL	NULL
+
+query II
+SELECT i, (WITH c AS MATERIALIZED (SELECT 10 AS x) SELECT x + i1.i + (random() * 0)::INT FROM c) FROM integers i1 ORDER BY ALL
+----
+1	11
+2	12
+2	12
+3	13
+NULL	NULL
+
+# The same subqueries without a volatile function deduplicate the outer values.
+query II
+SELECT i, EXISTS (WITH c AS MATERIALIZED (SELECT 2 AS x) SELECT x FROM c WHERE x = i1.i) FROM integers i1 ORDER BY ALL
+----
+1	false
+2	true
+2	true
+3	false
+NULL	false
+
+query II
+SELECT i, y FROM integers i1, LATERAL (WITH c AS MATERIALIZED (SELECT 10 AS x) SELECT x + i1.i AS y FROM c) ORDER BY ALL
+----
+1	11
+2	12
+2	12
+3	13
+NULL	NULL
+
+# Two leading independent CTEs, the second reading the first.
+query II
+SELECT i, y FROM integers i1, LATERAL (WITH c AS MATERIALIZED (SELECT 10 AS x), d AS MATERIALIZED (SELECT x * 10 AS x FROM c) SELECT c.x + d.x + i1.i + (random() * 0)::INT AS y FROM c, d) ORDER BY ALL
+----
+1	111
+2	112
+2	112
+3	113
+NULL	NULL
+
+# Both leading independent CTEs are evaluated once, above the join.
+statement ok
+SET explain_output='optimized_only'
+
+query II
+EXPLAIN SELECT i, y FROM integers i1, LATERAL (WITH c AS MATERIALIZED (SELECT 10 AS x), d AS MATERIALIZED (SELECT x * 10 AS x FROM c) SELECT c.x + d.x + i1.i + (random() * 0)::INT AS y FROM c, d) ORDER BY ALL
+----
+logical_opt	<REGEX>:.*CTE Name: c .*CTE Name: d .*(__duckdb_delim|Delim Join).*
+
+statement ok
+RESET explain_output
+
+query II
+SELECT i, EXISTS (WITH c AS MATERIALIZED (SELECT 2 AS x), d AS MATERIALIZED (SELECT x + 1 AS x FROM c) SELECT 1 FROM c, d WHERE i1.i IN (c.x, d.x) AND random() >= 0) FROM integers i1 ORDER BY ALL
+----
+1	false
+2	true
+2	true
+3	true
+NULL	false
+
+# An independent CTE ahead of one that depends on the outer row.
+query II
+SELECT i, y FROM integers i1, LATERAL (WITH c AS MATERIALIZED (SELECT 10 AS x), d AS MATERIALIZED (SELECT x + i1.i AS x FROM c) SELECT x + (random() * 0)::INT AS y FROM d) ORDER BY ALL
+----
+1	11
+2	12
+2	12
+3	13
+NULL	NULL
+
+# A leading CTE whose definition holds a subquery correlated within the definition.
+query II
+SELECT i, y FROM integers i1, LATERAL (WITH c AS MATERIALIZED (SELECT (SELECT v) AS r FROM (SELECT 1 AS v) s) SELECT r + i1.i + (random() * 0)::INT AS y FROM c) ORDER BY ALL
+----
+1	2
+2	3
+2	3
+3	4
+NULL	NULL
+
+# Nested and volatile together, with the inner left side depending on the outer row.
+statement ok
+CREATE TABLE t2(j INTEGER)
+
+statement ok
+INSERT INTO t2 VALUES (1), (2), (4), (NULL)
+
+query II
+SELECT i, (SELECT count(*) FROM (SELECT j FROM t2 WHERE j <> i1.i) s, LATERAL (WITH c AS MATERIALIZED (SELECT 1 AS x) SELECT x + s.j + (random() * 0)::INT AS y FROM c) WHERE y > 2) FROM integers i1 ORDER BY ALL
+----
+1	2
+2	1
+2	1
+3	2
+NULL	0
+
+# A scalar subquery, a single join, whose left side depends on the outer row.
+query II
+SELECT i, (SELECT sum((WITH c AS MATERIALIZED (SELECT 1 AS x) SELECT x + s.j + (random() * 0)::INT FROM c)) FROM (SELECT j FROM t2 WHERE j <> i1.i) s) FROM integers i1 ORDER BY ALL
+----
+1	8
+2	7
+2	7
+3	10
+NULL	NULL
+
+query II
+SELECT i, (SELECT sum((WITH c AS MATERIALIZED (SELECT 1 AS x), d AS MATERIALIZED (SELECT x + i1.i AS y FROM c) SELECT y + s.j + (random() * 0)::INT FROM d)) FROM (SELECT j FROM t2 WHERE j <> i1.i) s) FROM integers i1 ORDER BY ALL
+----
+1	10
+2	11
+2	11
+3	19
+NULL	NULL
+
+# A correlated column of a type that is not deduplicated numbers the outer rows too.
+query II
+SELECT l, EXISTS (WITH c AS MATERIALIZED (SELECT 2 AS x) SELECT x FROM c WHERE x = len(t.l)) FROM (VALUES ([1]), ([1]), ([1, 2]), (NULL)) t(l) ORDER BY ALL
+----
+[1]	false
+[1]	false
+[1, 2]	true
+NULL	false
+
+# A volatile CTE definition belongs to the numbered outer rows, so it is not detached and runs once per row.
+query I
+SELECT count(DISTINCT y) FROM integers i1, LATERAL (WITH c AS MATERIALIZED (SELECT random() AS x) SELECT x + 0 * i1.i AS y FROM c) WHERE i1.i IS NOT NULL
+----
+4
+
+# Inside another correlated subquery the left side gets the outer domain attached, which must happen once.
+query II
+SELECT i, (SELECT count(*) FROM integers i2, LATERAL (WITH c AS (SELECT 1 AS x) SELECT x FROM c WHERE x + i2.i = i1.i)) FROM integers i1 ORDER BY ALL
+----
+1	0
+2	1
+2	1
+3	2
+NULL	0
+
+query II
+SELECT i, (SELECT count(*) FROM integers i2, LATERAL (WITH c AS MATERIALIZED (SELECT 1 AS x) SELECT x FROM c WHERE x + i2.i = i1.i)) FROM integers i1 ORDER BY ALL
+----
+1	0
+2	1
+2	1
+3	2
+NULL	0
+
+query II
+SELECT i, (SELECT count(*) FROM integers i2 WHERE EXISTS (WITH c AS MATERIALIZED (SELECT 1 AS x) SELECT x FROM c WHERE x + i2.i = i1.i)) FROM integers i1 ORDER BY ALL
+----
+1	0
+2	1
+2	1
+3	2
+NULL	0
+
+query II
+SELECT i, (SELECT count(*) FROM integers i2, LATERAL (WITH c AS MATERIALIZED (SELECT 1 AS x), d AS MATERIALIZED (SELECT x FROM c) SELECT d.x FROM d WHERE d.x + i2.i = i1.i)) FROM integers i1 ORDER BY ALL
+----
+1	0
+2	1
+2	1
+3	2
+NULL	0
+
+query II
+SELECT i, (SELECT count(*) FROM integers i2, LATERAL (WITH c AS MATERIALIZED (SELECT 1 AS x), d AS MATERIALIZED (SELECT x + i2.i AS y FROM c) SELECT y FROM d WHERE y = i1.i)) FROM integers i1 ORDER BY ALL
+----
+1	0
+2	1
+2	1
+3	2
+NULL	0
+
+query II
+SELECT i, (SELECT count(*) FROM integers i2 WHERE NOT EXISTS (WITH c AS MATERIALIZED (SELECT 1 AS x) SELECT x FROM c WHERE x + i2.i = i1.i)) FROM integers i1 ORDER BY ALL
+----
+1	5
+2	4
+2	4
+3	3
+NULL	5
+
+query II
+SELECT i, (SELECT count(*) FROM integers i2, LATERAL (WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM r WHERE x < 2) SELECT x FROM r WHERE x + i2.i = i1.i)) FROM integers i1 ORDER BY ALL
+----
+1	0
+2	1
+2	1
+3	3
+NULL	0

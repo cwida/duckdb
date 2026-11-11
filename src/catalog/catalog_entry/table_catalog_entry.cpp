@@ -242,17 +242,13 @@ DataTable &TableCatalogEntry::GetStorage() {
 }
 // LCOV_EXCL_STOP
 
-void LogicalUpdate::BindExtraColumns(TableCatalogEntry &table, LogicalGet &get, LogicalProjection &proj,
-                                     LogicalUpdate &update, physical_index_set_t &bound_columns,
-                                     bool reuse_projected_columns) {
-	if (bound_columns.size() <= 1) {
-		return;
-	}
+static void BindMissingColumns(TableCatalogEntry &table, LogicalGet &get, LogicalProjection &proj,
+                               LogicalUpdate &update, const physical_index_set_t &bound_columns,
+                               bool reuse_projected_columns) {
 	idx_t found_column_count = 0;
 	physical_index_set_t found_columns;
 	for (idx_t i = 0; i < update.columns.size(); i++) {
 		if (bound_columns.find(update.columns[i]) != bound_columns.end()) {
-			// this column is referenced in the CHECK constraint
 			found_column_count++;
 			found_columns.insert(update.columns[i]);
 		}
@@ -282,13 +278,23 @@ void LogicalUpdate::BindExtraColumns(TableCatalogEntry &table, LogicalGet &get, 
 	}
 }
 
+void LogicalUpdate::BindExtraColumns(TableCatalogEntry &table, LogicalGet &get, LogicalProjection &proj,
+                                     LogicalUpdate &update, physical_index_set_t &bound_columns,
+                                     bool reuse_projected_columns) {
+	// A constraint over one column is only checked when that column is updated, so it needs no extra column.
+	if (bound_columns.size() <= 1) {
+		return;
+	}
+	BindMissingColumns(table, get, proj, update, bound_columns, reuse_projected_columns);
+}
+
 void LogicalUpdate::BindAllColumns(TableCatalogEntry &table, LogicalGet &get, LogicalProjection &proj,
                                    LogicalUpdate &update, bool reuse_projected_columns) {
 	physical_index_set_t all_columns;
 	for (auto &column : table.GetColumns().Physical()) {
 		all_columns.insert(column.Physical());
 	}
-	BindExtraColumns(table, get, proj, update, all_columns, reuse_projected_columns);
+	BindMissingColumns(table, get, proj, update, all_columns, reuse_projected_columns);
 }
 
 vector<ColumnSegmentInfo> TableCatalogEntry::GetColumnSegmentInfo(const QueryContext &context,

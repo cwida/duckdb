@@ -1,0 +1,403 @@
+# name: test/sql/copy/csv/test_header_declared_columns.test
+# description: With declared columns, a first row that the declared types read is data, not a header
+# group: [csv]
+
+statement ok
+COPY (FROM (VALUES ('+5'), ('007'), ('300'))) TO '{TEST_DIR}/int_signs.csv' (HEADER false)
+
+query I
+SELECT v FROM read_csv('{TEST_DIR}/int_signs.csv', columns={'v': 'INTEGER'})
+----
+5
+7
+300
+
+query I
+SELECT v FROM read_csv('{TEST_DIR}/int_signs.csv', columns={'v': 'INTEGER'}, header=false)
+----
+5
+7
+300
+
+# An explicit header option still decides
+query I
+SELECT v FROM read_csv('{TEST_DIR}/int_signs.csv', columns={'v': 'INTEGER'}, header=true)
+----
+7
+300
+
+statement ok
+COPY (FROM (VALUES ('+5'), ('6'))) TO '{TEST_DIR}/int_plus.csv' (HEADER false)
+
+query I
+SELECT v FROM read_csv('{TEST_DIR}/int_plus.csv', columns={'v': 'INTEGER'})
+----
+5
+6
+
+query I
+SELECT v FROM read_csv('{TEST_DIR}/int_plus.csv', columns={'v': 'INTEGER'}, all_varchar=true)
+----
+5
+6
+
+statement ok
+COPY (FROM (VALUES ('12:00:00+01'), ('13:00:00'), ('14:00:00'))) TO '{TEST_DIR}/time_offset.csv' (HEADER false)
+
+query I
+SELECT t FROM read_csv('{TEST_DIR}/time_offset.csv', columns={'t': 'TIME'})
+----
+12:00:00
+13:00:00
+14:00:00
+
+statement ok
+COPY (FROM (VALUES ('2024-01-01 12:00:00'), ('13:00:00'))) TO '{TEST_DIR}/time_timestamp.csv' (HEADER false)
+
+query I
+SELECT t FROM read_csv('{TEST_DIR}/time_timestamp.csv', columns={'t': 'TIME'})
+----
+12:00:00
+13:00:00
+
+# The other types whose scan conversion is less strict than type detection
+statement ok
+COPY (FROM (VALUES ('1.5', '1e3', '+5', '007', '1_000', '+7', '+1.5', '01.5', '1', 'y', '+5', '2024-01-01 10:00:00+01'),
+                   ('2', '2', '2', '2', '2', '2', '2', '2', 'false', 'n', '2', '2024-01-02 10:00:00')))
+TO '{TEST_DIR}/types.csv' (HEADER false)
+
+query IIIIIIIIIIII
+FROM read_csv('{TEST_DIR}/types.csv', columns={'a': 'BIGINT', 'b': 'SMALLINT', 'c': 'UINTEGER', 'd': 'HUGEINT',
+    'e': 'BIGINT', 'f': 'TINYINT', 'g': 'DOUBLE', 'h': 'FLOAT', 'i': 'BOOLEAN', 'j': 'BOOLEAN', 'k': 'BIGNUM',
+    'l': 'TIMESTAMP'})
+----
+2	1000	5	7	1000	7	1.5	1.5	true	true	5	2024-01-01 10:00:00
+2	2	2	2	2	2	2.0	2.0	false	false	2	2024-01-02 10:00:00
+
+# A first row that a declared type refuses is a header
+statement ok
+COPY (FROM (VALUES ('w'), ('1'), ('2'))) TO '{TEST_DIR}/named.csv' (HEADER false)
+
+query I
+SELECT v FROM read_csv('{TEST_DIR}/named.csv', columns={'v': 'INTEGER'})
+----
+1
+2
+
+query I
+SELECT w FROM read_csv('{TEST_DIR}/named.csv', columns={'w': 'INTEGER'})
+----
+1
+2
+
+statement error
+SELECT v FROM read_csv('{TEST_DIR}/named.csv', columns={'v': 'INTEGER'}, header=false)
+----
+Could not convert string "w" to 'INTEGER'
+
+# One refusing column makes the row a header
+statement ok
+COPY (FROM (VALUES ('+5', 'b'), ('1', '2'))) TO '{TEST_DIR}/two_columns.csv' (HEADER false)
+
+query II
+FROM read_csv('{TEST_DIR}/two_columns.csv', columns={'a': 'INTEGER', 'b': 'INTEGER'})
+----
+1	2
+
+query II
+FROM read_csv('{TEST_DIR}/two_columns.csv', columns={'a': 'INTEGER', 'b': 'VARCHAR'})
+----
+5	b
+1	2
+
+# A first row that the scan refuses keeps its outcome, here the conversion error
+statement ok
+COPY (FROM (VALUES ('-5'), ('6'))) TO '{TEST_DIR}/negative.csv' (HEADER false)
+
+statement error
+FROM read_csv('{TEST_DIR}/negative.csv', columns={'v': 'UINTEGER'})
+----
+Could not convert string "-5" to 'UINTEGER'
+
+# A NULL in the first row means no header
+statement ok
+COPY (FROM (VALUES (NULL, 'b'), ('1', '2'))) TO '{TEST_DIR}/first_null.csv' (HEADER false)
+
+query II
+FROM read_csv('{TEST_DIR}/first_null.csv', columns={'a': 'INTEGER', 'b': 'VARCHAR'})
+----
+NULL	b
+1	2
+
+# Dates and timestamps are judged with the format the scan uses: the user's format when set, else the sniffed one
+statement ok
+COPY (FROM (VALUES ('01/02/2024'), ('03/04/2024'))) TO '{TEST_DIR}/dates.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/dates.csv', columns={'d': 'DATE'}, dateformat='%m/%d/%Y')
+----
+2024-01-02
+2024-03-04
+
+query I
+FROM read_csv('{TEST_DIR}/dates.csv', columns={'d': 'DATE'})
+----
+2024-02-01
+2024-04-03
+
+query I
+FROM read_csv('{TEST_DIR}/dates.csv', columns={'d': 'DATE'}, header=false)
+----
+2024-02-01
+2024-04-03
+
+statement ok
+COPY (FROM (VALUES ('2024-01-02'), ('03/04/2024'))) TO '{TEST_DIR}/dates_mixed.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/dates_mixed.csv', columns={'d': 'DATE'}, dateformat='%m/%d/%Y')
+----
+2024-03-04
+
+statement ok
+COPY (FROM (VALUES ('01/02/2024 10:00:00'), ('03/04/2024 11:00:00'))) TO '{TEST_DIR}/timestamps.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/timestamps.csv', columns={'t': 'TIMESTAMP'})
+----
+2024-02-01 10:00:00
+2024-04-03 11:00:00
+
+query I
+FROM read_csv('{TEST_DIR}/timestamps.csv', columns={'t': 'TIMESTAMP'}, timestampformat='%m/%d/%Y %H:%M:%S')
+----
+2024-01-02 10:00:00
+2024-03-04 11:00:00
+
+# ICU is not loaded here, so the scan converts TIMESTAMPTZ directly, with the timestamp format when one is set
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE extension_name = 'icu' AND loaded
+----
+0
+
+statement ok
+COPY (FROM (VALUES ('01/02/2024 10:00:00'), ('13/04/2024 11:00:00'))) TO '{TEST_DIR}/timestamps_tz.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/timestamps_tz.csv', columns={'t': 'TIMESTAMPTZ'}, timestampformat='%d/%m/%Y %H:%M:%S')
+----
+2024-02-01 10:00:00+00
+2024-04-13 11:00:00+00
+
+query I
+FROM read_csv('{TEST_DIR}/timestamps_tz.csv', columns={'t': 'TIMESTAMPTZ'}, timestampformat='%d/%m/%Y %H:%M:%S',
+    header=false)
+----
+2024-02-01 10:00:00+00
+2024-04-13 11:00:00+00
+
+statement ok
+COPY (FROM (VALUES ('stamp'), ('01/02/2024 10:00:00'))) TO '{TEST_DIR}/timestamps_tz_named.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/timestamps_tz_named.csv', columns={'t': 'TIMESTAMPTZ'}, timestampformat='%d/%m/%Y %H:%M:%S')
+----
+2024-02-01 10:00:00+00
+
+# Without a format the direct conversion reads offsets but not zone names, so a zone name stays a header
+statement ok
+COPY (FROM (VALUES ('2024-01-01 10:00:00 Europe/Amsterdam'), ('2024-01-02 10:00:00+01')))
+TO '{TEST_DIR}/timestamps_tz_zone.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/timestamps_tz_zone.csv', columns={'t': 'TIMESTAMPTZ'})
+----
+2024-01-02 09:00:00+00
+
+# No format is sniffed for ISO dates; a name over them is still a header
+statement ok
+COPY (FROM (VALUES ('day'), ('2024-01-02'), ('2024-03-04'))) TO '{TEST_DIR}/dates_iso.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/dates_iso.csv', columns={'d': 'DATE'})
+----
+2024-01-02
+2024-03-04
+
+# A first row outside a sniffed format keeps its outcome, the conversion error
+statement ok
+COPY (FROM (VALUES ('2024-01-02'), ('03/04/2024'), ('13/04/2024'))) TO '{TEST_DIR}/dates_iso_first.csv' (HEADER false)
+
+statement error
+FROM read_csv('{TEST_DIR}/dates_iso_first.csv', columns={'d': 'DATE'})
+----
+Could not convert string "2024-01-02" to 'DATE'
+
+statement ok
+COPY (FROM (VALUES ('2024-01-02 10:00:00'), ('03/04/2024 10:00:00'), ('13/04/2024 10:00:00')))
+TO '{TEST_DIR}/timestamps_iso_first.csv' (HEADER false)
+
+statement error
+FROM read_csv('{TEST_DIR}/timestamps_iso_first.csv', columns={'t': 'TIMESTAMP'})
+----
+Could not convert string "2024-01-02 10:00:00" to 'TIMESTAMP'
+
+# The row is judged as a whole: the scan refuses this row and neither check reads every value, so it stays a header,
+# although each value is read by one of the checks
+statement ok
+COPY (FROM (VALUES ('+5', '2024-01-02'), ('6', '03/04/2024'), ('7', '13/04/2024')))
+TO '{TEST_DIR}/mixed_checks.csv' (HEADER false)
+
+query II
+FROM read_csv('{TEST_DIR}/mixed_checks.csv', columns={'a': 'INTEGER', 'd': 'DATE'})
+----
+6	2024-04-03
+7	2024-04-13
+
+# A negative spelling that neither the scan nor type detection reads as unsigned stays a header
+statement ok
+COPY (FROM (VALUES ('-0.0'), ('6'))) TO '{TEST_DIR}/unsigned_negative_zero.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/unsigned_negative_zero.csv', columns={'v': 'UINTEGER'})
+----
+6
+
+query I
+FROM read_csv('{TEST_DIR}/unsigned_negative_zero.csv', columns={'v': 'UTINYINT'})
+----
+6
+
+# A date with a time part, without a format
+statement ok
+COPY (FROM (VALUES ('2024-01-01 10:00:00'), ('2024-01-02'))) TO '{TEST_DIR}/date_time_part.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/date_time_part.csv', columns={'d': 'DATE'})
+----
+2024-01-01
+2024-01-02
+
+# The other unsigned integers
+statement ok
+COPY (FROM (VALUES ('+5', '+6', '+7'), ('1', '2', '3'))) TO '{TEST_DIR}/unsigned.csv' (HEADER false)
+
+query III
+FROM read_csv('{TEST_DIR}/unsigned.csv', columns={'a': 'UTINYINT', 'b': 'UBIGINT', 'c': 'UHUGEINT'})
+----
+5	6	7
+1	2	3
+
+# A quoted value, a thousands separator and a decimal separator
+statement ok
+COPY (FROM (VALUES ('+5'), ('6'))) TO '{TEST_DIR}/quoted.csv' (HEADER false, FORCE_QUOTE *)
+
+query I
+FROM read_csv('{TEST_DIR}/quoted.csv', columns={'v': 'INTEGER'})
+----
+5
+6
+
+statement ok
+COPY (FROM (VALUES ('+1,000', '+1,5'), ('2,000', '2,5'))) TO '{TEST_DIR}/separators.csv' (HEADER false, DELIMITER ';')
+
+query II
+FROM read_csv('{TEST_DIR}/separators.csv', columns={'a': 'INTEGER', 'b': 'VARCHAR'}, thousands=',', delim=';')
+----
+1000	+1,5
+2000	2,5
+
+query II
+FROM read_csv('{TEST_DIR}/separators.csv', columns={'a': 'VARCHAR', 'b': 'DOUBLE'}, decimal_separator=',', delim=';')
+----
++1,000	1.5
+2,000	2.5
+
+# A type the scan reads as text and then casts
+statement ok
+COPY (FROM (VALUES ('[+5, 007]'), ('[1, 2]'))) TO '{TEST_DIR}/lists.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/lists.csv', columns={'l': 'INTEGER[]'})
+----
+[5, 7]
+[1, 2]
+
+# A name row whose names the scan reads is data, like any other row it reads
+statement ok
+COPY (FROM (VALUES ('name', 'y'), ('bob', '1'), ('ann', '0'))) TO '{TEST_DIR}/boolean_names.csv' (HEADER false)
+
+query II
+FROM read_csv('{TEST_DIR}/boolean_names.csv', columns={'n': 'VARCHAR', 'label': 'BOOLEAN'})
+----
+name	true
+bob	true
+ann	false
+
+# Two known differences, both in the loud direction, where header detection sees a value the scan refuses as one it
+# reads, so the row is data and the scan reports it. First: the scan cannot convert an escaped value of a directly
+# converted type, but header detection sees the value without its escapes
+statement ok
+COPY (FROM (VALUES ('"\+5"'), ('6'))) TO '{TEST_DIR}/escaped.csv' (HEADER false, QUOTE '', ESCAPE '')
+
+statement error
+FROM read_csv('{TEST_DIR}/escaped.csv', columns={'v': 'INTEGER'}, escape='\', strict_mode=true)
+----
+Could not convert string "\+5" to 'INTEGER'
+
+# Second: a force_not_null given before columns is not yet applied when the file is sniffed, so header detection sees
+# the null string as NULL while the scan refuses it in a forced column
+statement ok
+COPY (FROM (VALUES ('+5', 'NA'), ('6', '2'))) TO '{TEST_DIR}/forced.csv' (HEADER false)
+
+statement error
+FROM read_csv('{TEST_DIR}/forced.csv', force_not_null=['b'], columns={'a': 'INTEGER', 'b': 'INTEGER'}, nullstr='NA')
+----
+<REGEX>:.*CSV Error on Line: 1.*Error when converting column "b".*
+
+# Given after columns, the sniffer sees the forced value as text, which neither check reads, so the row is a header
+query II
+FROM read_csv('{TEST_DIR}/forced.csv', columns={'a': 'INTEGER', 'b': 'INTEGER'}, force_not_null=['b'], nullstr='NA')
+----
+6	2
+
+# The scan validates JSON, so invalid JSON beside a newly read number keeps the row a header
+require json
+
+statement ok
+COPY (FROM (VALUES ('+5', 'bad'), ('6', '{}'))) TO '{TEST_DIR}/json.csv' (HEADER false, QUOTE '', ESCAPE '')
+
+query II
+FROM read_csv('{TEST_DIR}/json.csv', columns={'a': 'INTEGER', 'j': 'JSON'})
+----
+6	{}
+
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/json.csv', columns={'a': 'INTEGER', 'j': 'JSON'})
+----
+1
+
+statement ok
+COPY (FROM (VALUES ('+5', '{"k": 1}'), ('6', '{}')))
+TO '{TEST_DIR}/json_valid.csv' (HEADER false, QUOTE '', ESCAPE '', DELIMITER ';')
+
+query II
+FROM read_csv('{TEST_DIR}/json_valid.csv', columns={'a': 'INTEGER', 'j': 'JSON'}, delim=';')
+----
+5	{"k": 1}
+6	{}
+
+# With ICU loaded the scan casts TIMESTAMPTZ text through ICU, which does not use the timestamp format, so a first row
+# in that format is a header
+require icu
+
+statement ok
+SET TimeZone='UTC'
+
+statement ok
+COPY (FROM (VALUES ('01/02/2024 10:00:00'), ('2024-01-02 10:00:00'))) TO '{TEST_DIR}/timestamps_tz_icu.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/timestamps_tz_icu.csv', columns={'t': 'TIMESTAMPTZ'}, timestampformat='%d/%m/%Y %H:%M:%S')
+----
+2024-01-02 10:00:00+00

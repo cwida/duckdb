@@ -64,6 +64,8 @@ public:
 	ArrowTableSchema arrow_table;
 	//! Whether projection pushdown is enabled on the scan
 	bool projection_pushdown_enabled = true;
+	//! Whether the factory's streams hold only the selected columns, in selection order
+	bool producer_projects = true;
 };
 
 struct ArrowRunEndEncodingState {
@@ -206,6 +208,9 @@ public:
 	                                              vector<LogicalType> &return_types, vector<Identifier> &names);
 	static unique_ptr<FunctionData> ArrowScanBindDumb(ClientContext &context, TableFunctionBindInput &input,
 	                                                  vector<LogicalType> &return_types, vector<Identifier> &names);
+	static unique_ptr<FunctionData> ArrowScanBindUnprojected(ClientContext &context, TableFunctionBindInput &input,
+	                                                         vector<LogicalType> &return_types,
+	                                                         vector<Identifier> &names);
 	//! Actual conversion from Arrow to DuckDB
 	static void ArrowToDuckDB(ArrowScanLocalState &scan_state, const arrow_column_map_t &arrow_convert_data,
 	                          DataChunk &output, bool arrow_scan_is_projected = true,
