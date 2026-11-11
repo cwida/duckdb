@@ -110,6 +110,8 @@ StringValueResult::StringValueResult(CSVStates &states, CSVStateMachine &state_m
 
 	// Initialize Parse Chunk
 	parse_chunk.Initialize(buffer_allocator, logical_types, result_size);
+	// one slot more, the cast error search of Flush can stop one past the last row
+	line_positions_per_row.resize(result_size + 1);
 	for (auto &col : parse_chunk.data) {
 		vector_ptr.push_back(FlatVector::GetDataMutable(col));
 		validity_mask.push_back(&FlatVector::ValidityMutable(col));
@@ -262,11 +264,9 @@ void StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 		return;
 	}
 
-	if (projecting_columns) {
-		if (!projected_columns[cur_col_id]) {
-			cur_col_id++;
-			return;
-		}
+	if (CanSkipValue(*this)) {
+		cur_col_id++;
+		return;
 	}
 
 	if (((quoted && state_machine.options.allow_quoted_nulls) || !quoted)) {
@@ -681,6 +681,24 @@ void StringValueResult::AddValue(StringValueResult &result, const idx_t buffer_p
 	result.last_position.buffer_pos = buffer_pos + 1;
 }
 
+void StringValueResult::SkipValueInternal() {
+	D_ASSERT(CanSkipValue(*this));
+	if (quoted && !unquoted) {
+		current_errors.Insert(UNTERMINATED_QUOTES, cur_col_id, chunk_col_id, last_position);
+	}
+	cur_col_id++;
+	quoted = false;
+	escaped = false;
+}
+
+void StringValueResult::SkipValue(StringValueResult &result, const idx_t buffer_pos) {
+	if (result.last_position.buffer_pos > buffer_pos) {
+		return;
+	}
+	result.SkipValueInternal();
+	result.last_position.buffer_pos = buffer_pos + 1;
+}
+
 void StringValueResult::HandleUnicodeError(idx_t col_idx, LinePosition &error_position) {
 	bool first_nl = false;
 	auto borked_line = current_line_position.ReconstructCurrentLine(first_nl, buffer_handles, PrintErrorLine());
@@ -855,6 +873,13 @@ void StringValueResult::InvalidateUnwrittenColumns(idx_t first_unwritten_col) {
 	}
 }
 
+void StringValueResult::StoreLinePosition() {
+	// a removed row leaves number_of_rows at -1, nothing reads a position for it
+	if (number_of_rows >= 0) {
+		line_positions_per_row[static_cast<idx_t>(number_of_rows)] = current_line_position;
+	}
+}
+
 bool StringValueResult::AddRowInternal() {
 	LinePosition current_line_start = {iterator.pos.buffer_idx, iterator.pos.buffer_pos, buffer_size};
 	idx_t current_line_size = current_line_start - current_line_position.end;
@@ -875,7 +900,7 @@ bool StringValueResult::AddRowInternal() {
 
 		D_ASSERT(buffer_handles.find(current_line_position.begin.buffer_idx) != buffer_handles.end());
 		D_ASSERT(buffer_handles.find(current_line_position.end.buffer_idx) != buffer_handles.end());
-		line_positions_per_row[static_cast<idx_t>(number_of_rows)] = current_line_position;
+		StoreLinePosition();
 		number_of_rows++;
 		if (static_cast<idx_t>(number_of_rows) >= result_size) {
 			// We have a full chunk
@@ -936,7 +961,7 @@ bool StringValueResult::AddRowInternal() {
 	}
 	D_ASSERT(buffer_handles.find(current_line_position.begin.buffer_idx) != buffer_handles.end());
 	D_ASSERT(buffer_handles.find(current_line_position.end.buffer_idx) != buffer_handles.end());
-	line_positions_per_row[static_cast<idx_t>(number_of_rows)] = current_line_position;
+	StoreLinePosition();
 	cur_col_id = 0;
 	chunk_col_id = 0;
 	number_of_rows++;
@@ -945,6 +970,15 @@ bool StringValueResult::AddRowInternal() {
 		return true;
 	}
 	return false;
+}
+
+void StringValueResult::SetLastPositionAfterNewline(const idx_t buffer_pos) {
+	if (state_machine.dialect_options.state_machine_options.new_line == NewLineIdentifier::CARRY_ON &&
+	    states.states[1] != CSVState::RECORD_SEPARATOR) {
+		last_position.buffer_pos = buffer_pos + 2;
+	} else {
+		last_position.buffer_pos = buffer_pos + 1;
+	}
 }
 
 bool StringValueResult::AddRow(StringValueResult &result, const idx_t buffer_pos) {
@@ -961,19 +995,18 @@ bool StringValueResult::AddRow(StringValueResult &result, const idx_t buffer_pos
 				result.AddValueToVector(value_ptr, size);
 			}
 		}
-		if (result.state_machine.dialect_options.state_machine_options.new_line == NewLineIdentifier::CARRY_ON) {
-			if (result.states.states[1] == CSVState::RECORD_SEPARATOR) {
-				// Even though this is marked as a carry on, this is a hippie mixie
-				result.last_position.buffer_pos = buffer_pos + 1;
-			} else {
-				result.last_position.buffer_pos = buffer_pos + 2;
-			}
-		} else {
-			result.last_position.buffer_pos = buffer_pos + 1;
-		}
+		result.SetLastPositionAfterNewline(buffer_pos);
 	}
 
 	// We add the value
+	return result.AddRowInternal();
+}
+
+bool StringValueResult::AddRowWithoutValue(StringValueResult &result, const idx_t buffer_pos) {
+	if (result.last_position.buffer_pos <= buffer_pos) {
+		result.SkipValueInternal();
+		result.SetLastPositionAfterNewline(buffer_pos);
+	}
 	return result.AddRowInternal();
 }
 

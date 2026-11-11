@@ -18,14 +18,14 @@ namespace duckdb {
 
 struct Min {
 	template <class T>
-	static inline T Operation(T left, T right) {
+	static inline T Operation(const T &left, const T &right) {
 		return LessThan::Operation(left, right) ? left : right;
 	}
 };
 
 struct Max {
 	template <class T>
-	static inline T Operation(T left, T right) {
+	static inline T Operation(const T &left, const T &right) {
 		return GreaterThan::Operation(left, right) ? left : right;
 	}
 };
@@ -66,22 +66,22 @@ inline T MaxFloatingPoint(T left, T right) {
 }
 
 template <>
-inline float Min::Operation(float left, float right) {
+inline float Min::Operation(const float &left, const float &right) {
 	return MinFloatingPoint<float>(left, right);
 }
 
 template <>
-inline double Min::Operation(double left, double right) {
+inline double Min::Operation(const double &left, const double &right) {
 	return MinFloatingPoint<double>(left, right);
 }
 
 template <>
-inline float Max::Operation(float left, float right) {
+inline float Max::Operation(const float &left, const float &right) {
 	return MaxFloatingPoint<float>(left, right);
 }
 
 template <>
-inline double Max::Operation(double left, double right) {
+inline double Max::Operation(const double &left, const double &right) {
 	return MaxFloatingPoint<double>(left, right);
 }
 

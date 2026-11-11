@@ -1,6 +1,6 @@
 #include "core_functions/scalar/string_functions.hpp"
 #include "core_functions/scalar/string_characters.hpp"
-#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/string_util.hpp"
 
@@ -15,8 +15,7 @@ namespace duckdb {
 // (too muach memory usage)
 
 template <class T>
-static idx_t LevenshteinDistance(optional_ptr<ClientContext> context, const T *txt_str, idx_t txt_len, const T *tgt_str,
-                                 idx_t tgt_len) {
+static idx_t LevenshteinDistance(Context &context, const T *txt_str, idx_t txt_len, const T *tgt_str, idx_t tgt_len) {
 	// If one string is empty, the distance equals the length of the other string
 	if (txt_len == 0) {
 		return tgt_len;
@@ -39,9 +38,7 @@ static idx_t LevenshteinDistance(optional_ptr<ClientContext> context, const T *t
 	}
 
 	for (idx_t pos_txt = 0; pos_txt < txt_len; pos_txt++) {
-		if (context) {
-			context->InterruptCheck();
-		}
+		context.InterruptCheck();
 		// calculate distances1 (current raw distances) from the previous row
 
 		distances1[0] = pos_txt + 1;
@@ -66,7 +63,7 @@ static idx_t LevenshteinDistance(optional_ptr<ClientContext> context, const T *t
 }
 
 //! The distance between the characters of the strings - not their bytes
-static idx_t LevenshteinDistance(optional_ptr<ClientContext> context, const string_t &txt, const string_t &tgt) {
+static idx_t LevenshteinDistance(Context &context, const string_t &txt, const string_t &tgt) {
 	if (StringIsAscii(txt) && StringIsAscii(tgt)) {
 		return LevenshteinDistance(context, txt.GetData(), txt.GetSize(), tgt.GetData(), tgt.GetSize());
 	}
@@ -75,7 +72,7 @@ static idx_t LevenshteinDistance(optional_ptr<ClientContext> context, const stri
 	return LevenshteinDistance(context, txt_chars.data(), txt_chars.size(), tgt_chars.data(), tgt_chars.size());
 }
 
-static int64_t LevenshteinScalarFunction(optional_ptr<ClientContext> context, const string_t str, string_t tgt) {
+static int64_t LevenshteinScalarFunction(Context &context, const string_t str, string_t tgt) {
 	return (int64_t)LevenshteinDistance(context, str, tgt);
 }
 
@@ -83,8 +80,7 @@ static void LevenshteinFunction(DataChunk &args, ExpressionState &state, Vector 
 	const auto &str_vec = args.data[0];
 	const auto &tgt_vec = args.data[1];
 
-	// the client context only serves interrupt checks, and index keys are computed without one
-	optional_ptr<ClientContext> context = state.HasContext() ? &state.GetContext() : nullptr;
+	auto &context = state.GetContext();
 	BinaryExecutor::Execute<string_t, string_t, int64_t>(str_vec, tgt_vec, result, [&](string_t str, string_t tgt) {
 		return LevenshteinScalarFunction(context, str, tgt);
 	});

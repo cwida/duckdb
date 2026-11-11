@@ -424,7 +424,7 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		}
 	}
 
-	if (mismatches > 0) {
+	if (reason) {
 		// the wrong shape is further away than arguments that cannot be cast, of which there are at most this many
 		return FunctionMismatch(overload, std::move(function), received_count + mismatches, std::move(*reason));
 	}
@@ -480,7 +480,7 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		}
 		cost += static_cast<idx_t>(cast_cost);
 	}
-	if (mismatches > 0) {
+	if (reason) {
 		return FunctionMismatch(overload, std::move(function), mismatches, std::move(*reason));
 	}
 

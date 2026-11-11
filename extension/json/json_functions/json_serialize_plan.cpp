@@ -113,10 +113,10 @@ static void JsonSerializePlanFunction(DataChunk &args, ExpressionState &state, V
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	const auto &info = func_expr.BindInfo()->Cast<JsonSerializePlanBindData>();
 
-	if (!state.HasContext()) {
+	if (!state.HasClientContext()) {
 		throw InvalidInputException("json_serialize_plan: No client context available");
 	}
-	auto &context = state.GetContext();
+	auto &context = state.GetClientContext();
 
 	auto &heap = StringVector::GetStringHeap(result);
 	UnaryExecutor::Execute<string_t, string_t>(inputs, result, [&](string_t input) {
@@ -125,7 +125,7 @@ static void JsonSerializePlanFunction(DataChunk &args, ExpressionState &state, V
 		yyjson_mut_doc_set_root(doc, result_obj);
 
 		try {
-			Parser parser(state.GetContext());
+			Parser parser(state.GetClientContext());
 			parser.ParseQuery(input.GetString());
 			auto plans_arr = yyjson_mut_arr(doc);
 
