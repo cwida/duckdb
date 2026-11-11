@@ -462,12 +462,19 @@ TEST_CASE("Test that duckdb_extensions lists extensions installed from user-prov
 	REQUIRE(ExtensionRows(con, "moved_ext") ==
 	        vector<string> {"true|false|REPOSITORY|my_repo|v1|sha256:my_repo|moved_ext.duckdb_extension"});
 
-	// a folder that no repository backs is not listed
+	// install folders are listed from disk, also when no repository file backs them
 	StageInstalledExtension(*db.instance, "stray_ext", "not_a_repository",
 	                        UserRepositoryInstallInfo("not_a_repository", "v1"));
-	REQUIRE(ExtensionRows(con, "stray_ext").empty());
+	REQUIRE(ExtensionRows(con, "stray_ext") ==
+	        vector<string> {"true|false|REPOSITORY|not_a_repository|v1|sha256:not_a_repository|"
+	                        "repositories/not_a_repository/stray_ext.duckdb_extension"});
 
-	// an unreadable repository file does not fail the listing, nor hide the flat folder
+	// folders that cannot be repository names are not listed
+	StageInstalledExtension(*db.instance, "invalid_ext", "Not_Normalized", UserRepositoryInstallInfo("x", "v1"));
+	StageInstalledExtension(*db.instance, "invalid_ext", "core", UserRepositoryInstallInfo("x", "v1"));
+	REQUIRE(ExtensionRows(con, "invalid_ext").empty());
+
+	// an unreadable repository file does not fail the listing, nor hide any installed extension
 	auto fs = FileSystem::CreateLocal();
 	auto broken_path = fs->JoinPath(repository_directory, "broken.duckdb_extension.repo.json");
 	{
@@ -475,14 +482,15 @@ TEST_CASE("Test that duckdb_extensions lists extensions installed from user-prov
 		string garbage = "not json";
 		handle->Write((void *)garbage.data(), garbage.size());
 	}
-	REQUIRE(ExtensionRows(con, "dns") ==
-	        vector<string> {"true|false|REPOSITORY|community|v0|NULL|dns.duckdb_extension"});
+	REQUIRE(ExtensionRows(con, "dns").size() == 3);
 	fs->RemoveFile(broken_path);
+
+	// dropping a repository leaves its installed files on disk, so they are still listed
+	REQUIRE_NO_FAIL(con.Query("DROP EXTENSION REPOSITORY other"));
 	REQUIRE(ExtensionRows(con, "dns").size() == 3);
 
-	// once repositories are forbidden they are distrusted, so their folders are no longer listed
+	// forbidding repositories only affects loading: the installed files are still listed
 	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='forbidden'"));
-	REQUIRE(ExtensionRows(con, "dns") ==
-	        vector<string> {"true|false|REPOSITORY|community|v0|NULL|dns.duckdb_extension"});
-	REQUIRE(ExtensionRows(con, "json").size() == 1);
+	REQUIRE(ExtensionRows(con, "dns").size() == 3);
+	REQUIRE(ExtensionRows(con, "json").size() == 2);
 }
