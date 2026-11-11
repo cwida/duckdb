@@ -1,0 +1,123 @@
+# name: test/sql/storage/bc/test_null_stats_v1_5.test
+# description: Filters that accept NULL keep the NULL rows of segments written by v1.5
+# group: [bc]
+
+# data/storage/null_stats_v1_5.db.gz was written by DuckDB v1.5.6 with
+# CREATE TABLE t AS SELECT CASE WHEN i >= 1024 THEN NULL ELSE 1 END::INTEGER AS x FROM range(2048) r(i);
+# CREATE TABLE no_null AS SELECT 1::INTEGER AS x FROM range(2048) r(i);
+# CHECKPOINT;
+require exact_vector_size 2048
+
+unzip data/storage/null_stats_v1_5.db.gz {TEST_DIR}/null_stats_v1_5.db
+
+statement ok
+ATTACH '{TEST_DIR}/null_stats_v1_5.db' AS old
+
+# an appended row joins the old segments
+statement ok
+INSERT INTO old.t VALUES (NULL)
+
+loop i 0 2
+
+query I
+SELECT count(*) FROM old.t WHERE x IS NULL OR x > 2
+----
+1025
+
+query I
+SELECT count(*) FROM old.t WHERE coalesce(x, 5) > 2
+----
+1025
+
+query I
+SELECT count(*) FROM old.t WHERE x IS DISTINCT FROM 1
+----
+1025
+
+query II
+SELECT count(*) FILTER (x > 2), count(*) FILTER (x IS NOT NULL) FROM old.t
+----
+0	1024
+
+query I
+SELECT count(*) FROM old.no_null WHERE x IS NULL OR x > 2
+----
+0
+
+# a checkpoint by this version keeps the answers
+statement ok
+UPDATE old.t SET x = 1 WHERE x = 1
+
+statement ok
+CHECKPOINT old
+
+endloop
+
+# the rewritten segments keep the answers after the database is attached again
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/null_stats_v1_5.db' AS old
+
+query I
+SELECT count(*) FROM old.t WHERE x IS NULL OR x > 2
+----
+1025
+
+# a checkpoint keeps the answers after the database is attached again, whether it writes the segment metadata
+# again or reuses it
+loop reuse 0 2
+
+unzip data/storage/null_stats_v1_5.db.gz {TEST_DIR}/null_stats_v1_5_reuse.db
+
+statement ok
+SET experimental_metadata_reuse = {reuse}::BOOLEAN
+
+statement ok
+ATTACH '{TEST_DIR}/null_stats_v1_5_reuse.db' AS reuse (STORAGE_VERSION 'v2.0.0')
+
+statement ok
+CREATE TABLE reuse.touch (i INTEGER)
+
+statement ok
+CHECKPOINT reuse
+
+statement ok
+DETACH reuse
+
+statement ok
+ATTACH '{TEST_DIR}/null_stats_v1_5_reuse.db' AS reuse
+
+query I
+SELECT count(*) FROM reuse.t WHERE x IS NULL OR x > 2
+----
+1024
+
+statement ok
+DETACH reuse
+
+endloop
+
+# segments rewritten with the 2.0 storage version carry their own statistics
+unzip data/storage/null_stats_v1_5.db.gz {TEST_DIR}/null_stats_v1_5_rewrite.db
+
+statement ok
+ATTACH '{TEST_DIR}/null_stats_v1_5_rewrite.db' AS rewrite (STORAGE_VERSION 'v2.0.0')
+
+statement ok
+UPDATE rewrite.t SET x = 1 WHERE x = 1
+
+statement ok
+CHECKPOINT rewrite
+
+statement ok
+DETACH rewrite
+
+statement ok
+ATTACH '{TEST_DIR}/null_stats_v1_5_rewrite.db' AS rewrite
+
+query I
+SELECT count(*) FROM rewrite.t WHERE x IS NULL OR x > 2
+----
+1024

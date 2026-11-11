@@ -387,7 +387,8 @@ SinkNextBatchType PhysicalBatchInsert::NextBatch(ExecutionContext &context, Oper
 			throw InternalException("NextBatch called with the same batch index?");
 		}
 		// batch index has changed: move the old collection to the global state and create a new collection
-		auto tdata = TransactionData::Unversioned();
+		// the transaction id keeps the rows invisible to other transactions until the commit
+		TransactionData tdata(DuckTransaction::Get(context.client, gstate.table.catalog));
 		auto &optimistic_collection =
 		    gstate.table.GetStorage().GetOptimisticCollection(context.client, lstate.collection_index);
 		auto &collection = *optimistic_collection.collection;
@@ -441,8 +442,11 @@ SinkResultType PhysicalBatchInsert::Sink(ExecutionContext &context, DataChunk &i
 		// we are not processing the current min batch index
 		// check if we have exceeded the maximum number of unflushed rows
 		if (memory_manager.OutOfMemory(batch_index)) {
-			// out-of-memory
-			// execute tasks while we wait (if any are available)
+			// try to free memory by merging finished batches and executing any pending tasks
+			{
+				annotated_lock_guard<annotated_mutex> l(gstate.lock);
+				gstate.ScheduleMergeTasks(context.client, memory_manager.GetMinimumBatchIndex());
+			}
 			ExecuteTasks(context.client, gstate, lstate);
 
 			const annotated_lock_guard<annotated_mutex> guard {memory_manager.lock};
@@ -497,7 +501,7 @@ SinkCombineResultType PhysicalBatchInsert::Combine(ExecutionContext &context, Op
 	memory_manager.UpdateMinBatchIndex(lstate.partition_info.min_batch_index.GetIndex());
 
 	if (lstate.collection_index.IsValid()) {
-		auto tdata = TransactionData::Unversioned();
+		TransactionData tdata(DuckTransaction::Get(context.client, gstate.table.catalog));
 		auto &optimistic_collection =
 		    gstate.table.GetStorage().GetOptimisticCollection(context.client, lstate.collection_index);
 		auto &collection = *optimistic_collection.collection;

@@ -19,7 +19,6 @@
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_column_data_get.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
-#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
@@ -492,6 +491,27 @@ void RemoveUnusedColumns::VisitSecureView(LogicalSecureView &view) {
 	view.output_expressions = std::move(new_expressions);
 }
 
+static bool IsDuplicateCondition(const vector<JoinCondition> &conditions, const JoinCondition &cond) {
+	// two equal volatile conditions are two evaluations, so neither is a duplicate of the other
+	if (cond.IsComparison() ? (cond.GetLHS().IsVolatile() || cond.GetRHS().IsVolatile())
+	                        : cond.GetJoinExpression().IsVolatile()) {
+		return false;
+	}
+	for (auto &other : conditions) {
+		if (cond.IsComparison() && other.IsComparison()) {
+			if (cond.GetComparisonType() == other.GetComparisonType() && cond.GetLHS().Equals(other.GetLHS()) &&
+			    cond.GetRHS().Equals(other.GetRHS())) {
+				return true;
+			}
+		} else if (!cond.IsComparison() && !other.IsComparison()) {
+			if (cond.GetJoinExpression().Equals(other.GetJoinExpression())) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 	const bool analyze = mode == RemoveUnusedColumnsMode::ANALYZE;
 	auto &op = *op_ref;
@@ -568,8 +588,8 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 				// removed all expressions from the aggregate: push a COUNT(*)
 				auto count_star_fun = GetBuiltinAggregateFunction(context, CountStarFun::Name, {});
 				FunctionBinder function_binder(context);
-				aggr.expressions.push_back(function_binder.BindAggregateFunction(std::move(count_star_fun), {}, nullptr,
-				                                                                 AggregateType::NON_DISTINCT));
+				aggr.expressions.push_back(
+				    function_binder.BindAggregateFunction(count_star_fun, {}, nullptr, AggregateType::NON_DISTINCT));
 			}
 		}
 
@@ -810,21 +830,6 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		}
 		return;
 	}
-	case LogicalOperatorType::LOGICAL_DISTINCT: {
-		auto &distinct = op.Cast<LogicalDistinct>();
-		if (distinct.distinct_type == DistinctType::DISTINCT_ON) {
-			// distinct type references columns that need to be distinct on, so no
-			// need to implicitly reference everything.
-			break;
-		}
-		// Preserve all DISTINCT inputs without affecting sibling branches.
-		const auto previous_everything_referenced = everything_referenced;
-		everything_referenced = true;
-		LogicalOperatorVisitor::VisitOperatorExpressions(op);
-		VisitPrunableChildren(op);
-		everything_referenced = previous_everything_referenced;
-		return;
-	}
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE: {
 		if (analyze) {
 			LogicalOperatorVisitor::VisitOperatorExpressions(op);
@@ -934,6 +939,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 				}
 			}
 
+			cte.column_count = expressions.size();
 			auto projection = make_uniq<LogicalProjection>(binder.GenerateTableIndex(), std::move(expressions));
 			projection->children.push_back(std::move(cte.children[0]));
 			cte.children[0] = std::move(projection);
@@ -1009,22 +1015,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		// after removing duplicate columns we may have duplicate join conditions (if the join graph is cyclical)
 		vector<JoinCondition> unique_conditions;
 		for (auto &cond : comp_join.conditions) {
-			bool found = false;
-			for (auto &unique_cond : unique_conditions) {
-				if (cond.IsComparison() && unique_cond.IsComparison()) {
-					if (cond.GetComparisonType() == unique_cond.GetComparisonType() &&
-					    cond.GetLHS().Equals(unique_cond.GetLHS()) && cond.GetRHS().Equals(unique_cond.GetRHS())) {
-						found = true;
-						break;
-					}
-				} else if (!cond.IsComparison() && !unique_cond.IsComparison()) {
-					if (cond.GetJoinExpression().Equals(unique_cond.GetJoinExpression())) {
-						found = true;
-						break;
-					}
-				}
-			}
-			if (!found) {
+			if (!IsDuplicateCondition(unique_conditions, cond)) {
 				unique_conditions.push_back(std::move(cond));
 			}
 		}
@@ -1836,7 +1827,8 @@ static bool TryGetCastChild(unique_ptr<Expression> &expr, optional_ptr<unique_pt
 	}
 	D_ASSERT(BoundCastExpression::IsCast(*expr));
 	auto &cast = expr->Cast<BoundFunctionExpression>();
-	if (BoundCastExpression::IsTryCast(cast)) {
+	//! A pushed-down cast runs on every row of the child, including rows that are later filtered out
+	if (BoundCastExpression::IsTryCast(cast) || cast.CanThrow()) {
 		return false;
 	}
 	child = BoundCastExpression::ChildMutable(cast);
@@ -1844,20 +1836,9 @@ static bool TryGetCastChild(unique_ptr<Expression> &expr, optional_ptr<unique_pt
 }
 
 void BaseColumnPruner::VisitExpression(unique_ptr<Expression> *expression) {
-	if ((*expression)->GetExpressionType() == ExpressionType::OPERATOR_TRY) {
-		const auto was_inside_try = inside_try;
-		inside_try = true;
-		LogicalOperatorVisitor::VisitExpression(expression);
-		inside_try = was_inside_try;
-		return;
-	}
-
-	//! Check if this is a struct extract wrapped in a cast. TRY_CAST is already
-	//! skipped by TryGetCastChild. A throwing CAST under TRY must also stay put:
-	//! unused-columns would otherwise emit CAST(struct_extract) in a child
-	//! projection and leave TRY wrapping only the already-cast column (#25236).
+	//! Check if this is a struct extract wrapped in a cast
 	optional_ptr<unique_ptr<Expression>> cast_child;
-	if (!inside_try && TryGetCastChild(*expression, cast_child)) {
+	if (TryGetCastChild(*expression, cast_child)) {
 		if (HandleExtractExpression(cast_child.get(), expression)) {
 			// already handled
 			return;

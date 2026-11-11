@@ -41,8 +41,10 @@ class Vector;
 class Transaction;
 class WriteAheadLog;
 class TableDataWriter;
+class TableStatistics;
 class ConflictManager;
 class TableScanState;
+struct CollectionCheckpointResult;
 struct TableDeleteState;
 struct ConstraintState;
 struct TableUpdateState;
@@ -194,6 +196,8 @@ public:
 	//! commit (e.g. because of an I/O exception)
 	void RevertAppend(DuckTransaction &transaction, idx_t start_row, idx_t count);
 	void RevertAppendInternal(idx_t start_row);
+	//! Revert an append that failed before it was finalized
+	void RevertFailedAppend(TableAppendState &state);
 
 	void ScanTableSegment(DuckTransaction &transaction, idx_t start_row, idx_t count,
 	                      const std::function<void(DataChunk &chunk)> &function);
@@ -231,6 +235,8 @@ public:
 
 	//! Checkpoint the table to the specified table data writer
 	void Checkpoint(TableDataWriter &writer, Serializer &serializer);
+	//! Install checkpointed row groups.
+	void PublishCheckpoint(CollectionCheckpointResult result, TableStatistics &checkpoint_stats);
 	//! Accumulates the table's on-disk blocks for reclamation into the drop state.
 	void CommitDropTable(CommitDropState &drop_state);
 	//! Accumulates the column's on-disk blocks for reclamation into the drop state.

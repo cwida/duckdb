@@ -8,7 +8,6 @@
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/expression_binder/base_select_binder.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
-#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
@@ -17,9 +16,11 @@ namespace duckdb {
 
 void ApplyFunctionalDependencies::VisitLogicalGet(LogicalGet &get) {
 	VisitOperatorChildren(get);
+	// Table-in/out functions need not preserve the multiplicity of their input keys.
+	result.clear();
 
 	auto table = get.GetTable();
-	if (!table || !table->IsDuckTable() || !get.projected_input.empty() || get.GetColumnIds().empty()) {
+	if (!table || !table->IsDuckTable() || !get.children.empty() || get.GetColumnIds().empty()) {
 		return;
 	}
 	unordered_map<idx_t, ColumnBinding> column_bindings;
@@ -91,26 +92,6 @@ void ApplyFunctionalDependencies::VisitLogicalAggregate(LogicalAggregate &aggr) 
 		}
 	}
 	if (!key.empty()) {
-		result.push_back(std::move(key));
-	}
-}
-
-void ApplyFunctionalDependencies::VisitLogicalDistinct(LogicalDistinct &distinct) {
-	VisitOperatorChildren(distinct);
-
-	//	TODO: use child FDs to simplify groupings.
-	result.clear();
-
-	column_binding_set_t key;
-	bool all_columns = true;
-	for (auto &target : distinct.distinct_targets) {
-		if (target->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
-			all_columns = false;
-			break;
-		}
-		key.insert(target->Cast<BoundColumnRefExpression>().Binding());
-	}
-	if (all_columns && !key.empty()) {
 		result.push_back(std::move(key));
 	}
 }
@@ -321,9 +302,6 @@ void ApplyFunctionalDependencies::VisitOperator(LogicalOperator &op) {
 		break;
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
 		VisitLogicalAggregate(op.Cast<LogicalAggregate>());
-		break;
-	case LogicalOperatorType::LOGICAL_DISTINCT:
-		VisitLogicalDistinct(op.Cast<LogicalDistinct>());
 		break;
 	default:
 		VisitOperatorChildren(op);

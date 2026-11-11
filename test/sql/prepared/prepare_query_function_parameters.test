@@ -1,0 +1,94 @@
+# name: test/sql/prepared/prepare_query_function_parameters.test
+# description: Parameters inside the SQL string of query() are rejected in prepared statements
+# group: [prepared]
+
+statement ok
+SET VARIABLE n = 10
+
+# outside PREPARE a $variable inside query() falls back to the variable
+query I
+SELECT * FROM query('SELECT $n')
+----
+10
+
+# inside PREPARE a parameter that only appears inside the string can never receive a value, so it is rejected
+statement error
+PREPARE stmt AS SELECT * FROM query('SELECT $n')
+----
+Prepared statement parameter "$n" only appears inside query()
+
+statement error
+PREPARE stmt AS SELECT * FROM query('SELECT $1')
+----
+Prepared statement parameter "$1" only appears inside query()
+
+statement error
+PREPARE stmt AS SELECT * FROM query('SELECT ?')
+----
+Prepared statement parameter "$1" only appears inside query()
+
+# getvariable is the supported way to read a variable inside query()
+statement ok
+PREPARE stmt_getvariable AS SELECT * FROM query('SELECT getvariable(''n'')')
+
+query I
+EXECUTE stmt_getvariable
+----
+10
+
+statement ok
+SET VARIABLE n = 20
+
+query I
+EXECUTE stmt_getvariable
+----
+20
+
+# parameters outside the string keep working alongside query()
+statement ok
+PREPARE stmt_outer AS SELECT $n, * FROM query('SELECT 1')
+
+query II
+EXECUTE stmt_outer
+----
+20	1
+
+query II
+EXECUTE stmt_outer(n := 5)
+----
+5	1
+
+# query_table shares the check
+statement ok
+CREATE TABLE t AS SELECT 1 AS i
+
+statement ok
+PREPARE stmt_table AS SELECT * FROM query_table('t')
+
+query I
+EXECUTE stmt_table
+----
+1
+
+# a parameter that the outer statement declares as well is shared with the inner query
+statement ok
+PREPARE stmt_shared AS SELECT $customer::INTEGER AS supplied, * FROM query('SELECT $customer::INTEGER AS value')
+
+query II
+EXECUTE stmt_shared(customer := 42)
+----
+42	42
+
+statement ok
+PREPARE stmt_shared_positional AS SELECT $1::INTEGER AS supplied, * FROM query('SELECT $1::INTEGER AS value')
+
+query II
+EXECUTE stmt_shared_positional(7)
+----
+7	7
+
+# declaring one parameter does not cover another
+statement error
+PREPARE stmt_partial AS SELECT $a, * FROM query('SELECT $a + $b')
+----
+Prepared statement parameter "$b" only appears inside query()

@@ -1,0 +1,21 @@
+# name: test/parquet/corrupt/f1_scratch_buffer_stale_ptr.test
+# description: Reuse scratch storage safely across Parquet page encoding transitions
+# group: [corrupt]
+
+require parquet
+
+# The DBP page consumes the scratch buffer before dictionary decoding reuses it.
+# The file contains 2048 values of 42, followed by 1024 NULLs and 1024 dictionary values of 0.
+query IIII
+SELECT count(*), count(x), count(*) FILTER (WHERE x IS NULL), sum(x)
+FROM read_parquet('data/parquet-testing/corrupt/f1_scratch_buffer_stale_ptr.parquet');
+----
+4096	3072	1024	86016
+
+# Dictionary filtering also reads the decoded offsets after the batch.
+query II
+SELECT count(*), sum(x)
+FROM read_parquet('data/parquet-testing/corrupt/f1_scratch_buffer_stale_ptr.parquet')
+WHERE x = 0;
+----
+1024	0

@@ -45,6 +45,26 @@ struct ErrorFun {
 	static ScalarFunction GetFunction();
 };
 
+struct HasErrorFun {
+	static constexpr const char *Name = "has_error";
+	static constexpr const char *Parameters = "expr";
+	static constexpr const char *Description = "Returns true when evaluating the expression raises an error and false otherwise. Errors are captured per row, exactly where try(expr) returns NULL.";
+	static constexpr const char *Example = "has_error(1 // 0)";
+	static constexpr const char *Categories = "";
+
+	static ScalarFunction GetFunction();
+};
+
+struct TryRethrowFun {
+	static constexpr const char *Name = "__internal_try_rethrow";
+	static constexpr const char *Parameters = "error,value";
+	static constexpr const char *Description = "Raises an error when the flag is set and returns the value otherwise. Created by the TRY subquery lowering to re-raise a captured error at the use site.";
+	static constexpr const char *Example = "";
+	static constexpr const char *Categories = "";
+
+	static ScalarFunction GetFunction();
+};
+
 struct BarrierFun {
 	static constexpr const char *Name = "__internal_barrier";
 	static constexpr const char *Parameters = "arg";

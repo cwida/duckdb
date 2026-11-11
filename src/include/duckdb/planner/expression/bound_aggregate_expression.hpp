@@ -78,6 +78,7 @@ public:
 		return false;
 	}
 	bool IsVolatile() const override;
+	bool CanThrow() const override;
 	bool PropagatesNullValues() const override;
 
 	string ToString() const override;

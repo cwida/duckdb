@@ -47,6 +47,20 @@ struct ListCast {
 	static bool ListToListCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
 };
 
+//! How the fields of a STRUCT -> STRUCT cast are paired - positionally for unnamed structs, by name otherwise
+struct StructCastFieldMapping {
+	enum class MatchKind : uint8_t { VALID, SIZE_MISMATCH, DUPLICATE_TARGET_NAME, NO_MATCHING_FIELD };
+
+	MatchKind kind = MatchKind::VALID;
+	//! The duplicate target field name, set for DUPLICATE_TARGET_NAME
+	Identifier duplicate_name;
+	//! Matched (source, target) field pairs, in source field order
+	vector<idx_t> source_indexes;
+	vector<idx_t> target_indexes;
+	//! Target fields without a matching source field - the cast sets these to NULL
+	vector<idx_t> target_null_indexes;
+};
+
 struct StructBoundCastData : public BoundCastData {
 	StructBoundCastData(vector<BoundCastInfo> child_casts, LogicalType target_p, vector<idx_t> source_indexes_p,
 	                    vector<idx_t> target_indexes_p, vector<idx_t> target_null_indexes_p)
@@ -70,6 +84,8 @@ struct StructBoundCastData : public BoundCastData {
 	vector<idx_t> target_indexes;
 	vector<idx_t> target_null_indexes;
 
+	//! Computes the field pairing of a STRUCT -> STRUCT cast without binding the child casts
+	static StructCastFieldMapping GetFieldMapping(const LogicalType &source, const LogicalType &target);
 	static unique_ptr<BoundCastData> BindStructToStructCast(BindCastInput &input, const LogicalType &source,
 	                                                        const LogicalType &target);
 	static unique_ptr<FunctionLocalState> InitStructCastLocalState(CastLocalStateParameters &parameters);

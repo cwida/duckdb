@@ -6,40 +6,11 @@
 #include "duckdb/optimizer/join_order/cardinality_estimator.hpp"
 #include "duckdb/optimizer/join_order/cost_model.hpp"
 #include "duckdb/optimizer/join_order/plan_enumerator.hpp"
+#include "duckdb/optimizer/join_order/join_order_source_stats.hpp"
 #include "duckdb/planner/expression/list.hpp"
 #include "duckdb/planner/operator/list.hpp"
 
 namespace duckdb {
-
-static optional<RelationStats> CombineReorderableStats(const vector<ColumnBinding> &bindings,
-                                                       const vector<RelationStats> &relation_stats) {
-	RelationStats result;
-	result.cardinality = 0;
-	result.stats_initialized = true;
-	for (auto &stats : relation_stats) {
-		if (!stats.stats_initialized) {
-			return {};
-		}
-		result.cardinality = MaxValue(result.cardinality, stats.cardinality);
-		if (!result.table_name.empty()) {
-			result.table_name = Identifier(result.table_name + " joined with ");
-		}
-		result.table_name = Identifier(result.table_name + stats.table_name);
-	}
-	RelationColumnStatsLookup lookup;
-	for (auto &stats : relation_stats) {
-		lookup.AddRelation(stats);
-	}
-	for (auto &binding : bindings) {
-		auto source = lookup.Find(binding);
-		if (!source) {
-			return {};
-		}
-		result.columns.emplace_back(binding, source->distinct_count, source->name);
-	}
-	result.Verify(bindings);
-	return result;
-}
 
 JoinOrderOptimizer::JoinOrderOptimizer(ClientContext &context)
     : context(context), query_graph_manager(context), depth(1) {
@@ -51,7 +22,12 @@ JoinOrderOptimizer JoinOrderOptimizer::CreateChildOptimizer() {
 	child_optimizer.delim_scan_stats = delim_scan_stats;
 	child_optimizer.depth = depth + 1;
 	child_optimizer.recursive_cte_indexes = recursive_cte_indexes;
+	child_optimizer.source_stats = source_stats;
 	return child_optimizer;
+}
+
+const shared_ptr<const JoinOrderSourceStats> &JoinOrderOptimizer::GetSourceStats() const {
+	return source_stats;
 }
 
 unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOperator> plan,
@@ -63,21 +39,25 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 	}
 
 	// make sure query graph manager has not extracted a relation graph already
-	LogicalOperator *op = plan.get();
+	auto &op = *plan;
+	if (!source_stats) {
+		source_stats = make_shared_ptr<JoinOrderSourceStats>(context, op);
+	}
 
 	// extract the relations that go into the hyper graph.
 	// We optimize the children of any non-reorderable operations we come across.
-	bool reorderable = query_graph_manager.Build(*this, *op);
+	bool reorderable = query_graph_manager.Build(*this, op);
 
 	// get relation_stats here since the reconstruction process will move all relations.
 	auto relation_stats = query_graph_manager.relation_manager.GetRelationStats();
 	unique_ptr<LogicalOperator> new_logical_plan = nullptr;
+	RelationStats output_stats;
 
 	if (reorderable) {
 		// query graph now has filters and relations
 		auto cardinality_estimator =
 		    CardinalityEstimator(query_graph_manager.set_manager, query_graph_manager.GetPredicateModel());
-		auto cost_model = CostModel(query_graph_manager, cardinality_estimator);
+		auto cost_model = CostModel(cardinality_estimator);
 
 		// Initialize a plan enumerator.
 		auto plan_enumerator =
@@ -88,34 +68,30 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 		if (plan_enumerator.SolveJoinOrder()) {
 			// now reconstruct a logical plan from the query graph plan
 			query_graph_manager.plans = plan_enumerator.GetPlans();
-			new_logical_plan = query_graph_manager.Reconstruct(std::move(plan));
-		} else {
-			// Approximate enumeration can conservatively reject every remaining partition. The original tree is still
-			// intact and is always a valid fallback.
-			new_logical_plan = std::move(plan);
+			auto reconstructed = query_graph_manager.Reconstruct(std::move(plan), relation_stats);
+			new_logical_plan = std::move(reconstructed.op);
+			output_stats = std::move(reconstructed.stats);
 		}
-	} else {
-		new_logical_plan = std::move(plan);
-		if (relation_stats.size() == 1) {
+	}
+	if (!new_logical_plan) {
+		// Keep the original tree when there is nothing to reorder or enumeration cannot complete.
+		new_logical_plan = std::move(plan); // NOLINT: plan is only moved when reconstruction succeeded
+		if (!reorderable && relation_stats.size() == 1) {
 			new_logical_plan->estimated_cardinality = relation_stats.at(0).cardinality;
 			new_logical_plan->has_estimated_cardinality = true;
+		}
+		if (stats && query_graph_manager.relation_manager.HasCompleteStats()) {
+			auto combined = query_graph_manager.CombineRelationStats(
+			    new_logical_plan->GetColumnBindings(), relation_stats, new_logical_plan->EstimateCardinality(context));
+			if (combined) {
+				output_stats = std::move(*combined);
+			}
 		}
 	}
 
 	// Propagate up a stats object from the top of the new_logical_plan if stats exist.
 	if (stats) {
-		auto new_stats = query_graph_manager.relation_manager.HasCompleteStats()
-		                     ? CombineReorderableStats(new_logical_plan->GetColumnBindings(), relation_stats)
-		                     : optional<RelationStats>();
-		if (new_stats) {
-			new_stats->cardinality = new_logical_plan->EstimateCardinality(context);
-			*stats = std::move(*new_stats);
-		} else {
-			*stats = RelationStats();
-		}
-	} else {
-		// starts recursively setting cardinality
-		new_logical_plan->EstimateCardinality(context);
+		*stats = std::move(output_stats);
 	}
 
 	if (new_logical_plan->type == LogicalOperatorType::LOGICAL_EXPLAIN) {

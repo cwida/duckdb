@@ -1,4 +1,5 @@
 #include "duckdb/catalog/default/default_table_functions.hpp"
+#include "duckdb/catalog/default/default_macro_qualifier.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/catalog/catalog_entry/table_macro_catalog_entry.hpp"
 #include "duckdb/parser/parser.hpp"
@@ -105,6 +106,7 @@ DefaultTableFunctionGenerator::CreateInternalTableMacroInfo(const DefaultTableMa
 		function->parameters.push_back(make_uniq<ColumnRefExpression>(named_param.name));
 		function->default_parameters.insert(Identifier(named_param.name), std::move(default_value));
 	}
+	DefaultMacroQualifier::Qualify(*function, Identifier(default_macro.schema));
 
 	auto type = CatalogType::TABLE_MACRO_ENTRY;
 	auto bind_info = make_uniq<CreateMacroInfo>(type);

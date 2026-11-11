@@ -1,4 +1,6 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/parsed_data/create_pragma_function_info.hpp"
@@ -7,6 +9,7 @@
 #include "json_functions.hpp"
 #include "json_serializer.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
+#include "duckdb/parser/literal.hpp"
 
 namespace duckdb {
 
@@ -92,7 +95,7 @@ static void JsonSerializeFunction(DataChunk &args, ExpressionState &state, Vecto
 		yyjson_mut_doc_set_root(doc, result_obj);
 
 		try {
-			Parser parser(state.GetContext());
+			Parser parser(state.GetClientContext());
 			parser.ParseQuery(input.GetString());
 
 			auto statements_arr = yyjson_mut_arr(doc);
@@ -104,7 +107,7 @@ static void JsonSerializeFunction(DataChunk &args, ExpressionState &state, Vecto
 				auto &select = statement->Cast<SelectStatement>();
 
 				auto options = make_uniq<SerializationOptions>();
-				options->storage_compatibility = state.GetContext().db->config.options.storage_compatibility;
+				options->storage_compatibility = state.GetContext().GetDatabase().config.options.storage_compatibility;
 				auto json = JsonSerializer::Serialize(select, doc, info.skip_if_null, info.skip_if_empty,
 				                                      info.skip_if_default, *options);
 
@@ -193,6 +196,10 @@ static vector<unique_ptr<SelectStatement>> DeserializeSelectStatement(string_t i
 		throw ParserException("Error parsing json: no statements");
 	}
 
+	DeserializationPolicy policy;
+	policy.Disallow(LogicalTypeId::POINTER);
+	policy.Disallow(LiteralKind::POINTER);
+
 	vector<unique_ptr<SelectStatement>> result;
 
 	idx_t idx;
@@ -200,6 +207,7 @@ static vector<unique_ptr<SelectStatement>> DeserializeSelectStatement(string_t i
 	yyjson_val *stmt_json;
 	yyjson_arr_foreach(statements, idx, max, stmt_json) {
 		JsonDeserializer deserializer(stmt_json, doc);
+		deserializer.SetPolicy(policy);
 		auto stmt = SelectStatement::Deserialize(deserializer);
 		if (!stmt->node) {
 			throw ParserException("Error parsing json: no select node found in json");
@@ -253,7 +261,7 @@ ScalarFunctionSet JSONFunctions::GetDeserializeSqlFunction() {
 // JSON EXECUTE SERIALIZED SQL (PRAGMA)
 //----------------------------------------------------------------------
 static string ExecuteJsonSerializedSqlPragmaFunction(ClientContext &context, const FunctionParameters &parameters) {
-	JSONFunctionLocalState local_state(context);
+	JSONFunctionLocalState local_state(context.GetContext());
 	auto alc = local_state.json_allocator->GetYYAlc();
 
 	if (parameters.values[0].IsNull()) {
@@ -280,7 +288,6 @@ PragmaFunctionSet JSONFunctions::GetExecuteJsonSerializedSqlPragmaFunction() {
 struct ExecuteSqlTableFunction {
 	struct BindData : public TableFunctionData {
 		shared_ptr<Relation> plan;
-		unique_ptr<QueryResult> result;
 		unique_ptr<Connection> con;
 
 		bool SupportStatementCache() const override {
@@ -288,9 +295,19 @@ struct ExecuteSqlTableFunction {
 		}
 	};
 
+	// The result is scan state, not bind state: a scan can be initialized multiple times (e.g. per recursive
+	// CTE iteration) and must produce the full result each time.
+	struct State : public GlobalTableFunctionState {
+		unique_ptr<QueryResult> result;
+	};
+
+	static unique_ptr<GlobalTableFunctionState> Init(ClientContext &context, TableFunctionInitInput &input) {
+		return make_uniq<State>();
+	}
+
 	static unique_ptr<FunctionData> Bind(ClientContext &context, TableFunctionBindInput &input,
 	                                     vector<LogicalType> &return_types, vector<Identifier> &names) {
-		JSONFunctionLocalState local_state(context);
+		JSONFunctionLocalState local_state(context.GetContext());
 		auto alc = local_state.json_allocator->GetYYAlc();
 
 		auto result = make_uniq<BindData>();
@@ -314,11 +331,12 @@ struct ExecuteSqlTableFunction {
 	}
 
 	static void Function(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-		auto &data = data_p.bind_data->CastNoConst<BindData>();
-		if (!data.result) {
-			data.result = data.plan->Execute();
+		auto &data = data_p.bind_data->Cast<BindData>();
+		auto &state = data_p.global_state->Cast<State>();
+		if (!state.result) {
+			state.result = data.plan->ExecuteOrThrow();
 		}
-		auto result_chunk = data.result->Fetch();
+		auto result_chunk = state.result->Fetch();
 		if (!result_chunk) {
 			return;
 		}
@@ -329,7 +347,7 @@ struct ExecuteSqlTableFunction {
 TableFunctionSet JSONFunctions::GetExecuteJsonSerializedSqlFunction() {
 	TableFunction func("json_execute_serialized_sql",
 	                   FunctionSignature().AddPositionalOnly("serialized_sql", LogicalType::VARCHAR),
-	                   ExecuteSqlTableFunction::Function, ExecuteSqlTableFunction::Bind);
+	                   ExecuteSqlTableFunction::Function, ExecuteSqlTableFunction::Bind, ExecuteSqlTableFunction::Init);
 	return TableFunctionSet(func);
 }
 

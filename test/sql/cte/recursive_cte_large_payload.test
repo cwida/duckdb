@@ -1,0 +1,162 @@
+# name: test/sql/cte/recursive_cte_large_payload.test
+# description: Recursive CTEs carrying large nested payloads across iterations
+# group: [cte]
+
+# A list payload larger than one internal vector carried unchanged through every iteration.
+# Every emitted row must still hold the complete list.
+query III
+WITH RECURSIVE r(i, s, dom) AS (
+	SELECT 0::BIGINT, 0::BIGINT, (SELECT list(x) FROM range(1, 3001) t(x))
+	UNION ALL
+	SELECT i + 1, s + list_extract(dom, i + 1), dom FROM r WHERE i < 40
+)
+SELECT count(*), max(s), bool_and(len(dom) = 3000 AND list_sum(dom) = 4501500) FROM r;
+----
+41	820	true
+
+# Mutation after carry: an iteration that extends the list must not affect the payloads
+# of earlier rows. Every row keeps exactly its own version of the list.
+query I
+WITH RECURSIVE r(i, dom) AS (
+	SELECT 0::BIGINT, (SELECT list(x) FROM range(1, 3001) t(x))
+	UNION ALL
+	SELECT i + 1, list_append(dom, -(i + 1)) FROM r WHERE i < 40
+)
+SELECT bool_and(
+	len(dom) = 3000 + i
+	AND list_sum(dom) = 4501500 - i * (i + 1) / 2
+	AND (i = 0 OR dom[3000 + i] = -i))
+FROM r;
+----
+true
+
+# Full rewrite of the payload in every iteration (copy-on-modify semantics)
+query I
+WITH RECURSIVE r(i, dom) AS (
+	SELECT 0::BIGINT, (SELECT list(x) FROM range(1, 3001) t(x))
+	UNION ALL
+	SELECT i + 1, list_transform(dom, lambda x: x + 1) FROM r WHERE i < 20
+)
+SELECT bool_and(list_sum(dom) = 4501500 + i * 3000) FROM r;
+----
+true
+
+# Multi-row working table: one row carries the payload unchanged, the other mutates it
+query II
+WITH RECURSIVE r(id, i, dom) AS (
+	SELECT t.id, 0::BIGINT, (SELECT list(x) FROM range(1, 3001) u(x)) FROM (VALUES (1), (2)) t(id)
+	UNION ALL
+	SELECT id, i + 1, CASE WHEN id = 1 THEN dom ELSE list_append(dom, i + 1) END FROM r WHERE i < 30
+)
+SELECT bool_and(CASE WHEN id = 1 THEN len(dom) = 3000 AND list_sum(dom) = 4501500
+                     ELSE len(dom) = 3000 + i AND list_sum(dom) = 4501500 + i * (i + 1) / 2 END),
+       count(*)
+FROM r;
+----
+true	62
+
+# NULL entries inside the carried list (validity travels with the payload)
+query I
+WITH RECURSIVE r(i, dom) AS (
+	SELECT 0::BIGINT, (SELECT list(CASE WHEN x % 100 = 0 THEN NULL ELSE x END) FROM range(1, 3001) t(x))
+	UNION ALL
+	SELECT i + 1, dom FROM r WHERE i < 30
+)
+SELECT bool_and(
+	len(dom) = 3000
+	AND len(list_filter(dom, lambda x: x IS NULL)) = 30
+	AND list_sum(dom) = 4455000)
+FROM r;
+----
+true
+
+# UNION (distinct) recursion with a large list in the row
+# the recursion terminates through duplicate elimination, bound it with a timeout
+statement ok
+SET max_execution_time=30000
+
+query II
+WITH RECURSIVE r(i, dom) AS (
+	SELECT 0::BIGINT, (SELECT list(x) FROM range(1, 3001) t(x))
+	UNION
+	SELECT (i + 1) % 5, dom FROM r
+)
+SELECT count(*), bool_and(list_sum(dom) = 4501500) FROM r;
+----
+5	true
+
+statement ok
+SET max_execution_time=0
+
+# A large list of structs is carried through the copying path
+query II
+WITH RECURSIVE r(i, dom) AS (
+	SELECT 0::BIGINT, (SELECT list({'a': x, 'b': x * 2}) FROM range(1, 3001) t(x))
+	UNION ALL
+	SELECT i + 1, dom FROM r WHERE i < 20
+)
+SELECT bool_and(len(dom) = 3000 AND dom[3000].b = 6000), count(*) FROM r;
+----
+true	21
+
+# USING KEY recursion with a large, growing list payload
+query IIII
+WITH RECURSIVE r(k, i, dom) USING KEY (k) AS (
+	SELECT 1, 0::BIGINT, (SELECT list(x) FROM range(1, 3001) t(x))
+	UNION ALL
+	SELECT k, i + 1, list_append(dom, i + 1) FROM r WHERE i < 30
+)
+SELECT k, i, len(dom), list_sum(dom) FROM r;
+----
+1	30	3030	4501965
+
+# The recurring table receives the payload through a collection-to-collection append
+query II
+WITH RECURSIVE r(i, dom) AS (
+	SELECT 0::BIGINT, (SELECT list(x) FROM range(1, 3001) t(x))
+	UNION ALL
+	SELECT r.i + 1, r.dom
+	FROM r JOIN recurring.r rec ON rec.i = r.i
+	WHERE r.i < 5
+)
+SELECT count(*), bool_and(list_sum(dom) = 4501500) FROM r;
+----
+6	true
+
+# A payload spanning several internal vectors stays intact over many iterations
+query II
+WITH RECURSIVE r(i, s, dom) AS (
+	SELECT 0::BIGINT, 0::BIGINT, (SELECT list(x) FROM range(1, 10001) t(x))
+	UNION ALL
+	SELECT i + 1, s + dom[i + 1], dom FROM r WHERE i < 100
+)
+SELECT max(s), bool_and(list_sum(dom) = 50005000) FROM r;
+----
+5050	true
+
+# Alternating small and large lists in the same output column
+query II
+WITH RECURSIVE r(i, dom) AS (
+	SELECT 0::BIGINT, [1]::BIGINT[]
+	UNION ALL
+	SELECT i + 1, CASE WHEN i % 2 = 0 THEN (SELECT list(x) FROM range(1, 3001) t(x)) ELSE [i] END
+	FROM r WHERE i < 20
+)
+SELECT bool_and(CASE WHEN i = 0 THEN dom = [1]
+                     WHEN i % 2 = 1 THEN list_sum(dom) = 4501500
+                     ELSE dom = [i - 1] END),
+       count(*)
+FROM r;
+----
+true	21
+
+# Constant scalar payloads carried next to the list through every iteration
+query IIII
+WITH RECURSIVE r(i, c, dom) AS (
+	SELECT 0::BIGINT, 'constant_recursive_payload_string', (SELECT list(x) FROM range(1, 3001) t(x))
+	UNION ALL
+	SELECT i + 1, c, dom FROM r WHERE i < 40
+)
+SELECT count(*), count(DISTINCT c), min(c), bool_and(list_sum(dom) = 4501500) FROM r;
+----
+41	1	constant_recursive_payload_string	true

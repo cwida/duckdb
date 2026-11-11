@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/unordered_map.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/aggregate_function.hpp"
 #include "duckdb/parser/group_by_node.hpp"
@@ -46,6 +47,11 @@ public:
 
 	//! Initialize a GroupedAggregateData object for use with distinct aggregates
 	void InitializeDistinct(const unique_ptr<Expression> &aggregate, const vector<unique_ptr<Expression>> *groups_p);
+
+	//! Points the filters of the aggregates at payload columns following the children (one per distinct filter) and
+	//! appends their types; returns the input column that each of those payload columns is read from
+	static unordered_map<idx_t, idx_t> AddFilterColumns(const vector<unique_ptr<Expression>> &aggregates,
+	                                                    vector<LogicalType> &payload_types);
 
 private:
 	void InitializeDistinctGroups(const vector<unique_ptr<Expression>> *groups);

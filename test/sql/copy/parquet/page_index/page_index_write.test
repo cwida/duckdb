@@ -1,0 +1,331 @@
+# name: test/sql/copy/parquet/page_index/page_index_write.test
+# description: Writing the Parquet page index (ColumnIndex + OffsetIndex per column chunk)
+# group: [page_index]
+
+require parquet
+
+# the page row counts and boundaries below assume the default vector size
+require vector_size 2048
+
+statement ok
+CREATE TABLE data AS
+	SELECT range AS id,
+	       ((range // 512) * 7919) % 1000 + range % 10 AS v,
+	       -range AS neg,
+	       CASE WHEN range BETWEEN 10000 AND 19999 THEN NULL WHEN range % 7 = 0 THEN NULL ELSE range END AS n,
+	       'str_' || lpad(range::VARCHAR, 6, '0') AS s,
+	       CASE WHEN range % 3 = 0 THEN 'apple' WHEN range % 3 = 1 THEN 'banana' ELSE 'cherry' END AS dict_s,
+	       (range / 4)::DOUBLE AS d,
+	       (range % 2 = 0) AS b,
+	       DATE '2024-01-01' + INTERVAL (range % 365) DAY AS dt,
+	       TIMESTAMP '2024-01-01 00:00:00' + INTERVAL (range) SECOND AS ts,
+	       (range::DECIMAL(10,2) / 4) AS dec,
+	       (range::DECIMAL(28,3) / 8) AS wide_dec,
+	       [range::INTEGER, (range + 1)::INTEGER] AS arr,
+	       {'a': range::INTEGER, 'b': 't' || range::VARCHAR} AS st
+	FROM range(50000);
+
+# one row group, pages of at most 4 KiB: a BIGINT column gets pages of exactly 512 rows
+statement ok
+COPY data TO '{TEST_DIR}/page_index_write.parquet' (ROW_GROUP_SIZE 50000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+# every leaf column chunk has both indexes, stored after the data and before the footer
+query IIII
+SELECT count(*), bool_and(column_index_offset > data_page_offset), bool_and(offset_index_offset > column_index_offset),
+       bool_and(column_index_length > 0 AND offset_index_length > 0)
+FROM parquet_metadata('{TEST_DIR}/page_index_write.parquet')
+----
+15	true	true	true
+
+# the OffsetIndex covers every row of the row group exactly once, for nested columns too
+query IIII
+SELECT count(*), bool_and(first_page_row = 0), bool_and(rows = 50000), bool_and(contiguous)
+FROM (
+	SELECT column_id, min(first_row_index) FILTER (page_id = 0) AS first_page_row, sum(num_rows) AS rows,
+	       bool_and(first_row_index + num_rows = next_first_row) AS contiguous
+	FROM (
+		SELECT *, lead(first_row_index, 1, 50000) OVER (PARTITION BY column_id ORDER BY page_id) AS next_first_row
+		FROM parquet_page_index('{TEST_DIR}/page_index_write.parquet')
+	)
+	GROUP BY column_id
+)
+----
+15	true	true	true
+
+# the pages of the sorted BIGINT column: 512 rows each, exact bounds, ascending
+query IIIIII
+SELECT count(*), bool_and(num_rows = 512 OR page_id = 97), bool_and(min_value::BIGINT = first_row_index),
+       bool_and(max_value::BIGINT = first_row_index + num_rows - 1), bool_and(null_count = 0),
+       any_value(boundary_order)
+FROM parquet_page_index('{TEST_DIR}/page_index_write.parquet')
+WHERE path_in_schema = 'id'
+----
+98	true	true	true	true	ASCENDING
+
+# the page locations are consistent with the column chunk metadata: the first page starts at the data page offset and
+# the pages fill the chunk (no dictionary page for the delta encoded id column)
+query II
+SELECT m.data_page_offset = p.first_offset, m.total_compressed_size = p.total_size
+FROM parquet_metadata('{TEST_DIR}/page_index_write.parquet') m
+JOIN (
+	SELECT column_id, min(page_offset) AS first_offset, sum(compressed_page_size) AS total_size
+	FROM parquet_page_index('{TEST_DIR}/page_index_write.parquet') GROUP BY column_id
+) p USING (column_id)
+WHERE m.path_in_schema = 'id'
+----
+true	true
+
+# the bounds of every page are the bounds of its rows - for every type
+foreach col v neg s dict_s d b dt ts dec wide_dec
+
+query I
+SELECT count(*)
+FROM parquet_page_index('{TEST_DIR}/page_index_write.parquet') p
+JOIN LATERAL (
+	SELECT min({col}) AS mn, max({col}) AS mx FROM data
+	WHERE id BETWEEN p.first_row_index AND p.first_row_index + p.num_rows - 1
+) r ON true
+WHERE p.path_in_schema = '{col}' AND (p.min_value <> r.mn::VARCHAR OR p.max_value <> r.mx::VARCHAR)
+----
+0
+
+endloop
+
+# boundary orders: descending for -id, unordered for the pseudo-random v, ascending when every page spans the same
+# bounds (equal bounds are non-decreasing, like parquet-mr reports them)
+query II
+SELECT path_in_schema, any_value(boundary_order)
+FROM parquet_page_index('{TEST_DIR}/page_index_write.parquet')
+WHERE path_in_schema IN ('neg', 'v', 'dict_s', 's', 'ts', 'dec', 'wide_dec', 'b', 'd')
+GROUP BY path_in_schema
+ORDER BY path_in_schema
+----
+b	ASCENDING
+d	ASCENDING
+dec	ASCENDING
+dict_s	ASCENDING
+neg	DESCENDING
+s	ASCENDING
+ts	ASCENDING
+v	UNORDERED
+wide_dec	ASCENDING
+
+# NULLs: the null counts add up to the chunk's null count (NULL values take no space, so the page that reaches the
+# stretch of 10000 NULLs holds all of them next to valid values: no page holds only NULLs)
+query III
+SELECT count(*) FILTER (null_page), bool_and(null_count < num_rows),
+       sum(null_count) = (SELECT count(*) FROM data WHERE n IS NULL)
+FROM parquet_page_index('{TEST_DIR}/page_index_write.parquet')
+WHERE path_in_schema = 'n'
+----
+0	true	true
+
+query I
+SELECT stats_null_count = (SELECT count(*) FROM data WHERE n IS NULL)
+FROM parquet_metadata('{TEST_DIR}/page_index_write.parquet') WHERE path_in_schema = 'n'
+----
+true
+
+# the per-page null counts of every page match the data
+query I
+SELECT count(*)
+FROM parquet_page_index('{TEST_DIR}/page_index_write.parquet') p
+JOIN LATERAL (
+	SELECT count(*) FILTER (n IS NULL) AS nulls, min(n) AS mn, max(n) AS mx FROM data
+	WHERE id BETWEEN p.first_row_index AND p.first_row_index + p.num_rows - 1
+) r ON true
+WHERE p.path_in_schema = 'n' AND (p.null_count <> r.nulls OR p.min_value IS DISTINCT FROM r.mn::VARCHAR OR p.max_value IS DISTINCT FROM r.mx::VARCHAR)
+----
+0
+
+# the null pages of a sorted column do not break its boundary order
+query I
+SELECT any_value(boundary_order) FROM parquet_page_index('{TEST_DIR}/page_index_write.parquet') WHERE path_in_schema = 'n'
+----
+ASCENDING
+
+# nested columns: the list elements are two values per row, the OffsetIndex still counts rows; the pages of list
+# values begin at row boundaries (a list never spans pages, so they begin at vector boundaries)
+query III
+SELECT count(*) > 1, bool_and(first_row_index % 2048 = 0), bool_and(num_rows % 2048 = 0 OR first_row_index + num_rows = 50000)
+FROM parquet_page_index('{TEST_DIR}/page_index_write.parquet') WHERE path_in_schema = 'arr, list, element'
+----
+true	true	true
+
+query IIII
+SELECT path_in_schema, sum(num_rows), min(min_value::INTEGER), max(max_value::INTEGER)
+FROM parquet_page_index('{TEST_DIR}/page_index_write.parquet')
+WHERE path_in_schema IN ('arr, list, element', 'st, a')
+GROUP BY path_in_schema
+ORDER BY path_in_schema
+----
+arr, list, element	50000	0	50000
+st, a	50000	0	49999
+
+query I
+SELECT count(*)
+FROM parquet_page_index('{TEST_DIR}/page_index_write.parquet') p
+JOIN LATERAL (
+	SELECT min(st.a) AS mn, max(st.a) AS mx FROM data
+	WHERE id BETWEEN p.first_row_index AND p.first_row_index + p.num_rows - 1
+) r ON true
+WHERE p.path_in_schema = 'st, a' AND (p.min_value <> r.mn::VARCHAR OR p.max_value <> r.mx::VARCHAR)
+----
+0
+
+# the page index is opt-in: without WRITE_PAGE_INDEX no index is written, and the column chunk statistics are the
+# same with and without the page index
+statement ok
+COPY (SELECT id, v, s, dict_s, n, d FROM data) TO '{TEST_DIR}/page_index_off.parquet' (ROW_GROUP_SIZE 50000, DATA_PAGE_SIZE_LIMIT 4096);
+
+statement ok
+COPY (SELECT id, v, s, dict_s, n, d FROM data) TO '{TEST_DIR}/page_index_on.parquet' (ROW_GROUP_SIZE 50000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query IIII
+SELECT bool_and(column_index_offset IS NULL), bool_and(offset_index_offset IS NULL), count(*),
+       (SELECT count(*) FROM parquet_page_index('{TEST_DIR}/page_index_off.parquet'))
+FROM parquet_metadata('{TEST_DIR}/page_index_off.parquet')
+----
+true	true	6	0
+
+query I
+SELECT count(*)
+FROM (
+	SELECT path_in_schema, stats_min_value, stats_max_value, stats_null_count, stats_distinct_count, min_is_exact, max_is_exact, encodings
+	FROM parquet_metadata('{TEST_DIR}/page_index_off.parquet')
+	EXCEPT ALL
+	SELECT path_in_schema, stats_min_value, stats_max_value, stats_null_count, stats_distinct_count, min_is_exact, max_is_exact, encodings
+	FROM parquet_metadata('{TEST_DIR}/page_index_on.parquet')
+)
+----
+0
+
+# the page index follows the bloom filters, right in front of the footer, so the tail read that fetches the footer
+# brings it along
+query II
+SELECT bool_and(column_index_offset > bloom_filter_offset + bloom_filter_length) FILTER (bloom_filter_offset IS NOT NULL),
+       count(*) FILTER (bloom_filter_offset IS NOT NULL) > 0
+FROM parquet_metadata('{TEST_DIR}/page_index_on.parquet')
+----
+true	true
+
+# dictionary encoded strings get per-page bounds as well (the dictionary only has the chunk-wide bounds)
+query IIII
+SELECT count(*) > 1, min(min_value), max(max_value), bool_and(min_value <= max_value)
+FROM parquet_page_index('{TEST_DIR}/page_index_on.parquet') WHERE path_in_schema = 'dict_s'
+----
+true	apple	cherry	true
+
+# the data itself is unchanged
+query I
+SELECT count(*) FROM (SELECT * FROM '{TEST_DIR}/page_index_off.parquet' EXCEPT ALL SELECT * FROM '{TEST_DIR}/page_index_on.parquet')
+----
+0
+
+# long strings are truncated to valid bounds (the chunk statistics truncate at 256 bytes)
+statement ok
+COPY (
+	SELECT range AS id, repeat('a', 300) || lpad(range::VARCHAR, 6, '0') AS s
+	FROM range(2000)
+) TO '{TEST_DIR}/page_index_long_strings.parquet' (ROW_GROUP_SIZE 2000, DATA_PAGE_SIZE_LIMIT 65536, WRITE_PAGE_INDEX true);
+
+query IIII
+SELECT count(*) > 1, bool_and(length(min_value) <= 256 AND length(max_value) <= 256),
+       bool_and(min_value <= repeat('a', 300) || lpad(first_row_index::VARCHAR, 6, '0')),
+       bool_and(max_value > repeat('a', 300) || lpad((first_row_index + num_rows - 1)::VARCHAR, 6, '0'))
+FROM parquet_page_index('{TEST_DIR}/page_index_long_strings.parquet') WHERE path_in_schema = 's'
+----
+true	true	true	true
+
+# floating point columns with NaN values get no ColumnIndex (NaN has no place in min/max), but an OffsetIndex
+statement ok
+COPY (
+	SELECT range AS id, CASE WHEN range = 1500 THEN 'nan'::DOUBLE ELSE range::DOUBLE END AS d
+	FROM range(3000)
+) TO '{TEST_DIR}/page_index_nan.parquet' (ROW_GROUP_SIZE 3000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query IIII
+SELECT path_in_schema, column_index_offset IS NOT NULL, offset_index_offset IS NOT NULL, stats_nan_count
+FROM parquet_metadata('{TEST_DIR}/page_index_nan.parquet') ORDER BY column_id
+----
+id	true	true	NULL
+d	false	true	1
+
+query III
+SELECT count(*), bool_and(page_offset IS NOT NULL), bool_and(min_value IS NULL AND boundary_order IS NULL)
+FROM parquet_page_index('{TEST_DIR}/page_index_nan.parquet') WHERE path_in_schema = 'd'
+----
+6	true	true
+
+# a column chunk with a single page carries no page index (the footer statistics describe that page already):
+# a column without any value always fits in one page, the id column next to it has six
+statement ok
+COPY (SELECT range AS id, NULL::INTEGER AS nn FROM range(3000)) TO '{TEST_DIR}/page_index_all_null.parquet' (ROW_GROUP_SIZE 3000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query III
+SELECT path_in_schema, column_index_offset IS NOT NULL, offset_index_offset IS NOT NULL
+FROM parquet_metadata('{TEST_DIR}/page_index_all_null.parquet') ORDER BY column_id
+----
+id	true	true
+nn	false	false
+
+query II
+SELECT path_in_schema, count(*) FROM parquet_page_index('{TEST_DIR}/page_index_all_null.parquet') GROUP BY path_in_schema
+----
+id	6
+
+# with the page index, pages default to 1 MiB: a default row group of a BIGINT column is still one page and gets no
+# index, the wide string column gets several pages
+statement ok
+COPY (SELECT range AS id, repeat('x', 100) || range AS s FROM range(122880)) TO '{TEST_DIR}/page_index_default_layout.parquet' (WRITE_PAGE_INDEX true);
+
+query III
+SELECT path_in_schema, column_index_offset IS NOT NULL, (SELECT count(*) > 1 FROM parquet_page_index('{TEST_DIR}/page_index_default_layout.parquet') p WHERE p.path_in_schema = m.path_in_schema)
+FROM parquet_metadata('{TEST_DIR}/page_index_default_layout.parquet') m ORDER BY column_id
+----
+id	false	false
+s	true	true
+
+# without the page index, pages keep their old default of one page per column chunk: pinning that page size with the
+# index gives the string column a single page, which gets no index
+statement ok
+COPY (SELECT range AS id, repeat('x', 100) || range AS s FROM range(122880)) TO '{TEST_DIR}/page_index_default_layout_big_pages.parquet' (WRITE_PAGE_INDEX true, DATA_PAGE_SIZE_LIMIT 104857600);
+
+query I
+SELECT count(*) FROM parquet_page_index('{TEST_DIR}/page_index_default_layout_big_pages.parquet')
+----
+0
+
+# several row groups: every row group has its own index
+statement ok
+COPY (SELECT range AS id, range % 10 AS m FROM range(10000)) TO '{TEST_DIR}/page_index_groups.parquet' (ROW_GROUP_SIZE 2048, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query III
+SELECT row_group_id, count(*), min(first_row_index)
+FROM parquet_page_index('{TEST_DIR}/page_index_groups.parquet') WHERE path_in_schema = 'id'
+GROUP BY row_group_id ORDER BY row_group_id
+----
+0	4	0
+1	4	0
+2	4	0
+3	4	0
+4	4	0
+
+# UUID bounds
+statement ok
+COPY (
+	SELECT range AS id, ('00000000-0000-0000-0000-' || lpad(hex(range), 12, '0'))::UUID AS u
+	FROM range(2000)
+) TO '{TEST_DIR}/page_index_uuid.parquet' (ROW_GROUP_SIZE 2000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query IIII
+SELECT count(*), min(min_value), max(max_value), any_value(boundary_order)
+FROM parquet_page_index('{TEST_DIR}/page_index_uuid.parquet') WHERE path_in_schema = 'u'
+----
+8	00000000-0000-0000-0000-000000000000	00000000-0000-0000-0000-0000000007cf	ASCENDING
+
+# the option is write-only
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/page_index_write.parquet', write_page_index = false)
+----
+write_page_index

@@ -1,0 +1,597 @@
+# name: test/sql/copy/parquet/page_index/page_index_read.test
+# description: Skipping pages with the Parquet page index (ColumnIndex + OffsetIndex)
+# group: [page_index]
+
+require parquet
+
+# the page row counts and boundaries below assume the default vector size
+require vector_size 2048
+
+statement ok
+CREATE TABLE data AS
+	SELECT range AS id,
+	       ((range // 512) * 7919) % 1000 + range % 10 AS v,
+	       CASE WHEN (range // 512) % 2 = 0 THEN range ELSE 1000000 + range END AS striped,
+	       'str_' || lpad(range::VARCHAR, 6, '0') AS s,
+	       CASE WHEN range % 7 = 0 THEN NULL ELSE range END AS n,
+	       (range / 4)::DOUBLE AS d,
+	       [range::INTEGER, (range + 1)::INTEGER] AS arr,
+	       {'a': range::INTEGER, 'b': 't' || range::VARCHAR} AS st
+	FROM range(100000);
+
+# one row group, BIGINT pages of 512 rows: 196 pages for 100000 rows
+statement ok
+COPY data TO '{TEST_DIR}/page_index_read.parquet' (ROW_GROUP_SIZE 100000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+# the log entries of a query are flushed by disable_logging, so every check disables and re-enables logging
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# a point lookup on the sorted column reads one page of 512 rows
+query IIIII
+SELECT id, v, s, arr, st FROM '{TEST_DIR}/page_index_read.parquet' WHERE id = 77777
+----
+77777	776	str_077777	[77777, 77778]	{'a': 77777, 'b': t77777}
+
+statement ok
+CALL disable_logging();
+
+query III
+SELECT event, count(*), sum(info['rows_skipped']::BIGINT) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' GROUP BY event ORDER BY event
+----
+ReadRowGroup	1	NULL
+SkipPages	1	99488
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# a range that spans two pages
+query III
+SELECT count(*), min(id), max(id) FROM '{TEST_DIR}/page_index_read.parquet' WHERE id BETWEEN 10000 AND 10600
+----
+601	10000	10600
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT sum(info['rows_skipped']::BIGINT) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+98976
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# an IN list reads three pages (the last page holds 160 rows)
+query II
+SELECT count(*), list(id ORDER BY id) FROM '{TEST_DIR}/page_index_read.parquet' WHERE id IN (1, 50000, 99999)
+----
+3	[1, 50000, 99999]
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT sum(info['rows_skipped']::BIGINT) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+98816
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# only the filter column is projected
+query I
+SELECT count(*) FROM '{TEST_DIR}/page_index_read.parquet' WHERE id BETWEEN 1000 AND 1999
+----
+1000
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT sum(info['rows_skipped']::BIGINT) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+98464
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# a value inside the bounds of the column chunk that no page holds: the whole row group is skipped by its pages
+query I
+SELECT count(*) FROM '{TEST_DIR}/page_index_read.parquet' WHERE striped BETWEEN 200000 AND 900000
+----
+0
+
+statement ok
+CALL disable_logging();
+
+query III
+SELECT event, count(*), sum(info['rows_skipped']::BIGINT) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' GROUP BY event ORDER BY event
+----
+SkipPages	1	100000
+SkipRowGroup	1	NULL
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# every other page qualifies for the striped column
+query II
+SELECT count(*) = (SELECT count(*) FROM data WHERE striped >= 1000000), sum(id) = (SELECT sum(id) FROM data WHERE striped >= 1000000)
+FROM '{TEST_DIR}/page_index_read.parquet' WHERE striped >= 1000000
+----
+true	true
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT sum(info['rows_skipped']::BIGINT) = 100000 - (SELECT count(*) FROM data WHERE (id // 512) % 2 = 1)
+FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# two filters prune to the intersection of their pages
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE id < 20000 AND striped >= 1000000) FROM '{TEST_DIR}/page_index_read.parquet' WHERE id < 20000 AND striped >= 1000000
+----
+true
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT sum(info['rows_skipped']::BIGINT) = 100000 - (SELECT count(*) FROM data WHERE id // 512 <= 39 AND (id // 512) % 2 = 1)
+FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# strings, doubles, NULLs, struct fields: results match the data
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE s = 'str_050000' EXCEPT ALL SELECT * FROM data WHERE s = 'str_050000')
+	UNION ALL
+	(SELECT * FROM data WHERE s = 'str_050000' EXCEPT ALL SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE s = 'str_050000')
+)
+----
+0
+
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE s = 'str_050000') FROM '{TEST_DIR}/page_index_read.parquet' WHERE s = 'str_050000'
+----
+true
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE s BETWEEN 'str_012345' AND 'str_012400' EXCEPT ALL SELECT * FROM data WHERE s BETWEEN 'str_012345' AND 'str_012400')
+	UNION ALL
+	(SELECT * FROM data WHERE s BETWEEN 'str_012345' AND 'str_012400' EXCEPT ALL SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE s BETWEEN 'str_012345' AND 'str_012400')
+)
+----
+0
+
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE s BETWEEN 'str_012345' AND 'str_012400') FROM '{TEST_DIR}/page_index_read.parquet' WHERE s BETWEEN 'str_012345' AND 'str_012400'
+----
+true
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE d > 24999.0 EXCEPT ALL SELECT * FROM data WHERE d > 24999.0)
+	UNION ALL
+	(SELECT * FROM data WHERE d > 24999.0 EXCEPT ALL SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE d > 24999.0)
+)
+----
+0
+
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE d > 24999.0) FROM '{TEST_DIR}/page_index_read.parquet' WHERE d > 24999.0
+----
+true
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE d = 0.25 EXCEPT ALL SELECT * FROM data WHERE d = 0.25)
+	UNION ALL
+	(SELECT * FROM data WHERE d = 0.25 EXCEPT ALL SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE d = 0.25)
+)
+----
+0
+
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE d = 0.25) FROM '{TEST_DIR}/page_index_read.parquet' WHERE d = 0.25
+----
+true
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE n IS NULL AND id < 1000 EXCEPT ALL SELECT * FROM data WHERE n IS NULL AND id < 1000)
+	UNION ALL
+	(SELECT * FROM data WHERE n IS NULL AND id < 1000 EXCEPT ALL SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE n IS NULL AND id < 1000)
+)
+----
+0
+
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE n IS NULL AND id < 1000) FROM '{TEST_DIR}/page_index_read.parquet' WHERE n IS NULL AND id < 1000
+----
+true
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE n = 500 EXCEPT ALL SELECT * FROM data WHERE n = 500)
+	UNION ALL
+	(SELECT * FROM data WHERE n = 500 EXCEPT ALL SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE n = 500)
+)
+----
+0
+
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE n = 500) FROM '{TEST_DIR}/page_index_read.parquet' WHERE n = 500
+----
+true
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE v = 5 EXCEPT ALL SELECT * FROM data WHERE v = 5)
+	UNION ALL
+	(SELECT * FROM data WHERE v = 5 EXCEPT ALL SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE v = 5)
+)
+----
+0
+
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE v = 5) FROM '{TEST_DIR}/page_index_read.parquet' WHERE v = 5
+----
+true
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE v BETWEEN 100 AND 110 AND id > 90000 EXCEPT ALL SELECT * FROM data WHERE v BETWEEN 100 AND 110 AND id > 90000)
+	UNION ALL
+	(SELECT * FROM data WHERE v BETWEEN 100 AND 110 AND id > 90000 EXCEPT ALL SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE v BETWEEN 100 AND 110 AND id > 90000)
+)
+----
+0
+
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE v BETWEEN 100 AND 110 AND id > 90000) FROM '{TEST_DIR}/page_index_read.parquet' WHERE v BETWEEN 100 AND 110 AND id > 90000
+----
+true
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE st.a = 777 EXCEPT ALL SELECT * FROM data WHERE st.a = 777)
+	UNION ALL
+	(SELECT * FROM data WHERE st.a = 777 EXCEPT ALL SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE st.a = 777)
+)
+----
+0
+
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE st.a = 777) FROM '{TEST_DIR}/page_index_read.parquet' WHERE st.a = 777
+----
+true
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE id = 77777 AND s = 'nope' EXCEPT ALL SELECT * FROM data WHERE id = 77777 AND s = 'nope')
+	UNION ALL
+	(SELECT * FROM data WHERE id = 77777 AND s = 'nope' EXCEPT ALL SELECT * FROM '{TEST_DIR}/page_index_read.parquet' WHERE id = 77777 AND s = 'nope')
+)
+----
+0
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT count(*) > 5 FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# the file row number stays correct across skipped pages
+query I
+SELECT bool_and(file_row_number = id) FROM read_parquet('{TEST_DIR}/page_index_read.parquet', file_row_number = true) WHERE id IN (5, 5000, 50000, 99999) OR id BETWEEN 70000 AND 70100
+----
+true
+
+query I
+SELECT list(file_row_number ORDER BY file_row_number) FROM read_parquet('{TEST_DIR}/page_index_read.parquet', file_row_number = true) WHERE id IN (5, 5000, 50000, 99999)
+----
+[5, 5000, 50000, 99999]
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+2
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# no filters, no page skipping
+query I
+SELECT count(*) FROM '{TEST_DIR}/page_index_read.parquet'
+----
+100000
+
+query I
+SELECT sum(v) = (SELECT sum(v) FROM data) FROM '{TEST_DIR}/page_index_read.parquet'
+----
+true
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+0
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# the page index can be switched off
+statement ok
+SET parquet_use_page_index = false;
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query IIIII
+SELECT id, v, s, arr, st FROM '{TEST_DIR}/page_index_read.parquet' WHERE id = 77777
+----
+77777	776	str_077777	[77777, 77778]	{'a': 77777, 'b': t77777}
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT event, count(*) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' GROUP BY event ORDER BY event
+----
+ReadRowGroup	1
+
+statement ok
+SET parquet_use_page_index = true;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# without prefetching, and with whole-row-group prefetching
+statement ok
+SET disable_parquet_prefetching = true;
+
+query IIIII
+SELECT id, v, s, arr, st FROM '{TEST_DIR}/page_index_read.parquet' WHERE id = 77777
+----
+77777	776	str_077777	[77777, 77778]	{'a': 77777, 'b': t77777}
+
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE id < 20000 AND striped >= 1000000) FROM '{TEST_DIR}/page_index_read.parquet' WHERE id < 20000 AND striped >= 1000000
+----
+true
+
+statement ok
+SET disable_parquet_prefetching = false;
+
+query IIIII
+SELECT id, v, s, arr, st FROM read_parquet('{TEST_DIR}/page_index_read.parquet', prefetch_strategy = 'whole_group') WHERE id = 77777
+----
+77777	776	str_077777	[77777, 77778]	{'a': 77777, 'b': t77777}
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+3
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# several row groups (of 20480 rows, a multiple of the vector size): row groups are skipped by their statistics,
+# pages within the remaining one
+statement ok
+COPY data TO '{TEST_DIR}/page_index_read_groups.parquet' (ROW_GROUP_SIZE 20000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query II
+SELECT id, s FROM '{TEST_DIR}/page_index_read_groups.parquet' WHERE id = 55555
+----
+55555	str_055555
+
+statement ok
+CALL disable_logging();
+
+query III
+SELECT event, count(*), sum(info['rows_skipped']::BIGINT) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' GROUP BY event ORDER BY event
+----
+ReadRowGroup	1	NULL
+SkipPages	1	19968
+SkipRowGroup	4	NULL
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# a filter that matches rows in every row group
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE striped >= 1000000 AND n IS NOT NULL) FROM '{TEST_DIR}/page_index_read_groups.parquet' WHERE striped >= 1000000 AND n IS NOT NULL
+----
+true
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# a floating point column with NaN values has no ColumnIndex: no page skipping, correct results
+statement ok
+COPY (SELECT range AS id, CASE WHEN range = 1500 THEN 'nan'::DOUBLE ELSE range::DOUBLE END AS d FROM range(3000)) TO '{TEST_DIR}/page_index_read_nan.parquet' (ROW_GROUP_SIZE 3000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query II
+SELECT count(*), max(id) FROM '{TEST_DIR}/page_index_read_nan.parquet' WHERE d > 2998.0
+----
+2	2999
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+0
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# the filter on the id column of the same file does skip pages
+query I
+SELECT d FROM '{TEST_DIR}/page_index_read_nan.parquet' WHERE id = 1500
+----
+nan
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT sum(info['rows_skipped']::BIGINT) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+2488
+
+# pruning on BOOLEAN, DATE, TIMESTAMP, DECIMAL and UUID columns
+statement ok
+CREATE TABLE typed AS
+	SELECT range AS id, range % 1000 >= 500 AS b, DATE '2024-01-01' + INTERVAL (range // 100) DAY AS dt,
+	       TIMESTAMP '2024-01-01 00:00:00' + INTERVAL (range) SECOND AS ts, (range::DECIMAL(12,2) / 8) AS dec,
+	       ('00000000-0000-0000-0000-' || lpad(hex(range), 12, '0'))::UUID AS u
+	FROM range(100000);
+
+statement ok
+COPY typed TO '{TEST_DIR}/page_index_read_typed.parquet' (ROW_GROUP_SIZE 100000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query I
+SELECT count(*) = (SELECT count(*) FROM typed WHERE dt = DATE '2024-03-01') FROM '{TEST_DIR}/page_index_read_typed.parquet' WHERE dt = DATE '2024-03-01'
+----
+true
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/page_index_read_typed.parquet' WHERE ts BETWEEN TIMESTAMP '2024-01-01 10:00:00' AND TIMESTAMP '2024-01-01 10:00:59' EXCEPT ALL SELECT * FROM typed WHERE ts BETWEEN TIMESTAMP '2024-01-01 10:00:00' AND TIMESTAMP '2024-01-01 10:00:59')
+	UNION ALL
+	(SELECT * FROM typed WHERE ts BETWEEN TIMESTAMP '2024-01-01 10:00:00' AND TIMESTAMP '2024-01-01 10:00:59' EXCEPT ALL SELECT * FROM '{TEST_DIR}/page_index_read_typed.parquet' WHERE ts BETWEEN TIMESTAMP '2024-01-01 10:00:00' AND TIMESTAMP '2024-01-01 10:00:59')
+)
+----
+0
+
+query II
+SELECT count(*), list(id ORDER BY id) FROM '{TEST_DIR}/page_index_read_typed.parquet' WHERE dec = 1234.50
+----
+1	[9876]
+
+query II
+SELECT count(*), any_value(id) FROM '{TEST_DIR}/page_index_read_typed.parquet' WHERE u = '00000000-0000-0000-0000-00000000c350'::UUID
+----
+1	50000
+
+query I
+SELECT count(*) = (SELECT count(*) FROM typed WHERE b AND id < 1000) FROM '{TEST_DIR}/page_index_read_typed.parquet' WHERE b AND id < 1000
+----
+true
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT count(*) >= 4 FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# many row groups scanned by several threads, the page index active in each of them
+statement ok
+SET threads = 8;
+
+statement ok
+COPY data TO '{TEST_DIR}/page_index_read_threads.parquet' (ROW_GROUP_SIZE 5000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/page_index_read_threads.parquet' WHERE striped >= 1000000 AND v < 500 EXCEPT ALL SELECT * FROM data WHERE striped >= 1000000 AND v < 500)
+	UNION ALL
+	(SELECT * FROM data WHERE striped >= 1000000 AND v < 500 EXCEPT ALL SELECT * FROM '{TEST_DIR}/page_index_read_threads.parquet' WHERE striped >= 1000000 AND v < 500)
+)
+----
+0
+
+query II
+SELECT count(*) = (SELECT count(*) FROM data WHERE id % 5000 < 100), sum(id) = (SELECT sum(id) FROM data WHERE id % 5000 < 100)
+FROM '{TEST_DIR}/page_index_read_threads.parquet' WHERE id % 5000 < 100
+----
+true	true
+
+query I
+SELECT bool_and(file_row_number = id) FROM read_parquet('{TEST_DIR}/page_index_read_threads.parquet', file_row_number = true) WHERE striped >= 1000000 AND n IS NULL
+----
+true
+
+statement ok
+SET threads = 1;
+
+# a file without a page index (the default) is unaffected
+statement ok
+COPY data TO '{TEST_DIR}/page_index_read_none.parquet' (ROW_GROUP_SIZE 100000, DATA_PAGE_SIZE_LIMIT 4096);
+
+query IIIII
+SELECT id, v, s, arr, st FROM '{TEST_DIR}/page_index_read_none.parquet' WHERE id = 77777
+----
+77777	776	str_077777	[77777, 77778]	{'a': 77777, 'b': t77777}

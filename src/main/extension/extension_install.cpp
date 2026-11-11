@@ -138,6 +138,11 @@ vector<string> ExtensionHelper::GetExtensionDirectoryPath(DatabaseInstance &db, 
 	return extension_directories;
 }
 
+bool ExtensionHelper::IsInstalledExtensionFile(const string &path) {
+	// an install writes <name>.duckdb_extension.tmp-<uuid>.duckdb_extension before it moves the file in place
+	return StringUtil::EndsWith(path, ".duckdb_extension") && !StringUtil::Contains(path, ".duckdb_extension.tmp-");
+}
+
 string ExtensionHelper::ExtensionDirectory(DatabaseInstance &db, FileSystem &fs) {
 #ifdef WASM_LOADABLE_EXTENSIONS
 	throw PermissionException("ExtensionDirectory functionality is not supported in duckdb-wasm");

@@ -1,0 +1,26 @@
+# name: test/sql/aggregate/aggregates/sum_no_overflow_fallible.test
+# description: sum_no_overflow bound by name has no statistics proof for its int64 accumulator
+# group: [aggregates]
+
+# Name binding delegates to the regular sum and swaps in the no-overflow implementation, so the
+# EXPLAIN (SQL) export renders the checked HUGEINT sum, which no longer raises. These raising
+# fixtures are excluded from the explain_sql verification config for that reason.
+
+statement error
+SELECT sum_no_overflow(9223372036854775807::BIGINT) FROM range(2);
+----
+Overflow in repeated aggregate state combine
+
+# the reconstructed name-bound sum_no_overflow still raises after a serializer round trip (the flag
+# itself is only observable through metadata consumers at plan time)
+
+statement ok
+SET debug_verify_serializer=true;
+
+statement error
+SELECT sum_no_overflow(9223372036854775807::BIGINT) FROM range(2);
+----
+Overflow in repeated aggregate state combine
+
+statement ok
+SET debug_verify_serializer=false;

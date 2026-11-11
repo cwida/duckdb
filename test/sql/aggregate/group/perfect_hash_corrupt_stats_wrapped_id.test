@@ -1,0 +1,24 @@
+# name: test/sql/aggregate/group/perfect_hash_corrupt_stats_wrapped_id.test
+# description: Reject a group id whose high bits are dropped when clustering perfect hash aggregates
+# group: [group]
+
+# On 32-bit builds, the raw group id truncates to an in-bounds index before clustering.
+require 64bit
+
+require vector_size 2048
+
+unzip data/storage/corrupt/perfect_hash_corrupt_stats_wrapped_id.db.gz {TEST_DIR}/perfect_hash_corrupt_stats_wrapped_id.db
+
+load {TEST_DIR}/perfect_hash_corrupt_stats_wrapped_id.db readonly
+
+statement ok
+USE perfect_hash_corrupt_stats_wrapped_id;
+
+statement ok
+SET threads=1;
+
+# The filtered aggregate uses per-row addresses, including the wrapped group id.
+statement error
+SELECT g, count(*), sum(g), count(*) FILTER (WHERE g % 2 = 0) FROM t GROUP BY g;
+----
+Data Corruption Error: Perfect hash aggregate:

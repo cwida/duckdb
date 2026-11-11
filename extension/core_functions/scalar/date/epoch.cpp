@@ -12,9 +12,7 @@ struct EpochSecOperator {
 	template <class INPUT_TYPE, class RESULT_TYPE>
 	static RESULT_TYPE Operation(INPUT_TYPE sec) {
 		int64_t result;
-		// the first midnight of Timestamp::MIN_YEAR - smaller values are not valid timestamps
-		constexpr int64_t min_timestamp_micros = -9223372022400000000LL;
-		if (!TryCast::Operation(sec * Interval::MICROS_PER_SEC, result) || result < min_timestamp_micros) {
+		if (!TryCast::Operation(sec * Interval::MICROS_PER_SEC, result)) {
 			throw ConversionException("Epoch seconds out of range for TIMESTAMP WITH TIME ZONE");
 		}
 		return timestamp_t(result);

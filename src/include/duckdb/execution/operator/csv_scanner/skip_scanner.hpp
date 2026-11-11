@@ -18,6 +18,8 @@ namespace duckdb {
 
 class SkipResult : public ScannerResult {
 public:
+	static constexpr bool BLOCK_SCAN = false;
+
 	SkipResult(CSVStates &states, CSVStateMachine &state_machine, idx_t rows_to_skip);
 
 	idx_t row_count = 0;

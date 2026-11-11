@@ -286,7 +286,8 @@ unique_ptr<SecretEntry> SecretManager::CreateSecret(ClientContext &context, cons
 	                              input.storage_type);
 }
 
-BoundStatement SecretManager::BindCreateSecret(CatalogTransaction transaction, CreateSecretInput &info) {
+BoundStatement SecretManager::BindCreateSecret(Context &context, CatalogTransaction transaction,
+                                               CreateSecretInput &info) {
 	if (info.persist_type == SecretPersistType::TRANSACTION || info.storage_type == TRANSACTION_STORAGE_NAME) {
 		throw BinderException("Transaction-scoped secrets cannot be created through SQL");
 	}
@@ -323,7 +324,7 @@ BoundStatement SecretManager::BindCreateSecret(CatalogTransaction transaction, C
 
 		// Cast the provided value to the expected type
 		string error_msg;
-		auto cast_value = param.second.DefaultTryCastAs(matched_param->second, &error_msg);
+		auto cast_value = param.second.TryCastAs(context, matched_param->second, &error_msg);
 		if (!cast_value) {
 			throw BinderException("Failed to cast option %s to type '%s': '%s'", matched_param->first,
 			                      matched_param->second.ToString(), error_msg);
@@ -643,18 +644,19 @@ void SecretManager::InitializeSecrets(CatalogTransaction transaction) {
 			return;
 		}
 
+		// load the persistent storage first if enabled: it can throw (e.g. a permission error), in which case no
+		// storage is registered yet and the next secret statement retries and throws the same error
+		if (config.allow_persistent_secrets) {
+			LoadSecretStorageInternal(
+			    make_uniq<LocalFileSecretStorage>(*this, transaction.db, LOCAL_FILE_STORAGE_NAME, config.secret_path));
+		}
+
 		// load the tmp storage
-		LoadSecretStorageInternal(make_uniq<TemporarySecretStorage>(TEMPORARY_STORAGE_NAME, *transaction.db));
+		LoadSecretStorageInternal(make_uniq<TemporarySecretStorage>(TEMPORARY_STORAGE_NAME, transaction.db));
 
 		// load the connection-scoped storage: secrets created `IN connection_storage` are visible only to the
 		// connection that created them, and are dropped automatically when that connection closes.
 		LoadSecretStorageInternal(make_uniq<ConnectionSecretStorage>(CONNECTION_STORAGE_NAME));
-
-		if (config.allow_persistent_secrets) {
-			// load the persistent storage if enabled
-			LoadSecretStorageInternal(
-			    make_uniq<LocalFileSecretStorage>(*this, *transaction.db, LOCAL_FILE_STORAGE_NAME, config.secret_path));
-		}
 
 		initialized = true;
 	}
@@ -757,8 +759,10 @@ vector<reference<SecretStorage>> SecretManager::GetSecretStorages() {
 }
 
 DefaultSecretGenerator::DefaultSecretGenerator(Catalog &catalog, SecretManager &secret_manager,
-                                               identifier_set_t &persistent_secrets)
-    : DefaultGenerator(catalog), secret_manager(secret_manager), persistent_secrets(persistent_secrets) {
+                                               identifier_set_t &persistent_secrets,
+                                               shared_ptr<PersistentSecretFiles> files_p)
+    : DefaultGenerator(catalog), secret_manager(secret_manager), persistent_secrets(persistent_secrets),
+      files(std::move(files_p)) {
 }
 
 unique_ptr<CatalogEntry> DefaultSecretGenerator::CreateDefaultEntryInternal(const Identifier &entry_name) {
@@ -770,8 +774,11 @@ unique_ptr<CatalogEntry> DefaultSecretGenerator::CreateDefaultEntryInternal(cons
 
 	auto &fs = FileSystem::GetLocal(catalog.GetDatabase());
 
-	string base_secret_path = secret_manager.PersistentSecretPath();
-	string secret_path = fs.JoinPath(base_secret_path, entry_name + ".duckdb_secret");
+	// the file that was found for this secret, as the file name does not always identify the secret
+	string secret_path = files->Get(entry_name);
+	if (secret_path.empty()) {
+		return nullptr;
+	}
 
 	// Note each file should contain 1 secret
 	try {
@@ -797,6 +804,7 @@ unique_ptr<CatalogEntry> DefaultSecretGenerator::CreateDefaultEntryInternal(cons
 			// Finally: we remove the default entry from the persistent_secrets, otherwise we aren't able to drop it
 			// later
 			persistent_secrets.erase(secret_lu);
+			files->Set(entry->secret->secret->GetName(), secret_path);
 
 			return std::move(entry);
 		}

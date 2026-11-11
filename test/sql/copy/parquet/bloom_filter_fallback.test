@@ -1,0 +1,406 @@
+# name: test/sql/copy/parquet/bloom_filter_fallback.test
+# description: Non-dictionary Bloom filters, folding, and bounded allocation
+# group: [parquet]
+
+require parquet
+
+statement ok
+SET threads=1
+
+statement ok
+SET debug_verify_serializer=true
+
+statement ok
+CREATE TABLE input AS
+SELECT md5(i::VARCHAR) AS k, i AS sorted_id, 'label-' || (i % 10) AS label,
+       {'k': md5(i::VARCHAR)} AS nested
+FROM range(8192) t(i)
+
+foreach version V1 V2
+
+statement ok
+COPY input TO '{TEST_DIR}/default-{version}.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048, PARQUET_VERSION '{version}')
+
+# Unsorted top-level columns whose dictionary overflows get a fallback filter.
+query TI
+SELECT path_in_schema, count(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/default-{version}.parquet')
+GROUP BY path_in_schema ORDER BY path_in_schema
+----
+k	4
+label	4
+nested, k	0
+sorted_id	0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/default-{version}.parquet' WHERE k = md5('5000')
+----
+1
+
+query I
+SELECT bool_and(bloom_filter_excludes)
+FROM parquet_bloom_probe('{TEST_DIR}/default-{version}.parquet', 'k', md5('-1'))
+----
+true
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM input EXCEPT ALL SELECT * FROM '{TEST_DIR}/default-{version}.parquet')
+  UNION ALL
+  (SELECT * FROM '{TEST_DIR}/default-{version}.parquet' EXCEPT ALL SELECT * FROM input)
+)
+----
+0
+
+endloop
+
+statement ok
+COPY input TO '{TEST_DIR}/disabled.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048, WRITE_BLOOM_FILTER FALSE)
+
+query I
+SELECT count(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/disabled.parquet')
+----
+0
+
+# A zero budget suppresses only fallback filters.
+statement ok
+COPY input TO '{TEST_DIR}/zero-budget.parquet'
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_MAX_BYTES 0)
+
+query TI
+SELECT path_in_schema, count(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/zero-budget.parquet')
+GROUP BY path_in_schema ORDER BY path_in_schema
+----
+k	0
+label	4
+nested, k	0
+sorted_id	0
+
+# The existing dictionary filter keeps its size and encoding.
+query I
+SELECT count(*) FROM (
+  SELECT row_group_id, bloom_filter_length, encodings
+  FROM parquet_metadata('{TEST_DIR}/default-V1.parquet') WHERE path_in_schema='label'
+  EXCEPT
+  SELECT row_group_id, bloom_filter_length, encodings
+  FROM parquet_metadata('{TEST_DIR}/zero-budget.parquet') WHERE path_in_schema='label'
+)
+----
+0
+
+# Values the dictionary held before it overflowed seed the filter.
+statement ok
+COPY (SELECT (i * 7919) % 2048 AS n, n::VARCHAR AS s FROM range(2048) t(i)) TO '{TEST_DIR}/seeded.parquet'
+(FORMAT PARQUET, DICTIONARY_SIZE_LIMIT 100)
+
+query TI
+SELECT path_in_schema, count(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/seeded.parquet')
+WHERE encodings NOT LIKE '%DICTIONARY%'
+GROUP BY ALL ORDER BY ALL
+----
+n	1
+s	1
+
+foreach value 0 99 100 2047
+
+query I
+SELECT bool_or(bloom_filter_excludes) FROM (
+  SELECT * FROM parquet_bloom_probe('{TEST_DIR}/seeded.parquet', 'n', ({value} * 7919) % 2048)
+  UNION ALL SELECT * FROM parquet_bloom_probe('{TEST_DIR}/seeded.parquet', 's', (({value} * 7919) % 2048)::VARCHAR)
+)
+----
+false
+
+endloop
+
+# Min/max statistics already prune sorted row groups, so these get no fallback filter.
+statement ok
+COPY (
+ SELECT i AS ascending, -i AS descending, i::DOUBLE AS ascending_double, (-i)::FLOAT AS descending_float,
+        i::HUGEINT AS ascending_hugeint, lpad(i::VARCHAR, 8, '0') AS ascending_string,
+        lpad(((i * 7919) % 300000)::VARCHAR, 8, '0') AS shuffled_string,
+        CASE WHEN i < 100000 THEN lpad(i::VARCHAR, 8, '0') ELSE lpad(((i * 7919) % 300000)::VARCHAR, 8, '0') END
+            AS sorted_prefix
+ FROM range(300000) t(i)
+) TO '{TEST_DIR}/sorted.parquet' (FORMAT PARQUET)
+
+query TI
+SELECT path_in_schema, count(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/sorted.parquet')
+GROUP BY ALL ORDER BY ALL
+----
+ascending	0
+ascending_double	0
+ascending_hugeint	0
+ascending_string	0
+descending	0
+descending_float	0
+shuffled_string	3
+sorted_prefix	2
+
+# Fallback filters estimated to exceed a quarter of the column are skipped before hashing.
+statement ok
+COPY (
+ SELECT (hash(i) >> 1)::BIGINT AS unique_bigint, (hash(i) >> 33)::INTEGER AS unique_int,
+        md5(i::VARCHAR)::UUID AS unique_uuid, md5(i::VARCHAR) AS unique_string,
+        ((hash(i) >> 1) % 50000)::INTEGER AS repeated_int
+ FROM range(245760) t(i)
+) TO '{TEST_DIR}/sizes.parquet' (FORMAT PARQUET)
+
+query TI
+SELECT path_in_schema, count(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/sizes.parquet')
+GROUP BY ALL ORDER BY ALL
+----
+repeated_int	2
+unique_bigint	0
+unique_int	0
+unique_string	2
+unique_uuid	2
+
+# A higher false positive ratio makes smaller filters, which can fit.
+statement ok
+COPY (
+ SELECT (hash(i) >> 1)::BIGINT AS unique_bigint, (hash(i) >> 33)::INTEGER AS unique_int FROM range(245760) t(i)
+) TO '{TEST_DIR}/sizes-fpp.parquet' (FORMAT PARQUET, BLOOM_FILTER_FALSE_POSITIVE_RATIO 0.02)
+
+query TI
+SELECT path_in_schema, count(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/sizes-fpp.parquet')
+GROUP BY ALL ORDER BY ALL
+----
+unique_bigint	2
+unique_int	0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/sizes-fpp.parquet' WHERE unique_bigint = (hash(12345) >> 1)::BIGINT
+----
+1
+
+# Fallback filters larger than half the compressed column are dropped after writing.
+statement ok
+CREATE TABLE wrapped AS SELECT ((i // 2 + 20000) % 30000)::INTEGER AS n FROM range(122880) t(i)
+
+statement ok
+COPY wrapped TO '{TEST_DIR}/wrapped-snappy.parquet' (FORMAT PARQUET)
+
+statement ok
+COPY wrapped TO '{TEST_DIR}/wrapped-zstd.parquet' (FORMAT PARQUET, COMPRESSION ZSTD)
+
+statement ok
+COPY wrapped TO '{TEST_DIR}/wrapped-zstd-v2.parquet' (FORMAT PARQUET, COMPRESSION ZSTD, PARQUET_VERSION V2)
+
+query TI
+SELECT parse_filename(file_name), count(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/wrapped-*.parquet')
+GROUP BY ALL ORDER BY ALL
+----
+wrapped-snappy.parquet	1
+wrapped-zstd-v2.parquet	0
+wrapped-zstd.parquet	0
+
+# Sortedness of strings carries over between vectors, whose memory may be released in between.
+statement ok
+COPY (SELECT lpad(i::VARCHAR, 20, '0') AS s FROM range(10000) t(i)) TO '{TEST_DIR}/sorted-strings.parquet'
+(FORMAT PARQUET, ROW_GROUP_SIZE 10000, DICTIONARY_SIZE_LIMIT 10)
+
+query I
+SELECT count(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/sorted-strings.parquet')
+----
+0
+
+statement ok
+COPY (SELECT lpad(((i * 7919) % 10000)::VARCHAR, 20, '0') AS s FROM range(10000) t(i))
+TO '{TEST_DIR}/shuffled-strings.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 10000, DICTIONARY_SIZE_LIMIT 10)
+
+query I
+SELECT count(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/shuffled-strings.parquet')
+----
+1
+
+# Vectors without any values leave no string to carry over.
+statement ok
+COPY (
+ SELECT NULL::VARCHAR AS s, NULL::BLOB AS b,
+        CASE WHEN i < 4096 THEN NULL ELSE md5(((i * 7919) % 8192)::VARCHAR) END AS late
+ FROM range(8192) t(i)
+) TO '{TEST_DIR}/null-strings.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 8192)
+
+query TI
+SELECT path_in_schema, count(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/null-strings.parquet')
+GROUP BY ALL ORDER BY ALL
+----
+b	0
+late	1
+s	0
+
+query IIII
+SELECT count(s), count(b), count(late), count(*) FILTER (late = md5(((5000 * 7919) % 8192)::VARCHAR))
+FROM '{TEST_DIR}/null-strings.parquet'
+----
+0	0	4096	1
+
+# Folding releases reservation bytes, so later chunks can also get filters.
+statement ok
+CREATE TABLE repeated AS
+SELECT CASE WHEN i % 17 = 0 THEN NULL ELSE (i % 10)::BIGINT END AS n
+FROM range(8192) t(i)
+
+statement ok
+COPY repeated TO '{TEST_DIR}/folded.parquet'
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, DICTIONARY_SIZE_LIMIT 0, BLOOM_FILTER_FALLBACK_MAX_BYTES 16384)
+
+query II
+SELECT count(bloom_filter_length), bool_and(bloom_filter_length BETWEEN 32 AND 256)
+FROM parquet_metadata('{TEST_DIR}/folded.parquet')
+----
+4	true
+
+loop i 0 10
+
+query I
+SELECT bool_or(bloom_filter_excludes)
+FROM parquet_bloom_probe('{TEST_DIR}/folded.parquet', 'n', {i})
+----
+false
+
+query I
+SELECT (SELECT count(*) FROM '{TEST_DIR}/folded.parquet' WHERE n={i}) =
+       (SELECT count(*) FROM repeated WHERE n={i})
+----
+true
+
+endloop
+
+query I
+SELECT (SELECT count(*) FROM '{TEST_DIR}/folded.parquet' WHERE n IS NULL) =
+       (SELECT count(*) FROM repeated WHERE n IS NULL)
+----
+true
+
+# Buffered filters are written early when the budget runs out, freeing it for later row groups.
+statement ok
+COPY (SELECT k, label FROM input) TO '{TEST_DIR}/limited.parquet'
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_MAX_BYTES 8192)
+
+query TII
+SELECT path_in_schema, count(bloom_filter_length), count(DISTINCT bloom_filter_offset)
+FROM parquet_metadata('{TEST_DIR}/limited.parquet')
+GROUP BY path_in_schema ORDER BY path_in_schema
+----
+k	4	4
+label	4	4
+
+query I
+SELECT min(bloom_filter_offset) < max(data_page_offset) FROM parquet_metadata('{TEST_DIR}/limited.parquet')
+----
+true
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/limited.parquet' WHERE k IN (md5('1'), md5('5000'), md5('-1'))
+----
+2
+
+query I
+SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/limited.parquet', 'k', md5('-1'))
+----
+true
+
+statement ok
+COPY (SELECT k FROM input) TO '{TEST_DIR}/limited-string.parquet'
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_MAX_BYTES '8KiB')
+
+query I
+SELECT count(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/limited-string.parquet')
+----
+4
+
+# Within the budget, all filters stay after the row groups.
+query I
+SELECT min(bloom_filter_offset) > max(data_page_offset) FROM parquet_metadata('{TEST_DIR}/default-V1.parquet')
+----
+true
+
+# A filter that can never fit the budget gets skipped without writing the buffered ones early.
+statement ok
+COPY (SELECT k, label FROM input) TO '{TEST_DIR}/too-small.parquet'
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_MAX_BYTES 4096)
+
+query TI
+SELECT path_in_schema, count(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/too-small.parquet')
+GROUP BY path_in_schema ORDER BY path_in_schema
+----
+k	0
+label	4
+
+query I
+SELECT min(bloom_filter_offset) > max(data_page_offset) FROM parquet_metadata('{TEST_DIR}/too-small.parquet')
+----
+true
+
+# Extreme requested accuracy must not overflow the size calculation.
+statement ok
+COPY (SELECT k FROM input) TO '{TEST_DIR}/tiny-target.parquet'
+(FORMAT PARQUET, DICTIONARY_SIZE_LIMIT 0, BLOOM_FILTER_FALSE_POSITIVE_RATIO 1e-300)
+
+query I
+SELECT count(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/tiny-target.parquet')
+----
+0
+
+statement ok
+COPY (SELECT k FROM input) TO '{TEST_DIR}/target-one.parquet'
+(FORMAT PARQUET, DICTIONARY_SIZE_LIMIT 0, BLOOM_FILTER_FALSE_POSITIVE_RATIO 1)
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/target-one.parquet' WHERE k=md5('5000')
+----
+1
+
+statement ok
+COPY (SELECT NULL::INTEGER AS n FROM range(4096)) TO '{TEST_DIR}/nulls.parquet'
+(FORMAT PARQUET, DICTIONARY_SIZE_LIMIT 0)
+
+query II
+SELECT count(bloom_filter_length), sum(row_group_num_rows)
+FROM parquet_metadata('{TEST_DIR}/nulls.parquet')
+----
+0	4096
+
+statement ok
+COPY (SELECT 1 AS n WHERE false) TO '{TEST_DIR}/empty.parquet' (FORMAT PARQUET)
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/empty.parquet'
+----
+0
+
+statement ok
+SET debug_verify_serializer=false
+
+# Multiple row-group writers share the same budget.
+statement ok
+SET threads=4
+
+statement ok
+SET preserve_insertion_order=false
+
+statement ok
+COPY (SELECT md5(i::VARCHAR) AS k, md5((i+1)::VARCHAR) AS other FROM range(65536) t(i))
+TO '{TEST_DIR}/parallel.parquet'
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_MAX_BYTES 32768)
+
+query I
+SELECT count(bloom_filter_length)>0
+FROM parquet_metadata('{TEST_DIR}/parallel.parquet')
+----
+true
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/parallel.parquet'
+WHERE k=md5('32769') AND other=md5('32770')
+----
+1

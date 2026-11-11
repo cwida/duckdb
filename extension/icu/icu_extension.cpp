@@ -29,18 +29,6 @@
 
 namespace duckdb {
 
-//! The collation settings of the tagged collations that are registered by the extension
-static collation::CollationSettings SettingsFromTag(const string &tag) {
-	collation::CollationSettings settings;
-	// "und-u-ks-level1-kc-true": compare at the primary level, but keep case differences
-	if (tag == "und-u-ks-level1-kc-true") {
-		settings.strength = collation::CollationStrength::PRIMARY;
-		settings.case_level = true;
-		return settings;
-	}
-	throw InvalidInputException("Unknown collation tag %s", tag);
-}
-
 struct IcuBindData : public FunctionData {
 	collation::Collator collator;
 	string language;
@@ -52,7 +40,8 @@ struct IcuBindData : public FunctionData {
 	      country(std::move(country_p)) {
 	}
 
-	explicit IcuBindData(string tag_p) : collator(SettingsFromTag(tag_p)), tag(std::move(tag_p)) {
+	//! A BCP 47 language tag such as "und-u-ks-level1-kc-true"
+	explicit IcuBindData(string tag_p) : collator(collation::Collator::FromLanguageTag(tag_p)), tag(std::move(tag_p)) {
 	}
 
 	static duckdb::unique_ptr<FunctionData> CreateInstance(const string &language, const string &country,
@@ -197,14 +186,12 @@ static duckdb::unique_ptr<FunctionData> ICUSortKeyBind(BindScalarFunctionInput &
 	if (!bound_function.GetExtraInfo().empty()) {
 		return make_uniq<IcuBindData>(bound_function.GetExtraInfo());
 	}
-	auto splits = StringUtil::Split(StringValue::Get(val), "_");
-	if (splits.size() == 1) {
-		return make_uniq<IcuBindData>(splits[0], "");
-	} else if (splits.size() == 2) {
-		return make_uniq<IcuBindData>(splits[0], splits[1]);
-	} else {
+	// the collator is a language and a country such as "de_DE", or a language tag such as "en-u-ka-shifted"
+	auto &collator = StringValue::Get(val);
+	if (StringUtil::Split(collator, "_").size() > 2) {
 		throw InvalidInputException("Expected one or two splits");
 	}
+	return make_uniq<IcuBindData>(collator);
 }
 
 //! The function a collation pushes into a query, it writes the sort key as a blob

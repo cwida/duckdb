@@ -299,6 +299,7 @@ void WALWriteState::CommitEntry(UndoFlags type, data_ptr_t data) {
 		break;
 	}
 	case UndoFlags::ATTACHED_DATABASE:
+	case UndoFlags::UPDATE_ROWS:
 		break;
 	case UndoFlags::SEQUENCE_VALUE: {
 		auto info = reinterpret_cast<SequenceValue *>(data);

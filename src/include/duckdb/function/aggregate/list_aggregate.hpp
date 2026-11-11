@@ -159,7 +159,7 @@ void ListCombineFunction(Vector &states_vector, Vector &combined, AggregateInput
 			}
 			const auto signed_multiplicity = multiplicity_data[multiplicity_idx];
 			if (signed_multiplicity < 0) {
-				throw InvalidInputException("combine_aggr multiplicity must be non-negative");
+				InvalidInputException::Throw("combine_aggr multiplicity must be non-negative");
 			}
 			multiplicity = static_cast<idx_t>(signed_multiplicity);
 		}

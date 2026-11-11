@@ -11,27 +11,9 @@
   ],
   "skip_tests": [
     {
-      "reason": "Explicit constraint check mode requires storage version v2.0.0 or higher.",
+      "reason": "A declared RETURNS type requires storage version v2.1.0 but encrypted databases use an older default storage version",
       "paths": [
-        "test/optimizer/remove_redundant_order_keys_deferred.test"
-      ]
-    },
-    {
-      "reason": "Explicit constraint check mode requires storage version v2.0.0 or higher.",
-      "paths": [
-        "test/sql/constraints/deferred/test_alter_constraint_check_mode.test",
-        "test/sql/constraints/deferred/test_deferred_alter.test",
-        "test/sql/constraints/deferred/test_deferred_checkpoint.test_slow",
-        "test/sql/constraints/deferred/test_deferred_compatibility.test",
-        "test/sql/constraints/deferred/test_deferred_delete_reinsert.test",
-        "test/sql/constraints/deferred/test_deferred_large.test_slow",
-        "test/sql/constraints/deferred/test_deferred_metadata.test",
-        "test/sql/constraints/deferred/test_deferred_statements.test",
-        "test/sql/constraints/deferred/test_deferred_syntax.test",
-        "test/sql/constraints/deferred/test_deferred_trigger.test",
-        "test/sql/constraints/deferred/test_deferred_unique_pk.test",
-        "test/sql/window/test_window_degenerate_frames.test",
-        "test/optimizer/remove_redundant_order_keys.test"
+        "test/sql/catalog/function/macro_returns_type.test"
       ]
     },
     {
@@ -73,7 +55,8 @@
     {
       "reason": "Calls a deleter by unqualified name: the internal connection running it uses the default catalog, not this config's attached one.",
       "paths": [
-        "test/sql/table_function/external_resource_logging.test"
+        "test/sql/table_function/external_resource_logging.test",
+        "test/sql/table_function/external_resource_callback_recursion.test"
       ]
     },
     {
@@ -99,45 +82,6 @@
       ]
     },
     {
-      "reason": "CREATE TRIGGER requires storage version v2.0.0 but encrypted databases use an older default storage version",
-      "paths": [
-        "test/sql/trigger/drop_trigger_parse.test",
-        "test/sql/trigger/trigger_alter_table.test",
-        "test/sql/trigger/trigger_after_delete.test",
-        "test/sql/trigger/trigger_after_insert.test",
-        "test/sql/trigger/trigger_after_insert_referencing.test",
-        "test/sql/trigger/trigger_after_update.test",
-        "test/sql/trigger/trigger_after_update_referencing.test",
-        "test/sql/trigger/trigger_after_update_old_new.test",
-        "test/sql/trigger/trigger_after_update_old_new_wal.test",
-        "test/sql/trigger/trigger_update_from_multi_match.test",
-        "test/sql/trigger/trigger_after_delete_referencing.test",
-        "test/sql/trigger/trigger_referencing_validation.test",
-        "test/sql/trigger/trigger_multiple_per_event.test",
-        "test/sql/trigger/trigger_before_insert.test",
-        "test/sql/trigger/trigger_before_update.test",
-        "test/sql/trigger/trigger_before_delete.test",
-        "test/sql/trigger/trigger_before_after_mixed.test",
-        "test/sql/trigger/trigger_returning.test",
-        "test/sql/trigger/trigger_returning_binder_parity.test",
-        "test/sql/trigger/trigger_for_each_row.test",
-        "test/sql/trigger/trigger_concurrent_rename.test",
-        "test/sql/merge/trigger_merge_into.test"
-      ]
-    },
-    {
-      "reason": "Aggregate state columns require storage version v2.0.0 but encrypted databases use an older default storage version",
-      "paths": [
-        "test/sql/aggregate/aggregates/lttb.test"
-      ]
-    },
-    {
-      "reason": "test_all_types() require latest storage",
-      "paths": [
-        "test/fuzzer/duckfuzz/vector_type.test"
-      ]
-    },
-    {
       "reason": "Encrypted persistent storage packs validity into one segment, so zonemap pruning cannot skip rows.",
       "paths": [
         "test/sql/optimizer/nested_null_segment_pruning.test",
@@ -150,33 +94,6 @@
         "test/sql/attach/attach_to_external_resource.test",
         "test/sql/attach/external_resource_option_collision.test",
         "test/sql/attach/external_resource_attach_failure.test"
-      ]
-    },
-    {
-      "reason": "CREATE SECURE VIEW requires storage version v2.0.0 but encrypted databases use an older default storage version",
-      "paths": [
-        "test/sql/catalog/view/secure_view.test",
-        "test/sql/optimizer/secure_view_explain.test",
-        "test/sql/optimizer/secure_view_pushdown.test",
-        "test/sql/pragma/profiling/test_profiling_bytes_scanned_secure_view.test",
-        "test/sql/optimizer/secure_view_statistics.test",
-        "test/sql/sql_export/secure_view_sql_export.test",
-        "test/sql/sql_export/secure_view_predicates.test",
-        "test/sql/optimizer/secure_view_fallible_functions.test"
-      ]
-    },
-    {
-      "reason": "Stored aggregate-state and TUPLE columns require v2.0.0 storage.",
-      "paths": [
-        "test/sql/sql_export/empty_aggregate_state.test",
-        "test/sql/sql_export/mark_condition_shapes.test",
-        "test/sql/types/variant/variant_struct_field_subquery.test"
-      ]
-    },
-    {
-      "reason": "Nested schemas require storage version v2.0.0 but encrypted databases use an older default storage version",
-      "paths": [
-        "test/sql/alter/alter_schema_set_schema_options.test"
       ]
     },
     {

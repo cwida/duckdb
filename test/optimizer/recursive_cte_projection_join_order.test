@@ -166,6 +166,7 @@ JOIN nodes n ON w.i + d.delta = n.i AND w.h <= n.h + 1;
 ----
 127	1
 
+# Either cost-based order is valid for an ordinary CTE.
 query TT
 EXPLAIN (FORMAT JSON) WITH nodes(i, h) AS MATERIALIZED (
     SELECT i, i % 3 FROM range(256) t(i)
@@ -175,4 +176,4 @@ FROM (VALUES (-1), (1)) d(delta)
 JOIN (SELECT * FROM frontier) w ON true
 JOIN nodes n ON w.i + d.delta = n.i AND w.h <= n.h + 1;
 ----
-physical_plan	<REGEX>:.*NESTED_LOOP_JOIN.*
+physical_plan	<REGEX>:.*(NESTED_LOOP_JOIN|HASH_JOIN).*

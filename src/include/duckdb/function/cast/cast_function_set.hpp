@@ -10,8 +10,10 @@
 
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/function/combine_types_rule.hpp"
+#include "duckdb/main/context.hpp"
 
 namespace duckdb {
+class Context;
 struct MapCastInfo;
 struct MapCastNode;
 struct DBConfig;
@@ -21,13 +23,28 @@ typedef BoundCastInfo (*bind_cast_function_t)(BindCastInput &input, const Logica
 typedef int64_t (*implicit_cast_cost_t)(const LogicalType &from, const LogicalType &to);
 
 struct GetCastFunctionInput {
-	explicit GetCastFunctionInput(optional_ptr<ClientContext> context = nullptr) : context(context) {
-	}
-	explicit GetCastFunctionInput(ClientContext &context) : context(&context) {
+	DUCKDB_API explicit GetCastFunctionInput(Context &context);
+	DUCKDB_API explicit GetCastFunctionInput(ClientContext &context);
+
+	//! Input for the default casts: there are no services, so GetContext() must not be called
+	DUCKDB_API static GetCastFunctionInput Default();
+
+	//! The services of the cast
+	DUCKDB_API Context &GetContext();
+	//! The services of the cast (if any)
+	optional_ptr<Context> TryGetContext() const {
+		return context;
 	}
 
-	optional_ptr<ClientContext> context;
+	//! The client context - only present if the cast is bound for a client
+	optional_ptr<ClientContext> client_context;
 	QueryLocation query_location;
+
+private:
+	GetCastFunctionInput() = default;
+
+private:
+	optional_ptr<Context> context;
 };
 
 struct BindCastFunction {
@@ -47,6 +64,7 @@ public:
 	DUCKDB_API static CastFunctionSet &Get(ClientContext &context);
 	DUCKDB_API static const CastFunctionSet &Get(const ClientContext &context);
 	DUCKDB_API static CastFunctionSet &Get(DatabaseInstance &db);
+	DUCKDB_API static CastFunctionSet &Get(Context &context);
 
 	//! Returns a cast function (from source -> target)
 	//! Note that this always returns a function - since a cast is ALWAYS possible if the value is NULL
@@ -68,6 +86,9 @@ public:
 	//! Whether a registered cast can change this default conversion, including nested casts.
 	//! Data-dependent VARIANT conversions are treated conservatively.
 	DUCKDB_API bool CanOverrideDefaultCast(const LogicalType &source, const LogicalType &target) const;
+
+	//! Returns registered source types that can match this target, without invoking bind callbacks.
+	DUCKDB_API vector<LogicalType> GetRegisteredCastSourceTypes(const LogicalType &target) const;
 
 	//! Register a combine rule for LogicalType::TryGetMaxLogicalType, consulted before previously registered rules
 	//! and the built-in rules

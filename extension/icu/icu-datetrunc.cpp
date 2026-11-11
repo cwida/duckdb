@@ -192,6 +192,7 @@ struct ICUDateTrunc : public ICUDateFunc {
 		set.AddFunction(GetDateTruncFunction<timestamp_tz_ns_t>(LogicalType::TIMESTAMP_TZ_NS));
 		// throws for unrecognized part specifiers and for dates that overflow the timestamp range
 		set.SetFallible();
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		set.SetArgProperties(1, ArgProperties().NonDecreasing());
 		loader.RegisterFunction(set);
 	}
@@ -241,7 +242,7 @@ ICUDateFunc::part_trunc_t ICUDateFunc::TruncationFactory(DatePartSpecifier type)
 }
 
 timestamp_tz_t ICUDateFunc::CurrentMidnight(Calendar *calendar, ExpressionState &state) {
-	const timestamp_tz_t current_timestamp(MetaTransaction::Get(state.GetContext()).start_timestamp);
+	const timestamp_tz_t current_timestamp(MetaTransaction::Get(state.GetClientContext()).start_timestamp);
 	auto current_micros = SetTime(calendar, current_timestamp);
 	ICUDateTrunc::TruncDay(calendar, current_micros);
 	return GetTime(calendar);

@@ -1,0 +1,81 @@
+# name: test/sql/copy/parquet/bloom_filter_interval_saturated.test
+# description: Bloom filters on INTERVAL columns for intervals whose normalization saturates at the 32 bit month limit
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT (i % 10) * INTERVAL '1 day' AS iv FROM range(2048) t(i)) TO '{TEST_DIR}/bloom_interval_days.parquet' (FORMAT PARQUET);
+
+query I
+SELECT count(*)
+FROM parquet_kv_metadata('{TEST_DIR}/bloom_interval_days.parquet')
+WHERE key = 'duckdb.interval_bloom_filter' AND decode(value) = 'normalized-v1';
+----
+1
+
+# normalizing this constant leaves its days negative, and no stored interval equals it
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_interval_days.parquet' WHERE iv = INTERVAL '-178956970 years -8 months -1 day';
+----
+0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_interval_days.parquet' WHERE iv IN (INTERVAL '-178956970 years -8 months -1 day', INTERVAL '3 days');
+----
+205
+
+query I
+SELECT bool_or(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/bloom_interval_days.parquet', 'iv', INTERVAL '-178956970 years -8 months -1 day');
+----
+false
+
+# other negative constants are not hashed either
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_interval_days.parquet' WHERE iv = INTERVAL '-1 day';
+----
+0
+
+# the normalization of this interval keeps a day in its microseconds, as both months and days saturate
+statement ok
+COPY (
+	SELECT to_months(2147483646) + to_days(2147483647) + INTERVAL '744 hours' AS iv
+	UNION ALL SELECT INTERVAL '1 day'
+) TO '{TEST_DIR}/bloom_interval_saturated.parquet' (FORMAT PARQUET);
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_interval_saturated.parquet' WHERE iv = to_months(2147483646) + to_days(2147483647) + INTERVAL '744 hours';
+----
+1
+
+query I
+SELECT bloom_filter_excludes FROM parquet_bloom_probe('{TEST_DIR}/bloom_interval_saturated.parquet', 'iv', to_months(2147483646) + to_days(2147483647) + INTERVAL '744 hours');
+----
+false
+
+# files of v2.0 hash it with the whole days in the days field, and files of main before this change in the
+# milliseconds field, so a filter on it keeps the row groups of both
+query I
+SELECT bloom_filter_excludes FROM parquet_bloom_probe('data/parquet-testing/interval_bloom_saturated_v2_0.parquet', 'iv', to_months(2147483646) + to_days(2147483647) + INTERVAL '744 hours');
+----
+false
+
+query I
+SELECT bloom_filter_excludes FROM parquet_bloom_probe('data/parquet-testing/interval_bloom_saturated_v2_0.parquet', 'iv', INTERVAL '50 days');
+----
+true
+
+query I
+SELECT bloom_filter_excludes FROM parquet_bloom_probe('data/parquet-testing/interval_bloom_saturated_main.parquet', 'iv', to_months(2147483646) + to_days(2147483647) + INTERVAL '744 hours');
+----
+false
+
+query I
+SELECT count(*) FROM 'data/parquet-testing/interval_bloom_saturated_main.parquet' WHERE iv = to_months(2147483646) + to_days(2147483647) + INTERVAL '744 hours';
+----
+1
+
+query I
+SELECT bloom_filter_excludes FROM parquet_bloom_probe('data/parquet-testing/interval_bloom_saturated_main.parquet', 'iv', INTERVAL '50 days');
+----
+true

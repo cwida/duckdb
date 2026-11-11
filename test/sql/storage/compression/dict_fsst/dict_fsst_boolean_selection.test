@@ -1,0 +1,133 @@
+# name: test/sql/storage/compression/dict_fsst/dict_fsst_boolean_selection.test
+# description: Cached dictionary filtering preserves NULLs and row selection across batches
+# group: [dict_fsst]
+
+require vector_size 2048
+
+load {TEST_DIR}/dict_fsst_boolean_selection.db readwrite v2.0.0
+
+foreach cardinality 16 4096
+
+statement ok
+PRAGMA force_compression='DICT_FSST'
+
+statement ok
+CREATE TABLE values_{cardinality} AS
+SELECT i, CASE WHEN i >= 4096 AND i % 17 = 0 THEN NULL
+               ELSE 'key=' || lpad((hash(i) % {cardinality})::VARCHAR, 4, '0') ||
+                    repeat('/special requests packages regular accounts', CASE WHEN {cardinality} = 16 THEN 0 ELSE 4 END)
+          END AS v
+FROM range(16387) t(i)
+
+statement ok
+CHECKPOINT
+
+restart
+
+query I
+SELECT count(*) > 0
+FROM pragma_storage_info('values_{cardinality}', include_segment_info=true)
+WHERE column_name = 'v' AND compression = 'DICT_FSST'
+  AND segment_info LIKE CASE WHEN {cardinality} = 16 THEN 'DICTIONARY:%' ELSE 'DICT_FSST:%' END
+----
+true
+
+# The first NULL arrives after two full vectors. Compare membership, including the final partial vector.
+query I
+WITH actual AS (
+    SELECT i FROM values_{cardinality}
+    WHERE substring(v, 5, 4) < lpad(({cardinality} // 2)::VARCHAR, 4, '0')
+), expected AS (
+    SELECT i FROM range(16387) t(i)
+    WHERE (i < 4096 OR i % 17 <> 0) AND hash(i) % {cardinality} < {cardinality} // 2
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+) differences
+----
+0
+
+query I
+WITH actual AS (
+    SELECT i FROM values_{cardinality}
+    WHERE coalesce(substring(v, 5, 4) < lpad(({cardinality} // 2)::VARCHAR, 4, '0'), true)
+), expected AS (
+    SELECT i FROM range(16387) t(i)
+    WHERE (i >= 4096 AND i % 17 = 0) OR hash(i) % {cardinality} < {cardinality} // 2
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+) differences
+----
+0
+
+# An earlier numeric filter can exclude the vectors containing NULLs.
+query I
+WITH actual AS (
+    SELECT i FROM values_{cardinality}
+    WHERE i < 4096 AND substring(v, 5, 4) < lpad(({cardinality} // 2)::VARCHAR, 4, '0')
+), expected AS (
+    SELECT i FROM range(4096) t(i) WHERE hash(i) % {cardinality} < {cardinality} // 2
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+) differences
+----
+0
+
+# New executions must evaluate the current predicate rather than retain a previous scan's answers.
+statement ok
+PREPARE dictionary_selection AS
+SELECT count(*), sum(i) FROM values_{cardinality} WHERE coalesce(contains(v, $1), true)
+
+query II
+EXECUTE dictionary_selection('absent')
+----
+723	7399182
+
+query II
+EXECUTE dictionary_selection('key=')
+----
+16387	134258691
+
+query II
+EXECUTE dictionary_selection('absent')
+----
+723	7399182
+
+# Deleted rows leave a non-contiguous incoming selection and exclude every NULL.
+statement ok
+DELETE FROM values_{cardinality} WHERE i % 17 <> 1
+
+query I
+WITH actual AS (
+    SELECT i FROM values_{cardinality}
+    WHERE substring(v, 5, 4) < lpad(({cardinality} // 2)::VARCHAR, 4, '0')
+), expected AS (
+    SELECT i FROM range(16387) t(i)
+    WHERE i % 17 = 1 AND hash(i) % {cardinality} < {cardinality} // 2
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+) differences
+----
+0
+
+# Updates require the existing scan/filter fallback.
+statement ok
+UPDATE values_{cardinality} SET v = NULL WHERE i = 1
+
+query II
+SELECT count(*), sum(i) FROM values_{cardinality} WHERE v IS NULL
+----
+1	1
+
+endloop

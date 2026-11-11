@@ -35,6 +35,13 @@ enum class UpdateScanType {
 	DISALLOW_UPDATES
 };
 
+enum class StringScanType {
+	//! scanned strings may point into memory that only the scan state keeps alive, e.g. a pinned block
+	STANDARD,
+	//! copy scanned strings into the result vector, so they stay valid after the scan state is gone
+	COPY_STRINGS
+};
+
 struct ScanOptions {
 	ScanOptions(TransactionData transaction); // NOLINT: allow implicit conversion from transaction
 

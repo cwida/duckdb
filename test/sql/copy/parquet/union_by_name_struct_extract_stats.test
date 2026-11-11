@@ -38,3 +38,52 @@ ORDER BY ALL
 ----
 key-0
 key-1
+
+# Pruning the first union member must not interpret another file's physical child order as the output order.
+statement ok
+COPY (SELECT {'a': 1, 'b': 100} AS s) TO '{TEST_DIR}/nested_order_a.parquet'
+
+statement ok
+COPY (SELECT {'b': 200, 'a': 2} AS s) TO '{TEST_DIR}/nested_order_b.parquet'
+
+statement ok
+COPY (SELECT {'b': 300} AS s) TO '{TEST_DIR}/nested_order_c.parquet'
+
+query II
+SELECT s.a, s.b
+FROM read_parquet(['{TEST_DIR}/nested_order_a.parquet', '{TEST_DIR}/nested_order_b.parquet'],
+                  union_by_name = true, filename = true)
+WHERE filename = '{TEST_DIR}/nested_order_b.parquet' AND s.a = 2
+----
+2	200
+
+query II
+SELECT s.a, s.b
+FROM read_parquet(['{TEST_DIR}/nested_order_a.parquet', '{TEST_DIR}/nested_order_b.parquet'],
+                  union_by_name = true, filename = true)
+WHERE filename = '{TEST_DIR}/nested_order_b.parquet' AND s.b = 200
+----
+2	200
+
+query II
+SELECT s.a, s.b
+FROM read_parquet(['{TEST_DIR}/nested_order_a.parquet', '{TEST_DIR}/nested_order_c.parquet'],
+                  union_by_name = true, filename = true)
+WHERE filename = '{TEST_DIR}/nested_order_c.parquet' AND s.a IS NULL
+----
+NULL	300
+
+# Partition column accessors use physical ordinals; pruning must retain the union output mapping.
+statement ok
+COPY (SELECT 1 AS a, 2 AS b) TO '{TEST_DIR}/root_order_a.parquet'
+
+statement ok
+COPY (SELECT 20 AS b, 10 AS a) TO '{TEST_DIR}/root_order_b.parquet'
+
+query II
+SELECT min(a), max(b)
+FROM read_parquet(['{TEST_DIR}/root_order_a.parquet', '{TEST_DIR}/root_order_b.parquet'],
+                  union_by_name = true, filename = true)
+WHERE filename = '{TEST_DIR}/root_order_b.parquet'
+----
+10	20

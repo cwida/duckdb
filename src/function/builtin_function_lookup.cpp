@@ -38,13 +38,11 @@ shared_ptr<const AggregateFunction> TryGetBuiltinAggregateFunction(ClientContext
 	auto &catalog = Catalog::GetSystemCatalog(context);
 	auto &entry = catalog.GetEntry<AggregateFunctionCatalogEntry>(context, BuiltinName(catalog, name));
 
-	ErrorData error;
-	FunctionBinder function_binder(context);
-	auto index = function_binder.BindFunction(entry.functions.name, entry.functions, arguments, error);
-	if (!index.IsValid()) {
+	auto index = FunctionBinder::SelectFunction(context, entry.functions, arguments);
+	if (!index.IsSuccess()) {
 		return nullptr;
 	}
-	return entry.functions.GetFunctionByOffset(index.GetIndex());
+	return index.GetBinding().GetFunction<AggregateFunction>();
 }
 
 shared_ptr<const WindowFunction> GetBuiltinWindowFunction(ClientContext &context, const Identifier &name,

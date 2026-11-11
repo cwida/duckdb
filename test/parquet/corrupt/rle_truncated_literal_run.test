@@ -1,0 +1,23 @@
+# name: test/parquet/corrupt/rle_truncated_literal_run.test
+# description: Reject RLE bit-packed runs that end before the values they declare
+# group: [corrupt]
+
+require parquet
+
+# b is RLE encoded with one bit-packed run that covers every value but holds a single data byte.
+# The first vectors of b only have seven valid values each, so each read continues mid-byte.
+statement error
+SELECT sum(b::INT) FROM read_parquet('data/parquet-testing/corrupt/rle_truncated_literal_run.parquet');
+----
+Out of buffer
+
+# a is false in those vectors, so filtering on it skips them in b instead
+statement error
+SELECT sum(b::INT) FROM read_parquet('data/parquet-testing/corrupt/rle_truncated_literal_run.parquet') WHERE a;
+----
+Out of buffer
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a) FROM read_parquet('data/parquet-testing/corrupt/rle_truncated_literal_run.parquet');
+----
+139264	131072

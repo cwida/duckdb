@@ -24,7 +24,7 @@ struct CastCounts {
 
 static BoundCastInfo GetDefaultCast(const LogicalType &source, const LogicalType &target) {
 	CastFunctionSet function_set;
-	GetCastFunctionInput input;
+	auto input = GetCastFunctionInput::Default();
 	return function_set.GetCastFunction(source, target, input);
 }
 
@@ -334,6 +334,28 @@ TEST_CASE("Custom casts without statistics callbacks are not specialized", "[opt
 	auto reverse_result = reverse_connection.Query("SELECT sum(i) FROM (SELECT i FROM reverse_values ORDER BY i)");
 	REQUIRE_NO_FAIL(*reverse_result);
 	REQUIRE(CHECK_COLUMN(reverse_result, 0, {8128}));
+}
+
+TEST_CASE("Join filters preserve registered integer casts", "[optimizer][cast]") {
+	DuckDB db;
+	Connection connection(db);
+	auto &casts = CastFunctionSet::Get(*connection.context);
+	casts.RegisterCastFunction(LogicalType::BIGINT, LogicalType::TINYINT, BoundCastInfo(BigintToTinyintOffsetCast));
+	REQUIRE_NO_FAIL(
+	    connection.Query("SET disabled_optimizers="
+	                     "'statistics_propagation,join_order,build_side_probe_side,compressed_materialization'"));
+	REQUIRE_NO_FAIL(connection.Query("CREATE TABLE probe AS SELECT 100::BIGINT k FROM range(10000)"));
+	unique_ptr<QueryResult> result;
+	SECTION("An intermediate cast changes the value") {
+		REQUIRE_NO_FAIL(connection.Query("CREATE TABLE build AS SELECT 101::BIGINT k"));
+		result = connection.Query("SELECT count(*) FROM probe p JOIN build b ON p.k::TINYINT::BIGINT=b.k");
+	}
+	SECTION("A direct cast would introduce an override") {
+		REQUIRE_NO_FAIL(connection.Query("CREATE TABLE build AS SELECT 100::TINYINT k"));
+		result = connection.Query("SELECT count(*) FROM probe p JOIN build b ON p.k::SMALLINT::TINYINT=b.k");
+	}
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {10000}));
 }
 
 TEST_CASE("Compressed materialization uses value-preserving default casts", "[optimizer][cast]") {

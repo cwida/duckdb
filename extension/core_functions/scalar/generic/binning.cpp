@@ -475,7 +475,7 @@ void EquiWidthBinFunction(DataChunk &args, ExpressionState &state, Vector &resul
 		    }
 		    return result_bins;
 	    });
-	VectorOperations::DefaultCast(intermediate_result, result, args.size());
+	VectorOperations::Cast(state.GetContext(), intermediate_result, result, args.size());
 }
 
 void UnsupportedEquiWidth(DataChunk &args, ExpressionState &state, Vector &) {

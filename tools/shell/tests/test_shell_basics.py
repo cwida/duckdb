@@ -141,6 +141,25 @@ def test_bail_off_continues_after_error(shell):
     result.check_stderr("Parser Error: syntax error at or near")
     assert "reached here" in str(result.stdout)
 
+def test_home_duckdbrc_is_not_read(shell, tmp_path):
+    (tmp_path / '.duckdbrc').write_text('.print init-output\n')
+    for arguments in ([], ['-csv']):
+        test = ShellTest(shell, arguments).env_var('HOME', tmp_path.as_posix()).env_var('USERPROFILE', str(tmp_path))
+        test = test.statement("SELECT 42;")
+        result = test.run()
+        result.check_stdout('42')
+        result.check_not_exist('init-output')
+
+
+def test_shell_test_adds_no_init_once(shell):
+    arguments = ['-csv']
+    assert ShellTest(shell, arguments).arguments.count('--no-init') == 1
+    assert arguments == ['-csv']
+    for _ in range(2):
+        assert ShellTest(shell).arguments.count('--no-init') == 1
+    assert '--no-init' not in ShellTest(shell, ['-init', '/dev/null']).arguments
+
+
 def test_bail_on_missing_init(shell):
     test = (
         ShellTest(shell, ['-init', '___thisfiledoesnotexist'])
@@ -195,7 +214,6 @@ def test_explicit_bail_within_read(shell, generated_file):
     result.check_stderr("selec")
     assert "reached here" in str(result.stdout)
 
-@pytest.mark.skipif(os.name == 'nt', reason="Skipped on windows")
 def test_shell_command(shell):
     test = (
         ShellTest(shell)
@@ -203,6 +221,34 @@ def test_shell_command(shell):
     )
     result = test.run()
     result.check_stdout("quack")
+
+
+def test_shell_command_pipe(shell):
+    # the command line reaches the system shell as-is: echo and sort exist in both sh and cmd.exe,
+    # and a quoted-per-word command line would print the pipe symbol instead of piping
+    test = ShellTest(shell).statement(".shell echo quack | sort")
+    result = test.run()
+    result.check_stdout("quack")
+    result.check_not_exist("|")
+
+
+@pytest.mark.skipif(os.name == 'nt', reason="uses POSIX shell syntax")
+def test_shell_command_quoting(shell):
+    test = (
+        ShellTest(shell)
+        .statement(".shell echo 'quack quack' | tr a-z A-Z")
+        .statement('.system DUCK=mallard; echo "$DUCK"')
+    )
+    result = test.run()
+    result.check_stdout("QUACK QUACK")
+    result.check_stdout("mallard")
+
+
+def test_shell_command_exit_code(shell):
+    test = ShellTest(shell).statement(".shell exit 3")
+    result = test.run()
+    result.check_stderr("System command returns 3")
+
 
 def test_cd(shell, tmp_path):
     pwd_dir = os.getcwd()
@@ -989,7 +1035,6 @@ def test_profiling_select(shell):
     result.check_stderr('Total Time')
     result.check_stdout('42')
 
-@pytest.mark.skipif(os.name == 'nt', reason="echo does not exist on Windows")
 @pytest.mark.parametrize("command", [
     "system",
     "shell"

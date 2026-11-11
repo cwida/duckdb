@@ -1,0 +1,74 @@
+# name: test/sql/json/scalar/test_json_structure_iterative.test
+# description: Iterative json_structure extraction
+# group: [scalar]
+
+require json
+
+query I
+SELECT json_structure(repeat('[', 10000) || '1' || repeat(']', 10000)) =
+       repeat('[', 10000) || '"UBIGINT"' || repeat(']', 10000);
+----
+true
+
+query I
+SELECT json_structure(repeat('{"q":', 10000) || 'null' || repeat('}', 10000)) =
+       repeat('{"q":', 10000) || '"NULL"' || repeat('}', 10000);
+----
+true
+
+# Alternate container types and resume siblings while unwinding a deep traversal.
+query I
+SELECT json_structure(repeat('{"before":0,"nested":[', 5000) || '1' || repeat('],"after":true}', 5000)) =
+       repeat('{"before":"UBIGINT","nested":[', 5000) || '"UBIGINT"' || repeat('],"after":"BOOLEAN"}', 5000);
+----
+true
+
+query T
+SELECT json_structure('[{"a":[],"b":{},"c":[[],[1]],"d":2},{"a":[true],"b":{"e":null},"c":[[2]],"d":null}]');
+----
+[{"a":["BOOLEAN"],"b":{"e":"NULL"},"c":[["UBIGINT"]],"d":"UBIGINT"}]
+
+query T
+SELECT json_structure('[{"a":[1],"b":{"q":2}},{"a":true,"b":3,"c":null}]');
+----
+[{"a":"JSON","b":"JSON","c":"NULL"}]
+
+query T
+SELECT json_structure('{"a\u0000b":1,"":null,"q":1,"q":2.5,"Q":true}');
+----
+{"a\u0000b":"UBIGINT","":"NULL","q":"DOUBLE","Q":"BOOLEAN"}
+
+# Resume object traversal after nested containers.
+query T
+SELECT json_structure('{"before":1,"array":[2,null],"between":true,"object":{"x":"s","y":null},"after":2.5}');
+----
+{"before":"UBIGINT","array":["UBIGINT"],"between":"BOOLEAN","object":{"x":"VARCHAR","y":"NULL"},"after":"DOUBLE"}
+
+# An incompatible field must not stop traversal of subsequent fields.
+query T
+SELECT json_structure('{"x":true,"x":1,"x":{"ignored":1},"tail":"ok"}');
+----
+{"x":"JSON","tail":"VARCHAR"}
+
+query T
+SELECT json_structure('{"x":{"a":1},"x":false,"tail":1}');
+----
+{"x":"JSON","tail":"UBIGINT"}
+
+query T
+SELECT json_structure('{"x":false,"x":[1],"tail":1}');
+----
+{"x":"JSON","tail":"UBIGINT"}
+
+# Merge scalar fields across objects, including nulls and numeric promotion.
+query T
+SELECT json_structure('[{"a":null,"b":1,"c":true},{"a":"s","b":2.5,"c":null,"tail":0}]');
+----
+[{"a":"VARCHAR","b":"DOUBLE","c":"BOOLEAN","tail":"UBIGINT"}]
+
+query I
+SELECT json_group_structure(v::JSON) = repeat('{"q":', 256) || '"UBIGINT"' || repeat('}', 256)
+FROM (VALUES (repeat('{"q":', 256) || '1' || repeat('}', 256)),
+             (repeat('{"q":', 256) || 'null' || repeat('}', 256))) AS t(v);
+----
+true

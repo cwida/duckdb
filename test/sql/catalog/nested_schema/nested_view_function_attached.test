@@ -1,0 +1,101 @@
+# name: test/sql/catalog/nested_schema/nested_view_function_attached.test
+# description: A view of an attached database calls a function by its nested schema path in that database (duckdblabs/bot-issue-tracker#686)
+# group: [nested_schema]
+
+# an in-memory default database allows nested schemas under every storage version
+statement ok
+ATTACH ':memory:' AS mem;
+
+statement ok
+USE mem;
+
+statement ok
+ATTACH '{TEST_DIR}/nested_view_function_attached.db' AS db (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE SCHEMA db.p;
+
+statement ok
+CREATE SCHEMA db.p.s;
+
+statement ok
+CREATE MACRO db.p.s.f() AS 11;
+
+statement ok
+CREATE TABLE db.p.s.t AS SELECT 5 AS x;
+
+statement ok
+CREATE VIEW db.p.s.v_table AS SELECT x FROM p.s.t;
+
+statement ok
+CREATE VIEW db.p.s.v_function AS SELECT p.s.f() AS y;
+
+# a table macro in the nested schema
+statement ok
+CREATE MACRO db.p.s.tf() AS TABLE SELECT 7 AS z;
+
+statement ok
+CREATE VIEW db.p.s.v_table_function AS SELECT z FROM p.s.tf();
+
+query I
+SELECT z FROM db.p.s.v_table_function;
+----
+7
+
+query II
+SELECT (SELECT x FROM db.p.s.v_table), (SELECT y FROM db.p.s.v_function);
+----
+5	11
+
+# the default database's own nested schemas are still found from it
+statement ok
+CREATE SCHEMA q;
+
+statement ok
+CREATE SCHEMA q.r;
+
+statement ok
+CREATE MACRO q.r.g() AS 33;
+
+query I
+SELECT q.r.g();
+----
+33
+
+# the view's own database comes first when the default database has the same nested schema
+statement ok
+CREATE SCHEMA p;
+
+statement ok
+CREATE SCHEMA p.s;
+
+statement ok
+CREATE MACRO p.s.f() AS 101;
+
+statement ok
+CREATE MACRO p.s.tf() AS TABLE SELECT 102 AS z;
+
+statement ok
+CREATE TABLE p.s.t AS SELECT 103 AS x;
+
+query III
+SELECT (SELECT x FROM db.p.s.v_table), (SELECT y FROM db.p.s.v_function), (SELECT z FROM db.p.s.v_table_function);
+----
+5	11	7
+
+query II
+SELECT p.s.f(), (SELECT z FROM p.s.tf());
+----
+101	102
+
+# the view keeps working when the database is attached under a different alias
+statement ok
+DETACH db;
+
+statement ok
+ATTACH '{TEST_DIR}/nested_view_function_attached.db' AS other;
+
+query III
+SELECT (SELECT x FROM other.p.s.v_table), (SELECT y FROM other.p.s.v_function), (SELECT z FROM other.p.s.v_table_function);
+----
+5	11	7

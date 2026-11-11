@@ -1,0 +1,152 @@
+# name: test/sql/cte/recursive_cte_reference_errors.test
+# description: Error messages for invalid references to a CTE from within its own definition
+# group: [cte]
+
+statement ok
+CREATE TABLE e(src INTEGER, dst INTEGER);
+
+statement ok
+INSERT INTO e VALUES (1, 2), (2, 3), (4, 1);
+
+# self-reference without RECURSIVE
+statement error
+WITH q AS (SELECT n FROM q) SELECT * FROM q
+----
+Circular reference to CTE "q", recursive CTEs must use WITH RECURSIVE and have the form <non-recursive term> UNION [ALL] <recursive term>
+
+# reference in the non-recursive term
+statement error
+WITH RECURSIVE q(n) AS (SELECT n FROM q UNION SELECT 1) SELECT * FROM q
+----
+Recursive reference to CTE "q" must not appear in its non-recursive term
+
+# with several branches, the non-recursive term is everything before the last UNION
+statement error
+WITH RECURSIVE q(n) AS (
+	SELECT 1
+	UNION SELECT e.dst FROM q JOIN e ON e.src = q.n
+	UNION SELECT e.src FROM q JOIN e ON e.dst = q.n
+)
+SELECT * FROM q
+----
+Recursive reference to CTE "q" must not appear in its non-recursive term
+
+# the reference is detected inside subqueries of the non-recursive term
+statement error
+WITH RECURSIVE q(n) AS (SELECT 1 WHERE 1 IN (SELECT n FROM q) UNION ALL SELECT n + 1 FROM q WHERE n < 3)
+SELECT * FROM q
+----
+Recursive reference to CTE "q" must not appear in its non-recursive term
+
+# also for recursive views
+statement error
+CREATE RECURSIVE VIEW v(n) AS SELECT n FROM v UNION ALL SELECT 1
+----
+Recursive reference to CTE "v" must not appear in its non-recursive term
+
+# wrapping the recursive branches in parentheses keeps them out of the non-recursive term
+query I
+WITH RECURSIVE q(n) AS (
+	SELECT 1
+	UNION (SELECT e.dst FROM q JOIN e ON e.src = q.n
+	UNION SELECT e.src FROM q JOIN e ON e.dst = q.n)
+)
+SELECT * FROM q ORDER BY n
+----
+1
+2
+3
+4
+
+# a reference from a CTE attached to the recursive UNION is outside the recursive term
+statement error
+WITH RECURSIVE q(n) AS (WITH r AS (SELECT n FROM q) SELECT * FROM r UNION ALL SELECT n + 1 FROM q WHERE n < 3)
+SELECT * FROM q
+----
+Recursive reference to CTE "q" must not appear in its non-recursive term
+
+statement error
+WITH RECURSIVE q(n) AS (WITH r AS MATERIALIZED (SELECT n FROM q) SELECT * FROM r UNION ALL SELECT n + 1 FROM q WHERE n < 3)
+SELECT * FROM q
+----
+Recursive reference to CTE "q" must not appear in its non-recursive term
+
+statement error
+WITH RECURSIVE q(n) AS (WITH q AS (SELECT * FROM q) SELECT * FROM q UNION ALL SELECT n + 1 FROM q WHERE n < 3)
+SELECT * FROM q
+----
+Recursive reference to CTE "q" must not appear in its non-recursive term
+
+# a same-name inner CTE in the non-recursive term refers to the recursive CTE
+statement error
+WITH RECURSIVE q(n) AS ((WITH q AS (SELECT * FROM q) SELECT * FROM q) UNION ALL SELECT n + 1 FROM q WHERE n < 3)
+SELECT * FROM q
+----
+Recursive reference to CTE "q" must not appear in its non-recursive term
+
+# an outer CTE with the same name can be used in the non-recursive term
+query I
+WITH q AS (SELECT 1 AS n)
+SELECT * FROM (WITH RECURSIVE q AS (SELECT * FROM q UNION ALL SELECT n + 1 FROM q WHERE n < 3) SELECT * FROM q)
+ORDER BY n
+----
+1
+2
+3
+
+# a self-reference in a non-recursive CTE within the recursive term is a plain circular reference
+statement error
+WITH RECURSIVE q(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM q WHERE n < (WITH r AS (SELECT * FROM r) SELECT * FROM r))
+SELECT * FROM q
+----
+Circular reference to CTE "r", recursive CTEs must use WITH RECURSIVE and have the form <non-recursive term> UNION [ALL] <recursive term>
+
+# a recursive CTE that is not a UNION cannot reference itself
+statement error
+WITH RECURSIVE q(n) AS (SELECT 1 INTERSECT SELECT n FROM q) SELECT * FROM q
+----
+Circular reference to CTE "q", recursive CTEs must use WITH RECURSIVE and have the form <non-recursive term> UNION [ALL] <recursive term>
+
+statement error
+CREATE RECURSIVE VIEW v(n) AS SELECT n FROM v
+----
+Circular reference to CTE "v", recursive CTEs must use WITH RECURSIVE and have the form <non-recursive term> UNION [ALL] <recursive term>
+
+# a recursive CTE that is not a UNION and does not reference itself is a regular CTE
+query I
+WITH RECURSIVE q(n) AS (SELECT 1 INTERSECT SELECT 1) SELECT * FROM q
+----
+1
+
+# a table with the name of the CTE is used in the non-recursive term
+statement ok
+CREATE TABLE q AS SELECT 1 AS n;
+
+query I
+WITH RECURSIVE q(n) AS (SELECT n FROM q UNION ALL SELECT n + 1 FROM q WHERE n < 3) SELECT * FROM q ORDER BY n
+----
+1
+2
+3
+
+# a self-reference that is not in a recursive term falls back to the table
+query I
+WITH q AS (SELECT n + 1 AS n FROM q) SELECT * FROM q
+----
+2
+
+# so does a recursive CTE that is not a UNION
+query I
+WITH RECURSIVE q AS (SELECT n + 1 AS n FROM q) SELECT * FROM q
+----
+2
+
+# the error points at the reference (reparsing the statement would move the location)
+statement ok
+SET debug_verify_statement='none'
+
+statement error
+WITH RECURSIVE r(n) AS (SELECT n FROM r UNION SELECT 1) SELECT * FROM r
+----
+LINE 1: WITH RECURSIVE r(n) AS (SELECT n FROM r UNION SELECT 1) SELECT * FROM r
+                                              ^

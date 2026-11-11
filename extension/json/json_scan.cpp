@@ -8,7 +8,7 @@
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
-#include "json_structure.hpp"
+#include "json_schema_inference.hpp"
 #include "json_transform.hpp"
 #include "duckdb/common/multi_file/multi_file_list.hpp"
 
@@ -287,7 +287,7 @@ bool JSONScan::ParseOption(ClientContext &context, const Identifier &key, const 
 	}
 	if (key == "dateformat" || key == "date_format") {
 		auto format_string = StringValue::Get(value);
-		if (StringUtil::Lower(format_string) == "iso") {
+		if (StringUtil::CIEquals(format_string, "iso")) {
 			format_string = "%Y-%m-%d";
 		}
 		options.date_format = format_string;
@@ -301,7 +301,7 @@ bool JSONScan::ParseOption(ClientContext &context, const Identifier &key, const 
 	}
 	if (key == "timestampformat" || key == "timestamp_format") {
 		auto format_string = StringValue::Get(value);
-		if (StringUtil::Lower(format_string) == "iso") {
+		if (StringUtil::CIEquals(format_string, "iso")) {
 			format_string = "%Y-%m-%dT%H:%M:%S.%fZ";
 		}
 		options.timestamp_format = format_string;
@@ -427,6 +427,8 @@ void JSONScan::FinalizeBind(JSONScanData &json_data, vector<Identifier> &names) 
 	transform_options.key_match = options.case_insensitive_keys ? JSONKeyMatch::CASE_INSENSITIVE : JSONKeyMatch::EXACT;
 	transform_options.date_format_map = json_data.date_format_map.get();
 	transform_options.delay_error = true;
+	// the readers of this scan parse numbers as text when a column is a DECIMAL (JSONReader::read_flag)
+	transform_options.numbers_as_raw = JSONCommon::NumbersAsRaw(options.sql_type_list);
 
 	if (!options.auto_detect) {
 		return;

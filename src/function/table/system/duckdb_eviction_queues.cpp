@@ -68,8 +68,11 @@ void DuckDBEvictionQueuesFunction(ClientContext &context, TableFunctionInput &da
 }
 
 void DuckDBEvictionQueuesFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("duckdb_eviction_queues", {}, DuckDBEvictionQueuesFunction, DuckDBEvictionQueuesBind,
-	                              DuckDBEvictionQueuesInit));
+	TableFunction eviction_queues_fun("duckdb_eviction_queues", {}, DuckDBEvictionQueuesFunction,
+	                                  DuckDBEvictionQueuesBind, DuckDBEvictionQueuesInit);
+	// reads live buffer manager state
+	eviction_queues_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(eviction_queues_fun));
 }
 
 } // namespace duckdb

@@ -58,6 +58,7 @@ protected:
 	void AddRuleOverride(const char *name, unique_ptr<Matcher> &&matcher_p);
 	void AddPackratMemoizedRule(const char *name);
 	void SuppressSuggestions(const char *name);
+	void LabelRule(const char *name, const char *label);
 	Matcher &CreateMatcher(string_t rule_name);
 	Matcher &CreateMatcher(string_t rule_name, vector<reference<Matcher>> &parameters);
 	Matcher &CreateMatcher(const PEGExpression &expression, const string_map_t<idx_t> &parameter_map,
@@ -79,6 +80,7 @@ private:
 	case_insensitive_map_t<KeywordInfo> keyword_overrides;
 	string_set_t no_suggestion_rules;
 	string_set_t packrat_memoized_rules;
+	string_map_t<string> rule_labels;
 };
 
 } // namespace duckdb

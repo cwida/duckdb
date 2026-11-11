@@ -17,6 +17,7 @@
 
 namespace duckdb {
 class BaseSecret;
+class Context;
 struct SecretEntry;
 struct FileOpenerInfo;
 struct CreateSecretInfo;
@@ -221,6 +222,9 @@ public:
 
 		Value redact_set_value;
 		deserializer.ReadProperty(202, "redact_keys", redact_set_value);
+		if (redact_set_value.IsNull() || redact_set_value.type().id() != LogicalTypeId::LIST) {
+			throw SerializationException("Secret redact_keys must be a non-NULL list");
+		}
 		for (const auto &entry : ListValue::GetChildren(redact_set_value)) {
 			result->redact_keys.insert(Identifier(entry.ToString()));
 		}
@@ -346,7 +350,7 @@ protected:
 	//! Secrets/settings will be fetched either through a context (local + global settings) or a databaseinstance
 	//! (global only)
 	optional_ptr<DatabaseInstance> db;
-	optional_ptr<ClientContext> context;
+	optional_ptr<Context> context;
 
 	string path;
 };

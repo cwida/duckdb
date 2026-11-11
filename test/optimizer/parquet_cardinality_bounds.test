@@ -1,0 +1,96 @@
+# name: test/optimizer/parquet_cardinality_bounds.test
+# description: Parquet row bounds describe the retained row groups of the complete source
+# group: [optimizer]
+
+require parquet
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+COPY (SELECT i FROM range(5) t(i)) TO '{TEST_DIR}/source_row_bounds.parquet' (FORMAT PARQUET);
+
+# Integer ranges still provide an exact bound.
+query II
+EXPLAIN SELECT * FROM range(5) LIMIT 6
+----
+physical_plan	<!REGEX>:.*LIMIT.*
+
+# A single file's bound proves this limit redundant, independently of the estimate.
+foreach estimate 1 1000
+
+query II
+EXPLAIN SELECT i FROM read_parquet('{TEST_DIR}/source_row_bounds.parquet', explicit_cardinality={estimate}) LIMIT 6
+----
+physical_plan	<!REGEX>:.*LIMIT.*
+
+query I
+SELECT i FROM read_parquet('{TEST_DIR}/source_row_bounds.parquet', explicit_cardinality={estimate}) LIMIT 6
+----
+0
+1
+2
+3
+4
+
+# The footer advertises one row, but its row groups actually contain five.
+query II
+EXPLAIN SELECT i FROM read_parquet('{DATA_DIR}/parquet-testing/footer_row_count_mismatch.parquet', explicit_cardinality={estimate}) LIMIT 2
+----
+physical_plan	<REGEX>:.*LIMIT.*
+
+query I
+SELECT i FROM read_parquet('{DATA_DIR}/parquet-testing/footer_row_count_mismatch.parquet', explicit_cardinality={estimate}) LIMIT 2
+----
+0
+1
+
+query II
+EXPLAIN SELECT i FROM read_parquet('{DATA_DIR}/parquet-testing/footer_row_count_mismatch.parquet', explicit_cardinality={estimate}) LIMIT 6
+----
+physical_plan	<!REGEX>:.*LIMIT.*
+
+query I
+SELECT i FROM read_parquet('{DATA_DIR}/parquet-testing/footer_row_count_mismatch.parquet', explicit_cardinality={estimate}) LIMIT 6
+----
+0
+1
+2
+3
+4
+
+endloop
+
+# The first file's bound must not become a bound for the complete list.
+query II
+EXPLAIN SELECT i FROM read_parquet(['{TEST_DIR}/source_row_bounds.parquet', '{TEST_DIR}/source_row_bounds.parquet']) LIMIT 6
+----
+physical_plan	<REGEX>:.*LIMIT.*
+
+query I
+SELECT count(*) FROM (SELECT i FROM read_parquet(['{TEST_DIR}/source_row_bounds.parquet', '{TEST_DIR}/source_row_bounds.parquet']) LIMIT 6)
+----
+6
+
+# Union-by-name scans open the footer of the file, so they expose the exact row count too.
+query II
+EXPLAIN SELECT i FROM read_parquet('{TEST_DIR}/source_row_bounds.parquet', union_by_name=true) LIMIT 6
+----
+physical_plan	<!REGEX>:.*LIMIT.*
+
+query I
+SELECT sum(i) FROM read_parquet('{TEST_DIR}/source_row_bounds.parquet', union_by_name=true)
+----
+10
+
+statement ok
+COPY (SELECT 1::BIGINT i WHERE false) TO '{TEST_DIR}/empty_source_row_bounds.parquet' (FORMAT PARQUET);
+
+query II
+EXPLAIN SELECT i FROM read_parquet('{TEST_DIR}/empty_source_row_bounds.parquet') LIMIT 1
+----
+physical_plan	<!REGEX>:.*LIMIT.*
+
+query I
+SELECT i FROM read_parquet('{TEST_DIR}/empty_source_row_bounds.parquet') LIMIT 1
+----

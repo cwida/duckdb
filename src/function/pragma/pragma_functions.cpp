@@ -78,7 +78,7 @@ static void PragmaEnableForceParallelism(ClientContext &context, const FunctionP
 
 static void PragmaForceCheckpoint(ClientContext &context, const FunctionParameters &parameters) {
 	DBConfig::GetConfig(context).CheckLock("force_checkpoint");
-	DBConfig::GetConfig(context).options.force_checkpoint = true;
+	Settings::Set<DebugForceCheckpointSetting>(context, SetScope::GLOBAL, Value::BOOLEAN(true));
 }
 
 static void PragmaDisableForceParallelism(ClientContext &context, const FunctionParameters &parameters) {
@@ -96,12 +96,12 @@ static void PragmaDisableObjectCache(ClientContext &context, const FunctionParam
 
 static void PragmaEnableCheckpointOnShutdown(ClientContext &context, const FunctionParameters &parameters) {
 	DBConfig::GetConfig(context).CheckLock("checkpoint_on_shutdown");
-	DBConfig::GetConfig(context).options.checkpoint_on_shutdown = true;
+	Settings::Set<CheckpointOnShutdownSetting>(context, SetScope::GLOBAL, Value::BOOLEAN(true));
 }
 
 static void PragmaDisableCheckpointOnShutdown(ClientContext &context, const FunctionParameters &parameters) {
 	DBConfig::GetConfig(context).CheckLock("checkpoint_on_shutdown");
-	DBConfig::GetConfig(context).options.checkpoint_on_shutdown = false;
+	Settings::Set<CheckpointOnShutdownSetting>(context, SetScope::GLOBAL, Value::BOOLEAN(false));
 }
 
 static string PragmaEnableOptimizer(ClientContext &context, const FunctionParameters &parameters) {
