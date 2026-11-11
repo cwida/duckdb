@@ -3,7 +3,7 @@
 # group: [optimizer]
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = OPTIMIZED_ONLY;
 
 statement ok
 CREATE TABLE t AS FROM (VALUES (0.0::DOUBLE, 1, 1), (-0.0::DOUBLE, 2, 1), (1.5::DOUBLE, 3, 2), (-0.0::DOUBLE, 4, 2), (-1.0::DOUBLE, 5, 1), (0.0::DOUBLE, 6, 2)) v(d, x, g);
