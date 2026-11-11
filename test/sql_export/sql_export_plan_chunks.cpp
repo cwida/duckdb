@@ -63,8 +63,7 @@ public:
 };
 
 void SQLExportValuesNext(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto counter =
-	    state.GetContext().GetContext().GetRegisteredState().Get<SQLExportValuesCounter>("sql_export_values_counter");
+	auto counter = state.GetContext().GetRegisteredState().Get<SQLExportValuesCounter>("sql_export_values_counter");
 	auto writer = FlatVector::Writer<int64_t>(result, args.size());
 	for (idx_t i = 0; i < args.size(); i++) {
 		writer.WriteValue(++counter->value);
@@ -72,8 +71,7 @@ void SQLExportValuesNext(DataChunk &args, ExpressionState &state, Vector &result
 }
 
 void SQLExportValuesPeek(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto counter =
-	    state.GetContext().GetContext().GetRegisteredState().Get<SQLExportValuesCounter>("sql_export_values_counter");
+	auto counter = state.GetContext().GetRegisteredState().Get<SQLExportValuesCounter>("sql_export_values_counter");
 	auto writer = FlatVector::Writer<int64_t>(result, args.size());
 	for (idx_t i = 0; i < args.size(); i++) {
 		writer.WriteValue(counter->value);

@@ -308,10 +308,12 @@ CompressionFunction GetCompressionFunction(PhysicalType data_type) {
 	default:
 		throw InternalException("Roaring GetCompressionFunction, type %s not handled", EnumUtil::ToString(data_type));
 	}
-	return CompressionFunction(CompressionType::COMPRESSION_ROARING, data_type, roaring::RoaringInitAnalyze, analyze,
+	CompressionFunction result(CompressionType::COMPRESSION_ROARING, data_type, roaring::RoaringInitAnalyze, analyze,
 	                           roaring::RoaringFinalAnalyze, roaring::RoaringInitCompression, compress,
 	                           roaring::RoaringFinalizeCompress, roaring::RoaringInitScan, scan, scan_partial,
 	                           roaring::RoaringSkip, roaring::RoaringInitSegment);
+	result.zero_initialize_segments = false;
+	return result;
 }
 
 CompressionFunction RoaringCompressionFun::GetFunction(PhysicalType type) {
