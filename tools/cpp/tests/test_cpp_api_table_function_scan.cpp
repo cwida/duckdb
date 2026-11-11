@@ -198,14 +198,19 @@ void LinesExec(TableFunction::ExecInput &input) {
 		vector.SetSize(count);
 		const auto column = input.GetColumnIndex(v);
 		if (TableFunction::IsVirtualColumn(column)) {
-			REQUIRE(TableFunction::GetVirtualColumn(column) == TableFunction::VirtualColumn::FILE_ROW_NUMBER);
+			// exec runs on worker threads, where Catch assertions are not thread-safe: fail the query instead
+			if (TableFunction::GetVirtualColumn(column) != TableFunction::VirtualColumn::FILE_ROW_NUMBER) {
+				throw InvalidInputException("unexpected virtual column");
+			}
 			auto *data = vector.GetDataMutable<int64_t>();
 			for (idx_t row = 0; row < count; row++) {
 				data[row] = static_cast<int64_t>(start + row);
 			}
 			continue;
 		}
-		REQUIRE(column == 0);
+		if (column != 0) {
+			throw InvalidInputException("unexpected column");
+		}
 		for (idx_t row = 0; row < count; row++) {
 			vector.AssignString(row, bind.lines[start + row]);
 		}
