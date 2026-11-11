@@ -3,10 +3,10 @@
 # group: [asof]
 
 statement ok 
-PRAGMA debug_asof_iejoin=False
+SET debug_asof_iejoin=False
 
 statement ok
-PRAGMA asof_loop_join_threshold = 0;
+SET asof_loop_join_threshold = 0;
 
 #
 # INTEGERs

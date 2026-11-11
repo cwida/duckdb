@@ -11,6 +11,7 @@ Statement <-
 	PragmaStatement /
 	CallStatement /
 	InsertStatement /
+	DropMemberStatement /
 	DropStatement /
 	CopyStatement /
 	ExplainStatement /
@@ -57,6 +58,7 @@ FunctionName <- Identifier
 ReservedFunctionName <- Identifier
 ReservedTypeName <- Identifier
 TableFunctionName <- Identifier
+ReservedTableFunctionName <- Identifier
 ConstraintName <- ColIdOrString
 SequenceName <- Identifier
 CollationName <- Identifier
@@ -1540,6 +1542,10 @@ DescRule <- 'DESC'
 DetachStatement <- 'DETACH' Database? IfExists? CatalogName
 
 DropStatement <- 'DROP' DropEntries DropBehavior?
+DropMemberStatement <- 'DROP' DropMember DropBehavior?
+DropMember <- DropTableFunctionMember / DropFunctionMember
+DropTableFunctionMember <- CommentMacroTable IfExists? QualifiedTableFunction DropFunctionSignature
+DropFunctionMember <- FunctionTypeMacro IfExists? FunctionIdentifier DropFunctionSignature
 
 DropEntries <-
 	DropTable /
@@ -1558,6 +1564,9 @@ DropTrigger <- 'TRIGGER' IfExists? TriggerName 'ON' BaseTableName
 DropTable <- TableOrView IfExists? List(BaseTableName)
 DropTableFunction <- CommentMacroTable IfExists? List(QualifiedTableFunction)
 DropFunction <- FunctionTypeMacro IfExists? List(FunctionIdentifier)
+DropFunctionSignature <- Parens(List(DropSignatureType)?)
+DropSignatureType <- DropSignatureAnyType / Type
+DropSignatureAnyType <- 'ANY'
 DropSchema <- 'SCHEMA' IfExists? List(QualifiedName)
 DropIndex <- 'INDEX' IfExists? List(QualifiedIndexName)
 QualifiedIndexName <- CatalogReservedSchemaIndex / SchemaReservedIndex / QualifiedIndexNameString
@@ -1601,6 +1610,7 @@ ExplainableStatements <-
     CreateStatement /
     DeallocateStatement /
     DeleteStatement /
+    DropMemberStatement /
     DropStatement /
     ExecuteStatement /
     InsertStatement /
@@ -1788,11 +1798,8 @@ SingleExpression <-
     DefaultExpression
 
 # LEVEL 1 (Lowest)
-Expression <- LambdaArrowExpression
+Expression <- LogicalOrExpression
 ColumnDefaultExpr <- ColDefOrExpr
-# LEVEL 1.5
-LambdaArrowExpression <- LogicalOrExpression SingleArrowPair*
-SingleArrowPair <- '->' LogicalOrExpression
 LogicalOrExpression <- LogicalAndExpression LogicalOrExpressionTail*
 LogicalOrExpressionTail <- 'OR' LogicalAndExpression
 ColDefOrExpr <- ColDefAndExpr ColDefOrExpressionTail*
@@ -1878,9 +1885,17 @@ Asymmetric <- 'ASYMMETRIC'
 # LEVEL 8
 OtherOperatorExpression <- InfixOtherOperatorExpression
 InfixOtherOperatorExpression <- BitwiseExpression OtherOperatorTail*
-OtherOperatorTail <- AnyAllSubqueryTail / OtherOperatorExpressionTail
+OtherOperatorTail <- AnyAllSubqueryTail / OtherOperatorExpressionTail / SingleArrowTail
 AnyAllSubqueryTail <- AnyAllParsedOperator SubqueryReference
 OtherOperatorExpressionTail <- OtherOperator BitwiseExpression
+# '->' is the lambda arrow or the JSON extract operator. Its operand extends as far as possible (the lambda body),
+# unless another arrow follows directly: then the arrows chain to the left, like in PostgreSQL.
+SingleArrowTail <- '->' SingleArrowBody
+SingleArrowBody <- ArrowChainBody / ArrowFullBody
+ArrowChainBody <- BitwiseExpression ArrowChainTail+
+ArrowChainTail <- DoubleArrowTail / SingleArrowTail
+DoubleArrowTail <- '->>' BitwiseExpression
+ArrowFullBody <- LogicalOrExpression
 OtherOperator <-
     AnyAllParsedOperator / NamedOtherOperator
 AnyAllParsedOperator <- AnyAllOperator
@@ -2305,7 +2320,10 @@ TableFunction <- TableFunctionLateralOpt / TableFunctionAliasColon
 TableFunctionLateralOpt <- Lateral? QualifiedTableFunction TableFunctionArguments WithOrdinality? TableAlias? SampleClause?
 TableFunctionAliasColon <- TableAliasColon QualifiedTableFunction TableFunctionArguments WithOrdinality? SampleClause?
 WithOrdinality <- 'WITH' 'ORDINALITY'
-QualifiedTableFunction <- CatalogQualification? SchemaQualification* TableFunctionName
+QualifiedTableFunction <- CatalogReservedSchemaTableFunctionName / TableFunctionNameAsQualifiedName
+# after a qualification a reserved keyword can name a table function, as in g.describe('a')
+CatalogReservedSchemaTableFunctionName <- CatalogQualification SchemaQualification* ReservedTableFunctionName
+TableFunctionNameAsQualifiedName <- TableFunctionName
 TableFunctionArguments <- Parens(List(FunctionArgument)?)
 FunctionArgument <- NamedFunctionArgument / PositionalFunctionArgument
 NamedFunctionArgument <- TypeFuncName NamedParameterAssignment Expression

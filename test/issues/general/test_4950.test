@@ -3,7 +3,7 @@
 # group: [general]
 
 statement ok
-pragma explain_output = optimized_only
+SET explain_output = 'optimized_only'
 
 statement ok
 create table lineitem (l_orderkey int, l_suppkey int, l_partkey int);

@@ -29,10 +29,10 @@ SELECT count(DISTINCT file_name), count(DISTINCT row_group_id) FROM chunks;
 
 # one column: its chunk in every row group
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_one_column.json';
+SET profiling_output = '{TEST_DIR}/bytes_scanned_one_column.json';
 
 statement ok
 SET tracked_metrics = ['query.total_bytes_scanned'];
@@ -51,10 +51,10 @@ true
 
 # two columns: both chunks in every row group
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_two_columns.json';
+SET profiling_output = '{TEST_DIR}/bytes_scanned_two_columns.json';
 
 statement ok
 SET tracked_metrics = ['query.total_bytes_scanned', 'operator.bytes_scanned', 'operator.type'];
@@ -94,10 +94,10 @@ SELECT count(*) FROM chunks WHERE file_name LIKE '%_1.parquet' AND col = 'i' AND
 1
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_skipped.json';
+SET profiling_output = '{TEST_DIR}/bytes_scanned_skipped.json';
 
 statement ok
 SET tracked_metrics = ['query.total_bytes_scanned'];
@@ -116,10 +116,10 @@ true
 
 # several files
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_glob.json';
+SET profiling_output = '{TEST_DIR}/bytes_scanned_glob.json';
 
 statement ok
 SET tracked_metrics = ['query.total_bytes_scanned'];
@@ -138,10 +138,10 @@ true
 
 # a file scanned twice counts twice
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_twice.json';
+SET profiling_output = '{TEST_DIR}/bytes_scanned_twice.json';
 
 statement ok
 SET tracked_metrics = ['query.total_bytes_scanned', 'operator.bytes_scanned', 'operator.type'];

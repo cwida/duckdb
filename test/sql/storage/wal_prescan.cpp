@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "duckdb/common/checksum.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/common/enums/wal_type.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/helper.hpp"
@@ -152,7 +153,7 @@ TEST_CASE("WAL checkpoint prescan skips unnecessary framed payloads", "[storage]
 		{
 			auto config = GetTestConfig();
 			config->options.checkpoint_wal_size = idx_t(-1);
-			config->options.checkpoint_on_shutdown = false;
+			config->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
 			DuckDB db(helper.GetDatabasePath(), config.get());
 			Connection con(db);
 			REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER)"));
@@ -167,7 +168,7 @@ TEST_CASE("WAL checkpoint prescan skips unnecessary framed payloads", "[storage]
 		helper.CorruptPayload(test.wal_type);
 
 		auto config = GetTestConfig();
-		config->options.abort_on_wal_failure = true;
+		config->SetOption(DebugAbortOnWalFailureSetting::SettingIndex, Value::BOOLEAN(true));
 		DuckDB db(helper.GetDatabasePath(), config.get());
 		Connection con(db);
 		auto result = con.Query(test.query);
@@ -181,7 +182,7 @@ TEST_CASE("WAL replay validates DML payloads skipped during prescan", "[storage]
 	{
 		auto config = GetTestConfig();
 		config->options.checkpoint_wal_size = idx_t(-1);
-		config->options.checkpoint_on_shutdown = false;
+		config->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
 		DuckDB db(helper.GetDatabasePath(), config.get());
 		Connection con(db);
 		REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER)"));
@@ -194,7 +195,7 @@ TEST_CASE("WAL replay validates DML payloads skipped during prescan", "[storage]
 	helper.CorruptPayload(WALType::INSERT_TUPLE);
 
 	auto config = GetTestConfig();
-	config->options.abort_on_wal_failure = true;
+	config->SetOption(DebugAbortOnWalFailureSetting::SettingIndex, Value::BOOLEAN(true));
 	try {
 		DuckDB db(helper.GetDatabasePath(), config.get());
 		FAIL("Expected WAL replay to fail");

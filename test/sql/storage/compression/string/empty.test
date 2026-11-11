@@ -22,7 +22,7 @@ statement ok
 USE db_v13
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 statement ok
 CREATE TABLE test_empty (a VARCHAR);

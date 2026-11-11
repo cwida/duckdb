@@ -7,7 +7,7 @@ load {TEST_DIR}/struct_storage_test.db
 foreach compression <compression>
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 statement ok
 CREATE TABLE a AS SELECT {
@@ -35,7 +35,7 @@ hello
 restart
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 query I
 SELECT * FROM a
@@ -74,7 +74,7 @@ blabla
 restart
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 query I
 SELECT * FROM a
@@ -153,7 +153,7 @@ NULL
 restart
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 query I
 SELECT * FROM a

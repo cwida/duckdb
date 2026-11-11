@@ -15,6 +15,7 @@
 namespace duckdb {
 class CastFunctionSet;
 struct GetCastFunctionInput;
+class Context;
 
 // VectorOperations contains a set of operations that operate on sets of
 // vectors. In general, the operators must all have the same type, otherwise an
@@ -193,6 +194,9 @@ struct VectorOperations {
 	//! Cast the data from the source type to the target type. Throws an exception if the cast fails.
 	DUCKDB_API static void Cast(ClientContext &context, Vector &source, Vector &result, idx_t count,
 	                            bool strict = false);
+	DUCKDB_API static bool TryCast(Context &context, Vector &source, Vector &result, idx_t count, string *error_message,
+	                               bool strict = false, const bool nullify_parent = false);
+	DUCKDB_API static void Cast(Context &context, Vector &source, Vector &result, idx_t count, bool strict = false);
 	DUCKDB_API static void DefaultCast(Vector &source, Vector &result, idx_t count, bool strict = false);
 
 	// Copy the data of <source> to the target vector

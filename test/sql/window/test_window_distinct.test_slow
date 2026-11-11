@@ -8,7 +8,7 @@ statement ok
 CALL dbgen(sf=1);
 
 statement ok
-PRAGMA temp_directory='{TEST_DIR}/window_distinct'
+SET temp_directory='{TEST_DIR}/window_distinct'
 
 # DISTINCT aggregate over a larger data set (e.g. lineitem or so)
 query I
@@ -24,12 +24,12 @@ ORDER BY ALL
 
 # Trigger external sorting of a partition
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 # The actual memory consumption of this query is 1.5GB
 # So this is a serious level of stress.
 statement ok
-PRAGMA memory_limit='500MB'
+SET memory_limit='500MB'
 
 query I
 WITH t AS (

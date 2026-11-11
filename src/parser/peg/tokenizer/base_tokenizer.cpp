@@ -29,7 +29,7 @@ uint8_t ComputeMatcherTokenClass(TokenType type, const string &text) {
 	}
 }
 
-TokenizerBehavior::TokenizerBehavior(const string &sql, vector<MatcherToken> &tokens) : sql(sql), tokens(tokens) {
+TokenizerBehavior::TokenizerBehavior(const string &sql) : sql(sql) {
 }
 
 Tokenizer::Tokenizer(const PEGKeywordHelper &keyword_helper_p) : keyword_helper(keyword_helper_p) {

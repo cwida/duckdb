@@ -127,6 +127,6 @@ LIMIT 1;
 INTEGER[]	BIGINT[]	INTEGER[]
 
 statement ok
-PRAGMA threads=1
+SET threads=1
 
 endloop

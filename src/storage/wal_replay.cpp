@@ -527,7 +527,7 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 	} catch (std::exception &ex) { // LCOV_EXCL_START
 		ErrorData error(ex);
 		// ignore serialization exceptions - they signal a torn WAL
-		if (config.options.abort_on_wal_failure || error.Type() != ExceptionType::SERIALIZATION) {
+		if (Settings::Get<DebugAbortOnWalFailureSetting>(config) || error.Type() != ExceptionType::SERIALIZATION) {
 			con.Rollback();
 			error.Throw("Failure while replaying WAL file \"" + wal_path + "\": ");
 		}
@@ -690,7 +690,7 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 		// serialization failure means a truncated WAL
 		// these failures are ignored unless abort_on_wal_failure is true
 		// other failures always result in an error
-		if (config.options.abort_on_wal_failure || error.Type() != ExceptionType::SERIALIZATION) {
+		if (Settings::Get<DebugAbortOnWalFailureSetting>(config) || error.Type() != ExceptionType::SERIALIZATION) {
 			error.Throw("Failure while replaying WAL file \"" + wal_path + "\": ");
 		}
 	} catch (...) {
@@ -977,7 +977,19 @@ void WriteAheadLogDeserializer::ReplayIndexData(IndexStorageInfo &info) {
 
 void WriteAheadLogDeserializer::ReplayAlter() {
 	auto info = deserializer.ReadProperty<unique_ptr<ParseInfo>>(101, "info");
+	if (!info || info->info_type != ParseInfoType::ALTER_INFO) {
+		throw DataCorruptionException("Corrupt WAL file: alter entry does not carry alter information");
+	}
 	auto &alter_info = info->Cast<AlterInfo>();
+	// IsAddUniqueConstraint() below dereferences the constraint of an ADD_CONSTRAINT entry, so it must be present
+	if (alter_info.type == AlterType::ALTER_TABLE) {
+		auto &table_info = alter_info.Cast<AlterTableInfo>();
+		if (table_info.alter_table_type == AlterTableType::ADD_CONSTRAINT) {
+			if (!table_info.Cast<AddConstraintInfo>().constraint) {
+				throw DataCorruptionException("Corrupt WAL file: add constraint entry is missing its constraint");
+			}
+		}
+	}
 	alter_info.bind_mode = AlterBindMode::SKIP_BINDING;
 	if (!alter_info.IsAddUniqueConstraint()) {
 		return ReplayWithoutIndex(context, catalog, alter_info, DeserializeOnly());

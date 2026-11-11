@@ -2,7 +2,7 @@
 # group: [pedro]
 
 statement ok
-PRAGMA DEBUG_WINDOW_MODE='separate';
+SET DEBUG_WINDOW_MODE='separate';
 
 statement ok
 CREATE TABLE t1 (c1 INT);

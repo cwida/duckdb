@@ -12,7 +12,7 @@ statement ok
 SET nested_loop_join_threshold=0;
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 # We read from CSVs to prevent the optimiser from
 # using statistics to decide the join is a NOP

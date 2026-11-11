@@ -57,7 +57,7 @@ Conversion Error
 
 # field id can't be a colref
 statement error
-copy (select range as i from range(10)) to '{TEST_DIR}/my.parquet' (FIELD_IDS {i:i})
+copy (select range as i from range(10)) to '{TEST_DIR}/my.parquet' (FIELD_IDS {i:'i'})
 ----
 Could not convert string 'i' to INT32
 

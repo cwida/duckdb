@@ -5,7 +5,7 @@
 require parquet
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 query I
 select count(*) from parquet_scan('{DATA_DIR}/parquet-testing/glob/t?.parquet')

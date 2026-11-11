@@ -14,10 +14,10 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
-PRAGMA debug_checkpoint_abort='after_free_list_write';
+SET debug_checkpoint_abort='after_free_list_write';
 
 statement ok
 INSERT INTO integers SELECT * FROM range(100000, 200000) tbl(i);
@@ -43,10 +43,10 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
-PRAGMA debug_checkpoint_abort='after_free_list_write';
+SET debug_checkpoint_abort='after_free_list_write';
 
 statement ok
 UPDATE integers SET i=i;

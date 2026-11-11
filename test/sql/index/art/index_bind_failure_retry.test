@@ -95,8 +95,9 @@ INSERT INTO w.t SELECT range FROM range(200001, 200011);
 statement ok
 DETACH w;
 
+# The key is deterministic, but casting a buffered row fails during replay.
 statement ok
-CREATE OR REPLACE MACRO m(x) AS CASE WHEN x > 200000 THEN error('boom') ELSE x + 1 END;
+CREATE OR REPLACE MACRO m(x) AS CASE WHEN x > 200000 THEN CAST('boom' || x::VARCHAR AS BIGINT) ELSE x + 1 END;
 
 statement ok
 ATTACH '{TEMP_DIR}/idx_bind_failure_replay.db' AS w;

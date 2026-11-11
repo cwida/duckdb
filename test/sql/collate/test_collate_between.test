@@ -29,7 +29,7 @@ SELECT COUNT(*) FROM collate_test WHERE 'mórritz' BETWEEN s AND (t COLLATE NOAC
 1
 
 statement ok
-PRAGMA default_collation='NOACCENT'
+SET default_collation='NOACCENT'
 
 query I
 SELECT COUNT(*) FROM collate_test WHERE 'mórritz' BETWEEN s AND t

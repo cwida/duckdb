@@ -3,10 +3,10 @@
 # group: [profiling]
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profile_file.json';
+SET profiling_output = '{TEST_DIR}/profile_file.json';
 
 statement ok
 SET tracked_metrics = ['io.total_bytes_read', 'io.total_bytes_written'];

@@ -12,7 +12,7 @@ statement ok
 SET enable_fsst_vectors='{enable_fsst_vector}'
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 # varchars
 statement ok
@@ -42,7 +42,7 @@ statement ok
 SET enable_fsst_vectors='{enable_fsst_vector}'
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 # varchars
 statement ok

@@ -1,0 +1,40 @@
+# name: test/sql/join/bloom_filter_rowid_deleted_rows.test
+# description: A Bloom filter pushed onto rowid runs under the selection vector that skips deleted rows
+# group: [join]
+
+statement ok
+CREATE TABLE t AS SELECT i AS id, i % 100 AS grp FROM range(100000) t(i);
+
+# the first row of the first three vectors is deleted, the matching rows are the last row of each vector
+statement ok
+DELETE FROM t WHERE id IN (0, 2048, 4096);
+
+# a wide key range rules out a prefix range filter, and more keys than the OR threshold rule out an IN list
+statement ok
+SET dynamic_or_filter_threshold = 1;
+
+statement ok
+CREATE TABLE s AS SELECT * FROM (VALUES (2047::BIGINT), (4095::BIGINT), (6143::BIGINT), (1000000000::BIGINT)) v(v);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t JOIN s ON t.rowid = s.v;
+----
+analyzed_plan	<REGEX>:.*rowid IN BF\(v\).*
+
+query I
+SELECT count(*) FROM t JOIN s ON t.rowid = s.v;
+----
+3
+
+query III
+SELECT t.rowid, t.id, t.grp FROM t JOIN s ON t.rowid = s.v ORDER BY ALL;
+----
+2047	2047	47
+4095	4095	95
+6143	6143	43
+
+# a filter on another column runs before the rowid filter
+query II
+SELECT t.id, t.grp FROM t JOIN s ON t.rowid = s.v WHERE t.grp = 47 ORDER BY ALL;
+----
+2047	47

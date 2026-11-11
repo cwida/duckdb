@@ -2,6 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/parser/parser_extension.hpp"
+#include "duckdb/parser/peg/tokenizer/tokenizer.hpp"
 
 namespace duckdb {
 
@@ -15,6 +16,11 @@ TokenIterator::TokenIterator(unique_ptr<vector<MatcherToken>> owned_tokens_p)
 	}
 }
 
+TokenIterator::TokenIterator(TokenizerBehavior &behavior)
+    : TokenIterator(make_uniq<vector<MatcherToken>>(std::move(behavior.tokens))) {
+	source = &behavior.sql;
+}
+
 TokenIterator::TokenIterator(vector<MatcherToken> &tokens_p) : tokens(tokens_p) {
 	// A new root can receive tokens edited since an earlier match.
 	for (auto &token : tokens) {
@@ -23,7 +29,8 @@ TokenIterator::TokenIterator(vector<MatcherToken> &tokens_p) : tokens(tokens_p) 
 }
 
 TokenIterator::TokenIterator(TokenIterator &&other) noexcept
-    : owned_tokens(std::move(other.owned_tokens)), tokens(other.tokens), position(other.position) {
+    : owned_tokens(std::move(other.owned_tokens)), tokens(other.tokens), source(other.source),
+      position(other.position) {
 }
 
 bool TokenIterator::HasMoreStatements() const {
@@ -44,6 +51,14 @@ idx_t TokenIterator::EndOffset() const {
 		return 0;
 	}
 	auto &last_token = tokens.back();
+	return last_token.offset + last_token.length;
+}
+
+idx_t TokenIterator::ConsumedEndOffset() const {
+	if (position == 0) {
+		return 0;
+	}
+	auto &last_token = Previous();
 	return last_token.offset + last_token.length;
 }
 

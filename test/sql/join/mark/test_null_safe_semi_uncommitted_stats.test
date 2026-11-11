@@ -154,7 +154,7 @@ ROLLBACK;
 # uncommitted appends that are large enough to engage the optimistic writer (parallel
 # insert): the transaction-local rows must still be covered by the merged statistics
 statement ok
-PRAGMA threads=8;
+SET threads=8;
 
 statement ok
 CREATE TABLE p(k INTEGER);

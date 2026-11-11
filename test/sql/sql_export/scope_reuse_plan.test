@@ -231,10 +231,11 @@ EXPLAIN (SQL) SELECT x,unnest(x) FROM (SELECT list_value(i,i+1) x FROM scope_inp
 ----
 sql	<REGEX>:.*[(][[:space:]]*SELECT.*
 
+# DISTINCT is planned as a GROUP BY, which an ORDER BY can follow in the same scope
 query TT
 EXPLAIN (SQL) SELECT DISTINCT i FROM scope_input ORDER BY i;
 ----
-sql	<REGEX>:.*[(][[:space:]]*SELECT.*[(][[:space:]]*SELECT.*
+sql	<REGEX>:^SELECT .*GROUP BY .*ORDER BY [^;]*$
 
 query TT
 EXPLAIN (SQL) SELECT i FROM scope_input USING SAMPLE 100% ORDER BY i;

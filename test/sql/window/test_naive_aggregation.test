@@ -6,7 +6,7 @@ statement ok
 SET default_null_order='nulls_first';
 
 statement ok
-PRAGMA debug_window_mode=separate
+SET debug_window_mode='separate'
 
 statement ok
 CREATE TABLE empsalary (depname varchar, empno bigint, salary int, enroll_date date)

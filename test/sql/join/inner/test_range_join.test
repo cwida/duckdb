@@ -56,7 +56,7 @@ SELECT test.a, test.b, test2.b, test2.c FROM test, test2 WHERE test.a>test2.c AN
 
 # Forced external
 statement ok
-PRAGMA debug_force_external=true;
+SET debug_force_external=true;
 
 # In memory unswizzling
 statement ok

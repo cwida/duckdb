@@ -449,7 +449,7 @@ ORDER BY 1, 2
 foreach windowmode "window" "combine" "separate"
 
 statement ok
-PRAGMA debug_window_mode={windowmode}
+SET debug_window_mode={windowmode}
 
 query II
 WITH t(r, i, p, f) AS (VALUES

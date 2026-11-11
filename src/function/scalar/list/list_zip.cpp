@@ -163,8 +163,6 @@ static unique_ptr<FunctionData> ListZipBind(BindScalarFunctionInput &input) {
 		case LogicalTypeId::SQLNULL:
 			struct_children.emplace_back(make_pair(string(), LogicalTypeId::SQLNULL));
 			break;
-		case LogicalTypeId::UNKNOWN:
-			throw ParameterNotResolvedException();
 		default:
 			throw BinderException("Parameter type needs to be List");
 		}

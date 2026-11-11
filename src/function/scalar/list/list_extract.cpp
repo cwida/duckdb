@@ -141,7 +141,7 @@ static unique_ptr<FunctionData> StringExtractBind(BindScalarFunctionInput &input
 		return nullptr;
 	}
 	string error;
-	auto index_value = index->DefaultTryCastAs(LogicalType::BIGINT, &error);
+	auto index_value = index->TryCastAs(input.GetClientContext(), LogicalType::BIGINT, &error);
 	if (!index_value) {
 		// the index is a constant that cannot be converted to an integer at all - report that directly
 		throw ConversionException(error);

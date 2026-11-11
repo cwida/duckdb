@@ -2,9 +2,6 @@
 # description: Test nested lambda parameters in the rhs of lambda expressions
 # group: [lambdas]
 
-statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
 # Issue 5795.
 
 query I

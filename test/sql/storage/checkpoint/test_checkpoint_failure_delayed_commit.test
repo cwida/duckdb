@@ -12,10 +12,10 @@ statement ok
 ATTACH '{TEST_DIR}/fail_detach_delayed' AS db;
 
 statement ok
-PRAGMA wal_autocheckpoint = '1TB';
+SET wal_autocheckpoint = '1TB';
 
 statement ok
-PRAGMA debug_checkpoint_abort = 'before_header';
+SET debug_checkpoint_abort = 'before_header';
 
 statement ok
 CREATE TABLE db.integers AS SELECT * FROM range(100) tbl(i);

@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
 #include "duckdb/main/query_profiler.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/main/statement_iterator.hpp"
 
@@ -82,7 +83,8 @@ TEST_CASE("Test parser timing is reported per statement", "[api]") {
 	con.EnableProfiling();
 	ClientConfig::GetConfig(*con.context).profiler_save_location =
 	    TestCreatePath("test_query_profiler_parser_output.txt");
-	ClientConfig::GetConfig(*con.context).tracked_metrics = {"parser.total_time", "query.sql"};
+	Settings::Set<TrackedMetricsSetting>(*con.context, SetScope::SESSION,
+	                                     Value::LIST({Value("parser.total_time"), Value("query.sql")}));
 
 	REQUIRE_NO_FAIL(con.Query("SELECT 7;"));
 	auto single_statement_output = con.GetProfilingInformation(ProfilerPrintFormat::JSON());
@@ -90,7 +92,7 @@ TEST_CASE("Test parser timing is reported per statement", "[api]") {
 	REQUIRE(single_statement_output.find("SELECT 7;") != std::string::npos);
 
 	auto iterator = con.context->IterateStatements("SELECT 42; SELECT 43;");
-	for (const auto expected_query : {"SELECT 42; ", "SELECT 43;"}) {
+	for (const auto expected_query : {"SELECT 42;", " SELECT 43;"}) {
 		REQUIRE(iterator.Peek());
 		auto statement = iterator.GetStatementForExecution();
 		REQUIRE(statement);
@@ -110,7 +112,8 @@ TEST_CASE("Extracting statements does not start the query profiler", "[api]") {
 	con.EnableProfiling();
 	ClientConfig::GetConfig(*con.context).profiler_save_location =
 	    TestCreatePath("test_query_profiler_extract_output.txt");
-	ClientConfig::GetConfig(*con.context).tracked_metrics = {"parser.total_time", "query.sql"};
+	Settings::Set<TrackedMetricsSetting>(*con.context, SetScope::SESSION,
+	                                     Value::LIST({Value("parser.total_time"), Value("query.sql")}));
 
 	auto statements = con.ExtractStatements("SELECT 44;");
 	REQUIRE(statements.size() == 1);
