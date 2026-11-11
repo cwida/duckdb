@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output='OPTIMIZED_ONLY';
+SET explain_output='OPTIMIZED_ONLY';
 
 # disable this (for now - could be fixed by pushing casts instead of internal compress functions if possible)
 statement ok

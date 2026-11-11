@@ -6,7 +6,7 @@
 load {TEST_DIR}/test_rle_bool.db
 
 statement ok
-PRAGMA force_compression = 'rle'
+SET force_compression = 'rle'
 
 # simple RLE with few values
 statement ok

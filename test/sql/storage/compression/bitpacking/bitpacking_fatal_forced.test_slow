@@ -8,10 +8,10 @@ load {TEST_DIR}/test_bitpacking.db
 foreach bitpacking_mode delta_for for constant_delta constant
 
 statement ok
-PRAGMA force_bitpacking_mode='{bitpacking_mode}'
+SET force_bitpacking_mode='{bitpacking_mode}'
 
 statement ok
-PRAGMA force_compression = 'bitpacking'
+SET force_compression = 'bitpacking'
 
 statement ok
 CREATE TABLE test (x INT128, a INT64, b INT32, c INT16, d TINYINT);

@@ -5,10 +5,10 @@
 require json
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET profiling_mode='standard';
@@ -41,10 +41,10 @@ SELECT unnest(current_setting('tracked_metrics')) ORDER BY ALL;
 ----
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['optimizer.join_order'];
@@ -72,10 +72,10 @@ FROM metrics_output;
 true
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['optimizer.total_time'];
@@ -107,10 +107,10 @@ statement ok
 SET profiling_mode = 'detailed';
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SELECT unnest(['Maia', 'Thijs', 'Mark', 'Hannes', 'Tom', 'Max', 'Carlo', 'Sam', 'Tania']) AS names ORDER BY random();
@@ -130,10 +130,10 @@ statement ok
 SET profiling_mode = 'standard';
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SELECT unnest(['Maia', 'Thijs', 'Mark', 'Hannes', 'Tom', 'Max', 'Carlo', 'Sam', 'Tania']) AS names ORDER BY random();

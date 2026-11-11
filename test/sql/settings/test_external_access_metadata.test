@@ -5,9 +5,6 @@
 require skip_reload
 
 statement ok
-PRAGMA disable_verification;
-
-statement ok
 SET enable_external_access=false;
 
 statement error

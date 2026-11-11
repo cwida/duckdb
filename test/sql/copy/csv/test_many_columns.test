@@ -6,4 +6,4 @@ statement ok
 CREATE TABLE t AS SELECT * FROM read_csv_auto('{DATA_DIR}/csv/manycolumns.csv');
 
 statement ok
-SHOW t
+DESCRIBE t

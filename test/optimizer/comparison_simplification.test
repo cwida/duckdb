@@ -9,7 +9,7 @@ statement ok
 CREATE TABLE test(X INTEGER);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # comparisons with NULL result in NULL
 query I nosort compnorm1
@@ -62,7 +62,7 @@ statement ok
 INSERT INTO date_test VALUES ('2024-01-01'), ('2024-06-15'), ('2025-01-01');
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 # --- midnight, column LEFT: all 6 ops rewrite to direct DATE comparison ---
 query II

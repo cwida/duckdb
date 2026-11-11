@@ -290,6 +290,15 @@ ExtensionLoadResult SQLLogicTestRunner::LoadExtension(DuckDB &db, const std::str
 	return linked_result;
 }
 
+//! Make any statement that logs a warning fail with that warning as its error
+static void EnableWarningsAsErrors(DuckDB &db) {
+	Connection con(db);
+	auto result = con.Query("SET logging_level='WARNING'; SET enable_logging=true; SET warnings_as_errors=true;");
+	if (result->HasError()) {
+		result->ThrowError("Failed to enable warnings_as_errors: ");
+	}
+}
+
 NewDatabaseConnection SQLLogicTestRunner::CreateDatabase(const string &db_path, bool load_extensions) {
 	NewDatabaseConnection result;
 	// a prefixed path (ducklake:...) loads its extension inside the DuckDB constructor, before LoadExtension can run
@@ -309,6 +318,9 @@ NewDatabaseConnection SQLLogicTestRunner::CreateDatabase(const string &db_path, 
 		auto &test_config = TestConfiguration::Get();
 		for (auto ext : test_config.ExtensionToBeLoadedOnLoad()) {
 			SQLLogicTestRunner::LoadExtension(*result.db, ext);
+		}
+		if (test_config.GetWarningsAsErrors()) {
+			EnableWarningsAsErrors(*result.db);
 		}
 	} catch (std::exception &ex) {
 		config->options.extension_directories = saved_extension_directories;
@@ -350,9 +362,8 @@ unique_ptr<Connection> SQLLogicTestRunner::ConnectToDatabase(DuckDB &db_ref) {
 #ifdef DUCKDB_ALTERNATIVE_VERIFY
 	result->Query("SET pivot_filter_threshold=0");
 #endif
-	auto &client_config = ClientConfig::GetConfig(*result->context);
-	client_config.enable_progress_bar = true;
-	client_config.print_progress_bar = false;
+	Settings::Set<EnableProgressBarSetting>(*result->context, SetScope::SESSION, Value::BOOLEAN(true));
+	Settings::Set<EnableProgressBarPrintSetting>(*result->context, SetScope::SESSION, Value::BOOLEAN(false));
 	// Set the local extension repo for autoinstalling extensions
 	if (!local_extension_repo.empty()) {
 		auto res1 = result->Query("SET autoinstall_extension_repository='" + local_extension_repo + "'");

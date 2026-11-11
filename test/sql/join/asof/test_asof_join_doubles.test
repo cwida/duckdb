@@ -7,7 +7,7 @@
 #
 
 statement ok
-PRAGMA asof_loop_join_threshold=0;
+SET asof_loop_join_threshold=0;
 
 # Use doubles for readable infinities
 statement ok

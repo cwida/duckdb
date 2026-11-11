@@ -4,7 +4,7 @@
 
 # force multi-threaded build so thread-local dictionaries reconcile through Merge
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 statement ok
 PRAGMA verify_parallelism
@@ -225,7 +225,7 @@ WHERE o.ok < 10
 # external is supported: the in-memory dictionary and the narrow index column survive the spill/repartition,
 # so results must match the in-memory path
 statement ok
-PRAGMA debug_force_external=true
+SET debug_force_external=true
 
 query II
 SELECT n.n_name, COUNT(*) AS cnt
@@ -280,7 +280,7 @@ FROM nation n JOIN customer c ON n.nk = c.nk JOIN orders o ON o.ck = c.ck
 ----
 
 statement ok
-PRAGMA debug_force_external=false
+SET debug_force_external=false
 
 # a column read by a residual predicate keeps native width (the predicate spans both sides to stay a residual)
 query II
@@ -426,7 +426,7 @@ statement ok
 ATTACH '{TEST_DIR}/hash_join_dict_surviving.db' AS sdb
 
 statement ok
-PRAGMA force_compression='dictionary'
+SET force_compression='dictionary'
 
 statement ok
 CREATE TABLE sdb.dim (k VARCHAR, name VARCHAR)
@@ -453,7 +453,7 @@ NAME_3	4000
 NAME_4	4000
 
 statement ok
-PRAGMA force_compression='auto'
+SET force_compression='auto'
 
 statement ok
 SET disabled_optimizers='join_order'

@@ -1,0 +1,385 @@
+# name: test/sql/catalog/function/drop_function_signature_concurrent.test
+# description: Member drops conflict with concurrent dependency creation in either commit order
+# group: [function]
+
+# a member drop needs storage v2.1.0
+load {TEST_DIR}/drop_function_signature_concurrent.db readwrite v2.1.0
+
+foreach storage_version v2.1.0
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+SET wal_autocheckpoint = '1TB';
+
+statement ok
+ATTACH '{TEST_DIR}/concurrent_member_{storage_version}.db' AS mdb (STORAGE_VERSION '{storage_version}');
+
+statement ok con1
+SET enable_macro_dependencies=true;
+
+statement ok con2
+SET enable_macro_dependencies=true;
+
+statement ok
+CREATE MACRO mdb.f(x INTEGER) AS x + 1, (x VARCHAR) AS 42;
+
+statement ok
+CREATE MACRO mdb.tm(x INTEGER) AS TABLE (SELECT x + 1 AS v), (x VARCHAR) AS TABLE (SELECT 42 AS v);
+
+statement ok
+CHECKPOINT mdb;
+
+# The removal commits first: dependencies bound against the old member set cannot commit.
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+DROP MACRO mdb.f(VARCHAR);
+
+statement ok con2
+CREATE MACRO mdb.caller() AS mdb.f(1);
+
+statement ok con1
+COMMIT;
+
+statement error con2
+COMMIT;
+----
+was altered incompatibly by another transaction
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+DROP MACRO TABLE mdb.tm(VARCHAR);
+
+statement ok con2
+CREATE MACRO mdb.table_caller() AS TABLE SELECT * FROM mdb.tm(1);
+
+statement ok con1
+COMMIT;
+
+statement error con2
+COMMIT;
+----
+was altered incompatibly by another transaction
+
+# The dependency commits first: the removal must recheck dependents at commit.
+statement ok
+CREATE OR REPLACE MACRO mdb.f(x INTEGER) AS x + 1, (x VARCHAR) AS 42;
+
+statement ok
+CREATE OR REPLACE MACRO mdb.tm(x INTEGER) AS TABLE (SELECT x + 1 AS v), (x VARCHAR) AS TABLE (SELECT 42 AS v);
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+DROP MACRO mdb.f(VARCHAR);
+
+statement ok con2
+CREATE MACRO mdb.caller() AS mdb.f(1);
+
+statement ok con2
+COMMIT;
+
+statement error con1
+COMMIT;
+----
+Could not commit DROP
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+DROP MACRO TABLE mdb.tm(VARCHAR);
+
+statement ok con2
+CREATE MACRO mdb.table_caller() AS TABLE SELECT * FROM mdb.tm(1);
+
+statement ok con2
+COMMIT;
+
+statement error con1
+COMMIT;
+----
+Could not commit DROP
+
+query III
+SELECT mdb.f(1), mdb.f('a'), mdb.caller();
+----
+2	42	2
+
+query II
+SELECT (SELECT v FROM mdb.tm('a')), (SELECT v FROM mdb.table_caller());
+----
+42	2
+
+# A later commit must also survive recovery after the conflicting transactions were rolled back.
+statement ok
+CREATE TABLE mdb.after_races AS SELECT 99 AS i;
+
+restart
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+SET wal_autocheckpoint = '1TB';
+
+statement ok
+ATTACH '{TEST_DIR}/concurrent_member_{storage_version}.db' AS mdb;
+
+query IIII
+SELECT mdb.f(1), mdb.f('a'), mdb.caller(), (SELECT i FROM mdb.after_races);
+----
+2	42	2	99
+
+query II
+SELECT (SELECT v FROM mdb.tm('a')), (SELECT v FROM mdb.table_caller());
+----
+42	2
+
+# Own earlier member drops are visible when committing a subsequently created dependency.
+statement ok
+SET enable_macro_dependencies=true;
+
+statement ok
+BEGIN;
+
+statement ok
+DROP MACRO mdb.caller;
+
+statement ok
+DROP MACRO TABLE mdb.table_caller;
+
+statement ok
+DROP MACRO mdb.f(VARCHAR);
+
+statement ok
+DROP MACRO TABLE mdb.tm(VARCHAR);
+
+statement ok
+CREATE MACRO mdb.caller() AS mdb.f(1);
+
+statement ok
+CREATE MACRO mdb.table_caller() AS TABLE SELECT * FROM mdb.tm(1);
+
+statement ok
+COMMIT;
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/concurrent_member_{storage_version}.db' AS mdb;
+
+query II
+SELECT mdb.caller(), (SELECT v FROM mdb.table_caller());
+----
+2	2
+
+statement ok
+DETACH mdb;
+
+endloop
+
+# Comment-only changes preserve the member set and allow concurrent dependency creation.
+statement ok
+CREATE MACRO comment_subject(x INTEGER) AS x, (x VARCHAR) AS 42;
+
+statement ok con2
+SET enable_macro_dependencies=true;
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+COMMENT ON MACRO comment_subject IS 'still the same overloads';
+
+statement ok con2
+CREATE MACRO comment_caller() AS comment_subject(1);
+
+statement ok con1
+COMMIT;
+
+statement ok con2
+COMMIT;
+
+query I
+SELECT comment_caller();
+----
+1
+
+# Rolling back a removal leaves the old member set valid for a concurrent dependency.
+statement ok
+CREATE MACRO rollback_subject(x INTEGER) AS x, (x VARCHAR) AS 42;
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+DROP MACRO rollback_subject(VARCHAR);
+
+statement ok con2
+CREATE MACRO rollback_caller() AS rollback_subject(1);
+
+statement ok con1
+ROLLBACK;
+
+statement ok con2
+COMMIT;
+
+query II
+SELECT rollback_subject('a'), rollback_caller();
+----
+42	1
+
+# A dependent bound to the removed overload itself is rejected in either commit order too.
+statement ok
+CREATE MACRO removed_subject(x INTEGER) AS x, (x VARCHAR) AS 42;
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+DROP MACRO removed_subject(VARCHAR);
+
+statement ok con2
+CREATE MACRO removed_caller() AS removed_subject('a');
+
+statement ok con1
+COMMIT;
+
+statement error con2
+COMMIT;
+----
+was altered incompatibly by another transaction
+
+statement ok
+CREATE OR REPLACE MACRO removed_subject(x INTEGER) AS x, (x VARCHAR) AS 42;
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+DROP MACRO removed_subject(VARCHAR);
+
+statement ok con2
+CREATE MACRO removed_caller() AS removed_subject('a');
+
+statement ok con2
+COMMIT;
+
+statement error con1
+COMMIT;
+----
+Could not commit DROP
+
+query II
+SELECT removed_subject('a'), removed_caller();
+----
+42	42
+
+# A comment on the subject is a harmless alter: a concurrent dependency commits in either order.
+statement ok
+CREATE MACRO comment_order(x INTEGER) AS x, (x VARCHAR) AS 42;
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+COMMENT ON MACRO comment_order IS 'first';
+
+statement ok con2
+CREATE MACRO comment_order_caller() AS comment_order(1);
+
+statement ok con2
+COMMIT;
+
+statement ok con1
+COMMIT;
+
+query I
+SELECT comment_order_caller();
+----
+1
+
+# A removal on a different macro does not affect a dependency on this one, in either order.
+statement ok
+CREATE MACRO other_subject(x INTEGER) AS x, (x VARCHAR) AS 42;
+
+statement ok
+CREATE MACRO kept_subject(x INTEGER) AS x + 10;
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+DROP MACRO other_subject(VARCHAR);
+
+statement ok con2
+CREATE MACRO kept_caller() AS kept_subject(1);
+
+statement ok con1
+COMMIT;
+
+statement ok con2
+COMMIT;
+
+statement ok
+CREATE OR REPLACE MACRO other_subject(x INTEGER) AS x, (x VARCHAR) AS 42;
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+DROP MACRO other_subject(VARCHAR);
+
+statement ok con2
+CREATE MACRO kept_caller_2() AS kept_subject(2);
+
+statement ok con2
+COMMIT;
+
+statement ok con1
+COMMIT;
+
+query II
+SELECT kept_caller(), kept_caller_2();
+----
+11	12

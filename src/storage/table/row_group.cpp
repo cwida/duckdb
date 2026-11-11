@@ -1062,12 +1062,6 @@ void RowGroup::ProcessPreparedScan(ScanOptions options, CollectionScanState &sta
 				col_data.Filter(transaction, state.vector_index, state.column_scans[scan_idx], result_vector, sel,
 				                approved_tuple_count, filter.filter, table_filter_state);
 			}
-			for (auto &table_filter : filter_list) {
-				if (table_filter.IsAlwaysTrue()) {
-					continue;
-				}
-				result.data[table_filter.scan_column_index].Slice(sel, approved_tuple_count);
-			}
 		}
 		if (approved_tuple_count == 0) {
 			// all rows were filtered out by the table filters
@@ -1085,6 +1079,15 @@ void RowGroup::ProcessPreparedScan(ScanOptions options, CollectionScanState &sta
 			filter_info.EndFilter(filter_state);
 			FinishVector(state);
 			return;
+		}
+		if (has_filters) {
+			// Slice only columns that will be returned. Empty chunks are reset above without allocating dictionaries.
+			for (auto &table_filter : filter_info.GetFilterList()) {
+				if (table_filter.IsAlwaysTrue()) {
+					continue;
+				}
+				result.data[table_filter.scan_column_index].Slice(sel, approved_tuple_count);
+			}
 		}
 		//! Now we use the selection vector to fetch data for the other columns.
 		for (idx_t i = 0; i < column_ids.size(); i++) {

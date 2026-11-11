@@ -11,7 +11,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
 CREATE TABLE t (r BIGINT, s VARCHAR);
@@ -22,7 +22,7 @@ INSERT INTO t SELECT r, repeat(md5(r::VARCHAR), 10) FROM range(200000) tt(r);
 
 # simulate a crash after the checkpoint header is written but before the WAL is truncated
 statement ok
-PRAGMA debug_checkpoint_abort='before_wal_finish';
+SET debug_checkpoint_abort='before_wal_finish';
 
 statement error
 CHECKPOINT;
@@ -33,7 +33,7 @@ restart
 
 # the crash simulation is done - the abort setting survives the restart, reset it
 statement ok
-PRAGMA debug_checkpoint_abort='none';
+SET debug_checkpoint_abort='none';
 
 # the checkpoint completed cleanly, so the WAL is discarded without being replayed -
 # the deserialize-only scan must not have leaked block usage marks for the ROW_GROUP_DATA blocks
@@ -41,7 +41,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
 SET debug_verify_blocks=true;

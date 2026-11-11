@@ -5,7 +5,7 @@
 require skip_reload
 
 statement ok
-pragma storage_compatibility_version='v1.2.0'
+SET storage_compatibility_version='v1.2.0'
 
 statement ok
 SET default_transaction_invalidation_policy='SYNTACTIC_ERRORS_DO_NOT_INVALIDATE';

@@ -12,10 +12,10 @@ statement ok
 COPY (SELECT * FROM range(0, 10) as r(i)) TO '{TEST_DIR}/range2.parquet' (FORMAT 'parquet');
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET tracked_metrics = ['operator.intermediate_rows', 'operator.rows_scanned', 'query.total_intermediate_rows', 'query.total_rows_scanned'];

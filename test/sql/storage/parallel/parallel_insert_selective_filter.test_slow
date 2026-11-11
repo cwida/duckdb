@@ -72,6 +72,6 @@ statement ok
 DROP TABLE integers2
 
 statement ok
-PRAGMA preserve_insertion_order=false
+SET preserve_insertion_order=false
 
 endloop

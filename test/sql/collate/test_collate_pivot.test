@@ -3,7 +3,7 @@
 # group: [collate]
 
 statement ok
-PRAGMA default_collation=NOACCENT;
+SET default_collation='NOACCENT';
 
 statement ok
 CREATE TABLE Cities (

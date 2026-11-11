@@ -70,7 +70,7 @@ SELECT j FROM integers LIMIT 5;
 
 # This shows that the even-indexed insert tuples conflicted with the last rows.
 query I
-SELECT j FROM integers LIMIT 5 OFFSET 4995;
+SELECT j FROM integers ORDER BY rowid LIMIT 5 OFFSET 4995;
 ----
 8
 6

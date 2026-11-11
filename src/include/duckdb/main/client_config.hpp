@@ -53,12 +53,6 @@ struct ClientConfig {
 
 	//! system-wide progress bar disable.
 	const char *system_progress_bar_disable_reason = nullptr;
-	//! If the progress bar is enabled or not.
-	bool enable_progress_bar = false;
-	//! If the print of the progress bar is enabled
-	bool print_progress_bar = true;
-	//! The wait time before showing the progress bar
-	int wait_time = 2000;
 
 	//! Force parallelism of small tables, used for testing
 	bool verify_parallelism = false;
