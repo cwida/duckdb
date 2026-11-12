@@ -280,6 +280,18 @@ SELECT count(*) FROM big_a t1 JOIN big_c t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
 statement ok
 SET disabled_optimizers = 'filter_pushdown,join_order,build_side_probe_side,join_filter_pushdown,expression_rewriter';
 
+# the conditions written as a filter over a cross product: the filter evaluates its conjuncts in an adaptive order,
+# so the verification statistics of a conjunct cannot assume the narrowing by the earlier conjuncts
+query II
+EXPLAIN SELECT count(*) FROM big_a t1, big_c t2 WHERE t1.n >= 1001 AND t2.n <= 1999 AND t1.n = t2.n AND t1.n::DECIMAL(18,3) >= t2.n;
+----
+physical_plan	<REGEX>:.*CROSS_PRODUCT.*
+
+query I
+SELECT count(*) FROM big_a t1, big_c t2 WHERE t1.n >= 1001 AND t2.n <= 1999 AND t1.n = t2.n AND t1.n::DECIMAL(18,3) >= t2.n;
+----
+686
+
 query II
 EXPLAIN SELECT count(*) FROM lhs JOIN rhs ON lhs.n >= rhs.n AND lhs.n + 1 >= rhs.n;
 ----
