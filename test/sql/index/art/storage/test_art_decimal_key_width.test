@@ -191,16 +191,19 @@ RESET max_decimal_width
 
 # an in-memory database is at the latest storage version: its keys are bound without a bound as well
 statement ok
-CREATE TABLE m (a DECIMAL(38,0), b DECIMAL(38,1))
+ATTACH ':memory:' AS mem
 
 statement ok
-CREATE UNIQUE INDEX mx ON m ((coalesce(a, b)::DECIMAL(38,1)))
+CREATE TABLE mem.m (a DECIMAL(38,0), b DECIMAL(38,1))
 
 statement ok
-INSERT INTO m VALUES (NULL, 0.1)
+CREATE UNIQUE INDEX mx ON mem.m ((coalesce(a, b)::DECIMAL(38,1)))
+
+statement ok
+INSERT INTO mem.m VALUES (NULL, 0.1)
 
 statement error
-INSERT INTO m VALUES (NULL, 0.1)
+INSERT INTO mem.m VALUES (NULL, 0.1)
 ----
 <REGEX>:.*Duplicate key.*0\.1.*
 
@@ -208,26 +211,29 @@ statement ok
 SET max_decimal_width = 38
 
 statement error
-INSERT INTO m VALUES (NULL, 0.1)
+INSERT INTO mem.m VALUES (NULL, 0.1)
 ----
 <REGEX>:.*Duplicate key.*0\.1.*
 
 statement ok
-CREATE TABLE n (a BIGNUM)
+CREATE TABLE mem.n (a BIGNUM)
 
 statement ok
-CREATE UNIQUE INDEX nx ON n ((coalesce(try_cast(a AS DECIMAL(18,0)), -1::DECIMAL(18,0))))
+CREATE UNIQUE INDEX nx ON mem.n ((coalesce(try_cast(a AS DECIMAL(18,0)), -1::DECIMAL(18,0))))
 
 statement ok
-INSERT INTO n VALUES ('1'::BIGNUM)
+INSERT INTO mem.n VALUES ('1'::BIGNUM)
 
 statement error
-INSERT INTO n VALUES ('1'::BIGNUM)
+INSERT INTO mem.n VALUES ('1'::BIGNUM)
 ----
 <REGEX>:.*Duplicate key.*1.*
 
 statement ok
-INSERT INTO n VALUES ('2'::BIGNUM)
+INSERT INTO mem.n VALUES ('2'::BIGNUM)
 
 statement ok
 RESET max_decimal_width
+
+statement ok
+DETACH mem
