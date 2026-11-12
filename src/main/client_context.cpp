@@ -1535,7 +1535,7 @@ SettingLookupResult ClientContext::TryGetCurrentSetting(const Identifier &key, V
 		return SettingLookupResult(SettingScope::LOCAL);
 	}
 	// setting is not set - get the default value
-	return DBConfig::TryGetDefaultValue(option, result);
+	return db_config.TryGetDefaultValue(key, option, result);
 }
 
 SettingLookupResult ClientContext::TryGetCurrentUserSetting(idx_t setting_index, Value &result) const {

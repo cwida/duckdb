@@ -175,6 +175,9 @@ public:
 	bool HasStatisticsCallback() const {
 		return statistics;
 	}
+	bool HasSameStatisticsCallback(const BoundCastInfo &other) const {
+		return statistics && statistics == other.statistics;
+	}
 	void SetStatisticsCallback(cast_statistics_t new_statistics) {
 		statistics = new_statistics;
 	}

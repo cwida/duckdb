@@ -31,7 +31,7 @@ def test_logging_custom_delim(shell):
 
 def test_logging_shell_pretty(shell):
     # INFO/TRACE logs render as a compact single line "LEVEL:type   <elapsed>  <message>" via
-    # the shell log storage. '.highlight off' makes the output deterministic (no ANSI). The elapsed
+    # the shell log sink. '.highlight off' makes the output deterministic (no ANSI). The elapsed
     # value is measured from CLI launch, so assert on the prefix + message, not the timing.
     test = (
         ShellTest(shell)

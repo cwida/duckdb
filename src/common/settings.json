@@ -1246,12 +1246,21 @@
         "custom_implementation": true
     },
     {
+        "name": "logging_sink",
+        "description": "Set the logging sink, options are 'memory', 'stdout', 'file', '<custom>'.",
+        "type": "VARCHAR",
+        "scope": "global",
+        "struct": "LoggingSink",
+        "custom_implementation": true
+    },
+    {
         "name": "logging_storage",
-        "description": "Set the logging storage, options are 'memory', 'stdout', 'file', '<custom>'.",
+        "description": "Deprecated setting. Use logging_sink instead.",
         "type": "VARCHAR",
         "scope": "global",
         "struct": "LoggingStorage",
-        "custom_implementation": true
+        "custom_implementation": true,
+        "is_deprecated": true
     },
     {
         "name": "match_recognize_max_states",

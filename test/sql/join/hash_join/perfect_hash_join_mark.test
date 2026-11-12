@@ -1,0 +1,86 @@
+# name: test/sql/join/hash_join/perfect_hash_join_mark.test
+# description: Bitmap and row lookup preserve ungrouped and grouped MARK semantics
+# group: [hash_join]
+
+# Keep the operator logs across statements.
+require skip_reload
+
+statement ok
+SET VARIABLE check_perfect_activation =
+    NOT current_setting('debug_force_external') AND NOT current_setting('debug_disable_optimizer');
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side,join_filter_pushdown,statistics_propagation';
+
+statement ok
+CREATE TABLE p(k BIGINT, v BIGINT);
+
+statement ok
+INSERT INTO p VALUES (0,0),(1,1),(2,2),(3,NULL),(NULL,10);
+
+statement ok
+CREATE TABLE b(k BIGINT, v BIGINT);
+
+statement ok
+INSERT INTO b VALUES (0,-1),(0,NULL),(1,5),(2,0),(NULL,0);
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query II
+SELECT k, k IN (SELECT k FROM b) FROM p ORDER BY k NULLS LAST;
+----
+0	true
+1	true
+2	true
+3	NULL
+NULL	NULL
+
+statement ok
+INSERT INTO p VALUES (0,-5),(1,NULL);
+
+query III
+SELECT p.k,p.v,__mark_join_marker FROM p JOIN BY(TYPE MARK) b
+ON p.k IS NOT DISTINCT FROM b.k AND p.v>b.v ORDER BY p.k NULLS LAST,p.v NULLS LAST;
+----
+0	-5	NULL
+0	0	true
+1	1	false
+1	NULL	NULL
+2	2	true
+3	NULL	false
+NULL	10	true
+
+query III
+SELECT p.k,p.v,__mark_join_marker FROM p JOIN BY(TYPE MARK) b
+ON p.k::VARCHAR IS NOT DISTINCT FROM b.k::VARCHAR AND p.v>b.v ORDER BY p.k NULLS LAST,p.v NULLS LAST;
+----
+0	-5	NULL
+0	0	true
+1	1	false
+1	NULL	NULL
+2	2	true
+3	NULL	false
+NULL	10	true
+
+statement ok
+CALL disable_logging();
+
+query III
+SELECT k, v, v > ANY(SELECT b.v FROM b WHERE b.k IS NOT DISTINCT FROM p.k) FROM p
+ORDER BY k NULLS LAST,v NULLS LAST;
+----
+0	-5	NULL
+0	0	true
+1	1	false
+1	NULL	NULL
+2	2	true
+3	NULL	false
+NULL	10	true
+
+query I
+SELECT NOT getvariable('check_perfect_activation') OR list_sort(list(info['backend'])) = ['bitmap','direct','hash']
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event='Lookup' AND parameters['Join Type']='MARK';
+----
+true

@@ -166,6 +166,30 @@ public:
 		}
 	}
 
+	//! Selects the overload of a v1.x aggregate whose bind lost the erased arguments, by its leading parameter types
+	template <class FUNCTION_SET>
+	static optional_idx SelectByLeadingArguments(const FUNCTION_SET &functions, vector<LogicalType> &arguments,
+	                                             const LogicalType &return_type) {
+		for (idx_t offset = 0; offset < functions.functions.size(); offset++) {
+			auto &signature = functions.functions[offset]->GetSignature();
+			if (signature.GetParameterCount() <= arguments.size() ||
+			    signature.GetReturnType().id() != return_type.id()) {
+				continue;
+			}
+			bool leading = true;
+			for (idx_t i = 0; i < arguments.size() && leading; i++) {
+				leading = signature.GetParameter(i).GetType().id() == arguments[i].id();
+			}
+			if (leading) {
+				for (idx_t i = arguments.size(); i < signature.GetParameterCount(); i++) {
+					arguments.push_back(signature.GetParameter(i).GetType());
+				}
+				return offset;
+			}
+		}
+		return optional_idx();
+	}
+
 	//! Splits the argument types a plan recorded into those passed by position and those passed by name
 	static void SplitArgumentTypes(const QualifiedName &qualified_name, const vector<LogicalType> &arguments,
 	                               idx_t positional_count, const vector<Identifier> &named_arguments,
@@ -363,6 +387,7 @@ public:
 		auto positional_count = deserializer.ReadPropertyWithDefault<idx_t>(508, "positional_arguments");
 		auto named_arguments = deserializer.ReadPropertyWithDefault<vector<Identifier>>(509, "named_arguments");
 
+		const bool legacy_without_original_arguments = original_arguments.empty() && positional_count == 0;
 		RestoreErasedArguments(arguments, original_arguments);
 
 		if (arguments.empty() && !children.empty()) {
@@ -421,14 +446,22 @@ public:
 		FunctionBinder binder(context);
 		binder.arguments_collated = true;
 		const auto func_idx = FunctionBinder::SelectFunction(context, functions, {positional_types, keyword_types});
+		optional_idx overload;
+		if (func_idx.IsSuccess()) {
+			overload = func_idx.GetBinding().GetOverloadIndex();
+		} else if (catalog_type == CatalogType::AGGREGATE_FUNCTION_ENTRY && legacy_without_original_arguments &&
+		           named_arguments.empty() && !arguments.empty()) {
+			overload = SelectByLeadingArguments(functions, arguments, return_type);
+			positional_count = arguments.size();
+		}
 
 		// Ensure the function overload was found
-		if (!func_idx.IsSuccess()) {
+		if (!overload.IsValid()) {
 			throw SerializationException("Failed to find function %s(%s)\n%s", qualified_name.ToString(),
 			                             StringUtil::ToString(arguments, ","), func_idx.GetError().RawMessage());
 		}
 
-		const auto function = functions.GetFunctionByOffset(func_idx.GetBinding().GetOverloadIndex());
+		const auto function = functions.GetFunctionByOffset(overload.GetIndex());
 
 		// Does this function support serializing its bound data?
 		if (!has_serialize) {

@@ -52,15 +52,17 @@ static void EnableLogging(ClientContext &context, TableFunctionInput &data, Data
 
 	auto &log_manager = context.db->GetLogManager();
 
-	// warnings stop being printed in the CLI when they no longer reach the shell's storage
-	static constexpr const char *SHELL_LOG_STORAGE = "shell_log_storage";
-	const bool leaves_shell_storage = !StringUtil::CIEquals(bind_data.config.storage, SHELL_LOG_STORAGE);
+	// warnings stop being printed in the CLI when they no longer reach the shell's sink
+	static constexpr const char *SHELL_LOG_SINK = "shell_log_sink";
+	static constexpr const char *DEPRECATED_SHELL_LOG_SINK = "shell_log_storage";
+	const bool leaves_shell_sink = !StringUtil::CIEquals(bind_data.config.storage, SHELL_LOG_SINK) &&
+	                               !StringUtil::CIEquals(bind_data.config.storage, DEPRECATED_SHELL_LOG_SINK);
 	const bool drops_warnings = bind_data.config.level > LogLevel::LOG_WARNING || !bind_data.log_types_to_set.empty();
-	if (StringUtil::CIEquals(log_manager.GetConfig().storage, SHELL_LOG_STORAGE) &&
-	    (leaves_shell_storage || drops_warnings)) {
+	if (StringUtil::CIEquals(log_manager.GetConfig().storage, SHELL_LOG_SINK) &&
+	    (leaves_shell_sink || drops_warnings)) {
 		DUCKDB_LOG_WARNING(context,
 		                   "The logging settings have been changed so you may lose warnings printed in the CLI.\n"
-		                   "To continue printing warnings to the console, set storage='shell_log_storage'.\n"
+		                   "To continue printing warnings to the console, set storage='shell_log_sink'.\n"
 		                   "For more info see https://duckdb.org/docs/current/operations_manual/logging/overview.")
 	}
 
@@ -68,7 +70,7 @@ static void EnableLogging(ClientContext &context, TableFunctionInput &data, Data
 	VerifyFileStoragePath(log_manager, bind_data.config.storage, bind_data.storage_config);
 
 	// Apply the config generated from the input - restoring the previous config if that fails part-way
-	auto previous = log_manager.GetConfigAndStorage();
+	auto previous = log_manager.GetConfigAndSink();
 	try {
 		log_manager.SetConfig(*context.db, bind_data.config);
 
@@ -80,10 +82,10 @@ static void EnableLogging(ClientContext &context, TableFunctionInput &data, Data
 		}
 
 		if (!bind_data.storage_config.empty()) {
-			log_manager.UpdateLogStorageConfig(*context.db, bind_data.storage_config);
+			log_manager.UpdateLogSinkConfig(*context.db, bind_data.storage_config);
 		}
 	} catch (...) {
-		// the previous storage itself, as a new one of its kind would lack its storage config
+		// the previous sink itself, as a new one of its kind would lack its storage config
 		log_manager.RestoreConfig(previous.first, std::move(previous.second));
 		throw;
 	}
@@ -110,7 +112,7 @@ static unique_ptr<FunctionData> BindEnableLogging(ClientContext &context, TableF
 	config.CheckLock(EnabledLogTypes::Name);
 	config.CheckLock(LoggingLevel::Name);
 	config.CheckLock(LoggingMode::Name);
-	config.CheckLock(LoggingStorage::Name);
+	config.CheckLock(LoggingSink::Name);
 
 	auto result = make_uniq<EnableLoggingBindData>();
 
@@ -148,7 +150,7 @@ static unique_ptr<FunctionData> BindEnableLogging(ClientContext &context, TableF
 
 	// If the user didn't explicitly set storage=, infer it. A 'path' in storage_config (provided
 	// either via storage_path= or storage_config={path:...}) implies file storage. Otherwise
-	// preserve the currently configured storage so logging_storage isn't silently reset.
+	// preserve the currently configured storage so logging_sink isn't silently reset.
 	if (!storage_isset) {
 		if (result->storage_config.find("path") != result->storage_config.end()) {
 			result->config.storage = LogConfig::FILE_STORAGE_NAME;
@@ -191,9 +193,9 @@ static void DisableLogging(ClientContext &context, TableFunctionInput &data, Dat
 	context.db->GetLogManager().SetEnableLogging(false);
 }
 
-//! Truncate the current log storage
+//! Truncate the current log sink
 static void TruncateLogs(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
-	context.db->GetLogManager().TruncateLogStorage();
+	context.db->GetLogManager().TruncateLogSink();
 }
 
 static unique_ptr<FunctionData> BindDisableLogging(ClientContext &context, TableFunctionBindInput &input,

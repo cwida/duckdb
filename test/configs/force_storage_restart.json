@@ -57,6 +57,8 @@
         "test/sql/copy/parquet/bloom_filter_coalesced_reads.test",
         "test/sql/storage/compression/zstd/zstd_compression_ratio.test_slow",
         "test/sql/logging/logging_memory_after_truncate.test",
+        "test/sql/logging/logging_deprecated_names.test",
+        "test/sql/logging/logging_scan_progress.test",
         "test/sql/logging/physical_operator_logging.test_slow",
         "test/sql/cte/recursive_cte_logging.test",
         "test/sql/cte/recursive_cte_invariant_build_logging.test",
