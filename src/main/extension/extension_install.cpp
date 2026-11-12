@@ -4,6 +4,7 @@
 #include "duckdb/main/http/http_transport_manager.hpp"
 #include "duckdb/main/http/http_util.hpp"
 #include "duckdb/common/local_file_system.hpp"
+#include "duckdb/common/path.hpp"
 #include "duckdb/main/database_file_opener.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -93,6 +94,16 @@ vector<duckdb::string> ExtensionHelper::DefaultExtensionFolders(FileSystem &fs) 
 	}
 
 	return default_folders;
+}
+
+string ExtensionHelper::ResolveRelativePath(FileSystem &fs, const string &path) {
+	// '~' is expanded when the path is used, since it depends on the home_directory setting
+	if (path.empty() || StringUtil::StartsWith(path, "~") || fs.IsPathAbsolute(path) ||
+	    FileSystem::IsRemoteFile(path) || !Path::FromString(path).IsLocal()) {
+		return path;
+	}
+	// no normalization: '..' components and symbolic links are left to the OS
+	return FileSystem::GetWorkingDirectory() + fs.PathSeparator(path) + path;
 }
 
 vector<string> ExtensionHelper::GetExtensionDirectoryPath(ClientContext &context) {

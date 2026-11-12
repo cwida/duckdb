@@ -1,0 +1,91 @@
+# name: test/sql/extensions/load_relative_path.test
+# description: Relative extension paths are resolved against the working directory, for LOAD and for the extension directory settings
+# group: [extensions]
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+require notmingw
+
+# a persistent database, so that restart can unload the extension between the loads below
+load {TEMP_DIR}/load_relative_path.db
+
+# {TEMP_DIR} is relative to the working directory of the test runner, {BUILD_DIRECTORY} is absolute.
+# SQL cannot write files ending in .duckdb_extension, so the extension goes through a gzip file the runner unpacks.
+statement ok
+COPY (SELECT content FROM read_blob('{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension')) TO '{TEMP_DIR}/loadable_extension_demo.gz' (FORMAT BLOB, COMPRESSION gzip);
+
+unzip {TEMP_DIR}/loadable_extension_demo.gz {TEMP_DIR}/loadable_extension_demo.duckdb_extension
+
+statement ok
+LOAD '{TEMP_DIR}/loadable_extension_demo.duckdb_extension';
+
+query I
+SELECT test_alias_hello();
+----
+Hello Alias!
+
+# a missing extension is reported by its absolute path, not by the relative path as written
+statement error
+LOAD '{TEMP_DIR}/does_not_exist.duckdb_extension';
+----
+<REGEX>:.*Extension "(/|[A-Za-z]:[\\/]).*does_not_exist\.duckdb_extension" not found.*
+
+restart
+
+# a relative extension directory is made absolute when it is set, a '~' directory is expanded when it is used
+statement ok
+SET extension_directory='{TEMP_DIR}/it''s a dir (#1) [50%] ü';
+
+query I
+SELECT current_setting('extension_directory');
+----
+<REGEX>:(/|[A-Za-z]:[\\/]).*[/\\]it's a dir \(#1\) \[50%\] ü
+
+statement ok
+SET extension_directories=['{TEMP_DIR}/it''s a dir (#1) [50%] ü', '~/not resolved'];
+
+query I
+SELECT current_setting('extension_directories')[1];
+----
+<REGEX>:(/|[A-Za-z]:[\\/]).*[/\\]it's a dir \(#1\) \[50%\] ü
+
+query I
+SELECT current_setting('extension_directories')[2];
+----
+~/not resolved
+
+statement ok
+RESET extension_directories;
+
+# the directory with spaces and quotes is created by INSTALL, which also exercises the by-name load from it
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension';
+
+statement ok
+LOAD loadable_extension_demo;
+
+query I
+SELECT test_alias_hello();
+----
+Hello Alias!
+
+restart
+
+# a direct load from a relative path with quotes and other special characters (unzip takes a single token, so no spaces)
+statement ok
+SET extension_directory='{TEMP_DIR}/it''s_(#1)_[50%]_ü';
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension';
+
+unzip {TEMP_DIR}/loadable_extension_demo.gz {TEMP_DIR}/it's_(#1)_[50%]_ü/loadable_extension_demo.duckdb_extension
+
+statement ok
+LOAD '{TEMP_DIR}/it''s_(#1)_[50%]_ü/loadable_extension_demo.duckdb_extension';
+
+query I
+SELECT test_alias_hello();
+----
+Hello Alias!

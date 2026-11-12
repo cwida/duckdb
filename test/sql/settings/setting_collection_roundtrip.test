@@ -3,10 +3,10 @@
 # group: [settings]
 
 statement ok
-SET extension_directories=['first', 'second']
+SET extension_directories=['/first', '/second']
 
 query I
-SELECT current_setting('extension_directories') = ['first', 'second']
+SELECT current_setting('extension_directories') = ['/first', '/second']
 ----
 true
 

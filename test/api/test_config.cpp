@@ -170,9 +170,11 @@ TEST_CASE("Test secret_directory configuration", "[api]") {
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 
-	// Ensure that the extension directory is set correctly (according to the inital config)
+	// the extension directory of the initial config is kept, resolved against the working directory when it was set
+	LocalFileSystem fs;
+	auto expected_extension_dir = FileSystem::GetWorkingDirectory() + fs.PathSeparator("") + "my_extension_dir";
 	auto select_extension_dir = con.Query("SELECT current_setting('extension_directory') AS extdir;");
-	REQUIRE(select_extension_dir->Collection().GetValue(0, 0).ToString() == "my_extension_dir");
+	REQUIRE(select_extension_dir->Collection().GetValue(0, 0).ToString() == expected_extension_dir);
 
 	auto select_secret_dir = con.Query("SELECT current_setting('secret_directory') AS secretdir;");
 	REQUIRE(select_secret_dir->Collection().GetValue(0, 0).ToString() == "my_secret_dir");
