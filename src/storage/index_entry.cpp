@@ -439,10 +439,8 @@ void IndexEntry::VerifyUpdate(const vector<PhysicalIndex> &column_ids) const {
 
 void IndexEntry::Vacuum() {
 	auto entry_lock = lock.GetExclusiveLock();
-	if (shadow_pending) {
-		// the checkpoint's copy shares the buffers that vacuuming rewrites
-		return;
-	}
+	// vacuuming holds the shared checkpoint lock
+	D_ASSERT(!shadow_pending);
 	if (owned_index->IsBound()) {
 		owned_index->Cast<BoundIndex>().Vacuum();
 	}
