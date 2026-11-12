@@ -144,6 +144,8 @@ public:
 	}
 	//! Why a column type cannot be stored at the storage version of this database, empty when it can
 	string GetUnsupportedTypeReason(const LogicalType &type) const;
+	//! Why something that needs the required storage version is not supported by this database, which is prior to it
+	string GetUnsupportedPriorToVersionReason(const string &what, StorageVersion required) const;
 	//! Throws when a column type cannot be stored at the storage version of this database
 	void CheckTypeIsSupported(const LogicalType &type) const;
 	//! Whether a type holds a DECIMAL stored as a BIGNUM blob, the argument types of aggregate states included

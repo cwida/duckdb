@@ -17,8 +17,10 @@
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/planner/operator/logical_create_index.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 
@@ -93,13 +95,54 @@ optional_ptr<const Expression> FindWideDecimalExpression(const vector<unique_ptr
 	return nullptr;
 }
 
+bool ContainsTypeId(const LogicalType &type, LogicalTypeId id) {
+	return TypeVisitor::Contains(type, [&](const LogicalType &child) { return child.id() == id; });
+}
+
+//! The first cast between BIGNUM and DECIMAL within the key, if any: the engines before wide decimals have no such
+//! cast (a TRY_CAST gives NULL there), so the keys they stored differ from the keys this engine computes
+optional_ptr<const BoundFunctionExpression> FindBignumDecimalCast(const Expression &expr) {
+	if (BoundCastExpression::IsCast(expr)) {
+		auto &cast = expr.Cast<BoundFunctionExpression>();
+		const auto source = BoundCastExpression::SourceType(cast);
+		auto &target = BoundCastExpression::TargetType(cast);
+		if ((ContainsTypeId(source, LogicalTypeId::BIGNUM) && ContainsTypeId(target, LogicalTypeId::DECIMAL)) ||
+		    (ContainsTypeId(source, LogicalTypeId::DECIMAL) && ContainsTypeId(target, LogicalTypeId::BIGNUM))) {
+			return &cast;
+		}
+	}
+	optional_ptr<const BoundFunctionExpression> result;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		if (!result) {
+			result = FindBignumDecimalCast(child);
+		}
+	});
+	return result;
+}
+
+optional_ptr<const BoundFunctionExpression> FindBignumDecimalCast(const vector<unique_ptr<Expression>> &keys) {
+	for (auto &key : keys) {
+		auto cast = FindBignumDecimalCast(*key);
+		if (cast) {
+			return cast;
+		}
+	}
+	return nullptr;
+}
+
 //! Why the engines before wide decimals compute other keys for the expressions than this engine, empty when they
-//! agree: those engines bind every decimal within 38 digits
+//! agree: those engines bind every decimal within 38 digits and have no cast between BIGNUM and DECIMAL
 string DescribeLegacyKeyDifference(const vector<unique_ptr<Expression>> &keys) {
 	auto wide = FindWideDecimalExpression(keys);
 	if (wide) {
 		return StringUtil::Format("%s binds to %s, those engines bind decimal keys within %d digits", wide->ToString(),
 		                          wide->GetReturnType().ToString(), Decimal::MAX_WIDTH_INT128);
+	}
+	auto cast = FindBignumDecimalCast(keys);
+	if (cast) {
+		return StringUtil::Format("%s casts %s to %s, a cast those engines do not have (a TRY_CAST gives NULL there)",
+		                          cast->ToString(), BoundCastExpression::SourceType(*cast).ToString(),
+		                          BoundCastExpression::TargetType(*cast).ToString());
 	}
 	return string();
 }
@@ -110,7 +153,8 @@ void ThrowMismatchedStoredKey(const UnboundIndex &unbound_index, StorageVersion 
 	auto &name = unbound_index.GetIndexName();
 	throw BinderException("Cannot bind index %s on table %s: the index was stored at storage version %s, whose engines "
 	                      "compute other keys for its expression (%s), so the stored keys differ from the keys this "
-	                      "engine computes. DROP INDEX %s and CREATE it again",
+	                      "engine computes. DROP INDEX %s and CREATE it again; until then writes to the table fail, as "
+	                      "does a CHECKPOINT after writes replayed from the write-ahead log",
 	                      name, unbound_index.GetTableName(), GetStorageVersionName(key_version, false), difference,
 	                      name);
 }
@@ -126,6 +170,11 @@ void CheckNewKeys(AttachedDatabase &db, StorageVersion key_version, const vector
 	if (wide) {
 		throw InvalidInputException(
 		    storage.GetUnsupportedDecimalWidthReason(wide->GetReturnType(), "index key expressions"));
+	}
+	auto cast = FindBignumDecimalCast(keys);
+	if (cast) {
+		throw InvalidInputException(storage.GetUnsupportedPriorToVersionReason(
+		    "Index key expressions with a cast between BIGNUM and DECIMAL", Decimal::WIDE_VERSION_ADDED));
 	}
 }
 

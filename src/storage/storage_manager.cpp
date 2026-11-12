@@ -316,6 +316,11 @@ bool StorageManager::ContainsWideDecimal(const LogicalType &logical_type) {
 	});
 }
 
+string StorageManager::GetUnsupportedPriorToVersionReason(const string &what, StorageVersion required) const {
+	D_ASSERT(IsPriorToVersion(required, GetStorageVersion()));
+	return UnsupportedAtStorageVersion(db, GetStorageVersion(), what, required);
+}
+
 string StorageManager::GetUnsupportedTypeReason(const LogicalType &logical_type) const {
 	const auto storage_version = GetStorageVersion();
 	auto unsupported = [&](const string &what, StorageVersion required) {
