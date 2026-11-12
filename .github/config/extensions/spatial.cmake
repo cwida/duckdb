@@ -3,7 +3,7 @@ if (${BUILD_COMPLETE_EXTENSION_SET})
 duckdb_extension_load(spatial
     LOAD_TESTS
     GIT_URL https://github.com/duckdb/duckdb-spatial
-    GIT_TAG 37bff11aea111375eca0acad7b37a7ac41896af9
+    GIT_TAG e3b4a07a159b18e9fd15a68910c07f203bc357cf
     INCLUDE_DIR src/spatial
     TEST_DIR test/sql
     )
