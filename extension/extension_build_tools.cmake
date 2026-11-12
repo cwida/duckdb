@@ -745,19 +745,32 @@ function(duckdb_extension_generate_version OUTPUT_VAR WORKING_DIR)
         )
     endif()
     if (IS_IN_GIT_DIR)
+        # sync_out_of_tree_extensions.py commits patches on top of the pin; version the pin, like FetchContent builds
+        set(VERSION_COMMIT "HEAD")
+        while (TRUE)
+            execute_process(
+                    COMMAND ${GIT_EXECUTABLE} log -1 "--format=%H %s" ${VERSION_COMMIT}
+                    WORKING_DIRECTORY ${WORKING_DIR}
+                    RESULT_VARIABLE GIT_RESULT
+                    OUTPUT_VARIABLE GIT_COMMIT_INFO
+                    ERROR_VARIABLE GIT_ERROR
+                    OUTPUT_STRIP_TRAILING_WHITESPACE)
+            if (GIT_RESULT AND VERSION_COMMIT STREQUAL "HEAD")
+                message(FATAL_ERROR
+                        "git is available (at ${GIT_EXECUTABLE}) but has failed to execute 'log -1': ${GIT_ERROR}")
+            elseif (GIT_RESULT)
+                string(REPLACE "~1" "" VERSION_COMMIT "${VERSION_COMMIT}")
+                break()
+            endif()
+            string(REGEX MATCH "^[0-9a-f]+" VERSION_COMMIT "${GIT_COMMIT_INFO}")
+            if (NOT GIT_COMMIT_INFO MATCHES "^[0-9a-f]+ [^ ]+\\.patch$")
+                break()
+            endif()
+            set(VERSION_COMMIT "${VERSION_COMMIT}~1")
+        endwhile()
+        string(SUBSTRING "${VERSION_COMMIT}" 0 10 GIT_COMMIT_HASH)
         execute_process(
-                COMMAND ${GIT_EXECUTABLE} log -1 --format=%H
-                WORKING_DIRECTORY ${WORKING_DIR}
-                RESULT_VARIABLE GIT_RESULT
-                OUTPUT_VARIABLE GIT_COMMIT_HASH
-                OUTPUT_STRIP_TRAILING_WHITESPACE)
-        if (GIT_RESULT)
-            message(FATAL_ERROR
-                    "git is available (at ${GIT_EXECUTABLE}) but has failed to execute 'log -1 --format=%H'.")
-        endif()
-        string(SUBSTRING "${GIT_COMMIT_HASH}" 0 10 GIT_COMMIT_HASH)
-        execute_process(
-                COMMAND ${GIT_EXECUTABLE} describe --tags --always --match "${VERSIONING_TAG_MATCH}"
+                COMMAND ${GIT_EXECUTABLE} describe --tags --always --match "${VERSIONING_TAG_MATCH}" ${VERSION_COMMIT}
                 WORKING_DIRECTORY ${WORKING_DIR}
                 RESULT_VARIABLE GIT_RESULT
                 OUTPUT_VARIABLE GIT_DESCRIBE
