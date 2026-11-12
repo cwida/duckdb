@@ -3,7 +3,6 @@
 #include "duckdb/parallel/pipeline_broadcast_exchange.hpp"
 #include "duckdb/execution/operator/projection/physical_projection.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
-#include "duckdb/execution/row_id_deduplicator.hpp"
 #include "duckdb/parallel/meta_pipeline.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
@@ -11,7 +10,6 @@
 #include "duckdb/parser/query_node/merge_query_node.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
-#include "duckdb/common/types/vector.hpp"
 
 namespace duckdb {
 
@@ -352,8 +350,7 @@ public:
 
 class MergeIntoGlobalState : public GlobalSinkState {
 public:
-	MergeIntoGlobalState(ClientContext &context, const PhysicalMergeInto &op)
-	    : op(op), matched_rows(context, GetRowIdTypes(op)) {
+	MergeIntoGlobalState(ClientContext &context, const PhysicalMergeInto &op) : op(op) {
 		merged_count = 0;
 		for (auto &action : op.actions) {
 			shared_ptr<PipelineBroadcastExchange> exchange;
@@ -376,34 +373,10 @@ public:
 		}
 	}
 
-	static vector<LogicalType> GetRowIdTypes(const PhysicalMergeInto &op) {
-		auto &input_types = op.children[0].get().types;
-		if (op.row_id_index >= input_types.size()) {
-			throw InternalException("MERGE row ID index is out of range");
-		}
-		auto row_id_offset = NumericCast<vector<LogicalType>::difference_type>(op.row_id_index);
-		return vector<LogicalType>(input_types.begin() + row_id_offset, input_types.end());
-	}
-
 	const PhysicalMergeInto &op;
 	//! The exchange of every action - NULL for actions that have no operator to push data into
 	vector<shared_ptr<PipelineBroadcastExchange>> exchanges;
 	atomic<idx_t> merged_count;
-	//! Target row-ids already matched by a WHEN MATCHED modifying action, to detect a second action on a row.
-	mutex match_lock;
-	RowIdDeduplicator matched_rows;
-
-	//! Record the matched target rows; throw if any row was already matched (cardinality violation). A distinct
-	//! count below the input count means a row ID repeated.
-	void CheckMatchedRows(DataChunk &matched, idx_t row_id_index) {
-		lock_guard<mutex> glock(match_lock);
-		auto distinct = matched_rows.Register(matched, row_id_index);
-		if (distinct != matched.size()) {
-			throw InvalidInputException(
-			    "MERGE INTO command cannot affect the same target row more than once. A target row matched more "
-			    "than one source row; ensure the source rows are deduplicated or the ON condition is unique.");
-		}
-	}
 
 	SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, MergeIntoLocalState &local_state,
 	                    OperatorSinkInput &input, MergeActionRange range, idx_t &index_in_match) {
@@ -418,15 +391,6 @@ public:
 				if (!input_chunk) {
 					// no data for this action - move to next action
 					continue;
-				}
-				// A WHEN MATCHED update/delete must not affect the same target row twice (cardinality violation).
-				// Checked here, on the freshly condition-selected rows (which still carry the row-id column), so
-				// rows filtered out by the action condition are not counted - matching PostgreSQL. Runs once per
-				// input chunk: on a BLOCKED resume input_chunk is still set and we skip re-checking.
-				if (range.condition == MergeActionCondition::WHEN_MATCHED &&
-				    (action->action_type == MergeActionType::MERGE_UPDATE ||
-				     action->action_type == MergeActionType::MERGE_DELETE)) {
-					CheckMatchedRows(*input_chunk, op.row_id_index);
 				}
 			}
 			// process the action

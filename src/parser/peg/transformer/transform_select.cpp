@@ -387,6 +387,20 @@ QualifiedName PEGTransformerFactory::TransformSchemaReservedIdentifierOrStringLi
 	return result;
 }
 
+static unique_ptr<TableRef> ApplyJoinOrPivot(unique_ptr<TableRef> source, unique_ptr<TableRef> join_or_pivot) {
+	if (join_or_pivot->type == TableReferenceType::JOIN) {
+		join_or_pivot->Cast<JoinRef>().left = std::move(source);
+	} else if (join_or_pivot->type == TableReferenceType::PIVOT) {
+		join_or_pivot->Cast<PivotRef>().source = std::move(source);
+	} else if (join_or_pivot->type == TableReferenceType::MATCH_RECOGNIZE) {
+		join_or_pivot->Cast<MatchRecognizeRef>().input = std::move(source);
+	} else {
+		throw NotImplementedException("Unsupported TableRef type encountered: %s",
+		                              EnumUtil::ToString(join_or_pivot->type));
+	}
+	return join_or_pivot;
+}
+
 void PEGTransformerFactory::InitializeTableRefTrampoline(PEGTransformer &transformer,
                                                          GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
@@ -417,25 +431,18 @@ arena_ptr<TransformResultValue> PEGTransformerFactory::FinalizeTableRefTrampolin
 	auto &repeat_join_or_pivot = join_or_pivot_opt.GetResult().Cast<RepeatParseResult>();
 	auto repeat_children = repeat_join_or_pivot.GetChildren();
 	for (idx_t i = 0; i < repeat_children.size(); i++) {
-		auto transform_join_or_pivot = process.TakeResult<unique_ptr<TableRef>>(1 + i);
-		if (transform_join_or_pivot->type == TableReferenceType::JOIN) {
-			auto &join_ref = transform_join_or_pivot->Cast<JoinRef>();
-			join_ref.left = std::move(inner_table_ref);
-			inner_table_ref = std::move(transform_join_or_pivot);
-		} else if (transform_join_or_pivot->type == TableReferenceType::PIVOT) {
-			auto &pivot_ref = transform_join_or_pivot->Cast<PivotRef>();
-			pivot_ref.source = std::move(inner_table_ref);
-			inner_table_ref = std::move(transform_join_or_pivot);
-		} else if (transform_join_or_pivot->type == TableReferenceType::MATCH_RECOGNIZE) {
-			auto &match_recognize_ref = transform_join_or_pivot->Cast<MatchRecognizeRef>();
-			match_recognize_ref.input = std::move(inner_table_ref);
-			inner_table_ref = std::move(transform_join_or_pivot);
-		} else {
-			throw NotImplementedException("Unsupported TableRef type encountered: %s",
-			                              EnumUtil::ToString(transform_join_or_pivot->type));
-		}
+		inner_table_ref = ApplyJoinOrPivot(std::move(inner_table_ref), process.TakeResult<unique_ptr<TableRef>>(1 + i));
 	}
 	return transformer.MakeResult<unique_ptr<TableRef>>(std::move(inner_table_ref));
+}
+
+unique_ptr<TableRef> PEGTransformerFactory::TransformJoinedTableRefChain(PEGTransformer &transformer,
+                                                                         unique_ptr<TableRef> inner_table_ref,
+                                                                         vector<unique_ptr<TableRef>> join_or_pivot) {
+	for (auto &entry : join_or_pivot) {
+		inner_table_ref = ApplyJoinOrPivot(std::move(inner_table_ref), std::move(entry));
+	}
+	return inner_table_ref;
 }
 
 unique_ptr<TableRef> PEGTransformerFactory::TransformTableUnpivotClauseBody(PEGTransformer &transformer,

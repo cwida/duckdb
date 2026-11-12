@@ -1,0 +1,88 @@
+# name: test/sql/logging/logging_deprecated_names.test
+# description: The deprecated logging_storage setting keeps working and warns
+# group: [logging]
+
+statement ok
+SET GLOBAL logging_level = 'INFO';
+
+statement ok
+SET GLOBAL enable_logging = true;
+
+# logging_sink is the listed setting, logging_storage is deprecated and hidden
+query I
+SELECT count(*) FROM duckdb_settings() WHERE name = 'logging_sink';
+----
+1
+
+query I
+SELECT count(*) FROM duckdb_settings() WHERE name = 'logging_storage';
+----
+0
+
+query I
+SELECT current_setting('logging_storage') = current_setting('logging_sink');
+----
+true
+
+# Setting the deprecated name works, and warns
+statement ok
+SET logging_storage = 'memory';
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE starts_with(message, 'the logging_storage setting is deprecated');
+----
+1
+
+# Both names change the same sink
+statement ok
+SET logging_storage = 'stdout';
+
+query I
+SELECT current_setting('logging_sink');
+----
+stdout
+
+statement ok
+SET logging_sink = 'memory';
+
+query I
+SELECT current_setting('logging_storage');
+----
+memory
+
+statement ok
+SET logging_storage = 'stdout';
+
+statement ok
+RESET logging_storage;
+
+query I
+SELECT current_setting('logging_sink');
+----
+memory
+
+# Setting the deprecated name warns, resetting it does not
+statement ok
+SET warnings_as_errors = true;
+
+statement error
+SET logging_storage = 'stdout';
+----
+the logging_storage setting is deprecated: use logging_sink instead
+
+statement ok
+RESET logging_storage;
+
+statement ok
+SET warnings_as_errors = false;
+
+# Errors are the same as for logging_sink
+statement error
+SET logging_storage = 'quack';
+----
+Invalid Input Error: Log sink 'quack' is not yet registered
+
+statement error
+SET logging_storage = 'file';
+----
+Cannot select 'file' log sink

@@ -21,6 +21,19 @@ CMAKE = shutil.which('cmake')
 MAKE = shutil.which('make')
 
 
+def configure(build_dir, *arguments):
+    return subprocess.run(
+        [CMAKE, '-S', str(REPO_ROOT), '-B', str(build_dir), '-DEXTENSION_CONFIG_BUILD=TRUE', *arguments],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+
+def git(repo, *args):
+    return subprocess.check_output(['git', '-C', str(repo), *args], stderr=subprocess.PIPE, text=True).strip()
+
+
 class ExtensionSyncTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -314,21 +327,13 @@ class ExtensionSyncTest(unittest.TestCase):
         for use_project in (False, True):
             with self.subTest(use_project=use_project):
                 build_dir = self.root / f'build-{use_project}'
-                command = [
-                    CMAKE,
-                    '-S',
-                    str(REPO_ROOT),
-                    '-B',
-                    str(build_dir),
-                    '-DEXTENSION_CONFIG_BUILD=TRUE',
-                    '-DBUILD_EXTENSIONS=sample',
-                ]
+                arguments = ['-DBUILD_EXTENSIONS=sample']
                 if use_project:
                     os.environ['EXTENSION_CONFIG_BASE_DIR'] = str(config_dir)
-                    command.append(f'-DDUCKDB_EXTENSION_CONFIGS={project}')
+                    arguments.append(f'-DDUCKDB_EXTENSION_CONFIGS={project}')
                 else:
-                    command.append(f'-DEXTENSION_CONFIG_BASE_DIR={config_dir}')
-                configured = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                    arguments.append(f'-DEXTENSION_CONFIG_BASE_DIR={config_dir}')
+                configured = configure(build_dir, *arguments)
                 self.assertEqual(configured.returncode, 0, configured.stdout)
                 extensions = sync.collect_extensions(
                     REPO_ROOT, 'sample', str(project) if use_project else '', config_dir
@@ -349,9 +354,6 @@ class ExtensionSyncTest(unittest.TestCase):
             GIT_COMMITTER_NAME='Extension Sync Test',
             GIT_COMMITTER_EMAIL='test@example.com',
         )
-
-        def git(repo, *args):
-            return subprocess.check_output(['git', '-C', str(repo), *args], stderr=subprocess.PIPE, text=True).strip()
 
         def repo(name):
             directory = self.root / name
@@ -387,6 +389,43 @@ class ExtensionSyncTest(unittest.TestCase):
         )
         self.assertEqual(git(checkout, 'rev-parse', 'HEAD'), revision)
 
+    @unittest.skipUnless(CMAKE, 'CMake is required for configuration integration tests')
+    def test_version_is_the_pin_under_patch_commits(self):
+        os.environ.update(
+            PATH=os.defpath,
+            GIT_CONFIG_NOSYSTEM='1',
+            GIT_CONFIG_GLOBAL=os.devnull,
+            GIT_AUTHOR_NAME='Extension Sync Test',
+            GIT_AUTHOR_EMAIL='test@example.com',
+            GIT_COMMITTER_NAME='Extension Sync Test',
+            GIT_COMMITTER_EMAIL='test@example.com',
+        )
+        checkout = self.root / 'example'
+        checkout.mkdir()
+
+        def commit(message):
+            git(checkout, 'commit', '--allow-empty', '-m', message)
+            return git(checkout, 'rev-parse', 'HEAD')
+
+        git(checkout, 'init')
+        root_patch = commit('0000-root.patch')
+        config_dir = self.root / 'configs'
+        config_dir.mkdir()
+        (config_dir / 'example.cmake').write_text('duckdb_extension_load(example GIT_URL unused GIT_TAG unused)')
+        os.environ['DUCKDB_EXAMPLE_DIRECTORY'] = str(checkout)
+        arguments = ['-DBUILD_EXTENSIONS=example', f'-DEXTENSION_CONFIG_BASE_DIR={config_dir}']
+
+        configured = configure(self.root / 'build-root', *arguments)
+        self.assertEqual(configured.returncode, 0, configured.stdout)
+        self.assertIn(f'@ {root_patch[:10]}\n', configured.stdout)
+
+        pin = commit('Pinned commit')
+        commit('0001-first.patch')
+        commit('0002-second.patch')
+        configured = configure(self.root / 'build-patched', *arguments)
+        self.assertEqual(configured.returncode, 0, configured.stdout)
+        self.assertIn(f'@ {pin[:10]}\n', configured.stdout)
+
     def test_sync_commits_and_exports_patches_inside_submodules(self):
         os.environ.update(
             PATH=os.defpath,
@@ -398,9 +437,6 @@ class ExtensionSyncTest(unittest.TestCase):
             GIT_COMMITTER_NAME='Extension Sync Test',
             GIT_COMMITTER_EMAIL='test@example.com',
         )
-
-        def git(repo, *args):
-            return subprocess.check_output(['git', '-C', str(repo), *args], stderr=subprocess.PIPE, text=True).strip()
 
         def repo(name):
             directory = self.root / name

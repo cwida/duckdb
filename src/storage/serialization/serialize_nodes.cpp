@@ -664,7 +664,7 @@ void SampleOptions::Serialize(Serializer &serializer) const {
 	serializer.WriteProperty<SampleMethod>(102, "method", method);
 	serializer.WritePropertyWithDefault<int64_t>(103, "seed", GetSeed());
 	if (serializer.ShouldSerialize(StorageVersion::V2_0_0)) {
-		serializer.WritePropertyWithDefault<bool>(104, "repeatable", repeatable, seed.IsValid());
+		serializer.WriteProperty<bool>(104, "repeatable", repeatable);
 	}
 	serializer.WritePropertyWithDefault<double>(105, "sample_rate", sample_rate, -1.0);
 }

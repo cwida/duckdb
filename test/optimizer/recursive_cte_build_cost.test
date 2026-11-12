@@ -1,0 +1,58 @@
+# name: test/optimizer/recursive_cte_build_cost.test
+# description: Small expanding builds can be cheaper than expanding the recursive frontier
+# group: [optimizer]
+
+statement ok
+SET threads=1;
+
+statement ok
+SET memory_limit='2GB';
+
+statement ok
+CREATE TABLE build_a AS SELECT i AS x, i % 2 AS g FROM range(100) t(i);
+
+statement ok
+CREATE TABLE build_b AS SELECT i AS y, i % 2 AS g FROM range(100) t(i);
+
+statement ok
+CREATE VIEW walk_result AS
+WITH RECURSIVE c(id, g, depth) AS (
+	SELECT i, i % 2, 0 FROM range(100000) t(i)
+	UNION ALL
+	SELECT c.id, c.g, c.depth + 1
+	FROM c
+	JOIN build_a a ON c.g = a.g
+	JOIN build_b b ON a.g = b.g AND c.id = a.x + b.y
+	WHERE c.depth < 1
+)
+SELECT count(*), sum(id) FROM c;
+
+query II
+SELECT * FROM walk_result;
+----
+102500	5000195000
+
+# The plan pins below depend on in-memory table statistics.
+require noforcestorage
+
+statement ok
+SET explain_output='physical_only';
+
+# Both independent scans belong to the same build; expanding the frontier produces five million rows.
+query II
+EXPLAIN SELECT * FROM walk_result;
+----
+physical_plan	<REGEX>:(?s).*\.main\.build_(a(?:[^\n]*\n){0,6}[^\n]*\.main\.build_b|b(?:[^\n]*\n){0,6}[^\n]*\.main\.build_a).*
+
+statement ok
+SET approximate_join_order_threshold=0;
+
+query II
+SELECT * FROM walk_result;
+----
+102500	5000195000
+
+query II
+EXPLAIN SELECT * FROM walk_result;
+----
+physical_plan	<REGEX>:(?s).*\.main\.build_(a(?:[^\n]*\n){0,6}[^\n]*\.main\.build_b|b(?:[^\n]*\n){0,6}[^\n]*\.main\.build_a).*

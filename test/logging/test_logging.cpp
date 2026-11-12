@@ -6,7 +6,7 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/extension_manager.hpp"
 #include "duckdb/function/table_function.hpp"
-#include "duckdb/logging/log_storage.hpp"
+#include "duckdb/logging/log_sink.hpp"
 #include "duckdb/logging/log_manager.hpp"
 
 using namespace duckdb;
@@ -176,8 +176,8 @@ TEST_CASE("Test thread context logger", "[logging][.]") {
 	REQUIRE(CHECK_COLUMN(res, 1, {"thread_logger"}));
 }
 
-// Testing pluggable log storage
-class MyLogStorage : public LogStorage {
+// Testing pluggable log sink
+class MyLogSink : public LogSink {
 public:
 	void WriteLogEntry(timestamp_t timestamp, LogLevel level, const string &log_type, const string &log_message,
 	                   const RegisteredLoggingContext &context) override {
@@ -189,28 +189,76 @@ public:
 	bool IsEnabled(LoggingTargetTable table) override {
 		return table == LoggingTargetTable::ALL_LOGS;
 	}
-	const string GetStorageName() override {
-		return "MyLogStorage";
+	const string GetSinkName() override {
+		return "MyLogSink";
 	}
 
 	unordered_set<string> log_store;
 };
 
-TEST_CASE("Test pluggable log storage", "[logging][.]") {
+TEST_CASE("Test pluggable log sink", "[logging][.]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 
-	auto my_log_storage = make_shared_ptr<MyLogStorage>();
+	auto my_log_sink = make_shared_ptr<MyLogSink>();
 
-	duckdb::shared_ptr<LogStorage> base_ptr = my_log_storage;
-	db.instance->GetLogManager().RegisterLogStorage("my_log_storage", base_ptr);
+	duckdb::shared_ptr<LogSink> base_ptr = my_log_sink;
+	db.instance->GetLogManager().RegisterLogSink("my_log_sink", base_ptr);
 
 	REQUIRE_NO_FAIL(con.Query("set enable_logging=true;"));
-	REQUIRE_NO_FAIL(con.Query("set logging_storage='my_log_storage';"));
+	REQUIRE_NO_FAIL(con.Query("set logging_sink='my_log_sink';"));
 
 	REQUIRE_NO_FAIL(con.Query("select write_log('HELLO, BRO');"));
 
-	REQUIRE(my_log_storage->log_store.find("HELLO, BRO") != my_log_storage->log_store.end());
+	REQUIRE(my_log_sink->log_store.find("HELLO, BRO") != my_log_sink->log_store.end());
+}
+
+static bool ContainsMessage(const unordered_set<string> &messages, const string &needle) {
+	for (auto &message : messages) {
+		if (StringUtil::Contains(message, needle)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+TEST_CASE("Test deprecated logging_storage setting and shell_log_storage sink name", "[logging]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &log_manager = db.instance->GetLogManager();
+
+	// The first sink records the deprecation warnings, the second is registered under the name the shell uses
+	auto warning_sink = make_shared_ptr<MyLogSink>();
+	auto shell_sink = make_shared_ptr<MyLogSink>();
+	duckdb::shared_ptr<LogSink> warning_ptr = warning_sink;
+	duckdb::shared_ptr<LogSink> shell_ptr = shell_sink;
+	REQUIRE(log_manager.RegisterLogSink("warning_sink", warning_ptr));
+	REQUIRE(log_manager.RegisterLogSink("shell_log_sink", shell_ptr));
+
+	REQUIRE_NO_FAIL(con.Query("set enable_logging=true;"));
+	REQUIRE_NO_FAIL(con.Query("set logging_sink='warning_sink';"));
+	REQUIRE(!ContainsMessage(warning_sink->log_store, "is deprecated"));
+
+	// the deprecated setting reads and writes the same sink, and warns
+	auto result = con.Query("select current_setting('logging_storage')");
+	REQUIRE(CHECK_COLUMN(result, 0, {"warning_sink"}));
+	REQUIRE_NO_FAIL(con.Query("set logging_storage='warning_sink';"));
+	REQUIRE(ContainsMessage(warning_sink->log_store, "the logging_storage setting is deprecated: use logging_sink"));
+
+	// the old name of the shell sink resolves to the new one, and warns
+	REQUIRE(!ContainsMessage(warning_sink->log_store, "has been renamed"));
+	REQUIRE_NO_FAIL(con.Query("set logging_sink='shell_log_storage';"));
+	REQUIRE(ContainsMessage(warning_sink->log_store, "'shell_log_storage' has been renamed to 'shell_log_sink'"));
+	REQUIRE(log_manager.GetConfig().storage == "shell_log_sink");
+	REQUIRE_NO_FAIL(con.Query("select write_log('HELLO, RENAMED SINK');"));
+	REQUIRE(shell_sink->log_store.find("HELLO, RENAMED SINK") != shell_sink->log_store.end());
+
+	// same through enable_logging
+	REQUIRE_NO_FAIL(con.Query("set logging_sink='warning_sink';"));
+	warning_sink->log_store.clear();
+	REQUIRE_NO_FAIL(con.Query("call enable_logging(storage = 'shell_log_storage');"));
+	REQUIRE(ContainsMessage(warning_sink->log_store, "'shell_log_storage' has been renamed to 'shell_log_sink'"));
+	REQUIRE(log_manager.GetConfig().storage == "shell_log_sink");
 }
 
 struct CorrectLogType : public LogType {
