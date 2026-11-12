@@ -139,6 +139,38 @@ idx_t ChunkVectorInfo::TemplatedGetSelVector(const SnapshotView &view, optional_
 		return count;
 	}
 	case DeleteIdState::MASKED: {
+		if (HasBaseMask()) {
+			// two deletes of different transactions live in this vector: decide per row
+			if (HasConstantInsertionId() && !INSERT_OP::UseInsertedVersion(view, ConstantInsertId())) {
+				return 0;
+			}
+			const bool base_deleted = DELETE_OP::IsDeleted(view, base_delete_id);
+			const bool mask_deleted = DELETE_OP::IsDeleted(view, mask_delete_id);
+			auto scan = [&](const transaction_t *inserted) {
+				idx_t count = 0;
+				for (idx_t i = 0; i < max_count; i++) {
+					if (inserted && !INSERT_OP::UseInsertedVersion(view, inserted[i])) {
+						continue;
+					}
+					if (mask_deleted && deleted_mask.RowIsValid(i)) {
+						continue;
+					}
+					if (base_deleted && base_mask.RowIsValid(i)) {
+						continue;
+					}
+					if (sel_vector) {
+						sel_vector->set_index(count, i);
+					}
+					count++;
+				}
+				return count;
+			};
+			if (HasConstantInsertionId()) {
+				return scan(nullptr);
+			}
+			auto insert_segment = allocator.GetHandle(GetInsertedPointer());
+			return scan(insert_segment.GetPtr<transaction_t>());
+		}
 		// the rows outside of the mask are not deleted, so mask_delete_id decides for the whole vector
 		const bool masked_deleted = DELETE_OP::IsDeleted(view, mask_delete_id);
 		if (HasConstantInsertionId()) {
@@ -283,7 +315,15 @@ idx_t ChunkVectorInfo::GetSelVector(ScanOptions options, optional_ptr<SelectionV
 
 transaction_t ChunkVectorInfo::GetDeleteId(idx_t row) const {
 	D_ASSERT(delete_state != DeleteIdState::ARRAY);
-	return delete_state == DeleteIdState::MASKED && deleted_mask.RowIsValid(row) ? mask_delete_id : constant_delete_id;
+	if (delete_state == DeleteIdState::MASKED) {
+		if (deleted_mask.RowIsValid(row)) {
+			return mask_delete_id;
+		}
+		if (HasBaseMask() && base_mask.RowIsValid(row)) {
+			return base_delete_id;
+		}
+	}
+	return constant_delete_id;
 }
 
 bool ChunkVectorInfo::Fetch(TransactionData transaction, row_t row) {
@@ -375,7 +415,38 @@ void ChunkVectorInfo::FreeDeleteData() {
 		deleted_data = IndexPointer();
 	}
 	deleted_mask.Reset();
+	base_mask.Reset();
+	base_delete_id = 0;
 	delete_state = DeleteIdState::CONSTANT;
+}
+
+void ChunkVectorInfo::RestoreBaseMask() {
+	D_ASSERT(delete_state == DeleteIdState::MASKED && HasBaseMask());
+	// share the buffer of the base mask, then drop the (empty) mask of the reverted transaction
+	deleted_mask.Reset();
+	deleted_mask.Initialize(base_mask);
+	base_mask.Reset();
+	mask_delete_id = base_delete_id;
+	base_delete_id = 0;
+}
+
+void ChunkVectorInfo::MergeBaseMask() {
+	D_ASSERT(delete_state == DeleteIdState::MASKED && HasBaseMask());
+	// the two masks never overlap: the union holds all rows that are deleted
+	auto base_data = base_mask.GetData();
+	auto mask_data = deleted_mask.GetData();
+	for (idx_t i = 0; i < ValidityMask::EntryCount(STANDARD_VECTOR_SIZE); i++) {
+		mask_data[i] |= base_data[i];
+	}
+	base_mask.Reset();
+	base_delete_id = 0;
+	// both deletes are visible to all transactions - the shared id is 0, as for deletes read from disk
+	mask_delete_id = 0;
+	if (deleted_mask.CheckAllValid(STANDARD_VECTOR_SIZE)) {
+		// every row is deleted
+		FreeDeleteData();
+		constant_delete_id = 0;
+	}
 }
 
 void ChunkVectorInfo::CompressDeleteToMask(transaction_t mask_id) {
@@ -408,10 +479,18 @@ void ChunkVectorInfo::DecompressDeleteMask() {
 		auto segment = allocator.GetHandle(deleted_data);
 		auto deleted = segment.GetPtr<transaction_t>();
 		for (idx_t i = 0; i < STANDARD_VECTOR_SIZE; i++) {
-			deleted[i] = deleted_mask.RowIsValid(i) ? mask_delete_id : constant_delete_id;
+			if (deleted_mask.RowIsValid(i)) {
+				deleted[i] = mask_delete_id;
+			} else if (HasBaseMask() && base_mask.RowIsValid(i)) {
+				deleted[i] = base_delete_id;
+			} else {
+				deleted[i] = constant_delete_id;
+			}
 		}
 	}
 	deleted_mask.Reset();
+	base_mask.Reset();
+	base_delete_id = 0;
 	constant_delete_id = NOT_DELETED_ID;
 	delete_state = DeleteIdState::ARRAY;
 	recheck_compression = true;
@@ -539,12 +618,33 @@ void ChunkVectorInfo::AssignId(const uint16_t rows[], idx_t count, transaction_t
 			}
 			if (in_mask ? deleted_mask.CheckAllValid(STANDARD_VECTOR_SIZE)
 			            : deleted_mask.CheckAllInvalid(STANDARD_VECTOR_SIZE)) {
-				FreeDeleteData();
-				constant_delete_id = id;
+				if (!in_mask && HasBaseMask()) {
+					// the rows of this transaction are all reverted - only the committed delete is left
+					RestoreBaseMask();
+				} else {
+					FreeDeleteData();
+					constant_delete_id = id;
+				}
 			}
 			return;
 		}
-		if (IsDeleteId(mask_delete_id) && !IsDeleteId(id) && RowsAreAllOutsideMask(rows, count)) {
+		if (IsDeleteId(id) && !IsCommitted(id) && !HasBaseMask() && IsDeleteId(mask_delete_id) &&
+		    IsCommitted(mask_delete_id) && constant_delete_id == NOT_DELETED_ID) {
+			// the vector holds a committed delete and a transaction deletes further rows: keep the committed
+			// delete in the base mask and the new rows in the mask, instead of materializing the 16 KB per-row
+			// array. A transaction never writes a row that holds a committed delete, so the masks do not overlap
+			base_mask.Initialize(deleted_mask);
+			base_delete_id = mask_delete_id;
+			deleted_mask.Reset();
+			deleted_mask.Initialize(STANDARD_VECTOR_SIZE);
+			deleted_mask.SetAllInvalid(STANDARD_VECTOR_SIZE);
+			mask_delete_id = id;
+			for (idx_t i = 0; i < count; i++) {
+				deleted_mask.SetValidUnsafe(rows ? rows[i] : i);
+			}
+			return;
+		}
+		if (!HasBaseMask() && IsDeleteId(mask_delete_id) && !IsDeleteId(id) && RowsAreAllOutsideMask(rows, count)) {
 			// the rows that are not deleted keep sharing one id
 			constant_delete_id = id;
 			return;
@@ -622,6 +722,8 @@ void ChunkVectorInfo::VerifyCachedCompressionState() const {
 	} else {
 		// a settled, non-constant delete side can only be the terminal masked state
 		D_ASSERT(delete_state == DeleteIdState::MASKED);
+		// a base mask is merged as soon as both deletes are visible to all - until then the check stays armed
+		D_ASSERT(!HasBaseMask());
 		D_ASSERT(IsDeleteId(mask_delete_id) && IsCommitted(mask_delete_id) && constant_delete_id == NOT_DELETED_ID);
 		// the mask must hold at least one deleted row and one alive row: a fully deleted vector
 		// collapses to a constant, and a vector with no deletes carries no delete-side info
@@ -661,6 +763,16 @@ VersionCompressionResult ChunkVectorInfo::CompressVersionIds(VisibilityBound low
 			}
 		} else if (!IsCommitted(mask_delete_id)) {
 			// the delete is not committed yet - retry next pass
+			pending = true;
+		}
+	}
+	if (delete_state == DeleteIdState::MASKED && HasBaseMask() && IsDeleteId(mask_delete_id) &&
+	    IsCommitted(mask_delete_id)) {
+		if (mask_delete_id < lowest_visibility_bound && base_delete_id < lowest_visibility_bound) {
+			// both deletes are visible to all transactions - they can share one mask
+			MergeBaseMask();
+		} else {
+			// merge once the lowest active start advances past both deletes
 			pending = true;
 		}
 	}
@@ -840,7 +952,7 @@ bool ChunkVectorInfo::HasDeletes(VisibilityBound visibility_bound, idx_t row_cou
 		return ConstantDeleteId() < visibility_bound;
 	case DeleteIdState::MASKED:
 		// AnyDeleted() above guaranteed at least one deleted row; they all share mask_delete_id
-		return mask_delete_id < visibility_bound;
+		return mask_delete_id < visibility_bound || (HasBaseMask() && base_delete_id < visibility_bound);
 	case DeleteIdState::ARRAY: {
 		auto segment = allocator.GetHandle(GetDeletedPointer());
 		auto deleted = segment.GetPtr<transaction_t>();
@@ -947,6 +1059,17 @@ string ChunkVectorInfo::ToString(idx_t max_count) const {
 			result += deleted_mask.RowIsValid(idx) ? "1" : "0";
 		}
 		result += "]";
+		if (HasBaseMask()) {
+			result += ", Base Delete Id: " + to_string(base_delete_id);
+			result += ", Base Deleted (mask): [";
+			for (idx_t idx = 0; idx < max_count; idx++) {
+				if (idx > 0) {
+					result += ", ";
+				}
+				result += base_mask.RowIsValid(idx) ? "1" : "0";
+			}
+			result += "]";
+		}
 		break;
 	}
 	case DeleteIdState::ARRAY: {
