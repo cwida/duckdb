@@ -5,6 +5,9 @@
 require 64bit
 
 statement ok
+SET threads = least(current_setting('threads'), 8)
+
+statement ok
 CREATE or replace TABLE big_table AS
     SELECT
     (i % 500)::int16 AS "Pid",
