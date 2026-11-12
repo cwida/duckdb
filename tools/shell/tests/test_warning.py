@@ -101,6 +101,15 @@ def test_deprecated_shell_log_storage(shell):
     result.check_not_exist("The logging settings have been changed")
 
 
+def test_warning_has_no_escape_codes_when_redirected(shell, tmp_path):
+    test = ShellTest(shell).statement(f"SET extension_directory = '{tmp_path.as_posix()}';").statement("SELECT 42;")
+
+    result = test.run()
+    result.check_stdout("WARNING:")
+    result.check_stdout("42")
+    result.check_not_exist("\x1b[")
+
+
 def test_keeping_shell_log_sink_does_not_warn(shell):
     test = (
         ShellTest(shell)

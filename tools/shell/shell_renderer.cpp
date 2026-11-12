@@ -2221,6 +2221,16 @@ void ShellLogSink::WriteLogEntry(duckdb::timestamp_t, duckdb::LogLevel level, co
 
 	const auto log_level = duckdb::EnumUtil::ToString(level);
 
+	auto &state = shell_highlight.state;
+	auto print = [&](const string &text, HighlightElementType type) {
+		if (state.stdout_is_console) {
+			shell_highlight.PrintText(text, PrintOutput::STDOUT, type);
+		} else {
+			// not a console - emit plain text so redirected output has no escape codes
+			state.Print(PrintOutput::STDOUT, text);
+		}
+	};
+
 	if (loud) {
 		// De-duplicate repeated WARNINGS so they don't spam the shell; errors/fatals are always shown
 		if (level == duckdb::LogLevel::LOG_WARNING) {
@@ -2231,8 +2241,8 @@ void ShellLogSink::WriteLogEntry(duckdb::timestamp_t, duckdb::LogLevel level, co
 			printed_logs.emplace(log_id);
 		}
 
-		shell_highlight.PrintText(log_level + ":\n", PrintOutput::STDOUT, element_type);
-		shell_highlight.PrintText(log_message + "\n\n", PrintOutput::STDOUT, element_type);
+		print(log_level + ":\n", element_type);
+		print(log_message + "\n\n", element_type);
 		return;
 	}
 
@@ -2240,7 +2250,7 @@ void ShellLogSink::WriteLogEntry(duckdb::timestamp_t, duckdb::LogLevel level, co
 	// launch. No de-duplication - every logged statement is shown.
 	// Colored prefix (the configurable LOG_* palette), then the rest plain
 	const string prefix = log_level + ":" + log_type;
-	shell_highlight.PrintText(prefix, PrintOutput::STDOUT, element_type);
+	print(prefix, element_type);
 
 	string rest;
 	if (prefix.size() < PRETTY_PREFIX_WIDTH) {
