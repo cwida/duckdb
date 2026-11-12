@@ -42,7 +42,7 @@ class ExtensionSyncTest(unittest.TestCase):
                 GIT_URL "https://example.com/avro"
                 GIT_TAG "012345"
                 SUBMODULES "third_party/avro-c"
-                LOAD_TESTS APPLY_PATCHES
+                LOAD_TESTS TEST_CONFIG "test/configs/native.json" APPLY_PATCHES
             )
             '''
         )

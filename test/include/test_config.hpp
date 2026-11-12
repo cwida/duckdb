@@ -29,6 +29,8 @@ struct ConfigSetting {
 };
 
 class TestConfiguration {
+	friend class ScopedTestConfiguration;
+
 public:
 	enum class ExtensionAutoLoadingMode { NONE = 0, AVAILABLE = 1, ALL = 2 };
 
@@ -135,6 +137,8 @@ private:
 	//! throwaway config loaded only for its `skip_tests` -- the hooks write process-global
 	//! lifecycle state that belongs to the selected invocation, not to an inherited file.
 	bool ignore_option_side_effects = false;
+	//! Extension test configs cannot change process-wide test lifecycle options.
+	bool scoped_config = false;
 
 	//! Give preference to settings from loaded configs
 	bool test_env_from_config_loaded = false;
@@ -163,6 +167,16 @@ private:
 	T GetOptionOrDefault(const string &name, T default_val);
 
 	static string ReadFileToString(const string &path);
+};
+
+//! Apply an extension's test config for registration or execution, restoring it on every exit path.
+class ScopedTestConfiguration {
+public:
+	explicit ScopedTestConfiguration(const string &config_path);
+	~ScopedTestConfiguration();
+
+private:
+	unique_ptr<TestConfiguration> original;
 };
 
 class FailureSummary {

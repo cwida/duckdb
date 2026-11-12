@@ -37,6 +37,7 @@ void RegisterSqllogictestStdin();
 bool SummarizeFailures();
 //! Test directories of the extensions this build registered with LOAD_TESTS
 vector<string> LoadedExtensionTestPaths();
+string ExtensionTestConfigPath(const string &test_path);
 
 //! Test identity: the full test name sanitized to one filesystem/shell-safe path component (every char
 //! outside [A-Za-z0-9_-] -> '_', including '.'). The body suffix is kept, so siblings differing only by

@@ -176,6 +176,28 @@ duckdb_extension_load(postgres_scanner
 )
 ```
 
+## Extension test configuration
+
+`LOAD_TESTS` registers SQL tests from `TEST_DIR` (default: `test/sql`). An optional
+`TEST_CONFIG` names a JSON test configuration relative to the extension source
+directory, or an absolute path:
+
+```cmake
+duckdb_extension_load(iceberg
+    SOURCE_DIR /path/to/duckdb-iceberg
+    LOAD_TESTS
+    TEST_DIR /path/to/duckdb-iceberg/test/sql/local/native_catalog
+    TEST_CONFIG test/configs/mock_native.json
+)
+```
+
+The configuration applies while registering and running tests under that test
+directory, including config exclusions and database initialization. It extends
+the invocation's configuration, and its changes are restored before the next
+test. Inherited JSON configs resolve relative to their containing file.
+Options with process-wide callbacks, such as temp directory and environment
+passthrough options, must be supplied to the invocation rather than `TEST_CONFIG`.
+
 # Explicitly disabling extensions
 Because the sometimes you may want to override extensions set by other configurations, explicitly disabling extensions is 
 also possible using the `DONT_BUILD flag`. This will disable the extension from being built all together. For example, to build DuckDB without the parquet extension which is enabled by default, in `extension/extension_config_local.cmake` specify:
