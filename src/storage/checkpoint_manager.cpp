@@ -257,7 +257,7 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 	auto &transaction_manager = db.GetTransactionManager().Cast<DuckTransactionManager>();
 
 	// If there is a checkpoint context (non shutdown path), WALStartCheckpoint creates the checkpoint transaction.
-	ActiveCheckpointWrapper active_checkpoint(GetCheckpointContext(), db, transaction_manager);
+	ActiveCheckpointWrapper active_checkpoint(checkpoint_context, db, transaction_manager);
 	auto has_wal = storage_manager.WALStartCheckpoint(meta_block, options, active_checkpoint);
 
 	catalog_entry_vector_t catalog_entries;

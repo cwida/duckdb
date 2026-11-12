@@ -80,10 +80,6 @@ public:
 	Context &GetContext() const {
 		return context;
 	}
-	//! The context the checkpoint transaction runs in (null on shutdown and DETACH)
-	optional_ptr<ClientContext> GetCheckpointContext() const {
-		return checkpoint_context;
-	}
 
 	virtual void CreateCheckpoint() = 0;
 	virtual MetadataManager &GetMetadataManager() = 0;
@@ -92,9 +88,11 @@ public:
 
 private:
 	Context &context;
-	optional_ptr<ClientContext> checkpoint_context;
 
 protected:
+	//! The context the checkpoint transaction runs in (null on shutdown and DETACH)
+	optional_ptr<ClientContext> checkpoint_context;
+
 	virtual void WriteEntry(CatalogEntry &entry, Serializer &serializer);
 	virtual void WriteSchema(SchemaCatalogEntry &schema, Serializer &serializer);
 	virtual void WriteTable(TableCatalogEntry &table, Serializer &serializer) = 0;
