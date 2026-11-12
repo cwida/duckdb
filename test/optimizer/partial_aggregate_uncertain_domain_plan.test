@@ -93,7 +93,7 @@ SELECT a.g, count(*), sum(a.m::DOUBLE)
 FROM a JOIN repeated_{storage} b USING (k)
 GROUP BY a.g
 ----
-physical_plan	<REGEX>:.*combine_aggr.*
+physical_plan	<REGEX>:.*combine_aggr.*combine_aggr.*combine_aggr.*
 
 query II
 EXPLAIN

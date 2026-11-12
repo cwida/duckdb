@@ -816,16 +816,21 @@ static bool DEValidateGroups(const LogicalAggregate &aggr, const unordered_set<T
 	return true;
 }
 
-static bool DEBuildLowerSides(Optimizer &optimizer, const LogicalAggregate &aggr,
-                              vector<DoubleEagerAggregate> &aggregates,
-                              const unordered_set<TableIndex> (&side_bindings)[2],
-                              const vector<ColumnBinding> (&join_keys)[2],
-                              const vector<LogicalType> (&join_key_types)[2], DoubleEagerSide (&sides)[2]) {
+static void DECollectLowerGroups(Optimizer &optimizer, const LogicalAggregate &aggr,
+                                 const unordered_set<TableIndex> (&side_bindings)[2],
+                                 const vector<ColumnBinding> (&join_keys)[2],
+                                 const vector<LogicalType> (&join_key_types)[2], DoubleEagerSide (&sides)[2]) {
 	for (idx_t s = 0; s < 2; s++) {
 		sides[s].group_index = optimizer.binder.GenerateTableIndex();
-		sides[s].aggregate_index = optimizer.binder.GenerateTableIndex();
 		CollectLowerSideGroups(sides[s].group_index, join_keys[s], join_key_types[s], aggr.groups, s, side_bindings,
 		                       sides[s].groups, sides[s].group_map, sides[s].group_types);
+	}
+}
+
+static bool DEBuildLowerSides(Optimizer &optimizer, const LogicalAggregate &aggr,
+                              vector<DoubleEagerAggregate> &aggregates, DoubleEagerSide (&sides)[2]) {
+	for (idx_t s = 0; s < 2; s++) {
+		sides[s].aggregate_index = optimizer.binder.GenerateTableIndex();
 		auto count_star = DEBindAggregate(optimizer.context, "count_star", {});
 		if (!count_star) {
 			return false;
@@ -974,14 +979,8 @@ bool PartialAggregatePushdown::TryDoubleEagerPushdown(unique_ptr<LogicalOperator
 	if (!DECollectJoinKeys(join, side_bindings, join_keys, join_key_types) || !DEValidateGroups(aggr, side_bindings)) {
 		return false;
 	}
-	if (AggregateArgumentsCanThrow(optimizer, op)) {
-		return false;
-	}
-
 	DoubleEagerSide sides[2];
-	if (!DEBuildLowerSides(optimizer, aggr, aggregates, side_bindings, join_keys, join_key_types, sides)) {
-		return false;
-	}
+	DECollectLowerGroups(optimizer, aggr, side_bindings, join_keys, join_key_types, sides);
 
 	idx_t lower_cardinalities[2];
 	idx_t join_cardinality;
@@ -993,6 +992,9 @@ bool PartialAggregatePushdown::TryDoubleEagerPushdown(unique_ptr<LogicalOperator
 		return entry->second.get().children[0].get();
 	});
 	if (!DEEstimateCollapse(extractor, join, sides, lower_cardinalities, join_cardinality)) {
+		return false;
+	}
+	if (AggregateArgumentsCanThrow(optimizer, op) || !DEBuildLowerSides(optimizer, aggr, aggregates, sides)) {
 		return false;
 	}
 
