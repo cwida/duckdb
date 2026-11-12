@@ -29,3 +29,39 @@ SELECT count(*), sum(v), sum(w) FROM (
 );
 ----
 10	6002	8000
+
+statement ok
+CREATE TABLE dense AS SELECT i % 1000 AS k, i % 17 AS w FROM range(10000) r(i);
+
+statement ok
+CREATE TABLE sparse AS SELECT (i % 10) * 100 AS k, i % 17 AS w FROM range(100) r(i);
+
+statement ok
+ANALYZE;
+
+query IIII
+SELECT count(*), sum(n), sum(v), sum(w) FROM (
+    SELECT f.k, count(*) AS n, sum(f.v) AS v, sum(d.w) AS w
+    FROM facts f JOIN dense d USING (k)
+    GROUP BY f.k
+);
+----
+1000	1000000	5999820	7997400
+
+query IIII
+SELECT count(*), sum(n), sum(v), sum(w) FROM (
+    SELECT f.k, count(*) AS n, sum(f.v) AS v, sum(d.w) AS w
+    FROM facts f JOIN sparse d USING (k)
+    GROUP BY f.k
+);
+----
+10	10000	60020	78500
+
+query IIII
+SELECT count(*), sum(n), sum(v), sum(w) FROM (
+    SELECT f.k, count(*) AS n, sum(f.v) AS v, sum(d.w) AS w
+    FROM sparse d JOIN facts f USING (k)
+    GROUP BY f.k
+);
+----
+10	10000	60020	78500

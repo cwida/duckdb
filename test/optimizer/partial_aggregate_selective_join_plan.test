@@ -19,6 +19,45 @@ GROUP BY f.k;
 ----
 physical_plan	<!REGEX>:.*combine_aggr.*
 
+statement ok
+CREATE TABLE dense AS SELECT i % 1000 AS k, i % 17 AS w FROM range(10000) r(i);
+
+statement ok
+CREATE TABLE sparse AS SELECT (i % 10) * 100 AS k, i % 17 AS w FROM range(100) r(i);
+
+statement ok
+ANALYZE;
+
+# Both inputs collapse and all fact rows survive.
+query II
+EXPLAIN SELECT f.k, count(*), sum(f.v), sum(d.w)
+FROM facts f JOIN dense d USING (k)
+GROUP BY f.k;
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN SELECT f.k, count(*), sum(f.v), sum(d.w)
+FROM dense d JOIN facts f USING (k)
+GROUP BY f.k;
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# Both inputs still collapse, but only 1% of the fact rows match.
+query II
+EXPLAIN SELECT f.k, count(*), sum(f.v), sum(d.w)
+FROM facts f JOIN sparse d USING (k)
+GROUP BY f.k;
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN SELECT f.k, count(*), sum(f.v), sum(d.w)
+FROM sparse d JOIN facts f USING (k)
+GROUP BY f.k;
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
 # A selective dimension is cheaper to join before computing the aggregates.
 query II
 EXPLAIN SELECT f.k, sum(f.v), sum(d.w)

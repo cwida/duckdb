@@ -25,8 +25,17 @@
 
 namespace duckdb {
 
-PartialAggregatePushdown::PartialAggregatePushdown(Optimizer &optimizer_p, unique_ptr<LogicalOperator> &plan_p)
-    : optimizer(optimizer_p), plan(plan_p) {
+PartialAggregatePushdown::PartialAggregatePushdown(Optimizer &optimizer_p) : optimizer(optimizer_p) {
+}
+
+void PartialAggregatePushdown::CollectCTEs(LogicalOperator &op) {
+	if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
+		auto &cte = op.Cast<LogicalMaterializedCTE>();
+		cte_definitions.emplace(cte.table_index.index, cte);
+	}
+	for (auto &child : op.children) {
+		CollectCTEs(*child);
+	}
 }
 
 //===--------------------------------------------------------------------===//
@@ -679,27 +688,12 @@ static bool DEHasSufficientCollapse(idx_t cardinality, idx_t group_count) {
 	return cardinality > 0 && cardinality / min_collapse >= group_count;
 }
 
-static optional_ptr<LogicalOperator> DEFindCTEDefinition(LogicalOperator &op, TableIndex index) {
-	if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE &&
-	    op.Cast<LogicalMaterializedCTE>().table_index == index) {
-		return op.children[0].get();
-	}
-	for (auto &child : op.children) {
-		auto definition = DEFindCTEDefinition(*child, index);
-		if (definition) {
-			return definition;
-		}
-	}
-	return nullptr;
-}
-
-static bool DEEstimateCollapse(ClientContext &context, LogicalOperator &root, LogicalComparisonJoin &join,
+static bool DEEstimateCollapse(RelationStatsExtractor &extractor, LogicalComparisonJoin &join,
                                const DoubleEagerSide (&sides)[2], idx_t (&lower_cardinalities)[2],
                                idx_t &join_cardinality) {
 	if (!join.has_estimated_cardinality) {
 		return false;
 	}
-	RelationStatsExtractor extractor(context, [&](TableIndex index) { return DEFindCTEDefinition(root, index); });
 	double retained_fraction = 1;
 	for (idx_t side = 0; side < 2; side++) {
 		auto stats = extractor.Extract(*join.children[side]);
@@ -981,7 +975,14 @@ bool PartialAggregatePushdown::TryDoubleEagerPushdown(unique_ptr<LogicalOperator
 
 	idx_t lower_cardinalities[2];
 	idx_t join_cardinality;
-	if (!DEEstimateCollapse(optimizer.context, *plan, join, sides, lower_cardinalities, join_cardinality)) {
+	RelationStatsExtractor extractor(optimizer.context, [&](TableIndex index) -> optional_ptr<LogicalOperator> {
+		auto entry = cte_definitions.find(index.index);
+		if (entry == cte_definitions.end()) {
+			return nullptr;
+		}
+		return entry->second.get().children[0].get();
+	});
+	if (!DEEstimateCollapse(extractor, join, sides, lower_cardinalities, join_cardinality)) {
 		return false;
 	}
 
