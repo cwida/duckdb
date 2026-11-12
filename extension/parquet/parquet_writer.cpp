@@ -1553,13 +1553,4 @@ void ParquetWriter::SetWrittenStatistics(CopyFunctionFileStatistics &written_sta
 
 ParquetWriteGlobalState::ParquetWriteGlobalState() = default;
 
-ParquetWriteGlobalState::~ParquetWriteGlobalState() {
-	// an error path can leave a prepare running; wait for it before the writer it references goes away
-	for (auto &entry : cdc_pipeline) {
-		if (entry->future.valid()) {
-			entry->future.wait();
-		}
-	}
-}
-
 } // namespace duckdb

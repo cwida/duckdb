@@ -164,6 +164,11 @@ typedef unique_ptr<PreparedBatchData> (*copy_prepare_batch_t)(ClientContext &con
                                                               unique_ptr<ColumnDataCollection> collection);
 typedef void (*copy_flush_batch_t)(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
                                    PreparedBatchData &batch);
+//! Ordered pre-pass over a batch: called once per batch, one batch at a time in batch order, on the same
+//! thread that will prepare that batch immediately afterwards. The scan records state that the prepare
+//! consumes; it must be bounded work that never waits for other batches
+typedef void (*copy_scan_batch_t)(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+                                  ColumnDataCollection &collection);
 
 typedef optional_idx (*copy_default_batch_size_t)();
 typedef optional_idx (*copy_default_batch_size_bytes_t)();
@@ -254,6 +259,8 @@ public:
 	copy_to_initialize_operator_t initialize_operator;
 	copy_to_propagate_statistics_t copy_to_propagate_statistics = nullptr;
 
+	//! Called once per batch, in batch order, immediately before prepare_batch - see copy_scan_batch_t
+	copy_scan_batch_t scan_batch;
 	copy_prepare_batch_t prepare_batch;
 	copy_flush_batch_t flush_batch;
 	copy_file_size_bytes_t file_size_bytes;

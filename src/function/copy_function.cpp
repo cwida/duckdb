@@ -8,8 +8,9 @@ CopyFunction::CopyFunction(const Identifier &name)
     : Function(name), plan(nullptr), copy_to_select(nullptr), copy_to_bind(nullptr), copy_options(nullptr),
       copy_to_initialize_local(nullptr), copy_to_initialize_global(nullptr), copy_to_get_written_statistics(nullptr),
       copy_to_sink(nullptr), copy_to_combine(nullptr), copy_to_finalize(nullptr), execution_mode(nullptr),
-      initialize_operator(nullptr), prepare_batch(nullptr), flush_batch(nullptr), file_size_bytes(nullptr),
-      desired_batch_size(nullptr), serialize(nullptr), deserialize(nullptr), copy_from_bind(nullptr) {
+      initialize_operator(nullptr), scan_batch(nullptr), prepare_batch(nullptr), flush_batch(nullptr),
+      file_size_bytes(nullptr), desired_batch_size(nullptr), serialize(nullptr), deserialize(nullptr),
+      copy_from_bind(nullptr) {
 }
 
 CopyOption::CopyOption() : type(LogicalType::ANY), mode(CopyOptionMode::READ_WRITE) {

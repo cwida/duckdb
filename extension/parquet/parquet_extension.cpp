@@ -38,7 +38,6 @@
 #include "duckdb/function/pragma_function.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
-#include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -604,23 +603,8 @@ static void ParquetWriteCombine(ExecutionContext &context, FunctionData &bind_da
 	global_state.combine_buffer->Combine(local_state.buffer);
 }
 
-//! Append completed content-defined row groups, oldest first, keeping at most keep_in_flight prepares running
-static void ParquetCdcDrain(ParquetWriteGlobalState &global_state, idx_t keep_in_flight) {
-	while (global_state.cdc_pipeline.size() > keep_in_flight) {
-		auto &entry = *global_state.cdc_pipeline.front();
-		if (entry.future.valid()) {
-			entry.future.get(); // a failed prepare surfaces here, on the flushing thread
-		}
-		global_state.writer->FlushRowGroup(*entry.prepared);
-		global_state.cdc_pipeline.pop_front();
-	}
-}
-
 static void ParquetWriteFinalize(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate) {
 	auto &global_state = gstate.Cast<ParquetWriteGlobalState>();
-	// the last batches' prepares are still in flight when the last flush_batch ran - finish them first,
-	// so their row groups reach the file before anything that follows
-	ParquetCdcDrain(global_state, 0);
 	// flush the combine buffer (if it's there)
 	if (global_state.combine_buffer) {
 		global_state.writer->Flush(*global_state.combine_buffer, global_state.transform_data);
@@ -1030,11 +1014,30 @@ static void ParquetWriteInitializeOperator(GlobalFunctionData &gstate, const Phy
 	global_state.op = &op;
 }
 //===--------------------------------------------------------------------===//
+// Scan Batch
+//===--------------------------------------------------------------------===//
+//! The cuts produced by the ordered scan below; consumed by ParquetWritePrepareBatch, which the copy
+//! operator runs on this same thread immediately after the scan for the very same batch
+static thread_local unique_ptr<ParquetCdcBoundaries> tls_cdc_boundaries;
+
+//! Rolls the content-defined chunkers over this batch. The copy operator runs scan_batch callbacks one
+//! batch at a time, in batch order, so the chunker state stays in file order while the prepares
+//! themselves stay fully concurrent
+static void ParquetWriteScanBatch(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+                                  ColumnDataCollection &collection) {
+	auto &global_state = gstate.Cast<ParquetWriteGlobalState>();
+	if (!global_state.writer->ContentDefinedChunking()) {
+		return;
+	}
+	tls_cdc_boundaries = global_state.writer->ComputeCdcBoundaries(collection);
+}
+
+//===--------------------------------------------------------------------===//
 // Prepare Batch
 //===--------------------------------------------------------------------===//
 struct ParquetWriteBatchData : public PreparedBatchData {
 	PreparedRowGroup prepared_row_group;
-	//! With content-defined chunking the batch is prepared when it is flushed, in file order
+	//! With content-defined chunking in an unordered copy the batch is prepared when it is flushed, in file order
 	unique_ptr<ColumnDataCollection> collection;
 };
 
@@ -1044,8 +1047,16 @@ static unique_ptr<PreparedBatchData> ParquetWritePrepareBatch(ClientContext &con
 	auto &global_state = gstate.Cast<ParquetWriteGlobalState>();
 	auto result = make_uniq<ParquetWriteBatchData>();
 	if (global_state.writer->ContentDefinedChunking()) {
-		// page boundaries need ordered chunker state, so the batch is held and its row group prepared on the
-		// flushing thread instead, in ParquetWriteFlushBatch
+		if (tls_cdc_boundaries) {
+			// batched copy: the ordered scan handed this batch its cuts on this very thread
+			auto cdc_boundaries = std::move(tls_cdc_boundaries);
+			unique_ptr<ParquetWriteTransformData> transform_data;
+			global_state.writer->PrepareRowGroup(*collection, result->prepared_row_group, transform_data,
+			                                     cdc_boundaries.get());
+			return std::move(result);
+		}
+		// unordered copy: the chunkers can only roll in write order, so the batch is held and its row group
+		// prepared on the flushing thread instead, in ParquetWriteFlushBatch
 		result->collection = std::move(collection);
 		return std::move(result);
 	}
@@ -1057,48 +1068,15 @@ static unique_ptr<PreparedBatchData> ParquetWritePrepareBatch(ClientContext &con
 //===--------------------------------------------------------------------===//
 // Flush Batch
 //===--------------------------------------------------------------------===//
-//! A content-defined batch carries only its collection: the boundary scan runs here, serialized on the
-//! flushing thread, the heavy prepare it unlocks runs on a worker, and finished row groups are appended
-//! in batch order as their prepares complete
-static void ParquetCdcFlushBatch(ClientContext &context, ParquetWriteGlobalState &global_state,
-                                 unique_ptr<ColumnDataCollection> input) {
-	if (input->Count() == 0) {
-		return;
-	}
-	if (global_state.cdc_pipeline_depth == 0) {
-		auto max_threads = TaskScheduler::GetScheduler(context).NumberOfThreads();
-		global_state.cdc_pipeline_depth = MaxValue<idx_t>(2, MinValue<idx_t>(8, max_threads));
-	}
-	// the chunker only rolls in file order, so that scan runs here, serialized - it is the cheap pass; the
-	// heavy stages need nothing but its boundaries, so they run on a worker while later batches scan.
-	// The worker owns the batch and its cuts, freeing them as soon as its prepare completes
-	shared_ptr<ColumnDataCollection> collection(std::move(input));
-	shared_ptr<const ParquetCdcBoundaries> boundaries(global_state.writer->ComputeCdcBoundaries(*collection));
-	auto entry = make_uniq<ParquetCdcPipelineEntry>();
-	entry->prepared = make_uniq<PreparedRowGroup>();
-	auto *prepared = entry->prepared.get();
-	auto *writer = global_state.writer.get();
-	try {
-		entry->future = std::async(std::launch::async, [writer, collection, boundaries, prepared]() {
-			unique_ptr<ParquetWriteTransformData> transform_data;
-			writer->PrepareRowGroup(*collection, *prepared, transform_data, boundaries.get());
-		});
-	} catch (const std::exception &) {
-		// no thread to hand this to - prepare it right here
-		unique_ptr<ParquetWriteTransformData> transform_data;
-		writer->PrepareRowGroup(*collection, *prepared, transform_data, boundaries.get());
-	}
-	global_state.cdc_pipeline.push_back(std::move(entry));
-	ParquetCdcDrain(global_state, global_state.cdc_pipeline_depth);
-}
-
 static void ParquetWriteFlushBatch(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
                                    PreparedBatchData &batch_p) {
 	auto &global_state = gstate.Cast<ParquetWriteGlobalState>();
 	auto &batch = batch_p.Cast<ParquetWriteBatchData>();
 	if (batch.collection) {
-		// content-defined chunking: this batch has not been prepared yet
-		ParquetCdcFlushBatch(context, global_state, std::move(batch.collection));
+		// unordered content-defined copy: roll the chunkers and write, in write order, right here
+		unique_ptr<ParquetWriteTransformData> transform_data;
+		global_state.writer->Flush(*batch.collection, transform_data);
+		batch.collection.reset();
 		return;
 	}
 	global_state.writer->FlushRowGroup(batch.prepared_row_group);
@@ -1307,6 +1285,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	function.copy_from_function = *scan_fun.functions[0];
 
 	function.prepare_batch = ParquetWritePrepareBatch;
+	function.scan_batch = ParquetWriteScanBatch;
 	function.flush_batch = ParquetWriteFlushBatch;
 	function.file_size_bytes = ParquetWriteFileSizeBytes;
 

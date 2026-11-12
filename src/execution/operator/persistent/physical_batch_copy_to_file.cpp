@@ -18,6 +18,7 @@
 #include "duckdb/logging/log_type.hpp"
 
 #include <algorithm>
+#include <condition_variable>
 
 namespace duckdb {
 
@@ -98,6 +99,11 @@ public:
 	BatchTaskManager<BatchCopyTask> task_manager;
 	mutex lock;
 	mutex flush_lock;
+	//! Orders scan_batch callbacks by batch index so a scan sees all earlier scans' state - the heavy
+	//! prepares themselves stay concurrent. See CopyFunction::scan_batch
+	mutex scan_lock;
+	std::condition_variable scan_cv;
+	idx_t scan_batch_index = 0;
 	atomic<bool> initialized {false};
 	//! The total number of rows copied to the file
 	atomic<idx_t> rows_copied;
@@ -396,6 +402,25 @@ public:
 		auto &gstate = gstate_p.Cast<FixedBatchCopyGlobalState>();
 		auto memory_usage = batch_data->memory_usage;
 		const CopyFunctionBatchAnalyzer batch_analyzer(*batch_data->collection, op.batch_size, op.batch_size_bytes);
+		if (op.function.scan_batch) {
+			// scans run in batch order, on the thread that also prepares this batch right afterwards, while
+			// the (heavy) prepares themselves stay fully concurrent
+			unique_lock<mutex> guard(gstate.scan_lock);
+			gstate.scan_cv.wait(guard, [&]() { return gstate.scan_batch_index == batch_index; });
+			// advances the scan position even if the scan throws, so later batches never wait forever
+			struct ScanTurn {
+				explicit ScanTurn(FixedBatchCopyGlobalState &gstate_p) : gstate(gstate_p) {
+				}
+				~ScanTurn() {
+					gstate.scan_batch_index++;
+					gstate.scan_cv.notify_all();
+				}
+
+				FixedBatchCopyGlobalState &gstate;
+			};
+			ScanTurn scan_turn(gstate);
+			op.function.scan_batch(context, *op.bind_data, *gstate.global_state, *batch_data->collection);
+		}
 		auto prepared_batch =
 		    op.function.prepare_batch(context, *op.bind_data, *gstate.global_state, std::move(batch_data->collection));
 		gstate.AddBatchData(batch_index, std::move(prepared_batch), memory_usage, batch_analyzer);
