@@ -1,0 +1,26 @@
+--- a/src/functions/delta_scan/delta_multi_file_reader.cpp
++++ b/src/functions/delta_scan/delta_multi_file_reader.cpp
+@@ -6,6 +6,7 @@
+ #include "duckdb/common/type_visitor.hpp"
+ #include "duckdb/common/types/data_chunk.hpp"
+ #include "duckdb/execution/expression_executor.hpp"
++#include "duckdb/function/cast/cast_function_set.hpp"
+ #include "duckdb/function/table_function.hpp"
+ #include "duckdb/logging/logger.hpp"
+ #include "duckdb/main/client_data.hpp"
+@@ -210,8 +211,13 @@
+ 		auto target = BoundCastExpression::TargetType(cast);
+ 		if (TypeVisitor::Contains(BoundCastExpression::SourceType(cast), IsNaiveTimestamp) &&
+ 		    TypeVisitor::Contains(target, LogicalTypeId::TIMESTAMP_TZ)) {
+-			expr = BoundCastExpression::AddDefaultCastToType(std::move(BoundCastExpression::ChildMutable(cast)), target,
+-			                                                 BoundCastExpression::IsTryCast(cast));
++			auto &child = BoundCastExpression::ChildMutable(cast);
++			CastFunctionSet default_casts;
++			auto get_input = GetCastFunctionInput::Default();
++			get_input.query_location = child->GetQueryLocation();
++			auto bound_cast = default_casts.GetCastFunction(child->GetReturnType(), target, get_input);
++			auto try_cast = BoundCastExpression::IsTryCast(cast);
++			expr = BoundCastExpression::CreateDefault(std::move(child), target, std::move(bound_cast), try_cast);
+ 		}
+ 	}
+ 	ExpressionIterator::EnumerateChildren(*expr,
