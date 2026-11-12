@@ -1,0 +1,41 @@
+# name: test/sql/prepared/prepare_order_preserve_insertion_order.test
+# description: Issue #28543: Prepared statement with top-level ORDER BY and preserve_insertion_order = false
+# group: [prepared]
+
+statement ok
+SET threads = 4;
+
+statement ok
+SET preserve_insertion_order = false;
+
+statement ok
+PREPARE p1 AS SELECT i FROM range(200000) r(i) ORDER BY i DESC;
+
+query I
+EXECUTE p1;
+----
+200000 values hashing to 317abf825ce5f12f5067b415b927cdbb
+
+statement ok
+PREPARE p2 AS SELECT i FROM range(200000) r(i) WHERE i >= $1 ORDER BY i DESC;
+
+query I
+EXECUTE p2(0);
+----
+200000 values hashing to 317abf825ce5f12f5067b415b927cdbb
+
+statement ok
+PREPARE p3 AS SELECT i FROM range($1) r(i) ORDER BY i DESC;
+
+query I
+EXECUTE p3(200000);
+----
+200000 values hashing to 317abf825ce5f12f5067b415b927cdbb
+
+statement ok
+PREPARE p4 AS SELECT i + 0 FROM range(200000) r(i) ORDER BY i DESC;
+
+query I
+EXECUTE p4;
+----
+200000 values hashing to 317abf825ce5f12f5067b415b927cdbb
