@@ -165,6 +165,29 @@ CREATE UNIQUE INDEX nx ON d.n ((coalesce(try_cast(a AS DECIMAL(18,0)), -1::DECIM
 statement ok
 CREATE INDEX nx ON d.n ((a::VARCHAR))
 
+# a cast between nested types is refused when a field converts between BIGNUM and DECIMAL, other fields may change
+statement ok
+CREATE TABLE d.s (s STRUCT(n BIGNUM, amount DECIMAL(18,0)))
+
+statement ok
+CREATE INDEX sx ON d.s ((struct_extract(CAST(s AS STRUCT(n BIGNUM, amount DECIMAL(19,0))), 'amount')))
+
+statement error
+CREATE INDEX sx2 ON d.s ((struct_extract(CAST(s AS STRUCT(n DECIMAL(18,0), amount DECIMAL(18,0))), 'n')))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+statement ok
+CREATE TABLE d.l (v BIGNUM[])
+
+statement ok
+CREATE INDEX lx ON d.l (((CAST(v AS DOUBLE[]))[1]))
+
+statement error
+CREATE INDEX lx2 ON d.l (((try_cast(v AS DECIMAL(18,0)[]))[1]))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
 # the setting does not change what the key binds to, so the index is bound the same after reopening
 statement ok
 CHECKPOINT d

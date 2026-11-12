@@ -20,7 +20,6 @@
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/common/types/decimal.hpp"
-#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 
@@ -95,8 +94,61 @@ optional_ptr<const Expression> FindWideDecimalExpression(const vector<unique_ptr
 	return nullptr;
 }
 
-bool ContainsTypeId(const LogicalType &type, LogicalTypeId id) {
-	return TypeVisitor::Contains(type, [&](const LogicalType &child) { return child.id() == id; });
+//! The element type of a LIST or ARRAY
+const LogicalType &NestedChildType(const LogicalType &type) {
+	return type.id() == LogicalTypeId::ARRAY ? ArrayType::GetChildType(type) : ListType::GetChildType(type);
+}
+
+bool IsNestedList(const LogicalType &type) {
+	return type.id() == LogicalTypeId::LIST || type.id() == LogicalTypeId::ARRAY;
+}
+
+bool IsBignumDecimalPair(const LogicalType &a, const LogicalType &b) {
+	return a.id() == LogicalTypeId::BIGNUM && b.id() == LogicalTypeId::DECIMAL;
+}
+
+//! Whether the cast converts a BIGNUM to a DECIMAL or a DECIMAL to a BIGNUM, the types themselves
+bool IsBignumDecimalCast(const LogicalType &source, const LogicalType &target) {
+	return IsBignumDecimalPair(source, target) || IsBignumDecimalPair(target, source);
+}
+
+//! Whether a cast converts between BIGNUM and DECIMAL, the types themselves or corresponding fields of nested types
+//! (struct fields by name, else by position); the engines before wide decimals have no such cast
+bool CastsBetweenBignumAndDecimal(const LogicalType &source, const LogicalType &target) {
+	if (IsBignumDecimalCast(source, target)) {
+		return true;
+	}
+	if (IsNestedList(source) && IsNestedList(target)) {
+		return CastsBetweenBignumAndDecimal(NestedChildType(source), NestedChildType(target));
+	}
+	if (source.id() == LogicalTypeId::MAP && target.id() == LogicalTypeId::MAP) {
+		return CastsBetweenBignumAndDecimal(MapType::KeyType(source), MapType::KeyType(target)) ||
+		       CastsBetweenBignumAndDecimal(MapType::ValueType(source), MapType::ValueType(target));
+	}
+	const bool structs = source.id() == LogicalTypeId::STRUCT || source.id() == LogicalTypeId::TUPLE ||
+	                     source.id() == LogicalTypeId::UNION;
+	if (!structs || source.id() != target.id()) {
+		return false;
+	}
+	auto &source_children = StructType::GetChildTypes(source);
+	auto &target_children = StructType::GetChildTypes(target);
+	for (idx_t i = 0; i < source_children.size(); i++) {
+		auto &name = source_children[i].first;
+		optional_ptr<const LogicalType> target_child;
+		for (auto &candidate : target_children) {
+			if (!name.empty() && candidate.first == name) {
+				target_child = &candidate.second;
+				break;
+			}
+		}
+		if (!target_child && i < target_children.size()) {
+			target_child = &target_children[i].second;
+		}
+		if (target_child && CastsBetweenBignumAndDecimal(source_children[i].second, *target_child)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 //! The first cast between BIGNUM and DECIMAL within the key, if any: the engines before wide decimals have no such
@@ -106,8 +158,7 @@ optional_ptr<const BoundFunctionExpression> FindBignumDecimalCast(const Expressi
 		auto &cast = expr.Cast<BoundFunctionExpression>();
 		const auto source = BoundCastExpression::SourceType(cast);
 		auto &target = BoundCastExpression::TargetType(cast);
-		if ((ContainsTypeId(source, LogicalTypeId::BIGNUM) && ContainsTypeId(target, LogicalTypeId::DECIMAL)) ||
-		    (ContainsTypeId(source, LogicalTypeId::DECIMAL) && ContainsTypeId(target, LogicalTypeId::BIGNUM))) {
+		if (CastsBetweenBignumAndDecimal(source, target)) {
 			return &cast;
 		}
 	}
