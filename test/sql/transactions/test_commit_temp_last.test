@@ -1,0 +1,52 @@
+# name: test/sql/transactions/test_commit_temp_last.test
+# description: When the commit of an attached database fails, the transaction's writes to temporary tables roll back too
+# group: [transactions]
+
+statement ok
+ATTACH ':memory:' AS db1;
+
+statement ok
+CREATE TABLE db1.t (i INTEGER PRIMARY KEY);
+
+statement ok con1
+CREATE TEMP TABLE tmp (i INTEGER);
+
+statement ok con1
+BEGIN;
+
+statement ok con1
+INSERT INTO db1.t VALUES (1);
+
+statement ok con1
+INSERT INTO tmp VALUES (1);
+
+statement ok con2
+INSERT INTO db1.t VALUES (1);
+
+statement error con1
+COMMIT;
+----
+<REGEX>:.*PRIMARY KEY or UNIQUE constraint violation.*
+
+query I con1
+SELECT count(*) FROM tmp;
+----
+0
+
+# a commit that succeeds keeps both
+statement ok con1
+BEGIN;
+
+statement ok con1
+INSERT INTO db1.t VALUES (2);
+
+statement ok con1
+INSERT INTO tmp VALUES (2);
+
+statement ok con1
+COMMIT;
+
+query II con1
+SELECT (SELECT count(*) FROM tmp), (SELECT count(*) FROM db1.t);
+----
+1	2

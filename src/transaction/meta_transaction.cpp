@@ -121,9 +121,23 @@ ErrorData MetaTransaction::Commit() {
 #ifdef DEBUG
 	reference_set_t<AttachedDatabase> committed_tx;
 #endif
-	// commit transactions in reverse order
+	// commit transactions in reverse order, the temp and system databases last: writing to them always succeeds, so
+	// they roll back when the commit of another database fails
+	vector<reference<AttachedDatabase>> commit_order;
 	for (idx_t i = all_transactions.size(); i > 0; i--) {
 		auto &db = all_transactions[i - 1].get();
+		if (!db.IsTemporary() && !db.IsSystem()) {
+			commit_order.push_back(db);
+		}
+	}
+	for (idx_t i = all_transactions.size(); i > 0; i--) {
+		auto &db = all_transactions[i - 1].get();
+		if (db.IsTemporary() || db.IsSystem()) {
+			commit_order.push_back(db);
+		}
+	}
+	for (auto &db_ref : commit_order) {
+		auto &db = db_ref.get();
 		auto entry = transactions.find(db);
 		if (entry == transactions.end()) {
 			throw InternalException("Could not find transaction corresponding to database in MetaTransaction");
