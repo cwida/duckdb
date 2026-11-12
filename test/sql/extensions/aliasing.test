@@ -84,7 +84,7 @@ Hello from the explicit_extension_schema_alias
 load
 
 statement ok
-SET extension_directory='{TEST_DIR}/aliasing_installed'
+SET extension_directories=['{TEST_DIR}/aliasing_installed']
 
 statement ok
 INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
