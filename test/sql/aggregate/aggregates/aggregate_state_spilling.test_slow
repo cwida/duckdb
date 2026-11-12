@@ -153,3 +153,36 @@ WHERE f != substr(md5(k::VARCHAR), 1, 8);
 
 statement ok
 SET debug_force_external=false;
+
+# aggregate states in the arena that cannot be exported must not make the sink abandon (and re-create them) on every
+# chunk: quantile states (linked lists and a destructor) and top-n heaps (the shape of h2o groupby q08)
+statement ok
+CREATE TABLE no_plan AS SELECT i % 1000000 AS g, ((i * 2654435761) % 1000003)::DOUBLE AS v, hash(i) % 95000 AS h
+FROM range(10000000) r(i);
+
+statement ok
+SET memory_limit='1GB';
+
+query II
+SELECT count(*), sum(x) FROM (SELECT g, quantile_cont(v, 0.5) x FROM no_plan GROUP BY g);
+----
+1000000	500001175986.0
+
+statement ok
+SET memory_limit='500MB';
+
+query II
+SELECT count(*), sum(x[1]) FROM (SELECT h, arg_max(v, v, 2) x FROM no_plan GROUP BY h);
+----
+95000	94097970666.0
+
+# with a few rows per group the arena alone can exceed the thread limit: neither the abandon step nor the decision to
+# grow the pointer table may count it, or every abandon re-creates most states
+statement ok
+SET memory_limit='300MB';
+
+query II
+SELECT count(*), sum(x) FROM (SELECT g, quantile_cont(v, 0.5) x
+FROM (SELECT i % 200000 AS g, hash(i) % 1000 AS v FROM range(4000000) r(i)) GROUP BY g);
+----
+200000	99819633.0
