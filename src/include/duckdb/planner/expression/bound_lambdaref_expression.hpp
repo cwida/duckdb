@@ -30,19 +30,10 @@ public:
 	const ColumnBinding &Binding() const {
 		return binding;
 	}
-	ColumnBinding &BindingMutable() {
-		return binding;
-	}
 	idx_t LambdaIndex() const {
 		return lambda_idx;
 	}
-	idx_t &LambdaIndexMutable() {
-		return lambda_idx;
-	}
 	idx_t Depth() const {
-		return depth;
-	}
-	idx_t &DepthMutable() {
 		return depth;
 	}
 	bool IsScalar() const override {

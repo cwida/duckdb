@@ -79,12 +79,11 @@ bool UsesIndexParameter(Expression &expr) {
 }
 
 void RemoveIndexInputSlot(unique_ptr<Expression> &expr) {
-	ExpressionIterator::VisitExpressionClassMutable(expr, ExpressionClass::BOUND_REF,
-	                                                [&](unique_ptr<Expression> &child) {
-		                                                auto &ref = child->Cast<BoundReferenceExpression>();
-		                                                D_ASSERT(ref.Index() > 0);
-		                                                ref.IndexMutable()--;
-	                                                });
+	expr = ExpressionIterator::PreorderReplace<BoundReferenceExpression>(std::move(expr),
+	                                                                     [&](const BoundReferenceExpression &ref) {
+		                                                                     D_ASSERT(ref.Index() > 0);
+		                                                                     return ref.WithIndex(ref.Index() - 1);
+	                                                                     });
 }
 
 bool MatchesStructFieldProjection(Expression &expr, const string &field_name, bool allow_boolean_cast = false) {

@@ -196,10 +196,8 @@ static unique_ptr<Expression> CreateCastExpression(unique_ptr<Expression> child,
 	BoundScalarFunction bound_function(scalar_function);
 	bound_function.GetArguments() = {source_type};
 
-	auto result = make_uniq<BoundFunctionExpression>(std::move(bound_function), std::move(children),
-	                                                 std::move(function_data), true);
-	result->SetQueryLocation(query_location);
-	return std::move(result);
+	return make_uniq<BoundFunctionExpression>(std::move(bound_function), std::move(children), std::move(function_data),
+	                                          true, Identifier(), query_location);
 }
 
 unique_ptr<Expression> BoundCastExpression::Create(unique_ptr<Expression> child, const LogicalType &target_type,

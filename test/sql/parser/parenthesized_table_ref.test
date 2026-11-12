@@ -1,0 +1,70 @@
+# name: test/sql/parser/parenthesized_table_ref.test
+# description: Parentheses around a table reference require a join, as in v1.5
+# group: [parser]
+
+statement ok
+CREATE TABLE t (x INTEGER)
+
+statement ok
+INSERT INTO t VALUES (7)
+
+statement error
+FROM (CALL query('SELECT 42'))
+----
+Parser Error: syntax error at or near ")"
+
+statement error
+FROM (PRAGMA version)
+----
+Parser Error: syntax error at or near ")"
+
+statement error
+FROM (EXECUTE p)
+----
+Parser Error: syntax error at or near ")"
+
+statement error
+FROM (t)
+----
+Parser Error: syntax error at or near ")"
+
+statement error
+FROM (range(3))
+----
+Parser Error: syntax error at or near ")"
+
+query I
+FROM (t a CROSS JOIN t b) SELECT a.x + b.x
+----
+14
+
+query I
+FROM ((t a CROSS JOIN t b)) j SELECT count(*)
+----
+1
+
+query I
+FROM j: (t a CROSS JOIN t b) SELECT count(*)
+----
+1
+
+query I
+SELECT count(*) FROM (range(2) a JOIN range(3) b ON a.range = b.range) JOIN range(4) c ON c.range = a.range
+----
+2
+
+# nested parentheses parse in linear time
+query I
+FROM ((((((((((((((((((((((((((((((t a CROSS JOIN t b)))))))))))))))))))))))))))))) SELECT count(*)
+----
+1
+
+query I
+FROM ((SELECT 1 x)) SELECT x
+----
+1
+
+query I
+FROM (VALUES (1)) v(x) SELECT x
+----
+1

@@ -1370,6 +1370,40 @@ GROUP BY o.k
 physical_plan	<!REGEX>:.*COALESCE.*
 
 
+# The pushed down aggregate is estimated from its group domain, not from the aggregate above the join, so it stays
+# the build side instead of the wide dimension
+statement ok
+CREATE TABLE bs_fact AS SELECT i % 10000 AS k, i AS v FROM range(1000000) r(i);
+
+statement ok
+CREATE TABLE bs_dim AS SELECT i AS k, repeat('x', 100) || i AS s1, repeat('y', 100) || i AS s2 FROM range(100000) r(i);
+
+statement ok
+ANALYZE;
+
+statement ok
+RESET disabled_optimizers
+
+query II
+EXPLAIN (FORMAT JSON) SELECT bs_dim.k, s1, s2, sum(v) FROM bs_fact JOIN bs_dim USING (k) GROUP BY bs_dim.k, s1, s2;
+----
+physical_plan	<REGEX>:.*"name":\s*"HASH_JOIN",\s*"children":\s*\[\s*(\{\s*"name":\s*"PROJECTION",\s*"children":\s*\[\s*)*\{\s*"name":\s*"SEQ_SCAN",\s*"children":\s*\[\],\s*"extra_info":\s*\{\s*"Table":\s*"[^"]*\.main\.bs_dim".*
+
+query II
+SELECT count(*), sum(sv) FROM (SELECT bs_dim.k, s1, s2, sum(v) AS sv FROM bs_fact JOIN bs_dim USING (k) GROUP BY bs_dim.k, s1, s2);
+----
+10000	499999500000
+
+# Large group domains retain the input cap without overflowing.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT f.i, d.k, d.a, d.b, min(f.i)
+FROM range('-9223372036854775808'::BIGINT, '9223372036854775807'::BIGINT) f(i)
+LEFT JOIN (SELECT i AS k, i+1 AS a, i+2 AS b FROM range(1000000000000) r(i)) d ON f.i=d.k
+GROUP BY f.i,d.k,d.a,d.b;
+----
+physical_plan	<REGEX>:.*"Groups": "#0",\s*"Aggregates": "min\(#1\) EXPORT_STATE",\s*"Estimated Cardinality": "18446744073709551615".*
+
 # Projection fusion still allows pushdown. The rewrite is gated on the estimated group count being at most
 # 2 * STANDARD_VECTOR_SIZE, and this query's estimate falls between the 512 and 2048 thresholds, so the plan
 # shape only holds at the default vector size. Kept last so the result checks above run at every size.

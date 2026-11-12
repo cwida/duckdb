@@ -1171,21 +1171,18 @@ static unique_ptr<TableFilter> TryCastTableFilter(Context &context, const TableF
 }
 
 static idx_t StartIndexAtZero(unique_ptr<Expression> &root_expr) {
-	map<idx_t, vector<reference<BoundReferenceExpression>>> reference_map;
-
-	//! First gather all references, sorted by their index
-	ExpressionIterator::VisitExpressionMutable<BoundReferenceExpression>(
-	    root_expr, [&reference_map](BoundReferenceExpression &ref, unique_ptr<Expression> &expr) {
-		    reference_map[ref.Index()].push_back(ref);
-	    });
-	idx_t new_index = 0;
+	//! First gather all referenced indexes, sorted
+	map<idx_t, idx_t> index_map;
+	ExpressionIterator::VisitExpression<BoundReferenceExpression>(
+	    *root_expr, [&index_map](const BoundReferenceExpression &ref) { index_map[ref.Index()] = 0; });
 	//! Then assign all the references a new index, starting at 0
-	for (auto &[_, references] : reference_map) {
-		auto index = new_index++;
-		for (auto &ref : references) {
-			ref.get().IndexMutable() = index;
-		}
+	idx_t new_index = 0;
+	for (auto &entry : index_map) {
+		entry.second = new_index++;
 	}
+	root_expr = ExpressionIterator::PreorderReplace<BoundReferenceExpression>(
+	    std::move(root_expr),
+	    [&index_map](const BoundReferenceExpression &ref) { return ref.WithIndex(index_map.at(ref.Index())); });
 	return new_index;
 }
 

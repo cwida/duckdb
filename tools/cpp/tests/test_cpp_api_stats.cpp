@@ -198,6 +198,33 @@ void RegisterPair(Connection &conn, const std::string &name, const StatsMode &mo
 	conn.Register(function);
 }
 
+void PairValueStats(TableFunction::StatsInput &input) {
+	if (input.GetColumnIndex() != 1) {
+		return;
+	}
+	auto &factory = input.GetContext().GetFactory();
+	auto stats = input.GetResultStats();
+	std::vector<std::pair<std::string, Value>> fields;
+	fields.emplace_back("min", Value::Create(factory, int32_t(20)));
+	fields.emplace_back("max", Value::Create(factory, int32_t(30)));
+	fields.emplace_back("has_null", Value::Create(factory, false));
+	stats.SetValue(Value::CreateStruct(factory, fields));
+	// What was set can be read back
+	const auto value = stats.GetValue();
+	REQUIRE(value.GetChildCount() >= 3);
+	REQUIRE(!stats.CanHaveNull());
+}
+
+void RegisterPairValue(Connection &conn, const std::string &name) {
+	auto function = TableFunction::Create(conn.GetFactory());
+	function.SetName(name)
+	    .SetBindCallback(PairBind)
+	    .SetInitGlobalCallback(PairInitGlobal)
+	    .SetExecCallback(PairExec)
+	    .SetStatsCallback(PairValueStats);
+	conn.Register(function);
+}
+
 // Tables whose column statistics the engine knows from storage: "t" has no NULLs, "tn" has one.
 void CreateTables(Connection &conn) {
 	conn.Execute("CREATE TABLE t AS SELECT range::INTEGER AS i FROM range(3)").Drain();
@@ -292,4 +319,16 @@ TEST_CASE("Stable C++API: table stats callback narrows a column", "[cpp_api]") {
 	// Column "a" is described as unknown, so its filter is evaluated
 	REQUIRE(CountOf(conn, "SELECT count(*) FROM cpp_stats_pair() WHERE a IS NOT NULL") == 3);
 	REQUIRE(CountOf(conn, "SELECT count(*) FROM cpp_stats_pair_untouched() WHERE b IS NOT NULL") == 3);
+}
+
+TEST_CASE("Stable C++API: table stats callback sets min and max from a value", "[cpp_api]") {
+	auto db = Instance(":memory:");
+	auto conn = db.Connect();
+	RegisterPairValue(conn, "cpp_stats_pair_value");
+
+	// "b" is declared to lie in [20, 30], so a filter outside the range is pruned although the rows hold 7
+	REQUIRE(CountOf(conn, "SELECT count(*) FROM cpp_stats_pair_value() WHERE b < 10") == 0);
+	REQUIRE(CountOf(conn, "SELECT count(*) FROM cpp_stats_pair_value() WHERE b > 100") == 0);
+	// "a" is unknown, so its filter is evaluated
+	REQUIRE(CountOf(conn, "SELECT count(*) FROM cpp_stats_pair_value() WHERE a < 10") == 3);
 }

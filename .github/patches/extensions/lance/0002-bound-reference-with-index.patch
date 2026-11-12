@@ -1,0 +1,44 @@
+diff --git a/src/lance_common.cpp b/src/lance_common.cpp
+index b10f7a9..6c49d31 100644
+--- a/src/lance_common.cpp
++++ b/src/lance_common.cpp
+@@ -685,25 +685,20 @@ void ApplyDuckDBFilters(ClientContext &context, TableFilterSet &filters,
+   for (const auto &filter : filters.GetMultiColumnFilters()) {
+     const auto &expression_filter =
+         ExpressionFilter::GetExpressionFilter(*filter, "Lance residual filter");
+-    auto expr = expression_filter.expr->Copy();
+-    std::function<void(Expression &)> remap = [&](Expression &node) {
+-      if (node.GetExpressionClass() == ExpressionClass::BOUND_REF) {
+-        auto &ref = node.Cast<BoundReferenceExpression>();
+-        if (ref.Index() >= expression_filter.column_indexes.size()) {
+-          throw InternalException(
+-              "Lance multi-column filter reference is out of bounds");
+-        }
+-        auto projection = expression_filter.column_indexes[ref.Index()];
+-        if (projection >= chunk.ColumnCount()) {
+-          throw InternalException(
+-              "Lance multi-column filter refers to a missing scan column");
+-        }
+-        ref.IndexMutable() = projection.GetIndex();
+-      }
+-      ExpressionIterator::EnumerateChildren(
+-          node, [&](Expression &child) { remap(child); });
+-    };
+-    remap(*expr);
++    auto expr = ExpressionIterator::PreorderReplace<BoundReferenceExpression>(
++        expression_filter.expr->Copy(),
++        [&](const BoundReferenceExpression &ref) {
++          if (ref.Index() >= expression_filter.column_indexes.size()) {
++            throw InternalException(
++                "Lance multi-column filter reference is out of bounds");
++          }
++          auto projection = expression_filter.column_indexes[ref.Index()];
++          if (projection >= chunk.ColumnCount()) {
++            throw InternalException(
++                "Lance multi-column filter refers to a missing scan column");
++          }
++          return ref.WithIndex(projection.GetIndex());
++        });
+     if (!combined) {
+       combined = std::move(expr);
+     } else {

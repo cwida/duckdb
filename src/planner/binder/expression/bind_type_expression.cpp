@@ -111,8 +111,8 @@ BindResult ExpressionBinder::BindExpression(TypeExpression &type_expr, idx_t dep
 	                                                type_expr.GetQueryLocation(), &decimal_width_limit);
 
 	// Return the resulting type!
-	auto result_expr = make_uniq<BoundConstantExpression>(Value::TYPE(result_type));
-	result_expr->SetQueryLocation(type_expr.GetQueryLocation());
+	auto result_expr =
+	    make_uniq<BoundConstantExpression>(Value::TYPE(result_type), Identifier(), type_expr.GetQueryLocation());
 	return BindResult(std::move(result_expr));
 }
 

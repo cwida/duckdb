@@ -6,8 +6,8 @@ name Client Context Memory Logger
 group logger
 
 load
-set enable_logging=true;
 set logging_storage='memory';
+set enable_logging=true;
 set logging_level='debug'
 
 run

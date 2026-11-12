@@ -47,10 +47,7 @@ static bool ReferencesComputedExpression(LogicalProjection &proj, const Expressi
 }
 
 static unique_ptr<Expression> CreateColumnReference(const Expression &expr, ColumnBinding binding) {
-	unique_ptr<Expression> result = make_uniq<BoundColumnRefExpression>(expr.GetReturnType(), binding);
-	if (!expr.GetAlias().empty()) {
-		result->SetAlias(expr.GetAlias());
-	}
+	unique_ptr<Expression> result = make_uniq<BoundColumnRefExpression>(expr.GetAlias(), expr.GetReturnType(), binding);
 	return result;
 }
 

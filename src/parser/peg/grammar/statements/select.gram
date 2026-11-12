@@ -55,7 +55,9 @@ TableSubquery <- TableAliasColon? Lateral? SubqueryReference TableAlias? SampleC
 BaseTableRef <- TableAliasColon? BaseTableName TableAlias? AtClause? SampleClause?
 TableAliasColon <- ColIdOrString ':'
 ValuesRef <- TableAliasColon? ValuesClause TableAlias? SampleClause?
-ParensTableRef <- TableAliasColon? Parens(TableRef) TableAlias? SampleClause?
+ParensTableRef <- TableAliasColon? Parens(JoinedTableRef) TableAlias? SampleClause?
+JoinedTableRef <- JoinedTableRefChain / ParensTableRef
+JoinedTableRefChain <- InnerTableRef JoinOrPivot+
 
 JoinOrPivot <- JoinClause / TablePivotClause / TableUnpivotClause / TableMatchRecognizeClause
 
@@ -119,7 +121,7 @@ NearestValuesRef <- ValuesClause
 NearestTableFunction <- Lateral? QualifiedTableFunction TableFunctionArguments WithOrdinality?
 NearestTableSubquery <- Lateral? SubqueryReference
 NearestBaseTableRef <- BaseTableName AtClause? SampleClause?
-NearestParensTableRef <- Parens(TableRef) SampleClause?
+NearestParensTableRef <- Parens(JoinedTableRef) SampleClause?
 ApproxOrExact <- NearestApprox / NearestExact
 NearestApprox <- 'APPROX'
 NearestExact <- 'EXACT'
