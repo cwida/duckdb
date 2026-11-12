@@ -80,6 +80,17 @@ SELECT count(*) FROM t t1 JOIN t t2 ON t1.w >= t2.w AND t1.w + 1 >= t2.w;
 ----
 6
 
+# equality and cast join keys on wide decimals derive no filters from the join statistics
+query I
+SELECT count(*) FROM t t1 JOIN t t2 ON t1.w = t2.w;
+----
+3
+
+query I
+SELECT count(*) FROM t t1 JOIN t t2 ON t1.w >= t2.n;
+----
+5
+
 query IIII
 SELECT min(w), max(w), min(w % 7), max(w % 7) FROM t WHERE w % 7 <> 0;
 ----

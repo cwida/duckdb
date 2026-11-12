@@ -504,10 +504,10 @@ void StatisticsPropagator::CreateFilterFromJoinStats(unique_ptr<LogicalOperator>
 	if (mode != StatisticsPropagationMode::FULL) {
 		return;
 	}
-	// Match the numeric types supported by UpdateFilterStatistics.
+	// Match UpdateFilterStatistics: numeric types only, wide decimals are numeric but carry string statistics
 	auto column = GetFilterColumn(context, *expr);
-	if (!column || !expr->GetReturnType().IsNumeric() || !NumericStats::HasMinMax(stats_before) ||
-	    !NumericStats::HasMinMax(stats_after)) {
+	if (!column || !expr->GetReturnType().IsNumeric() || stats_before.GetStatsType() != StatisticsType::NUMERIC_STATS ||
+	    !NumericStats::HasMinMax(stats_before) || !NumericStats::HasMinMax(stats_after)) {
 		return;
 	}
 
