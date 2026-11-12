@@ -34,9 +34,6 @@ struct LightWeightSemaphoreWrapper {
 
 struct TaskSchedulerThread {
 #ifndef DUCKDB_NO_THREADS
-	explicit TaskSchedulerThread(unique_ptr<thread> thread_p) : internal_thread(std::move(thread_p)) {
-	}
-
 	unique_ptr<thread> internal_thread;
 #endif
 };
@@ -170,24 +167,26 @@ void TaskSchedulerPool::RelaunchThreads(TaskScheduler &scheduler, bool destroy) 
 		idx_t create_new_threads = new_thread_count - threads.size();
 
 		const auto available_cpus = GetAvailableCPUsForPinning(pool_type, pin_thread_mode, new_thread_count);
+		// destroying a running thread ends the process: the pool owns a thread as soon as it starts, so everything
+		// that can fail to allocate happens before the thread is created
+		threads.reserve(new_thread_count);
+		markers.reserve(new_thread_count);
 		for (idx_t i = 0; i < create_new_threads; i++) {
-			// launch a thread and assign it a cancellation marker
-			auto marker = unique_ptr<atomic<bool>>(new atomic<bool>(true));
-			unique_ptr<thread> worker_thread;
 			try {
+				// launch a thread and assign it a cancellation marker
+				auto marker = unique_ptr<atomic<bool>>(new atomic<bool>(true));
+				auto thread_wrapper = make_uniq<TaskSchedulerThread>();
 				const auto cpu = threads.size() < available_cpus.size() ? optional_idx(available_cpus[threads.size()])
 				                                                        : optional_idx();
-				worker_thread =
+				thread_wrapper->internal_thread =
 				    make_uniq<thread>(&TaskScheduler::ExecuteForever, &scheduler, marker.get(), pool_type, cpu);
+				threads.push_back(std::move(thread_wrapper));
+				markers.push_back(std::move(marker));
 			} catch (std::exception &ex) {
-				// thread constructor failed - this can happen when the system has too many threads allocated
-				// in this case we cannot allocate more threads - stop launching them
+				// thread constructor failed - this can happen when the system has too many threads allocated, or when
+				// the marker cannot be allocated - in this case we cannot launch more threads - stop launching them
 				break;
 			}
-			auto thread_wrapper = make_uniq<TaskSchedulerThread>(std::move(worker_thread));
-
-			threads.push_back(std::move(thread_wrapper));
-			markers.push_back(std::move(marker));
 		}
 	}
 	current_thread_count = threads.size() + (pool_type == TaskSchedulerType::REGULAR ? external_threads : 0);
