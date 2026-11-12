@@ -45,3 +45,21 @@ query IIII
 SELECT (SELECT count(*) FROM t), (SELECT count(*) FROM u), (SELECT count(*) FROM l), (SELECT max(a) FROM u);
 ----
 2	4	3	10
+
+# duplicate input rows each fire the row trigger with their own NEW value
+statement ok
+INSERT INTO t VALUES (4), (4);
+
+query II
+SELECT a, count(*) FROM u GROUP BY a ORDER BY a;
+----
+1	1
+2	1
+3	1
+4	2
+10	1
+
+query I
+SELECT count(*) FROM l;
+----
+4
