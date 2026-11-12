@@ -667,40 +667,34 @@ class BindScalarFunctionInput : public BindFunctionInput {
 public:
 	BindScalarFunctionInput(ClientContext &context_p, BoundScalarFunction &bound_function_p,
 	                        vector<unique_ptr<Expression>> &arguments_p, optional_ptr<Binder> binder_p = nullptr)
-	    : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p),
-	      bound_function(bound_function_p), binder(binder_p) {
+	    : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p,
+	                        binder_p),
+	      bound_function(bound_function_p) {
 	}
 
 	BoundScalarFunction &GetBoundFunction() const {
 		return bound_function;
 	}
-	bool HasBinder() const {
-		return binder != nullptr;
-	}
-	Binder &GetBinder() {
-		if (binder == nullptr) {
-			throw InternalException("Function %s has cannot be bound without a Binder!", bound_function.GetName());
-		}
-		return *binder;
-	}
 
 private:
 	BoundScalarFunction &bound_function;
-	optional_ptr<Binder> binder;
 };
 
 //! Input of the resolve_types callback - the arguments are read-only, the bound function can be modified
 class ResolveScalarFunctionTypesInput : private BindFunctionInput {
 public:
 	ResolveScalarFunctionTypesInput(ClientContext &context_p, BoundScalarFunction &bound_function_p,
-	                                vector<unique_ptr<Expression>> &arguments_p)
-	    : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p),
+	                                vector<unique_ptr<Expression>> &arguments_p,
+	                                optional_ptr<Binder> binder_p = nullptr)
+	    : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p,
+	                        binder_p),
 	      bound_function(bound_function_p), arguments(arguments_p) {
 	}
 
 	using BindFunctionInput::GetArgumentName;
 	using BindFunctionInput::GetClientContext;
 	using BindFunctionInput::GetConstant;
+	using BindFunctionInput::GetDecimalWidthLimit;
 	using BindFunctionInput::GetNonNullConstant;
 	using BindFunctionInput::TryGetConstant;
 

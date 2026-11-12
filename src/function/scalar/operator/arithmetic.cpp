@@ -422,8 +422,8 @@ unique_ptr<BaseStatistics> PropagateFloatingStats(ClientContext &context, Functi
 
 //! Computes the result type of a decimal addition, subtraction or modulo over the given input types
 template <bool IS_MODULO>
-LogicalType DecimalArithmeticResultType(ClientContext &context, const vector<LogicalType> &input_types,
-                                        bool &check_overflow) {
+LogicalType DecimalArithmeticResultType(const DecimalWidthLimit &decimal_width_limit,
+                                        const vector<LogicalType> &input_types, bool &check_overflow) {
 	check_overflow = false;
 	// get the max width and scale of the input arguments
 	uint32_t max_width = 0, max_scale = 0, max_width_over_scale = 0, max_decimal_width = 0;
@@ -453,14 +453,14 @@ LogicalType DecimalArithmeticResultType(ClientContext &context, const vector<Log
 		// for addition/subtraction, we add 1 to the width to ensure we don't overflow
 		required_width++;
 	}
-	const idx_t width_limit = Decimal::MaxResultWidth(context, max_decimal_width);
+	const idx_t width_limit = decimal_width_limit.ResultWidth(max_decimal_width);
 	if (required_width > width_limit && !Decimal::IsWide(width_limit)) {
 		// the result does not fit the fixed-size tiers: clamp the width and perform overflow detection
 		check_overflow = true;
 		required_width = width_limit;
 	}
 	return LogicalType::DECIMAL(
-	    Decimal::CheckedWidth(context, required_width, max_decimal_width, IS_MODULO ? "Modulo" : "Addition"),
+	    decimal_width_limit.CheckedWidth(required_width, max_decimal_width, IS_MODULO ? "Modulo" : "Addition"),
 	    max_scale);
 }
 
@@ -470,7 +470,8 @@ bool ResolveDecimalArithmeticTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &bound_function = input.GetBoundFunction();
 	bool check_overflow;
 	auto argument_types = input.GetArgumentTypes();
-	auto result_type = DecimalArithmeticResultType<IS_MODULO>(input.GetClientContext(), argument_types, check_overflow);
+	auto result_type =
+	    DecimalArithmeticResultType<IS_MODULO>(input.GetDecimalWidthLimit(), argument_types, check_overflow);
 	// we cast all input types to the specified type
 	for (idx_t i = 0; i < argument_types.size(); i++) {
 		// first check if the cast is necessary
@@ -493,7 +494,7 @@ template <bool IS_MODULO = false>
 unique_ptr<FunctionData> BindDecimalArithmetic(BindScalarFunctionInput &input) {
 	auto bind_data = make_uniq<DecimalArithmeticBindData>();
 	auto &input_types = input.GetBoundFunction().GetLogicalArguments();
-	DecimalArithmeticResultType<IS_MODULO>(input.GetClientContext(), input_types, bind_data->check_overflow);
+	DecimalArithmeticResultType<IS_MODULO>(input.GetDecimalWidthLimit(), input_types, bind_data->check_overflow);
 	return std::move(bind_data);
 }
 
@@ -1235,8 +1236,8 @@ struct MultiplyPropagateStatistics {
 };
 
 //! Computes the result type of a decimal multiplication over the given input types
-LogicalType DecimalMultiplyResultType(ClientContext &context, const vector<LogicalType> &input_types,
-                                      bool &check_overflow) {
+LogicalType DecimalMultiplyResultType(const DecimalWidthLimit &decimal_width_limit,
+                                      const vector<LogicalType> &input_types, bool &check_overflow) {
 	check_overflow = false;
 	idx_t result_width = 0, result_scale = 0;
 	uint32_t max_width = 0, max_decimal_width = 0;
@@ -1259,7 +1260,7 @@ LogicalType DecimalMultiplyResultType(ClientContext &context, const vector<Logic
 		result_scale += scale;
 	}
 	D_ASSERT(max_width > 0);
-	const idx_t width_limit = Decimal::MaxResultWidth(context, max_decimal_width);
+	const idx_t width_limit = decimal_width_limit.ResultWidth(max_decimal_width);
 	if (result_scale > width_limit) {
 		throw OutOfRangeException(
 		    "Needed scale %d to accurately represent the multiplication result, but this is out of range of the "
@@ -1277,7 +1278,7 @@ LogicalType DecimalMultiplyResultType(ClientContext &context, const vector<Logic
 		check_overflow = true;
 		result_width = width_limit;
 	}
-	return LogicalType::DECIMAL(Decimal::CheckedWidth(context, result_width, max_decimal_width, "Multiplication"),
+	return LogicalType::DECIMAL(decimal_width_limit.CheckedWidth(result_width, max_decimal_width, "Multiplication"),
 	                            NumericCast<uint32_t>(result_scale));
 }
 
@@ -1285,7 +1286,7 @@ void DecimalMultiplyResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &bound_function = input.GetBoundFunction();
 	bool check_overflow;
 	auto argument_types = input.GetArgumentTypes();
-	auto result_type = DecimalMultiplyResultType(input.GetClientContext(), argument_types, check_overflow);
+	auto result_type = DecimalMultiplyResultType(input.GetDecimalWidthLimit(), argument_types, check_overflow);
 	auto result_width = DecimalType::GetWidth(result_type);
 	// since our scale is the summation of our input scales, we do not need to cast to the result scale
 	// however, we might need to cast to the correct internal type
@@ -1321,7 +1322,7 @@ void DecimalMultiplyResolveTypes(ResolveScalarFunctionTypesInput &input) {
 unique_ptr<FunctionData> BindDecimalMultiply(BindScalarFunctionInput &input) {
 	auto bind_data = make_uniq<DecimalArithmeticBindData>();
 	auto &input_types = input.GetBoundFunction().GetLogicalArguments();
-	DecimalMultiplyResultType(input.GetClientContext(), input_types, bind_data->check_overflow);
+	DecimalMultiplyResultType(input.GetDecimalWidthLimit(), input_types, bind_data->check_overflow);
 	return std::move(bind_data);
 }
 

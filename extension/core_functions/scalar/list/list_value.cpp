@@ -1,3 +1,4 @@
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/vector/map_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "core_functions/scalar/list_functions.hpp"
@@ -246,7 +247,8 @@ void UnpivotResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	    arguments.empty() ? LogicalType::SQLNULL : ExpressionBinder::GetExpressionReturnType(*arguments[0]);
 	for (idx_t i = 1; i < arguments.size(); i++) {
 		auto arg_type = ExpressionBinder::GetExpressionReturnType(*arguments[i]);
-		if (!LogicalType::TryGetMaxLogicalType(context, child_type, arg_type, child_type)) {
+		if (!LogicalType::TryGetMaxLogicalType(context, child_type, arg_type, child_type,
+		                                       input.GetDecimalWidthLimit())) {
 			string list_arguments = "Full list: ";
 			idx_t error_index = list_arguments.size();
 			for (idx_t k = 0; k < arguments.size(); k++) {

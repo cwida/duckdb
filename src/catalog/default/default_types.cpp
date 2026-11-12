@@ -57,11 +57,11 @@ LogicalType BindDecimalType(BindLogicalTypeInput &input) {
 	if (scale > width) {
 		throw BinderException(input.GetLocation(1), "DECIMAL type scale cannot be greater than width");
 	}
-	const auto max_width = Decimal::MaxWidth(input.context);
-	if (width > max_width) {
+	const auto limit = input.GetDecimalWidthLimit();
+	if (width > limit.width) {
 		throw BinderException(input.GetLocation(0),
-		                      "DECIMAL type width %u exceeds the maximum DECIMAL width of %u (%s)", width, max_width,
-		                      Decimal::MaxWidthHint());
+		                      "DECIMAL type width %u exceeds the maximum DECIMAL width of %u (%s)", width, limit.width,
+		                      limit.hint);
 	}
 	return LogicalType::DECIMAL(width, scale);
 }

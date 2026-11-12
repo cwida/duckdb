@@ -41,6 +41,8 @@ class FunctionProperties;
 class WindowFunction;
 class WindowFunctionSet;
 class BoundSimpleFunction;
+class Binder;
+class DecimalWidthLimit;
 
 struct PragmaInfo;
 
@@ -712,13 +714,21 @@ public:
 class BindFunctionInput {
 public:
 	BindFunctionInput(ClientContext &context_p, const BoundSimpleFunction &function_p,
-	                  const FunctionSignature &signature_p, vector<unique_ptr<Expression>> &arguments_p)
-	    : context(context_p), function(function_p), signature(signature_p), arguments(arguments_p) {
+	                  const FunctionSignature &signature_p, vector<unique_ptr<Expression>> &arguments_p,
+	                  optional_ptr<Binder> binder_p = nullptr)
+	    : context(context_p), function(function_p), signature(signature_p), arguments(arguments_p), binder(binder_p) {
 	}
 
 	ClientContext &GetClientContext() const {
 		return context;
 	}
+	//! The binder of the query the function is bound in, if any: a rebind outside of a query has none
+	bool HasBinder() const {
+		return binder != nullptr;
+	}
+	DUCKDB_API Binder &GetBinder();
+	//! The widest DECIMAL the bind constructs: the limit of the binder, or the max_decimal_width setting without one
+	DUCKDB_API DecimalWidthLimit GetDecimalWidthLimit() const;
 	vector<unique_ptr<Expression>> &GetArguments() const {
 		return arguments;
 	}
@@ -759,6 +769,7 @@ private:
 	const BoundSimpleFunction &function;
 	const FunctionSignature &signature;
 	vector<unique_ptr<Expression>> &arguments;
+	optional_ptr<Binder> binder;
 };
 
 } // namespace duckdb

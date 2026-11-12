@@ -142,6 +142,28 @@ SELECT count(*) FROM d.t
 ----
 1
 
+# the key of a function whose parameters share a template type is bound within 38 digits as well: the greatest of
+# DECIMAL(38,0) and DECIMAL(38,1) is DECIMAL(38,0) in the key, as in the engines of that version, and DECIMAL(39,1) in a
+# query of this engine
+statement ok
+CREATE TABLE d.g (a DECIMAL(38,0), b DECIMAL(38,1))
+
+query I
+SELECT typeof(greatest(NULL::DECIMAL(38,0), NULL::DECIMAL(38,1)))
+----
+DECIMAL(39,1)
+
+statement ok
+CREATE UNIQUE INDEX gx ON d.g ((greatest(a, b)))
+
+statement ok
+INSERT INTO d.g VALUES (0, 0.1)
+
+statement error
+INSERT INTO d.g VALUES (0, 0.2)
+----
+<REGEX>:.*Duplicate key.*0.*
+
 # a type or a literal wider than 38 digits cannot be part of such a key, the error names the storage version
 statement error
 CREATE INDEX ix2 ON d.t ((a::DECIMAL(40,2)))
@@ -243,6 +265,18 @@ statement error
 INSERT INTO mem.m VALUES (NULL, 0.1)
 ----
 <REGEX>:.*Duplicate key.*0\.1.*
+
+statement ok
+CREATE TABLE mem.g (a DECIMAL(38,0), b DECIMAL(38,1))
+
+statement ok
+CREATE UNIQUE INDEX gx ON mem.g ((greatest(a, b)))
+
+statement ok
+INSERT INTO mem.g VALUES (0, 0.1)
+
+statement ok
+INSERT INTO mem.g VALUES (0, 0.2)
 
 statement ok
 CREATE TABLE mem.n (a BIGNUM)

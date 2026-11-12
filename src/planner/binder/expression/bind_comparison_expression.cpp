@@ -62,6 +62,14 @@ static bool SwitchVarcharComparison(const LogicalType &type) {
 bool BoundComparisonExpression::TryBindComparison(ClientContext &context, const LogicalType &left_type,
                                                   const LogicalType &right_type, LogicalType &result_type,
                                                   ExpressionType comparison_type) {
+	return TryBindComparison(context, left_type, right_type, result_type, comparison_type,
+	                         DecimalWidthLimit::FromSetting(context));
+}
+
+bool BoundComparisonExpression::TryBindComparison(ClientContext &context, const LogicalType &left_type,
+                                                  const LogicalType &right_type, LogicalType &result_type,
+                                                  ExpressionType comparison_type,
+                                                  const DecimalWidthLimit &decimal_width_limit) {
 	LogicalType res;
 	bool is_equality;
 	switch (comparison_type) {
@@ -78,9 +86,9 @@ bool BoundComparisonExpression::TryBindComparison(ClientContext &context, const 
 		break;
 	}
 	if (is_equality) {
-		res = LogicalType::ForceMaxLogicalType(context, left_type, right_type);
+		res = LogicalType::ForceMaxLogicalType(context, left_type, right_type, decimal_width_limit);
 	} else {
-		if (!LogicalType::TryGetMaxLogicalType(context, left_type, right_type, res)) {
+		if (!LogicalType::TryGetMaxLogicalType(context, left_type, right_type, res, decimal_width_limit)) {
 			return false;
 		}
 	}
@@ -104,7 +112,7 @@ bool BoundComparisonExpression::TryBindComparison(ClientContext &context, const 
 			max_width_over_scale = MaxValue<uint32_t>(width - scale, max_width_over_scale);
 		}
 		idx_t required_width = MaxValue<idx_t>(idx_t(max_scale) + max_width_over_scale, max_width);
-		const idx_t width_limit = Decimal::MaxResultWidth(context, max_decimal_width);
+		const idx_t width_limit = decimal_width_limit.ResultWidth(max_decimal_width);
 		if (required_width > width_limit) {
 			// target width does not fit in decimal: truncate the scale (if possible) to try and make it fit
 			required_width = width_limit;

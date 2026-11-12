@@ -59,8 +59,10 @@ bool BoundWindowFunction::operator!=(const BoundWindowFunction &rhs) const {
 
 BindWindowFunctionInput::BindWindowFunctionInput(ClientContext &context_p, BoundWindowFunction &bound_function_p,
                                                  vector<unique_ptr<Expression>> &arguments_p,
-                                                 OptionalOrderTypes order_types_p, OptionalOrderTypes arg_order_types_p)
-    : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p),
+                                                 OptionalOrderTypes order_types_p, OptionalOrderTypes arg_order_types_p,
+                                                 optional_ptr<Binder> binder_p)
+    : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p,
+                        binder_p),
       bound_function(bound_function_p), order_types(order_types_p), arg_order_types(arg_order_types_p) {
 }
 

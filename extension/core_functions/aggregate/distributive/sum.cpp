@@ -530,8 +530,8 @@ unique_ptr<FunctionData> BindDecimalSum(BindAggregateFunctionInput &input) {
 	if (decimal_type.InternalType() == PhysicalType::VARCHAR) {
 		// wide decimals sum their BIGNUM blobs exactly: 20 more digits hold the sum of any number of rows (below 2^64)
 		const auto input_width = DecimalType::GetWidth(decimal_type);
-		const auto result_width = Decimal::CheckedWidth(
-		    input.GetClientContext(), idx_t(input_width) + WIDE_SUM_EXTRA_DIGITS, input_width, "The sum");
+		const auto result_width = input.GetDecimalWidthLimit().CheckedWidth(idx_t(input_width) + WIDE_SUM_EXTRA_DIGITS,
+		                                                                    input_width, "The sum");
 		function.ReplaceImplementation(GetWideDecimalSumAggregate());
 		function.SetName("sum");
 		function.GetArguments()[0] = decimal_type;

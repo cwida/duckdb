@@ -71,6 +71,22 @@ string KeyDecimalWidthReason(StorageVersion key_version) {
 	                          GetStorageVersionName(Decimal::WIDE_VERSION_ADDED, false));
 }
 
+//! Binds the keys within the decimal width of their storage version while it lives, in place of the setting
+struct KeyDecimalWidthScope {
+	KeyDecimalWidthScope(Binder &binder_p, StorageVersion key_version)
+	    : binder(binder_p), limit(KeyDecimalWidth(key_version), KeyDecimalWidthReason(key_version)),
+	      previous(binder_p.GetFixedDecimalWidthLimit()) {
+		binder.SetDecimalWidthLimit(&limit);
+	}
+	~KeyDecimalWidthScope() {
+		binder.SetDecimalWidthLimit(previous);
+	}
+
+	Binder &binder;
+	const DecimalWidthLimit limit;
+	optional_ptr<const DecimalWidthLimit> previous;
+};
+
 //! The first expression of a wide decimal type within the key, if any: the engines before wide decimals bind every
 //! subexpression within 38 digits, so a wide intermediate changes the computed key as much as a wide result
 optional_ptr<const Expression> FindWideDecimalExpression(const Expression &expr) {
@@ -274,7 +290,7 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index,
 	unbound_expressions.reserve(parsed_expressions.size());
 	{
 		IndexKeyBindingScope scope(keys, binding);
-		FixedDecimalWidthScope key_width(KeyDecimalWidth(binding.version), KeyDecimalWidthReason(binding.version));
+		KeyDecimalWidthScope key_width(binder, binding.version);
 		for (auto &expr : parsed_expressions) {
 			auto copy = expr->Copy();
 			properties.always_require_rebind = false;
@@ -361,7 +377,7 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 	vector<unique_ptr<Expression>> expressions;
 	{
 		IndexKeyBindingScope scope(keys, binding);
-		FixedDecimalWidthScope key_width(KeyDecimalWidth(key_version), KeyDecimalWidthReason(key_version));
+		KeyDecimalWidthScope key_width(binder, key_version);
 		for (auto &expr : create_index_info->expressions) {
 			properties.always_require_rebind = false;
 			expressions.push_back(Bind(expr));

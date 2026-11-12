@@ -22,9 +22,10 @@ BindResult ExpressionBinder::BindExpression(CaseExpression &expr, idx_t depth) {
 	// the children have been successfully resolved
 	// figure out the result type of the CASE expression
 	auto return_type = ExpressionBinder::GetExpressionReturnType(*else_expr);
+	const auto decimal_width_limit = binder.GetDecimalWidthLimit();
 	for (auto &check : checks) {
 		auto then_type = ExpressionBinder::GetExpressionReturnType(*check.second);
-		if (!LogicalType::TryGetMaxLogicalType(context, return_type, then_type, return_type)) {
+		if (!LogicalType::TryGetMaxLogicalType(context, return_type, then_type, return_type, decimal_width_limit)) {
 			throw BinderException(
 			    expr, "Cannot mix values of type %s and %s in CASE expression - an explicit cast is required",
 			    return_type.ToString(), then_type.ToString());

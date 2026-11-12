@@ -70,7 +70,7 @@ public:
 	// Defined out-of-line: converting to the BindFunctionInput base requires the complete BoundWindowFunction.
 	BindWindowFunctionInput(ClientContext &context_p, BoundWindowFunction &bound_function_p,
 	                        vector<unique_ptr<Expression>> &arguments_p, OptionalOrderTypes order_types_p = nullptr,
-	                        OptionalOrderTypes arg_order_types_p = nullptr);
+	                        OptionalOrderTypes arg_order_types_p = nullptr, optional_ptr<Binder> binder_p = nullptr);
 
 	BoundWindowFunction &GetBoundFunction() const {
 		return bound_function;

@@ -74,19 +74,6 @@ public:
 	static bool IsWide(uint32_t width) {
 		return width > MAX_WIDTH_INT128;
 	}
-	//! The widest DECIMAL the session binds: the max_decimal_width setting (at least MAX_WIDTH_INT128, so the
-	//! fixed-size tiers are never bounded by it), or the uint32_t range of the width without a context; the width of
-	//! the FixedDecimalWidthScope of the current thread, if one is active
-	static uint32_t MaxWidth(optional_ptr<ClientContext> context);
-	//! How to bind a DECIMAL wider than MaxWidth, the hint of the errors a wider type raises
-	static string MaxWidthHint();
-	//! The widest result of combining decimals, given the widest DECIMAL among the inputs: MaxWidth, or the input
-	//! width when that is wider
-	static uint32_t MaxResultWidth(optional_ptr<ClientContext> context, uint32_t max_input_width);
-	//! Narrows a computed result width, throws when the operation needs a DECIMAL beyond MaxResultWidth: the setting
-	//! bounds the types an operation constructs, never the types of the inputs it already has
-	static uint32_t CheckedWidth(optional_ptr<ClientContext> context, idx_t width, uint32_t max_input_width,
-	                             const string &operation);
 	static string ToString(int16_t value, uint32_t width, uint32_t scale);
 	static string ToString(int32_t value, uint32_t width, uint32_t scale);
 	static string ToString(int64_t value, uint32_t width, uint32_t scale);
@@ -96,25 +83,26 @@ public:
 	                       optional_ptr<ClientContext> context = nullptr);
 };
 
-//! Binds DECIMAL types within a fixed width on the current thread while it lives, in place of the max_decimal_width
-//! setting: index keys are bound this way, so that every session binds a stored key to the same types
-class FixedDecimalWidthScope {
+//! The widest DECIMAL binding constructs: the max_decimal_width setting of the session, or the width the keys of an
+//! index are bound within, which the Binder carries while it binds them so that every session binds a stored key to
+//! the same types. The limit bounds the types an operation constructs, never the types of the inputs it already has
+class DecimalWidthLimit {
 public:
-	FixedDecimalWidthScope(uint32_t width, string reason);
-	~FixedDecimalWidthScope();
-	FixedDecimalWidthScope(const FixedDecimalWidthScope &) = delete;
-	FixedDecimalWidthScope &operator=(const FixedDecimalWidthScope &) = delete;
+	//! The limit of the max_decimal_width setting (at least MAX_WIDTH_INT128, so the fixed-size tiers are never
+	//! bounded by it), or of the uint32_t range of the width without a context
+	static DecimalWidthLimit FromSetting(optional_ptr<ClientContext> context);
+	DecimalWidthLimit(uint32_t width, string hint);
 
-	//! The scope active on the current thread, if any
-	static optional_ptr<const FixedDecimalWidthScope> Current();
+	//! The widest result of combining decimals, given the widest DECIMAL among the inputs: the limit, or the input
+	//! width when that is wider
+	uint32_t ResultWidth(uint32_t max_input_width) const;
+	//! Narrows a computed result width, throws when the operation needs a DECIMAL beyond ResultWidth
+	uint32_t CheckedWidth(idx_t width, uint32_t max_input_width, const string &operation) const;
 
 public:
-	const uint32_t width;
-	//! Why the width is fixed, the hint of the errors a wider type raises
-	const string reason;
-
-private:
-	//! The scope this one replaced on the current thread
-	optional_ptr<const FixedDecimalWidthScope> previous;
+	//! The widest DECIMAL binding constructs
+	uint32_t width;
+	//! How to bind a wider DECIMAL, the hint of the errors a wider type raises
+	string hint;
 };
 } // namespace duckdb

@@ -1,3 +1,4 @@
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/operator/decimal_cast_operators.hpp"
 #include "duckdb/common/likely.hpp"
@@ -703,7 +704,8 @@ void GenericRoundPrecisionDecimal(DataChunk &input, ExpressionState &state, Vect
 
 //! Resolves the types and the function of a decimal round with a precision, given the original decimal type
 template <typename NEGOP, typename POSOP, bool CAN_CARRY>
-unique_ptr<FunctionData> ResolveDecimalRoundPrecision(ClientContext &context, BoundScalarFunction &bound_function,
+unique_ptr<FunctionData> ResolveDecimalRoundPrecision(const DecimalWidthLimit &decimal_width_limit,
+                                                      BoundScalarFunction &bound_function,
                                                       const LogicalType &decimal_type, int32_t round_value) {
 	// our new precision becomes the round value
 	// e.g. ROUND(DECIMAL(18,3), 1) -> DECIMAL(18,1)
@@ -721,7 +723,7 @@ unique_ptr<FunctionData> ResolveDecimalRoundPrecision(ClientContext &context, Bo
 			// a fixed-size decimal stays in the fixed-size tiers (a carry out of 38 digits overflows), a wide decimal
 			// grows by the carry digit
 			if (Decimal::IsWide(width)) {
-				result_width = Decimal::CheckedWidth(context, idx_t(result_width) + 1, width, "Rounding");
+				result_width = decimal_width_limit.CheckedWidth(idx_t(result_width) + 1, width, "Rounding");
 			} else if (result_width < Decimal::MAX_WIDTH_INT128) {
 				result_width++;
 			}
@@ -781,7 +783,7 @@ unique_ptr<FunctionData> ResolveDecimalRoundPrecision(ClientContext &context, Bo
 template <typename NEGOP, typename POSOP, bool CAN_CARRY = false>
 void DecimalRoundPrecisionResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto val = input.GetNonNullConstant(1).CastAs(input.GetClientContext(), LogicalType::INTEGER);
-	ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(input.GetClientContext(), input.GetBoundFunction(),
+	ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(input.GetDecimalWidthLimit(), input.GetBoundFunction(),
 	                                                      input.GetArgumentType(0), IntegerValue::Get(val));
 }
 
@@ -791,7 +793,7 @@ unique_ptr<FunctionData> BindDecimalRoundPrecision(BindScalarFunctionInput &inpu
 	auto &bound_function = input.GetBoundFunction();
 	auto val = input.GetNonNullConstant(1).CastAs(input.GetClientContext(), LogicalType::INTEGER);
 	return ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(
-	    input.GetClientContext(), bound_function, bound_function.GetLogicalArguments()[0], IntegerValue::Get(val));
+	    input.GetDecimalWidthLimit(), bound_function, bound_function.GetLogicalArguments()[0], IntegerValue::Get(val));
 }
 
 struct TruncOperatorPrecision {

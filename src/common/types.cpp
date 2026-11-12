@@ -988,14 +988,14 @@ bool LogicalType::GetDecimalProperties(uint32_t &width, uint32_t &scale) const {
 }
 
 //! Grows Decimal width/scale when appropriate
-static LogicalType DecimalSizeCheck(optional_ptr<ClientContext> context, const LogicalType &left,
+static LogicalType DecimalSizeCheck(const LogicalTypeResolver &logical_type_resolver, const LogicalType &left,
                                     const LogicalType &right) {
 	D_ASSERT(left.id() == LogicalTypeId::DECIMAL || right.id() == LogicalTypeId::DECIMAL);
 	D_ASSERT(left.id() != right.id());
 
 	//! Make sure the 'right' is the DECIMAL type
 	if (left.id() == LogicalTypeId::DECIMAL) {
-		return DecimalSizeCheck(context, right, left);
+		return DecimalSizeCheck(logical_type_resolver, right, left);
 	}
 	auto width = DecimalType::GetWidth(right);
 	auto scale = DecimalType::GetScale(right);
@@ -1011,7 +1011,7 @@ static LogicalType DecimalSizeCheck(optional_ptr<ClientContext> context, const L
 	if (other_width > effective_width) {
 		idx_t new_width = idx_t(other_width) + scale;
 		//! Cap the width at max, if an actual value exceeds this, an exception will be thrown later
-		const idx_t width_limit = Decimal::MaxResultWidth(context, width);
+		const idx_t width_limit = logical_type_resolver.GetDecimalWidthLimit().ResultWidth(width);
 		if (new_width > width_limit) {
 			new_width = width_limit;
 		}
@@ -1068,14 +1068,16 @@ LogicalType LogicalType::NormalizeType(const LogicalType &type) {
 
 static bool TryGetMaxLogicalTypeInternal(LogicalTypeResolver &logical_type_resolver, const LogicalType &left,
                                          const LogicalType &right, LogicalType &result);
+static LogicalType ForceMaxLogicalTypeInternal(optional_ptr<ClientContext> context, const LogicalType &left,
+                                               const LogicalType &right,
+                                               optional_ptr<const DecimalWidthLimit> decimal_width_limit);
 
 class ForceLogicalTypeResolver : public LogicalTypeResolver {
 public:
 	using LogicalTypeResolver::LogicalTypeResolver;
 
 	bool Operation(const LogicalType &left, const LogicalType &right, LogicalType &result) override {
-		result = context ? LogicalType::ForceMaxLogicalType(*context, left, right)
-		                 : LogicalType::DefaultForceMaxLogicalType(left, right);
+		result = ForceMaxLogicalTypeInternal(context, left, right, decimal_width_limit);
 		return true;
 	}
 };
@@ -1108,7 +1110,7 @@ static bool TryCombineViaImplicitCast(LogicalTypeResolver &logical_type_resolver
 				//! Prefer VARIANT always
 				result = left;
 			} else {
-				result = DecimalSizeCheck(logical_type_resolver.context, left, right);
+				result = DecimalSizeCheck(logical_type_resolver, left, right);
 			}
 		} else {
 			result = right;
@@ -1123,7 +1125,7 @@ static bool TryCombineViaImplicitCast(LogicalTypeResolver &logical_type_resolver
 				//! Prefer VARIANT always
 				result = right;
 			} else {
-				result = DecimalSizeCheck(logical_type_resolver.context, right, left);
+				result = DecimalSizeCheck(logical_type_resolver, right, left);
 			}
 		} else {
 			result = left;
@@ -1180,13 +1182,25 @@ static bool TryGetMaxLogicalTypeInternal(LogicalTypeResolver &logical_type_resol
 	return true;
 }
 
-bool LogicalType::TryGetMaxLogicalType(ClientContext &context, const LogicalType &left, const LogicalType &right,
-                                       LogicalType &result) {
+static bool TryGetMaxLogicalTypeChecked(ClientContext &context, const LogicalType &left, const LogicalType &right,
+                                        LogicalType &result,
+                                        optional_ptr<const DecimalWidthLimit> decimal_width_limit) {
 	if (Settings::Get<OldImplicitCastingSetting>(context)) {
-		result = LogicalType::ForceMaxLogicalType(context, left, right);
+		result = ForceMaxLogicalTypeInternal(&context, left, right, decimal_width_limit);
 		return true;
 	}
-	return TryGetMaxLogicalTypeUnchecked(context, left, right, result);
+	TryGetLogicalTypeResolver logical_type_resolver(&context, decimal_width_limit);
+	return TryGetMaxLogicalTypeInternal(logical_type_resolver, left, right, result);
+}
+
+bool LogicalType::TryGetMaxLogicalType(ClientContext &context, const LogicalType &left, const LogicalType &right,
+                                       LogicalType &result) {
+	return TryGetMaxLogicalTypeChecked(context, left, right, result, nullptr);
+}
+
+bool LogicalType::TryGetMaxLogicalType(ClientContext &context, const LogicalType &left, const LogicalType &right,
+                                       LogicalType &result, const DecimalWidthLimit &decimal_width_limit) {
+	return TryGetMaxLogicalTypeChecked(context, left, right, result, &decimal_width_limit);
 }
 
 bool LogicalType::TryGetMaxLogicalTypeUnchecked(ClientContext &context, const LogicalType &left,
@@ -1304,9 +1318,10 @@ static idx_t GetLogicalTypeScore(const LogicalType &type) {
 }
 
 static LogicalType ForceMaxLogicalTypeInternal(optional_ptr<ClientContext> context, const LogicalType &left,
-                                               const LogicalType &right) {
+                                               const LogicalType &right,
+                                               optional_ptr<const DecimalWidthLimit> decimal_width_limit) {
 	LogicalType result;
-	ForceLogicalTypeResolver logical_type_resolver(context);
+	ForceLogicalTypeResolver logical_type_resolver(context, decimal_width_limit);
 	if (TryGetMaxLogicalTypeInternal(logical_type_resolver, left, right, result)) {
 		return result;
 	}
@@ -1322,20 +1337,35 @@ static LogicalType ForceMaxLogicalTypeInternal(optional_ptr<ClientContext> conte
 
 LogicalType LogicalType::ForceMaxLogicalType(ClientContext &context, const LogicalType &left,
                                              const LogicalType &right) {
-	return ForceMaxLogicalTypeInternal(&context, left, right);
+	return ForceMaxLogicalTypeInternal(&context, left, right, nullptr);
+}
+
+LogicalType LogicalType::ForceMaxLogicalType(ClientContext &context, const LogicalType &left, const LogicalType &right,
+                                             const DecimalWidthLimit &decimal_width_limit) {
+	return ForceMaxLogicalTypeInternal(&context, left, right, &decimal_width_limit);
 }
 
 LogicalType LogicalType::DefaultForceMaxLogicalType(const LogicalType &left, const LogicalType &right) {
-	return ForceMaxLogicalTypeInternal(nullptr, left, right);
+	return ForceMaxLogicalTypeInternal(nullptr, left, right, nullptr);
 }
 
-LogicalType LogicalType::MaxLogicalType(ClientContext &context, const LogicalType &left, const LogicalType &right) {
+static LogicalType MaxLogicalTypeChecked(ClientContext &context, const LogicalType &left, const LogicalType &right,
+                                         optional_ptr<const DecimalWidthLimit> decimal_width_limit) {
 	LogicalType result;
-	if (!TryGetMaxLogicalType(context, left, right, result)) {
+	if (!TryGetMaxLogicalTypeChecked(context, left, right, result, decimal_width_limit)) {
 		throw NotImplementedException("Cannot combine types %s and %s - an explicit cast is required", left.ToString(),
 		                              right.ToString());
 	}
 	return result;
+}
+
+LogicalType LogicalType::MaxLogicalType(ClientContext &context, const LogicalType &left, const LogicalType &right) {
+	return MaxLogicalTypeChecked(context, left, right, nullptr);
+}
+
+LogicalType LogicalType::MaxLogicalType(ClientContext &context, const LogicalType &left, const LogicalType &right,
+                                        const DecimalWidthLimit &decimal_width_limit) {
+	return MaxLogicalTypeChecked(context, left, right, &decimal_width_limit);
 }
 
 void LogicalType::Verify() const {

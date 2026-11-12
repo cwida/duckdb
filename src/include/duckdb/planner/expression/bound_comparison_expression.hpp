@@ -11,6 +11,8 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
 namespace duckdb {
+class DecimalWidthLimit;
+
 //! The BoundComparisonExpression has been moved to a function expression
 //! This class exists only as a set of helper methods
 struct BoundComparisonExpression {
@@ -39,5 +41,9 @@ struct BoundComparisonExpression {
 	                                  const LogicalType &right_type, ExpressionType comparison_type);
 	static bool TryBindComparison(ClientContext &context, const LogicalType &left_type, const LogicalType &right_type,
 	                              LogicalType &result_type, ExpressionType comparison_type);
+	//! Binds the width of a DECIMAL result within the limit instead of the max_decimal_width setting
+	static bool TryBindComparison(ClientContext &context, const LogicalType &left_type, const LogicalType &right_type,
+	                              LogicalType &result_type, ExpressionType comparison_type,
+	                              const DecimalWidthLimit &decimal_width_limit);
 };
 } // namespace duckdb

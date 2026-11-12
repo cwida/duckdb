@@ -1,3 +1,4 @@
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/smaller_binary.hpp"
 #include "duckdb/function/scalar/comparison_functions.hpp"
@@ -81,7 +82,8 @@ static unique_ptr<FunctionData> ComparisonBind(BindScalarFunctionInput &input) {
 	auto left_type = ExpressionBinder::GetExpressionReturnType(*arguments[0]);
 	auto right_type = ExpressionBinder::GetExpressionReturnType(*arguments[1]);
 	LogicalType input_type;
-	if (!BoundComparisonExpression::TryBindComparison(context, left_type, right_type, input_type, TYPE)) {
+	if (!BoundComparisonExpression::TryBindComparison(context, left_type, right_type, input_type, TYPE,
+	                                                  input.GetDecimalWidthLimit())) {
 		throw BinderException("Cannot compare values of type %s and type %s - an explicit cast is required",
 		                      left_type.ToString(), right_type.ToString());
 	}

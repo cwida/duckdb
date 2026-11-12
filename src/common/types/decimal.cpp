@@ -12,63 +12,35 @@ namespace duckdb {
 constexpr uint32_t Decimal::MAX_WIDTH_DECIMAL;
 constexpr uint32_t Decimal::DEFAULT_MAX_WIDTH;
 
-//! The scope of the current thread: a trivially destructible thread_local, a thread registers no destructor for it
-static optional_ptr<const FixedDecimalWidthScope> &CurrentFixedDecimalWidth() {
-	static thread_local optional_ptr<const FixedDecimalWidthScope> current;
-	return current;
-}
-
-FixedDecimalWidthScope::FixedDecimalWidthScope(uint32_t width_p, string reason_p)
-    : width(width_p), reason(std::move(reason_p)), previous(CurrentFixedDecimalWidth()) {
+DecimalWidthLimit::DecimalWidthLimit(uint32_t width_p, string hint_p) : width(width_p), hint(std::move(hint_p)) {
 	D_ASSERT(width >= Decimal::MAX_WIDTH_INT128);
-	CurrentFixedDecimalWidth() = this;
 }
 
-FixedDecimalWidthScope::~FixedDecimalWidthScope() {
-	D_ASSERT(CurrentFixedDecimalWidth().get() == this);
-	CurrentFixedDecimalWidth() = previous;
-}
-
-optional_ptr<const FixedDecimalWidthScope> FixedDecimalWidthScope::Current() {
-	return CurrentFixedDecimalWidth();
-}
-
-uint32_t Decimal::MaxWidth(optional_ptr<ClientContext> context) {
-	auto fixed = FixedDecimalWidthScope::Current();
-	if (fixed) {
-		return fixed->width;
-	}
+DecimalWidthLimit DecimalWidthLimit::FromSetting(optional_ptr<ClientContext> context) {
+	const string hint = "SET max_decimal_width to allow wider decimals";
 	if (!context) {
-		return NumericLimits<uint32_t>::Maximum();
+		return DecimalWidthLimit(NumericLimits<uint32_t>::Maximum(), hint);
 	}
 	const idx_t max_width = Settings::Get<MaxDecimalWidthSetting>(*context);
-	return NumericCast<uint32_t>(
-	    MinValue<idx_t>(MaxValue<idx_t>(max_width, MAX_WIDTH_INT128), NumericLimits<uint32_t>::Maximum()));
+	const auto width = NumericCast<uint32_t>(
+	    MinValue<idx_t>(MaxValue<idx_t>(max_width, Decimal::MAX_WIDTH_INT128), NumericLimits<uint32_t>::Maximum()));
+	return DecimalWidthLimit(width, hint);
 }
 
-string Decimal::MaxWidthHint() {
-	auto fixed = FixedDecimalWidthScope::Current();
-	if (fixed) {
-		return fixed->reason;
-	}
-	return "SET max_decimal_width to allow wider decimals";
+uint32_t DecimalWidthLimit::ResultWidth(uint32_t max_input_width) const {
+	return MaxValue<uint32_t>(width, max_input_width);
 }
 
-uint32_t Decimal::MaxResultWidth(optional_ptr<ClientContext> context, uint32_t max_input_width) {
-	return MaxValue<uint32_t>(MaxWidth(context), max_input_width);
-}
-
-uint32_t Decimal::CheckedWidth(optional_ptr<ClientContext> context, idx_t width, uint32_t max_input_width,
-                               const string &operation) {
-	if (width > NumericLimits<uint32_t>::Maximum()) {
+uint32_t DecimalWidthLimit::CheckedWidth(idx_t result_width, uint32_t max_input_width, const string &operation) const {
+	if (result_width > NumericLimits<uint32_t>::Maximum()) {
 		throw OutOfRangeException("%s needs a DECIMAL of %llu digits, the width of a DECIMAL is at most %u", operation,
-		                          width, NumericLimits<uint32_t>::Maximum());
+		                          result_width, NumericLimits<uint32_t>::Maximum());
 	}
-	if (width > MaxResultWidth(context, max_input_width)) {
+	if (result_width > ResultWidth(max_input_width)) {
 		throw OutOfRangeException("%s needs a DECIMAL of %llu digits, the maximum DECIMAL width is %u (%s)", operation,
-		                          width, MaxWidth(context), MaxWidthHint());
+		                          result_width, width, hint);
 	}
-	return NumericCast<uint32_t>(width);
+	return NumericCast<uint32_t>(result_width);
 }
 
 template <class SIGNED>
