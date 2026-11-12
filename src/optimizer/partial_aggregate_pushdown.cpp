@@ -681,11 +681,9 @@ struct DoubleEagerHeuristics {
 	static constexpr idx_t MIN_LARGE_COLLAPSE = 8;
 };
 
-static bool DEHasSufficientCollapse(idx_t cardinality, idx_t group_count) {
-	const auto min_collapse = group_count <= DoubleEagerHeuristics::MAX_SMALL_GROUP_COUNT
-	                              ? DoubleEagerHeuristics::MIN_SMALL_COLLAPSE
-	                              : DoubleEagerHeuristics::MIN_LARGE_COLLAPSE;
-	return cardinality > 0 && cardinality / min_collapse >= group_count;
+static idx_t DERequiredCollapse(idx_t group_count) {
+	return group_count <= DoubleEagerHeuristics::MAX_SMALL_GROUP_COUNT ? DoubleEagerHeuristics::MIN_SMALL_COLLAPSE
+	                                                                   : DoubleEagerHeuristics::MIN_LARGE_COLLAPSE;
 }
 
 static bool DEEstimateCollapse(RelationStatsExtractor &extractor, LogicalComparisonJoin &join,
@@ -695,6 +693,9 @@ static bool DEEstimateCollapse(RelationStatsExtractor &extractor, LogicalCompari
 		return false;
 	}
 	double retained_fraction = 1;
+	double input_cardinality = 0;
+	idx_t work_margin = 1;
+	bool both_inputs_collapse = true;
 	for (idx_t side = 0; side < 2; side++) {
 		auto stats = extractor.Extract(*join.children[side]);
 		if (!stats) {
@@ -714,17 +715,26 @@ static bool DEEstimateCollapse(RelationStatsExtractor &extractor, LogicalCompari
 		const auto join_retains_rows =
 		    static_cast<double>(join.estimated_cardinality) >=
 		    PartialAggregatePushdownHeuristics::MIN_JOIN_RETENTION * static_cast<double>(cardinality);
-		if (!join_retains_rows || !DEHasSufficientCollapse(cardinality, lower_cardinalities[side])) {
+		if (!join_retains_rows || cardinality == 0) {
 			return false;
 		}
-		retained_fraction *=
-		    static_cast<double>(lower_cardinalities[side]) / static_cast<double>(MaxValue<idx_t>(cardinality, 1));
+		const auto min_collapse = DERequiredCollapse(lower_cardinalities[side]);
+		both_inputs_collapse &= cardinality / min_collapse >= lower_cardinalities[side];
+		work_margin = MaxValue(work_margin, min_collapse);
+		input_cardinality += static_cast<double>(cardinality);
+		retained_fraction *= static_cast<double>(lower_cardinalities[side]) / static_cast<double>(cardinality);
 	}
 	// Scale the join estimate by grouping reduction without interpreting its selectivity as an NDV.
 	const auto cross_product =
 	    static_cast<double>(lower_cardinalities[0]) * static_cast<double>(lower_cardinalities[1]);
 	join_cardinality = RelationStatisticsHelper::CardinalityFromDouble(
 	    MinValue(cross_product, static_cast<double>(join.estimated_cardinality) * retained_fraction));
+	// Uneven collapse must save enough join output work to pay for aggregating both inputs.
+	if (!both_inputs_collapse &&
+	    static_cast<double>(join.estimated_cardinality) <
+	        static_cast<double>(work_margin) * (input_cardinality + static_cast<double>(join_cardinality))) {
+		return false;
+	}
 	return true;
 }
 
