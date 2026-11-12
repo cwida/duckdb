@@ -40,6 +40,7 @@
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/tableref/expressionlistref.hpp"
 #include "duckdb/parser/tableref/joinref.hpp"
+#include "duckdb/parser/tableref/pivotref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
@@ -1345,6 +1346,24 @@ void RemotePushdownOptimizer::StripCatalogName(TableRef &ref, const Identifier &
 		for (auto &row : el.values) {
 			for (auto &expr : row) {
 				StripCatalogName(*expr, catalog_name);
+			}
+		}
+		break;
+	}
+	case TableReferenceType::PIVOT: {
+		auto &pivot_ref = ref.Cast<PivotRef>();
+		StripCatalogName(*pivot_ref.source, catalog_name);
+		for (auto &aggr : pivot_ref.aggregates) {
+			StripCatalogName(*aggr, catalog_name);
+		}
+		for (auto &pivot : pivot_ref.pivots) {
+			for (auto &expr : pivot.pivot_expressions) {
+				StripCatalogName(*expr, catalog_name);
+			}
+			for (auto &entry : pivot.entries) {
+				if (entry.expr) {
+					StripCatalogName(*entry.expr, catalog_name);
+				}
 			}
 		}
 		break;
