@@ -326,7 +326,7 @@ static const TransformChildPlan FRAME_CHILDREN_20[] = {{PEGRuleId::AlterSequence
                                                         {0, TRANSFORM_PATH_END, 0}}};
 static const TransformFramePlan FRAME_PLAN_23 = {FRAME_CHILDREN_20, 3, 3, false, 0, {}};
 static const TransformChildPlan FRAME_CHILDREN_21[] = {{PEGRuleId::SchemaQualification,
-                                                        TransformChildKind::OPTIONAL,
+                                                        TransformChildKind::OPTIONAL_REPEAT,
                                                         1,
                                                         1,
                                                         false,
@@ -339,7 +339,7 @@ static const TransformChildPlan FRAME_CHILDREN_21[] = {{PEGRuleId::SchemaQualifi
                                                         false,
                                                         {0, TRANSFORM_PATH_END, 0},
                                                         {0, TRANSFORM_PATH_END, 0}}};
-static const TransformFramePlan FRAME_PLAN_24 = {FRAME_CHILDREN_21, 2, 2, false, 0, {}};
+static const TransformFramePlan FRAME_PLAN_24 = {FRAME_CHILDREN_21, 2, 2, true, 0, {}};
 static const TransformChildPlan FRAME_CHILDREN_22[] = {{PEGRuleId::RenameAlter,
                                                         TransformChildKind::REQUIRED,
                                                         0,
@@ -9788,13 +9788,25 @@ arena_ptr<TransformResultValue>
 PEGTransformerFactory::FinalizeQualifiedSequenceNameTrampoline(PEGTransformer &transformer,
                                                                GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	idx_t dynamic_child_count = 0;
+	auto &dynamic_repeat_opt = list_pr.GetChild(1).Cast<OptionalParseResult>();
+	if (dynamic_repeat_opt.HasResult()) {
+		auto &dynamic_repeat_pr = dynamic_repeat_opt.GetResult().Cast<RepeatParseResult>();
+		auto dynamic_repeat_children = dynamic_repeat_pr.GetChildren();
+		dynamic_child_count = dynamic_repeat_children.size();
+	}
 	optional<Identifier> catalog_qualification {};
 	if (process.child_results[0]) {
 		catalog_qualification = process.TakeResult<Identifier>(0);
 	}
-	optional<Identifier> schema_qualification {};
-	if (process.child_results[1]) {
-		schema_qualification = process.TakeResult<Identifier>(1);
+	optional<vector<Identifier>> schema_qualification {};
+	if (dynamic_child_count > 0) {
+		vector<Identifier> schema_qualification_value;
+		schema_qualification_value.reserve(dynamic_child_count);
+		for (idx_t i = 1; i < 1 + dynamic_child_count; i++) {
+			schema_qualification_value.push_back(process.TakeResult<Identifier>(i));
+		}
+		schema_qualification = std::move(schema_qualification_value);
 	}
 	auto sequence_name = list_pr.GetChild(2).Cast<IdentifierParseResult>().identifier;
 	auto result =
