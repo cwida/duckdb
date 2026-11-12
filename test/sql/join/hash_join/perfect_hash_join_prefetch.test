@@ -1,0 +1,168 @@
+# name: test/sql/join/hash_join/perfect_hash_join_prefetch.test
+# description: Large membership bitmaps preserve range, NULL and partial-batch semantics
+# group: [hash_join]
+
+require skip_reload
+
+statement ok
+SET VARIABLE check_perfect_activation =
+    NOT current_setting('debug_force_external') AND NOT current_setting('debug_disable_optimizer');
+
+statement ok
+SET disabled_optimizers='compressed_materialization,join_filter_pushdown,join_order,build_side_probe_side';
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+foreach type INTEGER UINTEGER BIGINT UBIGINT HUGEINT UHUGEINT
+
+# Cross zero for signed integers and a lower-limb boundary for the 128-bit types.
+statement ok
+SET VARIABLE bitmap_base =
+    CASE WHEN typeof(NULL::{type}) IN ('INTEGER', 'BIGINT') THEN -8388608::HUGEINT
+         WHEN typeof(NULL::{type}) IN ('HUGEINT', 'UHUGEINT') THEN 18446744073709551600::HUGEINT
+         ELSE 0::HUGEINT END;
+
+# The bitmap spans 2 MiB, with NULL in an additional word.
+statement ok
+CREATE OR REPLACE TABLE bitmap_build AS
+SELECT (i * 64 + 10 + getvariable('bitmap_base'))::{type} k FROM range(262144) t(i)
+UNION ALL SELECT (16777225 + getvariable('bitmap_base'))::{type}
+UNION ALL SELECT NULL;
+
+# Scattered keys also cover a partial final batch.
+statement ok
+CREATE OR REPLACE TABLE bitmap_probe AS
+SELECT (i * 104729 % 16777216 + 10 + getvariable('bitmap_base'))::{type} k FROM range(4353) t(i)
+UNION ALL SELECT (k + getvariable('bitmap_base'))::{type}
+FROM (VALUES (NULL), (NULL), (9), (16777226), (10), (16777225)) t(k);
+
+query I
+SELECT count(*) FROM bitmap_probe p SEMI JOIN bitmap_build b ON p.k = b.k;
+----
+71
+
+query I
+SELECT count(*) FROM bitmap_probe p SEMI JOIN bitmap_build b ON p.k IS NOT DISTINCT FROM b.k;
+----
+73
+
+query I
+SELECT count(*) FROM bitmap_probe p ANTI JOIN bitmap_build b ON p.k = b.k;
+----
+4288
+
+query I
+SELECT count(*) FROM bitmap_probe p ANTI JOIN bitmap_build b ON p.k IS NOT DISTINCT FROM b.k;
+----
+4286
+
+query II
+SELECT count(*) FILTER (WHERE matched), count(*) FILTER (WHERE matched IS NULL)
+FROM (SELECT k IN (SELECT k FROM bitmap_build) matched FROM bitmap_probe);
+----
+71	4288
+
+endloop
+
+# Out-of-domain 128-bit keys must not alias matching lower limbs.
+statement ok
+CREATE TABLE wide_bitmap_probe AS
+SELECT k FROM bitmap_probe
+UNION ALL SELECT (getvariable('bitmap_base') + 10 + 18446744073709551616::HUGEINT)::UHUGEINT
+UNION ALL SELECT (getvariable('bitmap_base') + 74 - 18446744073709551616::HUGEINT)::UHUGEINT;
+
+query I
+SELECT count(*) FROM wide_bitmap_probe p SEMI JOIN bitmap_build b ON p.k IS NOT DISTINCT FROM b.k;
+----
+73
+
+query I
+SELECT count(*) FROM wide_bitmap_probe p SEMI JOIN bitmap_build b
+ON p.k::HUGEINT IS NOT DISTINCT FROM b.k::HUGEINT;
+----
+73
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_perfect_activation') OR
+    (count(*) = 32 AND bool_and(info['backend'] = 'bitmap'))
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event='Lookup';
+----
+true
+
+# Filtering the probe must preserve the association between keys and row identities.
+statement ok
+CREATE TABLE identity_bitmap_probe AS
+SELECT row_number() OVER () - 1 AS id, k FROM wide_bitmap_probe;
+
+statement ok
+CREATE VIEW selected_bitmap_probe AS
+SELECT * FROM identity_bitmap_probe WHERE id % 3 <> 2;
+
+statement ok
+CREATE VIEW expected_bitmap_probe AS
+SELECT *, k IS NULL OR (
+    k::HUGEINT >= getvariable('bitmap_base') + 10 AND
+    k::HUGEINT <= getvariable('bitmap_base') + 16777225 AND
+    ((k::HUGEINT - getvariable('bitmap_base') - 10) % 64 = 0 OR
+     k::HUGEINT = getvariable('bitmap_base') + 16777225)
+) AS is_member
+FROM selected_bitmap_probe;
+
+query I
+SELECT
+    (SELECT list(id ORDER BY id) FROM selected_bitmap_probe p SEMI JOIN bitmap_build b
+     ON p.k IS NOT DISTINCT FROM b.k) =
+    (SELECT list(id ORDER BY id) FROM expected_bitmap_probe WHERE is_member);
+----
+true
+
+query I
+SELECT
+    (SELECT list(id ORDER BY id) FROM selected_bitmap_probe p ANTI JOIN bitmap_build b ON p.k = b.k) =
+    (SELECT list(id ORDER BY id) FROM expected_bitmap_probe WHERE NOT is_member OR k IS NULL);
+----
+true
+
+query I
+SELECT bool_and(m.matched IS NOT DISTINCT FROM
+    CASE WHEN e.is_member AND e.k IS NOT NULL THEN true ELSE NULL::BOOLEAN END)
+FROM (SELECT id, k IN (SELECT k FROM bitmap_build) AS matched FROM selected_bitmap_probe) m
+JOIN expected_bitmap_probe e USING (id);
+----
+true
+
+# INT64_MIN is one past this domain after unsigned subtraction, where the NULL slot lives.
+statement ok
+SET disabled_optimizers='compressed_materialization,join_filter_pushdown,join_order,build_side_probe_side,statistics_propagation';
+
+statement ok
+SET VARIABLE high_bitmap_base = 9223372036837998592::BIGINT;
+
+statement ok
+CREATE TABLE high_bitmap_build AS
+SELECT i * 64 + getvariable('high_bitmap_base') k FROM range(262144) t(i)
+UNION ALL SELECT 9223372036854775807::BIGINT
+UNION ALL SELECT NULL;
+
+statement ok
+CREATE TABLE high_bitmap_probe AS
+SELECT i * 104729 % 16777216 + getvariable('high_bitmap_base') k FROM range(4353) t(i)
+UNION ALL SELECT (-9223372036854775808)::BIGINT
+UNION ALL SELECT 9223372036854775807::BIGINT
+UNION ALL SELECT NULL;
+
+query I
+SELECT count(*) FROM high_bitmap_probe p SEMI JOIN high_bitmap_build b ON p.k IS NOT DISTINCT FROM b.k;
+----
+71
+
+query II
+SELECT count(*),count(*) FILTER (WHERE p.k = -9223372036854775808)
+FROM high_bitmap_probe p ANTI JOIN high_bitmap_build b ON p.k IS NOT DISTINCT FROM b.k;
+----
+4285	1

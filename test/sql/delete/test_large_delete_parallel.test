@@ -3,7 +3,7 @@
 # group: [delete]
 
 statement ok
-pragma threads=2
+SET threads=2
 
 statement ok
 pragma verify_parallelism

@@ -233,7 +233,7 @@ SELECT percentile_cont(frac := 0.5) WITHIN GROUP (ORDER BY i) FROM generate_seri
 <REGEX>:Binder Error:.*No function matches.*
 
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 # direct aggregate callbacks retain the first/last rewrite
 query II

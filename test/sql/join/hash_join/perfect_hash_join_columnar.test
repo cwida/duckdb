@@ -1,0 +1,70 @@
+# name: test/sql/join/hash_join/perfect_hash_join_columnar.test
+# description: Unique direct joins emit dictionary positions with NULLs and missing keys
+# group: [hash_join]
+
+# Keep the operator logs across statements.
+require skip_reload
+
+statement ok
+SET VARIABLE check_perfect_activation =
+    NOT current_setting('debug_force_external') AND NOT current_setting('debug_disable_optimizer');
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side,join_filter_pushdown,statistics_propagation';
+
+statement ok
+CREATE TABLE b(k BIGINT, v VARCHAR, n BIGINT);
+
+statement ok
+INSERT INTO b VALUES (0,NULL,10),(2,'two',NULL),(NULL,'null',30);
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query ITI
+SELECT p.k,b.v,b.n FROM (VALUES (0::BIGINT),(1),(2),(NULL)) p(k) JOIN b ON p.k=b.k ORDER BY p.k;
+----
+0	NULL	10
+2	two	NULL
+
+query ITI
+SELECT p.k,b.v,b.n FROM (VALUES (0::BIGINT),(1),(2),(NULL)) p(k)
+JOIN b ON p.k IS NOT DISTINCT FROM b.k ORDER BY p.k NULLS LAST;
+----
+0	NULL	10
+2	two	NULL
+NULL	null	30
+
+query II
+SELECT count(*),sum(b.n) FROM range(5000) p(i) JOIN b ON p.i//2500=b.k;
+----
+2500	25000
+
+query II
+SELECT count(*),sum(b.n) FROM range(5000) p(i) JOIN b ON (p.i%2)*2=b.k;
+----
+5000	25000
+
+# A small probe keeps row lookup instead of materializing the whole build as a dictionary.
+query ITI
+SELECT p.k,b.v,b.n FROM (VALUES (2::BIGINT)) p(k) JOIN b ON p.k=b.k;
+----
+2	two	NULL
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_perfect_activation') OR count(*)=4
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event='DictionaryLookup';
+----
+true
+
+query I
+SELECT NOT getvariable('check_perfect_activation') OR
+       list_sort(list(info['total_probe_matches']::UBIGINT)) = [1,2,3,2500,5000]
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event='GetData';
+----
+true

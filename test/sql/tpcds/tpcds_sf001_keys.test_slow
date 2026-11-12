@@ -7,7 +7,7 @@ require tpcds
 # answers are generated from postgres
 # hence check with NULLS LAST flag
 statement ok
-PRAGMA default_null_order='NULLS LAST'
+SET default_null_order='NULLS LAST'
 
 statement ok
 CALL dsdgen(sf=0.01, keys=true)

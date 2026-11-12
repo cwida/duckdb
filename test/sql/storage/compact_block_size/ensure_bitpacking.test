@@ -6,7 +6,7 @@ statement ok
 SET threads=1;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
 ATTACH '{TEST_DIR}/smaller_block_size.db' (BLOCK_SIZE 16384);

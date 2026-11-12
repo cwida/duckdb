@@ -42,7 +42,7 @@ SELECT count(*) FROM xy WHERE i > j;
 
 # Multi-column filters survive common-subplan canonicalization alongside regular filters
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 query II
 EXPLAIN SELECT count(*) FROM xy WHERE i > j AND i >= 0
@@ -52,7 +52,7 @@ SELECT count(*) FROM xy WHERE i > j AND i >= 0;
 logical_opt	<REGEX>:.*CTE.*
 
 statement ok
-PRAGMA explain_output='all';
+SET explain_output='all';
 
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM xy WHERE i > j AND i >= 0

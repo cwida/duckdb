@@ -2,9 +2,6 @@
 # description: Test mixing lambdas and macros
 # group: [lambdas]
 
-statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
 # Test conflicting column names.
 
 statement ok

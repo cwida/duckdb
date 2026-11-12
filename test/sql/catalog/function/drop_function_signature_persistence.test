@@ -1,0 +1,129 @@
+# name: test/sql/catalog/function/drop_function_signature_persistence.test
+# description: Member drops and the entry's dependencies survive checkpoint and restart
+# group: [function]
+
+load {TEST_DIR}/drop_function_signature_base.db
+
+statement ok
+SET enable_macro_dependencies = true;
+
+# a member drop on a v2.1.0 database
+statement ok
+ATTACH '{TEST_DIR}/drop_function_signature_persistence.db' AS pdb (STORAGE_VERSION 'v2.1.0');
+
+statement ok
+CREATE TABLE pdb.src(i INTEGER);
+
+statement ok
+CREATE MACRO pdb.main.pf(x INTEGER) AS (SELECT count(*) FROM pdb.src), (x VARCHAR) AS x, (x) AS 42;
+
+statement ok
+DROP MACRO pdb.main.pf(VARCHAR);
+
+restart
+
+statement ok
+SET enable_macro_dependencies = true;
+
+statement ok
+ATTACH '{TEST_DIR}/drop_function_signature_persistence.db' AS pdb;
+
+# the replacement entry with the surviving members was persisted
+query TT
+SELECT pdb.main.pf(1), pdb.main.pf(DATE '2024-01-01');
+----
+0	42
+
+statement error
+DROP MACRO pdb.main.pf(VARCHAR);
+----
+<REGEX>:.*has no overload with signature \(VARCHAR\).*
+
+# the entry's dependency survived the restart
+statement error
+DROP TABLE pdb.src;
+----
+<REGEX>:.*depend.*
+
+# a member drop after the restart keeps the entry's dependencies too
+statement ok
+DROP MACRO pdb.main.pf(ANY);
+
+statement error
+SELECT pdb.main.pf(DATE '2024-01-01');
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+statement error
+DROP TABLE pdb.src;
+----
+<REGEX>:.*depend.*
+
+statement ok
+CHECKPOINT pdb;
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/drop_function_signature_persistence.db' AS pdb;
+
+query T
+SELECT pdb.main.pf(1);
+----
+0
+
+statement ok
+DROP MACRO pdb.main.pf;
+
+statement ok
+DROP TABLE pdb.src;
+
+# a database pinned below v2.1.0 rejects a member drop after a round trip, with or without dependencies:
+# releases before v2.1.0 do not know the ALTER_MACRO WAL record
+statement ok
+SET enable_macro_dependencies = true;
+
+statement ok
+ATTACH '{TEST_DIR}/drop_function_signature_old.db' AS odb (STORAGE_VERSION 'v1.4.0');
+
+statement ok
+CREATE TABLE odb.old_src(i INTEGER);
+
+statement ok
+CREATE MACRO odb.main.old_pf(x INTEGER) AS (SELECT count(*) FROM odb.old_src), (x VARCHAR) AS x;
+
+statement ok
+CREATE MACRO odb.main.old_plain(x INTEGER) AS 1, (x VARCHAR) AS 2;
+
+restart
+
+statement ok
+SET enable_macro_dependencies = true;
+
+statement ok
+ATTACH '{TEST_DIR}/drop_function_signature_old.db' AS odb;
+
+statement error
+DROP MACRO odb.main.old_pf(VARCHAR);
+----
+<REGEX>:.*Dropping a single overload is only supported for storage versions v2.1.0 and higher.*
+
+statement error
+DROP MACRO odb.main.old_plain(VARCHAR);
+----
+<REGEX>:.*Dropping a single overload is only supported for storage versions v2.1.0 and higher.*
+
+query TT
+SELECT odb.main.old_pf(1), odb.main.old_plain('a');
+----
+0	2
+
+# dropping the macros themselves works on any storage version
+statement ok
+DROP MACRO odb.main.old_plain;
+
+statement ok
+DROP MACRO odb.main.old_pf;
+
+statement ok
+DROP TABLE odb.old_src;

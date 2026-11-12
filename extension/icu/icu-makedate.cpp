@@ -6,6 +6,7 @@
 #include "duckdb/common/vector_operations/variadic_executor.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "include/icu-casts.hpp"
 #include "include/icu-datefunc.hpp"
@@ -36,7 +37,7 @@ date_t ICUMakeDate::Operation(Calendar *calendar, timestamp_tz_t instant) {
 	return result;
 }
 
-date_t ICUMakeDate::ToDate(ClientContext &context, timestamp_tz_t instant) {
+date_t ICUMakeDate::ToDate(Context &context, timestamp_tz_t instant) {
 	ICUDateFunc::BindData data(context);
 	return Operation(data.calendar.get(), instant);
 }

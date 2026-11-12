@@ -31,9 +31,6 @@ SELECT * FROM test WHERE i = 1
 ----
 1	1
 
-statement ok
-PRAGMA disable_verification
-
 query II
 SELECT s.min, s.max FROM (SELECT stats(i) s FROM test LIMIT 1)
 ----

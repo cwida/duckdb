@@ -14,7 +14,7 @@ SELECT CASE WHEN i % 3 = 0 THEN NULL ELSE i END
 FROM range(12) tbl(i)
 
 statement ok
-PRAGMA explain_output='OPTIMIZED_ONLY'
+SET explain_output='OPTIMIZED_ONLY'
 
 query II nosort
 EXPLAIN SELECT v FROM topn_nulls ORDER BY v NULLS FIRST LIMIT 6;

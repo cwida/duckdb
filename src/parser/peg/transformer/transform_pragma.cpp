@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/parser/statement/pragma_statement.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"

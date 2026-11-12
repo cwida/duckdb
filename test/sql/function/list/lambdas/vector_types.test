@@ -4,9 +4,6 @@
 
 require vector_size 2048
 
-statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
 query I
 SELECT [x for x in c if x IS NOT NULL] FROM test_vector_types(NULL::INT[]) t(c);
 ----

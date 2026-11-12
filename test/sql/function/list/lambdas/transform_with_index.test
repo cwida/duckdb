@@ -2,9 +2,6 @@
 # description: Test the list_transform function with an index parameter
 # group: [lambdas]
 
-statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
 query I
 SELECT list_transform([1, 2, 3], lambda x: list_transform([4, 5, 6], lambda y, y_i: x + y + y_i));
 ----

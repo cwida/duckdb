@@ -99,15 +99,17 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(AutoinstallExtensionRepositorySetting),
     DUCKDB_SETTING(AutoinstallKnownExtensionsSetting),
     DUCKDB_SETTING(AutoloadKnownExtensionsSetting),
+    DUCKDB_SETTING_CALLBACK(BufferManagerTrackEvictionTimestampsSetting),
     DUCKDB_SETTING(CacheLocalFilesSetting),
     DUCKDB_SETTING(CatalogErrorMaxSchemasSetting),
     DUCKDB_SETTING_CALLBACK(CheckpointOnDetachSetting),
+    DUCKDB_SETTING(CheckpointOnShutdownSetting),
     DUCKDB_GLOBAL(CheckpointThresholdSetting),
     DUCKDB_LOCAL(CurrentDialectSetting),
     DUCKDB_SETTING_CALLBACK(CurrentTransactionInvalidationPolicySetting),
     DUCKDB_SETTING(CustomExtensionRepositorySetting),
     DUCKDB_GLOBAL(CustomUserAgentSetting),
-    DUCKDB_GLOBAL(DebugAbortOnWalFailureSetting),
+    DUCKDB_SETTING(DebugAbortOnWalFailureSetting),
     DUCKDB_SETTING(DebugAsofIejoinSetting),
     DUCKDB_SETTING_CALLBACK(DebugCheckpointAbortSetting),
     DUCKDB_SETTING(DebugCheckpointScanSleepMsSetting),
@@ -118,17 +120,20 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(DebugEvictionQueueSleepMicroSecondsSetting),
     DUCKDB_SETTING(DebugFileDescriptorLimitSetting),
     DUCKDB_SETTING_CALLBACK(ForceBitpackingModeSetting),
+    DUCKDB_SETTING(DebugForceCheckpointSetting),
     DUCKDB_SETTING(DebugForceCommitFailureSetting),
     DUCKDB_SETTING(DebugForceCommitRevertFailureSetting),
     DUCKDB_SETTING(DebugForceExternalSetting),
     DUCKDB_SETTING(DebugForceFetchRowSetting),
+    DUCKDB_SETTING(DebugForceFlushAppendFailureSetting),
     DUCKDB_GLOBAL(ForceMbedtlsUnsafeSetting),
     DUCKDB_SETTING(DebugForceNoCrossProductSetting),
     DUCKDB_SETTING(ForceUpdateToDelAndInsertSetting),
     DUCKDB_GLOBAL(ForceVariantShredding),
     DUCKDB_SETTING(DebugForceWalFsyncFailureSetting),
+    DUCKDB_SETTING_CALLBACK(DebugInitializeSetting),
     DUCKDB_SETTING(DebugLocalFileSystemDelayMsSetting),
-    DUCKDB_GLOBAL(DebugOrderVerificationSetting),
+    DUCKDB_SETTING_CALLBACK(DebugOrderVerificationSetting),
     DUCKDB_SETTING_CALLBACK(DebugPhysicalTableScanExecutionStrategySetting),
     DUCKDB_SETTING(DebugSkipCheckpointOnCommitSetting),
     DUCKDB_GLOBAL(DebugVerificationModeSetting),
@@ -172,8 +177,8 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(EnableOptimisticWriteSetting),
     DUCKDB_SETTING(EnableOptimizerSetting),
     DUCKDB_LOCAL(EnableProfilingSetting),
-    DUCKDB_LOCAL(EnableProgressBarSetting),
-    DUCKDB_LOCAL(EnableProgressBarPrintSetting),
+    DUCKDB_SETTING_CALLBACK(EnableProgressBarSetting),
+    DUCKDB_SETTING_CALLBACK(EnableProgressBarPrintSetting),
     DUCKDB_SETTING(EnableViewDependenciesSetting),
     DUCKDB_GLOBAL(EnabledLogTypes),
     DUCKDB_SETTING(ErrorOnDivisionByZeroSetting),
@@ -245,7 +250,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_LOCAL(ProfilingModeSetting),
     DUCKDB_LOCAL(ProfilingOutputSetting),
     DUCKDB_LOCAL(ProfilingRendererSettingsSetting),
-    DUCKDB_LOCAL(ProgressBarTimeSetting),
+    DUCKDB_SETTING_CALLBACK(ProgressBarTimeSetting),
     DUCKDB_SETTING_CALLBACK(ReadAheadDepthSetting),
     DUCKDB_SETTING(RedactHttpLogsSetting),
     DUCKDB_SETTING_CALLBACK(RegexMatchOperatorSemanticsSetting),
@@ -264,6 +269,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING_CALLBACK(TempFileEncryptionSetting),
     DUCKDB_GLOBAL(ThreadsSetting),
     DUCKDB_SETTING_CALLBACK(TrackedMetricsSetting),
+    DUCKDB_SETTING(TrimFreeBlocksSetting),
     DUCKDB_SETTING(UsernameSetting),
     DUCKDB_SETTING_CALLBACK(VacuumRebuildIndexesSetting),
     DUCKDB_SETTING_CALLBACK(ValidateExternalFileCacheSetting),
@@ -1107,10 +1113,46 @@ vector<string> DBConfig::GetAllowedPaths() const {
 	return vector<string>(options.allowed_paths.begin(), options.allowed_paths.end());
 }
 
+static bool HasRemotePathTraversal(const string &path) {
+	auto scheme_end = path.find("://");
+	if (scheme_end == string::npos || Path::FromString(path).IsLocal()) {
+		return false;
+	}
+
+	auto path_to_check = StringUtil::Lower(path);
+	if (StringUtil::StartsWith(path_to_check, "http://") || StringUtil::StartsWith(path_to_check, "https://")) {
+		// HTTP queries and fragments are not part of the path.
+		path_to_check = path_to_check.substr(0, path_to_check.find_first_of("?#"));
+	}
+	auto path_start = path_to_check.find_first_of("/\\", scheme_end + 3);
+	if (path_start == string::npos) {
+		return false;
+	}
+
+	// Replace all separator variants with a literal /
+	path_to_check = path_to_check.substr(path_start);
+	path_to_check = StringUtil::Replace(path_to_check, "\\", "/");
+	path_to_check = StringUtil::Replace(path_to_check, "%2f", "/");
+	path_to_check = StringUtil::Replace(path_to_check, "%5c", "/");
+	// Ensure encoded dots are also treated as a .
+	path_to_check = StringUtil::Replace(path_to_check, "%2e", ".");
+
+	for (const auto &segment : StringUtil::Split(path_to_check, '/')) {
+		if (segment == "..") {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool DBConfig::CanAccessFile(const string &input_path, FileType type, optional_ptr<FileOpener> opener) {
 	if (Settings::Get<EnableExternalAccessSetting>(*this)) {
 		// all external access is allowed
 		return true;
+	}
+	// Remote backends can resolve parent segments outside the allowed prefix.
+	if (HasRemotePathTraversal(input_path)) {
+		return false;
 	}
 	string path = SanitizeAllowedPath(input_path, opener);
 

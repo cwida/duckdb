@@ -14,7 +14,7 @@ SELECT hash(range) col0,
 FROM range(10);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II
 EXPLAIN

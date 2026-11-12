@@ -83,7 +83,10 @@ tnorm
 statement ok
 SET wal_autocheckpoint = '0B';
 
-# the automatic checkpoint cannot bind the index, so it is skipped and the WAL is kept
+# the automatic checkpoint cannot bind the index, so it is skipped and the WAL is kept, which is reported as a warning
+statement ok
+SET warnings_as_errors=false
+
 statement ok
 CREATE TABLE other AS SELECT 1 AS i;
 

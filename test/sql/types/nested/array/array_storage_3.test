@@ -6,7 +6,7 @@
 load {TEST_DIR}/temp_array_storage_3.db
 
 statement ok
-pragma preserve_insertion_order=true
+SET preserve_insertion_order=true
 
 statement ok
 CREATE TABLE tbl1 AS SELECT array_value(a, a) FROM range(0,122881) AS r1(a)

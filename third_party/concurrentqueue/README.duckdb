@@ -1,0 +1,11 @@
+Source: https://github.com/cameron314/concurrentqueue
+Version: v1.0.5 (9afb99746f0f5fc94ac8aef737053ae0481ba8d1)
+
+DuckDB customizations:
+* Rename the namespace to duckdb_moodycamel.
+* Retain scheduler producer-count and producer-size observation methods.
+* Preserve amalgamation-compatible includes and warning handling.
+* Use std::chrono for the non-monotonic semaphore clock fallback.
+* Keep implicit-producer thread-exit notification disabled for TLS destructor enqueueing.
+* Separate producer/consumer counters and semaphore state with byte padding.
+* Retry failed initial implicit-producer block-index allocation on allocating enqueue.

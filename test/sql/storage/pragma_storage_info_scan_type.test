@@ -11,7 +11,7 @@ require vector_size 2048
 load {TEST_DIR}/test_pragma_storage_info_scan_type.db
 
 statement ok
-PRAGMA force_compression = 'bitpacking'
+SET force_compression = 'bitpacking'
 
 statement ok
 CREATE TABLE bp_tbl (a INTEGER)
