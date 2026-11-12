@@ -166,7 +166,8 @@ unique_ptr<BaseStatistics> TableFunctionUnionData::GetStatistics(ClientContext &
 	}
 	for (idx_t col_idx = 0; col_idx < names.size(); col_idx++) {
 		if (Identifier(names[col_idx]) == name) {
-			return statistics(context, bind_data.get(), col_idx);
+			TableFunctionGetStatisticsInput input(bind_data.get(), ColumnIndex(col_idx));
+			return statistics(context, input);
 		}
 	}
 	return nullptr;
@@ -177,7 +178,8 @@ unique_ptr<BaseStatistics> TableFunctionUnionData::GetVirtualColumnStatistics(Cl
 	if (!statistics || !bind_data) {
 		return nullptr;
 	}
-	return statistics(context, bind_data.get(), virtual_column_id);
+	TableFunctionGetStatisticsInput input(bind_data.get(), ColumnIndex(virtual_column_id));
+	return statistics(context, input);
 }
 
 shared_ptr<BaseUnionData> TableFunctionFileReader::GetUnionData(idx_t file_idx) {
@@ -186,7 +188,7 @@ shared_ptr<BaseUnionData> TableFunctionFileReader::GetUnionData(idx_t file_idx) 
 	result->types = types;
 	result->cardinality = cardinality;
 	result->bind_data = bind_data;
-	result->statistics = function.statistics;
+	result->statistics = function.statistics_extended;
 	if (file_idx == 0) {
 		// keep the first reader around so we don't need to bind it again
 		result->reader = shared_from_this();
@@ -195,12 +197,13 @@ shared_ptr<BaseUnionData> TableFunctionFileReader::GetUnionData(idx_t file_idx) 
 }
 
 unique_ptr<BaseStatistics> TableFunctionFileReader::GetStatistics(ClientContext &context, const Identifier &name) {
-	if (!function.statistics || !bind_data) {
+	if (!function.statistics_extended || !bind_data) {
 		return nullptr;
 	}
 	for (idx_t col_idx = 0; col_idx < names.size(); col_idx++) {
 		if (names[col_idx] == name) {
-			return function.statistics(context, bind_data.get(), col_idx);
+			TableFunctionGetStatisticsInput input(bind_data.get(), ColumnIndex(col_idx));
+			return function.statistics_extended(context, input);
 		}
 	}
 	return nullptr;
@@ -208,10 +211,11 @@ unique_ptr<BaseStatistics> TableFunctionFileReader::GetStatistics(ClientContext 
 
 unique_ptr<BaseStatistics> TableFunctionFileReader::GetVirtualColumnStatistics(ClientContext &context,
                                                                                column_t virtual_column_id) {
-	if (!function.statistics || !bind_data) {
+	if (!function.statistics_extended || !bind_data) {
 		return nullptr;
 	}
-	return function.statistics(context, bind_data.get(), virtual_column_id);
+	TableFunctionGetStatisticsInput input(bind_data.get(), ColumnIndex(virtual_column_id));
+	return function.statistics_extended(context, input);
 }
 
 void TableFunctionFileReader::AddVirtualColumn(column_t virtual_column_id) {
@@ -744,12 +748,12 @@ static constexpr idx_t MIN_ESTIMATED_BYTES_PER_ROW = 10;
 
 //! The row count the caller gives for the whole scan, read_parquet's explicit_cardinality (0 means not given). Looked
 //! up by name, by convention: read_parquet is the only wrapped function that declares it
-static optional_idx ExplicitCardinality(const TableFunctionMultiFileData &data) {
+static optional_idx ExplicitCardinality(Context &context, const TableFunctionMultiFileData &data) {
 	auto entry = data.options.named_parameters.find(Identifier("explicit_cardinality"));
 	if (entry == data.options.named_parameters.end() || entry->second.IsNull()) {
 		return optional_idx();
 	}
-	auto cardinality = entry->second.DefaultCastAs(LogicalType::UBIGINT).GetValue<uint64_t>();
+	auto cardinality = entry->second.CastAs(context, LogicalType::UBIGINT).GetValue<uint64_t>();
 	if (cardinality == 0) {
 		return optional_idx();
 	}
@@ -764,7 +768,7 @@ unique_ptr<NodeStatistics> TableFunctionMultiFileWrapper::GetCardinality(ClientC
 	}
 	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
 	auto result = make_uniq<NodeStatistics>();
-	auto explicit_cardinality = ExplicitCardinality(data);
+	auto explicit_cardinality = ExplicitCardinality(context.GetContext(), data);
 	if (explicit_cardinality.IsValid()) {
 		result->has_estimated_cardinality = true;
 		result->estimated_cardinality = explicit_cardinality.GetIndex();
@@ -952,7 +956,12 @@ TableFunction TableFunctionMultiFileWrapper::CreateFunction(TableFunction single
 		// the metrics of the scan include those the wrapped function keeps per file
 		result.get_metrics = TableFunctionMultiFileGetMetrics;
 	}
-	if (single_file_function.statistics) {
+	if (single_file_function.statistics && !single_file_function.statistics_extended) {
+		throw InternalException("Table function %s defines statistics, but a function wrapped in a multi file function "
+		                        "needs statistics_extended",
+		                        single_file_function.name);
+	}
+	if (single_file_function.statistics_extended) {
 		// the statistics of the scan are those of its files, combined
 		result.statistics_extended = TableFunctionMultiFileFunction::MultiFileScanStatsExtended;
 	}

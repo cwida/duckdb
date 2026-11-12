@@ -10,7 +10,7 @@ def test_trace(shell, tmp_path):
 
     test = (
         ShellTest(shell)
-        .statement("CALL enable_logging('FileSystem', level = 'trace', storage = 'shell_log_storage');")
+        .statement("CALL enable_logging('FileSystem', level = 'trace', storage = 'shell_log_sink');")
         .statement(f"copy (select 1 as a) to '{temp_file.as_posix()}'")
     )
     result = test.run()
@@ -21,7 +21,7 @@ def test_trace(shell, tmp_path):
 # def test_debug(shell):
 #     test = (
 #         ShellTest(shell)
-#         .statement("CALL enable_logging(level = 'debug', storage = 'shell_log_storage');")
+#         .statement("CALL enable_logging(level = 'debug', storage = 'shell_log_sink');")
 #         .statement("SELECT 42;")
 #     )
 #
@@ -36,7 +36,7 @@ def test_info(shell):
 
     test = (
         ShellTest(shell)
-        .statement("CALL enable_logging(level = 'info', storage = 'shell_log_storage');")
+        .statement("CALL enable_logging(level = 'info', storage = 'shell_log_sink');")
         .statement("LOAD HTTP;")
     )
 
@@ -91,11 +91,21 @@ def test_changing_logging_settings(shell, tmp_path):
     result.check_stdout("The logging settings have been changed")
 
 
-def test_keeping_shell_log_storage_does_not_warn(shell):
+def test_deprecated_shell_log_storage(shell):
+    test = ShellTest(shell).statement("CALL enable_logging(level = 'info', storage = 'shell_log_storage');")
+
+    result = test.run()
+    result.check_stdout("WARNING:")
+    result.check_stdout("The log sink 'shell_log_storage' has been renamed to 'shell_log_sink'")
+    # the deprecated name still selects the shell's sink
+    result.check_not_exist("The logging settings have been changed")
+
+
+def test_keeping_shell_log_sink_does_not_warn(shell):
     test = (
         ShellTest(shell)
         .statement("CALL enable_logging(level = 'warning');")
-        .statement("CALL enable_logging(level = 'info', storage = 'shell_log_storage');")
+        .statement("CALL enable_logging(level = 'info', storage = 'shell_log_sink');")
     )
 
     result = test.run()
@@ -106,7 +116,7 @@ def test_keeping_shell_log_storage_does_not_warn(shell):
     "statement",
     ["CALL enable_logging(level = 'error');", "CALL enable_logging('QueryLog');"],
 )
-def test_dropping_warnings_from_shell_log_storage_warns(shell, statement):
+def test_dropping_warnings_from_shell_log_sink_warns(shell, statement):
     test = ShellTest(shell).statement(statement)
 
     result = test.run()

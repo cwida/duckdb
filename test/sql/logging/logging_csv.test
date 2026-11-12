@@ -147,12 +147,12 @@ CALL disable_logging();
 statement error
 CALL enable_logging(['FileSystem'], storage='stdout', storage_config={'bla': 'bla'});
 ----
-Invalid Input Error: Unrecognized log storage config option for storage: 'StdOutLogStorage': 'bla'
+Invalid Input Error: Unrecognized log sink config option for sink: 'StdOutLogSink': 'bla'
 
 statement error
 CALL enable_logging(['FileSystem'], storage='stdout', storage_config={'path': './file.csv'});
 ----
-Invalid Input Error: Unrecognized log storage config option for storage: 'StdOutLogStorage': 'path'
+Invalid Input Error: Unrecognized log sink config option for sink: 'StdOutLogSink': 'path'
 
 # Switching between normalized and denormalized logs will throw if the log is non-empty
 

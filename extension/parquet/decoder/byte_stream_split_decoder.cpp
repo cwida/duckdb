@@ -36,26 +36,31 @@ static idx_t GetValueWidth(const ParquetColumnSchema &schema) {
 
 void ByteStreamSplitDecoder::InitializePage() {
 	auto &block = reader.block;
-	bss_decoder = make_uniq<BssDecoder>(block->ptr, block->len, GetValueWidth(reader.Schema()));
-	block->inc(block->len);
+	block_offset = block->GetOffset();
+	idx_t bss_len;
+	auto loc = block->ConsumeRemaining(bss_len);
+	bss_decoder = make_uniq<BssDecoder>(loc, NumericCast<uint32_t>(bss_len), GetValueWidth(reader.Schema()));
+}
+
+void ByteStreamSplitDecoder::Rebase() {
+	ColumnReader::RebaseDecoder(bss_decoder, *reader.block, block_offset);
 }
 
 void ByteStreamSplitDecoder::Read(uint8_t *defines, idx_t read_count, Vector &result, idx_t result_offset) {
 	idx_t valid_count = reader.GetValidCount(defines, read_count, result_offset);
-	auto &allocator = reader.reader.allocator;
+	auto &allocator = reader.GetAllocator();
 	auto value_width = GetValueWidth(reader.Schema());
 
 	if (reader.Schema().parquet_type == duckdb_parquet::Type::FIXED_LEN_BYTE_ARRAY) {
 		// string readers can reference the decoded values, so the buffer must be able to outlive this call
 		auto plain_data = make_shared_ptr<ResizeableBuffer>(allocator, value_width * valid_count);
-		bss_decoder->GetBatch(plain_data->ptr, NumericCast<uint32_t>(valid_count));
+		bss_decoder->GetBatch(plain_data->GetCurrentLoc(), NumericCast<uint32_t>(valid_count));
 		reader.Plain(plain_data, defines, read_count, result_offset, result);
 		return;
 	}
 
-	decoded_data_buffer.reset();
-	decoded_data_buffer.resize(allocator, value_width * valid_count);
-	bss_decoder->GetBatch(decoded_data_buffer.ptr, NumericCast<uint32_t>(valid_count));
+	decoded_data_buffer.Resize(allocator, value_width * valid_count);
+	bss_decoder->GetBatch(decoded_data_buffer.GetCurrentLoc(), NumericCast<uint32_t>(valid_count));
 	reader.Plain(decoded_data_buffer, defines, read_count, result_offset, result);
 }
 

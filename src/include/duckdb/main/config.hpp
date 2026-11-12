@@ -358,6 +358,8 @@ public:
 	SettingLookupResult TryGetCurrentUserSetting(idx_t setting_index, Value &result) const;
 	//! Returns the default value of an option
 	static SettingLookupResult TryGetDefaultValue(optional_ptr<const ConfigurationOption> option, Value &result);
+	SettingLookupResult TryGetDefaultValue(const Identifier &key, optional_ptr<const ConfigurationOption> option,
+	                                       Value &result) const;
 
 	//! The opener (if any) is used to expand "~" using the connection-specific home_directory
 	bool CanAccessFile(const string &path, FileType type, optional_ptr<FileOpener> opener = nullptr);

@@ -36,9 +36,9 @@ public:
 protected:
 	void Dictionary(shared_ptr<ResizeableBuffer> dictionary_data, idx_t num_entries) {
 		BaseType::AllocateDict(num_entries * sizeof(DUCKDB_PHYSICAL_TYPE));
-		auto dict_ptr = (DUCKDB_PHYSICAL_TYPE *)this->dict->ptr;
+		auto dict_ptr = (DUCKDB_PHYSICAL_TYPE *)this->dict->GetCurrentLoc();
 		for (idx_t i = 0; i < num_entries; i++) {
-			dict_ptr[i] = FUNC(dictionary_data->read<PARQUET_PHYSICAL_TYPE>());
+			dict_ptr[i] = FUNC(dictionary_data->Read<PARQUET_PHYSICAL_TYPE>());
 		}
 	}
 };
