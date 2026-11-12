@@ -1,0 +1,96 @@
+name: Windows static exports
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/WindowsStaticExports.yml
+      - CMakeLists.txt
+      - src/CMakeLists.txt
+      - scripts/strip_coff_exports.py
+      - scripts/ci/test_strip_coff_exports.py
+      - scripts/ci/check_windows_static_exports.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-static-exports-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    name: Compare ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: windows-2022
+            msvc_arch: x64
+            platform: windows_amd64
+            cmake_flags: ""
+          - arch: arm64
+            runner: windows-2025-vs2026
+            msvc_arch: arm64
+            platform: windows_arm64
+            cmake_flags: -DCMAKE_C_COMPILER_TARGET=arm64-pc-windows-msvc -DCMAKE_CXX_COMPILER_TARGET=arm64-pc-windows-msvc
+    env:
+      GEN: ninja
+      CC: clang-cl
+      CXX: clang-cl
+      DUCKDB_PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-msvc-env
+        with:
+          arch: ${{ matrix.msvc_arch }}
+          host_arch: x64
+      - name: Test archive export removal
+        shell: bash
+        run: python -m unittest scripts.ci.test_strip_coff_exports
+      - name: Prepare Windows headers
+        if: matrix.arch == 'amd64'
+        shell: bash
+        run: python scripts/ci/retry.py -- python scripts/windows_ci.py
+      - name: Build baseline with static exports
+        shell: bash
+        env:
+          EXTRA_CMAKE_VARIABLES: ${{ matrix.cmake_flags }} -DWINDOWS_STATIC_LIBRARY_EXPORTS=ON
+        run: |
+          python scripts/ci/retry.py -- make windows_release
+          python scripts/ci/check_windows_static_exports.py --output windows-exports-before.json
+      - name: Relink without static exports
+        shell: bash
+        env:
+          EXTRA_CMAKE_VARIABLES: ${{ matrix.cmake_flags }} -DWINDOWS_STATIC_LIBRARY_EXPORTS=OFF
+        run: |
+          python scripts/ci/retry.py -- make windows_release
+          python scripts/ci/check_windows_static_exports.py --output windows-exports-after.json --compare windows-exports-before.json
+      - name: Unit tests
+        if: matrix.arch == 'amd64'
+        shell: bash
+        run: python test/run.py
+      - name: Load each extension with no extensions linked into the host
+        if: matrix.arch == 'amd64'
+        shell: bash
+        env:
+          EXTRA_CMAKE_VARIABLES: ${{ matrix.cmake_flags }} -DWINDOWS_STATIC_LIBRARY_EXPORTS=OFF -DSTATICALLY_LINK_EXTENSIONS=none
+        run: |
+          python scripts/ci/retry.py -- make windows_release
+          python scripts/ci/check_windows_static_exports.py --output windows-exports-smoke.json --smoke
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-static-exports-${{ matrix.arch }}
+          path: |
+            windows-exports-*.json
+            repository
+          if-no-files-found: error

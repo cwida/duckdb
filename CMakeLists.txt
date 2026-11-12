@@ -701,6 +701,8 @@ option(FORCE_DEBUG "Force adding a debug define, even in release mode" FALSE)
 
 option(TREAT_WARNINGS_AS_ERRORS "Treat warnings as errors" FALSE)
 option(EXPORT_DLL_SYMBOLS "Export dll symbols on Windows, else import" TRUE)
+option(WINDOWS_STATIC_LIBRARY_EXPORTS
+       "Keep DLL export directives in the Windows static DuckDB library" OFF)
 option(BUILD_RDTSC "Enable the rdtsc instruction." FALSE)
 set(SMALLER_BINARY
     ""

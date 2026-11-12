@@ -85,6 +85,24 @@ target_link_libraries(duckdb_static PUBLIC ${DUCKDB_SYSTEM_LIBS})
 link_threads(duckdb_static PUBLIC)
 duckdb_make_native_lto_archive(duckdb_static)
 
+if(WIN32
+   AND MSVC
+   AND NOT WINDOWS_STATIC_LIBRARY_EXPORTS
+   AND NOT CLANG_TIDY)
+  if(NOT Python3_FOUND)
+    message(FATAL_ERROR "Removing Windows static exports requires Python3")
+  endif()
+  # The shared library retains the original objects and their DLL exports.
+  set(STRIP_COFF_EXPORTS "${PROJECT_SOURCE_DIR}/scripts/strip_coff_exports.py")
+  add_custom_command(
+    TARGET duckdb_static
+    POST_BUILD
+    COMMAND "${Python3_EXECUTABLE}" "${STRIP_COFF_EXPORTS}"
+            "$<TARGET_FILE:duckdb_static>"
+    COMMENT "Removing DLL exports from duckdb_static"
+    VERBATIM)
+endif()
+
 #
 # FIXME file(COPY ${CMAKE_SOURCE_DIR}/libduckdb_static.a  DESTINATION
 # ${CMAKE_CURRENT_BINARY_DIR}) add_library(duckdb_static STATIC IMPORTED GLOBAL)
