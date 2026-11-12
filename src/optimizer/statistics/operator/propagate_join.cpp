@@ -122,15 +122,16 @@ struct VerificationStatsGuard {
 	bool previous;
 };
 
-//! The column a join-derived filter can target: the side itself or the column under a lossless integral cast
+//! The column a join-derived filter can target: the side itself or the column under an invertible numeric cast
 static optional_ptr<const Expression> GetFilterColumn(ClientContext &context, const Expression &expr) {
 	optional_ptr<const Expression> column = expr;
 	if (BoundCastExpression::IsCast(expr)) {
 		auto &cast = expr.Cast<BoundFunctionExpression>();
 		auto source_type = BoundCastExpression::SourceType(cast);
 		auto &target_type = cast.GetReturnType();
-		if (BoundCastExpression::IsTryCast(cast) || !source_type.IsIntegral() || !target_type.IsIntegral() ||
-		    !BoundCastExpression::CastIsInvertible(source_type, target_type)) {
+		// Invertible numeric casts also preserve order.
+		if (BoundCastExpression::IsTryCast(cast) || !source_type.IsNumeric() || !target_type.IsNumeric() ||
+		    !BoundCastExpression::CastIsInvertibleForEquality(source_type, target_type)) {
 			return nullptr;
 		}
 		if (!BoundCastExpression::IsDefaultCast(cast) &&
@@ -503,9 +504,9 @@ void StatisticsPropagator::CreateFilterFromJoinStats(unique_ptr<LogicalOperator>
 	if (mode != StatisticsPropagationMode::FULL) {
 		return;
 	}
-	// Only do this for integral colref's (possibly under a lossless cast) that have stats
+	// Match the numeric types supported by UpdateFilterStatistics.
 	auto column = GetFilterColumn(context, *expr);
-	if (!column || !expr->GetReturnType().IsIntegral() || !NumericStats::HasMinMax(stats_before) ||
+	if (!column || !expr->GetReturnType().IsNumeric() || !NumericStats::HasMinMax(stats_before) ||
 	    !NumericStats::HasMinMax(stats_after)) {
 		return;
 	}
@@ -518,7 +519,7 @@ void StatisticsPropagator::CreateFilterFromJoinStats(unique_ptr<LogicalOperator>
 
 	vector<unique_ptr<Expression>> filter_exprs;
 	auto add_filter = [&](ExpressionType comparison_type, const Value &bound) {
-		// Bounds are within the column's range, but skip one that does not fit its type
+		// Inclusive bounds remain conservative when the reverse numeric cast rounds.
 		auto column_bound = bound.DefaultTryCastAs(column->GetReturnType());
 		if (column_bound) {
 			filter_exprs.emplace_back(BoundComparisonExpression::Create(
