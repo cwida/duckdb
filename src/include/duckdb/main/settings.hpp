@@ -2170,8 +2170,10 @@ struct MaxDecimalWidthSetting {
 	static constexpr const char *Description =
 	    "The maximum width (number of digits) of a DECIMAL type, at least 38. Decimals wider than 38 digits are "
 	    "computed on BIGNUM blobs whose cost grows with the width, so the bound limits the time and memory a single "
-	    "value can take: a type declaration, a cast, a literal or an arithmetic result that needs a wider DECIMAL "
-	    "raises an error.";
+	    "value can take: a type declaration, a cast or a literal wider than the bound raises an error, and above 38 so "
+	    "does an arithmetic result that would need a wider DECIMAL. At 38, the setting preserves the types of the "
+	    "versions before wide decimals: arithmetic results stay within 38 digits, as they did there. Index keys are "
+	    "bound independently of the setting.";
 	static constexpr const char *InputType = "UBIGINT";
 	static constexpr bool IsDebug = false;
 	static constexpr bool IsDeprecated = false;

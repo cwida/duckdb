@@ -221,6 +221,29 @@ SELECT count(*), typeof(max(d)) FROM w WHERE d = d
 ----
 1	DECIMAL(5000,10)
 
+# at 38 arithmetic keeps the types of the versions before wide decimals: a result that does not fit stays within 38
+# digits instead of raising an error, as it did there
+statement ok
+SET max_decimal_width = 38;
+
+query II
+SELECT typeof(1::DECIMAL(38,0) + 1::DECIMAL(38,0)), typeof(1::DECIMAL(38,0) * 1::DECIMAL(38,0))
+----
+DECIMAL(38,0)	DECIMAL(38,0)
+
+statement ok
+SET max_decimal_width = 39;
+
+query I
+SELECT typeof(1::DECIMAL(38,0) + 1::DECIMAL(38,0))
+----
+DECIMAL(39,0)
+
+statement error
+SELECT typeof(1::DECIMAL(38,0) * 1::DECIMAL(38,0))
+----
+Multiplication needs a DECIMAL of 76 digits, the maximum DECIMAL width is 39
+
 # values below 38 act as 38: the fixed-size tiers are never bounded and results stay within 38 digits, as before wide
 # decimals
 statement ok
