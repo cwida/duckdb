@@ -1916,73 +1916,8 @@ FilterPropagateResult ParquetReader::CheckRowGroupFilterStatistics(ClientContext
 	return prune_result;
 }
 
-static unique_ptr<Expression> TryUnwrapAdaptiveMinMaxFilter(const Expression &expression) {
-	if (expression.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
-		auto result = expression.Copy();
-		bool supported = true;
-		ExpressionIterator::EnumerateChildren(*result, [&](unique_ptr<Expression> &child) {
-			auto predicate = TryUnwrapAdaptiveMinMaxFilter(*child);
-			if (!predicate) {
-				supported = false;
-			} else {
-				child = std::move(predicate);
-			}
-		});
-		return supported ? std::move(result) : nullptr;
-	}
-	if (expression.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION ||
-	    expression.Cast<BoundFunctionExpression>().Function().GetName() != SelectivityOptionalFilterScalarFun::NAME) {
-		return nullptr;
-	}
-	auto child = ExpressionFilter::GetOptionalFilterChild(expression);
-	if (!child || child->GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
-		return nullptr;
-	}
-	switch (child->GetExpressionType()) {
-	case ExpressionType::COMPARE_GREATERTHAN:
-	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-	case ExpressionType::COMPARE_LESSTHAN:
-	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-		break;
-	default:
-		return nullptr;
-	}
-	auto &arguments = child->Cast<BoundFunctionExpression>().GetChildren();
-	if (arguments.size() != 2 || arguments[0]->GetExpressionClass() != ExpressionClass::BOUND_REF ||
-	    arguments[0]->Cast<BoundReferenceExpression>().Index() != 0 ||
-	    arguments[1]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
-		return nullptr;
-	}
-	return child->Copy();
-}
-
-struct ParquetScanFilter::AdaptiveMinMaxState {
-	AdaptiveMinMaxState(unique_ptr<Expression> predicate_p, idx_t check_vectors, float threshold)
-	    : predicate(std::move(predicate_p)), stats(check_vectors, threshold) {
-	}
-
-	unique_ptr<Expression> predicate;
-	SelectivityOptionalFilterState::SelectivityStats stats;
-};
-
 void ParquetScanFilter::Initialize(ClientContext &context) {
-	auto &expr = *ExpressionFilter::GetExpressionFilter(filter, "ParquetScanFilter::Initialize").expr;
-	auto predicate = TryUnwrapAdaptiveMinMaxFilter(expr);
-	if (!predicate) {
-		filter_state = TableFilterState::Initialize(context, filter);
-		return;
-	}
-	float threshold;
-	idx_t check_vectors;
-	GetThresholdAndVectorsToCheck(SelectivityOptionalFilterType::MIN_MAX, threshold, check_vectors);
-	auto adaptive_state = make_uniq<AdaptiveMinMaxState>(std::move(predicate), check_vectors, threshold);
-	auto expression_state = make_uniq<ExpressionFilterState>(context.GetContext(), *adaptive_state->predicate);
-	if (!expression_state->fast_executor) {
-		filter_state = TableFilterState::Initialize(context, filter);
-		return;
-	}
-	adaptive_minmax = std::move(adaptive_state);
-	filter_state = std::move(expression_state);
+	filter_state = TableFilterState::Initialize(context, filter);
 }
 
 bool ParquetReader::FiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state,
@@ -2003,7 +1938,6 @@ bool ParquetReader::FiltersExcludeRowGroup(ClientContext &context, ParquetReader
 		}
 		if (prune_result == FilterPropagateResult::FILTER_ALWAYS_TRUE) {
 			scan_filter.filter_state.reset();
-			scan_filter.adaptive_minmax.reset();
 		} else if (!scan_filter.filter_state) {
 			scan_filter.Initialize(context);
 		}
@@ -3037,19 +2971,11 @@ idx_t ParquetReader::EvaluateFilters(ParquetReaderScanState &state, DataChunk &r
 
 		auto &result_vector = result.data[local_idx.GetIndex()];
 		ColumnReaderInput reader_input(scan_count, define_ptr, repeat_ptr);
-		auto &adaptive_minmax = scan_filter.adaptive_minmax;
-		if (scan_filter.filter_state && (!adaptive_minmax || adaptive_minmax->stats.IsActive())) {
-			const auto before_count = filter_count;
+		if (scan_filter.filter_state) {
 			child_reader.Filter(reader_input, result_vector, scan_filter.filter, *scan_filter.filter_state, state.sel,
 			                    filter_count, is_first_filter);
-			if (adaptive_minmax) {
-				adaptive_minmax->stats.Update(filter_count, before_count);
-			}
 		} else {
 			child_reader.Select(reader_input, result_vector, state.sel, filter_count);
-			if (adaptive_minmax) {
-				adaptive_minmax->stats.Update(0, 0);
-			}
 		}
 		if (log_prefetch) {
 			auto &filters_used = state.prefetch_metrics.logger.filters_used;

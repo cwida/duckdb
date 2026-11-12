@@ -19,10 +19,12 @@
 #include "duckdb/common/types/selection_vector.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/planner/table_filter.hpp"
+#include "duckdb/planner/table_filter_state.hpp"
 
 namespace duckdb {
 class ColumnReader;
 struct TableFilterState;
+class TableFilterCache;
 class DictionaryEntry;
 class ResizeableBuffer;
 class Vector;
@@ -38,13 +40,11 @@ public:
 	idx_t Read(uint8_t *defines, idx_t read_count, Vector &result, idx_t result_offset);
 	void Skip(uint8_t *defines, idx_t skip_count);
 	bool CanFilter(const TableFilter &filter, TableFilterState &filter_state);
-	bool DictionarySupportsFilter(const TableFilter &filter, TableFilterState &filter_state);
 	void Filter(uint8_t *defines, idx_t read_count, Vector &result, SelectionVector &sel, idx_t &approved_tuple_count);
-	bool HasFilter() const {
-		return filter_result.get();
-	}
+	void ResetFilter(const TableFilterState &state);
+	bool HasFilter(TableFilterState &state);
 	bool HasFilteredOutAllValues() const {
-		return HasFilter() && filter_count == 0;
+		return filter_cache && filter_cache->CanSkipAll();
 	}
 
 private:
@@ -59,8 +59,7 @@ private:
 	SelectionVector dictionary_selection_vector;
 	idx_t dictionary_size;
 	buffer_ptr<DictionaryEntry> dictionary;
-	unsafe_unique_array<bool> filter_result;
-	idx_t filter_count;
+	unique_ptr<TableFilterCache> filter_cache;
 	bool can_have_nulls;
 };
 

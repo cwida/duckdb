@@ -155,8 +155,6 @@ StringColumnReader::Utf8ValidationOption
 EnumUtil::FromString<StringColumnReader::Utf8ValidationOption>(const char *value);
 
 struct ParquetScanFilter {
-	struct AdaptiveMinMaxState;
-
 	ParquetScanFilter(ClientContext &context, ProjectionIndex filter_idx, TableFilter &filter);
 	~ParquetScanFilter();
 	ParquetScanFilter(ParquetScanFilter &&) = default;
@@ -164,7 +162,6 @@ struct ParquetScanFilter {
 
 	ProjectionIndex filter_idx;
 	TableFilter &filter;
-	unique_ptr<AdaptiveMinMaxState> adaptive_minmax;
 	unique_ptr<TableFilterState> filter_state;
 };
 

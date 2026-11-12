@@ -34,8 +34,7 @@ DictionaryDecoder::DictionaryDecoder(ColumnReader &reader)
 void DictionaryDecoder::InitializeDictionary(idx_t new_dictionary_size, optional_ptr<const TableFilter> filter,
                                              optional_ptr<TableFilterState> filter_state, bool has_defines) {
 	dictionary_size = new_dictionary_size;
-	filter_result.reset();
-	filter_count = 0;
+	filter_cache.reset();
 	can_have_nulls = has_defines;
 
 	// we use the last entry as a NULL, dictionary vectors don't have a separate validity mask
@@ -53,22 +52,8 @@ void DictionaryDecoder::InitializeDictionary(idx_t new_dictionary_size, optional
 		reader.Plain(reader.block, nullptr, dictionary_size, 0, dictionary_data);
 	}
 
-	// immediately filter the dictionary, if applicable
 	if (filter && CanFilter(*filter, *filter_state)) {
-		// no filter result yet - apply filter to the dictionary
-		// initialize the filter result - setting everything to false
-		filter_result = make_unsafe_uniq_array<bool>(duckdb_dictionary_size);
-
-		// apply the filter
-		SelectionVector dict_sel;
-		filter_count = duckdb_dictionary_size;
-		ColumnSegment::FilterSelection(dict_sel, dictionary_data, *filter_state, duckdb_dictionary_size, filter_count);
-
-		// now set all matching tuples to true
-		for (idx_t i = 0; i < filter_count; i++) {
-			auto idx = dict_sel.get_index(i);
-			filter_result[idx] = true;
-		}
+		filter_cache = filter_state->CreateCache(dictionary_data, duckdb_dictionary_size);
 	}
 }
 
@@ -152,25 +137,23 @@ void DictionaryDecoder::Skip(uint8_t *defines, idx_t skip_count) {
 	dict_decoder->Skip(NumericCast<uint32_t>(valid_count));
 }
 
-bool DictionaryDecoder::DictionarySupportsFilter(const TableFilter &filter, TableFilterState &filter_state) {
-	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "DictionaryDecoder::DictionarySupportsFilter");
-	auto &state = filter_state.Cast<ExpressionFilterState>();
-	auto emits_nulls = expr_filter.EvaluateWithConstant(*state.executor, Value(reader.Type()));
-	return !emits_nulls;
+bool DictionaryDecoder::CanFilter(const TableFilter &filter, TableFilterState &filter_state) {
+	return dictionary_size > 0 && filter_state.can_cache;
 }
 
-bool DictionaryDecoder::CanFilter(const TableFilter &filter, TableFilterState &filter_state) {
-	if (dictionary_size == 0) {
+void DictionaryDecoder::ResetFilter(const TableFilterState &state) {
+	if (filter_cache && !filter_cache->IsValidFor(state)) {
+		filter_cache.reset();
+	}
+}
+
+bool DictionaryDecoder::HasFilter(TableFilterState &state) {
+	ResetFilter(state);
+	if (!dictionary || dictionary_size == 0 || !state.can_cache) {
 		return false;
 	}
-	if (filter_state.can_throw) {
-		// the dictionary holds the values of every row in the page - evaluating a filter that can throw over it
-		// would raise errors for rows that are never returned
-		return false;
-	}
-	// We can only push the filter if the filter removes NULL values
-	if (!DictionarySupportsFilter(filter, filter_state)) {
-		return false;
+	if (!filter_cache) {
+		filter_cache = state.CreateCache(dictionary->data, dictionary_size + can_have_nulls);
 	}
 	return true;
 }
@@ -180,36 +163,9 @@ void DictionaryDecoder::Filter(uint8_t *defines, const idx_t read_count, Vector 
 	if (!dictionary) {
 		throw std::runtime_error("Parquet file is likely corrupted, missing dictionary");
 	}
-	D_ASSERT(filter_count > 0);
-	// read the dictionary values
-	const auto valid_count = Read(defines, read_count, result, 0);
-	if (valid_count == 0) {
-		// all values are NULL
-		approved_tuple_count = 0;
-		return;
-	}
-
-	// apply the filter by checking the dictionary offsets directly
-	SelectionVector new_sel(valid_count);
-	if (valid_count == read_count) {
-		approved_tuple_count =
-		    SelectionVector::SelectFromBoolean(filter_result.get(), &dictionary_selection_vector, read_count,
-		                                       array_ptr<sel_t>(new_sel.data(), new_sel.Capacity()));
-	} else {
-		auto offsets = reinterpret_cast<uint32_t *>(offset_buffer.ptr);
-		D_ASSERT(offsets);
-		approved_tuple_count = 0;
-		for (idx_t idx = 0; idx < valid_count; idx++) {
-			auto row_idx = valid_sel.get_index(idx);
-			auto offset = offsets[idx];
-			// avoid a branch per row: always write, advance only on a match
-			new_sel.set_index(approved_tuple_count, row_idx);
-			approved_tuple_count += filter_result[offset];
-		}
-	}
-	if (approved_tuple_count < read_count) {
-		sel.Initialize(new_sel);
-	}
+	D_ASSERT(filter_cache);
+	Read(defines, read_count, result, 0);
+	filter_cache->Filter(dictionary_selection_vector, sel, approved_tuple_count);
 }
 
 } // namespace duckdb
