@@ -2,7 +2,6 @@
 #include "duckdb/catalog/catalog.hpp"
 
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
-#include "duckdb/catalog/catalog_entry/collate_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/coordinate_system_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/copy_function_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/duck_index_entry.hpp"
@@ -27,7 +26,6 @@
 #include "duckdb/parser/constraints/foreign_key_constraint.hpp"
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
-#include "duckdb/parser/parsed_data/create_collation_info.hpp"
 #include "duckdb/parser/parsed_data/create_copy_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
 #include "duckdb/parser/parsed_data/create_pragma_function_info.hpp"
@@ -79,7 +77,7 @@ DuckSchemaEntry::DuckSchemaEntry(Catalog &catalog, CreateSchemaInfo &info,
                       catalog.IsSystemCatalog() ? make_uniq<DefaultTableFunctionGenerator>(catalog, *this) : nullptr),
       copy_functions(catalog), pragma_functions(catalog),
       functions(catalog, catalog.IsSystemCatalog() ? make_uniq<DefaultFunctionGenerator>(catalog, *this) : nullptr),
-      sequences(catalog), collations(catalog), types(catalog, make_uniq<DefaultTypeGenerator>(catalog, *this)),
+      sequences(catalog), types(catalog, make_uniq<DefaultTypeGenerator>(catalog, *this)),
       coordinate_systems(
           catalog, catalog.IsSystemCatalog() ? make_uniq<DefaultCoordinateSystemGenerator>(catalog, *this) : nullptr) {
 }
@@ -286,12 +284,6 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::CreateIndex(CatalogTransaction trans
 	return AddEntryInternal(transaction, std::move(index), info.on_conflict, dependencies);
 }
 
-optional_ptr<CatalogEntry> DuckSchemaEntry::CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) {
-	auto collation = make_uniq<CollateCatalogEntry>(catalog, *this, info);
-	collation->internal = info.internal;
-	return AddEntry(transaction, std::move(collation), info.on_conflict);
-}
-
 optional_ptr<CatalogEntry> DuckSchemaEntry::CreateCoordinateSystem(CatalogTransaction transaction,
                                                                    CreateCoordinateSystemInfo &info) {
 	auto coordinate_system = make_uniq<CoordinateSystemCatalogEntry>(catalog, *this, info);
@@ -431,8 +423,6 @@ CatalogSet &DuckSchemaEntry::GetCatalogSet(CatalogType type) {
 		return functions;
 	case CatalogType::SEQUENCE_ENTRY:
 		return sequences;
-	case CatalogType::COLLATION_ENTRY:
-		return collations;
 	case CatalogType::COORDINATE_SYSTEM_ENTRY:
 		return coordinate_systems;
 	case CatalogType::TYPE_ENTRY:
@@ -453,7 +443,6 @@ void DuckSchemaEntry::Verify(Catalog &catalog) {
 	pragma_functions.Verify(catalog);
 	functions.Verify(catalog);
 	sequences.Verify(catalog);
-	collations.Verify(catalog);
 	types.Verify(catalog);
 }
 

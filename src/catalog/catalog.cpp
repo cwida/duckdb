@@ -17,7 +17,6 @@
 #include "duckdb/parser/parsed_data/alter_schema_info.hpp"
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
-#include "duckdb/parser/parsed_data/create_collation_info.hpp"
 #include "duckdb/parser/parsed_data/create_coordinate_system_info.hpp"
 #include "duckdb/parser/parsed_data/create_copy_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
@@ -303,23 +302,6 @@ optional_ptr<CatalogEntry> Catalog::CreateFunction(CatalogTransaction transactio
 optional_ptr<CatalogEntry> Catalog::AddFunction(ClientContext &context, CreateFunctionInfo &info) {
 	info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
 	return CreateFunction(context, info);
-}
-
-//===--------------------------------------------------------------------===//
-// Collation
-//===--------------------------------------------------------------------===//
-optional_ptr<CatalogEntry> Catalog::CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) {
-	auto &schema = GetEntrySchema(transaction, info.GetQualifiedName());
-	return CreateCollation(transaction, schema, info);
-}
-
-optional_ptr<CatalogEntry> Catalog::CreateCollation(ClientContext &context, CreateCollationInfo &info) {
-	return CreateCollation(GetCatalogTransaction(context), info);
-}
-
-optional_ptr<CatalogEntry> Catalog::CreateCollation(CatalogTransaction transaction, SchemaCatalogEntry &schema,
-                                                    CreateCollationInfo &info) {
-	return schema.CreateCollation(transaction, info);
 }
 
 //===--------------------------------------------------------------------===//

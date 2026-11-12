@@ -6,7 +6,7 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
-#include "duckdb/parser/parsed_data/create_collation_info.hpp"
+#include "duckdb/planner/collation_binding.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "include/icu-current.hpp"
 #include "include/icu-dateadd.hpp"
@@ -99,7 +99,7 @@ struct IcuBindData : public FunctionData {
 	}
 };
 
-const string IcuBindData::FUNCTION_PREFIX = "collate_";
+const string IcuBindData::FUNCTION_PREFIX = CollationFunctions::PREFIX;
 const string IcuBindData::HEX_FUNCTION_PREFIX = "icu_collate_";
 
 //! The two hexadecimal characters of every byte value
@@ -406,8 +406,7 @@ static void SetICUCalendar(ClientContext &context, SetScope scope, Value &parame
 static void LoadInternal(ExtensionLoader &loader) {
 	// iterate over all the collations
 	for (auto &collation : collation::Collator::GetCollations()) {
-		CreateCollationInfo info(Identifier(collation), GetCollateFunction(collation, ""), false, false);
-		loader.RegisterCollation(info);
+		loader.RegisterFunction(GetCollateFunction(collation, ""));
 		loader.RegisterFunction(GetICUCollateFunction(collation, ""));
 	}
 
@@ -421,8 +420,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	 * e.g. "und@colcaselevel=yes;colstrength=primary"
 	 *
 	 */
-	CreateCollationInfo info("icu_noaccent", GetCollateFunction("noaccent", "und-u-ks-level1-kc-true"), false, false);
-	loader.RegisterCollation(info);
+	loader.RegisterFunction(GetCollateFunction("icu_noaccent", "und-u-ks-level1-kc-true"));
 	loader.RegisterFunction(GetICUCollateFunction("noaccent", "und-u-ks-level1-kc-true"));
 
 	ScalarFunction sort_key("icu_sort_key", {}, LogicalType::VARCHAR, ICUCollateFunction<true>, ICUSortKeyBind);

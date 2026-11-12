@@ -1,0 +1,38 @@
+# name: test/sql/collate/test_string_collation_functions.test
+# description: Test that collations are registered as string_collation_<name> functions
+# group: [collate]
+
+# built-in collations are scalar functions with the string_collation_ prefix
+query I
+SELECT string_collation_nocase('HeLLo')
+----
+hello
+
+query I
+SELECT string_collation_noaccent('café')
+----
+cafe
+
+query I
+SELECT collname FROM pragma_collations() WHERE collname IN ('nocase', 'noaccent', 'nfc') ORDER BY 1
+----
+nfc
+noaccent
+nocase
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'string_collation_nocase'
+----
+1
+
+# nocase and noaccent are combinable
+query I
+SELECT 'ÀB' = 'ab' COLLATE nocase.noaccent
+----
+true
+
+# unknown collations are still reported as such
+statement error
+SELECT 'a' COLLATE does_not_exist
+----
+Catalog Error: Collation with name does_not_exist does not exist!

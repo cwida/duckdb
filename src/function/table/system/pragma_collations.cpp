@@ -1,7 +1,7 @@
 #include "duckdb/function/table/system_functions.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
-#include "duckdb/catalog/catalog_entry/collate_catalog_entry.hpp"
+#include "duckdb/planner/collation_binding.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
 
@@ -26,11 +26,7 @@ static unique_ptr<FunctionData> PragmaCollateBind(ClientContext &context, TableF
 unique_ptr<GlobalTableFunctionState> PragmaCollateInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<PragmaCollateData>();
 
-	auto schemas = Catalog::GetAllSchemas(context);
-	for (auto schema : schemas) {
-		schema.get().Scan(context, CatalogType::COLLATION_ENTRY,
-		                  [&](CatalogEntry &entry) { result->entries.push_back(entry.name.GetIdentifierName()); });
-	}
+	result->entries = CollationFunctions::GetCollations(context);
 	return std::move(result);
 }
 

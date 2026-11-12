@@ -7,6 +7,7 @@
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/planner/collation_binding.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 
 namespace duckdb {
@@ -256,6 +257,20 @@ string SimpleFunction::ToString() const {
 }
 
 // add your initializer for new functions here
+void BuiltinFunctions::AddCollation(const string &name, ScalarFunction function, bool combinable) {
+	function.SetName(Identifier(CollationFunctions::GetFunctionName(name)));
+	if (combinable) {
+		CollationFunctions::SetCombinable(function);
+	}
+	AddFunction(std::move(function));
+}
+
+void BuiltinFunctions::RegisterCollations() {
+	AddCollation("nocase", LowerFun::GetFunction(), true);
+	AddCollation("noaccent", StripAccentsFun::GetFunction(), true);
+	AddCollation("nfc", NFCNormalizeFun::GetFunction());
+}
+
 void BuiltinFunctions::Initialize() {
 	RegisterTableScanFunctions();
 	RegisterSQLiteFunctions();
@@ -267,10 +282,7 @@ void BuiltinFunctions::Initialize() {
 
 	RegisterCopyFunctions();
 
-	// initialize collations
-	AddCollation("nocase", LowerFun::GetFunction(), true);
-	AddCollation("noaccent", StripAccentsFun::GetFunction(), true);
-	AddCollation("nfc", NFCNormalizeFun::GetFunction());
+	RegisterCollations();
 
 	RegisterExtensionOverloads();
 }

@@ -23,7 +23,6 @@ class TableFunctionCatalogEntry;
 
 class DatabaseInstance;
 struct CreateMacroInfo;
-struct CreateCollationInfo;
 struct CreateAggregateFunctionInfo;
 struct CreateScalarFunctionInfo;
 struct CreateTableFunctionInfo;
@@ -102,9 +101,6 @@ public:
 	DUCKDB_API void RegisterFunction(CopyFunction function);
 	//! Register a new macro function - throw an exception if the function already exists
 	DUCKDB_API void RegisterFunction(CreateMacroInfo &info);
-
-	//! Register a new collation
-	DUCKDB_API void RegisterCollation(CreateCollationInfo &info);
 
 	//! Register a new coordinate system
 	DUCKDB_API void RegisterCoordinateSystem(CreateCoordinateSystemInfo &info);

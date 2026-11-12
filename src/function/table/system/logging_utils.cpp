@@ -1,6 +1,5 @@
 #include "duckdb/function/table/system_functions.hpp"
 
-#include "duckdb/catalog/catalog_entry/collate_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/logging/log_manager.hpp"

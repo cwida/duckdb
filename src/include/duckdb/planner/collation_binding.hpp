@@ -10,6 +10,7 @@
 
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/common/enums/collation_type.hpp"
+#include "duckdb/function/scalar_function.hpp"
 
 namespace duckdb {
 struct MapCastInfo;
@@ -27,6 +28,36 @@ struct CollationCallback {
 	}
 
 	get_collation_functions_t get_collation_functions;
+};
+
+//! Optional extra info of a string collation function, marks the collation as combinable with other collations
+struct CollationFunctionInfo : public ScalarFunctionInfo {
+	explicit CollationFunctionInfo(bool combinable_p) : combinable(combinable_p) {
+	}
+
+	bool combinable;
+};
+
+struct CollationFunction {
+	//! The name of the scalar function that maps a string to its sort key
+	string name;
+	//! Whether the collation can be combined with other collations, e.g. nocase.noaccent
+	bool combinable;
+};
+
+//! A string collation "x" is the scalar function "string_collation_x" in the system catalog: it takes a VARCHAR and
+//! returns a VARCHAR or BLOB that is compared (and sorted) instead of the original string.
+struct CollationFunctions {
+	static constexpr const char *PREFIX = "string_collation_";
+
+	//! The name of the function that implements the collation with the given name
+	DUCKDB_API static string GetFunctionName(const string &collation);
+	//! Marks the function as a collation function that can be combined with other collations
+	DUCKDB_API static void SetCombinable(ScalarFunction &function);
+	//! Looks up the function of a collation (autoloading its extension), throws if the collation does not exist
+	DUCKDB_API static CollationFunction Lookup(ClientContext &context, const string &collation);
+	//! The names of all registered collations
+	DUCKDB_API static vector<string> GetCollations(ClientContext &context);
 };
 
 class CollationBinding {
