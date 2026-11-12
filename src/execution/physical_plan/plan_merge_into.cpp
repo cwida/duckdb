@@ -219,6 +219,15 @@ static unique_ptr<MergeIntoOperator> PlanGenericMergeIntoAction(ClientContext &c
 		// that layout so that we can plan the update exactly like a regular update
 		vector<unique_ptr<Expression>> select_list;
 		vector<unique_ptr<Expression>> update_expressions;
+		//! Deprecated: plans serialized before v2.0 keep SET col = DEFAULT as a placeholder that the update operator
+		//! resolved, now the binder resolves it - resolve it here, as it cannot be evaluated in the projection
+		for (idx_t i = 0; i < action.expressions.size(); i++) {
+			if (action.expressions[i]->GetExpressionType() != ExpressionType::VALUE_DEFAULT) {
+				continue;
+			}
+			auto storage_idx = op.table.GetColumns().GetColumn(action.columns[i]).StorageOid();
+			action.expressions[i] = op.bound_defaults[storage_idx]->Copy();
+		}
 		CastActionExpressionsToColumnTypes(context, op.table, action.expressions, action.columns);
 		for (auto &expr : action.expressions) {
 			update_expressions.push_back(
