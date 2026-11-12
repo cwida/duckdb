@@ -13,7 +13,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='400KB';
+SET wal_autocheckpoint='400KB';
 
 # inserts approximately 786.0 KiB (256KB block size) or 338.0 KiB (16KB block size) of in-memory data,
 # i.e., the WAL has to exceed that (barely)
@@ -44,7 +44,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='400KB';
+SET wal_autocheckpoint='400KB';
 
 # inserts just a few bytes (catalog entries), i.e., the WAL has to exceed that
 

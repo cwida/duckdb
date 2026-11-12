@@ -136,6 +136,7 @@ void FixedSizeBuffer::LoadFromDisk() {
 	auto new_buffer_handle = buffer_manager.Allocate(MemoryTag::ART_INDEX, &block_manager, false);
 	new_block_handle = new_buffer_handle.GetBlockHandle();
 	memcpy(new_buffer_handle.GetDataMutable(), pinned_buffer_handle.Ptr() + block_pointer.offset, allocation_size);
+	memset(new_buffer_handle.GetDataMutable() + allocation_size, 0, block_size - allocation_size);
 
 	buffer_handle = std::move(new_buffer_handle);
 	block_handle = std::move(new_block_handle);

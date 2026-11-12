@@ -57,10 +57,9 @@ private:
 };
 
 static vector<MatcherToken> Tokenize(const Tokenizer &tokenizer, const string &sql) {
-	vector<MatcherToken> tokens;
-	TokenizerBehavior behavior(sql, tokens);
+	TokenizerBehavior behavior(sql);
 	tokenizer.TokenizeInput(behavior);
-	return tokens;
+	return std::move(behavior.tokens);
 }
 
 TEST_CASE("Register and select a dialect extension", "[api][dialect_extension]") {
@@ -115,8 +114,8 @@ TEST_CASE("Dialect tokenizer hooks are opt-in", "[api][dialect_extension]") {
 
 class TerminatorTokenizerBehavior final : public TokenizerBehavior {
 public:
-	TerminatorTokenizerBehavior(const string &sql, vector<MatcherToken> &tokens, bool autocomplete)
-	    : TokenizerBehavior(sql, tokens), autocomplete(autocomplete) {
+	TerminatorTokenizerBehavior(const string &sql, bool autocomplete)
+	    : TokenizerBehavior(sql), autocomplete(autocomplete) {
 	}
 	TokenType GetTerminator() const override {
 		return autocomplete ? TokenType::END_OF_INPUT_AUTOCOMPLETE : TokenType::END_OF_INPUT;
@@ -137,8 +136,8 @@ TEST_CASE("Tokenizer preserves delimiters and incomplete input across long runs"
 			for (auto &literal : {"'" + padding + "''b'", "E'" + padding + "\\'b'", "\"" + padding + "\"\"b\"",
 			                      "`" + padding + "``b`", "$tag$" + padding + "$wrong$b$tag$"}) {
 				auto sql = literal + " 42";
-				vector<MatcherToken> tokens;
-				TerminatorTokenizerBehavior behavior(sql, tokens, autocomplete);
+				TerminatorTokenizerBehavior behavior(sql, autocomplete);
+				auto &tokens = behavior.tokens;
 				REQUIRE(tokenizer.TokenizeInput(behavior) == autocomplete);
 				REQUIRE(tokens.size() == 3);
 				REQUIRE(tokens[0].text == literal);
@@ -151,8 +150,8 @@ TEST_CASE("Tokenizer preserves delimiters and incomplete input across long runs"
 			}
 			{
 				auto sql = "'" + padding + "\\'b' 42";
-				vector<MatcherToken> tokens;
-				TerminatorTokenizerBehavior behavior(sql, tokens, autocomplete);
+				TerminatorTokenizerBehavior behavior(sql, autocomplete);
+				auto &tokens = behavior.tokens;
 				REQUIRE(escaped_tokenizer.TokenizeInput(behavior) == autocomplete);
 				REQUIRE(tokens.size() == 3);
 				REQUIRE(tokens[0].text == sql.substr(0, sql.size() - 3));
@@ -161,8 +160,8 @@ TEST_CASE("Tokenizer preserves delimiters and incomplete input across long runs"
 			}
 			{
 				auto sql = "1 /*" + padding + "/*nested*/" + padding + "*/\n2 ";
-				vector<MatcherToken> tokens;
-				TerminatorTokenizerBehavior behavior(sql, tokens, autocomplete);
+				TerminatorTokenizerBehavior behavior(sql, autocomplete);
+				auto &tokens = behavior.tokens;
 				REQUIRE(tokenizer.TokenizeInput(behavior) == autocomplete);
 				REQUIRE(tokens.size() == 3);
 				REQUIRE(tokens[0].text == "1");
@@ -173,23 +172,23 @@ TEST_CASE("Tokenizer preserves delimiters and incomplete input across long runs"
 			}
 			for (auto &ending : {"", "\n", "\r"}) {
 				auto sql = "--" + padding + ending;
-				vector<MatcherToken> tokens;
-				TerminatorTokenizerBehavior behavior(sql, tokens, autocomplete);
+				TerminatorTokenizerBehavior behavior(sql, autocomplete);
+				auto &tokens = behavior.tokens;
 				bool clean = ending[0] != '\0';
 				REQUIRE(tokenizer.TokenizeInput(behavior) == (clean && autocomplete));
 				REQUIRE(tokens.size() == 1);
 				REQUIRE(tokens.back().type == (clean ? terminator : TokenType::END_OF_INPUT));
 			}
 			for (auto &sql : {"/*" + padding, "$tag$" + padding + "$ta"}) {
-				vector<MatcherToken> tokens;
-				TerminatorTokenizerBehavior behavior(sql, tokens, autocomplete);
+				TerminatorTokenizerBehavior behavior(sql, autocomplete);
+				auto &tokens = behavior.tokens;
 				REQUIRE_FALSE(tokenizer.TokenizeInput(behavior));
 				REQUIRE(tokens.back().type == TokenType::END_OF_INPUT);
 			}
 			{
 				auto sql = "'" + padding;
-				vector<MatcherToken> tokens;
-				TerminatorTokenizerBehavior behavior(sql, tokens, autocomplete);
+				TerminatorTokenizerBehavior behavior(sql, autocomplete);
+				auto &tokens = behavior.tokens;
 				REQUIRE(tokenizer.TokenizeInput(behavior) == autocomplete);
 				REQUIRE(tokens.size() == 2);
 				REQUIRE(tokens[0].text == sql);

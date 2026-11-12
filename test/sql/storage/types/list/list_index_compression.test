@@ -7,7 +7,7 @@ load {TEST_DIR}/list_index_compression.db
 foreach compression rle bitpacking uncompressed
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 statement ok
 CREATE TABLE a(id INTEGER PRIMARY KEY, c INT[]);

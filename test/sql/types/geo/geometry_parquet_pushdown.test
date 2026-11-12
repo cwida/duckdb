@@ -16,10 +16,10 @@ COPY (
 ) TO '{TEST_DIR}/points.parquet' (FORMAT 'parquet', GEOPARQUET_VERSION 'V2', ROW_GROUP_SIZE 1000);
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/output.json';
+SET profiling_output = '{TEST_DIR}/output.json';
 
 statement ok
 SET tracked_metrics = ['operator.type', 'operator.row_groups_scanned', 'operator.total_row_groups_to_scan'];
@@ -45,10 +45,10 @@ WHERE t.type = 'TABLE_SCAN';
 
 # Combining && on a GEOMETRY('<crs>') column with a fallible predicate should still push down && and prune row groups.
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/output_multi.json';
+SET profiling_output = '{TEST_DIR}/output_multi.json';
 
 statement ok
 SET tracked_metrics = ['operator.type', 'operator.row_groups_scanned', 'operator.total_row_groups_to_scan'];

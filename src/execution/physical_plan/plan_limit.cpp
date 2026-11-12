@@ -175,7 +175,8 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalLimit &op) {
 	auto &plan = CreatePlan(*op.children[0]);
 	auto *limit_child = &plan;
 	auto total_limit = GetLimit(op.limit_val, op.offset_val);
-	if (op.offset_val.Type() != LimitNodeType::UNSET && !PreserveInsertionOrder(plan)) {
+	bool zero_offset = op.offset_val.Type() == LimitNodeType::CONSTANT_VALUE && op.offset_val.GetConstantValue() == 0;
+	if (op.offset_val.Type() != LimitNodeType::UNSET && !zero_offset && !PreserveInsertionOrder(plan)) {
 		DUCKDB_LOG_WARNING(context,
 		                   "OFFSET is applied to a query whose row order is not guaranteed - the result may "
 		                   "differ between runs. This happens when the query contains order-breaking operators (e.g. "

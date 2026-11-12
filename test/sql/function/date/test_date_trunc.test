@@ -284,9 +284,6 @@ SELECT date_trunc('duck', TIMESTAMP '2019-01-06 04:03:02') FROM timestamps LIMIT
 
 # Statistics should propagate
 
-statement ok
-PRAGMA disable_verification
-
 query IIII
 SELECT s.min, s.max, s.has_null, s.has_no_null FROM (SELECT stats(date_trunc('year', d)) s FROM dates LIMIT 1);
 ----

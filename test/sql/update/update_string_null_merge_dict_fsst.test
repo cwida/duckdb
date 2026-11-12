@@ -5,7 +5,7 @@
 load {TEST_DIR}/update_string_null_merge_dict_fsst readwrite v1.3.0
 
 statement ok
-pragma force_compression='dict_fsst'
+SET force_compression='dict_fsst'
 
 # rows 0 and 2 are NULL
 # the rest are low-cardinality strings so DICT_FSST is used

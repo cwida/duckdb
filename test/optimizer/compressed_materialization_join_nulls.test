@@ -9,7 +9,7 @@ statement ok
 CREATE TABLE with_nulls AS SELECT * FROM (VALUES (4), (5), (NULL)) t(i);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT i IS NULL FROM (SELECT * FROM no_nulls ANTI JOIN with_nulls ON no_nulls.i IS NOT DISTINCT FROM with_nulls.i) t(i);

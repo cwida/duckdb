@@ -3,7 +3,7 @@
 # group: [iejoin]
 
 statement ok
-PRAGMA threads=1
+SET threads=1
 
 set seed 0.8765309
 
@@ -30,7 +30,7 @@ FROM df
 foreach prefer False True
 
 statement ok
-PRAGMA prefer_range_joins={prefer};
+SET prefer_range_joins={prefer};
 
 # mode output_hash
 

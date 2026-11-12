@@ -30,7 +30,7 @@ from range(24000000) t(i)
 
 # go external at a low radix bit count, then let the many wide groups keep growing the radix bits
 statement ok
-pragma memory_limit='300MB'
+SET memory_limit='300MB'
 
 # sum(cnt) counts every input row exactly once  -> equals the number of rows (24000000)
 # sum(vsum) sums v over all groups              -> equals sum(i) for i in [0, 24000000)

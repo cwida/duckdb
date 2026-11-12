@@ -2,6 +2,7 @@
 #include "test_reporter.hpp"
 
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/common/path.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
 #include "compare_result.hpp"
@@ -661,15 +662,15 @@ unique_ptr<DBConfig> GetTestConfig() {
 	auto result = make_uniq<DBConfig>();
 #ifndef DUCKDB_ALTERNATIVE_VERIFY
 	result->options.checkpoint_wal_size = test_config.GetCheckpointWALSize();
-	result->options.checkpoint_on_shutdown = test_config.GetCheckpointOnShutdown();
+	result->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(test_config.GetCheckpointOnShutdown()));
 #else
-	result->options.checkpoint_on_shutdown = false;
+	result->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
 #endif
-	result->options.abort_on_wal_failure = true;
+	result->SetOption(DebugAbortOnWalFailureSetting::SettingIndex, Value::BOOLEAN(true));
 #ifdef DUCKDB_RUN_SLOW_VERIFIERS
 	// This mode isn't slow, but we want test coverage both when it's enabled
 	// and when it's not, so we enable only when DUCKDB_RUN_SLOW_VERIFIERS is set.
-	result->options.trim_free_blocks = true;
+	result->SetOption(TrimFreeBlocksSetting::SettingIndex, Value::BOOLEAN(true));
 #endif
 	result->SetOptionByName("allow_unsigned_extensions", true);
 	auto storage_version = test_config.GetStorageVersion();
@@ -688,7 +689,7 @@ unique_ptr<DBConfig> GetTestConfig() {
 		result->SetOptionByName("default_block_size", Value::UBIGINT(block_alloc_size.GetIndex()));
 	}
 
-	result->options.debug_initialize = test_config.GetDebugInitialize();
+	result->SetOptionByName("debug_initialize", EnumUtil::ToString(test_config.GetDebugInitialize()));
 	result->options.main_database_options = test_config.GetMainDatabaseOptions();
 	result->SetOptionByName("debug_verify_vector", EnumUtil::ToString(test_config.GetVectorVerification()));
 	return result;

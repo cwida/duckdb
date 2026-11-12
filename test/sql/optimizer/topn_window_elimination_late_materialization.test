@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 # Issue #22849: a payload that is a scalar function of a base column (parse_filename(path))
 # was rebuilt by the rowid semi-join as the raw base column, dropping the function.

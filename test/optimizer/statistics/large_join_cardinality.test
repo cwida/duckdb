@@ -3,7 +3,7 @@
 # group: [statistics]
 
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 # Each range has 2^60 distinct values, but currently supplies only a row-count fallback.
 # The uncertain-domain floor makes the estimate exceed a representable row count.

@@ -69,20 +69,5 @@ private:
 	Prefix Append(ART &art, const uint8_t byte);
 	void Append(ART &art, NodePtr other_ptr);
 	Prefix TransformToDeprecatedAppend(ART &art, FixedSizeAllocator &allocator, uint8_t byte);
-
-private:
-	template <class F, class NODE>
-	static void Iterator(ART &art, reference<NODE> &node_ptr_ref, const bool exit_gate, const bool is_mutable,
-	                     F &&lambda) {
-		while (node_ptr_ref.get().HasMetadata() && node_ptr_ref.get().GetType() == PREFIX) {
-			Prefix prefix(art, node_ptr_ref, is_mutable);
-			lambda(prefix);
-
-			node_ptr_ref = *prefix.child_slot;
-			if (exit_gate && node_ptr_ref.get().GetGateStatus() == GateStatus::GATE_SET) {
-				break;
-			}
-		}
-	}
 };
 } // namespace duckdb

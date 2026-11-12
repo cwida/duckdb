@@ -7,7 +7,7 @@ load {TEST_DIR}/list_compression.db
 foreach compression rle bitpacking uncompressed
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 statement ok
 CREATE TABLE a AS SELECT i AS id, [1, 2, 3] AS l FROM range(1000000) t(i);

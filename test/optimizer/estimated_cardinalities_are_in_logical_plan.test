@@ -17,7 +17,7 @@ statement ok
 CREATE TABLE t3 AS SELECT range c FROM range(10000, 1000000);
 
 statement ok
-PRAGMA explain_output=OPTIMIZED_ONLY;
+SET explain_output='OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT * FROM t1, t2, t3 WHERE a = b AND b = c;

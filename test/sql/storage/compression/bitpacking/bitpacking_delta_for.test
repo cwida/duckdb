@@ -9,7 +9,7 @@ require block_size 262144
 load {TEST_DIR}/test_bitpacking.db
 
 statement ok
-PRAGMA force_compression='bitpacking'
+SET force_compression='bitpacking'
 
 statement ok
 create table aux as select range::INT x from range(-2_000_000_000, 2_000_000_000, 2_000_000);

@@ -487,39 +487,36 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
                                                                bool use_operator_cardinality) {
 	RelationColumnStatsLookup child_columns(child_stats);
 	vector<DistinctCount> cardinality_counts;
-	auto get_set_counts = [&](const GroupingSet &grouping_set) {
+	auto add_group = [&](const Expression &group, vector<DistinctCount> &counts) {
+		if (group.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+			return true;
+		}
+		auto column = child_columns.Find(group.Cast<BoundColumnRefExpression>().Binding());
+		if (!column) {
+			return false;
+		}
+		auto count = column->current_domain;
+		count.distinct_count = MaxValue<idx_t>(count.distinct_count, 1);
+		counts.push_back(count);
+		return true;
+	};
+	// An absent grouping-set list denotes the single set containing all groups.
+	if (aggregate.grouping_sets.empty()) {
+		for (auto &group : aggregate.groups) {
+			if (!add_group(*group, cardinality_counts)) {
+				return {};
+			}
+		}
+	}
+	for (auto &grouping_set : aggregate.grouping_sets) {
 		vector<DistinctCount> set_counts;
 		for (auto group_idx : grouping_set) {
-			auto &group = aggregate.GetGroupExpression(group_idx);
-			if (group.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
-				continue;
+			if (!add_group(aggregate.GetGroupExpression(group_idx), set_counts)) {
+				return {};
 			}
-			auto column = child_columns.Find(group.Cast<BoundColumnRefExpression>().Binding());
-			if (!column) {
-				return false;
-			}
-			auto count = column->current_domain;
-			count.distinct_count = MaxValue<idx_t>(count.distinct_count, 1);
-			set_counts.push_back(count);
 		}
 		if (set_counts.size() > cardinality_counts.size()) {
 			cardinality_counts = std::move(set_counts);
-		}
-		return true;
-	};
-	if (aggregate.grouping_sets.empty()) {
-		GroupingSet full_set;
-		for (idx_t i = 0; i < aggregate.groups.size(); i++) {
-			full_set.insert(ProjectionIndex(i));
-		}
-		if (!get_set_counts(full_set)) {
-			return {};
-		}
-	} else {
-		for (auto &grouping_set : aggregate.grouping_sets) {
-			if (!get_set_counts(grouping_set)) {
-				return {};
-			}
 		}
 	}
 

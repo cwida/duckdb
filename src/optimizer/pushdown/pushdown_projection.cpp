@@ -1,3 +1,4 @@
+#include "duckdb/function/scalar/compressed_materialization_utils.hpp"
 #include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -19,6 +20,18 @@ static bool IsVolatile(LogicalProjection &proj, const Expression &expr) {
 		}
 	});
 	return is_volatile;
+}
+
+// A compress expression only holds where it was placed, so a filter must not inline it into a position below
+static bool ReferencesCompressExpression(LogicalProjection &proj, const Expression &expr) {
+	bool references_compress_expression = false;
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(expr, [&](const BoundColumnRefExpression &colref) {
+		D_ASSERT(colref.Depth() == 0);
+		if (CMUtils::CompressesInput(proj.GetExpression(colref.Binding()))) {
+			references_compress_expression = true;
+		}
+	});
+	return references_compress_expression;
 }
 
 static bool ReferencesComputedExpression(LogicalProjection &proj, const Expression &expr) {
@@ -158,7 +171,8 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownProjection(unique_ptr<Logica
 	vector<unique_ptr<Expression>> remain_expressions;
 	vector<unique_ptr<Expression>> split_expressions;
 	auto stays_on_top = [&](const Filter &f) {
-		return IsVolatile(proj, *f.filter) || (f.filter->CanThrow() && !f.has_barrier);
+		return IsVolatile(proj, *f.filter) || ReferencesCompressExpression(proj, *f.filter) ||
+		       (f.filter->CanThrow() && !f.has_barrier);
 	};
 	auto splits_off = [&](const Filter &f) {
 		return projection_mode == ProjectionMode::PRESERVE_COMPUTED_EXPRESSIONS &&
@@ -176,9 +190,10 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownProjection(unique_ptr<Logica
 		auto &f = *filter;
 		D_ASSERT(f.bindings.size() <= 1);
 		if (stays_on_top(f) || (f.has_barrier && hold_back_barriers)) {
-			// Volatile and throwing expressions cannot move across the projection. Expressions carrying a barrier
-			// are the exception: a projection does not remove any rows, so pushing them through it does not
-			// change which rows they are evaluated on - unless another filter stays behind, see above.
+			// Volatile and throwing expressions and filters over compressed columns cannot move across the
+			// projection. Expressions carrying a barrier are the exception: a projection does not remove any rows,
+			// so pushing them through it does not change which rows they are evaluated on - unless another filter
+			// stays behind, see above.
 			remain_expressions.push_back(std::move(f.filter));
 		} else if (splits_off(f)) {
 			// Compute filter-dependent projection expressions once, below the filter.

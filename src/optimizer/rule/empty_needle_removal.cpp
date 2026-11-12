@@ -50,6 +50,10 @@ unique_ptr<Expression> EmptyNeedleRemovalRule::Apply(LogicalOperator &op, vector
 	if (root.Function().GetName() == "||") {
 		return TryRemoveEmptyStringConcat(GetContext(), root);
 	}
+	auto &input_expr = bindings[1].get();
+	if (input_expr.GetReturnType().InternalType() != PhysicalType::VARCHAR) {
+		return nullptr;
+	}
 	auto &prefix_expr = bindings[2].get();
 
 	// the constant_expr is a scalar expression that we have to fold
