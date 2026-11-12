@@ -668,7 +668,12 @@ INSERT INTO returned_orders VALUES (2), (2), (NULL);
 query II
 EXPLAIN SELECT count(DISTINCT order_id), sum(cost) FROM selected_orders o, selected_dim d WHERE o.dim_id = d.id AND d.selected AND EXISTS (SELECT 1 FROM other_sales s WHERE s.order_id = o.order_id AND s.warehouse <> o.warehouse) AND NOT EXISTS (SELECT 1 FROM returned_orders r WHERE r.order_id = o.order_id);
 ----
-logical_opt	<REGEX>:.*CTE Name: __duckdb_delim.*Join Type: MARK.*Join Type: SEMI.*order_id = order_id.*
+logical_opt	<REGEX>:.*CTE Name: __duckdb_delim.*Join Type: MARK.*
+
+query II
+EXPLAIN SELECT count(DISTINCT order_id), sum(cost) FROM selected_orders o, selected_dim d WHERE o.dim_id = d.id AND d.selected AND EXISTS (SELECT 1 FROM other_sales s WHERE s.order_id = o.order_id AND s.warehouse <> o.warehouse) AND NOT EXISTS (SELECT 1 FROM returned_orders r WHERE r.order_id = o.order_id);
+----
+logical_opt	<REGEX>:.*CTE Name: __duckdb_delim.*Join Type: SEMI.*order_id = order_id.*
 
 query II
 SELECT count(DISTINCT order_id), sum(cost) FROM selected_orders o, selected_dim d WHERE o.dim_id = d.id AND d.selected AND EXISTS (SELECT 1 FROM other_sales s WHERE s.order_id = o.order_id AND s.warehouse <> o.warehouse) AND NOT EXISTS (SELECT 1 FROM returned_orders r WHERE r.order_id = o.order_id);
@@ -807,7 +812,12 @@ SET disabled_optimizers='';
 query II
 EXPLAIN SELECT cntrycode, count(*) AS numcust, sum(c_acctbal) AS totacctbal FROM (SELECT substring(c_phone FROM 1 FOR 2) AS cntrycode, c_acctbal FROM customer WHERE substring(c_phone FROM 1 FOR 2) IN ('13', '31', '23', '29', '30', '18', '17') AND c_acctbal > (SELECT avg(c_acctbal) FROM customer WHERE c_acctbal > 0.00 AND substring(c_phone FROM 1 FOR 2) IN ('13', '31', '23', '29', '30', '18', '17')) AND NOT EXISTS (SELECT * FROM orders WHERE o_custkey = c_custkey)) AS custsale GROUP BY cntrycode ORDER BY cntrycode;
 ----
-logical_opt	<REGEX>:.*__duckdb_delim.*Join Type: MARK.*Join Type: (SEMI|RIGHT_SEMI).*o_custkey = c_custkey.*
+logical_opt	<REGEX>:.*__duckdb_delim.*Join Type: (SEMI|RIGHT_SEMI).*o_custkey = c_custkey.*
+
+query II
+EXPLAIN SELECT cntrycode, count(*) AS numcust, sum(c_acctbal) AS totacctbal FROM (SELECT substring(c_phone FROM 1 FOR 2) AS cntrycode, c_acctbal FROM customer WHERE substring(c_phone FROM 1 FOR 2) IN ('13', '31', '23', '29', '30', '18', '17') AND c_acctbal > (SELECT avg(c_acctbal) FROM customer WHERE c_acctbal > 0.00 AND substring(c_phone FROM 1 FOR 2) IN ('13', '31', '23', '29', '30', '18', '17')) AND NOT EXISTS (SELECT * FROM orders WHERE o_custkey = c_custkey)) AS custsale GROUP BY cntrycode ORDER BY cntrycode;
+----
+logical_opt	<REGEX>:.*Join Type: (ANTI|RIGHT_ANTI).*c_custkey = c_custkey.*
 
 # Delimiter CTE fanout should stay runnable with grouped build-side consumers
 query I
