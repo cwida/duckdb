@@ -1,0 +1,309 @@
+# name: test/sql/catalog/nested_schema/nested_search_path.test
+# description: Nested schemas in USE, schema and search_path
+# group: [nested_schema]
+
+statement ok
+ATTACH ':memory:' AS lake;
+
+statement ok
+CREATE SCHEMA lake.s3tablescatalog;
+
+statement ok
+CREATE SCHEMA lake.s3tablescatalog.salesdemo;
+
+statement ok
+CREATE SCHEMA lake.s3tablescatalog.salesdemo.retail;
+
+statement ok
+CREATE SCHEMA lake.retail;
+
+statement ok
+CREATE TABLE lake.retail.widget_sales AS SELECT 7 AS id;
+
+statement ok
+CREATE TABLE lake.s3tablescatalog.salesdemo.retail.widget_sales AS SELECT 42 AS id;
+
+statement ok
+PREPARE current_namespace AS SELECT database_name, schema_name FROM (SHOW SCHEMAS) WHERE current;
+
+query II
+EXECUTE current_namespace;
+----
+memory	main
+
+statement ok
+USE lake.s3tablescatalog.salesdemo.retail;
+
+query II
+EXECUTE current_namespace;
+----
+lake	retail
+
+query I
+SELECT * FROM widget_sales;
+----
+42
+
+query I
+SELECT * FROM lake.widget_sales;
+----
+42
+
+query I
+SELECT * FROM retail.widget_sales;
+----
+7
+
+query III
+SELECT current_database(), current_schema(), current_setting('schema');
+----
+lake	s3tablescatalog.salesdemo.retail	s3tablescatalog.salesdemo.retail
+
+query II
+SELECT current_setting('search_path'), current_schemas(false);
+----
+lake.s3tablescatalog.salesdemo.retail	[s3tablescatalog.salesdemo.retail]
+
+query II
+SELECT in_search_path('lake', 's3tablescatalog.salesdemo.retail'), in_search_path('lake', 'retail');
+----
+true	false
+
+query I
+SHOW TABLES;
+----
+widget_sales
+
+statement ok
+CREATE TABLE created_here AS SELECT 'nested' AS value;
+
+statement ok
+CREATE TABLE lake.catalog_qualified AS SELECT [1, NULL, 3] AS value;
+
+query I
+SELECT * FROM lake.s3tablescatalog.salesdemo.retail.created_here;
+----
+nested
+
+query I
+SELECT * FROM lake.s3tablescatalog.salesdemo.retail.catalog_qualified;
+----
+[1, NULL, 3]
+
+statement ok
+CREATE SEQUENCE seq START 10;
+
+statement ok
+CREATE TYPE mood AS ENUM ('happy');
+
+statement ok
+CREATE MACRO twice(x) AS x * 2;
+
+statement ok
+CREATE VIEW nested_view AS SELECT twice(id) AS id FROM widget_sales;
+
+query III
+SELECT nextval('seq'), 'happy'::mood, twice(21);
+----
+10	happy	42
+
+statement ok
+UPDATE widget_sales SET id = 43;
+
+query I
+SELECT * FROM nested_view;
+----
+86
+
+statement ok
+CREATE TEMP TABLE temp_table AS SELECT 99 AS id;
+
+query I
+SELECT * FROM temp.main.temp_table;
+----
+99
+
+statement ok
+USE lake.retail;
+
+query I
+SELECT * FROM lake.s3tablescatalog.salesdemo.retail.nested_view;
+----
+86
+
+statement ok
+SET schema = 'lake.s3tablescatalog.salesdemo.retail';
+
+query I
+SELECT * FROM widget_sales;
+----
+43
+
+statement ok
+SET schema = 's3tablescatalog.salesdemo.retail';
+
+query I
+SELECT * FROM widget_sales;
+----
+43
+
+statement ok
+USE s3tablescatalog.salesdemo;
+
+query II
+EXECUTE current_namespace;
+----
+lake	salesdemo
+
+statement ok
+CREATE TABLE parent_table AS SELECT 11 AS id;
+
+query I
+SELECT * FROM lake.s3tablescatalog.salesdemo.parent_table;
+----
+11
+
+statement ok
+SET search_path = 'lake.s3tablescatalog.salesdemo.retail,lake.retail';
+
+query I
+SELECT * FROM widget_sales;
+----
+43
+
+statement ok
+SET search_path = 'lake.retail,lake.s3tablescatalog.salesdemo.retail';
+
+query I
+SELECT * FROM widget_sales;
+----
+7
+
+query I
+SELECT twice(21);
+----
+42
+
+statement error
+SET schema = 'lake.s3tablescatalog.missing.retail';
+----
+No catalog + schema named
+
+statement error
+SET search_path = 'lake.retail,lake.s3tablescatalog.missing.retail';
+----
+No catalog + schema named
+
+query I
+SELECT current_setting('search_path');
+----
+lake.retail,lake.s3tablescatalog.salesdemo.retail
+
+# Quoted dots, commas and quotes remain part of a single identifier.
+statement ok
+CREATE SCHEMA lake."a.b";
+
+statement ok
+CREATE SCHEMA lake."a.b"."c,d";
+
+statement ok
+CREATE SCHEMA lake."a.b"."c,d"."e""f";
+
+statement ok
+USE lake."a.b"."c,d"."e""f";
+
+statement ok
+CREATE TABLE quoted_table AS SELECT 5 AS id;
+
+query I
+SELECT * FROM lake."a.b"."c,d"."e""f".quoted_table;
+----
+5
+
+query I
+SELECT current_setting('search_path');
+----
+lake."a.b"."c,d"."e""f"
+
+statement ok
+SET schema = '"a.b"."c,d"."e""f"';
+
+query I
+SELECT * FROM quoted_table;
+----
+5
+
+statement ok
+SET search_path = 'lake."a.b"."c,d"."e""f",lake.retail';
+
+query I
+SELECT * FROM widget_sales;
+----
+7
+
+# An attached database takes precedence over the outermost schema.
+statement ok
+ATTACH ':memory:' AS s3tablescatalog;
+
+statement error
+USE s3tablescatalog.salesdemo.retail;
+----
+No catalog + schema named
+
+statement ok
+USE lake.s3tablescatalog.salesdemo.retail;
+
+query I
+SELECT * FROM widget_sales;
+----
+43
+
+statement ok
+DROP VIEW nested_view;
+
+statement ok
+DROP SEQUENCE seq;
+
+statement ok
+DROP MACRO twice;
+
+statement ok
+DROP TYPE mood;
+
+statement ok
+DROP SCHEMA lake.retail CASCADE;
+
+query I
+SELECT current_schema();
+----
+s3tablescatalog.salesdemo.retail
+
+statement ok
+DROP SCHEMA lake.s3tablescatalog.salesdemo CASCADE;
+
+query I
+SELECT current_schema();
+----
+main
+
+statement ok
+CREATE SCHEMA lake.s3tablescatalog.main;
+
+statement ok
+USE lake.s3tablescatalog.main;
+
+statement ok
+DROP SCHEMA lake.s3tablescatalog.main;
+
+query I
+SELECT current_schema();
+----
+main
+
+statement ok
+RESET search_path;
+
+query I
+SELECT current_schema();
+----
+main

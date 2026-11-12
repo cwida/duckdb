@@ -16,6 +16,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/main/extension_entries.hpp"
 #include "duckdb/logging/logger.hpp"
@@ -194,11 +195,19 @@ BoundStatement Binder::BindDescribeTable(ShowRef &ref) {
 	if (lname == "\"databases\"") {
 		sql = PragmaShowDatabases();
 	} else if (lname == "\"schemas\"") {
-		sql = "SELECT "
-		      " schema.database_name, "
-		      " schema.schema_name, "
-		      " ((select current_schema() = schema.schema_name) "
-		      "  and (select current_database() = schema.database_name)) \"current\" "
+		auto &default_entry = ClientData::Get(context).catalog_search_path->GetDefault();
+		auto catalog_name = default_entry.GetCatalog();
+		if (catalog_name.empty()) {
+			catalog_name = DatabaseManager::GetDefaultDatabase(context);
+		}
+		auto schema =
+		    Catalog::GetSchema(context, catalog_name, default_entry.GetSchemaPath(), OnEntryNotFound::RETURN_NULL);
+		auto current = schema ? StringUtil::Format("(schema.oid = %llu AND schema.database_oid = %llu)", schema->oid,
+		                                           schema->ParentCatalog().GetOid())
+		                      : "false";
+		SetAlwaysRequireRebind();
+		sql = "SELECT schema.database_name, schema.schema_name, " + current +
+		      " \"current\" "
 		      "FROM duckdb_schemas() schema "
 		      "JOIN duckdb_databases dbs USING (database_oid) "
 		      "WHERE dbs.internal = false "

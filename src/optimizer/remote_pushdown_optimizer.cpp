@@ -144,7 +144,7 @@ bool RemotePushdownOptimizer::EntryExistsInLocalCatalog(const EntryLookupInfo &l
                                                         const vector<Identifier> &schema_path) {
 	for (auto &local_entry : pushdown_state.local_catalogs_in_search_path) {
 		// if the name specifies a schema use it, otherwise use the search path schema
-		vector<Identifier> schema = schema_path.empty() ? vector<Identifier> {local_entry.GetSchema()} : schema_path;
+		auto schema = schema_path.empty() ? local_entry.GetSchemaPath() : schema_path;
 		if (LookupEntry(local_entry.GetCatalog(), lookup, schema)) {
 			return true;
 		}
@@ -878,7 +878,7 @@ CatalogPushdownResult RemotePushdownOptimizer::RewriteTableFunctionOnly(TableFun
 	FindRemoteCatalogsInSearchPath();
 	EntryLookupInfo func_lookup(CatalogType::TABLE_FUNCTION_ENTRY, QualifiedName(func_expr.FunctionName()));
 	for (auto &local_entry : pushdown_state.local_catalogs_in_search_path) {
-		vector<Identifier> schema = schema_path.empty() ? vector<Identifier> {local_entry.GetSchema()} : schema_path;
+		auto schema = schema_path.empty() ? local_entry.GetSchemaPath() : schema_path;
 		auto entry = LookupEntry(local_entry.GetCatalog(), func_lookup, schema);
 		if (entry && entry->type == CatalogType::TABLE_FUNCTION_ENTRY) {
 			auto &tf_entry = entry->Cast<TableFunctionCatalogEntry>();

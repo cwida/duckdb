@@ -49,6 +49,8 @@ public:
 	}
 	//! The names of the schemas from the top level down to this schema
 	vector<Identifier> GetSchemaPath() const;
+	//! The schema name, including its parent path for nested schemas
+	string GetSchemaName() const;
 
 	string ToString() const;
 	static string ListToString(const vector<CatalogSearchEntry> &input);

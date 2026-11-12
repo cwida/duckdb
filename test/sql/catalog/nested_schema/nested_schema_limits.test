@@ -14,17 +14,20 @@ CREATE TABLE s1.s2.t(i INTEGER);
 statement ok
 INSERT INTO s1.s2.t VALUES (1);
 
-# nested schemas cannot be used in the search path - the error says so explicitly
-
-statement error
+# Nested schemas can be used in the search path.
+statement ok
 USE s1.s2;
-----
-<REGEX>:.*nested schema.*cannot be used in the search path.*
 
-statement error
+statement ok
 SET search_path='s1.s2';
+
+query I
+SELECT * FROM t;
 ----
-<REGEX>:.*nested schema.*cannot be used in the search path.*
+1
+
+statement ok
+RESET search_path;
 
 # a path that is neither a catalog+schema nor a nested schema still reports "not found"
 

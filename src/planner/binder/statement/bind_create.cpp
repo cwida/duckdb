@@ -176,14 +176,19 @@ void Binder::SearchSchema(CreateInfo &info) {
 		// no catalog and no schema given: use the search path default for both
 		auto &default_entry = search_path->GetDefault();
 		catalog = default_entry.GetCatalog();
-		schema_path.push_back(default_entry.GetSchema());
+		schema_path = default_entry.GetSchemaPath();
 	} else if (schema_path.empty()) {
 		// a catalog was given but no schema: use the catalog's default schema
-		auto default_schema = search_path->GetDefaultSchema(context, catalog);
-		if (!default_schema) {
-			throw BinderException("Catalog %s has no default schema - specify a schema explicitly", catalog);
+		auto entries = search_path->GetEntriesForCatalog(catalog);
+		if (catalog != TEMP_CATALOG && !entries.empty()) {
+			schema_path = entries[0].GetSchemaPath();
+		} else {
+			auto default_schema = search_path->GetDefaultSchema(context, catalog);
+			if (!default_schema) {
+				throw BinderException("Catalog %s has no default schema - specify a schema explicitly", catalog);
+			}
+			schema_path.push_back(*default_schema);
 		}
-		schema_path.push_back(*default_schema);
 	} else if (IsInvalidCatalog(catalog)) {
 		// a schema was given but no catalog: resolve the catalog that holds it
 		catalog = search_path->ResolveCatalog(schema_path[0]);

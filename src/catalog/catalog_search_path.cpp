@@ -11,6 +11,7 @@
 #include "duckdb/main/extension_callback_manager.hpp"
 
 #include "duckdb/common/exception/parser_exception.hpp"
+#include "duckdb/parser/qualified_name.hpp"
 
 namespace duckdb {
 
@@ -33,6 +34,10 @@ vector<Identifier> CatalogSearchEntry::GetSchemaPath() const {
 	auto result = parent_schemas;
 	result.push_back(schema);
 	return result;
+}
+
+string CatalogSearchEntry::GetSchemaName() const {
+	return IsNested() ? QualifiedName::FromPath(GetSchemaPath()).ToString() : schema.GetIdentifierName();
 }
 
 string CatalogSearchEntry::ToString() const {
@@ -68,8 +73,7 @@ string CatalogSearchEntry::ListToString(const vector<CatalogSearchEntry> &input)
 }
 
 CatalogSearchEntry CatalogSearchEntry::ParseInternal(const string &input, idx_t &idx) {
-	string catalog;
-	string schema;
+	vector<Identifier> components;
 	string entry;
 	bool finished = false;
 normal:
@@ -95,16 +99,7 @@ separator:
 	if (entry.empty()) {
 		throw ParserException("Unexpected dot - empty CatalogSearchEntry");
 	}
-	if (schema.empty()) {
-		// if we parse one entry it is the schema
-		schema = std::move(entry);
-	} else if (catalog.empty()) {
-		// if we parse two entries it is [catalog.schema]
-		catalog = std::move(schema);
-		schema = std::move(entry);
-	} else {
-		throw ParserException("Too many dots - expected [schema] or [catalog.schema] for CatalogSearchEntry");
-	}
+	components.emplace_back(std::move(entry));
 	entry = "";
 	idx++;
 	if (finished) {
@@ -112,10 +107,12 @@ separator:
 	}
 	goto normal;
 final:
-	if (schema.empty()) {
-		throw ParserException("Unexpected end of entry - empty CatalogSearchEntry");
+	if (components.size() == 1) {
+		return CatalogSearchEntry(Identifier(), std::move(components[0]));
 	}
-	return CatalogSearchEntry(Identifier(std::move(catalog)), Identifier(std::move(schema)));
+	auto catalog = std::move(components[0]);
+	components.erase(components.begin());
+	return FromSchemaPath(std::move(catalog), std::move(components));
 }
 
 CatalogSearchEntry CatalogSearchEntry::Parse(const string &input) {
@@ -176,13 +173,26 @@ void CatalogSearchPath::Set(vector<CatalogSearchEntry> new_paths, CatalogSetPath
 			}
 			continue;
 		}
-		auto schema_entry =
-		    Catalog::GetSchema(context, path.GetCatalog(), path.GetSchema(), OnEntryNotFound::RETURN_NULL);
+		auto catalog_name = path.GetCatalog();
+		auto schema_path = path.GetSchemaPath();
+		if (!catalog_name.empty() && !Catalog::GetCatalogEntry(context, catalog_name)) {
+			schema_path.insert(schema_path.begin(), catalog_name);
+			catalog_name = Identifier();
+		}
+		auto lookup_catalog = catalog_name.empty() ? GetDefaultCatalog(schema_path[0]) : catalog_name;
+		if (lookup_catalog.empty()) {
+			lookup_catalog = DatabaseManager::TryGetDefaultDatabase(context);
+		}
+		optional_ptr<SchemaCatalogEntry> schema_entry;
+		if (!lookup_catalog.empty()) {
+			schema_entry = Catalog::GetSchema(context, lookup_catalog, schema_path, OnEntryNotFound::RETURN_NULL);
+		}
 		if (schema_entry) {
-			// we are setting a schema - update the catalog and schema
-			if (path.GetCatalog().empty()) {
-				path.SetCatalog(GetDefault().GetCatalog());
+			if (catalog_name.empty()) {
+				catalog_name = GetDefault().GetCatalog();
 			}
+			path = CatalogSearchEntry::FromSchemaPath(std::move(catalog_name), std::move(schema_path),
+			                                          path.DefaultSchemaPrecedence());
 			continue;
 		}
 		// only schema supplied - check if this is a catalog instead
@@ -198,15 +208,6 @@ void CatalogSearchPath::Set(vector<CatalogSearchEntry> new_paths, CatalogSetPath
 						continue;
 					}
 				}
-			}
-		}
-		if (!path.GetCatalog().empty()) {
-			// "a.b" can also name a nested schema - give a clearer error in that case
-			vector<Identifier> nested_path {path.GetCatalog(), path.GetSchema()};
-			if (Catalog::GetSchema(context, Identifier(), nested_path, OnEntryNotFound::RETURN_NULL)) {
-				throw NotImplementedException("%s: \"%s\" is a nested schema - nested schemas cannot be used in the "
-				                              "search path",
-				                              GetSetName(set_type), path.ToString());
 			}
 		}
 		throw CatalogException("%s: No catalog + schema named \"%s\" found.", GetSetName(set_type), path.ToString());
@@ -389,7 +390,7 @@ void CatalogSearchPath::SetPathsInternal(vector<CatalogSearchEntry> new_paths) {
 bool CatalogSearchPath::SchemaInSearchPath(ClientContext &context, const Identifier &catalog_name,
                                            const Identifier &schema_name) const {
 	for (auto &path : paths) {
-		if (path.GetSchema() != schema_name || path.IsNested()) {
+		if (Identifier(path.GetSchemaName()) != schema_name) {
 			continue;
 		}
 		if (path.GetCatalog() == catalog_name) {
