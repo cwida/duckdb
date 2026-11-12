@@ -45,26 +45,26 @@ SELECT count(*) FROM (FROM kinds EXCEPT ALL (SELECT DISTINCT * EXCLUDE (r) FROM 
 ----
 0
 
-# a join gives the matching rows in dictionary vectors, and the children of a struct in dictionary vectors
+# a semi join slices the probe rows and their struct children into dictionary vectors
 query IIIII
 SELECT bool_and(vector_type(i) = 'DICTIONARY_VECTOR'), bool_and(vector_type(n) = 'DICTIONARY_VECTOR'),
 	bool_and(vector_type(l) = 'DICTIONARY_VECTOR'), bool_and(vector_type(st.s) = 'DICTIONARY_VECTOR'),
 	bool_and(vector_type(m) = 'DICTIONARY_VECTOR')
-FROM kinds JOIN (VALUES (5), (3), (1)) v(x) ON i = x;
+FROM kinds SEMI JOIN (VALUES (5), (3), (1)) v(x) ON i = x;
 ----
 true	true	true	true	true
 
 query IIII
-SELECT x, count(*), bool_and(i = x), count(DISTINCT (i, n, h, iv, b, l, st, arr, m, un, va))
-FROM (SELECT *, unnest(range(5000)) AS r FROM kinds JOIN (VALUES (5), (3), (1)) v(x) ON i = x)
-GROUP BY x ORDER BY x;
+SELECT i, count(*), bool_and(i IN (1, 3, 5)), count(DISTINCT (i, n, h, iv, b, l, st, arr, m, un, va))
+FROM (SELECT *, unnest(range(5000)) AS r FROM kinds SEMI JOIN (VALUES (5), (3), (1)) v(x) ON i = x)
+GROUP BY i ORDER BY i;
 ----
 1	5000	true	1
 3	5000	true	1
 5	5000	true	1
 
 query I
-SELECT count(*) FROM ((SELECT DISTINCT * EXCLUDE (r, x) FROM (SELECT *, unnest(range(5000)) AS r FROM kinds JOIN (VALUES (5), (3), (1)) v(x) ON i = x)) EXCEPT ALL FROM kinds);
+SELECT count(*) FROM ((SELECT DISTINCT * EXCLUDE (r) FROM (SELECT *, unnest(range(5000)) AS r FROM kinds SEMI JOIN (VALUES (5), (3), (1)) v(x) ON i = x)) EXCEPT ALL FROM kinds);
 ----
 0
 

@@ -1,0 +1,53 @@
+# name: test/sql/join/hash_join/perfect_hash_join_pushdown.test
+# description: Perfect hash lookup and NULL-safe runtime filters work together
+# group: [hash_join]
+
+require skip_reload
+
+statement ok
+SET VARIABLE check_perfect_activation =
+    NOT current_setting('debug_force_external') AND NOT current_setting('debug_disable_optimizer');
+
+statement ok
+SET disabled_optimizers='compressed_materialization,statistics_propagation,join_order,build_side_probe_side';
+
+statement ok
+CREATE TABLE pushdown_probe AS SELECT i k FROM range(5000) t(i)
+UNION ALL SELECT NULL UNION ALL SELECT NULL UNION ALL SELECT -1;
+
+statement ok
+CREATE TABLE pushdown_build AS SELECT i k,j v FROM range(100) t(i),range(3) u(j)
+UNION ALL SELECT NULL,7;
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query I
+SELECT count(*) FROM pushdown_probe p SEMI JOIN pushdown_build b ON p.k=b.k;
+----
+100
+
+query I
+SELECT count(*) FROM pushdown_probe p SEMI JOIN pushdown_build b ON p.k IS NOT DISTINCT FROM b.k;
+----
+102
+
+query II
+SELECT count(*),sum(b.v) FROM pushdown_probe p JOIN pushdown_build b ON p.k IS NOT DISTINCT FROM b.k;
+----
+302	314
+
+statement ok
+CALL disable_logging();
+
+# Logical plan serialization does not retain runtime filter pushdown.
+query I
+SELECT NOT getvariable('check_perfect_activation') OR
+    (bool_or(event='Lookup' AND info['backend']='bitmap') AND
+     bool_or(event='Lookup' AND info['backend']='direct') AND
+     (current_setting('debug_verify_serializer') OR
+      bool_or(event='PublishRuntimeFilter' AND info['kind']='PREFIX_RANGE')))
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin';
+----
+true
