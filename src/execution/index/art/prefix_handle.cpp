@@ -107,7 +107,8 @@ void PrefixHandle::Concat(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, con
 	// Inside gates, inlined row IDs are not prefixed, so the byte is dropped.
 	if (child_ptr.GetType() == NType::LEAF_INLINED && (node4_was_gate || status == GateStatus::GATE_SET)) {
 		if (!node4_was_gate && parent_ptr.GetType() == PREFIX) {
-			// (PREFIX -> Node4 -> INLINED_LEAF) ==> (INLINED_LEAF)
+			// (PREFIX (gate) -> Node4 -> INLINED_LEAF) ==> (INLINED_LEAF)
+			// (INNER_NODE -> PREFIX -> Node4 -> INLINED_LEAF) ==> (INNER_NODE -> INLINED_LEAF)
 			while (parent_ptr.GetType() == PREFIX) {
 				NodePtr next_ptr;
 				{
@@ -127,14 +128,23 @@ void PrefixHandle::Concat(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, con
 		return;
 	}
 
-	// Append merges a child prefix into the tail up to the first gate, and attaches any other child.
+	// X is a child that Append attaches without merging: an inlined leaf, an inner node, a leaf node, or a gate.
+	// PREFIX[c] is a child prefix chain, which Append merges up to the first gate.
+	// Bytes that do not fit into a prefix continue in a new prefix.
 	if (!node4_was_gate && parent_ptr.GetType() == PREFIX) {
-		// (PREFIX[...] -> Node4 -> child) ==> (PREFIX[..., byte] -> child)
+		// (PREFIX[a] -> Node4 -> X) ==> (PREFIX[a, byte] -> X)
+		// (PREFIX[a] -> Node4 -> PREFIX[c] -> X) ==> (PREFIX[a, byte, c] -> X)
+		// (PREFIX[full] -> Node4 -> X) ==> (PREFIX[full] -> PREFIX[byte] -> X)
+		// (PREFIX[full] -> Node4 -> PREFIX[c] -> X) ==> (PREFIX[full] -> PREFIX[byte, c] -> X)
 		Append(art, AppendByte(art, GetTail(art, parent_ptr), byte), child_ptr);
 		return;
 	}
-	// (INNER_NODE -> Node4 -> child) ==> (INNER_NODE -> PREFIX[byte] -> child), also if the Node4 was the root.
-	// (parent -> Node4 (gate) -> child) ==> (parent -> PREFIX[byte] (gate) -> child)
+	// (INNER_NODE -> Node4 -> X) ==> (INNER_NODE -> PREFIX[byte] -> X)
+	// (INNER_NODE -> Node4 -> PREFIX[c] -> X) ==> (INNER_NODE -> PREFIX[byte, c] -> X)
+	// (Node4 -> X) ==> (PREFIX[byte] -> X), at the root
+	// (Node4 -> PREFIX[c] -> X) ==> (PREFIX[byte, c] -> X), at the root
+	// (parent -> Node4 (gate) -> X) ==> (parent -> PREFIX[byte] (gate) -> X)
+	// (parent -> Node4 (gate) -> PREFIX[c] -> X) ==> (parent -> PREFIX[byte, c] (gate) -> X)
 	Append(art, NewInternal(art, node4_ptr, &byte, 1, 0), child_ptr);
 	if (node4_was_gate) {
 		node4_ptr.SetGateStatus(GateStatus::GATE_SET);
