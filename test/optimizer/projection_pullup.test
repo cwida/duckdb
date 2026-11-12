@@ -117,13 +117,13 @@ CREATE OR REPLACE TABLE t2 AS SELECT range i FROM range(100);
 statement ok
 CREATE VIEW v1 AS SELECT i, length(i::VARCHAR) j FROM t1 JOIN t2 using (i);
 
-# Pullup projections with non colref expressions
+# Keep computations with variable-size intermediate values below joins
 query II
 EXPLAIN SELECT i, j1.j FROM v1 j1 JOIN v1 j2 using (i);
 ----
-logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*
 
-# Computed expressions remain eligible for general projection pullup
+# Variable-size computations stay below joins even without statistics propagation
 statement ok
 CREATE TABLE pullup_variable(i INTEGER, v VARCHAR);
 
@@ -132,15 +132,51 @@ EXPLAIN SELECT s
 FROM (SELECT i, substring(v, 1, 20) AS s FROM pullup_variable) p
 JOIN t2 USING (i);
 ----
-logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*
 
-# Expression placement is handled separately after statistics propagation
+# A fixed-size result can still depend on variable-size inputs
 query II
 EXPLAIN SELECT n
 FROM (SELECT i, length(v) AS n FROM pullup_variable) p
 JOIN t2 USING (i);
 ----
-logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*
+
+# Fixed-size computations also require costed placement across joins
+query II
+EXPLAIN SELECT n
+FROM (SELECT i, CASE WHEN i > 5 THEN i ELSE 0 END AS n FROM t1) p
+JOIN t2 USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*
+
+# Without a join on the path, computed projections can still move above a filter.
+statement ok
+SET disabled_optimizers = 'common_subplan,column_lifetime,compressed_materialization,statistics_propagation,filter_pushdown,projection_placement';
+
+query II
+EXPLAIN SELECT n
+FROM (SELECT i, CASE WHEN i > 5 THEN i ELSE 0 END AS n FROM t1) p
+WHERE i < 8;
+----
+logical_opt	<REGEX>:.*PROJECTION.*FILTER.*SEQ_SCAN.*
+
+query II
+EXPLAIN SELECT n
+FROM (SELECT i, CASE WHEN i > 5 THEN i ELSE 0 END AS n FROM t1) p
+WHERE i < 8;
+----
+logical_opt	<!REGEX>:.*FILTER.*PROJECTION.*
+
+query I
+SELECT SUM(n)
+FROM (SELECT i, CASE WHEN i > 5 THEN i ELSE 0 END AS n FROM t1) p
+WHERE i < 8;
+----
+13
+
+statement ok
+SET disabled_optimizers = 'common_subplan,column_lifetime,compressed_materialization,statistics_propagation';
 
 # Variable-size column references can still be removed
 query II

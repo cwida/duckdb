@@ -93,7 +93,7 @@ static void CopyCardinality(LogicalOperator &dst, const LogicalOperator &src) {
 }
 
 static bool IsSupportedAggregate(const BoundAggregateExpression &expr) {
-	if (expr.IsDistinct() || expr.GetFilter() || expr.GetOrderBys()) {
+	if (expr.IsDistinct() || expr.GetFilter() || expr.GetOrderBys() || expr.IsVolatile() || expr.CanThrow()) {
 		return false;
 	}
 	if (expr.Function().GetName() == "decimal_average") {
@@ -587,14 +587,15 @@ static void AddReplacement(column_binding_map_t<ColumnBinding> &replacement_map,
 	replacement_map[key] = value;
 }
 
-template <class BUILD_VALUE>
-static unique_ptr<LogicalProjection>
-BuildFinalProjection(Optimizer &optimizer, LogicalAggregate &aggr, unique_ptr<LogicalAggregate> upper_aggr,
-                     column_binding_map_t<ColumnBinding> &replacement_map, BUILD_VALUE &&build_value) {
+static unique_ptr<LogicalProjection> BuildFinalProjection(Optimizer &optimizer, LogicalAggregate &aggr,
+                                                          unique_ptr<LogicalAggregate> upper_aggr,
+                                                          vector<unique_ptr<Expression>> values,
+                                                          column_binding_map_t<ColumnBinding> &replacement_map) {
+	D_ASSERT(values.size() == aggr.expressions.size());
 	const auto proj_index = optimizer.binder.GenerateTableIndex();
 	const auto group_count = aggr.groups.size();
 	vector<unique_ptr<Expression>> expressions;
-	expressions.reserve(group_count + aggr.expressions.size());
+	expressions.reserve(group_count + values.size());
 
 	for (idx_t i = 0; i < group_count; i++) {
 		AddReplacement(replacement_map, ColumnBinding(aggr.group_index, ProjectionIndex(i)),
@@ -603,16 +604,10 @@ BuildFinalProjection(Optimizer &optimizer, LogicalAggregate &aggr, unique_ptr<Lo
 		    upper_aggr->types[i], ColumnBinding(upper_aggr->group_index, ProjectionIndex(i))));
 	}
 
-	for (idx_t j = 0; j < aggr.expressions.size(); j++) {
-		auto ref = make_uniq<BoundColumnRefExpression>(upper_aggr->types[group_count + j],
-		                                               ColumnBinding(upper_aggr->aggregate_index, ProjectionIndex(j)));
-		auto value = build_value(j, std::move(ref));
-		if (!value) {
-			return nullptr;
-		}
+	for (idx_t j = 0; j < values.size(); j++) {
 		AddReplacement(replacement_map, ColumnBinding(aggr.aggregate_index, ProjectionIndex(j)),
 		               ColumnBinding(proj_index, ProjectionIndex(group_count + j)));
-		expressions.push_back(std::move(value));
+		expressions.push_back(std::move(values[j]));
 	}
 
 	auto projection = make_uniq<LogicalProjection>(proj_index, std::move(expressions));
@@ -807,13 +802,11 @@ static void DECreateLowerAggregates(LogicalComparisonJoin &join, DoubleEagerSide
 	}
 }
 
-static void DEGetCountBindings(const DoubleEagerSide (&sides)[2], const unique_ptr<LogicalAggregate> (&lower)[2],
-                               ColumnBinding (&cnt_binding)[2], LogicalType (&cnt_type)[2],
-                               idx_t (&lower_group_count)[2]) {
+static void DEGetCountBindings(const DoubleEagerSide (&sides)[2], ColumnBinding (&cnt_binding)[2],
+                               LogicalType (&cnt_type)[2]) {
 	for (idx_t s = 0; s < 2; s++) {
-		lower_group_count[s] = lower[s]->groups.size();
 		cnt_binding[s] = ColumnBinding(sides[s].aggregate_index, ProjectionIndex(0));
-		cnt_type[s] = lower[s]->types[lower_group_count[s]];
+		cnt_type[s] = sides[s].aggregates[0]->GetReturnType();
 	}
 }
 
@@ -837,13 +830,12 @@ static unique_ptr<LogicalComparisonJoin> DECreateJoin(DoubleEagerSide (&sides)[2
 }
 
 static bool DECreateUpperAggregates(Optimizer &optimizer, const vector<DoubleEagerAggregate> &aggregates,
-                                    const DoubleEagerSide (&sides)[2], LogicalComparisonJoin &new_join,
                                     const ColumnBinding (&cnt_binding)[2], const LogicalType (&cnt_type)[2],
-                                    const idx_t (&lower_group_count)[2],
+                                    const DoubleEagerSide (&sides)[2],
                                     vector<unique_ptr<Expression>> &upper_aggregates) {
 	auto partial_ref = [&](const DoubleEagerAggregate &de) {
 		auto binding = ColumnBinding(sides[de.side].aggregate_index, ProjectionIndex(de.partial_pos));
-		auto type = new_join.children[de.side]->types[lower_group_count[de.side] + de.partial_pos];
+		auto type = sides[de.side].aggregates[de.partial_pos]->GetReturnType();
 		return make_uniq<BoundColumnRefExpression>(type, binding);
 	};
 	auto cnt_ref = [&](idx_t s) -> unique_ptr<Expression> {
@@ -865,13 +857,11 @@ static bool DECreateUpperAggregates(Optimizer &optimizer, const vector<DoubleEag
 	return true;
 }
 
-static unique_ptr<LogicalAggregate> DECreateUpperAggregate(Optimizer &optimizer, LogicalAggregate &aggr,
-                                                           unique_ptr<LogicalComparisonJoin> new_join,
-                                                           const unordered_set<TableIndex> (&side_bindings)[2],
-                                                           const DoubleEagerSide (&sides)[2],
-                                                           vector<unique_ptr<Expression>> upper_aggregates) {
-	auto upper_group_index = optimizer.binder.GenerateTableIndex();
-	auto upper_aggregate_index = optimizer.binder.GenerateTableIndex();
+static unique_ptr<LogicalAggregate>
+DECreateUpperAggregate(LogicalAggregate &aggr, unique_ptr<LogicalComparisonJoin> new_join,
+                       const unordered_set<TableIndex> (&side_bindings)[2], const DoubleEagerSide (&sides)[2],
+                       TableIndex upper_group_index, TableIndex upper_aggregate_index,
+                       vector<unique_ptr<Expression>> upper_aggregates) {
 	auto upper_aggr =
 	    make_uniq<LogicalAggregate>(upper_group_index, upper_aggregate_index, std::move(upper_aggregates));
 	for (auto &group : aggr.groups) {
@@ -936,38 +926,38 @@ bool PartialAggregatePushdown::TryDoubleEagerPushdown(unique_ptr<LogicalOperator
 		return false;
 	}
 
-	unique_ptr<LogicalAggregate> lower[2];
-	DECreateLowerAggregates(join, sides, effective_ndv, lower);
-
 	ColumnBinding cnt_binding[2];
 	LogicalType cnt_type[2];
-	idx_t lower_group_count[2];
-	DEGetCountBindings(sides, lower, cnt_binding, cnt_type, lower_group_count);
-
-	auto new_join = DECreateJoin(sides, join_keys, join_key_types, lower, effective_ndv);
+	DEGetCountBindings(sides, cnt_binding, cnt_type);
 
 	vector<unique_ptr<Expression>> upper_aggregates;
-	if (!DECreateUpperAggregates(optimizer, aggregates, sides, *new_join, cnt_binding, cnt_type, lower_group_count,
-	                             upper_aggregates)) {
+	if (!DECreateUpperAggregates(optimizer, aggregates, cnt_binding, cnt_type, sides, upper_aggregates)) {
 		return false;
 	}
+	auto upper_group_index = optimizer.binder.GenerateTableIndex();
+	auto upper_aggregate_index = optimizer.binder.GenerateTableIndex();
+	vector<unique_ptr<Expression>> final_values;
+	final_values.reserve(upper_aggregates.size());
+	for (idx_t j = 0; j < upper_aggregates.size(); j++) {
+		auto ref = make_uniq<BoundColumnRefExpression>(upper_aggregates[j]->GetReturnType(),
+		                                               ColumnBinding(upper_aggregate_index, ProjectionIndex(j)));
+		unique_ptr<Expression> finalized = optimizer.BindScalarFunction("finalize", std::move(ref));
+		if (finalized->GetReturnType() != aggregates[j].return_type) {
+			finalized =
+			    BoundCastExpression::AddCastToType(optimizer.context, std::move(finalized), aggregates[j].return_type);
+		}
+		final_values.push_back(std::move(finalized));
+	}
 
-	auto upper_aggr =
-	    DECreateUpperAggregate(optimizer, aggr, std::move(new_join), side_bindings, sides, std::move(upper_aggregates));
+	// From here on the rewrite only moves owned plan nodes; all fallible binding has completed.
+	unique_ptr<LogicalAggregate> lower[2];
+	DECreateLowerAggregates(join, sides, effective_ndv, lower);
+	auto new_join = DECreateJoin(sides, join_keys, join_key_types, lower, effective_ndv);
+	auto upper_aggr = DECreateUpperAggregate(aggr, std::move(new_join), side_bindings, sides, upper_group_index,
+	                                         upper_aggregate_index, std::move(upper_aggregates));
 
 	auto projection =
-	    BuildFinalProjection(optimizer, aggr, std::move(upper_aggr), replacement_map,
-	                         [&](idx_t j, unique_ptr<Expression> ref) -> unique_ptr<Expression> {
-		                         auto finalized = optimizer.BindScalarFunction("finalize", std::move(ref));
-		                         if (finalized->GetReturnType() != aggregates[j].return_type) {
-			                         return BoundCastExpression::AddCastToType(optimizer.context, std::move(finalized),
-			                                                                   aggregates[j].return_type);
-		                         }
-		                         return finalized;
-	                         });
-	if (!projection) {
-		return false;
-	}
+	    BuildFinalProjection(optimizer, aggr, std::move(upper_aggr), std::move(final_values), replacement_map);
 	op = std::move(projection);
 	return true;
 }
@@ -1020,7 +1010,7 @@ bool PartialAggregatePushdown::TryOwnerOuterCountPushdown(unique_ptr<LogicalOper
 	const bool count_star = aggregate_name == "count_star";
 	if ((!count_star && aggregate_name != "count") || aggregate.IsDistinct() || aggregate.GetFilter() ||
 	    aggregate.GetOrderBys() || (!count_star && aggregate.GetChildren().size() != 1) ||
-	    (count_star && !aggregate.GetChildren().empty()) || aggregate.IsVolatile() ||
+	    (count_star && !aggregate.GetChildren().empty()) || aggregate.IsVolatile() || aggregate.CanThrow() ||
 	    aggregate.StateExportMode() != AggregateStateExportMode::NONE) {
 		return false;
 	}
@@ -1053,6 +1043,28 @@ bool PartialAggregatePushdown::TryOwnerOuterCountPushdown(unique_ptr<LogicalOper
 
 	auto lower_group_index = optimizer.binder.GenerateTableIndex();
 	auto lower_aggregate_index = optimizer.binder.GenerateTableIndex();
+	auto count_type = aggregate.GetReturnType();
+	auto count_alias = aggregate.GetAlias();
+	auto count_ref =
+	    make_uniq<BoundColumnRefExpression>(count_type, ColumnBinding(lower_aggregate_index, ProjectionIndex(0)));
+	auto count_value = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_COALESCE, count_type);
+	count_value->GetChildrenMutable().push_back(std::move(count_ref));
+	count_value->GetChildrenMutable().push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(count_star ? 1 : 0)));
+	vector<unique_ptr<Expression>> sum_children;
+	sum_children.push_back(std::move(count_value));
+	auto upper_sum = DEBindAggregate(optimizer.context, "sum", std::move(sum_children));
+	if (!upper_sum) {
+		return false;
+	}
+	upper_sum->SetAlias(count_alias);
+	auto upper_group_index = optimizer.binder.GenerateTableIndex();
+	auto upper_aggregate_index = optimizer.binder.GenerateTableIndex();
+	auto sum_ref = make_uniq<BoundColumnRefExpression>(upper_sum->GetReturnType(),
+	                                                   ColumnBinding(upper_aggregate_index, ProjectionIndex(0)));
+	auto count_result = BoundCastExpression::AddCastToType(optimizer.context, std::move(sum_ref), count_type);
+	count_result->SetAlias(count_alias);
+
+	// From here on the rewrite only moves owned plan nodes; all fallible binding has completed.
 	vector<unique_ptr<Expression>> lower_aggregates;
 	lower_aggregates.push_back(aggregate.Copy());
 	auto lower = make_uniq<LogicalAggregate>(lower_group_index, lower_aggregate_index, std::move(lower_aggregates));
@@ -1068,24 +1080,8 @@ bool PartialAggregatePushdown::TryOwnerOuterCountPushdown(unique_ptr<LogicalOper
 	join.ResolveOperatorTypes();
 	CopyCardinality(join, *join.children[info.dimension_side]);
 
-	auto count_type = aggregate.GetReturnType();
-	auto count_alias = aggregate.GetAlias();
-	auto count_ref =
-	    make_uniq<BoundColumnRefExpression>(count_type, ColumnBinding(lower_aggregate_index, ProjectionIndex(0)));
-	auto count_value = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_COALESCE, count_type);
-	count_value->GetChildrenMutable().push_back(std::move(count_ref));
-	count_value->GetChildrenMutable().push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(count_star ? 1 : 0)));
-	vector<unique_ptr<Expression>> sum_children;
-	sum_children.push_back(std::move(count_value));
-	auto upper_sum = DEBindAggregate(optimizer.context, "sum", std::move(sum_children));
-	if (!upper_sum) {
-		return false;
-	}
-	upper_sum->SetAlias(count_alias);
 	vector<unique_ptr<Expression>> upper_aggregates;
 	upper_aggregates.push_back(std::move(upper_sum));
-	auto upper_group_index = optimizer.binder.GenerateTableIndex();
-	auto upper_aggregate_index = optimizer.binder.GenerateTableIndex();
 	auto upper = make_uniq<LogicalAggregate>(upper_group_index, upper_aggregate_index, std::move(upper_aggregates));
 	for (auto &group : aggr.groups) {
 		upper->groups.push_back(group->Copy());
@@ -1100,10 +1096,6 @@ bool PartialAggregatePushdown::TryOwnerOuterCountPushdown(unique_ptr<LogicalOper
 	vector<unique_ptr<Expression>> expressions;
 	expressions.push_back(
 	    make_uniq<BoundColumnRefExpression>(upper->types[0], ColumnBinding(upper_group_index, ProjectionIndex(0))));
-	auto sum_ref =
-	    make_uniq<BoundColumnRefExpression>(upper->types[1], ColumnBinding(upper_aggregate_index, ProjectionIndex(0)));
-	auto count_result = BoundCastExpression::AddCastToType(optimizer.context, std::move(sum_ref), count_type);
-	count_result->SetAlias(count_alias);
 	expressions.push_back(std::move(count_result));
 
 	auto projection = make_uniq<LogicalProjection>(projection_index, std::move(expressions));
@@ -1134,7 +1126,27 @@ static void DEInlineProjection(unique_ptr<Expression> &expr, const LogicalProjec
 	                                      [&](unique_ptr<Expression> &child) { DEInlineProjection(child, proj); });
 }
 
-bool PartialAggregatePushdown::FuseInterveningProjections(LogicalOperator &op) {
+// Projection fusion is speculative: retain both the detached chain and the original aggregate expressions so a
+// rejected aggregate rewrite can restore the plan without leaving an optimization from another pass inlined.
+struct ProjectionFusionState {
+	unique_ptr<LogicalOperator> projection_chain;
+	optional_ptr<LogicalProjection> innermost_projection;
+	vector<unique_ptr<Expression>> groups;
+	vector<unique_ptr<Expression>> aggregates;
+
+	void Rollback(LogicalAggregate &aggr) {
+		D_ASSERT(projection_chain);
+		D_ASSERT(innermost_projection);
+		D_ASSERT(aggr.children.size() == 1);
+		D_ASSERT(!innermost_projection->children[0]);
+		innermost_projection->children[0] = std::move(aggr.children[0]);
+		aggr.children[0] = std::move(projection_chain);
+		aggr.groups = std::move(groups);
+		aggr.expressions = std::move(aggregates);
+	}
+};
+
+static bool FuseInterveningProjections(LogicalOperator &op, ProjectionFusionState &state) {
 	if (op.type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY || op.children.size() != 1) {
 		return false;
 	}
@@ -1151,15 +1163,23 @@ bool PartialAggregatePushdown::FuseInterveningProjections(LogicalOperator &op) {
 	if (cur.get().type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
 		return false;
 	}
-	// Projection inlining would duplicate volatile expressions.
+	// Inlining can change evaluation count and timing, which is unsafe for volatile or fallible expressions.
 	for (auto &proj : projections) {
 		for (auto &expr : proj.get().expressions) {
-			if (expr->IsVolatile()) {
+			if (expr->IsVolatile() || expr->CanThrow()) {
 				return false;
 			}
 		}
 	}
 	auto &aggr = op.Cast<LogicalAggregate>();
+	state.groups.reserve(aggr.groups.size());
+	for (auto &group : aggr.groups) {
+		state.groups.push_back(group->Copy());
+	}
+	state.aggregates.reserve(aggr.expressions.size());
+	for (auto &aggregate : aggr.expressions) {
+		state.aggregates.push_back(aggregate->Copy());
+	}
 	auto inline_all = [&](unique_ptr<Expression> &e) {
 		for (auto &proj : projections) {
 			DEInlineProjection(e, proj.get());
@@ -1171,16 +1191,21 @@ bool PartialAggregatePushdown::FuseInterveningProjections(LogicalOperator &op) {
 	for (auto &expr : aggr.expressions) {
 		inline_all(expr);
 	}
-	op.children[0] = std::move(projections.back().get().children[0]);
+	state.innermost_projection = optional_ptr<LogicalProjection>(&projections.back().get());
+	state.projection_chain = std::move(op.children[0]);
+	op.children[0] = std::move(state.innermost_projection->children[0]);
 	return true;
 }
 
 void PartialAggregatePushdown::VisitOperator(unique_ptr<LogicalOperator> &op) {
 	LogicalOperatorVisitor::VisitOperator(op);
-	FuseInterveningProjections(*op);
+	ProjectionFusionState fusion;
+	auto fused_projections = FuseInterveningProjections(*op, fusion);
 	if (TryDoubleEagerPushdown(op) || TryOwnerOuterCountPushdown(op) || TryPushdownAggregate(op)) {
 		// Revisit rewritten subtrees so nested aggregate-over-join shapes can be pushed too.
 		LogicalOperatorVisitor::VisitOperator(op);
+	} else if (fused_projections) {
+		fusion.Rollback(op->Cast<LogicalAggregate>());
 	}
 }
 
@@ -1223,22 +1248,24 @@ bool PartialAggregatePushdown::TryPushdownAggregate(unique_ptr<LogicalOperator> 
 	                            upper_aggregates)) {
 		return false;
 	}
+	vector<unique_ptr<Expression>> final_values;
+	final_values.reserve(upper_aggregates.size());
+	for (idx_t j = 0; j < upper_aggregates.size(); j++) {
+		auto ref = make_uniq<BoundColumnRefExpression>(upper_aggregates[j]->GetReturnType(),
+		                                               ColumnBinding(info.upper_aggregate_index, ProjectionIndex(j)));
+		unique_ptr<Expression> finalized = optimizer.BindScalarFunction("finalize", std::move(ref));
+		if (finalized->GetReturnType() != aggr->expressions[j]->GetReturnType()) {
+			return false; // state does not round-trip back to the original type
+		}
+		final_values.push_back(std::move(finalized));
+	}
 
+	// From here on the rewrite only moves owned plan nodes; all fallible binding has completed.
 	auto lower_aggr = CreateLowerAggregate(*aggr, *join, info, std::move(lower_aggregates));
 	auto new_join = CreateJoin(*join, info, std::move(lower_aggr));
 	auto upper_aggr = CreateUpperAggregate(*aggr, std::move(new_join), info, std::move(upper_aggregates));
 	auto final_projection =
-	    BuildFinalProjection(optimizer, *aggr, std::move(upper_aggr), replacement_map,
-	                         [&](idx_t j, unique_ptr<Expression> ref) -> unique_ptr<Expression> {
-		                         auto finalized = optimizer.BindScalarFunction("finalize", std::move(ref));
-		                         if (finalized->GetReturnType() != aggr->expressions[j]->GetReturnType()) {
-			                         return nullptr; // state does not round-trip back to the original type
-		                         }
-		                         return finalized;
-	                         });
-	if (!final_projection) {
-		return false;
-	}
+	    BuildFinalProjection(optimizer, *aggr, std::move(upper_aggr), std::move(final_values), replacement_map);
 	op = std::move(final_projection);
 	return true;
 }

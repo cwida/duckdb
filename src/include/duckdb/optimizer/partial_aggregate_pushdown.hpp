@@ -22,8 +22,6 @@ public:
 	void VisitOperator(unique_ptr<LogicalOperator> &op) override;
 
 private:
-	//! Inline projection chains between the aggregate and comparison join.
-	bool FuseInterveningProjections(LogicalOperator &op);
 	//! Double-eager (Yan & Larson "eager group-by-count"): pre-aggregate BOTH join inputs by the join key and
 	//! reconstruct aggregates above by repeating each side's state by the other side's row count.
 	bool TryDoubleEagerPushdown(unique_ptr<LogicalOperator> &op);

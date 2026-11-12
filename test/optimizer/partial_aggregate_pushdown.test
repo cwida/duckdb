@@ -1369,6 +1369,44 @@ GROUP BY o.k
 ----
 physical_plan	<!REGEX>:.*COALESCE.*
 
+# Aggregate inputs that can throw must remain above an inner join, where unmatched rows have already been removed.
+statement ok
+CREATE TABLE fallible_dimension AS SELECT i::INTEGER AS k FROM range(10) t(i)
+
+statement ok
+CREATE TABLE fallible_fact AS
+SELECT (i % 11)::INTEGER AS k, CASE WHEN i % 11 = 10 THEN 'invalid' ELSE '1' END AS v
+FROM range(1100) t(i)
+
+statement ok
+ANALYZE fallible_dimension
+
+statement ok
+ANALYZE fallible_fact
+
+query II
+EXPLAIN SELECT d.k, sum(CAST(f.v AS INTEGER))
+FROM fallible_dimension d JOIN fallible_fact f USING (k)
+GROUP BY d.k
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+query I
+SELECT sum(s) FROM (
+	SELECT d.k, sum(CAST(f.v AS INTEGER)) AS s
+	FROM fallible_dimension d JOIN fallible_fact f USING (k)
+	GROUP BY d.k
+)
+----
+1000
+
+# Volatile aggregate inputs must not be evaluated at a different cardinality below the join.
+query II
+EXPLAIN SELECT d.k, sum(random())
+FROM fallible_dimension d JOIN fallible_fact f USING (k)
+GROUP BY d.k
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
 
 # Projection fusion still allows pushdown. The rewrite is gated on the estimated group count being at most
 # 2 * STANDARD_VECTOR_SIZE, and this query's estimate falls between the 512 and 2048 thresholds, so the plan

@@ -31,6 +31,11 @@ CREATE TABLE placement_wide AS
 SELECT i::INTEGER AS i, lpad(i::VARCHAR, 2000, 'x') AS v
 FROM range(100) t(i);
 
+statement ok
+CREATE TABLE placement_entries AS
+SELECT (i % 100)::INTEGER AS i, (1000 - i)::INTEGER AS v
+FROM range(1000) t(i);
+
 # A bounded string projection is cheaper to evaluate on the dimension side of a fanout join
 query II
 EXPLAIN SELECT s
@@ -54,7 +59,7 @@ JOIN placement_fact USING (i);
 ----
 logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
 
-# The placement decision is independently configurable
+# With placement disabled, pullup preserves the original computation location
 statement ok
 SET disabled_optimizers = 'projection_placement';
 
@@ -63,7 +68,15 @@ EXPLAIN SELECT s
 FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
 JOIN placement_fact USING (i);
 ----
-logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# Pullup alone does not defer bounded string computations past selective joins
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, repeat(v, 10) AS s FROM placement_dimension) d
+JOIN placement_selective USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
 
 statement ok
 SET disabled_optimizers = '';
@@ -167,8 +180,8 @@ logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]n[ 
 
 # The input payload is not credited as a saving when it is selected independently
 query II
-EXPLAIN SELECT d.v, n
-FROM (SELECT i, v, length(v) AS n FROM placement_wide) d
+EXPLAIN SELECT d.v, length(d.v) AS n
+FROM placement_wide d
 JOIN placement_dimension USING (i);
 ----
 logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]n[ ,│].*
@@ -213,13 +226,162 @@ JOIN placement_selective USING (i);
 ----
 logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
 
-# Unknown variable-width results stay above the join
+# Unknown variable-width results remain at their original location
 query II
 EXPLAIN SELECT s
 FROM (SELECT i, lower(v) AS s FROM placement_dimension) d
 JOIN placement_fact USING (i);
 ----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# Nested values without width statistics retain their producer-side evaluation below the join
+query II
+EXPLAIN WITH grouped AS (
+	SELECT i, list(v) AS values FROM placement_entries GROUP BY i
+), sorted AS (
+	SELECT i, list_sort(values) AS sorted_values FROM grouped
+)
+SELECT SUM(sorted_values[1])
+FROM sorted
+JOIN placement_fact USING (i);
+----
+logical_opt	<REGEX>:.*AGGREGATE.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*sorted_values.*
+
+# Grouping above the join also preserves the producer-side computation
+query II
+EXPLAIN WITH grouped AS (
+	SELECT i, list(v) AS values FROM placement_entries GROUP BY i
+), sorted AS (
+	SELECT i, list_sort(values) AS sorted_values FROM grouped
+)
+SELECT f.i % 2 AS g, SUM(sorted_values[1])
+FROM sorted
+JOIN placement_fact f USING (i)
+GROUP BY g;
+----
+logical_opt	<REGEX>:.*AGGREGATE.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*sorted_values.*
+
+query I
+WITH grouped AS (
+	SELECT i, list(v) AS values FROM placement_entries GROUP BY i
+), sorted AS (
+	SELECT i, list_sort(values) AS sorted_values FROM grouped
+)
+SELECT SUM(sorted_values[1])
+FROM sorted
+JOIN placement_fact USING (i);
+----
+5050000
+
+# A computed projection above the join is fused speculatively, but DISTINCT rejects aggregate pushdown.
+# Disable later placement and compression so the restored projection chain is checked directly.
+statement ok
+SET disabled_optimizers = 'projection_placement,compressed_materialization';
+
+query II
+EXPLAIN SELECT g, SUM(DISTINCT n)
+FROM (
+	SELECT d.k AS g, CASE WHEN d.i > 5 THEN 1 ELSE 0 END AS n
+	FROM placement_dimension d JOIN placement_fact f USING (i)
+) p
+GROUP BY g;
+----
+logical_opt	<REGEX>:.*AGGREGATE.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]n[ ,│].*JOIN.*
+
+query I
+SELECT SUM(total) FROM (
+	SELECT g, SUM(DISTINCT n) AS total
+	FROM (
+		SELECT d.k AS g, CASE WHEN d.i > 5 THEN 1 ELSE 0 END AS n
+		FROM placement_dimension d JOIN placement_fact f USING (i)
+	) p
+	GROUP BY g
+);
+----
+10
+
+statement ok
+SET disabled_optimizers = '';
+
+# Fixed-size computations use the same costed placement as strings. Keep scan cardinalities intact
+# so a selective join, rather than pushed filters, accounts for the reduction in evaluations.
+statement ok
+SET disabled_optimizers = 'projection_placement,filter_pushdown,compressed_materialization';
+
+query II
+EXPLAIN SELECT n
+FROM (SELECT i, CASE WHEN i > 5 THEN 1 ELSE 0 END AS n FROM placement_dimension) d
+JOIN placement_selective USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]n[ ,│].*
+
+statement ok
+SET disabled_optimizers = 'filter_pushdown,compressed_materialization';
+
+query II
+EXPLAIN SELECT n
+FROM (SELECT i, CASE WHEN i > 5 THEN 1 ELSE 0 END AS n FROM placement_dimension) d
+JOIN placement_selective USING (i);
+----
+logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]n[ ,│].*
+
+query II
+EXPLAIN SELECT CASE WHEN d.i > 5 THEN 1 ELSE 0 END AS n
+FROM placement_dimension d JOIN placement_fact USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]n[ ,│].*
+
+statement ok
+SET disabled_optimizers = '';
+
+# Missing output width must not defer a computation past a selective join
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, lower(v) AS s FROM placement_dimension) d
+JOIN placement_selective USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# Missing output width must not introduce a computation below a fanout join either
+query II
+EXPLAIN SELECT lower(v) AS s
+FROM placement_dimension JOIN placement_fact USING (i);
+----
 logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# Fixed-size inputs and outputs do not describe the cost of an intermediate list
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, length(list_sort([i, 0])) AS s FROM placement_dimension) d
+JOIN placement_selective USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# The same intermediate-list computation cannot be pushed down from above a join
+query II
+EXPLAIN SELECT length(list_sort([d.i, 0])) AS s
+FROM placement_dimension d JOIN placement_fact USING (i);
+----
+logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+query I
+SELECT SUM(s)
+FROM (SELECT i, length(list_sort([i, 0])) AS s FROM placement_dimension) d
+JOIN placement_selective USING (i);
+----
+20
+
+# STRUCT and ARRAY results without width estimates retain their producer-side evaluation
+foreach expression struct_pack(value:=i) array_value(i,0)
+
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, {expression} AS s FROM placement_dimension) d
+JOIN placement_selective USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+endloop
 
 # The cost is evaluated across the complete single-child path through multiple joins
 query II
@@ -339,14 +501,14 @@ EXPLAIN SELECT s
 FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
 SEMI JOIN placement_fact USING (i);
 ----
-logical_opt	<!REGEX>:.*SEMI.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+logical_opt	<REGEX>:.*SEMI.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
 
 query II
 EXPLAIN SELECT s
 FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
 ANTI JOIN placement_fact USING (i);
 ----
-logical_opt	<!REGEX>:.*ANTI.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+logical_opt	<REGEX>:.*ANTI.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
 
 # MARK joins remain placement barriers
 query II

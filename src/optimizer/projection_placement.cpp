@@ -108,23 +108,37 @@ static bool GetBindingWidth(const ColumnBinding &binding, const LogicalType &typ
 		width = GetTypeIdSize(physical_type);
 		return true;
 	}
-	if (physical_type != PhysicalType::VARCHAR) {
-		return false;
+	if (physical_type == PhysicalType::VARCHAR) {
+		auto entry = statistics_map.find(binding);
+		if (entry != statistics_map.end() && entry->second &&
+		    entry->second->GetStatsType() == StatisticsType::STRING_STATS &&
+		    StringStats::HasMaxStringLength(*entry->second)) {
+			width = GetTypeIdSize(physical_type) + StringStats::MaxStringLength(*entry->second);
+			return true;
+		}
 	}
-	// Variable-width values are only costed when statistics provide a safe upper bound.
-	auto entry = statistics_map.find(binding);
-	if (entry == statistics_map.end() || !entry->second ||
-	    entry->second->GetStatsType() != StatisticsType::STRING_STATS ||
-	    !StringStats::HasMaxStringLength(*entry->second)) {
-		return false;
-	}
-	width = GetTypeIdSize(physical_type) + StringStats::MaxStringLength(*entry->second);
-	return true;
+	return false;
+}
+
+static bool HasUncostedIntermediate(const Expression &expression) {
+	bool result = false;
+	ExpressionIterator::EnumerateChildren(expression, [&](const Expression &child) {
+		if (result || child.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF ||
+		    child.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+			return;
+		}
+		// Binding statistics describe inputs and outputs, but not variable-size intermediate computations.
+		result = !TypeIsConstantSize(child.GetReturnType().InternalType()) || HasUncostedIntermediate(child);
+	});
+	return result;
 }
 
 static bool GetExpressionWidth(const Expression &expression,
                                const column_binding_map_t<unique_ptr<BaseStatistics>> &statistics_map,
                                idx_t &input_width, vector<ExpressionBindingWidth> &binding_widths) {
+	if (HasUncostedIntermediate(expression)) {
+		return false;
+	}
 	vector<pair<ColumnBinding, LogicalType>> bindings;
 	bool valid = true;
 	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(

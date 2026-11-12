@@ -304,20 +304,29 @@ void ProjectionPullup::VisitOperator(unique_ptr<LogicalOperator> &op) {
 	case LogicalOperatorType::LOGICAL_PROJECTION: {
 		auto &proj = op->Cast<LogicalProjection>();
 		auto proj_bindings = proj.GetColumnBindings();
-		// Check if all expressions are simple column refs
-		// Cannot pull this projection up safely if any expression is not a column ref
+		bool crosses_join = false;
+		for (auto &parent : parents) {
+			if (parent.get().type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN ||
+			    parent.get().type == LogicalOperatorType::LOGICAL_ANY_JOIN) {
+				crosses_join = true;
+				break;
+			}
+		}
+		// Defer computed projections across joins to costed placement before copying any expressions.
 		bool all_column_refs = true;
-		column_binding_map_t<unique_ptr<Expression>> projection_map;
-		for (idx_t i = 0; i < proj.expressions.size(); i++) {
-			projection_map[proj_bindings[i]] = proj.expressions[i]->Copy();
-			if (proj.expressions[i]->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+		for (auto &expr : proj.expressions) {
+			if (expr->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
 				all_column_refs = false;
 			}
-			if (proj.expressions[i]->IsVolatile() || proj.expressions[i]->CanThrow()) {
+			if ((crosses_join && !all_column_refs) || expr->IsVolatile() || expr->CanThrow()) {
 				ProjectionPullup next(optimizer, root);
 				next.Optimize(proj.children[0]);
 				return; // bail
 			}
+		}
+		column_binding_map_t<unique_ptr<Expression>> projection_map;
+		for (idx_t i = 0; i < proj.expressions.size(); i++) {
+			projection_map[proj_bindings[i]] = proj.expressions[i]->Copy();
 		}
 
 		bool can_pull_through = true;
