@@ -675,7 +675,7 @@ private:
 
 idx_t BlockAllocator::GetGuardBlockCount() const {
 	// Power-of-two blocks of at least 64 KiB align to all supported OS page sizes.
-	if (touched->blocks_per_shard > 1 && block_size >= 64 * 1024) {
+	if (touched->blocks_per_shard > 1 && block_size >= 64ULL * 1024) {
 		return touched->queues.Count() - 1;
 	}
 	return 0;
