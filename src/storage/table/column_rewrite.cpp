@@ -106,6 +106,7 @@ bool ColumnRewrite::IsVolatile() const {
 
 void ColumnRewrite::RewriteRowGroup(idx_t index) {
 	auto row_group_count = row_groups->RowGroupCount();
+	// indices past the table's row groups are the transaction-local rows
 	if (index < row_group_count) {
 		row_groups->AlterRowGroup(index);
 	} else {
