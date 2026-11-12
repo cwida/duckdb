@@ -39,7 +39,7 @@ def compare(before, after):
     if "duckdb_open" in after["cli"]["exports"]:
         raise ValueError("The static CLI still exports duckdb_open")
     lines = [
-        "| Binary | Bytes before → after | Reduction | Gzip bytes before → after | Reduction | Exports before → after |",
+        "| Binary | Bytes before -> after | Reduction | Gzip bytes before -> after | Reduction | Exports before -> after |",
         "|---|---:|---:|---:|---:|---:|",
     ]
     for name, current in after.items():
@@ -56,9 +56,9 @@ def compare(before, after):
         reduction = 100 * (1 - current["bytes"] / original["bytes"])
         gzip_reduction = 100 * (1 - current["gzip_bytes"] / original["gzip_bytes"])
         lines.append(
-            f"| {name} | {original['bytes']} → {current['bytes']} | {reduction:.2f}% "
-            f"| {original['gzip_bytes']} → {current['gzip_bytes']} | {gzip_reduction:.2f}% "
-            f"| {len(original['exports'])} → {len(current['exports'])} |"
+            f"| {name} | {original['bytes']} -> {current['bytes']} | {reduction:.2f}% "
+            f"| {original['gzip_bytes']} -> {current['gzip_bytes']} | {gzip_reduction:.2f}% "
+            f"| {len(original['exports'])} -> {len(current['exports'])} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -120,12 +120,12 @@ def main():
     parser.add_argument("--smoke", action="store_true")
     arguments = parser.parse_args()
     after = snapshot(arguments.root)
-    arguments.output.write_text(json.dumps(after, indent=2) + "\n")
+    arguments.output.write_text(json.dumps(after, indent=2) + "\n", encoding="utf-8")
     if arguments.compare:
-        summary = compare(json.loads(arguments.compare.read_text()), after)
+        summary = compare(json.loads(arguments.compare.read_text(encoding="utf-8")), after)
         print(summary)
         if os.getenv("GITHUB_STEP_SUMMARY"):
-            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as output:
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
                 output.write(summary)
     if arguments.smoke:
         smoke(arguments.root)
