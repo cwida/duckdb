@@ -622,18 +622,18 @@ static vector<string> UpdateRows(Connection &con, const string &statement) {
 	return rows;
 }
 
-TEST_CASE("Test that UPDATE EXTENSIONS updates extensions installed from user-provided repositories", "[api]") {
+TEST_CASE("Test UPDATE EXTENSIONS with user-provided repositories", "[api]") {
 	auto fs = FileSystem::CreateLocal();
 	auto demo_extension = fs->JoinPath(TestBuildDirectory(), "test/extension/loadable_extension_demo.duckdb_extension");
 	if (!fs->FileExists(demo_extension)) {
 		WARN("loadable_extension_demo is not built, skipping");
 		return;
 	}
-	auto repository_directory = TestCreatePath("ext_repo_update");
-	auto extension_directory = TestCreatePath("ext_repo_update_ext");
+	auto repository_directory = TestCreatePath("upd_repos");
+	auto extension_directory = TestCreatePath("upd_ext");
 
 	// a local repository serving the demo extension, in the <prefix>/<version>/<platform>/ layout
-	auto prefix = TestCreatePath("ext_repo_update_prefix");
+	auto prefix = TestCreatePath("upd_prefix");
 	auto served_directory =
 	    fs->JoinPath(fs->JoinPath(prefix, ExtensionHelper::GetVersionDirectoryName()), DuckDB::Platform());
 	fs->CreateDirectoriesRecursive(served_directory);
@@ -698,18 +698,18 @@ TEST_CASE("Test that UPDATE EXTENSIONS updates extensions installed from user-pr
 	REQUIRE(UpdateRows(con, "UPDATE EXTENSIONS (loadable_extension_demo)") == vector<string> {not_trusted_row});
 }
 
-TEST_CASE("Test that UPDATE EXTENSIONS updates extensions in the directory they are installed in", "[api]") {
+TEST_CASE("Test UPDATE EXTENSIONS keeps the extension directory", "[api]") {
 	auto fs = FileSystem::CreateLocal();
 	auto demo_extension = fs->JoinPath(TestBuildDirectory(), "test/extension/loadable_extension_demo.duckdb_extension");
 	if (!fs->FileExists(demo_extension)) {
 		WARN("loadable_extension_demo is not built, skipping");
 		return;
 	}
-	auto repository_directory = TestCreatePath("ext_repo_update_dirs");
-	auto primary_directory = TestCreatePath("ext_repo_update_dirs_primary");
-	auto secondary_directory = TestCreatePath("ext_repo_update_dirs_secondary");
+	auto repository_directory = TestCreatePath("updd_repos");
+	auto primary_directory = TestCreatePath("updd_primary");
+	auto secondary_directory = TestCreatePath("updd_secondary");
 
-	auto prefix = TestCreatePath("ext_repo_update_dirs_prefix");
+	auto prefix = TestCreatePath("updd_prefix");
 	auto served_directory =
 	    fs->JoinPath(fs->JoinPath(prefix, ExtensionHelper::GetVersionDirectoryName()), DuckDB::Platform());
 	fs->CreateDirectoriesRecursive(served_directory);
