@@ -486,15 +486,7 @@ void DBConfig::SetOption(const Identifier &name, Value value) {
 }
 
 void DBConfig::ResetOption(const ExtensionOption &extension_option) {
-	auto &default_value = extension_option.default_value;
-	auto setting_index = extension_option.setting_index.GetIndex();
-	if (!default_value.IsNull()) {
-		// Default is not NULL, override the setting
-		user_settings.SetUserSetting(setting_index, default_value);
-	} else {
-		// Otherwise just remove it from the 'set_variables' map
-		user_settings.ClearSetting(setting_index);
-	}
+	user_settings.ClearSetting(extension_option.setting_index.GetIndex());
 }
 
 void DBConfig::ResetGenericOption(idx_t setting_index) {
@@ -630,17 +622,12 @@ void DBConfig::AddExtensionOption(const Identifier &name, string description, Lo
 }
 
 void DBConfig::AddExtensionOption(const Identifier &name, ExtensionOption extension_option) {
-	auto default_value = extension_option.default_value;
 	auto setting_index = user_settings.AddExtensionOption(name, std::move(extension_option));
 	// copy over unrecognized options, if they match the new extension option
 	auto iter = options.unrecognized_options.find(name);
 	if (iter != options.unrecognized_options.end()) {
 		user_settings.SetUserSetting(setting_index, iter->second);
 		options.unrecognized_options.erase(iter);
-	}
-	if (!default_value.IsNull() && !user_settings.IsSet(setting_index)) {
-		// Default value is set, insert it into the 'set_variables' list
-		user_settings.SetUserSetting(setting_index, default_value);
 	}
 }
 
@@ -899,6 +886,19 @@ SettingLookupResult DBConfig::TryGetDefaultValue(optional_ptr<const Configuratio
 	return SettingLookupResult(SettingScope::GLOBAL);
 }
 
+SettingLookupResult DBConfig::TryGetDefaultValue(const Identifier &key, optional_ptr<const ConfigurationOption> option,
+                                                 Value &result) const {
+	if (option) {
+		return TryGetDefaultValue(option, result);
+	}
+	ExtensionOption extension_option;
+	if (!TryGetExtensionOption(key, extension_option) || extension_option.default_value.IsNull()) {
+		return SettingLookupResult();
+	}
+	result = extension_option.default_value;
+	return SettingLookupResult(SettingScope::GLOBAL);
+}
+
 SettingLookupResult DBConfig::TryGetCurrentSetting(const Identifier &key, Value &result) const {
 	optional_ptr<const ConfigurationOption> option;
 	auto setting_index = TryGetSettingIndex(key, option);
@@ -908,7 +908,7 @@ SettingLookupResult DBConfig::TryGetCurrentSetting(const Identifier &key, Value 
 			return lookup_result;
 		}
 	}
-	return TryGetDefaultValue(option, result);
+	return TryGetDefaultValue(key, option, result);
 }
 
 optional_idx DBConfig::TryGetSettingIndex(const Identifier &name,
