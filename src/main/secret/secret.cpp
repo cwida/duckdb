@@ -12,6 +12,94 @@
 
 namespace duckdb {
 
+//! Terminates the authority component and separates path segments
+static bool IsPathSeparator(char c) {
+	return c == '/' || c == '?' || c == '#';
+}
+
+//! Locates the authority of a URI: everything between "scheme://" and the first '/', '?' or '#'
+//! Returns false for anything that is not a URI, such as a plain path or a bare bucket name
+static bool TryGetAuthority(const string &uri, idx_t &authority_begin, idx_t &authority_end) {
+	auto scheme_end = uri.find("://");
+	if (scheme_end == string::npos || scheme_end == 0) {
+		return false;
+	}
+	// RFC 3986: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+	if (!StringUtil::CharacterIsAlpha(uri[0])) {
+		return false;
+	}
+	for (idx_t i = 1; i < scheme_end; i++) {
+		auto c = uri[i];
+		if (!StringUtil::CharacterIsAlphaNumeric(c) && c != '+' && c != '-' && c != '.') {
+			return false;
+		}
+	}
+	authority_begin = scheme_end + 3;
+	authority_end = uri.size();
+	for (idx_t i = authority_begin; i < uri.size(); i++) {
+		if (IsPathSeparator(uri[i])) {
+			authority_end = i;
+			break;
+		}
+	}
+	return true;
+}
+
+//! A scope path must cover the requested path entirely or stop on a segment boundary within it
+static bool PathPrefixMatches(const string &path, const string &prefix) {
+	if (prefix.empty()) {
+		return true;
+	}
+	if (!StringUtil::StartsWith(path, prefix)) {
+		return false;
+	}
+	return path.size() == prefix.size() || IsPathSeparator(prefix.back()) || IsPathSeparator(path[prefix.size()]);
+}
+
+//! The scope authority must designate the host the request is actually sent to
+//! A scope may leave off the port, but it may never stop inside the userinfo of a longer authority
+static bool AuthorityMatches(const string &path_authority, const string &scope_authority) {
+	if (scope_authority.empty()) {
+		// a scheme-only scope such as 's3://' covers every host of that scheme
+		return true;
+	}
+	if (path_authority == scope_authority) {
+		return true;
+	}
+	if (path_authority.size() <= scope_authority.size() || !StringUtil::StartsWith(path_authority, scope_authority)) {
+		return false;
+	}
+	// only a port may follow the host, and a port contains neither userinfo nor another host
+	auto remainder = path_authority.substr(scope_authority.size());
+	return remainder[0] == ':' && remainder.find('@') == string::npos;
+}
+
+static bool ScopeMatches(const string &path, const string &scope) {
+	if (scope.empty()) {
+		return true;
+	}
+	idx_t scope_authority_begin = 0;
+	idx_t scope_authority_end = 0;
+	idx_t path_authority_begin = 0;
+	idx_t path_authority_end = 0;
+	auto scope_is_uri = TryGetAuthority(scope, scope_authority_begin, scope_authority_end);
+	auto path_is_uri = TryGetAuthority(path, path_authority_begin, path_authority_end);
+	if (!scope_is_uri || !path_is_uri) {
+		// comparing a URI against a non-URI would weigh a host against a path segment
+		return !scope_is_uri && !path_is_uri && PathPrefixMatches(path, scope);
+	}
+	// scheme, authority and path are compared as separate components, never as one flat string
+	if (scope_authority_begin != path_authority_begin ||
+	    scope.substr(0, scope_authority_begin) != path.substr(0, path_authority_begin)) {
+		return false;
+	}
+	if (!AuthorityMatches(path.substr(path_authority_begin, path_authority_end - path_authority_begin),
+	                      scope.substr(scope_authority_begin, scope_authority_end - scope_authority_begin))) {
+		return false;
+	}
+	return PathPrefixMatches(path.substr(path_authority_end), scope.substr(scope_authority_end));
+}
+
 int64_t BaseSecret::MatchScore(const string &path) const {
 	int64_t longest_match = NumericLimits<int64_t>::Minimum();
 
@@ -25,7 +113,7 @@ int64_t BaseSecret::MatchScore(const string &path) const {
 			longest_match = 0;
 			continue;
 		}
-		if (StringUtil::StartsWith(path, prefix)) {
+		if (ScopeMatches(path, prefix)) {
 			longest_match = MaxValue<int64_t>(NumericCast<int64_t>(prefix.length()), longest_match);
 		}
 	}
