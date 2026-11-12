@@ -883,7 +883,7 @@ vector<string> ExtensionHelper::GetTrustedPublicKeys(DatabaseInstance &db, Exten
 		// only the keys of the repository the extension came from are trusted
 		ExtensionRepository repository;
 		auto &fs = FileSystem::GetLocal(db);
-		// under 'known_hosts' only a repository resolved through the registry is trusted
+		// under 'known_hosts' only a repository resolved from its host is trusted
 		if (ExtensionRepositoryManager::TryGetRepository(db, fs, repository_name, repository) &&
 		    ExtensionRepositoryManager::TrustsRepository(db, repository)) {
 			for (auto &public_key : repository.public_keys) {

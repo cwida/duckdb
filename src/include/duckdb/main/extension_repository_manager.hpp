@@ -68,6 +68,8 @@ public:
 	//! Repository names are case insensitive and are used as file names - restrict them to a safe character set
 	static string NormalizeRepositoryName(const string &name);
 	static bool TryNormalizeRepositoryName(const string &name, string &result);
+	//! Whether a name is a host on the public internet, the only kind of name resolved without a prefix
+	static bool IsHostName(const string &name);
 
 	//! Whether the user has opted in to adding external extension repositories
 	static ExtensionRepositoryAccess GetAccess(DatabaseInstance &db);

@@ -4,6 +4,7 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/types/blob.hpp"
 #include "duckdb/common/serializer/buffered_file_writer.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/main/database.hpp"
@@ -370,11 +371,50 @@ string ExtensionRepositoryManager::NormalizeRepositoryName(const string &name) {
 
 static constexpr const idx_t METADATA_FORMAT_VERSION = 1;
 
+//! Whether a name is one DuckDB will reach over the network as a host: two or more labels of letters, digits and '-'
+//! separated by single dots, no label starting or ending with '-', the last label letters only (so no IPv4 literal),
+//! and not localhost. A single word is not a host: it would be resolved through search domains to a host the user did
+//! not name. There is no stricter test short of the public suffix list; this one keeps out what is certainly not a
+//! public host
+bool ExtensionRepositoryManager::IsHostName(const string &text) {
+	idx_t label_count = 0;
+	idx_t label_start = 0;
+	for (idx_t i = 0; i <= text.size(); i++) {
+		if (i < text.size() && text[i] != '.') {
+			auto c = text[i];
+			if (!StringUtil::CharacterIsAlpha(c) && !StringUtil::CharacterIsDigit(c) && c != '-') {
+				return false;
+			}
+			continue;
+		}
+		// end of a label
+		if (i == label_start || text[label_start] == '-' || text[i - 1] == '-') {
+			return false;
+		}
+		label_count++;
+		label_start = i + 1;
+	}
+	if (label_count < 2) {
+		return false;
+	}
+	for (idx_t i = text.rfind('.') + 1; i < text.size(); i++) {
+		if (!StringUtil::CharacterIsAlpha(text[i])) {
+			return false;
+		}
+	}
+	auto lower = StringUtil::Lower(text);
+	return lower != "localhost" && !StringUtil::EndsWith(lower, ".localhost");
+}
+
 //! Read a small file over https for resolving a repository from its host. The file decides which prefix and which
 //! signing keys get trusted, so it is not read through the file system, whose http settings the user controls: the url
 //! must be https, a secret or setting that switches verification off for it is refused, and the server certificate is
-//! verified whatever the provider's defaults are. Redirects are followed as the client follows them: a host that
-//! redirects is still the host speaking, and where it sends its visitors is its own responsibility
+//! verified whatever the provider's defaults are.
+//!
+//! Redirects are followed as the client follows them, wherever they lead, http included. The first hop is verified
+//! https, so a redirect can only come from the host itself: it is the host speaking, and where it sends its visitors
+//! (a moved site, a different domain, even plain http) is the host's own decision and the host's own risk, exactly as
+//! the content of the file is. Nothing here inspects the hops.
 static string ReadAuthenticatedHTTPS(DatabaseInstance &db, optional_ptr<ClientContext> context, const string &url,
                                      const char *what) {
 	if (!StringUtil::StartsWith(url, "https://")) {
@@ -398,10 +438,45 @@ static string ReadAuthenticatedHTTPS(DatabaseInstance &db, optional_ptr<ClientCo
 	params.RequireServerCertificateVerification();
 	params.keep_alive = false;
 
+	// the body is received through a handler so that the transfer stops as soon as it exceeds the cap, or before it
+	// starts when the announced length does: the cap is on what is downloaded, not on what is kept afterwards
+	string body;
+	bool too_large = false;
+	auto response_handler = [&](const HTTPResponse &response) {
+		// called once per response (a redirect or a retry starts another one): begin afresh
+		body.clear();
+		if (too_large) {
+			// a previous attempt already received too much: do not download it again
+			return false;
+		}
+		if (response.HasHeader("Content-Length")) {
+			idx_t content_length;
+			if (TryCast::Operation<string_t, idx_t>(string_t(response.GetHeaderValue("Content-Length")), content_length,
+			                                        false) &&
+			    content_length > MAX_METADATA_FILE_SIZE) {
+				too_large = true;
+				return false;
+			}
+		}
+		return true;
+	};
+	auto content_handler = [&](const_data_ptr_t data, idx_t data_length) {
+		if (body.size() + data_length > MAX_METADATA_FILE_SIZE) {
+			too_large = true;
+			return false;
+		}
+		body.append(const_char_ptr_cast(data), data_length);
+		return true;
+	};
 	HTTPHeaders headers(db);
-	GetRequestInfo get_request(url, headers, params, nullptr, nullptr);
+	GetRequestInfo get_request(url, headers, params, response_handler, content_handler);
 	get_request.try_request = true;
 	auto response = session.Request(get_request);
+	if (too_large) {
+		throw IOException("Failed to read the %s '%s': it is larger than the %llu bytes a repository metadata file can "
+		                  "take",
+		                  what, url, MAX_METADATA_FILE_SIZE);
+	}
 	if (response->HasRequestError()) {
 		throw IOException("Failed to read the %s '%s': %s", what, url, response->GetRequestError());
 	}
@@ -409,11 +484,7 @@ static string ReadAuthenticatedHTTPS(DatabaseInstance &db, optional_ptr<ClientCo
 		throw IOException("Failed to read the %s '%s': HTTP %d %s", what, url, static_cast<int32_t>(response->status),
 		                  response->GetError());
 	}
-	if (response->body.size() > MAX_METADATA_FILE_SIZE) {
-		throw IOException("Failed to read the %s '%s': %llu bytes is too large for a repository metadata file", what,
-		                  url, response->body.size());
-	}
-	return response->body;
+	return body;
 }
 
 //! The root object of a host's metadata file, after checking its version
@@ -445,6 +516,16 @@ ExtensionRepositoryResolution ExtensionRepositoryManager::ResolveRepositoryFromH
                                                                                     const string &name_p) {
 	// called by CreateRepository once the access check and the conflict check have passed
 	auto name = NormalizeRepositoryName(name_p);
+	// only a name that is a host on the public internet is reached: a single word would resolve through search
+	// domains to a host the user did not name, an IP literal or localhost is nobody's statement
+	if (!IsHostName(name)) {
+		throw InvalidInputException(
+		    "Cannot create extension repository '%s': '%s' is not a host name. A host has two or "
+		    "more labels of letters, digits and '-' separated by dots, the last one letters "
+		    "only, and is not localhost\nUse `WITH PREFIX '<url>'` to name the repository's "
+		    "location directly",
+		    name_p, name);
+	}
 	ExtensionRepositoryResolution resolution;
 	resolution.host = name;
 
@@ -457,7 +538,7 @@ ExtensionRepositoryResolution ExtensionRepositoryManager::ResolveRepositoryFromH
 	} catch (MissingExtensionException &) {
 		throw;
 	} catch (InvalidInputException &) {
-		// a policy refusal (verification switched off, a non-https hop): not something the host did
+		// a policy refusal (verification switched off for the url): not something the host did
 		throw;
 	} catch (std::exception &ex) {
 		ErrorData error(ex);
@@ -573,6 +654,13 @@ ExtensionRepository ExtensionRepositoryManager::ReadRepository(FileSystem &fs, c
 		throw IOException("Failed to read extension repository file '%s': the file contains repository '%s', but '%s' "
 		                  "was expected based on the file name",
 		                  path, result.name, expected_name);
+	}
+	// a host means "resolved from that host", and a repository resolved from a host is named after it: a file that
+	// says otherwise was not written by DuckDB, and is not trusted on its word
+	if (!result.host.empty() && (!IsHostName(result.host) || StringUtil::Lower(result.host) != expected_name)) {
+		throw IOException("Failed to read extension repository file '%s': the file names host '%s', but a repository "
+		                  "resolved from a host is named after it ('%s')",
+		                  path, result.host, expected_name);
 	}
 	// a user provided repository must never shadow a built-in repository: those are resolved first, so a file named
 	// after a built-in repository would silently redirect installs to an attacker controlled key and url

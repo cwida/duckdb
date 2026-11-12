@@ -98,6 +98,44 @@ CREATE EXTENSION REPOSITORY byurl WITH PREFIX 'https://needs-httpfs.example/repo
 statement ok
 RESET autoload_known_extensions
 
+# Without a prefix the name must be a host on the public internet: two or more labels, letters-only last label, not
+# localhost. Anything else is refused before any network is touched; it can still be a repository WITH PREFIX.
+statement error
+CREATE EXTENSION REPOSITORY myrepo
+----
+<REGEX>:Invalid Input Error.*'myrepo' is not a host name.*WITH PREFIX.*
+
+statement error
+CREATE EXTENSION REPOSITORY '10.0.0.5'
+----
+<REGEX>:Invalid Input Error.*is not a host name.*
+
+statement error
+CREATE EXTENSION REPOSITORY localhost
+----
+<REGEX>:Invalid Input Error.*is not a host name.*
+
+statement error
+CREATE EXTENSION REPOSITORY repo.localhost
+----
+<REGEX>:Invalid Input Error.*is not a host name.*
+
+statement error
+CREATE EXTENSION REPOSITORY under_score.example
+----
+<REGEX>:Invalid Input Error.*is not a host name.*
+
+statement error
+CREATE EXTENSION REPOSITORY 'bad-.example'
+----
+<REGEX>:Invalid Input Error.*is not a host name.*
+
+statement ok
+CREATE EXTENSION REPOSITORY myrepo WITH PREFIX '{TEST_DIR}/repo' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
+
+statement ok
+DROP EXTENSION REPOSITORY myrepo
+
 # The built-in names stay reserved, before anything is fetched.
 statement error
 CREATE EXTENSION REPOSITORY core_nightly

@@ -208,6 +208,38 @@ static void WriteTextFile(const string &path, const string &contents) {
 	handle->Sync();
 }
 
+TEST_CASE("Test that a stored repository file is only believed about a host it is named after", "[api]") {
+	auto repository_directory = TestCreatePath("extension_repositories_host_mismatch");
+	auto prefix = TestCreatePath("extension_repositories_host_mismatch_prefix");
+	auto fs = FileSystem::CreateLocal();
+	fs->CreateDirectory(repository_directory);
+	fs->CreateDirectory(prefix);
+	// a file that claims a host it is not named after was not written by DuckDB: under 'known_hosts' a stored host is
+	// what gets a repository trusted, so the claim is refused rather than believed
+	WriteTextFile(fs->JoinPath(repository_directory, "mismatch.example.duckdb_extension.repo.json"),
+	              StringUtil::Format("{\"version\": 1, \"name\": \"mismatch.example\", \"url\": \"%s\", \"host\": "
+	                                 "\"other.example\", \"public_keys\": [\"%s\"]}",
+	                                 prefix, TEST_PUBLIC_KEY));
+
+	DBConfig config;
+	config.SetOptionByName("extension_repository_directory", repository_directory);
+	config.SetOptionByName("autoload_known_extensions", false);
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	auto result = con.Query("SELECT repository_name FROM duckdb_extension_repositories() WHERE type='USER_PROVIDED'");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "names host 'other.example'"));
+	// reading the file fails, so the key is not trusted either way
+	bool trusted = false;
+	try {
+		trusted =
+		    KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "mismatch.example", TEST_PUBLIC_KEY);
+	} catch (std::exception &) {
+	}
+	REQUIRE(!trusted);
+}
+
 TEST_CASE("Test that a repository resolved from its host does not need the opt-in", "[api]") {
 	auto repository_directory = TestCreatePath("extension_repositories_from_host");
 	auto prefix = TestCreatePath("extension_repositories_from_host_prefix");
