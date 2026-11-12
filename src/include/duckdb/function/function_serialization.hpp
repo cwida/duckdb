@@ -311,7 +311,8 @@ public:
 	//! a trailing alias there is a genuine alias, not an argument name.
 	template <class FUNCTION_SET>
 	static void RestoreNamesFromAliases(const FUNCTION_SET &functions, const vector<unique_ptr<Expression>> &children,
-	                                    idx_t &positional_count, vector<Identifier> &named_arguments) {
+	                                    const LogicalType &return_type, idx_t &positional_count,
+	                                    vector<Identifier> &named_arguments) {
 		bool takes_named = false;
 		idx_t standard_count = 0;
 		for (auto &function : functions.functions) {
@@ -323,6 +324,15 @@ public:
 			standard_count = MaxValue(standard_count, signature.GetPositionalParameterCount());
 		}
 		if (!takes_named || children.size() != positional_count) {
+			return;
+		}
+		// the fields of a v1.x struct_pack are its argument names, also where a rewrite dropped an argument's alias
+		if (standard_count == 0 && return_type.id() == LogicalTypeId::STRUCT &&
+		    StructType::GetChildCount(return_type) == children.size()) {
+			for (idx_t i = 0; i < children.size(); i++) {
+				named_arguments.push_back(StructType::GetChildName(return_type, i));
+			}
+			positional_count = 0;
 			return;
 		}
 		idx_t named_offset = children.size();
@@ -392,7 +402,7 @@ public:
 			const bool argument_names_serialized = positional_count != 0;
 			positional_count = arguments.size();
 			if (!argument_names_serialized) {
-				RestoreNamesFromAliases(functions, children, positional_count, named_arguments);
+				RestoreNamesFromAliases(functions, children, return_type, positional_count, named_arguments);
 			}
 		}
 
