@@ -471,14 +471,39 @@ static bool PassesLowerGroupHeuristic(const LogicalAggregate &aggr, const Partia
 	       info.lower_groups.size() <= info.join_key_count + PartialAggregatePushdownHeuristics::MAX_EXTRA_LOWER_GROUPS;
 }
 
+//! A swapped-in implementation (e.g. sum_no_overflow on a DECIMAL) finalizes to another type, so rebind it first
+static unique_ptr<BoundAggregateExpression> ExportPushdownAggregate(ClientContext &context,
+                                                                    const BoundAggregateExpression &aggregate) {
+	auto copy = unique_ptr_cast<Expression, BoundAggregateExpression>(aggregate.Copy());
+	if (copy->Function().GetReturnType() != copy->GetReturnType()) {
+		if (copy->GetOrderBys()) {
+			return nullptr;
+		}
+		vector<unique_ptr<Expression>> children;
+		for (auto &child : copy->GetChildren()) {
+			children.push_back(child->Copy());
+		}
+		auto filter = copy->GetFilter() ? copy->GetFilter()->Copy() : nullptr;
+		FunctionBinder function_binder(context);
+		copy = function_binder.BindAggregateFunction(copy->Function().GetDefinition(), std::move(children),
+		                                             std::move(filter), copy->GetAggregateType());
+		if (copy->GetReturnType() != aggregate.GetReturnType()) {
+			return nullptr;
+		}
+	}
+	return ExportAggregateFunction::Bind(std::move(copy));
+}
+
 static bool BindPushdownAggregates(ClientContext &context, LogicalAggregate &aggr, TableIndex lower_aggregate_index,
                                    vector<unique_ptr<Expression>> &lower_aggregates,
                                    vector<unique_ptr<Expression>> &upper_aggregates) {
 	FunctionBinder function_binder(context);
 
 	for (idx_t i = 0; i < aggr.expressions.size(); i++) {
-		auto aggregate_copy = unique_ptr_cast<Expression, BoundAggregateExpression>(aggr.expressions[i]->Copy());
-		auto lower_aggregate = ExportAggregateFunction::Bind(std::move(aggregate_copy));
+		auto lower_aggregate = ExportPushdownAggregate(context, aggr.expressions[i]->Cast<BoundAggregateExpression>());
+		if (!lower_aggregate) {
+			return false;
+		}
 		auto lower_type = lower_aggregate->GetReturnType();
 		if (!lower_type.IsAggregateState()) {
 			return false;
@@ -783,10 +808,9 @@ static bool DEBuildLowerSides(Optimizer &optimizer, const LogicalAggregate &aggr
 
 	// Per-side exported states for each measured aggregate.
 	for (auto &de : aggregates) {
-		auto aggregate_copy =
-		    unique_ptr_cast<Expression, BoundAggregateExpression>(aggr.expressions[de.aggregate_pos]->Copy());
-		auto partial = ExportAggregateFunction::Bind(std::move(aggregate_copy));
-		if (!partial->GetReturnType().IsAggregateState()) {
+		auto partial = ExportPushdownAggregate(optimizer.context,
+		                                       aggr.expressions[de.aggregate_pos]->Cast<BoundAggregateExpression>());
+		if (!partial || !partial->GetReturnType().IsAggregateState()) {
 			return false;
 		}
 		de.partial_pos = sides[de.side].aggregates.size();
