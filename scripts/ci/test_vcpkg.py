@@ -120,6 +120,29 @@ class VcpkgTest(unittest.TestCase):
 
             self.assertNotIn('overrides', json.loads((output_dir / 'vcpkg.json').read_text()))
 
+    def test_out_of_tree_merger_unions_dependency_features(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            external_dir = root / 'external'
+            manifests = {
+                'aws': [{'name': 'aws-sdk-cpp', 'features': ['sso', 'sts']}],
+                'glue': [{'name': 'aws-sdk-cpp', 'features': ['glue', 'sts']}],
+                'curl_min': [{'name': 'curl', 'default-features': False, 'features': ['ssl']}],
+                'curl_default': [{'name': 'curl'}],
+            }
+            for name, dependencies in manifests.items():
+                (external_dir / name).mkdir(parents=True)
+                (external_dir / name / 'vcpkg.json').write_text(json.dumps({'dependencies': dependencies}))
+            output_dir = root / 'build'
+
+            with patch.dict(os.environ, {'VCPKG_TOOLCHAIN_PATH': '/unused/vcpkg.cmake'}, clear=True):
+                sync.merge_vcpkg_manifests(list(manifests), external_dir, root, output_dir)
+
+            dependencies = json.loads((output_dir / 'vcpkg.json').read_text())['dependencies']
+            self.assertIn({'name': 'aws-sdk-cpp', 'features': ['sso', 'sts', 'glue']}, dependencies)
+            self.assertIn({'name': 'curl', 'features': ['ssl']}, dependencies)
+            self.assertEqual(len([dep for dep in dependencies if isinstance(dep, dict)]), 2)
+
 
 if __name__ == '__main__':
     unittest.main()
