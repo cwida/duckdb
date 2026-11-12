@@ -75,8 +75,11 @@ public:
 		return width > MAX_WIDTH_INT128;
 	}
 	//! The widest DECIMAL the session binds: the max_decimal_width setting (at least MAX_WIDTH_INT128, so the
-	//! fixed-size tiers are never bounded by it), or the uint32_t range of the width without a context
+	//! fixed-size tiers are never bounded by it), or the uint32_t range of the width without a context; the width of
+	//! the FixedDecimalWidthScope of the current thread, if one is active
 	static uint32_t MaxWidth(optional_ptr<ClientContext> context);
+	//! How to bind a DECIMAL wider than MaxWidth, the hint of the errors a wider type raises
+	static string MaxWidthHint();
 	//! The widest result of combining decimals, given the widest DECIMAL among the inputs: MaxWidth, or the input
 	//! width when that is wider
 	static uint32_t MaxResultWidth(optional_ptr<ClientContext> context, uint32_t max_input_width);
@@ -91,5 +94,27 @@ public:
 	//! Formats the unscaled value of a wide decimal (a BIGNUM blob), a long conversion checks for interrupts
 	static string ToString(bignum_t value, uint32_t width, uint32_t scale,
 	                       optional_ptr<ClientContext> context = nullptr);
+};
+
+//! Binds DECIMAL types within a fixed width on the current thread while it lives, in place of the max_decimal_width
+//! setting: index keys are bound this way, so that every session binds a stored key to the same types
+class FixedDecimalWidthScope {
+public:
+	FixedDecimalWidthScope(uint32_t width, string reason);
+	~FixedDecimalWidthScope();
+	FixedDecimalWidthScope(const FixedDecimalWidthScope &) = delete;
+	FixedDecimalWidthScope &operator=(const FixedDecimalWidthScope &) = delete;
+
+	//! The scope active on the current thread, if any
+	static optional_ptr<const FixedDecimalWidthScope> Current();
+
+public:
+	const uint32_t width;
+	//! Why the width is fixed, the hint of the errors a wider type raises
+	const string reason;
+
+private:
+	//! The scope this one replaced on the current thread
+	optional_ptr<const FixedDecimalWidthScope> previous;
 };
 } // namespace duckdb

@@ -47,6 +47,27 @@ bool KeysPredateWideDecimals(StorageVersion key_version) {
 	return StorageManager::IsPriorToVersion(Decimal::WIDE_VERSION_ADDED, key_version);
 }
 
+//! The width the keys of the storage version are bound within, in place of the max_decimal_width setting, so that
+//! every session binds a key to the same types: 38 digits before wide decimals, as the engines of those versions bind
+//! them, and the uint32_t range of the width from then on, so that the key types follow from the column types alone
+uint32_t KeyDecimalWidth(StorageVersion key_version) {
+	if (KeysPredateWideDecimals(key_version)) {
+		return Decimal::MAX_WIDTH_INT128;
+	}
+	return NumericLimits<uint32_t>::Maximum();
+}
+
+//! The hint of the errors a wider type raises while binding keys of the storage version, if it bounds them
+string KeyDecimalWidthReason(StorageVersion key_version) {
+	if (!KeysPredateWideDecimals(key_version)) {
+		return string();
+	}
+	return StringUtil::Format("index keys of storage version %s are bound within %d digits, as the engines of that "
+	                          "version bind them; upgrade the database to storage version %s or later for wider keys",
+	                          GetStorageVersionName(key_version, false), Decimal::MAX_WIDTH_INT128,
+	                          GetStorageVersionName(Decimal::WIDE_VERSION_ADDED, false));
+}
+
 //! The first expression of a wide decimal type within the key, if any: the engines before wide decimals bind every
 //! subexpression within 38 digits, so a wide intermediate changes the computed key as much as a wide result
 optional_ptr<const Expression> FindWideDecimalExpression(const Expression &expr) {
@@ -72,41 +93,39 @@ optional_ptr<const Expression> FindWideDecimalExpression(const vector<unique_ptr
 	return nullptr;
 }
 
-//! A stored index whose key binds a wide type here was written with keys computed in other types: binding it would
-//! leave the stored keys unmatched (a UNIQUE index would accept duplicates), so it is not bound until created again
-optional_ptr<const Expression> FindMismatchedStoredKey(const UnboundIndex &unbound_index,
-                                                       const vector<unique_ptr<Expression>> &keys) {
-	const auto key_version = IndexKeyStorageVersion(unbound_index.db, unbound_index.GetStorageInfo());
-	if (!KeysPredateWideDecimals(key_version)) {
-		return nullptr;
+//! Why the engines before wide decimals compute other keys for the expressions than this engine, empty when they
+//! agree: those engines bind every decimal within 38 digits
+string DescribeLegacyKeyDifference(const vector<unique_ptr<Expression>> &keys) {
+	auto wide = FindWideDecimalExpression(keys);
+	if (wide) {
+		return StringUtil::Format("%s binds to %s, those engines bind decimal keys within %d digits", wide->ToString(),
+		                          wide->GetReturnType().ToString(), Decimal::MAX_WIDTH_INT128);
 	}
-	return FindWideDecimalExpression(keys);
+	return string();
 }
 
-void ThrowMismatchedStoredKey(const UnboundIndex &unbound_index, const Expression &wide) {
-	const auto key_version = IndexKeyStorageVersion(unbound_index.db, unbound_index.GetStorageInfo());
+//! A stored index whose keys the engines of its storage version computed otherwise would leave the stored keys
+//! unmatched (a UNIQUE index would accept duplicates), so it is not bound until it is created again
+void ThrowMismatchedStoredKey(const UnboundIndex &unbound_index, StorageVersion key_version, const string &difference) {
 	auto &name = unbound_index.GetIndexName();
-	throw BinderException(
-	    "Cannot bind index %s on table %s: its key expression %s binds to %s, but the index was stored at "
-	    "storage version %s, whose engines bind decimal keys within %d digits, so the stored keys have "
-	    "another type. DROP INDEX %s and CREATE it again, with every part of the key within %d digits or after "
-	    "upgrading the database to storage version %s or later",
-	    name, unbound_index.GetTableName(), wide.ToString(), wide.GetReturnType().ToString(),
-	    GetStorageVersionName(key_version, false), Decimal::MAX_WIDTH_INT128, name, Decimal::MAX_WIDTH_INT128,
-	    GetStorageVersionName(Decimal::WIDE_VERSION_ADDED, false));
+	throw BinderException("Cannot bind index %s on table %s: the index was stored at storage version %s, whose engines "
+	                      "compute other keys for its expression (%s), so the stored keys differ from the keys this "
+	                      "engine computes. DROP INDEX %s and CREATE it again",
+	                      name, unbound_index.GetTableName(), GetStorageVersionName(key_version, false), difference,
+	                      name);
 }
 
-//! The keys of a new index are stored at the storage version of its database: a key with a wide decimal expression is
-//! refused where that version cannot hold it, like a wide column, so that the engines of that version compute the same
-//! keys from the types they bind
-void CheckNewKeyTypes(AttachedDatabase &db, const vector<unique_ptr<Expression>> &keys) {
-	if (!db.HasStorageManager() || !KeysPredateWideDecimals(IndexKeyStorageVersion(db, nullptr))) {
+//! The keys of a new index are stored at the storage version of its database: a key the engines of that version
+//! compute otherwise is refused, like a column type they cannot read, so that they compute the stored keys
+void CheckNewKeys(AttachedDatabase &db, StorageVersion key_version, const vector<unique_ptr<Expression>> &keys) {
+	if (!KeysPredateWideDecimals(key_version)) {
 		return;
 	}
+	auto &storage = db.GetStorageManager();
 	auto wide = FindWideDecimalExpression(keys);
 	if (wide) {
 		throw InvalidInputException(
-		    db.GetStorageManager().GetUnsupportedDecimalWidthReason(wide->GetReturnType(), "index key expressions"));
+		    storage.GetUnsupportedDecimalWidthReason(wide->GetReturnType(), "index key expressions"));
 	}
 }
 
@@ -169,28 +188,34 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index,
 	auto &storage_info = unbound_index.GetStorageInfo();
 	auto &parsed_expressions = unbound_index.GetParsedExpressions();
 
-	// bind the parsed expressions to create unbound expressions
+	// bind the parsed expressions to create unbound expressions, within the decimal width of their storage version
+	const auto key_version = IndexKeyStorageVersion(unbound_index.db, storage_info);
 	auto &properties = binder.GetStatementProperties();
 	const auto statement_requires_rebind = properties.always_require_rebind;
 	vector<unique_ptr<Expression>> unbound_expressions;
 	unbound_expressions.reserve(parsed_expressions.size());
-	for (auto &expr : parsed_expressions) {
-		auto copy = expr->Copy();
-		properties.always_require_rebind = false;
-		unbound_expressions.push_back(Bind(copy));
-		// Stored keys must satisfy the same requirements as newly created keys.
-		ErrorData error;
-		if (!IsValidIndexExpression(binder, *unbound_expressions.back(), error)) {
-			throw DataCorruptionException("Invalid index %s: %s", create_info.GetIndexName(), error.RawMessage());
+	{
+		FixedDecimalWidthScope key_width(KeyDecimalWidth(key_version), KeyDecimalWidthReason(key_version));
+		for (auto &expr : parsed_expressions) {
+			auto copy = expr->Copy();
+			properties.always_require_rebind = false;
+			unbound_expressions.push_back(Bind(copy));
+			// Stored keys must satisfy the same requirements as newly created keys.
+			ErrorData error;
+			if (!IsValidIndexExpression(binder, *unbound_expressions.back(), error)) {
+				throw DataCorruptionException("Invalid index %s: %s", create_info.GetIndexName(), error.RawMessage());
+			}
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;
-	auto mismatched_key = FindMismatchedStoredKey(unbound_index, unbound_expressions);
-	if (mismatched_key) {
-		if (skip_mismatched_keys) {
-			return nullptr;
+	if (KeysPredateWideDecimals(key_version)) {
+		auto difference = DescribeLegacyKeyDifference(unbound_expressions);
+		if (!difference.empty()) {
+			if (skip_mismatched_keys) {
+				return nullptr;
+			}
+			ThrowMismatchedStoredKey(unbound_index, key_version, difference);
 		}
-		ThrowMismatchedStoredKey(unbound_index, *mismatched_key);
 	}
 
 	CreateIndexInput input(context, unbound_index.table_io_manager, unbound_index.db, create_info.constraint_type,
@@ -247,20 +272,26 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 
 	// Bind the index expressions.
 	// The expressions are bound again when the index is loaded, so they cannot depend on the session or the query
-	// they are bound in (e.g. now(), getvariable()) - such functions are folded to constants while binding.
+	// they are bound in (e.g. now(), getvariable()) - such functions are folded to constants while binding, and
+	// decimals are bound within the width of the storage version instead of the max_decimal_width setting.
+	auto &db = table_entry.ParentCatalog().GetAttached();
+	const auto key_version = db.HasStorageManager() ? IndexKeyStorageVersion(db, nullptr) : StorageVersion::LATEST;
 	auto &properties = binder.GetStatementProperties();
 	const auto statement_requires_rebind = properties.always_require_rebind;
 	vector<unique_ptr<Expression>> expressions;
-	for (auto &expr : create_index_info->expressions) {
-		properties.always_require_rebind = false;
-		expressions.push_back(Bind(expr));
-		ErrorData error;
-		if (!IsValidIndexExpression(binder, *expressions.back(), error)) {
-			error.Throw();
+	{
+		FixedDecimalWidthScope key_width(KeyDecimalWidth(key_version), KeyDecimalWidthReason(key_version));
+		for (auto &expr : create_index_info->expressions) {
+			properties.always_require_rebind = false;
+			expressions.push_back(Bind(expr));
+			ErrorData error;
+			if (!IsValidIndexExpression(binder, *expressions.back(), error)) {
+				error.Throw();
+			}
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;
-	CheckNewKeyTypes(table_entry.ParentCatalog().GetAttached(), expressions);
+	CheckNewKeys(db, key_version, expressions);
 
 	auto &get = plan->Cast<LogicalGet>();
 	InitCreateIndexInfo(get, *create_index_info);

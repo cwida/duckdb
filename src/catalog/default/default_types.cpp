@@ -60,9 +60,8 @@ LogicalType BindDecimalType(BindLogicalTypeInput &input) {
 	const auto max_width = Decimal::MaxWidth(input.context);
 	if (width > max_width) {
 		throw BinderException(input.GetLocation(0),
-		                      "DECIMAL type width %u exceeds the maximum DECIMAL width of %u (SET max_decimal_width to "
-		                      "allow wider decimals)",
-		                      width, max_width);
+		                      "DECIMAL type width %u exceeds the maximum DECIMAL width of %u (%s)", width, max_width,
+		                      Decimal::MaxWidthHint());
 	}
 	return LogicalType::DECIMAL(width, scale);
 }

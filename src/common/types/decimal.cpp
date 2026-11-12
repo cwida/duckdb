@@ -12,13 +12,46 @@ namespace duckdb {
 constexpr uint32_t Decimal::MAX_WIDTH_DECIMAL;
 constexpr uint32_t Decimal::DEFAULT_MAX_WIDTH;
 
+//! The scope of the current thread: a trivially destructible thread_local, a thread registers no destructor for it
+static optional_ptr<const FixedDecimalWidthScope> &CurrentFixedDecimalWidth() {
+	static thread_local optional_ptr<const FixedDecimalWidthScope> current;
+	return current;
+}
+
+FixedDecimalWidthScope::FixedDecimalWidthScope(uint32_t width_p, string reason_p)
+    : width(width_p), reason(std::move(reason_p)), previous(CurrentFixedDecimalWidth()) {
+	D_ASSERT(width >= Decimal::MAX_WIDTH_INT128);
+	CurrentFixedDecimalWidth() = this;
+}
+
+FixedDecimalWidthScope::~FixedDecimalWidthScope() {
+	D_ASSERT(CurrentFixedDecimalWidth().get() == this);
+	CurrentFixedDecimalWidth() = previous;
+}
+
+optional_ptr<const FixedDecimalWidthScope> FixedDecimalWidthScope::Current() {
+	return CurrentFixedDecimalWidth();
+}
+
 uint32_t Decimal::MaxWidth(optional_ptr<ClientContext> context) {
+	auto fixed = FixedDecimalWidthScope::Current();
+	if (fixed) {
+		return fixed->width;
+	}
 	if (!context) {
 		return NumericLimits<uint32_t>::Maximum();
 	}
 	const idx_t max_width = Settings::Get<MaxDecimalWidthSetting>(*context);
 	return NumericCast<uint32_t>(
 	    MinValue<idx_t>(MaxValue<idx_t>(max_width, MAX_WIDTH_INT128), NumericLimits<uint32_t>::Maximum()));
+}
+
+string Decimal::MaxWidthHint() {
+	auto fixed = FixedDecimalWidthScope::Current();
+	if (fixed) {
+		return fixed->reason;
+	}
+	return "SET max_decimal_width to allow wider decimals";
 }
 
 uint32_t Decimal::MaxResultWidth(optional_ptr<ClientContext> context, uint32_t max_input_width) {
@@ -32,9 +65,8 @@ uint32_t Decimal::CheckedWidth(optional_ptr<ClientContext> context, idx_t width,
 		                          width, NumericLimits<uint32_t>::Maximum());
 	}
 	if (width > MaxResultWidth(context, max_input_width)) {
-		throw OutOfRangeException("%s needs a DECIMAL of %llu digits, the maximum DECIMAL width is %u (SET "
-		                          "max_decimal_width to allow wider decimals)",
-		                          operation, width, MaxWidth(context));
+		throw OutOfRangeException("%s needs a DECIMAL of %llu digits, the maximum DECIMAL width is %u (%s)", operation,
+		                          width, MaxWidth(context), MaxWidthHint());
 	}
 	return NumericCast<uint32_t>(width);
 }

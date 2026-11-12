@@ -14,10 +14,8 @@ BindResult ExpressionBinder::BindExpression(ConstantExpression &expr, idx_t dept
 		const auto max_width = Decimal::MaxWidth(context);
 		if (width > max_width) {
 			return BindResult(
-			    BinderException(expr,
-			                    "Decimal literal of %u digits exceeds the maximum DECIMAL width of %u (SET "
-			                    "max_decimal_width to allow wider decimals)",
-			                    width, max_width));
+			    BinderException(expr, "Decimal literal of %u digits exceeds the maximum DECIMAL width of %u (%s)",
+			                    width, max_width, Decimal::MaxWidthHint()));
 		}
 	}
 	return BindResult(make_uniq<BoundConstantExpression>(std::move(value)));

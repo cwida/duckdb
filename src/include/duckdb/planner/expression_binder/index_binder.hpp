@@ -26,8 +26,8 @@ public:
 	IndexBinder(Binder &binder, ClientContext &context, optional_ptr<TableCatalogEntry> table = nullptr,
 	            optional_ptr<CreateIndexInfo> info = nullptr);
 
-	//! Binds a stored index. An index whose stored keys this engine binds to other types is refused, or left unbound
-	//! (nullptr) when skip_mismatched_keys is set, for a read that can do without it
+	//! Binds a stored index. An index whose stored keys the engines of its storage version compute otherwise is
+	//! refused, or left unbound (nullptr) when skip_mismatched_keys is set, for a read that can do without it
 	unique_ptr<BoundIndex> BindIndex(const UnboundIndex &index, bool skip_mismatched_keys = false);
 	unique_ptr<LogicalOperator> BindCreateIndex(ClientContext &context, unique_ptr<CreateIndexInfo> create_index_info,
 	                                            TableCatalogEntry &table_entry, unique_ptr<LogicalOperator> plan,
