@@ -300,6 +300,7 @@ shared_ptr<PreparedStatementData> Planner::PrepareSQLStatement(unique_ptr<SQLSta
 }
 
 void Planner::CreateExecutePlan(ExecuteStatement &statement) {
+	RunPreBindExtensions(context, *binder, statement);
 	auto execution = binder->ResolveExecute(statement);
 	if (!execution.rebind && execution.prepared->physical_plan) {
 		auto &prepared = *execution.prepared;
@@ -313,6 +314,7 @@ void Planner::CreateExecutePlan(ExecuteStatement &statement) {
 	}
 	// plan the prepared statement again
 	auto bound_statement = binder->BindExecute(execution);
+	RunPostBindExtensions(context, *binder, bound_statement);
 	names = std::move(bound_statement.names);
 	types = std::move(bound_statement.types);
 	plan = std::move(bound_statement.plan);
