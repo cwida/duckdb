@@ -134,17 +134,17 @@ TEST_CASE("Test that forbidding repositories distrusts their keys", "[api]") {
 	REQUIRE_FAIL(con.Query(StringUtil::Format(
 	    "CREATE EXTENSION REPOSITORY other WITH PREFIX 'http://other.com' USING PUBLIC KEY '%s'", OTHER_PUBLIC_KEY)));
 
-	// once forbidden, it cannot be re-enabled or reset to 'undecided' while the database is running
+	// once forbidden, it cannot be re-enabled or reset to 'hosts' while the database is running
 	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='allowed'"));
-	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='undecided'"));
+	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='hosts'"));
 }
 
 TEST_CASE("Test that adding trusted extension repositories must be opted into", "[api]") {
-	auto repository_directory = TestCreatePath("extension_repositories_undecided");
-	auto local_prefix = TestCreatePath("extension_repositories_undecided_prefix");
+	auto repository_directory = TestCreatePath("extension_repositories_hosts");
+	auto local_prefix = TestCreatePath("extension_repositories_hosts_prefix");
 
-	// the default is 'undecided': adding a repository fails until the setting is explicitly moved to 'allowed', which
-	// can be done at startup or at runtime. Once decided, the setting cannot be reverted to 'undecided'
+	// the default is 'hosts': adding a repository by prefix fails until the setting is explicitly moved to 'allowed',
+	// which can be done at startup or at runtime. Once moved, the setting cannot be reverted to 'hosts'
 	{
 		DBConfig config;
 		config.SetOptionByName("extension_repository_directory", repository_directory);
@@ -164,10 +164,10 @@ TEST_CASE("Test that adding trusted extension repositories must be opted into", 
 		                                 local_prefix, TEST_PUBLIC_KEY)));
 
 		// the decision cannot be reverted
-		REQUIRE_FAIL(con.Query("SET allow_extension_repositories='undecided'"));
+		REQUIRE_FAIL(con.Query("SET allow_extension_repositories='hosts'"));
 	}
 
-	// the 'undecided' default keeps trusting repositories that were added earlier, but blocks adding new ones
+	// the 'hosts' default keeps trusting repositories that were added earlier, but blocks adding new ones
 	{
 		DBConfig config;
 		config.SetOptionByName("extension_repository_directory", repository_directory);
@@ -214,7 +214,7 @@ TEST_CASE("Test that a stored repository file is only believed about a host it i
 	auto fs = FileSystem::CreateLocal();
 	fs->CreateDirectory(repository_directory);
 	fs->CreateDirectory(prefix);
-	// a file that claims a host it is not named after was not written by DuckDB: under 'known_hosts' a stored host is
+	// a file that claims a host it is not named after was not written by DuckDB: under 'hosts_only' a stored host is
 	// what gets a repository trusted, so the claim is refused rather than believed
 	WriteTextFile(fs->JoinPath(repository_directory, "mismatch.example.duckdb_extension.repo.json"),
 	              StringUtil::Format("{\"version\": 1, \"name\": \"mismatch.example\", \"url\": \"%s\", \"host\": "
@@ -260,7 +260,7 @@ TEST_CASE("Test that a repository resolved from its host does not need the opt-i
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 
-	// 'undecided' (the default): a repository by prefix is refused, the one resolved from its host is trusted
+	// 'hosts' (the default): a repository by prefix is refused, the one resolved from its host is trusted
 	REQUIRE_FAIL(con.Query(StringUtil::Format("CREATE EXTENSION REPOSITORY by_prefix WITH PREFIX '%s'", prefix)));
 	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", TEST_PUBLIC_KEY));
 	REQUIRE(UserRepositoryCount(con) == 1);
@@ -287,16 +287,16 @@ TEST_CASE("Test that a repository resolved from its host does not need the opt-i
 	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", TEST_PUBLIC_KEY));
 	REQUIRE(!KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", OTHER_PUBLIC_KEY));
 
-	// 'known_hosts' keeps trusting the repository resolved from its host, 'forbidden' forbids the form as well
-	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='known_hosts'"));
+	// 'hosts_only' keeps trusting the repository resolved from its host, 'forbidden' forbids the form as well
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='hosts_only'"));
 	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", TEST_PUBLIC_KEY));
 	REQUIRE_NO_FAIL(con.Query("DROP EXTENSION REPOSITORY listed.example"));
 	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='forbidden'"));
 	REQUIRE_FAIL(con.Query("CREATE EXTENSION REPOSITORY listed.example"));
 }
 
-TEST_CASE("Test that 'known_hosts' distrusts the repositories added by prefix", "[api]") {
-	auto repository_directory = TestCreatePath("extension_repositories_known_hosts");
+TEST_CASE("Test that 'hosts_only' distrusts the repositories added by prefix", "[api]") {
+	auto repository_directory = TestCreatePath("extension_repositories_hosts_only");
 
 	DBConfig config;
 	config.SetOptionByName("extension_repository_directory", repository_directory);
@@ -308,16 +308,16 @@ TEST_CASE("Test that 'known_hosts' distrusts the repositories added by prefix", 
 	    "CREATE EXTENSION REPOSITORY acme WITH PREFIX 'http://acme.com' USING PUBLIC KEY '%s'", TEST_PUBLIC_KEY)));
 	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "acme", TEST_PUBLIC_KEY));
 
-	// a repository added by prefix is distrusted under 'known_hosts', like under 'forbidden'; it stays listed
-	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='known_hosts'"));
+	// a repository added by prefix is distrusted under 'hosts_only', like under 'forbidden'; it stays listed
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='hosts_only'"));
 	REQUIRE(!KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "acme", TEST_PUBLIC_KEY));
 	REQUIRE(UserRepositoryCount(con) == 1);
 
-	// the ratchet: 'known_hosts' cannot go back to 'allowed' or 'undecided', only on to 'forbidden'
+	// the ratchet: 'hosts_only' cannot go back to 'allowed' or 'hosts', only on to 'forbidden'
 	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='allowed'"));
-	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='undecided'"));
+	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='hosts'"));
 	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='forbidden'"));
-	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='known_hosts'"));
+	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='hosts_only'"));
 }
 
 TEST_CASE("Test that the extension repository directory is a startup-only trust anchor", "[api]") {

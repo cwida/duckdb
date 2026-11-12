@@ -49,7 +49,7 @@ public:
 	static string GetRepositoryDirectory(DatabaseInstance &db, FileSystem &fs);
 
 	//! Store a new trusted repository on disk, from what was requested: a name, a prefix and optionally keys - or a
-	//! name alone, which is then the host that names the prefix (the 'undecided' default of
+	//! name alone, which is then the host that names the prefix (the 'hosts' default of
 	//! allow_extension_repositories permits that form; keys cannot be given with it). Keys that were not given are
 	//! fetched from the prefix and pinned. The conflict is decided before anything is fetched. Returns the repository
 	//! as it was stored, `host` set when it was resolved from one
@@ -74,9 +74,9 @@ public:
 	//! Whether the user has opted in to adding external extension repositories
 	static ExtensionRepositoryAccess GetAccess(DatabaseInstance &db);
 	//! Whether any of the repositories that were already created may be trusted: their extensions can be installed and
-	//! loaded. Under 'known_hosts' only some are, see TrustsRepository
+	//! loaded. Under 'hosts_only' only some are, see TrustsRepository
 	static bool TrustsExistingRepositories(DatabaseInstance &db);
-	//! Whether this repository is trusted: under 'known_hosts' only a repository resolved from its host is
+	//! Whether this repository is trusted: under 'hosts_only' only a repository resolved from its host is
 	static bool TrustsRepository(DatabaseInstance &db, const ExtensionRepository &repository);
 	//! Parse the access value of the allow_extension_repositories setting (throws on an invalid value)
 	static ExtensionRepositoryAccess ParseAccess(const string &value);

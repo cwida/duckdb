@@ -234,8 +234,8 @@ vector<string> ExtensionRepositoryManager::ParsePublicKeys(const string &content
 
 ExtensionRepositoryAccess ExtensionRepositoryManager::ParseAccess(const string &value) {
 	auto lower = StringUtil::Lower(value);
-	if (lower == "undecided") {
-		return ExtensionRepositoryAccess::UNDECIDED;
+	if (lower == "hosts") {
+		return ExtensionRepositoryAccess::HOSTS;
 	}
 	if (lower == "allowed") {
 		return ExtensionRepositoryAccess::ALLOWED;
@@ -243,11 +243,11 @@ ExtensionRepositoryAccess ExtensionRepositoryManager::ParseAccess(const string &
 	if (lower == "forbidden") {
 		return ExtensionRepositoryAccess::FORBIDDEN;
 	}
-	if (lower == "known_hosts") {
-		return ExtensionRepositoryAccess::KNOWN_HOSTS;
+	if (lower == "hosts_only") {
+		return ExtensionRepositoryAccess::HOSTS_ONLY;
 	}
-	throw InvalidInputException("Invalid value '%s' for allow_extension_repositories: expected 'undecided', 'allowed', "
-	                            "'known_hosts' or 'forbidden'",
+	throw InvalidInputException("Invalid value '%s' for allow_extension_repositories: expected 'hosts', 'allowed', "
+	                            "'hosts_only' or 'forbidden'",
 	                            value);
 }
 
@@ -257,10 +257,10 @@ string ExtensionRepositoryManager::AccessToString(ExtensionRepositoryAccess acce
 		return "allowed";
 	case ExtensionRepositoryAccess::FORBIDDEN:
 		return "forbidden";
-	case ExtensionRepositoryAccess::KNOWN_HOSTS:
-		return "known_hosts";
+	case ExtensionRepositoryAccess::HOSTS_ONLY:
+		return "hosts_only";
 	default:
-		return "undecided";
+		return "hosts";
 	}
 }
 
@@ -271,9 +271,9 @@ ExtensionRepositoryAccess ExtensionRepositoryManager::GetAccess(DatabaseInstance
 bool ExtensionRepositoryManager::TrustsExistingRepositories(DatabaseInstance &db) {
 	// the access values that trust existing repositories are listed explicitly, any other value distrusts them
 	switch (GetAccess(db)) {
-	case ExtensionRepositoryAccess::UNDECIDED:
+	case ExtensionRepositoryAccess::HOSTS:
 	case ExtensionRepositoryAccess::ALLOWED:
-	case ExtensionRepositoryAccess::KNOWN_HOSTS:
+	case ExtensionRepositoryAccess::HOSTS_ONLY:
 		return true;
 	default:
 		return false;
@@ -284,7 +284,7 @@ bool ExtensionRepositoryManager::TrustsRepository(DatabaseInstance &db, const Ex
 	if (!TrustsExistingRepositories(db)) {
 		return false;
 	}
-	if (GetAccess(db) == ExtensionRepositoryAccess::KNOWN_HOSTS) {
+	if (GetAccess(db) == ExtensionRepositoryAccess::HOSTS_ONLY) {
 		// only a repository resolved from its host is trusted - one added by prefix is distrusted
 		return !repository.host.empty();
 	}
@@ -301,20 +301,19 @@ void ExtensionRepositoryManager::CheckCanCreate(DatabaseInstance &db, bool from_
 	CheckNotLocked(db);
 	// adding a repository adds a new trusted signing key, so the user must explicitly opt in first - except for a
 	// repository resolved from its host: the name says who is trusted, and the host's own file says what, so the
-	// 'undecided' default lets it through
+	// 'hosts' default lets it through
 	switch (GetAccess(db)) {
 	case ExtensionRepositoryAccess::ALLOWED:
 		return;
 	case ExtensionRepositoryAccess::FORBIDDEN:
 		throw PermissionException("Adding extension repositories has been forbidden through configuration");
-	case ExtensionRepositoryAccess::KNOWN_HOSTS:
+	case ExtensionRepositoryAccess::HOSTS_ONLY:
 		if (from_host) {
 			return;
 		}
-		throw PermissionException(
-		    "Adding extension repositories by prefix is not permitted while "
-		    "allow_extension_repositories='known_hosts': use `CREATE EXTENSION REPOSITORY <host>` "
-		    "without a prefix, so that the host names its repository");
+		throw PermissionException("Adding extension repositories by prefix is not permitted while "
+		                          "allow_extension_repositories='hosts_only': use `CREATE EXTENSION REPOSITORY <host>` "
+		                          "without a prefix, so that the host names its repository");
 	default:
 		if (from_host) {
 			return;

@@ -153,24 +153,24 @@ CREATE EXTENSION REPOSITORY '.hidden' WITH PREFIX '{TEST_DIR}/repo'
 ----
 <REGEX>:Invalid Input Error.*Invalid extension repository name.*
 
-# 'known_hosts': only repositories resolved from their host can be added, and only those are trusted. The runner starts
+# 'hosts_only': only repositories resolved from their host can be added, and only those are trusted. The runner starts
 # in 'allowed'; the setting can only be tightened.
 statement ok
 CREATE EXTENSION REPOSITORY byprefix WITH PREFIX '{TEST_DIR}/repo' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
 
 statement ok
-SET allow_extension_repositories='known_hosts'
+SET allow_extension_repositories='hosts_only'
 
 statement error
 CREATE EXTENSION REPOSITORY other WITH PREFIX '{TEST_DIR}/repo'
 ----
-<REGEX>:Permission Error.*by prefix is not permitted.*known_hosts.*
+<REGEX>:Permission Error.*by prefix is not permitted.*hosts_only.*
 
 # the repository added by prefix is distrusted: installing from it is refused before anything is fetched
 statement error
 INSTALL nonexistent_extension FROM byprefix
 ----
-<REGEX>:Permission Error.*'byprefix' is not permitted while allow_extension_repositories='known_hosts'.*
+<REGEX>:Permission Error.*'byprefix' is not permitted while allow_extension_repositories='hosts_only'.*
 
 # the ratchet only tightens
 statement error
