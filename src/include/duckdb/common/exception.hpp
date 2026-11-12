@@ -133,6 +133,8 @@ public:
 
 	DUCKDB_API static bool InvalidatesTransaction(ExceptionType exception_type);
 	DUCKDB_API static bool InvalidatesDatabase(ExceptionType exception_type);
+	//! Extra info key naming the attached database that has been invalidated for a fatal error, instead of the instance
+	static constexpr const char *INVALIDATED_DATABASE_KEY = "invalidated_database";
 
 	DUCKDB_API static string ConstructMessageRecursive(const string &msg, std::vector<ExceptionFormatValue> &values);
 
