@@ -136,6 +136,12 @@ public:
 	unique_ptr<TableDeleteState> delete_state;
 	unique_ptr<TableUpdateState> update_state;
 	const vector<unique_ptr<BoundConstraint>> &bound_constraints;
+	//! In-place updates (followed by their row ids) staged so they reach the storage sorted by row id
+	DataChunk staged_updates;
+	//! References the update chunk and its row ids, to append them to staged_updates
+	DataChunk staging_input;
+	//! A sorted window of staged_updates, passed to the storage
+	DataChunk sorted_updates;
 
 	TableDeleteState &GetDeleteState(DataTable &table, TableCatalogEntry &tableref, ClientContext &context) {
 		if (!delete_state) {
@@ -210,8 +216,7 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 			}
 			mock_chunk.CheckCardinality(update_chunk.size());
 		}
-		auto &update_state = l_state.GetUpdateState(table, tableref, context.client);
-		table.Update(update_state, context.client, tableref, row_ids, columns, update_chunk);
+		StageUpdates(context.client, l_state, update_chunk, row_ids);
 
 		if (return_chunk) {
 			lock_guard<mutex> glock(g_state.lock);
@@ -303,7 +308,79 @@ unique_ptr<LocalSinkState> PhysicalUpdate::GetLocalSinkState(ExecutionContext &c
 	                                   bound_constraints, capture_old_rows, index_update);
 }
 
+static bool RowIdsAreSorted(Vector &row_ids, idx_t count) {
+	auto ids = row_ids.Values<row_t>();
+	for (idx_t i = 1; i < count; i++) {
+		if (ids[i].GetValueUnsafe() < ids[i - 1].GetValueUnsafe()) {
+			return false;
+		}
+	}
+	return true;
+}
+
+void PhysicalUpdate::StageUpdates(ClientContext &context, LocalSinkState &lstate, DataChunk &updates,
+                                  Vector &row_ids) const {
+	auto &l_state = lstate.Cast<UpdateLocalState>();
+	auto &staged = l_state.staged_updates;
+	if (staged.size() == 0 && RowIdsAreSorted(row_ids, updates.size())) {
+		// already clustered (e.g. updates driven by a scan of the table) - staging would not help
+		auto &update_state = l_state.GetUpdateState(table, tableref, context);
+		table.Update(update_state, context, tableref, row_ids, columns, updates);
+		return;
+	}
+	if (staged.ColumnCount() == 0) {
+		auto types = updates.GetTypes();
+		types.push_back(LogicalType::ROW_TYPE);
+		staged.Initialize(context, types, STAGED_UPDATE_CAPACITY);
+		l_state.staging_input.InitializeEmpty(types);
+		l_state.sorted_updates.InitializeEmpty(updates.GetTypes());
+	}
+	if (staged.size() + updates.size() > STAGED_UPDATE_CAPACITY) {
+		FlushStagedUpdates(context, l_state);
+	}
+	auto &input = l_state.staging_input;
+	for (idx_t c = 0; c < updates.ColumnCount(); c++) {
+		input.data[c].Reference(updates.data[c]);
+	}
+	input.data.back().Reference(row_ids);
+	input.CheckCardinality(updates.size());
+	staged.Append(input);
+}
+
+void PhysicalUpdate::FlushStagedUpdates(ClientContext &context, LocalSinkState &lstate) const {
+	auto &l_state = lstate.Cast<UpdateLocalState>();
+	auto &staged = l_state.staged_updates;
+	const auto count = staged.size();
+	if (count == 0) {
+		return;
+	}
+	// sort by row id, so that every update chunk touches as few vectors of the table as possible
+	auto &staged_row_ids = staged.data.back();
+	auto ids = FlatVector::GetData<row_t>(staged_row_ids);
+	SelectionVector sel(count);
+	for (idx_t i = 0; i < count; i++) {
+		sel.set_index(i, i);
+	}
+	std::stable_sort(sel.data(), sel.data() + count, [&](sel_t a, sel_t b) { return ids[a] < ids[b]; });
+
+	auto &update_state = l_state.GetUpdateState(table, tableref, context);
+	auto &sorted = l_state.sorted_updates;
+	Vector sorted_row_ids(LogicalType::ROW_TYPE, nullptr);
+	for (idx_t offset = 0; offset < count; offset += STANDARD_VECTOR_SIZE) {
+		auto window_count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, count - offset);
+		SelectionVector window(sel.data() + offset, window_count);
+		for (idx_t c = 0; c < sorted.ColumnCount(); c++) {
+			sorted.data[c].Slice(staged.data[c], window, window_count);
+		}
+		sorted.CheckCardinality(window_count);
+		sorted_row_ids.Slice(staged_row_ids, window, window_count);
+		table.Update(update_state, context, tableref, sorted_row_ids, columns, sorted);
+	}
+	staged.Reset();
+}
+
 SinkCombineResultType PhysicalUpdate::Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const {
+	FlushStagedUpdates(context.client, input.local_state);
 	auto &client_profiler = QueryProfiler::Get(context.client);
 	context.thread.profiler.Flush(*this);
 	client_profiler.Flush(context.thread.profiler);

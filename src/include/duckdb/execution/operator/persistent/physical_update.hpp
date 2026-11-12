@@ -68,6 +68,13 @@ public:
 	bool ParallelSink() const override {
 		return true;
 	}
+
+private:
+	//! The number of in-place updates a thread stages before sorting them by row id and applying them
+	static constexpr idx_t STAGED_UPDATE_CAPACITY = STANDARD_VECTOR_SIZE * 64;
+
+	void StageUpdates(ClientContext &context, LocalSinkState &lstate, DataChunk &updates, Vector &row_ids) const;
+	void FlushStagedUpdates(ClientContext &context, LocalSinkState &lstate) const;
 };
 
 } // namespace duckdb

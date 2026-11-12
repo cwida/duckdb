@@ -1,0 +1,121 @@
+# name: test/sql/update/update_unordered_row_ids.test
+# description: Updates whose row ids arrive out of order, spanning many vectors and row groups per chunk
+# group: [update]
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE tgt AS SELECT i AS id, i AS v, i::VARCHAR AS s, {'a': i, 'b': i::VARCHAR} AS st FROM range(300000) t(i);
+
+statement ok
+CREATE TABLE src AS SELECT i AS id FROM range(300000) t(i) ORDER BY hash(i);
+
+statement ok
+UPDATE tgt SET v = tgt.v + 1, s = CASE WHEN src.id % 7 = 0 THEN NULL ELSE 'x' || src.id END,
+	st = {'a': src.id * 2, 'b': NULL} FROM src WHERE tgt.id = src.id AND src.id % 3 <> 0;
+
+query IIIIIII
+SELECT count(*), sum(v), count(s), count(*) FILTER (s = 'x' || id), sum(st.a), count(st.b),
+	count(*) FILTER (v <> id + (id % 3 <> 0)::INT)
+FROM tgt
+----
+300000	45000050000	271428	171428	74999850000	100000	0
+
+# the statistics still cover the updated values
+query I
+SELECT count(*) FROM tgt WHERE v = 299999 + 1
+----
+1
+
+# rollback restores the original values
+statement ok
+BEGIN
+
+statement ok
+UPDATE tgt SET v = -1, s = 'rolled back' FROM src WHERE tgt.id = src.id
+
+query I
+SELECT count(*) FROM tgt WHERE v = -1 AND s = 'rolled back'
+----
+300000
+
+statement ok
+ROLLBACK
+
+query II
+SELECT count(*) FILTER (v = -1), count(*) FILTER (s = 'rolled back') FROM tgt
+----
+0	0
+
+# a conflict in the middle of the update restores the rows it marked before
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE tgt SET v = -5 WHERE id = 150000
+
+statement ok con2
+BEGIN
+
+statement error con2
+UPDATE tgt SET v = -1 FROM src WHERE tgt.id = src.id
+----
+<REGEX>:.*Conflict.*
+
+statement ok con2
+ROLLBACK
+
+statement ok con1
+COMMIT
+
+query II
+SELECT count(*) FILTER (v = -5), count(*) FILTER (v = -1) FROM tgt
+----
+1	0
+
+statement ok
+UPDATE tgt SET v = -7 FROM src WHERE tgt.id = src.id AND src.id % 1000 = 0
+
+query I
+SELECT count(*) FROM tgt WHERE v = -7
+----
+300
+
+# transaction-local rows updated out of order
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO tgt SELECT i AS id, 0 AS v, NULL AS s, NULL AS st FROM range(300000, 600000) t(i);
+
+statement ok
+CREATE TABLE src2 AS SELECT i AS id FROM range(300000, 600000) t(i) ORDER BY hash(i);
+
+statement ok
+UPDATE tgt SET v = src2.id FROM src2 WHERE tgt.id = src2.id
+
+query II
+SELECT count(*), count(*) FILTER (v = id) FROM tgt WHERE id >= 300000
+----
+300000	300000
+
+statement ok
+COMMIT
+
+query II
+SELECT count(*), count(*) FILTER (v = id) FROM tgt WHERE id >= 300000
+----
+300000	300000
+
+# duplicate row ids within a chunk: every row receives one of its matches
+statement ok
+CREATE TABLE dup AS SELECT i % 100000 AS id, i AS w FROM range(200000) t(i) ORDER BY hash(i);
+
+statement ok
+UPDATE tgt SET v = dup.w FROM dup WHERE tgt.id = dup.id
+
+query I
+SELECT count(*) FROM tgt WHERE id < 100000 AND v <> id AND v <> id + 100000
+----
+0
