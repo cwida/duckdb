@@ -63,7 +63,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 				// we can erase any children after this node
 				if (i + 1 < expr.GetChildren().size()) {
 					expr.GetChildrenMutable().erase(expr.GetChildrenMutable().begin() + NumericCast<int64_t>(i + 1),
-					                                expr.GetChildrenMutable().end());
+					                                expr.GetChildren().end());
 					child_stats.erase(child_stats.begin() + NumericCast<int64_t>(i + 1), child_stats.end());
 					removed_expressions = true;
 				}

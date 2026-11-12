@@ -18,7 +18,7 @@ ConjunctionSimplificationRule::ConjunctionSimplificationRule(ExpressionRewriter 
 unique_ptr<Expression> ConjunctionSimplificationRule::RemoveExpression(BoundConjunctionExpression &conj,
                                                                        const Expression &expr) {
 	for (idx_t i = 0; i < conj.GetChildren().size(); i++) {
-		if (conj.GetChildrenMutable()[i].get() == &expr) {
+		if (conj.GetChildren()[i].get() == &expr) {
 			// erase the expression
 			conj.GetChildrenMutable().erase_at(i);
 			break;

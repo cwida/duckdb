@@ -72,7 +72,7 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 	hugeint_t outer_value = IntegralValue::Get(outer_constant.GetValue());
 	hugeint_t inner_value = IntegralValue::Get(inner_constant.GetValue());
 
-	idx_t arithmetic_child_index = arithmetic.GetChildrenMutable()[0].get() == &inner_constant ? 1 : 0;
+	idx_t arithmetic_child_index = arithmetic.GetChildren()[0].get() == &inner_constant ? 1 : 0;
 	auto &op_type = arithmetic.Function().GetName();
 	if (op_type == "+") {
 		// [x + 1 COMP 10] OR [1 + x COMP 10]

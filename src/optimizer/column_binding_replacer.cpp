@@ -268,8 +268,8 @@ void CorrelatedColumnBindingReplacer::VisitOperatorBindings(LogicalOperator &op)
 unique_ptr<Expression> CorrelatedColumnBindingReplacer::VisitReplace(BoundSubqueryExpression &expr,
                                                                      unique_ptr<Expression> *expr_ptr) {
 	ReplaceCorrelatedColumns(expr.GetBinder()->correlated_columns, *this);
-	if (expr.SubqueryMutable().plan) {
-		VisitOperator(*expr.SubqueryMutable().plan);
+	if (expr.Subquery().plan) {
+		VisitOperator(*expr.Subquery().plan);
 	}
 	return nullptr;
 }

@@ -106,7 +106,7 @@ void AggregateRewriteHelper::StageVolatileAggregateInputs(Optimizer &optimizer, 
 			StageVolatileExpression(child_expr, projection_index, projection->expressions);
 		}
 		if (aggregate.GetOrderBys()) {
-			for (auto &order : aggregate.GetOrderBysMutable()->orders) {
+			for (auto &order : aggregate.GetOrderBys()->orders) {
 				StageVolatileExpression(order.expression, projection_index, projection->expressions);
 			}
 		}

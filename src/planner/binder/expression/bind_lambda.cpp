@@ -182,7 +182,7 @@ void ExpressionBinder::TransformCapturedLambdaColumn(unique_ptr<Expression> &ori
 		offset += GetLambdaParamCount(*lambda_bindings);
 	}
 	offset += bound_lambda_expr.ParameterCount();
-	offset += bound_lambda_expr.CapturesMutable().size();
+	offset += bound_lambda_expr.Captures().size();
 
 	replacement = make_uniq<BoundReferenceExpression>(original->GetAlias(), original->GetReturnType(), offset);
 	bound_lambda_expr.CapturesMutable().push_back(std::move(original));

@@ -109,7 +109,7 @@ unique_ptr<Expression> DistributivityRule::Apply(LogicalOperator &op, vector<ref
 	// since (1) only tuples that do not qualify "X" will not pass this predicate
 	//   and (2) all tuples that qualify "X" will pass this predicate
 	for (idx_t i = 0; i < initial_or.GetChildren().size(); i++) {
-		if (!initial_or.GetChildrenMutable()[i]) {
+		if (!initial_or.GetChildren()[i]) {
 			if (new_root->GetChildren().size() <= 1) {
 				return std::move(new_root->GetChildrenMutable()[0]);
 			} else {

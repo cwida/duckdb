@@ -241,7 +241,7 @@ unique_ptr<Expression> &BoundComparisonExpression::RightMutable(BoundFunctionExp
 }
 
 void BoundComparisonExpression::SetType(BoundFunctionExpression &comparison_expr, ExpressionType new_type) {
-	auto arguments = comparison_expr.FunctionMutable().GetArguments();
+	auto arguments = comparison_expr.Function().GetArguments();
 
 	comparison_expr.SetExpressionTypeUnsafe(new_type);
 	comparison_expr.FunctionMutable() = BoundScalarFunction(GetComparisonFunction(new_type));

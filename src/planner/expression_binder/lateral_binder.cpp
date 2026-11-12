@@ -111,9 +111,9 @@ public:
 
 	static void ReduceExpressionSubquery(BoundSubqueryExpression &expr, const CorrelatedColumns &correlated_columns) {
 		ReduceColumnDepth(expr.GetBinder()->correlated_columns, correlated_columns);
-		if (expr.SubqueryMutable().plan) {
+		if (expr.Subquery().plan) {
 			ExpressionDepthReducerRecursive recursive(correlated_columns);
-			recursive.VisitOperator(*expr.SubqueryMutable().plan);
+			recursive.VisitOperator(*expr.Subquery().plan);
 		}
 	}
 
@@ -189,10 +189,10 @@ protected:
 
 	unique_ptr<Expression> VisitReplace(BoundSubqueryExpression &expr, unique_ptr<Expression> *expr_ptr) override {
 		AdjustCorrelatedColumns(expr.GetBinder()->correlated_columns, scope_depth + 1);
-		if (expr.SubqueryMutable().plan) {
-			CollectLocalBindings(*expr.SubqueryMutable().plan);
+		if (expr.Subquery().plan) {
+			CollectLocalBindings(*expr.Subquery().plan);
 			scope_depth++;
-			VisitOperator(*expr.SubqueryMutable().plan);
+			VisitOperator(*expr.Subquery().plan);
 			scope_depth--;
 		}
 		return nullptr;

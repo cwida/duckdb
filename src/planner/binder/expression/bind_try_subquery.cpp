@@ -447,12 +447,12 @@ BindResult ExpressionBinder::BindTrySubquery(OperatorExpression &op, idx_t depth
 		return result;
 	}
 	auto &bound_subquery = result.expression->Cast<BoundSubqueryExpression>();
-	if (bound_subquery.SubqueryMutable().plan) {
+	if (bound_subquery.Subquery().plan) {
 		auto &indexes = bound_subquery.GetBinder()->GetTrySubqueryPlanIndexes();
 		if (!indexes.recorded) {
 			throw InternalException("TRY subquery: no plan indexes were recorded for the top select node");
 		}
-		LowerTrySubquery(op, indexes, *bound_subquery.SubqueryMutable().plan, false, false);
+		LowerTrySubquery(op, indexes, *bound_subquery.Subquery().plan, false, false);
 	}
 	return result;
 }
