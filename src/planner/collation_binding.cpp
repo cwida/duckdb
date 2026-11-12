@@ -59,7 +59,7 @@ vector<string> CollationFunctions::GetCollations(ClientContext &context) {
 			return;
 		}
 		auto &function_entry = entry.Cast<ScalarFunctionCatalogEntry>();
-		if (!function_entry.functions.GetFunctionByArguments(context, {LogicalType::VARCHAR})) {
+		if (!FunctionBinder::SelectFunction(context, function_entry.functions, {LogicalType::VARCHAR}).IsSuccess()) {
 			return;
 		}
 		result.push_back(name.substr(prefix.size()));

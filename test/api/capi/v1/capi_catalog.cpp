@@ -161,7 +161,10 @@ static void LookupCollation(duckdb_function_info info, duckdb_data_chunk input, 
 		string name(duckdb_string_t_data(&name_str), duckdb_string_t_length(name_str));
 		auto entry =
 		    duckdb_catalog_get_entry(catalog, context, DUCKDB_CATALOG_ENTRY_TYPE_COLLATION, "main", name.c_str());
-		result_data[row_idx] = entry != nullptr;
+		// a collation is reported under its own name and type
+		result_data[row_idx] = entry != nullptr &&
+		                       duckdb_catalog_entry_get_type(entry) == DUCKDB_CATALOG_ENTRY_TYPE_COLLATION &&
+		                       name == duckdb_catalog_entry_get_name(entry);
 		duckdb_destroy_catalog_entry(&entry);
 	}
 	duckdb_destroy_catalog(&catalog);
@@ -191,4 +194,37 @@ TEST_CASE("Test collation lookup in the C API catalog interface", "[capi]") {
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(result->Fetch<bool>(0, 0) == true);
 	REQUIRE(result->Fetch<bool>(1, 0) == false);
+}
+
+static void IntegerIdentity(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output) {
+	auto count = duckdb_data_chunk_get_size(input);
+	auto input_data = (int32_t *)duckdb_vector_get_data(duckdb_data_chunk_get_vector(input, 0));
+	auto result_data = (int32_t *)duckdb_vector_get_data(output);
+	for (idx_t i = 0; i < count; i++) {
+		result_data[i] = input_data[i];
+	}
+}
+
+TEST_CASE("Test collate_ functions without a VARCHAR overload are not collations", "[capi]") {
+	CAPITester tester;
+	duckdb::unique_ptr<CAPIResult> result;
+	REQUIRE(tester.OpenDatabase(nullptr));
+
+	auto func = duckdb_create_scalar_function();
+	duckdb_scalar_function_set_name(func, "collate_int");
+	auto int_type = duckdb_create_logical_type(DUCKDB_TYPE_INTEGER);
+	duckdb_scalar_function_add_parameter(func, int_type);
+	duckdb_scalar_function_set_return_type(func, int_type);
+	duckdb_scalar_function_set_function(func, IntegerIdentity);
+	REQUIRE(duckdb_register_scalar_function(tester.connection, func) == DuckDBSuccess);
+	duckdb_destroy_scalar_function(&func);
+	duckdb_destroy_logical_type(&int_type);
+
+	result = tester.Query("SELECT count(*) FROM pragma_collations() WHERE collname = 'int'");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == 0);
+
+	result = tester.Query("SELECT 'a' COLLATE nocas = 'a'");
+	REQUIRE_FAIL(result);
+	REQUIRE_THAT(result->ErrorMessage(), Catch::Matchers::Contains("Did you mean \"nocase\""));
 }

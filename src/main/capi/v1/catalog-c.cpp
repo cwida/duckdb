@@ -18,6 +18,8 @@ struct CCatalogWrapper {
 
 struct CCatalogEntryWrapper {
 	CatalogEntry &entry;
+	//! Set when the entry is the function implementing a collation: the entry is reported as that collation
+	string collation_name;
 	CCatalogEntryWrapper(CatalogEntry &entry) : entry(entry) {
 	}
 };
@@ -140,7 +142,11 @@ duckdb_catalog_entry duckdb_catalog_get_entry(duckdb_catalog catalog, duckdb_cli
 		return nullptr;
 	}
 
-	return reinterpret_cast<duckdb_catalog_entry>(new duckdb::CCatalogEntryWrapper(*entry));
+	auto wrapper = new duckdb::CCatalogEntryWrapper(*entry);
+	if (entry_type == DUCKDB_CATALOG_ENTRY_TYPE_COLLATION) {
+		wrapper->collation_name = entry_name;
+	}
+	return reinterpret_cast<duckdb_catalog_entry>(wrapper);
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -153,6 +159,9 @@ duckdb_catalog_entry_type duckdb_catalog_entry_get_type(duckdb_catalog_entry ent
 	}
 
 	auto &entry_ref = *reinterpret_cast<duckdb::CCatalogEntryWrapper *>(entry);
+	if (!entry_ref.collation_name.empty()) {
+		return DUCKDB_CATALOG_ENTRY_TYPE_COLLATION;
+	}
 	return duckdb::CatalogTypeToC(entry_ref.entry.type);
 }
 
@@ -161,6 +170,9 @@ const char *duckdb_catalog_entry_get_name(duckdb_catalog_entry entry) {
 		return nullptr;
 	}
 	auto &entry_ref = *reinterpret_cast<duckdb::CCatalogEntryWrapper *>(entry);
+	if (!entry_ref.collation_name.empty()) {
+		return entry_ref.collation_name.c_str();
+	}
 	return entry_ref.entry.name.c_str();
 }
 
