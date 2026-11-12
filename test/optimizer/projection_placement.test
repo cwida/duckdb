@@ -443,3 +443,41 @@ statement error
 SELECT substring('x', 9223372036854775807, 1);
 ----
 <REGEX>:Out of Range Error:.*offset outside of supported range.*
+
+# Cheap expressions whose inputs other expressions still read are not moved below the joins: they would only add
+# columns for the joins to carry
+statement ok
+SET disabled_optimizers = '';
+
+statement ok
+CREATE TABLE placement_months AS SELECT i::INTEGER AS i, (i % 12)::INTEGER AS k FROM range(365) t(i);
+
+statement ok
+CREATE TABLE placement_others AS SELECT i::INTEGER AS j FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE placement_sales AS
+SELECT (i % 365)::INTEGER AS i, (i % 1000)::INTEGER AS j, (i % 7)::INTEGER AS g, (i % 1000)::DECIMAL(7,2) AS x
+FROM range(100000) t(i);
+
+query II
+EXPLAIN SELECT g,
+       sum(CASE WHEN k = 1 THEN x * 2 ELSE 0 END), sum(CASE WHEN k = 1 THEN x * 3 ELSE 0 END),
+       sum(CASE WHEN k = 2 THEN x * 2 ELSE 0 END), sum(CASE WHEN k = 2 THEN x * 3 ELSE 0 END)
+FROM placement_sales JOIN placement_months USING (i) JOIN placement_others USING (j)
+GROUP BY g;
+----
+logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*k = 1.*
+
+query III
+SELECT g, sum(CASE WHEN k = 1 THEN x * 2 ELSE 0 END), sum(CASE WHEN k = 2 THEN x * 3 ELSE 0 END)
+FROM placement_sales JOIN placement_months USING (i) JOIN placement_others USING (j)
+GROUP BY g ORDER BY g;
+----
+0	1210208.00	1816389.00
+1	1215908.00	1815951.00
+2	1213642.00	1824504.00
+3	1213340.00	1818102.00
+4	1209076.00	1820649.00
+5	1210774.00	1814253.00
+6	1212498.00	1816800.00

@@ -1,0 +1,105 @@
+# name: test/sql/cte/recursive_cte_independent_join_order.test
+# description: Recursion-independent inputs join onto the frontier spine instead of expanding products
+# group: [cte]
+
+# Shape of duckdb/duckdb#28511: the recursive step joins the working table to three
+# recursion-independent tables. Joining two of them first on the group id alone (powers x params)
+# builds a per-group product that grows with K^2, while the frontier-spine plan stays bounded
+# by the frontier.
+
+statement ok
+SET threads = 2;
+
+statement ok
+SET explain_output='physical_only';
+
+statement ok
+SET VARIABLE K = 30;
+
+statement ok
+CREATE TABLE params AS
+SELECT g AS grp, k AS kind, 0.1 AS a, 0.2 AS b
+FROM range(20) t1(g), range(getvariable('K')) t2(k);
+
+statement ok
+CREATE TABLE powers AS
+SELECT g AS grp, k AS kind, m AS m0, j, s AS sk, 0.9 AS uu, 0.05 AS lu, 0.03 AS du, 0.02 AS cu
+FROM range(20) t1(g), range(getvariable('K')) t2(k), range(11) t3(m), range(20) t4(j), range(-4, 6) t5(s);
+
+statement ok
+CREATE TABLE episodes AS
+SELECT g AS grp, a AS id, q AS seq, (a + q) % getvariable('K') AS kind, q % 11 AS m0, (a * 7 + q) % 20 AS months
+FROM range(20) t1(g), range(300) t2(a), range(10) t3(q);
+
+statement ok
+CREATE TABLE starts AS
+SELECT grp, id, seq, 1.0 AS pu, 0.0 AS pl, 0.0 AS pd, 0.0 AS pc, m0, (id % 10) - 4 AS sk
+FROM episodes WHERE seq = 0;
+
+statement ok
+CREATE VIEW chain_step AS
+WITH RECURSIVE chain AS (
+    SELECT s.grp, s.id, s.seq, s.pu, s.pl, s.pd, s.pc, s.m0, s.sk, e.kind, e.months
+    FROM starts s
+    JOIN episodes e ON e.grp = s.grp AND e.id = s.id AND e.seq = s.seq
+    UNION ALL
+    SELECT c.grp, c.id, n.seq,
+           (c.pu * w.uu + c.pl * w.lu + c.pd * w.du + c.pc * w.cu) * (1 - p.a),
+           0.0,
+           (c.pu * w.uu + c.pl * w.lu + c.pd * w.du + c.pc * w.cu) * p.a,
+           (1 - (c.pu * w.uu + c.pl * w.lu + c.pd * w.du + c.pc * w.cu)) * (1 - p.b),
+           n.m0, c.sk, n.kind, n.months
+    FROM chain c
+    JOIN episodes n ON n.grp = c.grp AND n.id = c.id AND n.seq = c.seq + 1
+    JOIN powers   w ON w.grp = c.grp AND w.kind = c.kind AND w.m0 = c.m0 AND w.j = c.months AND w.sk = c.sk
+    JOIN params   p ON p.grp = c.grp AND p.kind = n.kind
+)
+SELECT count(*) AS n, sum(pu) AS s FROM chain;
+
+# powers and params never meet as sibling scans under one join
+query II
+EXPLAIN SELECT * FROM chain_step;
+----
+physical_plan	<!REGEX>:(?s).*memory\.main\.powers[^\n]*memory\.main\.params.*
+
+query II
+SELECT * FROM chain_step;
+----
+60000	31200.0
+
+# A reducing join of two independent inputs stays allowed: the narrow lookup shrinks the wide
+# one to ten rows, so the independent join is built first and the frontier join consumes it.
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE lookup_wide AS SELECT i % 50 AS g, i AS u, i * 2 AS payload FROM range(1000000) t(i);
+
+statement ok
+CREATE TABLE lookup_narrow AS SELECT i * 100000 AS u, i AS cls FROM range(10) t(i);
+
+statement ok
+CREATE VIEW walk_step AS
+WITH RECURSIVE walk AS (
+    SELECT 0 AS g, 0 AS d
+    UNION ALL
+    SELECT w.g + 1, w.d + ln.cls
+    FROM walk w JOIN lookup_wide lw ON lw.g = w.g JOIN lookup_narrow ln ON ln.u = lw.u
+    WHERE w.g < 40
+)
+SELECT count(*), sum(d) FROM walk;
+
+query II
+SELECT * FROM walk_step;
+----
+11	45
+
+# The reducing-join choice depends on table statistics: WAL-replayed storage estimates differently
+# and picks the frontier-spine plan, which is equally valid. Pin the plan on in-memory runs only.
+require noforcestorage
+
+query II
+EXPLAIN SELECT * FROM walk_step;
+----
+physical_plan	<REGEX>:(?s).* = g.*Conditions: u = u.*

@@ -165,8 +165,11 @@ TEST_CASE("V2 custom option: registered options are read and written like any ot
 	REQUIRE(scope == DUCKDB_V2_SETTING_SCOPE_GLOBAL);
 	duckdb_v2_connection_destroy(&other);
 
-	// A reset at the default scope, SESSION, writes the default value into the session.
+	// A reset at the default scope, SESSION, clears the session value, so the global value applies again.
 	REQUIRE(RunSql(fx.conn, "RESET my_budget") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(ReadOption(fx.config, "my_budget") == 9);
+	// A global reset clears the global value, so the default applies again.
+	REQUIRE(RunSql(fx.conn, "RESET GLOBAL my_budget") == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(ReadOption(fx.config, "my_budget") == 5);
 
 	// The descriptor reports what was registered.

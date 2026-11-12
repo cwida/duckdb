@@ -19,13 +19,14 @@ public:
 
 public:
 	explicit BoundConstantExpression(Value value);
+	BoundConstantExpression(Value value, Identifier alias, QueryLocation location = QueryLocation());
 
 public:
 	const Value &GetValue() const {
 		return value;
 	}
-	void SetValue(Value value_p);
-	Value TakeValue();
+	//! Create a constant with a different value (and the type of that value)
+	unique_ptr<Expression> WithValue(Value new_value) const;
 	void SetReturnType(LogicalType type) override;
 	string ToString() const override;
 

@@ -806,8 +806,7 @@ static ResolvedArguments ResolveArguments(const SimpleFunction &function, const 
 		}
 		if (!param.IsVariadic() && received[param_idx].empty()) {
 			// the call matches the function, so every parameter it leaves out has a default
-			auto default_arg = make_uniq<BoundConstantExpression>(*param.GetDefaultValue());
-			default_arg->SetAlias(param.GetName());
+			auto default_arg = make_uniq<BoundConstantExpression>(*param.GetDefaultValue(), param.GetName());
 			result.arguments.push_back(std::move(default_arg));
 			result.types.push_back(param_type);
 		}
@@ -1045,19 +1044,23 @@ void FunctionBinder::CastToFunctionArguments(const Identifier &function_name, ve
 
 unique_ptr<Expression> FunctionBinder::BindScalarFunction(const Identifier &schema, const Identifier &name,
                                                           vector<unique_ptr<Expression>> children, ErrorData &error,
-                                                          bool is_operator, optional_ptr<Binder> binder) {
+                                                          bool is_operator, optional_ptr<Binder> binder,
+                                                          Identifier alias, QueryLocation query_location) {
 	// bind the function
 	auto &function = Catalog::GetSystemCatalog(context).GetEntry<ScalarFunctionCatalogEntry>(
 	    context, QualifiedName(Catalog::GetSystemCatalog(context).GetName(), schema, name));
 	D_ASSERT(function.type == CatalogType::SCALAR_FUNCTION_ENTRY);
-	return BindScalarFunction(function, std::move(children), error, is_operator, binder);
+	return BindScalarFunction(function, std::move(children), error, is_operator, binder, std::move(alias),
+	                          query_location);
 }
 
 unique_ptr<Expression> FunctionBinder::BindScalarFunction(const Identifier &schema, const Identifier &name,
                                                           vector<unique_ptr<Expression>> children, bool is_operator,
-                                                          optional_ptr<Binder> binder) {
+                                                          optional_ptr<Binder> binder, Identifier alias,
+                                                          QueryLocation query_location) {
 	ErrorData error;
-	auto result = BindScalarFunction(schema, name, std::move(children), error, is_operator, binder);
+	auto result = BindScalarFunction(schema, name, std::move(children), error, is_operator, binder, std::move(alias),
+	                                 query_location);
 	if (!result) {
 		error.Throw();
 	}
@@ -1066,13 +1069,14 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(const Identifier &sche
 
 unique_ptr<Expression> FunctionBinder::BindScalarFunction(const ScalarFunctionCatalogEntry &func,
                                                           vector<unique_ptr<Expression>> children, ErrorData &error,
-                                                          bool is_operator, optional_ptr<Binder> binder) {
+                                                          bool is_operator, optional_ptr<Binder> binder,
+                                                          Identifier alias, QueryLocation query_location) {
 	vector<pair<Identifier, unique_ptr<Expression>>> arguments;
 	arguments.reserve(children.size());
 	for (auto &child : children) {
 		arguments.emplace_back(string(), std::move(child));
 	}
-	return BindScalarFunction(func, std::move(arguments), error, is_operator, binder);
+	return BindScalarFunction(func, std::move(arguments), error, is_operator, binder, std::move(alias), query_location);
 }
 
 //! Returns true if any argument is an untyped NULL, i.e. has type SQLNULL
@@ -1114,10 +1118,7 @@ static bool FoldConstantArgument(ClientContext &context, unique_ptr<Expression> 
 	if (result.IsNull()) {
 		return true;
 	}
-	auto constant = make_uniq<BoundConstantExpression>(std::move(result));
-	constant->SetAlias(child->GetAlias());
-	constant->SetQueryLocation(child->GetQueryLocation());
-	child = std::move(constant);
+	child = make_uniq<BoundConstantExpression>(std::move(result), child->GetAlias(), child->GetQueryLocation());
 	return false;
 }
 
@@ -1150,7 +1151,8 @@ static LogicalType NullReturnType(const LogicalType &return_type) {
 unique_ptr<Expression> FunctionBinder::BindScalarFunction(const ScalarFunctionCatalogEntry &func,
                                                           vector<pair<Identifier, unique_ptr<Expression>>> arguments,
                                                           ErrorData &error, bool is_operator,
-                                                          optional_ptr<Binder> binder) {
+                                                          optional_ptr<Binder> binder, Identifier alias,
+                                                          QueryLocation query_location) {
 	// select the best matching overload (this may name positional arguments by their alias for functions that opt
 	// into implicit argument naming, e.g. struct_pack/row)
 	vector<unique_ptr<Expression>> regular_args;
@@ -1172,7 +1174,8 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(const ScalarFunctionCa
 	if (bound_function.GetNullHandling() == FunctionNullHandling::DEFAULT_NULL_HANDLING) {
 		const auto &return_type = bound_function.GetReturnType();
 		if (HasUntypedNullArgument(regular_args, keyword_args)) {
-			return make_uniq<BoundConstantExpression>(Value(NullReturnType(return_type)));
+			return make_uniq<BoundConstantExpression>(Value(NullReturnType(return_type)), std::move(alias),
+			                                          query_location);
 		}
 		if (HasNullConstantArgument(context, regular_args, keyword_args, binder)) {
 			if (return_type.IsComplete()) {
@@ -1181,15 +1184,18 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(const ScalarFunctionCa
 					regular_args.push_back(std::move(child.second));
 				}
 				PropagateReturnCollation(null_function, null_function.GetProperties(), regular_args, string());
-				return make_uniq<BoundConstantExpression>(Value(null_function.GetReturnType()));
+				return make_uniq<BoundConstantExpression>(Value(null_function.GetReturnType()), std::move(alias),
+				                                          query_location);
 			}
 			auto resolved = ResolveScalarFunctionTypes(binding, regular_args, keyword_args);
 			PropagateReturnCollation(resolved.bound_function, resolved.bound_function.GetProperties(), regular_args,
 			                         resolved.pushed_collation);
-			return make_uniq<BoundConstantExpression>(Value(NullReturnType(resolved.bound_function.GetReturnType())));
+			return make_uniq<BoundConstantExpression>(Value(NullReturnType(resolved.bound_function.GetReturnType())),
+			                                          std::move(alias), query_location);
 		}
 	}
-	return BindScalarFunction(binding, std::move(regular_args), std::move(keyword_args), is_operator, binder);
+	return BindScalarFunction(binding, std::move(regular_args), std::move(keyword_args), is_operator, binder,
+	                          std::move(alias), query_location);
 }
 
 static bool RequiresCollationPropagation(const LogicalType &type) {
@@ -1527,39 +1533,46 @@ FunctionBinder::ResolveScalarFunction(const FunctionBinding &binding, vector<uni
 
 unique_ptr<Expression> FunctionBinder::BindScalarFunction(const shared_ptr<const ScalarFunction> &function,
                                                           vector<unique_ptr<Expression>> children, bool is_operator,
-                                                          optional_ptr<Binder> binder) {
-	return BindScalarFunction(function, std::move(children), {}, is_operator, binder);
+                                                          optional_ptr<Binder> binder, Identifier alias,
+                                                          QueryLocation query_location) {
+	return BindScalarFunction(function, std::move(children), {}, is_operator, binder, std::move(alias), query_location);
 }
 
 unique_ptr<Expression> FunctionBinder::BindScalarFunction(const ScalarFunction &function,
                                                           vector<unique_ptr<Expression>> children, bool is_operator,
-                                                          optional_ptr<Binder> binder) {
-	return BindScalarFunction(make_shared_ptr<ScalarFunction>(function), std::move(children), {}, is_operator, binder);
+                                                          optional_ptr<Binder> binder, Identifier alias,
+                                                          QueryLocation query_location) {
+	return BindScalarFunction(make_shared_ptr<ScalarFunction>(function), std::move(children), {}, is_operator, binder,
+	                          std::move(alias), query_location);
 }
 
 unique_ptr<Expression> FunctionBinder::BindScalarFunction(const ScalarFunction &function,
                                                           vector<unique_ptr<Expression>> children,
                                                           vector<pair<Identifier, unique_ptr<Expression>>> keyword_args,
-                                                          bool is_operator, optional_ptr<Binder> binder) {
+                                                          bool is_operator, optional_ptr<Binder> binder,
+                                                          Identifier alias, QueryLocation query_location) {
 	return BindScalarFunction(make_shared_ptr<ScalarFunction>(function), std::move(children), std::move(keyword_args),
-	                          is_operator, binder);
+	                          is_operator, binder, std::move(alias), query_location);
 }
 
 unique_ptr<Expression> FunctionBinder::BindScalarFunction(const shared_ptr<const ScalarFunction> &function,
                                                           vector<unique_ptr<Expression>> children,
                                                           vector<pair<Identifier, unique_ptr<Expression>>> keyword_args,
-                                                          bool is_operator, optional_ptr<Binder> binder) {
+                                                          bool is_operator, optional_ptr<Binder> binder,
+                                                          Identifier alias, QueryLocation query_location) {
 	auto binding = MatchFunction(function, children, keyword_args);
-	return BindScalarFunction(binding, std::move(children), std::move(keyword_args), is_operator, binder);
+	return BindScalarFunction(binding, std::move(children), std::move(keyword_args), is_operator, binder,
+	                          std::move(alias), query_location);
 }
 
 unique_ptr<Expression> FunctionBinder::BindScalarFunction(const FunctionBinding &binding,
                                                           vector<unique_ptr<Expression>> children,
                                                           vector<pair<Identifier, unique_ptr<Expression>>> keyword_args,
-                                                          bool is_operator, optional_ptr<Binder> binder) {
+                                                          bool is_operator, optional_ptr<Binder> binder,
+                                                          Identifier alias, QueryLocation query_location) {
 	auto [bound_function, bind_info] = ResolveScalarFunction(binding, children, keyword_args);
 	auto result_func = make_uniq<BoundFunctionExpression>(std::move(bound_function), std::move(children),
-	                                                      std::move(bind_info), is_operator);
+	                                                      std::move(bind_info), is_operator, alias, query_location);
 
 	if (binder && result_func->Function().GetStability() == FunctionStability::CONSISTENT_WITHIN_QUERY) {
 		// the result depends on the query it is bound in, also when the bind_expression callback folds it
@@ -1571,6 +1584,13 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(const FunctionBinding 
 		                                  result_func->GetChildrenMutable());
 		auto result = result_func->Function().GetBindExpressionCallback()(input);
 		if (result) {
+			// the callback constructs the expression itself
+			if (!alias.empty()) {
+				result->SetAlias(std::move(alias));
+			}
+			if (query_location.IsValid()) {
+				result->SetQueryLocation(query_location);
+			}
 			return result;
 		}
 	}

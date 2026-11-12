@@ -74,8 +74,7 @@ static unique_ptr<Expression> AddCastToTypeInternal(unique_ptr<Expression> expr,
 		return expr;
 	} else if (expr->GetExpressionClass() == ExpressionClass::BOUND_DEFAULT) {
 		D_ASSERT(target_type.IsValid());
-		auto &def = expr->Cast<BoundDefaultExpression>();
-		def.SetReturnType(target_type);
+		expr = make_uniq<BoundDefaultExpression>(target_type, expr->GetAlias(), expr->GetQueryLocation());
 	}
 	if (!target_type.IsValid()) {
 		return expr;

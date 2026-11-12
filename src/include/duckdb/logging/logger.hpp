@@ -22,7 +22,7 @@ class ColumnDataCollection;
 class Context;
 class ThreadContext;
 class FileOpener;
-class LogStorage;
+class LogSink;
 class ExecutionContext;
 struct FileHandle;
 
