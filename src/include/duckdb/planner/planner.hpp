@@ -16,6 +16,7 @@
 namespace duckdb {
 class ClientContext;
 class PreparedStatementData;
+class ExecuteStatement;
 
 //! The planner creates a logical query plan from the parsed SQL statements
 //! using the Binder and LogicalPlanGenerator.
@@ -37,6 +38,11 @@ public:
 	StatementProperties properties;
 	bound_parameter_map_t value_map;
 
+	//! Whether a top-level EXECUTE may re-use the physical plan of its prepared statement
+	bool reuse_prepared_plans = false;
+	//! The prepared statement whose physical plan is re-used - set instead of plan
+	shared_ptr<PreparedStatementData> reused_statement;
+
 public:
 	void CreatePlan(unique_ptr<SQLStatement> statement);
 	//! Apply the execution planner's optimizer policy, including mandatory rewrites.
@@ -46,6 +52,7 @@ public:
 
 private:
 	void CreatePlan(SQLStatement &statement);
+	void CreateExecutePlan(ExecuteStatement &statement);
 	shared_ptr<PreparedStatementData> PrepareSQLStatement(unique_ptr<SQLStatement> statement);
 };
 } // namespace duckdb

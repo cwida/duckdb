@@ -333,34 +333,22 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatementInternal
 		}
 	}
 
-	if (statement_type == StatementType::EXECUTE_STATEMENT) {
+	{
 		auto planner_timer = profiler.StartTimer<MetricPlannerTotalTime>();
-		auto &binder = *logical_planner.binder;
-		auto execution = binder.ResolveExecute(statement->Cast<ExecuteStatement>());
-		if (!execution.rebind && execution.prepared->physical_plan) {
-			// re-use the physical plan of the prepared statement
-			auto &prepared = *execution.prepared;
-			prepared.Bind(*this, execution.bind_values);
-			result->properties = prepared.properties;
-			result->properties.parameter_count = execution.parameter_count;
-			result->names = prepared.names;
-			result->types = prepared.types;
-			result->physical_plan = make_uniq<PhysicalPlan>(Allocator::Get(*this));
-			result->physical_plan->SetRoot(prepared.physical_plan->Root());
-			result->reused_statement = std::move(execution.prepared);
-			return result;
-		}
-		// plan the prepared statement again
-		auto bound_statement = binder.BindExecute(execution);
-		logical_planner.names = std::move(bound_statement.names);
-		logical_planner.types = std::move(bound_statement.types);
-		logical_planner.plan = std::move(bound_statement.plan);
-		logical_planner.properties = binder.GetStatementProperties();
-		logical_planner.properties.bound_all_parameters = true;
-	} else {
-		auto planner_timer = profiler.StartTimer<MetricPlannerTotalTime>();
+		logical_planner.reuse_prepared_plans = true;
 		logical_planner.CreatePlan(std::move(statement));
-		D_ASSERT(logical_planner.plan || !logical_planner.properties.bound_all_parameters);
+		D_ASSERT(logical_planner.plan || logical_planner.reused_statement ||
+		         !logical_planner.properties.bound_all_parameters);
+	}
+	if (logical_planner.reused_statement) {
+		// re-use the physical plan of the prepared statement
+		result->properties = logical_planner.properties;
+		result->names = logical_planner.names;
+		result->types = logical_planner.types;
+		result->physical_plan = make_uniq<PhysicalPlan>(Allocator::Get(*this));
+		result->physical_plan->SetRoot(logical_planner.reused_statement->physical_plan->Root());
+		result->reused_statement = std::move(logical_planner.reused_statement);
+		return result;
 	}
 
 	if (logical_planner.properties.bound_all_parameters) {
