@@ -139,6 +139,50 @@ SELECT * FROM "t upsert";
 ----
 1	2	1	2
 
+# Trigger whose body inserts from a VALUES list with ORDER BY and LIMIT
+statement ok
+CREATE TABLE t_limited (id INTEGER);
+
+statement ok
+CREATE TABLE limited_audit (v INTEGER);
+
+statement ok
+CREATE TRIGGER limited AFTER INSERT ON t_limited INSERT INTO limited_audit VALUES (3), (1), (2) ORDER BY 1 LIMIT 1;
+
+query T
+SELECT sql FROM duckdb_triggers() WHERE trigger_name = 'limited';
+----
+CREATE TRIGGER limited AFTER INSERT ON t_limited FOR EACH STATEMENT INSERT INTO limited_audit (VALUES (3), (1), (2)) ORDER BY 1 LIMIT 1;
+
+statement ok
+INSERT INTO t_limited VALUES (1);
+
+query I
+SELECT v FROM limited_audit;
+----
+1
+
+# The stored text creates a trigger that inserts the same rows
+statement ok
+DROP TRIGGER limited ON t_limited;
+
+statement ok
+CREATE TRIGGER limited AFTER INSERT ON t_limited FOR EACH STATEMENT INSERT INTO limited_audit (VALUES (3), (1), (2)) ORDER BY 1 LIMIT 1;
+
+query T
+SELECT sql FROM duckdb_triggers() WHERE trigger_name = 'limited';
+----
+CREATE TRIGGER limited AFTER INSERT ON t_limited FOR EACH STATEMENT INSERT INTO limited_audit (VALUES (3), (1), (2)) ORDER BY 1 LIMIT 1;
+
+statement ok
+INSERT INTO t_limited VALUES (2);
+
+query I
+SELECT v FROM limited_audit;
+----
+1
+1
+
 # Cleanup - CASCADE to drop dependent triggers
 statement ok
 DROP TABLE t1 CASCADE;

@@ -34,6 +34,8 @@ public:
 
 public:
 	string ToString() const override;
+	//! The rows as a parenthesized VALUES list, without the alias, column names and sample
+	string ValuesToString() const;
 	bool Equals(const TableRef &other_p) const override;
 
 	unique_ptr<TableRef> Copy() override;
