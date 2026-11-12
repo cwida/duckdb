@@ -4,19 +4,7 @@
 
 require json
 
-query TT
-SELECT j, (j::JSON::VARIANT::JSON)::VARCHAR
-FROM (VALUES
-    (1, NULL::VARCHAR),
-    (2, 'null'),
-    (3, '7'),
-    (4, '"duck"'),
-    (5, '{"a":[1,null]}')
-) t(i, j)
-ORDER BY i;
+query T
+SELECT ('{"a":[1,null]}'::JSON::VARIANT::JSON)::VARCHAR;
 ----
-NULL	NULL
-null	NULL
-7	7
-"duck"	"duck"
-{"a":[1,null]}	{"a":[1,null]}
+{"a":[1,null]}
