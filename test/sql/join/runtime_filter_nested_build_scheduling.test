@@ -1,0 +1,70 @@
+# name: test/sql/join/runtime_filter_nested_build_scheduling.test
+# description: Small runtime filter producers finish before filtered nested build scans
+# group: [join]
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization';
+
+statement ok
+CREATE TABLE nested_probe AS SELECT i AS id FROM range(200000) t(i);
+
+statement ok
+CREATE TABLE nested_build AS
+SELECT i AS id,i%1000 AS k,CASE WHEN i%2=0 THEN 'USA' ELSE 'Sweden' END AS country
+FROM range(200000) t(i);
+
+statement ok
+CREATE TABLE dimension AS SELECT 0::BIGINT AS k,true AS selected;
+
+statement ok
+PREPARE nested_target AS
+SELECT count(*) FROM nested_probe p
+JOIN nested_build b ON p.id=b.id
+JOIN dimension d ON b.k=d.k
+WHERE b.country='USA' AND d.selected;
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+query I
+EXECUTE nested_target;
+----
+200
+
+# The dimension filter must be published before the nested build scan takes its snapshot.
+query II
+EXPLAIN (ANALYZE, FORMAT JSON)
+SELECT count(*) FROM nested_probe p
+JOIN nested_build b ON p.id=b.id
+JOIN dimension d ON b.k=d.k
+WHERE b.country='USA' AND d.selected;
+----
+analyzed_plan	<REGEX>:(?s).*"Table": "[^"]*[.]nested_build"[^}]*},\s*"intermediate_rows": 200,.*
+
+endloop
+
+statement ok
+UPDATE dimension SET k=1;
+
+query I
+EXECUTE nested_target;
+----
+0
+
+statement ok
+UPDATE dimension SET k=2;
+
+query I
+EXECUTE nested_target;
+----
+200
+
+statement ok
+DELETE FROM dimension;
+
+query I
+EXECUTE nested_target;
+----
+0

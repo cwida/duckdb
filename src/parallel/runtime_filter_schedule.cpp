@@ -128,7 +128,11 @@ static void ScheduleRuntimeFiltersInternal(PipelineSchedule &schedule, bool clea
 		dependency_check = RuntimeFilterDependencyCheck(schedule);
 		join_build_stages = CollectJoinBuildStages(schedule);
 	}
-	reference_map_t<DynamicTableFilterSet, vector<idx_t>> sources;
+	struct FilterSource {
+		idx_t stage_idx;
+		bool small_build_only;
+	};
+	reference_map_t<DynamicTableFilterSet, vector<FilterSource>> sources;
 	for (idx_t stage_idx = 0; add_edges && stage_idx < schedule.stages.size(); stage_idx++) {
 		auto &stage = schedule.stages[stage_idx];
 		auto &pipeline = *stage.pipeline;
@@ -143,12 +147,12 @@ static void ScheduleRuntimeFiltersInternal(PipelineSchedule &schedule, bool clea
 		    scan.function.global_initialization == TableFunctionInitialization::INITIALIZE_ON_SCHEDULE) {
 			continue;
 		}
-		if (!join_build_stages[stage_idx] && (!scan.table_filters || (!scan.table_filters->HasFilters() &&
-		                                                              !scan.table_filters->HasMultiColumnFilters()))) {
-			sources[*scan.dynamic_filters].push_back(stage_idx);
-		}
+		const auto small_build_only =
+		    join_build_stages[stage_idx] ||
+		    (scan.table_filters && (scan.table_filters->HasFilters() || scan.table_filters->HasMultiColumnFilters()));
+		sources[*scan.dynamic_filters].push_back({stage_idx, small_build_only});
 		for (auto &filters : scan.dynamic_filters->GetDisjunctionFilters()) {
-			sources[filters.get()].push_back(stage_idx);
+			sources[filters.get()].push_back({stage_idx, false});
 		}
 	}
 
@@ -170,7 +174,12 @@ static void ScheduleRuntimeFiltersInternal(PipelineSchedule &schedule, bool clea
 			    build_estimate >= MaxValue(probe_estimate, target.estimated_scan_cardinality)) {
 				continue;
 			}
-			for (auto execution : source->second) {
+			for (auto &filter_source : source->second) {
+				// Small builds publish selective filters before nested or already-filtered scans start.
+				if (filter_source.small_build_only && build_estimate > STANDARD_VECTOR_SIZE) {
+					continue;
+				}
+				auto execution = filter_source.stage_idx;
 				if (dependency_check.TryAddDependency(execution, publication[0])) {
 					schedule.TryAddDependency(execution, publication[0]);
 				}
