@@ -25,9 +25,6 @@ UPDATE EXTENSIONS
 statement ok
 INSTALL json FROM my_repo
 
-statement ok
-LOAD json FROM my_repo
-
 # the extension from my_repo is listed and updated from my_repo
 query IIIII
 UPDATE EXTENSIONS

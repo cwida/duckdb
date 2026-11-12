@@ -647,11 +647,11 @@ TEST_CASE("Test UPDATE EXTENSIONS with user-provided repositories", "[api]") {
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 
-	// the reproducer: install and load from a user-provided repository, then update
+	// install from a user-provided repository, then update. The extension is not loaded: Windows cannot replace the
+	// file of a loaded extension
 	REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
 	    "CREATE EXTENSION REPOSITORY my_repo WITH PREFIX '%s' USING PUBLIC KEY '%s'", prefix, TEST_PUBLIC_KEY)));
 	REQUIRE_NO_FAIL(con.Query("INSTALL loadable_extension_demo FROM my_repo"));
-	REQUIRE_NO_FAIL(con.Query("LOAD loadable_extension_demo FROM my_repo"));
 
 	const string repo_row = "loadable_extension_demo|my_repo|NO_UPDATE_AVAILABLE|default-version|default-version";
 	REQUIRE(UpdateRows(con, "UPDATE EXTENSIONS") == vector<string> {repo_row});
