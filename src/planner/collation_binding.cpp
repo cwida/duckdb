@@ -34,7 +34,9 @@ CollationFunction CollationFunctions::Lookup(ClientContext &context, const strin
 		entry = catalog.GetEntry<ScalarFunctionCatalogEntry>(context, qualified_name, OnEntryNotFound::RETURN_NULL);
 	}
 	if (!entry) {
-		throw CatalogException::MissingEntry(CatalogType::COLLATION_ENTRY, Identifier(collation), string());
+		auto candidates = StringUtil::TopNJaroWinkler(GetCollations(context), collation, 1);
+		throw CatalogException::MissingEntry(CatalogType::COLLATION_ENTRY, Identifier(collation),
+		                                     candidates.empty() ? string() : candidates[0]);
 	}
 	auto function = entry->functions.GetFunctionByArguments(context, {LogicalType::VARCHAR});
 	if (!function) {
@@ -46,16 +48,22 @@ CollationFunction CollationFunctions::Lookup(ClientContext &context, const strin
 }
 
 vector<string> CollationFunctions::GetCollations(ClientContext &context) {
+	// only list what Lookup resolves: scalar functions in the system catalog that take a single VARCHAR
 	vector<string> result;
 	const string prefix = PREFIX;
-	for (auto &schema : Catalog::GetAllSchemas(context)) {
-		schema.get().Scan(context, CatalogType::SCALAR_FUNCTION_ENTRY, [&](CatalogEntry &entry) {
-			auto &name = entry.name.GetIdentifierName();
-			if (StringUtil::StartsWith(name, prefix) && name.size() > prefix.size()) {
-				result.push_back(name.substr(prefix.size()));
-			}
-		});
-	}
+	auto &schema = Catalog::GetSystemCatalog(context).GetSchema(context, Identifier::DefaultSchema());
+	schema.Scan(context, CatalogType::SCALAR_FUNCTION_ENTRY, [&](CatalogEntry &entry) {
+		auto &name = entry.name.GetIdentifierName();
+		if (entry.type != CatalogType::SCALAR_FUNCTION_ENTRY || !StringUtil::StartsWith(name, prefix) ||
+		    name.size() <= prefix.size()) {
+			return;
+		}
+		auto &function_entry = entry.Cast<ScalarFunctionCatalogEntry>();
+		if (!function_entry.functions.GetFunctionByArguments(context, {LogicalType::VARCHAR})) {
+			return;
+		}
+		result.push_back(name.substr(prefix.size()));
+	});
 	return result;
 }
 
@@ -95,8 +103,8 @@ static vector<string> GetVarcharCollationFunctions(ClientContext &context, const
 			continue;
 		}
 		if (!functions.empty()) {
-			throw BinderException("Cannot combine collation types %s and %s", non_combinable_collation,
-			                      collation_argument);
+			throw BinderException("Cannot combine collation types %s and %s", Identifier(non_combinable_collation),
+			                      Identifier(collation_argument));
 		}
 		non_combinable_collation = collation_argument;
 		functions.push_back(function.name);

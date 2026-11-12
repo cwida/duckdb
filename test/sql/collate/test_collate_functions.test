@@ -36,3 +36,29 @@ statement error
 SELECT 'a' COLLATE does_not_exist
 ----
 Catalog Error: Collation with name does_not_exist does not exist!
+
+# a misspelled collation suggests the closest one
+statement error
+SELECT 'a' COLLATE nocas
+----
+<REGEX>:Catalog Error: Collation with name nocas does not exist!.*Did you mean "nocase"\?.*
+
+# only system scalar functions that take a VARCHAR are collations: macros and functions in other schemas are not
+statement ok
+CREATE MACRO collate_my_macro(s) AS lower(s);
+
+statement ok
+CREATE SCHEMA other;
+
+statement ok
+CREATE MACRO other.collate_other(s) AS lower(s);
+
+query I
+SELECT count(*) FROM pragma_collations() WHERE collname IN ('my_macro', 'other')
+----
+0
+
+statement error
+SELECT 'a' COLLATE my_macro
+----
+Catalog Error: Collation with name my_macro does not exist!

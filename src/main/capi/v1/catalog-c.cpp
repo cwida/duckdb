@@ -1,3 +1,4 @@
+#include "duckdb/planner/collation_binding.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/helper.hpp"
@@ -125,8 +126,14 @@ duckdb_catalog_entry duckdb_catalog_get_entry(duckdb_catalog catalog, duckdb_cli
 	auto &catalog_ref = *reinterpret_cast<duckdb::CCatalogWrapper *>(catalog);
 	auto &context_ref = *reinterpret_cast<duckdb::CClientContextWrapper *>(context);
 
-	auto entry = catalog_ref.catalog.GetEntry(context_ref.context, duckdb::CatalogTypeFromC(entry_type),
-	                                          duckdb::Identifier(schema_name), duckdb::Identifier(entry_name),
+	auto type = duckdb::CatalogTypeFromC(entry_type);
+	duckdb::Identifier name(entry_name);
+	if (type == duckdb::CatalogType::COLLATION_ENTRY) {
+		// a collation is the scalar function that implements it
+		type = duckdb::CatalogType::SCALAR_FUNCTION_ENTRY;
+		name = duckdb::Identifier(duckdb::CollationFunctions::GetFunctionName(entry_name));
+	}
+	auto entry = catalog_ref.catalog.GetEntry(context_ref.context, type, duckdb::Identifier(schema_name), name,
 	                                          duckdb::OnEntryNotFound::RETURN_NULL);
 
 	if (!entry) {

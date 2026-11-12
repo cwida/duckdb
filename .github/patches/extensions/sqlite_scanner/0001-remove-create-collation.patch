@@ -1,0 +1,24 @@
+--- a/src/storage/sqlite_schema_entry.cpp
++++ b/src/storage/sqlite_schema_entry.cpp
+@@ -245,11 +245,6 @@
+ 	throw BinderException("SQLite databases do not support creating pragma functions");
+ }
+ 
+-optional_ptr<CatalogEntry> SQLiteSchemaEntry::CreateCollation(CatalogTransaction transaction,
+-                                                              CreateCollationInfo &info) {
+-	throw BinderException("SQLite databases do not support creating collations");
+-}
+-
+ optional_ptr<CatalogEntry> SQLiteSchemaEntry::CreateType(CatalogTransaction transaction, CreateTypeInfo &info) {
+ 	throw BinderException("SQLite databases do not support creating types");
+ }
+--- a/src/include/storage/sqlite_schema_entry.hpp
++++ b/src/include/storage/sqlite_schema_entry.hpp
+@@ -30,7 +30,6 @@
+ 	                                              CreateCopyFunctionInfo &info) override;
+ 	optional_ptr<CatalogEntry> CreatePragmaFunction(CatalogTransaction transaction,
+ 	                                                CreatePragmaFunctionInfo &info) override;
+-	optional_ptr<CatalogEntry> CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) override;
+ 	optional_ptr<CatalogEntry> CreateType(CatalogTransaction transaction, CreateTypeInfo &info) override;
+ 	void Alter(CatalogTransaction transaction, AlterInfo &info) override;
+ 	void Scan(ClientContext &context, CatalogType type, const std::function<void(CatalogEntry &)> &callback) override;
