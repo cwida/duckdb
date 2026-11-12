@@ -52,7 +52,7 @@ WHERE grouped.total > 25;
 3	2	61
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 # The corrected aggregate binding layout should keep the three connected relations in a join tree.
 query TT

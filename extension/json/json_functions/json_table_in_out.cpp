@@ -1,3 +1,4 @@
+#include "duckdb/main/client_context.hpp"
 #include "json_common.hpp"
 #include "json_functions.hpp"
 #include "duckdb/common/atomic.hpp"
@@ -309,7 +310,8 @@ struct JSONTableInOutResult {
 };
 
 template <JSONTableInOutType TYPE>
-static void InitializeLocalState(JSONTableInOutLocalState &lstate, DataChunk &input, JSONTableInOutResult &result) {
+static void InitializeLocalState(Context &context, JSONTableInOutLocalState &lstate, DataChunk &input,
+                                 JSONTableInOutResult &result) {
 	lstate.total_count = 0;
 
 	// Parse path, default to root if not given
@@ -322,7 +324,8 @@ static void InitializeLocalState(JSONTableInOutLocalState &lstate, DataChunk &in
 		path_value = path_values[lstate.input_row].GetValue();
 	}
 
-	if (JSONReadFunctionData::CheckPath(path_value, lstate.path, lstate.len) == JSONCommon::JSONPathType::WILDCARD) {
+	if (JSONReadFunctionData::CheckPath(context, path_value, lstate.path, lstate.len) ==
+	    JSONCommon::JSONPathType::WILDCARD) {
 		throw BinderException("Wildcard JSON path not supported in json_each/json_tree");
 	}
 
@@ -383,8 +386,8 @@ static bool JSONTableInOutHandleValue(JSONTableInOutLocalState &lstate, JSONTabl
 }
 
 template <JSONTableInOutType TYPE>
-static OperatorResultType JSONTableInOutFunction(ExecutionContext &, TableFunctionInput &data_p, DataChunk &input,
-                                                 DataChunk &output) {
+static OperatorResultType JSONTableInOutFunction(ExecutionContext &context, TableFunctionInput &data_p,
+                                                 DataChunk &input, DataChunk &output) {
 	auto &gstate = data_p.global_state->Cast<JSONTableInOutGlobalState>();
 	auto &lstate = data_p.local_state->Cast<JSONTableInOutLocalState>();
 
@@ -393,7 +396,7 @@ static OperatorResultType JSONTableInOutFunction(ExecutionContext &, TableFuncti
 		if (lstate.input_row >= input.size()) {
 			return OperatorResultType::NEED_MORE_INPUT;
 		}
-		InitializeLocalState<TYPE>(lstate, input, result);
+		InitializeLocalState<TYPE>(context.client.GetContext(), lstate, input, result);
 		lstate.initialized = true;
 	}
 

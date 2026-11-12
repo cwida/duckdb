@@ -5,7 +5,7 @@
 require parquet
 
 statement ok
-PRAGMA threads=16;
+SET threads=16;
 
 statement ok
 SET partitioned_write_flush_threshold=2048;

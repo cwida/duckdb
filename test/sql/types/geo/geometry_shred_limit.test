@@ -6,7 +6,7 @@ require vector_size 2048
 load {TEST_DIR}/test_shred_limit.db readwrite v1.5.0
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
 SET geometry_minimum_shredding_size = 3;

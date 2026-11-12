@@ -10,10 +10,10 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
-PRAGMA debug_checkpoint_abort='AFTER_FREE_LIST_WRITE';
+SET debug_checkpoint_abort='AFTER_FREE_LIST_WRITE';
 
 statement ok
 CREATE TABLE t AS SELECT repeat('a', 100) FROM range(50000);
@@ -26,7 +26,7 @@ CHECKPOINT;
 restart
 
 statement ok
-PRAGMA debug_checkpoint_abort='none';
+SET debug_checkpoint_abort='none';
 
 statement ok
 DROP TABLE t;

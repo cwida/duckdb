@@ -17,10 +17,10 @@ SELECT CASE WHEN range % 2 = 0 THEN range::INTEGER ELSE NULL END AS x
 FROM range(100000);
 
 statement ok
-PRAGMA enable_profiling = 'json'
+SET enable_profiling = 'json'
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/false_or_null_segment_profile.json'
+SET profiling_output = '{TEST_DIR}/false_or_null_segment_profile.json'
 
 statement ok
 SET tracked_metrics = ['query.total_rows_scanned']

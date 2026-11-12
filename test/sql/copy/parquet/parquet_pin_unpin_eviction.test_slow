@@ -1,0 +1,98 @@
+# name: test/sql/copy/parquet/parquet_pin_unpin_eviction.test_slow
+# description: Checks parquet scans stay correct under a memory limit tight enough that ColumnReader::block gets evicted and re-pinned
+# group: [parquet]
+
+require parquet
+
+require vector_size 2048
+
+# fixture, written before the memory budget is constrained below
+statement ok
+CREATE TABLE source AS
+SELECT
+    i AS id,
+    (i % 2000)::VARCHAR AS low_card,     -- DICTIONARY encoding; 2000 distinct keeps the RLE index pages above the evictable-page threshold
+    md5(i::VARCHAR) || md5((i+1)::VARCHAR) AS high_card,  -- 64-byte unique strings, not inlined
+    i::DOUBLE / 3 AS val
+FROM range(800000) t(i);
+
+statement ok
+COPY source TO '{TEST_DIR}/pin_unpin_eviction.parquet' (FORMAT PARQUET, PARQUET_VERSION 'V2');
+
+# V1 strings take the PLAIN path; V2 strings use DELTA_LENGTH_BYTE_ARRAY
+statement ok
+COPY source TO '{TEST_DIR}/pin_unpin_eviction_v1.parquet' (FORMAT PARQUET, PARQUET_VERSION 'V1');
+
+# ground truth, computed at the default (unconstrained) memory budget
+statement ok
+CREATE TABLE expected AS
+SELECT count(*) AS cnt, sum(id) AS id_sum, sum(length(high_card)) AS str_len_sum,
+       min(high_card) AS str_min, max(high_card) AS str_max, sum(val) AS val_sum,
+       sum(length(low_card)) AS lc_len_sum, min(low_card) AS lc_min, max(low_card) AS lc_max
+FROM source;
+
+# would itself compete for the memory budgets below
+statement ok
+DROP TABLE source;
+
+statement ok
+SET temp_directory = '{TEST_DIR}/pin_unpin_eviction_tmp';
+
+statement ok
+SET memory_limit = '100MB';
+
+statement ok
+SET threads = 4;
+
+# compared against ground truth, not hardcoded literals, since md5-derived min/max and float sums aren't hand-verifiable
+statement ok
+CREATE TABLE actual AS
+SELECT count(*) AS cnt, sum(id) AS id_sum, sum(length(high_card)) AS str_len_sum,
+       min(high_card) AS str_min, max(high_card) AS str_max, sum(val) AS val_sum,
+       sum(length(low_card)) AS lc_len_sum, min(low_card) AS lc_min, max(low_card) AS lc_max
+FROM '{TEST_DIR}/pin_unpin_eviction.parquet';
+
+# epsilon, not exact equality: summing doubles in a different order can differ in the last ULP
+query I
+SELECT (SELECT cnt FROM actual) = (SELECT cnt FROM expected)
+   AND (SELECT id_sum FROM actual) = (SELECT id_sum FROM expected)
+   AND (SELECT str_len_sum FROM actual) = (SELECT str_len_sum FROM expected)
+   AND (SELECT str_min FROM actual) = (SELECT str_min FROM expected)
+   AND (SELECT str_max FROM actual) = (SELECT str_max FROM expected)
+   AND (SELECT lc_len_sum FROM actual) = (SELECT lc_len_sum FROM expected)
+   AND (SELECT lc_min FROM actual) = (SELECT lc_min FROM expected)
+   AND (SELECT lc_max FROM actual) = (SELECT lc_max FROM expected)
+   AND abs((SELECT val_sum FROM actual) - (SELECT val_sum FROM expected)) < 0.01;
+----
+true
+
+statement ok
+DROP TABLE actual;
+
+statement ok
+SET memory_limit = '50MB';
+
+statement ok
+SET threads = 1;
+
+# 50MB: ~2x the ~25MB floor this scan needs with working eviction, padded for cross-machine noise.
+# duckdb_memory() can't prove eviction after the fact -- the scan state is torn down by the time the query returns
+foreach file pin_unpin_eviction pin_unpin_eviction_v1
+
+query I
+SELECT a.cnt = e.cnt AND a.id_sum = e.id_sum AND a.str_len_sum = e.str_len_sum
+   AND a.str_min = e.str_min AND a.str_max = e.str_max AND abs(a.val_sum - e.val_sum) < 0.01
+   AND a.lc_len_sum = e.lc_len_sum AND a.lc_min = e.lc_min AND a.lc_max = e.lc_max
+FROM (
+    SELECT count(*) AS cnt, sum(id) AS id_sum, sum(length(high_card)) AS str_len_sum,
+           min(high_card) AS str_min, max(high_card) AS str_max, sum(val) AS val_sum,
+           sum(length(low_card)) AS lc_len_sum, min(low_card) AS lc_min, max(low_card) AS lc_max
+    FROM '{TEST_DIR}/{file}.parquet'
+) AS a, expected AS e;
+----
+true
+
+endloop
+
+statement ok
+SET memory_limit = '-1';

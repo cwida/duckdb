@@ -90,7 +90,7 @@ SELECT * FROM t LIMIT 5;
 4
 
 statement ok
-PRAGMA threads=1
+SET threads=1
 
 query I
 WITH d AS MATERIALIZED (
@@ -136,7 +136,7 @@ SELECT (SELECT sum(c00 + c01 + c02 + c03 + c04 + c05 + c06 + c07 +
 720	720
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 query II
 WITH d AS (

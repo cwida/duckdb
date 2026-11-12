@@ -147,7 +147,7 @@ FROM query_table(['tbl_int']);
 42
 
 query III
-FROM query_table(tbl);
+FROM query_table('tbl');
 ----
 1	2	3
 4	5	6
@@ -160,7 +160,7 @@ statement ok
 INSERT INTO tbl2 VALUES (9, 8, 7), (6, 5, 4), (3, 2, 1);
 
 query III
-FROM query_table([tbl, tbl2]);
+FROM query_table(['tbl', 'tbl2']);
 ----
 1	2	3
 4	5	6
@@ -197,17 +197,17 @@ FROM query_table('main..tbl_int');
 Parser Error: Zero-length identifier in qualified name!
 
 statement error
-FROM query_table('tbl_int', 'tbl_varchar', tbl2_varchar);
+FROM query_table('tbl_int', 'tbl_varchar', 'tbl2_varchar');
 ----
 Binder Error: No function matches the given name and argument types 'query_table(STRING_LITERAL, STRING_LITERAL, STRING_LITERAL)'.
 
 statement error
-FROM query_table([tbl_int, tbl2]);
+FROM query_table(['tbl_int', 'tbl2']);
 ----
 Binder Error: Set operations can only apply to expressions with the same number of result columns
 
 statement error
-FROM query_table(not_defined_tbl);
+FROM query_table('not_defined_tbl');
 ----
 Catalog Error: Table with name not_defined_tbl does not exist!
 
@@ -239,11 +239,6 @@ SELECT * FROM "(SELECT 17 + 25)";
 100
 
 query I 
-FROM query_table("(SELECT 17 + 25)");
-----
-100
-
-query I 
 FROM query_table('(SELECT 17 + 25)');
 ----
 100
@@ -252,11 +247,6 @@ statement error
 FROM query_table(SELECT 17 + 25);
 ----
 Parser Error: syntax error at or near "SELECT"
-
-statement error 
-FROM query_table("SELECT 4 + 2");
-----
-Catalog Error: Table with name SELECT 4 + 2 does not exist!
 
 statement error
 FROM query_table('SELECT 4 + 2');
@@ -283,7 +273,7 @@ duckdb
 1?ch@racter$
 
 query IIII
-from query_table([tbl_int, tbl_varchar, tbl_empty, tbl2_varchar], true);
+from query_table(['tbl_int', 'tbl_varchar', 'tbl_empty', 'tbl2_varchar'], true);
 ----
 42	NULL	NULL	NULL
 NULL	duckdb	NULL	NULL
@@ -298,7 +288,7 @@ Binder Error: No function matches the given name and argument types 'query_table
 
 # a single table name is accepted alongside by_name - the string satisfies the VARCHAR[] parameter
 query III
-FROM query_table(tbl2, true);
+FROM query_table('tbl2', true);
 ----
 9	8	7
 6	5	4
@@ -308,3 +298,17 @@ statement error
 FROM query_table(['tbl_int', 'tbl_varchar', 'tbl_empty', '(select ''I am a subquery'')'], false);
 ----
 Catalog Error: Table with name (select 'I am a subquery') does not exist!
+
+# a quoted identifier is converted to the table name, which is deprecated and warns
+statement ok
+SET warnings_as_errors = false;
+
+query I
+FROM query_table("(SELECT 17 + 25)");
+----
+100
+
+statement error
+FROM query_table("SELECT 4 + 2");
+----
+Catalog Error: Table with name SELECT 4 + 2 does not exist!

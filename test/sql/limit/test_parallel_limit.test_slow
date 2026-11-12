@@ -3,7 +3,7 @@
 # group: [limit]
 
 statement ok
-PRAGMA threads=8
+SET threads=8
 
 statement ok
 CREATE TABLE other_table AS SELECT 337 i UNION ALL SELECT 948247 UNION ALL SELECT 1779793 UNION ALL SELECT 4779793;

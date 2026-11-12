@@ -6,7 +6,7 @@ statement ok
 SET threads=8;
 
 statement ok
-PRAGMA memory_limit='100MB';
+SET memory_limit='100MB';
 
 statement ok
 CREATE MACRO eviction_queues_sane() AS (

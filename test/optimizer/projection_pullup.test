@@ -21,7 +21,7 @@ statement ok
 CREATE TABLE tbl AS SELECT range a, mod(range,10) b FROM range(10000);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # These optimizers introduce projections. I disable them for now
 statement ok
@@ -93,7 +93,7 @@ logical_opt	<!REGEX>:.*AGGREGATION.*JOIN.*PROJECTION.*
 query II
 EXPLAIN SELECT DISTINCT a FROM (SELECT a, b FROM (SELECT i AS a, i AS b FROM range(10) t(i)) t1) t2;
 ----
-logical_opt	<REGEX>:.*DISTINCT.*PROJECTION.*
+logical_opt	<REGEX>:.*AGGREGATE.*PROJECTION.*
 
 query II
 EXPLAIN SELECT * FROM range(5) UNION SELECT * FROM range(5);

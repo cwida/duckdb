@@ -3,6 +3,7 @@
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/storage/object_cache.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
@@ -294,7 +295,7 @@ TEST_CASE("Hash buffers reuse live eviction entries without changing tracked or 
 	const auto tag = GENERATE(MemoryTag::HASH_TABLE, MemoryTag::EXTENSION);
 	const auto track_timestamps = GENERATE(false, true);
 	DBConfig config;
-	config.options.buffer_manager_track_eviction_timestamps = track_timestamps;
+	config.SetOption(BufferManagerTrackEvictionTimestampsSetting::SettingIndex, Value::BOOLEAN(track_timestamps));
 	DuckDB db(nullptr, &config);
 	auto &manager = BufferManager::GetBufferManager(*db.instance);
 	auto &pool = manager.GetBufferPool();

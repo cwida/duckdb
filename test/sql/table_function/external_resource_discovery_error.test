@@ -14,7 +14,7 @@ SELECT count(*) FROM duckdb_external_resources();
 
 # 1. A list callback without a `handle` column. The callback's rows carry its name in the error.
 statement ok
-CREATE MACRO nohandle_list(opts) AS TABLE SELECT 'ext-1' AS reference, 'running' AS state;
+CREATE MACRO nohandle_list(opts) AS TABLE SELECT 'one' AS name, 'ext-1' AS reference, 'running' AS state;
 
 statement ok
 CALL register_external_resource_type('nohandle@disc', kind := 'catalog', create_function := 'noop_create', list_function := 'nohandle_list');
@@ -24,26 +24,34 @@ SELECT * FROM duckdb_external_resources(discover := true);
 ----
 <REGEX>:.*"nohandle_list" does not have a column named "handle".*
 
-# 2. `reference` and `state` are required too (they may be NULL).
+# 2. `name`, `reference` and `state` are required too (they may be NULL).
 statement ok
 CREATE OR REPLACE MACRO nohandle_list(opts) AS TABLE SELECT MAP {'id': 'a'} AS handle;
 
 statement error
 SELECT * FROM duckdb_external_resources(discover := true);
 ----
-<REGEX>:.*"nohandle_list" does not have a column named "(reference|state)".*
+<REGEX>:.*"nohandle_list" does not have a column named "(name|reference|state)".*
 
 statement ok
-CREATE OR REPLACE MACRO nohandle_list(opts) AS TABLE SELECT MAP {'id': 'a'} AS handle, NULL AS reference, NULL AS state;
+CREATE OR REPLACE MACRO nohandle_list(opts) AS TABLE SELECT MAP {'id': 'a'} AS handle, 'ext-1' AS reference, 'running' AS state;
 
-query TTT
-SELECT type, reference, state FROM duckdb_external_resources(discover := true);
+statement error
+SELECT * FROM duckdb_external_resources(discover := true);
 ----
-nohandle@disc	NULL	NULL
+<REGEX>:.*"nohandle_list" does not have a column named "name".*
+
+statement ok
+CREATE OR REPLACE MACRO nohandle_list(opts) AS TABLE SELECT MAP {'id': 'a'} AS handle, NULL AS name, NULL AS reference, NULL AS state;
+
+query TTTT
+SELECT name, type, reference, state FROM duckdb_external_resources(discover := true);
+----
+NULL	nohandle@disc	NULL	NULL
 
 # 3. A list callback whose `handle` column is not a MAP.
 statement ok
-CREATE MACRO badtype_list(opts) AS TABLE SELECT 42 AS handle, 'ext-2' AS reference, 'running' AS state;
+CREATE MACRO badtype_list(opts) AS TABLE SELECT 42 AS handle, 'two' AS name, 'ext-2' AS reference, 'running' AS state;
 
 statement ok
 CALL register_external_resource_type('badtype@disc', kind := 'catalog', create_function := 'noop_create', list_function := 'badtype_list');
@@ -54,7 +62,7 @@ SELECT * FROM duckdb_external_resources(discover := true);
 <REGEX>:.*cast \(INTEGER -> MAP\(VARCHAR, VARCHAR\)\).*
 
 statement ok
-CREATE OR REPLACE MACRO badtype_list(opts) AS TABLE SELECT MAP {'id': 'b'} AS handle, 'ext-2' AS reference, 'running' AS state;
+CREATE OR REPLACE MACRO badtype_list(opts) AS TABLE SELECT MAP {'id': 'b'} AS handle, 'two' AS name, 'ext-2' AS reference, 'running' AS state;
 
 # 4. A list callback whose function does not resolve (the name is only validated for shape at registration,
 # not existence).
@@ -73,7 +81,7 @@ SELECT count(*) FROM duckdb_external_resources(discover := true, type := 'badtyp
 1
 
 statement ok
-CREATE MACRO no_such_list_fn(opts) AS TABLE SELECT MAP {'id': 'c'} AS handle, 'ext-3' AS reference, 'running' AS state;
+CREATE MACRO no_such_list_fn(opts) AS TABLE SELECT MAP {'id': 'c'} AS handle, 'three' AS name, 'ext-3' AS reference, 'running' AS state;
 
 # With every callback repaired, discovery succeeds again.
 query I
@@ -83,7 +91,7 @@ SELECT count(*) FROM duckdb_external_resources(discover := true);
 
 # 5. A list callback that calls discovery itself is caught by the binder's macro recursion check.
 statement ok
-CREATE MACRO rec_list(opts) AS TABLE SELECT handle, reference, state FROM duckdb_external_resources(discover := true);
+CREATE MACRO rec_list(opts) AS TABLE SELECT handle, name, reference, state FROM duckdb_external_resources(discover := true);
 
 statement ok
 CALL register_external_resource_type('rec@disc', kind := 'catalog', create_function := 'noop_create', list_function := 'rec_list');

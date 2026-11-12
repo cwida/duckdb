@@ -3,7 +3,7 @@
 # group: [statistics]
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 statement ok
 CREATE TABLE integers AS SELECT range i FROM range(5)

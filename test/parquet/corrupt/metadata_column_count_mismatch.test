@@ -1,0 +1,11 @@
+# name: test/parquet/corrupt/metadata_column_count_mismatch.test
+# description: Reject a Parquet row group with fewer columns than the schema
+# group: [corrupt]
+
+require parquet
+
+# The schema has two columns, but only the first row group contains both.
+statement error
+SELECT column_id, num_values FROM parquet_metadata('{DATA_DIR}/parquet-testing/corrupt/metadata_column_count_mismatch.parquet');
+----
+Data Corruption Error: Parquet row group 1 column count mismatch (expected 2, found 1)

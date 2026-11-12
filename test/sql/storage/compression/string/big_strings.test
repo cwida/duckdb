@@ -18,7 +18,7 @@ statement ok
 USE db_v13
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 # Baseline, non big string, dictionary compression should work
 statement ok
@@ -47,7 +47,7 @@ SELECT lower(compression)='{compression}' FROM pragma_storage_info('normal_strin
 1
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 # Big string, should disable string compression
 statement ok

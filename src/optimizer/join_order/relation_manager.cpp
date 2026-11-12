@@ -29,6 +29,15 @@ SingleJoinRelation::SingleJoinRelation(LogicalOperator &op, optional_ptr<Logical
 RelationManager::RelationManager(ClientContext &context) : context(context) {
 }
 
+void RelationManager::SetSourceStats(shared_ptr<const JoinOrderSourceStats> stats) {
+	D_ASSERT(relations.empty());
+	source_stats = std::move(stats);
+}
+
+const join_column_sources_t &RelationManager::GetColumnSources() const {
+	return column_sources;
+}
+
 static bool OperatorNeedsRelation(LogicalOperatorType op_type);
 static bool OperatorIsNonReorderable(const LogicalOperator &op);
 
@@ -105,6 +114,15 @@ bool RelationManager::RegisterRelation(LogicalOperator &op, optional_ptr<Logical
 		}
 	}
 	RegisterRelationBindings(op, relation_id, relation->stats);
+	if (source_stats) {
+		auto sources = source_stats->Resolve(op);
+		for (idx_t i = 0; i < relation->stats.columns.size(); i++) {
+			auto entry = sources.find(relation->stats.columns[i].binding);
+			if (entry != sources.end()) {
+				column_sources.emplace(ColumnBinding(TableIndex(relation_id.index), ProjectionIndex(i)), entry->second);
+			}
+		}
+	}
 	operator_relations[op] = relation_id;
 	relations.push_back(std::move(relation));
 	return true;
@@ -527,7 +545,8 @@ bool RelationManager::ExtractJoinRelation(JoinOrderOptimizer &optimizer, Pending
 		auto child_optimizer = optimizer.CreateChildOptimizer();
 		op->children[0] = child_optimizer.Optimize(std::move(op->children[0]), &child_stats);
 		auto &aggr = op->Cast<LogicalAggregate>();
-		auto operator_stats = RelationStatisticsHelper::ExtractAggregationStats(aggr, child_stats, context);
+		RelationStatsExtractor extractor(context, optimizer.GetSourceStats());
+		auto operator_stats = RelationStatisticsHelper::ExtractAggregationStats(aggr, child_stats, extractor, true);
 		if (!operator_stats) {
 			stats_complete = false;
 			return false;
@@ -627,7 +646,8 @@ bool RelationManager::ExtractJoinRelation(JoinOrderOptimizer &optimizer, Pending
 			RelationStats child_stats;
 			return AddRelationWithChildren(optimizer, *op, input_op, parent, child_stats);
 		}
-		auto stats = RelationStatisticsHelper::ExtractGetStats(get, context);
+		auto captured = source_stats ? source_stats->FindScanStats(get) : nullptr;
+		auto stats = captured ? *captured : RelationStatisticsHelper::ExtractGetStats(get, context);
 		// if there is another logical filter that could not be pushed down into the
 		// table scan, apply another selectivity.
 		get.SetEstimatedCardinality(stats.cardinality);
@@ -754,7 +774,9 @@ bool RelationManager::ExtractJoinRelation(JoinOrderOptimizer &optimizer, Pending
 			dummy_aggr->grouping_sets.back().insert(ProjectionIndex(dummy_aggr->groups.size()));
 			dummy_aggr->groups.push_back(delim_col->Copy());
 		}
-		auto lhs_delim_stats = RelationStatisticsHelper::ExtractAggregationStats(*dummy_aggr, lhs_stats, context);
+		RelationStatsExtractor extractor(context, optimizer.GetSourceStats());
+		auto lhs_delim_stats =
+		    RelationStatisticsHelper::ExtractAggregationStats(*dummy_aggr, lhs_stats, extractor, true);
 		if (!lhs_delim_stats) {
 			stats_complete = false;
 			return false;
@@ -927,6 +949,10 @@ JoinOrderExtraction RelationManager::ExtractEdges(LogicalOperator &op,
 	reference_map_t<LogicalOperator, vector<idx_t>> operator_predicates;
 	reference_map_t<LogicalOperator, vector<JoinCondition>> operator_conditions;
 	expression_set_t filter_set;
+	// two equal volatile filters are two evaluations, so neither is a duplicate of the other
+	auto is_new_filter = [&](const Expression &expr) {
+		return expr.IsVolatile() || filter_set.insert(expr).second;
+	};
 	auto normalize_conditions = [&](LogicalComparisonJoin &join, const column_binding_set_t &semantic_left_bindings,
 	                                const column_binding_set_t &semantic_right_bindings) {
 		vector<JoinCondition> result;
@@ -1093,8 +1119,7 @@ JoinOrderExtraction RelationManager::ExtractEdges(LogicalOperator &op,
 						is_residual = true;
 					}
 
-					if (filter_set.find(*expr) == filter_set.end()) {
-						filter_set.insert(*expr);
+					if (is_new_filter(*expr)) {
 						unordered_set<RelationIndex> bindings;
 						ExtractBindings(*expr, bindings);
 						auto &set = set_manager.GetJoinRelation(bindings);
@@ -1118,8 +1143,7 @@ JoinOrderExtraction RelationManager::ExtractEdges(LogicalOperator &op,
 					// in this case we do not create a FilterInfo for it. (duckdb-internal/#1493)
 					continue;
 				}
-				if (filter_set.find(*expression) == filter_set.end()) {
-					filter_set.insert(*expression);
+				if (is_new_filter(*expression)) {
 					auto &set = set_manager.GetJoinRelation(bindings);
 					auto filter_info = make_uniq<FilterInfo>(expression->Copy(), set, filters_and_bindings.size());
 					filter_info->from_logical_filter = true;

@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/optimizer/duplicate_eliminated_domain_optimizer.hpp"
 
 #include "duckdb/common/enums/optimizer_type.hpp"
 #include "duckdb/function/function_binder.hpp"
@@ -261,6 +262,11 @@ void Optimizer::RunBuiltInOptimizers() {
 	});
 
 	if (!CTEContainsDML(*plan)) {
+		RunOptimizer(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN, [&]() {
+			DuplicateEliminatedDomainOptimizer domain_optimizer(*this);
+			domain_optimizer.Optimize(plan);
+		});
+
 		FilterStatisticsOptimizer filter_statistics(*this);
 		filter_statistics.Optimize(plan);
 	}
@@ -478,9 +484,11 @@ void Optimizer::RunBuiltInOptimizers() {
 	}
 
 	// rewrite row_number window function + filter on row_number to aggregate
+	bool topn_used_late_materialization = false;
 	RunOptimizer(OptimizerType::TOP_N_WINDOW_ELIMINATION, [&]() {
 		TopNWindowElimination topn_window_elimination(context, *this, &statistics_map);
 		plan = topn_window_elimination.Optimize(std::move(plan));
+		topn_used_late_materialization = topn_window_elimination.UsedLateMaterialization();
 	});
 
 	// remove duplicate aggregates
@@ -490,8 +498,9 @@ void Optimizer::RunBuiltInOptimizers() {
 	});
 
 	// statistics propagation removes filters, join conditions and aggregate children that it proves redundant.
-	// this can leave columns in a scan that nothing references any more - prune them again
-	if (removed_expressions) {
+	// this can leave columns in a scan that nothing references any more - prune them again. so does a top-N rewrite
+	// with late materialization, which reads the payload in a second scan
+	if (removed_expressions || topn_used_late_materialization) {
 		RunOptimizer(OptimizerType::UNUSED_COLUMNS, [&]() {
 			ClearProjectionMaps(*plan);
 			RemoveUnusedColumns unused(*this);

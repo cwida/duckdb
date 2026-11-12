@@ -208,6 +208,16 @@
         "default_value": "true"
     },
     {
+        "name": "buffer_manager_track_eviction_timestamps",
+        "description": "Record timestamps of buffer manager unpin() events. Usable by custom eviction policies.",
+        "type": "BOOLEAN",
+        "scope": "global",
+        "default_value": "false",
+        "on_callbacks": [
+            "set"
+        ]
+    },
+    {
         "name": "cache_local_files",
         "description": "Whether the external file cache also caches local files. Remote files are always cached.",
         "type": "BOOLEAN",
@@ -227,6 +237,13 @@
         "type": "ENUM<CheckpointOnDetach>",
         "default_scope": "local",
         "default_value": "DEFAULT"
+    },
+    {
+        "name": "checkpoint_on_shutdown",
+        "description": "Whether to run a checkpoint on successful shutdown and delete the WAL, to leave only a single database file behind.",
+        "type": "BOOLEAN",
+        "scope": "global",
+        "default_value": "true"
     },
     {
         "name": "checkpoint_threshold",
@@ -287,7 +304,7 @@
         "description": "Whether or not to abort if a serialization exception is thrown during WAL playback.",
         "type": "BOOLEAN",
         "scope": "global",
-        "internal_setting": "abort_on_wal_failure",
+        "default_value": "false",
         "is_debug": true
     },
     {
@@ -381,6 +398,14 @@
         "struct": "ForceBitpackingModeSetting"
     },
     {
+        "name": "debug_force_checkpoint",
+        "description": "Force a checkpoint when CHECKPOINT is called or on shutdown, even if no changes have been made.",
+        "type": "BOOLEAN",
+        "scope": "global",
+        "default_value": "false",
+        "is_debug": true
+    },
+    {
         "name": "debug_force_commit_failure",
         "description": "Force transaction commit to fail after the undo buffer has been committed. Can be used for testing commit error recovery.",
         "type": "BOOLEAN",
@@ -409,6 +434,14 @@
         "description": "Read the rows of scans through the fetch by row id.",
         "type": "BOOLEAN",
         "default_scope": "local",
+        "default_value": "false",
+        "is_debug": true
+    },
+    {
+        "name": "debug_force_flush_append_failure",
+        "description": "Force the commit-time flush of transaction-local storage to fail after appending to the table. Can be used for testing commit error recovery.",
+        "type": "BOOLEAN",
+        "default_scope": "global",
         "default_value": "false",
         "is_debug": true
     },
@@ -465,6 +498,14 @@
         "is_debug": true
     },
     {
+        "name": "debug_initialize",
+        "description": "How to initialize blocks in the storage layer when allocating (NO_INITIALIZE, DEBUG_ZERO_INITIALIZE or DEBUG_ONE_INITIALIZE).",
+        "type": "ENUM<DebugInitialize>",
+        "scope": "global",
+        "default_value": "NO_INITIALIZE",
+        "is_debug": true
+    },
+    {
         "name": "debug_local_file_system_delay_ms",
         "description": "Time to sleep before local file system open/read/write operations.",
         "type": "UBIGINT",
@@ -476,7 +517,8 @@
         "name": "debug_order_verification",
         "description": "Verify ORDER BY results by rewriting the ordering (NONE, CREATE_SORT_KEY or VARIANT).",
         "type": "ENUM<DebugOrderVerification>",
-        "scope": "global",
+        "default_scope": "global",
+        "default_value": "NONE",
         "is_debug": true
     },
     {
@@ -834,9 +876,9 @@
         "description": "Enables the progress bar, which prints progress to the terminal during long queries.",
         "type": "BOOLEAN",
         "scope": "local",
+        "default_value": "false",
         "on_callbacks": [
-            "set",
-            "reset"
+            "set"
         ]
     },
     {
@@ -844,7 +886,10 @@
         "description": "Controls the printing of the progress bar and requires 'enable_progress_bar' to be true.",
         "type": "BOOLEAN",
         "scope": "local",
-        "custom_implementation": true
+        "default_value": "true",
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "enable_view_dependencies",
@@ -1064,6 +1109,22 @@
         "scope": "global",
         "default_value": "",
         "struct": "HTTPProxyUsernameSetting"
+    },
+    {
+        "name": "http_retry_quota_throttled",
+        "description": "Whether the per-host retry quota can refuse the retry of a throttled request (HTTP 429 or 503). When false, a throttled retry is still charged to the quota but is not refused when the quota is empty.",
+        "type": "BOOLEAN",
+        "default_scope": "local",
+        "default_value": "true",
+        "struct": "HTTPRetryQuotaThrottledSetting"
+    },
+    {
+        "name": "http_retry_throttled_wait_ms",
+        "description": "Smallest base wait, in milliseconds, of the back-off between retries of a throttled request (HTTP 429 or 503). Throttled retries back off from the larger of this and http_retry_wait_ms.",
+        "type": "UBIGINT",
+        "default_scope": "local",
+        "default_value": "0",
+        "struct": "HTTPRetryThrottledWaitMsSetting"
     },
     {
         "name": "ieee_floating_point_ops",
@@ -1414,7 +1475,10 @@
         "description": "Configures how long (in milliseconds) a query needs to take before we start printing a progress bar.",
         "type": "BIGINT",
         "scope": "local",
-        "custom_implementation": true
+        "default_value": "2000",
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "read_ahead_depth",
@@ -1563,8 +1627,18 @@
         "name": "tracked_metrics",
         "description": "A list of metric glob patterns to enable for collection, e.g. ['query.*', 'optimizer.*'].",
         "type": "VARCHAR[]",
-        "scope": "local",
-        "custom_implementation": true
+        "default_scope": "local",
+        "default_value": "['*']",
+        "on_callbacks": [
+            "set"
+        ]
+    },
+    {
+        "name": "trim_free_blocks",
+        "description": "Whether to invoke filesystem trim on free blocks after checkpoint. This reclaims space for sparse files, on platforms that support it.",
+        "type": "BOOLEAN",
+        "scope": "global",
+        "default_value": "false"
     },
     {
         "name": "username",

@@ -13,7 +13,7 @@ statement ok
 insert into a values (42);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 # in alternative verify mode, CTEs may not be inlined
 require no_alternative_verify

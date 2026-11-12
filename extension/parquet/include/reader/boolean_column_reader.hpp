@@ -43,14 +43,13 @@ struct BooleanParquetValueConversion {
 	template <bool CHECKED>
 	static bool PlainRead(ByteBuffer &plain_data, ColumnReader &reader) {
 		auto &byte_pos = reader.Cast<BooleanColumnReader>().byte_pos;
-		bool ret = (*plain_data.ptr >> byte_pos) & 1;
+		if (CHECKED) {
+			plain_data.Available(1);
+		}
+		bool ret = (*plain_data.GetCurrentLoc() >> byte_pos) & 1;
 		if (++byte_pos == 8) {
 			byte_pos = 0;
-			if (CHECKED) {
-				plain_data.inc(1);
-			} else {
-				plain_data.unsafe_inc(1);
-			}
+			plain_data.UnsafeInc(1);
 		}
 		return ret;
 	}
@@ -61,7 +60,7 @@ struct BooleanParquetValueConversion {
 	}
 
 	static bool PlainAvailable(const ByteBuffer &plain_data, const idx_t count) {
-		return plain_data.check_available((count + 7) / 8);
+		return plain_data.CheckAvailable((count + 7) / 8);
 	}
 
 	static idx_t PlainConstantSize() {

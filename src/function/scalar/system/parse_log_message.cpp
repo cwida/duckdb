@@ -79,7 +79,7 @@ void ParseLogMessageFunction(DataChunk &args, ExpressionState &state, Vector &re
 
 	if (info.log_type.is_structured) {
 		// TODO: allow more complex parsing operations than DefaultCast
-		VectorOperations::DefaultCast(args.data[1], result, args.size(), true);
+		VectorOperations::Cast(state.GetContext(), args.data[1], result, args.size(), true);
 	} else {
 		auto &struct_entries = StructVector::GetEntries(result);
 		struct_entries[0].Reference(args.data[1]);

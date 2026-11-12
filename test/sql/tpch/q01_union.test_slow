@@ -7,7 +7,7 @@ set variable sf 0.01
 include test/sql/tpch/tpch_setup.test_template
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 statement ok
 PRAGMA verify_parallelism

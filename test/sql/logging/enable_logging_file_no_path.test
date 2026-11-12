@@ -17,7 +17,7 @@ memory
 
 # 1) file storage without a path must fail cleanly (no crash on the following flush / on exit)
 statement error
-CALL enable_logging('QueryLog', storage=file);
+CALL enable_logging('QueryLog', storage='file');
 ----
 Cannot enable 'file' log storage without a valid path
 
@@ -30,7 +30,7 @@ memory
 # 2) ...and it must not have poisoned the storage: the same call WITH a path now succeeds.
 #    Before the fix this also failed with "path wasn't set", and DuckDB aborted on exit.
 statement ok
-CALL enable_logging('QueryLog', storage=file, storage_path='{TEST_DIR}/issue9144.csv')
+CALL enable_logging('QueryLog', storage='file', storage_path='{TEST_DIR}/issue9144.csv')
 
 query I
 SELECT value FROM duckdb_settings() WHERE name = 'logging_storage';

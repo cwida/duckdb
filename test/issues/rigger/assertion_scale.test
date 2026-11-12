@@ -28,8 +28,9 @@ CREATE VIEW v0(c0, c1) AS SELECT 888938716, '' FROM t0 GROUP BY t0.rowid, t0.row
 statement ok
 COMMIT;
 
+# OFFSET on an unordered input is intended here
+statement ok
+SET warnings_as_errors=false
+
 statement ok
 SELECT MAX(agg0) FROM (SELECT MAX(v0.c1) AS agg0 FROM v0, t0 WHERE ((((UNICODE('b횐')) IS NOT NULL))AND((- ((0.8179740556303334)*(0.5235330721055326))))) UNION ALL SELECT MAX(v0.c1) AS agg0 FROM v0, t0 WHERE (NOT ((((UNICODE('b횐')) IS NOT NULL))AND((- ((0.8179740556303334)*(0.5235330721055326)))))) UNION ALL SELECT MAX(v0.c1) AS agg0 FROM v0, t0 WHERE ((((((UNICODE('b횐')) IS NOT NULL))AND((- ((0.8179740556303334)*(0.5235330721055326)))))) IS NULL)) as asdf;
-
-
-

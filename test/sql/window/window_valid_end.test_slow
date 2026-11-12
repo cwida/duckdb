@@ -4,7 +4,7 @@
 
 # This only reproduced in release because debug wrote garbage instead of 0s...
 statement ok
-pragma threads=2;
+SET threads=2;
 
 loop i 1 100
 

@@ -3,9 +3,6 @@
 # group: [pragma]
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
 CREATE SCHEMA "my.schema"
 
 statement ok

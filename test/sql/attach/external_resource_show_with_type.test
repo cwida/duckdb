@@ -11,11 +11,11 @@ CREATE SEQUENCE calls_b;
 
 statement ok
 CREATE MACRO list_a(opts) AS TABLE
-    SELECT MAP {'id': 'a' || nextval('calls_a')::VARCHAR} AS handle, 'a-ref' AS reference, 'running' AS state;
+    SELECT MAP {'id': 'a' || nextval('calls_a')::VARCHAR} AS handle, 'bucket-a' AS name, 'a-ref' AS reference, 'running' AS state;
 
 statement ok
 CREATE MACRO list_b(opts) AS TABLE
-    SELECT MAP {'id': 'b' || nextval('calls_b')::VARCHAR} AS handle, 'b-ref' AS reference, 'running' AS state;
+    SELECT MAP {'id': 'b' || nextval('calls_b')::VARCHAR} AS handle, 'bucket-b' AS name, 'b-ref' AS reference, 'running' AS state;
 
 statement ok
 CALL register_external_resource_type('a@st', kind := 'catalog', create_function := 'noop_create', list_function := 'list_a');
@@ -47,7 +47,7 @@ SELECT currval('calls_a'), currval('calls_b');
 query TTTTTTTT rowsort
 SHOW ALL EXTERNAL RESOURCES WITH TYPE 'a@st';
 ----
-NULL	a@st	false	running	a-ref	NULL	NULL	{id=a3}
+bucket-a	a@st	false	running	a-ref	NULL	NULL	{id=a3}
 local_a	a@st	true	NULL	NULL	NULL	NULL	{id=x}
 
 query II
@@ -58,7 +58,7 @@ SELECT currval('calls_a'), currval('calls_b');
 query TTTTTTTT
 SHOW ALL EXTERNAL RESOURCES WITH TYPE 'b@st';
 ----
-NULL	b@st	false	running	b-ref	NULL	NULL	{id=b3}
+bucket-b	b@st	false	running	b-ref	NULL	NULL	{id=b3}
 
 query II
 SELECT currval('calls_a'), currval('calls_b');

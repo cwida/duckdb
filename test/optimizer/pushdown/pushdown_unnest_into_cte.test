@@ -9,7 +9,7 @@ statement ok
 CREATE TABLE tbl2 as SELECT i as id1, [i-3, i+1, i+2] as somelist FROM generate_series(1, 10_000) s(i);
 
 statement ok
-pragma explain_output='OPTIMIZED_ONLY';
+SET explain_output='OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT id1, element

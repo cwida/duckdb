@@ -19,6 +19,7 @@ namespace duckdb {
 
 struct ICUDateFunc {
 	struct BindData : public FunctionData {
+		explicit BindData(Context &context);
 		explicit BindData(ClientContext &context);
 		BindData(const string &tz_setting, const string &cal_setting);
 		BindData(const BindData &other);

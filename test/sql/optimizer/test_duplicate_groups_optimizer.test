@@ -65,10 +65,7 @@ select
 1	1	NULL
 
 statement ok
-pragma explain_output='optimized_only';
-
-statement ok
-pragma disable_verification;
+SET explain_output='optimized_only';
 
 # make sure there is only one group and unused columns/duplicate groups still
 # works.

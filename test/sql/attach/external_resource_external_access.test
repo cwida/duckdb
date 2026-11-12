@@ -1,0 +1,73 @@
+# name: test/sql/attach/external_resource_external_access.test
+# description: EXTERNAL RESOURCE statements are refused when enable_external_access is false
+# group: [attach]
+
+# A mock recipe whose create callback leaves a trace (the sequence advances), so the test can show that
+# the refusal happens before anything is provisioned.
+statement ok
+CREATE SEQUENCE create_calls;
+
+statement ok
+CREATE MACRO mock_create(p) AS TABLE SELECT MAP {'id': 'r' || nextval('create_calls')} AS handle;
+
+statement ok
+CREATE MACRO mock_status(h) AS TABLE
+  SELECT 'ready' AS state, MAP {'uri': 'quack:localhost:9494', 'attached_db_type': 'quack', 'token': 't1'} AS result;
+
+statement ok
+CREATE MACRO mock_destroy(h) AS TABLE SELECT 'ok' AS status;
+
+statement ok
+CALL register_external_resource_type('mock@local', kind := 'catalog', create_function := 'mock_create',
+    status_function := 'mock_status', destroy_function := 'mock_destroy');
+
+statement ok
+SET enable_external_access = false;
+
+# ATTACH / CONNECT TO EXTERNAL RESOURCE: the create form and the reference form alike.
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'mock@local' AS res;
+----
+Permission Error: External resources are disabled through configuration
+
+statement error
+ATTACH TO EXTERNAL RESOURCE shared_res AS res;
+----
+Permission Error: External resources are disabled through configuration
+
+statement error
+CONNECT TO NEW TEMPORARY EXTERNAL RESOURCE 'mock@local';
+----
+Permission Error: External resources are disabled through configuration
+
+# CREATE / REGISTER / DESTROY EXTERNAL RESOURCE.
+statement error
+CREATE EXTERNAL RESOURCE 'mock@local' AS res;
+----
+Permission Error: External resources are disabled through configuration
+
+statement error
+REGISTER EXTERNAL RESOURCE 'mock@local' AS res FROM {'id': 'r1'};
+----
+Permission Error: External resources are disabled through configuration
+
+statement error
+DESTROY EXTERNAL RESOURCE res;
+----
+Permission Error: External resources are disabled through configuration
+
+# Nothing was provisioned, attached or registered.
+query I
+SELECT last_value IS NULL FROM duckdb_sequences() WHERE sequence_name = 'create_calls';
+----
+true
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'res';
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_external_resources();
+----
+0

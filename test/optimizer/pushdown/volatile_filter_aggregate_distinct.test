@@ -125,12 +125,12 @@ SELECT count(*) FROM (SELECT a FROM dd INTERSECT SELECT a FROM dd) q WHERE nextv
 # filters that are not volatile are still pushed below the DISTINCT and the GROUP BY
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT * FROM (SELECT DISTINCT a FROM dd) q WHERE nextval('s6') <= 9 AND a >= 2;
 ----
-logical_opt	<REGEX>:.*nextval.*Distinct.*Filters: a >= 2.*
+logical_opt	<REGEX>:.*nextval.*Aggregate.*Filters: a >= 2.*
 
 query II
 EXPLAIN SELECT p FROM agg GROUP BY p HAVING nextval('s1') <= 9 AND p >= 2;
@@ -148,7 +148,7 @@ CREATE TABLE half AS SELECT 0.5::DOUBLE AS a;
 query II
 EXPLAIN SELECT count(*) FROM (SELECT DISTINCT a FROM halves WHERE random() < a) d JOIN half USING (a);
 ----
-logical_opt	<REGEX>:.*Distinct.*random\(\) < a.*
+logical_opt	<REGEX>:.*Aggregate.*random\(\) < a.*
 
 statement ok
 SET threads = 1;

@@ -8,7 +8,7 @@ SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 require tpch
 
 statement ok
-PRAGMA explain_output='OPTIMIZED_ONLY'
+SET explain_output='OPTIMIZED_ONLY'
 
 statement ok
 SET disabled_optimizers TO 'common_subplan'
