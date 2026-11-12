@@ -1,0 +1,109 @@
+# name: test/sql/function/language_function/language_function_member_alter_races.test
+# description: The add-or-create decision of a language CREATE under concurrent creation and drop of the entry
+# group: [language_function]
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+# language functions need storage v2.1.0
+load {TEST_DIR}/language_function_member_alter_races.db readwrite v2.1.0
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/language_function_demo.duckdb_extension';
+
+statement ok
+CREATE TABLE anchor(i INTEGER);
+
+# the binder decides between create and add on the transaction's snapshot, which execution shares:
+# an entry committed after the snapshot makes the create a write-write conflict, not an add
+statement ok con1
+BEGIN;
+
+statement ok con1
+SELECT * FROM anchor;
+
+statement ok con2
+CREATE FUNCTION fa() RETURNS INTEGER LANGUAGE testlang AS '1';
+
+statement error con1
+CREATE FUNCTION fa(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '2';
+----
+<REGEX>:.*Catalog write-write conflict on create.*
+
+statement ok con1
+ROLLBACK;
+
+query TT
+SELECT parameter_types, macro_definition FROM duckdb_functions() WHERE function_name = 'fa';
+----
+[]	1
+
+# a retry on a new snapshot sees the entry and adds the member
+statement ok con1
+CREATE FUNCTION fa(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '2';
+
+query II
+SELECT fa(), fa(1);
+----
+1	2
+
+# an entry dropped after the snapshot makes the add a write-write conflict, not a create
+statement ok
+CREATE FUNCTION fb() RETURNS INTEGER LANGUAGE testlang AS '1';
+
+statement ok con1
+BEGIN;
+
+statement ok con1
+SELECT * FROM anchor;
+
+statement ok con2
+DROP FUNCTION fb;
+
+statement error con1
+CREATE FUNCTION fb(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '2';
+----
+<REGEX>:.*Catalog write-write conflict on alter.*
+
+statement ok con1
+ROLLBACK;
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'fb';
+----
+0
+
+# a retry on a new snapshot creates the entry
+statement ok con1
+CREATE FUNCTION fb(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '2';
+
+query I
+SELECT fb(1);
+----
+2
+
+# a transaction takes its snapshot at its first access to the database: an entry committed before
+# that is visible, so the CREATE adds the member
+statement ok con1
+BEGIN;
+
+statement ok con2
+CREATE FUNCTION fd() RETURNS INTEGER LANGUAGE testlang AS '1';
+
+statement ok con1
+CREATE FUNCTION fd(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '2';
+
+statement ok con1
+COMMIT;
+
+query II
+SELECT fd(), fd(1);
+----
+1	2
+
+# CREATE is not preparable, so no bound add-or-create decision outlives its statement
+statement error
+PREPARE p AS CREATE FUNCTION fc() RETURNS INTEGER LANGUAGE testlang AS '1';
+----
+<REGEX>:.*CREATE_STATEMENT is not a preparable statement.*
