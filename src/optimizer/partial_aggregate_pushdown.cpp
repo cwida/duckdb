@@ -719,7 +719,10 @@ static bool DEEstimateCollapse(ClientContext &context, LogicalOperator &root, Lo
 		const auto cardinality = stats->cardinality;
 		lower_cardinalities[side] = RelationStatisticsHelper::EstimateGroupCardinality(*join.children[side], *stats,
 		                                                                               std::move(groups), extractor);
-		sufficient_collapse |= DEHasSufficientCollapse(cardinality, lower_cardinalities[side]);
+		const auto join_retains_rows =
+		    static_cast<double>(join.estimated_cardinality) >=
+		    PartialAggregatePushdownHeuristics::MIN_JOIN_RETENTION * static_cast<double>(cardinality);
+		sufficient_collapse |= join_retains_rows && DEHasSufficientCollapse(cardinality, lower_cardinalities[side]);
 		retained_fraction *=
 		    static_cast<double>(lower_cardinalities[side]) / static_cast<double>(MaxValue<idx_t>(cardinality, 1));
 	}

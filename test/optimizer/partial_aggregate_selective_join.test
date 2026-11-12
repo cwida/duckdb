@@ -1,0 +1,56 @@
+# name: test/optimizer/partial_aggregate_selective_join.test
+# description: Partial aggregation must save work before a selective join
+# group: [optimizer]
+
+statement ok
+CREATE TABLE facts AS SELECT i % 1000 AS k, i % 13 AS v FROM range(100000) r(i);
+
+statement ok
+CREATE TABLE dim AS SELECT i AS k, i % 17 AS w, i % 100 = 0 AS keep FROM range(1000) r(i);
+
+statement ok
+ANALYZE;
+
+# Aggregates on both inputs can benefit when only the fact input collapses.
+query II
+EXPLAIN SELECT f.k, sum(f.v), sum(d.w)
+FROM facts f JOIN dim d USING (k)
+GROUP BY f.k;
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query III
+SELECT count(*), sum(v), sum(w) FROM (
+    SELECT f.k, sum(f.v) AS v, sum(d.w) AS w
+    FROM facts f JOIN dim d USING (k)
+    GROUP BY f.k
+);
+----
+1000	599982	797900
+
+# A selective dimension is cheaper to join before computing the aggregates.
+query II
+EXPLAIN SELECT f.k, sum(f.v), sum(d.w)
+FROM facts f JOIN dim d USING (k)
+WHERE d.keep
+GROUP BY f.k;
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN SELECT f.k, sum(f.v), sum(d.w)
+FROM dim d JOIN facts f USING (k)
+WHERE d.keep
+GROUP BY f.k;
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+query III
+SELECT count(*), sum(v), sum(w) FROM (
+    SELECT f.k, sum(f.v) AS v, sum(d.w) AS w
+    FROM facts f JOIN dim d USING (k)
+    WHERE d.keep
+    GROUP BY f.k
+);
+----
+10	6002	8000
