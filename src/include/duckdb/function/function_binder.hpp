@@ -98,8 +98,8 @@ struct FunctionCallArgument {
 	    : type(std::move(type)), name(std::move(name)), location(location) {
 	}
 	//! For the type constants, e.g. LogicalType::INTEGER
-	FunctionCallArgument(LogicalTypeId id)
-	    : FunctionCallArgument(LogicalType(id)) { // NOLINT: allow implicit conversion
+	FunctionCallArgument(LogicalTypeId id) // NOLINT: allow implicit conversion
+	    : FunctionCallArgument(LogicalType(id)) {
 	}
 
 	LogicalType type;

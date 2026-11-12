@@ -243,7 +243,7 @@ yyjson_mut_val *ExtractStructure(yyjson_val *val, yyjson_mut_doc *doc) {
 		case YYJSON_TYPE_ARR | YYJSON_SUBTYPE_NONE: {
 			auto child = HandleArrayFrame(nodes, frame, doc);
 			if (child) {
-				stack.push_back(std::move(*child));
+				stack.push_back(*child);
 			} else {
 				stack.pop_back();
 			}
@@ -252,7 +252,7 @@ yyjson_mut_val *ExtractStructure(yyjson_val *val, yyjson_mut_doc *doc) {
 		case YYJSON_TYPE_OBJ | YYJSON_SUBTYPE_NONE: {
 			auto child = HandleObjectFrame(nodes, frame, doc);
 			if (child) {
-				stack.push_back(std::move(*child));
+				stack.push_back(*child);
 			} else {
 				stack.pop_back();
 			}

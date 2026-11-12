@@ -18,7 +18,7 @@ SET storage_compatibility_version='v1.3.0'
 load {TEST_DIR}/test_table_copy_{compression}.db
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 statement ok
 CREATE TABLE test (a VARCHAR);

@@ -92,6 +92,7 @@ static const TestConfigOption test_config_options[] = {
          LogicalType::STRUCT({{"reason", LogicalType::VARCHAR}, {"paths", LogicalType::LIST(LogicalType::VARCHAR)}})),
      nullptr},
     {"skip_compiled", "Skip compiled tests", LogicalType::BOOLEAN, nullptr},
+    {"warnings_as_errors", "Fail any statement that logs a DuckDB warning", LogicalType::BOOLEAN, nullptr},
     {"skip_error_messages", "Skip compiled tests", LogicalType::LIST(LogicalType::VARCHAR), nullptr},
     {"sort_style", "Default sort style if none is configured in the test (none, rowsort, valuesort)",
      LogicalType::VARCHAR, TestConfiguration::CheckSortStyle},
@@ -758,6 +759,10 @@ bool TestConfiguration::GetSummarizeFailures() {
 
 bool TestConfiguration::GetSkipCompiledTests() {
 	return GetOptionOrDefault("skip_compiled", false);
+}
+
+bool TestConfiguration::GetWarningsAsErrors() {
+	return GetOptionOrDefault("warnings_as_errors", false);
 }
 
 string TestConfiguration::GetStorageVersion() {

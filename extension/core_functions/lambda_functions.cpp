@@ -1,6 +1,7 @@
 #include "duckdb/function/lambda_functions.hpp"
 #include "duckdb/common/exception/binder_exception.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
@@ -20,8 +21,8 @@ namespace duckdb {
 //! LambdaExecuteInfo holds information for executing the lambda expression on an input chunk and
 //! a resulting lambda chunk.
 struct LambdaExecuteInfo {
-	LambdaExecuteInfo(ClientContext &context, const Expression &lambda_expr, const DataChunk &args,
-	                  const bool has_index, const Vector &child_vector)
+	LambdaExecuteInfo(Context &context, const Expression &lambda_expr, const DataChunk &args, const bool has_index,
+	                  const Vector &child_vector)
 	    : has_index(has_index) {
 		expr_executor = make_uniq<ExpressionExecutor>(context, lambda_expr);
 

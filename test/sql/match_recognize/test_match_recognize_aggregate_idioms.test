@@ -9,7 +9,7 @@
 # was checked against two other engines before it was written down.
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 # ---------------------------------------------------------------- a later leg reads an earlier one
 

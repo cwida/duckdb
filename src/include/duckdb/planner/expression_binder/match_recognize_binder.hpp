@@ -220,7 +220,7 @@ struct MatchRecognizeSteppedNavigation {
 };
 
 //! Peel what the step reads with off its argument, leaving the expression the row it reaches supplies
-MatchRecognizeSteppedNavigation MatchRecognizePeelStep(unique_ptr<ParsedExpression> &inner);
+MatchRecognizeSteppedNavigation MatchRecognizePeelStep(Context &context, unique_ptr<ParsedExpression> &inner);
 
 //! A step starts from a row the match names, and a step inside one names no row, so refuse the nesting
 void MatchRecognizeRejectNestedStep(const ParsedExpression &inner, const string &function_name);
@@ -242,7 +242,8 @@ string MatchRecognizeNavigationVariable(unique_ptr<ParsedExpression> &inner, con
 
 //! FIRST() and LAST() count from the end of the match they read from, by a constant the two clauses
 //! spell the same way.
-idx_t MatchRecognizeNavigationOffset(const string &function_name, const ParsedExpression &offset_expr);
+idx_t MatchRecognizeNavigationOffset(Context &context, const string &function_name,
+                                     const ParsedExpression &offset_expr);
 
 //! One field of the matcher's state, read from the column it travels in
 unique_ptr<ParsedExpression> MatchRecognizeStateField(const string &state, const string &field);

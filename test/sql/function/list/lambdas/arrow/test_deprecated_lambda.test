@@ -25,3 +25,15 @@ SELECT  v.split(' ') strings,
 FROM varchars
 ----
 <REGEX>:Binder Error.*Deprecated lambda arrow.*
+
+statement ok
+SET lambda_syntax='ENABLE_SINGLE_ARROW'
+
+statement ok
+CREATE OR REPLACE FUNCTION transpose(lst) AS (
+	SELECT list_transform(range(1, 1 + length(lst[1])),
+		j -> list_transform(range(1, length(lst) + 1),
+			i -> lst[i][j]
+		)
+	)
+);

@@ -2,9 +2,6 @@
 # description: MATCH_RECOGNIZE - where a value is computed, and what may read it
 # group: [match_recognize]
 
-statement ok
-PRAGMA enable_verification
-
 # A window walks the ordered partition rather than the match, so it is computed below the matcher.
 # What binding it hands back is the window operator's own output, which the projection the conditions
 # are evaluated over can read - so navigating one is projecting the navigated expression, once.

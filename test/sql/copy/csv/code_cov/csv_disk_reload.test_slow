@@ -10,10 +10,10 @@ COPY t1 TO '{TEST_DIR}/t1.csv' (FORMAT CSV, DELIMITER '|', HEADER);
 
 # Let's set a memory limit
 statement ok
-PRAGMA memory_limit='2M'
+SET memory_limit='2M'
 
 statement ok
-PRAGMA threads=2
+SET threads=2
 
 query I
 select count(*) from read_csv_auto('{TEST_DIR}/t1.csv',buffer_size = 262144, sample_size=-1)

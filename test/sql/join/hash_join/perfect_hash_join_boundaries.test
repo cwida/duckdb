@@ -1,0 +1,177 @@
+# name: test/sql/join/hash_join/perfect_hash_join_boundaries.test
+# description: Direct integer domains handle boundary values and all-NULL builds
+# group: [hash_join]
+
+# Keep the operator logs across statements.
+require skip_reload
+
+statement ok
+SET VARIABLE check_perfect_activation =
+    NOT current_setting('debug_force_external') AND NOT current_setting('debug_disable_optimizer');
+
+statement ok
+SET disabled_optimizers='compressed_materialization,join_filter_pushdown,statistics_propagation,join_order,build_side_probe_side';
+
+foreach type TINYINT SMALLINT INTEGER BIGINT HUGEINT UTINYINT USMALLINT UINTEGER UBIGINT UHUGEINT
+
+statement ok
+CREATE OR REPLACE TABLE boundary_probe AS SELECT i::{type} k FROM range(8) t(i);
+
+statement ok
+CREATE OR REPLACE TABLE boundary_build AS SELECT (i+2)::{type} k FROM range(4) t(i), range(3);
+
+query I
+SELECT count(*) FROM boundary_probe p JOIN boundary_build b USING(k);
+----
+12
+
+query I
+SELECT count(*) FROM boundary_probe p SEMI JOIN boundary_build b USING(k);
+----
+4
+
+query I
+SELECT count(*) FROM boundary_probe p ANTI JOIN boundary_build b USING(k);
+----
+4
+
+endloop
+
+statement ok
+CREATE TABLE high_unsigned(k UHUGEINT);
+
+statement ok
+INSERT INTO high_unsigned VALUES (340282366920938463463374607431768211454), (340282366920938463463374607431768211455), (NULL);
+
+query I
+SELECT count(*) FROM high_unsigned p JOIN high_unsigned b ON p.k IS NOT DISTINCT FROM b.k;
+----
+3
+
+query I
+SELECT count(*) FROM high_unsigned p SEMI JOIN high_unsigned b USING(k);
+----
+2
+
+statement ok
+CREATE TABLE low_signed(k HUGEINT);
+
+statement ok
+INSERT INTO low_signed VALUES (-170141183460469231731687303715884105728), (-170141183460469231731687303715884105727), (NULL);
+
+query I
+SELECT count(*) FROM low_signed p JOIN low_signed b ON p.k IS NOT DISTINCT FROM b.k;
+----
+3
+
+query I
+SELECT count(*) FROM low_signed p ANTI JOIN low_signed b USING(k);
+----
+1
+
+statement ok
+CREATE TABLE null_keys(k BIGINT, v INTEGER);
+
+statement ok
+INSERT INTO null_keys VALUES (NULL, 1), (NULL, 2);
+
+query I
+SELECT count(*) FROM null_keys p JOIN null_keys b ON p.k IS NOT DISTINCT FROM b.k;
+----
+4
+
+query I
+SELECT count(*) FROM null_keys p FULL OUTER JOIN null_keys b ON p.k=b.k;
+----
+4
+
+query I
+SELECT count(*) FROM null_keys p FULL OUTER JOIN null_keys b ON p.k IS NOT DISTINCT FROM b.k AND p.v>b.v;
+----
+3
+
+# Cross both the signed boundary and the lower limb of a 128-bit key.
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CREATE TABLE signed_crossing(k HUGEINT);
+
+statement ok
+INSERT INTO signed_crossing VALUES (-1),(0),(1),(NULL);
+
+query T
+SELECT p.k::VARCHAR FROM signed_crossing p JOIN signed_crossing b
+ON p.k IS NOT DISTINCT FROM b.k ORDER BY p.k NULLS LAST;
+----
+-1
+0
+1
+NULL
+
+statement ok
+CREATE TABLE unsigned_crossing(k UHUGEINT);
+
+statement ok
+INSERT INTO unsigned_crossing VALUES (18446744073709551615),(18446744073709551616),(18446744073709551617),(NULL);
+
+query T
+SELECT p.k::VARCHAR FROM unsigned_crossing p JOIN unsigned_crossing b
+ON p.k IS NOT DISTINCT FROM b.k ORDER BY p.k NULLS LAST;
+----
+18446744073709551615
+18446744073709551616
+18446744073709551617
+NULL
+
+statement ok
+CREATE TABLE wide_domain(k HUGEINT);
+
+statement ok
+INSERT INTO wide_domain VALUES (-170141183460469231731687303715884105728),(170141183460469231731687303715884105727),(NULL);
+
+query T
+SELECT p.k::VARCHAR FROM wide_domain p JOIN wide_domain b
+ON p.k IS NOT DISTINCT FROM b.k ORDER BY p.k NULLS LAST;
+----
+-170141183460469231731687303715884105728
+170141183460469231731687303715884105727
+NULL
+
+statement ok
+CREATE TABLE wide_bigint(k BIGINT);
+
+statement ok
+INSERT INTO wide_bigint VALUES (-9223372036854775808),(9223372036854775807),(NULL);
+
+query T
+SELECT p.k::VARCHAR FROM wide_bigint p JOIN wide_bigint b
+ON p.k IS NOT DISTINCT FROM b.k ORDER BY p.k NULLS LAST;
+----
+-9223372036854775808
+9223372036854775807
+NULL
+
+statement ok
+CREATE TABLE full_tinyint AS SELECT i::TINYINT k FROM range(-128,128) t(i);
+
+query II
+SELECT count(*),sum(p.k) FROM full_tinyint p SEMI JOIN full_tinyint b USING(k);
+----
+256	-128
+
+query I
+SELECT count(*) FROM full_tinyint p ANTI JOIN full_tinyint b USING(k);
+----
+0
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_perfect_activation') OR
+    list_sort(list(info['backend'])) = ['bitmap','bitmap','direct','direct','hash','hash']
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event='Lookup';
+----
+true

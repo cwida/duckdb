@@ -22,10 +22,6 @@ SELECT list(a ORDER BY a[3] DESC) FROM arrays;
 ----
 [[7, 8, 9], [1, 2, 4], [1, 2, 3], [4, NULL, 2], [-1, -2, -3], NULL]
 
-# TODO: this does not work with verification, bug is reproducible on main (with list_value), issue has been filed.
-
-statement ok
-pragma disable_verification
 
 query I
 SELECT list(array_value({'foo': [10]}));

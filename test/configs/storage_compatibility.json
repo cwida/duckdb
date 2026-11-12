@@ -66,6 +66,7 @@
         "test/sql/copy/parquet/bloom_filter_fallback_types.test",
         "test/sql/aggregate/aggregates/summarize_nanosecond_types.test",
         "test/sql/optimizer/expression/test_time_ns_cast_comparison.test",
+        "test/optimizer/comparison_simplification_equality_casts.test",
         "test/fuzzer/duckfuzz/arg_minmax_by_decimal.test",
         "test/fuzzer/duckfuzz/array_distance.test",
         "test/fuzzer/duckfuzz/array_hash.test",
@@ -112,7 +113,8 @@
         "test/sql/types/time/test_time_ns.test",
         "test/sql/copy/parquet/int96_as.test",
         "test/sql/copy/parquet/byte_stream_split_flba.test",
-        "test/sql/function/timestamp/test_icu_time_bucket_timestamptz_ns.test"
+        "test/sql/function/timestamp/test_icu_time_bucket_timestamptz_ns.test",
+        "test/sql/types/timestamp/timestamptz_ns_timestamptz_comparison.test"
       ]
     },
     {
@@ -252,6 +254,12 @@
         "test/sql/catalog/nested_schema/nested_export.test",
         "test/sql/catalog/nested_schema/nested_schema_limits.test",
         "test/sql/catalog/nested_schema/nested_wal_replay.test"
+      ]
+    },
+    {
+      "reason": "Checkpoint vacuum of indexed tables requires storage version v2.0.0.",
+      "paths": [
+        "test/sql/storage/checkpoint_vacuum_unbound_index.test"
       ]
     },
     {

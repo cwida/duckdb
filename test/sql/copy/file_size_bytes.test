@@ -87,7 +87,7 @@ statement ok
 PRAGMA verify_parallelism;
 
 statement ok
-pragma threads=4;
+SET threads=4;
 
 # with parallelism we do best-effort to get to the specified file size, but we are more likely to overshoot
 # this file would be ~950MB if written to a single file, what if we set a 500kb limit

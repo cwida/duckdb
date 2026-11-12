@@ -63,7 +63,7 @@ unique_ptr<FileBuffer> StandardBufferManager::ConstructManagedBuffer(idx_t size,
 		// non re-usable buffer (or mmap-backed, which we cannot rewrite): allocate a new buffer
 		result = make_uniq<FileBuffer>(BlockAllocator::Get(db), type, size, block_header_size);
 	}
-	result->Initialize(DBConfig::GetConfig(db).options.debug_initialize);
+	result->Initialize(Settings::Get<DebugInitializeSetting>(db));
 	return result;
 }
 

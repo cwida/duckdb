@@ -18,6 +18,7 @@ namespace duckdb {
 class TableRef;
 class Expression;
 class ClientContext;
+class Context;
 struct ReplacementScanData;
 class CastFunctionSet;
 struct CastParameters;
@@ -31,7 +32,7 @@ public:
 	JSONReadFunctionData(bool constant, string path_p, idx_t len, JSONCommon::JSONPathType path_type);
 	unique_ptr<FunctionData> Copy() const override;
 	bool Equals(const FunctionData &other_p) const override;
-	static JSONCommon::JSONPathType CheckPath(const Value &path_val, string &path, idx_t &len);
+	static JSONCommon::JSONPathType CheckPath(Context &context, const Value &path_val, string &path, idx_t &len);
 	static void ResolveTypes(ResolveScalarFunctionTypesInput &input);
 	static unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input);
 
@@ -65,7 +66,7 @@ public:
 struct JSONFunctionLocalState : public FunctionLocalState {
 public:
 	explicit JSONFunctionLocalState(Allocator &allocator);
-	explicit JSONFunctionLocalState(ClientContext &context);
+	explicit JSONFunctionLocalState(Context &context);
 	static unique_ptr<FunctionLocalState> Init(ExpressionState &state, const BoundFunctionExpression &expr,
 	                                           FunctionData *bind_data);
 	static unique_ptr<FunctionLocalState> InitCastLocalState(CastLocalStateParameters &parameters);

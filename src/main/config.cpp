@@ -33,13 +33,14 @@ DebugVerificationMode DBConfigOptions::global_verification_mode = DebugVerificat
 #define DUCKDB_SETTING(_PARAM)                                                                                         \
 	{                                                                                                                  \
 		_PARAM::Name, _PARAM::Description, _PARAM::InputType, nullptr, nullptr, nullptr, nullptr, nullptr,             \
-		    _PARAM::Scope, _PARAM::DefaultValue, nullptr, _PARAM::SettingIndex, _PARAM::IsDebug, _PARAM::IsDeprecated  \
+		    _PARAM::Scope, _PARAM::DefaultValue, nullptr, _PARAM::SettingIndex, _PARAM::IsDebug, _PARAM::IsDeprecated, \
+		    Settings::GetDefaultValue<_PARAM>                                                                          \
 	}
 #define DUCKDB_SETTING_CALLBACK(_PARAM)                                                                                \
 	{                                                                                                                  \
 		_PARAM::Name, _PARAM::Description, _PARAM::InputType, nullptr, nullptr, nullptr, nullptr, nullptr,             \
 		    _PARAM::Scope, _PARAM::DefaultValue, _PARAM::OnSet, _PARAM::SettingIndex, _PARAM::IsDebug,                 \
-		    _PARAM::IsDeprecated                                                                                       \
+		    _PARAM::IsDeprecated, Settings::GetDefaultValue<_PARAM>                                                    \
 	}
 #define DUCKDB_GLOBAL(_PARAM)                                                                                          \
 	{                                                                                                                  \
@@ -98,15 +99,17 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(AutoinstallExtensionRepositorySetting),
     DUCKDB_SETTING(AutoinstallKnownExtensionsSetting),
     DUCKDB_SETTING(AutoloadKnownExtensionsSetting),
+    DUCKDB_SETTING_CALLBACK(BufferManagerTrackEvictionTimestampsSetting),
     DUCKDB_SETTING(CacheLocalFilesSetting),
     DUCKDB_SETTING(CatalogErrorMaxSchemasSetting),
     DUCKDB_SETTING_CALLBACK(CheckpointOnDetachSetting),
+    DUCKDB_SETTING(CheckpointOnShutdownSetting),
     DUCKDB_GLOBAL(CheckpointThresholdSetting),
     DUCKDB_LOCAL(CurrentDialectSetting),
     DUCKDB_SETTING_CALLBACK(CurrentTransactionInvalidationPolicySetting),
     DUCKDB_SETTING(CustomExtensionRepositorySetting),
     DUCKDB_GLOBAL(CustomUserAgentSetting),
-    DUCKDB_GLOBAL(DebugAbortOnWalFailureSetting),
+    DUCKDB_SETTING(DebugAbortOnWalFailureSetting),
     DUCKDB_SETTING(DebugAsofIejoinSetting),
     DUCKDB_SETTING_CALLBACK(DebugCheckpointAbortSetting),
     DUCKDB_SETTING(DebugCheckpointScanSleepMsSetting),
@@ -117,17 +120,20 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(DebugEvictionQueueSleepMicroSecondsSetting),
     DUCKDB_SETTING(DebugFileDescriptorLimitSetting),
     DUCKDB_SETTING_CALLBACK(ForceBitpackingModeSetting),
+    DUCKDB_SETTING(DebugForceCheckpointSetting),
     DUCKDB_SETTING(DebugForceCommitFailureSetting),
     DUCKDB_SETTING(DebugForceCommitRevertFailureSetting),
     DUCKDB_SETTING(DebugForceExternalSetting),
     DUCKDB_SETTING(DebugForceFetchRowSetting),
+    DUCKDB_SETTING(DebugForceFlushAppendFailureSetting),
     DUCKDB_GLOBAL(ForceMbedtlsUnsafeSetting),
     DUCKDB_SETTING(DebugForceNoCrossProductSetting),
     DUCKDB_SETTING(ForceUpdateToDelAndInsertSetting),
     DUCKDB_GLOBAL(ForceVariantShredding),
     DUCKDB_SETTING(DebugForceWalFsyncFailureSetting),
+    DUCKDB_SETTING_CALLBACK(DebugInitializeSetting),
     DUCKDB_SETTING(DebugLocalFileSystemDelayMsSetting),
-    DUCKDB_GLOBAL(DebugOrderVerificationSetting),
+    DUCKDB_SETTING_CALLBACK(DebugOrderVerificationSetting),
     DUCKDB_SETTING_CALLBACK(DebugPhysicalTableScanExecutionStrategySetting),
     DUCKDB_SETTING(DebugSkipCheckpointOnCommitSetting),
     DUCKDB_GLOBAL(DebugVerificationModeSetting),
@@ -171,8 +177,8 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(EnableOptimisticWriteSetting),
     DUCKDB_SETTING(EnableOptimizerSetting),
     DUCKDB_LOCAL(EnableProfilingSetting),
-    DUCKDB_LOCAL(EnableProgressBarSetting),
-    DUCKDB_LOCAL(EnableProgressBarPrintSetting),
+    DUCKDB_SETTING_CALLBACK(EnableProgressBarSetting),
+    DUCKDB_SETTING_CALLBACK(EnableProgressBarPrintSetting),
     DUCKDB_SETTING(EnableViewDependenciesSetting),
     DUCKDB_GLOBAL(EnabledLogTypes),
     DUCKDB_SETTING(ErrorOnDivisionByZeroSetting),
@@ -198,6 +204,8 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_GLOBAL(HTTPProxySetting),
     DUCKDB_SETTING(HTTPProxyPasswordSetting),
     DUCKDB_SETTING(HTTPProxyUsernameSetting),
+    DUCKDB_SETTING(HTTPRetryQuotaThrottledSetting),
+    DUCKDB_SETTING(HTTPRetryThrottledWaitMsSetting),
     DUCKDB_SETTING(IeeeFloatingPointOpsSetting),
     DUCKDB_SETTING(IgnoreUnknownCrsSetting),
     DUCKDB_SETTING(ImmediateTransactionModeSetting),
@@ -242,7 +250,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_LOCAL(ProfilingModeSetting),
     DUCKDB_LOCAL(ProfilingOutputSetting),
     DUCKDB_LOCAL(ProfilingRendererSettingsSetting),
-    DUCKDB_LOCAL(ProgressBarTimeSetting),
+    DUCKDB_SETTING_CALLBACK(ProgressBarTimeSetting),
     DUCKDB_SETTING_CALLBACK(ReadAheadDepthSetting),
     DUCKDB_SETTING(RedactHttpLogsSetting),
     DUCKDB_SETTING_CALLBACK(RegexMatchOperatorSemanticsSetting),
@@ -260,7 +268,8 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_GLOBAL(TempDirectorySetting),
     DUCKDB_SETTING_CALLBACK(TempFileEncryptionSetting),
     DUCKDB_GLOBAL(ThreadsSetting),
-    DUCKDB_LOCAL(TrackedMetricsSetting),
+    DUCKDB_SETTING_CALLBACK(TrackedMetricsSetting),
+    DUCKDB_SETTING(TrimFreeBlocksSetting),
     DUCKDB_SETTING(UsernameSetting),
     DUCKDB_SETTING_CALLBACK(VacuumRebuildIndexesSetting),
     DUCKDB_SETTING_CALLBACK(ValidateExternalFileCacheSetting),
@@ -882,8 +891,10 @@ SettingLookupResult DBConfig::TryGetDefaultValue(optional_ptr<const Configuratio
 	if (!option || !option->default_value) {
 		return SettingLookupResult();
 	}
-	auto input_type = ParseLogicalType(option->parameter_type);
-	result = Value(option->default_value).DefaultCastAs(input_type);
+	if (!option->get_default_value) {
+		throw InternalException("Generic setting \"%s\" has no typed default value", option->name);
+	}
+	result = option->get_default_value();
 	return SettingLookupResult(SettingScope::GLOBAL);
 }
 

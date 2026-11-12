@@ -11,10 +11,10 @@ SET threads=4;
 # disable spilling so the memory limit assertion below is deterministic, not a race against the
 # radix hash table's spill-to-disk speed
 statement ok
-PRAGMA temp_directory=''
+SET temp_directory=''
 
 statement ok
-PRAGMA max_temp_directory_size='0B'
+SET max_temp_directory_size='0B'
 
 statement ok
 CREATE TABLE src AS

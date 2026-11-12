@@ -74,6 +74,9 @@ public:
 	virtual void UndoAlter(ClientContext &context, AlterInfo &info);
 	virtual void Rollback(CatalogEntry &prev_entry);
 	virtual void OnDrop();
+	//! Whether this version breaks what dependents bound against previous rely on. Previous is any earlier
+	//! version of this entry, possibly several alters back, so the answer has to hold across a chain of alters
+	virtual bool InvalidatesDependents(const CatalogEntry &previous) const;
 
 	virtual unique_ptr<CatalogEntry> Copy(ClientContext &context) const;
 

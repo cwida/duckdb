@@ -12,7 +12,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
 CREATE TABLE test AS SELECT -i a, -i b FROM range(100000) tbl(i)
@@ -74,7 +74,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 query I
 SELECT COUNT(*) FROM test WHERE a>0 AND a%2=0

@@ -168,5 +168,5 @@ select start, token_type, word from sql_tokenize($$select r.e100$$);
 ----
 0	KEYWORD	select
 7	TABLE_NAME	r
-8	NUMBER_LITERAL	.
+8	OPERATOR	.
 9	COLUMN_NAME	e100

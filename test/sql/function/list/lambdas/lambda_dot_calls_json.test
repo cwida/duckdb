@@ -1,0 +1,53 @@
+# name: test/sql/function/list/lambdas/lambda_dot_calls_json.test
+# description: Arrow expressions can turn out to be the JSON operator, so their parameters must not shadow function qualifiers.
+# group: [lambdas]
+
+require json
+
+statement ok
+SET lambda_syntax='DISABLE_SINGLE_ARROW'
+
+statement ok
+CREATE SCHEMA j;
+
+statement ok
+CREATE MACRO j.pick() AS 'a';
+
+statement ok
+CREATE MACRO pick(v) AS 'b';
+
+# the arrow LHS looks like a lambda parameter, but the schema macro must still resolve
+
+query I
+SELECT json_extract_string(j -> j.pick(), '$') FROM (VALUES ('{"a":1,"b":222}'::JSON)) t(j);
+----
+1
+
+# the same holds on the bind-time path
+
+query I
+SELECT count(*) FROM (VALUES ('{"a":1,"b":222}'::JSON)) t(j) WHERE json_extract_string(j -> j.pick(), '$') = '1';
+----
+1
+
+# a keyword lambda parameter of the same name does shadow the schema
+
+query I
+SELECT list_transform(['x'], lambda j: pick(j));
+----
+[b]
+
+query I
+SELECT list_transform(['x'], lambda j: j.pick());
+----
+[b]
+
+# an arrow on a lambda-capable function resolves as a lambda at bind time, so its parameter shadows there too
+
+statement ok
+SET lambda_syntax='ENABLE_SINGLE_ARROW'
+
+query I
+SELECT list_transform(['x'], j -> j.pick());
+----
+[b]

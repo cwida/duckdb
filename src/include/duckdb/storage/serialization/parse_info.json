@@ -518,6 +518,39 @@
     ]
   },
   {
+    "class": "AlterMacroInfo",
+    "base": "AlterInfo",
+    "enum": "ALTER_MACRO",
+    "class_type": "alter_macro_type",
+    "includes": [
+      "duckdb/parser/parsed_data/alter_macro_info.hpp"
+    ],
+    "members": [
+      {
+        "id": 300,
+        "name": "alter_macro_type",
+        "type": "AlterMacroType"
+      },
+      {
+        "id": 301,
+        "name": "entry_catalog_type",
+        "type": "CatalogType"
+      }
+    ]
+  },
+  {
+    "class": "RemoveMacroOverloadInfo",
+    "base": "AlterMacroInfo",
+    "enum": "REMOVE_OVERLOAD",
+    "members": [
+      {
+        "id": 400,
+        "name": "signature",
+        "type": "vector<LogicalType>"
+      }
+    ]
+  },
+  {
     "class": "AlterSchemaInfo",
     "base": "AlterInfo",
     "enum": "ALTER_SCHEMA",

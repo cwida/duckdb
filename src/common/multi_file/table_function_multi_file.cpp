@@ -485,7 +485,7 @@ bool TableFunctionMultiFileWrapper::ParseOption(ClientContext &context, const Id
 	if (!settings.sample_files_parameter.empty() && key == settings.sample_files_parameter) {
 		// this parameter of the wrapped function also sets how many files are sampled to determine the schema - a
 		// value we cannot use is left to the function to report, in its own words, when it binds
-		file_options.TrySetMaximumSampleFiles(val);
+		file_options.TrySetMaximumSampleFiles(context.GetContext(), val);
 	}
 	return true;
 }
@@ -516,7 +516,7 @@ bool TableFunctionMultiFileWrapper::ParseCopyOption(ClientContext &context, cons
 	} else if (type.id() == LogicalTypeId::ANY || values[0].type() == type) {
 		val = values[0];
 	} else {
-		val = values[0].DefaultCastAs(type);
+		val = values[0].CastAs(context, type);
 	}
 	return ParseNamedParameter(key, val, options_p.Cast<TableFunctionFileReaderOptions>());
 }

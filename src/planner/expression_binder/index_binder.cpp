@@ -1,5 +1,6 @@
 #include "duckdb/planner/expression_binder/index_binder.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/error_data.hpp"
 
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
@@ -25,6 +26,44 @@ IndexBinder::IndexBinder(Binder &binder, ClientContext &context, optional_ptr<Ta
     : ExpressionBinder(binder, context), table(table), info(info) {
 }
 
+//! Returns a lambda function of the key, if any
+static optional_ptr<const BoundFunctionExpression> FindLambdaFunction(const Expression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
+		auto &function = expr.Cast<BoundFunctionExpression>();
+		if (function.Function().HasBindLambdaCallback()) {
+			return &function;
+		}
+	}
+	optional_ptr<const BoundFunctionExpression> result;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		if (!result) {
+			result = FindLambdaFunction(child);
+		}
+	});
+	return result;
+}
+
+static bool IsValidIndexExpression(Binder &binder, const Expression &expr, ErrorData &error) {
+	// casts are bound without the binder, so a cast that reads settings such as TimeZone is found in the key
+	if (binder.GetStatementProperties().always_require_rebind || expr.RequiresRebind()) {
+		error = BinderException("Index keys cannot contain expressions with side effects. They also cannot depend on "
+		                        "settings such as TimeZone.");
+		return false;
+	}
+	// Lambda functions require a ClientContext, but the index's expression executor has none, so reject.
+	auto lambda_function = FindLambdaFunction(expr);
+	if (lambda_function) {
+		error = BinderException(*lambda_function, "Index keys cannot contain lambda functions such as %s.",
+		                        lambda_function->Function().GetName());
+		return false;
+	}
+	if (!expr.IsConsistent()) {
+		error = BinderException("Index keys cannot contain expressions with side effects.");
+		return false;
+	}
+	return true;
+}
+
 unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index) {
 	auto &index_type_name = unbound_index.GetIndexType();
 	// Do we know the type of this index now?
@@ -40,12 +79,21 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index)
 	auto &parsed_expressions = unbound_index.GetParsedExpressions();
 
 	// bind the parsed expressions to create unbound expressions
+	auto &properties = binder.GetStatementProperties();
+	const auto statement_requires_rebind = properties.always_require_rebind;
 	vector<unique_ptr<Expression>> unbound_expressions;
 	unbound_expressions.reserve(parsed_expressions.size());
 	for (auto &expr : parsed_expressions) {
 		auto copy = expr->Copy();
+		properties.always_require_rebind = false;
 		unbound_expressions.push_back(Bind(copy));
+		// Stored keys must satisfy the same requirements as newly created keys.
+		ErrorData error;
+		if (!IsValidIndexExpression(binder, *unbound_expressions.back(), error)) {
+			throw DataCorruptionException("Invalid index %s: %s", create_info.GetIndexName(), error.RawMessage());
+		}
 	}
+	properties.always_require_rebind = statement_requires_rebind;
 
 	CreateIndexInput input(context, unbound_index.table_io_manager, unbound_index.db, create_info.constraint_type,
 	                       create_info.GetIndexName(), create_info.column_ids, unbound_expressions, storage_info,
@@ -75,23 +123,6 @@ void IndexBinder::InitCreateIndexInfo(LogicalGet &get, CreateIndexInfo &info) {
 	// the index lives in the same (possibly nested) schema as the table it is created on
 	info.SetQualifiedName(get.GetTable()->schema.GetQualifiedName(info.GetQualifiedName().Name()));
 	get.AddColumnId(COLUMN_IDENTIFIER_ROW_ID);
-}
-
-//! Returns a lambda function of the key, if any
-static optional_ptr<const BoundFunctionExpression> FindLambdaFunction(const Expression &expr) {
-	if (expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
-		auto &function = expr.Cast<BoundFunctionExpression>();
-		if (function.Function().HasBindLambdaCallback()) {
-			return &function;
-		}
-	}
-	optional_ptr<const BoundFunctionExpression> result;
-	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
-		if (!result) {
-			result = FindLambdaFunction(child);
-		}
-	});
-	return result;
 }
 
 unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
@@ -125,16 +156,9 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 	for (auto &expr : create_index_info->expressions) {
 		properties.always_require_rebind = false;
 		expressions.push_back(Bind(expr));
-		// casts are bound without the binder, so a cast that reads settings such as TimeZone is found in the key
-		if (properties.always_require_rebind || expressions.back()->RequiresRebind()) {
-			throw BinderException("Index keys cannot contain expressions with side effects. They also cannot depend on "
-			                      "settings such as TimeZone.");
-		}
-		// lambda functions need a ClientContext to execute, which appends and deletes do not have
-		auto lambda_function = FindLambdaFunction(*expressions.back());
-		if (lambda_function) {
-			throw BinderException(*lambda_function, "Index keys cannot contain lambda functions such as %s.",
-			                      lambda_function->Function().GetName());
+		ErrorData error;
+		if (!IsValidIndexExpression(binder, *expressions.back(), error)) {
+			error.Throw();
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;

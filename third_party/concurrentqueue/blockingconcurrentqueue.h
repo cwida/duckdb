@@ -1,8 +1,9 @@
-// Provides an efficient blocking version of moodycamel::ConcurrentQueue.
-// ©2015-2016 Cameron Desrochers. Distributed under the terms of the simplified
+// Provides an efficient blocking version of duckdb_moodycamel::ConcurrentQueue.
+// ©2015-2020 Cameron Desrochers. Distributed under the terms of the simplified
 // BSD license, available at the top of concurrentqueue.h.
+// Also dual-licensed under the Boost Software License (see LICENSE.md)
 // Uses Jeff Preshing's semaphore implementation (under the terms of its
-// separate zlib license, embedded below).
+// separate zlib license, see lightweightsemaphore.h).
 
 #pragma once
 
@@ -55,18 +56,18 @@ public:
 	// includes making the memory effects of construction visible, possibly with a
 	// memory barrier).
 	explicit BlockingConcurrentQueue(size_t capacity = 6 * BLOCK_SIZE)
-		: inner(capacity), sema(create<LightweightSemaphore>(), &BlockingConcurrentQueue::template destroy<LightweightSemaphore>)
+		: inner(capacity), sema(create<LightweightSemaphore, ssize_t, int>(0, static_cast<int>(Traits::MAX_SEMA_SPINS)), &BlockingConcurrentQueue::template destroy<LightweightSemaphore>)
 	{
-		assert(reinterpret_cast<ConcurrentQueue*>((BlockingConcurrentQueue*)1) == &((BlockingConcurrentQueue*)1)->inner && "BlockingConcurrentQueue must have ConcurrentQueue as its first member");
+		assert(reinterpret_cast<ConcurrentQueue*>(reinterpret_cast<BlockingConcurrentQueue*>(1)) == &(reinterpret_cast<BlockingConcurrentQueue*>(1))->inner && "BlockingConcurrentQueue must have ConcurrentQueue as its first member");
 		if (!sema) {
 			MOODYCAMEL_THROW(std::bad_alloc());
 		}
 	}
 	
 	BlockingConcurrentQueue(size_t minCapacity, size_t maxExplicitProducers, size_t maxImplicitProducers)
-		: inner(minCapacity, maxExplicitProducers, maxImplicitProducers), sema(create<LightweightSemaphore>(), &BlockingConcurrentQueue::template destroy<LightweightSemaphore>)
+		: inner(minCapacity, maxExplicitProducers, maxImplicitProducers), sema(create<LightweightSemaphore, ssize_t, int>(0, static_cast<int>(Traits::MAX_SEMA_SPINS)), &BlockingConcurrentQueue::template destroy<LightweightSemaphore>)
 	{
-		assert(reinterpret_cast<ConcurrentQueue*>((BlockingConcurrentQueue*)1) == &((BlockingConcurrentQueue*)1)->inner && "BlockingConcurrentQueue must have ConcurrentQueue as its first member");
+		assert(reinterpret_cast<ConcurrentQueue*>(reinterpret_cast<BlockingConcurrentQueue*>(1)) == &(reinterpret_cast<BlockingConcurrentQueue*>(1))->inner && "BlockingConcurrentQueue must have ConcurrentQueue as its first member");
 		if (!sema) {
 			MOODYCAMEL_THROW(std::bad_alloc());
 		}
@@ -178,12 +179,13 @@ public:
 	inline bool enqueue_bulk(It itemFirst, size_t count)
 	{
 		if ((details::likely)(inner.enqueue_bulk(std::forward<It>(itemFirst), count))) {
-			sema->signal((LightweightSemaphore::ssize_t)(ssize_t)count);
+			assert(static_cast<ssize_t>(count) >= 0);
+			sema->signal(static_cast<LightweightSemaphore::ssize_t>(static_cast<ssize_t>(count)));
 			return true;
 		}
 		return false;
 	}
-	
+
 	// Enqueues several items using an explicit producer token.
 	// Allocates memory if required. Only fails if memory allocation fails
 	// (or Traits::MAX_SUBQUEUE_SIZE has been defined and would be surpassed).
@@ -194,7 +196,8 @@ public:
 	inline bool enqueue_bulk(producer_token_t const& token, It itemFirst, size_t count)
 	{
 		if ((details::likely)(inner.enqueue_bulk(token, std::forward<It>(itemFirst), count))) {
-			sema->signal((LightweightSemaphore::ssize_t)(ssize_t)count);
+			assert(static_cast<ssize_t>(count) >= 0);
+			sema->signal(static_cast<LightweightSemaphore::ssize_t>(static_cast<ssize_t>(count)));
 			return true;
 		}
 		return false;
@@ -263,12 +266,13 @@ public:
 	inline bool try_enqueue_bulk(It itemFirst, size_t count)
 	{
 		if (inner.try_enqueue_bulk(std::forward<It>(itemFirst), count)) {
-			sema->signal((LightweightSemaphore::ssize_t)(ssize_t)count);
+			assert(static_cast<ssize_t>(count) >= 0);
+			sema->signal(static_cast<LightweightSemaphore::ssize_t>(static_cast<ssize_t>(count)));
 			return true;
 		}
 		return false;
 	}
-	
+
 	// Enqueues several items using an explicit producer token.
 	// Does not allocate memory. Fails if not enough room to enqueue.
 	// Note: Use std::make_move_iterator if the elements should be moved
@@ -278,7 +282,8 @@ public:
 	inline bool try_enqueue_bulk(producer_token_t const& token, It itemFirst, size_t count)
 	{
 		if (inner.try_enqueue_bulk(token, std::forward<It>(itemFirst), count)) {
-			sema->signal((LightweightSemaphore::ssize_t)(ssize_t)count);
+			assert(static_cast<ssize_t>(count) >= 0);
+			sema->signal(static_cast<LightweightSemaphore::ssize_t>(static_cast<ssize_t>(count)));
 			return true;
 		}
 		return false;
@@ -326,13 +331,14 @@ public:
 	inline size_t try_dequeue_bulk(It itemFirst, size_t max)
 	{
 		size_t count = 0;
-		max = (size_t)sema->tryWaitMany((LightweightSemaphore::ssize_t)(ssize_t)max);
+		assert(static_cast<ssize_t>(max) >= 0);
+		max = static_cast<size_t>(sema->tryWaitMany(static_cast<LightweightSemaphore::ssize_t>(static_cast<ssize_t>(max))));
 		while (count != max) {
 			count += inner.template try_dequeue_bulk<It&>(itemFirst, max - count);
 		}
 		return count;
 	}
-	
+
 	// Attempts to dequeue several elements from the queue using an explicit consumer token.
 	// Returns the number of items actually dequeued.
 	// Returns 0 if all producer streams appeared empty at the time they
@@ -342,7 +348,8 @@ public:
 	inline size_t try_dequeue_bulk(consumer_token_t& token, It itemFirst, size_t max)
 	{
 		size_t count = 0;
-		max = (size_t)sema->tryWaitMany((LightweightSemaphore::ssize_t)(ssize_t)max);
+		assert(static_cast<ssize_t>(max) >= 0);
+		max = static_cast<size_t>(sema->tryWaitMany(static_cast<LightweightSemaphore::ssize_t>(static_cast<ssize_t>(max))));
 		while (count != max) {
 			count += inner.template try_dequeue_bulk<It&>(token, itemFirst, max - count);
 		}
@@ -446,13 +453,14 @@ public:
 	inline size_t wait_dequeue_bulk(It itemFirst, size_t max)
 	{
 		size_t count = 0;
-		max = (size_t)sema->waitMany((LightweightSemaphore::ssize_t)(ssize_t)max);
+		assert(static_cast<ssize_t>(max) >= 0);
+		max = static_cast<size_t>(sema->waitMany(static_cast<LightweightSemaphore::ssize_t>(static_cast<ssize_t>(max))));
 		while (count != max) {
 			count += inner.template try_dequeue_bulk<It&>(itemFirst, max - count);
 		}
 		return count;
 	}
-	
+
 	// Attempts to dequeue several elements from the queue.
 	// Returns the number of items actually dequeued, which can
 	// be 0 if the timeout expires while waiting for elements,
@@ -464,7 +472,8 @@ public:
 	inline size_t wait_dequeue_bulk_timed(It itemFirst, size_t max, std::int64_t timeout_usecs)
 	{
 		size_t count = 0;
-		max = (size_t)sema->waitMany((LightweightSemaphore::ssize_t)(ssize_t)max, timeout_usecs);
+		assert(static_cast<ssize_t>(max) >= 0);
+		max = static_cast<size_t>(sema->waitMany(static_cast<LightweightSemaphore::ssize_t>(static_cast<ssize_t>(max)), timeout_usecs));
 		while (count != max) {
 			count += inner.template try_dequeue_bulk<It&>(itemFirst, max - count);
 		}
@@ -491,7 +500,8 @@ public:
 	inline size_t wait_dequeue_bulk(consumer_token_t& token, It itemFirst, size_t max)
 	{
 		size_t count = 0;
-		max = (size_t)sema->waitMany((LightweightSemaphore::ssize_t)(ssize_t)max);
+		assert(static_cast<ssize_t>(max) >= 0);
+		max = static_cast<size_t>(sema->waitMany(static_cast<LightweightSemaphore::ssize_t>(static_cast<ssize_t>(max))));
 		while (count != max) {
 			count += inner.template try_dequeue_bulk<It&>(token, itemFirst, max - count);
 		}
@@ -509,7 +519,8 @@ public:
 	inline size_t wait_dequeue_bulk_timed(consumer_token_t& token, It itemFirst, size_t max, std::int64_t timeout_usecs)
 	{
 		size_t count = 0;
-		max = (size_t)sema->waitMany((LightweightSemaphore::ssize_t)(ssize_t)max, timeout_usecs);
+		assert(static_cast<ssize_t>(max) >= 0);
+		max = static_cast<size_t>(sema->waitMany(static_cast<LightweightSemaphore::ssize_t>(static_cast<ssize_t>(max)), timeout_usecs));
 		while (count != max) {
 			count += inner.template try_dequeue_bulk<It&>(token, itemFirst, max - count);
 		}
@@ -536,32 +547,25 @@ public:
 	// Thread-safe.
 	inline size_t size_approx() const
 	{
-		return (size_t)sema->availableApprox();
+		return static_cast<size_t>(sema->availableApprox());
 	}
 	
 	
 	// Returns true if the underlying atomic variables used by
 	// the queue are lock-free (they should be on most platforms).
 	// Thread-safe.
-	static bool is_lock_free()
+	static constexpr bool is_lock_free()
 	{
 		return ConcurrentQueue::is_lock_free();
 	}
 	
 
 private:
-	template<typename U>
-	static inline U* create()
+	template<typename U, typename A1, typename A2>
+	static inline U* create(A1&& a1, A2&& a2)
 	{
-		auto p = (Traits::malloc)(sizeof(U));
-		return p != nullptr ? new (p) U : nullptr;
-	}
-	
-	template<typename U, typename A1>
-	static inline U* create(A1&& a1)
-	{
-		auto p = (Traits::malloc)(sizeof(U));
-		return p != nullptr ? new (p) U(std::forward<A1>(a1)) : nullptr;
+		void* p = (Traits::malloc)(sizeof(U));
+		return p != nullptr ? new (p) U(std::forward<A1>(a1), std::forward<A2>(a2)) : nullptr;
 	}
 	
 	template<typename U>
@@ -585,4 +589,4 @@ inline void swap(BlockingConcurrentQueue<T, Traits>& a, BlockingConcurrentQueue<
 	a.swap(b);
 }
 
-}	// end namespace moodycamel
+}	// end namespace duckdb_moodycamel

@@ -2,7 +2,6 @@
 
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
-#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
 #include "duckdb/planner/operator/logical_set_operation.hpp"
 
@@ -13,6 +12,10 @@ namespace {
 //! A hash aggregate sinks in parallel, so the input order never reaches its aggregates; an ungrouped aggregate sinks in
 //! order when one of its aggregates reads the rows in order
 bool AggregateDiscardsOrder(const LogicalAggregate &aggr) {
+	if (aggr.preserve_input_order) {
+		// DISTINCT ON keeps the first row of every group in input order
+		return false;
+	}
 	if (!aggr.groups.empty()) {
 		return true;
 	}
@@ -27,11 +30,6 @@ bool AggregateDiscardsOrder(const LogicalAggregate &aggr) {
 		}
 	}
 	return true;
-}
-
-//! DISTINCT ON keeps the first row of every group, so it reads its input in order; plain DISTINCT does not
-bool DistinctDiscardsOrder(const LogicalDistinct &distinct) {
-	return distinct.distinct_type == DistinctType::DISTINCT;
 }
 
 //! UNION ALL concatenates its inputs in order; the hash-based set operations do not
@@ -65,9 +63,6 @@ void RemoveRedundantOrder::Optimize(unique_ptr<LogicalOperator> &op, bool order_
 		return;
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
 		Optimize(op->children[0], AggregateDiscardsOrder(op->Cast<LogicalAggregate>()));
-		return;
-	case LogicalOperatorType::LOGICAL_DISTINCT:
-		Optimize(op->children[0], DistinctDiscardsOrder(op->Cast<LogicalDistinct>()));
 		return;
 	case LogicalOperatorType::LOGICAL_UNION:
 	case LogicalOperatorType::LOGICAL_EXCEPT:

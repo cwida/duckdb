@@ -207,7 +207,7 @@ void Binder::PrepareModifiers(OrderBinder &order_binder, QueryNode &statement, B
 					}
 				}
 			}
-			if (config.options.debug_order_verification == DebugOrderVerification::CREATE_SORT_KEY) {
+			if (Settings::Get<DebugOrderVerificationSetting>(context) == DebugOrderVerification::CREATE_SORT_KEY) {
 				// When this verification is enabled, replace ORDER BY x, y with ORDER BY create_sort_key(x, y)
 				// note that we don't enable this during actual verification since it doesn't always work
 				// e.g. it breaks EXPLAIN output on queries
@@ -402,10 +402,10 @@ void Binder::BindModifiers(BoundQueryNode &result, TableIndex table_index, const
 					order.orders.emplace_back(order_type, null_order, std::move(expr));
 				}
 			}
-			auto &config = DBConfig::GetConfig(context);
+			auto order_verification = Settings::Get<DebugOrderVerificationSetting>(context);
 			for (auto &order_node : order.orders) {
 				auto &expr = order_node.expression;
-				if (config.options.debug_order_verification == DebugOrderVerification::VARIANT &&
+				if (order_verification == DebugOrderVerification::VARIANT &&
 				    expr->GetReturnType().id() != LogicalTypeId::VARIANT) {
 					// when this verification is enabled, cast every ORDER BY expression to VARIANT (the
 					// PushCollation below then routes ordering through the VARIANT comparator) to verify it

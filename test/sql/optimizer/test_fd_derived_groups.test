@@ -66,13 +66,8 @@ SELECT i, datepart('day', i), count(*) FROM iv GROUP BY i, datepart('day', i) OR
 24:00:00	0	1
 1 day	1	1
 
-# Plan-shape assertions: EXPLAIN output differs between optimized and unoptimized, so verification
-# must be off here.
 statement ok
-PRAGMA disable_verification;
-
-statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 # ----- Collapses (the AGGREGATE must end up with the single base group `x`) ----
 

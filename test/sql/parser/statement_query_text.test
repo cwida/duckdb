@@ -1,0 +1,35 @@
+# name: test/sql/parser/statement_query_text.test
+# description: Comments before a statement are part of its query text
+# group: [parser]
+
+# the in-memory QueryLog does not survive the restarts of the force_restart configs
+require skip_reload
+
+statement ok
+CALL enable_logging(['QueryLog'], storage='memory');
+
+query I
+/* leading */ SELECT current_query();
+----
+/* leading */ SELECT current_query();
+
+query I
+SELECT current_query() /* trailing */;
+----
+SELECT current_query() /* trailing */;
+
+query I
+-- tag
+SELECT replace(current_query(), chr(10), '|');
+----
+-- tag|SELECT replace(current_query(), chr(10), '|');
+
+# in a multi-statement query, text between two statements belongs to the one that follows it
+statement ok
+SELECT 'first'; /* between */ SELECT 'second'
+
+query I
+SELECT '[' || message || ']' FROM duckdb_logs WHERE type = 'QueryLog' AND (message LIKE 'SELECT ''first''%' OR message LIKE ' /* between */%') ORDER BY timestamp;
+----
+[SELECT 'first';]
+[ /* between */ SELECT 'second']

@@ -7,13 +7,13 @@ require skip_reload
 load
 
 statement ok
-PRAGMA temp_directory=''
+SET temp_directory=''
 
 statement ok
-PRAGMA threads=1
+SET threads=1
 
 statement ok
-PRAGMA memory_limit='2MB'
+SET memory_limit='2MB'
 
 # streaming results do not use any memory
 query II
@@ -23,7 +23,7 @@ SELECT MIN(i), MAX(i) FROM range(1000001) tbl(i)
 
 # increase memory limit 10MB because we always partition data in GROUP BY queries now (for potential out-of-core)
 statement ok
-PRAGMA memory_limit='10MB'
+SET memory_limit='10MB'
 
 # we can group by 9K integers (fits into one block of 256KB)
 statement ok
@@ -44,7 +44,7 @@ endloop
 
 # set the memory limit back to 2MB again, no more GROUP BY's in this test
 statement ok
-PRAGMA memory_limit='2MB'
+SET memory_limit='2MB'
 
 # we can create a single table with 10K integers
 statement ok
