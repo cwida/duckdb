@@ -302,7 +302,6 @@
         "name": "repeatable",
         "type": "bool",
         "version": "v2.0.0",
-        "default": "seed.IsValid()",
         "deserialize_default": "result->seed.IsValid()"
       },
       {
