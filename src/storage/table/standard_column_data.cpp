@@ -9,6 +9,8 @@
 
 namespace duckdb {
 
+static constexpr idx_t UNCOMPRESSED_SELECT_DENSITY = 5;
+
 StandardColumnData::StandardColumnData(BlockManager &block_manager, DataTableInfo &info, idx_t column_index,
                                        LogicalType type, ColumnDataType data_type, optional_ptr<ColumnData> parent)
     : ColumnData(block_manager, info, column_index, std::move(type), data_type, parent) {
@@ -88,6 +90,24 @@ void StandardColumnData::Filter(TransactionData transaction, idx_t vector_index,
 	auto scan_type = GetVectorScanType(state, target_count, result);
 	bool scan_entire_vector = scan_type == ScanVectorType::SCAN_ENTIRE_VECTOR;
 	bool verify_fetch_row = state.scan_options && state.scan_options->force_fetch_row;
+	if (!has_filter && compression && compression->type == CompressionType::COMPRESSION_UNCOMPRESSED &&
+	    type.InternalType() == PhysicalType::VARCHAR && count > 0 &&
+	    count * UNCOMPRESSED_SELECT_DENSITY <= target_count && !HasUpdates() && !validity->HasUpdates()) {
+		// Fetch surviving strings and their validity before evaluating the next predicate.
+		Select(transaction, vector_index, state, result, sel, count);
+		FlatVector::SetSize(result, count_t(count));
+		// FilterSelection and subsequent columns use the original vector's row positions.
+		SelectionVector original_positions(target_count);
+		for (idx_t i = 0; i < target_count; i++) {
+			original_positions.set_index(i, 0);
+		}
+		for (idx_t i = 0; i < count; i++) {
+			original_positions.set_index(sel.get_index(i), i);
+		}
+		result.Slice(original_positions, target_count);
+		ColumnSegment::FilterSelection(sel, result, filter_state, target_count, count);
+		return;
+	}
 	if (!has_filter || !validity_has_filter || !scan_entire_vector || verify_fetch_row || filter_state.can_throw) {
 		// we are not scanning an entire vector - this can have several causes (updates, etc)
 		// a filter that can throw is excluded as well: the compression-level filters evaluate it over the distinct
@@ -120,7 +140,6 @@ void StandardColumnData::Select(TransactionData transaction, idx_t vector_index,
 		return;
 	}
 	// a scan references uncompressed data without copying it: slicing beats gathering unless few rows are selected
-	static constexpr idx_t UNCOMPRESSED_SELECT_DENSITY = 5;
 	if (compression->type == CompressionType::COMPRESSION_UNCOMPRESSED &&
 	    sel_count * UNCOMPRESSED_SELECT_DENSITY > target_count) {
 		ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
