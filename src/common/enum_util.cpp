@@ -3309,6 +3309,24 @@ IdentifierCaseMode EnumUtil::FromString<IdentifierCaseMode>(const char *value) {
 	return static_cast<IdentifierCaseMode>(StringUtil::StringToEnum(GetIdentifierCaseModeValues(), 3, "IdentifierCaseMode", value));
 }
 
+const StringUtil::EnumStringLiteral *GetInFilterModeValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(InFilterMode::PRUNING_ONLY), "PRUNING_ONLY" },
+		{ static_cast<uint32_t>(InFilterMode::ADAPTIVE_ROW_FILTERING), "ADAPTIVE_ROW_FILTERING" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<InFilterMode>(InFilterMode value) {
+	return StringUtil::EnumToString(GetInFilterModeValues(), 2, "InFilterMode", static_cast<uint32_t>(value));
+}
+
+template<>
+InFilterMode EnumUtil::FromString<InFilterMode>(const char *value) {
+	return static_cast<InFilterMode>(StringUtil::StringToEnum(GetInFilterModeValues(), 2, "InFilterMode", value));
+}
+
 const StringUtil::EnumStringLiteral *GetIndexAppendModeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(IndexAppendMode::DEFAULT), "DEFAULT" },
