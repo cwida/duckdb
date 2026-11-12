@@ -84,6 +84,11 @@ TEST_CASE("Test allowed options", "[api]") {
 		option = "logging_mode";
 	}
 
+	SECTION("logging_sink") {
+		config_dict.emplace("logging_sink", Value::BOOLEAN(false));
+		option = "logging_sink";
+	}
+
 	SECTION("logging_storage") {
 		config_dict.emplace("logging_storage", Value::BOOLEAN(false));
 		option = "logging_storage";

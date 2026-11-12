@@ -48,15 +48,15 @@ CONNECTION	NULL	QueryLog	INFO	SELECT * EXCLUDE (context_id, timestamp, connectio
 CONNECTION	NULL	QueryLog	INFO	set enable_logging=false;
 
 statement ok
-set logging_storage='stdout';
+set logging_sink='stdout';
 
 statement ok
-set logging_storage='memory';
+set logging_sink='memory';
 
 statement error
-set logging_storage='quack';
+set logging_sink='quack';
 ----
-Invalid Input Error: Log storage 'quack' is not yet registered
+Invalid Input Error: Log sink 'quack' is not yet registered
 
 # Storage is now cleared because switching storage will clear it
 query IIIIII

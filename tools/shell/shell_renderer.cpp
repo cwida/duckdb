@@ -3,7 +3,7 @@
 #include "shell_state.hpp"
 #include "duckdb/common/box_renderer.hpp"
 #include "shell_highlight.hpp"
-#include "duckdb/logging/log_storage.hpp"
+#include "duckdb/logging/log_sink.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/hash.hpp"
 #include <stdexcept>
@@ -2100,7 +2100,7 @@ unique_ptr<ShellRenderer> ShellState::GetRenderer(RenderMode mode) {
 }
 
 //===--------------------------------------------------------------------===//
-// Shell Logging Storage
+// Shell Logging Sink
 //===--------------------------------------------------------------------===//
 
 namespace {
@@ -2184,12 +2184,12 @@ string SanitizeLogMessage(const string &message) {
 
 } // namespace
 
-ShellLogStorage::ShellLogStorage(ShellState &state) : shell_highlight(state), start_time(duckdb::TimePoint::Tick()) {
+ShellLogSink::ShellLogSink(ShellState &state) : shell_highlight(state), start_time(duckdb::TimePoint::Tick()) {
 	// Elapsed time on compact log lines is measured from here (CLI launch / db open)
 }
 
-void ShellLogStorage::WriteLogEntry(duckdb::timestamp_t, duckdb::LogLevel level, const string &log_type,
-                                    const string &log_message, const duckdb::RegisteredLoggingContext &context) {
+void ShellLogSink::WriteLogEntry(duckdb::timestamp_t, duckdb::LogLevel level, const string &log_type,
+                                 const string &log_message, const duckdb::RegisteredLoggingContext &context) {
 	duckdb::lock_guard<duckdb::mutex> l(lock);
 
 	// Warnings/errors keep the original loud, multi-line representation; lower-severity logs

@@ -8,7 +8,7 @@
 
 // ---------------------------------------------------------------------------
 // Stable C++ API tests: LogSink. A log sink of our own, selected with
-// SET logging_storage, receiving the entries DuckDB logs.
+// SET logging_sink, receiving the entries DuckDB logs.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -64,7 +64,7 @@ TEST_CASE("Stable C++API: log sink receives entries", "[cpp_api]") {
 
 	registered_collected = nullptr;
 	conn.Execute("CALL enable_logging()").Drain();
-	conn.Execute("SET logging_storage = 'CPP_STORE'").Drain();
+	conn.Execute("SET logging_sink = 'CPP_STORE'").Drain();
 	conn.Execute("SELECT write_log('hello', level := 'warning', log_type := 'CppLogSinkTest')").Drain();
 	db.Log(LogLevel::LOG_ERROR, "from the instance", CPP_LOG_TYPE);
 
@@ -82,7 +82,7 @@ TEST_CASE("Stable C++API: log sink receives entries", "[cpp_api]") {
 	// The end of every query flushes the log.
 	REQUIRE(registered_collected->flushes > 0);
 
-	conn.Execute("SET logging_storage = 'memory'").Drain();
+	conn.Execute("SET logging_sink = 'memory'").Drain();
 }
 
 TEST_CASE("Stable C++API: log sink errors", "[cpp_api]") {
@@ -98,11 +98,11 @@ TEST_CASE("Stable C++API: log sink errors", "[cpp_api]") {
 		db.Register(sink);
 		registered_collected = nullptr;
 		conn.Execute("CALL enable_logging()").Drain();
-		conn.Execute("SET logging_storage = 'cpp_broken'").Drain();
+		conn.Execute("SET logging_sink = 'cpp_broken'").Drain();
 		conn.Execute("SELECT write_log('lost', log_type := 'CppLogSinkTest')").Drain();
 		REQUIRE(registered_collected != nullptr);
 		REQUIRE(registered_collected->entries.empty());
-		conn.Execute("SET logging_storage = 'memory'").Drain();
+		conn.Execute("SET logging_sink = 'memory'").Drain();
 	}
 	// No write callback.
 	{

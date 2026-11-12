@@ -17,7 +17,7 @@ Unknown log type: 'a'
 
 # the previous settings are still in place
 query I
-SELECT current_setting('logging_storage');
+SELECT current_setting('logging_sink');
 ----
 memory
 

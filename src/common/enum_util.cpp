@@ -153,7 +153,7 @@
 #include "duckdb/function/table/arrow/enum/arrow_variable_size_type.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/function/window/window_merge_sort_tree.hpp"
-#include "duckdb/logging/log_storage.hpp"
+#include "duckdb/logging/log_sink.hpp"
 #include "duckdb/logging/logging.hpp"
 #include "duckdb/main/appender.hpp"
 #include "duckdb/main/attached_database.hpp"

@@ -114,7 +114,7 @@ OptionValueSet GetValueForOption(const string &name, const LogicalType &type) {
 	    {"enable_logging", {true}},
 	    {"logging_mode", {"ENABLE_SELECTED"}},
 	    {"logging_level", {"FATAL"}},
-	    {"logging_storage", {"stdout"}},
+	    {"logging_sink", {"stdout"}},
 	    {"redact_http_logs", {false}},
 	    {"enable_progress_bar_print", {false}},
 	    {"scalar_subquery_error_on_multiple_rows", {false}},

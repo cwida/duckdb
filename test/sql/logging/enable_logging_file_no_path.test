@@ -9,7 +9,7 @@ statement ok
 CALL enable_logging(storage='memory')
 
 query I
-SELECT value FROM duckdb_settings() WHERE name = 'logging_storage';
+SELECT value FROM duckdb_settings() WHERE name = 'logging_sink';
 ----
 memory
 
@@ -23,7 +23,7 @@ Cannot enable 'file' log storage without a valid path
 
 # The failed call must not have switched the active storage...
 query I
-SELECT value FROM duckdb_settings() WHERE name = 'logging_storage';
+SELECT value FROM duckdb_settings() WHERE name = 'logging_sink';
 ----
 memory
 
@@ -33,7 +33,7 @@ statement ok
 CALL enable_logging('QueryLog', storage=file, storage_path='{TEST_DIR}/issue9144.csv')
 
 query I
-SELECT value FROM duckdb_settings() WHERE name = 'logging_storage';
+SELECT value FROM duckdb_settings() WHERE name = 'logging_sink';
 ----
 file
 
@@ -46,7 +46,7 @@ statement ok
 CALL enable_logging()
 
 query I
-SELECT value FROM duckdb_settings() WHERE name = 'logging_storage';
+SELECT value FROM duckdb_settings() WHERE name = 'logging_sink';
 ----
 file
 
@@ -77,32 +77,32 @@ CALL enable_logging(storage_config:={path:''});
 Cannot enable 'file' log storage without a valid path
 
 query I
-SELECT value FROM duckdb_settings() WHERE name = 'logging_storage';
+SELECT value FROM duckdb_settings() WHERE name = 'logging_sink';
 ----
 memory
 
 statement ok
 SELECT 42
 
-# --- SET logging_storage='file' cannot supply a path: clean error, storage unchanged ---
+# --- SET logging_sink='file' cannot supply a path: clean error, storage unchanged ---
 statement error
-SET logging_storage='file';
+SET logging_sink='file';
 ----
-Cannot select 'file' log storage
+Cannot select 'file' log sink
 
 query I
-SELECT value FROM duckdb_settings() WHERE name = 'logging_storage';
+SELECT value FROM duckdb_settings() WHERE name = 'logging_sink';
 ----
 memory
 
 # Case-insensitive: an upper-cased value must be caught too (must not bypass the guard)
 statement error
-SET logging_storage='FILE';
+SET logging_sink='FILE';
 ----
-Cannot select 'file' log storage
+Cannot select 'file' log sink
 
 query I
-SELECT value FROM duckdb_settings() WHERE name = 'logging_storage';
+SELECT value FROM duckdb_settings() WHERE name = 'logging_sink';
 ----
 memory
 
