@@ -363,3 +363,33 @@ query II
 explain select distinct pg from (select p.g as pg from p left join (select distinct a from k) s on p.id = s.a order by pg desc limit 3) order by pg;
 ----
 physical_plan	<!REGEX>:.*JOIN.*
+
+# a filter projection map above an eliminated left join must not keep indexes into the removed side
+statement ok
+create table t0(c0 integer);
+
+statement ok
+insert into t0 values (1), (2);
+
+query I rowsort
+select distinct x1.c0 from t0 as x1 left join t0 as x2 using (c0) left join t0 as x3 on ((select true) and false) where true;
+----
+1
+2
+
+query II
+explain select distinct x1.c0 from t0 as x1 left join t0 as x2 using (c0) left join t0 as x3 on ((select true) and false) where true;
+----
+physical_plan	<!REGEX>:.*JOIN.*
+
+# the inner column is referenced, so the join stays
+query II rowsort
+select distinct x1.c0, x2.c0 from t0 as x1 left join t0 as x2 using (c0) left join t0 as x3 on ((select true) and false) where true;
+----
+1	1
+2	2
+
+query II
+explain select distinct x1.c0, x2.c0 from t0 as x1 left join t0 as x2 using (c0) left join t0 as x3 on ((select true) and false) where true;
+----
+physical_plan	<REGEX>:.*JOIN.*
