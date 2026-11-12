@@ -91,7 +91,7 @@ public:
 	//! The limit of the max_decimal_width setting (at least MAX_WIDTH_INT128, so the fixed-size tiers are never
 	//! bounded by it), or of the uint32_t range of the width without a context
 	static DecimalWidthLimit FromSetting(optional_ptr<ClientContext> context);
-	DecimalWidthLimit(uint32_t width, string hint);
+	DecimalWidthLimit(uint32_t width, const char *hint);
 
 	//! The widest result of combining decimals, given the widest DECIMAL among the inputs: the limit, or the input
 	//! width when that is wider
@@ -102,7 +102,7 @@ public:
 public:
 	//! The widest DECIMAL binding constructs
 	uint32_t width;
-	//! How to bind a wider DECIMAL, the hint of the errors a wider type raises
-	string hint;
+	//! How to bind a wider DECIMAL, the hint of the errors a wider type raises; a literal or text the owner outlives
+	const char *hint;
 };
 } // namespace duckdb

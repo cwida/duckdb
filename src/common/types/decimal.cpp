@@ -12,12 +12,12 @@ namespace duckdb {
 constexpr uint32_t Decimal::MAX_WIDTH_DECIMAL;
 constexpr uint32_t Decimal::DEFAULT_MAX_WIDTH;
 
-DecimalWidthLimit::DecimalWidthLimit(uint32_t width_p, string hint_p) : width(width_p), hint(std::move(hint_p)) {
+DecimalWidthLimit::DecimalWidthLimit(uint32_t width_p, const char *hint_p) : width(width_p), hint(hint_p) {
 	D_ASSERT(width >= Decimal::MAX_WIDTH_INT128);
 }
 
 DecimalWidthLimit DecimalWidthLimit::FromSetting(optional_ptr<ClientContext> context) {
-	const string hint = "SET max_decimal_width to allow wider decimals";
+	const char *hint = "SET max_decimal_width to allow wider decimals";
 	if (!context) {
 		return DecimalWidthLimit(NumericLimits<uint32_t>::Maximum(), hint);
 	}

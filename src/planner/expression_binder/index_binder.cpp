@@ -74,8 +74,8 @@ string KeyDecimalWidthReason(StorageVersion key_version) {
 //! Binds the keys within the decimal width of their storage version while it lives, in place of the setting
 struct KeyDecimalWidthScope {
 	KeyDecimalWidthScope(Binder &binder_p, StorageVersion key_version)
-	    : binder(binder_p), limit(KeyDecimalWidth(key_version), KeyDecimalWidthReason(key_version)),
-	      previous(binder_p.GetFixedDecimalWidthLimit()) {
+	    : binder(binder_p), reason(KeyDecimalWidthReason(key_version)),
+	      limit(KeyDecimalWidth(key_version), reason.c_str()), previous(binder_p.GetFixedDecimalWidthLimit()) {
 		binder.SetDecimalWidthLimit(&limit);
 	}
 	~KeyDecimalWidthScope() {
@@ -83,6 +83,7 @@ struct KeyDecimalWidthScope {
 	}
 
 	Binder &binder;
+	const string reason;
 	const DecimalWidthLimit limit;
 	optional_ptr<const DecimalWidthLimit> previous;
 };
