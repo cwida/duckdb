@@ -14,6 +14,7 @@
       "paths": [
         "test/optimizer/aggregate_reuse.test",
         "test/optimizer/avg_rewrite_profitability.test",
+        "test/optimizer/generated_domain_plan.test",
         "test/optimizer/deliminator.test",
         "test/optimizer/pushdown/filter_cannot_pushdown.test",
         "test/optimizer/eager_aggregate_execution.test",
@@ -30,6 +31,7 @@
         "test/optimizer/shared_key_domain_plan.test",
         "test/optimizer/statistics/statistics_count_not_null_join_pruning.test",
         "test/optimizer/statistics/statistics_count_not_null_pruning.test",
+        "test/optimizer/statistics/statistics_join_aggregate_bounds.test",
         "test/optimizer/test_aggregate_function_rewrite.test",
         "test/optimizer/ordered_aggregate.test",
         "test/sql/copy/parquet/parquet_encryption.test",

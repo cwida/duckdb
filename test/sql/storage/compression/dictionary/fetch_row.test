@@ -5,7 +5,7 @@
 load {TEST_DIR}/test_dictionary_fetchrow.db readwrite v1.0.0
 
 statement ok
-PRAGMA force_compression = 'dictionary'
+SET force_compression = 'dictionary'
 
 statement ok
 CREATE TABLE test (

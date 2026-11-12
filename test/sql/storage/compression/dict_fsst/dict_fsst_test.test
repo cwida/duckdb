@@ -4,7 +4,7 @@
 load {TEST_DIR}/dict_fsst_test readwrite v1.3.0
 
 statement ok
-pragma force_compression='uncompressed';
+SET force_compression='uncompressed';
 
 statement ok
 create table uncompressed_data as
@@ -23,7 +23,7 @@ select * from uncompressed_data order by i;
 ----
 
 statement ok
-pragma force_compression='dict_fsst';
+SET force_compression='dict_fsst';
 
 statement ok
 create table compressed_data as select * from uncompressed_data;

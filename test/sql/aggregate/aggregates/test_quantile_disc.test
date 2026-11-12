@@ -235,7 +235,7 @@ SELECT quantile_cont(r, q) FROM quantile
 ----
 
 statement ok
-pragma threads=4
+SET threads=4
 
 statement ok
 PRAGMA verify_parallelism

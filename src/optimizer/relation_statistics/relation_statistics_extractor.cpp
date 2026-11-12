@@ -4,6 +4,7 @@
 #include "duckdb/planner/operator/logical_cteref.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/operator/logical_materialized_cte.hpp"
 #include "duckdb/optimizer/join_order/query_graph_manager.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 
@@ -78,6 +79,27 @@ optional<RelationStats> RelationStatsExtractor::ExtractInternal(LogicalOperator 
 	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
 		return ExtractCTERef(op.Cast<LogicalCTERef>());
 	}
+	if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
+		if (op.HasSideEffects()) {
+			return {};
+		}
+		auto &cte = op.Cast<LogicalMaterializedCTE>();
+		// An extraction exception invalidates this extractor; restore the outer lookup on normal return.
+		auto outer_callback = cte_callback;
+		cte_callback = [&cte, outer_callback](TableIndex index) -> optional_ptr<LogicalOperator> {
+			if (index == cte.table_index) {
+				return cte.children[0].get();
+			}
+			return outer_callback ? outer_callback(index) : nullptr;
+		};
+		optional<RelationStats> result;
+		auto stats = Extract(*cte.children[1]);
+		if (stats) {
+			result = RelationStatisticsHelper::ProjectOutputStats(*stats, cte);
+		}
+		cte_callback = std::move(outer_callback);
+		return result;
+	}
 	if (op.type == LogicalOperatorType::LOGICAL_EXPLAIN) {
 		return RelationStatisticsHelper::ExtractExplainStats(op);
 	}
@@ -132,7 +154,8 @@ optional<RelationStats> RelationStatsExtractor::ExtractCTERef(LogicalCTERef &cte
 	if (!definition) {
 		return {};
 	}
-	if (cache.find(*definition) == cache.end()) {
+	// Inherited snapshots already contain the entire plan and remain read-only.
+	if (source_stats && cache.find(*definition) == cache.end()) {
 		source_stats->AddPlan(context, *definition);
 	}
 	auto definition_stats = Extract(*definition);

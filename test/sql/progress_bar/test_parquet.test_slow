@@ -16,7 +16,7 @@ statement ok
 copy lineitem TO '{TEST_DIR}/progress_bar_lineitem2.parquet' (FORMAT 'parquet');
 
 statement ok
-PRAGMA progress_bar_time=1
+SET progress_bar_time=1
 
 statement ok
 PRAGMA disable_print_progress_bar
@@ -69,7 +69,7 @@ ORDER BY
     l_linestatus;
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 statement ok
 PRAGMA verify_parallelism

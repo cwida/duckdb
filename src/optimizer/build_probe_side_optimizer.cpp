@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/build_probe_side_optimizer.hpp"
+#include "duckdb/optimizer/recursive_join_planning.hpp"
 
 #include "duckdb/common/enums/join_type.hpp"
 #include "duckdb/common/type_visitor.hpp"
@@ -318,43 +319,6 @@ bool BuildProbeSideOptimizer::TryFlipJoinChildren(LogicalOperator &op) const {
 	return swap;
 }
 
-bool BuildProbeSideOptimizer::ContainsActiveRecursiveReference(const LogicalOperator &op) const {
-	if (active_recursive_cte_indexes.empty()) {
-		return false;
-	}
-	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
-		auto &cte_ref = op.Cast<LogicalCTERef>();
-		for (auto &active_cte_index : active_recursive_cte_indexes) {
-			if (cte_ref.cte_index == active_cte_index) {
-				return true;
-			}
-		}
-	}
-	for (auto &child : op.children) {
-		if (ContainsActiveRecursiveReference(*child)) {
-			return true;
-		}
-	}
-	return false;
-}
-
-bool BuildProbeSideOptimizer::ContainsCorrelationSensitiveOperators(const LogicalOperator &op) const {
-	switch (op.type) {
-	case LogicalOperatorType::LOGICAL_DELIM_GET:
-	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
-	case LogicalOperatorType::LOGICAL_DEPENDENT_JOIN:
-		return true;
-	default:
-		break;
-	}
-	for (auto &child : op.children) {
-		if (ContainsCorrelationSensitiveOperators(*child)) {
-			return true;
-		}
-	}
-	return false;
-}
-
 RecursiveProbeSidePreference BuildProbeSideOptimizer::GetRecursiveProbeSidePreference(const LogicalOperator &op) const {
 	if (active_recursive_cte_indexes.empty() || op.type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
 		return RecursiveProbeSidePreference::NONE;
@@ -367,16 +331,9 @@ RecursiveProbeSidePreference BuildProbeSideOptimizer::GetRecursiveProbeSidePrefe
 		return RecursiveProbeSidePreference::NONE;
 	}
 
-	auto left_depends_on_recursive_cte = ContainsActiveRecursiveReference(*op.children[0]);
-	auto right_depends_on_recursive_cte = ContainsActiveRecursiveReference(*op.children[1]);
-	if (left_depends_on_recursive_cte == right_depends_on_recursive_cte) {
-		return RecursiveProbeSidePreference::NONE;
-	}
-
-	const auto &current_build_side = *op.children[1];
-	auto current_orientation_can_reuse = left_depends_on_recursive_cte && !PropagatesBuildSide(join.join_type) &&
-	                                     !ContainsCorrelationSensitiveOperators(current_build_side);
-	if (current_orientation_can_reuse) {
+	auto left = RecursiveJoinProperties::Extract(*op.children[0], active_recursive_cte_indexes);
+	auto right = RecursiveJoinProperties::Extract(*op.children[1], active_recursive_cte_indexes);
+	if (CanPlaceRecursiveProbe(join.join_type, left, right)) {
 		return RecursiveProbeSidePreference::KEEP;
 	}
 
@@ -384,11 +341,7 @@ RecursiveProbeSidePreference BuildProbeSideOptimizer::GetRecursiveProbeSidePrefe
 		return RecursiveProbeSidePreference::NONE;
 	}
 
-	const auto &swapped_build_side = *op.children[0];
-	auto swapped_orientation_can_reuse = right_depends_on_recursive_cte &&
-	                                     !PropagatesBuildSide(InverseJoinType(join.join_type)) &&
-	                                     !ContainsCorrelationSensitiveOperators(swapped_build_side);
-	if (swapped_orientation_can_reuse) {
+	if (CanPlaceRecursiveProbe(InverseJoinType(join.join_type), right, left)) {
 		return RecursiveProbeSidePreference::SWAP;
 	}
 
@@ -454,9 +407,9 @@ void BuildProbeSideOptimizer::VisitOperator(LogicalOperator &op) {
 		} else {
 			VisitOperator(*op.children[0]);
 		}
-		active_recursive_cte_indexes.push_back(cte.table_index);
+		active_recursive_cte_indexes.insert(cte.table_index);
 		VisitOperator(*op.children[1]);
-		active_recursive_cte_indexes.pop_back();
+		active_recursive_cte_indexes.erase(cte.table_index);
 		return;
 	}
 

@@ -7,7 +7,7 @@ SET default_null_order='nulls_first';
 
 # first iteration runs externally, second runs normally
 statement ok
-PRAGMA debug_force_external=true
+SET debug_force_external=true
 
 loop i 0 2
 
@@ -415,7 +415,7 @@ NULL	[[d, d, d]]
 # lists longer than STANDARD_VECTOR_SIZE
 # need single thread since order within list is otherwise undefined
 statement ok
-PRAGMA threads=1
+SET threads=1
 
 statement ok
 CREATE TABLE test9 AS (SELECT range % 4 i, range j FROM range(5000));
@@ -511,6 +511,6 @@ statement ok
 DROP TABLE DirectReports;
 
 statement ok
-PRAGMA debug_force_external=false
+SET debug_force_external=false
 
 endloop

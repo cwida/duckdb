@@ -3,7 +3,7 @@
 # group: [general]
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 statement ok
 CREATE TABLE nocase_strings(s VARCHAR COLLATE NOCASE)

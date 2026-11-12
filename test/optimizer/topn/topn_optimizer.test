@@ -12,7 +12,7 @@ statement ok
 INSERT INTO integers VALUES (1, 1), (2, 2), (3, 3), (4, 4), (5, 5)
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # standalone limit
 query II

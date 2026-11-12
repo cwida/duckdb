@@ -1,0 +1,65 @@
+# name: test/sql/join/hash_join/perfect_hash_join_dictionary_payload.test
+# description: Direct lookup preserves narrowed dictionary payloads and unmatched build rows
+# group: [hash_join]
+
+# Keep the operator logs across statements.
+require skip_reload
+
+statement ok
+SET VARIABLE check_perfect_activation =
+    NOT current_setting('debug_force_external') AND NOT current_setting('debug_disable_optimizer');
+
+statement ok
+SET threads=1;
+
+statement ok
+SET enable_caching_operators=false;
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side,join_filter_pushdown,compressed_materialization,statistics_propagation';
+
+statement ok
+CREATE TABLE dim(dimension_key BIGINT, label VARCHAR);
+
+statement ok
+INSERT INTO dim VALUES (0,'non_inline_dictionary_payload'),(1,NULL);
+
+statement ok
+CREATE TABLE fact(build_key BIGINT, dimension_key BIGINT);
+
+statement ok
+INSERT INTO fact VALUES (0,0),(1,1),(2,0),(3,1);
+
+statement ok
+CREATE TABLE probe(probe_key BIGINT);
+
+statement ok
+INSERT INTO probe VALUES (0),(1),(1),(4);
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query IIT
+SELECT p.probe_key,b.build_key,b.label
+FROM probe p RIGHT JOIN (
+    SELECT f.build_key,d.label FROM fact f JOIN dim d USING(dimension_key)
+) b ON p.probe_key=b.build_key
+ORDER BY b.build_key,p.probe_key;
+----
+0	0	non_inline_dictionary_payload
+1	1	NULL
+1	1	NULL
+NULL	2	non_inline_dictionary_payload
+NULL	3	NULL
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_perfect_activation') OR list_sort(list(
+    parameters['Join Type'] || '/' || event || '/' || coalesce(info['backend'],'')
+)) = ['INNER/DictionaryLookup/','INNER/Lookup/direct','RIGHT/Lookup/direct']
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event IN ('Lookup','DictionaryLookup');
+----
+true

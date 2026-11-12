@@ -1529,6 +1529,12 @@ public:
 	                                                                         GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeDropStatementTrampoline(PEGTransformer &transformer,
 	                                                                       GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeDropMemberStatementTrampoline(PEGTransformer &transformer,
+	                                                                             GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue>
+	FinalizeDropTableFunctionMemberTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeDropFunctionMemberTrampoline(PEGTransformer &transformer,
+	                                                                            GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeDropTriggerTrampoline(PEGTransformer &transformer,
 	                                                                     GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeDropTableTrampoline(PEGTransformer &transformer,
@@ -1537,6 +1543,10 @@ public:
 	                                                                           GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeDropFunctionTrampoline(PEGTransformer &transformer,
 	                                                                      GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeDropFunctionSignatureTrampoline(PEGTransformer &transformer,
+	                                                                               GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeDropSignatureAnyTypeTrampoline(PEGTransformer &transformer,
+	                                                                              GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeDropSchemaTrampoline(PEGTransformer &transformer,
 	                                                                    GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeDropIndexTrampoline(PEGTransformer &transformer,
@@ -2393,6 +2403,8 @@ public:
 	                                                                   GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeParensTableRefTrampoline(PEGTransformer &transformer,
 	                                                                        GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeJoinedTableRefChainTrampoline(PEGTransformer &transformer,
+	                                                                             GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeTablePivotClauseTrampoline(PEGTransformer &transformer,
 	                                                                          GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeTablePivotClauseBodyTrampoline(PEGTransformer &transformer,
@@ -3357,6 +3369,19 @@ public:
 	static unique_ptr<SQLStatement> TransformDropStatement(PEGTransformer &transformer,
 	                                                       unique_ptr<DropStatement> drop_entries,
 	                                                       const optional<bool> &drop_behavior);
+	static unique_ptr<SQLStatement> TransformDropMemberStatement(PEGTransformer &transformer,
+	                                                             unique_ptr<AlterInfo> drop_member,
+	                                                             const optional<bool> &drop_behavior);
+	static unique_ptr<AlterInfo> TransformDropTableFunctionMember(PEGTransformer &transformer,
+	                                                              const CatalogType &comment_macro_table,
+	                                                              const optional<bool> &if_exists,
+	                                                              const QualifiedName &qualified_table_function,
+	                                                              const vector<LogicalType> &drop_function_signature);
+	static unique_ptr<AlterInfo> TransformDropFunctionMember(PEGTransformer &transformer,
+	                                                         const bool &function_type_macro,
+	                                                         const optional<bool> &if_exists,
+	                                                         const QualifiedName &function_identifier,
+	                                                         const vector<LogicalType> &drop_function_signature);
 	static unique_ptr<DropStatement> TransformDropTrigger(PEGTransformer &transformer, const optional<bool> &if_exists,
 	                                                      const Identifier &trigger_name,
 	                                                      unique_ptr<BaseTableRef> base_table_name);
@@ -3370,6 +3395,9 @@ public:
 	static unique_ptr<DropStatement> TransformDropFunction(PEGTransformer &transformer, const bool &function_type_macro,
 	                                                       const optional<bool> &if_exists,
 	                                                       const vector<QualifiedName> &function_identifier);
+	static vector<LogicalType> TransformDropFunctionSignature(PEGTransformer &transformer,
+	                                                          const optional<vector<LogicalType>> &type);
+	static LogicalType TransformDropSignatureAnyType(PEGTransformer &transformer);
 	static unique_ptr<DropStatement> TransformDropSchema(PEGTransformer &transformer, const optional<bool> &if_exists,
 	                                                     const vector<QualifiedName> &qualified_name);
 	static unique_ptr<DropStatement> TransformDropIndex(PEGTransformer &transformer, const optional<bool> &if_exists,
@@ -4264,6 +4292,9 @@ public:
 	                                                    unique_ptr<TableRef> table_ref,
 	                                                    const optional<TableAlias> &table_alias,
 	                                                    optional<unique_ptr<SampleOptions>> sample_clause);
+	static unique_ptr<TableRef> TransformJoinedTableRefChain(PEGTransformer &transformer,
+	                                                         unique_ptr<TableRef> inner_table_ref,
+	                                                         vector<unique_ptr<TableRef>> join_or_pivot);
 	static unique_ptr<TableRef> TransformTablePivotClause(PEGTransformer &transformer,
 	                                                      unique_ptr<TableRef> table_pivot_clause_body,
 	                                                      const optional<TableAlias> &table_alias);

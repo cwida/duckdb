@@ -1,0 +1,587 @@
+# name: test/sql/catalog/function/drop_function_signature.test
+# description: DROP MACRO/FUNCTION with a parameter type list drops a single overload member
+# group: [function]
+
+# a member drop needs storage v2.1.0
+load {TEST_DIR}/drop_function_signature.db readwrite v2.1.0
+
+statement ok
+CREATE MACRO f(a INTEGER) AS a + 1, (a VARCHAR) AS a || '!', (a INTEGER, b INTEGER) AS a + b;
+
+query TTT
+SELECT f(1), f('x'), f(1, 2);
+----
+2	x!	3
+
+# dropping one overload keeps the siblings
+statement ok
+DROP MACRO f(VARCHAR);
+
+statement error
+SELECT f('x');
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+query TT
+SELECT f(1), f(1, 2);
+----
+2	3
+
+# the dropped signature no longer exists
+statement error
+DROP MACRO f(VARCHAR);
+----
+<REGEX>:.*has no overload with signature \(VARCHAR\).*
+
+# IF EXISTS at member granularity leaves siblings untouched
+statement ok
+DROP MACRO IF EXISTS f(VARCHAR);
+
+query TT
+SELECT f(1), f(1, 2);
+----
+2	3
+
+# both keyword spellings work
+statement ok
+DROP FUNCTION f(INTEGER, INTEGER);
+
+query T
+SELECT f(1);
+----
+2
+
+# a signature drop is an alter of the entry, so it cannot remove the last overload: the macro is dropped instead
+statement error
+DROP MACRO f(INTEGER);
+----
+<REGEX>:.*Cannot drop the last overload of "f": drop the macro itself instead.*
+
+query T
+SELECT f(1);
+----
+2
+
+statement ok
+DROP MACRO f;
+
+statement error
+SELECT f(1);
+----
+<REGEX>:.*Scalar Function with name f does not exist.*
+
+# an untyped member is named by ANY in each untyped slot, a type list never falls back to it
+statement ok
+CREATE MACRO g(x) AS x + 1, (x, y) AS x + y;
+
+statement error
+DROP MACRO g(BIGINT);
+----
+<REGEX>:.*has no overload with signature \(BIGINT\).*
+
+# a typed signature on an untyped entry does nothing under IF EXISTS, repeatably
+statement ok
+DROP MACRO IF EXISTS g(BIGINT);
+
+statement ok
+DROP MACRO IF EXISTS g(BIGINT);
+
+query TT
+SELECT g(1), g(1, 2);
+----
+2	3
+
+statement ok
+DROP MACRO g(ANY);
+
+statement error
+SELECT g(1);
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+query T
+SELECT g(1, 2);
+----
+3
+
+# ANY, ANY names the remaining two-parameter overload, which is the last one
+statement error
+DROP MACRO g(ANY, ANY);
+----
+<REGEX>:.*Cannot drop the last overload of "g": drop the macro itself instead.*
+
+statement ok
+DROP MACRO g;
+
+# a typed drop only ever names the typed member: repeating it cannot reach the untyped sibling
+statement ok
+CREATE MACRO r(x) AS x, (x INTEGER) AS x + 1;
+
+statement ok
+DROP MACRO IF EXISTS r(INTEGER);
+
+query T
+SELECT r(1);
+----
+1
+
+statement ok
+DROP MACRO IF EXISTS r(INTEGER);
+
+query T
+SELECT r(1);
+----
+1
+
+statement error
+DROP MACRO r(ANY);
+----
+<REGEX>:.*Cannot drop the last overload of "r": drop the macro itself instead.*
+
+statement ok
+DROP MACRO r;
+
+# empty parentheses name the zero-parameter overload
+statement ok
+CREATE MACRO h() AS 42, (x INTEGER) AS x;
+
+statement ok
+DROP MACRO h();
+
+statement error
+SELECT h();
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+query T
+SELECT h(7);
+----
+7
+
+# a signature naming no overload of that arity errors with the signature
+statement error
+DROP MACRO h(VARCHAR, VARCHAR);
+----
+<REGEX>:.*has no overload with signature \(VARCHAR, VARCHAR\).*
+
+# type modifiers are part of the declared identity
+statement ok
+CREATE MACRO dm(x DECIMAL(10,2)) AS 1, (x INTEGER) AS 2;
+
+statement error
+DROP MACRO dm(DECIMAL);
+----
+<REGEX>:.*has no overload with signature \(DECIMAL\(18,3\)\).*
+
+statement ok
+DROP MACRO dm(DECIMAL(10,2));
+
+query T
+SELECT dm(1);
+----
+2
+
+statement ok
+DROP MACRO dm;
+
+# a schema-qualified name drops a member in that schema
+statement ok
+CREATE SCHEMA qs;
+
+statement ok
+CREATE MACRO qs.q(x INTEGER) AS 1, (x VARCHAR) AS 2;
+
+statement ok
+DROP MACRO qs.q(INTEGER);
+
+query T
+SELECT qs.q('x');
+----
+2
+
+statement ok
+DROP SCHEMA qs CASCADE;
+
+# the unquoted ANY keyword names untyped slots, a user type named "any" is quoted
+statement ok
+CREATE TYPE "any" AS STRUCT(i INTEGER);
+
+statement ok
+CREATE MACRO anyt(x "any") AS 1, (x INTEGER) AS 2;
+
+statement error
+DROP MACRO anyt(ANY);
+----
+<REGEX>:.*has no overload with signature \(ANY\).*
+
+statement ok
+DROP MACRO anyt("any");
+
+query T
+SELECT anyt(1);
+----
+2
+
+statement ok
+DROP MACRO anyt;
+
+statement ok
+DROP TYPE "any";
+
+# user types resolve before matching
+statement ok
+CREATE TYPE mood AS ENUM ('ok', 'sad');
+
+statement ok
+CREATE MACRO m(a mood) AS a = 'ok', (a INTEGER) AS a > 0;
+
+statement ok
+DROP MACRO m(mood);
+
+query T
+SELECT m(1);
+----
+true
+
+statement error
+DROP MACRO m(INTEGER);
+----
+<REGEX>:.*Cannot drop the last overload of "m": drop the macro itself instead.*
+
+statement ok
+DROP MACRO m;
+
+# a DROP without a type list keeps dropping the whole entry
+statement ok
+CREATE MACRO whole(a INTEGER) AS a, (a VARCHAR) AS a;
+
+statement ok
+DROP MACRO whole;
+
+statement error
+SELECT whole(1);
+----
+<REGEX>:.*Scalar Function with name whole does not exist!.*
+
+# built-in macros live in the system catalog, which the generic alter path refuses to alter
+statement error
+DROP MACRO current_role(VARCHAR);
+----
+<REGEX>:.*Can not comment on System Catalog entries.*
+
+# only macros and functions take a signature, DROP TABLE does not parse one
+statement error
+DROP TABLE wrong_entry(INTEGER);
+----
+<REGEX>:.*syntax error.*
+
+# member drops are transactional
+statement ok
+CREATE MACRO txn_f(a INTEGER) AS a, (a VARCHAR) AS a;
+
+statement ok
+BEGIN;
+
+statement ok
+DROP MACRO txn_f(INTEGER);
+
+statement ok
+ROLLBACK;
+
+query TT
+SELECT txn_f(1), txn_f('x');
+----
+1	x
+
+# a partially typed member is named by its declared shape: ANY for untyped slots, the type otherwise
+statement ok
+CREATE MACRO pt(x INTEGER, y) AS 1, (x VARCHAR, y) AS 2;
+
+statement ok
+DROP MACRO pt(VARCHAR, ANY);
+
+query T
+SELECT pt(1, NULL);
+----
+1
+
+# the typed slot must match the declaration exactly
+statement error
+DROP MACRO pt(INTEGER, DATE);
+----
+<REGEX>:.*has no overload with signature \(INTEGER, DATE\).*
+
+statement error
+DROP MACRO pt(INTEGER, ANY);
+----
+<REGEX>:.*Cannot drop the last overload of "pt": drop the macro itself instead.*
+
+statement ok
+DROP MACRO pt;
+
+# ANY does not match a typed slot, so same-arity members stay apart
+statement ok
+CREATE MACRO amb(x, y) AS 1, (x INTEGER, y) AS 2;
+
+statement error
+DROP MACRO amb(INTEGER, VARCHAR);
+----
+<REGEX>:.*has no overload with signature \(INTEGER, VARCHAR\).*
+
+statement ok
+DROP MACRO amb(ANY, ANY);
+
+query T
+SELECT amb(1, 'x');
+----
+2
+
+statement error
+DROP MACRO amb(INTEGER, ANY);
+----
+<REGEX>:.*Cannot drop the last overload of "amb": drop the macro itself instead.*
+
+statement ok
+DROP MACRO amb;
+
+# a member drop alters the entry in place and keeps its oid, so EXPORT's creation order is unaffected
+
+# CASCADE never applies to a signature drop: dependents block it, and only dropping the macro cascades
+statement ok
+CREATE MACRO casc(x INTEGER) AS x, (x VARCHAR) AS x;
+
+statement error
+DROP MACRO casc(INTEGER) CASCADE;
+----
+<REGEX>:.*Cannot drop an overload of "casc" with CASCADE: drop the dependent entries first, or drop the whole macro.*
+
+statement ok
+DROP MACRO casc;
+
+# table macro members drop by signature too
+statement ok
+CREATE MACRO tmm(x INTEGER) AS TABLE (SELECT x AS v), (x VARCHAR) AS TABLE (SELECT 0 AS v);
+
+statement ok
+DROP MACRO tmm(VARCHAR);
+
+query T
+SELECT v FROM tmm(7);
+----
+7
+
+statement ok
+DROP MACRO tmm;
+
+# DROP MACRO TABLE accepts a signature and targets the table entry past a same-named scalar macro
+statement ok
+CREATE MACRO shared() AS 42;
+
+statement ok
+CREATE MACRO shared(x INTEGER) AS TABLE (SELECT x AS v), (x VARCHAR) AS TABLE (SELECT 0 AS v);
+
+statement ok
+DROP MACRO TABLE shared(VARCHAR);
+
+query T
+SELECT v FROM shared(7);
+----
+7
+
+query T
+SELECT shared();
+----
+42
+
+statement error
+DROP MACRO TABLE shared(VARCHAR);
+----
+<REGEX>:.*has no overload with signature \(VARCHAR\).*
+
+statement ok
+DROP MACRO TABLE IF EXISTS shared(VARCHAR);
+
+query T
+SELECT v FROM shared(7);
+----
+7
+
+statement error
+DROP MACRO TABLE shared(INTEGER);
+----
+<REGEX>:.*Cannot drop the last overload of "shared": drop the macro itself instead.*
+
+statement ok
+DROP MACRO TABLE shared;
+
+statement error
+SELECT v FROM shared(7);
+----
+<REGEX>:.*Table Function with name shared does not exist!.*
+
+query T
+SELECT shared();
+----
+42
+
+statement ok
+DROP MACRO shared;
+
+# a schema-qualified drop resolves signature types from the entry's schema first
+statement ok
+CREATE SCHEMA ty_s1;
+
+statement ok
+CREATE SCHEMA ty_s2;
+
+statement ok
+CREATE TYPE ty_s1.mood AS ENUM ('ok');
+
+statement ok
+CREATE TYPE ty_s2.mood AS ENUM ('nope', 'x');
+
+statement ok
+SET schema = 'ty_s1';
+
+statement ok
+CREATE MACRO m_ty(x mood) AS 1, (x INTEGER) AS 2;
+
+statement ok
+SET schema = 'ty_s2';
+
+statement ok
+DROP MACRO ty_s1.m_ty(mood);
+
+query T
+SELECT ty_s1.m_ty(1);
+----
+2
+
+statement ok
+SET schema = 'main';
+
+statement ok
+DROP SCHEMA ty_s1 CASCADE;
+
+statement ok
+DROP SCHEMA ty_s2 CASCADE;
+
+# a TEMP macro drops members by signature too
+statement ok
+CREATE TEMP MACRO tmp_m(x INTEGER) AS 1, (x VARCHAR) AS 2;
+
+statement ok
+DROP MACRO temp.main.tmp_m(VARCHAR);
+
+query T
+SELECT tmp_m(1);
+----
+1
+
+statement error
+SELECT tmp_m('x');
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+statement ok
+DROP MACRO temp.main.tmp_m;
+
+# two connections dropping different overloads: the loser's replacement conflicts
+statement ok con1
+CREATE MACRO cc(x INTEGER) AS 1, (x VARCHAR) AS 2, (x DATE) AS 3;
+
+statement ok con1
+BEGIN;
+
+statement ok con1
+DROP MACRO cc(INTEGER);
+
+statement error con2
+DROP MACRO cc(VARCHAR);
+----
+<REGEX>:.*Catalog write-write conflict on alter with "cc".*
+
+statement ok con1
+COMMIT;
+
+statement ok con1
+DROP MACRO cc(VARCHAR);
+
+query T con2
+SELECT cc(DATE '2024-01-01');
+----
+3
+
+statement ok con1
+DROP MACRO cc;
+
+# the signature resolves against the entry actually found, not the session's default catalog
+statement ok
+ATTACH ':memory:' AS cat_neutral;
+
+statement ok
+ATTACH ':memory:' AS cat_a;
+
+statement ok
+ATTACH ':memory:' AS cat_b;
+
+statement ok
+CREATE SCHEMA cat_a.s;
+
+statement ok
+CREATE SCHEMA cat_b.s;
+
+statement ok
+CREATE TYPE cat_a.s.mood AS ENUM ('a');
+
+statement ok
+CREATE TYPE cat_b.s.mood AS ENUM ('b');
+
+statement ok
+CREATE MACRO cat_b.s.m(x cat_a.s.mood) AS 1, (x cat_b.s.mood) AS 2;
+
+statement ok
+USE cat_a;
+
+statement ok
+SET search_path = 'cat_a.main,cat_b.s';
+
+statement ok
+DROP MACRO s.m(mood);
+
+query T
+SELECT cat_b.s.m('a'::cat_a.s.mood);
+----
+1
+
+# exactly the cat_a.s.mood member remains
+query I
+SELECT count(*) FROM duckdb_functions() WHERE database_name = 'cat_b' AND function_name = 'm';
+----
+1
+
+statement error
+DROP MACRO s.m(mood);
+----
+<REGEX>:.*has no overload with signature.*
+
+statement ok
+USE cat_neutral;
+
+statement ok
+DETACH cat_a;
+
+statement ok
+DETACH cat_b;
+
+statement ok
+SET schema = 'main';
+
+# IF EXISTS on a missing entry succeeds, and the signature types still bind like any alter's types
+statement ok
+DROP MACRO IF EXISTS missing_entry(INTEGER);
+
+statement error
+DROP MACRO IF EXISTS missing_entry(nonexistent_type);
+----
+<REGEX>:.*Type with name nonexistent_type does not exist.*

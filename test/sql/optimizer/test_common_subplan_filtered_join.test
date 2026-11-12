@@ -89,7 +89,7 @@ FROM (SELECT count(*)
 3	0
 
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 # Common predicates interleaved with bucket predicates must still become joins.
 query II

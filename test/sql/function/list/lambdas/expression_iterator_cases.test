@@ -4,9 +4,6 @@
 
 # these tests check the different cases of the expression iterator
 
-statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
 # this BOUND_AGGREGATE is a constant, so we can allow it inside lambda functions
 
 query I

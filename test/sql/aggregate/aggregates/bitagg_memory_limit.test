@@ -11,10 +11,10 @@ SET threads=4;
 # disable spilling so the memory limit assertion below is deterministic, not a race against the
 # radix hash table's spill-to-disk speed
 statement ok
-PRAGMA temp_directory=''
+SET temp_directory=''
 
 statement ok
-PRAGMA max_temp_directory_size='0B'
+SET max_temp_directory_size='0B'
 
 # each of the 1,000,000 groups needs ~763 bytes of state (6096-bit value), i.e. ~750MB total,
 # which must be tracked against the 256MB memory_limit rather than allocated as untracked raw heap

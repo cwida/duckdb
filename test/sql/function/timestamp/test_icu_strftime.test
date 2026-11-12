@@ -285,15 +285,15 @@ SELECT ts, strftime(ts, '%C') FROM timestamps;
 # Tests for fix of nr3 in list of https://github.com/duckdb/duckdb/issues/5984
 #
 statement ok
-PRAGMA TIMEZONE='Asia/Baghdad';
+SET TIMEZONE='Asia/Baghdad';
 SELECT strftime(TIMESTAMPTZ '-268535-1-1 0:0:0 America/Pangnirtung','%Z');
 
 statement ok
-PRAGMA TIMEZONE='Asia/Baghdad';
+SET TIMEZONE='Asia/Baghdad';
 SELECT strftime(TIMESTAMPTZ '-268535-1-1 0:0:0 America/Pangnirtung','%Z');
 
 statement ok
-PRAGMA TIMEZONE='Pacific/Truk';
+SET TIMEZONE='Pacific/Truk';
 SELECT strftime(TIMESTAMPTZ '-217208-11-5 1:47:22 America/Merida','%Z');
 
 statement ok

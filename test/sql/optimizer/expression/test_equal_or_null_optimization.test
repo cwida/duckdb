@@ -3,7 +3,7 @@
 # group: [expression]
 
 statement ok
-PRAGMA explain_output = 'PHYSICAL_ONLY'
+SET explain_output = 'PHYSICAL_ONLY'
 
 statement ok
 CREATE TABLE test(i INTEGER, j INTEGER, k integer);

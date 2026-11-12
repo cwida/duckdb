@@ -1,0 +1,57 @@
+# name: test/sql/subquery/lateral/lateral_cte_list_correlation.test
+# description: A correlated subquery with a CTE that does not use the outer row (LIST correlation, nested and stacked CTEs)
+# group: [lateral]
+
+statement ok
+CREATE TABLE q AS SELECT i % 3 AS s, i % 4 AS k FROM range(200) t(i);
+
+# a LIST correlation is not duplicate-eliminated, the subquery's rows are numbered instead
+query I
+SELECT count(*)
+FROM (VALUES ([0, 1]), ([2])) o(ss),
+     LATERAL (WITH st(k) AS (VALUES (1), (2))
+              SELECT q.k FROM q WHERE q.k IN (SELECT k FROM st) AND list_contains(o.ss, q.s)) n;
+----
+100
+
+query II
+SELECT o.ss, count(*)
+FROM (VALUES ([0, 1]), ([2]), ([0, 1])) o(ss),
+     LATERAL (WITH st(k) AS (VALUES (1), (2))
+              SELECT q.k FROM q WHERE q.k = ANY (SELECT k FROM st) AND list_contains(o.ss, q.s)) n
+GROUP BY ALL
+ORDER BY ALL;
+----
+[0, 1]	132
+[2]	34
+
+query II
+SELECT o.ss, EXISTS (WITH st(k) AS (VALUES (1), (2))
+                     SELECT 1 FROM q WHERE q.k IN (SELECT k FROM st) AND list_contains(o.ss, q.s))
+FROM (VALUES ([0, 1]), ([2]), ([5]), ([0, 1])) o(ss)
+ORDER BY ALL;
+----
+[0, 1]	true
+[0, 1]	true
+[2]	true
+[5]	false
+
+statement ok
+CREATE TABLE o AS SELECT i AS x, i % 3 AS g FROM range(10) t(i);
+
+# the CTE is inside a nested lateral join
+query II
+SELECT count(*), sum(n.k)
+FROM o, LATERAL (SELECT * FROM (SELECT o.x) p,
+                 LATERAL (WITH st(k) AS (VALUES (1), (2))
+                          SELECT q.k FROM q WHERE q.k IN (SELECT k FROM st) AND q.s = o.g AND q.k < p.x)) n;
+----
+250	367
+
+# two stacked CTEs that do not use the outer row
+query II
+SELECT count(*), sum(n.k)
+FROM o, LATERAL (WITH a(k) AS (VALUES (1), (2), (3)), b(k) AS (SELECT k FROM a WHERE k > 1)
+                 SELECT q.k FROM q WHERE q.k IN (SELECT k FROM a) AND q.k IN (SELECT k FROM b) AND q.s = o.g) n;
+----
+334	835

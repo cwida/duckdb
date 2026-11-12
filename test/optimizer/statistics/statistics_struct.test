@@ -9,7 +9,7 @@ statement ok
 CREATE TABLE structs AS SELECT {'i': i} c FROM range(4) tbl(i);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # we can statically determine IS NULL/IS NOT NULL are false, if there are no null values for this column
 query II

@@ -6,6 +6,7 @@
 #include "duckdb/common/likely.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/planner/expression.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 
 namespace duckdb {
 
@@ -500,6 +501,14 @@ static AggregateFunction NameXParameter(AggregateFunction fun) {
 	return fun;
 }
 
+unique_ptr<BaseStatistics> AveragePropagateStats(ClientContext &context, BoundAggregateExpression &expr,
+                                                 AggregateStatisticsInput &input) {
+	auto bounds = SumAccumulatorBounds::TryGet(input);
+	expr.FunctionMutable().SetErrorMode(bounds ? FunctionErrors::CANNOT_ERROR
+	                                           : FunctionErrors::CAN_THROW_RUNTIME_ERROR);
+	return nullptr;
+}
+
 AggregateFunction GetAverageAggregate(PhysicalType type) {
 	switch (type) {
 	case PhysicalType::INT16: {
@@ -522,6 +531,7 @@ AggregateFunction GetAverageAggregate(PhysicalType type) {
 		    AggregateFunction::UnaryAggregate<AvgState<hugeint_t>, hugeint_t, double, HugeintAverageOperation>(
 		        LogicalType::HUGEINT, LogicalType::DOUBLE);
 		function.SetFallible(); // adding HUGEINT values to the HUGEINT accumulator throws on overflow
+		function.SetStatisticsCallback(AveragePropagateStats);
 		return NameXParameter(std::move(function));
 	}
 	case PhysicalType::INTERVAL: {

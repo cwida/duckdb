@@ -27,7 +27,7 @@ CREATE TABLE probe0 AS
 foreach threshold 0 32
 
 statement ok
-PRAGMA asof_loop_join_threshold = {threshold};
+SET asof_loop_join_threshold = {threshold};
 
 # INNER ON inequality only
 query II

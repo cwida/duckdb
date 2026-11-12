@@ -7,7 +7,7 @@ SET default_null_order='nulls_first';
 
 # test all integral types and varchar, internal and external
 statement ok
-PRAGMA debug_force_external=true
+SET debug_force_external=true
 
 loop i 0 2
 
@@ -437,7 +437,7 @@ statement ok
 DROP TABLE test24
 
 statement ok
-PRAGMA debug_force_external=false
+SET debug_force_external=false
 
 endloop
 
@@ -445,7 +445,7 @@ endloop
 
 # test floating point types, internal and external
 statement ok
-PRAGMA debug_force_external=true
+SET debug_force_external=true
 
 loop i 0 2
 
@@ -586,7 +586,7 @@ statement ok
 DROP TABLE test24
 
 statement ok
-PRAGMA debug_force_external=false
+SET debug_force_external=false
 
 endloop
 

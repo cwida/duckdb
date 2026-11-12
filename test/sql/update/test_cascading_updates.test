@@ -20,7 +20,7 @@ statement ok
 INSERT INTO integers SELECT i, i FROM range(10000) t(i)
 
 statement ok
-PRAGMA checkpoint_threshold='1GB'
+SET checkpoint_threshold='1GB'
 
 statement ok
 UPDATE integers SET val=val+1000000 WHERE id=1

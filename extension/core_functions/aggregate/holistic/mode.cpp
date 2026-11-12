@@ -114,6 +114,10 @@ struct ModeStandard {
 		return new MAP_TYPE();
 	}
 
+	static ModeAttr &GetOrCreate(MAP_TYPE &map, const T &key, ArenaAllocator &) {
+		return map[key];
+	}
+
 	template <class INPUT_TYPE, class RESULT_TYPE>
 	static RESULT_TYPE Assign(Vector &result, INPUT_TYPE input) {
 		return RESULT_TYPE(input);
@@ -136,11 +140,15 @@ struct ModeStandard {
 struct ModeString {
 	using MAP_TYPE = OwningStringMap<ModeAttr>;
 
-	static MAP_TYPE *CreateEmpty(ArenaAllocator &allocator) {
-		return new MAP_TYPE(allocator);
+	static MAP_TYPE *CreateEmpty(ArenaAllocator &) {
+		return new MAP_TYPE();
 	}
 	static MAP_TYPE *CreateEmpty(Allocator &allocator) {
 		return new MAP_TYPE(allocator);
+	}
+
+	static ModeAttr &GetOrCreate(MAP_TYPE &map, const string_t &key, ArenaAllocator &allocator) {
+		return map.GetOrCreate(key, allocator);
 	}
 
 	template <class INPUT_TYPE, class RESULT_TYPE>
@@ -376,7 +384,7 @@ struct BaseModeFunction {
 		if (!state.frequency_map) {
 			state.frequency_map = TYPE_OP::CreateEmpty(input_data.allocator);
 		}
-		auto &i = (*state.frequency_map)[key];
+		auto &i = TYPE_OP::GetOrCreate(*state.frequency_map, key, input_data.allocator);
 		++i.count;
 		i.first_row = MinValue<idx_t>(i.first_row, state.count);
 		++state.count;
@@ -396,7 +404,7 @@ struct BaseModeFunction {
 			target.frequency_map = TYPE_OP::CreateEmpty(aggr_input_data.allocator);
 		}
 		for (auto &val : *source.frequency_map) {
-			auto &i = (*target.frequency_map)[val.first];
+			auto &i = TYPE_OP::GetOrCreate(*target.frequency_map, val.first, aggr_input_data.allocator);
 			i.count += val.second.count;
 			i.first_row = MinValue(i.first_row, val.second.first_row);
 		}
@@ -420,7 +428,7 @@ struct TypedModeFunction : BaseModeFunction<TYPE_OP> {
 		if (!state.frequency_map) {
 			state.frequency_map = TYPE_OP::CreateEmpty(aggr_input.input.allocator);
 		}
-		auto &i = (*state.frequency_map)[key];
+		auto &i = TYPE_OP::GetOrCreate(*state.frequency_map, key, aggr_input.input.allocator);
 		i.count += count;
 		i.first_row = MinValue<idx_t>(i.first_row, state.count);
 		state.count += count;

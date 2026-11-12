@@ -84,6 +84,14 @@ bool RelationManager::AddRelation(LogicalOperator &op, optional_ptr<LogicalOpera
 	return true;
 }
 
+bool RelationManager::HasRecursiveRelations() const {
+	return has_recursive_relations;
+}
+
+const SingleJoinRelation &RelationManager::GetRelation(RelationIndex index) const {
+	return *relations.at(index.index);
+}
+
 bool RelationManager::RegisterRelation(LogicalOperator &op, optional_ptr<LogicalOperator> parent, RelationStats stats) {
 	D_ASSERT(!parent || parent->children.size() >= 2);
 	if (!stats.stats_initialized || !stats.MatchesBindings(op.GetColumnBindings())) {
@@ -91,6 +99,10 @@ bool RelationManager::RegisterRelation(LogicalOperator &op, optional_ptr<Logical
 		return false;
 	}
 	auto relation = make_uniq<SingleJoinRelation>(op, parent, std::move(stats));
+	if (!active_recursive_ctes.empty()) {
+		relation->recursive_properties = RecursiveJoinProperties::Extract(op, active_recursive_ctes);
+		has_recursive_relations |= relation->recursive_properties.depends_on_recursive_input;
+	}
 	RelationIndex relation_id(relations.size());
 
 	unordered_set<TableIndex> relation_bindings;
@@ -455,6 +467,7 @@ bool RelationManager::AddRelationWithChildren(JoinOrderOptimizer &optimizer, Log
 bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, LogicalOperator &input_op,
                                            vector<reference<LogicalOperator>> &filter_operators,
                                            optional_ptr<LogicalOperator> parent) {
+	active_recursive_ctes = optimizer.recursive_cte_indexes;
 	// Keep the join-region walk off the call stack: leaf extraction has a substantial frame, and generated
 	// plans (e.g. many DISTINCT aggregates) can contain hundreds of nested binary joins.
 	vector<PendingRelation> pending_relations {{input_op, parent, false}};
@@ -670,7 +683,10 @@ bool RelationManager::ExtractJoinRelation(JoinOrderOptimizer &optimizer, Pending
 			return false;
 		}
 		// A projection must preserve the recursive reference's join-order restriction.
-		return !IsProjectedRecursiveCTERef(proj, optimizer) || RecursiveCTERefCanReorder(parent);
+		if (!IsProjectedRecursiveCTERef(proj, optimizer)) {
+			return true;
+		}
+		return RecursiveCTERefCanReorder(parent);
 	}
 	case LogicalOperatorType::LOGICAL_EMPTY_RESULT: {
 		// optimize the child and copy the stats

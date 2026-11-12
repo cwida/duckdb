@@ -58,6 +58,7 @@ namespace duckdb {
 constexpr const char *LoggingMode::Name;
 constexpr const char *LoggingLevel::Name;
 constexpr const char *EnableLogging::Name;
+constexpr const char *LoggingSink::Name;
 constexpr const char *LoggingStorage::Name;
 constexpr const char *EnabledLogTypes::Name;
 constexpr const char *DisabledLogTypes::Name;
@@ -998,19 +999,36 @@ void LoggingLevel::ResetGlobal(DatabaseInstance *db_p, DBConfig &config) {
 }
 
 //===----------------------------------------------------------------------===//
-// Logging Storage
+// Logging Sink
 //===----------------------------------------------------------------------===//
-Value LoggingStorage::GetSetting(const ClientContext &context) {
+Value LoggingSink::GetSetting(const ClientContext &context) {
 	return context.db->GetLogManager().GetConfig().storage;
 }
+void LoggingSink::SetGlobal(DatabaseInstance *db_p, DBConfig &config, const Value &parameter) {
+	auto &db = GetDB<LoggingSink>(db_p);
+	db.GetLogManager().SetLogSink(db, parameter.GetValue<string>());
+}
+
+void LoggingSink::ResetGlobal(DatabaseInstance *db_p, DBConfig &config) {
+	auto &db = GetDB<LoggingSink>(db_p);
+	db.GetLogManager().SetLogSink(db, LogConfig::DEFAULT_LOG_STORAGE);
+}
+
+//===----------------------------------------------------------------------===//
+// Logging Storage (deprecated, use logging_sink)
+//===----------------------------------------------------------------------===//
+Value LoggingStorage::GetSetting(const ClientContext &context) {
+	return LoggingSink::GetSetting(context);
+}
+
 void LoggingStorage::SetGlobal(DatabaseInstance *db_p, DBConfig &config, const Value &parameter) {
 	auto &db = GetDB<LoggingStorage>(db_p);
-	db.GetLogManager().SetLogStorage(db, parameter.GetValue<string>());
+	DUCKDB_LOG_WARNING(db, "the logging_storage setting is deprecated: use logging_sink instead");
+	LoggingSink::SetGlobal(db_p, config, parameter);
 }
 
 void LoggingStorage::ResetGlobal(DatabaseInstance *db_p, DBConfig &config) {
-	auto &db = GetDB<LoggingStorage>(db_p);
-	db.GetLogManager().SetLogStorage(db, LogConfig::DEFAULT_LOG_STORAGE);
+	LoggingSink::ResetGlobal(db_p, config);
 }
 
 //===----------------------------------------------------------------------===//

@@ -377,9 +377,6 @@ FlattenDependentJoins::DecorrelateSubtreeInternal(unique_ptr<LogicalOperator> &p
 				output.right_payload.erase(right_entry);
 			}
 		}
-		auto left_child_requires_domain = RequiresDomain(*plan->children[0]);
-		auto requires_full_rhs_decorrelation = left_child_requires_domain || op.join_type != JoinType::SINGLE;
-
 		// Phase 1: prepare the left side in the current flattener context.
 		auto outer_state = PrepareDependentJoinLeft(plan, propagate_null_values, std::move(state));
 		// Phase 2: push the active correlated state through the right subtree in a child flattener.
@@ -399,13 +396,6 @@ FlattenDependentJoins::DecorrelateSubtreeInternal(unique_ptr<LogicalOperator> &p
 				                                   definition_state.replacement_graph);
 				// the domain probe above cached access entries for definition operators this replaced
 				child_flatten.InvalidateAccessCache();
-				if (requires_full_rhs_decorrelation) {
-					auto result = DecorrelateSubtree(plan, propagate_null_values, std::move(outer_state.bindings));
-					result.replacement_graph.Merge(outer_state.replacement_graph);
-					detached_cte->children[1] = std::move(plan);
-					plan = std::move(detached_cte);
-					return result;
-				}
 			}
 		}
 
@@ -578,8 +568,21 @@ vector<optional_idx> FlattenDependentJoins::GetCTERefCorrelatedPositions(const L
 void FlattenDependentJoins::AddCTERefJoinConditions(LogicalComparisonJoin &join, const LogicalCTERef &cteref,
                                                     const vector<optional_idx> &positions,
                                                     const vector<ColumnBinding> &state) const {
+	optional_idx identity;
+	auto cte_entry = binder.recursive_ctes.find(cteref.cte_index);
+	if (cte_entry != binder.recursive_ctes.end()) {
+		auto &columns = cte_entry->second->Cast<LogicalCTE>().correlated_columns;
+		auto delim_index = columns.GetDelimIndex();
+		if (delim_index < columns.size()) {
+			auto index = GetCorrelatedIndex(columns[delim_index].binding);
+			if (index.IsValid() && positions[index.GetIndex()].IsValid()) {
+				identity = index;
+			}
+		}
+	}
 	for (idx_t i = 0; i < positions.size(); i++) {
-		if (!positions[i].IsValid()) {
+		// The CTE's row identity determines all its correlation payloads.
+		if (!positions[i].IsValid() || (identity.IsValid() && i != identity.GetIndex())) {
 			continue;
 		}
 		JoinCondition cond(make_uniq<BoundColumnRefExpression>(

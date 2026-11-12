@@ -5,7 +5,7 @@
 require tpch
 
 statement ok
-pragma threads=4
+SET threads=4
 
 statement ok
 CALL dbgen(sf=1, suffix='_og');

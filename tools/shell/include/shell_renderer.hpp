@@ -9,7 +9,7 @@
 #pragma once
 
 #include "duckdb/common/time_point.hpp"
-#include "duckdb/logging/log_storage.hpp"
+#include "duckdb/logging/log_sink.hpp"
 #include "shell_state.hpp"
 #include "shell_highlight.hpp"
 
@@ -171,14 +171,14 @@ public:
 	bool ShouldUsePager(RenderingQueryResult &result, PagerMode global_mode) override;
 };
 
-class ShellLogStorage : public duckdb::LogStorage {
+class ShellLogSink : public duckdb::LogSink {
 public:
-	explicit ShellLogStorage(ShellState &state);
+	explicit ShellLogSink(ShellState &state);
 
-	~ShellLogStorage() override = default;
+	~ShellLogSink() override = default;
 
-	const string GetStorageName() override {
-		return "ShellLogStorage";
+	const string GetSinkName() override {
+		return "ShellLogSink";
 	}
 
 protected:

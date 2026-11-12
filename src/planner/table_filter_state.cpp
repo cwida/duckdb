@@ -325,6 +325,9 @@ public:
 
 		const auto hash_capacity = sel.IsSet() ? scan_count : approved_tuple_count;
 		PrepareCapacity(hash_capacity);
+		if (sel.IsSet() && sel.data() == bloom_sel.data()) {
+			bloom_sel.Initialize(current_capacity);
+		}
 		if (sel.IsSet()) {
 			VectorOperations::Hash(vector, hashes, sel, approved_tuple_count);
 			if (hashes.GetVectorType() == VectorType::FLAT_VECTOR) {
@@ -468,6 +471,9 @@ public:
 		}
 
 		PrepareCapacity(approved_tuple_count);
+		if (sel.IsSet() && sel.data() == local_sel.data()) {
+			local_sel.Initialize(current_capacity);
+		}
 		const auto has_selection = sel.IsSet();
 		const auto result_count = has_selection ? filter->LookupKeys(vector, sel, local_sel, approved_tuple_count)
 		                                        : filter->LookupKeys(vector, local_sel, approved_tuple_count);

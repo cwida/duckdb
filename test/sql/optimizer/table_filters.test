@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA threads=1
+SET threads=1
 
 statement ok
 SET disabled_optimizers='join_order,build_side_probe_side'
@@ -168,7 +168,7 @@ EXPLAIN ANALYZE
 SELECT count(*)
 FROM read_parquet('{TEMP_DIR}/optional_partition_prune_22617/*/*.parquet',
                   hive_partitioning=1,
-                  hive_types={'part': INTEGER}) p
+                  hive_types={'part': 'INTEGER'}) p
 JOIN build_part b
   ON p.part = b.part
 ----
@@ -178,7 +178,7 @@ query I
 SELECT count(*)
 FROM read_parquet('{TEMP_DIR}/optional_partition_prune_22617/*/*.parquet',
                   hive_partitioning=1,
-                  hive_types={'part': INTEGER}) p
+                  hive_types={'part': 'INTEGER'}) p
 JOIN build_part b
   ON p.part = b.part
 ----

@@ -168,6 +168,8 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalGet 
                                                                      unique_ptr<LogicalOperator> &node_ptr) {
 	if (get.function.cardinality) {
 		node_stats = get.function.cardinality(context, get.bind_data.get());
+	} else {
+		node_stats.reset();
 	}
 	if (!get.function.statistics && !get.function.statistics_extended) {
 		// no column statistics to get

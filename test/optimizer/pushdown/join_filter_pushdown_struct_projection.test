@@ -1,0 +1,69 @@
+# name: test/optimizer/pushdown/join_filter_pushdown_struct_projection.test
+# description: Runtime struct filters preserve projected scan bindings
+# group: [pushdown]
+
+require parquet
+
+statement ok
+COPY (
+	SELECT i AS id, struct_pack(nested := struct_pack(a := i, b := -i), sibling := i::VARCHAR) AS s
+	FROM range(10000) t(i)
+) TO '{TEST_DIR}/join_filter_struct_projection.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048);
+
+# A scalar scan projection needs no residual extraction.
+query II
+EXPLAIN (ANALYZE, FORMAT JSON)
+SELECT p.s.nested.a FROM read_parquet('{TEST_DIR}/join_filter_struct_projection.parquet') p
+JOIN (VALUES (4500::BIGINT), (4502::BIGINT)) q(x) ON p.s.nested.a = q.x;
+----
+analyzed_plan	<REGEX>:.*"Function": "READ_PARQUET",.*"Projections": "s.nested.a",.*"Dynamic Filters":.*"row_groups_scanned": 1,.*
+
+# Retaining the substruct must not require the sibling field.
+query II
+EXPLAIN (ANALYZE, FORMAT JSON)
+SELECT p.s.nested FROM read_parquet('{TEST_DIR}/join_filter_struct_projection.parquet') p
+JOIN (VALUES (4500::BIGINT), (4502::BIGINT)) q(x) ON p.s.nested.a = q.x;
+----
+analyzed_plan	<REGEX>:.*"Function": "READ_PARQUET",.*"Projections": "s.nested",.*"Dynamic Filters":.*"row_groups_scanned": 1,.*
+
+# A retained parent needs both residual extractions.
+query II
+EXPLAIN (ANALYZE, FORMAT JSON)
+SELECT p.s FROM read_parquet('{TEST_DIR}/join_filter_struct_projection.parquet') p
+JOIN (VALUES (4500::BIGINT), (4502::BIGINT)) q(x) ON p.s.nested.a = q.x;
+----
+analyzed_plan	<REGEX>:.*"Function": "READ_PARQUET",.*"Projections": "s",.*"Dynamic Filters":.*"row_groups_scanned": 1,.*
+
+query T rowsort
+SELECT p.s FROM read_parquet('{TEST_DIR}/join_filter_struct_projection.parquet') p
+JOIN (VALUES (4500::BIGINT), (4502::BIGINT)) q(x) ON p.s.nested.a = q.x;
+----
+{'nested': {'a': 4500, 'b': -4500}, 'sibling': 4500}
+{'nested': {'a': 4502, 'b': -4502}, 'sibling': 4502}
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON)
+SELECT p.s.nested FROM read_parquet('{TEST_DIR}/join_filter_struct_projection.parquet') p
+JOIN (VALUES (4500::INTEGER), (4502::INTEGER)) q(x) ON TRY_CAST(p.s.nested.a AS INTEGER) = q.x;
+----
+analyzed_plan	<REGEX>:.*"Function": "READ_PARQUET",.*"Projections": "s.nested",.*"Dynamic Filters":.*"row_groups_scanned": 1,.*
+
+# The original cast must still fail on the smallest positive TINYINT overflow.
+statement ok
+CREATE TABLE struct_cast_error AS SELECT {'a': i} AS s FROM (VALUES (0::BIGINT), (128::BIGINT)) t(i);
+
+statement error
+SELECT p.* FROM struct_cast_error p JOIN (VALUES (0::TINYINT)) q(x) ON p.s.a::TINYINT = q.x;
+----
+out of range
+
+query T
+SELECT p.s FROM struct_cast_error p JOIN (VALUES (0::TINYINT)) q(x) ON TRY_CAST(p.s.a AS TINYINT) = q.x;
+----
+{'a': 0}
+
+query T
+SELECT p.s FROM read_parquet('{TEST_DIR}/join_filter_struct_projection.parquet') p
+ORDER BY p.s.nested.b LIMIT 1 OFFSET 5000;
+----
+{'nested': {'a': 4999, 'b': -4999}, 'sibling': 4999}

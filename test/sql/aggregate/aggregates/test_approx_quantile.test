@@ -207,7 +207,7 @@ SELECT approx_quantile(r, 'nan'::FLOAT) FROM quantile
 cannot be NaN
 
 statement ok
-pragma threads=4
+SET threads=4
 
 statement ok
 PRAGMA verify_parallelism

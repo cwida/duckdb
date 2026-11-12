@@ -8,7 +8,7 @@ load {TEST_DIR}/null_byte_storage.db
 foreach compr uncompressed fsst dictionary dict_fsst
 
 statement ok
-PRAGMA force_compression='{compr}'
+SET force_compression='{compr}'
 
 statement ok
 CREATE TABLE null_byte AS SELECT concat('goo', chr(0), i) AS v FROM range(10000) tbl(i)
