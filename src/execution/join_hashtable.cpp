@@ -2911,19 +2911,56 @@ void ProbeSpill::PrepareNextProbe() {
 struct DictionaryEmissionActivation {
 	//! Caps the dict_arrays allocation; 8 MiB keeps them in L3 and bounds aux_next_ptrs
 	static constexpr idx_t MAX_BUILD_PAYLOAD_BYTES = 8ULL * 1024ULL * 1024ULL;
-	//! Below this, dictionary-emission setup is not amortized by probe-side savings
-	static constexpr idx_t MIN_PROBE_ROWS = 262144;
 	//! Below this ratio, per-row savings are unlikely to amortize the setup cost
 	static constexpr idx_t PROBE_BUILD_RATIO = 100;
 };
 
-idx_t JoinHashTable::ComputeBuildPayloadBytes(const vector<LogicalType> &rhs_output_types) const {
-	// the size of variable-size strings isn't counted here because they are already stored in the TupleDataCollection
-	idx_t payload_bytes_per_row = 0;
-	for (const auto &type : rhs_output_types) {
-		payload_bytes_per_row += GetTypeIdSize(type.InternalType());
+static idx_t DictionaryRowSize(const LogicalType &type) {
+	const auto limit = DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES;
+	switch (type.InternalType()) {
+	case PhysicalType::ARRAY: {
+		const auto child_size = DictionaryRowSize(ArrayType::GetChildType(type));
+		const auto array_size = ArrayType::GetSize(type);
+		return child_size > limit / array_size ? limit + 1 : child_size * array_size;
 	}
-	return Count() * payload_bytes_per_row;
+	case PhysicalType::STRUCT: {
+		idx_t size = 0;
+		for (const auto &child : StructType::GetChildTypes(type)) {
+			const auto child_size = DictionaryRowSize(child.second);
+			if (child_size > limit - size) {
+				return limit + 1;
+			}
+			size += child_size;
+		}
+		return size;
+	}
+	default:
+		return GetTypeIdSize(type.InternalType());
+	}
+}
+
+idx_t JoinHashTable::ComputeBuildPayloadBytes(const vector<LogicalType> &rhs_output_types) const {
+	D_ASSERT(Count() > 0);
+	const auto limit = DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES;
+	idx_t payload_bytes = 0;
+	bool has_nested = false;
+	for (const auto &type : rhs_output_types) {
+		const auto row_size = DictionaryRowSize(type);
+		if (row_size > (limit - payload_bytes) / Count()) {
+			return limit + 1;
+		}
+		payload_bytes += row_size * Count();
+		has_nested |= type.IsNested();
+	}
+	// Nested gathers copy children; scalar strings continue to reference the pinned build heap.
+	if (has_nested) {
+		const auto collection_bytes = data_collection->SizeInBytes();
+		if (collection_bytes > limit - payload_bytes) {
+			return limit + 1;
+		}
+		payload_bytes += collection_bytes;
+	}
+	return payload_bytes;
 }
 
 bool JoinHashTable::CanUsePerfectDictionaryLookup() const {
@@ -2953,28 +2990,18 @@ bool JoinHashTable::CanUseDictionaryEmission(const PhysicalHashJoin &op, bool ex
 	if (op.rhs_output_columns.col_types.empty()) {
 		return false;
 	}
-	if (Count() == 0) {
+	if (Count() == 0 || Count() > NumericLimits<uint32_t>::Maximum()) {
 		return false;
 	}
-	if (probe_cardinality < Count()) {
+	if (probe_cardinality < Count() ||
+	    (!CanUsePerfectDictionaryLookup() &&
+	     probe_cardinality / DictionaryEmissionActivation::PROBE_BUILD_RATIO < Count())) {
 		return false;
 	}
-	const auto perfect_dictionary_lookup = CanUsePerfectDictionaryLookup();
-	if (!perfect_dictionary_lookup && probe_cardinality < DictionaryEmissionActivation::MIN_PROBE_ROWS) {
-		return false;
-	}
-	if (!perfect_dictionary_lookup && probe_cardinality < DictionaryEmissionActivation::PROBE_BUILD_RATIO * Count()) {
-		return false;
-	}
-	// Vector::Dictionary does not support nested types
 	for (const auto &type : op.rhs_output_columns.col_types) {
-		switch (type.InternalType()) {
-		case PhysicalType::STRUCT:
-		case PhysicalType::LIST:
-		case PhysicalType::ARRAY:
+		if (type.InternalType() == PhysicalType::STRUCT) {
+			// STRUCT vectors apply selections to their children instead of wrapping a dictionary.
 			return false;
-		default:
-			break;
 		}
 	}
 	if (ComputeBuildPayloadBytes(op.rhs_output_columns.col_types) >
@@ -3012,6 +3039,7 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 	const auto build_count = collection.Count();
 	// preconditions enforced by CanUseDictionaryEmission
 	D_ASSERT(build_count > 0);
+	D_ASSERT(dict_arrays.empty());
 	// dict index is a uint32_t; assert defensively if MAX_BUILD_PAYLOAD_BYTES is ever relaxed
 	D_ASSERT(build_count <= NumericLimits<uint32_t>::Maximum());
 
@@ -3022,7 +3050,7 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 	                           TupleDataPinProperties::KEEP_EVERYTHING_PINNED);
 	const auto collected = FillWithHTOffsets(scan_state, row_pointer_vector);
 	D_ASSERT(collected == build_count);
-	(void)collected;
+	FlatVector::SetSize(row_pointer_vector, collected);
 	const auto row_ptrs = FlatVector::GetData<data_ptr_t>(row_pointer_vector);
 
 	// LEFT / OUTER joins fill unmatched probe rows with a constant-NULL vector (NextLeftJoin), so they do not
@@ -3031,14 +3059,38 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 
 	// gather RHS output columns into columnar dictionary arrays
 	const auto &sel = *FlatVector::IncrementalSelectionVector();
+	idx_t dictionary_bytes = 0;
+	vector<buffer_ptr<DictionaryEntry>> dictionaries;
 	for (idx_t col_idx = 0; col_idx < op.rhs_output_columns.col_types.size(); col_idx++) {
 		const auto &type = op.rhs_output_columns.col_types[col_idx];
 		auto dict_entry = dict_on_every_chunk ? DictionaryVector::CreateReusableGlobalDictionary(type, build_count)
 		                                      : DictionaryVector::CreateReusableDictionary(type, build_count);
 		const auto output_col_idx = output_columns[col_idx];
-		collection.Gather(row_pointer_vector, sel, build_count, output_col_idx, dict_entry->data, sel, nullptr);
-		dict_arrays.emplace_back(std::move(dict_entry));
+		if (type.IsNested()) {
+			// Recursive gathers use dense, vector-sized scratch space for both source and target indices.
+			for (idx_t offset = 0; offset < build_count; offset += STANDARD_VECTOR_SIZE) {
+				const auto count = MinValue<idx_t>(build_count - offset, STANDARD_VECTOR_SIZE);
+				Vector rows(row_pointer_vector, offset, offset + count);
+				Vector gathered(type, count);
+				FlatVector::SetSize(gathered, count);
+				collection.Gather(rows, sel, count, output_col_idx, gathered, sel, nullptr);
+				VectorOperations::Copy(gathered, dict_entry->data, count, 0, offset);
+				if (dict_entry->data.GetAllocationSize() >
+				    DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES - dictionary_bytes) {
+					return;
+				}
+			}
+		} else {
+			collection.Gather(row_pointer_vector, sel, build_count, output_col_idx, dict_entry->data, sel, nullptr);
+		}
+		const auto allocation_size = dict_entry->data.GetAllocationSize();
+		if (allocation_size > DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES - dictionary_bytes) {
+			return;
+		}
+		dictionary_bytes += allocation_size;
+		dictionaries.emplace_back(std::move(dict_entry));
 	}
+	dict_arrays = std::move(dictionaries);
 
 	// save chain pointers before overwriting NEXT_PTR; GetNextPointer reads them back.
 	// One extra slot is reserved at the end and left null so that `dead_end` has an index
