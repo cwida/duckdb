@@ -1547,7 +1547,7 @@ bool JoinFilterPushdownInfo::CanUseInFilter(const ClientContext &context, option
 	if (ht->Count() <= dynamic_or_filter_threshold) {
 		return true;
 	}
-	static constexpr idx_t MAX_IN_FILTER_BUILD_BYTES = 256 * 1024;
+	static constexpr idx_t MAX_IN_FILTER_BUILD_BYTES = 256ULL * 1024;
 	return ht->Count() <= STANDARD_VECTOR_SIZE && ht->SizeInBytes() <= MAX_IN_FILTER_BUILD_BYTES;
 }
 

@@ -720,10 +720,12 @@ static bool DEEstimateCollapse(ClientContext &context, LogicalOperator &root, Lo
 		lower_cardinalities[side] = RelationStatisticsHelper::EstimateGroupCardinality(*join.children[side], *stats,
 		                                                                               std::move(groups), extractor);
 		sufficient_collapse |= DEHasSufficientCollapse(cardinality, lower_cardinalities[side]);
-		retained_fraction *= static_cast<double>(lower_cardinalities[side]) / MaxValue<idx_t>(cardinality, 1);
+		retained_fraction *=
+		    static_cast<double>(lower_cardinalities[side]) / static_cast<double>(MaxValue<idx_t>(cardinality, 1));
 	}
 	// Scale the join estimate by grouping reduction without interpreting its selectivity as an NDV.
-	const auto cross_product = static_cast<double>(lower_cardinalities[0]) * lower_cardinalities[1];
+	const auto cross_product =
+	    static_cast<double>(lower_cardinalities[0]) * static_cast<double>(lower_cardinalities[1]);
 	join_cardinality = RelationStatisticsHelper::CardinalityFromDouble(
 	    MinValue(cross_product, static_cast<double>(join.estimated_cardinality) * retained_fraction));
 	return sufficient_collapse;
