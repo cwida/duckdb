@@ -814,6 +814,9 @@ bool RelationManager::ExtractJoinRelation(JoinOrderOptimizer &optimizer, Pending
 		} else {
 			for (auto &column : dj_stats.columns) {
 				column.semi_anti_join_domain_evidence.Invalidate();
+				if (delim_join.join_type == JoinType::OUTER) {
+					column.base_stats = nullptr;
+				}
 			}
 		}
 

@@ -93,3 +93,44 @@ JOIN '{TEST_DIR}/jk_items.parquet' i ON i.item = s.item
 JOIN p ON p.attr = i.attr AND p.yr = s.yr;
 ----
 225000
+
+# outer joins can add NULLs, so a key from the nullable side is not bounded by its scan range
+statement ok
+CREATE TABLE nl AS SELECT i AS id, DATE '2000-01-01' + i::INT AS d FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE nr AS SELECT i AS id, TIMESTAMP '2100-01-01' + INTERVAL (i) SECOND AS ts FROM range(5000) t(i);
+
+query II
+EXPLAIN (FORMAT compact)
+WITH q AS (SELECT coalesce(nr.ts::DATE, nl.d) AS k FROM nl LEFT JOIN nr ON nl.id = nr.id)
+SELECT k, count(*) FROM q GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*HASH_GROUP_BY \(est=\d{4,}\).*
+
+query II
+EXPLAIN (FORMAT compact)
+WITH q AS (SELECT coalesce(nr.ts::DATE, nl.d) AS k FROM nr RIGHT JOIN nl ON nl.id = nr.id)
+SELECT k, count(*) FROM q GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*HASH_GROUP_BY \(est=\d{4,}\).*
+
+query II
+EXPLAIN (FORMAT compact)
+WITH q AS (SELECT coalesce(nr.ts::DATE, nl.d) AS k FROM nl FULL OUTER JOIN nr ON nl.id = nr.id)
+SELECT k, count(*) FROM q GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*HASH_GROUP_BY \(est=\d{4,}\).*
+
+query I
+SELECT count(DISTINCT coalesce(nr.ts::DATE, nl.d)) FROM nl LEFT JOIN nr ON nl.id = nr.id;
+----
+5001
+
+# an inner join keeps the scan range, all nr.ts values fall on one day
+query II
+EXPLAIN (FORMAT compact)
+WITH q AS (SELECT nr.ts::DATE AS k FROM nl JOIN nr ON nl.id = nr.id)
+SELECT k, count(*) FROM q GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*GROUP_BY \(est=1\).*
