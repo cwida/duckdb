@@ -95,16 +95,6 @@ PrefixHandle PrefixHandle::GetTail(ART &art, const NodePtr node_ptr) {
 
 void PrefixHandle::Concat(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, const NodePtr child_ptr,
                           const uint8_t byte, const GateStatus node4_status, const GateStatus status) {
-	// The Node4 is already freed. NODE is an inner node, and child is any other node.
-	// An inlined row ID inside a gate, or below a gated Node4, is never prefixed:
-	//   PREFIX (parent) - Node4 - INLINED_LEAF  =>  INLINED_LEAF, and the parent chain is freed
-	//   NODE (parent) - Node4 - INLINED_LEAF    =>  NODE - INLINED_LEAF
-	//   parent - Node4 (gate) - INLINED_LEAF    =>  parent - INLINED_LEAF
-	// Otherwise, the byte joins the parent chain, unless the parent is a node or the Node4 was the gate:
-	//   PREFIX (parent) - Node4 - child         =>  PREFIX + byte - child
-	//   NODE (parent) - Node4 - child           =>  NODE - PREFIX (byte) - child
-	//   parent - Node4 (gate) - child           =>  parent - PREFIX (byte, gate) - child
-	// Appending the child merges a child prefix up to the first gate, and attaches anything else.
 	D_ASSERT(!parent_ptr.IsAnyLeaf());
 	D_ASSERT(child_ptr.HasMetadata());
 
@@ -114,10 +104,10 @@ void PrefixHandle::Concat(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, con
 		D_ASSERT(child_ptr.GetGateStatus() == GateStatus::GATE_NOT_SET);
 	}
 
-	// Inside gates, inlined row IDs are not prefixed.
+	// Inside gates, inlined row IDs are not prefixed, so the byte is dropped.
 	if (child_ptr.GetType() == NType::LEAF_INLINED && (node4_was_gate || status == GateStatus::GATE_SET)) {
 		if (!node4_was_gate && parent_ptr.GetType() == PREFIX) {
-			// The parent prefix chain only leads to the Node4, so the row ID replaces the whole chain.
+			// PREFIX - Node4 - INLINED_LEAF => INLINED_LEAF, as the parent chain only led to the Node4.
 			while (parent_ptr.GetType() == PREFIX) {
 				NodePtr next_ptr;
 				{
@@ -131,15 +121,20 @@ void PrefixHandle::Concat(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, con
 			parent_ptr = child_ptr;
 			return;
 		}
+		// Inner node - Node4 - INLINED_LEAF => inner node - INLINED_LEAF, or the gated Node4 becomes the row ID.
 		node4_ptr = child_ptr;
 		return;
 	}
 
-	// A gated Node4's byte belongs to the row IDs, so it must not join the parent's key bytes.
-	const auto append_to_parent = !node4_was_gate && parent_ptr.GetType() == PREFIX;
-	auto tail =
-	    append_to_parent ? AppendByte(art, GetTail(art, parent_ptr), byte) : NewInternal(art, node4_ptr, &byte, 1, 0);
-	Append(art, std::move(tail), child_ptr);
+	// Append merges a child prefix into the tail up to the first gate, and attaches any other child.
+	if (!node4_was_gate && parent_ptr.GetType() == PREFIX) {
+		// PREFIX - Node4 - child => PREFIX + byte - child.
+		Append(art, AppendByte(art, GetTail(art, parent_ptr), byte), child_ptr);
+		return;
+	}
+	// Inner node or root - Node4 - child => inner node or root - PREFIX (byte) - child.
+	// A gated Node4's byte belongs to the row IDs, so it gets its own prefix, which becomes the gate.
+	Append(art, NewInternal(art, node4_ptr, &byte, 1, 0), child_ptr);
 	if (node4_was_gate) {
 		node4_ptr.SetGateStatus(GateStatus::GATE_SET);
 	}
