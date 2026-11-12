@@ -116,12 +116,12 @@ ELSE [union_value(n := i)::UNION(n BIGINT, s VARCHAR),
       union_value(s := repeat('x', 40) || i)::UNION(n BIGINT, s VARCHAR), NULL] END;
 
 statement ok
-CREATE MACRO expected_variants(i) AS
+CREATE TEMP MACRO expected_variants(i) AS
 CASE WHEN i % 11 = 0 THEN NULL WHEN i % 13 = 0 THEN []
 ELSE [i::VARIANT, (repeat('x', 40) || i)::VARIANT, NULL, {'n': i, 'a': [i, NULL]}::VARIANT] END;
 
 statement ok
-CREATE TABLE nested_build AS
+CREATE TEMP TABLE nested_build AS
 SELECT i AS k,
        expected_strings(i) AS val_strings,
        expected_lists(i) AS val_lists,
