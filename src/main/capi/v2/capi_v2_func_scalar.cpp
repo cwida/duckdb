@@ -190,23 +190,34 @@ static auto CV2ScalarBind(BindScalarFunctionInput &input) -> unique_ptr<Function
 	return result;
 }
 
-static auto CV2ScalarInit(ExpressionState &state, const BoundFunctionExpression &expr, FunctionData *bind_data)
-    -> unique_ptr<FunctionLocalState> {
-	const auto &info = expr.Function().GetExtraFunctionInfo().Cast<CV2ScalarFunctionInfo>();
+static auto CV2BindDataPointer(optional_ptr<FunctionData> bind_data) -> void * {
+	if (!bind_data) {
+		return nullptr;
+	}
+	auto &handle = bind_data->Cast<CV2FunctionData>().handle;
+	return handle ? handle->GetData() : nullptr;
+}
 
-	auto user_bind_data = bind_data ? bind_data->Cast<CV2FunctionData>().handle : nullptr;
+static auto CV2MakeCallbackContext(optional_ptr<ClientContext> context) -> unique_ptr<CV2CallbackContext> {
+	// Without a client context (e.g. while an index is built) the callback receives a NULL context
+	return context ? make_uniq<CV2CallbackContext>(*context) : nullptr;
+}
+
+unique_ptr<FunctionLocalState> CV2ScalarInitState(const BoundScalarFunction &function,
+                                                  optional_ptr<FunctionData> bind_data,
+                                                  optional_ptr<ClientContext> context) {
+	const auto &info = function.GetExtraFunctionInfo().Cast<CV2ScalarFunctionInfo>();
+	if (!info.init_cb) {
+		return nullptr;
+	}
 
 	CV2InitInfo args = {};
 	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
-	args.in_bind_data = user_bind_data ? user_bind_data->GetData() : nullptr;
+	args.in_bind_data = CV2BindDataPointer(bind_data);
 
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
-	// Without a client context (e.g. while an index is built) the callback receives a NULL context
-	unique_ptr<CV2CallbackContext> callback_context;
-	if (state.HasContext()) {
-		callback_context = make_uniq<CV2CallbackContext>(state.GetContext());
-	}
+	auto callback_context = CV2MakeCallbackContext(context);
 	info.init_cb(Convert(&args), Convert(callback_context.get()), &err_ptr);
 
 	unique_ptr<FunctionLocalState> result = nullptr;
@@ -217,57 +228,43 @@ static auto CV2ScalarInit(ExpressionState &state, const BoundFunctionExpression 
 	}
 
 	// Throw after setting the state, so that it is destroyed even if we error.
-
 	if (err.HasError()) {
 		err.ThrowAsException();
 	}
-
 	return result;
+}
+
+void CV2ScalarInvoke(const BoundScalarFunction &function, optional_ptr<FunctionData> bind_data,
+                     optional_ptr<FunctionLocalState> local_state, optional_ptr<ClientContext> context,
+                     DataChunk &input, Vector &result, CV2ErrorInfo &err) {
+	const auto &info = function.GetExtraFunctionInfo().Cast<CV2ScalarFunctionInfo>();
+
+	CV2ExecInfo args;
+	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
+	args.in_bind_data = CV2BindDataPointer(bind_data);
+	if (local_state) {
+		args.in_init_data = local_state->Cast<CV2FunctionLocalState>().handle.GetData();
+	}
+	args.input = &input;
+	args.function = &function;
+	args.result = &result;
+
+	auto err_ptr = Convert(&err);
+	auto callback_context = CV2MakeCallbackContext(context);
+	info.exec_cb(Convert(&args), Convert(callback_context.get()), &err_ptr);
+}
+
+static auto CV2ScalarInit(ExpressionState &state, const BoundFunctionExpression &expr, FunctionData *bind_data)
+    -> unique_ptr<FunctionLocalState> {
+	return CV2ScalarInitState(expr.Function(), bind_data, state.HasContext() ? &state.GetContext() : nullptr);
 }
 
 static auto CV2ScalarExec(DataChunk &input, ExpressionState &state, Vector &result) -> void {
 	auto &expr = state.expr.Cast<BoundFunctionExpression>();
-	const auto &info = expr.Function().GetExtraFunctionInfo().Cast<CV2ScalarFunctionInfo>();
-
-	// A function registered as the try cast runs under a cast executor that swallows its error
-	optional_ptr<CV2CastExecutor> cast_executor;
-	if (state.root.executor && state.root.executor == ActiveCastExecutor()) {
-		cast_executor = ActiveCastExecutor();
-	}
-
-	CV2ExecInfo args;
-	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
-	args.input = &input;
-	args.function = &expr.Function();
-	args.result = &result;
-
-	// Setup bind data (if provided)
-	if (auto bind_ptr = expr.BindInfo().get()) {
-		const auto &bind_data = bind_ptr->Cast<CV2FunctionData>();
-		args.in_bind_data = bind_data.handle ? bind_data.handle->GetData() : nullptr;
-	}
-
-	// Setup local state (if provided)
-	if (auto state_ptr = ExecuteFunctionState::GetFunctionState(state)) {
-		const auto &state_data = state_ptr->Cast<CV2FunctionLocalState>();
-		args.in_init_data = state_data.handle.GetData();
-	}
-
 	CV2ErrorInfo err = {};
-	auto err_ptr = Convert(&err);
-
-	unique_ptr<CV2CallbackContext> callback_context;
-	if (state.HasContext()) {
-		callback_context = make_uniq<CV2CallbackContext>(state.GetContext());
-	}
-	info.exec_cb(Convert(&args), Convert(callback_context.get()), &err_ptr);
-
+	CV2ScalarInvoke(expr.Function(), expr.BindInfo().get(), ExecuteFunctionState::GetFunctionState(state),
+	                state.HasContext() ? &state.GetContext() : nullptr, input, result, err);
 	if (err.HasError()) {
-		if (cast_executor && cast_executor->is_try) {
-			// The rows the callback wrote stay: the cast reports that not every row converted
-			cast_executor->error = err.message;
-			return;
-		}
 		err.ThrowAsException();
 	}
 }

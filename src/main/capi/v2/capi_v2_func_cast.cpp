@@ -11,7 +11,7 @@ namespace duckdb::capiv2 {
 //! A cast is a pair of scalar functions of one parameter. These are the calls of them that a bound cast executes.
 class CV2CastBoundData final : public BoundCastData {
 public:
-	CV2CastBoundData(shared_ptr<Expression> call, shared_ptr<Expression> try_call)
+	CV2CastBoundData(shared_ptr<BoundFunctionExpression> call, shared_ptr<BoundFunctionExpression> try_call)
 	    : call(std::move(call)), try_call(std::move(try_call)) {
 	}
 
@@ -20,8 +20,8 @@ public:
 	}
 
 public:
-	shared_ptr<Expression> call;
-	shared_ptr<Expression> try_call;
+	shared_ptr<BoundFunctionExpression> call;
+	shared_ptr<BoundFunctionExpression> try_call;
 };
 
 //! The per-cast info the engine hands to the bind function
@@ -35,28 +35,26 @@ public:
 	ScalarFunction try_function;
 };
 
-//! Holds the executor that runs the call, so that the state of the scalar function lives as long as the cast does
+//! The init state of both functions, which lives as long as the cast does
 class CV2CastLocalState final : public FunctionLocalState {
 public:
-	unique_ptr<CV2CastExecutor> executor;
-	unique_ptr<CV2CastExecutor> try_executor;
+	optional_ptr<ClientContext> context;
+	unique_ptr<FunctionLocalState> state;
+	unique_ptr<FunctionLocalState> try_state;
 };
 
-static auto MakeExecutor(optional_ptr<ClientContext> context, const Expression &call, bool is_try)
-    -> unique_ptr<CV2CastExecutor> {
-	// Without a client context (e.g. while an index is built) the scalar function runs with a NULL context
-	if (context) {
-		return make_uniq<CV2CastExecutor>(*context, call, is_try);
-	}
-	return make_uniq<CV2CastExecutor>(call, is_try);
+static auto InitCallState(const BoundFunctionExpression &call, optional_ptr<ClientContext> context)
+    -> unique_ptr<FunctionLocalState> {
+	return CV2ScalarInitState(call.Function(), call.BindInfo().get(), context);
 }
 
 static auto CV2CastInitLocalState(CastLocalStateParameters &parameters) -> unique_ptr<FunctionLocalState> {
-	auto state = make_uniq<CV2CastLocalState>();
 	auto &bound_data = parameters.cast_data->Cast<CV2CastBoundData>();
-	state->executor = MakeExecutor(parameters.context, *bound_data.call, false);
-	state->try_executor = MakeExecutor(parameters.context, *bound_data.try_call, true);
-	return std::move(state);
+	auto result = make_uniq<CV2CastLocalState>();
+	result->context = parameters.context;
+	result->state = InitCallState(*bound_data.call, parameters.context);
+	result->try_state = InitCallState(*bound_data.try_call, parameters.context);
+	return std::move(result);
 }
 
 static auto CV2CastExec(Vector &input, Vector &output, idx_t count, CastParameters &parameters) -> bool {
@@ -64,37 +62,40 @@ static auto CV2CastExec(Vector &input, Vector &output, idx_t count, CastParamete
 
 	// A try cast is exactly the case where the engine handed us a slot to write a message into instead of aborting.
 	const auto is_try_cast = parameters.error_message != nullptr;
+	const auto &call = is_try_cast ? *bound_data.try_call : *bound_data.call;
 
-	unique_ptr<CV2CastExecutor> temporary;
-	optional_ptr<CV2CastExecutor> executor;
+	unique_ptr<FunctionLocalState> temporary_state;
+	optional_ptr<FunctionLocalState> state;
+	optional_ptr<ClientContext> context;
 	if (parameters.local_state) {
 		auto &local_state = parameters.local_state->Cast<CV2CastLocalState>();
-		executor = is_try_cast ? local_state.try_executor.get() : local_state.executor.get();
+		state = is_try_cast ? local_state.try_state.get() : local_state.state.get();
+		context = local_state.context;
 	} else {
-		temporary = MakeExecutor(nullptr, is_try_cast ? *bound_data.try_call : *bound_data.call, is_try_cast);
-		executor = temporary.get();
+		temporary_state = InitCallState(call, nullptr);
+		state = temporary_state.get();
 	}
-	executor->error.clear();
 
 	DataChunk chunk;
 	chunk.InitializeEmpty(vector<LogicalType> {input.GetType()});
 	chunk.data[0].Reference(input);
 	chunk.SetCardinality(count);
-	{
-		CV2ActiveCastScope scope(*executor);
-		executor->ExecuteExpression(chunk, output);
-	}
 
-	if (!executor->error.empty()) {
-		// The engine discards the message and keeps whatever the function left in the output vector.
-		HandleCastError::AssignError(executor->error, parameters);
-		return false;
+	CV2ErrorInfo err = {};
+	CV2ScalarInvoke(call.Function(), call.BindInfo().get(), state, context, chunk, output, err);
+	if (!err.HasError()) {
+		return true;
 	}
-	return true;
+	if (!is_try_cast) {
+		err.ThrowAsException();
+	}
+	// The engine discards the message and keeps whatever the function left in the output vector.
+	HandleCastError::AssignError(err.message, parameters);
+	return false;
 }
 
 static auto BindCall(BindCastInput &input, const ScalarFunction &function, const LogicalType &source,
-                     const LogicalType &target) -> unique_ptr<Expression> {
+                     const LogicalType &target) -> shared_ptr<BoundFunctionExpression> {
 	vector<unique_ptr<Expression>> children;
 	children.push_back(make_uniq<BoundReferenceExpression>(source, 0));
 
@@ -105,11 +106,25 @@ static auto BindCall(BindCastInput &input, const ScalarFunction &function, const
 		// The bind callback needs a client context: without one, the call is made as it is
 		call = make_uniq<BoundFunctionExpression>(BoundScalarFunction(function), std::move(children), nullptr);
 	}
+	if (call->GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
+		throw InternalException("Cast function %s did not bind to a function call", function.GetName());
+	}
 	if (call->GetReturnType() != target) {
 		throw InvalidInputException("Cast function %s returns %s, not the %s it casts to", function.GetName(),
 		                            call->GetReturnType().ToString(), target.ToString());
 	}
-	return call;
+	return shared_ptr<BoundFunctionExpression>(unique_ptr_cast<Expression, BoundFunctionExpression>(std::move(call)));
+}
+
+//! The least stable of two stabilities
+static auto LeastStable(FunctionStability a, FunctionStability b) -> FunctionStability {
+	if (a == FunctionStability::VOLATILE || b == FunctionStability::VOLATILE) {
+		return FunctionStability::VOLATILE;
+	}
+	if (a == FunctionStability::CONSISTENT_WITHIN_QUERY || b == FunctionStability::CONSISTENT_WITHIN_QUERY) {
+		return FunctionStability::CONSISTENT_WITHIN_QUERY;
+	}
+	return FunctionStability::CONSISTENT;
 }
 
 static auto CV2CastBind(BindCastInput &input, const LogicalType &source, const LogicalType &target) -> BoundCastInfo {
@@ -118,23 +133,9 @@ static auto CV2CastBind(BindCastInput &input, const LogicalType &source, const L
 
 	auto call = BindCall(input, info.function, source, target);
 	auto try_call = BindCall(input, info.try_function, source, target);
+	auto stability = LeastStable(call->Function().GetStability(), try_call->Function().GetStability());
 
-	// A cast is only as stable as its least stable function
-	auto stability = FunctionStability::CONSISTENT;
-	for (auto &bound : {call.get(), try_call.get()}) {
-		if (bound->GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
-			continue;
-		}
-		auto function_stability = bound->Cast<BoundFunctionExpression>().Function().GetStability();
-		if (function_stability == FunctionStability::VOLATILE || stability == FunctionStability::VOLATILE) {
-			stability = FunctionStability::VOLATILE;
-		} else if (function_stability == FunctionStability::CONSISTENT_WITHIN_QUERY) {
-			stability = function_stability;
-		}
-	}
-	BoundCastInfo cast_info(CV2CastExec,
-	                        make_uniq<CV2CastBoundData>(shared_ptr<Expression>(std::move(call)),
-	                                                    shared_ptr<Expression>(std::move(try_call))),
+	BoundCastInfo cast_info(CV2CastExec, make_uniq<CV2CastBoundData>(std::move(call), std::move(try_call)),
 	                        CV2CastInitLocalState);
 	cast_info.SetStability(stability);
 	return cast_info;
