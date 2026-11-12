@@ -62,3 +62,14 @@ statement error
 SELECT 'a' COLLATE my_macro
 ----
 Catalog Error: Collation with name my_macro does not exist!
+
+# nfc is not combinable, but can be applied together with combinable collations
+query I
+SELECT 'Ä' COLLATE nfc.nocase = 'ä'
+----
+true
+
+query I
+SELECT 'Ä' COLLATE nocase.nfc.noaccent = 'a'
+----
+true

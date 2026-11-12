@@ -779,6 +779,38 @@ TEST_CASE("V2 aggregate: function properties", "[capi_v2][aggregate_function]") 
 	REQUIRE(AggQueryI64(fx.conn, "SELECT prop_sum(r::INTEGER) FROM range(100) t(r)") == 100LL * 99 / 2);
 }
 
+TEST_CASE("V2 aggregate: generic function properties", "[capi_v2][aggregate_function]") {
+	EnvFixture fx;
+	auto function = MakeAggregate(fx.conn, "generic_props");
+	std::string_view name = "my_extension.flag";
+
+	duckdb_v2_value_handle value = nullptr;
+	REQUIRE(duckdb_v2_aggregate_function_get_generic_property(function, name.data(), name.size(), &value, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(value == nullptr);
+
+	REQUIRE(duckdb_v2_value_create_bool(fx.factory, true, &value, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_aggregate_function_set_generic_property(function, name.data(), name.size(), value, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_value_destroy(&value);
+
+	REQUIRE(duckdb_v2_aggregate_function_get_generic_property(function, name.data(), name.size(), &value, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(value != nullptr);
+	bool result = false;
+	REQUIRE(duckdb_v2_value_get_bool(value, &result, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(result);
+
+	REQUIRE(duckdb_v2_aggregate_function_set_generic_property(function, "", 0, value, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_aggregate_function_set_generic_property(nullptr, name.data(), name.size(), value, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_aggregate_function_get_generic_property(function, name.data(), name.size(), nullptr, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_value_destroy(&value);
+	duckdb_v2_aggregate_function_destroy(&function);
+}
+
 namespace {
 
 // ---------------------------------------------------------------------------

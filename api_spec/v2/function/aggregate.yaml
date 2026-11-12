@@ -330,6 +330,69 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
+  aggregate_function_set_generic_property:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-12" ]
+    description: |
+      Sets a generic, named property on the aggregate function.
+
+      Generic properties are free-form `name = value` pairs that the engine or extensions can read from a
+      function, e.g. `duckdb.collation.combinable = true` marks a collation function as combinable. Setting a
+      property that is already set replaces its value. Reading a property that is not set yields NULL, which
+      boolean properties treat as false.
+    parameters:
+      function:
+        type: aggregate_function
+        description: The function to set the property of.
+      name:
+        type: char
+        indirection: 1
+        const: true
+        kind: IN
+        description: "The name of the property, e.g. `duckdb.collation.combinable`."
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
+      value:
+        type: value
+        description: The value of the property. Borrowed (copied in).
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  aggregate_function_get_generic_property:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-12" ]
+    description: |
+      Reads a generic, named property of the aggregate function, as set by `[[aggregate_function_set_generic_property]]`.
+
+      A property that is not set is not an error: `out_value` then receives NULL.
+    parameters:
+      function:
+        type: aggregate_function
+        description: The function to read the property of.
+      name:
+        type: char
+        indirection: 1
+        const: true
+        kind: IN
+        description: "The name of the property, e.g. `duckdb.collation.combinable`."
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
+      out_value:
+        type: value
+        indirection: 1
+        kind: OUT
+        description: Receives the value of the property, owned by the caller, or NULL if the property is not set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
   aggregate_function_set_bind_callback:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-08-28" ]

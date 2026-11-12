@@ -21,7 +21,7 @@ string CollationFunctions::GetFunctionName(const string &collation) {
 }
 
 void CollationFunctions::SetCombinable(ScalarFunction &function) {
-	function.SetExtraFunctionInfo<CollationFunctionInfo>(true);
+	function.GetProperties().SetProperty(COMBINABLE_PROPERTY, Value::BOOLEAN(true));
 }
 
 CollationFunction CollationFunctions::Lookup(ClientContext &context, const string &collation) {
@@ -42,9 +42,7 @@ CollationFunction CollationFunctions::Lookup(ClientContext &context, const strin
 	if (!function) {
 		throw CatalogException("Collation function \"%s\" must take a single VARCHAR argument", function_name);
 	}
-	auto info = function->GetFunctionInfo();
-	auto collation_info = dynamic_cast<CollationFunctionInfo *>(info.get());
-	return CollationFunction {function_name, collation_info && collation_info->combinable};
+	return CollationFunction {function_name, function->GetProperties().GetBooleanProperty(COMBINABLE_PROPERTY)};
 }
 
 vector<string> CollationFunctions::GetCollations(ClientContext &context) {

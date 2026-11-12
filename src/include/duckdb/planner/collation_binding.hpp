@@ -30,14 +30,6 @@ struct CollationCallback {
 	get_collation_functions_t get_collation_functions;
 };
 
-//! Optional extra info of a string collation function, marks the collation as combinable with other collations
-struct CollationFunctionInfo : public ScalarFunctionInfo {
-	explicit CollationFunctionInfo(bool combinable_p) : combinable(combinable_p) {
-	}
-
-	bool combinable;
-};
-
 struct CollationFunction {
 	//! The name of the scalar function that maps a string to its sort key
 	string name;
@@ -49,6 +41,8 @@ struct CollationFunction {
 //! returns a VARCHAR or BLOB that is compared (and sorted) instead of the original string.
 struct CollationFunctions {
 	static constexpr const char *PREFIX = "collate_";
+	//! Boolean function property that marks a collation as combinable, an absent property means false
+	static constexpr const char *COMBINABLE_PROPERTY = "duckdb.collation.combinable";
 
 	//! The name of the function that implements the collation with the given name
 	DUCKDB_API static string GetFunctionName(const string &collation);

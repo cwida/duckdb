@@ -111,7 +111,40 @@ bool FunctionProperties::operator==(const FunctionProperties &rhs) const {
 	return stability == rhs.stability && null_handling == rhs.null_handling && errors == rhs.errors &&
 	       collation_handling == rhs.collation_handling && capture_argument_aliases == rhs.capture_argument_aliases &&
 	       requires_expression_names == rhs.requires_expression_names &&
-	       requires_ordered_execution == rhs.requires_ordered_execution;
+	       requires_ordered_execution == rhs.requires_ordered_execution && GenericPropertiesEqual(rhs);
+}
+
+bool FunctionProperties::GenericPropertiesEqual(const FunctionProperties &rhs) const {
+	if (generic_properties.size() != rhs.generic_properties.size()) {
+		return false;
+	}
+	for (auto &entry : generic_properties) {
+		auto other = rhs.GetProperty(entry.first);
+		if (!other || !Value::NotDistinctFrom(entry.second, *other)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+void FunctionProperties::SetProperty(const string &name, Value value) {
+	generic_properties[name] = std::move(value);
+}
+
+optional_ptr<const Value> FunctionProperties::GetProperty(const string &name) const {
+	auto entry = generic_properties.find(name);
+	if (entry == generic_properties.end()) {
+		return nullptr;
+	}
+	return &entry->second;
+}
+
+bool FunctionProperties::GetBooleanProperty(const string &name) const {
+	auto value = GetProperty(name);
+	if (!value || value->IsNull()) {
+		return false;
+	}
+	return BooleanValue::Get(value->DefaultCastAs(LogicalType::BOOLEAN));
 }
 
 bool FunctionProperties::operator!=(const FunctionProperties &rhs) const {
