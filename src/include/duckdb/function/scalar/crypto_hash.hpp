@@ -15,6 +15,7 @@
 #include "duckdb/execution/expression_executor_state.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 namespace crypto_hash_scalar {
@@ -35,10 +36,11 @@ template <CryptoHashFunction FUNCTION>
 unique_ptr<FunctionLocalState> InitLocalState(ExpressionState &state, const BoundFunctionExpression &, FunctionData *) {
 	auto &db = state.GetContext().GetDatabase();
 	auto &config = DBConfig::GetConfig(db);
-	if (!config.options.force_mbedtls && config.encryption_util && config.encryption_util->SupportsHash(FUNCTION)) {
+	auto force_mbedtls = Settings::Get<ForceMbedtlsUnsafeSetting>(config);
+	if (!force_mbedtls && config.encryption_util && config.encryption_util->SupportsHash(FUNCTION)) {
 		return make_uniq<LocalState>(config.encryption_util, FUNCTION);
 	}
-	return make_uniq<LocalState>(db.GetMbedTLSUtil(config.options.force_mbedtls), FUNCTION);
+	return make_uniq<LocalState>(db.GetMbedTLSUtil(force_mbedtls), FUNCTION);
 }
 
 struct StringData {

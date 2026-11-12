@@ -1,0 +1,220 @@
+# name: test/sql/settings/generic_migrated_settings.test
+# description: Settings migrated to generic settings keep their defaults, normalization, validation and RESET behavior
+# group: [settings]
+
+# defaults
+query IIII
+SELECT current_setting('profiling_coverage'), current_setting('debug_force_variant_shredding'),
+       current_setting('checkpoint_threshold'), current_setting('allocator_bulk_deallocation_flush_threshold')
+----
+SELECT	INVALID	16.0 MiB	512.0 MiB
+
+query IIIII
+SELECT current_setting('disabled_optimizers'), current_setting('disabled_compression_methods'),
+       current_setting('extension_directories'), current_setting('profiling_output'),
+       current_setting('custom_user_agent')
+----
+(empty)	(empty)	[]	(empty)	(empty)
+
+# enums are normalized
+statement ok
+SET debug_verification_mode='verify_vectors'
+
+statement ok
+SET profiling_coverage='all'
+
+query II
+SELECT current_setting('debug_verification_mode'), current_setting('profiling_coverage')
+----
+VERIFY_VECTORS	ALL
+
+statement error
+SET profiling_coverage='does_not_exist'
+----
+unrecognized value
+
+statement ok
+RESET debug_verification_mode
+
+statement ok
+RESET profiling_coverage
+
+query II
+SELECT current_setting('debug_verification_mode'), current_setting('profiling_coverage')
+----
+NONE	SELECT
+
+# lists of optimizers and compression methods are normalized
+statement ok
+SET disabled_optimizers='Join_Order , extension'
+
+statement ok
+SET disabled_compression_methods='rle,bitpacking'
+
+query II
+SELECT current_setting('disabled_optimizers'), current_setting('disabled_compression_methods')
+----
+join_order,extension	RLE,BitPacking
+
+# compression methods are deduplicated and kept in canonical order
+statement ok
+SET disabled_compression_methods='bitpacking,rle,rle'
+
+query I
+SELECT current_setting('disabled_compression_methods')
+----
+RLE,BitPacking
+
+statement ok
+SET disabled_compression_methods='rle,rle'
+
+query I
+SELECT current_setting('disabled_compression_methods')
+----
+RLE
+
+statement ok
+RESET disabled_optimizers
+
+statement ok
+RESET disabled_compression_methods
+
+query II
+SELECT current_setting('disabled_optimizers'), current_setting('disabled_compression_methods')
+----
+(empty)	(empty)
+
+# thresholds and lists
+statement ok
+SET checkpoint_threshold='1GB'
+
+statement ok
+SET allocator_bulk_deallocation_flush_threshold='1GiB'
+
+statement ok
+SET extension_directories=['/tmp/a', '/tmp/b']
+
+query III
+SELECT current_setting('checkpoint_threshold'), current_setting('allocator_bulk_deallocation_flush_threshold'),
+       current_setting('extension_directories')
+----
+953.6 MiB	1.0 GiB	[/tmp/a, /tmp/b]
+
+statement error
+SET extension_directories=NULL
+----
+cannot be NULL
+
+statement error
+SET extension_directories=[NULL]
+----
+extension_directories setting elements cannot be NULL
+
+statement error
+SET extension_directories=['/tmp/c', NULL]
+----
+extension_directories setting elements cannot be NULL
+
+# a rejected value leaves the previous value in place
+query I
+SELECT current_setting('extension_directories')
+----
+[/tmp/a, /tmp/b]
+
+statement ok
+SELECT count(*) > 0 FROM duckdb_extensions()
+
+statement ok
+RESET checkpoint_threshold
+
+statement ok
+RESET allocator_bulk_deallocation_flush_threshold
+
+statement ok
+RESET extension_directories
+
+query III
+SELECT current_setting('checkpoint_threshold'), current_setting('allocator_bulk_deallocation_flush_threshold'),
+       current_setting('extension_directories')
+----
+16.0 MiB	512.0 MiB	[]
+
+# progress bar printing
+statement ok
+SET enable_progress_bar_print=false
+
+query I
+SELECT current_setting('enable_progress_bar_print')
+----
+false
+
+statement ok
+RESET enable_progress_bar_print
+
+query I
+SELECT current_setting('enable_progress_bar_print')
+----
+true
+
+# variant shredding schema
+statement ok
+SET force_variant_shredding='STRUCT(a INTEGER)'
+
+query I
+SELECT current_setting('debug_force_variant_shredding')
+----
+STRUCT(unshredded STRUCT(keys VARCHAR[], children STRUCT(keys_index UINTEGER, values_index UINTEGER)[], "values" STRUCT(type_id UTINYINT, byte_offset UINTEGER)[], "data" BLOB), shredded STRUCT(typed_value STRUCT(a STRUCT(typed_value INTEGER, untyped_value_index UINTEGER)), untyped_value_index UINTEGER))
+
+statement error
+SET force_variant_shredding=NULL
+----
+debug_force_variant_shredding setting cannot be NULL
+
+statement error
+SET force_variant_shredding='MAP(VARCHAR, INTEGER)'
+----
+Shredding can consist of the nested types LIST
+
+statement ok
+RESET force_variant_shredding
+
+query I
+SELECT current_setting('debug_force_variant_shredding')
+----
+INVALID
+
+# settings that cannot be changed by the user, or while the database is running
+statement error
+SET debug_delta_only_variant_encoding_enabled=true
+----
+This setting is not adjustable by a user
+
+statement error
+RESET debug_delta_only_variant_encoding_enabled
+----
+This setting is not adjustable by a user
+
+statement error
+SET custom_user_agent='my_agent'
+----
+Cannot change custom_user_agent setting while database is running
+
+# unset local-only settings report a LOCAL scope
+query II
+SELECT name, scope FROM duckdb_settings()
+WHERE name IN ('profiling_coverage', 'profiling_output', 'progress_bar_time') ORDER BY name
+----
+profiling_coverage	LOCAL
+profiling_output	LOCAL
+progress_bar_time	LOCAL
+
+# local-only settings reject a global assignment with the generic-settings error
+statement error
+SET GLOBAL profiling_coverage='all'
+----
+Invalid Input Error: Setting "profiling_coverage" cannot be set as a global variable - it can only be set per session
+
+statement error
+SET GLOBAL profiling_output='out.txt'
+----
+Invalid Input Error: Setting "profiling_output" cannot be set as a global variable - it can only be set per session
