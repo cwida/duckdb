@@ -6,6 +6,7 @@
 #include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_case_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -61,15 +62,19 @@ static bool PlanReturnsExactlyOneRow(const LogicalOperator &op) {
 	}
 }
 
-static bool IsExtremumRewriteValid(const BoundSubqueryExpression &expr) {
+static bool IsExtremumRewriteValid(Binder &binder, const BoundSubqueryExpression &expr) {
 	// TODO/FIXME: Generalize this rewrite to multi-column subqueries
 	if (expr.GetChildren().size() != 1 || expr.GetChildTypes().size() != 1 || expr.GetChildTargets().size() != 1) {
 		return false;
 	}
 	auto cmp_type = expr.ComparisonType();
-	return cmp_type == ExpressionType::COMPARE_GREATERTHAN ||
-	       cmp_type == ExpressionType::COMPARE_GREATERTHANOREQUALTO || cmp_type == ExpressionType::COMPARE_LESSTHAN ||
-	       cmp_type == ExpressionType::COMPARE_LESSTHANOREQUALTO;
+	if (cmp_type != ExpressionType::COMPARE_GREATERTHAN && cmp_type != ExpressionType::COMPARE_GREATERTHANOREQUALTO &&
+	    cmp_type != ExpressionType::COMPARE_LESSTHAN && cmp_type != ExpressionType::COMPARE_LESSTHANOREQUALTO) {
+		return false;
+	}
+	// the extremum is cast after aggregating, which requires an order-preserving cast - a registered one need not be
+	return !CastFunctionSet::Get(binder.context)
+	            .CanOverrideDefaultCast(expr.GetChildTypes()[0], expr.GetChildTargets()[0]);
 }
 
 static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryExpression &expr,
@@ -350,7 +355,7 @@ static unique_ptr<Expression> PlanUncorrelatedSubquery(Binder &binder, BoundSubq
 	}
 	default: {
 		D_ASSERT(expr.GetSubqueryType() == SubqueryType::ANY);
-		if (IsExtremumRewriteValid(expr)) {
+		if (IsExtremumRewriteValid(binder, expr)) {
 			auto result = PlanExtremumRewrite(binder, expr, plan);
 			root = LogicalCrossProduct::Create(std::move(root), std::move(plan));
 			return result;
@@ -572,7 +577,7 @@ static unique_ptr<Expression> PlanCorrelatedSubquery(Binder &binder, BoundSubque
 	default: {
 		D_ASSERT(expr.GetSubqueryType() == SubqueryType::ANY);
 
-		if (IsExtremumRewriteValid(expr)) {
+		if (IsExtremumRewriteValid(binder, expr)) {
 			auto result = PlanExtremumRewrite(binder, expr, plan);
 			// For the extremum rewrite, we treat the correlated subquery just like a SCALAR query.
 			// It produces a single aggregated result per RHS execution.

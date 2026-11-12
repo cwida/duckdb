@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/rule/date_trunc_simplification.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
@@ -87,6 +88,13 @@ unique_ptr<Expression> DateTruncSimplificationRule::Apply(LogicalOperator &op, v
 
 	auto &column_side = col_is_lhs ? left : right;
 	auto &constant_side = col_is_lhs ? right : left;
+
+	// the rewrites rely on built-in casts inverting date_trunc - a registered cast need not
+	if (CastFunctionSet::Get(rewriter.context)
+	        .CanOverrideDefaultCast(rhs.GetReturnType(), column_part.GetReturnType()) ||
+	    !CreateTrunc(date_part, rhs, rhs.GetReturnType())) {
+		return nullptr;
+	}
 
 	// date_trunc preserves temporal infinities, so only remove the function call.
 	if (IsInfinity(rhs.GetValue())) {
@@ -378,6 +386,9 @@ unique_ptr<Expression> DateTruncSimplificationRule::CreateTrunc(const BoundConst
 
 	// Ensure that the RHS type matches the column type.
 	if (trunc->GetReturnType().id() != return_type.id()) {
+		if (CastFunctionSet::Get(rewriter.context).CanOverrideDefaultCast(trunc->GetReturnType(), return_type)) {
+			return nullptr;
+		}
 		trunc = BoundCastExpression::AddCastToType(rewriter.context, std::move(trunc), return_type, true);
 	}
 
@@ -429,6 +440,9 @@ unique_ptr<Expression> DateTruncSimplificationRule::CreateTruncAdd(const BoundCo
 
 	// Ensure that the RHS type matches the column type.
 	if (trunc->GetReturnType().id() != return_type.id()) {
+		if (CastFunctionSet::Get(rewriter.context).CanOverrideDefaultCast(trunc->GetReturnType(), return_type)) {
+			return nullptr;
+		}
 		trunc = BoundCastExpression::AddCastToType(rewriter.context, std::move(trunc), return_type, true);
 	}
 
