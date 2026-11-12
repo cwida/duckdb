@@ -1,0 +1,364 @@
+# name: test/extension/install_any_extension_directory.test
+# description: INSTALL treats an extension that the loader finds in any configured extension directory as installed
+# group: [extension]
+
+require notmingw
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+statement ok
+SET extension_directory = ''
+
+# an extension directory has the <version>/<platform>/<name>.duckdb_extension layout of a repository, so installing
+# into one builds a local repository
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_repo']
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_other_repo']
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+
+# a copy installed from a file path, as a package manager would place it
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_pinned']
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+
+# a copy installed from a repository
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_from_repo']
+
+statement ok
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_repo'
+
+# one directory: an installed copy makes INSTALL a no op, even when the repository is unreachable
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_pinned']
+
+statement ok
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_missing_repo'
+
+# no copy in any directory: INSTALL goes to the repository
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_empty_a', '{TEST_DIR}/iad_empty_b']
+
+statement error
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_missing_repo'
+----
+<REGEX>:IO Error: Failed to install local extension "loadable_extension_demo".*iad_missing_repo.*
+
+# a copy only in the second directory is installed: nothing is downloaded, and the first directory stays empty
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_first', '{TEST_DIR}/iad_pinned']
+
+statement ok
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_missing_repo'
+
+statement ok
+SET custom_extension_repository = '{TEST_DIR}/iad_missing_repo'
+
+statement ok
+INSTALL loadable_extension_demo
+
+statement ok
+RESET custom_extension_repository
+
+statement ok
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_repo'
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/iad_first/**/*.duckdb_extension*')
+----
+0
+
+# the first directory is not created, so it may be one that cannot be created: below a file, or below a missing home
+statement ok
+COPY (SELECT 1) TO '{TEST_DIR}/iad_file.csv'
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_file.csv/first', '{TEST_DIR}/iad_pinned']
+
+statement ok
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_missing_repo'
+
+statement error
+FORCE INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_repo'
+----
+<REGEX>:IO Error: Failed to create directory "[^"]*iad_file\.csv".*
+
+statement ok
+SET home_directory = '{TEST_DIR}/iad_missing_home'
+
+statement ok
+SET extension_directories = ['~/extensions', '{TEST_DIR}/iad_pinned']
+
+statement ok
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_missing_repo'
+
+statement error
+FORCE INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_repo'
+----
+<REGEX>:IO Error: Can't find the home directory at '[^']*iad_missing_home'.*
+
+statement ok
+RESET home_directory
+
+# the deprecated extension_directory comes before extension_directories
+statement ok
+SET extension_directory = '{TEST_DIR}/iad_first'
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_pinned']
+
+statement ok
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_missing_repo'
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/iad_first/**/*.duckdb_extension*')
+----
+0
+
+statement ok
+SET extension_directory = '{TEST_DIR}/iad_pinned'
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_from_repo']
+
+statement ok
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_other_repo'
+
+statement ok
+SET extension_directory = '{TEST_DIR}/iad_from_repo'
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_pinned']
+
+statement error
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_other_repo'
+----
+<REGEX>:Invalid Input Error: Installing extension 'loadable_extension_demo' failed\. The extension is already installed but the origin is different\..*
+
+statement ok
+SET extension_directory = ''
+
+# the origin check runs on the copy that is found
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_first', '{TEST_DIR}/iad_from_repo']
+
+statement ok
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_repo'
+
+statement error
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_other_repo'
+----
+<REGEX>:Invalid Input Error: Installing extension 'loadable_extension_demo' failed\. The extension is already installed but the origin is different\..*from repository '[^']*iad_repo', while the extension to be installed is from repository '[^']*iad_other_repo'.*
+
+statement error
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+----
+<REGEX>:Invalid Input Error: Installing extension 'loadable_extension_demo' failed\. The extension is already installed but the origin is different\..*from repository '[^']*iad_repo', while the extension to be installed is from custom_path.*
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/iad_first/**/*.duckdb_extension*')
+----
+0
+
+# with a copy in both directories, the first one decides, as it does for the loader
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_pinned', '{TEST_DIR}/iad_from_repo']
+
+statement ok
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_other_repo'
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_from_repo', '{TEST_DIR}/iad_pinned']
+
+statement error
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_other_repo'
+----
+<REGEX>:Invalid Input Error: Installing extension 'loadable_extension_demo' failed\. The extension is already installed but the origin is different\..*
+
+# FORCE INSTALL ignores the copies and installs into the first directory
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_first', '{TEST_DIR}/iad_from_repo']
+
+statement error
+FORCE INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_missing_repo'
+----
+<REGEX>:IO Error: Failed to install local extension "loadable_extension_demo".*iad_missing_repo.*
+
+statement ok
+FORCE INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_other_repo'
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/iad_first/*/*/loadable_extension_demo.duckdb_extension')
+----
+1
+
+# the copy in the first directory now shadows the one in the second
+statement ok
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_other_repo'
+
+statement error
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_repo'
+----
+<REGEX>:Invalid Input Error: Installing extension 'loadable_extension_demo' failed\. The extension is already installed but the origin is different\..*from repository '[^']*iad_other_repo', while the extension to be installed is from repository '[^']*iad_repo'.*
+
+# a user provided repository installs into a repositories/<name> subfolder of each directory, and the loader looks
+# for an extension from it there
+statement ok
+SET extension_repository_directory = '{TEST_DIR}/iad_repositories'
+
+statement ok
+CREATE EXTENSION REPOSITORY iadrepo WITH PREFIX '{TEST_DIR}/iad_repo' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_user_second']
+
+statement ok
+INSTALL loadable_extension_demo FROM iadrepo
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/iad_user_second/*/*/repositories/iadrepo/loadable_extension_demo.duckdb_extension')
+----
+1
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_user_first', '{TEST_DIR}/iad_user_second']
+
+statement ok
+INSTALL loadable_extension_demo FROM iadrepo
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/iad_user_first/**/*.duckdb_extension*')
+----
+0
+
+# the copy from the user provided repository is not a copy for a plain INSTALL
+statement error
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/iad_missing_repo'
+----
+<REGEX>:IO Error: Failed to install local extension "loadable_extension_demo".*iad_missing_repo.*
+
+# the no op does not create the repositories subfolder in the first directory either
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_file.csv/first', '{TEST_DIR}/iad_user_second']
+
+statement ok
+INSTALL loadable_extension_demo FROM iadrepo
+
+# and a plain copy is not a copy for an INSTALL from the user provided repository
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_user_first', '{TEST_DIR}/iad_pinned']
+
+statement ok
+INSTALL loadable_extension_demo FROM iadrepo
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/iad_user_first/*/*/repositories/iadrepo/loadable_extension_demo.duckdb_extension')
+----
+1
+
+# a repository name is case insensitive: INSTALL writes the subfolder of the lower case name, and LOAD ... FROM finds
+# it there and accepts its origin however the name is written
+statement ok
+CREATE EXTENSION REPOSITORY IadCaseRepo WITH PREFIX '{TEST_DIR}/iad_repo' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_case_second']
+
+statement ok
+INSTALL loadable_extension_demo FROM IadCaseRepo
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/iad_case_second/*/*/repositories/iadcaserepo/loadable_extension_demo.duckdb_extension')
+----
+1
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_case_first', '{TEST_DIR}/iad_case_second']
+
+statement ok
+INSTALL loadable_extension_demo FROM IADCASEREPO
+
+statement ok
+LOAD loadable_extension_demo FROM IadCaseRepo
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/iad_case_first/**')
+----
+0
+
+# a later directory inside allowed_directories, prepared before external access is disabled
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_ok_pinned']
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+
+# a first directory below the home directory, prepared before external access is disabled
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_home/extensions']
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+
+# with external access disabled the lookup is subject to the same access checks as the install, so a later directory
+# outside allowed_directories is an error rather than skipped
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_allowed', '{TEST_DIR}/iad_pinned']
+
+statement ok
+SET allowed_directories = ['{TEST_DIR}/iad_allowed', '{BUILD_DIRECTORY}/test/extension', '{TEST_DIR}/iad_home/extensions', '{TEST_DIR}/iad_repo/', '{TEST_DIR}/iad_repositories/', '{TEST_DIR}/iad_ok_first', '{TEST_DIR}/iad_ok_pinned']
+
+statement ok
+SET enable_external_access = false
+
+statement error
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+----
+<REGEX>:Permission Error: Cannot access directory "[^"]*iad_pinned.*
+
+# a later directory inside allowed_directories is looked at like any other, and its copy makes INSTALL a no op
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_ok_first', '{TEST_DIR}/iad_ok_pinned']
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/iad_ok_first/**')
+----
+0
+
+# creating the repository subfolder in an existing first directory needs no access to the home directory around it
+statement ok
+SET home_directory = '{TEST_DIR}/iad_home'
+
+statement ok
+SET extension_directories = ['~/extensions']
+
+statement ok
+FORCE INSTALL loadable_extension_demo FROM iadrepo
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/iad_home/extensions/*/*/repositories/iadrepo/loadable_extension_demo.duckdb_extension')
+----
+1
+
+# the opt in for user provided repositories applies also when a copy is installed
+statement ok
+SET allow_extension_repositories = 'forbidden'
+
+statement error
+INSTALL loadable_extension_demo FROM iadrepo
+----
+Permission Error: Installing extensions from a user-provided repository is not permitted while allow_extension_repositories='forbidden'

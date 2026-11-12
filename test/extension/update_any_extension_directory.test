@@ -1,0 +1,273 @@
+# name: test/extension/update_any_extension_directory.test
+# description: duckdb_extensions() and UPDATE EXTENSIONS act on the copy the loader uses, from any extension directory
+# group: [extension]
+
+require notmingw
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+statement ok
+SET extension_directory = ''
+
+# a local repository, a copy installed from it, and a copy installed from a file path as a package manager would place it
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_repo']
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_from_repo']
+
+statement ok
+INSTALL loadable_extension_demo FROM '{TEST_DIR}/uad_repo'
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_pinned']
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_double']
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo_double.duckdb_extension'
+
+# one directory
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_pinned']
+
+query III
+SELECT installed, install_mode, install_path LIKE '%uad\_pinned%' ESCAPE '\' FROM duckdb_extensions() WHERE extension_name = 'loadable_extension_demo'
+----
+true	CUSTOM_PATH	true
+
+query IIIII
+UPDATE EXTENSIONS
+----
+loadable_extension_demo	(empty)	NOT_A_REPOSITORY	default-version	default-version
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_from_repo']
+
+query IIIII
+UPDATE EXTENSIONS
+----
+loadable_extension_demo	<REGEX>:.*uad_repo.*	NO_UPDATE_AVAILABLE	default-version	default-version
+
+# with a copy in both directories, the first one is the installed copy, as it is for the loader
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_pinned', '{TEST_DIR}/uad_from_repo']
+
+query III
+SELECT installed, install_mode, install_path LIKE '%uad\_pinned%' ESCAPE '\' FROM duckdb_extensions() WHERE extension_name = 'loadable_extension_demo'
+----
+true	CUSTOM_PATH	true
+
+query IIIII
+UPDATE EXTENSIONS
+----
+loadable_extension_demo	(empty)	NOT_A_REPOSITORY	default-version	default-version
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_from_repo', '{TEST_DIR}/uad_pinned']
+
+query IIII
+SELECT installed, install_mode, installed_from LIKE '%uad\_repo%' ESCAPE '\', install_path LIKE '%uad\_from\_repo%' ESCAPE '\' FROM duckdb_extensions() WHERE extension_name = 'loadable_extension_demo'
+----
+true	REPOSITORY	true	true
+
+query IIIII
+UPDATE EXTENSIONS
+----
+loadable_extension_demo	<REGEX>:.*uad_repo.*	NO_UPDATE_AVAILABLE	default-version	default-version
+
+query IIIII
+UPDATE EXTENSIONS (loadable_extension_demo)
+----
+loadable_extension_demo	<REGEX>:.*uad_repo.*	NO_UPDATE_AVAILABLE	default-version	default-version
+
+# a copy only in the second directory is listed and updated from the repository it was installed from; the update
+# goes into the first directory, as FORCE INSTALL does, and the second directory is not written
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_first', '{TEST_DIR}/uad_from_repo']
+
+query III
+SELECT installed, install_mode, install_path LIKE '%uad\_from\_repo%' ESCAPE '\' FROM duckdb_extensions() WHERE extension_name = 'loadable_extension_demo'
+----
+true	REPOSITORY	true
+
+query IIIII
+UPDATE EXTENSIONS
+----
+loadable_extension_demo	<REGEX>:.*uad_repo.*	NO_UPDATE_AVAILABLE	default-version	default-version
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/uad_first/*/*/loadable_extension_demo.duckdb_extension')
+----
+1
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/uad_from_repo/**/*.duckdb_extension*')
+----
+2
+
+query IIII
+SELECT installed, install_mode, installed_from LIKE '%uad\_repo%' ESCAPE '\', install_path LIKE '%uad\_first%' ESCAPE '\' FROM duckdb_extensions() WHERE extension_name = 'loadable_extension_demo'
+----
+true	REPOSITORY	true	true
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_first_by_name', '{TEST_DIR}/uad_from_repo']
+
+query IIIII
+UPDATE EXTENSIONS (loadable_extension_demo)
+----
+loadable_extension_demo	<REGEX>:.*uad_repo.*	NO_UPDATE_AVAILABLE	default-version	default-version
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/uad_first_by_name/*/*/loadable_extension_demo.duckdb_extension')
+----
+1
+
+# a copy in the second directory that did not come from a repository is reported, not updated
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_first_pinned', '{TEST_DIR}/uad_pinned']
+
+query IIIII
+UPDATE EXTENSIONS
+----
+loadable_extension_demo	(empty)	NOT_A_REPOSITORY	default-version	default-version
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/uad_first_pinned/**')
+----
+0
+
+# different extensions in different directories are all listed
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_pinned', '{TEST_DIR}/uad_double']
+
+query IIII rowsort
+SELECT extension_name, installed, install_mode, regexp_extract(install_path, 'uad_[a-z_]+') FROM duckdb_extensions() WHERE extension_name LIKE 'loadable\_extension\_demo%' ESCAPE '\'
+----
+loadable_extension_demo	true	CUSTOM_PATH	uad_pinned
+loadable_extension_demo_double	true	CUSTOM_PATH	uad_double
+
+query IIIII rowsort
+UPDATE EXTENSIONS
+----
+loadable_extension_demo	(empty)	NOT_A_REPOSITORY	default-version	default-version
+loadable_extension_demo_double	(empty)	NOT_A_REPOSITORY	<REGEX>:.*	<REGEX>:.*
+
+# no copy in any directory
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_empty_a', '{TEST_DIR}/uad_empty_b']
+
+query IIIII
+UPDATE EXTENSIONS
+----
+
+statement error
+UPDATE EXTENSIONS (loadable_extension_demo)
+----
+Failed to update the extension 'loadable_extension_demo', the extension is not installed!
+
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE extension_name = 'loadable_extension_demo'
+----
+0
+
+# listing does not create the first directory, so it may be one that cannot be created
+statement ok
+COPY (SELECT 1) TO '{TEST_DIR}/uad_file.csv'
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_file.csv/first', '{TEST_DIR}/uad_empty_b']
+
+query IIIII
+UPDATE EXTENSIONS
+----
+
+# an update of a later copy writes the first directory, as FORCE INSTALL does, so it needs one that can be created
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_file.csv/first', '{TEST_DIR}/uad_from_repo']
+
+statement error
+UPDATE EXTENSIONS
+----
+<REGEX>:IO Error: Extension updating failed when trying to install 'loadable_extension_demo', original error: .*Failed to create directory "[^"]*uad_file\.csv".*
+
+# a load from a user provided repository looks in the repositories/<name> subfolder of each directory, and a flat
+# copy is not its copy
+statement ok
+SET extension_repository_directory = '{TEST_DIR}/uad_repositories'
+
+statement ok
+CREATE EXTENSION REPOSITORY uadrepo WITH PREFIX '{TEST_DIR}/uad_repo' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_user_second']
+
+statement ok
+INSTALL loadable_extension_demo FROM uadrepo
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_user_first', '{TEST_DIR}/uad_pinned']
+
+statement error
+LOAD loadable_extension_demo FROM uadrepo
+----
+<REGEX>:IO Error: Extension "[^"]*uad_user_first[^"]*repositories[^"]*uadrepo[^"]*loadable_extension_demo\.duckdb_extension" not found.*
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_pinned', '{TEST_DIR}/uad_user_second']
+
+statement ok
+LOAD loadable_extension_demo FROM uadrepo
+
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'loadable_extension_demo'
+----
+true
+
+restart
+
+statement ok
+SET extension_directory = ''
+
+# the row of a loaded extension shows the copy in the first directory that holds one
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_pinned', '{TEST_DIR}/uad_from_repo']
+
+statement ok
+LOAD loadable_extension_demo
+
+query IIII
+SELECT loaded, installed, install_mode, install_path LIKE '%uad\_pinned%' ESCAPE '\' FROM duckdb_extensions() WHERE extension_name = 'loadable_extension_demo'
+----
+true	true	CUSTOM_PATH	true
+
+# with external access disabled the listing is subject to the access checks, so a later directory outside
+# allowed_directories is an error rather than skipped, as it is for INSTALL
+statement ok
+SET extension_directories = ['{TEST_DIR}/uad_allowed', '{TEST_DIR}/uad_pinned']
+
+statement ok
+SET allowed_directories = ['{TEST_DIR}/uad_allowed']
+
+statement ok
+SET enable_external_access = false
+
+statement error
+UPDATE EXTENSIONS
+----
+<REGEX>:Permission Error: Cannot access directory "[^"]*uad_pinned.*
+
+statement error
+SELECT * FROM duckdb_extensions()
+----
+<REGEX>:Permission Error: Cannot access directory "[^"]*uad_pinned.*

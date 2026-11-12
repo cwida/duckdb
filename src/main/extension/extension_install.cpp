@@ -8,6 +8,7 @@
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include "duckdb/common/unordered_set.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/main/extension/external_extension_provider.hpp"
 #include "duckdb/main/extension_helper.hpp"
@@ -143,6 +144,53 @@ bool ExtensionHelper::IsInstalledExtensionFile(const string &path) {
 	return StringUtil::EndsWith(path, ".duckdb_extension") && !StringUtil::Contains(path, ".duckdb_extension.tmp-");
 }
 
+// User provided repositories install into a per repository subfolder to avoid on disk name collisions between
+// repositories; core and community extensions keep the flat top level layout for backwards compatibility.
+string ExtensionHelper::RepositoryInstallDirectory(FileSystem &fs, const string &extension_directory,
+                                                   const string &user_repository_name) {
+	if (user_repository_name.empty()) {
+		return extension_directory;
+	}
+	return fs.JoinPath(fs.JoinPath(extension_directory, "repositories"), user_repository_name);
+}
+
+string ExtensionHelper::FindInstalledExtension(DatabaseInstance &db, FileSystem &fs, const string &extension_name,
+                                               const string &user_repository_name) {
+	for (auto &extension_directory : GetExtensionDirectoryPath(db, fs)) {
+		auto directory = RepositoryInstallDirectory(fs, extension_directory, user_repository_name);
+		if (!fs.DirectoryExists(directory)) {
+			continue;
+		}
+		auto path = fs.JoinPath(directory, extension_name + ".duckdb_extension");
+		if (fs.FileExists(path)) {
+			return path;
+		}
+	}
+	return string();
+}
+
+vector<string> ExtensionHelper::GetInstalledExtensionPaths(DatabaseInstance &db, FileSystem &fs) {
+	vector<string> extension_names;
+	unordered_set<string> seen_extensions;
+	for (auto &extension_directory : GetExtensionDirectoryPath(db, fs)) {
+		fs.ListFiles(extension_directory, [&](const string &path, bool is_directory) {
+			auto extension_name = fs.ExtractBaseName(path);
+			if (IsInstalledExtensionFile(path) && seen_extensions.insert(extension_name).second) {
+				extension_names.push_back(std::move(extension_name));
+			}
+		});
+	}
+	// a listing only yields names; the copy is the one the loader finds, also in an earlier directory it cannot list
+	vector<string> result;
+	for (auto &extension_name : extension_names) {
+		auto path = FindInstalledExtension(db, fs, extension_name, string());
+		if (!path.empty()) {
+			result.push_back(std::move(path));
+		}
+	}
+	return result;
+}
+
 string ExtensionHelper::ExtensionDirectory(DatabaseInstance &db, FileSystem &fs) {
 #ifdef WASM_LOADABLE_EXTENSIONS
 	throw PermissionException("ExtensionDirectory functionality is not supported in duckdb-wasm");
@@ -153,20 +201,23 @@ string ExtensionHelper::ExtensionDirectory(DatabaseInstance &db, FileSystem &fs)
 	D_ASSERT(!extension_directories.empty());
 
 	string extension_directory = extension_directories[0]; // Use first/primary directory
-	{
-		if (!fs.DirectoryExists(extension_directory)) {
-			string home_directory = fs.GetHomeDirectory();
-			if (extension_directory.rfind(home_directory, 0) == 0 && !fs.DirectoryExists(home_directory)) {
-				throw IOException("Can't find the home directory at '%s'\nSpecify a home directory using the SET "
-				                  "home_directory='/path/to/dir' option.",
-				                  home_directory);
-			}
-			fs.CreateDirectoriesRecursive(extension_directory);
-		}
-	}
+	CreateExtensionDirectory(fs, extension_directory);
 	D_ASSERT(fs.DirectoryExists(extension_directory));
 
 	return extension_directory;
+}
+
+void ExtensionHelper::CreateExtensionDirectory(FileSystem &fs, const string &extension_directory) {
+	if (fs.DirectoryExists(extension_directory)) {
+		return;
+	}
+	string home_directory = fs.GetHomeDirectory();
+	if (extension_directory.rfind(home_directory, 0) == 0 && !fs.DirectoryExists(home_directory)) {
+		throw IOException("Can't find the home directory at '%s'\nSpecify a home directory using the SET "
+		                  "home_directory='/path/to/dir' option.",
+		                  home_directory);
+	}
+	fs.CreateDirectoriesRecursive(extension_directory);
 }
 
 string ExtensionHelper::ExtensionDirectory(ClientContext &context) {
@@ -202,7 +253,8 @@ unique_ptr<ExtensionInstallInfo> ExtensionHelper::InstallExtension(DatabaseInsta
 	// Install is currently a no-op
 	return nullptr;
 #endif
-	string local_path = ExtensionDirectory(db, fs);
+	// the install creates the directory only when it writes to it, an installed copy elsewhere makes it a no op
+	string local_path = GetExtensionDirectoryPath(db, fs)[0];
 	return InstallExtensionInternal(db, fs, local_path, extension, options);
 }
 
@@ -214,7 +266,7 @@ unique_ptr<ExtensionInstallInfo> ExtensionHelper::InstallExtension(ClientContext
 #endif
 	auto &db = DatabaseInstance::GetDatabase(context);
 	auto &fs = FileSystem::GetFileSystem(context);
-	string local_path = ExtensionDirectory(context);
+	string local_path = GetExtensionDirectoryPath(db, fs)[0];
 	return InstallExtensionInternal(db, fs, local_path, extension, options, context);
 }
 

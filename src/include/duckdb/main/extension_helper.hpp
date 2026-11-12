@@ -140,12 +140,25 @@ public:
 	//! Get the extension directory base on the current config
 	static string ExtensionDirectory(ClientContext &context);
 	static string ExtensionDirectory(DatabaseInstance &db, FileSystem &fs);
+	//! Create an extension directory unless it exists, throws instead of creating a missing home directory
+	static void CreateExtensionDirectory(FileSystem &fs, const string &extension_directory);
 
 	// Get all extension directory paths
 	static vector<string> GetExtensionDirectoryPath(ClientContext &context);
 	static vector<string> GetExtensionDirectoryPath(DatabaseInstance &db, FileSystem &fs);
 	//! Whether a file in an extension directory is an installed extension, and not the temporary file of an install
 	static bool IsInstalledExtensionFile(const string &path);
+	//! Where an extension directory keeps an extension: one from a user provided repository in a repositories/<name>
+	//! subfolder, every other one (an empty name) in the directory itself
+	static string RepositoryInstallDirectory(FileSystem &fs, const string &extension_directory,
+	                                         const string &user_repository_name);
+	//! The installed copy of an extension, the one the loader uses: the file in the first extension directory that
+	//! holds one, or an empty string
+	static string FindInstalledExtension(DatabaseInstance &db, FileSystem &fs, const string &extension_name,
+	                                     const string &user_repository_name);
+	//! The installed copy of each extension outside the repositories subfolders, the one the loader uses, in extension
+	//! directory order
+	static vector<string> GetInstalledExtensionPaths(DatabaseInstance &db, FileSystem &fs);
 
 	// Check signature of an Extension stored as FileHandle
 	static bool CheckExtensionSignature(DatabaseInstance &db, FileHandle &handle,

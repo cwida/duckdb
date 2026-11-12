@@ -527,6 +527,7 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 	// the flat top-level layout and only resolves core and community extensions; user-provided repositories live in a
 	// per-repository subfolder, so their extensions require an explicit FROM to be found
 	bool expect_user_repo = false;
+	string user_repository_name;
 	ExtensionRepositoryType expected_repository_type = ExtensionRepositoryType::CORE;
 	if (!repository_name.empty()) {
 		if (ExtensionHelper::IsFullPath(extension)) {
@@ -537,6 +538,9 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 		if (ExtensionRepositoryManager::TryGetRepository(db, fs, repository_name, repository)) {
 			expected_repository_type = repository.type;
 			expect_user_repo = repository.type == ExtensionRepositoryType::USER_PROVIDED;
+			if (expect_user_repo) {
+				user_repository_name = repository.name;
+			}
 		} else if (ExtensionRepository::TryGetKnownRepository(repository_name, repository)) {
 			expected_repository_type = repository.type;
 		} else {
@@ -576,64 +580,14 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 		filename = address;
 #else
 
-		// Local function to process local path
-		auto ComputeLocalExtensionPath = [&](const string &base_path, const string &extension_name,
-		                                     const string &user_repository) -> string {
-			// convert random separators to platform-canonic
-			string local_path = fs.ConvertSeparators(base_path);
-			// expand ~ in extension directory
-			local_path = fs.ExpandPath(local_path);
-			auto path_components = PathComponents();
-			for (auto &path_ele : path_components) {
-				local_path = fs.JoinPath(local_path, path_ele);
-			}
-			if (!user_repository.empty()) {
-				local_path = fs.JoinPath(fs.JoinPath(local_path, "repositories"), user_repository);
-			}
-			return fs.JoinPath(local_path, extension_name + ".duckdb_extension");
-		};
-
-		// Collect all directories to search for extensions
-		vector<string> search_directories;
-		auto custom_extension_directory = Settings::Get<ExtensionDirectorySetting>(db);
-		if (!custom_extension_directory.empty()) {
-			search_directories.push_back(custom_extension_directory);
-		}
-
-		// Add all configured extension directories
-		for (auto &dir : db.config.GetExtensionDirectories()) {
-			search_directories.push_back(std::move(dir));
-		}
-
-		// Add default extension directory if no custom directories configured
-		if (search_directories.empty()) {
-			for (const auto &path : ExtensionHelper::DefaultExtensionFolders(fs)) {
-				search_directories.push_back(path);
-			}
-		}
-
-		// Try each directory in sequence until extension is found
-		const string user_repository = expect_user_repo ? repository_name : string();
-		bool found = false;
-		for (const auto &directory : search_directories) {
-			filename = ComputeLocalExtensionPath(directory, extension_name, user_repository);
-			if (fs.FileExists(filename)) {
-				found = true;
-				break;
-			}
-		}
-
+		filename = FindInstalledExtension(db, fs, extension_name, user_repository_name);
 		// If not found in any directory, use the first directory for error reporting
-		if (!found) {
-			filename = ComputeLocalExtensionPath(search_directories[0], extension_name, user_repository);
+		if (filename.empty()) {
+			auto directory = RepositoryInstallDirectory(fs, GetExtensionDirectoryPath(db, fs)[0], user_repository_name);
+			filename = fs.JoinPath(directory, extension_name + ".duckdb_extension");
 			if (repository_name.empty()) {
 				installed_in_repositories = FindUserRepositoryInstalls(db, fs, [&](const string &repository) {
-					for (const auto &directory : search_directories) {
-						if (fs.FileExists(ComputeLocalExtensionPath(directory, extension_name, repository))) {
-							return true;
-						}
-					}
-					return false;
+					return !FindInstalledExtension(db, fs, extension_name, repository).empty();
 				});
 			}
 		}
@@ -689,7 +643,7 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 	if (!repository_name.empty() && install_info) {
 		bool origin_matches = expect_user_repo
 		                          ? (install_info->repository_type == ExtensionRepositoryType::USER_PROVIDED &&
-		                             install_info->repository_name == repository_name)
+		                             install_info->repository_name == user_repository_name)
 		                          : (install_info->repository_type == expected_repository_type);
 		if (!origin_matches) {
 			error =
