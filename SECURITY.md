@@ -5,7 +5,7 @@ Please see the "[Securing DuckDB](https://duckdb.org/docs/current/operations_man
 
 ## Security Model
 
-DuckDB is an embedded engine: it runs in the host process, with the privileges of that process. It has no internal privilege boundary and no notion of an untrusted user inside the engine. The embedding application controls which SQL is executed and which files are opened. That is the security boundary, and DuckDB assumes both inputs are trusted.
+DuckDB is an embedded engine: it runs in the host process, with the privileges of that process. It has no internal privilege boundary and no notion of an untrusted user inside the engine. DuckDB trusts the embedding application to use its APIs correctly and control which SQL is executed. Column values processed by that SQL may be untrusted.
 
 ### SQL
 
@@ -13,7 +13,7 @@ SQL is executable code, comparable to Bash or Python. A query can read and write
 
 This also applies to non-SQL APIs: file paths, table names, `ATTACH` targets and filter expressions can all trigger file or network access.
 
-To run untrusted SQL, sandbox at the OS level (container, VM, or [DuckDB-Wasm](https://duckdb.org/docs/stable/clients/wasm/overview)). The settings in [Securing DuckDB](https://duckdb.org/docs/current/operations_manual/securing_duckdb/overview) are defense in depth, not a sandbox, but bypassing them is in scope.
+To run untrusted SQL, sandbox at the OS level (container, VM, or [DuckDB-Wasm](https://duckdb.org/docs/stable/clients/wasm/overview)). The settings in [Securing DuckDB](https://duckdb.org/docs/current/operations_manual/securing_duckdb/overview) are defense in depth. Bypasses of these settings are bugs, but are not security vulnerabilities on their own.
 
 ### Data files
 
@@ -23,14 +23,17 @@ Column values *inside* a well-formed file are a separate case and are in scope. 
 
 ### Extensions
 
-Loading an extension executes native code in the host process. Core extensions are signed by the DuckDB project; community extensions are third party code. A deliberately loaded malicious extension is not a vulnerability. Loading an extension that was not requested, or loading unsigned code while signature checking is enabled, is.
+Loading an extension executes native code in the host process. Core extensions are signed by the DuckDB project and fall under this security model. Community extensions are third party code and are not covered by this policy. Please report security issues in them to their maintainers. A deliberately loaded malicious extension is not a vulnerability. Loading an extension that was not requested, or loading unsigned code while signature checking is enabled, is.
 
 ### In scope
 
-* Memory safety issues (out-of-bounds access, use-after-free) reachable from data values in a well-formed file, or from query execution over trusted input.
-* Bypasses of `enable_external_access`, `allowed_directories`, `allowed_paths`, `disabled_filesystems`, `lock_configuration`, the extension settings, or the CLI safe mode.
+When trusted SQL processes column values or well-formed files from trusted writers, the following issues are in scope:
+
+* Memory safety issues (out-of-bounds access, use-after-free)
 * Missing or incorrect use of cryptography, e.g. data assumed to be encrypted that is not.
-* Sending data to a remote host that was not requested, or exposing secrets that should be redacted.
+* Disclosure of data or credentials to a party that should not have access to them, such as sending credentials to an unrelated host.
+
+For example, a well-formed Parquet file written by Spark is in scope even if its column values come from an untrusted source.
 
 ### Not in scope
 
@@ -45,9 +48,10 @@ Loading an extension executes native code in the host process. Core extensions a
 Please see our [release calendar](https://duckdb.org/release_calendar) or DuckDB's [`endoflife.date`](https://endoflife.date/duckdb) page to see which versions are currently supported.
 
 ## Reporting a Vulnerability
+
 Please check the [Security Model](#security-model) above first: many reports we receive fall outside it.
 
-Please use GitHub's [security reporting tool here](https://github.com/duckdb/duckdb/security/advisories/new) to report a potential security issue. 
+Please use GitHub's [security reporting tool here](https://github.com/duckdb/duckdb/security/advisories/new) to report a potential security issue.
 Our team will investigate and get back to you. There are three major outcomes of this investigation:
 
 1. The issue is an actual security issue. For [example](https://github.com/duckdb/duckdb/security/advisories/GHSA-vmp8-hg63-v2hp), a return value of a cryptographic function is not checked, and that could lead to failure to encrypt.
@@ -56,7 +60,7 @@ Our team will investigate and get back to you. There are three major outcomes of
 
 If the issue is determined to be an actual security issue, we will request a CVE. For the second case, our [general support policy](https://ducklabs.com/community_support_policy/) will be followed.
 
-
 ## Public Disclosure
+
 We would prefer to only disclose the issue once a DuckDB release is published with a fix. We generally publish a new DuckDB release every few weeks.
-Again, see the [release calendar](https://duckdb.org/release_calendar) for the planned release dates. 
+Again, see the [release calendar](https://duckdb.org/release_calendar) for the planned release dates.

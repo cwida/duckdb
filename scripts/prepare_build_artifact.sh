@@ -69,6 +69,10 @@ if [[ -z "$unittest_path" ]]; then
 	echo "No unittest executable found in $BUILD_DIR/test" >&2
 	exit 1
 fi
+if [[ -f "$BUILD_DIR/test/block_allocator_fault_injection" ]]; then
+	copy_file "$BUILD_DIR/test/block_allocator_fault_injection" "test/block_allocator_fault_injection"
+	chmod 755 "$ARTIFACT_DIR/test/block_allocator_fault_injection"
+fi
 
 runner_path=""
 for runner_name in run run.py run.bat; do

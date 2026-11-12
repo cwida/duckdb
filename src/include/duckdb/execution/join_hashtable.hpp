@@ -34,6 +34,7 @@ struct ColumnDataAppendState;
 struct ClientConfig;
 struct ResidualPredicateInfo;
 class PhysicalHashJoin;
+class PerfectHashJoinTable;
 
 //! Each producer has its own refcounts; emitted vectors retain the original dictionaries through these owners.
 class DictionaryOwnershipCache {
@@ -181,6 +182,8 @@ public:
 		SelectionVector sel_vector;
 		SelectionVector chain_match_sel_vector;
 		SelectionVector chain_no_match_sel_vector;
+		//! Direct columnar lookup produces dictionary positions instead of row pointers.
+		unique_ptr<SelectionVector> dictionary_selection;
 
 		// whether or not the given tuple has found a match
 		unsafe_unique_array<bool> found_match;
@@ -211,8 +214,11 @@ public:
 		void FlushProbeMatches();
 
 	private:
+		void ProjectProbeColumns(DataChunk &probe_data, const SelectionVector &sel, idx_t count, DataChunk &result,
+		                         bool full_identity);
 		//! Next operator for the inner join
 		void NextInnerJoin(DataChunk &keys, DataChunk &probe_data, DataChunk &result);
+		void NextDictionaryJoin(DataChunk &probe_data, DataChunk &result);
 		void NextSemiJoin(DataChunk &keys, DataChunk &probe_data, DataChunk &result);
 		void NextAntiJoin(DataChunk &keys, DataChunk &probe_data, DataChunk &result);
 		void NextRightSemiOrAntiJoin(DataChunk &keys, DataChunk &probe_data);
@@ -271,7 +277,6 @@ public:
 		string dictionary_id;
 		DataChunk unique_values;
 		TupleDataChunkState unique_key_state;
-		Vector hashes;
 		Vector new_dictionary_pointers;
 		SelectionVector unique_entries;
 		//! Per-slot head-of-chain pointer cache; nullptr marks a miss
@@ -286,6 +291,7 @@ public:
 	struct ProbeState : SharedState {
 		ProbeState();
 
+		Vector hashes;
 		Vector ht_offsets_and_salts_v;
 		Vector hashes_dense_v;
 		SelectionVector non_empty_sel;
@@ -373,11 +379,12 @@ public:
 	//! Fill the pointer with all the addresses from the hashtable for full scan
 	static idx_t FillWithHTOffsets(JoinHTScanState &state, Vector &addresses);
 
-	//! Pre-materialize RHS output columns into dict_arrays and embed the dict index into NEXT_PTR;
-	//! called once from HashJoinFinalizeEvent::FinishEvent, after all finalize tasks have completed.
+	//! Materialize RHS dictionaries after all finalize tasks complete.
 	void BuildDictionaryArrays(const PhysicalHashJoin &op);
-	//! Emit dictionary vectors for row_ptrs[ptr_sel[0..count)]; pass
-	//! *FlatVector::IncrementalSelectionVector() when row_ptrs is already compacted
+	//! Emit RHS dictionaries using build-row positions.
+	void EmitDictVectors(const SelectionVector &build_sel, idx_t count, DataChunk &result, idx_t rhs_col_offset,
+	                     DictionaryOwnershipCache &dictionary_state) const;
+	//! Emit RHS dictionaries using selected row pointers.
 	void EmitDictVectors(const data_ptr_t *row_ptrs, const SelectionVector &ptr_sel, idx_t count, DataChunk &result,
 	                     idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const;
 	//! Emit RHS output columns for matched rows row_ptrs[ptr_sel[0..count)] into result starting at
@@ -427,6 +434,11 @@ public:
 		return null_values_are_equal[col_idx];
 	}
 
+	//! Choose direct lookup from the completed in-memory build.
+	bool TryInitializePerfectHashTable();
+	//! Whether lookup produces row pointers for compressed-probe fan-out.
+	bool SupportsCompressedProbe() const;
+
 	ClientContext &context;
 	const PhysicalOperator &op;
 	//! BufferManager
@@ -466,7 +478,7 @@ public:
 	//! If there is more than one element in the chain, we need to scan the next elements of the chain
 	atomic<bool> chains_longer_than_one {false};
 
-	//! The capacity of the HT. Is the same as hash_map.GetSize() / sizeof(ht_entry_t)
+	//! Number of hash entries, direct-directory slots or bitmap words to initialize.
 	idx_t capacity = DConstants::INVALID_INDEX;
 	//! The size of an entry as stored in the HashTable
 	idx_t entry_size;
@@ -540,6 +552,11 @@ private:
 	                             optional_ptr<const SelectionVector> &current_sel);
 	void Hash(DataChunk &keys, const SelectionVector &sel, idx_t count, Vector &hashes);
 
+	bool TryProbePerfectHashTable(ScanStructure &scan_structure, DataChunk &keys);
+	bool CanUsePerfectDictionaryLookup() const;
+	bool UsesDictionaryLookup() const;
+	void AllocateHashMap(bool use_radix_layout);
+
 	//! Dictionary-aware variant of Probe. Returns false if the LHS keys are not dictionary-eligible.
 	bool TryProbeDictionary(ScanStructure &scan_structure, DataChunk &keys, TupleDataChunkState &key_state,
 	                        ProbeState &probe_state);
@@ -549,11 +566,10 @@ private:
 
 	bool UseSalt() const;
 
-	//! Gets a pointer to the entry in the HT for each of the hashes_v using linear probing. Will update the
-	//! key_match_sel vector and the count argument to the number and position of the matches
-	void GetRowPointers(DataChunk &keys, TupleDataChunkState &key_state, ProbeState &state, Vector &hashes_v,
-	                    optional_ptr<const SelectionVector> sel, idx_t &count, Vector &pointers_result_v,
-	                    SelectionVector &match_sel, bool has_sel);
+	//! Resolve keys to equality-group heads and return their probe positions in match_sel.
+	void GetRowPointers(DataChunk &keys, TupleDataChunkState &key_state, ProbeState &state,
+	                    optional_ptr<Vector> precomputed_hashes, optional_ptr<const SelectionVector> sel, idx_t &count,
+	                    Vector &pointers_result_v, SelectionVector &match_sel, bool has_sel);
 
 private:
 	//! Insert the given set of locations into the HT with the given set of hashes_v
@@ -577,6 +593,11 @@ private:
 	unique_ptr<PartitionedTupleData> sink_collection;
 	//! The DataCollection holding the main data of the hash table
 	unique_ptr<TupleDataCollection> data_collection;
+
+	//! Bounds collected during sink, before choosing the lookup representation.
+	unique_ptr<PerfectHashJoinTable> perfect_hash_candidate;
+	//! An allocated direct lookup, published only after in-memory finalize chooses it.
+	unique_ptr<PerfectHashJoinTable> perfect_hash_table;
 
 	//! The hash map of the HT, created after finalization
 	HugeAllocation hash_map;
@@ -721,7 +742,6 @@ public:
 		return should_build_prefix_range_filter && prefix_range_filter;
 	}
 
-	void BuildPrefixRangeFilter();
 	unique_ptr<PrefixRangeFilter::BuildState> InitializePrefixRangeBuildState();
 	idx_t GetPrefixRangeBuildStateSize() const;
 	void InsertPrefixRangeChunk(TupleDataChunkState &chunk_state, idx_t count, PrefixRangeFilter::BuildState &state,

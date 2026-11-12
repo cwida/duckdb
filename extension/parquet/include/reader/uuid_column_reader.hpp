@@ -24,24 +24,24 @@ struct UUIDValueConversion {
 	template <bool CHECKED>
 	static hugeint_t PlainRead(ByteBuffer &plain_data, ColumnReader &reader) {
 		if (CHECKED) {
-			plain_data.available(sizeof(hugeint_t));
+			plain_data.Available(sizeof(hugeint_t));
 		}
-		auto res = ReadParquetUUID(const_data_ptr_cast(plain_data.ptr));
-		plain_data.unsafe_inc(sizeof(hugeint_t));
+		auto res = ReadParquetUUID(const_data_ptr_cast(plain_data.GetCurrentLoc()));
+		plain_data.UnsafeInc(sizeof(hugeint_t));
 		return res;
 	}
 
 	template <bool CHECKED>
 	static void PlainSkip(ByteBuffer &plain_data, ColumnReader &reader) {
 		if (CHECKED) {
-			plain_data.inc(sizeof(hugeint_t));
+			plain_data.Inc(sizeof(hugeint_t));
 		} else {
-			plain_data.unsafe_inc(sizeof(hugeint_t));
+			plain_data.UnsafeInc(sizeof(hugeint_t));
 		}
 	}
 
 	static bool PlainAvailable(const ByteBuffer &plain_data, const idx_t count) {
-		return plain_data.check_available(count * sizeof(hugeint_t));
+		return plain_data.CheckAvailable(count * sizeof(hugeint_t));
 	}
 
 	static idx_t PlainConstantSize() {

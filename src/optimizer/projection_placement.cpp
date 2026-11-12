@@ -1,23 +1,18 @@
 #include "duckdb/optimizer/projection_placement.hpp"
 
-#include "duckdb/common/limits.hpp"
 #include "duckdb/optimizer/column_binding_replacer.hpp"
 #include "duckdb/optimizer/expression_heuristics.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
-#include "duckdb/parser/expression_map.hpp"
 #include "duckdb/planner/binder.hpp"
-#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
-#include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_any_join.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_join.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
-#include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/storage/statistics/string_stats.hpp"
 
 namespace duckdb {
@@ -113,39 +108,17 @@ static bool GetBindingWidth(const ColumnBinding &binding, const LogicalType &typ
 		width = GetTypeIdSize(physical_type);
 		return true;
 	}
-	if (physical_type != PhysicalType::VARCHAR && physical_type != PhysicalType::LIST) {
+	if (physical_type != PhysicalType::VARCHAR) {
 		return false;
 	}
 	// Variable-width values are only costed when statistics provide a safe upper bound.
 	auto entry = statistics_map.find(binding);
-	if (entry == statistics_map.end() || !entry->second) {
+	if (entry == statistics_map.end() || !entry->second ||
+	    entry->second->GetStatsType() != StatisticsType::STRING_STATS ||
+	    !StringStats::HasMaxStringLength(*entry->second)) {
 		return false;
 	}
-	if (physical_type == PhysicalType::VARCHAR) {
-		if (entry->second->GetStatsType() != StatisticsType::STRING_STATS ||
-		    !StringStats::HasMaxStringLength(*entry->second)) {
-			return false;
-		}
-		width = GetTypeIdSize(physical_type) + StringStats::MaxStringLength(*entry->second);
-		return true;
-	}
-	if (entry->second->GetStatsType() != StatisticsType::LIST_STATS) {
-		return false;
-	}
-	auto child_type = ListType::GetChildType(type).InternalType();
-	if (!TypeIsConstantSize(child_type)) {
-		return false;
-	}
-	auto max_length = ListStats::MaxListLength(*entry->second);
-	if (!max_length.IsValid()) {
-		return false;
-	}
-	const auto child_width = GetTypeIdSize(child_type);
-	if (child_width == 0 ||
-	    max_length.GetIndex() > (NumericLimits<idx_t>::Maximum() - sizeof(list_entry_t)) / child_width) {
-		return false;
-	}
-	width = sizeof(list_entry_t) + max_length.GetIndex() * child_width;
+	width = GetTypeIdSize(physical_type) + StringStats::MaxStringLength(*entry->second);
 	return true;
 }
 
@@ -174,9 +147,6 @@ static bool GetExpressionWidth(const Expression &expression,
 	for (auto &entry : bindings) {
 		idx_t binding_width;
 		if (!GetBindingWidth(entry.first, entry.second, statistics_map, binding_width)) {
-			return false;
-		}
-		if (binding_width > NumericLimits<idx_t>::Maximum() - input_width) {
 			return false;
 		}
 		input_width += binding_width;
@@ -987,103 +957,8 @@ static void ApplyPlacementGroup(Optimizer &optimizer, column_binding_map_t<uniqu
 	}
 }
 
-static void ExtractProfitableAggregateArguments(Optimizer &optimizer,
-                                                column_binding_map_t<unique_ptr<BaseStatistics>> &statistics_map,
-                                                unique_ptr<LogicalOperator> &op) {
-	if (op->type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY || op->children.size() != 1) {
-		return;
-	}
-	auto &aggregate = op->Cast<LogicalAggregate>();
-	vector<reference<unique_ptr<Expression>>> arguments;
-	for (auto &expression : aggregate.expressions) {
-		auto &bound_aggregate = expression->Cast<BoundAggregateExpression>();
-		if (bound_aggregate.IsDistinct() || bound_aggregate.GetFilter() || bound_aggregate.GetOrderBys()) {
-			continue;
-		}
-		for (auto &argument : bound_aggregate.GetChildrenMutable()) {
-			if (argument->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF || argument->IsVolatile() ||
-			    argument->CanThrow() || !TypeIsConstantSize(argument->GetReturnType().InternalType())) {
-				continue;
-			}
-			bool has_list_input = false;
-			ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
-			    *argument, [&](const BoundColumnRefExpression &colref) {
-				    has_list_input |= colref.GetReturnType().InternalType() == PhysicalType::LIST;
-			    });
-			if (has_list_input) {
-				arguments.emplace_back(argument);
-			}
-		}
-	}
-	if (arguments.empty()) {
-		return;
-	}
-
-	auto old_bindings = op->children[0]->GetColumnBindings();
-	auto projection_index = optimizer.binder.GenerateTableIndex();
-	auto projection = LogicalProjection::CreateIdentity(projection_index, std::move(op->children[0]));
-	const auto argument_offset = projection->expressions.size();
-	expression_map_t<idx_t> shared_arguments;
-	vector<idx_t> argument_indices;
-	for (auto &argument : arguments) {
-		auto entry = shared_arguments.find(*argument.get());
-		if (entry != shared_arguments.end()) {
-			argument_indices.push_back(entry->second);
-			continue;
-		}
-		auto index = projection->expressions.size();
-		projection->expressions.push_back(argument.get()->Copy());
-		shared_arguments.emplace(*projection->expressions.back(), index);
-		argument_indices.push_back(index);
-	}
-	shared_arguments.clear();
-	if (projection->children[0]->has_estimated_cardinality) {
-		projection->SetEstimatedCardinality(projection->children[0]->estimated_cardinality);
-	}
-	auto reading_expressions = CountReadingExpressions(*projection);
-	vector<optional_idx> replacement_indices(projection->expressions.size());
-	idx_t next_expression = argument_offset;
-	for (idx_t i = argument_offset; i < projection->expressions.size(); i++) {
-		ExpressionPlacement placement;
-		if (!FindPlacement(*projection, i, statistics_map, reading_expressions, placement)) {
-			continue;
-		}
-		replacement_indices[i] = next_expression;
-		if (i != next_expression) {
-			projection->expressions[next_expression] = std::move(projection->expressions[i]);
-		}
-		next_expression++;
-	}
-	op->children[0] = std::move(projection->children[0]);
-	if (next_expression == argument_offset) {
-		return;
-	}
-	projection->expressions.resize(next_expression);
-
-	for (idx_t i = 0; i < arguments.size(); i++) {
-		auto index = replacement_indices[argument_indices[i]];
-		if (!index.IsValid()) {
-			continue;
-		}
-		auto &argument = arguments[i].get();
-		argument = make_uniq<BoundColumnRefExpression>(
-		    argument->GetReturnType(), ColumnBinding(projection_index, ProjectionIndex(index.GetIndex())));
-	}
-	ColumnBindingRewrite::RewriteChild(op, 0,
-	                                   [&](unique_ptr<LogicalOperator> &child, BindingReplacementGraph &replacements) {
-		                                   projection->children[0] = std::move(child);
-		                                   child = std::move(projection);
-		                                   for (idx_t i = 0; i < old_bindings.size(); i++) {
-			                                   auto new_binding = ColumnBinding(projection_index, ProjectionIndex(i));
-			                                   replacements.Add(old_bindings[i], new_binding);
-			                                   CopyStatistics(statistics_map, old_bindings[i], new_binding);
-		                                   }
-	                                   });
-}
-
 static void OptimizeOperator(Optimizer &optimizer, column_binding_map_t<unique_ptr<BaseStatistics>> &statistics_map,
                              unique_ptr<LogicalOperator> &op) {
-	ExtractProfitableAggregateArguments(optimizer, statistics_map, op);
 	for (auto &child : op->children) {
 		OptimizeOperator(optimizer, statistics_map, child);
 	}

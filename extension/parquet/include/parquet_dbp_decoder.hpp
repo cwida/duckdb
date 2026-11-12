@@ -24,7 +24,7 @@ public:
 	      previous_value(ParquetDecodeUtils::ZigzagToInt(ParquetDecodeUtils::VarintDecode<uint64_t>(buffer_))),
 	      // init state to something sane
 	      is_first_value(true), read_values(0), min_delta(NumericLimits<int64_t>::Maximum()),
-	      miniblock_index(number_of_miniblocks_per_block - 1), list_of_bitwidths_of_miniblocks(nullptr),
+	      miniblock_index(number_of_miniblocks_per_block - 1), list_of_bitwidths_relative_offset(0),
 	      miniblock_offset(number_of_values_in_a_miniblock),
 	      unpacked_data_offset(BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE) {
 		if (!(block_size_in_values % number_of_miniblocks_per_block == 0 && number_of_values_in_a_miniblock > 0 &&
@@ -33,8 +33,8 @@ public:
 		}
 	}
 
-	ByteBuffer BufferPtr() const {
-		return buffer_;
+	idx_t BytesConsumed() const {
+		return buffer_.GetOffset();
 	}
 
 	uint64_t TotalValues() const {
@@ -68,6 +68,10 @@ public:
 		}
 		auto data = make_unsafe_uniq_array<int64_t>(number_of_values_in_a_miniblock);
 		GetBatchInternal<int64_t>(data_ptr_cast(data.get()), number_of_values_in_a_miniblock - miniblock_offset);
+	}
+
+	void Rebase(data_ptr_t new_ptr) {
+		buffer_.Rebase(new_ptr);
 	}
 
 private:
@@ -128,17 +132,17 @@ private:
 				if (++miniblock_index == number_of_miniblocks_per_block) {
 					// <min delta> <list of bitwidths of miniblocks> <miniblocks>
 					min_delta = ParquetDecodeUtils::ZigzagToInt(ParquetDecodeUtils::VarintDecode<uint64_t>(buffer_));
-					buffer_.available(number_of_miniblocks_per_block);
-					list_of_bitwidths_of_miniblocks = buffer_.ptr;
-					buffer_.unsafe_inc(number_of_miniblocks_per_block);
+					buffer_.Available(number_of_miniblocks_per_block);
+					list_of_bitwidths_relative_offset = buffer_.GetOffset();
+					buffer_.UnsafeInc(number_of_miniblocks_per_block);
 					miniblock_index = 0;
 				}
 			}
 
 			// Unpack from current miniblock
-			ParquetDecodeUtils::BitUnpackAligned(buffer_, unpacked_data,
-			                                     BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE,
-			                                     list_of_bitwidths_of_miniblocks[miniblock_index]);
+			ParquetDecodeUtils::BitUnpackAligned(
+			    buffer_, unpacked_data, BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE,
+			    Load<bitpacking_width_t>(buffer_.GetPtrAt(list_of_bitwidths_relative_offset) + miniblock_index));
 			unpacked_data_offset = 0;
 			miniblock_offset += BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
 		}
@@ -158,7 +162,7 @@ private:
 	//! Block stuff
 	int64_t min_delta;
 	idx_t miniblock_index;
-	bitpacking_width_t *list_of_bitwidths_of_miniblocks;
+	idx_t list_of_bitwidths_relative_offset;
 	idx_t miniblock_offset;
 	uint64_t unpacked_data[BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE];
 	idx_t unpacked_data_offset;

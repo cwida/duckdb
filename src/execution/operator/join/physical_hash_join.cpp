@@ -14,7 +14,6 @@
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/execution/join_hashtable.hpp"
 #include "duckdb/execution/operator/aggregate/ungrouped_aggregate_state.hpp"
-#include "duckdb/execution/operator/join/perfect_hash_join_executor.hpp"
 #include "duckdb/execution/operator/join/physical_delim_join.hpp"
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
 #include "duckdb/function/aggregate/distributive_functions.hpp"
@@ -278,18 +277,6 @@ JoinFilterGlobalState::~JoinFilterGlobalState() {
 JoinFilterLocalState::~JoinFilterLocalState() {
 }
 
-static bool CanUsePerfectHashJoin(const PhysicalHashJoin &op, PerfectHashJoinExecutor &perfect_join_executor) {
-	if (op.conditions.size() != 1 || !op.conditions[0].GetRightStats()) {
-		return false;
-	}
-	const auto &right_stats = *op.conditions[0].GetRightStats();
-	if (!TypeIsIntegral(right_stats.GetType().InternalType()) || !NumericStats::HasMinMax(right_stats)) {
-		return false;
-	}
-	return perfect_join_executor.CanDoPerfectHashJoin(op, NumericStats::Min(right_stats),
-	                                                  NumericStats::Max(right_stats));
-}
-
 unique_ptr<JoinFilterGlobalState> JoinFilterPushdownInfo::GetGlobalState(ClientContext &context,
                                                                          const PhysicalOperator &op) const {
 	// clear any previously set filters
@@ -465,18 +452,11 @@ public:
 	}
 
 	//! Establishes the per-execution decisions, both at construction and at a recursive iteration reset:
-	//! the perfect-hash candidate, filter-pushdown participation, and the sink bloom filter.
+	//! filter-pushdown participation and the sink bloom filter.
 	void InitializePerExecutionState(ClientContext &context, shared_ptr<BloomFilter> recycled_filter = nullptr) {
-		perfect_join_executor = make_uniq<PerfectHashJoinExecutor>(op, *hash_table);
-		can_use_perfect_hash = CanUsePerfectHashJoin(op, *perfect_join_executor);
 		external = Settings::Get<DebugForceExternalSetting>(context);
-		skip_filter_pushdown = false;
 		global_filter_state.reset();
-		if (op.filter_pushdown) {
-			if (op.filter_pushdown->probe_info.empty() && can_use_perfect_hash) {
-				// Only computing min/max to check for perfect HJ, but we already can
-				skip_filter_pushdown = true;
-			}
+		if (op.filter_pushdown && !op.filter_pushdown->probe_info.empty()) {
 			global_filter_state = op.filter_pushdown->GetGlobalState(context, op);
 		}
 		InitializeBloomFilter(std::move(recycled_filter));
@@ -489,8 +469,7 @@ public:
 		if (recycled_filter && recycled_filter->IsPublished()) {
 			recycled_filter.reset();
 		}
-		// a perfect hash join publishes its own exact filter, so a bloom filter would never leave the sink
-		if (skip_filter_pushdown || can_use_perfect_hash || !ShouldBuildBloomFilterInSink(context, op)) {
+		if (!ShouldBuildBloomFilterInSink(context, op)) {
 			hash_table->SetBloomFilter(nullptr);
 			// an in-memory join builds its filter during finalize, which can still reuse the allocation;
 			// an iteration without a filter must not clear a slot that finalize has not consumed yet
@@ -516,8 +495,6 @@ public:
 	//! First-chunk election: build the canonical layout (with per-column slot narrowing) and publish it.
 	//! Idempotent and safe to call concurrently; only the first thread runs the slow path.
 	void PublishLayoutIfFirst(class HashJoinLocalSinkState &lstate, DataChunk &payload_chunk);
-	//! True iff at least one column on the global JHT carries a pinned upstream dictionary entry.
-	bool DictSurvivingActive() const;
 
 	bool SupportsReuse() const override {
 		return true;
@@ -561,8 +538,6 @@ public:
 	const idx_t initial_radix_bits;
 	//! Global HT used by the join
 	unique_ptr<JoinHashTable> hash_table;
-	//! The perfect hash join executor (if any)
-	unique_ptr<PerfectHashJoinExecutor> perfect_join_executor;
 	//! Whether or not the hash table has been finalized
 	bool finalized;
 	//! The number of active local states
@@ -595,15 +570,11 @@ public:
 	//! Preserve the finalized build-side state across recursive CTE iterations
 	bool preserve_build_for_reuse = false;
 
-	bool skip_filter_pushdown = false;
 	unique_ptr<JoinFilterGlobalState> global_filter_state;
 	bool keep_local_hash_tables = false;
 
 	//! Coordinates first-chunk publication of the TupleDataLayout across parallel sinks.
 	LayoutGate layout_gate;
-	//! True iff this join may use perfect-hash-join at Finalize. PHJ's FullScanHashTable reads payload at native
-	//! width, so it disables dict-surviving slot narrowing.
-	bool can_use_perfect_hash = false;
 	//! True iff the build subtree funnels multiple producer pipelines into this sink (UNION ALL /
 	//! recursive CTE); disables dict-surviving because the first-chunk layout election is unsound there.
 	bool build_side_multi_source = false;
@@ -641,7 +612,7 @@ public:
 
 		gstate.active_local_states++;
 
-		if (op.filter_pushdown) {
+		if (gstate.global_filter_state) {
 			local_filter_state = op.filter_pushdown->GetLocalState(*gstate.global_filter_state);
 		}
 	}
@@ -686,7 +657,7 @@ public:
 		hash_table->SetBloomFilter(gstate.hash_table->GetBloomFilter());
 		keep_hash_table = gstate.keep_local_hash_tables;
 		gstate.active_local_states++;
-		if (op.filter_pushdown) {
+		if (gstate.global_filter_state) {
 			local_filter_state = op.filter_pushdown->GetLocalState(*gstate.global_filter_state);
 		} else {
 			local_filter_state.reset();
@@ -718,9 +689,8 @@ static shared_ptr<TupleDataLayout> BuildJoinLayout(const vector<LogicalType> &co
 	return layout;
 }
 
-//! Join-level gate: shape-only eligibility checks, mirroring the dict-emission path plus a PHJ exclusion
-static bool CanUseDictSurvivingJoin(const PhysicalHashJoin &op, const JoinHashTable &ht, bool can_use_perfect_hash,
-                                    bool build_side_multi_source) {
+//! Join-level eligibility for preserving build-side dictionary slots.
+static bool CanUseDictSurvivingJoin(const PhysicalHashJoin &op, const JoinHashTable &ht, bool build_side_multi_source) {
 	// external is safe here: the dictionary is an in-memory self-owned copy and the index is a plain row-store
 	// column, so a spill/repartition preserves both (unlike the pointer-embedding dict-emission/compressed-probe paths)
 	// a multi-source build (UNION ALL, CTE) can deliver a later chunk flat or as a different dictionary under the
@@ -747,15 +717,7 @@ static bool CanUseDictSurvivingJoin(const PhysicalHashJoin &op, const JoinHashTa
 	if (op.rhs_output_columns.col_types.empty()) {
 		return false;
 	}
-	// PHJ's FullScanHashTable reads payload from the row store at native width; a narrowed slot would corrupt it.
-	if (can_use_perfect_hash) {
-		return false;
-	}
 	return true;
-}
-
-bool HashJoinGlobalSinkState::DictSurvivingActive() const {
-	return hash_table && hash_table->HasDictSurvivingColumns();
 }
 
 void HashJoinGlobalSinkState::PublishLayoutIfFirst(HashJoinLocalSinkState &lstate, DataChunk &payload_chunk) {
@@ -764,7 +726,7 @@ void HashJoinGlobalSinkState::PublishLayoutIfFirst(HashJoinLocalSinkState &lstat
 		const auto &build_types = lstate.hash_table->build_types;
 
 		shared_ptr<const DictSurvivingInfo> dict_info;
-		if (CanUseDictSurvivingJoin(op, *lstate.hash_table, can_use_perfect_hash, build_side_multi_source)) {
+		if (CanUseDictSurvivingJoin(op, *lstate.hash_table, build_side_multi_source)) {
 			// Per-column width decision lives on the JHT (GetDictSurvivingIndexWidth); feed it each arriving vector.
 			// The dictionary a narrowed slot indexes into is created here, once, and handed to every thread with the
 			// layout: a later chunk may carry no dictionary at all (NULL-only), so no thread can pin it lazily.
@@ -909,7 +871,7 @@ SinkResultType PhysicalHashJoin::Sink(ExecutionContext &context, DataChunk &chun
 	lstate.join_keys.Reset();
 	lstate.join_key_executor.Execute(chunk, lstate.join_keys);
 
-	if (filter_pushdown && !gstate.skip_filter_pushdown) {
+	if (lstate.local_filter_state) {
 		filter_pushdown->Sink(lstate.join_keys, *lstate.local_filter_state);
 	}
 
@@ -966,7 +928,7 @@ SinkCombineResultType PhysicalHashJoin::Combine(ExecutionContext &context, Opera
 	auto &client_profiler = QueryProfiler::Get(context.client);
 	context.thread.profiler.Flush(*this);
 	client_profiler.Flush(context.thread.profiler);
-	if (filter_pushdown && !gstate.skip_filter_pushdown) {
+	if (lstate.local_filter_state) {
 		filter_pushdown->Combine(*gstate.global_filter_state, *lstate.local_filter_state);
 	}
 
@@ -1422,7 +1384,7 @@ void HashJoinGlobalSinkState::InitializeProbeSpill() {
 //! scheduled. Every input is accumulated during Sink, so it does not matter which partitions are materialized.
 static void FinalizeExternalRuntimeFilters(ClientContext &context, const PhysicalHashJoin &op,
                                            HashJoinGlobalSinkState &sink) {
-	if (!op.filter_pushdown || sink.skip_filter_pushdown) {
+	if (!sink.global_filter_state) {
 		return;
 	}
 	auto &ht = *sink.hash_table;
@@ -2122,7 +2084,6 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 		// runs through repeated build/probe rounds with partition/probe-spill state, so it cannot be
 		// treated as a stable materialized build that later recursive iterations may skip entirely.
 		sink.preserve_build_for_reuse = false;
-		sink.perfect_join_executor.reset();
 
 		const auto max_partition_ht_size = sink.max_partition_size + ht.PointerTableSize(sink.max_partition_count);
 		const auto very_very_skewed = // No point in repartitioning if it's this skewed
@@ -2160,47 +2121,14 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	sink.owned_local_hash_tables.clear();
 	ht.Unpartition();
 
-	Value min;
-	Value max;
-	unique_ptr<DataChunk> filter_min_max = nullptr;
+	const auto use_perfect_hash = ht.TryInitializePerfectHashTable();
 
-	if (filter_pushdown && !sink.skip_filter_pushdown && ht.Count() > 0) {
-		filter_min_max = filter_pushdown->FinalizeMinMax(*sink.global_filter_state);
-		min = filter_min_max->data[0].GetValue(0);
-		max = filter_min_max->data[1].GetValue(0);
-	} else if (TypeIsIntegral(conditions[0].GetRHS().GetReturnType().InternalType())) {
-		min = Value::MinimumValue(conditions[0].GetRHS().GetReturnType());
-		max = Value::MaximumValue(conditions[0].GetRHS().GetReturnType());
-	}
-
-	// check for possible perfect hash table
-	auto use_perfect_hash = sink.perfect_join_executor->CanDoPerfectHashJoin(*this, min, max);
-	// PHJ's FullScanHashTable reads payload at native width; if any slot was narrowed it would crash. Runtime
-	// min/max from filter pushdown can re-enable PHJ here, so re-check after dict-surviving may have narrowed.
-	if (use_perfect_hash && sink.DictSurvivingActive()) {
-		use_perfect_hash = false;
-	}
-	if (use_perfect_hash) {
-		use_perfect_hash = sink.perfect_join_executor->BuildPerfectHashTable();
-	}
-
-	if (!use_perfect_hash) {
-		sink.perfect_join_executor.reset();
-	}
-
-	if (filter_min_max) {
+	if (sink.global_filter_state && ht.Count() > 0) {
+		auto filter_min_max = filter_pushdown->FinalizeMinMax(*sink.global_filter_state);
 		filter_pushdown->FinalizeFilters(context, *this, std::move(filter_min_max), &ht, !use_perfect_hash, true,
 		                                 sink.global_filter_state.get());
-		if (use_perfect_hash) {
-			ht.BuildPrefixRangeFilter();
-			PublishDeferredRuntimeFilters(context, ht, *sink.global_filter_state);
-		}
 	}
-
-	// In case of a large build side or duplicates, use regular hash join
-	if (!use_perfect_hash) {
-		sink.ScheduleFinalize(pipeline, event);
-	}
+	sink.ScheduleFinalize(pipeline, event);
 	sink.finalized = true;
 	if (ht.Count() == 0 && EmptyResultIfRHSIsEmpty()) {
 		return SinkFinalizeType::NO_OUTPUT_POSSIBLE;
@@ -2219,7 +2147,7 @@ static bool CanUseCompressedProbe(const HashJoinGlobalSinkState &sink, const vec
 		// external joins re-finalize the HT mid-probe, invalidating the per-id pointer cache
 		return false;
 	}
-	if (sink.perfect_join_executor) {
+	if (!sink.hash_table->SupportsCompressedProbe()) {
 		return false;
 	}
 	if (conditions.size() != 1) {
@@ -2252,7 +2180,6 @@ public:
 
 	ExpressionExecutor probe_executor;
 	JoinHashTable::ScanStructure scan_structure;
-	unique_ptr<OperatorState> perfect_hash_join_state;
 
 	JoinHashTable::ProbeSpillLocalAppendState spill_state;
 	JoinHashTable::ProbeState probe_state;
@@ -2262,9 +2189,6 @@ public:
 public:
 	void Finalize(const PhysicalOperator &op, ExecutionContext &context) override {
 		scan_structure.dictionary_gather_state.Reset();
-		if (perfect_hash_join_state) {
-			perfect_hash_join_state->Finalize(op, context);
-		}
 		context.thread.profiler.Flush(op);
 	}
 
@@ -2278,7 +2202,6 @@ public:
 		lhs_probe_data.Reset();
 		lhs_output_data.Reset();
 		scan_structure.Reset();
-		perfect_hash_join_state.reset();
 		spill_state = JoinHashTable::ProbeSpillLocalAppendState();
 		TupleDataCollection::InitializeChunkState(join_key_state, op.condition_types);
 		if (spill_chunk.ColumnCount() != 0) {
@@ -2288,7 +2211,6 @@ public:
 		if (probe_state.dict_state) {
 			probe_state.dict_state = make_uniq<JoinHashTable::ProbeDictionaryState>();
 		}
-		// perfect_hash_join_state will be lazily initialized on first Execute when we have a real ExecutionContext
 	}
 };
 
@@ -2310,10 +2232,6 @@ unique_ptr<OperatorState> PhysicalHashJoin::GetOperatorState(ExecutionContext &c
 		state->probe_executor.AddExpression(cond.GetLHS());
 	}
 	TupleDataCollection::InitializeChunkState(state->join_key_state, condition_types);
-
-	if (sink.perfect_join_executor) {
-		state->perfect_hash_join_state = sink.perfect_join_executor->GetOperatorState(context);
-	}
 
 	if (sink.external) {
 		state->spill_chunk.InitializeEmpty(sink.probe_types);
@@ -2363,18 +2281,6 @@ OperatorResultType PhysicalHashJoin::ExecuteInternal(ExecutionContext &context, 
 		state.lhs_output_data.ReferenceColumns(input, lhs_output_columns.col_idxs);
 		ConstructEmptyJoinResult(sink.hash_table->join_type, sink.hash_table->has_null, state.lhs_output_data, chunk);
 		return OperatorResultType::NEED_MORE_INPUT;
-	}
-
-	if (sink.perfect_join_executor) {
-		D_ASSERT(!sink.external);
-		// Lazily initialize perfect_hash_join_state on first use if needed
-		if (!state.perfect_hash_join_state) {
-			state.perfect_hash_join_state = sink.perfect_join_executor->GetOperatorState(context);
-		}
-		// for perfect hash join, when predicate is NULL, only output columns are needed
-		state.lhs_output_data.ReferenceColumns(input, lhs_output_columns.col_idxs);
-		return sink.perfect_join_executor->ProbePerfectHashTable(context, input, state.lhs_output_data, chunk,
-		                                                         *state.perfect_hash_join_state);
 	}
 
 	if (sink.external && !state.initialized) {

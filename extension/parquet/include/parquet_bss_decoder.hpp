@@ -30,10 +30,10 @@ public:
 public:
 	/// Writes batch_size values in the PLAIN layout (consecutive type_size-byte values) to values_target_ptr
 	void GetBatch(data_ptr_t values_target_ptr, uint32_t batch_size) {
-		buffer_.available((value_offset_ + batch_size) * type_size_);
+		buffer_.Available((value_offset_ + batch_size) * type_size_);
 
 		for (idx_t byte_offset = 0; byte_offset < type_size_; ++byte_offset) {
-			data_ptr_t input_bytes = buffer_.ptr + byte_offset * num_buffer_values_ + value_offset_;
+			data_ptr_t input_bytes = buffer_.GetCurrentLoc() + byte_offset * num_buffer_values_ + value_offset_;
 			for (uint32_t i = 0; i < batch_size; ++i) {
 				values_target_ptr[byte_offset + i * type_size_] = *(input_bytes + i);
 			}
@@ -42,8 +42,12 @@ public:
 	}
 
 	void Skip(uint32_t batch_size) {
-		buffer_.available((value_offset_ + batch_size) * type_size_);
+		buffer_.Available((value_offset_ + batch_size) * type_size_);
 		value_offset_ += batch_size;
+	}
+
+	void Rebase(data_ptr_t new_ptr) {
+		buffer_.Rebase(new_ptr);
 	}
 
 private:

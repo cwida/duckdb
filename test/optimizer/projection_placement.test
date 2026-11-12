@@ -39,51 +39,6 @@ JOIN placement_fact USING (i);
 ----
 logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
 
-# Sorting a bounded list is cheaper before a fanout join
-statement ok
-CREATE TABLE placement_lists AS
-SELECT i AS id, list_transform(range(16), lambda x: hash(i * 16 + x)::UBIGINT) AS vals
-FROM range(100) t(i);
-
-statement ok
-CREATE TABLE placement_list_fanout AS
-SELECT i % 100 AS id FROM range(10000) t(i);
-
-query II
-EXPLAIN SELECT sum(sorted_values[1]::HUGEINT)
-FROM (SELECT id, list_sort(vals) AS sorted_values FROM placement_lists) l
-JOIN placement_list_fanout f ON l.id = f.id;
-----
-logical_opt	<REGEX>:.*COMPARISON_JOIN.*PROJECTION.*list_sort.*
-
-query I
-SELECT sum(sorted_values[1]::HUGEINT)
-FROM (SELECT id, list_sort(vals) AS sorted_values FROM placement_lists) l
-JOIN placement_list_fanout f ON l.id = f.id;
-----
-11432177246310852919500
-
-# Shared aggregate arguments are still evaluated once without CSE
-statement ok
-SET disabled_optimizers = 'common_subexpressions';
-
-query II
-EXPLAIN SELECT sum(s[1]::HUGEINT), max(s[1]::HUGEINT)
-FROM (SELECT id, list_sort(vals) AS s FROM placement_lists) l
-JOIN placement_list_fanout f ON l.id = f.id;
-----
-logical_opt	<!REGEX>:.*list_sort.*list_sort.*
-
-statement ok
-SET disabled_optimizers = '';
-
-# LIST costing does not introduce extraction for unrelated scalar aggregates
-query II
-EXPLAIN SELECT sum(hash(l.id)::HUGEINT)
-FROM placement_lists l JOIN placement_list_fanout f ON l.id = f.id;
-----
-logical_opt	<!REGEX>:.*COMPARISON_JOIN.*PROJECTION.*hash.*
-
 # The input byte width also bounds substrings with negative offsets and grapheme slicing
 query II
 EXPLAIN SELECT s

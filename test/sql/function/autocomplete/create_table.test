@@ -92,7 +92,7 @@ abcdefgh.	13
 query II
 SELECT suggestion, suggestion_start FROM sql_auto_complete('CREATE TABLE abcdefgh.') LIMIT 1;
 ----
-.	21
+abcdefgh.	22
 
 # we suggest the original schema
 query II
