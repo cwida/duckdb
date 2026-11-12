@@ -1387,7 +1387,7 @@ RESET disabled_optimizers
 query II
 EXPLAIN (FORMAT JSON) SELECT bs_dim.k, s1, s2, sum(v) FROM bs_fact JOIN bs_dim USING (k) GROUP BY bs_dim.k, s1, s2;
 ----
-physical_plan	<REGEX>:.*"name":\s*"HASH_JOIN",\s*"children":\s*\[\s*\{\s*"name":\s*"SEQ_SCAN",\s*"children":\s*\[\],\s*"extra_info":\s*\{\s*"Table":\s*"memory.main.bs_dim".*
+physical_plan	<REGEX>:.*"name":\s*"HASH_JOIN",\s*"children":\s*\[\s*(\{\s*"name":\s*"PROJECTION",\s*"children":\s*\[\s*)*\{\s*"name":\s*"SEQ_SCAN",\s*"children":\s*\[\],\s*"extra_info":\s*\{\s*"Table":\s*"memory.main.bs_dim".*
 
 query II
 SELECT count(*), sum(sv) FROM (SELECT bs_dim.k, s1, s2, sum(v) AS sv FROM bs_fact JOIN bs_dim USING (k) GROUP BY bs_dim.k, s1, s2);
