@@ -178,7 +178,8 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 
 		ExtensionKey key(ext_name, string());
 		auto installed_path = installed_paths.find(ext_data.file_path);
-		if (!ext_data.file_path.empty() && installed_path != installed_paths.end()) {
+		if (!ext_data.file_path.empty() && installed_path != installed_paths.end() &&
+		    installed_path->second.first == ext_name) {
 			key = installed_path->second;
 		}
 		if (auto &ext_install_info = ext_data.install_info) {
