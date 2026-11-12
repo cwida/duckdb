@@ -394,11 +394,12 @@ void Binder::BindModifiers(BoundQueryNode &result, TableIndex table_index, const
 				auto null_order = order.orders[0].null_order;
 				order.orders.clear();
 				for (idx_t i = 0; i < sql_types.size(); i++) {
-					auto expr = make_uniq<BoundColumnRefExpression>(sql_types[i],
-					                                                ColumnBinding(table_index, ProjectionIndex(i)));
+					Identifier alias;
 					if (i < names.size()) {
-						expr->SetAlias(names[i]);
+						alias = names[i];
 					}
+					auto expr = make_uniq<BoundColumnRefExpression>(std::move(alias), sql_types[i],
+					                                                ColumnBinding(table_index, ProjectionIndex(i)));
 					order.orders.emplace_back(order_type, null_order, std::move(expr));
 				}
 			}

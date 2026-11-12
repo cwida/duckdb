@@ -20,8 +20,8 @@
 
 namespace duckdb {
 static void RewriteJoinCondition(unique_ptr<Expression> &root_expr, idx_t offset) {
-	ExpressionIterator::VisitExpressionMutable<BoundReferenceExpression>(
-	    root_expr, [&](BoundReferenceExpression &ref, unique_ptr<Expression> &expr) { ref.IndexMutable() += offset; });
+	root_expr = ExpressionIterator::PreorderReplace<BoundReferenceExpression>(
+	    std::move(root_expr), [&](const BoundReferenceExpression &ref) { return ref.WithIndex(ref.Index() + offset); });
 }
 
 static optional_ptr<PhysicalRecursiveCTEStateScan>

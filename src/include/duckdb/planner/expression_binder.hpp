@@ -140,7 +140,9 @@ public:
 
 	void SetCatalogLookupCallback(catalog_entry_callback_t callback);
 	//! Bind the expression at the given depth, returning the bound expression or the error
-	[[nodiscard]] BindResult Bind(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression = false);
+	//! Binds the expression - the bound expression gets the given alias, or that of the parsed expression if empty
+	[[nodiscard]] BindResult Bind(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression = false,
+	                              const Identifier &alias = Identifier());
 
 	//! Returns the STRUCT_EXTRACT operator expression
 	unique_ptr<ParsedExpression> CreateStructExtract(unique_ptr<ParsedExpression> base, const Identifier &field_name);
@@ -227,7 +229,8 @@ public:
 
 	//! Bind a child expression, returning it. A null child, or one that fails to bind, returns null;
 	//! the first error encountered is recorded in the accumulator.
-	[[nodiscard]] unique_ptr<Expression> BindChild(unique_ptr<ParsedExpression> &expr, idx_t depth, ErrorData &error);
+	[[nodiscard]] unique_ptr<Expression> BindChild(unique_ptr<ParsedExpression> &expr, idx_t depth, ErrorData &error,
+	                                               const Identifier &alias = Identifier());
 	static void ExtractCorrelatedExpressions(Binder &binder, Expression &expr);
 
 	static bool ContainsNullType(const LogicalType &type);

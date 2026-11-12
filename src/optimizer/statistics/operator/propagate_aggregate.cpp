@@ -569,8 +569,8 @@ void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_p
 			if (fun_name == "count_star") {
 				// pre_count + count_star_from_scan
 				auto &pre_count_expr = agg_results[i];
-				auto add_expr = optimizer.BindScalarFunction("+", pre_count_expr->Copy(), std::move(agg_col_ref));
-				add_expr->SetAlias(aggr.expressions[i]->GetAlias());
+				auto add_expr = optimizer.BindScalarFunction("+", pre_count_expr->Copy(), std::move(agg_col_ref),
+				                                             aggr.expressions[i]->GetAlias());
 				proj_expressions.push_back(std::move(add_expr));
 			} else if (fun_name == "min" || fun_name == "max") {
 				// For min: COALESCE(least(pre_min, agg_min), pre_min)
