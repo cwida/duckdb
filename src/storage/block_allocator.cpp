@@ -355,9 +355,15 @@ public:
 
 private:
 	bool TryClear() DUCKDB_EXCLUDES(lifetime_state->lock) {
+		if (touched.empty() && untouched.empty()) {
+			// nothing to return, and the queues may not exist: a worker creates its state before the pool is ready
+			return true;
+		}
 		if (lifetime_state) {
 			annotated_lock_guard<annotated_mutex> guard(lifetime_state->lock);
 			if (lifetime_state->alive) {
+				// local blocks only come out of a ready pool, whose queues stay published until the allocator dies
+				D_ASSERT(block_allocator->IsInitialized());
 				TryReturnTouched(touched.size());
 				TryReturnBlocks(untouched, *block_allocator->untouched, untouched.size());
 				return touched.empty() && untouched.empty();
