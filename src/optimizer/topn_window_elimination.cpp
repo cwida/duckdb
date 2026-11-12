@@ -1044,6 +1044,10 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 				if (!ExtractSingleBinding(&condition.RightReference(), right_binding, true)) {
 					return false;
 				}
+				if (!Optimizer::EqualityImpliesBitwiseIdentity(condition.GetLHS().GetReturnType()) ||
+				    !Optimizer::EqualityImpliesBitwiseIdentity(condition.GetRHS().GetReturnType())) {
+					continue;
+				}
 
 				replaceable_bindings[left_binding] = right_binding;
 				replaceable_bindings[right_binding] = left_binding;
