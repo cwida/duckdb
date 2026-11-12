@@ -232,7 +232,7 @@ ORDER BY 1
 foreach windowmode "window" "combine" "separate"
 
 statement ok
-PRAGMA debug_window_mode={windowmode}
+SET debug_window_mode={windowmode}
 
 query IIII
 SELECT r % 2 as p, r, r/3.0, mad(r/3.0) over (partition by r % 2 order by r)

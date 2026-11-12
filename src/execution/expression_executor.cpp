@@ -1,5 +1,9 @@
 #include "duckdb/execution/expression_executor.hpp"
 
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
+#include "duckdb/main/database.hpp"
+
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
@@ -13,22 +17,20 @@
 
 namespace duckdb {
 
-ExpressionExecutor::ExpressionExecutor(ClientContext &context) : context(&context) {
+ExpressionExecutor::ExpressionExecutor(Context &context_p) : context(context_p) {
 	debug_vector_verification = Settings::Get<DebugVerifyVectorSetting>(context);
 }
 
-ExpressionExecutor::ExpressionExecutor(ClientContext &context, const Expression *expression)
-    : ExpressionExecutor(context) {
+ExpressionExecutor::ExpressionExecutor(Context &context, const Expression *expression) : ExpressionExecutor(context) {
 	D_ASSERT(expression);
 	AddExpression(*expression);
 }
 
-ExpressionExecutor::ExpressionExecutor(ClientContext &context, const Expression &expression)
-    : ExpressionExecutor(context) {
+ExpressionExecutor::ExpressionExecutor(Context &context, const Expression &expression) : ExpressionExecutor(context) {
 	AddExpression(expression);
 }
 
-ExpressionExecutor::ExpressionExecutor(ClientContext &context, const vector<unique_ptr<Expression>> &exprs)
+ExpressionExecutor::ExpressionExecutor(Context &context, const vector<unique_ptr<Expression>> &exprs)
     : ExpressionExecutor(context) {
 	D_ASSERT(exprs.size() > 0);
 	for (auto &expr : exprs) {
@@ -36,33 +38,59 @@ ExpressionExecutor::ExpressionExecutor(ClientContext &context, const vector<uniq
 	}
 }
 
-ExpressionExecutor::ExpressionExecutor(const vector<unique_ptr<Expression>> &exprs) : context(nullptr) {
+ExpressionExecutor::ExpressionExecutor(ClientContext &context) : ExpressionExecutor(context.GetContext()) {
+}
+
+ExpressionExecutor::ExpressionExecutor(ClientContext &context, const Expression *expression)
+    : ExpressionExecutor(context.GetContext(), expression) {
+}
+
+ExpressionExecutor::ExpressionExecutor(ClientContext &context, const Expression &expression)
+    : ExpressionExecutor(context.GetContext(), expression) {
+}
+
+ExpressionExecutor::ExpressionExecutor(ClientContext &context, const vector<unique_ptr<Expression>> &exprs)
+    : ExpressionExecutor(context.GetContext(), exprs) {
+}
+
+ExpressionExecutor::ExpressionExecutor(DatabaseInstance &db) : ExpressionExecutor(db.GetContext()) {
+}
+
+ExpressionExecutor::ExpressionExecutor(DatabaseInstance &db, const Expression &expression) : ExpressionExecutor(db) {
+	AddExpression(expression);
+}
+
+ExpressionExecutor::ExpressionExecutor(DatabaseInstance &db, const vector<unique_ptr<Expression>> &exprs)
+    : ExpressionExecutor(db) {
 	D_ASSERT(exprs.size() > 0);
 	for (auto &expr : exprs) {
 		AddExpression(*expr);
 	}
 }
 
-ExpressionExecutor::ExpressionExecutor() : context(nullptr) {
-}
-
-bool ExpressionExecutor::HasContext() {
+Context &ExpressionExecutor::GetContext() {
 	return context;
 }
 
-ClientContext &ExpressionExecutor::GetContext() {
-	if (!context) {
-		throw InternalException("Calling ExpressionExecutor::GetContext on an expression executor without a context");
+bool ExpressionExecutor::HasClientContext() {
+	return context.IsClient();
+}
+
+ClientContext &ExpressionExecutor::GetClientContext() {
+	auto client_context = context.TryGetClientContext();
+	if (!client_context) {
+		throw InternalException(
+		    "Calling ExpressionExecutor::GetClientContext on an expression executor without a client context");
 	}
-	return *context;
+	return *client_context;
 }
 
-optional_ptr<ClientContext> ExpressionExecutor::GetContextPtr() {
-	return context;
+optional_ptr<ClientContext> ExpressionExecutor::TryGetClientContext() {
+	return context.TryGetClientContext();
 }
 
 Allocator &ExpressionExecutor::GetAllocator() {
-	return context ? Allocator::Get(*context) : Allocator::DefaultAllocator();
+	return Allocator::Get(context.GetDatabase());
 }
 
 void ExpressionExecutor::AddExpression(const Expression &expr) {
@@ -92,7 +120,7 @@ void ExpressionExecutor::Execute(DataChunk *input, DataChunk &result) {
 		ExecuteExpression(i, result.data[i]);
 	}
 	result.SetChildCardinality(input ? input->size() : 1);
-	result.Verify(context);
+	result.Verify(context.GetDatabase());
 }
 
 void ExpressionExecutor::ExecuteExpression(DataChunk &input, Vector &result) {
@@ -146,6 +174,10 @@ void ExpressionExecutor::ExecuteExpression(idx_t expr_idx, Vector &result, const
 }
 
 Value ExpressionExecutor::EvaluateScalar(ClientContext &context, const Expression &expr, bool allow_unfoldable) {
+	return EvaluateScalar(context.GetContext(), expr, allow_unfoldable);
+}
+
+Value ExpressionExecutor::EvaluateScalar(Context &context, const Expression &expr, bool allow_unfoldable) {
 	D_ASSERT(allow_unfoldable || expr.IsFoldable());
 	D_ASSERT(expr.IsScalar());
 	// use an ExpressionExecutor to execute the expression
@@ -161,6 +193,10 @@ Value ExpressionExecutor::EvaluateScalar(ClientContext &context, const Expressio
 }
 
 bool ExpressionExecutor::TryEvaluateScalar(ClientContext &context, const Expression &expr, Value &result) {
+	return TryEvaluateScalar(context.GetContext(), expr, result);
+}
+
+bool ExpressionExecutor::TryEvaluateScalar(Context &context, const Expression &expr, Value &result) {
 	try {
 		result = EvaluateScalar(context, expr);
 		return true;
@@ -201,21 +237,13 @@ void ExpressionExecutor::Verify(const Expression &expr, Vector &vector, idx_t co
 		Vector intermediate(LogicalType::VARIANT(), cast_count);
 
 		//! First cast to VARIANT
-		if (HasContext()) {
-			VectorOperations::Cast(GetContext(), vector, intermediate, cast_count, true);
-		} else {
-			VectorOperations::DefaultCast(vector, intermediate, cast_count, true);
-		}
+		VectorOperations::Cast(GetContext(), vector, intermediate, cast_count, true);
 		intermediate.Verify();
 		//! FIXME: this is probably also where we want to test 'variant_normalize'
 
 		Vector result(vector.GetType(), cast_count);
 		//! Then cast back into the original type
-		if (HasContext()) {
-			VectorOperations::Cast(GetContext(), intermediate, result, cast_count, true);
-		} else {
-			VectorOperations::DefaultCast(intermediate, result, cast_count, true);
-		}
+		VectorOperations::Cast(GetContext(), intermediate, result, cast_count, true);
 		if (input_is_constant) {
 			result.SetVectorType(VectorType::CONSTANT_VECTOR);
 			FlatVector::SetSize(result, count_t(count));

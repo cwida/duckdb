@@ -19,7 +19,7 @@ statement ok
 SET temp_directory='';
 
 statement ok
-PRAGMA memory_limit='3MiB';
+SET memory_limit='3MiB';
 
 # If the 'temp_directory' is not set, then this defaults to 90% of available disk space.
 query I

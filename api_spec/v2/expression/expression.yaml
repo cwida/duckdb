@@ -99,6 +99,27 @@ enums:
         value: 228
         description: A reference to a column. No children; read it with `[[expression_column_ref_get_index]]`.
 
+  FILTER_PROPAGATE_RESULT:
+    description: |
+      What checking a predicate against the statistics of its column found out (`FilterPropagateResult`): whether every
+      row the statistics describe passes the predicate, none does, or the statistics do not tell.
+    values:
+      FILTER_PROPAGATE_RESULT_NO_PRUNING_POSSIBLE:
+        value: 0
+        description: "The statistics do not decide the predicate."
+      FILTER_PROPAGATE_RESULT_ALWAYS_TRUE:
+        value: 1
+        description: "Every row passes the predicate."
+      FILTER_PROPAGATE_RESULT_ALWAYS_FALSE:
+        value: 2
+        description: "No row passes the predicate."
+      FILTER_PROPAGATE_RESULT_TRUE_OR_NULL:
+        value: 3
+        description: "Every row passes the predicate or evaluates it to NULL."
+      FILTER_PROPAGATE_RESULT_FALSE_OR_NULL:
+        value: 4
+        description: "No row passes the predicate: each evaluates it to false or to NULL."
+
 #-----------------------------------------------------------------------------------------------------------------------
 # Handles
 #-----------------------------------------------------------------------------------------------------------------------
@@ -338,4 +359,35 @@ functions:
         type: error_info
         indirection: 1
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  expression_check_statistics:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-30" ]
+    description: |
+      Checks a predicate over one column against the statistics of that column (`ExpressionFilter::CheckStatistics`):
+      the statistics of the column are propagated through the expression - comparisons, conjunctions, IS NULL, IN, casts
+      and the functions the engine knows the statistics of - to find out whether every row the statistics describe
+      passes the predicate, none does, or nothing can be told. A table function uses it to skip a row group (or a file)
+      whose statistics, built with `[[stats_create]]`, make a pushed-down filter it did not take over false for every
+      row. Every column reference of the predicate stands for the column described by `stats`.
+    parameters:
+      context:
+        type: context
+        description: "The context of the query; the statistics of function calls in the predicate are derived through it."
+      expression:
+        type: expression
+        description: "The predicate: a boolean expression over one column, referenced by its column references."
+      stats:
+        type: stats
+        description: "The statistics of that column over the rows in question."
+      result:
+        type: FILTER_PROPAGATE_RESULT
+        indirection: 1
+        kind: OUT
+        description: "Receives what the statistics decide about the predicate."
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR

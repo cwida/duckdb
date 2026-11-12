@@ -104,7 +104,7 @@ SourceResultType PhysicalAttach::GetDataInternal(ExecutionContext &context, Data
 		}
 
 		// construct the options
-		AttachOptions options(attach_info->options, config.options.access_mode);
+		AttachOptions options(context.client.GetContext(), attach_info->options, config.options.access_mode);
 		if (owns_resource) {
 			options.deleter_function = launched.deleter_function;
 			options.deleter_payload = launched.deleter_payload;

@@ -10,7 +10,7 @@ CREATE or replace TABLE t1 as select range a, [1, a, 2] b, a::VARCHAR || 'duckta
 loop i 1 8
 
 statement ok
-pragma threads={i};
+SET threads={i};
 
 query III nosort result_1
 SELECT * from t1 using sample reservoir(100) repeatable (1) order by a;

@@ -33,10 +33,10 @@ statement ok
 DELETE FROM vacuum_db.tbl WHERE id % 2 = 0;
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/cumulative_vacuum_time_vacuum.json';
+SET profiling_output = '{TEST_DIR}/cumulative_vacuum_time_vacuum.json';
 
 statement ok
 SET tracked_metrics = ['storage.total_vacuum_time', 'storage.checkpoint_latency'];
@@ -77,10 +77,10 @@ statement ok
 DELETE FROM drop_vacuum.tbl WHERE id < 122_880;
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/cumulative_vacuum_time_drop.json';
+SET profiling_output = '{TEST_DIR}/cumulative_vacuum_time_drop.json';
 
 statement ok
 SET tracked_metrics = ['storage.total_vacuum_time', 'storage.checkpoint_latency'];
@@ -124,10 +124,10 @@ statement ok
 DELETE FROM index_vacuum.tbl WHERE id < 122_880;
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/cumulative_vacuum_time_index.json';
+SET profiling_output = '{TEST_DIR}/cumulative_vacuum_time_index.json';
 
 statement ok
 SET tracked_metrics = ['storage.total_vacuum_time', 'storage.checkpoint_latency'];

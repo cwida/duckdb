@@ -349,6 +349,26 @@ void MacroFunction::FinalizeDeserialization() {
 	}
 }
 
+bool MacroFunction::MatchesSignature(const vector<LogicalType> &signature) const {
+	if (parameters.size() != signature.size()) {
+		return false;
+	}
+	for (idx_t i = 0; i < signature.size(); i++) {
+		const auto member_type_id = i < types.size() ? types[i].id() : LogicalTypeId::UNKNOWN;
+		if (signature[i].id() == LogicalTypeId::ANY) {
+			// ANY names an untyped slot exactly, it does not match a typed slot
+			if (member_type_id != LogicalTypeId::UNKNOWN) {
+				return false;
+			}
+			continue;
+		}
+		if (member_type_id == LogicalTypeId::UNKNOWN || types[i] != signature[i]) {
+			return false;
+		}
+	}
+	return true;
+}
+
 string MacroFunction::ToSQL() const {
 	vector<string> param_strings;
 	for (idx_t param_idx = 0; param_idx < parameters.size(); param_idx++) {

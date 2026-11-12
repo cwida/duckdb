@@ -3,7 +3,7 @@
 # group: [match_recognize]
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 # The cases in test_match_recognize_backtracking are a handful of rows each, so an engine that tries
 # every split still answers them. These are the same shapes at a length where that is not an option:

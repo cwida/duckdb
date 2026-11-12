@@ -10,6 +10,8 @@
 #include "duckdb/storage/object_cache.hpp"
 #include "duckdb/storage/temporary_memory_manager.hpp"
 
+#include <iterator>
+
 namespace duckdb {
 
 static idx_t FileBufferTypeToEvictionQueueTypeIdx(const FileBufferType &type) {
@@ -270,8 +272,7 @@ void EvictionQueue::PurgeIteration(const idx_t purge_size) {
 
 	total_dead_nodes -= dead_count;
 
-	// Re-enqueue alive nodes via producer token — goes into a dedicated sub-queue
-	// that the consumer token has already passed
+	// Re-enqueue alive nodes into the purge producer's dedicated sub-queue.
 	if (alive_count > 0) {
 #ifdef DUCKDB_NO_THREADS
 		// The fallback queue can throw after publishing a prefix of a bulk insertion.
@@ -286,7 +287,9 @@ void EvictionQueue::PurgeIteration(const idx_t purge_size) {
 			}
 		}
 #else
-		if (!purge_producer_token.valid() || !q.enqueue_bulk(purge_producer_token, purge_nodes.begin(), alive_count)) {
+		// A failed bulk enqueue leaves the input nodes untouched.
+		if (!purge_producer_token.valid() ||
+		    !q.enqueue_bulk(purge_producer_token, std::make_move_iterator(purge_nodes.begin()), alive_count)) {
 			for (idx_t i = 0; i < alive_count; i++) {
 				DiscardNode(purge_nodes[i]);
 			}
@@ -320,9 +323,10 @@ bool BufferPool::AddToEvictionQueue(BlockLock &lock, shared_ptr<BlockHandle> &ha
 	// (uncontended) lock of the freshly created block before calling.
 	memory.VerifyMutex(lock);
 	D_ASSERT(memory.GetReaders() == 0);
-	// Repeated hash-table appends can reuse an entry while leaving the block evictable.
+	// Reusing the entry keeps a stale queue position, so a block in active use can be evicted earlier under pressure.
+	const auto tag = memory.GetMemoryTag();
 	if (!track_eviction_timestamps && memory.GetBufferType() == FileBufferType::MANAGED_BUFFER &&
-	    memory.GetMemoryTag() == MemoryTag::HASH_TABLE && memory.HasLiveQueueEntry(lock)) {
+	    (tag == MemoryTag::HASH_TABLE || tag == MemoryTag::PARQUET_READER) && memory.HasLiveQueueEntry(lock)) {
 		return false;
 	}
 	auto &queue = GetEvictionQueueForBlockMemory(memory);

@@ -1,0 +1,156 @@
+# name: test/optimizer/fixed_key_domain_replacement_plan.test
+# description: Fixed-key replacement eliminates the old duplicate-producing source
+# group: [optimizer]
+
+statement ok
+CREATE TABLE fact_data AS SELECT (i % 1000)::INTEGER k, i::BIGINT v FROM range(10000) t(i);
+
+statement ok
+CREATE VIEW fact AS SELECT (k + 1000) % 1000 k, v FROM fact_data;
+
+statement ok
+CREATE TABLE repeated_keys AS SELECT k FROM fact_data;
+
+statement ok
+CREATE VIEW old_keys AS
+SELECT d.k FROM (VALUES (1), (2), (3)) d(k) LEFT JOIN repeated_keys USING(k);
+
+# Replacement removes the whole duplicate-producing source.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.s
+FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s FROM fact f SEMI JOIN old_keys old USING(k) GROUP BY f.k
+) a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+# Replacement also retains the existing restriction's native scan-filter opportunity.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.s
+FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s FROM fact_data f SEMI JOIN old_keys old USING(k) GROUP BY f.k
+) a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.s
+FROM (VALUES (1), (4)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s FROM fact f SEMI JOIN old_keys old USING(k) GROUP BY f.k
+) a USING(k);
+----
+physical_plan	<REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+# Ordinary statistics callbacks may consume the restricted key.
+statement ok
+CREATE VIEW callback_groups AS
+SELECT d.k, a.s, a.n
+FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(f.k) s, count(f.k) n
+    FROM fact f SEMI JOIN old_keys old USING(k) GROUP BY f.k
+) a USING(k);
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM callback_groups;
+----
+physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+# Ancestor aggregate/window callbacks and materialized CTEs do not block replacement.
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(s), sum(n) FROM callback_groups;
+----
+physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(s) OVER () FROM callback_groups;
+----
+physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+WITH c AS MATERIALIZED (SELECT * FROM callback_groups) SELECT sum(s) FROM c;
+----
+physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+# Only implicit bitstring bounds require the bailout.
+query II
+SELECT bit_length(bitstring_agg(k, 0, 999)), bit_count(bitstring_agg(k, 0, 999)) FROM callback_groups;
+----
+1000	2
+
+query II
+EXPLAIN (FORMAT JSON) SELECT bitstring_agg(k, 0, 999), sum(s) FROM callback_groups;
+----
+physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT bitstring_agg(k), sum(s) FROM callback_groups;
+----
+physical_plan	<REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+# The implicit-bitstring bailout also covers aliases and computed arguments.
+query II rowsort
+SELECT d.k, bit_length(a.bits)
+FROM (VALUES (1)) d(k)
+LEFT JOIN (
+    SELECT renamed, bitstring_agg(copy) bits
+    FROM (
+        SELECT f.k renamed, f.k copy
+        FROM fact f SEMI JOIN (SELECT 1 k) old USING(k)
+    ) f GROUP BY renamed
+) a ON d.k=a.renamed;
+----
+1	1
+
+# Computed payload aliases can depend on the restricted key as well.
+query II rowsort
+SELECT d.k, bit_length(a.bits)
+FROM (VALUES (1)) d(k)
+LEFT JOIN (
+    SELECT renamed, bitstring_agg(copy) bits
+    FROM (
+        SELECT f.k renamed, f.k + 1 copy
+        FROM fact f SEMI JOIN (SELECT 1 k) old USING(k)
+    ) f GROUP BY renamed
+) a ON d.k=a.renamed;
+----
+1	1
+
+# Bounds also escape through the selected aggregate's grouping-key output.
+query II
+SELECT bit_length(bitstring_agg(a.k)), bit_count(bitstring_agg(a.k))
+FROM (VALUES (1)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s FROM fact f SEMI JOIN (SELECT 1 k) old USING(k) GROUP BY f.k
+) a USING(k);
+----
+1	1
+
+# Window aggregates consume the same statistics as grouped aggregates.
+query III
+SELECT a.s, bit_length(bitstring_agg(a.k) OVER ()), bit_count(bitstring_agg(a.k) OVER ())
+FROM (VALUES (1)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s FROM fact f SEMI JOIN (SELECT 1 k) old USING(k) GROUP BY f.k
+) a USING(k);
+----
+45010	1	1
+
+# CTE statistics reach consumers outside the definition's ancestor path.
+query II
+WITH c AS MATERIALIZED (
+    SELECT a.k AS a_key FROM (VALUES (1)) d(k)
+    LEFT JOIN (
+        SELECT f.k, sum(v) s FROM fact f SEMI JOIN (SELECT 1 k) old USING(k) GROUP BY f.k
+    ) a USING(k)
+)
+SELECT bit_length(bitstring_agg(a_key)), bit_count(bitstring_agg(a_key)) FROM c;
+----
+1	1

@@ -35,14 +35,14 @@ statement ok
 create table distinct_sum as select ((random() * 100) % 2)::BIGINT as i, (i % 10) as j from range(1000000) tbl(i);
 
 statement ok
-pragma threads=8;
+SET threads=8;
 
 query I nosort test1
 SELECT sum(distinct i) from distinct_sum group by j order by j;
 ----
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 query I nosort test1
 SELECT sum(distinct i) from distinct_sum group by j order by j;

@@ -15,65 +15,20 @@ namespace duckdb {
 
 class Context;
 
+template <class T>
+struct IsSettingList : std::false_type {};
+
+template <class T>
+struct IsSettingList<vector<T>> : std::true_type {};
+
 struct Settings {
 	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_enum<typename OP::RETURN_TYPE>::value, typename OP::RETURN_TYPE>::type
-	Get(const SOURCE &source) {
+	static typename OP::RETURN_TYPE Get(const SOURCE &source) {
 		Value result;
 		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return EnumUtil::FromString<typename OP::RETURN_TYPE>(StringValue::Get(result));
+			return FromValue<typename OP::RETURN_TYPE>(result);
 		}
-		return EnumUtil::FromString<typename OP::RETURN_TYPE>(OP::DefaultValue);
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, string>::value, string>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return StringValue::Get(result);
-		}
-		return OP::DefaultValue;
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, bool>::value, bool>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return BooleanValue::Get(result);
-		}
-		return StringUtil::Equals(OP::DefaultValue, "true");
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, idx_t>::value, idx_t>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return UBigIntValue::Get(result);
-		}
-		return StringUtil::ToUnsigned(OP::DefaultValue);
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, int64_t>::value, int64_t>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return BigIntValue::Get(result);
-		}
-		return StringUtil::ToSigned(OP::DefaultValue);
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, double>::value, double>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return DoubleValue::Get(result);
-		}
-		return StringUtil::ToDouble(OP::DefaultValue);
+		return FromDefault<typename OP::RETURN_TYPE>(OP::DefaultValue);
 	}
 
 	template <class SOURCE>
@@ -86,7 +41,136 @@ struct Settings {
 		Set(source, OP::SettingIndex, scope, std::move(target_value));
 	}
 
+	//! The default value of a setting as a Value of its input type
+	template <class OP>
+	static Value GetDefaultValue() {
+		return DefaultToValue<typename OP::RETURN_TYPE>(OP::DefaultValue);
+	}
+
 private:
+	//! Converts the value of a setting to its return type
+	template <class T>
+	static typename std::enable_if<std::is_enum<T>::value, T>::type FromValue(const Value &value) {
+		return EnumUtil::FromString<T>(StringValue::Get(value));
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, string>::value, T>::type FromValue(const Value &value) {
+		return StringValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, bool>::value, T>::type FromValue(const Value &value) {
+		return BooleanValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, idx_t>::value, T>::type FromValue(const Value &value) {
+		return UBigIntValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, int64_t>::value, T>::type FromValue(const Value &value) {
+		return BigIntValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, double>::value, T>::type FromValue(const Value &value) {
+		return DoubleValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<IsSettingList<T>::value, T>::type FromValue(const Value &value) {
+		T result;
+		for (auto &child : ListValue::GetChildren(value)) {
+			result.push_back(FromValue<typename T::value_type>(child));
+		}
+		return result;
+	}
+
+	//! Parses the default value of a setting
+	template <class T>
+	static typename std::enable_if<std::is_enum<T>::value, T>::type FromDefault(const char *default_value) {
+		return EnumUtil::FromString<T>(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, string>::value, T>::type FromDefault(const char *default_value) {
+		return default_value;
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, bool>::value, T>::type FromDefault(const char *default_value) {
+		return StringUtil::Equals(default_value, "true");
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, idx_t>::value, T>::type FromDefault(const char *default_value) {
+		return StringUtil::ToUnsigned(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, int64_t>::value, T>::type FromDefault(const char *default_value) {
+		return StringUtil::ToSigned(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, double>::value, T>::type FromDefault(const char *default_value) {
+		return StringUtil::ToDouble(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<IsSettingList<T>::value, T>::type FromDefault(const char *default_value) {
+		T result;
+		for (auto &entry : SplitListDefault(default_value)) {
+			result.push_back(FromDefault<typename T::value_type>(entry.c_str()));
+		}
+		return result;
+	}
+	//! Splits a list literal (e.g. "['a', 'b']") into its entries
+	static vector<string> SplitListDefault(const char *default_value);
+
+	//! String and enum settings are VARCHAR: their default is used as written
+	template <class T>
+	static typename std::enable_if<std::is_enum<T>::value || std::is_same<T, string>::value, Value>::type
+	DefaultToValue(const char *default_value) {
+		return Value(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<!std::is_enum<T>::value && !std::is_same<T, string>::value, Value>::type
+	DefaultToValue(const char *default_value) {
+		return ToSettingValue(FromDefault<T>(default_value));
+	}
+
+	static Value ToSettingValue(const string &value) {
+		return Value(value);
+	}
+	static Value ToSettingValue(bool value) {
+		return Value::BOOLEAN(value);
+	}
+	static Value ToSettingValue(uint64_t value) {
+		return Value::UBIGINT(value);
+	}
+	static Value ToSettingValue(int64_t value) {
+		return Value::BIGINT(value);
+	}
+	static Value ToSettingValue(double value) {
+		return Value::DOUBLE(value);
+	}
+	template <class T>
+	static Value ToSettingValue(const vector<T> &values) {
+		vector<Value> children;
+		for (auto &value : values) {
+			children.push_back(ToSettingValue(value));
+		}
+		return Value::LIST(SettingLogicalType(static_cast<const T *>(nullptr)), std::move(children));
+	}
+
+	//! The logical type of a setting value, selected by the (unused) pointer type
+	static LogicalType SettingLogicalType(const string *) {
+		return LogicalType::VARCHAR;
+	}
+	static LogicalType SettingLogicalType(const bool *) {
+		return LogicalType::BOOLEAN;
+	}
+	static LogicalType SettingLogicalType(const uint64_t *) {
+		return LogicalType::UBIGINT;
+	}
+	static LogicalType SettingLogicalType(const int64_t *) {
+		return LogicalType::BIGINT;
+	}
+	static LogicalType SettingLogicalType(const double *) {
+		return LogicalType::DOUBLE;
+	}
+
 	static bool TryGetSettingInternal(const DatabaseInstance &db, idx_t setting_index, Value &result);
 	static bool TryGetSettingInternal(const DBConfig &config, idx_t setting_index, Value &result);
 	static bool TryGetSettingInternal(const ClientContext &context, idx_t setting_index, Value &result);
@@ -455,6 +539,20 @@ struct AutoloadKnownExtensionsSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
+struct BufferManagerTrackEvictionTimestampsSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "buffer_manager_track_eviction_timestamps";
+	static constexpr const char *Description =
+	    "Record timestamps of buffer manager unpin() events. Usable by custom eviction policies.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
 struct CacheLocalFilesSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "cache_local_files";
@@ -495,6 +593,19 @@ struct CheckpointOnDetachSetting {
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
+struct CheckpointOnShutdownSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "checkpoint_on_shutdown";
+	static constexpr const char *Description = "Whether to run a checkpoint on successful shutdown and delete the WAL, "
+	                                           "to leave only a single database file behind.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "true";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
 struct CheckpointThresholdSetting {
@@ -571,9 +682,9 @@ struct DebugAbortOnWalFailureSetting {
 	static constexpr const char *InputType = "BOOLEAN";
 	static constexpr bool IsDebug = true;
 	static constexpr bool IsDeprecated = false;
-	static void SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &parameter);
-	static void ResetGlobal(DatabaseInstance *db, DBConfig &config);
-	static Value GetSetting(const ClientContext &context);
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
 struct DebugAsofIejoinSetting {
@@ -701,6 +812,19 @@ struct ForceBitpackingModeSetting {
 	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
+struct DebugForceCheckpointSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "debug_force_checkpoint";
+	static constexpr const char *Description =
+	    "Force a checkpoint when CHECKPOINT is called or on shutdown, even if no changes have been made.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = true;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct DebugForceCommitFailureSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "debug_force_commit_failure";
@@ -747,6 +871,19 @@ struct DebugForceFetchRowSetting {
 	static constexpr bool IsDeprecated = false;
 	static constexpr const char *DefaultValue = "false";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
+struct DebugForceFlushAppendFailureSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "debug_force_flush_append_failure";
+	static constexpr const char *Description = "Force the commit-time flush of transaction-local storage to fail after "
+	                                           "appending to the table. Can be used for testing commit error recovery.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = true;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
@@ -814,6 +951,20 @@ struct DebugForceWalFsyncFailureSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
+struct DebugInitializeSetting {
+	using RETURN_TYPE = DebugInitialize;
+	static constexpr const char *Name = "debug_initialize";
+	static constexpr const char *Description = "How to initialize blocks in the storage layer when allocating "
+	                                           "(NO_INITIALIZE, DEBUG_ZERO_INITIALIZE or DEBUG_ONE_INITIALIZE).";
+	static constexpr const char *InputType = "VARCHAR";
+	static constexpr bool IsDebug = true;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "NO_INITIALIZE";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
 struct DebugLocalFileSystemDelayMsSetting {
 	using RETURN_TYPE = idx_t;
 	static constexpr const char *Name = "debug_local_file_system_delay_ms";
@@ -834,9 +985,10 @@ struct DebugOrderVerificationSetting {
 	static constexpr const char *InputType = "VARCHAR";
 	static constexpr bool IsDebug = true;
 	static constexpr bool IsDeprecated = false;
-	static void SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &parameter);
-	static void ResetGlobal(DatabaseInstance *db, DBConfig &config);
-	static Value GetSetting(const ClientContext &context);
+	static constexpr const char *DefaultValue = "NONE";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
 struct DebugPhysicalTableScanExecutionStrategySetting {
@@ -1405,11 +1557,10 @@ struct EnableProgressBarSetting {
 	static constexpr const char *InputType = "BOOLEAN";
 	static constexpr bool IsDebug = false;
 	static constexpr bool IsDeprecated = false;
-	static void SetLocal(ClientContext &context, const Value &parameter);
-	static void ResetLocal(ClientContext &context);
-	static bool OnLocalSet(ClientContext &context, const Value &input);
-	static bool OnLocalReset(ClientContext &context);
-	static Value GetSetting(const ClientContext &context);
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
 struct EnableProgressBarPrintSetting {
@@ -1420,9 +1571,10 @@ struct EnableProgressBarPrintSetting {
 	static constexpr const char *InputType = "BOOLEAN";
 	static constexpr bool IsDebug = false;
 	static constexpr bool IsDeprecated = false;
-	static void SetLocal(ClientContext &context, const Value &parameter);
-	static void ResetLocal(ClientContext &context);
-	static Value GetSetting(const ClientContext &context);
+	static constexpr const char *DefaultValue = "true";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
 struct EnableViewDependenciesSetting {
@@ -1753,6 +1905,34 @@ struct HTTPProxyUsernameSetting {
 	static constexpr bool IsDeprecated = false;
 	static constexpr const char *DefaultValue = "";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
+struct HTTPRetryQuotaThrottledSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "http_retry_quota_throttled";
+	static constexpr const char *Description =
+	    "Whether the per-host retry quota can refuse the retry of a throttled request (HTTP 429 or 503). When false, a "
+	    "throttled retry is still charged to the quota but is not refused when the quota is empty.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "true";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
+struct HTTPRetryThrottledWaitMsSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "http_retry_throttled_wait_ms";
+	static constexpr const char *Description =
+	    "Smallest base wait, in milliseconds, of the back-off between retries of a throttled request (HTTP 429 or "
+	    "503). Throttled retries back off from the larger of this and http_retry_wait_ms.";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "0";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
@@ -2343,9 +2523,10 @@ struct ProgressBarTimeSetting {
 	static constexpr const char *InputType = "BIGINT";
 	static constexpr bool IsDebug = false;
 	static constexpr bool IsDeprecated = false;
-	static void SetLocal(ClientContext &context, const Value &parameter);
-	static void ResetLocal(ClientContext &context);
-	static Value GetSetting(const ClientContext &context);
+	static constexpr const char *DefaultValue = "2000";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
 struct ReadAheadDepthSetting {
@@ -2585,9 +2766,23 @@ struct TrackedMetricsSetting {
 	static constexpr const char *InputType = "VARCHAR[]";
 	static constexpr bool IsDebug = false;
 	static constexpr bool IsDeprecated = false;
-	static void SetLocal(ClientContext &context, const Value &parameter);
-	static void ResetLocal(ClientContext &context);
-	static Value GetSetting(const ClientContext &context);
+	static constexpr const char *DefaultValue = "['*']";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
+struct TrimFreeBlocksSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "trim_free_blocks";
+	static constexpr const char *Description = "Whether to invoke filesystem trim on free blocks after checkpoint. "
+	                                           "This reclaims space for sparse files, on platforms that support it.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
 struct UsernameSetting {

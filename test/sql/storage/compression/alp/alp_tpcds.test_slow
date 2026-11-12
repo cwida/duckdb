@@ -10,13 +10,13 @@ load {TEST_DIR}/test_alp.db readwrite v1.5.0
 #pragma threads=1
 
 statement ok
-PRAGMA force_compression='alp';
+SET force_compression='alp';
 
 statement ok
 call dsdgen(sf=1, suffix='_original');
 
 statement ok
-PRAGMA default_null_order='NULLS LAST'
+SET default_null_order='NULLS LAST'
 
 # Test both DOUBLE and FLOAT
 

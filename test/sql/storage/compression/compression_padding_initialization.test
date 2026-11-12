@@ -1,0 +1,388 @@
+# name: test/sql/storage/compression/compression_padding_initialization.test
+# description: Compressed segments must initialize gaps and padding before they are persisted
+# group: [compression]
+
+# scripts/test_zero_initialize.py runs this with one- and zero-initialized buffers and compares the files
+
+require vector_size 2048
+
+statement ok
+SET threads=1
+
+# dictionary_gap
+statement ok
+ATTACH '{TEST_DIR}/padding_dictionary_gap.db' AS dictionary_gap (STORAGE_VERSION 'v1.2.0', BLOCK_SIZE 16384)
+
+statement ok
+SET force_compression='dictionary'
+
+statement ok
+CREATE TABLE dictionary_gap.t AS SELECT lpad(i::VARCHAR,1000,'x') AS x FROM range(14) r(i)
+
+statement ok
+CHECKPOINT dictionary_gap
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('dictionary_gap.t') WHERE compression = 'Dictionary'
+----
+true
+
+query I
+SELECT count(*) FROM dictionary_gap.t
+----
+14
+
+statement ok
+DETACH dictionary_gap
+
+# dict_fsst_small
+statement ok
+ATTACH '{TEST_DIR}/padding_dict_fsst_small.db' AS dict_fsst_small (STORAGE_VERSION 'v1.3.0', BLOCK_SIZE 16384)
+
+statement ok
+SET force_compression='dict_fsst'
+
+statement ok
+CREATE TABLE dict_fsst_small.t AS SELECT * FROM (VALUES ('a'),('b')) v(x)
+
+statement ok
+CHECKPOINT dict_fsst_small
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('dict_fsst_small.t') WHERE compression = 'DICT_FSST'
+----
+true
+
+query I
+SELECT count(*) FROM dict_fsst_small.t
+----
+2
+
+statement ok
+DETACH dict_fsst_small
+
+# zstd_small
+statement ok
+ATTACH '{TEST_DIR}/padding_zstd_small.db' AS zstd_small (STORAGE_VERSION 'v1.2.0', BLOCK_SIZE 16384)
+
+statement ok
+SET force_compression='zstd'
+
+statement ok
+CREATE TABLE zstd_small.t AS SELECT * FROM (VALUES ('a'),('b')) v(x)
+
+statement ok
+CHECKPOINT zstd_small
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('zstd_small.t') WHERE compression = 'ZSTD'
+----
+true
+
+query I
+SELECT count(*) FROM zstd_small.t
+----
+2
+
+statement ok
+DETACH zstd_small
+
+# zstd_multi
+statement ok
+ATTACH '{TEST_DIR}/padding_zstd_multi.db' AS zstd_multi (STORAGE_VERSION 'v1.2.0', BLOCK_SIZE 16384)
+
+statement ok
+SET force_compression='zstd'
+
+statement ok
+CREATE TABLE zstd_multi.t AS SELECT CASE WHEN i%2=0 THEN 'a' ELSE 'b' END AS x FROM range(4097) r(i)
+
+statement ok
+CHECKPOINT zstd_multi
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('zstd_multi.t') WHERE compression = 'ZSTD'
+----
+true
+
+query I
+SELECT count(*) FROM zstd_multi.t
+----
+4097
+
+statement ok
+DETACH zstd_multi
+
+# zstd_overflow
+statement ok
+ATTACH '{TEST_DIR}/padding_zstd_overflow.db' AS zstd_overflow (STORAGE_VERSION 'v1.2.0', BLOCK_SIZE 16384)
+
+statement ok
+SET force_compression='zstd'
+
+statement ok
+CREATE TABLE zstd_overflow.t AS SELECT CASE WHEN i%2=0 THEN 'a' ELSE 'b' END AS x FROM range(12289) r(i)
+
+statement ok
+CHECKPOINT zstd_overflow
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('zstd_overflow.t') WHERE compression = 'ZSTD'
+----
+true
+
+query I
+SELECT count(*) FROM zstd_overflow.t
+----
+12289
+
+statement ok
+DETACH zstd_overflow
+
+# uncompressed_overflow
+statement ok
+ATTACH '{TEST_DIR}/padding_uncompressed_overflow.db' AS uncompressed_overflow (STORAGE_VERSION 'v1.2.0', BLOCK_SIZE 16384)
+
+statement ok
+SET force_compression='uncompressed'
+
+statement ok
+CREATE TABLE uncompressed_overflow.t AS SELECT * FROM (VALUES (repeat('a',5000)),(repeat('b',5001))) v(x)
+
+statement ok
+CHECKPOINT uncompressed_overflow
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('uncompressed_overflow.t') WHERE compression = 'Uncompressed'
+----
+true
+
+query I
+SELECT count(*) FROM uncompressed_overflow.t
+----
+2
+
+statement ok
+DETACH uncompressed_overflow
+
+# alp_small
+statement ok
+ATTACH '{TEST_DIR}/padding_alp_small.db' AS alp_small (STORAGE_VERSION 'v1.5.0', BLOCK_SIZE 16384)
+
+statement ok
+SET force_compression='alp'
+
+statement ok
+CREATE TABLE alp_small.t AS SELECT i::DOUBLE AS x FROM range(33) r(i)
+
+statement ok
+CHECKPOINT alp_small
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('alp_small.t') WHERE compression = 'ALP'
+----
+true
+
+query I
+SELECT count(*) FROM alp_small.t
+----
+33
+
+statement ok
+DETACH alp_small
+
+# alp_full
+statement ok
+ATTACH '{TEST_DIR}/padding_alp_full.db' AS alp_full (STORAGE_VERSION 'v1.5.0', BLOCK_SIZE 16384)
+
+statement ok
+SET force_compression='alp'
+
+statement ok
+CREATE TABLE alp_full.t AS SELECT sin(i::DOUBLE) AS x FROM range(1700) r(i)
+
+statement ok
+CHECKPOINT alp_full
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('alp_full.t') WHERE compression = 'ALP'
+----
+true
+
+query I
+SELECT count(*) FROM alp_full.t
+----
+1700
+
+statement ok
+DETACH alp_full
+
+# alprd_small
+statement ok
+ATTACH '{TEST_DIR}/padding_alprd_small.db' AS alprd_small (STORAGE_VERSION 'v1.5.0', BLOCK_SIZE 16384)
+
+statement ok
+SET force_compression='alprd'
+
+statement ok
+CREATE TABLE alprd_small.t AS SELECT i::DOUBLE AS x FROM range(33) r(i)
+
+statement ok
+CHECKPOINT alprd_small
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('alprd_small.t') WHERE compression = 'ALPRD'
+----
+true
+
+query I
+SELECT count(*) FROM alprd_small.t
+----
+33
+
+statement ok
+DETACH alprd_small
+
+# alprd_full
+statement ok
+ATTACH '{TEST_DIR}/padding_alprd_full.db' AS alprd_full (STORAGE_VERSION 'v1.5.0', BLOCK_SIZE 16384)
+
+statement ok
+SET force_compression='alprd'
+
+statement ok
+CREATE TABLE alprd_full.t AS SELECT sin(i::DOUBLE) AS x FROM range(2400) r(i)
+
+statement ok
+CHECKPOINT alprd_full
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('alprd_full.t') WHERE compression = 'ALPRD'
+----
+true
+
+query I
+SELECT count(*) FROM alprd_full.t
+----
+2400
+
+statement ok
+DETACH alprd_full
+
+# roaring_small
+statement ok
+ATTACH '{TEST_DIR}/padding_roaring_small.db' AS roaring_small (STORAGE_VERSION 'v1.5.0', BLOCK_SIZE 16384)
+
+statement ok
+SET force_compression='roaring'
+
+statement ok
+CREATE TABLE roaring_small.t AS SELECT i=0 AS x FROM range(33) r(i)
+
+statement ok
+CHECKPOINT roaring_small
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('roaring_small.t') WHERE compression = 'Roaring'
+----
+true
+
+query I
+SELECT count(*) FROM roaring_small.t
+----
+33
+
+statement ok
+DETACH roaring_small
+
+# roaring_multi
+statement ok
+ATTACH '{TEST_DIR}/padding_roaring_multi.db' AS roaring_multi (STORAGE_VERSION 'v1.5.0', BLOCK_SIZE 16384)
+
+statement ok
+SET force_compression='roaring'
+
+statement ok
+CREATE TABLE roaring_multi.t AS SELECT CASE WHEN i<2048 THEN i<144 AND i%16=0 ELSE i%2=0 END AS x FROM range(4096) r(i)
+
+statement ok
+CHECKPOINT roaring_multi
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('roaring_multi.t') WHERE compression = 'Roaring'
+----
+true
+
+query I
+SELECT count(*) FROM roaring_multi.t
+----
+4096
+
+statement ok
+DETACH roaring_multi
+
+# codecs that skip zeroing new segments must still write every byte they persist
+
+statement ok
+ATTACH '{TEST_DIR}/padding_no_zeroing.db' AS no_zeroing (STORAGE_VERSION 'v1.5.0')
+
+statement ok
+SET force_compression='bitpacking'
+
+foreach bitpacking_mode for delta_for constant constant_delta
+
+statement ok
+SET force_bitpacking_mode='{bitpacking_mode}'
+
+statement ok
+CREATE TABLE no_zeroing.bitpacking_{bitpacking_mode} AS SELECT CASE WHEN r % 7 = 3 THEN NULL ELSE r * 13 END::INTEGER AS i, CASE WHEN r % 5 = 0 THEN NULL ELSE r % 100 END::SMALLINT AS s FROM range(5000) t(r)
+
+# the forced compression applies when the data is checkpointed
+statement ok
+CHECKPOINT no_zeroing
+
+endloop
+
+statement ok
+RESET force_bitpacking_mode
+
+statement ok
+SET force_compression='rle'
+
+statement ok
+CREATE TABLE no_zeroing.rle AS SELECT CASE WHEN r % 11 = 0 THEN NULL ELSE r // 10 END::BIGINT AS x FROM range(5000) t(r)
+
+statement ok
+CHECKPOINT no_zeroing
+
+statement ok
+SET force_compression='uncompressed'
+
+statement ok
+CREATE TABLE no_zeroing.uncompressed AS SELECT CASE WHEN r % 5 = 0 THEN NULL ELSE r * 7 END::HUGEINT AS x, CASE WHEN r % 3 = 0 THEN NULL ELSE to_seconds(r) END AS y FROM range(5000) t(r)
+
+statement ok
+CHECKPOINT no_zeroing
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('no_zeroing.bitpacking_for') WHERE compression = 'BitPacking'
+----
+true
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('no_zeroing.rle') WHERE compression = 'RLE'
+----
+true
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('no_zeroing.uncompressed') WHERE compression = 'Uncompressed' AND segment_type = 'VALIDITY'
+----
+true
+
+query II
+SELECT count(*), count(i) FROM no_zeroing.bitpacking_for
+----
+5000	4286
+
+statement ok
+DETACH no_zeroing

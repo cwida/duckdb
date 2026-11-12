@@ -18,7 +18,7 @@ CREATE TABLE r AS SELECT * FROM a;
 foreach threshold 0 32
 
 statement ok
-PRAGMA asof_loop_join_threshold = {threshold};
+SET asof_loop_join_threshold = {threshold};
 
 # EXCEPT ALL / INTERSECT ALL append a ROW_NUMBER column during physical planning. That column must not leak into the types of the AsOf join's children.
 

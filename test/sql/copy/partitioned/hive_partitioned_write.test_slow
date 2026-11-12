@@ -7,14 +7,14 @@ require parquet
 require tpch
 
 statement ok
-pragma memory_limit='100mb'
+SET memory_limit='100mb'
 
 # around 200MB worth of data, will require the PartitionedColumnData to spill to disk
 statement ok
 COPY (SELECT i%2::INT32 as part_col, i::INT32 FROM range(0,25000000) tbl(i)) TO '{TEST_DIR}/partitioned_memory_spill' (FORMAT parquet, PARTITION_BY part_col);
 
 statement ok
-pragma memory_limit='-1'
+SET memory_limit='-1'
 
 statement ok
 call dbgen(sf=1);
@@ -48,4 +48,4 @@ PRAGMA tpch({i})
 endloop
 
 statement ok
-pragma threads=1;
+SET threads=1;

@@ -5,6 +5,7 @@
 
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/main/attached_database.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/main/valid_checker.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/data_table.hpp"
@@ -197,37 +198,52 @@ ErrorData LocalTableStorage::AppendToIndexes(DuckTransaction &transaction, RowGr
 	return error;
 }
 
-void LocalTableStorage::AppendToTable(DuckTransaction &transaction, TableAppendState &append_state) {
+ErrorData LocalTableStorage::AppendToTable(DuckTransaction &transaction, TableAppendState &append_state) {
 	auto &table = table_ref.get();
-	table.InitializeAppend(transaction, append_state);
-	auto &collection = *row_groups->collection;
-	for (auto &table_chunk : collection.Chunks(transaction)) {
-		// Append to the base table.
-		table.Append(table_chunk, append_state);
+	const auto index_end = append_state.current_row;
+	try {
+		table.InitializeAppend(transaction, append_state);
+		auto &collection = *row_groups->collection;
+		for (auto &table_chunk : collection.Chunks(transaction)) {
+			// Append to the base table.
+			table.Append(table_chunk, append_state);
+		}
+		table.FinalizeAppend(transaction, append_state);
+	} catch (std::exception &ex) {
+		// remove the rows and index entries that the failed append added
+		table.RevertFailedAppend(append_state);
+		// free the memory of the reverted rows before this storage is scanned again
+		append_state.row_group_append_state.states.reset();
+		append_state.row_groups.reset();
+		auto revert_error = RevertAppendToIndexes(transaction, append_state.row_start, index_end);
+		if (revert_error.HasError()) {
+			revert_error.Throw();
+		}
+		return ErrorData(ex);
 	}
-	table.FinalizeAppend(transaction, append_state);
+	return ErrorData();
 }
 
-void LocalTableStorage::AppendToIndexes(DuckTransaction &transaction, TableAppendState &append_state) {
+ErrorData LocalTableStorage::AppendToIndexes(DuckTransaction &transaction, TableAppendState &append_state) {
 	// In this function, we might scan all table columns,
 	// as we might also append to the table itself (append_to_table).
 	auto &table = table_ref.get();
 	if (!table.HasIndexes()) {
 		// no indexes to append to
-		return;
+		return ErrorData();
 	}
 	auto data_table_info = table.GetDataTableInfo();
 	auto &index_list = data_table_info->GetIndexes();
 	auto &collection = *row_groups->collection;
 	auto error = AppendToIndexes(transaction, collection, index_list, table.GetTypes(), append_state.current_row);
 	if (error.HasError()) {
-		// Revert all appended row IDs.
+		// the failing chunk's keys were already removed; revert the chunks appended before it
 		auto revert_error = RevertAppendToIndexes(transaction, append_state.row_start, append_state.current_row);
 		if (revert_error.HasError()) {
 			revert_error.Throw();
 		}
-		error.Throw();
 	}
+	return error;
 }
 
 ErrorData LocalTableStorage::RevertAppendToIndexes(DuckTransaction &transaction, row_t row_start, row_t row_end) {
@@ -617,53 +633,56 @@ void LocalStorage::Flush(DataTable &table, LocalTableStorage &storage, optional_
 
 	TableAppendState append_state;
 	table.AppendLock(transaction, append_state);
-	if (storage.IsBulkAppend() ||
-	    (append_state.row_start == 0 && storage.deleted_rows == 0 && !storage.WritesToDisk())) {
-		// bulk append (at least one full row group, no deletes): move over the storage directly.
-		// Appends to an empty table are also merged directly if the table cannot be written to
-		// disk (temporary / in-memory / read-only, e.g. WAL replay of a read-only attach) -
-		// there are no optimistically written blocks to manage, and merging avoids re-appending
-		// row by row.
-		// first flush any outstanding blocks
-		storage.FlushBlocks();
-		// Append to the indexes.
-		storage.AppendToIndexes(transaction, append_state);
-		// finally move over the row groups
-		table.MergeStorage(storage.GetCollection(), commit_state);
-	} else {
-		// check if we have written data
-		// if we have, we cannot merge to disk after all
-		// so we need to revert the data we have already written
-		// this happens when rows were deleted after a bulk append, or when the optimistic writer
-		// flushed a partial row group that does not qualify as a bulk append
-		storage.Rollback();
-		// append to the indexes
-		storage.AppendToIndexes(transaction, append_state);
-		const auto index_end = append_state.current_row;
-		// after that is successful - append to the table
-		try {
-			storage.AppendToTable(transaction, append_state);
-		} catch (...) {
-			// remove the rows and index entries that the failed append added
-			try {
-				table.RevertFailedAppend(append_state);
-				// free the memory of the reverted rows before this storage is scanned again
-				append_state.row_group_append_state.states.reset();
-				append_state.row_groups.reset();
-				auto error = storage.RevertAppendToIndexes(transaction, append_state.row_start, index_end);
-				if (error.HasError()) {
-					error.Throw();
-				}
-			} catch (std::exception &ex) {
-				ValidChecker::Invalidate(table.db.GetDatabase(),
-				                         "Failed to revert a failed append: " + ErrorData(ex).RawMessage());
+	// until PushAppend, a returned error means the shared state was restored; anything thrown invalidates
+	ErrorData error;
+	try {
+		if (storage.IsBulkAppend() ||
+		    (append_state.row_start == 0 && storage.deleted_rows == 0 && !storage.WritesToDisk())) {
+			// bulk append (at least one full row group, no deletes): move over the storage directly.
+			// Appends to an empty table are also merged directly if the table cannot be written to
+			// disk (temporary / in-memory / read-only, e.g. WAL replay of a read-only attach) -
+			// there are no optimistically written blocks to manage, and merging avoids re-appending
+			// row by row.
+			// first flush any outstanding blocks
+			storage.FlushBlocks();
+			// Append to the indexes.
+			error = storage.AppendToIndexes(transaction, append_state);
+			if (!error.HasError()) {
+				// finally move over the row groups
+				table.MergeStorage(storage.GetCollection(), commit_state);
 			}
-			throw;
+		} else {
+			// check if we have written data
+			// if we have, we cannot merge to disk after all
+			// so we need to revert the data we have already written
+			// this happens when rows were deleted after a bulk append, or when the optimistic writer
+			// flushed a partial row group that does not qualify as a bulk append
+			storage.Rollback();
+			// append to the indexes
+			error = storage.AppendToIndexes(transaction, append_state);
+			if (!error.HasError()) {
+				// after that is successful - append to the table
+				error = storage.AppendToTable(transaction, append_state);
+			}
 		}
+		if (!error.HasError()) {
+			if (!table.db.IsSystem() && !table.db.IsTemporary() &&
+			    Settings::Get<DebugForceFlushAppendFailureSetting>(table.db.GetDatabase())) {
+				throw IOException("Forced flush append failure (debug_force_flush_append_failure)");
+			}
+			// table_entry is set through the append path (InitializeAppend/Append/LocalMerge/Alter)
+			D_ASSERT(storage.table_entry);
+			transaction.PushAppend(*storage.table_entry, NumericCast<idx_t>(append_state.row_start), append_count);
+		}
+	} catch (std::exception &ex) {
+		// the shared table or indexes may be partially modified: no checkpoint may persist them
+		ValidChecker::Invalidate(table.db.GetDatabase(), "Failed to flush table " + table.GetTableName() +
+		                                                     " during commit: " + ErrorData(ex).RawMessage());
+		throw;
 	}
-	// table_entry is set through the append path (InitializeAppend/Append/LocalMerge/Alter)
-	D_ASSERT(storage.table_entry);
-	transaction.PushAppend(*storage.table_entry, NumericCast<idx_t>(append_state.row_start), append_count);
+	if (error.HasError()) {
+		error.Throw();
+	}
 
 #ifdef DEBUG
 	// Verify that our index memory is stable.

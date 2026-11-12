@@ -488,7 +488,7 @@ SELECT l.id, count(*) FROM l GROUP BY l.* ORDER BY 1;
 
 # an unqualified star is still bound to count_star
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT count(*) FROM l LEFT JOIN r ON l.id = r.id;

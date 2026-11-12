@@ -2,12 +2,8 @@ name: CIFuzz
 on:
   workflow_dispatch:
   repository_dispatch:
-  push:
-    branches-ignore:
-      - 'main'
-      - 'feature'
-      - 'v*.*-*'
-      - 'gh-readonly-queue/**'
+  # CIFuzz fetches pull request refs before building the fuzz targets.
+  pull_request:
     paths:
       - '**'
       - '!**.md'
@@ -38,6 +34,12 @@ jobs:
         oss-fuzz-project-name: 'duckdb'
         dry-run: false
         sanitizer: ${{ matrix.sanitizer }}
+    - name: Verify fuzzed revision
+      env:
+        EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: |
+        git -c safe.directory="$GITHUB_WORKSPACE/storage/duckdb" -C storage/duckdb rev-parse HEAD
+        git -c safe.directory="$GITHUB_WORKSPACE/storage/duckdb" -C storage/duckdb merge-base --is-ancestor "$EXPECTED_COMMIT" HEAD
     - name: Run Fuzzers ${{ matrix.sanitizer }}
       uses: google/oss-fuzz/infra/cifuzz/actions/run_fuzzers@master
       with:

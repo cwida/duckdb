@@ -10,8 +10,7 @@ bool ParserTokenizerBehavior::IsEmptyQuotedIdentifier(const string &sql, idx_t s
 	return (sql[start] == '"' && sql[start + 1] == '"') || (sql[start] == '`' && sql[start + 1] == '`');
 }
 
-ParserTokenizerBehavior::ParserTokenizerBehavior(const string &sql, vector<MatcherToken> &tokens)
-    : TokenizerBehavior(sql, tokens) {
+ParserTokenizerBehavior::ParserTokenizerBehavior(const string &sql) : TokenizerBehavior(sql) {
 }
 
 void ParserTokenizerBehavior::PushToken(idx_t start, idx_t end, TokenType type, bool unterminated) {

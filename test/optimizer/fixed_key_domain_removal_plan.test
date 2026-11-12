@@ -1,0 +1,60 @@
+# name: test/optimizer/fixed_key_domain_removal_plan.test
+# description: Remove unselective local restrictions and retain useful restrictions
+# group: [optimizer]
+
+statement ok
+CREATE TABLE small_domain AS SELECT (i%2)::INTEGER k,i::BIGINT v FROM range(10000)t(i);
+
+statement ok
+INSERT INTO small_domain VALUES(NULL,4);
+
+# Full demand does not need to probe a SEMI for every input row.
+query II
+EXPLAIN(FORMAT JSON)
+SELECT d.k,a.s FROM (VALUES(0),(1))d(k)
+LEFT JOIN (SELECT f.k,sum(v)s FROM small_domain f
+ SEMI JOIN (SELECT DISTINCT k FROM (VALUES(0),(1))keys(k))old USING(k) GROUP BY f.k)a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
+
+# Statistics callbacks on the key and in ancestors do not prevent removal.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT sum(a.s) FROM (VALUES (0), (1)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(f.k) s FROM small_domain f
+    SEMI JOIN (SELECT DISTINCT k FROM (VALUES (0), (1)) keys(k)) old USING(k) GROUP BY f.k
+) a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
+
+# Removal also works when ordinary equality's NULL exclusion must be retained.
+query II
+EXPLAIN(FORMAT JSON)
+SELECT d.k,a.s FROM (VALUES(0),(1),(NULL))d(k)
+LEFT JOIN (SELECT f.k,sum(v)s FROM small_domain f
+ SEMI JOIN (SELECT DISTINCT k FROM (VALUES(0),(1),(NULL))keys(k))old USING(k) GROUP BY f.k)a
+ON d.k IS NOT DISTINCT FROM a.k;
+----
+physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
+
+statement ok
+CREATE TABLE large_domain AS SELECT i::INTEGER k,i::BIGINT v FROM range(10000)t(i);
+
+# Selective restriction avoids aggregating thousands of unused groups.
+query II
+EXPLAIN(FORMAT JSON)
+SELECT d.k,a.s FROM (VALUES(0),(1))d(k)
+LEFT JOIN (SELECT f.k,sum(v)s FROM large_domain f
+ SEMI JOIN (SELECT DISTINCT k FROM (VALUES(0),(1))keys(k))old USING(k) GROUP BY f.k)a USING(k);
+----
+physical_plan	<REGEX>:[\s\S]*SEMI[\s\S]*
+
+# This local increment does not move computed payloads onto additional rows.
+query II
+EXPLAIN(FORMAT JSON)
+SELECT d.k,a.s FROM (VALUES(0),(1))d(k)
+LEFT JOIN (SELECT f.k,sum(v*v)s FROM small_domain f
+ SEMI JOIN (SELECT DISTINCT k FROM (VALUES(0),(1))keys(k))old USING(k) GROUP BY f.k)a USING(k);
+----
+physical_plan	<REGEX>:[\s\S]*SEMI[\s\S]*

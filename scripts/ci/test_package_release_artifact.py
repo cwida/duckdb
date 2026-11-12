@@ -132,6 +132,31 @@ class PackageReleaseArtifactTest(unittest.TestCase):
                 self.assertEqual(archive.extractfile(members["libduckdb_shell.a"]).read(), b"shell")
                 self.assertEqual(archive.extractfile(members["libcore_functions_extension.a"]).read(), b"extension")
 
+    def test_release_artifact_includes_native_test_probe(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "linux-build"
+            (source / "test").mkdir(parents=True)
+            (source / "test" / "unittest").write_bytes(b"unittest")
+            (source / "test" / "run").write_text("# runner\n", encoding="utf-8")
+            probe = source / "test" / "block_allocator_fault_injection"
+            probe.write_bytes(b"probe")
+            probe.chmod(0o644)
+
+            archive_path = root / "release-artifact.tar.gz"
+            self.run_make(
+                "release-artifact",
+                root,
+                RELEASE_ARTIFACT_SOURCE_DIR=str(source),
+                RELEASE_ARTIFACT_STAGING_DIR=str(root / "staging"),
+                RELEASE_ARTIFACT_TARBALL=str(archive_path),
+            )
+
+            with tarfile.open(archive_path, mode="r:gz") as archive:
+                member = archive.getmember("release/test/block_allocator_fault_injection")
+                self.assertEqual(archive.extractfile(member).read(), b"probe")
+                self.assertTrue(member.mode & stat.S_IXUSR)
+
     def test_release_artifact_normalizes_windows_layout(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

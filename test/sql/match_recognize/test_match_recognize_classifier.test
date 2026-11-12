@@ -7,7 +7,7 @@
 # down.
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 statement ok
 create table t(rn integer, x integer, p varchar);

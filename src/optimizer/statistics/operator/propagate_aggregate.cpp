@@ -1,8 +1,10 @@
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/column_index.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/numeric_utils.hpp"
+#include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/unique_ptr.hpp"
@@ -121,7 +123,7 @@ bool TryGetMinMaxColumnInfo(const Expression &expr, MinMaxColumnInfo &info) {
 	return true;
 }
 
-bool TryGetValueFromStats(const PartitionStatistics &stats, const StorageIndex &storage_index,
+bool TryGetValueFromStats(Context &context, const PartitionStatistics &stats, const StorageIndex &storage_index,
                           const ValueComparator &comparator, const LogicalType &result_type, Value &result) {
 	if (!stats.partition_row_group) {
 		return false;
@@ -153,7 +155,7 @@ bool TryGetValueFromStats(const PartitionStatistics &stats, const StorageIndex &
 	if (result.type() == result_type) {
 		return true;
 	}
-	auto cast = result.DefaultTryCastAs(result_type);
+	auto cast = result.TryCastAs(context, result_type);
 	if (!cast) {
 		return false;
 	}
@@ -313,8 +315,8 @@ void CapGroupedAggregateCardinalityByKeyDomain(LogicalAggregate &aggr, optional_
 } // namespace
 
 void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_ptr<LogicalOperator> &node_ptr) {
-	if (!aggr.groups.empty()) {
-		// not possible with groups
+	if (!aggr.groups.empty() || aggr.grouping_sets.size() > 1) {
+		// Direct execution produces one row, so it cannot preserve groups or repeated grouping sets.
 		return;
 	}
 	if (aggr.expressions.empty()) {
@@ -474,6 +476,9 @@ void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_p
 			case FilterPropagateResult::FILTER_ALWAYS_FALSE:
 				break;
 			default:
+				// Bail out early: partial precomputation is disabled due to unstable row-group indices (PR #24962).
+				return;
+
 				need_to_scan = true;
 				scan_partition_indices.push_back(partition_idx);
 				break;
@@ -499,13 +504,14 @@ void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_p
 			auto &comparator = comparators[agg_idx];
 
 			Value agg_result;
-			if (!TryGetValueFromStats(partition_stats[0], storage_index, *comparator, result_type, agg_result)) {
+			if (!TryGetValueFromStats(context.GetContext(), partition_stats[0], storage_index, *comparator, result_type,
+			                          agg_result)) {
 				return;
 			}
 			for (idx_t partition_idx = 1; partition_idx < partition_stats.size(); partition_idx++) {
 				Value rhs;
-				if (!TryGetValueFromStats(partition_stats[partition_idx], storage_index, *comparator, result_type,
-				                          rhs)) {
+				if (!TryGetValueFromStats(context.GetContext(), partition_stats[partition_idx], storage_index,
+				                          *comparator, result_type, rhs)) {
 					return;
 				}
 				if (!comparator->Compare(agg_result, rhs)) {
@@ -681,23 +687,34 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalAggr
 	aggr.distinct_validity = distinct_validity;
 
 	const auto is_ungrouped = aggr.groups.empty();
+	const auto grouping_set_count = MaxValue<idx_t>(1, aggr.grouping_sets.size());
 	// after we propagate statistics - try to directly execute aggregates using statistics
 	TryExecuteAggregates(aggr, node_ptr);
 
 	if (is_ungrouped) {
-		// Ungrouped aggregate always returns exactly one row, even over empty input
+		// Each empty grouping set returns one row, even over empty input.
 		// node_stats holds the input cardinality: do not leak it to the parent operator
 		node_stats.reset();
-		return make_uniq<NodeStatistics>(1U, 1U);
+		return make_uniq<NodeStatistics>(grouping_set_count, grouping_set_count);
 	}
-	// the max cardinality of an aggregate is the max cardinality of the input (i.e. when every row is a unique
-	// group)
 	// The join-order optimizer bounds a group key's distinct count by its table's min/max only for keys that are
 	// a direct base-table column reference; a key that is an expression or arrives through another operator falls
 	// back to an input-proportional guess. Now that the propagated group statistics are available, tighten the
 	// estimate by an upper bound on the number of distinct group-key combinations - the same group-key domain the
 	// physical perfect-hash-aggregate path derives from min/max and type.
 	CapGroupedAggregateCardinalityByKeyDomain(aggr, node_stats.get());
+	if (node_stats && node_stats->has_max_cardinality && !aggr.grouping_sets.empty()) {
+		idx_t max_cardinality = 0;
+		for (const auto &grouping_set : aggr.grouping_sets) {
+			// Nonempty sets emit at most one group per input row. Empty sets always emit one row.
+			const auto set_max = grouping_set.empty() ? 1 : node_stats->max_cardinality;
+			if (!TryAddOperator::Operation(max_cardinality, set_max, max_cardinality)) {
+				node_stats.reset();
+				return nullptr;
+			}
+		}
+		node_stats->max_cardinality = max_cardinality;
+	}
 	return std::move(node_stats);
 }
 
