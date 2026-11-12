@@ -575,13 +575,13 @@ RESET disabled_optimizers
 
 # Modest per-key collapse does not amortize two aggregate-state tables, their join, and the final combine.
 statement ok
-CREATE TABLE de_modest_dim AS SELECT i AS k, (i % 1000) AS g FROM range(5000) _(i)
+CREATE TABLE de_modest_dim AS SELECT i AS k, (i % 1000) AS g FROM range(10000) _(i)
 
 statement ok
-CREATE TABLE de_modest_a AS SELECT (i % 5000) AS k FROM range(30000) _(i)
+CREATE TABLE de_modest_a AS SELECT (i % 10000) AS k FROM range(20000) _(i)
 
 statement ok
-CREATE TABLE de_modest_b AS SELECT (i % 5000) AS k FROM range(30000) _(i)
+CREATE TABLE de_modest_b AS SELECT (i % 10000) AS k FROM range(20000) _(i)
 
 statement ok
 ANALYZE
@@ -593,7 +593,7 @@ SELECT count(*), sum(c) FROM (
 	GROUP BY d.g
 )
 ----
-1000	180000
+1000	40000
 
 query II
 EXPLAIN
