@@ -942,6 +942,8 @@ enum class PEGRuleId : uint32_t {
 	TableAliasColon,
 	ValuesRef,
 	ParensTableRef,
+	JoinedTableRef,
+	JoinedTableRefChain,
 	JoinOrPivot,
 	TablePivotClause,
 	TablePivotClauseBody,
