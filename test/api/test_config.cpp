@@ -316,6 +316,42 @@ TEST_CASE("Test deprecated extension options warn when set", "[api]") {
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 }
 
+TEST_CASE("Test extension option defaults are not user settings", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &config = DBConfig::GetConfig(*db.instance);
+	config.AddExtensionOption("my_option", "An option", LogicalType::VARCHAR, Value("default"));
+	ExtensionOption option;
+	REQUIRE(config.TryGetExtensionOption(Identifier("my_option"), option));
+	auto setting_index = option.setting_index.GetIndex();
+	Value value;
+
+	REQUIRE(!config.TryGetCurrentUserSetting(setting_index, value));
+	auto result = con.Query("SELECT current_setting('my_option')");
+	REQUIRE(CHECK_COLUMN(result, 0, {"default"}));
+
+	// setting the default explicitly is not the same as leaving it unset
+	REQUIRE_NO_FAIL(con.Query("SET GLOBAL my_option = 'default'"));
+	REQUIRE(bool(config.TryGetCurrentUserSetting(setting_index, value)));
+	REQUIRE_NO_FAIL(con.Query("RESET GLOBAL my_option"));
+	REQUIRE(!config.TryGetCurrentUserSetting(setting_index, value));
+	result = con.Query("SELECT current_setting('my_option')");
+	REQUIRE(CHECK_COLUMN(result, 0, {"default"}));
+
+	// RESET clears the session value, so the connection sees the global value again
+	REQUIRE_NO_FAIL(con.Query("SET GLOBAL my_option = 'global'"));
+	REQUIRE_NO_FAIL(con.Query("SET my_option = 'session'"));
+	REQUIRE_NO_FAIL(con.Query("RESET my_option"));
+	result = con.Query("SELECT current_setting('my_option')");
+	REQUIRE(CHECK_COLUMN(result, 0, {"global"}));
+
+	// an option without a default is unset again after RESET, not NULL
+	config.AddExtensionOption("my_option_without_default", "An option", LogicalType::BOOLEAN);
+	REQUIRE_NO_FAIL(con.Query("SET my_option_without_default = true"));
+	REQUIRE_NO_FAIL(con.Query("RESET my_option_without_default"));
+	REQUIRE(!con.context->TryGetCurrentSetting(Identifier("my_option_without_default"), value));
+}
+
 TEST_CASE("Test every deprecated setting warns when set", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
