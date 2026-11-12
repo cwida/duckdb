@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <future>
+#include <stdexcept>
 #include <thread>
 
 namespace duckdb {
@@ -808,7 +809,7 @@ TEST_CASE("HTTP transport manager synchronous session API", "[http_transport_man
 		provider->state->creation_failures = 1;
 		AllowMockRequests(*provider->state, 1);
 		REQUIRE(holder.get());
-		CHECK_THROWS_AS(failing_waiter.get(), IOException);
+		CHECK_THROWS_WITH(failing_waiter.get(), Catch::Contains("mock one-shot create failure"));
 		REQUIRE(WaitForMockRequests(*provider->state, 2));
 		{
 			lock_guard<mutex> guard(provider->state->request_lock);
@@ -882,7 +883,8 @@ TEST_CASE("HTTP transport manager synchronous session API", "[http_transport_man
 		auto session = manager->CreateSession(nullptr, nullptr);
 
 		provider->state->throw_on_create = true;
-		CHECK_THROWS_AS(RunManagedRequest(session, session.Parameters(), "https://example.com/"), IOException);
+		CHECK_THROWS_WITH(RunManagedRequest(session, session.Parameters(), "https://example.com/"),
+		                  Catch::Contains("mock create failure"));
 		CHECK(HTTPTransportManagerTestHelper::OccupiedSlots(*manager) == 0);
 		provider->state->throw_on_create = false;
 		REQUIRE(RunManagedRequest(session, session.Parameters(), "https://example.com/"));
@@ -893,13 +895,15 @@ TEST_CASE("HTTP transport manager synchronous session API", "[http_transport_man
 		CHECK(provider->state->high_water == 1);
 		provider->state->can_reuse = true;
 		provider->state->throw_on_can_reuse = true;
-		CHECK_THROWS_AS(RunManagedRequest(session, session.Parameters(), "https://example.com/"), IOException);
+		CHECK_THROWS_WITH(RunManagedRequest(session, session.Parameters(), "https://example.com/"),
+		                  Catch::Contains("mock compatibility failure"));
 		CHECK(HTTPTransportManagerTestHelper::OccupiedSlots(*manager) == 0);
 		provider->state->throw_on_can_reuse = false;
 		REQUIRE(RunManagedRequest(session, session.Parameters(), "https://example.com/"));
 
 		provider->state->throw_on_initialize = true;
-		CHECK_THROWS_AS(RunManagedRequest(session, session.Parameters(), "https://example.com/"), IOException);
+		CHECK_THROWS_WITH(RunManagedRequest(session, session.Parameters(), "https://example.com/"),
+		                  Catch::Contains("mock initialize failure"));
 		CHECK(HTTPTransportManagerTestHelper::OccupiedSlots(*manager) == 0);
 		provider->state->throw_on_initialize = false;
 		provider->state->throw_on_cleanup = true;
@@ -913,8 +917,8 @@ TEST_CASE("HTTP transport manager synchronous session API", "[http_transport_man
 		reusable_provider->state->return_null = true;
 		auto reusable_manager = HTTPTransportManagerTestHelper::Create(reusable_provider, 1);
 		auto reusable_session = reusable_manager->CreateSession(nullptr, nullptr);
-		CHECK_THROWS_AS(RunManagedRequest(reusable_session, reusable_session.Parameters(), "https://example.com/"),
-		                InvalidConfigurationException);
+		CHECK_THROWS_WITH(RunManagedRequest(reusable_session, reusable_session.Parameters(), "https://example.com/"),
+		                  Catch::Contains("Reusable HTTP provider returned a null client"));
 		CHECK(HTTPTransportManagerTestHelper::OccupiedSlots(*reusable_manager) == 0);
 
 		auto ephemeral_provider = make_shared_ptr<MockHTTPUtil>(HTTPTransportReusePolicy::EPHEMERAL);
@@ -1244,6 +1248,56 @@ TEST_CASE("Core extension downloads use managed HTTP transports", "[http_transpo
 	TestDeleteDirectory(extension_directory);
 }
 
+TEST_CASE("HTTP retries classify serialized errors without exception RTTI", "[http_transport_manager]") {
+	HTTPUtil http;
+	HTTPParams params(http);
+	params.retries = 1;
+	params.retry_wait_ms = 0;
+	params.retry_throttled_wait_ms = 0;
+	GetRequestInfo request("http://mock.test/serialized_error", HTTPHeaders(), params, nullptr, nullptr);
+	string message;
+	bool retry = false;
+
+	SECTION("IO errors are retried") {
+		message = IOException("serialized transport failure").what();
+		retry = true;
+	}
+	SECTION("retryable HTTP statuses are retried") {
+		HTTPResponse response(HTTPStatusCode::ServiceUnavailable_503);
+		message = HTTPException(response, "serialized HTTP failure").what();
+		retry = true;
+	}
+	SECTION("non-retryable HTTP errors retain their response details") {
+		HTTPResponse response(HTTPStatusCode::NotFound_404);
+		response.body = "missing object";
+		response.headers.Insert("test-header", "test-value");
+		message = HTTPException(response, "serialized HTTP failure").what();
+	}
+	SECTION("permission errors are not retried") {
+		message = PermissionException("serialized permission failure").what();
+	}
+	SECTION("unstructured errors are not retried") {
+		message = "unstructured transport failure";
+	}
+
+	idx_t attempts = 0;
+	auto on_request = [&]() -> unique_ptr<HTTPResponse> {
+		if (++attempts == 1) {
+			throw std::runtime_error(message);
+		}
+		return make_uniq<HTTPResponse>(HTTPStatusCode::OK_200);
+	};
+	if (retry) {
+		auto response = HTTPUtil::RunRequestWithRetry(on_request, request, {});
+		REQUIRE(response);
+		CHECK(response->Success());
+		CHECK(attempts == 2);
+	} else {
+		CHECK_THROWS_WITH(HTTPUtil::RunRequestWithRetry(on_request, request, {}), message);
+		CHECK(attempts == 1);
+	}
+}
+
 TEST_CASE("A linked httplib client is the default HTTP provider", "[http_transport_manager]") {
 	// statically linked extensions, such as httpfs, may replace the provider when they load
 	DBConfig config;
@@ -1315,7 +1369,8 @@ TEST_CASE("HTTP transport manager enforces enable_external_access", "[http_trans
 		db.instance->config.SetHTTPUtil(provider);
 		auto &manager = db.instance->config.GetHTTPTransportManager();
 		auto session = manager.CreateSession(*db.instance, "https://example.com/");
-		CHECK_THROWS_AS(RunManagedRequest(session, session.Parameters(), "https://example.com/"), PermissionException);
+		CHECK_THROWS_WITH(RunManagedRequest(session, session.Parameters(), "https://example.com/"),
+		                  Catch::Contains("file system operations are disabled by configuration"));
 	}
 
 	// a caller that performs its own access control (e.g. extension installation) can skip the check
@@ -1350,16 +1405,9 @@ TEST_CASE("Extension downloads respect enable_external_access", "[http_transport
 	auto install_denied = [&](const string &url) {
 		ExtensionInstallOptions options;
 		options.force_install = true;
-		try {
-			ExtensionHelper::InstallExtension(*connection.context, url, options);
-		} catch (PermissionException &ex) {
-			// the extension directory is allowed, so only the url can be denied
-			REQUIRE(StringUtil::Contains(ex.what(), "Cannot download extension"));
-			return true;
-		} catch (std::exception &) {
-			return false;
-		}
-		return false;
+		auto error =
+		    CaptureExceptionMessage([&]() { ExtensionHelper::InstallExtension(*connection.context, url, options); });
+		return StringUtil::Contains(error, "Cannot download extension");
 	};
 	auto requested = [&](const string &url) {
 		auto &paths = provider->state->initialized_paths;

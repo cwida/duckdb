@@ -184,24 +184,28 @@ TEST_CASE("GZIP rejects truncated member boundaries", "[file_system][gzip]") {
 		CAPTURE(footer_bytes);
 		vector<data_t> truncated(compressed_data.begin(),
 		                         compressed_data.begin() + next_header - GZIP_FOOTER_SIZE + footer_bytes);
-		REQUIRE_THROWS_AS(ReadCompressedData(truncated, truncated.size()), IOException);
+		REQUIRE_THROWS_WITH(ReadCompressedData(truncated, truncated.size()),
+		                    Catch::Contains("Unexpected end of GZIP stream"));
 	}
 	for (idx_t header_bytes = 1; header_bytes < GZIP_HEADER_MINSIZE; header_bytes++) {
 		CAPTURE(header_bytes);
 		vector<data_t> truncated(compressed_data.begin(), compressed_data.begin() + next_header + header_bytes);
-		REQUIRE_THROWS_AS(ReadCompressedData(truncated, truncated.size()), IOException);
+		REQUIRE_THROWS_WITH(ReadCompressedData(truncated, truncated.size()),
+		                    Catch::Contains("Unexpected end of GZIP stream"));
 	}
 
 	SECTION("EOF after a complete subsequent member header") {
 		vector<data_t> truncated(compressed_data.begin(), compressed_data.begin() + next_header_end);
-		REQUIRE_THROWS_AS(ReadCompressedData(truncated, truncated.size()), IOException);
+		REQUIRE_THROWS_WITH(ReadCompressedData(truncated, truncated.size()),
+		                    Catch::Contains("Unexpected end of GZIP stream"));
 	}
 	SECTION("EOF inside a subsequent member") {
 		auto compressed_size = NumericCast<idx_t>(compressed_data.size());
 		for (auto end : {next_header_end + 1, compressed_size - GZIP_FOOTER_SIZE, compressed_size - 1}) {
 			CAPTURE(end);
 			vector<data_t> truncated(compressed_data.begin(), compressed_data.begin() + end);
-			REQUIRE_THROWS_AS(ReadCompressedData(truncated, truncated.size()), IOException);
+			REQUIRE_THROWS_WITH(ReadCompressedData(truncated, truncated.size()),
+			                    Catch::Contains("Unexpected end of GZIP stream"));
 		}
 	}
 	SECTION("EOF inside the first member") {
@@ -209,7 +213,8 @@ TEST_CASE("GZIP rejects truncated member boundaries", "[file_system][gzip]") {
 		for (auto end : {first_header_end, next_header - GZIP_FOOTER_SIZE - 1, next_header - GZIP_FOOTER_SIZE}) {
 			CAPTURE(end);
 			vector<data_t> truncated(compressed_data.begin(), compressed_data.begin() + end);
-			REQUIRE_THROWS_AS(ReadCompressedData(truncated, truncated.size()), IOException);
+			REQUIRE_THROWS_WITH(ReadCompressedData(truncated, truncated.size()),
+			                    Catch::Contains("Unexpected end of GZIP stream"));
 		}
 	}
 	SECTION("EOF between complete members") {
@@ -220,5 +225,6 @@ TEST_CASE("GZIP rejects truncated member boundaries", "[file_system][gzip]") {
 
 TEST_CASE("GZIP string decompression rejects a header-only stream with FNAME", "[file_system][gzip]") {
 	const char header[] = {'\x1f', '\x8b', '\x08', '\x08', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00'};
-	REQUIRE_THROWS_AS(GZipFileSystem::UncompressGZIPString(header, sizeof(header)), IOException);
+	REQUIRE_THROWS_WITH(GZipFileSystem::UncompressGZIPString(header, sizeof(header)),
+	                    Catch::Contains("Failed to uncompress"));
 }
