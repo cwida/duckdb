@@ -23,6 +23,15 @@ statement ok
 CREATE TABLE arms_native AS SELECT i % 500 AS k, i % 500 AS g FROM range(5000) t(i)
 
 statement ok
+CREATE TABLE large_native AS SELECT i % 50 AS k, i AS tag FROM range(50000) t(i)
+
+statement ok
+CREATE TABLE moderate_native AS SELECT i % 50 AS k FROM range(400) t(i)
+
+statement ok
+CREATE TABLE low_native AS SELECT i % 50 AS k FROM range(100) t(i)
+
+statement ok
 ANALYZE
 
 statement ok
@@ -41,6 +50,15 @@ statement ok
 COPY arms_native TO '{TEST_DIR}/pap_arms.parquet' (FORMAT PARQUET)
 
 statement ok
+COPY large_native TO '{TEST_DIR}/pap_large.parquet' (FORMAT PARQUET)
+
+statement ok
+COPY moderate_native TO '{TEST_DIR}/pap_moderate.parquet' (FORMAT PARQUET)
+
+statement ok
+COPY low_native TO '{TEST_DIR}/pap_low.parquet' (FORMAT PARQUET)
+
+statement ok
 CREATE VIEW unique_parquet AS FROM read_parquet('{TEST_DIR}/pap_unique.parquet')
 
 statement ok
@@ -54,6 +72,15 @@ CREATE VIEW small_parquet AS FROM read_parquet('{TEST_DIR}/pap_small.parquet')
 
 statement ok
 CREATE VIEW arms_parquet AS FROM read_parquet('{TEST_DIR}/pap_arms.parquet')
+
+statement ok
+CREATE VIEW large_parquet AS FROM read_parquet('{TEST_DIR}/pap_large.parquet')
+
+statement ok
+CREATE VIEW moderate_parquet AS FROM read_parquet('{TEST_DIR}/pap_moderate.parquet')
+
+statement ok
+CREATE VIEW low_parquet AS FROM read_parquet('{TEST_DIR}/pap_low.parquet')
 
 foreach storage native parquet
 
@@ -72,6 +99,22 @@ FROM repeated_{storage} a JOIN repeated_{storage} b USING (k)
 GROUP BY a.g
 ----
 physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN
+SELECT a.tag, count(*)
+FROM large_{storage} a JOIN moderate_{storage} b USING (k)
+GROUP BY a.tag
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN
+SELECT a.tag, count(*)
+FROM large_{storage} a JOIN low_{storage} b USING (k)
+GROUP BY a.tag
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
 
 query II
 EXPLAIN

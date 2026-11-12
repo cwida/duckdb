@@ -694,7 +694,7 @@ static bool DEEstimateCollapse(RelationStatsExtractor &extractor, LogicalCompari
 	}
 	double retained_fraction = 1;
 	double input_cardinality = 0;
-	idx_t work_margin = 1;
+	idx_t work_margin = DoubleEagerHeuristics::MIN_LARGE_COLLAPSE;
 	bool both_inputs_collapse = true;
 	for (idx_t side = 0; side < 2; side++) {
 		auto stats = extractor.Extract(*join.children[side]);
@@ -719,8 +719,11 @@ static bool DEEstimateCollapse(RelationStatsExtractor &extractor, LogicalCompari
 			return false;
 		}
 		const auto min_collapse = DERequiredCollapse(lower_cardinalities[side]);
-		both_inputs_collapse &= cardinality / min_collapse >= lower_cardinalities[side];
-		work_margin = MaxValue(work_margin, min_collapse);
+		const auto input_collapses = cardinality / min_collapse >= lower_cardinalities[side];
+		both_inputs_collapse &= input_collapses;
+		if (input_collapses) {
+			work_margin = MinValue(work_margin, min_collapse);
+		}
 		input_cardinality += static_cast<double>(cardinality);
 		retained_fraction *= static_cast<double>(lower_cardinalities[side]) / static_cast<double>(cardinality);
 	}
