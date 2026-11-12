@@ -25,6 +25,7 @@
 #include "duckdb/planner/joinside.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/function/function_binder.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/subquery/flatten_dependent_join.hpp"
 #include "duckdb/common/enums/logical_operator_type.hpp"
 #include "duckdb/planner/operator/logical_dependent_join.hpp"
@@ -214,6 +215,38 @@ static bool IsMultiColumnComparison(const BoundSubqueryExpression &expr) {
 	return false;
 }
 
+static unique_ptr<Expression> TryFoldConstantInSubquery(Binder &binder, BoundSubqueryExpression &expr,
+                                                        LogicalOperator &plan) {
+	if (expr.GetSubqueryType() != SubqueryType::ANY || expr.ComparisonType() != ExpressionType::COMPARE_EQUAL ||
+	    expr.GetChildren().size() != 1 || expr.GetChildTypes().size() != 1 || expr.GetChildTargets().size() != 1) {
+		return nullptr;
+	}
+	if (plan.type != LogicalOperatorType::LOGICAL_PROJECTION || plan.children.size() != 1 ||
+	    plan.children[0]->type != LogicalOperatorType::LOGICAL_DUMMY_SCAN || plan.expressions.size() != 1) {
+		return nullptr;
+	}
+
+	auto &constant_expression = *plan.expressions[0];
+	if (!constant_expression.IsFoldable() || constant_expression.HasParameter() || constant_expression.IsVolatile()) {
+		return nullptr;
+	}
+
+	Value constant;
+	if (!ExpressionExecutor::TryEvaluateScalar(binder.context, constant_expression, constant)) {
+		return nullptr;
+	}
+
+	auto &compare_type = expr.GetChildTargets()[0];
+	auto left = std::move(expr.GetChildrenMutable()[0]);
+	ExpressionBinder::PushCollation(binder.context, left, compare_type);
+
+	unique_ptr<Expression> right = make_uniq<BoundConstantExpression>(std::move(constant));
+	right = BoundCastExpression::AddDefaultCastToType(std::move(right), compare_type);
+	ExpressionBinder::PushCollation(binder.context, right, compare_type);
+
+	return BoundComparisonExpression::Create(ExpressionType::COMPARE_EQUAL, std::move(left), std::move(right));
+}
+
 static unique_ptr<Expression> PlanUncorrelatedSubquery(Binder &binder, BoundSubqueryExpression &expr,
                                                        unique_ptr<LogicalOperator> &root,
                                                        unique_ptr<LogicalOperator> plan) {
@@ -350,6 +383,9 @@ static unique_ptr<Expression> PlanUncorrelatedSubquery(Binder &binder, BoundSubq
 	}
 	default: {
 		D_ASSERT(expr.GetSubqueryType() == SubqueryType::ANY);
+		if (auto result = TryFoldConstantInSubquery(binder, expr, *plan)) {
+			return result;
+		}
 		if (IsExtremumRewriteValid(expr)) {
 			auto result = PlanExtremumRewrite(binder, expr, plan);
 			root = LogicalCrossProduct::Create(std::move(root), std::move(plan));

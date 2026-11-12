@@ -25,6 +25,37 @@ SELECT 1 IN (SELECT 2)
 ----
 0
 
+# Constant single-row IN subqueries can be folded to direct comparisons
+query TTTTT
+SELECT 3 IN (SELECT 1 + 2), 2 IN (SELECT 1 + 2), NULL IN (SELECT 3), 1 IN (SELECT NULL),
+       NULL IN (SELECT NULL)
+----
+true	false	NULL	NULL	NULL
+
+query TTTTT
+SELECT 3 NOT IN (SELECT 1 + 2), 2 NOT IN (SELECT 1 + 2), NULL NOT IN (SELECT 3),
+       1 NOT IN (SELECT NULL), NULL NOT IN (SELECT NULL)
+----
+false	true	NULL	NULL	NULL
+
+query II
+EXPLAIN SELECT i IN (SELECT 1 + 2) FROM range(5) t(i)
+----
+physical_plan	<!REGEX>:.*Join Type: MARK.*
+
+query II
+EXPLAIN SELECT i FROM range(5) t(i) WHERE i IN (SELECT 1 + 2)
+----
+physical_plan	<!REGEX>:.*Join Type: SEMI.*
+
+# Preserve collation when folding the subquery
+query T rowsort
+SELECT s IN (SELECT 'hello')
+FROM (VALUES ('HELLO' COLLATE NOCASE), ('other' COLLATE NOCASE)) t(s)
+----
+false
+true
+
 statement ok
 CREATE TABLE integers(i INTEGER)
 
