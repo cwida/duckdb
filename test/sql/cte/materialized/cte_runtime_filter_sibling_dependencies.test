@@ -47,7 +47,7 @@ SELECT sum(x.v),sum(y.v)
 FROM (SELECT p.* FROM p JOIN b USING(g)) x
 JOIN (SELECT p.* FROM p JOIN c USING(g)) y ON x.g=y.g-400;
 ----
-analyzed_plan	<REGEX>:(?s).*"Table": "[^"]*[.]dates"(?:[^}]*"Dynamic Filters": "[^"]* OR [^"]*"[^}]*},\s*"intermediate_rows": [4-9][0-9]{3},|(?:,\s*"(?:Type|Projections|Estimated Cardinality)":\s*(?:"[^"]*"|\[[^]]*\]))+\s*},\s*"intermediate_rows": 10000,).*
+analyzed_plan	<REGEX>:(?s).*"Table": "[^"]*[.]dates"(?:[^}]*"Dynamic Filters": (?:"[^"]* OR [^"]*"|\[[^]]*"[^"]* OR [^"]*"[^]]*\])[^}]*},\s*"intermediate_rows": [4-9][0-9]{3},|(?:,\s*"(?:Type|Projections|Estimated Cardinality)":\s*(?:"[^"]*"|\[[^]]*\]))+\s*},\s*"intermediate_rows": 10000,).*
 
 # Both UNION inputs must finish before the producer publishes its filter.
 query II
@@ -140,7 +140,7 @@ SELECT sum(x.v),sum(y.v)
 FROM (SELECT p.* FROM p JOIN b USING(g)) x
 JOIN (SELECT p.* FROM p JOIN c USING(g)) y ON x.g=y.g-400;
 ----
-analyzed_plan	<REGEX>:(?s).*"Table": "[^"]*[.]dates"(?:[^}]*"Dynamic Filters": "[^"]* OR [^"]*"[^}]*},\s*"intermediate_rows": (?:[4-9][0-9]{2}|[1-9][0-9]{3,4}|1[0-9]{5}),|(?:,\s*"(?:Type|Projections|Estimated Cardinality)":\s*(?:"[^"]*"|\[[^]]*\]))+\s*},\s*"intermediate_rows": 200000,).*
+analyzed_plan	<REGEX>:(?s).*"Table": "[^"]*[.]dates"(?:[^}]*"Dynamic Filters": (?:"[^"]* OR [^"]*"|\[[^]]*"[^"]* OR [^"]*"[^]]*\])[^}]*},\s*"intermediate_rows": (?:[4-9][0-9]{2}|[1-9][0-9]{3,4}|1[0-9]{5}),|(?:,\s*"(?:Type|Projections|Estimated Cardinality)":\s*(?:"[^"]*"|\[[^]]*\]))+\s*},\s*"intermediate_rows": 200000,).*
 
 statement ok
 SET max_execution_time=0;

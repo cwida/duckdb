@@ -6144,7 +6144,7 @@ const StringUtil::EnumStringLiteral *GetSelectivityOptionalFilterTypeValues() {
 		{ static_cast<uint32_t>(SelectivityOptionalFilterType::MIN_MAX), "MIN_MAX" },
 		{ static_cast<uint32_t>(SelectivityOptionalFilterType::BF), "BF" },
 		{ static_cast<uint32_t>(SelectivityOptionalFilterType::PRF), "PRF" },
-		{ static_cast<uint32_t>(SelectivityOptionalFilterType::IN), "IN" }
+		{ static_cast<uint32_t>(SelectivityOptionalFilterType::IN_FILTER), "IN_FILTER" }
 	};
 	return values;
 }

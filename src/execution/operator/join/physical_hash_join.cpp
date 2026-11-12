@@ -1870,7 +1870,7 @@ bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilt
 	if (mode == InFilterMode::ADAPTIVE_ROW_FILTERING && column.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION &&
 	    ExpressionFilterExecutor::TryCreate(*in_expr)) {
 		auto filter = CreateSelectivityOptionalExpressionFilter(std::move(in_expr), column.storage_type,
-		                                                        SelectivityOptionalFilterType::IN);
+		                                                        SelectivityOptionalFilterType::IN_FILTER);
 		info.dynamic_filters->PushFilter(op, filter_col_idx, std::move(filter));
 		return true;
 	}

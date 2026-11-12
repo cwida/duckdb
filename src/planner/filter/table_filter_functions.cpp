@@ -58,7 +58,7 @@ void GetThresholdAndVectorsToCheck(SelectivityOptionalFilterType type, float &se
 		selectivity_threshold = PRF_THRESHOLD;
 		n_vectors_to_check = PRF_CHECK_N;
 		return;
-	case SelectivityOptionalFilterType::IN:
+	case SelectivityOptionalFilterType::IN_FILTER:
 		selectivity_threshold = IN_THRESHOLD;
 		n_vectors_to_check = IN_CHECK_N;
 		return;

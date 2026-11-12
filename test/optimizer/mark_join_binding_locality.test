@@ -101,3 +101,7 @@ two again	2	21	1	1
 
 statement ok
 RESET disabled_optimizers;
+
+# Older storage readers use a different implicit MARK column name.
+statement ok
+DROP VIEW binding_selected;
