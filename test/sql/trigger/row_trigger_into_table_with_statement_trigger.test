@@ -1,0 +1,47 @@
+# name: test/sql/trigger/row_trigger_into_table_with_statement_trigger.test
+# description: A FOR EACH ROW trigger inserts into a table that has a BEFORE INSERT FOR EACH STATEMENT trigger
+# group: [trigger]
+
+require noforcestorage
+
+statement ok
+CREATE TABLE t(a INT);
+
+statement ok
+CREATE TABLE u(a INT);
+
+statement ok
+CREATE TABLE l(x INT);
+
+statement ok
+CREATE TRIGGER b BEFORE INSERT ON u FOR EACH STATEMENT INSERT INTO l VALUES (1);
+
+statement ok
+CREATE TRIGGER r AFTER INSERT ON t FOR EACH ROW INSERT INTO u VALUES (NEW.a);
+
+statement ok
+INSERT INTO t VALUES (1);
+
+query III
+SELECT (SELECT count(*) FROM t), (SELECT count(*) FROM u), (SELECT count(*) FROM l);
+----
+1	1	1
+
+statement ok
+INSERT INTO t VALUES (2), (3);
+
+query III
+SELECT (SELECT count(*) FROM t), (SELECT count(*) FROM u), (SELECT count(*) FROM l);
+----
+3	3	2
+
+statement ok
+CREATE TRIGGER d AFTER DELETE ON t FOR EACH ROW INSERT INTO u VALUES (OLD.a * 10);
+
+statement ok
+DELETE FROM t WHERE a = 1;
+
+query IIII
+SELECT (SELECT count(*) FROM t), (SELECT count(*) FROM u), (SELECT count(*) FROM l), (SELECT max(a) FROM u);
+----
+2	4	3	10

@@ -25,9 +25,19 @@ int64_t BaseSecret::MatchScore(const string &path) const {
 			longest_match = 0;
 			continue;
 		}
-		if (StringUtil::StartsWith(path, prefix)) {
-			longest_match = MaxValue<int64_t>(NumericCast<int64_t>(prefix.length()), longest_match);
+		if (!StringUtil::StartsWith(path, prefix)) {
+			continue;
 		}
+		// Authority-only URI scopes have an implicit trailing slash.
+		auto authority = StringUtil::GetURIAuthority(prefix);
+		bool authority_only = !authority.empty() && prefix.size() == prefix.find("://") + 3 + authority.size();
+		if (authority_only) {
+			bool at_authority_boundary = path.size() == prefix.size() || path[prefix.size()] == '/';
+			if (!at_authority_boundary) {
+				continue;
+			}
+		}
+		longest_match = MaxValue<int64_t>(NumericCast<int64_t>(prefix.length()), longest_match);
 	}
 	return longest_match;
 }
