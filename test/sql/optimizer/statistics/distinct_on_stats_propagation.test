@@ -1,0 +1,453 @@
+# name: test/sql/optimizer/statistics/distinct_on_stats_propagation.test
+# description: Aggregate domains require exact grouping keys and single-value identity
+# group: [statistics]
+
+# HLL can estimate one group per input row even when grouping removes a row.
+statement ok
+CREATE TABLE false_singletons AS
+SELECT CASE WHEN i = 32 THEN 0 ELSE i END * 2018::BIGINT AS g,
+       CASE WHEN i = 32 THEN 9 ELSE i % 2 END::INT AS x FROM range(33) t(i);
+
+statement ok
+CREATE TABLE false_singletons_right AS SELECT * FROM false_singletons;
+
+statement ok
+ANALYZE;
+
+statement ok
+SET explain_output = 'optimized_only';
+
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT first(x ORDER BY x) AS k FROM false_singletons GROUP BY g) l
+JOIN (SELECT first(x ORDER BY x) AS k FROM false_singletons_right GROUP BY g) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~33 rows.*
+
+query I
+SELECT count(*)
+FROM (SELECT first(x ORDER BY x) AS k FROM false_singletons GROUP BY g) l
+JOIN (SELECT first(x ORDER BY x) AS k FROM false_singletons_right GROUP BY g) r ON l.k = r.k;
+----
+512
+
+# Positive fixture with a declared key. Unconstrained inputs are checked separately.
+statement ok
+CREATE TABLE nodes(id INTEGER PRIMARY KEY, k INTEGER);
+
+statement ok
+INSERT INTO nodes SELECT i::INT, i::INT FROM range(100000) t(i);
+
+statement ok
+CREATE TABLE edges AS SELECT i::INT AS eid, (i % 10000)::INT AS k FROM range(100000) t(i);
+
+statement ok
+ANALYZE;
+
+statement ok
+SET explain_output = 'optimized_only';
+
+# DISTINCT ON lowers to Aggregate(GROUP BY id, first(k)): the first() output carries k's
+# domain (100000 distinct) instead of an aggregate-cardinality guess, so the join
+# denominator is max(100000, 10000) and the estimate matches the DISTINCT k control
+query II
+EXPLAIN SELECT count(*) FROM (SELECT DISTINCT ON (id) k FROM nodes) s JOIN edges e ON s.k = e.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~100,000 rows.*
+
+# a handwritten first() gets the same domain forwarding
+query II
+EXPLAIN SELECT count(*) FROM (SELECT first(k) AS k FROM nodes GROUP BY id) s JOIN edges e ON s.k = e.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~100,000 rows.*
+
+# DISTINCT ON with an ORDER BY inside the subquery keeps the forwarded domain
+query II
+EXPLAIN SELECT count(*) FROM (SELECT DISTINCT ON (id) k FROM nodes ORDER BY id, k) s JOIN edges e ON s.k = e.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~100,000 rows.*
+
+# the DISTINCT k control was already exact and stays exact
+query II
+EXPLAIN SELECT count(*) FROM (SELECT DISTINCT k FROM nodes) s JOIN edges e ON s.k = e.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~100,000 rows.*
+
+# the statistics change does not change results
+query I
+SELECT count(*) FROM (SELECT DISTINCT ON (id) k FROM nodes) s JOIN edges e ON s.k = e.k;
+----
+100000
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT ON (id) k FROM nodes ORDER BY id, k) s JOIN edges e ON s.k = e.k;
+----
+100000
+
+# List-producing overloads create combinations outside their first child's domain.
+statement ok
+CREATE TABLE bit_pairs_left AS
+SELECT g::INT AS g, p::INT AS p, ((g >> p) & 1)::INT AS x
+FROM range(4) g_values(g), range(2) p_values(p);
+
+statement ok
+CREATE TABLE bit_pairs_right AS SELECT * FROM bit_pairs_left;
+
+statement ok
+ANALYZE;
+
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT arg_min(x, p, 2) AS k FROM bit_pairs_left GROUP BY g) l
+JOIN (SELECT arg_min(x, p, 2) AS k FROM bit_pairs_right GROUP BY g) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~4 rows.*
+
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT arg_max(x, p, 2) AS k FROM bit_pairs_left GROUP BY g) l
+JOIN (SELECT arg_max(x, p, 2) AS k FROM bit_pairs_right GROUP BY g) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~4 rows.*
+
+# The return type also differs when the input is already a list.
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT arg_min([x], p, 2) AS k FROM bit_pairs_left GROUP BY g) l
+JOIN (SELECT arg_min([x], p, 2) AS k FROM bit_pairs_right GROUP BY g) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~4 rows.*
+
+# Reducing groups retain the aggregate cardinality fallback.
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT first(x ORDER BY p) AS k FROM bit_pairs_left GROUP BY g) l
+JOIN (SELECT first(x ORDER BY p) AS k FROM bit_pairs_right GROUP BY g) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~4 rows.*
+
+# List-producing overloads remain excluded even with certified singleton groups.
+statement ok
+CREATE TABLE unique_list_values(id INTEGER PRIMARY KEY, x INTEGER, p INTEGER);
+
+statement ok
+INSERT INTO unique_list_values SELECT i::INT, (i % 2)::INT, NULL FROM range(8) t(i);
+
+statement ok
+CREATE TABLE unique_list_values_right(id INTEGER PRIMARY KEY, x INTEGER, p INTEGER);
+
+statement ok
+INSERT INTO unique_list_values_right SELECT * FROM unique_list_values;
+
+statement ok
+ANALYZE;
+
+# The scalar control forwards the domain for the same unique groups.
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT first(x) AS k FROM unique_list_values GROUP BY id) l
+JOIN (SELECT first(x) AS k FROM unique_list_values_right GROUP BY id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~32 rows.*
+
+# An aggregate filter can remove values even when every group has one row.
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT first(x) FILTER (WHERE id % 2 = 0) AS k FROM unique_list_values GROUP BY id) l
+JOIN (SELECT first(x) FILTER (WHERE id % 2 = 0) AS k FROM unique_list_values_right GROUP BY id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~8 rows.*
+
+query I
+SELECT count(*)
+FROM (SELECT first(x) FILTER (WHERE id % 2 = 0) AS k FROM unique_list_values GROUP BY id) l
+JOIN (SELECT first(x) FILTER (WHERE id % 2 = 0) AS k FROM unique_list_values_right GROUP BY id) r ON l.k = r.k;
+----
+16
+
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT arg_min(x, id, 2) AS k FROM unique_list_values GROUP BY id) l
+JOIN (SELECT arg_min(x, id, 2) AS k FROM unique_list_values_right GROUP BY id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~8 rows.*
+
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT arg_max(x, id, 2) AS k FROM unique_list_values GROUP BY id) l
+JOIN (SELECT arg_max(x, id, 2) AS k FROM unique_list_values_right GROUP BY id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~8 rows.*
+
+query I
+SELECT count(*)
+FROM (SELECT arg_min(x, id, 2) AS k FROM unique_list_values GROUP BY id) l
+JOIN (SELECT arg_min(x, id, 2) AS k FROM unique_list_values_right GROUP BY id) r ON l.k = r.k;
+----
+32
+
+query I
+SELECT count(*)
+FROM (SELECT arg_max(x, id, 2) AS k FROM unique_list_values GROUP BY id) l
+JOIN (SELECT arg_max(x, id, 2) AS k FROM unique_list_values_right GROUP BY id) r ON l.k = r.k;
+----
+32
+
+query I
+SELECT count(*)
+FROM (SELECT arg_min(x, p, 2) AS k FROM bit_pairs_left GROUP BY g) l
+JOIN (SELECT arg_min(x, p, 2) AS k FROM bit_pairs_right GROUP BY g) r ON l.k = r.k;
+----
+4
+
+query I
+SELECT count(*)
+FROM (SELECT arg_max(x, p, 2) AS k FROM bit_pairs_left GROUP BY g) l
+JOIN (SELECT arg_max(x, p, 2) AS k FROM bit_pairs_right GROUP BY g) r ON l.k = r.k;
+----
+4
+
+query I
+SELECT count(*)
+FROM (SELECT first(x ORDER BY p) AS k FROM bit_pairs_left GROUP BY g) l
+JOIN (SELECT first(x ORDER BY p) AS k FROM bit_pairs_right GROUP BY g) r ON l.k = r.k;
+----
+8
+
+# Aliases retain the bound single-value identity property.
+query II
+EXPLAIN SELECT count(*) FROM (SELECT arbitrary(k) AS k FROM nodes GROUP BY id) s JOIN edges e ON s.k = e.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~100,000 rows.*
+
+query II
+EXPLAIN SELECT count(*) FROM (SELECT last(k) AS k FROM nodes GROUP BY id) s JOIN edges e ON s.k = e.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~100,000 rows.*
+
+query II
+EXPLAIN SELECT count(*) FROM (SELECT any_value(k) AS k FROM nodes GROUP BY id) s JOIN edges e ON s.k = e.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~100,000 rows.*
+
+# A unique grouping key does not stop arg_min from rejecting a NULL selector.
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT arg_min(x, p) AS k FROM unique_list_values GROUP BY id) l
+JOIN (SELECT arg_min(x, p) AS k FROM unique_list_values_right GROUP BY id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~8 rows.*
+
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT min_by(x, p) AS k FROM unique_list_values GROUP BY id) l
+JOIN (SELECT min_by(x, p) AS k FROM unique_list_values_right GROUP BY id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~8 rows.*
+
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT max_by(x, p) AS k FROM unique_list_values GROUP BY id) l
+JOIN (SELECT max_by(x, p) AS k FROM unique_list_values_right GROUP BY id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~8 rows.*
+
+query I
+SELECT count(*)
+FROM (SELECT arg_min(x, p) AS k FROM unique_list_values GROUP BY id) l
+JOIN (SELECT arg_min(x, p) AS k FROM unique_list_values_right GROUP BY id) r ON l.k = r.k;
+----
+0
+
+# An identical CTAS input has no certified key and retains the fallback.
+statement ok
+CREATE TABLE unconstrained_values AS SELECT * FROM unique_list_values;
+
+statement ok
+CREATE TABLE unconstrained_values_right AS SELECT * FROM unique_list_values;
+
+statement ok
+ANALYZE;
+
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT first(x) AS k FROM unconstrained_values GROUP BY id) l
+JOIN (SELECT first(x) AS k FROM unconstrained_values_right GROUP BY id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~8 rows.*
+
+query I
+SELECT count(*)
+FROM (SELECT first(x) AS k FROM unconstrained_values GROUP BY id) l
+JOIN (SELECT first(x) AS k FROM unconstrained_values_right GROUP BY id) r ON l.k = r.k;
+----
+32
+
+# Non-null immediate UNIQUE keys provide the same proof as a primary key.
+statement ok
+CREATE TABLE nonnull_unique(id INTEGER UNIQUE NOT NULL, x INTEGER);
+
+statement ok
+INSERT INTO nonnull_unique SELECT id, x FROM unique_list_values;
+
+statement ok
+CREATE TABLE nullable_unique(id INTEGER UNIQUE, x INTEGER);
+
+statement ok
+INSERT INTO nullable_unique SELECT CASE WHEN id = 7 THEN NULL ELSE id END, x FROM unique_list_values;
+
+statement ok
+CREATE TABLE deferred_unique(id INTEGER PRIMARY KEY DEFERRED, x INTEGER);
+
+statement ok
+INSERT INTO deferred_unique SELECT id, x FROM unique_list_values;
+
+statement ok
+CREATE TABLE composite_unique(a INTEGER NOT NULL, b INTEGER NOT NULL, x INTEGER, UNIQUE(a, b));
+
+statement ok
+INSERT INTO composite_unique SELECT id % 2, id // 2, x FROM unique_list_values;
+
+statement ok
+ANALYZE;
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*)
+FROM (SELECT first(x) AS k FROM nonnull_unique GROUP BY id) l
+JOIN (SELECT first(x) AS k FROM nonnull_unique GROUP BY id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*"Join Type": "INNER",\s*"Conditions": "\(k = k\)",\s*"Estimated Cardinality": "32".*
+
+# Nullable and deferred keys do not certify singleton groups.
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*)
+FROM (SELECT first(x) AS k FROM nullable_unique GROUP BY id) l
+JOIN (SELECT first(x) AS k FROM nullable_unique GROUP BY id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*"Join Type": "INNER",\s*"Conditions": "\(k = k\)",\s*"Estimated Cardinality": "7".*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*)
+FROM (SELECT first(x) AS k FROM deferred_unique GROUP BY id) l
+JOIN (SELECT first(x) AS k FROM deferred_unique GROUP BY id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*"Join Type": "INNER",\s*"Conditions": "\(k = k\)",\s*"Estimated Cardinality": "8".*
+
+# A composite key must be completely covered by the grouping expressions.
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*)
+FROM (SELECT first(x) AS k FROM composite_unique GROUP BY a, b) l
+JOIN (SELECT first(x) AS k FROM composite_unique GROUP BY a, b) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*"Join Type": "INNER",\s*"Conditions": "\(k = k\)",\s*"Estimated Cardinality": "32".*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*)
+FROM (SELECT first(x) AS k FROM composite_unique GROUP BY a) l
+JOIN (SELECT first(x) AS k FROM composite_unique GROUP BY a) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*"Join Type": "INNER",\s*"Conditions": "\(k = k\)",\s*"Estimated Cardinality": "2".*
+
+# Casting a key to BOOLEAN can merge distinct key values.
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT first(x) AS k FROM unique_list_values GROUP BY CAST(id AS BOOLEAN)) l
+JOIN (SELECT first(x) AS k FROM unique_list_values_right GROUP BY CAST(id AS BOOLEAN)) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~4 rows.*
+
+# TRY_CAST can turn distinct key values into NULL and cannot certify uniqueness.
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT first(x) AS k FROM unique_list_values GROUP BY TRY_CAST(id AS TINYINT)) l
+JOIN (SELECT first(x) AS k FROM unique_list_values_right GROUP BY TRY_CAST(id AS TINYINT)) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~4 rows.*
+
+# Joins can multiply a key's rows and must invalidate the singleton proof.
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT first(v.x) AS k FROM unique_list_values v CROSS JOIN range(2) t(i) GROUP BY v.id) l
+JOIN (SELECT first(v.x) AS k FROM unique_list_values_right v CROSS JOIN range(2) t(i) GROUP BY v.id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~8 rows.*
+
+query I
+SELECT count(*)
+FROM (SELECT first(v.x) AS k FROM unique_list_values v CROSS JOIN range(2) t(i) GROUP BY v.id) l
+JOIN (SELECT first(v.x) AS k FROM unique_list_values_right v CROSS JOIN range(2) t(i) GROUP BY v.id) r ON l.k = r.k;
+----
+32
+
+# The ordered rewrite must retain identity on the bound expression only.
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT first(x ORDER BY p) AS k FROM unique_list_values GROUP BY id) l
+JOIN (SELECT last(x ORDER BY p) AS k FROM unique_list_values_right GROUP BY id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~32 rows.*
+
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT any_value(x ORDER BY p) AS k FROM unique_list_values GROUP BY id) l
+JOIN (SELECT any_value(x ORDER BY p) AS k FROM unique_list_values_right GROUP BY id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~32 rows.*
+
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT arg_min_null(x, p) AS k FROM unique_list_values GROUP BY id) l
+JOIN (SELECT arg_max_null(x, p) AS k FROM unique_list_values_right GROUP BY id) r ON l.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~8 rows.*
+
+# Every group selects the common value from an otherwise larger input domain.
+statement ok
+CREATE TABLE biased_nodes AS
+SELECT g::INT AS g, p::INT AS p, CASE WHEN p = 0 THEN 0 ELSE 2 * g + 1 END::INT AS k
+FROM range(4) g_values(g), range(2) p_values(p);
+
+statement ok
+CREATE TABLE biased_edges AS SELECT ((i % 3) * 3)::INT AS k FROM range(12) t(i);
+
+statement ok
+ANALYZE;
+
+query II
+EXPLAIN SELECT count(*)
+FROM (SELECT DISTINCT ON (g) k FROM biased_nodes ORDER BY g, p) s
+JOIN biased_edges e ON s.k = e.k;
+----
+logical_opt	<REGEX>:(?s).*Comparison Join[^~]*~16 rows.*
+
+query I
+SELECT count(*)
+FROM (SELECT DISTINCT ON (g) k FROM biased_nodes ORDER BY g, p) s
+JOIN biased_edges e ON s.k = e.k;
+----
+16
+
+# Computed CTE keys remain ineligible even when each group contains one row.
+statement ok
+CREATE TABLE ids_left AS SELECT i::INT AS id FROM range(8) t(i);
+
+statement ok
+CREATE TABLE ids_right AS SELECT i::INT AS id FROM range(4) t(i);
+
+statement ok
+ANALYZE;
+
+query II
+EXPLAIN (FORMAT JSON)
+WITH lhs AS MATERIALIZED (SELECT id, id % 2 AS k FROM ids_left),
+     rhs AS MATERIALIZED (SELECT id % 2 AS k FROM ids_right)
+SELECT count(*) FROM (SELECT first(k) AS k FROM lhs GROUP BY id) s JOIN rhs r ON s.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*"Join Type": "INNER",\s*"Conditions": "\(k = k\)",\s*"Estimated Cardinality": "8".*
+
+query I
+WITH lhs AS MATERIALIZED (SELECT id, id % 2 AS k FROM ids_left),
+     rhs AS MATERIALIZED (SELECT id % 2 AS k FROM ids_right)
+SELECT count(*) FROM (SELECT first(k) AS k FROM lhs GROUP BY id) s JOIN rhs r ON s.k = r.k;
+----
+16

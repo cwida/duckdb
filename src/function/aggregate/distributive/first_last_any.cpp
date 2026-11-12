@@ -53,6 +53,8 @@ unique_ptr<Expression> RewriteOrderedFirst(AggregateRewriteInput &input) {
 	const auto &function = entry.functions.GetFunctionByArguments(input.context, child_types);
 	auto result = binder.BindAggregateFunction(function, std::move(children), std::move(aggregate->GetFilterMutable()),
 	                                           aggregate->GetAggregateType());
+	// The encoded sort key is non-NULL, so a singleton still returns its input value.
+	result->FunctionMutable().SetSingleValueIdentity(aggregate->Function().HasSingleValueIdentity());
 	return unique_ptr_cast<BoundAggregateExpression, Expression>(std::move(result));
 }
 
