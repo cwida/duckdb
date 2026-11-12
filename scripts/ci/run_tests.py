@@ -2029,9 +2029,12 @@ def run_custom_batch(config: TestRunnerConfig, batch):
 def read_test_state(config: TestRunnerConfig, state_database: Path, child_env):
     if not state_database.is_file():
         return [], f"test state database was not created: {state_database}"
+    repository = Path(config.unittest_bin).resolve().parent / "repository"
     proc = subprocess.run(
-        [config.unittest_bin, "-no-agent", "-batch", "-jsonlines", os.fspath(state_database)],
+        [config.unittest_bin, "-unsigned", "-no-agent", "-batch", "-bail", "-jsonlines", os.fspath(state_database)],
         input=(
+            f"SET extension_directories = {sql_string_list([repository])};\n"
+            "LOAD json;\n"
             "SELECT test_id, attempt, status, duration_ms, assertion_count, failures, message, "
             "skip_mode, partial_skip_reasons FROM test_results;\n"
         ),
@@ -2050,14 +2053,26 @@ def read_test_state(config: TestRunnerConfig, state_database: Path, child_env):
         return [], message
 
     rows = []
-    for line in proc.stdout.splitlines():
+    errors = []
+    for line_number, line in enumerate(proc.stdout.splitlines(), start=1):
+        if not line.strip():
+            continue
         try:
             row = json.loads(line)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            excerpt = line[max(0, exc.pos - 120) : exc.pos + 120]
+            errors.append(
+                f"invalid JSON while recovering test state from {state_database} "
+                f"(line {line_number}, column {exc.colno}): {exc.msg}; output: {excerpt!r}"
+            )
             continue
-        if isinstance(row, dict) and isinstance(row.get("test_id"), str):
-            rows.append(row)
-    return rows, None
+        if not isinstance(row, dict) or not isinstance(row.get("test_id"), str) or type(row.get("attempt")) is not int:
+            errors.append(
+                f"invalid row while recovering test state from {state_database} (line {line_number}): {line!r}"
+            )
+            continue
+        rows.append(row)
+    return rows, "\n".join(errors) or None
 
 
 def run_batch(config: TestRunnerConfig, batch):
@@ -2229,9 +2244,11 @@ def run_batch(config: TestRunnerConfig, batch):
             failed = True
             if proc.returncode == 0:
                 allow_retry = False
+            missing_message = f"test state is missing {len(missing_tests)} requested test(s)"
             if message is None:
-                message = f"test state is missing {len(missing_tests)} requested test(s)"
-            failure_lines.append(message)
+                message = missing_message
+            failure_lines.append(missing_message + ":")
+            failure_lines.extend(f"- {test_id}" for test_id in missing_tests)
         if incomplete_tests:
             failed = True
             if proc.returncode == 0:

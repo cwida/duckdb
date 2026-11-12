@@ -150,6 +150,7 @@ class PackageReleaseArtifactTest(unittest.TestCase):
             root = Path(temp_dir)
             source = root / "linux-build"
             (source / "test").mkdir(parents=True)
+            (source / "duckdb").write_bytes(b"duckdb")
             (source / "test" / "unittest").write_bytes(b"unittest")
             (source / "test" / "run").write_text("# runner\n", encoding="utf-8")
             probe = source / "test" / "block_allocator_fault_injection"

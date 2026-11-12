@@ -113,7 +113,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
                         PROPERTIES BUILD_RPATH_USE_ORIGIN TRUE)
   target_sources(duckdb_tests_loadable_extension
                  PRIVATE api/test_block_allocator_fault_injection.cpp)
-  add_dependencies(duckdb_tests_loadable_extension block_allocator_fault_injection)
+  add_dependencies(duckdb_tests_loadable_extension
+                   block_allocator_fault_injection)
 endif()
 
 set(RUN_WRAPPER_DUCKDB_NAME "duckdb")

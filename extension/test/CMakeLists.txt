@@ -47,6 +47,17 @@ foreach(TEST_TARGET test_extension test_loadable_extension)
             "${PROJECT_SOURCE_DIR}/test/sqlite")
   target_link_libraries(${TEST_TARGET} test_helpers duckdb_re2)
 endforeach()
+if(TARGET test_prebuilt_extension
+   AND NOT EMSCRIPTEN
+   AND NOT WASM_LOADABLE_EXTENSIONS)
+  target_link_libraries(test_prebuilt_extension INTERFACE test_helpers
+                                                          duckdb_re2)
+  target_link_libraries(
+    test_helpers
+    INTERFACE
+      "$<$<NOT:$<BOOL:$<TARGET_PROPERTY:DUCKDB_DYNAMIC_LOADABLE_EXTENSION>>>:duckdb_static>"
+  )
+endif()
 if(EXTENSION_STATIC_BUILD
    AND NOT EMSCRIPTEN
    AND NOT WASM_LOADABLE_EXTENSIONS)

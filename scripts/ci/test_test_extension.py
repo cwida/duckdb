@@ -202,11 +202,17 @@ class TestExtensionIntegrationTest(unittest.TestCase):
             "mode unskip\n\nquery I\nSELECT 42\n----\n42\n",
         )
         database = self.run_selected([test_id])
-        rows = self.query(
-            "SELECT status, skip_mode::INTEGER AS skip_mode, partial_skip_reasons FROM test_results;", database
-        )
+        rows, error = run_tests.read_test_state(protocol_config(unittest_bin=self.binary), database, os.environ.copy())
+        self.assertIsNone(error)
         self.assertEqual(
-            rows,
+            [
+                {
+                    "status": row["status"],
+                    "skip_mode": int(row["skip_mode"]),
+                    "partial_skip_reasons": row["partial_skip_reasons"],
+                }
+                for row in rows
+            ],
             [
                 {
                     "status": "passed",
@@ -215,6 +221,20 @@ class TestExtensionIntegrationTest(unittest.TestCase):
                 }
             ],
         )
+
+    def test_result_recovery_preserves_failure_messages_and_empty_lists(self):
+        passed_id = self.create_test("passed.test", "query I\nSELECT 42\n----\n42\n")
+        failed_id = self.create_test("failed.test", "query I\nSELECT 42\n----\n43\n")
+        database = self.run_selected([passed_id, failed_id])
+        rows, error = run_tests.read_test_state(protocol_config(unittest_bin=self.binary), database, os.environ.copy())
+        self.assertIsNone(error)
+        rows_by_id = {row["test_id"]: row for row in rows}
+        self.assertEqual(rows_by_id[passed_id]["status"], "passed")
+        self.assertEqual(rows_by_id[passed_id]["failures"], [])
+        self.assertEqual(rows_by_id[failed_id]["status"], "failed")
+        self.assertTrue(rows_by_id[failed_id]["failures"])
+        for row in rows:
+            self.assertEqual(row["partial_skip_reasons"], [])
 
     def test_cpp_tests_have_separate_temporary_directories(self):
         names = ["Test file operations", "exclusive create fails when the file exists"]

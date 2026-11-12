@@ -167,6 +167,32 @@ class RunTestsScriptTest(unittest.TestCase):
         self.assertEqual(skip_events[4], {"mode skip unsupported": {test_ids[0]}})
         self.assertEqual(len(run_tests.parse_test_events(result["stdout"] + result["stderr"])), 2)
 
+    def test_missing_state_reports_test_ids_and_recovery_cause(self):
+        passed_id = "sql:test/sql/passed.test"
+        missing_id = "sql:test/sql/autoload_sqlite_catalog.test"
+        rows = [{"test_id": passed_id, "attempt": 0, "status": "passed", "duration_ms": 5}]
+        child = "import sys; sys.stdin.read(); print('[mode skip unsupported]')"
+        recovery_error = "invalid JSON while recovering test state (line 2): output: [mode skip unsupported]"
+        for error in (None, recovery_error):
+            with self.subTest(recovery_error=error):
+                with (
+                    mock.patch(
+                        "scripts.ci.run_tests.test_protocol_command",
+                        return_value=[sys.executable, "-c", child],
+                    ),
+                    mock.patch("scripts.ci.run_tests.read_test_state", return_value=(rows, error)),
+                ):
+                    result = run_tests.run_batch(protocol_config(batch_size=2), [passed_id, missing_id])
+                self.assertTrue(result["failed"], result)
+                self.assertFalse(result["allow_retry"], result)
+                self.assertIn("test state is missing 1 requested test(s):", result["stderr"])
+                self.assertIn("- " + missing_id, result["stderr"])
+                self.assertNotIn("- " + passed_id, result["stderr"])
+                self.assertNotIn("[mode skip unsupported]", result["stdout"])
+                if error:
+                    self.assertIn(error, result["stderr"])
+                    self.assertEqual(result["message"], error)
+
     def test_protocol_changed_tests_stabilize_only_new_identifiers(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -578,7 +604,8 @@ class RunTestsScriptTest(unittest.TestCase):
             returncode=0,
             stdout=(
                 '{"test_id":"sql:test/sql/a.test","attempt":0,"status":"passed",'
-                '"duration_ms":1.5,"assertion_count":1,"failures":[],"message":null}\n'
+                '"duration_ms":1.5,"assertion_count":1,"failures":[],'
+                '"partial_skip_reasons":[],"message":null}\n\n'
             ),
             stderr="",
         )
@@ -594,11 +621,85 @@ class RunTestsScriptTest(unittest.TestCase):
 
         self.assertIsNone(error)
         self.assertEqual(rows[0]["status"], "passed")
+        self.assertEqual(rows[0]["failures"], [])
+        self.assertEqual(rows[0]["partial_skip_reasons"], [])
         self.assertEqual(
             run.call_args.args[0],
-            ["duckdb", "-no-agent", "-batch", "-jsonlines", os.fspath(state_database)],
+            ["duckdb", "-unsigned", "-no-agent", "-batch", "-bail", "-jsonlines", os.fspath(state_database)],
         )
-        self.assertIn("FROM test_results", run.call_args.kwargs["input"])
+        query = run.call_args.kwargs["input"]
+        self.assertIn("SET extension_directories", query)
+        self.assertLess(query.index("LOAD json;"), query.index("SELECT"))
+        self.assertIn("FROM test_results", query)
+
+    def test_read_test_state_preserves_lists_for_each_attempt(self):
+        test_id = "sql:test/sql/a.test"
+        failure = 'Expected "hello, world"\nReceived [NULL]'
+        records = [
+            {
+                "test_id": test_id,
+                "attempt": 0,
+                "status": "failed",
+                "failures": [failure, "second failure"],
+                "partial_skip_reasons": [],
+            },
+            {
+                "test_id": test_id,
+                "attempt": 1,
+                "status": "passed",
+                "failures": [],
+                "partial_skip_reasons": ["mode skip unsupported"],
+            },
+        ]
+        state_database = create_temp_file("")
+        self.addCleanup(state_database.unlink)
+        result = mock.Mock(returncode=0, stdout="\n".join(map(json.dumps, records)), stderr="")
+        with mock.patch("scripts.ci.run_tests.subprocess.run", return_value=result):
+            rows, error = run_tests.read_test_state(protocol_config(), state_database, {})
+        self.assertIsNone(error)
+        self.assertEqual(rows[0]["failures"], [failure, "second failure"])
+        self.assertEqual(rows[0]["partial_skip_reasons"], [])
+        self.assertEqual(rows[1]["failures"], [])
+        self.assertEqual(rows[1]["partial_skip_reasons"], ["mode skip unsupported"])
+
+    def test_read_test_state_reports_malformed_output(self):
+        state_database = create_temp_file("")
+        self.addCleanup(state_database.unlink)
+        for output, expected_error in (
+            ('{"test_id":"a","attempt":0,"partial_skip_reasons":[mode skip]}', "invalid JSON"),
+            ('{"test_id":"a"}', "invalid row"),
+        ):
+            with self.subTest(output=output):
+                result = mock.Mock(returncode=0, stdout=output, stderr="")
+                with mock.patch("scripts.ci.run_tests.subprocess.run", return_value=result):
+                    rows, error = run_tests.read_test_state(protocol_config(), state_database, {})
+                self.assertEqual(rows, [])
+                self.assertIn(expected_error, error)
+                self.assertIn(output, error)
+
+    def test_read_test_state_retains_valid_rows_when_another_row_is_malformed(self):
+        state_database = create_temp_file("")
+        self.addCleanup(state_database.unlink)
+        passed = {"test_id": "passed", "attempt": 0, "status": "passed"}
+        result = mock.Mock(
+            returncode=0,
+            stdout=json.dumps(passed) + '\n{"test_id":"missing","partial_skip_reasons":[mode skip unsupported]}\n',
+            stderr="",
+        )
+        with mock.patch("scripts.ci.run_tests.subprocess.run", return_value=result):
+            rows, error = run_tests.read_test_state(protocol_config(), state_database, {})
+        self.assertEqual(rows, [passed])
+        self.assertIn("line 2", error)
+        self.assertIn("[mode skip unsupported]", error)
+
+    def test_read_test_state_reports_json_loading_failure(self):
+        state_database = create_temp_file("")
+        self.addCleanup(state_database.unlink)
+        result = mock.Mock(returncode=1, stdout="", stderr="IO Error: JSON extension was not found")
+        with mock.patch("scripts.ci.run_tests.subprocess.run", return_value=result):
+            rows, error = run_tests.read_test_state(protocol_config(), state_database, {})
+        self.assertEqual(rows, [])
+        self.assertIn("JSON extension was not found", error)
 
     def test_protocol_scan_rejects_unmatched_exact_test_list_entry(self):
         test_list = create_temp_file("test/sql/a.test\ntest/sql/stale.test\n")

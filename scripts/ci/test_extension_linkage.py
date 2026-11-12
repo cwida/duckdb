@@ -118,6 +118,20 @@ class ExtensionLinkageTest(unittest.TestCase):
                 )
                 self.assertNotIn("test_sqlite_runner", dependencies("test_extension"))
                 self.assertNotIn("test_sqlite_runner", dependencies("test_loadable_extension"))
+                test_prebuilt_archive = (
+                    (archives / ("test_extension.lib" if sys.platform == "win32" else "libtest_extension.a"))
+                    .relative_to(build)
+                    .as_posix()
+                )
+                for name in ("shell", "test_loadable_extension"):
+                    linked = libraries(name).replace("\\", "/")
+                    self.assertLess(linked.index(test_prebuilt_archive), linked.index("test_helpers"), linked)
+                    if (
+                        name == "shell"
+                        or (name == "test_loadable_extension" and static_build)
+                        or sys.platform == "win32"
+                    ):
+                        self.assertLess(linked.index("test_helpers"), linked.rindex("duckdb_static"), linked)
             if sanitized:
                 for name in ("test_extension", "shell"):
                     compile_flags = " ".join(
