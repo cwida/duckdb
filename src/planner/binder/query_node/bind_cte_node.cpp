@@ -50,6 +50,10 @@ BoundStatement Binder::BindNode(QueryNode &node) {
 			++dml_cte_count;
 		}
 		bound_ctes.push_back(current_binder.get().PrepareCTE(cte.first, *cte.second));
+		if (current_binder.get().IsBindingTrySubquery()) {
+			// the child binder binds the same query node, so TRY lowering follows it
+			bound_ctes.back().child_binder->SetBindingTrySubquery();
+		}
 		current_binder = *bound_ctes.back().child_binder;
 	}
 	BoundStatement result;
@@ -84,6 +88,10 @@ BoundStatement Binder::BindNode(QueryNode &node) {
 		break;
 	default:
 		throw InternalException("Unsupported query node type");
+	}
+	if (!bound_ctes.empty() && IsBindingTrySubquery()) {
+		// carry the plan indexes of the TRY select node back across the CTE binder handoff
+		GetTrySubqueryPlanIndexesMutable() = current_binder.get().GetTrySubqueryPlanIndexes();
 	}
 	for (idx_t i = bound_ctes.size(); i > 0; i--) {
 		auto &finish_binder = i == 1 ? *this : *bound_ctes[i - 2].child_binder;
@@ -128,8 +136,10 @@ void CTEBindState::Bind(CTEBinding &binding) {
 
 	// add this CTE to the query binder on the RHS with "CANNOT_BE_REFERENCED" to detect recursive references to
 	// ourselves
+	auto self_type = cte_def.type == QueryNodeType::RECURSIVE_CTE_NODE ? CTEType::CANNOT_BE_REFERENCED_RECURSIVE
+	                                                                   : CTEType::CANNOT_BE_REFERENCED;
 	query_binder->bind_context.AddCTEBinding(binding.GetIndex(), binding.GetBindingAlias(), vector<Identifier>(),
-	                                         vector<LogicalType>(), CTEType::CANNOT_BE_REFERENCED);
+	                                         vector<LogicalType>(), self_type);
 
 	// bind the actual CTE
 	query = query_binder->Bind(cte_def);
@@ -208,8 +218,9 @@ BoundStatement Binder::FinishCTE(BoundCTEData &bound_cte, BoundStatement child) 
 	auto cte_query = std::move(bind_state.query.plan);
 	auto cte_child = std::move(child.plan);
 
-	auto root = make_uniq<LogicalMaterializedCTE>(bound_cte.ctename, bound_cte.setop_index, result.types.size(),
-	                                              std::move(cte_query), std::move(cte_child), bound_cte.materialized);
+	auto root =
+	    make_uniq<LogicalMaterializedCTE>(bound_cte.ctename, bound_cte.setop_index, bind_state.query.types.size(),
+	                                      std::move(cte_query), std::move(cte_child), bound_cte.materialized);
 
 	result.plan = std::move(root);
 	return result;

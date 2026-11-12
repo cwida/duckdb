@@ -17,6 +17,7 @@
 
 namespace duckdb {
 
+class Context;
 class TaskExecutor;
 class TaskExecutorTask;
 
@@ -64,11 +65,15 @@ protected:
 class TaskExecutor {
 public:
 	explicit TaskExecutor(ClientContext &context, TaskSchedulerType type = TaskSchedulerType::REGULAR);
+	explicit TaskExecutor(Context &context, TaskSchedulerType type = TaskSchedulerType::REGULAR);
 	explicit TaskExecutor(TaskScheduler &scheduler, TaskSchedulerType type = TaskSchedulerType::REGULAR);
 	~TaskExecutor();
 
 	//! Push an error into the TaskExecutor
 	void PushError(ErrorData error);
+	//! Push the error of a task, which reports an out of memory error when memory runs out while recording it
+	void PushTaskError(const std::exception &ex);
+	void PushTaskError(const char *message);
 	//! Whether or not any task has encountered an error
 	bool HasError();
 	//! Throw an error that was encountered during execution (if HasError() is true)
@@ -120,7 +125,7 @@ private:
 	idx_t completed_tasks DUCKDB_GUARDED_BY(token->producer_lock) = 0;
 	idx_t total_tasks DUCKDB_GUARDED_BY(token->producer_lock) = 0;
 	atomic<bool> cancelled {false};
-	optional_ptr<ClientContext> context;
+	optional_ptr<Context> context;
 };
 
 } // namespace duckdb

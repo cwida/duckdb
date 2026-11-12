@@ -151,7 +151,8 @@ OperatorResultType PhysicalStreamingSample::Execute(ExecutionContext &context, D
 InsertionOrderPreservingMap<string> PhysicalStreamingSample::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
 	if (sample_options->is_percentage) {
-		result["Sample Method"] = EnumUtil::ToString(sample_options->method) + ": " + to_string(100 * percentage) + "%";
+		result["Sample Method"] =
+		    EnumUtil::ToString(sample_options->method) + ": " + StringUtil::ToString(100 * percentage) + "%";
 	} else {
 		result["Sample Method"] = EnumUtil::ToString(sample_options->method) + ": " + to_string(rows) + " rows";
 	}

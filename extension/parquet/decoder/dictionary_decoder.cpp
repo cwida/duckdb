@@ -75,9 +75,15 @@ void DictionaryDecoder::InitializeDictionary(idx_t new_dictionary_size, optional
 void DictionaryDecoder::InitializePage() {
 	// where is it otherwise??
 	auto &block = reader.block;
-	auto dict_width = block->read<uint8_t>();
-	dict_decoder = make_uniq<RleBpDecoder>(block->ptr, block->len, dict_width);
-	block->inc(block->len);
+	auto dict_width = block->Read<uint8_t>();
+	block_offset = block->GetOffset();
+	idx_t dict_len;
+	auto loc = block->ConsumeRemaining(dict_len);
+	dict_decoder = make_uniq<RleBpDecoder>(loc, dict_len, dict_width);
+}
+
+void DictionaryDecoder::Rebase() {
+	ColumnReader::RebaseDecoder(dict_decoder, *reader.block, block_offset);
 }
 
 void DictionaryDecoder::ConvertDictToSelVec(uint32_t *offsets, const SelectionVector &rows, idx_t count) {
@@ -125,9 +131,9 @@ idx_t DictionaryDecoder::Read(uint8_t *defines, idx_t read_count, Vector &result
 		}
 	} else if (valid_count > 0) {
 		// for the valid entries - decode the offsets
-		offset_buffer.resize(reader.reader.allocator, sizeof(uint32_t) * valid_count);
-		dict_decoder->GetBatch<uint32_t>(offset_buffer.ptr, NumericCast<uint32_t>(valid_count));
-		ConvertDictToSelVec(reinterpret_cast<uint32_t *>(offset_buffer.ptr), valid_sel, valid_count);
+		offset_buffer.Resize(reader.GetAllocator(), sizeof(uint32_t) * valid_count);
+		dict_decoder->GetBatch<uint32_t>(offset_buffer.GetCurrentLoc(), NumericCast<uint32_t>(valid_count));
+		ConvertDictToSelVec(reinterpret_cast<uint32_t *>(offset_buffer.GetCurrentLoc()), valid_sel, valid_count);
 	}
 #ifdef DEBUG
 	dictionary_selection_vector.Verify(read_count, dictionary_size + can_have_nulls);
@@ -189,21 +195,22 @@ void DictionaryDecoder::Filter(uint8_t *defines, const idx_t read_count, Vector 
 	}
 
 	// apply the filter by checking the dictionary offsets directly
-	uint32_t *offsets;
-	if (valid_count == read_count) {
-		offsets = dictionary_selection_vector.data();
-	} else {
-		offsets = reinterpret_cast<uint32_t *>(offset_buffer.ptr);
-	}
-	D_ASSERT(offsets);
 	SelectionVector new_sel(valid_count);
-	approved_tuple_count = 0;
-	for (idx_t idx = 0; idx < valid_count; idx++) {
-		auto row_idx = valid_count == read_count ? idx : valid_sel.get_index(idx);
-		auto offset = offsets[idx];
-		// avoid a branch per row: always write, advance only on a match
-		new_sel.set_index(approved_tuple_count, row_idx);
-		approved_tuple_count += filter_result[offset];
+	if (valid_count == read_count) {
+		approved_tuple_count =
+		    SelectionVector::SelectFromBoolean(filter_result.get(), &dictionary_selection_vector, read_count,
+		                                       array_ptr<sel_t>(new_sel.data(), new_sel.Capacity()));
+	} else {
+		auto offsets = reinterpret_cast<uint32_t *>(offset_buffer.GetCurrentLoc());
+		D_ASSERT(offsets);
+		approved_tuple_count = 0;
+		for (idx_t idx = 0; idx < valid_count; idx++) {
+			auto row_idx = valid_sel.get_index(idx);
+			auto offset = offsets[idx];
+			// avoid a branch per row: always write, advance only on a match
+			new_sel.set_index(approved_tuple_count, row_idx);
+			approved_tuple_count += filter_result[offset];
+		}
 	}
 	if (approved_tuple_count < read_count) {
 		sel.Initialize(new_sel);

@@ -16,6 +16,7 @@
 #include "parquet_bss_decoder.hpp"
 #include "parquet_statistics.hpp"
 #include "parquet_types.h"
+#include "parquet_page_index.hpp"
 #include "resizable_buffer.hpp"
 #include "thrift_tools.hpp"
 #include "decoder/byte_stream_split_decoder.hpp"
@@ -110,8 +111,8 @@ public:
 
 public:
 	static unique_ptr<ColumnReader> CreateReader(const ParquetReader &reader, const ParquetColumnSchema &schema);
-	virtual void InitializeRead(idx_t row_group_index, idx_t row_group_num_rows, const vector<ColumnChunk> &columns,
-	                            TProtocol &protocol_p);
+	virtual void InitializeRead(idx_t row_group_index, idx_t row_group_num_rows,
+	                            const duckdb_parquet::ColumnChunkList &columns, TProtocol &protocol_p);
 	virtual idx_t Read(ColumnReaderInput &input, Vector &result);
 	virtual void Select(ColumnReaderInput &input, Vector &result, const SelectionVector &sel,
 	                    idx_t approved_tuple_count);
@@ -174,8 +175,13 @@ public:
 
 	// register the range this reader will touch for prefetching
 	virtual void RegisterPrefetch(ThriftFileTransport &transport, bool allow_merge);
+	//! The first offset RegisterPrefetch registered: the chunk start, or the first needed page with a page index
+	idx_t PrefetchOffset() const;
+	//! Hands the reader the page index of the row group, so it can prefetch and read only the pages whose rows may
+	//! match the filters. Called after InitializeRead, only for row groups where the page index prunes pages.
+	virtual void InitializePageIndex(const ParquetRowGroupPageIndex &page_index);
 
-	virtual unique_ptr<BaseStatistics> Stats(idx_t row_group_idx_p, const vector<ColumnChunk> &columns);
+	virtual unique_ptr<BaseStatistics> Stats(idx_t row_group_idx_p, const duckdb_parquet::ColumnChunkList &columns);
 	void ValidateColumnMetadata(idx_t row_group_num_rows, const ColumnChunk &column);
 
 	template <class VALUE_TYPE, class CONVERSION, bool HAS_DEFINES>
@@ -278,8 +284,8 @@ private:
 			// we can memcpy
 			idx_t copy_count = num_values * CONVERSION::PlainConstantSize();
 			if (copy_count > 0) {
-				memcpy(result_ptr + result_offset, plain_data.ptr, copy_count);
-				plain_data.unsafe_inc(copy_count);
+				memcpy(result_ptr + result_offset, plain_data.GetCurrentLoc(), copy_count);
+				plain_data.UnsafeInc(copy_count);
 			}
 			return;
 		}
@@ -298,9 +304,9 @@ private:
 	                                const uint64_t num_values, idx_t row_offset = 0) {
 		if (!HAS_DEFINES && CONVERSION::PlainConstantSize() > 0) {
 			if (CHECKED) {
-				plain_data.inc(num_values * CONVERSION::PlainConstantSize());
+				plain_data.Inc(num_values * CONVERSION::PlainConstantSize());
 			} else {
-				plain_data.unsafe_inc(num_values * CONVERSION::PlainConstantSize());
+				plain_data.UnsafeInc(num_values * CONVERSION::PlainConstantSize());
 			}
 			return;
 		}
@@ -351,6 +357,7 @@ private:
 
 protected:
 	Allocator &GetAllocator();
+	BufferManager &GetBufferManager();
 	// readers that use the default Read() need to implement those
 	virtual void PlainSkip(ByteBuffer &plain_data, uint8_t *defines, idx_t num_values);
 	virtual void Plain(ByteBuffer &plain_data, uint8_t *defines, idx_t num_values, idx_t result_offset, Vector &result);
@@ -380,12 +387,41 @@ protected:
 	virtual void ResetPage();
 
 private:
-	void AllocateBlock(idx_t size);
+	void AllocateBlock(idx_t payload_size);
+	//! Also rebases decoders, since pinning can move block.
+	void PinBlock();
+	void RebaseDecoders();
+	//! Callers are the decoder friend classes, which share this one rebase step.
+	template <class DECODER>
+	static void RebaseDecoder(unique_ptr<DECODER> &decoder, ResizeableBuffer &block, idx_t offset) {
+		if (decoder) {
+			decoder->Rebase(block.GetPtrAt(offset));
+		}
+	}
+
+	class BlockPinGuard {
+	public:
+		explicit BlockPinGuard(ColumnReader &reader) : reader(reader) {
+			reader.PinBlock();
+		}
+		~BlockPinGuard() {
+			if (reader.block) {
+				reader.block->Unpin();
+			}
+		}
+		BlockPinGuard(const BlockPinGuard &) = delete;
+		BlockPinGuard &operator=(const BlockPinGuard &) = delete;
+
+	private:
+		ColumnReader &reader;
+	};
 	void PrepareRead(optional_ptr<const TableFilter> filter, optional_ptr<TableFilterState> filter_state,
 	                 idx_t rows_to_skip = 0);
 	void PreparePage(PageHeader &page_hdr);
 	void PrepareDataPage(PageHeader &page_hdr);
 	void PreparePageV2(PageHeader &page_hdr);
+	//! The size of the page body in the file, without the encryption framing that Arrow includes
+	uint32_t GetPageBodySize(const PageHeader &page_hdr) const;
 	void DecompressInternal(CompressionCodec::type codec, const_data_ptr_t src, idx_t src_size, data_ptr_t dst,
 	                        idx_t dst_size);
 	const ColumnChunk *chunk = nullptr;
@@ -397,11 +433,27 @@ private:
 	idx_t group_rows_available;
 	idx_t chunk_read_offset;
 
+	//! The OffsetIndex of the column chunk and the rows of the row group that may match the filters (both owned by
+	//! the scan state), set only when the page index can be used to skip pages of this column chunk
+	optional_ptr<const duckdb_parquet::OffsetIndex> offset_index;
+	optional_ptr<const vector<ParquetPageRowRange>> page_index_rows;
+	//! The first offset registered for prefetching, when it is not the chunk start
+	optional_idx prefetch_offset;
+	//! Whether the rows [begin, end) of the row group are needed according to the page index
+	bool PageIndexNeedsRows(idx_t begin, idx_t end) const;
+	//! Skips pages using the OffsetIndex instead of reading their headers; returns false when no page can be skipped
+	bool TrySkipPagesWithOffsetIndex(idx_t skipped_so_far, idx_t &to_skip);
+	//! Throws when the row count the OffsetIndex gives for the page at this location disagrees with its header
+	void VerifyPageAgainstOffsetIndex(idx_t header_location, const PageHeader &page_hdr);
+
 	shared_ptr<ResizeableBuffer> block;
 
 	ColumnEncoding encoding = ColumnEncoding::INVALID;
 	unique_ptr<RleBpDecoder> defined_decoder;
 	unique_ptr<RleBpDecoder> repeated_decoder;
+	//! Fixed offsets used to recompute decoder's location after a re-pin.
+	idx_t defined_decoder_offset = 0;
+	idx_t repeated_decoder_offset = 0;
 	DictionaryDecoder dictionary_decoder;
 	DeltaBinaryPackedDecoder delta_binary_packed_decoder;
 	RLEDecoder rle_decoder;
@@ -409,6 +461,8 @@ private:
 	DeltaByteArrayDecoder delta_byte_array_decoder;
 	ByteStreamSplitDecoder byte_stream_split_decoder;
 	CryptoMetaData aad_crypto_metadata;
+	//! Backs the Thrift page header of the page that is currently being read
+	ArenaAllocator page_header_arena;
 
 	//! Resizeable buffers used for the various encodings above
 	ResizeableBuffer encoding_buffers[2];

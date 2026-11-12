@@ -273,6 +273,8 @@ void PhysicalColumnDataScan::BuildPipelines(Pipeline &current, MetaPipeline &met
 			if (cte.ShouldUseBufferedConsumer(current)) {
 				cte.RegisterBufferedConsumer(current, source.consumer_idx);
 				current.AddDataflowDependency(cte_dependency);
+				D_ASSERT(collection);
+				state.AddBufferedConsumer(current, *this, cte_dependency, cte, source.consumer_idx);
 				DUCKDB_LOG(current.GetClientContext(), PhysicalOperatorLogType, cte, "PhysicalCTE", "SelectConsumer",
 				           {{"consumer", to_string(source.consumer_idx)}, {"mode", "BUFFERED"}});
 				state.SetPipelineSource(current, *cte_source);

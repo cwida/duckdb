@@ -58,6 +58,14 @@ struct BoundCastExpression {
 	//! Returns true if a cast is invertible (i.e. CAST(s -> t -> s) = s for all values of s). This is not true for e.g.
 	//! boolean casts, because that can be e.g. -1 -> TRUE -> 1. This is necessary to prevent some optimizer bugs.
 	static bool CastIsInvertible(const LogicalType &source_type, const LogicalType &target_type);
+	//! Returns true if every value of the integral source type is exactly representable in the floating target type
+	static bool IsLosslessIntegralToFloatingCast(const LogicalType &source_type, const LogicalType &target_type);
+	//! Returns true if CAST(s -> t -> s) = s for all values of s, possibly without preserving their order (e.g. INTEGER
+	//! -> VARCHAR). An (in)equality comparison of the cast with a constant can then be applied to the source values.
+	static bool CastIsInvertibleForEquality(const LogicalType &source_type, const LogicalType &target_type);
+	//! Returns the source value s with CAST(s) = constant, or nullopt if the constant does not round-trip exactly
+	static optional<Value> TryInvertConstant(ClientContext &context, const BoundFunctionExpression &cast_expr,
+	                                         const Value &constant);
 
 	//! Returns true if a cast from source_type to target_type can throw a runtime error
 	static bool CastCanThrow(const LogicalType &source_type, const LogicalType &target_type, bool try_cast);

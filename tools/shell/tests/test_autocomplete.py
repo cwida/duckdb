@@ -337,4 +337,163 @@ def test_autocomplete_directory(shell, autocomplete_extension, tmp_path):
     result = test.run()
     result.check_stdout("extra.parquet")
 
+
+# Ties between completions complete up to their longest common prefix. The completions cover the
+# text before the cursor only, so the first <tab> must keep the characters after the cursor: text
+# typed after it must not end up where the trailing quote and semicolon used to be. See #27985.
+@pytest.mark.skipif(os.name == "nt", reason="requires a POSIX pseudo-terminal")
+def test_tab_completion_preserves_text_after_cursor(shell, tmp_path, autocomplete_extension):
+    import fcntl
+    import pty
+    import select
+    import struct
+    import termios
+    import time
+
+    for name in ("table_one.parquet", "table_two.parquet", "table_three.parquet"):
+        (tmp_path / name).touch()
+    history = tmp_path / "history"
+    env = ShellTest(shell).get_environment()
+    env["TERM"] = "xterm-256color"
+    # `shell` may be a relative path; spawn() below changes the working directory,
+    # so resolve it against the repository root before starting the process.
+    binary = os.path.abspath(shell)
+    env["DUCKDB_HISTORY"] = str(history)
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    process = None
+
+    def drain(seconds):
+        # Answer the terminal capability queries that the line editor waits for.
+        end = time.time() + seconds
+        while time.time() < end:
+            readable, _, _ = select.select([master], [], [], 0.05)
+            if master not in readable:
+                continue
+            try:
+                output = os.read(master, 65536)
+            except OSError:
+                return
+            if b"\x1b]11;?" in output:
+                os.write(master, b"\x1b]11;rgb:0000/0000/0000\x07")
+            if b"\x1b[c" in output:
+                os.write(master, b"\x1b[?1;2c")
+            if b"\x1b[6n" in output:
+                os.write(master, b"\x1b[1;1R")
+
+    try:
+        process = subprocess.Popen(
+            [binary, "-no-init", "-interactive"],
+            cwd=tmp_path,
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            env=env,
+        )
+        os.close(slave)
+        slave = None
+        drain(2.0)
+        os.write(master, b"describe from 'ta")
+        drain(0.2)
+        os.write(master, b"';")
+        drain(0.2)
+        # Move the cursor in front of the quote so the quote and semicolon follow the cursor.
+        os.write(master, b"\x1b[D\x1b[D")
+        drain(0.2)
+        # The first <tab> applies the longest common prefix of the file completions.
+        os.write(master, b"\t")
+        drain(1.0)
+        # Finish the file name without another <tab> and submit the line.
+        os.write(master, b"two.parquet")
+        drain(0.3)
+        os.write(master, b"\r")
+        drain(0.5)
+        # Canceling also ends the pending statement if the completion lost the semicolon.
+        os.write(master, b"\x03")
+        drain(0.5)
+        os.write(master, b".exit\r")
+        drain(1.0)
+        process.wait(timeout=10)
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        if slave is not None:
+            os.close(slave)
+        os.close(master)
+
+    assert history.is_file()
+    saved = history.read_text(encoding="utf-8")
+    assert "describe from 'table_two.parquet';" in saved, saved
+
+
 # fmt: on
+
+
+def run_interactive(shell, cwd, keys, history):
+    import pty
+    import select
+    import time
+
+    def drain(fd, wait_for_prompt=False):
+        # read until the shell is idle, answering cursor position queries like a terminal would
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.3)
+            if not ready:
+                if wait_for_prompt:
+                    continue
+                return
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            if b"\x1b[6n" in chunk:
+                # the shell queries the cursor position when it shows the prompt
+                wait_for_prompt = False
+                os.write(fd, b"\x1b[1;1R")
+
+    env = ShellTest(shell).get_environment()
+    env["TERM"] = "xterm"
+    env["DUCKDB_HISTORY"] = str(history)
+    master, slave = pty.openpty()
+    process = subprocess.Popen(
+        [os.path.abspath(shell), "-no-init", "-dark-mode"], stdin=slave, stdout=slave, stderr=slave, cwd=cwd, env=env
+    )
+    os.close(slave)
+    try:
+        drain(master, wait_for_prompt=True)
+        # submit the line, terminating it with an extra ';' if the completion dropped it
+        for key in keys + ["\r", ";\r", ".exit\r"]:
+            os.write(master, key.encode())
+            drain(master)
+        process.wait(timeout=30)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        os.close(master)
+    return history.read_text().splitlines()[0]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires a POSIX pseudo-terminal")
+@pytest.mark.parametrize(
+    "keys, expected",
+    [
+        # 'describe from '|';' - complete the common prefix, then cycle to the first match
+        (["describe from '';", "\x1b[D" * 2, "ta", "\t", "\t"], "describe from 'table_one.parquet';"),
+        # complete the common prefix, then narrow down by typing
+        (["describe from '';", "\x1b[D" * 2, "ta", "\t", "tw", "\t"], "describe from 'table_two.parquet';"),
+        # longer text after the cursor
+        (
+            ["describe from ''; select 42;", "\x1b[D" * 13, "ta", "\t", "th", "\t"],
+            "describe from 'table_three.parquet'; select 42;",
+        ),
+    ],
+)
+def test_tab_complete_keeps_text_after_cursor(shell, autocomplete_extension, tmp_path, keys, expected):
+    for name in ["table_one.parquet", "table_two.parquet", "table_three.parquet"]:
+        (tmp_path / name).touch()
+    assert run_interactive(shell, tmp_path, keys, tmp_path / "history") == expected

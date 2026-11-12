@@ -9,6 +9,7 @@
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "parquet_metadata.hpp"
+#include "parquet_page_index.hpp"
 #include "parquet_statistics.hpp"
 #include "duckdb/common/multi_file/multi_file_reader.hpp"
 #include "duckdb/common/multi_file/multi_file_list.hpp"
@@ -24,6 +25,7 @@
 #include "duckdb/common/multi_file/multi_file_data.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/open_file_info.hpp"
+#include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/pair.hpp"
@@ -79,9 +81,9 @@ struct ParquetMetadataFilePaths {
 };
 
 struct ParquetMetaDataBindData : public TableFunctionData {
-	unique_ptr<ParquetMetadataFilePaths> file_paths;
+	shared_ptr<MultiFileList> file_list;
 
-	//! The file list is consumed by the first execution
+	//! The file list is a glob snapshot taken at bind time
 	bool SupportStatementCache() const override {
 		return false;
 	}
@@ -98,7 +100,8 @@ enum class ParquetMetadataOperatorType : uint8_t {
 	KEY_VALUE_META_DATA,
 	FILE_META_DATA,
 	BLOOM_PROBE,
-	FULL_METADATA
+	FULL_METADATA,
+	PAGE_INDEX
 };
 
 class ParquetMetadataFileProcessor {
@@ -366,6 +369,18 @@ void ParquetMetaDataOperator::BindSchema<ParquetMetadataOperatorType::META_DATA>
 
 	names.emplace_back("stats_nan_count");
 	return_types.emplace_back(LogicalType::BIGINT);
+
+	names.emplace_back("column_index_offset");
+	return_types.emplace_back(LogicalType::BIGINT);
+
+	names.emplace_back("column_index_length");
+	return_types.emplace_back(LogicalType::BIGINT);
+
+	names.emplace_back("offset_index_offset");
+	return_types.emplace_back(LogicalType::BIGINT);
+
+	names.emplace_back("offset_index_length");
+	return_types.emplace_back(LogicalType::BIGINT);
 }
 
 static Value ConvertParquetStats(const LogicalType &type, const ParquetColumnSchema &schema_ele, bool stats_is_set,
@@ -475,6 +490,10 @@ void ParquetRowGroupMetadataProcessor::ReadRow(vector<reference<Vector>> &output
 	idx_t row_group_idx = row_idx / column_schemas.size();
 
 	auto &row_group = meta_data->row_groups[row_group_idx];
+	if (row_group.columns.size() != column_schemas.size()) {
+		throw DataCorruptionException("Parquet row group %llu column count mismatch (expected %llu, found %llu)",
+		                              row_group_idx, column_schemas.size(), row_group.columns.size());
+	}
 
 	auto &column = row_group.columns[col_idx];
 	auto &column_schema = column_schemas[col_idx];
@@ -499,7 +518,8 @@ void ParquetRowGroupMetadataProcessor::ReadRow(vector<reference<Vector>> &output
 	// num_values
 	output[7].get().Append(Value::BIGINT(col_meta.num_values));
 	// path_in_schema
-	output[8].get().Append(StringUtil::Join(col_meta.path_in_schema, ", "));
+	output[8].get().Append(StringUtil::Join(col_meta.path_in_schema, ", ",
+	                                        [](const duckdb_parquet::ParquetString &part) { return string(part); }));
 	// type
 	output[9].get().Append(ConvertParquetElementToString(col_meta.type));
 	// stats_min
@@ -537,8 +557,8 @@ void ParquetRowGroupMetadataProcessor::ReadRow(vector<reference<Vector>> &output
 	// key_value_metadata
 	vector<Value> map_keys, map_values;
 	for (auto &entry : col_meta.key_value_metadata) {
-		map_keys.push_back(Value::BLOB_RAW(entry.key));
-		map_values.push_back(Value::BLOB_RAW(entry.value));
+		map_keys.push_back(Value::BLOB_RAW(string(entry.key)));
+		map_values.push_back(Value::BLOB_RAW(string(entry.value)));
 	}
 	output[23].get().Append(
 	    Value::MAP(LogicalType::BLOB, LogicalType::BLOB, std::move(map_keys), std::move(map_values)));
@@ -563,6 +583,14 @@ void ParquetRowGroupMetadataProcessor::ReadRow(vector<reference<Vector>> &output
 	output[31].get().Append(ConvertParquetEncodingStats(col_meta));
 	// stats_nan_count
 	output[32].get().Append(ParquetElementBigint(stats.nan_count, stats.__isset.nan_count));
+	// column_index_offset
+	output[33].get().Append(ParquetElementBigint(column.column_index_offset, column.__isset.column_index_offset));
+	// column_index_length
+	output[34].get().Append(ParquetElementBigint(column.column_index_length, column.__isset.column_index_length));
+	// offset_index_offset
+	output[35].get().Append(ParquetElementBigint(column.offset_index_offset, column.__isset.offset_index_offset));
+	// offset_index_length
+	output[36].get().Append(ParquetElementBigint(column.offset_index_length, column.__isset.offset_index_length));
 }
 
 //===--------------------------------------------------------------------===//
@@ -707,7 +735,7 @@ void ParquetSchemaProcessor::ReadRow(vector<reference<Vector>> &output, idx_t ro
 	// file_name
 	output[0].get().Append(reader.file.path);
 	// name
-	output[1].get().Append(column.name);
+	output[1].get().Append(string(column.name));
 	// type
 	output[2].get().Append(ParquetElementString(column.type, column.__isset.type));
 	// type_length
@@ -765,8 +793,8 @@ void ParquetKeyValueMetadataProcessor::ReadRow(vector<reference<Vector>> &output
 	auto &entry = meta_data->key_value_metadata[row_idx];
 
 	output[0].get().Append(Value(reader.file.path));
-	output[1].get().Append(Value::BLOB_RAW(entry.key));
-	output[2].get().Append(Value::BLOB_RAW(entry.value));
+	output[1].get().Append(Value::BLOB_RAW(string(entry.key)));
+	output[2].get().Append(Value::BLOB_RAW(string(entry.value)));
 }
 
 //===--------------------------------------------------------------------===//
@@ -871,7 +899,6 @@ private:
 	optional_idx probe_column_idx;
 
 	unique_ptr<duckdb_apache::thrift::protocol::TCompactProtocolT<ThriftFileTransport>> protocol;
-	optional_ptr<Allocator> allocator;
 	unique_ptr<ExpressionFilter> filter;
 	optional<ParquetBloomFilterHashStrategy> hash_strategy;
 };
@@ -909,7 +936,6 @@ void ParquetBloomProbeProcessor::InitializeInternal(ClientContext &context, Parq
 
 	auto transport = duckdb_base_std::make_shared<ThriftFileTransport>(context, reader.GetHandle(), false);
 	protocol = make_uniq<duckdb_apache::thrift::protocol::TCompactProtocolT<ThriftFileTransport>>(std::move(transport));
-	allocator = &BufferAllocator::Get(context);
 	auto column_type = reader.GetColumns()[probe_column_idx.GetIndex()].type;
 	filter = ExpressionFilter::CreateComparisonFilter(ExpressionType::COMPARE_EQUAL,
 	                                                  probe_constant.CastAs(context, column_type));
@@ -931,12 +957,263 @@ void ParquetBloomProbeProcessor::ReadRow(vector<reference<Vector>> &output, idx_
 
 	auto &column_schema = reader.root_schema->children[probe_column_idx.GetIndex()];
 	auto bloom_excludes =
-	    hash_strategy && ParquetStatisticsUtils::BloomFilterExcludes(*filter, column.meta_data, *protocol, *allocator,
-	                                                                 column_schema, *hash_strategy);
+	    hash_strategy && ParquetStatisticsUtils::BloomFilterExcludes(*filter, column.meta_data, *protocol,
+	                                                                 reader.allocator, column_schema, *hash_strategy);
 
 	output[0].get().Append(Value(reader.file.path));
 	output[1].get().Append(Value::BIGINT(NumericCast<int64_t>(row_idx)));
 	output[2].get().Append(Value::BOOLEAN(bloom_excludes));
+}
+
+//===--------------------------------------------------------------------===//
+// Page Index
+//===--------------------------------------------------------------------===//
+
+//! One row per data page: the OffsetIndex (location, first row) and ColumnIndex (bounds, null count) entries
+class ParquetPageIndexProcessor : public ParquetMetadataFileProcessor {
+public:
+	void InitializeInternal(ClientContext &context, ParquetReader &reader) override;
+	idx_t TotalRowCount(ParquetReader &reader) override;
+	void ReadRow(vector<reference<Vector>> &output, idx_t row_idx, ParquetReader &reader) override;
+
+private:
+	struct ColumnChunkPageIndex {
+		idx_t row_group_idx;
+		idx_t column_idx;
+		//! The first output row of this column chunk
+		idx_t first_row;
+		idx_t page_count;
+		bool has_column_index = false;
+		duckdb_parquet::ColumnIndex column_index;
+		bool has_offset_index = false;
+		duckdb_parquet::OffsetIndex offset_index;
+
+		explicit ColumnChunkPageIndex(ArenaAllocator &arena) : column_index(arena), offset_index(arena) {
+		}
+	};
+
+	vector<ParquetColumnSchema> column_schemas;
+	//! Backs the Thrift page index objects of the file
+	ArenaAllocator arena {Allocator::DefaultAllocator()};
+	//! The column chunks that have a page index, in file order
+	vector<ColumnChunkPageIndex> chunks;
+	idx_t total_rows = 0;
+	//! The chunk the previous row came from - rows are read in order
+	idx_t current_chunk = 0;
+};
+
+template <>
+void ParquetMetaDataOperator::BindSchema<ParquetMetadataOperatorType::PAGE_INDEX>(vector<LogicalType> &return_types,
+                                                                                  vector<Identifier> &names) {
+	names.emplace_back("file_name");
+	return_types.emplace_back(LogicalType::VARCHAR);
+
+	names.emplace_back("row_group_id");
+	return_types.emplace_back(LogicalType::BIGINT);
+
+	names.emplace_back("column_id");
+	return_types.emplace_back(LogicalType::BIGINT);
+
+	names.emplace_back("path_in_schema");
+	return_types.emplace_back(LogicalType::VARCHAR);
+
+	names.emplace_back("page_id");
+	return_types.emplace_back(LogicalType::BIGINT);
+
+	names.emplace_back("page_offset");
+	return_types.emplace_back(LogicalType::BIGINT);
+
+	names.emplace_back("compressed_page_size");
+	return_types.emplace_back(LogicalType::BIGINT);
+
+	names.emplace_back("first_row_index");
+	return_types.emplace_back(LogicalType::BIGINT);
+
+	names.emplace_back("num_rows");
+	return_types.emplace_back(LogicalType::BIGINT);
+
+	names.emplace_back("null_page");
+	return_types.emplace_back(LogicalType::BOOLEAN);
+
+	names.emplace_back("min_value");
+	return_types.emplace_back(LogicalType::VARCHAR);
+
+	names.emplace_back("max_value");
+	return_types.emplace_back(LogicalType::VARCHAR);
+
+	names.emplace_back("null_count");
+	return_types.emplace_back(LogicalType::BIGINT);
+
+	names.emplace_back("boundary_order");
+	return_types.emplace_back(LogicalType::VARCHAR);
+}
+
+void ParquetPageIndexProcessor::InitializeInternal(ClientContext &context, ParquetReader &reader) {
+	auto meta_data = reader.GetFileMetadata();
+	column_schemas.clear();
+	for (idx_t schema_idx = 0; schema_idx < meta_data->schema.size(); schema_idx++) {
+		auto &schema_element = meta_data->schema[schema_idx];
+		if (schema_element.num_children > 0) {
+			continue;
+		}
+		ParquetColumnSchema column_schema;
+		column_schema.type = reader.DeriveLogicalType(schema_element, column_schema);
+		column_schemas.push_back(std::move(column_schema));
+	}
+
+	chunks.clear();
+	total_rows = 0;
+	current_chunk = 0;
+	if (reader.parquet_options.encryption_config) {
+		// the page index of an encrypted file is encrypted as well - not supported (yet)
+		return;
+	}
+	auto transport = duckdb_base_std::make_shared<ThriftFileTransport>(context, reader.GetHandle(), false);
+	auto &trans = *transport;
+	duckdb_apache::thrift::protocol::TCompactProtocolT<ThriftFileTransport> protocol(std::move(transport));
+	for (idx_t row_group_idx = 0; row_group_idx < meta_data->row_groups.size(); row_group_idx++) {
+		auto &row_group = meta_data->row_groups[row_group_idx];
+		// the indexes of a row group are stored next to each other: fetch them in one go
+		idx_t index_begin = NumericLimits<idx_t>::Maximum();
+		idx_t index_end = 0;
+		for (auto &column : row_group.columns) {
+			if (ParquetPageIndexUtils::HasColumnIndex(column)) {
+				const auto begin = NumericCast<idx_t>(column.column_index_offset);
+				index_begin = MinValue(index_begin, begin);
+				index_end = MaxValue(index_end, begin + NumericCast<idx_t>(column.column_index_length));
+			}
+			if (ParquetPageIndexUtils::HasOffsetIndex(column)) {
+				const auto begin = NumericCast<idx_t>(column.offset_index_offset);
+				index_begin = MinValue(index_begin, begin);
+				index_end = MaxValue(index_end, begin + NumericCast<idx_t>(column.offset_index_length));
+			}
+		}
+		if (index_end == 0) {
+			continue;
+		}
+		if (index_end > trans.GetSize()) {
+			throw InvalidInputException(
+			    "Failed to read file \"%s\": metadata is corrupt. Page index lies outside the file", reader.file.path);
+		}
+		trans.Prefetch(index_begin, index_end - index_begin);
+		for (idx_t column_idx = 0; column_idx < row_group.columns.size(); column_idx++) {
+			auto &column = row_group.columns[column_idx];
+			ColumnChunkPageIndex chunk(arena);
+			chunk.row_group_idx = row_group_idx;
+			chunk.column_idx = column_idx;
+			chunk.first_row = total_rows;
+			chunk.page_count = 0;
+			if (ParquetPageIndexUtils::HasOffsetIndex(column)) {
+				ParquetPageIndexUtils::ReadOffsetIndex(protocol, column, chunk.offset_index);
+				chunk.has_offset_index = true;
+				chunk.page_count = chunk.offset_index.page_locations.size();
+			}
+			if (ParquetPageIndexUtils::HasColumnIndex(column)) {
+				ParquetPageIndexUtils::ReadColumnIndex(protocol, column, chunk.column_index);
+				chunk.has_column_index = true;
+				chunk.page_count = MaxValue<idx_t>(chunk.page_count, chunk.column_index.null_pages.size());
+			}
+			if (chunk.page_count == 0) {
+				continue;
+			}
+			total_rows += chunk.page_count;
+			chunks.push_back(std::move(chunk));
+		}
+		trans.ClearPrefetch();
+	}
+}
+
+idx_t ParquetPageIndexProcessor::TotalRowCount(ParquetReader &reader) {
+	return total_rows;
+}
+
+void ParquetPageIndexProcessor::ReadRow(vector<reference<Vector>> &output, idx_t row_idx, ParquetReader &reader) {
+	auto meta_data = reader.GetFileMetadata();
+	if (current_chunk >= chunks.size() || row_idx < chunks[current_chunk].first_row) {
+		current_chunk = 0;
+	}
+	while (chunks[current_chunk].first_row + chunks[current_chunk].page_count <= row_idx) {
+		current_chunk++;
+	}
+	auto &chunk = chunks[current_chunk];
+	const auto page_idx = row_idx - chunk.first_row;
+	auto &row_group = meta_data->row_groups[chunk.row_group_idx];
+	auto &column = row_group.columns[chunk.column_idx];
+	auto &column_schema = column_schemas[chunk.column_idx];
+
+	// file_name
+	output[0].get().Append(Value(reader.file.path));
+	// row_group_id
+	output[1].get().Append(Value::BIGINT(NumericCast<int64_t>(chunk.row_group_idx)));
+	// column_id
+	output[2].get().Append(Value::BIGINT(NumericCast<int64_t>(chunk.column_idx)));
+	// path_in_schema
+	output[3].get().Append(
+	    Value(StringUtil::Join(column.meta_data.path_in_schema, ", ",
+	                           [](const duckdb_parquet::ParquetString &part) { return string(part); })));
+	// page_id
+	output[4].get().Append(Value::BIGINT(NumericCast<int64_t>(page_idx)));
+
+	const bool has_location = chunk.has_offset_index && page_idx < chunk.offset_index.page_locations.size();
+	Value offset;
+	Value compressed_page_size;
+	Value first_row_index;
+	Value num_rows;
+	if (has_location) {
+		auto &locations = chunk.offset_index.page_locations;
+		auto &location = locations[page_idx];
+		offset = Value::BIGINT(location.offset);
+		compressed_page_size = Value::BIGINT(location.compressed_page_size);
+		first_row_index = Value::BIGINT(location.first_row_index);
+		const auto next_row =
+		    page_idx + 1 < locations.size() ? locations[page_idx + 1].first_row_index : row_group.num_rows;
+		int64_t page_row_count;
+		if (!TrySubtractOperator::Operation(next_row, location.first_row_index, page_row_count)) {
+			throw DataCorruptionException("Failed to read file \"%s\": metadata is corrupt. Page row count overflows",
+			                              reader.file.path);
+		}
+		num_rows = Value::BIGINT(page_row_count);
+	}
+	// page_offset
+	output[5].get().Append(offset);
+	// compressed_page_size
+	output[6].get().Append(compressed_page_size);
+	// first_row_index
+	output[7].get().Append(first_row_index);
+	// num_rows
+	output[8].get().Append(num_rows);
+
+	const bool has_bounds = chunk.has_column_index && page_idx < chunk.column_index.null_pages.size() &&
+	                        page_idx < chunk.column_index.min_values.size() &&
+	                        page_idx < chunk.column_index.max_values.size();
+	Value null_page;
+	Value min_value;
+	Value max_value;
+	Value null_count;
+	Value boundary_order;
+	if (has_bounds) {
+		auto &column_index = chunk.column_index;
+		const bool is_null_page = column_index.null_pages[page_idx];
+		null_page = Value::BOOLEAN(is_null_page);
+		min_value =
+		    ConvertParquetStats(column_schema.type, column_schema, !is_null_page, column_index.min_values[page_idx]);
+		max_value =
+		    ConvertParquetStats(column_schema.type, column_schema, !is_null_page, column_index.max_values[page_idx]);
+		if (column_index.__isset.null_counts && page_idx < column_index.null_counts.size()) {
+			null_count = Value::BIGINT(column_index.null_counts[page_idx]);
+		}
+		boundary_order = Value(ConvertParquetElementToString(column_index.boundary_order));
+	}
+	// null_page
+	output[9].get().Append(null_page);
+	// min_value
+	output[10].get().Append(min_value);
+	// max_value
+	output[11].get().Append(max_value);
+	// null_count
+	output[12].get().Append(null_count);
+	// boundary_order
+	output[13].get().Append(boundary_order);
 }
 
 //===--------------------------------------------------------------------===//
@@ -1079,10 +1356,8 @@ unique_ptr<FunctionData> ParquetMetaDataOperator::Bind(ClientContext &context, T
 		result = std::move(probe_bind_data);
 	}
 
-	result->file_paths = make_uniq<ParquetMetadataFilePaths>();
-	result->file_paths->file_list = multi_file_reader->CreateFileList(context, input.inputs[0], glob_input);
-	D_ASSERT(!result->file_paths->file_list->IsEmpty());
-	result->file_paths->file_list->InitializeScan(result->file_paths->scan_data);
+	result->file_list = multi_file_reader->CreateFileList(context, input.inputs[0], glob_input);
+	D_ASSERT(!result->file_list->IsEmpty());
 
 	BindSchema<OP_TYPE>(return_types, names);
 
@@ -1091,8 +1366,13 @@ unique_ptr<FunctionData> ParquetMetaDataOperator::Bind(ClientContext &context, T
 
 unique_ptr<GlobalTableFunctionState> ParquetMetaDataOperator::InitGlobal(ClientContext &context,
                                                                          TableFunctionInitInput &input) {
-	auto &bind_data = input.bind_data->CastNoConst<ParquetMetaDataBindData>();
-	return make_uniq<ParquetMetadataGlobalState>(std::move(bind_data.file_paths), context);
+	auto &bind_data = input.bind_data->Cast<ParquetMetaDataBindData>();
+	// The file cursor is scan state: a scan can be initialized multiple times and must restart from the
+	// first file each time.
+	auto file_paths = make_uniq<ParquetMetadataFilePaths>();
+	file_paths->file_list = bind_data.file_list;
+	file_paths->file_list->InitializeScan(file_paths->scan_data);
+	return make_uniq<ParquetMetadataGlobalState>(std::move(file_paths), context);
 }
 
 template <ParquetMetadataOperatorType OP_TYPE>
@@ -1124,6 +1404,9 @@ unique_ptr<LocalTableFunctionState> ParquetMetaDataOperator::InitLocal(Execution
 		res->processor = make_uniq<FullMetadataProcessor>();
 		break;
 	}
+	case ParquetMetadataOperatorType::PAGE_INDEX:
+		res->processor = make_uniq<ParquetPageIndexProcessor>();
+		break;
 	default:
 		throw InternalException("Unsupported ParquetMetadataOperatorType");
 	}
@@ -1245,6 +1528,16 @@ ParquetBloomProbeFunction::ParquetBloomProbeFunction()
                     ParquetMetaDataOperator::Bind<ParquetMetadataOperatorType::BLOOM_PROBE>,
                     ParquetMetaDataOperator::InitGlobal,
                     ParquetMetaDataOperator::InitLocal<ParquetMetadataOperatorType::BLOOM_PROBE>) {
+	table_scan_progress = ParquetMetaDataOperator::Progress;
+	get_partition_data = ParquetMetaDataOperator::GetPartitionData;
+}
+
+ParquetPageIndexFunction::ParquetPageIndexFunction()
+    : TableFunction("parquet_page_index", FunctionSignature().AddPositionalOnly("path", LogicalType::VARCHAR),
+                    ParquetMetaDataOperator::Function,
+                    ParquetMetaDataOperator::Bind<ParquetMetadataOperatorType::PAGE_INDEX>,
+                    ParquetMetaDataOperator::InitGlobal,
+                    ParquetMetaDataOperator::InitLocal<ParquetMetadataOperatorType::PAGE_INDEX>) {
 	table_scan_progress = ParquetMetaDataOperator::Progress;
 	get_partition_data = ParquetMetaDataOperator::GetPartitionData;
 }

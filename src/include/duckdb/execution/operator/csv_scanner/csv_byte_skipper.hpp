@@ -47,13 +47,11 @@ public:
 	//! Skips bytes that match no stop pattern, `pos` ends on a candidate stop, on `limit`, or in the buffer tail
 	inline SkippedTo SkipToCandidate(const idx_t limit, idx_t &pos) {
 		while (pos < limit) {
-			if (pos < block_start || pos >= block_end) {
-				if (pos + SwarBlock::SIZE > buffer_size) {
-					return SkippedTo::TAIL;
-				}
-				MaskBlock(pos);
+			uint64_t candidates;
+			idx_t block_end_p;
+			if (!BlockCandidates(pos, candidates, block_end_p)) {
+				return SkippedTo::TAIL;
 			}
-			const uint64_t candidates = stop_mask >> (pos - block_start);
 			if (candidates) {
 				const idx_t candidate = pos + CountZeros<uint64_t>::Trailing(candidates);
 				if (candidate < limit) {
@@ -64,6 +62,19 @@ public:
 			pos = MinValue<idx_t>(candidates ? limit : block_end, limit);
 		}
 		return SkippedTo::CANDIDATE_NOT_FOUND;
+	}
+
+	//! The stop candidates of the block holding `pos`, bit i is byte pos + i, false in the buffer tail
+	inline bool BlockCandidates(const idx_t pos, uint64_t &candidates, idx_t &block_end_p) {
+		if (pos < block_start || pos >= block_end) {
+			if (pos + SwarBlock::SIZE > buffer_size) {
+				return false;
+			}
+			MaskBlock(pos);
+		}
+		candidates = stop_mask >> (pos - block_start);
+		block_end_p = block_end;
+		return true;
 	}
 
 	//! Skips every byte `skip_table` skips, `pos` ends on a stop or on the byte before `to_pos`

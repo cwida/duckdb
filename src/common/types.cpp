@@ -4,6 +4,7 @@
 #include "duckdb/catalog/catalog_entry/type_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
 #include "duckdb/catalog/default/default_types.hpp"
+#include "duckdb/common/array.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/logical_type_info.hpp"
@@ -695,6 +696,19 @@ string LogicalType::ToString() const {
 			result += StringUtil::Format("GEOMETRY(%s)", SQLString(crs.GetDefinition()));
 			break;
 		}
+		case LogicalTypeId::VARCHAR: {
+			// a collation is part of the type's identity: the constructor form parses in type position
+			auto &string_type_info = type.GetTypeInfo();
+			if (string_type_info.type == LogicalTypeInfoType::STRING_TYPE_INFO) {
+				auto &string_info = string_type_info.Cast<StringTypeInfo>();
+				if (!string_info.collation.empty()) {
+					result += StringUtil::Format("VARCHAR(%s)", SQLString(string_info.collation));
+					break;
+				}
+			}
+			result += "VARCHAR";
+			break;
+		}
 		default:
 			result += EnumUtil::ToString(type.id());
 			break;
@@ -896,7 +910,7 @@ bool LogicalType::SupportsRegularUpdate() const {
 	}
 }
 
-bool LogicalType::GetDecimalProperties(uint8_t &width, uint8_t &scale) const {
+bool LogicalType::GetDecimalProperties(uint32_t &width, uint32_t &scale) const {
 	switch (id()) {
 	case LogicalTypeId::SQLNULL:
 		width = 0;
@@ -986,8 +1000,8 @@ static LogicalType DecimalSizeCheck(const LogicalType &left, const LogicalType &
 	auto width = DecimalType::GetWidth(right);
 	auto scale = DecimalType::GetScale(right);
 
-	uint8_t other_width;
-	uint8_t other_scale;
+	uint32_t other_width;
+	uint32_t other_scale;
 	bool success = left.GetDecimalProperties(other_width, other_scale);
 	if (!success) {
 		throw InternalException("Type provided to DecimalSizeCheck was not a numeric type");
@@ -995,7 +1009,7 @@ static LogicalType DecimalSizeCheck(const LogicalType &left, const LogicalType &
 	D_ASSERT(other_scale == 0);
 	const auto effective_width = width - scale;
 	if (other_width > effective_width) {
-		auto new_width = NumericCast<uint8_t>(other_width + scale);
+		uint32_t new_width = other_width + scale;
 		//! Cap the width at max, if an actual value exceeds this, an exception will be thrown later
 		if (new_width > DecimalType::MaxWidth()) {
 			new_width = DecimalType::MaxWidth();
@@ -1442,6 +1456,7 @@ void LogicalType::Serialize(Serializer &serializer) const {
 
 LogicalType LogicalType::Deserialize(Deserializer &deserializer) {
 	auto id = deserializer.ReadProperty<LogicalTypeId>(100, "id");
+	deserializer.CheckAllowed(id);
 	auto type_info = deserializer.ReadPropertyWithDefault<unique_ptr<LogicalTypeInfo>>(101, "type_info");
 	if (id == LogicalTypeId::LEGACY_AGGREGATE_STATE) {
 		// convert legacy aggregate state to blob on deserialize
@@ -1461,6 +1476,9 @@ LogicalType LogicalType::Deserialize(Deserializer &deserializer) {
 			throw SerializationException("Failed to deserialize type: invalid DECIMAL(%d, %d)", decimal_info.width,
 			                             decimal_info.scale);
 		}
+		if (id == LogicalTypeId::DECIMAL && type_info->alias.empty() && !type_info->extension_info) {
+			return DECIMAL(decimal_info.width, decimal_info.scale);
+		}
 	}
 	LogicalType result(id, std::move(type_info));
 	if (info_type != LogicalTypeInfoType::INVALID_TYPE_INFO && info_type != LogicalTypeInfoType::GENERIC_TYPE_INFO &&
@@ -1479,12 +1497,13 @@ LogicalType LogicalType::Deserialize(Deserializer &deserializer) {
 // Extra Type Info
 //===--------------------------------------------------------------------===//
 LogicalType LogicalType::Copy() const {
-	if (type_info_.get().type == LogicalTypeInfoType::INVALID_TYPE_INFO ||
-	    type_info_.get().type == LogicalTypeInfoType::ENUM_TYPE_INFO) {
+	auto &info = type_info_.get();
+	if (info.immortal || info.type == LogicalTypeInfoType::INVALID_TYPE_INFO ||
+	    info.type == LogicalTypeInfoType::ENUM_TYPE_INFO) {
 		// enum type info is kept shared to avoid rebuilding the dictionary lookup map
 		return *this;
 	}
-	return LogicalType(id(), type_info_.get().Copy());
+	return LogicalType(id(), info.Copy());
 }
 
 //! Copies the type info so it can be modified before being adopted by a new type
@@ -1530,26 +1549,48 @@ LogicalType LogicalType::WithExtensionInfo(unique_ptr<ExtensionTypeInfo> info) c
 //===--------------------------------------------------------------------===//
 // Decimal Type
 //===--------------------------------------------------------------------===//
-uint8_t DecimalType::GetWidth(const LogicalType &type) {
+uint32_t DecimalType::GetWidth(const LogicalType &type) {
 	D_ASSERT(type.id() == LogicalTypeId::DECIMAL);
 	auto &info = type.GetTypeInfo();
 	return info.Cast<DecimalTypeInfo>().width;
 }
 
-uint8_t DecimalType::GetScale(const LogicalType &type) {
+uint32_t DecimalType::GetScale(const LogicalType &type) {
 	D_ASSERT(type.id() == LogicalTypeId::DECIMAL);
 	auto &info = type.GetTypeInfo();
 	return info.Cast<DecimalTypeInfo>().scale;
 }
 
-uint8_t DecimalType::MaxWidth() {
+uint32_t DecimalType::MaxWidth() {
 	return DecimalWidth<hugeint_t>::max;
 }
 
-LogicalType LogicalType::DECIMAL(uint8_t width, uint8_t scale) {
+static constexpr idx_t DecimalTypeInfoIndex(idx_t width, idx_t scale) {
+	return (width - 1) * (width + 2) / 2 + scale;
+}
+
+LogicalType LogicalType::DECIMAL(uint32_t width, uint32_t scale) {
 	D_ASSERT(width >= scale);
-	auto type_info = make_uniq<DecimalTypeInfo>(width, scale);
-	return LogicalType(LogicalTypeId::DECIMAL, std::move(type_info));
+	if (!Decimal::IsValidWidthScale(width, scale)) {
+		return LogicalType(LogicalTypeId::DECIMAL, make_uniq<DecimalTypeInfo>(width, scale));
+	}
+	constexpr idx_t TYPE_COUNT = DecimalTypeInfoIndex(Decimal::MAX_WIDTH_DECIMAL, Decimal::MAX_WIDTH_DECIMAL) + 1;
+	static const auto decimal_types = []() {
+		// Finish allocation before immortalizing any info so failed initialization releases partial allocations.
+		array<unique_ptr<LogicalTypeInfo>, TYPE_COUNT> infos;
+		for (uint32_t width = 1; width <= Decimal::MAX_WIDTH_DECIMAL; width++) {
+			for (uint32_t scale = 0; scale <= width; scale++) {
+				infos[DecimalTypeInfoIndex(width, scale)] = make_uniq<DecimalTypeInfo>(width, scale);
+			}
+		}
+		array<optional_ptr<const LogicalTypeInfo>, TYPE_COUNT> result;
+		for (idx_t i = 0; i < TYPE_COUNT; i++) {
+			auto type = CreateImmortal(LogicalTypeId::DECIMAL, std::move(infos[i]));
+			result[i] = type.GetTypeInfo();
+		}
+		return result;
+	}();
+	return LogicalType(*decimal_types[DecimalTypeInfoIndex(width, scale)]);
 }
 
 //===--------------------------------------------------------------------===//

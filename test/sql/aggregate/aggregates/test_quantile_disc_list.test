@@ -115,7 +115,7 @@ SELECT quantile_disc(('2021-01-01'::TIMESTAMP + interval (r) hour)::TIMESTAMPTZ,
 ['2021-02-11 15:00:00+00', '2021-07-28 07:00:00+00', '2022-01-10 23:00:00+00']
 
 statement ok
-pragma threads=4
+SET threads=4
 
 statement ok
 PRAGMA verify_parallelism

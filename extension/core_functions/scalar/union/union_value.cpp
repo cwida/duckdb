@@ -41,7 +41,7 @@ unique_ptr<FunctionData> UnionValueBind(BindScalarFunctionInput &input) {
 		throw BinderException("union_value takes exactly one argument");
 	}
 	child_list_t<LogicalType> union_members;
-	union_members.emplace_back(make_pair(input.GetArgumentNames()->at(0), arguments[0]->GetReturnType()));
+	union_members.emplace_back(make_pair(input.GetArgumentName(0), arguments[0]->GetReturnType()));
 
 	bound_function.SetReturnType(LogicalType::UNION(std::move(union_members)));
 	return make_uniq<VariableReturnBindData>(bound_function.GetReturnType());

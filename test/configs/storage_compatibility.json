@@ -18,6 +18,12 @@
   "skip_compiled": "true",
   "skip_tests": [
     {
+      "reason": "Older versions cannot read the types of the tables left behind by the test.",
+      "paths": [
+        "test/sql/index/art/create_index_time_zone_dependent.test"
+      ]
+    },
+    {
       "reason": "Contains explicit use of the memory catalog.",
       "paths": [
         "test/sql/show_select/test_describe_all.test",
@@ -57,7 +63,10 @@
     {
       "reason": "Time (NS) not supported (new type).",
       "paths": [
+        "test/sql/copy/parquet/bloom_filter_fallback_types.test",
+        "test/sql/aggregate/aggregates/summarize_nanosecond_types.test",
         "test/sql/optimizer/expression/test_time_ns_cast_comparison.test",
+        "test/optimizer/comparison_simplification_equality_casts.test",
         "test/fuzzer/duckfuzz/arg_minmax_by_decimal.test",
         "test/fuzzer/duckfuzz/array_distance.test",
         "test/fuzzer/duckfuzz/array_hash.test",
@@ -103,12 +112,16 @@
         "test/parquet/timens_parquet.test",
         "test/sql/types/time/test_time_ns.test",
         "test/sql/copy/parquet/int96_as.test",
-        "test/sql/copy/parquet/byte_stream_split_flba.test"
+        "test/sql/copy/parquet/byte_stream_split_flba.test",
+        "test/sql/function/timestamp/test_icu_time_bucket_timestamptz_ns.test",
+        "test/sql/types/timestamp/timestamptz_ns_timestamptz_comparison.test"
       ]
     },
     {
       "reason": "Expected forwards compatibility failure.",
       "paths": [
+        "test/sql/catalog/function/default_macro_shadowing.test",
+        "test/sql/catalog/function/default_table_macro_shadowing.test",
         "test/fuzzer/pedro/view_not_rebound_error_no_view_dependencies.test",
         "test/issues/rigger/assertion_scale.test",
         "test/issues/general/test_16662.test",
@@ -183,6 +196,9 @@
         "test/sql/aggregate/aggregates/test_combine_aggr.test",
         "test/sql/aggregate/aggregate_state_export/test_covar_export_state.test",
         "test/sql/aggregate/aggregate_state_export/test_state_export_opaque.test",
+        "test/sql/aggregate/aggregate_state_export/avg_timestamp_export_state.test",
+        "test/optimizer/statistics/statistics_cast_infinity.test",
+        "test/optimizer/statistics/statistics_monotone_infinity.test",
         "test/sql/types/struct/empty_struct.test",
         "test/optimizer/pushdown/cte_domain_join_filter.test",
         "test/sql/subquery/lateral/lateral_domain_join_filter_semantics.test",
@@ -238,6 +254,12 @@
         "test/sql/catalog/nested_schema/nested_export.test",
         "test/sql/catalog/nested_schema/nested_schema_limits.test",
         "test/sql/catalog/nested_schema/nested_wal_replay.test"
+      ]
+    },
+    {
+      "reason": "Checkpoint vacuum of indexed tables requires storage version v2.0.0.",
+      "paths": [
+        "test/sql/storage/checkpoint_vacuum_unbound_index.test"
       ]
     },
     {

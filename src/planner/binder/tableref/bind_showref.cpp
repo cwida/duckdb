@@ -5,6 +5,10 @@
 #include "duckdb/parser/tableref/showref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/function/aggregate/distributive_functions.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_column_data_get.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
@@ -60,6 +64,32 @@ BaseTableColumnInfo FindBaseTableColumn(LogicalOperator &op, ColumnBinding bindi
 			// if the projection at this index only has a column reference we can directly trace it to the base table
 			auto &bound_colref = expr.Cast<BoundColumnRefExpression>();
 			return FindBaseTableColumn(*projection.children[0], bound_colref.Binding());
+		}
+		break;
+	}
+	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+		// a group or the first value of a column keeps the constraints of that column (DISTINCT plans this way)
+		auto &aggregate = op.Cast<LogicalAggregate>();
+		if (aggregate.grouping_sets.size() > 1) {
+			// ROLLUP, CUBE and GROUPING SETS repeat keys and introduce NULLs
+			break;
+		}
+		optional_ptr<const Expression> source;
+		if (binding.table_index == aggregate.group_index) {
+			if (!aggregate.grouping_sets.empty() &&
+			    aggregate.grouping_sets[0].find(binding.column_index) == aggregate.grouping_sets[0].end()) {
+				break;
+			}
+			source = aggregate.GetExpression(binding);
+		} else if (binding.table_index == aggregate.aggregate_index && !aggregate.groups.empty()) {
+			// without groups first() returns NULL on empty input
+			auto &aggr = aggregate.GetExpression(binding).Cast<BoundAggregateExpression>();
+			if (aggr.Function().GetName() == FirstFun::Name && !aggr.GetFilter() && aggr.GetChildren().size() == 1) {
+				source = *aggr.GetChildren()[0];
+			}
+		}
+		if (source && source->GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+			return FindBaseTableColumn(*aggregate.children[0], source->Cast<BoundColumnRefExpression>().Binding());
 		}
 		break;
 	}

@@ -28,6 +28,7 @@ struct MetricDescriptor {
 static const MetricDescriptor internal_metrics[] = {
 	DUCKDB_METRIC(MetricQueryCPUTime),
 	DUCKDB_METRIC(MetricQuerySQL),
+	DUCKDB_METRIC(MetricQueryTotalBytesScanned),
 	DUCKDB_METRIC(MetricQueryTotalIntermediateRows),
 	DUCKDB_METRIC(MetricQueryTotalIntermediateSizeBytes),
 	DUCKDB_METRIC(MetricQueryTotalRowGroupsScanned),
@@ -54,6 +55,7 @@ static const MetricDescriptor internal_metrics[] = {
 	DUCKDB_METRIC(MetricStorageWaitingToAttachLatency),
 	DUCKDB_METRIC(MetricStorageWALReplayEntryCount),
 	DUCKDB_METRIC(MetricStorageWriteToWALLatency),
+	DUCKDB_METRIC(MetricOperatorBytesScanned),
 	DUCKDB_METRIC(MetricOperatorCPUTime),
 	DUCKDB_METRIC(MetricOperatorExtraInfo),
 	DUCKDB_METRIC(MetricOperatorIntermediateRows),
@@ -87,11 +89,15 @@ MetricsManager &MetricsManager::Get(DatabaseInstance &db) {
 	return db.GetMetricsManager();
 }
 
+// The name of an optimizer's timing, `optimizer.<type>`, as Optimizer::StartProfiler names it.
+static string OptimizerMetricName(const string &optimizer) {
+	return "optimizer." + StringUtil::Lower(EnumUtil::ToString(OptimizerTypeFromString(optimizer)));
+}
+
 idx_t MetricsManager::GetMetricCount() const {
 	lock_guard<mutex> guard(registered_metrics_lock);
 	idx_t count = sizeof(internal_metrics) / sizeof(MetricDescriptor) - 1;
-	count += static_cast<idx_t>(OptimizerType::PARTIAL_AGGREGATE_PUSHDOWN) -
-	         static_cast<idx_t>(OptimizerType::EXPRESSION_REWRITER) + 1;
+	count += ListAllOptimizers().size();
 	count += registered_metrics.size();
 	return count;
 }
@@ -107,11 +113,9 @@ vector<MetricInfo> MetricsManager::GetAllMetrics() const {
 		info.unit = internal_metrics[i].unit;
 		result.push_back(std::move(info));
 	}
-	// Optimizer metrics are generated at runtime from the OptimizerType enum.
-	for (auto opt = static_cast<uint32_t>(OptimizerType::EXPRESSION_REWRITER);
-	     opt <= static_cast<uint32_t>(OptimizerType::PARTIAL_AGGREGATE_PUSHDOWN); opt++) {
-		auto opt_type = static_cast<OptimizerType>(opt);
-		string opt_name = StringUtil::Lower(EnumUtil::ToString(opt_type));
+	// Optimizer metrics are generated at runtime from the list of optimizers.
+	for (auto &optimizer : ListAllOptimizers()) {
+		string opt_name = StringUtil::Lower(EnumUtil::ToString(OptimizerTypeFromString(optimizer)));
 		MetricInfo info;
 		info.name = "optimizer." + opt_name;
 		info.metric_type = "double";
@@ -126,7 +130,24 @@ vector<MetricInfo> MetricsManager::GetAllMetrics() const {
 	return result;
 }
 
+static bool IsInternalMetric(const string &name) {
+	for (idx_t i = 0; internal_metrics[i].name; i++) {
+		if (name == internal_metrics[i].name) {
+			return true;
+		}
+	}
+	for (auto &optimizer : ListAllOptimizers()) {
+		if (name == OptimizerMetricName(optimizer)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void MetricsManager::RegisterMetric(MetricInfo info) {
+	if (IsInternalMetric(info.name)) {
+		return; // the profiler's own metrics are already known, and are not set by extensions
+	}
 	lock_guard<mutex> guard(registered_metrics_lock);
 	for (const auto &existing : registered_metrics) {
 		if (existing.name == info.name) {
@@ -134,6 +155,16 @@ void MetricsManager::RegisterMetric(MetricInfo info) {
 		}
 	}
 	registered_metrics.push_back(std::move(info));
+}
+
+bool MetricsManager::IsRegisteredMetric(const string &name) const {
+	lock_guard<mutex> guard(registered_metrics_lock);
+	for (const auto &existing : registered_metrics) {
+		if (existing.name == name) {
+			return true;
+		}
+	}
+	return false;
 }
 
 } // namespace duckdb

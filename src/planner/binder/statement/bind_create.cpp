@@ -18,6 +18,7 @@
 #include "duckdb/parser/constraints/list.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
@@ -336,7 +337,7 @@ void Binder::SetCatalogLookupCallback(catalog_entry_callback_t callback) {
 }
 
 void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const Identifier &catalog_name,
-                      const Identifier &schema_name, optional_ptr<LogicalDependencyList> dependencies,
+                      const vector<Identifier> &schema_path, optional_ptr<LogicalDependencyList> dependencies,
                       const vector<Identifier> &aliases, vector<LogicalType> &result_types,
                       vector<Identifier> &result_names) {
 	auto view_binder = Binder::CreateBinder(context);
@@ -353,7 +354,7 @@ void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const
 	}
 	view_binder->SetCanContainNulls(true);
 
-	auto view_search_path = view_binder->GetSearchPath(catalog, schema_name, true);
+	auto view_search_path = view_binder->GetSearchPath(catalog, schema_path, true);
 	view_binder->entry_retriever.SetSearchPath(std::move(view_search_path));
 
 	auto copy = stmt.Copy();
@@ -395,8 +396,33 @@ void Binder::BindCreateViewInfo(CreateViewInfo &base) {
 	if (Settings::Get<EnableViewDependenciesSetting>(context)) {
 		dependencies = base.dependencies;
 	}
-	BindView(context, *base.query, base.GetQualifiedName().Catalog(), base.GetQualifiedName().Schema(), dependencies,
-	         base.aliases, base.types, base.names);
+	BindView(context, *base.query, base.GetQualifiedName().Catalog(), base.GetQualifiedName().SchemaPath(),
+	         dependencies, base.aliases, base.types, base.names);
+}
+
+void Binder::CheckMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &info) {
+	bool uses_returns = false;
+	for (auto &member : info.macros) {
+		if (member->return_type.id() != LogicalTypeId::UNKNOWN) {
+			uses_returns = true;
+			break;
+		}
+	}
+	if (!uses_returns) {
+		return;
+	}
+	auto &attached = catalog.GetAttached();
+	if (!attached.HasStorageManager()) {
+		return;
+	}
+	auto &storage_manager = attached.GetStorageManager();
+	const auto since = StorageCompatibility::FromString("v2.1.0").storage_version;
+	if (!info.temporary && !attached.IsTemporary() && !storage_manager.InMemory() &&
+	    storage_manager.GetStorageVersion() < since) {
+		string msg = "Macros with a declared RETURNS type are only supported for storage versions v2.1.0 and higher.\n";
+		msg += "Use an in-memory database, ATTACH with (STORAGE_VERSION v2.1.0), or create a TEMP macro";
+		throw BinderException(msg);
+	}
 }
 
 SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
@@ -445,6 +471,7 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 	// try to bind each of the included functions
 	vector_of_logical_type_set_t type_overloads;
 	auto &base = info.Cast<CreateMacroInfo>();
+	CheckMacroStorageVersion(catalog, base);
 	for (auto &function : base.macros) {
 		if (!store_types) {
 			for (const auto &type : function->types) {
@@ -504,6 +531,11 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			const_expr->SetAlias(param_name);
 			it.second = std::move(const_expr);
 			default_values[param_name] = std::move(default_val);
+		}
+
+		// Resolve a user type in the declared return type
+		if (function->return_type.id() == LogicalTypeId::UNBOUND) {
+			BindLogicalType(function->return_type);
 		}
 
 		// Resolve any user type arguments
@@ -842,6 +874,20 @@ unique_ptr<LogicalOperator> DuckCatalog::BindCreateIndex(Binder &binder, CreateS
 	return index_binder.BindCreateIndex(binder.context, std::move(create_index_info), table, std::move(plan), nullptr);
 }
 
+//! The literal of a CREATE SECRET type or provider without evaluating it, empty when it is not a plain literal
+static string SecretLiteral(const unique_ptr<ParsedExpression> &expr) {
+	if (!expr) {
+		return string();
+	}
+	if (expr->GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
+		return StringUtil::Lower(expr->Cast<ConstantExpression>().GetLiteral().ToValue().ToString());
+	}
+	if (expr->GetExpressionType() == ExpressionType::COLUMN_REF) {
+		return StringUtil::Lower(expr->Cast<ColumnRefExpression>().GetName().GetIdentifierName());
+	}
+	return string();
+}
+
 BoundStatement Binder::Bind(CreateStatement &stmt) {
 	BoundStatement result;
 	result.names = {"Count"};
@@ -1016,6 +1062,11 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 
 		auto &info = stmt.info->Cast<CreateSecretInfo>();
 
+		// Refuse before any option expression runs, so a refused statement has no side effects
+		SecretManager::ThrowIfSecretCreationDisabled(DatabaseInstance::GetDatabase(context),
+		                                             Identifier(SecretLiteral(info.type)),
+		                                             Identifier(SecretLiteral(info.provider)));
+
 		// We need to execute all expressions in the CreateSecretInfo to construct a CreateSecretInput
 		ConstantBinder default_binder(*this, context, "Secret Parameter");
 
@@ -1085,7 +1136,7 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 		                                       info.on_conflict,
 		                                       info.persist_type};
 
-		result = SecretManager::Get(context).BindCreateSecret(transaction, create_secret_input);
+		result = SecretManager::Get(context).BindCreateSecret(context.GetContext(), transaction, create_secret_input);
 		break;
 	}
 	case CatalogType::TRIGGER_ENTRY: {

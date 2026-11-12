@@ -1,0 +1,58 @@
+# name: test/sql/join/runtime_filter_route_effects.test
+# description: Filtering nested builds and window partitions preserves evaluation effects
+# group: [join]
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization,cte_filter_pusher,projection_pullup,projection_placement';
+
+statement ok
+CREATE TABLE a(id BIGINT,k BIGINT,s VARCHAR);
+
+statement ok
+INSERT INTO a VALUES (0,0,'bad'),(1,1,'1'),(2,2,'2');
+
+statement ok
+CREATE TABLE b AS SELECT id,k FROM a;
+
+statement ok
+CREATE TABLE c AS SELECT 1::BIGINT AS k;
+
+statement ok
+CREATE SEQUENCE route_seq;
+
+query II
+SELECT p.k,n FROM (
+    SELECT k,count(nextval('route_seq')) OVER (PARTITION BY k) AS n FROM a
+) p JOIN c ON p.k=c.k;
+----
+1	1
+
+query I
+SELECT currval('route_seq');
+----
+3
+
+statement ok
+UPDATE c SET k=999;
+
+statement ok
+CREATE OR REPLACE SEQUENCE route_seq;
+
+query I
+SELECT count(*) FROM (
+    SELECT b.k,a.v,count(*) OVER (PARTITION BY b.k) AS n
+    FROM (SELECT id,nextval('route_seq') AS v FROM a) a JOIN b USING(id)
+) p JOIN c ON p.k=c.k AND v>0 AND n>0;
+----
+0
+
+query I
+SELECT currval('route_seq');
+----
+3
+
+statement ok
+RESET disabled_optimizers;

@@ -67,7 +67,7 @@ Accessories | Google Merchandise Store	1	0
 # now test that the unnest optimizer rewrote the plan
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 query II
 EXPLAIN SELECT * FROM (VALUES ([1, 2, 3]), ([4, 5])) t(i), (SELECT UNNEST(i)) t2(j) ORDER BY 1, 2;

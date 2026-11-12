@@ -1,0 +1,209 @@
+# name: test/sql/json/table/read_json_case_insensitive_keys.test
+# description: read_json case_insensitive_keys matches object keys to the columns ignoring case
+# group: [table]
+
+require json
+
+statement ok
+COPY (SELECT * FROM (VALUES
+	('{"userid":1,"Url":"a"}'),
+	('{"userId":2,"URL":"b","user":{"userId":20}}'),
+	('{"USERID":3,"user":{"USERID":30}}')
+) t(line)) TO '{TEST_DIR}/case_keys.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t');
+
+# by default keys are matched exactly
+query III
+SELECT * FROM read_json('{TEST_DIR}/case_keys.json', columns := {userid: 'INTEGER', url: 'VARCHAR', "user": 'STRUCT(userid INTEGER)'}, format := 'newline_delimited');
+----
+1	NULL	NULL
+NULL	NULL	{'userid': NULL}
+NULL	NULL	{'userid': NULL}
+
+query III
+SELECT * FROM read_json('{TEST_DIR}/case_keys.json', columns := {userid: 'INTEGER', url: 'VARCHAR', "user": 'STRUCT(userid INTEGER)'}, format := 'newline_delimited', case_insensitive_keys := true);
+----
+1	a	NULL
+2	b	{'userid': 20}
+3	NULL	{'userid': 30}
+
+# the column names may be in any case too
+query II
+SELECT * FROM read_json('{TEST_DIR}/case_keys.json', columns := {UserId: 'INTEGER', URL: 'VARCHAR'}, format := 'newline_delimited', case_insensitive_keys := true);
+----
+1	a
+2	b
+3	NULL
+
+# projection pushdown
+query I
+SELECT "user".userid FROM read_json('{TEST_DIR}/case_keys.json', columns := {userid: 'INTEGER', url: 'VARCHAR', "user": 'STRUCT(userid INTEGER)'}, format := 'newline_delimited', case_insensitive_keys := true);
+----
+NULL
+20
+30
+
+query I
+SELECT userid FROM read_ndjson('{TEST_DIR}/case_keys.json', columns := {userid: 'INTEGER'}, case_insensitive_keys := true);
+----
+1
+2
+3
+
+# keys that differ only in case are duplicate keys
+statement ok
+COPY (SELECT * FROM (VALUES
+	('{"URL":1}'),
+	('{"URL":2,"Url":3}')
+) t(line)) TO '{TEST_DIR}/case_keys_duplicate.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t');
+
+statement error
+SELECT * FROM read_json('{TEST_DIR}/case_keys_duplicate.json', columns := {url: 'INTEGER'}, format := 'newline_delimited', case_insensitive_keys := true);
+----
+has duplicate key "Url"
+
+query I
+SELECT * FROM read_json('{TEST_DIR}/case_keys_duplicate.json', columns := {url: 'INTEGER'}, format := 'newline_delimited', case_insensitive_keys := true, ignore_errors := true);
+----
+1
+2
+
+# without case_insensitive_keys they are different keys
+query I
+SELECT * FROM read_json('{TEST_DIR}/case_keys_duplicate.json', columns := {URL: 'INTEGER'}, format := 'newline_delimited');
+----
+1
+2
+
+# multiple files are read with the same setting
+statement ok
+COPY (SELECT * FROM (VALUES ('{"USERID":4,"url":"d"}')) t(line)) TO '{TEST_DIR}/case_keys_2.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t');
+
+query II
+SELECT userid, url FROM read_json(['{TEST_DIR}/case_keys.json', '{TEST_DIR}/case_keys_2.json'], columns := {userid: 'INTEGER', url: 'VARCHAR'}, format := 'newline_delimited', case_insensitive_keys := true) ORDER BY userid;
+----
+1	a
+2	b
+3	NULL
+4	d
+
+# union_by_name with the columns given
+query II
+SELECT userid, url FROM read_json(['{TEST_DIR}/case_keys.json', '{TEST_DIR}/case_keys_2.json'], columns := {userid: 'INTEGER', url: 'VARCHAR'}, format := 'newline_delimited', case_insensitive_keys := true, union_by_name := true) ORDER BY userid;
+----
+1	a
+2	b
+3	NULL
+4	d
+
+#---------------------------------------------------------------------------
+# without columns: the detected schema has one column per key, whatever its spelling, named by the first spelling
+#---------------------------------------------------------------------------
+
+query III
+SELECT * FROM read_json('{TEST_DIR}/case_keys.json', case_insensitive_keys := true);
+----
+1	a	NULL
+2	b	{'userId': 20}
+3	NULL	{'userId': 30}
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_json('{TEST_DIR}/case_keys.json', case_insensitive_keys := true));
+----
+userid	BIGINT
+Url	VARCHAR
+user	STRUCT(userId BIGINT)
+
+# by default every spelling is a key of its own, and user / USER are two structs with differently spelled fields
+statement error
+SELECT * FROM read_json('{TEST_DIR}/case_keys.json');
+----
+Duplicate name
+
+# a key whose spellings have different types gets the type of a key with values of both types
+statement ok
+COPY (SELECT * FROM (VALUES ('{"Value":1}'), ('{"VALUE":"x"}')) t(line)) TO '{TEST_DIR}/case_keys_types.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t');
+
+query II
+SELECT Value, typeof(Value) FROM read_json('{TEST_DIR}/case_keys_types.json', case_insensitive_keys := true);
+----
+1	JSON
+"x"	JSON
+
+# structs in lists, and the array format
+statement ok
+COPY (SELECT * FROM (VALUES ('[{"Id":1,"Tags":[{"Key":"a"},{"KEY":"b"}]},{"ID":2,"tags":[]}]')) t(line)) TO '{TEST_DIR}/case_keys_array.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t');
+
+query II
+SELECT * FROM read_json('{TEST_DIR}/case_keys_array.json', case_insensitive_keys := true);
+----
+1	[{'Key': a}, {'Key': b}]
+2	[]
+
+# keys that differ only in case are duplicate keys
+statement error
+SELECT * FROM read_json('{TEST_DIR}/case_keys_duplicate.json', case_insensitive_keys := true);
+----
+has duplicate key "Url"
+
+query I
+SELECT * FROM read_json('{TEST_DIR}/case_keys_duplicate.json', case_insensitive_keys := true, ignore_errors := true);
+----
+1
+2
+
+# map inference merges the fields of the structs ignoring case too: Id / ID / id are one field, and the result is
+# the same as when every object spells the key the same way
+statement ok
+COPY (SELECT * FROM (VALUES ('{"a":{"Id":1},"b":{"ID":2},"c":{"id":3}}')) t(line)) TO '{TEST_DIR}/case_keys_map.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t');
+
+query II
+SELECT typeof(json), json FROM read_json('{TEST_DIR}/case_keys_map.json', case_insensitive_keys := true, map_inference_threshold := 1);
+----
+MAP(VARCHAR, MAP(VARCHAR, BIGINT))	{a={Id=1}, b={ID=2}, c={id=3}}
+
+# the spellings have different value types: Id / ID is one field, so the objects are not a uniform map but columns
+statement ok
+COPY (SELECT * FROM (VALUES ('{"a":{"Id":1},"b":{"ID":"s"}}')) t(line)) TO '{TEST_DIR}/case_keys_map_types.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t');
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_json('{TEST_DIR}/case_keys_map_types.json', case_insensitive_keys := true, map_inference_threshold := 1));
+----
+a	MAP(VARCHAR, BIGINT)
+b	MAP(VARCHAR, VARCHAR)
+
+# by default Id and ID are two fields of the merged struct, which can not be a struct
+statement error
+SELECT * FROM read_json('{TEST_DIR}/case_keys_map_types.json', map_inference_threshold := 1);
+----
+Duplicate name
+
+# the schemas of several files are combined, with and without union_by_name
+query III
+SELECT * FROM read_json(['{TEST_DIR}/case_keys.json', '{TEST_DIR}/case_keys_2.json'], case_insensitive_keys := true) ORDER BY 1;
+----
+1	a	NULL
+2	b	{'userId': 20}
+3	NULL	{'userId': 30}
+4	d	NULL
+
+query III
+SELECT * FROM read_json(['{TEST_DIR}/case_keys.json', '{TEST_DIR}/case_keys_2.json'], case_insensitive_keys := true, union_by_name := true) ORDER BY 1;
+----
+1	a	NULL
+2	b	{'userId': 20}
+3	NULL	{'userId': 30}
+4	d	NULL
+
+# the first spelling seen names the column: userid from the first file, not USERID from the second
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM read_json(['{TEST_DIR}/case_keys.json', '{TEST_DIR}/case_keys_2.json'], case_insensitive_keys := true, union_by_name := true));
+----
+userid
+Url
+user
+
+# by default union_by_name keeps a column per spelling
+query I
+SELECT count(*) FROM (DESCRIBE SELECT * FROM read_json(['{TEST_DIR}/case_keys_2.json', '{TEST_DIR}/case_keys_duplicate.json'], union_by_name := true));
+----
+4

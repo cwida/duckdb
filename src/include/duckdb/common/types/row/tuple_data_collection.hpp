@@ -53,8 +53,15 @@ private:
 
 //! TupleDataCollection represents a set of buffer-managed data stored in row format
 //! FIXME: rename to RowDataCollection after we phase it out
+//! The position of a chunk within a TupleDataCollection
+struct TupleDataChunkPosition {
+	idx_t segment_index = 0;
+	idx_t chunk_index = 0;
+};
+
 class TupleDataCollection {
 	friend class TupleDataChunkIterator;
+	friend class TupleDataChunkCursor;
 	friend class PartitionedTupleData;
 
 public:
@@ -82,6 +89,10 @@ public:
 	idx_t ChunkCount() const;
 	//! The size (in bytes) of the blocks held by this tuple data collection
 	idx_t SizeInBytes() const;
+	//! Logical row and heap bytes in a chunk, without pinning its blocks
+	idx_t GetChunkDataSize(idx_t chunk_idx) const;
+	//! Maximum average row bytes estimated from chunk parts, without pinning blocks
+	idx_t GetMaxChunkPartRowSize() const;
 	//! Buffer-manager memory charged for row and heap blocks
 	idx_t GetBlockAllocationSize() const;
 	//! Unpins all held pins
@@ -92,9 +103,10 @@ public:
 	vector<pair<idx_t, idx_t>> GetChunkRangesForPartition(idx_t partition_idx) const;
 	//! Gets the pointers to the start of every block
 	vector<data_ptr_t> GetRowBlockPointers();
-	//! Destroy blocks for an incremental chunk range; earlier chunks must no longer be read.
-	//! Blocks needed by chunks at or after chunk_idx_end are retained.
-	void DestroyChunks(idx_t chunk_idx_begin, idx_t chunk_idx_end);
+	//! Destroy blocks for an incremental chunk range, optionally bounded by row offsets within its boundary chunks.
+	//! Earlier rows must no longer be read; blocks needed at or after the end boundary are retained.
+	//! Nonzero offsets require subsequent fetches to skip the preceding parts in the boundary chunk.
+	void DestroyChunks(idx_t chunk_idx_begin, idx_t chunk_idx_end, idx_t begin_offset = 0, idx_t end_offset = 0);
 
 	//! Gets the scatter function for the given type
 	static TupleDataScatterFunction GetScatterFunction(const LogicalType &type, bool within_collection = false);
@@ -197,6 +209,8 @@ public:
 	//! Initializes a Scan state for scanning a subset of the columns
 	void InitializeScan(TupleDataScanState &state, vector<column_t> column_ids,
 	                    TupleDataPinProperties properties = TupleDataPinProperties::UNPIN_AFTER_DONE) const;
+	//! Positions a freshly initialized scan so that the next Scan reads the chunk at the given position
+	void SeekScan(TupleDataScanState &state, const TupleDataChunkPosition &position) const;
 	//! Initialize a parallel scan over the tuple data collection over all columns
 	void InitializeScan(TupleDataParallelScanState &state,
 	                    TupleDataPinProperties properties = TupleDataPinProperties::UNPIN_AFTER_DONE) const;

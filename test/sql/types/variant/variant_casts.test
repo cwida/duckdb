@@ -30,3 +30,39 @@ query I
 select [1, 2, 3, 4]::VARIANT
 ----
 [1, 2, 3, 4]
+
+# Casts from deeply nested VARIANTs enforce the traversal limit.
+foreach wrapper [v] {'x':v}
+
+query I
+WITH RECURSIVE t(d, v) AS (
+    SELECT 0, 1::VARIANT
+    UNION ALL
+    SELECT d + 1, {wrapper}::VARIANT FROM t WHERE d < 127
+)
+SELECT v::VARCHAR IS NOT NULL FROM t WHERE d = 127;
+----
+true
+
+statement error
+WITH RECURSIVE t(d, v) AS (
+    SELECT 0, 1::VARIANT
+    UNION ALL
+    SELECT d + 1, {wrapper}::VARIANT FROM t WHERE d < 128
+)
+SELECT v::VARCHAR FROM t WHERE d = 128;
+----
+<REGEX>:.*VARIANT exceeds maximum recursion depth of 128.*
+
+# A failure must not affect the next traversal.
+query T
+SELECT {'x': [1, 2]}::VARIANT::VARCHAR;
+----
+{'x': [1, 2]}
+
+endloop
+
+query I
+SELECT length(range(1024)::VARIANT::VARCHAR) > 0;
+----
+true

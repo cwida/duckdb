@@ -35,6 +35,8 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 	// check if we are on AutoCommit. In this case we should start a transaction
 	D_ASSERT(!active_query);
 	D_ASSERT(!statements.statements.empty());
+	// not reset on Rollback, so a statement that fails before StartQuery must not report the previous one's
+	QueryProfiler::Get(*this).ResetBytesScanned();
 	auto &db_inst = DatabaseInstance::GetDatabase(*this);
 	if (ValidChecker::IsInvalidated(db_inst)) {
 		throw ErrorManager::InvalidatedDatabase(*this, ValidChecker::InvalidatedMessage(db_inst));
@@ -66,7 +68,7 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 		query_deadline.SetInvalid();
 	}
 	// Notify any registered state of query begin
-	for (auto &state : registered_state->States()) {
+	for (auto &state : context->GetRegisteredState().States()) {
 		state->QueryBegin(*this);
 	}
 	RefreshLoggerInternal();
@@ -80,24 +82,41 @@ void ClientContext::BeginStatementInternal(ClientContextLock &lock, const string
 
 void ClientContext::RefreshLoggerInternal() {
 	// Flush the old logger.
-	logger->Flush();
+	context->GetLogger().Flush();
 
 	// Refresh the logger to ensure we are in sync with the global log settings.
 	LoggingContext logging_context(LogContextScope::CONNECTION);
 	logging_context.connection_id = connection_id;
 	logging_context.transaction_id = transaction.ActiveTransaction().global_transaction_id;
 	logging_context.query_id = transaction.GetActiveQuery();
-	logger = db->GetLogManager().CreateLogger(logging_context, true);
+	ResetLoggerInternal(logging_context);
 	DUCKDB_LOG(*this, QueryLogType, active_query->query);
+}
+
+void ClientContext::ResetLoggerInternal(const LoggingContext &logging_context) {
+	context->SetLogger(db->GetLogManager().CreateLogger(logging_context, log_config));
 }
 
 ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
                                           optional_ptr<ErrorData> previous_error) {
-	if (active_query->executor) {
-		active_query->executor->CancelTasks();
-	}
-	active_query->progress_bar.reset();
 	D_ASSERT(active_query.get());
+	// whether the statement that finished, or an earlier statement of a query that expands, modifies a database
+	const bool statement_wrote =
+	    active_query->Wrote() || (active_query->prepared && !active_query->prepared->properties.IsReadOnly());
+	auto statement_error = EndStatementInternal(lock, previous_error);
+	// a statement that a state failed to end did not succeed, the failure is the query's error unless it has one
+	const bool report_statement_error = statement_error.HasError() && !previous_error;
+	if (statement_error.HasError()) {
+		success = false;
+	}
+	if (report_statement_error) {
+		// what the statement wrote can only be dropped with the whole transaction
+		invalidate_transaction =
+		    invalidate_transaction || statement_wrote || ErrorInvalidatesQueryTransaction(statement_error.Type());
+		ProcessError(statement_error, active_query->query);
+		previous_error = &statement_error;
+	}
+	invalidate_transaction = invalidate_transaction && !active_query->outside_local_transaction;
 	active_query.reset();
 	query_deadline.SetInvalid();
 	query_progress.Initialize();
@@ -133,13 +152,18 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	EndQueryProfiling(error);
 
 	// Refresh the logger
-	logger->Flush();
-	LoggingContext context(LogContextScope::CONNECTION);
-	context.connection_id = connection_id;
-	logger = db->GetLogManager().CreateLogger(context, true);
+	context->GetLogger().Flush();
+	LoggingContext logging_context(LogContextScope::CONNECTION);
+	logging_context.connection_id = connection_id;
+	ResetLoggerInternal(logging_context);
+
+	if (!error.HasError() && report_statement_error) {
+		// the failure to end the statement is reported on the result the way a failed commit is
+		error = statement_error;
+	}
 
 	// Notify any registered state of query end
-	for (auto const &s : registered_state->States()) {
+	for (auto const &s : context->GetRegisteredState().States()) {
 		if (error.HasError()) {
 			s->QueryEnd(*this, &error);
 		} else {
@@ -152,7 +176,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 void ClientContext::EndQueryProfiling(ErrorData &error) {
 	// this also runs while a connection with an open result is destroyed, so it must not throw
 	try {
-		client_data->profiler->EndQuery();
+		QueryProfiler::Get(*context).EndQuery();
 	} catch (std::exception &ex) {
 		if (!error.HasError()) {
 			error = ErrorData(ex);
@@ -189,7 +213,7 @@ void ClientContext::CleanupInternal(ClientContextLock &lock, BaseQueryResult *re
 	}
 	auto error = EndQueryInternal(lock, result ? !result->HasError() : false, invalidate_transaction, passed_error);
 	if (result && !result->HasError()) {
-		// if an error occurred while committing report it in the result
+		// if an error occurred while ending the statement or committing report it in the result
 		result->SetError(error);
 	}
 	D_ASSERT(!active_query);
@@ -216,6 +240,10 @@ const string &ClientContext::GetCurrentQuery() {
 	return active_query->query;
 }
 
+bool ClientContext::ActiveQueryIsLastStatement() const {
+	return !active_query || !active_query->HasNextStatement();
+}
+
 void BindPreparedStatementParameters(ClientContext &context, PreparedStatementData &statement,
                                      const QueryParameters &parameters) {
 	identifier_map_t<BoundParameterData> owned_values;
@@ -240,15 +268,16 @@ unique_ptr<QueryResult> ClientContext::SubmitPreparedStatementInternal(
 	active_query->executor = make_uniq<Executor>(*this);
 	auto &executor = *active_query->executor;
 
-	if (config.enable_progress_bar) {
+	auto &config = ClientConfig::GetConfig(*this);
+	if (Settings::Get<EnableProgressBarSetting>(*this)) {
 		progress_bar_display_create_func_t display_create_func = nullptr;
-		if (config.print_progress_bar) {
+		if (Settings::Get<EnableProgressBarPrintSetting>(*this)) {
 			// Use either a custom display function, or the default.
 			display_create_func =
 			    config.display_create_func ? config.display_create_func : ProgressBar::DefaultProgressBarDisplay;
 		}
-		active_query->progress_bar =
-		    make_uniq<ProgressBar>(executor, NumericCast<idx_t>(config.wait_time), display_create_func);
+		active_query->progress_bar = make_uniq<ProgressBar>(
+		    executor, NumericCast<idx_t>(Settings::Get<ProgressBarTimeSetting>(*this)), display_create_func);
 		active_query->progress_bar->Start();
 		query_progress.Restart();
 	}
@@ -362,7 +391,8 @@ unique_ptr<QueryResult> ClientContext::SubmitPreparedStatementInternal(
 unique_ptr<QueryResult> ClientContext::CompleteDelegatedInternal(ClientContextLock &lock, QueryResult &result) {
 	QueryResultState state;
 	while (!IsObservable(state = ExecuteTaskInternal(lock, result))) {
-		if (state == QueryResultState::BLOCKED) {
+		// As in QueryResult::CompleteInternal: wait while other threads run the remaining tasks, never spin
+		if (state == QueryResultState::BLOCKED || state == QueryResultState::NO_TASKS_AVAILABLE) {
 			WaitForTask(lock, result);
 		}
 	}
@@ -467,7 +497,7 @@ void ClientContext::AbandonActiveQuery(ClientContextLock &lock) {
 		AbortInternal(lock);
 	}
 	interrupt_state = ClientInterruptState::NOT_INTERRUPTED;
-	client_data->profiler->ResetQueryStart();
+	QueryProfiler::Get(*context).ResetQueryStart();
 }
 
 unique_ptr<QueryResult> ClientContext::CompleteInternal(ClientContextLock &lock, unique_ptr<QueryResult> result) {
@@ -509,10 +539,17 @@ unique_ptr<QueryResult> ClientContext::AdvanceStatementInternal(ClientContextLoc
 	if (QueryDeadlinePassed()) {
 		throw InterruptException(QUERY_DEADLINE_ERROR);
 	}
-	EndStatementInternal(lock);
+	auto end_error = EndStatementInternal(lock, nullptr);
+	if (end_error.HasError()) {
+		// a state that fails to end the statement fails the query, the way the statement failing would
+		end_error.Throw();
+	}
+	transaction.ResetActiveQuery();
+	QueryProfiler::Get(*context).EndQuery();
 	auto statement = active_query->TakeNextStatement();
 	BeginStatementInternal(lock, statement->query);
 	RefreshLoggerInternal();
+	NotifyStatementBeginInternal(lock);
 	QueryParameters parameters(active_query->format);
 	auto produced = SubmitStatementInternal(lock, std::move(statement), parameters);
 	// A statement that could not start fails the query; the result object of a collector already ended it
@@ -552,14 +589,45 @@ unique_ptr<QueryResult> ClientContext::RunToResultStatementInternal(ClientContex
 	return nullptr;
 }
 
-void ClientContext::EndStatementInternal(ClientContextLock &lock) {
-	active_query->executor->CancelTasks();
-	active_query->executor.reset();
+ErrorData ClientContext::EndStatementInternal(ClientContextLock &lock, optional_ptr<ErrorData> error) {
+	if (active_query->executor) {
+		active_query->executor->CancelTasks();
+		active_query->executor.reset();
+	}
 	active_query->progress_bar.reset();
 	// The plan outlives the executor
 	active_query->prepared.reset();
-	transaction.ResetActiveQuery();
-	client_data->profiler->EndQuery();
+	ErrorData end_error;
+	if (!active_query->statement_began) {
+		// the states saw no begin of a statement, or its end already, which a failed step between statements leaves
+		return end_error;
+	}
+	active_query->statement_began = false;
+	// every state sees the end of the statement, also when one of them fails, and the first failure is reported
+	context->GetRegisteredState().ForEachState([&](ClientContextState &state) {
+		try {
+			state.StatementEnd(*this, error);
+		} catch (std::exception &ex) {
+			ErrorData state_error(ex);
+			if (Exception::InvalidatesDatabase(state_error.Type()) || state_error.Type() == ExceptionType::INTERNAL) {
+				// a fatal failure invalidates the database also when another failure is the one reported
+				ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), state_error.RawMessage());
+			}
+			if (!end_error.HasError()) {
+				end_error = std::move(state_error);
+			}
+		} catch (...) { // LCOV_EXCL_START
+			if (!end_error.HasError()) {
+				end_error = ErrorData("Unhandled exception in StatementEnd");
+			}
+		} // LCOV_EXCL_STOP
+	});
+	return end_error;
+}
+
+void ClientContext::NotifyStatementBeginInternal(ClientContextLock &lock) {
+	active_query->statement_began = true;
+	context->GetRegisteredState().ForEachState([&](ClientContextState &state) { state.StatementBegin(*this); });
 }
 
 unique_ptr<QueryResult> ClientContext::TakeFinishedResultInternal(ClientContextLock &lock) {

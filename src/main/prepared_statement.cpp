@@ -13,12 +13,12 @@ PreparedStatement::PreparedStatement(const shared_ptr<ClientContext> &context_p,
 }
 
 PreparedStatement::PreparedStatement(const shared_ptr<ClientContext> &context_p, unique_ptr<SQLStatement> statement)
-    : context(context_p), query(statement->query), success(true), expanding_statement(std::move(statement)) {
+    : context(context_p), query(statement->query), success(true), written_statement(std::move(statement)) {
 	D_ASSERT(!context.expired());
 	// The placeholder the planner reports for a result known only at execution. The properties describe nothing
 	info.names = {Identifier("unknown")};
 	info.types = {LogicalTypeId::UNKNOWN};
-	info.statement_type = expanding_statement->type;
+	info.statement_type = written_statement->type;
 	info.properties.always_require_rebind = true;
 }
 
@@ -26,7 +26,7 @@ PreparedStatement::PreparedStatement(ErrorData error) : success(false), error(st
 }
 
 PreparedStatement::~PreparedStatement() {
-	if (expanding_statement) {
+	if (written_statement) {
 		// nothing was prepared in the client context
 		return;
 	}
@@ -109,16 +109,16 @@ case_insensitive_map_t<LogicalType> PreparedStatement::GetExpectedParameterTypes
 }
 
 bool PreparedStatement::MetadataAvailable() const {
-	return !expanding_statement && info.properties.bound_all_parameters;
+	return !written_statement && info.properties.bound_all_parameters;
 }
 
 unique_ptr<SQLStatement> PreparedStatement::CreateStatement(identifier_map_t<BoundParameterData> &named_values,
                                                             QueryParameters &parameters) const {
-	if (expanding_statement) {
+	if (written_statement) {
 		if (!named_values.empty()) {
 			parameters.statement_args = named_values;
 		}
-		return expanding_statement->Copy();
+		return written_statement->Copy();
 	}
 	auto execute = make_uniq<ExecuteStatement>();
 	execute->name = Identifier(name);

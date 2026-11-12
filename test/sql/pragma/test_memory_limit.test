@@ -4,117 +4,117 @@
 
 # set memory_limit
 statement ok
-PRAGMA memory_limit='1GB'
+SET memory_limit='1GB'
 
 statement ok
-PRAGMA memory_limit=-1
+SET memory_limit=-1
 
 statement ok
-PRAGMA memory_limit='-1'
+SET memory_limit='-1'
 
 statement ok
-PRAGMA memory_limit='none'
+SET memory_limit='none'
 
 statement ok
-PRAGMA memory_limit=' -1'
+SET memory_limit=' -1'
 
 # different units can be used
 # G and GB = gigabyte
 statement ok
-PRAGMA memory_limit='1G'
+SET memory_limit='1G'
 
 statement ok
-PRAGMA memory_limit='   1G'
+SET memory_limit='   1G'
 
 statement ok
-PRAGMA memory_limit='1GB'
+SET memory_limit='1GB'
 
 statement ok
-PRAGMA memory_limit='1gb'
+SET memory_limit='1gb'
 
 statement ok
-PRAGMA memory_limit = '1GB'
+SET memory_limit = '1GB'
 
 statement ok
-PRAGMA memory_limit='1.0gb'
+SET memory_limit='1.0gb'
 
 statement ok
-PRAGMA memory_limit='1.0 gb'
+SET memory_limit='1.0 gb'
 
 statement ok
-PRAGMA memory_limit='488.2 MiB'
+SET memory_limit='488.2 MiB'
 
 statement ok
-PRAGMA memory_limit='1.0 gigabytes'
+SET memory_limit='1.0 gigabytes'
 
 # M and MB = megabyte
 statement ok
-PRAGMA memory_limit='100M'
+SET memory_limit='100M'
 
 statement ok
-PRAGMA memory_limit='100MB'
+SET memory_limit='100MB'
 
 statement ok
-PRAGMA memory_limit='100mb'
+SET memory_limit='100mb'
 
 statement ok
-PRAGMA memory_limit='100 megabytes'
+SET memory_limit='100 megabytes'
 
 # K and KB = kilobyte
 statement ok
-PRAGMA memory_limit='10000K'
+SET memory_limit='10000K'
 
 statement ok
-PRAGMA memory_limit='10000KB'
+SET memory_limit='10000KB'
 
 statement ok
-PRAGMA memory_limit='10000kb'
+SET memory_limit='10000kb'
 
 statement ok
-PRAGMA memory_limit='10000 kilobytes'
+SET memory_limit='10000 kilobytes'
 
 # B = byte
 statement ok
-PRAGMA memory_limit='1000000B'
+SET memory_limit='1000000B'
 
 statement ok
-PRAGMA memory_limit='1000000b'
+SET memory_limit='1000000b'
 
 statement ok
-PRAGMA memory_limit='1000000 bytes'
+SET memory_limit='1000000 bytes'
 
 # T and TB = terabyte
 statement ok
-PRAGMA memory_limit='0.01T'
+SET memory_limit='0.01T'
 
 statement ok
-PRAGMA memory_limit='0.01TB'
+SET memory_limit='0.01TB'
 
 statement ok
-PRAGMA memory_limit='0.01tb'
+SET memory_limit='0.01tb'
 
 statement ok
-PRAGMA memory_limit='0.01 terabytes'
+SET memory_limit='0.01 terabytes'
 
 # no unit or unknown units fail
 statement error
-PRAGMA memory_limit=100
+SET memory_limit=100
 ----
 
 statement error
-PRAGMA memory_limit='0.01BG'
+SET memory_limit='0.01BG'
 ----
 
 statement error
-PRAGMA memory_limit='0.01BLA'
+SET memory_limit='0.01BLA'
 ----
 
 statement error
-PRAGMA memory_limit='0.01PP'
+SET memory_limit='0.01PP'
 ----
 
 statement error
-PRAGMA memory_limit='0.01TEST'
+SET memory_limit='0.01TEST'
 ----
 
 # we can't invoke it like this either
@@ -132,5 +132,5 @@ PRAGMA memory_limit(1, 2)
 ----
 
 statement error
-PRAGMA memory_limit='blabla'
+SET memory_limit='blabla'
 ----

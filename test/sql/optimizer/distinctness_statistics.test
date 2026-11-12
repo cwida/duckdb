@@ -1,0 +1,230 @@
+# name: test/sql/optimizer/distinctness_statistics.test
+# description: Simplify distinctness comparisons only when input nullability permits it
+# group: [optimizer]
+
+foreach type INTEGER VARCHAR
+
+statement ok
+CREATE OR REPLACE TABLE scalar_keys AS
+SELECT a::{type} a, b::{type} b, n::{type} n
+FROM (VALUES (1, 1, NULL), (2, 3, 2), (3, 3, 3)) t(a, b, n);
+
+query IIII
+SELECT a IS NOT DISTINCT FROM b, a IS DISTINCT FROM b,
+       NOT (a IS NOT DISTINCT FROM n), NOT (n IS DISTINCT FROM a)
+FROM scalar_keys ORDER BY a;
+----
+true	false	true	false
+false	true	false	true
+true	false	false	true
+
+# One non-NULL operand is insufficient in scalar context, in either orientation.
+query II
+SELECT n IS NOT DISTINCT FROM a, a IS DISTINCT FROM n FROM scalar_keys ORDER BY a;
+----
+false	true
+true	false
+true	false
+
+statement ok
+CREATE OR REPLACE TABLE probe AS SELECT a FROM scalar_keys;
+
+statement ok
+CREATE OR REPLACE TABLE build AS SELECT b FROM scalar_keys;
+
+statement ok
+CREATE OR REPLACE TABLE nullable_probe AS SELECT n AS a FROM scalar_keys;
+
+statement ok
+CREATE OR REPLACE TABLE nullable_build AS SELECT n AS b FROM scalar_keys;
+
+# Ordinary joins can use either input's proof, retaining unmatched outer and ANTI rows.
+query II rowsort
+SELECT a, b FROM nullable_probe FULL OUTER JOIN build ON a IS NOT DISTINCT FROM b;
+----
+2	NULL
+3	3
+3	3
+NULL	1
+NULL	NULL
+
+query II rowsort
+SELECT a, b FROM probe LEFT JOIN nullable_build ON b IS NOT DISTINCT FROM a;
+----
+1	NULL
+2	2
+3	3
+
+query I rowsort
+SELECT a FROM nullable_probe SEMI JOIN build ON b IS NOT DISTINCT FROM a;
+----
+3
+
+query I rowsort
+SELECT a FROM nullable_probe ANTI JOIN build ON a IS NOT DISTINCT FROM b;
+----
+2
+NULL
+
+# Neither input proves non-NULL: preserve NULL-to-NULL matches.
+query II rowsort
+SELECT a, b FROM nullable_probe JOIN nullable_build ON a IS NOT DISTINCT FROM b;
+----
+2	2
+3	3
+NULL	NULL
+
+# DISTINCT FROM needs both proofs even in ordinary joins.
+query I
+SELECT count(*) FROM probe JOIN nullable_build ON a IS DISTINCT FROM b;
+----
+7
+
+# MARK joins must continue returning FALSE rather than NULL for one-sided NULL keys.
+query II rowsort
+SELECT a, __mark_join_marker FROM nullable_probe JOIN BY (TYPE MARK) build ON a IS NOT DISTINCT FROM b;
+----
+2	false
+3	true
+NULL	false
+
+query II rowsort
+SELECT a, __mark_join_marker FROM probe JOIN BY (TYPE MARK) nullable_build ON b IS NOT DISTINCT FROM a;
+----
+1	false
+2	true
+3	true
+
+query II rowsort
+SELECT a, __mark_join_marker FROM probe JOIN BY (TYPE MARK) build ON b IS DISTINCT FROM a;
+----
+1	true
+2	true
+3	true
+
+statement ok
+DELETE FROM build;
+
+query II rowsort
+SELECT a, __mark_join_marker FROM nullable_probe JOIN BY (TYPE MARK) build ON a IS NOT DISTINCT FROM b;
+----
+2	false
+3	false
+NULL	false
+
+endloop
+
+# Nested children can contain NULL even when their top-level value is non-NULL.
+statement ok
+CREATE TABLE nested_keys AS
+SELECT [a, NULL] a, [b, NULL] b, {'v': a} sa, {'v': b} sb
+FROM (VALUES (1, 1), (2, 3), (NULL, NULL)) t(a, b);
+
+query IIII
+SELECT a IS NOT DISTINCT FROM b, a IS DISTINCT FROM b,
+       sa IS NOT DISTINCT FROM sb, sa IS DISTINCT FROM sb
+FROM nested_keys;
+----
+true	false	true	false
+false	true	false	true
+true	false	true	false
+
+# A function without output statistics must not block the proof from the other input.
+statement ok
+CREATE TABLE function_probe(a INTEGER);
+
+statement ok
+INSERT INTO function_probe VALUES (1), (2), (NULL);
+
+statement ok
+CREATE TABLE function_build(b INTEGER);
+
+statement ok
+INSERT INTO function_build VALUES (1), (3);
+
+query II rowsort
+SELECT a, b FROM function_probe LEFT JOIN function_build ON xor(a, 1) IS NOT DISTINCT FROM b;
+----
+1	NULL
+2	3
+NULL	NULL
+
+# Prepared executions must reconsider table statistics when NULLs are introduced.
+statement ok
+PREPARE distinct_prepared AS SELECT a IS NOT DISTINCT FROM b, a IS DISTINCT FROM b FROM function_probe, function_build ORDER BY a, b;
+
+query II
+EXECUTE distinct_prepared;
+----
+true	false
+false	true
+false	true
+false	true
+false	true
+false	true
+
+statement ok
+INSERT INTO function_build VALUES (NULL);
+
+query II
+EXECUTE distinct_prepared;
+----
+true	false
+false	true
+false	true
+false	true
+false	true
+false	true
+false	true
+false	true
+true	false
+
+# This prepared plan initially rewrites both comparisons, then must admit NULLs.
+statement ok
+CREATE TABLE prepared_keys(id INTEGER, a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO prepared_keys VALUES (1,1,1), (2,2,3);
+
+statement ok
+PREPARE rewritten_distinct AS
+SELECT id, a IS NOT DISTINCT FROM b, a IS DISTINCT FROM b FROM prepared_keys ORDER BY id;
+
+query III
+EXECUTE rewritten_distinct;
+----
+1	true	false
+2	false	true
+
+statement ok
+INSERT INTO prepared_keys VALUES (3,NULL,NULL), (4,NULL,1), (5,1,NULL);
+
+query III
+EXECUTE rewritten_distinct;
+----
+1	true	false
+2	false	true
+3	true	false
+4	false	true
+5	false	true
+
+# NULL extension invalidates input non-NULL proofs for comparisons above the join.
+statement ok
+CREATE TABLE preserved(id INTEGER);
+
+statement ok
+INSERT INTO preserved VALUES (1), (2);
+
+statement ok
+CREATE TABLE optional(id INTEGER, a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO optional VALUES (1, 10, 10);
+
+query III
+SELECT p.id, o.a IS NOT DISTINCT FROM o.b, o.a IS DISTINCT FROM o.b
+FROM preserved p LEFT JOIN optional o USING (id)
+ORDER BY p.id;
+----
+1	true	false
+2	true	false

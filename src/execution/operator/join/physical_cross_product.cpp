@@ -4,6 +4,7 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/operator/join/physical_join.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
+#include "duckdb/common/vector/dictionary_vector.hpp"
 
 namespace duckdb {
 
@@ -154,8 +155,15 @@ OperatorResultType CrossProductExecutor::Execute(const DataChunk &input, DataChu
 	col_count = scan.ColumnCount();
 	col_offset = scan_input_chunk ? 0 : input.ColumnCount();
 	for (idx_t i = 0; i < col_count; i++) {
-		ConstantVector::Reference(output.data[col_offset + i], count_t(output.size()), scan.data[i], position_in_chunk,
-		                          scan.size());
+		auto &source = scan.data[i];
+		auto &target = output.data[col_offset + i];
+		if (DictionaryVector::IsGlobalDictionary(source)) {
+			// repeat the row within the global dictionary, which its consumers expect in every chunk
+			target.Slice(source, position_in_chunk, position_in_chunk + 1);
+			target.Slice(*ConstantVector::ZeroSelectionVector(), output.size());
+			continue;
+		}
+		ConstantVector::Reference(target, count_t(output.size()), source, position_in_chunk, scan.size());
 	}
 	return OperatorResultType::HAVE_MORE_OUTPUT;
 }

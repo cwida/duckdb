@@ -4,7 +4,6 @@
 #include "duckdb/common/fstream.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/optional_idx.hpp"
-#include "duckdb/common/printer.hpp"
 #include "duckdb/common/tree_renderer/base_tree_renderer.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/tree_renderer.hpp"
@@ -15,9 +14,11 @@
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/profiler/profiling_utils.hpp"
 #include "duckdb/main/profiler/gathered_metrics.hpp"
+#include "duckdb/main/profiler/metrics_manager.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/buffer/buffer_pool.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
@@ -102,8 +103,7 @@ bool QueryProfiler::PrintOptimizerOutput() const {
 		return metrics->MetricIsTracked("optimizer.join_order");
 	}
 	// Fall back to checking tracked_metrics patterns directly
-	auto &config = ClientConfig::GetConfig(context);
-	for (const auto &pattern : config.tracked_metrics) {
+	for (const auto &pattern : Settings::Get<TrackedMetricsSetting>(context)) {
 		if (pattern == "*" || StringUtil::StartsWith(pattern, "optimizer")) {
 			return true;
 		}
@@ -116,11 +116,16 @@ string QueryProfiler::GetSaveLocation() const {
 }
 
 QueryProfiler &QueryProfiler::Get(ClientContext &context) {
-	return *ClientData::Get(context).profiler;
+	return Get(context.GetContext());
+}
+
+QueryProfiler &QueryProfiler::Get(Context &context) {
+	return context.GetQueryProfiler();
 }
 
 void QueryProfiler::Start(const string &query) {
 	Reset();
+	tracked_metric_patterns = make_uniq<GatheredMetrics>(Settings::Get<TrackedMetricsSetting>(context));
 	running = true;
 	query_metrics.query_sql = query;
 	query_metrics.latency_timer = make_uniq<MetricsTimer>(StartTimer<MetricQueryTotalTime>());
@@ -130,6 +135,7 @@ void QueryProfiler::Reset() {
 	tree_map.clear();
 	root = nullptr;
 	metrics.reset();
+	tracked_metric_patterns.reset();
 	running = false;
 	query_metrics.Reset();
 	result_tree.reset();
@@ -143,6 +149,7 @@ void QueryProfiler::StartQuery(const string &query, bool is_explain_analyze_p, b
 	if (!query_started) {
 		query_started = true;
 		query_metrics.ResetLiveMetrics();
+		query_metrics.bytes_scanned = 0;
 	}
 	if (is_explain_analyze_p) {
 		StartExplainAnalyze();
@@ -266,10 +273,10 @@ void QueryProfiler::EndQuery() {
 			string tree = ToString();
 			WriteToFile(save_location.c_str(), tree);
 		} else if (has_plan) {
-			// print directly through the renderer's print sink
+			// print directly through the renderer's print sink, the blank line that separates consecutive profiles
+			// included: a pluggable renderer (ProfilerExtension) whose sink keeps the output elsewhere prints nothing
 			auto renderer = GetRenderer();
-			PrintProfilerOutput(renderer.get());
-			Printer::Print("\n");
+			PrintProfilerOutput(renderer.get(), "\n\n");
 		}
 	}
 }
@@ -297,28 +304,52 @@ void QueryProfiler::TrackBytesSpilled(const idx_t amount) {
 	query_metrics.UpdateBytesSpilled(amount);
 }
 
+void QueryProfiler::TrackBytesScanned(const idx_t amount) {
+	query_metrics.UpdateBytesScanned(amount);
+}
+
+void QueryProfiler::ResetBytesScanned() {
+	query_metrics.bytes_scanned = 0;
+}
+
 void QueryProfiler::TrackTotalMemoryAllocated(const idx_t amount) {
 	query_metrics.UpdateTotalMemoryAllocated(amount);
 }
 
 void QueryProfiler::AddToMetricCounter(const string &key, const idx_t amount) {
-	if (IsEnabled()) {
+	if (IsEnabled() && running) {
 		query_metrics.UpdateMetricCounter(key, amount);
 	}
 }
 
+void QueryProfiler::AddToMetricTiming(const string &key, const idx_t elapsed_ns) {
+	if (IsEnabled() && running) {
+		query_metrics.UpdateMetric(key, elapsed_ns);
+	}
+}
+
 void QueryProfiler::SetMetric(const string &key, Value new_value) {
-	if (!IsEnabled()) {
+	if (!IsEnabled() || !running) {
 		return;
 	}
-	metrics->SetMetric(key, std::move(new_value));
+	// only the metrics extensions registered: the profiler sets its own, and leaves some out on purpose
+	if (!MetricsManager::Get(context).IsRegisteredMetric(key)) {
+		return;
+	}
+	// the query's metrics are only gathered once its plan is built, so the value is kept with the query until then:
+	// an extension may set it while the query binds
+	query_metrics.SetMetricValue(key, std::move(new_value));
 }
 
 bool QueryProfiler::MetricIsTracked(const string &key) const {
-	if (!IsEnabled()) {
+	if (!IsEnabled() || !running) {
 		return false;
 	}
-	return metrics->MetricIsTracked(key);
+	if (metrics) {
+		return metrics->MetricIsTracked(key);
+	}
+	// before the plan is built there are no gathered metrics to ask
+	return tracked_metric_patterns && tracked_metric_patterns->MetricIsTracked(key);
 }
 
 idx_t QueryProfiler::GetBytesRead() const {
@@ -327,6 +358,10 @@ idx_t QueryProfiler::GetBytesRead() const {
 
 idx_t QueryProfiler::GetBytesWritten() const {
 	return query_metrics.GetBytesWritten();
+}
+
+idx_t QueryProfiler::GetBytesScanned() const {
+	return query_metrics.GetBytesScanned();
 }
 
 MetricsTimer QueryProfiler::StartTimerInternal(const string &key) {
@@ -353,14 +388,14 @@ static string StripExplainPrefix(const string &sql) {
 		start++;
 	}
 	string rest = sql.substr(start);
-	if (!StringUtil::StartsWith(StringUtil::Upper(rest), "EXPLAIN")) {
+	if (!StringUtil::CIStartsWith(rest, "EXPLAIN")) {
 		return sql;
 	}
 	idx_t pos = 7; // past "EXPLAIN"
 	while (pos < rest.size() && is_space(rest[pos])) {
 		pos++;
 	}
-	if (StringUtil::StartsWith(StringUtil::Upper(rest.substr(pos)), "ANALYZE")) {
+	if (StringUtil::CIStartsWith(std::string_view(rest).substr(pos), "ANALYZE")) {
 		pos += 7;
 		while (pos < rest.size() && is_space(rest[pos])) {
 			pos++;
@@ -413,7 +448,7 @@ string QueryProfiler::RenderProfilerOutput(optional_ptr<TreeRenderer> renderer) 
 	return ss.str();
 }
 
-void QueryProfiler::PrintProfilerOutput(optional_ptr<TreeRenderer> renderer) const {
+void QueryProfiler::PrintProfilerOutput(optional_ptr<TreeRenderer> renderer, const string &trailer) const {
 	if (!renderer) {
 		// "no_output" format: nothing is rendered, enabled or not
 		return;
@@ -426,6 +461,7 @@ void QueryProfiler::PrintProfilerOutput(optional_ptr<TreeRenderer> renderer) con
 	}
 	renderer->RenderProfiler(*this, *sink);
 	renderer->Finish();
+	*sink << trailer;
 }
 
 void QueryProfiler::RenderProfilingNodeTree(TreeRenderer &renderer, BaseTreeRenderer &ss) const {
@@ -484,6 +520,8 @@ void OperatorMetrics::MergeInternal(const OperatorMetrics &other) {
 	intermediate_size_bytes += other.intermediate_size_bytes;
 	rows_scanned += other.rows_scanned;
 	row_groups_scanned += other.row_groups_scanned;
+	bytes_scanned += other.bytes_scanned;
+	bytes_scanned_reported = bytes_scanned_reported || other.bytes_scanned_reported;
 	if (other.system_peak_buffer_manager_memory > system_peak_buffer_manager_memory) {
 		system_peak_buffer_manager_memory = other.system_peak_buffer_manager_memory;
 	}
@@ -663,7 +701,7 @@ void QueryProfiler::RenderQueryTree(BaseTreeRenderer &ss) const {
 
 	// the registered states write profiling info through an ostream - capture it and emit as layout text
 	duckdb::stringstream state_info;
-	for (auto &state : context.registered_state->States()) {
+	for (auto &state : context.GetContext().GetRegisteredState().States()) {
 		state->WriteProfilingInformation(state_info);
 	}
 	ss << state_info.str();
@@ -782,6 +820,10 @@ profiler_metrics_t OperatorMetrics::GetMetrics(const GatheredMetrics &info) cons
 	}
 	if (info.MetricIsTracked<MetricOperatorRowGroupsScanned>() && operator_type == PhysicalOperatorType::TABLE_SCAN) {
 		result["row_groups_scanned"] = Value::UBIGINT(row_groups_scanned);
+	}
+	if (info.MetricIsTracked<MetricOperatorBytesScanned>() && operator_type == PhysicalOperatorType::TABLE_SCAN &&
+	    bytes_scanned_reported) {
+		result["bytes_scanned"] = Value::UBIGINT(bytes_scanned);
 	}
 	if (info.MetricIsTracked<MetricOperatorTotalRowGroupsToScan>() &&
 	    operator_type == PhysicalOperatorType::TABLE_SCAN) {
@@ -1116,8 +1158,7 @@ void QueryProfiler::Initialize(const PhysicalOperator &root_op) {
 		tree_map.clear();
 		root = nullptr;
 	} else {
-		auto &client_config = ClientConfig::GetConfig(context);
-		metrics = make_uniq<GatheredMetrics>(client_config.tracked_metrics);
+		metrics = make_uniq<GatheredMetrics>(Settings::Get<TrackedMetricsSetting>(context));
 	}
 }
 
@@ -1131,6 +1172,19 @@ void QueryProfiler::Print() {
 	// print the framed text query tree directly through the renderer's print sink
 	auto renderer = CreateProfiler("query_tree");
 	PrintProfilerOutput(renderer.get());
+}
+
+static bool HasScanWithoutBytesScanned(ProfilingNode &node) {
+	auto &metrics = node.GetOperatorMetrics();
+	if (metrics.operator_type == PhysicalOperatorType::TABLE_SCAN && !metrics.bytes_scanned_reported) {
+		return true;
+	}
+	for (idx_t i = 0; i < node.GetChildCount(); i++) {
+		if (HasScanWithoutBytesScanned(*node.GetChild(i))) {
+			return true;
+		}
+	}
+	return false;
 }
 
 static void MergeOperatorMeasurements(ProfilingNode &root, OperatorMetrics &result) {
@@ -1175,6 +1229,7 @@ void QueryProfiler::FinalizeMetricsInternal() {
 	if (query_metrics.latency_timer) {
 		query_metrics.latency_timer->EndTimer();
 	}
+	query_metrics.FinalizeMetricValues(*metrics);
 	if (root) {
 		// collapse secure views first - the query-wide totals are sums over the operator tree, so leaving the
 		// operators of the view in would expose how much of the table behind it was scanned. The time of the view
@@ -1188,6 +1243,10 @@ void QueryProfiler::FinalizeMetricsInternal() {
 		metrics->SetMetric<MetricQueryTotalIntermediateSizeBytes>(cumulative_metrics.intermediate_size_bytes);
 		metrics->SetMetric<MetricQueryTotalRowGroupsScanned>(cumulative_metrics.row_groups_scanned);
 		metrics->SetMetric<MetricQueryTotalRowGroupsToScan>(cumulative_metrics.total_row_groups_to_scan);
+		// left out if a scan doesn't count the bytes it scans, as the total would leave that scan out
+		if (!HasScanWithoutBytesScanned(*root)) {
+			metrics->SetMetric<MetricQueryTotalBytesScanned>(cumulative_metrics.bytes_scanned);
+		}
 	}
 	query_metrics.FinalizeMetrics(*metrics);
 	metrics_finalized = true;

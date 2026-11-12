@@ -41,7 +41,7 @@ TaskExecutionResult ExecutorTask::Execute(TaskExecutionMode mode) {
 		if (thread_context) {
 			TaskExecutionResult result;
 			do {
-				TaskNotifier task_notifier {context};
+				TaskNotifier task_notifier {&context.GetContext()};
 				thread_context->profiler.StartOperator(op);
 				// to allow continuous profiling, always execute in small steps
 				result = ExecuteTask(TaskExecutionMode::PROCESS_PARTIAL);
@@ -50,14 +50,14 @@ TaskExecutionResult ExecutorTask::Execute(TaskExecutionMode mode) {
 			} while (mode == TaskExecutionMode::PROCESS_ALL && result == TaskExecutionResult::TASK_NOT_FINISHED);
 			return result;
 		} else {
-			TaskNotifier task_notifier {context};
+			TaskNotifier task_notifier {&context.GetContext()};
 			auto result = ExecuteTask(mode);
 			return result;
 		}
 	} catch (std::exception &ex) {
-		executor.PushError(ErrorData(ex));
+		executor.PushTaskError(ex);
 	} catch (...) { // LCOV_EXCL_START
-		executor.PushError(ErrorData("Unknown exception in ExecutorTask::Execute"));
+		executor.PushTaskError("Unknown exception in ExecutorTask::Execute");
 	} // LCOV_EXCL_STOP
 	return TaskExecutionResult::TASK_ERROR;
 }

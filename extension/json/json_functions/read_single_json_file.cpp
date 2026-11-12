@@ -3,7 +3,7 @@
 #include "duckdb/common/mutex.hpp"
 #include "json_functions.hpp"
 #include "json_scan.hpp"
-#include "json_structure.hpp"
+#include "json_schema_inference.hpp"
 
 namespace duckdb {
 
@@ -39,6 +39,7 @@ public:
 		} else {
 			reader = make_shared_ptr<JSONReader>(context, json_data.options, json_data.file);
 		}
+		reader->scanning = true;
 	}
 
 public:
@@ -233,6 +234,7 @@ static void ReadSingleJSONFileFunction(ClientContext &context, TableFunctionInpu
 		default:
 			throw InternalException("Unsupported scan type for read_single_json_file");
 		}
+		reader.CountBytesScanned();
 		if (output.size() != 0) {
 			return;
 		}
@@ -247,8 +249,11 @@ static unique_ptr<FunctionData> ReadSingleJSONFileCombineSchema(ClientContext &c
                                                                 TableFunctionCombineSchemaInput &input,
                                                                 vector<LogicalType> &return_types,
                                                                 vector<Identifier> &names) {
-	JSONStructureNode merged;
-	optional_ptr<const ReadSingleJSONFileData> first_file;
+	if (input.bind_data.empty()) {
+		return nullptr;
+	}
+	auto &first_file = input.bind_data[0].get().Cast<ReadSingleJSONFileData>();
+	JSONStructureNode merged(first_file.options.case_insensitive_keys);
 	for (auto &bind_data : input.bind_data) {
 		auto &json_data = bind_data.get().Cast<ReadSingleJSONFileData>();
 		if (!json_data.structure) {
@@ -256,23 +261,17 @@ static unique_ptr<FunctionData> ReadSingleJSONFileCombineSchema(ClientContext &c
 			return nullptr;
 		}
 		JSONStructure::MergeNodes(merged, *json_data.structure);
-		if (!first_file) {
-			first_file = json_data;
-		}
-	}
-	if (!first_file) {
-		return nullptr;
 	}
 	// the result describes how every file of the scan is read - it is the bind the auto-detection would have
 	// produced if it had run over all of the sampled files at once
 	auto result = make_uniq<ReadSingleJSONFileData>();
-	result->options = first_file->options;
-	if (first_file->record_type_auto_detected) {
+	result->options = first_file.options;
+	if (first_file.record_type_auto_detected) {
 		// the record type is re-detected on the combined structure
 		result->options.record_type = JSONRecordType::AUTO_DETECT;
 	}
 	// the date/timestamp formats that were settled on while detecting the structure are carried over
-	result->date_format_map = make_uniq<DateFormatMap>(*first_file->date_format_map);
+	result->date_format_map = make_uniq<DateFormatMap>(*first_file.date_format_map);
 	// the merged structure describes the schema of the scan by itself
 	return_types.clear();
 	names.clear();
@@ -306,6 +305,17 @@ static unique_ptr<NodeStatistics> ReadSingleJSONFileCardinality(ClientContext &c
 	return make_uniq<NodeStatistics>(per_file_cardinality);
 }
 
+//! The bytes scanned are drained, so each is reported once - the profiler sums what every thread reports
+static void ReadSingleJSONFileGetMetrics(TableFunctionGetMetricsInput &input) {
+	if (!input.global_state) {
+		return;
+	}
+	auto &gstate = input.global_state->Cast<ReadSingleJSONFileGlobalState>();
+	if (gstate.reader) {
+		input.operator_metrics.bytes_scanned += gstate.reader->bytes_scanned_unreported.exchange(0);
+	}
+}
+
 TableFunction JSONFunctions::GetReadSingleJSONFileTableFunction(shared_ptr<JSONScanInfo> function_info) {
 	const auto scan_type = function_info->type;
 	TableFunction table_function(
@@ -319,6 +329,7 @@ TableFunction JSONFunctions::GetReadSingleJSONFileTableFunction(shared_ptr<JSONS
 	}
 	table_function.table_scan_progress = ReadSingleJSONFileProgress;
 	table_function.cardinality = ReadSingleJSONFileCardinality;
+	table_function.get_metrics = ReadSingleJSONFileGetMetrics;
 	table_function.function_info = std::move(function_info);
 	return table_function;
 }
@@ -335,8 +346,10 @@ TableFunction JSONFunctions::GetJSONTableFunction(Identifier name, shared_ptr<JS
 	settings.combine_schema = ReadSingleJSONFileCombineSchema;
 	settings.claim_batch = ReadSingleJSONFileClaimBatch;
 	settings.finish_batch = ReadSingleJSONFileFinishBatch;
-	return TableFunctionMultiFileWrapper::CreateFunction(std::move(single_file_function), std::move(name),
-	                                                     std::move(settings));
+	settings.reports_bytes_scanned = true;
+	auto result = TableFunctionMultiFileWrapper::CreateFunction(std::move(single_file_function), std::move(name),
+	                                                            std::move(settings));
+	return result;
 }
 
 static TableFunctionSet CreateJSONFunctionSet(Identifier name, shared_ptr<JSONScanInfo> function_info) {

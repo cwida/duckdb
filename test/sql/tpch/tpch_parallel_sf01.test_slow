@@ -5,7 +5,7 @@
 require tpch
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 statement ok
 PRAGMA verify_parallelism

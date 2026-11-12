@@ -1,0 +1,275 @@
+# name: test/sql/cte/materialized/cte_runtime_filters.test
+# description: Combined consumer filters preserve CTE rows across publication and execution changes
+# group: [materialized]
+
+statement ok
+SET disabled_optimizers='cte_filter_pusher,statistics_propagation,join_order,build_side_probe_side,compressed_materialization';
+
+statement ok
+SET max_execution_time=5000;
+
+statement ok
+CREATE TABLE probe AS SELECT i AS k,i%7 AS v FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE b(k BIGINT);
+
+statement ok
+CREATE TABLE c(k BIGINT);
+
+statement ok
+INSERT INTO b VALUES (1),(42);
+
+statement ok
+INSERT INTO c VALUES (42),(99);
+
+statement ok
+PREPARE consumers AS
+WITH p AS MATERIALIZED (SELECT k FROM probe)
+SELECT p.k,'b' AS consumer FROM p JOIN b ON p.k=b.k
+UNION ALL SELECT p.k,'c' FROM p JOIN c ON p.k=c.k;
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+query IT rowsort
+EXECUTE consumers;
+----
+1	b
+42	b
+42	c
+99	c
+
+endloop
+
+statement ok
+DELETE FROM b;
+
+statement ok
+DELETE FROM c;
+
+statement ok
+INSERT INTO b VALUES (12),(NULL);
+
+statement ok
+INSERT INTO c VALUES (17),(12);
+
+query IT rowsort
+EXECUTE consumers;
+----
+12	b
+12	c
+17	c
+
+statement ok
+DELETE FROM b;
+
+query IT rowsort
+EXECUTE consumers;
+----
+12	c
+17	c
+
+statement ok
+DELETE FROM c;
+
+query IT
+EXECUTE consumers;
+----
+
+statement ok
+INSERT INTO b VALUES (NULL);
+
+statement ok
+INSERT INTO c VALUES (NULL);
+
+query IT
+EXECUTE consumers;
+----
+
+statement ok
+INSERT INTO b VALUES (1);
+
+statement ok
+INSERT INTO c VALUES (9999);
+
+query IT rowsort
+EXECUTE consumers;
+----
+1	b
+9999	c
+
+# Every unrestricted consumer must retain all rows.
+query III
+WITH p AS MATERIALIZED (SELECT k FROM probe)
+SELECT (SELECT k FROM p ORDER BY k LIMIT 1),
+       (SELECT count(*) FROM p JOIN b USING(k)),
+       (SELECT count(*) FROM p JOIN c USING(k));
+----
+0	1	1
+
+# A dependent build cannot delay the producer that supplies its own input.
+query I
+WITH p AS MATERIALIZED (SELECT k FROM probe)
+SELECT sum(n) FROM (
+    SELECT count(*) n FROM p JOIN b USING(k)
+    UNION ALL
+    SELECT count(*) n FROM p x JOIN (SELECT y.k FROM p y JOIN c USING(k)) z USING(k)
+) counts;
+----
+2
+
+# Producer aliases, casts, grouping keys and window partitions retain their meaning.
+query II rowsort
+WITH p AS MATERIALIZED (SELECT CAST(k AS INTEGER) alias,count(*) n FROM probe GROUP BY k)
+SELECT p.alias,p.n FROM p JOIN b ON p.alias=b.k
+UNION ALL SELECT p.alias,p.n FROM p JOIN c ON p.alias=c.k;
+----
+1	1
+9999	1
+
+query II rowsort
+WITH p AS MATERIALIZED (SELECT k,row_number() OVER (PARTITION BY k ORDER BY v) n FROM probe)
+SELECT p.k,p.n FROM p JOIN b USING(k)
+UNION ALL SELECT p.k,p.n FROM p JOIN c USING(k);
+----
+1	1
+9999	1
+
+# LIMIT and producer-side CTE references remain traversal barriers.
+query I
+WITH p AS MATERIALIZED (SELECT k FROM probe ORDER BY k LIMIT 3)
+SELECT p.k FROM p JOIN b USING(k)
+UNION ALL SELECT p.k FROM p JOIN c USING(k);
+----
+1
+
+query I rowsort
+WITH q AS MATERIALIZED (SELECT k FROM probe),p AS MATERIALIZED (SELECT k FROM q)
+SELECT p.k FROM p JOIN b USING(k)
+UNION ALL SELECT p.k FROM p JOIN c USING(k);
+----
+1
+9999
+
+statement ok
+CREATE TABLE pairs(a BIGINT,b BIGINT);
+
+statement ok
+INSERT INTO pairs VALUES (1,2),(1,4),(3,2),(3,4),(NULL,2);
+
+statement ok
+CREATE TABLE first_pair AS SELECT 1::BIGINT a,2::BIGINT b;
+
+statement ok
+CREATE TABLE second_pair AS SELECT 3::BIGINT a,4::BIGINT b;
+
+# Independent column filters retain rows needed by the original join conjunctions.
+query II rowsort
+WITH p AS MATERIALIZED (SELECT b AS y,a AS x FROM pairs)
+SELECT p.x,p.y FROM p JOIN first_pair f ON p.x=f.a AND p.y=f.b
+UNION ALL SELECT p.x,p.y FROM p JOIN second_pair s ON p.x=s.a AND p.y=s.b;
+----
+1	2
+3	4
+
+query II rowsort
+WITH p AS MATERIALIZED (SELECT * FROM pairs)
+SELECT p.a,p.b FROM p JOIN first_pair f ON p.b=f.b WHERE p.a=1
+UNION ALL SELECT p.a,p.b FROM p JOIN second_pair s ON p.b=s.b WHERE p.a=3;
+----
+1	2
+3	4
+
+query II rowsort
+WITH p AS MATERIALIZED (SELECT * FROM pairs)
+SELECT p.a,p.b FROM p JOIN first_pair f ON p.a=f.a
+UNION ALL SELECT p.a,p.b FROM p JOIN second_pair s ON p.b=s.b WHERE p.a=3;
+----
+1	2
+1	4
+3	4
+
+query II
+WITH p AS MATERIALIZED (SELECT * FROM pairs)
+SELECT p.a,p.b FROM p JOIN first_pair f ON p.b=f.b WHERE p.a IS NULL
+UNION ALL SELECT p.a,p.b FROM p JOIN second_pair s ON p.b=s.b WHERE p.a=3
+ORDER BY 1 NULLS FIRST;
+----
+NULL	2
+3	4
+
+# NULL-safe and preserved-side consumers cannot inherit ordinary equality restrictions.
+query II
+WITH p AS MATERIALIZED (SELECT a FROM pairs)
+SELECT count(*),count(*) FILTER (WHERE a IS NULL) FROM (
+    SELECT p.a FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.k
+    UNION ALL SELECT p.a FROM p JOIN first_pair f ON p.a=f.a
+) result;
+----
+5	1
+
+query II
+WITH p AS MATERIALIZED (SELECT a FROM pairs)
+SELECT count(*),count(*) FILTER (WHERE a IS NULL) FROM (
+    SELECT p.a FROM p LEFT JOIN b ON p.a=b.k
+    UNION ALL SELECT p.a FROM p JOIN first_pair f ON p.a=f.a
+) result;
+----
+7	1
+
+statement ok
+CREATE TABLE strings AS SELECT repeat(s,100) s FROM (VALUES ('a'),('m'),('z'),(NULL)) t(s);
+
+statement ok
+CREATE TABLE string_b AS SELECT repeat('a',100) s;
+
+statement ok
+CREATE TABLE string_c AS SELECT repeat('z',100) s;
+
+query IT rowsort
+WITH p AS MATERIALIZED (SELECT s FROM strings)
+SELECT length(p.s),left(p.s,1) FROM p JOIN string_b b USING(s)
+UNION ALL SELECT length(p.s),left(p.s,1) FROM p JOIN string_c c USING(s);
+----
+100	a
+100	z
+
+statement ok
+CREATE TABLE nested(k BIGINT,payload INTEGER[]);
+
+statement ok
+INSERT INTO nested VALUES (1,[NULL,2]),(9999,[3,4]);
+
+query IT rowsort
+WITH p AS MATERIALIZED (SELECT * FROM nested)
+SELECT p.k,p.payload FROM p JOIN b USING(k)
+UNION ALL SELECT p.k,p.payload FROM p JOIN c USING(k);
+----
+1	[NULL, 2]
+9999	[3, 4]
+
+# Existing CTE and join-filter pushdown can contribute their own references and restrictions.
+statement ok
+RESET disabled_optimizers;
+
+query IT rowsort
+EXECUTE consumers;
+----
+1	b
+9999	c
+
+query I
+WITH p AS MATERIALIZED (SELECT k FROM probe)
+SELECT sum(n) FROM (
+    SELECT count(*) n FROM p JOIN b USING(k)
+    UNION ALL
+    SELECT count(*) n FROM p x JOIN (SELECT y.k FROM p y JOIN c USING(k)) z USING(k)
+) counts;
+----
+2
+
+statement ok
+RESET threads;

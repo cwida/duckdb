@@ -272,6 +272,19 @@ SELECT COUNT(t1.rowid) FROM t1, v0 NATURAL RIGHT JOIN t0;
 statement ok
 SELECT COUNT(t1.rowid) FROM t1, v0 RIGHT JOIN t0 ON v0.c0=t0.c0;
 
+# Empty inputs may avoid evaluating the invalid cast, depending on join order.
+statement maybe
+SELECT COUNT(t1.rowid) FROM t1, v0 RIGHT JOIN t0 ON t1.c1=t0.c1 AND v0.c0=t0.c0;
+----
+<REGEX>:.*Conversion Error.*BOOLEAN.*DATE.*
+
+# With nonempty inputs the invalid comparison must be evaluated.
+statement ok
+INSERT INTO t0 VALUES ('2000-01-01', '2000-01-01', 1);
+
+statement ok
+INSERT INTO t1 VALUES ('2000-01-01', '2000-01-01');
+
 statement error
 SELECT COUNT(t1.rowid) FROM t1, v0 RIGHT JOIN t0 ON t1.c1=t0.c1 AND v0.c0=t0.c0;
 ----
@@ -282,9 +295,6 @@ statement error
 select * from (values (1)) t1(i) join (values (1)) t2(i) on (t1.i=t2.i) natural join (values (1)) t3(i);
 ----
 <REGEX>:.*Binder Error.*Ambiguous reference to column name.*
-
-statement ok
-PRAGMA disable_verification
 
 # column name appears more than once on right side of the natural join
 statement error

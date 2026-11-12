@@ -1,11 +1,70 @@
 #include "catch.hpp"
 #include "duckdb.hpp"
+#include "duckdb/common/types/row/integer_partitioned_tuple_data.hpp"
 #include "duckdb/common/types/row/tuple_data_collection.hpp"
 #include "duckdb/common/types/row/tuple_data_iterator.hpp"
 #include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 
 namespace duckdb {
+
+TEST_CASE("Integer-partitioned row append respects the source selection", "[tuple_data_allocation]") {
+	if (STANDARD_VECTOR_SIZE < 6) {
+		return;
+	}
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &buffer_manager = BufferManager::GetBufferManager(*con.context);
+	vector<LogicalType> types {LogicalType::BIGINT};
+	auto layout = make_shared_ptr<TupleDataLayout>();
+	layout->Initialize(types, TupleDataValidityType::CAN_HAVE_NULL_VALUES);
+	TupleDataCollection source(buffer_manager, layout, MemoryTag::ORDER_BY);
+	TupleDataAppendState source_state;
+	source.InitializeAppend(source_state, TupleDataPinProperties::KEEP_EVERYTHING_PINNED);
+	DataChunk chunk;
+	chunk.Initialize(Allocator::DefaultAllocator(), types);
+	{
+		auto keys = FlatVector::Writer<int64_t>(chunk.data[0], 6);
+		keys.WriteValue(0);
+		keys.WriteValue(1);
+		keys.WriteValue(2);
+		keys.WriteNull();
+		keys.WriteValue(99);
+		keys.WriteValue(-1);
+	}
+	source.Append(source_state, chunk);
+
+	IntegerPartitionedTupleData target(buffer_manager, layout, MemoryTag::ORDER_BY, 0, Value::BIGINT(0), 3);
+	PartitionedTupleDataAppendState target_state;
+	target.InitializeAppendState(target_state);
+	SelectionVector selection(5);
+	const idx_t selected_rows[] = {4, 2, 3, 5, 2};
+	for (idx_t i = 0; i < 5; i++) {
+		selection.set_index(i, selected_rows[i]);
+	}
+	target.Append(target_state, source_state.chunk_state, 5, selection);
+	target.FlushAppendState(target_state);
+	REQUIRE(target.Count() == 5);
+
+	vector<vector<Value>> expected {{},
+	                                {},
+	                                {Value::BIGINT(2), Value::BIGINT(2)},
+	                                {Value(LogicalType::BIGINT)},
+	                                {Value::BIGINT(99), Value::BIGINT(-1)}};
+	for (idx_t i = 0; i < expected.size(); i++) {
+		auto &partition = *target.GetPartitions()[i];
+		REQUIRE(partition.Count() == expected[i].size());
+		TupleDataScanState scan;
+		partition.InitializeScan(scan);
+		idx_t row = 0;
+		while (partition.Scan(scan, chunk)) {
+			for (idx_t j = 0; j < chunk.size(); j++) {
+				REQUIRE(Value::NotDistinctFrom(chunk.GetValue(0, j), expected[i][row++]));
+			}
+		}
+		REQUIRE(row == expected[i].size());
+	}
+}
 
 TEST_CASE("Tuple data allocation accounting follows retained blocks", "[tuple_data_allocation]") {
 	DuckDB db(nullptr);

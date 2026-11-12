@@ -33,6 +33,7 @@ namespace duckdb {
 
 class BaseTreeRenderer;
 class ClientContext;
+class Context;
 class ExpressionExecutor;
 class ProfilingNode;
 class PhysicalOperator;
@@ -96,6 +97,7 @@ public:
 	DUCKDB_API string GetSaveLocation() const;
 
 	DUCKDB_API static QueryProfiler &Get(ClientContext &context);
+	DUCKDB_API static QueryProfiler &Get(Context &context);
 
 	DUCKDB_API void Start(const string &query);
 	DUCKDB_API void Reset();
@@ -114,17 +116,34 @@ public:
 	DUCKDB_API void TrackBytesWritten(idx_t amount, idx_t elapsed_us);
 	//! Track bytes spilled to the temporary directory (always tracked, even when profiling disabled).
 	DUCKDB_API void TrackBytesSpilled(idx_t amount);
+	//! Track the compressed size of column data scanned (always tracked, even when profiling disabled). Unlike
+	//! query.total_bytes_scanned, the running total includes scans inside secure views
+	DUCKDB_API void TrackBytesScanned(idx_t amount);
+	//! Zero the running total of bytes scanned, at the start of every statement
+	void ResetBytesScanned();
 	//! Track memory allocated (thread-safe; always tracked).
 	DUCKDB_API void TrackTotalMemoryAllocated(idx_t amount);
-	//! Add to a metric counter (profiling-only).
+	// The metrics an extension reports for the running query, declared with ExtensionLoader::RegisterMetric. These
+	// calls are thread-safe and take a lock while profiling is enabled, so add up per-row figures locally first. Make
+	// them on threads the query waits for: an update that arrives after the query ends may be lost, or counted for the
+	// next query.
+
+	//! Add to a metric counter (profiling-only, thread-safe).
 	DUCKDB_API void AddToMetricCounter(const string &key, idx_t amount);
+	//! Add time measured elsewhere, in nanoseconds, to a timing metric, which is reported in seconds (profiling-only,
+	//! thread-safe). Unlike a timer it records no start and end time. For time a timer cannot measure, e.g. requests
+	//! that were made on other threads.
+	DUCKDB_API void AddToMetricTiming(const string &key, idx_t elapsed_ns);
 	//! Add parser time measured before the per-statement profiler was started.
 	void AddParserTime(const Profiler &parser_timer, timestamp_t start_time, timestamp_t end_time);
 
-	//! Set an arbitrary metric value (profiling-only; no-op when profiling is disabled).
+	//! Set the value of a metric an extension registered with ExtensionLoader::RegisterMetric, for the running query
+	//! (profiling-only). Any other name, including the profiler's own metrics, is ignored. Thread-safe, and may be
+	//! called while the statement binds or executes; a value set while a prepared statement binds is not kept for its
+	//! executions.
 	DUCKDB_API void SetMetric(const string &key, Value new_value);
-	//! Returns true if the given metric is currently being tracked.
-	//! Always returns false when profiling is disabled.
+	//! Returns true if the given metric is being tracked for the running query, also while the statement binds.
+	//! Always returns false when profiling is disabled or no query is being profiled.
 	DUCKDB_API bool MetricIsTracked(const string &key) const;
 
 	//! Start a timer for a metric identified by its struct type.
@@ -172,6 +191,7 @@ public:
 	DUCKDB_API void WriteToFile(const char *path, string &info) const;
 	DUCKDB_API idx_t GetBytesRead() const;
 	DUCKDB_API idx_t GetBytesWritten() const;
+	DUCKDB_API idx_t GetBytesScanned() const;
 
 	//! Return the result tree (generating it if it does not yet exist)
 	QueryProfileResult &GetResult();
@@ -185,8 +205,9 @@ private:
 	//! case. Used for the programmatic / string paths.
 	string RenderProfilerOutput(optional_ptr<TreeRenderer> renderer) const;
 	//! Print the profiler output directly via the renderer's print sink (nullptr prints nothing), handling the
-	//! disabled case. Only used on the terminal-print paths.
-	void PrintProfilerOutput(optional_ptr<TreeRenderer> renderer) const;
+	//! disabled case, followed by `trailer`. Only used on the terminal-print paths; everything they print goes
+	//! through the sink, so a renderer whose sink keeps or discards the output decides what is printed.
+	void PrintProfilerOutput(optional_ptr<TreeRenderer> renderer, const string &trailer = "") const;
 
 public:
 	//! Provides access to the root of the query tree, but ensures there are no concurrent modifications
@@ -218,6 +239,8 @@ private:
 	unique_ptr<ProfilingNode> root;
 
 	unique_ptr<GatheredMetrics> metrics;
+	//! The tracked_metrics patterns of the running query, for MetricIsTracked before metrics exists
+	unique_ptr<GatheredMetrics> tracked_metric_patterns;
 
 	//! Top level query information.
 	QueryMetrics query_metrics;

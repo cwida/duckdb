@@ -15,6 +15,7 @@
 #include "duckdb/main/relation/view_relation.hpp"
 #include "duckdb/parser/parsed_data/transaction_info.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/main/statement_iterator.hpp"
 
@@ -36,6 +37,14 @@ Connection::Connection(DuckDB &database) : Connection(*database.instance) {
 
 Connection Connection::CreateInternal(DatabaseInstance &database) {
 	return Connection(database, ConnectionType::INTERNAL);
+}
+
+Connection Connection::CreateInternal(ClientContext &caller) {
+	auto con = CreateInternal(*caller.db);
+	auto &context = *con.context;
+	context.base_context = caller.base_context ? caller.base_context : caller.shared_from_this();
+	context.internal_depth = caller.internal_depth + 1;
+	return con;
 }
 
 Connection::Connection(Connection &&other) noexcept {
@@ -204,29 +213,17 @@ shared_ptr<Relation> Connection::Table(const Identifier &table_name) {
 }
 
 shared_ptr<Relation> Connection::Table(const Identifier &schema_name, const Identifier &table_name) {
-	auto table_info = TableInfo(Identifier::InvalidCatalog(), schema_name, table_name);
-	if (!table_info) {
-		throw CatalogException("Table %s does not exist!",
-		                       QualifiedName(Identifier(), schema_name, table_name)
-		                           .ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA));
-	}
-	return make_shared_ptr<TableRelation>(context, std::move(table_info));
+	return Table(Identifier::InvalidCatalog(), schema_name, table_name);
 }
 
 shared_ptr<Relation> Connection::Table(const Identifier &catalog_name, const Identifier &schema_name,
                                        const Identifier &table_name) {
-	unique_ptr<TableDescription> table_info;
-	do {
-		table_info = TableInfo(catalog_name, schema_name, table_name);
-		if (table_info) {
-			break;
-		}
-
-		if (catalog_name.empty() && !schema_name.empty()) {
-			table_info = TableInfo(schema_name, Identifier::DefaultSchema(), table_name);
-		}
-	} while (false);
-
+	auto catalog = catalog_name;
+	auto schema = schema_name;
+	if (IsInvalidCatalog(catalog) && !IsInvalidSchema(schema)) {
+		context->RunFunctionInTransaction([&]() { Binder::BindSchemaOrCatalog(*context, catalog, schema); });
+	}
+	auto table_info = TableInfo(catalog, schema, table_name);
 	if (!table_info) {
 		throw CatalogException("Table %s does not exist!",
 		                       QualifiedName(catalog_name, schema_name, table_name)

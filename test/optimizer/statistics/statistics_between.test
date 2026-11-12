@@ -9,7 +9,7 @@ statement ok
 CREATE TABLE integers AS SELECT * FROM (VALUES (1), (2), (3)) tbl(i);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # filter is out of range: no need to execute it
 query II
@@ -133,7 +133,7 @@ SELECT i BETWEEN -1 AND 0 FROM (SELECT * FROM integers LIMIT 10) integers(i);
 0
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 # wide between: both are always true, entire filter can be pruned. (happens during physical planning).
 # see https://github.com/duckdb/duckdb-fuzzer/issues/1357
@@ -144,7 +144,7 @@ EXPLAIN SELECT * FROM (SELECT * FROM integers LIMIT 10) integers(i) WHERE i BETW
 physical_plan	<!REGEX>:.*FILTER.*
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # now insert a null value
 statement ok

@@ -183,10 +183,20 @@ typedef void (*copy_to_propagate_statistics_t)(CopyToPropagateStatsInput &input)
 enum class CopyFunctionReturnType : uint8_t {
 	CHANGED_ROWS = 0,
 	CHANGED_ROWS_AND_FILE_LIST = 1,
-	WRITTEN_FILE_STATISTICS = 2
+	WRITTEN_FILE_STATISTICS = 2,
+	//! The above, followed by a "columns" column with the name and type of every copied column (RETURN_COLUMN_TYPES)
+	CHANGED_ROWS_AND_COLUMN_TYPES = 3,
+	CHANGED_ROWS_AND_FILE_LIST_AND_COLUMN_TYPES = 4,
+	WRITTEN_FILE_STATISTICS_AND_COLUMN_TYPES = 5
 };
 vector<Identifier> GetCopyFunctionReturnNames(CopyFunctionReturnType return_type);
 vector<LogicalType> GetCopyFunctionReturnLogicalTypes(CopyFunctionReturnType return_type);
+//! Whether the result ends with the "columns" column of RETURN_COLUMN_TYPES
+bool CopyFunctionReturnsColumnTypes(CopyFunctionReturnType return_type);
+//! The return type without the "columns" column of RETURN_COLUMN_TYPES
+CopyFunctionReturnType GetCopyFunctionBaseReturnType(CopyFunctionReturnType return_type);
+//! The return type with the "columns" column of RETURN_COLUMN_TYPES
+CopyFunctionReturnType GetCopyFunctionReturnTypeWithColumnTypes(CopyFunctionReturnType return_type);
 
 struct CopyFunctionFileStatistics {
 	idx_t row_count = 0;

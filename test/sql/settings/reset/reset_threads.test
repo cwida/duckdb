@@ -9,7 +9,7 @@ select current_setting('threads')
 
 # Set the 'threads' setting to something else
 statement ok
-pragma threads=42
+SET threads=42
 
 statement ok
 RESET threads;

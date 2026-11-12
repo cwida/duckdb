@@ -6,6 +6,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +40,25 @@ class PackageReleaseArtifactTest(unittest.TestCase):
                 self.assertEqual([member.name for member in members], ["duckdb"])
                 self.assertTrue(members[0].mode & stat.S_IXUSR)
                 self.assertEqual(archive.extractfile(members[0]).read(), b"binary")
+
+    def test_cli_zip_release_artifact(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cli = root / "duckdb.exe"
+            cli.write_bytes(b"binary")
+
+            self.run_make(
+                "cli-zip-release-artifact",
+                root,
+                ARTIFACT_SUFFIX="windows-amd64",
+                CLI_BINARY=str(cli),
+            )
+
+            archive_path = root / "duckdb-cli-windows-amd64.zip"
+            with zipfile.ZipFile(archive_path) as archive:
+                self.assertEqual(archive.namelist(), ["duckdb.exe"])
+                self.assertEqual(archive.getinfo("duckdb.exe").compress_type, zipfile.ZIP_DEFLATED)
+                self.assertEqual(archive.read("duckdb.exe"), b"binary")
 
     def test_shared_libraries_release_artifact(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -111,6 +131,31 @@ class PackageReleaseArtifactTest(unittest.TestCase):
                 self.assertEqual(archive.extractfile(members["libduckdb_static.a"]).read(), b"library")
                 self.assertEqual(archive.extractfile(members["libduckdb_shell.a"]).read(), b"shell")
                 self.assertEqual(archive.extractfile(members["libcore_functions_extension.a"]).read(), b"extension")
+
+    def test_release_artifact_includes_native_test_probe(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "linux-build"
+            (source / "test").mkdir(parents=True)
+            (source / "test" / "unittest").write_bytes(b"unittest")
+            (source / "test" / "run").write_text("# runner\n", encoding="utf-8")
+            probe = source / "test" / "block_allocator_fault_injection"
+            probe.write_bytes(b"probe")
+            probe.chmod(0o644)
+
+            archive_path = root / "release-artifact.tar.gz"
+            self.run_make(
+                "release-artifact",
+                root,
+                RELEASE_ARTIFACT_SOURCE_DIR=str(source),
+                RELEASE_ARTIFACT_STAGING_DIR=str(root / "staging"),
+                RELEASE_ARTIFACT_TARBALL=str(archive_path),
+            )
+
+            with tarfile.open(archive_path, mode="r:gz") as archive:
+                member = archive.getmember("release/test/block_allocator_fault_injection")
+                self.assertEqual(archive.extractfile(member).read(), b"probe")
+                self.assertTrue(member.mode & stat.S_IXUSR)
 
     def test_release_artifact_normalizes_windows_layout(self):
         with tempfile.TemporaryDirectory() as temp_dir:

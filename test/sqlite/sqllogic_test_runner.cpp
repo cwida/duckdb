@@ -6,6 +6,7 @@
 #include "duckdb/common/json_document.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/extension_entries.hpp"
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/main/settings.hpp"
@@ -59,7 +60,7 @@ SQLLogicTestRunner::SQLLogicTestRunner(string dbpath) : dbpath(std::move(dbpath)
 	}
 	}
 
-	auto repo = string(DUCKDB_BUILD_DIRECTORY) + "/repository";
+	auto repo = TestBuildDirectory() + "/repository";
 	auto env_var = std::getenv("LOCAL_EXTENSION_REPO");
 	if (env_var) {
 		local_extension_repo = env_var;
@@ -289,6 +290,15 @@ ExtensionLoadResult SQLLogicTestRunner::LoadExtension(DuckDB &db, const std::str
 	return linked_result;
 }
 
+//! Make any statement that logs a warning fail with that warning as its error
+static void EnableWarningsAsErrors(DuckDB &db) {
+	Connection con(db);
+	auto result = con.Query("SET logging_level='WARNING'; SET enable_logging=true; SET warnings_as_errors=true;");
+	if (result->HasError()) {
+		result->ThrowError("Failed to enable warnings_as_errors: ");
+	}
+}
+
 NewDatabaseConnection SQLLogicTestRunner::CreateDatabase(const string &db_path, bool load_extensions) {
 	NewDatabaseConnection result;
 	// a prefixed path (ducklake:...) loads its extension inside the DuckDB constructor, before LoadExtension can run
@@ -309,19 +319,22 @@ NewDatabaseConnection SQLLogicTestRunner::CreateDatabase(const string &db_path, 
 		for (auto ext : test_config.ExtensionToBeLoadedOnLoad()) {
 			SQLLogicTestRunner::LoadExtension(*result.db, ext);
 		}
+		if (test_config.GetWarningsAsErrors()) {
+			EnableWarningsAsErrors(*result.db);
+		}
 	} catch (std::exception &ex) {
 		config->options.extension_directories = saved_extension_directories;
 		ErrorData err(ex);
 		SQLLogicTestLogger::LoadDatabaseFail(file_name, db_path, err.Message());
 		TEST_FAIL("");
 	}
-	result.con = ConnectToDatabase(*result.db);
-	// load any previously loaded extensions again
+	// load any previously loaded extensions again, before a connection snapshots the search path
 	if (load_extensions) {
 		for (auto &extension : extensions) {
 			SQLLogicTestRunner::LoadExtension(*result.db, extension);
 		}
 	}
+	result.con = ConnectToDatabase(*result.db);
 	return result;
 }
 
@@ -349,9 +362,8 @@ unique_ptr<Connection> SQLLogicTestRunner::ConnectToDatabase(DuckDB &db_ref) {
 #ifdef DUCKDB_ALTERNATIVE_VERIFY
 	result->Query("SET pivot_filter_threshold=0");
 #endif
-	auto &client_config = ClientConfig::GetConfig(*result->context);
-	client_config.enable_progress_bar = true;
-	client_config.print_progress_bar = false;
+	Settings::Set<EnableProgressBarSetting>(*result->context, SetScope::SESSION, Value::BOOLEAN(true));
+	Settings::Set<EnableProgressBarPrintSetting>(*result->context, SetScope::SESSION, Value::BOOLEAN(false));
 	// Set the local extension repo for autoinstalling extensions
 	if (!local_extension_repo.empty()) {
 		auto res1 = result->Query("SET autoinstall_extension_repository='" + local_extension_repo + "'");
@@ -435,11 +447,11 @@ string SQLLogicTestRunner::ReplaceKeywords(string input) {
 	}
 	auto &test_config = TestConfiguration::Get();
 	test_config.ProcessPath(input, file_name);
-	input = StringUtil::Replace(input, "{BUILD_DIRECTORY}", DUCKDB_BUILD_DIRECTORY);
+	input = StringUtil::Replace(input, "{BUILD_DIRECTORY}", TestBuildDirectory());
 	if (StringUtil::Contains(input, "__BUILD_DIRECTORY__")) {
 		Printer::PrintF("Replacing deprecated __BUILD_DIRECTORY__ in test %s - please replace with {BUILD_DIRECTORY}",
 		                file_name);
-		input = StringUtil::Replace(input, "__BUILD_DIRECTORY__", DUCKDB_BUILD_DIRECTORY);
+		input = StringUtil::Replace(input, "__BUILD_DIRECTORY__", TestBuildDirectory());
 	}
 
 	return input;
@@ -716,6 +728,11 @@ RequireResult SQLLogicTestRunner::CheckRequire(SQLLogicParser &parser, const vec
 		if (result == ExtensionLoadResult::LOADED_EXTENSION) {
 			// add the extension to the list of loaded extensions
 			extensions.insert(param);
+			// Loading the extension didn't put the extension schema (if present) on the search path yet
+			ExtensionLoader::RefreshSearchPath(*con->context);
+			for (auto &entry : named_connection_map) {
+				ExtensionLoader::RefreshSearchPath(*entry.second->context);
+			}
 		} else if (result == ExtensionLoadResult::EXTENSION_UNKNOWN) {
 			parser.Fail("unknown extension type: %s", params[0]);
 		} else if (result == ExtensionLoadResult::NOT_LOADED) {
@@ -819,6 +836,8 @@ void SQLLogicTestRunner::ConfigureDefaultInMemoryTemporaryDirectory(DuckDB &data
 	}
 	auto normalized_script = StringUtil::Replace(file_name, "\\", "/");
 	auto temp_directory_name = StringUtil::Replace(normalized_script, "/", "_");
+	// an absolute Windows path has a drive colon, which a directory name cannot contain
+	temp_directory_name = StringUtil::Replace(temp_directory_name, ":", "_");
 	auto temp_directory = TestJoinPath(TestDirectoryPath(), "sqllogic_temp_" + temp_directory_name);
 	db_config.SetOption(database.instance.get(), *DBConfig::GetOptionByName("temp_directory"), temp_directory);
 }
@@ -1178,6 +1197,19 @@ void SQLLogicTestRunner::ExecuteScript(SQLLogicParser &parser, const string &scr
 					var_value = val.ToString();
 				}
 				environment_variables[var_name] = var_value;
+			} else if (token.parameters[0] == "query_timeout") {
+				if (token.parameters.size() != 2) {
+					parser.Fail("set query_timeout requires a single value (seconds, 0 disables)");
+				}
+				auto timeout = Value(token.parameters[1]).DefaultTryCastAs(LogicalType::DOUBLE);
+				static constexpr double MAXIMUM_QUERY_TIMEOUT = 3600;
+				// The explicit range check also rejects NaN and infinity, which the double cast accepts but
+				// which cannot be represented as a condition-variable deadline.
+				if (!timeout || !(timeout->GetValue<double>() >= 0) ||
+				    timeout->GetValue<double>() > MAXIMUM_QUERY_TIMEOUT) {
+					parser.Fail("set query_timeout requires a number of seconds between 0 and 3600 (0 disables)");
+				}
+				query_timeout = timeout->GetValue<double>();
 			} else {
 				parser.Fail("unrecognized set parameter: %s", token.parameters[0]);
 			}
@@ -1279,7 +1311,7 @@ void SQLLogicTestRunner::ExecuteScript(SQLLogicParser &parser, const string &scr
 			} else {
 				env_actual = std::getenv(env_var.c_str());
 			}
-			string default_local_repo = string(DUCKDB_BUILD_DIRECTORY) + "/repository";
+			string default_local_repo = TestBuildDirectory() + "/repository";
 			if (env_actual == nullptr && env_var == "LOCAL_EXTENSION_REPO" &&
 			    Settings::Get<AutoloadKnownExtensionsSetting>(*config)) {
 				// Overriding LOCAL_EXTENSION_REPO here is a hacky

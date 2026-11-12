@@ -1,0 +1,63 @@
+# name: test/sql/types/timestamp/timestamptz_ns_timestamptz_comparison.test
+# description: TIMESTAMPTZ_NS combines with TIMESTAMPTZ at nanosecond precision, as TIMESTAMP_NS does with TIMESTAMP
+# group: [timestamp]
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+	(TIMESTAMP_NS '2026-10-12 12:34:56.123456789' AT TIME ZONE 'UTC', TIMESTAMPTZ '2026-10-12 12:34:56.123456+00'),
+	(TIMESTAMP_NS '2026-10-12 12:34:56.123456000' AT TIME ZONE 'UTC', TIMESTAMPTZ '2026-10-12 12:34:56.123456+00'),
+	(NULL, TIMESTAMPTZ '2026-10-12 00:00:00+00')
+) v(tzns, tz);
+
+query IIII
+SELECT tzns = tz, tzns < tz, tzns > tz, tz <= tzns FROM t ORDER BY ALL;
+----
+false	false	true	true
+true	false	false	true
+NULL	NULL	NULL	NULL
+
+query I
+SELECT (TIMESTAMP_NS '2026-10-12 12:34:56.123456789' AT TIME ZONE 'UTC') < now();
+----
+true
+
+query I
+SELECT (TIMESTAMP_NS '2026-10-12 12:34:56.123456789' AT TIME ZONE 'UTC')
+	BETWEEN TIMESTAMPTZ '2026-10-01 00:00:00+00' AND TIMESTAMPTZ '2026-10-13 00:00:00+00';
+----
+true
+
+query II
+SELECT COALESCE(tzns, tz) AS c, typeof(c) FROM t ORDER BY ALL;
+----
+2026-10-12 00:00:00+00	TIMESTAMPTZ_NS
+2026-10-12 12:34:56.123456+00	TIMESTAMPTZ_NS
+2026-10-12 12:34:56.123456789+00	TIMESTAMPTZ_NS
+
+query I
+SELECT tz IN (tzns, TIMESTAMPTZ '2026-10-12 00:00:00+00') FROM t ORDER BY ALL;
+----
+false
+true
+true
+
+query I
+SELECT typeof([tzns, tz]) FROM t LIMIT 1;
+----
+TIMESTAMPTZ_NS[]
+
+# the microsecond side is cast up, so a value outside the TIMESTAMPTZ_NS range fails, as it does for TIMESTAMP_NS
+statement error
+SELECT (TIMESTAMP_NS '2026-10-12 12:34:56.123456789' AT TIME ZONE 'UTC') < TIMESTAMPTZ '3000-01-01 00:00:00+00';
+----
+Could not convert Timestamp to higher precision
+
+query I
+SELECT (TIMESTAMP_NS '2026-10-12 12:34:56.123456789' AT TIME ZONE 'UTC') < 'infinity'::TIMESTAMPTZ;
+----
+true

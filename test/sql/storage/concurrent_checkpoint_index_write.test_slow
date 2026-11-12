@@ -33,7 +33,7 @@ ATTACH ':memory:' AS mem
 statement ok
 CREATE TABLE mem.timing (who VARCHAR, t TIMESTAMP);
 
-# the checkpoint sleeps for six seconds after it copied the indexes of t, before it writes and installs the copies
+# the checkpoint sleeps for six seconds after it wrote the indexes of t, before it installs the copies
 statement ok
 SET debug_checkpoint_index_sleep_ms=6000
 

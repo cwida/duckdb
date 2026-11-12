@@ -19,6 +19,7 @@ class Allocator;
 class AttachedDatabase;
 class ClientContext;
 class DatabaseInstance;
+class Context;
 class ExecutionContext;
 class ThreadContext;
 
@@ -56,6 +57,8 @@ typedef data_ptr_t (*reallocate_function_ptr_t)(PrivateAllocatorData *private_da
 class AllocatedData {
 public:
 	DUCKDB_API AllocatedData();
+	//! An empty allocation that retains its resource for later growth.
+	DUCKDB_API explicit AllocatedData(Allocator &allocator);
 	DUCKDB_API AllocatedData(Allocator &allocator, data_ptr_t pointer, idx_t allocated_size);
 	DUCKDB_API ~AllocatedData();
 	// disable copy constructors
@@ -159,7 +162,7 @@ void DeleteArray(T *ptr, idx_t size) {
 }
 
 template <typename T, typename... ARGS>
-T *AllocateObject(ARGS &&...args) {
+T *AllocateObject(ARGS &&... args) {
 	auto data = Allocator::DefaultAllocator().AllocateData(sizeof(T));
 	return new (data) T(std::forward<ARGS>(args)...);
 }
@@ -220,6 +223,7 @@ public:
 	//! Allocate with a huge-page hint, retaining the matching release path.
 	DUCKDB_API HugeAllocation AllocateHuge(idx_t size);
 	DUCKDB_API static BufferAllocator &Get(ClientContext &context);
+	DUCKDB_API static BufferAllocator &Get(Context &context);
 	DUCKDB_API static BufferAllocator &Get(DatabaseInstance &db);
 	DUCKDB_API static BufferAllocator &Get(AttachedDatabase &db);
 

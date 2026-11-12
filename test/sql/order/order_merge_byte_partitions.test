@@ -1,0 +1,56 @@
+# name: test/sql/order/order_merge_byte_partitions.test
+# description: Merge uneven payload partitions with a partial final vector
+# group: [order]
+
+# Requires three default-sized merge partitions.
+require vector_size 2048
+
+statement ok
+SET threads=4;
+
+statement ok
+SET memory_limit='1GB';
+
+statement ok
+SET preserve_insertion_order=true;
+
+statement ok
+SET asof_loop_join_threshold=0;
+
+statement ok
+CREATE TABLE byte_keys AS
+SELECT i, (i * 977) % 262147 AS k,
+       CASE WHEN k < 8192 THEN repeat('x', 8192) ELSE repeat('y', 32) END AS p
+FROM range(262147) t(i);
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+statement ok
+CREATE TEMP TABLE sorted_keys AS SELECT * FROM byte_keys ORDER BY k DESC;
+
+query II
+SELECT count(*),
+       bool_and(coalesce((prev_k IS NULL OR prev_k > k) AND
+                         i BETWEEN 0 AND 262146 AND k = (i * 977) % 262147 AND
+                         p = CASE WHEN k < 8192 THEN repeat('x', 8192) ELSE repeat('y', 32) END, false))
+FROM (SELECT *, lag(k) OVER () AS prev_k FROM sorted_keys);
+----
+262147	true
+
+statement ok
+DROP TABLE sorted_keys;
+
+# ASOF consumes concatenated materialized sort partitions.
+query II
+SELECT count(*), count(*) FILTER (
+    WHERE r.i IS DISTINCT FROM l.i OR
+          r.p IS DISTINCT FROM CASE WHEN l.k < 8192 THEN repeat('x', 8192) ELSE repeat('y', 32) END
+)
+FROM byte_keys l ASOF JOIN byte_keys r ON l.k >= r.k;
+----
+262147	0
+
+endloop

@@ -1,0 +1,17 @@
+# name: benchmark/micro/compression/dictionary/dict_fsst_analyze_large_dictionary.benchmark
+# description: Storing short strings with tens of thousands of distinct values, so every block holds a large dictionary
+# group: [dictionary]
+
+name Dictionary Compression Write
+group dictionary
+storage persistent v1.4.0
+require_reinit
+
+load
+PRAGMA force_compression='dict_fsst';
+DROP TABLE IF EXISTS test;
+CREATE OR REPLACE TABLE src AS SELECT (hash(i) % 50_000)::VARCHAR AS i FROM range(0, 50_000_000) tbl(i);
+
+run
+CREATE TABLE test AS SELECT * FROM src;
+checkpoint;

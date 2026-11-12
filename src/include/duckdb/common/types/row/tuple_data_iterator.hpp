@@ -19,6 +19,9 @@ public:
 	//! Creates a TupleDataChunkIterator that iterates over the specified DataChunk range in the TupleDataCollection
 	TupleDataChunkIterator(TupleDataCollection &collection, TupleDataPinProperties properties, idx_t chunk_idx_from,
 	                       idx_t chunk_idx_to, bool init_heap);
+	//! Creates a TupleDataChunkIterator that iterates over the single DataChunk at the given position
+	TupleDataChunkIterator(TupleDataCollection &collection, TupleDataPinProperties properties,
+	                       const TupleDataChunkPosition &position, bool init_heap);
 
 public:
 	//! Whether the iterator is done
@@ -59,6 +62,28 @@ private:
 	TupleDataScanState state;
 	idx_t current_segment_idx;
 	idx_t current_chunk_idx;
+};
+
+//! Walks the chunks of a TupleDataCollection in storage order without pinning anything: exposes the position, the
+//! row count and the used heap bytes of every chunk, e.g. to plan scans over the collection
+class TupleDataChunkCursor {
+public:
+	explicit TupleDataChunkCursor(const TupleDataCollection &collection);
+
+public:
+	//! Moves to the next chunk; returns false once past the last chunk
+	bool Next();
+	//! The position of the current chunk
+	TupleDataChunkPosition Position() const;
+	//! The number of rows in the current chunk
+	idx_t Count() const;
+	//! The heap bytes used by the rows of the current chunk (zero for fixed-size layouts)
+	idx_t HeapSize() const;
+
+private:
+	const TupleDataCollection &collection;
+	TupleDataChunkPosition position;
+	bool started;
 };
 
 } // namespace duckdb

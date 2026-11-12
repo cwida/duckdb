@@ -1,6 +1,8 @@
 #include "duckdb/parallel/task_executor.hpp"
 #include "duckdb/parallel/task_notifier.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 
 namespace duckdb {
 
@@ -28,10 +30,10 @@ public:
 				result = task->ExecuteTaskStep();
 			} while (result == TaskExecutionResult::TASK_NOT_FINISHED && mode == TaskExecutionMode::PROCESS_ALL);
 		} catch (std::exception &ex) {
-			executor.PushError(ErrorData(ex));
+			executor.PushTaskError(ex);
 			return TaskExecutionResult::TASK_ERROR;
 		} catch (...) { // LCOV_EXCL_START
-			executor.PushError(ErrorData("Unknown exception during task execution"));
+			executor.PushTaskError("Unknown exception during task execution");
 			return TaskExecutionResult::TASK_ERROR;
 		} // LCOV_EXCL_STOP
 		if (result == TaskExecutionResult::TASK_NOT_FINISHED) {
@@ -90,10 +92,10 @@ private:
 		try {
 			callback();
 		} catch (std::exception &ex) {
-			executor.PushError(ErrorData(ex));
+			executor.PushTaskError(ex);
 			return TaskExecutionResult::TASK_ERROR;
 		} catch (...) { // LCOV_EXCL_START
-			executor.PushError(ErrorData(unknown_error));
+			executor.PushTaskError(unknown_error);
 			return TaskExecutionResult::TASK_ERROR;
 		} // LCOV_EXCL_STOP
 		return TaskExecutionResult::TASK_FINISHED;
@@ -108,9 +110,13 @@ TaskExecutor::TaskExecutor(TaskScheduler &scheduler, TaskSchedulerType type_p)
     : scheduler(scheduler), type(type_p), token(scheduler.CreateProducer()) {
 }
 
-TaskExecutor::TaskExecutor(ClientContext &context_p, TaskSchedulerType type_p)
-    : TaskExecutor(TaskScheduler::GetScheduler(context_p), type_p) {
-	context = context_p;
+TaskExecutor::TaskExecutor(ClientContext &context, TaskSchedulerType type_p)
+    : TaskExecutor(context.GetContext(), type_p) {
+}
+
+TaskExecutor::TaskExecutor(Context &context_p, TaskSchedulerType type_p)
+    : TaskExecutor(context_p.GetTaskScheduler(), type_p) {
+	context = &context_p;
 }
 
 TaskExecutor::~TaskExecutor() {
@@ -124,6 +130,14 @@ TaskExecutor::~TaskExecutor() {
 
 void TaskExecutor::PushError(ErrorData error) {
 	error_manager.PushError(std::move(error));
+}
+
+void TaskExecutor::PushTaskError(const std::exception &ex) {
+	error_manager.PushTaskError([&]() { return ErrorData(ex); });
+}
+
+void TaskExecutor::PushTaskError(const char *message) {
+	error_manager.PushTaskError([&]() { return ErrorData(message); });
 }
 
 bool TaskExecutor::HasError() {

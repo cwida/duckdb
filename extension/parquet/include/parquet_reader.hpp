@@ -31,6 +31,9 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "column_reader.hpp"
+#include "parquet_page_index.hpp"
+#include "duckdb/common/allocator.hpp"
+#include "duckdb/common/mutex.hpp"
 #include "parquet_prefetch_cost_model.hpp"
 #include "parquet_file_metadata_cache.hpp"
 #include "parquet_rle_bp_decoder.hpp"
@@ -93,6 +96,7 @@ struct CryptoMetaData;
 struct GlobalTableFunctionState;
 struct LocalTableFunctionState;
 struct PartitionStatistics;
+struct ReadHead;
 struct TableFilterState;
 
 struct ParquetReaderPrefetchConfig {
@@ -106,9 +110,11 @@ struct ParquetReaderPrefetchConfig {
 
 enum class ParquetPrefetchStrategy : uint8_t {
 	NONE,
-	WHOLE_GROUP,      //! Prefetches the whole group
-	PREFETCH_FILTERS, //! Used when we have fully selective filters, so they are prefetched earlier
-	COLUMN_WISE_EAGER //! Used when we have projections and optional only filters
+	WHOLE_GROUP,             //! Prefetches the whole group
+	PREFETCH_FILTERS,        //! Used when we have fully selective filters, so they are prefetched earlier
+	COLUMN_WISE_EAGER,       //! Used when we have projections and optional only filters
+	PREFETCH_FILTERS_PAGES,  //! PREFETCH_FILTERS, reading only the pages the page index keeps
+	COLUMN_WISE_EAGER_PAGES, //! COLUMN_WISE_EAGER, reading only the pages the page index keeps
 };
 
 const char *ParquetPrefetchStrategyToString(ParquetPrefetchStrategy strategy);
@@ -189,7 +195,7 @@ struct ParquetLoggerPrefetchMetrics {
 
 	//! Build a prefetch group
 	void GeneratePrefetchGroup(ThriftFileTransport &trans, vector<ParquetPrefetchColumn> &requested_columns,
-	                           const vector<duckdb_parquet::ColumnChunk> &all_chunks);
+	                           const duckdb_parquet::ColumnChunkList &all_chunks);
 };
 
 struct ParquetPrefetchMetrics {
@@ -252,6 +258,15 @@ public:
 	//! true once the filter at this index has driven the surviving row count to zero
 	vector<bool> filter_eliminated_all_rows;
 
+	//! Whether the page index (ColumnIndex / OffsetIndex) is used to skip pages, see parquet_use_page_index
+	bool use_page_index = true;
+	//! The page index of the current row group, filled when it rules out pages
+	ParquetRowGroupPageIndex page_index;
+	//! Whether page_index.row_ranges restricts the rows the scan reads from the current row group
+	bool page_index_active = false;
+	//! The entry of page_index.row_ranges the scan is at
+	idx_t page_index_range_idx = 0;
+
 	//! (optional) pointer to the PhysicalOperator for logging
 	optional_ptr<const PhysicalOperator> op;
 
@@ -260,6 +275,10 @@ public:
 	//! profiling metrics (the profiler sums them across threads).
 	idx_t row_groups_read = 0;
 	idx_t row_groups_skipped = 0;
+	//! Compressed size of the column chunks of the row groups read, surfaced as bytes_scanned the same way
+	idx_t bytes_scanned = 0;
+	//! Compressed size of the column chunks of the registered row group, counted once its scan starts
+	idx_t pending_bytes_scanned = 0;
 
 	//! Prefetch cost model
 	PrefetchCostModelState cost_model_state;
@@ -304,6 +323,12 @@ struct ParquetOptions {
 	StringColumnReader::Utf8ValidationOption utf8_validation_option =
 	    StringColumnReader::Utf8ValidationOption::STRICT_UTF8;
 	ParquetInt96AsOption int96_as = ParquetInt96AsOption::TIMESTAMP;
+
+	//! Whether invalid UTF-8 in a VARCHAR column (not JSON) is changed as it is read, so that the values no longer lie
+	//! within the statistics and bloom filters of the stored bytes
+	bool RepairsInvalidUTF8() const {
+		return utf8_validation_option != StringColumnReader::Utf8ValidationOption::STRICT_UTF8;
+	}
 };
 
 struct ParquetOptionsSerialization {
@@ -368,6 +393,7 @@ public:
 
 	mutable CachingFileSystem fs;
 	Allocator &allocator;
+	BufferManager &buffer_manager;
 	shared_ptr<ParquetFileMetadataCache> metadata;
 	ParquetOptions parquet_options;
 	unique_ptr<ParquetColumnSchema> root_schema;
@@ -477,8 +503,27 @@ private:
 	uint64_t GetGroupSpan(ParquetReaderScanState &state);
 	FilterPropagateResult CheckRowGroupFilterStatistics(ClientContext &context, ParquetReaderScanState &state,
 	                                                    ColumnReader &column_reader, const TableFilter &filter);
-	bool DynamicFiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state);
+	FilterPropagateResult CheckRowGroupFilterStatistics(ClientContext &context, idx_t group_index,
+	                                                    ColumnReader &column_reader, const TableFilter &filter);
+	bool FiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state, bool dynamic_filters_only);
 	void PrepareRowGroupBuffer(ClientContext &context, ParquetReaderScanState &state, idx_t out_col_idx);
+	//! Reads the page index of the row group and works out which rows may match the filters; a page index that
+	//! cannot be read or evaluated is ignored
+	void PreparePageIndex(ClientContext &context, ParquetReaderScanState &state);
+	void PreparePageIndexInternal(ClientContext &context, ParquetReaderScanState &state);
+	//! Serves the page index of the whole file from one buffer that is read once per reader and shared by every row
+	//! group and thread, when the index fits the transport's accepted column gap; returns false when it does not
+	bool TryAttachPageIndexBuffer(ThriftFileTransport &transport) const;
+	struct BloomFilterReadPlan;
+	BloomFilterReadPlan PlanBloomFilterReads(ClientContext &context, ThriftFileTransport &transport,
+	                                         ColumnReader &column_reader, const TableFilter &filter, bool nested_filter,
+	                                         idx_t column_chunk_idx);
+	bool TryAttachBloomFilterReadHead(ClientContext &context, ParquetReaderScanState &state,
+	                                  ColumnReader &column_reader, const TableFilter &filter, bool nested_filter,
+	                                  idx_t column_chunk_idx);
+	//! Moves the scan to the next rows of the row group that may match according to the page index, skipping the
+	//! rows in between in every column reader; returns the number of rows to scan next (0 if none are left)
+	idx_t SkipToPageIndexRows(ParquetReaderScanState &state);
 	//! Whole-group prefetch strategy.
 	ParquetPrefetchStrategy WholeGroupPrefetch(ParquetReaderScanState &state, ThriftFileTransport &trans,
 	                                           const duckdb_parquet::RowGroup &group, uint64_t total_row_group_span,
@@ -524,6 +569,17 @@ private:
 private:
 	unique_ptr<CachingFileHandle> file_handle;
 	mutable OnceFlag scan_handle_initialized;
+	//! The byte range of the file that holds the page indexes of every row group (0 if there is none), computed once
+	mutable OnceFlag page_index_span_computed;
+	mutable idx_t page_index_span_begin = 0;
+	mutable idx_t page_index_span_end = 0;
+	//! The bytes of that range, read once and shared by every scan state of this reader
+	mutable mutex page_index_buffer_lock;
+	mutable AllocatedData page_index_buffer;
+	mutable bool page_index_buffer_loaded = false;
+	mutex bloom_filter_read_heads_lock;
+	//! Per column, unclaimed row groups hold their shared read heads. Plans use the first gap estimate.
+	unordered_map<idx_t, unordered_map<idx_t, shared_ptr<ReadHead>>> bloom_filter_read_heads;
 	//! Scan handle shared by all scan states of this reader
 	mutable shared_ptr<CachingFileHandle> shared_scan_handle;
 	mutable annotated_mutex variant_stats_lock;

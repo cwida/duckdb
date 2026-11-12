@@ -1,0 +1,94 @@
+# name: test/sql/parser/unicode_whitespace_error_position.test
+# description: Preserve original UTF-8 byte offsets after normalizing Unicode whitespace
+# group: [parser]
+
+statement ok
+SET errors_as_json=true;
+
+# ASCII space.
+statement error
+SELECT );
+----
+"position":"7"
+
+statement error
+PREPARE p AS SELECT );
+----
+"position":"20"
+
+# ASCII space, following a multibyte comment.
+statement error
+/* é */ SELECT );
+----
+"position":"16"
+
+statement error
+PREPARE p AS /* é */ SELECT );
+----
+"position":"29"
+
+# U+00A0 non-breaking space (two bytes).
+statement error
+SELECT );
+----
+"position":"8"
+
+statement error
+PREPARE p AS SELECT );
+----
+"position":"21"
+
+# U+00A0 non-breaking space (two bytes), following a multibyte comment.
+statement error
+/* é */ SELECT );
+----
+"position":"17"
+
+statement error
+PREPARE p AS /* é */ SELECT );
+----
+"position":"30"
+
+# U+2003 em space (three bytes).
+statement error
+SELECT );
+----
+"position":"9"
+
+statement error
+PREPARE p AS SELECT );
+----
+"position":"22"
+
+# U+2003 em space (three bytes), following a multibyte comment.
+statement error
+/* é */ SELECT );
+----
+"position":"18"
+
+statement error
+PREPARE p AS /* é */ SELECT );
+----
+"position":"31"
+
+# Consecutive U+00A0 and U+2003 spaces (five bytes).
+statement error
+SELECT  );
+----
+"position":"11"
+
+statement error
+PREPARE p AS SELECT  );
+----
+"position":"24"
+
+# Consecutive U+00A0 and U+2003 spaces (five bytes), following a multibyte comment.
+statement error
+/* é */ SELECT  );
+----
+"position":"20"
+
+statement error
+PREPARE p AS /* é */ SELECT  );
+----
+"position":"33"

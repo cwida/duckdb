@@ -8,7 +8,17 @@ select timestamp '1970-01-01';
 1970-01-01 00:00:00
 
 # timestamp micros
-# min date for timestamp micros is 290309-12-22 (BC) 00:00:00
+# min timestamp micros is 290309-12-21 (BC) 19:59:05.224192, the smallest int64
+query I
+select '290309-12-21 (BC) 19:59:05.224192'::timestamp
+----
+290309-12-21 (BC) 19:59:05.224192
+
+statement error
+select '290309-12-21 (BC) 19:59:05.224192'::timestamp - interval (1) microsecond
+----
+Conversion Error: Date and time not in timestamp range
+
 query I
 select '290309-12-22 (BC) 00:00:00'::timestamp
 ----
@@ -24,15 +34,15 @@ select '290309-12-22 (BC) 00:00:00'::timestamp + interval (1) day
 ----
 290309-12-23 (BC) 00:00:00
 
-statement error
+query I
 select '290309-12-22 (BC) 00:00:00'::timestamp - interval (1) microsecond
 ----
-Conversion Error: Date and time not in timestamp range
+290309-12-21 (BC) 23:59:59.999999
 
-statement error
+query I
 select '290309-12-22 (BC) 00:00:00'::timestamp - interval (1) second
 ----
-Conversion Error: Date and time not in timestamp range
+290309-12-21 (BC) 23:59:59
 
 statement error
 select '290309-12-22 (BC) 00:00:00'::timestamp - interval (1) day

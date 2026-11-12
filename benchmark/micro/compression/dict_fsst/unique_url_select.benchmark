@@ -1,0 +1,32 @@
+# name: benchmark/micro/compression/dict_fsst/unique_url_select.benchmark
+# description: Read unique FSST-compressed URLs after a scattered one-percent filter
+# group: [dict_fsst]
+
+name Select Unique DICT_FSST URLs
+group dict_fsst
+storage persistent
+cache dict_fsst_unique_urls_8m.db
+
+load
+CREATE TABLE requests(bucket INTEGER USING COMPRESSION UNCOMPRESSED, customer_id INTEGER USING COMPRESSION UNCOMPRESSED, url VARCHAR USING COMPRESSION DICT_FSST);
+INSERT INTO requests
+SELECT i % 100, i % 2048, 'https://shop.example/orders/' || lpad(i::VARCHAR, 9, '0') || '/receipt'
+FROM range(8_000_000) t(i);
+CREATE INDEX requests_customer ON requests(customer_id);
+CHECKPOINT;
+
+# Final segments can remain plain dictionaries when they do not fill a block.
+assert III
+SELECT bool_and(compression='DICT_FSST' AND persistent),
+       sum(count) FILTER (WHERE segment_info LIKE 'FSST_ONLY:%') >= 0.99 * sum(count),
+       bool_and(segment_info LIKE 'FSST_ONLY:%' OR segment_info LIKE 'DICTIONARY:%')
+FROM pragma_storage_info('requests', include_segment_info=true)
+WHERE column_name='url' AND segment_type='VARCHAR';
+----
+true	true	true
+
+run
+SELECT sum(strlen(url)) FROM requests WHERE bucket=7;
+
+result I
+3600000

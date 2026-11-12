@@ -63,6 +63,10 @@ using duckdb_parquet::Encoding;
 using duckdb_parquet::PageType;
 using duckdb_parquet::Type;
 
+void ByteBuffer::ThrowOutOfBuffer() {
+	throw std::runtime_error("Out of buffer");
+}
+
 const uint64_t ParquetDecodeUtils::BITPACK_MASKS[] = {0,
                                                       1,
                                                       3,
@@ -136,7 +140,8 @@ const uint8_t ParquetDecodeUtils::BITPACK_DLEN = 8;
 ColumnReader::ColumnReader(const ParquetReader &reader, const ParquetColumnSchema &schema_p)
     : column_schema(schema_p), reader(reader), page_rows_available(0), dictionary_decoder(*this),
       delta_binary_packed_decoder(*this), rle_decoder(*this), delta_length_byte_array_decoder(*this),
-      delta_byte_array_decoder(*this), byte_stream_split_decoder(*this), aad_crypto_metadata(reader.allocator) {
+      delta_byte_array_decoder(*this), byte_stream_split_decoder(*this), aad_crypto_metadata(reader.allocator),
+      page_header_arena(reader.allocator) {
 }
 
 ColumnReader::~ColumnReader() {
@@ -146,22 +151,183 @@ Allocator &ColumnReader::GetAllocator() {
 	return reader.allocator;
 }
 
+BufferManager &ColumnReader::GetBufferManager() {
+	return reader.buffer_manager;
+}
+
 const ParquetReader &ColumnReader::Reader() {
 	return reader;
 }
 
+//! A column chunk with at least this many small cached blocks is read whole instead of page by page ...
+static constexpr idx_t PAGE_INDEX_WHOLE_CHUNK_AFTER_CACHED_BLOCKS = 4;
+//! ... unless it is larger than this share of the memory limit
+static constexpr idx_t PAGE_INDEX_WHOLE_CHUNK_MAX_MEMORY_SHARE = 4;
+
+//! Whether a chunk the cache already holds several small pieces of should be fetched whole instead of the given
+//! (offset, size) page ranges: only when a range misses the cache, and only when the chunk fits the memory budget
+static bool ShouldReadChunkWhole(CachingFileHandle &handle, idx_t chunk_start, idx_t chunk_size,
+                                 const vector<pair<idx_t, idx_t>> &ranges) {
+	if (handle.CountCachedBlocks(chunk_start, chunk_size) < PAGE_INDEX_WHOLE_CHUNK_AFTER_CACHED_BLOCKS) {
+		return false;
+	}
+	bool all_cached = true;
+	for (auto &range : ranges) {
+		if (!handle.IsCached(range.first, range.second)) {
+			all_cached = false;
+			break;
+		}
+	}
+	if (all_cached) {
+		// the probe needs no I/O at all
+		return false;
+	}
+	return chunk_size <= handle.GetMaxMemory() / PAGE_INDEX_WHOLE_CHUNK_MAX_MEMORY_SHARE;
+}
+
+idx_t ColumnReader::PrefetchOffset() const {
+	return prefetch_offset.IsValid() ? prefetch_offset.GetIndex() : FileOffset();
+}
+
 void ColumnReader::RegisterPrefetch(ThriftFileTransport &transport, bool allow_merge) {
-	if (chunk) {
+	prefetch_offset = optional_idx();
+	if (!chunk) {
+		return;
+	}
+	if (!offset_index) {
 		uint64_t size = chunk->meta_data.total_compressed_size;
 		if (size == 0) {
 			// nothing to prefetch
 			return;
 		}
 		transport.RegisterPrefetch(FileOffset(), size, allow_merge);
+		return;
+	}
+	// the page index tells which pages hold rows that may match: the dictionary page (and anything else in front of
+	// the first data page) plus only those pages - adjacent pages are coalesced by the transport
+	auto &locations = offset_index->page_locations;
+	const auto chunk_start = FileOffset();
+	const auto chunk_size = NumericCast<idx_t>(chunk->meta_data.total_compressed_size);
+	const auto first_data_page = NumericCast<idx_t>(locations[0].offset);
+	vector<pair<idx_t, idx_t>> ranges;
+	if (chunk_start < first_data_page) {
+		ranges.emplace_back(chunk_start, first_data_page - chunk_start);
+	}
+	optional_idx first_page_offset;
+	const auto row_group_rows = NumericCast<idx_t>(chunk->meta_data.num_values);
+	for (idx_t page_idx = 0; page_idx < locations.size(); page_idx++) {
+		const auto begin = NumericCast<idx_t>(locations[page_idx].first_row_index);
+		const auto end = page_idx + 1 < locations.size() ? NumericCast<idx_t>(locations[page_idx + 1].first_row_index)
+		                                                 : row_group_rows;
+		if (!PageIndexNeedsRows(begin, end)) {
+			continue;
+		}
+		const auto page_offset = NumericCast<idx_t>(locations[page_idx].offset);
+		if (!first_page_offset.IsValid() && chunk_start >= first_data_page) {
+			first_page_offset = page_offset;
+		}
+		ranges.emplace_back(page_offset, NumericCast<idx_t>(locations[page_idx].compressed_page_size));
+	}
+	// a chunk the cache already holds several small pieces of is being probed repeatedly: once a probe misses a page,
+	// fetch the chunk whole, so this and every later read of it is served from the cache, as it would be without the
+	// page index. The read re-fetches the cached pieces with the gaps around them, so it sends about as many requests
+	// as on a cold cache
+	if (ShouldReadChunkWhole(transport.GetCachingFileHandle(), chunk_start, chunk_size, ranges)) {
+		transport.RegisterPrefetch(chunk_start, chunk_size, allow_merge, true);
+		return;
+	}
+	prefetch_offset = first_page_offset;
+	for (auto &range : ranges) {
+		transport.RegisterPrefetch(range.first, range.second, allow_merge);
 	}
 }
 
-unique_ptr<BaseStatistics> ColumnReader::Stats(idx_t row_group_idx_p, const vector<ColumnChunk> &columns) {
+void ColumnReader::InitializePageIndex(const ParquetRowGroupPageIndex &page_index) {
+	// pages of a repeated column hold several values per row, and lists are skipped by reading them: no page skipping
+	if (!chunk || MaxRepeat() != 0 || reader.parquet_options.encryption_config) {
+		return;
+	}
+	if (!page_index.HasOffsetIndex(ColumnIndex())) {
+		return;
+	}
+	offset_index = *page_index.offset_indexes[ColumnIndex()];
+	page_index_rows = page_index.row_ranges;
+}
+
+void ColumnReader::VerifyPageAgainstOffsetIndex(idx_t header_location, const PageHeader &page_hdr) {
+	// the page index is only used for non-repeated columns, whose pages hold one value per row
+	auto &locations = offset_index->page_locations;
+	auto it = std::lower_bound(locations.begin(), locations.end(), header_location,
+	                           [](const duckdb_parquet::PageLocation &location, idx_t offset) {
+		                           return NumericCast<idx_t>(location.offset) < offset;
+	                           });
+	if (it == locations.end() || NumericCast<idx_t>(it->offset) != header_location) {
+		return;
+	}
+	const auto page_idx = NumericCast<idx_t>(it - locations.begin());
+	const auto index_rows =
+	    ParquetPageIndexUtils::PageRowCount(*offset_index, page_idx, NumericCast<idx_t>(chunk->meta_data.num_values));
+	const auto page_values = page_hdr.type == PageType::DATA_PAGE
+	                             ? NumericCast<idx_t>(page_hdr.data_page_header.num_values)
+	                             : NumericCast<idx_t>(page_hdr.data_page_header_v2.num_values);
+	if (page_values != index_rows) {
+		throw InvalidInputException(
+		    "Failed to read file \"%s\": the OffsetIndex of column \"%s\" is corrupt. Page %llu "
+		    "should hold %llu rows according to the index, but holds %llu values. The file can be read without "
+		    "its page index: SET parquet_use_page_index = false",
+		    Reader().GetFileName(), Schema().name, page_idx, index_rows, page_values);
+	}
+}
+
+bool ColumnReader::PageIndexNeedsRows(idx_t begin, idx_t end) const {
+	D_ASSERT(page_index_rows);
+	return ParquetPageIndexUtils::PageOverlapsRowRanges(*page_index_rows, begin, end);
+}
+
+bool ColumnReader::TrySkipPagesWithOffsetIndex(idx_t skipped_so_far, idx_t &to_skip) {
+	if (!offset_index || page_rows_available != 0) {
+		// no page index, or still inside a page
+		return false;
+	}
+	auto &trans = reinterpret_cast<ThriftFileTransport &>(*protocol->getTransport());
+	auto &locations = offset_index->page_locations;
+	while (trans.GetLocation() < NumericCast<idx_t>(locations[0].offset)) {
+		// read the dictionary page (and anything else in front of the first data page) before jumping
+		PrepareRead(nullptr, nullptr, 0);
+		if (page_rows_available != 0) {
+			// a data page where the OffsetIndex has none: leave the page index alone
+			return false;
+		}
+	}
+	// a non-repeated column has one value per row: the value count tells the row the next page starts at
+	const auto chunk_rows = NumericCast<idx_t>(chunk->meta_data.num_values);
+	const auto current_row = chunk_rows - group_rows_available + skipped_so_far;
+	const auto target_row = current_row + to_skip;
+	if (target_row >= chunk_rows) {
+		// everything that is left is skipped: move past the last page
+		auto &last = locations.back();
+		trans.SetLocation(NumericCast<idx_t>(last.offset) + NumericCast<idx_t>(last.compressed_page_size));
+		to_skip = 0;
+		return true;
+	}
+	// the last page that starts at or before the target row
+	auto it = std::upper_bound(locations.begin(), locations.end(), target_row,
+	                           [](idx_t row, const duckdb_parquet::PageLocation &location) {
+		                           return row < NumericCast<idx_t>(location.first_row_index);
+	                           });
+	D_ASSERT(it != locations.begin());
+	auto &target_page = *(it - 1);
+	const auto target_page_row = NumericCast<idx_t>(target_page.first_row_index);
+	if (target_page_row <= current_row) {
+		// the target lies in the page that starts here - read its header as usual
+		return false;
+	}
+	trans.SetLocation(NumericCast<idx_t>(target_page.offset));
+	to_skip -= target_page_row - current_row;
+	return true;
+}
+
+unique_ptr<BaseStatistics> ColumnReader::Stats(idx_t row_group_idx_p, const duckdb_parquet::ColumnChunkList &columns) {
 	return Schema().Stats(*reader.GetFileMetadata(), reader.parquet_options, row_group_idx_p, columns);
 }
 
@@ -248,8 +414,8 @@ void ColumnReader::PlainSelect(shared_ptr<ResizeableBuffer> &plain_data, uint8_t
 	throw NotImplementedException("PlainSelect not implemented");
 }
 
-void ColumnReader::InitializeRead(idx_t row_group_idx_p, idx_t row_group_num_rows, const vector<ColumnChunk> &columns,
-                                  TProtocol &protocol_p) {
+void ColumnReader::InitializeRead(idx_t row_group_idx_p, idx_t row_group_num_rows,
+                                  const duckdb_parquet::ColumnChunkList &columns, TProtocol &protocol_p) {
 	D_ASSERT(ColumnIndex() < columns.size());
 	chunk = &columns[ColumnIndex()];
 	protocol = &protocol_p;
@@ -272,6 +438,8 @@ void ColumnReader::InitializeRead(idx_t row_group_idx_p, idx_t row_group_num_row
 		                            "data page offset (%lld)",
 		                            Reader().GetFileName(), chunk->meta_data.data_page_offset);
 	}
+	offset_index = nullptr;
+	page_index_rows = nullptr;
 	// ugh. sometimes there is an extra offset for the dict. sometimes it's wrong.
 	chunk_read_offset = NumericCast<idx_t>(chunk->meta_data.data_page_offset);
 	if (chunk->meta_data.__isset.dictionary_page_offset && chunk->meta_data.dictionary_page_offset >= 4) {
@@ -312,7 +480,8 @@ bool ColumnReader::PageIsFilteredOut(PageHeader &page_hdr, optional_ptr<const Ta
 			return false;
 		}
 		auto stats =
-		    ParquetStatisticsUtils::TransformParquetStatistics(Type(), Schema(), *page_stats, /*can_have_nan=*/true);
+		    ParquetStatisticsUtils::TransformParquetStatistics(Type(), Schema(), *page_stats, reader.parquet_options,
+		                                                       /*can_have_nan=*/true);
 		auto &expr_filter = filter->Cast<ExpressionFilter>();
 		if (stats) {
 			auto prune_result = expr_filter.CheckStatistics(*stats);
@@ -369,8 +538,10 @@ void ColumnReader::PrepareRead(optional_ptr<const TableFilter> filter, optional_
 	defined_decoder.reset();
 	page_is_filtered_out = false;
 	block.reset();
-	PageHeader page_hdr;
+	page_header_arena.Reset();
+	PageHeader page_hdr(page_header_arena);
 	auto &trans = reinterpret_cast<ThriftFileTransport &>(*protocol->getTransport());
+	const auto header_location = trans.GetLocation();
 
 	if (trans.HasPrefetch()) {
 		// Already has some data prefetched, let's not mess with it
@@ -387,6 +558,10 @@ void ColumnReader::PrepareRead(optional_ptr<const TableFilter> filter, optional_
 	// some basic sanity check
 	if (page_hdr.compressed_page_size < 0 || page_hdr.uncompressed_page_size < 0) {
 		throw InvalidInputException("Failed to read file \"%s\": Page sizes must be >= 0", Reader().GetFileName());
+	}
+
+	if (offset_index && (page_hdr.type == PageType::DATA_PAGE || page_hdr.type == PageType::DATA_PAGE_V2)) {
+		VerifyPageAgainstOffsetIndex(header_location, page_hdr);
 	}
 
 	if (PageIsFilteredOut(page_hdr, filter)) {
@@ -436,24 +611,25 @@ void ColumnReader::ResetPage() {
 void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 	D_ASSERT(page_hdr.type == PageType::DATA_PAGE_V2);
 
-	AllocateBlock(NumericCast<idx_t>(page_hdr.uncompressed_page_size) + 1);
+	AllocateBlock(NumericCast<idx_t>(page_hdr.uncompressed_page_size));
+	const auto page_body_size = GetPageBodySize(page_hdr);
 	bool uncompressed = false;
 	if (page_hdr.data_page_header_v2.__isset.is_compressed && !page_hdr.data_page_header_v2.is_compressed) {
 		uncompressed = true;
 	}
 	if (chunk->meta_data.codec == CompressionCodec::UNCOMPRESSED) {
-		if (page_hdr.compressed_page_size != page_hdr.uncompressed_page_size) {
+		uncompressed = true;
+	}
+	if (uncompressed) {
+		if (page_body_size != NumericCast<uint32_t>(page_hdr.uncompressed_page_size)) {
 			// LCOV_EXCL_START
 			const auto &file_name = Reader().GetFileName();
 			throw InvalidInputException(
 			    "Parquet file (%s) corrupted: uncompressed page size mismatch (expected %d, actual: %d)", file_name,
-			    page_hdr.uncompressed_page_size, page_hdr.compressed_page_size);
+			    page_hdr.uncompressed_page_size, page_body_size);
 			// LCOV_EXCL_STOP
 		}
-		uncompressed = true;
-	}
-	if (uncompressed) {
-		ReadData(block->ptr, page_hdr.compressed_page_size, page_hdr.type);
+		ReadData(block->GetCurrentLoc(), page_body_size, page_hdr.type);
 		return;
 	}
 
@@ -480,7 +656,7 @@ void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 		    Reader().GetFileName());
 		// LCOV_EXCL_STOP
 	}
-	if (static_cast<uint64_t>(page_hdr.compressed_page_size) < uncompressed_bytes) {
+	if (static_cast<uint64_t>(page_body_size) < uncompressed_bytes) {
 		// LCOV_EXCL_START
 		throw InvalidInputException(
 		    "Failed to read file \"%s\": header inconsistency, compressed_page_size is smaller than "
@@ -489,9 +665,13 @@ void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 		// LCOV_EXCL_STOP
 	}
 
-	ReadData(block->ptr, uncompressed_bytes, page_hdr.type);
+	// only the values are compressed, and an encrypted page body is a single module, so the body is read at once
+	ResizeableBuffer page_buffer;
+	page_buffer.Resize(GetAllocator(), page_body_size + 1);
+	ReadData(page_buffer.GetCurrentLoc(), page_body_size, page_hdr.type);
+	memcpy(block->GetCurrentLoc(), page_buffer.GetCurrentLoc(), uncompressed_bytes);
 
-	auto compressed_bytes = page_hdr.compressed_page_size - uncompressed_bytes;
+	auto compressed_bytes = page_body_size - uncompressed_bytes;
 
 	if (compressed_bytes == 0 && static_cast<uint64_t>(page_hdr.uncompressed_page_size) > uncompressed_bytes) {
 		// LCOV_EXCL_START
@@ -503,38 +683,48 @@ void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 	}
 
 	if (compressed_bytes > 0) {
-		ResizeableBuffer compressed_buffer;
-		compressed_buffer.resize(GetAllocator(), compressed_bytes);
-
-		ReadData(compressed_buffer.ptr, compressed_bytes, page_hdr.type);
-
-		DecompressInternal(chunk->meta_data.codec, compressed_buffer.ptr, compressed_bytes,
-		                   block->ptr + uncompressed_bytes, page_hdr.uncompressed_page_size - uncompressed_bytes);
+		DecompressInternal(chunk->meta_data.codec, page_buffer.GetCurrentLoc() + uncompressed_bytes, compressed_bytes,
+		                   block->GetCurrentLoc() + uncompressed_bytes,
+		                   page_hdr.uncompressed_page_size - uncompressed_bytes);
 	}
 }
 
-void ColumnReader::AllocateBlock(idx_t size) {
-	if (!block) {
-		block = make_shared_ptr<ResizeableBuffer>(GetAllocator(), size);
-	} else {
-		block->resize(GetAllocator(), size);
-	}
-}
-
-void ColumnReader::PreparePage(PageHeader &page_hdr) {
-	AllocateBlock(NumericCast<idx_t>(page_hdr.uncompressed_page_size) + 1);
-	uint32_t compressed_page_size = page_hdr.compressed_page_size;
-
+uint32_t ColumnReader::GetPageBodySize(const PageHeader &page_hdr) const {
+	uint32_t page_body_size = page_hdr.compressed_page_size;
 	if (chunk->__isset.crypto_metadata) {
 		auto const file_aad = reader.GetUniqueFileIdentifier(reader.metadata->crypto_metadata->encryption_algorithm);
 		if (!file_aad.empty()) {
 			// If there is a file aad (identifier), this means that the Encrypted file is written by Arrow
 			// Arrow adds the bytes for encryption (len + nonce + tag)
 			// to the compressed page size
-			compressed_page_size -=
-			    (ParquetCrypto::LENGTH_BYTES + ParquetCrypto::NONCE_BYTES + ParquetCrypto::TAG_BYTES);
+			const uint32_t framing =
+			    ParquetCrypto::LENGTH_BYTES + ParquetCrypto::NONCE_BYTES + ParquetCrypto::TAG_BYTES;
+			if (page_body_size < framing) {
+				throw DataCorruptionException(
+				    "Parquet file (%s) corrupted: compressed page size %d is smaller than the "
+				    "encryption framing",
+				    reader.GetFileName(), page_hdr.compressed_page_size);
+			}
+			page_body_size -= framing;
 		}
 	}
+	return page_body_size;
+}
+
+void ColumnReader::AllocateBlock(idx_t payload_size) {
+	const auto allocation_size = payload_size + 1;
+	if (!block) {
+		block = make_shared_ptr<ResizeableBuffer>();
+	}
+	block->Resize(GetAllocator(), GetBufferManager(), allocation_size);
+	// Keep a zeroed guard byte for decoder lookahead, but exclude it from the payload.
+	*block->GetPtrAt(payload_size) = 0;
+	block->Truncate(payload_size);
+}
+
+void ColumnReader::PreparePage(PageHeader &page_hdr) {
+	AllocateBlock(NumericCast<idx_t>(page_hdr.uncompressed_page_size));
+	const auto compressed_page_size = GetPageBodySize(page_hdr);
 
 	if (chunk->meta_data.codec == CompressionCodec::UNCOMPRESSED) {
 		if (compressed_page_size != NumericCast<uint32_t>(page_hdr.uncompressed_page_size)) {
@@ -545,16 +735,16 @@ void ColumnReader::PreparePage(PageHeader &page_hdr) {
 			    page_hdr.uncompressed_page_size, compressed_page_size);
 			// LCOV_EXCL_STOP
 		}
-		ReadData(block->ptr, compressed_page_size, page_hdr.type);
+		ReadData(block->GetCurrentLoc(), compressed_page_size, page_hdr.type);
 		return;
 	}
 
 	ResizeableBuffer compressed_buffer;
-	compressed_buffer.resize(GetAllocator(), compressed_page_size + 1);
-	ReadData(compressed_buffer.ptr, compressed_page_size, page_hdr.type);
+	compressed_buffer.Resize(GetAllocator(), compressed_page_size + 1);
+	ReadData(compressed_buffer.GetCurrentLoc(), compressed_page_size, page_hdr.type);
 
-	DecompressInternal(chunk->meta_data.codec, compressed_buffer.ptr, compressed_page_size, block->ptr,
-	                   page_hdr.uncompressed_page_size);
+	DecompressInternal(chunk->meta_data.codec, compressed_buffer.GetCurrentLoc(), compressed_page_size,
+	                   block->GetCurrentLoc(), page_hdr.uncompressed_page_size);
 }
 
 static bool TryDecompressLZ4Hadoop(const_data_ptr_t src, idx_t src_size, data_ptr_t dst, idx_t dst_size) {
@@ -608,7 +798,12 @@ void ColumnReader::DecompressInternal(CompressionCodec::type codec, const_data_p
 		throw InternalException("Parquet data unexpectedly uncompressed");
 	case CompressionCodec::GZIP: {
 		MiniZStream s;
-		s.Decompress(const_char_ptr_cast(src), src_size, char_ptr_cast(dst), dst_size);
+		auto remaining_size = s.Decompress(const_char_ptr_cast(src), src_size, char_ptr_cast(dst), dst_size);
+		if (remaining_size != 0) {
+			throw DataCorruptionException(
+			    "Failed to read file \"%s\": GZIP uncompressed data size mismatch (expected %d, actual: %d)",
+			    Reader().GetFileName(), dst_size, dst_size - remaining_size);
+		}
 		break;
 	}
 	case CompressionCodec::LZ4:
@@ -669,6 +864,11 @@ void ColumnReader::DecompressInternal(CompressionCodec::type codec, const_data_p
 			throw InvalidInputException("Failed to read file \"%s\": Brotli Decompression failure",
 			                            Reader().GetFileName());
 		}
+		if (total_out != dst_size) {
+			throw DataCorruptionException(
+			    "Failed to read file \"%s\": Brotli uncompressed data size mismatch (expected %d, actual: %d)",
+			    Reader().GetFileName(), dst_size, total_out);
+		}
 		break;
 	}
 
@@ -701,23 +901,25 @@ void ColumnReader::PrepareDataPage(PageHeader &page_hdr) {
 	auto page_encoding = is_v1 ? v1_header.encoding : v2_header.encoding;
 
 	if (HasRepeats()) {
-		uint32_t rep_length = is_v1 ? block->read<uint32_t>() : v2_header.repetition_levels_byte_length;
-		block->available(rep_length);
-		repeated_decoder =
-		    make_uniq<RleBpDecoder>(block->ptr, rep_length, RleBpDecoder::ComputeBitWidthFromMaxValue(MaxRepeat()));
-		block->inc(rep_length);
+		uint32_t rep_length = is_v1 ? block->Read<uint32_t>() : v2_header.repetition_levels_byte_length;
+		block->Available(rep_length);
+		repeated_decoder_offset = block->GetOffset();
+		repeated_decoder = make_uniq<RleBpDecoder>(block->GetCurrentLoc(), rep_length,
+		                                           RleBpDecoder::ComputeBitWidthFromMaxValue(MaxRepeat()));
+		block->Inc(rep_length);
 	} else if (is_v2 && v2_header.repetition_levels_byte_length > 0) {
-		block->inc(v2_header.repetition_levels_byte_length);
+		block->Inc(v2_header.repetition_levels_byte_length);
 	}
 
 	if (HasDefines()) {
-		uint32_t def_length = is_v1 ? block->read<uint32_t>() : v2_header.definition_levels_byte_length;
-		block->available(def_length);
-		defined_decoder =
-		    make_uniq<RleBpDecoder>(block->ptr, def_length, RleBpDecoder::ComputeBitWidthFromMaxValue(MaxDefine()));
-		block->inc(def_length);
+		uint32_t def_length = is_v1 ? block->Read<uint32_t>() : v2_header.definition_levels_byte_length;
+		block->Available(def_length);
+		defined_decoder_offset = block->GetOffset();
+		defined_decoder = make_uniq<RleBpDecoder>(block->GetCurrentLoc(), def_length,
+		                                          RleBpDecoder::ComputeBitWidthFromMaxValue(MaxDefine()));
+		block->Inc(def_length);
 	} else if (is_v2 && v2_header.definition_levels_byte_length > 0) {
-		block->inc(v2_header.definition_levels_byte_length);
+		block->Inc(v2_header.definition_levels_byte_length);
 	}
 
 	switch (page_encoding) {
@@ -810,6 +1012,35 @@ bool ColumnReader::PrepareRead(idx_t read_now, data_ptr_t define_out, data_ptr_t
 	return true; // No defines, so everything is valid
 }
 
+void ColumnReader::PinBlock() {
+	if (block) {
+		block->Pin(GetBufferManager());
+		RebaseDecoders();
+	}
+}
+
+void ColumnReader::RebaseDecoders() {
+	// Block's offset has moved on so we need to use the decoders own stored offset to calculate current location.
+	RebaseDecoder(repeated_decoder, *block, repeated_decoder_offset);
+	RebaseDecoder(defined_decoder, *block, defined_decoder_offset);
+	switch (encoding) {
+	case ColumnEncoding::DICTIONARY:
+		dictionary_decoder.Rebase();
+		break;
+	case ColumnEncoding::DELTA_BINARY_PACKED:
+		delta_binary_packed_decoder.Rebase();
+		break;
+	case ColumnEncoding::RLE:
+		rle_decoder.Rebase();
+		break;
+	case ColumnEncoding::BYTE_STREAM_SPLIT:
+		byte_stream_split_decoder.Rebase();
+		break;
+	default:
+		break;
+	}
+}
+
 void ColumnReader::ReadData(idx_t read_now, data_ptr_t define_out, data_ptr_t repeat_out, Vector &result,
                             idx_t result_offset) {
 	// flatten the result vector if required
@@ -826,6 +1057,9 @@ void ColumnReader::ReadData(idx_t read_now, data_ptr_t define_out, data_ptr_t re
 		page_rows_available -= read_now;
 		return;
 	}
+
+	BlockPinGuard pin_guard(*this);
+
 	// read the defines/repeats
 	const auto all_valid = PrepareRead(read_now, define_out, repeat_out, result_offset);
 	if (!IsRoot() && AllValuesAreNull()) {
@@ -922,7 +1156,11 @@ void ColumnReader::Select(ColumnReaderInput &input, Vector &result, const Select
 		DirectSelect(input, result, sel, approved_tuple_count);
 		return;
 	}
-	Read(input, result);
+	const auto rows_read = Read(input, result);
+	if (rows_read != num_values) {
+		throw DataCorruptionException("Mismatch in parquet read for column \"%s\", expected %llu rows, got %llu",
+		                              Schema().name, num_values, rows_read);
+	}
 }
 
 void ColumnReader::DirectSelect(ColumnReaderInput &input, Vector &result, const SelectionVector &sel,
@@ -938,7 +1176,8 @@ void ColumnReader::DirectSelect(ColumnReaderInput &input, Vector &result, const 
 	auto read_now = ReadPageHeaders(to_read);
 
 	// we can only push the filter into the decoder if we are reading the ENTIRE vector in one go
-	if (read_now == to_read && encoding == ColumnEncoding::PLAIN) {
+	if (!page_is_filtered_out && read_now == to_read && encoding == ColumnEncoding::PLAIN) {
+		BlockPinGuard pin_guard(*this);
 		const auto all_valid = PrepareRead(read_now, define_out, repeat_out, 0);
 		const auto define_ptr = all_valid ? nullptr : static_cast<uint8_t *>(define_out);
 		PlainSelect(block, define_ptr, read_now, result, sel, approved_tuple_count);
@@ -977,6 +1216,7 @@ void ColumnReader::DirectFilter(ColumnReaderInput &input, Vector &result, const 
 
 	// we can only push the filter into the decoder if we are reading the ENTIRE vector in one go
 	if (encoding == ColumnEncoding::DICTIONARY && read_now == to_read && dictionary_decoder.HasFilter()) {
+		BlockPinGuard pin_guard(*this);
 		if (page_is_filtered_out) {
 			// the page has been filtered out entirely - skip
 			approved_tuple_count = 0;
@@ -1018,10 +1258,17 @@ void ColumnReader::ApplyPendingSkips(data_ptr_t define_out, data_ptr_t repeat_ou
 	data_t skip_repeats[STANDARD_VECTOR_SIZE];
 	data_ptr_t skip_define_out = HasDefines() ? skip_defines : define_out;
 	data_ptr_t skip_repeat_out = HasRepeats() ? skip_repeats : repeat_out;
+
+	BlockPinGuard pin_guard(*this);
+
 	// start reading but do not apply skips (we are skipping now)
 	BeginRead(nullptr, nullptr);
 
 	while (to_skip > 0) {
+		if (TrySkipPagesWithOffsetIndex(num_values - to_skip, to_skip)) {
+			// jumped over whole pages without reading them
+			continue;
+		}
 		auto skip_now = ReadPageHeaders(to_skip, nullptr, nullptr, to_skip);
 		if (page_is_filtered_out) {
 			// the page has been filtered out entirely - skip

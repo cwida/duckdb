@@ -18,6 +18,8 @@
 namespace duckdb {
 
 class CastFunctionSet;
+class Context;
+struct GetCastFunctionInput;
 class BaseStatistics;
 struct FunctionLocalState;
 struct BoundCastInfo;
@@ -147,6 +149,13 @@ public:
 	optional_ptr<BoundCastData> GetCastData() const {
 		return cast_data;
 	}
+	//! The stability of the cast and of the casts it applies to child values
+	FunctionStability GetStability() const {
+		return stability;
+	}
+	void SetStability(FunctionStability stability_p) {
+		stability = stability_p;
+	}
 	bool HasInitLocalState() const {
 		return init_local_state;
 	}
@@ -166,6 +175,9 @@ public:
 	bool HasStatisticsCallback() const {
 		return statistics;
 	}
+	bool HasSameStatisticsCallback(const BoundCastInfo &other) const {
+		return statistics && statistics == other.statistics;
+	}
 	void SetStatisticsCallback(cast_statistics_t new_statistics) {
 		statistics = new_statistics;
 	}
@@ -184,19 +196,28 @@ private:
 	init_cast_local_state_t init_local_state;
 	unique_ptr<BoundCastData> cast_data;
 	cast_statistics_t statistics = nullptr;
+	FunctionStability stability = FunctionStability::CONSISTENT;
 };
 
 struct BindCastInput {
 	DUCKDB_API BindCastInput(CastFunctionSet &function_set, optional_ptr<BindCastInfo> info,
-	                         optional_ptr<ClientContext> context);
+	                         GetCastFunctionInput &get_input);
+
+	//! The services of the cast - throws for the default casts, which have none
+	DUCKDB_API Context &GetContext();
 
 	CastFunctionSet &function_set;
 	optional_ptr<BindCastInfo> info;
 	optional_ptr<ClientContext> context;
 	QueryLocation query_location;
+	//! The stability of the bound cast, lowered by a bind that reads settings such as TimeZone and by child casts
+	FunctionStability stability = FunctionStability::CONSISTENT;
 
 public:
 	DUCKDB_API BoundCastInfo GetCastFunction(const LogicalType &source, const LogicalType &target);
+
+private:
+	optional_ptr<Context> services;
 };
 
 struct DefaultCasts {

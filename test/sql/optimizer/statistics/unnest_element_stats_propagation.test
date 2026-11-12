@@ -1,0 +1,105 @@
+# name: test/sql/optimizer/statistics/unnest_element_stats_propagation.test
+# description: UNNEST propagates the element statistics of the unnested list
+# group: [statistics]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+CREATE TABLE lists AS SELECT [i::INT, (i + 1)::INT] AS l, [i::INT, NULL] AS nl, [i::INT, i::INT]::INT[2] AS a
+FROM range(1000) r(i);
+
+# the elements of a stored list column are within [0, 1000]
+query II
+EXPLAIN SELECT x FROM (SELECT unnest(l) AS x FROM lists) WHERE x > 5000;
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT count(*) FROM (SELECT unnest(l) AS x FROM lists) WHERE x > 5000;
+----
+0
+
+query II
+SELECT min(x), max(x) FROM (SELECT unnest(l) AS x FROM lists);
+----
+0	1000
+
+# a filter inside the element range is kept
+query I
+SELECT count(*) FROM (SELECT unnest(l) AS x FROM lists) WHERE x > 990;
+----
+19
+
+# constant lists
+query II
+EXPLAIN SELECT x FROM (SELECT unnest([1, 2, 3]) AS x) WHERE x > 5000;
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT x FROM (SELECT unnest([1, 2, 3]) AS x) WHERE x > 2;
+----
+3
+
+# fixed-size arrays
+query II
+EXPLAIN SELECT x FROM (SELECT unnest(a) AS x FROM lists) WHERE x > 5000;
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+# lists without NULL elements give NULL-free elements: IS NULL folds away
+query II
+EXPLAIN SELECT x IS NULL FROM (SELECT unnest(l) AS x FROM lists);
+----
+physical_plan	<!REGEX>:.*IS_NULL.*
+
+# NULL elements are kept
+query I
+SELECT count(*) FROM (SELECT unnest(nl) AS x FROM lists) WHERE x IS NULL;
+----
+1000
+
+# several unnests in one operator pad the shorter lists with NULL
+query II
+SELECT unnest([1, 2, 3]) a, unnest([7]) b;
+----
+1	7
+2	NULL
+3	NULL
+
+query I
+SELECT count(*) FROM (SELECT unnest([1, 2, 3]) a, unnest([7]) b) WHERE b IS NULL;
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT unnest(l) a, unnest([7]) b FROM lists) WHERE b IS NULL;
+----
+1000
+
+# recursive unnest composes the element statistics level by level
+query II
+EXPLAIN SELECT x FROM (SELECT unnest([[1, 2], [3]], recursive := true) AS x) WHERE x > 5000;
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT unnest([[1, 2], [3, NULL]], recursive := true) AS x ORDER BY x NULLS LAST;
+----
+1
+2
+3
+NULL
+
+# an empty input list yields no rows
+query I
+SELECT count(*) FROM (SELECT unnest([]::INT[]) AS x) WHERE x IS NULL;
+----
+0
+
+# strings: element statistics carry over without additive totals
+query I
+SELECT max(x) FROM (SELECT unnest(['a', 'bb', 'ccc']) AS x);
+----
+ccc

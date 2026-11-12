@@ -42,7 +42,7 @@ INSERT INTO checkpoint_trigger VALUES(0);
 statement ok
 CHECKPOINT;
 
-# the blocks written by the checkpoint stay cached as ART_INDEX memory, restart so that all buffers start on disk
+# Restart so that all ART working buffers start cold.
 restart
 
 statement ok

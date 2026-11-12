@@ -180,6 +180,18 @@ static unique_ptr<FunctionData> RegexReplaceBind(BindScalarFunctionInput &input)
 		ParseRegexOptions(input.GetConstant(3), data->options, &data->global_replace);
 	}
 	data->options.set_log_errors(false);
+
+	auto replacement = input.TryGetConstant(2);
+	if (data->constant_pattern && replacement && !replacement->IsNull() &&
+	    data->constant_string.find("\\C") == string::npos) {
+		RE2 validation_re(data->constant_string, data->options);
+		std::string rewrite_error;
+		if (validation_re.ok() &&
+		    validation_re.CheckRewriteString(CreateStringPiece(StringValue::Get(*replacement)), &rewrite_error)) {
+			// A valid pattern without byte escapes and a valid replacement cannot throw.
+			input.GetBoundFunction().SetErrorMode(FunctionErrors::CANNOT_ERROR);
+		}
+	}
 	return std::move(data);
 }
 

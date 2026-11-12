@@ -3,7 +3,7 @@
 # group: [optimizer]
 
 statement ok
-PRAGMA explain_output=optimized_only;
+SET explain_output='optimized_only';
 
 statement ok
 CREATE TABLE nn(k INTEGER, wh INTEGER NOT NULL);

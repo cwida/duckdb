@@ -348,18 +348,27 @@ FROM (SELECT '2021-07-30'::TIMESTAMP + INTERVAL (d) DAY AS startdate FROM range(
 
 endloop
 
-# Overflow
-statement error
+# Differences whose microseconds overflow, but whose units fit
+query I
 SELECT datesub('week',TIMESTAMP '-214169-1-18 21:29:6',TIMESTAMP '93495-11-19 13:3:22');
 ----
+16053181
 
-statement error
+query I
 SELECT datesub('dayofyear',TIMESTAMP '-109502-12-4 20:26:13',TIMESTAMP '252823-4-6 9:56:28');
 ----
+132336245
 
-statement error
+query I
 SELECT datesub('epoch',TIMESTAMP '153520-4-1 20:33:43',TIMESTAMP '-269898-3-29 12:9:14');
 ----
+-13361781803069
+
+# Overflow
+statement error
+SELECT datesub('microsecond',TIMESTAMP '153520-4-1 20:33:43',TIMESTAMP '-269898-3-29 12:9:14');
+----
+Out of Range Error
 
 #
 # TIME

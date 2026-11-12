@@ -1,0 +1,127 @@
+diff --git a/src/include/quack_session_state.hpp b/src/include/quack_session_state.hpp
+index 5ae8019..9d77841 100644
+--- a/src/include/quack_session_state.hpp
++++ b/src/include/quack_session_state.hpp
+@@ -28,7 +28,7 @@ public:
+ 
+ 	//! Null for any context that the quack server does not own.
+ 	static shared_ptr<QuackSessionState> Get(ClientContext &context) {
+-		return context.registered_state->Get<QuackSessionState>(KEY);
++		return context.GetContext().GetRegisteredState().Get<QuackSessionState>(KEY);
+ 	}
+ 
+ 	//! The id the client uses to address this session, as returned to it by the connection handshake.
+diff --git a/src/quack_client.cpp b/src/quack_client.cpp
+index b9e6aa8..612c5de 100644
+--- a/src/quack_client.cpp
++++ b/src/quack_client.cpp
+@@ -467,7 +467,7 @@ unique_ptr<QuackClient> QuackClientConnection::TakeClient(optional_ptr<ClientCon
+ 	if (!result) {
+ 		result = QuackClient::GetClient(db, uri);
+ 	}
+-	result->SetRequestLogger(context ? context->logger : nullptr);
++	result->SetRequestLogger(context ? context->GetContext().GetLoggerPtr() : nullptr);
+ 	return result;
+ }
+ 
+diff --git a/src/quack_fetch_ahead.cpp b/src/quack_fetch_ahead.cpp
+index 0428852..66d270c 100644
+--- a/src/quack_fetch_ahead.cpp
++++ b/src/quack_fetch_ahead.cpp
+@@ -127,7 +127,7 @@ idx_t QuackFetcher::GetReadAheadDepth(ClientContext &context) {
+ QuackFetcher::QuackFetcher(ClientContext &context, QuackClientConnection &connection, hugeint_t query_uuid,
+                            idx_t depth_p)
+     : depth(MaxValue<idx_t>(depth_p, 1)) {
+-	queue = make_uniq<ManagedAsyncTaskQueue>(context, depth);
++	queue = make_uniq<ManagedAsyncTaskQueue>(context.GetContext(), depth);
+ 	if (!queue->IsAsync()) {
+ 		// Register runs the POST inline on the scan thread; deeper pipelining is impossible.
+ 		depth = 1;
+@@ -141,7 +141,7 @@ QuackFetcher::QuackFetcher(ClientContext &context, QuackClientConnection &connec
+ 
+ 	this->query_uuid = query_uuid;
+ 	connection_id = connection.ConnectionId();
+-	logger = context.logger;
++	logger = context.GetContext().GetLoggerPtr();
+ 	// Read once: the async tasks read it together, and it belongs to this query.
+ 	client_query_id = QuackActiveClientQueryId(context);
+ 
+diff --git a/src/quack_http_server.cpp b/src/quack_http_server.cpp
+index 5ac96c0..2d6b464 100644
+--- a/src/quack_http_server.cpp
++++ b/src/quack_http_server.cpp
+@@ -197,7 +197,7 @@ HttpQuackServer::HttpQuackServer(ClientContext &context_p, const QuackUri &uri_p
+ 		if (cert_file.empty()) {
+ 			auto &fs = FileSystem::GetFileSystem(context_p);
+ 			auto certificate_directory =
+-			    SslKeyGenerator::GetDefaultCertificateDirectory(fs, ClientData::Get(context_p).file_opener.get());
++			    SslKeyGenerator::GetDefaultCertificateDirectory(fs, context_p.GetContext().TryGetFileOpener().get());
+ 			cert_file = SslKeyGenerator::GetDefaultCertificateFile(fs, certificate_directory);
+ 			key_file = SslKeyGenerator::GetDefaultPrivateKeyFile(fs, certificate_directory);
+ 			if (!fs.FileExists(cert_file) || !fs.FileExists(key_file)) {
+diff --git a/src/quack_send_data.cpp b/src/quack_send_data.cpp
+index d055927..f1fb0bf 100644
+--- a/src/quack_send_data.cpp
++++ b/src/quack_send_data.cpp
+@@ -150,7 +150,7 @@ public:
+ 	    : context(context.shared_from_this()), table(table_p), stream_id(std::move(stream_id_p)),
+ 	      query_uuid(query_uuid_p), debug_delay_ms(debug_delay_ms_p), debug_duplicate_sends(debug_duplicate_sends_p),
+ 	      debug_drop_batch(debug_drop_batch_p) {
+-		queue = make_uniq<ManagedAsyncTaskQueue>(context);
++		queue = make_uniq<ManagedAsyncTaskQueue>(context.GetContext());
+ 	}
+ 
+ 	~QuackSendDataEmitter() override {
+@@ -210,12 +210,12 @@ public:
+ 		auto client_wrapper = quack_catalog.GetClientConnection()->GetClient(context);
+ 		queue->Register(make_uniq<QuackSendDataTask>(std::move(client_wrapper), std::move(prepared->payload),
+ 		                                             body_start, body_size, connection_id, client_query_id,
+-		                                             context.logger, debug_delay_ms),
++		                                             context.GetContext().GetLoggerPtr(), debug_delay_ms),
+ 		                body_size);
+ 		if (duplicate) {
+ 			auto retry_wrapper = quack_catalog.GetClientConnection()->GetClient(context);
+ 			queue->Register(make_uniq<QuackSendDataTask>(std::move(retry_wrapper), std::move(duplicate), 0, body_size,
+-			                                             std::move(connection_id), client_query_id, context.logger,
++			                                             std::move(connection_id), client_query_id, context.GetContext().GetLoggerPtr(),
+ 			                                             debug_delay_ms),
+ 			                body_size);
+ 		}
+diff --git a/src/quack_server.cpp b/src/quack_server.cpp
+index 9993e46..c2af196 100644
+--- a/src/quack_server.cpp
++++ b/src/quack_server.cpp
+@@ -7,6 +7,7 @@
+ 
+ #include "duckdb/main/client_config.hpp"
+ #include "duckdb/main/prepared_statement_data.hpp"
++#include "duckdb/main/settings.hpp"
+ 
+ #include "quack_server.hpp"
+ #include "quack_message.hpp"
+@@ -395,9 +396,9 @@ string QuackServer::CreateNewConnection(const string &connection_id, const strin
+ 	new_connection->duckdb_connection = make_uniq<Connection>(*db);
+ 	auto &connection_context = *new_connection->duckdb_connection->context;
+ 	// scan_data_from_quack_client registers its streams here, and SEND_DATA finds them by connection.
+-	connection_context.registered_state->Insert(QuackSessionState::KEY,
+-	                                            make_shared_ptr<QuackSessionState>(connection_id));
+-	connection_context.config.enable_progress_bar = false;
++	connection_context.GetContext().GetRegisteredState().Insert(QuackSessionState::KEY,
++	                                                          make_shared_ptr<QuackSessionState>(connection_id));
++	Settings::Set<EnableProgressBarSetting>(connection_context, SetScope::SESSION, Value::BOOLEAN(false));
+ 	// new_connection->duckdb_connection->context->config.streaming_buffer_size = 10 * 1000000; // 10 MB
+ 	active_connections[connection_id] = std::move(new_connection);
+ 	return connection_id;
+diff --git a/src/quack_start_stop.cpp b/src/quack_start_stop.cpp
+index 4d3eb81..9541245 100644
+--- a/src/quack_start_stop.cpp
++++ b/src/quack_start_stop.cpp
+@@ -313,7 +313,7 @@ static void QuackGenerateKeysFun(ClientContext &context, TableFunctionInput &dat
+ 	auto certificate_directory = bind_data.certificate_directory;
+ 	if (certificate_directory.empty()) {
+ 		certificate_directory =
+-		    SslKeyGenerator::GetDefaultCertificateDirectory(fs, ClientData::Get(context).file_opener.get());
++		    SslKeyGenerator::GetDefaultCertificateDirectory(fs, context.GetContext().TryGetFileOpener().get());
+ 	} else if (!fs.DirectoryExists(certificate_directory)) {
+ 		fs.CreateDirectoriesRecursive(certificate_directory);
+ 	}

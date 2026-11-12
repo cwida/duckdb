@@ -57,3 +57,55 @@ SELECT s || '', prefix(s, '') FROM t ORDER BY s NULLS LAST;
 ----
 a	true
 NULL	NULL
+
+# AND/OR simplification and LIMIT/OFFSET binding
+statement ok
+CREATE TABLE ints(i INTEGER);
+
+# a failing LIMIT or OFFSET does not fail on an empty table
+query I
+SELECT * FROM ints LIMIT CAST('a' AS BIGINT);
+----
+
+query I
+SELECT * FROM ints LIMIT 1 OFFSET 1 // 0;
+----
+
+statement ok
+INSERT INTO ints VALUES (0), (1), (2);
+
+# a failing AND/OR child in a dead CASE branch is never evaluated
+query I
+SELECT CASE WHEN i::VARCHAR = 'x' THEN (i > 0 OR CAST('a' AS BOOLEAN)) ELSE true END FROM ints;
+----
+true
+true
+true
+
+query I
+SELECT CASE WHEN i::VARCHAR = 'x' THEN (i > 0 AND 1 // 0 = 0) ELSE false END FROM ints;
+----
+false
+false
+false
+
+# neither is a failing LIMIT when a filter removes all rows
+query I
+SELECT * FROM ints WHERE i > 10 LIMIT CAST('a' AS BIGINT);
+----
+
+# once a row reaches the expression, the error surfaces
+statement error
+SELECT CASE WHEN i::VARCHAR <> 'x' THEN (i > 0 OR CAST('a' AS BOOLEAN)) ELSE true END FROM ints;
+----
+<REGEX>:Conversion Error.*
+
+statement error
+SELECT * FROM ints LIMIT CAST('a' AS BIGINT);
+----
+<REGEX>:Conversion Error.*
+
+statement error
+SELECT * FROM ints LIMIT 1 OFFSET 1 // 0;
+----
+<REGEX>:.*Division by zero.*

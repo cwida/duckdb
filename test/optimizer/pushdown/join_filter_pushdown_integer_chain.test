@@ -1,0 +1,122 @@
+# name: test/optimizer/pushdown/join_filter_pushdown_integer_chain.test
+# description: Integer runtime-filter cast chains preserve matches and NULL-safe casts
+# group: [pushdown]
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization';
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+statement ok
+CREATE TABLE probe AS
+SELECT k::BIGINT AS k FROM
+(VALUES (-129),(-128),(-1),(0),(1),(127),(128),(255),(256),(NULL)) v(k),
+range(2000);
+
+statement ok
+CREATE TABLE build AS
+SELECT k::BIGINT AS k FROM (VALUES (-129),(-128),(0),(127),(128),(256),(NULL)) v(k);
+
+# Values outside the intermediate type may pass the filter, but must not match the join.
+query I
+SELECT count(*) FROM probe p JOIN build b
+ON TRY_CAST(p.k AS TINYINT)::BIGINT=b.k;
+----
+6000
+
+statement ok
+BEGIN;
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT count(*) FROM probe p JOIN build b
+ON TRY_CAST(p.k AS TINYINT)::BIGINT=b.k;
+----
+6000
+
+statement ok
+CALL disable_logging();
+
+# The runtime filter probes the stored BIGINT directly.
+# Serializer verification discards runtime filters.
+query II
+SELECT count(*) = CASE WHEN current_setting('debug_disable_optimizer') OR current_setting('debug_verify_serializer')
+                      THEN 0 ELSE 1 END,
+       NOT coalesce(bool_or(info.uses_try_cast::BOOLEAN), false)
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event='PublishRuntimeFilter' AND info.kind='PREFIX_RANGE';
+----
+true	true
+
+statement ok
+COMMIT;
+
+# Narrowing TRY_CAST creates NULLs that do match NULL-safe equality.
+query I
+SELECT count(*) FROM probe p JOIN build b
+ON TRY_CAST(p.k AS TINYINT)::BIGINT IS NOT DISTINCT FROM b.k;
+----
+16000
+
+query I
+SELECT count(*) FROM probe p JOIN build b
+ON TRY_CAST(p.k AS UTINYINT)::BIGINT=b.k;
+----
+6000
+
+query I
+SELECT count(*) FROM probe p JOIN build b
+ON TRY_CAST(p.k AS UTINYINT)::BIGINT IS NOT DISTINCT FROM b.k;
+----
+16000
+
+# Compose casts discovered in separate projections.
+query I
+SELECT count(*) FROM
+(SELECT a::SMALLINT::BIGINT AS k FROM (SELECT TRY_CAST(k AS TINYINT) AS a FROM probe)) p
+JOIN build b USING (k);
+----
+6000
+
+# The final filter key type can differ from the stored type.
+query I
+SELECT count(*) FROM probe p
+JOIN (SELECT k::INTEGER AS k FROM build) b
+ON TRY_CAST(p.k AS TINYINT)::INTEGER=b.k;
+----
+6000
+
+# A final narrowing conversion is still checked.
+query I
+SELECT count(*) FROM probe p
+JOIN (SELECT TRY_CAST(k AS TINYINT) AS k FROM build) b
+ON TRY_CAST(TRY_CAST(p.k AS SMALLINT) AS TINYINT)=b.k;
+----
+6000
+
+# Filtering below aggregation must preserve the values of matching groups.
+query I
+SELECT sum(n) FROM
+(SELECT TRY_CAST(k AS TINYINT)::BIGINT AS k, count(*) AS n FROM probe GROUP BY ALL) p
+JOIN build b USING (k);
+----
+6000
+
+query I
+SELECT sum(n) FROM
+(SELECT TRY_CAST(k AS TINYINT)::BIGINT AS k, count(*) AS n FROM probe GROUP BY ALL) p
+JOIN build b ON p.k IS NOT DISTINCT FROM b.k;
+----
+16000
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+RESET dynamic_or_filter_threshold;

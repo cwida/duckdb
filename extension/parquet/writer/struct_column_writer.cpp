@@ -135,7 +135,7 @@ void StructColumnWriter::FinalizeWrite(ColumnWriterState &state_p) {
 	}
 }
 
-idx_t StructColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> &schemas) {
+idx_t StructColumnWriter::FinalizeSchema(duckdb_parquet::SchemaElementList &schemas) {
 	idx_t schema_idx = schemas.size();
 
 	auto &schema = column_schema;
@@ -146,7 +146,8 @@ idx_t StructColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> &
 	auto &field_id = schema.field_id;
 
 	// set up the schema element for this struct
-	duckdb_parquet::SchemaElement schema_element;
+	schemas.emplace_back();
+	auto &schema_element = schemas.back();
 	schema_element.repetition_type = repetition_type;
 	schema_element.num_children = NumericCast<int32_t>(child_writers.size());
 	schema_element.__isset.num_children = true;
@@ -157,7 +158,6 @@ idx_t StructColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> &
 		schema_element.__isset.field_id = true;
 		schema_element.field_id = NumericCast<int32_t>(field_id.GetIndex());
 	}
-	schemas.push_back(std::move(schema_element));
 
 	idx_t unique_columns = 0;
 	for (auto &child_writer : child_writers) {

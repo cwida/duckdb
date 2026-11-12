@@ -102,6 +102,17 @@ EXPLAIN (SQL) COPY (SELECT * FROM ctas_src) TO '{TEST_DIR}/export_ordered.parque
 ----
 sql	<REGEX>:(?s)COPY \(.*\) TO '.*export_ordered\.parquet'\s*\(\s*FORMAT 'parquet',.*"order_by" 'b DESC NULLS LAST'.*"return_files" TRUE.*\)
 
+# RETURN_COLUMN_TYPES is re-emitted, alone and together with RETURN_STATS (options are emitted in name order)
+query TT
+EXPLAIN (SQL) COPY (SELECT * FROM ctas_src) TO '{TEST_DIR}/export_column_types.csv' (FORMAT csv, RETURN_COLUMN_TYPES true);
+----
+sql	<REGEX>:(?s)COPY \(.*\) TO '.*export_column_types\.csv'\s*\(.*"return_column_types" TRUE.*\)
+
+query TT
+EXPLAIN (SQL) COPY (SELECT * FROM ctas_src) TO '{TEST_DIR}/export_column_types_stats.parquet' (FORMAT parquet, RETURN_STATS true, RETURN_COLUMN_TYPES true);
+----
+sql	<REGEX>:(?s)COPY \(.*\) TO '.*export_column_types_stats\.parquet'\s*\(.*"return_column_types" TRUE.*"return_stats" TRUE.*\)
+
 # a COPY used as a CTE body exports as the statement itself
 query TT
 EXPLAIN (SQL) WITH written AS (COPY ctas_src TO '{TEST_DIR}/export_cte.csv' (FORMAT csv)) SELECT * FROM written;

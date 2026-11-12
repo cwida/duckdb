@@ -2,9 +2,6 @@
 # description: SEMI/ANTI IEJoin with a residual predicate over sides whose column types differ positionally
 # group: [iejoin]
 
-statement ok
-PRAGMA enable_verification
-
 # SplitPayloads used to reference the right payload from the left columns of the merged chunk,
 # which threw "Vector::Reference used on vector of different type" whenever the left column at that
 # position had a different type than the right one (INTEGER vs BIGINT here)

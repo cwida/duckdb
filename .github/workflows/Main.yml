@@ -59,6 +59,7 @@ jobs:
     runs-on: ${{ github.repository == 'duckdb/duckdb' && 'namespace-profile-linux-slim;job.priority=1' || 'ubuntu-latest' }}
     outputs:
       duckdb_commit: ${{ steps.version.outputs.duckdb_commit }}
+      runner_linux_slim: ${{ fromJSON(steps.config.outputs.runners).linux_slim }}
       runner_linux_small: ${{ fromJSON(steps.config.outputs.runners).linux_small }}
       runner_linux_x64: ${{ fromJSON(steps.config.outputs.runners).linux_x64 }}
       runner_linux_22_x64: ${{ fromJSON(steps.config.outputs.runners).linux_22_x64 }}
@@ -80,9 +81,11 @@ jobs:
       enabled_jobs: ${{ steps.config.outputs.enabled_jobs }}
       save_cache: ${{ steps.config.outputs.save_cache }}
       reduced_ci_mode: ${{ steps.config.outputs.reduced_ci_mode }}
+      windows_full_matrix: ${{ steps.config.outputs.windows_full_matrix }}
       runner_provider: ${{ steps.runners.outputs.runner_provider }}
       skip_tests: ${{ steps.config.outputs.skip_tests }}
       duckdb_version: ${{ steps.version.outputs.duckdb_version }}
+      is_release_build: ${{ steps.version.outputs.is_release_build }}
       staged_version: ${{ steps.version.outputs.staged_version }}
       extension_allow_failure_archs: ${{ steps.version.outputs.extension_allow_failure_archs }}
     env:
@@ -162,7 +165,6 @@ jobs:
             extensions:
               - .github/config/**
               - .github/patches/**
-              - extension/**
             tests:
               - test/**/*.test
             tests_slow:
@@ -199,15 +201,18 @@ jobs:
             --skip-tests "$skip_tests" \
             --changed-keys "$CHANGED_KEYS" \
             --reduced-ci-mode "${{ (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.run_all)) && 'enabled' || 'disabled' }}" \
+            --run-all "${{ github.event_name != 'workflow_dispatch' || inputs.run_all }}" \
             --runners '${{ steps.runners.outputs.runners }}' \
             --runner-provider '${{ steps.runners.outputs.runner_provider }}'
 
+          # Wasm extensions: wasm_eh and wasm_threads everywhere, never wasm_mvp
+          wasm_exclude_archs="wasm_mvp"
           if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-            extra_exclude_archs=
+            extra_exclude_archs="$wasm_exclude_archs"
           elif [[ "${{ steps.changed.outputs.extensions_any_changed }}" == "true" ]]; then
-            extra_exclude_archs="osx_amd64"
+            extra_exclude_archs="$wasm_exclude_archs;osx_amd64"
           else
-            extra_exclude_archs="windows_arm64;osx_amd64;wasm_eh"
+            extra_exclude_archs="$wasm_exclude_archs;windows_arm64;osx_amd64;wasm_eh;wasm_threads"
           fi
           if [[ -n "$INPUT_EXCLUDE_ARCHS" ]]; then
             extra_exclude_archs="${extra_exclude_archs:+$extra_exclude_archs;}$INPUT_EXCLUDE_ARCHS"
@@ -215,7 +220,7 @@ jobs:
 
           echo "extra_exclude_archs=$extra_exclude_archs" >> "$GITHUB_OUTPUT"
 
-          if [[ "${{ steps.changed.outputs.tests_slow_any_changed }}" == "true" || "${{ github.ref_name }}" == "main" ]]; then
+          if [[ "${{ steps.changed.outputs.tests_slow_any_changed }}" == "true" || "${{ steps.version.outputs.is_release_build }}" == "true" ]]; then
             run_slow_tests=true
           else
             run_slow_tests=false
@@ -465,11 +470,11 @@ jobs:
           toolchain: main
         rust:
           config: duckdb/.github/config/rust_based_extensions.cmake
-          default_exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw;linux_amd64_musl
+          default_exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw;linux_amd64_musl;windows_arm64;linux_arm64_musl
           toolchain: rust
         external:
           config: duckdb/.github/config/external_extensions.cmake
-          default_exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw;linux_amd64_musl
+          default_exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw;linux_amd64_musl;windows_arm64;linux_arm64_musl
           toolchain: rust
       extension_repository: duckdb/extension-template
       extension_ref: main
@@ -515,7 +520,7 @@ jobs:
         name: Download all extensions
         with:
           pattern: '*-extensions-*'
-          path: /tmp/repository_generation
+          path: ${{ runner.temp }}/repository_generation
           # When multiple artifacts are matched:
           # - if true: the downloaded artifacts will be in the same directory
           #   specified by path.
@@ -528,9 +533,9 @@ jobs:
 
       - name: Print all extensions
         run: |
-          tree /tmp/repository_generation
+          tree "$RUNNER_TEMP/repository_generation"
 
-          ls /tmp/repository_generation/*/*/*.duckdb_extension*
+          ls "$RUNNER_TEMP"/repository_generation/*/*/*.duckdb_extension*
 
       - name: Validate extension signing
         if: ${{ github.event_name == 'pull_request' }}
@@ -539,23 +544,23 @@ jobs:
           AWS_ENDPOINT_URL: https://example.com
           AWS_ACCESS_KEY_ID: duckdb-signing-validation
           AWS_SECRET_ACCESS_KEY: duckdb-signing-validation
-          DUCKDB_EXTENSION_SIGNING_OUTPUT_DIR: /tmp/repository_signed_validation
+          DUCKDB_EXTENSION_SIGNING_OUTPUT_DIR: ${{ runner.temp }}/repository_signed_validation
         run: |
           set -euo pipefail
 
-          private_key_file=$(mktemp "${TMPDIR:-/tmp}/duckdb-extension-signing-validation.XXXXXX.pem")
-          public_key_file=$(mktemp "${TMPDIR:-/tmp}/duckdb-extension-signing-validation.XXXXXX.pub")
-          trap 'rm -f "$private_key_file" "$public_key_file"' EXIT
+          private_key_file=$(mktemp "$RUNNER_TEMP/duckdb-extension-signing-validation.XXXXXX.pem")
+          public_key_file=$(mktemp "$RUNNER_TEMP/duckdb-extension-signing-validation.XXXXXX.pub")
+          trap 'rm -f "$private_key_file" "$public_key_file"; rm -rf "$DUCKDB_EXTENSION_SIGNING_OUTPUT_DIR"' EXIT
 
           openssl genrsa -out "$private_key_file" 2048
           openssl rsa -in "$private_key_file" -pubout -out "$public_key_file"
           DUCKDB_EXTENSION_SIGNING_PK="$(cat "$private_key_file")"
           export DUCKDB_EXTENSION_SIGNING_PK
 
-          rm -rf /tmp/repository_signed_validation
-          make upload-extensions EXTENSION_REPOSITORY_PATH=/tmp/repository_generation
+          rm -rf "$DUCKDB_EXTENSION_SIGNING_OUTPUT_DIR"
+          make upload-extensions EXTENSION_REPOSITORY_PATH="$RUNNER_TEMP/repository_generation"
           make verify-extension-signing \
-            SIGNED_EXTENSIONS_DIR=/tmp/repository_signed_validation \
+            SIGNED_EXTENSIONS_DIR="$DUCKDB_EXTENSION_SIGNING_OUTPUT_DIR" \
             EXTENSION_SIGNING_PUBLIC_KEY_FILE="$public_key_file"
 
       - name: Deploy extensions
@@ -567,7 +572,7 @@ jobs:
           DUCKDB_DEPLOY_SCRIPT_MODE: for_real
           DUCKDB_EXTENSION_SIGNING_PK: ${{ secrets.DUCKDB_EXTENSION_SIGNING_PK }}
         run: |
-          make upload-extensions EXTENSION_REPOSITORY_PATH=/tmp/repository_generation
+          make upload-extensions EXTENSION_REPOSITORY_PATH="$RUNNER_TEMP/repository_generation"
 
       - name: Build DuckDB
         if: ${{ !fromJson(needs.prepare.outputs.skip_tests) }}
@@ -586,7 +591,7 @@ jobs:
       - name: Run Tests
         if: ${{ !fromJson(needs.prepare.outputs.skip_tests) }}
         env:
-          LOCAL_EXTENSION_REPO: /tmp/repository_generation
+          LOCAL_EXTENSION_REPO: ${{ runner.temp }}/repository_generation
           DUCKDB_TEST_DESCRIPTION: 'Running with autoloading of extensions. Run unittest --autoloading available to reproduce locally. Add require no_extension_autoloading to skip the test'
         run: make unittest_release SKIP_BUILD=1 T="--test-flags='--autoloading available --skip-compiled'"
 
@@ -603,7 +608,7 @@ jobs:
       - name: Copy over local extension repository
         if: ${{ !fromJson(needs.prepare.outputs.skip_tests) }}
         run: |
-          cp -r /tmp/repository_generation build/release/repository
+          cp -r "$RUNNER_TEMP/repository_generation" build/release/repository
           tree build/release/repository
           find build/release/repository -type f ! -path "build/release/repository/*/linux_amd64/*" -delete
           tree build/release/repository
@@ -755,7 +760,7 @@ jobs:
         echo "::group::CLI check"
         ./build/release/duckdb -c "PRAGMA platform; PRAGMA version;"
         if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-          # Fail on non-zero major version.
+          # Fail on a zero major version.
           ./build/release/duckdb -ascii -noheader -c "SELECT library_version FROM pragma_version() WHERE library_version NOT LIKE 'v0%'" | grep '^v'
         fi
         echo "::endgroup::"
@@ -999,7 +1004,7 @@ jobs:
       run: |
         ./build/release/duckdb -c "PRAGMA platform; PRAGMA version;"
         if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-          # Fail on non-zero major version.
+          # Fail on a zero major version.
           ./build/release/duckdb -ascii -noheader -c "SELECT library_version FROM pragma_version() WHERE library_version NOT LIKE 'v0%'" | grep '^v'
         fi
 
@@ -1106,6 +1111,7 @@ jobs:
     with:
       duckdb_commit: ${{ needs.prepare.outputs.duckdb_commit }}
       duckdb_version: ${{ needs.prepare.outputs.duckdb_version }}
+      is_release_build: ${{ fromJson(needs.prepare.outputs.is_release_build) }}
       runner_macos_arm64: ${{ needs.prepare.outputs.runner_macos_14_arm64 }}
       runner_provider: ${{ needs.prepare.outputs.runner_provider }}
 
@@ -1122,7 +1128,7 @@ jobs:
       runners: ${{ needs.prepare.outputs.runners }}
       runner_provider: ${{ needs.prepare.outputs.runner_provider }}
       skip_tests: ${{ fromJson(needs.prepare.outputs.skip_tests) }}
-      run_all: ${{ github.event_name != 'workflow_dispatch' || inputs.run_all }}
+      run_all: ${{ fromJson(needs.prepare.outputs.windows_full_matrix) }}
 
  osx:
     if: ${{ contains(fromJson(needs.prepare.outputs.enabled_jobs), 'osx') }}
@@ -1132,6 +1138,7 @@ jobs:
     with:
       duckdb_version: ${{ needs.prepare.outputs.duckdb_version }}
       duckdb_commit: ${{ needs.prepare.outputs.duckdb_commit }}
+      is_release_build: ${{ fromJson(needs.prepare.outputs.is_release_build) }}
       runner_macos_arm64: ${{ needs.prepare.outputs.runner_macos_arm64 }}
       skip_tests: ${{ fromJson(needs.prepare.outputs.skip_tests) }}
       run_all: ${{ github.event_name != 'workflow_dispatch' || inputs.run_all }}
@@ -1316,7 +1323,7 @@ jobs:
       run: make unittest_threadsan
 
     - name: Test Extra
-      if: ${{ github.ref_name == 'main' && !fromJson(needs.prepare.outputs.skip_tests) }}
+      if: ${{ fromJson(needs.prepare.outputs.is_release_build) && !fromJson(needs.prepare.outputs.skip_tests) }}
       run: make unittest_threadsan_extra
 
  # TODO: Consider bringing back fts
@@ -1387,7 +1394,9 @@ jobs:
  summary:
     name: Summary
     if: ${{ always() }}
-    runs-on: ${{ fromJSON(needs.prepare.outputs.runners).linux_slim }}
+    # No fromJSON here: when prepare is skipped (draft PRs, non-member synchronize) its outputs are
+    # empty and fromJSON('') makes the whole run fail with every job skipped.
+    runs-on: ${{ needs.prepare.outputs.runner_linux_slim || 'ubuntu-slim' }}
     needs:
       - prepare
       - linux-relassert
@@ -1438,7 +1447,6 @@ jobs:
           STAGED_VERSION: ${{ needs.prepare.outputs.staged_version }}
           RELEASE_STATUS_SUCCESS: ${{ steps.release-status.outputs.success || 'false' }}
           CURRENT_REF: ${{ github.ref }}
-          ALPHA_BRANCH: 'v2.0-cyanoptera'
         run: |
           is_release_event=false
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
@@ -1455,14 +1463,33 @@ jobs:
             run_release_dispatch=true
           fi
 
-          is_default_branch=false
-          if [[ "$CURRENT_REF" == "refs/heads/$ALPHA_BRANCH" ]]; then
-            is_default_branch=true
+          alpha_release_line=""
+          if [[ "$DUCKDB_VERSION" =~ ^v([0-9]+\.[0-9]+)\.[0-9]+-alpha[0-9]+$ ]]; then
+            alpha_release_line="${BASH_REMATCH[1]}"
+          fi
+
+          is_main_branch=false
+          if [[ "$CURRENT_REF" == "refs/heads/main" ]]; then
+            is_main_branch=true
+          fi
+
+          is_release_line_branch=false
+          if [[ -n "$alpha_release_line" && \
+                ("$CURRENT_REF" == "refs/heads/v$alpha_release_line" || \
+                 "$CURRENT_REF" == "refs/heads/v$alpha_release_line-"*) ]]; then
+            is_release_line_branch=true
           fi
 
           publish_latest_alpha=false
-          if [[ "$is_duckdb_repo" == "true" && "$is_default_branch" == "true" && "$RELEASE_STATUS_SUCCESS" == "true" && -n "$STAGED_VERSION" ]]; then
+          if [[ "$is_duckdb_repo" == "true" && \
+                ("$is_main_branch" == "true" || "$is_release_line_branch" == "true") && \
+                "$RELEASE_STATUS_SUCCESS" == "true" && -n "$STAGED_VERSION" && -n "$alpha_release_line" ]]; then
             publish_latest_alpha=true
+          fi
+
+          publish_global_latest_alpha=false
+          if [[ "$publish_latest_alpha" == "true" && "$is_main_branch" == "true" ]]; then
+            publish_global_latest_alpha=true
           fi
 
           echo "summary dispatch context:"
@@ -1475,13 +1502,17 @@ jobs:
           echo "  run_release_dispatch=$run_release_dispatch"
           echo "  staged_version=$STAGED_VERSION"
           echo "  current_ref=$CURRENT_REF"
-          echo "  alpha_branch=$ALPHA_BRANCH"
-          echo "  is_default_branch=$is_default_branch"
+          echo "  alpha_release_line=$alpha_release_line"
+          echo "  is_main_branch=$is_main_branch"
+          echo "  is_release_line_branch=$is_release_line_branch"
           echo "  publish_latest_alpha=$publish_latest_alpha"
+          echo "  publish_global_latest_alpha=$publish_global_latest_alpha"
 
           {
             echo "run_release_dispatch=$run_release_dispatch"
+            echo "alpha_release_line=$alpha_release_line"
             echo "publish_latest_alpha=$publish_latest_alpha"
+            echo "publish_global_latest_alpha=$publish_global_latest_alpha"
           } >> "$GITHUB_OUTPUT"
 
       - name: Run release dispatch
@@ -1536,6 +1567,8 @@ jobs:
           DUCKDB_COMMIT: ${{ needs.prepare.outputs.duckdb_commit }}
           DUCKDB_VERSION: ${{ needs.prepare.outputs.duckdb_version }}
           STAGED_VERSION: ${{ needs.prepare.outputs.staged_version }}
+          RELEASE_LINE: ${{ steps.summary-context.outputs.alpha_release_line }}
+          PUBLISH_GLOBAL_LATEST_ALPHA: ${{ steps.summary-context.outputs.publish_global_latest_alpha }}
         run: |
           set -euo pipefail
 
@@ -1548,6 +1581,20 @@ jobs:
             s3_provider="Cloudflare"
           fi
 
+          if [[ "$PUBLISH_GLOBAL_LATEST_ALPHA" == "true" ]]; then
+            rclone copyto \
+              --s3-provider "$s3_provider" \
+              --s3-endpoint "$AWS_ENDPOINT_URL" \
+              --s3-access-key-id "$AWS_ACCESS_KEY_ID" \
+              --s3-secret-access-key "$AWS_SECRET_ACCESS_KEY" \
+              --s3-no-check-bucket \
+              --s3-no-head \
+              --header-upload "Content-Type: text/plain" \
+              --header-upload "Cache-Control: no-cache" \
+              "$pointer_file" \
+              ":s3:duckdb-staging/latest_alpha_version.txt"
+          fi
+
           rclone copyto \
             --s3-provider "$s3_provider" \
             --s3-endpoint "$AWS_ENDPOINT_URL" \
@@ -1558,7 +1605,7 @@ jobs:
             --header-upload "Content-Type: text/plain" \
             --header-upload "Cache-Control: no-cache" \
             "$pointer_file" \
-            ":s3:duckdb-staging/latest_alpha_version.txt"
+            ":s3:duckdb-staging/release/$RELEASE_LINE/latest_alpha_version.txt"
 
           rclone copyto \
             --s3-provider "$s3_provider" \

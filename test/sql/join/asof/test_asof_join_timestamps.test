@@ -45,7 +45,7 @@ INSERT INTO asof_nulls (time, value) VALUES ('2025-07-15 01:00:00', null);
 foreach threshold 0 32
 
 statement ok
-PRAGMA asof_loop_join_threshold = {threshold};
+SET asof_loop_join_threshold = {threshold};
 
 # INNER ON inequality only
 query II nosort

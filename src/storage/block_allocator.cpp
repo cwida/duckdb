@@ -1,4 +1,5 @@
 #include "duckdb/storage/block_allocator.hpp"
+#include "duckdb/storage/sharded_allocator_queue.hpp"
 
 #include "duckdb/common/allocator.hpp"
 #include "duckdb/common/types/uuid.hpp"
@@ -6,6 +7,7 @@
 #include "duckdb/common/thread.hpp"
 
 #include <new>
+#include <cstring>
 
 #if defined(__linux__) && INTPTR_MAX == INT64_MAX
 #include <cinttypes>
@@ -30,6 +32,18 @@
 
 namespace duckdb {
 
+template <class FUNC>
+static data_ptr_t RetryAfterReclaiming(const BlockAllocator &block_allocator, FUNC &&allocate) {
+	try {
+		return allocate();
+	} catch (const std::bad_alloc &) {
+	} catch (const OutOfMemoryException &) {
+	}
+	// Cached backing must not cause an otherwise avoidable allocation failure.
+	block_allocator.FlushAll();
+	return allocate();
+}
+
 struct BlockAllocatorConfig {
 	//! Blocks transferred between thread-local caches and global queues.
 	static constexpr idx_t BATCH_SIZE = 16;
@@ -41,14 +55,8 @@ struct BlockAllocatorConfig {
 	static constexpr idx_t RECLAIM_BATCH_SIZE = 1024;
 	//! Maximum blocks reclaimed by one background task.
 	static constexpr idx_t MAX_FLUSH_BLOCKS = 64;
-	//! Width of each retention bucket, rounding return times up to the bucket end.
-	static constexpr idx_t RETENTION_INTERVAL_MS = 500;
 	//! Minimum interval between bounded decay checks on each allocating thread.
-	static constexpr idx_t ACTIVE_DECAY_INTERVAL_MS = RETENTION_INTERVAL_MS;
-	//! Linear decay on the same one-second timescale as bundled jemalloc, without extra grace.
-	static constexpr idx_t RETENTION_DECAY_MS = DEFAULT_DECAY_DELAY * 1000;
-	//! Current bucket plus the complete decay history.
-	static constexpr idx_t RETENTION_BUCKETS = RETENTION_DECAY_MS / RETENTION_INTERVAL_MS + 1;
+	static constexpr idx_t ACTIVE_DECAY_INTERVAL_MS = AllocatorCacheRetention::INTERVAL_MS;
 };
 
 static idx_t RetentionTimeMillis() {
@@ -67,19 +75,17 @@ static uint32_t RetentionBucketCount(const uint64_t bucket) {
 	return static_cast<uint32_t>(bucket);
 }
 
-void BlockAllocator::InitializeRetention(const idx_t now_ms) const {
-	const auto epoch = now_ms / BlockAllocatorConfig::RETENTION_INTERVAL_MS;
-	for (idx_t age = 0; age < retention_buckets.size(); age++) {
-		auto &bucket = retention_buckets[(epoch % retention_buckets.size() + retention_buckets.size() - age) %
-		                                 retention_buckets.size()];
+void AllocatorCacheRetention::Reset(const idx_t now_ms) {
+	const auto epoch = now_ms / INTERVAL_MS;
+	for (idx_t age = 0; age < buckets.size(); age++) {
+		auto &bucket = buckets[(epoch % buckets.size() + buckets.size() - age) % buckets.size()];
 		bucket.store(PackRetentionBucket(static_cast<uint32_t>(epoch - age), 0), std::memory_order_relaxed);
 	}
 }
 
-void BlockAllocator::AddRetention(const idx_t count, const idx_t now_ms) const {
-	const auto epoch = now_ms / BlockAllocatorConfig::RETENTION_INTERVAL_MS;
-	const auto capacity = DivBlockSize(pool_size);
-	auto &bucket = retention_buckets[epoch % retention_buckets.size()];
+void AllocatorCacheRetention::Return(const idx_t count, const idx_t capacity, const idx_t now_ms) {
+	const auto epoch = now_ms / INTERVAL_MS;
+	auto &bucket = buckets[epoch % buckets.size()];
 	auto current = bucket.load(std::memory_order_relaxed);
 	do {
 		const auto elapsed = static_cast<uint32_t>(epoch - RetentionBucketEpoch(current));
@@ -97,11 +103,10 @@ void BlockAllocator::AddRetention(const idx_t count, const idx_t now_ms) const {
 	} while (true);
 }
 
-void BlockAllocator::ReuseRetention(idx_t count, const idx_t now_ms) const {
-	const auto epoch = now_ms / BlockAllocatorConfig::RETENTION_INTERVAL_MS;
-	for (idx_t age = 0; age < retention_buckets.size() && count > 0; age++) {
-		auto &bucket = retention_buckets[(epoch % retention_buckets.size() + retention_buckets.size() - age) %
-		                                 retention_buckets.size()];
+void AllocatorCacheRetention::Reuse(idx_t count, const idx_t now_ms) {
+	const auto epoch = now_ms / INTERVAL_MS;
+	for (idx_t age = 0; age < buckets.size() && count > 0; age++) {
+		auto &bucket = buckets[(epoch % buckets.size() + buckets.size() - age) % buckets.size()];
 		auto current = bucket.load(std::memory_order_relaxed);
 		while (RetentionBucketEpoch(current) == static_cast<uint32_t>(epoch - age) &&
 		       RetentionBucketCount(current) > 0) {
@@ -116,21 +121,21 @@ void BlockAllocator::ReuseRetention(idx_t count, const idx_t now_ms) const {
 	}
 }
 
-idx_t BlockAllocator::RetentionTarget(const idx_t now_ms) const {
-	const auto epoch = now_ms / BlockAllocatorConfig::RETENTION_INTERVAL_MS;
+idx_t AllocatorCacheRetention::Target(const idx_t now_ms) const {
+	const auto epoch = now_ms / INTERVAL_MS;
 	idx_t weighted = 0;
-	const auto offset = now_ms % BlockAllocatorConfig::RETENTION_INTERVAL_MS;
-	for (auto &bucket : retention_buckets) {
+	const auto offset = now_ms % INTERVAL_MS;
+	for (auto &bucket : buckets) {
 		const auto current = bucket.load(std::memory_order_relaxed);
 		const auto age = static_cast<uint32_t>(epoch - RetentionBucketEpoch(current));
-		if (age >= retention_buckets.size()) {
+		if (age >= buckets.size()) {
 			continue;
 		}
-		const auto age_ms = age == 0 ? 0 : (age - 1) * BlockAllocatorConfig::RETENTION_INTERVAL_MS + offset;
-		const auto remaining_ms = BlockAllocatorConfig::RETENTION_DECAY_MS - age_ms;
+		const auto age_ms = age == 0 ? 0 : (age - 1) * INTERVAL_MS + offset;
+		const auto remaining_ms = DECAY_MS - age_ms;
 		weighted += RetentionBucketCount(current) * remaining_ms;
 	}
-	return weighted / BlockAllocatorConfig::RETENTION_DECAY_MS;
+	return weighted / DECAY_MS;
 }
 
 //===--------------------------------------------------------------------===//
@@ -197,8 +202,67 @@ static bool OnDeallocation(const data_ptr_t pointer, const idx_t size) {
 //===--------------------------------------------------------------------===//
 // BlockAllocatorThreadLocalState
 //===--------------------------------------------------------------------===//
+static idx_t AllocatorShardCount() {
+#ifndef DUCKDB_NO_THREADS
+	const idx_t cpus = std::thread::hardware_concurrency();
+	return MaxValue<idx_t>(1, MinValue<idx_t>(256, (cpus + 3) / 4));
+#else
+	return 1;
+#endif
+}
+
+static idx_t AllocatorLocalShard(const idx_t count) {
+	return count == 1 ? 0 : (TaskScheduler::GetEstimatedCPUId() / 4) % count;
+}
+
 struct BlockQueue {
-	duckdb_moodycamel::ConcurrentQueue<uint32_t> q;
+	BlockQueue(idx_t blocks, idx_t shards)
+	    : blocks_per_shard(MaxValue<idx_t>(1, blocks / shards + (blocks % shards != 0))),
+	      queues(MaxValue<idx_t>(1, blocks / blocks_per_shard + (blocks % blocks_per_shard != 0)),
+	             blocks > blocks_per_shard) {
+	}
+
+	void ReserveOverflow(idx_t blocks) {
+		for (idx_t shard = 0; shard < queues.Count(); shard++) {
+			queues.Get(shard).ReserveOverflow(MinValue(blocks_per_shard, blocks - shard * blocks_per_shard));
+		}
+	}
+	void ReleaseOverflow() {
+		for (idx_t shard = 0; shard < queues.Count(); shard++) {
+			queues.Get(shard).ReserveOverflow(0);
+		}
+	}
+	idx_t Home(uint32_t block) const {
+		return block / blocks_per_shard;
+	}
+	bool Enqueue(uint32_t block) {
+		return queues.Get(Home(block)).EnqueueBulk(&block, 1);
+	}
+	template <class ITERATOR>
+	bool EnqueueBulk(ITERATOR begin, idx_t count) {
+		if (queues.Count() == 1) {
+			return queues.Get(0).EnqueueBulk(begin, count);
+		}
+		while (count > 0) {
+			const auto shard = Home(*begin);
+			idx_t next = 1;
+			while (next < count && Home(begin[next]) == shard) {
+				next++;
+			}
+			if (!queues.Get(shard).EnqueueBulk(begin, next)) {
+				return false;
+			}
+			begin += next;
+			count -= next;
+		}
+		return true;
+	}
+	idx_t SizeApprox() const {
+		return queues.SizeApprox();
+	}
+
+	const idx_t blocks_per_shard;
+	ShardedAllocatorQueue<uint32_t> queues;
 };
 
 struct BlockAllocatorLifetimeState {
@@ -224,6 +288,10 @@ public:
 	}
 
 	data_ptr_t Allocate() {
+		const auto shard = block_allocator->GetLocalPoolShard();
+		if (shard != preferred_shard && TryClear()) {
+			preferred_shard = shard;
+		}
 		auto pointer = TryAllocateFromLocal();
 		if (pointer) {
 			return pointer;
@@ -237,8 +305,35 @@ public:
 			return pointer;
 		}
 
+		// Borrow individual blocks so a remote batch cannot occupy this thread's local cache.
+		for (auto queue : {block_allocator->touched.get(), block_allocator->untouched.get()}) {
+			for (idx_t offset = 1; offset < queue->queues.Count(); offset++) {
+				uint32_t block;
+				if (!queue->queues.Get((preferred_shard + offset) % queue->queues.Count()).TryDequeueBulk(&block, 1)) {
+					continue;
+				}
+				pointer = block_allocator->GetPointer(block);
+				if (queue == block_allocator->touched.get()) {
+					block_allocator->UpdateCachedBlocks(-1, cache_slot);
+					OnSharedReuse(1);
+				} else {
+					try {
+						OnFirstAllocation(pointer, block_allocator->block_size);
+					} catch (...) {
+						// Retain ownership without allocating queue metadata while memory is exhausted.
+						D_ASSERT(untouched.empty());
+						D_ASSERT(untouched.capacity() >= BlockAllocatorConfig::BATCH_SIZE);
+						untouched.push_back(block);
+						throw;
+					}
+				}
+				return pointer;
+			}
+		}
+
 		// We have also run out of global blocks, use fallback allocator
-		return block_allocator->allocator.AllocateData(block_allocator->block_size);
+		return RetryAfterReclaiming(
+		    *block_allocator, [&] { return block_allocator->allocator.AllocateData(block_allocator->block_size); });
 	}
 
 	void Free(const data_ptr_t pointer) {
@@ -249,32 +344,74 @@ public:
 		}
 
 		// Upon reaching the threshold, we return a local batch to global
-		std::sort(touched.begin(), touched.end());
 		ReturnTouched(BlockAllocatorConfig::BATCH_SIZE);
 	}
 
 	void Clear() DUCKDB_EXCLUDES(lifetime_state->lock) {
-		if (lifetime_state) {
-			annotated_lock_guard<annotated_mutex> guard(lifetime_state->lock);
-			if (lifetime_state->alive) {
-				if (!touched.empty()) {
-					ReturnTouched(touched.size());
-				}
-				if (!untouched.empty()) {
-					block_allocator->untouched->q.enqueue_bulk(untouched.begin(), untouched.size());
-				}
-			}
-		}
+		TryClear();
 		touched.clear();
 		untouched.clear();
 	}
 
 private:
+	bool TryClear() DUCKDB_EXCLUDES(lifetime_state->lock) {
+		if (lifetime_state) {
+			annotated_lock_guard<annotated_mutex> guard(lifetime_state->lock);
+			if (lifetime_state->alive) {
+				TryReturnTouched(touched.size());
+				TryReturnBlocks(untouched, *block_allocator->untouched, untouched.size());
+				return touched.empty() && untouched.empty();
+			}
+		}
+		touched.clear();
+		untouched.clear();
+		return true;
+	}
+
+	static idx_t TryReturnBlocks(vector<uint32_t> &blocks, BlockQueue &queue, const idx_t count) {
+		D_ASSERT(count <= blocks.size());
+		const auto initial_size = blocks.size();
+		const auto remaining_size = initial_size - count;
+		if (queue.queues.Count() == 1) {
+			if (count > 0 && queue.queues.Get(0).EnqueueBulk(blocks.data() + remaining_size, count)) {
+				blocks.resize(remaining_size);
+			}
+			return initial_size - blocks.size();
+		}
+		while (blocks.size() > remaining_size) {
+			const auto home = queue.Home(blocks.back());
+			auto begin = blocks.size() - 1;
+			while (begin > remaining_size && queue.Home(blocks[begin - 1]) == home) {
+				begin--;
+			}
+			if (!queue.queues.Get(home).EnqueueBulk(blocks.data() + begin, blocks.size() - begin)) {
+				break;
+			}
+			blocks.resize(begin);
+		}
+		return initial_size - blocks.size();
+	}
+
+	bool TryReturnTouched(const idx_t count) {
+		if (count == 0) {
+			return true;
+		}
+		block_allocator->retention.Return(count, block_allocator->DivBlockSize(block_allocator->pool_size),
+		                                  RetentionTimeMillis());
+		if (count < touched.size() || block_allocator->touched->queues.Count() > 1) {
+			std::sort(touched.begin(), touched.end());
+		}
+		const auto returned = TryReturnBlocks(touched, *block_allocator->touched, count);
+		if (returned < count) {
+			block_allocator->retention.Reuse(count - returned, RetentionTimeMillis());
+		}
+		return returned == count;
+	}
+
 	void ReturnTouched(const idx_t count) {
-		block_allocator->AddRetention(count, RetentionTimeMillis());
-		block_allocator->touched->q.enqueue_bulk(touched.end() - NumericCast<vector<uint32_t>::difference_type>(count),
-		                                         count);
-		touched.resize(touched.size() - count);
+		const auto remaining_size = touched.size() - count;
+		TryReturnTouched(count);
+		touched.resize(remaining_size);
 	}
 
 	void Initialize(const BlockAllocator &block_allocator_p) {
@@ -285,11 +422,21 @@ private:
 		cache_slot = block_allocator_p.next_cache_slot.fetch_add(1, std::memory_order_relaxed) %
 		             block_allocator_p.cached_blocks.size();
 		next_decay_check = 0;
+		preferred_shard = block_allocator_p.GetLocalPoolShard();
 		untouched.reserve(BlockAllocatorConfig::BATCH_SIZE);
 		touched.reserve(BlockAllocatorConfig::FREE_THRESHOLD);
 	}
 
 	data_ptr_t TryAllocateFromLocal() {
+		if (!touched.empty() && block_allocator->touched->queues.Count() > 1 &&
+		    block_allocator->touched->Home(touched.back()) != preferred_shard) {
+			// Prefer returning foreign frees, but keep them reusable if queue metadata allocation fails.
+			TryReturnTouched(touched.size());
+			// The returned batch may also contain local blocks; prefer those to untouched backing.
+			if (touched.empty()) {
+				TryGetBatch(touched, *block_allocator->touched);
+			}
+		}
 		if (!touched.empty()) {
 			const auto pointer = block_allocator->GetPointer(touched.back());
 			touched.pop_back();
@@ -305,23 +452,31 @@ private:
 		return nullptr;
 	}
 
+	void OnSharedReuse(idx_t count) {
+		const auto now = RetentionTimeMillis();
+		block_allocator->retention.Reuse(count, now);
+		if (now >= next_decay_check) {
+			next_decay_check = now + BlockAllocatorConfig::ACTIVE_DECAY_INTERVAL_MS;
+			try {
+				block_allocator->FlushAllocationCache(BlockAllocatorConfig::MAX_FLUSH_BLOCKS *
+				                                          block_allocator->block_size,
+				                                      BlockAllocator::ReclaimMode::OPPORTUNISTIC);
+				block_allocator->FreeInternal(optional_idx(), BlockAllocatorConfig::MAX_FLUSH_BLOCKS,
+				                              BlockAllocator::ReclaimMode::OPPORTUNISTIC);
+			} catch (...) {
+				// Failed reclamation leaves blocks available for reuse.
+			}
+		}
+	}
+
 	bool TryGetBatch(vector<uint32_t> &local, BlockQueue &global) {
 		D_ASSERT(local.empty());
 		local.resize(BlockAllocatorConfig::BATCH_SIZE);
-		const auto size = global.q.try_dequeue_bulk(local.begin(), BlockAllocatorConfig::BATCH_SIZE);
+		const auto size =
+		    global.queues.Get(preferred_shard).TryDequeueBulk(local.begin(), BlockAllocatorConfig::BATCH_SIZE);
 		local.resize(size);
 		if (size > 0 && RefersToSameObject(global, *block_allocator->touched)) {
-			const auto now = RetentionTimeMillis();
-			block_allocator->ReuseRetention(size, now);
-			if (now >= next_decay_check) {
-				next_decay_check = now + BlockAllocatorConfig::ACTIVE_DECAY_INTERVAL_MS;
-				try {
-					block_allocator->FreeInternal(optional_idx(), BlockAllocatorConfig::MAX_FLUSH_BLOCKS,
-					                              BlockAllocator::ReclaimMode::OPPORTUNISTIC);
-				} catch (...) {
-					// Failed reclamation leaves blocks available for reuse.
-				}
-			}
+			OnSharedReuse(size);
 		}
 		std::sort(local.begin(), local.end());
 		return !local.empty();
@@ -333,10 +488,16 @@ private:
 	shared_ptr<BlockAllocatorLifetimeState> lifetime_state;
 	idx_t next_decay_check = 0;
 	idx_t cache_slot = 0;
+	idx_t preferred_shard = 0;
 
 	vector<uint32_t> untouched;
 	vector<uint32_t> touched;
 };
+
+#ifndef __MVS__
+//! Whether this thread created its state. A bool needs no thread_local destructor, so reading it allocates nothing
+static thread_local bool thread_local_state_created = false; // NOLINT
+#endif
 
 BlockAllocatorThreadLocalState &GetBlockAllocatorThreadLocalState(const BlockAllocator &block_allocator) {
 #ifdef __MVS__
@@ -347,8 +508,19 @@ BlockAllocatorThreadLocalState &GetBlockAllocatorThreadLocalState(const BlockAll
 	return *local_state;
 #else
 	thread_local BlockAllocatorThreadLocalState local_state(block_allocator);
+	thread_local_state_created = true;
 	local_state.TryInitialize(block_allocator);
 	return local_state;
+#endif
+}
+
+//! A thread that never created its state has no blocks to give back. Creating it registers a thread_local
+//! destructor, which glibc cannot fail to allocate without ending the process
+static bool ThreadHasLocalState() {
+#ifdef __MVS__
+	return true;
+#else
+	return thread_local_state_created;
 #endif
 }
 
@@ -356,25 +528,26 @@ BlockAllocatorThreadLocalState &GetBlockAllocatorThreadLocalState(const BlockAll
 // BlockAllocator
 //===--------------------------------------------------------------------===//
 class AllocationCache {
-	using Queue = duckdb_moodycamel::ConcurrentQueue<data_ptr_t>;
 	static constexpr idx_t MIN_SHIFT = 19;
-	static constexpr idx_t MAX_SHIFT = 26;
-	static constexpr idx_t MAX_SHARDS = 256;
-	static constexpr idx_t CPUS_PER_SHARD = 4;
+	static constexpr idx_t MAX_SHIFT = 32;
 	static constexpr idx_t MAX_LOCAL_SPARES = 16;
-	// An admission ceiling, independent of pressure-driven reclamation.
+	// Retain at most 1 GiB per size class, or one larger allocation.
 	static constexpr idx_t MAX_CACHED_BYTES_PER_BUCKET = 1024ULL * 1024 * 1024;
 
 	struct alignas(64) Bucket {
-		vector<Queue> queues;
-		alignas(64) atomic<idx_t> count {0};
+		explicit Bucket(idx_t shard_count) : queues(shard_count) {
+		}
+
+		ShardedAllocatorQueue<data_ptr_t> queues;
 		atomic<idx_t> last_return_ms {0};
+		// Keep queue metadata and the infrequently updated timestamp off the admission counter's cache line.
+		alignas(64) atomic<idx_t> count {0};
 	};
 
 public:
-	explicit AllocationCache(Allocator &allocator) : allocator(allocator), shard_count(GetShardCount()) {
+	explicit AllocationCache(Allocator &allocator) : allocator(allocator), shard_count(AllocatorShardCount()) {
 		for (auto &bucket : buckets) {
-			bucket.queues.resize(shard_count);
+			bucket = make_uniq<Bucket>(shard_count);
 		}
 	}
 	~AllocationCache() {
@@ -388,17 +561,18 @@ public:
 	data_ptr_t TryAllocate(idx_t size) {
 		D_ASSERT(SupportsSize(size));
 		const auto shard = LocalShard();
-		auto &bucket = buckets[CountZeros<idx_t>::Trailing(size) - MIN_SHIFT];
+		auto &bucket = *buckets[CountZeros<idx_t>::Trailing(size) - MIN_SHIFT];
 		data_ptr_t pointer;
-		if (bucket.queues[shard].try_dequeue(pointer)) {
+		if (bucket.queues.Get(shard).TryDequeue(pointer)) {
 			bucket.count.fetch_sub(1, std::memory_order_relaxed);
 			return pointer;
 		}
 		// Share surplus buffers, leaving a few local spares without reserving the entire budget.
 		const auto reserve = MinValue<idx_t>(MAX_LOCAL_SPARES, MAX_CACHED_BYTES_PER_BUCKET / size / (2 * shard_count));
 		for (idx_t offset = 1; offset < shard_count; offset++) {
-			auto &queue = bucket.queues[(shard + offset) % shard_count];
-			if ((reserve == 0 || queue.size_approx() > reserve) && queue.try_dequeue(pointer)) {
+			const auto peer = (shard + offset) % shard_count;
+			auto &queue = bucket.queues.Get(peer);
+			if ((reserve == 0 || queue.SizeApprox() > reserve) && queue.TryDequeue(pointer)) {
 				bucket.count.fetch_sub(1, std::memory_order_relaxed);
 				return pointer;
 			}
@@ -407,19 +581,20 @@ public:
 	}
 	bool TryFree(data_ptr_t pointer, idx_t size) {
 		D_ASSERT(SupportsSize(size));
-		const auto shard = LocalShard();
 		if (!pointer) {
 			return false;
 		}
-		auto &bucket = buckets[CountZeros<idx_t>::Trailing(size) - MIN_SHIFT];
-		if (bucket.count.fetch_add(1, std::memory_order_relaxed) < MAX_CACHED_BYTES_PER_BUCKET / size) {
+		const auto shard = LocalShard();
+		auto &bucket = *buckets[CountZeros<idx_t>::Trailing(size) - MIN_SHIFT];
+		const auto capacity = MaxValue<idx_t>(MAX_CACHED_BYTES_PER_BUCKET / size, 1);
+		if (bucket.count.fetch_add(1, std::memory_order_relaxed) < capacity) {
 			try {
 				const auto now = RetentionTimeMillis();
 				auto last_return = bucket.last_return_ms.load(std::memory_order_relaxed);
 				while (last_return < now &&
 				       !bucket.last_return_ms.compare_exchange_weak(last_return, now, std::memory_order_relaxed)) {
 				}
-				if (bucket.queues[shard].enqueue(pointer)) {
+				if (bucket.queues.Get(shard).Enqueue(pointer)) {
 					return true;
 				}
 			} catch (...) {
@@ -433,11 +608,7 @@ public:
 	idx_t GetCachedMemory(optional_idx idle_before = optional_idx()) const {
 		idx_t bytes = 0;
 		for (idx_t i = 0; i < buckets.size(); i++) {
-			const auto &bucket = buckets[i];
-			if (!idle_before.IsValid() ||
-			    bucket.last_return_ms.load(std::memory_order_relaxed) <= idle_before.GetIndex()) {
-				bytes += bucket.count.load(std::memory_order_relaxed) << (MIN_SHIFT + i);
-			}
+			bytes += Reclaimable(*buckets[i], idle_before) * (static_cast<idx_t>(1) << (MIN_SHIFT + i));
 		}
 		return bytes;
 	}
@@ -446,18 +617,15 @@ public:
 	idx_t Flush(idx_t byte_limit, optional_idx idle_before = optional_idx()) {
 		idx_t freed = 0;
 		for (idx_t i = buckets.size(); i > 0 && freed < byte_limit; i--) {
-			auto &bucket = buckets[i - 1];
+			auto &bucket = *buckets[i - 1];
 			const idx_t size = static_cast<idx_t>(1) << (MIN_SHIFT + i - 1);
 			// A snapshot bounds the work even if producers continue returning buffers.
-			auto remaining = bucket.count.load(std::memory_order_relaxed);
-			for (auto &queue : bucket.queues) {
+			auto remaining = Reclaimable(bucket, idle_before);
+			for (idx_t shard = 0; shard < bucket.queues.Count(); shard++) {
+				auto &queue = bucket.queues.Get(shard);
 				data_ptr_t pointer;
-				while (remaining > 0 && freed < byte_limit) {
-					if (idle_before.IsValid() &&
-					    bucket.last_return_ms.load(std::memory_order_relaxed) > idle_before.GetIndex()) {
-						break;
-					}
-					if (!queue.try_dequeue(pointer)) {
+				while (remaining > 0 && freed < byte_limit && Reclaimable(bucket, idle_before) > 0) {
+					if (!queue.TryDequeue(pointer)) {
 						break;
 					}
 					allocator.FreeData(pointer, size);
@@ -471,23 +639,21 @@ public:
 	}
 
 private:
-	static idx_t GetShardCount() {
-#ifndef DUCKDB_NO_THREADS
-		const idx_t cpus = std::thread::hardware_concurrency();
-		return MaxValue<idx_t>(1, MinValue<idx_t>(MAX_SHARDS, (cpus + CPUS_PER_SHARD - 1) / CPUS_PER_SHARD));
-#else
-		return 1;
-#endif
+	static idx_t Reclaimable(const Bucket &bucket, optional_idx idle_before) {
+		if (idle_before.IsValid() && bucket.last_return_ms.load(std::memory_order_relaxed) > idle_before.GetIndex()) {
+			return 0;
+		}
+		return bucket.count.load(std::memory_order_relaxed);
 	}
 
+private:
 	idx_t LocalShard() const {
-		const auto cpu = TaskScheduler::GetEstimatedCPUId();
-		return (cpu / CPUS_PER_SHARD) % shard_count;
+		return AllocatorLocalShard(buckets[0]->queues.Count());
 	}
 
 	Allocator &allocator;
 	const idx_t shard_count;
-	array<Bucket, MAX_SHIFT - MIN_SHIFT + 1> buckets;
+	array<unique_ptr<Bucket>, MAX_SHIFT - MIN_SHIFT + 1> buckets;
 };
 
 BlockAllocator::BlockAllocator(Allocator &allocator_p, const idx_t block_size_p, const idx_t pool_size_p)
@@ -497,11 +663,10 @@ BlockAllocator::BlockAllocator(Allocator &allocator_p, const idx_t block_size_p,
       pool_state(pool_size != 0 && DivBlockSize(pool_size) <= NumericLimits<uint32_t>::Maximum()
                      ? PoolState::UNINITIALIZED
                      : PoolState::UNAVAILABLE),
-      touched(make_unsafe_uniq<BlockQueue>()), lifetime_state(make_shared_ptr<BlockAllocatorLifetimeState>()) {
-	static_assert(std::tuple_size<decltype(retention_buckets)>::value == BlockAllocatorConfig::RETENTION_BUCKETS,
-	              "Retention bucket storage must match the decay configuration");
+      touched(make_unsafe_uniq<BlockQueue>(DivBlockSize(pool_size), AllocatorShardCount())),
+      lifetime_state(make_shared_ptr<BlockAllocatorLifetimeState>()) {
 	D_ASSERT(IsPowerOfTwo(block_size));
-	InitializeRetention(RetentionTimeMillis());
+	retention.Reset(RetentionTimeMillis());
 }
 
 BlockAllocator::~BlockAllocator() {
@@ -509,7 +674,14 @@ BlockAllocator::~BlockAllocator() {
 		annotated_lock_guard<annotated_mutex> guard(lifetime_state->lock);
 		lifetime_state->alive = false;
 	}
-	GetBlockAllocatorThreadLocalState(*this).Clear();
+	// creating the state of a thread that has none, or re-initializing it for this allocator, allocates
+	if (ThreadHasLocalState()) {
+		try {
+			GetBlockAllocatorThreadLocalState(*this).Clear();
+		} catch (...) {
+			// Not allowed to throw in destructor!
+		}
+	}
 	if (IsInitialized()) {
 		try {
 			FreeVirtualMemory(pool_base, pool_size);
@@ -555,7 +727,9 @@ bool BlockAllocator::InitializePool() const {
 
 	unsafe_unique_ptr<BlockQueue> queue;
 	try {
-		queue = make_unsafe_uniq<BlockQueue>();
+		queue = make_unsafe_uniq<BlockQueue>(DivBlockSize(pool_size), touched->queues.Count());
+		queue->ReserveOverflow(DivBlockSize(pool_size));
+		touched->ReserveOverflow(DivBlockSize(pool_size));
 		uint32_t block_ids[STANDARD_VECTOR_SIZE];
 		const auto count = DivBlockSize(pool_size);
 		for (idx_t block_id = 0; block_id < count; block_id += STANDARD_VECTOR_SIZE) {
@@ -563,18 +737,21 @@ bool BlockAllocator::InitializePool() const {
 			for (idx_t i = 0; i < next; i++) {
 				block_ids[i] = NumericCast<uint32_t>(block_id + i);
 			}
-			if (!queue->q.enqueue_bulk(block_ids, next)) {
+			if (!queue->EnqueueBulk(block_ids, next)) {
+				touched->ReleaseOverflow();
 				pool_state.store(PoolState::UNAVAILABLE, std::memory_order_release);
 				return false;
 			}
 		}
 	} catch (const std::bad_alloc &) {
+		touched->ReleaseOverflow();
 		pool_state.store(PoolState::UNAVAILABLE, std::memory_order_release);
 		return false;
 	}
 
 	const auto pointer = AllocateVirtualMemory(pool_size);
 	if (!pointer) {
+		touched->ReleaseOverflow();
 		pool_state.store(PoolState::UNAVAILABLE, std::memory_order_release);
 		return false;
 	}
@@ -605,6 +782,10 @@ idx_t BlockAllocator::DivBlockSize(const idx_t n) const {
 	return n >> block_size_div_shift;
 }
 
+idx_t BlockAllocator::GetLocalPoolShard() const {
+	return AllocatorLocalShard(touched->queues.Count());
+}
+
 uint32_t BlockAllocator::GetBlockID(const data_ptr_t pointer) const {
 	D_ASSERT(IsInPool(pointer));
 	const auto offset = NumericCast<idx_t>(pointer - pool_base);
@@ -631,7 +812,7 @@ data_ptr_t BlockAllocator::AllocateData(const idx_t size) const {
 				return pointer;
 			}
 		}
-		return allocator.AllocateData(size);
+		return RetryAfterReclaiming(*this, [&] { return allocator.AllocateData(size); });
 	}
 	return GetBlockAllocatorThreadLocalState(*this).Allocate();
 }
@@ -642,7 +823,8 @@ idx_t BlockAllocator::GetCachedMemory() const {
 
 idx_t BlockAllocator::GetCachedPoolMemory() const {
 	int64_t count = 0;
-	const auto slots = MinValue<idx_t>(next_cache_slot.load(std::memory_order_relaxed), cached_blocks.size());
+	const auto slots =
+	    MaxValue<idx_t>(1, MinValue<idx_t>(next_cache_slot.load(std::memory_order_relaxed), cached_blocks.size()));
 	for (idx_t i = 0; i < slots; i++) {
 		count += cached_blocks[i].count.load(std::memory_order_relaxed);
 	}
@@ -666,6 +848,14 @@ void BlockAllocator::FreeData(const data_ptr_t pointer, const idx_t size) const 
 		return;
 	}
 	D_ASSERT(size == block_size);
+	if (!ThreadHasLocalState()) {
+		// creating the state of a thread that only frees allocates and registers a thread_local destructor, which
+		// glibc aborts on when memory is exhausted: hand the block to the global pool directly
+		UpdateCachedBlocks(1, 0);
+		retention.Return(1, DivBlockSize(pool_size), RetentionTimeMillis());
+		touched->Enqueue(GetBlockID(pointer));
+		return;
+	}
 	GetBlockAllocatorThreadLocalState(*this).Free(pointer);
 }
 
@@ -677,10 +867,10 @@ data_ptr_t BlockAllocator::ReallocateData(const data_ptr_t pointer, const idx_t 
 	const bool old_in_pool = IsInPool(pointer);
 	const bool new_can_use_pool = new_size == block_size && TryUsePool();
 	if (!old_in_pool && !new_can_use_pool) {
-		return allocator.ReallocateData(pointer, old_size, new_size);
+		return RetryAfterReclaiming(*this, [&] { return allocator.ReallocateData(pointer, old_size, new_size); });
 	}
 
-	// Either old or new can be in the pool: allocate, copy, and free
+	// Pool allocations must retain their matching allocation/release paths.
 	const auto new_pointer = AllocateData(new_size);
 	memcpy(new_pointer, pointer, MinValue(old_size, new_size));
 	FreeData(pointer, old_size);
@@ -723,21 +913,13 @@ static void AdviseHugePages(data_ptr_t pointer, idx_t size) {
 }
 
 data_ptr_t BlockAllocator::AllocateHugeData(const idx_t size) const {
-	auto pointer = size == block_size && TryUsePool() ? GetBlockAllocatorThreadLocalState(*this).Allocate()
-	                                                  : allocator.AllocateData(size);
+	auto pointer = AllocateData(size);
 	AdviseHugePages(pointer, size);
 	return pointer;
 }
 
 void BlockAllocator::FreeHugeData(data_ptr_t pointer, const idx_t size) const {
-	if (IsInPool(pointer)) {
-		FreeData(pointer, size);
-		return;
-	}
-	allocator.FreeData(pointer, size);
-	if (pointer) {
-		estimated_unflushed_memory.fetch_add(size, std::memory_order_relaxed);
-	}
+	FreeData(pointer, size);
 }
 
 bool BlockAllocator::SupportsFlush() const {
@@ -753,7 +935,7 @@ optional_idx BlockAllocator::DecayDelay() const {
 }
 
 void BlockAllocator::ReturnThreadLocalBlocks() const {
-	if (IsInitialized()) {
+	if (IsInitialized() && ThreadHasLocalState()) {
 		GetBlockAllocatorThreadLocalState(*this).Clear();
 	}
 }
@@ -878,7 +1060,7 @@ void BlockAllocator::ThreadExit() const {
 }
 
 idx_t BlockAllocator::GetFreeBlockCount() const {
-	return touched->q.size_approx();
+	return touched->SizeApprox();
 }
 
 idx_t BlockAllocator::GetReclaimableBlockCount(const ReclaimMode mode, const optional_idx cache_limit) const {
@@ -891,7 +1073,7 @@ idx_t BlockAllocator::GetReclaimableBlockCount(const ReclaimMode mode, const opt
 	if (mode == ReclaimMode::FORCE) {
 		return available;
 	}
-	return available - MinValue(available, RetentionTarget(RetentionTimeMillis()));
+	return available - MinValue(available, retention.Target(RetentionTimeMillis()));
 }
 
 idx_t BlockAllocator::FlushPool(const optional_idx block_limit, const optional_idx task_limit, const ReclaimMode mode,
@@ -907,7 +1089,7 @@ idx_t BlockAllocator::FlushPool(const optional_idx block_limit, const optional_i
 
 static idx_t AllocationCacheIdleCutoff() {
 	const auto now = RetentionTimeMillis();
-	return now - MinValue(now, BlockAllocatorConfig::RETENTION_DECAY_MS);
+	return now - MinValue(now, AllocatorCacheRetention::DECAY_MS);
 }
 
 bool BlockAllocator::HasReclaimableMemory() const {
@@ -920,9 +1102,16 @@ bool BlockAllocator::HasPendingCacheDecay() const {
 }
 
 idx_t BlockAllocator::FlushAllocationCache(idx_t byte_limit, ReclaimMode mode) const noexcept {
-	annotated_lock_guard<annotated_mutex> guard(flush_lock);
+	annotated_unique_lock<annotated_mutex> guard(flush_lock, std::defer_lock);
+	if (mode == ReclaimMode::OPPORTUNISTIC) {
+		if (!guard.try_lock()) {
+			return 0;
+		}
+	} else {
+		guard.lock();
+	}
 	const auto freed = allocation_cache->Flush(
-	    byte_limit, mode == ReclaimMode::DECAY ? optional_idx(AllocationCacheIdleCutoff()) : optional_idx());
+	    byte_limit, mode != ReclaimMode::FORCE ? optional_idx(AllocationCacheIdleCutoff()) : optional_idx());
 	estimated_unflushed_memory.fetch_add(freed, std::memory_order_relaxed);
 	return freed;
 }
@@ -1045,7 +1234,18 @@ idx_t BlockAllocator::FreeInternal(const optional_idx block_limit, const optiona
 				guard.lock();
 			}
 			const auto eligible = MinValue(task_remaining, GetReclaimableBlockCount(mode, cache_limit));
-			count = touched->q.try_dequeue_bulk(to_free_buffer.begin(), MinValue(eligible, batch_size));
+			if (eligible == 0) {
+				return 0;
+			}
+			count = 0;
+			for (idx_t attempt = 0; attempt < touched->queues.Count(); attempt++) {
+				auto &queue = touched->queues.Get(reclaim_shard);
+				reclaim_shard = (reclaim_shard + 1) % touched->queues.Count();
+				count = queue.TryDequeueBulk(to_free_buffer.begin(), MinValue(eligible, batch_size));
+				if (count > 0) {
+					break;
+				}
+			}
 			reclaiming_blocks += count;
 		}
 		if (count == 0) {
@@ -1065,9 +1265,9 @@ idx_t BlockAllocator::FreeInternal(const optional_idx block_limit, const optiona
 			if (!FreeContiguousBlocks(to_free_buffer[start], to_free_buffer[end - 1])) {
 				annotated_lock_guard<annotated_mutex> guard(flush_lock);
 				reclaiming_blocks -= count - start;
-				touched->q.enqueue_bulk(to_free_buffer.begin() +
-				                            NumericCast<unsafe_vector<uint32_t>::difference_type>(start),
-				                        count - start);
+				touched->EnqueueBulk(to_free_buffer.begin() +
+				                         NumericCast<unsafe_vector<uint32_t>::difference_type>(start),
+				                     count - start);
 				return 0;
 			}
 			{
@@ -1075,7 +1275,7 @@ idx_t BlockAllocator::FreeInternal(const optional_idx block_limit, const optiona
 				UpdateCachedBlocks(-NumericCast<int64_t>(end - start), 0);
 				reclaiming_blocks -= end - start;
 			}
-			untouched->q.enqueue_bulk(
+			untouched->EnqueueBulk(
 			    to_free_buffer.begin() + NumericCast<unsafe_vector<uint32_t>::difference_type>(start), end - start);
 			start = end;
 		}

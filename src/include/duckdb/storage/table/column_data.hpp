@@ -28,6 +28,7 @@ class DatabaseInstance;
 class PartialBlockManager;
 class DuckTableEntry;
 struct ColumnCheckpointState;
+struct ColumnFetchState;
 struct ColumnSegmentInfo;
 struct ColumnSegmentInfoScanOptions;
 class RowGroup;
@@ -35,10 +36,11 @@ class RowGroupWriter;
 class StorageManager;
 class TableDataWriter;
 class TableStorageInfo;
+class UpdateSegment;
 struct DataTableInfo;
 struct PrefetchState;
 struct RowGroupWriteInfo;
-struct TableScanOptions;
+struct ScanFilter;
 struct TransactionData;
 struct PersistentColumnData;
 class ValidityColumnData;
@@ -82,8 +84,14 @@ public:
 	LogicalType type;
 
 public:
-	virtual FilterPropagateResult CheckZonemap(ColumnScanState &state, TableFilter &filter,
-	                                           optional_ptr<SegmentNode<ColumnSegment>> &checked_segment);
+	//! Checks the filter against the zonemap from the scan position, and sets checked_end to the row of the row group
+	//! up to which the result holds, so that the scan can skip ahead to it when the filter is rejected
+	virtual FilterPropagateResult CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+	                                           optional_idx &checked_end);
+	//! Checks the filter against the zonemap from any row of the row group, reporting checked_end as CheckZonemap
+	//! does, so that the prefetch of a scan can leave out the vectors the filter rejects
+	virtual FilterPropagateResult CheckZonemapAt(ColumnScanState &state, const ScanFilter &filter, idx_t row,
+	                                             optional_idx &checked_end);
 
 	BlockManager &GetBlockManager() const {
 		return block_manager;
@@ -138,8 +146,9 @@ public:
 	//! Whether or not we can scan an entire vector
 	virtual ScanVectorType GetVectorScanType(ColumnScanState &state, idx_t scan_count, Vector &result);
 
-	//! Initialize prefetch state with required I/O data for the next N rows
-	virtual void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows);
+	//! Initialize prefetch state with the I/O data required to scan the rows in [start_row, end_row)
+	virtual void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+	                                idx_t end_row);
 	//! Initialize a scan of the column
 	virtual void InitializeScan(ColumnScanState &state);
 	//! Initialize a scan starting at the specified offset
@@ -174,8 +183,6 @@ public:
 	//! Revert a set of appends to the ColumnData
 	virtual void RevertAppend(row_t new_count);
 
-	//! Fetch the vector from the column data that belongs to this specific row
-	virtual idx_t Fetch(ColumnScanState &state, row_t row_id, Vector &result);
 	//! Fetch a batch of row offsets and append them to the vector
 	virtual void FetchRows(TransactionData transaction, ColumnFetchState &state, const StorageIndex &storage_index,
 	                       const idx_t *offsets, const SelectionVector &sel, idx_t count, Vector &result,
@@ -183,6 +190,14 @@ public:
 	//! Fetches a batch of row offsets for leaf columns.
 	void FetchRowsAtSegmentLevel(TransactionData transaction, ColumnFetchState &state, const idx_t *offsets,
 	                             const SelectionVector &sel, idx_t count, Vector &result, idx_t result_offset);
+	//! Fetches the base data of a batch of row offsets, without updates
+	void FetchBaseRows(const QueryContext &context, const idx_t *offsets, const SelectionVector &sel, idx_t count,
+	                   Vector &result, idx_t result_offset);
+	//! Fetches base values of row_ids into result, densely and in the same order, without updates
+	void FetchBaseRows(const row_t *row_ids, idx_t count, Vector &result, idx_t row_group_start);
+	//! Reads the selected rows of a scan through FetchBaseRows (debug_force_fetch_row)
+	void FetchScannedRows(ColumnScanState &state, const SelectionVector &sel, idx_t count, Vector &result,
+	                      idx_t result_offset);
 
 	virtual void Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
 	                    Vector &update_vector, row_t *row_ids, idx_t update_count, idx_t row_group_start);
@@ -218,8 +233,6 @@ public:
 
 	FilterPropagateResult CheckZonemap(optional_ptr<ClientContext> context, const StorageIndex &index,
 	                                   TableFilter &filter);
-	//! End of the last vector in [start_row, end_row) that the segment zonemaps do not reject for the filter
-	idx_t ZonemapScanEnd(optional_ptr<ClientContext> context, idx_t start_row, idx_t end_row, TableFilter &filter);
 
 	static shared_ptr<ColumnData> CreateColumn(BlockManager &block_manager, DataTableInfo &info, idx_t column_index,
 	                                           const LogicalType &type,
@@ -247,7 +260,7 @@ protected:
 	idx_t ScanVector(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
 	                 idx_t target_scan, UpdateScanType update_type);
 	void SelectVector(ColumnScanState &state, Vector &result, idx_t target_count, const SelectionVector &sel,
-	                  idx_t sel_count, ScanVectorType scan_type);
+	                  idx_t sel_count, ScanVectorType scan_type, idx_t result_offset = 0);
 	void FilterVector(ColumnScanState &state, Vector &result, idx_t target_count, SelectionVector &sel,
 	                  idx_t &sel_count, const TableFilter &filter, TableFilterState &filter_state);
 
@@ -255,19 +268,16 @@ protected:
 	                  UpdateScanType update_type);
 	void FetchUpdateRow(TransactionData transaction, row_t row_id, Vector &result, idx_t result_idx);
 	void UpdateInternal(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
-	                    Vector &update_vector, row_t *row_ids, idx_t update_count, Vector &base_vector,
+	                    Vector &update_vector, row_t *row_ids, idx_t update_count, const Vector &base_vector,
 	                    idx_t row_group_start);
-	idx_t FetchUpdateData(ColumnScanState &state, row_t *row_ids, Vector &base_vector, idx_t row_group_start);
-
 	idx_t GetVectorCount(idx_t vector_index) const;
 
 	static bool IsDirectNullCheckFilter(const TableFilter &filter);
-	//! Checks the filter against the statistics of one segment
+	//! Checks the filter against the statistics of one segment and of the updates of the column
 	FilterPropagateResult CheckSegmentStatistics(optional_ptr<ClientContext> context,
 	                                             SegmentNode<ColumnSegment> &segment, ExpressionFilter &expr_filter);
-	FilterPropagateResult CheckValidityZonemap(ColumnScanState &state, TableFilter &filter,
-	                                           optional_ptr<SegmentNode<ColumnSegment>> &checked_segment,
-	                                           ColumnData &validity_column);
+	FilterPropagateResult CheckValidityZonemap(ColumnScanState &state, const ScanFilter &filter,
+	                                           optional_idx &checked_end, ColumnData &validity_column);
 
 private:
 	void UpdateCompressionFunction(SegmentLock &l, const CompressionFunction &function);
@@ -312,6 +322,7 @@ enum class ExtraPersistentColumnDataType : uint8_t {
 	INVALID = 0,
 	VARIANT = 1,
 	GEOMETRY = 2,
+	LIST = 3,
 };
 
 class ExtraPersistentColumnData {
@@ -337,6 +348,10 @@ public:
 
 	void Serialize(Serializer &serializer) const;
 	static unique_ptr<ExtraPersistentColumnData> Deserialize(Deserializer &deserializer);
+	//! Whether the extra data can be written for the storage version of the serializer
+	virtual bool IsSupported(const Serializer &serializer) const {
+		return true;
+	}
 
 protected:
 	explicit ExtraPersistentColumnData(ExtraPersistentColumnDataType type_p) : type(type_p) {

@@ -20,12 +20,8 @@ unique_ptr<LogicalOperator> FilterPullup::PullupSetOperation(unique_ptr<LogicalO
 	D_ASSERT(op->type == LogicalOperatorType::LOGICAL_INTERSECT || op->type == LogicalOperatorType::LOGICAL_EXCEPT);
 	can_add_column = false;
 	can_pullup = true;
-	if (op->type == LogicalOperatorType::LOGICAL_INTERSECT) {
-		op = PullupBothSide(std::move(op));
-	} else {
-		// EXCEPT only pull ups from LHS
-		op = PullupFromLeft(std::move(op));
-	}
+	// EXCEPT and INTERSECT return rows of the left child, so a filter of the right child does not apply to them
+	op = PullupFromLeft(std::move(op));
 	if (op->type == LogicalOperatorType::LOGICAL_FILTER) {
 		auto &filter = op->Cast<LogicalFilter>();
 		auto &setop = filter.children[0]->Cast<LogicalSetOperation>();

@@ -449,6 +449,45 @@ const vector<unique_ptr<TableFilter>> &TableFilterSet::GetMultiColumnFilters() c
 	return multi_column_filters;
 }
 
+vector<shared_ptr<DynamicTableFilterSet>> DynamicTableFilterSet::AddDisjunction(ProjectionIndex column,
+                                                                                idx_t alternative_count) {
+	D_ASSERT(alternative_count > 1);
+	FilterDisjunction disjunction {column, {}};
+	for (idx_t i = 0; i < alternative_count; i++) {
+		disjunction.alternatives.push_back(make_shared_ptr<DynamicTableFilterSet>());
+	}
+	disjunctions.push_back(std::move(disjunction));
+	return disjunctions.back().alternatives;
+}
+
+vector<reference<DynamicTableFilterSet>> DynamicTableFilterSet::GetDisjunctionFilters() const {
+	vector<reference<DynamicTableFilterSet>> result;
+	for (auto &disjunction : disjunctions) {
+		for (auto &alternative : disjunction.alternatives) {
+			result.push_back(*alternative);
+		}
+	}
+	return result;
+}
+
+unique_ptr<Expression> DynamicTableFilterSet::CopyColumnFilter(ProjectionIndex column) const {
+	lock_guard<mutex> l(lock);
+	auto conjunction = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND);
+	for (auto &entry : filters) {
+		auto filter = entry.second->TryGetFilterByColumnIndex(column);
+		if (filter) {
+			conjunction->GetChildrenMutable().push_back(filter->Cast<ExpressionFilter>().expr->Copy());
+		}
+	}
+	if (conjunction->GetChildren().empty()) {
+		return nullptr;
+	}
+	if (conjunction->GetChildren().size() == 1) {
+		return std::move(conjunction->GetChildrenMutable()[0]);
+	}
+	return std::move(conjunction);
+}
+
 void DynamicTableFilterSet::ClearFilters(const PhysicalOperator &op) {
 	lock_guard<mutex> l(lock);
 	filters.erase(op);
@@ -471,14 +510,25 @@ void DynamicTableFilterSet::PushFilter(const PhysicalOperator &op, ProjectionInd
 
 bool DynamicTableFilterSet::HasFilters() const {
 	lock_guard<mutex> l(lock);
-	return !filters.empty();
+	if (!filters.empty()) {
+		return true;
+	}
+	for (auto &disjunction : disjunctions) {
+		bool complete = true;
+		for (auto &alternative : disjunction.alternatives) {
+			complete &= alternative->HasFilters();
+		}
+		if (complete) {
+			return true;
+		}
+	}
+	return false;
 }
 
 unique_ptr<TableFilterSet>
 DynamicTableFilterSet::GetFinalTableFilters(const PhysicalTableScan &scan,
                                             optional_ptr<TableFilterSet> existing_filters) const {
 	lock_guard<mutex> l(lock);
-	D_ASSERT(!filters.empty());
 	auto result = make_uniq<TableFilterSet>();
 	if (existing_filters) {
 		for (auto &filter_entry : *existing_filters) {
@@ -492,6 +542,21 @@ DynamicTableFilterSet::GetFinalTableFilters(const PhysicalTableScan &scan,
 	for (auto &entry : filters) {
 		for (auto &filter_entry : *entry.second) {
 			result->PushFilter(filter_entry.GetIndex(), filter_entry.Filter().Cast<ExpressionFilter>().Copy());
+		}
+	}
+	for (auto &group : disjunctions) {
+		auto disjunction = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_OR);
+		bool complete = true;
+		for (auto &alternative : group.alternatives) {
+			auto expression = alternative->CopyColumnFilter(group.column);
+			if (!expression) {
+				complete = false;
+				break;
+			}
+			disjunction->GetChildrenMutable().push_back(std::move(expression));
+		}
+		if (complete) {
+			result->PushFilter(group.column, make_uniq<ExpressionFilter>(std::move(disjunction)));
 		}
 	}
 	if (!result->HasFilters() && !result->HasMultiColumnFilters()) {

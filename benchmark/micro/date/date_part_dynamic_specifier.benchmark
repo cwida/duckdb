@@ -1,0 +1,44 @@
+# name: benchmark/micro/date/date_part_dynamic_specifier.benchmark
+# description: DATE_PART with a dynamic specifier column, preventing constant specifier specialization
+# group: [date]
+
+name Date Part Dynamic Specifier
+group date
+
+load
+CREATE TABLE date_parts AS
+SELECT CASE i % 25
+  WHEN 0 THEN 'year'
+  WHEN 1 THEN 'yr'
+  WHEN 2 THEN 'y'
+  WHEN 3 THEN 'years'
+  WHEN 4 THEN 'yrs'
+  WHEN 5 THEN 'month'
+  WHEN 6 THEN 'mon'
+  WHEN 7 THEN 'months'
+  WHEN 8 THEN 'mons'
+  WHEN 9 THEN 'day'
+  WHEN 10 THEN 'days'
+  WHEN 11 THEN 'd'
+  WHEN 12 THEN 'dayofmonth'
+  WHEN 13 THEN 'decade'
+  WHEN 14 THEN 'dec'
+  WHEN 15 THEN 'decades'
+  WHEN 16 THEN 'decs'
+  WHEN 17 THEN 'century'
+  WHEN 18 THEN 'cent'
+  WHEN 19 THEN 'centuries'
+  WHEN 20 THEN 'c'
+  WHEN 21 THEN 'millennium'
+  WHEN 22 THEN 'mil'
+  WHEN 23 THEN 'millenniums'
+  ELSE 'millennia'
+END AS spec,
+TIMESTAMP '2024-01-02 03:04:05' AS ts
+FROM range(10000000) tbl(i);
+
+run
+SELECT sum(date_part(spec, ts))::HUGEINT FROM date_parts
+
+result I
+4414400000

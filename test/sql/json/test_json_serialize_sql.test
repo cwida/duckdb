@@ -3,6 +3,13 @@
 
 require json
 
+# Error positions are byte offsets into the original SQL, including Unicode whitespace.
+query II
+SELECT (json_serialize_sql('SELECT' || chr(160) || ')')->>'position')::INTEGER,
+       (json_serialize_sql('SELECT' || chr(8195) || ')')->>'position')::INTEGER
+----
+8	9
+
 statement ok
 SET storage_compatibility_version='v1.0.0'
 

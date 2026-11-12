@@ -1,0 +1,28 @@
+# name: benchmark/micro/compression/dict_fsst/categorical_filter.benchmark
+# description: Filter a short categorical column stored as a plain dictionary
+# group: [dict_fsst]
+
+name Filter DICT_FSST Status Labels
+group dict_fsst
+storage persistent
+cache dict_fsst_status_labels_128m.db
+
+load
+CREATE TABLE events(status VARCHAR USING COMPRESSION DICT_FSST);
+INSERT INTO events
+SELECT ['created', 'queued', 'processing', 'complete', 'failed', 'cancelled', 'returned', 'pending'][1 + i % 8]
+FROM range(128_000_000) t(i);
+CHECKPOINT;
+
+assert TII
+SELECT DISTINCT compression, persistent, segment_info LIKE 'DICTIONARY:%'
+FROM pragma_storage_info('events', include_segment_info=true)
+WHERE column_name='status' AND segment_type='VARCHAR';
+----
+DICT_FSST	true	true
+
+run
+SELECT count(*) FROM events WHERE status='failed';
+
+result I
+16000000

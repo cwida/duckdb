@@ -70,7 +70,7 @@ public:
 	template <class TARGET>
 	TARGET &Cast() {
 		if (binding_type != TARGET::TYPE) {
-			throw InternalException("Failed to cast binding to type - binding type mismatch");
+			InternalException::Throw("Failed to cast binding to type - binding type mismatch");
 		}
 		return reinterpret_cast<TARGET &>(*this);
 	}
@@ -78,7 +78,7 @@ public:
 	template <class TARGET>
 	const TARGET &Cast() const {
 		if (binding_type != TARGET::TYPE) {
-			throw InternalException("Failed to cast binding to type - binding type mismatch");
+			InternalException::Throw("Failed to cast binding to type - binding type mismatch");
 		}
 		return reinterpret_cast<const TARGET &>(*this);
 	}
@@ -174,7 +174,8 @@ public:
 	unique_ptr<ParsedExpression> ParamToArg(ColumnRefExpression &col_ref);
 };
 
-enum class CTEType { CAN_BE_REFERENCED, CANNOT_BE_REFERENCED };
+//! CANNOT_BE_REFERENCED_RECURSIVE is the binding of a recursive CTE outside its recursive term
+enum class CTEType { CAN_BE_REFERENCED, CANNOT_BE_REFERENCED, CANNOT_BE_REFERENCED_RECURSIVE };
 struct CTEBinding;
 
 struct CTEBindState {
@@ -205,6 +206,7 @@ public:
 
 public:
 	bool CanBeReferenced() const;
+	bool IsRecursiveSelfReference() const;
 	bool IsReferenced() const;
 	void Reference();
 

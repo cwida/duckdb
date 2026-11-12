@@ -29,7 +29,7 @@ statement ok
 SET disabled_optimizers = 'top_n_window_elimination'
 
 statement ok
-CREATE OR REPLACE TABLE window_table AS SELECT * FROM compute_top_k(tbl, grp_col, val_col, 2) as rs(grp, res);
+CREATE OR REPLACE TABLE window_table AS SELECT * FROM compute_top_k('tbl', grp_col, val_col, 2) as rs(grp, res);
 
 statement ok
 SET disabled_optimizers = ''

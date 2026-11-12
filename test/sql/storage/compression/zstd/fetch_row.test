@@ -14,7 +14,7 @@ CREATE TABLE big_string (
 );
 
 statement ok
-pragma force_compression='zstd'
+SET force_compression='zstd'
 
 statement ok
 INSERT INTO big_string values (repeat('a', 8000), 1);

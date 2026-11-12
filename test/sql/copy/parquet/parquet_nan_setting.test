@@ -1,0 +1,265 @@
+# name: test/sql/copy/parquet/parquet_nan_setting.test
+# description: The parquet_can_have_nan setting is the default of the can_have_nan option of Parquet scans
+# group: [parquet]
+
+require parquet
+
+# one thread reads the row groups in file order, so that ORDER BY ... LIMIT prunes them the same way every run
+statement ok
+SET threads=1
+
+# both files are written by pyarrow 26 with rows (1, 1.0), (2, NaN), (3, 2.0) in k (INT32), d (DOUBLE) and f (FLOAT):
+# the min/max leave NaN out and there is no nan_count. nan_no_nan_count has the NaN in its first row group (the
+# default row_group_size=2), nan_no_nan_count_nan_last has it in its last
+query IIIII
+SELECT row_group_id, path_in_schema, stats_min_value, stats_max_value, stats_nan_count
+FROM parquet_metadata('{DATA_DIR}/parquet-testing/nan_no_nan_count.parquet')
+WHERE path_in_schema <> 'k'
+ORDER BY ALL
+----
+0	d	1.0	1.0	NULL
+0	f	1.0	1.0	NULL
+1	d	2.0	2.0	NULL
+1	f	2.0	2.0	NULL
+
+query IIIII
+SELECT row_group_id, path_in_schema, stats_min_value, stats_max_value, stats_nan_count
+FROM parquet_metadata('{DATA_DIR}/parquet-testing/nan_no_nan_count_nan_last.parquet')
+WHERE path_in_schema <> 'k'
+ORDER BY ALL
+----
+0	d	2.0	2.0	NULL
+0	f	2.0	2.0	NULL
+1	d	1.0	1.0	NULL
+1	f	1.0	1.0	NULL
+
+# views are bound when they are queried, so they are read with the setting in effect at that point
+statement ok
+CREATE VIEW nan_first AS FROM read_parquet('{DATA_DIR}/parquet-testing/nan_no_nan_count.parquet')
+
+statement ok
+CREATE VIEW nan_last AS FROM read_parquet('{DATA_DIR}/parquet-testing/nan_no_nan_count_nan_last.parquet')
+
+statement ok
+CREATE VIEW nan_first_explicit_false AS
+FROM read_parquet('{DATA_DIR}/parquet-testing/nan_no_nan_count.parquet', can_have_nan := false)
+
+statement ok
+CREATE VIEW nan_last_explicit_false AS
+FROM read_parquet('{DATA_DIR}/parquet-testing/nan_no_nan_count_nan_last.parquet', can_have_nan := false)
+
+statement ok
+CREATE VIEW nan_last_explicit_true AS
+FROM read_parquet('{DATA_DIR}/parquet-testing/nan_no_nan_count_nan_last.parquet', can_have_nan := true)
+
+# nan_count_bounds holds 1.0, NaN, NULL with min = max = 1.0 and nan_count = 1 - k numbers its rows from 1
+statement ok
+CREATE VIEW nan_counted AS
+SELECT file_row_number + 1 AS k, d FROM read_parquet('{DATA_DIR}/parquet-testing/nan_count_bounds.parquet')
+
+statement ok
+CREATE VIEW nan_counted_explicit_false AS
+SELECT file_row_number + 1 AS k, d FROM read_parquet('{DATA_DIR}/parquet-testing/nan_count_bounds.parquet', can_have_nan := false)
+
+# the query forms that lose the NaN row when the min/max are trusted - pruning (d <> 1, d > 1.5, d = NaN), folding
+# isnan(d) to false, max(d) answered from the statistics, and the Top-N filter that prunes the later row groups
+statement ok
+CREATE MACRO nan_forms(t) AS TABLE SELECT
+	(SELECT list(k ORDER BY k) FROM query_table(t) WHERE d <> 1) AS ne_1,
+	(SELECT list(k ORDER BY k) FROM query_table(t) WHERE d > 1.5) AS gt_1_5,
+	(SELECT list(k ORDER BY k) FROM query_table(t)
+	 WHERE NOT (CASE WHEN d IS NULL THEN NULL WHEN isnan(d) THEN false ELSE d < 3 END)) AS not_case,
+	(SELECT list(k ORDER BY k) FROM query_table(t) WHERE d = 'nan'::DOUBLE) AS eq_nan,
+	(SELECT max(d) FROM query_table(t)) AS max_d,
+	(SELECT k FROM query_table(t) ORDER BY d DESC LIMIT 1) AS top_k
+
+# the same rows, not read from Parquet
+statement ok
+CREATE VIEW nan_values AS FROM (VALUES (1, 1.0::DOUBLE), (2, 'nan'::DOUBLE), (3, 2.0::DOUBLE)) v(k, d)
+
+query IIIIII
+FROM nan_forms('nan_values')
+----
+[2, 3]	[2, 3]	[2]	[2]	nan	2
+
+# the setting is off by default: the bounds are trusted and the NaN row is lost (unchanged behavior)
+query I
+SELECT current_setting('parquet_can_have_nan')
+----
+false
+
+query IIIIII
+FROM nan_forms('nan_first')
+----
+[3]	[3]	NULL	NULL	2.0	2
+
+query IIIIII
+FROM nan_forms('nan_last')
+----
+[3]	[3]	NULL	NULL	2.0	3
+
+# can_have_nan := true of the scan still fixes it with the setting off
+query IIIIII
+FROM nan_forms('nan_last_explicit_true')
+----
+[2, 3]	[2, 3]	[2]	[2]	nan	2
+
+# a positive nan_count is used whatever the setting or the option say
+query IIIIII
+FROM nan_forms('nan_counted')
+----
+[2]	[2]	[2]	[2]	nan	2
+
+query IIIIII
+FROM nan_forms('nan_counted_explicit_false')
+----
+[2]	[2]	[2]	[2]	nan	2
+
+# with the setting on, a scan that does not set can_have_nan keeps the NaN row
+statement ok
+SET parquet_can_have_nan = true
+
+query IIIIII
+FROM nan_forms('nan_first')
+----
+[2, 3]	[2, 3]	[2]	[2]	nan	2
+
+query IIIIII
+FROM nan_forms('nan_last')
+----
+[2, 3]	[2, 3]	[2]	[2]	nan	2
+
+# ... also when the scan is not read_parquet itself, and over several files
+query I
+SELECT list(k ORDER BY k) FROM parquet_scan('{DATA_DIR}/parquet-testing/nan_no_nan_count.parquet') WHERE d <> 1
+----
+[2, 3]
+
+query I
+SELECT list(k ORDER BY k) FROM '{DATA_DIR}/parquet-testing/nan_no_nan_count.parquet' WHERE d > 1.5
+----
+[2, 3]
+
+query II
+SELECT list(k ORDER BY k), count(DISTINCT filename)
+FROM read_parquet(['{DATA_DIR}/parquet-testing/nan_no_nan_count.parquet', '{DATA_DIR}/parquet-testing/nan_no_nan_count_nan_last.parquet'])
+WHERE d <> 1
+----
+[2, 2, 3, 3]	2
+
+query I
+SELECT list(k ORDER BY k) FROM read_parquet('{DATA_DIR}/parquet-testing/nan_no_nan_count*.parquet', union_by_name := true) WHERE f > 1.5
+----
+[2, 2, 3, 3]
+
+# the optimizer statistics leave the upper bound open
+query II
+SELECT stats(d), stats(f) FROM nan_first LIMIT 1
+----
+{'has_no_null': true, 'has_null': false, 'max': nan, 'min': 1.0}	{'has_no_null': true, 'has_null': false, 'max': nan, 'min': 1.0}
+
+# an explicit can_have_nan := false of the scan takes precedence over the setting (the NaN row is lost again)
+query IIIIII
+FROM nan_forms('nan_first_explicit_false')
+----
+[3]	[3]	NULL	NULL	2.0	2
+
+query IIIIII
+FROM nan_forms('nan_last_explicit_false')
+----
+[3]	[3]	NULL	NULL	2.0	3
+
+query II
+SELECT stats(d), stats(f) FROM nan_first_explicit_false LIMIT 1
+----
+{'has_no_null': true, 'has_null': false, 'max': 2.0, 'min': 1.0}	{'has_no_null': true, 'has_null': false, 'max': 2.0, 'min': 1.0}
+
+# a positive nan_count is still used
+query IIIIII
+FROM nan_forms('nan_counted')
+----
+[2]	[2]	[2]	[2]	nan	2
+
+query IIIIII
+FROM nan_forms('nan_counted_explicit_false')
+----
+[2]	[2]	[2]	[2]	nan	2
+
+# and a nan_count of zero takes precedence over the setting: the bounds of a NaN-free column are trusted
+statement ok
+COPY (SELECT i::DOUBLE d, i::FLOAT f FROM range(10) t(i)) TO '{TEST_DIR}/nan_setting_nan_count_zero.parquet'
+
+query II
+SELECT path_in_schema, stats_nan_count FROM parquet_metadata('{TEST_DIR}/nan_setting_nan_count_zero.parquet') ORDER BY ALL
+----
+d	0
+f	0
+
+query II
+SELECT stats(d), stats(f) FROM read_parquet('{TEST_DIR}/nan_setting_nan_count_zero.parquet') LIMIT 1
+----
+{'has_no_null': true, 'has_null': false, 'max': 9.0, 'min': 0.0}	{'has_no_null': true, 'has_null': false, 'max': 9.0, 'min': 0.0}
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/nan_setting_nan_count_zero.parquet') WHERE isnan(d) OR d > 8.5
+----
+1
+
+# the metadata cache holds the file metadata, not statistics derived with the setting - toggling it with the cache on
+statement ok
+SET parquet_metadata_cache = true
+
+query IIIIII
+FROM nan_forms('nan_last')
+----
+[2, 3]	[2, 3]	[2]	[2]	nan	2
+
+statement ok
+SET parquet_can_have_nan = false
+
+query IIIIII
+FROM nan_forms('nan_last')
+----
+[3]	[3]	NULL	NULL	2.0	3
+
+statement ok
+SET parquet_can_have_nan = true
+
+query IIIIII
+FROM nan_forms('nan_last')
+----
+[2, 3]	[2, 3]	[2]	[2]	nan	2
+
+statement ok
+RESET parquet_metadata_cache
+
+# RESET restores the default
+statement ok
+RESET parquet_can_have_nan
+
+query IIIIII
+FROM nan_forms('nan_last')
+----
+[3]	[3]	NULL	NULL	2.0	3
+
+# the setting can also be set globally - for a connection that has not set it itself
+statement ok
+SET GLOBAL parquet_can_have_nan = true
+
+query IIIIII con_global
+FROM nan_forms('nan_last')
+----
+[2, 3]	[2, 3]	[2]	[2]	nan	2
+
+statement ok
+RESET GLOBAL parquet_can_have_nan
+
+query IIIIII con_global
+FROM nan_forms('nan_last')
+----
+[3]	[3]	NULL	NULL	2.0	3
+
+statement error
+SET parquet_can_have_nan = 'maybe'
+----
+<REGEX>:.*Could not convert string 'maybe' to BOOL.*

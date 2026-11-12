@@ -70,8 +70,10 @@ public:
 			    "Cannot create a string of size: '%d', the maximum supported string size is: '%d'", len,
 			    string_t::MAX_STRING_SIZE);
 		}
-		auto insert_pos = const_char_ptr_cast(allocator.Allocate(len));
-		return string_t(insert_pos, UnsafeNumericCast<uint32_t>(len));
+		// The caller fills the bytes and finalizes the prefix.
+		string_t result(UnsafeNumericCast<uint32_t>(len));
+		result.SetPointer(char_ptr_cast(allocator.Allocate(len)));
+		return result;
 	}
 
 	inline string_t AddBlobToHeap(const char *data, idx_t len) {

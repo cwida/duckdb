@@ -1,5 +1,6 @@
 #include "duckdb/parser/peg/autocomplete_catalog_provider.hpp"
 #include "duckdb/parser/peg/compiled_grammar.hpp"
+#include "duckdb/parser/peg/parser_packrat.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/parser/parser.hpp"
@@ -119,7 +120,7 @@ static vector<AutoCompleteSuggestion> ComputeSuggestions(vector<AutoCompleteCand
 		}
 		if (results.size() > fuzzy_suggestion_count) {
 			// after we exceed the "fuzzy_suggestion_count" we only accept exact suggestion matches
-			if (!StringUtil::StartsWith(StringUtil::Lower(result), lower_prefix)) {
+			if (!StringUtil::CIStartsWith(result, lower_prefix)) {
 				break;
 			}
 		}
@@ -163,9 +164,8 @@ bool ReplaceUnicodeSpaces(const string &query, string &new_query, const vector<U
 
 class AutoCompleteTokenizerBehavior : public TokenizerBehavior {
 public:
-	AutoCompleteTokenizerBehavior(const string &sql, vector<MatcherToken> &tokens,
-	                              vector<MatcherSuggestion> &suggestions_p)
-	    : TokenizerBehavior(sql, tokens), suggestions(suggestions_p) {
+	AutoCompleteTokenizerBehavior(const string &sql, vector<MatcherSuggestion> &suggestions_p)
+	    : TokenizerBehavior(sql), suggestions(suggestions_p) {
 		last_pos = 0;
 	}
 
@@ -198,24 +198,26 @@ vector<AutoCompleteSuggestion> GenerateAutoCompleteSuggestions(AutoCompleteCatal
                                                                AutoCompleteParameters &parameters) {
 	// tokenize the input
 	auto compiled_grammar = provider.GetCompiledGrammar();
-	vector<MatcherToken> tokens;
 	vector<MatcherSuggestion> suggestions;
 	ParseResultAllocator parse_allocator;
 	idx_t max_token_index = 0;
 	vector<UnicodeSpace> unicode_spaces;
 	string clean_sql;
 	const string &sql_ref = Parser::StripUnicodeSpaces(sql, clean_sql) ? clean_sql : sql;
-	AutoCompleteTokenizerBehavior behavior(sql_ref, tokens, suggestions);
+	AutoCompleteTokenizerBehavior behavior(sql_ref, suggestions);
 	if (!compiled_grammar->GetTokenizer().TokenizeInput(behavior)) {
 		return {};
 	}
 	if (suggestions.empty()) {
 		// no suggestions found during tokenizing
 		// run the root matcher
-		TokenIterator token_iterator(tokens);
+		TokenIterator token_iterator(behavior);
 		ArenaAllocator process_allocator(Allocator::DefaultAllocator());
+		// memoize match results so backtracking over unbalanced input stays polynomial
+		ArenaAllocator packrat_allocator(Allocator::DefaultAllocator());
+		ParserPackratCache packrat_cache(packrat_allocator, token_iterator.Position(), token_iterator.Size());
 		MatchContext match_context(suggestions, parse_allocator, process_allocator, max_token_index,
-		                           MatchMode::RECOGNIZE_ONLY, IdentifierCaseMode::PRESERVE_CASE);
+		                           MatchMode::RECOGNIZE_ONLY, IdentifierCaseMode::PRESERVE_CASE, &packrat_cache);
 		MatchState state(token_iterator, match_context);
 		compiled_grammar->ProgramMatcher().MatchParseResult(state);
 	}

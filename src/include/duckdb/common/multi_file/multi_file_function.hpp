@@ -27,6 +27,11 @@ namespace duckdb {
 struct MultiFileReaderInterface {
 	virtual ~MultiFileReaderInterface();
 
+	//! Whether the scans of this reader report operator.bytes_scanned
+	virtual bool ReportsBytesScanned() const {
+		return false;
+	}
+
 	virtual void InitializeInterface(ClientContext &context, MultiFileReader &reader, MultiFileList &file_list);
 	//! Set the default multi-file options of this reader - called before any option is parsed
 	virtual void InitializeFileOptions(MultiFileOptions &file_options);
@@ -43,6 +48,10 @@ struct MultiFileReaderInterface {
 	                                                         unique_ptr<BaseFileReaderOptions> options) = 0;
 	virtual void BindReader(ClientContext &context, vector<LogicalType> &return_types, vector<Identifier> &names,
 	                        MultiFileBindData &bind_data) = 0;
+	//! After a custom MultiFileReader::Bind, open the files for their statistics (maximum_files_for_stats) with the
+	//! reader options, which only the interface holds
+	virtual void ReadFilesForStatistics(ClientContext &context, MultiFileBindData &bind_data) {
+	}
 	//! Combine the schemas of a set of files that were bound individually into a single schema
 	//! The default implementation combines the return types of the files by name
 	virtual void CombineSchemas(ClientContext &context, const vector<shared_ptr<BaseUnionData>> &union_data,
@@ -165,6 +174,7 @@ public:
 			}
 			result->multi_file_reader->BindOptions(result->file_options, *result->file_list, result->types,
 			                                       result->names, result->reader_bind);
+			interface.ReadFilesForStatistics(context, *result);
 			bound_on_first_file = false;
 		} else {
 			result->file_options.AutoDetectHivePartitioning(*result->file_list, context);
@@ -228,7 +238,7 @@ public:
 			result->table_columns = IdentifiersToStrings(names);
 		}
 		result->columns = MultiFileColumnDefinition::ColumnsFromNamesAndTypes(result->names, result->types);
-		result->file_options.VerifyColumnStatistics(result->names, result->types);
+		result->file_options.VerifyColumnStatistics(context.GetContext(), result->names, result->types);
 		return std::move(result);
 	}
 
@@ -301,7 +311,7 @@ public:
 		file_options.auto_detect_hive_partitioning = false;
 
 		for (auto &[option_name, option_values] : input.info.options) {
-			if (multi_file_reader->ParseCopyOption(option_name, option_values, file_options)) {
+			if (multi_file_reader->ParseCopyOption(context.GetContext(), option_name, option_values, file_options)) {
 				continue;
 			}
 			if (interface->ParseCopyOption(context, option_name, option_values, *options, expected_names,
@@ -520,7 +530,7 @@ public:
 	static bool TryOpenNextFile(ClientContext &context, const MultiFileBindData &bind_data,
 	                            MultiFileGlobalState &global_state, unique_lock<mutex> &parallel_lock) {
 		if (!parallel_lock.owns_lock()) {
-			throw InternalException("parallel_lock is not held in TryOpenNextFile, this should not happen");
+			InternalException::Throw("parallel_lock is not held in TryOpenNextFile, this should not happen");
 		}
 
 		const auto file_lookahead_limit = TaskScheduler::GetScheduler(context).NumberOfThreads();
@@ -715,7 +725,7 @@ public:
 				if (current_reader_data.reader->TryInitializeScan(context, *gstate.global_state, *job.scan_state)) {
 					job.reader = current_reader_data.reader;
 					if (!job.reader) {
-						throw InternalException("MultiFileReader was moved");
+						InternalException::Throw("MultiFileReader was moved");
 					}
 					// The current reader has data left to be scanned
 					job.reader_data = current_reader_data;
@@ -835,12 +845,16 @@ public:
 
 		if (file_list.IsEmpty()) {
 			result->readers.clear();
-		} else if (!bind_data.union_readers.empty()) {
-			for (auto &reader : bind_data.union_readers) {
-				result->readers.push_back(make_uniq<MultiFileReaderData>(reader));
-			}
-			if (result->readers.size() != file_list.GetTotalFileCount()) {
-				result->readers.clear();
+		} else if (!bind_data.union_readers.empty() &&
+		           (bind_data.union_readers.size() == 1
+		                ? bind_data.union_readers[0]->GetFileName() == file_list.GetFirstFile().path
+		                : bind_data.union_readers.size() == file_list.GetTotalFileCount())) {
+			for (auto &file : bind_data.union_readers) {
+				if (bind_data.initial_reader && bind_data.initial_reader->GetFileName() == file->GetFileName()) {
+					result->readers.push_back(make_uniq<MultiFileReaderData>(std::move(bind_data.initial_reader)));
+				} else {
+					result->readers.push_back(make_uniq<MultiFileReaderData>(file));
+				}
 			}
 		} else if (bind_data.initial_reader) {
 			// we can only use the initial reader if it was constructed from the first file
@@ -863,12 +877,12 @@ public:
 			file_list.Scan(result->file_list_scan, file_name);
 			if (reader_data->union_data) {
 				if (file_name.path != reader_data->union_data->GetFileName()) {
-					throw InternalException("Mismatch in filename order and union reader order in multi file scan");
+					InternalException::Throw("Mismatch in filename order and union reader order in multi file scan");
 				}
 			} else {
 				D_ASSERT(reader_data->reader);
 				if (file_name.path != reader_data->reader->GetFileName()) {
-					throw InternalException("Mismatch in filename order and reader order in multi file scan");
+					InternalException::Throw("Mismatch in filename order and reader order in multi file scan");
 				}
 				auto init_result = InitializeReader(*reader_data, bind_data, input.column_indexes, input.filters,
 				                                    context, file_idx, *result);
@@ -905,7 +919,7 @@ public:
 				if (col_idx.IsVirtualColumn()) {
 					auto entry = bind_data.virtual_columns.find(column_id);
 					if (entry == bind_data.virtual_columns.end()) {
-						throw InternalException("MultiFileReader - virtual column definition not found");
+						InternalException::Throw("MultiFileReader - virtual column definition not found");
 					}
 					result->scanned_types.emplace_back(entry->second.type);
 				} else {
@@ -924,7 +938,7 @@ public:
 		auto &gstate = input.global_state->Cast<MultiFileGlobalState>();
 		if (data.finalize_batch_index.IsValid()) {
 			if (input.partition_info.RequiresPartitionColumns()) {
-				throw InternalException("Cannot get partition columns for FinalizeScan output");
+				InternalException::Throw("Cannot get partition columns for FinalizeScan output");
 			}
 			return OperatorPartitionData(data.finalize_batch_index.GetIndex());
 		}
@@ -963,8 +977,8 @@ public:
 
 		data.resuming_blocked_scan = res.GetResultType() == AsyncResultType::BLOCKED;
 		if (res.GetResultType() == AsyncResultType::BLOCKED) {
-			return data_p.HandleBlocked(res) ? MultiFileDecodeResult::RETURN_TO_CALLER
-			                                 : MultiFileDecodeResult::CONTINUE;
+			return data_p.HandleBlocked(context, res) ? MultiFileDecodeResult::RETURN_TO_CALLER
+			                                          : MultiFileDecodeResult::CONTINUE;
 		}
 
 		output.SetChildCardinality(scan_chunk.size());
@@ -1021,7 +1035,7 @@ public:
 			auto &job = *lstate.job;
 			auto scheduled = job.reader->ScheduleIO(context, *gstate.global_state, *job.scan_state);
 			lstate.job_state = MultiFileJobState::DECODE;
-			if (scheduled.GetResultType() == AsyncResultType::BLOCKED && input.HandleBlocked(scheduled)) {
+			if (scheduled.GetResultType() == AsyncResultType::BLOCKED && input.HandleBlocked(context, scheduled)) {
 				return ScanReadAheadAcquire::PARKED;
 			}
 		}
@@ -1139,11 +1153,9 @@ public:
 		auto &bind_data = input.bind_data->Cast<MultiFileBindData>();
 		auto &column_index = input.column_index;
 
-		if (!bind_data.initial_reader) {
-			// no reader
-			return nullptr;
-		}
-		// scanning single file and we have the metadata read already
+		optional_ptr<BaseUnionData> file = bind_data.union_readers.empty() ? nullptr : bind_data.union_readers[0].get();
+		// a scan whose schema was given opens no file at bind - the column_statistics option below still applies
+		const bool opened_a_file = file || bind_data.initial_reader;
 		if (column_index.IsVirtualColumn()) {
 			return nullptr;
 		}
@@ -1153,11 +1165,13 @@ public:
 		auto &file_row_number_idx = bind_data.reader_bind.file_row_number_idx;
 		if (file_row_number_idx.IsValid() && file_row_number_idx.GetIndex() == primary_index) {
 			// the column is read from the row number virtual column of the reader
-			if (bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES) {
+			if (!opened_a_file || bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES) {
 				return nullptr;
 			}
-			return bind_data.initial_reader->GetVirtualColumnStatistics(
-			    context, MultiFileReader::COLUMN_IDENTIFIER_FILE_ROW_NUMBER);
+			return bind_data.initial_reader
+			           ? bind_data.initial_reader->GetVirtualColumnStatistics(
+			                 context, MultiFileReader::COLUMN_IDENTIFIER_FILE_ROW_NUMBER)
+			           : file->GetVirtualColumnStatistics(context, MultiFileReader::COLUMN_IDENTIFIER_FILE_ROW_NUMBER);
 		}
 
 		// a hive partitioning column overrides any file column of the same name - the statistics stored in the
@@ -1171,7 +1185,8 @@ public:
 		// statistics the caller gave for the column (the "column_statistics" option) stand in for the files' -
 		// they describe the scan as a whole, which is what the optimizer asks about, where a file's describe one file
 		if (!bind_data.file_options.column_statistics.IsNull()) {
-			auto explicit_stats = bind_data.file_options.GetColumnStatistics(col_name, bind_data.types[primary_index]);
+			auto explicit_stats = bind_data.file_options.GetColumnStatistics(context.GetContext(), col_name,
+			                                                                 bind_data.types[primary_index]);
 			if (explicit_stats) {
 				if (!column_index.IsPushdownExtract()) {
 					return explicit_stats;
@@ -1185,26 +1200,61 @@ public:
 			// A physical shadow's bounds do not describe the generated path. Explicit scan statistics above still do.
 			return nullptr;
 		}
+		if (!opened_a_file) {
+			return nullptr;
+		}
 		// NOTE: we do not want to parse the file metadata for the sole purpose of getting column statistics
 		const bool multiple_files = bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES;
-		if (multiple_files && !bind_data.file_options.union_by_name) {
-			// multiple files, but no union_by_name: no luck!
+		// multiple files: only if every file was opened at bind (union_by_name, maximum_sample_files or
+		// maximum_files_for_stats)
+		if (multiple_files && bind_data.union_readers.size() != bind_data.file_list->GetTotalFileCount()) {
 			return nullptr;
 		}
-		auto result = bind_data.initial_reader->GetStatistics(context, col_name);
-		if (result && !bind_data.file_options.bound_schema.empty() &&
-		    !bind_data.MatchesPhysicalColumn(primary_index, col_name, result->GetType())) {
-			// Check the whole root before interpreting an extracted child's positional statistics.
-			return nullptr;
-		}
-		if (result && multiple_files) {
-			for (idx_t i = 1; i < bind_data.union_readers.size(); i++) {
-				auto &union_reader = *bind_data.union_readers[i];
-				auto stats = union_reader.GetStatistics(context, col_name);
-				if (!stats || result->GetType() != stats->GetType()) {
+		auto get_statistics = [&](BaseUnionData &reader) {
+			unique_ptr<BaseStatistics> stats;
+			try {
+				stats = reader.GetStatistics(context, col_name);
+			} catch (std::exception &ex) {
+				// statistics that cannot be decoded just mean there are none - the data itself may still read fine
+				if (ErrorData(ex).Type() == ExceptionType::INTERRUPT) {
+					throw;
+				}
+				return unique_ptr<BaseStatistics>();
+			}
+			if (stats && (stats->GetType() != bind_data.types[primary_index] ||
+			              (!bind_data.file_options.bound_schema.empty() &&
+			               !bind_data.MatchesPhysicalColumn(primary_index, col_name, stats->GetType())))) {
+				// Positional child statistics require the physical root to match the scan's output layout.
+				return unique_ptr<BaseStatistics>();
+			}
+			return stats;
+		};
+		unique_ptr<BaseStatistics> result;
+		if (multiple_files) {
+			for (auto &union_reader : bind_data.union_readers) {
+				auto rows = union_reader->TryGetCardinalityEstimate();
+				if (rows.IsValid() && rows.GetIndex() == 0) {
+					// an empty file has no statistics, and no values the merged bounds must cover
+					continue;
+				}
+				auto stats = get_statistics(*union_reader);
+				if (!stats) {
 					return nullptr;
 				}
-				result->Merge(*stats);
+				if (!result) {
+					result = std::move(stats);
+				} else {
+					result->Merge(*stats);
+				}
+			}
+		} else {
+			result = bind_data.initial_reader ? bind_data.initial_reader->GetStatistics(context, col_name)
+			                                  : file->GetStatistics(context, col_name);
+			if (result && (result->GetType() != bind_data.types[primary_index] ||
+			               (!bind_data.file_options.bound_schema.empty() &&
+			                !bind_data.MatchesPhysicalColumn(primary_index, col_name, result->GetType())))) {
+				// Positional child statistics require the physical root to match the scan's output layout.
+				return nullptr;
 			}
 		}
 		if (!result || !column_index.IsPushdownExtract()) {
@@ -1279,14 +1329,19 @@ public:
 	static unique_ptr<NodeStatistics> MultiFileCardinality(ClientContext &context, const FunctionData *bind_data) {
 		auto &data = bind_data->Cast<MultiFileBindData>();
 		if (IsEmptyResult(data)) {
-			return make_uniq<NodeStatistics>(idx_t(0));
+			return make_uniq<NodeStatistics>(idx_t(0), idx_t(0));
 		}
 		auto file_list_cardinality_estimate = data.file_list->GetCardinality(context);
 		if (file_list_cardinality_estimate) {
 			return file_list_cardinality_estimate;
 		}
-		if (data.file_options.union_by_name) {
-			// for UNION BY NAME - check if we can get a cardinality estimate from the (already opened) union readers
+		// a single file opened at bind for its schema keeps the format's own estimate (e.g. explicit_cardinality);
+		// files opened for their statistics alone (ReadFilesForStatistics after a custom Bind) are counted here
+		const bool opened_for_statistics =
+		    data.file_options.union_by_name || data.union_readers.size() > 1 || !data.initial_reader;
+		if (!data.union_readers.empty() && opened_for_statistics &&
+		    data.union_readers.size() == data.file_list->GetTotalFileCount()) {
+			// check if we can get a cardinality estimate from the (already opened) union readers
 			bool has_exact_cardinality = true;
 			idx_t cardinality = 0;
 			for (auto &union_data : data.union_readers) {
@@ -1298,7 +1353,15 @@ public:
 				cardinality += file_cardinality.GetIndex();
 			}
 			if (has_exact_cardinality) {
-				return make_uniq<NodeStatistics>(cardinality);
+				// the files' totals are the estimate; the maximum is what the format proves the scan reads, as a
+				// footer's total is not checked against the rows it holds
+				auto result = make_uniq<NodeStatistics>(cardinality);
+				auto format_stats = data.interface->GetCardinality(context, data, data.union_readers.size());
+				if (format_stats && format_stats->has_max_cardinality) {
+					result->has_max_cardinality = true;
+					result->max_cardinality = format_stats->max_cardinality;
+				}
+				return result;
 			}
 		}
 		// get the file count - for >500 files we allow an estimate
@@ -1370,6 +1433,9 @@ public:
 		if (input.local_state) {
 			auto &local = input.local_state->Cast<MultiFileLocalState>();
 			input.operator_metrics.rows_scanned = local.rows_scanned;
+		}
+		if (input.bind_data && input.bind_data->Cast<MultiFileBindData>().interface->ReportsBytesScanned()) {
+			input.operator_metrics.bytes_scanned_reported = true;
 		}
 		auto files_loaded = gstate.files_opened.load();
 		input.operator_metrics.AddExtraInfo("Total Files Read", std::to_string(files_loaded));

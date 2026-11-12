@@ -13,6 +13,12 @@
   "inherit_skip_tests": "test/configs/force_storage.json",
   "skip_tests": [
     {
+      "reason": "Explicit constraint check mode requires storage version v2.0.0 or higher.",
+      "paths": [
+        "test/optimizer/remove_redundant_order_keys_deferred.test"
+      ]
+    },
+    {
       "reason": "The AT clause is only serialized with storage version v2.0.0 or higher.",
       "paths": [
         "test/sql/json/test_deserialize_at_clause.test"
@@ -61,10 +67,15 @@
       "paths": [
         "test/sql/catalog/view/secure_view.test",
         "test/sql/optimizer/secure_view_explain.test",
+        "test/sql/optimizer/secure_view_join_filter_pushdown.test",
+        "test/sql/optimizer/secure_view_build_side.test_slow",
+        "test/sql/optimizer/secure_view_join_order.test",
         "test/sql/optimizer/secure_view_pushdown.test",
+        "test/sql/pragma/profiling/test_profiling_bytes_scanned_secure_view.test",
         "test/sql/optimizer/secure_view_statistics.test",
         "test/sql/sql_export/secure_view_sql_export.test",
-        "test/sql/sql_export/secure_view_predicates.test"
+        "test/sql/sql_export/secure_view_predicates.test",
+        "test/sql/optimizer/secure_view_fallible_functions.test"
       ]
     },
     {
@@ -72,7 +83,8 @@
       "paths": [
         "test/sql/sql_export/empty_aggregate_state.test",
         "test/sql/sql_export/mark_condition_shapes.test",
-        "test/sql/types/variant/variant_struct_field_subquery.test"
+        "test/sql/types/variant/variant_struct_field_subquery.test",
+        "test/sql/optimizer/tuple_cast_pushdown.test"
       ]
     }
   ]

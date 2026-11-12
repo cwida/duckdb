@@ -21,7 +21,7 @@ statement ok
 CREATE TABLE tbl AS SELECT range a, mod(range,10) b FROM range(10000);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # These optimizers introduce projections. I disable them for now
 statement ok
@@ -93,12 +93,12 @@ logical_opt	<!REGEX>:.*AGGREGATION.*JOIN.*PROJECTION.*
 query II
 EXPLAIN SELECT DISTINCT a FROM (SELECT a, b FROM (SELECT i AS a, i AS b FROM range(10) t(i)) t1) t2;
 ----
-logical_opt	<REGEX>:.*DISTINCT.*PROJECTION.*
+logical_opt	<REGEX>:.*AGGREGATE.*PROJECTION.*
 
 query II
-EXPLAIN SELECT * FROM range(5) INTERSECT SELECT * FROM range(5);
+EXPLAIN SELECT * FROM range(5) UNION SELECT * FROM range(5);
 ----
-logical_opt	<REGEX>:.*INTERSECT.*PROJECTION.*
+logical_opt	<REGEX>:.*UNION.*PROJECTION.*
 
 #Test that the projection on the RHS of a semi join is not removed, but the plan is optimized deeper
 query II
@@ -106,7 +106,7 @@ EXPLAIN
 select * from(select a.a, b.b from (select * from t1) a join (select * from t2) b on a.a = b.b) as join12
 semi join(select c.c, d.d as newD from (select * from t3) c join (select * from t4) d on c.c = d.d) as join34 on join12.a = join34.c;
 ----
-logical_opt	<!REGEX>:.*INNER.*PROJECTION.*
+logical_opt	<REGEX>:(?s).*Join Type: SEMI.*PROJECTION.*Join Type: INNER.*
 
 statement ok
 CREATE OR REPLACE TABLE t1 AS SELECT range i FROM range(10);

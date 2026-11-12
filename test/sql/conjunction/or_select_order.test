@@ -1,0 +1,110 @@
+# name: test/sql/conjunction/or_select_order.test
+# description: Test that OR filters return the correct rows in order
+# group: [conjunction]
+
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE ints AS
+SELECT
+    i,
+    CASE WHEN i % 13 = 0 THEN NULL ELSE i % 1000 END AS v,
+    CASE WHEN i % 17 = 0 THEN NULL ELSE i % 7 END AS w
+FROM range(10000) t(i);
+
+# v < 250 OR v >= 750
+query II
+SELECT (SELECT count(*) FROM ints WHERE v < 250 OR v >= 750), sum(((v < 250 OR v >= 750) IS TRUE)::INT) FROM ints
+----
+4616	4616
+
+query I
+SELECT list(i) = list(i ORDER BY i) FROM ints WHERE v < 250 OR v >= 750
+----
+true
+
+query I
+SELECT (SELECT sum(i) FROM ints WHERE v < 250 OR v >= 750) = sum(CASE WHEN (v < 250 OR v >= 750) IS TRUE THEN i ELSE 0 END) FROM ints
+----
+true
+
+# v < 100 OR v BETWEEN 300 AND 400 OR w = 3
+query II
+SELECT (SELECT count(*) FROM ints WHERE v < 100 OR v BETWEEN 300 AND 400 OR w = 3), sum(((v < 100 OR v BETWEEN 300 AND 400 OR w = 3) IS TRUE)::INT) FROM ints
+----
+2947	2947
+
+query I
+SELECT list(i) = list(i ORDER BY i) FROM ints WHERE v < 100 OR v BETWEEN 300 AND 400 OR w = 3
+----
+true
+
+query I
+SELECT (SELECT sum(i) FROM ints WHERE v < 100 OR v BETWEEN 300 AND 400 OR w = 3) = sum(CASE WHEN (v < 100 OR v BETWEEN 300 AND 400 OR w = 3) IS TRUE THEN i ELSE 0 END) FROM ints
+----
+true
+
+# (v < 500 AND w = 1) OR (v >= 500 AND w = 2)
+query II
+SELECT (SELECT count(*) FROM ints WHERE (v < 500 AND w = 1) OR (v >= 500 AND w = 2)), sum((((v < 500 AND w = 1) OR (v >= 500 AND w = 2)) IS TRUE)::INT) FROM ints
+----
+1243	1243
+
+query I
+SELECT list(i) = list(i ORDER BY i) FROM ints WHERE (v < 500 AND w = 1) OR (v >= 500 AND w = 2)
+----
+true
+
+query I
+SELECT (SELECT sum(i) FROM ints WHERE (v < 500 AND w = 1) OR (v >= 500 AND w = 2)) = sum(CASE WHEN ((v < 500 AND w = 1) OR (v >= 500 AND w = 2)) IS TRUE THEN i ELSE 0 END) FROM ints
+----
+true
+
+# (w = 1 AND v < 300) OR v % 9 = 0 OR (w = 4 AND v > 900)
+query II
+SELECT (SELECT count(*) FROM ints WHERE (w = 1 AND v < 300) OR v % 9 = 0 OR (w = 4 AND v > 900)), sum((((w = 1 AND v < 300) OR v % 9 = 0 OR (w = 4 AND v > 900)) IS TRUE)::INT) FROM ints
+----
+1476	1476
+
+query I
+SELECT list(i) = list(i ORDER BY i) FROM ints WHERE (w = 1 AND v < 300) OR v % 9 = 0 OR (w = 4 AND v > 900)
+----
+true
+
+query I
+SELECT (SELECT sum(i) FROM ints WHERE (w = 1 AND v < 300) OR v % 9 = 0 OR (w = 4 AND v > 900)) = sum(CASE WHEN ((w = 1 AND v < 300) OR v % 9 = 0 OR (w = 4 AND v > 900)) IS TRUE THEN i ELSE 0 END) FROM ints
+----
+true
+
+# ((v < 200 OR w = 6) AND i % 2 = 0) OR (v > 800 AND (w = 0 OR w IS NULL))
+query II
+SELECT (SELECT count(*) FROM ints WHERE ((v < 200 OR w = 6) AND i % 2 = 0) OR (v > 800 AND (w = 0 OR w IS NULL))), sum(((((v < 200 OR w = 6) AND i % 2 = 0) OR (v > 800 AND (w = 0 OR w IS NULL))) IS TRUE)::INT) FROM ints
+----
+1824	1824
+
+query I
+SELECT list(i) = list(i ORDER BY i) FROM ints WHERE ((v < 200 OR w = 6) AND i % 2 = 0) OR (v > 800 AND (w = 0 OR w IS NULL))
+----
+true
+
+query I
+SELECT (SELECT sum(i) FROM ints WHERE ((v < 200 OR w = 6) AND i % 2 = 0) OR (v > 800 AND (w = 0 OR w IS NULL))) = sum(CASE WHEN (((v < 200 OR w = 6) AND i % 2 = 0) OR (v > 800 AND (w = 0 OR w IS NULL))) IS TRUE THEN i ELSE 0 END) FROM ints
+----
+true
+
+# v IS NULL OR w IS NULL OR (v + w) % 11 = 0
+query II
+SELECT (SELECT count(*) FROM ints WHERE v IS NULL OR w IS NULL OR (v + w) % 11 = 0), sum(((v IS NULL OR w IS NULL OR (v + w) % 11 = 0) IS TRUE)::INT) FROM ints
+----
+2106	2106
+
+query I
+SELECT list(i) = list(i ORDER BY i) FROM ints WHERE v IS NULL OR w IS NULL OR (v + w) % 11 = 0
+----
+true
+
+query I
+SELECT (SELECT sum(i) FROM ints WHERE v IS NULL OR w IS NULL OR (v + w) % 11 = 0) = sum(CASE WHEN (v IS NULL OR w IS NULL OR (v + w) % 11 = 0) IS TRUE THEN i ELSE 0 END) FROM ints
+----
+true

@@ -60,7 +60,7 @@ static bool MapTryGet(const Value &map_value, const string &key, string &out) {
 	return false;
 }
 
-Value RequireResourceMap(const Value &value, const string &function_name, const string &column) {
+Value RequireResourceMap(Context &context, const Value &value, const string &function_name, const string &column) {
 	if (value.IsNull()) {
 		return value;
 	}
@@ -68,7 +68,7 @@ Value RequireResourceMap(const Value &value, const string &function_name, const 
 		throw InvalidInputException("external resource callback \"%s\" must return a MAP in its '%s' column, got %s",
 		                            function_name, column, value.type().ToString());
 	}
-	return value.DefaultCastAs(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	return value.CastAs(context, LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 }
 
 //===--------------------------------------------------------------------===//
@@ -128,7 +128,7 @@ static unique_ptr<FunctionData> CreateExternalResourceBind(ClientContext &contex
 			result->adopt_handle =
 			    np.second.type().id() == LogicalTypeId::MAP
 			        ? np.second
-			        : np.second.DefaultCastAs(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+			        : np.second.CastAs(context, LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 		} else if (key == "teardown_on_failure" && !np.second.IsNull()) {
 			result->teardown_on_failure = BooleanValue::Get(np.second);
 		} else if (key == "timeout_seconds" && !np.second.IsNull()) {
@@ -169,12 +169,21 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 	}
 	auto &bind_data = data_p.bind_data->Cast<CreateExternalResourceBindData>();
 
-	auto type = ExternalResourceTypeRegistry::Get(context).Lookup(bind_data.type_name);
+	// An unknown type autoloads the extension known to provide it, like an unknown function or file format does
+	auto type =
+	    ExternalResourceTypeRegistry::LookupOrAutoload(DatabaseInstance::GetDatabase(context), bind_data.type_name);
 	if (!type) {
+		auto extension = ExternalResourceTypeRegistry::ProvidingExtension(bind_data.type_name);
+		if (!extension.empty()) {
+			throw InvalidInputException("create_external_resource: unknown resource type \"%s\": it is provided by the "
+			                            "%s extension, which could not be autoloaded. Try: INSTALL AND LOAD %s;",
+			                            bind_data.type_name, extension, extension);
+		}
 		throw InvalidInputException("create_external_resource: unknown resource type \"%s\"", bind_data.type_name);
 	}
 	// Separate internal connection: the current connection's context lock is held here.
-	Connection con(DatabaseInstance::GetDatabase(context));
+	auto callback_con = CreateExternalResourceCallbackConnection(DatabaseInstance::GetDatabase(context), &context);
+	auto &con = *callback_con;
 	// Resolve the callbacks in the search path captured at registration, so unqualified names in a non-default
 	// schema/catalog keep resolving here (not against this fresh connection's default, nor the current path).
 	if (!type->search_path.empty()) {
@@ -191,7 +200,7 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 	const bool adopting = !bind_data.adopt_handle.IsNull();
 	Value handle;
 	if (adopting) {
-		handle = RequireResourceMap(bind_data.adopt_handle, bind_data.type_name, "handle");
+		handle = RequireResourceMap(context.GetContext(), bind_data.adopt_handle, bind_data.type_name, "handle");
 	} else {
 		if (type->create_function.empty()) {
 			throw InvalidInputException("create_external_resource: resource type \"%s\" has no create function",
@@ -211,7 +220,8 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 				throw InvalidInputException("create_external_resource: create function \"%s\" returned no rows",
 				                            type->create_function);
 			}
-			handle = RequireResourceMap(result->Collection().GetRows().GetValue(0, 0), type->create_function, "handle");
+			handle = RequireResourceMap(context.GetContext(), result->Collection().GetRows().GetValue(0, 0),
+			                            type->create_function, "handle");
 			if (handle.IsNull()) {
 				// the handle identifies the resource for status and teardown - without one it can never be destroyed
 				throw InvalidInputException("create_external_resource: create function \"%s\" returned a NULL handle",
@@ -304,7 +314,8 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 				                  bind_data.type_name);
 			}
 			if (status_state == "ready") {
-				status_result = RequireResourceMap(status_rows.GetValue(1, 0), type->status_function, "result");
+				status_result = RequireResourceMap(context.GetContext(), status_rows.GetValue(1, 0),
+				                                   type->status_function, "result");
 				ready = true;
 			} else if (has_deadline && std::chrono::steady_clock::now() >= deadline) {
 				throw IOException("create_external_resource: timed out awaiting readiness for \"%s\" (last state '%s')",
@@ -383,6 +394,8 @@ void CreateExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
 		    .Add("timeout_seconds", LogicalType::BIGINT)
 		    .Add("poll_interval_seconds", LogicalType::BIGINT);
 	});
+	// provisions an external resource per execution
+	fn.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn);
 }
 
@@ -430,7 +443,8 @@ static void DestroyExternalResourceFunction(ClientContext &context, TableFunctio
 	auto &bind_data = data_p.bind_data->Cast<DestroyExternalResourceBindData>();
 
 	// CALL <deleter_function>(<deleter_payload>) on a separate internal connection.
-	Connection con(DatabaseInstance::GetDatabase(context));
+	auto callback_con = CreateExternalResourceCallbackConnection(DatabaseInstance::GetDatabase(context), &context);
+	auto &con = *callback_con;
 	auto sql = "SELECT * FROM " + QualifiedName::Parse(bind_data.deleter_function).ToString() + "(" +
 	           bind_data.deleter_payload.ToSQLString() + ")";
 	// resource_type/name are unknown at this callsite (the deleter binding does not carry them).
@@ -450,12 +464,15 @@ static void DestroyExternalResourceFunction(ClientContext &context, TableFunctio
 }
 
 void DestroyExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("destroy_external_resource",
-	                              FunctionSignature()
-	                                  .AddPositionalOnly("deleter_function", LogicalType::VARCHAR)
-	                                  .AddPositionalOnly("payload", LogicalType::ANY),
-	                              DestroyExternalResourceFunction, DestroyExternalResourceBind,
-	                              DestroyExternalResourceInit));
+	TableFunction destroy_fun("destroy_external_resource",
+	                          FunctionSignature()
+	                              .AddPositionalOnly("deleter_function", LogicalType::VARCHAR)
+	                              .AddPositionalOnly("payload", LogicalType::ANY),
+	                          DestroyExternalResourceFunction, DestroyExternalResourceBind,
+	                          DestroyExternalResourceInit);
+	// tears down an external resource per execution
+	destroy_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(destroy_fun));
 }
 
 } // namespace duckdb

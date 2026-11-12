@@ -6,6 +6,7 @@
 
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
+#include "duckdb/common/logical_type_info.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
 #include "duckdb/function/table_macro_function.hpp"
@@ -81,14 +82,14 @@ MacroBindResult MacroFunction::BindMacroFunction(
 			const auto arg_bind_result = expr_binder.BindExpression(arg_copy, depth);
 			arg_type = arg_bind_result.HasError() ? LogicalType::UNKNOWN : arg_bind_result.expression->GetReturnType();
 		}
-		if (!arg.GetExpression().GetAlias().empty()) {
+		if (arg.HasName()) {
 			// Default argument
-			if (named_arguments.find(arg.GetExpression().GetAlias()) != named_arguments.end()) {
-				return MacroBindResult(StringUtil::Format("Macro %s() has named argument repeated %s", name,
-				                                          arg.GetExpression().GetAlias()));
+			if (named_arguments.find(arg.GetName()) != named_arguments.end()) {
+				return MacroBindResult(
+				    StringUtil::Format("Macro %s() has named argument repeated %s", name, arg.GetName()));
 			}
-			named_arg_types.insert(arg.GetExpression().GetAlias(), std::move(arg_type));
-			named_arguments[arg.GetExpression().GetAlias()] = std::move(arg.GetExpressionMutable());
+			named_arg_types.insert(arg.GetName(), std::move(arg_type));
+			named_arguments[arg.GetName()] = std::move(arg.GetExpressionMutable());
 		} else if (!named_arguments.empty()) {
 			return MacroBindResult(
 			    StringUtil::Format("Macro %s() has positional argument following named argument", name));
@@ -294,10 +295,20 @@ void MacroFunction::CopyProperties(MacroFunction &other) const {
 		other.default_parameters[kv.first] = kv.second->Copy();
 	}
 	other.types = types;
+	other.return_type = return_type;
 }
 
 vector<unique_ptr<ParsedExpression>>
 MacroFunction::GetPositionalParametersForSerialization(Serializer &serializer) const {
+	// this runs at the start of member serialization: reject a definition the target storage
+	// version cannot represent instead of silently dropping its fields
+	if (!serializer.ShouldSerialize(StorageVersion::V2_1_0)) {
+		if (return_type.id() != LogicalTypeId::UNKNOWN) {
+			throw SerializationException(
+			    "Cannot write a macro with a declared RETURNS type for a storage version below v2.1.0. Re-attach "
+			    "with (STORAGE_VERSION 'v2.1.0') or drop the macro");
+		}
+	}
 	vector<unique_ptr<ParsedExpression>> result;
 	if (serializer.ShouldSerialize(StorageVersion::V1_4_0)) {
 		// We serialize all positional parameters as-is
@@ -338,6 +349,26 @@ void MacroFunction::FinalizeDeserialization() {
 	}
 }
 
+bool MacroFunction::MatchesSignature(const vector<LogicalType> &signature) const {
+	if (parameters.size() != signature.size()) {
+		return false;
+	}
+	for (idx_t i = 0; i < signature.size(); i++) {
+		const auto member_type_id = i < types.size() ? types[i].id() : LogicalTypeId::UNKNOWN;
+		if (signature[i].id() == LogicalTypeId::ANY) {
+			// ANY names an untyped slot exactly, it does not match a typed slot
+			if (member_type_id != LogicalTypeId::UNKNOWN) {
+				return false;
+			}
+			continue;
+		}
+		if (member_type_id == LogicalTypeId::UNKNOWN || types[i] != signature[i]) {
+			return false;
+		}
+	}
+	return true;
+}
+
 string MacroFunction::ToSQL() const {
 	vector<string> param_strings;
 	for (idx_t param_idx = 0; param_idx < parameters.size(); param_idx++) {
@@ -352,7 +383,11 @@ string MacroFunction::ToSQL() const {
 		}
 		param_strings.emplace_back(std::move(param_string));
 	}
-	return StringUtil::Format("(%s) AS ", StringUtil::Join(param_strings, ", "));
+	string returns;
+	if (return_type.id() != LogicalTypeId::UNKNOWN) {
+		returns = " RETURNS " + return_type.ToString();
+	}
+	return StringUtil::Format("(%s)%s AS ", StringUtil::Join(param_strings, ", "), returns);
 }
 
 } // namespace duckdb

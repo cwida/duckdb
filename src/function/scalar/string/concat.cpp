@@ -186,7 +186,7 @@ void ConcatFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	auto &info = func_expr.BindInfo()->Cast<ConcatFunctionData>();
 	if (info.return_type.id() == LogicalTypeId::SQLNULL) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+		ConstantVector::SetNull(result, count_t(args.size()));
 		return;
 	}
 	if (info.return_type.id() == LogicalTypeId::LIST) {
@@ -332,6 +332,23 @@ unique_ptr<BaseStatistics> ListConcatStats(ClientContext &context, FunctionStati
 	for (idx_t i = 1; i < child_stats.size(); i++) {
 		stats->Merge(child_stats[i]);
 	}
+	// NULL lists are skipped, so the result length is the sum of the input lengths
+	idx_t min_length = 0;
+	optional_idx max_length = 0;
+	for (auto &child : child_stats) {
+		auto child_min = ListStats::MinListLength(child);
+		auto child_max = ListStats::MaxListLength(child);
+		if (!child.CanHaveNull() && child_min.IsValid()) {
+			min_length += child_min.GetIndex();
+		}
+		if (!max_length.IsValid() || !child_max.IsValid() ||
+		    child_max.GetIndex() > NumericLimits<idx_t>::Maximum() - max_length.GetIndex()) {
+			max_length = optional_idx();
+		} else {
+			max_length = max_length.GetIndex() + child_max.GetIndex();
+		}
+	}
+	ListStats::SetLengthBounds(*stats, min_length, max_length);
 	return stats;
 }
 

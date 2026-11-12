@@ -109,6 +109,12 @@
         "name": "distinct_validity",
         "type": "TupleDataValidityType",
         "default": "TupleDataValidityType::CAN_HAVE_NULL_VALUES"
+      },
+      {
+        "id": 208,
+        "name": "preserve_input_order",
+        "type": "bool",
+        "default": "false"
       }
     ],
     "constructor": [
@@ -551,12 +557,18 @@
         "id": 208,
         "name": "predicate",
         "type": "Expression*",
-        "status": "deleted"
+        "status": "read_only",
+        "deserialize_skip_assign": true
       }
     ],
     "constructor": [
       "join_type",
       "type"
+    ],
+    "finalize_deserialization": [
+      "if (predicate) {",
+      "\tresult->conditions.emplace_back(std::move(predicate));",
+      "}"
     ]
   },
   {

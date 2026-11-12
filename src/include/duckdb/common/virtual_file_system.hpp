@@ -76,6 +76,7 @@ public:
 	std::string GetName() const override;
 
 	void SetDisabledFileSystems(const vector<string> &names) override;
+	vector<string> GetDisabledFileSystems() override;
 	bool SubSystemIsDisabled(const string &name) override;
 	bool IsDisabledForPath(const string &path) override;
 
@@ -111,7 +112,8 @@ private:
 	// Return nullptr if compression is not involved, throw exception if compression is requested but no usable
 	// filesystem gets registered.
 	optional_ptr<FileSystem> FindCompressionFileSystem(FileSystemRegistry &registry,
-	                                                   const FileCompressionType &compression, const string &path);
+	                                                   const FileCompressionType &compression, const string &path,
+	                                                   bool for_writing);
 
 private:
 	mutex registry_lock;

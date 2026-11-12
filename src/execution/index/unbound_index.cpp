@@ -2,11 +2,13 @@
 
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/index/bound_index.hpp"
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
 #include "duckdb/planner/expression_binder/index_binder.hpp"
 #include "duckdb/storage/block_manager.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/index_storage_info.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table_io_manager.hpp"
 #include "duckdb/storage/checkpoint/table_index_writer.hpp"
 
@@ -56,20 +58,34 @@ void UnboundIndex::ResetStorage() {
 }
 
 IndexCheckpointResult UnboundIndex::Checkpoint(PartialBlockManager &, StorageVersion) {
+	if (HasBufferedReplays()) {
+		throw InternalException("Cannot checkpoint index %s: it has buffered operations that were not applied",
+		                        GetIndexName());
+	}
 	return {storage_info, nullptr};
 }
 
 unique_ptr<BoundIndex> UnboundIndex::Bind(IndexBinder &binder, const vector<LogicalType> &physical_column_types) {
 	auto bound_index = binder.BindIndex(*this);
-	storage_reclaimed = true;
+	// The bound index references the blocks of storage_info from here on, but this index keeps owning them until
+	// the buffered rows are replayed, so that a bind that fails during the replay leaves this index intact for a
+	// retry. Destroying the bound index would otherwise free the blocks this index still references.
 	if (HasBufferedReplays()) {
-		bound_index->ApplyBufferedReplays(physical_column_types, buffered_replays, mapped_column_ids);
+		try {
+			bound_index->ApplyBufferedReplays(physical_column_types, buffered_replays, mapped_column_ids);
+		} catch (...) {
+			bound_index->DisownStorage();
+			throw;
+		}
 	}
+	storage_reclaimed = true;
 	return bound_index;
 }
 
 void UnboundIndex::BufferChunk(DataChunk &table_chunk, Vector &row_ids, const BufferedIndexReplay replay_type) {
 	D_ASSERT(!column_ids.empty());
+
+	db.GetStorageManager().MarkBufferedIndexReplays();
 
 	// table_chunk is in physical table layout: data[j] holds the data of physical column j.
 	// Reference this index's own columns directly by their physical offset.

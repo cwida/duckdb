@@ -14,6 +14,7 @@
 #include "duckdb/optimizer/join_order/cardinality_estimator.hpp"
 #include "duckdb/optimizer/join_order/join_relation_set.hpp"
 #include "duckdb/optimizer/join_order/join_order_operator.hpp"
+#include "duckdb/optimizer/join_order/join_order_source_stats.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 #include "duckdb/parser/expression_map.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
@@ -24,6 +25,7 @@ namespace duckdb {
 
 class JoinOrderOptimizer;
 class FilterInfo;
+class RelationStatsExtractor;
 
 struct JoinOrderExtraction {
 	vector<unique_ptr<FilterInfo>> filters;
@@ -53,6 +55,11 @@ public:
 	                          vector<reference<LogicalOperator>> &filter_operators,
 	                          optional_ptr<LogicalOperator> parent = nullptr);
 
+	//! Collect an inner-join region without optimizing or rewriting its leaves.
+	bool ExtractJoinRelationsForEstimation(RelationStatsExtractor &extractor, LogicalOperator &op,
+	                                       vector<reference<LogicalOperator>> &filter_operators,
+	                                       optional_ptr<LogicalOperator> parent = nullptr);
+
 	//! for each join filter in the logical plan op, extract the relations that are referred to on
 	//! both sides of the join filter, along with the tables & indexes.
 	JoinOrderExtraction ExtractEdges(LogicalOperator &op, vector<reference<LogicalOperator>> &filter_operators,
@@ -67,18 +74,28 @@ public:
 	bool AddRelation(LogicalOperator &op, optional_ptr<LogicalOperator> parent, const RelationStats &stats);
 	//! Add an unnest relation which can come from a logical unnest or a logical get which has an unnest function
 	bool AddRelationWithChildren(JoinOrderOptimizer &optimizer, LogicalOperator &op, LogicalOperator &input_op,
-	                             optional_ptr<LogicalOperator> parent, RelationStats &child_stats,
-	                             optional_ptr<LogicalOperator> limit_op,
-	                             vector<reference<LogicalOperator>> &datasource_filters);
+	                             optional_ptr<LogicalOperator> parent, RelationStats &child_stats);
 	vector<unique_ptr<SingleJoinRelation>> GetRelations();
 
 	const vector<RelationStats> GetRelationStats();
+	void SetSourceStats(shared_ptr<const JoinOrderSourceStats> stats);
+	const join_column_sources_t &GetColumnSources() const;
 	//! A mapping of base table index -> index into relations array (relation number)
 	unordered_map<TableIndex, RelationIndex> relation_mapping;
 
 	void PrintRelationStats();
 
 private:
+	struct PendingRelation {
+		LogicalOperator &op;
+		optional_ptr<LogicalOperator> parent;
+		bool optimize_as_leaf;
+	};
+
+	bool ExtractJoinRelation(JoinOrderOptimizer &optimizer, PendingRelation relation,
+	                         vector<reference<LogicalOperator>> &filter_operators,
+	                         vector<PendingRelation> &pending_relations);
+	bool RegisterRelation(LogicalOperator &op, optional_ptr<LogicalOperator> parent, RelationStats stats);
 	optional_ptr<JoinRelationSet> GetJoinRelations(column_binding_set_t &column_bindings,
 	                                               JoinRelationSetManager &set_manager);
 	void GetColumnBindingsFromExpression(const Expression &expression, column_binding_set_t &column_bindings);
@@ -93,6 +110,8 @@ private:
 	reference_map_t<LogicalOperator, RelationIndex> operator_relations;
 	column_binding_map_t<ColumnBinding> normalized_bindings;
 	bool stats_complete = true;
+	shared_ptr<const JoinOrderSourceStats> source_stats;
+	join_column_sources_t column_sources;
 };
 
 } // namespace duckdb
