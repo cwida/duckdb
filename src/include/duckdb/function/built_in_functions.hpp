@@ -33,7 +33,7 @@ public:
 	void AddFunction(TableFunction function);
 	void AddFunction(CopyFunction function);
 
-	//! Registers the function as the string collation with the given name (as string_collation_<name>)
+	//! Registers the function as the string collation with the given name (as collate_<name>)
 	void AddCollation(const string &name, ScalarFunction function, bool combinable = false);
 
 private:

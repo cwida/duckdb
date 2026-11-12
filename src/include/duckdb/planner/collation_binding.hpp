@@ -45,10 +45,10 @@ struct CollationFunction {
 	bool combinable;
 };
 
-//! A string collation "x" is the scalar function "string_collation_x" in the system catalog: it takes a VARCHAR and
+//! A string collation "x" is the scalar function "collate_x" in the system catalog: it takes a VARCHAR and
 //! returns a VARCHAR or BLOB that is compared (and sorted) instead of the original string.
 struct CollationFunctions {
-	static constexpr const char *PREFIX = "string_collation_";
+	static constexpr const char *PREFIX = "collate_";
 
 	//! The name of the function that implements the collation with the given name
 	DUCKDB_API static string GetFunctionName(const string &collation);

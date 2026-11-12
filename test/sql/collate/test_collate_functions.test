@@ -1,15 +1,15 @@
-# name: test/sql/collate/test_string_collation_functions.test
-# description: Test that collations are registered as string_collation_<name> functions
+# name: test/sql/collate/test_collate_functions.test
+# description: Test that collations are registered as collate_<name> functions
 # group: [collate]
 
-# built-in collations are scalar functions with the string_collation_ prefix
+# built-in collations are scalar functions with the collate_ prefix
 query I
-SELECT string_collation_nocase('HeLLo')
+SELECT collate_nocase('HeLLo')
 ----
 hello
 
 query I
-SELECT string_collation_noaccent('café')
+SELECT collate_noaccent('café')
 ----
 cafe
 
@@ -21,7 +21,7 @@ noaccent
 nocase
 
 query I
-SELECT count(*) FROM duckdb_functions() WHERE function_name = 'string_collation_nocase'
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'collate_nocase'
 ----
 1
 
