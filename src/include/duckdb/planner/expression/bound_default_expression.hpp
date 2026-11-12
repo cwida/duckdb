@@ -17,8 +17,11 @@ public:
 	static constexpr const ExpressionClass TYPE = ExpressionClass::BOUND_DEFAULT;
 
 public:
-	explicit BoundDefaultExpression(LogicalType type = LogicalType())
+	explicit BoundDefaultExpression(LogicalType type = LogicalType(), Identifier alias_p = Identifier(),
+	                                QueryLocation location = QueryLocation())
 	    : Expression(ExpressionType::VALUE_DEFAULT, ExpressionClass::BOUND_DEFAULT, std::move(type)) {
+		alias = std::move(alias_p);
+		query_location = location;
 	}
 
 public:

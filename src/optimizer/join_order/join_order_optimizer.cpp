@@ -58,6 +58,14 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 		auto cardinality_estimator =
 		    CardinalityEstimator(query_graph_manager.set_manager, query_graph_manager.GetPredicateModel());
 		auto cost_model = CostModel(cardinality_estimator);
+		bool inner_region = true;
+		for (auto &join : query_graph_manager.GetJoinOperators()) {
+			inner_region &=
+			    join->type == JoinOrderOperatorType::INNER || join->type == JoinOrderOperatorType::CROSS_PRODUCT;
+		}
+		if (inner_region) {
+			cost_model.InitializeRecursiveMemory(context, query_graph_manager.relation_manager);
+		}
 
 		// Initialize a plan enumerator.
 		auto plan_enumerator =

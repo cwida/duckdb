@@ -23,7 +23,7 @@ SELECT count(*), count(DISTINCT nm) FROM probe p JOIN (SELECT c.ck, n.n_name || 
 100000	5
 
 statement ok
-PRAGMA threads=1
+SET threads=1
 
 query II
 SELECT count(*), count(DISTINCT nm) FROM probe p JOIN (SELECT c.ck, CASE WHEN c.ck < 5000000 OR random() < 0 THEN n.n_name ELSE 'other' END AS nm FROM customer c JOIN nation n ON c.nk = n.nk) b ON p.ck = b.ck;

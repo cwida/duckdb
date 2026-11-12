@@ -211,9 +211,6 @@ statement ok
 EXPORT DATABASE '{TEST_DIR}/export_test' (FORMAT CSV)
 
 statement ok
-PRAGMA disable_verification
-
-statement ok
 ROLLBACK
 
 statement ok

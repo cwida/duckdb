@@ -65,21 +65,6 @@ void CheckpointOnDetachSetting::OnSet(SettingCallbackInfo &info, Value &paramete
 }
 
 //===----------------------------------------------------------------------===//
-// Checkpoint Threshold
-//===----------------------------------------------------------------------===//
-void CheckpointThresholdSetting::ResetGlobal(DatabaseInstance *db, DBConfig &config) {
-	config.options.checkpoint_wal_size = DBConfigOptions().checkpoint_wal_size;
-}
-
-//===----------------------------------------------------------------------===//
-// Custom User Agent
-//===----------------------------------------------------------------------===//
-Value CustomUserAgentSetting::GetSetting(const ClientContext &context) {
-	auto &config = DBConfig::GetConfig(context);
-	return Value(config.options.custom_user_agent);
-}
-
-//===----------------------------------------------------------------------===//
 // Debug Checkpoint Abort
 //===----------------------------------------------------------------------===//
 void DebugCheckpointAbortSetting::OnSet(SettingCallbackInfo &info, Value &parameter) {

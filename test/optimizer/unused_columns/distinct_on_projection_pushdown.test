@@ -31,7 +31,7 @@ FROM
 ----
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT col0

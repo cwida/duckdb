@@ -402,7 +402,11 @@ BindResult ExpressionBinder::BindFunction(FunctionExpression &function, ScalarFu
 	// bind each child
 	vector<unique_ptr<Expression>> bound_children;
 	for (idx_t i = 0; i < function.GetArguments().size(); i++) {
-		bound_children.push_back(BindChild(function.GetArgumentsMutable()[i].GetExpressionMutable(), depth, error));
+		// legacy function calls cannot have named arguments, so we ignore the names of the arguments during binding
+		// and pass them all positionally. We do alias them by their name though, so that alias-capturing functions
+		// (e.g. struct_pack) still work and so that re-serializing to the old format can match arguments by name.
+		auto &arg = function.GetArgumentsMutable()[i];
+		bound_children.push_back(BindChild(arg.GetExpressionMutable(), depth, error, arg.GetName()));
 	}
 
 	if (error.HasError()) {
@@ -421,15 +425,6 @@ BindResult ExpressionBinder::BindFunction(FunctionExpression &function, ScalarFu
 	for (idx_t i = 0; i < function.GetArgumentsMutable().size(); i++) {
 		auto &arg = function.GetArgumentsMutable()[i];
 		auto bound_arg = std::move(bound_children[i]);
-
-		// legacy function calls cannot have named arguments, so we ignore the names of the arguments during binding
-		// and pass them all positionally. We do alias them by their name though, so that alias-capturing functions
-		// (e.g. struct_pack) still work and so that re-serializing to the old format can match arguments by name.
-		// Only override the alias when the argument actually carries a name, otherwise we would clobber the
-		// display alias the binding assigned (e.g. clearing a column reference's name to its raw binding).
-		if (!arg.GetName().empty()) {
-			bound_arg->SetAlias(arg.GetName());
-		}
 		if (function.IsLegacyFunctionCall()) {
 			arguments.emplace_back(string(), std::move(bound_arg));
 		} else {
@@ -444,12 +439,9 @@ BindResult ExpressionBinder::BindFunction(FunctionExpression &function, ScalarFu
 		ErrorData named_error;
 		vector<pair<Identifier, unique_ptr<Expression>>> named_arguments;
 		for (auto &arg : named_fallback) {
-			auto bound_arg = BindChild(arg.GetExpressionMutable(), depth, named_error);
+			auto bound_arg = BindChild(arg.GetExpressionMutable(), depth, named_error, arg.GetName());
 			if (named_error.HasError()) {
 				break;
-			}
-			if (!arg.GetName().empty()) {
-				bound_arg->SetAlias(arg.GetName());
 			}
 			named_arguments.emplace_back(arg.GetName(), std::move(bound_arg));
 		}

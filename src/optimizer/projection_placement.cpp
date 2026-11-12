@@ -20,6 +20,9 @@ namespace duckdb {
 namespace {
 
 constexpr double MINIMUM_COST_RATIO = 0.75;
+//! An expression up to this cost (e.g. a comparison of a numeric column with a constant) is not moved below joins
+//! unless that frees one of its inputs
+constexpr idx_t MAXIMUM_CHEAP_EXPRESSION_COST = 20;
 
 struct PathStep {
 	reference<LogicalOperator> op;
@@ -775,6 +778,11 @@ static bool FindPlacement(LogicalProjection &projection, idx_t expression_index,
 		return false;
 	}
 	auto exclusive_input_width = GetExclusiveInputWidth(reading_expressions, input_bindings);
+	if (exclusive_input_width == 0 && ExpressionHeuristics::Cost(expression) <= MAXIMUM_CHEAP_EXPRESSION_COST) {
+		// the other expressions of the projection still read every input, so moving a cheap expression only adds
+		// a column that the joins below have to carry
+		return false;
+	}
 	idx_t output_width;
 	if (!GetBindingWidth(ColumnBinding(projection.table_index, ProjectionIndex(expression_index)),
 	                     expression.GetReturnType(), statistics_map, output_width)) {
@@ -951,8 +959,7 @@ static void ApplyPlacementGroup(Optimizer &optimizer, column_binding_map_t<uniqu
 		auto expression_index = group.placements[i].expression_index;
 		auto alias = upper_projection.expressions[expression_index]->GetAlias();
 		auto replacement = make_uniq<BoundColumnRefExpression>(
-		    upper_projection.expressions[expression_index]->GetReturnType(), computed_bindings[i]);
-		replacement->SetAlias(std::move(alias));
+		    std::move(alias), upper_projection.expressions[expression_index]->GetReturnType(), computed_bindings[i]);
 		upper_projection.expressions[expression_index] = std::move(replacement);
 	}
 }

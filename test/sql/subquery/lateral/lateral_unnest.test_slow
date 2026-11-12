@@ -51,9 +51,6 @@ SELECT (SELECT SUM(k) FROM UNNEST(l) t(k)) FROM (SELECT ARRAY [1, 2, 3]) t(l)
 ----
 6
 
-statement ok
-PRAGMA disable_verification
-
 query II
 SELECT l, (SELECT SUM(k) FROM UNNEST(l) t(k)) AS sum FROM (SELECT ARRAY [1, 2, 3] UNION ALL SELECT ARRAY[4, 5, NULL] UNION ALL SELECT ARRAY[]::INT[]) t(l) ORDER BY sum NULLS LAST
 ----

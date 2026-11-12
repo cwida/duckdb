@@ -8,16 +8,16 @@ SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 # Test read_csv with user defined variable
 
 statement ok
-pragma threads=4
+SET threads=4
 
 statement ok
 PRAGMA enable_profiling
 
 statement ok
-PRAGMA profiling_output='{TEST_DIR}/test.txt'
+SET profiling_output='{TEST_DIR}/test.txt'
 
 statement ok
-PRAGMA profiling_mode = detailed
+SET profiling_mode = 'detailed'
 
 statement ok
 CREATE TABLE integers(i INTEGER)
@@ -44,7 +44,7 @@ statement ok
 SELECT CASE a WHEN 42 THEN 100 WHEN 43 THEN 200 ELSE 300 END FROM exprtest
 
 statement ok
-PRAGMA profiling_output='{TEST_DIR}/test_2.txt'
+SET profiling_output='{TEST_DIR}/test_2.txt'
 
 # At least one of the lines should contain "Total Time" to verify that we're getting profiling timings
 query T

@@ -115,6 +115,20 @@ static bool TinyintToBigintOffsetCast(Vector &source, Vector &result, idx_t coun
 	return VectorCastHelpers::TemplatedCastLoop<int8_t, int64_t, OffsetCast>(source, result, count, parameters);
 }
 
+static unique_ptr<BaseStatistics> TinyintToBigintOffsetStatistics(CastStatisticsInput &input) {
+	if (input.child_stats.GetStatsType() != StatisticsType::NUMERIC_STATS ||
+	    !NumericStats::HasMinMax(input.child_stats)) {
+		return nullptr;
+	}
+	auto result = NumericStats::CreateEmpty(input.target_type);
+	result.CopyBase(input.child_stats);
+	auto min = NumericStats::Min(input.child_stats).GetValue<int8_t>();
+	auto max = NumericStats::Max(input.child_stats).GetValue<int8_t>();
+	NumericStats::SetMin(result, Value::BIGINT(static_cast<int64_t>(min) + 1));
+	NumericStats::SetMax(result, Value::BIGINT(static_cast<int64_t>(max) + 1));
+	return result.ToUnique();
+}
+
 static unique_ptr<BaseStatistics> BigintToTinyintOffsetStatistics(CastStatisticsInput &input) {
 	if (input.child_stats.GetStatsType() != StatisticsType::NUMERIC_STATS ||
 	    !NumericStats::HasMinMax(input.child_stats)) {
@@ -356,6 +370,25 @@ TEST_CASE("Join filters preserve registered integer casts", "[optimizer][cast]")
 	}
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(CHECK_COLUMN(result, 0, {10000}));
+}
+
+TEST_CASE("Join statistics filters preserve registered widening casts", "[optimizer][cast]") {
+	DuckDB db;
+	Connection connection(db);
+	REQUIRE_NO_FAIL(connection.Query("CREATE TABLE probe(a TINYINT)"));
+	REQUIRE_NO_FAIL(connection.Query("INSERT INTO probe VALUES (1), (100)"));
+	REQUIRE_NO_FAIL(connection.Query("CREATE TABLE build(b BIGINT)"));
+	REQUIRE_NO_FAIL(connection.Query("INSERT INTO build VALUES (101), (102)"));
+
+	BoundCastInfo custom_cast(TinyintToBigintOffsetCast);
+	custom_cast.SetStatisticsCallback(TinyintToBigintOffsetStatistics);
+	CastFunctionSet::Get(*connection.context)
+	    .RegisterCastFunction(LogicalType::TINYINT, LogicalType::BIGINT, std::move(custom_cast));
+	REQUIRE_NO_FAIL(
+	    connection.Query("SET disabled_optimizers='join_order,build_side_probe_side,compressed_materialization'"));
+	auto result = connection.Query("SELECT count(*) FROM probe JOIN build ON CAST(a AS BIGINT) = b");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 }
 
 TEST_CASE("Compressed materialization uses value-preserving default casts", "[optimizer][cast]") {

@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-pragma explain_output='physical_only'
+SET explain_output='physical_only'
 
 query II
 explain with recursive

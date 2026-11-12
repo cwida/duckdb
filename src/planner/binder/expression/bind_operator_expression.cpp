@@ -227,12 +227,11 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 				if (uinteger_value) {
 					// Array extraction: if the cast fails it's definitely out-of-bounds for a JSON array
 					auto index = UIntegerValue::Get(*uinteger_value);
-					const_exp.SetValue(StringUtil::Format("$[%lld]", index));
-					const_exp.SetReturnType(LogicalType::VARCHAR);
+					children[1] = const_exp.WithValue(Value(StringUtil::Format("$[%lld]", index)));
 				} else if (const_exp.GetReturnType().id() == LogicalType::VARCHAR) {
 					// Field extraction
-					const_exp.SetValue(StringUtil::Format("$.\"%s\"", const_exp.GetValue().ToString()));
-					const_exp.SetReturnType(LogicalType::VARCHAR);
+					children[1] =
+					    const_exp.WithValue(Value(StringUtil::Format("$.\"%s\"", const_exp.GetValue().ToString())));
 				}
 			}
 		} else if (b_exp_type.id() == LogicalTypeId::VARIANT && children.size() == 2) {
@@ -241,8 +240,8 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 			if (i_exp.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 				auto &const_exp = i_exp.Cast<BoundConstantExpression>();
 				if (!const_exp.GetValue().IsNull() && const_exp.GetReturnType().IsIntegral()) {
-					const_exp.SetValue(const_exp.GetValue().CastAs(context, LogicalType::UINTEGER, true));
-					const_exp.SetReturnType(LogicalType::UINTEGER);
+					children[1] =
+					    const_exp.WithValue(const_exp.GetValue().CastAs(context, LogicalType::UINTEGER, true));
 				}
 			}
 		} else {
@@ -279,8 +278,7 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 			if (i_exp.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 				auto &const_exp = i_exp.Cast<BoundConstantExpression>();
 				if (!const_exp.GetValue().IsNull()) {
-					const_exp.SetValue(StringUtil::Format("%s", const_exp.GetValue().ToString()));
-					const_exp.SetReturnType(LogicalType::VARCHAR);
+					children[1] = const_exp.WithValue(Value(StringUtil::Format("%s", const_exp.GetValue().ToString())));
 				}
 			}
 		} else if (extract_expr_type.IsJSONType()) {
@@ -289,8 +287,8 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 			if (name_exp.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 				auto &const_exp = name_exp.Cast<BoundConstantExpression>();
 				if (!const_exp.GetValue().IsNull()) {
-					const_exp.SetValue(StringUtil::Format("$.\"%s\"", const_exp.GetValue().ToString()));
-					const_exp.SetReturnType(LogicalType::VARCHAR);
+					children[1] =
+					    const_exp.WithValue(Value(StringUtil::Format("$.\"%s\"", const_exp.GetValue().ToString())));
 				}
 			}
 		} else if (extract_expr_type.id() == LogicalTypeId::GEOMETRY) {

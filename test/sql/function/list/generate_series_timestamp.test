@@ -81,9 +81,6 @@ statement error
 SELECT range('-infinity'::TIMESTAMP, '290309-12-22 (BC) 00:00:00'::TIMESTAMP, INTERVAL '1 DAY');
 ----
 
-statement ok
-PRAGMA disable_verification
-
 # > vector size
 query I
 SELECT count(*) FROM (

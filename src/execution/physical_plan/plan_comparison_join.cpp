@@ -1,4 +1,3 @@
-#include "duckdb/execution/operator/join/perfect_hash_join_executor.hpp"
 #include "duckdb/execution/operator/join/physical_blockwise_nl_join.hpp"
 #include "duckdb/execution/operator/join/physical_cross_product.hpp"
 #include "duckdb/execution/operator/join/physical_hash_join.hpp"
@@ -21,8 +20,8 @@
 
 namespace duckdb {
 static void RewriteJoinCondition(unique_ptr<Expression> &root_expr, idx_t offset) {
-	ExpressionIterator::VisitExpressionMutable<BoundReferenceExpression>(
-	    root_expr, [&](BoundReferenceExpression &ref, unique_ptr<Expression> &expr) { ref.IndexMutable() += offset; });
+	root_expr = ExpressionIterator::PreorderReplace<BoundReferenceExpression>(
+	    std::move(root_expr), [&](const BoundReferenceExpression &ref) { return ref.WithIndex(ref.Index() + offset); });
 }
 
 static optional_ptr<PhysicalRecursiveCTEStateScan>

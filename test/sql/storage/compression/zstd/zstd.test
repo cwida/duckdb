@@ -12,7 +12,7 @@ SET storage_compatibility_version='v1.2.0'
 load {TEST_DIR}/test_zstd_storage.db
 
 statement ok
-PRAGMA force_compression = 'zstd'
+SET force_compression = 'zstd'
 
 statement ok
 CREATE TABLE test (a VARCHAR);

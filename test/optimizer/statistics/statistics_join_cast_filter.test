@@ -1,0 +1,227 @@
+# name: test/optimizer/statistics/statistics_join_cast_filter.test
+# description: Join statistics derive filters through invertible numeric casts
+# group: [statistics]
+
+statement ok
+CREATE TABLE inventory AS
+SELECT (i % 1000)::INTEGER quantity, (i % 100)::INTEGER item FROM range(10000) r(i)
+UNION ALL VALUES (NULL, 1), (5, NULL);
+
+statement ok
+CREATE TABLE sales AS
+SELECT (1 + (i * 7) % 100)::BIGINT quantity, (i % 100)::INTEGER item FROM range(1000) r(i)
+UNION ALL VALUES (NULL, 1), (50, NULL);
+
+statement ok
+CREATE TABLE inventory_bigint AS SELECT quantity::BIGINT quantity, item FROM inventory;
+
+statement ok
+CREATE TABLE sales_integer AS SELECT quantity::INTEGER quantity, item FROM sales;
+
+statement ok
+CREATE TABLE sales_empty (quantity BIGINT, item INTEGER);
+
+# the condition is CAST(quantity AS BIGINT) < quantity: the sales maximum bounds the inventory quantity
+query II
+EXPLAIN SELECT count(*) FROM inventory i JOIN sales s ON i.item = s.item AND i.quantity < s.quantity;
+----
+physical_plan	<REGEX>:.*quantity <= 100.*
+
+query II
+EXPLAIN SELECT count(*) FROM inventory i SEMI JOIN sales s ON i.item = s.item AND s.quantity > i.quantity;
+----
+physical_plan	<REGEX>:.*quantity <= 100.*
+
+query II
+EXPLAIN SELECT count(*) FROM inventory i JOIN sales s ON i.quantity < s.quantity;
+----
+physical_plan	<REGEX>:.*quantity <= 100.*
+
+# a narrowing cast does not keep every value
+query II
+EXPLAIN SELECT count(*) FROM inventory_bigint i JOIN sales_integer s
+ON i.item = s.item AND i.quantity::INTEGER < s.quantity;
+----
+physical_plan	<!REGEX>:.*quantity <= 100.*
+
+query I
+SELECT count(*) FROM inventory i JOIN sales s ON i.item = s.item AND i.quantity < s.quantity;
+----
+5100
+
+query I
+SELECT count(*) FROM inventory i SEMI JOIN sales s ON i.item = s.item AND s.quantity > i.quantity;
+----
+510
+
+query IIII
+SELECT count(*), count(i.quantity), sum(i.quantity), sum(s.quantity)
+FROM inventory i JOIN sales s ON i.quantity < s.quantity;
+----
+506451	506451	16682005	33910400
+
+query I
+SELECT count(*) FROM inventory_bigint i JOIN sales_integer s
+ON i.item = s.item AND i.quantity::INTEGER < s.quantity;
+----
+5100
+
+query I
+SELECT count(*) FROM inventory i JOIN sales_empty s ON i.item = s.item AND i.quantity < s.quantity;
+----
+0
+
+query I
+SELECT count(*) FROM sales_empty s SEMI JOIN inventory i ON i.item = s.item AND s.quantity > i.quantity;
+----
+0
+
+# Preserve the cast in the join condition and keep the probe on the left.
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization';
+
+statement ok
+CREATE TABLE decimal_probe AS
+SELECT v::DECIMAL(8,2) amount FROM (VALUES (0), (1.23), (1.24), (1.25), (10), (NULL)) t(v);
+
+# Widening the decimal width or scale uses the same bound conversion as integral casts.
+foreach target_type DECIMAL(12,2) DECIMAL(12,3) DECIMAL(24,4)
+
+statement ok
+CREATE OR REPLACE TABLE decimal_build AS
+SELECT v::{target_type} amount FROM (VALUES (1.23), (1.25), (NULL)) t(v);
+
+query II
+EXPLAIN SELECT count(*) FROM decimal_probe p JOIN decimal_build b ON p.amount < b.amount;
+----
+physical_plan	<REGEX>:.*amount <= 1.25.*
+
+query I
+SELECT count(*) FROM decimal_probe p JOIN decimal_build b ON p.amount < b.amount;
+----
+4
+
+query II
+EXPLAIN SELECT count(*) FROM decimal_probe p JOIN decimal_build b ON p.amount > b.amount;
+----
+physical_plan	<REGEX>:.*amount >= 1.23.*
+
+query I
+SELECT count(*) FROM decimal_probe p JOIN decimal_build b ON p.amount > b.amount;
+----
+4
+
+endloop
+
+# Lossless numeric conversions also include small decimals to floating point and FLOAT to DOUBLE.
+foreach source_type DECIMAL(4,2) FLOAT
+
+statement ok
+CREATE OR REPLACE TABLE small_probe AS SELECT amount::{source_type} amount FROM decimal_probe;
+
+foreach target_type FLOAT DOUBLE
+
+statement ok
+CREATE OR REPLACE TABLE floating_build AS
+SELECT v::{target_type} amount FROM (VALUES (1.23), (1.25), (NULL)) t(v);
+
+query II
+EXPLAIN SELECT count(*) FROM small_probe p JOIN floating_build b ON p.amount < b.amount;
+----
+physical_plan	<REGEX>:.*amount <= 1.25.*
+
+query I
+SELECT count(*) FROM small_probe p JOIN floating_build b ON p.amount < b.amount;
+----
+4
+
+endloop
+
+endloop
+
+# Inclusive bounds remain conservative when rounded; the join still tests the exact comparison.
+statement ok
+CREATE OR REPLACE TABLE decimal_build AS
+SELECT v::DECIMAL(12,3) amount FROM (VALUES (1.234), (1.246), (NULL)) t(v);
+
+query II
+EXPLAIN SELECT count(*) FROM decimal_probe p JOIN decimal_build b ON p.amount < b.amount;
+----
+physical_plan	<REGEX>:.*amount <= 1.25.*
+
+query I
+SELECT count(*) FROM decimal_probe p JOIN decimal_build b ON p.amount < b.amount;
+----
+5
+
+query II
+EXPLAIN SELECT count(*) FROM decimal_probe p JOIN decimal_build b ON p.amount > b.amount;
+----
+physical_plan	<REGEX>:.*amount >= 1.23.*
+
+query I
+SELECT count(*) FROM decimal_probe p JOIN decimal_build b ON p.amount > b.amount;
+----
+5
+
+# Reuse the existing proof for integral casts to decimal and floating-point types.
+foreach target_type DECIMAL(12,2) DOUBLE
+
+statement ok
+CREATE OR REPLACE TABLE numeric_sales AS SELECT quantity::{target_type} quantity, item FROM sales;
+
+query II
+EXPLAIN SELECT count(*) FROM inventory i JOIN numeric_sales s ON i.item = s.item AND i.quantity < s.quantity;
+----
+physical_plan	<REGEX>:.*quantity <= 100.*
+
+query I
+SELECT count(*) FROM inventory i JOIN numeric_sales s ON i.item = s.item AND i.quantity < s.quantity;
+----
+5100
+
+endloop
+
+# Reducing the decimal scale is not invertible.
+statement ok
+CREATE TABLE decimal_narrow_build AS
+SELECT v::DECIMAL(8,1) amount FROM (VALUES (1.2), (1.3), (NULL)) t(v);
+
+query II
+EXPLAIN SELECT count(*) FROM decimal_probe p JOIN decimal_narrow_build b ON p.amount::DECIMAL(8,1) < b.amount;
+----
+physical_plan	<!REGEX>:.*amount <= 1.3.*
+
+query I
+SELECT count(*) FROM decimal_probe p JOIN decimal_narrow_build b ON p.amount::DECIMAL(8,1) < b.amount;
+----
+4
+
+query I
+SELECT count(*) FROM decimal_probe p JOIN decimal_narrow_build b ON try_cast(p.amount AS DECIMAL(8,1)) < b.amount;
+----
+4
+
+# Direct floating-point columns retain DuckDB's ordering of infinities and NaN.
+statement ok
+CREATE TABLE floating_probe AS
+SELECT v::DOUBLE amount FROM (VALUES ('-inf'), ('-1'), ('0'), ('1'), ('inf'), ('nan'), (NULL)) t(v);
+
+statement ok
+CREATE OR REPLACE TABLE floating_build AS
+SELECT v::DOUBLE amount FROM (VALUES (0), (1), (NULL)) t(v);
+
+query I
+SELECT count(*) FROM floating_probe p JOIN floating_build b ON p.amount < b.amount;
+----
+5
+
+query I
+SELECT count(*) FROM floating_probe p JOIN floating_build b ON p.amount > b.amount;
+----
+5
+
+query I
+SELECT count(*) FROM floating_probe p JOIN floating_build b ON p.amount = b.amount;
+----
+2

@@ -3,7 +3,7 @@
 # group: [fuzz]
 
 statement ok
-PRAGMA threads=1
+SET threads=1
 
 statement ok
 create view strings as (with recursive t(a) as (select 1 union select a+1 from t where a < 3) select * from t order by a);

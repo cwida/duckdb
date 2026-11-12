@@ -101,9 +101,6 @@ INSERT INTO integers VALUES (1), (2), (3), (4), (5);
 statement ok
 CREATE SEQUENCE seq START 3;
 
-statement ok
-PRAGMA disable_verification;
-
 query I
 SELECT * FROM integers LIMIT nextval('seq');
 ----

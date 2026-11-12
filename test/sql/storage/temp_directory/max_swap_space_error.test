@@ -22,7 +22,7 @@ SET force_compression='uncompressed';
 
 # Ensure the temp_directory is used
 statement ok
-PRAGMA memory_limit='4MB'
+SET memory_limit='4MB'
 
 # Zero blocks
 statement ok
@@ -61,7 +61,7 @@ statement ok
 set max_temp_directory_size='4MB'
 
 statement ok
-pragma threads=2;
+SET threads=2;
 
 statement ok
 set preserve_insertion_order=true;

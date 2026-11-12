@@ -4,7 +4,7 @@
 load {TEST_DIR}/test_roaring2.db readwrite v1.2.0
 
 statement ok
-PRAGMA force_compression='roaring';
+SET force_compression='roaring';
 
 statement ok
 set checkpoint_threshold = '10mb';

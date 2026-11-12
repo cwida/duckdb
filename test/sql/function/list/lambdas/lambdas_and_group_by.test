@@ -3,9 +3,6 @@
 # group: [lambdas]
 
 statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
-statement ok
 CREATE TABLE tbl (tag_product VARCHAR);
 
 statement ok

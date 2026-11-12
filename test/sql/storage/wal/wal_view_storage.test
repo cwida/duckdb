@@ -15,7 +15,7 @@ PRAGMA disable_checkpoint_on_shutdown
 
 # Make sure the WAL doesn't get flushed by a checkpoint
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 # Create a schema containing a table and a view
 statement ok

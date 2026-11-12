@@ -59,7 +59,7 @@ statement ok
 INSERT INTO integers VALUES (42), (84);
 
 query II
-SELECT * FROM histogram_values(integers, i, bin_count := 2);
+SELECT * FROM histogram_values('integers', i, bin_count := 2);
 ----
 60	1
 80	0

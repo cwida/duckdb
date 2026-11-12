@@ -9,6 +9,7 @@
 
 #include "duckdb/optimizer/join_order/join_relation_set.hpp"
 #include "duckdb/optimizer/join_order/cardinality_value.hpp"
+#include "duckdb/optimizer/recursive_join_planning.hpp"
 
 namespace duckdb {
 
@@ -46,6 +47,9 @@ public:
 	double cost;
 	//! Candidate output used when composing parent estimates and costs.
 	CardinalityValue cardinality {0};
+	RecursiveJoinProperties recursive_properties;
+	double retained_build_size = 0;
+	double peak_build_size = 0;
 };
 
 } // namespace duckdb

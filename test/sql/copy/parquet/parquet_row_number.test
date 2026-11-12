@@ -37,9 +37,6 @@ select sum(row_number_lag), min(row_number_lag), max(row_number_lag)  from (sele
 1000	1	1
 
 
-statement ok
-PRAGMA disable_verification
-
 
 # lets eliminate some row groups using parquet stats and see what happens
 query IIII
@@ -74,7 +71,7 @@ select s.min, s.max, s.has_null, s.has_no_null from (select first(stats(file_row
 0	9999	false	true
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II nosort empty_result
 explain select 1 from parquet_scan('{DATA_DIR}/parquet-testing/lineitem-top10000.gzip.parquet', file_row_number=1) where file_row_number > 10000;

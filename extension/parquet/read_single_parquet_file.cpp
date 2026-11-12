@@ -115,14 +115,14 @@ static unique_ptr<FunctionData> ReadSingleParquetFileBind(ClientContext &context
 	result->file = TableFunctionFileBindInput::GetFile(input);
 
 	// the named parameters of this function are those of the multi-file parquet reader
-	ParquetMultiFileInfo interface;
+	ParquetMultiFileInfo file_info;
 	MultiFileOptions file_options;
 	if (file_input.multi_file_options) {
 		file_options = *file_input.multi_file_options;
 	}
 	ParquetFileReaderOptions options(context);
 	for (auto &kv : input.named_parameters) {
-		interface.ParseOption(context, kv.first, kv.second, file_options, options);
+		file_info.ParseOption(context, kv.first, kv.second, file_options, options);
 	}
 	result->options = std::move(options.options);
 
@@ -432,9 +432,13 @@ static vector<column_t> ReadSingleParquetFileRowIdColumns(ClientContext &context
 }
 
 //! The statistics of a column of this file, read from its metadata
-static unique_ptr<BaseStatistics>
-ReadSingleParquetFileStatistics(ClientContext &context, const FunctionData *bind_data_p, column_t column_index) {
-	auto &parquet_data = bind_data_p->Cast<ReadSingleParquetFileData>();
+static unique_ptr<BaseStatistics> ReadSingleParquetFileStatistics(ClientContext &context,
+                                                                  TableFunctionGetStatisticsInput &input) {
+	auto &parquet_data = input.bind_data->Cast<ReadSingleParquetFileData>();
+	if (!input.column_index.HasPrimaryIndex() || input.column_index.HasChildren()) {
+		return nullptr;
+	}
+	const auto column_index = input.column_index.GetPrimaryIndex();
 	if (IsVirtualColumn(column_index)) {
 		return ParquetReader::ReadVirtualColumnStatistics(context, parquet_data.options, parquet_data.metadata,
 		                                                  column_index);
@@ -566,7 +570,7 @@ TableFunction ParquetScanFunction::GetSingleFileFunction() {
 	                           ReadSingleParquetFileInitGlobal, ReadSingleParquetFileInitLocal);
 	read_parquet.table_scan_progress = ReadSingleParquetFileProgress;
 	read_parquet.cardinality = ReadSingleParquetFileCardinality;
-	read_parquet.statistics = ReadSingleParquetFileStatistics;
+	read_parquet.statistics_extended = ReadSingleParquetFileStatistics;
 	read_parquet.get_virtual_columns = ReadSingleParquetFileVirtualColumns;
 	read_parquet.get_partition_stats = ReadSingleParquetFilePartitionStats;
 	read_parquet.get_metrics = ReadSingleParquetFileGetMetrics;

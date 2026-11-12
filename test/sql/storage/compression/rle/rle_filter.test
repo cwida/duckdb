@@ -6,7 +6,7 @@
 load {TEST_DIR}/test_rle_filter.db
 
 statement ok
-PRAGMA force_compression = 'rle'
+SET force_compression = 'rle'
 
 statement ok
 CREATE TABLE tbl AS SELECT i id, i // 50 rle_val, case when i%8=0 then null else i // 50 end rle_val_null FROM range(100000) t(i);

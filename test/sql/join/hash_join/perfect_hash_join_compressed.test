@@ -1,0 +1,74 @@
+# name: test/sql/join/hash_join/perfect_hash_join_compressed.test
+# description: Direct lookup accepts identity selections from constant and dictionary probes
+# group: [hash_join]
+
+# Keep the operator logs across statements.
+require skip_reload
+
+load {TEST_DIR}/perfect_hash_join_compressed.db
+
+statement ok
+SET VARIABLE check_perfect_activation =
+    NOT current_setting('debug_force_external') AND NOT current_setting('debug_disable_optimizer');
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side,join_filter_pushdown';
+
+statement ok
+CREATE TABLE constant_probe AS SELECT (i // 122880)::INTEGER k FROM range(245760) t(i);
+
+statement ok
+CREATE TABLE build(k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO build VALUES (0, 10), (1, 20), (1, 30);
+
+statement ok
+INSERT INTO build VALUES (NULL, 40), (NULL, 50);
+
+statement ok
+CREATE TABLE null_probe AS SELECT NULL::INTEGER k FROM range(4096);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query II
+SELECT count(*), sum(b.v) FROM constant_probe p JOIN build b USING(k);
+----
+368640	7372800
+
+statement ok
+CREATE TABLE mapping(k INTEGER, target INTEGER);
+
+statement ok
+INSERT INTO mapping VALUES (0, 0), (1, 1), (2, 2), (3, 3);
+
+query II
+SELECT count(*), sum(b.v)
+FROM (SELECT m.target FROM range(10000) p(i) JOIN mapping m ON (p.i%4)::INTEGER=m.k) d
+JOIN build b ON d.target=b.k;
+----
+7500	150000
+
+query II
+SELECT count(*), sum(b.v) FROM null_probe p RIGHT JOIN build b ON p.k=b.k;
+----
+5	150
+
+query II
+SELECT count(*), sum(b.v) FROM null_probe p FULL JOIN build b ON p.k=b.k;
+----
+4101	150
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_perfect_activation') OR list_sort(list(info['backend'])) = ['direct','direct','direct','direct','direct']
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event='Lookup';
+----
+true

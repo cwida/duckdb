@@ -80,6 +80,7 @@ SQLStatement:
     - DetachStatement
     - DisconnectStatement
     - DropStatement
+    - DropMemberStatement
     - ExecuteStatement
     - ExplainStatement
     - ExplainableStatements
@@ -222,6 +223,9 @@ AlterInfo:
     - AlterSequenceOptions
     - RenameAlterSequenceOptions
     - SetSequenceOption
+    - DropMember
+    - DropTableFunctionMember
+    - DropFunctionMember
 
 AlterTableInfo:
   type: "unique_ptr<AlterTableInfo>"
@@ -618,6 +622,8 @@ TableRef:
     - SubqueryReference
     - BaseTableRef
     - ParensTableRef
+    - JoinedTableRef
+    - JoinedTableRefChain
     - ValuesRef
     - MergeIntoUsingClause
     - UpdateTarget
@@ -1272,12 +1278,15 @@ LogicalType:
   rules:
     - Type
     - ReturnsType
+    - DropSignatureType
+    - DropSignatureAnyType
 
 LogicalTypeList:
   type: "vector<LogicalType>"
   by_value: false
   rules:
     - TypeList
+    - DropFunctionSignature
 
 TransactionModifierType:
   type: "TransactionModifierType"
@@ -1994,6 +2003,7 @@ collapsible_rules:
 packrat_memoized_rules:
   - Expression
   - TableRef
+  - ParensTableRef
   - Identifier
   - ColId
   - CatalogQualification

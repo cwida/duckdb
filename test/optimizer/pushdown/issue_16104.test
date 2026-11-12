@@ -3,7 +3,7 @@
 # group: [pushdown]
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 statement ok
 WITH random_data AS (

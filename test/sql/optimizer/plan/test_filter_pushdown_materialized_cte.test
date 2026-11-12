@@ -8,7 +8,7 @@ statement ok
 call dsdgen(sf=0.01)
 
 statement ok
-pragma explain_output='OPTIMIZED_ONLY'
+SET explain_output='OPTIMIZED_ONLY'
 
 query II
 EXPLAIN WITH ss AS MATERIALIZED
