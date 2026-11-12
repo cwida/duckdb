@@ -504,26 +504,22 @@ static void CapLowerAggregateCardinality(ClientContext &context, LogicalAggregat
 	if (!input.has_estimated_cardinality) {
 		return;
 	}
-	auto cardinality = static_cast<double>(input.estimated_cardinality);
+	auto cardinality = input.estimated_cardinality;
 	if (lower_aggr.has_estimated_cardinality) {
-		cardinality = MinValue(cardinality, static_cast<double>(lower_aggr.estimated_cardinality));
+		cardinality = MinValue(cardinality, lower_aggr.estimated_cardinality);
 	}
-	RelationStatsExtractor stats_extractor(context);
-	auto input_stats = stats_extractor.Extract(input);
-	if (input_stats) {
-		double group_count = 1;
-		for (auto &group : lower_aggr.groups) {
-			ColumnBinding binding;
-			auto column = GetColumnBinding(*group, binding) ? input_stats->GetColumnStats(binding) : nullptr;
-			if (!column) {
-				group_count = cardinality;
-				break;
-			}
-			group_count *= static_cast<double>(MaxValue<idx_t>(column->current_domain.distinct_count, 1));
+	idx_t group_count = 1;
+	for (auto &group : lower_aggr.groups) {
+		ColumnBinding binding;
+		auto stats = GetColumnBinding(*group, binding) ? GetBaseColumnStatistics(context, input, binding) : nullptr;
+		auto distinct_count = stats ? stats->GetDistinctCount() : 0;
+		if (distinct_count == 0 || group_count > cardinality / distinct_count) {
+			group_count = cardinality;
+			break;
 		}
-		cardinality = MinValue(cardinality, group_count);
+		group_count *= distinct_count;
 	}
-	lower_aggr.SetEstimatedCardinality(LossyNumericCast<idx_t>(cardinality));
+	lower_aggr.SetEstimatedCardinality(MinValue(cardinality, group_count));
 }
 
 static unique_ptr<LogicalAggregate> CreateLowerAggregate(ClientContext &context, LogicalAggregate &aggr,
