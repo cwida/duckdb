@@ -88,7 +88,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
     -Wl,--wrap=_Znwm
     -Wl,--wrap=_ZdlPv
     -Wl,--wrap=_ZdlPvm
-    -Wl,--wrap=mmap)
+    -Wl,--wrap=mmap
+    -Wl,--wrap=mprotect
+    -Wl,--wrap=munmap)
   set_target_properties(block_allocator_fault_injection
                         PROPERTIES BUILD_RPATH_USE_ORIGIN TRUE)
   target_sources(unittest PRIVATE api/test_block_allocator_fault_injection.cpp)
