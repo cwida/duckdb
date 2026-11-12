@@ -1,0 +1,125 @@
+# name: test/sql/join/hash_join/dict_cache_computed_column.test
+# description: The operator cache demotes a global dictionary column that an expression passes through for some chunks only
+# group: [hash_join]
+
+# the hash join emits rates.fx_rate as a global dictionary; the CASE passes that vector through unchanged for a
+# chunk in which no row takes the THEN branch, so the filter's cache sees the dictionary for some chunks only
+statement ok
+CREATE TABLE positions AS
+SELECT i AS k, i % 10 AS day,
+       CASE (i // 2048) % 3 WHEN 0 THEN 'EUR' WHEN 1 THEN 'USD' ELSE ['USD', 'EUR'][1 + i % 2] END AS currency
+  FROM range(30000) t(i);
+
+statement ok
+CREATE TABLE rates AS SELECT i AS day, 1.0 + i / 100 AS fx_rate, 'rate_' || i AS rate_name FROM range(10) t(i);
+
+query I
+SELECT count(*)
+  FROM (SELECT k, CASE WHEN currency = 'USD' THEN 1.0::DOUBLE ELSE fx_rate END AS rate
+          FROM positions JOIN rates USING (day))
+ WHERE (k * rate) % 997 < 1;
+----
+31
+
+query I
+SELECT count(*)
+  FROM (SELECT k, IF(currency = 'USD', 1.0::DOUBLE, fx_rate) AS rate
+          FROM positions JOIN rates USING (day))
+ WHERE (k * rate) % 997 < 1;
+----
+31
+
+query I
+SELECT count(*)
+  FROM (SELECT k, CASE WHEN currency = 'EUR' THEN fx_rate ELSE 2.0::DOUBLE END AS rate
+          FROM positions JOIN rates USING (day))
+ WHERE (k * rate) % 997 < 1;
+----
+31
+
+# the values of the demoted column survive
+query III
+SELECT sum(rate), min(rate), max(rate)
+  FROM (SELECT k, CASE WHEN currency = 'USD' THEN 1.0::DOUBLE ELSE fx_rate END AS rate
+          FROM positions JOIN rates USING (day))
+ WHERE (k * rate) % 997 < 1;
+----
+31.809999999999995	1.0	1.09
+
+query II
+SELECT rate, count(*)
+  FROM (SELECT k, CASE WHEN currency = 'USD' THEN 1.0::DOUBLE ELSE fx_rate END AS rate
+          FROM positions JOIN rates USING (day))
+ WHERE (k * rate) % 997 < 1
+ GROUP BY rate ORDER BY rate;
+----
+1.0	17
+1.02	2
+1.04	2
+1.05	2
+1.06	2
+1.07	3
+1.08	1
+1.09	2
+
+# a VARCHAR dictionary is materialized when it is demoted
+query IITT
+SELECT count(*), count(DISTINCT nm), min(nm), max(nm)
+  FROM (SELECT k, CASE WHEN currency = 'USD' THEN 'const' ELSE rate_name END AS nm,
+               CASE WHEN currency = 'USD' THEN 1.0::DOUBLE ELSE fx_rate END AS rate
+          FROM positions JOIN rates USING (day))
+ WHERE (k * rate) % 997 < 1;
+----
+31	9	const	rate_9
+
+# a switch between two global dictionaries
+statement ok
+CREATE TABLE other_rates AS SELECT i AS day, 10.0 + i AS other_rate FROM range(10) t(i);
+
+query IR
+SELECT count(*), round(sum(v), 2)
+  FROM (SELECT k, CASE WHEN currency = 'USD' THEN other_rate ELSE fx_rate END AS v
+          FROM positions JOIN rates USING (day) JOIN other_rates USING (day))
+ WHERE (k * v) % 997 < 1;
+----
+31	231.81
+
+# sinks that consume the demoted column
+query IIII
+SELECT rate, nm, k, row_number() OVER (ORDER BY rate, nm, k)
+  FROM (SELECT k, CASE WHEN currency = 'USD' THEN 'const' ELSE rate_name END AS nm,
+               CASE WHEN currency = 'USD' THEN 1.0::DOUBLE ELSE fx_rate END AS rate
+          FROM positions JOIN rates USING (day))
+ WHERE (k * rate) % 997 < 1
+ ORDER BY rate DESC, nm, k LIMIT 4;
+----
+1.09	rate_9	17379	30
+1.09	rate_9	19209	31
+1.08	rate_8	13848	29
+1.07	rate_7	13977	26
+
+statement ok
+SET threads=1;
+
+# several cache cycles with two dictionary columns, of which only one is demoted and re-seeded
+statement ok
+CREATE TABLE big_positions AS
+SELECT i AS k, i % 10 AS day,
+       CASE (i // 2048) % 3 WHEN 0 THEN 'EUR' WHEN 1 THEN 'USD' ELSE ['USD', 'EUR'][1 + i % 2] END AS currency
+  FROM range(500000) t(i);
+
+query IRRII
+SELECT count(*), round(sum(rate), 2), round(sum(fx_rate), 2), count(*) FILTER (WHERE rate <> fx_rate), count(DISTINCT rate_name)
+  FROM (SELECT k, fx_rate, rate_name, CASE WHEN currency = 'USD' THEN 1.0::DOUBLE ELSE fx_rate END AS rate
+          FROM big_positions JOIN rates USING (day))
+ WHERE (k * rate) % 997 < 20;
+----
+10034	10268.95	10485.31	4325	10
+
+query I
+SELECT count(*)
+  FROM (SELECT k, CASE WHEN currency = 'USD' THEN 1.0::DOUBLE ELSE fx_rate END AS rate
+          FROM positions JOIN rates USING (day))
+ WHERE (k * rate) % 997 < 1;
+----
+31

@@ -1,0 +1,112 @@
+# name: test/sql/join/hash_join/test_perfect_membership_join.test
+# description: Test dense and sparse integer membership joins
+# group: [hash_join]
+
+statement ok
+CREATE TABLE membership_probe(i INTEGER, payload VARCHAR);
+
+statement ok
+INSERT INTO membership_probe VALUES (1, 'one'), (2, 'two'), (2000000, 'large'), (NULL, 'null');
+
+statement ok
+CREATE TABLE membership_build(i INTEGER);
+
+statement ok
+INSERT INTO membership_build VALUES (1), (1), (2000000), (NULL);
+
+query IT
+SELECT i, payload
+FROM membership_probe SEMI JOIN membership_build USING (i)
+ORDER BY i NULLS LAST;
+----
+1	one
+2000000	large
+
+query IT
+SELECT i, payload
+FROM membership_probe ANTI JOIN membership_build USING (i)
+ORDER BY i NULLS LAST;
+----
+2	two
+NULL	null
+
+query IT
+SELECT probe.i, probe.payload
+FROM membership_probe probe
+SEMI JOIN membership_build build
+ON probe.i IS NOT DISTINCT FROM build.i
+ORDER BY probe.i NULLS LAST;
+----
+1	one
+2000000	large
+NULL	null
+
+query IT
+SELECT probe.i, probe.payload
+FROM membership_probe probe
+ANTI JOIN membership_build build
+ON probe.i IS NOT DISTINCT FROM build.i
+ORDER BY probe.i NULLS LAST;
+----
+2	two
+
+# Dense keys exercise the bitmap, including BIGINT and runtime-only bounds.
+statement ok
+CREATE TABLE dense_build AS SELECT i::BIGINT i FROM range(4) t(i), range(3);
+
+statement ok
+INSERT INTO dense_build VALUES (NULL);
+
+query I
+SELECT count(*) FROM range(8) p(i) SEMI JOIN dense_build USING (i);
+----
+4
+
+query I
+SELECT count(*) FROM range(8) p(i) ANTI JOIN dense_build USING (i);
+----
+4
+
+query I
+SELECT count(*) FROM (VALUES (0::BIGINT), (7), (NULL)) p(i)
+SEMI JOIN dense_build b ON p.i IS NOT DISTINCT FROM b.i;
+----
+2
+
+query I
+SELECT count(*) FROM (VALUES (0::BIGINT), (7), (NULL)) p(i)
+ANTI JOIN dense_build b ON p.i IS NOT DISTINCT FROM b.i;
+----
+1
+
+query II rowsort
+SELECT i, i IN (SELECT i FROM dense_build) FROM (VALUES (0::BIGINT), (7), (NULL)) p(i);
+----
+0	true
+7	NULL
+NULL	NULL
+
+statement ok
+DELETE FROM dense_build WHERE i IS NOT NULL;
+
+query I
+SELECT count(*) FROM (VALUES (0::BIGINT), (7), (NULL)) p(i)
+SEMI JOIN dense_build b ON p.i IS NOT DISTINCT FROM b.i;
+----
+1
+
+query I
+SELECT count(*) FROM (VALUES (0::BIGINT), (7), (NULL)) p(i)
+ANTI JOIN dense_build b ON p.i IS NOT DISTINCT FROM b.i;
+----
+2
+
+statement ok
+DELETE FROM dense_build;
+
+query II rowsort
+SELECT i, i IN (SELECT i FROM dense_build) FROM (VALUES (0::BIGINT), (7), (NULL)) p(i);
+----
+0	false
+7	false
+NULL	false

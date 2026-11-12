@@ -3,6 +3,9 @@
 # group: [general]
 
 statement ok
+SET threads = least(current_setting('threads'), 8)
+
+statement ok
 SET memory_limit = '300MB'
 
 query I
