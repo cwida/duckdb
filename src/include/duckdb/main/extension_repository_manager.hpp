@@ -48,12 +48,14 @@ public:
 	//! The directory in which the trusted extension repositories are stored
 	static string GetRepositoryDirectory(DatabaseInstance &db, FileSystem &fs);
 
-	//! Store a new trusted repository on disk. If the repository has no public keys, they are fetched from the
-	//! repository prefix and pinned. A repository with a `host` was resolved from it, which the 'undecided' default of
-	//! allow_extension_repositories permits. Returns the repository as it was stored
+	//! Store a new trusted repository on disk, from what was requested: a name, a prefix and optionally keys - or a
+	//! name alone, which is then the host that names the prefix (the 'undecided' default of
+	//! allow_extension_repositories permits that form; keys cannot be given with it). Keys that were not given are
+	//! fetched from the prefix and pinned. The conflict is decided before anything is fetched. Returns the repository
+	//! as it was stored, `host` set when it was resolved from one
 	static ExtensionRepository CreateRepository(DatabaseInstance &db, FileSystem &fs,
 	                                            optional_ptr<ClientContext> context,
-	                                            const ExtensionRepository &repository, OnCreateConflict on_conflict);
+	                                            const ExtensionRepository &requested, OnCreateConflict on_conflict);
 	//! Remove a trusted repository from disk
 	static void DropRepository(DatabaseInstance &db, FileSystem &fs, const string &name,
 	                           OnEntryNotFound on_entry_not_found);
@@ -84,12 +86,6 @@ public:
 	static vector<string> FetchPublicKeys(DatabaseInstance &db, optional_ptr<ClientContext> context,
 	                                      const string &prefix);
 
-	//! Resolve `CREATE EXTENSION REPOSITORY <name>` (no prefix): the name is the publisher's host, and the metadata
-	//! file it serves (https://<name>/METADATA_FILE) names the repository url. Only the url is taken from the host;
-	//! the keys come from the prefix, as with WITH PREFIX. Throws unless adding a repository from its host is permitted
-	static ExtensionRepositoryResolution
-	ResolveRepositoryFromHost(DatabaseInstance &db, optional_ptr<ClientContext> context, const string &name);
-
 	//! The sha256 fingerprint of a public key, used to compare a key against the fingerprint published by a repository
 	static string GetPublicKeyFingerprint(const string &compact_key);
 
@@ -103,6 +99,13 @@ public:
 	static string ToPEMPublicKey(const string &compact_key);
 
 private:
+	//! Resolve `CREATE EXTENSION REPOSITORY <name>` (no prefix): the name is the publisher's host, and the metadata
+	//! file it serves (https://<name>/METADATA_FILE) names the repository url. Only the url is taken from the host;
+	//! the keys come from the prefix, as with WITH PREFIX. Called by CreateRepository after the access and conflict
+	//! checks
+	static ExtensionRepositoryResolution
+	ResolveRepositoryFromHost(DatabaseInstance &db, optional_ptr<ClientContext> context, const string &name);
+
 	//! Throws unless adding a repository is currently allowed (opt-in and configuration lock)
 	static void CheckCanCreate(DatabaseInstance &db, bool from_host);
 	//! Throws if the configuration is locked, freezing the trust store

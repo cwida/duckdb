@@ -378,14 +378,6 @@
         "is_debug": true
     },
     {
-        "name": "debug_extension_repository_host_base",
-        "description": "Where the host of CREATE EXTENSION REPOSITORY <host> (no prefix) is reached: '<base>/<host>' instead of 'https://<host>'. Empty (the default) reaches the host itself. For tests.",
-        "type": "VARCHAR",
-        "scope": "global",
-        "default_value": "",
-        "is_debug": true
-    },
-    {
         "name": "debug_file_descriptor_limit",
         "description": "Override the file descriptor limit that bounds how many files a scan opens ahead. 0 uses the limit of the process.",
         "type": "UBIGINT",

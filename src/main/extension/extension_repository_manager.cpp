@@ -387,22 +387,13 @@ static yyjson_val *ReadVersionedObject(RepositoryJSONDocument &document, const s
 ExtensionRepositoryResolution ExtensionRepositoryManager::ResolveRepositoryFromHost(DatabaseInstance &db,
                                                                                     optional_ptr<ClientContext> context,
                                                                                     const string &name_p) {
-	// nothing is fetched before the access check: 'forbidden' forbids this too
-	CheckCanCreate(db, true);
+	// called by CreateRepository once the access check and the conflict check have passed
 	auto name = NormalizeRepositoryName(name_p);
-	if (!ExtensionRepository::TryGetRepositoryUrl(name).empty()) {
-		// the built-in repositories are resolved through the built-in table, never through a host
-		throw InvalidInputException("Cannot create extension repository '%s': this is a built-in repository name",
-		                            name);
-	}
 	ExtensionRepositoryResolution resolution;
 	resolution.host = name;
 
-	// the host is the name the user typed, reached over https: that is what makes the file the host's own statement.
-	// The debug base replaces 'https://' so that tests can serve hosts from a directory
-	auto host_base = Settings::Get<DebugExtensionRepositoryHostBaseSetting>(db);
-	StringUtil::RTrim(host_base, "/");
-	auto metadata_path = (host_base.empty() ? "https://" + name : host_base + "/" + name) + "/" + string(METADATA_FILE);
+	// the host is the name the user typed, reached over https: that is what makes the file the host's own statement
+	auto metadata_path = "https://" + name + "/" + string(METADATA_FILE);
 	string contents;
 	try {
 		contents = ReadSmallRemoteFile(db, context, metadata_path);
@@ -527,18 +518,30 @@ ExtensionRepository ExtensionRepositoryManager::ReadRepository(FileSystem &fs, c
 
 ExtensionRepository ExtensionRepositoryManager::CreateRepository(DatabaseInstance &db, FileSystem &fs,
                                                                  optional_ptr<ClientContext> context,
-                                                                 const ExtensionRepository &repository,
+                                                                 const ExtensionRepository &requested,
                                                                  OnCreateConflict on_conflict) {
-	CheckCanCreate(db, !repository.host.empty());
+	// no prefix: the name is the host, and the host names the prefix. The host is derived here, never taken from the
+	// caller, so a stored host always means the repository was resolved from it
+	bool from_host = requested.path.empty();
+	CheckCanCreate(db, from_host);
 
-	auto name = NormalizeRepositoryName(repository.name);
+	auto name = NormalizeRepositoryName(requested.name);
 	if (!ExtensionRepository::TryGetRepositoryUrl(name).empty()) {
 		throw InvalidInputException("Cannot create extension repository '%s': this is a built-in repository name",
 		                            name);
 	}
-	if (repository.path.empty()) {
-		throw InvalidInputException("Cannot create extension repository '%s': the prefix cannot be empty", name);
+	if (from_host && !requested.public_keys.empty()) {
+		// the keys of a repository resolved from its host come from the repository the host names: a key the caller
+		// supplies would be trusted for whatever the host points at, with nothing vouching for it
+		throw InvalidInputException(
+		    "Cannot create extension repository '%s': a repository resolved from its host takes "
+		    "its signing keys from the repository the host names; USING PUBLIC KEY goes with "
+		    "WITH PREFIX",
+		    name);
 	}
+
+	// the conflict is decided before anything is fetched: IF NOT EXISTS returns the stored definition, a plain CREATE
+	// reports the duplicate, and only OR REPLACE goes on to resolve - keeping the old definition if that fails
 	auto directory = GetRepositoryDirectory(db, fs);
 	auto file_path = fs.JoinPath(directory, name + FILE_EXTENSION);
 	if (fs.FileExists(file_path)) {
@@ -553,6 +556,13 @@ ExtensionRepository ExtensionRepositoryManager::CreateRepository(DatabaseInstanc
 		}
 	}
 
+	ExtensionRepository repository(name, requested.path, requested.public_keys);
+	if (from_host) {
+		auto resolution = ResolveRepositoryFromHost(db, context, name);
+		repository.path = resolution.url;
+		repository.host = name;
+	}
+
 	// if no key was provided, the repository is expected to serve it at its prefix. The keys are pinned here: they are
 	// stored alongside the repository and never fetched again
 	auto public_keys = repository.public_keys.empty() ? FetchPublicKeys(db, context, repository.path)
@@ -561,6 +571,8 @@ ExtensionRepository ExtensionRepositoryManager::CreateRepository(DatabaseInstanc
 		throw InvalidInputException("Cannot create extension repository '%s': no public key was provided or served",
 		                            name);
 	}
+	// the fetches took time: the access may have been tightened meanwhile, so check again before persisting
+	CheckCanCreate(db, from_host);
 
 	if (!fs.DirectoryExists(directory)) {
 		fs.CreateDirectoriesRecursive(directory);

@@ -136,6 +136,13 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformCreateExtensionReposito
 
 string PEGTransformerFactory::TransformRepositoryPrefix(PEGTransformer &transformer, const bool &has_result,
                                                         const string &string_literal) {
+	// an empty prefix is not "no prefix": the form without one resolves the repository from its host, and must not be
+	// reachable with keys of the caller's choosing attached
+	if (string_literal.empty()) {
+		throw ParserException(
+		    "CREATE EXTENSION REPOSITORY: the prefix cannot be empty. Leave WITH PREFIX out to resolve "
+		    "the repository from its host");
+	}
 	return string_literal;
 }
 

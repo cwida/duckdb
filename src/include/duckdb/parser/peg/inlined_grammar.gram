@@ -2093,7 +2093,8 @@ RepositoryPublicKey <- 'USING'? 'PUBLIC' ('KEYS' / 'KEY') List(StringLiteral)
 # the signing keys). The rest is CREATE EXTENSION REPOSITORY <name> WITH PREFIX <that prefix>.
 CreateExtensionRepositoryFromHostStmt <- 'CREATE' OrReplace? 'EXTENSION' 'REPOSITORY' IfNotExists? ExtensionRepositoryName
 DropExtensionRepositoryStmt <- 'DROP' 'EXTENSION' 'REPOSITORY' IfExists? ExtensionRepositoryName
-# A repository name: an identifier or a string, or a host spelled as dotted words
+# A repository name: an identifier or a string, or a host spelled as dotted words. A host with a '-' in it cannot be
+# spelled unquoted ('-' is an operator); it is given as a string: 'duckdb-extensions.example.com'
 ExtensionRepositoryName <- ExtensionRepositoryHostName / ColIdOrString
 ExtensionRepositoryHostName <- ColId DotColLabel+
 

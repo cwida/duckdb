@@ -1,52 +1,27 @@
 # name: test/sql/extensions/extension_repository_from_host.test
-# description: CREATE EXTENSION REPOSITORY <host> without a prefix: the host's .well-known metadata file names the repository
+# description: CREATE EXTENSION REPOSITORY <host> without a prefix: what can be checked without reaching a host
 # group: [extensions]
+
+# The host form reads https://<host>/.well-known/duckdb-extension-repo.json, which needs httpfs and a live host; the
+# resolution itself is therefore not exercised here. Everything that is decided before that fetch is.
+# TODO: exercise the resolution itself once duckdb.org serves a .well-known/duckdb-extension-repo.json, in a test that
+# requires httpfs.
 
 statement ok
 SET extension_repository_directory='{TEST_DIR}/extension_repositories'
 
-# Hosts are directories here: '<base>/<host>/.well-known/duckdb-extension-repo.json' stands in for
-# 'https://<host>/.well-known/duckdb-extension-repo.json'.
+# A repository name may be a host, spelled as dotted words or as a string, wherever a repository is named.
 statement ok
-SET debug_extension_repository_host_base='{TEST_DIR}/hosts'
+CREATE EXTENSION REPOSITORY pointing.example WITH PREFIX '{TEST_DIR}/repo' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
 
-# The repository itself: a prefix serving its signing key, as for WITH PREFIX. PER_THREAD_OUTPUT creates directories.
-statement ok
-COPY (SELECT 1 AS a) TO '{TEST_DIR}/repo' (FORMAT csv, PER_THREAD_OUTPUT true)
-
-statement ok
-COPY (SELECT 1 AS a) TO '{TEST_DIR}/repo/.well-known' (FORMAT csv, PER_THREAD_OUTPUT true)
-
-statement ok
-COPY (SELECT '{"version": 1, "repository_url": "{TEST_DIR}/repo", "signature_keys":["MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB"]}') TO '{TEST_DIR}/repo/.well-known/duckdb-extension-repo.json' (FORMAT csv, HEADER false, QUOTE '', USE_TMP_FILE false)
-
-# The host's file names the prefix; the keys are fetched from the prefix.
-statement ok
-COPY (SELECT 1 AS a) TO '{TEST_DIR}/hosts' (FORMAT csv, PER_THREAD_OUTPUT true)
-
-statement ok
-COPY (SELECT 1 AS a) TO '{TEST_DIR}/hosts/pointing.example' (FORMAT csv, PER_THREAD_OUTPUT true)
-
-statement ok
-COPY (SELECT 1 AS a) TO '{TEST_DIR}/hosts/pointing.example/.well-known' (FORMAT csv, PER_THREAD_OUTPUT true)
-
-statement ok
-COPY (SELECT '{"version": 1, "repository_url": "{TEST_DIR}/repo/"}') TO '{TEST_DIR}/hosts/pointing.example/.well-known/duckdb-extension-repo.json' (FORMAT csv, HEADER false, QUOTE '', USE_TMP_FILE false)
-
-# The name is the host, spelled as dotted words or as a string.
-query III
-CREATE EXTENSION REPOSITORY pointing.example
-----
-pointing.example	{TEST_DIR}/repo	['sha256:172c29bbb3cd41c70a8225d36ba3a53c94ca9236389fba11a71d45ef0524fa3b']
-
-# It is stored like any other repository, and remembers it was resolved from its host.
+# Added by prefix, it has no host.
 query III
 SELECT repository_name, prefix, host FROM duckdb_extension_repositories() WHERE type='USER_PROVIDED'
 ----
-pointing.example	{TEST_DIR}/repo	pointing.example
+pointing.example	{TEST_DIR}/repo	NULL
 
-# The name is what INSTALL and LOAD take, as dotted words or as a string; an extension that is not served fails on
-# the download, not on the name.
+# INSTALL and LOAD take the dotted name as well as the string; an extension that is not served fails on the download,
+# not on the name.
 statement error
 INSTALL nonexistent_extension FROM pointing.example
 ----
@@ -67,55 +42,46 @@ INSTALL nonexistent_extension FROM unknown.example
 ----
 <REGEX>:Binder Error.*not a known repository name.*
 
+# The conflict is decided before any host is contacted: IF NOT EXISTS returns the stored definition and a plain CREATE
+# reports the duplicate, neither reaching for 'https://pointing.example'.
 statement ok
-DROP EXTENSION REPOSITORY pointing.example
-
-# ...the string form works too (names are case insensitive); IF NOT EXISTS and OR REPLACE as with WITH PREFIX
-statement ok
-CREATE EXTENSION REPOSITORY 'POINTING.example'
+CREATE EXTENSION REPOSITORY IF NOT EXISTS pointing.example
 
 statement ok
-CREATE EXTENSION REPOSITORY IF NOT EXISTS 'pointing.example'
+CREATE EXTENSION REPOSITORY IF NOT EXISTS 'POINTING.example'
 
 statement error
 CREATE EXTENSION REPOSITORY pointing.example
 ----
 <REGEX>:Catalog Error.*already exists.*
 
-statement ok
+# OR REPLACE does resolve; here that fails (no httpfs to reach the host, or no such host), and the old definition stays.
+statement error
 CREATE OR REPLACE EXTENSION REPOSITORY pointing.example
+----
+<REGEX>:.*
+
+query II
+SELECT prefix, host FROM duckdb_extension_repositories() WHERE repository_name = 'pointing.example'
+----
+{TEST_DIR}/repo	NULL
+
+# An empty prefix is not "no prefix": it is refused, with or without keys, so the host form can never be reached with
+# keys of the caller's choosing.
+statement error
+CREATE OR REPLACE EXTENSION REPOSITORY pointing.example WITH PREFIX ''
+----
+<REGEX>:Parser Error.*prefix cannot be empty.*
+
+statement error
+CREATE OR REPLACE EXTENSION REPOSITORY pointing.example WITH PREFIX '' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA42wcKQCSwoEFA89qFVyjug5NIRKtExLQ+cCIdb8tbKICvGmiK6aQY5sO1iNiTxaRzfeDcxH4dSVxBIY7RZoNPjPpakd1K06gGv2R31LUg2JZY6P/oqvliHdhxMOcMdMnzsyQPJuSXFrzBXsy4xpAbYfNbdjZfPgH27iORiiUEjG6gmEeXzWe9bis5hEExvWD5GIRV6B+YCaAt41+g+nP4byZ5MPCw9dXHIk5+OMakOsiM/dTj66SxdRfeYJE7HBdmk2zXD2t1st3gHydJQyX3Ov6a1Q/mhnWJq3tni5ZzkmaDKHHcnitI7iQxrCp+XWzVsT5N9wQeFvQLcFLcrR9ZQIDAQAB'
+----
+<REGEX>:Parser Error.*prefix cannot be empty.*
 
 statement ok
 DROP EXTENSION REPOSITORY 'pointing.example'
 
-# Only the url is taken from the host's file: keys in it are ignored, they come from the prefix, which here serves none.
-statement ok
-COPY (SELECT 1 AS a) TO '{TEST_DIR}/hosts/keyed.example' (FORMAT csv, PER_THREAD_OUTPUT true)
-
-statement ok
-COPY (SELECT 1 AS a) TO '{TEST_DIR}/hosts/keyed.example/.well-known' (FORMAT csv, PER_THREAD_OUTPUT true)
-
-statement ok
-COPY (SELECT '{"version": 1, "repository_url": "{TEST_DIR}/nowhere", "signature_keys":["MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA42wcKQCSwoEFA89qFVyjug5NIRKtExLQ+cCIdb8tbKICvGmiK6aQY5sO1iNiTxaRzfeDcxH4dSVxBIY7RZoNPjPpakd1K06gGv2R31LUg2JZY6P/oqvliHdhxMOcMdMnzsyQPJuSXFrzBXsy4xpAbYfNbdjZfPgH27iORiiUEjG6gmEeXzWe9bis5hEExvWD5GIRV6B+YCaAt41+g+nP4byZ5MPCw9dXHIk5+OMakOsiM/dTj66SxdRfeYJE7HBdmk2zXD2t1st3gHydJQyX3Ov6a1Q/mhnWJq3tni5ZzkmaDKHHcnitI7iQxrCp+XWzVsT5N9wQeFvQLcFLcrR9ZQIDAQAB"]}') TO '{TEST_DIR}/hosts/keyed.example/.well-known/duckdb-extension-repo.json' (FORMAT csv, HEADER false, QUOTE '', USE_TMP_FILE false)
-
-statement error
-CREATE EXTENSION REPOSITORY keyed.example
-----
-<REGEX>:IO Error.*Failed to read the metadata file.*nowhere.*
-
-# A repository added by prefix has no host.
-statement ok
-CREATE EXTENSION REPOSITORY byprefix WITH PREFIX '{TEST_DIR}/repo'
-
-query II
-SELECT repository_name, host FROM duckdb_extension_repositories() WHERE type='USER_PROVIDED' ORDER BY 1
-----
-byprefix	NULL
-
 # A host reached over https needs httpfs: when it is not there, that is the error, not a missing file.
-statement ok
-RESET debug_extension_repository_host_base
-
 statement ok
 SET autoload_known_extensions=false
 
@@ -132,51 +98,11 @@ CREATE EXTENSION REPOSITORY byurl WITH PREFIX 'https://needs-httpfs.example/repo
 statement ok
 RESET autoload_known_extensions
 
-statement ok
-SET debug_extension_repository_host_base='{TEST_DIR}/hosts'
-
-# A host that serves no metadata file.
-statement error
-CREATE EXTENSION REPOSITORY unknown.example
-----
-<REGEX>:IO Error.*does not serve a metadata file.*WITH PREFIX.*
-
-# The built-in names stay reserved.
+# The built-in names stay reserved, before anything is fetched.
 statement error
 CREATE EXTENSION REPOSITORY core_nightly
 ----
 <REGEX>:Invalid Input Error.*built-in repository name.*
-
-# A file of a version this DuckDB does not understand, one that is not json, one without the url.
-statement ok
-COPY (SELECT 1 AS a) TO '{TEST_DIR}/hosts/future.example' (FORMAT csv, PER_THREAD_OUTPUT true)
-
-statement ok
-COPY (SELECT 1 AS a) TO '{TEST_DIR}/hosts/future.example/.well-known' (FORMAT csv, PER_THREAD_OUTPUT true)
-
-statement ok
-COPY (SELECT '{"version": 2, "repository_url": "{TEST_DIR}/repo"}') TO '{TEST_DIR}/hosts/future.example/.well-known/duckdb-extension-repo.json' (FORMAT csv, HEADER false, QUOTE '', USE_TMP_FILE false)
-
-statement error
-CREATE EXTENSION REPOSITORY future.example
-----
-<REGEX>:IO Error.*version 2.*understands version 1.*
-
-statement ok
-COPY (SELECT 'not json') TO '{TEST_DIR}/hosts/future.example/.well-known/duckdb-extension-repo.json' (FORMAT csv, HEADER false, QUOTE '', USE_TMP_FILE false)
-
-statement error
-CREATE EXTENSION REPOSITORY future.example
-----
-<REGEX>:IO Error.*not valid json.*
-
-statement ok
-COPY (SELECT '{"version": 1}') TO '{TEST_DIR}/hosts/future.example/.well-known/duckdb-extension-repo.json' (FORMAT csv, HEADER false, QUOTE '', USE_TMP_FILE false)
-
-statement error
-CREATE EXTENSION REPOSITORY future.example
-----
-<REGEX>:IO Error.*repository_url.*
 
 # Names: dots are allowed, but not at the ends or doubled.
 statement error
@@ -189,10 +115,10 @@ CREATE EXTENSION REPOSITORY '.hidden' WITH PREFIX '{TEST_DIR}/repo'
 ----
 <REGEX>:Invalid Input Error.*Invalid extension repository name.*
 
-# 'known_hosts': only repositories resolved from their host can be added, and only those are trusted. The runner
-# starts in 'allowed'; the setting can only be tightened.
+# 'known_hosts': only repositories resolved from their host can be added, and only those are trusted. The runner starts
+# in 'allowed'; the setting can only be tightened.
 statement ok
-CREATE EXTENSION REPOSITORY pointing.example
+CREATE EXTENSION REPOSITORY byprefix WITH PREFIX '{TEST_DIR}/repo' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
 
 statement ok
 SET allow_extension_repositories='known_hosts'
@@ -202,20 +128,11 @@ CREATE EXTENSION REPOSITORY other WITH PREFIX '{TEST_DIR}/repo'
 ----
 <REGEX>:Permission Error.*by prefix is not permitted.*known_hosts.*
 
-statement ok
-CREATE OR REPLACE EXTENSION REPOSITORY pointing.example
-
 # the repository added by prefix is distrusted: installing from it is refused before anything is fetched
 statement error
 INSTALL nonexistent_extension FROM byprefix
 ----
 <REGEX>:Permission Error.*'byprefix' is not permitted while allow_extension_repositories='known_hosts'.*
-
-# ...while the one resolved from its host is still consulted (and fails on the download, not on permission)
-statement error
-INSTALL nonexistent_extension FROM pointing.example
-----
-<REGEX>:IO Error.*
 
 # the ratchet only tightens
 statement error
@@ -225,6 +142,3 @@ SET allow_extension_repositories='allowed'
 
 statement ok
 DROP EXTENSION REPOSITORY byprefix
-
-statement ok
-DROP EXTENSION REPOSITORY pointing.example

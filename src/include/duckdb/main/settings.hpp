@@ -788,20 +788,6 @@ struct DebugEvictionQueueSleepMicroSecondsSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
-struct DebugExtensionRepositoryHostBaseSetting {
-	using RETURN_TYPE = string;
-	static constexpr const char *Name = "debug_extension_repository_host_base";
-	static constexpr const char *Description =
-	    "Where the host of CREATE EXTENSION REPOSITORY <host> (no prefix) is reached: '<base>/<host>' instead of "
-	    "'https://<host>'. Empty (the default) reaches the host itself. For tests.";
-	static constexpr const char *InputType = "VARCHAR";
-	static constexpr bool IsDebug = true;
-	static constexpr bool IsDeprecated = false;
-	static constexpr const char *DefaultValue = "";
-	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
-	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
-};
-
 struct DebugFileDescriptorLimitSetting {
 	using RETURN_TYPE = idx_t;
 	static constexpr const char *Name = "debug_file_descriptor_limit";

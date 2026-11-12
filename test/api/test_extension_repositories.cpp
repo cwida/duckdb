@@ -210,33 +210,50 @@ static void WriteTextFile(const string &path, const string &contents) {
 
 TEST_CASE("Test that a repository resolved from its host does not need the opt-in", "[api]") {
 	auto repository_directory = TestCreatePath("extension_repositories_from_host");
-	auto hosts = TestCreatePath("extension_repositories_from_host_hosts");
 	auto prefix = TestCreatePath("extension_repositories_from_host_prefix");
 	auto fs = FileSystem::CreateLocal();
-	fs->CreateDirectory(hosts);
+	fs->CreateDirectory(repository_directory);
 	fs->CreateDirectory(prefix);
-	// the host's file names the prefix; the prefix serves the key
-	auto host_dir = fs->JoinPath(hosts, "listed.example");
-	fs->CreateDirectory(host_dir);
-	fs->CreateDirectory(fs->JoinPath(host_dir, ".well-known"));
-	WriteTextFile(fs->JoinPath(fs->JoinPath(host_dir, ".well-known"), "duckdb-extension-repo.json"),
-	              StringUtil::Format("{\"version\": 1, \"repository_url\": \"%s\"}", prefix));
-	fs->CreateDirectory(fs->JoinPath(prefix, ".well-known"));
-	WriteTextFile(fs->JoinPath(fs->JoinPath(prefix, ".well-known"), "duckdb-extension-repo.json"),
-	              StringUtil::Format("{\"version\": 1, \"repository_url\": \"%s\", \"signature_keys\": [\"%s\"]}",
+	// a repository as the host form stores it: resolving one needs httpfs and a live host, which this test has not,
+	// so the stored file stands in for the resolution.
+	// TODO: resolve one for real once duckdb.org serves a .well-known/duckdb-extension-repo.json
+	WriteTextFile(fs->JoinPath(repository_directory, "listed.example.duckdb_extension.repo.json"),
+	              StringUtil::Format("{\"version\": 1, \"name\": \"listed.example\", \"url\": \"%s\", \"host\": "
+	                                 "\"listed.example\", \"public_keys\": [\"%s\"]}",
 	                                 prefix, TEST_PUBLIC_KEY));
 
 	DBConfig config;
 	config.SetOptionByName("extension_repository_directory", repository_directory);
-	config.SetOptionByName("debug_extension_repository_host_base", hosts);
+	config.SetOptionByName("autoload_known_extensions", false);
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 
-	// 'undecided': a repository by prefix is refused, one resolved from its host is accepted
+	// 'undecided' (the default): a repository by prefix is refused, the one resolved from its host is trusted
 	REQUIRE_FAIL(con.Query(StringUtil::Format("CREATE EXTENSION REPOSITORY by_prefix WITH PREFIX '%s'", prefix)));
-	REQUIRE_NO_FAIL(con.Query("CREATE EXTENSION REPOSITORY listed.example"));
 	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", TEST_PUBLIC_KEY));
+	REQUIRE(UserRepositoryCount(con) == 1);
+
+	// the conflict is decided before the host is contacted: IF NOT EXISTS returns the stored definition, a plain CREATE
+	// reports the duplicate; OR REPLACE does resolve, fails here (no httpfs), and keeps the old definition
+	REQUIRE_NO_FAIL(con.Query("CREATE EXTENSION REPOSITORY IF NOT EXISTS listed.example"));
+	REQUIRE_FAIL(con.Query("CREATE EXTENSION REPOSITORY listed.example"));
+	REQUIRE_FAIL(con.Query("CREATE OR REPLACE EXTENSION REPOSITORY listed.example"));
 	REQUIRE_FAIL(con.Query("CREATE EXTENSION REPOSITORY unlisted.example"));
+	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", TEST_PUBLIC_KEY));
+
+	// an empty prefix does not reopen the host form with keys of the caller's choosing: refused at parse, and refused
+	// by the manager when handed in through the API; the pinned key stays
+	REQUIRE_FAIL(con.Query(
+	    StringUtil::Format("CREATE OR REPLACE EXTENSION REPOSITORY listed.example WITH PREFIX '' USING PUBLIC KEY '%s'",
+	                       OTHER_PUBLIC_KEY)));
+	{
+		ExtensionRepository requested("listed.example", "", {OTHER_PUBLIC_KEY});
+		REQUIRE_THROWS(ExtensionRepositoryManager::CreateRepository(*db.instance, FileSystem::GetLocal(*db.instance),
+		                                                            con.context.get(), requested,
+		                                                            OnCreateConflict::REPLACE_ON_CONFLICT));
+	}
+	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", TEST_PUBLIC_KEY));
+	REQUIRE(!KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", OTHER_PUBLIC_KEY));
 
 	// 'known_hosts' keeps trusting the repository resolved from its host, 'forbidden' forbids the form as well
 	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='known_hosts'"));

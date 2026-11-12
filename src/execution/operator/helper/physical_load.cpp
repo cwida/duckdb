@@ -41,14 +41,9 @@ static void ExecuteRepositoryStatement(ClientContext &context, const LoadInfo &i
 	auto &fs = FileSystem::GetLocal(db);
 
 	if (info.load_type == LoadType::CREATE_REPOSITORY) {
-		ExtensionRepository repository(info.repository, info.repository_url, info.public_keys);
-		if (info.repository_url.empty()) {
-			// no prefix: the name is the host, and the host names the prefix
-			auto resolution = ExtensionRepositoryManager::ResolveRepositoryFromHost(db, context, info.repository);
-			repository.path = resolution.url;
-			repository.host = resolution.host;
-		}
-		auto result = ExtensionRepositoryManager::CreateRepository(db, fs, context, repository, info.on_conflict);
+		// what was asked for; without a prefix the manager resolves the name as a host
+		ExtensionRepository requested(info.repository, info.repository_url, info.public_keys);
+		auto result = ExtensionRepositoryManager::CreateRepository(db, fs, context, requested, info.on_conflict);
 
 		// report the repository as it was stored, so that the keys can be compared with the published fingerprints
 		vector<Value> fingerprints;
