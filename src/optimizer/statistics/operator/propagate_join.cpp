@@ -507,16 +507,16 @@ void StatisticsPropagator::CreateFilterFromJoinStats(unique_ptr<LogicalOperator>
 	}
 	// Match the numeric types supported by UpdateFilterStatistics.
 	auto column = GetFilterColumn(context, *expr);
-	if (!column || !expr->GetReturnType().IsNumeric() || !NumericStats::HasMinMax(stats_before) ||
-	    !NumericStats::HasMinMax(stats_after)) {
+	if (!column || !expr->GetReturnType().IsNumeric() || !HasNumericMinMax(stats_before) ||
+	    !HasNumericMinMax(stats_after)) {
 		return;
 	}
 
 	// Retrieve min/max
-	auto min_before = NumericStats::Min(stats_before);
-	auto max_before = NumericStats::Max(stats_before);
-	auto min_after = NumericStats::Min(stats_after);
-	auto max_after = NumericStats::Max(stats_after);
+	auto min_before = NumericMin(stats_before);
+	auto max_before = NumericMax(stats_before);
+	auto min_after = NumericMin(stats_after);
+	auto max_after = NumericMax(stats_after);
 
 	vector<unique_ptr<Expression>> filter_exprs;
 	auto add_filter = [&](ExpressionType comparison_type, const Value &bound) {
