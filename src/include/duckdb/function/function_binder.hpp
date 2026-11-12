@@ -496,7 +496,8 @@ public:
 	BindAggregateFunction(const AggregateFunctionCatalogEntry &function,
 	                      vector<pair<Identifier, unique_ptr<Expression>>> arguments, ErrorData &error,
 	                      unique_ptr<Expression> filter = nullptr,
-	                      AggregateType aggr_type = AggregateType::NON_DISTINCT);
+	                      AggregateType aggr_type = AggregateType::NON_DISTINCT,
+	                      std::function<unique_ptr<Expression>(idx_t)> rebind_argument = nullptr);
 	DUCKDB_API unique_ptr<BoundAggregateExpression>
 	BindAggregateFunction(const AggregateFunctionCatalogEntry &function, vector<unique_ptr<Expression>> children,
 	                      ErrorData &error, unique_ptr<Expression> filter = nullptr,
@@ -542,7 +543,8 @@ public:
 	                      vector<pair<Identifier, unique_ptr<Expression>>> &keyword_args);
 	DUCKDB_API pair<BoundAggregateFunction, unique_ptr<FunctionData>>
 	ResolveAggregateFunction(const FunctionBinding &binding, vector<unique_ptr<Expression>> &children,
-	                         vector<pair<Identifier, unique_ptr<Expression>>> &keyword_args);
+	                         vector<pair<Identifier, unique_ptr<Expression>>> &keyword_args,
+	                         std::function<unique_ptr<Expression>(idx_t)> rebind_argument = nullptr);
 	//! Also resolves the types of the ORDER BY arguments, if they are passed
 	DUCKDB_API pair<BoundWindowFunction, unique_ptr<FunctionData>>
 	ResolveWindowFunction(const FunctionBinding &binding, vector<unique_ptr<Expression>> &children,
@@ -563,7 +565,8 @@ private:
 	unique_ptr<BoundAggregateExpression>
 	BindAggregateFunction(FunctionBinding binding, vector<unique_ptr<Expression>> children,
 	                      vector<pair<Identifier, unique_ptr<Expression>>> keyword_args, unique_ptr<Expression> filter,
-	                      AggregateType aggr_type);
+	                      AggregateType aggr_type,
+	                      std::function<unique_ptr<Expression>(idx_t)> rebind_argument = nullptr);
 	unique_ptr<BoundWindowExpression> BindWindowFunction(const FunctionBinding &binding,
 	                                                     vector<unique_ptr<Expression>> children,
 	                                                     vector<pair<Identifier, unique_ptr<Expression>>> keyword_args,

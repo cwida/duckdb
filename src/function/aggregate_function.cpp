@@ -183,9 +183,18 @@ void BoundAggregateFunction::ReplaceImplementation(const AggregateFunction &func
 
 BindAggregateFunctionInput::BindAggregateFunctionInput(ClientContext &context_p,
                                                        BoundAggregateFunction &bound_function_p,
-                                                       vector<unique_ptr<Expression>> &arguments_p)
+                                                       vector<unique_ptr<Expression>> &arguments_p,
+                                                       std::function<unique_ptr<Expression>(idx_t)> rebind_argument_p)
     : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p),
-      bound_function(bound_function_p) {
+      bound_function(bound_function_p), rebind_argument(std::move(rebind_argument_p)) {
+}
+
+unique_ptr<Expression> BindAggregateFunctionInput::CopyOrRebindArgument(idx_t idx) const {
+	auto &arguments = GetArguments();
+	if (arguments[idx]->HasSubquery() && rebind_argument) {
+		return rebind_argument(idx);
+	}
+	return arguments[idx]->Copy();
 }
 
 } // namespace duckdb

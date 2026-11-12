@@ -182,9 +182,13 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 		}
 	}
 
+	// bound subqueries cannot be copied, so keep the parsed arguments in case an aggregate bind callback needs to rebind
+	vector<unique_ptr<ParsedExpression>> parsed_arguments;
+	parsed_arguments.reserve(aggr.GetArguments().size());
 	vector<unique_ptr<Expression>> bound_arguments;
 	for (idx_t i = 0; i < aggr.GetArguments().size(); ++i) {
 		auto &child = aggr.GetArgumentsMutable()[i];
+		parsed_arguments.push_back(child.GetExpression().Copy());
 		bound_arguments.push_back(BindChild(child.GetExpressionMutable(), 0, error));
 		// We have to negate the fractions for PERCENTILE_XXXX DESC
 		if (!error.HasError() && ordered_set_agg && i == aggr.GetArguments().size() - 1) {
@@ -304,9 +308,27 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 
 	// Bind the function
 	FunctionBinder function_binder(binder);
-	auto aggregate =
-	    function_binder.BindAggregateFunction(func, std::move(arguments), error, std::move(bound_filter),
-	                                          aggr.Distinct() ? AggregateType::DISTINCT : AggregateType::NON_DISTINCT);
+	auto rebind_argument = [&](idx_t arg_idx) -> unique_ptr<Expression> {
+		D_ASSERT(arg_idx < parsed_arguments.size());
+		auto parsed_copy = parsed_arguments[arg_idx]->Copy();
+		const auto prev_inside_aggregate = this->inside_aggregate;
+		const auto prev_transport_try_errors = this->transport_try_errors;
+		this->inside_aggregate = true;
+		this->transport_try_errors = false;
+		auto bound_column_count = GetBoundColumns().size();
+		ErrorData rebind_error;
+		auto rebound = BindChild(parsed_copy, 0, rebind_error);
+		this->inside_aggregate = prev_inside_aggregate;
+		this->transport_try_errors = prev_transport_try_errors;
+		TruncateBoundColumns(bound_column_count);
+		if (rebind_error.HasError()) {
+			rebind_error.Throw();
+		}
+		return rebound;
+	};
+	auto aggregate = function_binder.BindAggregateFunction(
+	    func, std::move(arguments), error, std::move(bound_filter),
+	    aggr.Distinct() ? AggregateType::DISTINCT : AggregateType::NON_DISTINCT, rebind_argument);
 	// No function found, throw an error
 	if (!aggregate) {
 		error.AddQueryLocation(aggr);

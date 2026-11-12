@@ -63,14 +63,17 @@ class BindAggregateFunctionInput : public BindFunctionInput {
 public:
 	// Defined out-of-line: converting to the BindFunctionInput base requires the complete BoundAggregateFunction.
 	BindAggregateFunctionInput(ClientContext &context_p, BoundAggregateFunction &bound_function_p,
-	                           vector<unique_ptr<Expression>> &arguments_p);
+	                           vector<unique_ptr<Expression>> &arguments_p,
+	                           std::function<unique_ptr<Expression>(idx_t)> rebind_argument_p = nullptr);
 
 	BoundAggregateFunction &GetBoundFunction() const {
 		return bound_function;
 	}
+	unique_ptr<Expression> CopyOrRebindArgument(idx_t idx) const;
 
 private:
 	BoundAggregateFunction &bound_function;
+	std::function<unique_ptr<Expression>(idx_t)> rebind_argument;
 };
 
 class FunctionExpression;

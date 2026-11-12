@@ -1579,7 +1579,8 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(const FunctionBinding 
 
 pair<BoundAggregateFunction, unique_ptr<FunctionData>>
 FunctionBinder::ResolveAggregateFunction(const FunctionBinding &binding, vector<unique_ptr<Expression>> &children,
-                                         vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments) {
+                                         vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments,
+                                         std::function<unique_ptr<Expression>(idx_t)> rebind_argument) {
 	auto &function = binding.GetFunction();
 	// Make a BoundFunction out of the func
 	BoundAggregateFunction bound_function(binding.GetFunction<AggregateFunction>());
@@ -1596,7 +1597,7 @@ FunctionBinder::ResolveAggregateFunction(const FunctionBinding &binding, vector<
 	unique_ptr<FunctionData> bind_info;
 
 	if (bound_function.GetCallbacks().HasBindCallback()) {
-		BindAggregateFunctionInput input(context, bound_function, children);
+		BindAggregateFunctionInput input(context, bound_function, children, std::move(rebind_argument));
 		bind_info = bound_function.GetCallbacks().GetBindCallback()(input);
 
 		// we may have lost some arguments in the bind
@@ -1648,7 +1649,8 @@ FunctionBinder::BindAggregateFunction(const shared_ptr<const AggregateFunction> 
 unique_ptr<BoundAggregateExpression>
 FunctionBinder::BindAggregateFunction(FunctionBinding binding, vector<unique_ptr<Expression>> children,
                                       vector<pair<Identifier, unique_ptr<Expression>>> keyword_args,
-                                      unique_ptr<Expression> filter, AggregateType aggr_type) {
+                                      unique_ptr<Expression> filter, AggregateType aggr_type,
+                                      std::function<unique_ptr<Expression>(idx_t)> rebind_argument) {
 	auto function = binding.GetFunction<AggregateFunction>();
 	if (aggr_type == AggregateType::DISTINCT &&
 	    function->GetCollationHandling() == FunctionCollationHandling::PUSH_DISTINCT_COLLATIONS) {
@@ -1661,7 +1663,8 @@ FunctionBinder::BindAggregateFunction(FunctionBinding binding, vector<unique_ptr
 		// the arguments are replaced by their comparison keys, which may be of other types
 		binding = MatchFunction(function, children, keyword_args);
 	}
-	auto [bound_function, bind_info] = ResolveAggregateFunction(binding, children, keyword_args);
+	auto [bound_function, bind_info] =
+	    ResolveAggregateFunction(binding, children, keyword_args, std::move(rebind_argument));
 
 	return make_uniq<BoundAggregateExpression>(std::move(bound_function), std::move(children), std::move(filter),
 	                                           std::move(bind_info), aggr_type);
@@ -1670,7 +1673,8 @@ FunctionBinder::BindAggregateFunction(FunctionBinding binding, vector<unique_ptr
 unique_ptr<BoundAggregateExpression>
 FunctionBinder::BindAggregateFunction(const AggregateFunctionCatalogEntry &func,
                                       vector<pair<Identifier, unique_ptr<Expression>>> arguments, ErrorData &error,
-                                      unique_ptr<Expression> filter, AggregateType aggr_type) {
+                                      unique_ptr<Expression> filter, AggregateType aggr_type,
+                                      std::function<unique_ptr<Expression>(idx_t)> rebind_argument) {
 	// select the best matching overload (this may name positional arguments by their alias for functions that opt
 	// into implicit argument naming, e.g. struct_pack/row)
 	vector<unique_ptr<Expression>> regular_args;
@@ -1682,7 +1686,7 @@ FunctionBinder::BindAggregateFunction(const AggregateFunctionCatalogEntry &func,
 	}
 
 	return BindAggregateFunction(std::move(*best_function), std::move(regular_args), std::move(keyword_args),
-	                             std::move(filter), aggr_type);
+	                             std::move(filter), aggr_type, std::move(rebind_argument));
 }
 
 unique_ptr<BoundAggregateExpression> FunctionBinder::BindAggregateFunction(const AggregateFunctionCatalogEntry &func,
