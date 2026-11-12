@@ -660,7 +660,7 @@ bool RelationManager::ExtractJoinRelation(JoinOrderOptimizer &optimizer, Pending
 		op->children[0] = child_optimizer.Optimize(std::move(op->children[0]), &child_stats);
 		auto &proj = op->Cast<LogicalProjection>();
 		// Projection can create columns so we need to add them here
-		auto proj_stats = RelationStatisticsHelper::ExtractProjectionStats(proj, child_stats);
+		auto proj_stats = RelationStatisticsHelper::ExtractProjectionStats(proj, child_stats, context);
 		if (!proj_stats) {
 			stats_complete = false;
 			return false;

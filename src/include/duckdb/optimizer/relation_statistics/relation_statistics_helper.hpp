@@ -60,7 +60,7 @@ public:
 	static optional<RelationStats> ExtractOperatorStats(LogicalOperator &op, ClientContext &context,
 	                                                    const vector<reference<const RelationStats>> &child_stats);
 	static optional<RelationStats> ExtractProjectionStats(LogicalProjection &projection,
-	                                                      const RelationStats &child_stats);
+	                                                      const RelationStats &child_stats, ClientContext &context);
 	static optional<RelationStats> ExtractAggregationStats(LogicalAggregate &aggregate,
 	                                                       const RelationStats &child_stats, ClientContext &context);
 	//! Reuse the caller snapshot for aggregate input refinements.
@@ -103,6 +103,8 @@ public:
 	EstimateSemiAntiJoinCardinality(LogicalComparisonJoin &join, const RelationStats &left, const RelationStats &right);
 	static optional_idx EstimateDirectFilterDomain(const Expression &expression, optional<ColumnBinding> target_binding,
 	                                               idx_t maximum_domain);
+	//! max - min + 1 of an integer or temporal min/max range, invalid if unknown or overflowing
+	static optional_idx NumericStatsDistinctCount(const BaseStatistics &stats);
 
 private:
 	static unique_ptr<BaseStatistics> GetColumnStatistics(LogicalGet &get, ClientContext &context,

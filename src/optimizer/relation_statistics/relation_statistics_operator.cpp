@@ -23,6 +23,7 @@ ProjectChildStats(LogicalOperator &op, const vector<reference<const RelationStat
 			return {};
 		}
 		result.columns.emplace_back(binding, source->total_domain, source->current_domain, source->name);
+		result.columns.back().base_stats = source->base_stats;
 	}
 	result.CapCurrentDomainsToCardinality();
 	result.Verify(op.GetColumnBindings());
@@ -365,7 +366,7 @@ RelationStatisticsHelper::ExtractOperatorStats(LogicalOperator &op, ClientContex
 	case LogicalOperatorType::LOGICAL_CHUNK_GET:
 		return ExtractColumnDataGetStats(op.Cast<LogicalColumnDataGet>(), context);
 	case LogicalOperatorType::LOGICAL_PROJECTION:
-		return ExtractProjectionStats(op.Cast<LogicalProjection>(), child_stats[0].get());
+		return ExtractProjectionStats(op.Cast<LogicalProjection>(), child_stats[0].get(), context);
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
 		return ExtractAggregationStats(op.Cast<LogicalAggregate>(), child_stats[0].get(), context);
 	case LogicalOperatorType::LOGICAL_WINDOW:

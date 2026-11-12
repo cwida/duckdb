@@ -381,6 +381,7 @@ static RelationColumnStats CombineColumnStats(const ColumnBinding &binding, cons
 		semi_anti_evidence = source.semi_anti_join_domain_evidence;
 	}
 	RelationColumnStats column(binding, source.total_domain, source.current_domain, source.name, semi_anti_evidence);
+	column.base_stats = source.base_stats;
 	auto equality_entry = equality_bounds.find(normalized);
 	if (equality_entry != equality_bounds.end()) {
 		column.current_domain = DistinctCount(MinValue(column.current_domain.distinct_count, equality_entry->second),
