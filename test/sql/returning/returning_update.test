@@ -313,3 +313,15 @@ query I
 UPDATE table1 SET a=5 returning a;
 ----
 4000 values hashing to e301b6700134ddecb65484e0532d3fd5
+
+# a del+insert update whose appends cross a row group boundary returns every updated row
+statement ok
+ATTACH '{TEST_DIR}/returning_update_small_row_groups.db' AS small_rg
+
+statement ok
+CREATE TABLE small_rg.t_list AS SELECT i AS id, [i] AS l FROM range(300000) t(i)
+
+query II
+WITH u AS (UPDATE small_rg.t_list SET l = [id + 1] WHERE id % 7 <> 0 RETURNING id) SELECT count(*), count(DISTINCT id) FROM u
+----
+257142	257142
