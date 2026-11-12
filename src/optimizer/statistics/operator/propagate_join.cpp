@@ -1,5 +1,6 @@
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/operator/add.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -122,8 +123,8 @@ struct VerificationStatsGuard {
 };
 
 //! The column a join-derived filter can target: the side itself or the column under a lossless integral cast
-static optional_ptr<const Expression> GetFilterColumn(const Expression &expr) {
-	auto column = &expr;
+static optional_ptr<const Expression> GetFilterColumn(ClientContext &context, const Expression &expr) {
+	optional_ptr<const Expression> column = expr;
 	if (BoundCastExpression::IsCast(expr)) {
 		auto &cast = expr.Cast<BoundFunctionExpression>();
 		auto source_type = BoundCastExpression::SourceType(cast);
@@ -132,7 +133,11 @@ static optional_ptr<const Expression> GetFilterColumn(const Expression &expr) {
 		    !BoundCastExpression::CastIsInvertible(source_type, target_type)) {
 			return nullptr;
 		}
-		column = &BoundCastExpression::Child(cast);
+		if (!BoundCastExpression::IsDefaultCast(cast) &&
+		    CastFunctionSet::Get(context).CanOverrideDefaultCast(source_type, target_type)) {
+			return nullptr;
+		}
+		column = BoundCastExpression::Child(cast);
 	}
 	if (column->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
 		return nullptr;
@@ -259,8 +264,8 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 				// Update join_stats when is already part of the join
 				condition.SetLeftStats(std::move(updated_stats_left));
 				condition.SetRightStats(std::move(updated_stats_right));
-			} else if (stats_left && stats_right && GetFilterColumn(condition.GetLHS()) &&
-			           GetFilterColumn(condition.GetRHS())) {
+			} else if (stats_left && stats_right && GetFilterColumn(context, condition.GetLHS()) &&
+			           GetFilterColumn(context, condition.GetRHS())) {
 				// A side is a cast of a column: tighten copies of the side stats instead
 				auto tightened_left = stats_left->Copy();
 				auto tightened_right = stats_right->Copy();
@@ -499,7 +504,7 @@ void StatisticsPropagator::CreateFilterFromJoinStats(unique_ptr<LogicalOperator>
 		return;
 	}
 	// Only do this for integral colref's (possibly under a lossless cast) that have stats
-	auto column = GetFilterColumn(*expr);
+	auto column = GetFilterColumn(context, *expr);
 	if (!column || !expr->GetReturnType().IsIntegral() || !NumericStats::HasMinMax(stats_before) ||
 	    !NumericStats::HasMinMax(stats_after)) {
 		return;
