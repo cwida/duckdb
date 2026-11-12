@@ -18,6 +18,7 @@
 namespace duckdb {
 
 class BoundColumnRefExpression;
+class ConstantExpression;
 class LogicalOperator;
 
 //! The keys of an index while they are bound
@@ -53,6 +54,8 @@ protected:
 	string UnsupportedAggregateMessage() override;
 
 private:
+	//! Binds a literal of a stored key as the engines before wide decimals bound it
+	BindResult BindLegacyConstant(ConstantExpression &expr);
 	//! Binds the casts between BIGNUM and DECIMAL of a bound key node as the engines before wide decimals bound them
 	void BindLegacyCasts(unique_ptr<Expression> &expr);
 	void BindLegacyCast(unique_ptr<Expression> &expr);

@@ -1,5 +1,5 @@
 # name: test/sql/storage/bc/test_decimal_expression_index_v2_0.test
-# description: Decimal index keys of a database written before wide decimals bind as that engine bound them: within 38 digits, casts between BIGNUM and DECIMAL as the null cast; a key that engine computed otherwise is refused by writes and skipped by reads
+# description: Decimal index keys of a database written before wide decimals bind as that engine bound them: within 38 digits, wide literals as DOUBLE, casts between BIGNUM and DECIMAL as the null cast; a key that engine computed otherwise is refused by writes and skipped by reads
 # group: [bc]
 
 # The databases are written with a vector size of 2048.
@@ -443,6 +443,64 @@ statement error
 INSERT INTO old.t VALUES (2)
 ----
 <REGEX>:.*Duplicate key.*2.*
+
+statement ok
+DETACH old
+
+# data/storage/decimal_wide_literal_index_v2_0_0.db.gz was written by DuckDB 2.0.0 at storage version v2.0.0 with:
+#   CREATE TABLE t (k INTEGER);
+#   CREATE INDEX ix ON t ((k + 1234567890123456789012345678901234567890.5));
+#   INSERT INTO t SELECT i FROM range(1000) r(i);
+# That engine bound the literal of 41 digits to a DOUBLE and stored DOUBLE keys; this engine binds the literal of a
+# query to DECIMAL(41,1) and the sum to DECIMAL(42,1), and the literal of the stored key to the DOUBLE of that engine
+unzip data/storage/decimal_wide_literal_index_v2_0_0.db.gz {TEST_DIR}/decimal_wide_literal_index.db
+
+statement ok
+ATTACH '{TEST_DIR}/decimal_wide_literal_index.db' AS ro (READ_ONLY)
+
+query I
+SELECT k FROM ro.t WHERE k = 1
+----
+1
+
+query I
+SELECT typeof(k + 1234567890123456789012345678901234567890.5) FROM ro.t LIMIT 1
+----
+DECIMAL(42,1)
+
+statement ok
+DETACH ro
+
+statement ok
+ATTACH '{TEST_DIR}/decimal_wide_literal_index.db' AS old
+
+statement ok
+INSERT INTO old.t VALUES (1000)
+
+query I
+SELECT count(*) FROM old.t
+----
+1001
+
+statement ok
+CHECKPOINT old
+
+# the same key cannot be created again at this storage version: a literal wider than 38 digits is refused
+statement error
+CREATE INDEX ix2 ON old.t ((k + 1234567890123456789012345678901234567890.5))
+----
+<REGEX>:.*Decimal literal of 41 digits exceeds the maximum DECIMAL width of 38 \(index keys of storage version v2\.0\.0.*
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/decimal_wide_literal_index.db' AS old
+
+query I
+SELECT k FROM old.t WHERE k = 1000
+----
+1000
 
 statement ok
 DETACH old

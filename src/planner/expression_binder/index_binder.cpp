@@ -5,6 +5,8 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/column_binding.hpp"
@@ -391,6 +393,11 @@ BindResult IndexBinder::BindExpression(unique_ptr<ParsedExpression> &expr_ptr, i
 		return BindResult(BinderException::Unsupported(expr, "window functions are not allowed in index expressions"));
 	case ExpressionClass::SUBQUERY:
 		return BindResult(BinderException::Unsupported(expr, "cannot use subquery in index expressions"));
+	case ExpressionClass::CONSTANT:
+		if (legacy_keys && keys->stored) {
+			return BindLegacyConstant(expr.Cast<ConstantExpression>());
+		}
+		break;
 	default:
 		break;
 	}
@@ -411,6 +418,11 @@ BindResult IndexBinder::BindExpression(unique_ptr<ParsedExpression> &expr_ptr, i
 		BindLegacyCasts(result.expression);
 	}
 	return result;
+}
+
+BindResult IndexBinder::BindLegacyConstant(ConstantExpression &expr) {
+	// those engines bind a literal wider than 38 digits to a DOUBLE, the stored keys hold that value
+	return BindResult(make_uniq<BoundConstantExpression>(expr.GetLiteral().ToValue(Decimal::MAX_WIDTH_INT128)));
 }
 
 void IndexBinder::BindLegacyCasts(unique_ptr<Expression> &expr) {
