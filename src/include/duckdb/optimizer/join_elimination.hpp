@@ -13,6 +13,7 @@
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/unordered_set.hpp"
+#include "duckdb/common/vector.hpp"
 #include "duckdb/planner/column_binding.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/expression.hpp"
@@ -26,6 +27,12 @@ class PipelineInfo;
 struct DistinctGroupRef {
 	column_binding_set_t distinct_group;
 	unordered_set<ProjectionIndex> ref_column_ids;
+};
+
+struct SavedProjectionMap {
+	LogicalOperator *op;
+	idx_t child_index;
+	vector<ColumnBinding> selected;
 };
 
 class PipelineInfo {
@@ -79,6 +86,8 @@ private:
 	bool ContainDistinctGroup(vector<ColumnBinding> &exprs);
 
 	PipelineInfo pipe_info;
+	// Projection maps resolved before this optimizer detaches the children it rewrites.
+	vector<SavedProjectionMap> saved_projection_maps;
 
 	optional_ptr<LogicalOperator> children_root;
 	vector<unique_ptr<JoinElimination>> children;
