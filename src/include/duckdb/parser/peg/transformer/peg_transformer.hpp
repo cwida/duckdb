@@ -89,6 +89,7 @@ struct GroupByExpressionInfo {
 //===--------------------------------------------------------------------===//
 DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.AddColumnEntry", AddColumnEntry);
 DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.AnalyzeTarget", AnalyzeTarget);
+DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.ArrowBody", ArrowBody);
 DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.BetweenInLikeOperator", BetweenInLikeOperator);
 DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.BinaryExpressionTail", BinaryExpressionTail);
 DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.CaseCheck", CaseCheck);
@@ -2584,13 +2585,6 @@ public:
 	static void InitializeColumnDefaultExprTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeColumnDefaultExprTrampoline(PEGTransformer &transformer,
 	                                                                           GeneratedTransformProcess &process);
-	static void InitializeLambdaArrowExpressionTrampoline(PEGTransformer &transformer,
-	                                                      GeneratedTransformProcess &process);
-	static arena_ptr<TransformResultValue> FinalizeLambdaArrowExpressionTrampoline(PEGTransformer &transformer,
-	                                                                               GeneratedTransformProcess &process);
-	static void InitializeSingleArrowPairTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static arena_ptr<TransformResultValue> FinalizeSingleArrowPairTrampoline(PEGTransformer &transformer,
-	                                                                         GeneratedTransformProcess &process);
 	static void InitializeLogicalOrExpressionTrampoline(PEGTransformer &transformer,
 	                                                    GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeLogicalOrExpressionTrampoline(PEGTransformer &transformer,
@@ -2825,6 +2819,24 @@ public:
 	                                                            GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
 	FinalizeOtherOperatorExpressionTailTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static void InitializeSingleArrowTailTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeSingleArrowTailTrampoline(PEGTransformer &transformer,
+	                                                                         GeneratedTransformProcess &process);
+	static void InitializeSingleArrowBodyTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeSingleArrowBodyTrampoline(PEGTransformer &transformer,
+	                                                                         GeneratedTransformProcess &process);
+	static void InitializeArrowChainBodyTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeArrowChainBodyTrampoline(PEGTransformer &transformer,
+	                                                                        GeneratedTransformProcess &process);
+	static void InitializeArrowChainTailTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeArrowChainTailTrampoline(PEGTransformer &transformer,
+	                                                                        GeneratedTransformProcess &process);
+	static void InitializeDoubleArrowTailTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeDoubleArrowTailTrampoline(PEGTransformer &transformer,
+	                                                                         GeneratedTransformProcess &process);
+	static void InitializeArrowFullBodyTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeArrowFullBodyTrampoline(PEGTransformer &transformer,
+	                                                                       GeneratedTransformProcess &process);
 	static void InitializeOtherOperatorTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeOtherOperatorTrampoline(PEGTransformer &transformer,
 	                                                                       GeneratedTransformProcess &process);
@@ -5133,11 +5145,6 @@ public:
 	static unique_ptr<ParsedExpression> TransformColumnDefaultExpr(PEGTransformer &transformer,
 	                                                               unique_ptr<ParsedExpression> col_def_or_expr);
 	static unique_ptr<ParsedExpression>
-	TransformLambdaArrowExpression(PEGTransformer &transformer, unique_ptr<ParsedExpression> logical_or_expression,
-	                               optional<vector<unique_ptr<ParsedExpression>>> single_arrow_pair);
-	static unique_ptr<ParsedExpression> TransformSingleArrowPair(PEGTransformer &transformer,
-	                                                             unique_ptr<ParsedExpression> logical_or_expression);
-	static unique_ptr<ParsedExpression>
 	TransformLogicalOrExpression(PEGTransformer &transformer, unique_ptr<ParsedExpression> logical_and_expression,
 	                             optional<vector<unique_ptr<ParsedExpression>>> logical_or_expression_tail);
 	static unique_ptr<ParsedExpression>
@@ -5252,6 +5259,14 @@ public:
 	static OtherOperatorTail TransformOtherOperatorExpressionTail(PEGTransformer &transformer,
 	                                                              ParsedOperator other_operator,
 	                                                              unique_ptr<ParsedExpression> bitwise_expression);
+	static OtherOperatorTail TransformSingleArrowTail(PEGTransformer &transformer, ArrowBody single_arrow_body);
+	static ArrowBody TransformArrowChainBody(PEGTransformer &transformer,
+	                                         unique_ptr<ParsedExpression> bitwise_expression,
+	                                         vector<OtherOperatorTail> arrow_chain_tail);
+	static OtherOperatorTail TransformDoubleArrowTail(PEGTransformer &transformer,
+	                                                  unique_ptr<ParsedExpression> bitwise_expression);
+	static ArrowBody TransformArrowFullBody(PEGTransformer &transformer,
+	                                        unique_ptr<ParsedExpression> logical_or_expression);
 	static ParsedOperator TransformAnyAllParsedOperator(PEGTransformer &transformer,
 	                                                    const pair<string, bool> &any_all_operator);
 	static ParsedOperator TransformNamedOtherOperator(PEGTransformer &transformer, const string &child);

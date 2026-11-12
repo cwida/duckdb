@@ -122,6 +122,8 @@ private:
 	// Finish pushing down at this operator, creating a LogicalFilter to store any of the stored filters and recursively
 	// pushing down into its children (if any)
 	unique_ptr<LogicalOperator> FinishPushdown(unique_ptr<LogicalOperator> op);
+	//! Rewrite a child of op with this pushdown, keeping op's projection map of that child on its new layout
+	void RewriteChild(LogicalOperator &op, idx_t child_idx);
 	//! Adds a filter to the set of filters. Returns FilterResult::UNSATISFIABLE if the subtree should be stripped, or
 	//! FilterResult::SUCCESS otherwise
 

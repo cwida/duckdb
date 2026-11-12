@@ -749,11 +749,9 @@ bool LineError::HandleErrors(StringValueResult &result) {
 				    result.current_line_position.begin.GetGlobalPosition(result.requested_size, first_nl),
 				    line_pos.GetGlobalPosition(result.requested_size), result.path);
 			}
-			// the file types are those of the projected columns
-			auto &file_types = result.csv_file_scan->file_types;
-			if (cur_error.chunk_idx < file_types.size() &&
-			    !StringValueScanner::CanDirectlyCast(file_types[cur_error.chunk_idx], result.icu_loaded)) {
-				result.number_of_rows--;
+			// the value is invalid: make it NULL so that casting the column does not report a second error for it
+			if (cur_error.chunk_idx < result.validity_mask.size()) {
+				result.validity_mask[cur_error.chunk_idx]->SetInvalid(static_cast<idx_t>(result.number_of_rows));
 			}
 			break;
 		}

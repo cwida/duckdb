@@ -240,87 +240,12 @@ vector<idx_t> GetChildIndices(const UnifiedVariantVectorData &variant, idx_t row
 	return child_indices;
 }
 
-static idx_t AnalyzeValueData(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_index,
-                              vector<uint32_t> &offsets, optional_ptr<ParquetVariantShreddingState> shredding_state) {
-	idx_t total_size = 0;
+//! The size of a primitive value, the value header included
+static idx_t AnalyzePrimitiveValueData(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_index,
+                                       VariantLogicalType type_id) {
 	//! Every value has at least a value header
-	total_size++;
-
-	idx_t offset_size = offsets.size();
-	VariantLogicalType type_id = VariantLogicalType::VARIANT_NULL;
-	if (variant.RowIsValid(row)) {
-		type_id = variant.GetTypeId(row, values_index);
-	}
+	idx_t total_size = 1;
 	switch (type_id) {
-	case VariantLogicalType::OBJECT: {
-		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_index);
-
-		//! Calculate value and key offsets for all children
-		idx_t total_offset = 0;
-		uint32_t highest_keys_index = 0;
-
-		auto child_indices = GetChildIndices(variant, row, nested_data, shredding_state);
-		if (nested_data.child_count && child_indices.empty()) {
-			//! All fields of the object are shredded, omit the object entirely
-			return 0;
-		}
-
-		auto num_elements = child_indices.size();
-		offsets.resize(offset_size + num_elements + 1);
-
-		for (idx_t entry = 0; entry < child_indices.size(); entry++) {
-			auto i = child_indices[entry];
-			auto keys_index = variant.GetKeysIndex(row, i + nested_data.children_idx);
-			auto values_index = variant.GetValuesIndex(row, i + nested_data.children_idx);
-			offsets[offset_size + entry] = NumericCast<uint32_t>(total_offset);
-
-			total_offset += AnalyzeValueData(variant, row, values_index, offsets, nullptr);
-			highest_keys_index = MaxValue(highest_keys_index, keys_index);
-		}
-		offsets[offset_size + num_elements] = NumericCast<uint32_t>(total_offset);
-
-		//! Calculate the sizes for the objects value data
-		auto field_id_size = CalculateByteLength(highest_keys_index);
-		auto field_offset_size = CalculateByteLength(total_offset);
-		const bool is_large = num_elements > NumericLimits<uint8_t>::Maximum();
-
-		//! Now add the sizes for the objects value data
-		if (is_large) {
-			total_size += sizeof(uint32_t);
-		} else {
-			total_size += sizeof(uint8_t);
-		}
-		total_size += num_elements * field_id_size;
-		total_size += (num_elements + 1) * field_offset_size;
-		total_size += total_offset;
-		break;
-	}
-	case VariantLogicalType::ARRAY: {
-		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_index);
-
-		idx_t total_offset = 0;
-		offsets.resize(offset_size + nested_data.child_count + 1);
-		for (idx_t i = 0; i < nested_data.child_count; i++) {
-			auto values_index = variant.GetValuesIndex(row, i + nested_data.children_idx);
-			offsets[offset_size + i] = NumericCast<uint32_t>(total_offset);
-
-			total_offset += AnalyzeValueData(variant, row, values_index, offsets, nullptr);
-		}
-		offsets[offset_size + nested_data.child_count] = NumericCast<uint32_t>(total_offset);
-
-		auto field_offset_size = CalculateByteLength(total_offset);
-		auto num_elements = nested_data.child_count;
-		const bool is_large = num_elements > NumericLimits<uint8_t>::Maximum();
-
-		if (is_large) {
-			total_size += sizeof(uint32_t);
-		} else {
-			total_size += sizeof(uint8_t);
-		}
-		total_size += (num_elements + 1) * field_offset_size;
-		total_size += total_offset;
-		break;
-	}
 	case VariantLogicalType::BLOB:
 	case VariantLogicalType::VARCHAR: {
 		auto string_value = VariantUtils::DecodeStringData(variant, row, values_index);
@@ -408,6 +333,107 @@ static idx_t AnalyzeValueData(const UnifiedVariantVectorData &variant, idx_t row
 	}
 
 	return total_size;
+}
+
+//! The size of the header of a nested value, the value header, the element count, the field ids and the field offsets
+static idx_t NestedHeaderSize(idx_t num_elements, idx_t field_id_size, idx_t field_offset_size) {
+	idx_t total_size = 1;
+	if (num_elements > NumericLimits<uint8_t>::Maximum()) {
+		total_size += sizeof(uint32_t);
+	} else {
+		total_size += sizeof(uint8_t);
+	}
+	total_size += num_elements * field_id_size;
+	total_size += (num_elements + 1) * field_offset_size;
+	return total_size;
+}
+
+//! A nested value whose children are being measured. The explicit stack replaces recursion, so the nesting depth of
+//! a value is not bounded by the thread stack
+struct AnalyzeFrame {
+	VariantLogicalType type_id;
+	VariantNestedData nested_data;
+	//! The children of an object in the order of the Parquet value, unused for an array
+	vector<idx_t> child_indices;
+	idx_t num_elements = 0;
+	//! Where the field offsets of this value start in 'offsets'
+	idx_t offset_start = 0;
+	idx_t next_child = 0;
+	//! The size of the children measured so far
+	idx_t total_offset = 0;
+	uint32_t highest_keys_index = 0;
+};
+
+//! The caller keeps 'stack' across rows, so its capacity is reused
+static idx_t AnalyzeValueData(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_index,
+                              vector<uint32_t> &offsets, optional_ptr<ParquetVariantShreddingState> shredding_state,
+                              vector<AnalyzeFrame> &stack) {
+	stack.clear();
+	auto current = values_index;
+	for (;;) {
+		//! Measure 'current', entering it when it is nested
+		VariantLogicalType type_id = VariantLogicalType::VARIANT_NULL;
+		if (variant.RowIsValid(row)) {
+			type_id = variant.GetTypeId(row, current);
+		}
+		if (type_id == VariantLogicalType::OBJECT || type_id == VariantLogicalType::ARRAY) {
+			AnalyzeFrame frame;
+			frame.type_id = type_id;
+			frame.nested_data = VariantUtils::DecodeNestedData(variant, row, current);
+			if (type_id == VariantLogicalType::OBJECT) {
+				//! The shredding state only applies to the root
+				frame.child_indices =
+				    GetChildIndices(variant, row, frame.nested_data, stack.empty() ? shredding_state : nullptr);
+				if (frame.nested_data.child_count && frame.child_indices.empty()) {
+					//! All fields of the object are shredded, omit the object entirely
+					D_ASSERT(stack.empty());
+					return 0;
+				}
+				frame.num_elements = frame.child_indices.size();
+			} else {
+				frame.num_elements = frame.nested_data.child_count;
+			}
+			frame.offset_start = offsets.size();
+			offsets.resize(frame.offset_start + frame.num_elements + 1);
+			stack.push_back(std::move(frame));
+		} else {
+			auto size = AnalyzePrimitiveValueData(variant, row, current, type_id);
+			if (stack.empty()) {
+				return size;
+			}
+			stack.back().total_offset += size;
+		}
+		//! Finish the nested values whose children are all measured, then move to the next child
+		for (;;) {
+			auto &frame = stack.back();
+			if (frame.next_child < frame.num_elements) {
+				auto child = frame.type_id == VariantLogicalType::OBJECT ? frame.child_indices[frame.next_child]
+				                                                         : frame.next_child;
+				auto child_position = child + frame.nested_data.children_idx;
+				offsets[frame.offset_start + frame.next_child] = NumericCast<uint32_t>(frame.total_offset);
+				if (frame.type_id == VariantLogicalType::OBJECT) {
+					frame.highest_keys_index =
+					    MaxValue(frame.highest_keys_index, variant.GetKeysIndex(row, child_position));
+				}
+				current = variant.GetValuesIndex(row, child_position);
+				frame.next_child++;
+				break;
+			}
+			//! All children are measured, the header sizes follow from them
+			offsets[frame.offset_start + frame.num_elements] = NumericCast<uint32_t>(frame.total_offset);
+			idx_t field_id_size = 0;
+			if (frame.type_id == VariantLogicalType::OBJECT) {
+				field_id_size = CalculateByteLength(frame.highest_keys_index);
+			}
+			auto field_offset_size = CalculateByteLength(frame.total_offset);
+			auto size = NestedHeaderSize(frame.num_elements, field_id_size, field_offset_size) + frame.total_offset;
+			stack.pop_back();
+			if (stack.empty()) {
+				return size;
+			}
+			stack.back().total_offset += size;
+		}
+	}
 }
 
 template <VariantPrimitiveType TYPE_ID>
@@ -632,148 +658,166 @@ static void WritePrimitiveValueData(const UnifiedVariantVectorData &variant, idx
 	}
 }
 
-static void WriteValueData(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_index,
-                           data_ptr_t &value_data, const vector<uint32_t> &offsets, idx_t &offset_index,
-                           optional_ptr<ParquetVariantShreddingState> shredding_state) {
-	VariantLogicalType type_id = VariantLogicalType::VARIANT_NULL;
-	if (variant.RowIsValid(row)) {
-		type_id = variant.GetTypeId(row, values_index);
-	}
+//! A nested value whose children are being written
+struct WriteFrame {
+	VariantLogicalType type_id;
+	VariantNestedData nested_data;
+	//! The children of an object in the order of the Parquet value, unused for an array
+	vector<idx_t> child_indices;
+	idx_t num_elements = 0;
+	idx_t field_offset_size = 0;
+	idx_t next_child = 0;
+	//! The size of the children written so far
+	idx_t total_offset = 0;
+	//! Where the next field offset is written
+	data_ptr_t offsets_ptr = nullptr;
+	//! Where the next child is written
+	data_ptr_t children_ptr = nullptr;
+	//! Where the child being written started
+	data_ptr_t child_start = nullptr;
+};
+
+//! Writes the header of a nested value, the value header, the element count and for an object the field ids, and
+//! leaves the frame ready to write the field offsets and the children
+static WriteFrame WriteNestedHeader(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_index,
+                                    VariantLogicalType type_id, data_ptr_t &value_data, const vector<uint32_t> &offsets,
+                                    idx_t &offset_index, optional_ptr<ParquetVariantShreddingState> shredding_state) {
+	WriteFrame frame;
+	frame.type_id = type_id;
+	frame.nested_data = VariantUtils::DecodeNestedData(variant, row, values_index);
+	idx_t field_id_size = 0;
 	if (type_id == VariantLogicalType::OBJECT) {
-		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_index);
-
-		//! -- Object value header --
-
-		auto child_indices = GetChildIndices(variant, row, nested_data, shredding_state);
-		if (nested_data.child_count && child_indices.empty()) {
+		frame.child_indices = GetChildIndices(variant, row, frame.nested_data, shredding_state);
+		if (frame.nested_data.child_count && frame.child_indices.empty()) {
 			throw InternalException(
 			    "The entire should be omitted, should have been handled by the Analyze step already");
 		}
-		auto num_elements = child_indices.size();
+		frame.num_elements = frame.child_indices.size();
 
 		//! Determine the 'field_id_size'
 		uint32_t highest_keys_index = 0;
-		for (auto &i : child_indices) {
-			auto keys_index = variant.GetKeysIndex(row, i + nested_data.children_idx);
+		for (auto &i : frame.child_indices) {
+			auto keys_index = variant.GetKeysIndex(row, i + frame.nested_data.children_idx);
 			highest_keys_index = MaxValue(highest_keys_index, keys_index);
 		}
-		auto field_id_size = CalculateByteLength(highest_keys_index);
+		field_id_size = CalculateByteLength(highest_keys_index);
+	} else {
+		frame.num_elements = frame.nested_data.child_count;
+	}
 
-		uint32_t last_offset = 0;
-		if (num_elements) {
-			last_offset = offsets[offset_index + num_elements];
-		}
-		offset_index += num_elements + 1;
-		auto field_offset_size = CalculateByteLength(last_offset);
+	uint32_t last_offset = 0;
+	if (frame.num_elements) {
+		last_offset = offsets[offset_index + frame.num_elements];
+	}
+	offset_index += frame.num_elements + 1;
+	frame.field_offset_size = CalculateByteLength(last_offset);
 
-		const bool is_large = num_elements > NumericLimits<uint8_t>::Maximum();
+	const bool is_large = frame.num_elements > NumericLimits<uint8_t>::Maximum();
 
-		uint8_t value_header = 0;
+	uint8_t value_header = 0;
+	if (type_id == VariantLogicalType::OBJECT) {
 		value_header |= static_cast<uint8_t>(VariantBasicType::OBJECT);
 		value_header |= static_cast<uint8_t>(is_large) << 6;
 		value_header |= (static_cast<uint8_t>(field_id_size) - 1) << 4;
-		value_header |= (static_cast<uint8_t>(field_offset_size) - 1) << 2;
-
-#ifdef DEBUG
-		auto object_value_header = VariantValueMetadata::FromHeaderByte(value_header);
-		D_ASSERT(object_value_header.basic_type == VariantBasicType::OBJECT);
-		D_ASSERT(object_value_header.is_large == is_large);
-		D_ASSERT(object_value_header.field_offset_size == field_offset_size);
-		D_ASSERT(object_value_header.field_id_size == field_id_size);
-#endif
-
-		*value_data = value_header;
-		value_data++;
-
-		//! Write the 'num_elements'
-		if (is_large) {
-			Store<uint32_t>(static_cast<uint32_t>(num_elements), value_data);
-			value_data += sizeof(uint32_t);
-		} else {
-			Store<uint8_t>(static_cast<uint8_t>(num_elements), value_data);
-			value_data += sizeof(uint8_t);
-		}
-
-		//! Write the 'field_id' entries
-		for (auto &i : child_indices) {
-			auto keys_index = variant.GetKeysIndex(row, i + nested_data.children_idx);
-			memcpy(value_data, reinterpret_cast<data_ptr_t>(&keys_index), field_id_size);
-			value_data += field_id_size;
-		}
-
-		//! Write the 'field_offset' entries and the child 'value's
-		auto children_ptr = value_data + ((num_elements + 1) * field_offset_size);
-		idx_t total_offset = 0;
-		for (auto &i : child_indices) {
-			auto values_index = variant.GetValuesIndex(row, i + nested_data.children_idx);
-
-			memcpy(value_data, reinterpret_cast<data_ptr_t>(&total_offset), field_offset_size);
-			value_data += field_offset_size;
-			auto start_ptr = children_ptr;
-			WriteValueData(variant, row, values_index, children_ptr, offsets, offset_index, nullptr);
-			total_offset += NumericCast<idx_t>(children_ptr - start_ptr);
-		}
-		memcpy(value_data, reinterpret_cast<data_ptr_t>(&total_offset), field_offset_size);
-		value_data += field_offset_size;
-		D_ASSERT(children_ptr - total_offset == value_data);
-		value_data = children_ptr;
-	} else if (type_id == VariantLogicalType::ARRAY) {
-		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_index);
-
-		//! -- Array value header --
-
-		uint32_t last_offset = 0;
-		if (nested_data.child_count) {
-			last_offset = offsets[offset_index + nested_data.child_count];
-		}
-		offset_index += nested_data.child_count + 1;
-		auto field_offset_size = CalculateByteLength(last_offset);
-
-		auto num_elements = nested_data.child_count;
-		const bool is_large = num_elements > NumericLimits<uint8_t>::Maximum();
-
-		uint8_t value_header = 0;
+		value_header |= (static_cast<uint8_t>(frame.field_offset_size) - 1) << 2;
+	} else {
 		value_header |= static_cast<uint8_t>(VariantBasicType::ARRAY);
 		value_header |= static_cast<uint8_t>(is_large) << 4;
-		value_header |= (static_cast<uint8_t>(field_offset_size) - 1) << 2;
+		value_header |= (static_cast<uint8_t>(frame.field_offset_size) - 1) << 2;
+	}
 
 #ifdef DEBUG
-		auto array_value_header = VariantValueMetadata::FromHeaderByte(value_header);
-		D_ASSERT(array_value_header.basic_type == VariantBasicType::ARRAY);
-		D_ASSERT(array_value_header.is_large == is_large);
-		D_ASSERT(array_value_header.field_offset_size == field_offset_size);
+	auto nested_value_header = VariantValueMetadata::FromHeaderByte(value_header);
+	D_ASSERT(nested_value_header.basic_type ==
+	         (type_id == VariantLogicalType::OBJECT ? VariantBasicType::OBJECT : VariantBasicType::ARRAY));
+	D_ASSERT(nested_value_header.is_large == is_large);
+	D_ASSERT(nested_value_header.field_offset_size == frame.field_offset_size);
+	if (type_id == VariantLogicalType::OBJECT) {
+		D_ASSERT(nested_value_header.field_id_size == field_id_size);
+	}
 #endif
 
-		*value_data = value_header;
-		value_data++;
+	*value_data = value_header;
+	value_data++;
 
-		//! Write the 'num_elements'
-		if (is_large) {
-			Store<uint32_t>(static_cast<uint32_t>(num_elements), value_data);
-			value_data += sizeof(uint32_t);
-		} else {
-			Store<uint8_t>(static_cast<uint8_t>(num_elements), value_data);
-			value_data += sizeof(uint8_t);
-		}
-
-		//! Write the 'field_offset' entries and the child 'value's
-		auto children_ptr = value_data + ((num_elements + 1) * field_offset_size);
-		idx_t total_offset = 0;
-		for (idx_t i = 0; i < nested_data.child_count; i++) {
-			auto values_index = variant.GetValuesIndex(row, i + nested_data.children_idx);
-
-			memcpy(value_data, reinterpret_cast<data_ptr_t>(&total_offset), field_offset_size);
-			value_data += field_offset_size;
-			auto start_ptr = children_ptr;
-			WriteValueData(variant, row, values_index, children_ptr, offsets, offset_index, nullptr);
-			total_offset += NumericCast<idx_t>(children_ptr - start_ptr);
-		}
-		memcpy(value_data, reinterpret_cast<data_ptr_t>(&total_offset), field_offset_size);
-		value_data += field_offset_size;
-		D_ASSERT(children_ptr - total_offset == value_data);
-		value_data = children_ptr;
+	//! Write the 'num_elements'
+	if (is_large) {
+		Store<uint32_t>(static_cast<uint32_t>(frame.num_elements), value_data);
+		value_data += sizeof(uint32_t);
 	} else {
-		WritePrimitiveValueData(variant, row, values_index, value_data, offsets, offset_index);
+		Store<uint8_t>(static_cast<uint8_t>(frame.num_elements), value_data);
+		value_data += sizeof(uint8_t);
+	}
+
+	//! Write the 'field_id' entries
+	for (auto &i : frame.child_indices) {
+		auto keys_index = variant.GetKeysIndex(row, i + frame.nested_data.children_idx);
+		memcpy(value_data, reinterpret_cast<data_ptr_t>(&keys_index), field_id_size);
+		value_data += field_id_size;
+	}
+
+	//! The 'field_offset' entries come next, the children follow them
+	frame.offsets_ptr = value_data;
+	frame.children_ptr = value_data + ((frame.num_elements + 1) * frame.field_offset_size);
+	return frame;
+}
+
+//! The explicit stack replaces recursion, so the nesting depth of a value is not bounded by the thread stack. The
+//! caller keeps it across rows, so its capacity is reused
+static void WriteValueData(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_index,
+                           data_ptr_t &value_data, const vector<uint32_t> &offsets, idx_t &offset_index,
+                           optional_ptr<ParquetVariantShreddingState> shredding_state, vector<WriteFrame> &stack) {
+	stack.clear();
+	auto current = values_index;
+	auto cursor = value_data;
+	for (;;) {
+		//! Write 'current' at 'cursor', entering it when it is nested
+		VariantLogicalType type_id = VariantLogicalType::VARIANT_NULL;
+		if (variant.RowIsValid(row)) {
+			type_id = variant.GetTypeId(row, current);
+		}
+		if (type_id == VariantLogicalType::OBJECT || type_id == VariantLogicalType::ARRAY) {
+			//! The shredding state only applies to the root
+			stack.push_back(WriteNestedHeader(variant, row, current, type_id, cursor, offsets, offset_index,
+			                                  stack.empty() ? shredding_state : nullptr));
+		} else {
+			WritePrimitiveValueData(variant, row, current, cursor, offsets, offset_index);
+			if (stack.empty()) {
+				value_data = cursor;
+				return;
+			}
+			auto &parent = stack.back();
+			parent.total_offset += NumericCast<idx_t>(cursor - parent.child_start);
+			parent.children_ptr = cursor;
+		}
+		//! Finish the nested values whose children are all written, then move to the next child
+		for (;;) {
+			auto &frame = stack.back();
+			if (frame.next_child < frame.num_elements) {
+				auto child = frame.type_id == VariantLogicalType::OBJECT ? frame.child_indices[frame.next_child]
+				                                                         : frame.next_child;
+				memcpy(frame.offsets_ptr, reinterpret_cast<data_ptr_t>(&frame.total_offset), frame.field_offset_size);
+				frame.offsets_ptr += frame.field_offset_size;
+				frame.child_start = frame.children_ptr;
+				cursor = frame.children_ptr;
+				current = variant.GetValuesIndex(row, child + frame.nested_data.children_idx);
+				frame.next_child++;
+				break;
+			}
+			//! All children are written, the last field offset is their total size
+			memcpy(frame.offsets_ptr, reinterpret_cast<data_ptr_t>(&frame.total_offset), frame.field_offset_size);
+			frame.offsets_ptr += frame.field_offset_size;
+			D_ASSERT(frame.children_ptr - frame.total_offset == frame.offsets_ptr);
+			cursor = frame.children_ptr;
+			stack.pop_back();
+			if (stack.empty()) {
+				value_data = cursor;
+				return;
+			}
+			auto &parent = stack.back();
+			parent.total_offset += NumericCast<idx_t>(cursor - parent.child_start);
+			parent.children_ptr = cursor;
+		}
 	}
 }
 
@@ -784,6 +828,8 @@ static void CreateValues(UnifiedVariantVectorData &variant, Vector &value, optio
 	auto &validity = FlatVector::ValidityMutable(value);
 	auto value_data = FlatVector::GetDataMutable<string_t>(value);
 
+	vector<AnalyzeFrame> analyze_stack;
+	vector<WriteFrame> write_stack;
 	for (idx_t i = 0; i < count; i++) {
 		uint32_t value_index = 0;
 		if (value_index_sel) {
@@ -815,7 +861,7 @@ static void CreateValues(UnifiedVariantVectorData &variant, Vector &value, optio
 		//! The (relative) offsets for each value, in the case of nesting
 		vector<uint32_t> offsets;
 		//! Determine the size of this 'value' blob
-		idx_t blob_length = AnalyzeValueData(variant, row, value_index, offsets, shredding_state);
+		idx_t blob_length = AnalyzeValueData(variant, row, value_index, offsets, shredding_state, analyze_stack);
 		if (!blob_length) {
 			//! This is only allowed to happen for a shredded OBJECT, where there are no excess fields to write for the
 			//! OBJECT
@@ -829,7 +875,7 @@ static void CreateValues(UnifiedVariantVectorData &variant, Vector &value, optio
 		auto value_blob_data = reinterpret_cast<data_ptr_t>(value_blob.GetDataWriteable());
 
 		idx_t offset_index = 0;
-		WriteValueData(variant, row, value_index, value_blob_data, offsets, offset_index, shredding_state);
+		WriteValueData(variant, row, value_index, value_blob_data, offsets, offset_index, shredding_state, write_stack);
 		D_ASSERT(data_ptr_cast(value_blob.GetDataWriteable() + blob_length) == value_blob_data);
 		value_blob.SetSizeAndFinalize(NumericCast<uint32_t>(blob_length), blob_length);
 	}

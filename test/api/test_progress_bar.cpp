@@ -311,4 +311,36 @@ TEST_CASE("Test Progress Bar CSV", "[progress-bar][.]") {
 	REQUIRE_NO_FAIL(con.Query("COPY test FROM 'data/csv/test/test.csv'"));
 	test_progress.End();
 }
+
+TEST_CASE("Test progress is not capped by a low cardinality estimate", "[progress-bar]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+	REQUIRE_NO_FAIL(con.Query("SET enable_progress_bar=true"));
+	REQUIRE_NO_FAIL(con.Query("SET enable_progress_bar_print=false"));
+	// j is unique and not correlated with the row order, so a filter on j is estimated to return very few rows while
+	// zonemaps cannot prune it: the query scans the whole table
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE tbl AS SELECT i, (i * 7919) % 1000000 AS j FROM range(1000000) t(i)"));
+
+	auto check_progress = [&](const string &query) {
+		INFO(query);
+		auto result = con.Submit(query);
+		result->Materialize();
+		// the call that finishes the query also resets its progress, so keep the highest value seen before that
+		double max_percentage = -1;
+		while (!IsTerminal(result->ExecuteTask())) {
+			max_percentage = MaxValue<double>(max_percentage, con.context->GetQueryProgress().GetPercentage());
+		}
+		REQUIRE(!result->HasError());
+		CAPTURE(max_percentage);
+		CHECK(max_percentage >= 99);
+	};
+	check_progress("SELECT i FROM tbl WHERE j = 12345");
+	check_progress("SELECT count(*) FROM tbl WHERE j = 12345");
+	check_progress("SELECT i FROM tbl WHERE j = 12345 ORDER BY i");
+	check_progress("SELECT a.i FROM tbl a JOIN tbl b USING (i) WHERE a.j = 12345");
+	check_progress("CREATE TEMP TABLE ctas AS SELECT i FROM tbl WHERE j = 12345");
+}
+
 #endif

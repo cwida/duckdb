@@ -593,6 +593,12 @@ void TableFunctionMultiFileWrapper::GetVirtualColumns(ClientContext &context, Mu
 	}
 }
 
+void TableFunctionMultiFileWrapper::ReadFilesForStatistics(ClientContext &context, MultiFileBindData &bind_data) {
+	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
+	bind_data.multi_file_reader->ReadFilesForStatistics(context, *bind_data.file_list, bind_data, data.options,
+	                                                    bind_data.file_options);
+}
+
 void TableFunctionMultiFileWrapper::FinalizeBindData(MultiFileBindData &multi_file_data) {
 	auto &data = multi_file_data.bind_data->Cast<TableFunctionMultiFileData>();
 	if (multi_file_data.initial_reader) {

@@ -1,0 +1,95 @@
+# name: test/sql/copy/parquet/multi_file_max_files_for_stats.test
+# description: maximum_files_for_stats gives a multi-file scan their merged statistics and exact count
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT range AS i FROM range(0, 10)) TO '{TEST_DIR}/sample_stats_0.parquet'
+
+statement ok
+COPY (SELECT range AS i FROM range(100, 110)) TO '{TEST_DIR}/sample_stats_1.parquet'
+
+# statistics cover every file: a filter outside the merged min and max empties the scan
+query II
+EXPLAIN SELECT * FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_1.parquet'], maximum_files_for_stats=2) WHERE i > 1000
+----
+physical_plan	<REGEX>:(?s).*Empty Result.*
+
+query II
+EXPLAIN SELECT * FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_1.parquet'], maximum_files_for_stats=2)
+----
+physical_plan	<REGEX>:.*.*20.*.*
+
+# a filter inside the range is kept
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_1.parquet'], maximum_files_for_stats=2) WHERE i > 5
+----
+14
+
+# by default there are no statistics for several files
+query II
+EXPLAIN SELECT * FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_1.parquet']) WHERE i > 1000
+----
+physical_plan	<REGEX>:(?s).*Read Parquet.*
+
+# more files than the maximum: no statistics
+query II
+EXPLAIN SELECT * FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_1.parquet'], maximum_files_for_stats=1) WHERE i > 1000
+----
+physical_plan	<REGEX>:(?s).*Read Parquet.*
+
+# an empty file has no statistics and is skipped
+statement ok
+COPY (SELECT range AS i FROM range(0, 0)) TO '{TEST_DIR}/sample_stats_empty.parquet'
+
+query II
+EXPLAIN SELECT * FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_empty.parquet', '{TEST_DIR}/sample_stats_1.parquet'], maximum_files_for_stats=3) WHERE i > 1000
+----
+physical_plan	<REGEX>:(?s).*Empty Result.*
+
+# the footers' totals are only an estimate: a LIMIT above them is kept
+query II
+EXPLAIN SELECT * FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_1.parquet']) LIMIT 100
+----
+physical_plan	<REGEX>:(?s).*Limit.*
+
+# a scan whose schema is given reads the files for their statistics too
+query II
+EXPLAIN SELECT * FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_1.parquet'], schema=map{'i': {name: 'i', type: 'BIGINT', default_value: NULL}}, maximum_files_for_stats=2) WHERE i > 1000
+----
+physical_plan	<REGEX>:(?s).*Empty Result.*
+
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_1.parquet'], schema=map{'i': {name: 'i', type: 'BIGINT', default_value: NULL}}, maximum_files_for_stats=2) WHERE i > 5
+----
+14
+
+query II
+EXPLAIN SELECT * FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_1.parquet'], schema=map{'i': {name: 'i', type: 'BIGINT', default_value: NULL}}) WHERE i > 1000
+----
+physical_plan	<REGEX>:(?s).*READ_PARQUET.*
+
+# a single remaining file falls back to a union reader: a STRUCT with reordered fields has no usable statistics
+statement ok
+COPY (SELECT {'a': 0, 'b': 0} AS s) TO '{TEST_DIR}/stats_first.parquet' (FORMAT PARQUET)
+
+statement ok
+COPY (SELECT {'b': 0, 'a': 1000} AS s) TO '{TEST_DIR}/stats_second.parquet' (FORMAT PARQUET)
+
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/stats_first.parquet', '{TEST_DIR}/stats_second.parquet'], union_by_name=true, filename=true) WHERE filename = '{TEST_DIR}/stats_second.parquet' AND s.a = 1000
+----
+1
+
+# a schema that renames a column has no statistics: they are looked up by output name, not the file column
+statement ok
+COPY (SELECT 1000::INTEGER AS src, 0::INTEGER AS dst) TO '{TEST_DIR}/schema_stats_0.parquet' (FORMAT PARQUET)
+
+statement ok
+COPY (SELECT 2000::INTEGER AS src, 0::INTEGER AS dst) TO '{TEST_DIR}/schema_stats_1.parquet' (FORMAT PARQUET)
+
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/schema_stats_0.parquet', '{TEST_DIR}/schema_stats_1.parquet'], schema=map{'src': {name: 'dst', type: 'INTEGER', default_value: NULL}}, maximum_files_for_stats=2) WHERE dst > 100
+----
+2
