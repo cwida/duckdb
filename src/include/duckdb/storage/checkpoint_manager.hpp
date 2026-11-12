@@ -189,8 +189,8 @@ private:
 	CheckpointOptions options;
 	//! Block usage count for verification purposes
 	unordered_map<block_id_t, idx_t> verify_block_usage_count;
-	//! The OIDs of the indexes in the catalog that the checkpoint writes
-	unordered_set<idx_t> index_oids;
+	//! The number of indexes in the catalog that the checkpoint writes
+	idx_t catalog_index_count = 0;
 	//! The number of indexes that the tables wrote
 	idx_t written_index_count = 0;
 	//! Owns prepared state in publication order.

@@ -122,7 +122,7 @@ public:
 	//! Verify a foreign key constraint.
 	void VerifyForeignKey(optional_ptr<const TableIndexList> delete_indexes, const vector<PhysicalIndex> &fk_keys,
 	                      DataChunk &chunk, ConflictManager &conflict_manager);
-	//! Persist the buffers of the indexes the writer asks for and install replacements, returning their metadata.
+	//! Persist index buffers and install replacements before returning their metadata.
 	vector<shared_ptr<const IndexStorageInfo>> Checkpoint(TableIndexWriter &writer);
 	//! Returns the physical table columns referenced by any index.
 	unordered_set<column_t> GetIndexedColumns() const;
@@ -142,10 +142,6 @@ public:
 	                                vector<StorageIndex> &mapped_column_ids);
 
 private:
-	//! Returns the index entries with these OIDs.
-	vector<shared_ptr<IndexEntry>> FindEntries(const unordered_set<idx_t> &index_oids) const
-	    DUCKDB_REQUIRES(index_entries_lock);
-
 	template <class>
 	friend class TableIndexIterationHelper;
 

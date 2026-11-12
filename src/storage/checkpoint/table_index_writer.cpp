@@ -25,10 +25,6 @@ PartialBlockManager SingleFileTableIndexWriter::CreatePerIndexPartialBlockManage
 	return checkpoint_manager.CreatePerIndexPartialBlockManager();
 }
 
-const unordered_set<idx_t> &SingleFileTableIndexWriter::GetIndexOids() const {
-	return checkpoint_manager.index_oids;
-}
-
 void SingleFileTableIndexWriter::AddPendingPublication(unique_ptr<PendingPublication> publication) {
 	checkpoint_manager.AddPendingPublication(std::move(publication));
 }

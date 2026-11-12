@@ -281,11 +281,11 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 	for (auto &entry : catalog_entries) {
 		auto &catalog_entry = entry.get();
 		if (catalog_entry.type == CatalogType::INDEX_ENTRY) {
-			index_oids.insert(catalog_entry.oid);
+			catalog_index_count++;
 		} else if (catalog_entry.type == CatalogType::TABLE_ENTRY) {
 			for (auto &constraint : catalog_entry.Cast<TableCatalogEntry>().GetConstraints()) {
 				if (constraint->NeedsBackingIndex()) {
-					index_oids.insert(constraint->GetBackingIndexOid());
+					catalog_index_count++;
 				}
 			}
 		}
@@ -318,9 +318,10 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 		list.WriteObject([&](Serializer &obj) { WriteEntry(entry.get(), obj); });
 	});
 	serializer.End();
-	if (written_index_count != index_oids.size()) {
-		throw InternalException("A checkpoint wrote %llu of the %llu indexes of its catalog", written_index_count,
-		                        index_oids.size());
+	// the index lists of the tables had exactly the indexes of the catalog
+	if (written_index_count != catalog_index_count) {
+		throw InternalException("A checkpoint wrote %llu indexes, its catalog has %llu", written_index_count,
+		                        catalog_index_count);
 	}
 
 	partial_block_manager.FlushPartialBlocks();

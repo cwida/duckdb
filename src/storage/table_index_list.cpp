@@ -493,16 +493,6 @@ unordered_set<column_t> TableIndexList::GetIndexedColumns() const {
 	return column_ids;
 }
 
-vector<shared_ptr<IndexEntry>> TableIndexList::FindEntries(const unordered_set<idx_t> &index_oids) const {
-	vector<shared_ptr<IndexEntry>> result;
-	for (const auto &entry : index_entries) {
-		if (index_oids.find(entry->GetIndexOid()) != index_oids.end()) {
-			result.push_back(entry);
-		}
-	}
-	return result;
-}
-
 namespace {
 
 class PendingIndexPublication final : public PendingPublication {
@@ -532,12 +522,11 @@ private:
 } // namespace
 
 vector<shared_ptr<const IndexStorageInfo>> TableIndexList::Checkpoint(TableIndexWriter &writer) {
-	auto &index_oids = writer.GetIndexOids();
 	vector<shared_ptr<IndexEntry>> entries;
 	{
 		annotated_lock_guard lock(index_entries_lock);
-		// the indexes of the catalog that the checkpoint writes: the list can also have uncommitted or later ones
-		entries = FindEntries(index_oids);
+		// the indexes of the checkpoint's catalog: adding or removing one holds the checkpoint lock
+		entries = index_entries;
 	}
 
 	// written without the list lock, which every commit that changes the table takes
@@ -552,20 +541,11 @@ vector<shared_ptr<const IndexStorageInfo>> TableIndexList::Checkpoint(TableIndex
 	}
 
 #ifdef D_ASSERT_IS_ENABLED
-	// the list lock was not needed: the entries of the catalog's indexes did not change meanwhile
-	vector<shared_ptr<IndexEntry>> current;
 	{
+		// the list lock was not needed: no index was added or removed meanwhile
 		annotated_lock_guard lock(index_entries_lock);
-		current = FindEntries(index_oids);
+		D_ASSERT(index_entries == entries);
 	}
-	auto entry_set = [](const vector<shared_ptr<IndexEntry>> &list) {
-		unordered_set<const IndexEntry *> result;
-		for (const auto &entry : list) {
-			result.insert(entry.get());
-		}
-		return result;
-	};
-	D_ASSERT(entry_set(current) == entry_set(entries));
 #endif
 	return infos;
 }
