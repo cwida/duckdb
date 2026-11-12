@@ -11820,10 +11820,11 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_statement_iterator_next(duckdb_v2_stateme
  *
  * Binding is read-only and does not disturb a live result: it begins no query, claims no cursor, reuses an active
  * transaction read-only, and runs alongside a paused stream. It is single-consumer like the stepping functions, so bind
- * concurrently only on a second connection. Prepare-time errors — binder, catalog, preprocessing — surface here. A
- * statement that expands into a group (a dynamic PIVOT, or statement-expanding DDL such as ALTER ADD COLUMN with a
- * non-constant DEFAULT) has a schema known only at execution, and is reported with ERROR_INPUT_METADATA_DEFERRED;
- * execute it instead.
+ * concurrently only on a second connection. Errors of the bind itself (catalog lookups, type resolution, preprocessing)
+ * surface here; errors of the planning after the bind (the plan depth limit, a correlated subquery or trigger body that
+ * decorrelation refuses) may surface only when the statement is executed. A statement that expands into a group (a
+ * dynamic PIVOT, or statement-expanding DDL such as ALTER ADD COLUMN with a non-constant DEFAULT) has a schema known
+ * only at execution, and is reported with ERROR_INPUT_METADATA_DEFERRED; execute it instead.
  *
  * *out_schema and *out_parameters are set to NULL on failure.
  *
@@ -13188,6 +13189,22 @@ typedef enum DUCKDB_V2_TABLE_PARTITION_INFO {
 	DUCKDB_V2_TABLE_PARTITION_INFO_MAX_ENUM = 0x7FFFFFFF,
 } DUCKDB_V2_TABLE_PARTITION_INFO;
 
+/*!
+ * A column a table function can produce next to the columns it declares in bind. A query asks for it by name, but it is
+ * not part of the function's result columns. Declared with `duckdb_v2_table_function_add_virtual_column()`. In the
+ * column lists of the scan (e.g. `duckdb_v2_table_function_exec_get_column_index()`), a virtual column is identified by
+ * 2^63 plus its value in this enum.
+ */
+typedef enum DUCKDB_V2_TABLE_VIRTUAL_COLUMN {
+	/*!
+	 * `file_row_number`, a BIGINT holding the position of the row within the file it was read from, counting from 0. A
+	 * function that reads a single file produces it when it is wrapped in a multi-file function (see
+	 * `duckdb_v2_multi_file_function_create()`), which is where the name of the file comes from.
+	 */
+	DUCKDB_V2_TABLE_VIRTUAL_COLUMN_FILE_ROW_NUMBER = 0,
+	DUCKDB_V2_TABLE_VIRTUAL_COLUMN_MAX_ENUM = 0x7FFFFFFF,
+} DUCKDB_V2_TABLE_VIRTUAL_COLUMN;
+
 /* --- Struct forward declarations for table --- */
 
 /* --- Types for table --- */
@@ -13296,6 +13313,15 @@ typedef struct _duckdb_v2_table_function_claim_batch_info {
 } * duckdb_v2_table_function_claim_batch_info_handle;
 
 /*!
+ * A borrowed opaque handle to the arguments supplied to a table function when the engine collects the metrics of a
+ * scan. The "metrics" callback receives this handle and can use it to report the operator metrics of the scan, e.g. how
+ * many row groups it read.
+ */
+typedef struct _duckdb_v2_table_function_metrics_info {
+	void *internal_ptr;
+} * duckdb_v2_table_function_metrics_info_handle;
+
+/*!
  * A borrowed opaque handle to the arguments supplied to a table function when the engine asks it to describe a bound
  * call. The "get bind info" callback receives this handle, and can use it to describe the call in more detail than its
  * columns: with identifiers of its columns (e.g. field ids), and with options - key-value facts about what the call
@@ -13342,6 +13368,10 @@ typedef void (*duckdb_v2_table_function_exec_callback_fn)(duckdb_v2_table_functi
 typedef void (*duckdb_v2_table_function_progress_callback_fn)(duckdb_v2_table_function_progress_info_handle info,
                                                               duckdb_v2_context_handle context,
                                                               duckdb_v2_error_info_handle *err);
+
+typedef void (*duckdb_v2_table_function_metrics_callback_fn)(duckdb_v2_table_function_metrics_info_handle info,
+                                                             duckdb_v2_context_handle context,
+                                                             duckdb_v2_error_info_handle *err);
 
 typedef void (*duckdb_v2_table_function_filter_pushdown_callback_fn)(
     duckdb_v2_table_function_filter_pushdown_info_handle info, duckdb_v2_context_handle context,
@@ -13621,6 +13651,57 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_set_projection_pushdown(du
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!
+ * Declares that the table function can produce the given virtual column.
+ *
+ * A virtual column is not one of the columns declared in bind: the query asks for it by name, and the function only
+ * produces it when it is asked for. It then takes up a vector of the exec callback's output chunk, like any other
+ * column the scan produces. This requires projection pushdown (see
+ * `duckdb_v2_table_function_set_projection_pushdown()`), which is what lets the engine ask for it. The global init,
+ * local init and exec callbacks recognize the vector by its column index, which is 2^63 plus the value of the
+ * `DUCKDB_V2_TABLE_VIRTUAL_COLUMN` (see e.g. `duckdb_v2_table_function_exec_get_column_index()`).
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param function The function to configure.
+ * @param column The virtual column the function can produce.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_add_virtual_column(duckdb_v2_table_function_handle function,
+                                                                         DUCKDB_V2_TABLE_VIRTUAL_COLUMN column,
+                                                                         duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Sets the optional metrics callback of the table function.
+ *
+ * The metrics callback is invoked when the engine collects the metrics of the scan, e.g. when profiling is enabled, and
+ * can report what the scan did through its `duckdb_v2_table_function_metrics_info_handle`.
+ *
+ * DuckDB does not synchronize the callback with the scan: each thread that scanned invokes it when it finishes, so it
+ * can run while other threads still scan and while other threads invoke it. The global state it reads is shared with
+ * those threads, so the function must synchronize what the callback reads from it, e.g. by keeping counters in atomics
+ * and reading them with an exchange, so that each amount is reported once.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param function The function to set the metrics callback of.
+ * @param callback The metrics callback to set.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_set_metrics_callback(
+    duckdb_v2_table_function_handle function, duckdb_v2_table_function_metrics_callback_fn callback,
+    duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
  * Sets the optional filter pushdown callback of the table function.
  *
  * The filter pushdown callback is invoked while the query is optimized, after the bind callback and before any init
@@ -13630,6 +13711,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_set_projection_pushdown(du
  * The engine then stops applying the accepted predicates and keeps applying the rest above the scan, so accepting a
  * predicate is a promise to filter the rows exactly as it would have. The optimizer may invoke the callback more than
  * once for the same query, each time with the predicates not yet accepted; it is not invoked when there are none.
+ *
+ * A function that also has projection pushdown (see `duckdb_v2_table_function_set_projection_pushdown()`) is offered
+ * the predicates that apply to a single column of it once more when a scan starts, just before the global init
+ * callback, in the same form, with the column references resolved by
+ * `duckdb_v2_table_function_filter_pushdown_get_column_index()` as at optimization time. This is how the callback of a
+ * function wrapped in a multi-file function sees the predicates, which the optimizer only offers to the wrapper. The
+ * engine applies these predicates to the rows the function produces itself, so the function may use them to skip what
+ * the query can never use but does not have to understand them, and accepting one has no effect. The scan keeps the
+ * columns the predicates are applied to.
  *
  * history:
  * - unstable: v2.0.0
@@ -14782,6 +14872,92 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_stats_get_column_index(
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_stats_get_result_stats(
     duckdb_v2_table_function_stats_info_handle info, duckdb_v2_stats_handle *stats, duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Retrieves the user data set via `duckdb_v2_table_function_set_user_data()`.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param info The metrics info handle.
+ * @param data Receives the user data pointer, or null if none was set.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_get_user_data(
+    duckdb_v2_table_function_metrics_info_handle info, void **data, duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Retrieves the bind data set by the function's bind callback.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param info The metrics info handle.
+ * @param data Receives the bind data pointer, or null if none was set.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_get_bind_data(
+    duckdb_v2_table_function_metrics_info_handle info, void **data, duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Retrieves the global state set by the function's global init callback.
+ *
+ * The metrics callback can run while the scan is still running, so it must read the global state in a thread-safe way.
+ * The global state is null if the scan has not been initialized.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param info The metrics info handle.
+ * @param data Receives the global state pointer, or null if none was set.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_get_global_state(
+    duckdb_v2_table_function_metrics_info_handle info, void **data, duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Reports an operator metric of the scan, by the name DuckDB's profiler uses for it (the names `tracked_metrics`
+ * accepts).
+ *
+ * The metrics a scan can report are counters:
+ * - `operator.rows_scanned`: the rows the scan read.
+ * - `operator.row_groups_scanned`: the row groups the scan read. A row group is the unit a format lets the scan skip,
+ * e.g. a Parquet row group or an ORC stripe.
+ * - `operator.total_row_groups_to_scan`: the row groups the scan read or skipped.
+ * - `operator.bytes_scanned`: the bytes the scan read.
+ *
+ * The engine may collect the metrics of a scan more than once, and adds up what it is told: each value is the amount
+ * since the metrics were last collected, except `operator.total_row_groups_to_scan`, which is the number found so far
+ * in all. Fails for a name that is not one of the above.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param info The metrics info handle.
+ * @param name The name of the metric. Borrowed.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8 and need not be null-terminated.
+ * @param value The value of the metric.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_set(duckdb_v2_table_function_metrics_info_handle info,
+                                                                  const char *name, idx_t name_length, uint64_t value,
+                                                                  duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE

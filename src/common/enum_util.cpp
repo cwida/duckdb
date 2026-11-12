@@ -74,7 +74,6 @@
 #include "duckdb/common/enums/result_lifetime.hpp"
 #include "duckdb/common/enums/result_ordering.hpp"
 #include "duckdb/common/enums/row_group_append_mode.hpp"
-#include "duckdb/common/enums/row_id_handling.hpp"
 #include "duckdb/common/enums/set_operation_type.hpp"
 #include "duckdb/common/enums/set_scope.hpp"
 #include "duckdb/common/enums/set_type.hpp"
@@ -158,7 +157,7 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/function/window/match_recognize_matcher.hpp"
 #include "duckdb/function/window/window_merge_sort_tree.hpp"
-#include "duckdb/logging/log_storage.hpp"
+#include "duckdb/logging/log_sink.hpp"
 #include "duckdb/logging/logging.hpp"
 #include "duckdb/main/appender.hpp"
 #include "duckdb/main/attached_database.hpp"
@@ -234,6 +233,7 @@
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/planner/logical_operator_repeatability.hpp"
 #include "duckdb/planner/logical_plan_verification_result.hpp"
+#include "duckdb/planner/planner.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/buffer/buffer_pool_reservation.hpp"
@@ -5296,6 +5296,24 @@ PipelineScheduleStageType EnumUtil::FromString<PipelineScheduleStageType>(const 
 	return static_cast<PipelineScheduleStageType>(StringUtil::StringToEnum(GetPipelineScheduleStageTypeValues(), 5, "PipelineScheduleStageType", value));
 }
 
+const StringUtil::EnumStringLiteral *GetPlanningModeValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(PlanningMode::FULL), "FULL" },
+		{ static_cast<uint32_t>(PlanningMode::BIND_ONLY), "BIND_ONLY" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<PlanningMode>(PlanningMode value) {
+	return StringUtil::EnumToString(GetPlanningModeValues(), 2, "PlanningMode", static_cast<uint32_t>(value));
+}
+
+template<>
+PlanningMode EnumUtil::FromString<PlanningMode>(const char *value) {
+	return static_cast<PlanningMode>(StringUtil::StringToEnum(GetPlanningModeValues(), 2, "PlanningMode", value));
+}
+
 const StringUtil::EnumStringLiteral *GetPragmaTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(PragmaType::PRAGMA_STATEMENT), "PRAGMA_STATEMENT" },
@@ -5930,25 +5948,6 @@ const char* EnumUtil::ToChars<RowGroupAppendMode>(RowGroupAppendMode value) {
 template<>
 RowGroupAppendMode EnumUtil::FromString<RowGroupAppendMode>(const char *value) {
 	return static_cast<RowGroupAppendMode>(StringUtil::StringToEnum(GetRowGroupAppendModeValues(), 3, "RowGroupAppendMode", value));
-}
-
-const StringUtil::EnumStringLiteral *GetRowIdHandlingValues() {
-	static constexpr StringUtil::EnumStringLiteral values[] {
-		{ static_cast<uint32_t>(RowIdHandling::ASSUME_UNIQUE), "ASSUME_UNIQUE" },
-		{ static_cast<uint32_t>(RowIdHandling::KEEP_FIRST), "KEEP_FIRST" },
-		{ static_cast<uint32_t>(RowIdHandling::ERROR), "ERROR" }
-	};
-	return values;
-}
-
-template<>
-const char* EnumUtil::ToChars<RowIdHandling>(RowIdHandling value) {
-	return StringUtil::EnumToString(GetRowIdHandlingValues(), 3, "RowIdHandling", static_cast<uint32_t>(value));
-}
-
-template<>
-RowIdHandling EnumUtil::FromString<RowIdHandling>(const char *value) {
-	return static_cast<RowIdHandling>(StringUtil::StringToEnum(GetRowIdHandlingValues(), 3, "RowIdHandling", value));
 }
 
 const StringUtil::EnumStringLiteral *GetSampleMethodValues() {

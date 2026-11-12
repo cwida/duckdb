@@ -36,20 +36,19 @@ public:
 	void VisitOperator(LogicalOperator &op) override;
 	void VisitExpression(unique_ptr<Expression> *expression) override {};
 
+	static double GetBuildSize(vector<LogicalType> types, idx_t cardinality);
+
 private:
 	bool TryFlipJoinChildren(LogicalOperator &op) const;
 	static idx_t ChildHasJoins(LogicalOperator &op);
-	bool ContainsActiveRecursiveReference(const LogicalOperator &op) const;
-	bool ContainsCorrelationSensitiveOperators(const LogicalOperator &op) const;
 	RecursiveProbeSidePreference GetRecursiveProbeSidePreference(const LogicalOperator &op) const;
 
 	static BuildSize GetBuildSizes(const LogicalOperator &op, idx_t lhs_cardinality, idx_t rhs_cardinality);
-	static double GetBuildSize(vector<LogicalType> types, idx_t cardinality);
 
 private:
 	ClientContext &context;
 	vector<ColumnBinding> preferred_on_probe_side;
-	vector<TableIndex> active_recursive_cte_indexes;
+	unordered_set<TableIndex> active_recursive_cte_indexes;
 };
 
 } // namespace duckdb

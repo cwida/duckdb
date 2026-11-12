@@ -8,4 +8,5 @@ duckdb_extension_load(sirius
     SOURCE_DIR sirius-duckdb/loader
     INCLUDE_DIR sirius-duckdb/loader/src
     SUBMODULES ""
+    APPLY_PATCHES
 )

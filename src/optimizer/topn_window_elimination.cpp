@@ -488,8 +488,8 @@ void TopNWindowElimination::AddStructExtractExprs(
 		fun_args[0] = aggregate_column_ref->Copy();
 		fun_args[1] = make_uniq<BoundConstantExpression>(alias);
 
-		auto bound_function = function_binder.BindScalarFunction(struct_extract_fun, std::move(fun_args));
-		bound_function->SetAlias(alias);
+		auto bound_function =
+		    function_binder.BindScalarFunction(struct_extract_fun, std::move(fun_args), false, nullptr, alias);
 		exprs.push_back(std::move(bound_function));
 	}
 }

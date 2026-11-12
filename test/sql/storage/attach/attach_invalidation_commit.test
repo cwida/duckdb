@@ -1,0 +1,205 @@
+# name: test/sql/storage/attach/attach_invalidation_commit.test
+# description: Unrecoverable commit failures on an attached database invalidate only that database
+# group: [attach]
+
+require no_alternative_verify
+
+require skip_reload
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+SET checkpoint_threshold = '1TB';
+
+statement ok
+ATTACH '{TEST_DIR}/attach_invalidation_commit_a.db' AS a;
+
+statement ok
+ATTACH '{TEST_DIR}/attach_invalidation_commit_b.db' AS b;
+
+statement ok
+CREATE TABLE a.tbl(i INTEGER);
+
+statement ok
+CREATE TABLE b.tbl(i INTEGER);
+
+statement ok
+CREATE TABLE main_tbl(i INTEGER);
+
+statement ok
+INSERT INTO a.tbl VALUES (1);
+
+statement ok
+INSERT INTO b.tbl VALUES (1);
+
+# --- a failed WAL fsync invalidates the attached database ---
+
+statement ok
+SET debug_force_wal_fsync_failure = true;
+
+statement error
+INSERT INTO a.tbl VALUES (2);
+----
+injected WAL fsync failure
+
+statement ok
+SET debug_force_wal_fsync_failure = false;
+
+statement error
+SELECT COUNT(*) FROM a.tbl;
+----
+<REGEX>:IO Error: Database "a" has been invalidated because syncing its WAL failed\. Detach and reattach it.*
+
+statement error
+INSERT INTO a.tbl VALUES (3);
+----
+<REGEX>:IO Error: Database "a" has been invalidated because syncing its WAL failed.*
+
+# the instance, the default database and the sibling database are unaffected
+statement ok
+INSERT INTO b.tbl VALUES (2);
+
+statement ok
+INSERT INTO main_tbl VALUES (1);
+
+query II
+SELECT (SELECT COUNT(*) FROM b.tbl), (SELECT COUNT(*) FROM main_tbl);
+----
+2	1
+
+# a transaction spanning the invalidated database cannot commit, but leaves the others usable
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO b.tbl VALUES (3);
+
+statement error
+INSERT INTO a.tbl VALUES (4);
+----
+<REGEX>:IO Error: Database "a" has been invalidated.*
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT COUNT(*) FROM b.tbl;
+----
+2
+
+# detaching the database clears the invalidation; the failed commit was rolled back
+statement ok
+DETACH a;
+
+statement ok
+ATTACH '{TEST_DIR}/attach_invalidation_commit_a.db' AS a;
+
+query I
+SELECT i FROM a.tbl ORDER BY i;
+----
+1
+
+statement ok
+INSERT INTO a.tbl VALUES (5);
+
+# --- a commit whose revert fails leaves the attached database in an undefined state ---
+
+statement ok
+SET debug_force_commit_failure = true;
+
+statement ok
+SET debug_force_commit_revert_failure = true;
+
+statement error
+INSERT INTO a.tbl VALUES (6);
+----
+Forced commit failure
+
+statement ok
+SET debug_force_commit_failure = false;
+
+statement ok
+SET debug_force_commit_revert_failure = false;
+
+statement error
+SELECT COUNT(*) FROM a.tbl;
+----
+<REGEX>:IO Error: Database "a" has been invalidated because reverting a failed commit failed.*
+
+query I
+SELECT COUNT(*) FROM b.tbl;
+----
+2
+
+statement ok
+INSERT INTO main_tbl VALUES (2);
+
+statement ok
+DETACH a;
+
+statement ok
+ATTACH '{TEST_DIR}/attach_invalidation_commit_a.db' AS a;
+
+query I
+SELECT i FROM a.tbl ORDER BY i;
+----
+1
+5
+
+# --- a fatal error during the commit of an attached database invalidates only that database ---
+
+statement ok
+SET debug_checkpoint_abort = 'before_wal_flush';
+
+statement error
+INSERT INTO a.tbl VALUES (7);
+----
+<REGEX>:FATAL Error: Simulated crash before WAL_FLUSH write.*
+
+statement error
+SELECT COUNT(*) FROM a.tbl;
+----
+<REGEX>:IO Error: Database "a" has been invalidated because of a simulated crash.*
+
+statement ok
+SET debug_checkpoint_abort = 'none';
+
+# the simulated crash leaves a torn WAL tail behind
+statement ok
+SET debug_abort_on_wal_failure = false;
+
+query I
+SELECT COUNT(*) FROM b.tbl;
+----
+2
+
+statement ok
+DETACH a;
+
+statement ok
+ATTACH '{TEST_DIR}/attach_invalidation_commit_a.db' AS a;
+
+query I
+SELECT i FROM a.tbl ORDER BY i;
+----
+1
+5
+
+# --- the same failure on the default database still invalidates the whole instance ---
+
+statement ok
+SET debug_force_commit_failure = true;
+
+statement ok
+SET debug_force_commit_revert_failure = true;
+
+statement error
+INSERT INTO main_tbl VALUES (3);
+----
+Forced commit failure
+
+statement error
+SELECT COUNT(*) FROM b.tbl;
+----
+<REGEX>:.*has been invalidated.*

@@ -117,6 +117,10 @@ unique_ptr<GlobalTableFunctionState> DuckDBSettingsInit(ClientContext &context, 
 				value.value = option->default_value;
 			}
 		}
+		if (option->scope == SettingScopeTarget::LOCAL_ONLY) {
+			// a local-only setting never has a global value
+			scope = SettingScope::LOCAL;
+		}
 		value.description = option->description;
 		value.input_type = option->parameter_type;
 		value.scope = EnumUtil::ToString(scope);

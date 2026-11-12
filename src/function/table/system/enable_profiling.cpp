@@ -5,6 +5,7 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/profiler/gathered_metrics.hpp"
 #include "duckdb/function/function_set.hpp"
+#include "duckdb/execution/operator/helper/physical_set.hpp"
 
 namespace duckdb {
 
@@ -35,7 +36,7 @@ static void EnableProfiling(ClientContext &context, TableFunctionInput &data, Da
 		}
 
 		EnableProfilingSetting::ResetLocal(context);
-		ProfilingOutputSetting::ResetLocal(context);
+		Settings::Set<ProfilingOutputSetting>(context, SetScope::SESSION, Value(""));
 	}
 
 	if (!bind_data.format.IsNull()) {
@@ -43,11 +44,13 @@ static void EnableProfiling(ClientContext &context, TableFunctionInput &data, Da
 	}
 
 	if (!bind_data.coverage.IsNull()) {
-		ProfilingCoverageSetting::SetLocal(context, bind_data.coverage);
+		PhysicalSet::SetVariable(context, Identifier(ProfilingCoverageSetting::Name), SetScope::SESSION,
+		                         bind_data.coverage);
 	}
 
 	if (!bind_data.save_location.IsNull()) {
-		ProfilingOutputSetting::SetLocal(context, bind_data.save_location);
+		PhysicalSet::SetVariable(context, Identifier(ProfilingOutputSetting::Name), SetScope::SESSION,
+		                         bind_data.save_location);
 	}
 
 	if (!bind_data.mode.IsNull()) {

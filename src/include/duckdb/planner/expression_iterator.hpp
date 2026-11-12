@@ -35,6 +35,21 @@ public:
 	static unique_ptr<Expression> ReplaceExpression(const Expression &expr, const Expression &target,
 	                                                const Expression &replacement);
 
+	//! Returns the replacement of an expression, or nullptr to keep the expression
+	using ReplaceFunction = std::function<unique_ptr<Expression>(const Expression &expr)>;
+
+	//! Replace expressions in a tree in pre-order and return the new root - replacements are not visited
+	static unique_ptr<Expression> PreorderReplace(unique_ptr<Expression> expr, const ReplaceFunction &callback);
+	//! Replace expressions of a class in a tree - the children of these expressions are not visited
+	static unique_ptr<Expression> PreorderReplaceClass(unique_ptr<Expression> expr, ExpressionClass expr_class,
+	                                                   const ReplaceFunction &callback);
+	template <class T>
+	static unique_ptr<Expression>
+	PreorderReplace(unique_ptr<Expression> expr, const std::function<unique_ptr<Expression>(const T &expr)> &callback) {
+		return PreorderReplaceClass(std::move(expr), T::TYPE,
+		                            [&](const Expression &child) { return callback(child.Cast<T>()); });
+	}
+
 	template <class T>
 	static void VisitExpressionMutable(unique_ptr<Expression> &expr,
 	                                   const std::function<void(T &child, unique_ptr<Expression> &)> &callback) {

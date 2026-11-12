@@ -50,6 +50,8 @@ add_library_unity(
   partial_aggregate_pushdown.cpp
   partitioned_execution.cpp
   join_elimination.cpp
+  join_build_properties.cpp
+  recursive_join_planning.cpp
   regex_range_filter.cpp
   remove_duplicate_groups.cpp
   remove_redundant_order.cpp
