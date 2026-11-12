@@ -99,3 +99,17 @@ WHERE EXISTS (SELECT 1 FROM unnest(CAST(r.doc AS JSON[])) AS i(item) WHERE json_
   AND json_extract_string(r.doc, '$[0].type') = 'a';
 ----
 1
+
+# without identity projections above the delim join CTEs, unused columns are still pruned from the CTE input
+statement ok
+CREATE TABLE wide AS SELECT i AS id, repeat('a', 50) pad1, repeat('b', 50) pad2 FROM range(1000) t(i);
+
+query II
+EXPLAIN (FORMAT compact) SELECT max(sub.pad1) FROM (SELECT d.*, t.i FROM wide d, range(0, d.id % 3) t(i) WHERE t.i = 0) sub;
+----
+physical_plan	<REGEX>:.*SEQ_SCAN[^\n]*Table: [^\n]*\.wide;[^\n]*Projections: id, pad1\n.*
+
+query II
+SELECT max(sub.pad1) = repeat('a', 50), count(*) FROM (SELECT d.*, t.i FROM wide d, range(0, d.id % 3) t(i) WHERE t.i = 0) sub;
+----
+true	666
