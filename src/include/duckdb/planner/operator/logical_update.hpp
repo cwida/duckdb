@@ -11,7 +11,6 @@
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/planner/bound_constraint.hpp"
 #include "duckdb/common/index_map.hpp"
-#include "duckdb/common/enums/row_id_handling.hpp"
 
 namespace duckdb {
 struct CreateInfo;
@@ -40,9 +39,6 @@ public:
 	vector<unique_ptr<Expression>> bound_defaults;
 	vector<unique_ptr<BoundConstraint>> bound_constraints;
 	bool update_is_del_and_insert;
-	//! how to handle a target row-id appearing more than once in the input (e.g. UPDATE ... FROM): keep the
-	//! lock-free path (ASSUME_UNIQUE), deduplicate keeping the first match (KEEP_FIRST), or error (ERROR)
-	RowIdHandling row_id_handling = RowIdHandling::ASSUME_UNIQUE;
 
 public:
 	void Serialize(Serializer &serializer) const override;
