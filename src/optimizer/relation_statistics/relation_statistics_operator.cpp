@@ -378,8 +378,6 @@ RelationStatisticsHelper::ExtractOperatorStats(LogicalOperator &op, ClientContex
 	}
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
 		return child_stats.size() == 1 ? ProjectOutputStats(child_stats[0].get(), op) : optional<RelationStats>();
-	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE:
-		return child_stats.size() == 2 ? ProjectOutputStats(child_stats[1].get(), op) : optional<RelationStats>();
 	case LogicalOperatorType::LOGICAL_UNNEST:
 		return ExtractUnnestStats(op, child_stats[0].get());
 	case LogicalOperatorType::LOGICAL_LIMIT: {
