@@ -86,6 +86,8 @@ auto GetErrorCodeFromExceptionType(ExceptionType type) -> DUCKDB_V2_ERROR {
 		return DUCKDB_V2_ERROR_DATABASE_STATISTICS;
 	case ExceptionType::SERIALIZATION:
 		return DUCKDB_V2_ERROR_DATABASE_SERIALIZATION;
+	case ExceptionType::DATA_CORRUPTION:
+		return DUCKDB_V2_ERROR_DATABASE_DATA_CORRUPTION;
 	// Configuration
 	case ExceptionType::SETTINGS:
 		return DUCKDB_V2_ERROR_CONFIGURATION_SETTINGS;
@@ -220,6 +222,9 @@ auto TryGetExceptionTypeFromErrorCode(DUCKDB_V2_ERROR code) -> optional<Exceptio
 
 	case DUCKDB_V2_ERROR_DATABASE_SERIALIZATION:
 		return ExceptionType::SERIALIZATION;
+
+	case DUCKDB_V2_ERROR_DATABASE_DATA_CORRUPTION:
+		return ExceptionType::DATA_CORRUPTION;
 
 	// Configuration
 	case DUCKDB_V2_ERROR_CONFIGURATION_SETTINGS:

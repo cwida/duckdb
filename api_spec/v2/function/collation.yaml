@@ -1,0 +1,229 @@
+module: collation
+#
+# A collation changes how strings compare and sort, e.g. case-insensitively. It is used with COLLATE and as a column
+# collation. A collation names a scalar function that turns a string into the sort key its comparisons are performed
+# on: where a collated string is compared or sorted, the engine wraps it in a call to the function and compares the
+# results.
+#
+# A collation is described by a `[[collation_info]]`, built with the setters below and registered on an instance.
+# Registration is not transactional: a registered collation is visible to every connection at once and is not undone
+# by a rollback.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Handles
+#-----------------------------------------------------------------------------------------------------------------------
+handles:
+  collation_info:
+    description: |
+      An owned opaque handle to a collation being built. Created with `[[collation_info_create]]`, configured with
+      the setter functions (e.g. `[[collation_info_set_name]]`, `[[collation_info_set_function_name]]`, etc.), made
+      available with `[[connection_register_collation]]` or `[[extension_register_collation]]`, and destroyed with
+      `[[collation_info_destroy]]`.
+
+functions:
+  #---------------------------------------------------------------------------------------------------------------------
+  # Constructors
+  #---------------------------------------------------------------------------------------------------------------------
+  collation_info_create:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-10" ]
+    description: |
+      Creates a new collation info through a factory.
+
+      The collation starts out empty, neither combinable nor skippable for equality: configure it with the setter
+      functions, then make it available with `[[connection_register_collation]]` or
+      `[[extension_register_collation]]`. The caller owns the returned handle and must destroy it with
+      `[[collation_info_destroy]]`, also after registration.
+
+      The collation can only be registered on the instance the factory belongs to.
+    role: constructor
+    belongs_to: collation_info
+    parameters:
+      factory:
+        type: factory
+        description: The factory to create the collation info through.
+      info:
+        type: collation_info
+        indirection: 1
+        kind: OUT
+        description: On success, receives the newly created collation info. Owned by the caller.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Properties
+  #---------------------------------------------------------------------------------------------------------------------
+  collation_info_set_name:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-10" ]
+    description: |
+      Sets the name of the collation, as used in COLLATE.
+
+      The name is borrowed and copied. Calling this again replaces the previous name. A name must be set before
+      registration.
+    parameters:
+      info:
+        type: collation_info
+        description: The collation info to set the name of.
+      name:
+        type: char
+        indirection: 1
+        const: true
+        kind: IN
+        description: The name to set. Borrowed and copied.
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  collation_info_set_function_name:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-10" ]
+    description: |
+      Sets the name of the scalar function that computes the sort key of the collation.
+
+      The function is looked up when the collation is registered, so it must be registered first, e.g. with
+      `[[connection_register_scalar_function]]` or `[[extension_register_scalar_function]]`. It must have an overload
+      that takes exactly one VARCHAR argument and returns VARCHAR or BLOB; that overload is the one the collation
+      calls. Per-collation configuration can live in the function's user data.
+
+      The name is borrowed and copied. Calling this again replaces the previous name. A function name must be set
+      before registration.
+    parameters:
+      info:
+        type: collation_info
+        description: The collation info to set the function name of.
+      name:
+        type: char
+        indirection: 1
+        const: true
+        kind: IN
+        description: The name of the scalar function. Borrowed and copied.
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  collation_info_set_combinable:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-10" ]
+    description: |
+      Sets whether the collation can be combined with other collations on the same expression. Defaults to false.
+    parameters:
+      info:
+        type: collation_info
+        description: The collation info to configure.
+      combinable:
+        type: bool
+        description: Whether the collation can be combined with other collations.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  collation_info_set_not_required_for_equality:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-10" ]
+    description: |
+      Sets whether equality comparisons can skip the collation and compare the raw strings. Defaults to false.
+
+      This is only correct when equal strings always have equal sort keys and vice versa.
+    parameters:
+      info:
+        type: collation_info
+        description: The collation info to configure.
+      not_required_for_equality:
+        type: bool
+        description: Whether equality comparisons can skip the collation.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Registration
+  #---------------------------------------------------------------------------------------------------------------------
+  connection_register_collation:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-09" ]
+    description: |
+      Registers the collation on the connection's database, making it available to COLLATE and as a column collation.
+
+      The collation takes effect immediately for every connection; it is not part of the connection's transaction, so
+      a rollback does not undo it. Registration requires a name and a function name, and fails when the function does
+      not exist or has no overload taking one VARCHAR and returning VARCHAR or BLOB. An existing collation of the same
+      name is kept. The collation info must have been created through a factory of the same database. The caller still
+      owns the handle after registration and must destroy it with `[[collation_info_destroy]]`, which does not affect
+      the registered collation.
+    role: method
+    belongs_to: connection
+    parameters:
+      conn:
+        type: connection
+        description: The connection to register on.
+      info:
+        type: collation_info
+        description: The collation to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  extension_register_collation:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-09" ]
+    description: |
+      Registers the collation on the loading extension's database, making it available to COLLATE and as a column
+      collation.
+
+      Use this from the extension's load callback, after registering the collation's scalar function. Registration
+      requires a name and a function name, and fails when the function does not exist or has no overload taking one
+      VARCHAR and returning VARCHAR or BLOB. An existing collation of the same name is kept. The collation info must
+      have been created through a factory of the same database. The caller still owns the handle after registration
+      and must destroy it with `[[collation_info_destroy]]`, which does not affect the registered collation.
+    role: method
+    belongs_to: extension
+    parameters:
+      extension:
+        type: extension
+        description: The loading extension.
+      info:
+        type: collation_info
+        description: The collation to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Destroy
+  #---------------------------------------------------------------------------------------------------------------------
+  collation_info_destroy:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-10" ]
+    description: |
+      Destroys the collation info, releasing its resources.
+
+      Null-safe: passing a null pointer or null handle is a no-op. The handle is set to null on return to
+      prevent double-destruction. Destroying the handle after registration does not affect the registered collation.
+    parameters:
+      info:
+        type: collation_info
+        description: The collation info to destroy.
+        indirection: 1
+    return_type: ERROR

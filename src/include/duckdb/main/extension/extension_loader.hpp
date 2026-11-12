@@ -47,6 +47,10 @@ public:
 
 	//! Returns the DatabaseInstance associated with this extension loader
 	DUCKDB_API DatabaseInstance &GetDatabaseInstance() const;
+	//! Returns the schema the extension registers its functions in
+	const Identifier &GetExtensionSchema() const {
+		return loader_info.extension_schema;
+	}
 
 public:
 	//! Set the description of the extension

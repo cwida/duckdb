@@ -897,3 +897,28 @@ TEST_CASE("Stable C++API: scalar function overloads carry their own description 
 	REQUIRE(chunk.GetVector(3).GetValue(0).ToText() == "numeric|example");
 	REQUIRE(chunk.GetVector(3).GetValue(1).ToText() == "");
 }
+
+namespace {
+
+void CorruptExec(ScalarFunction::ExecInput &) {
+	throw Exception(DUCKDB_V2_ERROR_DATABASE_DATA_CORRUPTION, "the input is corrupt");
+}
+
+} // namespace
+
+TEST_CASE("Stable C++API: scalar function reports a data corruption error", "[cpp_api]") {
+	auto db = Instance(":memory:");
+	auto conn = db.Connect();
+	auto &factory = conn.GetFactory();
+
+	auto function = ScalarFunction::Create(factory);
+	function.SetName("cpp_corrupt").SetExecCallback(CorruptExec);
+	function.GetSignature().AddParameter("a", factory.ParseType("INTEGER")).SetReturnType(factory.ParseType("INTEGER"));
+	conn.Register(function);
+
+	// The engine reports it as a data corruption error, and the code reads back the same
+	REQUIRE_THROWS_MATCHES(conn.Execute("SELECT cpp_corrupt(1)").Drain(), Exception,
+	                       HasErrorCode(DUCKDB_V2_ERROR_DATABASE_DATA_CORRUPTION));
+	REQUIRE_THROWS_WITH(conn.Execute("SELECT cpp_corrupt(1)").Drain(),
+	                    Catch::Matchers::Contains("Data Corruption Error"));
+}

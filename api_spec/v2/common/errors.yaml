@@ -139,6 +139,9 @@ enums:
       ERROR_DATABASE_SERIALIZATION:
         value: 6007
         description: "Serializing or deserializing a database object failed."
+      ERROR_DATABASE_DATA_CORRUPTION:
+        value: 6008
+        description: "Data corruption was detected (e.g. malformed persistent data or input that must be well formed)."
       # Configuration: errors related to settings, configuration, and permissions
       ERROR_CONFIGURATION_SETTINGS:
         value: 7001

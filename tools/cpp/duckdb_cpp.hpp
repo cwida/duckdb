@@ -62,6 +62,7 @@ class Exception;
 class OptionDescription;
 struct OptionValue;
 class Config;
+class CollationInfo;
 class CustomOption;
 class Environment;
 class Instance;
@@ -93,6 +94,7 @@ template <class CTX>
 class TypeBuilder;
 class CustomType;
 class CastFunction;
+struct timestamp_t;
 class PragmaFunction;
 class LogSink;
 class MacroFunction;
@@ -533,6 +535,10 @@ public:
 	/// The file system this context reads and writes through. Borrowed, and valid only while the context is.
 	auto GetFileSystem() const -> FileSystem;
 
+	/// The start time of the context's current transaction: the instant `current_timestamp` reports, the same for
+	/// every call within the transaction.
+	auto GetTransactionStartTimestamp() const -> timestamp_t;
+
 	/// The factory values, types and data chunks are created through in this context.
 	auto GetFactory() -> Factory & {
 		return factory;
@@ -564,6 +570,36 @@ private:
 ///
 /// Registration is not transactional: a registered option is visible to every connection at once, is not undone by a
 /// rollback, and lives for as long as the database does.
+/// A collation being built: a name, as used in COLLATE, and the scalar function that turns a string into the sort key
+/// its comparisons are performed on. Register it through a `Connection` or an `Extension` of the factory's database,
+/// after registering the function.
+class CollationInfo final : public detail::Handle<CollationInfo> {
+	friend detail::HandleFactory;
+
+public:
+	CollationInfo(CollationInfo &&) noexcept = default;
+	CollationInfo &operator=(CollationInfo &&) noexcept = default;
+
+	~CollationInfo() override;
+
+	/// Creates an empty CollationInfo through `factory`.
+	static auto Create(Factory &factory) -> CollationInfo;
+
+	/// Sets the collation's name, as used in COLLATE.
+	auto SetName(std::string_view name) & -> CollationInfo &;
+	/// Sets the name of the scalar function computing the sort key. It must have an overload taking exactly one
+	/// VARCHAR argument and returning VARCHAR or BLOB, which is the one the collation calls.
+	auto SetFunctionName(std::string_view function_name) & -> CollationInfo &;
+	/// Sets whether the collation can be combined with other collations on an expression. Defaults to false.
+	auto SetCombinable(bool combinable) & -> CollationInfo &;
+	/// Sets whether equality comparisons can skip the collation and compare the raw strings, which is only correct when
+	/// equal strings always have equal sort keys and vice versa. Defaults to false.
+	auto SetNotRequiredForEquality(bool not_required_for_equality) & -> CollationInfo &;
+
+private:
+	explicit CollationInfo(void *impl);
+};
+
 class CustomOption final : public detail::Handle<CustomOption> {
 	friend detail::HandleFactory;
 	friend class Connection;
@@ -948,6 +984,11 @@ public:
 	/// `COPY ... TO` side lacks its batch or flush callback, or a configured `COPY ... FROM` side lacks its bind or
 	/// exec callback.
 	auto Register(CopyFunction &copy_function) -> void;
+	/// Registers the collation, making it available to COLLATE and as a column collation. Its scalar function must be
+	/// registered first. The collation object remains valid. An existing collation of the same name is kept.
+	/// @throws InvalidInputException When the name or function name is missing, or the function does not exist or
+	/// has no overload taking one VARCHAR and returning VARCHAR or BLOB.
+	auto Register(CollationInfo &collation) -> void;
 	/// Registers the cast, replacing whatever cast was registered for the same type pair. The function object remains
 	/// valid and may be adjusted and registered again; user data set via `SetUserData` is consumed by the first
 	/// registration.
@@ -1358,6 +1399,11 @@ public:
 	/// `COPY ... TO` side lacks its batch or flush callback, or a configured `COPY ... FROM` side lacks its bind or
 	/// exec callback.
 	auto Register(CopyFunction &copy_function) -> void;
+	/// Registers the collation, making it available to COLLATE and as a column collation. Its scalar function must be
+	/// registered first. The collation object remains valid. An existing collation of the same name is kept.
+	/// @throws InvalidInputException When the name or function name is missing, or the function does not exist or
+	/// has no overload taking one VARCHAR and returning VARCHAR or BLOB.
+	auto Register(CollationInfo &collation) -> void;
 	/// Registers the cast, replacing whatever cast was registered for the same type pair. The function object remains
 	/// valid and may be adjusted and registered again; user data set via `SetUserData` is consumed by the first
 	/// registration.

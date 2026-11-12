@@ -10,6 +10,7 @@ add_library_unity(
   capi_v2_column_data_collection.cpp
   capi_v2_config.cpp
   capi_v2_connection.cpp
+  capi_v2_collation.cpp
   capi_v2_custom_option.cpp
   capi_v2_custom_type.cpp
   capi_v2_data_chunk.cpp

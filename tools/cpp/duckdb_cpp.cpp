@@ -52,6 +52,10 @@ struct HandleTraits<Factory> {
 	using handle = duckdb_v2_factory_handle;
 };
 template <>
+struct HandleTraits<CollationInfo> {
+	using handle = duckdb_v2_collation_info_handle;
+};
+template <>
 struct HandleTraits<CustomOption> {
 	using handle = duckdb_v2_custom_option_handle;
 };
@@ -633,6 +637,41 @@ auto GetCustomOptionInfo(duckdb_v2_custom_option_update_info_handle info) -> con
 }
 
 } // namespace
+
+CollationInfo::CollationInfo(void *impl) : detail::Handle<CollationInfo>(impl) {
+}
+
+CollationInfo::~CollationInfo() {
+	auto _h = handle();
+	duckdb_v2_collation_info_destroy(&_h);
+}
+
+auto CollationInfo::Create(Factory &factory) -> CollationInfo {
+	duckdb_v2_collation_info_handle _h = nullptr;
+	CheckedAPICall(duckdb_v2_collation_info_create, factory.handle(), &_h);
+	return detail::HandleFactory::Make<CollationInfo>(_h);
+}
+
+auto CollationInfo::SetName(std::string_view name) & -> CollationInfo & {
+	CheckedAPICall(duckdb_v2_collation_info_set_name, handle(), name.data(), static_cast<idx_t>(name.size()));
+	return *this;
+}
+
+auto CollationInfo::SetFunctionName(std::string_view function_name) & -> CollationInfo & {
+	CheckedAPICall(duckdb_v2_collation_info_set_function_name, handle(), function_name.data(),
+	               static_cast<idx_t>(function_name.size()));
+	return *this;
+}
+
+auto CollationInfo::SetCombinable(bool combinable) & -> CollationInfo & {
+	CheckedAPICall(duckdb_v2_collation_info_set_combinable, handle(), combinable);
+	return *this;
+}
+
+auto CollationInfo::SetNotRequiredForEquality(bool not_required_for_equality) & -> CollationInfo & {
+	CheckedAPICall(duckdb_v2_collation_info_set_not_required_for_equality, handle(), not_required_for_equality);
+	return *this;
+}
 
 CustomOption::CustomOption(void *impl) : detail::Handle<CustomOption>(impl) {
 }
@@ -1291,6 +1330,14 @@ auto Extension::Register(CopyFunction &copy_function) -> void {
 	CheckedAPICall(duckdb_v2_extension_register_copy_function, handle(), copy_function.handle());
 }
 
+auto Connection::Register(CollationInfo &collation) -> void {
+	CheckedAPICall(duckdb_v2_connection_register_collation, handle(), collation.handle());
+}
+
+auto Extension::Register(CollationInfo &collation) -> void {
+	CheckedAPICall(duckdb_v2_extension_register_collation, handle(), collation.handle());
+}
+
 auto Connection::Register(CastFunction &cast_function) -> void {
 	cast_function.PrepareRegistration();
 	CheckedAPICall(duckdb_v2_connection_register_cast_function, handle(), cast_function.handle());
@@ -1402,6 +1449,12 @@ auto Factory::CreateType(std::string_view name) const -> LogicalType {
 
 auto Factory::CreateType(std::string_view name, const std::vector<TypeParam> &params) const -> LogicalType {
 	return CreateType(QualifiedName::Create({std::string(name)}), params);
+}
+
+auto Context::GetTransactionStartTimestamp() const -> timestamp_t {
+	timestamp_t result;
+	CheckedAPICall(duckdb_v2_context_get_transaction_start_timestamp, handle(), &result.micros);
+	return result;
 }
 
 auto Context::GetFileSystem() const -> FileSystem {

@@ -115,3 +115,31 @@ functions:
         kind: OUT
         description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
+
+  context_get_transaction_start_timestamp:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-09" ]
+    description: |
+      Reads the start time of the context's current transaction, the instant `current_timestamp` and friends report.
+
+      The payload is microseconds since 1970-01-01, the same unit a TIMESTAMP vector exposes. The instant is the same
+      for every call within the transaction, which is what functions with a consistent-within-query stability need.
+      Within a function callback a transaction is already active; outside one, the call joins the connection's
+      transaction or runs in one of its own.
+    role: getter
+    belongs_to: context
+    parameters:
+      ctx:
+        type: context
+        description: The context.
+      out_micros:
+        type: i64
+        indirection: 1
+        kind: OUT
+        description: Receives the start timestamp in microseconds since the epoch.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR

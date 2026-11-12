@@ -1,4 +1,5 @@
 #include "duckdb/main/capi_v2/capi_v2_internal.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 
 using namespace duckdb::capiv2;
 
@@ -54,5 +55,16 @@ DUCKDB_V2_ERROR duckdb_v2_connection_progress_get(duckdb_v2_connection_handle co
 		*out_percentage = progress.GetPercentage();
 		*out_rows_processed = progress.GetRowsProcessed();
 		*out_total_rows_to_process = progress.GetTotalRowsToProcess();
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_context_get_transaction_start_timestamp(duckdb_v2_context_handle ctx, int64_t *out_micros,
+                                                                  duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(ctx);
+	DUCKDB_CHECK_ARG(out_micros);
+	return WithErrorHandler(err, [&]() {
+		Convert(ctx)->WithContext([&](duckdb::ClientContext &context) {
+			*out_micros = duckdb::MetaTransaction::Get(context).start_timestamp.value;
+		});
 	});
 }
