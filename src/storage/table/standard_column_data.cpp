@@ -79,7 +79,7 @@ idx_t StandardColumnData::ScanCount(ColumnScanState &state, Vector &result, idx_
 void StandardColumnData::Filter(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
                                 SelectionVector &sel, idx_t &count, const TableFilter &filter,
                                 TableFilterState &filter_state) {
-	// check if we can do a specialized select
+	// check if we can do a specialized filter
 	// the compression functions need to support this
 	auto compression = GetCompressionFunction();
 	bool has_filter = compression && compression->filter;
@@ -90,30 +90,31 @@ void StandardColumnData::Filter(TransactionData transaction, idx_t vector_index,
 	auto scan_type = GetVectorScanType(state, target_count, result);
 	bool scan_entire_vector = scan_type == ScanVectorType::SCAN_ENTIRE_VECTOR;
 	bool verify_fetch_row = state.scan_options && state.scan_options->force_fetch_row;
-	if (!has_filter && compression && compression->type == CompressionType::COMPRESSION_UNCOMPRESSED &&
-	    type.InternalType() == PhysicalType::VARCHAR && count > 0 &&
-	    count * UNCOMPRESSED_SELECT_DENSITY <= target_count && !HasUpdates() && !validity->HasUpdates()) {
-		// Fetch surviving strings and their validity before evaluating the next predicate.
-		Select(transaction, vector_index, state, result, sel, count);
-		FlatVector::SetSize(result, count_t(count));
-		// FilterSelection and subsequent columns use the original vector's row positions.
-		SelectionVector original_positions(target_count);
-		for (idx_t i = 0; i < target_count; i++) {
-			original_positions.set_index(i, 0);
-		}
-		for (idx_t i = 0; i < count; i++) {
-			original_positions.set_index(sel.get_index(i), i);
-		}
-		result.Slice(original_positions, target_count);
-		ColumnSegment::FilterSelection(sel, result, filter_state, target_count, count);
-		return;
-	}
 	if (!has_filter || !validity_has_filter || !scan_entire_vector || verify_fetch_row || filter_state.can_throw) {
 		// we are not scanning an entire vector - this can have several causes (updates, etc)
 		// a filter that can throw is excluded as well: the compression-level filters evaluate it over the distinct
 		// values of the segment (e.g. the dictionary, or the RLE runs), which includes values of rows that another
 		// filter already removed - pushing the filter down there must not raise errors that would not occur otherwise
-		ColumnData::Filter(transaction, vector_index, state, result, sel, count, filter, filter_state);
+		if (compression && compression->type == CompressionType::COMPRESSION_UNCOMPRESSED &&
+		    type.InternalType() == PhysicalType::VARCHAR && compression->select && validity_compression &&
+		    validity_compression->select && count > 0 && count * UNCOMPRESSED_SELECT_DENSITY <= target_count &&
+		    !HasUpdates() && !validity->HasUpdates()) {
+			// Fetch surviving strings and their validity before evaluating the next predicate.
+			Select(transaction, vector_index, state, result, sel, count);
+			FlatVector::SetSize(result, count_t(count));
+			// Restore original row positions for filtering and the caller's final slice.
+			SelectionVector original_positions(target_count);
+			for (idx_t i = 0; i < target_count; i++) {
+				original_positions.set_index(i, 0);
+			}
+			for (idx_t i = 0; i < count; i++) {
+				original_positions.set_index(sel.get_index(i), i);
+			}
+			result.Slice(original_positions, target_count);
+			ColumnSegment::FilterSelection(sel, result, filter_state, target_count, count);
+		} else {
+			ColumnData::Filter(transaction, vector_index, state, result, sel, count, filter, filter_state);
+		}
 		return;
 	}
 	FilterVector(state, result, target_count, sel, count, filter, filter_state);

@@ -12,8 +12,7 @@
     {
       "reason": "Forced prefetching reads all blocks of the column at once, which exceeds the memory limit the test relies on.",
       "paths": [
-        "test/sql/storage/overflow_strings/blob_row_fetch.test",
-        "test/sql/storage/overflow_strings/selective_string_filter.test"
+        "test/sql/storage/overflow_strings/blob_row_fetch.test"
       ]
     }
   ]

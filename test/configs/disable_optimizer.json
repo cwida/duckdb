@@ -107,8 +107,7 @@
     {
       "reason": "Fetching only the selected rows requires filter pushdown from optimizer.",
       "paths": [
-        "test/sql/storage/overflow_strings/blob_row_fetch.test",
-        "test/sql/storage/overflow_strings/selective_string_filter.test"
+        "test/sql/storage/overflow_strings/blob_row_fetch.test"
       ]
     },
     {
