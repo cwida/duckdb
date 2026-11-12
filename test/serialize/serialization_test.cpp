@@ -1,9 +1,12 @@
 #include "catch.hpp"
 
+#include "duckdb.hpp"
 #include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/main/secret/secret.hpp"
+#include "duckdb/main/secret/secret_manager.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/storage/data_pointer.hpp"
 
@@ -340,6 +343,37 @@ TEST_CASE("Test KeyValueSecret deserialization validates redact_keys", "[seriali
 			REQUIRE_THROWS_AS(KeyValueSecret::Deserialize<KeyValueSecret>(deserializer, base), SerializationException);
 		}
 	}
+}
+
+TEST_CASE("Test refresh metadata redaction with legacy redaction lists", "[serialization][secrets]") {
+	DuckDB db(nullptr);
+	KeyValueSecret secret({"s3://"}, "s3", "config", "legacy_refresh");
+	secret.redact_keys = {"secret", "session_token"};
+	secret.secret_map["key_id"] = "visible-key";
+	auto refresh_info = Value::STRUCT({{"secret", "dummy-secret"}, {"session_token", "dummy-session-token"}});
+	secret.secret_map["REFRESH_INFO"] = refresh_info;
+
+	auto check_redaction = [&](const KeyValueSecret &value) {
+		auto redacted = value.ToString();
+		REQUIRE(StringUtil::Contains(redacted, "REFRESH_INFO=redacted"));
+		REQUIRE(StringUtil::Contains(redacted, "key_id=visible-key"));
+		REQUIRE_FALSE(StringUtil::Contains(redacted, "dummy-secret"));
+		REQUIRE_FALSE(StringUtil::Contains(redacted, "dummy-session-token"));
+		auto unredacted = value.ToString(SecretDisplayType::UNREDACTED);
+		REQUIRE(StringUtil::Contains(unredacted, refresh_info.ToString()));
+		REQUIRE(Value::NotDistinctFrom(value.TryGetValue("refresh_info"), refresh_info));
+	};
+	check_redaction(secret);
+
+	Allocator allocator;
+	MemoryStream stream(allocator);
+	BinarySerializer::Serialize(secret, stream);
+	stream.Rewind();
+	BinaryDeserializer deserializer(stream);
+	deserializer.Begin();
+	auto restored = SecretManager::Get(*db.instance).DeserializeSecret(deserializer);
+	deserializer.End();
+	check_redaction(restored->Cast<KeyValueSecret>());
 }
 
 } // namespace duckdb

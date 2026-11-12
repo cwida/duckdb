@@ -1,0 +1,22 @@
+diff --git a/test/sql/aws_secret_server_side_encryption.test b/test/sql/aws_secret_server_side_encryption.test
+index 79e2120..ce74308 100644
+--- a/test/sql/aws_secret_server_side_encryption.test
++++ b/test/sql/aws_secret_server_side_encryption.test
+@@ -56,7 +56,7 @@ FROM duckdb_secrets() WHERE name = 'ssec_refresh';
+ ----
+ true	true	false
+ 
+-# Without SSE_C_KEY, refresh_info stays visible as before
++# Refresh metadata is redacted even without SSE_C_KEY
+ statement ok
+ CREATE SECRET plain_refresh (
+     TYPE S3,
+@@ -71,7 +71,7 @@ CREATE SECRET plain_refresh (
+ query I
+ SELECT secret_string LIKE '%refresh_info=redacted%' FROM duckdb_secrets() WHERE name = 'plain_refresh';
+ ----
+-false
++true
+ 
+ # An invalid key fails at CREATE, without echoing the value
+ statement error

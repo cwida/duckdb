@@ -63,7 +63,9 @@ string KeyValueSecret::ToString(SecretDisplayType mode) const {
 	for (auto it = secret_map.begin(); it != secret_map.end(); it++) {
 		result.append(it->first.GetIdentifierName());
 		result.append("=");
-		if (mode == SecretDisplayType::REDACTED && redact_keys.find(it->first) != redact_keys.end()) {
+		// Refresh metadata can contain credentials even when the stored redaction list omits it.
+		if (mode == SecretDisplayType::REDACTED &&
+		    (it->first == "refresh_info" || redact_keys.find(it->first) != redact_keys.end())) {
 			result.append("redacted");
 		} else {
 			result.append(it->second.ToString());
