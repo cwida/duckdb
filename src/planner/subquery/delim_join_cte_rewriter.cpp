@@ -66,16 +66,6 @@ static BindingReplacementGraph CreateConstructedBindingReplacements(const vector
 	return result;
 }
 
-static unique_ptr<LogicalOperator> CreateIdentityProjection(Binder &binder, unique_ptr<LogicalOperator> child,
-                                                            BindingReplacementGraph &replacements) {
-	auto projection = LogicalProjection::CreateIdentity(binder.GenerateTableIndex(), std::move(child));
-	projection->query_block_boundary = false;
-	projection->ResolveOperatorTypes();
-	auto bindings = projection->children[0]->GetColumnBindings();
-	replacements = CreateConstructedBindingReplacements(bindings, projection->GetColumnBindings());
-	return std::move(projection);
-}
-
 static idx_t RewriteDelimScanReferences(unique_ptr<LogicalOperator> &op, TableIndex delim_scan_index) {
 	if (op->type == LogicalOperatorType::LOGICAL_DELIM_JOIN) {
 		if (!op->children.empty()) {
@@ -2126,15 +2116,11 @@ BindingReplacementGraph DelimJoinCTERewriter::MaterializeDelimJoinAsCTE(unique_p
 	dedup->children.push_back(std::move(dedup_child));
 
 	auto dedup_cte_name = Identifier("__duckdb_delim_dedup_" + to_string(dedup_cte_index.index));
-	BindingReplacementGraph dedup_output_replacements;
-	auto dedup_cte_child = CreateIdentityProjection(binder, std::move(plan), dedup_output_replacements);
-	output_replacements.Merge(dedup_output_replacements);
+	auto dedup_cte_child = std::move(plan);
 	auto dedup_cte =
 	    make_uniq<LogicalMaterializedCTE>(dedup_cte_name, dedup_cte_index, dedup_types.size(), std::move(dedup),
 	                                      std::move(dedup_cte_child), CTEMaterialize::CTE_MATERIALIZE_DEFAULT);
-	BindingReplacementGraph cte_output_replacements;
-	auto cte_child = CreateIdentityProjection(binder, std::move(dedup_cte), cte_output_replacements);
-	output_replacements.Merge(cte_output_replacements);
+	auto cte_child = std::move(dedup_cte);
 	auto cte = make_uniq<LogicalMaterializedCTE>(cte_name, cte_index, left_column_count, std::move(cte_source),
 	                                             std::move(cte_child), CTEMaterialize::CTE_MATERIALIZE_DEFAULT);
 	if (can_restrict_input) {
