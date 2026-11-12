@@ -112,7 +112,7 @@ bool QueryProfiler::PrintOptimizerOutput() const {
 }
 
 string QueryProfiler::GetSaveLocation() const {
-	return is_explain_analyze ? string() : ClientConfig::GetConfig(context).profiler_save_location;
+	return is_explain_analyze ? string() : Settings::Get<ProfilingOutputSetting>(context);
 }
 
 QueryProfiler &QueryProfiler::Get(ClientContext &context) {
@@ -182,8 +182,7 @@ void QueryProfiler::AddParserTime(const Profiler &parser_timer, timestamp_t star
 }
 
 bool QueryProfiler::OperatorRequiresProfiling(const PhysicalOperatorType op_type) {
-	const auto &config = ClientConfig::GetConfig(context);
-	if (config.profiling_coverage == ProfilingCoverage::ALL) {
+	if (Settings::Get<ProfilingCoverageSetting>(context) == ProfilingCoverage::ALL) {
 		return true;
 	}
 

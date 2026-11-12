@@ -1,0 +1,24 @@
+# name: test/sql/logging/logging_scan_progress.test
+# description: Scanning duckdb_logs reports complete progress
+# group: [logging]
+
+statement ok
+SET threads=1
+
+statement ok
+CALL enable_logging()
+
+# enough log entries for the scan to produce several chunks
+statement ok
+SELECT write_log('progress test entry') FROM range(10000)
+
+statement ok
+SET debug_verify_progress='error'
+
+statement ok
+SET debug_verify_progress_ignore='UNSUPPORTED_SOURCE:DUCKDB_LOG_CONTEXTS'
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message = 'progress test entry'
+----
+10000

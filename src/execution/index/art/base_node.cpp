@@ -2,7 +2,7 @@
 
 #include "duckdb/execution/index/art/leaf.hpp"
 #include "duckdb/execution/index/art/node48.hpp"
-#include "duckdb/execution/index/art/prefix.hpp"
+#include "duckdb/execution/index/art/prefix_handle.hpp"
 
 namespace duckdb {
 
@@ -96,7 +96,7 @@ void Node4::DeleteChild(ART &art, NodePtr &node_ptr, NodePtr &parent_ptr, const 
 	NodePtr::FreeNode(art, node_ptr);
 	// Propagate both the prev_node_4 status and the general gate status (if the gate was earlier on),
 	// since the concatenation logic depends on both.
-	Prefix::Concat(art, parent_ptr, node_ptr, child_ptr, remaining_byte, prev_node4_status, status);
+	PrefixHandle::Concat(art, parent_ptr, node_ptr, child_ptr, remaining_byte, prev_node4_status, status);
 }
 
 void Node4::ShrinkNode16(ART &art, NodePtr &node4_ptr, NodePtr &node16_ptr) {

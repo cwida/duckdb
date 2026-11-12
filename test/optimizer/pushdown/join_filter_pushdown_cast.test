@@ -208,10 +208,17 @@ SELECT COUNT(*) FROM probe_direct JOIN build_direct ON probe_direct.a = build_di
 statement ok
 INSERT INTO build_direct VALUES (9999999999);
 
+# keep the out-of-range build value: join statistics would filter it out
+statement ok
+SET disabled_optimizers = 'compressed_materialization,statistics_propagation';
+
 query II
 EXPLAIN ANALYZE SELECT COUNT(*) FROM probe_direct JOIN build_direct ON probe_direct.a = build_direct.b;
 ----
 analyzed_plan	<!REGEX>:.*Dynamic Filters.*
+
+statement ok
+SET disabled_optimizers = 'compressed_materialization';
 
 query I
 SELECT COUNT(*) FROM probe_direct JOIN build_direct ON probe_direct.a = build_direct.b;

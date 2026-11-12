@@ -26,8 +26,8 @@ BindResult ProjectionBinder::BindColumnRef(unique_ptr<ParsedExpression> &expr_pt
 	auto return_type = result.expression->GetReturnType();
 	auto alias = result.expression->GetName();
 	auto proj_col_idx = ColumnBinding::PushExpression(proj_expressions, std::move(result.expression));
-	auto proj_ref = make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(proj_index, proj_col_idx));
-	proj_ref->SetAlias(std::move(alias));
+	auto proj_ref =
+	    make_uniq<BoundColumnRefExpression>(std::move(alias), return_type, ColumnBinding(proj_index, proj_col_idx));
 	return BindResult(std::move(proj_ref));
 }
 

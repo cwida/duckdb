@@ -124,4 +124,4 @@ Forced commit failure
 statement error
 SELECT count(*) FROM t
 ----
-database has been invalidated
+<REGEX>:.*has been invalidated.*

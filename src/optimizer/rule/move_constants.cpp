@@ -68,6 +68,8 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 		}
 		return make_uniq<BoundConstantExpression>(Value(comparison.GetReturnType()));
 	}
+	const bool constant_is_left = RefersToSameObject(BoundComparisonExpression::Left(comparison), outer_constant);
+	Value new_constant;
 	auto &constant_type = outer_constant.GetReturnType();
 	hugeint_t outer_value = IntegralValue::Get(outer_constant.GetValue());
 	hugeint_t inner_value = IntegralValue::Get(inner_constant.GetValue());
@@ -93,7 +95,7 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 			    GetContext(), std::move(arithmetic.GetChildrenMutable()[arithmetic_child_index]),
 			    Value::BOOLEAN(false));
 		}
-		outer_constant.SetValue(std::move(*result_value));
+		new_constant = std::move(*result_value);
 	} else if (op_type == "-") {
 		// [x - 1 COMP 10] O R [1 - x COMP 10]
 		// order matters in subtraction:
@@ -113,7 +115,7 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 				    GetContext(), std::move(arithmetic.GetChildrenMutable()[arithmetic_child_index]),
 				    Value::BOOLEAN(false));
 			}
-			outer_constant.SetValue(std::move(*result_value));
+			new_constant = std::move(*result_value);
 		} else {
 			// [1 - x COMP 10]
 			// change right side to 1-10=-9
@@ -130,7 +132,7 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 				    GetContext(), std::move(arithmetic.GetChildrenMutable()[arithmetic_child_index]),
 				    Value::BOOLEAN(false));
 			}
-			outer_constant.SetValue(std::move(*result_value));
+			new_constant = std::move(*result_value);
 			// in this case, we should also flip the comparison
 			// e.g. if we have [4 - x < 2] then we should have [x > 2]
 			BoundComparisonExpression::FlipType(comparison);
@@ -182,15 +184,18 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 			// multiply by negative value, need to flip expression
 			BoundComparisonExpression::FlipType(comparison);
 		}
-		outer_constant.SetValue(std::move(*result_value));
+		new_constant = std::move(*result_value);
 	}
 	// replace left side with x
 	// first extract x from the arithmetic expression
 	auto arithmetic_child = std::move(arithmetic.GetChildrenMutable()[arithmetic_child_index]);
-	// then place in the comparison
-	if (RefersToSameObject(BoundComparisonExpression::Left(comparison), outer_constant)) {
+	// then place in the comparison, next to the new constant
+	auto new_constant_expr = outer_constant.WithValue(std::move(new_constant));
+	if (constant_is_left) {
+		BoundComparisonExpression::LeftMutable(comparison) = std::move(new_constant_expr);
 		BoundComparisonExpression::RightMutable(comparison) = std::move(arithmetic_child);
 	} else {
+		BoundComparisonExpression::RightMutable(comparison) = std::move(new_constant_expr);
 		BoundComparisonExpression::LeftMutable(comparison) = std::move(arithmetic_child);
 	}
 	changes_made = true;
@@ -272,6 +277,8 @@ unique_ptr<Expression> MoveUnaryMinusRule::Apply(LogicalOperator &op, vector<ref
 		return make_uniq<BoundConstantExpression>(Value(comparison.GetReturnType()));
 	}
 
+	const bool negation_is_left = RefersToSameObject(BoundComparisonExpression::Left(comparison), negation);
+	Value new_constant;
 	auto &constant_type = outer_constant.GetReturnType();
 	unique_ptr<Expression> nan_guard;
 	bool nan_guard_disjunctive = false;
@@ -308,15 +315,15 @@ unique_ptr<Expression> MoveUnaryMinusRule::Apply(LogicalOperator &op, vector<ref
 		if (!result_value) {
 			return nullptr;
 		}
-		outer_constant.SetValue(std::move(*result_value));
+		new_constant = std::move(*result_value);
 	} else if (constant_type.id() == LogicalTypeId::DECIMAL && constant_type.InternalType() == PhysicalType::VARCHAR) {
 		// wide decimal, negate the BIGNUM blob of the unscaled value
 		bignum_t unscaled(string_t(StringValue::Get(outer_constant.GetValue())));
 		const BignumIntermediate intermediate(unscaled);
 		StringHeap heap;
 		auto negated = intermediate.Negate(heap);
-		outer_constant.SetValue(Value::WIDEDECIMAL(negated.GetString(), DecimalType::GetWidth(constant_type),
-		                                           DecimalType::GetScale(constant_type)));
+		new_constant = Value::WIDEDECIMAL(negated.GetString(), DecimalType::GetWidth(constant_type),
+		                                  DecimalType::GetScale(constant_type));
 	} else if (constant_type.id() == LogicalTypeId::DECIMAL) {
 		// negate the unscaled integer and reconstruct with the same width/scale
 		hugeint_t negated_value;
@@ -327,16 +334,16 @@ unique_ptr<Expression> MoveUnaryMinusRule::Apply(LogicalOperator &op, vector<ref
 		auto scale = DecimalType::GetScale(constant_type);
 		switch (constant_type.InternalType()) {
 		case PhysicalType::INT16:
-			outer_constant.SetValue(Value::DECIMAL(Cast::Operation<hugeint_t, int16_t>(negated_value), width, scale));
+			new_constant = Value::DECIMAL(Cast::Operation<hugeint_t, int16_t>(negated_value), width, scale);
 			break;
 		case PhysicalType::INT32:
-			outer_constant.SetValue(Value::DECIMAL(Cast::Operation<hugeint_t, int32_t>(negated_value), width, scale));
+			new_constant = Value::DECIMAL(Cast::Operation<hugeint_t, int32_t>(negated_value), width, scale);
 			break;
 		case PhysicalType::INT64:
-			outer_constant.SetValue(Value::DECIMAL(Cast::Operation<hugeint_t, int64_t>(negated_value), width, scale));
+			new_constant = Value::DECIMAL(Cast::Operation<hugeint_t, int64_t>(negated_value), width, scale);
 			break;
 		case PhysicalType::INT128:
-			outer_constant.SetValue(Value::DECIMAL(negated_value, width, scale));
+			new_constant = Value::DECIMAL(negated_value, width, scale);
 			break;
 		default:
 			throw InternalException("Unknown DECIMAL physical type");
@@ -356,14 +363,17 @@ unique_ptr<Expression> MoveUnaryMinusRule::Apply(LogicalOperator &op, vector<ref
 			return ExpressionRewriter::ConstantOrNull(GetContext(), std::move(negation.GetChildrenMutable()[0]),
 			                                          Value::BOOLEAN(comparison_result));
 		}
-		outer_constant.SetValue(std::move(*result_value));
+		new_constant = std::move(*result_value);
 	}
 	// [-x COMP c] => [x FLIPPED_COMP -c]
 	auto inner_expr = std::move(negation.GetChildrenMutable()[0]);
-	if (RefersToSameObject(BoundComparisonExpression::Left(comparison), negation)) {
+	auto new_constant_expr = outer_constant.WithValue(std::move(new_constant));
+	if (negation_is_left) {
 		BoundComparisonExpression::LeftMutable(comparison) = std::move(inner_expr);
+		BoundComparisonExpression::RightMutable(comparison) = std::move(new_constant_expr);
 	} else {
 		BoundComparisonExpression::RightMutable(comparison) = std::move(inner_expr);
+		BoundComparisonExpression::LeftMutable(comparison) = std::move(new_constant_expr);
 	}
 	BoundComparisonExpression::FlipType(comparison);
 	if (nan_guard) {
