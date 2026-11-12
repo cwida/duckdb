@@ -373,3 +373,133 @@ SELECT id, p1, rowid FROM (SELECT id, p1, rowid, ROW_NUMBER() OVER (PARTITION BY
 
 statement ok
 SET disabled_optimizers = ''
+
+# Issue #28559: Join column replacement in late materialization must not replace FLOAT/DOUBLE
+# (or nested types containing them) with the other side's join key, because 0.0 = -0.0 is true
+# but the values are distinguishable.
+
+statement ok
+CREATE TABLE a_28559(g INT, g2 VARCHAR, k BIGINT, c DOUBLE);
+
+statement ok
+CREATE TABLE b_28559(c DOUBLE, w INT);
+
+statement ok
+INSERT INTO a_28559 VALUES (NULL, 'x', 2, -0.0::DOUBLE);
+
+statement ok
+INSERT INTO b_28559 VALUES (0.0::DOUBLE, 0);
+
+query TI
+SELECT bc::VARCHAR, ak FROM (
+    SELECT b_28559.c AS bc, a_28559.k AS ak,
+           row_number() OVER (PARTITION BY a_28559.g, a_28559.g2 ORDER BY a_28559.k) AS rn
+    FROM b_28559 JOIN a_28559 ON b_28559.c = a_28559.c
+) WHERE rn = 1;
+----
+0.0	2
+
+query TI
+SELECT ac::VARCHAR, bw FROM (
+    SELECT a_28559.c AS ac, b_28559.w AS bw,
+           row_number() OVER (PARTITION BY b_28559.w ORDER BY a_28559.k) AS rn
+    FROM b_28559 JOIN a_28559 ON b_28559.c = a_28559.c
+) WHERE rn = 1;
+----
+-0.0	0
+
+# FLOAT join key
+statement ok
+CREATE TABLE af_28559(g INT, g2 VARCHAR, k BIGINT, c FLOAT);
+
+statement ok
+CREATE TABLE bf_28559(c FLOAT, w INT);
+
+statement ok
+INSERT INTO af_28559 VALUES (NULL, 'x', 2, -0.0::FLOAT);
+
+statement ok
+INSERT INTO bf_28559 VALUES (0.0::FLOAT, 0);
+
+query TI
+SELECT bc::VARCHAR, ak FROM (
+    SELECT bf_28559.c AS bc, af_28559.k AS ak,
+           row_number() OVER (PARTITION BY af_28559.g, af_28559.g2 ORDER BY af_28559.k) AS rn
+    FROM bf_28559 JOIN af_28559 ON bf_28559.c = af_28559.c
+) WHERE rn = 1;
+----
+0.0	2
+
+# Nested FLOAT[] join key
+statement ok
+CREATE TABLE al_28559(g INT, g2 VARCHAR, k BIGINT, c FLOAT[]);
+
+statement ok
+CREATE TABLE bl_28559(c FLOAT[], w INT);
+
+statement ok
+INSERT INTO al_28559 VALUES (NULL, 'x', 2, [-0.0::FLOAT]);
+
+statement ok
+INSERT INTO bl_28559 VALUES ([0.0::FLOAT], 0);
+
+query TI
+SELECT bc::VARCHAR, ak FROM (
+    SELECT bl_28559.c AS bc, al_28559.k AS ak,
+           row_number() OVER (PARTITION BY al_28559.g, al_28559.g2 ORDER BY al_28559.k) AS rn
+    FROM bl_28559 JOIN al_28559 ON bl_28559.c = al_28559.c
+) WHERE rn = 1;
+----
+[0.0]	2
+
+# Nested STRUCT(x DOUBLE) join key
+statement ok
+CREATE TABLE as_28559(g INT, g2 VARCHAR, k BIGINT, c STRUCT(x DOUBLE));
+
+statement ok
+CREATE TABLE bs_28559(c STRUCT(x DOUBLE), w INT);
+
+statement ok
+INSERT INTO as_28559 VALUES (NULL, 'x', 2, {'x': -0.0::DOUBLE});
+
+statement ok
+INSERT INTO bs_28559 VALUES ({'x': 0.0::DOUBLE}, 0);
+
+query TI
+SELECT bc::VARCHAR, ak FROM (
+    SELECT bs_28559.c AS bc, as_28559.k AS ak,
+           row_number() OVER (PARTITION BY as_28559.g, as_28559.g2 ORDER BY as_28559.k) AS rn
+    FROM bs_28559 JOIN as_28559 ON bs_28559.c = as_28559.c
+) WHERE rn = 1;
+----
+{'x': 0.0}	2
+
+# Join key as PARTITION BY column
+query TI
+SELECT bc::VARCHAR, ak FROM (
+    SELECT b_28559.c AS bc, a_28559.k AS ak, a_28559.g2 AS ag2,
+           row_number() OVER (PARTITION BY b_28559.c, a_28559.g2 ORDER BY a_28559.k) AS rn
+    FROM b_28559 JOIN a_28559 ON b_28559.c = a_28559.c
+) WHERE rn = 1;
+----
+0.0	2
+
+# When all projected columns come from one side of the join, late materialization can still be used
+# even if the join condition is on DOUBLE.
+query II
+EXPLAIN SELECT ac::VARCHAR, ak FROM (
+    SELECT a_28559.c AS ac, a_28559.k AS ak,
+           row_number() OVER (PARTITION BY a_28559.g, a_28559.g2 ORDER BY a_28559.k) AS rn
+    FROM b_28559 JOIN a_28559 ON b_28559.c = a_28559.c
+) WHERE rn = 1;
+----
+logical_opt	<REGEX>:.*COMPARISON_JOIN.*rowid = rowid.*
+
+query TI
+SELECT ac::VARCHAR, ak FROM (
+    SELECT a_28559.c AS ac, a_28559.k AS ak,
+           row_number() OVER (PARTITION BY a_28559.g, a_28559.g2 ORDER BY a_28559.k) AS rn
+    FROM b_28559 JOIN a_28559 ON b_28559.c = a_28559.c
+) WHERE rn = 1;
+----
+-0.0	2

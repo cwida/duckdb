@@ -1,0 +1,178 @@
+# name: test/optimizer/joins/join_equal_non_identical_keys.test
+# description: Issue #28566: Do not replace RHS join key with LHS join key when equality does not imply identical values
+# group: [joins]
+
+# Original reproducer: DOUBLE[] with [0.0] and [-0.0]
+statement ok
+CREATE TABLE l_list(id INT, x DOUBLE[]);
+
+statement ok
+CREATE TABLE r_list(x DOUBLE[]);
+
+statement ok
+INSERT INTO l_list VALUES (1, [0.0::DOUBLE]), (2, ['NaN'::DOUBLE]);
+
+statement ok
+INSERT INTO r_list VALUES ([-0.0::DOUBLE]), (['-NaN'::DOUBLE]);
+
+query II
+SELECT l_list.id, count(*) FROM l_list JOIN r_list ON l_list.x = r_list.x GROUP BY l_list.id
+HAVING count(*) FILTER (WHERE r_list.x::VARCHAR <> l_list.x::VARCHAR) > 0
+ORDER BY l_list.id;
+----
+1	1
+2	1
+
+# Non-root projection over INNER JOIN on FLOAT[]
+statement ok
+CREATE TABLE l_flist(id INT, x FLOAT[]);
+
+statement ok
+CREATE TABLE r_flist(x FLOAT[]);
+
+statement ok
+INSERT INTO l_flist VALUES (1, [0.0::FLOAT]);
+
+statement ok
+INSERT INTO r_flist VALUES ([-0.0::FLOAT]);
+
+query ITT
+SELECT id, lx, rx FROM (
+    SELECT l_flist.id AS id, l_flist.x::VARCHAR AS lx, r_flist.x::VARCHAR AS rx
+    FROM l_flist JOIN r_flist ON l_flist.x = r_flist.x
+) WHERE id = 1;
+----
+1	[0.0]	[-0.0]
+
+# Fixed-size ARRAY: DOUBLE[1]
+statement ok
+CREATE TABLE l_arr(id INT, x DOUBLE[1]);
+
+statement ok
+CREATE TABLE r_arr(x DOUBLE[1]);
+
+statement ok
+INSERT INTO l_arr VALUES (1, [0.0::DOUBLE]);
+
+statement ok
+INSERT INTO r_arr VALUES ([-0.0::DOUBLE]);
+
+query II
+SELECT l_arr.id, count(*) FROM l_arr JOIN r_arr ON l_arr.x = r_arr.x GROUP BY l_arr.id
+HAVING count(*) FILTER (WHERE r_arr.x::VARCHAR <> l_arr.x::VARCHAR) > 0;
+----
+1	1
+
+# Nested STRUCT(a INT, b DOUBLE)
+statement ok
+CREATE TABLE l_struct(id INT, x STRUCT(a INT, b DOUBLE));
+
+statement ok
+CREATE TABLE r_struct(x STRUCT(a INT, b DOUBLE));
+
+statement ok
+INSERT INTO l_struct VALUES (1, {'a': 7, 'b': 0.0::DOUBLE});
+
+statement ok
+INSERT INTO r_struct VALUES ({'a': 7, 'b': -0.0::DOUBLE});
+
+query II
+SELECT l_struct.id, count(*) FROM l_struct JOIN r_struct ON l_struct.x = r_struct.x GROUP BY l_struct.id
+HAVING count(*) FILTER (WHERE r_struct.x::VARCHAR <> l_struct.x::VARCHAR) > 0;
+----
+1	1
+
+# Nested MAP(INT, DOUBLE)
+statement ok
+CREATE TABLE l_map(id INT, x MAP(INT, DOUBLE));
+
+statement ok
+CREATE TABLE r_map(x MAP(INT, DOUBLE));
+
+statement ok
+INSERT INTO l_map VALUES (1, MAP([1], [0.0::DOUBLE]));
+
+statement ok
+INSERT INTO r_map VALUES (MAP([1], [-0.0::DOUBLE]));
+
+query II
+SELECT l_map.id, count(*) FROM l_map JOIN r_map ON l_map.x = r_map.x GROUP BY l_map.id
+HAVING count(*) FILTER (WHERE r_map.x::VARCHAR <> l_map.x::VARCHAR) > 0;
+----
+1	1
+
+# Nested UNION(i INT, d DOUBLE)
+statement ok
+CREATE TABLE l_union(id INT, x UNION(i INT, d DOUBLE));
+
+statement ok
+CREATE TABLE r_union(x UNION(i INT, d DOUBLE));
+
+statement ok
+INSERT INTO l_union VALUES (1, union_value(d := 0.0::DOUBLE));
+
+statement ok
+INSERT INTO r_union VALUES (union_value(d := -0.0::DOUBLE));
+
+query II
+SELECT l_union.id, count(*) FROM l_union JOIN r_union ON l_union.x = r_union.x GROUP BY l_union.id
+HAVING count(*) FILTER (WHERE r_union.x::VARCHAR <> l_union.x::VARCHAR) > 0;
+----
+1	1
+
+# INTERVAL: '1 month' = '30 days' is true, but string/calendar semantics differ
+statement ok
+CREATE TABLE l_iv(id INT, x INTERVAL);
+
+statement ok
+CREATE TABLE r_iv(x INTERVAL);
+
+statement ok
+INSERT INTO l_iv VALUES (1, INTERVAL '1 month');
+
+statement ok
+INSERT INTO r_iv VALUES (INTERVAL '30 days');
+
+query II
+SELECT l_iv.id, count(*) FROM l_iv JOIN r_iv ON l_iv.x = r_iv.x GROUP BY l_iv.id
+HAVING count(*) FILTER (WHERE r_iv.x::VARCHAR <> l_iv.x::VARCHAR) > 0;
+----
+1	1
+
+# VARIANT: 1::VARIANT = 1.0::VARIANT is true, but values have distinct types/representations
+statement ok
+CREATE TABLE l_var(id INT, x VARIANT);
+
+statement ok
+CREATE TABLE r_var(x VARIANT);
+
+statement ok
+INSERT INTO l_var VALUES (1, 1::VARIANT);
+
+statement ok
+INSERT INTO r_var VALUES (1.0::VARIANT);
+
+query II
+SELECT l_var.id, count(*) FROM l_var JOIN r_var ON l_var.x = r_var.x GROUP BY l_var.id
+HAVING count(*) FILTER (WHERE r_var.x::VARCHAR <> l_var.x::VARCHAR) > 0;
+----
+1	1
+
+# Bitwise-identical types (e.g. INT[]) still allow RHS join column replacement
+statement ok
+CREATE TABLE l_int_list(id INT, x INT[]);
+
+statement ok
+CREATE TABLE r_int_list(x INT[]);
+
+statement ok
+INSERT INTO l_int_list VALUES (1, [42]);
+
+statement ok
+INSERT INTO r_int_list VALUES ([42]);
+
+query II
+SELECT l_int_list.id, count(*) FROM l_int_list JOIN r_int_list ON l_int_list.x = r_int_list.x GROUP BY l_int_list.id
+HAVING count(*) FILTER (WHERE r_int_list.x = l_int_list.x) > 0;
+----
+1	1
