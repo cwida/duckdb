@@ -41,6 +41,7 @@ static bool IsSQLLogicTestFile(const string &path) {
 
 static void register_sqllogic_test_case(void (*test_fun)(), const string &path, const string &tags) {
 	auto normalized_path = StringUtil::Replace(path, "\\", "/");
+	ScopedTestConfiguration config_scope(ExtensionTestConfigPath(normalized_path));
 	if (TestConfiguration::Get().ShouldSkipTest(normalized_path)) {
 		return;
 	}
@@ -207,6 +208,7 @@ static void testRunner() {
 	// this is an ugly hack that uses the test case name to pass the script file
 	// name if someone has a better idea...
 	const auto name = Catch::getResultCapture().getCurrentTestName();
+	ScopedTestConfiguration config_scope(ExtensionTestConfigPath(name));
 	RunSQLLogicTest<AUTO_SWITCH_TEST_DIR>(name, nullptr);
 }
 

@@ -302,6 +302,9 @@ bool TestConfiguration::TryParseOption(const string &name, const Value &value) {
 		return false;
 	}
 	auto &test_config = test_config_options[config_index.GetIndex()];
+	if (scoped_config && test_config.on_set_option) {
+		throw std::runtime_error("Option " + name + " cannot be set by an extension's scoped test config");
+	}
 	// Config values arrive as strings, parsed as SQL types. Lists in particular are
 	// user-unfriendly, requiring [] wrappers instead of just-plain-commas.
 	// Help out here, and add [] for list params. This intentionally also
@@ -641,6 +644,28 @@ void TestConfiguration::LoadConfig(const string &config_path) {
 		ErrorData error(ex);
 		throw std::runtime_error(
 		    StringUtil::Format("Failed to parse config file \"%s\": %s", config_path, error.Message()));
+	}
+}
+
+ScopedTestConfiguration::ScopedTestConfiguration(const string &config_path) {
+	if (config_path.empty()) {
+		return;
+	}
+	auto &config = TestConfiguration::Get();
+	original = make_uniq<TestConfiguration>(config);
+	try {
+		config.scoped_config = true;
+		config.LoadConfig(config_path);
+		config.scoped_config = false;
+	} catch (...) {
+		config = std::move(*original);
+		throw;
+	}
+}
+
+ScopedTestConfiguration::~ScopedTestConfiguration() {
+	if (original) {
+		TestConfiguration::Get() = std::move(*original);
 	}
 }
 

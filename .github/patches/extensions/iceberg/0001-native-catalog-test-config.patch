@@ -1,0 +1,53 @@
+diff --git a/extension_config.cmake b/extension_config.cmake
+index 34c4d78b4..bc3ade384 100644
+--- a/extension_config.cmake
++++ b/extension_config.cmake
+@@ -44,11 +44,4 @@ if (NOT EMSCRIPTEN)
+   endif()
+ endif()
+ 
+-# The native REST mock is a separate, test-only extension. It is deliberately not
+-# linked into Iceberg or the default DuckDB library; SQL tests load it explicitly.
+-if (BUILD_UNITTESTS AND NOT EMSCRIPTEN)
+-  duckdb_extension_load(iceberg_mock
+-      SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/test/native_catalog
+-      INCLUDE_DIR ${CMAKE_CURRENT_LIST_DIR}/test/native_catalog
+-  )
+-endif()
++include("${CMAKE_CURRENT_LIST_DIR}/test/native_catalog/extension_config.cmake")
+diff --git a/test/native_catalog/CMakeLists.txt b/test/native_catalog/CMakeLists.txt
+index 1d1dec363..8e766fbb3 100644
+--- a/test/native_catalog/CMakeLists.txt
++++ b/test/native_catalog/CMakeLists.txt
+@@ -4,8 +4,15 @@ project(IcebergMockExtension)
+ 
+ # This extension depends only on DuckDB's extension interfaces. In particular,
+ # none of its sources or include paths belong to the Iceberg extension.
+-build_extension_library(iceberg_mock catalog_json.cpp catalog_model.cpp
+-                        catalog_router.cpp catalog_transport.cpp)
++option(ICEBERG_MOCK_BUILD_LOADABLE
++       "Build the native catalog as a loadable test extension" ON)
++set(ICEBERG_MOCK_BUILD_OPTIONS)
++if(NOT ICEBERG_MOCK_BUILD_LOADABLE)
++  list(APPEND ICEBERG_MOCK_BUILD_OPTIONS NO_LOADABLE)
++endif()
++build_extension_library(
++  iceberg_mock ${ICEBERG_MOCK_BUILD_OPTIONS} catalog_json.cpp catalog_model.cpp
++  catalog_router.cpp catalog_transport.cpp)
+ 
+ add_executable(unittest_iceberg_native test_native_catalog.cpp)
+ target_include_directories(unittest_iceberg_native
+diff --git a/test/native_catalog/extension_config.cmake b/test/native_catalog/extension_config.cmake
+new file mode 100644
+index 000000000..1e525a862
+--- /dev/null
++++ b/test/native_catalog/extension_config.cmake
+@@ -0,0 +1,8 @@
++# Shared by Iceberg's standalone build and DuckDB's extension CI configuration.
++# The mock stays separate from Iceberg and is loaded explicitly by SQL tests.
++if(BUILD_UNITTESTS AND NOT EMSCRIPTEN AND NOT EXTENSION_TESTS_ONLY)
++  duckdb_extension_load(iceberg_mock
++      SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}"
++      INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}"
++  )
++endif()

@@ -111,6 +111,7 @@ def parse_cmake_file(cmake_path, extension_config_base_dir=None, include_non_rem
         'SOURCE_DIR',
         'INCLUDE_DIR',
         'TEST_DIR',
+        'TEST_CONFIG',
         'GIT_URL',
         'GIT_TAG',
         'SUBMODULES',

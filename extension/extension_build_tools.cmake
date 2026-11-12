@@ -782,7 +782,7 @@ endfunction()
 function(duckdb_extension_load NAME)
     # Parameter parsing
     set(options DONT_BUILD LOAD_TESTS APPLY_PATCHES)
-    set(oneValueArgs SOURCE_DIR INCLUDE_DIR TEST_DIR GIT_URL GIT_TAG SUBMODULES EXTENSION_VERSION LINKED_LIBS)
+    set(oneValueArgs SOURCE_DIR INCLUDE_DIR TEST_DIR TEST_CONFIG GIT_URL GIT_TAG SUBMODULES EXTENSION_VERSION LINKED_LIBS)
     cmake_parse_arguments(duckdb_extension_load "${options}" "${oneValueArgs}" "" ${ARGN})
     if("DONT_LINK" IN_LIST duckdb_extension_load_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "duckdb_extension_load(${NAME} DONT_LINK): DONT_LINK was removed, extensions are only linked when listed with duckdb_extension_statically_link() or STATICALLY_LINK_EXTENSIONS")
@@ -871,6 +871,15 @@ function(duckdb_extension_load NAME)
         message(STATUS "Load extension '${NAME}' from '${CMAKE_CURRENT_SOURCE_DIR}/extensions' @ ${duckdb_extension_load_EXTENSION_VERSION}")
 
         register_extension(${NAME} "${duckdb_extension_load_DONT_BUILD}" "${duckdb_extension_load_LOAD_TESTS}" "${CMAKE_CURRENT_SOURCE_DIR}/extension/${NAME}" "${CMAKE_CURRENT_SOURCE_DIR}/extension/${NAME}/include" "${CMAKE_CURRENT_SOURCE_DIR}/extension/${NAME}/test/sql" "${duckdb_extension_load_LINKED_LIBS}" "${duckdb_extension_load_EXTENSION_VERSION}")
+    endif()
+
+    if(duckdb_extension_load_LOAD_TESTS AND duckdb_extension_load_TEST_CONFIG)
+        get_filename_component(EXT_TEST_CONFIG "${duckdb_extension_load_TEST_CONFIG}" ABSOLUTE
+            BASE_DIR "${DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_PATH}")
+        if(NOT EXISTS "${EXT_TEST_CONFIG}")
+            message(FATAL_ERROR "Test configuration for extension '${NAME}' does not exist: ${EXT_TEST_CONFIG}")
+        endif()
+        set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_TEST_CONFIG "${EXT_TEST_CONFIG}" PARENT_SCOPE)
     endif()
 
     # Propagate variables set by register_extension
