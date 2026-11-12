@@ -66,6 +66,8 @@ public:
 
 	optional_ptr<Binder> binder;
 	ClientContext &context;
+	//! Set when the arguments were bound before, so their collations are not pushed again
+	bool arguments_collated = false;
 
 public:
 	//! Bind a scalar function from the set of functions and input arguments. Returns the index of the chosen function,

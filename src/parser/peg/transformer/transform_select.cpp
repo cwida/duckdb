@@ -129,11 +129,15 @@ unique_ptr<SelectStatement> PEGTransformerFactory::TransformSelectSetOpChain(
 	if (!select_set_op_chain_tail) {
 		return select;
 	}
+	// the chain only extends the N-ary nodes it builds itself: an operand that already is a set operation was written
+	// in parentheses and resolves its own result type before the outer operation unifies over it
+	bool chain_node = false;
 	for (auto &tail : *select_set_op_chain_tail) {
 		auto setop_result = std::move(tail.first);
 		auto right_select = std::move(tail.second);
-		if (select->node->type == QueryNodeType::SET_OPERATION_NODE && select->node->modifiers.empty() &&
-		    select->node->cte_map.map.empty()) {
+		if (chain_node) {
+			// modifiers and CTEs are attached by SelectStatementInternal, after the chain has been built
+			D_ASSERT(select->node->modifiers.empty() && select->node->cte_map.map.empty());
 			auto &existing = select->node->Cast<SetOperationNode>();
 			if (existing.setop_type == setop_result->setop_type && existing.setop_all == setop_result->setop_all &&
 			    (existing.setop_type == SetOperationType::UNION ||
@@ -145,6 +149,7 @@ unique_ptr<SelectStatement> PEGTransformerFactory::TransformSelectSetOpChain(
 		setop_result->children.push_back(std::move(select->node));
 		setop_result->children.push_back(std::move(right_select->node));
 		select->node = std::move(setop_result);
+		chain_node = true;
 	}
 	return select;
 }
@@ -1541,19 +1546,22 @@ unique_ptr<BaseTableRef> PEGTransformerFactory::TransformCatalogReservedSchemaTa
 	return make_uniq<BaseTableRef>(description);
 }
 
-QualifiedName PEGTransformerFactory::TransformQualifiedTableFunction(
-    PEGTransformer &transformer, const optional<Identifier> &catalog_qualification,
-    const optional<vector<Identifier>> &schema_qualification, const Identifier &table_function_name) {
+QualifiedName PEGTransformerFactory::TransformCatalogReservedSchemaTableFunctionName(
+    PEGTransformer &transformer, const Identifier &catalog_qualification,
+    const optional<vector<Identifier>> &schema_qualification, const Identifier &reserved_table_function_name) {
 	vector<Identifier> qualification;
-	if (catalog_qualification) {
-		qualification.push_back(*catalog_qualification);
-	}
+	qualification.push_back(catalog_qualification);
 	if (schema_qualification) {
 		for (auto &schema : *schema_qualification) {
 			qualification.push_back(schema);
 		}
 	}
-	return QualifiedName(std::move(qualification), table_function_name);
+	return QualifiedName(std::move(qualification), reserved_table_function_name);
+}
+
+QualifiedName PEGTransformerFactory::TransformTableFunctionNameAsQualifiedName(PEGTransformer &transformer,
+                                                                               const Identifier &table_function_name) {
+	return QualifiedName(table_function_name);
 }
 
 vector<FunctionArgument>

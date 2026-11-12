@@ -4428,19 +4428,20 @@ const StringUtil::EnumStringLiteral *GetOptimizerTypeValues() {
 		{ static_cast<uint32_t>(OptimizerType::DISTINCT_AGGREGATE_REWRITE), "DISTINCT_AGGREGATE_REWRITE" },
 		{ static_cast<uint32_t>(OptimizerType::AGGREGATE_REUSE), "AGGREGATE_REUSE" },
 		{ static_cast<uint32_t>(OptimizerType::PROJECTION_PLACEMENT), "PROJECTION_PLACEMENT" },
-		{ static_cast<uint32_t>(OptimizerType::REDUNDANT_ORDER_KEYS), "REDUNDANT_ORDER_KEYS" }
+		{ static_cast<uint32_t>(OptimizerType::REDUNDANT_ORDER_KEYS), "REDUNDANT_ORDER_KEYS" },
+		{ static_cast<uint32_t>(OptimizerType::SELF_JOIN_AGGREGATE), "SELF_JOIN_AGGREGATE" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<OptimizerType>(OptimizerType value) {
-	return StringUtil::EnumToString(GetOptimizerTypeValues(), 47, "OptimizerType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetOptimizerTypeValues(), 48, "OptimizerType", static_cast<uint32_t>(value));
 }
 
 template<>
 OptimizerType EnumUtil::FromString<OptimizerType>(const char *value) {
-	return static_cast<OptimizerType>(StringUtil::StringToEnum(GetOptimizerTypeValues(), 47, "OptimizerType", value));
+	return static_cast<OptimizerType>(StringUtil::StringToEnum(GetOptimizerTypeValues(), 48, "OptimizerType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetOrderByColumnTypeValues() {
@@ -6869,6 +6870,28 @@ const char* EnumUtil::ToChars<TransactionType>(TransactionType value) {
 template<>
 TransactionType EnumUtil::FromString<TransactionType>(const char *value) {
 	return static_cast<TransactionType>(StringUtil::StringToEnum(GetTransactionTypeValues(), 4, "TransactionType", value));
+}
+
+const StringUtil::EnumStringLiteral *GetTransformChildKindValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(TransformChildKind::REQUIRED), "REQUIRED" },
+		{ static_cast<uint32_t>(TransformChildKind::OPTIONAL), "OPTIONAL" },
+		{ static_cast<uint32_t>(TransformChildKind::LIST), "LIST" },
+		{ static_cast<uint32_t>(TransformChildKind::OPTIONAL_LIST), "OPTIONAL_LIST" },
+		{ static_cast<uint32_t>(TransformChildKind::REPEAT), "REPEAT" },
+		{ static_cast<uint32_t>(TransformChildKind::OPTIONAL_REPEAT), "OPTIONAL_REPEAT" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<TransformChildKind>(TransformChildKind value) {
+	return StringUtil::EnumToString(GetTransformChildKindValues(), 6, "TransformChildKind", static_cast<uint32_t>(value));
+}
+
+template<>
+TransformChildKind EnumUtil::FromString<TransformChildKind>(const char *value) {
+	return static_cast<TransformChildKind>(StringUtil::StringToEnum(GetTransformChildKindValues(), 6, "TransformChildKind", value));
 }
 
 const StringUtil::EnumStringLiteral *GetTriggerEventTypeValues() {

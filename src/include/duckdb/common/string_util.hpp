@@ -169,6 +169,10 @@ public:
 		return result;
 	}
 
+	//! Returns the authority, including any userinfo and port.
+	//! Empty if there is no scheme:// prefix or authority. Does not validate or decode URI components.
+	DUCKDB_API static string GetURIAuthority(const string &str);
+
 	//! Encode special URL characters in a string
 	DUCKDB_API static string URLEncode(const string &str, bool encode_slash = true);
 	DUCKDB_API static idx_t URLEncodeSize(const char *input, idx_t input_size, bool encode_slash = true);

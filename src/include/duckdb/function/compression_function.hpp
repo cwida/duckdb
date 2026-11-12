@@ -317,6 +317,10 @@ public:
 
 	//! Whether persistent segments can be stored without a backing data block.
 	bool supports_null_block = false;
+
+	//! Whether new segments are zero-initialized before compression. A function that sets this to false must
+	//! initialize every byte it persists itself.
+	bool zero_initialize_segments = true;
 };
 
 //! The set of compression functions

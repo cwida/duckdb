@@ -354,9 +354,6 @@ FlattenDependentJoins::DecorrelateSubtreeInternal(unique_ptr<LogicalOperator> &p
 				output.right_payload.erase(right_entry);
 			}
 		}
-		auto left_child_requires_domain = RequiresDomain(*plan->children[0]);
-		auto requires_full_rhs_decorrelation = left_child_requires_domain || op.join_type != JoinType::SINGLE;
-
 		// Phase 1: prepare the left side in the current flattener context.
 		auto outer_state = PrepareDependentJoinLeft(plan, propagate_null_values, std::move(state));
 		// Phase 2: push the active correlated state through the right subtree in a child flattener.
@@ -369,13 +366,6 @@ FlattenDependentJoins::DecorrelateSubtreeInternal(unique_ptr<LogicalOperator> &p
 			if (!child_flatten.RequiresDomain(*cte_ref.children[0])) {
 				detached_cte = std::move(plan->children[1]);
 				plan->children[1] = std::move(detached_cte->children[1]);
-				if (requires_full_rhs_decorrelation) {
-					auto result = DecorrelateSubtree(plan, propagate_null_values, std::move(outer_state.bindings));
-					result.replacement_graph.Merge(outer_state.replacement_graph);
-					detached_cte->children[1] = std::move(plan);
-					plan = std::move(detached_cte);
-					return result;
-				}
 			}
 		}
 

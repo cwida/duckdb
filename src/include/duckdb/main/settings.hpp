@@ -760,6 +760,19 @@ struct DebugForceFetchRowSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
+struct DebugForceFlushAppendFailureSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "debug_force_flush_append_failure";
+	static constexpr const char *Description = "Force the commit-time flush of transaction-local storage to fail after "
+	                                           "appending to the table. Can be used for testing commit error recovery.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = true;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct ForceMbedtlsUnsafeSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "debug_force_mbedtls_unsafe";

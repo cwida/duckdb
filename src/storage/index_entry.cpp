@@ -35,7 +35,10 @@ void IndexEntry::Append(DataChunk &chunk, Vector &row_ids) {
 		return;
 	}
 	auto &bound_index = owned_index->Cast<BoundIndex>();
-	bound_index.Append(chunk, row_ids);
+	auto error = bound_index.Append(chunk, row_ids);
+	if (error.HasError()) {
+		error.Throw();
+	}
 }
 
 ErrorData IndexEntry::Append(DataChunk &chunk, Vector &row_ids, const shared_ptr<IndexEntry> &delete_entry,
@@ -65,7 +68,6 @@ ErrorData IndexEntry::Append(DataChunk &chunk, Vector &row_ids, const shared_ptr
 		}
 	}
 
-	ErrorData error;
 	try {
 		if (lookup_main_index) {
 			IndexAppendInfo lookup_append_info;
@@ -77,20 +79,19 @@ ErrorData IndexEntry::Append(DataChunk &chunk, Vector &row_ids, const shared_ptr
 			}
 			bound_index.VerifyAppend(chunk, lookup_append_info, optional_ptr<ConflictManager>());
 		}
-
-		IndexAppendInfo index_append_info(append_mode, nullptr);
-		if (delete_index) {
-			index_append_info.delete_indexes.push_back(*delete_index);
-		}
-		if (append_index) {
-			error = append_index->Append(chunk, row_ids, index_append_info);
-		} else {
-			error = bound_index.Append(chunk, row_ids, index_append_info);
-		}
 	} catch (std::exception &ex) {
-		error = ErrorData(ex);
+		// the lookup is read-only: nothing was inserted yet
+		return ErrorData(ex);
 	}
-	return error;
+
+	IndexAppendInfo index_append_info(append_mode, nullptr);
+	if (delete_index) {
+		index_append_info.delete_indexes.push_back(*delete_index);
+	}
+	if (append_index) {
+		return append_index->Append(chunk, row_ids, index_append_info);
+	}
+	return bound_index.Append(chunk, row_ids, index_append_info);
 }
 
 void IndexEntry::RevertAppend(DataChunk &chunk, Vector &row_ids) {
@@ -129,6 +130,9 @@ void IndexEntry::AppendToDeleteIndexes(DataChunk &chunk, Vector &row_ids) {
 	IndexAppendInfo index_append_info(IndexAppendMode::IGNORE_DUPLICATES, nullptr);
 	auto result = bound_index.Append(chunk, row_ids, index_append_info);
 	if (result.HasError()) {
+		if (result.Type() != ExceptionType::CONSTRAINT) {
+			result.Throw();
+		}
 		throw InternalException("unexpected constraint violation on delete ART: ", result.Message());
 	}
 }
@@ -137,6 +141,9 @@ static void AppendIndexEntries(BoundIndex &index, DataChunk &chunk, Vector &row_
 	IndexAppendInfo append_info;
 	const auto error = index.Append(chunk, row_ids, append_info);
 	if (error.HasError()) {
+		if (error.Type() != ExceptionType::CONSTRAINT) {
+			error.Throw();
+		}
 		throw InternalException("Failed to append to %s: %s", index.GetIndexName(), error.Message());
 	}
 }
@@ -428,6 +435,9 @@ void IndexEntry::Rebuild(const IndexRebuildScan &scan) {
 	IndexRebuildAppend append = [&](DataChunk &chunk, Vector &row_ids) {
 		auto error = bound_index.Append(chunk, row_ids);
 		if (error.HasError()) {
+			if (error.Type() != ExceptionType::CONSTRAINT) {
+				error.Throw();
+			}
 			throw InternalException("Failed to rebuild index %s after vacuum: %s", bound_index.GetIndexName(),
 			                        error.Message());
 		}
@@ -486,7 +496,12 @@ IndexStorageInfo IndexEntry::SerializeToDisk(QueryContext context, const case_in
 	if (owned_index->IsBound()) {
 		return owned_index->Cast<BoundIndex>().SerializeToDisk(context, options);
 	}
-	return owned_index->Cast<UnboundIndex>().CopyStorageInfo();
+	auto &unbound_index = owned_index->Cast<UnboundIndex>();
+	if (unbound_index.HasBufferedReplays()) {
+		throw InternalException("Cannot checkpoint index %s: it has buffered operations that were not applied",
+		                        unbound_index.GetIndexName());
+	}
+	return unbound_index.CopyStorageInfo();
 }
 
 IndexStorageInfo IndexEntry::SerializeToWAL(const case_insensitive_map_t<Value> &options) {

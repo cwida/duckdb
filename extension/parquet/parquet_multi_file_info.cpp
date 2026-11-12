@@ -473,10 +473,6 @@ unique_ptr<NodeStatistics> ParquetMultiFileInfo::GetCardinality(ClientContext &c
 	}
 	// we don't have any scan data - check if we can get some intel from the file list
 	// in particular - if we have file sizes, we try to estimate rows per file from the file size
-	MultiFileListScanData scan_data;
-	scan_data.scan_type = MultiFileListScanType::FETCH_IF_AVAILABLE;
-	bind_data.file_list->InitializeScan(scan_data);
-	OpenFileInfo file;
 	idx_t initial_cardinality = MaxValue<idx_t>(parquet_data.initial_file_cardinality, 1ULL);
 	idx_t estimated_bytes_per_row = parquet_data.initial_file_data_size / initial_cardinality;
 	// for very small cardinalities, compression doesn't really work well
@@ -487,33 +483,10 @@ unique_ptr<NodeStatistics> ParquetMultiFileInfo::GetCardinality(ClientContext &c
 	}
 	estimated_bytes_per_row = MaxValue<idx_t>(estimated_bytes_per_row, 10ULL);
 
-	idx_t files_with_sizes = 0;
-	idx_t estimated_file_row_count = 0;
-	while (bind_data.file_list->Scan(scan_data, file)) {
-		if (!file.extended_info) {
-			// no extended info
-			estimated_file_row_count = 0;
-			break;
-		}
-		idx_t current_file_size;
-		if (!file.extended_info->TryGetOption("file_size", current_file_size)) {
-			// no file size available
-			estimated_file_row_count = 0;
-			break;
-		}
-		// we have the file size - estimate row count based on estimated bytes per row
-		files_with_sizes++;
-		idx_t rows_in_this_file = MaxValue<idx_t>(current_file_size / estimated_bytes_per_row, 1ULL);
-		estimated_file_row_count += rows_in_this_file;
-	}
-	idx_t per_file_cardinality;
-	if (estimated_file_row_count > 0) {
-		// use estimate based on file sizes
-		per_file_cardinality = estimated_file_row_count / files_with_sizes;
-	} else {
-		// no estimate based on file sizes - use initial file cardinality
-		per_file_cardinality = parquet_data.initial_file_cardinality;
-	}
+	// use the estimate based on file sizes; without one, the initial file cardinality
+	auto estimated_rows_per_file = bind_data.file_list->EstimateRowsPerFile(estimated_bytes_per_row);
+	idx_t per_file_cardinality =
+	    estimated_rows_per_file.IsValid() ? estimated_rows_per_file.GetIndex() : parquet_data.initial_file_cardinality;
 	// if we have several files, our cardinality estimate can be way off if our initial file is ~empty
 	// we set the minimum per file cardinality to 1000 just to avoid greatly underestimating
 	idx_t min_per_file_cardinality = 1000ULL;

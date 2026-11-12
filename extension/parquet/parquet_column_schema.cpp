@@ -203,7 +203,7 @@ unique_ptr<BaseStatistics> ParquetColumnSchema::Stats(const FileMetaData &file_m
 		stats.Set(StatsInfo::CANNOT_HAVE_NULL_VALUES);
 		return stats.ToUnique();
 	}
-	return ParquetStatisticsUtils::TransformColumnStatistics(*this, columns, parquet_options.can_have_nan);
+	return ParquetStatisticsUtils::TransformColumnStatistics(*this, columns, parquet_options);
 }
 
 } // namespace duckdb

@@ -51,6 +51,7 @@
 #include "duckdb/storage/statistics/string_stats.hpp"
 #include "duckdb/storage/statistics/variant_stats.hpp"
 #include "parquet_column_schema.hpp"
+#include "parquet_reader.hpp"
 #include "parquet_types.h"
 #include "thrift/protocol/TProtocol.h"
 #include "thrift_tools.hpp"
@@ -488,10 +489,9 @@ static bool TryGetStringStats(const string &value, bool has_value, const string 
 	return false;
 }
 
-unique_ptr<BaseStatistics>
-ParquetStatisticsUtils::TransformParquetStatistics(const LogicalType &type, const ParquetColumnSchema &schema,
-                                                   const duckdb_parquet::Statistics &parquet_stats, bool can_have_nan,
-                                                   optional_ptr<const ColumnChunk> column_chunk) {
+unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformParquetStatistics(
+    const LogicalType &type, const ParquetColumnSchema &schema, const duckdb_parquet::Statistics &parquet_stats,
+    const ParquetOptions &parquet_options, bool can_have_nan, optional_ptr<const ColumnChunk> column_chunk) {
 	// INT96 has no defined sort order: a column is only ordered chronologically when the file declares
 	// INT96_TIMESTAMP_ORDER for it. Under the default TYPE_ORDER the statistics bound the values by byte comparison,
 	// which is a different order, so pruning on them silently drops rows - the specification requires readers to
@@ -538,6 +538,11 @@ ParquetStatisticsUtils::TransformParquetStatistics(const LogicalType &type, cons
 	case LogicalTypeId::BLOB:
 	case LogicalTypeId::VARCHAR: {
 		const bool is_varchar = type.id() == LogicalTypeId::VARCHAR;
+		if (parquet_options.RepairsInvalidUTF8() &&
+		    StringColumnReader::GetStringColumnType(type) == StringColumnReader::StringColumnType::VARCHAR) {
+			// a repaired value can lie below the minimum or above the maximum of the stored bytes
+			return StringStats::CreateUnknown(type).ToUnique();
+		}
 		auto min_stats_type = parquet_stats.__isset.is_min_value_exact && parquet_stats.is_min_value_exact
 		                          ? StringStatsType::EXACT_STATS
 		                          : StringStatsType::TRUNCATED_STATS;
@@ -633,7 +638,7 @@ ParquetStatisticsUtils::TransformParquetStatistics(const LogicalType &type, cons
 
 unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformColumnStatistics(const ParquetColumnSchema &schema,
                                                                              const vector<ColumnChunk> &columns,
-                                                                             bool can_have_nan) {
+                                                                             const ParquetOptions &parquet_options) {
 	// Not supported types
 	auto &type = schema.type;
 	if (type.id() == LogicalTypeId::ARRAY) {
@@ -645,7 +650,7 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformColumnStatistics(con
 	if (type.id() == LogicalTypeId::LIST || type.id() == LogicalTypeId::MAP) {
 		auto list_stats = ListStats::CreateUnknown(type);
 		auto &child_schema = schema.children[0];
-		auto child_stats = ParquetStatisticsUtils::TransformColumnStatistics(child_schema, columns, can_have_nan);
+		auto child_stats = ParquetStatisticsUtils::TransformColumnStatistics(child_schema, columns, parquet_options);
 		ListStats::SetChildStats(list_stats, std::move(child_stats));
 		row_group_stats = list_stats.ToUnique();
 		return row_group_stats;
@@ -656,7 +661,8 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformColumnStatistics(con
 		// Recurse into child readers
 		for (idx_t i = 0; i < schema.children.size(); i++) {
 			auto &child_schema = schema.children[i];
-			auto child_stats = ParquetStatisticsUtils::TransformColumnStatistics(child_schema, columns, can_have_nan);
+			auto child_stats =
+			    ParquetStatisticsUtils::TransformColumnStatistics(child_schema, columns, parquet_options);
 			StructStats::SetChildStats(struct_stats, i, std::move(child_stats));
 		}
 		row_group_stats = struct_stats.ToUnique();
@@ -686,13 +692,13 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformColumnStatistics(con
 		if (schema.children[0].name != "metadata" || value.name != "value") {
 			return nullptr;
 		}
-		auto value_stats = ParquetStatisticsUtils::TransformColumnStatistics(value, columns, can_have_nan);
+		auto value_stats = ParquetStatisticsUtils::TransformColumnStatistics(value, columns, parquet_options);
 		//! Best-effort: nodes whose stats can't be converted are left UNKNOWN (not fully shredded) rather
 		//! than discarding the statistics for the entire variant column
 		ConvertUnshreddedStats(untyped_value_index_stats, value_stats.get());
 
 		auto parquet_typed_value_stats =
-		    ParquetStatisticsUtils::TransformColumnStatistics(typed_value, columns, can_have_nan);
+		    ParquetStatisticsUtils::TransformColumnStatistics(typed_value, columns, parquet_options);
 		ConvertShreddedStats(typed_value_stats, parquet_typed_value_stats.get());
 		//! Set validity to UNKNOWN
 		variant_stats.SetHasNoNull();
@@ -707,7 +713,8 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformColumnStatistics(con
 		return nullptr;
 	}
 	auto &parquet_stats = column_chunk.meta_data.statistics;
-	row_group_stats = TransformParquetStatistics(type, schema, parquet_stats, can_have_nan, &column_chunk);
+	row_group_stats = TransformParquetStatistics(type, schema, parquet_stats, parquet_options,
+	                                             parquet_options.can_have_nan, &column_chunk);
 
 	// null count is generic
 	if (row_group_stats) {

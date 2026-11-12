@@ -284,33 +284,34 @@ void Parser::ParseQuery(const string &query_p) {
 	// PEG parser: tokenize, then peel one TopLevelStatement at a time. On per-statement PEG
 	// failure, hand the rest of the query to parse_function extensions; the extension reports
 	// how many bytes it consumed and we advance the token cursor past them.
-	auto owned_tokens = make_uniq<vector<MatcherToken>>();
-	ParserTokenizerBehavior behavior(query, *owned_tokens);
+	ParserTokenizerBehavior behavior(query);
 	auto &tokenizer = GetGrammar().GetTokenizer();
 	tokenizer.TokenizeInput(behavior);
-	TokenIterator token_iterator(std::move(owned_tokens));
+	TokenIterator token_iterator(behavior);
+	// A statement's text starts where the previous one ended, so comments and whitespace before its
+	// first token belong to it; the last statement runs to the end of the input.
+	idx_t stmt_start = 0;
 	while (token_iterator.Current()) {
+		unique_ptr<SQLStatement> stmt;
 		try {
-			auto stmt = ParseTopLevelStatement(token_iterator);
-			if (stmt) {
-				statements.push_back(std::move(stmt));
-			}
+			stmt = ParseTopLevelStatement(token_iterator);
 		} catch (ParserException &e) {
-			auto ext_stmt = TryParseExtensionStatement(token_iterator, query);
-			if (!ext_stmt) {
+			stmt = TryParseExtensionStatement(token_iterator, query);
+			if (!stmt) {
 				throw;
 			}
-			statements.push_back(std::move(ext_stmt));
 		}
+		auto stmt_end = token_iterator.ConsumedEndOffset();
+		if (stmt) {
+			stmt->stmt_location = QueryLocation(stmt_start, stmt_end - stmt_start);
+			statements.push_back(std::move(stmt));
+		}
+		stmt_start = stmt_end;
 	}
 
 	if (!statements.empty()) {
-		for (idx_t i = 0; i + 1 < statements.size(); i++) {
-			auto start = statements[i]->stmt_location.offset;
-			statements[i]->stmt_location = QueryLocation(start, statements[i + 1]->stmt_location.offset - start);
-		}
-		statements.back()->stmt_location = QueryLocation(statements.back()->stmt_location.offset,
-		                                                 query.size() - statements.back()->stmt_location.offset);
+		auto &last_location = statements.back()->stmt_location;
+		last_location = QueryLocation(last_location.offset, query.size() - last_location.offset);
 		for (auto &statement : statements) {
 			statement->query = query.substr(statement->stmt_location.offset, statement->stmt_location.length);
 			statement->stmt_location = QueryLocation(0, statement->query.size());
@@ -375,10 +376,10 @@ unique_ptr<SQLStatement> Parser::ParseTopLevelStatement(TokenIterator &token_ite
 
 vector<SimplifiedToken> Parser::Tokenize(const string &query) {
 	auto &keyword_helper = DuckDBKeywordHelper::Instance();
-	vector<MatcherToken> tokens;
-	HighlightTokenizerBehavior behavior(query, tokens);
+	HighlightTokenizerBehavior behavior(query);
 	Tokenizer tokenizer(keyword_helper);
 	tokenizer.TokenizeInput(behavior);
+	auto &tokens = behavior.tokens;
 
 	vector<SimplifiedToken> result;
 	result.reserve(tokens.size());

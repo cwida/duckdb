@@ -617,14 +617,8 @@ ErrorData ART::InsertKeys(ArenaAllocator &arena, unsafe_vector<ARTKey> &keys, un
 
 ErrorData ART::Append(IndexLock &l, DataChunk &chunk, Vector &row_ids) {
 	l.AssertHeld(*this);
-	// Execute all column expressions before inserting the data chunk.
-	DataChunk expr_chunk;
-	expr_chunk.Initialize(Allocator::DefaultAllocator(), logical_types);
-	ExecuteExpressions(chunk, expr_chunk);
-
-	// Now insert the data chunk.
 	IndexAppendInfo info;
-	return Insert(l, expr_chunk, row_ids, info);
+	return Append(l, chunk, row_ids, info);
 }
 
 ErrorData ART::Append(IndexLock &l, DataChunk &chunk, Vector &row_ids, IndexAppendInfo &info) {
@@ -632,7 +626,12 @@ ErrorData ART::Append(IndexLock &l, DataChunk &chunk, Vector &row_ids, IndexAppe
 	// Execute all column expressions before inserting the data chunk.
 	DataChunk expr_chunk;
 	expr_chunk.Initialize(Allocator::DefaultAllocator(), logical_types);
-	ExecuteExpressions(chunk, expr_chunk);
+	try {
+		ExecuteExpressions(chunk, expr_chunk);
+	} catch (std::exception &ex) {
+		// nothing was inserted yet: return the error instead of throwing
+		return ErrorData(ex);
+	}
 
 	// Now insert the data chunk.
 	return Insert(l, expr_chunk, row_ids, info);
@@ -655,6 +654,15 @@ void ART::ResetStorage(IndexLock &index_lock) {
 	index_lock.AssertHeld(*this);
 	for (auto &allocator : *allocators) {
 		allocator->Reset();
+	}
+	tree.Clear();
+}
+
+void ART::DisownStorage(IndexLock &index_lock) {
+	index_lock.AssertHeld(*this);
+	D_ASSERT(owns_data);
+	for (auto &allocator : *allocators) {
+		allocator->DisownBuffers();
 	}
 	tree.Clear();
 }

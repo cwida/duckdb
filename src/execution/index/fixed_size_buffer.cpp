@@ -85,6 +85,11 @@ FixedSizeBuffer::~FixedSizeBuffer() {
 	}
 }
 
+void FixedSizeBuffer::DisownBlock() {
+	lock_guard<mutex> l(lock);
+	block_pointer = BlockPointer();
+}
+
 void FixedSizeBuffer::Serialize(PartialBlockManager &partial_block_manager, const idx_t available_segments,
                                 const idx_t segment_size, const idx_t bitmask_offset) {
 	D_ASSERT(readers == 0);
@@ -174,6 +179,7 @@ void FixedSizeBuffer::LoadFromDisk() {
 	auto new_buffer_handle = buffer_manager.Allocate(MemoryTag::ART_INDEX, &block_manager, false);
 	new_block_handle = new_buffer_handle.GetBlockHandle();
 	memcpy(new_buffer_handle.GetDataMutable(), pinned_buffer_handle.Ptr() + block_pointer.offset, allocation_size);
+	memset(new_buffer_handle.GetDataMutable() + allocation_size, 0, block_size - allocation_size);
 
 	buffer_handle = std::move(new_buffer_handle);
 	block_handle = std::move(new_block_handle);

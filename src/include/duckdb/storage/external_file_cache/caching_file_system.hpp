@@ -81,6 +81,8 @@ public:
 	DUCKDB_API bool CanSeek();
 	DUCKDB_API bool IsRemoteFile() const;
 	DUCKDB_API bool OnDiskFile();
+	//! Whether reads through this handle go through the external file cache (enabled, file cacheable, metadata valid)
+	DUCKDB_API bool ReadsAreCached();
 	DUCKDB_API bool TryGetNetworkThroughput(NetworkThroughputEstimate &result);
 	DUCKDB_API idx_t SeekPosition();
 	DUCKDB_API void Seek(idx_t location);
