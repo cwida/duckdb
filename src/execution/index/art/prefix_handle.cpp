@@ -95,6 +95,16 @@ PrefixHandle PrefixHandle::GetTail(ART &art, const NodePtr node_ptr) {
 
 void PrefixHandle::Concat(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, const NodePtr child_ptr,
                           const uint8_t byte, const GateStatus node4_status, const GateStatus status) {
+	// The Node4 is already freed. NODE is an inner node, and child is any other node.
+	// An inlined row ID inside a gate, or below a gated Node4, is never prefixed:
+	//   PREFIX (parent) - Node4 - INLINED_LEAF  =>  INLINED_LEAF, and the parent chain is freed
+	//   NODE (parent) - Node4 - INLINED_LEAF    =>  NODE - INLINED_LEAF
+	//   parent - Node4 (gate) - INLINED_LEAF    =>  parent - INLINED_LEAF
+	// Otherwise, the byte joins the parent chain, unless the parent is a node or the Node4 was the gate:
+	//   PREFIX (parent) - Node4 - child         =>  PREFIX + byte - child
+	//   NODE (parent) - Node4 - child           =>  NODE - PREFIX (byte) - child
+	//   parent - Node4 (gate) - child           =>  parent - PREFIX (byte, gate) - child
+	// Appending the child merges a child prefix up to the first gate, and attaches anything else.
 	D_ASSERT(!parent_ptr.IsAnyLeaf());
 	D_ASSERT(child_ptr.HasMetadata());
 
