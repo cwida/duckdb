@@ -12,6 +12,7 @@
 #include "duckdb/common/named_parameter_map.hpp"
 #include "duckdb/function/function.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/function/scalar_function.hpp"
 #include "duckdb/parser/parsed_data/create_function_info.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
 
@@ -59,6 +60,18 @@ public:
 	vector<CV2FunctionExample> examples;
 	vector<string> categories;
 };
+
+//! Runs the init callback of a stable API scalar function, if it has one
+unique_ptr<FunctionLocalState> CV2ScalarInitState(const BoundScalarFunction &function,
+                                                  optional_ptr<FunctionData> bind_data,
+                                                  optional_ptr<ClientContext> context);
+//! Runs the exec callback of a stable API scalar function, reporting its error through `err` instead of throwing
+void CV2ScalarInvoke(const BoundScalarFunction &function, optional_ptr<FunctionData> bind_data,
+                     optional_ptr<FunctionLocalState> local_state, optional_ptr<ClientContext> context,
+                     DataChunk &input, Vector &result, CV2ErrorInfo &err);
+
+//! Builds the scalar function a cast is registered from, validating that it can convert between two types.
+ScalarFunction BuildScalarFunctionForCast(duckdb_v2_scalar_function_handle function, DatabaseInstance &target);
 
 inline auto Convert(duckdb_v2_function_docs_handle docs) -> CV2FunctionDocs * {
 	return reinterpret_cast<CV2FunctionDocs *>(docs);

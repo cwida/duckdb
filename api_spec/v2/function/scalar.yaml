@@ -828,6 +828,91 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   # Register
   #---------------------------------------------------------------------------------------------------------------------
+  connection_register_cast:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-10" ]
+    description: |
+      Registers a pair of scalar functions as a cast, making it available to CAST and TRY_CAST.
+
+      `function` implements CAST and `try_function` implements TRY_CAST. Each must take exactly one parameter, the
+      value to convert, and both must declare the same parameter type and the same return type, which must be fully
+      defined concrete types: the cast converts from the former to the latter. Neither can have a resolve types
+      callback. Their names are only used in messages.
+
+      `function` reports a row it cannot convert as an error, which aborts the query. `try_function` writes a NULL
+      into the result vector for each such row and reports the error through the error slot once the batch is
+      written: the engine swallows the error, keeps the rows the callback wrote, and reports that not every row
+      converted, which callers that probe a cast, such as the CSV sniffer, rely on. A callback that leaves a row NULL
+      without reporting an error tells the engine the row converted. The two functions can share their exec callback
+      and differ only in how they treat a failure. Setting the stability of the function to
+      `FUNCTION_PROPERTY_STABILITY_CONSISTENT_WITHIN_QUERY` keeps a cast that reads a setting out of prepared
+      statements and index expressions.
+
+      The bind callback of the function runs each time the cast is bound for a call site. It is not run when the engine
+      binds the cast without a client context, and the exec callback then finds no bind data; the exec callback is
+      handed a NULL context when the cast runs without a client context, for example while an index is built.
+
+      The cast is registered on the connection's database and takes effect immediately for every connection; it is not
+      part of the connection's transaction, so a rollback does not undo it. Registering a cast for a pair that already
+      has one replaces it. The functions must have been created through a factory of the same database. The caller
+      still owns the handles after registration and must destroy them with `[[scalar_function_destroy]]`, which does not
+      affect the registered cast.
+    role: method
+    belongs_to: connection
+    parameters:
+      conn:
+        type: connection
+        description: The connection to register on.
+      function:
+        type: scalar_function
+        description: The scalar function implementing CAST.
+      try_function:
+        type: scalar_function
+        description: The scalar function implementing TRY_CAST.
+      implicit_cast_cost:
+        type: i64
+        description: |
+          What it costs to apply this cast implicitly. The binder uses the cost to choose between candidate implicit
+          casts: a lower non-negative cost makes the cast more likely to be picked, a higher one less likely. Built-in
+          widening casts sit in the [0, 20] range, so a cost above 100 effectively puts this cast last. A negative
+          cost means the cast is never applied implicitly and is reached only through an explicit CAST or TRY_CAST.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  extension_register_cast:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-10" ]
+    description: |
+      Registers a pair of scalar functions as a cast, making it available to CAST and TRY_CAST.
+
+      The cast is registered on the loading extension's database. Use this from the extension's load callback. See
+      `[[connection_register_cast]]` for what the functions must look like and how the cast behaves. The caller still
+      owns the handles after registration and must destroy them with `[[scalar_function_destroy]]`, which does not
+      affect the registered cast.
+    role: method
+    belongs_to: extension
+    parameters:
+      extension:
+        type: extension
+        description: The loading extension.
+      function:
+        type: scalar_function
+        description: The scalar function implementing CAST.
+      try_function:
+        type: scalar_function
+        description: The scalar function implementing TRY_CAST.
+      implicit_cast_cost:
+        type: i64
+        description: What it costs to apply this cast implicitly, see `[[connection_register_cast]]`. Negative disables implicit casting.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
   connection_register_scalar_function:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-08-11" ]

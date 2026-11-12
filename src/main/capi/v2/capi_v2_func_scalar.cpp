@@ -190,20 +190,35 @@ static auto CV2ScalarBind(BindScalarFunctionInput &input) -> unique_ptr<Function
 	return result;
 }
 
-static auto CV2ScalarInit(ExpressionState &state, const BoundFunctionExpression &expr, FunctionData *bind_data)
-    -> unique_ptr<FunctionLocalState> {
-	const auto &info = expr.Function().GetExtraFunctionInfo().Cast<CV2ScalarFunctionInfo>();
+static auto CV2BindDataPointer(optional_ptr<FunctionData> bind_data) -> void * {
+	if (!bind_data) {
+		return nullptr;
+	}
+	auto &handle = bind_data->Cast<CV2FunctionData>().handle;
+	return handle ? handle->GetData() : nullptr;
+}
 
-	auto user_bind_data = bind_data ? bind_data->Cast<CV2FunctionData>().handle : nullptr;
+static auto CV2MakeCallbackContext(optional_ptr<ClientContext> context) -> unique_ptr<CV2CallbackContext> {
+	// Without a client context (e.g. while an index is built) the callback receives a NULL context
+	return context ? make_uniq<CV2CallbackContext>(*context) : nullptr;
+}
+
+unique_ptr<FunctionLocalState> CV2ScalarInitState(const BoundScalarFunction &function,
+                                                  optional_ptr<FunctionData> bind_data,
+                                                  optional_ptr<ClientContext> context) {
+	const auto &info = function.GetExtraFunctionInfo().Cast<CV2ScalarFunctionInfo>();
+	if (!info.init_cb) {
+		return nullptr;
+	}
 
 	CV2InitInfo args = {};
 	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
-	args.in_bind_data = user_bind_data ? user_bind_data->GetData() : nullptr;
+	args.in_bind_data = CV2BindDataPointer(bind_data);
 
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
-	CV2CallbackContext callback_context(state.GetContext());
-	info.init_cb(Convert(&args), Convert(&callback_context), &err_ptr);
+	auto callback_context = CV2MakeCallbackContext(context);
+	info.init_cb(Convert(&args), Convert(callback_context.get()), &err_ptr);
 
 	unique_ptr<FunctionLocalState> result = nullptr;
 	if (args.out_init_data.ptr) {
@@ -213,42 +228,42 @@ static auto CV2ScalarInit(ExpressionState &state, const BoundFunctionExpression 
 	}
 
 	// Throw after setting the state, so that it is destroyed even if we error.
-
 	if (err.HasError()) {
 		err.ThrowAsException();
 	}
-
 	return result;
+}
+
+void CV2ScalarInvoke(const BoundScalarFunction &function, optional_ptr<FunctionData> bind_data,
+                     optional_ptr<FunctionLocalState> local_state, optional_ptr<ClientContext> context,
+                     DataChunk &input, Vector &result, CV2ErrorInfo &err) {
+	const auto &info = function.GetExtraFunctionInfo().Cast<CV2ScalarFunctionInfo>();
+
+	CV2ExecInfo args;
+	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
+	args.in_bind_data = CV2BindDataPointer(bind_data);
+	if (local_state) {
+		args.in_init_data = local_state->Cast<CV2FunctionLocalState>().handle.GetData();
+	}
+	args.input = &input;
+	args.function = &function;
+	args.result = &result;
+
+	auto err_ptr = Convert(&err);
+	auto callback_context = CV2MakeCallbackContext(context);
+	info.exec_cb(Convert(&args), Convert(callback_context.get()), &err_ptr);
+}
+
+static auto CV2ScalarInit(ExpressionState &state, const BoundFunctionExpression &expr, FunctionData *bind_data)
+    -> unique_ptr<FunctionLocalState> {
+	return CV2ScalarInitState(expr.Function(), bind_data, state.HasContext() ? &state.GetContext() : nullptr);
 }
 
 static auto CV2ScalarExec(DataChunk &input, ExpressionState &state, Vector &result) -> void {
 	auto &expr = state.expr.Cast<BoundFunctionExpression>();
-	const auto &info = expr.Function().GetExtraFunctionInfo().Cast<CV2ScalarFunctionInfo>();
-
-	CV2ExecInfo args;
-	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
-	args.input = &input;
-	args.function = &expr.Function();
-	args.result = &result;
-
-	// Setup bind data (if provided)
-	if (auto bind_ptr = expr.BindInfo().get()) {
-		const auto &bind_data = bind_ptr->Cast<CV2FunctionData>();
-		args.in_bind_data = bind_data.handle ? bind_data.handle->GetData() : nullptr;
-	}
-
-	// Setup local state (if provided)
-	if (auto state_ptr = ExecuteFunctionState::GetFunctionState(state)) {
-		const auto &state_data = state_ptr->Cast<CV2FunctionLocalState>();
-		args.in_init_data = state_data.handle.GetData();
-	}
-
 	CV2ErrorInfo err = {};
-	auto err_ptr = Convert(&err);
-
-	CV2CallbackContext callback_context(state.GetContext());
-	info.exec_cb(Convert(&args), Convert(&callback_context), &err_ptr);
-
+	CV2ScalarInvoke(expr.Function(), expr.BindInfo().get(), ExecuteFunctionState::GetFunctionState(state),
+	                state.HasContext() ? &state.GetContext() : nullptr, input, result, err);
 	if (err.HasError()) {
 		err.ThrowAsException();
 	}
@@ -341,6 +356,21 @@ public:
 		return function;
 	}
 
+	//! Builds the function a cast is registered from: one concrete parameter, converting to the concrete return type
+	ScalarFunction BuildForCast(DatabaseInstance &target) {
+		if (signature.GetParameterCount() != 1 || signature.IsVariadic() ||
+		    !signature.GetParameter(0).AcceptsPosition()) {
+			throw InvalidInputException("A cast function must take exactly one standard parameter: the value to cast.");
+		}
+		if (!signature.GetParameter(0).GetType().IsComplete()) {
+			throw InvalidInputException("The parameter of a cast function must be a fully defined concrete type");
+		}
+		if (info.resolve_types_cb) {
+			throw InvalidInputException("A cast function cannot have a resolve types callback: its types are fixed.");
+		}
+		return Build(target);
+	}
+
 public:
 	//! The database it was created for: the only one it can be registered on.
 	DatabaseInstance &db;
@@ -356,6 +386,10 @@ static auto Convert(duckdb_v2_scalar_function_handle func) -> CV2ScalarFunction 
 }
 static auto Convert(CV2ScalarFunction *func) -> duckdb_v2_scalar_function_handle {
 	return reinterpret_cast<duckdb_v2_scalar_function_handle>(func);
+}
+
+ScalarFunction BuildScalarFunctionForCast(duckdb_v2_scalar_function_handle function, DatabaseInstance &target) {
+	return Convert(function)->BuildForCast(target);
 }
 
 } // namespace duckdb::capiv2
