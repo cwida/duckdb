@@ -2927,7 +2927,14 @@ private:
 		{
 			auto localBlockIndex = blockIndex.load(std::memory_order_relaxed);		// We're the only writer thread, relaxed is OK
 			if (localBlockIndex == nullptr) {
-				return false;  // this can happen if new_block_index failed in the constructor
+				// Retry if the initial index allocation failed in the constructor.
+				MOODYCAMEL_CONSTEXPR_IF (allocMode == CannotAlloc) {
+					return false;
+				}
+				else if (!new_block_index()) {
+					return false;
+				}
+				localBlockIndex = blockIndex.load(std::memory_order_relaxed);
 			}
 			size_t newTail = (localBlockIndex->tail.load(std::memory_order_relaxed) + 1) & (localBlockIndex->capacity - 1);
 			idxEntry = localBlockIndex->index[newTail];
