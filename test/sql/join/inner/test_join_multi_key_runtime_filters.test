@@ -184,11 +184,11 @@ SELECT count(*) FROM (
 ----
 0
 
-# a VARCHAR key column next to an INTEGER one
+# a VARCHAR key column next to an INTEGER one (builds without string inlining have no VARCHAR PRF, so a BF instead)
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON p.item = b.item AND p.str_ticket = b.str_ticket;
 ----
-analyzed_plan	<REGEX>:(?s).*item IN PRF\(item\).*str_ticket IN PRF\(str_ticket\).*
+analyzed_plan	<REGEX>:(?s).*item IN PRF\(item\).*str_ticket IN (PRF|BF)\(str_ticket\).*
 
 query I
 SELECT count(*) FROM (
