@@ -84,7 +84,7 @@ TEST_CASE("Test a custom log storage in the CAPI with extra data", "[capi]") {
 	REQUIRE(state == DuckDBError);
 
 	REQUIRE_NO_FAIL(tester.Query("SET enable_logging = true;"));
-	REQUIRE_NO_FAIL(tester.Query("SET logging_storage = 'MyCustomStorage';"));
+	REQUIRE_NO_FAIL(tester.Query("SET logging_sink = 'MyCustomStorage';"));
 	REQUIRE_NO_FAIL(tester.Query("SELECT write_log('HELLO, BRO');"));
 
 	REQUIRE(my_log_store.Contains("INFO, QueryLog, SELECT write_log('HELLO, BRO');"));
@@ -105,7 +105,7 @@ TEST_CASE("Test logging silent exceptions using a custom log storage in the CAPI
 	duckdb_register_log_storage(tester.database, log_storage);
 
 	REQUIRE_NO_FAIL(tester.Query("CALL enable_logging(level = 'error');"));
-	REQUIRE_NO_FAIL(tester.Query("SET logging_storage = 'MyCustomStorage';"));
+	REQUIRE_NO_FAIL(tester.Query("SET logging_sink = 'MyCustomStorage';"));
 
 	auto path = TestCreatePath("log_storage_test.db");
 	REQUIRE_NO_FAIL(tester.Query("ATTACH '" + path + "'"));
@@ -162,7 +162,7 @@ TEST_CASE("Test a concurrent custom log storage in the CAPI", "[capi]") {
 
 	REQUIRE_NO_FAIL(tester.Query("PRAGMA disable_profiling;"));
 	REQUIRE_NO_FAIL(tester.Query("SET enable_logging = true;"));
-	REQUIRE_NO_FAIL(tester.Query("SET logging_storage = 'MyCustomStorage';"));
+	REQUIRE_NO_FAIL(tester.Query("SET logging_sink = 'MyCustomStorage';"));
 
 	duckdb::vector<std::thread> workers;
 	for (idx_t worker_id = 0; worker_id < 10; worker_id++) {

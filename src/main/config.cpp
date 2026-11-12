@@ -221,6 +221,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING_CALLBACK(LogQueryPathSetting),
     DUCKDB_GLOBAL(LoggingLevel),
     DUCKDB_GLOBAL(LoggingMode),
+    DUCKDB_GLOBAL(LoggingSink),
     DUCKDB_GLOBAL(LoggingStorage),
     DUCKDB_SETTING(MatchRecognizeMaxStatesSetting),
     DUCKDB_SETTING(MaxExecutionTimeSetting),

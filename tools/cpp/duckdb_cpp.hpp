@@ -6475,7 +6475,7 @@ enum class LogScope : uint8_t {
 /// Code of your own that receives DuckDB's log entries. Create one through a `Factory` of the database it will be
 /// registered in, give it a name and a write callback, then register it with `Instance::Register` or
 /// `Extension::Register`, which makes it available to the logging configuration under its name; once the
-/// configuration directs entries to it (currently with `SET logging_storage = '<name>'`), the write callback receives
+/// configuration directs entries to it (currently with `SET logging_sink = '<name>'`), the write callback receives
 /// them. A log sink only receives entries: they cannot be read back through `duckdb_logs`.
 ///
 /// Which entries a sink receives, and when and on which thread its callbacks run, are up to DuckDB: the callbacks must
