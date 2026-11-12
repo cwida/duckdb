@@ -90,7 +90,7 @@ public:
 	virtual DataTable &GetStorage();
 
 	//! Returns a list of the constraints of the table
-	DUCKDB_API const vector<unique_ptr<Constraint>> &GetConstraints() const;
+	DUCKDB_API virtual const vector<unique_ptr<Constraint>> &GetConstraints() const;
 	DUCKDB_API string ToSQL() const override;
 
 	//! Get statistics of a column (physical or virtual) within the table
