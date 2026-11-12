@@ -22,8 +22,7 @@ struct PragmaFunctions {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
-string PragmaShowTables(const string &catalog = "", const string &schema = "",
-                        optional_idx schema_oid = optional_idx());
+string PragmaShowTables(ClientContext &context, const string &catalog = "", optional_idx schema_oid = optional_idx());
 string PragmaShowTablesExpanded();
 string PragmaShowDatabases();
 string PragmaShowVariables();

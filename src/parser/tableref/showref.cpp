@@ -22,16 +22,7 @@ string ShowRef::ToString() const {
 	if (show_type == ShowType::SUMMARY) {
 		result += "SUMMARIZE ";
 	} else if (show_type == ShowType::SHOW_FROM) {
-		result += "SHOW TABLES FROM ";
-		string name = "";
-		if (!GetCatalogName().empty()) {
-			name += SQLIdentifier(GetCatalogName());
-			if (!GetSchemaName().empty()) {
-				name += ".";
-			}
-		}
-		name += SQLIdentifier(GetSchemaName());
-		result += name;
+		result += "SHOW TABLES FROM " + qualified_name.Parent().ToString();
 	} else {
 		result += "DESCRIBE ";
 	}
