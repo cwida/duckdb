@@ -1,0 +1,515 @@
+# name: test/sql/catalog/function/drop_function_signature_dependencies.test
+# description: A member drop keeps the entry's dependencies, so it is conservative
+# group: [function]
+
+# a member drop needs storage v2.1.0
+load {TEST_DIR}/drop_function_signature_dependencies.db readwrite v2.1.0
+
+# dependencies register per entry: a member drop keeps the entry's whole list, including what only
+# the removed member referenced
+statement ok
+SET enable_macro_dependencies = true;
+
+# a qualification probe is a conservative dependency when binding defers on an untyped parameter
+statement ok
+CREATE MACRO dependency_leaf() AS 7;
+
+statement ok
+CREATE MACRO dependency_holder(x) AS struct_extract(x, 'a') + dependency_leaf();
+
+statement error
+DROP MACRO dependency_leaf;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP MACRO dependency_holder;
+
+statement ok
+DROP MACRO dependency_leaf;
+
+# a dependency only the removed member had stays: it still blocks, and a cascade takes the macro along
+statement ok
+CREATE TABLE dep_source(i INTEGER);
+
+statement ok
+CREATE MACRO dep_survivor(x INTEGER) AS x + 1, (x VARCHAR) AS (SELECT count(*) FROM dep_source);
+
+statement ok
+DROP MACRO dep_survivor(VARCHAR);
+
+query T
+SELECT dep_survivor(1);
+----
+2
+
+statement error
+DROP TABLE dep_source;
+----
+<REGEX>:.*Cannot drop entry "dep_source" because there are entries that depend on it.*
+
+statement ok
+DROP TABLE dep_source CASCADE;
+
+statement error
+SELECT dep_survivor(1);
+----
+<REGEX>:.*Scalar Function with name dep_survivor does not exist.*
+
+# only dropping the whole macro releases what the removed member referenced
+statement ok
+CREATE TABLE dep_released(i INTEGER);
+
+statement ok
+CREATE MACRO dep_release(x INTEGER) AS x, (x VARCHAR) AS (SELECT count(*) FROM dep_released);
+
+statement ok
+DROP MACRO dep_release(VARCHAR);
+
+statement ok
+DROP MACRO dep_release;
+
+statement ok
+DROP TABLE dep_released;
+
+# a dependency of a surviving member is retained: RESTRICT still blocks the referenced table
+statement ok
+CREATE TABLE dep_kept(i INTEGER);
+
+statement ok
+CREATE MACRO dep_holder(x INTEGER) AS (SELECT count(*) FROM dep_kept), (x VARCHAR) AS x;
+
+statement ok
+DROP MACRO dep_holder(VARCHAR);
+
+statement error
+DROP TABLE dep_kept;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP TABLE dep_kept CASCADE;
+
+statement error
+SELECT dep_holder(1);
+----
+<REGEX>:.*Scalar Function with name dep_holder does not exist.*
+
+# disabling dependency tracking after CREATE does not strip registered protection on a member drop
+statement ok
+CREATE TABLE dep_toggled(i INTEGER);
+
+statement ok
+CREATE MACRO dep_toggle_holder(x INTEGER) AS (SELECT count(*) FROM dep_toggled), (x VARCHAR) AS x;
+
+statement ok
+SET enable_macro_dependencies = false;
+
+statement ok
+DROP MACRO dep_toggle_holder(VARCHAR);
+
+statement error
+DROP TABLE dep_toggled;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP TABLE dep_toggled CASCADE;
+
+statement ok
+SET enable_macro_dependencies = true;
+
+# an unqualified reference records the entry its CREATE bind resolved, wherever the session was
+statement ok
+CREATE SCHEMA dep_s1;
+
+statement ok
+CREATE SCHEMA dep_s2;
+
+statement ok
+SET schema = 'dep_s1';
+
+statement ok
+CREATE TABLE dep_src(i INTEGER);
+
+statement ok
+CREATE MACRO dep_path_holder(x INTEGER) AS TABLE (SELECT i FROM dep_src), (x VARCHAR) AS TABLE (SELECT 0 AS i);
+
+statement ok
+SET schema = 'dep_s2';
+
+statement ok
+DROP MACRO TABLE dep_s1.dep_path_holder(VARCHAR);
+
+statement error
+DROP TABLE dep_s1.dep_src;
+----
+<REGEX>:.*depend.*
+
+statement ok
+SET schema = 'main';
+
+statement ok
+DROP SCHEMA dep_s1 CASCADE;
+
+statement ok
+DROP SCHEMA dep_s2 CASCADE;
+
+# a create-time dependency resolved outside the entry's schema survives: the list is kept, never re-derived
+statement ok
+CREATE SCHEMA amb_s1;
+
+statement ok
+CREATE SCHEMA amb_s2;
+
+statement ok
+CREATE TABLE amb_s1.src(i INTEGER);
+
+statement ok
+CREATE TABLE amb_s2.src(i INTEGER);
+
+statement ok
+SET schema = 'amb_s2';
+
+statement ok
+CREATE MACRO amb_s1.holder(x INTEGER) AS TABLE (SELECT i FROM src), (x VARCHAR) AS TABLE (SELECT 0 AS i);
+
+statement ok
+DROP MACRO TABLE amb_s1.holder(VARCHAR);
+
+# the macro bound amb_s2.src at CREATE, the registered dependency must still block its drop
+statement error
+DROP TABLE amb_s2.src;
+----
+<REGEX>:.*depend.*
+
+statement ok
+SET schema = 'main';
+
+statement ok
+DROP SCHEMA amb_s2 CASCADE;
+
+statement ok
+DROP SCHEMA amb_s1 CASCADE;
+
+# a dependency shared by the removed member and a survivor whose unqualified name resolves
+# differently today is kept: the registered list decides, not a fresh resolution
+statement ok
+CREATE SCHEMA sh_s1;
+
+statement ok
+CREATE SCHEMA sh_s2;
+
+statement ok
+CREATE TABLE sh_s1.src(i INTEGER);
+
+statement ok
+CREATE TABLE sh_s2.src(i INTEGER);
+
+statement ok
+SET schema = 'sh_s2';
+
+statement ok
+CREATE MACRO sh_s1.holder(x INTEGER) AS TABLE (SELECT i FROM src), (x VARCHAR) AS TABLE (SELECT i FROM sh_s2.src);
+
+statement ok
+DROP MACRO TABLE sh_s1.holder(VARCHAR);
+
+# both members bound sh_s2.src at CREATE, the survivor's protection must not be subtracted
+statement error
+DROP TABLE sh_s2.src;
+----
+<REGEX>:.*depend.*
+
+statement ok
+SET schema = 'main';
+
+statement ok
+DROP SCHEMA sh_s2 CASCADE;
+
+statement ok
+DROP SCHEMA sh_s1 CASCADE;
+
+# both the survivor's and the removed member's references stay registered
+statement ok
+CREATE SCHEMA at_a;
+
+statement ok
+CREATE SCHEMA at_b;
+
+statement ok
+CREATE TABLE at_a.src(i INTEGER);
+
+statement ok
+CREATE TABLE at_b.src(i INTEGER);
+
+statement ok
+SET schema = 'at_b';
+
+statement ok
+CREATE MACRO at_a.f(x INTEGER) AS TABLE (SELECT * FROM src), (x VARCHAR) AS TABLE (SELECT * FROM at_a.src UNION ALL SELECT * FROM at_b.src);
+
+statement ok
+DROP MACRO at_a.f(VARCHAR);
+
+# the survivor bound at_b.src at CREATE: still protected
+statement error
+DROP TABLE at_b.src;
+----
+<REGEX>:.*depend.*
+
+# at_a.src belonged only to the removed member, and is kept too
+statement error
+DROP TABLE at_a.src;
+----
+<REGEX>:.*Cannot drop entry "src" because there are entries that depend on it.*
+
+statement ok
+SET schema = 'main';
+
+statement ok
+DROP SCHEMA at_a CASCADE;
+
+statement ok
+DROP SCHEMA at_b CASCADE;
+
+# a declared parameter type is an entry dependency
+statement ok
+CREATE TYPE dep_mood AS ENUM ('ok', 'sad');
+
+statement ok
+CREATE MACRO dep_typed(x INTEGER) AS 1, (x dep_mood) AS 2;
+
+statement error
+DROP TYPE dep_mood;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP MACRO dep_typed(INTEGER);
+
+# the type belongs to the surviving member: still protected
+statement error
+DROP TYPE dep_mood;
+----
+<REGEX>:.*depend.*
+
+# dropping the macro releases the type
+statement ok
+DROP MACRO dep_typed;
+
+statement ok
+DROP TYPE dep_mood;
+
+# the entry dependencies re-root through COPY FROM DATABASE and survive a member drop on the copy
+statement ok
+ATTACH ':memory:' AS cpd_src;
+
+statement ok
+SET search_path = 'cpd_src';
+
+statement ok
+CREATE TABLE cpd_table(i INTEGER);
+
+statement ok
+CREATE MACRO cpd(x INTEGER) AS (SELECT count(*) FROM cpd_table), (x VARCHAR) AS 0;
+
+statement ok
+RESET search_path;
+
+statement ok
+ATTACH ':memory:' AS cpd_dst;
+
+statement ok
+COPY FROM DATABASE cpd_src TO cpd_dst;
+
+statement ok
+DROP MACRO cpd_dst.main.cpd(VARCHAR);
+
+# the copied survivor protects the copied table
+statement error
+DROP TABLE cpd_dst.cpd_table;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP MACRO cpd_dst.main.cpd;
+
+statement ok
+DROP TABLE cpd_dst.cpd_table;
+
+statement ok
+DETACH cpd_src;
+
+statement ok
+DETACH cpd_dst;
+
+# a dependency stays while any member survives, even after the last member referencing it is gone
+statement ok
+CREATE TABLE shared_src(i INTEGER);
+
+statement ok
+CREATE MACRO shared_dep(x INTEGER) AS (SELECT count(*) FROM shared_src), (x VARCHAR) AS (SELECT count(*) FROM shared_src), (x) AS 1;
+
+statement ok
+DROP MACRO shared_dep(VARCHAR);
+
+statement error
+DROP TABLE shared_src;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP MACRO shared_dep(INTEGER);
+
+statement error
+DROP TABLE shared_src;
+----
+<REGEX>:.*Cannot drop entry "shared_src" because there are entries that depend on it.*
+
+statement ok
+DROP MACRO shared_dep;
+
+statement ok
+DROP TABLE shared_src;
+
+# a rolled back member drop leaves the original entry and its dependencies in place
+statement ok
+CREATE TABLE rb_src(i INTEGER);
+
+statement ok
+CREATE MACRO rb_dep(x INTEGER) AS (SELECT count(*) FROM rb_src), (x VARCHAR) AS x;
+
+statement ok
+BEGIN;
+
+statement ok
+DROP MACRO rb_dep(INTEGER);
+
+statement ok
+ROLLBACK;
+
+statement error
+DROP TABLE rb_src;
+----
+<REGEX>:.*depend.*
+
+query TT
+SELECT rb_dep(1), rb_dep('x');
+----
+0	x
+
+statement ok
+DROP TABLE rb_src CASCADE;
+
+# a member drop works on a copy made by COPY FROM DATABASE
+statement ok
+ATTACH ':memory:' AS attr_src;
+
+statement ok
+CREATE MACRO attr_src.main.cp(x INTEGER) AS 1, (x VARCHAR) AS 2;
+
+statement ok
+ATTACH ':memory:' AS attr_dst;
+
+statement ok
+COPY FROM DATABASE attr_src TO attr_dst;
+
+statement ok
+DROP MACRO attr_dst.main.cp(VARCHAR);
+
+query T
+SELECT attr_dst.main.cp(1);
+----
+1
+
+statement ok
+DETACH attr_src;
+
+statement ok
+DETACH attr_dst;
+
+statement ok
+SET enable_macro_dependencies = false;
+
+# any dependent blocks a member drop: it is an alter, so it reports the alter's dependency error
+statement ok
+SET enable_macro_dependencies = true;
+
+statement ok
+CREATE MACRO blocked_f(x INTEGER) AS x, (x VARCHAR) AS x;
+
+statement ok
+CREATE MACRO blocked_g() AS blocked_f(1);
+
+statement error
+DROP MACRO blocked_f(VARCHAR);
+----
+<REGEX>:.*Cannot alter entry "blocked_f" because there are entries that depend on it.*
+
+statement error
+DROP MACRO blocked_f(VARCHAR) CASCADE;
+----
+<REGEX>:.*Cannot drop an overload of "blocked_f" with CASCADE: drop the dependent entries first, or drop the whole macro.*
+
+statement ok
+DROP MACRO blocked_g;
+
+statement ok
+DROP MACRO blocked_f(VARCHAR);
+
+query T
+SELECT blocked_f(1);
+----
+1
+
+statement ok
+DROP MACRO blocked_f;
+
+statement ok
+SET enable_macro_dependencies = false;
+
+# a trigger using a macro whose unused argument references another catalog still binds: the
+# expansion's qualification probes stay out of the trigger's dependency collector
+statement ok
+ATTACH ':memory:' AS probe_other;
+
+statement ok
+CREATE MACRO probe_other.helper() AS 1;
+
+# triggers need storage v2.0.0, so the whole scenario lives in an attached in-memory catalog,
+# with only the unused argument crossing into another catalog
+statement ok
+ATTACH ':memory:' AS probe_mem;
+
+statement ok
+CREATE MACRO probe_mem.main.probe_ignore(x) AS 42;
+
+statement ok
+CREATE MACRO probe_mem.main.probe_callee() AS probe_mem.main.probe_ignore(probe_other.helper());
+
+statement ok
+CREATE TABLE probe_mem.probe_t(i INT);
+
+statement ok
+CREATE TABLE probe_mem.probe_log(i INT);
+
+statement ok
+CREATE TRIGGER probe_tr AFTER INSERT ON probe_mem.probe_t FOR EACH STATEMENT INSERT INTO probe_mem.probe_log VALUES (probe_mem.main.probe_callee());
+
+statement ok
+INSERT INTO probe_mem.probe_t VALUES (1);
+
+query I
+SELECT i FROM probe_mem.probe_log;
+----
+42
+
+statement ok
+DROP TRIGGER probe_tr ON probe_mem.probe_t;
+
+statement ok
+DETACH probe_mem;
+
+statement ok
+DETACH probe_other;

@@ -9,10 +9,10 @@ require block_size 262144
 load {TEST_DIR}/test_bitpacking.db
 
 statement ok
-PRAGMA force_compression='bitpacking'
+SET force_compression='bitpacking'
 
 statement ok
-PRAGMA force_bitpacking_mode='constant'
+SET force_bitpacking_mode='constant'
 
 #             bit-width < 32
 # ----------------------------------------

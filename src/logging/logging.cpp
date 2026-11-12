@@ -1,4 +1,4 @@
-#include "duckdb/logging/log_storage.hpp"
+#include "duckdb/logging/log_sink.hpp"
 #include "duckdb/logging/logger.hpp"
 
 namespace duckdb {

@@ -40,7 +40,7 @@ SELECT count(*) FROM (SELECT * FROM c1 UNION SELECT * FROM c2);
 1
 
 statement ok
-PRAGMA explain_output='physical_only';
+SET explain_output='physical_only';
 
 # exactly one de-duplication operator for a plain UNION
 query II

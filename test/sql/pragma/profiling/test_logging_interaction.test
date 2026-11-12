@@ -5,10 +5,10 @@
 require skip_reload
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profile_attach.json';
+SET profiling_output = '{TEST_DIR}/profile_attach.json';
 
 statement ok
 ATTACH '{TEST_DIR}/profiler_logger.db' AS my_db;

@@ -1,0 +1,331 @@
+# name: test/sql/catalog/function/drop_function_signature_alter.test
+# description: A member drop is an alter internally: oid preserved, WAL replay, rollback
+# group: [function]
+
+# a member drop needs storage v2.1.0
+load {TEST_DIR}/drop_function_signature_alter.db readwrite v2.1.0
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+SET wal_autocheckpoint = '1TB';
+
+statement ok
+CREATE MACRO alt(x INTEGER) AS x + 1, (x VARCHAR) AS concat(x, '!'), (x DATE) AS year(x);
+
+# a member drop preserves the entry's oid: the altered entry is the same logical object. Oids are
+# reassigned at load, so both reads share one transaction to keep a restart from separating them
+statement ok
+BEGIN;
+
+statement ok
+CREATE TEMP TABLE oid_before AS SELECT DISTINCT function_oid FROM duckdb_functions() WHERE function_name = 'alt';
+
+query I
+SELECT count(*) FROM oid_before;
+----
+1
+
+statement ok
+DROP MACRO alt(VARCHAR);
+
+query I
+SELECT (SELECT DISTINCT function_oid FROM duckdb_functions() WHERE function_name = 'alt')
+     = (SELECT function_oid FROM oid_before);
+----
+true
+
+statement ok
+COMMIT;
+
+# the member drop rolls back like any alter
+statement ok
+BEGIN;
+
+statement ok
+DROP MACRO alt(INTEGER);
+
+statement error
+SELECT alt(1);
+----
+<REGEX>:.*Macro alt\(\) does not support the supplied arguments.*
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT alt(1);
+----
+2
+
+# the member drop replays from the WAL as the ALTER_MACRO record
+statement ok
+DROP MACRO alt(DATE);
+
+restart
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+SET wal_autocheckpoint = '1TB';
+
+query I
+SELECT alt(1);
+----
+2
+
+statement error
+SELECT alt(DATE '2024-01-01');
+----
+<REGEX>:.*Macro alt\(\) does not support the supplied arguments.*
+
+# the member removal and the oid survive the replay
+query I
+SELECT count(DISTINCT function_oid) FROM duckdb_functions() WHERE function_name = 'alt';
+----
+1
+
+# the last overload cannot be dropped by signature, dropping the macro itself is replayed from the WAL
+statement error
+DROP MACRO alt(INTEGER);
+----
+<REGEX>:.*Cannot drop the last overload of "alt": drop the macro itself instead.*
+
+statement ok
+DROP MACRO alt;
+
+restart
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+SET wal_autocheckpoint = '1TB';
+
+statement error
+SELECT alt(1);
+----
+<REGEX>:.*Scalar Function with name alt does not exist!.*
+
+# the replacement keeps its dependency on the containing schema
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE MACRO s.sf(x INTEGER) AS x, (x VARCHAR) AS x;
+
+statement ok
+DROP MACRO s.sf(INTEGER);
+
+statement error
+DROP SCHEMA s;
+----
+<REGEX>:.*depend.*
+
+query I
+SELECT s.sf('a') = 'a';
+----
+true
+
+statement ok
+DROP SCHEMA s CASCADE;
+
+statement error
+SELECT s.sf('a');
+----
+<REGEX>:.*Scalar Function with name sf does not exist!.*
+
+# a table macro member drop replays from the WAL too
+statement ok
+CREATE MACRO tm(x INTEGER) AS TABLE (SELECT x AS v), (x VARCHAR) AS TABLE (SELECT concat(x, '?') AS v);
+
+statement ok
+DROP MACRO TABLE tm(VARCHAR);
+
+restart
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+SET wal_autocheckpoint = '1TB';
+
+query I
+SELECT v FROM tm(7);
+----
+7
+
+statement error
+SELECT v FROM tm('a');
+----
+<REGEX>:.*Macro tm\(\) does not support the supplied arguments.*
+
+# two connections racing member drops of the same entry conflict on the alter path
+statement ok con1
+CREATE MACRO ww(x INTEGER) AS 1, (x VARCHAR) AS 2, (x DATE) AS 3;
+
+statement ok con1
+BEGIN;
+
+statement ok con1
+DROP MACRO ww(INTEGER);
+
+statement error con2
+DROP MACRO ww(VARCHAR);
+----
+<REGEX>:.*write-write conflict on alter.*
+
+statement ok con1
+COMMIT;
+
+statement ok con1
+DROP MACRO ww;
+
+# releases before v2.1.0 do not know the ALTER_MACRO WAL record, so a database pinned below v2.1.0, including
+# the v2.0.0 default, rejects a member drop and keeps the macro
+foreach storage_version v1.4.0 v2.0.0
+
+statement ok
+ATTACH '{TEST_DIR}/alter_old_pin_{storage_version}.db' AS odb (STORAGE_VERSION '{storage_version}');
+
+statement ok
+CREATE MACRO odb.om(x INTEGER) AS x + 1, (x VARCHAR) AS x;
+
+statement error
+DROP MACRO odb.om(VARCHAR);
+----
+<REGEX>:.*Dropping a single overload is only supported for storage versions v2.1.0 and higher.*
+
+query II
+SELECT odb.om(1), odb.om('a');
+----
+2	a
+
+statement ok
+DROP MACRO odb.om;
+
+statement ok
+DETACH odb;
+
+endloop
+
+# a v2.1.0 database carries the member drop as the ALTER_MACRO record: the replay goes through
+# MacroCatalogEntry::AlterEntry, keeps the oid, and keeps the dependency list
+statement ok
+SET enable_macro_dependencies = true;
+
+statement ok
+ATTACH '{TEST_DIR}/alter_new_pin.db' AS ndb (STORAGE_VERSION 'v2.1.0');
+
+statement ok
+CREATE TABLE ndb.nsrc(i INTEGER);
+
+statement ok
+CREATE MACRO ndb.nm(x INTEGER) AS (SELECT count(*) FROM ndb.nsrc), (x VARCHAR) AS x, (x DATE) AS 42;
+
+statement ok
+CHECKPOINT ndb;
+
+statement ok
+DROP MACRO ndb.nm(VARCHAR);
+
+restart
+
+statement ok
+SET enable_macro_dependencies = true;
+
+statement ok
+ATTACH '{TEST_DIR}/alter_new_pin.db' AS ndb;
+
+query TT
+SELECT ndb.nm(1), ndb.nm(DATE '2024-01-01');
+----
+0	42
+
+statement error
+SELECT ndb.nm('a');
+----
+<REGEX>:.*Macro nm\(\) does not support the supplied arguments.*
+
+# the kept dependency list still protects the surviving member's reference
+statement error
+DROP TABLE ndb.nsrc;
+----
+<REGEX>:.*depend.*
+
+# a dependency-blocked member drop reports the alter's dependency error
+statement ok
+SET enable_view_dependencies = true;
+
+statement ok
+CREATE MACRO blk(x INTEGER) AS x, (x VARCHAR) AS x;
+
+statement ok
+CREATE VIEW blk_v1 AS SELECT blk(1) AS a;
+
+statement ok
+CREATE VIEW blk_v2 AS SELECT blk('b') AS b;
+
+statement error
+DROP MACRO blk(INTEGER);
+----
+<REGEX>:.*Cannot alter entry "blk" because there are entries that depend on it.*
+
+# the blocked alter changed nothing
+query II
+SELECT blk(1), blk('b');
+----
+1	b
+
+statement ok
+DROP VIEW blk_v1;
+
+statement ok
+DROP VIEW blk_v2;
+
+statement ok
+DROP MACRO blk(INTEGER);
+
+query I
+SELECT blk('b');
+----
+b
+
+# the last overload is rejected regardless of dependents, and CASCADE never applies to a signature drop
+statement ok
+CREATE MACRO last_one(x INTEGER) AS x;
+
+statement ok
+CREATE VIEW last_one_v AS SELECT last_one(1) AS a;
+
+statement error
+DROP MACRO last_one(INTEGER);
+----
+<REGEX>:.*Cannot drop the last overload of "last_one": drop the macro itself instead.*
+
+statement error
+DROP MACRO last_one(INTEGER) CASCADE;
+----
+<REGEX>:.*Cannot drop an overload of "last_one" with CASCADE: drop the dependent entries first, or drop the whole macro.*
+
+# dropping the macro itself honors CASCADE like any drop
+statement ok
+DROP MACRO last_one CASCADE;
+
+statement error
+SELECT * FROM last_one_v;
+----
+<REGEX>:.*Table with name last_one_v does not exist.*
+
+statement error
+SELECT last_one(1);
+----
+<REGEX>:.*Scalar Function with name last_one does not exist.*
+
+# a signature names one entry
+statement error
+DROP MACRO blk, last_one(INTEGER);
+----
+<REGEX>:.*syntax error.*

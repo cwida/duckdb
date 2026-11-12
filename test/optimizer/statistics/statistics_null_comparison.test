@@ -15,7 +15,7 @@ statement ok
 CREATE TABLE t2 AS SELECT * FROM (VALUES (NULL::INTEGER)) tbl(c0);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # this is statically false, but there are null values NOT in a filter, so we can't optimize it away
 # instead the comparison is replaced by a CONSTANT OR NULL

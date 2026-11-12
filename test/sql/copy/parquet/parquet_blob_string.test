@@ -71,7 +71,7 @@ baz
 
 # Preference goes to variable set in scan
 statement ok
-PRAGMA binary_as_string=1
+SET binary_as_string=1
 
 query I
 SELECT typeof(#1) FROM parquet_scan('{DATA_DIR}/parquet-testing/binary_string.parquet' ,binary_as_string=False) limit 1

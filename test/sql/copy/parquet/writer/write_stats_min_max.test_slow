@@ -5,7 +5,7 @@
 require parquet
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 statement ok
 CREATE TABLE boolean_limits AS SELECT (false)::BOOLEAN min, true::BOOLEAN max

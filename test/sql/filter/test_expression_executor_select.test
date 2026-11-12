@@ -40,7 +40,7 @@ CREATE TABLE dict_select(
 );
 
 statement ok
-PRAGMA debug_verify_vector='dictionary_expression'
+SET debug_verify_vector='dictionary_expression'
 
 statement ok
 INSERT INTO dict_select VALUES
@@ -96,7 +96,7 @@ EXECUTE dict_between('duck', 'goose')
 6
 
 statement ok
-PRAGMA debug_verify_vector='none'
+SET debug_verify_vector='none'
 
 statement ok
 PRAGMA enable_optimizer

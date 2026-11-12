@@ -173,7 +173,8 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	ErrorData error;
 	vector<unique_ptr<Expression>> bound_args;
 	for (auto &child : window.GetArgumentsMutable()) {
-		bound_args.push_back(BindChild(child.GetExpressionMutable(), depth, error));
+		// arguments are aliased by their name, if any (see BindFunction for the rationale)
+		bound_args.push_back(BindChild(child.GetExpressionMutable(), depth, error, child.GetName()));
 	}
 	vector<unique_ptr<Expression>> bound_partitions;
 	for (auto &child : window.PartitionsMutable()) {
@@ -237,15 +238,6 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	for (idx_t arg_idx = 0; arg_idx < window.GetArgumentsMutable().size(); arg_idx++) {
 		auto &arg = window.GetArgumentsMutable()[arg_idx];
 		auto bound_arg = std::move(bound_args[arg_idx]);
-
-		// legacy function calls cannot have named arguments, so we ignore the names of the arguments during binding
-		// and pass them all positionally. We do alias them by their name though, so that alias-capturing functions
-		// (e.g. struct_pack) still work and so that re-serializing to the old format can match arguments by name.
-		// Only override the alias when the argument actually carries a name, otherwise we would clobber the
-		// display alias the binding assigned (e.g. clearing a column reference's name to its raw binding).
-		if (!arg.GetName().empty()) {
-			bound_arg->SetAlias(arg.GetName());
-		}
 
 		if (window.IsLegacyFunctionCall()) {
 			arguments.emplace_back(Identifier(), std::move(bound_arg));

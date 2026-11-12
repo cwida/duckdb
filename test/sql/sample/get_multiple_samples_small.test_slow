@@ -3,7 +3,7 @@
 # group: [sample]
 
 statement ok
-pragma memory_limit='10G';
+SET memory_limit='10G';
 
 statement ok
 CREATE OR REPLACE TABLE blah as (

@@ -21,7 +21,7 @@ SELECT * FROM summary((SELECT * FROM a))
 
 
 statement ok
-pragma threads=4
+SET threads=4
 
 statement ok
 pragma verify_parallelism

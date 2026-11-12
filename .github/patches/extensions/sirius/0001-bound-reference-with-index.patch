@@ -1,0 +1,64 @@
+diff --git a/src/op/scan/scan_utils.cpp b/src/op/scan/scan_utils.cpp
+index 034ad497..5a6be8bf 100644
+--- a/src/op/scan/scan_utils.cpp
++++ b/src/op/scan/scan_utils.cpp
+@@ -146,10 +146,8 @@ std::vector<table_filter_conjunct> decompose_table_filters(
+     auto const* filter =
+       &duckdb::ExpressionFilter::GetExpressionFilter(*entry, "multi-column scan filter");
+     if (duckdb::ExpressionFilter::IsOptionalFilter(*filter)) { continue; }
+-    auto expr                                      = filter->expr->Copy();
+-    std::function<void(duckdb::Expression&)> remap = [&](duckdb::Expression& node) {
+-      if (node.GetExpressionClass() == duckdb::ExpressionClass::BOUND_REF) {
+-        auto& ref             = node.Cast<duckdb::BoundReferenceExpression>();
++    auto expr = duckdb::ExpressionIterator::PreorderReplace<duckdb::BoundReferenceExpression>(
++      filter->expr->Copy(), [&](duckdb::BoundReferenceExpression const& ref) {
+         auto const scan_index = filter->column_indexes.at(ref.Index()).GetIndex();
+         auto const column     = resolve_filtered_column(
+           scan_index, column_ids, batch_position_by_column_id, skip_primary_indices);
+@@ -157,12 +155,8 @@ std::vector<table_filter_conjunct> decompose_table_filters(
+           throw std::runtime_error(
+             "TABLE_SCAN multi-column filter references an unavailable batch column");
+         }
+-        ref.IndexMutable() = column.batch_position;
+-      }
+-      duckdb::ExpressionIterator::EnumerateChildren(
+-        node, [&](duckdb::unique_ptr<duckdb::Expression>& child) { remap(*child); });
+-    };
+-    remap(*expr);
++        return ref.WithIndex(column.batch_position);
++      });
+     conjuncts.push_back({std::nullopt, std::nullopt, std::move(expr)});
+   }
+ 
+diff --git a/test/cpp/planner/test_window_plan.cpp b/test/cpp/planner/test_window_plan.cpp
+index fb3f68fa..6e50301f 100644
+--- a/test/cpp/planner/test_window_plan.cpp
++++ b/test/cpp/planner/test_window_plan.cpp
+@@ -277,8 +277,9 @@ TEST_CASE("whole-partition window planning rejects invalid mappings and null tre
+   SECTION("incorrect input mapping") { window.types[0] = duckdb::LogicalType::VARCHAR; }
+   SECTION("argument outside input schema")
+   {
+-    expression.GetChildrenMutable()[0]->Cast<duckdb::BoundReferenceExpression>().IndexMutable() =
+-      window.children[0]->types.size();
++    auto& argument = expression.GetChildrenMutable()[0];
++    argument       = argument->Cast<duckdb::BoundReferenceExpression>().WithIndex(
++      window.children[0]->types.size());
+   }
+   REQUIRE_THROWS_AS(plan_whole_partition_window(window), duckdb::NotImplementedException);
+ }
+diff --git a/test/cpp/scan_manager/test_pinned_chunk_stats.cpp b/test/cpp/scan_manager/test_pinned_chunk_stats.cpp
+index 9b1e62f7..df599899 100644
+--- a/test/cpp/scan_manager/test_pinned_chunk_stats.cpp
++++ b/test/cpp/scan_manager/test_pinned_chunk_stats.cpp
+@@ -222,9 +222,8 @@ TEST_CASE("pinned_chunk_stats - classifier rejects unsupported shapes and malfor
+   auto wrong_index = cmp(ExpressionType::COMPARE_EQUAL, Value::INTEGER(1));
+   auto& function =
+     wrong_index->Cast<duckdb::ExpressionFilter>().expr->Cast<duckdb::BoundFunctionExpression>();
+-  duckdb::BoundComparisonExpression::LeftMutable(function)
+-    ->Cast<duckdb::BoundReferenceExpression>()
+-    .IndexMutable() = 1;
++  auto& wrong_index_lhs = duckdb::BoundComparisonExpression::LeftMutable(function);
++  wrong_index_lhs       = wrong_index_lhs->Cast<duckdb::BoundReferenceExpression>().WithIndex(1);
+   REQUIRE_FALSE(filter_safe_for_stats(*wrong_index, type));
+ 
+   auto multi = cmp(ExpressionType::COMPARE_EQUAL, Value::INTEGER(1));

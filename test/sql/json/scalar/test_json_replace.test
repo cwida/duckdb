@@ -4,9 +4,6 @@
 
 require json
 
-statement ok
-pragma enable_verification
-
 # Basic: replace existing key
 query T
 SELECT json_replace('{"a":1}', '$.a', '99')

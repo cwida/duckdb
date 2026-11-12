@@ -17,7 +17,7 @@ select * from read_csv_auto('{DATA_DIR}/csv/dirty_line.csv',  skip = 1)
 2.5	b	4
 
 query II
-select * from read_csv_auto('{DATA_DIR}/csv/null_string.csv',  nullstr="null")
+select * from read_csv_auto('{DATA_DIR}/csv/null_string.csv',  nullstr='null')
 ----
 1	NULL
 NULL	2

@@ -70,8 +70,7 @@ unique_ptr<MergeIntoOperator> PlanMergeIntoAction(ClientContext &context, Logica
 		                                          op.table.GetStorage(), std::move(action.columns),
 		                                          std::move(action.expressions), std::move(defaults),
 		                                          std::move(bound_constraints), cardinality, op.return_chunk,
-		                                          /*capture_old_rows=*/false, /*old_row_columns=*/vector<idx_t>(),
-		                                          /*row_id_handling=*/RowIdHandling::ASSUME_UNIQUE);
+		                                          /*capture_old_rows=*/false, /*old_row_columns=*/vector<idx_t>());
 		auto &cast_update = result->op->Cast<PhysicalUpdate>();
 		cast_update.update_is_del_and_insert = action.update_is_del_and_insert;
 		result->op->children.push_back(action_input);
@@ -219,6 +218,15 @@ static unique_ptr<MergeIntoOperator> PlanGenericMergeIntoAction(ClientContext &c
 		// that layout so that we can plan the update exactly like a regular update
 		vector<unique_ptr<Expression>> select_list;
 		vector<unique_ptr<Expression>> update_expressions;
+		//! Deprecated: plans serialized before v2.0 keep SET col = DEFAULT as a placeholder that the update operator
+		//! resolved, now the binder resolves it - resolve it here, as it cannot be evaluated in the projection
+		for (idx_t i = 0; i < action.expressions.size(); i++) {
+			if (action.expressions[i]->GetExpressionType() != ExpressionType::VALUE_DEFAULT) {
+				continue;
+			}
+			auto storage_idx = op.table.GetColumns().GetColumn(action.columns[i]).StorageOid();
+			action.expressions[i] = op.bound_defaults[storage_idx]->Copy();
+		}
 		CastActionExpressionsToColumnTypes(context, op.table, action.expressions, action.columns);
 		for (auto &expr : action.expressions) {
 			update_expressions.push_back(

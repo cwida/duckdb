@@ -1,0 +1,214 @@
+# name: test/optimizer/statistics/statistics_join_aggregate_bounds.test
+# description: Aggregate bounds survive joins and include unmatched rows
+# group: [statistics]
+
+statement ok
+CREATE TABLE amounts(k INTEGER, v DECIMAL(7,2));
+
+statement ok
+INSERT INTO amounts VALUES (1,10),(2,20),(3,30);
+
+statement ok
+CREATE TABLE keys(k INTEGER);
+
+statement ok
+INSERT INTO keys VALUES (1),(2);
+
+query I
+SELECT sum(v) FROM amounts JOIN keys USING(k) HAVING sum(v) > 10;
+----
+30.00
+
+query II
+EXPLAIN SELECT sum(v) FROM amounts JOIN keys USING(k) HAVING sum(v) > 180;
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN WITH grouped AS MATERIALIZED (
+	SELECT amounts.k, sum(v) AS total FROM amounts JOIN keys USING(k) GROUP BY amounts.k
+) SELECT sum(total) FROM grouped HAVING sum(total) < 0;
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query I
+SELECT sum(v) FROM amounts POSITIONAL JOIN keys HAVING sum(v) > 40;
+----
+60.00
+
+query II
+EXPLAIN SELECT sum(v) FROM amounts POSITIONAL JOIN keys HAVING sum(v) > 90;
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+# A fresh empty table has a zero maximum, unlike a table with deleted rows.
+statement ok
+CREATE OR REPLACE TABLE keys(k INTEGER);
+
+query I
+SELECT sum(v) FROM amounts LEFT JOIN keys USING(k) HAVING sum(v) > 40;
+----
+60.00
+
+query I
+SELECT sum(v) FROM keys RIGHT JOIN amounts USING(k) HAVING sum(v) > 40;
+----
+60.00
+
+query I
+SELECT sum(v) FROM amounts ANTI JOIN keys USING(k) HAVING sum(v) > 40;
+----
+60.00
+
+query I
+SELECT sum(v) FROM (SELECT v, k IN (SELECT k FROM keys) AS matched FROM amounts)
+GROUP BY matched HAVING sum(v) > 40;
+----
+60.00
+
+statement ok
+CREATE TABLE left_row(k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO left_row VALUES (1,10);
+
+statement ok
+CREATE TABLE right_row(k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO right_row VALUES (2,20);
+
+query I
+SELECT sum(coalesce(l.v,r.v)) FROM left_row l FULL OUTER JOIN right_row r USING(k)
+HAVING sum(coalesce(l.v,r.v)) > 20;
+----
+30
+
+query II
+EXPLAIN SELECT sum(coalesce(l.v,r.v)) FROM left_row l FULL OUTER JOIN right_row r USING(k)
+HAVING sum(coalesce(l.v,r.v)) > 40;
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+# Unknown-cardinality scans must not inherit another subtree's row bound.
+statement ok
+CREATE TABLE unknown_scan_left AS SELECT * FROM range(1, 3) t(k);
+
+statement ok
+SET disabled_optimizers='build_side_probe_side';
+
+query I
+SELECT sum(r.v)
+FROM unknown_scan_left l RIGHT JOIN (SELECT 1 AS k, 1 AS v FROM test_all_types()) r
+ON l.k = r.k AND l.k > 5
+HAVING sum(r.v) > 2;
+----
+3
+
+# An unknown bound must not select the unchecked INT64 SUM implementation either.
+query I
+SELECT sum(r.v)
+FROM unknown_scan_left l RIGHT JOIN (
+	SELECT 1 AS k, 4000000000000000000::BIGINT AS v FROM test_all_types()
+) r ON l.k = r.k AND l.k > 5;
+----
+12000000000000000000
+
+query I
+SELECT sum(r.v)
+FROM (SELECT * FROM unknown_scan_left WHERE k > 5) l
+FULL JOIN (SELECT 1 AS k, 1 AS v FROM test_all_types()) r ON l.k = r.k
+HAVING sum(r.v) > 2;
+----
+3
+
+statement ok
+RESET disabled_optimizers;
+
+# Repeated grouping sets can emit more rows than their input.
+statement ok
+CREATE TABLE repeated_key(k INTEGER);
+
+statement ok
+INSERT INTO repeated_key VALUES (1);
+
+query I
+SELECT sum(g.k)
+FROM (SELECT k FROM repeated_key GROUP BY GROUPING SETS ((k),(k))) g
+JOIN repeated_key USING(k)
+HAVING sum(g.k) > 1;
+----
+2
+
+query I
+SELECT sum(g.k)
+FROM (SELECT k FROM repeated_key GROUP BY GROUPING SETS ((k),(k))) g
+LEFT JOIN repeated_key USING(k)
+HAVING sum(g.k) > 1;
+----
+2
+
+query I
+SELECT sum(g.k)
+FROM (SELECT k FROM repeated_key GROUP BY GROUPING SETS ((k),(k))) g
+POSITIONAL JOIN repeated_key
+HAVING sum(g.k) > 1;
+----
+2
+
+# Each empty grouping set emits one row even when the input is empty.
+statement ok
+CREATE TABLE empty_keys(k INTEGER);
+
+query I
+SELECT sum(v) FROM (
+    SELECT 1 AS v FROM empty_keys GROUP BY GROUPING SETS ((),()) HAVING true
+) g LEFT JOIN repeated_key ON true HAVING sum(v) > 1;
+----
+2
+
+query I
+SELECT sum(v) FROM (
+    SELECT 1 AS v FROM empty_keys GROUP BY GROUPING SETS ((),(),(k))
+) g LEFT JOIN repeated_key ON true HAVING sum(v) > 1;
+----
+2
+
+# Eager COUNT execution must preserve repeated empty grouping sets too.
+statement ok
+SET disabled_optimizers='grouping_sets';
+
+query I
+SELECT count(*) FROM repeated_key GROUP BY GROUPING SETS ((),());
+----
+1
+1
+
+statement ok
+RESET disabled_optimizers;
+
+# Withdraw the maximum when summing grouping-set bounds would overflow idx_t.
+query II
+EXPLAIN SELECT sum(k) FROM (
+    SELECT i AS k FROM range(9223372036854775807) r(i)
+    GROUP BY GROUPING SETS ((i),(i),(i))
+) g HAVING sum(k) > 100000000000000000000000000000000000000::HUGEINT;
+----
+physical_plan	<!REGEX>:.*Empty Result.*
+
+# UNION accepts unsigned grouping-set bounds and withdraws bounds on overflow.
+query II
+EXPLAIN SELECT sum(v) FROM (
+	SELECT 1::HUGEINT AS v FROM range(9223372036854775807) r(i) GROUP BY GROUPING SETS ((i),(i))
+	UNION ALL SELECT 1::HUGEINT AS v FROM range(1) r(i)
+) u HAVING sum(v) > 18446744073709551615::HUGEINT;
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT sum(v) FROM (
+	SELECT 1::HUGEINT AS v FROM range(9223372036854775807) r(i) GROUP BY GROUPING SETS ((i),(i))
+	UNION ALL SELECT 1::HUGEINT AS v FROM range(2) r(i)
+) u HAVING sum(v) > 18446744073709551615::HUGEINT;
+----
+physical_plan	<!REGEX>:.*Empty Result.*

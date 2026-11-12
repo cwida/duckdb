@@ -104,10 +104,21 @@ void ErrorData::Merge(const ErrorData &other) {
 		return;
 	}
 	if (Exception::InvalidatesDatabase(other.Type()) || other.type == ExceptionType::INTERNAL) {
-		// inherit severe types
+		// inherit severe types; the result is scoped only if every severe error was handled by its database
+		auto was_severe = Exception::InvalidatesDatabase(type) || type == ExceptionType::INTERNAL;
+		auto other_entry = other.extra_info.find(Exception::INVALIDATED_DATABASE_KEY);
+		if (other_entry == other.extra_info.end()) {
+			extra_info.erase(Exception::INVALIDATED_DATABASE_KEY);
+		} else if (!was_severe) {
+			extra_info[Exception::INVALIDATED_DATABASE_KEY] = other_entry->second;
+		}
 		type = other.type;
 	}
 	final_message += "\n\n" + other.Message();
+}
+
+void ErrorData::SetExtraInfo(const string &key, const string &value) {
+	extra_info[key] = value;
 }
 
 bool ErrorData::operator==(const ErrorData &other) const {

@@ -3,7 +3,7 @@
 # group: [plan]
 
 statement ok
-pragma explain_output='OPTIMIZED_ONLY'
+SET explain_output='OPTIMIZED_ONLY'
 
 query I
 SELECT lhs.id FROM (SELECT 1 id) lhs ANTI JOIN (SELECT 1 id WHERE FALSE) rhs ON lhs.id = rhs.id

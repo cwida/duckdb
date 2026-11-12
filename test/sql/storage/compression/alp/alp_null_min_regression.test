@@ -7,7 +7,7 @@ load {TEST_DIR}/test_alp_null_min_regression.db
 foreach compression alp alprd
 
 statement ok
-PRAGMA force_compression='{compression}';
+SET force_compression='{compression}';
 
 foreach type DOUBLE FLOAT
 

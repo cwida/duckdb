@@ -16,6 +16,54 @@
 
 namespace duckdb {
 
+optional<SumAccumulatorBounds> SumAccumulatorBounds::TryGet(const AggregateStatisticsInput &input) {
+	if (!input.node_stats || !input.node_stats->has_max_cardinality) {
+		return {};
+	}
+	auto &numeric_stats = input.child_stats[0];
+	if (!NumericStats::HasMinMax(numeric_stats)) {
+		return {};
+	}
+	hugeint_t min_value;
+	hugeint_t max_value;
+	switch (numeric_stats.GetType().InternalType()) {
+	case PhysicalType::BOOL:
+		min_value = NumericStats::Min(numeric_stats).GetValueUnsafe<bool>() ? 1 : 0;
+		max_value = NumericStats::Max(numeric_stats).GetValueUnsafe<bool>() ? 1 : 0;
+		break;
+	case PhysicalType::INT16:
+		min_value = NumericStats::Min(numeric_stats).GetValueUnsafe<int16_t>();
+		max_value = NumericStats::Max(numeric_stats).GetValueUnsafe<int16_t>();
+		break;
+	case PhysicalType::INT32:
+		min_value = NumericStats::Min(numeric_stats).GetValueUnsafe<int32_t>();
+		max_value = NumericStats::Max(numeric_stats).GetValueUnsafe<int32_t>();
+		break;
+	case PhysicalType::INT64:
+		min_value = NumericStats::Min(numeric_stats).GetValueUnsafe<int64_t>();
+		max_value = NumericStats::Max(numeric_stats).GetValueUnsafe<int64_t>();
+		break;
+	case PhysicalType::INT128:
+		min_value = NumericStats::Min(numeric_stats).GetValueUnsafe<hugeint_t>();
+		max_value = NumericStats::Max(numeric_stats).GetValueUnsafe<hugeint_t>();
+		break;
+	default:
+		return {};
+	}
+	if (min_value > max_value) {
+		return {};
+	}
+	const auto max_count = Hugeint::Convert(input.node_stats->max_cardinality);
+	SumAccumulatorBounds bounds;
+	if (!Hugeint::TryMultiply(min_value, max_count, bounds.min) ||
+	    !Hugeint::TryMultiply(max_value, max_count, bounds.max)) {
+		return {};
+	}
+	bounds.min = MinValue(min_value, bounds.min);
+	bounds.max = MaxValue(max_value, bounds.max);
+	return bounds;
+}
+
 namespace {
 
 struct SumSetOperation {
@@ -354,46 +402,19 @@ unique_ptr<FunctionData> SumNoOverflowBind(BindAggregateFunctionInput &input) {
 
 unique_ptr<BaseStatistics> SumPropagateStats(ClientContext &context, BoundAggregateExpression &expr,
                                              AggregateStatisticsInput &input) {
-	if (!input.node_stats || !input.node_stats->has_max_cardinality) {
-		return nullptr;
-	}
 	auto &numeric_stats = input.child_stats[0];
-	if (!NumericStats::HasMinMax(numeric_stats)) {
-		return nullptr;
-	}
 	auto internal_type = numeric_stats.GetType().InternalType();
-	hugeint_t max_negative = 0;
-	hugeint_t max_positive = 0;
-	switch (internal_type) {
-	case PhysicalType::BOOL:
-		max_negative = NumericStats::Min(numeric_stats).GetValueUnsafe<bool>() ? 1 : 0;
-		max_positive = NumericStats::Max(numeric_stats).GetValueUnsafe<bool>() ? 1 : 0;
-		break;
-	case PhysicalType::INT16:
-		max_negative = NumericStats::Min(numeric_stats).GetValueUnsafe<int16_t>();
-		max_positive = NumericStats::Max(numeric_stats).GetValueUnsafe<int16_t>();
-		break;
-	case PhysicalType::INT32:
-		max_negative = NumericStats::Min(numeric_stats).GetValueUnsafe<int32_t>();
-		max_positive = NumericStats::Max(numeric_stats).GetValueUnsafe<int32_t>();
-		break;
-	case PhysicalType::INT64:
-		max_negative = NumericStats::Min(numeric_stats).GetValueUnsafe<int64_t>();
-		max_positive = NumericStats::Max(numeric_stats).GetValueUnsafe<int64_t>();
-		break;
-	case PhysicalType::INT128:
-		max_negative = NumericStats::Min(numeric_stats).GetValueUnsafe<hugeint_t>();
-		max_positive = NumericStats::Max(numeric_stats).GetValueUnsafe<hugeint_t>();
-		break;
-	default:
-		throw InternalException("Unsupported type for propagate sum stats");
+	auto bounds = SumAccumulatorBounds::TryGet(input);
+	if (internal_type == PhysicalType::INT128) {
+		bool cannot_overflow = bounds.has_value();
+		if (cannot_overflow && expr.GetReturnType().id() == LogicalTypeId::DECIMAL) {
+			const auto decimal_limit = Hugeint::POWERS_OF_TEN[Decimal::MAX_WIDTH_DECIMAL];
+			cannot_overflow = bounds->min > -decimal_limit && bounds->max < decimal_limit;
+		}
+		expr.FunctionMutable().SetErrorMode(cannot_overflow ? FunctionErrors::CANNOT_ERROR
+		                                                    : FunctionErrors::CAN_THROW_RUNTIME_ERROR);
 	}
-
-	const auto max_card = Hugeint::Convert(input.node_stats->max_cardinality);
-	hugeint_t wide_negative = 0;
-	hugeint_t wide_positive = 0;
-	if (!Hugeint::TryMultiply(max_negative, max_card, wide_negative) ||
-	    !Hugeint::TryMultiply(max_positive, max_card, wide_positive)) {
+	if (!bounds) {
 		return nullptr;
 	}
 
@@ -401,17 +422,15 @@ unique_ptr<BaseStatistics> SumPropagateStats(ClientContext &context, BoundAggreg
 	// swap in.
 	const bool has_no_overflow_variant = internal_type == PhysicalType::INT32 || internal_type == PhysicalType::INT64;
 	const bool sum_fits_in_int64 =
-	    wide_negative > NumericLimits<int64_t>::Minimum() && wide_positive < NumericLimits<int64_t>::Maximum();
+	    bounds->min > NumericLimits<int64_t>::Minimum() && bounds->max < NumericLimits<int64_t>::Maximum();
 	if (has_no_overflow_variant && sum_fits_in_int64) {
 		expr.FunctionMutable().ReplaceImplementation(GetSumAggregateNoOverflow(internal_type));
 	}
 
 	// Propagate stats.
-	auto sum_min = max_negative <= 0 ? wide_negative : max_negative;
-	auto sum_max = max_positive >= 0 ? wide_positive : max_positive;
 	auto result = NumericStats::CreateEmpty(expr.GetReturnType()).ToUnique();
-	NumericStats::SetMin(*result, Value::HUGEINT(sum_min));
-	NumericStats::SetMax(*result, Value::HUGEINT(sum_max));
+	NumericStats::SetMin(*result, Value::HUGEINT(bounds->min));
+	NumericStats::SetMax(*result, Value::HUGEINT(bounds->max));
 	result->Set(StatsInfo::CAN_HAVE_NULL_AND_VALID_VALUES);
 	return result;
 }

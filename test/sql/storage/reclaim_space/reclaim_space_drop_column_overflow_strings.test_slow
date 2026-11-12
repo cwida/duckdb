@@ -5,7 +5,7 @@
 load {TEST_DIR}/reclaim_space_drop_column_overflow_strings.db
 
 statement ok
-PRAGMA force_compression='Uncompressed';
+SET force_compression='Uncompressed';
 
 statement ok
 PRAGMA force_checkpoint;

@@ -5,7 +5,7 @@
 require tpch
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 statement ok
 CALL dbgen(sf=1);
@@ -22,7 +22,7 @@ CREATE TABLE lineitem_d AS (
 
 # first iteration runs externally, second runs normally
 statement ok
-PRAGMA debug_force_external=true
+SET debug_force_external=true
 
 loop i 0 2
 
@@ -84,6 +84,6 @@ select * from rownum_window order by l_extendedprice
 ----
 
 statement ok
-PRAGMA debug_force_external=false
+SET debug_force_external=false
 
 endloop

@@ -11,13 +11,13 @@
 # * Multiple scanned payload blocks
 
 statement ok
-PRAGMA asof_loop_join_threshold=0;
+SET asof_loop_join_threshold=0;
 
 # Check results against IEJoin
 foreach debug False True
 
 statement ok 
-PRAGMA debug_asof_iejoin={debug}
+SET debug_asof_iejoin={debug}
 
 # 10 dates, 5 keys
 query I

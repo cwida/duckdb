@@ -188,35 +188,6 @@ physical_plan	<REGEX>:.*combine_aggr\(#[0-9]+, #[0-9]+\).*
 statement ok
 RESET disabled_optimizers
 
-# A division that yields NULL instead of an error on a zero divisor cannot throw either.
-statement ok
-CREATE TABLE fact_div AS SELECT i % 100 AS id, (i % 1000)::DOUBLE AS x, (i % 5)::DOUBLE AS y FROM range(10000) t(i);
-
-statement ok
-SET ieee_floating_point_ops = false
-
-statement ok
-SET error_on_division_by_zero = false
-
-query II
-EXPLAIN SELECT a, b, sum(x / y) FROM fact_div JOIN dim USING (id) GROUP BY a, b
-----
-physical_plan	<REGEX>:.*combine_aggr.*
-
-query III
-SELECT a, b, sum(x / y) FROM fact_div JOIN dim USING (id) GROUP BY a, b ORDER BY a, b LIMIT 4
-----
-0	0	NULL
-0	1	NULL
-0	2	NULL
-1	0	347600.0
-
-statement ok
-RESET ieee_floating_point_ops
-
-statement ok
-RESET error_on_division_by_zero
-
 # DECIMAL(10,0) * DECIMAL(10,0) is clamped to DECIMAL(18,0) and checks for overflow. The unmatched row holds a value
 # whose square does not fit, and the column bounds cannot rule the overflow out, so the argument stays above the join.
 statement ok
@@ -322,3 +293,39 @@ SELECT a, b, sum(price * (1 - discount)) FROM fact_rev JOIN dim USING (id) GROUP
 0	0	339417.5000
 0	1	291217.5000
 0	2	290290.0000
+
+statement ok
+RESET disabled_optimizers
+
+# A division that yields NULL instead of an error on a zero divisor cannot throw either.
+# error_on_division_by_zero is deprecated, so setting it warns.
+statement ok
+SET warnings_as_errors=false
+
+statement ok
+CREATE TABLE fact_div AS SELECT i % 100 AS id, (i % 1000)::DOUBLE AS x, (i % 5)::DOUBLE AS y FROM range(10000) t(i);
+
+statement ok
+SET ieee_floating_point_ops = false
+
+statement ok
+SET error_on_division_by_zero = false
+
+query II
+EXPLAIN SELECT a, b, sum(x / y) FROM fact_div JOIN dim USING (id) GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query III
+SELECT a, b, sum(x / y) FROM fact_div JOIN dim USING (id) GROUP BY a, b ORDER BY a, b LIMIT 4
+----
+0	0	NULL
+0	1	NULL
+0	2	NULL
+1	0	347600.0
+
+statement ok
+RESET ieee_floating_point_ops
+
+statement ok
+RESET error_on_division_by_zero

@@ -290,18 +290,36 @@ ExtensionLoadResult SQLLogicTestRunner::LoadExtension(DuckDB &db, const std::str
 	return linked_result;
 }
 
+//! Make any statement that logs a warning fail with that warning as its error
+static void EnableWarningsAsErrors(DuckDB &db) {
+	Connection con(db);
+	auto result = con.Query("SET logging_level='WARNING'; SET enable_logging=true; SET warnings_as_errors=true;");
+	if (result->HasError()) {
+		result->ThrowError("Failed to enable warnings_as_errors: ");
+	}
+}
+
 NewDatabaseConnection SQLLogicTestRunner::CreateDatabase(const string &db_path, bool load_extensions) {
 	NewDatabaseConnection result;
 	// a prefixed path (ducklake:...) loads its extension inside the DuckDB constructor, before LoadExtension can run
-	auto saved_extension_directories = config->options.extension_directories;
+	auto to_value = [](const vector<string> &directories) {
+		vector<Value> values;
+		for (auto &directory : directories) {
+			values.emplace_back(directory);
+		}
+		return Value::LIST(LogicalType::VARCHAR, std::move(values));
+	};
+	auto saved_extension_directories = to_value(Settings::Get<ExtensionDirectoriesSetting>(*config));
 	if (autoloading_mode == TestConfiguration::ExtensionAutoLoadingMode::NONE &&
 	    !ExtensionHelper::ExtractExtensionPrefixFromPath(db_path).empty()) {
-		config->options.extension_directories = {TestConfiguration::Get().GetLocalExtensionRepository()};
+		Settings::Set<ExtensionDirectoriesSetting>(*config, SetScope::GLOBAL,
+		                                           to_value({TestConfiguration::Get().GetLocalExtensionRepository()}));
 	}
 	try {
 		result.db = make_uniq<DuckDB>(db_path, config.get());
-		config->options.extension_directories = saved_extension_directories;
-		result.db->instance->config.options.extension_directories = saved_extension_directories;
+		Settings::Set<ExtensionDirectoriesSetting>(*config, SetScope::GLOBAL, saved_extension_directories);
+		Settings::Set<ExtensionDirectoriesSetting>(result.db->instance->config, SetScope::GLOBAL,
+		                                           saved_extension_directories);
 		LoadStaticExtensions(*result.db);
 		ConfigureDefaultInMemoryTemporaryDirectory(*result.db, db_path);
 
@@ -310,8 +328,11 @@ NewDatabaseConnection SQLLogicTestRunner::CreateDatabase(const string &db_path, 
 		for (auto ext : test_config.ExtensionToBeLoadedOnLoad()) {
 			SQLLogicTestRunner::LoadExtension(*result.db, ext);
 		}
+		if (test_config.GetWarningsAsErrors()) {
+			EnableWarningsAsErrors(*result.db);
+		}
 	} catch (std::exception &ex) {
-		config->options.extension_directories = saved_extension_directories;
+		Settings::Set<ExtensionDirectoriesSetting>(*config, SetScope::GLOBAL, saved_extension_directories);
 		ErrorData err(ex);
 		SQLLogicTestLogger::LoadDatabaseFail(file_name, db_path, err.Message());
 		TEST_FAIL("");

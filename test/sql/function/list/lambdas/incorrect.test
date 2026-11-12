@@ -253,9 +253,6 @@ SELECT list_transform([1], lambda x: 1 : hello) FROM dummy_tbl;
 ----
 <REGEX>:Parser Error.*syntax error.*
 
-statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
 statement error
 CREATE OR REPLACE function transpose(lst) AS (
 	SELECT list_transform(range(1, 1 + length(lst[1])),
@@ -277,15 +274,3 @@ CREATE OR REPLACE FUNCTION transpose(lst) AS (
 );
 ----
 <REGEX>:Binder Error.*Deprecated lambda arrow.*
-
-statement ok
-SET lambda_syntax='ENABLE_SINGLE_ARROW'
-
-statement ok
-CREATE OR REPLACE FUNCTION transpose(lst) AS (
-	SELECT list_transform(range(1, 1 + length(lst[1])),
-		j -> list_transform(range(1, length(lst) + 1),
-			i -> lst[i][j]
-		)
-	)
-);
