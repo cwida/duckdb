@@ -528,7 +528,7 @@ void ReadDuckDBAddNamedParameters(TableFunction &table_function) {
 	});
 }
 
-static vector<column_t> DuckDBGetRowIdColumns(ClientContext &, optional_ptr<FunctionData>) {
+static vector<column_t> DuckDBGetRowIdColumns(ClientContext &, optional_ptr<const FunctionData>) {
 	vector<column_t> result;
 	result.emplace_back(MultiFileReader::COLUMN_IDENTIFIER_FILE_INDEX);
 	result.emplace_back(COLUMN_IDENTIFIER_ROW_ID);

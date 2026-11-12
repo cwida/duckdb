@@ -64,7 +64,7 @@ struct WriteBlobGlobalState final : public GlobalFunctionData {
 	mutex lock;
 };
 
-unique_ptr<GlobalFunctionData> WriteBlobInitializeGlobal(ClientContext &context, FunctionData &bind_data,
+unique_ptr<GlobalFunctionData> WriteBlobInitializeGlobal(ClientContext &context, const FunctionData &bind_data,
                                                          const string &file_path) {
 	auto &bdata = bind_data.Cast<WriteBlobBindData>();
 	auto &fs = FileSystem::GetFileSystem(context);
@@ -83,7 +83,7 @@ unique_ptr<GlobalFunctionData> WriteBlobInitializeGlobal(ClientContext &context,
 //----------------------------------------------------------------------------------------------------------------------
 struct WriteBlobLocalState final : public LocalFunctionData {};
 
-unique_ptr<LocalFunctionData> WriteBlobInitializeLocal(ExecutionContext &context, FunctionData &bind_data) {
+unique_ptr<LocalFunctionData> WriteBlobInitializeLocal(ExecutionContext &context, const FunctionData &bind_data) {
 	return make_uniq_base<LocalFunctionData, WriteBlobLocalState>();
 }
 
@@ -101,7 +101,7 @@ void WriteBlobData(QueryContext &query_context, FileHandle &handle, data_ptr_t b
 //----------------------------------------------------------------------------------------------------------------------
 // Sink
 //----------------------------------------------------------------------------------------------------------------------
-void WriteBlobSink(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+void WriteBlobSink(ExecutionContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate,
                    LocalFunctionData &lstate, DataChunk &input) {
 	D_ASSERT(input.ColumnCount() == 1);
 
@@ -127,7 +127,7 @@ struct WriteBlobPreparedBatch final : public PreparedBatchData {
 	vector<string> blobs;
 };
 
-unique_ptr<PreparedBatchData> WriteBlobPrepareBatch(ClientContext &context, FunctionData &bind_data,
+unique_ptr<PreparedBatchData> WriteBlobPrepareBatch(ClientContext &context, const FunctionData &bind_data,
                                                     GlobalFunctionData &gstate,
                                                     unique_ptr<ColumnDataCollection> collection) {
 	auto result = make_uniq<WriteBlobPreparedBatch>();
@@ -149,7 +149,7 @@ unique_ptr<PreparedBatchData> WriteBlobPrepareBatch(ClientContext &context, Func
 //----------------------------------------------------------------------------------------------------------------------
 // Flush Batch
 //----------------------------------------------------------------------------------------------------------------------
-void WriteBlobFlushBatch(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+void WriteBlobFlushBatch(ClientContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate,
                          PreparedBatchData &batch) {
 	auto &state = gstate.Cast<WriteBlobGlobalState>();
 	auto &blob_batch = batch.Cast<WriteBlobPreparedBatch>();
@@ -164,14 +164,14 @@ void WriteBlobFlushBatch(ClientContext &context, FunctionData &bind_data, Global
 //----------------------------------------------------------------------------------------------------------------------
 // Combine
 //----------------------------------------------------------------------------------------------------------------------
-void WriteBlobCombine(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+void WriteBlobCombine(ExecutionContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate,
                       LocalFunctionData &lstate) {
 }
 
 //----------------------------------------------------------------------------------------------------------------------
 // Finalize
 //----------------------------------------------------------------------------------------------------------------------
-void WriteBlobFinalize(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate) {
+void WriteBlobFinalize(ClientContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate) {
 	auto &state = gstate.Cast<WriteBlobGlobalState>();
 	lock_guard<mutex> glock(state.lock);
 

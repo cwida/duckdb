@@ -118,7 +118,7 @@ bool QuantileBindData::Equals(const FunctionData &other_p) const {
 	return desc == other.desc && quantiles == other.quantiles && order == other.order;
 }
 
-void QuantileBindData::Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+void QuantileBindData::Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
                                  const BoundAggregateFunction &function) {
 	auto &bind_data = bind_data_p->Cast<QuantileBindData>();
 	vector<Value> raw;

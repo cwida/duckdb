@@ -63,10 +63,10 @@ public:
 	//! Create a CSVWriter that writes to a (non-owned) WriteStream
 	CSVWriter(WriteStream &stream, vector<Identifier> name_list, bool shared = true);
 	//! Create a CSVWriter with the full set of options that writes to a (non-owned) AsyncFileWriter
-	CSVWriter(CSVReaderOptions &options, AsyncFileWriter &file_writer, bool shared = true);
+	CSVWriter(const CSVReaderOptions &options, AsyncFileWriter &file_writer, bool shared = true);
 
 	//! Create a CSVWriter that writes to a file
-	CSVWriter(CSVReaderOptions &options, FileSystem &fs, const string &file_path, FileCompressionType compression,
+	CSVWriter(const CSVReaderOptions &options, FileSystem &fs, const string &file_path, FileCompressionType compression,
 	          QueryContext context = QueryContext(), bool shared = true);
 	~CSVWriter();
 

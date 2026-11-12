@@ -49,7 +49,7 @@ AggregateInputData::AggregateInputData(const AggregateObject &aggr, ArenaAllocat
 }
 
 AggregateFinalizeInputData::AggregateFinalizeInputData(const BoundAggregateFunction &function_p,
-                                                       optional_ptr<FunctionData> bind_data_p,
+                                                       optional_ptr<const FunctionData> bind_data_p,
                                                        ArenaAllocator &allocator_p,
                                                        optional_ptr<FunctionLocalState> local_state_p)
     : AggregateInputData(function_p, bind_data_p, allocator_p), local_state(local_state_p) {

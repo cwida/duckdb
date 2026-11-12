@@ -36,7 +36,7 @@ TEST_CASE("Parquet row bounds survive consuming the initial reader", "[optimizer
 	parser.ParseQuery("SELECT * FROM read_parquet('" + path + "')");
 	planner.CreatePlan(std::move(parser.statements[0]));
 	auto &get = BoundSource(*planner.plan);
-	auto &bind_data = get.bind_data->Cast<MultiFileBindData>();
+	auto &bind_data = get.bind_data.write().Cast<MultiFileBindData>();
 	REQUIRE(bind_data.initial_reader);
 	bind_data.initial_reader.reset();
 	auto stats = get.function.cardinality(*con.context, get.bind_data.get());

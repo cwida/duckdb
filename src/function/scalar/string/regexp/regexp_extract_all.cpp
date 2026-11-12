@@ -16,8 +16,9 @@ using regexp_util::CreateStringPiece;
 using regexp_util::ParseRegexOptions;
 using regexp_util::TryParseConstantPattern;
 
-unique_ptr<FunctionLocalState>
-RegexpExtractAll::InitLocalState(ExpressionState &state, const BoundFunctionExpression &expr, FunctionData *bind_data) {
+unique_ptr<FunctionLocalState> RegexpExtractAll::InitLocalState(ExpressionState &state,
+                                                                const BoundFunctionExpression &expr,
+                                                                optional_ptr<const FunctionData> bind_data) {
 	auto &info = bind_data->Cast<RegexpBaseBindData>();
 	if (info.constant_pattern) {
 		return make_uniq<RegexLocalState>(info, true);
@@ -27,7 +28,7 @@ RegexpExtractAll::InitLocalState(ExpressionState &state, const BoundFunctionExpr
 
 unique_ptr<FunctionLocalState> RegexpExtractAllStruct::InitLocalState(ExpressionState &state,
                                                                       const BoundFunctionExpression &expr,
-                                                                      FunctionData *bind_data) {
+                                                                      optional_ptr<const FunctionData> bind_data) {
 	auto &info = bind_data->Cast<RegexpExtractAllStructBindData>();
 	if (info.constant_pattern) {
 		return make_uniq<RegexLocalState>(info, true);

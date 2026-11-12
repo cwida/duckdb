@@ -52,7 +52,7 @@ struct LeastGreatestSortKeyState : public FunctionLocalState {
 
 template <class OP>
 unique_ptr<FunctionLocalState> LeastGreatestSortKeyInit(ExpressionState &state, const BoundFunctionExpression &expr,
-                                                        FunctionData *bind_data) {
+                                                        optional_ptr<const FunctionData> bind_data) {
 	return make_uniq<LeastGreatestSortKeyState>(expr.GetChildren().size(), OP::NullOrdering());
 }
 

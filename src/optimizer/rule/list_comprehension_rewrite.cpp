@@ -129,7 +129,7 @@ struct ListComprehensionMatch {
 	optional_ptr<BoundFunctionExpression> root;
 	optional_ptr<BoundFunctionExpression> list_filter_expr;
 	optional_ptr<BoundFunctionExpression> inner_apply;
-	optional_ptr<ListLambdaBindData> inner_bind;
+	optional_ptr<const ListLambdaBindData> inner_bind;
 	optional_ptr<Expression> filter_expr;
 	optional_ptr<Expression> result_expr;
 	vector<unique_ptr<Expression>> captured_children;

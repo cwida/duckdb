@@ -246,7 +246,7 @@ unique_ptr<Expression> BetweenLegacySerializeCallback(FunctionToStringInput &inp
 	                                               between_info.upper_inclusive);
 }
 
-void BetweenFunctionSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+void BetweenFunctionSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
                               const BoundScalarFunction &function) {
 	auto &bind_data = bind_data_p->Cast<BetweenFunctionData>();
 	serializer.WriteProperty(100, "lower_inclusive", bind_data.lower_inclusive);

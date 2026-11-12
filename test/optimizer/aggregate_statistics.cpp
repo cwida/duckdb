@@ -33,7 +33,7 @@ TEST_CASE("Aggregate overflow proofs use guaranteed bounds and can be withdrawn"
 			vector<BaseStatistics> child_stats;
 			child_stats.push_back(BaseStatistics::CreateUnknown(aggregate.GetChildren()[0]->GetReturnType()));
 			NodeStatistics rows(2U, 2U);
-			AggregateStatisticsInput input(aggregate.BindInfo(), child_stats, rows);
+			AggregateStatisticsInput input(aggregate.BindInfoMutable(), child_stats, rows);
 			auto set_range = [&](hugeint_t minimum, hugeint_t maximum) {
 				NumericStats::SetMin(child_stats[0], Value::HUGEINT(minimum));
 				NumericStats::SetMax(child_stats[0], Value::HUGEINT(maximum));

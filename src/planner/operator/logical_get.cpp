@@ -67,7 +67,7 @@ static void MapLegacyTableFilterKeys(LogicalGet &get) {
 LogicalGet::LogicalGet() : LogicalOperator(LogicalOperatorType::LOGICAL_GET) {
 }
 
-LogicalGet::LogicalGet(TableIndex table_index, BoundTableFunction function, shared_ptr<FunctionData> bind_data,
+LogicalGet::LogicalGet(TableIndex table_index, BoundTableFunction function, cow_ptr<FunctionData> bind_data,
                        vector<LogicalType> returned_types, vector<Identifier> returned_names,
                        virtual_column_map_t virtual_columns_p)
     : LogicalOperator(LogicalOperatorType::LOGICAL_GET), table_index(table_index), function(std::move(function)),
@@ -328,7 +328,7 @@ void LogicalGet::SetScanOrder(unique_ptr<RowGroupOrderOptions> options) {
 		throw InternalException("LogicalGet::SetScanOrder called but function does not have scan order defined");
 	}
 	row_group_order_options = make_uniq<RowGroupOrderOptions>(*options);
-	function.set_scan_order(std::move(options), bind_data.get());
+	function.set_scan_order(std::move(options), bind_data);
 }
 
 void LogicalGet::SetPartitionsToScan(vector<idx_t> partition_indices) {
@@ -336,7 +336,7 @@ void LogicalGet::SetPartitionsToScan(vector<idx_t> partition_indices) {
 		throw InternalException("LogicalGet::SetPartitionsToScan called but function is not defined");
 	}
 	scan_partition_indices = partition_indices;
-	function.set_partitions_to_scan(std::move(partition_indices), bind_data.get());
+	function.set_partitions_to_scan(std::move(partition_indices), bind_data);
 }
 
 void LogicalGet::Serialize(Serializer &serializer) const {

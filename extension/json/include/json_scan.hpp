@@ -185,7 +185,7 @@ public:
 	                               vector<JSONFeatureColumn> &feature_columns, vector<LogicalType> &return_types,
 	                               vector<Identifier> &names);
 
-	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+	static void Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
 	                      const BoundTableFunction &function);
 	static unique_ptr<FunctionData> Deserialize(Deserializer &deserializer, BoundTableFunction &function);
 

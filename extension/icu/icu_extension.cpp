@@ -63,7 +63,7 @@ struct IcuBindData : public FunctionData {
 		return language == other.language && country == other.country && tag == other.tag;
 	}
 
-	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+	static void Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
 	                      const BoundScalarFunction &function) {
 		auto &bind_data = bind_data_p->Cast<IcuBindData>();
 		serializer.WriteProperty(100, "language", bind_data.language);
@@ -123,7 +123,8 @@ static const uint16_t &HexDigits(uint8_t byte) {
 struct CollatorLocalState : public FunctionLocalState {
 	collation::CollationBuffer buffer;
 
-	static unique_ptr<FunctionLocalState> Init(ExpressionState &, const BoundFunctionExpression &, FunctionData *) {
+	static unique_ptr<FunctionLocalState> Init(ExpressionState &, const BoundFunctionExpression &,
+	                                           optional_ptr<const FunctionData>) {
 		return make_uniq<CollatorLocalState>();
 	}
 };

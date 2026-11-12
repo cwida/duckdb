@@ -119,8 +119,9 @@ bool ICUDateFunc::CalendarCacheState::TrySetTimeZone(Calendar *calendar, const s
 	return true;
 }
 
-unique_ptr<FunctionLocalState>
-ICUDateFunc::InitCalendarCache(ExpressionState &state, const BoundFunctionExpression &expr, FunctionData *bind_data) {
+unique_ptr<FunctionLocalState> ICUDateFunc::InitCalendarCache(ExpressionState &state,
+                                                              const BoundFunctionExpression &expr,
+                                                              optional_ptr<const FunctionData> bind_data) {
 	auto &info = bind_data->Cast<BindData>();
 	return make_uniq<CalendarCacheState>(*info.calendar);
 }

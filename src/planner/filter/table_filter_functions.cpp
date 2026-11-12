@@ -110,7 +110,7 @@ unique_ptr<Expression> CreateDynamicFilterExpression(shared_ptr<DynamicFilterDat
 	                                          std::move(bind_data));
 }
 
-void TableFilterFunctionSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+void TableFilterFunctionSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
                                   const BoundScalarFunction &function) {
 	// Runtime state cannot be serialized - write nothing
 }

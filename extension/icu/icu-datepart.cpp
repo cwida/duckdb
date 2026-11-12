@@ -563,7 +563,7 @@ struct ICUDatePart : public ICUDateFunc {
 		return make_uniq<BindStructData>(context, std::move(part_codes));
 	}
 
-	static void SerializeStructFunction(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+	static void SerializeStructFunction(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
 	                                    const BoundScalarFunction &function) {
 		D_ASSERT(bind_data);
 		auto &info = bind_data->Cast<BindStructData>();

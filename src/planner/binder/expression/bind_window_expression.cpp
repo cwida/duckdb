@@ -251,7 +251,7 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	LogicalType sql_type;
 	unique_ptr<BoundAggregateFunction> aggregate;
 	unique_ptr<BoundWindowFunction> window_func;
-	shared_ptr<FunctionData> bind_info;
+	cow_ptr<FunctionData> bind_info;
 	vector<unique_ptr<Expression>> children;
 
 	if (entry->type == CatalogType::AGGREGATE_FUNCTION_ENTRY) {

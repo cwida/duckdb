@@ -32,7 +32,7 @@ bool OptionalFilterFunctionData::Equals(const FunctionData &other_p) const {
 	return child_filter_expr->Equals(*other.child_filter_expr);
 }
 
-static void OptionalFilterSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+static void OptionalFilterSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
                                     const BoundScalarFunction &function) {
 	if (!bind_data) {
 		return;

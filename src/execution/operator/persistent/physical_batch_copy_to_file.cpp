@@ -33,7 +33,7 @@ struct ActiveFlushGuard {
 };
 
 PhysicalBatchCopyToFile::PhysicalBatchCopyToFile(PhysicalPlan &physical_plan, vector<LogicalType> types,
-                                                 CopyFunction function_p, shared_ptr<FunctionData> bind_data_p,
+                                                 CopyFunction function_p, cow_ptr<FunctionData> bind_data_p,
                                                  idx_t estimated_cardinality)
     : PhysicalOperator(physical_plan, PhysicalOperatorType::BATCH_COPY_TO_FILE, std::move(types),
                        estimated_cardinality),

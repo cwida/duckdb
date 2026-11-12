@@ -1,0 +1,13 @@
+diff --git a/src/functions/delta_scan/delta_scan.cpp b/src/functions/delta_scan/delta_scan.cpp
+index e2924fa..2dcba78 100644
+--- a/src/functions/delta_scan/delta_scan.cpp
++++ b/src/functions/delta_scan/delta_scan.cpp
+@@ -73,7 +73,7 @@ virtual_column_map_t DeltaVirtualColumns(ClientContext &, optional_ptr<FunctionD
+ 	return result;
+ }
+ 
+-static void DeltaScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
++static void DeltaScanSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
+                                const BoundTableFunction &function) {
+ 	throw NotImplementedException("DeltaScan serialization not implemented");
+ }

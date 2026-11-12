@@ -62,14 +62,15 @@ class ScalarFunctionCatalogEntry;
 struct StatementProperties;
 
 struct FunctionStatisticsPruneInput {
-	FunctionStatisticsPruneInput(const BoundFunctionExpression &function_p, optional_ptr<FunctionData> bind_data_p,
+	FunctionStatisticsPruneInput(const BoundFunctionExpression &function_p,
+	                             optional_ptr<const FunctionData> bind_data_p,
 	                             const vector<optional_ptr<const BaseStatistics>> &child_stats_p)
 	    : function(function_p), bind_data(bind_data_p), child_stats(child_stats_p) {
 	}
 
 	//! The bound function expression being checked (gives access to the argument expressions)
 	const BoundFunctionExpression &function;
-	optional_ptr<FunctionData> bind_data;
+	optional_ptr<const FunctionData> bind_data;
 
 	//! Statistics for each function argument (an entry is null if it could not be derived for that argument)
 	const vector<optional_ptr<const BaseStatistics>> &child_stats;
@@ -81,35 +82,37 @@ struct FunctionStatisticsPruneInput {
 };
 
 struct FunctionStatisticsInput {
-	FunctionStatisticsInput(BoundFunctionExpression &expr_p, optional_ptr<FunctionData> bind_data_p,
+	FunctionStatisticsInput(BoundFunctionExpression &expr_p, cow_ptr<FunctionData> &bind_data_p,
 	                        vector<BaseStatistics> &child_stats_p, unique_ptr<Expression> *expr_ptr_p)
 	    : expr(expr_p), bind_data(bind_data_p), child_stats(child_stats_p), expr_ptr(expr_ptr_p) {
 	}
 
 	BoundFunctionExpression &expr;
-	optional_ptr<FunctionData> bind_data;
+	//! The bind data of the function - use write() to modify it
+	cow_ptr<FunctionData> &bind_data;
 	vector<BaseStatistics> &child_stats;
 	unique_ptr<Expression> *expr_ptr;
 };
 
 struct FunctionModifiedDatabasesInput {
-	FunctionModifiedDatabasesInput(optional_ptr<FunctionData> bind_data_p, StatementProperties &properties)
+	FunctionModifiedDatabasesInput(optional_ptr<const FunctionData> bind_data_p, StatementProperties &properties)
 	    : bind_data(bind_data_p), properties(properties) {
 	}
 
-	optional_ptr<FunctionData> bind_data;
+	optional_ptr<const FunctionData> bind_data;
 	StatementProperties &properties;
 };
 
 struct FunctionBindExpressionInput {
 	FunctionBindExpressionInput(ClientContext &context_p, BoundScalarFunction &bound_function,
-	                            optional_ptr<FunctionData> bind_data_p, vector<unique_ptr<Expression>> &children_p)
+	                            optional_ptr<const FunctionData> bind_data_p,
+	                            vector<unique_ptr<Expression>> &children_p)
 	    : context(context_p), bound_function(bound_function), bind_data(bind_data_p), children(children_p) {
 	}
 
 	ClientContext &context;
 	BoundScalarFunction &bound_function;
-	optional_ptr<FunctionData> bind_data;
+	optional_ptr<const FunctionData> bind_data;
 	vector<unique_ptr<Expression>> &children;
 };
 
@@ -122,13 +125,13 @@ struct FunctionUnbindInput {
 };
 
 struct FunctionToStringInput {
-	FunctionToStringInput(const BoundScalarFunction &bound_function, optional_ptr<FunctionData> bind_data_p,
+	FunctionToStringInput(const BoundScalarFunction &bound_function, optional_ptr<const FunctionData> bind_data_p,
 	                      const vector<unique_ptr<Expression>> &children_p)
 	    : bound_function(bound_function), bind_data(bind_data_p), children(children_p) {
 	}
 
 	const BoundScalarFunction &bound_function;
-	optional_ptr<FunctionData> bind_data;
+	optional_ptr<const FunctionData> bind_data;
 	const vector<unique_ptr<Expression>> &children;
 
 	const Expression &GetChild(idx_t i) const {
@@ -148,7 +151,7 @@ typedef void (*resolve_scalar_types_t)(ResolveScalarFunctionTypesInput &input);
 //! The type to initialize a thread local state for the scalar function
 typedef unique_ptr<FunctionLocalState> (*init_local_state_t)(ExpressionState &state,
                                                              const BoundFunctionExpression &expr,
-                                                             FunctionData *bind_data);
+                                                             optional_ptr<const FunctionData> bind_data);
 //! The type to directly access the selection vector of a scalar function
 typedef idx_t (*scalar_function_select_t)(DataChunk &args, ExpressionState &state,
                                           optional_ptr<const SelectionVector> sel,
@@ -164,7 +167,7 @@ typedef LogicalType (*bind_lambda_function_t)(ClientContext &context, const vect
 //! The type to bind lambda-specific parameter types
 typedef void (*get_modified_databases_t)(ClientContext &context, FunctionModifiedDatabasesInput &input);
 
-typedef void (*function_serialize_t)(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+typedef void (*function_serialize_t)(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
                                      const BoundScalarFunction &function);
 typedef unique_ptr<FunctionData> (*function_deserialize_t)(Deserializer &deserializer, BoundScalarFunction &function);
 

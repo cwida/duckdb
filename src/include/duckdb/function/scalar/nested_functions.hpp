@@ -66,7 +66,7 @@ struct VariableReturnBindData : public FunctionData {
 		auto &other = other_p.Cast<VariableReturnBindData>();
 		return stype == other.stype;
 	}
-	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+	static void Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
 	                      const BoundScalarFunction &function) {
 		auto &info = bind_data->Cast<VariableReturnBindData>();
 		serializer.WriteProperty(100, "variable_return_type", info.stype);

@@ -17,7 +17,7 @@
 namespace duckdb {
 
 PhysicalTableScan::PhysicalTableScan(PhysicalPlan &physical_plan, vector<LogicalType> types,
-                                     BoundTableFunction function_p, shared_ptr<FunctionData> bind_data_p,
+                                     BoundTableFunction function_p, cow_ptr<FunctionData> bind_data_p,
                                      vector<LogicalType> returned_types_p, vector<ColumnIndex> column_ids_p,
                                      vector<idx_t> projection_ids_p, vector<string> names_p,
                                      unique_ptr<TableFilterSet> table_filters_p, idx_t estimated_cardinality,

@@ -1,0 +1,58 @@
+diff --git a/src/include/storage/ducklake_scan.hpp b/src/include/storage/ducklake_scan.hpp
+index a07728f5..338e0830 100644
+--- a/src/include/storage/ducklake_scan.hpp
++++ b/src/include/storage/ducklake_scan.hpp
+@@ -34,7 +34,7 @@ public:
+ };
+ 
+ //! Serialize/Deserialize callbacks for DuckLakeScan (used by table macro Copy)
+-void DuckLakeScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
++void DuckLakeScanSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
+                            const BoundTableFunction &function);
+ unique_ptr<FunctionData> DuckLakeScanDeserialize(Deserializer &deserializer, BoundTableFunction &function);
+ 
+diff --git a/src/storage/ducklake_delete.cpp b/src/storage/ducklake_delete.cpp
+index 26fd6992..dbea2df1 100644
+--- a/src/storage/ducklake_delete.cpp
++++ b/src/storage/ducklake_delete.cpp
+@@ -67,7 +67,8 @@ static DuckLakeDeleteFile WriteDeleteFileInternal(ClientContext &context, InputT
+ 
+ 	DuckLakeUtil::EnsureDirectoryExists(input.fs, input.data_path);
+ 
+-	auto function_data = copy_fun.function.copy_to_bind(input.context, bind_input, names_to_write, types_to_write);
++	cow_ptr<FunctionData> function_data =
++	    copy_fun.function.copy_to_bind(input.context, bind_input, names_to_write, types_to_write);
+ 	// the delete file columns never hold NULL, so they are written as required
+ 	vector<BaseStatistics> not_null_stats;
+ 	vector<optional_ptr<BaseStatistics>> column_stats;
+@@ -78,7 +79,7 @@ static DuckLakeDeleteFile WriteDeleteFileInternal(ClientContext &context, InputT
+ 	for (auto &stats : not_null_stats) {
+ 		column_stats.push_back(&stats);
+ 	}
+-	CopyToPropagateStatsInput stats_input {input.context, *function_data, column_stats};
++	CopyToPropagateStatsInput stats_input {input.context, function_data, column_stats};
+ 	copy_fun.function.copy_to_propagate_statistics(stats_input);
+ 	auto copy_global_state = copy_fun.function.copy_to_initialize_global(context, *function_data, delete_file_path);
+ 
+diff --git a/src/storage/ducklake_scan.cpp b/src/storage/ducklake_scan.cpp
+index 7db62319..22498be4 100644
+--- a/src/storage/ducklake_scan.cpp
++++ b/src/storage/ducklake_scan.cpp
+@@ -136,7 +136,7 @@ virtual_column_map_t DuckLakeVirtualColumns(ClientContext &context, optional_ptr
+ 	return result;
+ }
+ 
+-vector<column_t> DuckLakeGetRowIdColumn(ClientContext &context, optional_ptr<FunctionData> bind_data) {
++vector<column_t> DuckLakeGetRowIdColumn(ClientContext &context, optional_ptr<const FunctionData> bind_data) {
+ 	vector<column_t> result;
+ 	result.emplace_back(MultiFileReader::COLUMN_IDENTIFIER_FILENAME);
+ 	result.emplace_back(MultiFileReader::COLUMN_IDENTIFIER_FILE_ROW_NUMBER);
+@@ -297,7 +297,7 @@ bool DuckLakeFunctionInfo::CanUseGlobalStats() {
+ 	       !active_transaction->GetCatalog().CatalogSnapshot();
+ }
+ 
+-void DuckLakeScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
++void DuckLakeScanSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
+                            const BoundTableFunction &function) {
+ 	auto &func_info = function.function_info->Cast<DuckLakeFunctionInfo>();
+ 	auto &catalog = func_info.table.ParentCatalog();

@@ -391,7 +391,7 @@ private:
 			children.push_back(stats ? stats->Copy() : BaseStatistics::CreateUnknown(child->GetReturnType()));
 		}
 		NodeStatistics rows(maximum.GetIndex(), maximum.GetIndex());
-		AggregateStatisticsInput statistics(copy.BindInfo(), children, &rows);
+		AggregateStatisticsInput statistics(copy.BindInfoMutable(), children, &rows);
 		return copy.Function().GetCallbacks().GetStatisticsCallback()(context, copy, statistics);
 	}
 

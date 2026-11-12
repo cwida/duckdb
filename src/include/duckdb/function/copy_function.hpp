@@ -129,7 +129,8 @@ struct CopyOptionsInput {
 
 struct CopyToPropagateStatsInput {
 	ClientContext &context;
-	FunctionData &bind_data;
+	//! The bind data of the copy - use write() to modify it
+	cow_ptr<FunctionData> &bind_data;
 	const vector<optional_ptr<BaseStatistics>> &column_stats;
 };
 
@@ -140,14 +141,16 @@ typedef void (*copy_options_t)(ClientContext &context, CopyOptionsInput &input);
 typedef unique_ptr<FunctionData> (*copy_to_bind_t)(ClientContext &context, CopyFunctionBindInput &input,
                                                    const vector<Identifier> &names,
                                                    const vector<LogicalType> &sql_types);
-typedef unique_ptr<LocalFunctionData> (*copy_to_initialize_local_t)(ExecutionContext &context, FunctionData &bind_data);
-typedef unique_ptr<GlobalFunctionData> (*copy_to_initialize_global_t)(ClientContext &context, FunctionData &bind_data,
+typedef unique_ptr<LocalFunctionData> (*copy_to_initialize_local_t)(ExecutionContext &context,
+                                                                    const FunctionData &bind_data);
+typedef unique_ptr<GlobalFunctionData> (*copy_to_initialize_global_t)(ClientContext &context,
+                                                                      const FunctionData &bind_data,
                                                                       const string &file_path);
-typedef void (*copy_to_sink_t)(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+typedef void (*copy_to_sink_t)(ExecutionContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate,
                                LocalFunctionData &lstate, DataChunk &input);
-typedef void (*copy_to_combine_t)(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+typedef void (*copy_to_combine_t)(ExecutionContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate,
                                   LocalFunctionData &lstate);
-typedef void (*copy_to_finalize_t)(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate);
+typedef void (*copy_to_finalize_t)(ClientContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate);
 
 typedef void (*copy_to_serialize_t)(Serializer &serializer, const FunctionData &bind_data,
                                     const CopyFunction &function);
@@ -159,19 +162,19 @@ typedef unique_ptr<FunctionData> (*copy_from_bind_t)(ClientContext &context, Cop
                                                      vector<LogicalType> &expected_types);
 typedef CopyFunctionExecutionMode (*copy_to_execution_mode_t)(bool preserve_insertion_order, bool supports_batch_index);
 
-typedef unique_ptr<PreparedBatchData> (*copy_prepare_batch_t)(ClientContext &context, FunctionData &bind_data,
+typedef unique_ptr<PreparedBatchData> (*copy_prepare_batch_t)(ClientContext &context, const FunctionData &bind_data,
                                                               GlobalFunctionData &gstate,
                                                               unique_ptr<ColumnDataCollection> collection);
-typedef void (*copy_flush_batch_t)(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+typedef void (*copy_flush_batch_t)(ClientContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate,
                                    PreparedBatchData &batch);
 
 typedef optional_idx (*copy_default_batch_size_t)();
 typedef optional_idx (*copy_default_batch_size_bytes_t)();
 typedef idx_t (*copy_file_size_bytes_t)(GlobalFunctionData &gstate);
 
-typedef optional_idx (*copy_desired_batch_size_t)(ClientContext &context, FunctionData &bind_data);
+typedef optional_idx (*copy_desired_batch_size_t)(ClientContext &context, const FunctionData &bind_data);
 
-typedef void (*copy_to_get_written_statistics_t)(ClientContext &context, FunctionData &bind_data,
+typedef void (*copy_to_get_written_statistics_t)(ClientContext &context, const FunctionData &bind_data,
                                                  GlobalFunctionData &gstate, CopyFunctionFileStatistics &statistics);
 
 typedef vector<unique_ptr<Expression>> (*copy_to_select_t)(CopyToSelectInput &input);

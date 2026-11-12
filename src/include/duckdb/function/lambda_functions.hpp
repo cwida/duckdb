@@ -54,7 +54,7 @@ public:
 	}
 
 	//! Serializes a lambda function's bind data
-	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+	static void Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
 	                      const BoundScalarFunction &function);
 	//! Deserializes a lambda function's bind data
 	static unique_ptr<FunctionData> Deserialize(Deserializer &deserializer, BoundScalarFunction &);

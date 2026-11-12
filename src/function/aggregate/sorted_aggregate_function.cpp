@@ -60,7 +60,7 @@ LogicalType BufferStructType(const vector<LogicalType> &column_types) {
 
 struct SortedAggregateBindData : public FunctionData {
 	using Expressions = vector<unique_ptr<Expression>>;
-	using BindInfoPtr = shared_ptr<FunctionData>;
+	using BindInfoPtr = cow_ptr<FunctionData>;
 	using OrderBys = vector<BoundOrderByNode>;
 
 	//! fixed_layout: the buffer struct and per-key columns to use instead of mapping the keys onto the arguments
@@ -189,7 +189,7 @@ struct SortedAggregateBindData : public FunctionData {
 
 	ClientContext &context;
 	BoundAggregateFunction function;
-	shared_ptr<FunctionData> bind_info;
+	cow_ptr<FunctionData> bind_info;
 
 	//! The sort expressions (all references as the expressions have been computed)
 	vector<BoundOrderByNode> orders;
@@ -246,7 +246,8 @@ struct SortedAggregateFinalizeState : FunctionLocalState {
 		}
 	}
 
-	static unique_ptr<FunctionLocalState> Init(const BoundAggregateFunction &, optional_ptr<FunctionData> bind_data) {
+	static unique_ptr<FunctionLocalState> Init(const BoundAggregateFunction &,
+	                                           optional_ptr<const FunctionData> bind_data) {
 		return make_uniq<SortedAggregateFinalizeState>(bind_data->Cast<SortedAggregateBindData>());
 	}
 

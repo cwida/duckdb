@@ -1374,9 +1374,10 @@ public:
 		return data.interface->GetCardinality(context, data, estimated_file_count);
 	}
 
-	static void MultiFileComplexFilterPushdown(ClientContext &context, LogicalGet &get, FunctionData *bind_data_p,
+	static void MultiFileComplexFilterPushdown(ClientContext &context, LogicalGet &get,
+	                                           optional_ptr<const FunctionData> bind_data_p,
 	                                           vector<unique_ptr<Expression>> &filters) {
-		auto &data = bind_data_p->Cast<MultiFileBindData>();
+		auto &data = get.bind_data.write().Cast<MultiFileBindData>();
 
 		MultiFilePushdownInfo info(get.table_index, data.names, get.GetColumnIds(), get.extra_info);
 		auto new_list =

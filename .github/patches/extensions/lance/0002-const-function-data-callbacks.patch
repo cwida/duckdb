@@ -1,0 +1,53 @@
+diff --git a/src/lance_scan.cpp b/src/lance_scan.cpp
+index 16e406e..1c827e9 100644
+--- a/src/lance_scan.cpp
++++ b/src/lance_scan.cpp
+@@ -683,12 +683,12 @@ static bool TryExtractTakeRowIdsFromFilters(const TableFilterSet &filters,
+ 
+ static void
+ LancePushdownComplexFilter(ClientContext &context, LogicalGet &get,
+-                           FunctionData *bind_data,
++                           optional_ptr<const FunctionData> bind_data,
+                            vector<unique_ptr<Expression>> &filters) {
+   if (!bind_data || filters.empty()) {
+     return;
+   }
+-  auto &scan_bind = bind_data->Cast<LanceScanBindData>();
++  auto &scan_bind = get.bind_data.write().Cast<LanceScanBindData>();
+ 
+   auto quote_identifier = [](const string &name) {
+     string escaped;
+diff --git a/src/lance_search.cpp b/src/lance_search.cpp
+index 9fe64b1..5447e6d 100644
+--- a/src/lance_search.cpp
++++ b/src/lance_search.cpp
+@@ -396,12 +396,12 @@ CollectLancePushedFilterIRParts(LogicalGet &get, const vector<string> &names,
+ 
+ static void
+ LancePushdownComplexFilter(ClientContext &, LogicalGet &get,
+-                           FunctionData *bind_data,
++                           optional_ptr<const FunctionData> bind_data,
+                            vector<unique_ptr<Expression>> &filters) {
+   if (!bind_data || filters.empty()) {
+     return;
+   }
+-  auto &scan_bind = bind_data->Cast<LanceKnnBindData>();
++  auto &scan_bind = get.bind_data.write().Cast<LanceKnnBindData>();
+   string unencodable;
+   if (!CollectLancePushedFilterIRParts(
+           get, scan_bind.names, scan_bind.types, filters,
+@@ -1363,12 +1363,12 @@ LanceHybridBind(ClientContext &context, TableFunctionBindInput &input,
+ 
+ static void
+ LanceSearchPushdownComplexFilter(ClientContext &, LogicalGet &get,
+-                                 FunctionData *bind_data,
++                                 optional_ptr<const FunctionData> bind_data,
+                                  vector<unique_ptr<Expression>> &filters) {
+   if (!bind_data || filters.empty()) {
+     return;
+   }
+-  auto &search_bind = bind_data->Cast<LanceSearchBindData>();
++  auto &search_bind = get.bind_data.write().Cast<LanceSearchBindData>();
+   string unencodable;
+   if (!CollectLancePushedFilterIRParts(
+           get, search_bind.names, search_bind.types, filters,

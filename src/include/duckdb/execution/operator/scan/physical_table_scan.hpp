@@ -29,7 +29,7 @@ public:
 public:
 	//! Table scan that immediately projects out filter columns that are unused in the remainder of the query plan
 	PhysicalTableScan(PhysicalPlan &physical_plan, vector<LogicalType> types, BoundTableFunction function,
-	                  shared_ptr<FunctionData> bind_data, vector<LogicalType> returned_types,
+	                  cow_ptr<FunctionData> bind_data, vector<LogicalType> returned_types,
 	                  vector<ColumnIndex> column_ids, vector<idx_t> projection_ids, vector<string> names,
 	                  unique_ptr<TableFilterSet> table_filters, idx_t estimated_cardinality,
 	                  ExtraOperatorInfo extra_info, vector<Value> parameters, virtual_column_map_t virtual_columns);
@@ -37,7 +37,7 @@ public:
 	//! The table function
 	BoundTableFunction function;
 	//! Bind data of the function
-	shared_ptr<FunctionData> bind_data;
+	cow_ptr<FunctionData> bind_data;
 	//! The types of ALL columns that can be returned by the table function
 	vector<LogicalType> returned_types;
 	//! The column ids used within the table function

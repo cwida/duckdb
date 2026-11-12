@@ -135,7 +135,7 @@ struct ICUStrptime : public ICUDateFunc {
 	}
 
 	static inline void ParseOne(Calendar *calendar, CalendarCacheState &cache, string_t input,
-	                            vector<StrpTimeFormat> &formats, timestamp_tz_t &result) {
+	                            const vector<StrpTimeFormat> &formats, timestamp_tz_t &result) {
 		ParseResult parsed;
 		for (auto &format : formats) {
 			if (format.Parse(input, parsed)) {
@@ -155,7 +155,7 @@ struct ICUStrptime : public ICUDateFunc {
 	}
 
 	static inline void ParseOne(Calendar *calendar, CalendarCacheState &cache, string_t input,
-	                            vector<StrpTimeFormat> &formats, timestamp_tz_ns_t &result) {
+	                            const vector<StrpTimeFormat> &formats, timestamp_tz_ns_t &result) {
 		ParseResult parsed;
 		for (auto &format : formats) {
 			if (format.Parse(input, parsed)) {
@@ -195,7 +195,7 @@ struct ICUStrptime : public ICUDateFunc {
 	}
 
 	static inline bool TryParseOne(Calendar *calendar, CalendarCacheState &cache, string_t input,
-	                               vector<StrpTimeFormat> &formats, timestamp_tz_t &result) {
+	                               const vector<StrpTimeFormat> &formats, timestamp_tz_t &result) {
 		ParseResult parsed;
 		for (auto &format : formats) {
 			if (format.Parse(input, parsed)) {
@@ -215,7 +215,7 @@ struct ICUStrptime : public ICUDateFunc {
 	}
 
 	static inline bool TryParseOne(Calendar *calendar, CalendarCacheState &cache, string_t input,
-	                               vector<StrpTimeFormat> &formats, timestamp_tz_ns_t &result) {
+	                               const vector<StrpTimeFormat> &formats, timestamp_tz_ns_t &result) {
 		ParseResult parsed;
 		for (auto &format : formats) {
 			if (format.Parse(input, parsed)) {

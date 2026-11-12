@@ -482,7 +482,8 @@ struct OrdinalityEcho {
 		return OperatorResultType::NEED_MORE_INPUT;
 	}
 
-	static void PushdownComplexFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data,
+	static void PushdownComplexFilter(ClientContext &context, LogicalGet &get,
+	                                  optional_ptr<const FunctionData> bind_data,
 	                                  vector<unique_ptr<Expression>> &filters) {
 		filters.clear();
 	}

@@ -1,0 +1,209 @@
+diff --git a/src/spatial/index/rtree/rtree_index_scan.cpp b/src/spatial/index/rtree/rtree_index_scan.cpp
+index a120fdf..061f89c 100644
+--- a/src/spatial/index/rtree/rtree_index_scan.cpp
++++ b/src/spatial/index/rtree/rtree_index_scan.cpp
+@@ -469,7 +469,7 @@ static virtual_column_map_t RTreeIndexScanGetVirtualColumns(ClientContext &conte
+ 	return result;
+ }
+ 
+-static vector<column_t> RTreeIndexScanGetRowIdColumns(ClientContext &context, optional_ptr<FunctionData> bind_data) {
++static vector<column_t> RTreeIndexScanGetRowIdColumns(ClientContext &context, optional_ptr<const FunctionData> bind_data) {
+ 	vector<column_t> result;
+ 	result.emplace_back(COLUMN_IDENTIFIER_ROW_ID);
+ 	return result;
+@@ -493,7 +493,7 @@ static InsertionOrderPreservingMap<string> RTreeIndexScanToString(TableFunctionT
+ //-------------------------------------------------------------------------
+ // De/Serialize
+ //-------------------------------------------------------------------------
+-static void RTreeScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
++static void RTreeScanSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
+                                const BoundTableFunction &function) {
+ 	auto &bind_data = bind_data_p->Cast<RTreeIndexScanBindData>();
+ 	serializer.WriteProperty(100, "catalog", bind_data.table.schema.catalog.GetName());
+diff --git a/src/spatial/modules/gdal/gdal_module.cpp b/src/spatial/modules/gdal/gdal_module.cpp
+index cfc6847..42097c8 100644
+--- a/src/spatial/modules/gdal/gdal_module.cpp
++++ b/src/spatial/modules/gdal/gdal_module.cpp
+@@ -894,10 +894,10 @@ auto Bind(ClientContext &ctx, TableFunctionBindInput &input, vector<LogicalType>
+ //----------------------------------------------------------------------------------------------------------------------
+ // FILTER (EXPRESSION) PUSHDOWN
+ //----------------------------------------------------------------------------------------------------------------------
+-auto Pushdown(ClientContext &context, LogicalGet &get, FunctionData *bind_data, vector<unique_ptr<Expression>> &filters)
++auto Pushdown(ClientContext &context, LogicalGet &get, optional_ptr<const FunctionData> bind_data, vector<unique_ptr<Expression>> &filters)
+     -> void {
+ 
+-	auto &bdata = bind_data->Cast<BindData>();
++	auto &bdata = get.bind_data.write().Cast<BindData>();
+ 
+ 	if (!bdata.can_filter) {
+ 		return;
+@@ -1640,7 +1640,7 @@ public:
+ 	OGRSpatialReferenceH srs;
+ };
+ 
+-auto InitGlobal(ClientContext &context, FunctionData &bdata_p, const string &real_file_path)
++auto InitGlobal(ClientContext &context, const FunctionData &bdata_p, const string &real_file_path)
+     -> unique_ptr<GlobalFunctionData> {
+ 	auto &bdata = bdata_p.Cast<BindData>();
+ 	auto result = make_uniq<GlobalState>();
+@@ -1761,7 +1761,7 @@ public:
+ 	ArrowArray array;
+ };
+ 
+-auto InitLocal(ExecutionContext &context, FunctionData &bind_data) -> unique_ptr<LocalFunctionData> {
++auto InitLocal(ExecutionContext &context, const FunctionData &bind_data) -> unique_ptr<LocalFunctionData> {
+ 	auto result = make_uniq<LocalState>();
+ 	return std::move(result);
+ }
+@@ -1769,7 +1769,7 @@ auto InitLocal(ExecutionContext &context, FunctionData &bind_data) -> unique_ptr
+ //----------------------------------------------------------------------------------------------------------------------
+ // Sink
+ //----------------------------------------------------------------------------------------------------------------------
+-void Sink(ExecutionContext &context, FunctionData &bdata_p, GlobalFunctionData &gstate_p, LocalFunctionData &lstate_p,
++void Sink(ExecutionContext &context, const FunctionData &bdata_p, GlobalFunctionData &gstate_p, LocalFunctionData &lstate_p,
+           DataChunk &input) {
+ 
+ 	const auto &bdata = bdata_p.Cast<BindData>();
+@@ -1802,7 +1802,7 @@ void Sink(ExecutionContext &context, FunctionData &bdata_p, GlobalFunctionData &
+ //----------------------------------------------------------------------------------------------------------------------
+ // Combine
+ //----------------------------------------------------------------------------------------------------------------------
+-void Combine(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
++void Combine(ExecutionContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate,
+              LocalFunctionData &lstate) {
+ 	// Nothing to do, we don't have any local state that needs to be merged
+ }
+@@ -1810,7 +1810,7 @@ void Combine(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionD
+ //----------------------------------------------------------------------------------------------------------------------
+ // Finalize
+ //----------------------------------------------------------------------------------------------------------------------
+-void Finalize(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate_p) {
++void Finalize(ClientContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate_p) {
+ 	auto &gstate = gstate_p.Cast<GlobalState>();
+ 
+ 	// Some drivers spread a single dataset over several files, such as the .shx, .dbf and .prj sidecars of
+diff --git a/src/spatial/modules/geos/geos_module.cpp b/src/spatial/modules/geos/geos_module.cpp
+index 8f720e3..cd744a1 100644
+--- a/src/spatial/modules/geos/geos_module.cpp
++++ b/src/spatial/modules/geos/geos_module.cpp
+@@ -25,7 +25,7 @@ namespace {
+ class LocalState final : public FunctionLocalState {
+ public:
+ 	static unique_ptr<FunctionLocalState> Init(ExpressionState &state, const BoundFunctionExpression &expr,
+-	                                           FunctionData *bind_data) {
++	                                           optional_ptr<const FunctionData> bind_data) {
+ 		return make_uniq<LocalState>(state.GetClientContext());
+ 	}
+ 
+diff --git a/src/spatial/modules/main/spatial_functions_scalar.cpp b/src/spatial/modules/main/spatial_functions_scalar.cpp
+index e91a565..7dca0e9 100644
+--- a/src/spatial/modules/main/spatial_functions_scalar.cpp
++++ b/src/spatial/modules/main/spatial_functions_scalar.cpp
+@@ -45,7 +45,7 @@ public:
+ 	}
+ 
+ 	static unique_ptr<FunctionLocalState> Init(ExpressionState &state, const BoundFunctionExpression &expr,
+-	                                           FunctionData *bind_data);
++	                                           optional_ptr<const FunctionData> bind_data);
+ 	static LocalState &ResetAndGet(ExpressionState &state);
+ 
+ 	// De/Serialize geometries
+@@ -67,7 +67,7 @@ private:
+ };
+ 
+ unique_ptr<FunctionLocalState> LocalState::Init(ExpressionState &state, const BoundFunctionExpression &expr,
+-                                                FunctionData *bind_data) {
++                                                optional_ptr<const FunctionData> bind_data) {
+ 	return make_uniq_base<FunctionLocalState, LocalState>(state.GetClientContext());
+ }
+ 
+@@ -2655,7 +2655,7 @@ struct ST_DistanceWithin {
+ 			return is_constant == other_data.is_constant && distance == other_data.distance;
+ 		}
+ 
+-		static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
++		static void Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
+ 		                      const BoundScalarFunction &function) {
+ 
+ 			const auto &bind_data = bind_data_p->Cast<BindData>();
+@@ -9498,7 +9498,7 @@ constexpr const char *ST_Z::NAME;
+ } // namespace
+ 
+ // Helper to access the constant distance from the bind data
+-bool ST_DWithinHelper::TryGetConstDistance(const unique_ptr<FunctionData> &bind_data, double &result) {
++bool ST_DWithinHelper::TryGetConstDistance(optional_ptr<const FunctionData> bind_data, double &result) {
+ 	if (bind_data) {
+ 		const auto &data = bind_data->Cast<ST_DistanceWithin::BindData>();
+ 		if (data.is_constant) {
+diff --git a/src/spatial/modules/mvt/mvt_module.cpp b/src/spatial/modules/mvt/mvt_module.cpp
+index fba0005..366e9ac 100644
+--- a/src/spatial/modules/mvt/mvt_module.cpp
++++ b/src/spatial/modules/mvt/mvt_module.cpp
+@@ -29,7 +29,7 @@ public:
+ 	}
+ 
+ 	static unique_ptr<FunctionLocalState> Init(ExpressionState &state, const BoundFunctionExpression &expr,
+-	                                           FunctionData *bind_data);
++	                                           optional_ptr<const FunctionData> bind_data);
+ 	static LocalState &ResetAndGet(ExpressionState &state);
+ 
+ 	string_t Serialize(Vector &vector, const sgl::geometry &geom);
+@@ -44,7 +44,7 @@ private:
+ };
+ 
+ unique_ptr<FunctionLocalState> LocalState::Init(ExpressionState &state, const BoundFunctionExpression &expr,
+-                                                FunctionData *bind_data) {
++                                                optional_ptr<const FunctionData> bind_data) {
+ 	return make_uniq_base<FunctionLocalState, LocalState>(state.GetClientContext());
+ }
+ 
+diff --git a/src/spatial/modules/proj/proj_module.cpp b/src/spatial/modules/proj/proj_module.cpp
+index 6101cb1..84f4354 100644
+--- a/src/spatial/modules/proj/proj_module.cpp
++++ b/src/spatial/modules/proj/proj_module.cpp
+@@ -224,7 +224,7 @@ struct ST_Transform {
+ 			return normalize == data.normalize && source_crs == data.source_crs && target_crs == data.target_crs;
+ 		}
+ 
+-		static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
++		static void Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
+ 		                      const BoundScalarFunction &function) {
+ 			auto &bind_data = bind_data_p->Cast<TypedBindData>();
+ 			serializer.WritePropertyWithDefault(100, "normalize", bind_data.normalize);
+@@ -351,7 +351,7 @@ struct ST_Transform {
+ 		}
+ 
+ 		static unique_ptr<FunctionLocalState> Init(ExpressionState &state, const BoundFunctionExpression &expr,
+-		                                           FunctionData *bind_data) {
++		                                           optional_ptr<const FunctionData> bind_data) {
+ 			auto result = make_uniq<LocalState>(state.GetClientContext());
+ 			return std::move(result);
+ 		}
+@@ -760,12 +760,12 @@ struct GeodesicLocalState final : FunctionLocalState {
+ 	}
+ 
+ 	static unique_ptr<FunctionLocalState> InitPolygon(ExpressionState &state, const BoundFunctionExpression &expr,
+-	                                                  FunctionData *bind_data) {
++	                                                  optional_ptr<const FunctionData> bind_data) {
+ 		return make_uniq<GeodesicLocalState>(state.GetClientContext(), false);
+ 	}
+ 
+ 	static unique_ptr<FunctionLocalState> InitLine(ExpressionState &state, const BoundFunctionExpression &expr,
+-	                                               FunctionData *bind_data) {
++	                                               optional_ptr<const FunctionData> bind_data) {
+ 		return make_uniq<GeodesicLocalState>(state.GetClientContext(), true);
+ 	}
+ 
+diff --git a/src/spatial/util/distance_extract.hpp b/src/spatial/util/distance_extract.hpp
+index 3d4bc65..7081f2f 100644
+--- a/src/spatial/util/distance_extract.hpp
++++ b/src/spatial/util/distance_extract.hpp
+@@ -6,7 +6,7 @@ struct FunctionData;
+ 
+ // Helper class to extract the constant distance from the ST_DWithin function.
+ struct ST_DWithinHelper {
+-	static bool TryGetConstDistance(const unique_ptr<FunctionData> &bind_data, double &result);
++	static bool TryGetConstDistance(optional_ptr<const FunctionData> bind_data, double &result);
+ };
+ 
+ } // namespace duckdb

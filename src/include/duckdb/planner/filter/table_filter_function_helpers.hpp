@@ -167,7 +167,7 @@ inline void ExecuteWithSelectivityTracking(DataChunk &args, Vector &result, TRAC
 	}
 }
 
-void TableFilterFunctionSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+void TableFilterFunctionSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
                                   const BoundScalarFunction &function);
 unique_ptr<FunctionData> TableFilterFunctionDeserialize(Deserializer &deserializer, BoundScalarFunction &function);
 

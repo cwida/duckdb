@@ -178,7 +178,7 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalCopy
 			column_stats[i] = entry->second.get();
 		}
 	}
-	CopyToPropagateStatsInput input {context, *op.bind_data, column_stats};
+	CopyToPropagateStatsInput input {context, op.bind_data, column_stats};
 	op.function.copy_to_propagate_statistics(input);
 	return stats;
 }

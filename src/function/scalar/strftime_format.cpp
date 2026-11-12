@@ -167,7 +167,7 @@ idx_t StrfTimeFormat::GetLength(date_t date, int32_t data[8], const char *tz_nam
 	return size;
 }
 
-idx_t StrfTimeFormat::GetLength(date_t date, dtime_t time, int32_t utc_offset, const char *tz_name) {
+idx_t StrfTimeFormat::GetLength(date_t date, dtime_t time, int32_t utc_offset, const char *tz_name) const {
 	if (!var_length_specifiers.empty()) {
 		int32_t data[8];
 		Date::Convert(date, data[0], data[1], data[2]);
@@ -457,13 +457,13 @@ void StrfTimeFormat::FormatStringNS(date_t date, int32_t data[8], const char *tz
 	memcpy(target, literals[i].c_str(), literals[i].size());
 }
 
-void StrfTimeFormat::FormatString(date_t date, int32_t data[8], const char *tz_name, char *target) {
+void StrfTimeFormat::FormatString(date_t date, int32_t data[8], const char *tz_name, char *target) const {
 	data[6] *= Interval::NANOS_PER_MICRO;
 	FormatStringNS(date, data, tz_name, target);
 	data[6] /= Interval::NANOS_PER_MICRO;
 }
 
-void StrfTimeFormat::FormatString(date_t date, dtime_t time, char *target) {
+void StrfTimeFormat::FormatString(date_t date, dtime_t time, char *target) const {
 	int32_t data[8]; // year, month, day, hour, min, sec, µs, offset
 	Date::Convert(date, data[0], data[1], data[2]);
 	Time::Convert(time, data[3], data[4], data[5], data[6]);
@@ -672,7 +672,7 @@ string StrTimeFormat::ParseFormatSpecifier(const string &format_string, StrTimeF
 	return string();
 }
 
-void StrfTimeFormat::ConvertDateVector(const Vector &input, Vector &result) {
+void StrfTimeFormat::ConvertDateVector(const Vector &input, Vector &result) const {
 	D_ASSERT(input.GetType().id() == LogicalTypeId::DATE);
 	D_ASSERT(result.GetType().id() == LogicalTypeId::VARCHAR);
 	auto &heap = StringVector::GetStringHeap(result);
@@ -738,7 +738,7 @@ string_t StrfTimeFormat::ConvertTimestampValue(const timestamp_ns_t &input, Stri
 	}
 }
 
-void StrfTimeFormat::ConvertTimestampVector(const Vector &input, Vector &result) {
+void StrfTimeFormat::ConvertTimestampVector(const Vector &input, Vector &result) const {
 	D_ASSERT(input.GetType().id() == LogicalTypeId::TIMESTAMP || input.GetType().id() == LogicalTypeId::TIMESTAMP_TZ);
 	D_ASSERT(result.GetType().id() == LogicalTypeId::VARCHAR);
 	auto &heap = StringVector::GetStringHeap(result);
@@ -746,7 +746,7 @@ void StrfTimeFormat::ConvertTimestampVector(const Vector &input, Vector &result)
 	                                              [&](timestamp_t ts) { return ConvertTimestampValue(ts, heap); });
 }
 
-void StrfTimeFormat::ConvertTimestampNSVector(const Vector &input, Vector &result) {
+void StrfTimeFormat::ConvertTimestampNSVector(const Vector &input, Vector &result) const {
 	D_ASSERT(input.GetType().id() == LogicalTypeId::TIMESTAMP_NS ||
 	         input.GetType().id() == LogicalTypeId::TIMESTAMP_TZ_NS);
 	D_ASSERT(result.GetType().id() == LogicalTypeId::VARCHAR);

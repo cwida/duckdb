@@ -33,7 +33,7 @@ enum class AggregateStateExportMode : uint8_t { NONE = 1, STATE_EXPORT = 2 };
 class BoundAggregateExpression;
 
 struct AggregateInputData {
-	AggregateInputData(const BoundAggregateFunction &function_p, optional_ptr<FunctionData> bind_data_p,
+	AggregateInputData(const BoundAggregateFunction &function_p, optional_ptr<const FunctionData> bind_data_p,
 	                   ArenaAllocator &allocator_p,
 	                   AggregateCombineType combine_type_p = AggregateCombineType::PRESERVE_INPUT)
 	    : function(function_p), bind_data(bind_data_p), allocator(allocator_p), combine_type(combine_type_p) {
@@ -44,7 +44,7 @@ struct AggregateInputData {
 	                   AggregateCombineType combine_type_p = AggregateCombineType::PRESERVE_INPUT);
 
 	const BoundAggregateFunction &function;
-	optional_ptr<FunctionData> bind_data;
+	optional_ptr<const FunctionData> bind_data;
 	ArenaAllocator &allocator;
 	AggregateCombineType combine_type;
 	optional_ptr<const ClusteredAggr> clustered;
@@ -54,12 +54,12 @@ struct AggregateInputData {
 //! Input to the get_state_type callback - bundles the bound aggregate function with its bind data so that the
 //! callback can resolve the exported state layout (including any constant parameters stored in the bind data).
 struct AggregateLayoutInput {
-	AggregateLayoutInput(const BoundAggregateFunction &function_p, optional_ptr<FunctionData> bind_data_p)
+	AggregateLayoutInput(const BoundAggregateFunction &function_p, optional_ptr<const FunctionData> bind_data_p)
 	    : function(function_p), bind_data(bind_data_p) {
 	}
 
 	const BoundAggregateFunction &function;
-	optional_ptr<FunctionData> bind_data;
+	optional_ptr<const FunctionData> bind_data;
 };
 
 //! Input to the state size/init callbacks - bundles the bound aggregate function with its bind data so that the
@@ -79,7 +79,7 @@ struct AggregateStateInput {
 //! re-used across multiple finalize calls (e.g. for the duration of a hash table scan).
 struct AggregateFinalizeInputData : public AggregateInputData {
 	DUCKDB_API AggregateFinalizeInputData(const BoundAggregateFunction &function_p,
-	                                      optional_ptr<FunctionData> bind_data_p, ArenaAllocator &allocator_p,
+	                                      optional_ptr<const FunctionData> bind_data_p, ArenaAllocator &allocator_p,
 	                                      optional_ptr<FunctionLocalState> local_state_p = nullptr);
 	DUCKDB_API AggregateFinalizeInputData(const BoundAggregateExpression &expr, ArenaAllocator &allocator_p,
 	                                      optional_ptr<FunctionLocalState> local_state_p = nullptr);
@@ -153,12 +153,13 @@ struct AggregateFinalizeData {
 };
 
 struct AggregateStatisticsInput {
-	AggregateStatisticsInput(optional_ptr<FunctionData> bind_data_p, vector<BaseStatistics> &child_stats_p,
+	AggregateStatisticsInput(cow_ptr<FunctionData> &bind_data_p, vector<BaseStatistics> &child_stats_p,
 	                         optional_ptr<NodeStatistics> node_stats_p)
 	    : bind_data(bind_data_p), child_stats(child_stats_p), node_stats(node_stats_p) {
 	}
 
-	optional_ptr<FunctionData> bind_data;
+	//! The bind data of the aggregate - use write() to modify it
+	cow_ptr<FunctionData> &bind_data;
 	vector<BaseStatistics> &child_stats;
 	optional_ptr<NodeStatistics> node_stats;
 };

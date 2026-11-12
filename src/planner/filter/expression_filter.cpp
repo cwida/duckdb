@@ -303,7 +303,7 @@ static optional_ptr<const BaseStatistics> TryGetExpressionStats(optional_ptr<Cli
 			// Use copy to avoid expression rewritten
 			auto expr_copy = func.Copy();
 			auto &func_copy = expr_copy->Cast<BoundFunctionExpression>();
-			FunctionStatisticsInput input(func_copy, func_copy.BindInfo(), child_stats, &expr_copy);
+			FunctionStatisticsInput input(func_copy, func_copy.BindInfoMutable(), child_stats, &expr_copy);
 			owned_stats.push_back(func.Function().GetStatisticsCallback()(*context_p, input));
 			return owned_stats.back().get();
 		}

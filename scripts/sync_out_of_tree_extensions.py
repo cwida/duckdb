@@ -136,6 +136,9 @@ def parse_cmake_file(cmake_path, extension_config_base_dir=None, include_non_rem
             if argument in keywords:
                 keyword = argument
                 values[keyword] = []
+            elif re.fullmatch(r'\$\{\w+\}', argument):
+                # an unevaluated variable (e.g. a conditional LOAD_TESTS) is not a value of the preceding keyword
+                keyword = None
             elif keyword is not None:
                 values[keyword].append(argument)
         remote = values.get('GIT_URL') and values.get('GIT_TAG') and 'DONT_BUILD' not in values

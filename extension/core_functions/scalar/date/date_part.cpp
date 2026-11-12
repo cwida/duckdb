@@ -127,7 +127,7 @@ struct DateCacheLocalState : public FunctionLocalState {
 
 template <class OP>
 unique_ptr<FunctionLocalState> InitDateCacheLocalState(ExpressionState &state, const BoundFunctionExpression &expr,
-                                                       FunctionData *bind_data) {
+                                                       optional_ptr<const FunctionData> bind_data) {
 	return make_uniq<DateCacheLocalState<OP>>();
 }
 
@@ -2606,7 +2606,7 @@ struct StructDatePart {
 		result.Verify();
 	}
 
-	static void SerializeFunction(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+	static void SerializeFunction(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
 	                              const BoundScalarFunction &function) {
 		D_ASSERT(bind_data_p);
 		auto &info = bind_data_p->Cast<BindData>();

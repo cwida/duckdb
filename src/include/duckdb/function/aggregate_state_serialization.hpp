@@ -30,7 +30,7 @@ enum class StateMemoryOwnership : uint8_t {
 //! state export layouts. Used by the aggregate state export functions and by state spilling.
 struct AggregateStateSerialization {
 	//! Serialize `count` states into `result` (of the layout's logical type) at [offset, offset + count)
-	static void SerializeStates(const BoundAggregateFunction &aggr, optional_ptr<FunctionData> bind_data,
+	static void SerializeStates(const BoundAggregateFunction &aggr, optional_ptr<const FunctionData> bind_data,
 	                            const AggregateStateLayout &layout, Vector &states, idx_t count, Vector &result,
 	                            ArenaAllocator &allocator, idx_t offset);
 	//! Serialize `count` states at the given addresses, without an aggregate-specific export callback

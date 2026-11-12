@@ -165,8 +165,7 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 
 	auto &get = plan->Cast<LogicalGet>();
 	InitCreateIndexInfo(get, *create_index_info);
-	auto &bind_data = get.bind_data->Cast<TableScanBindData>();
-	bind_data.is_create_index = true;
+	get.bind_data.write().Cast<TableScanBindData>().is_create_index = true;
 
 	auto result = make_uniq<LogicalCreateIndex>(std::move(create_index_info), std::move(expressions), table_entry,
 	                                            std::move(alter_table_info));

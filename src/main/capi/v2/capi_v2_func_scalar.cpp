@@ -190,8 +190,8 @@ static auto CV2ScalarBind(BindScalarFunctionInput &input) -> unique_ptr<Function
 	return result;
 }
 
-static auto CV2ScalarInit(ExpressionState &state, const BoundFunctionExpression &expr, FunctionData *bind_data)
-    -> unique_ptr<FunctionLocalState> {
+static auto CV2ScalarInit(ExpressionState &state, const BoundFunctionExpression &expr,
+                          optional_ptr<const FunctionData> bind_data) -> unique_ptr<FunctionLocalState> {
 	const auto &info = expr.Function().GetExtraFunctionInfo().Cast<CV2ScalarFunctionInfo>();
 
 	auto user_bind_data = bind_data ? bind_data->Cast<CV2FunctionData>().handle : nullptr;

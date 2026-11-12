@@ -1,0 +1,37 @@
+diff --git a/src/function/scan/iceberg_scan.cpp b/src/function/scan/iceberg_scan.cpp
+index 649b19d3b..32fdf3a9f 100644
+--- a/src/function/scan/iceberg_scan.cpp
++++ b/src/function/scan/iceberg_scan.cpp
+@@ -57,7 +57,7 @@ virtual_column_map_t IcebergVirtualColumns(ClientContext &context, optional_ptr<
+ 	return result;
+ }
+ 
+-static void IcebergScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
++static void IcebergScanSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
+                                  const BoundTableFunction &function) {
+ 	throw NotImplementedException("IcebergScan serialization not implemented");
+ }
+@@ -93,8 +93,8 @@ BindInfo IcebergBindInfo(TableFunctionGetBindInfoInput &input) {
+ 	return result;
+ }
+ 
+-static void IcebergSetScanOrder(unique_ptr<RowGroupOrderOptions> order_options, optional_ptr<FunctionData> bind_data) {
+-	auto &multi_file_data = bind_data->Cast<MultiFileBindData>();
++static void IcebergSetScanOrder(unique_ptr<RowGroupOrderOptions> order_options, cow_ptr<FunctionData> &bind_data) {
++	auto &multi_file_data = bind_data.write().Cast<MultiFileBindData>();
+ 	auto &file_list = multi_file_data.file_list->Cast<IcebergMultiFileList>();
+ 	file_list.GetScanPlanner().SetScanOrder(std::move(order_options));
+ }
+diff --git a/src/planning/metadata_io/deletes/iceberg_deletes_file_reader.cpp b/src/planning/metadata_io/deletes/iceberg_deletes_file_reader.cpp
+index 5f2f637ea..1c8f48ac6 100644
+--- a/src/planning/metadata_io/deletes/iceberg_deletes_file_reader.cpp
++++ b/src/planning/metadata_io/deletes/iceberg_deletes_file_reader.cpp
+@@ -9,7 +9,7 @@
+ 
+ namespace duckdb {
+ 
+-static void IcebergDeletesScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
++static void IcebergDeletesScanSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
+                                         const BoundTableFunction &function) {
+ 	throw NotImplementedException("IcebergDeletesScan serialization not implemented");
+ }

@@ -685,7 +685,8 @@ TEST_CASE("Function deserialization restores enclosing context after callback ex
 	ExtensionLoader loader(*db.instance, "sql_export_deserialization_context");
 	ScalarFunction function("throwing_deserializer", {LogicalType::INTEGER}, LogicalType::INTEGER,
 	                        ScalarFunction::NopFunction);
-	function.SetSerializeCallback([](Serializer &, const optional_ptr<FunctionData>, const BoundScalarFunction &) {});
+	function.SetSerializeCallback(
+	    [](Serializer &, const optional_ptr<const FunctionData>, const BoundScalarFunction &) {});
 	function.SetDeserializeCallback([](Deserializer &deserializer, BoundScalarFunction &) -> unique_ptr<FunctionData> {
 		REQUIRE(deserializer.Get<const LogicalType &>() == LogicalType::INTEGER);
 		auto &children = deserializer.Get<const const_expression_list_t &>();

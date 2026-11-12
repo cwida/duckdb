@@ -81,8 +81,8 @@ enum class JSONGeometryFormat : uint8_t { WKT, GEOJSON };
 
 struct JSONCopyFormatOptions {
 	JSONGeometryFormat geometry_format = JSONGeometryFormat::WKT;
-	mutable optional_ptr<StrfTimeFormat> date_format;
-	mutable optional_ptr<StrfTimeFormat> timestamp_format;
+	mutable optional_ptr<const StrfTimeFormat> date_format;
+	mutable optional_ptr<const StrfTimeFormat> timestamp_format;
 	mutable optional_ptr<Context> context;
 	optional_ptr<const Expression> timestamptz_format_expression;
 	optional_ptr<const Expression> timestamptz_ns_format_expression;
@@ -155,11 +155,12 @@ public:
 		       const_struct_names.Equals(other.const_struct_names);
 	}
 
-	JSONCopyFormatOptions GetFormatOptions(Context &context) {
+	JSONCopyFormatOptions GetFormatOptions(Context &context) const {
 		JSONCopyFormatOptions result;
 		result.geometry_format = ClientGeometryFormat(context);
-		result.date_format = has_date_format ? optional_ptr<StrfTimeFormat>(&date_format) : nullptr;
-		result.timestamp_format = has_timestamp_format ? optional_ptr<StrfTimeFormat>(&timestamp_format) : nullptr;
+		result.date_format = has_date_format ? optional_ptr<const StrfTimeFormat>(&date_format) : nullptr;
+		result.timestamp_format =
+		    has_timestamp_format ? optional_ptr<const StrfTimeFormat>(&timestamp_format) : nullptr;
 		result.context = context;
 		result.timestamptz_format_expression = timestamptz_format_expression
 		                                           ? optional_ptr<const Expression>(timestamptz_format_expression.get())
@@ -1428,7 +1429,7 @@ static unique_ptr<FunctionData> JSONCopyToGeoJSONBind(INPUT &input) {
 	                                                std::move(property_indices), write_bbox);
 }
 
-static void JSONCopyToJSONSerialize(Serializer &serializer, optional_ptr<FunctionData> bind_data,
+static void JSONCopyToJSONSerialize(Serializer &serializer, optional_ptr<const FunctionData> bind_data,
                                     const BoundScalarFunction &) {
 	if (!bind_data) {
 		throw InternalException("%s is missing bind data during serialization", JSON_COPY_TO_JSON_INTERNAL_NAME);

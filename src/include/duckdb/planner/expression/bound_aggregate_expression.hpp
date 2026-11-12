@@ -20,8 +20,7 @@ public:
 
 public:
 	BoundAggregateExpression(BoundAggregateFunction function, vector<unique_ptr<Expression>> children,
-	                         unique_ptr<Expression> filter, shared_ptr<FunctionData> bind_info,
-	                         AggregateType aggr_type);
+	                         unique_ptr<Expression> filter, cow_ptr<FunctionData> bind_info, AggregateType aggr_type);
 
 public:
 	bool IsDistinct() const {
@@ -40,10 +39,10 @@ public:
 	vector<unique_ptr<Expression>> &GetChildrenMutable() {
 		return children;
 	}
-	const shared_ptr<FunctionData> &BindInfo() const {
+	const cow_ptr<FunctionData> &BindInfo() const {
 		return bind_info;
 	}
-	shared_ptr<FunctionData> &BindInfoMutable() {
+	cow_ptr<FunctionData> &BindInfoMutable() {
 		return bind_info;
 	}
 	AggregateType GetAggregateType() const {
@@ -96,7 +95,7 @@ private:
 	//! List of arguments to the function
 	vector<unique_ptr<Expression>> children;
 	//! The bound function data (if any)
-	shared_ptr<FunctionData> bind_info;
+	cow_ptr<FunctionData> bind_info;
 	//! The aggregate type (distinct or non-distinct)
 	AggregateType aggr_type;
 	//! Whether or not we are exporting state in this aggregate
