@@ -6,7 +6,10 @@ import shlex
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -95,6 +98,7 @@ class JobStagesTest(unittest.TestCase):
         reduced_ci_mode: str | None = None,
         runner_provider: str = "github",
         run_all: bool = True,
+        changed_extension_files: list[str] | None = None,
     ) -> job_stages.JobSelection:
         if reduced_ci_mode is None:
             reduced_ci_mode = "enabled" if event_name == "pull_request" else "disabled"
@@ -110,8 +114,199 @@ class JobStagesTest(unittest.TestCase):
                 run_all=run_all,
                 runners={"linux_x64": "runner-x64", "linux_arm64": "runner-arm64"},
                 runner_provider=runner_provider,
+                changed_extension_files=changed_extension_files or [],
             )
         )
+
+    def _read_github_output(self, content: str) -> dict[str, str]:
+        outputs = {}
+        lines = iter(content.splitlines())
+        for line in lines:
+            if "<<" in line:
+                key, delimiter = line.split("<<", 1)
+                value = []
+                for value_line in lines:
+                    if value_line == delimiter:
+                        break
+                    value.append(value_line)
+                outputs[key] = "\n".join(value)
+            else:
+                key, value = line.split("=", 1)
+                outputs[key] = value
+        return outputs
+
+    def test_pr_without_extension_changes_selects_main_groups(self):
+        selection = self._compute_job_selection("pull_request", "feature/my-branch", "duckdb/duckdb")
+        self.assertEqual(list(selection.extension_groups), ["core", "cloud", "search", "scanner"])
+        self.assertNotIn("delta", selection.extension_entries.split(","))
+        self.assertNotIn("lance", selection.extension_entries.split(","))
+        self.assertIn("extensions-build", selection.enabled_jobs)
+
+    def test_pr_extension_files_select_their_groups(self):
+        cases = [
+            (".github/config/extensions/avro.cmake", "cloud"),
+            (".github/config/extensions/iceberg.cmake", "cloud"),
+            (".github/patches/extensions/glue/deleted.patch", "cloud"),
+            (".github/config/extensions/legacy_parser.cmake", "core"),
+            (".github/config/extensions/vss.cmake", "search"),
+            (".github/config/extensions/mysql_scanner.cmake", "scanner"),
+            (".github/config/extensions/delta.cmake", "rust"),
+            (".github/config/extensions/lance.cmake", "external"),
+            (".github/config/rust_based_extensions.cmake", "rust"),
+            (".github/config/external_extensions.cmake", "external"),
+        ]
+        for filename, group in cases:
+            with self.subTest(filename=filename):
+                selection = self._compute_job_selection(
+                    "pull_request",
+                    "feature/my-branch",
+                    "duckdb/duckdb",
+                    changed_keys={"extensions", "github", "tests"},
+                    changed_extension_files=[filename],
+                )
+                self.assertEqual(list(selection.extension_groups), [group])
+                if group in {"rust", "external"}:
+                    self.assertEqual(selection.extension_entries, "")
+
+    def test_pr_extension_groups_are_unioned_and_keep_architecture_settings(self):
+        selection = self._compute_job_selection(
+            "pull_request",
+            "feature/my-branch",
+            "duckdb/duckdb",
+            changed_keys={"extensions"},
+            changed_extension_files=[
+                ".github/config/extensions/iceberg.cmake",
+                ".github/patches/extensions/iceberg/deleted.patch",
+                ".github/config/extensions/spatial.cmake",
+                ".github/config/core.cmake",
+            ],
+        )
+        self.assertEqual(list(selection.extension_groups), ["core", "cloud", "search"])
+        self.assertEqual(selection.reduced_ci_mode, "disabled")
+        self.assertTrue(selection.windows_full_matrix)
+        self.assertEqual(selection.extension_opt_in_archs, "windows_arm64;linux_arm64_musl")
+        self.assertEqual(
+            selection.extension_groups["cloud"],
+            {
+                "config": "duckdb/.github/config/cloud.cmake",
+                "extra_toolchains": "unixodbc;parser_tools",
+                "opt_in_archs": "windows_arm64;linux_arm64_musl",
+                "toolchain": "main",
+            },
+        )
+
+    def test_shared_unknown_or_missing_extension_files_select_all_groups(self):
+        for files in [
+            [".github/config/in_tree_extensions.cmake"],
+            [".github/config/out_of_tree_extensions.cmake"],
+            [".github/config/extensions/removed_extension.cmake"],
+            [".github/patches/extensions/unknown/deleted.patch"],
+            [],
+        ]:
+            with self.subTest(files=files), redirect_stderr(StringIO()):
+                selection = self._compute_job_selection(
+                    "pull_request",
+                    "feature/my-branch",
+                    "duckdb/duckdb",
+                    changed_keys={"extensions"},
+                    changed_extension_files=files,
+                )
+                self.assertEqual(list(selection.extension_groups), list(job_stages.EXTENSION_GROUP_CONFIGS))
+
+    def test_non_pr_events_select_all_groups_without_enabling_jobs(self):
+        for event in ["push", "merge_group", "workflow_dispatch"]:
+            with self.subTest(event=event):
+                selection = self._compute_job_selection(
+                    event,
+                    "feature/my-branch",
+                    "duckdb/duckdb",
+                    run_all=False,
+                    changed_keys={"extensions"},
+                    changed_extension_files=[".github/config/extensions/iceberg.cmake"],
+                )
+                self.assertEqual(list(selection.extension_groups), list(job_stages.EXTENSION_GROUP_CONFIGS))
+                self.assertEqual(selection.extension_groups["rust"]["toolchain"], "rust")
+                self.assertEqual(
+                    selection.extension_groups["rust"]["default_exclude_archs"],
+                    job_stages.RUST_EXTENSION_EXCLUDE_ARCHS,
+                )
+                if event == "merge_group":
+                    self.assertNotIn("extensions-build", selection.enabled_jobs)
+                    self.assertNotIn("extensions-deploy", selection.enabled_jobs)
+
+    def test_group_selection_is_independent_of_architecture_and_job_overrides(self):
+        with mock.patch.dict(os.environ, {"OVERRIDE_REDUCED_CI_MODE": "disabled", "OVERRIDE_JOBS": "linux-relassert"}):
+            selection = self._compute_job_selection(
+                "pull_request",
+                "feature/my-branch",
+                "duckdb/duckdb",
+                changed_keys={"extensions"},
+                changed_extension_files=[".github/config/extensions/iceberg.cmake"],
+            )
+        self.assertEqual(list(selection.extension_groups), ["cloud"])
+        self.assertEqual(selection.enabled_jobs, ["prepare", "linux-relassert"])
+
+    def test_cloud_entry_subset_includes_dependencies_and_excludes_other_groups(self):
+        selection = self._compute_job_selection(
+            "pull_request",
+            "feature/my-branch",
+            "duckdb/duckdb",
+            changed_keys={"extensions"},
+            changed_extension_files=[".github/config/extensions/iceberg.cmake"],
+        )
+        self.assertEqual(
+            set(selection.extension_entries.split(",")),
+            {"avro", "aws", "azure", "ducklake", "glue", "httpfs", "iceberg", "json", "parquet"},
+        )
+        self.assertNotIn("avro", job_stages.extension_group_members()["core"])
+
+    def test_main_consumes_changed_extension_file_and_writes_group_yaml(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "outputs"
+            files_path = Path(directory) / "changed_extensions.txt"
+            files_path.write_text(".github/config/extensions/avro.cmake\n\n", encoding="utf-8")
+            argv = [
+                "job_stages.py",
+                "--event",
+                "pull_request",
+                "--ref_name",
+                "feature/my-branch",
+                "--default_branch",
+                "main",
+                "--changed-keys",
+                "extensions",
+                "--changed-extensions-file",
+                str(files_path),
+                "--reduced-ci-mode",
+                "enabled",
+                "--run-all",
+                "true",
+                "--runners",
+                '{"linux_x64":"runner-x64","linux_arm64":"runner-arm64"}',
+                "--runner-provider",
+                "namespace",
+            ]
+            with mock.patch.object(sys, "argv", argv), mock.patch.dict(
+                os.environ, {"GITHUB_OUTPUT": str(output_path)}
+            ), redirect_stderr(StringIO()):
+                self.assertEqual(job_stages.main(), 0)
+                outputs = self._read_github_output(output_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    outputs["extension_groups"],
+                    'cloud:\n'
+                    '  config: "duckdb/.github/config/cloud.cmake"\n'
+                    '  extra_toolchains: "unixodbc;parser_tools"\n'
+                    '  opt_in_archs: "windows_arm64;linux_arm64_musl"\n'
+                    '  toolchain: "main"',
+                )
+                self.assertIn("avro", outputs["extension_entries"].split(","))
+
+                files_path.unlink()
+                output_path.write_text("", encoding="utf-8")
+                self.assertEqual(job_stages.main(), 0)
+                outputs = self._read_github_output(output_path.read_text(encoding="utf-8"))
+                groups = re.findall(r"^(\w+):$", outputs["extension_groups"], re.MULTILINE)
+                self.assertEqual(groups, list(job_stages.EXTENSION_GROUP_CONFIGS))
 
     def _main_workflow_job_ids(self) -> set[str]:
         workflow_path = REPO_ROOT / ".github" / "workflows" / "Main.yml"
@@ -416,6 +611,9 @@ class JobStagesTest(unittest.TestCase):
         self.assertEqual(lines[6], "runners={}")
         self.assertEqual(lines[7], "linux_release_matrix=[]")
         self.assertEqual(lines[8], "linux_musl_matrix=[]")
+        self.assertEqual(lines[9], "extension_entries=")
+        self.assertEqual(lines[10], "extension_groups<<EXTENSION_GROUPS")
+        self.assertEqual(lines[11], "EXTENSION_GROUPS")
 
     def test_reduced_ci_mode_override(self):
         self.assertEqual(job_stages.resolve_reduced_ci_mode("enabled", "disabled"), "disabled")
@@ -475,7 +673,7 @@ class JobStagesTest(unittest.TestCase):
             selected_jobs = json.loads(payload)
             required_jobs = {"linux-relassert", "linux-release", "linux-release-tests", "tidy-check"}
             self.assertTrue(required_jobs.issubset(set(selected_jobs)))
-            output_values = dict(line.split("=", 1) for line in out.splitlines())
+            output_values = self._read_github_output(out)
             release_matrix = json.loads(output_values["linux_release_matrix"])
             self.assertEqual(release_matrix[0]["runner"], "runner-x64;job.priority=2")
         finally:

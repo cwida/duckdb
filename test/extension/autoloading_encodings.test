@@ -4,6 +4,8 @@
 
 require-env LOCAL_EXTENSION_REPO
 
+require encodings
+
 statement ok
 set extension_directory='{TEST_DIR}/encodings_extensions';
 
