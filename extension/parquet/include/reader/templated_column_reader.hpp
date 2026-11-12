@@ -18,23 +18,23 @@ struct TemplatedParquetValueConversion {
 	template <bool CHECKED>
 	static VALUE_TYPE PlainRead(ByteBuffer &plain_data, ColumnReader &reader) {
 		if (CHECKED) {
-			return plain_data.read<VALUE_TYPE>();
+			return plain_data.Read<VALUE_TYPE>();
 		} else {
-			return plain_data.unsafe_read<VALUE_TYPE>();
+			return plain_data.UnsafeRead<VALUE_TYPE>();
 		}
 	}
 
 	template <bool CHECKED>
 	static void PlainSkip(ByteBuffer &plain_data, ColumnReader &reader) {
 		if (CHECKED) {
-			plain_data.inc(sizeof(VALUE_TYPE));
+			plain_data.Inc(sizeof(VALUE_TYPE));
 		} else {
-			plain_data.unsafe_inc(sizeof(VALUE_TYPE));
+			plain_data.UnsafeInc(sizeof(VALUE_TYPE));
 		}
 	}
 
 	static bool PlainAvailable(const ByteBuffer &plain_data, const idx_t count) {
-		return plain_data.check_available(count * sizeof(VALUE_TYPE));
+		return plain_data.CheckAvailable(count * sizeof(VALUE_TYPE));
 	}
 
 	static idx_t PlainConstantSize() {
@@ -59,7 +59,7 @@ public:
 		if (!dict) {
 			dict = make_shared_ptr<ResizeableBuffer>(GetAllocator(), size);
 		} else {
-			dict->resize(GetAllocator(), size);
+			dict->Resize(GetAllocator(), size);
 		}
 	}
 
@@ -83,23 +83,23 @@ struct CallbackParquetValueConversion {
 	template <bool CHECKED>
 	static DUCKDB_PHYSICAL_TYPE PlainRead(ByteBuffer &plain_data, ColumnReader &reader) {
 		if (CHECKED) {
-			return FUNC(plain_data.read<PARQUET_PHYSICAL_TYPE>());
+			return FUNC(plain_data.Read<PARQUET_PHYSICAL_TYPE>());
 		} else {
-			return FUNC(plain_data.unsafe_read<PARQUET_PHYSICAL_TYPE>());
+			return FUNC(plain_data.UnsafeRead<PARQUET_PHYSICAL_TYPE>());
 		}
 	}
 
 	template <bool CHECKED>
 	static void PlainSkip(ByteBuffer &plain_data, ColumnReader &reader) {
 		if (CHECKED) {
-			plain_data.inc(sizeof(PARQUET_PHYSICAL_TYPE));
+			plain_data.Inc(sizeof(PARQUET_PHYSICAL_TYPE));
 		} else {
-			plain_data.unsafe_inc(sizeof(PARQUET_PHYSICAL_TYPE));
+			plain_data.UnsafeInc(sizeof(PARQUET_PHYSICAL_TYPE));
 		}
 	}
 
 	static bool PlainAvailable(const ByteBuffer &plain_data, const idx_t count) {
-		return plain_data.check_available(count * sizeof(PARQUET_PHYSICAL_TYPE));
+		return plain_data.CheckAvailable(count * sizeof(PARQUET_PHYSICAL_TYPE));
 	}
 
 	static idx_t PlainConstantSize() {

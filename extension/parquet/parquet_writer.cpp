@@ -118,11 +118,11 @@ public:
 	}
 
 	data_ptr_t Ptr() override {
-		return bloom_filter->Get()->ptr;
+		return bloom_filter->Get()->GetCurrentLoc();
 	}
 
 	idx_t Size() const override {
-		return bloom_filter->Get()->len;
+		return bloom_filter->Get()->GetLength();
 	}
 
 private:
@@ -1485,7 +1485,7 @@ void ParquetWriter::FlushBloomFilters() {
 		D_ASSERT(!options.encryption_config);
 		// write nonsense bloom filter header
 		duckdb_parquet::BloomFilterHeader filter_header;
-		const auto bloom_filter_size = bloom_filter_entry.bloom_filter->Get()->len;
+		const auto bloom_filter_size = bloom_filter_entry.bloom_filter->Get()->GetLength();
 		filter_header.numBytes = NumericCast<int32_t>(bloom_filter_size);
 		filter_header.algorithm.__set_BLOCK(duckdb_parquet::SplitBlockAlgorithm());
 		filter_header.compression.__set_UNCOMPRESSED(duckdb_parquet::Uncompressed());
