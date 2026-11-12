@@ -93,6 +93,48 @@ PrefixHandle PrefixHandle::GetTail(ART &art, const NodePtr node_ptr) {
 	}
 }
 
+void PrefixHandle::Concat(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, const NodePtr child_ptr,
+                          const uint8_t byte, const GateStatus node4_status, const GateStatus status) {
+	D_ASSERT(!parent_ptr.IsAnyLeaf());
+	D_ASSERT(child_ptr.HasMetadata());
+
+	const auto node4_was_gate = node4_status == GateStatus::GATE_SET;
+	if (node4_was_gate) {
+		D_ASSERT(parent_ptr.GetGateStatus() == GateStatus::GATE_NOT_SET);
+		D_ASSERT(child_ptr.GetGateStatus() == GateStatus::GATE_NOT_SET);
+	}
+
+	// Inside gates, inlined row IDs are not prefixed.
+	if (child_ptr.GetType() == NType::LEAF_INLINED && (node4_was_gate || status == GateStatus::GATE_SET)) {
+		if (!node4_was_gate && parent_ptr.GetType() == PREFIX) {
+			// The parent prefix chain only leads to the Node4, so the row ID replaces the whole chain.
+			while (parent_ptr.GetType() == PREFIX) {
+				NodePtr next_ptr;
+				{
+					// Release the handle before freeing its node, which may destroy the buffer.
+					PrefixHandle prefix(NodeHandle(art, parent_ptr));
+					next_ptr = prefix.Child(art);
+				}
+				NodePtr::FreeNode(art, parent_ptr);
+				parent_ptr = next_ptr;
+			}
+			parent_ptr = child_ptr;
+			return;
+		}
+		node4_ptr = child_ptr;
+		return;
+	}
+
+	// A gated Node4's byte belongs to the row IDs, so it must not join the parent's key bytes.
+	const auto append_to_parent = !node4_was_gate && parent_ptr.GetType() == PREFIX;
+	auto tail =
+	    append_to_parent ? AppendByte(art, GetTail(art, parent_ptr), byte) : NewInternal(art, node4_ptr, &byte, 1, 0);
+	Append(art, std::move(tail), child_ptr);
+	if (node4_was_gate) {
+		node4_ptr.SetGateStatus(GateStatus::GATE_SET);
+	}
+}
+
 NodePtr PrefixHandle::Split(ART &art, NodePtr &prefix_ptr, NodePtr &branching_node4_ptr, const uint8_t pos) {
 	D_ASSERT(prefix_ptr.HasMetadata());
 	D_ASSERT(prefix_ptr.GetType() == PREFIX);

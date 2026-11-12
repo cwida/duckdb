@@ -20,8 +20,6 @@ struct PrefixChain;
 
 //! PrefixHandle owns the pin for a mutable prefix node.
 class PrefixHandle {
-	friend class Prefix;
-
 public:
 	static constexpr NType PREFIX = NType::PREFIX;
 	static constexpr uint8_t DEPRECATED_COUNT = 15;
@@ -47,6 +45,12 @@ public:
 	//! the split byte before calling and attach the returned child to branching_node4_ptr under that byte. Gate status
 	//! is handled internally; the caller does not need to set it after splitting.
 	static NodePtr Split(ART &art, NodePtr &prefix_ptr, NodePtr &branching_node4_ptr, const uint8_t pos);
+
+	//! Replaces a freed Node4 that had one remaining child: concatenates parent -> byte -> child.
+	//! node4_ptr is the slot of the freed Node4, node4_status its gate status, and status is GATE_SET
+	//! if the Node4 was inside a gate.
+	static void Concat(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, const NodePtr child_ptr, const uint8_t byte,
+	                   const GateStatus node4_status, const GateStatus status);
 
 	//! Create a new deprecated prefix node and return a handle to it.
 	static NodeHandle NewDeprecated(FixedSizeAllocator &allocator, NodePtr &node_ptr);
