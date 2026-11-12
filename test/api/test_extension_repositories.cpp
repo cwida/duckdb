@@ -362,3 +362,237 @@ TEST_CASE("Test that a bare load names the user repository an extension is insta
 	REQUIRE(forbidden->HasError());
 	REQUIRE(!StringUtil::Contains(forbidden->GetError(), "Candidate repositories"));
 }
+
+// Stage an extension plus the .info an install writes, in the flat folder (empty folder_repository) or in the
+// per-repository subfolder of folder_repository. The binary is a stub: duckdb_extensions only reads the .info
+static void StageInstalledExtension(DatabaseInstance &db, const string &name, const string &folder_repository,
+                                    const ExtensionInstallInfo &info) {
+	auto fs = FileSystem::CreateLocal();
+	string dir = ExtensionHelper::ExtensionDirectory(db, *fs);
+	if (!folder_repository.empty()) {
+		dir = fs->JoinPath(fs->JoinPath(dir, "repositories"), folder_repository);
+	}
+	fs->CreateDirectoriesRecursive(dir);
+
+	string ext_path = fs->JoinPath(dir, name + ".duckdb_extension");
+	vector<data_t> stub(ParsedExtensionMetaData::FOOTER_SIZE, 0);
+	WriteExtensionFile(*fs, ext_path, stub.data(), stub.size());
+
+	MemoryStream stream;
+	BinarySerializer::Serialize(info, stream);
+	WriteExtensionFile(*fs, ext_path + ".info", stream.GetData(), stream.GetPosition());
+}
+
+static ExtensionInstallInfo UserRepositoryInstallInfo(const string &repository_name, const string &version) {
+	ExtensionInstallInfo info;
+	info.mode = ExtensionInstallMode::REPOSITORY;
+	info.repository_type = ExtensionRepositoryType::USER_PROVIDED;
+	info.repository_name = repository_name;
+	info.repository_url = "http://" + repository_name + ".com";
+	info.version = version;
+	info.signature_key_fingerprint = "sha256:" + repository_name;
+	return info;
+}
+
+// One "installed|loaded|install_mode|installed_from|version|fingerprint|path suffix" string per row of the extension
+static vector<string> ExtensionRows(Connection &con, const string &name) {
+	auto result = con.Query("SELECT installed, loaded, install_mode, installed_from, extension_version, "
+	                        "coalesce(signature_key_fingerprint, 'NULL'), "
+	                        "regexp_extract(replace(install_path, '\\', '/'), '(repositories/[^/]+/)?[^/]*$') "
+	                        "FROM duckdb_extensions() WHERE extension_name = $1",
+	                        name);
+	REQUIRE_NO_FAIL(*result);
+	vector<string> rows;
+	for (auto &row : result->Collection().Rows()) {
+		vector<string> values;
+		for (idx_t c = 0; c < result->ColumnCount(); c++) {
+			values.push_back(row.GetValue(c).ToString());
+		}
+		rows.push_back(StringUtil::Join(values, "|"));
+	}
+	return rows;
+}
+
+TEST_CASE("Test that duckdb_extensions lists extensions installed from user-provided repositories", "[api]") {
+	auto repository_directory = TestCreatePath("ext_repo_duckdb_extensions");
+	auto extension_directory = TestCreatePath("ext_repo_duckdb_extensions_ext");
+
+	DBConfig config;
+	config.SetOptionByName("extension_repository_directory", repository_directory);
+	config.SetOptionByName("extension_directory", extension_directory);
+	config.SetOptionByName("allow_extension_repositories", "allowed");
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query(
+	    StringUtil::Format("CREATE EXTENSION REPOSITORY my_repo WITH PREFIX 'http://my_repo.com' USING PUBLIC KEY '%s'",
+	                       TEST_PUBLIC_KEY)));
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
+	    "CREATE EXTENSION REPOSITORY other WITH PREFIX 'http://other.com' USING PUBLIC KEY '%s'", OTHER_PUBLIC_KEY)));
+	REQUIRE(ExtensionRows(con, "dns").empty());
+
+	// INSTALL dns FROM my_repo writes to the per-repository subfolder: the row reports the repository by name
+	StageInstalledExtension(*db.instance, "dns", "my_repo", UserRepositoryInstallInfo("my_repo", "v1"));
+	REQUIRE(
+	    ExtensionRows(con, "dns") ==
+	    vector<string> {"true|false|REPOSITORY|my_repo|v1|sha256:my_repo|repositories/my_repo/dns.duckdb_extension"});
+
+	// rows are keyed by name and repository: a copy in the flat folder and in another repository each get a row
+	ExtensionInstallInfo community_info;
+	community_info.mode = ExtensionInstallMode::REPOSITORY;
+	community_info.repository_type = ExtensionRepositoryType::COMMUNITY;
+	community_info.repository_url = ExtensionRepository::TryGetRepositoryUrl("community");
+	community_info.version = "v0";
+	StageInstalledExtension(*db.instance, "dns", "", community_info);
+	StageInstalledExtension(*db.instance, "dns", "other", UserRepositoryInstallInfo("other", "v2"));
+	REQUIRE(ExtensionRows(con, "dns") ==
+	        vector<string> {"true|false|REPOSITORY|community|v0|NULL|dns.duckdb_extension",
+	                        "true|false|REPOSITORY|my_repo|v1|sha256:my_repo|repositories/my_repo/dns.duckdb_extension",
+	                        "true|false|REPOSITORY|other|v2|sha256:other|repositories/other/dns.duckdb_extension"});
+
+	// a known extension keeps its flat row next to the copy from a user-provided repository
+	StageInstalledExtension(*db.instance, "json", "my_repo", UserRepositoryInstallInfo("my_repo", "v1"));
+	auto json_rows = ExtensionRows(con, "json");
+	REQUIRE(json_rows.size() == 2);
+	REQUIRE(json_rows[1] ==
+	        "true|false|REPOSITORY|my_repo|v1|sha256:my_repo|repositories/my_repo/json.duckdb_extension");
+
+	// moving the files to the flat folder, as the reproducer does, keeps the origin recorded in the .info
+	StageInstalledExtension(*db.instance, "moved_ext", "", UserRepositoryInstallInfo("my_repo", "v1"));
+	REQUIRE(ExtensionRows(con, "moved_ext") ==
+	        vector<string> {"true|false|REPOSITORY|my_repo|v1|sha256:my_repo|moved_ext.duckdb_extension"});
+
+	// install folders are listed from disk, also when no repository file backs them
+	StageInstalledExtension(*db.instance, "stray_ext", "not_a_repository",
+	                        UserRepositoryInstallInfo("not_a_repository", "v1"));
+	REQUIRE(ExtensionRows(con, "stray_ext") ==
+	        vector<string> {"true|false|REPOSITORY|not_a_repository|v1|sha256:not_a_repository|"
+	                        "repositories/not_a_repository/stray_ext.duckdb_extension"});
+
+	// folders that cannot be repository names are not listed
+	StageInstalledExtension(*db.instance, "invalid_ext", "Not_Normalized", UserRepositoryInstallInfo("x", "v1"));
+	StageInstalledExtension(*db.instance, "invalid_ext", "core", UserRepositoryInstallInfo("x", "v1"));
+	REQUIRE(ExtensionRows(con, "invalid_ext").empty());
+
+	// an unreadable repository file does not fail the listing, nor hide any installed extension
+	auto fs = FileSystem::CreateLocal();
+	auto broken_path = fs->JoinPath(repository_directory, "broken.duckdb_extension.repo.json");
+	{
+		auto handle = fs->OpenFile(broken_path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		string garbage = "not json";
+		handle->Write((void *)garbage.data(), garbage.size());
+	}
+	REQUIRE(ExtensionRows(con, "dns").size() == 3);
+	fs->RemoveFile(broken_path);
+
+	// dropping a repository leaves its installed files on disk, so they are still listed
+	REQUIRE_NO_FAIL(con.Query("DROP EXTENSION REPOSITORY other"));
+	REQUIRE(ExtensionRows(con, "dns").size() == 3);
+
+	// forbidding repositories only affects loading: the installed files are still listed
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='forbidden'"));
+	REQUIRE(ExtensionRows(con, "dns").size() == 3);
+	REQUIRE(ExtensionRows(con, "json").size() == 2);
+}
+
+// Copy a loadable extension into the flat folder (empty folder_repository) or a per-repository subfolder, with the
+// .info an install from repository_name writes
+static string CopyInstalledExtension(DatabaseInstance &db, const string &source, const string &name,
+                                     const string &folder_repository, const string &repository_name,
+                                     const string &version) {
+	auto fs = FileSystem::CreateLocal();
+	string dir = ExtensionHelper::ExtensionDirectory(db, *fs);
+	if (!folder_repository.empty()) {
+		dir = fs->JoinPath(fs->JoinPath(dir, "repositories"), folder_repository);
+	}
+	fs->CreateDirectoriesRecursive(dir);
+
+	auto source_handle = fs->OpenFile(source, FileFlags::FILE_FLAGS_READ);
+	auto size = source_handle->GetFileSize();
+	auto buffer = make_unsafe_uniq_array<data_t>(size);
+	source_handle->Read(buffer.get(), size);
+	string ext_path = fs->JoinPath(dir, name + ".duckdb_extension");
+	WriteExtensionFile(*fs, ext_path, buffer.get(), size);
+
+	MemoryStream stream;
+	BinarySerializer::Serialize(UserRepositoryInstallInfo(repository_name, version), stream);
+	WriteExtensionFile(*fs, ext_path + ".info", stream.GetData(), stream.GetPosition());
+	return ext_path;
+}
+
+// "in_repository_folder|loaded" per row, the flat row first
+static vector<string> LoadedRows(Connection &con, const string &name) {
+	auto result = con.Query("SELECT loaded, "
+	                        "replace(install_path, '\\', '/') LIKE '%/repositories/%' AS in_repository "
+	                        "FROM duckdb_extensions() WHERE extension_name = $1 ORDER BY in_repository",
+	                        name);
+	REQUIRE_NO_FAIL(*result);
+	vector<string> rows;
+	for (auto &row : result->Collection().Rows()) {
+		rows.push_back(row.GetValue(1).ToString() + "|" + row.GetValue(0).ToString());
+	}
+	return rows;
+}
+
+TEST_CASE("Test that duckdb_extensions marks the copy that was loaded", "[api]") {
+	auto repository_directory = TestCreatePath("ext_repo_loaded_copy");
+	auto extension_directory = TestCreatePath("ext_repo_loaded_copy_ext");
+	auto fs = FileSystem::CreateLocal();
+	auto demo = fs->JoinPath(TestBuildDirectory(), "test/extension/loadable_extension_demo.duckdb_extension");
+	if (!fs->FileExists(demo)) {
+		return;
+	}
+	const string name = "loadable_extension_demo";
+
+	auto make_db = [&]() {
+		DBConfig config;
+		config.SetOptionByName("extension_repository_directory", repository_directory);
+		config.SetOptionByName("extension_directory", extension_directory);
+		config.SetOptionByName("allow_extension_repositories", "allowed");
+		config.SetOptionByName("allow_unsigned_extensions", true);
+		return make_uniq<DuckDB>(nullptr, &config);
+	};
+
+	// the .info version has to match the binary
+	string version;
+	string repository_path;
+	{
+		auto db = make_db();
+		Connection con(*db);
+		REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
+		    "CREATE EXTENSION REPOSITORY my_repo WITH PREFIX 'http://my_repo.com' USING PUBLIC KEY '%s'",
+		    TEST_PUBLIC_KEY)));
+		REQUIRE_NO_FAIL(con.Query(StringUtil::Format("LOAD '%s'", demo)));
+		auto result = con.Query("SELECT extension_version FROM duckdb_extensions() WHERE extension_name = $1", name);
+		REQUIRE_NO_FAIL(*result);
+		version = result->Collection().GetValue(0, 0).ToString();
+
+		// the same extension installed from my_repo, and a copy of it in the flat folder
+		repository_path = CopyInstalledExtension(*db->instance, demo, name, "my_repo", "my_repo", version);
+		CopyInstalledExtension(*db->instance, demo, name, "", "my_repo", version);
+	}
+
+	// a bare load resolves the flat copy, even though both .info files record my_repo
+	{
+		auto db = make_db();
+		Connection con(*db);
+		REQUIRE_NO_FAIL(con.Query("LOAD " + name));
+		REQUIRE(LoadedRows(con, name) == vector<string> {"false|true", "true|false"});
+	}
+
+	// loading from the repository resolves the copy in its folder
+	{
+		auto db = make_db();
+		Connection con(*db);
+		REQUIRE_NO_FAIL(con.Query("LOAD " + name + " FROM my_repo"));
+		REQUIRE(LoadedRows(con, name) == vector<string> {"false|false", "true|true"});
+	}
+
+	// loading the repository copy by its path marks that copy
+	{
+		auto db = make_db();
+		Connection con(*db);
+		REQUIRE_NO_FAIL(con.Query(StringUtil::Format("LOAD '%s'", repository_path)));
+		REQUIRE(LoadedRows(con, name) == vector<string> {"false|false", "true|true"});
+	}
+}

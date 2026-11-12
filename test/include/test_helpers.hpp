@@ -44,6 +44,9 @@ vector<string> LoadedExtensionTestPaths();
 //! env var and the temp-dir leaf so they agree.
 string TestNameToId(const string &name);
 
+//! The build directory of this test binary
+string TestBuildDirectory();
+
 //! Delete a database file (+ its .wal). A no-op under --database-destroy off (retain).
 void DeleteDatabase(string path);
 void TestDeleteDirectory(string path);
