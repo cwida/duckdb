@@ -29,6 +29,7 @@ class PipelineExecutor;
 class ProgressVerifier;
 class OperatorState;
 class QueryProfiler;
+class QueryResultNotifier;
 class ThreadContext;
 class Task;
 
@@ -103,9 +104,7 @@ public:
 	//! Returns the progress of the pipelines
 	idx_t GetPipelinesProgress(ProgressData &progress);
 
-	void CompletePipeline() {
-		completed_pipelines++;
-	}
+	void CompletePipeline();
 	ProducerToken &GetToken() {
 		return *producer;
 	}
@@ -132,6 +131,8 @@ public:
 	//! Set the buffer of the result this query produces. Called at submission, before execution starts
 	void SetResultBuffer(shared_ptr<BufferedData> result_buffer_p);
 	shared_ptr<BufferedData> GetResultBuffer();
+	//! Set at submission, before execution starts, so workers read it without a lock
+	void SetResultNotifier(shared_ptr<QueryResultNotifier> result_notifier_p);
 
 	idx_t GetTotalPipelines() const {
 		return total_pipelines;
@@ -147,6 +148,9 @@ public:
 	}
 
 private:
+	void NotifyResult();
+	//! Whether a producer of the result sink is parked for the retention decision
+	bool ResultAwaitsDecision();
 	//! Whether the result sink waits on the consumer: a producer is parked for the retention
 	//! decision, or for space that only a pop frees
 	bool ResultCollectorIsBlocked();
@@ -230,6 +234,8 @@ private:
 	mutex result_buffer_lock;
 	//! The buffer of the result this query produces, or null for a query that has none
 	shared_ptr<BufferedData> result_buffer;
+	//! Rung when the last pipeline completes and when an error is pushed (may be null)
+	shared_ptr<QueryResultNotifier> result_notifier;
 
 	//! Total time blocked while waiting on tasks, in microseconds
 	atomic<idx_t> blocked_thread_time;

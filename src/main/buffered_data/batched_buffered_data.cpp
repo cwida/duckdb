@@ -15,41 +15,48 @@ BatchedBufferedData::BatchedBufferedData(ClientContext &context, ResultLifetime 
 
 bool BatchedBufferedData::AppendOrBlock(unique_ptr<ResultUnit> unit, idx_t batch, const InterruptState &blocked_sink) {
 	const idx_t unit_data_size = unit->byte_size;
-	annotated_lock_guard<annotated_mutex> lock(glock);
-	D_ASSERT(batch != DConstants::INVALID_INDEX);
-	D_ASSERT(batch >= min_batch);
-	max_seen_unit_bytes = MaxValue<idx_t>(max_seen_unit_bytes, unit_data_size);
-	if (ShouldBlockBatch(lock, batch, unit_data_size)) {
-		// Park holding the finished unit. Restart selection deposits it at wake time
-		parked_bytes += unit_data_size;
+	bool became_poppable = false;
+	{
+		annotated_lock_guard<annotated_mutex> lock(glock);
+		D_ASSERT(batch != DConstants::INVALID_INDEX);
+		D_ASSERT(batch >= min_batch);
+		max_seen_unit_bytes = MaxValue<idx_t>(max_seen_unit_bytes, unit_data_size);
+		if (ShouldBlockBatch(lock, batch, unit_data_size)) {
+			// Park holding the finished unit. Restart selection deposits it at wake time
+			parked_bytes += unit_data_size;
+			peak_streaming_bytes =
+			    MaxValue<idx_t>(peak_streaming_bytes, read_queue_byte_count + buffer_byte_count + parked_bytes);
+			auto entry = blocked_sinks.emplace(batch, BlockedSink {blocked_sink, std::move(unit)});
+			(void)entry;
+			D_ASSERT(entry.second);
+			return true;
+		}
+		auto is_minimum = IsMinimumBatchIndex(lock, batch);
+		if (is_minimum) {
+			for (auto &it : buffer) {
+				auto batch_index = it.first;
+				if (batch_index >= min_batch) {
+					break;
+				}
+				// There should not be any batches in the buffer that are lower or equal to the minimum batch index
+				throw InternalException("Batches remaining in buffer");
+			}
+			became_poppable = read_queue.empty();
+			read_queue.push(std::move(unit));
+			read_queue_byte_count += unit_data_size;
+		} else {
+			auto &in_progress_batch = buffer[batch];
+			in_progress_batch.completed = false;
+			in_progress_batch.units.push_back(std::move(unit));
+			buffer_byte_count += unit_data_size;
+		}
+		peak_buffered_bytes = MaxValue<idx_t>(peak_buffered_bytes, read_queue_byte_count + buffer_byte_count);
 		peak_streaming_bytes =
 		    MaxValue<idx_t>(peak_streaming_bytes, read_queue_byte_count + buffer_byte_count + parked_bytes);
-		auto entry = blocked_sinks.emplace(batch, BlockedSink {blocked_sink, std::move(unit)});
-		(void)entry;
-		D_ASSERT(entry.second);
-		return true;
 	}
-	auto is_minimum = IsMinimumBatchIndex(lock, batch);
-	if (is_minimum) {
-		for (auto &it : buffer) {
-			auto batch_index = it.first;
-			if (batch_index >= min_batch) {
-				break;
-			}
-			// There should not be any batches in the buffer that are lower or equal to the minimum batch index
-			throw InternalException("Batches remaining in buffer");
-		}
-		read_queue.push(std::move(unit));
-		read_queue_byte_count += unit_data_size;
-	} else {
-		auto &in_progress_batch = buffer[batch];
-		in_progress_batch.completed = false;
-		in_progress_batch.units.push_back(std::move(unit));
-		buffer_byte_count += unit_data_size;
+	if (became_poppable) {
+		Notify();
 	}
-	peak_buffered_bytes = MaxValue<idx_t>(peak_buffered_bytes, read_queue_byte_count + buffer_byte_count);
-	peak_streaming_bytes =
-	    MaxValue<idx_t>(peak_streaming_bytes, read_queue_byte_count + buffer_byte_count + parked_bytes);
 	return false;
 }
 
@@ -182,6 +189,7 @@ void BatchedBufferedData::MoveCompletedBatches(annotated_lock_guard<annotated_mu
 
 void BatchedBufferedData::UpdateMinBatchIndex(idx_t min_batch_index) {
 	vector<pair<idx_t, BlockedSink>> to_unblock;
+	bool became_poppable = false;
 	{
 		annotated_lock_guard<annotated_mutex> lock(glock);
 
@@ -192,6 +200,7 @@ void BatchedBufferedData::UpdateMinBatchIndex(idx_t min_batch_index) {
 			return;
 		}
 		min_batch = new_min_batch;
+		const bool was_empty = read_queue.empty();
 		MoveCompletedBatches(lock);
 		// The move conserves the byte total, so only the newly minimum batch's sink can
 		// have a changed block decision: it now falls under the read queue rule
@@ -201,8 +210,12 @@ void BatchedBufferedData::UpdateMinBatchIndex(idx_t min_batch_index) {
 			to_unblock.emplace_back(entry->first, std::move(entry->second));
 			blocked_sinks.erase(entry);
 		}
+		became_poppable = was_empty && !read_queue.empty();
 	}
 	InvokeUnblocks(to_unblock);
+	if (became_poppable) {
+		Notify();
+	}
 }
 
 void BatchedBufferedData::CompleteBatch(idx_t batch) {

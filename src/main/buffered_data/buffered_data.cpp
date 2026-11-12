@@ -5,6 +5,7 @@
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/query_result_notifier.hpp"
 
 namespace duckdb {
 
@@ -57,25 +58,49 @@ void BufferedData::DecideDraining() {
 }
 
 bool BufferedData::ParkUndecided(const InterruptState &blocked_sink) {
-	annotated_lock_guard<annotated_mutex> lock(glock);
-	if (lifetime != ResultLifetime::UNDECIDED) {
-		return false;
+	bool first_park = false;
+	{
+		annotated_lock_guard<annotated_mutex> lock(glock);
+		if (lifetime != ResultLifetime::UNDECIDED) {
+			return false;
+		}
+		// The decision releases every parked producer at once, so only the first park changes what the consumer sees
+		first_park = undecided_sinks.empty();
+		undecided_sinks.push_back(blocked_sink);
 	}
-	undecided_sinks.push_back(blocked_sink);
+	if (first_park) {
+		Notify();
+	}
 	return true;
 }
 
-bool BufferedData::WaitsOnConsumer() {
+bool BufferedData::AwaitsDecision() {
 	// The undecided list is empty once the retention is settled: ParkUndecided re-checks under glock
-	if (lifetime == ResultLifetime::UNDECIDED) {
-		annotated_lock_guard<annotated_mutex> lock(glock);
-		if (!undecided_sinks.empty()) {
-			return true;
-		}
+	if (lifetime != ResultLifetime::UNDECIDED) {
+		return false;
+	}
+	annotated_lock_guard<annotated_mutex> lock(glock);
+	return !undecided_sinks.empty();
+}
+
+idx_t BufferedData::UndecidedParkCount() {
+	annotated_lock_guard<annotated_mutex> lock(glock);
+	return undecided_sinks.size();
+}
+
+bool BufferedData::WaitsOnConsumer() {
+	if (AwaitsDecision()) {
+		return true;
 	}
 	// A space park is only the consumer's to release when a pop is possible: the batched buffer also
 	// parks read-ahead batches while the read queue is empty, and the minimum batch releases those
 	return HasBlockedSink() && HasObservableUnit();
+}
+
+void BufferedData::Notify() {
+	if (notifier) {
+		notifier->Notify();
+	}
 }
 
 QueryResultState BufferedData::Cancelled(QueryResult &result) {

@@ -129,19 +129,26 @@ unique_ptr<ResultUnit> SimpleBufferedData::Scan() {
 
 bool SimpleBufferedData::AppendOrBlock(unique_ptr<ResultUnit> unit, const InterruptState &blocked_sink) {
 	const idx_t unit_data_size = unit->byte_size;
-	annotated_lock_guard<annotated_mutex> lock(glock);
-	// The buffer admits a unit that fits, and always one unit when empty
-	if (buffered_count > 0 && buffered_count + unit_data_size > BufferSize()) {
-		// Park holding the finished unit. Restart selection deposits it at wake time
-		parked_bytes += unit_data_size;
+	bool became_poppable = false;
+	{
+		annotated_lock_guard<annotated_mutex> lock(glock);
+		// The buffer admits a unit that fits, and always one unit when empty
+		if (buffered_count > 0 && buffered_count + unit_data_size > BufferSize()) {
+			// Park holding the finished unit. Restart selection deposits it at wake time
+			parked_bytes += unit_data_size;
+			peak_streaming_bytes = MaxValue<idx_t>(peak_streaming_bytes, buffered_count + parked_bytes);
+			blocked_sinks.push(BlockedSink {blocked_sink, std::move(unit)});
+			return true;
+		}
+		became_poppable = unread_units.empty();
+		unread_units.push(std::move(unit));
+		buffered_count += unit_data_size;
+		peak_buffered_bytes = MaxValue<idx_t>(peak_buffered_bytes, buffered_count);
 		peak_streaming_bytes = MaxValue<idx_t>(peak_streaming_bytes, buffered_count + parked_bytes);
-		blocked_sinks.push(BlockedSink {blocked_sink, std::move(unit)});
-		return true;
 	}
-	unread_units.push(std::move(unit));
-	buffered_count += unit_data_size;
-	peak_buffered_bytes = MaxValue<idx_t>(peak_buffered_bytes, buffered_count);
-	peak_streaming_bytes = MaxValue<idx_t>(peak_streaming_bytes, buffered_count + parked_bytes);
+	if (became_poppable) {
+		Notify();
+	}
 	return false;
 }
 

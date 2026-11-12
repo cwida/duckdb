@@ -56,6 +56,7 @@ set(TEST_API_OBJECTS
     test_query_result_arrow.cpp
     test_query_result_format.cpp
     test_query_result_format_buffer.cpp
+    test_query_result_notifier.cpp
     test_query_result_stream.cpp
     test_expanding_statements.cpp
     test_retained_result_collection.cpp

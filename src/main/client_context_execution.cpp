@@ -21,6 +21,7 @@
 #include "duckdb/main/prepared_statement_data.hpp"
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/query_result.hpp"
+#include "duckdb/main/query_result_notifier.hpp"
 #include "duckdb/main/result_format.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/main/valid_checker.hpp"
@@ -72,6 +73,10 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 		state->QueryBegin(*this);
 	}
 	RefreshLoggerInternal();
+	// Last, so a failed begin does not keep the consumer's callback
+	if (parameters.notify_callback) {
+		active_query->notifier = make_shared_ptr<QueryResultNotifier>(parameters.notify_callback);
+	}
 }
 
 void ClientContext::BeginStatementInternal(ClientContextLock &lock, const string &query) {
@@ -100,6 +105,10 @@ void ClientContext::ResetLoggerInternal(const LoggingContext &logging_context) {
 ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
                                           optional_ptr<ErrorData> previous_error) {
 	D_ASSERT(active_query.get());
+	if (active_query->notifier) {
+		// First, so the call that ends the query returns only once no callback can run
+		active_query->notifier->Clear();
+	}
 	// whether the statement that finished, or an earlier statement of a query that expands, modifies a database
 	const bool statement_wrote =
 	    active_query->Wrote() || (active_query->prepared && !active_query->prepared->properties.IsReadOnly());
@@ -307,6 +316,10 @@ unique_ptr<QueryResult> ClientContext::SubmitPreparedStatementInternal(
 		throw NotImplementedException("A result collector that builds its own result object can only serve a "
 		                              "statement that expands into several when it is set before the submission");
 	}
+	if (delegating && active_query->notifier) {
+		// The collector builds its result without a buffer, so the callback would hear only the end of execution
+		throw InvalidInputException("A notify callback cannot be combined with a custom result collector");
+	}
 	if (delegating && parameters.format) {
 		if (!parameters.format->Is<ChunkFormat>()) {
 			// The collector builds its own result, which the format would never reach
@@ -345,9 +358,11 @@ unique_ptr<QueryResult> ClientContext::SubmitPreparedStatementInternal(
 		} else if (active_query->retention != ResultLifetime::UNDECIDED) {
 			buffer->Decide(active_query->retention);
 		}
+		buffer->SetNotifier(active_query->notifier);
 		sink.SetResultBuffer(buffer);
 	}
 	executor.SetResultBuffer(buffer);
+	executor.SetResultNotifier(active_query->notifier);
 
 	if (expands) {
 		// Recorded before Initialize schedules the statement's tasks, which may write before it returns

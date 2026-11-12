@@ -19,6 +19,7 @@
 namespace duckdb {
 class BaseQueryResult;
 class QueryResult;
+class QueryResultNotifier;
 
 //! The user statement a connection runs, from its submission until a call ends it. A statement that expands into
 //! several runs them one after another, each with its own executor, as one query
@@ -39,6 +40,8 @@ public:
 	bool collector_built_result = false;
 	//! The format every statement of the query is submitted in; null is the chunk format
 	shared_ptr<ResultFormat> format;
+	//! Rings the consumer's notify callback, from every statement of the query (may be null)
+	shared_ptr<QueryResultNotifier> notifier;
 	//! The consumer's retention decision, applied to the result statement's buffer when it is created
 	ResultLifetime retention = ResultLifetime::UNDECIDED;
 	//! Whether the statement whose rows the result carries has started

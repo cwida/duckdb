@@ -10,6 +10,7 @@
 #include "duckdb/main/buffered_data/buffered_data.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
+#include "duckdb/main/query_result_notifier.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parallel/meta_pipeline.hpp"
 #include "duckdb/parallel/pipeline_complete_event.hpp"
@@ -529,6 +530,10 @@ QueryResultState Executor::Poll() {
 
 QueryResultState Executor::IdleState() {
 	lock_guard<mutex> l(executor_lock);
+	// Reported from the park itself: whether some task is descheduled says nothing about the decision
+	if (ResultAwaitsDecision()) {
+		return QueryResultState::READY;
+	}
 	if (to_be_rescheduled_tasks.empty()) {
 		return QueryResultState::NO_TASKS_AVAILABLE;
 	}
@@ -637,6 +642,8 @@ void Executor::TryInterruptPipelines() {
 void Executor::InterruptPipelines() {
 	// interrupt execution of any other pipelines that belong to this executor
 	context.interrupt_state = ClientInterruptState::INTERRUPTED;
+	// The error ends execution. Rung first: interrupting the pipelines can fail when memory runs out
+	NotifyResult();
 	for (auto &pipeline : pipelines) {
 		pipeline->FinishSourceAndPreventBlocking(context);
 		pipeline->PreventSinkBlocking();
@@ -708,6 +715,22 @@ shared_ptr<BufferedData> Executor::GetResultBuffer() {
 	return result_buffer;
 }
 
+void Executor::SetResultNotifier(shared_ptr<QueryResultNotifier> result_notifier_p) {
+	result_notifier = std::move(result_notifier_p);
+}
+
+void Executor::CompletePipeline() {
+	if (++completed_pipelines >= total_pipelines) {
+		NotifyResult();
+	}
+}
+
+void Executor::NotifyResult() {
+	if (result_notifier) {
+		result_notifier->Notify();
+	}
+}
+
 bool Executor::ResultStoreCanPark() {
 	if (!HasStreamingResultCollector()) {
 		return false;
@@ -715,6 +738,11 @@ bool Executor::ResultStoreCanPark() {
 	auto buffer = GetResultBuffer();
 	// The store was settled on retained at submission: producers append and never park
 	return !buffer || buffer->Lifetime() != ResultLifetime::RETAINED;
+}
+
+bool Executor::ResultAwaitsDecision() {
+	auto buffer = GetResultBuffer();
+	return buffer && buffer->AwaitsDecision();
 }
 
 bool Executor::ResultCollectorIsBlocked() {

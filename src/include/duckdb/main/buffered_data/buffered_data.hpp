@@ -27,6 +27,7 @@
 namespace duckdb {
 
 class QueryResult;
+class QueryResultNotifier;
 class ClientContextLock;
 
 //! A blocked sink. Holds the InterruptState and owns the finished unit it could not append.
@@ -83,6 +84,10 @@ public:
 	void DecideDraining();
 	//! Park a producer until the retention is decided. False when it already is
 	bool ParkUndecided(const InterruptState &blocked_sink);
+	//! Whether a producer is parked for the retention decision, from the park itself, before its task is descheduled
+	bool AwaitsDecision();
+	//! The number of producers parked for the retention decision
+	idx_t UndecidedParkCount();
 	//! Whether the engine waits on the consumer: a producer is parked for the retention decision, or for
 	//! space that only a pop frees
 	bool WaitsOnConsumer();
@@ -98,6 +103,10 @@ public:
 	virtual void UnblockSinks() = 0;
 	shared_ptr<ClientContext> GetContext() {
 		return context.lock();
+	}
+	//! Set at submission, before execution starts, so producers read it without a lock
+	void SetNotifier(shared_ptr<QueryResultNotifier> notifier_p) {
+		notifier = std::move(notifier_p);
 	}
 	//! The highest number of bytes the buffer ever queued. This is what the cap governs
 	virtual idx_t PeakBufferedBytes() = 0;
@@ -141,6 +150,8 @@ public:
 	}
 
 protected:
+	//! Called without glock: the callback is user code, and producers must not wait on it
+	void Notify();
 	//! Record on the result that it is no longer the connection's active query, and report it as an
 	//! error state
 	static QueryResultState Cancelled(QueryResult &result);
@@ -166,6 +177,8 @@ protected:
 	//! Set at construction and never changed afterwards, so workers read these without synchronization
 	shared_ptr<ResultFormat> format;
 	shared_ptr<ResultFormatGlobalState> format_state;
+	//! Rung when a producer makes a unit poppable in an empty queue, and at the first undecided park (may be null)
+	shared_ptr<QueryResultNotifier> notifier;
 };
 
 } // namespace duckdb

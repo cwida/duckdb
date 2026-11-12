@@ -50,6 +50,7 @@ add_library_unity(
   relation.cpp
   query_profiler.cpp
   query_result.cpp
+  query_result_notifier.cpp
   query_result_stream.cpp
   result_format.cpp
   result_set_manager.cpp

@@ -573,6 +573,68 @@ TEST_CASE("A custom collector refuses a submission that asks for a format", "[ap
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));
 }
 
+TEST_CASE("A custom collector refuses a submission with a notify callback", "[api][query_result]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &config = ClientConfig::GetConfig(*con.context);
+	DrainWatchdog watchdog(con);
+
+	std::atomic<idx_t> notifications {0};
+	QueryParameters parameters;
+	parameters.notify_callback = [&notifications]() {
+		notifications++;
+	};
+	SECTION("a collector that builds its own result") {
+		auto setting = UseTestStreamingCollector(config);
+		auto refused = con.Submit("SELECT i FROM range(1000) t(i)", parameters);
+		REQUIRE(refused->HasError());
+		REQUIRE(refused->GetErrorType() == ExceptionType::INVALID_INPUT);
+		REQUIRE(StringUtil::Contains(refused->GetError(),
+		                             "A notify callback cannot be combined with a custom result collector"));
+		REQUIRE(notifications.load() == 0);
+	}
+	SECTION("a hook that hands back the default sink") {
+		ScopedConfigSetting setting(
+		    config,
+		    [](ClientConfig &config) { config.get_result_collector = PhysicalResultCollector::GetResultCollector; },
+		    [](ClientConfig &config) { config.get_result_collector = nullptr; });
+		auto accepted = con.Submit("SELECT i FROM range(1000) t(i)", parameters);
+		REQUIRE(!accepted->HasError());
+		REQUIRE(accepted->RowCount() == 1000);
+		REQUIRE(notifications.load() > 0);
+	}
+	auto next = con.Query("SELECT 42");
+	REQUIRE(CHECK_COLUMN(next, 0, {42}));
+}
+
+TEST_CASE("A custom collector refuses a notify callback when the result statement of an expanding statement starts",
+          "[api][query_result]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &config = ClientConfig::GetConfig(*con.context);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE sales(city VARCHAR, year INTEGER, amount INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO sales VALUES ('ams', 2023, 10), ('rtm', 2024, 40)"));
+	DrainWatchdog watchdog(con);
+
+	std::atomic<idx_t> notifications {0};
+	QueryParameters parameters;
+	parameters.notify_callback = [&notifications]() {
+		notifications++;
+	};
+	{
+		auto setting = UseTestStreamingCollector(config);
+		auto refused = con.Submit("PIVOT sales ON year USING sum(amount)", parameters);
+		REQUIRE(refused->HasError());
+		REQUIRE(refused->GetErrorType() == ExceptionType::INVALID_INPUT);
+		REQUIRE(StringUtil::Contains(refused->GetError(),
+		                             "A notify callback cannot be combined with a custom result collector"));
+		// The type creation ran before the PIVOT reached the collector, so its end rang for a query that is refused
+		REQUIRE(notifications.load() > 0);
+	}
+	auto next = con.Query("SELECT 42");
+	REQUIRE(CHECK_COLUMN(next, 0, {42}));
+}
+
 TEST_CASE("A collector hook that hands back the default sink accepts a format", "[api][query_result]") {
 	DuckDB db(nullptr);
 	Connection con(db);
