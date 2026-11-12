@@ -1,0 +1,22 @@
+# name: test/sql/types/variant/variant_json_cast_registration.test
+# description: Loading JSON preserves the core casts to and from VARIANT
+# group: [variant]
+
+require json
+
+query TT
+SELECT j, (j::JSON::VARIANT::JSON)::VARCHAR
+FROM (VALUES
+    (1, NULL::VARCHAR),
+    (2, 'null'),
+    (3, '7'),
+    (4, '"duck"'),
+    (5, '{"a":[1,null]}')
+) t(i, j)
+ORDER BY i;
+----
+NULL	NULL
+null	NULL
+7	7
+"duck"	"duck"
+{"a":[1,null]}	{"a":[1,null]}

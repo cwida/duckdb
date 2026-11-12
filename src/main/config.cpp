@@ -588,9 +588,6 @@ LogicalType DBConfig::ParseLogicalType(const string &type) {
 	}
 
 	const auto type_id = StringUtil::CIEquals(type, "ANY") ? LogicalTypeId::ANY : TransformStringToLogicalTypeId(type);
-	if (type_id == LogicalTypeId::VARIANT) {
-		return LogicalType::VARIANT();
-	}
 	if (type_id == LogicalTypeId::UNBOUND) {
 		throw InternalException("Error while generating extension function overloads - unrecognized logical type %s",
 		                        type);
