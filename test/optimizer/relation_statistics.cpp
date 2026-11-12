@@ -26,6 +26,7 @@
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/operator/logical_column_data_get.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_limit.hpp"
@@ -1232,6 +1233,59 @@ TEST_CASE("Delim SEMI and ANTI joins use domain coverage", "[optimizer][relation
 	REQUIRE(
 	    RelationStatisticsHelper::EstimateSemiAntiJoinCardinality(delim_join, left_stats, right_stats).cardinality ==
 	    900);
+}
+
+TEST_CASE("Constant membership uses a selectivity floor without discarding domain bounds",
+          "[optimizer][relation_statistics]") {
+	for (idx_t projection_count : {idx_t(0), idx_t(1), idx_t(2)}) {
+		for (auto join_type : {JoinType::SEMI, JoinType::RIGHT_SEMI, JoinType::ANTI, JoinType::RIGHT_ANTI}) {
+			for (idx_t list_size : {idx_t(0), idx_t(8), idx_t(500)}) {
+				auto binding = ColumnBinding(TableIndex(10), ProjectionIndex(0));
+				auto list_binding = ColumnBinding(TableIndex(20), ProjectionIndex(0));
+				auto preserved = CreateStats({binding}, {1000}, 10000);
+				auto collection = make_uniq<ColumnDataCollection>(Allocator::DefaultAllocator(),
+				                                                  vector<LogicalType> {LogicalType::INTEGER});
+				LogicalComparisonJoin join(join_type);
+				join.children.push_back(make_uniq<LogicalDummyScan>(TableIndex(10)));
+				join.children.push_back(make_uniq<LogicalColumnDataGet>(
+				    TableIndex(20), vector<LogicalType> {LogicalType::INTEGER}, std::move(collection)));
+				for (idx_t i = 0; i < projection_count; i++) {
+					vector<unique_ptr<Expression>> expressions;
+					expressions.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, list_binding));
+					list_binding = ColumnBinding(TableIndex(30 + i), ProjectionIndex(0));
+					auto projection = make_uniq<LogicalProjection>(list_binding.table_index, std::move(expressions));
+					projection->children.push_back(std::move(join.children[1]));
+					join.children[1] = std::move(projection);
+				}
+				auto constants = CreateStats({list_binding}, {list_size}, list_size);
+				constants.columns[0].semi_anti_join_domain_evidence.TightenDomainBound(list_size);
+				auto preserve_right = join_type == JoinType::RIGHT_SEMI || join_type == JoinType::RIGHT_ANTI;
+				auto is_semi = join_type == JoinType::SEMI || join_type == JoinType::RIGHT_SEMI;
+				if (preserve_right) {
+					std::swap(join.children[0], join.children[1]);
+				}
+				join.conditions.emplace_back(
+				    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, preserve_right ? list_binding : binding),
+				    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, preserve_right ? binding : list_binding),
+				    ExpressionType::COMPARE_EQUAL);
+				auto &left = preserve_right ? constants : preserved;
+				auto &right = preserve_right ? preserved : constants;
+				auto expected = list_size == 0 ? 0 : MaxValue<idx_t>(2000, list_size * 10);
+				if (!is_semi) {
+					expected = preserved.cardinality - list_size * 10;
+				}
+				auto estimate = RelationStatisticsHelper::EstimateSemiAntiJoinCardinality(join, left, right);
+				REQUIRE(estimate.cardinality == expected);
+				REQUIRE(estimate.used_domain_evidence == (list_size > 0 && (!is_semi || list_size >= 200)));
+				auto result = CreateStats({binding}, {1000}, 10000);
+				RelationStatisticsHelper::ApplySemiAntiJoinStats(join, left, right, result);
+				REQUIRE(result.cardinality == expected);
+				if (is_semi) {
+					REQUIRE(result.columns[0].current_domain.distinct_count <= list_size);
+				}
+			}
+		}
+	}
 }
 
 TEST_CASE("Operator statistics reject incomplete child layouts", "[optimizer][relation_statistics]") {

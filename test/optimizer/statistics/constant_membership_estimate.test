@@ -1,0 +1,38 @@
+# name: test/optimizer/statistics/constant_membership_estimate.test
+# description: Constant membership retains a conservative estimate for skewed values
+# group: [statistics]
+
+statement ok
+CREATE TABLE membership_skew AS
+SELECT CASE WHEN i < 9000 THEN 'common' ELSE i::VARCHAR END AS value
+FROM range(10000) t(i);
+
+statement ok
+ANALYZE membership_skew;
+
+query I
+SELECT count(*) FROM membership_skew
+WHERE value IN ('common', '9001', '9003', '9005', '9007', '9009', '9011', '9013', 'common', NULL);
+----
+9007
+
+query I
+SELECT count(*) FROM membership_skew
+WHERE value IN ('9001', '9003', '9005', '9007', '9009', '9011', '9013', NULL);
+----
+7
+
+query I
+SELECT count(*) FROM membership_skew
+WHERE value IN ('absent1', 'absent2', 'absent3', 'absent4', 'absent5', 'absent6', NULL);
+----
+0
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+query II
+EXPLAIN SELECT * FROM membership_skew
+WHERE value IN ('common', '9001', '9003', '9005', '9007', '9009', '9011', '9013', 'common', NULL);
+----
+physical_plan	<REGEX>:(?s).*HASH_JOIN.*Join Type: SEMI.*~2,000 rows.*
