@@ -60,6 +60,22 @@ static idx_t CountCTERefs(LogicalOperator &op, TableIndex cte_index) {
 	return result;
 }
 
+// The UNNEST argument can be moved into a BoundUnnestExpression over the outer rows if it is not volatile,
+// e.g. a column reference or struct_extract(col, 'items') for unnest(t.col.items)
+static bool CanMoveUnnestArgument(const Expression &expr) {
+	return !expr.IsVolatile();
+}
+
+// Column reference that replaces the UNNEST argument in the projection above the new LOGICAL_UNNEST
+static unique_ptr<Expression> MakeUnnestOutputRef(const Expression &argument, const LogicalType &type,
+                                                  ColumnBinding binding) {
+	idx_t depth = 0;
+	if (argument.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		depth = argument.Cast<BoundColumnRefExpression>().Depth();
+	}
+	return make_uniq<BoundColumnRefExpression>(argument.GetAlias(), type, binding, depth);
+}
+
 static bool IsCTERef(LogicalOperator &op, TableIndex cte_index) {
 	return op.type == LogicalOperatorType::LOGICAL_CTE_REF && op.Cast<LogicalCTERef>().cte_index == cte_index;
 }
@@ -199,8 +215,8 @@ void UnnestRewriter::FindCandidates(unique_ptr<LogicalOperator> &root, unique_pt
 					continue;
 				}
 				auto &expr = proj.GetExpression(col_bind.column_index);
-				if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
-					// unnest reference is not a projection reference - bail
+				if (!CanMoveUnnestArgument(expr)) {
+					// volatile unnest argument - bail
 					return;
 				}
 			}
@@ -218,16 +234,13 @@ void UnnestRewriter::FindCandidates(unique_ptr<LogicalOperator> &root, unique_pt
 					// not part of the unnest
 					continue;
 				}
-				auto &bind_col = proj.expressions[col_bind.column_index]->Cast<BoundColumnRefExpression>();
+				auto &argument = *proj.expressions[col_bind.column_index];
 				auto unnest_expr = make_uniq<BoundUnnestExpression>(unnest_get->types[i]);
-				unnest_expr->ChildMutable() =
-				    BoundCastExpression::AddArrayCastToList(context, proj.expressions[col_bind.column_index]->Copy());
-				bind_col.BindingMutable() = ColumnBinding(unnest_get_index, bind_col.Binding().column_index);
+				unnest_expr->ChildMutable() = BoundCastExpression::AddArrayCastToList(context, argument.Copy());
 				auto unnest_proj_idx = ColumnBinding::PushExpression(unnest->expressions, std::move(unnest_expr));
-				ColumnBinding new_column_ref(bind_col.Binding().table_index, unnest_proj_idx);
-				auto unnest_ref = make_uniq<BoundColumnRefExpression>(bind_col.GetAlias(), unnest_get->types[i],
-				                                                      new_column_ref, bind_col.Depth());
-				proj.expressions[col_bind.column_index] = std::move(unnest_ref);
+				ColumnBinding new_column_ref(unnest_get_index, unnest_proj_idx);
+				proj.expressions[col_bind.column_index] =
+				    MakeUnnestOutputRef(argument, unnest_get->types[i], new_column_ref);
 				proj.types[col_bind.column_index] = unnest_get->types[i];
 				replacer.replacement_bindings.push_back(ReplacementBinding(
 				    col_bind, ColumnBinding(proj.table_index, col_bind.column_index), unnest_get->types[i]));
@@ -270,7 +283,7 @@ static bool ConvertCTETableInOutUnnest(ClientContext &context, unique_ptr<Logica
 			continue;
 		}
 		auto &expr = proj.GetExpression(col_bind.column_index);
-		if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+		if (!CanMoveUnnestArgument(expr)) {
 			return false;
 		}
 	}
@@ -287,16 +300,12 @@ static bool ConvertCTETableInOutUnnest(ClientContext &context, unique_ptr<Logica
 		if (col_bind.table_index != unnest_get_index) {
 			continue;
 		}
-		auto &bind_col = proj.expressions[col_bind.column_index]->Cast<BoundColumnRefExpression>();
+		auto &argument = *proj.expressions[col_bind.column_index];
 		auto unnest_expr = make_uniq<BoundUnnestExpression>(unnest_get->types[i]);
-		unnest_expr->ChildMutable() =
-		    BoundCastExpression::AddArrayCastToList(context, proj.expressions[col_bind.column_index]->Copy());
-		bind_col.BindingMutable() = ColumnBinding(unnest_get_index, bind_col.Binding().column_index);
+		unnest_expr->ChildMutable() = BoundCastExpression::AddArrayCastToList(context, argument.Copy());
 		auto unnest_proj_idx = ColumnBinding::PushExpression(unnest->expressions, std::move(unnest_expr));
-		ColumnBinding new_column_ref(bind_col.Binding().table_index, unnest_proj_idx);
-		auto unnest_ref = make_uniq<BoundColumnRefExpression>(bind_col.GetAlias(), unnest_get->types[i], new_column_ref,
-		                                                      bind_col.Depth());
-		proj.expressions[col_bind.column_index] = std::move(unnest_ref);
+		ColumnBinding new_column_ref(unnest_get_index, unnest_proj_idx);
+		proj.expressions[col_bind.column_index] = MakeUnnestOutputRef(argument, unnest_get->types[i], new_column_ref);
 		proj.types[col_bind.column_index] = unnest_get->types[i];
 		replacer.replacement_bindings.push_back(
 		    ReplacementBinding(col_bind, ColumnBinding(proj.table_index, col_bind.column_index), unnest_get->types[i]));

@@ -1,0 +1,311 @@
+# name: test/optimizer/unnest_rewriter_expression.test
+# description: the unnest rewriter also removes the decorrelation when the LATERAL UNNEST argument is an expression over the outer row
+# group: [optimizer]
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY
+
+statement ok
+create table t as select * from (values
+ (1, {'items': [{'a':'x','b':1},{'a':'y','b':2}]}, [1,2,3], [10,20], 5),
+ (2, {'items': []}, [], [30], 7),
+ (3, {'items': NULL}, NULL, NULL, NULL),
+ (4, NULL, [4, NULL], [], 1),
+ (5, {'items': [{'a':'x','b':1},{'a':'y','b':2}]}, [1,2,3], [10,20], 5),
+ (6, {'items': [{'a':NULL,'b':NULL}]}, [NULL], [NULL, 40], 2)
+) v(id, p, lst, l2, k);
+
+# struct field
+query II
+EXPLAIN SELECT id, u.l FROM t, unnest(t.p.items) u(l) ORDER BY ALL
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+query II
+SELECT id, u.l FROM t, unnest(t.p.items) u(l) ORDER BY ALL
+----
+1	{'a': x, 'b': 1}
+1	{'a': y, 'b': 2}
+5	{'a': x, 'b': 1}
+5	{'a': y, 'b': 2}
+6	{'a': NULL, 'b': NULL}
+
+# struct_extract
+query II
+EXPLAIN SELECT id, u.l FROM t, unnest(struct_extract(p, 'items')) u(l) ORDER BY ALL
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+query II
+SELECT id, u.l FROM t, unnest(struct_extract(p, 'items')) u(l) ORDER BY ALL
+----
+1	{'a': x, 'b': 1}
+1	{'a': y, 'b': 2}
+5	{'a': x, 'b': 1}
+5	{'a': y, 'b': 2}
+6	{'a': NULL, 'b': NULL}
+
+# list_transform over a column
+query II
+EXPLAIN SELECT id, u.x FROM t, unnest(list_transform(t.lst, lambda x: x + 1)) u(x) ORDER BY ALL
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+query II
+SELECT id, u.x FROM t, unnest(list_transform(t.lst, lambda x: x + 1)) u(x) ORDER BY ALL
+----
+1	2
+1	3
+1	4
+4	5
+4	NULL
+5	2
+5	3
+5	4
+6	NULL
+
+# expression over two outer columns
+query II
+EXPLAIN SELECT id, u.x FROM t, unnest(list_concat(t.lst, t.l2)) u(x) ORDER BY ALL
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+query II
+SELECT id, u.x FROM t, unnest(list_concat(t.lst, t.l2)) u(x) ORDER BY ALL
+----
+1	1
+1	2
+1	3
+1	10
+1	20
+2	30
+4	4
+4	NULL
+5	1
+5	2
+5	3
+5	10
+5	20
+6	40
+6	NULL
+6	NULL
+
+# lambda capturing another outer column
+query II
+EXPLAIN SELECT id, u.x FROM t, unnest(list_transform(t.lst, lambda x: x * t.k)) u(x) ORDER BY ALL
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+query II
+SELECT id, u.x FROM t, unnest(list_transform(t.lst, lambda x: x * t.k)) u(x) ORDER BY ALL
+----
+1	5
+1	10
+1	15
+4	4
+4	NULL
+5	5
+5	10
+5	15
+6	NULL
+
+# two expression unnests in one FROM
+query II
+EXPLAIN SELECT id, u.l, w.x FROM t, unnest(t.p.items) u(l), unnest(list_transform(t.l2, lambda y: y + 1)) w(x) ORDER BY ALL
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+query III
+SELECT id, u.l, w.x FROM t, unnest(t.p.items) u(l), unnest(list_transform(t.l2, lambda y: y + 1)) w(x) ORDER BY ALL
+----
+1	{'a': x, 'b': 1}	11
+1	{'a': x, 'b': 1}	21
+1	{'a': y, 'b': 2}	11
+1	{'a': y, 'b': 2}	21
+5	{'a': x, 'b': 1}	11
+5	{'a': x, 'b': 1}	21
+5	{'a': y, 'b': 2}	11
+5	{'a': y, 'b': 2}	21
+6	{'a': NULL, 'b': NULL}	41
+6	{'a': NULL, 'b': NULL}	NULL
+
+# chained: second unnest argument references the first unnest
+query II
+EXPLAIN SELECT id, y FROM t, unnest(t.lst) u(x), unnest(list_transform(t.l2, lambda z: z + x)) w(y) ORDER BY ALL
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+query II
+SELECT id, y FROM t, unnest(t.lst) u(x), unnest(list_transform(t.l2, lambda z: z + x)) w(y) ORDER BY ALL
+----
+1	11
+1	12
+1	13
+1	21
+1	22
+1	23
+5	11
+5	12
+5	13
+5	21
+5	22
+5	23
+6	NULL
+6	NULL
+
+# coalesce turns a NULL list into a list
+query II
+EXPLAIN SELECT id, u.x FROM t, unnest(coalesce(t.lst, [99])) u(x) ORDER BY ALL
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+query II
+SELECT id, u.x FROM t, unnest(coalesce(t.lst, [99])) u(x) ORDER BY ALL
+----
+1	1
+1	2
+1	3
+3	99
+4	4
+4	NULL
+5	1
+5	2
+5	3
+6	NULL
+
+# list slice
+query II
+EXPLAIN SELECT id, u.x FROM t, unnest(t.lst[1:2]) u(x) ORDER BY ALL
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+query II
+SELECT id, u.x FROM t, unnest(t.lst[1:2]) u(x) ORDER BY ALL
+----
+1	1
+1	2
+4	4
+4	NULL
+5	1
+5	2
+6	NULL
+
+# LEFT JOIN LATERAL keeps rows with NULL / empty lists (not rewritten, as for a plain column)
+query II
+EXPLAIN SELECT id, u.l FROM t LEFT JOIN LATERAL unnest(t.p.items) u(l) ON true ORDER BY ALL
+----
+logical_opt	<REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+query II
+SELECT id, u.l FROM t LEFT JOIN LATERAL unnest(t.p.items) u(l) ON true ORDER BY ALL
+----
+1	{'a': x, 'b': 1}
+1	{'a': y, 'b': 2}
+2	NULL
+3	NULL
+4	NULL
+5	{'a': x, 'b': 1}
+5	{'a': y, 'b': 2}
+6	{'a': NULL, 'b': NULL}
+
+# WITH ORDINALITY is not rewritten
+query II
+EXPLAIN SELECT id, u.x, u.o FROM t, unnest(list_transform(t.lst, lambda x: x + 1)) WITH ORDINALITY u(x, o) ORDER BY ALL
+----
+logical_opt	<REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+query III
+SELECT id, u.x, u.o FROM t, unnest(list_transform(t.lst, lambda x: x + 1)) WITH ORDINALITY u(x, o) ORDER BY ALL
+----
+1	2	1
+1	3	2
+1	4	3
+4	5	1
+4	NULL	2
+5	2	1
+5	3	2
+5	4	3
+6	NULL	1
+
+# an argument that fails on some rows raises the same error after the rewrite
+statement ok
+CREATE TABLE s AS SELECT * FROM (VALUES (1, ['1', '2']), (2, ['3', 'abc']), (3, ['4'])) v(id, strs);
+
+query II
+EXPLAIN SELECT id, u.x FROM s, unnest(list_transform(s.strs, lambda v: v::INTEGER)) u(x)
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+statement error
+SELECT id, u.x FROM s, unnest(list_transform(s.strs, lambda v: v::INTEGER)) u(x)
+----
+Could not convert string 'abc' to INT32
+
+query II
+SELECT id, u.x FROM s, unnest(list_transform(s.strs, lambda v: TRY_CAST(v AS INTEGER))) u(x) ORDER BY ALL
+----
+1	1
+1	2
+2	3
+2	NULL
+3	4
+
+# a volatile argument is not rewritten
+query II
+EXPLAIN SELECT id, u.x FROM t, unnest(list_transform(t.lst, lambda x: random())) u(x)
+----
+logical_opt	<REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+# the DELIM_JOIN path (delim joins not materialized as CTEs)
+statement ok
+SET delim_join_as_cte = false
+
+query II
+EXPLAIN SELECT id, u.l FROM t, unnest(t.p.items) u(l)
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+query II
+SELECT id, u.l FROM t, unnest(t.p.items) u(l) ORDER BY ALL
+----
+1	{'a': x, 'b': 1}
+1	{'a': y, 'b': 2}
+5	{'a': x, 'b': 1}
+5	{'a': y, 'b': 2}
+6	{'a': NULL, 'b': NULL}
+
+query II
+EXPLAIN SELECT id, u.x FROM t, unnest(list_transform(t.lst, lambda x: x + t.k)) u(x)
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+query II
+SELECT id, u.x FROM t, unnest(list_transform(t.lst, lambda x: x + t.k)) u(x) ORDER BY ALL
+----
+1	6
+1	7
+1	8
+4	5
+4	NULL
+5	6
+5	7
+5	8
+6	NULL
+
+statement ok
+RESET delim_join_as_cte
+
+# equivalence with the non-LATERAL form on more rows
+statement ok
+CREATE TABLE raw AS SELECT i AS seq, {'timestamp': i, 'items': CASE WHEN i % 5 = 0 THEN NULL WHEN i % 7 = 0 THEN [] ELSE [{'a': 'x' || (i % 3), 'b': i % 2}, {'a': 'y', 'b': 1}] END} AS p FROM range(10000) t(i)
+
+query I
+SELECT count(*) FROM raw, unnest(raw.p.items) u(l)
+----
+13714
+
+query II
+(SELECT seq, u.l FROM raw, unnest(raw.p.items) u(l) EXCEPT ALL SELECT seq, unnest(p.items) FROM raw)
+UNION ALL
+(SELECT seq, unnest(p.items) FROM raw EXCEPT ALL SELECT seq, u.l FROM raw, unnest(raw.p.items) u(l))
+----
