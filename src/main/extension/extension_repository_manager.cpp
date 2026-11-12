@@ -8,6 +8,8 @@
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension_helper.hpp"
+#include "duckdb/main/http/http_transport_manager.hpp"
+#include "duckdb/main/http/http_util.hpp"
 #include "duckdb/main/settings.hpp"
 #include "mbedtls_wrapper.hpp"
 #include "yyjson.hpp"
@@ -132,10 +134,10 @@ string ExtensionRepositoryManager::GetPublicKeyFingerprint(const string &compact
 //===--------------------------------------------------------------------===//
 //! Read a small file that may live on a remote file system (autoloading the extension that provides it), bounded by
 //! MAX_METADATA_FILE_SIZE: a metadata file is a few lines of json
-static string ReadSmallRemoteFile(DatabaseInstance &db, optional_ptr<ClientContext> context, const string &path) {
+//! Remote file systems are provided by extensions - autoload the one `path` needs if necessary. A missing extension is
+//! reported as such: it is not something the remote side did
+static void LoadExtensionForRemotePath(DatabaseInstance &db, optional_ptr<ClientContext> context, const string &path) {
 	auto &fs = db.GetFileSystem();
-	// remote file systems are provided by extensions - autoload them if necessary. A missing extension is reported as
-	// such: it is not something the remote side did
 	string required_extension;
 	if (fs.IsRemoteFile(path, required_extension) && !db.ExtensionIsLoaded(required_extension)) {
 		if (!context || !Settings::Get<AutoloadKnownExtensionsSetting>(*context)) {
@@ -154,6 +156,11 @@ static string ReadSmallRemoteFile(DatabaseInstance &db, optional_ptr<ClientConte
 			    path, required_extension, error.RawMessage(), required_extension));
 		}
 	}
+}
+
+static string ReadSmallRemoteFile(DatabaseInstance &db, optional_ptr<ClientContext> context, const string &path) {
+	LoadExtensionForRemotePath(db, context, path);
+	auto &fs = db.GetFileSystem();
 	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
 	auto file_size = handle->GetFileSize();
 	if (file_size > MAX_METADATA_FILE_SIZE) {
@@ -183,7 +190,10 @@ vector<string> ExtensionRepositoryManager::FetchPublicKeys(DatabaseInstance &db,
 		                  "directly using `USING PUBLIC KEY '<key>'` if the repository does not serve it",
 		                  metadata_path, error.RawMessage());
 	}
+	return ParsePublicKeys(contents, metadata_path);
+}
 
+vector<string> ExtensionRepositoryManager::ParsePublicKeys(const string &contents, const string &metadata_path) {
 	RepositoryJSONDocument document(yyjson_read(contents.c_str(), contents.size(), 0));
 	if (!document.doc) {
 		throw IOException("Failed to read extension repository metadata file '%s': the file is not valid json",
@@ -360,6 +370,52 @@ string ExtensionRepositoryManager::NormalizeRepositoryName(const string &name) {
 
 static constexpr const idx_t METADATA_FORMAT_VERSION = 1;
 
+//! Read a small file over https for resolving a repository from its host. The file decides which prefix and which
+//! signing keys get trusted, so it is not read through the file system, whose http settings the user controls: the url
+//! must be https, a secret or setting that switches verification off for it is refused, and the server certificate is
+//! verified whatever the provider's defaults are. Redirects are followed as the client follows them: a host that
+//! redirects is still the host speaking, and where it sends its visitors is its own responsibility
+static string ReadAuthenticatedHTTPS(DatabaseInstance &db, optional_ptr<ClientContext> context, const string &url,
+                                     const char *what) {
+	if (!StringUtil::StartsWith(url, "https://")) {
+		throw InvalidInputException("The %s must be reached over https, got '%s'", what, url);
+	}
+	LoadExtensionForRemotePath(db, context, url);
+
+	auto &manager = db.config.GetHTTPTransportManager();
+	auto session = context ? manager.CreateSession(*context, url) : manager.CreateSession(db, url);
+	auto &params = session.Parameters();
+	// a secret or setting that switches verification off for this url is refused outright, rather than silently
+	// overruled: it says the user does not want this host verified, and an unverified host cannot vouch for anything
+	if (params.override_verify_ssl && !params.verify_ssl) {
+		throw InvalidInputException(
+		    "Cannot read the %s '%s': certificate verification is disabled for it (a VERIFY_SSL "
+		    "false secret or setting applies), and a repository is only resolved from a host "
+		    "that is verified",
+		    what, url);
+	}
+	// ...and verification is required regardless of the provider's defaults
+	params.RequireServerCertificateVerification();
+	params.keep_alive = false;
+
+	HTTPHeaders headers(db);
+	GetRequestInfo get_request(url, headers, params, nullptr, nullptr);
+	get_request.try_request = true;
+	auto response = session.Request(get_request);
+	if (response->HasRequestError()) {
+		throw IOException("Failed to read the %s '%s': %s", what, url, response->GetRequestError());
+	}
+	if (!response->Success()) {
+		throw IOException("Failed to read the %s '%s': HTTP %d %s", what, url, static_cast<int32_t>(response->status),
+		                  response->GetError());
+	}
+	if (response->body.size() > MAX_METADATA_FILE_SIZE) {
+		throw IOException("Failed to read the %s '%s': %llu bytes is too large for a repository metadata file", what,
+		                  url, response->body.size());
+	}
+	return response->body;
+}
+
 //! The root object of a host's metadata file, after checking its version
 static yyjson_val *ReadVersionedObject(RepositoryJSONDocument &document, const string &path) {
 	if (!document.doc) {
@@ -392,12 +448,16 @@ ExtensionRepositoryResolution ExtensionRepositoryManager::ResolveRepositoryFromH
 	ExtensionRepositoryResolution resolution;
 	resolution.host = name;
 
-	// the host is the name the user typed, reached over https: that is what makes the file the host's own statement
+	// the host is the name the user typed, reached over verified https: that is what makes the file the host's own
+	// statement
 	auto metadata_path = "https://" + name + "/" + string(METADATA_FILE);
 	string contents;
 	try {
-		contents = ReadSmallRemoteFile(db, context, metadata_path);
+		contents = ReadAuthenticatedHTTPS(db, context, metadata_path, "host's metadata file");
 	} catch (MissingExtensionException &) {
+		throw;
+	} catch (InvalidInputException &) {
+		// a policy refusal (verification switched off, a non-https hop): not something the host did
 		throw;
 	} catch (std::exception &ex) {
 		ErrorData error(ex);
@@ -415,6 +475,13 @@ ExtensionRepositoryResolution ExtensionRepositoryManager::ResolveRepositoryFromH
 	}
 	resolution.url = string(yyjson_get_str(url), yyjson_get_len(url));
 	StringUtil::RTrim(resolution.url, "/");
+	// the keys are fetched from the prefix next: over anything but https they could be anyone's
+	if (!StringUtil::StartsWith(resolution.url, "https://")) {
+		throw InvalidInputException("Cannot create extension repository '%s': the host names the repository at '%s', "
+		                            "but a repository resolved from its host must be served over https, so that its "
+		                            "signing keys are fetched from where the host says they are",
+		                            name, resolution.url);
+	}
 	return resolution;
 }
 
@@ -557,16 +624,22 @@ ExtensionRepository ExtensionRepositoryManager::CreateRepository(DatabaseInstanc
 	}
 
 	ExtensionRepository repository(name, requested.path, requested.public_keys);
+	vector<string> public_keys;
 	if (from_host) {
 		auto resolution = ResolveRepositoryFromHost(db, context, name);
 		repository.path = resolution.url;
 		repository.host = name;
+		// the keys come from the prefix the host named, fetched as strictly as the host's own file was
+		auto metadata_path = repository.path + "/" + string(METADATA_FILE);
+		public_keys = ParsePublicKeys(ReadAuthenticatedHTTPS(db, context, metadata_path, "repository's metadata file"),
+		                              metadata_path);
+	} else if (repository.public_keys.empty()) {
+		// no key was provided: the repository is expected to serve it at its prefix
+		public_keys = FetchPublicKeys(db, context, repository.path);
+	} else {
+		public_keys = NormalizePublicKeys(repository.public_keys);
 	}
-
-	// if no key was provided, the repository is expected to serve it at its prefix. The keys are pinned here: they are
-	// stored alongside the repository and never fetched again
-	auto public_keys = repository.public_keys.empty() ? FetchPublicKeys(db, context, repository.path)
-	                                                  : NormalizePublicKeys(repository.public_keys);
+	// the keys are pinned here: they are stored alongside the repository and never fetched again
 	if (public_keys.empty()) {
 		throw InvalidInputException("Cannot create extension repository '%s': no public key was provided or served",
 		                            name);

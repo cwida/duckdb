@@ -86,6 +86,9 @@ public:
 	static vector<string> FetchPublicKeys(DatabaseInstance &db, optional_ptr<ClientContext> context,
 	                                      const string &prefix);
 
+	//! The keys in a metadata file's contents (see FetchPublicKeys); `metadata_path` names the file in errors
+	static vector<string> ParsePublicKeys(const string &contents, const string &metadata_path);
+
 	//! The sha256 fingerprint of a public key, used to compare a key against the fingerprint published by a repository
 	static string GetPublicKeyFingerprint(const string &compact_key);
 
