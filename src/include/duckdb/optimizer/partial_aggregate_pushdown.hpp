@@ -17,7 +17,7 @@ class Optimizer;
 //! The PartialAggregatePushdown optimizer pushes partial aggregate states below joins when this can reduce join work
 class PartialAggregatePushdown : public LogicalOperatorVisitor {
 public:
-	explicit PartialAggregatePushdown(Optimizer &optimizer);
+	PartialAggregatePushdown(Optimizer &optimizer, unique_ptr<LogicalOperator> &plan);
 
 	void VisitOperator(unique_ptr<LogicalOperator> &op) override;
 
@@ -35,6 +35,8 @@ private:
 
 private:
 	Optimizer &optimizer;
+	//! Borrow the owning slot so CTE lookups follow plan replacements.
+	unique_ptr<LogicalOperator> &plan;
 	column_binding_map_t<ColumnBinding> replacement_map;
 };
 } // namespace duckdb

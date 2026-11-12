@@ -1,0 +1,169 @@
+# name: test/optimizer/partial_aggregate_uncertain_domain_plan.test
+# description: Plan partial aggregation from complete input grouping domains
+# group: [optimizer]
+
+require parquet
+
+statement ok
+CREATE TABLE unique_native AS
+SELECT i::VARCHAR AS k, i % 7 AS g, i AS m FROM range(5000) t(i)
+
+statement ok
+CREATE TABLE repeated_native AS
+SELECT i % 50 AS k, i % 7 AS g, i AS tag FROM range(5000) t(i)
+
+statement ok
+CREATE TABLE asymmetric_native AS
+SELECT i % 10 AS k, i % 100 AS g, i AS m FROM range(10000) t(i)
+
+statement ok
+CREATE TABLE small_native AS SELECT i % 10 AS k FROM range(100) t(i)
+
+statement ok
+CREATE TABLE arms_native AS SELECT i % 500 AS k, i % 500 AS g FROM range(5000) t(i)
+
+statement ok
+ANALYZE
+
+statement ok
+COPY unique_native TO '{TEST_DIR}/pap_unique.parquet' (FORMAT PARQUET)
+
+statement ok
+COPY repeated_native TO '{TEST_DIR}/pap_repeated.parquet' (FORMAT PARQUET)
+
+statement ok
+COPY asymmetric_native TO '{TEST_DIR}/pap_asymmetric.parquet' (FORMAT PARQUET)
+
+statement ok
+COPY small_native TO '{TEST_DIR}/pap_small.parquet' (FORMAT PARQUET)
+
+statement ok
+COPY arms_native TO '{TEST_DIR}/pap_arms.parquet' (FORMAT PARQUET)
+
+statement ok
+CREATE VIEW unique_parquet AS FROM read_parquet('{TEST_DIR}/pap_unique.parquet')
+
+statement ok
+CREATE VIEW repeated_parquet AS FROM read_parquet('{TEST_DIR}/pap_repeated.parquet')
+
+statement ok
+CREATE VIEW asymmetric_parquet AS FROM read_parquet('{TEST_DIR}/pap_asymmetric.parquet')
+
+statement ok
+CREATE VIEW small_parquet AS FROM read_parquet('{TEST_DIR}/pap_small.parquet')
+
+statement ok
+CREATE VIEW arms_parquet AS FROM read_parquet('{TEST_DIR}/pap_arms.parquet')
+
+foreach storage native parquet
+
+query II
+EXPLAIN
+SELECT a.g, count(*), sum(a.m)
+FROM unique_{storage} a JOIN unique_{storage} b USING (k)
+GROUP BY a.g
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN
+SELECT a.g, count(*)
+FROM repeated_{storage} a JOIN repeated_{storage} b USING (k)
+GROUP BY a.g
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN
+WITH a AS MATERIALIZED (SELECT k, g, tag FROM repeated_{storage})
+SELECT a.g, count(*), sum(a.tag)
+FROM a JOIN repeated_{storage} b USING (k)
+GROUP BY a.g
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN
+WITH a AS MATERIALIZED (
+	SELECT x.k, x.g, sum(x.tag) AS m
+	FROM repeated_{storage} x JOIN repeated_{storage} y USING (k)
+	GROUP BY x.k, x.g
+)
+SELECT a.g, count(*), sum(a.m::DOUBLE)
+FROM a JOIN repeated_{storage} b USING (k)
+GROUP BY a.g
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN
+SELECT a.tag, count(*)
+FROM repeated_{storage} a JOIN repeated_{storage} b USING (k)
+GROUP BY a.tag
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN
+SELECT a.tag, b.tag, count(*)
+FROM repeated_{storage} a JOIN repeated_{storage} b USING (k)
+GROUP BY a.tag, b.tag
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN
+SELECT a.g, b.g, count(*)
+FROM (SELECT k, tag % 7 AS g FROM repeated_{storage}) a
+JOIN (SELECT k, tag % 11 AS g FROM repeated_{storage}) b USING (k)
+GROUP BY a.g, b.g
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN
+SELECT a.g, count(*), sum(a.m)
+FROM asymmetric_{storage} a JOIN small_{storage} b USING (k)
+GROUP BY a.g
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# Group combinations from separate UNION arms are not independent.
+statement ok
+CREATE VIEW union_{storage} AS
+SELECT k, 0::BIGINT AS g FROM arms_{storage}
+UNION ALL
+SELECT 0::BIGINT AS k, g FROM arms_{storage}
+
+query II
+EXPLAIN
+SELECT a.g, b.g, count(*)
+FROM union_{storage} a JOIN union_{storage} b USING (k)
+GROUP BY a.g, b.g
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# The same correlated group domains survive two references to one materialized producer.
+query II
+EXPLAIN
+WITH v AS MATERIALIZED (SELECT * FROM union_{storage})
+SELECT a.g, b.g, count(*)
+FROM v a JOIN v b USING (k)
+GROUP BY a.g, b.g
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# A nested materialized owner exposes its continuation, with reordered output positions.
+query II
+EXPLAIN
+WITH v AS MATERIALIZED (
+	WITH x AS MATERIALIZED (SELECT g AS label, k AS key FROM union_{storage})
+	SELECT key AS k, label AS g FROM x
+)
+SELECT a.g, b.g, count(*)
+FROM v a JOIN v b USING (k)
+GROUP BY a.g, b.g
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+endloop

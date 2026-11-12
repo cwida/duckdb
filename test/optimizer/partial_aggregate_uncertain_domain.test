@@ -1,0 +1,190 @@
+# name: test/optimizer/partial_aggregate_uncertain_domain.test
+# description: Partial aggregate results across uncertain domains and materialized CTEs
+# group: [optimizer]
+
+require parquet
+
+statement ok
+CREATE TABLE unique_native AS
+SELECT i::VARCHAR AS k, i % 7 AS g, i AS m FROM range(5000) t(i)
+
+statement ok
+CREATE TABLE repeated_native AS
+SELECT i % 50 AS k, i % 7 AS g, i AS tag FROM range(5000) t(i)
+
+statement ok
+CREATE TABLE asymmetric_native AS
+SELECT i % 10 AS k, i % 100 AS g, i AS m FROM range(10000) t(i)
+
+statement ok
+CREATE TABLE small_native AS SELECT i % 10 AS k FROM range(100) t(i)
+
+statement ok
+CREATE TABLE arms_native AS SELECT i % 500 AS k, i % 500 AS g FROM range(5000) t(i)
+
+statement ok
+ANALYZE
+
+statement ok
+COPY unique_native TO '{TEST_DIR}/pap_unique.parquet' (FORMAT PARQUET)
+
+statement ok
+COPY repeated_native TO '{TEST_DIR}/pap_repeated.parquet' (FORMAT PARQUET)
+
+statement ok
+COPY asymmetric_native TO '{TEST_DIR}/pap_asymmetric.parquet' (FORMAT PARQUET)
+
+statement ok
+COPY small_native TO '{TEST_DIR}/pap_small.parquet' (FORMAT PARQUET)
+
+statement ok
+COPY arms_native TO '{TEST_DIR}/pap_arms.parquet' (FORMAT PARQUET)
+
+statement ok
+CREATE VIEW unique_parquet AS FROM read_parquet('{TEST_DIR}/pap_unique.parquet')
+
+statement ok
+CREATE VIEW repeated_parquet AS FROM read_parquet('{TEST_DIR}/pap_repeated.parquet')
+
+statement ok
+CREATE VIEW asymmetric_parquet AS FROM read_parquet('{TEST_DIR}/pap_asymmetric.parquet')
+
+statement ok
+CREATE VIEW small_parquet AS FROM read_parquet('{TEST_DIR}/pap_small.parquet')
+
+statement ok
+CREATE VIEW arms_parquet AS FROM read_parquet('{TEST_DIR}/pap_arms.parquet')
+
+foreach storage native parquet
+
+# Unknown string NDV must not turn a key lookup into a predicted aggregation collapse.
+query II
+SELECT sum(n), sum(s) FROM (
+	SELECT a.g, count(*) AS n, sum(a.m) AS s
+	FROM unique_{storage} a JOIN unique_{storage} b USING (k)
+	GROUP BY a.g
+)
+----
+5000	12497500
+
+# Supported small key domains still permit useful partial aggregation.
+query I
+SELECT sum(n) FROM (
+	SELECT a.g, count(*) AS n
+	FROM repeated_{storage} a JOIN repeated_{storage} b USING (k)
+	GROUP BY a.g
+)
+----
+500000
+
+# Materialized references retain their producer's supported join-key domain.
+query II
+WITH a AS MATERIALIZED (SELECT k, g, tag FROM repeated_{storage})
+SELECT sum(n), sum(s) FROM (
+	SELECT a.g, count(*) AS n, sum(a.tag) AS s
+	FROM a JOIN repeated_{storage} b USING (k)
+	GROUP BY a.g
+)
+----
+500000	1249750000
+
+# Resolve a rewritten producer before aggregating its consumer.
+query IR
+WITH a AS MATERIALIZED (
+	SELECT x.k, x.g, sum(x.tag) AS m
+	FROM repeated_{storage} x JOIN repeated_{storage} y USING (k)
+	GROUP BY x.k, x.g
+)
+SELECT sum(n), sum(s) FROM (
+	SELECT a.g, count(*) AS n, sum(a.m::DOUBLE) AS s
+	FROM a JOIN repeated_{storage} b USING (k)
+	GROUP BY a.g
+)
+----
+35000	124975000000.0
+
+# Extra grouping columns retain every row on one input.
+query II
+SELECT count(*), sum(n) FROM (
+	SELECT a.tag, count(*) AS n
+	FROM repeated_{storage} a JOIN repeated_{storage} b USING (k)
+	GROUP BY a.tag
+)
+----
+5000	500000
+
+# Group columns on both inputs must be included in the estimated reduction.
+query II
+SELECT count(*), sum(n) FROM (
+	SELECT a.tag, b.tag, count(*) AS n
+	FROM repeated_{storage} a JOIN repeated_{storage} b USING (k)
+	GROUP BY a.tag, b.tag
+)
+----
+500000	500000
+
+# Unknown expression domains must not predict a reduction from the join keys alone.
+query II
+SELECT count(*), sum(n) FROM (
+	SELECT a.g, b.g, count(*) AS n
+	FROM (SELECT k, tag % 7 AS g FROM repeated_{storage}) a
+	JOIN (SELECT k, tag % 11 AS g FROM repeated_{storage}) b USING (k)
+	GROUP BY a.g, b.g
+)
+----
+77	500000
+
+# Extra groups on one input do not change the other input's join-key domain.
+query III
+SELECT count(*), sum(n), sum(s) FROM (
+	SELECT a.g, count(*) AS n, sum(a.m) AS s
+	FROM asymmetric_{storage} a JOIN small_{storage} b USING (k)
+	GROUP BY a.g
+)
+----
+100	100000	499950000
+
+# Group combinations from separate UNION arms are not independent.
+statement ok
+CREATE VIEW union_{storage} AS
+SELECT k, 0::BIGINT AS g FROM arms_{storage}
+UNION ALL
+SELECT 0::BIGINT AS k, g FROM arms_{storage}
+
+query II
+SELECT count(*), sum(n) FROM (
+	SELECT a.g, b.g, count(*) AS n
+	FROM union_{storage} a JOIN union_{storage} b USING (k)
+	GROUP BY a.g, b.g
+)
+----
+250000	25150000
+
+query III
+WITH v AS MATERIALIZED (SELECT * FROM union_{storage})
+SELECT count(*), sum(n), count(*) FILTER (
+	WHERE n <> 100 + 100*(ag=0)::INTEGER + 100*(bg=0)::INTEGER + 50000*(ag=0 AND bg=0)::INTEGER
+) FROM (
+	SELECT a.g ag, b.g bg, count(*) n
+	FROM v a JOIN v b USING (k)
+	GROUP BY a.g, b.g
+)
+----
+250000	25150000	0
+
+query III
+WITH v AS MATERIALIZED (
+	WITH x AS MATERIALIZED (SELECT g AS label, k AS key FROM union_{storage})
+	SELECT key AS k, label AS g FROM x
+)
+SELECT count(*), sum(n), count(*) FILTER (
+	WHERE n <> 100 + 100*(ag=0)::INTEGER + 100*(bg=0)::INTEGER + 50000*(ag=0 AND bg=0)::INTEGER
+) FROM (
+	SELECT a.g ag, b.g bg, count(*) n
+	FROM v a JOIN v b USING (k)
+	GROUP BY a.g, b.g
+)
+----
+250000	25150000	0
+
+endloop
