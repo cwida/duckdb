@@ -282,7 +282,10 @@ idx_t RadixHTConfig::ExternalRadixBits(const bool dynamic) const {
 	// Because we'll have too many pages in memory to do the partitioning in the first place
 
 	// Budget row blocks and optional heap or exported-state blocks, with headroom for repartitioning.
-	const auto memory_limit = dynamic ? sink.temporary_memory_state->GetReservation() : sink.memory_limit / 2;
+	const auto reservation = sink.temporary_memory_state->GetReservation();
+	// An unspillable arena cannot fund a larger partitioning working set.
+	const auto use_reservation = dynamic && (sink.spill_plan || reservation <= sink.memory_limit);
+	const auto memory_limit = use_reservation ? reservation : sink.memory_limit / 2;
 	const idx_t pages_per_partition = sink.radix_ht.GetLayout().AllConstant() && !sink.spill_plan ? 2 : 4;
 	const auto max_partitions = memory_limit / sink.number_of_threads / sink.block_alloc_size / pages_per_partition;
 
@@ -598,9 +601,17 @@ bool ShouldExportStates(RadixHTGlobalSinkState &gstate, RadixHTLocalSinkState &l
 	return arena_size >= gstate.GetThreadLimit() / RadixHTConfig::AGGREGATE_STATE_SPILL_DIVISOR;
 }
 
-// Without a spill plan, abandoning cannot free the arena and re-creates repeated groups' states in it,
-// so abandon again only once the HT's spillable part has grown by thread_limit / AGGREGATE_STATE_SPILL_DIVISOR
-// since the last abandon.
+idx_t SpillableLimit(RadixHTGlobalSinkState &gstate, GroupedAggregateHashTable &ht) {
+	const auto thread_limit = gstate.GetThreadLimit();
+	if (gstate.spill_plan || ht.GetAggregateAllocator()->AllocationSize() == 0 ||
+	    !BufferManager::GetBufferManager(gstate.context).HasTemporaryDirectory()) {
+		return thread_limit;
+	}
+	// The arena's minimum reservation can exceed the memory limit.
+	return MinValue(thread_limit, gstate.memory_limit / gstate.number_of_threads / 10 * 8);
+}
+
+// Without a spill plan, arena pressure alone must not repeatedly abandon and re-create the same states.
 bool MemoryPressure(RadixHTGlobalSinkState &gstate, RadixHTLocalSinkState &lstate, GroupedAggregateHashTable &ht,
                     idx_t total_size) {
 	const auto thread_limit = gstate.GetThreadLimit();
@@ -614,8 +625,12 @@ bool MemoryPressure(RadixHTGlobalSinkState &gstate, RadixHTLocalSinkState &lstat
 		// abandoning duplicates nothing that cannot spill
 		return true;
 	}
-	return gstate.SpillableSize(ht) >
-	       lstate.size_after_abandon + thread_limit / RadixHTConfig::AGGREGATE_STATE_SPILL_DIVISOR;
+	const auto spillable_size = gstate.SpillableSize(ht);
+	const auto arena_size = ht.GetAggregateAllocator()->AllocationSize();
+	// Preserve growth opportunities when spilling rows would reclaim little compared with the arena.
+	const auto growth_limit =
+	    gstate.external || spillable_size > arena_size / 4 ? SpillableLimit(gstate, ht) : thread_limit;
+	return spillable_size > lstate.size_after_abandon + growth_limit / RadixHTConfig::AGGREGATE_STATE_SPILL_DIVISOR;
 }
 
 void UpdateSinkReservation(ClientContext &context, RadixHTGlobalSinkState &gstate, GroupedAggregateHashTable &ht,
@@ -652,9 +667,7 @@ void MaybeRepartition(ClientContext &context, RadixHTGlobalSinkState &gstate, Ra
 	const auto total_size = ht.GetSizeInBytes();
 	UpdateSinkReservation(context, gstate, ht, total_size);
 
-	// Without a spill plan the arena stays in memory either way, so only the spillable part decides
-	// whether to go external.
-	if (gstate.SpillableSize(ht) > gstate.GetThreadLimit()) {
+	if (gstate.SpillableSize(ht) > SpillableLimit(gstate, ht)) {
 		if (gstate.config.SetRadixBitsToExternal()) {
 			lstate.PrepareForSpill(gstate);
 			// We're approaching the memory limit, unpin the data
