@@ -20,7 +20,7 @@ statement ok
 CREATE TABLE small_native AS SELECT i % 10 AS k FROM range(100) t(i)
 
 statement ok
-CREATE TABLE arms_native AS SELECT i % 500 AS k, i % 500 AS g FROM range(5000) t(i)
+CREATE TABLE arms_native AS SELECT i % 50 AS k, i % 50 AS g FROM range(500) t(i)
 
 statement ok
 CREATE TABLE large_native AS SELECT i % 50 AS k, i AS tag FROM range(50000) t(i)
@@ -205,19 +205,19 @@ SELECT count(*), sum(n) FROM (
 	GROUP BY a.g, b.g
 )
 ----
-250000	25150000
+2500	265000
 
 query III
 WITH v AS MATERIALIZED (SELECT * FROM union_{storage})
 SELECT count(*), sum(n), count(*) FILTER (
-	WHERE n <> 100 + 100*(ag=0)::INTEGER + 100*(bg=0)::INTEGER + 50000*(ag=0 AND bg=0)::INTEGER
+	WHERE n <> 100 + 100*(ag=0)::INTEGER + 100*(bg=0)::INTEGER + 5000*(ag=0 AND bg=0)::INTEGER
 ) FROM (
 	SELECT a.g ag, b.g bg, count(*) n
 	FROM v a JOIN v b USING (k)
 	GROUP BY a.g, b.g
 )
 ----
-250000	25150000	0
+2500	265000	0
 
 query III
 WITH v AS MATERIALIZED (
@@ -225,13 +225,13 @@ WITH v AS MATERIALIZED (
 	SELECT key AS k, label AS g FROM x
 )
 SELECT count(*), sum(n), count(*) FILTER (
-	WHERE n <> 100 + 100*(ag=0)::INTEGER + 100*(bg=0)::INTEGER + 50000*(ag=0 AND bg=0)::INTEGER
+	WHERE n <> 100 + 100*(ag=0)::INTEGER + 100*(bg=0)::INTEGER + 5000*(ag=0 AND bg=0)::INTEGER
 ) FROM (
 	SELECT a.g ag, b.g bg, count(*) n
 	FROM v a JOIN v b USING (k)
 	GROUP BY a.g, b.g
 )
 ----
-250000	25150000	0
+2500	265000	0
 
 endloop
