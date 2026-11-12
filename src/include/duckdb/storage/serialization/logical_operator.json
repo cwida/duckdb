@@ -947,12 +947,6 @@
         "id": 208,
         "name": "old_row_columns",
         "type": "vector<idx_t>"
-      },
-      {
-        "id": 209,
-        "name": "row_id_handling",
-        "type": "RowIdHandling",
-        "default": "RowIdHandling::ASSUME_UNIQUE"
       }
     ],
     "constructor": [
