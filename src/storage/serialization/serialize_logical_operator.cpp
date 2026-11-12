@@ -373,7 +373,10 @@ unique_ptr<LogicalOperator> LogicalComparisonJoin::Deserialize(Deserializer &des
 	deserializer.ReadPropertyWithDefault<vector<LogicalType>>(205, "mark_types", result->mark_types);
 	deserializer.ReadPropertyWithDefault<vector<unique_ptr<Expression>>>(206, "duplicate_eliminated_columns", result->duplicate_eliminated_columns);
 	deserializer.ReadPropertyWithExplicitDefault<bool>(207, "delim_flipped", result->delim_flipped, false);
-	deserializer.ReadDeletedProperty<unique_ptr<Expression>>(208, "predicate");
+	auto predicate = deserializer.ReadPropertyWithDefault<unique_ptr<Expression>>(208, "predicate");
+	if (predicate) {
+		result->conditions.emplace_back(std::move(predicate));
+	}
 	return std::move(result);
 }
 

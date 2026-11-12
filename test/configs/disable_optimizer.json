@@ -5,6 +5,12 @@
   "inherit_skip_tests": "test/configs/stats_dependent_tests.json",
   "skip_tests": [
     {
+      "reason": "Checks the plan of an executed query through the profiler output.",
+      "paths": [
+        "test/optimizer/partial_aggregate_pushdown_serialized_plan.test"
+      ]
+    },
+    {
       "reason": "Rejecting corrupt Parquet geometry statistics requires optimizer statistics propagation.",
       "paths": [
         "test/parquet/corrupt/geometry_add_wkb_type_oob.test"
