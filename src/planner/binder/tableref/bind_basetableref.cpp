@@ -299,11 +299,12 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 		}
 		auto table_entry = logical_get->GetTable();
 		auto &col_ids = logical_get->GetMutableColumnIds();
-		if (!table_entry) {
-			bind_context.AddBaseTable(table_index, ref.alias, table_names, table_types, col_ids, ref.Table());
-		} else {
-			bind_context.AddBaseTable(table_index, ref.alias, table_names, table_types, col_ids, *table_entry);
+		if (table_entry && &table_entry->ParentCatalog() != &table.ParentCatalog()) {
+			properties.RegisterDBRead(table_entry->ParentCatalog(), context);
 		}
+		// A catalog table can delegate its scan without changing the identity used by SQL references.
+		bind_context.AddBaseTable(table_index, ref.alias, table_names, table_types, col_ids, table,
+		                          logical_get->virtual_columns);
 		BoundStatement result;
 		result.types = table_types;
 		result.names = table_names;
