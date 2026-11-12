@@ -495,7 +495,7 @@ struct ICUDatePart : public ICUDateFunc {
 			auto &unary = unary_expression->Cast<BoundFunctionExpression>();
 			bound_function = std::move(unary.FunctionMutable());
 			arguments = std::move(unary.GetChildrenMutable());
-			return std::move(unary.BindInfoMutable());
+			return unary.BindInfo() ? unary.BindInfo()->Copy() : nullptr;
 		} while (false);
 
 		using data_t = BindAdapterData<double>;

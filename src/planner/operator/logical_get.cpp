@@ -67,7 +67,7 @@ static void MapLegacyTableFilterKeys(LogicalGet &get) {
 LogicalGet::LogicalGet() : LogicalOperator(LogicalOperatorType::LOGICAL_GET) {
 }
 
-LogicalGet::LogicalGet(TableIndex table_index, BoundTableFunction function, unique_ptr<FunctionData> bind_data,
+LogicalGet::LogicalGet(TableIndex table_index, BoundTableFunction function, shared_ptr<FunctionData> bind_data,
                        vector<LogicalType> returned_types, vector<Identifier> returned_names,
                        virtual_column_map_t virtual_columns_p)
     : LogicalOperator(LogicalOperatorType::LOGICAL_GET), table_index(table_index), function(std::move(function)),

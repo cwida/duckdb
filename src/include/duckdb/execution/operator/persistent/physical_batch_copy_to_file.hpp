@@ -23,13 +23,13 @@ public:
 
 public:
 	PhysicalBatchCopyToFile(PhysicalPlan &physical_plan, vector<LogicalType> types, CopyFunction function,
-	                        unique_ptr<FunctionData> bind_data, idx_t estimated_cardinality);
+	                        shared_ptr<FunctionData> bind_data, idx_t estimated_cardinality);
 
 public:
 	InsertionOrderPreservingMap<string> ParamsToString() const override;
 
 	CopyFunction function;
-	unique_ptr<FunctionData> bind_data;
+	shared_ptr<FunctionData> bind_data;
 	string file_path;
 	bool use_tmp_file;
 	CopyFunctionReturnType return_type;

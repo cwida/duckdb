@@ -21,7 +21,7 @@ static optional_ptr<const Expression> GetLambdaExpression(const BoundFunctionExp
 
 BoundFunctionExpression::BoundFunctionExpression(BoundScalarFunction bound_function,
                                                  vector<unique_ptr<Expression>> arguments,
-                                                 unique_ptr<FunctionData> bind_info_p, bool is_operator,
+                                                 shared_ptr<FunctionData> bind_info_p, bool is_operator,
                                                  Identifier alias_p, QueryLocation location)
     : Expression(GetFunctionExpressionType(bound_function, arguments, bind_info_p.get()),
                  ExpressionClass::BOUND_FUNCTION, bound_function.GetReturnType()),

@@ -26,7 +26,7 @@ public:
 
 public:
 	BoundWindowExpression(LogicalType return_type, unique_ptr<BoundAggregateFunction> aggregate,
-	                      unique_ptr<BoundWindowFunction> window, unique_ptr<FunctionData> bind_info);
+	                      unique_ptr<BoundWindowFunction> window, shared_ptr<FunctionData> bind_info);
 
 public:
 	const unique_ptr<BoundAggregateFunction> &AggregateFunction() const {
@@ -41,10 +41,10 @@ public:
 	unique_ptr<BoundWindowFunction> &WindowFunctionMutable() {
 		return window;
 	}
-	const unique_ptr<FunctionData> &BindInfo() const {
+	const shared_ptr<FunctionData> &BindInfo() const {
 		return bind_info;
 	}
-	unique_ptr<FunctionData> &BindInfoMutable() {
+	shared_ptr<FunctionData> &BindInfoMutable() {
 		return bind_info;
 	}
 	const vector<unique_ptr<Expression>> &GetChildren() const {
@@ -197,7 +197,7 @@ private:
 	//! The bound window function
 	unique_ptr<BoundWindowFunction> window;
 	//! The bound function info
-	unique_ptr<FunctionData> bind_info;
+	shared_ptr<FunctionData> bind_info;
 	//! The child expressions of the main window function
 	vector<unique_ptr<Expression>> children;
 	//! The set of expressions to partition by

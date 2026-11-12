@@ -21,7 +21,7 @@ public:
 
 public:
 	BoundFunctionExpression(BoundScalarFunction bound_function, vector<unique_ptr<Expression>> arguments,
-	                        unique_ptr<FunctionData> bind_info, bool is_operator = false,
+	                        shared_ptr<FunctionData> bind_info, bool is_operator = false,
 	                        Identifier alias = Identifier(), QueryLocation location = QueryLocation());
 
 public:
@@ -37,10 +37,10 @@ public:
 	vector<unique_ptr<Expression>> &GetChildrenMutable() {
 		return children;
 	}
-	const unique_ptr<FunctionData> &BindInfo() const {
+	const shared_ptr<FunctionData> &BindInfo() const {
 		return bind_info;
 	}
-	unique_ptr<FunctionData> &BindInfoMutable() {
+	shared_ptr<FunctionData> &BindInfoMutable() {
 		return bind_info;
 	}
 	bool IsOperator() const {
@@ -78,7 +78,7 @@ private:
 	//! List of child-expressions of the function
 	vector<unique_ptr<Expression>> children;
 	//! The bound function data (if any)
-	unique_ptr<FunctionData> bind_info;
+	shared_ptr<FunctionData> bind_info;
 	//! Whether or not the function is an operator, only used for rendering
 	bool is_operator;
 };

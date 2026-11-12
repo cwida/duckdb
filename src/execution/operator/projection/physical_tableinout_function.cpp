@@ -34,7 +34,7 @@ public:
 
 PhysicalTableInOutFunction::PhysicalTableInOutFunction(PhysicalPlan &physical_plan, vector<LogicalType> types,
                                                        BoundTableFunction function_p,
-                                                       unique_ptr<FunctionData> bind_data_p,
+                                                       shared_ptr<FunctionData> bind_data_p,
                                                        vector<ColumnIndex> column_ids_p, vector<idx_t> projection_ids_p,
                                                        unique_ptr<TableFilterSet> table_filters_p,
                                                        idx_t estimated_cardinality, vector<column_t> project_input_p)

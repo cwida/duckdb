@@ -13,7 +13,7 @@
 namespace duckdb {
 
 BoundWindowExpression::BoundWindowExpression(LogicalType return_type, unique_ptr<BoundAggregateFunction> aggregate,
-                                             unique_ptr<BoundWindowFunction> window, unique_ptr<FunctionData> bind_info)
+                                             unique_ptr<BoundWindowFunction> window, shared_ptr<FunctionData> bind_info)
     : Expression(window.get() ? window->window_enum : ExpressionType::WINDOW_AGGREGATE, ExpressionClass::BOUND_WINDOW,
                  std::move(return_type)),
       aggregate(std::move(aggregate)), window(std::move(window)), bind_info(std::move(bind_info)), ignore_nulls(false),
