@@ -115,6 +115,10 @@ int __wrap_munmap(void *address, size_t length) {
 namespace duckdb {
 class BlockAllocatorTestHelper {
 public:
+	static BlockAllocator CreateWithShards(Allocator &allocator, idx_t block_size, idx_t pool_size, idx_t shard_count) {
+		return BlockAllocator(allocator, block_size, pool_size, shard_count);
+	}
+
 	static bool IsInPool(const BlockAllocator &allocator, data_ptr_t pointer) {
 		return allocator.IsInPool(pointer);
 	}
@@ -260,10 +264,8 @@ static void CheckProtectionRollback() {
 	using namespace duckdb;
 	constexpr idx_t BLOCK_SIZE = 65536;
 	Allocator fallback;
-	BlockAllocator allocator(fallback, BLOCK_SIZE, 1025 * BLOCK_SIZE);
-	if (BlockAllocatorTestHelper::GuardBlocks(allocator) < 2) {
-		return;
-	}
+	auto allocator = BlockAllocatorTestHelper::CreateWithShards(fallback, BLOCK_SIZE, 1025 * BLOCK_SIZE, 4);
+	Check(BlockAllocatorTestHelper::GuardBlocks(allocator) == 3, "rollback test must exercise multiple guards");
 	track_mapping = true;
 	fail_protection_at = 2;
 	protection_calls = released_mappings = 0;

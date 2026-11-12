@@ -38,6 +38,10 @@ using namespace duckdb;
 namespace duckdb {
 class BlockAllocatorTestHelper {
 public:
+	static BlockAllocator CreateWithShards(Allocator &allocator, idx_t block_size, idx_t pool_size, idx_t shard_count) {
+		return BlockAllocator(allocator, block_size, pool_size, shard_count);
+	}
+
 	static idx_t UsableBlocks(const BlockAllocator &allocator) {
 		return allocator.GetUsableBlockCount();
 	}
@@ -2439,14 +2443,10 @@ TEST_CASE("BlockAllocator guard slots separate writable shard mappings", "[api][
 	const auto block_size = GENERATE(idx_t(16384), idx_t(32768), idx_t(65536), idx_t(262144));
 	// Prime-sized pools also exercise a partial final shard.
 	const auto slots = GENERATE(idx_t(1), idx_t(2), idx_t(257), idx_t(513));
+	const auto requested_shards = GENERATE(idx_t(1), idx_t(2), idx_t(4));
 	Allocator fallback;
-	BlockAllocator allocator(fallback, block_size, slots * block_size);
-#ifndef DUCKDB_NO_THREADS
-	const auto requested_shards =
-	    MaxValue<idx_t>(1, MinValue<idx_t>(256, (std::thread::hardware_concurrency() + 3) / 4));
-#else
-	const idx_t requested_shards = 1;
-#endif
+	auto allocator =
+	    BlockAllocatorTestHelper::CreateWithShards(fallback, block_size, slots * block_size, requested_shards);
 	const auto stride = (slots + requested_shards - 1) / requested_shards;
 	const auto shards = (slots + stride - 1) / stride;
 	const idx_t expected_guards = stride > 1 && block_size >= 65536 ? shards - 1 : 0;

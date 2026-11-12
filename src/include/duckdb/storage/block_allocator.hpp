@@ -75,6 +75,9 @@ public:
 	bool TryFlushDeallocated(idx_t threshold, idx_t memory_headroom) const noexcept DUCKDB_EXCLUDES(flush_lock);
 
 private:
+	//! Explicit pool geometry for tests; production construction uses the CPU-count heuristic.
+	BlockAllocator(Allocator &allocator, idx_t block_size, idx_t pool_size, idx_t shard_count);
+
 	//! The buffer allocator's huge-page backend keeps matching allocation and release ownership.
 	data_ptr_t AllocateHugeData(idx_t size) const;
 	void FreeHugeData(data_ptr_t pointer, idx_t size) const;

@@ -686,13 +686,18 @@ idx_t BlockAllocator::GetUsableBlockCount() const {
 }
 
 BlockAllocator::BlockAllocator(Allocator &allocator_p, const idx_t block_size_p, const idx_t pool_size_p)
+    : BlockAllocator(allocator_p, block_size_p, pool_size_p, AllocatorShardCount()) {
+}
+
+BlockAllocator::BlockAllocator(Allocator &allocator_p, const idx_t block_size_p, const idx_t pool_size_p,
+                               const idx_t shard_count)
     : uuid(UUID::GenerateRandomUUID()), allocator(allocator_p), allocation_cache(make_uniq<AllocationCache>(allocator)),
       block_size(block_size_p), block_size_div_shift(CountZeros<idx_t>::Trailing(block_size)),
       pool_size(sizeof(void *) == 8 ? pool_size_p - pool_size_p % block_size : 0),
       pool_state(pool_size != 0 && DivBlockSize(pool_size) <= NumericLimits<uint32_t>::Maximum()
                      ? PoolState::UNINITIALIZED
                      : PoolState::UNAVAILABLE),
-      touched(make_unsafe_uniq<BlockQueue>(DivBlockSize(pool_size), AllocatorShardCount())),
+      touched(make_unsafe_uniq<BlockQueue>(DivBlockSize(pool_size), shard_count)),
       lifetime_state(make_shared_ptr<BlockAllocatorLifetimeState>()) {
 	D_ASSERT(IsPowerOfTwo(block_size));
 	retention.Reset(RetentionTimeMillis());
