@@ -44,7 +44,7 @@ public:
 public:
 	static void GenerateFieldIDs(ChildFieldIDs &field_ids, idx_t &field_id, const vector<Identifier> &names,
 	                             const vector<LogicalType> &sql_types);
-	static void GetFieldIDs(const Value &field_ids_value, ChildFieldIDs &field_ids,
+	static void GetFieldIDs(Context &context, const Value &field_ids_value, ChildFieldIDs &field_ids,
 	                        unordered_set<uint32_t> &unique_field_ids,
 	                        const case_insensitive_map_t<LogicalType> &name_to_type_map);
 };

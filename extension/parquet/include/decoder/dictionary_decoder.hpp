@@ -35,6 +35,7 @@ public:
 	void InitializeDictionary(idx_t dictionary_size, optional_ptr<const TableFilter> filter,
 	                          optional_ptr<TableFilterState> filter_state, bool has_defines);
 	void InitializePage();
+	void Rebase();
 	idx_t Read(uint8_t *defines, idx_t read_count, Vector &result, idx_t result_offset);
 	void Skip(uint8_t *defines, idx_t skip_count);
 	bool CanFilter(const TableFilter &filter, TableFilterState &filter_state);
@@ -55,6 +56,7 @@ private:
 	ColumnReader &reader;
 	ResizeableBuffer &offset_buffer;
 	unique_ptr<RleBpDecoder> dict_decoder;
+	idx_t block_offset = 0;
 	SelectionVector valid_sel;
 	SelectionVector dictionary_selection_vector;
 	idx_t dictionary_size;

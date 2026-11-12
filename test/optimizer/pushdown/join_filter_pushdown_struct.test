@@ -1,0 +1,191 @@
+# name: test/optimizer/pushdown/join_filter_pushdown_struct.test
+# description: Runtime join filters on struct fields when the parent struct is selected
+# group: [pushdown]
+
+require parquet
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+COPY (
+	SELECT i AS id, struct_pack(xmin := i::DOUBLE, xmax := i::DOUBLE + 0.5,
+	                           ymin := i::DOUBLE, ymax := i::DOUBLE + 0.5) AS bbox
+	FROM range(10000) t(i)
+) TO '{TEST_DIR}/join_filter_pushdown_struct.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048);
+
+# Retain the complete struct while pushing all four field comparisons into the scan.
+query II
+EXPLAIN ANALYZE
+WITH input_bbox AS (
+	SELECT unnest({'xmin': 4500.1, 'ymin': 4500.1, 'xmax': 4501.1, 'ymax': 4501.1})
+)
+SELECT b.*
+FROM read_parquet('{TEST_DIR}/join_filter_pushdown_struct.parquet') b
+JOIN input_bbox q
+  ON bbox.xmax >= q.xmin AND bbox.ymax >= q.ymin
+ AND bbox.xmin <= q.xmax AND bbox.ymin <= q.ymax;
+----
+analyzed_plan	<REGEX>:.*Dynamic Filters:.*Row Groups Scanned: 1 / [0-9]+.*
+
+query IIRRRR rowsort
+WITH input_bbox AS (
+	SELECT unnest({'xmin': 4500.1, 'ymin': 4500.1, 'xmax': 4501.1, 'ymax': 4501.1})
+)
+SELECT b.id, b.bbox IS NULL, b.bbox.xmin, b.bbox.xmax, b.bbox.ymin, b.bbox.ymax
+FROM read_parquet('{TEST_DIR}/join_filter_pushdown_struct.parquet') b
+JOIN input_bbox q
+  ON bbox.xmax >= q.xmin AND bbox.ymax >= q.ymin
+ AND bbox.xmin <= q.xmax AND bbox.ymin <= q.ymax;
+----
+4500	false	4500.0	4500.5	4500.0	4500.5
+4501	false	4501.0	4501.5	4501.0	4501.5
+
+# Remap field paths when files use a different struct field order.
+statement ok
+COPY (
+	SELECT 10000 AS id,
+	       struct_pack(ymax := 4500.5::DOUBLE, ymin := 4500.0::DOUBLE,
+	                   xmax := 4500.5::DOUBLE, xmin := 4500.0::DOUBLE) AS bbox
+) TO '{TEST_DIR}/join_filter_pushdown_struct_reordered.parquet' (FORMAT PARQUET);
+
+query II rowsort
+WITH input_bbox AS (
+	SELECT unnest({'xmin': 4500.1, 'ymin': 4500.1, 'xmax': 4501.1, 'ymax': 4501.1})
+)
+SELECT b.id, b.bbox = struct_pack(xmin := b.id::DOUBLE, xmax := b.id::DOUBLE + 0.5,
+	                             ymin := b.id::DOUBLE, ymax := b.id::DOUBLE + 0.5)
+FROM read_parquet(['{TEST_DIR}/join_filter_pushdown_struct.parquet',
+	              '{TEST_DIR}/join_filter_pushdown_struct_reordered.parquet'], union_by_name = true) b
+JOIN input_bbox q
+  ON bbox.xmax >= q.xmin AND bbox.ymax >= q.ymin
+ AND bbox.xmin <= q.xmax AND bbox.ymin <= q.ymax;
+----
+10000	false
+4500	true
+4501	true
+
+statement ok
+CREATE TABLE struct_probe AS
+SELECT i AS id, struct_pack(a := i, b := -i, nested := struct_pack(x := i)) AS s
+FROM range(100) t(i);
+
+statement ok
+INSERT INTO struct_probe VALUES (100, NULL), (101, {'a': NULL, 'b': NULL, 'nested': NULL});
+
+# Nested paths and integral casts must refer to the original struct column.
+query II
+EXPLAIN ANALYZE
+SELECT p.* FROM struct_probe p JOIN (VALUES (10::INTEGER), (20::INTEGER)) q(x)
+ON p.s.nested.x::INTEGER = q.x;
+----
+analyzed_plan	<REGEX>:.*Dynamic Filters:.*
+
+query IIII rowsort
+SELECT p.id, p.s IS NULL, p.s.a, p.s.b
+FROM struct_probe p JOIN (VALUES (10::INTEGER), (20::INTEGER)) q(x)
+ON p.s.nested.x::INTEGER = q.x;
+----
+10	false	10	-10
+20	false	20	-20
+
+# Keep independent filter paths for different fields of the same parent.
+query II
+EXPLAIN ANALYZE
+SELECT p.* FROM struct_probe p JOIN (VALUES (10::BIGINT, -10::BIGINT)) q(a, b)
+ON p.s.a = q.a AND p.s.b = q.b;
+----
+analyzed_plan	<REGEX>:.*Dynamic Filters:.*
+
+query III rowsort
+SELECT p.id, p.s.a, p.s.b
+FROM struct_probe p JOIN (VALUES (10::BIGINT, -10::BIGINT), (20::BIGINT, -10::BIGINT)) q(a, b)
+ON p.s.a = q.a AND p.s.b = q.b;
+----
+10	10	-10
+
+# Positional extraction also supports unnamed structs.
+statement ok
+CREATE TEMP TABLE tuple_probe AS SELECT i AS id, row(i, -i) AS s FROM range(100) t(i);
+
+query II
+EXPLAIN ANALYZE
+SELECT p.* FROM tuple_probe p JOIN (VALUES (10::BIGINT)) q(x)
+ON struct_extract_at(p.s, 1) = q.x;
+----
+analyzed_plan	<REGEX>:.*Dynamic Filters:.*
+
+query II rowsort
+SELECT p.id, p.s IS NULL FROM tuple_probe p JOIN (VALUES (10::BIGINT)) q(x)
+ON struct_extract_at(p.s, 1) = q.x;
+----
+10	false
+
+# NULL-safe field comparisons retain both NULL parents and NULL children.
+query II
+EXPLAIN ANALYZE
+SELECT p.* FROM struct_probe p JOIN (VALUES (10::BIGINT), (NULL::BIGINT)) q(x)
+ON p.s.a IS NOT DISTINCT FROM q.x;
+----
+analyzed_plan	<REGEX>:.*Dynamic Filters:.*
+
+query II rowsort
+SELECT p.id, p.s IS NULL FROM struct_probe p JOIN (VALUES (10::BIGINT), (NULL::BIGINT)) q(x)
+ON p.s.a IS NOT DISTINCT FROM q.x;
+----
+10	false
+100	true
+101	false
+
+# A runtime filter must not hide errors from a narrowing cast on a struct field.
+statement ok
+CREATE TABLE struct_overflow AS
+SELECT i AS id, {'a': i} AS s FROM (VALUES (10::BIGINT), (1000::BIGINT)) t(i);
+
+statement error
+SELECT p.* FROM struct_overflow p JOIN (VALUES (10::TINYINT)) q(x)
+ON p.s.a::TINYINT = q.x;
+----
+out of range
+
+query II rowsort
+SELECT p.id, p.s IS NULL FROM struct_overflow p JOIN (VALUES (10::TINYINT)) q(x)
+ON TRY_CAST(p.s.a AS TINYINT) = q.x;
+----
+10	false
+
+# Row-group ordering cannot use the parent struct's statistics for a scalar field.
+query T
+SELECT s FROM (
+	SELECT * FROM struct_probe ORDER BY s.b LIMIT 1 OFFSET 50
+);
+----
+{'a': 49, 'b': -49, 'nested': {'x': 49}}
+
+statement ok
+CREATE TABLE string_struct_probe AS
+SELECT i AS id, {'name': lpad(i::VARCHAR, 3, '0')} AS s FROM range(100) t(i);
+
+statement ok
+INSERT INTO string_struct_probe VALUES (100, NULL), (101, {'name': NULL});
+
+query II
+EXPLAIN ANALYZE
+SELECT p.* FROM string_struct_probe p JOIN (VALUES ('010'), ('020')) q(name)
+ON p.s.name = q.name;
+----
+analyzed_plan	<REGEX>:.*Dynamic Filters:.*
+
+query IIT rowsort
+SELECT p.id, p.s IS NULL, p.s.name
+FROM string_struct_probe p JOIN (VALUES ('010'), ('020')) q(name)
+ON p.s.name = q.name;
+----
+10	false	010
+20	false	020
+
+query IIT
+SELECT id, s IS NULL, s.name
+FROM string_struct_probe ORDER BY s.name LIMIT 1 OFFSET 50;
+----
+50	false	050

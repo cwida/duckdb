@@ -318,15 +318,16 @@ bool NodePtr::HasByte(const ART &art, const uint8_t byte) const {
 	D_ASSERT(HasMetadata());
 
 	auto type = GetType();
+	ConstNodeHandle handle(art, *this);
 	switch (type) {
 	case NType::NODE_7_LEAF:
-		return Ref<const Node7Leaf>(art, *this, NType::NODE_7_LEAF).HasByte(byte);
+		return handle.Get<Node7Leaf>().HasByte(byte);
 	case NType::NODE_15_LEAF:
-		return Ref<const Node15Leaf>(art, *this, NType::NODE_15_LEAF).HasByte(byte);
+		return handle.Get<Node15Leaf>().HasByte(byte);
 	case NType::NODE_256_LEAF:
-		return Ref<const Node256Leaf>(art, *this, NType::NODE_256_LEAF).HasByte(byte);
+		return handle.Get<Node256Leaf>().HasByte(byte);
 	default:
-		throw InternalException("Invalid node type for GetNextByte: %d.", type);
+		throw InternalException("Invalid node type for HasByte: %d.", type);
 	}
 }
 

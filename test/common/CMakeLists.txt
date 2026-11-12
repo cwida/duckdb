@@ -70,6 +70,9 @@ add_library_unity(
   test_lazy_vector.cpp
   test_musl_stack_size.cpp)
 
+# Keep platform semaphore headers separate from DuckDB using-directives.
+target_sources(test_common PRIVATE test_concurrentqueue.cpp)
+
 set(UNITTEST_OBJECT_FILES
     ${UNITTEST_OBJECT_FILES} $<TARGET_OBJECTS:test_common>
     PARENT_SCOPE)
