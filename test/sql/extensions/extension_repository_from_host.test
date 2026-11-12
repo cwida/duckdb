@@ -81,6 +81,53 @@ CREATE OR REPLACE EXTENSION REPOSITORY pointing.example WITH PREFIX '' USING PUB
 statement ok
 DROP EXTENSION REPOSITORY 'pointing.example'
 
+# A host with '-' in it is spelled without quotes too, wherever a repository is named; case does not matter.
+statement ok
+CREATE EXTENSION REPOSITORY my-pointing.example WITH PREFIX '{TEST_DIR}/repo' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
+
+query I
+SELECT repository_name FROM duckdb_extension_repositories() WHERE type='USER_PROVIDED'
+----
+my-pointing.example
+
+statement error
+INSTALL nonexistent_extension FROM my-pointing.example
+----
+<REGEX>:IO Error.*
+
+statement ok
+CREATE EXTENSION REPOSITORY IF NOT EXISTS My-Pointing.EXAMPLE
+
+statement error
+CREATE EXTENSION REPOSITORY s3-like.my-pointing.example
+----
+<REGEX>:.*
+
+# the parts of an unquoted host must touch: with a space in between it is not a host
+statement error
+CREATE EXTENSION REPOSITORY my - pointing.example
+----
+<REGEX>:Parser Error.*
+
+statement error
+CREATE EXTENSION REPOSITORY my-pointing .example
+----
+<REGEX>:Parser Error.*
+
+# and no label may start or end with '-'
+statement error
+CREATE EXTENSION REPOSITORY -my.example
+----
+<REGEX>:Parser Error.*
+
+statement error
+CREATE EXTENSION REPOSITORY my-.example
+----
+<REGEX>:Parser Error.*
+
+statement ok
+DROP EXTENSION REPOSITORY my-pointing.example
+
 # A host reached over https needs httpfs: the error when it is not there is checked in
 # extension_repository_from_host_no_httpfs.test, which only runs where httpfs is neither loaded nor autoloadable.
 

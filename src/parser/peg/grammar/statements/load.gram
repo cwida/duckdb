@@ -6,8 +6,8 @@ UpdateExtensionsStatement <- 'UPDATE' 'EXTENSIONS' Parens(List(Identifier))?
 FromSource <- FromSourceIdentifier / FromSourceString
 FromSourceIdentifier <- 'FROM' FromSourceName
 FromSourceString <- 'FROM' StringLiteral
-# a repository named after its host is spelled as dotted words: INSTALL x FROM carlopi.github.io
-FromSourceName <- ExtensionRepositoryHostName / Identifier
+# a repository may be named by a dotted name: INSTALL x FROM carlopi.github.io
+FromSourceName <- DottedName / Identifier
 VersionNumber <- 'VERSION' IdentifierOrStringLiteral
 
 ExtensionRepositoryStatement <- CreateExtensionRepositoryStmt / CreateExtensionRepositoryFromHostStmt / DropExtensionRepositoryStmt
@@ -19,7 +19,8 @@ RepositoryPublicKey <- 'USING'? 'PUBLIC' ('KEYS' / 'KEY') List(StringLiteral)
 # the signing keys). The rest is CREATE EXTENSION REPOSITORY <name> WITH PREFIX <that prefix>.
 CreateExtensionRepositoryFromHostStmt <- 'CREATE' OrReplace? 'EXTENSION' 'REPOSITORY' IfNotExists? ExtensionRepositoryName
 DropExtensionRepositoryStmt <- 'DROP' 'EXTENSION' 'REPOSITORY' IfExists? ExtensionRepositoryName
-# A repository name: an identifier or a string, or a host spelled as dotted words. A host with a '-' in it cannot be
-# spelled unquoted ('-' is an operator); it is given as a string: 'duckdb-extensions.example.com'
-ExtensionRepositoryName <- ExtensionRepositoryHostName / ColIdOrString
-ExtensionRepositoryHostName <- ColId DotColLabel+
+# A repository name: an identifier or a string, or a dotted name spelled without quotes
+ExtensionRepositoryName <- DottedName / ColIdOrString
+# A dotted name spelled without quotes: carlopi.github.io, my-website.com. Matched by DottedNameMatcher, which glues the
+# words, dots and dashes the tokenizer cut it into, as long as nothing separates them (no whitespace or comment in between)
+DottedName <- <[a-z0-9_]i[a-z0-9_-]i*('.'[a-z0-9_]i[a-z0-9_-]i*)+>
