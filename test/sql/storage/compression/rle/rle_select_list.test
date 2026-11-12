@@ -5,7 +5,7 @@
 load {TEST_DIR}/rle_select_bug.db
 
 statement ok
-pragma force_compression='rle';
+SET force_compression='rle';
 
 statement ok
 create table tbl as SELECT * FROM (

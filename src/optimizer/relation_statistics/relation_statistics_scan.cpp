@@ -363,7 +363,7 @@ static void ApplyFilterDomainCap(RelationColumnStats &column, optional_idx cap) 
 	}
 	column.current_domain =
 	    DistinctCount(MinValue(column.current_domain.distinct_count, cap.GetIndex()), DistinctCountSource::CARDINALITY);
-	column.semi_anti_join_domain_evidence.TightenFilterDomainBound(cap.GetIndex());
+	column.semi_anti_join_domain_evidence.TightenDomainBound(cap.GetIndex());
 }
 
 static void ApplyDirectFilterDomain(RelationColumnStats &column, const Expression &expression,
@@ -512,6 +512,10 @@ RelationStats RelationStatisticsHelper::ExtractExpressionGetStats(LogicalExpress
 	for (auto &binding : expression_get.GetColumnBindings()) {
 		result.columns.emplace_back(binding, DistinctCount(result.cardinality, DistinctCountSource::CARDINALITY),
 		                            Identifier("expression_get_column"));
+		if (expression_get.children.size() == 1 &&
+		    expression_get.children[0]->type == LogicalOperatorType::LOGICAL_DUMMY_SCAN) {
+			result.columns.back().semi_anti_join_domain_evidence.TightenDomainBound(expression_get.expressions.size());
+		}
 	}
 	result.Verify(expression_get.GetColumnBindings());
 	return result;
@@ -526,6 +530,7 @@ RelationStats RelationStatisticsHelper::ExtractColumnDataGetStats(LogicalColumnD
 	for (auto &binding : column_data_get.GetColumnBindings()) {
 		result.columns.emplace_back(binding, DistinctCount(result.cardinality, DistinctCountSource::CARDINALITY),
 		                            Identifier("column_data"));
+		result.columns.back().semi_anti_join_domain_evidence.TightenDomainBound(result.cardinality);
 	}
 	result.Verify(column_data_get.GetColumnBindings());
 	return result;

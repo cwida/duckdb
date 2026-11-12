@@ -6,7 +6,7 @@ statement ok
 CREATE TABLE test(X BOOLEAN);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 
 query I nosort cfold1

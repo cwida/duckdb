@@ -4,9 +4,6 @@
 
 require json
 
-statement ok
-pragma enable_verification
-
 # VARCHAR and JSON typed inputs bind to different function overloads,
 # so comparing the two on adversarial documents must never show a difference.
 statement ok

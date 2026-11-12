@@ -3,7 +3,7 @@
 # group: [settings]
 
 statement ok
-PRAGMA default_collation='NOCASE'
+SET default_collation='NOCASE'
 
 statement ok
 CREATE TABLE collate_test(s VARCHAR)
@@ -29,7 +29,7 @@ wozld
 WöRlD
 
 statement ok
-PRAGMA default_collation='NOCASE.NOACCENT'
+SET default_collation='NOCASE.NOACCENT'
 
 query T
 SELECT * FROM collate_test ORDER BY s
@@ -39,7 +39,7 @@ WöRlD
 wozld
 
 statement error
-PRAGMA default_collation='unknown'
+SET default_collation='unknown'
 ----
 <REGEX>:Catalog Error.*Collation.*does not exist.*
 

@@ -1,0 +1,15 @@
+# name: test/sql/json/copy_json_partition_by_identifier.test
+# description: Formats without their own COPY option list take bare column names in PARTITION_BY without a warning
+# group: [json]
+
+require json
+
+# one statement: configs that restart between statements drop the logger
+statement ok
+SET enable_logging=true; SET warnings_as_errors=true; COPY (SELECT i AS part, i AS val FROM range(2) t(i)) TO '{TEST_DIR}/json_partition_identifier' (FORMAT JSON, PARTITION_BY (part));
+
+query II
+SELECT part, val FROM read_json('{TEST_DIR}/json_partition_identifier/*/*.json', hive_partitioning=true) ORDER BY ALL
+----
+0	0
+1	1

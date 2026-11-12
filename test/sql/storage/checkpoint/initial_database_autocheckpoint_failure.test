@@ -19,7 +19,7 @@ statement ok
 SET wal_autocheckpoint_entries = 1;
 
 statement ok
-PRAGMA debug_checkpoint_abort = 'before_header';
+SET debug_checkpoint_abort = 'before_header';
 
 statement error
 INSERT INTO tbl VALUES (1), (2), (3);

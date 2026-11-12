@@ -1,0 +1,97 @@
+# name: test/sql/setops/test_union_staged_types.test
+# description: Parenthesized set operations stage type casts through the inner result type (#28372)
+# group: [setops]
+
+# The inner UNION resolves to DOUBLE, so 87::INTEGER must reach the outer VARCHAR
+# branch staged as '87.0', not as the direct INTEGER -> VARCHAR rendering '87'.
+
+query I
+(SELECT 1.5::DOUBLE AS x UNION SELECT 87::INTEGER) UNION SELECT 'text'::VARCHAR ORDER BY 1;
+----
+1.5
+87.0
+text
+
+query I
+(SELECT 1.5::DOUBLE AS x UNION SELECT 87::INTEGER) UNION ALL SELECT 'text'::VARCHAR ORDER BY 1;
+----
+1.5
+87.0
+text
+
+query I
+SELECT x FROM (SELECT 1.5::DOUBLE AS x UNION SELECT 87::INTEGER) q UNION SELECT 'text'::VARCHAR ORDER BY 1;
+----
+1.5
+87.0
+text
+
+# a plain (unparenthesized) chain is a single N-ary UNION: all branches are
+# unified directly against the outer VARCHAR, so 87::INTEGER renders as '87'.
+# Only explicitly parenthesized set operations stage their own result type.
+query I
+SELECT 1.5::DOUBLE AS x UNION SELECT 87::INTEGER UNION SELECT 'text'::VARCHAR ORDER BY 1;
+----
+1.5
+87
+text
+
+# the staged rendering matters for duplicate elimination: '87' (the VARCHAR
+# literal branch) and '87.0' (the staged INTEGER branch) are distinct values,
+# so the result holds four rows - the bug collapsed them to three
+query I
+SELECT count(*) FROM ((SELECT 1.5::DOUBLE AS x UNION SELECT 87::INTEGER) UNION SELECT 'text'::VARCHAR UNION SELECT '87'::VARCHAR);
+----
+4
+
+# by-name chains follow the same staged semantics
+query I
+(SELECT 1.5::DOUBLE AS x UNION SELECT 87::INTEGER) UNION BY NAME SELECT 'text'::VARCHAR AS x ORDER BY 1;
+----
+1.5
+87.0
+text
+
+# UNION ALL chains follow the same rule: parentheses stage the inner result type
+query I
+(SELECT 1.5::DOUBLE AS x UNION ALL SELECT 87::INTEGER) UNION ALL SELECT 'text'::VARCHAR ORDER BY 1;
+----
+1.5
+87.0
+text
+
+# every level of nesting stages its own type
+query I
+((SELECT 1.5::DOUBLE AS x UNION SELECT 87::INTEGER) UNION SELECT 2::INTEGER) UNION SELECT 'text'::VARCHAR ORDER BY 1;
+----
+1.5
+2.0
+87.0
+text
+
+# a parenthesized set operation on the right-hand side is nested as well
+query I
+SELECT 'text'::VARCHAR AS x UNION (SELECT 1.5::DOUBLE UNION SELECT 87::INTEGER) ORDER BY 1;
+----
+1.5
+87.0
+text
+
+# parentheses around plain SELECTs stage nothing: this is still a single N-ary UNION
+query I
+(SELECT 1.5::DOUBLE AS x) UNION (SELECT 87::INTEGER) UNION (SELECT 'text'::VARCHAR) ORDER BY 1;
+----
+1.5
+87
+text
+
+# the nesting survives a view round trip
+statement ok
+CREATE VIEW staged_union AS (SELECT 1.5::DOUBLE AS x UNION SELECT 87::INTEGER) UNION SELECT 'text'::VARCHAR;
+
+query I
+SELECT x FROM staged_union ORDER BY 1;
+----
+1.5
+87.0
+text

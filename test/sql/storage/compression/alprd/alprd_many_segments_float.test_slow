@@ -6,7 +6,7 @@
 load {TEST_DIR}/test_alprd.db
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 # Create a table with random floats of limited precision compressed as Uncompressed
 # This data should achieve x6 compression ratio
@@ -22,7 +22,7 @@ SELECT compression FROM pragma_storage_info('random_float') WHERE segment_type =
 
 # Now create a duplicate of this table, compressed with ALPRD instead
 statement ok
-PRAGMA force_compression='alprd'
+SET force_compression='alprd'
 
 statement ok
 create table random_alp_float as select * from random_float;

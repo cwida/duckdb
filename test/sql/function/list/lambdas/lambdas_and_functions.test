@@ -5,9 +5,6 @@
 require json
 
 statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
-statement ok
 CREATE OR REPLACE function demo(n, z) AS TABLE (
   SELECT list_transform(range(0, n), lambda x: z) AS row
 );

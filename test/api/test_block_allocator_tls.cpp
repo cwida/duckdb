@@ -32,20 +32,24 @@ using namespace duckdb;
 namespace duckdb {
 class BlockAllocatorTestHelper {
 public:
+	static idx_t LocalShard(const BlockAllocator &allocator) {
+		return allocator.GetLocalPoolShard();
+	}
+
 	explicit BlockAllocatorTestHelper(const BlockAllocator &allocator, idx_t now_ms = 0) : allocator(allocator) {
-		allocator.InitializeRetention(now_ms);
+		allocator.retention.Reset(now_ms);
 	}
 	void Add(idx_t count, idx_t now_ms) {
-		allocator.AddRetention(count, now_ms);
+		allocator.retention.Return(count, allocator.DivBlockSize(allocator.pool_size), now_ms);
 	}
 	void Reuse(idx_t count, idx_t now_ms) {
-		allocator.ReuseRetention(count, now_ms);
+		allocator.retention.Reuse(count, now_ms);
 	}
 	idx_t Target(idx_t now_ms) {
-		return allocator.RetentionTarget(now_ms);
+		return allocator.retention.Target(now_ms);
 	}
 	bool IsLockFree() const {
-		for (auto &bucket : allocator.retention_buckets) {
+		for (auto &bucket : allocator.retention.buckets) {
 			if (!bucket.is_lock_free()) {
 				return false;
 			}
@@ -58,7 +62,7 @@ public:
 	static void Expire(const BlockAllocator &allocator) {
 		allocator.ThreadFlush(false, 0, 1);
 		annotated_lock_guard<annotated_mutex> guard(allocator.flush_lock);
-		allocator.InitializeRetention(Now());
+		allocator.retention.Reset(Now());
 	}
 	static idx_t FreeBlocks(const BlockAllocator &allocator) {
 		annotated_lock_guard<annotated_mutex> guard(allocator.flush_lock);
@@ -66,7 +70,7 @@ public:
 	}
 	static idx_t RetainedBlocks(const BlockAllocator &allocator) {
 		annotated_lock_guard<annotated_mutex> guard(allocator.flush_lock);
-		return allocator.RetentionTarget(Now());
+		return allocator.retention.Target(Now());
 	}
 	static bool Drained(const BlockAllocator &allocator) {
 		annotated_lock_guard<annotated_mutex> guard(allocator.flush_lock);
@@ -1351,13 +1355,10 @@ TEST_CASE("BlockAllocator concurrent trimming preserves the cache target", "[api
 	CHECK(allocator.GetCachedMemory() == 0);
 }
 
-TEST_CASE("BlockAllocator accounts for cached backing through reuse, thread exit and discard",
-          "[api][block_allocator]") {
+TEST_CASE("BlockAllocator accounts for cached backing through reuse and discard", "[api][block_allocator]") {
 	constexpr idx_t BLOCK_SIZE = 65536;
-	constexpr idx_t THREADS = 2;
-	constexpr idx_t BLOCKS_PER_THREAD = 8;
 	Allocator fallback;
-	BlockAllocator allocator(fallback, BLOCK_SIZE, 64 * BLOCK_SIZE);
+	BlockAllocator allocator(fallback, BLOCK_SIZE, BLOCK_SIZE);
 	CHECK(allocator.GetCachedMemory() == 0);
 	auto block = allocator.AllocateData(BLOCK_SIZE);
 	block[0] = 42;
@@ -1378,7 +1379,14 @@ TEST_CASE("BlockAllocator accounts for cached backing through reuse, thread exit
 	CHECK(allocator.GetCachedMemory() == BLOCK_SIZE);
 	allocator.FlushForAllocation(NumericLimits<idx_t>::Maximum(), 0);
 	CHECK(allocator.GetCachedMemory() == 0);
+}
 
+TEST_CASE("BlockAllocator accounts for cached backing through thread exit", "[api][block_allocator]") {
+	constexpr idx_t BLOCK_SIZE = 65536;
+	constexpr idx_t THREADS = 2;
+	constexpr idx_t BLOCKS_PER_THREAD = 8;
+	Allocator fallback;
+	BlockAllocator allocator(fallback, BLOCK_SIZE, 64 * BLOCK_SIZE);
 	mutex gate;
 	std::condition_variable cv;
 	idx_t ready = 0;
@@ -2054,17 +2062,24 @@ TEST_CASE("BlockAllocator preserves failed discards without spinning and can ret
 	STATIC_REQUIRE(noexcept(allocator.FlushAll()));
 	CHECK(allocator.GetCachedMemory() == (BLOCK_COUNT - 2) * BLOCK_SIZE);
 	CHECK_NOTHROW(BlockAllocatorTestHelper::FlushBytes(allocator, POOL_SIZE));
-	// The first contiguous range succeeded; the failed range and remaining blocks stay charged.
-	CHECK(allocator.GetCachedMemory() == (BLOCK_COUNT - 6) * BLOCK_SIZE);
+	// The first contiguous range succeeds; rotation can also reclaim other shards on retry.
+	const auto after_first = allocator.GetCachedMemory();
+	CHECK(after_first >= BLOCK_SIZE);
+	CHECK(after_first <= (BLOCK_COUNT - 6) * BLOCK_SIZE);
+	CHECK(after_first == BlockAllocatorTestHelper::FreeBlocks(allocator) * BLOCK_SIZE);
 	CHECK_NOTHROW(allocator.FlushAll());
-	CHECK(allocator.GetCachedMemory() == (BLOCK_COUNT - 6) * BLOCK_SIZE);
+	const auto after_retry = allocator.GetCachedMemory();
+	CHECK(after_retry >= BLOCK_SIZE);
+	CHECK(after_retry <= after_first);
+	CHECK(after_retry == BlockAllocatorTestHelper::FreeBlocks(allocator) * BLOCK_SIZE);
 #ifndef DUCKDB_NO_THREADS
 	BlockAllocatorTestHelper::Expire(allocator);
 	allocator.ThreadIdle();
 	atomic<bool> execute {true};
 	CHECK(scheduler.ExecuteTasks(&execute, 32) == 1);
 	CHECK(scheduler.GetNumberOfTasks() == 0);
-	CHECK(allocator.GetCachedMemory() == (BLOCK_COUNT - 6) * BLOCK_SIZE);
+	CHECK(allocator.GetCachedMemory() == after_retry);
+	CHECK(allocator.GetCachedMemory() == BlockAllocatorTestHelper::FreeBlocks(allocator) * BLOCK_SIZE);
 	CHECK(locked[0] == 42);
 #endif
 	CHECK(syscall(SYS_munlock, locked, 1) == 0);
@@ -2201,3 +2216,193 @@ TEST_CASE("Active pool reuse expires old allocation classes and preserves fresh 
 	allocator.FlushAll();
 	CHECK(live_bytes.load() == 0);
 }
+
+#if INTPTR_MAX == INT64_MAX && !defined(DUCKDB_NO_THREADS)
+TEST_CASE("BlockAllocator charges blocks returned by a free-only thread",
+          "[api][block_allocator][allocator_locality]") {
+	constexpr idx_t BLOCK_SIZE = 65536;
+	Allocator fallback;
+	auto owned = make_uniq<BlockAllocator>(fallback, BLOCK_SIZE, BLOCK_SIZE);
+	auto &allocator = *owned;
+	auto pointer = allocator.AllocateData(BLOCK_SIZE);
+	allocator.ThreadExit();
+	std::thread freer([&] { allocator.FreeData(pointer, BLOCK_SIZE); });
+	freer.join();
+	CHECK(allocator.GetCachedMemory() == BLOCK_SIZE);
+	auto reused = allocator.AllocateData(BLOCK_SIZE);
+	CHECK(reused == pointer);
+	CHECK(allocator.GetCachedMemory() == 0);
+	allocator.FreeData(reused, BLOCK_SIZE);
+	CHECK(allocator.GetCachedMemory() == BLOCK_SIZE);
+	allocator.FlushAll();
+	CHECK(allocator.GetCachedMemory() == 0);
+}
+#endif
+
+#if defined(__linux__) && INTPTR_MAX == INT64_MAX && !defined(DUCKDB_NO_THREADS)
+TEST_CASE("BlockAllocator prefers local touched backing after mixed frees",
+          "[api][block_allocator][allocator_locality]") {
+	constexpr idx_t BLOCK_SIZE = 65536;
+	const bool foreign_last = GENERATE(false, true);
+	Allocator fallback;
+	auto owned = make_uniq<BlockAllocator>(fallback, BLOCK_SIZE, 257 * BLOCK_SIZE);
+	auto &allocator = *owned;
+	AllocationCacheTestAffinity affinity;
+	const auto cpus = affinity.CPUs();
+	if (cpus.empty() || !affinity.Pin(cpus.front())) {
+		return;
+	}
+	const auto first_shard = BlockAllocatorTestHelper::LocalShard(allocator);
+	idx_t other_cpu = cpus.front();
+	for (auto cpu : cpus) {
+		if (affinity.Pin(cpu) && BlockAllocatorTestHelper::LocalShard(allocator) != first_shard) {
+			other_cpu = cpu;
+			break;
+		}
+	}
+	if (other_cpu == cpus.front()) {
+		return;
+	}
+	REQUIRE(affinity.Pin(cpus.front()));
+	auto local = allocator.AllocateData(BLOCK_SIZE);
+	local[0] = 42;
+	data_ptr_t foreign = nullptr;
+	std::thread worker([&] {
+		if (affinity.Pin(other_cpu)) {
+			foreign = allocator.AllocateData(BLOCK_SIZE);
+		}
+	});
+	worker.join();
+	REQUIRE(foreign);
+	allocator.FreeData(foreign_last ? local : foreign, BLOCK_SIZE);
+	allocator.FreeData(foreign_last ? foreign : local, BLOCK_SIZE);
+	auto reused = allocator.AllocateData(BLOCK_SIZE);
+	CHECK(reused == local);
+	CHECK(reused[0] == 42);
+	CHECK(allocator.GetCachedMemory() == BLOCK_SIZE);
+	allocator.FreeData(reused, BLOCK_SIZE);
+	allocator.FlushAll();
+	CHECK(allocator.GetCachedMemory() == 0);
+}
+
+TEST_CASE("BlockAllocator peer reuse expires old allocation classes", "[api][block_allocator][allocator_locality]") {
+	constexpr idx_t BLOCK_SIZE = 65536;
+	constexpr idx_t BLOCKS = 257;
+	constexpr idx_t OLD_SIZE = 512 * 1024;
+	AllocationCacheTestAffinity affinity;
+	const auto cpus = affinity.CPUs();
+	if (cpus.empty() || !affinity.Pin(cpus.front()) || std::thread::hardware_concurrency() <= 4) {
+		return;
+	}
+	atomic<idx_t> live_bytes {0};
+	Allocator fallback(CacheTestAllocate, CacheTestFree, CacheTestReallocate,
+	                   make_uniq<AllocationCacheTestData>(live_bytes));
+	auto owned = make_uniq<BlockAllocator>(fallback, BLOCK_SIZE, BLOCKS * BLOCK_SIZE);
+	auto &allocator = *owned;
+	vector<data_ptr_t> blocks;
+	for (idx_t i = 0; i < BLOCKS; i++) {
+		auto pointer = allocator.AllocateData(BLOCK_SIZE);
+		REQUIRE(BlockAllocatorTestHelper::IsInPool(allocator, pointer));
+		blocks.push_back(pointer);
+	}
+	// Local capacity is still live: the only reusable block came from a peer range.
+	auto peer = blocks.back();
+	blocks.pop_back();
+	allocator.FreeData(peer, BLOCK_SIZE);
+	allocator.ThreadExit();
+	auto old = allocator.AllocateData(OLD_SIZE);
+	allocator.FreeData(old, OLD_SIZE);
+	REQUIRE(live_bytes.load() == OLD_SIZE);
+	std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+	auto reused = allocator.AllocateData(BLOCK_SIZE);
+	CHECK(reused == peer);
+	CHECK(live_bytes.load() == 0);
+	allocator.FreeData(reused, BLOCK_SIZE);
+	for (auto pointer : blocks) {
+		allocator.FreeData(pointer, BLOCK_SIZE);
+	}
+	allocator.FlushAll();
+	CHECK(allocator.GetCachedMemory() == 0);
+}
+
+TEST_CASE("BlockAllocator migration and foreign frees preserve the original home",
+          "[api][block_allocator][allocator_locality]") {
+	constexpr idx_t BLOCK_SIZE = 65536;
+	Allocator fallback;
+	auto owned = make_uniq<BlockAllocator>(fallback, BLOCK_SIZE, 257 * BLOCK_SIZE);
+	auto &allocator = *owned;
+	AllocationCacheTestAffinity affinity;
+	const auto cpus = affinity.CPUs();
+	if (cpus.empty() || !affinity.Pin(cpus.front())) {
+		return;
+	}
+	const auto first_shard = BlockAllocatorTestHelper::LocalShard(allocator);
+	idx_t other_cpu = cpus.front();
+	for (auto cpu : cpus) {
+		if (affinity.Pin(cpu) && BlockAllocatorTestHelper::LocalShard(allocator) != first_shard) {
+			other_cpu = cpu;
+			break;
+		}
+	}
+	if (other_cpu == cpus.front()) {
+		return;
+	}
+	REQUIRE(affinity.Pin(cpus.front()));
+	auto first = allocator.AllocateData(BLOCK_SIZE);
+	allocator.FreeData(first, BLOCK_SIZE);
+	REQUIRE(affinity.Pin(other_cpu));
+	auto other = allocator.AllocateData(BLOCK_SIZE);
+	CHECK(other != first);
+	CHECK(allocator.GetCachedMemory() == BLOCK_SIZE);
+	std::thread freer([&] { allocator.FreeData(other, BLOCK_SIZE); });
+	freer.join();
+	CHECK(allocator.GetCachedMemory() == 2 * BLOCK_SIZE);
+	REQUIRE(affinity.Pin(cpus.front()));
+	auto first_reused = allocator.AllocateData(BLOCK_SIZE);
+	CHECK(first_reused == first);
+	REQUIRE(affinity.Pin(other_cpu));
+	auto other_reused = allocator.AllocateData(BLOCK_SIZE);
+	CHECK(other_reused == other);
+	CHECK(allocator.GetCachedMemory() == 0);
+	allocator.FreeData(first_reused, BLOCK_SIZE);
+	allocator.FreeData(other_reused, BLOCK_SIZE);
+	allocator.FlushAll();
+	CHECK(allocator.GetCachedMemory() == 0);
+}
+
+TEST_CASE("BlockAllocator can borrow the whole pool and reclaim all ranges",
+          "[api][block_allocator][allocator_locality]") {
+	constexpr idx_t BLOCK_SIZE = 65536;
+	constexpr idx_t BLOCKS = 257;
+	Allocator fallback;
+	auto owned = make_uniq<BlockAllocator>(fallback, BLOCK_SIZE, BLOCKS * BLOCK_SIZE);
+	auto &allocator = *owned;
+	AllocationCacheTestAffinity affinity;
+	const auto cpus = affinity.CPUs();
+	if (!cpus.empty()) {
+		REQUIRE(affinity.Pin(cpus.front()));
+	}
+	for (idx_t round = 0; round < 3; round++) {
+		vector<data_ptr_t> blocks;
+		std::unordered_set<data_ptr_t> unique;
+		for (idx_t i = 0; i < BLOCKS; i++) {
+			auto pointer = allocator.AllocateData(BLOCK_SIZE);
+			REQUIRE(BlockAllocatorTestHelper::IsInPool(allocator, pointer));
+			CHECK(reinterpret_cast<uintptr_t>(pointer) % 4096 == 0);
+			CHECK(unique.insert(pointer).second);
+			pointer[0] = 42;
+			blocks.push_back(pointer);
+		}
+		auto overflow = allocator.AllocateData(BLOCK_SIZE);
+		CHECK_FALSE(BlockAllocatorTestHelper::IsInPool(allocator, overflow));
+		allocator.FreeData(overflow, BLOCK_SIZE);
+		for (auto pointer : blocks) {
+			allocator.FreeData(pointer, BLOCK_SIZE);
+		}
+		CHECK(allocator.GetCachedMemory() == BLOCKS * BLOCK_SIZE);
+		allocator.FlushAll();
+		CHECK(allocator.GetCachedMemory() == 0);
+		CHECK(BlockAllocatorTestHelper::FreeBlocks(allocator) == 0);
+	}
+}
+#endif

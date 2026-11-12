@@ -18,11 +18,10 @@ struct MatchOutcome {
 //! Match the matcher once against the token at `position` of the tokenized query
 MatchOutcome MatchTokenAt(const string &query, idx_t position) {
 	auto compiled = CompiledGrammar::Create();
-	vector<MatcherToken> tokens;
-	ParserTokenizerBehavior behavior(query, tokens);
+	ParserTokenizerBehavior behavior(query);
 	compiled->GetTokenizer().TokenizeInput(behavior);
 
-	TokenIterator iterator(tokens);
+	TokenIterator iterator(behavior);
 	iterator.SetPosition(position);
 
 	vector<MatcherSuggestion> suggestions;

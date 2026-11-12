@@ -14,7 +14,7 @@ statement ok
 CREATE INDEX i1 ON t1 (c1);
 
 statement ok
-PRAGMA MEMORY_LIMIT='4MB';
+SET MEMORY_LIMIT='4MB';
 
 statement ok
 CHECKPOINT;

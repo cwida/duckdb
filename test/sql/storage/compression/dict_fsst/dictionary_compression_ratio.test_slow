@@ -6,7 +6,7 @@ load {TEST_DIR}/test_dictionary.db readwrite v1.3.0
 
 # First test: detailed compression ratio
 statement ok
-PRAGMA force_compression='dict_fsst';
+SET force_compression='dict_fsst';
 
 # Assuming 10 chars at 1 byte, with a 4byte offset and a 2byte length per string uncompressed:
 # Ratio absolute max at 3 bits per value (ignoring dict size) = (16/(3/8)) = 42.6666666667
@@ -17,7 +17,7 @@ statement ok
 CHECKPOINT;
 
 statement ok
-PRAGMA force_compression='uncompressed';
+SET force_compression='uncompressed';
 
 statement ok
 CREATE TABLE test_uncompressed AS SELECT concat('BEEPBOOP-', (i%3)::VARCHAR) AS i FROM range(0, 1250000) tbl(i);

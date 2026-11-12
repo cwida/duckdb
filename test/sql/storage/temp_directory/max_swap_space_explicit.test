@@ -6,7 +6,7 @@ require skip_reload
 require vector_size 2048
 
 statement ok
-PRAGMA memory_limit='2MB'
+SET memory_limit='2MB'
 
 # --- Not changed when set explicitly by the user
 

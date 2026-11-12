@@ -6,7 +6,7 @@
 load {TEST_DIR}/test_rle.db
 
 statement ok
-PRAGMA force_compression = 'rle'
+SET force_compression = 'rle'
 
 statement ok
 CREATE TABLE test (id INTEGER, l INTEGER[]);

@@ -5,6 +5,9 @@
 require 64bit
 
 statement ok
+SET threads = least(current_setting('threads'), 8)
+
+statement ok
 CREATE or replace TABLE big_table AS
     SELECT
     (i % 500)::int16 AS "Pid",
@@ -13,11 +16,11 @@ CREATE or replace TABLE big_table AS
     FROM range(2e7::int) tbl(i);
 
 statement ok
-PRAGMA temp_directory='{TEST_DIR}/window_paging'
+SET temp_directory='{TEST_DIR}/window_paging'
 
 # This query would take ~2.5GB of memory
 statement ok
-PRAGMA memory_limit='1GB'
+SET memory_limit='1GB'
 
 statement ok
 SET debug_force_external=true;

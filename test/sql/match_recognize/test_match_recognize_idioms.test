@@ -9,7 +9,7 @@
 # rebaselined guess.
 
 statement ok
-pragma threads=1;
+SET threads=1;
 
 statement ok
 create table tiers(i integer, tier varchar, amt integer);

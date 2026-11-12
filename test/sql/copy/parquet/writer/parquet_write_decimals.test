@@ -75,9 +75,6 @@ SELECT * FROM '{TEST_DIR}/decimals.parquet' WHERE {dec_column}=43
 endloop
 
 # check statistics
-statement ok
-PRAGMA disable_verification
-
 query IIIIIIII
 SELECT sdec4.min, sdec4.max, sdec9.min, sdec9.max, sdec18.min, sdec18.max, sdec38.min, sdec38.max FROM (SELECT stats(dec4) sdec4, stats(dec9) sdec9, stats(dec18) sdec18, stats(dec38) sdec38 FROM '{TEST_DIR}/decimals.parquet' LIMIT 1)
 ----

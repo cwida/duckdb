@@ -3,7 +3,7 @@
 # group: [prepared]
 
 statement ok
-PRAGMA threads=1;
+SET threads=1;
 
 statement ok
 CREATE TABLE filter_t(i INTEGER);

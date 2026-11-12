@@ -1,0 +1,37 @@
+# name: test/sql/aggregate/aggregates/sum_bigint_carry.test
+# description: BIGINT clustered sums retain signed carries and null/selection behavior
+# group: [aggregates]
+
+statement ok
+CREATE TABLE t AS SELECT i, CASE i%5 WHEN 0 THEN 9223372036854775807::BIGINT WHEN 1 THEN '-9223372036854775808'::BIGINT WHEN 2 THEN NULL WHEN 3 THEN 7::BIGINT ELSE -3::BIGINT END AS x FROM range(65541) r(i)
+
+# Casting each input to HUGEINT uses the separate wide-input aggregate kernel.
+query I
+SELECT sum(x)=sum(x::HUGEINT) FROM t
+----
+true
+
+query I
+SELECT bool_and(a=b) FROM (SELECT sum(x) AS a, sum(x::HUGEINT) AS b FROM t GROUP BY i%7)
+----
+true
+
+query I
+SELECT bool_and(a IS NOT DISTINCT FROM b) FROM (SELECT sum(x) AS a, sum(x::HUGEINT) AS b FROM t WHERE i%2048=2047 GROUP BY i%7)
+----
+true
+
+query I
+SELECT sum(x)=sum(x::HUGEINT) FROM t WHERE x>=0
+----
+true
+
+query I
+SELECT sum(x)=sum(x::HUGEINT) FROM t WHERE x<0
+----
+true
+
+query I
+SELECT sum(x) FROM t WHERE x IS NULL
+----
+NULL

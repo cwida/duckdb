@@ -3,7 +3,7 @@
 # group: [prepared]
 
 statement ok
-PRAGMA threads=1;
+SET threads=1;
 
 # Plans without mutable database inputs remain cached.
 statement ok

@@ -25,49 +25,62 @@ class Vector;
 DeltaByteArrayDecoder::DeltaByteArrayDecoder(ColumnReader &reader) : reader(reader) {
 }
 
-void DeltaByteArrayDecoder::ReadDbpData(Allocator &allocator, ResizeableBuffer &buffer, ResizeableBuffer &result_buffer,
+template <class BACKING>
+void DeltaByteArrayDecoder::ReadDbpData(BACKING &backing, ResizeableBuffer &buffer, ResizeableBuffer &result_buffer,
                                         idx_t &value_count) {
-	auto decoder = make_uniq<DbpDecoder>(buffer.ptr, buffer.len);
+	auto decoder = make_uniq<DbpDecoder>(buffer.GetCurrentLoc(), buffer.GetRemaining());
 	value_count = decoder->TotalValues();
-	result_buffer.reset();
 	// value_count is read from the file, so the buffer size can overflow on a corrupt input
 	idx_t result_size;
 	if (!TryMultiplyOperator::Operation<idx_t, idx_t, idx_t>(value_count, sizeof(uint32_t), result_size)) {
 		throw InvalidInputException("DELTA_BYTE_ARRAY value count is too large - corrupt file?");
 	}
-	result_buffer.resize(allocator, result_size);
-	decoder->GetBatch<uint32_t>(result_buffer.ptr, value_count);
+	result_buffer.Resize(backing, result_size);
+	decoder->GetBatch<uint32_t>(result_buffer.GetCurrentLoc(), value_count);
 	decoder->Finalize();
-	buffer.inc(buffer.len - decoder->BufferPtr().len);
+	buffer.Inc(decoder->BytesConsumed());
 }
 
+template void DeltaByteArrayDecoder::ReadDbpData<ResizeableBuffer::SizedBacking>(ResizeableBuffer::SizedBacking &,
+                                                                                 ResizeableBuffer &, ResizeableBuffer &,
+                                                                                 idx_t &);
+
 void DeltaByteArrayDecoder::InitializePage() {
+	auto &schema = reader.Schema();
+	if (schema.parquet_type != duckdb_parquet::Type::BYTE_ARRAY &&
+	    schema.parquet_type != duckdb_parquet::Type::FIXED_LEN_BYTE_ARRAY) {
+		throw DataCorruptionException(
+		    "DELTA_BYTE_ARRAY encoding is only supported for BYTE_ARRAY or FIXED_LEN_BYTE_ARRAY data");
+	}
 	auto &block = *reader.block;
-	auto &allocator = reader.reader.allocator;
+	auto &buffer_manager = reader.reader.buffer_manager;
+	auto &allocator = reader.GetAllocator();
 	idx_t prefix_count, suffix_count;
+
 	auto &prefix_buffer = reader.encoding_buffers[0];
-	auto &suffix_buffer = reader.encoding_buffers[1];
 	ReadDbpData(allocator, block, prefix_buffer, prefix_count);
+
+	auto &suffix_buffer = reader.encoding_buffers[1];
 	ReadDbpData(allocator, block, suffix_buffer, suffix_count);
+
 	if (prefix_count != suffix_count) {
 		throw std::runtime_error("DELTA_BYTE_ARRAY - prefix and suffix counts are different - corrupt file?");
 	}
 
-	auto prefix_data = reinterpret_cast<uint32_t *>(prefix_buffer.ptr);
-	auto suffix_data = reinterpret_cast<uint32_t *>(suffix_buffer.ptr);
+	auto prefix_data = reinterpret_cast<uint32_t *>(prefix_buffer.GetCurrentLoc());
+	auto suffix_data = reinterpret_cast<uint32_t *>(suffix_buffer.GetCurrentLoc());
 
 	// Allocate the plain data buffer per page
 	plain_data = make_shared_ptr<ResizeableBuffer>();
 
 	if (prefix_count == 0) {
-		plain_data->resize(allocator, 0);
+		plain_data->Resize(allocator, buffer_manager, 0);
 		return;
 	}
 
 	// Decode DELTA_BYTE_ARRAY into plain Parquet page format
 	// Plain format for BYTE_ARRAY: [4-byte length][data] repeated
 	// Plain format for FIXED_LEN_BYTE_ARRAY: [data] repeated (no length prefix)
-	auto &schema = reader.Schema();
 	bool is_fixed_len = (schema.parquet_type == duckdb_parquet::Type::FIXED_LEN_BYTE_ARRAY);
 	idx_t fixed_len = is_fixed_len ? schema.type_length : 0;
 
@@ -96,11 +109,11 @@ void DeltaByteArrayDecoder::InitializePage() {
 		}
 	}
 
-	plain_data->resize(allocator, total_size);
+	plain_data->Resize(allocator, buffer_manager, total_size);
 	unsafe_vector<uint8_t> prev_value(max_len);
 	idx_t prev_len = 0;
 
-	auto output = plain_data->ptr;
+	auto output = plain_data->GetCurrentLoc();
 	for (idx_t i = 0; i < prefix_count; i++) {
 		idx_t prefix_len = prefix_data[i];
 		idx_t suffix_len = suffix_data[i];
@@ -115,23 +128,25 @@ void DeltaByteArrayDecoder::InitializePage() {
 			output += sizeof(uint32_t);
 		}
 
-		block.available(suffix_len);
+		block.Available(suffix_len);
 		if (value_len > 0) {
 			memcpy(output, prev_value.data(), prefix_len);
-			memcpy(output + prefix_len, block.ptr, suffix_len);
+			memcpy(output + prefix_len, block.GetCurrentLoc(), suffix_len);
 			memcpy(prev_value.data(), output, value_len);
 		}
-		block.inc(suffix_len);
+		block.Inc(suffix_len);
 		prev_len = value_len;
 		output += value_len;
 	}
 }
 
 void DeltaByteArrayDecoder::Read(uint8_t *defines, idx_t read_count, Vector &result, idx_t result_offset) {
+	ResizeableBuffer::PinGuard pin_guard(*plain_data, reader.reader.buffer_manager);
 	reader.Plain(plain_data, defines, read_count, result_offset, result);
 }
 
 void DeltaByteArrayDecoder::Skip(uint8_t *defines, idx_t skip_count) {
+	ResizeableBuffer::PinGuard pin_guard(*plain_data, reader.reader.buffer_manager);
 	reader.PlainSkip(*plain_data, defines, skip_count);
 }
 

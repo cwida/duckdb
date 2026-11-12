@@ -1,3 +1,4 @@
+#include "duckdb/common/operator/add.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/operator/logical_set_operation.hpp"
 
@@ -12,18 +13,10 @@ void StatisticsPropagator::AddCardinalities(unique_ptr<NodeStatistics> &stats, N
 		stats = nullptr;
 		return;
 	}
-	stats->estimated_cardinality += new_stats.estimated_cardinality;
-	auto new_max =
-	    Hugeint::Add(NumericCast<int64_t>(stats->max_cardinality), NumericCast<int64_t>(new_stats.max_cardinality));
-	if (new_max < NumericLimits<int64_t>::Maximum()) {
-		int64_t result;
-		if (!Hugeint::TryCast<int64_t>(new_max, result)) {
-			throw InternalException("Overflow in cast in statistics propagation");
-		}
-		D_ASSERT(result >= 0);
-		stats->max_cardinality = idx_t(result);
-	} else {
-		stats = nullptr;
+	if (!TryAddOperator::Operation(stats->estimated_cardinality, new_stats.estimated_cardinality,
+	                               stats->estimated_cardinality) ||
+	    !TryAddOperator::Operation(stats->max_cardinality, new_stats.max_cardinality, stats->max_cardinality)) {
+		stats.reset();
 	}
 }
 

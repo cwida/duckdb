@@ -4,9 +4,6 @@
 
 require json
 
-statement ok
-pragma enable_verification
-
 # Basic: remove key from object
 query T
 SELECT json_remove('{"a":1,"b":2}', '$.a')

@@ -37,8 +37,10 @@ public:
 	void AddChild(const Expression &child_expr);
 	void Finalize();
 	Allocator &GetAllocator();
-	bool HasContext();
-	DUCKDB_API ClientContext &GetContext();
+	DUCKDB_API Context &GetContext();
+	bool HasClientContext();
+	//! The client context - throws if the expression is executed without a client context
+	DUCKDB_API ClientContext &GetClientContext();
 
 	void Verify(ExpressionExecutorState &root);
 

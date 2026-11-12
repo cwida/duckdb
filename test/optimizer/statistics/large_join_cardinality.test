@@ -3,7 +3,7 @@
 # group: [statistics]
 
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 # Each range has 2^60 distinct values. The 20-way equality join still has 2^60 rows.
 # Match the root's final cardinality field, rather than a leaf's range estimate.

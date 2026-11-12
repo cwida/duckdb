@@ -9,7 +9,7 @@ statement ok
 CREATE TABLE integers(i INTEGER, j INTEGER)
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 statement ok
 INSERT INTO integers VALUES (1,1), (2,2), (3, 3), (4,4)

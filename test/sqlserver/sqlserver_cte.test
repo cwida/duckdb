@@ -6,10 +6,10 @@
 # Recursive CTEs
 
 statement ok
-PRAGMA threads=1
+SET threads=1
 
 statement ok
-PRAGMA default_null_order='NULLS LAST'
+SET default_null_order='NULLS LAST'
 
 statement ok
 CREATE TABLE MyEmployees

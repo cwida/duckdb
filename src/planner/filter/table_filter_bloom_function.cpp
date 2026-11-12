@@ -28,13 +28,15 @@ namespace duckdb {
 static constexpr idx_t MAX_NUM_SECTORS = (1ULL << 26);
 static constexpr idx_t MIN_NUM_BITS_PER_KEY = 12;
 static constexpr idx_t MIN_NUM_BITS = 512;
-static constexpr idx_t LOG_SECTOR_SIZE = 6;             // a sector is 64 bits, log2(64) = 6
-static constexpr idx_t SHIFT_MASK = 0x3F3F3F3F3F3F3F3F; // 6 bits for 64 positions
-static constexpr idx_t N_BITS = 4;                      // the number of bits to set per hash
+static constexpr idx_t LOG_SECTOR_SIZE = 6; // a sector is 64 bits, log2(64) = 6
+static constexpr idx_t N_BITS = 4;          // the number of bits to set per hash
 static constexpr idx_t BITS_PER_SECTOR = 1ULL << LOG_SECTOR_SIZE;
+static constexpr idx_t SECTOR_HASH_SHIFT = 32;
 
 //! A sector is one entry of the bit array, so the two have to agree on how wide it is
 static_assert(BITS_PER_SECTOR == sizeof(uint64_t) * 8, "a bloom filter sector must be exactly one array entry");
+static_assert(MAX_NUM_SECTORS <= (1ULL << SECTOR_HASH_SHIFT) && N_BITS * 8 <= SECTOR_HASH_SHIFT,
+              "sector and within-sector bits must use separate hash halves");
 
 //! A filter is sized from a cardinality estimate, so never let it claim more than this share of the memory budget
 static constexpr idx_t MAX_MEMORY_FRACTION = 64;
@@ -143,14 +145,15 @@ idx_t BloomFilter::GetNumberOfSectors(idx_t number_of_rows) {
 	return MinValue(NextPowerOfTwo(min_bits) >> LOG_SECTOR_SIZE, MAX_NUM_SECTORS);
 }
 
+static inline idx_t GetBloomSectorIndex(const hash_t hash, const uint64_t bitmask) {
+	// Align sector indexing with the high hash bits used for radix partitioning.
+	return (hash >> SECTOR_HASH_SHIFT) & bitmask;
+}
+
 inline uint64_t GetMask(const hash_t hash) {
-	const uint64_t shifts = hash & SHIFT_MASK;
-	const auto shifts_8 = reinterpret_cast<const uint8_t *>(&shifts);
-
 	uint64_t mask = 0;
-
-	for (idx_t bit_idx = 8 - N_BITS; bit_idx < 8; bit_idx++) {
-		const uint8_t bit_pos = shifts_8[bit_idx];
+	for (idx_t bit_idx = 0; bit_idx < N_BITS; bit_idx++) {
+		const auto bit_pos = (hash >> (bit_idx * 8)) & (BITS_PER_SECTOR - 1);
 		mask |= (1ULL << bit_pos);
 	}
 
@@ -192,7 +195,8 @@ idx_t BloomFilter::LookupHashes(const Vector &hashes_v, SelectionVector &result_
 		result_sel.set_index(found_count, i);
 		found_count += LookupOne(hashes[i]);
 		if (prefetch) {
-			PrefetchHashTableEntry(i, count, [&](idx_t next_idx) { return &bf[hashes[next_idx] & bitmask]; });
+			PrefetchHashTableEntry(i, count,
+			                       [&](idx_t next_idx) { return &bf[GetBloomSectorIndex(hashes[next_idx], bitmask)]; });
 		}
 	}
 	return found_count;
@@ -210,8 +214,9 @@ idx_t BloomFilter::LookupHashes(const Vector &hashes_v, const SelectionVector &s
 		result_sel.set_index(found_count, i);
 		found_count += LookupOne(hashes[sel.get_index_unsafe(i)]);
 		if (prefetch) {
-			PrefetchHashTableEntry(
-			    i, count, [&](idx_t next_idx) { return &bf[hashes[sel.get_index_unsafe(next_idx)] & bitmask]; });
+			PrefetchHashTableEntry(i, count, [&](idx_t next_idx) {
+				return &bf[GetBloomSectorIndex(hashes[sel.get_index_unsafe(next_idx)], bitmask)];
+			});
 		}
 	}
 	return found_count;
@@ -220,7 +225,7 @@ idx_t BloomFilter::LookupHashes(const Vector &hashes_v, const SelectionVector &s
 inline void BloomFilter::InsertOne(const hash_t hash) {
 	D_ASSERT(initialized);
 	D_ASSERT(!sealed);
-	const uint64_t bf_offset = hash & bitmask;
+	const auto bf_offset = GetBloomSectorIndex(hash, bitmask);
 	const uint64_t mask = GetMask(hash);
 	atomic<uint64_t> &slot = *reinterpret_cast<atomic<uint64_t> *>(&bf[bf_offset]);
 
@@ -234,7 +239,7 @@ inline void BloomFilter::InsertOne(const hash_t hash) {
 bool BloomFilter::LookupOne(const uint64_t hash) const {
 	D_ASSERT(initialized);
 	D_ASSERT(sealed);
-	const uint64_t bf_offset = hash & bitmask;
+	const auto bf_offset = GetBloomSectorIndex(hash, bitmask);
 	const uint64_t mask = GetMask(hash);
 	atomic<uint64_t> &slot = *reinterpret_cast<atomic<uint64_t> *>(&bf[bf_offset]);
 	auto bf_entry = slot.load(std::memory_order_relaxed);

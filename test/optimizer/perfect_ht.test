@@ -18,7 +18,7 @@ EXPLAIN SELECT year, SUM(val), COUNT(val), COUNT(*) FROM timeseries GROUP BY yea
 physical_plan	<REGEX>:.*PERFECT_HASH_GROUP_BY.*
 
 statement ok
-PRAGMA perfect_ht_threshold=0;
+SET perfect_ht_threshold=0;
 
 # if we set the threshold to 0, the perfect HT is not used anymore
 query II
@@ -27,7 +27,7 @@ EXPLAIN SELECT year, SUM(val), COUNT(val), COUNT(*) FROM timeseries GROUP BY yea
 physical_plan	<!REGEX>:.*PERFECT_HASH_GROUP_BY.*
 
 statement ok
-PRAGMA perfect_ht_threshold=1;
+SET perfect_ht_threshold=1;
 
 # if we set it too small, it is not used still
 query II
@@ -40,7 +40,7 @@ statement ok
 create table manycolumns as select i a, i b, i c, i d, i e, i f, i g, i h, i, i j from range(0,2) tbl(i);
 
 statement ok
-PRAGMA perfect_ht_threshold=30;
+SET perfect_ht_threshold=30;
 
 query II
 explain select a, b, c, d, e, f, g, h, i, j FROM manycolumns GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
@@ -49,11 +49,11 @@ physical_plan	<REGEX>:.*PERFECT_HASH_GROUP_BY.*
 
 # the threshold has to be in range
 statement error
-PRAGMA perfect_ht_threshold=-1;
+SET perfect_ht_threshold=-1;
 ----
 <REGEX>:.*out of range.*
 
 statement error
-PRAGMA perfect_ht_threshold=100;
+SET perfect_ht_threshold=100;
 ----
 <REGEX>:.*out of range.*

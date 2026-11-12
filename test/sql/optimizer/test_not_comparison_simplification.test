@@ -3,7 +3,7 @@
 # group: [optimizer]
 
 statement ok
-PRAGMA explain_output = 'OPTIMIZED_ONLY';
+SET explain_output = 'OPTIMIZED_ONLY';
 
 statement ok
 CREATE TABLE t AS SELECT * FROM (VALUES (1),(2),(3),(NULL)) v(a);
