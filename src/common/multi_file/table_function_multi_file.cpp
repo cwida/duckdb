@@ -744,12 +744,12 @@ static constexpr idx_t MIN_ESTIMATED_BYTES_PER_ROW = 10;
 
 //! The row count the caller gives for the whole scan, read_parquet's explicit_cardinality (0 means not given). Looked
 //! up by name, by convention: read_parquet is the only wrapped function that declares it
-static optional_idx ExplicitCardinality(const TableFunctionMultiFileData &data) {
+static optional_idx ExplicitCardinality(Context &context, const TableFunctionMultiFileData &data) {
 	auto entry = data.options.named_parameters.find(Identifier("explicit_cardinality"));
 	if (entry == data.options.named_parameters.end() || entry->second.IsNull()) {
 		return optional_idx();
 	}
-	auto cardinality = entry->second.DefaultCastAs(LogicalType::UBIGINT).GetValue<uint64_t>();
+	auto cardinality = entry->second.CastAs(context, LogicalType::UBIGINT).GetValue<uint64_t>();
 	if (cardinality == 0) {
 		return optional_idx();
 	}
@@ -764,7 +764,7 @@ unique_ptr<NodeStatistics> TableFunctionMultiFileWrapper::GetCardinality(ClientC
 	}
 	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
 	auto result = make_uniq<NodeStatistics>();
-	auto explicit_cardinality = ExplicitCardinality(data);
+	auto explicit_cardinality = ExplicitCardinality(context.GetContext(), data);
 	if (explicit_cardinality.IsValid()) {
 		result->has_estimated_cardinality = true;
 		result->estimated_cardinality = explicit_cardinality.GetIndex();

@@ -17,6 +17,7 @@
 #include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/unique_ptr.hpp"
+#include "duckdb/storage/allocator_cache_retention.hpp"
 
 namespace duckdb {
 
@@ -90,15 +91,12 @@ private:
 	idx_t ModuloBlockSize(idx_t n) const;
 	idx_t DivBlockSize(idx_t n) const;
 
+	idx_t GetLocalPoolShard() const;
 	uint32_t GetBlockID(data_ptr_t pointer) const;
 	data_ptr_t GetPointer(uint32_t block_id) const;
 
 	void VerifyBlockID(uint32_t block_id) const;
 
-	void InitializeRetention(idx_t now_ms) const;
-	void AddRetention(idx_t count, idx_t now_ms) const;
-	void ReuseRetention(idx_t count, idx_t now_ms) const;
-	idx_t RetentionTarget(idx_t now_ms) const;
 	void UpdateCachedBlocks(int64_t count, idx_t slot) const;
 	idx_t GetCachedPoolMemory() const;
 	void ReturnThreadLocalBlocks() const;
@@ -153,6 +151,8 @@ private:
 	mutable unsafe_unique_ptr<BlockQueue> untouched;
 	//! Touched by block IDs
 	unsafe_unique_ptr<BlockQueue> touched;
+	//! Rotates maintenance across the immutable pool ranges.
+	mutable idx_t reclaim_shard DUCKDB_GUARDED_BY(flush_lock) = 0;
 
 	struct alignas(64) CachedBlockCount {
 		//! Cross-thread reuse can make individual balances negative.
@@ -167,8 +167,8 @@ private:
 	//! Synchronizes returning cached blocks with allocator destruction.
 	shared_ptr<BlockAllocatorLifetimeState> lifetime_state;
 
-	//! Approximate retention volume, with a generation and count packed into each bucket.
-	mutable array<atomic<uint64_t>, 3> retention_buckets;
+	//! Recently returned volume retained for reuse before gradual decay.
+	mutable AllocatorCacheRetention retention;
 	//! Protect maintenance decisions and background scheduling.
 	mutable annotated_mutex flush_lock;
 	//! Scheduler queue destruction invalidates this token before allocator destruction.
