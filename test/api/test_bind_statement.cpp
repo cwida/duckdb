@@ -7,9 +7,6 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
-#include "duckdb/main/config.hpp"
-#include "duckdb/planner/binder.hpp"
-#include "duckdb/planner/planner_extension.hpp"
 #include <atomic>
 
 using namespace duckdb;
@@ -347,308 +344,53 @@ static void RequireDescribedThenRefused(Connection &con, const string &sql, cons
 	REQUIRE(StringUtil::Contains(result->GetError(), error));
 }
 
-TEST_CASE("BindStatement describes a statement whose plan is deeper than the tree depth limit",
+TEST_CASE("BindStatement describes a statement that only the planning after the bind refuses",
           "[api][bind_statement]") {
-	DuckDB db(nullptr);
-	Connection con(db);
-	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(a INTEGER, b VARCHAR)"));
-	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (1, 'x')"));
-	REQUIRE_NO_FAIL(con.Query("SET max_expression_depth=50"));
-
-	// 30 nested subqueries stay below the binder depth limit of 50, while their plan, a projection and a filter
-	// per level, is about 60 operators deep.
-	RequireDescribedThenRefused(con, NestedFilterChain(30), {"a", "b"}, {LogicalType::INTEGER, LogicalType::VARCHAR},
-	                            "Maximum tree depth of 50 exceeded in logical planner");
-
-	// Below the limit the chain is described and runs.
-	auto sig = BindOne(con, NestedFilterChain(20));
-	REQUIRE(sig.types.size() == 2);
-	REQUIRE(CountRows(con, "SELECT count(*) FROM (" + NestedFilterChain(20) + ")") == 1);
-
-	// A chain deeper than the binder depth limit is refused by the bind itself, so describing it fails too.
-	REQUIRE_THROWS_WITH(BindOne(con, NestedFilterChain(60)), Catch::Contains("Max expression depth limit of 50"));
-}
-
-TEST_CASE("BindStatement describes a correlated subquery that decorrelation refuses", "[api][bind_statement]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(a INTEGER, b INTEGER)"));
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE u(a INTEGER, b VARCHAR)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE audit(x INTEGER)"));
 	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (1, 2)"));
 	REQUIRE_NO_FAIL(con.Query("INSERT INTO u VALUES (1, 'y')"));
+	const string positional_join = "Positional join in correlated subqueries is not (yet) supported";
 
-	RequireDescribedThenRefused(con, "SELECT * FROM t WHERE EXISTS (SELECT * FROM u POSITIONAL JOIN (SELECT t.a) s)",
-	                            {"a", "b"}, {LogicalType::INTEGER, LogicalType::INTEGER},
-	                            "Positional join in correlated subqueries is not (yet) supported");
-	RequireDescribedThenRefused(con, "SELECT (SELECT b FROM u POSITIONAL JOIN (SELECT t.a AS c) s) AS r FROM t", {"r"},
-	                            {LogicalType::VARCHAR},
-	                            "Positional join in correlated subqueries is not (yet) supported");
+	SECTION("A plan deeper than the tree depth limit") {
+		REQUIRE_NO_FAIL(con.Query("SET max_expression_depth=50"));
+		// 30 nested subqueries stay below the binder depth limit of 50, while their plan, a projection and a filter
+		// per level, is about 60 operators deep.
+		RequireDescribedThenRefused(con, NestedFilterChain(30), {"a", "b"},
+		                            {LogicalType::INTEGER, LogicalType::INTEGER},
+		                            "Maximum tree depth of 50 exceeded in logical planner");
 
-	// A correlated subquery that decorrelation accepts is described and runs.
-	unique_ptr<QueryResult> result;
-	auto sig = BindOne(con, "SELECT (SELECT b FROM u WHERE u.a = t.a) AS r FROM t");
-	REQUIRE(sig.types.size() == 1);
-	REQUIRE(sig.types[0] == LogicalType::VARCHAR);
-	result = con.Query("SELECT (SELECT b FROM u WHERE u.a = t.a) AS r FROM t");
-	REQUIRE(CHECK_COLUMN(result, 0, {"y"}));
-}
-
-TEST_CASE("BindStatement describes a write whose row trigger body decorrelation refuses", "[api][bind_statement]") {
-	DuckDB db(nullptr);
-	Connection con(db);
-	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(a INTEGER, b INTEGER)"));
-	REQUIRE_NO_FAIL(con.Query("CREATE TABLE u(a INTEGER)"));
-	REQUIRE_NO_FAIL(con.Query("CREATE TABLE audit(x INTEGER)"));
-	REQUIRE_NO_FAIL(con.Query("INSERT INTO u VALUES (7)"));
-	REQUIRE_NO_FAIL(con.Query("CREATE TRIGGER trg AFTER INSERT ON t FOR EACH ROW "
-	                          "INSERT INTO audit SELECT s.x FROM (SELECT NEW.a AS x) s POSITIONAL JOIN u"));
-
-	// The changed rows column of a write with a row trigger is named by the expansion, so only its type is checked.
-	RequireDescribedThenRefused(con, "INSERT INTO t VALUES (1, 2)", {}, {LogicalType::BIGINT},
-	                            "Positional join in correlated subqueries is not (yet) supported");
-	REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 0);
-	REQUIRE(CountRows(con, "SELECT count(*) FROM audit") == 0);
-
-	// Without the trigger the same write is described and runs.
-	REQUIRE_NO_FAIL(con.Query("DROP TRIGGER trg ON t"));
-	auto sig = BindOne(con, "INSERT INTO t VALUES (1, 2)");
-	REQUIRE(sig.types.size() == 1);
-	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (1, 2)"));
-	REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 1);
-}
-
-TEST_CASE("The bind_statement verification passes statements whose two plannings agree", "[api][bind_statement]") {
-	DuckDB db(nullptr);
-	Connection con(db);
-	unique_ptr<QueryResult> result;
-	REQUIRE_NO_FAIL(con.Query("SET debug_verify_statement='bind_statement'"));
-	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(a INTEGER, b VARCHAR)"));
-	REQUIRE_NO_FAIL(con.Query("CREATE TABLE u(a INTEGER, b VARCHAR)"));
-	REQUIRE_NO_FAIL(con.Query("CREATE SEQUENCE seq"));
-	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (1, 'x'), (2, NULL)"));
-	REQUIRE_NO_FAIL(con.Query("INSERT INTO u SELECT a, b FROM t WHERE a = 1"));
-	REQUIRE_NO_FAIL(con.Query("UPDATE u SET b = 'z' WHERE a IN (SELECT a FROM t)"));
-	result = con.Query("SELECT (SELECT b FROM u WHERE u.a = t.a) FROM t ORDER BY a");
-	REQUIRE(CHECK_COLUMN(result, 0, {"z", Value()}));
-	result = con.Query("SELECT nextval('seq')");
-	REQUIRE(CHECK_COLUMN(result, 0, {1}));
-
-	// Parameters with values, and PREPARE and EXECUTE as statements, which pass through the verification.
-	result = con.Query("SELECT a + $1 FROM t ORDER BY a", 10);
-	REQUIRE(CHECK_COLUMN(result, 0, {11, 12}));
-	REQUIRE_NO_FAIL(con.Query("PREPARE p AS SELECT b FROM t WHERE a = $1"));
-	result = con.Query("EXECUTE p(2)");
-	REQUIRE(CHECK_COLUMN(result, 0, {Value()}));
-
-	// A bind error is the one of the statement, not a verification error.
-	auto missing = con.Query("SELECT * FROM no_such_table");
-	REQUIRE(missing->HasError());
-	REQUIRE(missing->GetErrorType() == ExceptionType::CATALOG);
-
-	// The three classes that fail only in the full planning still fail with their own error.
-	REQUIRE_NO_FAIL(con.Query("SET max_expression_depth=50"));
-	auto deep = con.Query(NestedFilterChain(30));
-	REQUIRE(deep->HasError());
-	REQUIRE(StringUtil::Contains(deep->GetError(), "Maximum tree depth of 50 exceeded"));
-	REQUIRE_NO_FAIL(con.Query("RESET max_expression_depth"));
-	auto refused = con.Query("SELECT * FROM t WHERE EXISTS (SELECT * FROM u POSITIONAL JOIN (SELECT t.a) s)");
-	REQUIRE(refused->HasError());
-	REQUIRE(StringUtil::Contains(refused->GetError(), "Positional join in correlated subqueries"));
-	REQUIRE_NO_FAIL(con.Query("CREATE TABLE audit(x INTEGER)"));
-	REQUIRE_NO_FAIL(con.Query("CREATE TRIGGER trg AFTER INSERT ON u FOR EACH ROW "
-	                          "INSERT INTO audit SELECT s.x FROM (SELECT NEW.a AS x) s POSITIONAL JOIN t"));
-	auto triggered = con.Query("INSERT INTO u VALUES (5, 'v')");
-	REQUIRE(triggered->HasError());
-	REQUIRE(StringUtil::Contains(triggered->GetError(), "Positional join in correlated subqueries"));
-	REQUIRE_NO_FAIL(con.Query("DROP TRIGGER trg ON u"));
-
-	// A failing statement in an explicit transaction aborts it exactly as without the verification.
-	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
-	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (3, 'w')"));
-	REQUIRE(con.Query("SELECT * FROM no_such_table")->HasError());
-	REQUIRE(con.Query("SELECT 1")->HasError());
-	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
-	REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 2);
-
-	// Statements that expand are left to execution.
-	REQUIRE_NO_FAIL(con.Query("CREATE TABLE p AS SELECT * FROM (VALUES ('k', 1), ('l', 2)) v(k, v)"));
-	result = con.Query("PIVOT p ON k USING sum(v)");
-	REQUIRE(CHECK_COLUMN(result, 0, {1}));
-	REQUIRE(CHECK_COLUMN(result, 1, {2}));
-}
-
-static std::atomic<idx_t> post_bind_count {0};
-
-static void CountPostBind(PlannerExtensionInput &input, BoundStatement &statement) {
-	post_bind_count++;
-}
-
-TEST_CASE("BindStatement runs the post bind hooks once, and the bind_statement verification plans in both modes",
-          "[api][bind_statement]") {
-	DBConfig config;
-	PlannerExtension extension;
-	extension.post_bind_function = CountPostBind;
-	PlannerExtension::Register(config, extension);
-	DuckDB db(nullptr, &config);
-	Connection con(db);
-
-	auto before = post_bind_count.load();
-	BindOne(con, "SELECT 42");
-	REQUIRE(post_bind_count.load() - before == 1);
-
-	before = post_bind_count.load();
-	REQUIRE_NO_FAIL(con.Query("SELECT 42"));
-	REQUIRE(post_bind_count.load() - before == 1);
-
-	REQUIRE_NO_FAIL(con.Query("SET debug_verify_statement='bind_statement'"));
-	before = post_bind_count.load();
-	REQUIRE_NO_FAIL(con.Query("SELECT 42"));
-	REQUIRE(post_bind_count.load() - before == 3);
-}
-
-// An InternalException aborts the process when DUCKDB_CRASH_ON_ASSERT is set.
-#ifndef DUCKDB_CRASH_ON_ASSERT
-enum class DisagreeingHook { RENAME, RETYPE, REBIND, FAIL_BIND_ONLY, FAIL_WITH_TWO_TYPES };
-
-static DisagreeingHook disagreeing_hook = DisagreeingHook::RENAME;
-static std::atomic<idx_t> disagreeing_hook_calls {0};
-
-// Under the bind_statement verification the full planning binds first and the bind only planning second.
-static void DisagreeingPostBind(PlannerExtensionInput &input, BoundStatement &statement) {
-	auto call = ++disagreeing_hook_calls;
-	switch (disagreeing_hook) {
-	case DisagreeingHook::RENAME:
-		if (call == 2) {
-			statement.names[0] = Identifier("renamed");
-		}
-		break;
-	case DisagreeingHook::RETYPE:
-		if (call == 2) {
-			statement.types[0] = LogicalType::VARCHAR;
-		}
-		break;
-	case DisagreeingHook::REBIND:
-		if (call == 2) {
-			input.binder.GetStatementProperties().always_require_rebind = true;
-		}
-		break;
-	case DisagreeingHook::FAIL_BIND_ONLY:
-		if (call == 2) {
-			throw BinderException("refused in the second planning");
-		}
-		break;
-	case DisagreeingHook::FAIL_WITH_TWO_TYPES:
-		if (call == 1) {
-			throw BinderException("refused in the first planning");
-		}
-		if (call == 2) {
-			throw InvalidInputException("refused in the second planning");
-		}
-		break;
+		REQUIRE(BindOne(con, NestedFilterChain(20)).types.size() == 2);
+		REQUIRE(CountRows(con, "SELECT count(*) FROM (" + NestedFilterChain(20) + ")") == 1);
 	}
-}
+	SECTION("A correlated subquery that decorrelation refuses") {
+		const string refused = "SELECT * FROM t WHERE EXISTS (SELECT * FROM u POSITIONAL JOIN (SELECT t.a) s)";
+		RequireDescribedThenRefused(con, refused, {"a", "b"}, {LogicalType::INTEGER, LogicalType::INTEGER},
+		                            positional_join);
+		RequireDescribedThenRefused(con, "SELECT (SELECT b FROM u POSITIONAL JOIN (SELECT t.a AS c) s) AS r FROM t",
+		                            {"r"}, {LogicalType::VARCHAR}, positional_join);
+		// A PREPARE plans the statement it prepares in full when it is bound.
+		REQUIRE_THROWS_WITH(BindOne(con, "PREPARE p AS " + refused), Catch::Contains(positional_join));
 
-TEST_CASE("The bind_statement verification reports two plannings that disagree", "[api][bind_statement]") {
-	DBConfig config;
-	PlannerExtension extension;
-	extension.post_bind_function = DisagreeingPostBind;
-	PlannerExtension::Register(config, extension);
-	DuckDB db(nullptr, &config);
-	Connection con(db);
-	REQUIRE_NO_FAIL(con.Query("SET debug_verify_statement='bind_statement'"));
-
-	auto run = [&](DisagreeingHook hook) {
-		disagreeing_hook = hook;
-		disagreeing_hook_calls = 0;
-		return con.Query("SELECT 42 AS x");
-	};
-	auto require_internal = [&](unique_ptr<QueryResult> result, const string &message) {
-		REQUIRE(result->HasError());
-		REQUIRE(result->GetErrorType() == ExceptionType::INTERNAL);
-		REQUIRE(StringUtil::Contains(result->GetError(), message));
-	};
-	require_internal(run(DisagreeingHook::RENAME), "Bind only planning reports different names than full planning");
-	require_internal(run(DisagreeingHook::RETYPE), "Bind only planning reports different types than full planning");
-	require_internal(run(DisagreeingHook::REBIND),
-	                 "Bind only planning reports different always require rebind than full planning");
-	require_internal(run(DisagreeingHook::FAIL_BIND_ONLY),
-	                 "Bind only planning failed where full planning succeeded: Binder Error: refused in the second "
-	                 "planning");
-	require_internal(run(DisagreeingHook::FAIL_WITH_TWO_TYPES), "Bind only planning failed with");
-
-	// Without the verification the statement plans once, so the hook changes nothing that is compared.
-	REQUIRE_NO_FAIL(con.Query("SET debug_verify_statement='none'"));
-	unique_ptr<QueryResult> result = run(DisagreeingHook::RENAME);
-	REQUIRE(CHECK_COLUMN(result, 0, {42}));
-	REQUIRE(disagreeing_hook_calls.load() == 1);
-}
-#endif
-
-struct ClientCallbackError : public std::runtime_error {
-	using std::runtime_error::runtime_error;
-};
-
-struct ClientUnwind {};
-
-static unique_ptr<TableRef> ThrowingReplacementScan(ClientContext &context, ReplacementScanInput &input,
-                                                    optional_ptr<ReplacementScanData> data) {
-	if (input.table_name == "client_frame") {
-		throw ClientCallbackError("lookup failed in the client");
+		const string accepted = "SELECT (SELECT b FROM u WHERE u.a = t.a) AS r FROM t";
+		REQUIRE(BindOne(con, accepted).types == vector<LogicalType> {LogicalType::VARCHAR});
+		unique_ptr<QueryResult> result = con.Query(accepted);
+		REQUIRE(CHECK_COLUMN(result, 0, {"y"}));
 	}
-	if (input.table_name == "client_unwind") {
-		throw ClientUnwind();
+	SECTION("A row trigger body that decorrelation refuses") {
+		REQUIRE_NO_FAIL(con.Query("CREATE TRIGGER trg AFTER INSERT ON t FOR EACH ROW "
+		                          "INSERT INTO audit SELECT s.x FROM (SELECT NEW.a AS x) s POSITIONAL JOIN u"));
+		// The changed rows column of a write with a row trigger is named by the expansion, so only its type is checked.
+		RequireDescribedThenRefused(con, "INSERT INTO t VALUES (3, 4)", {}, {LogicalType::BIGINT}, positional_join);
+		REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 1);
+		REQUIRE(CountRows(con, "SELECT count(*) FROM audit") == 0);
+
+		REQUIRE_NO_FAIL(con.Query("DROP TRIGGER trg ON t"));
+		REQUIRE(BindOne(con, "INSERT INTO t VALUES (3, 4)").types.size() == 1);
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (3, 4)"));
+		REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 2);
 	}
-	return nullptr;
-}
-
-TEST_CASE("A client's own exception from a bind callback leaves BindStatement as the same object",
-          "[api][bind_statement]") {
-	DuckDB db(nullptr);
-	DBConfig::GetConfig(*db.instance).replacement_scans.emplace_back(ThrowingReplacementScan);
-	Connection con(db);
-	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(a INTEGER)"));
-
-	// Autocommit: the bind's own transaction ends and the connection stays usable.
-	REQUIRE_THROWS_AS(BindOne(con, "SELECT * FROM client_frame"), ClientCallbackError);
-	REQUIRE_THROWS_WITH(BindOne(con, "SELECT * FROM client_frame"), Catch::Equals("lookup failed in the client"));
-	REQUIRE_THROWS_AS(BindOne(con, "SELECT * FROM client_unwind"), ClientUnwind);
-	REQUIRE(!con.context->transaction.HasActiveTransaction());
-	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (1)"));
-	REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 1);
-
-	// Explicit transaction: as for an engine bind error, the transaction stays usable and commits its work.
-	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
-	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (2)"));
-	REQUIRE_THROWS_AS(BindOne(con, "SELECT * FROM client_frame"), ClientCallbackError);
-	REQUIRE_THROWS_AS(BindOne(con, "SELECT * FROM client_unwind"), ClientUnwind);
-	REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 2);
-	REQUIRE_NO_FAIL(con.Query("COMMIT"));
-	REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 2);
-
-	// An engine bind error still leaves as the engine's exception.
-	REQUIRE_THROWS_AS(BindOne(con, "SELECT * FROM no_such_table"), Exception);
-	REQUIRE_THROWS_WITH(BindOne(con, "SELECT * FROM no_such_table"), Catch::Contains("\"exception_type\":\"Catalog\""));
-}
-
-TEST_CASE("A client exception of any type ends the autocommit transaction of a bind", "[api][bind_statement]") {
-	DuckDB db(nullptr);
-	DBConfig::GetConfig(*db.instance).replacement_scans.emplace_back(ThrowingReplacementScan);
-	Connection con(db);
-	Connection other(db);
-	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(a INTEGER)"));
-
-	// The Relation route binds through the transaction wrapper, which must end the transaction it began.
-	REQUIRE_THROWS_AS(con.RelationFromQuery("SELECT * FROM client_unwind"), ClientUnwind);
-	REQUIRE(!con.context->transaction.HasActiveTransaction());
-	REQUIRE_NO_FAIL(other.Query("INSERT INTO t VALUES (1)"));
-	REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 1);
-	REQUIRE_THROWS_AS(con.RelationFromQuery("SELECT * FROM client_frame"), ClientCallbackError);
-	REQUIRE(!con.context->transaction.HasActiveTransaction());
-
-	// In an explicit transaction such an exception aborts it, as a standard exception does under the default policy.
-	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
-	REQUIRE_THROWS_AS(con.RelationFromQuery("SELECT * FROM client_unwind"), ClientUnwind);
-	REQUIRE(con.Query("SELECT 1")->HasError());
-	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
-	REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 1);
 }

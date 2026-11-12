@@ -1,8 +1,6 @@
 #include "test_capi_v2.hpp"
 
 #include "duckdb/common/enums/statement_type.hpp"
-#include "duckdb/function/replacement_scan.hpp"
-#include "duckdb/main/config.hpp"
 
 #include <vector>
 
@@ -831,80 +829,21 @@ TEST_CASE("V2: sql_statement parameter names are statement_bind's, in its order"
 TEST_CASE("V2: statement_bind describes a statement that only the planning after the bind refuses",
           "[capi_v2][sql_statement]") {
 	EnvFixture fx;
-	auto run = [&](std::string_view sql) {
-		auto stmt = StmtParseOne(fx.conn, sql);
-		duckdb_v2_result_handle r = nullptr;
-		auto rc = duckdb_v2_statement_execute(fx.conn, stmt, nullptr, nullptr, nullptr, 0, &r, nullptr);
-		duckdb_v2_result_destroy(&r);
-		duckdb_v2_sql_statement_destroy(&stmt);
-		return rc;
-	};
 	ExecSQL(fx.conn, "CREATE TABLE t (a INTEGER, b INTEGER)");
 	ExecSQL(fx.conn, "CREATE TABLE u (a INTEGER, b VARCHAR)");
-	std::string_view refused = "SELECT * FROM t WHERE EXISTS (SELECT * FROM u POSITIONAL JOIN (SELECT t.a) s)";
 
 	// Decorrelation refuses the subquery after the bind, so bind describes the statement and execute refuses it.
-	auto stmt = StmtParseOne(fx.conn, refused);
+	auto stmt = StmtParseOne(fx.conn, "SELECT * FROM t WHERE EXISTS (SELECT * FROM u POSITIONAL JOIN (SELECT t.a) s)");
 	duckdb_v2_schema_handle out = nullptr;
 	REQUIRE(duckdb_v2_statement_bind(fx.conn, stmt, &out, nullptr, nullptr) == DUCKDB_V2_ERROR_NONE);
 	idx_t count = 0;
 	REQUIRE(duckdb_v2_schema_get_count(out, &count, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(count == 2);
 	duckdb_v2_schema_destroy(&out);
-	duckdb_v2_sql_statement_destroy(&stmt);
-	REQUIRE(run(refused) == DUCKDB_V2_ERROR_QUERY_BINDER);
-
-	// A PREPARE plans its inner statement in full when it is bound, so bind refuses it.
-	auto prepare = StmtParseOne(fx.conn, "PREPARE p AS " + std::string(refused));
-	REQUIRE(duckdb_v2_statement_bind(fx.conn, prepare, &out, nullptr, nullptr) == DUCKDB_V2_ERROR_QUERY_BINDER);
-	REQUIRE(out == nullptr);
-	duckdb_v2_sql_statement_destroy(&prepare);
-}
-
-static duckdb::unique_ptr<duckdb::TableRef> ThrowingStandardScan(duckdb::ClientContext &,
-                                                                 duckdb::ReplacementScanInput &input,
-                                                                 duckdb::optional_ptr<duckdb::ReplacementScanData>) {
-	if (input.table_name == "client_frame") {
-		throw std::runtime_error("lookup failed in the client");
-	}
-	if (input.table_name == "client_oom") {
-		throw std::bad_alloc();
-	}
-	return nullptr;
-}
-
-TEST_CASE("V2: statement_bind reports a callback's standard exception and bad_alloc with their raw text",
-          "[capi_v2][sql_statement]") {
-	EnvFixture fx;
-	auto &con = *reinterpret_cast<duckdb::Connection *>(fx.conn);
-	duckdb::DBConfig::GetConfig(*con.context).replacement_scans.emplace_back(ThrowingStandardScan);
-
-	auto stmt = StmtParseOne(fx.conn, "SELECT * FROM client_frame");
-	duckdb_v2_schema_handle out = nullptr;
-	duckdb_v2_error_info_handle err = nullptr;
-	REQUIRE(duckdb_v2_statement_bind(fx.conn, stmt, &out, nullptr, &err) == DUCKDB_V2_ERROR_API);
-	REQUIRE(out == nullptr);
-	const char *text = nullptr;
-	idx_t text_length = 0;
-	REQUIRE(duckdb_v2_error_info_get_text(err, &text, &text_length) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(std::string(text, text_length) == "lookup failed in the client");
-	const char *raw = nullptr;
-	idx_t raw_length = 0;
-	REQUIRE(duckdb_v2_error_info_get_raw_text(err, &raw, &raw_length) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(raw != nullptr);
-	REQUIRE(std::string(raw, raw_length) == "lookup failed in the client");
-	duckdb_v2_error_info_destroy(&err);
-	duckdb_v2_sql_statement_destroy(&stmt);
-
-	stmt = StmtParseOne(fx.conn, "SELECT * FROM client_oom");
-	REQUIRE(duckdb_v2_statement_bind(fx.conn, stmt, &out, nullptr, &err) == DUCKDB_V2_ERROR_RESOURCE_OUT_OF_MEMORY);
-	REQUIRE(out == nullptr);
-	REQUIRE(duckdb_v2_error_info_get_text(err, &text, &text_length) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(std::string(text, text_length) == "Out of memory.");
-	REQUIRE(duckdb_v2_error_info_get_raw_text(err, &raw, &raw_length) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(raw != nullptr);
-	REQUIRE(std::string(raw, raw_length) == "Out of memory.");
-	duckdb_v2_error_info_destroy(&err);
+	duckdb_v2_result_handle result = nullptr;
+	REQUIRE(duckdb_v2_statement_execute(fx.conn, stmt, nullptr, nullptr, nullptr, 0, &result, nullptr) ==
+	        DUCKDB_V2_ERROR_QUERY_BINDER);
+	duckdb_v2_result_destroy(&result);
 	duckdb_v2_sql_statement_destroy(&stmt);
 }
 

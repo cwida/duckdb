@@ -116,9 +116,6 @@ struct StatementProperties {
 		return modified_databases.empty();
 	}
 
-	//! The name of the first field in which the two differ, or an empty string when they are equal
-	string Difference(const StatementProperties &other) const;
-
 	void RegisterDBRead(Catalog &catalog, ClientContext &context);
 	void RegisterDBModify(Catalog &catalog, ClientContext &context, DatabaseModificationType modification);
 };

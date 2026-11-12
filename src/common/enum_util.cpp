@@ -1896,20 +1896,19 @@ const StringUtil::EnumStringLiteral *GetDebugStatementVerificationValues() {
 		{ static_cast<uint32_t>(DebugStatementVerification::PREPARED_STATEMENT), "PREPARED_STATEMENT" },
 		{ static_cast<uint32_t>(DebugStatementVerification::EXPLAIN_STATEMENT), "EXPLAIN_STATEMENT" },
 		{ static_cast<uint32_t>(DebugStatementVerification::EXPLAIN_SQL), "EXPLAIN_SQL" },
-		{ static_cast<uint32_t>(DebugStatementVerification::EXPLAIN_SQL_STRICT), "EXPLAIN_SQL_STRICT" },
-		{ static_cast<uint32_t>(DebugStatementVerification::BIND_STATEMENT), "BIND_STATEMENT" }
+		{ static_cast<uint32_t>(DebugStatementVerification::EXPLAIN_SQL_STRICT), "EXPLAIN_SQL_STRICT" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<DebugStatementVerification>(DebugStatementVerification value) {
-	return StringUtil::EnumToString(GetDebugStatementVerificationValues(), 9, "DebugStatementVerification", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetDebugStatementVerificationValues(), 8, "DebugStatementVerification", static_cast<uint32_t>(value));
 }
 
 template<>
 DebugStatementVerification EnumUtil::FromString<DebugStatementVerification>(const char *value) {
-	return static_cast<DebugStatementVerification>(StringUtil::StringToEnum(GetDebugStatementVerificationValues(), 9, "DebugStatementVerification", value));
+	return static_cast<DebugStatementVerification>(StringUtil::StringToEnum(GetDebugStatementVerificationValues(), 8, "DebugStatementVerification", value));
 }
 
 const StringUtil::EnumStringLiteral *GetDebugVectorVerificationValues() {

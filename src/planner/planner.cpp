@@ -178,6 +178,7 @@ static bool VerifyPlannedExpressions(const LogicalOperator &plan) {
 	}
 	return true;
 }
+
 //! What the signature of a planned statement reads from its bind
 struct BindSignatureState {
 	BindSignatureState(Binder &binder, BoundParameterMap &parameters)
@@ -188,8 +189,22 @@ struct BindSignatureState {
 	}
 
 	bool operator==(const BindSignatureState &other) const {
-		return properties.Difference(other.properties).empty() && parameter_types == other.parameter_types &&
-		       rebind == other.rebind;
+		auto &modified = properties.modified_databases;
+		auto &other_modified = other.properties.modified_databases;
+		for (auto &entry : modified) {
+			auto match = other_modified.find(entry.first);
+			if (match == other_modified.end() || match->second.identity != entry.second.identity ||
+			    !match->second.modifications.Contains(entry.second.modifications) ||
+			    !entry.second.modifications.Contains(match->second.modifications)) {
+				return false;
+			}
+		}
+		return modified.size() == other_modified.size() &&
+		       properties.read_databases == other.properties.read_databases &&
+		       properties.requires_valid_transaction == other.properties.requires_valid_transaction &&
+		       properties.return_type == other.properties.return_type &&
+		       properties.always_require_rebind == other.properties.always_require_rebind &&
+		       parameter_types == other.parameter_types && rebind == other.rebind;
 	}
 
 	StatementProperties properties;
@@ -283,9 +298,7 @@ void Planner::CreatePlan(SQLStatement &statement) {
 		D_ASSERT(!ContainsDependentJoin(*this->plan));
 		D_ASSERT(VerifyPlannedExpressions(*this->plan));
 		D_ASSERT(VerifyCanonicalComparisonJoins(*this->plan));
-#ifdef D_ASSERT_IS_ENABLED
 		D_ASSERT(BindSignatureState(*binder, bound_parameters) == bind_state);
-#endif
 	}
 	this->properties = binder->GetStatementProperties();
 	this->properties.parameter_count = parameter_count;

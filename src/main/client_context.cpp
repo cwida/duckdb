@@ -608,40 +608,10 @@ unique_ptr<PreparedStatement> ClientContext::Prepare(unique_ptr<SQLStatement> st
 	}
 }
 
-StatementSignature ClientContext::PlanSignature(unique_ptr<SQLStatement> statement, PlanningMode mode,
-                                                optional_ptr<identifier_map_t<BoundParameterData>> parameter_values) {
-	StatementSignature signature;
-	auto named_param_map = statement->named_param_map;
-	Planner planner(*this, mode);
-	if (parameter_values) {
-		for (auto &value : *parameter_values) {
-			planner.parameter_data.emplace(value.first, BoundParameterData(value.second));
-		}
-	}
-	planner.CreatePlan(std::move(statement));
-	signature.names = planner.names;
-	signature.types = planner.types;
-	signature.properties = std::move(planner.properties);
-	// Parameter types from the bound parameter map (as in PreparedStatementData::TryGetType).
-	// An un-anchored parameter (e.g. SELECT $1) gets no value_map entry, so its
-	// type stays UNKNOWN; do not assume every parameter is present.
-	for (auto &entry : named_param_map) {
-		LogicalType type(LogicalTypeId::UNKNOWN);
-		auto it = planner.value_map.find(entry.first);
-		if (it != planner.value_map.end()) {
-			type = it->second->return_type.id() != LogicalTypeId::INVALID ? it->second->return_type
-			                                                              : it->second->GetValue().type();
-		}
-		signature.parameters.push_back({entry.first, entry.second, std::move(type)});
-	}
-	return signature;
-}
-
 StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> statement) {
 	auto lock = LockContext();
 	StatementSignature signature;
 	ErrorData bind_error;
-	std::exception_ptr foreign_error;
 	RunFunctionInTransactionInternal(
 	    *lock,
 	    [&]() {
@@ -664,8 +634,26 @@ StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> stateme
 				    signature.metadata_deferred = true;
 				    return;
 			    }
-			    signature = PlanSignature(std::move(expanded.statements[0]), PlanningMode::BIND_ONLY, nullptr);
-		    } catch (const Exception &ex) {
+			    auto bound = std::move(expanded.statements[0]);
+			    auto named_param_map = bound->named_param_map;
+			    Planner planner(*this, PlanningMode::BIND_ONLY);
+			    planner.CreatePlan(std::move(bound));
+			    signature.names = planner.names;
+			    signature.types = planner.types;
+			    signature.properties = std::move(planner.properties);
+			    // Parameter types from the bound parameter map (as in PreparedStatementData::TryGetType).
+			    // An un-anchored parameter (e.g. SELECT $1) gets no value_map entry, so its
+			    // type stays UNKNOWN; do not assume every parameter is present.
+			    for (auto &entry : named_param_map) {
+				    LogicalType type(LogicalTypeId::UNKNOWN);
+				    auto it = planner.value_map.find(entry.first);
+				    if (it != planner.value_map.end()) {
+					    type = it->second->return_type.id() != LogicalTypeId::INVALID ? it->second->return_type
+					                                                                  : it->second->GetValue().type();
+				    }
+				    signature.parameters.push_back({entry.first, entry.second, std::move(type)});
+			    }
+		    } catch (const std::exception &ex) {
 			    ErrorData error(ex);
 			    // Binding is read-only: a recoverable bind error changed nothing, so leave
 			    // the caller's transaction intact (rethrow after the wrapper). A database-
@@ -674,16 +662,9 @@ StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> stateme
 				    throw;
 			    }
 			    bind_error = std::move(error);
-		    } catch (...) {
-			    // Any exception that is not the engine's leaves as the object thrown, where Query and Prepare would
-			    // report a standard one as an engine error
-			    foreign_error = std::current_exception();
 		    }
 	    },
 	    false);
-	if (foreign_error) {
-		std::rethrow_exception(foreign_error);
-	}
 	if (bind_error.HasError()) {
 		bind_error.Throw();
 	}
@@ -1351,7 +1332,10 @@ void ClientContext::RunFunctionInTransactionInternal(ClientContextLock &lock, co
 		transaction.BeginTransaction();
 		interrupt_state = ClientInterruptState::NOT_INTERRUPTED;
 	}
-	auto end_on_error = [&](ErrorData error) {
+	try {
+		fun();
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
 		bool invalidates_transaction = true;
 		if (!ErrorInvalidatesTransaction(error.Type())) {
 			// standard exceptions don't invalidate the transaction
@@ -1365,15 +1349,6 @@ void ClientContext::RunFunctionInTransactionInternal(ClientContextLock &lock, co
 		} else if (invalidates_transaction) {
 			ValidChecker::Invalidate(ActiveTransaction(), error.RawMessage());
 		}
-	};
-	try {
-		fun();
-	} catch (std::exception &ex) {
-		end_on_error(ErrorData(ex));
-		throw;
-	} catch (...) {
-		// A client's exception type need not derive from std::exception, and the transaction begun here must end
-		end_on_error(ErrorData(ExceptionType::INVALID, "An exception of an unknown type was thrown"));
 		throw;
 	}
 	if (require_new_transaction) {

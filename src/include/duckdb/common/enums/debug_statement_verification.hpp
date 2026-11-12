@@ -20,8 +20,7 @@ enum class DebugStatementVerification : uint8_t {
 	PREPARED_STATEMENT,
 	EXPLAIN_STATEMENT,
 	EXPLAIN_SQL,
-	EXPLAIN_SQL_STRICT,
-	BIND_STATEMENT
+	EXPLAIN_SQL_STRICT
 };
 
 } // namespace duckdb

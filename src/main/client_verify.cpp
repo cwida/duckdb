@@ -19,9 +19,6 @@
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/statement/execute_statement.hpp"
 #include "duckdb/parser/statement/prepare_statement.hpp"
-#include "duckdb/planner/planner.hpp"
-#include "duckdb/transaction/meta_transaction.hpp"
-#include "duckdb/main/valid_checker.hpp"
 
 namespace duckdb {
 
@@ -72,27 +69,6 @@ void PreparedStatementVerification::ConvertConstants(unique_ptr<ParsedExpression
 	}
 	ParsedExpressionIterator::EnumerateChildren(*expr,
 	                                            [&](unique_ptr<ParsedExpression> &child) { ConvertConstants(child); });
-}
-
-static string SignatureDifference(const StatementSignature &full, const StatementSignature &bind_only) {
-	if (full.names != bind_only.names) {
-		return "names";
-	}
-	if (full.types != bind_only.types) {
-		return "types";
-	}
-	if (full.parameters.size() != bind_only.parameters.size()) {
-		return "parameter count";
-	}
-	for (auto &parameter : full.parameters) {
-		auto entry =
-		    std::find_if(bind_only.parameters.begin(), bind_only.parameters.end(),
-		                 [&](const StatementParameter &other) { return other.identifier == parameter.identifier; });
-		if (entry == bind_only.parameters.end() || entry->index != parameter.index || entry->type != parameter.type) {
-			return "parameter " + parameter.identifier.GetIdentifierName();
-		}
-	}
-	return full.properties.Difference(bind_only.properties);
 }
 
 //! Swap in a statement produced by verification, carrying over the source text of the statement the user
@@ -266,53 +242,6 @@ void ClientContext::StatementVerification(ClientContextLock &lock, unique_ptr<SQ
 		execute->named_values = std::move(prep_verifier.values);
 
 		ReplaceStatement(statement, std::move(execute));
-	} else if (verification == DebugStatementVerification::BIND_STATEMENT) {
-		if (!allow_nested_statements || statement->type == StatementType::LOGICAL_PLAN_STATEMENT) {
-			return;
-		}
-		if (transaction.HasActiveTransaction() && ValidChecker::IsInvalidated(ActiveTransaction())) {
-			return;
-		}
-		StatementSignature full;
-		StatementSignature bind_only;
-		ErrorData full_error;
-		ErrorData bind_only_error;
-		RunFunctionInTransactionInternal(lock, [&]() {
-			try {
-				full = PlanSignature(statement->Copy(), PlanningMode::FULL, query_parameters.statement_args);
-			} catch (const std::exception &ex) {
-				full_error = ErrorData(ex);
-				if (Exception::InvalidatesDatabase(full_error.Type())) {
-					throw;
-				}
-			}
-			try {
-				bind_only = PlanSignature(statement->Copy(), PlanningMode::BIND_ONLY, query_parameters.statement_args);
-			} catch (const std::exception &ex) {
-				bind_only_error = ErrorData(ex);
-				if (Exception::InvalidatesDatabase(bind_only_error.Type())) {
-					throw;
-				}
-			}
-		});
-		if (bind_only_error.HasError()) {
-			if (!full_error.HasError()) {
-				throw InternalException("Bind only planning failed where full planning succeeded: %s",
-				                        bind_only_error.Message());
-			}
-			if (full_error.Type() != bind_only_error.Type()) {
-				throw InternalException("Bind only planning failed with \"%s\" where full planning failed with \"%s\"",
-				                        bind_only_error.Message(), full_error.Message());
-			}
-			return;
-		}
-		if (full_error.HasError()) {
-			return;
-		}
-		auto difference = SignatureDifference(full, bind_only);
-		if (!difference.empty()) {
-			throw InternalException("Bind only planning reports different %s than full planning", difference);
-		}
 	} else if (verification == DebugStatementVerification::EXPLAIN_STATEMENT ||
 	           verification == DebugStatementVerification::EXPLAIN_SQL ||
 	           verification == DebugStatementVerification::EXPLAIN_SQL_STRICT) {

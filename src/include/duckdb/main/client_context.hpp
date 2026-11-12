@@ -66,7 +66,6 @@ class Connection;
 class PhysicalTransaction;
 class RegisteredStateManager;
 struct TransactionInfo;
-enum class PlanningMode : uint8_t;
 
 //! A statement parameter: identifier ($1 -> "1"), binding index, and inferred type (UNKNOWN if not inferred).
 struct StatementParameter {
@@ -247,11 +246,7 @@ public:
 	//! Deallocate the prepared statement with the given name - does nothing if it does not exist
 	DUCKDB_API void RemovePreparedStatement(const string &name);
 	//! Bind a statement and return its signature, without building a PreparedStatement, optimizing, or
-	//! executing. Read-only: binding touches no in-flight query state, so a live result survives. Throws on error:
-	//! an engine error as a duckdb::Exception of its type, and any other exception that reaches the bind (a replacement
-	//! scan's, an extension hook's, the engine's own std::bad_alloc) as the object thrown, where Query and Prepare
-	//! report a standard exception as an engine error; a table function's or function's bind converts a standard
-	//! exception to an engine error first.
+	//! executing. Read-only: binding touches no in-flight query state, so a live result survives. Throws on error.
 	//! A statement that expands into several reports metadata_deferred with a placeholder column
 	DUCKDB_API StatementSignature BindStatement(unique_ptr<SQLStatement> statement);
 	//! Throws the error a new statement gets while a result that no call ended holds the connection
@@ -377,9 +372,6 @@ private:
 	//! several is refused with the given message
 	unique_ptr<SQLStatement> ExpandSingleStatementInternal(ClientContextLock &lock, unique_ptr<SQLStatement> statement,
 	                                                       const char *refusal);
-	//! The signature of a statement that does not expand, planned in the given mode inside the active transaction
-	StatementSignature PlanSignature(unique_ptr<SQLStatement> statement, PlanningMode mode,
-	                                 optional_ptr<identifier_map_t<BoundParameterData>> parameter_values);
 	//! A verification that runs a statement of its own, like a prepared or an explained copy, is skipped when
 	//! allow_nested_statements is false
 	void StatementVerification(ClientContextLock &lock, unique_ptr<SQLStatement> &statement,

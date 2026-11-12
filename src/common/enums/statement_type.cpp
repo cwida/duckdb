@@ -95,39 +95,6 @@ string StatementReturnTypeToString(StatementReturnType type) {
 }
 // LCOV_EXCL_STOP
 
-string StatementProperties::Difference(const StatementProperties &other) const {
-	if (read_databases != other.read_databases) {
-		return "read databases";
-	}
-	if (modified_databases.size() != other.modified_databases.size()) {
-		return "modified databases";
-	}
-	for (auto &modified : modified_databases) {
-		auto entry = other.modified_databases.find(modified.first);
-		if (entry == other.modified_databases.end() || entry->second.identity != modified.second.identity ||
-		    !entry->second.modifications.Contains(modified.second.modifications) ||
-		    !modified.second.modifications.Contains(entry->second.modifications)) {
-			return "modified databases";
-		}
-	}
-	if (requires_valid_transaction != other.requires_valid_transaction) {
-		return "requires valid transaction";
-	}
-	if (bound_all_parameters != other.bound_all_parameters) {
-		return "bound all parameters";
-	}
-	if (return_type != other.return_type) {
-		return "return type";
-	}
-	if (parameter_count != other.parameter_count) {
-		return "properties parameter count";
-	}
-	if (always_require_rebind != other.always_require_rebind) {
-		return "always require rebind";
-	}
-	return string();
-}
-
 void StatementProperties::RegisterDBRead(Catalog &catalog, ClientContext &context) {
 	auto catalog_identity = CatalogIdentity {catalog.GetOid(), catalog.GetCatalogVersion(context)};
 	D_ASSERT(read_databases.count(catalog.GetName()) == 0 || read_databases[catalog.GetName()] == catalog_identity);
