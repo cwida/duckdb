@@ -173,6 +173,24 @@ static void FreeVirtualMemory(const data_ptr_t pointer, const idx_t size) {
 	}
 }
 
+static bool ProtectVirtualMemory(const data_ptr_t pointer, const idx_t size) {
+#if defined(_WIN32)
+	MEMORY_BASIC_INFORMATION info;
+	if (!VirtualQuery(pointer, &info, sizeof(info))) {
+		return false;
+	}
+	if (info.State == MEM_RESERVE) {
+		// Uncommitted reservations are already inaccessible; keep the guards unbacked.
+		const auto offset = uintptr_t(pointer) - uintptr_t(info.BaseAddress);
+		return offset <= info.RegionSize && size <= info.RegionSize - offset;
+	}
+	DWORD old_protection;
+	return VirtualProtect(pointer, size, PAGE_NOACCESS, &old_protection) != 0;
+#else
+	return mprotect(pointer, size, PROT_NONE) == 0;
+#endif
+}
+
 static void OnFirstAllocation(const data_ptr_t pointer, const idx_t size) {
 	bool success = true;
 #if defined(_WIN32)
@@ -396,8 +414,7 @@ private:
 		if (count == 0) {
 			return true;
 		}
-		block_allocator->retention.Return(count, block_allocator->DivBlockSize(block_allocator->pool_size),
-		                                  RetentionTimeMillis());
+		block_allocator->retention.Return(count, block_allocator->GetUsableBlockCount(), RetentionTimeMillis());
 		if (count < touched.size() || block_allocator->touched->queues.Count() > 1) {
 			std::sort(touched.begin(), touched.end());
 		}
@@ -656,6 +673,18 @@ private:
 	array<unique_ptr<Bucket>, MAX_SHIFT - MIN_SHIFT + 1> buckets;
 };
 
+idx_t BlockAllocator::GetGuardBlockCount() const {
+	// Power-of-two blocks of at least 64 KiB align to all supported OS page sizes.
+	if (touched->blocks_per_shard > 1 && block_size >= 64 * 1024) {
+		return touched->queues.Count() - 1;
+	}
+	return 0;
+}
+
+idx_t BlockAllocator::GetUsableBlockCount() const {
+	return DivBlockSize(pool_size) - GetGuardBlockCount();
+}
+
 BlockAllocator::BlockAllocator(Allocator &allocator_p, const idx_t block_size_p, const idx_t pool_size_p)
     : uuid(UUID::GenerateRandomUUID()), allocator(allocator_p), allocation_cache(make_uniq<AllocationCache>(allocator)),
       block_size(block_size_p), block_size_div_shift(CountZeros<idx_t>::Trailing(block_size)),
@@ -732,15 +761,24 @@ bool BlockAllocator::InitializePool() const {
 		touched->ReserveOverflow(DivBlockSize(pool_size));
 		uint32_t block_ids[STANDARD_VECTOR_SIZE];
 		const auto count = DivBlockSize(pool_size);
-		for (idx_t block_id = 0; block_id < count; block_id += STANDARD_VECTOR_SIZE) {
-			const auto next = MinValue<idx_t>(count - block_id, STANDARD_VECTOR_SIZE);
-			for (idx_t i = 0; i < next; i++) {
-				block_ids[i] = NumericCast<uint32_t>(block_id + i);
+		const auto guard_block_count = GetGuardBlockCount();
+		for (idx_t shard = 0; shard < queue->queues.Count(); shard++) {
+			const auto start = shard * queue->blocks_per_shard;
+			auto end = MinValue(count, start + queue->blocks_per_shard);
+			if (shard < guard_block_count) {
+				// Skip the last slot: ProtectPoolGuards uses it to separate adjacent shard mappings.
+				end--;
 			}
-			if (!queue->EnqueueBulk(block_ids, next)) {
-				touched->ReleaseOverflow();
-				pool_state.store(PoolState::UNAVAILABLE, std::memory_order_release);
-				return false;
+			for (idx_t block_id = start; block_id < end; block_id += STANDARD_VECTOR_SIZE) {
+				const auto next = MinValue<idx_t>(end - block_id, STANDARD_VECTOR_SIZE);
+				for (idx_t i = 0; i < next; i++) {
+					block_ids[i] = NumericCast<uint32_t>(block_id + i);
+				}
+				if (!queue->queues.Get(shard).EnqueueBulk(block_ids, next)) {
+					touched->ReleaseOverflow();
+					pool_state.store(PoolState::UNAVAILABLE, std::memory_order_release);
+					return false;
+				}
 			}
 		}
 	} catch (const std::bad_alloc &) {
@@ -750,14 +788,30 @@ bool BlockAllocator::InitializePool() const {
 	}
 
 	const auto pointer = AllocateVirtualMemory(pool_size);
-	if (!pointer) {
+	if (!pointer || !ProtectPoolGuards(pointer)) {
 		touched->ReleaseOverflow();
 		pool_state.store(PoolState::UNAVAILABLE, std::memory_order_release);
+		if (pointer) {
+			FreeVirtualMemory(pointer, pool_size);
+		}
 		return false;
 	}
 	untouched = std::move(queue);
 	pool_base = pointer;
 	pool_state.store(PoolState::READY, std::memory_order_release);
+	return true;
+}
+
+bool BlockAllocator::ProtectPoolGuards(data_ptr_t pointer) const {
+	// Separate writable VMAs reduce contention on Linux's VMA reference counter during page faults.
+	// That contention can bottleneck first-touch faults and skew NUMA placement toward one node.
+	const auto guard_block_count = GetGuardBlockCount();
+	for (idx_t shard = 0; shard < guard_block_count; shard++) {
+		const auto guard_block_id = (shard + 1) * touched->blocks_per_shard - 1;
+		if (!ProtectVirtualMemory(pointer + guard_block_id * block_size, block_size)) {
+			return false;
+		}
+	}
 	return true;
 }
 
@@ -797,6 +851,12 @@ uint32_t BlockAllocator::GetBlockID(const data_ptr_t pointer) const {
 
 void BlockAllocator::VerifyBlockID(const uint32_t block_id) const {
 	D_ASSERT(block_id < DivBlockSize(pool_size));
+	D_ASSERT(!IsGuardBlock(block_id));
+}
+
+bool BlockAllocator::IsGuardBlock(const uint32_t block_id) const {
+	const auto home = touched->Home(block_id);
+	return home < GetGuardBlockCount() && idx_t(block_id) + 1 == (home + 1) * touched->blocks_per_shard;
 }
 
 data_ptr_t BlockAllocator::GetPointer(const uint32_t block_id) const {
@@ -852,7 +912,7 @@ void BlockAllocator::FreeData(const data_ptr_t pointer, const idx_t size) const 
 		// creating the state of a thread that only frees allocates and registers a thread_local destructor, which
 		// glibc aborts on when memory is exhausted: hand the block to the global pool directly
 		UpdateCachedBlocks(1, 0);
-		retention.Return(1, DivBlockSize(pool_size), RetentionTimeMillis());
+		retention.Return(1, GetUsableBlockCount(), RetentionTimeMillis());
 		touched->Enqueue(GetBlockID(pointer));
 		return;
 	}
@@ -1119,8 +1179,8 @@ idx_t BlockAllocator::FlushAllocationCache(idx_t byte_limit, ReclaimMode mode) c
 idx_t BlockAllocator::TrimCachedMemory(idx_t memory_headroom, optional_idx pool_block_limit) const noexcept {
 	const auto cached = allocation_cache->GetCachedMemory();
 	// Avoid reading the fixed pool's per-thread counters when even its capacity fits.
-	if (cached <= memory_headroom &&
-	    (pool_size <= memory_headroom - cached || GetCachedPoolMemory() <= memory_headroom - cached)) {
+	if (cached <= memory_headroom && (GetUsableBlockCount() * block_size <= memory_headroom - cached ||
+	                                  GetCachedPoolMemory() <= memory_headroom - cached)) {
 		return 0;
 	}
 	idx_t freed = 0;
@@ -1284,6 +1344,8 @@ idx_t BlockAllocator::FreeInternal(const optional_idx block_limit, const optiona
 }
 
 bool BlockAllocator::FreeContiguousBlocks(const uint32_t block_id_start, const uint32_t block_id_end_including) const {
+	VerifyBlockID(block_id_end_including);
+	D_ASSERT(touched->Home(block_id_start) == touched->Home(block_id_end_including));
 	const auto pointer = GetPointer(block_id_start);
 	const auto num_blocks = block_id_end_including - block_id_start + 1;
 	const auto size = num_blocks * block_size;

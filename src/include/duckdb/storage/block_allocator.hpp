@@ -85,8 +85,12 @@ private:
 
 	bool TryUsePool() const DUCKDB_EXCLUDES(pool_init_lock);
 	bool InitializePool() const DUCKDB_EXCLUDES(pool_init_lock);
+	bool ProtectPoolGuards(data_ptr_t pointer) const;
 	bool IsInitialized() const;
 	bool IsInPool(data_ptr_t pointer) const;
+	bool IsGuardBlock(uint32_t block_id) const;
+	idx_t GetGuardBlockCount() const;
+	idx_t GetUsableBlockCount() const;
 
 	idx_t ModuloBlockSize(idx_t n) const;
 	idx_t DivBlockSize(idx_t n) const;
@@ -137,7 +141,7 @@ private:
 	//! Shift for dividing by block size
 	const idx_t block_size_div_shift;
 
-	//! Fixed capacity, rounded down to whole blocks; zero on 32-bit.
+	//! Virtual reservation, including guards, rounded down to whole blocks; zero on 32-bit.
 	const idx_t pool_size;
 	//! Allocation permission is independent of the lifetime of the mapping.
 	atomic<bool> enabled {true};
