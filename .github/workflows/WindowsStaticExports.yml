@@ -61,25 +61,45 @@ jobs:
         shell: bash
         run: python scripts/ci/retry.py -- python scripts/windows_ci.py
       - name: Build baseline with static exports
+        id: baseline
         shell: bash
         env:
           EXTRA_CMAKE_VARIABLES: ${{ matrix.cmake_flags }} -DWINDOWS_STATIC_LIBRARY_EXPORTS=ON
         run: |
           python scripts/ci/retry.py -- make windows_release
           python scripts/ci/check_windows_static_exports.py --output windows-exports-before.json
+      - name: Unit tests with static exports
+        if: matrix.arch == 'amd64'
+        shell: bash
+        run: python test/run.py 2>&1 | tee windows-exports-before-tests.log
       - name: Relink without static exports
+        id: relink
+        if: ${{ !cancelled() && steps.baseline.outcome == 'success' }}
         shell: bash
         env:
           EXTRA_CMAKE_VARIABLES: ${{ matrix.cmake_flags }} -DWINDOWS_STATIC_LIBRARY_EXPORTS=OFF
         run: |
           python scripts/ci/retry.py -- make windows_release
           python scripts/ci/check_windows_static_exports.py --output windows-exports-after.json --compare windows-exports-before.json
-      - name: Unit tests
-        if: matrix.arch == 'amd64'
+      - name: Unit tests without static exports
+        id: unit_tests
+        if: ${{ !cancelled() && matrix.arch == 'amd64' && steps.relink.outcome == 'success' }}
         shell: bash
-        run: python test/run.py
+        run: python test/run.py 2>&1 | tee windows-exports-after-tests.log
+      - name: Record runtime crash reproductions
+        if: ${{ !cancelled() && steps.unit_tests.outcome == 'failure' }}
+        shell: bash
+        run: |
+          cp test/unittest.exe windows-exports-crash-unittest.exe
+          cp duckdb.exe windows-exports-crash-duckdb.exe
+          for test in \
+            test/common/test_cast_hugeint.test \
+            test/extension/load_extension.test \
+            test/sql/export/parquet/export_parquet_enum.test; do
+            ./test/unittest.exe "$test" --output-sql=true 2>&1 | tee "windows-exports-crash-$(basename "$test").log" || true
+          done
       - name: Load each extension with no extensions linked into the host
-        if: matrix.arch == 'amd64'
+        if: ${{ !cancelled() && matrix.arch == 'amd64' && steps.relink.outcome == 'success' }}
         shell: bash
         env:
           EXTRA_CMAKE_VARIABLES: ${{ matrix.cmake_flags }} -DWINDOWS_STATIC_LIBRARY_EXPORTS=OFF -DSTATICALLY_LINK_EXTENSIONS=none
@@ -92,5 +112,9 @@ jobs:
           name: windows-static-exports-${{ matrix.arch }}
           path: |
             windows-exports-*.json
+            windows-exports-*.log
+            windows-exports-crash-*.exe
+            test/extension/*.duckdb_extension
+            src/duckdb.dll
             repository
           if-no-files-found: error
