@@ -1,0 +1,76 @@
+# name: test/sql/catalog/nested_schema/nested_drop_index.test
+# description: Drop indexes through deeply nested schema paths
+# group: [nested_schema]
+
+statement ok
+ATTACH ':memory:' AS lake;
+
+statement ok
+USE lake;
+
+statement ok
+CREATE SCHEMA lake.a;
+
+statement ok
+CREATE SCHEMA lake.a.b;
+
+statement ok
+CREATE SCHEMA lake.a.b.c;
+
+statement ok
+CREATE TABLE lake.a.b.c.t(i INTEGER);
+
+statement ok
+CREATE INDEX idx ON lake.a.b.c.t(i);
+
+statement ok
+DROP INDEX lake.a.b.c.idx;
+
+statement ok
+DROP INDEX IF EXISTS lake.a.b.c.idx;
+
+statement error
+DROP INDEX lake.a.b.c.idx;
+----
+does not exist
+
+statement ok
+CREATE INDEX idx ON lake.a.b.c.t(i);
+
+statement ok
+DROP INDEX a.b.c.idx;
+
+query I
+SELECT count(*) FROM duckdb_indexes() WHERE database_name = 'lake';
+----
+0
+
+statement ok
+CREATE SCHEMA lake.a.b.c."d.e";
+
+statement ok
+CREATE TABLE lake.a.b.c."d.e".t(i INTEGER);
+
+statement ok
+CREATE INDEX "i""x" ON lake.a.b.c."d.e".t(i);
+
+statement ok
+DROP INDEX lake.a.b.c."d.e"."i""x";
+
+# A same-named index in another schema remains.
+statement ok
+CREATE TABLE lake.a.t(i INTEGER);
+
+statement ok
+CREATE INDEX idx ON lake.a.t(i);
+
+statement ok
+CREATE INDEX idx ON lake.a.b.c.t(i);
+
+statement ok
+DROP INDEX a.b.c.idx;
+
+query I
+SELECT schema_name FROM duckdb_indexes() WHERE database_name = 'lake' AND index_name = 'idx';
+----
+a
