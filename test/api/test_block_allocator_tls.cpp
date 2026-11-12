@@ -30,6 +30,7 @@
 #include <mach/mach_vm.h>
 #elif defined(_WIN32)
 #include "duckdb/common/windows.hpp"
+#include "duckdb/common/windows_undefs.hpp"
 #endif
 
 using namespace duckdb;
