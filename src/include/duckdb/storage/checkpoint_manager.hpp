@@ -56,8 +56,6 @@ public:
 	void GetCheckpointTransaction(CheckpointOptions &options);
 	void Commit();
 	bool HasCheckpointContext() const;
-	//! The context of the checkpoint connection, null when there is none (shutdown path)
-	optional_ptr<ClientContext> GetCheckpointContext() const;
 
 private:
 	AttachedDatabase &db;

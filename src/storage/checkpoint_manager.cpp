@@ -86,10 +86,6 @@ bool ActiveCheckpointWrapper::HasCheckpointContext() const {
 	return checkpoint_context;
 }
 
-optional_ptr<ClientContext> ActiveCheckpointWrapper::GetCheckpointContext() const {
-	return checkpoint_context;
-}
-
 void ReorderTableEntries(catalog_entry_vector_t &tables);
 
 SingleFileCheckpointWriter::SingleFileCheckpointWriter(QueryContext context, AttachedDatabase &db,
