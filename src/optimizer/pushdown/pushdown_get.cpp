@@ -1,6 +1,7 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/optimizer/in_clause_rewriter.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/planner/column_binding.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -10,6 +11,67 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 
 namespace duckdb {
+
+// Rewrite accepted filters onto declared column indexes so equality ignores table index and query location.
+static bool CanonicalizeConsumedFilter(LogicalGet &get, unique_ptr<Expression> &filter) {
+	bool representable = true;
+	ExpressionIterator::EnumerateExpression(filter, [&](Expression &expr) {
+		expr.ClearAlias();
+		expr.SetQueryLocation(optional_idx());
+		if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+			return;
+		}
+		auto &column = expr.Cast<BoundColumnRefExpression>();
+		const auto binding = column.Binding();
+		if (column.Depth() != 0 || binding.table_index != get.table_index) {
+			representable = false;
+			return;
+		}
+		const auto col_idx = binding.column_index.GetIndex();
+		const auto &column_ids = get.GetColumnIds();
+		if (col_idx >= column_ids.size()) {
+			representable = false;
+			return;
+		}
+		const auto &index = column_ids[col_idx];
+		if (index.IsVirtualColumn() || index.HasChildren() || index.IsPushdownExtract() || index.HasType()) {
+			representable = false;
+			return;
+		}
+		column.BindingMutable() = ColumnBinding(TableIndex(LogicalGet::CONSUMED_FILTER_TABLE_INDEX),
+		                                        ProjectionIndex(index.GetPrimaryIndex()));
+	});
+	return representable;
+}
+
+// Remember filters the callback removed. Their effect lives in bind data, which is absent from the serialized scan.
+static void RetainConsumedComplexFilters(LogicalGet &get, const vector<const Expression *> &offered_ptrs,
+                                         vector<unique_ptr<Expression>> &offered_copies,
+                                         const vector<unique_ptr<Expression>> &remaining) {
+	vector<unique_ptr<Expression>> consumed;
+	for (idx_t i = 0; i < offered_ptrs.size(); i++) {
+		bool kept = false;
+		for (auto &expr : remaining) {
+			if (expr.get() == offered_ptrs[i]) {
+				kept = true;
+				break;
+			}
+		}
+		if (!kept) {
+			consumed.push_back(std::move(offered_copies[i]));
+		}
+	}
+	for (auto &filter : consumed) {
+		if (!CanonicalizeConsumedFilter(get, filter)) {
+			// The accepted filters cannot be restored, so the scan cannot be serialized or copied.
+			get.function.verify_serialization = false;
+			return;
+		}
+	}
+	for (auto &filter : consumed) {
+		get.consumed_complex_filters.push_back(std::move(filter));
+	}
+}
 
 /**
  * When a BoundColumnRefExpression that's part of expr (a filter) arrives here, its
@@ -131,7 +193,23 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownGet(unique_ptr<LogicalOperat
 		}
 		filters.clear();
 
+		const auto offered_filters = expressions.size();
+		vector<const Expression *> offered_ptrs;
+		vector<unique_ptr<Expression>> offered_copies;
+		const bool record_consumed =
+		    get.function.consumed_filters_in_bind_data && !get.function.HasSerializationCallbacks();
+		if (record_consumed) {
+			offered_ptrs.reserve(expressions.size());
+			offered_copies.reserve(expressions.size());
+			for (auto &expr : expressions) {
+				offered_ptrs.push_back(expr.get());
+				offered_copies.push_back(expr->Copy());
+			}
+		}
 		get.function.pushdown_complex_filter(optimizer.context, get, get.bind_data.get(), expressions);
+		if (record_consumed && expressions.size() < offered_filters) {
+			RetainConsumedComplexFilters(get, offered_ptrs, offered_copies, expressions);
+		}
 
 		if (expressions.empty()) {
 			restore_barrier_filters();

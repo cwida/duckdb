@@ -9,6 +9,8 @@
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 
 namespace duckdb {
@@ -339,9 +341,64 @@ void LogicalGet::SetPartitionsToScan(vector<idx_t> partition_indices) {
 	function.set_partitions_to_scan(std::move(partition_indices), bind_data.get());
 }
 
+// Present accepted filters against the declared column order, then put the scan's own column ids back.
+static void ReplayConsumedComplexFilters(ClientContext &context, LogicalGet &get) {
+	if (get.consumed_complex_filters.empty()) {
+		return;
+	}
+	if (!get.function.pushdown_complex_filter || !get.function.consumed_filters_in_bind_data) {
+		throw SerializationException("Table function %s cannot restore the filters it accepted",
+		                             get.function.GetName());
+	}
+
+	vector<unique_ptr<Expression>> replay;
+	replay.reserve(get.consumed_complex_filters.size());
+	for (auto &filter : get.consumed_complex_filters) {
+		auto copy = filter->Copy();
+		ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(copy, [&](BoundColumnRefExpression &column,
+		                                                                               unique_ptr<Expression> &) {
+			auto &binding = column.BindingMutable();
+			if (binding.table_index != TableIndex(LogicalGet::CONSUMED_FILTER_TABLE_INDEX)) {
+				throw SerializationException("Table function %s consumed a filter reference that cannot be restored",
+				                             get.function.GetName());
+			}
+			if (binding.column_index.GetIndex() >= get.names.size()) {
+				throw SerializationException(
+				    "Table function %s consumed a filter on column %llu, which is outside its schema",
+				    get.function.GetName(), binding.column_index.GetIndex());
+			}
+			binding.table_index = get.table_index;
+		});
+		replay.push_back(std::move(copy));
+	}
+
+	auto saved_column_ids = get.GetColumnIds();
+	vector<ColumnIndex> declared_columns;
+	declared_columns.reserve(get.names.size());
+	for (idx_t column_index = 0; column_index < get.names.size(); column_index++) {
+		declared_columns.emplace_back(column_index);
+	}
+	get.SetColumnIds(std::move(declared_columns));
+	try {
+		get.function.pushdown_complex_filter(context, get, get.bind_data.get(), replay);
+	} catch (...) {
+		get.SetColumnIds(std::move(saved_column_ids));
+		throw;
+	}
+	get.SetColumnIds(std::move(saved_column_ids));
+	if (!replay.empty()) {
+		throw SerializationException("Table function %s did not accept filters it had accepted before deserialization",
+		                             get.function.GetName());
+	}
+}
+
 void LogicalGet::Serialize(Serializer &serializer) const {
 	if (bind_info) {
 		throw NotImplementedException("Cannot serialize a table function with process-local bind input");
+	}
+	if (function.consumed_filters_in_bind_data && !function.verify_serialization) {
+		throw NotImplementedException(
+		    "Cannot serialize table function %s with filters it accepted that cannot be restored", function.GetName());
 	}
 	LogicalOperator::Serialize(serializer);
 	serializer.WriteProperty(200, "table_index", table_index);
@@ -369,6 +426,7 @@ void LogicalGet::Serialize(Serializer &serializer) const {
 	serializer.WriteProperty(217, "table_filters_by_projection", true);
 	serializer.WritePropertyWithDefault(218, "has_pushed_projection", has_pushed_projection, false);
 	serializer.WritePropertyWithDefault(219, "at_clause", at_clause);
+	serializer.WritePropertyWithDefault(220, "consumed_complex_filters", consumed_complex_filters);
 }
 
 unique_ptr<LogicalOperator> LogicalGet::Deserialize(Deserializer &deserializer) {
@@ -410,6 +468,8 @@ unique_ptr<LogicalOperator> LogicalGet::Deserialize(Deserializer &deserializer) 
 	result->has_pushed_projection =
 	    deserializer.ReadPropertyWithExplicitDefault<bool>(218, "has_pushed_projection", false);
 	result->at_clause = deserializer.ReadPropertyWithDefault<unique_ptr<BoundAtClause>>(219, "at_clause");
+	deserializer.ReadPropertyWithDefault<vector<unique_ptr<Expression>>>(220, "consumed_complex_filters",
+	                                                                     result->consumed_complex_filters);
 	if (!legacy_column_ids.empty()) {
 		if (!result->column_ids.empty()) {
 			throw SerializationException(
@@ -468,6 +528,10 @@ unique_ptr<LogicalOperator> LogicalGet::Deserialize(Deserializer &deserializer) 
 	}
 	result->virtual_columns = std::move(virtual_columns);
 	result->bind_data = std::move(bind_data);
+	if (!has_serialize) {
+		// Bind data was reconstructed from the call parameters. Accepted filters live only in the recorded expressions.
+		ReplayConsumedComplexFilters(context, *result);
+	}
 	ConvertLegacyTableFilters(*result);
 	if (row_group_order_options) {
 		result->SetScanOrder(std::move(row_group_order_options));

@@ -53,6 +53,9 @@ public:
 	vector<ProjectionIndex> projection_ids;
 	//! Filters pushed down for table scan
 	TableFilterSet table_filters;
+	//! Accepted complex filters kept in the signature when bind data itself is not serialized
+	vector<unique_ptr<Expression>> consumed_complex_filters;
+	static constexpr idx_t CONSUMED_FILTER_TABLE_INDEX = DConstants::INVALID_INDEX - 2;
 	//! The set of input parameters for the table function
 	vector<Value> parameters;
 	//! The set of named input parameters for the table function
