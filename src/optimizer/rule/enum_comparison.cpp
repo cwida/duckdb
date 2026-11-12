@@ -65,8 +65,8 @@ unique_ptr<Expression> EnumComparisonRule::Apply(LogicalOperator &op, vector<ref
 	}
 
 	auto cast_left_to_right =
-	    BoundCastExpression::AddDefaultCastToType(std::move(BoundCastExpression::ChildMutable(left_child)),
-	                                              BoundCastExpression::Child(right_child).GetReturnType(), true);
+	    BoundCastExpression::AddCastToType(GetContext(), std::move(BoundCastExpression::ChildMutable(left_child)),
+	                                       BoundCastExpression::Child(right_child).GetReturnType(), true);
 	return BoundComparisonExpression::Create(root.GetExpressionType(), std::move(cast_left_to_right),
 	                                         std::move(BoundCastExpression::ChildMutable(right_child)));
 }

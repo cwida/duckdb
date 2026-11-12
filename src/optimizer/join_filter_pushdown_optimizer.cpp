@@ -739,7 +739,7 @@ static void SimplifyJoinFilterCastChain(ClientContext &context, JoinFilterPushdo
 	column.input_expression = make_uniq<BoundReferenceExpression>(column.storage_type, idx_t(0));
 	if (target_type != column.storage_type) {
 		column.input_expression =
-		    BoundCastExpression::AddDefaultCastToType(std::move(column.input_expression), target_type, true);
+		    BoundCastExpression::AddCastToType(context, std::move(column.input_expression), target_type, true);
 	}
 }
 

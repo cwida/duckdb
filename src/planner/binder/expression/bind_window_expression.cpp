@@ -20,11 +20,12 @@
 
 namespace duckdb {
 
-static unique_ptr<Expression> CastWindowExpression(unique_ptr<Expression> bound, const LogicalType &type) {
+static unique_ptr<Expression> CastWindowExpression(ClientContext &context, unique_ptr<Expression> bound,
+                                                   const LogicalType &type) {
 	if (!bound) {
 		return nullptr;
 	}
-	return BoundCastExpression::AddDefaultCastToType(std::move(bound), type);
+	return BoundCastExpression::AddCastToType(context, std::move(bound), type);
 }
 
 static bool IsRangeType(const LogicalType &type) {
@@ -440,11 +441,11 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 		result->ArgOrdersMutable().emplace_back(type, null_order, std::move(bound_arg_orders[order_idx]));
 	}
 
-	result->FilterMutable() = CastWindowExpression(std::move(bound_filter), LogicalType::BOOLEAN);
+	result->FilterMutable() = CastWindowExpression(context, std::move(bound_filter), LogicalType::BOOLEAN);
 	optional_ptr<const Expression> original_start = bound_start.get();
 	optional_ptr<const Expression> original_end = bound_end.get();
-	result->StartExprMutable() = CastWindowExpression(std::move(bound_start), start_type);
-	result->EndExprMutable() = CastWindowExpression(std::move(bound_end), end_type);
+	result->StartExprMutable() = CastWindowExpression(context, std::move(bound_start), start_type);
+	result->EndExprMutable() = CastWindowExpression(context, std::move(bound_end), end_type);
 	if (result->SQLRangeStartBoundary() &&
 	    !WindowRangeCast::Capture(*result->StartExpr(), *original_start,
 	                              result->SQLRangeStartBoundaryMutable()->result_casts)) {

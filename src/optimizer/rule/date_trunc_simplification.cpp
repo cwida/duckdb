@@ -378,7 +378,7 @@ unique_ptr<Expression> DateTruncSimplificationRule::CreateTrunc(const BoundConst
 
 	// Ensure that the RHS type matches the column type.
 	if (trunc->GetReturnType().id() != return_type.id()) {
-		trunc = BoundCastExpression::AddDefaultCastToType(std::move(trunc), return_type, true);
+		trunc = BoundCastExpression::AddCastToType(rewriter.context, std::move(trunc), return_type, true);
 	}
 
 	if (trunc->IsFoldable()) {
@@ -429,7 +429,7 @@ unique_ptr<Expression> DateTruncSimplificationRule::CreateTruncAdd(const BoundCo
 
 	// Ensure that the RHS type matches the column type.
 	if (trunc->GetReturnType().id() != return_type.id()) {
-		trunc = BoundCastExpression::AddDefaultCastToType(std::move(trunc), return_type, true);
+		trunc = BoundCastExpression::AddCastToType(rewriter.context, std::move(trunc), return_type, true);
 	}
 
 	if (trunc->IsFoldable()) {
@@ -493,7 +493,7 @@ void DateTruncSimplificationRule::ReplaceDateTruncWithColumn(unique_ptr<Expressi
 
 unique_ptr<Expression> DateTruncSimplificationRule::CastAndEvaluate(unique_ptr<Expression> rhs,
                                                                     const LogicalType &return_type) {
-	auto cast = BoundCastExpression::AddDefaultCastToType(std::move(rhs), return_type, true);
+	auto cast = BoundCastExpression::AddCastToType(rewriter.context, std::move(rhs), return_type, true);
 	if (cast->IsFoldable()) {
 		Value result;
 		if (!ExpressionExecutor::TryEvaluateScalar(rewriter.context, *cast, result)) {

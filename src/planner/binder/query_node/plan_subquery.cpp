@@ -151,8 +151,8 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	    make_uniq<BoundCaseExpression>(std::move(count_star_gt_count_child), null_val->Copy(), std::move(current_else));
 
 	// 3. WHEN X > MIN(Y) THEN TRUE
-	auto x_cast = BoundCastExpression::AddDefaultCastToType(x_expr.Copy(), compare_type);
-	auto extremum_cast = BoundCastExpression::AddDefaultCastToType(std::move(extremum_ref), compare_type);
+	auto x_cast = BoundCastExpression::AddCastToType(binder.context, x_expr.Copy(), compare_type);
+	auto extremum_cast = BoundCastExpression::AddCastToType(binder.context, std::move(extremum_ref), compare_type);
 	unique_ptr<Expression> x_op_min =
 	    BoundComparisonExpression::Create(cmp_type, std::move(x_cast), std::move(extremum_cast));
 
@@ -380,8 +380,8 @@ static unique_ptr<Expression> PlanUncorrelatedSubquery(Binder &binder, BoundSubq
 			for (idx_t i = 0; i < expr.GetChildTypes().size(); i++) {
 				auto &child_type = expr.GetChildTypes()[i];
 				auto &compare_type = expr.GetChildTargets()[i];
-				auto colref = BoundCastExpression::AddDefaultCastToType(
-				    make_uniq<BoundColumnRefExpression>(child_type, plan_columns[i]), compare_type);
+				auto colref = BoundCastExpression::AddCastToType(
+				    binder.context, make_uniq<BoundColumnRefExpression>(child_type, plan_columns[i]), compare_type);
 				struct_children.push_back(std::move(colref));
 			}
 
@@ -401,8 +401,9 @@ static unique_ptr<Expression> PlanUncorrelatedSubquery(Binder &binder, BoundSubq
 			for (idx_t child_idx = 0; child_idx < expr.GetChildren().size(); child_idx++) {
 				auto &child_type = expr.GetChildTypes()[child_idx];
 				auto &compare_type = expr.GetChildTargets()[child_idx];
-				auto right_expr = BoundCastExpression::AddDefaultCastToType(
-				    make_uniq<BoundColumnRefExpression>(child_type, plan_columns[child_idx]), compare_type);
+				auto right_expr = BoundCastExpression::AddCastToType(
+				    binder.context, make_uniq<BoundColumnRefExpression>(child_type, plan_columns[child_idx]),
+				    compare_type);
 				JoinCondition cond(std::move(expr.GetChildrenMutable()[child_idx]), std::move(right_expr),
 				                   expr.ComparisonType());
 
@@ -612,8 +613,8 @@ static unique_ptr<Expression> PlanCorrelatedSubquery(Binder &binder, BoundSubque
 		auto left_expr = std::move(expr.GetChildrenMutable()[0]);
 		auto &child_type = expr.GetChildTypes()[0];
 		auto &compare_type = expr.GetChildTargets()[0];
-		auto right_expr = BoundCastExpression::AddDefaultCastToType(
-		    make_uniq<BoundColumnRefExpression>(child_type, plan_columns[0]), compare_type);
+		auto right_expr = BoundCastExpression::AddCastToType(
+		    binder.context, make_uniq<BoundColumnRefExpression>(child_type, plan_columns[0]), compare_type);
 		ExpressionBinder::PushCollation(binder.context, left_expr, compare_type);
 		ExpressionBinder::PushCollation(binder.context, right_expr, compare_type);
 		delim_join->condition =

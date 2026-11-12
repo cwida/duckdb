@@ -65,6 +65,14 @@ static BoundCastInfo CountCastBinding(BindCastInput &, const LogicalType &, cons
 	return BoundCastInfo(IntegerToBigintPlusOne);
 }
 
+//! Casts using only the built-in SQL casts, regardless of the casts registered in the database
+static unique_ptr<Expression> DefaultCast(unique_ptr<Expression> expr, const LogicalType &target_type) {
+	CastFunctionSet default_casts;
+	auto get_input = GetCastFunctionInput::Default();
+	auto bound_cast = default_casts.GetCastFunction(expr->GetReturnType(), target_type, get_input);
+	return BoundCastExpression::CreateDefault(std::move(expr), target_type, std::move(bound_cast), false);
+}
+
 TEST_CASE("Bound expression SQL export resolves columns only by binding", "[sql_export][bound_expression_sql_export]") {
 	auto left_binding = ColumnBinding(TableIndex(10), ProjectionIndex(0));
 	auto right_binding = ColumnBinding(TableIndex(11), ProjectionIndex(0));
@@ -160,7 +168,7 @@ TEST_CASE("Bound expression SQL export reconstructs registered casts", "[sql_exp
 	REQUIRE(rebound->Collection().GetValue(0, 0) == Value::BIGINT(8));
 
 	context.client_context = registered_connection.context.get();
-	auto default_direct = BoundCastExpression::AddDefaultCastToType(Constant(Value::INTEGER(7)), LogicalType::BIGINT);
+	auto default_direct = DefaultCast(Constant(Value::INTEGER(7)), LogicalType::BIGINT);
 	auto default_direct_result = BoundExpressionSQLExporter::Export(*default_direct, context);
 	REQUIRE(default_direct_result.HasError());
 	REQUIRE(*default_direct_result.GetIssues()[0].construct->identifier == "default_cast_binding");
@@ -172,7 +180,7 @@ TEST_CASE("Bound expression SQL export reconstructs registered casts", "[sql_exp
 	                                      BoundCastInfo(IntegerToBigintPlusOne), 0);
 	BoundExpressionSQLExportContext unrelated_context;
 	unrelated_context.client_context = unrelated_connection.context.get();
-	auto default_unrelated = BoundCastExpression::AddDefaultCastToType(Constant(Value("7")), LogicalType::INTEGER);
+	auto default_unrelated = DefaultCast(Constant(Value("7")), LogicalType::INTEGER);
 	auto default_unrelated_result = BoundExpressionSQLExporter::Export(*default_unrelated, unrelated_context);
 	REQUIRE(default_unrelated_result.IsSuccess());
 	auto unrelated_rebound = unrelated_connection.Query("SELECT " + default_unrelated_result.GetValue()->ToString());
@@ -187,16 +195,14 @@ TEST_CASE("Bound expression SQL export reconstructs registered casts", "[sql_exp
 	          LogicalType::MAP(LogicalType::VARCHAR, LogicalType::BIGINT)},
 	         {LogicalType::UNION({{"v", LogicalType::INTEGER}}), LogicalType::UNION({{"v", LogicalType::BIGINT}})}}) {
 		INFO(nested_types.first.ToString());
-		auto nested =
-		    BoundCastExpression::AddDefaultCastToType(Constant(Value(nested_types.first)), nested_types.second);
+		auto nested = DefaultCast(Constant(Value(nested_types.first)), nested_types.second);
 		auto rejected = BoundExpressionSQLExporter::Export(*nested, context);
 		REQUIRE(rejected.HasError());
 		REQUIRE(*rejected.GetIssues()[0].construct->identifier == "default_cast_binding");
 	}
 
 	auto list = Value::LIST(LogicalType::VARCHAR, {Value("7"), Value(LogicalType::VARCHAR)});
-	auto unrelated_list =
-	    BoundCastExpression::AddDefaultCastToType(Constant(list), LogicalType::LIST(LogicalType::INTEGER));
+	auto unrelated_list = DefaultCast(Constant(list), LogicalType::LIST(LogicalType::INTEGER));
 	auto list_export = BoundExpressionSQLExporter::Export(*unrelated_list, context);
 	REQUIRE(list_export.IsSuccess());
 	auto list_result = registered_connection.Query("SELECT " + list_export.GetValue()->ToString());
@@ -205,7 +211,7 @@ TEST_CASE("Bound expression SQL export reconstructs registered casts", "[sql_exp
 	        ExpressionExecutor::EvaluateScalar(*registered_connection.context, *unrelated_list));
 
 	auto union_type = LogicalType::UNION({{"small", LogicalType::INTEGER}, {"big", LogicalType::BIGINT}});
-	auto union_cast = BoundCastExpression::AddDefaultCastToType(Constant(Value::INTEGER(7)), union_type);
+	auto union_cast = DefaultCast(Constant(Value::INTEGER(7)), union_type);
 	REQUIRE(ExpressionExecutor::EvaluateScalar(*registered_connection.context, *union_cast).type() == union_type);
 	auto union_export = BoundExpressionSQLExporter::Export(*union_cast, context);
 	REQUIRE(union_export.HasError());
@@ -252,7 +258,7 @@ TEST_CASE("Default VARIANT casts retain runtime binding protection", "[sql_expor
 	auto input = connection.Query("SELECT '7'::VARIANT");
 	REQUIRE_NO_FAIL(*input);
 	auto value = input->Collection().GetValue(0, 0);
-	auto original = BoundCastExpression::AddDefaultCastToType(Constant(value), LogicalType::INTEGER);
+	auto original = DefaultCast(Constant(value), LogicalType::INTEGER);
 	auto rebound = BoundCastExpression::AddCastToType(*connection.context, Constant(value), LogicalType::INTEGER);
 	REQUIRE(ExpressionExecutor::EvaluateScalar(*connection.context, *original) == Value::INTEGER(7));
 	REQUIRE(ExpressionExecutor::EvaluateScalar(*connection.context, *rebound) == Value::INTEGER(8));
