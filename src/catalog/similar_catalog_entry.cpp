@@ -6,6 +6,9 @@ namespace duckdb {
 
 string SimilarCatalogEntry::GetQualifiedName(bool qualify_catalog, bool qualify_schema) const {
 	D_ASSERT(Found());
+	if (schema->GetParentSchema()) {
+		return schema->GetQualifiedName(Identifier(name)).ToString();
+	}
 	string result;
 	if (qualify_catalog) {
 		result += schema->catalog.GetName().GetIdentifierName();

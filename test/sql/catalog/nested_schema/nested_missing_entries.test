@@ -1,0 +1,60 @@
+# name: test/sql/catalog/nested_schema/nested_missing_entries.test
+# description: Missing nested entries report the entry error and suggest reachable names
+# group: [nested_schema]
+
+statement ok
+CREATE SCHEMA a;
+
+statement ok
+CREATE SCHEMA a.b;
+
+statement ok
+CREATE SCHEMA a.b.c;
+
+statement error
+SELECT a.b.c.nope(1);
+----
+Scalar Function with name nope does not exist
+
+statement ok
+CREATE TABLE a.b.c.nested_hint_table(i INTEGER);
+
+statement error
+SELECT * FROM nested_hint_tabl;
+----
+memory.a.b.c.nested_hint_table
+
+statement ok
+CREATE MACRO a.b.c.nested_hint_function(x) AS x;
+
+statement error
+SELECT nested_hint_functio(1);
+----
+memory.a.b.c.nested_hint_function
+
+statement error
+SELECT a.b.c.nested_hint_functio(1);
+----
+Scalar Function with name nested_hint_functio does not exist
+
+statement ok
+CREATE MACRO a.b.c.tabular() AS TABLE SELECT 1 AS i;
+
+statement error
+SELECT a.b.c.tabular();
+----
+is a table function but it was used as a scalar function
+
+# The suggested name remains reachable when a catalog shadows its first schema.
+statement ok
+ATTACH ':memory:' AS a;
+
+statement error
+SELECT * FROM nested_hint_tabl;
+----
+memory.a.b.c.nested_hint_table
+
+query I
+SELECT memory.a.b.c.nested_hint_function(42);
+----
+42
