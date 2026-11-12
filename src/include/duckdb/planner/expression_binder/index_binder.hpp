@@ -20,6 +20,16 @@ namespace duckdb {
 class BoundColumnRefExpression;
 class LogicalOperator;
 
+//! The keys of an index while they are bound
+struct IndexKeyBinding {
+	//! The storage version the keys are stored at
+	StorageVersion version;
+	//! Whether the keys are stored keys, bound as the engines of their version bound them, rather than new keys
+	bool stored;
+	//! The first cast between BIGNUM and DECIMAL that the engines before wide decimals compute otherwise, if any
+	string legacy_cast;
+};
+
 //! The IndexBinder binds indexes and expressions within index statements.
 class IndexBinder : public ExpressionBinder {
 public:
@@ -43,9 +53,16 @@ protected:
 	string UnsupportedAggregateMessage() override;
 
 private:
+	//! Binds the casts between BIGNUM and DECIMAL of a bound key node as the engines before wide decimals bound them
+	void BindLegacyCasts(unique_ptr<Expression> &expr);
+	void BindLegacyCast(unique_ptr<Expression> &expr);
+
+private:
 	// Only for WAL replay.
 	optional_ptr<TableCatalogEntry> table;
 	optional_ptr<CreateIndexInfo> info;
+	//! The keys being bound, set while BindIndex or BindCreateIndex binds them
+	optional_ptr<IndexKeyBinding> keys;
 };
 
 } // namespace duckdb

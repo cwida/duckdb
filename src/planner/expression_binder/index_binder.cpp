@@ -151,51 +151,15 @@ bool CastsBetweenBignumAndDecimal(const LogicalType &source, const LogicalType &
 	return false;
 }
 
-//! The first cast between BIGNUM and DECIMAL within the key, if any: the engines before wide decimals have no such
-//! cast (a TRY_CAST gives NULL there), so the keys they stored differ from the keys this engine computes
-optional_ptr<const BoundFunctionExpression> FindBignumDecimalCast(const Expression &expr) {
-	if (BoundCastExpression::IsCast(expr)) {
-		auto &cast = expr.Cast<BoundFunctionExpression>();
-		const auto source = BoundCastExpression::SourceType(cast);
-		auto &target = BoundCastExpression::TargetType(cast);
-		if (CastsBetweenBignumAndDecimal(source, target)) {
-			return &cast;
-		}
-	}
-	optional_ptr<const BoundFunctionExpression> result;
-	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
-		if (!result) {
-			result = FindBignumDecimalCast(child);
-		}
-	});
-	return result;
-}
-
-optional_ptr<const BoundFunctionExpression> FindBignumDecimalCast(const vector<unique_ptr<Expression>> &keys) {
-	for (auto &key : keys) {
-		auto cast = FindBignumDecimalCast(*key);
-		if (cast) {
-			return cast;
-		}
-	}
-	return nullptr;
-}
-
 //! Why the engines before wide decimals compute other keys for the expressions than this engine, empty when they
 //! agree: those engines bind every decimal within 38 digits and have no cast between BIGNUM and DECIMAL
-string DescribeLegacyKeyDifference(const vector<unique_ptr<Expression>> &keys) {
+string DescribeLegacyKeyDifference(const vector<unique_ptr<Expression>> &keys, const IndexKeyBinding &binding) {
 	auto wide = FindWideDecimalExpression(keys);
 	if (wide) {
 		return StringUtil::Format("%s binds to %s, those engines bind decimal keys within %d digits", wide->ToString(),
 		                          wide->GetReturnType().ToString(), Decimal::MAX_WIDTH_INT128);
 	}
-	auto cast = FindBignumDecimalCast(keys);
-	if (cast) {
-		return StringUtil::Format("%s casts %s to %s, a cast those engines do not have (a TRY_CAST gives NULL there)",
-		                          cast->ToString(), BoundCastExpression::SourceType(*cast).ToString(),
-		                          BoundCastExpression::TargetType(*cast).ToString());
-	}
-	return string();
+	return binding.legacy_cast;
 }
 
 //! A stored index whose keys the engines of its storage version computed otherwise would leave the stored keys
@@ -212,8 +176,8 @@ void ThrowMismatchedStoredKey(const UnboundIndex &unbound_index, StorageVersion 
 
 //! The keys of a new index are stored at the storage version of its database: a key the engines of that version
 //! compute otherwise is refused, like a column type they cannot read, so that they compute the stored keys
-void CheckNewKeys(AttachedDatabase &db, StorageVersion key_version, const vector<unique_ptr<Expression>> &keys) {
-	if (!KeysPredateWideDecimals(key_version)) {
+void CheckNewKeys(AttachedDatabase &db, const vector<unique_ptr<Expression>> &keys, const IndexKeyBinding &binding) {
+	if (!KeysPredateWideDecimals(binding.version)) {
 		return;
 	}
 	auto &storage = db.GetStorageManager();
@@ -222,12 +186,23 @@ void CheckNewKeys(AttachedDatabase &db, StorageVersion key_version, const vector
 		throw InvalidInputException(
 		    storage.GetUnsupportedDecimalWidthReason(wide->GetReturnType(), "index key expressions"));
 	}
-	auto cast = FindBignumDecimalCast(keys);
-	if (cast) {
+	if (!binding.legacy_cast.empty()) {
 		throw InvalidInputException(storage.GetUnsupportedPriorToVersionReason(
 		    "Index key expressions with a cast between BIGNUM and DECIMAL", Decimal::WIDE_VERSION_ADDED));
 	}
 }
+
+//! Registers the keys being bound with the binder for the duration of the scope
+struct IndexKeyBindingScope {
+	IndexKeyBindingScope(optional_ptr<IndexKeyBinding> &slot_p, IndexKeyBinding &binding) : slot(slot_p) {
+		D_ASSERT(!slot);
+		slot = &binding;
+	}
+	~IndexKeyBindingScope() {
+		slot = nullptr;
+	}
+	optional_ptr<IndexKeyBinding> &slot;
+};
 
 } // namespace
 
@@ -289,13 +264,15 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index,
 	auto &parsed_expressions = unbound_index.GetParsedExpressions();
 
 	// bind the parsed expressions to create unbound expressions, within the decimal width of their storage version
-	const auto key_version = IndexKeyStorageVersion(unbound_index.db, storage_info);
+	// and as the engines of that version bound them
+	IndexKeyBinding binding {IndexKeyStorageVersion(unbound_index.db, storage_info), true, string()};
 	auto &properties = binder.GetStatementProperties();
 	const auto statement_requires_rebind = properties.always_require_rebind;
 	vector<unique_ptr<Expression>> unbound_expressions;
 	unbound_expressions.reserve(parsed_expressions.size());
 	{
-		FixedDecimalWidthScope key_width(KeyDecimalWidth(key_version), KeyDecimalWidthReason(key_version));
+		IndexKeyBindingScope scope(keys, binding);
+		FixedDecimalWidthScope key_width(KeyDecimalWidth(binding.version), KeyDecimalWidthReason(binding.version));
 		for (auto &expr : parsed_expressions) {
 			auto copy = expr->Copy();
 			properties.always_require_rebind = false;
@@ -308,13 +285,13 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index,
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;
-	if (KeysPredateWideDecimals(key_version)) {
-		auto difference = DescribeLegacyKeyDifference(unbound_expressions);
+	if (KeysPredateWideDecimals(binding.version)) {
+		auto difference = DescribeLegacyKeyDifference(unbound_expressions, binding);
 		if (!difference.empty()) {
 			if (skip_mismatched_keys) {
 				return nullptr;
 			}
-			ThrowMismatchedStoredKey(unbound_index, key_version, difference);
+			ThrowMismatchedStoredKey(unbound_index, binding.version, difference);
 		}
 	}
 
@@ -376,10 +353,12 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 	// decimals are bound within the width of the storage version instead of the max_decimal_width setting.
 	auto &db = table_entry.ParentCatalog().GetAttached();
 	const auto key_version = db.HasStorageManager() ? IndexKeyStorageVersion(db, nullptr) : StorageVersion::LATEST;
+	IndexKeyBinding binding {key_version, false, string()};
 	auto &properties = binder.GetStatementProperties();
 	const auto statement_requires_rebind = properties.always_require_rebind;
 	vector<unique_ptr<Expression>> expressions;
 	{
+		IndexKeyBindingScope scope(keys, binding);
 		FixedDecimalWidthScope key_width(KeyDecimalWidth(key_version), KeyDecimalWidthReason(key_version));
 		for (auto &expr : create_index_info->expressions) {
 			properties.always_require_rebind = false;
@@ -391,7 +370,7 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;
-	CheckNewKeys(db, key_version, expressions);
+	CheckNewKeys(db, expressions, binding);
 
 	auto &get = plan->Cast<LogicalGet>();
 	InitCreateIndexInfo(get, *create_index_info);
@@ -406,25 +385,65 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 
 BindResult IndexBinder::BindExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth, bool root_expression) {
 	auto &expr = *expr_ptr;
+	const bool legacy_keys = keys && KeysPredateWideDecimals(keys->version);
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::WINDOW:
 		return BindResult(BinderException::Unsupported(expr, "window functions are not allowed in index expressions"));
 	case ExpressionClass::SUBQUERY:
 		return BindResult(BinderException::Unsupported(expr, "cannot use subquery in index expressions"));
-	default: {
-		// restores the previous state on exit, binding is recursive
-		struct IndexKeyScope {
-			explicit IndexKeyScope(Binder &binder_p) : binder(binder_p), previous(binder_p.IsBindingIndexKey()) {
-				binder.SetBindingIndexKey(true);
-			}
-			~IndexKeyScope() {
-				binder.SetBindingIndexKey(previous);
-			}
-			Binder &binder;
-			bool previous;
-		} scope(binder);
-		return ExpressionBinder::BindExpression(expr_ptr, depth);
+	default:
+		break;
 	}
+	// restores the previous state on exit, binding is recursive
+	struct IndexKeyScope {
+		explicit IndexKeyScope(Binder &binder_p) : binder(binder_p), previous(binder_p.IsBindingIndexKey()) {
+			binder.SetBindingIndexKey(true);
+		}
+		~IndexKeyScope() {
+			binder.SetBindingIndexKey(previous);
+		}
+		Binder &binder;
+		bool previous;
+	} scope(binder);
+	auto result = ExpressionBinder::BindExpression(expr_ptr, depth);
+	if (legacy_keys && !result.HasError()) {
+		// the casts this node adds are bound now: an enclosing function folds a constant node to its value
+		BindLegacyCasts(result.expression);
+	}
+	return result;
+}
+
+void IndexBinder::BindLegacyCasts(unique_ptr<Expression> &expr) {
+	// the node is an explicit cast, the casts of its children are the implicit casts the node added: the children
+	// themselves were bound before
+	BindLegacyCast(expr);
+	ExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<Expression> &child) { BindLegacyCast(child); });
+}
+
+void IndexBinder::BindLegacyCast(unique_ptr<Expression> &expr) {
+	if (!BoundCastExpression::IsCast(*expr)) {
+		return;
+	}
+	auto &cast = expr->Cast<BoundFunctionExpression>();
+	const auto source = BoundCastExpression::SourceType(cast);
+	auto &target = BoundCastExpression::TargetType(cast);
+	if (!CastsBetweenBignumAndDecimal(source, target)) {
+		return;
+	}
+	if (keys->stored && IsBignumDecimalCast(source, target)) {
+		// those engines bind the cast to the null cast: a TRY_CAST gives NULL, a CAST raises an error
+		if (BoundCastExpression::GetBoundCast(cast).IsNullCast()) {
+			return;
+		}
+		auto child = std::move(BoundCastExpression::ChildMutable(cast));
+		expr = BoundCastExpression::Create(std::move(child), target, BoundCastInfo(DefaultCasts::TryVectorNullCast),
+		                                   BoundCastExpression::IsTryCast(cast));
+		return;
+	}
+	if (keys->legacy_cast.empty()) {
+		keys->legacy_cast =
+		    StringUtil::Format("%s casts %s to %s, a cast those engines do not have (a TRY_CAST gives NULL there)",
+		                       cast.ToString(), source.ToString(), target.ToString());
 	}
 }
 

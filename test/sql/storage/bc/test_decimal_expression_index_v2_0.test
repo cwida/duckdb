@@ -1,5 +1,5 @@
 # name: test/sql/storage/bc/test_decimal_expression_index_v2_0.test
-# description: Decimal index keys of a database written before wide decimals bind within 38 digits, as that engine bound them; a key that engine computed otherwise is refused by writes and skipped by reads
+# description: Decimal index keys of a database written before wide decimals bind as that engine bound them: within 38 digits, casts between BIGNUM and DECIMAL as the null cast; a key that engine computed otherwise is refused by writes and skipped by reads
 # group: [bc]
 
 # The databases are written with a vector size of 2048.
@@ -142,9 +142,10 @@ endloop
 #   CREATE UNIQUE INDEX ux ON u ((k || typeof(d + d)));
 #   INSERT INTO t VALUES ('1'::BIGNUM);
 #   INSERT INTO u VALUES ('x', 1);
-# That engine has no cast from BIGNUM to DECIMAL, its TRY_CAST gave NULL and the stored key is -1, while this engine
-# computes 1: the index is refused by writes and skipped by reads until it is created again. The key of u folds the
-# type name of the sum, 'DECIMAL(38,0)' in that engine and in this one, since the key is bound within 38 digits
+# That engine has no cast from BIGNUM to DECIMAL, its TRY_CAST gave NULL and the stored key is -1 for every row. This
+# engine binds the cast of the stored key as that engine did, so the index keeps computing -1 and keeps rejecting every
+# further row until it is created again. The key of u folds the type name of the sum, 'DECIMAL(38,0)' in that engine
+# and in this one, since the key is bound within 38 digits
 
 unzip data/storage/decimal_bignum_cast_index_v1_4_0.db.gz {TEST_DIR}/decimal_bignum_cast_index_v1_4_0.db
 
@@ -155,12 +156,12 @@ foreach version v1_4_0 v2_0_0
 statement ok
 ATTACH '{TEST_DIR}/decimal_bignum_cast_index_{version}.db' AS old
 
+# a query of this engine casts the BIGNUM, the stored key of the index is still NULL
 query I
 SELECT try_cast(a AS DECIMAL(18,0)) FROM old.t
 ----
 1
 
-# a read does not need the index: a filtered scan leaves it unbound and uses the other index or a table scan
 query I
 SELECT a FROM old.t WHERE a = '1'::BIGNUM
 ----
@@ -174,7 +175,7 @@ SELECT count(*) FROM old.t WHERE coalesce(try_cast(a AS DECIMAL(18,0)), -1::DECI
 statement error
 INSERT INTO old.t VALUES ('2'::BIGNUM)
 ----
-<REGEX>:.*Cannot bind index "ix" on table "t": the index was stored at storage version v(1\.4\.0|2\.0\.0), whose engines compute other keys for its expression \(.*casts BIGNUM to DECIMAL\(18,0\), a cast those engines do not have \(a TRY_CAST gives NULL there\)\).*DROP INDEX "ix" and CREATE it again.*CHECKPOINT.*
+<REGEX>:.*Duplicate key.*-1.*
 
 query I
 SELECT count(*) FROM old.t
@@ -219,7 +220,7 @@ DETACH old
 
 endloop
 
-# a read-only database cannot drop the index, its filtered reads work without it
+# a read-only database binds the index as well
 unzip data/storage/decimal_bignum_cast_index_v2_0_0.db.gz {TEST_DIR}/decimal_bignum_cast_index_read_only.db
 
 statement ok
@@ -245,8 +246,7 @@ DETACH ro
 
 # data/storage/decimal_bignum_cast_index_wal_v2_0_0.db.gz and .db.wal.gz were written by DuckDB 2.0.0 at storage
 # version v2.0.0 with the same schema, checkpointed before the two INSERTs, which its write-ahead log holds. The replay
-# buffers the row of t in the refused index, a CHECKPOINT has to bind the index to write them and fails until the index
-# is dropped
+# buffers the row of t in the index, a CHECKPOINT binds the index and writes it with the key that engine computed
 
 unzip data/storage/decimal_bignum_cast_index_wal_v2_0_0.db.gz {TEST_DIR}/decimal_bignum_cast_index_wal.db
 
@@ -265,21 +265,16 @@ SELECT k, d FROM wal.u
 ----
 x	1
 
-statement error
+statement ok
 CHECKPOINT wal
-----
-<REGEX>:.*Cannot CHECKPOINT: an index on table "t" has buffered operations and cannot be bound: Cannot bind index "ix".*
 
 statement error
 INSERT INTO wal.t VALUES ('2'::BIGNUM)
 ----
-<REGEX>:.*Cannot bind index "ix".*
+<REGEX>:.*Duplicate key.*-1.*
 
 statement ok
 DROP INDEX wal.ix
-
-statement ok
-CHECKPOINT wal
 
 statement ok
 INSERT INTO wal.t VALUES ('2'::BIGNUM)
@@ -299,8 +294,8 @@ statement ok
 DETACH wal
 
 # a database upgraded to the storage version of wide decimals keeps the stored keys of its indexes: the index on the sum
-# keeps binding within 38 digits, the refused index stays refused until it is created again, and then holds the key
-# this engine computes
+# keeps binding within 38 digits, the index on the cast keeps computing -1 until it is created again, and then holds the
+# key this engine computes
 unzip data/storage/decimal_expression_index_v2_0_0.db.gz {TEST_DIR}/decimal_expression_index_upgrade.db
 
 statement ok
@@ -343,7 +338,7 @@ CHECKPOINT up
 statement error
 INSERT INTO up.t VALUES ('2'::BIGNUM)
 ----
-<REGEX>:.*Cannot bind index "ix".*
+<REGEX>:.*Duplicate key.*-1.*
 
 statement ok
 DROP INDEX up.ix
@@ -366,3 +361,88 @@ SELECT count(*) FROM up.t
 
 statement ok
 DETACH up
+
+# data/storage/decimal_bignum_constant_cast_index_v2_0_0.db.gz was written by DuckDB 2.0.0 at storage version v2.0.0 with:
+#   CREATE TABLE t (k INTEGER);
+#   CREATE UNIQUE INDEX ix ON t ((k + coalesce(try_cast('1'::BIGNUM AS DECIMAL(18,0)), 0::DECIMAL(18,0))));
+#   INSERT INTO t VALUES (1);
+#   CREATE TABLE c (a BIGNUM);
+#   CREATE UNIQUE INDEX cx ON c ((CAST(a AS DECIMAL(18,0))));
+#   CREATE TABLE n (s STRUCT(v BIGNUM));
+#   CREATE INDEX nx ON n ((struct_extract(try_cast(s AS STRUCT(v DECIMAL(18,0))), 'v')));
+#   INSERT INTO n VALUES ({'v': '1'::BIGNUM});
+# The cast of t is folded while binding: that engine folded its TRY_CAST to NULL and stored the key k + 0, this engine
+# binds the cast as that engine did before folding, so the stored key is k + 0 as well. Every insert into c failed in
+# that engine, since its CAST raises an error, and does so here. The cast between the nested types of n is not bound as
+# that engine bound it: the index is refused by writes and skipped by reads until it is created again
+unzip data/storage/decimal_bignum_constant_cast_index_v2_0_0.db.gz {TEST_DIR}/decimal_bignum_constant_cast_index.db
+
+statement ok
+ATTACH '{TEST_DIR}/decimal_bignum_constant_cast_index.db' AS old
+
+# a query of this engine computes k + 1, the stored key of the index is k + 0
+query I
+SELECT k + coalesce(try_cast('1'::BIGNUM AS DECIMAL(18,0)), 0::DECIMAL(18,0)) FROM old.t
+----
+2
+
+statement error
+INSERT INTO old.t VALUES (1)
+----
+<REGEX>:.*Duplicate key.*1.*
+
+statement ok
+INSERT INTO old.t VALUES (2)
+
+query I
+SELECT count(*) FROM old.t
+----
+2
+
+statement error
+INSERT INTO old.c VALUES ('1'::BIGNUM)
+----
+<REGEX>:.*Unimplemented type for cast \(BIGNUM -> DECIMAL\(18,0\)\).*
+
+query I
+SELECT count(*) FROM old.c
+----
+0
+
+query I
+SELECT s FROM old.n
+----
+{'v': 1}
+
+query I
+SELECT count(*) FROM old.n WHERE struct_extract(try_cast(s AS STRUCT(v DECIMAL(18,0))), 'v') = 1
+----
+1
+
+statement error
+INSERT INTO old.n VALUES ({'v': '2'::BIGNUM})
+----
+<REGEX>:.*Cannot bind index "nx" on table "n": the index was stored at storage version v2\.0\.0, whose engines compute other keys for its expression \(.*casts STRUCT\(v BIGNUM\) to STRUCT\(v DECIMAL\(18,0\)\), a cast those engines do not have \(a TRY_CAST gives NULL there\)\).*DROP INDEX "nx" and CREATE it again.*
+
+statement ok
+DROP INDEX old.nx
+
+statement ok
+INSERT INTO old.n VALUES ({'v': '2'::BIGNUM})
+
+statement ok
+CHECKPOINT old
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/decimal_bignum_constant_cast_index.db' AS old
+
+statement error
+INSERT INTO old.t VALUES (2)
+----
+<REGEX>:.*Duplicate key.*2.*
+
+statement ok
+DETACH old
