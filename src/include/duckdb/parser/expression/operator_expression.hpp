@@ -50,6 +50,24 @@ private:
 	OperatorExpression();
 
 public:
+	//! The base of a subscript or slice, parenthesized when its own text binds less tightly than "[": a COLLATE
+	//! expression ("'abc' COLLATE nocase[1]" does not parse again) and a negative constant ("-1[1]" is "-(1[1])")
+	template <class BASE>
+	static string SubscriptBaseToString(const BASE &base) {
+		auto result = base.ToString();
+		switch (base.GetExpressionType()) {
+		case ExpressionType::COLLATE:
+			return "(" + result + ")";
+		case ExpressionType::VALUE_CONSTANT:
+			if (!result.empty() && result[0] == '-') {
+				return "(" + result + ")";
+			}
+			return result;
+		default:
+			return result;
+		}
+	}
+
 	template <class T, class BASE>
 	static string ToString(const T &entry) {
 		auto &children = entry.GetChildren();
@@ -106,7 +124,7 @@ public:
 		case ExpressionType::OPERATOR_IS_NOT_NULL:
 			return "(" + children[0]->ToString() + " IS NOT NULL)";
 		case ExpressionType::ARRAY_EXTRACT:
-			return children[0]->ToString() + "[" + children[1]->ToString() + "]";
+			return SubscriptBaseToString(*children[0]) + "[" + children[1]->ToString() + "]";
 		case ExpressionType::ARRAY_SLICE: {
 			string begin = children[1]->ToString();
 			if (IsEmptySliceBound(begin)) {
@@ -121,9 +139,10 @@ public:
 				}
 			}
 			if (children.size() == 4) {
-				return children[0]->ToString() + "[" + begin + ":" + end + ":" + children[3]->ToString() + "]";
+				return SubscriptBaseToString(*children[0]) + "[" + begin + ":" + end + ":" + children[3]->ToString() +
+				       "]";
 			}
-			return children[0]->ToString() + "[" + begin + ":" + end + "]";
+			return SubscriptBaseToString(*children[0]) + "[" + begin + ":" + end + "]";
 		}
 		case ExpressionType::STRUCT_EXTRACT: {
 			if (children[1]->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {

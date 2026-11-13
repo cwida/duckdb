@@ -14,6 +14,7 @@ set(TEST_API_OBJECTS
     test_temporary_file_owner.cpp
     test_task_error_out_of_memory.cpp
     test_bind_statement.cpp
+    test_subscript_base_tostring.cpp
     test_function_binding.cpp
     test_runtime_filter_input.cpp
     test_function_signature_variadic.cpp

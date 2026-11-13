@@ -1,0 +1,70 @@
+# name: test/sql/parser/subscript_base_tostring.test
+# description: ToString() keeps the parentheses around a COLLATE base of a subscript or slice (#27994)
+# group: [parser]
+
+# the printed statement is parsed again before it runs
+statement ok
+SET debug_verify_statement='REPARSE_STATEMENT'
+
+query T
+SELECT ('abc' COLLATE nocase)[1]
+----
+a
+
+query T
+SELECT ('abcd' COLLATE nocase)[2:3]
+----
+bc
+
+query T
+SELECT ('abcd' COLLATE nocase)[2:]
+----
+bcd
+
+query T
+SELECT (('abc' COLLATE nocase)[1] COLLATE nocase)[1]
+----
+a
+
+query I
+SELECT ('ABC' COLLATE nocase)[1] = 'a'
+----
+true
+
+statement ok
+SET debug_verify_statement='NONE'
+
+# the stored definitions of macros and views go through the same printer
+statement ok
+CREATE MACRO f() AS ('abc' COLLATE nocase)[1];
+
+query T
+SELECT macro_definition FROM duckdb_functions() WHERE function_name = 'f';
+----
+('abc' COLLATE nocase)[1]
+
+statement ok
+CREATE VIEW v AS SELECT ('abc' COLLATE nocase)[1] AS x, ('abcd' COLLATE nocase)[2:3] AS y;
+
+query I
+SELECT contains(sql, 'AS SELECT (''abc'' COLLATE nocase)[1] AS x, (''abcd'' COLLATE nocase)[2:3] AS y;') FROM duckdb_views() WHERE view_name = 'v';
+----
+true
+
+# and so does EXPORT DATABASE, whose schema.sql must import again
+statement ok
+EXPORT DATABASE '{TEST_DIR}/subscript_base_tostring';
+
+statement ok
+DROP VIEW v;
+
+statement ok
+DROP MACRO f;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/subscript_base_tostring';
+
+query TTT
+SELECT f(), x, y FROM v;
+----
+a	a	bc
