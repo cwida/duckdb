@@ -135,15 +135,30 @@ void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<Logical
 	}
 
 	if (op.children.size() == 1) {
-		// UNNEST emits multiple rows per input row, so a distinct group found below it does not hold above it
-		const auto invalidates_distinct = op.type == LogicalOperatorType::LOGICAL_UNNEST;
+		// UNNEST can invalidate groups discovered below it. Row-selection operators also prevent a
+		// distinct group from above from justifying join elimination below, because duplicate rows can
+		// change which rows are selected.
+		const auto is_unnest = op.type == LogicalOperatorType::LOGICAL_UNNEST;
+		const auto selects_rows = op.type == LogicalOperatorType::LOGICAL_LIMIT ||
+		                          op.type == LogicalOperatorType::LOGICAL_TOP_N ||
+		                          op.type == LogicalOperatorType::LOGICAL_SAMPLE;
 		unordered_map<TableIndex, column_binding_set_t> distinct_groups_above;
-		if (invalidates_distinct) {
+		if (is_unnest || selects_rows) {
 			distinct_groups_above = pipe_info.distinct_groups;
 		}
+		if (selects_rows) {
+			pipe_info.distinct_groups.clear();
+		}
 		OptimizeChildren(*op.children[0], op, idx);
-		if (invalidates_distinct) {
+		if (is_unnest) {
 			pipe_info.distinct_groups = std::move(distinct_groups_above);
+		} else if (selects_rows) {
+			// Groups discovered in the child remain valid above a row-selection operator. Merge the
+			// groups from above back in so they are still available to joins above this operator.
+			for (auto &distinct_group : distinct_groups_above) {
+				auto &group = pipe_info.distinct_groups[distinct_group.first];
+				group.insert(distinct_group.second.begin(), distinct_group.second.end());
+			}
 		}
 	} else {
 		children_root = op;
