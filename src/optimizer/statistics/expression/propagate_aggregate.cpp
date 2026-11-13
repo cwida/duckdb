@@ -14,6 +14,8 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundAggreg
 		    filter_stats->GetStatsType() == StatisticsType::NUMERIC_STATS && NumericStats::HasMinMax(*filter_stats) &&
 		    BooleanValue::Get(NumericStats::Min(*filter_stats))) {
 			filter.reset();
+			// the columns that only the filter read can be pruned from the scan
+			removed_expressions = true;
 		}
 	}
 	vector<BaseStatistics> stats;

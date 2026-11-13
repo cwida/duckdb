@@ -25,8 +25,9 @@ public:
 	~AggregateFunctionRewriter();
 
 	void Optimize(unique_ptr<LogicalOperator> &op);
-	//! Rewrites f(CASE WHEN c THEN x END) -> f(x) FILTER (WHERE c)
-	void RewriteCaseToFilter(unique_ptr<LogicalOperator> &op);
+	//! Rewrites f(CASE WHEN c THEN x END) -> f(x) FILTER (WHERE c). The table statistics are only consulted if
+	//! use_statistics is set: they have to describe the rows that the plan scans
+	void RewriteCaseToFilter(unique_ptr<LogicalOperator> &op, bool use_statistics);
 
 private:
 	Optimizer &optimizer;

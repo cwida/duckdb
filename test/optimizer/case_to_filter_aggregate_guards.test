@@ -172,7 +172,7 @@ EXPLAIN SELECT g, sum(CASE WHEN c THEN v ELSE g END), sum(CASE WHEN c THEN q ELS
 ----
 physical_plan	<!REGEX>:(?s).*FILTER.*
 
-# a non-NULL ELSE under min / bool_or 
+# a non-NULL ELSE under min / bool_or
 query II
 EXPLAIN SELECT g, min(CASE WHEN c THEN v ELSE 0 END), bool_or(CASE WHEN c THEN b ELSE false END) FROM t GROUP BY g
 ----

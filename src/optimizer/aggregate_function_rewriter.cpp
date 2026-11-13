@@ -378,8 +378,9 @@ unique_ptr<Expression> ListRewriteRule::Rewrite(unique_ptr<Expression> &expr, ve
 //! not be able to throw and must not be volatile.
 class CaseToFilterRule : public AggregateRewriteRule {
 public:
-	CaseToFilterRule(Optimizer &optimizer, LogicalOperator &root)
-	    : AggregateRewriteRule(optimizer), nullability(optimizer.context, root) {
+	CaseToFilterRule(Optimizer &optimizer, LogicalOperator &root, bool use_statistics_p)
+	    : AggregateRewriteRule(optimizer), nullability(optimizer.context, root),
+	      use_statistics(use_statistics_p && !optimizer.OptimizerDisabled(OptimizerType::STATISTICS_PROPAGATION)) {
 	}
 
 private:
@@ -459,8 +460,11 @@ private:
 			return CaseShape::INVALID;
 		}
 		const auto is_sum = name == "sum";
-		// a floating point constant that is summed per row is not count * k, and the aggregate adds exactly that
-		// product for a constant input vector
+		// sum and avg add value * count for a constant input vector instead of adding the value count times, which
+		// is another floating point number. A constant THEN branch is such a vector in every chunk: the filtered sum
+		// would never be the sum of the CASE form, so that it keeps its CASE. A column is not covered by this: it
+		// only is a constant vector where the scan or a join hands one out (a constant or RLE segment, the one-row
+		// side of a cross join), and there every sum over it adds the product - with a user-written FILTER, too
 		if ((is_sum || name == "avg") && then_expr.GetReturnType().IsFloating() &&
 		    then_expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 			return CaseShape::INVALID;
@@ -538,7 +542,7 @@ private:
 	}
 
 	//! Whether the expression is provably not NULL at the output of the operator
-	bool IsNotNull(LogicalOperator &input, const Expression &expr, bool use_statistics) {
+	bool IsNotNull(LogicalOperator &input, const Expression &expr) {
 		switch (expr.GetExpressionClass()) {
 		case ExpressionClass::BOUND_CONSTANT:
 			return IsNonNullConstant(expr);
@@ -550,13 +554,13 @@ private:
 				// a cast between numeric types returns a value or throws
 				auto &source = BoundCastExpression::Child(function);
 				return !BoundCastExpression::IsTryCast(function) && source.GetReturnType().IsNumeric() &&
-				       expr.GetReturnType().IsNumeric() && IsNotNull(input, source, use_statistics);
+				       expr.GetReturnType().IsNumeric() && IsNotNull(input, source);
 			}
 			if (!PreservesNotNull(function) || function.GetChildren().empty()) {
 				return false;
 			}
 			for (auto &child : function.GetChildren()) {
-				if (!IsNotNull(input, *child, use_statistics)) {
+				if (!IsNotNull(input, *child)) {
 					return false;
 				}
 			}
@@ -622,8 +626,7 @@ public:
 			return;
 		case CaseShape::ELSE_ZERO: {
 			auto &check = GetCase(aggregate).CaseChecks()[0];
-			const auto use_statistics = !optimizer.OptimizerDisabled(OptimizerType::STATISTICS_PROPAGATION);
-			if (!IsNotNull(*aggr.children[0], *check.then_expr, use_statistics)) {
+			if (!IsNotNull(*aggr.children[0], *check.then_expr)) {
 				// count(*) > count(*) FILTER (WHERE c): a row of the group took the ELSE 0
 				helpers.count = true;
 				helpers.extras.push_back(BindFilteredCount(*check.when_expr));
@@ -646,7 +649,10 @@ public:
 		D_ASSERT(filtered);
 		if (shape != CaseShape::ELSE_NULL) {
 			auto constant = GetConstant(aggr, shape);
-			D_ASSERT(constant);
+			if (!constant) {
+				throw InternalException("CaseToFilterRule::Rewrite - ShouldRewrite accepted a constant that the "
+				                        "type of the sum cannot hold");
+			}
 			additional_expressions.push_back(make_uniq<BoundConstantExpression>(std::move(*constant)));
 		}
 		expr = std::move(filtered);
@@ -703,6 +709,9 @@ public:
 
 private:
 	NotNullExpressionAnalyzer nullability;
+	//! Whether a column may be proven NOT NULL: the proof reads the statistics of the scanned tables, which the
+	//! optimizer does not use for a plan with a data-modifying CTE (the rows change while the query runs)
+	const bool use_statistics;
 };
 
 //! Internal LogicalOperatorVisitor that does the actual rewriting
@@ -911,8 +920,8 @@ void AggregateFunctionRewriter::Optimize(unique_ptr<LogicalOperator> &op) {
 	}
 }
 
-void AggregateFunctionRewriter::RewriteCaseToFilter(unique_ptr<LogicalOperator> &op) {
-	CaseToFilterRule rule(optimizer, *op);
+void AggregateFunctionRewriter::RewriteCaseToFilter(unique_ptr<LogicalOperator> &op, bool use_statistics) {
+	CaseToFilterRule rule(optimizer, *op, use_statistics);
 	AggregateFunctionRewriterInternal rewriter(optimizer, rule);
 	rewriter.Optimize(op);
 }

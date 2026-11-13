@@ -343,6 +343,25 @@ EXPLAIN SELECT g, sum(v) FILTER (WHERE i >= 0) FROM t GROUP BY g
 ----
 physical_plan	<!REGEX>:(?s).*FILTER.*
 
+# the scan no longer reads a column that only the dropped filter used
+statement ok
+CREATE TABLE w AS SELECT i AS v, i AS pred, i AS other FROM range(1000) r(i)
+
+query II
+EXPLAIN SELECT sum(v) FILTER (WHERE pred >= 0) FROM w
+----
+physical_plan	<!REGEX>:(?s).*pred.*
+
+query II
+EXPLAIN SELECT sum(CASE WHEN pred >= 0 THEN v ELSE 0 END), min(CASE WHEN pred >= 0 THEN v END) FROM w
+----
+physical_plan	<!REGEX>:(?s).*pred.*
+
+query III
+SELECT sum(v) FILTER (WHERE pred >= 0), sum(CASE WHEN pred >= 0 THEN v ELSE 0 END), min(CASE WHEN pred >= 0 THEN v END) FROM w
+----
+499500	499500	0
+
 query II
 EXPLAIN SELECT g, sum(v) FILTER (WHERE i >= 5) FROM t GROUP BY g
 ----

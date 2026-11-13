@@ -372,7 +372,8 @@ void Optimizer::RunBuiltInOptimizers() {
 	// without a filter (aggregate reuse, partial aggregate pushdown), so that these still see the CASE.
 	RunOptimizer(OptimizerType::CASE_TO_FILTER_AGGREGATE, [&]() {
 		AggregateFunctionRewriter aggregate_function_rewriter(*this);
-		aggregate_function_rewriter.RewriteCaseToFilter(plan);
+		// DML CTEs can invalidate the table statistics captured during planning.
+		aggregate_function_rewriter.RewriteCaseToFilter(plan, !CTEContainsDML(*plan));
 	});
 
 	RunOptimizer(OptimizerType::JOIN_ELIMINATION, [&]() {

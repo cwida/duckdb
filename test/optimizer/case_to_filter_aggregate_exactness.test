@@ -14,6 +14,13 @@ CREATE TABLE empty_t(g INTEGER, c BOOLEAN, v INTEGER, w INTEGER NOT NULL);
 statement ok
 CREATE TABLE f AS SELECT i % 4 AS g, i % 4 = 1 AS c, i AS v FROM range(400) r(i);
 
+# DOUBLE and FLOAT columns, and a one-row table: the side of a cross join that is repeated as a constant vector
+statement ok
+CREATE TABLE fd AS SELECT i % 4 AS g, i % 3 = 1 AS c, (i % 13)::DOUBLE / 7 AS d, ((i % 17)::DOUBLE / 3)::FLOAT AS r FROM range(4000) r(i);
+
+statement ok
+CREATE TABLE constants AS SELECT 0.1::DOUBLE AS x;
+
 statement ok
 CREATE TABLE t3(g INTEGER, c BOOLEAN NOT NULL, s STRUCT(x INTEGER) NOT NULL, l INTEGER[] NOT NULL, a INTEGER NOT NULL, b INTEGER NOT NULL);
 
@@ -97,6 +104,21 @@ query TT nosort ungrouped_float_constant
 SELECT sum(CASE WHEN g < 3 THEN 0.1::DOUBLE ELSE 0 END)::VARCHAR, sum(CASE WHEN g < 3 THEN 1e308 ELSE 0 END)::VARCHAR FROM f
 ----
 
+# a DOUBLE column: the filtered aggregate adds the same values in the same order as the CASE form, so that the digits
+# are the same (compare the runs with each other). The sum over a FLOAT column keeps its CASE, which is the argument
+# of the cast to DOUBLE
+query ITTTT nosort grouped_float_column
+SELECT g, sum(CASE WHEN c THEN d END)::VARCHAR, sum(CASE WHEN c THEN d ELSE 0 END)::VARCHAR,
+       avg(CASE WHEN c THEN d END)::VARCHAR, sum(CASE WHEN c THEN r ELSE 0 END)::VARCHAR
+FROM fd GROUP BY g ORDER BY g
+----
+
+query TTTT nosort ungrouped_float_column
+SELECT sum(CASE WHEN c THEN d END)::VARCHAR, sum(CASE WHEN c THEN d ELSE 0 END)::VARCHAR,
+       avg(CASE WHEN c THEN d END)::VARCHAR, sum(CASE WHEN c THEN r ELSE 0 END)::VARCHAR
+FROM fd
+----
+
 # an integer constant keeps the exact count form
 query III nosort
 SELECT g, sum(CASE WHEN c THEN 7 ELSE 0 END), sum(CASE WHEN g < 3 THEN -2 ELSE 0 END) FROM f GROUP BY g ORDER BY g
@@ -165,6 +187,26 @@ physical_plan	<REGEX>:.*FILTER.*
 
 statement ok
 SET disabled_optimizers = ''
+
+# a DOUBLE column under sum / avg is rewritten
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN d ELSE 0 END), avg(CASE WHEN c THEN d END) FROM fd GROUP BY g
+----
+physical_plan	<!REGEX>:.*CASE  WHEN.*
+
+# also where it arrives as a constant vector (the one-row side of a cross join). For such a vector sum adds
+# value * count instead of adding the value count times: the CASE form computes a flat vector and hides it from the
+# sum, the filtered aggregate does not. Its digits are those of a user-written FILTER (10.0 here, where the CASE form
+# adds up to 9.99999999999998), so that only the plan and the value are checked
+query II
+EXPLAIN SELECT sum(CASE WHEN i % 2 = 0 THEN x END) FROM constants CROSS JOIN range(200) r(i)
+----
+physical_plan	<REGEX>:.*sum\(#[0-9]+\) FILTER.*
+
+query RR
+SELECT sum(CASE WHEN i % 2 = 0 THEN x END), sum(x) FILTER (WHERE i % 2 = 0) FROM constants CROSS JOIN range(200) r(i)
+----
+10.0	10.0
 
 # a floating-point constant keeps its CASE
 query II
