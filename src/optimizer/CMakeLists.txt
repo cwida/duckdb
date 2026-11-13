@@ -45,6 +45,7 @@ add_library_unity(
   runtime_filter_cast.cpp
   late_materialization.cpp
   late_materialization_helper.cpp
+  lateral_row_function.cpp
   optimizer.cpp
   outer_join_simplification.cpp
   partial_aggregate_pushdown.cpp

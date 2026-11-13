@@ -12,7 +12,7 @@ SET threads = 4;
 
 # plan unnest with the same delim join as the JSON functions
 statement ok
-SET disabled_optimizers = 'unnest_rewriter';
+SET disabled_optimizers = 'unnest_rewriter,lateral_row_function';
 
 statement ok
 CREATE TABLE j AS SELECT json_object('a', i, 'b', [i, i + 1]) AS doc FROM range(10000) t(i);

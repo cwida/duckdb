@@ -44,6 +44,7 @@
 #include "duckdb/optimizer/type_pushdown.hpp"
 #include "duckdb/optimizer/unnest_rewriter.hpp"
 #include "duckdb/optimizer/late_materialization.hpp"
+#include "duckdb/optimizer/lateral_row_function.hpp"
 #include "duckdb/optimizer/common_subplan_optimizer.hpp"
 #include "duckdb/optimizer/partitioned_execution.hpp"
 #include "duckdb/optimizer/window_join_pushdown.hpp"
@@ -344,6 +345,12 @@ void Optimizer::RunBuiltInOptimizers() {
 	RunOptimizer(OptimizerType::OUTER_JOIN_SIMPLIFICATION, [&]() {
 		OuterJoinSimplification outer_join_simplification;
 		outer_join_simplification.VisitOperator(*plan);
+	});
+
+	// runs the right side of a lateral join that is a function of the left row alone directly over the left rows
+	RunOptimizer(OptimizerType::LATERAL_ROW_FUNCTION, [&]() {
+		LateralRowFunction lateral_row_function(*this);
+		lateral_row_function.Optimize(plan);
 	});
 
 	// then we perform the join ordering optimization
