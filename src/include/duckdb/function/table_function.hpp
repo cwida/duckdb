@@ -504,7 +504,8 @@ public:
 	//! (Optional) pushdown a set of arbitrary filter expressions, rather than only simple comparisons with a constant
 	//! Any functions remaining in the expression list will be pushed as a regular filter after the scan
 	table_function_pushdown_complex_filter_t pushdown_complex_filter;
-	//! (Optional) whether or not this table function supports pushing down an expression into a TableFilter
+	//! (Optional) whether or not this table function supports pushing down an expression into a TableFilter,
+	//! including expressions that reference multiple columns
 	table_function_pushdown_expression_t pushdown_expression;
 	//! (Optional) function for rendering the operator to a string in explain/profiling output (invoked pre-execution)
 	table_function_to_string_t to_string;

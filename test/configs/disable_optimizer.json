@@ -230,6 +230,12 @@
       ]
     },
     {
+      "reason": "Requires the filter pushdown optimizer to deliver the multi-column filter.",
+      "paths": [
+        "test/extension/test_multicolumn_filter_pushdown.test"
+      ]
+    },
+    {
       "reason": "Type and function pushdown optimizers changes output types",
       "paths": [
         "test/optimizer/pushdown/csv_type_pushdown.test",

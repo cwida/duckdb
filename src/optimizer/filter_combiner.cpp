@@ -513,13 +513,18 @@ FilterPushdownResult FilterCombiner::TryPushdownGenericExpression(LogicalGet &ge
 		}
 	}
 	if (has_multiple_bindings) {
+		if (!ExpressionFilter::CanPropagateExpressionStatistics(expr)) {
+			return FilterPushdownResult::NO_PUSHDOWN;
+		}
 		auto table = get.GetTable();
-		if (table && table->IsDuckTable() && ExpressionFilter::CanPropagateExpressionStatistics(expr)) {
-			auto filter = TryCreateMultiColumnExpressionFilter(get, expr, bindings);
-			if (filter) {
-				get.table_filters.PushMultiColumnFilter(std::move(filter));
-				return FilterPushdownResult::PUSHED_DOWN_PARTIALLY;
-			}
+		// duck tables accept the filter directly, table functions opt in via pushdown_expression
+		if ((!table || !table->IsDuckTable()) && !get.function.pushdown_expression(context, get, expr)) {
+			return FilterPushdownResult::NO_PUSHDOWN;
+		}
+		auto filter = TryCreateMultiColumnExpressionFilter(get, expr, bindings);
+		if (filter) {
+			get.table_filters.PushMultiColumnFilter(std::move(filter));
+			return FilterPushdownResult::PUSHED_DOWN_PARTIALLY;
 		}
 		return FilterPushdownResult::NO_PUSHDOWN;
 	}

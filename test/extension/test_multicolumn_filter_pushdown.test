@@ -1,0 +1,19 @@
+# name: test/extension/test_multicolumn_filter_pushdown.test
+# description: Test multi-column filter pushdown into extension table functions
+# group: [extension]
+
+require notmingw
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension';
+
+# The function verifies that it receives a multi-column ExpressionFilter but
+# deliberately does not apply it, so this also verifies that DuckDB retains the predicate.
+query II
+SELECT a, b FROM test_multicolumn_filter_pushdown() WHERE a < b;
+----
+1	2

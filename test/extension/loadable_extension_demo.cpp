@@ -5,6 +5,7 @@
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
+#include "duckdb/planner/table_filter_set.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
@@ -184,6 +185,60 @@ public:
 			count++;
 		}
 		output.SetChildCardinality(count);
+	}
+};
+
+//===--------------------------------------------------------------------===//
+// Multi-Column Filter Pushdown Table Function
+//===--------------------------------------------------------------------===//
+class MultiColumnFilterPushdownFunction : public TableFunction {
+public:
+	MultiColumnFilterPushdownFunction() {
+		name = "test_multicolumn_filter_pushdown";
+		bind = Bind;
+		init_global = Init;
+		function = Scan;
+		filter_pushdown = true;
+		pushdown_expression = PushdownExpression;
+	}
+
+	struct GlobalState : public GlobalTableFunctionState {
+		bool finished = false;
+	};
+
+	static unique_ptr<FunctionData> Bind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
+	                                     vector<Identifier> &names) {
+		return_types = {LogicalType::INTEGER, LogicalType::INTEGER};
+		names = {"a", "b"};
+		return nullptr;
+	}
+
+	static bool PushdownExpression(ClientContext &, const LogicalGet &, Expression &) {
+		return true;
+	}
+
+	static unique_ptr<GlobalTableFunctionState> Init(ClientContext &, TableFunctionInitInput &input) {
+		if (!input.filters || input.filters->GetMultiColumnFilters().size() != 1) {
+			throw InternalException("Expected one multi-column filter");
+		}
+		auto &filter = ExpressionFilter::GetExpressionFilter(*input.filters->GetMultiColumnFilters()[0],
+		                                                     "MultiColumnFilterPushdownFunction::Init");
+		if (filter.column_indexes != vector<ProjectionIndex> {ProjectionIndex(0), ProjectionIndex(1)}) {
+			throw InternalException("Unexpected multi-column filter indexes");
+		}
+		return make_uniq<GlobalState>();
+	}
+
+	static void Scan(ClientContext &, TableFunctionInput &input, DataChunk &output) {
+		auto &state = input.global_state->Cast<GlobalState>();
+		if (state.finished) {
+			return;
+		}
+		output.data[0].Append(Value::INTEGER(1));
+		output.data[1].Append(Value::INTEGER(2));
+		output.data[0].Append(Value::INTEGER(3));
+		output.data[1].Append(Value::INTEGER(1));
+		state.finished = true;
 	}
 };
 
@@ -1428,6 +1483,10 @@ DUCKDB_CPP_EXTENSION_ENTRY(loadable_extension_demo, loader) {
 	QuackFunction quack_function;
 	CreateTableFunctionInfo quack_info(quack_function);
 	catalog.CreateTableFunction(client_context, quack_info);
+
+	MultiColumnFilterPushdownFunction multicolumn_filter_function;
+	CreateTableFunctionInfo multicolumn_filter_info(multicolumn_filter_function);
+	catalog.CreateTableFunction(client_context, multicolumn_filter_info);
 
 	con.Commit();
 
