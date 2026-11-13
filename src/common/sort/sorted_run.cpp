@@ -1,3 +1,4 @@
+#include "duckdb/common/bit_utils.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/vector/map_vector.hpp"
@@ -257,17 +258,23 @@ struct SkaExtractSuffixKey : SkaExtractKey<SORT_KEY> {
 		return BSwapIfLE(word);
 	}
 
-	static bool PrefixMatches(const SORT_KEY &reference, const SORT_KEY &key, idx_t offset) {
+	//! Whether the bytes in [start, offset) match, given that the bytes before "start" are known to be equal
+	static bool PrefixMatches(const SORT_KEY &reference, const SORT_KEY &key, idx_t start, idx_t offset) {
+		D_ASSERT(start >= sizeof(uint64_t) && start <= offset);
 		if constexpr (SORT_KEY::INLINE_LENGTH > sizeof(uint64_t)) {
-			if (offset > sizeof(uint64_t) && reference.part1 != key.part1) {
+			if (start == sizeof(uint64_t) && offset > sizeof(uint64_t) && reference.part1 != key.part1) {
 				return false;
 			}
 		}
 		if (offset <= SORT_KEY::INLINE_LENGTH) {
 			return true;
 		}
-		return reference.GetSize() >= offset && key.GetSize() >= offset &&
-		       memcmp(reference.GetSuffixData(), key.GetSuffixData(), offset - SORT_KEY::INLINE_LENGTH) == 0;
+		if (reference.GetSize() < offset || key.GetSize() < offset) {
+			return false;
+		}
+		const auto from = MaxValue<idx_t>(start, SORT_KEY::INLINE_LENGTH) - SORT_KEY::INLINE_LENGTH;
+		const auto to = offset - SORT_KEY::INLINE_LENGTH;
+		return memcmp(reference.GetSuffixData() + from, key.GetSuffixData() + from, to - from) == 0;
 	}
 
 	bool ByteIsSkippable(const idx_t &byte_offset) const {
@@ -278,87 +285,173 @@ struct SkaExtractSuffixKey : SkaExtractKey<SORT_KEY> {
 	uint64_t varying_bits;
 };
 
+//! Radix key over one 8-byte word of a constant-size key, for buckets that tie on all earlier words
+template <class SORT_KEY>
+struct SkaExtractWordKey : SkaExtractKey<SORT_KEY> {
+	SkaExtractWordKey(const SkaExtractKey<SORT_KEY> &extract_key, idx_t word_p, uint64_t varying_bits_p)
+	    : SkaExtractKey<SORT_KEY>(extract_key), word(word_p), varying_bits(varying_bits_p) {
+		D_ASSERT(varying_bits != 0);
+		this->requires_next_sort = word + 1 < SORT_KEY::PARTS;
+		// Without a next sort, the radix passes must end at the last byte that varies: skipping past the final byte
+		// would hand the bucket to the (absent) next sort
+		this->ska_sort_width = this->requires_next_sort
+		                           ? sizeof(uint64_t)
+		                           : sizeof(uint64_t) - CountZeros<uint64_t>::Trailing(varying_bits) / 8;
+	}
+
+	const uint64_t &operator()(const SORT_KEY &key) const {
+		return (&key.part0)[word];
+	}
+
+	bool ByteIsSkippable(const idx_t &byte_offset) const {
+		D_ASSERT(byte_offset < sizeof(uint64_t));
+		return ((varying_bits >> ((sizeof(uint64_t) - 1 - byte_offset) * 8)) & 0xff) == 0;
+	}
+
+	idx_t word;
+	uint64_t varying_bits;
+};
+
+//! Minimum bucket size for which tied keys are refined with another radix pass instead of a comparison sort
+static constexpr idx_t MIN_TIED_RADIX_COUNT = 1024;
+
+//! Sorts a bucket of constant-size keys that tie on all words before "word" by radix sorting the next varying word
 template <class SORT_KEY, class ITERATOR, class MERGE>
-static void SortTiedBucket(ClientContext &context, const ITERATOR &begin, const ITERATOR &end,
-                           SkaExtractKey<SORT_KEY> &extract_key, const MERGE &merge) {
-	if constexpr (SORT_KEY::CONSTANT_SIZE) {
+static void SortTiedWords(ClientContext &context, const ITERATOR &begin, const ITERATOR &end,
+                          const SkaExtractKey<SORT_KEY> &extract_key, idx_t word, const MERGE &merge) {
+	D_ASSERT(end - begin >= 2);
+	if (NumericCast<idx_t>(end - begin) < MIN_TIED_RADIX_COUNT) {
 		duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
-	} else {
-		context.InterruptCheck();
-		D_ASSERT(end - begin >= 2);
-		using SUFFIX = SkaExtractSuffixKey<SORT_KEY>;
-		constexpr idx_t MIN_RADIX_COUNT = 1024;
-		constexpr idx_t SAMPLE_COUNT = 16;
-		constexpr idx_t MAX_PREFIX_OFFSET = 256;
-		const auto count = NumericCast<idx_t>(end - begin);
-		if (count < MIN_RADIX_COUNT) {
-			duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
-			return;
-		}
-
-		SORT_KEY samples[SAMPLE_COUNT];
-		const auto stride = (count - 1) / (SAMPLE_COUNT - 1);
-		for (idx_t i = 0; i < SAMPLE_COUNT; i++) {
-			samples[i] = *(begin + (i == SAMPLE_COUNT - 1 ? count - 1 : i * stride));
-		}
-		uint64_t words[SAMPLE_COUNT];
-		uint64_t varying_bits = 0;
-		idx_t offset = sizeof(uint64_t);
-		while (offset <= MAX_PREFIX_OFFSET) {
-			varying_bits = 0;
-			for (idx_t i = 0; i < SAMPLE_COUNT; i++) {
-				words[i] = SUFFIX::ExtractWord(samples[i], offset);
-				varying_bits |= words[0] ^ words[i];
-			}
-			if (varying_bits != 0) {
-				break;
-			}
-			offset += sizeof(uint64_t);
-		}
-		if (offset > MAX_PREFIX_OFFSET) {
-			duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
-			return;
-		}
-		for (const auto word : words) {
-			if (NumericCast<idx_t>(std::count(words, words + SAMPLE_COUNT, word)) >= SAMPLE_COUNT / 4) {
-				duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
-				return;
-			}
-		}
-
-		// The probe only selects a candidate; every skipped word must be equal across the whole bucket.
+		return;
+	}
+	context.InterruptCheck();
+	uint64_t varying_bits = 0;
+	for (; word < SORT_KEY::PARTS; word++) {
+		const auto first = (&begin->part0)[word];
 		idx_t scanned = 0;
 		for (auto it = begin + 1; it != end; ++it) {
 			if (++scanned % STANDARD_VECTOR_SIZE == 0) {
 				context.InterruptCheck();
 			}
-			if (it->part0 != samples[0].part0 || !SUFFIX::PrefixMatches(samples[0], *it, offset)) {
-				duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
-				return;
-			}
-			varying_bits |= words[0] ^ SUFFIX::ExtractWord(*it, offset);
+			varying_bits |= first ^ (&it->part0)[word];
 		}
-		// The common first word can cache the suffix during this synchronous refinement.
-		struct PrefixRestorer {
-			ITERATOR begin;
-			ITERATOR end;
-			uint64_t prefix;
+		if (varying_bits != 0) {
+			break;
+		}
+	}
+	if (word == SORT_KEY::PARTS) {
+		return; // All keys in the bucket are equal
+	}
+	SkaExtractWordKey<SORT_KEY> word_key(extract_key, word, varying_bits);
+	const auto sort_ties = [&context](const ITERATOR &b, const ITERATOR &e, SkaExtractWordKey<SORT_KEY> &key,
+	                                  const MERGE &policy) {
+		SortTiedWords(context, b, e, key, key.word + 1, policy);
+	};
+	duckdb_ska_sort::ska_sort(begin, end, word_key, merge, sort_ties);
+}
 
-			~PrefixRestorer() {
-				for (auto it = begin; it != end; ++it) {
-					it->part0 = prefix;
-				}
-			}
-		} restore {begin, end, samples[0].part0};
-		scanned = 0;
-		for (auto it = begin; it != end; ++it) {
-			if (++scanned % STANDARD_VECTOR_SIZE == 0) {
-				context.InterruptCheck();
-			}
-			it->part0 = SUFFIX::ExtractWord(*it, offset);
+//! Maximum number of nested suffix-word radix refinements of a tied bucket of variable-size keys
+static constexpr idx_t MAX_SUFFIX_RADIX_DEPTH = 8;
+
+//! Sorts a bucket of variable-size keys that tie on all bytes before "start" by radix sorting the first suffix word
+//! that varies, refining the buckets that tie on that word in turn
+template <class SORT_KEY, class ITERATOR, class MERGE>
+static void SortTiedSuffix(ClientContext &context, const ITERATOR &begin, const ITERATOR &end,
+                           const SkaExtractKey<SORT_KEY> &extract_key, const idx_t start, const idx_t depth,
+                           const MERGE &merge) {
+	context.InterruptCheck();
+	D_ASSERT(end - begin >= 2);
+	using SUFFIX = SkaExtractSuffixKey<SORT_KEY>;
+	constexpr idx_t MIN_RADIX_COUNT = MIN_TIED_RADIX_COUNT;
+	constexpr idx_t SAMPLE_COUNT = 16;
+	constexpr idx_t MAX_PREFIX_OFFSET = 256;
+	const auto count = NumericCast<idx_t>(end - begin);
+	if (count < MIN_RADIX_COUNT) {
+		duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
+		return;
+	}
+
+	SORT_KEY samples[SAMPLE_COUNT];
+	const auto stride = (count - 1) / (SAMPLE_COUNT - 1);
+	for (idx_t i = 0; i < SAMPLE_COUNT; i++) {
+		samples[i] = *(begin + (i == SAMPLE_COUNT - 1 ? count - 1 : i * stride));
+	}
+	uint64_t words[SAMPLE_COUNT];
+	uint64_t varying_bits = 0;
+	idx_t offset = start;
+	while (offset <= MAX_PREFIX_OFFSET) {
+		varying_bits = 0;
+		for (idx_t i = 0; i < SAMPLE_COUNT; i++) {
+			words[i] = SUFFIX::ExtractWord(samples[i], offset);
+			varying_bits |= words[0] ^ words[i];
 		}
-		SUFFIX suffix(extract_key, varying_bits);
+		if (varying_bits != 0) {
+			break;
+		}
+		offset += sizeof(uint64_t);
+	}
+	if (offset > MAX_PREFIX_OFFSET) {
+		duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
+		return;
+	}
+	for (const auto word : words) {
+		if (NumericCast<idx_t>(std::count(words, words + SAMPLE_COUNT, word)) >= SAMPLE_COUNT / 4) {
+			duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
+			return;
+		}
+	}
+
+	// The probe only selects a candidate; every skipped word must be equal across the whole bucket.
+	idx_t scanned = 0;
+	for (auto it = begin + 1; it != end; ++it) {
+		if (++scanned % STANDARD_VECTOR_SIZE == 0) {
+			context.InterruptCheck();
+		}
+		if (it->part0 != samples[0].part0 || !SUFFIX::PrefixMatches(samples[0], *it, start, offset)) {
+			duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
+			return;
+		}
+		varying_bits |= words[0] ^ SUFFIX::ExtractWord(*it, offset);
+	}
+	// The common first word can cache the suffix during this synchronous refinement.
+	struct PrefixRestorer {
+		ITERATOR begin;
+		ITERATOR end;
+		uint64_t prefix;
+
+		~PrefixRestorer() {
+			for (auto it = begin; it != end; ++it) {
+				it->part0 = prefix;
+			}
+		}
+	} restore {begin, end, samples[0].part0};
+	scanned = 0;
+	for (auto it = begin; it != end; ++it) {
+		if (++scanned % STANDARD_VECTOR_SIZE == 0) {
+			context.InterruptCheck();
+		}
+		it->part0 = SUFFIX::ExtractWord(*it, offset);
+	}
+	SUFFIX suffix(extract_key, varying_bits);
+	if (depth + 1 < MAX_SUFFIX_RADIX_DEPTH) {
+		// Buckets that tie on this word share every byte up to the next word, so they can be refined in turn
+		const auto sort_ties = [&context, offset, depth](const ITERATOR &b, const ITERATOR &e, SUFFIX &key,
+		                                                 const MERGE &policy) {
+			SortTiedSuffix(context, b, e, key, offset + sizeof(uint64_t), depth + 1, policy);
+		};
+		duckdb_ska_sort::ska_sort(begin, end, suffix, merge, sort_ties);
+	} else {
 		duckdb_ska_sort::ska_sort(begin, end, suffix, merge);
+	}
+}
+
+template <class SORT_KEY, class ITERATOR, class MERGE>
+static void SortTiedBucket(ClientContext &context, const ITERATOR &begin, const ITERATOR &end,
+                           SkaExtractKey<SORT_KEY> &extract_key, const MERGE &merge) {
+	if constexpr (SORT_KEY::CONSTANT_SIZE) {
+		SortTiedWords(context, begin, end, extract_key, 1, merge);
+	} else {
+		SortTiedSuffix(context, begin, end, extract_key, sizeof(uint64_t), 0, merge);
 	}
 }
 
