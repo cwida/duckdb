@@ -44,9 +44,6 @@ struct ClientConfig {
 	//! The format to print query profiling information in (default: query_tree), if enabled.
 	//! This is the profiler format name passed to QueryProfiler::CreateProfiler.
 	string profiler_print_format = "query_tree";
-	//! Settings that are passed to the renderer of the profiler output (e.g. 'maximum_render_width' for the text
-	//! renderer). Settings that are not recognized by the active renderer are ignored.
-	unordered_map<string, Value> profiling_renderer_settings;
 
 	//! system-wide progress bar disable.
 	const char *system_progress_bar_disable_reason = nullptr;

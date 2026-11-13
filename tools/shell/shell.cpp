@@ -51,6 +51,7 @@
 #include <stdio.h>
 #include <assert.h>
 
+#include "duckdb/common/tree_renderer.hpp"
 #include "duckdb/common/time_point.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/file_system.hpp"
@@ -1066,8 +1067,9 @@ void ShellState::SetupPrettyExplain(duckdb::SQLStatement &statement) {
 	// default to the full plan; only fold low-impact operators in an interactive console session, where the user
 	// can type ".last" to expand the tree again (batch/redirected output has no such affordance)
 	if (stdin_is_interactive && stdout_is_console) {
-		duckdb::ClientConfig::GetConfig(*conn->context).profiling_renderer_settings["expand_all"] =
-		    duckdb::Value::BOOLEAN(false);
+		auto renderer_settings = duckdb::TreeRenderer::GetRendererSettings(*conn->context);
+		renderer_settings["expand_all"] = duckdb::Value::BOOLEAN(false);
+		duckdb::TreeRenderer::SetRendererSettings(*conn->context, renderer_settings);
 	}
 	if (!stdout_is_console) {
 		// only pretty-print to an interactive console - redirected output keeps the plain plan as a result value
