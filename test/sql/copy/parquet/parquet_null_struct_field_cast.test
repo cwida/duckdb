@@ -1,0 +1,129 @@
+# name: test/sql/copy/parquet/parquet_null_struct_field_cast.test
+# description: Cast a "NULL" typed struct field read from parquet through a pushed down extract
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT {'x': NULL} AS s) TO '{TEST_DIR}/null_struct_field.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT {'x': NULL, 'y': i} AS s FROM range(1, 4) t(i)) TO '{TEST_DIR}/null_struct_field_two_children.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT {'a': {'b': NULL}} AS s) TO '{TEST_DIR}/null_nested_struct_field.parquet' (FORMAT parquet)
+
+# without a cast the field is read as its NULL type
+query I
+SELECT s.x FROM '{TEST_DIR}/null_struct_field.parquet'
+----
+NULL
+
+# the cast is pushed into the scan, so the NULL field has to be produced as a VARCHAR
+query I
+SELECT s.x::VARCHAR FROM '{TEST_DIR}/null_struct_field.parquet'
+----
+NULL
+
+query I
+SELECT CAST(s.x AS VARCHAR) FROM '{TEST_DIR}/null_struct_field.parquet'
+----
+NULL
+
+query I
+SELECT typeof(x) = 'VARCHAR' FROM (SELECT s.x::VARCHAR AS x FROM '{TEST_DIR}/null_struct_field.parquet')
+----
+true
+
+# a struct with another field that is read as usual
+query II
+SELECT s.x::VARCHAR, s.y::BIGINT FROM '{TEST_DIR}/null_struct_field_two_children.parquet'
+----
+NULL	1
+NULL	2
+NULL	3
+
+query I
+SELECT s.y::VARCHAR FROM '{TEST_DIR}/null_struct_field_two_children.parquet' ORDER BY 1
+----
+1
+2
+3
+
+# a NULL field inside a nested struct, and the extract written in the other supported ways
+query I
+SELECT s.a.b::VARCHAR FROM '{TEST_DIR}/null_nested_struct_field.parquet'
+----
+NULL
+
+query I
+SELECT s['x']::VARCHAR FROM '{TEST_DIR}/null_struct_field.parquet'
+----
+NULL
+
+query I
+SELECT struct_extract(s, 'x')::VARCHAR FROM '{TEST_DIR}/null_struct_field.parquet'
+----
+NULL
+
+query I
+SELECT (s.x::VARCHAR IS NULL) FROM '{TEST_DIR}/null_struct_field.parquet'
+----
+true
+
+query I
+SELECT coalesce(s.x::VARCHAR, 'fallback') FROM '{TEST_DIR}/null_struct_field.parquet'
+----
+fallback
+
+query I
+SELECT try_cast(s.x AS VARCHAR) FROM '{TEST_DIR}/null_struct_field.parquet'
+----
+NULL
+
+# filters on the extracted field are evaluated against the same pushed down expression
+query I
+SELECT count(*) FROM '{TEST_DIR}/null_struct_field_two_children.parquet' WHERE s.x::VARCHAR IS NULL
+----
+3
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/null_struct_field_two_children.parquet' WHERE s.x::VARCHAR = 'hello'
+----
+0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/null_struct_field_two_children.parquet' WHERE s.y::BIGINT = 2
+----
+1
+
+# casting the whole struct is unaffected
+query I
+SELECT s::STRUCT(x VARCHAR, y BIGINT) IS NOT NULL FROM '{TEST_DIR}/null_struct_field_two_children.parquet'
+----
+true
+true
+true
+
+query I
+SELECT (s::STRUCT(x VARCHAR, y BIGINT)).y FROM '{TEST_DIR}/null_struct_field_two_children.parquet' ORDER BY 1
+----
+1
+2
+3
+
+# reading a NULL field together with a file that has the field as a VARCHAR is unaffected
+statement ok
+COPY (SELECT {'x': 'hello'} AS s) TO '{TEST_DIR}/varchar_struct_field.parquet' (FORMAT parquet)
+
+query I rowsort
+SELECT s.x::VARCHAR FROM read_parquet(['{TEST_DIR}/varchar_struct_field.parquet', '{TEST_DIR}/null_struct_field.parquet'], union_by_name=1)
+----
+NULL
+hello
+
+# the struct itself is still readable after the cast queries
+query I
+SELECT s IS NOT NULL FROM '{TEST_DIR}/null_struct_field.parquet'
+----
+true

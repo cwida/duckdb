@@ -246,7 +246,8 @@ static bool IsTriviallyMappable(const MultiFileColumnDefinition &global_column,
 static ColumnMapResult MapColumn(ClientContext &context, const MultiFileColumnDefinition &global_column,
                                  const ColumnIndex &global_index,
                                  const vector<MultiFileColumnDefinition> &local_columns, const ColumnMapper &mapper,
-                                 MultiFileLocalIndex top_level_index = MultiFileLocalIndex());
+                                 MultiFileLocalIndex top_level_index = MultiFileLocalIndex(),
+                                 optional_ptr<const LogicalType> extract_type = nullptr);
 
 static ColumnMapResult MapColumnList(ClientContext &context, const MultiFileColumnDefinition &global_column,
                                      const ColumnIndex &global_index, const MultiFileColumnDefinition &local_column,
@@ -475,7 +476,11 @@ static ColumnMapResult MapColumnStruct(ClientContext &context, const MultiFileCo
 	if (global_index.IsPushdownExtract()) {
 		auto &child_index = global_index.GetChildIndexes()[0];
 		auto &child_column = global_column.children[child_index.GetPrimaryIndex()];
-		auto child_mapping = MapColumn(context, child_column, child_index, local_column.children, *nested_mapper);
+		//! The extract produces the type that was pushed down into it, which can differ from the type the field has in
+		//! this file (e.g. a NULL field that is read as a VARCHAR)
+		optional_ptr<const LogicalType> extract_type = child_index.HasType() ? &child_index.GetScanType() : nullptr;
+		auto child_mapping = MapColumn(context, child_column, child_index, local_column.children, *nested_mapper,
+		                               MultiFileLocalIndex(), extract_type);
 
 		if (child_mapping.column_index) {
 			auto &child_column_index = *child_mapping.column_index;
@@ -580,7 +585,7 @@ static ColumnMapResult MapColumnStruct(ClientContext &context, const MultiFileCo
 static ColumnMapResult MapColumn(ClientContext &context, const MultiFileColumnDefinition &global_column,
                                  const ColumnIndex &global_index,
                                  const vector<MultiFileColumnDefinition> &local_columns, const ColumnMapper &mapper,
-                                 MultiFileLocalIndex top_level_index) {
+                                 MultiFileLocalIndex top_level_index, optional_ptr<const LogicalType> extract_type) {
 	bool is_root = top_level_index.IsValid();
 	ColumnMapResult result;
 	auto local_idx = mapper.Find(global_column);
@@ -594,10 +599,15 @@ static ColumnMapResult MapColumn(ClientContext &context, const MultiFileColumnDe
 	if (local_column.type.id() == LogicalTypeId::SQLNULL) {
 		// An explicitly NULL field can represent any result type, including a nested field.
 		// Do not feed it into remap_struct, which requires matching nested source types.
-		auto &type = (is_root || global_index.IsPushdownExtract()) && global_index.HasType()
-		                 ? global_index.GetScanType()
-		                 : global_column.type;
-		result.default_value = make_uniq<BoundConstantExpression>(Value(type));
+		reference<const LogicalType> default_type(global_column.type);
+		if ((is_root || global_index.IsPushdownExtract()) && global_index.HasType()) {
+			default_type = global_index.GetScanType();
+		}
+		if (extract_type) {
+			//! the extract is evaluated at the pushed down type, not at the type the field has in this file
+			default_type = *extract_type;
+		}
+		result.default_value = make_uniq<BoundConstantExpression>(Value(default_type.get()));
 		return result;
 	}
 	auto mapping_idx = is_root ? top_level_index : local_idx;
