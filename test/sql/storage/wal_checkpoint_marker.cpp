@@ -2,7 +2,9 @@
 #include "duckdb/common/enums/wal_type.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/exception/http_exception.hpp"
 #include "duckdb/common/local_file_system.hpp"
+#include "duckdb/common/virtual_file_system.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/buffered_file_writer.hpp"
 #include "duckdb/main/attached_database.hpp"
@@ -316,4 +318,114 @@ TEST_CASE("Reject multiple checkpoint markers before changing WAL files", "[stor
 
 	DeleteDatabase(database_path);
 	RemoveCheckpointRecoveryFiles(fs, database_path);
+}
+
+class MockHTTPRemoteFileSystem : public LocalFileSystem {
+public:
+	explicit MockHTTPRemoteFileSystem(string base_dir, string local_db_path)
+	    : base_dir(std::move(base_dir)), local_db_path(std::move(local_db_path)) {
+	}
+
+	string GetName() const override {
+		return "MockHTTPRemoteFileSystem";
+	}
+
+	bool CanHandleFile(const string &path) override {
+		return StringUtil::StartsWith(path, base_dir);
+	}
+
+	unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags,
+	                                optional_ptr<FileOpener> opener = nullptr) override {
+		if (StringUtil::Contains(path, ".wal")) {
+			if (simulate_wal_403) {
+				throw HTTPException(403, "Forbidden", unordered_map<string, string>(), "Forbidden",
+				                    "HTTP 403 Forbidden: Presigned URL unauthorized for .wal");
+			}
+			if (simulate_wal_500) {
+				throw HTTPException(500, "Internal Server Error", unordered_map<string, string>(),
+				                    "Internal Server Error", "HTTP 500: Server error");
+			}
+		} else if (simulate_main_403) {
+			throw HTTPException(403, "Forbidden", unordered_map<string, string>(), "Forbidden",
+			                    "HTTP 403 Forbidden: Presigned URL unauthorized for database");
+		}
+		return LocalFileSystem::OpenFile(local_db_path, flags, opener);
+	}
+
+	string base_dir;
+	string local_db_path;
+	bool simulate_wal_403 = false;
+	bool simulate_wal_500 = false;
+	bool simulate_main_403 = false;
+};
+
+TEST_CASE("Test WAL replay handling of HTTP 403 on remote database", "[storage][wal]") {
+	auto db_path = TestCreatePath("wal_remote_403.db");
+	DeleteDatabase(db_path);
+
+	{
+		DuckDB db(db_path);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE test (id INT, name VARCHAR)"));
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO test VALUES (1, 'alice'), (2, 'bob')"));
+		REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
+	}
+
+	string remote_url = "mock://wal_remote_403.db?token=presigned";
+
+	// Test 1: HTTP 403 on .wal is treated as non-existent WAL, allowing attach to succeed
+	{
+		DBConfig config;
+		auto mock_fs = make_uniq<MockHTTPRemoteFileSystem>("mock://", db_path);
+		mock_fs->simulate_wal_403 = true;
+		auto vfs = make_uniq<VirtualFileSystem>();
+		vfs->RegisterSubSystem(std::move(mock_fs));
+		config.file_system = std::move(vfs);
+
+		DuckDB attach_db(nullptr, &config);
+		Connection con(attach_db);
+		REQUIRE_NO_FAIL(con.Query("ATTACH '" + remote_url + "' AS remote_db (READ_ONLY)"));
+
+		auto query_res = con.Query("SELECT COUNT(*) FROM remote_db.test");
+		REQUIRE_NO_FAIL(*query_res);
+		REQUIRE(CHECK_COLUMN(query_res, 0, {2}));
+
+		REQUIRE_NO_FAIL(con.Query("DETACH remote_db"));
+	}
+
+	// Test 2: HTTP 500 on .wal throws error and does not get swallowed
+	{
+		DBConfig config;
+		auto mock_fs = make_uniq<MockHTTPRemoteFileSystem>("mock://", db_path);
+		mock_fs->simulate_wal_500 = true;
+		auto vfs = make_uniq<VirtualFileSystem>();
+		vfs->RegisterSubSystem(std::move(mock_fs));
+		config.file_system = std::move(vfs);
+
+		DuckDB attach_db(nullptr, &config);
+		Connection con(attach_db);
+		auto result = con.Query("ATTACH '" + remote_url + "' AS remote_db (READ_ONLY)");
+		REQUIRE(result->HasError());
+		REQUIRE(result->GetErrorObject().Type() == ExceptionType::HTTP);
+		REQUIRE(StringUtil::Contains(result->GetError(), "500"));
+	}
+
+	// Test 3: HTTP 403 on main database throws error
+	{
+		DBConfig config;
+		auto mock_fs = make_uniq<MockHTTPRemoteFileSystem>("mock://", db_path);
+		mock_fs->simulate_main_403 = true;
+		auto vfs = make_uniq<VirtualFileSystem>();
+		vfs->RegisterSubSystem(std::move(mock_fs));
+		config.file_system = std::move(vfs);
+
+		DuckDB attach_db(nullptr, &config);
+		Connection con(attach_db);
+		auto result = con.Query("ATTACH '" + remote_url + "' AS remote_db (READ_ONLY)");
+		REQUIRE(result->HasError());
+		REQUIRE(result->GetErrorObject().Type() == ExceptionType::HTTP);
+		REQUIRE(StringUtil::Contains(result->GetError(), "403"));
+	}
+
+	DeleteDatabase(db_path);
 }

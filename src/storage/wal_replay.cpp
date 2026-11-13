@@ -6,6 +6,7 @@
 #include "duckdb/common/checksum.hpp"
 #include "duckdb/common/encryption_functions.hpp"
 #include "duckdb/common/encryption_key_manager.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/buffered_file_reader.hpp"
@@ -359,6 +360,7 @@ public:
 	unique_ptr<WriteAheadLog> Replay();
 
 private:
+	unique_ptr<FileHandle> OpenWALFile(const string &wal_path);
 	unique_ptr<WriteAheadLog> ReplayLog(unique_ptr<FileHandle> handle,
 	                                    WALReplayState replay_state = WALReplayState::MAIN_WAL);
 	void CopyOverWAL(BufferedFileReader &reader, FileHandle &target, data_ptr_t buffer, idx_t buffer_size,
@@ -386,8 +388,23 @@ WriteAheadLogReplayer::WriteAheadLogReplayer(QueryContext context, StorageManage
       main_wal_path(main_wal_path), fs(FileSystem::Get(storage_manager.GetAttached())) {
 }
 
+unique_ptr<FileHandle> WriteAheadLogReplayer::OpenWALFile(const string &wal_path) {
+	try {
+		return fs.OpenFile(wal_path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS);
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		if (error.Type() == ExceptionType::HTTP) {
+			auto status_entry = error.ExtraInfo().find("status_code");
+			if (status_entry != error.ExtraInfo().end() && status_entry->second == "403") {
+				return nullptr;
+			}
+		}
+		throw;
+	}
+}
+
 unique_ptr<WriteAheadLog> WriteAheadLogReplayer::Replay() {
-	auto handle = fs.OpenFile(main_wal_path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS);
+	auto handle = OpenWALFile(main_wal_path);
 	if (!handle) {
 		// WAL does not exist - instantiate an empty WAL
 		return make_uniq<WriteAheadLog>(storage_manager, main_wal_path);
@@ -560,8 +577,7 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 		// first check if there is a checkpoint WAL
 		auto &manager = database.GetStorageManager();
 		auto checkpoint_wal = manager.GetCheckpointWALPath();
-		checkpoint_handle =
-		    fs.OpenFile(checkpoint_wal, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS);
+		checkpoint_handle = OpenWALFile(checkpoint_wal);
 		bool checkpoint_was_successful = manager.IsCheckpointClean(checkpoint_state.checkpoint_id);
 		if (!checkpoint_handle) {
 			// no checkpoint WAL - either we just need to replay this WAL, or we are done
