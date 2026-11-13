@@ -67,6 +67,13 @@ public:
 	virtual void Configure(const unordered_map<string, Value> &settings) {
 	}
 
+	//! The "profiling_renderer_settings" of the client, as passed to Configure
+	static unordered_map<string, Value> GetRendererSettings(ClientContext &context);
+	//! Overwrites the "profiling_renderer_settings" of the client without validating them
+	static void SetRendererSettings(ClientContext &context, const unordered_map<string, Value> &settings);
+	//! Converts renderer settings to the MAP(VARCHAR, VARCHAR) value of the setting, sorted by name
+	static Value RendererSettingsToValue(const unordered_map<string, Value> &settings);
+
 	virtual bool UsesRawKeyNames() {
 		return false;
 	}

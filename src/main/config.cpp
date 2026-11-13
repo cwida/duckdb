@@ -250,7 +250,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING_CALLBACK(ProfilingCoverageSetting),
     DUCKDB_LOCAL(ProfilingModeSetting),
     DUCKDB_SETTING_CALLBACK(ProfilingOutputSetting),
-    DUCKDB_LOCAL(ProfilingRendererSettingsSetting),
+    DUCKDB_SETTING_CALLBACK(ProfilingRendererSettingsSetting),
     DUCKDB_SETTING_CALLBACK(ProgressBarTimeSetting),
     DUCKDB_SETTING_CALLBACK(ReadAheadDepthSetting),
     DUCKDB_SETTING(RedactHttpLogsSetting),
