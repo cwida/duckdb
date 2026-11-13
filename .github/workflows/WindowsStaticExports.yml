@@ -10,6 +10,7 @@ on:
       - extension/extension_build_tools.cmake
       - scripts/strip_coff_exports.py
       - scripts/ci/test_strip_coff_exports.py
+      - scripts/ci/test_windows_static_extension_link.py
       - scripts/ci/check_windows_static_exports.py
       - scripts/ci/record_test_batch.py
       - scripts/ci/test_record_test_batch.py
@@ -58,7 +59,9 @@ jobs:
           host_arch: x64
       - name: Test archive export removal
         shell: bash
-        run: python -m unittest scripts.ci.test_strip_coff_exports scripts.ci.test_record_test_batch
+        run: >-
+          python -m unittest scripts.ci.test_strip_coff_exports
+          scripts.ci.test_windows_static_extension_link scripts.ci.test_record_test_batch
       - name: Prepare Windows headers
         if: matrix.arch == 'amd64'
         shell: bash

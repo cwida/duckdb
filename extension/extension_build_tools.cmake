@@ -185,6 +185,14 @@ function(link_threads LIBRARY LINKAGE)
     target_link_libraries(${LIBRARY} ${LINKAGE} Threads::Threads)
 endfunction()
 
+# Resolve in the final consumer, after core targets have been declared. Static hosts
+# keep the original core archive; self-contained Windows loadables use the filtered one.
+function(duckdb_link_static_extension_core TARGET LINKAGE)
+    target_link_libraries(${TARGET} ${LINKAGE}
+        "$<$<NOT:$<BOOL:$<TARGET_PROPERTY:DUCKDB_DYNAMIC_LOADABLE_EXTENSION>>>:$<IF:$<AND:$<BOOL:$<TARGET_PROPERTY:DUCKDB_SELF_CONTAINED_WINDOWS_EXTENSION>>,$<TARGET_EXISTS:duckdb_static_no_exports>>,duckdb_static_no_exports,duckdb_static>>"
+        ${ARGN})
+endfunction()
+
 # Resolve archive LLVM IR into native code for non-LTO linkers.
 function(duckdb_make_native_lto_archive TARGET)
     if(NOT NATIVE_LTO_STATIC_LIBRARIES)
@@ -305,11 +313,8 @@ function(build_loadable_extension_directory NAME ABI_TYPE OUTPUT_DIRECTORY EXTEN
         # TODO strip all symbols except the capi init
     elseif (EXTENSION_STATIC_BUILD)
         if (WIN32)
-            if(TARGET duckdb_static_no_exports)
-                target_link_libraries(${TARGET_NAME} duckdb_static_no_exports ${DUCKDB_EXTRA_LINK_FLAGS})
-            else()
-                target_link_libraries(${TARGET_NAME} duckdb_static ${DUCKDB_EXTRA_LINK_FLAGS})
-            endif()
+            set_property(TARGET ${TARGET_NAME} PROPERTY DUCKDB_SELF_CONTAINED_WINDOWS_EXTENSION TRUE)
+            duckdb_link_static_extension_core(${TARGET_NAME} "" ${DUCKDB_EXTRA_LINK_FLAGS})
             if (MSVC)
                 # link.exe/lld-link only default these on without /DEBUG; pin the --gc-sections equivalent
                 target_link_options(${TARGET_NAME} PRIVATE "$<$<CONFIG:Release>:/OPT:REF;/OPT:ICF>")
@@ -502,8 +507,7 @@ function(build_static_extension NAME PARAMETERS)
         set(PREBUILT_TARGET ${NAME}_prebuilt_extension)
         add_library(${PREBUILT_TARGET} STATIC IMPORTED GLOBAL)
         set_property(TARGET ${PREBUILT_TARGET} PROPERTY IMPORTED_LOCATION "${PREBUILT_PATH}")
-        target_link_libraries(${PREBUILT_TARGET} INTERFACE
-            "$<$<NOT:$<BOOL:$<TARGET_PROPERTY:DUCKDB_DYNAMIC_LOADABLE_EXTENSION>>>:duckdb_static>")
+        duckdb_link_static_extension_core(${PREBUILT_TARGET} INTERFACE)
         add_library(${NAME}_extension STATIC "${DUMMY_SOURCE}")
         target_link_libraries(${NAME}_extension "$<BUILD_INTERFACE:${PREBUILT_TARGET}>")
         set_property(TARGET ${NAME}_extension PROPERTY DUCKDB_EXTENSION_KIND CPP)
@@ -512,8 +516,7 @@ function(build_static_extension NAME PARAMETERS)
     endif()
     add_library(${NAME}_extension STATIC ${FILES})
     # Dynamic loadables resolve DuckDB symbols from the host, including when linked through this archive.
-    target_link_libraries(${NAME}_extension
-        "$<$<NOT:$<BOOL:$<TARGET_PROPERTY:DUCKDB_DYNAMIC_LOADABLE_EXTENSION>>>:duckdb_static>")
+    duckdb_link_static_extension_core(${NAME}_extension "")
     duckdb_add_extension_describe(${NAME} CPP)
     duckdb_make_native_lto_archive(${NAME}_extension)
 endfunction()
@@ -585,8 +588,7 @@ endfunction()
 
 function(build_static_extension_capi_internal NAME KIND API_VERSION FILES)
     add_library(${NAME}_extension STATIC ${FILES})
-    target_link_libraries(${NAME}_extension
-        "$<$<NOT:$<BOOL:$<TARGET_PROPERTY:DUCKDB_DYNAMIC_LOADABLE_EXTENSION>>>:duckdb_static>")
+    duckdb_link_static_extension_core(${NAME}_extension "")
     target_compile_definitions(${NAME}_extension PRIVATE DUCKDB_BUILD_STATIC_EXTENSION)
     duckdb_add_extension_describe(${NAME} ${KIND} "${API_VERSION}")
     duckdb_make_native_lto_archive(${NAME}_extension)
