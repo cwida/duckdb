@@ -23,6 +23,18 @@ static optional_ptr<PhysicalComparisonJoin> RuntimeFilterProducer(Pipeline &pipe
 	}
 }
 
+static bool IsSmallBuild(const PhysicalOperator &op) {
+	if (op.estimated_cardinality > DEFAULT_STANDARD_VECTOR_SIZE || op.IsSink()) {
+		return false;
+	}
+	for (auto &child : op.children) {
+		if (!IsSmallBuild(child.get())) {
+			return false;
+		}
+	}
+	return true;
+}
+
 static bool HasJoinSink(Pipeline &pipeline) {
 	auto sink = pipeline.GetSink();
 	if (!sink) {
@@ -161,6 +173,7 @@ static void ScheduleRuntimeFiltersInternal(PipelineSchedule &schedule, bool clea
 		auto &publication = publications[producer];
 		auto build_estimate = producer.children[1].get().estimated_cardinality;
 		auto probe_estimate = producer.children[0].get().estimated_cardinality;
+		const auto small_build = add_edges && IsSmallBuild(producer.children[1].get());
 		for (auto &target : producer.filter_pushdown->probe_info) {
 			if (clear_filters) {
 				// Clear previous executions before any scan can take its filter snapshot.
@@ -175,8 +188,8 @@ static void ScheduleRuntimeFiltersInternal(PipelineSchedule &schedule, bool clea
 				continue;
 			}
 			for (auto &filter_source : source->second) {
-				// Small builds publish selective filters before nested or already-filtered scans start.
-				if (filter_source.small_build_only && build_estimate > STANDARD_VECTOR_SIZE) {
+				// A small aggregate or join result can still require expensive inputs.
+				if (filter_source.small_build_only && !small_build) {
 					continue;
 				}
 				auto execution = filter_source.stage_idx;
