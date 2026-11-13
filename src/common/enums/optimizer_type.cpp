@@ -38,6 +38,7 @@ static const DefaultOptimizerType internal_optimizer_types[] = {
     {"reorder_filter", OptimizerType::REORDER_FILTER},
     {"sampling_pushdown", OptimizerType::SAMPLING_PUSHDOWN},
     {"join_filter_pushdown", OptimizerType::JOIN_FILTER_PUSHDOWN},
+    {"join_filter_composite_keys", OptimizerType::JOIN_FILTER_COMPOSITE_KEYS},
     {"extension", OptimizerType::EXTENSION},
     {"materialized_cte", OptimizerType::MATERIALIZED_CTE},
     {"aggregate_function_rewriter", OptimizerType::AGGREGATE_FUNCTION_REWRITER},

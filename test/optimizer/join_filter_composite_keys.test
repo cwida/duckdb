@@ -1,0 +1,382 @@
+# name: test/optimizer/join_filter_composite_keys.test
+# description: A hash join on several equality columns publishes one bloom / prefix-range runtime filter per equality column
+# group: [optimizer]
+
+# the distinct-count gate reads the distinct counts of the tables
+require skip_reload
+
+statement ok
+SET threads=4;
+
+# pin the build and probe sides: the RHS of every join below is the build side
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization';
+
+statement ok
+CREATE TABLE probe AS SELECT i::BIGINT AS a, (i % 1000)::BIGINT AS b, (i % 7)::INTEGER AS c, (i % 13)::INTEGER AS g FROM range(100000) t(i);
+
+statement ok
+CREATE TABLE build AS SELECT (i * 2)::BIGINT AS a, (i % 10)::BIGINT AS b, (i % 7)::INTEGER AS c, (i % 13)::INTEGER AS g FROM range(5000) t(i);
+
+# b covers the probe domain: the filter on b passes every row
+statement ok
+CREATE TABLE build_wide AS SELECT (i * 2)::BIGINT AS a, (i % 1000)::BIGINT AS b FROM range(5000) t(i);
+
+# b takes 900 / 100 of the probe's 1,000 values: either side of the distinct-count gate (the table statistics'
+# distinct counts are sampled estimates, so the cases keep a margin from the 50 % threshold)
+statement ok
+CREATE TABLE build_b900 AS SELECT (i * 2)::BIGINT AS a, (i % 900)::BIGINT AS b FROM range(5000) t(i);
+
+statement ok
+CREATE TABLE build_b100 AS SELECT (i * 2)::BIGINT AS a, (i % 100)::BIGINT AS b FROM range(5000) t(i);
+
+statement ok
+CREATE TABLE probe_null AS SELECT CASE WHEN i % 5 = 0 THEN NULL ELSE i END::BIGINT AS a, (i % 1000)::BIGINT AS b FROM range(100000) t(i);
+
+statement ok
+CREATE TABLE build_null AS SELECT CASE WHEN i % 4 = 0 THEN NULL ELSE i * 2 END::BIGINT AS a, (i % 10)::BIGINT AS b FROM range(5000) t(i);
+
+statement ok
+CREATE TABLE probe_i32 AS SELECT a::INTEGER AS a, b::INTEGER AS b FROM probe;
+
+# keys 2^40 apart: too wide a span for a prefix range filter, so a gets a bloom filter
+statement ok
+CREATE TABLE probe_bf AS SELECT (i * 1099511627776)::BIGINT AS a, (i % 1000)::BIGINT AS b FROM range(100000) t(i);
+
+statement ok
+CREATE TABLE build_bf AS SELECT (i * 2 * 1099511627776)::BIGINT AS a, (i % 10)::BIGINT AS b FROM range(5000) t(i);
+
+# at most dynamic_or_filter_threshold (50) build rows: exact IN lists
+statement ok
+CREATE TABLE build_small AS SELECT (i * 2)::BIGINT AS a, ((i * 3) % 40)::BIGINT AS b FROM range(40) t(i);
+
+# a build side large enough to spill under debug_force_external
+statement ok
+CREATE TABLE probe_ext AS SELECT (i % 4000000)::BIGINT AS a, (i % 1000)::BIGINT AS b FROM range(4000000) t(i);
+
+statement ok
+CREATE TABLE build_ext AS SELECT (i * 2)::BIGINT AS a, (i % 10)::BIGINT AS b FROM range(1000000) t(i);
+
+# ---- rule off (disabled_optimizers): composite keys get min/max filters only ----
+
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization,join_filter_composite_keys';
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*optional: \(a >= 0\).*optional: \(b >= 0\).*
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<!REGEX>:(?s).*IN (PRF|BF)\(.*
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+10	72
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build_wide b ON p.a = b.a AND p.b = b.b;
+----
+5	32
+
+query II
+SELECT count(*), count(p.a) FROM probe_null p JOIN build_null b ON p.a = b.a AND p.b = b.b;
+----
+0	0
+
+query II
+SELECT count(*), count(p.a) FROM probe_null p JOIN build_null b ON p.a IS NOT DISTINCT FROM b.a AND p.b = b.b;
+----
+25000	0
+
+query II
+SELECT count(*), count(p.a) FROM probe_null p JOIN build_null b ON p.a IS NOT DISTINCT FROM b.a AND p.b IS NOT DISTINCT FROM b.b;
+----
+25000	0
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b AND p.c = b.c;
+----
+2	6
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b AND p.c < b.c;
+----
+4	31
+
+query II
+SELECT count(*), sum(b.g) FROM probe_i32 p JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+10	62
+
+query II
+SELECT count(*), sum(p.g) FROM build b JOIN probe p ON b.a = p.a AND b.b = p.b;
+----
+10	72
+
+query II
+SELECT count(*), sum(p.b) FROM probe_bf p JOIN build_bf b ON p.a = b.a AND p.b = b.b;
+----
+10	0
+
+query III
+SELECT count(*), count(p.a), sum(b.g) FROM probe p RIGHT JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+5000	10	29980
+
+query II
+SELECT count(*), sum(p.g) FROM probe p WHERE EXISTS (SELECT 1 FROM build b WHERE b.a = p.a AND b.b = p.b);
+----
+10	72
+
+query III
+WITH RECURSIVE r(a, b, n) AS (SELECT 0::BIGINT, 0::BIGINT, 0 UNION ALL SELECT b.a + 2, (b.b + 1) % 10, n + 1 FROM r JOIN build b ON r.a = b.a AND r.b = b.b WHERE n < 5) SELECT count(*), sum(a), sum(b) FROM r;
+----
+6	30	15
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build_small b ON p.a = b.a AND p.b = b.b;
+----
+1	0
+
+query II
+SELECT count(*), sum(p.b) FROM probe_ext p JOIN build_ext b ON p.a = b.a AND p.b = b.b;
+----
+2000	0
+
+# ---- rule on (the default): one runtime filter per equality column, results identical ----
+
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization';
+
+# 1. both columns selective: one exact prefix range filter per column (the spans fit)
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN PRF\(a\).*b IN PRF\(b\).*
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+10	72
+
+# 2. the build covers b's probe domain (1,000 distinct values on both sides): the optimizer's distinct-count gate
+# refuses the per-column filter on b, which would pass every probe row; b keeps the min/max filters, a its filter
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN build_wide b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN PRF\(a\).*optional: \(b >= 0\).*
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN build_wide b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<!REGEX>:(?s).*b IN (PRF|BF)\(.*
+
+# the gate is half the probe column's distinct count: 900 of 1,000 is refused, 100 of 1,000 is not
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN build_b900 b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<!REGEX>:(?s).*b IN (PRF|BF)\(.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN build_b100 b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN PRF\(a\).*b IN PRF\(b\).*
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build_b900 b ON p.a = b.a AND p.b = b.b;
+----
+6	34
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build_b100 b ON p.a = b.a AND p.b = b.b;
+----
+10	72
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build_wide b ON p.a = b.a AND p.b = b.b;
+----
+5	32
+
+# 3. a NULL key component on the probe side never matches under =: the filter may drop it
+query II
+EXPLAIN ANALYZE SELECT count(*), count(p.a) FROM probe_null p JOIN build_null b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN PRF\(a\).*b IN PRF\(b\).*
+
+query II
+SELECT count(*), count(p.a) FROM probe_null p JOIN build_null b ON p.a = b.a AND p.b = b.b;
+----
+0	0
+
+# 4. IS NOT DISTINCT FROM on a: the filter on a retains NULLs (they match the NULL build keys), b filters as before
+query II
+EXPLAIN ANALYZE SELECT count(*), count(p.a) FROM probe_null p JOIN build_null b ON p.a IS NOT DISTINCT FROM b.a AND p.b = b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN PRF\(a\).*b IN PRF\(b\).*
+
+query II
+SELECT count(*), count(p.a) FROM probe_null p JOIN build_null b ON p.a IS NOT DISTINCT FROM b.a AND p.b = b.b;
+----
+25000	0
+
+# 5. IS NOT DISTINCT FROM on both columns
+query II
+SELECT count(*), count(p.a) FROM probe_null p JOIN build_null b ON p.a IS NOT DISTINCT FROM b.a AND p.b IS NOT DISTINCT FROM b.b;
+----
+25000	0
+
+# 6. three equality columns: a filter per selective column; c (the same 7 values on both sides) is gated and keeps
+# its min/max filters
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b AND p.c = b.c;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN PRF\(a\).*b IN PRF\(b\).*optional: \(c >= 0\).*
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b AND p.c = b.c;
+----
+analyzed_plan	<!REGEX>:(?s).*c IN (PRF|BF)\(.*
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b AND p.c = b.c;
+----
+2	6
+
+# 7. equality + inequality: runtime filters on the equality columns only, the inequality keeps its max bound
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b AND p.c < b.c;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN PRF\(a\).*b IN PRF\(b\).*\(c <= 6\).*
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b AND p.c < b.c;
+----
+analyzed_plan	<!REGEX>:(?s).*c IN (PRF|BF)\(.*
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b AND p.c < b.c;
+----
+4	31
+
+# 8. INTEGER probe columns against BIGINT build keys: the filters apply to the stored (cast) values
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(b.g) FROM probe_i32 p JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN PRF\(a\).*b IN PRF\(b\).*
+
+query II
+SELECT count(*), sum(b.g) FROM probe_i32 p JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+10	62
+
+# 9. the build side is larger than the probe side: no bloom / prefix range filters (the ratio gate), min/max only
+# (without statistics propagation, which would push the small side's key range into the large side's scan)
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization,statistics_propagation';
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM build b JOIN probe p ON b.a = p.a AND b.b = p.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*optional: \(a >= 0\).*
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM build b JOIN probe p ON b.a = p.a AND b.b = p.b;
+----
+analyzed_plan	<!REGEX>:(?s).*IN (PRF|BF)\(.*
+
+query II
+SELECT count(*), sum(p.g) FROM build b JOIN probe p ON b.a = p.a AND b.b = p.b;
+----
+10	72
+
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization';
+
+# 10. a span too wide for a prefix range filter: a bloom filter on a, a prefix range filter on b
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.b) FROM probe_bf p JOIN build_bf b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN BF\(a\).*b IN PRF\(b\).*
+
+query II
+SELECT count(*), sum(p.b) FROM probe_bf p JOIN build_bf b ON p.a = b.a AND p.b = b.b;
+----
+10	0
+
+# 11. a spilling (external) join: the bloom filters are built during Sink and published anyway
+statement ok
+SET debug_force_external = true;
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.b) FROM probe_ext p JOIN build_ext b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN BF\(a\).*b IN BF\(b\).*
+
+query II
+SELECT count(*), sum(p.b) FROM probe_ext p JOIN build_ext b ON p.a = b.a AND p.b = b.b;
+----
+2000	0
+
+statement ok
+SET debug_force_external = false;
+
+# 12. RIGHT join on a composite key: the probe side may be filtered, the build rows are all preserved
+query II
+EXPLAIN ANALYZE SELECT count(*), count(p.a), sum(b.g) FROM probe p RIGHT JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN PRF\(a\).*b IN PRF\(b\).*
+
+query III
+SELECT count(*), count(p.a), sum(b.g) FROM probe p RIGHT JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+5000	10	29980
+
+# 13. SEMI join on a composite key
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p WHERE EXISTS (SELECT 1 FROM build b WHERE b.a = p.a AND b.b = p.b);
+----
+analyzed_plan	<REGEX>:(?s).*Join Type: (RIGHT_)?SEMI.*Dynamic Filters:.*a IN PRF\(a\).*b IN PRF\(b\).*
+
+query II
+SELECT count(*), sum(p.g) FROM probe p WHERE EXISTS (SELECT 1 FROM build b WHERE b.a = p.a AND b.b = p.b);
+----
+10	72
+
+# 14. a composite join inside a recursive CTE (no filters across iterations)
+query III
+WITH RECURSIVE r(a, b, n) AS (SELECT 0::BIGINT, 0::BIGINT, 0 UNION ALL SELECT b.a + 2, (b.b + 1) % 10, n + 1 FROM r JOIN build b ON r.a = b.a AND r.b = b.b WHERE n < 5) SELECT count(*), sum(a), sum(b) FROM r;
+----
+6	30	15
+
+# 15. a build side of at most 50 rows: exact IN lists per column (b's values are a dense range: bounds instead)
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN build_small b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN \(0, 2, 4.*
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build_small b ON p.a = b.a AND p.b = b.b;
+----
+1	0
+
+# 16. disabling join_filter_pushdown disables the per-column filters with it
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization,join_filter_pushdown';
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters.*
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+10	72
+
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization';
