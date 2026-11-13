@@ -280,7 +280,8 @@ void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &info)
 		D_ASSERT(catalog.IsDuckCatalog());
 
 		auto &new_entry = old_entry.Parent();
-		if (old_entry.type == CatalogType::TABLE_ENTRY && new_entry.type == CatalogType::TABLE_ENTRY) {
+		if (old_entry.type == CatalogType::TABLE_ENTRY && new_entry.type == CatalogType::TABLE_ENTRY &&
+		    old_entry.Cast<TableCatalogEntry>().IsDuckTable() && new_entry.Cast<TableCatalogEntry>().IsDuckTable()) {
 			auto &old_storage = old_entry.Cast<DuckTableEntry>().GetStorage();
 			auto &new_storage = new_entry.Cast<DuckTableEntry>().GetStorage();
 			if (!RefersToSameObject(old_storage, new_storage) && old_storage.IsMainTable()) {
