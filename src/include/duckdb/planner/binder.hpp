@@ -329,7 +329,6 @@ public:
 
 	//! Add the view to the set of currently bound views - used for detecting recursive view definitions
 	void AddBoundView(ViewCatalogEntry &view);
-	void AddBoundTableMacro(CatalogEntry &table_macro);
 
 	void BeginSubqueryBind(Binder &parent, ExpressionBinder &binder);
 	//! The innermost enclosing scope
@@ -445,8 +444,6 @@ private:
 	bool binding_index_key = false;
 	//! The set of bound views
 	reference_set_t<ViewCatalogEntry> bound_views;
-	//! The table macros that are being expanded by this binder
-	reference_set_t<CatalogEntry> bound_table_macros;
 	//! Used to retrieve CatalogEntry's
 	CatalogEntryRetriever entry_retriever;
 	//! Unnamed subquery index
@@ -541,7 +538,8 @@ private:
 	                             unique_ptr<LogicalOperator> child_operator,
 	                             virtual_column_map_t virtual_columns = virtual_column_map_t());
 
-	unique_ptr<QueryNode> BindTableMacro(FunctionExpression &function, TableMacroCatalogEntry &macro_func, idx_t depth);
+	unique_ptr<QueryNode> BindTableMacro(FunctionExpression &function, TableMacroCatalogEntry &macro_func,
+	                                     const reference_set_t<CatalogEntry> &expanded_table_macros, idx_t depth);
 
 	BoundStatement BindCTE(const Identifier &ctename, CommonTableExpressionInfo &info);
 

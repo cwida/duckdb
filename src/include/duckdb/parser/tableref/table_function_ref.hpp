@@ -12,8 +12,10 @@
 #include "duckdb/parser/tableref.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/common/enums/ordinality_request_type.hpp"
+#include "duckdb/common/reference_map.hpp"
 
 namespace duckdb {
+class CatalogEntry;
 struct TableFunctionInfo;
 
 //! Represents a Table producing function
@@ -34,6 +36,10 @@ public:
 
 	//! Whether or not WITH ORDINALITY has been invoked
 	OrdinalityType with_ordinality = OrdinalityType::WITHOUT_ORDINALITY;
+
+	//! The table macros that were expanded to produce this reference, used to detect recursive table macros.
+	//! Not serialized and not compared in Equals
+	reference_set_t<CatalogEntry> expanded_table_macros;
 
 public:
 	string ToString() const override;

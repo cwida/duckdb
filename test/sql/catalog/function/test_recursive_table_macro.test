@@ -44,3 +44,66 @@ statement error
 SELECT * FROM t2(1)
 ----
 infinite recursion detected: attempting to recursively expand table macro "t2"
+
+# using a table macro in its own arguments is not recursive
+statement ok
+CREATE MACRO foo(x) AS TABLE SELECT x AS v
+
+query I
+SELECT * FROM foo((SELECT v FROM foo(1)))
+----
+1
+
+query I
+SELECT * FROM foo((SELECT v FROM foo((SELECT v FROM foo(42)))))
+----
+42
+
+# also not when the argument uses it through another macro
+statement ok
+CREATE MACRO foo_list(x) AS TABLE SELECT unnest(x) AS v
+
+statement ok
+CREATE MACRO bar(x) AS TABLE SELECT list(v ORDER BY v) AS l FROM foo_list(x)
+
+query I
+SELECT * FROM foo_list((SELECT l FROM bar([1, 2]))) ORDER BY v
+----
+1
+2
+
+# or when the nesting is in the body of another macro
+statement ok
+CREATE MACRO baz(x) AS TABLE SELECT * FROM foo((SELECT v FROM foo(x)))
+
+query I
+SELECT * FROM baz(7)
+----
+7
+
+# recursion through a table function argument in the body
+statement ok
+CREATE MACRO u3(x) AS TABLE SELECT 1 a
+
+statement ok
+CREATE MACRO t3(x) AS TABLE SELECT * FROM u3(x)
+
+statement ok
+CREATE OR REPLACE MACRO u3(x) AS TABLE SELECT * FROM range((SELECT count(*) FROM t3(x)))
+
+statement error
+SELECT * FROM t3(1)
+----
+infinite recursion detected: attempting to recursively expand table macro "t3"
+
+# recursion through a CTE in the body
+statement ok
+CREATE OR REPLACE MACRO u3(x) AS TABLE SELECT 1 a
+
+statement ok
+CREATE OR REPLACE MACRO u3(x) AS TABLE WITH cte AS (SELECT * FROM t3(x)) SELECT * FROM cte
+
+statement error
+SELECT * FROM t3(1)
+----
+infinite recursion detected: attempting to recursively expand table macro "t3"

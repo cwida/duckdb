@@ -36,6 +36,7 @@ unique_ptr<TableRef> TableFunctionRef::Copy() {
 	copy->bind_info = bind_info;
 	copy->column_name_alias = column_name_alias;
 	copy->with_ordinality = with_ordinality;
+	copy->expanded_table_macros = expanded_table_macros;
 	CopyProperties(*copy);
 
 	return std::move(copy);

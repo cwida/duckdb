@@ -434,12 +434,19 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 		if (!func_catalog.ParentCatalog().IsSystemCatalog()) {
 			GetStatementProperties().RegisterDBRead(func_catalog.ParentCatalog(), context);
 		}
-		auto query_node = BindTableMacro(fexpr, macro_func, 0);
+		// only references that come from the body of a macro carry the macros expanded to produce them, references
+		// passed in as arguments do not - so using a macro in its own arguments is not considered recursive
+		if (ref.expanded_table_macros.find(macro_func) != ref.expanded_table_macros.end()) {
+			throw BinderException("infinite recursion detected: attempting to recursively expand table macro %s",
+			                      macro_func.name);
+		}
+		auto expanded_table_macros = ref.expanded_table_macros;
+		expanded_table_macros.insert(macro_func);
+		auto query_node = BindTableMacro(fexpr, macro_func, expanded_table_macros, 0);
 		D_ASSERT(query_node);
 
 		auto binder = Binder::CreateBinder(context, this);
 		binder->SetCanContainNulls(true);
-		binder->AddBoundTableMacro(macro_func);
 
 		binder->alias = ref.alias.empty() ? "unnamed_query" : ref.alias;
 		BoundStatement query;

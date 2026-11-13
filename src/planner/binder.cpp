@@ -232,19 +232,6 @@ void Binder::AddBoundView(ViewCatalogEntry &view) {
 	bound_views.insert(view);
 }
 
-void Binder::AddBoundTableMacro(CatalogEntry &table_macro) {
-	// check if the table macro is already being expanded
-	auto current = this;
-	while (current) {
-		if (current->bound_table_macros.find(table_macro) != current->bound_table_macros.end()) {
-			throw BinderException("infinite recursion detected: attempting to recursively expand table macro %s",
-			                      table_macro.name);
-		}
-		current = current->parent.get();
-	}
-	bound_table_macros.insert(table_macro);
-}
-
 TableIndex Binder::GenerateTableIndex() {
 	return TableIndex(global_binder_state->bound_tables++);
 }

@@ -11,14 +11,37 @@
 #include "duckdb/parser/expression/comparison_expression.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/tableref/joinref.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/catalog/catalog_entry/table_macro_catalog_entry.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/function/table_macro_function.hpp"
 
 namespace duckdb {
 
+static void MarkExpandedTableMacros(QueryNode &node, const reference_set_t<CatalogEntry> &expanded_table_macros);
+
+static void MarkExpandedTableMacros(unique_ptr<ParsedExpression> &expr,
+                                    const reference_set_t<CatalogEntry> &expanded_table_macros) {
+	if (expr->GetExpressionClass() == ExpressionClass::SUBQUERY) {
+		MarkExpandedTableMacros(*expr->Cast<SubqueryExpression>().Subquery()->node, expanded_table_macros);
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    *expr, [&](unique_ptr<ParsedExpression> &child) { MarkExpandedTableMacros(child, expanded_table_macros); });
+}
+
+//! Records on every table function reference in a macro body which table macros were expanded to produce it
+static void MarkExpandedTableMacros(QueryNode &node, const reference_set_t<CatalogEntry> &expanded_table_macros) {
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(
+	    node, [&](unique_ptr<ParsedExpression> &child) { MarkExpandedTableMacros(child, expanded_table_macros); },
+	    [&](TableRef &ref) {
+		    if (ref.type == TableReferenceType::TABLE_FUNCTION) {
+			    ref.Cast<TableFunctionRef>().expanded_table_macros = expanded_table_macros;
+		    }
+	    });
+}
+
 unique_ptr<QueryNode> Binder::BindTableMacro(FunctionExpression &function, TableMacroCatalogEntry &macro_func,
-                                             idx_t depth) {
+                                             const reference_set_t<CatalogEntry> &expanded_table_macros, idx_t depth) {
 	// expanding nested macros can take a long time, allow the query to be interrupted
 	context.InterruptCheck();
 	// validate the arguments and separate positional and default arguments
@@ -43,6 +66,8 @@ unique_ptr<QueryNode> Binder::BindTableMacro(FunctionExpression &function, Table
 	vector<identifier_set_t> lambda_params;
 
 	auto node = macro_def.Cast<TableMacroFunction>().query_node->Copy();
+	// mark the body before the parameters are replaced, so references inside the arguments are not marked
+	MarkExpandedTableMacros(*node, expanded_table_macros);
 	ParsedExpressionIterator::EnumerateQueryNodeChildren(
 	    *node, [&](unique_ptr<ParsedExpression> &child) { eb.ReplaceMacroParameters(child, lambda_params); });
 
