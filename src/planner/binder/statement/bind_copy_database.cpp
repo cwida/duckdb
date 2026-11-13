@@ -3,6 +3,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/parser/statement/copy_database_statement.hpp"
 #include "duckdb/catalog/catalog_entry/list.hpp"
+#include "duckdb/parser/parsed_data/create_macro_info.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/planner/operator/logical_copy_database.hpp"

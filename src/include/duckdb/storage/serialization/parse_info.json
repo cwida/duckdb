@@ -551,6 +551,23 @@
     ]
   },
   {
+    "class": "AddMacroOverloadInfo",
+    "base": "AlterMacroInfo",
+    "enum": "ADD_OVERLOAD",
+    "members": [
+      {
+        "id": 400,
+        "name": "member",
+        "type": "unique_ptr<MacroFunction>"
+      },
+      {
+        "id": 401,
+        "name": "member_on_conflict",
+        "type": "OnCreateConflict"
+      }
+    ]
+  },
+  {
     "class": "AlterSchemaInfo",
     "base": "AlterInfo",
     "enum": "ALTER_SCHEMA",

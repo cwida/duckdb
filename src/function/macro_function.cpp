@@ -303,6 +303,11 @@ MacroFunction::GetPositionalParametersForSerialization(Serializer &serializer) c
 	// this runs at the start of member serialization: reject a definition the target storage
 	// version cannot represent instead of silently dropping its fields
 	if (!serializer.ShouldSerialize(StorageVersion::V2_1_0)) {
+		if (type == MacroType::LANGUAGE_MACRO) {
+			throw SerializationException(
+			    "Cannot write a LANGUAGE function for a storage version below v2.1.0. Re-attach "
+			    "with (STORAGE_VERSION 'v2.1.0') or drop the function");
+		}
 		if (return_type.id() != LogicalTypeId::UNKNOWN) {
 			throw SerializationException(
 			    "Cannot write a macro with a declared RETURNS type for a storage version below v2.1.0. Re-attach "
@@ -349,6 +354,18 @@ void MacroFunction::FinalizeDeserialization() {
 	}
 }
 
+bool MacroFunction::HasUntypedParameter() const {
+	if (types.size() < parameters.size()) {
+		return true;
+	}
+	for (auto &type : types) {
+		if (type.id() == LogicalTypeId::UNKNOWN) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool MacroFunction::MatchesSignature(const vector<LogicalType> &signature) const {
 	if (parameters.size() != signature.size()) {
 		return false;
@@ -367,6 +384,44 @@ bool MacroFunction::MatchesSignature(const vector<LogicalType> &signature) const
 		}
 	}
 	return true;
+}
+
+bool MacroFunction::ConflictsWith(const MacroFunction &other) const {
+	// a member occupies its default arity range: f(a) conflicts with f(a, b := 5). Only language
+	// overload sets reach this, plain macro members keep call-time selection
+	const auto shared_arity = MaxValue(parameters.size() - default_parameters.size(),
+	                                   other.parameters.size() - other.default_parameters.size());
+	if (shared_arity > MinValue(parameters.size(), other.parameters.size())) {
+		// the callable arity ranges are disjoint
+		return false;
+	}
+	if (HasUntypedParameter() || other.HasUntypedParameter()) {
+		// an untyped member occupies its whole arity range
+		return true;
+	}
+	// the smallest shared arity decides: a call with that many arguments could name either member
+	for (idx_t i = 0; i < shared_arity; i++) {
+		if (types[i] != other.types[i]) {
+			return false;
+		}
+	}
+	return true;
+}
+
+string MacroFunction::SignatureToString() const {
+	string result = "(";
+	for (idx_t i = 0; i < parameters.size(); i++) {
+		if (i > 0) {
+			result += ", ";
+		}
+		const auto &param_name = parameters[i]->Cast<ColumnRefExpression>().GetColumnName();
+		result += SQLIdentifier::ToString(param_name);
+		if (i < types.size() && types[i].id() != LogicalTypeId::UNKNOWN) {
+			result += " " + types[i].ToString();
+		}
+	}
+	result += ")";
+	return result;
 }
 
 string MacroFunction::ToSQL() const {

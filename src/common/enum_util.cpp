@@ -590,19 +590,20 @@ AlterForeignKeyType EnumUtil::FromString<AlterForeignKeyType>(const char *value)
 const StringUtil::EnumStringLiteral *GetAlterMacroTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(AlterMacroType::INVALID), "INVALID" },
-		{ static_cast<uint32_t>(AlterMacroType::REMOVE_OVERLOAD), "REMOVE_OVERLOAD" }
+		{ static_cast<uint32_t>(AlterMacroType::REMOVE_OVERLOAD), "REMOVE_OVERLOAD" },
+		{ static_cast<uint32_t>(AlterMacroType::ADD_OVERLOAD), "ADD_OVERLOAD" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<AlterMacroType>(AlterMacroType value) {
-	return StringUtil::EnumToString(GetAlterMacroTypeValues(), 2, "AlterMacroType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetAlterMacroTypeValues(), 3, "AlterMacroType", static_cast<uint32_t>(value));
 }
 
 template<>
 AlterMacroType EnumUtil::FromString<AlterMacroType>(const char *value) {
-	return static_cast<AlterMacroType>(StringUtil::StringToEnum(GetAlterMacroTypeValues(), 2, "AlterMacroType", value));
+	return static_cast<AlterMacroType>(StringUtil::StringToEnum(GetAlterMacroTypeValues(), 3, "AlterMacroType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetAlterScalarFunctionTypeValues() {
@@ -1259,6 +1260,7 @@ const StringUtil::EnumStringLiteral *GetCatalogTypeValues() {
 		{ static_cast<uint32_t>(CatalogType::DATABASE_ENTRY), "DATABASE_ENTRY" },
 		{ static_cast<uint32_t>(CatalogType::COORDINATE_SYSTEM_ENTRY), "COORDINATE_SYSTEM_ENTRY" },
 		{ static_cast<uint32_t>(CatalogType::TRIGGER_ENTRY), "TRIGGER_ENTRY" },
+		{ static_cast<uint32_t>(CatalogType::LANGUAGE_ENTRY), "LANGUAGE_ENTRY" },
 		{ static_cast<uint32_t>(CatalogType::TABLE_FUNCTION_ENTRY), "TABLE_FUNCTION_ENTRY" },
 		{ static_cast<uint32_t>(CatalogType::SCALAR_FUNCTION_ENTRY), "SCALAR_FUNCTION_ENTRY" },
 		{ static_cast<uint32_t>(CatalogType::AGGREGATE_FUNCTION_ENTRY), "AGGREGATE_FUNCTION_ENTRY" },
@@ -1279,12 +1281,12 @@ const StringUtil::EnumStringLiteral *GetCatalogTypeValues() {
 
 template<>
 const char* EnumUtil::ToChars<CatalogType>(CatalogType value) {
-	return StringUtil::EnumToString(GetCatalogTypeValues(), 26, "CatalogType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetCatalogTypeValues(), 27, "CatalogType", static_cast<uint32_t>(value));
 }
 
 template<>
 CatalogType EnumUtil::FromString<CatalogType>(const char *value) {
-	return static_cast<CatalogType>(StringUtil::StringToEnum(GetCatalogTypeValues(), 26, "CatalogType", value));
+	return static_cast<CatalogType>(StringUtil::StringToEnum(GetCatalogTypeValues(), 27, "CatalogType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetCheckpointAbortValues() {
@@ -4066,19 +4068,20 @@ const StringUtil::EnumStringLiteral *GetMacroTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(MacroType::VOID_MACRO), "VOID_MACRO" },
 		{ static_cast<uint32_t>(MacroType::TABLE_MACRO), "TABLE_MACRO" },
-		{ static_cast<uint32_t>(MacroType::SCALAR_MACRO), "SCALAR_MACRO" }
+		{ static_cast<uint32_t>(MacroType::SCALAR_MACRO), "SCALAR_MACRO" },
+		{ static_cast<uint32_t>(MacroType::LANGUAGE_MACRO), "LANGUAGE_MACRO" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<MacroType>(MacroType value) {
-	return StringUtil::EnumToString(GetMacroTypeValues(), 3, "MacroType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetMacroTypeValues(), 4, "MacroType", static_cast<uint32_t>(value));
 }
 
 template<>
 MacroType EnumUtil::FromString<MacroType>(const char *value) {
-	return static_cast<MacroType>(StringUtil::StringToEnum(GetMacroTypeValues(), 3, "MacroType", value));
+	return static_cast<MacroType>(StringUtil::StringToEnum(GetMacroTypeValues(), 4, "MacroType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetMapInvalidReasonValues() {

@@ -1,0 +1,60 @@
+# name: test/sql/function/language_function/language_function_type_identity.test
+# description: Named types in signatures resolve at CREATE, matching typed macro parameters
+# group: [language_function]
+
+# Language function tests manage their own storage version (persistent entries need v2.1.0+)
+require noforcestorage
+
+statement ok
+CREATE TYPE lossy_t AS ENUM ('l');
+
+statement ok
+CREATE FUNCTION lossy(x lossy_t) RETURNS lossy_t LANGUAGE testlang AS '1';
+
+# the signature stores the resolved type, not the name: this matches typed macro parameters,
+# which record no dependency on the named type either
+statement ok
+DROP TYPE lossy_t;
+
+query TT
+SELECT parameter_types[1] LIKE 'ENUM%', return_type LIKE 'ENUM%' FROM duckdb_functions() WHERE function_name = 'lossy';
+----
+true	true
+
+# protection test: a plain typed macro behaves identically
+statement ok
+CREATE TYPE macro_t AS ENUM ('m');
+
+statement ok
+CREATE MACRO plain_lossy(x macro_t) AS x;
+
+statement ok
+DROP TYPE macro_t;
+
+query T
+SELECT parameter_types[1] LIKE 'ENUM%' FROM duckdb_functions() WHERE function_name = 'plain_lossy';
+----
+true
+
+# EXPORT renders the resolved type and the import round-trips it
+statement ok
+EXPORT DATABASE '{TEST_DIR}/language_function_type_identity_export';
+
+statement ok
+DROP FUNCTION lossy;
+
+statement ok
+DROP MACRO plain_lossy;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/language_function_type_identity_export';
+
+query T
+SELECT parameter_types[1] LIKE 'ENUM%' FROM duckdb_functions() WHERE function_name = 'lossy';
+----
+true
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'lossy';
+----
+1

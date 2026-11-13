@@ -1,0 +1,150 @@
+# name: test/sql/function/language_function/language_function_member_alter.test
+# description: Member adds and replacements alter the entry: IF NOT EXISTS ordering, language switches, oid identity, COPY DATABASE
+# group: [language_function]
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+# language functions need storage v2.1.0
+load {TEST_DIR}/language_function_member_alter.db readwrite v2.1.0
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/language_function_demo.duckdb_extension';
+
+statement ok
+CREATE FUNCTION f() RETURNS INTEGER LANGUAGE testlang AS '1';
+
+# IF NOT EXISTS skips a conflicting member before the language check, like CREATE MACRO IF NOT EXISTS
+statement ok
+CREATE FUNCTION IF NOT EXISTS f() LANGUAGE otherlang AS 'x';
+
+query TT
+SELECT language, macro_definition FROM duckdb_functions() WHERE function_name = 'f';
+----
+testlang	1
+
+# a member that conflicts with nothing has nothing to skip, so the language rule still applies
+statement error
+CREATE FUNCTION IF NOT EXISTS f(x INTEGER) LANGUAGE otherlang AS 'x';
+----
+<REGEX>:.*overloads of one name share one language.*
+
+# OR REPLACE switches the language of a single-member entry
+statement ok
+CREATE OR REPLACE FUNCTION f() LANGUAGE otherlang AS 'y';
+
+query TT
+SELECT language, macro_definition FROM duckdb_functions() WHERE function_name = 'f';
+----
+otherlang	y
+
+statement ok
+CREATE OR REPLACE FUNCTION f() RETURNS INTEGER LANGUAGE testlang AS '2';
+
+statement ok
+CREATE FUNCTION f(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '3';
+
+# a sibling left in the old language still blocks the switch
+statement error
+CREATE OR REPLACE FUNCTION f() LANGUAGE otherlang AS 'z';
+----
+<REGEX>:.*overloads of one name share one language.*
+
+query II
+SELECT f(), f(1);
+----
+2	3
+
+# member mutations alter the entry in place: its oid survives an add, a replacement and a member drop
+statement ok
+CREATE TABLE oids AS SELECT DISTINCT function_oid AS oid FROM duckdb_functions() WHERE function_name = 'f';
+
+statement ok
+CREATE FUNCTION f(x VARCHAR) RETURNS INTEGER LANGUAGE testlang AS '4';
+
+statement ok
+CREATE OR REPLACE FUNCTION f(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '5';
+
+statement ok
+DROP FUNCTION f(VARCHAR);
+
+query III
+SELECT count(*), count(DISTINCT function_oid), bool_and(function_oid = (SELECT oid FROM oids)) FROM duckdb_functions() WHERE function_name = 'f';
+----
+2	1	true
+
+query II
+SELECT f(), f(1);
+----
+2	5
+
+# protection test: dropping and re-creating the entry gives it a new oid
+statement ok
+DROP FUNCTION f;
+
+statement ok
+CREATE FUNCTION f() RETURNS INTEGER LANGUAGE testlang AS '1';
+
+query I
+SELECT bool_or(function_oid = (SELECT oid FROM oids)) FROM duckdb_functions() WHERE function_name = 'f';
+----
+false
+
+# a plain macro of the same name keeps entry-level semantics: IF NOT EXISTS skips, a plain
+# CREATE errors, and OR REPLACE replaces the whole entry
+statement ok
+CREATE MACRO pm() AS 7;
+
+statement ok
+CREATE FUNCTION IF NOT EXISTS pm(x INTEGER) LANGUAGE testlang AS '8';
+
+query I
+SELECT pm();
+----
+7
+
+statement error
+CREATE FUNCTION pm(x INTEGER) LANGUAGE testlang AS '8';
+----
+<REGEX>:.*already exists.*
+
+statement ok
+CREATE OR REPLACE FUNCTION pm() RETURNS INTEGER LANGUAGE testlang AS '8';
+
+query TI
+SELECT language, pm() FROM duckdb_functions() WHERE function_name = 'pm';
+----
+testlang	8
+
+# COPY FROM DATABASE creates entries and never merges members into an existing entry
+statement ok
+ATTACH ':memory:' AS copy_src;
+
+statement ok
+ATTACH ':memory:' AS copy_dst;
+
+statement ok
+CREATE FUNCTION copy_src.main.mf(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'src';
+
+statement ok
+CREATE FUNCTION copy_dst.main.mf(x VARCHAR) RETURNS VARCHAR LANGUAGE testlang AS 'dst';
+
+statement error
+COPY FROM DATABASE copy_src TO copy_dst;
+----
+<REGEX>:.*already exists.*
+
+# a source entry with several members fails the same way
+statement ok
+CREATE FUNCTION copy_src.main.mf(x DATE) RETURNS VARCHAR LANGUAGE testlang AS 'src date';
+
+statement error
+COPY FROM DATABASE copy_src TO copy_dst;
+----
+<REGEX>:.*already exists.*
+
+query TT
+SELECT parameter_types, macro_definition FROM duckdb_functions() WHERE database_name = 'copy_dst' AND function_name = 'mf';
+----
+[VARCHAR]	dst

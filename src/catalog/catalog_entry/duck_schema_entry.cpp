@@ -7,6 +7,7 @@
 #include "duckdb/catalog/catalog_entry/copy_function_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/duck_index_entry.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
+#include "duckdb/catalog/catalog_entry/language_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/macro_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/pragma_function_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
@@ -79,7 +80,8 @@ DuckSchemaEntry::DuckSchemaEntry(Catalog &catalog, CreateSchemaInfo &info,
                       catalog.IsSystemCatalog() ? make_uniq<DefaultTableFunctionGenerator>(catalog, *this) : nullptr),
       copy_functions(catalog), pragma_functions(catalog),
       functions(catalog, catalog.IsSystemCatalog() ? make_uniq<DefaultFunctionGenerator>(catalog, *this) : nullptr),
-      sequences(catalog), collations(catalog), types(catalog, make_uniq<DefaultTypeGenerator>(catalog, *this)),
+      sequences(catalog), collations(catalog), languages(catalog),
+      types(catalog, make_uniq<DefaultTypeGenerator>(catalog, *this)),
       coordinate_systems(
           catalog, catalog.IsSystemCatalog() ? make_uniq<DefaultCoordinateSystemGenerator>(catalog, *this) : nullptr) {
 }
@@ -286,6 +288,11 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::CreateIndex(CatalogTransaction trans
 	return AddEntryInternal(transaction, std::move(index), info.on_conflict, dependencies);
 }
 
+optional_ptr<CatalogEntry> DuckSchemaEntry::CreateLanguage(CatalogTransaction transaction, CreateLanguageInfo &info) {
+	auto language = make_uniq<LanguageCatalogEntry>(catalog, *this, info);
+	return AddEntry(transaction, std::move(language), info.on_conflict);
+}
+
 optional_ptr<CatalogEntry> DuckSchemaEntry::CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) {
 	auto collation = make_uniq<CollateCatalogEntry>(catalog, *this, info);
 	collation->internal = info.internal;
@@ -433,6 +440,8 @@ CatalogSet &DuckSchemaEntry::GetCatalogSet(CatalogType type) {
 		return sequences;
 	case CatalogType::COLLATION_ENTRY:
 		return collations;
+	case CatalogType::LANGUAGE_ENTRY:
+		return languages;
 	case CatalogType::COORDINATE_SYSTEM_ENTRY:
 		return coordinate_systems;
 	case CatalogType::TYPE_ENTRY:
@@ -454,6 +463,7 @@ void DuckSchemaEntry::Verify(Catalog &catalog) {
 	functions.Verify(catalog);
 	sequences.Verify(catalog);
 	collations.Verify(catalog);
+	languages.Verify(catalog);
 	types.Verify(catalog);
 }
 

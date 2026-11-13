@@ -8,6 +8,7 @@
 #include "duckdb/function/macro_function.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
 #include "duckdb/function/table_macro_function.hpp"
+#include "duckdb/function/language_macro_function.hpp"
 
 namespace duckdb {
 
@@ -31,6 +32,9 @@ unique_ptr<MacroFunction> MacroFunction::Deserialize(Deserializer &deserializer)
 	auto return_type = deserializer.ReadPropertyWithExplicitDefault<LogicalType>(104, "return_type", LogicalType(LogicalTypeId::UNKNOWN));
 	unique_ptr<MacroFunction> result;
 	switch (type) {
+	case MacroType::LANGUAGE_MACRO:
+		result = LanguageMacroFunction::Deserialize(deserializer);
+		break;
 	case MacroType::SCALAR_MACRO:
 		result = ScalarMacroFunction::Deserialize(deserializer);
 		break;
@@ -46,6 +50,19 @@ unique_ptr<MacroFunction> MacroFunction::Deserialize(Deserializer &deserializer)
 	result->return_type = std::move(return_type);
 	result->FinalizeDeserialization();
 	return result;
+}
+
+void LanguageMacroFunction::Serialize(Serializer &serializer) const {
+	MacroFunction::Serialize(serializer);
+	serializer.WritePropertyWithDefault<string>(200, "language", language);
+	serializer.WritePropertyWithDefault<string>(201, "source", source);
+}
+
+unique_ptr<MacroFunction> LanguageMacroFunction::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<LanguageMacroFunction>(new LanguageMacroFunction());
+	deserializer.ReadPropertyWithDefault<string>(200, "language", result->language);
+	deserializer.ReadPropertyWithDefault<string>(201, "source", result->source);
+	return std::move(result);
 }
 
 void ScalarMacroFunction::Serialize(Serializer &serializer) const {

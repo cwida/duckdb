@@ -256,6 +256,9 @@ unique_ptr<AlterInfo> AlterMacroInfo::Deserialize(Deserializer &deserializer) {
 	auto entry_catalog_type = deserializer.ReadProperty<CatalogType>(301, "entry_catalog_type");
 	unique_ptr<AlterMacroInfo> result;
 	switch (alter_macro_type) {
+	case AlterMacroType::ADD_OVERLOAD:
+		result = AddMacroOverloadInfo::Deserialize(deserializer);
+		break;
 	case AlterMacroType::REMOVE_OVERLOAD:
 		result = RemoveMacroOverloadInfo::Deserialize(deserializer);
 		break;
@@ -327,6 +330,19 @@ unique_ptr<AlterTableInfo> AddFieldInfo::Deserialize(Deserializer &deserializer)
 	auto result = duckdb::unique_ptr<AddFieldInfo>(new AddFieldInfo(std::move(new_field)));
 	deserializer.ReadPropertyWithDefault<bool>(401, "if_field_not_exists", result->if_field_not_exists);
 	deserializer.ReadPropertyWithDefault<vector<Identifier>>(402, "column_path", result->column_path);
+	return std::move(result);
+}
+
+void AddMacroOverloadInfo::Serialize(Serializer &serializer) const {
+	AlterMacroInfo::Serialize(serializer);
+	serializer.WritePropertyWithDefault<unique_ptr<MacroFunction>>(400, "member", member);
+	serializer.WriteProperty<OnCreateConflict>(401, "member_on_conflict", member_on_conflict);
+}
+
+unique_ptr<AlterMacroInfo> AddMacroOverloadInfo::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<AddMacroOverloadInfo>(new AddMacroOverloadInfo());
+	deserializer.ReadPropertyWithDefault<unique_ptr<MacroFunction>>(400, "member", result->member);
+	deserializer.ReadProperty<OnCreateConflict>(401, "member_on_conflict", result->member_on_conflict);
 	return std::move(result);
 }
 

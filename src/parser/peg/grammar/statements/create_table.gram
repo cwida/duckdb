@@ -1,5 +1,5 @@
 CreateStatement <- 'CREATE' OrReplace? Temporary? CreateStatementVariation
-CreateStatementVariation <- CreateTableStmt / CreateMacroStmt / CreateSequenceStmt / CreateTypeStmt / CreateSchemaStmt / CreateViewStmt / CreateIndexStmt / CreateSecretStmt / CreateTriggerStmt
+CreateStatementVariation <- CreateTableStmt / CreateLanguageFunctionStmt / CreateMacroStmt / CreateSequenceStmt / CreateTypeStmt / CreateSchemaStmt / CreateViewStmt / CreateIndexStmt / CreateSecretStmt / CreateTriggerStmt
 OrReplace <- 'OR' 'REPLACE'
 Temporary <- Persistent / TempPersistent / TemporaryPersistent
 Persistent <- 'PERSISTENT'

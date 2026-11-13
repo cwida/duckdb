@@ -1,0 +1,173 @@
+# name: test/sql/function/language_function/language_function_persistence.test
+# description: Language functions survive WAL replay and checkpoints, with and without the extension loaded
+# group: [language_function]
+
+# Language function tests manage their own storage version (v2.1.0+) and extension loading
+require noforcestorage
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+statement ok
+SET checkpoint_threshold = '10.0 GB';
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/language_function_demo.duckdb_extension';
+
+statement ok
+ATTACH '{TEST_DIR}/language_function_persistence.db' AS lfdb (STORAGE_VERSION 'v2.1.0');
+
+statement ok
+USE lfdb;
+
+statement ok
+CREATE FUNCTION persistent_fun() RETURNS INTEGER LANGUAGE testlang AS '42';
+
+statement ok
+CREATE FUNCTION persistent_fun(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'overload';
+
+statement ok
+CREATE FUNCTION dropped_fun() LANGUAGE testlang AS 'gone';
+
+statement ok
+DROP FUNCTION dropped_fun;
+
+# a member replacement and an interleaved COMMENT must replay from the WAL too
+statement ok
+CREATE FUNCTION replaced_fun() RETURNS VARCHAR LANGUAGE testlang AS 'before';
+
+statement ok
+COMMENT ON MACRO replaced_fun IS 'persisted comment';
+
+statement ok
+CREATE OR REPLACE FUNCTION replaced_fun() RETURNS VARCHAR LANGUAGE testlang AS 'after';
+
+# a RETURNS type naming a user type is resolved at CREATE and persists as the resolved type
+statement ok
+CREATE TYPE ptype AS ENUM ('p');
+
+statement ok
+CREATE FUNCTION typed_fun(x ptype) RETURNS INTEGER LANGUAGE testlang AS '3';
+
+# Detach without checkpoint - the functions must survive WAL replay
+statement ok
+USE memory;
+
+statement ok
+DETACH lfdb;
+
+# Re-attach replays the WAL in the same instance (binder registered)
+statement ok
+ATTACH '{TEST_DIR}/language_function_persistence.db' AS lfdb;
+
+query I
+SELECT lfdb.main.persistent_fun();
+----
+42
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'dropped_fun';
+----
+0
+
+# the replayed member replacement and the interleaved comment are both visible
+query TT
+SELECT macro_definition, comment FROM duckdb_functions() WHERE function_name = 'replaced_fun';
+----
+after	persisted comment
+
+# the typed member replayed with its signature
+query T
+SELECT parameter_types[1] LIKE 'ENUM%' FROM duckdb_functions() WHERE function_name = 'typed_fun';
+----
+true
+
+statement ok
+USE lfdb;
+
+statement ok
+DROP FUNCTION typed_fun;
+
+statement ok
+DROP TYPE ptype;
+
+statement ok
+USE memory;
+
+statement ok
+DETACH lfdb;
+
+# A fresh instance without the extension: WAL replay must succeed without the binder
+restart no_extension_load
+
+statement ok
+ATTACH '{TEST_DIR}/language_function_persistence.db' AS lfdb;
+
+query TTTT rowsort
+SELECT function_type, language, parameter_types, macro_definition FROM duckdb_functions() WHERE function_name = 'persistent_fun';
+----
+macro	testlang	[INTEGER]	overload
+macro	testlang	[]	42
+
+# calling without the binder names the language and suggests loading it
+statement error
+SELECT lfdb.main.persistent_fun();
+----
+<REGEX>:.*Missing Extension Error.*testlang.*no binder for that language is registered.*
+
+# loading the extension makes the stored function callable
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/language_function_demo.duckdb_extension';
+
+query I
+SELECT lfdb.main.persistent_fun();
+----
+42
+
+query T
+SELECT lfdb.main.persistent_fun(1);
+----
+overload
+
+# Checkpoint, then read the catalog from the checkpoint without the binder
+statement ok
+CHECKPOINT lfdb;
+
+statement ok
+DETACH lfdb;
+
+restart no_extension_load
+
+statement ok
+ATTACH '{TEST_DIR}/language_function_persistence.db' AS lfdb;
+
+query TTTT rowsort
+SELECT function_type, language, parameter_types, macro_definition FROM duckdb_functions() WHERE function_name = 'persistent_fun';
+----
+macro	testlang	[INTEGER]	overload
+macro	testlang	[]	42
+
+# member-granular DROP works on the checkpointed entry without the binder
+statement ok
+USE lfdb;
+
+statement ok
+DROP FUNCTION persistent_fun(INTEGER);
+
+statement ok
+USE memory;
+
+statement ok
+DETACH lfdb;
+
+statement ok
+ATTACH '{TEST_DIR}/language_function_persistence.db' AS lfdb;
+
+query TT
+SELECT parameter_types, macro_definition FROM duckdb_functions() WHERE function_name = 'persistent_fun';
+----
+[]	42

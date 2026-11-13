@@ -27,6 +27,13 @@
       "paths": [
         "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"
       ]
+    },
+    {
+      "reason": "ValidateCreate-published descriptions are in-memory annotations on the plan's CreateInfo, deliberately discarded by plan serialization",
+      "paths": [
+        "test/sql/function/language_function/language_function_binding.test",
+        "test/sql/function/language_function/language_function_demo.test"
+      ]
     }
   ]
 }

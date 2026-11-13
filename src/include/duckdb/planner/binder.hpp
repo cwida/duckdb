@@ -335,7 +335,7 @@ public:
 	void BindCreateSchema(CreateSchemaInfo &info);
 	SchemaCatalogEntry &BindSchema(CreateInfo &info);
 	SchemaCatalogEntry &BindCreateFunctionInfo(CreateInfo &info);
-	//! Reject macro entries with declared RETURNS types in storage below v2.1.0
+	//! Reject macro entries with language members or declared RETURNS types in storage below v2.1.0
 	static void CheckMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &info);
 	SchemaCatalogEntry &BindCreateTriggerInfo(CreateTriggerInfo &info);
 

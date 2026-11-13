@@ -1,0 +1,623 @@
+# name: test/sql/function/language_function/language_function_binding.test
+# description: Typed overload selection, casts, ambiguity, autoload paths, and concurrent member mutation
+# group: [language_function]
+
+# Language function tests manage their own storage version (persistent entries need v2.1.0+)
+require noforcestorage
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+# a definition created without the binder is stored unvalidated and binds at first call after LOAD
+statement ok
+CREATE FUNCTION unvalidated() RETURNS VARCHAR LANGUAGE testlang AS 'invalid but never validated';
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/language_function_demo.duckdb_extension';
+
+query T
+SELECT unvalidated();
+----
+invalid but never validated
+
+# the member created without the binder publishes no documentation of its own. With exactly one
+# description on the entry, duckdb_functions attributes it to every overload (the pre-existing
+# single-description heuristic used for built-in docs)
+statement ok
+CREATE FUNCTION unvalidated(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'validated member';
+
+query TT rowsort
+SELECT parameter_types, description FROM duckdb_functions() WHERE function_name = 'unvalidated';
+----
+[INTEGER]	testlang: validated member
+[]	testlang: validated member
+
+# ... while CREATE with the binder registered does validate
+statement error
+CREATE FUNCTION validated() LANGUAGE testlang AS 'invalid source';
+----
+<REGEX>:.*may not contain the word "invalid".*
+
+# same-arity typed overloads resolve by argument type, selection is the macro overload machinery
+statement ok
+CREATE FUNCTION pick(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'integer member';
+
+statement ok
+CREATE FUNCTION pick(x VARCHAR) RETURNS VARCHAR LANGUAGE testlang AS 'varchar member';
+
+query T
+SELECT pick(1);
+----
+integer member
+
+query T
+SELECT pick('s'::VARCHAR);
+----
+varchar member
+
+# implicit casts pick the cheapest viable member
+query T
+SELECT pick(1::SMALLINT);
+----
+integer member
+
+# column arguments resolve by their column type
+statement ok
+CREATE TABLE pick_input(i INTEGER, v VARCHAR);
+
+statement ok
+INSERT INTO pick_input VALUES (1, 'a');
+
+query TT
+SELECT pick(i), pick(v) FROM pick_input;
+----
+integer member	varchar member
+
+# argument binding errors surface like any other binder error
+statement error
+SELECT pick(no_such_column);
+----
+<REGEX>:.*no_such_column.*
+
+# an untyped member of another arity still catches by arity
+statement ok
+CREATE FUNCTION pick(a, b) RETURNS VARCHAR LANGUAGE testlang AS 'untyped pair';
+
+query T
+SELECT pick(1, 'x');
+----
+untyped pair
+
+statement error
+SELECT pick(1, 2, 3);
+----
+<REGEX>:.*Macro pick.* does not support the supplied arguments.*
+
+# a NULL argument picks the cheapest cast target deterministically
+query T
+SELECT pick(NULL);
+----
+integer member
+
+# symmetric signatures tie on cast cost: the macro overload machinery reports the ambiguity
+statement ok
+CREATE FUNCTION amb(a INTEGER, b VARCHAR) RETURNS VARCHAR LANGUAGE testlang AS 'int-varchar';
+
+statement ok
+CREATE FUNCTION amb(a VARCHAR, b INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'varchar-int';
+
+statement error
+SELECT amb(NULL, NULL);
+----
+<REGEX>:.*multiple overloads that match the supplied arguments.*
+
+query T
+SELECT amb(1, 'x');
+----
+int-varchar
+
+# named arguments resolve the member like they do for macros
+query T
+SELECT pick(x => 1);
+----
+integer member
+
+# argument declaration order, named arguments, and defaults as the language binder observes them:
+# the testlang source 'arg:<n>' compiles to the n-th argument handed to the binder
+statement ok
+CREATE FUNCTION arg_a(a INTEGER, b INTEGER := 20, c INTEGER := 30) RETURNS INTEGER LANGUAGE testlang AS 'arg:0';
+
+statement ok
+CREATE FUNCTION arg_b(a INTEGER, b INTEGER := 20, c INTEGER := 30) RETURNS INTEGER LANGUAGE testlang AS 'arg:1';
+
+statement ok
+CREATE FUNCTION arg_c(a INTEGER, b INTEGER := 20, c INTEGER := 30) RETURNS INTEGER LANGUAGE testlang AS 'arg:2';
+
+query III
+SELECT arg_a(1), arg_b(1), arg_c(1);
+----
+1	20	30
+
+query III
+SELECT arg_a(1, c => 9, b => 8), arg_b(1, c => 9, b => 8), arg_c(1, c => 9, b => 8);
+----
+1	8	9
+
+query III
+SELECT arg_a(c => 9, a => 1), arg_b(c => 9, a => 1), arg_c(c => 9, a => 1);
+----
+1	20	9
+
+# the parameter cast is applied before the binder sees the argument: no RETURNS is declared
+# here, so the observed type is the handed argument's, not a result cast
+statement ok
+CREATE FUNCTION arg_raw(a INTEGER, b INTEGER := 20) LANGUAGE testlang AS 'arg:0';
+
+statement ok
+CREATE FUNCTION arg_raw_b(a INTEGER, b INTEGER := 20) LANGUAGE testlang AS 'arg:1';
+
+query TTT
+SELECT typeof(arg_raw(1::SMALLINT)), typeof(arg_raw_b(1::SMALLINT)), typeof(arg_raw_b(1, b => 2::TINYINT));
+----
+INTEGER	INTEGER	INTEGER
+
+# the parameter cast is applied before the binder sees the argument
+query T
+SELECT typeof(arg_a(1::SMALLINT));
+----
+INTEGER
+
+# malformed argument indices in testlang sources are clean binder errors
+statement ok
+CREATE FUNCTION arg_bad(x INTEGER) LANGUAGE testlang AS 'arg:';
+
+statement error
+SELECT arg_bad(1);
+----
+<REGEX>:.*testlang: malformed argument index.*
+
+statement ok
+CREATE FUNCTION arg_trailing(x INTEGER) LANGUAGE testlang AS 'arg:0junk';
+
+statement error
+SELECT arg_trailing(1);
+----
+<REGEX>:.*testlang: malformed argument index.*
+
+statement ok
+CREATE FUNCTION arg_range(x INTEGER) LANGUAGE testlang AS 'arg:7';
+
+statement error
+SELECT arg_range(1);
+----
+<REGEX>:.*testlang: argument index 7 is out of range.*
+
+# ... and an argument without an implicit cast to the parameter type is rejected like a macro call
+statement error
+SELECT arg_a(2147483647::BIGINT * 2);
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+# IF NOT EXISTS adds a non-conflicting sibling
+statement ok
+CREATE FUNCTION IF NOT EXISTS arg_a(x VARCHAR) RETURNS VARCHAR LANGUAGE testlang AS 'varchar sibling';
+
+query T
+SELECT arg_a('s'::VARCHAR);
+----
+varchar sibling
+
+# OR REPLACE refuses to replace several conflicting members at once
+statement ok
+CREATE FUNCTION multi_conf(x INTEGER) LANGUAGE testlang AS '1';
+
+statement ok
+CREATE FUNCTION multi_conf(x VARCHAR) LANGUAGE testlang AS '2';
+
+statement error
+CREATE OR REPLACE FUNCTION multi_conf(y) LANGUAGE testlang AS '3';
+----
+<REGEX>:.*conflicts with several existing overloads.*
+
+# a member-granular drop of a sibling rolls back like any catalog change
+statement ok
+CREATE FUNCTION rb() RETURNS VARCHAR LANGUAGE testlang AS 'zero';
+
+statement ok
+CREATE FUNCTION rb(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'one';
+
+statement ok
+BEGIN;
+
+statement ok
+DROP FUNCTION rb(INTEGER);
+
+statement error
+SELECT rb(1);
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+statement ok
+ROLLBACK;
+
+query TT
+SELECT rb(), rb(1);
+----
+zero	one
+
+# disabling autoload leaves the clean missing-binder error for unknown languages
+statement ok
+SET autoload_known_extensions = false;
+
+statement ok
+CREATE FUNCTION other_lang() LANGUAGE no_such_language AS 'x';
+
+statement error
+SELECT other_lang();
+----
+<REGEX>:.*Missing Extension Error.*no_such_language.*no binder for that language is registered.*
+
+statement ok
+SET autoload_known_extensions = true;
+
+# a loaded extension that registers no binder for the language still errors cleanly
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension';
+
+statement ok
+CREATE FUNCTION no_registration() LANGUAGE loadable_extension_demo AS 'x';
+
+statement error
+SELECT no_registration();
+----
+<REGEX>:.*Missing Extension Error.*loadable_extension_demo.*no binder for that language is registered.*
+
+# a language member cannot be used as a window function
+statement ok
+CREATE FUNCTION winfun(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '1';
+
+statement error
+SELECT winfun(1) OVER () FROM range(3);
+----
+<REGEX>:.*cannot be used as a window function.*
+
+# concurrent member mutations of one entry are write-write conflicts
+statement ok
+CREATE FUNCTION shared() RETURNS INTEGER LANGUAGE testlang AS '1';
+
+statement ok con1
+BEGIN;
+
+statement ok con1
+CREATE FUNCTION shared(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '2';
+
+statement error con2
+CREATE FUNCTION shared(x VARCHAR) RETURNS INTEGER LANGUAGE testlang AS '3';
+----
+<REGEX>:.*(conflict|lock).*
+
+statement ok con1
+COMMIT;
+
+query I
+SELECT shared(1);
+----
+2
+
+statement error
+SELECT shared('s'::VARCHAR);
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+# a long-lived reader keeps its snapshot of the member set during a concurrent overload add
+statement ok
+CREATE FUNCTION snap() RETURNS INTEGER LANGUAGE testlang AS '1';
+
+statement ok con1
+BEGIN;
+
+query I con1
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'snap';
+----
+1
+
+statement ok con2
+CREATE FUNCTION snap(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '2';
+
+query I con1
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'snap';
+----
+1
+
+statement error con1
+SELECT snap(1);
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+statement ok con1
+COMMIT;
+
+query II con1
+SELECT snap(), snap(1);
+----
+1	2
+
+# a two-part catalog-qualified call resolves the attached catalog's function, not a dot-call on a column
+statement ok
+ATTACH ':memory:' AS r;
+
+statement ok
+CREATE FUNCTION r.main.g(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'attached g';
+
+statement ok
+CREATE FUNCTION g(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'local g';
+
+statement ok
+CREATE TABLE qual_t(i INTEGER);
+
+statement ok
+INSERT INTO qual_t VALUES (1);
+
+query TTT
+SELECT r.g(i), r.main.g(i), g(i) FROM qual_t;
+----
+attached g	attached g	local g
+
+# several member mutations and comments in one transaction commit together
+statement ok
+CREATE FUNCTION chained() RETURNS INTEGER LANGUAGE testlang AS '1';
+
+statement ok
+BEGIN;
+
+statement ok
+CREATE FUNCTION chained(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '2';
+
+statement ok
+COMMENT ON MACRO chained IS 'mid-transaction comment';
+
+statement ok
+CREATE OR REPLACE FUNCTION chained() RETURNS INTEGER LANGUAGE testlang AS '3';
+
+statement ok
+DROP FUNCTION chained(INTEGER);
+
+statement ok
+COMMIT;
+
+query ITT
+SELECT chained(), comment, macro_definition FROM duckdb_functions() WHERE function_name = 'chained';
+----
+3	mid-transaction comment	3
+
+# prepared statements track member mutations: the drop+create bumps the catalog version, so the
+# next EXECUTE re-binds against the new member set
+statement ok
+CREATE FUNCTION pf() RETURNS VARCHAR LANGUAGE testlang AS 'before';
+
+statement ok
+PREPARE p AS SELECT pf();
+
+query T
+EXECUTE p;
+----
+before
+
+statement ok
+CREATE OR REPLACE FUNCTION pf() RETURNS VARCHAR LANGUAGE testlang AS 'after';
+
+query T
+EXECUTE p;
+----
+after
+
+statement ok
+CREATE FUNCTION pf(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'overload';
+
+query T
+EXECUTE p;
+----
+after
+
+# OR REPLACE with a brand-new non-conflicting signature adds the member
+statement ok
+CREATE OR REPLACE FUNCTION pf(x VARCHAR) RETURNS VARCHAR LANGUAGE testlang AS 'added';
+
+query T
+SELECT pf('s'::VARCHAR);
+----
+added
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'pf';
+----
+3
+
+# dropping the member a prepared statement selected re-binds the next EXECUTE (no stale plan)
+statement ok
+CREATE FUNCTION pfd(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'int member';
+
+statement ok
+CREATE FUNCTION pfd(x VARCHAR) RETURNS VARCHAR LANGUAGE testlang AS 'varchar member';
+
+statement ok
+PREPARE q AS SELECT pfd(1);
+
+query T
+EXECUTE q;
+----
+int member
+
+statement ok
+DROP FUNCTION pfd(INTEGER);
+
+statement error
+EXECUTE q;
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+# ... and adding the member back re-binds to it
+statement ok
+CREATE FUNCTION pfd(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'int member back';
+
+query T
+EXECUTE q;
+----
+int member back
+
+# adding a member that changes selection invalidates a current prepared plan (no DDL in between)
+statement ok
+CREATE FUNCTION pfa(x BIGINT) RETURNS VARCHAR LANGUAGE testlang AS 'big';
+
+statement ok
+PREPARE r AS SELECT pfa(1::INTEGER);
+
+query T
+EXECUTE r;
+----
+big
+
+statement ok
+CREATE FUNCTION pfa(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'int';
+
+query T
+EXECUTE r;
+----
+int
+
+# nested user types in signatures resolve at CREATE: overload matching selects by the nested type
+statement ok
+CREATE TYPE pt AS ENUM ('p1', 'p2');
+
+statement ok
+CREATE FUNCTION np(x pt[]) RETURNS pt[] LANGUAGE testlang AS 'arg:0';
+
+statement ok
+CREATE FUNCTION np(x VARCHAR[]) RETURNS VARCHAR LANGUAGE testlang AS 'varchar list';
+
+query TT
+SELECT typeof(np(['p1'::pt])), np(['a']);
+----
+ENUM('p1', 'p2')[]	varchar list
+
+statement ok
+CREATE FUNCTION ns(x STRUCT(m pt)) LANGUAGE testlang AS 'struct member';
+
+query T
+SELECT ns({'m': 'p1'::pt});
+----
+struct member
+
+# ... and the resolved nested signature round-trips through EXPORT/IMPORT
+statement ok
+ATTACH ':memory:' AS nex;
+
+statement ok
+USE nex;
+
+statement ok
+CREATE TYPE pt2 AS ENUM ('p1');
+
+statement ok
+CREATE FUNCTION nexp(x pt2[]) RETURNS pt2[] LANGUAGE testlang AS 'arg:0';
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/language_function_nested_type_export';
+
+statement ok
+DROP FUNCTION nexp;
+
+statement ok
+DROP TYPE pt2;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/language_function_nested_type_export';
+
+query T
+SELECT typeof(nexp(['p1'::pt2]));
+----
+ENUM('p1')[]
+
+statement ok
+USE memory;
+
+statement ok
+DETACH nex;
+
+# a member occupies its whole default arity range: an overload whose range intersects on a
+# matching prefix is rejected at CREATE instead of surfacing as a call-time ambiguity
+statement ok
+CREATE FUNCTION da(a INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'fixed';
+
+statement error
+CREATE FUNCTION da(b INTEGER, c INTEGER := 5) RETURNS VARCHAR LANGUAGE testlang AS 'ranged';
+----
+<REGEX>:.*conflicts with the existing overload.*
+
+# IF NOT EXISTS skips the conflicting range, OR REPLACE replaces the single conflicting member
+statement ok
+CREATE FUNCTION IF NOT EXISTS da(b INTEGER, c INTEGER := 5) RETURNS VARCHAR LANGUAGE testlang AS 'skipped';
+
+query T
+SELECT da(1);
+----
+fixed
+
+statement ok
+CREATE OR REPLACE FUNCTION da(b INTEGER, c INTEGER := 5) RETURNS VARCHAR LANGUAGE testlang AS 'ranged';
+
+query TT
+SELECT da(1), da(1, 2);
+----
+ranged	ranged
+
+# ranges with a non-matching shared prefix stay distinct, and the set re-creates through EXPORT
+statement ok
+ATTACH ':memory:' AS dex;
+
+statement ok
+USE dex;
+
+statement ok
+CREATE FUNCTION dr(a INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'int member';
+
+statement ok
+CREATE FUNCTION dr(a VARCHAR, b INTEGER := 5) RETURNS VARCHAR LANGUAGE testlang AS 'varchar ranged';
+
+query TT
+SELECT dr(1), dr('s'::VARCHAR, 2);
+----
+int member	varchar ranged
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/language_function_arity_export';
+
+statement ok
+DROP FUNCTION dr;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/language_function_arity_export';
+
+query TT
+SELECT dr(1), dr('s'::VARCHAR);
+----
+int member	varchar ranged
+
+statement ok
+USE memory;
+
+statement ok
+DETACH dex;
+
+# disjoint arity ranges never conflict
+statement ok
+CREATE FUNCTION dd() RETURNS VARCHAR LANGUAGE testlang AS 'zero';
+
+statement ok
+CREATE FUNCTION dd(a INTEGER, b INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'two';
+
+query TT
+SELECT dd(), dd(1, 2);
+----
+zero	two

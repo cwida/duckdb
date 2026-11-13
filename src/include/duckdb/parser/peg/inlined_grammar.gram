@@ -1286,6 +1286,7 @@ NoneLiteral <- 'NONE'
 
 CreateMacroStmt <- MacroOrFunction IfNotExists? QualifiedName List(MacroDefinition)
 
+CreateLanguageFunctionStmt <- 'FUNCTION' IfNotExists? QualifiedName Parens(MacroParameters?) ReturnsType? 'LANGUAGE' Identifier 'AS' StringLiteral
 ReturnsType <- 'RETURNS' Type
 
 MacroOrFunction <- MacroKeyword / FunctionKeyword
@@ -1335,7 +1336,7 @@ MinValue <- 'MINVALUE'
 MaxValue <- 'MAXVALUE'
 
 CreateStatement <- 'CREATE' OrReplace? Temporary? CreateStatementVariation
-CreateStatementVariation <- CreateTableStmt / CreateMacroStmt / CreateSequenceStmt / CreateTypeStmt / CreateSchemaStmt / CreateViewStmt / CreateIndexStmt / CreateSecretStmt / CreateTriggerStmt
+CreateStatementVariation <- CreateTableStmt / CreateLanguageFunctionStmt / CreateMacroStmt / CreateSequenceStmt / CreateTypeStmt / CreateSchemaStmt / CreateViewStmt / CreateIndexStmt / CreateSecretStmt / CreateTriggerStmt
 OrReplace <- 'OR' 'REPLACE'
 Temporary <- Persistent / TempPersistent / TemporaryPersistent
 Persistent <- 'PERSISTENT'

@@ -80,14 +80,23 @@ inline LogicalType TypeVisitor::RebuildType(const VisitorFrame &frame, vector<Lo
 	D_ASSERT(frame.expected_children_count > 0);
 	D_ASSERT(result_stack.size() >= frame.expected_children_count);
 	const auto &type = frame.original_type;
+	// an untouched child shares its type info instance: when no child was replaced, return the
+	// original type itself, preserving its identity (alias, extension metadata). A container with
+	// a replaced child is rebuilt without that metadata, since the replacement may invalidate it
 	switch (type.id()) {
 	case LogicalTypeId::STRUCT:
 	case LogicalTypeId::TUPLE:
 	case LogicalTypeId::UNION: {
 		auto children =
 		    type.id() == LogicalTypeId::UNION ? UnionType::CopyMemberTypes(type) : StructType::GetChildTypes(type);
+		bool modified = false;
 		for (idx_t i = children.size(); i > 0; i--) {
-			children[i - 1].second = PopType(result_stack);
+			auto child = PopType(result_stack);
+			modified = modified || &child.GetTypeInfo() != &children[i - 1].second.GetTypeInfo();
+			children[i - 1].second = std::move(child);
+		}
+		if (!modified) {
+			return type;
 		}
 		if (type.id() == LogicalTypeId::STRUCT) {
 			return LogicalType::STRUCT(std::move(children));
@@ -100,12 +109,29 @@ inline LogicalType TypeVisitor::RebuildType(const VisitorFrame &frame, vector<Lo
 	case LogicalTypeId::MAP: {
 		auto value_type = PopType(result_stack);
 		auto key_type = PopType(result_stack);
+		if (&key_type.GetTypeInfo() == &MapType::KeyType(type).GetTypeInfo() &&
+		    &value_type.GetTypeInfo() == &MapType::ValueType(type).GetTypeInfo()) {
+			return type;
+		}
 		return LogicalType::MAP(std::move(key_type), std::move(value_type));
 	}
-	case LogicalTypeId::LIST:
-		return LogicalType::LIST(PopType(result_stack));
-	case LogicalTypeId::ARRAY:
-		return LogicalType::ARRAY(PopType(result_stack), ArrayType::GetSize(type));
+	case LogicalTypeId::LIST: {
+		auto child = PopType(result_stack);
+		if (&child.GetTypeInfo() == &ListType::GetChildType(type).GetTypeInfo()) {
+			return type;
+		}
+		return LogicalType::LIST(std::move(child));
+	}
+	case LogicalTypeId::ARRAY: {
+		auto child = PopType(result_stack);
+		if (&child.GetTypeInfo() == &ArrayType::GetChildType(type).GetTypeInfo()) {
+			return type;
+		}
+		if (ArrayType::IsAnySize(type)) {
+			return LogicalType::ARRAY(std::move(child), optional_idx());
+		}
+		return LogicalType::ARRAY(std::move(child), ArrayType::GetSize(type));
+	}
 	default:
 		throw InternalException("Cannot rebuild children of a non-nested type");
 	}
