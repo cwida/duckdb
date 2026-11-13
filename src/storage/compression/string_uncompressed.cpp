@@ -7,8 +7,6 @@
 #include "duckdb/storage/checkpoint/write_overflow_strings_to_disk.hpp"
 #include "duckdb/storage/table/column_data.hpp"
 
-#include <algorithm>
-
 namespace duckdb {
 
 //===--------------------------------------------------------------------===//
@@ -163,9 +161,9 @@ void UncompressedStringStorage::StringScan(ColumnSegment &segment, ColumnScanSta
 //===--------------------------------------------------------------------===//
 // Select
 //===--------------------------------------------------------------------===//
-template <bool COMPACT>
-static void StringSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count, Vector &result,
-                         const SelectionVector &sel, idx_t sel_count, idx_t result_offset) {
+void UncompressedStringStorage::Select(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count,
+                                       Vector &result, const SelectionVector &sel, idx_t sel_count, idx_t result_offset,
+                                       ScanVectorType) {
 	// clear any previously locked buffers and get the primary buffer handle
 	auto &scan_state = state.scan_state->Cast<StringScanState>();
 	auto layout = StringSegmentLayout::Read(scan_state.handle, segment);
@@ -177,49 +175,24 @@ static void StringSelect(ColumnSegment &segment, ColumnScanState &state, idx_t v
 	auto result_data = FlatVector::GetDataMutable<string_t>(result);
 	const bool copy_strings = state.string_scan_type == StringScanType::COPY_STRINGS;
 	auto write_entry = [&](idx_t i, const StringDictionaryEntry &entry) {
-		auto str = UncompressedStringStorage::FetchStringFromEntry(state.context, segment, result, entry);
-		result_data[COMPACT ? result_offset + i : sel.get_index(i)] =
+		auto str = FetchStringFromEntry(state.context, segment, result, entry);
+		result_data[result_offset + i] =
 		    copy_strings && !entry.is_overflow ? StringVector::AddStringOrBlob(result, str) : str;
-	};
-	auto source_index = [&](idx_t i) {
-		return COMPACT ? sel.get_index(i) : sel.get_index(i) - result_offset;
 	};
 	// a sparse selection validates its own entries rather than every entry in between
 	if (sel_count * 4 < vector_count) {
 		for (idx_t i = 0; i < sel_count; i++) {
-			D_ASSERT(source_index(i) < vector_count);
-			write_entry(i, layout.ValidateAndGetEntry(start + source_index(i)));
+			D_ASSERT(sel.get_index(i) < vector_count);
+			write_entry(i, layout.ValidateAndGetEntry(start + sel.get_index(i)));
 		}
 		return;
 	}
 	auto strings = layout.ValidateRange(start, vector_count);
 	for (idx_t i = 0; i < sel_count; i++) {
-		auto selection_index = source_index(i);
+		auto selection_index = sel.get_index(i);
 		D_ASSERT(selection_index < vector_count);
 		write_entry(i, strings.GetEntry(selection_index));
 	}
-}
-
-void UncompressedStringStorage::Select(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count,
-                                       Vector &result, const SelectionVector &sel, idx_t sel_count, idx_t result_offset,
-                                       ScanVectorType) {
-	StringSelect<true>(segment, state, vector_count, result, sel, sel_count, result_offset);
-}
-
-void UncompressedStringStorage::Filter(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count,
-                                       Vector &result, SelectionVector &sel, idx_t &sel_count, idx_t result_offset,
-                                       TableFilterState &filter_state) {
-	if (sel_count == vector_count) {
-		StringScanPartial(segment, state, vector_count, result, result_offset);
-	} else {
-		// Downstream dictionary consumers may inspect unselected slots as well.
-		std::fill_n(FlatVector::GetDataMutable<string_t>(result) + result_offset, vector_count, string_t(""));
-		if (sel_count > 0) {
-			StringSelect<false>(segment, state, vector_count, result, sel, sel_count, result_offset);
-		}
-	}
-	FlatVector::SetSize(result, count_t(result_offset + vector_count));
-	ColumnSegment::FilterSelection(sel, result, filter_state, result_offset + vector_count, sel_count);
 }
 
 //===--------------------------------------------------------------------===//
@@ -326,7 +299,6 @@ CompressionFunction StringUncompressed::GetFunction(PhysicalType data_type) {
 	    UncompressedStringStorage::FinalizeAppend, UncompressedStringStorage::StringRevertAppend,
 	    UncompressedStringStorage::SerializeState, UncompressedStringStorage::DeserializeState,
 	    UncompressedStringStorage::VisitBlockIds, UncompressedStringInitPrefetch, UncompressedStringStorage::Select);
-	result.filter_partial = UncompressedStringStorage::Filter;
 	result.zero_initialize_segments = false;
 	return result;
 }

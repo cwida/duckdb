@@ -171,12 +171,6 @@ typedef void (*compression_select_t)(ColumnSegment &segment, ColumnScanState &st
 typedef void (*compression_filter_t)(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count, Vector &result,
                                      SelectionVector &sel, idx_t &sel_count, const TableFilter &filter,
                                      TableFilterState &filter_state);
-//! Filter an arbitrary segment range into a flat result at result_offset, preserving preloaded validity.
-//! Selection indices are relative to result (not the segment); only selected rows may be evaluated.
-//! Initialize the entire output range, including unselected slots, without changing earlier ranges.
-typedef void (*compression_filter_partial_t)(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count,
-                                             Vector &result, SelectionVector &sel, idx_t &sel_count,
-                                             idx_t result_offset, TableFilterState &filter_state);
 //! Function prototype used for skipping 'skip_count' values, non-trivial if random-access is not supported for the
 //! compressed data.
 typedef void (*compression_skip_t)(ColumnSegment &segment, ColumnScanState &state, idx_t skip_count);
@@ -275,8 +269,6 @@ public:
 	compression_select_t select;
 	//! Scan and apply a filter to a vector while scanning
 	compression_filter_t filter;
-	//! Filter selected rows across segment boundaries without emitting encoded vectors
-	compression_filter_partial_t filter_partial = nullptr;
 	//! Skip forward in the compressed segment
 	compression_skip_t skip;
 

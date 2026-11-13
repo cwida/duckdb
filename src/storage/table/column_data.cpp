@@ -319,55 +319,13 @@ void ColumnData::SelectVector(ColumnScanState &state, Vector &result, idx_t targ
 void ColumnData::FilterVector(ColumnScanState &state, Vector &result, idx_t target_count, SelectionVector &sel,
                               idx_t &sel_count, const TableFilter &filter, TableFilterState &filter_state) {
 	BeginScanVectorInternal(state);
-	auto &segment = state.current->GetNode();
-	if (sel_count == target_count || !segment.GetCompressionFunction().filter_partial) {
-		if (state.current->GetRowStart() + segment.count - state.offset_in_column < target_count) {
-			throw InternalException("ColumnData::Filter should be able to fetch everything from one segment");
-		}
-		segment.Filter(state, target_count, result, sel, sel_count, filter, filter_state);
-		state.offset_in_column += target_count;
-		state.internal_index = state.offset_in_column;
-		return;
+	auto &current = state.current->GetNode();
+	if (state.current->GetRowStart() + current.count - state.offset_in_column < target_count) {
+		throw InternalException("ColumnData::Filter should be able to fetch everything from one segment");
 	}
-
-	SelectionVector segment_input(sel_count);
-	SelectionVector result_sel(sel_count);
-	idx_t sel_offset = 0;
-	idx_t result_count = 0;
-	idx_t scanned_count = 0;
-	while (scanned_count < target_count) {
-		auto &current = state.current->GetNode();
-		auto current_start = state.current->GetRowStart();
-		auto scan_count =
-		    MinValue<idx_t>(target_count - scanned_count, current_start + current.count - state.offset_in_column);
-		idx_t segment_count = 0;
-		while (sel_offset < sel_count && sel.get_index(sel_offset) < scanned_count + scan_count) {
-			segment_input.set_index(segment_count++, sel.get_index(sel_offset++));
-		}
-		if (scan_count > 0) {
-			SelectionVector segment_sel(segment_input);
-			current.FilterPartial(state, scan_count, result, segment_sel, segment_count, scanned_count, filter_state);
-			for (idx_t i = 0; i < segment_count; i++) {
-				result_sel.set_index(result_count++, segment_sel.get_index(i));
-			}
-		}
-		scanned_count += scan_count;
-		state.offset_in_column += scan_count;
-		if (scanned_count < target_count) {
-			auto next = data.GetNextSegment(*state.current);
-			if (!next) {
-				break;
-			}
-			state.previous_states.emplace_back(std::move(state.scan_state));
-			state.current = next;
-			state.current->GetNode().InitializeScan(state);
-			state.segment_checked = false;
-		}
-	}
+	current.Filter(state, target_count, result, sel, sel_count, filter, filter_state);
+	state.offset_in_column += target_count;
 	state.internal_index = state.offset_in_column;
-	sel.Initialize(result_sel);
-	sel_count = result_count;
-	FlatVector::SetSize(result, count_t(scanned_count));
 }
 
 unique_ptr<BaseStatistics> ColumnData::GetUpdateStatistics() {
@@ -461,32 +419,23 @@ idx_t ColumnData::ScanCount(ColumnScanState &state, Vector &result, idx_t scan_c
 }
 
 void ColumnData::Filter(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
-                        SelectionVector &sel, idx_t &s_count, const TableFilter &filter, TableFilterState &filter_state,
-                        ColumnData &validity_column) {
-	auto compression = GetCompressionFunction();
-	auto target_count = GetVectorCount(vector_index);
-	bool verify_fetch_row = state.scan_options && state.scan_options->force_fetch_row;
-	if (!compression || !compression->filter_partial || s_count == target_count || verify_fetch_row || HasUpdates() ||
-	    validity_column.HasUpdates()) {
-		ColumnData::Filter(transaction, vector_index, state, result, sel, s_count, filter, filter_state);
-		return;
-	}
-	bool filter_includes_validity = compression->validity == CompressionValidity::NO_VALIDITY_REQUIRED;
-	if (!filter_includes_validity) {
-		validity_column.ScanVector(transaction, vector_index, state.child_states[0], result, target_count,
-		                           ScanVectorType::SCAN_FLAT_VECTOR, state.update_scan_type);
-	}
-	FilterVector(state, result, target_count, sel, s_count, filter, filter_state);
-	if (filter_includes_validity) {
-		validity_column.Skip(state.child_states[0], target_count);
-	}
-}
-
-void ColumnData::Filter(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
                         SelectionVector &sel, idx_t &s_count, const TableFilter &filter,
                         TableFilterState &filter_state) {
-	idx_t scan_count = Scan(transaction, vector_index, state, result);
-	FlatVector::SetSize(result, count_t(scan_count));
+	idx_t scan_count = GetVectorCount(vector_index);
+	if (type.id() == LogicalTypeId::VARCHAR && state.current && s_count > 0 && s_count < scan_count) {
+		Select(transaction, vector_index, state, result, sel, s_count);
+		SelectionVector original_positions(scan_count);
+		for (idx_t i = 0; i < scan_count; i++) {
+			original_positions.set_index(i, 0);
+		}
+		for (idx_t i = 0; i < s_count; i++) {
+			original_positions.set_index(sel.get_index(i), i);
+		}
+		result.Slice(original_positions, scan_count);
+	} else {
+		scan_count = Scan(transaction, vector_index, state, result);
+		FlatVector::SetSize(result, count_t(scan_count));
+	}
 
 	ColumnSegment::FilterSelection(sel, result, filter_state, scan_count, s_count);
 }
