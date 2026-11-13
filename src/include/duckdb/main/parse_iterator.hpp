@@ -39,7 +39,7 @@ public:
 	//! policy. Without it, a parse error leaves the transaction untouched, for callers that only
 	//! inspect the statements or that handle the error through ErrorResult themselves. A caller that
 	//! holds the context lock while using the iterator passes it as held_lock, otherwise the iterator
-	//! takes the lock itself to apply the policy.
+	//! takes the lock itself to apply the policy and invoke parser-error callbacks.
 	DUCKDB_API ParseIterator(ClientContext &context, const string &sql, bool apply_invalidation_policy = true,
 	                         optional_ptr<ClientContextLock> held_lock = nullptr);
 	DUCKDB_API ~ParseIterator();
@@ -70,7 +70,7 @@ public:
 
 private:
 	bool PeekInternal();
-	void ApplyInvalidationPolicy(const ErrorData &error);
+	void HandleError(ErrorData &error, const string &query);
 	//! Tokenize the full input once (grammar-free); no-op if already tokenized.
 	void EnsureTokenized();
 

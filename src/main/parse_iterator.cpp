@@ -10,6 +10,7 @@
 #include "duckdb/parser/peg/compiled_grammar.hpp"
 #include "duckdb/parser/peg/tokenizer/parser_tokenizer.hpp"
 #include "duckdb/parser/sql_statement.hpp"
+#include "duckdb/planner/extension_callback.hpp"
 #include "duckdb/parser/statement/create_statement.hpp"
 #include "duckdb/parser/parsed_data/create_info.hpp"
 
@@ -21,22 +22,68 @@ ParseIterator::ParseIterator(ClientContext &context_p, const string &sql_p, bool
 	try {
 		sql = Parser::NormalizeSQLString(sql_p);
 	} catch (std::exception &ex) {
-		ApplyInvalidationPolicy(ErrorData(ex));
+		auto error = ErrorData(ex);
+		HandleError(error, sql_p);
 		throw;
 	}
 }
 
-void ParseIterator::ApplyInvalidationPolicy(const ErrorData &error) {
-	if (!apply_invalidation_policy) {
-		return;
-	}
-	if (held_lock) {
+void ParseIterator::HandleError(ErrorData &error, const string &query) {
+	auto lock = held_lock ? nullptr : context.LockContext();
+	if (apply_invalidation_policy) {
 		context.ApplyInvalidationPolicy(error);
+	}
+	if (error.Type() != ExceptionType::PARSER) {
 		return;
 	}
-	// Parsing itself can run without the context lock, but the transaction state must not change underneath us
-	auto lock = context.LockContext();
-	context.ApplyInvalidationPolicy(error);
+	bool changed = false;
+	try {
+		const auto original = error;
+		for (auto &callback : ExtensionCallbackManager::Get(context).ExtensionCallbacks()) {
+			try {
+				auto annotation = callback->OnParserError(context, query, original);
+				if (annotation.hint.empty() && annotation.details.empty()) {
+					continue;
+				}
+				auto details = error.ExtraInfo();
+				for (auto &entry : annotation.details) {
+					if (StringUtil::StartsWith(entry.first, "extension.") && entry.first.size() > 10) {
+						details.emplace(entry.first, entry.second);
+					}
+				}
+				if (annotation.hint.empty() && details.size() == error.ExtraInfo().size()) {
+					continue;
+				}
+				auto message = error.RawMessage();
+				if (!annotation.hint.empty()) {
+					message += "\n" + annotation.hint;
+				}
+				auto annotated = ErrorData(ParserException(details, message));
+				error = std::move(annotated);
+				changed = true;
+			} catch (const std::exception &ex) {
+				auto callback_error = ErrorData(ex);
+				if (Exception::InvalidatesDatabase(callback_error.Type()) ||
+				    callback_error.Type() == ExceptionType::INTERNAL) {
+					throw;
+				}
+			} catch (...) {
+				// Optional guidance cannot hide the original parsing failure.
+			}
+		}
+	} catch (const std::exception &ex) {
+		auto callback_error = ErrorData(ex);
+		if (Exception::InvalidatesDatabase(callback_error.Type()) || callback_error.Type() == ExceptionType::INTERNAL) {
+			if (apply_invalidation_policy) {
+				context.ApplyInvalidationPolicy(callback_error);
+			}
+			throw;
+		}
+	} catch (...) {
+	}
+	if (changed) {
+		throw ParserException(error.ExtraInfo(), error.RawMessage());
+	}
 }
 
 ParseIterator::~ParseIterator() = default;
@@ -62,7 +109,8 @@ bool ParseIterator::Peek() {
 		// active by then
 		exhausted = true;
 		// Rendering the error for display is left to the caller, since some render errors themselves
-		ApplyInvalidationPolicy(ErrorData(ex));
+		auto error = ErrorData(ex);
+		HandleError(error, sql);
 		throw;
 	}
 }
