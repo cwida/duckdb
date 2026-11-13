@@ -173,6 +173,16 @@ CREATE UNIQUE INDEX kx ON d.k ((a || CAST(make_type('DECIMAL', width := 40, scal
 statement ok
 INSERT INTO d.k VALUES ('x')
 
+# the string signature of to_aggregate_state is parsed within the width of the storage version as well
+statement ok
+CREATE TABLE d.b (id INTEGER, v BIGNUM)
+
+statement ok
+CREATE UNIQUE INDEX bx ON d.b ((finalize(to_aggregate_state(v, 'sum', ['DECIMAL(40,0)']))))
+
+statement ok
+INSERT INTO d.b VALUES (1, '1')
+
 statement ok
 CHECKPOINT d
 
@@ -205,6 +215,11 @@ query I
 SELECT a FROM d.k WHERE a = 'x'
 ----
 x
+
+query I
+SELECT id FROM d.b WHERE id = 1
+----
+1
 
 statement ok
 DETACH d
@@ -278,6 +293,25 @@ INSERT INTO d.k VALUES ('x')
 statement ok
 INSERT INTO d.k VALUES ('y')
 
+# the session cannot parse the signature, the key is bound within the storage version
+statement error
+SELECT finalize(to_aggregate_state(1::BIGNUM, 'sum', ['DECIMAL(40,0)']))
+----
+<REGEX>:.*DECIMAL type width 40 exceeds the maximum DECIMAL width of 38.*
+
+statement ok
+INSERT INTO d.b VALUES (2, '2')
+
+statement error
+INSERT INTO d.b VALUES (3, '1')
+----
+<REGEX>:.*Duplicate key.*1.*
+
+query I
+SELECT id FROM d.b WHERE id = 2
+----
+2
+
 statement ok
 DETACH d
 
@@ -303,6 +337,9 @@ CREATE TABLE d.e AS SELECT 1 AS id, sum(1::DECIMAL(40,0)) EXPORT_STATE AS s
 
 statement ok
 CREATE TABLE d.k (a VARCHAR)
+
+statement ok
+CREATE TABLE d.b (id INTEGER, v BIGNUM)
 
 statement ok
 CHECKPOINT d
@@ -378,6 +415,18 @@ INSERT INTO d.k VALUES ('x')
 ----
 <REGEX>:.*Duplicate key.*xDECIMAL\(40,0\).*
 
+# the string signature of the key is parsed within the storage version, while the session cannot parse it
+statement ok
+CREATE UNIQUE INDEX bx ON d.b ((finalize(to_aggregate_state(v, 'sum', ['DECIMAL(40,0)']))))
+
+statement ok
+INSERT INTO d.b VALUES (1, '1')
+
+statement error
+INSERT INTO d.b VALUES (2, '1')
+----
+<REGEX>:.*Duplicate key.*1.*
+
 statement ok
 CHECKPOINT d
 
@@ -437,6 +486,19 @@ INSERT INTO d.c VALUES (99999999999999999999999999999999999999, 0.6)
 
 query I
 SELECT count(*) FROM d.c
+----
+2
+
+statement ok
+INSERT INTO d.b VALUES (2, '2')
+
+statement error
+INSERT INTO d.b VALUES (3, '2')
+----
+<REGEX>:.*Duplicate key.*2.*
+
+query I
+SELECT id FROM d.b WHERE id = 2
 ----
 2
 

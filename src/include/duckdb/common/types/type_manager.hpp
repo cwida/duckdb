@@ -21,7 +21,9 @@ public:
 	const CastFunctionSet &GetCastFunctions() const;
 
 	//! Try to parse and bind a logical type from a string. Throws an exception if the type could not be parsed.
-	LogicalType ParseLogicalType(const string &type_str, ClientContext &context) const;
+	//! Decimals are bound within the limit, if one is given, else within the max_decimal_width setting
+	LogicalType ParseLogicalType(const string &type_str, ClientContext &context,
+	                             optional_ptr<const DecimalWidthLimit> decimal_width_limit = nullptr) const;
 	//! Parse and bind a logical type from a string with the default parser, resolving the built-in types only.
 	LogicalType ParseLogicalType(const string &type_str) const;
 
@@ -32,7 +34,7 @@ public:
 private:
 	//! This has to be a function pointer to avoid the compiler inlining the implementation and
 	//! blowing up the binary size of extensions that include type_manager.hpp
-	LogicalType (*parse_function)(const string &, ClientContext &);
+	LogicalType (*parse_function)(const string &, ClientContext &, optional_ptr<const DecimalWidthLimit>);
 
 	//! The set of cast functions
 	unique_ptr<CastFunctionSet> cast_functions;

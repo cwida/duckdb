@@ -723,7 +723,9 @@ DUCKDB_API string LogicalTypeIdToString(LogicalTypeId type);
 
 DUCKDB_API LogicalTypeId TransformStringToLogicalTypeId(const string &str);
 
-DUCKDB_API LogicalType TransformStringToLogicalType(const string &str, ClientContext &context);
+//! Parses and binds a type from its SQL text, binding decimals within the limit, if one is given
+DUCKDB_API LogicalType TransformStringToLogicalType(const string &str, ClientContext &context,
+                                                   optional_ptr<const DecimalWidthLimit> decimal_width_limit = nullptr);
 
 //! The PhysicalType used by the row identifiers column
 extern const PhysicalType ROW_TYPE;

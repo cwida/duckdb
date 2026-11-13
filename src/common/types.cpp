@@ -728,8 +728,9 @@ LogicalTypeId TransformStringToLogicalTypeId(const string &str) {
 	return type;
 }
 
-LogicalType TransformStringToLogicalType(const string &str, ClientContext &context) {
-	return TypeManager::Get(context).ParseLogicalType(str, context);
+LogicalType TransformStringToLogicalType(const string &str, ClientContext &context,
+                                         optional_ptr<const DecimalWidthLimit> decimal_width_limit) {
+	return TypeManager::Get(context).ParseLogicalType(str, context, decimal_width_limit);
 }
 
 bool LogicalType::IsIntegral() const {

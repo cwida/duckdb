@@ -653,8 +653,8 @@ LogicalType CreateSortedAggregateStateType(const BoundAggregateFunction &inner_f
 }
 
 // parses a single entry of the to_aggregate_state signature list - either a TYPE value (e.g. make_type('VARCHAR'))
-// or a string naming a type (e.g. 'VARCHAR')
-LogicalType ParseSignatureType(ClientContext &context, const Value &arg) {
+// or a string naming a type (e.g. 'VARCHAR'), bound within the decimal width limit of the bind
+LogicalType ParseSignatureType(ClientContext &context, const Value &arg, const DecimalWidthLimit &decimal_width_limit) {
 	if (arg.IsNull()) {
 		throw BinderException("to_aggregate_state: the signature cannot contain NULL values");
 	}
@@ -667,7 +667,7 @@ LogicalType ParseSignatureType(ClientContext &context, const Value &arg) {
 		if (StringUtil::CIEquals(name, "ANY")) {
 			return LogicalType::ANY;
 		}
-		return TransformStringToLogicalType(name, context);
+		return TransformStringToLogicalType(name, context, &decimal_width_limit);
 	}
 	throw BinderException("to_aggregate_state: the signature must be a list of types");
 }
@@ -769,10 +769,11 @@ unique_ptr<FunctionData> BindToAggregateState(INPUT &input) {
 	if (signature_val.type().id() != LogicalTypeId::LIST) {
 		throw BinderException("to_aggregate_state: the signature must be a list of types");
 	}
-	// the signature lists all of the argument types in order
+	// the signature lists all of the argument types in order, bound within the width limit of the bind
+	const auto decimal_width_limit = input.GetDecimalWidthLimit();
 	vector<LogicalType> argument_types;
 	for (auto &arg : ListValue::GetChildren(signature_val)) {
-		argument_types.push_back(ParseSignatureType(context, arg));
+		argument_types.push_back(ParseSignatureType(context, arg, decimal_width_limit));
 	}
 
 	// constant_parameters holds the values of arguments that must be re-bound with a specific constant rather than a
