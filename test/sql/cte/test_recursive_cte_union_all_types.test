@@ -1,0 +1,187 @@
+# name: test/sql/cte/test_recursive_cte_union_all_types.test
+# description: A WITH RECURSIVE CTE that does not reference itself must derive its column types from both sides
+# group: [cte]
+
+# NULL on the left, BOOLEAN on the right
+query II
+WITH RECURSIVE t(a) AS (SELECT NULL UNION ALL SELECT true) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	BOOLEAN
+true	BOOLEAN
+
+# BOOLEAN on the left, NULL on the right
+query II
+WITH RECURSIVE t(a) AS (SELECT true UNION ALL SELECT NULL) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	BOOLEAN
+true	BOOLEAN
+
+# INTEGER
+query II
+WITH RECURSIVE t(a) AS (SELECT NULL UNION ALL SELECT 42) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	INTEGER
+42	INTEGER
+
+query II
+WITH RECURSIVE t(a) AS (SELECT 42 UNION ALL SELECT NULL) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	INTEGER
+42	INTEGER
+
+# VARCHAR
+query II
+WITH RECURSIVE t(a) AS (SELECT NULL UNION ALL SELECT 'x') SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	VARCHAR
+x	VARCHAR
+
+query II
+WITH RECURSIVE t(a) AS (SELECT 'x' UNION ALL SELECT NULL) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	VARCHAR
+x	VARCHAR
+
+# UNION (not ALL)
+query II
+WITH RECURSIVE t(a) AS (SELECT NULL UNION SELECT true) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	BOOLEAN
+true	BOOLEAN
+
+query II
+WITH RECURSIVE t(a) AS (SELECT true UNION SELECT NULL) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	BOOLEAN
+true	BOOLEAN
+
+# multiple columns, only some need widening
+query IIII
+WITH RECURSIVE t(a, b) AS (SELECT NULL, 1 UNION ALL SELECT 'x', 2) SELECT a, b, typeof(a), typeof(b) FROM t ORDER BY b;
+----
+NULL	1	VARCHAR	INTEGER
+x	2	VARCHAR	INTEGER
+
+# a truly recursive CTE with mixed column types keeps working
+query III
+WITH RECURSIVE t(i, s) AS (
+	SELECT 1, 'a'
+	UNION ALL
+	SELECT i + 1, s || 'b' FROM t WHERE i < 3
+)
+SELECT i, s, typeof(s) FROM t ORDER BY i;
+----
+1	a	VARCHAR
+2	ab	VARCHAR
+3	abb	VARCHAR
+
+query II
+WITH RECURSIVE t(i, b) AS (
+	SELECT 1, true
+	UNION
+	SELECT i + 1, NULL FROM t WHERE i < 3
+)
+SELECT i, typeof(b) FROM t ORDER BY i;
+----
+1	BOOLEAN
+2	BOOLEAN
+3	BOOLEAN
+
+# an all-NULL column keeps the NULL type, so it still combines with any other type
+query I
+WITH RECURSIVE c(a) AS (SELECT NULL UNION ALL SELECT NULL) SELECT coalesce(a, DATE '2026-01-01') FROM c;
+----
+2026-01-01
+2026-01-01
+
+# a truly recursive CTE keeps the types of the left side, even if the right side has a wider type
+query II
+WITH RECURSIVE t(i) AS (SELECT 1 UNION ALL SELECT i + 0.5 FROM t WHERE i < 3) SELECT i, typeof(i) FROM t ORDER BY i;
+----
+1	INTEGER
+2	INTEGER
+3	INTEGER
+
+# a self-reference only inside a scalar subquery still makes the CTE recursive
+query II
+WITH RECURSIVE t(i) AS (
+	SELECT 1
+	UNION ALL
+	SELECT (SELECT max(i) FROM t) + 0.5 WHERE (SELECT max(i) FROM t) < 3
+)
+SELECT i, typeof(i) FROM t ORDER BY i;
+----
+1	INTEGER
+2	INTEGER
+3	INTEGER
+
+# a self-reference only inside a LATERAL join still makes the CTE recursive
+query II
+WITH RECURSIVE t(i) AS (
+	SELECT 1
+	UNION ALL
+	SELECT l.j FROM (SELECT 1) s(x), LATERAL (SELECT i + 0.5 AS j FROM t WHERE i < 3) l
+)
+SELECT i, typeof(i) FROM t ORDER BY i;
+----
+1	INTEGER
+2	INTEGER
+3	INTEGER
+
+# non-NULL widening: the right side is not cast to the type of the left side
+query II
+WITH RECURSIVE t(a) AS (SELECT 1 UNION ALL SELECT 1.5) SELECT a, typeof(a) FROM t ORDER BY a;
+----
+1.0	DECIMAL(11,1)
+1.5	DECIMAL(11,1)
+
+query II
+WITH RECURSIVE t(a) AS (SELECT 1 UNION ALL SELECT 10000000000) SELECT a, typeof(a) FROM t ORDER BY a;
+----
+1	BIGINT
+10000000000	BIGINT
+
+# an inner WITH that shadows the name of the CTE is not a self-reference
+query II
+WITH RECURSIVE t(a) AS (SELECT 1 UNION ALL (WITH t(a) AS (SELECT 1.5) SELECT a FROM t)) SELECT a, typeof(a) FROM t ORDER BY a;
+----
+1.0	DECIMAL(11,1)
+1.5	DECIMAL(11,1)
+
+# nested types
+query II
+WITH RECURSIVE t(a) AS (SELECT [NULL] UNION ALL SELECT [1]) SELECT a, typeof(a) FROM t ORDER BY a;
+----
+[1]	INTEGER[]
+[NULL]	INTEGER[]
+
+query II
+WITH RECURSIVE t(a) AS (SELECT {'k': NULL} UNION ALL SELECT {'k': 'v'}) SELECT a, typeof(a) FROM t ORDER BY a;
+----
+{'k': v}	STRUCT(k VARCHAR)
+{'k': NULL}	STRUCT(k VARCHAR)
+
+# a view over such a CTE gets the combined type
+statement ok
+CREATE VIEW v AS WITH RECURSIVE t(a) AS (SELECT 1 UNION ALL SELECT 1.5) SELECT a FROM t;
+
+query II
+SELECT a, typeof(a) FROM v ORDER BY a;
+----
+1.0	DECIMAL(11,1)
+1.5	DECIMAL(11,1)
+
+# with three or more arms, the left side holds all arms but the last one and is a set operation of its own,
+# which casts its arms to its own type before the last arm is added (plain WITH gives 1, 1.5, x)
+query II
+WITH RECURSIVE t(a) AS (SELECT 1 UNION ALL SELECT 1.5 UNION ALL SELECT 'x') SELECT a, typeof(a) FROM t ORDER BY a;
+----
+1.0	VARCHAR
+1.5	VARCHAR
+x	VARCHAR
+
+# so a combination that needs all arms at once still fails (plain WITH gives three VARCHAR rows)
+statement error
+WITH RECURSIVE t(a) AS (SELECT 42 UNION ALL SELECT DATE '2026-01-01' UNION ALL SELECT 'x') SELECT a FROM t;
+----
+Unimplemented type for cast (INTEGER -> DATE)
