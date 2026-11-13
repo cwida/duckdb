@@ -277,7 +277,8 @@ unique_ptr<LogicalOperator> JoinElimination::TryEliminateJoin() {
 	// 1. TODO: guarantee by primary/foreign key
 
 	if (!is_output_unique) {
-		is_output_unique = true;
+		// no inner join key => cannot prove inner uniqueness
+		is_output_unique = !join.conditions.empty();
 		// 2. inner table join condition columns contains a whole distinct group
 		vector<ColumnBinding> col_bindings;
 		for (auto &condition : join.conditions) {
@@ -310,7 +311,9 @@ unique_ptr<LogicalOperator> JoinElimination::TryEliminateJoin() {
 }
 
 bool JoinElimination::ContainDistinctGroup(vector<ColumnBinding> &column_bindings) {
-	D_ASSERT(!column_bindings.empty());
+	if (column_bindings.empty()) {
+		return false;
+	}
 	auto &column_binding = column_bindings[0];
 	auto it = pipe_info.distinct_groups.find(column_binding.table_index);
 	if (it == pipe_info.distinct_groups.end()) {

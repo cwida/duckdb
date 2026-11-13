@@ -363,3 +363,20 @@ query II
 explain select distinct pg from (select p.g as pg from p left join (select distinct a from k) s on p.id = s.a order by pg desc limit 3) order by pg;
 ----
 physical_plan	<!REGEX>:.*JOIN.*
+
+# A correlated count gets an empty-input fallback, attached as a join without join conditions. The
+# bug needs all three of: such a join, a distinct group above it, and the fallback column no longer
+# being used (issue #27445).
+
+statement ok
+create table t(c integer);
+
+statement ok
+insert into t values (1), (-1), (null);
+
+query I
+select (select case when true then 0 else count(distinct 1) end from t x where t.c > 0) as r from t;
+----
+0
+0
+0
