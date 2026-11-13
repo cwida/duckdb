@@ -22,8 +22,8 @@ public:
 
 	unique_ptr<GlobalSinkState> GetGlobalState(ClientContext &context, idx_t group_count,
 	                                           const ValidityMask &partition_mask) const override;
-	void Finalize(ExecutionContext &context, CollectionPtr collection, const FrameStats &stats,
-	              OperatorSinkInput &sink) override;
+	SourceResultType Finalize(ExecutionContext &context, CollectionPtr collection, const FrameStats &stats,
+	                          OperatorSinkInput &sink) override;
 
 	unique_ptr<LocalSinkState> GetLocalState(ExecutionContext &context, const GlobalSinkState &gstate) const override;
 	void Evaluate(ExecutionContext &context, const DataChunk &bounds, Vector &result, idx_t count, idx_t row_idx,

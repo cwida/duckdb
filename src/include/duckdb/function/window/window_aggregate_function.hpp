@@ -20,7 +20,8 @@ public:
 
 	void Sink(ExecutionContext &context, DataChunk &sink_chunk, DataChunk &coll_chunk, const idx_t input_idx,
 	          OperatorSinkInput &sink) const override;
-	void Finalize(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink) const override;
+	SourceResultType Finalize(ExecutionContext &context, CollectionPtr collection,
+	                          OperatorSinkInput &sink) const override;
 
 	unique_ptr<GlobalSinkState> GetGlobalState(ClientContext &client, const idx_t payload_count,
 	                                           const ValidityMask &partition_mask,

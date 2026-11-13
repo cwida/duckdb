@@ -61,7 +61,7 @@ public:
 	static void Sinker(ExecutionContext &context, DataChunk &sink_chunk, DataChunk &coll_chunk, idx_t input_idx,
 	                   OperatorSinkInput &sink);
 	//! Finish the sinking and prepare to scan
-	static void Finalizer(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink);
+	static SourceResultType Finalizer(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink);
 
 	//! The corresponding global value state
 	const WindowValueGlobalState &gvstate;
@@ -109,7 +109,8 @@ void WindowValueLocalState::Sinker(ExecutionContext &context, DataChunk &sink_ch
 	}
 }
 
-void WindowValueLocalState::Finalizer(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink) {
+SourceResultType WindowValueLocalState::Finalizer(ExecutionContext &context, CollectionPtr collection,
+                                                  OperatorSinkInput &sink) {
 	auto &gvstate = sink.global_state.Cast<WindowValueGlobalState>();
 	auto &executor = gvstate.executor;
 	const auto &value_idx = gvstate.value_idx;
@@ -122,14 +123,21 @@ void WindowValueLocalState::Finalizer(ExecutionContext &context, CollectionPtr c
 	auto &local_value = lvstate.local_value;
 	if (local_value) {
 		auto &value_state = local_value->Cast<WindowIndexTreeLocalState>();
-		value_state.Finalize(context, sink.interrupt_state);
-		value_state.index_tree.Build(context.client);
+		auto result = value_state.Finalize(context, sink.interrupt_state);
+		if (result != SourceResultType::FINISHED) {
+			return result;
+		}
+		result = value_state.index_tree.Build(sink.interrupt_state);
+		if (result != SourceResultType::FINISHED) {
+			return result;
+		}
 	}
 
 	// Prepare to scan
 	if (!lvstate.cursor && gvstate.value_idx != DConstants::INVALID_INDEX) {
 		lvstate.cursor = make_uniq<WindowCursor>(*collection, gvstate.value_idx);
 	}
+	return SourceResultType::FINISHED;
 }
 
 //===--------------------------------------------------------------------===//
@@ -320,7 +328,7 @@ public:
 	static void Sinker(ExecutionContext &context, DataChunk &sink_chunk, DataChunk &coll_chunk, idx_t input_idx,
 	                   OperatorSinkInput &sink);
 	//! Finish the sinking and prepare to scan
-	static void Finalizer(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink);
+	static SourceResultType Finalizer(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink);
 
 	//! The optional sorting state for the secondary sort row mapping
 	unique_ptr<LocalSinkState> local_row;
@@ -340,15 +348,26 @@ void WindowLeadLagLocalState::Sinker(ExecutionContext &context, DataChunk &sink_
 	}
 }
 
-void WindowLeadLagLocalState::Finalizer(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink) {
-	WindowValueLocalState::Finalizer(context, collection, sink);
+SourceResultType WindowLeadLagLocalState::Finalizer(ExecutionContext &context, CollectionPtr collection,
+                                                    OperatorSinkInput &sink) {
+	auto result = WindowValueLocalState::Finalizer(context, collection, sink);
+	if (result != SourceResultType::FINISHED) {
+		return result;
+	}
 
 	auto &local_row = sink.local_state.Cast<WindowLeadLagLocalState>().local_row;
 	if (local_row) {
 		auto &row_state = local_row->Cast<WindowMergeSortTreeLocalState>();
-		row_state.Finalize(context, sink.interrupt_state);
-		row_state.window_tree.Build(context.client);
+		result = row_state.Finalize(context, sink.interrupt_state);
+		if (result != SourceResultType::FINISHED) {
+			return result;
+		}
+		result = row_state.window_tree.Build(sink.interrupt_state);
+		if (result != SourceResultType::FINISHED) {
+			return result;
+		}
 	}
+	return SourceResultType::FINISHED;
 }
 
 //===--------------------------------------------------------------------===//
@@ -1715,14 +1734,18 @@ public:
 	}
 
 	//! Finish the sinking and prepare to scan
-	static void Finalizer(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink);
+	static SourceResultType Finalizer(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink);
 
 	//! Cursor for the secondary sort values
 	unique_ptr<WindowCursor> order_cursor;
 };
 
-void WindowFillLocalState::Finalizer(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink) {
-	WindowLeadLagLocalState::Finalizer(context, collection, sink);
+SourceResultType WindowFillLocalState::Finalizer(ExecutionContext &context, CollectionPtr collection,
+                                                 OperatorSinkInput &sink) {
+	const auto result = WindowLeadLagLocalState::Finalizer(context, collection, sink);
+	if (result != SourceResultType::FINISHED) {
+		return result;
+	}
 
 	// Prepare to scan
 	auto &gfstate = sink.global_state.Cast<WindowFillGlobalState>();
@@ -1730,6 +1753,7 @@ void WindowFillLocalState::Finalizer(ExecutionContext &context, CollectionPtr co
 	if (!lfstate.order_cursor && gfstate.order_idx != DConstants::INVALID_INDEX) {
 		lfstate.order_cursor = make_uniq<WindowCursor>(*collection, gfstate.order_idx);
 	}
+	return SourceResultType::FINISHED;
 }
 
 WindowFunction FillFun::GetFunction() {

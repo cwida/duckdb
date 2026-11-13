@@ -10,6 +10,7 @@
 
 #include "duckdb/common/array.hpp"
 #include "duckdb/common/atomic.hpp"
+#include "duckdb/common/enums/operator_result_type.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/pair.hpp"
@@ -19,6 +20,7 @@
 #include "duckdb/common/vector.hpp"
 #include "duckdb/common/vector_operations/aggregate_executor.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/parallel/interrupt.hpp"
 #include <iomanip>
 #include <thread>
 
@@ -124,8 +126,12 @@ struct MergeSortTree {
 
 	Elements &Allocate(idx_t count);
 
-	//! Build the tree in parallel: every thread calls this and waits for the others at each level.
-	//! The wait is interruptible so that a failed run releases the waiting threads through the executor.
+	//! Build the tree in parallel with the other threads that call this. Returns FINISHED once the tree has been built,
+	//! or BLOCKED (HAVE_MORE_OUTPUT if the thread can not be blocked) to be called again once the other threads have
+	//! built the runs of the current level.
+	SourceResultType Build(const InterruptState &interrupt);
+	//! Build the tree in parallel: every thread calls this and waits for the others at each level. For callers that can
+	//! not yield; the wait is interruptible so that a failed run releases the waiting threads through the executor.
 	void Build(ClientContext &context);
 
 	//	{nth index, remainder}
@@ -157,11 +163,13 @@ protected:
 	idx_t build_run;
 	idx_t build_run_length;
 	idx_t build_num_runs;
+	//! The threads waiting for the runs of the current level to be built
+	vector<InterruptState> build_blocked;
 
+	//! Get the next run to build (must hold the build lock). Returns false if the tree has been built, or all the runs
+	//! of the current level are being built.
 	bool TryNextRun(idx_t &level_idx, idx_t &run_idx) {
 		const auto fanout = F;
-
-		lock_guard<mutex> stage_guard(build_lock);
 
 		// Finished with this level?
 		if (build_complete >= build_num_runs) {
@@ -190,6 +198,32 @@ protected:
 	}
 
 	void BuildRun(idx_t level_idx, idx_t run_idx);
+
+	//! Block the thread until the runs of the current level have been built (must hold the build lock)
+	SourceResultType BlockBuild(const InterruptState &interrupt) {
+		if (!interrupt.CanCallback()) {
+			return SourceResultType::HAVE_MORE_OUTPUT;
+		}
+		build_blocked.push_back(interrupt);
+		return SourceResultType::BLOCKED;
+	}
+
+	//! Mark a run as built, and unblock the waiting threads once that completes the current level
+	void CompleteRun() {
+		//	The level can not advance before this run is complete, so this is the number of runs of its level
+		const auto num_runs = build_num_runs;
+		if (++build_complete < num_runs) {
+			return;
+		}
+		vector<InterruptState> blocked;
+		{
+			lock_guard<mutex> stage_guard(build_lock);
+			blocked.swap(build_blocked);
+		}
+		for (auto &state : blocked) {
+			state.Callback();
+		}
+	}
 
 	RunElement StartGames(Games &losers, const RunElements &elements, const RunElement &sentinel) {
 		const auto elem_nodes = elements.size();
@@ -359,20 +393,36 @@ typename MergeSortTree<E, O, CMP, F, C>::Elements &MergeSortTree<E, O, CMP, F, C
 }
 
 template <typename E, typename O, typename CMP, uint64_t F, uint64_t C>
-void MergeSortTree<E, O, CMP, F, C>::Build(ClientContext &context) {
+SourceResultType MergeSortTree<E, O, CMP, F, C>::Build(const InterruptState &interrupt) {
 	//	Fan in parent levels until we are at the top
 	//	Note that we don't build the top layer as that would just be all the data.
 	while (build_level.load() < tree.size()) {
+		idx_t level_idx;
+		idx_t run_idx;
+		{
+			lock_guard<mutex> stage_guard(build_lock);
+			if (!TryNextRun(level_idx, run_idx)) {
+				if (build_level.load() >= tree.size()) {
+					break;
+				}
+				//	All the runs of this level are being built
+				return BlockBuild(interrupt);
+			}
+		}
+		BuildRun(level_idx, run_idx);
+	}
+	return SourceResultType::FINISHED;
+}
+
+template <typename E, typename O, typename CMP, uint64_t F, uint64_t C>
+void MergeSortTree<E, O, CMP, F, C>::Build(ClientContext &context) {
+	//	Without a task to reschedule, waiting for the other threads returns HAVE_MORE_OUTPUT
+	const InterruptState no_interrupt;
+	while (Build(no_interrupt) != SourceResultType::FINISHED) {
 		//	A failed run never completes its level, so the waiting threads
 		//	leave through the interrupt that the executor raises for the failure
 		context.InterruptCheck();
-		idx_t level_idx;
-		idx_t run_idx;
-		if (TryNextRun(level_idx, run_idx)) {
-			BuildRun(level_idx, run_idx);
-		} else {
-			std::this_thread::yield();
-		}
+		std::this_thread::yield();
 	}
 }
 
@@ -452,7 +502,7 @@ void MergeSortTree<E, O, CMP, F, C>::BuildRun(idx_t level_idx, idx_t run_idx) {
 		}
 	}
 
-	++build_complete;
+	CompleteRun();
 }
 
 template <typename E, typename O, typename CMP, uint64_t F, uint64_t C>

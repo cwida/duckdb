@@ -8,7 +8,6 @@
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 
 #include <numeric>
-#include <thread>
 
 namespace duckdb {
 
@@ -55,9 +54,11 @@ public:
 		build_num_runs = count;
 	}
 
-	void Build(ClientContext &context, WindowDistinctAggregatorLocalState &ldastate);
+	//! See MergeSortTree::Build for the result
+	SourceResultType Build(WindowDistinctAggregatorLocalState &ldastate, const InterruptState &interrupt);
 
 protected:
+	//! Get the next run to build (must hold the build lock)
 	bool TryNextRun(idx_t &level_idx, idx_t &run_idx);
 	void BuildRun(idx_t level_nr, idx_t i, WindowDistinctAggregatorLocalState &ldastate);
 
@@ -75,7 +76,12 @@ public:
 	//! Create a new local sort
 	optional_ptr<LocalSinkState> InitializeLocalSort(ExecutionContext &context) const;
 
-	bool TryPrepareNextStage(WindowDistinctAggregatorLocalState &lstate);
+	//! Returns false if the thread has to wait for the other threads to finish the current stage, with the result to
+	//! return for that (BLOCKED or HAVE_MORE_OUTPUT)
+	bool TryPrepareNextStage(WindowDistinctAggregatorLocalState &lstate, const InterruptState &interrupt,
+	                         SourceResultType &wait);
+	//! Unblock the threads waiting for the current stage (once a task has completed)
+	void UnblockStage() const;
 
 	//! The tree allocators.
 	//! We need to hold onto them for the tree lifetime,
@@ -91,6 +97,8 @@ public:
 	mutable idx_t tasks_assigned;
 	//! Tasks completed successfully
 	mutable atomic<idx_t> tasks_completed;
+	//! The threads waiting for the current stage
+	mutable vector<InterruptState> blocked;
 
 	//! The aggregate arguments + partition index
 	vector<LogicalType> sort_types;
@@ -199,6 +207,8 @@ public:
 	optional_ptr<LocalSinkState> local_sink;
 	//! Finalize stage
 	WindowDistinctSortStage stage = WindowDistinctSortStage::INIT;
+	//! Whether the local state has been finalized (the global state is finalized after that, possibly in steps)
+	bool finalized = false;
 	//! Finalize scan block index
 	idx_t block_idx;
 	//! Thread-local tree aggregation
@@ -330,8 +340,31 @@ void WindowDistinctAggregatorLocalState::ExecuteTask(ExecutionContext &context,
 	++gdstate.tasks_completed;
 }
 
-bool WindowDistinctAggregatorGlobalState::TryPrepareNextStage(WindowDistinctAggregatorLocalState &lstate) {
+void WindowDistinctAggregatorGlobalState::UnblockStage() const {
+	vector<InterruptState> unblocked;
+	{
+		lock_guard<mutex> stage_guard(lock);
+		unblocked.swap(blocked);
+	}
+	for (auto &state : unblocked) {
+		state.Callback();
+	}
+}
+
+bool WindowDistinctAggregatorGlobalState::TryPrepareNextStage(WindowDistinctAggregatorLocalState &lstate,
+                                                              const InterruptState &interrupt, SourceResultType &wait) {
 	lock_guard<mutex> stage_guard(lock);
+
+	//	Block until a task of the current stage has completed
+	const auto block = [&]() {
+		if (interrupt.CanCallback()) {
+			blocked.push_back(interrupt);
+			wait = SourceResultType::BLOCKED;
+		} else {
+			wait = SourceResultType::HAVE_MORE_OUTPUT;
+		}
+		return false;
+	};
 
 	switch (stage.load()) {
 	case WindowDistinctSortStage::INIT:
@@ -347,7 +380,7 @@ bool WindowDistinctAggregatorGlobalState::TryPrepareNextStage(WindowDistinctAggr
 			lstate.block_idx = tasks_assigned++;
 			return true;
 		} else if (tasks_completed < tasks_assigned) {
-			return false;
+			return block();
 		}
 		// All combines are done, so move on to materialising the sorted data (1 task)
 		total_tasks = 1;
@@ -359,7 +392,7 @@ bool WindowDistinctAggregatorGlobalState::TryPrepareNextStage(WindowDistinctAggr
 	case WindowDistinctSortStage::FINALIZE:
 		if (tasks_completed < tasks_assigned) {
 			//	Wait for the single task to finish
-			return false;
+			return block();
 		}
 		//	Move on to building the tree in parallel
 		total_tasks = local_sinks.size();
@@ -376,7 +409,7 @@ bool WindowDistinctAggregatorGlobalState::TryPrepareNextStage(WindowDistinctAggr
 		} else if (tasks_completed < tasks_assigned) {
 			lstate.stage = WindowDistinctSortStage::FINISHED;
 			// Sleep while other tasks finish
-			return false;
+			return block();
 		}
 		break;
 	default:
@@ -388,30 +421,41 @@ bool WindowDistinctAggregatorGlobalState::TryPrepareNextStage(WindowDistinctAggr
 	return true;
 }
 
-void WindowDistinctAggregator::Finalize(ExecutionContext &context, CollectionPtr collection, const FrameStats &stats,
-                                        OperatorSinkInput &sink) {
+SourceResultType WindowDistinctAggregator::Finalize(ExecutionContext &context, CollectionPtr collection,
+                                                    const FrameStats &stats, OperatorSinkInput &sink) {
 	auto &gdsink = sink.global_state.Cast<WindowDistinctAggregatorGlobalState>();
 	auto &ldstate = sink.local_state.Cast<WindowDistinctAggregatorLocalState>();
-	ldstate.Finalize(context, gdsink, collection);
+	//	This can be called again after yielding or blocking (with the steps below continuing where they were)
+	if (!ldstate.finalized) {
+		ldstate.Finalize(context, gdsink, collection);
+		ldstate.finalized = true;
+	}
 
 	// Sort, merge and build the tree in parallel
 	while (gdsink.stage.load() != WindowDistinctSortStage::FINISHED) {
-		//	A failed task never completes its stage, so the waiting threads
-		//	leave through the interrupt that the executor raises for the failure
-		context.client.InterruptCheck();
-		if (gdsink.TryPrepareNextStage(ldstate)) {
-			ldstate.ExecuteTask(context, gdsink);
-		} else {
-			std::this_thread::yield();
+		auto wait = SourceResultType::FINISHED;
+		if (!gdsink.TryPrepareNextStage(ldstate, sink.interrupt_state, wait)) {
+			//	A failed task never completes its stage, so the waiting threads are not unblocked by it: they are
+			//	destroyed by the executor when it cancels the tasks for the failure
+			return wait;
 		}
+		ldstate.ExecuteTask(context, gdsink);
+		gdsink.UnblockStage();
 	}
 
 	//	These are a parallel implementations,
 	//	so every thread can call them.
-	gdsink.zipped_tree.Build(context.client);
-	gdsink.merge_sort_tree.Build(context.client, ldstate);
+	auto result = gdsink.zipped_tree.Build(sink.interrupt_state);
+	if (result != SourceResultType::FINISHED) {
+		return result;
+	}
+	result = gdsink.merge_sort_tree.Build(ldstate, sink.interrupt_state);
+	if (result != SourceResultType::FINISHED) {
+		return result;
+	}
 
 	++gdsink.finalized;
+	return SourceResultType::FINISHED;
 }
 
 void WindowDistinctAggregatorLocalState::Sorted() {
@@ -484,8 +528,6 @@ void WindowDistinctAggregatorLocalState::Sorted() {
 bool WindowDistinctSortTree::TryNextRun(idx_t &level_idx, idx_t &run_idx) {
 	const auto fanout = FANOUT;
 
-	lock_guard<mutex> stage_guard(build_lock);
-
 	//	Verify we are not done
 	if (build_level >= tree.size()) {
 		return false;
@@ -525,21 +567,26 @@ bool WindowDistinctSortTree::TryNextRun(idx_t &level_idx, idx_t &run_idx) {
 	return true;
 }
 
-void WindowDistinctSortTree::Build(ClientContext &context, WindowDistinctAggregatorLocalState &ldastate) {
+SourceResultType WindowDistinctSortTree::Build(WindowDistinctAggregatorLocalState &ldastate,
+                                               const InterruptState &interrupt) {
 	//	Fan in parent levels until we are at the top
 	//	Note that we don't build the top layer as that would just be all the data.
 	while (build_level.load() < tree.size()) {
-		//	A failed run never completes its level, so the waiting threads
-		//	leave through the interrupt that the executor raises for the failure
-		context.InterruptCheck();
 		idx_t level_idx;
 		idx_t run_idx;
-		if (TryNextRun(level_idx, run_idx)) {
-			BuildRun(level_idx, run_idx, ldastate);
-		} else {
-			std::this_thread::yield();
+		{
+			lock_guard<mutex> stage_guard(build_lock);
+			if (!TryNextRun(level_idx, run_idx)) {
+				if (build_level.load() >= tree.size()) {
+					break;
+				}
+				//	All the runs of this level are being built
+				return BlockBuild(interrupt);
+			}
 		}
+		BuildRun(level_idx, run_idx, ldastate);
 	}
+	return SourceResultType::FINISHED;
 }
 
 void WindowDistinctSortTree::BuildRun(idx_t level_nr, idx_t run_idx, WindowDistinctAggregatorLocalState &ldastate) {
@@ -642,7 +689,7 @@ void WindowDistinctSortTree::BuildRun(idx_t level_nr, idx_t run_idx, WindowDisti
 		ncombine = 0;
 	}
 
-	++build_complete;
+	CompleteRun();
 }
 
 void WindowDistinctAggregatorLocalState::FlushStates() {

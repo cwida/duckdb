@@ -4,8 +4,6 @@
 #include "duckdb/function/window/window_aggregate_states.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 
-#include <thread>
-
 namespace duckdb {
 
 //===--------------------------------------------------------------------===//
@@ -58,6 +56,20 @@ public:
 	//! The error that made building an entry fail
 	mutex build_lock;
 	ErrorData build_error;
+	//! The threads waiting for the level being built to be completed
+	vector<InterruptState> build_blocked;
+
+	//! Unblock the threads waiting for the level being built (once it is completed, or failed)
+	void UnblockBuild() {
+		vector<InterruptState> blocked;
+		{
+			const lock_guard<mutex> guard(build_lock);
+			blocked.swap(build_blocked);
+		}
+		for (auto &state : blocked) {
+			state.Callback();
+		}
+	}
 	//! The tree allocators.
 	//! We need to hold onto them for the tree lifetime,
 	//! not the lifetime of the local state that constructed part of the tree
@@ -152,7 +164,9 @@ public:
 	explicit WindowSegmentTreeLocalState(ExecutionContext &context) : WindowAggregatorLocalState(context) {
 	}
 
-	void Finalize(ExecutionContext &context, WindowAggregatorGlobalState &gastate, CollectionPtr collection) override;
+	//! Build the tree in parallel with the other threads (see window_finalize_function_t for the result)
+	SourceResultType BuildTree(ExecutionContext &context, WindowSegmentTreeGlobalState &gstate,
+	                           CollectionPtr collection, const InterruptState &interrupt);
 	void Evaluate(ExecutionContext &context, const WindowSegmentTreeGlobalState &gsink, const DataChunk &bounds,
 	              Vector &result, idx_t count, idx_t row_idx);
 	//! The left (default) segment tree part
@@ -161,12 +175,22 @@ public:
 	unique_ptr<WindowSegmentTreePart> right_part;
 };
 
-void WindowSegmentTree::Finalize(ExecutionContext &context, CollectionPtr collection, const FrameStats &stats,
-                                 OperatorSinkInput &sink) {
-	WindowAggregator::Finalize(context, collection, stats, sink);
+SourceResultType WindowSegmentTree::Finalize(ExecutionContext &context, CollectionPtr collection,
+                                             const FrameStats &stats, OperatorSinkInput &sink) {
+	auto result = WindowAggregator::Finalize(context, collection, stats, sink);
+	if (result != SourceResultType::FINISHED) {
+		return result;
+	}
 
 	auto &gasink = sink.global_state.Cast<WindowSegmentTreeGlobalState>();
+	auto &ltstate = sink.local_state.Cast<WindowSegmentTreeLocalState>();
+	result = ltstate.BuildTree(context, gasink, collection, sink.interrupt_state);
+	if (result != SourceResultType::FINISHED) {
+		return result;
+	}
+
 	++gasink.finalized;
+	return SourceResultType::FINISHED;
 }
 
 WindowSegmentTreePart::WindowSegmentTreePart(ArenaAllocator &allocator, const AggregateObject &aggr,
@@ -376,16 +400,14 @@ WindowSegmentTreeGlobalState::WindowSegmentTreeGlobalState(ClientContext &client
 	}
 }
 
-void WindowSegmentTreeLocalState::Finalize(ExecutionContext &context, WindowAggregatorGlobalState &gastate,
-                                           CollectionPtr collection) {
-	WindowAggregatorLocalState::Finalize(context, gastate, collection);
-
+SourceResultType WindowSegmentTreeLocalState::BuildTree(ExecutionContext &context, WindowSegmentTreeGlobalState &gstate,
+                                                        CollectionPtr collection, const InterruptState &interrupt) {
 	//	Single part for constructing the tree
-	auto &gstate = gastate.Cast<WindowSegmentTreeGlobalState>();
-	auto cursor = make_uniq<WindowCursor>(*collection, gastate.aggregator.child_idx);
+	//	This can be called again after yielding or blocking, and then continues with the level being built
+	auto cursor = make_uniq<WindowCursor>(*collection, gstate.aggregator.child_idx);
 	const auto leaf_count = collection->size();
 	auto &filter_mask = gstate.filter_mask;
-	WindowSegmentTreePart gtstate(allocator, gastate.aggr, std::move(cursor), filter_mask);
+	WindowSegmentTreePart gtstate(allocator, gstate.aggr, std::move(cursor), filter_mask);
 
 	//	Some aggregates (e.g., `MIN(x, n)`) allow "partition-constant" arguments (e.g., `n`)
 	//	and throw if you `Combine` across partitions. To avoid this, we only combine states
@@ -420,8 +442,15 @@ void WindowSegmentTreeLocalState::Finalize(ExecutionContext &context, WindowAggr
 		const idx_t build_begin = (*gstate.build_started).at(level_current).fetch_add(build_batch);
 		if (build_begin >= build_count) {
 			//	Nothing left at this level, so wait until other threads are done.
-			while (level_current == gstate.build_level.load() && !gstate.build_failed) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			{
+				const lock_guard<mutex> guard(gstate.build_lock);
+				if (level_current == gstate.build_level.load() && !gstate.build_failed) {
+					if (!interrupt.CanCallback()) {
+						return SourceResultType::HAVE_MORE_OUTPUT;
+					}
+					gstate.build_blocked.push_back(interrupt);
+					return SourceResultType::BLOCKED;
+				}
 			}
 			if (gstate.build_failed) {
 				// another thread failed to build its part of the level, so the tree will never be complete
@@ -466,6 +495,7 @@ void WindowSegmentTreeLocalState::Finalize(ExecutionContext &context, WindowAggr
 						gstate.build_error = ErrorData(ex);
 					}
 					gstate.build_failed = true;
+					gstate.UnblockBuild();
 					throw;
 				}
 			}
@@ -476,9 +506,11 @@ void WindowSegmentTreeLocalState::Finalize(ExecutionContext &context, WindowAggr
 		const idx_t build_complete = (*gstate.build_completed).at(level_current).fetch_add(completed) + completed;
 		if (build_complete == build_count) {
 			gstate.build_level++;
+			gstate.UnblockBuild();
 			continue;
 		}
 	}
+	return SourceResultType::FINISHED;
 }
 
 void WindowSegmentTree::Evaluate(ExecutionContext &context, const DataChunk &bounds, Vector &result, idx_t count,

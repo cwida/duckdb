@@ -254,7 +254,7 @@ public:
 	static unique_ptr<LocalSinkState> GetLocal(ExecutionContext &context, const GlobalSinkState &gstate) {
 		return make_uniq<LocalState>(context, gstate.Cast<GlobalState>());
 	}
-	static void Finalizer(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink) {
+	static SourceResultType Finalizer(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink) {
 		auto &gvstate = sink.global_state.Cast<GlobalState>();
 		auto &executor = gvstate.executor;
 		const auto value_idx = executor.child_idx[0];
@@ -262,6 +262,7 @@ public:
 		auto &lvstate = sink.local_state.Cast<LocalState>();
 		lvstate.validity = &collection->validities[value_idx];
 		lvstate.cursor = make_uniq<WindowCursor>(*collection, value_idx);
+		return SourceResultType::FINISHED;
 	}
 	static void GetData(ExecutionContext &context, DataChunk &eval_chunk, DataChunk &bounds, Vector &result,
 	                    idx_t row_idx, OperatorSinkInput &sink) {

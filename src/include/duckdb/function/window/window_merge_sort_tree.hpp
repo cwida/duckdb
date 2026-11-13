@@ -26,8 +26,8 @@ public:
 	//! Add a chunk to the local sort
 	void Sink(ExecutionContext &context, DataChunk &chunk, const idx_t row_idx,
 	          optional_ptr<SelectionVector> filter_sel, idx_t filtered, InterruptState &interrupt);
-	//! Sort the data
-	void Finalize(ExecutionContext &context, InterruptState &interrupt);
+	//! Sort the data (see window_finalize_function_t for the result)
+	SourceResultType Finalize(ExecutionContext &context, InterruptState &interrupt);
 	//! Process sorted leaf data
 	virtual void BuildLeaves() = 0;
 
@@ -66,9 +66,15 @@ public:
 	//! Post-sort cleanup (run as the single FINISH task)
 	virtual void Finished();
 
-	//! Sort state machine
-	bool TryPrepareSortStage(WindowMergeSortTreeLocalState &lstate);
-	//! Build the MST in parallel from the sorted data
+	//! Sort state machine. Returns false if the thread has to wait for the other threads to finish the current stage,
+	//! with the result to return for that (BLOCKED or HAVE_MORE_OUTPUT).
+	bool TryPrepareSortStage(WindowMergeSortTreeLocalState &lstate, const InterruptState &interrupt,
+	                         SourceResultType &wait);
+	//! Unblock the threads waiting for the current stage (once a task has completed)
+	void UnblockSortStage();
+	//! Build the MST in parallel from the sorted data (see window_finalize_function_t for the result)
+	SourceResultType Build(const InterruptState &interrupt);
+	//! Build the MST in parallel from the sorted data, waiting for the other threads (for callers that can not yield)
 	void Build(ClientContext &context);
 
 	//! The column indices for sorting
@@ -96,6 +102,8 @@ public:
 	idx_t tasks_assigned = 0;
 	//! Tasks completed successfully
 	atomic<idx_t> tasks_completed;
+	//! The threads waiting for the current stage
+	vector<InterruptState> blocked;
 
 	// Merge sort trees for various sizes
 	// Smaller is probably not worth the effort.
@@ -103,6 +111,10 @@ public:
 	using MergeSortTree64 = MergeSortTree<uint64_t, uint64_t>;
 	unique_ptr<MergeSortTree32> mst32;
 	unique_ptr<MergeSortTree64> mst64;
+
+protected:
+	//! Block the thread until a task of the current stage has completed (must hold the lock)
+	bool BlockSortStage(const InterruptState &interrupt, SourceResultType &wait);
 };
 
 } // namespace duckdb

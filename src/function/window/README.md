@@ -156,6 +156,14 @@ the `window_finalize_function_t` will be called for _each thread_:
 * `optional_ptr<WindowCollection> collection` - A wrapper around the `ColumnDataCollection` containing all hash group sized expressions;
 * `OperatorSinkInput &sink` - The sink data containing any data structures being computed.
 
+It returns a `SourceResultType`:
+
+* `FINISHED` - The thread is done finalizing;
+* `HAVE_MORE_OUTPUT` - Call it again (with the same local state). This lets the thread yield in between the steps of a long computation,
+  e.g. so that the query can be interrupted, or the progress can be reported;
+* `BLOCKED` - Call it again once the task has been rescheduled through `sink.interrupt_state.Callback()`,
+  e.g. when waiting for other threads to finish their part of the work.
+
 There is currently no provision for finalizing the global state except through locks shared by the local states.
 
 ### Evaluation

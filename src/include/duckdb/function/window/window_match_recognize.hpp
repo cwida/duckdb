@@ -26,7 +26,8 @@ struct WindowMatchRecognizeExecutor {
 	static unique_ptr<LocalSinkState> GetLocal(ExecutionContext &context, const GlobalSinkState &gstate);
 	static void Sink(ExecutionContext &context, DataChunk &sink_chunk, DataChunk &coll_chunk, idx_t input_idx,
 	                 OperatorSinkInput &sink);
-	static void Finalize(ExecutionContext &context, optional_ptr<WindowCollection> collection, OperatorSinkInput &sink);
+	static SourceResultType Finalize(ExecutionContext &context, optional_ptr<WindowCollection> collection,
+	                                 OperatorSinkInput &sink);
 	static void GetData(ExecutionContext &context, DataChunk &eval_chunk, DataChunk &bounds, Vector &result,
 	                    idx_t row_idx, OperatorSinkInput &sink);
 

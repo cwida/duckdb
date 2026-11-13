@@ -68,10 +68,17 @@ public:
 	virtual void Sink(ExecutionContext &context, DataChunk &sink_chunk, DataChunk &coll_chunk, const idx_t input_idx,
 	                  OperatorSinkInput &sink) const;
 
-	virtual void Finalize(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink) const;
+	//! See window_finalize_function_t for the result
+	virtual SourceResultType Finalize(ExecutionContext &context, CollectionPtr collection,
+	                                  OperatorSinkInput &sink) const;
 
 	void Evaluate(ExecutionContext &context, idx_t row_idx, DataChunk &eval_chunk, Vector &result,
 	              OperatorSinkInput &sink, idx_t count) const;
+
+	//! Does the function report the progress of finalizing a hash group?
+	virtual bool HasProgress() const;
+	//! The progress of finalizing the hash group with the given global state (see window_progress_function_t)
+	virtual ProgressData GetProgress(ClientContext &client, const GlobalSinkState &gstate) const;
 
 	// The function
 	const BoundWindowExpression &wexpr;

@@ -443,7 +443,7 @@ WindowBoundariesState::WindowBoundariesState(ExecutionContext &context, const Wi
 }
 
 void WindowBoundariesState::Finalize(CollectionPtr collection) {
-	if (range_idx != DConstants::INVALID_INDEX) {
+	if (range_idx != DConstants::INVALID_INDEX && !range) {
 		range = make_uniq<WindowCursor>(*collection, range_idx);
 	}
 }

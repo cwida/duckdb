@@ -58,7 +58,7 @@ public:
 	static void Sinker(ExecutionContext &context, DataChunk &sink_chunk, DataChunk &coll_chunk, idx_t input_idx,
 	                   OperatorSinkInput &sink);
 	//! Finish the sinking and prepare to scan
-	static void Finalizer(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink);
+	static SourceResultType Finalizer(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink);
 
 	void NextRank(idx_t partition_begin, idx_t peer_begin, idx_t row_idx);
 
@@ -82,13 +82,18 @@ void WindowPeerLocalState::Sinker(ExecutionContext &context, DataChunk &sink_chu
 	}
 }
 
-void WindowPeerLocalState::Finalizer(ExecutionContext &context, CollectionPtr collection, OperatorSinkInput &sink) {
+SourceResultType WindowPeerLocalState::Finalizer(ExecutionContext &context, CollectionPtr collection,
+                                                 OperatorSinkInput &sink) {
 	auto &local_tree = sink.local_state.Cast<WindowPeerLocalState>().local_tree;
 	if (local_tree) {
 		auto &local_tokens = local_tree->Cast<WindowMergeSortTreeLocalState>();
-		local_tokens.Finalize(context, sink.interrupt_state);
-		local_tokens.window_tree.Build(context.client);
+		const auto result = local_tokens.Finalize(context, sink.interrupt_state);
+		if (result != SourceResultType::FINISHED) {
+			return result;
+		}
+		return local_tokens.window_tree.Build(sink.interrupt_state);
 	}
+	return SourceResultType::FINISHED;
 }
 
 void WindowPeerLocalState::NextRank(idx_t partition_begin, idx_t peer_begin, idx_t row_idx) {

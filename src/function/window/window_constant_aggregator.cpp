@@ -282,8 +282,8 @@ void WindowConstantAggregatorLocalState::Sink(ExecutionContext &context, DataChu
 	}
 }
 
-void WindowConstantAggregator::Finalize(ExecutionContext &context, CollectionPtr collection, const FrameStats &stats,
-                                        OperatorSinkInput &sink) {
+SourceResultType WindowConstantAggregator::Finalize(ExecutionContext &context, CollectionPtr collection,
+                                                    const FrameStats &stats, OperatorSinkInput &sink) {
 	auto &gastate = sink.global_state.Cast<WindowConstantAggregatorGlobalState>();
 	auto &lastate = sink.local_state.Cast<WindowConstantAggregatorLocalState>();
 
@@ -295,6 +295,7 @@ void WindowConstantAggregator::Finalize(ExecutionContext &context, CollectionPtr
 	if (!--gastate.locals) {
 		gastate.statef.Finalize(*gastate.results);
 	}
+	return SourceResultType::FINISHED;
 }
 
 unique_ptr<LocalSinkState> WindowConstantAggregator::GetLocalState(ExecutionContext &context,

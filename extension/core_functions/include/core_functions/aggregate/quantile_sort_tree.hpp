@@ -366,7 +366,10 @@ struct QuantileSortTree {
 				local_state.Sink(partition.context, sort, row_idx, nullptr, 0, interrupt);
 			}
 		}
-		local_state.Finalize(partition.context, interrupt);
+		//	There is only one local state, so this never waits for other threads
+		const auto finalize_result = local_state.Finalize(partition.context, interrupt);
+		D_ASSERT(finalize_result == SourceResultType::FINISHED);
+		(void)finalize_result;
 	}
 
 	inline idx_t SelectNth(const SubFrames &frames, size_t n) const {

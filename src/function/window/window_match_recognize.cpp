@@ -1105,8 +1105,9 @@ static void ScanPartitions(ExecutionContext &context, WindowMatchRecognizeGlobal
 	}
 }
 
-void WindowMatchRecognizeExecutor::Finalize(ExecutionContext &context, optional_ptr<WindowCollection> collection,
-                                            OperatorSinkInput &sink) {
+SourceResultType WindowMatchRecognizeExecutor::Finalize(ExecutionContext &context,
+                                                        optional_ptr<WindowCollection> collection,
+                                                        OperatorSinkInput &sink) {
 	auto &gstate = sink.global_state.Cast<WindowMatchRecognizeGlobalState>();
 	auto &config = gstate.executor.wexpr.BindInfo()->Cast<MatchRecognizeFunctionData>();
 
@@ -1115,6 +1116,7 @@ void WindowMatchRecognizeExecutor::Finalize(ExecutionContext &context, optional_
 
 	PrepareHashGroup(gstate);
 	ScanPartitions(context, gstate, config, *collection);
+	return SourceResultType::FINISHED;
 }
 
 void WindowMatchRecognizeExecutor::GetData(ExecutionContext &context, DataChunk &eval_chunk, DataChunk &bounds,

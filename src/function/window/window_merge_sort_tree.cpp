@@ -3,7 +3,6 @@
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 
-#include <thread>
 #include <utility>
 
 namespace duckdb {
@@ -121,8 +120,8 @@ void WindowMergeSortTreeLocalState::ExecuteSortTask(ExecutionContext &context, I
 		break;
 	}
 
-	//	Completion means success: a failed task never completes its stage,
-	//	and the threads waiting for the stage leave through the executor's interrupt.
+	//	Completion means success: a failed task never completes its stage, and the threads waiting for the stage are
+	//	destroyed by the executor when it cancels the tasks for the failure.
 	++window_tree.tasks_completed;
 }
 
@@ -147,7 +146,29 @@ void WindowMergeSortTree::Finished() {
 	sorted.reset();
 }
 
-bool WindowMergeSortTree::TryPrepareSortStage(WindowMergeSortTreeLocalState &lstate) {
+bool WindowMergeSortTree::BlockSortStage(const InterruptState &interrupt, SourceResultType &wait) {
+	if (interrupt.CanCallback()) {
+		blocked.push_back(interrupt);
+		wait = SourceResultType::BLOCKED;
+	} else {
+		wait = SourceResultType::HAVE_MORE_OUTPUT;
+	}
+	return false;
+}
+
+void WindowMergeSortTree::UnblockSortStage() {
+	vector<InterruptState> unblocked;
+	{
+		lock_guard<mutex> stage_guard(lock);
+		unblocked.swap(blocked);
+	}
+	for (auto &state : unblocked) {
+		state.Callback();
+	}
+}
+
+bool WindowMergeSortTree::TryPrepareSortStage(WindowMergeSortTreeLocalState &lstate, const InterruptState &interrupt,
+                                              SourceResultType &wait) {
 	lock_guard<mutex> stage_guard(lock);
 
 	switch (build_stage.load()) {
@@ -165,7 +186,7 @@ bool WindowMergeSortTree::TryPrepareSortStage(WindowMergeSortTreeLocalState &lst
 			lstate.build_task = tasks_assigned++;
 			return true;
 		} else if (tasks_completed < tasks_assigned) {
-			return false;
+			return BlockSortStage(interrupt, wait);
 		}
 		// All combines are done, so move on to materialising the sorted data (1 task)
 		total_tasks = 1;
@@ -177,7 +198,7 @@ bool WindowMergeSortTree::TryPrepareSortStage(WindowMergeSortTreeLocalState &lst
 	case WindowMergeSortStage::FINALIZE:
 		if (tasks_completed < tasks_assigned) {
 			//	Wait for the single task to finish
-			return false;
+			return BlockSortStage(interrupt, wait);
 		}
 		//	Move on to building the tree in parallel
 		total_tasks = local_sinks.size();
@@ -193,7 +214,7 @@ bool WindowMergeSortTree::TryPrepareSortStage(WindowMergeSortTreeLocalState &lst
 			return true;
 		} else if (tasks_completed < tasks_assigned) {
 			// Sleep while other tasks finish
-			return false;
+			return BlockSortStage(interrupt, wait);
 		}
 		// All leaves are built, so move on to finishing the tree (1 task)
 		total_tasks = 1;
@@ -205,7 +226,7 @@ bool WindowMergeSortTree::TryPrepareSortStage(WindowMergeSortTreeLocalState &lst
 	case WindowMergeSortStage::FINISH:
 		if (tasks_completed < tasks_assigned) {
 			//	Wait for the single task to finish
-			return false;
+			return BlockSortStage(interrupt, wait);
 		}
 		break;
 	case WindowMergeSortStage::FINISHED:
@@ -217,18 +238,26 @@ bool WindowMergeSortTree::TryPrepareSortStage(WindowMergeSortTreeLocalState &lst
 	return true;
 }
 
-void WindowMergeSortTreeLocalState::Finalize(ExecutionContext &context, InterruptState &interrupt) {
+SourceResultType WindowMergeSortTreeLocalState::Finalize(ExecutionContext &context, InterruptState &interrupt) {
 	// Sort, merge and build the tree in parallel
 	while (window_tree.build_stage.load() != WindowMergeSortStage::FINISHED) {
-		//	A failed task never completes its stage, so the waiting threads
-		//	leave through the interrupt that the executor raises for the failure
-		context.client.InterruptCheck();
-		if (window_tree.TryPrepareSortStage(*this)) {
-			ExecuteSortTask(context, interrupt);
-		} else {
-			std::this_thread::yield();
+		auto wait = SourceResultType::FINISHED;
+		if (!window_tree.TryPrepareSortStage(*this, interrupt, wait)) {
+			//	A failed task never completes its stage, so the waiting threads are not unblocked by it: they are
+			//	destroyed by the executor when it cancels the tasks for the failure
+			return wait;
 		}
+		ExecuteSortTask(context, interrupt);
+		window_tree.UnblockSortStage();
 	}
+	return SourceResultType::FINISHED;
+}
+
+SourceResultType WindowMergeSortTree::Build(const InterruptState &interrupt) {
+	if (mst32) {
+		return mst32->Build(interrupt);
+	}
+	return mst64->Build(interrupt);
 }
 
 void WindowMergeSortTree::Build(ClientContext &context) {

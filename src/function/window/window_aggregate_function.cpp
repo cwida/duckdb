@@ -223,9 +223,12 @@ static void ApplyWindowStats(const WindowBoundary &boundary, FrameDelta &delta, 
 	}
 }
 
-void WindowAggregateExecutor::Finalize(ExecutionContext &context, CollectionPtr collection,
-                                       OperatorSinkInput &sink) const {
-	WindowExecutor::Finalize(context, collection, sink);
+SourceResultType WindowAggregateExecutor::Finalize(ExecutionContext &context, CollectionPtr collection,
+                                                   OperatorSinkInput &sink) const {
+	// Aggregates have no finalize callback, so this does not yield or block
+	const auto result = WindowExecutor::Finalize(context, collection, sink);
+	D_ASSERT(result == SourceResultType::FINISHED);
+	(void)result;
 
 	auto &gastate = sink.global_state.Cast<WindowAggregateExecutorGlobalState>();
 	auto &gsink = gastate.gsink;
@@ -248,7 +251,7 @@ void WindowAggregateExecutor::Finalize(ExecutionContext &context, CollectionPtr 
 
 	auto &lastate = sink.local_state.Cast<WindowAggregateExecutorLocalState>();
 	OperatorSinkInput asink {*gsink, *lastate.aggregator_state, sink.interrupt_state};
-	aggregator->Finalize(context, collection, stats, asink);
+	return aggregator->Finalize(context, collection, stats, asink);
 }
 
 void WindowAggregateExecutor::EvaluateInternal(ExecutionContext &context, DataChunk &eval_chunk, DataChunk &bounds,

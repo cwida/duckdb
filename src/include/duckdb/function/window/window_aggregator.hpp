@@ -97,8 +97,9 @@ public:
 	//	Build
 	virtual void Sink(ExecutionContext &context, DataChunk &sink_chunk, DataChunk &coll_chunk, idx_t input_idx,
 	                  optional_ptr<SelectionVector> filter_sel, idx_t filtered, OperatorSinkInput &sink);
-	virtual void Finalize(ExecutionContext &context, CollectionPtr collection, const FrameStats &stats,
-	                      OperatorSinkInput &sink);
+	//! See window_finalize_function_t for the result
+	virtual SourceResultType Finalize(ExecutionContext &context, CollectionPtr collection, const FrameStats &stats,
+	                                  OperatorSinkInput &sink);
 
 	//	Probe
 	virtual void Evaluate(ExecutionContext &context, const DataChunk &bounds, Vector &result, idx_t count,

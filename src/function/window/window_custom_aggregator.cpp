@@ -99,13 +99,13 @@ unique_ptr<GlobalSinkState> WindowCustomAggregator::GetGlobalState(ClientContext
 	return make_uniq<WindowCustomAggregatorGlobalState>(context, *this, group_count);
 }
 
-void WindowCustomAggregator::Finalize(ExecutionContext &context, CollectionPtr collection, const FrameStats &stats,
-                                      OperatorSinkInput &sink) {
+SourceResultType WindowCustomAggregator::Finalize(ExecutionContext &context, CollectionPtr collection,
+                                                  const FrameStats &stats, OperatorSinkInput &sink) {
 	//	Single threaded Finalize for now
 	auto &gcsink = sink.global_state.Cast<WindowCustomAggregatorGlobalState>();
 	lock_guard<mutex> gestate_guard(gcsink.lock);
 	if (gcsink.finalized) {
-		return;
+		return SourceResultType::FINISHED;
 	}
 
 	WindowAggregator::Finalize(context, collection, stats, sink);
@@ -132,6 +132,7 @@ void WindowCustomAggregator::Finalize(ExecutionContext &context, CollectionPtr c
 	}
 
 	++gcsink.finalized;
+	return SourceResultType::FINISHED;
 }
 
 unique_ptr<LocalSinkState> WindowCustomAggregator::GetLocalState(ExecutionContext &context,

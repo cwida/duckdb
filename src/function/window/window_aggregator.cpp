@@ -125,11 +125,12 @@ void WindowAggregatorLocalState::Finalize(ExecutionContext &context, WindowAggre
 	}
 }
 
-void WindowAggregator::Finalize(ExecutionContext &context, CollectionPtr collection, const FrameStats &stats,
-                                OperatorSinkInput &sink) {
+SourceResultType WindowAggregator::Finalize(ExecutionContext &context, CollectionPtr collection,
+                                            const FrameStats &stats, OperatorSinkInput &sink) {
 	auto &gasink = sink.global_state.Cast<WindowAggregatorGlobalState>();
 	auto &lastate = sink.local_state.Cast<WindowAggregatorLocalState>();
 	lastate.Finalize(context, gasink, collection);
+	return SourceResultType::FINISHED;
 }
 
 } // namespace duckdb
