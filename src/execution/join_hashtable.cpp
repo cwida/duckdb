@@ -1,3 +1,5 @@
+#include <new>
+
 #include "duckdb/execution/join_hashtable.hpp"
 
 #include "duckdb/common/enums/join_type.hpp"
@@ -148,11 +150,13 @@ void JoinHashTable::FinishInitWithLayout(shared_ptr<TupleDataLayout> published_l
 	dict_info = std::move(dict_info_p);
 	// A directory entry must identify an entire equality group.
 	if (equality_types.size() == 1) {
-		const auto type = !insert_duplicate_keys && mark_join_info.correlated_types.empty()
+		const auto track_matches = (join_type == JoinType::RIGHT_SEMI || join_type == JoinType::RIGHT_ANTI) &&
+		                           non_equality_predicates.empty() && !residual_predicate;
+		const auto type = track_matches || (!insert_duplicate_keys && mark_join_info.correlated_types.empty())
 		                      ? PerfectHashJoinTable::Type::BITMAP
 		                      : PerfectHashJoinTable::Type::ROWS;
-		perfect_hash_candidate =
-		    PerfectHashJoinTable::Create(equality_types[0].InternalType(), type, null_values_are_equal[0]);
+		perfect_hash_candidate = PerfectHashJoinTable::Create(equality_types[0].InternalType(), type,
+		                                                      null_values_are_equal[0], track_matches);
 	}
 
 	// Initialize the row matcher that are used for filtering during the probing only if there are non-equality preds
@@ -1161,9 +1165,10 @@ void JoinHashTable::AllocatePointerTable(bool use_radix_layout) {
 	} else {
 		AllocateHashMap(use_radix_layout);
 	}
+	const auto lookup_size = perfect_hash_table ? perfect_hash_table->SizeInBytes() : capacity * sizeof(uint64_t);
 	DUCKDB_LOG(context, PhysicalOperatorLogType, op, "JoinHashTable", "Build",
 	           {{"rows", to_string(data_collection->Count())},
-	            {"size", to_string(data_collection->SizeInBytes() + capacity * sizeof(uint64_t))}});
+	            {"size", to_string(data_collection->SizeInBytes() + lookup_size)}});
 }
 
 void JoinHashTable::AllocateHashMap(bool use_radix_layout) {
@@ -1225,6 +1230,7 @@ void JoinHashTable::Finalize(idx_t chunk_idx_from, idx_t chunk_idx_to, bool para
 		bool has_chains = false;
 		do {
 			auto &chunk_state = iterator.GetChunkState();
+			InitializeMatchFlags(chunk_state.row_locations);
 			has_chains |= perfect_hash_table->Insert(chunk_state.row_locations, *layout_ptr, pointer_offset, parallel);
 			if (prefix_range_state) {
 				InsertPrefixRangeChunk(chunk_state, iterator.GetCurrentChunkCount(), *prefix_range_state,
@@ -1243,6 +1249,7 @@ void JoinHashTable::Finalize(idx_t chunk_idx_from, idx_t chunk_idx_to, bool para
 	do {
 		const auto count = iterator.GetCurrentChunkCount();
 		TupleDataChunkState &chunk_state = iterator.GetChunkState();
+		InitializeMatchFlags(chunk_state.row_locations);
 
 		{
 			auto hash_data = FlatVector::Writer<hash_t>(hashes, count_t(count));
@@ -2007,15 +2014,7 @@ void ScanStructure::NextInnerJoin(DataChunk &keys, DataChunk &probe_data, DataCh
 			}
 
 			if (PropagatesBuildSide(ht.join_type)) {
-				// full/right outer join: mark join matches as FOUND in the HT
-				auto ptrs = FlatVector::GetData<data_ptr_t>(pointers);
-				for (idx_t i = 0; i < result_count; i++) {
-					auto idx = chain_match_sel_vector.get_index(i);
-					// NOTE: threadsan reports this as a data race because this can be set concurrently by separate
-					// threads Technically it is, but it does not matter, since the only value that can be written is
-					// "true"
-					Store<bool>(true, ptrs[idx] + ht.tuple_size);
-				}
+				ht.MarkMatchedRows(pointers, chain_match_sel_vector, result_count);
 			}
 
 			if (ht.join_type != JoinType::RIGHT_SEMI && ht.join_type != JoinType::RIGHT_ANTI) {
@@ -2119,16 +2118,53 @@ void ScanStructure::NextAntiJoin(DataChunk &keys, DataChunk &probe_data, DataChu
 	finished = true;
 }
 
+atomic<bool> &JoinHashTable::GetMatchFlag(data_ptr_t row) const {
+	return *reinterpret_cast<atomic<bool> *>(row + tuple_size);
+}
+
+void JoinHashTable::InitializeMatchFlags(const Vector &rows) const {
+	if (!PropagatesBuildSide(join_type) || (perfect_hash_table && perfect_hash_table->TracksMatches())) {
+		return;
+	}
+	static_assert(sizeof(atomic<bool>) == sizeof(bool) && alignof(atomic<bool>) == 1,
+	              "Atomic match flags must fit the packed row layout");
+	// Finalize pins the rows before constructing flags; they cannot move during probe/source.
+	for (auto entry : rows.Values<data_ptr_t>()) {
+		new (entry.GetValue() + tuple_size) atomic<bool>(false);
+	}
+}
+
+void JoinHashTable::MarkMatchedRows(Vector &pointers, const SelectionVector &sel, idx_t count) const {
+	const auto rows = FlatVector::GetData<data_ptr_t>(pointers);
+	for (idx_t i = 0; i < count; i++) {
+		GetMatchFlag(rows[sel.get_index(i)]).store(true, std::memory_order_relaxed);
+	}
+}
+
+idx_t JoinHashTable::SelectBuildMatches(array_ptr<const data_ptr_t> rows, idx_t &offset, array_ptr<data_ptr_t> result,
+                                        bool matched) const {
+	if (perfect_hash_table && perfect_hash_table->TracksMatches()) {
+		return perfect_hash_table->SelectMatches(rows, *layout_ptr, offset, result, matched);
+	}
+	idx_t count = 0;
+	while (offset < rows.size() && count < result.size()) {
+		const auto row = rows[offset++];
+		result[count] = row;
+		count += GetMatchFlag(row).load(std::memory_order_relaxed) == matched;
+	}
+	return count;
+}
+
 template <bool DICTIONARY>
 void JoinHashTable::MarkMatchedChains(Vector &pointers, const SelectionVector &sel, idx_t count) const {
 	const auto ptrs = FlatVector::GetData<data_ptr_t>(pointers);
 	for (idx_t i = 0; i < count; i++) {
 		auto row = ptrs[sel.get_index(i)];
-		if (Load<bool>(row + tuple_size)) {
+		if (GetMatchFlag(row).load(std::memory_order_relaxed)) {
 			continue;
 		}
 		do {
-			Store<bool>(true, row + tuple_size);
+			GetMatchFlag(row).store(true, std::memory_order_relaxed);
 			row = GetNextPointer<DICTIONARY>(row);
 		} while (row);
 	}
@@ -2143,7 +2179,6 @@ void JoinHashTable::MarkMatchedChains(Vector &pointers, const SelectionVector &s
 }
 
 void ScanStructure::NextRightSemiOrAntiJoin(DataChunk &keys, DataChunk &probe_data) {
-	const auto ptrs = FlatVector::GetData<data_ptr_t>(pointers);
 	while (!PointersExhausted()) {
 		const auto result_count = ResolvePredicates(keys, probe_data, chain_match_sel_vector, nullptr);
 		if (ht.non_equality_predicates.empty() && !ht.residual_predicate) {
@@ -2151,10 +2186,7 @@ void ScanStructure::NextRightSemiOrAntiJoin(DataChunk &keys, DataChunk &probe_da
 			ht.MarkMatchedChains(pointers, chain_match_sel_vector, result_count);
 			count = 0;
 		} else {
-			for (idx_t i = 0; i < result_count; i++) {
-				const auto idx = chain_match_sel_vector.get_index(i);
-				Store<bool>(true, ptrs[idx] + ht.tuple_size);
-			}
+			ht.MarkMatchedRows(pointers, chain_match_sel_vector, result_count);
 			AdvancePointers();
 		}
 	}
@@ -2488,15 +2520,9 @@ void JoinHashTable::ScanFullOuter(JoinHTScanState &state, Vector &addresses, Dat
 	do {
 		const auto count = iterator.GetCurrentChunkCount();
 		idx_t i = state.offset_in_chunk;
-		while (i < count && found_entries < STANDARD_VECTOR_SIZE) {
-			// Leave room for a scratch write even when every scanned row matches.
-			const auto end = MinValue(count, i + STANDARD_VECTOR_SIZE - found_entries);
-			for (; i < end; i++) {
-				const auto row = row_locations[i];
-				key_locations[found_entries] = row;
-				found_entries += Load<bool>(row + tuple_size) == match_propagation_value;
-			}
-		}
+		found_entries += SelectBuildMatches({row_locations, count}, i,
+		                                    {key_locations + found_entries, STANDARD_VECTOR_SIZE - found_entries},
+		                                    match_propagation_value);
 		if (found_entries == STANDARD_VECTOR_SIZE) {
 			state.offset_in_chunk = i;
 			break;

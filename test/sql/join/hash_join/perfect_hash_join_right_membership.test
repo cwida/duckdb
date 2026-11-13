@@ -1,5 +1,5 @@
 # name: test/sql/join/hash_join/perfect_hash_join_right_membership.test
-# description: Direct row lookup preserves build-side semi and anti join matches
+# description: Direct bitmap lookup preserves build-side semi and anti join matches
 # group: [hash_join]
 
 # Keep the operator logs across statements.
@@ -37,7 +37,7 @@ statement ok
 CALL disable_logging();
 
 query I
-SELECT NOT getvariable('check_perfect_activation') OR list_sort(list(parameters['Join Type'] || '/' || info['backend'])) = ['RIGHT_ANTI/direct','RIGHT_SEMI/direct']
+SELECT NOT getvariable('check_perfect_activation') OR list_sort(list(parameters['Join Type'] || '/' || info['backend'])) = ['RIGHT_ANTI/bitmap','RIGHT_SEMI/bitmap']
 FROM duckdb_logs_parsed('PhysicalOperator')
 WHERE class='PhysicalHashJoin' AND event='Lookup';
 ----

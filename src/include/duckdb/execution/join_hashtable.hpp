@@ -379,22 +379,6 @@ public:
 
 	//! Materialize RHS dictionaries after all finalize tasks complete.
 	void BuildDictionaryArrays(const PhysicalHashJoin &op);
-	//! Emit RHS dictionaries using build-row positions.
-	void EmitDictVectors(const SelectionVector &build_sel, idx_t count, DataChunk &result, idx_t rhs_col_offset,
-	                     DictionaryOwnershipCache &dictionary_state) const;
-	//! Emit RHS dictionaries using selected row pointers.
-	void EmitDictVectors(const data_ptr_t *row_ptrs, const JoinBuildSelection &selection, DataChunk &result,
-	                     idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const;
-	//! Emit RHS output columns for matched rows row_ptrs[ptr_sel[0..count)] into result starting at
-	//! result column rhs_col_offset, preserving prepared or surviving dictionaries where possible.
-	void GatherRHS(Vector &row_ptrs, const SelectionVector &ptr_sel, const idx_t count, DataChunk &result,
-	               idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const;
-	void GatherRHS(Vector &row_ptrs, const JoinBuildSelection &selection, DataChunk &result, idx_t rhs_col_offset,
-	               DictionaryOwnershipCache &dictionary_state) const;
-	//! Advance selected equality chains, compacting the surviving probe positions.
-	idx_t AdvancePointers(Vector &pointers, SelectionVector &out_sel, const SelectionVector &sel, idx_t count) const;
-	//! Mark every build row in the selected equality groups.
-	void MarkMatchedChains(Vector &pointers, const SelectionVector &sel, idx_t count) const;
 
 	idx_t Count() const {
 		return data_collection ? data_collection->Count() : 0;
@@ -529,6 +513,25 @@ public:
 	} mark_join_info;
 
 private:
+	//! Emit RHS dictionaries using build-row positions.
+	void EmitDictVectors(const SelectionVector &build_sel, idx_t count, DataChunk &result, idx_t rhs_col_offset,
+	                     DictionaryOwnershipCache &dictionary_state) const;
+	//! Emit RHS dictionaries using selected row pointers.
+	void EmitDictVectors(const data_ptr_t *row_ptrs, const JoinBuildSelection &selection, DataChunk &result,
+	                     idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const;
+	//! Emit RHS output columns for matched rows row_ptrs[ptr_sel[0..count)] into result starting at
+	//! result column rhs_col_offset, preserving prepared or surviving dictionaries where possible.
+	void GatherRHS(Vector &row_ptrs, const SelectionVector &ptr_sel, const idx_t count, DataChunk &result,
+	               idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const;
+	void GatherRHS(Vector &row_ptrs, const JoinBuildSelection &selection, DataChunk &result, idx_t rhs_col_offset,
+	               DictionaryOwnershipCache &dictionary_state) const;
+	//! Advance selected equality chains, compacting the surviving probe positions.
+	idx_t AdvancePointers(Vector &pointers, SelectionVector &out_sel, const SelectionVector &sel, idx_t count) const;
+	//! Mark selected build rows after all join predicates have matched.
+	void MarkMatchedRows(Vector &pointers, const SelectionVector &sel, idx_t count) const;
+	//! Mark every build row in the selected equality groups.
+	void MarkMatchedChains(Vector &pointers, const SelectionVector &sel, idx_t count) const;
+
 	void InitializeScanStructure(ScanStructure &scan_structure, DataChunk &keys, TupleDataChunkState &key_state,
 	                             optional_ptr<const SelectionVector> &current_sel);
 	void Hash(DataChunk &keys, const SelectionVector &sel, idx_t count, Vector &hashes);
@@ -567,6 +570,11 @@ private:
 		D_ASSERT(hash_map.get());
 		return reinterpret_cast<atomic<ht_entry_t> *>(hash_map.get());
 	}
+
+	void InitializeMatchFlags(const Vector &rows) const;
+	atomic<bool> &GetMatchFlag(data_ptr_t row) const;
+	idx_t SelectBuildMatches(array_ptr<const data_ptr_t> rows, idx_t &offset, array_ptr<data_ptr_t> result,
+	                         bool matched) const;
 
 	template <bool DICTIONARY>
 	data_ptr_t GetNextPointer(data_ptr_t row) const;
