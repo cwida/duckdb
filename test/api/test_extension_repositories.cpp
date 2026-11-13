@@ -534,9 +534,10 @@ static vector<string> LoadedRows(Connection &con, const string &name) {
 	return rows;
 }
 
-TEST_CASE("Test that duckdb_extensions marks the copy that was loaded", "[api]") {
-	auto repository_directory = TestCreatePath("ext_repo_loaded_copy");
-	auto extension_directory = TestCreatePath("ext_repo_loaded_copy_ext");
+TEST_CASE("Test that duckdb_extensions marks the loaded copy", "[api]") {
+	// short names: the test name is part of the path, and LoadLibrary rejects paths over MAX_PATH on Windows
+	auto repository_directory = TestCreatePath("lc_repo");
+	auto extension_directory = TestCreatePath("lc_ext");
 	auto fs = FileSystem::CreateLocal();
 	auto demo = fs->JoinPath(TestBuildDirectory(), "test/extension/loadable_extension_demo.duckdb_extension");
 	if (!fs->FileExists(demo)) {
