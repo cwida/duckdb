@@ -1,0 +1,20 @@
+# name: test/sql/index/art/scan/test_art_between_null_bound_scan.test
+# description: An ART scan must not turn a BETWEEN with a NULL bound into a one-sided range scan
+# group: [scan]
+
+statement ok
+CREATE TABLE t AS SELECT ('POINT(' || r || ' ' || r || ')')::GEOMETRY AS g FROM range(10) r(r);
+
+statement ok
+CREATE INDEX idx ON t ((vertex_extract(g, 'x')));
+
+# The points have no z coordinate, so the statistics fold vertex_extract(g, 'z') to a NULL constant.
+query I
+SELECT count(*) FROM t WHERE vertex_extract(g, 'x') BETWEEN vertex_extract(g, 'z') AND 5;
+----
+0
+
+query I
+SELECT count(*) FROM t WHERE vertex_extract(g, 'x') BETWEEN 2 AND vertex_extract(g, 'z');
+----
+0

@@ -275,12 +275,18 @@ unique_ptr<IndexScanState> ART::TryInitializeScan(const Expression &expr, const 
 			return nullptr;
 		}
 
+		// A NULL bound matches no rows.
+		if (lower_bound.Cast<BoundConstantExpression>().GetValue().IsNull() ||
+		    upper_bound.Cast<BoundConstantExpression>().GetValue().IsNull()) {
+			return nullptr;
+		}
+
 		auto lower_inclusive = BoundBetweenExpression::LowerInclusive(between);
 		auto upper_inclusive = BoundBetweenExpression::UpperInclusive(between);
 		low_value = lower_bound.Cast<BoundConstantExpression>().GetValue();
 		low_comparison_type =
 		    lower_inclusive ? ExpressionType::COMPARE_GREATERTHANOREQUALTO : ExpressionType::COMPARE_GREATERTHAN;
-		high_value = (upper_bound.Cast<BoundConstantExpression>()).GetValue();
+		high_value = upper_bound.Cast<BoundConstantExpression>().GetValue();
 		high_comparison_type =
 		    upper_inclusive ? ExpressionType::COMPARE_LESSTHANOREQUALTO : ExpressionType::COMPARE_LESSTHAN;
 	} else {
