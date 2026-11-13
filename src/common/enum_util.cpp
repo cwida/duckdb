@@ -230,6 +230,7 @@
 #include "duckdb/parser/tableref/showref.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/bound_result_modifier.hpp"
+#include "duckdb/planner/extension_callback.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/planner/logical_operator_repeatability.hpp"
 #include "duckdb/planner/logical_plan_verification_result.hpp"
@@ -6526,6 +6527,25 @@ const char* EnumUtil::ToChars<StateMemoryOwnership>(StateMemoryOwnership value) 
 template<>
 StateMemoryOwnership EnumUtil::FromString<StateMemoryOwnership>(const char *value) {
 	return static_cast<StateMemoryOwnership>(StringUtil::StringToEnum(GetStateMemoryOwnershipValues(), 2, "StateMemoryOwnership", value));
+}
+
+const StringUtil::EnumStringLiteral *GetStatementCheckTypeValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(StatementCheckType::SUBMISSION), "SUBMISSION" },
+		{ static_cast<uint32_t>(StatementCheckType::PREPARATION), "PREPARATION" },
+		{ static_cast<uint32_t>(StatementCheckType::INSPECTION), "INSPECTION" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<StatementCheckType>(StatementCheckType value) {
+	return StringUtil::EnumToString(GetStatementCheckTypeValues(), 3, "StatementCheckType", static_cast<uint32_t>(value));
+}
+
+template<>
+StatementCheckType EnumUtil::FromString<StatementCheckType>(const char *value) {
+	return static_cast<StatementCheckType>(StringUtil::StringToEnum(GetStatementCheckTypeValues(), 3, "StatementCheckType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetStatementReturnTypeValues() {

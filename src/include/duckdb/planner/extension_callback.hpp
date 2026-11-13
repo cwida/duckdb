@@ -16,6 +16,10 @@ struct DBConfig;
 class ClientContext;
 class DatabaseInstance;
 class ErrorData;
+class SQLStatement;
+
+//! The client operation, not the SQL statement type. Generated PREPARE/EXECUTE wrappers use SUBMISSION.
+enum class StatementCheckType : uint8_t { SUBMISSION, PREPARATION, INSPECTION };
 
 class ExtensionCallback {
 public:
@@ -41,6 +45,16 @@ public:
 	//! Destruction waits for this callback. The context and database are still alive.
 	//! Must not throw. Calls for different connections can overlap.
 	virtual void OnConnectionUnregistered(ClientContext &context) {
+	}
+	//! Throw to reject a parsed statement before preprocessing or connected routing, and reached children before
+	//! planning. Covers SQL submission, explicit preparation, BindStatement, GetTableNames and ExtractPlan.
+	//! Parsing alone and relation construction do not invoke this callback. Checks may repeat, including generated
+	//! PREPARE/EXECUTE wrappers. Extensions must inspect nested
+	//! ASTs themselves; retained prepared targets remain the responsibility of
+	//! ClientContextState::OnRebindPreparedStatement. Called with the connection lock held, without assuming a
+	//! transaction. Must be idempotent and not execute SQL. Different connections can invoke the same callback
+	//! concurrently.
+	virtual void OnStatementCheck(ClientContext &context, const SQLStatement &statement, StatementCheckType type) {
 	}
 
 	static void Register(DBConfig &config, shared_ptr<ExtensionCallback> extension);
