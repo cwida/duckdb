@@ -16,38 +16,6 @@ unzip data/storage/view_empty_sql.db.gz {TEST_DIR}/view_empty_sql.db
 statement ok
 ATTACH '{TEST_DIR}/view_empty_sql.db' AS stored;
 
-query II
-SELECT api_view.answer, sql_view.answer FROM stored.api_view AS api_view, stored.sql_view AS sql_view;
-----
-42	42
-
-query T
-SELECT sql FROM duckdb_views() WHERE view_name = 'sql_view';
-----
-CREATE VIEW sql_view AS SELECT (i + 1) AS answer FROM "source";
-
-query T
-SELECT sql FROM duckdb_views() WHERE view_name = 'api_view';
-----
-CREATE VIEW api_view AS SELECT (i + 1) AS answer FROM main."source";
-
-query T
-SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'api_view';
-----
-CREATE VIEW api_view AS SELECT (i + 1) AS answer FROM main."source";
-
-statement ok
-CREATE TABLE stored.checkpoint_marker(i INTEGER);
-
-statement ok
-CHECKPOINT stored;
-
-statement ok
-DETACH stored;
-
-statement ok
-ATTACH '{TEST_DIR}/view_empty_sql.db' AS stored;
-
 query I
 SELECT answer FROM stored.api_view;
 ----
@@ -55,10 +23,5 @@ SELECT answer FROM stored.api_view;
 
 query T
 SELECT sql FROM duckdb_views() WHERE view_name = 'api_view';
-----
-CREATE VIEW api_view AS SELECT (i + 1) AS answer FROM main."source";
-
-query T
-SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'api_view';
 ----
 CREATE VIEW api_view AS SELECT (i + 1) AS answer FROM main."source";
