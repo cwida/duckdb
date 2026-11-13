@@ -434,6 +434,36 @@ void ColumnData::Select(TransactionData transaction, idx_t vector_index, ColumnS
 	result.Slice(sel, s_count);
 }
 
+void ColumnData::SelectAndFilter(TransactionData transaction, idx_t vector_index, ColumnScanState &state,
+                                 Vector &result, SelectionVector &sel, idx_t &count, idx_t target_count,
+                                 TableFilterState &filter_state) {
+	D_ASSERT(count > 0 && count <= target_count);
+	const auto selected_count = count;
+	Select(transaction, vector_index, state, result, sel, selected_count);
+	FlatVector::SetSize(result, count_t(selected_count));
+
+	SelectionVector compact_sel;
+	ColumnSegment::FilterSelection(compact_sel, result, filter_state, selected_count, count);
+	if (count == 0) {
+		return;
+	}
+
+	// RowGroup slices filtered columns using original row positions.
+	SelectionVector original_positions(target_count);
+	for (idx_t i = 0; i < target_count; i++) {
+		original_positions.set_index(i, 0);
+	}
+	SelectionVector result_sel(count);
+	for (idx_t i = 0; i < count; i++) {
+		auto compact_idx = compact_sel.get_index(i);
+		auto original_idx = sel.get_index(compact_idx);
+		result_sel.set_index(i, original_idx);
+		original_positions.set_index(original_idx, compact_idx);
+	}
+	result.Slice(original_positions, target_count);
+	sel.Initialize(result_sel);
+}
+
 void ColumnData::Skip(ColumnScanState &state, idx_t s_count) {
 	state.Next(s_count);
 }
