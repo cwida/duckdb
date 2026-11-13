@@ -183,6 +183,21 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 		}
 	}
 
+	// The DESC of an ordered-set quantile is carried by negating its fraction, which describes a single sorting
+	// expression. With more sorting expressions the DESCENDING keys would silently be ignored, so reject them.
+	if (ordered_set_agg == 0 && aggr.OrderBy() && aggr.OrderBy()->orders.size() > 1 &&
+	    (aggr.FunctionName() == "quantile_cont" || aggr.FunctionName() == "quantile_disc")) {
+		auto &config = DBConfig::GetConfig(context);
+		for (auto &order : aggr.OrderBy()->orders) {
+			if (config.ResolveOrder(context, order.type) == OrderType::DESCENDING) {
+				throw BinderException(StringUtil::Format(
+				    "ORDER BY with multiple sorting expressions is not supported for %s, which can only reverse a "
+				    "single sorting expression",
+				    aggr.FunctionName().GetIdentifierName()));
+			}
+		}
+	}
+
 	vector<unique_ptr<Expression>> bound_arguments;
 	for (idx_t i = 0; i < aggr.GetArguments().size(); ++i) {
 		auto &child = aggr.GetArgumentsMutable()[i];

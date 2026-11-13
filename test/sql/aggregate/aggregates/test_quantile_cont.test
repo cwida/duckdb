@@ -150,6 +150,28 @@ FROM
 ----
 5.0	[5.0]
 
+# a DESC sorting expression next to other sorting expressions cannot be reversed, so it must not be ignored
+statement error
+SELECT quantile_cont(x, 0.0 ORDER BY (SELECT 1) = 1, x DESC) FROM (VALUES (1), (2)) _(x);
+----
+<REGEX>:Binder Error.*multiple sorting expressions.*
+
+statement error
+SELECT quantile_cont(x, 0.0 ORDER BY x DESC, (SELECT 1)) FROM (VALUES (1), (2)) _(x);
+----
+<REGEX>:Binder Error.*multiple sorting expressions.*
+
+statement error
+SELECT quantile_disc(x, 0.0 ORDER BY x DESC, (SELECT 1)) FROM (VALUES (1), (2)) _(x);
+----
+<REGEX>:Binder Error.*multiple sorting expressions.*
+
+# an ascending multi-key ORDER BY is unaffected
+query I
+SELECT quantile_cont(x, 0.0 ORDER BY (SELECT 1), x) FROM (VALUES (1), (2)) _(x);
+----
+1.0
+
 # empty input
 query R
 SELECT quantile_cont(r, 0.1) FROM quantile WHERE 1=0
