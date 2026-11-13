@@ -31,6 +31,12 @@
       ]
     },
     {
+      "reason": "Stores renderer settings that do not fit the active renderer, so the verification EXPLAIN fails",
+      "paths": [
+        "test/sql/settings/profiling_renderer_settings_invalid.test"
+      ]
+    },
+    {
       "reason": "Explain exceeds 300KB memory limit",
       "paths": [
         "test/issues/internal/test_5457.test"
