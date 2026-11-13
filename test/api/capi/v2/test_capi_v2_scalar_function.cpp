@@ -935,7 +935,6 @@ duckdb_v2_scalar_function_handle MakeCollation(duckdb_v2_connection_handle conn,
 	return function;
 }
 
-
 // Reads a BOOLEAN generic property, -1 if it is not set.
 int GetGenericBoolProperty(duckdb_v2_scalar_function_handle function, std::string_view name) {
 	duckdb_v2_value_handle value = nullptr;

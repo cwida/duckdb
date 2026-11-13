@@ -66,7 +66,7 @@ vector<string> CollationFunctions::GetCollations(ClientContext &context) {
 }
 
 static vector<CollationFunctionName> GetVarcharCollationFunctions(ClientContext &context, const LogicalType &sql_type,
-                                                   CollationType type) {
+                                                                  CollationType type) {
 	if (sql_type.id() != LogicalTypeId::VARCHAR) {
 		// only VARCHAR columns require collation
 		return vector<CollationFunctionName>();

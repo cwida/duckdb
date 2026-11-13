@@ -1525,21 +1525,21 @@ typedef struct {
 	(duckdb_v2_stats_handle stats, duckdb_v2_value_handle *value, duckdb_v2_error_info_handle *err);
 	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_value)
 	(duckdb_v2_stats_handle stats, duckdb_v2_value_handle value, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR (*duckdb_v2_aggregate_function_get_generic_property)
+	DUCKDB_V2_ERROR(*duckdb_v2_aggregate_function_get_generic_property)
 	(duckdb_v2_aggregate_function_handle function, const char *name, idx_t name_length,
 	 duckdb_v2_value_handle *out_value, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR (*duckdb_v2_aggregate_function_set_generic_property)
+	DUCKDB_V2_ERROR(*duckdb_v2_aggregate_function_set_generic_property)
 	(duckdb_v2_aggregate_function_handle function, const char *name, idx_t name_length, duckdb_v2_value_handle value,
 	 duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR (*duckdb_v2_scalar_function_get_generic_property)
+	DUCKDB_V2_ERROR(*duckdb_v2_scalar_function_get_generic_property)
 	(duckdb_v2_scalar_function_handle function, const char *name, idx_t name_length, duckdb_v2_value_handle *out_value,
 	 duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR (*duckdb_v2_scalar_function_set_generic_property)
+	DUCKDB_V2_ERROR(*duckdb_v2_scalar_function_set_generic_property)
 	(duckdb_v2_scalar_function_handle function, const char *name, idx_t name_length, duckdb_v2_value_handle value,
 	 duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR (*duckdb_v2_scalar_function_set_schema)(duckdb_v2_scalar_function_handle function,
-	                                                        const char *schema, idx_t schema_length,
-	                                                        duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR (*duckdb_v2_scalar_function_set_schema)
+	(duckdb_v2_scalar_function_handle function, const char *schema, idx_t schema_length,
+	 duckdb_v2_error_info_handle *err);
 } duckdb_ext_api_v2;
 
 //===--------------------------------------------------------------------===//

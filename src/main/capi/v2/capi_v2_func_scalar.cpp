@@ -685,8 +685,8 @@ DUCKDB_V2_ERROR duckdb_v2_connection_register_scalar_function(duckdb_v2_connecti
 		context.RunFunctionInTransaction([&]() {
 			auto &self = *Convert(function);
 			auto info = duckdb::CreateScalarFunctionInfo(self.Build(*context.db));
-			info.SetQualifiedName(duckdb::QualifiedName(info.GetQualifiedName().Catalog(), self.schema,
-			                                            info.GetFunctionName()));
+			info.SetQualifiedName(
+			    duckdb::QualifiedName(info.GetQualifiedName().Catalog(), self.schema, info.GetFunctionName()));
 			self.docs.AddTo(self.signature, info);
 			info.on_conflict = duckdb::OnCreateConflict::ALTER_ON_CONFLICT;
 			auto &catalog = duckdb::Catalog::GetSystemCatalog(context);
