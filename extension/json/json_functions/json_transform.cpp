@@ -522,6 +522,12 @@ static bool TransformToString(yyjson_val *vals[], yyjson_alc *alc, Vector &resul
 	return true;
 }
 
+//! A column whose key is already in the key map for another column: it copies that column's value
+struct JSONSharedKeyColumn {
+	idx_t col_idx;
+	idx_t source_col_idx;
+};
+
 //! Assigns the values of each object's keys to the columns; templated on the key map so that the exact match keeps
 //! its own hash and equality
 template <class KEY_MAP>
@@ -531,8 +537,19 @@ static bool AssignObjectValues(yyjson_val *objects[], yyjson_alc *alc, const idx
 	const idx_t column_count = names.size();
 	// Build hash map from key to column index so we don't have to linearly search using the key
 	KEY_MAP key_map;
+	vector<JSONSharedKeyColumn> shared_key_columns;
 	for (idx_t col_idx = 0; col_idx < column_count; col_idx++) {
-		key_map.insert({{names[col_idx].c_str(), names[col_idx].length()}, col_idx});
+		auto column_key = &names[col_idx];
+		if (options.key_mapping) {
+			auto mapped = options.key_mapping->find(*column_key);
+			if (mapped != options.key_mapping->end()) {
+				column_key = &mapped->second;
+			}
+		}
+		auto entry = key_map.insert({{column_key->c_str(), column_key->length()}, col_idx});
+		if (!entry.second) {
+			shared_key_columns.push_back({col_idx, entry.first->second});
+		}
 	}
 
 	idx_t found_key_count;
@@ -594,6 +611,14 @@ static bool AssignObjectValues(yyjson_val *objects[], yyjson_alc *alc, const idx
 				                       string(key_ptr, key_len));
 				options.object_index = i;
 				success = false;
+			}
+		}
+
+		for (auto &shared : shared_key_columns) {
+			if (found_keys[shared.source_col_idx]) {
+				nested_vals[shared.col_idx][i] = nested_vals[shared.source_col_idx][i];
+				found_keys[shared.col_idx] = true;
+				found_key_count++;
 			}
 		}
 
