@@ -1,0 +1,32 @@
+# name: test/sql/alter/add_pk/test_add_pk_checkpoint_estimate.test
+# description: Test that an ADD PRIMARY KEY backing index triggers an automatic checkpoint.
+# group: [add_pk]
+
+load {TEST_DIR}/test_add_pk_checkpoint_estimate.db
+
+statement ok
+CREATE TABLE test AS SELECT sha256(i::VARCHAR) AS k FROM range(10000) r(i)
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT wal_size = '0 bytes' FROM pragma_database_size()
+----
+1
+
+# The index estimate exceeds this threshold, while the ALTER metadata alone does not.
+statement ok
+SET checkpoint_threshold = '64KB'
+
+# Once checkpointing is selected, skip the WAL write.
+statement ok
+SET auto_checkpoint_skip_wal_threshold = 0
+
+statement ok
+ALTER TABLE test ADD PRIMARY KEY (k)
+
+query I
+SELECT wal_size = '0 bytes' FROM pragma_database_size()
+----
+1

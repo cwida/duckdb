@@ -383,8 +383,15 @@ bool CatalogSet::AlterEntry(CatalogTransaction transaction, const Identifier &na
 		serializer.WriteProperty(101, "alter_info", &alter_info);
 		serializer.End();
 
+		idx_t estimated_size = 0;
+		if (alter_info.IsAddUniqueConstraint()) {
+			auto &constraint_info = alter_info.Cast<AlterTableInfo>().Cast<AddConstraintInfo>();
+			estimated_size = constraint_info.estimated_backing_index_size;
+		}
+
 		DuckTransactionManager::Get(GetCatalog().GetAttached())
-		    .PushCatalogEntry(*transaction.transaction, new_entry->Child(), stream.GetData(), stream.GetPosition());
+		    .PushCatalogEntry(*transaction.transaction, new_entry->Child(), stream.GetData(), stream.GetPosition(),
+		                      estimated_size);
 	} else {
 		// if we don't have a transaction this alter is non-transactional
 		// in that case we are able to just directly destroy the child (if there is any)

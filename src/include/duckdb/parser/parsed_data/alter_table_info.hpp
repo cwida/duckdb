@@ -462,6 +462,9 @@ struct AddConstraintInfo : public AlterTableInfo {
 
 	//! The constraint to add.
 	unique_ptr<Constraint> constraint;
+	//! Runtime estimate set by PhysicalCreateIndex::Finalize and consumed by CatalogSet::AlterEntry.
+	//! It is not part of the ALTER semantics, so it is intentionally not serialized or copied.
+	idx_t estimated_backing_index_size = 0;
 
 public:
 	unique_ptr<AlterInfo> Copy() const override;

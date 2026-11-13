@@ -141,6 +141,7 @@ UndoBufferProperties UndoBuffer::GetProperties() {
 			properties.has_catalog_changes = true;
 
 			auto catalog_entry = Load<CatalogEntry *>(data);
+			properties.estimated_size += Load<idx_t>(data + sizeof(CatalogEntry *));
 			auto &parent = catalog_entry->Parent();
 			switch (parent.type) {
 			case CatalogType::DELETED_ENTRY:

@@ -180,6 +180,7 @@ SinkFinalizeType PhysicalCreateIndex::Finalize(Pipeline &pipeline, Event &event,
 		}
 		auto &constraint_info = alter_table_info->Cast<AddConstraintInfo>();
 		check_mode = constraint_info.constraint->Cast<UniqueConstraint>().check_mode;
+		constraint_info.estimated_backing_index_size = bound_index->GetInMemorySize();
 		index_oid = DatabaseManager::Get(context).NextOid();
 		constraint_info.constraint->SetBackingIndexOid(index_oid);
 

@@ -270,7 +270,7 @@ void WALWriteState::CommitEntry(UndoFlags type, data_ptr_t data) {
 		auto catalog_entry = Load<CatalogEntry *>(data);
 		D_ASSERT(catalog_entry->HasParent());
 		// push the catalog update to the WAL
-		WriteCatalogEntry(*catalog_entry, data + sizeof(CatalogEntry *));
+		WriteCatalogEntry(*catalog_entry, data + sizeof(CatalogEntry *) + sizeof(idx_t));
 		break;
 	}
 	case UndoFlags::INSERT_TUPLE: {
