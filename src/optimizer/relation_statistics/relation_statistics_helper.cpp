@@ -2,6 +2,8 @@
 #include "duckdb/optimizer/relation_statistics/relation_statistics_extractor.hpp"
 
 #include "duckdb/common/types/value_map.hpp"
+#include "duckdb/optimizer/apply_functional_dependencies.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/list.hpp"
@@ -449,6 +451,109 @@ idx_t RelationStatisticsHelper::EstimateGroupCardinality(LogicalOperator &input,
 	return estimate;
 }
 
+static optional<ColumnBinding> GetValuePreservingColumn(const Expression &expression) {
+	if (expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		return expression.Cast<BoundColumnRefExpression>().Binding();
+	}
+	if (!BoundCastExpression::IsCast(expression)) {
+		return {};
+	}
+	auto &cast = expression.Cast<BoundFunctionExpression>();
+	if (!BoundCastExpression::IsDefaultCast(cast) || BoundCastExpression::IsTryCast(cast)) {
+		return {};
+	}
+	auto source_type = BoundCastExpression::SourceType(cast);
+	auto &target_type = BoundCastExpression::TargetType(cast);
+	// Successful strict integral casts do not merge distinct input values.
+	if (source_type != target_type && !(source_type.IsIntegral() && target_type.IsIntegral()) &&
+	    !BoundCastExpression::CastIsInvertibleForEquality(source_type, target_type)) {
+		return {};
+	}
+	return GetValuePreservingColumn(BoundCastExpression::Child(cast));
+}
+
+static bool HasBaseColumnSource(LogicalOperator &op, ColumnBinding binding) {
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_GET: {
+		if (!op.children.empty()) {
+			return false;
+		}
+		for (auto &column : op.GetColumnBindings()) {
+			if (column == binding) {
+				return true;
+			}
+		}
+		return false;
+	}
+	case LogicalOperatorType::LOGICAL_PROJECTION: {
+		if (op.children.size() != 1) {
+			return false;
+		}
+		auto bindings = op.GetColumnBindings();
+		for (idx_t i = 0; i < bindings.size(); i++) {
+			if (bindings[i] != binding) {
+				continue;
+			}
+			auto child_binding = GetValuePreservingColumn(*op.expressions[i]);
+			return child_binding && HasBaseColumnSource(*op.children[0], *child_binding);
+		}
+		return false;
+	}
+	case LogicalOperatorType::LOGICAL_FILTER:
+	case LogicalOperatorType::LOGICAL_ORDER_BY:
+	case LogicalOperatorType::LOGICAL_LIMIT:
+	case LogicalOperatorType::LOGICAL_TOP_N:
+		return op.children.size() == 1 && HasBaseColumnSource(*op.children[0], binding);
+	default:
+		return false;
+	}
+}
+
+static bool HasUniqueGroups(LogicalOperator &op, const column_binding_set_t &groups) {
+	if (groups.empty()) {
+		return false;
+	}
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_PROJECTION: {
+		if (op.children.size() != 1) {
+			return false;
+		}
+		column_binding_set_t child_groups;
+		auto bindings = op.GetColumnBindings();
+		for (idx_t i = 0; i < bindings.size(); i++) {
+			if (groups.count(bindings[i]) == 0) {
+				continue;
+			}
+			auto binding = GetValuePreservingColumn(*op.expressions[i]);
+			if (binding) {
+				child_groups.insert(*binding);
+			}
+		}
+		return HasUniqueGroups(*op.children[0], child_groups);
+	}
+	case LogicalOperatorType::LOGICAL_FILTER:
+	case LogicalOperatorType::LOGICAL_ORDER_BY:
+	case LogicalOperatorType::LOGICAL_LIMIT:
+	case LogicalOperatorType::LOGICAL_TOP_N:
+		return op.children.size() == 1 && HasUniqueGroups(*op.children[0], groups);
+	default:
+		break;
+	}
+	for (auto &key : ApplyFunctionalDependencies::GetUniqueColumnCombinations(op)) {
+		bool covered = !key.empty();
+		for (auto &binding : key) {
+			if (groups.count(binding) == 0) {
+				covered = false;
+				break;
+			}
+		}
+		if (covered) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate &aggregate,
                                                                const RelationStats &child_stats,
                                                                RelationStatsExtractor &extractor,
@@ -509,6 +614,20 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 		        ? 1
 		        : RelationStatisticsHelper::EstimateDistinctCardinality(cardinality_counts, child_stats.cardinality);
 	}
+	bool has_unique_groups = false;
+	if (preserves_group_evidence && !aggregate.groups.empty() && aggregate.children.size() == 1) {
+		column_binding_set_t groups;
+		for (auto &group : aggregate.groups) {
+			auto binding = GetValuePreservingColumn(*group);
+			if (binding) {
+				groups.insert(*binding);
+			}
+		}
+		has_unique_groups = HasUniqueGroups(*aggregate.children[0], groups);
+		if (has_unique_groups) {
+			result.cardinality = child_stats.cardinality;
+		}
+	}
 	for (idx_t group_idx = 0; group_idx < aggregate.groups.size(); group_idx++) {
 		auto &group = *aggregate.groups[group_idx];
 		DistinctCount distinct_count(result.cardinality, DistinctCountSource::CARDINALITY);
@@ -535,8 +654,23 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 		                            Identifier(group.GetName()), semi_anti_join_domain_evidence);
 	}
 	for (auto &expression : aggregate.expressions) {
-		result.columns.emplace_back(bindings[result.columns.size()],
-		                            DistinctCount(result.cardinality, DistinctCountSource::CARDINALITY),
+		DistinctCount total_domain(result.cardinality, DistinctCountSource::CARDINALITY);
+		DistinctCount current_domain = total_domain;
+		if (has_unique_groups && expression->GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE) {
+			auto &bound_aggregate = expression->Cast<BoundAggregateExpression>();
+			auto &agg_children = bound_aggregate.GetChildren();
+			if (bound_aggregate.Function().HasSingleValueIdentity() && !bound_aggregate.GetFilter() &&
+			    !agg_children.empty() && expression->GetReturnType() == agg_children[0]->GetReturnType() &&
+			    agg_children[0]->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+				auto binding = agg_children[0]->Cast<BoundColumnRefExpression>().Binding();
+				auto child_column = child_columns.Find(binding);
+				if (child_column && HasBaseColumnSource(*aggregate.children[0], binding)) {
+					total_domain = child_column->total_domain;
+					current_domain = child_column->current_domain;
+				}
+			}
+		}
+		result.columns.emplace_back(bindings[result.columns.size()], total_domain, current_domain,
 		                            Identifier(expression->GetName()));
 	}
 	for (idx_t grouping_idx = 0; grouping_idx < aggregate.grouping_functions.size(); grouping_idx++) {
