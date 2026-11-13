@@ -54,3 +54,19 @@ statement error
 SELECT to_timestamp(1284352323::DOUBLE * 100000000);
 ----
 Conversion Error: Epoch seconds out of range for TIMESTAMP WITH TIME ZONE
+
+# Minimum valid value is 290309-12-22 (BC) 00:00:00 (#26797)
+query I
+SELECT make_timestamp_ms(-9223372022400000);
+----
+290309-12-22 (BC) 00:00:00
+
+statement error
+SELECT make_timestamp_ms(-9223372022400001);
+----
+Conversion Error: Timestamp milliseconds out of range
+
+statement error
+SELECT make_timestamp_ms(-9223372036854775);
+----
+Conversion Error: Timestamp milliseconds out of range

@@ -224,7 +224,33 @@ SELECT make_timestamp(0), make_timestamp(1684509234845000);
 statement error
 SELECT make_timestamp(9223372036854775807); -- Infinity
 ----
-Conversion Error: Timestamp microseconds out of range
+Conversion Error: Timestamp units out of range
+
+# Minimum valid value is 290309-12-22 (BC) 00:00:00 (#26797)
+query I
+SELECT make_timestamp(-9223372022400000000);
+----
+290309-12-22 (BC) 00:00:00
+
+query I
+SELECT make_timestamp(9223372036854775806);
+----
+294247-01-10 04:00:54.775806
+
+statement error
+SELECT make_timestamp(-9223372022400000001);
+----
+Conversion Error: Timestamp units out of range
+
+statement error
+SELECT make_timestamp(-9223372036854775806);
+----
+Conversion Error: Timestamp units out of range
+
+statement error
+SELECT make_timestamp(-9223372036854775807); -- Negative infinity
+----
+Conversion Error: Timestamp units out of range
 
 # From nanoseconds
 query II
@@ -241,7 +267,22 @@ SELECT make_timestamp_ns(9223372036854775806);
 statement error
 SELECT make_timestamp_ns(9223372036854775807); -- Infinity
 ----
-Conversion Error: Timestamp microseconds out of range
+Conversion Error: Timestamp units out of range
+
+query I
+SELECT make_timestamp_ns(-9223286400000000000);
+----
+1677-09-22 00:00:00
+
+statement error
+SELECT make_timestamp_ns(-9223286400000000001);
+----
+Conversion Error: Timestamp units out of range
+
+statement error
+SELECT make_timestamp_ns(-9223372036854775806);
+----
+Conversion Error: Timestamp units out of range
 
 #
 # Times

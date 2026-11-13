@@ -18,7 +18,7 @@ CREATE TABLE edge_tz(t TIMESTAMPTZ);
 
 statement ok
 INSERT INTO edge_tz VALUES
-  (make_timestamptz(-9223372036854775806)), ('2000-01-01'), (make_timestamptz(9223372036854775806)),
+  (make_timestamptz(-9223372022400000000)), ('2000-01-01'), (make_timestamptz(9223372036854775806)),
   ('-infinity'), ('infinity'), (NULL);
 
 query I
@@ -32,12 +32,12 @@ SELECT count(*) FROM edge_tz WHERE epoch(t) < 9223372036854775807;
 3
 
 query I
-SELECT count(*) FROM edge_tz WHERE epoch_us(t) >= -9223372036854775806;
+SELECT count(*) FROM edge_tz WHERE epoch_us(t) >= -9223372022400000000;
 ----
 3
 
 query I
-SELECT count(*) FROM edge_tz WHERE epoch_us(t) > -9223372036854775806;
+SELECT count(*) FROM edge_tz WHERE epoch_us(t) > -9223372022400000000;
 ----
 2
 

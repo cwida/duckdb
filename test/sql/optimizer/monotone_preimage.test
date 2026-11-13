@@ -215,10 +215,10 @@ statement ok
 CREATE TABLE ts_min(t TIMESTAMP);
 
 statement ok
-INSERT INTO ts_min VALUES (make_timestamp(-9223372036854775806));
+INSERT INTO ts_min VALUES (make_timestamp(-9223372022400000000));
 
 query I
-SELECT count(*) FROM ts_min WHERE epoch(t) > -9223372036854775807;
+SELECT count(*) FROM ts_min WHERE epoch(t) > -9223372022400000001;
 ----
 1
 
@@ -228,7 +228,7 @@ CREATE TABLE edge(t TIMESTAMP);
 
 statement ok
 INSERT INTO edge VALUES
-  (make_timestamp(-9223372036854775806)), ('290309-12-22 (BC) 00:00:00'), ('2000-01-01'),
+  (make_timestamp(-9223372022400000000)), ('290309-12-22 (BC) 00:00:00'), ('2000-01-01'),
   (make_timestamp(9223372036854775806)), ('-infinity'), ('infinity'), (NULL);
 
 query I
@@ -264,19 +264,19 @@ logical_opt	<REGEX>:.*t != '-infinity'.*t < 'infinity'.*
 
 # ... or one step inside the domain, below the first midnight of the range
 query I
-SELECT count(*) FROM edge WHERE epoch_us(t) > -9223372036854775806;
+SELECT count(*) FROM edge WHERE epoch_us(t) > -9223372022400000000;
 ----
-3
+2
 
 query I
-SELECT count(*) FROM edge WHERE epoch_us(t) < -9223372036854775805;
+SELECT count(*) FROM edge WHERE epoch_us(t) < -9223372022399999999;
 ----
-1
+2
 
 query I
-SELECT count(*) FROM edge WHERE epoch_us(t) = -9223372036854775806;
+SELECT count(*) FROM edge WHERE epoch_us(t) = -9223372022400000000;
 ----
-1
+2
 
 query II
 EXPLAIN SELECT count(*) FROM edge WHERE epoch_us(t) > -9223372036854775806;
@@ -286,7 +286,7 @@ logical_opt	<REGEX>:.*t >= '290309-12-21 \(BC\) 19:59:05.224195'.*
 query I
 SELECT count(*) FROM edge WHERE epoch_us(t) >= -9223372036854775000;
 ----
-3
+4
 
 statement ok
 EXPLAIN SELECT count(*) FROM edge WHERE epoch_us(t) >= -9223372036854775000;

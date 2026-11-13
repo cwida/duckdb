@@ -553,7 +553,11 @@ struct DatePart {
 			UnaryExecutor::Execute<int64_t, timestamp_t>(input.data[0], result, [&](int64_t input) {
 				// millisecond amounts provided to epoch_ms should never be considered infinite
 				// instead such values will just throw when converted to microseconds
-				return Timestamp::FromEpochMsPossiblyInfinite(input);
+				auto micros = Timestamp::FromEpochMsPossiblyInfinite(input);
+				if (!Timestamp::IsValid(micros)) {
+					throw ConversionException("Timestamp milliseconds out of range: %ld", input);
+				}
+				return micros;
 			});
 		}
 	};

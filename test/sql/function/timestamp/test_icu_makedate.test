@@ -399,6 +399,11 @@ SELECT make_timestamptz(9223372036854775807); -- Infinity
 Conversion Error: Timestamp microseconds out of range
 
 statement error
+SELECT make_timestamptz(-9223372036854775806); -- Below minimum valid timestamp (#26797)
+----
+Conversion Error: Timestamp microseconds out of range
+
+statement error
 SELECT make_timestamptz(294248, 1, 10, 4, 0, 54.775807);
 ----
 Conversion Error: ICU date overflows timestamp range

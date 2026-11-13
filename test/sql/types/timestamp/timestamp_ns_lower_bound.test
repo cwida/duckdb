@@ -3,24 +3,31 @@
 # group: [timestamp]
 
 # INT64_MIN is finite; INT64_MIN + 1 is reserved for negative infinity.
-query II
+statement error
 SELECT epoch_ns(make_timestamp_ns(-9223372036854775807::BIGINT - 1)),
        epoch_ns(make_timestamp_ns(-9223372036854775806::BIGINT))
 ----
--9223372036854775808	-9223372036854775806
+Conversion Error
+
+# These are the smallest legal ns timestamps
+query II
+SELECT epoch_ns(make_timestamp_ns(-9223286400000000000::BIGINT + 1)),
+       epoch_ns(make_timestamp_ns(-9223286400000000000::BIGINT))
+----
+-9223286399999999999	-9223286400000000000
 
 # These timestamps fit in BIGINT, but midnight on their date does not.
 query II
-SELECT CAST(make_timestamp_ns(-9223372036854775807::BIGINT - 1) AS VARCHAR),
-       CAST(make_timestamp_ns(-9223372036854775806::BIGINT) AS VARCHAR)
+SELECT CAST(make_timestamp_ns(-9223286400000000000::BIGINT + 1) AS VARCHAR),
+       CAST(make_timestamp_ns(-9223286400000000000::BIGINT) AS VARCHAR)
 ----
-1677-09-21 00:12:43.145224192	1677-09-21 00:12:43.145224194
+1677-09-22 00:00:00.000000001	1677-09-22 00:00:00
 
 query II
-SELECT CAST(make_timestamp_ns(-9223372036854775807::BIGINT - 1) AS TIME_NS),
-       CAST(make_timestamp_ns(-9223372036854775806::BIGINT) AS TIME_NS)
+SELECT CAST(make_timestamp_ns(-9223286400000000000::BIGINT + 1) AS TIME_NS),
+       CAST(make_timestamp_ns(-9223286400000000000::BIGINT) AS TIME_NS)
 ----
-00:12:43.145224192	00:12:43.145224194
+00:00:00.000000001	00:00:00
 
 # Scaling the microseconds to nanoseconds gives INT64_MIN - 192; adding 192 makes the value fit.
 query II
