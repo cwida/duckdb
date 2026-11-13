@@ -392,13 +392,13 @@ bool CTEBinding::IsReferenced() const {
 	return reference_count > 0;
 }
 
-void CTEBinding::Reference() {
+void CTEBinding::Reference(Binder &referencing_binder) {
 	if (!CanBeReferenced()) {
 		throw InternalException("CTE cannot be referenced!");
 	}
 	if (bind_state) {
 		// we have not bound the CTE yet - bind it
-		bind_state->Bind(*this);
+		bind_state->Bind(*this, referencing_binder);
 
 		// copy over the names / types and initialize the binding
 		this->names = bind_state->names;

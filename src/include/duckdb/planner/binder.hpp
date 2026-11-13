@@ -250,8 +250,11 @@ class Binder : public enable_shared_from_this<Binder> {
 	friend class RecursiveDependentJoinPlanner;
 
 public:
+	//! Create a binder. recursion_parent, if given, is a binder whose native bind recursion this binder continues
+	//! without being its lexical parent - used when a lazily bound CTE is bound from a reference site
 	DUCKDB_API static shared_ptr<Binder> CreateBinder(ClientContext &context, optional_ptr<Binder> parent = nullptr,
-	                                                  BinderType binder_type = BinderType::REGULAR_BINDER);
+	                                                  BinderType binder_type = BinderType::REGULAR_BINDER,
+	                                                  optional_ptr<Binder> recursion_parent = nullptr);
 
 	//! The client context
 	ClientContext &context;
@@ -494,12 +497,16 @@ private:
 	idx_t unnamed_subquery_index = 1;
 	//! Binder depth
 	idx_t depth;
+	//! Binder depth along the native bind recursion, excluding iteratively prepared sibling CTE scopes
+	idx_t recursion_depth;
 
 private:
-	//! Determine the depth of the binder
-	idx_t GetBinderDepth() const;
+	//! Check both depth counters against max_expression_depth
+	void CheckDepthLimit() const;
 	//! Increase the depth of the binder
 	void IncreaseDepth();
+	//! Increase only the cumulative depth, for iteratively planned subqueries
+	void IncreasePlanDepth();
 	//! Bind the expressions of generated columns to check for errors
 	void BindGeneratedColumns(BoundCreateTableInfo &info);
 	//! Bind the default values of the columns of a table
@@ -770,7 +777,8 @@ private:
 	bool DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_ptr<LogicalOperator> &root);
 
 private:
-	Binder(ClientContext &context, shared_ptr<Binder> parent, BinderType binder_type);
+	Binder(ClientContext &context, shared_ptr<Binder> parent, BinderType binder_type,
+	       optional_ptr<Binder> recursion_parent);
 };
 
 } // namespace duckdb

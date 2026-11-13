@@ -64,6 +64,12 @@
         "test/sql/attach/attach_to_external_resource.test",
         "test/sql/attach/external_resource_logging.test"
       ]
+    },
+    {
+      "reason": "Statement wrapping adds a binder level, shifting the exact depth boundary",
+      "paths": [
+        "test/sql/cte/cte_chain_depth_boundary.test"
+      ]
     }
   ]
 }

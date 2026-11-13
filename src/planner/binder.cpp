@@ -38,28 +38,40 @@
 
 namespace duckdb {
 
-idx_t Binder::GetBinderDepth() const {
-	return depth;
-}
-
-void Binder::IncreaseDepth() {
-	depth++;
+void Binder::CheckDepthLimit() const {
 	auto max_expression_depth = Settings::Get<MaxExpressionDepthSetting>(context);
-	if (depth > max_expression_depth) {
+	if (MaxValue<idx_t>(depth, recursion_depth) > max_expression_depth) {
 		throw BinderException("Max expression depth limit of %lld exceeded. Use \"SET max_expression_depth TO x\" to "
 		                      "increase the maximum expression depth.",
 		                      max_expression_depth);
 	}
 }
 
-shared_ptr<Binder> Binder::CreateBinder(ClientContext &context, optional_ptr<Binder> parent, BinderType binder_type) {
-	return shared_ptr<Binder>(new Binder(context, parent ? parent->shared_from_this() : nullptr, binder_type));
+void Binder::IncreaseDepth() {
+	depth++;
+	recursion_depth++;
+	CheckDepthLimit();
 }
 
-Binder::Binder(ClientContext &context, shared_ptr<Binder> parent_p, BinderType binder_type)
+void Binder::IncreasePlanDepth() {
+	// planned subqueries are charged cumulatively, but planning them is iterative, not native recursion
+	depth++;
+	CheckDepthLimit();
+}
+
+shared_ptr<Binder> Binder::CreateBinder(ClientContext &context, optional_ptr<Binder> parent, BinderType binder_type,
+                                        optional_ptr<Binder> recursion_parent) {
+	return shared_ptr<Binder>(
+	    new Binder(context, parent ? parent->shared_from_this() : nullptr, binder_type, recursion_parent));
+}
+
+Binder::Binder(ClientContext &context, shared_ptr<Binder> parent_p, BinderType binder_type,
+               optional_ptr<Binder> recursion_parent)
     : context(context), bind_context(*this), parent(std::move(parent_p)), binder_type(binder_type),
       global_binder_state(parent ? parent->global_binder_state : make_shared_ptr<GlobalBinderState>()),
-      entry_retriever(context), depth(parent ? parent->GetBinderDepth() : 1) {
+      entry_retriever(context), depth(parent ? parent->depth : 1),
+      recursion_depth(MaxValue<idx_t>(parent ? parent->recursion_depth : 1,
+                                      recursion_parent ? recursion_parent->recursion_depth : 1)) {
 	IncreaseDepth();
 	if (parent) {
 		entry_retriever.Inherit(parent->entry_retriever);
