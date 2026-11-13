@@ -63,6 +63,8 @@ struct AggregateFilterData {
 	SelectionVector true_sel;
 	//! The number of rows selected by the last Select
 	idx_t selected_count = 0;
+	//! Whether the last Select selected every row of the chunk: the payload is then used as it is
+	bool all_selected = false;
 	//! The non-distinct aggregates that use this filter
 	unsafe_vector<idx_t> aggregates;
 	//! The payload columns (the children of those aggregates) that ApplyFilter slices

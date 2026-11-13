@@ -1,0 +1,237 @@
+# name: test/optimizer/case_to_filter_aggregate_exactness.test
+# description: f(CASE WHEN c THEN x ELSE 0 END) -> f(x) FILTER (WHERE c): the shapes in which the filtered aggregate is not the CASE aggregate
+# group: [optimizer]
+
+# Shapes in which a naive rewrite of `sum(CASE WHEN c THEN x ELSE 0 END)` returns another value than the CASE form:
+# the grand total of ROLLUP / CUBE / GROUPING SETS over an empty input, a floating-point THEN constant as the factor
+# of a count, and a THEN expression taken for NOT NULL because its arguments are (a struct field, a list element).
+# Every block runs with the rule disabled and enabled, both with the grouping sets split into separate aggregates (the
+# default) and kept in one aggregate; the rows are those of the CASE form.
+
+statement ok
+CREATE TABLE empty_t(g INTEGER, c BOOLEAN, v INTEGER, w INTEGER NOT NULL);
+
+statement ok
+CREATE TABLE f AS SELECT i % 4 AS g, i % 4 = 1 AS c, i AS v FROM range(400) r(i);
+
+# DOUBLE and FLOAT columns, and a one-row table: the side of a cross join that is repeated as a constant vector
+statement ok
+CREATE TABLE fd AS SELECT i % 4 AS g, i % 3 = 1 AS c, (i % 13)::DOUBLE / 7 AS d, ((i % 17)::DOUBLE / 3)::FLOAT AS r FROM range(4000) r(i);
+
+statement ok
+CREATE TABLE constants AS SELECT 0.1::DOUBLE AS x;
+
+statement ok
+CREATE TABLE t3(g INTEGER, c BOOLEAN NOT NULL, s STRUCT(x INTEGER) NOT NULL, l INTEGER[] NOT NULL, a INTEGER NOT NULL, b INTEGER NOT NULL);
+
+statement ok
+INSERT INTO t3 VALUES
+	(1, true, {'x': NULL}, [1], 1, 0), (1, true, {'x': NULL}, [1], 2, 0),
+	(2, true, {'x': 5}, [], 3, 1), (2, false, {'x': NULL}, [2], 4, 1),
+	(3, true, {'x': NULL}, [], 5, 2);
+
+foreach disabled 'case_to_filter_aggregate' '' 'grouping_sets,case_to_filter_aggregate' 'grouping_sets'
+
+statement ok
+SET disabled_optimizers = {disabled}
+
+# 1. an empty input has one row per grouping set without a column, and a sum over no rows is NULL: the count form
+# (THEN 1, THEN 2) and the NOT NULL form (w) need the empty-input guard of the ungrouped aggregate
+query IIII nosort
+SELECT g, sum(CASE WHEN c THEN v ELSE 0 END), sum(CASE WHEN c THEN 1 ELSE 0 END), sum(CASE WHEN c THEN w ELSE 0 END)
+FROM empty_t GROUP BY ROLLUP (g)
+----
+NULL	NULL	NULL	NULL
+
+query IIII nosort
+SELECT g, sum(CASE WHEN c THEN 1 ELSE 0 END), sum(CASE WHEN c THEN w ELSE 0 END), sum(CASE WHEN c THEN 2 ELSE 0 END)
+FROM empty_t GROUP BY GROUPING SETS ((g), ())
+----
+NULL	NULL	NULL	NULL
+
+query IIII nosort
+SELECT g, v, sum(CASE WHEN c THEN 1 ELSE 0 END), sum(CASE WHEN c THEN w ELSE 0 END)
+FROM empty_t GROUP BY CUBE (g, v)
+----
+NULL	NULL	NULL	NULL
+
+# grouping sets that all have a column return no row for an empty input
+query III nosort
+SELECT g, sum(CASE WHEN c THEN 1 ELSE 0 END), sum(CASE WHEN c THEN w ELSE 0 END)
+FROM empty_t GROUP BY GROUPING SETS ((g), (g, v))
+----
+
+query II nosort
+SELECT sum(CASE WHEN c THEN 1 ELSE 0 END), sum(CASE WHEN c THEN w ELSE 0 END) FROM empty_t
+----
+NULL	NULL
+
+# the guard does not change the groups of an input with rows: the grand total and the groups of a ROLLUP
+query IIII nosort
+SELECT g, sum(CASE WHEN c THEN v ELSE 0 END), sum(CASE WHEN c THEN 1 ELSE 0 END), sum(CASE WHEN c THEN 3 ELSE 0 END)
+FROM f GROUP BY ROLLUP (g) ORDER BY ALL
+----
+0	0	0	0
+1	19900	100	300
+2	0	0	0
+3	0	0	0
+NULL	19900	100	300
+
+# 2. a floating-point THEN constant: a group without a match is 0.0, not 0 * inf = nan
+query IRRR nosort
+SELECT g, sum(CASE WHEN c THEN 'inf'::DOUBLE ELSE 0 END), sum(CASE WHEN c THEN '-inf'::DOUBLE ELSE 0 END),
+       sum(CASE WHEN c THEN 'nan'::DOUBLE ELSE 0 END)
+FROM f GROUP BY g ORDER BY g
+----
+0	0.0	0.0	0.0
+1	inf	-inf	nan
+2	0.0	0.0	0.0
+3	0.0	0.0	0.0
+
+# the sum of 100 times 0.1 is not 100 * 0.1, a sum of -0.0 is 0.0, and 1e300 rounds per row as well
+query ITTTT nosort
+SELECT g, sum(CASE WHEN g < 3 THEN 0.1::DOUBLE ELSE 0 END)::VARCHAR, sum(CASE WHEN c THEN '-0.0'::DOUBLE ELSE 0 END)::VARCHAR,
+       sum(CASE WHEN g = 1 THEN '-0.0'::DOUBLE ELSE 0 END)::VARCHAR, sum(CASE WHEN g < 3 THEN 1e300 ELSE 0 END)::VARCHAR
+FROM f GROUP BY g ORDER BY g
+----
+0	9.99999999999998	0.0	0.0	9.99999999999998e+301
+1	9.99999999999998	0.0	0.0	9.99999999999998e+301
+2	9.99999999999998	0.0	0.0	9.99999999999998e+301
+3	0.0	0.0	0.0	0.0
+
+# (the digits of an ungrouped sum of DOUBLE values depend on the vector size: compare the runs with each other)
+query TT nosort ungrouped_float_constant
+SELECT sum(CASE WHEN g < 3 THEN 0.1::DOUBLE ELSE 0 END)::VARCHAR, sum(CASE WHEN g < 3 THEN 1e308 ELSE 0 END)::VARCHAR FROM f
+----
+
+# a DOUBLE column: the filtered aggregate adds the same values in the same order as the CASE form, so that the digits
+# are the same (compare the runs with each other). The sum over a FLOAT column keeps its CASE, which is the argument
+# of the cast to DOUBLE
+query ITTTT nosort grouped_float_column
+SELECT g, sum(CASE WHEN c THEN d END)::VARCHAR, sum(CASE WHEN c THEN d ELSE 0 END)::VARCHAR,
+       avg(CASE WHEN c THEN d END)::VARCHAR, sum(CASE WHEN c THEN r ELSE 0 END)::VARCHAR
+FROM fd GROUP BY g ORDER BY g
+----
+
+query TTTT nosort ungrouped_float_column
+SELECT sum(CASE WHEN c THEN d END)::VARCHAR, sum(CASE WHEN c THEN d ELSE 0 END)::VARCHAR,
+       avg(CASE WHEN c THEN d END)::VARCHAR, sum(CASE WHEN c THEN r ELSE 0 END)::VARCHAR
+FROM fd
+----
+
+# an integer constant keeps the exact count form
+query III nosort
+SELECT g, sum(CASE WHEN c THEN 7 ELSE 0 END), sum(CASE WHEN g < 3 THEN -2 ELSE 0 END) FROM f GROUP BY g ORDER BY g
+----
+0	0	-200
+1	700	-200
+2	0	-200
+3	0	0
+
+# a decimal constant is the filtered sum, exact in either form
+query IRR nosort
+SELECT g, sum(CASE WHEN c THEN 0.1 ELSE 0 END), sum(CASE WHEN g < 3 THEN 2.5 ELSE 0 END) FROM f GROUP BY g ORDER BY g
+----
+0	0.0	250.0
+1	10.0	250.0
+2	0.0	250.0
+3	0.0	0.0
+
+# 3. NOT NULL arguments do not make a NOT NULL result: the field of a NOT NULL struct and the element of a NOT NULL
+# list are NULL in the groups 1 and 3, where every row matches, so the sum is NULL (a sum over NULLs), not 0
+query IIII nosort
+SELECT g, sum(CASE WHEN c THEN s.x ELSE 0 END), sum(CASE WHEN c THEN l[1] ELSE 0 END), sum(CASE WHEN c THEN a ELSE 0 END)
+FROM t3 GROUP BY g ORDER BY g
+----
+1	NULL	2	3
+2	5	0	3
+3	NULL	NULL	5
+
+# the arithmetic the proof still follows: a NOT NULL column, a product with a constant, a cast between numeric types,
+# a division by a constant
+query IRIR nosort
+SELECT g, sum(CASE WHEN c THEN a::DOUBLE * 2 ELSE 0 END), sum(CASE WHEN c THEN CAST(a AS BIGINT) ELSE 0 END),
+       sum(CASE WHEN c THEN a::DOUBLE / 2 ELSE 0 END)
+FROM t3 GROUP BY g ORDER BY g
+----
+1	6.0	3	1.5
+2	6.0	3	1.5
+3	10.0	5	2.5
+
+endloop
+
+# the plans
+statement ok
+SET explain_output='physical_only'
+
+# an aggregate with several grouping sets (the grouping sets are not split into separate aggregates here): the grand
+# total of an empty input is guarded, the count form is NULL unless the group has rows
+statement ok
+SET disabled_optimizers = 'grouping_sets'
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN 1 ELSE 0 END), sum(CASE WHEN c THEN w ELSE 0 END) FROM empty_t GROUP BY ROLLUP (g)
+----
+physical_plan	<REGEX>:.*> 0\)\) THEN \(CAST\(#[0-9]+ AS HUGEINT\)\) ELSE NULL.*
+
+# grouping sets that all have a column need no guard
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN 1 ELSE 0 END), sum(CASE WHEN c THEN 2 ELSE 0 END) FROM empty_t GROUP BY GROUPING SETS ((g), (g, v))
+----
+physical_plan	<!REGEX>:.*> 0\)\) THEN.*
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN 1 ELSE 0 END), sum(CASE WHEN c THEN 2 ELSE 0 END) FROM empty_t GROUP BY GROUPING SETS ((g), (g, v))
+----
+physical_plan	<REGEX>:.*FILTER.*
+
+statement ok
+SET disabled_optimizers = ''
+
+# a DOUBLE column under sum / avg is rewritten
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN d ELSE 0 END), avg(CASE WHEN c THEN d END) FROM fd GROUP BY g
+----
+physical_plan	<!REGEX>:.*CASE  WHEN.*
+
+# also where it arrives as a constant vector (the one-row side of a cross join). For such a vector sum adds
+# value * count instead of adding the value count times: the CASE form computes a flat vector and hides it from the
+# sum, the filtered aggregate does not. Its digits are those of a user-written FILTER (10.0 here, where the CASE form
+# adds up to 9.99999999999998), so that only the plan and the value are checked
+query II
+EXPLAIN SELECT sum(CASE WHEN i % 2 = 0 THEN x END) FROM constants CROSS JOIN range(200) r(i)
+----
+physical_plan	<REGEX>:.*sum\(#[0-9]+\) FILTER.*
+
+query RR
+SELECT sum(CASE WHEN i % 2 = 0 THEN x END), sum(x) FILTER (WHERE i % 2 = 0) FROM constants CROSS JOIN range(200) r(i)
+----
+10.0	10.0
+
+# a floating-point constant keeps its CASE
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN 0.1::DOUBLE ELSE 0 END), sum(CASE WHEN c THEN 2.5::DOUBLE ELSE 0 END) FROM f GROUP BY g
+----
+physical_plan	<!REGEX>:.*FILTER.*
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN 0.1::DOUBLE END), avg(CASE WHEN c THEN 2.5::FLOAT END) FROM f GROUP BY g
+----
+physical_plan	<!REGEX>:.*FILTER.*
+
+# an integer constant still is the count, a decimal one the filtered sum
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN 7 ELSE 0 END), sum(CASE WHEN g < 3 THEN -2 ELSE 0 END) FROM f GROUP BY g
+----
+physical_plan	<REGEX>:.*count\(\) FILTER.*
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN 0.1 ELSE 0 END), sum(CASE WHEN g < 3 THEN 2.5 ELSE 0 END) FROM f GROUP BY g
+----
+physical_plan	<REGEX>:.*sum_no_overflow\(#[0-9]+\) FILTER.*
+
+# the struct field takes the nullable form (the bare filtered sum when every row of the group matches)
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN s.x ELSE 0 END), sum(CASE WHEN c THEN l[1] ELSE 0 END) FROM t3 GROUP BY g
+----
+physical_plan	<REGEX>:.*COALESCE\(#[0-9]+, 0\)\) ELSE #[0-9]+ END.*COALESCE\(#[0-9]+, 0\)\) ELSE #[0-9]+ END.*

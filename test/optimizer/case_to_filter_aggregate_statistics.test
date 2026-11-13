@@ -1,0 +1,405 @@
+# name: test/optimizer/case_to_filter_aggregate_statistics.test
+# description: sum(CASE WHEN c THEN x ELSE 0 END) -> filtered aggregate: the NOT NULL proof of x only rests on statistics that describe the rows the aggregate reads
+# group: [optimizer]
+
+# `sum(CASE WHEN c THEN x ELSE 0 END)` is NULL for a group in which every row matches and every x is NULL (a sum over
+# NULLs). The rewrite drops the helper counts that detect such a group if x is provably NOT NULL, and the proof reads
+# the statistics of the scanned table. These tests change the table between the moment the statistics are read and
+# the moment the rows are scanned - or as closely to it as a query can - and expect the rows of the CASE form.
+# In t, group 1 only has matching rows and group 2 has a row that does not match.
+
+foreach disabled 'case_to_filter_aggregate' ''
+
+statement ok
+SET disabled_optimizers = {disabled}
+
+# 1. a data-modifying CTE changes the rows while the query runs: the statistics are those of the rows before it
+statement ok
+CREATE OR REPLACE TABLE t (g INTEGER, c BOOLEAN, x INTEGER)
+
+statement ok
+INSERT INTO t VALUES (1, true, 1)
+
+query I
+WITH changed AS (UPDATE t SET x = NULL RETURNING x)
+SELECT sum(CASE WHEN c THEN x ELSE 0 END) FROM t
+----
+NULL
+
+statement ok
+CREATE OR REPLACE TABLE t (g INTEGER, c BOOLEAN, x INTEGER)
+
+statement ok
+INSERT INTO t VALUES (1, true, 1), (2, true, 2), (2, false, 3)
+
+query II
+WITH changed AS (UPDATE t SET x = NULL WHERE g = 1 RETURNING x)
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM t GROUP BY g ORDER BY g
+----
+1	NULL
+2	2
+
+statement ok
+CREATE OR REPLACE TABLE t (g INTEGER, c BOOLEAN, x INTEGER)
+
+statement ok
+INSERT INTO t VALUES (1, true, 1), (2, true, 2), (2, false, 3)
+
+query II
+WITH added AS (INSERT INTO t VALUES (3, true, NULL) RETURNING g)
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM t GROUP BY g ORDER BY g
+----
+1	1
+2	2
+3	NULL
+
+# the aggregate in a CTE of its own, next to the data-modifying one
+statement ok
+CREATE OR REPLACE TABLE t (g INTEGER, c BOOLEAN, x INTEGER)
+
+statement ok
+INSERT INTO t VALUES (1, true, 1), (2, true, 2), (2, false, 3)
+
+query II
+WITH added AS (INSERT INTO t VALUES (3, true, NULL) RETURNING g),
+     sums AS (SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) AS s FROM t GROUP BY g)
+SELECT sums.* FROM sums, (SELECT count(*) FROM added) ORDER BY g
+----
+1	1
+2	2
+3	NULL
+
+# an upsert
+statement ok
+CREATE OR REPLACE TABLE u (g INTEGER PRIMARY KEY, c BOOLEAN, x INTEGER)
+
+statement ok
+INSERT INTO u VALUES (1, true, 1), (2, false, 2)
+
+query II
+WITH changed AS (INSERT INTO u VALUES (1, true, NULL) ON CONFLICT DO UPDATE SET x = excluded.x RETURNING g)
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM u GROUP BY g ORDER BY g
+----
+1	NULL
+2	0
+
+# 2. changes of the running transaction are part of the statistics: an insert, an update, a new column
+statement ok
+CREATE OR REPLACE TABLE t (g INTEGER, c BOOLEAN, x INTEGER)
+
+statement ok
+INSERT INTO t VALUES (1, true, 1), (2, true, 2), (2, false, 3)
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO t VALUES (3, true, NULL)
+
+query II
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM t GROUP BY g ORDER BY g
+----
+1	1
+2	2
+3	NULL
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE t SET x = NULL WHERE g = 1
+
+query II
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM t GROUP BY g ORDER BY g
+----
+1	NULL
+2	2
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE t ADD COLUMN y INTEGER
+
+query II
+SELECT g, sum(CASE WHEN c THEN y ELSE 0 END) FROM t GROUP BY g ORDER BY g
+----
+1	NULL
+2	0
+
+statement ok
+ROLLBACK
+
+# a delete does not make the column NOT NULL for the rows that are inserted after it
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM t
+
+statement ok
+INSERT INTO t VALUES (1, true, NULL), (2, true, 2), (2, false, 3)
+
+query II
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM t GROUP BY g ORDER BY g
+----
+1	NULL
+2	2
+
+statement ok
+ROLLBACK
+
+# a NOT NULL constraint that the transaction drops
+statement ok
+CREATE OR REPLACE TABLE nn (g INTEGER, c BOOLEAN, x INTEGER NOT NULL)
+
+statement ok
+INSERT INTO nn VALUES (1, true, 1), (2, true, 2), (2, false, 3)
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE nn ALTER x DROP NOT NULL
+
+statement ok
+INSERT INTO nn VALUES (3, true, NULL)
+
+query II
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM nn GROUP BY g ORDER BY g
+----
+1	1
+2	2
+3	NULL
+
+statement ok
+ROLLBACK
+
+# 3. a prepared statement is planned again when it is executed after the table has changed
+statement ok
+PREPARE p AS SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM t GROUP BY g ORDER BY g
+
+query II
+EXECUTE p
+----
+1	1
+2	2
+
+statement ok
+INSERT INTO t VALUES (3, true, NULL)
+
+query II
+EXECUTE p
+----
+1	1
+2	2
+3	NULL
+
+statement ok
+DEALLOCATE p
+
+# 4. a transaction that still reads the NULLs which another connection has overwritten since - and checkpointed
+statement ok
+CREATE OR REPLACE TABLE s (g INTEGER, c BOOLEAN, x INTEGER)
+
+statement ok
+INSERT INTO s VALUES (1, true, NULL), (2, true, 2), (2, false, 3)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+SET disabled_optimizers = {disabled}
+
+query II con1
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM s GROUP BY g ORDER BY g
+----
+1	NULL
+2	2
+
+statement ok
+UPDATE s SET x = 1 WHERE g = 1
+
+statement maybe
+CHECKPOINT
+----
+
+query II con1
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM s GROUP BY g ORDER BY g
+----
+1	NULL
+2	2
+
+statement ok con1
+COMMIT
+
+query II con1
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM s GROUP BY g ORDER BY g
+----
+1	1
+2	2
+
+# 5. rows that do not come from a table: a table function, a recursive CTE whose recursive member adds the NULLs, the
+# NULLs of an outer join
+query II
+SELECT i % 2, sum(CASE WHEN i >= 0 THEN x ELSE 0 END)
+FROM (SELECT i, CASE WHEN i % 2 = 0 THEN NULL ELSE i END AS x FROM range(4) r(i))
+GROUP BY ALL ORDER BY ALL
+----
+0	NULL
+1	4
+
+statement ok
+CREATE OR REPLACE TABLE t (g INTEGER, c BOOLEAN, x INTEGER)
+
+statement ok
+INSERT INTO t VALUES (1, true, 1), (2, true, 2), (2, false, 3)
+
+query II
+WITH RECURSIVE r(g, x) AS (
+	SELECT g, x FROM t WHERE c
+	UNION ALL
+	SELECT g + 2, NULL FROM r WHERE g < 3
+)
+SELECT g, sum(CASE WHEN g > 0 THEN x ELSE 0 END) FROM r GROUP BY g ORDER BY g
+----
+1	1
+2	2
+3	NULL
+4	NULL
+
+query II
+SELECT k.g, sum(CASE WHEN k.g > 0 THEN t.x ELSE 0 END)
+FROM (VALUES (1), (5)) k(g) LEFT JOIN t ON t.g = k.g
+GROUP BY k.g ORDER BY k.g
+----
+1	1
+5	NULL
+
+# a view and a materialized CTE read the table: its statistics, including the changes of the transaction
+statement ok
+CREATE OR REPLACE VIEW tv AS SELECT * FROM t
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO t VALUES (3, true, NULL)
+
+query II
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM tv GROUP BY g ORDER BY g
+----
+1	1
+2	2
+3	NULL
+
+query II
+WITH m AS MATERIALIZED (SELECT * FROM t)
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM m GROUP BY g ORDER BY g
+----
+1	1
+2	2
+3	NULL
+
+statement ok
+ROLLBACK
+
+endloop
+
+# the plans: the nullable form has the helper `count() FILTER (WHERE c)`, the NOT NULL form no count at all
+statement ok
+SET explain_output='physical_only'
+
+statement ok
+CREATE OR REPLACE TABLE t (g INTEGER, c BOOLEAN, x INTEGER)
+
+statement ok
+INSERT INTO t VALUES (1, true, 1), (2, true, 2), (2, false, 3)
+
+# no NULL in x
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*count.*
+
+# a data-modifying CTE: the statistics are not consulted, whatever the CTE changes
+query II
+EXPLAIN WITH changed AS (UPDATE t SET x = NULL WHERE g = 1 RETURNING x)
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM t GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*count\(\) FILTER.*
+
+query II
+EXPLAIN WITH removed AS (DELETE FROM u RETURNING g)
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM t GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*count\(\) FILTER.*
+
+# nor is a declared NOT NULL constraint, which the CTE cannot violate: the form with the counts is always correct
+query II
+EXPLAIN WITH added AS (INSERT INTO nn VALUES (4, true, 4) RETURNING g)
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM nn GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*count\(\) FILTER.*
+
+# a NOT NULL constraint
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM nn GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*count.*
+
+# a NULL that the transaction has inserted
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO t VALUES (3, true, NULL)
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM t GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*count\(\) FILTER.*
+
+statement ok
+ROLLBACK
+
+# a table function has no statistics, a recursive CTE is not followed, an outer join adds NULLs
+query II
+EXPLAIN SELECT i % 2, sum(CASE WHEN i < 2 THEN i ELSE 0 END) FROM range(4) r(i) GROUP BY ALL
+----
+physical_plan	<REGEX>:(?s).*count\(\) FILTER.*
+
+query II
+EXPLAIN WITH RECURSIVE r(g, x) AS (
+	SELECT g, x FROM t WHERE c
+	UNION ALL
+	SELECT g + 2, NULL FROM r WHERE g < 3
+)
+SELECT g, sum(CASE WHEN g > 1 THEN x ELSE 0 END) FROM r GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*count\(\) FILTER.*
+
+query II
+EXPLAIN SELECT k.g, sum(CASE WHEN k.g > 1 THEN t.x ELSE 0 END)
+FROM (VALUES (1), (5)) k(g) LEFT JOIN t ON t.g = k.g
+GROUP BY k.g
+----
+physical_plan	<REGEX>:(?s).*count\(\) FILTER.*
+
+# without the statistics propagation the statistics are not consulted either
+statement ok
+SET disabled_optimizers = 'statistics_propagation'
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN x ELSE 0 END) FROM t GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*count\(\) FILTER.*
+
+statement ok
+SET disabled_optimizers = ''
