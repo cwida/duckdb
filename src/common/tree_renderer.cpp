@@ -10,7 +10,6 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/query_profiler.hpp"
-#include "duckdb/main/client_config.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/main/profiler_extension.hpp"
 
@@ -119,14 +118,21 @@ Value TreeRenderer::RendererSettingsToValue(const unordered_map<string, Value> &
 }
 
 unique_ptr<TreeRenderer> TreeRenderer::CreateRenderer(ClientContext &context, const string &name) {
+	return CreateRenderer(context, name, GetRendererSettings(context));
+}
+
+unique_ptr<TreeRenderer> TreeRenderer::CreateRenderer(ClientContext &context, const string &name,
+                                                      const unordered_map<string, Value> &settings) {
 	// registered renderers take precedence over the built-in formats
+	unique_ptr<TreeRenderer> renderer;
 	auto extension = ProfilerExtension::Find(context, name);
 	if (extension && extension->create_renderer) {
-		return extension->create_renderer(context);
+		renderer = extension->create_renderer(context);
+	} else {
+		renderer = CreateRenderer(name);
 	}
-	auto renderer = CreateRenderer(name);
 	if (renderer) {
-		renderer->Configure(GetRendererSettings(context));
+		renderer->Configure(settings);
 	}
 	return renderer;
 }

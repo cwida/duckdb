@@ -1,0 +1,42 @@
+# name: test/sql/settings/profiling_renderer_settings_invalid.test
+# description: profiling_renderer_settings is validated against the active renderer only, and RESET always succeeds
+# group: [settings]
+
+# values are validated against the renderer of the current format only
+statement ok
+SET enable_profiling = 'json'
+
+statement ok
+SET profiling_output = '{TEST_DIR}/renderer_settings_profile.json'
+
+statement ok
+SET profiling_renderer_settings = MAP {'expand_all': 'invalid_boolean'}
+
+statement ok
+RESET enable_profiling
+
+statement error
+SET profiling_renderer_settings = MAP {'expand_all': 'still_invalid'}
+----
+Could not convert string 'still_invalid' to BOOL
+
+# a valid SET and RESET succeed even though the stored values do not fit the active renderer
+statement ok
+SET profiling_renderer_settings = MAP {'expand_all': 'true'}
+
+statement ok
+SET enable_profiling = 'json'
+
+statement ok
+SET profiling_renderer_settings = MAP {'expand_all': 'invalid_boolean'}
+
+statement ok
+RESET enable_profiling
+
+statement ok
+RESET profiling_renderer_settings
+
+query I
+SELECT current_setting('profiling_renderer_settings')
+----
+{}

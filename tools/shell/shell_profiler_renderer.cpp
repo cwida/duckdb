@@ -3,7 +3,6 @@
 
 #include "duckdb/common/tree_renderer.hpp"
 #include "duckdb/common/tree_renderer/text_tree_renderer.hpp"
-#include "duckdb/main/client_config.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/profiler_extension.hpp"
 #include "duckdb/main/query_profiler.hpp"
@@ -338,9 +337,7 @@ void RegisterProfilerHighlighting(duckdb::DBConfig &config) {
 	auto profiler_extension = duckdb::make_shared_ptr<duckdb::ProfilerExtension>();
 	profiler_extension->create_renderer =
 	    [](duckdb::ClientContext &context) -> duckdb::unique_ptr<duckdb::TreeRenderer> {
-		auto renderer = duckdb::make_uniq<CLITreeRenderer>();
-		renderer->Configure(duckdb::TreeRenderer::GetRendererSettings(context));
-		return std::move(renderer);
+		return duckdb::make_uniq<CLITreeRenderer>();
 	};
 	duckdb::ProfilerExtension::Register(config, "query_tree", std::move(profiler_extension));
 
@@ -348,9 +345,7 @@ void RegisterProfilerHighlighting(duckdb::DBConfig &config) {
 	auto explain_extension = duckdb::make_shared_ptr<duckdb::ProfilerExtension>();
 	explain_extension->create_renderer =
 	    [](duckdb::ClientContext &context) -> duckdb::unique_ptr<duckdb::TreeRenderer> {
-		auto renderer = duckdb::make_uniq<ShellExplainPrinter>();
-		renderer->Configure(duckdb::TreeRenderer::GetRendererSettings(context));
-		return std::move(renderer);
+		return duckdb::make_uniq<ShellExplainPrinter>();
 	};
 	duckdb::ProfilerExtension::Register(config, "shell_explain_printer", std::move(explain_extension));
 
