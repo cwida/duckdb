@@ -946,12 +946,15 @@ bool RelationManager::ExtractBindings(const Expression &expression, unordered_se
 }
 
 bool RelationManager::ExtractFilterBindings(const Expression &expression, unordered_set<RelationIndex> &bindings) {
-	const auto can_reorder = ExtractBindings(expression, bindings);
-	if (!bindings.empty()) {
-		return true;
-	}
-	// without bindings the filter can only move if it references no columns at all
-	return can_reorder && !ExpressionContainsColumnRef(expression);
+	auto can_reorder = ExtractBindings(expression, bindings);
+	// Every referenced column must be visible at the extracted relation boundary.
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+	    expression, [&](const BoundColumnRefExpression &colref) {
+		    if (normalized_bindings.find(colref.Binding()) == normalized_bindings.end()) {
+			    can_reorder = false;
+		    }
+	    });
+	return can_reorder;
 }
 
 JoinOrderExtraction RelationManager::ExtractEdges(LogicalOperator &op,

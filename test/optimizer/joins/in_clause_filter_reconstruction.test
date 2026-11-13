@@ -1,0 +1,120 @@
+# name: test/optimizer/joins/in_clause_filter_reconstruction.test
+# description: Preserve filters that reference projected-out IN marks during join ordering
+# group: [joins]
+
+statement ok
+SET debug_verify_column_bindings=true;
+
+statement ok
+CREATE TABLE t AS
+SELECT 'abc' || i AS s, i::FLOAT AS f, i, 'f' || (i % 3) AS filename, i AS file_row_number
+FROM range(5000) r(i);
+
+statement ok
+CREATE TABLE u AS SELECT i FROM range(5000) r(i);
+
+# The inner filter consumes an IN mark that is not visible to the outer filter.
+query I
+SELECT count(*)
+FROM (
+	SELECT s FROM (
+		SELECT s, f, i FROM t
+		WHERE NOT (filename = 'f0' AND file_row_number IN (0, 3, 6, 9, 12))
+	)
+	WHERE abs(length(s)) < f AND i > (SELECT avg(i) FROM u)
+);
+----
+2500
+
+# Matching rows must actually be removed, not just avoid a binding error.
+query I
+SELECT count(*)
+FROM (
+	SELECT s FROM (
+		SELECT s, f, i FROM t
+		WHERE NOT (filename = 'f0' AND file_row_number IN (3000, 3003, 3006, 3009, 3012))
+	)
+	WHERE abs(length(s)) < f AND i > (SELECT avg(i) FROM u)
+);
+----
+2495
+
+# Each predicate retains its own internal mark dependency.
+query I
+SELECT count(*)
+FROM (
+	SELECT s FROM (
+		SELECT s, f, i FROM t
+		WHERE NOT (filename = 'f0' AND file_row_number IN (3000, 3003, 3006, 3009, 3012))
+		  AND NOT (filename = 'f1' AND file_row_number IN (3001, 3004, 3007, 3010, 3013))
+	)
+	WHERE abs(length(s)) < f AND i > (SELECT avg(i) FROM u)
+);
+----
+2490
+
+statement ok
+CREATE TABLE nullable_t AS
+SELECT 'row' AS s, 100::FLOAT AS f, *
+FROM (VALUES
+	(1, 'f0', 3),
+	(2, 'f0', 42),
+	(3, 'f1', 3),
+	(4, 'f1', 42),
+	(5, 'f0', NULL),
+	(6, 'f1', NULL),
+	(7, NULL, 3),
+	(8, NULL, 42),
+	(9, NULL, NULL)
+) v(i, filename, file_row_number);
+
+statement ok
+CREATE TABLE threshold AS SELECT 0 AS i;
+
+# Preserve three-valued logic for nullable inputs and duplicate IN values.
+query I rowsort
+SELECT i
+FROM (
+	SELECT s, f, i FROM nullable_t
+	WHERE NOT (filename = 'f0' AND file_row_number IN (0, 3, 3, 6, 9, 12))
+)
+WHERE abs(length(s)) < f AND i > (SELECT avg(i) FROM threshold);
+----
+2
+3
+4
+6
+8
+
+# A NULL in the list makes non-matches unknown, but FALSE AND NULL is still FALSE.
+query I rowsort
+SELECT i
+FROM (
+	SELECT s, f, i FROM nullable_t
+	WHERE NOT (filename = 'f0' AND file_row_number IN (0, 3, 6, 9, 12, NULL))
+)
+WHERE abs(length(s)) < f AND i > (SELECT avg(i) FROM threshold);
+----
+3
+4
+6
+
+require parquet
+
+statement ok
+COPY t TO '{TEST_DIR}/in_clause_filter.parquet' (FORMAT PARQUET);
+
+query I
+SELECT count(*)
+FROM (
+	SELECT s FROM (
+		SELECT s, f, i FROM read_parquet('{TEST_DIR}/in_clause_filter.parquet')
+		WHERE NOT (filename = 'f0' AND file_row_number IN (3000, 3003, 3006, 3009, 3012, 3015))
+	)
+	WHERE abs(length(s)) < f AND i > (SELECT avg(i) FROM u)
+);
+----
+2494
+
+statement ok
+RESET debug_verify_column_bindings;
