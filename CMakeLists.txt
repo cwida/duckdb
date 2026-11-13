@@ -672,20 +672,30 @@ option(NATIVE_LTO_STATIC_LIBRARIES
        "Run LTO before writing static libraries so non-LTO linkers can use them"
        OFF)
 if(NATIVE_LTO_STATIC_LIBRARIES)
-  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux"
+  if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE)
      OR NOT "${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang$"
      OR NOT CMAKE_LTO)
     message(
       FATAL_ERROR
-        "NATIVE_LTO_STATIC_LIBRARIES requires a Linux Clang build with CMAKE_LTO set"
+        "NATIVE_LTO_STATIC_LIBRARIES requires a Linux or macOS Clang build with CMAKE_LTO set"
     )
   endif()
-  find_program(DUCKDB_LLD_LINKER NAMES ld.lld)
-  if(NOT DUCKDB_LLD_LINKER)
-    message(
-      FATAL_ERROR
-        "NATIVE_LTO_STATIC_LIBRARIES requires ld.lld to produce native relocatable objects"
-    )
+  if(APPLE)
+    # the relocatable link runs once, for a single architecture
+    list(LENGTH CMAKE_OSX_ARCHITECTURES DUCKDB_OSX_ARCH_COUNT)
+    if(DUCKDB_OSX_ARCH_COUNT GREATER 1)
+      message(
+        FATAL_ERROR
+          "NATIVE_LTO_STATIC_LIBRARIES does not support universal macOS builds")
+    endif()
+  else()
+    find_program(DUCKDB_LLD_LINKER NAMES ld.lld)
+    if(NOT DUCKDB_LLD_LINKER)
+      message(
+        FATAL_ERROR
+          "NATIVE_LTO_STATIC_LIBRARIES requires ld.lld to produce native relocatable objects"
+      )
+    endif()
   endif()
 endif()
 option(

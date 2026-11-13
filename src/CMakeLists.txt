@@ -92,7 +92,11 @@ duckdb_make_native_lto_archive(duckdb_static)
 # ${CMAKE_CURRENT_BINARY_DIR}/libduckdb_static.a)
 #
 
-if(NATIVE_LTO_STATIC_LIBRARIES)
+if(NATIVE_LTO_STATIC_LIBRARIES AND APPLE)
+  add_library(duckdb SHARED)
+  target_link_libraries(
+    duckdb PRIVATE "-Wl,-force_load,$<TARGET_FILE:duckdb_static>" duckdb_static)
+elseif(NATIVE_LTO_STATIC_LIBRARIES)
   add_library(duckdb SHARED)
   target_link_libraries(duckdb PRIVATE -Wl,--whole-archive duckdb_static
                                        -Wl,--no-whole-archive)

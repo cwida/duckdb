@@ -196,13 +196,33 @@ function(duckdb_make_native_lto_archive TARGET)
     if(CMAKE_LTO STREQUAL "thin" AND CMAKE_LTO_JOBS)
         set(LTO_JOB_FLAG "-flto-jobs=${CMAKE_LTO_JOBS}")
     endif()
+    set(LTO_CODEGEN_COMMAND "")
+    if(APPLE)
+        set(LTO_TARGET_FLAGS "")
+        if(CMAKE_OSX_ARCHITECTURES)
+            list(APPEND LTO_TARGET_FLAGS -arch ${CMAKE_OSX_ARCHITECTURES})
+        endif()
+        if(CMAKE_OSX_DEPLOYMENT_TARGET)
+            list(APPEND LTO_TARGET_FLAGS -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET})
+        endif()
+        set(LTO_LINK_FLAGS ${LTO_TARGET_FLAGS} -Wl,-all_load "${LTO_ARCHIVE}")
+        if(NOT CMAKE_LTO STREQUAL "thin")
+            # ld64 -r merges full LTO IR without code generation
+            set(LTO_CODEGEN_COMMAND
+                COMMAND ${CMAKE_CXX_COMPILER} -O3 ${LTO_TARGET_FLAGS} -c -x ir "${LTO_OBJECT}"
+                        -o "${LTO_OBJECT}.native.o"
+                COMMAND ${CMAKE_COMMAND} -E rename "${LTO_OBJECT}.native.o" "${LTO_OBJECT}")
+        endif()
+    else()
+        set(LTO_LINK_FLAGS -fuse-ld=lld -Wl,--whole-archive "${LTO_ARCHIVE}" -Wl,--no-whole-archive)
+    endif()
     add_custom_command(
         TARGET ${TARGET}
         POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E rename "$<TARGET_FILE:${TARGET}>" "${LTO_ARCHIVE}"
         COMMAND ${CMAKE_CXX_COMPILER} -O3 -flto=${CMAKE_LTO} ${LTO_JOB_FLAG}
-                -fuse-ld=lld -nostdlib -r -Wl,--whole-archive "${LTO_ARCHIVE}"
-                -Wl,--no-whole-archive -o "${LTO_OBJECT}"
+                -nostdlib -r ${LTO_LINK_FLAGS} -o "${LTO_OBJECT}"
+        ${LTO_CODEGEN_COMMAND}
         COMMAND ${CMAKE_AR} qc "$<TARGET_FILE:${TARGET}>" "${LTO_OBJECT}"
         COMMAND ${CMAKE_RANLIB} "$<TARGET_FILE:${TARGET}>"
         COMMAND ${CMAKE_COMMAND} -E remove "${LTO_ARCHIVE}" "${LTO_OBJECT}"
