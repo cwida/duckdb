@@ -1,19 +1,14 @@
 #include "duckdb/common/assert.hpp"
-#include "duckdb/catalog/catalog_search_path.hpp"
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/pragma/pragma_functions.hpp"
-#include "duckdb/main/client_data.hpp"
 #include "duckdb/main/config.hpp"
-#include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/parser/parser.hpp"
-#include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/parser/statement/copy_statement.hpp"
 #include "duckdb/parser/statement/export_statement.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
-#include "duckdb/common/enums/on_entry_not_found.hpp"
 
 namespace duckdb {
 
@@ -21,24 +16,8 @@ static string PragmaTableInfo(ClientContext &context, const FunctionParameters &
 	return StringUtil::Format("SELECT * FROM pragma_table_info(%s);", SQLString(parameters.values[0].ToString()));
 }
 
-string PragmaShowTables(const string &database, const string &schema, optional_idx schema_oid) {
-	string where_clause = "";
-	vector<string> where_conditions;
-	if (schema_oid.IsValid()) {
-		// the schema was resolved to a (possibly nested) schema entry - filter on its oid
-		where_conditions.push_back(StringUtil::Format("schema_oid = %llu", schema_oid.GetIndex()));
-	} else {
-		if (!database.empty()) {
-			where_conditions.push_back(StringUtil::Format("lower(database_name) = lower(%s)", SQLString(database)));
-		}
-		if (!schema.empty()) {
-			where_conditions.push_back(StringUtil::Format("lower(schema_name) = lower(%s)", SQLString(schema)));
-		}
-	}
-	if (where_conditions.empty()) {
-		where_conditions.push_back("in_search_path(database_name, schema_name)");
-	}
-	where_clause = "WHERE " + StringUtil::Join(where_conditions, " AND ");
+string PragmaShowTables(const string &filter) {
+	auto where_clause = "WHERE " + filter;
 
 	// clang-format off
 	string query = R"EOF(
@@ -67,7 +46,7 @@ string PragmaShowTables(const string &database, const string &schema, optional_i
 }
 
 static string PragmaShowTables(ClientContext &context, const FunctionParameters &parameters) {
-	return PragmaShowTables();
+	return "SHOW TABLES";
 }
 
 string PragmaShowTablesExpanded() {
@@ -82,7 +61,7 @@ string PragmaShowTablesExpanded() {
 	FROM duckdb_tables t
 	JOIN duckdb_columns c
 	USING (table_oid)
-	GROUP BY database, schema, name
+	GROUP BY database, schema, name, t.table_oid
 
 	UNION ALL
 
@@ -96,7 +75,7 @@ string PragmaShowTablesExpanded() {
 	FROM duckdb_views v
 	JOIN duckdb_columns c
 	ON (v.view_oid=c.table_oid)
-	GROUP BY database, schema, name
+	GROUP BY database, schema, name, v.view_oid
 
 	ORDER BY database, schema, name
 	)";

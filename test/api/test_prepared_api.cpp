@@ -603,6 +603,30 @@ TEST_CASE("Test prepared statements that require rebind", "[api]") {
 	REQUIRE_NO_FAIL(prepared->Execute());
 }
 
+TEST_CASE("Prepared PRAGMA show_tables follows schema changes", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA a"));
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA a.b"));
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA b"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE a.b.nested_table(i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE b.top_table(i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("USE a.b"));
+
+	auto prepared = con.Prepare("PRAGMA show_tables");
+	REQUIRE(!prepared->HasError());
+	auto result = prepared->Execute();
+	REQUIRE(CHECK_COLUMN(result, 0, {"nested_table"}));
+
+	REQUIRE_NO_FAIL(con.Query("USE b"));
+	result = prepared->Execute();
+	REQUIRE(CHECK_COLUMN(result, 0, {"top_table"}));
+
+	REQUIRE_NO_FAIL(con.Query("USE a.b"));
+	result = prepared->Execute();
+	REQUIRE(CHECK_COLUMN(result, 0, {"nested_table"}));
+}
+
 class TestExtensionState : public ClientContextState {
 public:
 	bool CanRequestRebind() override {

@@ -48,6 +48,7 @@ BoundStatement Binder::Bind(DropStatement &stmt) {
 		// dropping a schema is never read-only because there are no temporary schemas. The catalog is the leading
 		// component of the resolved path ([catalog, parent schemas..., schema])
 		auto &catalog = Catalog::GetCatalog(context, stmt.info->GetQualifiedName().Path().front());
+		catalog.CheckNestedSchemaSupport(stmt.info->GetQualifiedName(), CatalogType::SCHEMA_ENTRY);
 		properties.RegisterDBModify(catalog, context, stmt.info->GetModifications());
 		break;
 	}

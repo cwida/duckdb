@@ -1,0 +1,13 @@
+diff --git a/test/sql/catalog/nested_schema/nested_schema_version_gate.test b/test/sql/catalog/nested_schema/nested_schema_version_gate.test
+index 9aa43f48..067ea44d 100644
+--- a/test/sql/catalog/nested_schema/nested_schema_version_gate.test
++++ b/test/sql/catalog/nested_schema/nested_schema_version_gate.test
+@@ -19,7 +19,7 @@ CREATE SCHEMA ducklake.s1;
+ statement error
+ CREATE SCHEMA ducklake.s1.child;
+ ----
+-DuckLake 1.0 does not support nested schemas
++does not support nested schemas
+ 
+ query I
+ SELECT schema_name FROM duckdb_schemas() WHERE database_name = 'ducklake' ORDER BY ALL

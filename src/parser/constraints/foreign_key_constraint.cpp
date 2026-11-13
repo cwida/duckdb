@@ -26,11 +26,9 @@ string ForeignKeyConstraint::ToString() const {
 			base += SQLIdentifier(fk_columns[i]);
 		}
 		base += ") REFERENCES ";
-		if (!info.schema.empty() && info.schema != DEFAULT_SCHEMA) {
-			base += SQLIdentifier(info.schema);
-			base += ".";
-		}
-		base += SQLIdentifier(info.table);
+		auto table_name =
+		    referenced_table.Path().empty() ? QualifiedName(Identifier(), info.schema, info.table) : referenced_table;
+		base += table_name.ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA);
 		if (!pk_columns.empty()) {
 			base += "(";
 

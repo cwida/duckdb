@@ -45,7 +45,7 @@ AlterViewStmt <- 'VIEW' IfExists? BaseTableName RenameAlter
 
 AlterSequenceStmt <- 'SEQUENCE' IfExists? QualifiedSequenceName AlterSequenceOptions
 
-QualifiedSequenceName <- CatalogQualification? SchemaQualification? SequenceName
+QualifiedSequenceName <- CatalogQualification? SchemaQualification* SequenceName
 
 AlterSequenceOptions <- RenameAlterSequenceOptions / SetSequenceOption
 RenameAlterSequenceOptions <- RenameAlter

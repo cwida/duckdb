@@ -176,14 +176,19 @@ void Binder::SearchSchema(CreateInfo &info) {
 		// no catalog and no schema given: use the search path default for both
 		auto &default_entry = search_path->GetDefault();
 		catalog = default_entry.GetCatalog();
-		schema_path.push_back(default_entry.GetSchema());
+		schema_path = default_entry.GetSchemaPath();
 	} else if (schema_path.empty()) {
 		// a catalog was given but no schema: use the catalog's default schema
-		auto default_schema = search_path->GetDefaultSchema(context, catalog);
-		if (!default_schema) {
-			throw BinderException("Catalog %s has no default schema - specify a schema explicitly", catalog);
+		auto entries = search_path->GetEntriesForCatalog(catalog);
+		if (catalog != TEMP_CATALOG && !entries.empty()) {
+			schema_path = entries[0].GetSchemaPath();
+		} else {
+			auto default_schema = search_path->GetDefaultSchema(context, catalog);
+			if (!default_schema) {
+				throw BinderException("Catalog %s has no default schema - specify a schema explicitly", catalog);
+			}
+			schema_path.push_back(*default_schema);
 		}
-		schema_path.push_back(*default_schema);
 	} else if (IsInvalidCatalog(catalog)) {
 		// a schema was given but no catalog: resolve the catalog that holds it
 		catalog = search_path->ResolveCatalog(schema_path[0]);
@@ -264,12 +269,19 @@ QualifiedName Binder::BindTableName(CatalogEntryRetriever &retriever, const Qual
 		EntryLookupInfo schema_lookup(CatalogType::SCHEMA_ENTRY, QualifiedName(schema_path[0]));
 		auto schema = Catalog::GetSchema(retriever, schema_lookup, OnEntryNotFound::RETURN_NULL);
 		if (schema) {
-			catalog = schema->ParentCatalog().GetName();
+			catalog = schema->ParentCatalog().IsTemporaryCatalog()
+			              ? retriever.GetSearchPath().ResolveCatalog(schema_path[0])
+			              : schema->ParentCatalog().GetName();
 		} else {
 			catalog = DatabaseManager::GetDefaultDatabase(retriever.GetContext());
 		}
 	}
-	return QualifiedName::FromCatalogSchema(std::move(catalog), std::move(schema_path), resolved.Name());
+	auto result = QualifiedName::FromCatalogSchema(std::move(catalog), std::move(schema_path), resolved.Name());
+	auto catalog_entry = Catalog::GetCatalogEntry(retriever, result.Catalog());
+	if (catalog_entry) {
+		catalog_entry->CheckNestedSchemaSupport(result, CatalogType::TABLE_ENTRY);
+	}
+	return result;
 }
 
 QualifiedName Binder::BindTableName(const QualifiedName &name) {
@@ -295,6 +307,7 @@ void Binder::BindCreateSchema(CreateSchemaInfo &info) {
 	info.SetQualifiedName(ResolveCatalog(context, info.GetQualifiedName()));
 
 	auto &resolved_catalog = Catalog::GetCatalog(context, info.SchemaCatalog());
+	resolved_catalog.CheckNestedSchemaSupport(info.GetQualifiedName(), CatalogType::SCHEMA_ENTRY);
 	auto supports_create_schema = resolved_catalog.SupportsCreateSchema(info);
 	if (supports_create_schema.HasError()) {
 		supports_create_schema.Throw();
