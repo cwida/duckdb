@@ -166,6 +166,27 @@ SELECT '1_000_000_000.000_000_000_5'::DOUBLE
 ----
 1000000000.0000000005
 
+# Underscores do not count as digits
+query I
+SELECT '1_1_1_1_1_1_1_1_1_1_1'::DOUBLE
+----
+11111111111
+
+query I
+SELECT '1_1_1_1_1_1_1_1_1_1_1e5'::DOUBLE
+----
+1111111111100000
+
+query I
+SELECT '0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_1'::DOUBLE
+----
+1
+
+query I
+SELECT '1_000_000_000_000_000_000_000_000'::DOUBLE
+----
+1e+24
+
 # Cant start with an underscore
 statement error
 SELECT '_1_000_000_000_000_000_000_000'::DOUBLE == 1e+21

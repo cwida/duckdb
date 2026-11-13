@@ -521,6 +521,7 @@ parsed_number_string parse_number_string(const char *p, const char *pend, const 
   const char *const start_digits = p;
 
   uint64_t i = 0; // an unsigned int avoids signed overflows (which are bad)
+  int64_t integer_underscores = 0;
 
   while ((p != pend)) {
     if(is_integer(*p)) {
@@ -536,6 +537,7 @@ parsed_number_string parse_number_string(const char *p, const char *pend, const 
 	    }
 		  // skip 1 underscore if it is not the last character and followed by a digit
 		  ++p;
+		  ++integer_underscores;
 		  if(p == pend || !is_integer(*p)) {
 			  return answer;
 		  }
@@ -546,7 +548,7 @@ parsed_number_string parse_number_string(const char *p, const char *pend, const 
     }
   }
   const char *const end_of_integer_part = p;
-  int64_t digit_count = int64_t(end_of_integer_part - start_digits);
+  int64_t digit_count = int64_t(end_of_integer_part - start_digits) - integer_underscores;
   int64_t exponent = 0;
   if ((p != pend) && (*p == decimal_separator)) {
     ++p;
@@ -655,7 +657,7 @@ parsed_number_string parse_number_string(const char *p, const char *pend, const 
     // We need to be mindful of the case where we only have zeroes...
     // E.g., 0.000000000...000.
     const char *start = start_digits;
-    while ((start != pend) && (*start == '0' || *start == decimal_separator)) {
+    while ((start != pend) && (*start == '0' || *start == decimal_separator || *start == '_')) {
       if(*start == '0') { digit_count --; }
       start++;
     }
@@ -677,6 +679,7 @@ parsed_number_string parse_number_string(const char *p, const char *pend, const 
 	    }
 			// skip 1 underscore if it is not the last character and followed by a digit
 			++p;
+			--integer_underscores;
 			if(p == pend || !is_integer(*p)) {
 				answer.valid = false;
 				return answer;
@@ -688,9 +691,11 @@ parsed_number_string parse_number_string(const char *p, const char *pend, const 
         }
       }
       if (i >= minimal_nineteen_digit_integer) { // We have a big integers
-        exponent = end_of_integer_part - p + exp_number;
+        exponent = end_of_integer_part - p - integer_underscores + exp_number;
       } else { // We have a value with a fractional component.
-          p++; // skip the decimal_separator
+          if ((p != pend) && (*p == decimal_separator)) {
+            p++; // skip the decimal_separator
+          }
           const char *first_after_period = p;
           int64_t skipped_underscores = 0;
           while((i < minimal_nineteen_digit_integer) && (p != pend)) {
