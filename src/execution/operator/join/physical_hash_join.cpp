@@ -1498,10 +1498,23 @@ public:
 	}
 };
 
+//! The IN filter threshold limits the number of distinct values of a key column, not the number of build rows.
+//! A build side with more rows than the threshold can still have few distinct values in one of its key columns, e.g.
+//! the partition key of a multi-column join. Counting them requires a scan of the key column, so only build sides up
+//! to this many rows are scanned.
+static constexpr idx_t IN_FILTER_MAX_BUILD_SCAN_COUNT = 65536;
+
+static idx_t InFilterMaxBuildScanCount(idx_t dynamic_or_filter_threshold) {
+	return MaxValue<idx_t>(dynamic_or_filter_threshold, IN_FILTER_MAX_BUILD_SCAN_COUNT);
+}
+
 bool JoinFilterPushdownInfo::CanUseInFilter(const ClientContext &context, optional_ptr<JoinHashTable> ht,
                                             const ExpressionType &cmp) const {
 	auto dynamic_or_filter_threshold = Settings::Get<DynamicOrFilterThresholdSetting>(context);
-	return ht && ht->Count() > 1 && ht->Count() <= dynamic_or_filter_threshold &&
+	if (dynamic_or_filter_threshold <= 1) {
+		return false;
+	}
+	return ht && ht->Count() > 1 && ht->Count() <= InFilterMaxBuildScanCount(dynamic_or_filter_threshold) &&
 	       (cmp == ExpressionType::COMPARE_EQUAL || cmp == ExpressionType::COMPARE_NOT_DISTINCT_FROM);
 }
 
@@ -1836,6 +1849,7 @@ bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilt
 		filter_input = make_uniq<BoundReferenceExpression>(column.storage_type, idx_t(0));
 	}
 
+	const auto dynamic_or_filter_threshold = Settings::Get<DynamicOrFilterThresholdSetting>(context);
 	value_set_t unique_ht_values;
 	for (idx_t k = 0; k < key_count; k++) {
 		auto value = build_vector.GetValue(k).DefaultTryCastAs(filter_input_type);
@@ -1846,6 +1860,10 @@ bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilt
 			continue;
 		}
 		unique_ht_values.insert(std::move(*value));
+		if (unique_ht_values.size() > dynamic_or_filter_threshold) {
+			// too many distinct values for an IN filter - the caller falls back to a min/max filter
+			return false;
+		}
 	}
 	vector<Value> in_list(unique_ht_values.begin(), unique_ht_values.end());
 

@@ -1,0 +1,72 @@
+# name: test/sql/join/inner/test_join_in_filter_distinct_keys.test
+# description: The dynamic IN filter threshold applies to distinct key values, not to build-side rows
+# group: [inner]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+PRAGMA threads=1;
+
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side';
+
+# The probe holds 1000 groups; grp is a partition-like key and id is unique within the probe.
+statement ok
+CREATE TABLE probe AS SELECT ((i // 1000) * 1000003)::BIGINT AS grp, i::BIGINT AS id FROM range(1000000) t(i);
+
+# 200 build rows, but only 3 distinct grp values: grp gets an IN filter, id (200 distinct values) does not.
+statement ok
+CREATE TABLE few_groups AS
+SELECT ([0, 500, 999][(i % 3) + 1] * 1000003)::BIGINT AS grp,
+       ([0, 500, 999][(i % 3) + 1] * 1000 + i)::BIGINT AS id
+FROM range(200) t(i);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN few_groups b ON p.grp = b.grp AND p.id = b.id;
+----
+analyzed_plan	<REGEX>:.*Dynamic.*Filters:.*grp IN \(0, 500001500, 999002997\).*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN few_groups b ON p.grp = b.grp AND p.id = b.id;
+----
+analyzed_plan	<!REGEX>:.*id IN \(.*
+
+query I
+SELECT count(*) FROM probe p JOIN few_groups b ON p.grp = b.grp AND p.id = b.id;
+----
+200
+
+# Too many distinct values for the threshold: fall back to a min/max filter.
+statement ok
+CREATE TABLE many_groups AS
+SELECT ((i * 5) * 1000003)::BIGINT AS grp, (i * 5000)::BIGINT AS id FROM range(200) t(i);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN many_groups b ON p.grp = b.grp AND p.id = b.id;
+----
+analyzed_plan	<!REGEX>:.*grp IN \(.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN many_groups b ON p.grp = b.grp AND p.id = b.id;
+----
+analyzed_plan	<REGEX>:.*Dynamic.*Filters:.*grp >= 0.*
+
+query I
+SELECT count(*) FROM probe p JOIN many_groups b ON p.grp = b.grp AND p.id = b.id;
+----
+200
+
+# A threshold of 0 disables IN filters entirely.
+statement ok
+SET dynamic_or_filter_threshold = 0;
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN few_groups b ON p.grp = b.grp AND p.id = b.id;
+----
+analyzed_plan	<!REGEX>:.*grp IN \(.*
+
+query I
+SELECT count(*) FROM probe p JOIN few_groups b ON p.grp = b.grp AND p.id = b.id;
+----
+200
