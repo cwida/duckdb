@@ -12,6 +12,7 @@ add_library_unity(
   arrow_output_version_buffers.cpp
   arrow_run_end_encoded.cpp
   arrow_fixed_size_list_null_children.cpp
+  arrow_struct_fixed_size_binary_null.cpp
   arrow_union_offset.cpp)
 set(UNITTEST_OBJECT_FILES
     ${UNITTEST_OBJECT_FILES} $<TARGET_OBJECTS:test_arrow_roundtrip>
