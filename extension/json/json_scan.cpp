@@ -26,6 +26,7 @@ void JSONScanData::InitializeFormats() {
 
 void JSONScanData::InitializeFormats(bool auto_detect_p) {
 	type_id_map_t<vector<StrpTimeFormat>> candidate_formats;
+	type_id_set_t cast_candidates;
 	// Initialize date_format_map if anything was specified
 	if (!options.date_format.empty()) {
 		DateFormatMap::AddFormat(candidate_formats, LogicalTypeId::DATE, options.date_format);
@@ -53,9 +54,11 @@ void JSONScanData::InitializeFormats(bool auto_detect_p) {
 			for (auto &format_string : format_strings) {
 				DateFormatMap::AddFormat(candidate_formats, logical_type, format_string);
 			}
+			// What the plain cast reads (ISO 8601, with or without fractional seconds) is not a question of format
+			cast_candidates.insert(logical_type);
 		}
 	}
-	date_format_map = make_uniq<DateFormatMap>(std::move(candidate_formats));
+	date_format_map = make_uniq<DateFormatMap>(std::move(candidate_formats), std::move(cast_candidates));
 }
 
 JSONScanGlobalState::JSONScanGlobalState(ClientContext &context, const JSONScanData &json_data_p,
@@ -475,7 +478,7 @@ static bool TransformGeoJSONFeatures(yyjson_val *values[], yyjson_alc *alc, cons
 	bool success = true;
 	if (!feature_names.empty()) {
 		success = JSONTransform::TransformObject(values, alc, count, feature_names, feature_vectors, transform_options,
-		                                         feature_indices, false);
+		                                         feature_indices, false, &gstate.json_data.column_formats);
 	}
 	if (success && !property_names.empty()) {
 		vector<yyjson_val *> property_values(count);
@@ -484,7 +487,8 @@ static bool TransformGeoJSONFeatures(yyjson_val *values[], yyjson_alc *alc, cons
 			property_values[i] = val && unsafe_yyjson_is_obj(val) ? yyjson_obj_get(val, "properties") : nullptr;
 		}
 		success = JSONTransform::TransformObject(property_values.data(), alc, count, property_names, property_vectors,
-		                                         transform_options, property_indices, false);
+		                                         transform_options, property_indices, false,
+		                                         &gstate.json_data.column_formats);
 	}
 	return success;
 }
@@ -505,18 +509,21 @@ void ReadJSONFunction(ClientContext &context, JSONReader &json_reader, JSONScanG
 		}
 
 		D_ASSERT(gstate.json_data.options.record_type != JSONRecordType::AUTO_DETECT);
+		const auto &column_formats = gstate.json_data.column_formats;
 		bool success;
 		if (gstate.json_data.options.record_type == JSONRecordType::RECORDS) {
 			success = JSONTransform::TransformObject(values, scan_state.allocator.GetYYAlc(), count, gstate.names,
 			                                         result_vectors, lstate.transform_options, gstate.column_indices,
-			                                         lstate.transform_options.error_unknown_key);
+			                                         lstate.transform_options.error_unknown_key, &column_formats);
 		} else if (gstate.json_data.options.record_type == JSONRecordType::FEATURES) {
 			success = TransformGeoJSONFeatures(values, scan_state.allocator.GetYYAlc(), count, gstate, result_vectors,
 			                                   lstate.transform_options);
 		} else {
 			D_ASSERT(gstate.json_data.options.record_type == JSONRecordType::VALUES);
-			success = JSONTransform::Transform(values, scan_state.allocator.GetYYAlc(), *result_vectors[0], count,
-			                                   lstate.transform_options, gstate.column_indices[0]);
+			success = JSONTransform::Transform(
+			    values, scan_state.allocator.GetYYAlc(), *result_vectors[0], count, lstate.transform_options,
+			    gstate.column_indices[0],
+			    JSONColumnFormats::GetChild(&column_formats, gstate.column_indices[0].GetPrimaryIndex()));
 		}
 
 		if (!success) {

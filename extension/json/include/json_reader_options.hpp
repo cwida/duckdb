@@ -21,8 +21,8 @@ struct DateFormatMap {
 	friend class MutableDateFormatMap;
 
 public:
-	explicit DateFormatMap(type_id_map_t<vector<StrpTimeFormat>> candidate_formats_p)
-	    : candidate_formats(std::move(candidate_formats_p)) {
+	DateFormatMap(type_id_map_t<vector<StrpTimeFormat>> candidate_formats_p, type_id_set_t cast_candidates_p)
+	    : candidate_formats(std::move(candidate_formats_p)), cast_candidates(std::move(cast_candidates_p)) {
 	}
 
 	bool HasFormats(LogicalTypeId type) const {
@@ -37,6 +37,11 @@ public:
 	const vector<StrpTimeFormat> &GetFormats(LogicalTypeId type) const {
 		D_ASSERT(candidate_formats.find(type) != candidate_formats.end());
 		return candidate_formats.find(type)->second;
+	}
+
+	//! Whether the plain cast is a candidate for type too, preferred below every format
+	bool CastIsCandidate(LogicalTypeId type) const {
+		return cast_candidates.find(type) != cast_candidates.end();
 	}
 
 public:
@@ -58,6 +63,7 @@ public:
 
 private:
 	type_id_map_t<vector<StrpTimeFormat>> candidate_formats;
+	type_id_set_t cast_candidates;
 };
 
 class MutableDateFormatMap {
@@ -73,6 +79,11 @@ public:
 	idx_t NumberOfFormats(LogicalTypeId type) {
 		lock_guard<mutex> lock(format_lock);
 		return date_format_map.candidate_formats.at(type).size();
+	}
+
+	bool CastIsCandidate(LogicalTypeId type) {
+		lock_guard<mutex> lock(format_lock);
+		return date_format_map.CastIsCandidate(type);
 	}
 
 	bool GetFormatAtIndex(LogicalTypeId type, idx_t index, StrpTimeFormat &format) {

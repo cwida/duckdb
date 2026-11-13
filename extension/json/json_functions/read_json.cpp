@@ -289,7 +289,7 @@ unique_ptr<JSONStructureNode> JSONScan::DetectStructure(ClientContext &context, 
 
 void JSONScan::StructureToColumns(ClientContext &context, JSONReaderOptions &options, const JSONStructureNode &node,
                                   vector<JSONFeatureColumn> &feature_columns, vector<LogicalType> &return_types,
-                                  vector<Identifier> &names) {
+                                  vector<Identifier> &names, JSONColumnFormats &column_formats) {
 	// Convert structure to logical type
 	auto type = JSONStructure::StructureToType(context, node, options.max_depth, options.field_appearance_threshold,
 	                                           options.map_inference_threshold);
@@ -308,6 +308,18 @@ void JSONScan::StructureToColumns(ClientContext &context, JSONReaderOptions &opt
 	if (options.record_type == JSONRecordType::FEATURES) {
 		if (names.empty()) {
 			UnnestGeoJSONFeature(type, options.ignore_errors, return_types, names, feature_columns);
+			const auto properties = node.GetField("properties");
+			for (idx_t col_idx = 0; col_idx < feature_columns.size(); col_idx++) {
+				const auto &feature_column = feature_columns[col_idx];
+				optional_ptr<const JSONStructureNode> field;
+				if (!feature_column.from_properties) {
+					field = node.GetField(feature_column.key);
+				} else if (properties) {
+					field = properties->GetField(feature_column.key);
+				}
+				column_formats.children.push_back(
+				    field ? JSONStructure::StructureToFormats(*field, return_types[col_idx]) : JSONColumnFormats());
+			}
 		} else {
 			// COPY - we already have names/types, but we still need to know where each of them is read from
 			BindGeoJSONFeatureColumns(type, names, feature_columns);
@@ -329,6 +341,9 @@ void JSONScan::StructureToColumns(ClientContext &context, JSONReaderOptions &opt
 			for (auto &child_type : child_types) {
 				return_types.emplace_back(RemoveDuplicateStructKeys(child_type.second, options.ignore_errors));
 				names.emplace_back(child_type.first);
+				const auto field = node.GetField(child_type.first.GetIdentifierName());
+				column_formats.children.push_back(field ? JSONStructure::StructureToFormats(*field, return_types.back())
+				                                        : JSONColumnFormats());
 			}
 		} else {
 			throw BinderException("json_read expected records, but got non-record JSON instead."
@@ -337,6 +352,7 @@ void JSONScan::StructureToColumns(ClientContext &context, JSONReaderOptions &opt
 	} else {
 		D_ASSERT(options.record_type == JSONRecordType::VALUES);
 		return_types.emplace_back(RemoveDuplicateStructKeys(type, options.ignore_errors));
+		column_formats.children.push_back(JSONStructure::StructureToFormats(node, return_types.back()));
 		// Newline-delimited bare geometries produce a single GEOMETRY column, which "json" would be a poor name for
 		names.emplace_back(type.id() == LogicalTypeId::GEOMETRY ? "geometry" : "json");
 	}
@@ -347,7 +363,8 @@ void JSONScan::AutoDetect(ClientContext &context, JSONScanData &json_data, const
                           vector<Identifier> &names) {
 	json_data.record_type_auto_detected = json_data.options.record_type == JSONRecordType::AUTO_DETECT;
 	auto node = DetectStructure(context, json_data, files, sampled_readers);
-	StructureToColumns(context, json_data.options, *node, json_data.feature_columns, return_types, names);
+	StructureToColumns(context, json_data.options, *node, json_data.feature_columns, return_types, names,
+	                   json_data.column_formats);
 	if (json_data.keep_structure) {
 		// keep the structure around so it can be combined with the structures of other files later on
 		json_data.structure = std::move(node);

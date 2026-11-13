@@ -116,6 +116,7 @@ static unique_ptr<FunctionData> ReadSingleJSONFileBind(ClientContext &context, T
 		result->feature_columns = source.feature_columns;
 		// the date/timestamp formats that auto-detection settled on are part of how the scan is read
 		result->date_format_map = make_uniq<DateFormatMap>(*source.date_format_map);
+		result->column_formats = source.column_formats;
 		JSONScan::FinalizeBind(*result, result->options.name_list);
 		names = result->options.name_list;
 		return_types = result->options.sql_type_list;
@@ -275,7 +276,8 @@ static unique_ptr<FunctionData> ReadSingleJSONFileCombineSchema(ClientContext &c
 	// the merged structure describes the schema of the scan by itself
 	return_types.clear();
 	names.clear();
-	JSONScan::StructureToColumns(context, result->options, merged, result->feature_columns, return_types, names);
+	JSONScan::StructureToColumns(context, result->options, merged, result->feature_columns, return_types, names,
+	                             result->column_formats);
 
 	// the JSON reader looks columns up by their exact key, so the keys are kept before the column names that are
 	// duplicates for us (e.g. "id" and "Id") are renamed

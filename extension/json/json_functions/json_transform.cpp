@@ -410,24 +410,6 @@ static bool TransformGeometry(yyjson_val *vals[], Vector &result, const idx_t co
 	return success;
 }
 
-static bool TryOneFormat(const StrpTimeFormat &fmt, LogicalTypeId type_id, const string_t &input, Vector &result,
-                         idx_t i, string &error_message) {
-	if (type_id == LogicalTypeId::DATE) {
-		date_t val;
-		if (!TryParseDate::Operation<date_t>(fmt, input, val, error_message)) {
-			return false;
-		}
-		FlatVector::GetDataMutable<date_t>(result)[i] = val;
-	} else {
-		timestamp_t val;
-		if (!TryParseTimeStamp::Operation<timestamp_t>(fmt, input, val, error_message)) {
-			return false;
-		}
-		FlatVector::GetDataMutable<timestamp_t>(result)[i] = val;
-	}
-	return true;
-}
-
 template <class OP, class T>
 static bool TransformStringWithFormat(const Vector &string_vector, const StrpTimeFormat &format, const idx_t count,
                                       Vector &result, JSONTransformOptions &options) {
@@ -438,12 +420,14 @@ static bool TransformStringWithFormat(const Vector &string_vector, const StrpTim
 	auto &target_validity = FlatVector::ValidityMutable(result);
 
 	bool success = true;
+	string error_message;
 	for (idx_t i = 0; i < count; i++) {
 		if (!source_validity.RowIsValid(i)) {
 			target_validity.SetInvalid(i);
-		} else if (!OP::template Operation<T>(format, source_strings[i], target_vals[i], options.error_message)) {
+		} else if (!OP::template Operation<T>(format, source_strings[i], target_vals[i], error_message)) {
 			target_validity.SetInvalid(i);
 			if (success && options.strict_cast) {
+				options.error_message = error_message;
 				options.object_index = i;
 				success = false;
 			}
@@ -453,54 +437,36 @@ static bool TransformStringWithFormat(const Vector &string_vector, const StrpTim
 }
 
 static bool TransformFromStringWithFormat(yyjson_val *vals[], Vector &result, const idx_t count,
-                                          JSONTransformOptions &options) {
+                                          JSONTransformOptions &options,
+                                          optional_ptr<const JSONColumnFormats> formats) {
+	if (formats && formats->cast) {
+		return TransformFromString(vals, result, count, options);
+	}
 	Vector string_vector(LogicalTypeId::VARCHAR, count);
 	bool success = true;
 	if (!JSONTransform::GetStringVector(vals, count, result.GetType(), string_vector, options)) {
 		success = false;
 	}
 
+	// Without a detected format the type came from the user, whose format is the only one, or no sampled value
+	// ruled a format out, and then detection prefers the last one too
 	const auto result_type_id = result.GetType().id();
-	D_ASSERT(result_type_id == LogicalTypeId::DATE || result_type_id == LogicalTypeId::TIMESTAMP);
-	const auto &formats = options.date_format_map->GetFormats(result_type_id);
-	const auto source_strings = FlatVector::GetData<string_t>(string_vector);
-	const auto &source_validity = FlatVector::Validity(string_vector);
-	auto &target_validity = FlatVector::ValidityMutable(result);
-
-	// Probe first non-null value to find the most-specific matching format for this vector
-	idx_t matched_idx = DConstants::INVALID_INDEX;
-	for (idx_t i = 0; i < count && matched_idx == DConstants::INVALID_INDEX; i++) {
-		if (!source_validity.RowIsValid(i)) {
-			continue;
+	const auto &format = formats && formats->format_index.IsValid()
+	                         ? options.date_format_map->GetFormats(result_type_id)[formats->format_index.GetIndex()]
+	                         : options.date_format_map->GetFormat(result_type_id);
+	switch (result_type_id) {
+	case LogicalTypeId::DATE:
+		if (!TransformStringWithFormat<TryParseDate, date_t>(string_vector, format, count, result, options)) {
+			success = false;
 		}
-		string error_message;
-		for (idx_t j = formats.size(); j > 0; j--) {
-			if (TryOneFormat(formats[j - 1], result_type_id, source_strings[i], result, i, error_message)) {
-				matched_idx = j - 1;
-				break;
-			}
+		break;
+	case LogicalTypeId::TIMESTAMP:
+		if (!TransformStringWithFormat<TryParseTimeStamp, timestamp_t>(string_vector, format, count, result, options)) {
+			success = false;
 		}
-	}
-
-	const idx_t parse_limit = (matched_idx != DConstants::INVALID_INDEX) ? matched_idx + 1 : formats.size();
-	for (idx_t i = 0; i < count; i++) {
-		if (!source_validity.RowIsValid(i)) {
-			target_validity.SetInvalid(i);
-			continue;
-		}
-		bool parsed = false;
-		string error_message;
-		// Reverse iter formats, beginning at matched_idx until one parses
-		for (idx_t j = parse_limit; j > 0 && !parsed; j--) {
-			parsed = TryOneFormat(formats[j - 1], result_type_id, source_strings[i], result, i, error_message);
-		}
-		if (!parsed) {
-			target_validity.SetInvalid(i);
-			if (success && options.strict_cast) {
-				options.object_index = i;
-				success = false;
-			}
-		}
+		break;
+	default:
+		throw InternalException("No date/timestamp formats for %s", EnumUtil::ToString(result_type_id));
 	}
 	return success;
 }
@@ -622,7 +588,8 @@ static bool AssignObjectValues(yyjson_val *objects[], yyjson_alc *alc, const idx
 bool JSONTransform::TransformObject(yyjson_val *objects[], yyjson_alc *alc, const idx_t count,
                                     const vector<string> &names, const vector<Vector *> &result_vectors,
                                     JSONTransformOptions &options,
-                                    optional_ptr<const vector<ColumnIndex>> column_indices, bool error_unknown_key) {
+                                    optional_ptr<const vector<ColumnIndex>> column_indices, bool error_unknown_key,
+                                    optional_ptr<const JSONColumnFormats> formats) {
 	if (column_indices && column_indices->empty()) {
 		column_indices = nullptr;
 	}
@@ -645,8 +612,9 @@ bool JSONTransform::TransformObject(yyjson_val *objects[], yyjson_alc *alc, cons
 
 	for (idx_t col_idx = 0; col_idx < column_count; col_idx++) {
 		auto child_column_index = column_indices ? &(*column_indices)[col_idx] : nullptr;
+		const auto format_idx = child_column_index ? child_column_index->GetPrimaryIndex() : col_idx;
 		if (!JSONTransform::Transform(nested_vals[col_idx], alc, *result_vectors[col_idx], count, options,
-		                              child_column_index)) {
+		                              child_column_index, JSONColumnFormats::GetChild(formats, format_idx))) {
 			success = false;
 		}
 	}
@@ -659,7 +627,8 @@ bool JSONTransform::TransformObject(yyjson_val *objects[], yyjson_alc *alc, cons
 }
 
 static bool TransformObjectInternal(yyjson_val *objects[], yyjson_alc *alc, Vector &result, const idx_t count,
-                                    JSONTransformOptions &options, optional_ptr<const ColumnIndex> column_index) {
+                                    JSONTransformOptions &options, optional_ptr<const ColumnIndex> column_index,
+                                    optional_ptr<const JSONColumnFormats> formats) {
 	if (column_index && column_index->ChildIndexCount() == 0) {
 		column_index = nullptr;
 	}
@@ -700,11 +669,11 @@ static bool TransformObjectInternal(yyjson_val *objects[], yyjson_alc *alc, Vect
 	auto child_indices = column_index ? &column_index->GetChildIndexes() : nullptr;
 	const auto error_unknown_key = child_count == child_vs.size(); // Nothing projected out, error if unknown
 	return JSONTransform::TransformObject(objects, alc, count, child_names, child_vectors, options, child_indices,
-	                                      error_unknown_key);
+	                                      error_unknown_key, formats);
 }
 
 static bool TransformArrayToList(yyjson_val *arrays[], yyjson_alc *alc, Vector &result, const idx_t count,
-                                 JSONTransformOptions &options) {
+                                 JSONTransformOptions &options, optional_ptr<const JSONColumnFormats> formats) {
 	bool success = true;
 
 	// Initialize list vector
@@ -770,7 +739,8 @@ static bool TransformArrayToList(yyjson_val *arrays[], yyjson_alc *alc, Vector &
 	}
 
 	// Transform array values
-	if (!JSONTransform::Transform(nested_vals, alc, ListVector::GetChildMutable(result), offset, options, nullptr)) {
+	if (!JSONTransform::Transform(nested_vals, alc, ListVector::GetChildMutable(result), offset, options, nullptr,
+	                              JSONColumnFormats::GetChild(formats, 0))) {
 		success = false;
 	}
 
@@ -824,7 +794,8 @@ static bool TransformArrayToTuple(yyjson_val *arrays[], yyjson_alc *alc, Vector 
 	}
 
 	for (idx_t child_i = 0; child_i < child_count; child_i++) {
-		if (!JSONTransform::Transform(nested_vals + child_i * count, alc, child_vs[child_i], count, options, nullptr)) {
+		if (!JSONTransform::Transform(nested_vals + child_i * count, alc, child_vs[child_i], count, options, nullptr,
+		                              nullptr)) {
 			success = false;
 		}
 	}
@@ -914,7 +885,7 @@ static bool TransformArrayToArray(yyjson_val *arrays[], yyjson_alc *alc, Vector 
 	}
 
 	// Transform array values
-	if (!JSONTransform::Transform(nested_vals, alc, ArrayVector::GetChildMutable(result), child_count, options,
+	if (!JSONTransform::Transform(nested_vals, alc, ArrayVector::GetChildMutable(result), child_count, options, nullptr,
 	                              nullptr)) {
 		success = false;
 	}
@@ -927,7 +898,7 @@ static bool TransformArrayToArray(yyjson_val *arrays[], yyjson_alc *alc, Vector 
 }
 
 static bool TransformObjectToMap(yyjson_val *objects[], yyjson_alc *alc, Vector &result, const idx_t count,
-                                 JSONTransformOptions &options) {
+                                 JSONTransformOptions &options, optional_ptr<const JSONColumnFormats> formats) {
 	// Pre-allocate list vector
 	idx_t list_size = 0;
 	for (idx_t i = 0; i < count; i++) {
@@ -983,12 +954,13 @@ static bool TransformObjectToMap(yyjson_val *objects[], yyjson_alc *alc, Vector 
 	D_ASSERT(list_offset == list_size);
 
 	// Transform keys
-	if (!JSONTransform::Transform(keys, alc, MapVector::GetKeys(result), list_size, options, nullptr)) {
+	if (!JSONTransform::Transform(keys, alc, MapVector::GetKeys(result), list_size, options, nullptr, nullptr)) {
 		success = false;
 	}
 
 	// Transform values
-	if (!JSONTransform::Transform(vals, alc, MapVector::GetValues(result), list_size, options, nullptr)) {
+	if (!JSONTransform::Transform(vals, alc, MapVector::GetValues(result), list_size, options, nullptr,
+	                              JSONColumnFormats::GetChild(formats, 0))) {
 		success = false;
 	}
 
@@ -1111,7 +1083,7 @@ static bool TransformValueIntoUnion(yyjson_val **vals, yyjson_alc *alc, Vector &
 		idx_t actual_tag = tag - names.begin();
 
 		Vector single(UnionType::GetMemberType(type, actual_tag), 1);
-		if (!JSONTransform::Transform(&val, alc, single, 1, options, nullptr)) {
+		if (!JSONTransform::Transform(&val, alc, single, 1, options, nullptr, nullptr)) {
 			success = false;
 		}
 
@@ -1122,12 +1094,13 @@ static bool TransformValueIntoUnion(yyjson_val **vals, yyjson_alc *alc, Vector &
 }
 
 bool JSONTransform::Transform(yyjson_val *vals[], yyjson_alc *alc, Vector &result, const idx_t count,
-                              JSONTransformOptions &options, optional_ptr<const ColumnIndex> column_index) {
+                              JSONTransformOptions &options, optional_ptr<const ColumnIndex> column_index,
+                              optional_ptr<const JSONColumnFormats> formats) {
 	auto result_type = result.GetType();
 	if ((result_type == LogicalTypeId::TIMESTAMP || result_type == LogicalTypeId::DATE) && options.date_format_map &&
 	    options.date_format_map->HasFormats(result_type.id())) {
 		// Auto-detected date/timestamp format during sampling
-		return TransformFromStringWithFormat(vals, result, count, options);
+		return TransformFromStringWithFormat(vals, result, count, options, formats);
 	}
 
 	if (result_type.IsJSONType()) {
@@ -1201,13 +1174,13 @@ bool JSONTransform::Transform(yyjson_val *vals[], yyjson_alc *alc, Vector &resul
 	case LogicalTypeId::BLOB:
 		return TransformToBlob(vals, alc, result, count, options);
 	case LogicalTypeId::STRUCT:
-		return TransformObjectInternal(vals, alc, result, count, options, column_index);
+		return TransformObjectInternal(vals, alc, result, count, options, column_index, formats);
 	case LogicalTypeId::TUPLE:
 		return TransformArrayToTuple(vals, alc, result, count, options);
 	case LogicalTypeId::LIST:
-		return TransformArrayToList(vals, alc, result, count, options);
+		return TransformArrayToList(vals, alc, result, count, options, formats);
 	case LogicalTypeId::MAP:
-		return TransformObjectToMap(vals, alc, result, count, options);
+		return TransformObjectToMap(vals, alc, result, count, options, formats);
 	case LogicalTypeId::UNION:
 		return TransformValueIntoUnion(vals, alc, result, count, options);
 	case LogicalTypeId::ARRAY:
@@ -1240,7 +1213,7 @@ static bool TransformFunctionInternal(const Vector &input, const idx_t count, Ve
 			vals[i] = docs[i]->root;
 		}
 	}
-	return JSONTransform::Transform(vals, alc, result, count, options, nullptr);
+	return JSONTransform::Transform(vals, alc, result, count, options, nullptr, nullptr);
 }
 
 template <bool strict>
