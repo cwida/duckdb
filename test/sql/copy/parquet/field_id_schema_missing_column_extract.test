@@ -1,0 +1,200 @@
+# name: test/sql/copy/parquet/field_id_schema_missing_column_extract.test
+# description: a field extracted from a column that a file lacks takes the value the whole column has, with a field id schema
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT * FROM (VALUES (1, {'x': 1}), (2, NULL)) t(a, s)) TO '{TEST_DIR}/missing_extract_1.parquet' (FIELD_IDS {a: 1, s: {__duckdb_field_id: 2, x: 3}})
+
+statement ok
+COPY (SELECT 3 AS a) TO '{TEST_DIR}/missing_extract_2.parquet' (FIELD_IDS {a: 1})
+
+statement ok
+COPY (SELECT 4 AS a, {'k': 'hello'}::VARIANT AS v) TO '{TEST_DIR}/missing_extract_3.parquet' (FIELD_IDS {a: 1, v: 4})
+
+# the whole column takes its default in the file that lacks it
+query II
+SELECT a, s FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_2.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: {'x': 9}}}) ORDER BY a
+----
+1	{'x': 1}
+2	NULL
+3	{'x': 9}
+
+# a field extracted from it takes the field of that default
+query II
+SELECT a, s.x FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_2.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: {'x': 9}}}) ORDER BY a
+----
+1	1
+2	NULL
+3	9
+
+query II
+SELECT a, s.x FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_2.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: NULL}}) ORDER BY a
+----
+1	1
+2	NULL
+3	NULL
+
+# a filter on the extracted field
+query I
+SELECT a FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_2.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: NULL}}) WHERE s.x IS NULL ORDER BY a
+----
+2
+3
+
+query I
+SELECT a FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_2.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: {'x': 9}}}) WHERE s.x = 9 ORDER BY a
+----
+3
+
+# a field of a VARIANT column that a file lacks
+query II
+SELECT a, v.k::VARCHAR FROM read_parquet(['{TEST_DIR}/missing_extract_2.parquet', '{TEST_DIR}/missing_extract_3.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 4: {name: 'v', type: 'VARIANT', default_value: NULL}}) ORDER BY a
+----
+3	NULL
+4	hello
+
+# a column that a file holds as NULL without a type is NULL in every row, so are its fields
+statement ok
+COPY (SELECT 5 AS a, NULL AS s) TO '{TEST_DIR}/missing_extract_4.parquet' (FIELD_IDS {a: 1, s: 2})
+
+query II
+SELECT a, s.x FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_4.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: {'x': 9}}}) ORDER BY a
+----
+1	1
+2	NULL
+5	NULL
+
+# union_by_name fills the missing column before the mapping and is unchanged
+query II
+SELECT a, s.x FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_2.parquet'], union_by_name := true) ORDER BY a
+----
+1	1
+2	NULL
+3	NULL
+
+# a default whose field does not cast fails only on the rows of a file that lacks the column
+statement ok
+COPY (SELECT 6 AS a WHERE false) TO '{TEST_DIR}/missing_extract_empty.parquet' (FIELD_IDS {a: 1})
+
+query I
+SELECT s.n::INTEGER FROM read_parquet('{TEST_DIR}/missing_extract_empty.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(n VARCHAR)', default_value: {'n': 'bad'}}})
+----
+
+query I
+SELECT s.n::INTEGER FROM read_parquet('{TEST_DIR}/missing_extract_2.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(n VARCHAR)', default_value: {'n': 'bad'}}}) WHERE a = 99
+----
+
+statement error
+SELECT s.n::INTEGER FROM read_parquet('{TEST_DIR}/missing_extract_2.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(n VARCHAR)', default_value: {'n': 'bad'}}})
+----
+<REGEX>:.*Could not convert string 'bad'.*
+
+# a filter on the field needs the constant, so the failure surfaces before the file is read
+statement error
+SELECT a FROM read_parquet('{TEST_DIR}/missing_extract_2.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(n VARCHAR)', default_value: {'n': 'bad'}}}) WHERE s.n::INTEGER > 5
+----
+<REGEX>:.*Could not convert string 'bad'.*
+
+# a field that a file lacks in a struct it holds takes its default where the struct is not NULL
+statement ok
+COPY (SELECT * FROM (VALUES (7, {'y': 'bad'}), (8, NULL)) t(a, s)) TO '{TEST_DIR}/missing_extract_field.parquet' (FIELD_IDS {a: 1, s: {__duckdb_field_id: 2, y: 5}})
+
+# a field next to it is read for the validity of the struct alone, so it needs no conversion
+query II
+SELECT a, s.x FROM read_parquet('{TEST_DIR}/missing_extract_field.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER, y INTEGER)', default_value: NULL, children: MAP {3: {name: 'x', type: 'INTEGER', default_value: 9}, 5: {name: 'y', type: 'INTEGER', default_value: NULL}}}}) ORDER BY a
+----
+7	9
+8	NULL
+
+query II
+SELECT a, s.x::VARCHAR FROM read_parquet('{TEST_DIR}/missing_extract_field.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER, y INTEGER)', default_value: NULL, children: MAP {3: {name: 'x', type: 'INTEGER', default_value: 9}, 5: {name: 'y', type: 'INTEGER', default_value: NULL}}}}) ORDER BY a
+----
+7	9
+8	NULL
+
+query I
+SELECT a FROM read_parquet('{TEST_DIR}/missing_extract_field.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER, y INTEGER)', default_value: NULL, children: MAP {3: {name: 'x', type: 'INTEGER', default_value: 9}, 5: {name: 'y', type: 'INTEGER', default_value: NULL}}}}) WHERE s.x = 9
+----
+7
+
+query I
+SELECT a FROM read_parquet('{TEST_DIR}/missing_extract_field.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER, y INTEGER)', default_value: NULL, children: MAP {3: {name: 'x', type: 'INTEGER', default_value: 9}, 5: {name: 'y', type: 'INTEGER', default_value: NULL}}}}) WHERE s.x IS NULL
+----
+8
+
+# the file that holds the field reads it, the other takes the default
+query II
+SELECT a, s.x FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_field.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER, y INTEGER)', default_value: NULL, children: MAP {3: {name: 'x', type: 'INTEGER', default_value: 9}, 5: {name: 'y', type: 'INTEGER', default_value: NULL}}}}) ORDER BY a
+----
+1	1
+2	NULL
+7	9
+8	NULL
+
+query I
+SELECT a FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_field.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER, y INTEGER)', default_value: NULL, children: MAP {3: {name: 'x', type: 'INTEGER', default_value: 9}, 5: {name: 'y', type: 'INTEGER', default_value: NULL}}}}) WHERE s.x > 5
+----
+7
+
+# the whole struct converts the field the file holds
+statement error
+SELECT s FROM read_parquet('{TEST_DIR}/missing_extract_field.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER, y INTEGER)', default_value: NULL, children: MAP {3: {name: 'x', type: 'INTEGER', default_value: 9}, 5: {name: 'y', type: 'INTEGER', default_value: NULL}}}})
+----
+<REGEX>:.*Could not convert string 'bad'.*
+
+# a field of a nested struct, which is NULL in one row and whose parent is NULL in another
+statement ok
+COPY (SELECT * FROM (VALUES (1, {'t': {'y': 'bad'}, 'b': 1}), (2, {'t': NULL, 'b': 2}), (3, NULL)) r(a, s)) TO '{TEST_DIR}/missing_extract_nested.parquet' (FIELD_IDS {a: 1, s: {__duckdb_field_id: 2, t: {__duckdb_field_id: 3, y: 5}, b: 6}})
+
+query II
+SELECT a, s.t.x FROM read_parquet('{TEST_DIR}/missing_extract_nested.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 's', type: 'STRUCT(t STRUCT(x INTEGER, y INTEGER), b INTEGER)', default_value: NULL, children: MAP {3: {name: 't', type: 'STRUCT(x INTEGER, y INTEGER)', default_value: NULL, children: MAP {4: {name: 'x', type: 'INTEGER', default_value: 9}, 5: {name: 'y', type: 'INTEGER', default_value: NULL}}}, 6: {name: 'b', type: 'INTEGER', default_value: NULL, children: NULL}}}}) ORDER BY a
+----
+1	9
+2	NULL
+3	NULL
+
+# the file lacks the nested struct, whose default holds the field
+query II
+SELECT a, s.t.x FROM read_parquet('{TEST_DIR}/missing_extract_field.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 's', type: 'STRUCT(t STRUCT(x INTEGER), y INTEGER)', default_value: NULL, children: MAP {3: {name: 't', type: 'STRUCT(x INTEGER)', default_value: {'x': 9}}, 5: {name: 'y', type: 'INTEGER', default_value: NULL}}}}) ORDER BY a
+----
+7	9
+8	NULL
+
+query II
+SELECT a, s.t.x FROM read_parquet('{TEST_DIR}/missing_extract_field.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 's', type: 'STRUCT(t STRUCT(x INTEGER), y INTEGER)', default_value: NULL, children: MAP {3: {name: 't', type: 'STRUCT(x INTEGER)', default_value: {'x': NULL}}, 5: {name: 'y', type: 'INTEGER', default_value: NULL}}}}) ORDER BY a
+----
+7	NULL
+8	NULL
+
+# a VARIANT field the file lacks
+query II
+SELECT a, s.v.k::INTEGER FROM read_parquet('{TEST_DIR}/missing_extract_field.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 's', type: 'STRUCT(v VARIANT, y INTEGER)', default_value: NULL, children: MAP {3: {name: 'v', type: 'VARIANT', default_value: {'k': 1}}, 5: {name: 'y', type: 'INTEGER', default_value: NULL}}}}) ORDER BY a
+----
+7	1
+8	NULL
+
+# the validity of the struct comes from a field within a nested struct when it holds no plain field
+statement ok
+COPY (SELECT * FROM (VALUES (1, {'t': {'l': [1], 'p': 'bad'}}), (2, NULL)) r(a, s)) TO '{TEST_DIR}/missing_extract_nested_only.parquet' (FIELD_IDS {a: 1, s: {__duckdb_field_id: 2, t: {__duckdb_field_id: 4, l: {__duckdb_field_id: 5, element: 6}, p: 7}}})
+
+query II
+SELECT a, s.x FROM read_parquet('{TEST_DIR}/missing_extract_nested_only.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER, t STRUCT(l INTEGER[], p INTEGER))', default_value: NULL, children: MAP {3: {name: 'x', type: 'INTEGER', default_value: 9}, 4: {name: 't', type: 'STRUCT(l INTEGER[], p INTEGER)', default_value: NULL}}}}) ORDER BY a
+----
+1	9
+2	NULL
+
+statement error
+SELECT a, s.t.p FROM read_parquet('{TEST_DIR}/missing_extract_nested_only.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER, t STRUCT(l INTEGER[], p INTEGER))', default_value: NULL, children: MAP {3: {name: 'x', type: 'INTEGER', default_value: 9}, 4: {name: 't', type: 'STRUCT(l INTEGER[], p INTEGER)', default_value: NULL}}}}) ORDER BY a
+----
+<REGEX>:.*Could not convert string 'bad'.*
+
+# a struct within a list takes the default of a field the file lacks as a whole
+statement ok
+COPY (SELECT 1 AS a, [{'y': 1}, NULL] AS l) TO '{TEST_DIR}/missing_extract_list.parquet' (FIELD_IDS {a: 1, l: {__duckdb_field_id: 2, element: {__duckdb_field_id: 3, y: 5}}})
+
+query II
+SELECT l, l[1].x FROM read_parquet('{TEST_DIR}/missing_extract_list.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 'l', type: 'STRUCT(x INTEGER, y INTEGER)[]', default_value: NULL, children: MAP {3: {name: 'element', type: 'STRUCT(x INTEGER, y INTEGER)', default_value: NULL, children: MAP {4: {name: 'x', type: 'INTEGER', default_value: 9}, 5: {name: 'y', type: 'INTEGER', default_value: NULL}}}}}})
+----
+[{'x': 9, 'y': 1}, NULL]	9
