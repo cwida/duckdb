@@ -1,10 +1,13 @@
 #include "catch.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
+#include "duckdb/common/types/column/column_data_collection_segment.hpp"
 #include "duckdb/common/types/column/column_data_consumer.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/dictionary_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "test_helpers.hpp"
@@ -1045,6 +1048,117 @@ TEST_CASE("The fresh-dictionary gate sits at twice the appended rows", "[column_
 	REQUIRE(FirstScannedVectorType(past_boundary, past_chunk) == VectorType::FLAT_VECTOR);
 	REQUIRE(past_chunk.size() == 50);
 	REQUIRE(past_chunk.GetValue(0, 49) == Value(prefix + "49"));
+}
+
+static void AppendLargeList(ColumnDataCollection &collection, ColumnDataAppendState &state, idx_t length,
+                            int32_t base) {
+	DataChunk chunk;
+	collection.InitializeScanChunk(chunk);
+	{
+		auto writer = FlatVector::Writer<VectorListType<int32_t>>(chunk.data[0], 1);
+		idx_t i = 0;
+		for (auto &element : writer.WriteList(length)) {
+			if (i % 1000 == 7) {
+				element.WriteNull();
+			} else {
+				element.WriteValue(base + NumericCast<int32_t>(i));
+			}
+			i++;
+		}
+	}
+	chunk.CheckCardinality(1);
+	collection.Append(state, chunk);
+}
+
+static void VerifyLargeListChild(DataChunk &chunk, idx_t offset, idx_t length, int32_t base) {
+	auto &child = ListVector::GetChild(chunk.data[0]);
+	auto data = FlatVector::GetData<int32_t>(child);
+	auto &validity = FlatVector::Validity(child);
+	for (idx_t i = 0; i < length; i++) {
+		REQUIRE(validity.RowIsValid(offset + i) == (i % 1000 != 7));
+		if (i % 1000 != 7) {
+			REQUIRE(data[offset + i] == base + NumericCast<int32_t>(i));
+		}
+	}
+}
+
+static const_data_ptr_t ScanLargeListChild(ColumnDataCollection &collection, ColumnDataScanState &scan_state,
+                                           DataChunk &chunk, ColumnDataScanProperties properties) {
+	collection.InitializeScanChunk(chunk);
+	collection.InitializeScan(scan_state, properties);
+	REQUIRE(collection.Scan(scan_state, chunk));
+	return FlatVector::GetData(ListVector::GetChild(chunk.data[0]));
+}
+
+// Results are identical whether a scan copies a large list child or hands out a view of collection storage, so only
+// the child data pointers can show that a single-entry child is read without a copy.
+static VectorMetaData &FirstListChildEntry(ColumnDataCollection &collection) {
+	auto &segment = *collection.GetSegments()[0];
+	auto &list_vdata = segment.GetVectorData(segment.chunk_data[0].vector_data[0]);
+	return segment.GetVectorData(segment.GetChildIndex(list_vdata.child_index));
+}
+
+TEST_CASE("Large list children are scanned without copying", "[column_data_compact]") {
+	if (STANDARD_VECTOR_SIZE < 1024) {
+		// the shapes below assume full-size vectors
+		return;
+	}
+	DuckDB db(":memory:");
+	auto &buffer_manager = BufferManager::GetBufferManager(*db.instance);
+	const auto type = LogicalType::LIST(LogicalType::INTEGER);
+	const idx_t length = 5 * STANDARD_VECTOR_SIZE / 2;
+
+	for (auto in_memory : {false, true}) {
+		auto collection =
+		    in_memory ? make_uniq<ColumnDataCollection>(Allocator::DefaultAllocator(), vector<LogicalType> {type})
+		              : make_uniq<ColumnDataCollection>(buffer_manager, vector<LogicalType> {type});
+		ColumnDataAppendState append_state;
+		collection->InitializeAppend(append_state);
+		AppendLargeList(*collection, append_state, length, 0);
+		// only buffer-managed collections store the child as a single entry, in-memory ones keep the chain
+		auto &child_entry = FirstListChildEntry(*collection);
+		REQUIRE((child_entry.representation == ColumnDataRepresentation::LARGE_FLAT) == !in_memory);
+		REQUIRE(child_entry.next_data.IsValid() == in_memory);
+		if (!in_memory) {
+			REQUIRE(child_entry.count == length);
+		}
+
+		// zero-copy scans alive at the same time view the same storage, scans of a chain copy
+		ColumnDataScanState first_state, second_state, copy_state;
+		DataChunk first, second, copied;
+		auto first_ptr = ScanLargeListChild(*collection, first_state, first, ColumnDataScanProperties::ALLOW_ZERO_COPY);
+		auto second_ptr =
+		    ScanLargeListChild(*collection, second_state, second, ColumnDataScanProperties::ALLOW_ZERO_COPY);
+		REQUIRE((first_ptr == second_ptr) == !in_memory);
+		REQUIRE(ListVector::GetListSize(first.data[0]) == length);
+		VerifyLargeListChild(first, 0, length, 0);
+		VerifyLargeListChild(second, 0, length, 0);
+		// DISALLOW_ZERO_COPY materializes into the scanned vector
+		auto copy_ptr =
+		    ScanLargeListChild(*collection, copy_state, copied, ColumnDataScanProperties::DISALLOW_ZERO_COPY);
+		REQUIRE(copy_ptr != first_ptr);
+		REQUIRE(ListVector::GetListSize(copied.data[0]) == length);
+		VerifyLargeListChild(copied, 0, length, 0);
+
+		// a second large list in the same chunk continues on a chained entry, which scans copy
+		AppendLargeList(*collection, append_state, length, 1000000);
+		REQUIRE(collection->ChunkCount() == 1);
+		ColumnDataScanState chained_first_state, chained_second_state;
+		DataChunk chained_first, chained_second;
+		auto chained_first_ptr = ScanLargeListChild(*collection, chained_first_state, chained_first,
+		                                            ColumnDataScanProperties::ALLOW_ZERO_COPY);
+		auto chained_second_ptr = ScanLargeListChild(*collection, chained_second_state, chained_second,
+		                                             ColumnDataScanProperties::ALLOW_ZERO_COPY);
+		REQUIRE(chained_first_ptr != chained_second_ptr);
+		REQUIRE(chained_first.size() == 2);
+		REQUIRE(ListVector::GetListSize(chained_first.data[0]) == 2 * length);
+		auto entries = FlatVector::GetData<list_entry_t>(chained_first.data[0]);
+		REQUIRE(entries[1].offset == length);
+		REQUIRE(entries[1].length == length);
+		VerifyLargeListChild(chained_first, 0, length, 0);
+		VerifyLargeListChild(chained_first, length, length, 1000000);
+		VerifyLargeListChild(chained_second, length, length, 1000000);
+	}
 }
 
 } // namespace duckdb

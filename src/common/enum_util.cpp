@@ -1393,19 +1393,20 @@ const StringUtil::EnumStringLiteral *GetColumnDataRepresentationValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(ColumnDataRepresentation::FLAT), "FLAT" },
 		{ static_cast<uint32_t>(ColumnDataRepresentation::CONSTANT), "CONSTANT" },
-		{ static_cast<uint32_t>(ColumnDataRepresentation::DICTIONARY), "DICTIONARY" }
+		{ static_cast<uint32_t>(ColumnDataRepresentation::DICTIONARY), "DICTIONARY" },
+		{ static_cast<uint32_t>(ColumnDataRepresentation::LARGE_FLAT), "LARGE_FLAT" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<ColumnDataRepresentation>(ColumnDataRepresentation value) {
-	return StringUtil::EnumToString(GetColumnDataRepresentationValues(), 3, "ColumnDataRepresentation", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetColumnDataRepresentationValues(), 4, "ColumnDataRepresentation", static_cast<uint32_t>(value));
 }
 
 template<>
 ColumnDataRepresentation EnumUtil::FromString<ColumnDataRepresentation>(const char *value) {
-	return static_cast<ColumnDataRepresentation>(StringUtil::StringToEnum(GetColumnDataRepresentationValues(), 3, "ColumnDataRepresentation", value));
+	return static_cast<ColumnDataRepresentation>(StringUtil::StringToEnum(GetColumnDataRepresentationValues(), 4, "ColumnDataRepresentation", value));
 }
 
 const StringUtil::EnumStringLiteral *GetColumnDataScanPropertiesValues() {

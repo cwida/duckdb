@@ -1,0 +1,209 @@
+# name: test/sql/types/list/large_list_child_rescan.test
+# description: Lists whose children exceed a vector stay correct when materialized collections are scanned repeatedly
+# group: [list]
+
+statement ok
+SET max_execution_time=300000;
+
+# 16 rows, every row a list longer than a vector, with NULL elements, and NULL lists in rows 3, 8, 13
+statement ok
+CREATE TABLE big AS
+SELECT i,
+       CASE WHEN i % 5 = 3 THEN NULL ELSE
+           list_transform(range(3000 + i), lambda x: CASE WHEN x % 1000 = 7 THEN NULL ELSE x + i END)
+       END AS l
+FROM range(16) t(i);
+
+# a single row whose list alone exceeds a vector
+statement ok
+CREATE TABLE single AS SELECT list_transform(range(100000), lambda x: x * 3) AS l;
+
+# reference values from a single scan of the base table
+query IIIIII
+SELECT count(*), count(l), sum(len(l)), sum(list_count(l)), sum(list_sum(l)), sum(l[1] + l[-1])
+FROM big;
+----
+16	13	39096	39051	59000275	39275
+
+query III
+SELECT len(l), list_sum(l), l[100000] FROM single;
+----
+100000	14999850000	299997
+
+# cross join with the list side materialized and scanned once per input chunk: 4 scans
+query IIIII
+SELECT count(*), count(l), sum(len(l)), sum(list_count(l)), sum(l[1] + l[-1])
+FROM range(4 * 2048) t(r), big;
+----
+131072	106496	320274432	319905792	321740800
+
+query II
+SELECT count(*), sum(list_sum(l)) FROM range(4 * 2048) t(r), (SELECT l FROM big WHERE i < 2) b;
+----
+16384	73703063552
+
+# 32 scans
+query IIII
+SELECT count(*), count(l), sum(len(l)), sum(l[2999])
+FROM range(32 * 2048) t(r), big;
+----
+1048576	851968	2562195456	2560491520
+
+query III
+SELECT count(*), sum(len(l)), sum(l[1 + r % 100000]) FROM range(32 * 2048) t(r), single;
+----
+65536	6553600000	6442352640
+
+# materialized CTE read twice: a self-join reads the materialized collection once per consumer
+query II
+EXPLAIN ANALYZE WITH m AS MATERIALIZED (SELECT i, l FROM big)
+SELECT count(*) FROM m a JOIN m b USING (i);
+----
+analyzed_plan	<REGEX>:.*Execution Mode: MATERIALIZED.*
+
+query IIII
+WITH m AS MATERIALIZED (SELECT i, l FROM big)
+SELECT sum(len(a.l)), sum(list_sum(b.l)), count(*) FILTER (WHERE a.l IS NULL), sum(a.l[-1] - b.l[1])
+FROM m a JOIN m b USING (i);
+----
+39096	59000275	3	39083
+
+query II
+WITH m AS MATERIALIZED (SELECT i, l FROM big)
+SELECT a.i, list_sum(a.l) - list_sum(b.l) FROM m a JOIN m b ON a.i = b.i + 1 ORDER BY a.i LIMIT 4;
+----
+1	5998
+2	6001
+3	NULL
+4	NULL
+
+# element-wise equality against the base table after the round trip through a materialized CTE
+query I
+WITH m AS MATERIALIZED (SELECT i, l FROM big)
+SELECT count(*) FROM m a JOIN m b USING (i) JOIN big USING (i)
+WHERE a.l IS NOT DISTINCT FROM big.l AND b.l IS NOT DISTINCT FROM big.l;
+----
+16
+
+# NULL elements keep their positions
+query IIII
+WITH m AS MATERIALIZED (SELECT i, l FROM big)
+SELECT i, a.l[8] IS NULL, b.l[1008] IS NULL, a.l[9] FROM m a JOIN m b USING (i) WHERE i IN (0, 3, 15) ORDER BY i;
+----
+0	true	true	8
+3	true	true	NULL
+15	true	true	23
+
+# constant-size element types of different widths
+statement ok
+CREATE TABLE typed AS
+SELECT i,
+       list_transform(range(2500 + i), lambda x: (x % 3 = 0) OR NULL) AS l_bool,
+       list_transform(range(2500 + i), lambda x: (x % 100)::TINYINT) AS l_tiny,
+       list_transform(range(2500 + i), lambda x: CASE WHEN x % 7 = 0 THEN NULL ELSE x::INTEGER END) AS l_int,
+       list_transform(range(2500 + i), lambda x: x::HUGEINT * 1000000000000) AS l_huge,
+       list_transform(range(2500 + i), lambda x: x / 4) AS l_double,
+       list_transform(range(2500 + i), lambda x: INTERVAL (x) SECOND) AS l_interval
+FROM range(3) t(i);
+
+query IIIIIII
+SELECT count(*), sum(list_count(l_bool)), sum(list_sum(l_tiny)), sum(list_count(l_int)), sum(list_sum(l_huge)),
+       sum(list_sum(l_double)), max(l_interval[-1])
+FROM range(4 * 2048) t(r), typed;
+----
+24576	20496384	3041288192	52666368	76830728192000000000000	19207682048.0	00:41:41
+
+query I
+WITH m AS MATERIALIZED (SELECT * FROM typed)
+SELECT count(*) FROM m JOIN m b USING (i) JOIN typed USING (i)
+WHERE m.l_bool IS NOT DISTINCT FROM typed.l_bool AND m.l_tiny = typed.l_tiny
+  AND m.l_int IS NOT DISTINCT FROM typed.l_int AND m.l_huge = typed.l_huge AND m.l_double = typed.l_double
+  AND m.l_interval = typed.l_interval AND b.l_int IS NOT DISTINCT FROM typed.l_int;
+----
+3
+
+# variable-size and nested element types keep the vector-sized chain
+statement ok
+CREATE TABLE chained AS
+SELECT i,
+       list_transform(range(2500 + i), lambda x: 'element_' || x::VARCHAR) AS l_str,
+       list_transform(range(2500 + i), lambda x: {'a': x, 'b': x % 2 = 0}) AS l_struct
+FROM range(3) t(i);
+
+query III
+SELECT count(*), sum(len(l_str)), sum(len(l_struct))
+FROM range(4 * 2048) t(r), chained WHERE l_str[-1] = 'element_' || (2499 + i)::VARCHAR AND l_struct[-1].a = 2499 + i;
+----
+24576	61464576	61464576
+
+# nested lists: the grandchild is long, the child is short
+statement ok
+CREATE TABLE nested AS
+SELECT i,
+       list_transform(range(3), lambda j: list_transform(range(2500), lambda x: CASE WHEN x = 42 THEN NULL ELSE j * 10000 + x + i END)) AS ll,
+       list_transform(range(3000 + i), lambda j: [j, NULL, j + 1]) AS wide
+FROM range(4) t(i);
+
+query IIIII
+SELECT count(*), sum(len(flatten(ll))), sum(list_sum(flatten(ll))), sum(len(flatten(wide))), sum(list_sum(flatten(wide)))
+FROM range(4 * 2048) t(r), nested;
+----
+32768	245760000	2764058443776	295059456	295207026688
+
+query I
+WITH m AS MATERIALIZED (SELECT * FROM nested)
+SELECT count(*) FROM m JOIN m b USING (i) JOIN nested USING (i)
+WHERE m.ll IS NOT DISTINCT FROM nested.ll AND m.wide IS NOT DISTINCT FROM nested.wide
+  AND b.ll IS NOT DISTINCT FROM nested.ll AND b.wide IS NOT DISTINCT FROM nested.wide;
+----
+4
+
+query IIII
+WITH m AS MATERIALIZED (SELECT * FROM nested)
+SELECT i, m.ll[2][43] IS NULL, b.ll[3][2500], m.wide[3000][2] IS NULL FROM m JOIN m b USING (i) ORDER BY i;
+----
+0	true	22499	true
+1	true	22500	true
+2	true	22501	true
+3	true	22502	true
+
+# a second large list appended into the same collection chunk continues on a chained entry: the scan of a table with
+# deleted rows hands out one small chunk per vector, so the CTE sink appends three times into its first chunk
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE gaps AS
+SELECT i, CASE WHEN i % 2048 = 5 THEN list_transform(range(3000 + i), lambda x: CASE WHEN x = 2999 THEN NULL ELSE x + i END) ELSE [i] END AS l
+FROM range(3 * 2048) t(i);
+
+statement ok
+DELETE FROM gaps WHERE i % 2048 NOT IN (4, 5, 6);
+
+query IIIII
+WITH m AS MATERIALIZED (SELECT i, l FROM gaps)
+SELECT i, len(a.l), list_sum(b.l), a.l[3000] IS NULL, b.l[3001] FROM m a JOIN m b USING (i) ORDER BY i;
+----
+4	1	4	true	NULL
+5	3005	4525531	true	3005
+6	1	6	true	NULL
+2052	1	2052	true	NULL
+2053	5053	23132635	true	5053
+2054	1	2054	true	NULL
+4100	1	4100	true	NULL
+4101	7101	54322651	true	7101
+4102	1	4102	true	NULL
+
+query IIII
+WITH m AS MATERIALIZED (SELECT i, l FROM gaps)
+SELECT count(*), sum(len(l)), sum(list_sum(l)), sum(l[-1])
+FROM range(4 * 2048) t(r), (SELECT a.l FROM m a JOIN m b USING (i));
+----
+73728	124231680	671687761920	275521536
+
+query I
+WITH m AS MATERIALIZED (SELECT i, l FROM gaps)
+SELECT count(*) FROM m a JOIN m b USING (i) JOIN gaps USING (i)
+WHERE a.l IS NOT DISTINCT FROM gaps.l AND b.l IS NOT DISTINCT FROM gaps.l;
+----
+9

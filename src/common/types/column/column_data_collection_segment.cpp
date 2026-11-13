@@ -31,16 +31,18 @@ void ColumnDataCollectionSegment::Reset() {
 	heap->GetAllocator().Reset();
 }
 
-idx_t ColumnDataCollectionSegment::GetDataSize(idx_t type_size) {
-	return AlignValue(type_size * STANDARD_VECTOR_SIZE);
+idx_t ColumnDataCollectionSegment::GetDataSize(idx_t type_size, idx_t capacity) {
+	return AlignValue(type_size * capacity);
 }
 
-validity_t *ColumnDataCollectionSegment::GetValidityPointerForWriting(data_ptr_t base_ptr, idx_t type_size) {
-	return reinterpret_cast<validity_t *>(base_ptr + GetDataSize(type_size));
+validity_t *ColumnDataCollectionSegment::GetValidityPointerForWriting(data_ptr_t base_ptr, idx_t type_size,
+                                                                      idx_t capacity) {
+	return reinterpret_cast<validity_t *>(base_ptr + GetDataSize(type_size, capacity));
 }
 
-validity_t *ColumnDataCollectionSegment::GetValidityPointer(data_ptr_t base_ptr, idx_t type_size, idx_t count) {
-	auto validity_mask = reinterpret_cast<validity_t *>(base_ptr + GetDataSize(type_size));
+validity_t *ColumnDataCollectionSegment::GetValidityPointer(data_ptr_t base_ptr, idx_t type_size, idx_t count,
+                                                            idx_t capacity) {
+	auto validity_mask = reinterpret_cast<validity_t *>(base_ptr + GetDataSize(type_size, capacity));
 
 	// Optimized check to see if all entries are valid
 	for (idx_t i = 0; i < (count / ValidityMask::BITS_PER_VALUE); i++) {
@@ -94,6 +96,30 @@ VectorDataIndex ColumnDataCollectionSegment::AllocateVectorInternal(const Logica
 		                      chunk_state);
 	}
 	return result;
+}
+
+VectorDataIndex ColumnDataCollectionSegment::AllocateLargeVector(idx_t type_size, idx_t count,
+                                                                 ChunkMetaData &chunk_meta,
+                                                                 ChunkManagementState *chunk_state) {
+	D_ASSERT(count > STANDARD_VECTOR_SIZE);
+	VectorMetaData meta_data;
+	// the capacity equals the count, so appends continue on a new entry
+	meta_data.count = NumericCast<uint32_t>(count);
+	meta_data.representation = ColumnDataRepresentation::LARGE_FLAT;
+
+	VectorDataIndex index(vector_data.size());
+	vector_data.push_back(std::move(meta_data));
+	AllocateVectorStorage(index, GetDataSize(type_size, count) + ValidityMask::ValidityMaskSize(count), chunk_meta,
+	                      chunk_state);
+	return index;
+}
+
+idx_t ColumnDataCollectionSegment::GetVectorCapacity(const VectorMetaData &vdata) {
+	if (vdata.representation == ColumnDataRepresentation::LARGE_FLAT) {
+		// allocated for exactly its rows
+		return vdata.count;
+	}
+	return STANDARD_VECTOR_SIZE;
 }
 
 VectorDataIndex ColumnDataCollectionSegment::AllocateVector(const LogicalType &type, ChunkMetaData &chunk_meta,
@@ -321,14 +347,15 @@ idx_t ColumnDataCollectionSegment::ReadVectorInternal(ChunkManagementState &stat
 	auto &vdata = GetVectorData(vector_index);
 	D_ASSERT(vdata.is_allocated);
 
-	auto base_ptr = allocator->GetDataPointer(state, vdata.block_id, vdata.offset);
-	auto validity_data = GetValidityPointer(base_ptr, type_size, vdata.count);
 	if (!vdata.next_data.IsValid() && state.properties != ColumnDataScanProperties::DISALLOW_ZERO_COPY) {
 		// no next data, we can do a zero-copy read of this vector
+		const auto capacity = GetVectorCapacity(vdata);
+		auto base_ptr = allocator->GetDataPointer(state, vdata.block_id, vdata.offset);
+		auto validity_data = GetValidityPointer(base_ptr, type_size, vdata.count, capacity);
 		if (TypeHasData(result.GetType())) {
 			FlatVector::SetData(result, base_ptr, count_t(vdata.count));
 		}
-		FlatVector::ValidityMutable(result).Initialize(validity_data, STANDARD_VECTOR_SIZE);
+		FlatVector::ValidityMutable(result).Initialize(validity_data, capacity);
 		FlatVector::SetSize(result, count_t(vdata.count));
 		return vdata.count;
 	}
@@ -352,12 +379,13 @@ idx_t ColumnDataCollectionSegment::ReadVectorInternal(ChunkManagementState &stat
 	idx_t current_offset = 0;
 	while (next_index.IsValid()) {
 		auto &current_vdata = GetVectorData(next_index);
-		base_ptr = allocator->GetDataPointer(state, current_vdata.block_id, current_vdata.offset);
-		validity_data = GetValidityPointer(base_ptr, type_size, current_vdata.count);
+		const auto current_capacity = GetVectorCapacity(current_vdata);
+		auto base_ptr = allocator->GetDataPointer(state, current_vdata.block_id, current_vdata.offset);
+		auto validity_data = GetValidityPointer(base_ptr, type_size, current_vdata.count, current_capacity);
 		if (type_size > 0) {
 			memcpy(target_data + current_offset * type_size, base_ptr, current_vdata.count * type_size);
 		}
-		ValidityMask current_validity(validity_data, STANDARD_VECTOR_SIZE);
+		ValidityMask current_validity(validity_data, current_capacity);
 		target_validity.SliceInPlace(current_validity, current_offset, 0, current_vdata.count);
 		current_offset += current_vdata.count;
 		next_index = current_vdata.next_data;
@@ -375,7 +403,8 @@ idx_t ColumnDataCollectionSegment::ReadVector(ChunkManagementState &state, Vecto
 		FlatVector::SetSize(result, 0);
 		return 0;
 	}
-	if (vdata.representation != ColumnDataRepresentation::FLAT) {
+	if (vdata.representation == ColumnDataRepresentation::CONSTANT ||
+	    vdata.representation == ColumnDataRepresentation::DICTIONARY) {
 		return ReadCompactVector(state, vector_index, result);
 	}
 	auto vcount = ReadVectorInternal(state, vector_index, result);

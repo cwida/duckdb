@@ -43,7 +43,9 @@ enum class ColumnDataRepresentation : uint8_t {
 	//! A single value plus a row count
 	CONSTANT,
 	//! Per-row dictionary codes in block data referencing a per-segment dictionary
-	DICTIONARY
+	DICTIONARY,
+	//! Row values of a list child longer than a vector, in block data sized to exactly its count
+	LARGE_FLAT
 };
 
 //! The value of a CONSTANT entry
@@ -90,7 +92,7 @@ struct VectorMetaData {
 	uint32_t block_id = 0;
 	uint32_t offset = 0;
 	//! The number of entries present in this vector
-	uint16_t count;
+	uint32_t count;
 	//! Whether block space has been allocated for this entry
 	bool is_allocated = false;
 	//! The representation class of this entry
@@ -173,6 +175,9 @@ public:
 	//! Allocate space for string data during append (BUFFER_MANAGER_ALLOCATOR only)
 	VectorDataIndex AllocateStringHeap(idx_t size, ChunkMetaData &chunk_meta, ColumnDataAppendState &append_state,
 	                                   VectorDataIndex prev_index = VectorDataIndex());
+	//! Allocate a LARGE_FLAT entry holding exactly 'count' rows of a constant-size type
+	VectorDataIndex AllocateLargeVector(idx_t type_size, idx_t count, ChunkMetaData &chunk_meta,
+	                                    ChunkManagementState *chunk_state);
 	//! Allocate block storage for an entry whose allocation was deferred or whose storage is replaced
 	void AllocateVectorStorage(VectorDataIndex index, idx_t allocation_size, ChunkMetaData &chunk_meta,
 	                           ChunkManagementState *chunk_state);
@@ -198,6 +203,8 @@ public:
 		D_ASSERT(index.index < vector_data.size());
 		return vector_data[index.index];
 	}
+	//! The number of rows the block data of an entry has room for
+	static idx_t GetVectorCapacity(const VectorMetaData &vdata);
 
 	idx_t ChunkCount() const;
 	//! Get the total *used* size (not cached)
@@ -214,9 +221,11 @@ public:
 
 	void Verify();
 
-	static idx_t GetDataSize(idx_t type_size);
-	static validity_t *GetValidityPointerForWriting(data_ptr_t base_ptr, idx_t type_size);
-	static validity_t *GetValidityPointer(data_ptr_t base_ptr, idx_t type_size, idx_t count);
+	static idx_t GetDataSize(idx_t type_size, idx_t capacity = STANDARD_VECTOR_SIZE);
+	static validity_t *GetValidityPointerForWriting(data_ptr_t base_ptr, idx_t type_size,
+	                                                idx_t capacity = STANDARD_VECTOR_SIZE);
+	static validity_t *GetValidityPointer(data_ptr_t base_ptr, idx_t type_size, idx_t count,
+	                                      idx_t capacity = STANDARD_VECTOR_SIZE);
 
 private:
 	idx_t ReadVectorInternal(ChunkManagementState &state, VectorDataIndex vector_index, Vector &result);
