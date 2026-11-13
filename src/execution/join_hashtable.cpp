@@ -2047,6 +2047,8 @@ void ScanStructure::NextSemiOrAntiJoin(DataChunk &keys, DataChunk &probe_data, D
 			idx_t probe_col_idx = ht.lhs_output_in_probe[i];
 			result.data[i].Slice(probe_data.data[probe_col_idx], sel, result_count);
 		}
+		// the result may have no columns, so set the count explicitly
+		result.SetChildCardinality(result_count);
 	} else {
 		D_ASSERT(result.size() == 0);
 	}
