@@ -3,6 +3,9 @@
 # group: [inner]
 
 statement ok
+SET VARIABLE initial_database = current_database();
+
+statement ok
 SET threads=1;
 
 statement ok
@@ -51,7 +54,7 @@ statement ok
 CHECKPOINT;
 
 statement ok
-USE memory;
+SET schema = getvariable('initial_database');
 
 statement ok
 DETACH native_cache;
@@ -113,7 +116,7 @@ EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM dict_recovery p JOIN
 analyzed_plan	<REGEX>:(?s).*dict_recovery[^}]*},\s*"intermediate_rows": 20480,.*
 
 statement ok
-USE memory;
+SET schema = getvariable('initial_database');
 
 statement ok
 DETACH native_cache;
@@ -126,3 +129,6 @@ RESET disabled_optimizers;
 
 statement ok
 RESET dynamic_or_filter_threshold;
+
+statement ok
+RESET VARIABLE initial_database;
