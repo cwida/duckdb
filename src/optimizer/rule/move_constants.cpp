@@ -2,6 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
+#include "duckdb/common/types/uhugeint.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
@@ -69,6 +70,19 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 	const bool constant_is_left = RefersToSameObject(BoundComparisonExpression::Left(comparison), outer_constant);
 	Value new_constant;
 	auto &constant_type = outer_constant.GetReturnType();
+	// IntegralValue::Get returns a hugeint_t (128-bit signed). A UHUGEINT constant above
+	// NumericLimits<hugeint_t>::Maximum() does not fit in that range and would wrap to a
+	// negative number, silently producing a wrong rewrite (see #28541). Skip the rewrite when
+	// either constant does not fit into hugeint_t.
+	if (outer_constant.GetValue().type().InternalType() == PhysicalType::UINT128 ||
+	    inner_constant.GetValue().type().InternalType() == PhysicalType::UINT128) {
+		hugeint_t checked_outer;
+		hugeint_t checked_inner;
+		if (!Uhugeint::TryCast(UhugeIntValue::Get(outer_constant.GetValue()), checked_outer) ||
+		    !Uhugeint::TryCast(UhugeIntValue::Get(inner_constant.GetValue()), checked_inner)) {
+			return nullptr;
+		}
+	}
 	hugeint_t outer_value = IntegralValue::Get(outer_constant.GetValue());
 	hugeint_t inner_value = IntegralValue::Get(inner_constant.GetValue());
 
