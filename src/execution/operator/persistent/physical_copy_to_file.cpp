@@ -29,6 +29,7 @@
 #include "fmt/format.h"
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <exception>
 #include <functional>
@@ -347,6 +348,21 @@ public:
 	std::exception_ptr GetError();
 
 private:
+	template <class PREDICATE>
+	void WaitForTaskProgress(CopyFileLifecycleWaitMode mode, PREDICATE &&ready) {
+		if (mode == CopyFileLifecycleWaitMode::INTERRUPTIBLE) {
+			context.BlockingInterruptCheck();
+		}
+		{
+			unique_lock<mutex> guard(task_wait_lock);
+			// Completion wakes this wait; the timeout keeps interrupts and query deadlines responsive.
+			task_progress.wait_for(guard, std::chrono::milliseconds(10), std::forward<PREDICATE>(ready));
+		}
+		if (mode == CopyFileLifecycleWaitMode::INTERRUPTIBLE) {
+			context.BlockingInterruptCheck();
+		}
+	}
+
 	bool WorkOnTask(bool throw_error = true);
 	void WaitForTaskSlot(CopyFileLifecycleWaitMode mode);
 	void ThrowError();
@@ -357,6 +373,8 @@ private:
 	idx_t async_threads;
 	idx_t max_pending_tasks;
 	atomic<idx_t> pending_tasks {0};
+	mutex task_wait_lock;
+	std::condition_variable task_progress;
 	mutex error_lock;
 	std::exception_ptr error;
 };
@@ -419,7 +437,7 @@ public:
 	}
 
 	void Cancel() override {
-		// the task is retired without running - settle the job, WaitForJob spins until it is finished
+		// the task is retired without running - settle the job, WaitForJob waits until it is finished
 		settled = true;
 		CopyFileLifecycleTaskFinishGuard finish_guard(lifecycle);
 		if (job->IsFinished()) {
@@ -1794,7 +1812,9 @@ void CopyFileLifecycleExecutor::WaitForJob(CopyFileLifecycleJob &job, CopyFileLi
 		if (mode == CopyFileLifecycleWaitMode::INTERRUPTIBLE) {
 			context.InterruptCheck();
 		}
-		WorkOnTaskOrYield();
+		if (!WorkOnTask()) {
+			WaitForTaskProgress(mode, [&]() { return job.IsFinished(); });
+		}
 	}
 	job.Rethrow();
 }
@@ -1807,13 +1827,20 @@ void CopyFileLifecycleExecutor::WaitAll(CopyFileLifecycleWaitMode mode) {
 	}
 	while (pending_tasks.load(std::memory_order_acquire) > 0) {
 		context.InterruptCheck();
-		WorkOnTaskOrYield();
+		if (!WorkOnTask()) {
+			WaitForTaskProgress(mode, [&]() { return pending_tasks.load(std::memory_order_acquire) == 0; });
+		}
 	}
 	ThrowError();
 }
 
 void CopyFileLifecycleExecutor::FinishTask() {
-	--pending_tasks;
+	{
+		// Synchronize notification with the predicate check before a waiter parks.
+		lock_guard<mutex> guard(task_wait_lock);
+		--pending_tasks;
+	}
+	task_progress.notify_all();
 }
 
 void CopyFileLifecycleExecutor::PushError(const std::exception_ptr &error_p) {
@@ -1857,11 +1884,10 @@ void CopyFileLifecycleExecutor::WaitForTaskSlot(CopyFileLifecycleWaitMode mode) 
 		if (mode == CopyFileLifecycleWaitMode::INTERRUPTIBLE) {
 			context.InterruptCheck();
 		}
-		if (async_threads == 0 || mode == CopyFileLifecycleWaitMode::DRAIN) {
-			WorkOnTaskOrYield();
-		} else {
-			TaskScheduler::YieldThread();
+		if ((async_threads == 0 || mode == CopyFileLifecycleWaitMode::DRAIN) && WorkOnTask()) {
+			continue;
 		}
+		WaitForTaskProgress(mode, [&]() { return pending_tasks < max_pending_tasks; });
 	}
 }
 
