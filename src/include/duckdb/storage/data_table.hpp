@@ -248,6 +248,8 @@ public:
 	idx_t GetRowGroupCount() const;
 	//! The number of row groups, including the ones that are not loaded yet, without loading them
 	idx_t GetRowGroupCountWithoutLoading() const;
+	//! The same, including the row groups of the transaction-local storage
+	idx_t GetRowGroupCountWithoutLoading(ClientContext &context);
 	idx_t GetRowGroupCountWithLocalStorage(ClientContext &context);
 
 	vector<ColumnSegmentInfo>

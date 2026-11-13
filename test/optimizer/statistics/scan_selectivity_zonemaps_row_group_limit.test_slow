@@ -62,6 +62,38 @@ query II nosort above_range
 EXPLAIN SELECT sum(bucket) FROM rg.above WHERE id < 2048;
 ----
 
+# the row groups that the transaction has added count towards the limit: 16,386 transaction-local row groups
+statement ok
+SET disabled_optimizers = '';
+
+statement ok
+CREATE TABLE rg.local_rows (i BIGINT);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO rg.local_rows SELECT range FROM range(33558528);
+
+query II nosort local_range
+EXPLAIN SELECT sum(i) FROM rg.local_rows WHERE i < 2048;
+----
+
+statement ok
+SET disabled_optimizers = 'scan_selectivity_zonemaps';
+
+query II nosort local_range
+EXPLAIN SELECT sum(i) FROM rg.local_rows WHERE i < 2048;
+----
+
+query I
+SELECT count(*) FROM rg.local_rows WHERE i < 2048;
+----
+2048
+
+statement ok
+ROLLBACK;
+
 foreach disabled scan_selectivity_zonemaps extension
 
 statement ok

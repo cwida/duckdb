@@ -621,9 +621,10 @@ static optional_idx ZonemapFilterBound(LogicalGet &get, ClientContext &context,
 	if (filters.empty()) {
 		return optional_idx();
 	}
-	// the limit is checked before any row group is loaded or collected
+	// the limit is checked before any row group is loaded or collected, and covers the row groups of the table
+	// and the ones that the transaction has added
 	auto &storage = table->Cast<DuckTableEntry>().GetStorage();
-	if (storage.GetRowGroupCountWithoutLoading() > ZONEMAP_MAX_ROW_GROUPS) {
+	if (storage.GetRowGroupCountWithoutLoading(context) > ZONEMAP_MAX_ROW_GROUPS) {
 		return optional_idx();
 	}
 
