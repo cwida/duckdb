@@ -19,7 +19,7 @@ jobs:
     GEN: ninja
     BUILD_BENCHMARK: 1
     BUILD_JEMALLOC: 1
-    CORE_EXTENSIONS: "tpcd;tpcds;httpfs"
+    CORE_EXTENSIONS: "tpch;tpcds;httpfs"
 
   steps:
     - uses: actions/checkout@v6
