@@ -19,7 +19,10 @@ struct DynamicFilterData;
 //! smaller than the limit-th smallest distinct key tuple of the whole input, and neither is the smallest such bound of
 //! all threads. A row passes if its key tuple is not larger than that bound (ties included), so that every group that
 //! the Top-N can return still receives all of its rows.
-class PhysicalTopKeyFilter : public CachingPhysicalOperator {
+//! The rows that pass keep their order, so that aggregates that depend on the order of their input see the rows in the
+//! order in which they would see them without the filter. That is why this is not a caching operator: in a pipeline
+//! that ends in a hash aggregate the cache holds back a small chunk while a later full chunk passes.
+class PhysicalTopKeyFilter : public PhysicalOperator {
 public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::TOP_KEY_FILTER;
 
@@ -49,8 +52,7 @@ public:
 
 	InsertionOrderPreservingMap<string> ParamsToString() const override;
 
-protected:
-	OperatorResultType ExecuteInternal(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
-	                                   GlobalOperatorState &gstate, OperatorState &state) const override;
+	OperatorResultType Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
+	                           GlobalOperatorState &gstate, OperatorState &state) const override;
 };
 } // namespace duckdb

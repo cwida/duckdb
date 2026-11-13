@@ -206,6 +206,66 @@ SELECT count(*), sum(c) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 500
 ----
 21	500
 
+# a volatile expression between the LIMIT and the aggregate: the projections move above the TOP_N, where they would no
+# longer see the rows that the OFFSET skips (the limit pushdown declines for the same reason). The sequence advances
+# for the skipped row.
+statement ok
+CREATE SEQUENCE seq;
+
+query II
+EXPLAIN SELECT nextval('seq'), count(*) c FROM t GROUP BY k1 LIMIT 1 OFFSET 1
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query II
+SELECT nextval('seq'), count(*) > 0 FROM t GROUP BY k1 LIMIT 1 OFFSET 1
+----
+2	true
+
+statement ok
+SET disabled_optimizers = 'group_by_top_key';
+
+statement ok
+CREATE SEQUENCE seq_disabled;
+
+query II
+SELECT nextval('seq_disabled'), count(*) > 0 FROM t GROUP BY k1 LIMIT 1 OFFSET 1
+----
+2	true
+
+statement ok
+SET disabled_optimizers = '';
+
+# a limit that the limit pushdown leaves above the projections (8192 and more; 20,000 groups): a volatile expression
+# or one that can throw stays below the LIMIT; the sibling without such an expression is rewritten
+statement ok
+CREATE TABLE many AS SELECT (i % 20000)::INTEGER AS k, i AS v FROM range(40000) r(i);
+
+query II
+EXPLAIN SELECT random(), k, count(*) c FROM many GROUP BY k LIMIT 9000
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query II
+EXPLAIN SELECT (k * 1000)::SMALLINT, count(*) c FROM many GROUP BY k LIMIT 9000
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query II
+EXPLAIN SELECT k + 1, count(*) c FROM many GROUP BY k LIMIT 9000
+----
+logical_opt	<REGEX>:.*Top N.*
+
+query II
+SELECT count(*), sum(c) FROM (SELECT random() r, k, count(*) c FROM many GROUP BY k LIMIT 9000)
+----
+9000	18000
+
+query III
+SELECT count(*), sum(c), max(k1) FROM (SELECT k + 1 AS k1, count(*) c FROM many GROUP BY k LIMIT 9000)
+----
+9000	18000	9000
+
 # a window between the LIMIT and the aggregate. A TOP_N directly above the aggregate would feed the window three
 # groups: n would be 3, not 21
 query II

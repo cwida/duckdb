@@ -13,8 +13,7 @@ namespace duckdb {
 PhysicalTopKeyFilter::PhysicalTopKeyFilter(PhysicalPlan &physical_plan, vector<LogicalType> types,
                                            vector<BoundOrderByNode> orders_p, idx_t limit,
                                            shared_ptr<DynamicFilterData> dynamic_filter_p, idx_t estimated_cardinality)
-    : CachingPhysicalOperator(physical_plan, PhysicalOperatorType::TOP_KEY_FILTER, std::move(types),
-                              estimated_cardinality),
+    : PhysicalOperator(physical_plan, PhysicalOperatorType::TOP_KEY_FILTER, std::move(types), estimated_cardinality),
       orders(std::move(orders_p)), limit(limit), dynamic_filter(std::move(dynamic_filter_p)) {
 	D_ASSERT(!orders.empty());
 }
@@ -73,7 +72,7 @@ public:
 //===--------------------------------------------------------------------===//
 // Local State
 //===--------------------------------------------------------------------===//
-class TopKeyFilterState : public CachingOperatorState {
+class TopKeyFilterState : public OperatorState {
 public:
 	//! The number of key hashes that the cache of offered keys remembers
 	static constexpr idx_t SEEN_HASH_SLOTS = 4096;
@@ -333,8 +332,8 @@ unique_ptr<GlobalOperatorState> PhysicalTopKeyFilter::GetGlobalOperatorState(Cli
 	return make_uniq<TopKeyFilterGlobalState>(*this);
 }
 
-OperatorResultType PhysicalTopKeyFilter::ExecuteInternal(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
-                                                         GlobalOperatorState &gstate_p, OperatorState &state_p) const {
+OperatorResultType PhysicalTopKeyFilter::Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
+                                                 GlobalOperatorState &gstate_p, OperatorState &state_p) const {
 	auto &gstate = gstate_p.Cast<TopKeyFilterGlobalState>();
 	auto &state = state_p.Cast<TopKeyFilterState>();
 	const auto count = input.size();

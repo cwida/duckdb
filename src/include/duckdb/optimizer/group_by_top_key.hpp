@@ -29,12 +29,19 @@ class Optimizer;
 //! group that the Top-N can return still receives all of its rows and its aggregates are exact. A prefix of the
 //! ORDER BY suffices because the order is lexicographic.
 //!
+//! The filter computes a key for every input row, the Top-N for one row of a group. A key therefore has to be a group
+//! key (through projections that preserve the order), or an expression over group keys that has the same value for all
+//! rows of a group: one that cannot throw and only reads group keys whose equal values cannot be told apart (not
+//! FLOAT / DOUBLE, where -0.0 = 0.0). Key types whose sort keys do not agree with their comparison are declined.
+//!
 //! A LIMIT without an ORDER BY over a grouped aggregate may return any n groups. It is turned into a Top-N on a group
 //! key first, so that the aggregate only has to aggregate the n groups that are returned:
 //!
 //!   LIMIT(n)                                 PROJECTION*
 //!     PROJECTION*                   ==>        TOP_N(n, ORDER BY k)
 //!       AGGREGATE(k1 .. km; aggs)                AGGREGATE(k1 .. km; aggs)
+//!
+//! The projections must not be volatile or able to throw: above the Top-N they only see the rows that are returned.
 class GroupByTopKey {
 public:
 	explicit GroupByTopKey(Optimizer &optimizer);

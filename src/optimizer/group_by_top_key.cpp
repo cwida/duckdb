@@ -61,6 +61,57 @@ bool IsPlainGroupedAggregate(const LogicalAggregate &aggregate) {
 	return !aggregate.groups.empty() && IsSingleGroupingSet(aggregate) && aggregate.grouping_functions.empty();
 }
 
+//! Whether the filter can compare keys of this type. It keeps the distinct keys of a thread as sort keys and compares
+//! rows with the bound that it decodes from one, so (1) values that the aggregate puts into one group need the same
+//! sort key, and (2) the order of the sort keys has to be the order of the comparison operators. Both hold for the
+//! types below. FLOAT and DOUBLE are among them (-0.0 and 0.0, and all NaNs, have one sort key each), but they are not
+//! "exact": values that are equal can still be told apart by an expression (1 / -0.0 is not 1 / 0.0). INTERVAL is not
+//! supported: equal values (1 month and 30 days) have different sort keys. Types that are not listed are declined.
+bool IsSupportedKeyType(const LogicalType &type, bool exact) {
+	switch (type.id()) {
+	case LogicalTypeId::BOOLEAN:
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::UTINYINT:
+	case LogicalTypeId::USMALLINT:
+	case LogicalTypeId::UINTEGER:
+	case LogicalTypeId::UBIGINT:
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::UHUGEINT:
+	case LogicalTypeId::DECIMAL:
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIME:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::VARCHAR:
+	case LogicalTypeId::BLOB:
+	case LogicalTypeId::UUID:
+	case LogicalTypeId::ENUM:
+		return true;
+	case LogicalTypeId::FLOAT:
+	case LogicalTypeId::DOUBLE:
+		return !exact;
+	case LogicalTypeId::STRUCT:
+		for (auto &child : StructType::GetChildTypes(type)) {
+			if (!IsSupportedKeyType(child.second, exact)) {
+				return false;
+			}
+		}
+		return true;
+	case LogicalTypeId::LIST:
+		return IsSupportedKeyType(ListType::GetChildType(type), exact);
+	case LogicalTypeId::ARRAY:
+		return IsSupportedKeyType(ArrayType::GetChildType(type), exact);
+	default:
+		return false;
+	}
+}
+
 //! The column that a projection expression forwards in a way that preserves its order: the column itself, an integral
 //! cast of it or the decompression of a compressed materialization (which preserves the order)
 bool TryGetForwardedColumn(const Expression &expr, ColumnBinding &result) {
@@ -119,10 +170,11 @@ unique_ptr<Expression> ResolveColumn(ColumnBinding binding, idx_t level,
 }
 
 //! The expression - over the output of projections[level] - as an expression over the input of the aggregate: a column
-//! is replaced by the deterministic projection expression that computes it and, at the aggregate, by its group key
+//! is replaced by the deterministic projection expression that computes it and, at the aggregate, by its group key.
+//! exact_group_keys is cleared if a group key that the expression reads has a type whose equal values can differ.
 unique_ptr<Expression> Substitute(const Expression &expr, idx_t level,
                                   const vector<reference<LogicalOperator>> &projections,
-                                  const LogicalAggregate &aggregate) {
+                                  const LogicalAggregate &aggregate, bool &exact_group_keys) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
 		auto &colref = expr.Cast<BoundColumnRefExpression>();
 		if (colref.Depth() != 0) {
@@ -130,7 +182,11 @@ unique_ptr<Expression> Substitute(const Expression &expr, idx_t level,
 		}
 		auto &binding = colref.Binding();
 		if (level >= projections.size()) {
-			return GetGroupKey(aggregate, binding);
+			auto key = GetGroupKey(aggregate, binding);
+			if (key && !IsSupportedKeyType(key->GetReturnType(), true)) {
+				exact_group_keys = false;
+			}
+			return key;
 		}
 		auto &projection = projections[level].get().Cast<LogicalProjection>();
 		if (binding.table_index != projection.table_index ||
@@ -141,7 +197,7 @@ unique_ptr<Expression> Substitute(const Expression &expr, idx_t level,
 		if (!IsDeterministic(computed)) {
 			return nullptr;
 		}
-		return Substitute(computed, level + 1, projections, aggregate);
+		return Substitute(computed, level + 1, projections, aggregate, exact_group_keys);
 	}
 	if (!IsDeterministic(expr)) {
 		return nullptr;
@@ -152,7 +208,7 @@ unique_ptr<Expression> Substitute(const Expression &expr, idx_t level,
 		if (!resolved) {
 			return;
 		}
-		auto key = Substitute(*child, level, projections, aggregate);
+		auto key = Substitute(*child, level, projections, aggregate, exact_group_keys);
 		if (!key) {
 			resolved = false;
 			return;
@@ -186,8 +242,16 @@ unique_ptr<LogicalOperator> GroupByTopKey::LimitToTopN(unique_ptr<LogicalOperato
 		return op;
 	}
 	// the projections down to the aggregate: a filter (HAVING) or anything else ends the match
+	// The projections move above the Top-N, where they only see the rows that are returned: an expression that is
+	// volatile (a sequence has to advance for the rows that the OFFSET skips, as in the limit pushdown) or that can
+	// throw has to stay below the LIMIT.
 	reference<LogicalOperator> child = *op->children[0];
 	while (child.get().type == LogicalOperatorType::LOGICAL_PROJECTION) {
+		for (auto &expr : child.get().expressions) {
+			if (expr->IsVolatile() || expr->CanThrow()) {
+				return op;
+			}
+		}
 		child = *child.get().children[0];
 	}
 	if (child.get().type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
@@ -207,6 +271,9 @@ unique_ptr<LogicalOperator> GroupByTopKey::LimitToTopN(unique_ptr<LogicalOperato
 			continue;
 		}
 		auto &type = group.GetReturnType();
+		if (!IsSupportedKeyType(type, false)) {
+			continue;
+		}
 		if (TypeIsNumeric(type.InternalType()) || type.id() == LogicalTypeId::VARCHAR) {
 			key_idx = group_idx;
 			break;
@@ -289,19 +356,23 @@ bool GroupByTopKey::TryMatch(LogicalOperator &op, TopKeyMatch &match) {
 			key =
 			    ResolveColumn(order.expression->Cast<BoundColumnRefExpression>().Binding(), 0, projections, aggregate);
 		}
+		bool exact_group_keys = true;
 		if (!key) {
-			key = Substitute(*order.expression, 0, projections, aggregate);
+			key = Substitute(*order.expression, 0, projections, aggregate, exact_group_keys);
 		}
-		if (!key) {
+		if (!key || !IsSupportedKeyType(key->GetReturnType(), false)) {
 			break;
 		}
-		if (!IsInputColumn(*key)) {
-			bool is_group_key = false;
-			for (auto &group : aggregate.groups) {
-				is_group_key = is_group_key || group->Equals(*key);
-			}
-			// an expression over the group keys is evaluated for every input row: only cheap ones
-			if (!is_group_key && ExpressionHeuristics::Cost(*key) > MAX_DERIVED_KEY_COST) {
+		bool is_group_key = false;
+		for (auto &group : aggregate.groups) {
+			is_group_key = is_group_key || group->Equals(*key);
+		}
+		if (!is_group_key) {
+			// an expression over the group keys. The filter evaluates it for every input row and the Top-N for one
+			// row of the group, so it has to have one value for all rows of a group: the group keys it reads must not
+			// have equal values that an expression can tell apart. It also must not throw (the filter and the dynamic
+			// filter in the scans change the rows that it is evaluated for), and it has to be cheap.
+			if (!exact_group_keys || key->CanThrow() || ExpressionHeuristics::Cost(*key) > MAX_DERIVED_KEY_COST) {
 				break;
 			}
 		}

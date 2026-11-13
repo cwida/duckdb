@@ -755,6 +755,56 @@ SELECT a, b, list(v)[-3:] FROM ordered GROUP BY a, b ORDER BY a DESC, b LIMIT 4
 
 endloop
 
+# the rows that pass are not held back either: of 8,192 rows the group of "true" gets one row in each of the first two
+# chunks of 2,048 rows and the whole of the last one. A chunk with one row is not kept while a later full chunk passes.
+statement ok
+CREATE TABLE sparse AS SELECT i = 2048 OR i = 4096 OR i >= 6144 AS k, i AS v FROM range(8192) r(i);
+
+foreach disabled 'group_by_top_key' ''
+
+statement ok
+SET disabled_optimizers = {disabled};
+
+query II
+SELECT k, list(v)[1:3] FROM sparse GROUP BY k ORDER BY k DESC LIMIT 1
+----
+true	[2048, 4096, 6144]
+
+query II
+SELECT k, string_agg(v::VARCHAR, ',')[1:14] FROM sparse GROUP BY k ORDER BY k DESC LIMIT 1
+----
+true	2048,4096,6144
+
+query IIIIII
+SELECT k, first(v), any_value(v), last(v), arg_min(v, k), arg_max(v, k) FROM sparse GROUP BY k ORDER BY k DESC LIMIT 1
+----
+true	2048	2048	8191	2048	2048
+
+query III
+SELECT k, list(v)[1:3], first(v) FROM sparse GROUP BY k ORDER BY k LIMIT 1
+----
+false	[0, 1, 2]	0
+
+# with several threads the order of the rows of a group is open with and without the filter: the same rows
+statement ok
+SET threads = 8;
+
+query IIII
+SELECT k, list_sort(list(v))[1:3], count(*), sum(v) FROM sparse GROUP BY k ORDER BY k DESC LIMIT 1
+----
+true	[2048, 4096, 6144]	2050	14685184
+
+query II
+SELECT a, list_sort(list(v))[:3] FROM ordered GROUP BY a ORDER BY a LIMIT 2
+----
+0	[0, 50, 100]
+1	[1, 51, 101]
+
+statement ok
+SET threads = 1;
+
+endloop
+
 # a limit that covers a large part of the keys: the scans get no dynamic filter, and a thread that still passes too
 # many rows after its warm-up stops filtering (100 keys, 6000 rows each; 50 and 90 of them are returned)
 statement ok
