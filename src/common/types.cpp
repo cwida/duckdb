@@ -1627,8 +1627,7 @@ LogicalType LogicalType::DECIMAL(uint32_t width, uint32_t scale) {
 	if (!Decimal::IsValidWidthScale(width, scale) || Decimal::IsWide(width)) {
 		return LogicalType(LogicalTypeId::DECIMAL, make_uniq<DecimalTypeInfo>(width, scale));
 	}
-	static constexpr idx_t TYPE_COUNT =
-	    DecimalTypeInfoIndex(Decimal::MAX_WIDTH_INT128, Decimal::MAX_WIDTH_INT128) + 1;
+	static constexpr idx_t TYPE_COUNT = DecimalTypeInfoIndex(Decimal::MAX_WIDTH_INT128, Decimal::MAX_WIDTH_INT128) + 1;
 	static const auto decimal_types = []() {
 		// Finish allocation before immortalizing any info so failed initialization releases partial allocations.
 		array<unique_ptr<LogicalTypeInfo>, TYPE_COUNT> infos;
