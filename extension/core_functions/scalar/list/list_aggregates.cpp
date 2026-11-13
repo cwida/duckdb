@@ -57,7 +57,7 @@ struct ListAggregatesBindData : public FunctionData {
 		return result;
 	}
 
-	static void SerializeFunction(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+	static void SerializeFunction(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
 	                              const BoundScalarFunction &function) {
 		const ListAggregatesBindData *bind_data = nullptr;
 		if (bind_data_p) {
@@ -85,7 +85,7 @@ ListAggregatesBindData::~ListAggregatesBindData() {
 }
 
 struct ListAggregatesLocalState : public FunctionLocalState {
-	ListAggregatesLocalState(Context &context, optional_ptr<FunctionData> bind_data)
+	ListAggregatesLocalState(Context &context, optional_ptr<const FunctionData> bind_data)
 	    : arena_allocator(BufferAllocator::Get(context)) {
 		if (!bind_data) {
 			return;
@@ -110,7 +110,7 @@ struct ListAggregatesLocalState : public FunctionLocalState {
 };
 
 unique_ptr<FunctionLocalState> ListAggregatesInitLocalState(ExpressionState &state, const BoundFunctionExpression &expr,
-                                                            FunctionData *bind_data) {
+                                                            optional_ptr<const FunctionData> bind_data) {
 	return make_uniq<ListAggregatesLocalState>(state.GetContext(), bind_data);
 }
 

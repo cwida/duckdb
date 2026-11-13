@@ -332,7 +332,7 @@ void AggregateStateSerialization::SerializeStates(const AggregateStateLayout &la
 }
 
 void AggregateStateSerialization::SerializeStates(const BoundAggregateFunction &aggr,
-                                                  optional_ptr<FunctionData> bind_data,
+                                                  optional_ptr<const FunctionData> bind_data,
                                                   const AggregateStateLayout &layout, Vector &states, idx_t count,
                                                   Vector &result, ArenaAllocator &allocator, idx_t offset) {
 	if (aggr.HasExportAggregateStateCallback()) {

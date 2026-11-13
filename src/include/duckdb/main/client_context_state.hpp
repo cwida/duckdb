@@ -104,7 +104,7 @@ public:
 class RegisteredStateManager {
 public:
 	template <class T, typename... ARGS>
-	shared_ptr<T> GetOrCreate(const string &key, ARGS &&...args) {
+	shared_ptr<T> GetOrCreate(const string &key, ARGS &&... args) {
 		lock_guard<mutex> l(lock);
 		auto lookup = registered_state.find(key);
 		if (lookup != registered_state.end()) {

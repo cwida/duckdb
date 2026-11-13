@@ -82,7 +82,7 @@ void GeometryPointDecompressFunction(DataChunk &args, ExpressionState &state, Ve
 	}
 }
 
-void CMGeometryPointCompressSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+void CMGeometryPointCompressSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
                                       const BoundScalarFunction &function) {
 	serializer.WriteProperty(100, "arguments", function.GetArguments());
 	serializer.WriteProperty(101, "return_type", function.GetReturnType());
@@ -95,7 +95,7 @@ unique_ptr<FunctionData> CMGeometryPointCompressDeserialize(Deserializer &deseri
 	return nullptr;
 }
 
-void CMGeometryPointDecompressSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+void CMGeometryPointDecompressSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
                                         const BoundScalarFunction &function) {
 	serializer.WriteProperty(100, "arguments", function.GetArguments());
 	serializer.WriteProperty(101, "return_type", function.GetReturnType());

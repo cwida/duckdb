@@ -83,7 +83,7 @@ struct ReservoirQuantileBindData : public FunctionData {
 		return quantiles == other.quantiles && sample_size == other.sample_size && decimal_type == other.decimal_type;
 	}
 
-	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+	static void Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
 	                      const BoundAggregateFunction &function) {
 		auto &bind_data = bind_data_p->Cast<ReservoirQuantileBindData>();
 		serializer.WriteProperty(100, "quantiles", bind_data.quantiles);

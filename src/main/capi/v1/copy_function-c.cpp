@@ -300,12 +300,12 @@ struct CCopyToGlobalState : GlobalFunctionData {
 };
 
 struct CCopyToGlobalInitInfo {
-	CCopyToGlobalInitInfo(ClientContext &context, FunctionData &bind_data, const string &file_path)
+	CCopyToGlobalInitInfo(ClientContext &context, const FunctionData &bind_data, const string &file_path)
 	    : context(context), bind_data(bind_data), file_path(file_path) {
 	}
 
 	ClientContext &context;
-	FunctionData &bind_data;
+	const FunctionData &bind_data;
 	const string &file_path;
 
 	string error;
@@ -315,7 +315,7 @@ struct CCopyToGlobalInitInfo {
 	duckdb_delete_callback_t delete_callback = nullptr;
 };
 
-unique_ptr<GlobalFunctionData> CCopyToGlobalInit(ClientContext &context, FunctionData &bind_data,
+unique_ptr<GlobalFunctionData> CCopyToGlobalInit(ClientContext &context, const FunctionData &bind_data,
                                                  const string &file_path) {
 	auto &bind_info = bind_data.Cast<CCopyToBindInfo>();
 	auto &function_info = bind_info.function_info->Cast<CCopyFunctionInfo>();
@@ -417,7 +417,7 @@ const char *duckdb_copy_function_global_init_get_file_path(duckdb_copy_function_
 namespace duckdb {
 namespace {
 
-unique_ptr<LocalFunctionData> CCopyToLocalInit(ExecutionContext &context, FunctionData &bind_data) {
+unique_ptr<LocalFunctionData> CCopyToLocalInit(ExecutionContext &context, const FunctionData &bind_data) {
 	// This isnt exposed to the C-API yet, so we just return empty local function data
 	return make_uniq<LocalFunctionData>();
 }
@@ -431,18 +431,18 @@ namespace duckdb {
 namespace {
 
 struct CCopyToSinkInfo {
-	CCopyToSinkInfo(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate)
+	CCopyToSinkInfo(ClientContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate)
 	    : context(context), bind_data(bind_data), gstate(gstate) {
 	}
 
 	ClientContext &context;
-	FunctionData &bind_data;
+	const FunctionData &bind_data;
 	GlobalFunctionData &gstate;
 	string error;
 	bool success = true;
 };
 
-void CCopyToSink(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+void CCopyToSink(ExecutionContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate,
                  LocalFunctionData &lstate, DataChunk &input) {
 	auto &bind_info = bind_data.Cast<CCopyToBindInfo>();
 	auto &function_info = bind_info.function_info->Cast<CCopyFunctionInfo>();
@@ -534,7 +534,7 @@ void *duckdb_copy_function_sink_get_global_state(duckdb_copy_function_sink_info 
 namespace duckdb {
 namespace {
 
-void CCopyToCombine(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+void CCopyToCombine(ExecutionContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate,
                     LocalFunctionData &lstate) {
 	// Do nothing for now (this isnt exposed to the C-API yet)
 }
@@ -549,19 +549,19 @@ namespace duckdb {
 namespace {
 
 struct CCopyToFinalizeInfo {
-	CCopyToFinalizeInfo(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate)
+	CCopyToFinalizeInfo(ClientContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate)
 	    : context(context), bind_data(bind_data), gstate(gstate) {
 	}
 
 	ClientContext &context;
-	FunctionData &bind_data;
+	const FunctionData &bind_data;
 	GlobalFunctionData &gstate;
 
 	string error;
 	bool success = true;
 };
 
-void CCopyToFinalize(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate) {
+void CCopyToFinalize(ClientContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate) {
 	auto &bind_info = bind_data.Cast<CCopyToBindInfo>();
 	auto &function_info = bind_info.function_info->Cast<CCopyFunctionInfo>();
 

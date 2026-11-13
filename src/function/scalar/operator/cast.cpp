@@ -95,7 +95,7 @@ void CastFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 }
 
 static unique_ptr<FunctionLocalState> CastInitLocalState(ExpressionState &state, const BoundFunctionExpression &expr,
-                                                         FunctionData *bind_data) {
+                                                         optional_ptr<const FunctionData> bind_data) {
 	auto &cast_data = bind_data->Cast<CastFunctionData>();
 	if (!cast_data.bound_cast.HasInitLocalState()) {
 		return nullptr;
@@ -132,7 +132,7 @@ static unique_ptr<Expression> CastLegacySerializeCallback(FunctionToStringInput 
 	return make_uniq<LegacyBoundCastExpression>(input.GetChild(0).Copy(), cast_data.target_type, cast_data.try_cast);
 }
 
-static void CastFunctionSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+static void CastFunctionSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
                                   const BoundScalarFunction &function) {
 	auto &bind_data = bind_data_p->Cast<CastFunctionData>();
 	serializer.WriteProperty(100, "try_cast", bind_data.try_cast);
@@ -253,7 +253,7 @@ const BoundCastInfo &BoundCastExpression::GetBoundCast(const BoundFunctionExpres
 }
 
 BoundCastInfo &BoundCastExpression::GetBoundCastMutable(BoundFunctionExpression &cast_expr) {
-	return cast_expr.BindInfoMutable()->Cast<CastFunctionData>().bound_cast;
+	return cast_expr.BindInfoMutable().write().Cast<CastFunctionData>().bound_cast;
 }
 
 unique_ptr<BaseStatistics> BoundCastExpression::PropagateStatistics(BoundFunctionExpression &cast_expr,
@@ -263,7 +263,7 @@ unique_ptr<BaseStatistics> BoundCastExpression::PropagateStatistics(BoundFunctio
 	    cast_expr.Function().GetNullHandling() == FunctionNullHandling::DEFAULT_NULL_HANDLING) {
 		return BaseStatistics::FromConstant(Value(cast_expr.GetReturnType())).ToUnique();
 	}
-	auto &cast_data = cast_expr.BindInfoMutable()->Cast<CastFunctionData>();
+	auto &cast_data = cast_expr.BindInfoMutable().write().Cast<CastFunctionData>();
 	auto result =
 	    cast_data.bound_cast.PropagateStatistics(cast_data.source_type, cast_data.target_type, child_stats, context);
 	if (cast_data.try_cast && result) {

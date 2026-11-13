@@ -722,8 +722,9 @@ static idx_t SelectPrefixRange(Vector &input, const PrefixRangeFunctionData &fun
 	return result_count;
 }
 
-static unique_ptr<FunctionLocalState>
-PrefixRangeInitLocalState(ExpressionState &state, const BoundFunctionExpression &expr, FunctionData *bind_data) {
+static unique_ptr<FunctionLocalState> PrefixRangeInitLocalState(ExpressionState &state,
+                                                                const BoundFunctionExpression &expr,
+                                                                optional_ptr<const FunctionData> bind_data) {
 	auto &data = bind_data->Cast<PrefixRangeFunctionData>();
 	if (!data.filter) {
 		return nullptr;

@@ -33,7 +33,8 @@ struct LocalState : public FunctionLocalState {
 };
 
 template <CryptoHashFunction FUNCTION>
-unique_ptr<FunctionLocalState> InitLocalState(ExpressionState &state, const BoundFunctionExpression &, FunctionData *) {
+unique_ptr<FunctionLocalState> InitLocalState(ExpressionState &state, const BoundFunctionExpression &,
+                                              optional_ptr<const FunctionData>) {
 	auto &db = state.GetContext().GetDatabase();
 	auto &config = DBConfig::GetConfig(db);
 	auto force_mbedtls = Settings::Get<ForceMbedtlsUnsafeSetting>(config);

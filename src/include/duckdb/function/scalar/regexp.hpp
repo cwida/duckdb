@@ -40,7 +40,7 @@ struct RegexpExtractAll {
 	static void Execute(DataChunk &args, ExpressionState &state, Vector &result);
 	static unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input);
 	static unique_ptr<FunctionLocalState> InitLocalState(ExpressionState &state, const BoundFunctionExpression &expr,
-	                                                     FunctionData *bind_data);
+	                                                     optional_ptr<const FunctionData> bind_data);
 };
 
 struct RegexpBaseBindData : public FunctionData {
@@ -78,7 +78,7 @@ struct RegexpExtractAllStruct {
 	static void Execute(DataChunk &args, ExpressionState &state, Vector &result);
 	static unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input);
 	static unique_ptr<FunctionLocalState> InitLocalState(ExpressionState &state, const BoundFunctionExpression &expr,
-	                                                     FunctionData *bind_data);
+	                                                     optional_ptr<const FunctionData> bind_data);
 };
 
 struct RegexpMatchesBindData : public RegexpBaseBindData {
@@ -169,7 +169,7 @@ public:
 };
 
 struct RegexLocalState : public FunctionLocalState {
-	explicit RegexLocalState(RegexpBaseBindData &info, bool extract_all = false)
+	explicit RegexLocalState(const RegexpBaseBindData &info, bool extract_all = false)
 	    : constant_pattern(duckdb_re2::StringPiece(info.constant_string.c_str(), info.constant_string.size()),
 	                       info.options) {
 		if (!constant_pattern.ok()) {
@@ -190,7 +190,7 @@ struct RegexLocalState : public FunctionLocalState {
 };
 
 unique_ptr<FunctionLocalState> RegexInitLocalState(ExpressionState &state, const BoundFunctionExpression &expr,
-                                                   FunctionData *bind_data);
+                                                   optional_ptr<const FunctionData> bind_data);
 unique_ptr<FunctionData> RegexpMatchesBind(BindScalarFunctionInput &input);
 
 } // namespace duckdb

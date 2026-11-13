@@ -225,7 +225,7 @@ static void ExecuteExpression(const idx_t elem_cnt, const LambdaFunctions::Colum
 // ListLambdaBindData
 //===--------------------------------------------------------------------===//
 
-void ListLambdaBindData::Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+void ListLambdaBindData::Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
                                    const BoundScalarFunction &) {
 	auto &bind_data = bind_data_p->Cast<ListLambdaBindData>();
 	serializer.WriteProperty(100, "return_type", bind_data.return_type);

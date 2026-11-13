@@ -1,0 +1,40 @@
+diff --git a/src/inet_escape_functions.cpp b/src/inet_escape_functions.cpp
+index 8ca4166..8c6f8dd 100644
+--- a/src/inet_escape_functions.cpp
++++ b/src/inet_escape_functions.cpp
+@@ -76,7 +76,7 @@ struct MatchWriter {
+ 
+ struct Matcher {
+   template <class OP>
+-  static void Decode(string_t &input, UnescapeBindData &info,
++  static void Decode(string_t &input, const UnescapeBindData &info,
+                      typename OP::RESULT_TYPE &result) {
+     auto input_data = input.GetData();
+     auto input_size = input.GetSize();
+@@ -165,7 +165,7 @@ struct Matcher {
+   static void DecodeMatch(MatchType type, const char *input_data, idx_t start,
+                           idx_t end, uint32_t num,
+                           typename OP::RESULT_TYPE &result,
+-                          UnescapeBindData &info, bool semicolon = false) {
++                          const UnescapeBindData &info, bool semicolon = false) {
+     if (type == MatchType::Unknown) {
+       Append<OP>(input_data, start, end, result);
+     } else if (type == MatchType::CharRef) {
+@@ -178,7 +178,7 @@ struct Matcher {
+   // decode unicode matches (decimal or hexadecimal)
+   template <class OP>
+   static void AppendUnicodeMatch(uint32_t num, typename OP::RESULT_TYPE &result,
+-                                 UnescapeBindData &bind_data) {
++                                 const UnescapeBindData &bind_data) {
+     // line feed character
+     if (num == 0x0d) {
+       OP::Operation("\\r", result);
+@@ -231,7 +231,7 @@ struct Matcher {
+   template <class OP>
+   static void AppendCharRefMatch(const char *input_data, idx_t start, idx_t end,
+                                  typename OP::RESULT_TYPE &result,
+-                                 UnescapeBindData &bind_data) {
++                                 const UnescapeBindData &bind_data) {
+     idx_t sz = end - start + 1;
+     if (sz < 33) { // the biggest valid character reference has 32 characters
+       for (; sz >= 1; --sz) {

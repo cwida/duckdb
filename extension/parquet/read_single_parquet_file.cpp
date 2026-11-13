@@ -427,7 +427,7 @@ static virtual_column_map_t ReadSingleParquetFileVirtualColumns(ClientContext &c
 
 //! The row number within the file identifies a row of a single file
 static vector<column_t> ReadSingleParquetFileRowIdColumns(ClientContext &context,
-                                                          optional_ptr<FunctionData> bind_data) {
+                                                          optional_ptr<const FunctionData> bind_data) {
 	return {MultiFileReader::COLUMN_IDENTIFIER_FILE_ROW_NUMBER};
 }
 
@@ -484,7 +484,7 @@ bool ParquetScanFunction::ProjectionExpressionPushdown(ClientContext &context,
 	if (const Identifier &name = fn.Function().GetName(); name != "strlen" && name != "octet_length") {
 		return false;
 	}
-	auto &bind_data = input.get.bind_data->CastNoConst<MultiFileBindData>();
+	auto &bind_data = input.get.bind_data.write().Cast<MultiFileBindData>();
 	// Don't do pushdown on custom schema users like Ducklake, or when the schemas of several files are unified
 	if (!bind_data.reader_bind.schema.empty() || bind_data.file_options.union_by_name) {
 		return false;

@@ -70,7 +70,7 @@ CSVWriter::CSVWriter(WriteStream &stream, vector<Identifier> name_list, bool sha
 	}
 }
 
-CSVWriter::CSVWriter(CSVReaderOptions &options_p, AsyncFileWriter &file_writer_p, bool shared)
+CSVWriter::CSVWriter(const CSVReaderOptions &options_p, AsyncFileWriter &file_writer_p, bool shared)
     : options(options_p), writer_options(options.dialect_options.state_machine_options.delimiter.GetValue(),
                                          options.dialect_options.state_machine_options.quote.GetValue(),
                                          options.write_newline, GetWriteCommentChar(options)),
@@ -80,7 +80,7 @@ CSVWriter::CSVWriter(CSVReaderOptions &options_p, AsyncFileWriter &file_writer_p
 	}
 }
 
-CSVWriter::CSVWriter(CSVReaderOptions &options_p, FileSystem &fs, const string &file_path,
+CSVWriter::CSVWriter(const CSVReaderOptions &options_p, FileSystem &fs, const string &file_path,
                      FileCompressionType compression, QueryContext context, bool shared)
     : options(options_p), writer_options(options.dialect_options.state_machine_options.delimiter.GetValue(),
                                          options.dialect_options.state_machine_options.quote.GetValue(),

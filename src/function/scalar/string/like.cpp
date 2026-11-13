@@ -285,7 +285,7 @@ struct LikeMatcher : public FunctionData {
 	      has_start_percentage(has_start_percentage), has_end_percentage(has_end_percentage) {
 	}
 
-	bool Match(string_t &str) {
+	bool Match(string_t &str) const {
 		auto str_data = const_uchar_ptr_cast(str.GetData());
 		auto str_len = str.GetSize();
 		idx_t segment_idx = 0;

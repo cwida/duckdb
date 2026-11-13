@@ -109,7 +109,8 @@ TEST_CASE("Deserialized bind-expression replacements retain result annotations",
 	ScalarFunction function("copy_string", {LogicalType::VARCHAR}, LogicalType::VARCHAR, ScalarFunction::NopFunction);
 	function.SetBindCallback(
 	    [](BindScalarFunctionInput &) -> unique_ptr<FunctionData> { return make_uniq<ReplacementBindData>(false); });
-	function.SetSerializeCallback([](Serializer &, const optional_ptr<FunctionData>, const BoundScalarFunction &) {});
+	function.SetSerializeCallback(
+	    [](Serializer &, const optional_ptr<const FunctionData>, const BoundScalarFunction &) {});
 	function.SetDeserializeCallback([](Deserializer &, BoundScalarFunction &) -> unique_ptr<FunctionData> {
 		return make_uniq<ReplacementBindData>(true);
 	});

@@ -89,7 +89,7 @@ public:
 		//! The state vector for the single state
 		Vector statev;
 		//! The aggregate binding data (if any)
-		FunctionData *bind_data = nullptr;
+		optional_ptr<const FunctionData> bind_data = nullptr;
 		//! The aggregate state destructor (if any)
 		aggregate_destructor_t dtor = nullptr;
 		//! The inputs rows that pass the FILTER

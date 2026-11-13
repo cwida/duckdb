@@ -30,7 +30,7 @@ struct StructUpdateBindData : public FunctionData {
 		return stype == other.stype && field_indexes == other.field_indexes;
 	}
 
-	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+	static void Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
 	                      const BoundScalarFunction &function) {
 		auto &info = bind_data->Cast<StructUpdateBindData>();
 		serializer.WriteProperty(100, "variable_return_type", info.stype);

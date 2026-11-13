@@ -109,7 +109,7 @@ void ReadCSVTableFunction::ReadCSVAddNamedParameters(TableFunction &table_functi
 	});
 }
 
-static void CSVReaderSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+static void CSVReaderSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
                                const BoundTableFunction &function) {
 	throw NotImplementedException("CSVReaderSerialize not implemented");
 	// auto &bind_data = bind_data_p->Cast<MultiFileBindData>();
@@ -156,7 +156,7 @@ static bool PushdownProjectionExpression(ClientContext &context, const TableFunc
 	}
 	const auto &cast = input.expr.Cast<BoundFunctionExpression>();
 	const auto &target_type = cast.GetReturnType();
-	auto &bind_data = input.get.bind_data->Cast<MultiFileBindData>();
+	auto &bind_data = input.get.bind_data.write().Cast<MultiFileBindData>();
 	// With a custom schema (the 'schema' option, or a MultiFileReader that binds its own schema) the files are mapped
 	// onto that schema, not onto bind_data.columns, so retyping the columns would not reach the column mapping.
 	// See test/optimizer/pushdown/csv_type_pushdown_schema.test
@@ -189,7 +189,7 @@ static bool PushdownProjectionExpressionMultiFile(ClientContext &context,
 	if (!PushdownProjectionExpression(context, input)) {
 		return false;
 	}
-	auto &bind_data = input.get.bind_data->Cast<MultiFileBindData>();
+	auto &bind_data = input.get.bind_data.write().Cast<MultiFileBindData>();
 	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
 	const idx_t idx = input.get.GetColumnIds()[input.column_index].GetPrimaryIndex();
 	if (idx < data.options.expected_types.size()) {

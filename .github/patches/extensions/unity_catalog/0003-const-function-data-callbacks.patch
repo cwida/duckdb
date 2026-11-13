@@ -1,0 +1,16 @@
+diff --git a/src/storage/uc_table_entry.cpp b/src/storage/uc_table_entry.cpp
+index 58daac9..967ecc9 100644
+--- a/src/storage/uc_table_entry.cpp
++++ b/src/storage/uc_table_entry.cpp
+@@ -118,9 +118,9 @@ static TableFunction BuildDeltaScan(ClientContext &context, TableInformation &ta
+ // The optimizer runs this only to capture the predicate; the scan plan itself happens in
+ // init_global, so a query that never reaches filter pushdown still scans correctly (it just gets
+ // no server-side pruning).
+-static void UCScanPlanPushdownFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data_p,
++static void UCScanPlanPushdownFilter(ClientContext &context, LogicalGet &get, optional_ptr<const FunctionData> bind_data_p,
+                                      vector<unique_ptr<Expression>> &filters) {
+-	auto &bd = bind_data_p->Cast<UCScanPlanBindData>();
++	auto &bd = get.bind_data.write().Cast<UCScanPlanBindData>();
+ 	if (filters.empty()) {
+ 		// The optimizer calls this a second time once the predicates have become table filters, with
+ 		// nothing left to serialize. That call carries no information, so it must not overwrite what

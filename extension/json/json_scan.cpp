@@ -111,7 +111,7 @@ void JSONScanLocalState::AddTransformError(idx_t object_index, const string &err
 	scan_state.current_reader->AddTransformError(scan_state, object_index, error_message);
 }
 
-void JSONScan::Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+void JSONScan::Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
                          const BoundTableFunction &) {
 	throw NotImplementedException("JSONScan Serialize not implemented");
 }

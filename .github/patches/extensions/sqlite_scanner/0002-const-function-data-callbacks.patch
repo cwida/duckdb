@@ -1,0 +1,13 @@
+diff --git a/src/sqlite_scanner.cpp b/src/sqlite_scanner.cpp
+index b8565fd..d5ee2d6 100644
+--- a/src/sqlite_scanner.cpp
++++ b/src/sqlite_scanner.cpp
+@@ -544,7 +544,7 @@ SqliteStatistics(ClientContext &context, const FunctionData *bind_data_p,
+ }
+ */
+ 
+-static void SqliteScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
++static void SqliteScanSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
+                                 const BoundTableFunction &function) {
+ 	throw NotImplementedException("SqliteScanSerialize");
+ }

@@ -83,7 +83,7 @@ struct AverageSetOperation {
 };
 
 template <class T>
-static T GetAverageDivident(uint64_t count, optional_ptr<FunctionData> bind_data) {
+static T GetAverageDivident(uint64_t count, optional_ptr<const FunctionData> bind_data) {
 	T divident = T(count);
 	if (bind_data) {
 		auto &avg_bind_data = bind_data->Cast<AverageDecimalBindData>();

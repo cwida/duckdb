@@ -1,0 +1,13 @@
+diff --git a/src/quack_scan.cpp b/src/quack_scan.cpp
+index fd89af7..e416e13 100644
+--- a/src/quack_scan.cpp
++++ b/src/quack_scan.cpp
+@@ -462,7 +462,7 @@ InsertionOrderPreservingMap<string> QuackScanToString(TableFunctionToStringInput
+ 	return result;
+ }
+ 
+-void QuackScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
++void QuackScanSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
+                         const BoundTableFunction &function) {
+ 	throw NotImplementedException("Quack scans cannot be serialized (yet?)");
+ }

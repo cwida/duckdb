@@ -1,0 +1,50 @@
+diff --git a/src/mysql_scanner.cpp b/src/mysql_scanner.cpp
+index a6d747b..de36ca3 100644
+--- a/src/mysql_scanner.cpp
++++ b/src/mysql_scanner.cpp
+@@ -168,7 +168,7 @@ static InsertionOrderPreservingMap<string> MySQLScanToString(TableFunctionToStri
+ 	return result;
+ }
+ 
+-static void MySQLScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
++static void MySQLScanSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
+                                const BoundTableFunction &function) {
+ 	throw NotImplementedException("MySQLScanSerialize");
+ }
+diff --git a/src/storage/mysql_catalog.cpp b/src/storage/mysql_catalog.cpp
+index 57a7a79..6995205 100644
+--- a/src/storage/mysql_catalog.cpp
++++ b/src/storage/mysql_catalog.cpp
+@@ -518,10 +518,10 @@ void MySQLCatalog::MaterializeMySQLScans(PhysicalOperator &op) {
+ 		auto &table_scan = op.Cast<PhysicalTableScan>();
+ 		auto &function_name = table_scan.function.GetName().GetIdentifierName();
+ 		if (MySQLCatalog::IsMySQLScan(function_name)) {
+-			auto &bind_data = table_scan.bind_data->Cast<MySQLBindData>();
++			auto &bind_data = table_scan.bind_data.write().Cast<MySQLBindData>();
+ 			bind_data.optimizer_streaming = MySQLResultStreaming::FORCE_MATERIALIZATION;
+ 		} else if (MySQLCatalog::IsMySQLQuery(function_name)) {
+-			auto &bind_data = table_scan.bind_data->Cast<MySQLQueryBindData>();
++			auto &bind_data = table_scan.bind_data.write().Cast<MySQLQueryBindData>();
+ 			bind_data.optimizer_streaming = MySQLResultStreaming::FORCE_MATERIALIZATION;
+ 		}
+ 	}
+diff --git a/src/storage/mysql_optimizer.cpp b/src/storage/mysql_optimizer.cpp
+index 32610b4..10ae183 100644
+--- a/src/storage/mysql_optimizer.cpp
++++ b/src/storage/mysql_optimizer.cpp
+@@ -45,13 +45,13 @@ void MySQLOptimizer::Optimize(OptimizerExtensionInput &input, unique_ptr<Logical
+ 			auto &get = logical_get.get();
+ 			auto &function_name = get.function.GetName().GetIdentifierName();
+ 			if (MySQLCatalog::IsMySQLScan(function_name)) {
+-				auto &bind_data = get.bind_data->Cast<MySQLBindData>();
++				auto &bind_data = get.bind_data.write().Cast<MySQLBindData>();
+ 				if (bind_data.optimizer_streaming == MySQLResultStreaming::UNINITIALIZED ||
+ 				    result_streaming == MySQLResultStreaming::FORCE_MATERIALIZATION) {
+ 					bind_data.optimizer_streaming = result_streaming;
+ 				}
+ 			} else if (MySQLCatalog::IsMySQLQuery(function_name)) {
+-				auto &bind_data = get.bind_data->Cast<MySQLQueryBindData>();
++				auto &bind_data = get.bind_data.write().Cast<MySQLQueryBindData>();
+ 				if (bind_data.optimizer_streaming == MySQLResultStreaming::UNINITIALIZED ||
+ 				    result_streaming == MySQLResultStreaming::FORCE_MATERIALIZATION) {
+ 					bind_data.optimizer_streaming = result_streaming;

@@ -1,0 +1,47 @@
+diff --git a/src/excel/xlsx/copy_xlsx.cpp b/src/excel/xlsx/copy_xlsx.cpp
+index 9aedb86..4200565 100644
+--- a/src/excel/xlsx/copy_xlsx.cpp
++++ b/src/excel/xlsx/copy_xlsx.cpp
+@@ -345,7 +345,7 @@ struct WriteDispatch {
+ };
+ } // namespace
+ 
+-static unique_ptr<GlobalFunctionData> InitGlobal(ClientContext &context, FunctionData &bind_data,
++static unique_ptr<GlobalFunctionData> InitGlobal(ClientContext &context, const FunctionData &bind_data,
+                                                  const string &file_path) {
+ 	auto &data = bind_data.Cast<WriteXLSXData>();
+ 	auto gstate = make_uniq<GlobalWriteXLSXData>(context, file_path, data);
+@@ -374,14 +374,14 @@ static unique_ptr<GlobalFunctionData> InitGlobal(ClientContext &context, Functio
+ //------------------------------------------------------------------------------
+ struct LocalWriteXLSXData final : public LocalFunctionData {};
+ 
+-static unique_ptr<LocalFunctionData> InitLocal(ExecutionContext &context, FunctionData &bind_data) {
++static unique_ptr<LocalFunctionData> InitLocal(ExecutionContext &context, const FunctionData &bind_data) {
+ 	return make_uniq<LocalWriteXLSXData>();
+ }
+ 
+ //------------------------------------------------------------------------------
+ // Sink
+ //------------------------------------------------------------------------------
+-static void Sink(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
++static void Sink(ExecutionContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate,
+                  LocalFunctionData &lstate, DataChunk &input) {
+ 	auto &data = bind_data.Cast<WriteXLSXData>();
+ 	auto &state = gstate.Cast<GlobalWriteXLSXData>();
+@@ -471,14 +471,14 @@ static void Sink(ExecutionContext &context, FunctionData &bind_data, GlobalFunct
+ //------------------------------------------------------------------------------
+ // Combine
+ //------------------------------------------------------------------------------
+-static void Combine(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
++static void Combine(ExecutionContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate,
+                     LocalFunctionData &lstate) {
+ }
+ 
+ //------------------------------------------------------------------------------
+ // Finalize
+ //------------------------------------------------------------------------------
+-static void Finalize(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate) {
++static void Finalize(ClientContext &context, const FunctionData &bind_data, GlobalFunctionData &gstate) {
+ 	auto &state = gstate.Cast<GlobalWriteXLSXData>();
+ 
+ 	if (state.appender) {

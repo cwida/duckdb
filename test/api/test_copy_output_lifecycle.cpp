@@ -42,7 +42,7 @@ struct LifecycleCopyBindData : FunctionData {
 		return info == other_p.Cast<LifecycleCopyBindData>().info;
 	}
 
-	LifecycleCopyInfo &GetInfo() {
+	LifecycleCopyInfo &GetInfo() const {
 		return info->Cast<LifecycleCopyInfo>();
 	}
 
@@ -196,11 +196,11 @@ unique_ptr<FunctionData> LifecycleCopyBind(ClientContext &, CopyFunctionBindInpu
 	return make_uniq<LifecycleCopyBindData>(input.function_info);
 }
 
-unique_ptr<LocalFunctionData> LifecycleCopyInitializeLocal(ExecutionContext &, FunctionData &) {
+unique_ptr<LocalFunctionData> LifecycleCopyInitializeLocal(ExecutionContext &, const FunctionData &) {
 	return make_uniq<LifecycleCopyLocalData>();
 }
 
-unique_ptr<GlobalFunctionData> LifecycleCopyInitializeGlobal(ClientContext &context, FunctionData &bind_data,
+unique_ptr<GlobalFunctionData> LifecycleCopyInitializeGlobal(ClientContext &context, const FunctionData &bind_data,
                                                              const string &path) {
 	auto state = make_uniq<LifecycleCopyGlobalData>(context, path);
 	auto &info = bind_data.Cast<LifecycleCopyBindData>().GetInfo();
@@ -209,13 +209,14 @@ unique_ptr<GlobalFunctionData> LifecycleCopyInitializeGlobal(ClientContext &cont
 	return std::move(state);
 }
 
-void LifecycleCopySink(ExecutionContext &, FunctionData &, GlobalFunctionData &, LocalFunctionData &, DataChunk &) {
+void LifecycleCopySink(ExecutionContext &, const FunctionData &, GlobalFunctionData &, LocalFunctionData &,
+                       DataChunk &) {
 }
 
-void LifecycleCopyCombine(ExecutionContext &, FunctionData &, GlobalFunctionData &, LocalFunctionData &) {
+void LifecycleCopyCombine(ExecutionContext &, const FunctionData &, GlobalFunctionData &, LocalFunctionData &) {
 }
 
-void LifecycleCopyFinalize(ClientContext &, FunctionData &bind_data, GlobalFunctionData &global_data) {
+void LifecycleCopyFinalize(ClientContext &, const FunctionData &bind_data, GlobalFunctionData &global_data) {
 	auto &info = bind_data.Cast<LifecycleCopyBindData>().GetInfo();
 	auto attempt = info.finalize_attempts.fetch_add(1);
 	if (attempt >= info.fail_finalize_after) {
@@ -228,7 +229,7 @@ void LifecycleCopyFinalize(ClientContext &, FunctionData &bind_data, GlobalFunct
 	info.finalized_paths.push_back(state.path);
 }
 
-void LifecycleCopyGetStatistics(ClientContext &, FunctionData &, GlobalFunctionData &,
+void LifecycleCopyGetStatistics(ClientContext &, const FunctionData &, GlobalFunctionData &,
                                 CopyFunctionFileStatistics &statistics) {
 	statistics.footer_size_bytes = Value();
 }
@@ -241,12 +242,13 @@ CopyFunctionExecutionMode LifecycleBatchExecutionMode(bool, bool) {
 	return CopyFunctionExecutionMode::BATCH_COPY_TO_FILE;
 }
 
-unique_ptr<PreparedBatchData> LifecycleCopyPrepareBatch(ClientContext &, FunctionData &, GlobalFunctionData &,
+unique_ptr<PreparedBatchData> LifecycleCopyPrepareBatch(ClientContext &, const FunctionData &, GlobalFunctionData &,
                                                         unique_ptr<ColumnDataCollection>) {
 	return make_uniq<LifecycleCopyPreparedData>();
 }
 
-void LifecycleCopyFlushBatch(ClientContext &, FunctionData &, GlobalFunctionData &global_data, PreparedBatchData &) {
+void LifecycleCopyFlushBatch(ClientContext &, const FunctionData &, GlobalFunctionData &global_data,
+                             PreparedBatchData &) {
 	global_data.Cast<LifecycleCopyGlobalData>().flushed_batches++;
 }
 
@@ -314,7 +316,7 @@ struct BackpressurePreparedData : PreparedBatchData {
 	vector<int64_t> rows;
 };
 
-unique_ptr<PreparedBatchData> BackpressurePrepare(ClientContext &, FunctionData &bind_data, GlobalFunctionData &,
+unique_ptr<PreparedBatchData> BackpressurePrepare(ClientContext &, const FunctionData &bind_data, GlobalFunctionData &,
                                                   unique_ptr<ColumnDataCollection> collection) {
 	auto &info = bind_data.Cast<LifecycleCopyBindData>().info->Cast<BackpressureCopyInfo>();
 	{
@@ -338,7 +340,7 @@ unique_ptr<PreparedBatchData> BackpressurePrepare(ClientContext &, FunctionData 
 	return std::move(result);
 }
 
-void BackpressureFlush(ClientContext &, FunctionData &bind_data, GlobalFunctionData &, PreparedBatchData &batch) {
+void BackpressureFlush(ClientContext &, const FunctionData &bind_data, GlobalFunctionData &, PreparedBatchData &batch) {
 	auto &info = bind_data.Cast<LifecycleCopyBindData>().info->Cast<BackpressureCopyInfo>();
 	lock_guard<mutex> guard(info.lock);
 	auto &rows = batch.Cast<BackpressurePreparedData>().rows;

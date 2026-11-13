@@ -24,7 +24,7 @@ public:
 	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_COPY_TO_FILE;
 
 public:
-	LogicalCopyToFile(CopyFunction function, unique_ptr<FunctionData> bind_data, unique_ptr<CopyInfo> copy_info,
+	LogicalCopyToFile(CopyFunction function, cow_ptr<FunctionData> bind_data, unique_ptr<CopyInfo> copy_info,
 	                  TableIndex table_index)
 	    : LogicalOperator(LogicalOperatorType::LOGICAL_COPY_TO_FILE), function(std::move(function)),
 	      bind_data(std::move(bind_data)), copy_info(std::move(copy_info)), table_index(table_index) {
@@ -32,7 +32,7 @@ public:
 
 public:
 	CopyFunction function;
-	unique_ptr<FunctionData> bind_data;
+	cow_ptr<FunctionData> bind_data;
 	unique_ptr<CopyInfo> copy_info;
 	TableIndex table_index;
 

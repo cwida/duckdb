@@ -45,7 +45,7 @@ TEST_CASE("Parquet metadata survives consumption of the initial reader", "[optim
 			planner.CreatePlan(std::move(parser.statements[0]));
 			planner.plan->ResolveOperatorTypes();
 			auto &get = MetadataGet(*planner.plan);
-			auto &data = get.bind_data->Cast<MultiFileBindData>();
+			auto &data = get.bind_data.write().Cast<MultiFileBindData>();
 			REQUIRE(data.initial_reader);
 			if (consume_reader) {
 				data.initial_reader.reset();
@@ -93,7 +93,7 @@ TEST_CASE("Parquet row group statistics survive consumption of the initial reade
 		Planner planner(*con.context);
 		planner.CreatePlan(std::move(parser.statements[0]));
 		auto &get = MetadataGet(*planner.plan);
-		auto &data = get.bind_data->Cast<MultiFileBindData>();
+		auto &data = get.bind_data.write().Cast<MultiFileBindData>();
 		REQUIRE(data.initial_reader);
 		data.initial_reader.reset();
 		GetPartitionStatsInput input(get.function, get.bind_data.get());
@@ -125,7 +125,7 @@ TEST_CASE("Multi-file statistics use the live reader when union metadata has no 
 	Planner planner(*con.context);
 	planner.CreatePlan(std::move(parser.statements[0]));
 	auto &get = MetadataGet(*planner.plan);
-	auto &data = get.bind_data->Cast<MultiFileBindData>();
+	auto &data = get.bind_data.write().Cast<MultiFileBindData>();
 	REQUIRE(data.initial_reader);
 	REQUIRE(data.initial_reader->GetStatistics(*con.context, Identifier("i")));
 	// Some providers retain only a live reader and metadata without a statistics callback.

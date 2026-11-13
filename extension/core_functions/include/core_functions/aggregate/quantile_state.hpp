@@ -28,7 +28,7 @@ struct FlattenedQuantileValues : FunctionLocalState {
 	FlattenedQuantileValues() : capacity(0) {
 	}
 
-	static unique_ptr<FunctionLocalState> Init(const BoundAggregateFunction &, optional_ptr<FunctionData>) {
+	static unique_ptr<FunctionLocalState> Init(const BoundAggregateFunction &, optional_ptr<const FunctionData>) {
 		return make_uniq<FlattenedQuantileValues>();
 	}
 

@@ -1,0 +1,86 @@
+diff --git a/src/include/postgres_binary_copy.hpp b/src/include/postgres_binary_copy.hpp
+index 2e8fb9d..abf5114 100644
+--- a/src/include/postgres_binary_copy.hpp
++++ b/src/include/postgres_binary_copy.hpp
+@@ -24,14 +24,14 @@ public:
+ 	                                                        const vector<LogicalType> &sql_types);
+ 
+ 	static unique_ptr<GlobalFunctionData>
+-	PostgresBinaryWriteInitializeGlobal(ClientContext &context, FunctionData &bind_data, const string &file_path);
++	PostgresBinaryWriteInitializeGlobal(ClientContext &context, const FunctionData &bind_data, const string &file_path);
+ 	static unique_ptr<LocalFunctionData> PostgresBinaryWriteInitializeLocal(ExecutionContext &context,
+-	                                                                        FunctionData &bind_data_p);
+-	static void PostgresBinaryWriteSink(ExecutionContext &context, FunctionData &bind_data_p,
++	                                                                        const FunctionData &bind_data_p);
++	static void PostgresBinaryWriteSink(ExecutionContext &context, const FunctionData &bind_data_p,
+ 	                                    GlobalFunctionData &gstate, LocalFunctionData &lstate, DataChunk &input);
+-	static void PostgresBinaryWriteCombine(ExecutionContext &context, FunctionData &bind_data,
++	static void PostgresBinaryWriteCombine(ExecutionContext &context, const FunctionData &bind_data,
+ 	                                       GlobalFunctionData &gstate, LocalFunctionData &lstate);
+-	static void PostgresBinaryWriteFinalize(ClientContext &context, FunctionData &bind_data,
++	static void PostgresBinaryWriteFinalize(ClientContext &context, const FunctionData &bind_data,
+ 	                                        GlobalFunctionData &gstate);
+ 
+ 	static unique_ptr<FunctionData> PostgresBinaryReadBind(ClientContext &context, CopyFromFunctionBindInput &info,
+diff --git a/src/postgres_binary_copy.cpp b/src/postgres_binary_copy.cpp
+index 9387cb9..a94fa94 100644
+--- a/src/postgres_binary_copy.cpp
++++ b/src/postgres_binary_copy.cpp
+@@ -63,7 +63,7 @@ unique_ptr<FunctionData> PostgresBinaryCopyFunction::PostgresBinaryWriteBind(Cli
+ }
+ 
+ unique_ptr<GlobalFunctionData>
+-PostgresBinaryCopyFunction::PostgresBinaryWriteInitializeGlobal(ClientContext &context, FunctionData &bind_data,
++PostgresBinaryCopyFunction::PostgresBinaryWriteInitializeGlobal(ClientContext &context, const FunctionData &bind_data,
+                                                                 const string &file_path) {
+ 	auto result = make_uniq<PostgresBinaryCopyGlobalState>(context);
+ 	auto &fs = FileSystem::GetFileSystem(context);
+@@ -74,22 +74,22 @@ PostgresBinaryCopyFunction::PostgresBinaryWriteInitializeGlobal(ClientContext &c
+ }
+ 
+ unique_ptr<LocalFunctionData>
+-PostgresBinaryCopyFunction::PostgresBinaryWriteInitializeLocal(ExecutionContext &context, FunctionData &bind_data_p) {
++PostgresBinaryCopyFunction::PostgresBinaryWriteInitializeLocal(ExecutionContext &context, const FunctionData &bind_data_p) {
+ 	return make_uniq<LocalFunctionData>();
+ }
+ 
+-void PostgresBinaryCopyFunction::PostgresBinaryWriteSink(ExecutionContext &context, FunctionData &bind_data_p,
++void PostgresBinaryCopyFunction::PostgresBinaryWriteSink(ExecutionContext &context, const FunctionData &bind_data_p,
+                                                          GlobalFunctionData &gstate_p, LocalFunctionData &lstate,
+                                                          DataChunk &input) {
+ 	auto &gstate = gstate_p.Cast<PostgresBinaryCopyGlobalState>();
+ 	gstate.WriteChunk(input);
+ }
+ 
+-void PostgresBinaryCopyFunction::PostgresBinaryWriteCombine(ExecutionContext &context, FunctionData &bind_data,
++void PostgresBinaryCopyFunction::PostgresBinaryWriteCombine(ExecutionContext &context, const FunctionData &bind_data,
+                                                             GlobalFunctionData &gstate, LocalFunctionData &lstate) {
+ }
+ 
+-void PostgresBinaryCopyFunction::PostgresBinaryWriteFinalize(ClientContext &context, FunctionData &bind_data,
++void PostgresBinaryCopyFunction::PostgresBinaryWriteFinalize(ClientContext &context, const FunctionData &bind_data,
+                                                              GlobalFunctionData &gstate_p) {
+ 	auto &gstate = gstate_p.Cast<PostgresBinaryCopyGlobalState>();
+ 	// write the footer and close the file
+@@ -189,7 +189,7 @@ static unique_ptr<FunctionData> ReadPostgresBinaryBind(ClientContext &context, T
+ 	return std::move(result);
+ }
+ 
+-static void PostgresBinaryReadSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
++static void PostgresBinaryReadSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
+                                         const BoundTableFunction &function) {
+ 	auto &bind_data = bind_data_p->Cast<PostgresBinaryReadBindData>();
+ 	serializer.WriteProperty(100, "file_path", bind_data.file_path);
+diff --git a/src/postgres_scanner.cpp b/src/postgres_scanner.cpp
+index 03ded22..9035e9c 100644
+--- a/src/postgres_scanner.cpp
++++ b/src/postgres_scanner.cpp
+@@ -680,7 +680,7 @@ double PostgresScanProgress(ClientContext &context, const FunctionData *bind_dat
+ 	return MinValue<double>(100, progress);
+ }
+ 
+-static void PostgresScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
++static void PostgresScanSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
+                                   const BoundTableFunction &function) {
+ 	throw NotImplementedException("PostgresScanSerialize");
+ }

@@ -94,7 +94,7 @@ static unique_ptr<FunctionData> ComparisonBind(BindScalarFunctionInput &input) {
 }
 
 //! The arguments of a deserialized comparison have already been cast - so it should not be bound again
-static void ComparisonSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+static void ComparisonSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
                                 const BoundScalarFunction &function) {
 }
 

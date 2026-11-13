@@ -30,7 +30,7 @@ unique_ptr<FunctionData> AliasBind(BindScalarFunctionInput &input) {
 	return make_uniq<AliasBindData>(input.GetArguments()[0]->GetName());
 }
 
-void AliasSerialize(Serializer &serializer, const optional_ptr<FunctionData> data, const BoundScalarFunction &) {
+void AliasSerialize(Serializer &serializer, const optional_ptr<const FunctionData> data, const BoundScalarFunction &) {
 	serializer.WriteProperty(100, "alias", data->Cast<AliasBindData>().alias);
 }
 

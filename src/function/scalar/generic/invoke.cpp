@@ -36,7 +36,7 @@ struct LambdaInvokeData final : public LambdaFunctionData {
 	}
 
 	//! Serializes a lambda function's bind data
-	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+	static void Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
 	                      const BoundScalarFunction &function) {
 		auto &bind_data = bind_data_p->Cast<LambdaInvokeData>();
 		serializer.WritePropertyWithDefault(101, "lambda_expr", bind_data.lambda_expr, unique_ptr<Expression>());
@@ -78,7 +78,7 @@ struct LambdaInvokeState final : public FunctionLocalState {
 	}
 
 	static unique_ptr<FunctionLocalState> Init(ExpressionState &state, const BoundFunctionExpression &expr,
-	                                           FunctionData *bind_data) {
+	                                           optional_ptr<const FunctionData> bind_data) {
 		auto &bdata = bind_data->Cast<LambdaInvokeData>();
 		if (!bdata.lambda_expr) {
 			throw InternalException("Invoke function is missing its bound lambda expression");

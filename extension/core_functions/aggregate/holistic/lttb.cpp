@@ -365,7 +365,8 @@ auto LTTBBind(BindAggregateFunctionInput &input) -> unique_ptr<FunctionData> {
 	return make_uniq<LTTBBindData>(NumericCast<idx_t>(n));
 }
 
-auto LTTBSerialize(Serializer &ser, const optional_ptr<FunctionData> bdata, const BoundAggregateFunction &) -> void {
+auto LTTBSerialize(Serializer &ser, const optional_ptr<const FunctionData> bdata, const BoundAggregateFunction &)
+    -> void {
 	auto &bind_data = bdata->Cast<LTTBBindData>();
 	ser.WriteProperty<idx_t>(100, "n", bind_data.n);
 }

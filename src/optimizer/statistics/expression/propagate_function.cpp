@@ -271,7 +271,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundFuncti
 		return constant_stats;
 	}
 	if (func.Function().HasStatisticsCallback()) {
-		FunctionStatisticsInput input(func, func.BindInfo().get(), stats, &expr_ptr);
+		FunctionStatisticsInput input(func, func.BindInfoMutable(), stats, &expr_ptr);
 		return func.Function().GetStatisticsCallback()(context, input);
 	}
 	return PropagateMonotoneBounds(context, func, stats);

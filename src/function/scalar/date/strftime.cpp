@@ -129,12 +129,12 @@ inline timestamp_ns_t StrpTimeResult(StrpTimeFormat::ParseResult &parsed) {
 }
 
 template <typename T>
-inline bool StrpTimeTryResult(StrpTimeFormat &format, string_t &input, T &result, string &error) {
+inline bool StrpTimeTryResult(const StrpTimeFormat &format, string_t &input, T &result, string &error) {
 	return format.TryParseTimestamp(input, result, error);
 }
 
 template <>
-inline bool StrpTimeTryResult(StrpTimeFormat &format, string_t &input, timestamp_ns_t &result, string &error) {
+inline bool StrpTimeTryResult(const StrpTimeFormat &format, string_t &input, timestamp_ns_t &result, string &error) {
 	return format.TryParseTimestampNS(input, result, error);
 }
 

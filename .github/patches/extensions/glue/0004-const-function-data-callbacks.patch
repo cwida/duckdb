@@ -1,0 +1,13 @@
+diff --git a/src/planning/hive_multi_file_reader.cpp b/src/planning/hive_multi_file_reader.cpp
+index 2edf542..5796806 100644
+--- a/src/planning/hive_multi_file_reader.cpp
++++ b/src/planning/hive_multi_file_reader.cpp
+@@ -532,7 +532,7 @@ static const TableFunction &GetListReadFunction(ClientContext &context, const st
+ 
+ //! The full description of the scan: CommonSubplanOptimizer compares it to decide whether sub-plans are equal, and a
+ //! deserialized plan binds the same scan again from it
+-static void HiveScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
++static void HiveScanSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
+                               const BoundTableFunction &function) {
+ 	auto &bind_data = bind_data_p->Cast<MultiFileBindData>();
+ 	auto &list = bind_data.file_list->Cast<HiveMultiFileList>();

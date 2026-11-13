@@ -96,18 +96,18 @@ protected:
 };
 
 struct StrfTimeFormat : public StrTimeFormat { // NOLINT: work-around bug in clang-tidy
-	DUCKDB_API idx_t GetLength(date_t date, dtime_t time, int32_t utc_offset, const char *tz_name);
+	DUCKDB_API idx_t GetLength(date_t date, dtime_t time, int32_t utc_offset, const char *tz_name) const;
 	DUCKDB_API idx_t GetLength(date_t date, int32_t data[8], const char *tz_name) const;
 
 	DUCKDB_API void FormatStringNS(date_t date, int32_t data[8], const char *tz_name, char *target) const;
-	DUCKDB_API void FormatString(date_t date, int32_t data[8], const char *tz_name, char *target);
-	void FormatString(date_t date, dtime_t time, char *target);
+	DUCKDB_API void FormatString(date_t date, int32_t data[8], const char *tz_name, char *target) const;
+	void FormatString(date_t date, dtime_t time, char *target) const;
 
 	DUCKDB_API static string Format(timestamp_t timestamp, const string &format);
 
-	DUCKDB_API void ConvertDateVector(const Vector &input, Vector &result);
-	DUCKDB_API void ConvertTimestampVector(const Vector &input, Vector &result);
-	DUCKDB_API void ConvertTimestampNSVector(const Vector &input, Vector &result);
+	DUCKDB_API void ConvertDateVector(const Vector &input, Vector &result) const;
+	DUCKDB_API void ConvertTimestampVector(const Vector &input, Vector &result) const;
+	DUCKDB_API void ConvertTimestampNSVector(const Vector &input, Vector &result) const;
 
 protected:
 	//! The variable-length specifiers. To determine total string size, these need to be checked.

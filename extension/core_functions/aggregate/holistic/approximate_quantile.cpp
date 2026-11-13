@@ -140,7 +140,7 @@ struct ApproximateQuantileBindData : public FunctionData {
 		return true;
 	}
 
-	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+	static void Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
 	                      const BoundAggregateFunction &function) {
 		auto &bind_data = bind_data_p->Cast<ApproximateQuantileBindData>();
 		serializer.WriteProperty(100, "quantiles", bind_data.quantiles);

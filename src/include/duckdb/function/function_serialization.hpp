@@ -75,7 +75,7 @@ private:
 
 public:
 	template <class FUNC>
-	static void Serialize(Serializer &serializer, const FUNC &function, optional_ptr<FunctionData> bind_info) {
+	static void Serialize(Serializer &serializer, const FUNC &function, optional_ptr<const FunctionData> bind_info) {
 		D_ASSERT(!function.GetName().empty());
 		if (!serializer.ShouldSerialize(StorageVersion::V2_0_0)) {
 			serializer.WriteProperty(500, "name", function.GetName());

@@ -125,7 +125,7 @@ static bool ParquetScanSupportPushdownExtract(const FunctionData &bind_data_p, c
 	return StructType::IsStruct(column_type) || column_type.id() == LogicalTypeId::VARIANT;
 }
 
-static vector<column_t> ParquetGetRowIdColumns(ClientContext &context, optional_ptr<FunctionData> bind_data) {
+static vector<column_t> ParquetGetRowIdColumns(ClientContext &context, optional_ptr<const FunctionData> bind_data) {
 	vector<column_t> result;
 	result.emplace_back(MultiFileReader::COLUMN_IDENTIFIER_FILE_INDEX);
 	result.emplace_back(MultiFileReader::COLUMN_IDENTIFIER_FILE_ROW_NUMBER);

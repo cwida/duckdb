@@ -52,7 +52,7 @@ struct QuantileBindData : public FunctionData {
 	unique_ptr<FunctionData> Copy() const override;
 	bool Equals(const FunctionData &other_p) const override;
 
-	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+	static void Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
 	                      const BoundAggregateFunction &function);
 
 	static unique_ptr<FunctionData> Deserialize(Deserializer &deserializer, BoundAggregateFunction &function);

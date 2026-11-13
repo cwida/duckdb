@@ -17,6 +17,7 @@
 #include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/optional.hpp"
 #include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/cow_ptr.hpp"
 #include "duckdb/parser/qualified_name.hpp"
 
 namespace duckdb {
