@@ -118,8 +118,8 @@ void CTEFilterPusher::PushFilterIntoCTE(MaterializedCTEInfo &info) {
 		return;
 	}
 
-	// Create an OR expression with all the filters on all references of the CTE
-	unique_ptr<Expression> outer_expr;
+	// Collect the conjuncts of the filters on all references of the CTE, over the bindings of the CTE definition
+	vector<vector<unique_ptr<Expression>>> reference_filters;
 	for (auto &filter : info.filters) {
 		D_ASSERT(filter.get().type == LogicalOperatorType::LOGICAL_FILTER);
 
@@ -139,7 +139,7 @@ void CTEFilterPusher::PushFilterIntoCTE(MaterializedCTEInfo &info) {
 		}
 
 		// We copy the filters and replace the CTE reference bindings with the bindings in the CTE definition
-		unique_ptr<Expression> inner_expr;
+		vector<unique_ptr<Expression>> conjuncts;
 		for (auto &filter_expr : filter.get().expressions) {
 			// Dropping a conjunct must not expose errors it previously short-circuited.
 			if (filter_expr->IsVolatile() || ExpressionBarrier::Contains(*filter_expr) ||
@@ -148,19 +148,55 @@ void CTEFilterPusher::PushFilterIntoCTE(MaterializedCTEInfo &info) {
 			}
 			auto filter_expr_copy = filter_expr->Copy();
 			replacer.VisitExpression(&filter_expr_copy);
-			if (inner_expr) {
-				inner_expr = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND,
-				                                                   std::move(inner_expr), std::move(filter_expr_copy));
-			} else {
-				inner_expr = std::move(filter_expr_copy);
-			}
+			conjuncts.push_back(std::move(filter_expr_copy));
 		}
 
 		// An unrestricted consumer makes the disjunction true.
-		if (!inner_expr) {
+		if (conjuncts.empty()) {
 			return;
 		}
+		reference_filters.push_back(std::move(conjuncts));
+	}
 
+	// (A AND B) OR A is A: a reference whose conjuncts include all conjuncts of another reference adds nothing to
+	// the disjunction
+	auto includes = [](const vector<unique_ptr<Expression>> &conjuncts, const vector<unique_ptr<Expression>> &subset) {
+		for (auto &expr : subset) {
+			bool found = false;
+			for (auto &conjunct : conjuncts) {
+				if (conjunct->Equals(*expr)) {
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				return false;
+			}
+		}
+		return true;
+	};
+	for (idx_t i = 0; i < reference_filters.size(); i++) {
+		for (idx_t j = 0; j < reference_filters.size(); j++) {
+			if (i != j && includes(reference_filters[i], reference_filters[j])) {
+				reference_filters.erase_at(i);
+				i--;
+				break;
+			}
+		}
+	}
+
+	// Create an OR expression with the filters on the remaining references
+	unique_ptr<Expression> outer_expr;
+	for (auto &conjuncts : reference_filters) {
+		unique_ptr<Expression> inner_expr;
+		for (auto &conjunct : conjuncts) {
+			if (inner_expr) {
+				inner_expr = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND,
+				                                                   std::move(inner_expr), std::move(conjunct));
+			} else {
+				inner_expr = std::move(conjunct);
+			}
+		}
 		if (outer_expr) {
 			outer_expr = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_OR, std::move(outer_expr),
 			                                                   std::move(inner_expr));

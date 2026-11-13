@@ -1,0 +1,483 @@
+# name: test/optimizer/semi_join_key_filter_transfer.test
+# description: A predicate that every row of the right side of a SEMI join (or of a MARK join under a filter on its mark) satisfies on an equality key also filters a materialized CTE on the left side: a correlated EXISTS with a predicate on the outer key only filters the outer scan
+# group: [optimizer]
+
+# fact: duplicate, NULL and unmatched keys (-1, 9); dim: duplicate and NULL keys, an unmatched key (7)
+statement ok
+CREATE TABLE fact(k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO fact VALUES (1, 10), (1, 11), (2, 20), (3, 30), (3, 31), (4, 40), (5, 50), (NULL, 60), (NULL, 61), (-1, 70), (9, 90);
+
+statement ok
+CREATE TABLE dim(k INTEGER, c INTEGER);
+
+statement ok
+INSERT INTO dim VALUES (1, 1), (2, 2), (3, 3), (3, 4), (4, 6), (5, 7), (NULL, 8), (7, 9);
+
+statement ok
+CREATE TABLE empty_dim(k INTEGER, c INTEGER);
+
+query I
+SELECT name FROM duckdb_optimizers() WHERE name = 'semi_join_key_filter_transfer';
+----
+semi_join_key_filter_transfer
+
+# 1: the outer-only conjunct of a correlated EXISTS: only fact rows with k > 2 can match
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k > 2) ORDER BY ALL
+----
+3	30
+3	31
+4	40
+5	50
+
+# 2: the same with a predicate no row satisfies
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k > 100) ORDER BY ALL
+----
+
+# 3: NOT EXISTS keeps the rows that fail the predicate: nothing is transferred across an ANTI join / a NOT mark filter
+query II
+SELECT * FROM fact f WHERE NOT EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k > 2) ORDER BY ALL
+----
+-1	70
+1	10
+1	11
+2	20
+9	90
+NULL	60
+NULL	61
+
+# 4: EXISTS as a value: the mark is output, every fact row stays
+query III
+SELECT k, v, EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k > 2) AS e FROM fact f ORDER BY ALL
+----
+-1	70	false
+1	10	false
+1	11	false
+2	20	false
+3	30	true
+3	31	true
+4	40	true
+5	50	true
+9	90	false
+NULL	60	false
+NULL	61	false
+
+# 5: the mark under an OR is not a bare-mark filter
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k > 2) OR f.v = 10 ORDER BY ALL
+----
+1	10
+3	30
+3	31
+4	40
+5	50
+
+# 6: an uncorrelated IN whose subquery filters its key (the left side is a scan, not a CTE reference: left alone)
+query II
+SELECT * FROM fact f WHERE f.k IN (SELECT k FROM dim WHERE k > 2) ORDER BY ALL
+----
+3	30
+3	31
+4	40
+5	50
+
+# 7: BETWEEN
+query II
+SELECT * FROM fact f WHERE f.k IN (SELECT k FROM dim WHERE k BETWEEN 2 AND 4) ORDER BY ALL
+----
+2	20
+3	30
+3	31
+4	40
+
+# 8: an IN list
+query II
+SELECT * FROM fact f WHERE f.k IN (SELECT k FROM dim WHERE k IN (1, 3, 7)) ORDER BY ALL
+----
+1	10
+1	11
+3	30
+3	31
+
+# 9: an OR over the key
+query II
+SELECT * FROM fact f WHERE f.k IN (SELECT k FROM dim WHERE k < 2 OR k > 3) ORDER BY ALL
+----
+1	10
+1	11
+4	40
+5	50
+
+# 10: a null-safe correlation: the NULL keys match each other, IS NULL is transferred as it is
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k IS NOT DISTINCT FROM f.k AND f.k IS NULL) ORDER BY ALL
+----
+NULL	60
+NULL	61
+
+# 11: null-safe with an OR that keeps the NULL keys
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k IS NOT DISTINCT FROM f.k AND (f.k IS NULL OR f.k > 3)) ORDER BY ALL
+----
+4	40
+5	50
+NULL	60
+NULL	61
+
+# 12: a predicate on another column of the subquery says nothing about the key
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND d.c > 5) ORDER BY ALL
+----
+4	40
+5	50
+
+# 13: an outer-only conjunct on another outer column: every correlated column is a key of the join back
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.v > 25) ORDER BY ALL
+----
+3	30
+3	31
+4	40
+5	50
+
+# 14: an empty right side
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM empty_dim d WHERE d.k = f.k AND f.k > 2) ORDER BY ALL
+----
+
+# 15: an empty left side
+query II
+SELECT * FROM empty_dim f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k > 2) ORDER BY ALL
+----
+
+# 16: a predicate that can throw is not transferred: fact has k = -1, dim does not
+query II
+SELECT * FROM fact f WHERE f.k IN (SELECT k FROM dim WHERE k::UTINYINT < 4) ORDER BY ALL
+----
+1	10
+1	11
+2	20
+3	30
+3	31
+
+# 17: the key comes from the null-extended side of a LEFT join: its filter does not hold for the NULLs the join adds, and they match the NULL keys of fact
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d1 LEFT JOIN (SELECT * FROM dim WHERE k > 2) d2 ON d1.c = d2.c WHERE d2.k IS NOT DISTINCT FROM f.k) ORDER BY ALL
+----
+3	30
+3	31
+4	40
+5	50
+NULL	60
+NULL	61
+
+# 18: grouping sets add a NULL key the filter below does not describe
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM (SELECT k FROM dim WHERE k > 2 GROUP BY ROLLUP (k)) g WHERE g.k IS NOT DISTINCT FROM f.k) ORDER BY ALL
+----
+3	30
+3	31
+4	40
+5	50
+NULL	60
+NULL	61
+
+# 19: a UNION ends the search
+query II
+SELECT * FROM fact f WHERE f.k IN (SELECT k FROM dim WHERE k > 3 UNION ALL SELECT k FROM dim WHERE k < 2) ORDER BY ALL
+----
+1	10
+1	11
+4	40
+5	50
+
+# 20: the predicate is on the other side of an INNER join's equality
+query II
+SELECT * FROM fact f WHERE f.k IN (SELECT d1.k FROM dim d1 JOIN dim d2 ON d1.k = d2.k WHERE d2.k >= 4) ORDER BY ALL
+----
+4	40
+5	50
+
+# 21: through a grouped aggregate's key, below a HAVING
+query II
+SELECT * FROM fact f WHERE f.k IN (SELECT k FROM dim WHERE k > 2 GROUP BY k HAVING count(*) > 1) ORDER BY ALL
+----
+3	30
+3	31
+
+# 22: nested: the inner EXISTS restricts dim, the outer one fact
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k > 2 AND EXISTS (SELECT 1 FROM dim e WHERE e.k = d.k AND d.k < 5)) ORDER BY ALL
+----
+3	30
+3	31
+4	40
+
+# 23: the left key is an expression, not a column
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k + 0 AND f.k > 2) ORDER BY ALL
+----
+3	30
+3	31
+4	40
+5	50
+
+# 24: a correlated scalar subquery is a LEFT join, every fact row stays
+query II
+SELECT f.k, (SELECT count(*) FROM dim d WHERE d.k = f.k AND f.k > 2) FROM fact f ORDER BY ALL
+----
+-1	0
+1	0
+1	0
+2	0
+3	2
+3	2
+4	1
+5	1
+9	0
+NULL	0
+NULL	0
+
+# 25: two keys, a predicate on each
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND d.c = f.v / 10 AND f.k > 1 AND f.v < 45) ORDER BY ALL
+----
+2	20
+3	30
+
+# 26: VARCHAR and DATE keys
+query III
+SELECT * FROM (SELECT k::VARCHAR AS s, DATE '2020-01-01' + k AS d, v FROM fact) f WHERE EXISTS (SELECT 1 FROM (SELECT k::VARCHAR AS s, DATE '2020-01-01' + k AS d FROM dim) d WHERE d.s = f.s AND d.d = f.d AND f.s >= '3' AND f.d < DATE '2020-01-06') ORDER BY ALL
+----
+3	2020-01-04	30
+3	2020-01-04	31
+4	2020-01-05	40
+
+# 27: BETWEEN on the outer key inside the correlated EXISTS
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k BETWEEN 2 AND 4) ORDER BY ALL
+----
+2	20
+3	30
+3	31
+4	40
+
+# 28: an IN list on the outer key
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k IN (1, 3, 7)) ORDER BY ALL
+----
+1	10
+1	11
+3	30
+3	31
+
+# 29: an OR over the outer key
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND (f.k < 2 OR f.k > 3)) ORDER BY ALL
+----
+1	10
+1	11
+4	40
+5	50
+
+# 30: a correlated IN: two conditions on the MARK join, the predicate belongs to the correlation key
+query II
+SELECT * FROM fact f WHERE f.v IN (SELECT d.c * 10 FROM dim d WHERE d.k = f.k AND f.k > 2) ORDER BY ALL
+----
+3	30
+
+# 31: the predicate is written on the subquery's side of the correlation
+query II
+SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND d.k > 2) ORDER BY ALL
+----
+3	30
+3	31
+4	40
+5	50
+
+# 32: a query-written materialized CTE with one reference, semi-joined on a filtered key
+query II
+WITH c AS MATERIALIZED (SELECT * FROM fact) SELECT * FROM c WHERE k IN (SELECT k FROM dim WHERE k > 2) ORDER BY ALL
+----
+3	30
+3	31
+4	40
+5	50
+
+# 33: two references, the other one filtered: the CTE keeps the rows either consumer needs
+query II
+WITH c AS MATERIALIZED (SELECT * FROM fact) SELECT * FROM c WHERE k IN (SELECT k FROM dim WHERE k > 2) UNION ALL SELECT * FROM c WHERE v > 60 ORDER BY ALL
+----
+-1	70
+3	30
+3	31
+4	40
+5	50
+9	90
+NULL	61
+
+# 34: two references, the other one unfiltered: nothing is transferred
+query II
+WITH c AS MATERIALIZED (SELECT * FROM fact) SELECT * FROM c WHERE k IN (SELECT k FROM dim WHERE k > 2) UNION ALL SELECT * FROM c ORDER BY ALL
+----
+-1	70
+1	10
+1	11
+2	20
+3	30
+3	30
+3	31
+3	31
+4	40
+4	40
+5	50
+5	50
+9	90
+NULL	60
+NULL	61
+
+# 35: two references of a materialized CTE, the filter of one includes the filter of the other
+query II
+WITH c AS MATERIALIZED (SELECT * FROM fact) SELECT * FROM c WHERE k > 2 UNION ALL SELECT * FROM c WHERE k > 2 AND v > 30 ORDER BY ALL
+----
+3	30
+3	31
+3	31
+4	40
+4	40
+5	50
+5	50
+9	90
+9	90
+
+# Plans. A scan box lists its "Filters:" line right above its "Table:" line: "Filters: <p>" on one line and
+# "Table: ...fact" on the next is a table filter of the fact scan.
+
+statement ok
+SET explain_output = 'optimized_only';
+
+# 1 the outer-only conjunct reaches the outer scan (through the CTE filter pusher)
+query II
+EXPLAIN SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k > 2);
+----
+logical_opt	<REGEX>:(?s).*Filters: k > 2 *│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 3 NOT EXISTS: the outer scan stays unfiltered
+query II
+EXPLAIN SELECT * FROM fact f WHERE NOT EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k > 2);
+----
+logical_opt	<!REGEX>:(?s).*Filters:[^│\n]*│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 4 the mark is output: unfiltered
+query II
+EXPLAIN SELECT k, v, EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k > 2) AS e FROM fact f;
+----
+logical_opt	<!REGEX>:(?s).*Filters:[^│\n]*│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 5 the mark under an OR: unfiltered
+query II
+EXPLAIN SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k > 2) OR f.v = 10;
+----
+logical_opt	<!REGEX>:(?s).*Filters:[^│\n]*│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 6 an uncorrelated IN over a scan: not this rule (left alone)
+query II
+EXPLAIN SELECT * FROM fact f WHERE f.k IN (SELECT k FROM dim WHERE k > 2);
+----
+logical_opt	<!REGEX>:(?s).*Filters: k > 2 *│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 10 null-safe: IS NULL is transferred
+query II
+EXPLAIN SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k IS NOT DISTINCT FROM f.k AND f.k IS NULL);
+----
+logical_opt	<REGEX>:(?s).*Filters: k IS NULL *│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 12 a predicate on another column of the subquery: an IS NOT NULL on dim.k is not copied across the =
+query II
+EXPLAIN SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND d.c > 5);
+----
+logical_opt	<!REGEX>:(?s).*Filters: k IS NOT NULL *│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 13 an outer-only conjunct on another correlated column
+query II
+EXPLAIN SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.v > 25);
+----
+logical_opt	<REGEX>:(?s).*Filters: v > 25 *│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 17 the null-extended side of a LEFT join: not transferred
+query II
+EXPLAIN SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d1 LEFT JOIN (SELECT * FROM dim WHERE k > 2) d2 ON d1.c = d2.c WHERE d2.k IS NOT DISTINCT FROM f.k);
+----
+logical_opt	<!REGEX>:(?s).*Filters: k > 2 *│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 18 grouping sets: not transferred
+query II
+EXPLAIN SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM (SELECT k FROM dim WHERE k > 2 GROUP BY ROLLUP (k)) g WHERE g.k IS NOT DISTINCT FROM f.k);
+----
+logical_opt	<!REGEX>:(?s).*Filters: k > 2 *│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 27 BETWEEN
+query II
+EXPLAIN SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k BETWEEN 2 AND 4);
+----
+logical_opt	<REGEX>:(?s).*Filters: \(k >= 2\) AND \(k <= 4\) *│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 28 an IN list (an optional scan filter under the filter itself)
+query II
+EXPLAIN SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k IN (1, 3, 7));
+----
+logical_opt	<REGEX>:(?s).*Filters: optional: \(k IN \(1, 3, 7\)\) *│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 30 a correlated IN: the predicate on the correlation key
+query II
+EXPLAIN SELECT * FROM fact f WHERE f.v IN (SELECT d.c * 10 FROM dim d WHERE d.k = f.k AND f.k > 2);
+----
+logical_opt	<REGEX>:(?s).*Filters: k > 2 *│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 32 a query-written materialized CTE with one reference
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT * FROM fact) SELECT * FROM c WHERE k IN (SELECT k FROM dim WHERE k > 2);
+----
+logical_opt	<REGEX>:(?s).*Filters: k > 2 *│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 33 two references, both filtered now: the disjunction is pushed into the CTE
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT * FROM fact) SELECT * FROM c WHERE k IN (SELECT k FROM dim WHERE k > 2) UNION ALL SELECT * FROM c WHERE v > 60;
+----
+logical_opt	<REGEX>:(?s).*\(k > 2\) OR \(v > 60\).*
+
+# 34 two references, one unfiltered: nothing is transferred, the CTE keeps every row
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT * FROM fact) SELECT * FROM c WHERE k IN (SELECT k FROM dim WHERE k > 2) UNION ALL SELECT * FROM c;
+----
+logical_opt	<!REGEX>:(?s).*Filters:[^│\n]*│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 35 the filter of one reference includes the filter of the other: the CTE is restricted by the weaker one alone
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT * FROM fact) SELECT * FROM c WHERE k > 2 UNION ALL SELECT * FROM c WHERE k > 2 AND v > 30;
+----
+logical_opt	<REGEX>:(?s).*Filters: k > 2 *│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT * FROM fact) SELECT * FROM c WHERE k > 2 UNION ALL SELECT * FROM c WHERE k > 2 AND v > 30;
+----
+logical_opt	<!REGEX>:(?s).* OR .*
+
+# without the rule the outer scan of the correlated EXISTS is unfiltered
+statement ok
+SET disabled_optimizers = 'semi_join_key_filter_transfer';
+
+# 1 disabled
+query II
+EXPLAIN SELECT * FROM fact f WHERE EXISTS (SELECT 1 FROM dim d WHERE d.k = f.k AND f.k > 2);
+----
+logical_opt	<!REGEX>:(?s).*Filters: k > 2 *│[^\n]*\n[^\n]*│ Table: \S*fact .*
+
+# 33 disabled: no disjunction
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT * FROM fact) SELECT * FROM c WHERE k IN (SELECT k FROM dim WHERE k > 2) UNION ALL SELECT * FROM c WHERE v > 60;
+----
+logical_opt	<!REGEX>:(?s).*\(k > 2\) OR \(v > 60\).*
