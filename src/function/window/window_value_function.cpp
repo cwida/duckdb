@@ -1405,9 +1405,26 @@ bool TryExtrapolateOperator::Operation(const hugeint_t &lo, const double d, cons
 
 template <>
 bool TryExtrapolateOperator::Operation(const uhugeint_t &lo, const double d, const uhugeint_t &hi, uhugeint_t &result) {
-	double temp;
-	return Operation(Uhugeint::Cast<double>(lo), d, Uhugeint::Cast<double>(hi), temp) &&
-	       Uhugeint::TryConvert(temp, result);
+	//	Compute lo + d * (hi - lo) exactly; a non-finite slope has no exact offset.
+	if (!std::isfinite(d)) {
+		return false;
+	}
+	const bool ascending = lo <= hi;
+	const auto &lower = ascending ? lo : hi;
+	const auto &upper = ascending ? hi : lo;
+	uhugeint_t delta = upper;
+	if (!Uhugeint::TrySubtractInPlace(delta, lower)) {
+		return false;
+	}
+	uhugeint_t offset;
+	if (!TryMultiplyUhugeintByDoubleFraction(delta, d < 0 ? -d : d, offset)) {
+		return false;
+	}
+	//	The offset points up for ascending values with d > 0 and descending values with d < 0.
+	if ((d > 0) == ascending) {
+		return TryAddOperator::Operation(lo, offset, result);
+	}
+	return TrySubtractOperator::Operation(lo, offset, result);
 }
 
 typedef void (*fill_interpolate_t)(Vector &result, idx_t i, WindowCursor &cursor, idx_t lo, idx_t hi, double slope);

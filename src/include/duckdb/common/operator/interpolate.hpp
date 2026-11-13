@@ -23,6 +23,10 @@ struct InterpolateOperator {
 	}
 };
 
+// Computes trunc(delta * weight) exactly for a non-negative UHUGEINT delta and a finite,
+// non-negative double weight. Returns false when the truncated product exceeds UHUGEINT_MAX.
+bool TryMultiplyUhugeintByDoubleFraction(const uhugeint_t &delta, const double weight, uhugeint_t &result);
+
 template <>
 double InterpolateOperator::Operation(const double &lo, const double d, const double &hi);
 template <>
