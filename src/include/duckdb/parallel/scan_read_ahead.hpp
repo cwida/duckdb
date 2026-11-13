@@ -128,6 +128,8 @@ public:
 	ReadAheadOpenFile(const ReadAheadOpenFile &) = delete;
 	ReadAheadOpenFile &operator=(const ReadAheadOpenFile &) = delete;
 
+	//! The token for a file about to be opened: a remote file holds no descriptor, so it gets none
+	static shared_ptr<ReadAheadOpenFile> ForFile(const string &path);
 	//! Files counted by all scans of the process
 	static idx_t Count();
 };

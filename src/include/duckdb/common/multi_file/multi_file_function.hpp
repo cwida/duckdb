@@ -500,7 +500,7 @@ public:
 				reader_data.file_state = MultiFileFileState::OPENING;
 				{
 					MultiFileReaderData *reader_ptr = &reader_data;
-					auto open_file = make_shared_ptr<ReadAheadOpenFile>();
+					auto open_file = ReadAheadOpenFile::ForFile(reader_data.file_to_be_opened.path);
 					read_ahead.ScheduleFileOpen(
 					    [&context, &bind_data, &gstate, reader_ptr, current_file_index, open_file]() {
 						    OpenMarkedFileAsync(context, bind_data, gstate, *reader_ptr, current_file_index, open_file);
