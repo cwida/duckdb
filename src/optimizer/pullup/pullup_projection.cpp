@@ -17,33 +17,21 @@ static void RevertFilterPullup(LogicalProjection &proj, vector<unique_ptr<Expres
 	proj.children[0] = std::move(filter);
 }
 
-static void ReplaceExpressionBinding(vector<unique_ptr<Expression>> &proj_expressions, Expression &expr,
+static void ReplaceExpressionBinding(vector<unique_ptr<Expression>> &proj_expressions, unique_ptr<Expression> &expr,
                                      TableIndex proj_table_idx) {
-	if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
-		bool found_proj_col = false;
-		BoundColumnRefExpression &colref = expr.Cast<BoundColumnRefExpression>();
-		// find the corresponding column index in the projection expressions
-		for (idx_t proj_idx = 0; proj_idx < proj_expressions.size(); proj_idx++) {
-			auto &proj_expr = *proj_expressions[proj_idx];
-			if (proj_expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
-				if (colref.Equals(proj_expr)) {
-					colref.BindingMutable().table_index = proj_table_idx;
-					colref.BindingMutable().column_index = ProjectionIndex(proj_idx);
-					found_proj_col = true;
-					break;
-				}
-			}
-		}
-		if (!found_proj_col) {
-			// Project a new column
-			auto new_colref = colref.Copy();
-			colref.BindingMutable().table_index = proj_table_idx;
-			colref.BindingMutable().column_index =
-			    ColumnBinding::PushExpression(proj_expressions, std::move(new_colref));
-		}
-	}
-	ExpressionIterator::EnumerateChildren(
-	    expr, [&](Expression &child) { return ReplaceExpressionBinding(proj_expressions, child, proj_table_idx); });
+	expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+	    std::move(expr), [&](const BoundColumnRefExpression &colref) {
+		    // find the corresponding column index in the projection expressions
+		    for (idx_t proj_idx = 0; proj_idx < proj_expressions.size(); proj_idx++) {
+			    auto &proj_expr = *proj_expressions[proj_idx];
+			    if (proj_expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF && colref.Equals(proj_expr)) {
+				    return colref.WithBinding(ColumnBinding(proj_table_idx, ProjectionIndex(proj_idx)));
+			    }
+		    }
+		    // Project a new column
+		    auto column_index = ColumnBinding::PushExpression(proj_expressions, colref.Copy());
+		    return colref.WithBinding(ColumnBinding(proj_table_idx, column_index));
+	    });
 }
 
 void FilterPullup::ProjectSetOperation(LogicalProjection &proj) {
@@ -57,7 +45,7 @@ void FilterPullup::ProjectSetOperation(LogicalProjection &proj) {
 	vector<unique_ptr<Expression>> changed_filter_expressions;
 	for (idx_t i = 0; i < filters_expr_pullup.size(); ++i) {
 		auto copy_filter_expr = filters_expr_pullup[i]->Copy();
-		ReplaceExpressionBinding(copy_proj_expressions, (Expression &)*copy_filter_expr, proj.table_index);
+		ReplaceExpressionBinding(copy_proj_expressions, copy_filter_expr, proj.table_index);
 		changed_filter_expressions.push_back(std::move(copy_filter_expr));
 	}
 
@@ -95,8 +83,7 @@ unique_ptr<LogicalOperator> FilterPullup::PullupProjection(unique_ptr<LogicalOpe
 		}
 
 		for (idx_t i = 0; i < filters_expr_pullup.size(); ++i) {
-			auto &expr = (Expression &)*filters_expr_pullup[i];
-			ReplaceExpressionBinding(proj.expressions, expr, proj.table_index);
+			ReplaceExpressionBinding(proj.expressions, filters_expr_pullup[i], proj.table_index);
 		}
 	}
 	return op;

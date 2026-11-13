@@ -195,8 +195,8 @@ unique_ptr<Expression> LikeOptimizationRule::ApplyRule(BoundFunctionExpression &
 		return std::move(result);
 	}
 
-	auto negation = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_NOT, LogicalType::BOOLEAN);
-	negation->GetChildrenMutable().push_back(std::move(result));
+	auto negation =
+	    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_NOT, LogicalType::BOOLEAN, std::move(result));
 	return std::move(negation);
 }
 

@@ -315,3 +315,82 @@ TEST_CASE("A database-fatal bind error still invalidates", "[api][bind_statement
 	REQUIRE_THROWS(BindOne(con, "SELECT boom()"));
 	REQUIRE(con.Query("SELECT 1")->HasError());
 }
+
+static string NestedFilterChain(idx_t depth) {
+	string sql = "SELECT a, b FROM t";
+	for (idx_t i = 0; i < depth; i++) {
+		sql = "SELECT a, b FROM (" + sql + ") s" + to_string(i) + " WHERE a > -1";
+	}
+	return sql;
+}
+
+// The statement binds, so it is described; the planning after the bind refuses it, so Prepare and Query fail.
+static void RequireDescribedThenRefused(Connection &con, const string &sql, const vector<string> &names,
+                                        const vector<LogicalType> &types, const string &error) {
+	auto sig = BindOne(con, sql);
+	REQUIRE(sig.types == types);
+	if (!names.empty()) {
+		REQUIRE(sig.names.size() == names.size());
+		for (idx_t i = 0; i < names.size(); i++) {
+			REQUIRE(sig.names[i] == names[i]);
+		}
+	}
+	REQUIRE(sig.parameters.empty());
+	auto prepared = con.Prepare(sql);
+	REQUIRE(prepared->HasError());
+	REQUIRE(StringUtil::Contains(prepared->GetError(), error));
+	auto result = con.Query(sql);
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), error));
+}
+
+TEST_CASE("BindStatement describes a statement that only the planning after the bind refuses",
+          "[api][bind_statement]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(a INTEGER, b INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE u(a INTEGER, b VARCHAR)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE audit(x INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (1, 2)"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO u VALUES (1, 'y')"));
+	const string positional_join = "Positional join in correlated subqueries is not (yet) supported";
+
+	SECTION("A plan deeper than the tree depth limit") {
+		REQUIRE_NO_FAIL(con.Query("SET max_expression_depth=50"));
+		// 30 nested subqueries stay below the binder depth limit of 50, while their plan, a projection and a filter
+		// per level, is about 60 operators deep.
+		RequireDescribedThenRefused(con, NestedFilterChain(30), {"a", "b"},
+		                            {LogicalType::INTEGER, LogicalType::INTEGER},
+		                            "Maximum tree depth of 50 exceeded in logical planner");
+
+		REQUIRE(BindOne(con, NestedFilterChain(20)).types.size() == 2);
+		REQUIRE(CountRows(con, "SELECT count(*) FROM (" + NestedFilterChain(20) + ")") == 1);
+	}
+	SECTION("A correlated subquery that decorrelation refuses") {
+		const string refused = "SELECT * FROM t WHERE EXISTS (SELECT * FROM u POSITIONAL JOIN (SELECT t.a) s)";
+		RequireDescribedThenRefused(con, refused, {"a", "b"}, {LogicalType::INTEGER, LogicalType::INTEGER},
+		                            positional_join);
+		RequireDescribedThenRefused(con, "SELECT (SELECT b FROM u POSITIONAL JOIN (SELECT t.a AS c) s) AS r FROM t",
+		                            {"r"}, {LogicalType::VARCHAR}, positional_join);
+		// A PREPARE plans the statement it prepares in full when it is bound.
+		REQUIRE_THROWS_WITH(BindOne(con, "PREPARE p AS " + refused), Catch::Contains(positional_join));
+
+		const string accepted = "SELECT (SELECT b FROM u WHERE u.a = t.a) AS r FROM t";
+		REQUIRE(BindOne(con, accepted).types == vector<LogicalType> {LogicalType::VARCHAR});
+		unique_ptr<QueryResult> result = con.Query(accepted);
+		REQUIRE(CHECK_COLUMN(result, 0, {"y"}));
+	}
+	SECTION("A row trigger body that decorrelation refuses") {
+		REQUIRE_NO_FAIL(con.Query("CREATE TRIGGER trg AFTER INSERT ON t FOR EACH ROW "
+		                          "INSERT INTO audit SELECT s.x FROM (SELECT NEW.a AS x) s POSITIONAL JOIN u"));
+		// The changed rows column of a write with a row trigger is named by the expansion, so only its type is checked.
+		RequireDescribedThenRefused(con, "INSERT INTO t VALUES (3, 4)", {}, {LogicalType::BIGINT}, positional_join);
+		REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 1);
+		REQUIRE(CountRows(con, "SELECT count(*) FROM audit") == 0);
+
+		REQUIRE_NO_FAIL(con.Query("DROP TRIGGER trg ON t"));
+		REQUIRE(BindOne(con, "INSERT INTO t VALUES (3, 4)").types.size() == 1);
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (3, 4)"));
+		REQUIRE(CountRows(con, "SELECT count(*) FROM t") == 2);
+	}
+}

@@ -335,8 +335,20 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatementInternal
 
 	{
 		auto planner_timer = profiler.StartTimer<MetricPlannerTotalTime>();
+		logical_planner.reuse_prepared_plans = true;
 		logical_planner.CreatePlan(std::move(statement));
-		D_ASSERT(logical_planner.plan || !logical_planner.properties.bound_all_parameters);
+		D_ASSERT(logical_planner.plan || logical_planner.reused_statement ||
+		         !logical_planner.properties.bound_all_parameters);
+	}
+	if (logical_planner.reused_statement) {
+		// re-use the physical plan of the prepared statement
+		result->properties = logical_planner.properties;
+		result->names = logical_planner.names;
+		result->types = logical_planner.types;
+		result->physical_plan = make_uniq<PhysicalPlan>(Allocator::Get(*this));
+		result->physical_plan->SetRoot(logical_planner.reused_statement->physical_plan->Root());
+		result->reused_statement = std::move(logical_planner.reused_statement);
+		return result;
 	}
 
 	if (logical_planner.properties.bound_all_parameters) {
@@ -636,7 +648,7 @@ StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> stateme
 			    }
 			    auto bound = std::move(expanded.statements[0]);
 			    auto named_param_map = bound->named_param_map;
-			    Planner planner(*this);
+			    Planner planner(*this, PlanningMode::BIND_ONLY);
 			    planner.CreatePlan(std::move(bound));
 			    signature.names = planner.names;
 			    signature.types = planner.types;

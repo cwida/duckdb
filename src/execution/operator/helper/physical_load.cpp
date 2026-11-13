@@ -8,12 +8,13 @@
 
 namespace duckdb {
 
-static void InstallFromRepository(ClientContext &context, const LoadInfo &info) {
+//! Install from the FROM source, which is a trusted repository that was added by the user, a built-in repository name
+//! or a url. Returns the repository it resolved to, so that a following LOAD looks where the install put the extension
+static ExtensionRepository InstallFromRepository(ClientContext &context, const LoadInfo &info) {
 	auto &db = DatabaseInstance::GetDatabase(context);
 	auto &fs = FileSystem::GetLocal(db);
 
 	ExtensionRepository repository;
-	// the repository can be a trusted repository that was added by the user, a built-in repository name or a url
 	if (!ExtensionRepositoryManager::TryGetRepository(db, fs, info.repository, repository)) {
 		if (info.repo_is_alias) {
 			// This has been checked during bind, so it should not fail here
@@ -32,6 +33,7 @@ static void InstallFromRepository(ClientContext &context, const LoadInfo &info) 
 	options.repository = repository;
 
 	ExtensionHelper::InstallExtension(context, info.filename, options);
+	return repository;
 }
 
 static void ExecuteRepositoryStatement(ClientContext &context, const LoadInfo &info, DataChunk &chunk) {
@@ -39,8 +41,9 @@ static void ExecuteRepositoryStatement(ClientContext &context, const LoadInfo &i
 	auto &fs = FileSystem::GetLocal(db);
 
 	if (info.load_type == LoadType::CREATE_REPOSITORY) {
-		ExtensionRepository repository(info.repository, info.repository_url, info.public_keys);
-		auto result = ExtensionRepositoryManager::CreateRepository(db, fs, context, repository, info.on_conflict);
+		// what was asked for; without a prefix the manager resolves the name as a host
+		ExtensionRepository requested(info.repository, info.repository_url, info.public_keys);
+		auto result = ExtensionRepositoryManager::CreateRepository(db, fs, context, requested, info.on_conflict);
 
 		// report the repository as it was stored, so that the keys can be compared with the published fingerprints
 		vector<Value> fingerprints;
@@ -61,6 +64,9 @@ SourceResultType PhysicalLoad::GetDataInternal(ExecutionContext &context, DataCh
 	if (info->load_type == LoadType::CREATE_REPOSITORY || info->load_type == LoadType::DROP_REPOSITORY) {
 		ExecuteRepositoryStatement(context.client, *info, chunk);
 	} else if (info->load_type == LoadType::INSTALL || info->load_type == LoadType::FORCE_INSTALL) {
+		// the repository the install resolved to; a bare install has none to name, so the load stays bare
+		ExtensionRepository installed_from;
+		installed_from.name.clear();
 		if (info->repository.empty()) {
 			ExtensionInstallOptions options;
 			options.force_install = info->load_type == LoadType::FORCE_INSTALL;
@@ -68,16 +74,16 @@ SourceResultType PhysicalLoad::GetDataInternal(ExecutionContext &context, DataCh
 			options.version = info->version;
 			ExtensionHelper::InstallExtension(context.client, info->filename, options);
 		} else {
-			InstallFromRepository(context.client, *info);
+			installed_from = InstallFromRepository(context.client, *info);
 		}
 
-		// INSTALL AND LOAD: load the extension immediately after installing it. Only a named repository (core,
-		// community or a user repository alias) is passed on to the load - a URL or bare install lands in the flat
-		// top-level layout, which a bare load resolves
+		// INSTALL AND LOAD: load the extension immediately after installing it, from the repository the install
+		// resolved - whether it was named as an identifier or as a string. A url or a bare install resolves to no name,
+		// and lands in the flat top-level layout, which a bare load resolves
 		if (info->load_after_install) {
 			ExtensionLoadOptions load_options;
 			load_options.extension_name = info->filename;
-			load_options.repository = info->repo_is_alias ? info->repository : string();
+			load_options.repository = installed_from.name;
 			ExtensionHelper::LoadExternalExtension(context.client, load_options);
 			ExtensionLoader::RefreshSearchPath(context.client);
 		}

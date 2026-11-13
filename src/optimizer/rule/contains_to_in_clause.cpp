@@ -67,8 +67,8 @@ unique_ptr<Expression> ContainsToInClauseRule::Apply(LogicalOperator &op, vector
 		return nullptr;
 	}
 
-	auto in_expr = make_uniq<BoundOperatorExpression>(ExpressionType::COMPARE_IN, LogicalType::BOOLEAN);
-	in_expr->GetChildrenMutable().push_back(probe_arg->Copy());
+	auto in_expr =
+	    make_uniq<BoundOperatorExpression>(ExpressionType::COMPARE_IN, LogicalType::BOOLEAN, probe_arg->Copy());
 	for (auto &v : non_null_elements) {
 		in_expr->GetChildrenMutable().push_back(make_uniq<BoundConstantExpression>(std::move(v)));
 	}

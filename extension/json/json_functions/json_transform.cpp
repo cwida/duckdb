@@ -1336,6 +1336,8 @@ void JSONFunctions::RegisterJSONTransformCastFunctions(ExtensionLoader &loader) 
 		case LogicalTypeId::ARRAY:
 			target_type = LogicalType::ARRAY(LogicalType::ANY, optional_idx());
 			break;
+		case LogicalTypeId::VARIANT:
+			continue;
 		case LogicalTypeId::VARCHAR:
 			// We skip this one here as it's handled in json_functions.cpp
 			continue;

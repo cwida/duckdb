@@ -1,0 +1,52 @@
+# name: test/sql/storage/compression/alp/alp_legacy_block_size.test
+# description: Legacy ALP supports 32 KiB blocks without uncompressed-vector fallback
+# group: [alp]
+
+require exact_vector_size 2048
+
+statement ok
+SET initial_column_segment_size=262144
+
+statement ok
+SET force_compression='alp'
+
+# The sampled values have a wide integer range; most other values are exceptions.
+statement ok
+CREATE TEMP TABLE source AS
+SELECT x::FLOAT AS f, x AS d FROM (
+    SELECT CASE WHEN i % 64 = 0 THEN 1152921504606846976.0::DOUBLE
+                WHEN i % 64 = 32 THEN -1152921504606846976.0::DOUBLE
+                WHEN i % 64 = 1 THEN NULL
+                ELSE 'NaN'::DOUBLE END AS x
+    FROM range(12345) t(i)
+)
+
+query RR rowsort original_data
+SELECT * FROM source
+----
+
+statement ok
+ATTACH '{TEST_DIR}/alp_legacy_32k.db' AS legacy (STORAGE_VERSION 'v1.4.0', BLOCK_SIZE 32768)
+
+statement ok
+CREATE TABLE legacy.exceptions AS SELECT * FROM source
+
+statement ok
+CHECKPOINT legacy
+
+query TT rowsort
+SELECT DISTINCT segment_type, compression FROM pragma_storage_info('legacy.exceptions')
+WHERE segment_type IN ('FLOAT', 'DOUBLE') AND compression <> 'Constant'
+----
+DOUBLE	ALP
+FLOAT	ALP
+
+statement ok
+DETACH legacy
+
+statement ok
+ATTACH '{TEST_DIR}/alp_legacy_32k.db' AS legacy (READ_ONLY)
+
+query RR rowsort original_data
+SELECT * FROM legacy.exceptions
+----

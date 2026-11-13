@@ -161,8 +161,8 @@ unique_ptr<AggregateRewritePlan> FrequencyAggregateRewrite::Create(AggregateRewr
 		    LogicalType::BOOLEAN, ColumnBinding(frequency_group_index, ProjectionIndex(filter_column.GetIndex())));
 	}
 	if (ignore_nulls) {
-		auto not_null = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN);
-		not_null->GetChildrenMutable().push_back(value->Copy());
+		auto not_null = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN,
+		                                                   value->Copy());
 		if (filter) {
 			filter = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND, std::move(filter),
 			                                               std::move(not_null));

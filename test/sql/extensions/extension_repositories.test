@@ -264,12 +264,12 @@ SELECT count(*) FROM duckdb_extension_repositories() WHERE prefix='http://evil.e
 ----
 0
 
-# while the database is running the setting can only move down ('undecided' -> 'allowed' -> 'forbidden'): once
-# repositories are allowed, the decision cannot be reverted to the 'undecided' default
+# while the database is running the setting can only move down ('hosts' -> 'allowed' -> 'hosts_only' -> 'forbidden'):
+# once repositories are allowed, the setting cannot be reverted to the 'hosts' default
 statement error
-SET allow_extension_repositories='undecided'
+SET allow_extension_repositories='hosts'
 ----
-<REGEX>:.*can only be changed from 'undecided'.*
+<REGEX>:.*can only be tightened.*
 
 # existing repositories are still listed and trusted
 query I
@@ -278,7 +278,7 @@ SELECT repository_name FROM duckdb_extension_repositories() WHERE type='USER_PRO
 acme
 
 # repositories can be forbidden. this distrusts the keys of existing repositories (so extensions installed from them
-# can no longer be loaded), but the repositories can still be listed and dropped. the 'undecided' default is weaker:
+# can no longer be loaded), but the repositories can still be listed and dropped. the 'hosts' default is weaker:
 # it only blocks *adding* new repositories while still trusting existing ones (see the api tests for the trust checks)
 statement ok
 SET allow_extension_repositories='forbidden'
@@ -305,13 +305,13 @@ INSTALL some_extension FROM acme
 statement ok
 DROP EXTENSION REPOSITORY acme
 
-# once forbidden, repositories cannot be re-enabled or reset to 'undecided' while the database is running
+# once forbidden, repositories cannot be re-enabled or reset to 'hosts' while the database is running
 statement error
 SET allow_extension_repositories='allowed'
 ----
-<REGEX>:.*can only be changed from 'undecided'.*
+<REGEX>:.*can only be tightened.*
 
 statement error
-SET allow_extension_repositories='undecided'
+SET allow_extension_repositories='hosts'
 ----
-<REGEX>:.*can only be changed from 'undecided'.*
+<REGEX>:.*can only be tightened.*

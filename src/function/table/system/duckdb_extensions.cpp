@@ -70,6 +70,8 @@ static unique_ptr<FunctionData> DuckDBExtensionsBind(ClientContext &context, Tab
 	return nullptr;
 }
 
+using ExtensionKey = std::pair<string, string>;
+
 unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBExtensionsData>();
 
@@ -77,7 +79,8 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 	auto &db = DatabaseInstance::GetDatabase(context);
 
 	// Firstly, we go over all Default Extensions: duckdb_extensions always prints those, installed/loaded or not
-	map<string, ExtensionInformation> installed_extensions;
+	map<ExtensionKey, ExtensionInformation> installed_extensions;
+	unordered_map<string, ExtensionKey> installed_paths;
 	auto extension_count = ExtensionHelper::DefaultExtensionCount();
 	auto alias_count = ExtensionHelper::ExtensionAliasCount();
 	for (idx_t i = 0; i < extension_count; i++) {
@@ -94,7 +97,7 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 				info.aliases.emplace_back(alias.alias);
 			}
 		}
-		installed_extensions[info.name] = std::move(info);
+		installed_extensions[ExtensionKey(info.name, string())] = std::move(info);
 	}
 
 	// Extensions linked into this binary are built in, whether or not the default list knows them
@@ -102,7 +105,7 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 		if (!linked.load) {
 			continue;
 		}
-		auto &info = installed_extensions[linked.name];
+		auto &info = installed_extensions[ExtensionKey(linked.name, string())];
 		info.name = linked.name;
 		info.installed = true;
 		info.file_path = "(BUILT-IN)";
@@ -111,8 +114,8 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 
 	// Secondly we scan all installed extensions and their install info
 #ifndef WASM_LOADABLE_EXTENSIONS
-	auto ext_directories = ExtensionHelper::GetExtensionDirectoryPath(context);
-	for (const auto &ext_directory : ext_directories) {
+	for (const auto &directory : ExtensionHelper::GetInstalledExtensionDirectories(context)) {
+		const auto &ext_directory = directory.path;
 		fs.ListFiles(ext_directory, [&](const string &path, bool is_directory) {
 			if (!ExtensionHelper::IsInstalledExtensionFile(path)) {
 				return;
@@ -131,21 +134,25 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 			info.install_mode = extension_install_info->mode;
 			info.extension_version = extension_install_info->version;
 			info.signature_key_fingerprint = extension_install_info->signature_key_fingerprint;
-			if (extension_install_info->mode == ExtensionInstallMode::REPOSITORY) {
-				info.installed_from = ExtensionRepository::GetRepository(extension_install_info->repository_url);
-			} else {
+			if (extension_install_info->mode != ExtensionInstallMode::REPOSITORY) {
 				info.installed_from = extension_install_info->full_path;
+			} else if (extension_install_info->repository_type == ExtensionRepositoryType::USER_PROVIDED &&
+			           !extension_install_info->repository_name.empty()) {
+				info.installed_from = extension_install_info->repository_name;
+			} else {
+				info.installed_from = ExtensionRepository::GetRepository(extension_install_info->repository_url);
 			}
 
-			auto entry = installed_extensions.find(info.name);
+			ExtensionKey key(info.name, directory.repository);
+			installed_paths[fs.CanonicalizePath(info.file_path)] = key;
+			auto entry = installed_extensions.find(key);
 			if (entry == installed_extensions.end()) {
-				installed_extensions[info.name] = std::move(info);
+				installed_extensions[key] = std::move(info);
 			} else {
 				if (entry->second.install_mode != ExtensionInstallMode::STATICALLY_LINKED) {
 					entry->second.file_path = info.file_path;
 					entry->second.install_mode = info.install_mode;
 					entry->second.installed_from = info.installed_from;
-					entry->second.install_mode = info.install_mode;
 					entry->second.extension_version = info.extension_version;
 					entry->second.signature_key_fingerprint = info.signature_key_fingerprint;
 				}
@@ -168,10 +175,17 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 			continue;
 		}
 		auto &ext_data = *ext_info;
+
+		ExtensionKey key(ext_name, string());
+		auto installed_path = installed_paths.find(ext_data.file_path);
+		if (!ext_data.file_path.empty() && installed_path != installed_paths.end() &&
+		    installed_path->second.first == ext_name) {
+			key = installed_path->second;
+		}
 		if (auto &ext_install_info = ext_data.install_info) {
-			auto entry = installed_extensions.find(ext_name);
+			auto entry = installed_extensions.find(key);
 			if (entry == installed_extensions.end() || !entry->second.installed) {
-				ExtensionInformation &info = installed_extensions[ext_name];
+				ExtensionInformation &info = installed_extensions[key];
 
 				info.name = ext_name;
 				info.loaded = true;
@@ -187,7 +201,7 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 			}
 		}
 		if (auto &ext_load_info = ext_data.load_info) {
-			auto entry = installed_extensions.find(ext_name);
+			auto entry = installed_extensions.find(key);
 			if (entry != installed_extensions.end()) {
 				entry->second.description = ext_load_info->description;
 			}

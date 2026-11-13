@@ -24,7 +24,7 @@ unique_ptr<Expression> RewriteOrderedFirst(AggregateRewriteInput &input) {
 
 	FunctionBinder binder(input.context);
 	vector<unique_ptr<Expression>> sort_children;
-	for (auto &order : aggregate->GetOrderBysMutable()->orders) {
+	for (auto &order : aggregate->GetOrderBys()->orders) {
 		sort_children.emplace_back(std::move(order.expression));
 		sort_children.emplace_back(make_uniq<BoundConstantExpression>(Value(order.GetOrderModifier())));
 	}

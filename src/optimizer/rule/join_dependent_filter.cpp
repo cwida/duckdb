@@ -129,7 +129,7 @@ unique_ptr<Expression> JoinDependentFilterRule::Apply(LogicalOperator &op, vecto
 		derived_filter->GetChildrenMutable().push_back(std::move(derived_entry_filter));
 	}
 
-	if (derived_filter->GetChildrenMutable().empty()) {
+	if (derived_filter->GetChildren().empty()) {
 		return nullptr; // Could not derive filters that can be pushed down
 	}
 
@@ -138,7 +138,7 @@ unique_ptr<Expression> JoinDependentFilterRule::Apply(LogicalOperator &op, vecto
 	auto &result_conjunction = result->Cast<BoundConjunctionExpression>();
 	result_conjunction.GetChildrenMutable().push_back(conjunction.Copy());
 
-	if (derived_filter->GetChildrenMutable().size() == 1) {
+	if (derived_filter->GetChildren().size() == 1) {
 		result_conjunction.GetChildrenMutable().push_back(std::move(derived_filter->GetChildrenMutable()[0]));
 	} else {
 		result_conjunction.GetChildrenMutable().push_back(std::move(derived_filter));

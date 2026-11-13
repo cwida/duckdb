@@ -13,14 +13,15 @@ using Filter = FilterPushdown::Filter;
 
 static void ReplaceSetOpBindings(vector<ColumnBinding> &bindings, Filter &filter, unique_ptr<Expression> &root_expr,
                                  LogicalSetOperation &setop) {
-	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-	    root_expr, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &expr) {
+	root_expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+	    std::move(root_expr), [&](const BoundColumnRefExpression &colref) {
 		    D_ASSERT(colref.Binding().table_index == setop.table_index);
 		    D_ASSERT(colref.Depth() == 0);
 
 		    // rewrite the binding by looking into the bound_tables list of the subquery
-		    colref.BindingMutable() = bindings[colref.Binding().column_index];
-		    filter.bindings.insert(colref.Binding().table_index);
+		    auto &new_binding = bindings[colref.Binding().column_index];
+		    filter.bindings.insert(new_binding.table_index);
+		    return colref.WithBinding(new_binding);
 	    });
 }
 

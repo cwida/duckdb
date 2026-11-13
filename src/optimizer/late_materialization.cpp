@@ -121,9 +121,10 @@ void LateMaterialization::ReplaceTopLevelTableIndex(LogicalOperator &root, Table
 }
 
 void LateMaterialization::ReplaceTableReferences(unique_ptr<Expression> &root_expr, TableIndex new_table_index) {
-	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-	    root_expr, [&](BoundColumnRefExpression &bound_column_ref, unique_ptr<Expression> &expr) {
-		    bound_column_ref.BindingMutable().table_index = new_table_index;
+	root_expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+	    std::move(root_expr), [&](const BoundColumnRefExpression &bound_column_ref) {
+		    return bound_column_ref.WithBinding(
+		        ColumnBinding(new_table_index, bound_column_ref.Binding().column_index));
 	    });
 }
 

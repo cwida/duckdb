@@ -101,8 +101,6 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "EXPLAIN";
 	case PhysicalOperatorType::EXPLAIN_ANALYZE:
 		return "EXPLAIN_ANALYZE";
-	case PhysicalOperatorType::EXECUTE:
-		return "EXECUTE";
 	case PhysicalOperatorType::VACUUM:
 		return "VACUUM";
 	case PhysicalOperatorType::RECURSIVE_CTE:

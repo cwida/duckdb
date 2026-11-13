@@ -17,6 +17,26 @@ BoundColumnRefExpression::BoundColumnRefExpression(LogicalType type, ColumnBindi
     : BoundColumnRefExpression(Identifier(), std::move(type), binding, depth) {
 }
 
+unique_ptr<Expression> BoundColumnRefExpression::WithBinding(ColumnBinding new_binding) const {
+	return WithBinding(new_binding, depth);
+}
+
+unique_ptr<Expression> BoundColumnRefExpression::WithBinding(ColumnBinding new_binding, idx_t new_depth) const {
+	return make_uniq<BoundColumnRefExpression>(alias, return_type, new_binding, new_depth, query_location);
+}
+
+unique_ptr<Expression> BoundColumnRefExpression::WithBinding(ColumnBinding new_binding, LogicalType new_type) const {
+	return make_uniq<BoundColumnRefExpression>(alias, std::move(new_type), new_binding, depth, query_location);
+}
+
+unique_ptr<Expression> BoundColumnRefExpression::WithReturnType(LogicalType new_type) const {
+	return WithBinding(binding, std::move(new_type));
+}
+
+unique_ptr<Expression> BoundColumnRefExpression::WithDepth(idx_t new_depth) const {
+	return WithBinding(binding, new_depth);
+}
+
 unique_ptr<Expression> BoundColumnRefExpression::Copy() const {
 	return make_uniq<BoundColumnRefExpression>(alias, return_type, binding, depth);
 }

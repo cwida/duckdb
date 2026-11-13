@@ -548,7 +548,7 @@ bool JoinHashTable::ColumnReferencedByResidual(idx_t build_col_idx) const {
 
 uint8_t JoinHashTable::GetDictSurvivingIndexWidth(idx_t build_col_idx, const Vector &incoming) const {
 	const auto &type = build_types[build_col_idx];
-	// Vector::Dictionary rejects nested types
+	// Keep nested payloads in the regular row layout.
 	switch (type.InternalType()) {
 	case PhysicalType::STRUCT:
 	case PhysicalType::LIST:
@@ -1815,12 +1815,41 @@ void ScanStructure::GatherResult(Vector &result, const idx_t count, const idx_t 
 	                           *FlatVector::IncrementalSelectionVector(), nullptr);
 }
 
+static bool HasNestedDictionary(const vector<buffer_ptr<DictionaryEntry>> &dictionaries) {
+	for (const auto &entry : dictionaries) {
+		if (entry->data.GetType().IsNested()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool SelectionCoversDictionary(const data_ptr_t *row_ptrs, const SelectionVector &ptr_sel, idx_t count,
+                                      idx_t pointer_offset, idx_t dictionary_size) {
+	D_ASSERT(dictionary_size <= STANDARD_VECTOR_SIZE);
+	if (count < dictionary_size) {
+		return false;
+	}
+	validity_t selected_entries[ValidityMask::STANDARD_ENTRY_COUNT] = {};
+	ValidityMask selected(selected_entries, STANDARD_VECTOR_SIZE);
+	for (idx_t i = 0; i < count; i++) {
+		const auto dictionary_idx = Load<uint32_t>(row_ptrs[ptr_sel.get_index(i)] + pointer_offset);
+		D_ASSERT(dictionary_idx < dictionary_size);
+		selected.SetValid(dictionary_idx);
+	}
+	return selected.CheckAllValid(dictionary_size);
+}
+
 void JoinHashTable::GatherRHS(Vector &row_ptrs, const SelectionVector &ptr_sel, const idx_t count, DataChunk &result,
                               idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const {
 	if (use_dict_emission) {
 		const auto ptrs = FlatVector::GetData<data_ptr_t>(row_ptrs);
-		EmitDictVectors(ptrs, ptr_sel, count, result, rhs_col_offset, dictionary_state);
-		return;
+		// Nested consumers may process all backing children, including those absent from the selection.
+		if (!HasNestedDictionary(dict_arrays) ||
+		    SelectionCoversDictionary(ptrs, ptr_sel, count, pointer_offset, Count())) {
+			EmitDictVectors(ptrs, ptr_sel, count, result, rhs_col_offset, dictionary_state);
+			return;
+		}
 	}
 	const auto &result_sel = *FlatVector::IncrementalSelectionVector();
 	const auto ptrs = FlatVector::GetData<data_ptr_t>(row_ptrs);
@@ -2911,19 +2940,32 @@ void ProbeSpill::PrepareNextProbe() {
 struct DictionaryEmissionActivation {
 	//! Caps the dict_arrays allocation; 8 MiB keeps them in L3 and bounds aux_next_ptrs
 	static constexpr idx_t MAX_BUILD_PAYLOAD_BYTES = 8ULL * 1024ULL * 1024ULL;
-	//! Below this, dictionary-emission setup is not amortized by probe-side savings
-	static constexpr idx_t MIN_PROBE_ROWS = 262144;
 	//! Below this ratio, per-row savings are unlikely to amortize the setup cost
 	static constexpr idx_t PROBE_BUILD_RATIO = 100;
 };
 
 idx_t JoinHashTable::ComputeBuildPayloadBytes(const vector<LogicalType> &rhs_output_types) const {
-	// the size of variable-size strings isn't counted here because they are already stored in the TupleDataCollection
-	idx_t payload_bytes_per_row = 0;
+	D_ASSERT(Count() > 0);
+	const auto limit = DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES;
+	idx_t payload_bytes = 0;
+	bool has_nested = false;
 	for (const auto &type : rhs_output_types) {
-		payload_bytes_per_row += GetTypeIdSize(type.InternalType());
+		const auto row_size = GetTypeIdSize(type.InternalType());
+		if (row_size > (limit - payload_bytes) / Count()) {
+			return limit + 1;
+		}
+		payload_bytes += row_size * Count();
+		has_nested |= type.IsNested();
 	}
-	return Count() * payload_bytes_per_row;
+	// Nested gathers copy children; scalar strings continue to reference the pinned build heap.
+	if (has_nested) {
+		const auto collection_bytes = data_collection->SizeInBytes();
+		if (collection_bytes > limit - payload_bytes) {
+			return limit + 1;
+		}
+		payload_bytes += collection_bytes;
+	}
+	return payload_bytes;
 }
 
 bool JoinHashTable::CanUsePerfectDictionaryLookup() const {
@@ -2950,31 +2992,33 @@ bool JoinHashTable::CanUseDictionaryEmission(const PhysicalHashJoin &op, bool ex
 	if (join_type == JoinType::SINGLE) {
 		return false;
 	}
+	// Unique LEFT joins gather directly and never emit dictionaries.
+	if (join_type == JoinType::LEFT && !chains_longer_than_one.load(std::memory_order_relaxed)) {
+		return false;
+	}
 	if (op.rhs_output_columns.col_types.empty()) {
 		return false;
 	}
-	if (Count() == 0) {
+	if (Count() == 0 || Count() > NumericLimits<uint32_t>::Maximum()) {
 		return false;
 	}
-	if (probe_cardinality < Count()) {
+	if (probe_cardinality < Count() ||
+	    (!CanUsePerfectDictionaryLookup() &&
+	     probe_cardinality / DictionaryEmissionActivation::PROBE_BUILD_RATIO < Count())) {
 		return false;
 	}
-	const auto perfect_dictionary_lookup = CanUsePerfectDictionaryLookup();
-	if (!perfect_dictionary_lookup && probe_cardinality < DictionaryEmissionActivation::MIN_PROBE_ROWS) {
-		return false;
-	}
-	if (!perfect_dictionary_lookup && probe_cardinality < DictionaryEmissionActivation::PROBE_BUILD_RATIO * Count()) {
-		return false;
-	}
-	// Vector::Dictionary does not support nested types
 	for (const auto &type : op.rhs_output_columns.col_types) {
-		switch (type.InternalType()) {
-		case PhysicalType::STRUCT:
-		case PhysicalType::LIST:
-		case PhysicalType::ARRAY:
+		if (type.InternalType() == PhysicalType::STRUCT) {
+			// STRUCT vectors apply selections to their children instead of wrapping a dictionary.
 			return false;
-		default:
-			break;
+		}
+		if (type.InternalType() == PhysicalType::ARRAY) {
+			// ARRAY dictionary hashing processes individual arrays instead of batching their children.
+			return false;
+		}
+		if (type.IsNested() && Count() > STANDARD_VECTOR_SIZE) {
+			// A chunk must be able to reference every nested dictionary entry.
+			return false;
 		}
 	}
 	if (ComputeBuildPayloadBytes(op.rhs_output_columns.col_types) >
@@ -3012,6 +3056,7 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 	const auto build_count = collection.Count();
 	// preconditions enforced by CanUseDictionaryEmission
 	D_ASSERT(build_count > 0);
+	D_ASSERT(dict_arrays.empty());
 	// dict index is a uint32_t; assert defensively if MAX_BUILD_PAYLOAD_BYTES is ever relaxed
 	D_ASSERT(build_count <= NumericLimits<uint32_t>::Maximum());
 
@@ -3022,23 +3067,46 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 	                           TupleDataPinProperties::KEEP_EVERYTHING_PINNED);
 	const auto collected = FillWithHTOffsets(scan_state, row_pointer_vector);
 	D_ASSERT(collected == build_count);
-	(void)collected;
+	FlatVector::SetSize(row_pointer_vector, collected);
 	const auto row_ptrs = FlatVector::GetData<data_ptr_t>(row_pointer_vector);
 
-	// LEFT / OUTER joins fill unmatched probe rows with a constant-NULL vector (NextLeftJoin), so they do not
-	// wrap this entry on every chunk; it is only a global dictionary when every chunk goes through EmitDictVectors.
-	const bool dict_on_every_chunk = join_type != JoinType::LEFT && join_type != JoinType::OUTER;
+	// Outer joins and partial nested selections can produce chunks without these dictionaries.
+	bool dict_on_every_chunk = join_type != JoinType::LEFT && join_type != JoinType::OUTER;
+	for (const auto &type : op.rhs_output_columns.col_types) {
+		dict_on_every_chunk &= !type.IsNested();
+	}
 
 	// gather RHS output columns into columnar dictionary arrays
 	const auto &sel = *FlatVector::IncrementalSelectionVector();
+	idx_t dictionary_bytes = 0;
+	vector<buffer_ptr<DictionaryEntry>> dictionaries;
 	for (idx_t col_idx = 0; col_idx < op.rhs_output_columns.col_types.size(); col_idx++) {
 		const auto &type = op.rhs_output_columns.col_types[col_idx];
 		auto dict_entry = dict_on_every_chunk ? DictionaryVector::CreateReusableGlobalDictionary(type, build_count)
 		                                      : DictionaryVector::CreateReusableDictionary(type, build_count);
+		if (dict_entry->data.GetAllocationSize() >
+		    DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES - dictionary_bytes) {
+			return;
+		}
 		const auto output_col_idx = output_columns[col_idx];
-		collection.Gather(row_pointer_vector, sel, build_count, output_col_idx, dict_entry->data, sel, nullptr);
-		dict_arrays.emplace_back(std::move(dict_entry));
+		if (type.IsNested()) {
+			D_ASSERT(build_count <= STANDARD_VECTOR_SIZE);
+			Vector gathered(type, build_count);
+			FlatVector::SetSize(gathered, build_count);
+			collection.Gather(row_pointer_vector, sel, build_count, output_col_idx, gathered, sel, nullptr);
+			// Own nested string heaps independently of the scratch vector.
+			VectorOperations::Copy(gathered, dict_entry->data, build_count, 0, 0);
+		} else {
+			collection.Gather(row_pointer_vector, sel, build_count, output_col_idx, dict_entry->data, sel, nullptr);
+		}
+		const auto allocation_size = dict_entry->data.GetAllocationSize();
+		if (allocation_size > DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES - dictionary_bytes) {
+			return;
+		}
+		dictionary_bytes += allocation_size;
+		dictionaries.emplace_back(std::move(dict_entry));
 	}
+	dict_arrays = std::move(dictionaries);
 
 	// save chain pointers before overwriting NEXT_PTR; GetNextPointer reads them back.
 	// One extra slot is reserved at the end and left null so that `dead_end` has an index
@@ -3062,7 +3130,8 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 	}
 
 	use_dict_emission = true;
-	if (CanUsePerfectDictionaryLookup()) {
+	// Nested output can fall back to native gathering, which needs the original row pointers.
+	if (CanUsePerfectDictionaryLookup() && !HasNestedDictionary(dict_arrays)) {
 		perfect_hash_table->ConvertToDictionary(pointer_offset);
 		DUCKDB_LOG(context, PhysicalOperatorLogType, op, "PhysicalHashJoin", "DictionaryLookup", {});
 	}

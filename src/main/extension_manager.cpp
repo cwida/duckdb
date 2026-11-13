@@ -9,9 +9,10 @@ namespace duckdb {
 ExtensionInfo::ExtensionInfo() : is_loaded(false) {
 }
 
-void ExtensionActiveLoad::FinishLoad(ExtensionInstallInfo &install_info) {
+void ExtensionActiveLoad::FinishLoad(ExtensionInstallInfo &install_info, const string &file_path) {
 	info.is_loaded = true;
 	info.install_info = make_uniq<ExtensionInstallInfo>(install_info);
+	info.file_path = file_path;
 	string final_extension_name = extension_name.GetIdentifierName();
 
 	if (!alias.empty()) {
