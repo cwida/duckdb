@@ -1,6 +1,5 @@
 #include "duckdb/optimizer/remove_redundant_distinct.hpp"
 
-#include "duckdb/optimizer/distinctness.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
@@ -54,7 +53,7 @@ void RemoveRedundantDistinct::VisitOperator(unique_ptr<LogicalOperator> &op) {
 		}
 		keys.insert(group->Cast<BoundColumnRefExpression>().Binding());
 	}
-	if (!Distinctness::IsDistinctOn(*aggr.children[0], keys)) {
+	if (!distinctness.IsDistinctOn(*aggr.children[0], keys)) {
 		return;
 	}
 	ReplaceByProjection(op);

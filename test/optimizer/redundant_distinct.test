@@ -650,3 +650,24 @@ query I
 SELECT max(a + 1) FROM (SELECT DISTINCT a FROM vt);
 ----
 2
+
+# ---------------------------------------------------------------------------------------------------------------
+# 7. a chain of 30 joins on a key: the distinctness of every join is derived once, the query is planned without
+#    recomputing the left side of the chain at every level
+# ---------------------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE chain(k INTEGER PRIMARY KEY);
+
+statement ok
+INSERT INTO chain SELECT range FROM range(30);
+
+query II
+EXPLAIN SELECT DISTINCT t0.k FROM chain t0 JOIN chain t1 ON t0.k = t1.k JOIN chain t2 ON t1.k = t2.k JOIN chain t3 ON t2.k = t3.k JOIN chain t4 ON t3.k = t4.k JOIN chain t5 ON t4.k = t5.k JOIN chain t6 ON t5.k = t6.k JOIN chain t7 ON t6.k = t7.k JOIN chain t8 ON t7.k = t8.k JOIN chain t9 ON t8.k = t9.k JOIN chain t10 ON t9.k = t10.k JOIN chain t11 ON t10.k = t11.k JOIN chain t12 ON t11.k = t12.k JOIN chain t13 ON t12.k = t13.k JOIN chain t14 ON t13.k = t14.k JOIN chain t15 ON t14.k = t15.k JOIN chain t16 ON t15.k = t16.k JOIN chain t17 ON t16.k = t17.k JOIN chain t18 ON t17.k = t18.k JOIN chain t19 ON t18.k = t19.k JOIN chain t20 ON t19.k = t20.k JOIN chain t21 ON t20.k = t21.k JOIN chain t22 ON t21.k = t22.k JOIN chain t23 ON t22.k = t23.k JOIN chain t24 ON t23.k = t24.k JOIN chain t25 ON t24.k = t25.k JOIN chain t26 ON t25.k = t26.k JOIN chain t27 ON t26.k = t27.k JOIN chain t28 ON t27.k = t28.k JOIN chain t29 ON t28.k = t29.k JOIN chain t30 ON t29.k = t30.k;
+----
+logical_opt	<!REGEX>:(?s).*─ Aggregate ─.*
+
+query II
+SELECT count(*), sum(k) FROM (SELECT DISTINCT t0.k FROM chain t0 JOIN chain t1 ON t0.k = t1.k JOIN chain t2 ON t1.k = t2.k JOIN chain t3 ON t2.k = t3.k JOIN chain t4 ON t3.k = t4.k JOIN chain t5 ON t4.k = t5.k JOIN chain t6 ON t5.k = t6.k JOIN chain t7 ON t6.k = t7.k JOIN chain t8 ON t7.k = t8.k JOIN chain t9 ON t8.k = t9.k JOIN chain t10 ON t9.k = t10.k JOIN chain t11 ON t10.k = t11.k JOIN chain t12 ON t11.k = t12.k JOIN chain t13 ON t12.k = t13.k JOIN chain t14 ON t13.k = t14.k JOIN chain t15 ON t14.k = t15.k JOIN chain t16 ON t15.k = t16.k JOIN chain t17 ON t16.k = t17.k JOIN chain t18 ON t17.k = t18.k JOIN chain t19 ON t18.k = t19.k JOIN chain t20 ON t19.k = t20.k JOIN chain t21 ON t20.k = t21.k JOIN chain t22 ON t21.k = t22.k JOIN chain t23 ON t22.k = t23.k JOIN chain t24 ON t23.k = t24.k JOIN chain t25 ON t24.k = t25.k JOIN chain t26 ON t25.k = t26.k JOIN chain t27 ON t26.k = t27.k JOIN chain t28 ON t27.k = t28.k JOIN chain t29 ON t28.k = t29.k JOIN chain t30 ON t29.k = t30.k);
+----
+30	435

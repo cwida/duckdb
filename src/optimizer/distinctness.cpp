@@ -57,7 +57,7 @@ bool Distinctness::IsDistinctOnJoinKeys(LogicalComparisonJoin &join, idx_t child
 	return IsDistinctOn(*join.children[child_idx], keys);
 }
 
-vector<column_binding_set_t> Distinctness::GetJoinUniqueSets(LogicalComparisonJoin &join) {
+vector<column_binding_set_t> Distinctness::ComputeJoinUniqueSets(LogicalComparisonJoin &join) {
 	vector<column_binding_set_t> result;
 	switch (join.join_type) {
 	case JoinType::SEMI:
@@ -72,7 +72,7 @@ vector<column_binding_set_t> Distinctness::GetJoinUniqueSets(LogicalComparisonJo
 			result = GetUniqueSets(*join.children[0]);
 		}
 		if (IsDistinctOnJoinKeys(join, 0)) {
-			auto right_sets = GetUniqueSets(*join.children[1]);
+			auto &right_sets = GetUniqueSets(*join.children[1]);
 			result.insert(result.end(), right_sets.begin(), right_sets.end());
 		}
 		return result;
@@ -86,7 +86,21 @@ vector<column_binding_set_t> Distinctness::GetJoinUniqueSets(LogicalComparisonJo
 	}
 }
 
-vector<column_binding_set_t> Distinctness::GetUniqueSets(LogicalOperator &op) {
+const vector<column_binding_set_t> &Distinctness::GetUniqueSets(LogicalOperator &op) {
+	auto entry = unique_sets.find(op);
+	if (entry != unique_sets.end()) {
+		return entry->second;
+	}
+	// every operator is computed once: its children are looked up in the cache
+	auto result = ComputeUniqueSets(op);
+	if (result.size() > MAX_UNIQUE_SETS) {
+		// dropping a unique set only loses a proof
+		result.resize(MAX_UNIQUE_SETS);
+	}
+	return unique_sets.emplace(op, std::move(result)).first->second;
+}
+
+vector<column_binding_set_t> Distinctness::ComputeUniqueSets(LogicalOperator &op) {
 	vector<column_binding_set_t> result;
 	switch (op.type) {
 	case LogicalOperatorType::LOGICAL_GET:
@@ -111,7 +125,7 @@ vector<column_binding_set_t> Distinctness::GetUniqueSets(LogicalOperator &op) {
 	case LogicalOperatorType::LOGICAL_PROJECTION: {
 		// only plain column references forward a unique set: other expressions (e.g. casts) are not injective
 		auto &projection = op.Cast<LogicalProjection>();
-		auto child_sets = GetUniqueSets(*projection.children[0]);
+		auto &child_sets = GetUniqueSets(*projection.children[0]);
 		if (child_sets.empty()) {
 			return result;
 		}
@@ -148,7 +162,7 @@ vector<column_binding_set_t> Distinctness::GetUniqueSets(LogicalOperator &op) {
 		// these remove rows or add columns, but never duplicate a row
 		return GetUniqueSets(*op.children[0]);
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
-		return GetJoinUniqueSets(op.Cast<LogicalComparisonJoin>());
+		return ComputeJoinUniqueSets(op.Cast<LogicalComparisonJoin>());
 	default:
 		// unknown
 		return result;
