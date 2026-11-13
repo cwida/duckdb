@@ -218,3 +218,18 @@ query I
 SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='scheme'
 ----
 0
+
+# check_constraints has one row per constraint, regardless of how many columns it references
+statement ok
+CREATE TABLE check_cols (a INTEGER NOT NULL, b INTEGER, CHECK(a > 0 AND b > 0), CHECK(b < 100), CHECK(1 = 1));
+
+query II
+SELECT constraint_name, check_clause
+FROM information_schema.check_constraints
+WHERE constraint_name LIKE 'check_cols%'
+ORDER BY constraint_name
+----
+check_cols_a_b_check	CHECK(((a > 0) AND (b > 0)))
+check_cols_a_not_null	a IS NOT NULL
+check_cols_b_check	CHECK((b < 100))
+check_cols_check	CHECK((1 = 1))
