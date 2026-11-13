@@ -1,0 +1,36 @@
+# name: test/sql/copy/csv/issue_27459_quoted_escape_sniffer.test
+# description: Sniffer must not discard a later quoting candidate that uses the same quote character
+# group: [csv]
+
+# COPY writes empty VARCHAR values as "" and NULL as an empty unquoted field. When the sniffing window
+# only contains such empty quoted fields, the escape=\0 and escape=" candidates parse it identically, and
+# the early-return in the sniffer used to drop the second candidate. If a value with an embedded escaped
+# quote appears beyond the sniffing window, the file then round-trips incorrectly (#27459).
+
+statement ok
+CREATE TABLE src AS
+SELECT i::INT AS id,
+       CASE WHEN i = 60 THEN 'He said "hi"'
+            WHEN i % 3 = 0 THEN ''
+            WHEN i % 3 = 1 THEN 'plain'
+            ELSE NULL END AS vc
+FROM range(200) r(i);
+
+statement ok
+COPY src TO '{TEST_DIR}/issue_27459.csv'
+
+statement ok
+CREATE TABLE t(id INT, vc VARCHAR)
+
+statement ok
+COPY t FROM '{TEST_DIR}/issue_27459.csv' (FORMAT CSV, ALLOW_QUOTED_NULLS false)
+
+query I
+SELECT count(*) FROM src s JOIN t ON s.id = t.id WHERE coalesce(s.vc, '~N') <> coalesce(t.vc, '~N')
+----
+0
+
+query II
+SELECT id, vc FROM t WHERE id = 60
+----
+60	He said "hi"

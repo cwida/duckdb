@@ -350,9 +350,14 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 
 	const bool comments_are_acceptable = AreCommentsAcceptable(sniffed_column_counts, num_cols, options);
 
+	const auto sniffed_quote =
+	    sniffed_column_counts.state_machine.dialect_options.state_machine_options.quote.GetValue();
+	// Only treat quoting as a preference signal when it is meaningful: either the default
+	// double quote was used, or the quoted fields contained escapes. Quoting values that
+	// contain no delimiter, newline or escape is ambiguous; the default dialect should
+	// win over it, so that single quotes inside values survive a COPY round trip.
 	const bool quoted =
-	    scanner->ever_quoted &&
-	    sniffed_column_counts.state_machine.dialect_options.state_machine_options.quote.GetValue() != '\0';
+	    scanner->ever_quoted && sniffed_quote != '\0' && (sniffed_quote == '\"' || scanner->ever_escaped);
 
 	// A comment character the user gave marks real comments, so they do not make a quoted candidate less likely
 	const bool comment_set_by_user = options.dialect_options.state_machine_options.comment.IsSetByUser();
@@ -378,7 +383,21 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 		    consistent_rows <= stats.best_consistent_rows) {
 			// We have a candidate that fits our requirements better
 			if (successful_candidates.front()->ever_quoted || !scanner->ever_quoted) {
-				return;
+				// Unless both candidates use the same quote character and both actually quoted fields: a chunk
+				// whose only quoted fields are empty strings (e.g. the "" that COPY writes for empty VARCHAR
+				// values) is parsed consistently by the escape \0 and escape " candidates alike, and only the
+				// chunks beyond the sniffing window reveal which escape is correct. Discarding the second
+				// candidate here can leave the sniffer with no quoting candidate at all when a value with an
+				// embedded escaped quote appears later (#27459).
+				const auto &front_dialect = successful_candidates.front()->GetStateMachine().dialect_options;
+				const auto &scanner_dialect = scanner->GetStateMachine().dialect_options;
+				const bool same_meaningful_quote = consistent_rows == stats.best_consistent_rows &&
+				                                   successful_candidates.front()->ever_quoted && scanner->ever_quoted &&
+				                                   front_dialect.state_machine_options.quote.GetValue() ==
+				                                       scanner_dialect.state_machine_options.quote.GetValue();
+				if (!same_meaningful_quote) {
+					return;
+				}
 			}
 		}
 		auto &sniffing_state_machine = scanner->GetStateMachine();
@@ -545,7 +564,8 @@ void CSVSniffer::RefineCandidates() {
 		bool ever_quoted = false;
 		for (idx_t i = 0; i < successful_candidates.size(); i++) {
 			unique_ptr<ColumnCountScanner> cc_best_candidate = std::move(successful_candidates[i]);
-			if (cc_best_candidate->ever_quoted) {
+			const auto candidate_quote = cc_best_candidate->state_machine->state_machine_options.quote.GetValue();
+			if (cc_best_candidate->ever_quoted && (candidate_quote == '\"' || cc_best_candidate->ever_escaped)) {
 				if (cc_best_candidate->ever_escaped) {
 					// It can't be better than this
 					candidates.clear();
