@@ -63,14 +63,8 @@ EXPLAIN SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3
 ----
 physical_plan	<!REGEX>:.*Streaming Limit.*
 
-# 2. LIMIT with OFFSET: keys ranked 3..5
-query III nosort s02
-SELECT * FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 ORDER BY k1 LIMIT 3 OFFSET 2) ORDER BY ALL
-----
-
-query III nosort s02
-SELECT * FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3 OFFSET 2) ORDER BY ALL
-----
+# 2. LIMIT with OFFSET (keys ranked 3..5) warns about the missing ORDER BY, with and without the rule: its results
+# are in group_by_top_key_limit_guards.test, the warning in group_by_top_key_limit_offset_warning.test
 
 # 3. the NULL key sorts last: not chosen while there are enough non-NULL groups ... (the aggregate stays referenced:
 # an unreferenced aggregate is pruned and the LIMIT over the bare GROUP BY becomes a LIMITED_DISTINCT instead)

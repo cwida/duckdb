@@ -1,0 +1,81 @@
+# name: test/optimizer/group_by_top_key_limit_offset_warning.test
+# description: LIMIT with OFFSET over a grouped aggregate without ORDER BY still warns about the row order once it is a Top-N
+# group: [optimizer]
+
+statement ok
+SET enable_logging=true;
+
+statement ok
+CREATE TABLE t(k1 INTEGER, k2 VARCHAR, v INTEGER);
+
+statement ok
+INSERT INTO t SELECT i % 20, chr((97 + i % 5)::INTEGER), i FROM range(500) r(i);
+
+# the rule turns LIMIT n OFFSET m over a grouped aggregate into a Top-N over a group key (the plan is pinned in
+# group_by_top_key_limit_guards.test). The query still leaves the order of its groups open, so the warning of the
+# OFFSET stays, with the rule enabled and disabled alike
+foreach disabled '' 'group_by_top_key'
+
+statement ok
+SET disabled_optimizers = {disabled};
+
+statement ok
+SET warnings_as_errors=true;
+
+statement error
+SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3 OFFSET 2
+----
+<REGEX>:.*row order is not guaranteed.*
+
+# the group key not in the SELECT list, several keys, an offset past the last group
+statement error
+SELECT count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3 OFFSET 2
+----
+<REGEX>:.*row order is not guaranteed.*
+
+statement error
+SELECT k2, k1, count(*) c FROM t GROUP BY k2, k1 LIMIT 3 OFFSET 2
+----
+<REGEX>:.*row order is not guaranteed.*
+
+statement error
+SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3 OFFSET 30
+----
+<REGEX>:.*row order is not guaranteed.*
+
+# in a subquery whose rows are all used
+statement error
+SELECT sum(c) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3 OFFSET 2)
+----
+<REGEX>:.*row order is not guaranteed.*
+
+# EXPLAIN plans the query as well
+statement error
+EXPLAIN SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3 OFFSET 2
+----
+<REGEX>:.*row order is not guaranteed.*
+
+# nothing is skipped without an OFFSET or with OFFSET 0: no warning
+statement ok
+SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3
+
+statement ok
+SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3 OFFSET 0
+
+# the ORDER BY decides which groups are skipped: no warning
+statement ok
+SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 ORDER BY k1 LIMIT 3 OFFSET 2
+
+statement ok
+SELECT k2, k1, count(*) c FROM t GROUP BY k2, k1 ORDER BY k2, k1 LIMIT 3 OFFSET 2
+
+# a warning that is not an error does not change the result: three groups
+statement ok
+SET warnings_as_errors=false;
+
+query I
+SELECT count(*) FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3 OFFSET 2) WHERE c = 25
+----
+3
+
+endloop

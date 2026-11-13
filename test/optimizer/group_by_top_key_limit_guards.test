@@ -176,6 +176,15 @@ EXPLAIN SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3 OFFSET 2
 ----
 logical_opt	<REGEX>:.*Top N.*
 
+# the constant offset: the keys ranked 3..5
+query III nosort offset
+SELECT * FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 ORDER BY k1 LIMIT 3 OFFSET 2) ORDER BY ALL
+----
+
+query III nosort offset
+SELECT * FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3 OFFSET 2) ORDER BY ALL
+----
+
 query I
 SELECT count(*) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3 OFFSET (SELECT 20))
 ----

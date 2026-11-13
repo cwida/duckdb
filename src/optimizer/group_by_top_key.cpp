@@ -218,6 +218,11 @@ unique_ptr<LogicalOperator> GroupByTopKey::LimitToTopN(unique_ptr<LogicalOperato
 	if (!key_idx.IsValid()) {
 		return op;
 	}
+	if (offset_value > 0) {
+		// the query does not order the groups that its OFFSET skips, and the row order of a grouped aggregate is never
+		// guaranteed: the LIMIT warns about that when it is planned, so the Top-N that replaces it has to as well
+		LogicalLimit::WarnUnorderedOffset(optimizer.context);
+	}
 
 	// detach the projections and the aggregate
 	vector<unique_ptr<LogicalOperator>> projections;
