@@ -19,11 +19,11 @@ SELECT '14:42:04.999999'::TIME::VARCHAR
 ----
 14:42:04.999999
 
-# nanosecond precision gets truncated
+# nanosecond precision is rounded to microseconds
 query I
 SELECT '14:42:04.999999999'::TIME::VARCHAR
 ----
-14:42:04.999999
+14:42:05
 
 # trailing zeros get truncated
 query I

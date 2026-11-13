@@ -113,7 +113,7 @@ query IIIII
 SELECT ts::VARCHAR, ts_s::VARCHAR, ts_ms::VARCHAR, ts_ns::VARCHAR, ts_tz::VARCHAR
 FROM '{TEST_DIR}/timestamp_int96.parquet'
 ----
-1992-01-01 12:03:27.123456	1992-01-01 12:03:27	1992-01-01 12:03:27.123	1992-01-01 12:03:27.123456	1992-01-01 12:03:27.123456
+1992-01-01 12:03:27.123456	1992-01-01 12:03:27	1992-01-01 12:03:27.123	1992-01-01 12:03:27.123457	1992-01-01 12:03:27.123456
 
 # COPY option timestamp_is_adjusted_to_utc controls isAdjustedToUTC metadata
 # AUTO follows the input type, while TRUE and FALSE override it

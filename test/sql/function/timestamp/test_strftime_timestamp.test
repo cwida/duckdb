@@ -267,7 +267,7 @@ NULL
 000000
 123000
 123456
-123456
+123457
 
 # %g - Millisecond as a decimal number, zero-padded on the left.
 query I
@@ -291,7 +291,7 @@ NULL
 000000000
 123000000
 123456000
-123456000
+123457000
 
 # %z - UTC offset in the form +HHMM or -HHMM.
 query I

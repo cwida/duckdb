@@ -1,0 +1,121 @@
+# name: test/sql/types/timestamp/timestamp_fractional_second_rounding.test
+# description: Excess fractional second digits are rounded, not truncated
+# group: [timestamp]
+
+# --- the two cases from #26657 ---
+
+query I
+SELECT ('2024-01-01 12:00:00.1234575'::VARCHAR)::TIMESTAMP::VARCHAR
+----
+2024-01-01 12:00:00.123458
+
+query I
+SELECT ('2024-01-01 12:00:00.0001255'::VARCHAR)::TIMESTAMP::VARCHAR
+----
+2024-01-01 12:00:00.000126
+
+# --- round half to even, decided by the discarded digits alone ---
+
+# below the halfway point: rounds down
+query I
+SELECT '2024-01-01 12:00:00.1234564'::TIMESTAMP::VARCHAR
+----
+2024-01-01 12:00:00.123456
+
+# above the halfway point: rounds up
+query I
+SELECT '2024-01-01 12:00:00.1234566'::TIMESTAMP::VARCHAR
+----
+2024-01-01 12:00:00.123457
+
+# tie on an even value: stays put, so this is not "always round up on 5"
+query I
+SELECT '2024-01-01 12:00:00.1234565'::TIMESTAMP::VARCHAR
+----
+2024-01-01 12:00:00.123456
+
+# tie on an odd value: rounds up to the even neighbour
+query I
+SELECT '2024-01-01 12:00:00.1234575'::TIMESTAMP::VARCHAR
+----
+2024-01-01 12:00:00.123458
+
+# zeros past the halfway digit keep it a tie
+query I
+SELECT '2024-01-01 12:00:00.1234565000'::TIMESTAMP::VARCHAR
+----
+2024-01-01 12:00:00.123456
+
+# any nonzero digit past the halfway digit breaks the tie upward
+query I
+SELECT '2024-01-01 12:00:00.1234565001'::TIMESTAMP::VARCHAR
+----
+2024-01-01 12:00:00.123457
+
+# a long run of discarded digits is weighed the same as a short one
+query I
+SELECT '2024-01-01 12:00:00.1234564999999'::TIMESTAMP::VARCHAR
+----
+2024-01-01 12:00:00.123456
+
+# --- the carry out of the discarded digits has to propagate ---
+
+# into the next second
+query I
+SELECT '2024-01-01 12:00:00.9999995'::TIMESTAMP::VARCHAR
+----
+2024-01-01 12:00:01
+
+# and on into the date
+query I
+SELECT '2024-12-31 23:59:59.9999995'::TIMESTAMP::VARCHAR
+----
+2025-01-01 00:00:00
+
+# --- TIME, same parser ---
+
+query I
+SELECT '12:00:00.1234575'::TIME::VARCHAR
+----
+12:00:00.123458
+
+query I
+SELECT '12:00:00.1234565'::TIME::VARCHAR
+----
+12:00:00.123456
+
+query I
+SELECT '12:00:00.9999995'::TIME::VARCHAR
+----
+12:00:01
+
+# TIME wraps at the end of the day, as interval arithmetic does
+# see test/sql/types/time/time_limits.test
+query I
+SELECT '23:59:59.9999995'::TIME::VARCHAR
+----
+24:00:00
+
+# --- TIMESTAMP_NS, one digit further out ---
+
+query I
+SELECT '2024-01-01 12:00:00.1234567895'::TIMESTAMP_NS::VARCHAR
+----
+2024-01-01 12:00:00.12345679
+
+query I
+SELECT '2024-01-01 12:00:00.1234567886'::TIMESTAMP_NS::VARCHAR
+----
+2024-01-01 12:00:00.123456789
+
+# --- parsing an already-rounded value is a no-op ---
+
+query I
+SELECT '2024-01-01 12:00:00.123458'::TIMESTAMP::VARCHAR
+----
+2024-01-01 12:00:00.123458
+
+query I
+SELECT '2024-01-01 12:00:00.123456'::TIMESTAMP::VARCHAR
+----
+2024-01-01 12:00:00.123456
