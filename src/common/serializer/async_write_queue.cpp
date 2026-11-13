@@ -81,6 +81,10 @@ public:
 		queue.CancelScheduledTask();
 	}
 
+	string TaskType() const override {
+		return "AsyncWriteQueueTask";
+	}
+
 private:
 	AsyncWriteQueue &queue;
 };
