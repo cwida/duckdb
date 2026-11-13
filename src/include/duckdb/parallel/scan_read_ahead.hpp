@@ -53,6 +53,8 @@ private:
 	atomic<idx_t> pending_io_tasks;
 	//! Holds the scan task parked on this job's I/O
 	StateWithBlockableTasks parked_scan;
+	//! Notified once pending_io_tasks drops to zero, waited on with parked_scan.lock
+	condition_variable io_finished;
 };
 
 //! Base of the job types driven by ScanReadAhead

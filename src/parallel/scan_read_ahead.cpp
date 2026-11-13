@@ -22,9 +22,16 @@ void ReadAheadJobCompletion::FinishIOTask() {
 		// I/O tasks still outstanding, nothing to wake yet
 		return;
 	}
-	// wake the parked scan task, if any
-	const annotated_lock_guard<annotated_mutex> guard {parked_scan.lock};
-	parked_scan.UnblockTasks();
+	vector<InterruptState> blocked_tasks;
+	{
+		const annotated_lock_guard<annotated_mutex> guard {parked_scan.lock};
+		blocked_tasks = parked_scan.TakeBlockedTasks();
+	}
+	// wake blocked waiters before the parked tasks, a task callback can block on its executor's lock
+	io_finished.notify_all();
+	for (auto &entry : blocked_tasks) {
+		entry.Callback();
+	}
 }
 
 bool ReadAheadJobCompletion::TryPark(const InterruptState &interrupt_state) {
@@ -56,8 +63,9 @@ void ReadAheadJobCompletion::WaitForIO() {
 			task.reset();
 			continue;
 		}
-		// the remaining I/O is running on other threads, wait for it to finish
-		TaskScheduler::YieldThread();
+		// sleep while other threads finish I/O, periodically re-polling a queue that can appear empty during a race
+		annotated_unique_lock<annotated_mutex> guard(parked_scan.lock);
+		io_finished.wait_for(guard, std::chrono::milliseconds(10), [&] { return pending_io_tasks.load() == 0; });
 	}
 }
 

@@ -5,6 +5,7 @@ add_library_unity(
   test_arena_allocator.cpp
   test_async_file_writer.cpp
   test_managed_async_task_queue.cpp
+  test_scan_read_ahead.cpp
   test_bloom_filter.cpp
   test_cast.cpp
   test_checked_integer.cpp
