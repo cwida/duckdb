@@ -75,6 +75,17 @@ void CSVSniffer::SetResultOptions() const {
 	                                options.sniffer_user_mismatch_error, found_date, found_timestamp);
 	options.dialect_options.num_cols = best_candidate->GetStateMachine().dialect_options.num_cols;
 	options.dialect_options.rows_until_header = best_candidate->GetStateMachine().dialect_options.rows_until_header;
+
+	// Non-strict mode enables unquoted escape when quote != escape and escape != 0.
+	// That can strip multi-byte UTF-8 (issue #23330). If user did not set escape, prefer quote==escape.
+	auto &state_opts = options.dialect_options.state_machine_options;
+	if (!state_opts.strict_mode.GetValue() && !state_opts.escape.IsSetByUser()) {
+		const auto escape = state_opts.escape.GetValue();
+		const auto quote = state_opts.quote.GetValue();
+		if (escape != '\0' && escape != quote) {
+			state_opts.escape.Set(quote, false);
+		}
+	}
 }
 
 AdaptiveSnifferResult CSVSniffer::MinimalSniff() {

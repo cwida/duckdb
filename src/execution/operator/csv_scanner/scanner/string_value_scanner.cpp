@@ -487,12 +487,9 @@ void StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 		// We only evaluate if a string is utf8 valid, if it's actually a varchar
 		if (parse_types[chunk_col_id].validate_utf8 &&
 		    !Utf8Proc::IsValid(value_ptr, UnsafeNumericCast<uint32_t>(size))) {
-			bool force_error = !state_machine.options.ignore_errors.GetValue() && sniffing;
-			// Invalid unicode, we must error
-			if (force_error) {
-				HandleUnicodeError(cur_col_id, last_position);
-			}
-			// If we got here, we are ignoring errors, hence we must ignore this line.
+			// During sniffing, record the error instead of force-throwing so DetectTypes can skip
+			// dialects that corrupt multi-byte UTF-8 (issue #23330). Non-sniff scans still surface
+			// INVALID_ENCODING via current_errors / HandleErrors.
 			current_errors.Insert(INVALID_ENCODING, cur_col_id, chunk_col_id, last_position);
 			static_cast<string_t *>(vector_ptr[chunk_col_id])[number_of_rows] = StringVector::AddStringOrBlob(
 			    parse_chunk.data[chunk_col_id], string_t(value_ptr, UnsafeNumericCast<uint32_t>(0)));

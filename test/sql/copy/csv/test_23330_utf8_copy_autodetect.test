@@ -1,0 +1,87 @@
+# name: test/sql/copy/csv/test_23330_utf8_copy_autodetect.test
+# description: COPY auto_detect under strict_mode=false must not break valid UTF-8 (issue #23330)
+# group: [csv]
+
+# Repro-shaped pipe-delimited file: leading apostrophe + multi-byte UTF-8 (ã, é, 田)
+statement ok
+COPY (
+	SELECT * FROM (VALUES
+		(2512, 'Abdelwahab, Adil', 'm'),
+		(54, '''Ivanzinho'' Oliveira, Ivã', 'm'),
+		(3, 'José María', 'm'),
+		(4, 'O''Brien', 'm'),
+		(5, '田中太郎', 'm'),
+		(6, 'Müller', 'm')
+	) t(id, name, sex)
+) TO '{TEMP_DIR}/utf8_names.csv' (HEADER true, DELIM '|', QUOTE '');
+
+# read_csv_auto (default strict_mode=true) succeeds
+query I
+SELECT count(*) FROM read_csv_auto('{TEMP_DIR}/utf8_names.csv', delim='|');
+----
+6
+
+query I
+SELECT name FROM read_csv_auto('{TEMP_DIR}/utf8_names.csv', delim='|') WHERE id = 54;
+----
+'Ivanzinho' Oliveira, Ivã
+
+query I
+SELECT name FROM read_csv_auto('{TEMP_DIR}/utf8_names.csv', delim='|') WHERE id = 3;
+----
+José María
+
+# Same options as the issue: COPY with auto_detect + strict_mode false
+statement ok
+CREATE TABLE foo (id BIGINT, name VARCHAR, sex VARCHAR);
+
+statement ok
+COPY foo FROM '{TEMP_DIR}/utf8_names.csv' WITH (
+	format 'csv', delim '|', auto_detect true, header true, strict_mode false
+);
+
+query I
+SELECT count(*) FROM foo;
+----
+6
+
+query I
+SELECT name FROM foo WHERE id = 54;
+----
+'Ivanzinho' Oliveira, Ivã
+
+query I
+SELECT name FROM foo WHERE id = 3;
+----
+José María
+
+query I
+SELECT name FROM foo WHERE id = 5;
+----
+田中太郎
+
+# read_csv with the same non-strict auto_detect path
+query I
+SELECT count(*) FROM read_csv('{TEMP_DIR}/utf8_names.csv', delim='|', header=true, auto_detect=true, strict_mode=false);
+----
+6
+
+# Explicit quote/escape still works when set by the user (no unquoted_escape: quote==escape)
+statement ok
+CREATE TABLE bar AS SELECT * FROM foo LIMIT 0;
+
+statement ok
+COPY bar FROM '{TEMP_DIR}/utf8_names.csv' WITH (
+	format 'csv', delim '|', header true, strict_mode false, quote '"', escape '"'
+);
+
+query I
+SELECT count(*) FROM bar;
+----
+6
+
+# Explicit unquoted-escape remains available when the user sets escape != quote
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/unquoted_escape/plain.csv', escape='\', sep=',', strict_mode=false, nullstr='\N');
+----
+10

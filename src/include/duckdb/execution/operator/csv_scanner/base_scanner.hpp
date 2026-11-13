@@ -727,6 +727,9 @@ protected:
 					ever_escaped = true;
 					T::SetEscaped(result);
 				}
+				// UNQUOTED means content continued after a closing quote (non-strict relaxation).
+				// Mark on entry from QUOTED as well as while staying in UNQUOTED (issue #23330).
+				used_unstrictness = true;
 				T::SetUnquoted(result);
 				iterator.pos.buffer_pos++;
 				break;

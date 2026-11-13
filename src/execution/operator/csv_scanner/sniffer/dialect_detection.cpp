@@ -2,6 +2,7 @@
 #include "duckdb/execution/operator/csv_scanner/sniffer/csv_sniffer.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/execution/operator/csv_scanner/csv_reader_options.hpp"
+#include <algorithm>
 
 namespace duckdb {
 
@@ -350,8 +351,11 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 
 	const bool comments_are_acceptable = AreCommentsAcceptable(sniffed_column_counts, num_cols, options);
 
+	// Only treat clean quoted dialects as "quoted" for preference. Dialects that need
+	// non-strict relaxations (e.g. content after a closing quote) can break multi-byte UTF-8
+	// under strict_mode=false (issue #23330) and must not displace safer no-quote candidates.
 	const bool quoted =
-	    scanner->ever_quoted &&
+	    scanner->ever_quoted && !scanner->used_unstrictness &&
 	    sniffed_column_counts.state_machine.dialect_options.state_machine_options.quote.GetValue() != '\0';
 
 	// A comment character the user gave marks real comments, so they do not make a quoted candidate less likely
@@ -383,9 +387,10 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 		}
 		auto &sniffing_state_machine = scanner->GetStateMachine();
 
-		if (!successful_candidates.empty() && successful_candidates.front()->ever_quoted) {
-			// Give preference to quoted boys.
-			if (!scanner->ever_quoted) {
+		if (!successful_candidates.empty() && successful_candidates.front()->ever_quoted &&
+		    !successful_candidates.front()->used_unstrictness) {
+			// Give preference to clean quoted dialects only (see #23330).
+			if (!scanner->ever_quoted || scanner->used_unstrictness) {
 				return;
 			} else {
 				// Give preference to one that got escaped
@@ -456,6 +461,23 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 		} else if (!options.null_padding) {
 			sniffing_state_machine.dialect_options.skip_rows = dirty_notes_minus_comments;
 		}
+		// Do not let unstrict dialects wipe safer candidates (issue #23330).
+		if (scanner->used_unstrictness) {
+			bool have_clean = false;
+			for (auto &c : successful_candidates) {
+				if (!c->used_unstrictness) {
+					have_clean = true;
+					break;
+				}
+			}
+			if (have_clean) {
+				// Keep clean candidates; still record this dialect for later ranking if columns match.
+				sniffing_state_machine.dialect_options.num_cols = num_cols;
+				lines_sniffed = sniffed_column_counts.result_position;
+				successful_candidates.emplace_back(std::move(scanner));
+				return;
+			}
+		}
 		successful_candidates.clear();
 		sniffing_state_machine.dialect_options.num_cols = num_cols;
 		lines_sniffed = sniffed_column_counts.result_position;
@@ -508,71 +530,69 @@ void CSVSniffer::RefineCandidates() {
 		// No candidates to refine
 		return;
 	}
-	if (candidates.size() == 1 || candidates[0]->FinishedFile()) {
-		// Only one candidate nothing to refine, or all candidates already checked
+	if (candidates.size() > 1 && !candidates[0]->FinishedFile()) {
+		for (idx_t i = 1; i <= options.sample_size_chunks; i++) {
+			vector<unique_ptr<ColumnCountScanner>> successful_candidates;
+			bool done = candidates.empty();
+			for (auto &cur_candidate : candidates) {
+				const bool finished_file = cur_candidate->FinishedFile();
+				if (successful_candidates.empty()) {
+					lines_sniffed += cur_candidate->GetResult().result_position;
+				}
+				if (finished_file || i == options.sample_size_chunks) {
+					// we finished the file or our chunk sample successfully
+					if (!cur_candidate->GetResult().error) {
+						successful_candidates.push_back(std::move(cur_candidate));
+					}
+					done = true;
+					continue;
+				}
+				if (RefineCandidateNextChunk(*cur_candidate) && !cur_candidate->GetResult().error) {
+					successful_candidates.push_back(std::move(cur_candidate));
+				}
+			}
+			candidates = std::move(successful_candidates);
+			if (done) {
+				break;
+			}
+		}
+	}
+	// Rank remaining dialect candidates. Always run this — including when the sample already
+	// finished the file (small inputs) — so safer dialects win under strict_mode=false (#23330).
+	if (candidates.size() <= 1) {
 		return;
 	}
 
-	for (idx_t i = 1; i <= options.sample_size_chunks; i++) {
-		vector<unique_ptr<ColumnCountScanner>> successful_candidates;
-		bool done = candidates.empty();
-		for (auto &cur_candidate : candidates) {
-			const bool finished_file = cur_candidate->FinishedFile();
-			if (successful_candidates.empty()) {
-				lines_sniffed += cur_candidate->GetResult().result_position;
-			}
-			if (finished_file || i == options.sample_size_chunks) {
-				// we finished the file or our chunk sample successfully
-				if (!cur_candidate->GetResult().error) {
-					successful_candidates.push_back(std::move(cur_candidate));
-				}
-				done = true;
-				continue;
-			}
-			if (RefineCandidateNextChunk(*cur_candidate) && !cur_candidate->GetResult().error) {
-				successful_candidates.push_back(std::move(cur_candidate));
-			}
+	auto is_safe_escape = [](const ColumnCountScanner &scanner) {
+		const auto &opts = scanner.state_machine->state_machine_options;
+		// quote==escape or escape==\0 disables unquoted_escape
+		return opts.escape == '\0' || opts.quote == opts.escape;
+	};
+
+	// Lower score is better.
+	auto candidate_score = [&](const ColumnCountScanner &scanner) {
+		idx_t score = 0;
+		if (scanner.used_unstrictness) {
+			// Penalize dialects that need non-strict relaxations (can break multi-byte UTF-8).
+			score += 1000;
 		}
-		candidates = std::move(successful_candidates);
-		if (done) {
-			break;
+		if (!scanner.ever_quoted) {
+			score += 100;
 		}
-	}
-	// If we have multiple candidates with quotes set, we will give the preference to ones
-	// that have actually quoted values, otherwise we will choose quotes = \0
-	vector<unique_ptr<ColumnCountScanner>> successful_candidates = std::move(candidates);
-	if (!successful_candidates.empty()) {
-		bool ever_quoted = false;
-		for (idx_t i = 0; i < successful_candidates.size(); i++) {
-			unique_ptr<ColumnCountScanner> cc_best_candidate = std::move(successful_candidates[i]);
-			if (cc_best_candidate->ever_quoted) {
-				if (cc_best_candidate->ever_escaped) {
-					// It can't be better than this
-					candidates.clear();
-					candidates.push_back(std::move(cc_best_candidate));
-					return;
-				}
-				if (!ever_quoted) {
-					ever_quoted = true;
-					candidates.clear();
-				}
-				candidates.push_back(std::move(cc_best_candidate));
-			} else if (!ever_quoted) {
-				candidates.push_back(std::move(cc_best_candidate));
-			}
+		if (!is_safe_escape(scanner)) {
+			score += 10;
 		}
-	}
-	if (candidates.size() > 1) {
-		successful_candidates = std::move(candidates);
-		for (idx_t i = 0; i < successful_candidates.size(); i++) {
-			if (successful_candidates[i]->state_machine->state_machine_options.quote ==
-			    successful_candidates[i]->state_machine->state_machine_options.escape) {
-				candidates.push_back(std::move(std::move(successful_candidates[i])));
-				return;
-			}
+		// Prefer dialects that actually saw escapes when quotes are in use.
+		if (scanner.ever_quoted && !scanner.ever_escaped) {
+			score += 1;
 		}
-		candidates.push_back(std::move(std::move(successful_candidates[0])));
-	}
+		return score;
+	};
+
+	stable_sort(candidates.begin(), candidates.end(),
+	            [&](const unique_ptr<ColumnCountScanner> &a, const unique_ptr<ColumnCountScanner> &b) {
+		            return candidate_score(*a) < candidate_score(*b);
+	            });
 }
 
 NewLineIdentifier CSVSniffer::DetectNewLineDelimiter(CSVBufferManager &buffer_manager) {
