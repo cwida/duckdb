@@ -1194,7 +1194,9 @@ bool ClientContext::QueryDeadlinePassed() const {
 	if (query_deadline.IsValid()) {
 		auto now = NumericCast<idx_t>(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
 		if (now >= query_deadline.GetIndex()) {
-			return true;
+			// Running out of time after an irreversible operation (e.g. a COMMIT) must not fail the query, just like
+			// an interrupt must not
+			return interrupt_state.load(std::memory_order_relaxed) != ClientInterruptState::INTERRUPTS_SUPPRESSED;
 		}
 	}
 	// an internal connection is also out of time when the query it runs on behalf of is

@@ -163,7 +163,8 @@ public:
 	DUCKDB_API void Interrupt();
 	DUCKDB_API bool IsInterrupted() const;
 	DUCKDB_API void ClearInterrupt();
-	//! Suppress all further interrupts for the current query (called after irreversible operations like COMMIT)
+	//! Suppress all further interrupts for the current query, including its max_execution_time deadline (called after
+	//! irreversible operations like COMMIT)
 	DUCKDB_API void SuppressInterrupts();
 	DUCKDB_API void CancelTransaction();
 

@@ -1112,6 +1112,20 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 		context.ClearInterrupt();
 		REQUIRE_NO_FAIL(con.Query("DROP TABLE suppress_test"));
 	}
+
+	SECTION("Suppressed interrupts include the query deadline") {
+		auto internal = Connection::CreateInternal(context);
+		// a deadline in the past, as a query that ran out of time while committing would leave it
+		context.query_deadline = 1;
+		REQUIRE_THROWS(context.BlockingInterruptCheck());
+		REQUIRE_THROWS(internal.context->BlockingInterruptCheck());
+		context.SuppressInterrupts();
+		REQUIRE_NOTHROW(context.BlockingInterruptCheck());
+		REQUIRE_NOTHROW(internal.context->BlockingInterruptCheck());
+		context.ClearInterrupt();
+		REQUIRE_THROWS(context.BlockingInterruptCheck());
+		context.query_deadline.SetInvalid();
+	}
 }
 
 TEST_CASE("Test internal connections follow the interrupts of their base client", "[api]") {
