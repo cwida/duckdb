@@ -1,0 +1,27 @@
+# name: test/sql/storage/catalog/view_empty_sql.test
+# description: Display persisted view definitions without cached SQL
+# group: [catalog]
+
+require vector_size 2048
+
+require skip_reload
+
+# con.Query("CREATE TABLE source(i INTEGER)");
+# con.Query("INSERT INTO source VALUES (41)");
+# con.Table("source")->Project("i + 1 AS answer")->CreateView("api_view");
+# con.Query("CREATE VIEW sql_view AS SELECT i + 1 AS answer FROM source");
+# con.Query("CHECKPOINT");
+unzip data/storage/view_empty_sql.db.gz {TEST_DIR}/view_empty_sql.db
+
+statement ok
+ATTACH '{TEST_DIR}/view_empty_sql.db' AS stored;
+
+query I
+SELECT answer FROM stored.api_view;
+----
+42
+
+query T
+SELECT sql FROM duckdb_views() WHERE view_name = 'api_view';
+----
+CREATE VIEW api_view AS SELECT (i + 1) AS answer FROM main."source";
