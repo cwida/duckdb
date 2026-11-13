@@ -105,6 +105,16 @@ struct VariantTypeofFun {
 	static ScalarFunction GetFunction();
 };
 
+struct VariantValueFun {
+	static constexpr const char *Name = "variant_value";
+	static constexpr const char *Parameters = "input_variant::VARIANT,path::VARCHAR\001input_variant::VARIANT,path::VARCHAR[]\001input_variant::VARIANT,index::BIGINT";
+	static constexpr const char *Description = "Returns the scalar value at `path` in the `input_variant`, or `NULL` if it is an OBJECT, ARRAY or null.\001Returns the scalar value at each `path` in the `input_variant`, or `NULL` where it is an OBJECT, ARRAY or null.\001Returns the scalar element at the 0-based `index` of the `input_variant` if it's an ARRAY, negative indexes count from the end.";
+	static constexpr const char *Example = "variant_value({'a': 42, 'b': [1, 2, 3]}::VARIANT, 'a')\001variant_value({'a': 42, 'b': [1, 2, 3]}::VARIANT, ['a', 'b'])\001variant_value([1, 2, 3]::VARIANT, -1)";
+	static constexpr const char *Categories = "variant\001variant\001variant";
+
+	static ScalarFunctionSet GetFunctions();
+};
+
 struct VariantKeysFun {
 	static constexpr const char *Name = "variant_keys";
 	static constexpr const char *Parameters = "input_variant::VARIANT\001input_variant::VARIANT,path::VARCHAR\001input_variant::VARIANT,path::VARCHAR[]";

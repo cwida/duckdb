@@ -279,6 +279,63 @@
 		"type": "scalar_function"
 	},
 	{
+		"name": "variant_value",
+		"variants": [
+			{
+				"parameters": [
+					{
+						"name": "input_variant",
+						"type": "VARIANT"
+					},
+					{
+						"name": "path",
+						"type": "VARCHAR"
+					}
+				],
+				"description": "Returns the scalar value at `path` in the `input_variant`, or `NULL` if it is an OBJECT, ARRAY or null.",
+				"example": "variant_value({'a': 42, 'b': [1, 2, 3]}::VARIANT, 'a')",
+				"categories": [
+					"variant"
+				]
+			},
+			{
+				"parameters": [
+					{
+						"name": "input_variant",
+						"type": "VARIANT"
+					},
+					{
+						"name": "path",
+						"type": "VARCHAR[]"
+					}
+				],
+				"description": "Returns the scalar value at each `path` in the `input_variant`, or `NULL` where it is an OBJECT, ARRAY or null.",
+				"example": "variant_value({'a': 42, 'b': [1, 2, 3]}::VARIANT, ['a', 'b'])",
+				"categories": [
+					"variant"
+				]
+			},
+			{
+				"parameters": [
+					{
+						"name": "input_variant",
+						"type": "VARIANT"
+					},
+					{
+						"name": "index",
+						"type": "BIGINT"
+					}
+				],
+				"description": "Returns the scalar element at the 0-based `index` of the `input_variant` if it's an ARRAY, negative indexes count from the end.",
+				"example": "variant_value([1, 2, 3]::VARIANT, -1)",
+				"categories": [
+					"variant"
+				]
+			}
+		],
+		"type": "scalar_function_set"
+	},
+	{
 		"name": "variant_keys",
 		"variants": [
 			{

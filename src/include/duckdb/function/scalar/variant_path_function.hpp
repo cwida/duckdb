@@ -15,6 +15,9 @@
 
 namespace duckdb {
 
+//! Whether a VARIANT value selected by a path is returned
+typedef bool (*variant_node_filter_t)(const VariantNode &node);
+
 struct VariantPathFunction {
 	//! Provides unified construction of path based processing functions.
 	static ScalarFunctionSet CreateFunctionSet(const Identifier &name, const scalar_function_t &function,
@@ -58,6 +61,12 @@ struct VariantPathFunction {
 			return;
 		}
 	}
+
+	//! Executes scalar VARIANT functions that return the VARIANT value selected by an optional constant path argument.
+	//! The function may be called as f(VARIANT), f(VARIANT, VARCHAR) or f(VARIANT, VARCHAR[]), and returns VARIANT, or
+	//! VARIANT[] for a list of paths. Missing values, and values for which `keep` returns false, are written as NULL.
+	static void ExecuteVariant(DataChunk &input, const ExpressionState &state, Vector &result,
+	                           variant_node_filter_t keep);
 
 private:
 	//! Executes a single path and writes RESULT_TYPE per input row.
@@ -104,6 +113,13 @@ private:
 			}
 		}
 	}
+
+	//! Executes a single path and writes the selected VARIANT value per input row.
+	static void ExecuteVariantUnary(const Vector &input, const vector<VariantPathComponent> &path, Vector &result,
+	                                idx_t count, variant_node_filter_t keep);
+	//! Executes a list of paths and writes LIST<VARIANT> of the selected values per input row.
+	static void ExecuteVariantMany(const Vector &input, const vector<vector<VariantPathComponent>> &paths,
+	                               Vector &result, idx_t count, variant_node_filter_t keep);
 
 	//! Walks the VARIANT using a path, which may be either (partially) shredded or unshredded. Returns nullopt if the
 	//! path is missing in the VARIANT, and the present value with VariantNode otherwise.
