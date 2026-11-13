@@ -15,7 +15,6 @@ env:
   # an event triggering this workflow is either an issue or a pull request,
   # hence only one of the numbers will be filled in the TITLE_PREFIX
   TITLE_PREFIX: "[duckdb/#${{ github.event.issue.number || github.event.pull_request.number }}]"
-  PUBLIC_ISSUE_TITLE: ${{ github.event.issue.title || github.event.pull_request.title }}
 
 jobs:
   create_documentation_issue:
@@ -36,6 +35,8 @@ jobs:
           fi
 
       - name: Create mirror issue if it does not yet exist
+        env:
+          PUBLIC_ISSUE_TITLE: ${{ github.event.issue.title || github.event.pull_request.title }}
         run: |
           if [ "${MIRROR_ISSUE_NUMBER}" == "" ]; then
             gh issue create --repo duckdb/duckdb-web --title "${TITLE_PREFIX} - ${PUBLIC_ISSUE_TITLE} needs documentation" --body "See https://github.com/duckdb/duckdb/issues/${{ github.event.issue.number || github.event.pull_request.number }}"

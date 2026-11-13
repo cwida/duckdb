@@ -7,7 +7,6 @@ on:
 env:
   GH_TOKEN: ${{ secrets.DUCKDBLABS_BOT_TOKEN }}
   TITLE_PREFIX: "[duckdb/#${{ github.event.pull_request.number }}]"
-  PUBLIC_PR_TITLE: ${{ github.event.pull_request.title }}
 
 jobs:
   create_or_label_issue:
@@ -28,6 +27,8 @@ jobs:
           fi
 
       - name: Create or label issue
+        env:
+          PUBLIC_PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           if [ "${MIRROR_ISSUE_NUMBER}" == "" ]; then
             gh issue create --repo duckdblabs/duckdb-internal --label "external action required" --label "Pull request" --title "${TITLE_PREFIX} - ${PUBLIC_PR_TITLE}" --body "Pull request ${TITLE_PREFIX} needs input from maintainers. See https://github.com/duckdb/duckdb/pull/${{ github.event.pull_request.number }}"
