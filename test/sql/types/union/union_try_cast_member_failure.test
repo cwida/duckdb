@@ -1,5 +1,5 @@
 # name: test/sql/types/union/union_try_cast_member_failure.test
-# description: Test TRY_CAST between unions where a member cast fails
+# description: Test TRY_CAST into a UNION where a member cast fails
 # group: [union]
 
 statement ok
@@ -64,3 +64,242 @@ statement error
 SELECT CAST(u AS UNION(a INT, b VARCHAR)) FROM mixed;
 ----
 Could not convert string 'q1' to INT32
+
+# a non UNION source, or a UNION source with a member missing from the target, is cast into one member,
+# and the other members are constant NULL vectors next to the flat selected member
+query III
+SELECT r, union_tag(r), r IS NULL
+FROM (SELECT try_cast(x AS UNION(a DECIMAL(3,1), b VARCHAR)) r FROM (VALUES (1000::DECIMAL(9,1)), (1.5::DECIMAL(9,1))) v(x))
+----
+NULL	NULL	true
+1.5	a	false
+
+query III
+SELECT r, union_tag(r), r IS NULL
+FROM (SELECT try_cast(x AS UNION(a DECIMAL(3,1), b VARCHAR)) r FROM (VALUES (1000::DECIMAL(9,1))) v(x))
+----
+NULL	NULL	true
+
+query III
+SELECT r, union_tag(r), r IS NULL FROM (SELECT try_cast(1000::DECIMAL(9,1) AS UNION(a DECIMAL(3,1), b VARCHAR)) r)
+----
+NULL	NULL	true
+
+query III
+SELECT r, union_tag(r), r IS NULL
+FROM (SELECT try_cast(x AS UNION(a DECIMAL(3,1), b VARCHAR)) r FROM (VALUES (1000::DECIMAL(9,1)), (-1000)) v(x))
+----
+NULL	NULL	true
+NULL	NULL	true
+
+query III
+SELECT r, union_tag(r), r IS NULL
+FROM (SELECT try_cast(x AS UNION(a DECIMAL(3,1), b VARCHAR)) r FROM (VALUES (2.5::DECIMAL(9,1)), (1.5)) v(x))
+----
+2.5	a	false
+1.5	a	false
+
+# an INTEGER source selects the DECIMAL member too
+query III
+SELECT r, union_tag(r), r IS NULL
+FROM (SELECT try_cast(x AS UNION(a DECIMAL(3,1), b VARCHAR, c DATE)) r FROM (VALUES (1000), (12)) v(x))
+----
+NULL	NULL	true
+12.0	a	false
+
+# the member is chosen when the cast is bound: a value that does not fit is not cast to the VARCHAR member instead
+query II
+SELECT try_cast(x AS UNION(s VARCHAR, a DECIMAL(3,1))) r, union_tag(r) FROM (VALUES (1000::DECIMAL(9,1)), (1.5)) v(x)
+----
+NULL	NULL
+1.5	a
+
+# a NULL source row keeps the selected tag with a NULL member, unlike a row that fails
+query IIII
+SELECT x, r IS NULL, union_tag(r), union_extract(r, 'a')
+FROM (SELECT x, try_cast(x AS UNION(a DECIMAL(3,1), b VARCHAR)) r
+      FROM (VALUES (1000::DECIMAL(9,1)), (NULL), (1.5), (NULL), (-1000)) v(x))
+----
+1000.0	true	NULL	NULL
+NULL	false	a	NULL
+1.5	false	a	1.5
+NULL	false	a	NULL
+-1000.0	true	NULL	NULL
+
+query IIII
+SELECT count(*), count(r), count(union_extract(r, 'a')), count(union_tag(r))
+FROM (SELECT try_cast(CASE WHEN i % 3 = 0 THEN 1000 WHEN i % 3 = 1 THEN NULL ELSE i % 90 END::DECIMAL(9,1)
+                      AS UNION(a DECIMAL(3,1), b VARCHAR, c INTEGER)) r
+      FROM range(5000) t(i))
+----
+5000	3333	1666	3333
+
+# a UNION source with a member missing from the target is cast into one member, which is itself a UNION
+query III
+SELECT r, union_tag(r), r IS NULL
+FROM (SELECT try_cast(u AS UNION(x UNION(a DECIMAL(3,1), b VARCHAR), y INTEGER)) r
+      FROM (VALUES (1000::DECIMAL(9,1)::UNION(a DECIMAL(9,1), b VARCHAR)),
+                   (1.5::DECIMAL(9,1)::UNION(a DECIMAL(9,1), b VARCHAR)),
+                   ('q'::UNION(a DECIMAL(9,1), b VARCHAR))) v(u))
+----
+NULL	NULL	true
+1.5	x	false
+q	x	false
+
+# nested: the union cast runs on the child vector of a LIST, ARRAY, MAP and STRUCT cast
+query I
+SELECT try_cast(x AS UNION(a DECIMAL(3,1), b VARCHAR)[]) FROM (VALUES ([1000::DECIMAL(9,1), 1.5]), ([2.5])) v(x)
+----
+[NULL, 1.5]
+[2.5]
+
+query I
+SELECT try_cast(x AS UNION(a DECIMAL(3,1), b VARCHAR)[2]) FROM (VALUES ([1000::DECIMAL(9,1), 1.5]::DECIMAL(9,1)[2])) v(x)
+----
+[NULL, 1.5]
+
+query I
+SELECT try_cast(m AS MAP(VARCHAR, UNION(a DECIMAL(3,1), b VARCHAR))) FROM (VALUES (MAP {'k': 1000::DECIMAL(9,1), 'l': 1.5})) v(m)
+----
+{k=NULL, l=1.5}
+
+query III
+SELECT r, r.f IS NULL, union_tag(r.f)
+FROM (SELECT try_cast(x AS STRUCT(f UNION(a DECIMAL(3,1), b VARCHAR))) r
+      FROM (VALUES ({'f': 1000::DECIMAL(9,1)}), ({'f': 2.5})) v(x))
+----
+{'f': NULL}	true	NULL
+{'f': 2.5}	false	a
+
+# a selected member of a nested type that is NULL for a row of a valid source
+query III
+SELECT r, union_tag(r), r IS NULL
+FROM (SELECT try_cast(l AS UNION(m DECIMAL(3,1)[2], b DATE)) r
+      FROM (VALUES ([1.5::DECIMAL(9,1)]), ([1.5::DECIMAL(9,1), 2.5]), ([1000::DECIMAL(9,1), 2.5])) v(l))
+----
+NULL	NULL	true
+[1.5, 2.5]	m	false
+[NULL, 2.5]	m	false
+
+query III
+SELECT r, union_tag(r), r IS NULL
+FROM (SELECT try_cast(m AS UNION(m MAP(DECIMAL(3,1), INTEGER), b DATE)) r
+      FROM (VALUES (MAP {1000::DECIMAL(9,1): 1}), (MAP {1.5::DECIMAL(9,1): 2})) v(m))
+----
+NULL	NULL	true
+{1.5=2}	m	false
+
+query III
+SELECT r, union_tag(r), r IS NULL
+FROM (SELECT try_cast(x AS UNION(x UNION(a DECIMAL(3,1), b VARCHAR), y DATE)) r
+      FROM (VALUES (1000::DECIMAL(9,1)), (1.5)) v(x))
+----
+NULL	NULL	true
+1.5	x	false
+
+# a stored result keeps the NULL rows
+statement ok
+CREATE TABLE stored(u UNION(a DECIMAL(3,1), b VARCHAR));
+
+statement ok
+INSERT INTO stored SELECT try_cast(x AS UNION(a DECIMAL(3,1), b VARCHAR)) FROM (VALUES (1000::DECIMAL(9,1)), (1.5), (NULL)) v(x)
+
+query III
+SELECT u, union_tag(u), u IS NULL FROM stored
+----
+NULL	NULL	true
+1.5	a	false
+NULL	a	false
+
+# CAST and the implicit cast of an INSERT raise the member cast error for the same input
+statement error
+SELECT CAST(x AS UNION(a DECIMAL(3,1), b VARCHAR)) FROM (VALUES (1000::DECIMAL(9,1)), (1.5::DECIMAL(9,1))) v(x)
+----
+Conversion Error: Casting value "1000.0" to type DECIMAL(3,1) failed: value is out of range!
+
+statement error
+SELECT CAST(x AS UNION(a DECIMAL(3,1), b VARCHAR)[]) FROM (VALUES ([1000::DECIMAL(9,1), 1.5])) v(x)
+----
+Conversion Error: Casting value "1000.0" to type DECIMAL(3,1) failed: value is out of range!
+
+statement error
+INSERT INTO stored VALUES (1000::DECIMAL(9,1))
+----
+Conversion Error: Casting value "1000.0" to type DECIMAL(3,1) failed: value is out of range!
+
+statement ok
+SET debug_verification_mode = 'VERIFY_VECTORS'
+
+query III
+SELECT r, union_tag(r), r IS NULL
+FROM (SELECT try_cast(x AS UNION(a DECIMAL(3,1), b VARCHAR)) r FROM (VALUES (1000::DECIMAL(9,1)), (1.5::DECIMAL(9,1))) v(x))
+----
+NULL	NULL	true
+1.5	a	false
+
+query IIII
+SELECT x, r IS NULL, union_tag(r), union_extract(r, 'a')
+FROM (SELECT x, try_cast(x AS UNION(a DECIMAL(3,1), b VARCHAR)) r FROM (VALUES (1000::DECIMAL(9,1)), (NULL), (1.5)) v(x))
+----
+1000.0	true	NULL	NULL
+NULL	false	a	NULL
+1.5	false	a	1.5
+
+query I
+SELECT try_cast(x AS UNION(a DECIMAL(3,1), b VARCHAR)[]) FROM (VALUES ([1000::DECIMAL(9,1), 1.5]), ([2.5])) v(x)
+----
+[NULL, 1.5]
+[2.5]
+
+query I
+SELECT try_cast(x AS STRUCT(f UNION(a DECIMAL(3,1), b VARCHAR))) FROM (VALUES ({'f': 1000::DECIMAL(9,1)}), ({'f': 2.5})) v(x)
+----
+{'f': NULL}
+{'f': 2.5}
+
+query III
+SELECT r, union_tag(r), r IS NULL
+FROM (SELECT try_cast(u AS UNION(x UNION(a DECIMAL(3,1), b VARCHAR), y INTEGER)) r
+      FROM (VALUES (1000::DECIMAL(9,1)::UNION(a DECIMAL(9,1), b VARCHAR)), ('q'::UNION(a DECIMAL(9,1), b VARCHAR))) v(u))
+----
+NULL	NULL	true
+q	x	false
+
+query III
+SELECT r, union_tag(r), r IS NULL
+FROM (SELECT try_cast(x AS UNION(a DECIMAL(3,1), b VARCHAR)) r FROM (VALUES (1000::DECIMAL(9,1)), (-1000)) v(x))
+----
+NULL	NULL	true
+NULL	NULL	true
+
+# failing rows in the first vector only, then vectors where the tag is constant again
+query III
+SELECT count(*), count(r), count(union_tag(r))
+FROM (SELECT try_cast((CASE WHEN i < 10 THEN 1000 ELSE i % 90 END)::DECIMAL(9,1) AS UNION(a DECIMAL(3,1), b VARCHAR)) r
+      FROM range(6000) t(i))
+----
+6000	5990	5990
+
+query II
+SELECT count(*), count(e)
+FROM (SELECT unnest(try_cast(l AS UNION(a DECIMAL(3,1), b VARCHAR)[])) e
+      FROM (SELECT list(CASE WHEN i % 2 = 0 THEN 1000 ELSE i % 90 END::DECIMAL(9,1)) l FROM range(5000) t(i)))
+----
+5000	2500
+
+query III
+SELECT r, union_tag(r), r IS NULL
+FROM (SELECT try_cast(l AS UNION(m DECIMAL(3,1)[2], b DATE)) r FROM (VALUES ([1.5::DECIMAL(9,1)]), ([1.5::DECIMAL(9,1), 2.5])) v(l))
+----
+NULL	NULL	true
+[1.5, 2.5]	m	false
+
+query III
+SELECT r, union_tag(r), r IS NULL
+FROM (SELECT try_cast(x AS UNION(x UNION(a DECIMAL(3,1), b VARCHAR), y DATE)) r FROM (VALUES (1000::DECIMAL(9,1)), (1.5)) v(x))
+----
+NULL	NULL	true
+1.5	x	false
+
+statement ok
+RESET debug_verification_mode

@@ -226,9 +226,12 @@ static bool ToUnionMemberCast(Vector &source, Vector &result, idx_t count, CastP
 				ConstantVector::SetNull(result, count_t(count));
 			}
 		} else {
+			// every member is NULL in a failed row already, and the non selected ones are constant vectors
+			auto &result_validity = FlatVector::ValidityMutable(result);
 			for (idx_t row_idx = 0; row_idx < count; row_idx++) {
 				if (source_validity.IsValid(row_idx) && !member_validity.IsValid(row_idx)) {
-					FlatVector::SetNull(result, row_idx, true);
+					result_validity.SetInvalid(row_idx);
+					FlatVector::ValidityMutable(UnionVector::GetTags(result)).SetInvalid(row_idx);
 				}
 			}
 		}
