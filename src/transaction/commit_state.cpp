@@ -358,13 +358,7 @@ void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &info)
 	case UndoFlags::INSERT_TUPLE: {
 		// append:
 		auto info = reinterpret_cast<AppendInfo *>(data);
-		if (info->table->HasParent() && info->table->Parent().timestamp != transaction.GetTransactionId()) {
-			auto &storage = info->table->GetStorage();
-			auto table_name = storage.GetTableName();
-			auto table_modification = storage.TableModification();
-			throw TransactionException("Attempting to modify table %s but another transaction has %s this table",
-			                           table_name, table_modification);
-		}
+		VerifyTableNotModified(*info->table);
 		// mark the tuples as committed
 		info->table->GetStorage().CommitAppend(commit_id, info->start_row, info->count);
 		break;
@@ -372,26 +366,15 @@ void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &info)
 	case UndoFlags::DELETE_TUPLE: {
 		// deletion:
 		auto info = reinterpret_cast<DeleteInfo *>(data);
-		if (info->table->HasParent() && info->table->Parent().timestamp != transaction.GetTransactionId()) {
-			auto &storage = info->table->GetStorage();
-			auto table_name = storage.GetTableName();
-			auto table_modification = storage.TableModification();
-			throw TransactionException("Attempting to modify table %s but another transaction has %s this table",
-			                           table_name, table_modification);
-		}
+		VerifyTableNotModified(*info->table);
 		CommitDelete(*info, transaction.GetTransactionId());
 		break;
 	}
 	case UndoFlags::UPDATE_TUPLE: {
 		// update:
 		auto info = reinterpret_cast<UpdateInfo *>(data);
-		if (info->table->HasParent() && info->table->Parent().timestamp != transaction.GetTransactionId()) {
-			auto &storage = info->table->GetStorage();
-			auto table_name = storage.GetTableName();
-			auto table_modification = storage.TableModification();
-			throw TransactionException("Attempting to modify table %s but another transaction has %s this table",
-			                           table_name, table_modification);
-		}
+		// an ALTER TYPE rewrite drops updates committed after it started reading
+		VerifyTableNotModified(*info->table, true);
 		info->version_number = commit_id;
 		break;
 	}
@@ -406,6 +389,21 @@ void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &info)
 	}
 	default:
 		throw InternalException("UndoBuffer - don't know how to commit this type!");
+	}
+}
+
+void CommitState::VerifyTableNotModified(DuckTableEntry &table, bool check_pending_alter) {
+	auto &storage = table.GetStorage();
+	bool modified;
+	if (table.HasParent()) {
+		modified = table.Parent().timestamp != transaction.GetTransactionId();
+	} else {
+		// an ALTER of another transaction that is still running
+		modified = check_pending_alter && !storage.IsMainTable();
+	}
+	if (modified) {
+		throw TransactionException("Attempting to modify table %s but another transaction has %s this table",
+		                           storage.GetTableName(), storage.TableModification());
 	}
 }
 
