@@ -473,6 +473,24 @@ CREATE INDEX lx2 ON d.l (((try_cast(v AS DECIMAL(18,0)[]))[1]))
 ----
 <REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
 
+# a cast to a UNION selects the members as the cast does: by name when every source member has a name in the target,
+# else the whole source is promoted into the member it casts to implicitly
+statement ok
+CREATE TABLE d.un (u UNION(a BIGNUM, b INTEGER))
+
+statement ok
+CREATE INDEX unx ON d.un ((union_extract(union_extract(try_cast(u AS UNION(w UNION(a BIGNUM, b INTEGER))), 'w'), 'b')))
+
+statement error
+CREATE UNIQUE INDEX unx2 ON d.un ((coalesce(union_extract(union_extract(try_cast(u AS UNION(w UNION(a DECIMAL(18,0), b INTEGER))), 'w'), 'a'), 0::DECIMAL(18,0))))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+statement error
+CREATE INDEX unx3 ON d.un ((union_extract(try_cast(u AS UNION(a DECIMAL(18,0), b INTEGER)), 'a')))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
 # the setting does not change what the key binds to, so the index is bound the same after reopening
 statement ok
 CHECKPOINT d

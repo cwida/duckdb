@@ -23,6 +23,7 @@
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/function/cast/bound_cast_data.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 
@@ -137,42 +138,93 @@ bool IsStructOrTuple(const LogicalType &type) {
 	return type.id() == LogicalTypeId::STRUCT || type.id() == LogicalTypeId::TUPLE;
 }
 
-//! Whether a cast converts between BIGNUM and DECIMAL, the types themselves or the children the cast pairs: the
-//! elements of lists and arrays, the keys and values of maps, the struct fields the cast matches, every field of a
-//! STRUCT cast to a MAP with the value type, and union members by name; the engines before wide decimals have no such
-//! cast
-bool CastsBetweenBignumAndDecimal(const LogicalType &source, const LogicalType &target) {
-	if (IsBignumDecimalCast(source, target)) {
-		return true;
+bool CastsBetweenBignumAndDecimal(ClientContext &context, const LogicalType &source, const LogicalType &target);
+
+//! The member of a UNION a cast promotes its source to: the member the source casts to implicitly at the lowest cost,
+//! none when no member or several members do (the cast does not bind then)
+optional_ptr<const LogicalType> PromotedUnionMember(ClientContext &context, const LogicalType &source,
+                                                    const LogicalType &target) {
+	optional_ptr<const LogicalType> result;
+	auto best_cost = NumericLimits<int64_t>::Maximum();
+	bool ambiguous = false;
+	for (idx_t i = 0; i < UnionType::GetMemberCount(target); i++) {
+		auto &member = UnionType::GetMemberType(target, i);
+		const auto cost = CastFunctionSet::ImplicitCastCost(context, source, member);
+		if (cost < 0 || cost > best_cost) {
+			continue;
+		}
+		ambiguous = cost == best_cost;
+		best_cost = cost;
+		result = &member;
 	}
-	if (IsNestedList(source) && IsNestedList(target)) {
-		return CastsBetweenBignumAndDecimal(NestedChildType(source), NestedChildType(target));
-	}
-	if (source.id() == LogicalTypeId::MAP && target.id() == LogicalTypeId::MAP) {
-		return CastsBetweenBignumAndDecimal(MapType::KeyType(source), MapType::KeyType(target)) ||
-		       CastsBetweenBignumAndDecimal(MapType::ValueType(source), MapType::ValueType(target));
-	}
-	if (source.id() == LogicalTypeId::STRUCT && target.id() == LogicalTypeId::MAP) {
-		auto &value_type = MapType::ValueType(target);
-		for (auto &field : StructType::GetChildTypes(source)) {
-			if (CastsBetweenBignumAndDecimal(field.second, value_type)) {
-				return true;
+	return ambiguous ? nullptr : result;
+}
+
+//! Whether every member of a source UNION has a member of its name in the target UNION
+bool UnionMembersMatchByName(const LogicalType &source, const LogicalType &target) {
+	for (idx_t i = 0; i < UnionType::GetMemberCount(source); i++) {
+		auto &name = UnionType::GetMemberName(source, i);
+		bool found = false;
+		for (idx_t j = 0; j < UnionType::GetMemberCount(target); j++) {
+			if (UnionType::GetMemberName(target, j) == name) {
+				found = true;
+				break;
 			}
 		}
-		return false;
+		if (!found) {
+			return false;
+		}
 	}
-	if (source.id() == LogicalTypeId::UNION && target.id() == LogicalTypeId::UNION) {
+	return true;
+}
+
+//! Whether a cast to a UNION converts between BIGNUM and DECIMAL in the members it selects: a source UNION whose
+//! members all have a name in the target pairs the members by name, any other source is promoted into the member it
+//! casts to implicitly (union_casts.cpp)
+bool UnionCastsBetweenBignumAndDecimal(ClientContext &context, const LogicalType &source, const LogicalType &target) {
+	if (source.id() == LogicalTypeId::UNION && UnionMembersMatchByName(source, target)) {
 		for (idx_t i = 0; i < UnionType::GetMemberCount(source); i++) {
 			auto &name = UnionType::GetMemberName(source, i);
 			for (idx_t j = 0; j < UnionType::GetMemberCount(target); j++) {
 				if (UnionType::GetMemberName(target, j) == name &&
-				    CastsBetweenBignumAndDecimal(UnionType::GetMemberType(source, i),
+				    CastsBetweenBignumAndDecimal(context, UnionType::GetMemberType(source, i),
 				                                 UnionType::GetMemberType(target, j))) {
 					return true;
 				}
 			}
 		}
 		return false;
+	}
+	auto member = PromotedUnionMember(context, source, target);
+	return member && CastsBetweenBignumAndDecimal(context, source, *member);
+}
+
+//! Whether a cast converts between BIGNUM and DECIMAL, the types themselves or the children the cast pairs: the
+//! elements of lists and arrays, the keys and values of maps, the struct fields the cast matches, every field of a
+//! STRUCT cast to a MAP with the value type, and the union members the cast selects; the engines before wide decimals
+//! have no such cast
+bool CastsBetweenBignumAndDecimal(ClientContext &context, const LogicalType &source, const LogicalType &target) {
+	if (IsBignumDecimalCast(source, target)) {
+		return true;
+	}
+	if (IsNestedList(source) && IsNestedList(target)) {
+		return CastsBetweenBignumAndDecimal(context, NestedChildType(source), NestedChildType(target));
+	}
+	if (source.id() == LogicalTypeId::MAP && target.id() == LogicalTypeId::MAP) {
+		return CastsBetweenBignumAndDecimal(context, MapType::KeyType(source), MapType::KeyType(target)) ||
+		       CastsBetweenBignumAndDecimal(context, MapType::ValueType(source), MapType::ValueType(target));
+	}
+	if (source.id() == LogicalTypeId::STRUCT && target.id() == LogicalTypeId::MAP) {
+		auto &value_type = MapType::ValueType(target);
+		for (auto &field : StructType::GetChildTypes(source)) {
+			if (CastsBetweenBignumAndDecimal(context, field.second, value_type)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	if (target.id() == LogicalTypeId::UNION) {
+		return UnionCastsBetweenBignumAndDecimal(context, source, target);
 	}
 	if (!IsStructOrTuple(source) || !IsStructOrTuple(target)) {
 		return false;
@@ -187,7 +239,7 @@ bool CastsBetweenBignumAndDecimal(const LogicalType &source, const LogicalType &
 	for (idx_t i = 0; i < mapping.source_indexes.size(); i++) {
 		auto &source_child = source_children[mapping.source_indexes[i]].second;
 		auto &target_child = target_children[mapping.target_indexes[i]].second;
-		if (CastsBetweenBignumAndDecimal(source_child, target_child)) {
+		if (CastsBetweenBignumAndDecimal(context, source_child, target_child)) {
 			return true;
 		}
 	}
@@ -480,7 +532,7 @@ void IndexBinder::BindLegacyCast(unique_ptr<Expression> &expr) {
 	auto &cast = expr->Cast<BoundFunctionExpression>();
 	const auto source = BoundCastExpression::SourceType(cast);
 	auto &target = BoundCastExpression::TargetType(cast);
-	if (!CastsBetweenBignumAndDecimal(source, target)) {
+	if (!CastsBetweenBignumAndDecimal(context, source, target)) {
 		return;
 	}
 	if (keys->stored && IsBignumDecimalCast(source, target)) {

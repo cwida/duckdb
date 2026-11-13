@@ -524,6 +524,59 @@ SELECT (SELECT count(*) FROM old.t), (SELECT count(*) FROM old.m)
 statement ok
 DETACH old
 
+# data/storage/decimal_bignum_union_cast_index_v2_0_0.db.gz was written by DuckDB 2.0.0 at storage version v2.0.0 with:
+#   CREATE TABLE t (u UNION(a BIGNUM, b INTEGER));
+#   CREATE UNIQUE INDEX ux ON t ((coalesce(union_extract(union_extract(try_cast(u AS UNION(w UNION(a DECIMAL(18,0), b INTEGER))), 'w'), 'a'), 0::DECIMAL(18,0))));
+#   INSERT INTO t VALUES (union_value(a := '1'::BIGNUM));
+# The cast promotes the whole source UNION into the member w, whose cast pairs the BIGNUM member a with a DECIMAL one:
+# that engine's TRY_CAST gave NULL for it, so the stored key is 0. The cast is not bound as that engine bound it, so the
+# index is refused by writes and skipped by reads until created again
+unzip data/storage/decimal_bignum_union_cast_index_v2_0_0.db.gz {TEST_DIR}/decimal_bignum_union_cast_index.db
+
+statement ok
+ATTACH '{TEST_DIR}/decimal_bignum_union_cast_index.db' AS old
+
+# a query of this engine casts the member, the stored key is still 0
+query I
+SELECT coalesce(union_extract(union_extract(try_cast(u AS UNION(w UNION(a DECIMAL(18,0), b INTEGER))), 'w'), 'a'), 0::DECIMAL(18,0)) FROM old.t
+----
+1
+
+query I
+SELECT union_extract(u, 'a') FROM old.t
+----
+1
+
+statement error
+INSERT INTO old.t VALUES (union_value(a := '1'::BIGNUM))
+----
+<REGEX>:.*Cannot bind index "ux" on table "t": the index was stored at storage version v2\.0\.0, whose engines compute other keys for its expression \(.*casts UNION\(a BIGNUM, b INTEGER\) to UNION\(w UNION\(a DECIMAL\(18,0\), b INTEGER\)\), a cast those engines do not have \(a TRY_CAST gives NULL there\)\).*DROP INDEX "ux" and CREATE it again.*
+
+query I
+SELECT count(*) FROM old.t
+----
+1
+
+statement ok
+DROP INDEX old.ux
+
+# the key cannot be created again at this storage version, since the engines of that version compute it otherwise
+statement error
+CREATE UNIQUE INDEX ux ON old.t ((coalesce(union_extract(union_extract(try_cast(u AS UNION(w UNION(a DECIMAL(18,0), b INTEGER))), 'w'), 'a'), 0::DECIMAL(18,0))))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+statement ok
+INSERT INTO old.t VALUES (union_value(a := '1'::BIGNUM))
+
+query I
+SELECT count(*) FROM old.t
+----
+2
+
+statement ok
+DETACH old
+
 # data/storage/decimal_wide_literal_index_v2_0_0.db.gz was written by DuckDB 2.0.0 at storage version v2.0.0 with:
 #   CREATE TABLE t (k INTEGER);
 #   CREATE INDEX ix ON t ((k + 1234567890123456789012345678901234567890.5));
