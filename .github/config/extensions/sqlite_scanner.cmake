@@ -5,5 +5,4 @@ duckdb_extension_load(sqlite_scanner
         GIT_TAG ce0987fda4f6393231c6783ee32f72ab873a6d3e
         APPLY_PATCHES
         SUBMODULES database-connector
-        APPLY_PATCHES
         )

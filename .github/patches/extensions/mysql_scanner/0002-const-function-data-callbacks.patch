@@ -1,8 +1,8 @@
 diff --git a/src/mysql_scanner.cpp b/src/mysql_scanner.cpp
-index c44e584..d7ff87d 100644
+index a6d747b..de36ca3 100644
 --- a/src/mysql_scanner.cpp
 +++ b/src/mysql_scanner.cpp
-@@ -172,7 +172,7 @@ static InsertionOrderPreservingMap<string> MySQLScanToString(TableFunctionToStri
+@@ -168,7 +168,7 @@ static InsertionOrderPreservingMap<string> MySQLScanToString(TableFunctionToStri
  	return result;
  }
  
@@ -12,10 +12,10 @@ index c44e584..d7ff87d 100644
  	throw NotImplementedException("MySQLScanSerialize");
  }
 diff --git a/src/storage/mysql_catalog.cpp b/src/storage/mysql_catalog.cpp
-index 3833a42..7139f3a 100644
+index 57a7a79..6995205 100644
 --- a/src/storage/mysql_catalog.cpp
 +++ b/src/storage/mysql_catalog.cpp
-@@ -517,10 +517,10 @@ void MySQLCatalog::MaterializeMySQLScans(PhysicalOperator &op) {
+@@ -518,10 +518,10 @@ void MySQLCatalog::MaterializeMySQLScans(PhysicalOperator &op) {
  		auto &table_scan = op.Cast<PhysicalTableScan>();
  		auto &function_name = table_scan.function.GetName().GetIdentifierName();
  		if (MySQLCatalog::IsMySQLScan(function_name)) {
@@ -29,7 +29,7 @@ index 3833a42..7139f3a 100644
  		}
  	}
 diff --git a/src/storage/mysql_optimizer.cpp b/src/storage/mysql_optimizer.cpp
-index d091426..bac1e9d 100644
+index 32610b4..10ae183 100644
 --- a/src/storage/mysql_optimizer.cpp
 +++ b/src/storage/mysql_optimizer.cpp
 @@ -45,13 +45,13 @@ void MySQLOptimizer::Optimize(OptimizerExtensionInput &input, unique_ptr<Logical

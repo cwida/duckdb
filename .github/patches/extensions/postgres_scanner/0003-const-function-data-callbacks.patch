@@ -72,10 +72,10 @@ index 9387cb9..a94fa94 100644
  	auto &bind_data = bind_data_p->Cast<PostgresBinaryReadBindData>();
  	serializer.WriteProperty(100, "file_path", bind_data.file_path);
 diff --git a/src/postgres_scanner.cpp b/src/postgres_scanner.cpp
-index 071698a..98b10fe 100644
+index 03ded22..9035e9c 100644
 --- a/src/postgres_scanner.cpp
 +++ b/src/postgres_scanner.cpp
-@@ -610,7 +610,7 @@ double PostgresScanProgress(ClientContext &context, const FunctionData *bind_dat
+@@ -680,7 +680,7 @@ double PostgresScanProgress(ClientContext &context, const FunctionData *bind_dat
  	return MinValue<double>(100, progress);
  }
  
