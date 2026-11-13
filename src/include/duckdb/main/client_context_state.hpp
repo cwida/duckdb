@@ -87,6 +87,14 @@ public:
 	}
 	virtual void OnTaskStop(Context &context) {
 	}
+	//! An interrupt or the max_execution_time deadline (see context.query_deadline) is about to fail the query.
+	//! Returning true handles it instead, e.g. for a query that executes elsewhere and should only fail if it is
+	//! interrupted there: the query does not fail on it, and interrupts are suppressed for the rest of it. Called from
+	//! whichever threads notice it, possibly concurrently. After an error the executor interrupts the query too, see
+	//! Executor::HasError.
+	virtual bool OnInterrupt(ClientContext &context) {
+		return false;
+	}
 
 public:
 	template <class TARGET>

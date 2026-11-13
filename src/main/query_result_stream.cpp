@@ -98,7 +98,7 @@ QueryResultState ResultStreamBase::DriveWithoutBufferInternal(ClientContextLock 
 	// Checked as the buffer's own Poll checks it, so a cancel is seen before a finished execution can be ended. A
 	// worker error also raises the flag; both loads are seq_cst
 	if (context.interrupt_state.load() == ClientInterruptState::INTERRUPTED && !Executor::Get(context).HasError()) {
-		throw InterruptException();
+		context.HandlePossibleInterrupt();
 	}
 	return execute_task ? context.ExecuteTaskInternal(lock, *handle) : context.PollInternal(lock, *handle);
 }

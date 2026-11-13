@@ -104,9 +104,10 @@ QueryResultState BufferedData::Participate(ClientContextLock &context_lock, Quer
 	DecideDraining();
 	// Checked with units poppable too, so a cancel ends the drain early. A worker error also raises
 	// the flag, so only a flag without an executor error is a cancel; both loads are seq_cst
-	const bool interrupted = cc->interrupt_state.load() == ClientInterruptState::INTERRUPTED;
+	bool interrupted = cc->interrupt_state.load() == ClientInterruptState::INTERRUPTED;
 	if (interrupted && !Executor::Get(*cc).HasError()) {
-		throw InterruptException();
+		cc->HandlePossibleInterrupt();
+		interrupted = false;
 	}
 	if (!interrupted && ReplenishSatisfied()) {
 		return QueryResultState::READY;
@@ -137,9 +138,10 @@ QueryResultState BufferedData::Poll(ClientContextLock &context_lock, QueryResult
 	}
 	// Checked before the buffer, so a cancel is seen even with units poppable. A worker error also
 	// raises the flag; only a flag without an executor error is a real cancel
-	const bool interrupted = cc->interrupt_state.load() == ClientInterruptState::INTERRUPTED;
+	bool interrupted = cc->interrupt_state.load() == ClientInterruptState::INTERRUPTED;
 	if (interrupted && !Executor::Get(*cc).HasError()) {
-		throw InterruptException();
+		cc->HandlePossibleInterrupt();
+		interrupted = false;
 	}
 	if (!interrupted && HasObservableUnit()) {
 		return QueryResultState::READY;
