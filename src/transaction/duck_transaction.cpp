@@ -125,6 +125,21 @@ void DuckTransaction::PushAppend(DuckTableEntry &table_entry, idx_t start_row, i
 	append_info->count = row_count;
 }
 
+void DuckTransaction::PushAlteredStorage(DataTable &old_storage, DataTable &new_storage) {
+	altered_storage[old_storage] = new_storage.shared_from_this();
+}
+
+DataTable &DuckTransaction::GetLatestStorage(DataTable &storage) {
+	reference<DataTable> result(storage);
+	while (true) {
+		auto entry = altered_storage.find(result.get());
+		if (entry == altered_storage.end()) {
+			return result.get();
+		}
+		result = *entry->second;
+	}
+}
+
 UndoBufferReference DuckTransaction::CreateUpdateInfo(DuckTableEntry &table_entry, idx_t type_size, idx_t capacity,
                                                       idx_t value_capacity, idx_t row_group_start) {
 	idx_t alloc_size = UpdateInfo::GetAllocSize(type_size, capacity, value_capacity);

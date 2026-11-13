@@ -1,0 +1,280 @@
+# name: test/sql/transactions/test_ddl_after_dml_index.test
+# description: DELETE followed by ALTER TABLE and CREATE INDEX on the altered table in the same transaction
+# group: [transactions]
+
+load {TEST_DIR}/test_ddl_after_dml_index.db
+
+# add column and index the new column
+statement ok
+CREATE TABLE t0(a INT);
+
+statement ok
+INSERT INTO t0 VALUES (1);
+
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM t0;
+
+statement ok
+ALTER TABLE t0 ADD COLUMN e INT;
+
+statement ok
+CREATE INDEX i0 ON t0(e);
+
+statement ok
+COMMIT;
+
+query II
+SELECT * FROM t0;
+----
+
+statement ok
+INSERT INTO t0 VALUES (2, 3);
+
+query II
+SELECT * FROM t0 WHERE e = 3;
+----
+2	3
+
+# add column + unique index with default
+statement ok
+CREATE TABLE t1(a INT);
+
+statement ok
+INSERT INTO t1 VALUES (1), (2);
+
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM t1 WHERE a = 1;
+
+statement ok
+ALTER TABLE t1 ADD COLUMN e INT DEFAULT 7;
+
+statement ok
+CREATE UNIQUE INDEX i1 ON t1(a, e);
+
+statement ok
+COMMIT;
+
+query II
+SELECT * FROM t1;
+----
+2	7
+
+statement error
+INSERT INTO t1 VALUES (2, 7);
+----
+<REGEX>:Constraint Error:.*Duplicate key.*
+
+# multiple alters
+statement ok
+CREATE TABLE t2(a INT);
+
+statement ok
+INSERT INTO t2 VALUES (1);
+
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM t2;
+
+statement ok
+ALTER TABLE t2 ADD COLUMN e INT;
+
+statement ok
+ALTER TABLE t2 ADD COLUMN f INT;
+
+statement ok
+CREATE INDEX i2 ON t2(f);
+
+statement ok
+COMMIT;
+
+query III
+SELECT * FROM t2;
+----
+
+# rename followed by add column
+statement ok
+CREATE TABLE t3(a INT);
+
+statement ok
+INSERT INTO t3 VALUES (1);
+
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM t3;
+
+statement ok
+ALTER TABLE t3 RENAME TO t3b;
+
+statement ok
+ALTER TABLE t3b ADD COLUMN e INT;
+
+statement ok
+CREATE INDEX i3 ON t3b(e);
+
+statement ok
+COMMIT;
+
+query II
+SELECT * FROM t3b;
+----
+
+# drop column shifts the physical index of the indexed column
+statement ok
+CREATE TABLE t4(a INT, b INT, c INT);
+
+statement ok
+INSERT INTO t4 VALUES (1, 2, 3), (4, 5, 6);
+
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM t4 WHERE a = 1;
+
+statement ok
+ALTER TABLE t4 DROP COLUMN a;
+
+statement ok
+CREATE UNIQUE INDEX i4 ON t4(c);
+
+statement ok
+COMMIT;
+
+query II
+SELECT * FROM t4;
+----
+5	6
+
+# alter type of the indexed column
+statement ok
+CREATE TABLE t5(a INT);
+
+statement ok
+INSERT INTO t5 VALUES (1), (2);
+
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM t5 WHERE a = 1;
+
+statement ok
+ALTER TABLE t5 ALTER a TYPE VARCHAR;
+
+statement ok
+CREATE UNIQUE INDEX i5 ON t5(a);
+
+statement ok
+COMMIT;
+
+query I
+SELECT * FROM t5;
+----
+2
+
+# rollback of the same sequence
+statement ok
+CREATE TABLE t6(a INT);
+
+statement ok
+INSERT INTO t6 VALUES (1);
+
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM t6;
+
+statement ok
+ALTER TABLE t6 ADD COLUMN e INT;
+
+statement ok
+CREATE INDEX i6 ON t6(e);
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT * FROM t6;
+----
+1
+
+# commit while another transaction is active
+statement ok
+CREATE TABLE t7(a INT);
+
+statement ok
+INSERT INTO t7 VALUES (1), (2);
+
+statement ok con2
+BEGIN;
+
+query I con2
+SELECT count(*) FROM t7;
+----
+2
+
+statement ok con1
+BEGIN;
+
+statement ok con1
+DELETE FROM t7 WHERE a = 1;
+
+statement ok con1
+ALTER TABLE t7 ADD COLUMN e INT;
+
+statement ok con1
+CREATE INDEX i7 ON t7(e);
+
+statement ok con1
+COMMIT;
+
+query I con2
+SELECT count(*) FROM t7;
+----
+2
+
+statement ok con2
+COMMIT;
+
+query II con1
+SELECT * FROM t7;
+----
+2	NULL
+
+restart
+
+query II
+SELECT * FROM t1;
+----
+2	7
+
+query II
+SELECT * FROM t4;
+----
+5	6
+
+query I
+SELECT * FROM t5;
+----
+2
+
+statement error
+INSERT INTO t4 VALUES (9, 6);
+----
+<REGEX>:Constraint Error:.*Duplicate key.*
+
+query I
+SELECT 42;
+----
+42
