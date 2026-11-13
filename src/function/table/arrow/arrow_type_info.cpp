@@ -1,5 +1,7 @@
 #include "duckdb/function/table/arrow/arrow_type_info.hpp"
 #include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
+#include "duckdb/common/limits.hpp"
+#include "duckdb/common/numeric_utils.hpp"
 
 namespace duckdb {
 
@@ -125,6 +127,40 @@ bool ArrowListInfo::IsView() const {
 
 ArrowType &ArrowListInfo::GetChild() const {
 	return *child;
+}
+
+//===--------------------------------------------------------------------===//
+// ArrowUnionInfo
+//===--------------------------------------------------------------------===//
+
+ArrowUnionInfo::ArrowUnionInfo(vector<shared_ptr<ArrowType>> children_p, const vector<int8_t> &type_ids)
+    : ArrowTypeInfo(ArrowTypeInfoType::UNION), children(std::move(children_p)),
+      child_indexes(NumericLimits<int8_t>::Maximum() + 1, DConstants::INVALID_INDEX) {
+	D_ASSERT(type_ids.size() == children.size());
+	for (idx_t child_idx = 0; child_idx < type_ids.size(); child_idx++) {
+		D_ASSERT(type_ids[child_idx] >= 0);
+		child_indexes[NumericCast<idx_t>(type_ids[child_idx])] = child_idx;
+	}
+}
+
+ArrowUnionInfo::~ArrowUnionInfo() {
+}
+
+idx_t ArrowUnionInfo::ChildCount() const {
+	return children.size();
+}
+
+const ArrowType &ArrowUnionInfo::GetChild(idx_t index) const {
+	D_ASSERT(index < children.size());
+	return *children[index];
+}
+
+idx_t ArrowUnionInfo::GetChildIndex(int8_t type_id) const {
+	if (type_id < 0 || child_indexes[NumericCast<idx_t>(type_id)] == DConstants::INVALID_INDEX) {
+		throw InvalidInputException("Arrow union type id %d does not match any union member",
+		                            static_cast<int32_t>(type_id));
+	}
+	return child_indexes[NumericCast<idx_t>(type_id)];
 }
 
 //===--------------------------------------------------------------------===//
