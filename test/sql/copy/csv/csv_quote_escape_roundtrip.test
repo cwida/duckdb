@@ -1,0 +1,90 @@
+# name: test/sql/copy/csv/csv_quote_escape_roundtrip.test
+# description: COPY TO/FROM round trip with a non-default QUOTE: the writer escapes with the quote character itself
+# group: [csv]
+
+statement ok
+CREATE TABLE s(id INT, v VARCHAR, w VARCHAR);
+
+statement ok
+INSERT INTO s VALUES (1, 'a"b,c', 'x'), (2, 'say "hi", ok', 'y'), (3, 'plain', 'z'), (4, 'it''s fine', 'q'), (5, 'mixed "q''b', 'm');
+
+statement ok
+COPY s TO '{TEST_DIR}/sq.csv' (QUOTE '''');
+
+statement ok
+CREATE TABLE d AS SELECT * FROM s LIMIT 0;
+
+statement ok
+COPY d FROM '{TEST_DIR}/sq.csv' (QUOTE '''');
+
+query IT
+SELECT s.id, CASE WHEN s.v IS NOT DISTINCT FROM d.v THEN 'OK' ELSE 'MISMATCH' END FROM s JOIN d USING(id) ORDER BY 1;
+----
+1	OK
+2	OK
+3	OK
+4	OK
+5	OK
+
+# a second round trip must not change the values again
+statement ok
+COPY d TO '{TEST_DIR}/sq2.csv' (QUOTE '''');
+
+statement ok
+CREATE TABLE e AS SELECT * FROM s LIMIT 0;
+
+statement ok
+COPY e FROM '{TEST_DIR}/sq2.csv' (QUOTE '''');
+
+query IT
+SELECT s.id, CASE WHEN s.v IS NOT DISTINCT FROM e.v THEN 'OK' ELSE 'MISMATCH' END FROM s JOIN e USING(id) ORDER BY 1;
+----
+1	OK
+2	OK
+3	OK
+4	OK
+5	OK
+
+# the written file is self-consistent: the quote char is used as escape
+query I
+SELECT Escape FROM sniff_csv('{TEST_DIR}/sq.csv', quote = '''');
+----
+'
+
+# an explicit ESCAPE is still honored
+statement ok
+COPY s TO '{TEST_DIR}/es.csv' (QUOTE '''', ESCAPE '"');
+
+statement ok
+CREATE TABLE f AS SELECT * FROM s LIMIT 0;
+
+statement ok
+COPY f FROM '{TEST_DIR}/es.csv' (QUOTE '''', ESCAPE '"');
+
+query IT
+SELECT s.id, CASE WHEN s.v IS NOT DISTINCT FROM f.v THEN 'OK' ELSE 'MISMATCH' END FROM s JOIN f USING(id) ORDER BY 1;
+----
+1	OK
+2	OK
+3	OK
+4	OK
+5	OK
+
+# default quoting is unchanged
+statement ok
+COPY s TO '{TEST_DIR}/dq.csv';
+
+statement ok
+CREATE TABLE g AS SELECT * FROM s LIMIT 0;
+
+statement ok
+COPY g FROM '{TEST_DIR}/dq.csv';
+
+query IT
+SELECT s.id, CASE WHEN s.v IS NOT DISTINCT FROM g.v THEN 'OK' ELSE 'MISMATCH' END FROM s JOIN g USING(id) ORDER BY 1;
+----
+1	OK
+2	OK
+3	OK
+4	OK
+5	OK

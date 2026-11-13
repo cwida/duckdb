@@ -52,6 +52,17 @@ static char GetWriteCommentChar(CSVReaderOptions &options) {
 	return comment.IsSetByUser() ? comment.GetValue() : '#';
 }
 
+// The escape char to write with. When the user did not set ESCAPE explicitly, escape with the quote
+// character itself (PostgreSQL-style doubling), so files written with a non-default QUOTE can be read
+// back with the same QUOTE (see #27505).
+static char GetWriteEscapeChar(CSVReaderOptions &options) {
+	auto &escape = options.dialect_options.state_machine_options.escape;
+	if (escape.IsSetByUser()) {
+		return escape.GetValue();
+	}
+	return options.dialect_options.state_machine_options.quote.GetValue();
+}
+
 CSVWriterOptions::CSVWriterOptions(CSVReaderOptions &options)
     : CSVWriterOptions(options.dialect_options.state_machine_options.delimiter.GetValue(),
                        options.dialect_options.state_machine_options.quote.GetValue(), options.write_newline) {
@@ -303,7 +314,7 @@ void CSVWriter::WriteQuotedString(WriteStream &writer, const char *str, idx_t le
                                   CSVReaderOptions &options, CSVWriterOptions &writer_options) {
 	WriteQuotedString(writer, str, len, options.force_quote[col_idx], options.null_str[0],
 	                  writer_options.requires_quotes, options.dialect_options.state_machine_options.quote.GetValue(),
-	                  options.dialect_options.state_machine_options.escape.GetValue());
+	                  GetWriteEscapeChar(options));
 }
 
 void CSVWriter::WriteQuotedString(WriteStream &writer, const char *str, idx_t len, bool force_quote,
