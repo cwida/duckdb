@@ -210,8 +210,9 @@ optional<RelationStats> RelationStatisticsHelper::ExtractProjectionStats(Logical
 				semi_anti_join_domain_evidence = child_column->semi_anti_join_domain_evidence;
 			}
 		}
-		result.columns.emplace_back(bindings[expression_idx], distinct_count, current_domain,
-		                            Identifier(expression.GetName()), semi_anti_join_domain_evidence);
+		// a name would render the expression as SQL, which can cost more than running the query
+		result.columns.emplace_back(bindings[expression_idx], distinct_count, current_domain, Identifier(),
+		                            semi_anti_join_domain_evidence);
 	}
 	result.Verify(bindings);
 	return result;
@@ -476,13 +477,13 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 		if (aggregate.groups.size() == 1 && preserves_group_evidence) {
 			semi_anti_join_domain_evidence.MarkUnique();
 		}
-		result.columns.emplace_back(bindings[result.columns.size()], distinct_count, current_domain,
-		                            Identifier(group.GetName()), semi_anti_join_domain_evidence);
+		// a name would render the group as SQL, which can cost more than running the query
+		result.columns.emplace_back(bindings[result.columns.size()], distinct_count, current_domain, Identifier(),
+		                            semi_anti_join_domain_evidence);
 	}
-	for (auto &expression : aggregate.expressions) {
+	for (idx_t aggregate_idx = 0; aggregate_idx < aggregate.expressions.size(); aggregate_idx++) {
 		result.columns.emplace_back(bindings[result.columns.size()],
-		                            DistinctCount(result.cardinality, DistinctCountSource::CARDINALITY),
-		                            Identifier(expression->GetName()));
+		                            DistinctCount(result.cardinality, DistinctCountSource::CARDINALITY), Identifier());
 	}
 	for (idx_t grouping_idx = 0; grouping_idx < aggregate.grouping_functions.size(); grouping_idx++) {
 		auto grouping_count = MinValue<idx_t>(result.cardinality, MaxValue<idx_t>(aggregate.grouping_sets.size(), 1));

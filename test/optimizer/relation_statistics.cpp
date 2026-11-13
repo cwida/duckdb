@@ -10,6 +10,8 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/operator/logical_expression_get.hpp"
 #include "duckdb/planner/operator/logical_set_operation.hpp"
+#include "duckdb/function/aggregate/distributive_function_utils.hpp"
+#include "duckdb/function/function_binder.hpp"
 #include "duckdb/optimizer/join_order/cardinality_estimator.hpp"
 #include "duckdb/optimizer/join_order/filter_info.hpp"
 #include "duckdb/optimizer/join_order/join_predicate.hpp"
@@ -18,6 +20,7 @@
 #include "duckdb/optimizer/join_order/relation_manager.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_extractor.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -1037,6 +1040,74 @@ TEST_CASE("Grouping sets discard inherited SEMI domain evidence", "[optimizer][r
 	REQUIRE(duplicate_groups);
 	REQUIRE_FALSE(duplicate_groups->columns[0].GetSupportedSemiAntiDomainSize().IsValid());
 }
+
+//! Casts JSON nested 'depth' levels deep to VARIANT in a scan, so that no constant is folded on the way
+static Value DeepVariantValue(Connection &connection, idx_t depth) {
+	auto result = connection.Query("SELECT (repeat('[', i) || repeat(']', i))::JSON::VARIANT FROM range(" +
+	                               to_string(depth) + ", " + to_string(depth + 1) + ") t(i)");
+	REQUIRE_NO_FAIL(*result);
+	return result->Collection().GetValue(0, 0);
+}
+
+TEST_CASE("Projection and aggregate statistics do not render a nested VARIANT constant",
+          "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	if (!db.ExtensionIsLoaded("json")) {
+		return;
+	}
+	// rendering a VARIANT as SQL fails beyond 127 nested arrays, so naming a column after this value would fail
+	auto deep = DeepVariantValue(connection, 1000);
+	auto child_stats = CreateStats({}, {}, 3);
+	vector<unique_ptr<Expression>> expressions;
+	expressions.push_back(make_uniq<BoundConstantExpression>(deep));
+	LogicalProjection projection(TableIndex(20), std::move(expressions));
+	auto projected = RelationStatisticsHelper::ExtractProjectionStats(projection, child_stats);
+	REQUIRE(projected);
+	REQUIRE(projected->columns.size() == 1);
+	REQUIRE(projected->columns[0].total_domain.distinct_count == 1);
+
+	FunctionBinder function_binder(*connection.context);
+	vector<unique_ptr<Expression>> first_children;
+	first_children.push_back(make_uniq<BoundConstantExpression>(deep));
+	vector<unique_ptr<Expression>> aggregates;
+	aggregates.push_back(function_binder.BindAggregateFunction(FirstFunctionGetter::GetFunction(deep.type()),
+	                                                           std::move(first_children), nullptr,
+	                                                           AggregateType::NON_DISTINCT));
+	LogicalAggregate aggregate(TableIndex(30), TableIndex(40), std::move(aggregates));
+	aggregate.groups.push_back(make_uniq<BoundConstantExpression>(deep));
+	auto aggregated = RelationStatisticsHelper::ExtractAggregationStats(aggregate, child_stats, *connection.context);
+	REQUIRE(aggregated);
+	REQUIRE(aggregated->columns.size() == 2);
+}
+
+#ifndef DEBUG
+// debug builds render every plan expression in LogicalOperator::Verify, where this depth fails
+TEST_CASE("Statements over a nested VARIANT constant plan without rendering it", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	if (!db.ExtensionIsLoaded("json")) {
+		return;
+	}
+	string deep = "(repeat('[', 150) || repeat(']', 150))::JSON::VARIANT";
+	REQUIRE_NO_FAIL(connection.Query("CREATE TABLE t (id INTEGER, doc VARIANT)"));
+	REQUIRE_NO_FAIL(connection.Query("INSERT INTO t VALUES (1, NULL)"));
+	REQUIRE_NO_FAIL(connection.Query("CREATE TABLE s AS SELECT range AS x FROM range(3)"));
+	REQUIRE_NO_FAIL(connection.Query("UPDATE t SET doc = " + deep + " WHERE id = 1"));
+	auto result = connection.Query("SELECT variant_typeof(first(" + deep + ")) FROM s");
+	REQUIRE(CHECK_COLUMN(result, 0, {"ARRAY(1)"}));
+	result = connection.Query("SELECT count(*) FROM s GROUP BY [x, " + deep + "]");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 1, 1}));
+	REQUIRE_NO_FAIL(connection.Query("INSERT INTO t SELECT x + 2, " + deep + " FROM s"));
+	// an INSERT of the constant itself never named it, and stores the same value
+	REQUIRE_NO_FAIL(connection.Query("INSERT INTO t VALUES (5, " + deep + ")"));
+	result = connection.Query(
+	    "SELECT count(*), count(DISTINCT doc), count(*) FILTER (variant_typeof(doc) = 'ARRAY(1)') FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {5}));
+	REQUIRE(CHECK_COLUMN(result, 1, {1}));
+	REQUIRE(CHECK_COLUMN(result, 2, {5}));
+}
+#endif
 
 TEST_CASE("Relation statistics extraction is cached by operator", "[optimizer][relation_statistics]") {
 	DuckDB db;
