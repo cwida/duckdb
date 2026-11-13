@@ -223,6 +223,7 @@ class JobStagesTest(unittest.TestCase):
             )
             self.assertTrue(workflow_dispatch_selection.save_cache)
 
+    @unittest.skipIf(os.getenv("OVERRIDE_JOBS") is not None, SKIP_IF_OVERRIDE)
     def test_regular_branch_excludes_main_only_jobs(self):
         selection = self._compute_job_selection("pull_request", "feature/my-branch", "duckdb/duckdb")
         self.assertNotIn("codecov", selection.enabled_jobs)
