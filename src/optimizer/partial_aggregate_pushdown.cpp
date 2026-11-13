@@ -682,6 +682,14 @@ static bool DEEstimateCollapse(RelationStatsExtractor &extractor, LogicalCompari
 	if (!join.has_estimated_cardinality) {
 		return false;
 	}
+	// Reject selective joins before extracting their input statistics.
+	for (auto &child : join.children) {
+		if (child->has_estimated_cardinality &&
+		    static_cast<double>(join.estimated_cardinality) < PartialAggregatePushdownHeuristics::MIN_JOIN_RETENTION *
+		                                                          static_cast<double>(child->estimated_cardinality)) {
+			return false;
+		}
+	}
 	double retained_fraction = 1;
 	double input_cardinality = 0;
 	idx_t work_margin = DoubleEagerHeuristics::MIN_LARGE_COLLAPSE;
@@ -689,6 +697,13 @@ static bool DEEstimateCollapse(RelationStatsExtractor &extractor, LogicalCompari
 	for (idx_t side = 0; side < 2; side++) {
 		auto stats = extractor.Extract(*join.children[side]);
 		if (!stats) {
+			return false;
+		}
+		const auto cardinality = stats->cardinality;
+		const auto join_retains_rows =
+		    static_cast<double>(join.estimated_cardinality) >=
+		    PartialAggregatePushdownHeuristics::MIN_JOIN_RETENTION * static_cast<double>(cardinality);
+		if (!join_retains_rows || cardinality == 0) {
 			return false;
 		}
 		vector<idx_t> groups;
@@ -699,15 +714,8 @@ static bool DEEstimateCollapse(RelationStatsExtractor &extractor, LogicalCompari
 			}
 			groups.push_back(column.GetIndex());
 		}
-		const auto cardinality = stats->cardinality;
 		lower_cardinalities[side] = RelationStatisticsHelper::EstimateGroupCardinality(*join.children[side], *stats,
 		                                                                               std::move(groups), extractor);
-		const auto join_retains_rows =
-		    static_cast<double>(join.estimated_cardinality) >=
-		    PartialAggregatePushdownHeuristics::MIN_JOIN_RETENTION * static_cast<double>(cardinality);
-		if (!join_retains_rows || cardinality == 0) {
-			return false;
-		}
 		const auto min_collapse = DERequiredCollapse(lower_cardinalities[side]);
 		const auto input_collapses = cardinality / min_collapse >= lower_cardinalities[side];
 		both_inputs_collapse &= input_collapses;
