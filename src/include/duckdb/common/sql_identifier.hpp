@@ -101,9 +101,15 @@ class SQLString {
 public:
 	explicit SQLString(const string &raw_string) : raw_string(raw_string) {
 	}
+	explicit SQLString(const char *raw_string) : raw_string(raw_string) {
+	}
+	explicit SQLString(const Identifier &id);
 
 	//! Emits a quoted string literal including required escapes (i.e. ident -> 'ident')
 	static string ToString(const string &literal);
+	static string ToString(const Identifier &literal);
+	//! Needed to disambiguate between the string and Identifier overloads, as string literals convert to both
+	static string ToString(const char *literal);
 
 public:
 	string raw_string;

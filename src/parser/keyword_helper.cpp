@@ -105,8 +105,19 @@ string SQLQuotedIdentifier::ToString(const char *identifier) {
 	return ToString(string(identifier));
 }
 
+SQLString::SQLString(const Identifier &id) : raw_string(id.GetIdentifierName()) {
+}
+
 string SQLString::ToString(const string &literal) {
 	return KeywordHelper::WriteQuotedAndEscaped(literal, '\'');
+}
+
+string SQLString::ToString(const Identifier &literal) {
+	return ToString(literal.GetIdentifierName());
+}
+
+string SQLString::ToString(const char *literal) {
+	return ToString(string(literal));
 }
 
 } // namespace duckdb
