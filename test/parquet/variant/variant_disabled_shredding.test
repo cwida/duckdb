@@ -54,7 +54,7 @@ CREATE MACRO all_types_data() AS TABLE (
 			x FOR x IN (*) IF x NOT IN [
 				'utinyint', 'usmallint', 'uint', 'ubigint', 'hugeint', 'uhugeint',
 				'bignum', 'time_ns', 'timestamp_s', 'timestamp_ms', 'timestamp_tz',
-				'time_tz', 'interval', 'bit', 'dec_4_1', 'timestamp_tz_ns',
+				'time_tz', 'interval', 'bit', 'dec_4_1',
 				'blob', -- Parquet VARIANT reads blobs as base64.
 				'geometry' -- Not supported yet.
 			]
