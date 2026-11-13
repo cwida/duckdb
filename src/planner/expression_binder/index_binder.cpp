@@ -22,6 +22,7 @@
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/common/types/decimal.hpp"
+#include "duckdb/function/cast/bound_cast_data.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 
@@ -137,8 +138,8 @@ bool IsStructOrTuple(const LogicalType &type) {
 }
 
 //! Whether a cast converts between BIGNUM and DECIMAL, the types themselves or the children the cast pairs: the
-//! elements of lists and arrays, the keys and values of maps, struct fields (by name, else by position), every field of
-//! a STRUCT cast to a MAP with the value type, and union members by name; the engines before wide decimals have no such
+//! elements of lists and arrays, the keys and values of maps, the struct fields the cast matches, every field of a
+//! STRUCT cast to a MAP with the value type, and union members by name; the engines before wide decimals have no such
 //! cast
 bool CastsBetweenBignumAndDecimal(const LogicalType &source, const LogicalType &target) {
 	if (IsBignumDecimalCast(source, target)) {
@@ -176,21 +177,17 @@ bool CastsBetweenBignumAndDecimal(const LogicalType &source, const LogicalType &
 	if (!IsStructOrTuple(source) || !IsStructOrTuple(target)) {
 		return false;
 	}
+	// the fields the cast pairs: by name between named structs, else by position; a cast that does not bind pairs none
+	auto mapping = StructBoundCastData::GetFieldMapping(source, target);
+	if (mapping.kind != StructCastFieldMapping::MatchKind::VALID) {
+		return false;
+	}
 	auto &source_children = StructType::GetChildTypes(source);
 	auto &target_children = StructType::GetChildTypes(target);
-	for (idx_t i = 0; i < source_children.size(); i++) {
-		auto &name = source_children[i].first;
-		optional_ptr<const LogicalType> target_child;
-		for (auto &candidate : target_children) {
-			if (!name.empty() && candidate.first == name) {
-				target_child = &candidate.second;
-				break;
-			}
-		}
-		if (!target_child && i < target_children.size()) {
-			target_child = &target_children[i].second;
-		}
-		if (target_child && CastsBetweenBignumAndDecimal(source_children[i].second, *target_child)) {
+	for (idx_t i = 0; i < mapping.source_indexes.size(); i++) {
+		auto &source_child = source_children[mapping.source_indexes[i]].second;
+		auto &target_child = target_children[mapping.target_indexes[i]].second;
+		if (CastsBetweenBignumAndDecimal(source_child, target_child)) {
 			return true;
 		}
 	}

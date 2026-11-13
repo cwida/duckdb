@@ -205,6 +205,19 @@ CREATE INDEX sx2 ON d.s ((struct_extract(CAST(s AS STRUCT(n DECIMAL(18,0), amoun
 ----
 <REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
 
+# a named struct cast drops the source fields without a match and fills the missing target fields with NULL: those
+# fields pair with none, so a cast that converts nothing between BIGNUM and DECIMAL is accepted
+statement ok
+CREATE TABLE d.u (s STRUCT(keep INTEGER, dropped BIGNUM))
+
+statement ok
+CREATE INDEX ux ON d.u ((struct_extract(CAST(s AS STRUCT(keep INTEGER, added DECIMAL(18,0))), 'keep')))
+
+statement error
+CREATE INDEX ux2 ON d.u ((struct_extract(CAST(s AS STRUCT(keep INTEGER, dropped DECIMAL(18,0))), 'keep')))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
 # a cast between nested types of different kinds pairs the children as the cast does: the fields of a ROW cast to a
 # STRUCT by position, every field of a STRUCT cast to a MAP with the value type
 statement error
