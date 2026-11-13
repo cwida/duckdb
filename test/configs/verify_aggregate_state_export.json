@@ -26,6 +26,7 @@
         "test/optimizer/partial_aggregate_pushdown_serialized_plan.test",
         "test/optimizer/partial_aggregate_pushdown_throwing_argument.test",
         "test/optimizer/partition_stats_exactness.test",
+        "test/optimizer/redundant_distinct.test",
         "test/optimizer/remove_redundant_order.test",
         "test/optimizer/runtime_key_domain_plan.test",
         "test/optimizer/shared_key_domain_plan.test",
