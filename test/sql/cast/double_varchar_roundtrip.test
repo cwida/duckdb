@@ -1,0 +1,31 @@
+# name: test/sql/cast/double_varchar_roundtrip.test
+# description: Double -> VARCHAR casts must round-trip for exact powers of two
+# group: [cast]
+
+# 2^81 and 2^91 hit the shortest-representation fallback in the vendored fmt
+# and were printed as 2^82 and 2^92 respectively (issue #28033)
+query I
+select (2::DOUBLE ^ 91)::VARCHAR;
+----
+2.4758800785707605e+27
+
+query I
+select (2::DOUBLE ^ 81)::VARCHAR;
+----
+2.4178516392292583e+24
+
+query I
+select printf('%.17g', 2::DOUBLE ^ 91);
+----
+2.4758800785707605e+27
+
+# every representable power of two must round-trip through the cast
+query I
+select count(*) from (select e from range(0, 1000) t(e) where (2::DOUBLE ^ e)::VARCHAR::DOUBLE <> 2::DOUBLE ^ e);
+----
+0
+
+query I
+select count(*) from (select e from range(0, 1000) t(e) where (3 * 2::DOUBLE ^ e)::VARCHAR::DOUBLE <> 3 * 2::DOUBLE ^ e);
+----
+0
