@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -498,6 +499,28 @@ index 4b48dee..92efc5d 100644
         git(checkout, 'reset', '--hard', revision)
         git(checkout, 'submodule', 'update', '--force')
         git(checkout, 'apply', '--check', str(patch_file))
+
+    def test_vcpkg_merge_unions_dependency_features(self):
+        external_dir = self.root / 'external'
+        manifests = {
+            'aws': [{'name': 'aws-sdk-cpp', 'features': ['sso', 'sts']}],
+            'glue': [{'name': 'aws-sdk-cpp', 'features': ['glue', 'sts']}],
+            'curl_min': [{'name': 'curl', 'default-features': False, 'features': ['ssl']}],
+            'curl_default': [{'name': 'curl'}],
+        }
+        for name, dependencies in manifests.items():
+            (external_dir / name).mkdir(parents=True)
+            (external_dir / name / 'vcpkg.json').write_text(json.dumps({'dependencies': dependencies}))
+        output_dir = self.root / 'build'
+
+        os.environ['VCPKG_TOOLCHAIN_PATH'] = '/unused/vcpkg.cmake'
+        with contextlib.redirect_stdout(io.StringIO()):
+            sync.merge_vcpkg_manifests(list(manifests), external_dir, self.root, output_dir)
+
+        dependencies = json.loads((output_dir / 'vcpkg.json').read_text())['dependencies']
+        self.assertIn({'name': 'aws-sdk-cpp', 'features': ['sso', 'sts', 'glue']}, dependencies)
+        self.assertIn({'name': 'curl', 'features': ['ssl']}, dependencies)
+        self.assertEqual(len([dep for dep in dependencies if isinstance(dep, dict)]), 2)
 
 
 if __name__ == '__main__':
