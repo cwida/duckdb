@@ -113,7 +113,7 @@ BoundStatement Binder::BindNode(DeleteQueryNode &node) {
 
 		unique_ptr<LogicalOperator> del_as_logicaloperator = std::move(del);
 		// Include virtual columns (like rowid) so they can be referenced in RETURNING
-		auto virtual_columns = table.GetVirtualColumns();
+		auto virtual_columns = table.GetDeleteReturningVirtualColumns();
 		return BindReturning(std::move(node.returning_list), table, node.table->alias, update_table_index,
 		                     std::move(del_as_logicaloperator), std::move(virtual_columns));
 	}
