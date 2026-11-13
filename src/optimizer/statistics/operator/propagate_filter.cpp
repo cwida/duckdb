@@ -330,7 +330,10 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalFilt
 	column_binding_map_t<unique_ptr<BaseStatistics>> input_statistics;
 	if (verify_stats) {
 		for (auto &entry : statistics_map) {
-			input_statistics[entry.first] = entry.second->ToUnique();
+			// compressed materialization registers bindings without statistics
+			if (entry.second) {
+				input_statistics[entry.first] = entry.second->ToUnique();
+			}
 		}
 	}
 	// the conjuncts are propagated against statistics narrowed by the earlier conjuncts: these hold for the filter
