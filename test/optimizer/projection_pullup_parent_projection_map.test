@@ -1,0 +1,126 @@
+# name: test/optimizer/projection_pullup_parent_projection_map.test
+# description: Projection pullup drops a parent's projection map when it removes the projection the map selects from
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t1(a INTEGER, b INTEGER, c VARCHAR);
+
+statement ok
+INSERT INTO t1 VALUES (7, 3, ''), (2, 3, 'a'), (1, -1, 'c'), (1, 0, 'b'), (NULL, 2, 'a'), (3, NULL, 'a'), (1, 1, 'c'), (5, 2, 'c'), (6, 8, 'q');
+
+statement ok
+CREATE TABLE t2(a INTEGER, b INTEGER, c VARCHAR);
+
+statement ok
+INSERT INTO t2 VALUES (1, 5, 'c'), (-1, 1, 'a'), (3, 1, ''), (4, 9, 'q');
+
+statement ok
+CREATE TABLE t3(a INTEGER, b INTEGER, c VARCHAR);
+
+statement ok
+INSERT INTO t3 VALUES (-1, 7, 'b'), (2, 1, 'c'), (1, 1, 'b'), (0, 8, 'z');
+
+# The join of the flattened outer LATERAL has a projection map over the projection of the subquery. Pulling that
+# projection up removes it, and the projection below it is pulled above the join while the map still describes the
+# old layout.
+query IIII
+SELECT o.a, o.b, l0.x, l0.y
+FROM t2 o
+CROSS JOIN LATERAL (
+    SELECT i0.a AS x, i0.b AS y
+    FROM t1 i0, LATERAL (SELECT count(*) AS x FROM range(o.a) r) n0
+    WHERE i0.c = o.c
+) l0, t3 i1
+WHERE i1.b = l0.y
+ORDER BY ALL;
+----
+1	5	1	1
+1	5	1	1
+4	9	6	8
+
+query IIIII
+SELECT o.a, o.b, l0.x, l0.y, l0.z
+FROM t2 o
+CROSS JOIN LATERAL (
+    SELECT i0.a AS x, i0.b AS y, n0.x AS z
+    FROM t1 i0, LATERAL (SELECT count(*) AS x FROM range(o.a) r) n0
+    WHERE i0.c = o.c
+) l0, t3 i1
+WHERE i1.b = l0.y
+ORDER BY ALL;
+----
+1	5	1	1	1
+1	5	1	1	1
+4	9	6	8	4
+
+# consumers that depend on the column order above the rewritten joins
+query IIIII
+WITH q AS MATERIALIZED (
+    SELECT o.a, o.b, l0.x, l0.y, l0.z
+    FROM t2 o
+    CROSS JOIN LATERAL (
+        SELECT i0.a AS x, i0.b AS y, n0.x AS z
+        FROM t1 i0, LATERAL (SELECT count(*) AS x FROM range(o.a) r) n0
+        WHERE i0.c = o.c
+    ) l0, t3 i1
+    WHERE i1.b = l0.y
+)
+SELECT z, y, x, b, a FROM q ORDER BY ALL;
+----
+1	1	1	5	1
+1	1	1	5	1
+4	8	6	9	4
+
+query IIIII
+SELECT o.a, o.b, l0.x, l0.y, l0.z
+FROM t2 o
+CROSS JOIN LATERAL (
+    SELECT i0.a AS x, i0.b AS y, n0.x AS z
+    FROM t1 i0, LATERAL (SELECT count(*) AS x FROM range(o.a) r) n0
+    WHERE i0.c = o.c
+) l0, t3 i1
+WHERE i1.b = l0.y
+UNION ALL
+SELECT o.a, o.b, l0.x, l0.y, l0.z
+FROM t2 o
+CROSS JOIN LATERAL (
+    SELECT i0.a AS x, i0.b AS y, n0.x AS z
+    FROM t1 i0, LATERAL (SELECT count(*) AS x FROM range(o.a) r) n0
+    WHERE i0.c = o.c
+) l0, t3 i1
+WHERE i1.a = l0.y
+ORDER BY ALL;
+----
+-1	1	NULL	2	0
+1	5	1	-1	1
+1	5	1	1	1
+1	5	1	1	1
+1	5	1	1	1
+1	5	5	2	1
+4	9	6	8	4
+
+query IIII
+SELECT o.a, o.b, l0.x, l0.y
+FROM t2 o
+CROSS JOIN LATERAL (
+    SELECT i0.a AS x, i0.b AS y
+    FROM t1 i0, LATERAL (SELECT count(*) AS x, sum(x) AS y FROM (SELECT r.range + o.b AS x, o.c AS y FROM range(greatest(0, least(coalesce(o.a, 0), 4))::BIGINT) r) rr) n0
+    WHERE i0.c = o.c
+) l0
+JOIN t3 i1 ON i1.b = l0.y AND i1.a <> o.a
+ORDER BY ALL;
+----
+1	5	1	1
+4	9	6	8
+
+# the query of the report
+query III
+SELECT o.a, o.b, l0.x
+FROM t2 o
+CROSS JOIN LATERAL (
+    SELECT i0.a AS x, i0.b AS y
+    FROM t1 i0, LATERAL (SELECT count(*) AS x, sum(x) AS y FROM (SELECT r.range + o.b AS x, o.c AS y FROM range(greatest(0, least(coalesce(o.a, 0), 4))::BIGINT) r) rr) n0
+    WHERE i0.c = o.c
+) l0
+JOIN t3 i1 ON i1.c = l0.y::VARCHAR AND i1.a <> o.a;
+----

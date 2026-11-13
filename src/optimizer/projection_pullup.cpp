@@ -83,6 +83,22 @@ void ProjectionPullup::PullUpColrefProjection(unique_ptr<LogicalOperator> &op, L
 	replacer.stop_operator = proj.children[0];
 	replacer.VisitOperator(*root);
 
+	// A projection map of the parent selects positions in this projection's output. The parent's child is about to
+	// change to the projection's input, and the pull-ups below read the parent's output bindings before the map is
+	// remapped when the visit of the child returns. Drop the map: the parent then projects its whole child.
+	if (!parents.empty()) {
+		auto &parent = parents.back().get();
+		for (idx_t child_idx = 0; child_idx < parent.children.size(); child_idx++) {
+			if (parent.children[child_idx].get() != op.get()) {
+				continue;
+			}
+			auto projection_map = GetProjectionMap(parent, child_idx);
+			if (projection_map) {
+				projection_map->clear();
+			}
+		}
+	}
+
 	// Re-run optimization after removing this projection.
 	// Binding rewrites can make parent projections redundant, and without
 	// another pass they would not be eliminated.
