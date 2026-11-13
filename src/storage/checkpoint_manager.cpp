@@ -137,7 +137,11 @@ static catalog_entry_vector_t GetCatalogEntries(vector<reference<SchemaCatalogEn
 				return;
 			}
 			if (entry.type == CatalogType::TABLE_ENTRY) {
-				tables.push_back(entry.Cast<TableCatalogEntry>());
+				auto &table = entry.Cast<TableCatalogEntry>();
+				if (!table.IsDuckTable()) {
+					return;
+				}
+				tables.push_back(table);
 			} else if (entry.type == CatalogType::VIEW_ENTRY) {
 				views.push_back(entry.Cast<ViewCatalogEntry>());
 			} else {

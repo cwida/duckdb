@@ -32,7 +32,10 @@ void InMemoryCheckpointer::CreateCheckpoint() {
 		auto &schema = schema_ref.get();
 		schema.Scan(CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
 			if (entry.type == CatalogType::TABLE_ENTRY) {
-				tables.push_back(entry.Cast<TableCatalogEntry>());
+				auto &table = entry.Cast<TableCatalogEntry>();
+				if (table.IsDuckTable()) {
+					tables.push_back(table);
+				}
 			}
 		});
 	}
