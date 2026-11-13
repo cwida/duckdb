@@ -43,7 +43,7 @@ public:
 	}
 
 private:
-	void BeginWriteInternal(WriteStream &writer, const int64_t &first_value) {
+	void BeginWriteInternal(WriteStream &writer, const int64_t &first_value, bool wrap_first_value = false) {
 		// <block size in values> <number of miniblocks in a block> <total value count> <first value>
 
 		// the block size is a multiple of 128; it is stored as a ULEB128 int
@@ -57,8 +57,13 @@ private:
 		ParquetDecodeUtils::VarintEncode(NUMBER_OF_MINIBLOCKS_IN_A_BLOCK, writer);
 		// the total value count is stored as a ULEB128 int
 		ParquetDecodeUtils::VarintEncode(total_value_count, writer);
-		// the first value is stored as a zigzag ULEB128 int
-		ParquetDecodeUtils::VarintEncode(ParquetDecodeUtils::IntToZigzag(first_value), writer);
+		// the first value is stored as a zigzag ULEB128 int. For INT32 physical columns it must be stored as the
+		// 32-bit two-complement representation, otherwise the zigzag varint can exceed 32 bits and readers
+		// (Arrow C++/pyarrow) reject the page.
+		const int64_t encoded_first_value =
+		    wrap_first_value ? static_cast<int64_t>(static_cast<int32_t>(static_cast<uint32_t>(first_value)))
+		                     : first_value;
+		ParquetDecodeUtils::VarintEncode(ParquetDecodeUtils::IntToZigzag(encoded_first_value), writer);
 
 		// initialize
 		if (total_value_count != 0) {
@@ -86,6 +91,21 @@ private:
 		// Compute the frame of reference (the minimum of the deltas in the block).
 		min_delta = MinValue(min_delta, delta);
 		// append. if block is full, write it out
+		data[block_count++] = delta;
+		if (block_count == BLOCK_SIZE_IN_VALUES) {
+			WriteBlock(writer);
+		}
+	}
+
+	//! Same as WriteValueInternal, but computes the deltas with 32-bit wrapping arithmetic.
+	//! The Parquet spec requires that deltas for INT32 physical columns wrap around in two's complement and
+	//! "INT32 data must not use more than 32 bits", otherwise readers such as Arrow C++/pyarrow reject the page
+	//! ("delta bit width larger than integer bit width").
+	void WriteValueInternal32(WriteStream &writer, const int64_t &value) {
+		const auto delta = static_cast<int64_t>(
+		    static_cast<int32_t>(static_cast<uint32_t>(value) - static_cast<uint32_t>(previous_value)));
+		previous_value = value;
+		min_delta = MinValue(min_delta, delta);
 		data[block_count++] = delta;
 		if (block_count == BLOCK_SIZE_IN_VALUES) {
 			WriteBlock(writer);
@@ -188,7 +208,7 @@ private:
 
 template <>
 inline void DbpEncoder::BeginWrite(WriteStream &writer, const int32_t &first_value) {
-	BeginWriteInternal(writer, first_value);
+	BeginWriteInternal(writer, first_value, true);
 }
 
 template <>
@@ -198,7 +218,7 @@ inline void DbpEncoder::BeginWrite(WriteStream &writer, const int64_t &first_val
 
 template <>
 inline void DbpEncoder::BeginWrite(WriteStream &writer, const uint32_t &first_value) {
-	BeginWriteInternal(writer, first_value);
+	BeginWriteInternal(writer, first_value, true);
 }
 
 template <>
@@ -208,7 +228,7 @@ inline void DbpEncoder::BeginWrite(WriteStream &writer, const uint64_t &first_va
 
 template <>
 inline void DbpEncoder::WriteValue(WriteStream &writer, const int32_t &first_value) {
-	WriteValueInternal(writer, first_value);
+	WriteValueInternal32(writer, first_value);
 }
 
 template <>
@@ -218,7 +238,7 @@ inline void DbpEncoder::WriteValue(WriteStream &writer, const int64_t &first_val
 
 template <>
 inline void DbpEncoder::WriteValue(WriteStream &writer, const uint32_t &first_value) {
-	WriteValueInternal(writer, first_value);
+	WriteValueInternal32(writer, first_value);
 }
 
 template <>
