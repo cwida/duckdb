@@ -506,6 +506,16 @@ class RunTestsScriptTest(unittest.TestCase):
 
         self.assertEqual(error_output.getvalue(), "Stderr: Invalid test flag\n")
 
+    def test_protocol_scan_crash_preserves_stdout_and_windows_exit_status(self):
+        error_output = StringIO()
+        result = mock.Mock(returncode=0xC0000005, stdout='{"test_id":"sql:first.test"}\n', stderr="")
+        with (
+            mock.patch("scripts.ci.run_tests.run_test_protocol_query", return_value=result),
+            self.assertRaisesRegex(run_tests.TestRunnerError, "3221225477, 0xC0000005"),
+        ):
+            run_tests.generate_test_list(StringIO(), "duckdb.exe", "", [], error_output=error_output)
+        self.assertIn('{"test_id":"sql:first.test"}', error_output.getvalue())
+
     def test_protocol_runner_applies_thread_stack_size_to_duckdb_process(self):
         test_file = StringIO()
         result = mock.Mock(returncode=0, stdout="", stderr="")
@@ -3134,15 +3144,58 @@ For more information, see https://duckdb.org/docs/current/dev/internal_errors
         )
         self.assertEqual(reproduce_batch, [str(test_path)])
 
-    def test_timeout_names_last_file_in_multi_test_batch(self):
+    def test_timeout_without_progress_preserves_the_entire_batch(self):
         lines, reproduce_batch = run_tests.summarize_failure_output(
             "batch timed out after 5 seconds",
             "",
             "",
             ["test/sql/a.test", "test/sql/b.test"],
         )
-        self.assertEqual(lines, ["error: timeout (5s) for test/sql/b.test."])
-        self.assertEqual(reproduce_batch, ["test/sql/b.test"])
+        self.assertEqual(lines, ["error: timeout (5s) for test batch."])
+        self.assertEqual(reproduce_batch, ["test/sql/a.test", "test/sql/b.test"])
+
+    def test_timeout_uses_protocol_begin_and_durable_completion_events(self):
+        batch = ["sql:first.test", "sql:hanging.test", "sql:skipped.test"]
+        stdout = 'sql:first.test took 0.010s\n[TEST_EVENT] {"event":"end","name":"sql:first.test","status":"ok"}\n'
+        stderr = (
+            '[TEST_EVENT] {"event":"begin","name":"sql:first.test"}\n'
+            '[TEST_EVENT] {"event":"begin","name":"sql:hanging.test"}\n'
+            "incomplete tests:\n- sql:hanging.test\n"
+        )
+        lines, reproduce_batch = run_tests.summarize_failure_output(
+            "batch timed out after 300 seconds", stdout, stderr, batch
+        )
+        self.assertEqual(
+            lines,
+            [
+                "error: timeout (300s) for sql:hanging.test.",
+                "incomplete tests:",
+                "- sql:hanging.test",
+            ],
+        )
+        self.assertEqual(reproduce_batch, ["sql:hanging.test"])
+
+    def test_timeout_recognizes_plain_durable_runtime_lines(self):
+        batch = ["sql:completed.test", "sql:pending.test", "sql:last.test"]
+        lines, reproduce_batch = run_tests.summarize_failure_output(
+            "batch timed out after 5 seconds",
+            "sql:completed.test took 0.010s\n",
+            "",
+            batch,
+        )
+        self.assertEqual(lines, ["error: timeout (5s) for sql:pending.test."])
+        self.assertEqual(reproduce_batch, ["sql:pending.test"])
+
+    def test_timeout_after_all_tests_completed_does_not_blame_a_test(self):
+        batch = ["sql:first.test", "sql:last.test"]
+        lines, reproduce_batch = run_tests.summarize_failure_output(
+            "batch timed out after 5 seconds",
+            "sql:first.test took 0.010s\nsql:last.test took 0.010s\n",
+            "",
+            batch,
+        )
+        self.assertEqual(lines, ["error: timeout (5s) for test batch."])
+        self.assertEqual(reproduce_batch, batch)
 
     def test_timeout_uses_first_started_but_not_completed_test(self):
         batch = [

@@ -278,6 +278,27 @@ class TestExtensionIntegrationTest(unittest.TestCase):
         self.assertTrue(result["timed_out"], result)
         self.assertTrue(run_tests.can_warn_timeout(config, [test_id], result), result)
 
+    def test_batch_timeout_identifies_the_active_test_before_an_unstarted_skip(self):
+        first = self.create_test("first.test", "query I\nSELECT 42\n----\n42\n")
+        hanging = self.create_test(
+            "hanging.test",
+            "query I\nSELECT count(*) FROM range(1000000000) a, range(1000000000) b\n----\n0\n",
+        )
+        skipped = self.create_test("skipped.test", "require-env DUCKDB_CI_MISSING_TEST_VARIABLE\n")
+        batch = [first, hanging, skipped]
+        config = protocol_config(
+            unittest_bin=self.binary,
+            test_flags=f"--temp-dir-root {self.temp_root}",
+            batch_timeout_seconds=3,
+        )
+        with mock.patch("scripts.ci.run_tests.TEST_ROOT_OVERRIDES", [self.test_root]):
+            result = run_tests.run_batch(config, batch)
+        self.assertTrue(result["timed_out"], result)
+        failure = run_tests.parse_failure_info(result["message"], result["stdout"], result["stderr"], batch)
+        self.assertEqual(failure.test_name, hanging)
+        self.assertEqual(failure.reproduce_batch, [hanging])
+        self.assertIn("incomplete tests:", failure.detail_lines)
+
 
 if __name__ == "__main__":
     unittest.main()

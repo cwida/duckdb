@@ -544,7 +544,13 @@ def generate_test_list(
         list_file_args = []
         if test_list_files:
             list_file_args = [arg for test_list_file in test_list_files for arg in ("-f", str(test_list_file))]
-        command = [unittest_bin, *shlex.split(test_flags), "--list-tests", *list_file_args, *patterns]
+        command = [
+            unittest_bin,
+            *shlex.split(test_flags),
+            "--list-tests",
+            *list_file_args,
+            *patterns,
+        ]
         proc = subprocess.run(
             command,
             text=True,
@@ -554,7 +560,12 @@ def generate_test_list(
             stderr=subprocess.PIPE,
         )
         if proc.returncode != 0 and not proc.stdout:
-            print("Stderr:", proc.stderr, end="", file=error_output if error_output is not None else sys.stderr)
+            print(
+                "Stderr:",
+                proc.stderr,
+                end="",
+                file=error_output if error_output is not None else sys.stderr,
+            )
             raise TestRunnerError(f"failed to generate test list from {unittest_bin} (exit: {proc.returncode})")
         test_file.write(proc.stdout)
         test_file.flush()
@@ -562,7 +573,10 @@ def generate_test_list(
 
     _, test_roots, bundle_roots = resolve_test_protocol_paths(unittest_bin)
     test_list_selectors = read_test_selectors(test_list_files)
-    selectors = [*(test_list_selector_expression(selector) for selector in test_list_selectors), *patterns]
+    selectors = [
+        *(test_list_selector_expression(selector) for selector in test_list_selectors),
+        *patterns,
+    ]
     include_slow = any(
         selector == "*" or selector.endswith((".test_slow", ".test_coverage")) or "[.]" in selector
         for selector in selectors
@@ -583,14 +597,26 @@ def generate_test_list(
         thread_stack_size,
     )
     if proc.returncode != 0:
+        error_stream = error_output if error_output is not None else sys.stderr
+        if proc.stdout:
+            print(
+                "Stdout (last 100 lines):",
+                *proc.stdout.splitlines()[-RAW_OUTPUT_TAIL_LINE_COUNT:],
+                sep="\n",
+                file=error_stream,
+                flush=True,
+            )
         print(
             "Stderr:",
             proc.stderr,
             end="",
-            file=error_output if error_output is not None else sys.stderr,
+            file=error_stream,
             flush=True,
         )
-        raise TestRunnerError(f"failed to scan tests using {unittest_bin} (exit: {proc.returncode})")
+        exit_status = str(proc.returncode)
+        if proc.returncode >= 0x80000000:
+            exit_status += f", 0x{proc.returncode:08X}"
+        raise TestRunnerError(f"failed to scan tests using {unittest_bin} (exit: {exit_status})")
     selected_tests = []
     for line in proc.stdout.splitlines():
         try:
@@ -603,7 +629,7 @@ def generate_test_list(
         group = "[.]" if row.get("is_slow") else ""
         test_file.write(f"{row['test_id']}\t{group}\n")
     selected_names = {
-        row.get("name") if isinstance(row.get("name"), str) else test_id_to_list_name(row["test_id"])
+        (row.get("name") if isinstance(row.get("name"), str) else test_id_to_list_name(row["test_id"]))
         for row in selected_tests
     }
     selected_ids = {row["test_id"] for row in selected_tests}
@@ -825,14 +851,22 @@ def parse_stdout_progress(stdout_lines: list[str]):
 
     for line in stdout_lines:
         stripped = line.strip()
+        for event in parse_test_events(stripped):
+            test_name = event.get("name")
+            if not isinstance(test_name, str):
+                continue
+            if event.get("event") == "begin":
+                started_tests.append(test_name)
+            elif event.get("event") == "end":
+                completed_tests.add(test_name)
+        runtime_match = TEST_RUNTIME_PATTERN.match(stripped)
+        if runtime_match:
+            completed_tests.add(runtime_match.group(1))
+            continue
         progress_match = PROGRESS_TEST_START_PATTERN.match(stripped)
         if not progress_match:
             continue
-        progress_text = progress_match.group(1)
-        if " took " in progress_text:
-            completed_tests.add(progress_text.split(" took ", 1)[0])
-        else:
-            started_tests.append(progress_text)
+        started_tests.append(progress_match.group(1))
 
     return started_tests, completed_tests
 
@@ -847,10 +881,6 @@ def infer_timed_out_test_from_stdout(stdout_lines: list[str], batch):
         for test_name in batch:
             if test_name not in completed_tests:
                 return test_name
-    if started_tests:
-        return started_tests[-1]
-    if batch:
-        return batch[-1]
     return None
 
 
@@ -1263,9 +1293,13 @@ def parse_failure_info(message: str | None, stdout: str, stderr: str, batch, ret
     stderr_info = parse_stderr_failure_info(stderr_lines, batch)
 
     if message is not None and message.startswith("batch timed out after "):
-        timeout_test_name = (
-            batch_test_name or stdout_info.last_unfinished_test or infer_timed_out_test_from_stdout(stdout_lines, batch)
+        timeout_test_name = infer_timed_out_test_from_stdout(
+            strip_ansi(stdout).splitlines() + strip_ansi(stderr).splitlines(), batch
         )
+        if timeout_test_name is None and len(batch) == 1:
+            _, completed_tests = parse_stdout_progress(strip_ansi(stdout).splitlines())
+            if batch_test_name not in completed_tests:
+                timeout_test_name = batch_test_name
         reproduce_batch = [timeout_test_name] if timeout_test_name else list(batch)
         return FailureInfo(
             kind="timeout",
@@ -1278,9 +1312,12 @@ def parse_failure_info(message: str | None, stdout: str, stderr: str, batch, ret
             expected_result_lines=[],
             actual_result_lines=[],
             detail_lines=[
-                event.get("data") or "test reported an error before timing out"
-                for event in parse_test_events(stdout) + parse_test_events(stderr)
-                if event.get("event") == "error" or event.get("status") == "error"
+                *stderr_non_empty_lines[-RAW_OUTPUT_TAIL_LINE_COUNT:],
+                *[
+                    event.get("data") or "test reported an error before timing out"
+                    for event in parse_test_events(stdout) + parse_test_events(stderr)
+                    if event.get("event") == "error" or event.get("status") == "error"
+                ],
             ],
             timeout_seconds=float(re.search(r"after ([0-9]+(?:\.[0-9]+)?) seconds", message).group(1)),
             reproduce_batch=reproduce_batch,
@@ -1607,8 +1644,6 @@ def summarize_failure_output(message: str | None, stdout: str, stderr: str, batc
 def format_failed_test_retry_target(test_name: str | None, batch_info):
     if test_name:
         return test_name
-    if batch_info["batch"]:
-        return batch_info["batch"][-1]
     return f"batch {batch_info['batch_idx']}"
 
 
