@@ -124,11 +124,13 @@ unique_ptr<TreeRenderer> TreeRenderer::CreateRenderer(ClientContext &context, co
 unique_ptr<TreeRenderer> TreeRenderer::CreateRenderer(ClientContext &context, const string &name,
                                                       const unordered_map<string, Value> &settings) {
 	// registered renderers take precedence over the built-in formats
+	unique_ptr<TreeRenderer> renderer;
 	auto extension = ProfilerExtension::Find(context, name);
 	if (extension && extension->create_renderer) {
-		return extension->create_renderer(context);
+		renderer = extension->create_renderer(context);
+	} else {
+		renderer = CreateRenderer(name);
 	}
-	auto renderer = CreateRenderer(name);
 	if (renderer) {
 		renderer->Configure(settings);
 	}
