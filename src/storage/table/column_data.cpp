@@ -251,6 +251,7 @@ idx_t ColumnData::ScanVector(ColumnScanState &state, Vector &result, idx_t remai
 void ColumnData::SelectVector(ColumnScanState &state, Vector &result, idx_t target_count, const SelectionVector &sel,
                               idx_t sel_count, ScanVectorType scan_type, idx_t result_offset) {
 	BeginScanVectorInternal(state);
+	const bool preserve_positions = scan_type == ScanVectorType::SCAN_FLAT_VECTOR_PRESERVE_POSITIONS;
 	// scratch space to rebase the selection vector to the start of a segment scan
 	// this owns its data, as compression functions can retain the selection vector (e.g. by slicing the result)
 	SelectionVector rebased_sel;
@@ -274,7 +275,7 @@ void ColumnData::SelectVector(ColumnScanState &state, Vector &result, idx_t targ
 				segment_sel_count++;
 			}
 		}
-		if (segment_sel_count > 0) {
+		if (segment_sel_count > 0 || preserve_positions) {
 			// the indices must be relative to the start of the segment scan - for the first segment this is
 			// already the case, so we can forward the selection vector of the caller directly
 			reference<const SelectionVector> segment_sel(sel);
@@ -291,7 +292,7 @@ void ColumnData::SelectVector(ColumnScanState &state, Vector &result, idx_t targ
 				FetchScannedRows(state, segment_sel.get(), segment_sel_count, result, result_offset + sel_offset);
 			} else {
 				current.Select(state, scan_count, result, segment_sel.get(), segment_sel_count,
-				               result_offset + sel_offset, scan_type);
+				               result_offset + (preserve_positions ? scanned_count : sel_offset), scan_type);
 			}
 			segment_internal_index = state.offset_in_column + scan_count;
 		}
@@ -309,9 +310,9 @@ void ColumnData::SelectVector(ColumnScanState &state, Vector &result, idx_t targ
 			state.segment_checked = false;
 		}
 	}
-	if (scan_type == ScanVectorType::SCAN_FLAT_VECTOR) {
+	if (scan_type != ScanVectorType::SCAN_ENTIRE_VECTOR) {
 		// not every compression function sets the size of the result
-		FlatVector::SetSize(result, count_t(result_offset + sel_count));
+		FlatVector::SetSize(result, count_t(result_offset + (preserve_positions ? scanned_count : sel_count)));
 	}
 	state.internal_index = segment_internal_index;
 }
@@ -419,23 +420,27 @@ idx_t ColumnData::ScanCount(ColumnScanState &state, Vector &result, idx_t scan_c
 }
 
 void ColumnData::Filter(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
+                        SelectionVector &sel, idx_t &s_count, const TableFilter &filter, TableFilterState &filter_state,
+                        ColumnData &validity_column) {
+	auto compression = GetCompressionFunction();
+	auto target_count = GetVectorCount(vector_index);
+	bool verify_fetch_row = state.scan_options && state.scan_options->force_fetch_row;
+	if (!compression || !compression->select_supports_preserve_positions || verify_fetch_row || HasUpdates() ||
+	    validity_column.HasUpdates()) {
+		ColumnData::Filter(transaction, vector_index, state, result, sel, s_count, filter, filter_state);
+		return;
+	}
+	validity_column.ScanVector(transaction, vector_index, state.child_states[0], result, target_count,
+	                           ScanVectorType::SCAN_FLAT_VECTOR, state.update_scan_type);
+	SelectVector(state, result, target_count, sel, s_count, ScanVectorType::SCAN_FLAT_VECTOR_PRESERVE_POSITIONS);
+	ColumnSegment::FilterSelection(sel, result, filter_state, target_count, s_count);
+}
+
+void ColumnData::Filter(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
                         SelectionVector &sel, idx_t &s_count, const TableFilter &filter,
                         TableFilterState &filter_state) {
-	idx_t scan_count = GetVectorCount(vector_index);
-	if (type.id() == LogicalTypeId::VARCHAR && state.current && s_count > 0 && s_count < scan_count) {
-		Select(transaction, vector_index, state, result, sel, s_count);
-		SelectionVector original_positions(scan_count);
-		for (idx_t i = 0; i < scan_count; i++) {
-			original_positions.set_index(i, 0);
-		}
-		for (idx_t i = 0; i < s_count; i++) {
-			original_positions.set_index(sel.get_index(i), i);
-		}
-		result.Slice(original_positions, scan_count);
-	} else {
-		scan_count = Scan(transaction, vector_index, state, result);
-		FlatVector::SetSize(result, count_t(scan_count));
-	}
+	idx_t scan_count = Scan(transaction, vector_index, state, result);
+	FlatVector::SetSize(result, count_t(scan_count));
 
 	ColumnSegment::FilterSelection(sel, result, filter_state, scan_count, s_count);
 }
