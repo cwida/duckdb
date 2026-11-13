@@ -74,10 +74,11 @@ unique_ptr<Expression> ScalarFnReplace::VisitReplace(BoundColumnRefExpression &e
 	const auto &[analysis, column_index, projection, projection_column_index] = *binding;
 	if (CanPushdownColumn(analysis, column_index)) {
 		const LogicalType return_type = analysis.get.returned_types[analysis.StorageIndex(column_index)];
-		expr.SetReturnType(return_type);
+		auto retyped = expr.WithReturnType(return_type);
 		if (projection != nullptr && !projection->types.empty()) {
 			projection->types[projection_column_index] = return_type;
 		}
+		return retyped;
 	}
 
 	return std::move(*ptr);
@@ -105,7 +106,7 @@ unique_ptr<Expression> ScalarFnReplace::VisitReplace(BoundFunctionExpression &ex
 	}
 
 	const LogicalType return_type = analysis.get.returned_types[analysis.StorageIndex(column_index)];
-	bound_col_base->SetReturnType(return_type);
+	bound_col_base = bound_col.WithReturnType(return_type);
 	if (projection != nullptr && !projection->types.empty()) {
 		projection->types[projection_column_index] = return_type;
 	}

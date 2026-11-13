@@ -5,15 +5,12 @@
 
 namespace duckdb {
 
-static void ReplaceFilterTableIndex(Expression &expr, LogicalSetOperation &setop) {
-	if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
-		auto &colref = expr.Cast<BoundColumnRefExpression>();
-		D_ASSERT(colref.Depth() == 0);
-
-		colref.BindingMutable().table_index = setop.table_index;
-		return;
-	}
-	ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { ReplaceFilterTableIndex(child, setop); });
+static void ReplaceFilterTableIndex(unique_ptr<Expression> &expr, LogicalSetOperation &setop) {
+	expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+	    std::move(expr), [&](const BoundColumnRefExpression &colref) {
+		    D_ASSERT(colref.Depth() == 0);
+		    return colref.WithBinding(ColumnBinding(setop.table_index, colref.Binding().column_index));
+	    });
 }
 
 unique_ptr<LogicalOperator> FilterPullup::PullupSetOperation(unique_ptr<LogicalOperator> op) {
@@ -26,7 +23,7 @@ unique_ptr<LogicalOperator> FilterPullup::PullupSetOperation(unique_ptr<LogicalO
 		auto &filter = op->Cast<LogicalFilter>();
 		auto &setop = filter.children[0]->Cast<LogicalSetOperation>();
 		for (idx_t i = 0; i < filter.expressions.size(); ++i) {
-			ReplaceFilterTableIndex(*filter.expressions[i], setop);
+			ReplaceFilterTableIndex(filter.expressions[i], setop);
 		}
 	}
 	return op;

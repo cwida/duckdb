@@ -36,7 +36,7 @@ static void ExtractSubqueryChildren(unique_ptr<Expression> &child, vector<unique
 	}
 	// we found (a, b, ...) - we can extract all children of this function
 	// note that we don't always want to do this
-	if (types.size() == 1 && TypeIsTuple(types[0]) && function.GetChildrenMutable().size() != types.size()) {
+	if (types.size() == 1 && TypeIsTuple(types[0]) && function.GetChildren().size() != types.size()) {
 		// old case: we have an unnamed struct INSIDE the subquery as well
 		// i.e. (a, b) IN (SELECT (a, b) ...)
 		// unnesting the struct is guaranteed to throw an error - match the structs against each-other instead

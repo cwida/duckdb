@@ -366,23 +366,23 @@ static bool RewriteFilterThroughProjections(unique_ptr<Expression> &expr,
                                             const vector<reference<LogicalProjection>> &projections) {
 	for (auto &projection : projections) {
 		bool can_push = true;
-		ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-		    expr, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &) {
+		expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+		    std::move(expr), [&](const BoundColumnRefExpression &colref) -> unique_ptr<Expression> {
 			    if (colref.Depth() != 0) {
 				    can_push = false;
-				    return;
+				    return nullptr;
 			    }
 			    auto &projected = projection.get().GetExpression(colref.Binding());
 			    if (projected.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 				    can_push = false;
-				    return;
+				    return nullptr;
 			    }
 			    auto &input = projected.Cast<BoundColumnRefExpression>();
 			    if (input.Depth() != 0) {
 				    can_push = false;
-				    return;
+				    return nullptr;
 			    }
-			    colref.BindingMutable() = input.Binding();
+			    return colref.WithBinding(input.Binding());
 		    });
 		if (!can_push) {
 			return false;
@@ -1029,9 +1029,8 @@ struct GeneratedDomainReplacement {
 				}
 				auto &base_expression =
 				    FindDomainOutput(condition.GetLHS(), domain).IsValid() ? condition.GetRHS() : condition.GetLHS();
-				auto null_check =
-				    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN);
-				null_check->GetChildrenMutable().push_back(base_expression.Copy());
+				auto null_check = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL,
+				                                                     LogicalType::BOOLEAN, base_expression.Copy());
 				filters.push_back(std::move(null_check));
 			}
 			return !domain.has_projection;
@@ -1052,9 +1051,8 @@ struct GeneratedDomainReplacement {
 			if (comparison->GetExpressionType() == ExpressionType::COMPARE_EQUAL &&
 			    left.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF && !left.GetReturnType().IsNested() &&
 			    left.Equals(right)) {
-				auto null_check =
-				    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN);
-				null_check->GetChildrenMutable().push_back(left.Copy());
+				auto null_check = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL,
+				                                                     LogicalType::BOOLEAN, left.Copy());
 				comparison = std::move(null_check);
 			}
 			filters.push_back(std::move(comparison));

@@ -945,12 +945,10 @@ bool TryScanIndex(const IndexReadHandle<ART> &art, const ColumnList &column_list
 
 	// A bound column reference in an unbound index expression is an ordinal into indexed_columns, which is not the
 	// column's position in this scan. Rebind the references to the ART column's position in the scan input.
-	ExpressionIterator::EnumerateExpression(index_expr, [&](Expression &expr) {
-		if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
-			return;
-		}
-		expr.Cast<BoundColumnRefExpression>().BindingMutable().column_index = storage_index;
-	});
+	index_expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+	    std::move(index_expr), [&](const BoundColumnRefExpression &colref) {
+		    return colref.WithBinding(ColumnBinding(colref.Binding().table_index, storage_index));
+	    });
 
 	// Try to find a matching filter for the column.
 	auto filter = filter_set.TryGetFilterByColumnIndex(storage_index);

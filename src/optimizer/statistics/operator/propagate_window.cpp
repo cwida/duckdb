@@ -64,7 +64,7 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalWind
 				                                                        : AggregateType::NON_DISTINCT);
 				aggregate.GetCallbacks().GetStatisticsCallback()(context, synthetic, input);
 				agg_children = std::move(synthetic.GetChildrenMutable());
-				aggregate = synthetic.FunctionMutable();
+				aggregate = synthetic.Function();
 				removed_expressions |= agg_children.size() < child_count;
 			}
 		}

@@ -542,7 +542,7 @@ private:
 		bool can_materialize = true;
 		LogicalOperatorVisitor::EnumerateExpressions(op, [&](unique_ptr<Expression> *expr) {
 			ExpressionIterator::EnumerateExpression(*expr, [&](unique_ptr<Expression> &child) {
-				ConvertExpression<TYPE>(*child, info_idx, can_materialize);
+				ConvertExpression<TYPE>(child, info_idx, can_materialize);
 			});
 		});
 		if (op.type == LogicalOperatorType::LOGICAL_GET) {
@@ -550,46 +550,53 @@ private:
 			for (auto &entry : get.table_filters) {
 				auto &expression_filter =
 				    ExpressionFilter::GetExpressionFilter(entry.Filter(), "CommonSubplanOptimizer::ConvertExpressions");
-				ConvertExpression<TYPE>(*expression_filter.expr, info_idx, can_materialize);
+				ConvertExpression<TYPE>(expression_filter.expr, info_idx, can_materialize);
 			}
 		}
 		return can_materialize;
 	}
 
 	template <ConversionType TYPE>
-	void ConvertExpression(Expression &expr, idx_t &info_idx, bool &can_materialize) {
+	void ConvertExpression(unique_ptr<Expression> &expr_p, idx_t &info_idx, bool &can_materialize) {
 		const auto &table_index_mapping =
 		    TYPE == ConversionType::TO_CANONICAL ? to_canonical_table_index : restore_original_table_index;
 
-		// Replace column binding
-		if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
-			auto &col_ref = expr.Cast<BoundColumnRefExpression>();
+		// Determine the default fields: these are cleared when converting to canonical and restored afterwards
+		Identifier alias;
+		QueryLocation query_location;
+		switch (TYPE) {
+		case ConversionType::TO_CANONICAL:
+			expression_info.emplace_back(expr_p->GetAlias(), expr_p->GetQueryLocation());
+			break;
+		case ConversionType::RESTORE_ORIGINAL: {
+			auto &info = expression_info[info_idx++];
+			alias = Identifier(std::move(info.first));
+			query_location = info.second;
+			break;
+		}
+		}
+
+		if (expr_p->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+			// Replace column binding
+			auto &col_ref = expr_p->Cast<BoundColumnRefExpression>();
+			auto binding = col_ref.Binding();
 			const auto lookup_idx = TYPE == ConversionType::TO_CANONICAL
-			                            ? col_ref.Binding().table_index
-			                            : restore_original_table_index.at(col_ref.Binding().table_index);
+			                            ? binding.table_index
+			                            : restore_original_table_index.at(binding.table_index);
 			auto &table_map = table_index_map.at(lookup_idx);
 			if (!table_map.Empty<TYPE>()) {
 				// Replace column index
-				col_ref.BindingMutable().column_index = table_map.Get<TYPE>(col_ref.Binding().column_index);
+				binding.column_index = table_map.Get<TYPE>(binding.column_index);
 			}
 			// Replace table index
-			col_ref.BindingMutable().table_index = table_index_mapping.at(col_ref.Binding().table_index);
+			binding.table_index = table_index_mapping.at(binding.table_index);
+			expr_p = make_uniq<BoundColumnRefExpression>(std::move(alias), col_ref.GetReturnType(), binding,
+			                                             col_ref.Depth(), query_location);
+		} else {
+			expr_p->SetAlias(std::move(alias));
+			expr_p->SetQueryLocation(query_location);
 		}
-
-		// Replace default fields
-		switch (TYPE) {
-		case ConversionType::TO_CANONICAL:
-			expression_info.emplace_back(expr.GetAlias(), expr.GetQueryLocation());
-			expr.ClearAlias();
-			expr.SetQueryLocation(optional_idx());
-			break;
-		case ConversionType::RESTORE_ORIGINAL:
-			auto &info = expression_info[info_idx++];
-			expr.SetAlias(Identifier(std::move(info.first)));
-			expr.SetQueryLocation(info.second);
-			break;
-		}
-		if (expr.IsVolatile()) {
+		if (expr_p->IsVolatile()) {
 			can_materialize = false;
 		}
 	}
@@ -928,9 +935,9 @@ private:
 			} else {
 				auto &source = *expression_sources.at(binding.table_index);
 				auto expression = source.expressions[binding.column_index]->Copy();
-				ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-				    expression, [&](BoundColumnRefExpression &ref, unique_ptr<Expression> &) {
-					    ref.BindingMutable() = source.input->Expose(ref.Binding());
+				expression = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+				    std::move(expression), [&](const BoundColumnRefExpression &ref) {
+					    return ref.WithBinding(source.input->Expose(ref.Binding()));
 				    });
 				result = ColumnBinding(GetExpressionOutputTableIndex(source.op),
 				                       ProjectionIndex(source.op.expressions.size()));
@@ -1297,9 +1304,9 @@ private:
 		unordered_set<idx_t> used_indexes;
 		for (idx_t i = 0; i < op->expressions.size(); i++) {
 			auto expression = op->expressions[i]->Copy();
-			ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-			    expression, [&](BoundColumnRefExpression &ref, unique_ptr<Expression> &) {
-				    ref.BindingMutable() = GetCanonicalBinding(ref.Binding());
+			expression = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+			    std::move(expression), [&](const BoundColumnRefExpression &ref) {
+				    return ref.WithBinding(GetCanonicalBinding(ref.Binding()));
 			    });
 			idx_t index = 0;
 			for (; index < expressions.size(); index++) {

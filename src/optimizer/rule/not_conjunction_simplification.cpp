@@ -34,9 +34,8 @@ unique_ptr<Expression> NotConjunctionSimplificationRule::Apply(LogicalOperator &
 	auto result = make_uniq<BoundConjunctionExpression>(negated_type);
 	result->GetChildrenMutable().reserve(conjunction.GetChildren().size());
 	for (auto &conj_child : conjunction.GetChildrenMutable()) {
-		auto negated_child = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_NOT, LogicalType::BOOLEAN);
-		negated_child->GetChildrenMutable().push_back(std::move(conj_child));
-		result->GetChildrenMutable().push_back(std::move(negated_child));
+		result->GetChildrenMutable().push_back(make_uniq<BoundOperatorExpression>(
+		    ExpressionType::OPERATOR_NOT, LogicalType::BOOLEAN, std::move(conj_child)));
 	}
 
 	changes_made = true;

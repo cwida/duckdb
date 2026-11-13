@@ -559,9 +559,8 @@ void DomainRestriction::Apply(unique_ptr<LogicalAggregate> &domain, RestrictionA
 		D_ASSERT(slot.get() == &restriction);
 		auto input = std::move(restriction.children[0]);
 		if (FiltersNullKeys()) {
-			auto predicate =
-			    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN);
-			predicate->GetChildrenMutable().push_back(condition.GetLHS().Copy());
+			auto predicate = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL,
+			                                                    LogicalType::BOOLEAN, condition.GetLHS().Copy());
 			auto filter = make_uniq<LogicalFilter>(std::move(predicate));
 			filter->children.push_back(std::move(input));
 			input = std::move(filter);

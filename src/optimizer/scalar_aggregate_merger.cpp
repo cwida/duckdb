@@ -258,15 +258,15 @@ static void CollectBindings(const Expression &expr, column_binding_set_t &bindin
 }
 
 //! Points every column reference of `expr` that `remap` names at its new binding
-static void RemapBindings(Expression &expr, const column_binding_map_t<ColumnBinding> &remap) {
-	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
-		auto &binding = expr.Cast<BoundColumnRefExpression>().BindingMutable();
-		auto entry = remap.find(binding);
-		if (entry != remap.end()) {
-			binding = entry->second;
-		}
-	}
-	ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { RemapBindings(child, remap); });
+static void RemapBindings(unique_ptr<Expression> &expr, const column_binding_map_t<ColumnBinding> &remap) {
+	expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+	    std::move(expr), [&](const BoundColumnRefExpression &colref) -> unique_ptr<Expression> {
+		    auto entry = remap.find(colref.Binding());
+		    if (entry == remap.end()) {
+			    return nullptr;
+		    }
+		    return colref.WithBinding(entry->second);
+	    });
 }
 
 static unique_ptr<Expression> MakeConjunction(ExpressionType type, vector<unique_ptr<Expression>> terms) {
@@ -514,7 +514,7 @@ unique_ptr<LogicalOperator> ScalarAggregateMerger::MergeBranches(vector<Branch> 
 	for (idx_t k = 0; k < group.size(); k++) {
 		for (auto &conjunct : branches[group[k]].conjuncts) {
 			auto copy = conjunct.get().Copy();
-			RemapBindings(*copy, remaps[k]);
+			RemapBindings(copy, remaps[k]);
 			conjuncts[k].push_back(std::move(copy));
 		}
 	}
@@ -582,7 +582,7 @@ unique_ptr<LogicalOperator> ScalarAggregateMerger::MergeBranches(vector<Branch> 
 		offsets[k] = aggregates.size();
 		for (auto &expr : branches[group[k]].aggregate.get().expressions) {
 			auto copy = expr->Copy();
-			RemapBindings(*copy, remaps[k]);
+			RemapBindings(copy, remaps[k]);
 			auto &aggregate = copy->Cast<BoundAggregateExpression>();
 			if (predicates[k]) {
 				auto filter = predicates[k]->Copy();
@@ -612,7 +612,7 @@ unique_ptr<LogicalOperator> ScalarAggregateMerger::MergeBranches(vector<Branch> 
 			auto &expressions = branch.projection->expressions;
 			for (idx_t i = 0; i < expressions.size(); i++) {
 				auto copy = expressions[i]->Copy();
-				RemapBindings(*copy, to_merged);
+				RemapBindings(copy, to_merged);
 				replacements.emplace_back(ColumnBinding(branch.projection->table_index, ProjectionIndex(i)),
 				                          ColumnBinding(projection_index, ProjectionIndex(columns.size())));
 				columns.push_back(std::move(copy));
