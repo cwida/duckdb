@@ -341,6 +341,7 @@ void ArrowTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	arrow.filter_prune = true;
 	arrow.supports_pushdown_type = ArrowPushdownType;
 	arrow.parallelism = TableFunctionParallelism::SEQUENTIAL;
+	arrow.supports_multiple_scans = false;
 	set.AddFunction(arrow);
 
 	TableFunction arrow_dumb("arrow_scan_dumb", {}, ArrowScanFunction, ArrowScanBindDumb, ArrowScanInitGlobal,
@@ -352,6 +353,7 @@ void ArrowTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	arrow_dumb.filter_pushdown = false;
 	arrow_dumb.filter_prune = false;
 	arrow_dumb.parallelism = TableFunctionParallelism::SEQUENTIAL;
+	arrow_dumb.supports_multiple_scans = false;
 	set.AddFunction(arrow_dumb);
 }
 

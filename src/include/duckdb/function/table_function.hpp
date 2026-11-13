@@ -569,6 +569,8 @@ public:
 	bool sampling_pushdown;
 	//! Whether or not the table function supports late materialization
 	bool late_materialization;
+	//! Whether the scan can be re-executed
+	bool supports_multiple_scans = true;
 	TableFunctionReturnType return_type;
 	//! The return type used when this function is invoked through a CALL statement
 	//! By default a CALL returns a query result - functions that only have side effects can use NOTHING instead
