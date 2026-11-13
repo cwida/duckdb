@@ -6,6 +6,7 @@
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/common/shared_ptr_ipp.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
@@ -311,6 +312,66 @@ static unique_ptr<ExpressionFilter> AdaptiveCacheFilter(bool mandatory) {
 	    ExpressionFilter::CreateComparisonFilter(ExpressionType::COMPARE_GREATERTHANOREQUALTO, Value::BIGINT(2000));
 	return make_uniq<ExpressionFilter>(make_uniq<BoundConjunctionExpression>(
 	    ExpressionType::CONJUNCTION_AND, required->expr->Copy(), std::move(optional)));
+}
+
+TEST_CASE("Pure filter caches expose borrowed masks with root lifetime checks", "[filter][adaptive_cache]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	Vector dictionary(LogicalType::BIGINT, 4);
+	{
+		auto writer = FlatVector::Writer<int64_t>(dictionary, 4);
+		writer.WriteValue(1);
+		writer.WriteValue(2500);
+		writer.WriteValue(3000);
+		writer.WriteNull();
+	}
+	auto lower =
+	    ExpressionFilter::CreateComparisonFilter(ExpressionType::COMPARE_GREATERTHANOREQUALTO, Value::BIGINT(2000));
+	auto upper =
+	    ExpressionFilter::CreateComparisonFilter(ExpressionType::COMPARE_LESSTHANOREQUALTO, Value::BIGINT(2700));
+	ExpressionFilter filter(make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND, lower->expr->Copy(),
+	                                                              upper->expr->Copy()));
+	auto state = TableFilterState::Initialize(*con.context, filter);
+	auto cache = state->CreateCache(dictionary, dictionary.size());
+	auto mask = cache->GetPureMask();
+	REQUIRE(mask.has_value());
+	REQUIRE(mask->size() == dictionary.size());
+	REQUIRE_FALSE((*mask)[0]);
+	REQUIRE((*mask)[1]);
+	REQUIRE_FALSE((*mask)[2]);
+	REQUIRE_FALSE((*mask)[3]);
+	REQUIRE(mask->data() == cache->GetPureMask()->data());
+	auto replacement = state->CreateCache(dictionary, dictionary.size());
+	REQUIRE(cache->GetPureMask()->data() != replacement->GetPureMask()->data());
+	state.reset();
+	REQUIRE_FALSE(cache->CanAcceptAll());
+	REQUIRE_FALSE(cache->CanSkipAll());
+#ifndef DUCKDB_CRASH_ON_ASSERT
+	REQUIRE_THROWS_AS(cache->GetPureMask(), InternalException);
+	REQUIRE_THROWS_AS(replacement->GetPureMask(), InternalException);
+#endif
+}
+
+TEST_CASE("Adaptive roots never expose a static pure mask", "[filter][adaptive_cache]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	Vector dictionary(Value::BIGINT(3000), count_t(1));
+	float threshold;
+	idx_t vectors;
+	GetThresholdAndVectorsToCheck(SelectivityOptionalFilterType::MIN_MAX, threshold, vectors);
+	for (bool mandatory : {false, true}) {
+		auto filter = AdaptiveCacheFilter(mandatory);
+		auto state = TableFilterState::Initialize(*con.context, *filter);
+		auto cache = state->CreateCache(dictionary, dictionary.size());
+		for (idx_t batch = 0; batch <= vectors; batch++) {
+			if (batch == vectors) {
+				REQUIRE(cache->CanAcceptAll());
+			}
+			REQUIRE_FALSE(cache->GetPureMask().has_value());
+			idx_t count = STANDARD_VECTOR_SIZE;
+			cache->FilterConstant(0, count);
+		}
+	}
 }
 
 TEST_CASE("Accept-all cache checks preserve adaptive recovery and mandatory masks", "[filter][adaptive_cache]") {

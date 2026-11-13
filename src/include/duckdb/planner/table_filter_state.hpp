@@ -11,6 +11,7 @@
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/common/shared_ptr.hpp"
+#include "duckdb/common/optional.hpp"
 
 namespace duckdb {
 
@@ -35,8 +36,13 @@ public:
 	bool CanSkipAll() const;
 	//! Whether this batch can be filtered without reading value indices. Does not advance adaptive feedback.
 	bool CanAcceptAll() const;
+	//! Borrow a pure root mask while the cache and its filter state remain alive.
+	optional<array_ptr<const bool>> GetPureMask() const;
 
 protected:
+	virtual optional<array_ptr<const bool>> GetPureMaskInternal() const {
+		return {};
+	}
 	virtual bool CanAcceptAllInternal() const {
 		return false;
 	}

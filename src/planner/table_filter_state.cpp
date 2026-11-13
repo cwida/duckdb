@@ -33,6 +33,10 @@ public:
 	}
 
 protected:
+	optional<array_ptr<const bool>> GetPureMaskInternal() const override {
+		return array_ptr<const bool>(matches.get(), value_count);
+	}
+
 	bool CanAcceptAllInternal() const override {
 		return match_count == value_count;
 	}
@@ -103,6 +107,13 @@ bool TableFilterCache::CanSkipAll() const {
 
 bool TableFilterCache::CanAcceptAll() const {
 	return (!identity || identity->valid) && CanAcceptAllInternal();
+}
+
+optional<array_ptr<const bool>> TableFilterCache::GetPureMask() const {
+	if (identity && !identity->valid) {
+		throw InternalException("Filter cache outlived its filter state");
+	}
+	return GetPureMaskInternal();
 }
 
 void TableFilterCache::Filter(const SelectionVector &values, SelectionVector &sel, idx_t &count) {

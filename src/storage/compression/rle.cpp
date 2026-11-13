@@ -610,6 +610,34 @@ void RLEFilter(ColumnSegment &segment, ColumnScanState &state, idx_t vector_coun
 		return;
 	}
 	if (!sel.IsSet()) {
+		if (const auto matches = scan_state.filter_cache->GetPureMask()) {
+			SelectionVector selected_rows(sel_count);
+			result.SetVectorType(VectorType::FLAT_VECTOR);
+			auto writer = FlatVector::ScatterWriter<T>(result);
+			idx_t offset = 0;
+			idx_t accepted_rows = 0;
+			while (offset < vector_count) {
+				const auto run = scan_state.GetCurrentRun();
+				const auto count = MinValue<idx_t>(run.length - scan_state.position_in_entry, vector_count - offset);
+				if (offset < sel_count && (*matches)[scan_state.entry_pos]) {
+					const auto end = offset + MinValue<idx_t>(count, sel_count - offset);
+					for (idx_t row = offset; row < end; row++) {
+						writer[row] = run.value;
+						selected_rows.set_index(accepted_rows++, row);
+					}
+				}
+				offset += count;
+				scan_state.position_in_entry += count;
+				if (scan_state.ExhaustedRun(run.length)) {
+					scan_state.ForwardToNextRun();
+				}
+			}
+			if (accepted_rows != sel_count) {
+				sel.Initialize(selected_rows);
+			}
+			sel_count = accepted_rows;
+			return;
+		}
 		if (scan_state.run_indices.Capacity() < vector_count) {
 			scan_state.run_indices.Initialize(vector_count);
 		}
