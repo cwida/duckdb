@@ -1,7 +1,19 @@
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/parser/statement/call_statement.hpp"
 #include "duckdb/parser/statement/vacuum_statement.hpp"
 
 namespace duckdb {
+
+static unique_ptr<SQLStatement> TransformVacuumFullCall() {
+	auto result = make_uniq<CallStatement>();
+	vector<unique_ptr<ParsedExpression>> children;
+	auto function = make_uniq<FunctionExpression>("vacuum_full", std::move(children));
+	function->SetQualifiedName(
+	    QualifiedName(Identifier(SYSTEM_CATALOG), Identifier(DEFAULT_SCHEMA), function->GetQualifiedName().Name()));
+	result->function = std::move(function);
+	return std::move(result);
+}
 
 unique_ptr<SQLStatement> PEGTransformerFactory::TransformVacuumStatement(PEGTransformer &transformer,
                                                                          const optional<VacuumOptions> &vacuum_options,
@@ -9,6 +21,15 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformVacuumStatement(PEGTran
 	VacuumOptions options;
 	if (vacuum_options) {
 		options = *vacuum_options;
+	}
+	if (options.full) {
+		if (options.analyze) {
+			throw NotImplementedException("VACUUM FULL ANALYZE is not yet implemented");
+		}
+		if (analyze_target && analyze_target->ref) {
+			throw NotImplementedException("VACUUM FULL with a table name is not yet implemented");
+		}
+		return TransformVacuumFullCall();
 	}
 	auto result = make_uniq<VacuumStatement>(options);
 	if (analyze_target && analyze_target->ref) {
@@ -28,7 +49,7 @@ VacuumOptions PEGTransformerFactory::TransformVacuumLegacyOptions(PEGTransformer
 	options.vacuum = true;
 	options.analyze = opt_analyze.has_value();
 	if (opt_full) {
-		throw NotImplementedException("FULL is not yet implemented");
+		options.full = true;
 	}
 	if (opt_freeze) {
 		throw NotImplementedException("FREEZE is not yet implemented");
@@ -51,7 +72,8 @@ VacuumOptions PEGTransformerFactory::TransformVacuumParensOptions(PEGTransformer
 			throw NotImplementedException("FREEZE is not yet implemented");
 		}
 		if (StringUtil::CIEquals(option, "full")) {
-			throw NotImplementedException("FULL is not yet implemented");
+			options.full = true;
+			continue;
 		}
 		if (StringUtil::CIEquals(option, "verbose")) {
 			throw NotImplementedException("VERBOSE is not yet implemented");

@@ -1,0 +1,110 @@
+# name: test/sql/vacuum/vacuum_full.test
+# description: VACUUM FULL reclaims file space via COPY FROM DATABASE on a table without FKs
+# group: [vacuum]
+
+# in-memory databases have no file to compact
+statement error
+VACUUM FULL
+----
+persistent
+
+statement ok
+ATTACH '{TEST_DIR}/vacuum_full_a.db' AS a
+
+statement ok
+ATTACH '{TEST_DIR}/vacuum_full_b.db' AS b
+
+statement error
+VACUUM FULL
+----
+exactly one
+
+statement ok
+DETACH a
+
+statement ok
+DETACH b
+
+statement ok
+ATTACH '{TEST_DIR}/vacuum_full.db' AS src
+
+statement ok
+CREATE TABLE src.t AS SELECT range AS i, md5(range::VARCHAR) AS s FROM range(200000)
+
+statement ok
+CHECKPOINT src
+
+statement ok
+DELETE FROM src.t WHERE i >= 20
+
+statement ok
+CHECKPOINT src
+
+statement ok
+CREATE TABLE sizes AS SELECT total_blocks AS before_blocks FROM pragma_database_size() WHERE database_name = 'src'
+
+query I
+SELECT before_blocks > 5 FROM sizes
+----
+true
+
+# Stay on memory so the current transaction does not pin src; FULL targets the only persistent DB.
+statement ok
+VACUUM FULL
+
+query I
+SELECT count(*) FROM src.t
+----
+20
+
+query II
+SELECT min(i), max(i) FROM src.t
+----
+0	19
+
+query I
+SELECT total_blocks < (SELECT before_blocks FROM sizes) FROM pragma_database_size() WHERE database_name = 'src'
+----
+true
+
+# already-compact databases still accept FULL / parenthesized FULL
+statement ok
+VACUUM (FULL)
+
+statement error
+VACUUM FULL t
+----
+table name
+
+statement error
+VACUUM FULL ANALYZE
+----
+ANALYZE
+
+statement error
+VACUUM (FULL, ANALYZE)
+----
+ANALYZE
+
+# compacting an encrypted catalog would write plaintext; reject before attaching a temp file
+statement ok
+DETACH src
+
+statement ok
+SET force_mbedtls_unsafe = true
+
+statement ok
+ATTACH '{TEST_DIR}/vacuum_full_enc.db' AS enc (ENCRYPTION_KEY 'asdf')
+
+statement ok
+CREATE TABLE enc.t(i INT)
+
+statement error
+VACUUM FULL
+----
+encrypted
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/vacuum_full_enc.db.vacuum_full.tmp')
+----
+0

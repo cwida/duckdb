@@ -17,11 +17,12 @@ class Serializer;
 class Deserializer;
 
 struct VacuumOptions {
-	VacuumOptions() : vacuum(false), analyze(false) {
+	VacuumOptions() : vacuum(false), analyze(false), full(false) {
 	}
 
 	bool vacuum;
 	bool analyze;
+	bool full;
 
 	void Serialize(Serializer &serializer) const;
 	static VacuumOptions Deserialize(Deserializer &deserializer);

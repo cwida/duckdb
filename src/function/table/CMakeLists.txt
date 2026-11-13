@@ -7,6 +7,7 @@ add_library_unity(
   arrow.cpp
   arrow_conversion.cpp
   checkpoint.cpp
+  vacuum_full.cpp
   direct_file_reader.cpp
   glob.cpp
   query_function.cpp
