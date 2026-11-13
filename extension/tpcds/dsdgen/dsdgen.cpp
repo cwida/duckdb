@@ -266,7 +266,7 @@ static void CreateTPCDSTable(ClientContext &context, const Identifier &catalog_n
 }
 
 void DSDGenWrapper::CreateTPCDSSchema(ClientContext &context, const Identifier &catalog,
-                                    const vector<Identifier> &schema, string suffix, bool keys, bool overwrite) {
+                                      const vector<Identifier> &schema, string suffix, bool keys, bool overwrite) {
 	CreateTPCDSTable<CallCenterInfo>(context, catalog, schema, suffix, keys, overwrite);
 	CreateTPCDSTable<CatalogPageInfo>(context, catalog, schema, suffix, keys, overwrite);
 	CreateTPCDSTable<CatalogReturnsInfo>(context, catalog, schema, suffix, keys, overwrite);

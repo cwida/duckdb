@@ -4,6 +4,8 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
+#include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/storage/statistics/node_statistics.hpp"
 #include "dsdgen.hpp"
@@ -52,6 +54,7 @@ static unique_ptr<FunctionData> DsdgenBind(ClientContext &context, TableFunction
 
 	result->catalog = DatabaseManager::GetDefaultDatabase(context);
 	result->schema = ClientData::Get(context).catalog_search_path->GetDefault().GetSchemaPath();
+	optional<string> schema_arg;
 
 	for (auto &kv : input.named_parameters) {
 		if (kv.second.IsNull()) {
@@ -62,7 +65,7 @@ static unique_ptr<FunctionData> DsdgenBind(ClientContext &context, TableFunction
 		} else if (kv.first == "catalog") {
 			result->catalog = Identifier(StringValue::Get(kv.second));
 		} else if (kv.first == "schema") {
-			result->schema = {Identifier(StringValue::Get(kv.second))};
+			schema_arg = StringValue::Get(kv.second);
 		} else if (kv.first == "suffix") {
 			result->suffix = StringValue::Get(kv.second);
 		} else if (kv.first == "overwrite") {
@@ -70,6 +73,10 @@ static unique_ptr<FunctionData> DsdgenBind(ClientContext &context, TableFunction
 		} else if (kv.first == "keys") {
 			result->keys = kv.second.GetValue<bool>();
 		}
+	}
+	if (schema_arg) {
+		auto &catalog = Catalog::GetCatalog(context, result->catalog);
+		result->schema = catalog.ResolveSchema(context, *schema_arg).GetSchemaPath();
 	}
 	if (input.binder) {
 		auto &catalog = Catalog::GetCatalog(context, result->catalog);

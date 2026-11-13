@@ -62,17 +62,61 @@ SELECT sentinel FROM dsdgen_nested.b.customer_address;
 
 endloop
 
-# Explicit schema arguments still name one literal schema.
+# String schema arguments prefer a nested path when it exists.
 statement ok
-CALL dsdgen(sf=0, schema='a.b');
+CALL dsdgen(sf=0, schema='a.b', suffix='_nested_arg');
+
+query I
+SELECT count(*) FROM dsdgen_nested.a.b.customer_address_nested_arg;
+----
+0
 
 query I
 SELECT count(*) FROM (SHOW TABLES FROM dsdgen_nested."a.b");
 ----
-24
+0
+
+# Quoting selects the literal name even when the nested path exists.
+statement ok
+CALL dsdgen(sf=0, schema='"a.b"');
 
 query I
 SELECT count(*) FROM dsdgen_nested."a.b".customer_address;
+----
+0
+
+# Without a nested path, the unquoted argument falls back to a literal name.
+statement ok
+CREATE SCHEMA dsdgen_nested."legacy.dot";
+
+statement ok
+CALL dsdgen(sf=0, schema='legacy.dot');
+
+query I
+SELECT count(*) FROM dsdgen_nested."legacy.dot".customer_address;
+----
+0
+
+# Resolve schema= in the supplied catalog, regardless of parameter order.
+statement ok
+ATTACH '{TEST_DIR}/dsdgen_schema_arg.db' AS dsdgen_arg (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE SCHEMA dsdgen_arg."a.b";
+
+statement ok
+CALL dsdgen(sf=0, schema='a.b', catalog='dsdgen_arg');
+
+query I
+SELECT count(*) FROM dsdgen_arg."a.b".customer_address;
+----
+0
+
+statement ok
+CALL dsdgen(sf=0, catalog='dsdgen_arg', schema='a.b', suffix='_reverse');
+
+query I
+SELECT count(*) FROM dsdgen_arg."a.b".customer_address_reverse;
 ----
 0
 

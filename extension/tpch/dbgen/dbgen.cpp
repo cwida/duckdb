@@ -886,7 +886,7 @@ void skip(int table, int children, DSS_HUGE step, DBGenContext &dbgen_ctx) {
 
 struct TPCHDBgenParameters {
 	TPCHDBgenParameters(ClientContext &context, Catalog &catalog, const vector<Identifier> &schema,
-	                     const string &suffix) {
+	                    const string &suffix) {
 		tables.resize(REGION + 1);
 		for (size_t i = PART; i <= REGION; i++) {
 			auto tname = get_table_name(i);
@@ -1495,7 +1495,8 @@ private:
 };
 
 unique_ptr<DBGenGenerator> CreateDBGenGenerator(ClientContext &context, double sf, const Identifier &catalog,
-                                               const vector<Identifier> &schema, string suffix, int children, int step) {
+                                                const vector<Identifier> &schema, string suffix, int children,
+                                                int step) {
 	return make_uniq<TPCHDBGenGenerator>(context, sf, catalog, schema, std::move(suffix), children, step);
 }
 
