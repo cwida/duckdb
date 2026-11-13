@@ -480,6 +480,8 @@ enum class PipelineScheduleMode : uint8_t;
 
 enum class PipelineScheduleStageType : uint8_t;
 
+enum class PlanningMode : uint8_t;
+
 enum class PragmaType : uint8_t;
 
 enum class PreparedParamType : uint8_t;
@@ -541,8 +543,6 @@ enum class ResultModifierType : uint8_t;
 enum class ResultOrdering : uint8_t;
 
 enum class RowGroupAppendMode : uint8_t;
-
-enum class RowIdHandling : uint8_t;
 
 enum class SampleMethod : uint8_t;
 
@@ -1380,6 +1380,9 @@ template<>
 const char* EnumUtil::ToChars<PipelineScheduleStageType>(PipelineScheduleStageType value);
 
 template<>
+const char* EnumUtil::ToChars<PlanningMode>(PlanningMode value);
+
+template<>
 const char* EnumUtil::ToChars<PragmaType>(PragmaType value);
 
 template<>
@@ -1471,9 +1474,6 @@ const char* EnumUtil::ToChars<ResultOrdering>(ResultOrdering value);
 
 template<>
 const char* EnumUtil::ToChars<RowGroupAppendMode>(RowGroupAppendMode value);
-
-template<>
-const char* EnumUtil::ToChars<RowIdHandling>(RowIdHandling value);
 
 template<>
 const char* EnumUtil::ToChars<SampleMethod>(SampleMethod value);
@@ -2392,6 +2392,9 @@ template<>
 PipelineScheduleStageType EnumUtil::FromString<PipelineScheduleStageType>(const char *value);
 
 template<>
+PlanningMode EnumUtil::FromString<PlanningMode>(const char *value);
+
+template<>
 PragmaType EnumUtil::FromString<PragmaType>(const char *value);
 
 template<>
@@ -2483,9 +2486,6 @@ ResultOrdering EnumUtil::FromString<ResultOrdering>(const char *value);
 
 template<>
 RowGroupAppendMode EnumUtil::FromString<RowGroupAppendMode>(const char *value);
-
-template<>
-RowIdHandling EnumUtil::FromString<RowIdHandling>(const char *value);
 
 template<>
 SampleMethod EnumUtil::FromString<SampleMethod>(const char *value);

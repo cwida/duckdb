@@ -1,0 +1,50 @@
+# name: test/sql/aggregate/aggregates/unspillable_arena_row_spilling.test_slow
+# description: Unspillable aggregate arenas must leave room for spillable rows and finalization
+# group: [aggregates]
+
+require skip_reload
+
+statement ok
+SET threads=4;
+
+statement ok
+SET memory_limit='180MB';
+
+# The top-N heap reserves 200 entries even though each group contains one value.
+query II
+SELECT count(*), sum(v[1])
+FROM (
+    SELECT max(i, 200) AS v
+    FROM range(100000) t(i)
+    GROUP BY repeat(md5(i::VARCHAR), 16)
+);
+----
+100000	4999950000
+
+# Narrower keys fit without forcing the same row-spilling schedule.
+query II
+SELECT count(*), sum(v[1])
+FROM (
+    SELECT max(i, 200) AS v
+    FROM range(100000) t(i)
+    GROUP BY repeat(md5(i::VARCHAR), 4)
+);
+----
+100000	4999950000
+
+statement ok
+SET threads=8;
+
+statement ok
+SET memory_limit='400MB';
+
+# Keep useful in-memory growth: abandoning too often duplicates these unspillable heaps.
+query II
+SELECT count(*), sum(v[1])
+FROM (
+    SELECT max(i, 200) AS v
+    FROM range(1000000) t(i)
+    GROUP BY repeat(md5((i % 100000)::VARCHAR), 4)
+);
+----
+100000	94999950000

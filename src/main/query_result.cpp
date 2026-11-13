@@ -514,9 +514,9 @@ void QueryResult::HandleFetchFailure(ClientContextLock &lock, ErrorData error) {
 		// standard exceptions do not invalidate the current transaction
 		invalidate_query = false;
 	} else if (Exception::InvalidatesDatabase(error.Type())) {
-		// fatal exceptions invalidate the entire database
+		// fatal exceptions invalidate the database instance, unless scoped to an attached database
 		auto &db_instance = DatabaseInstance::GetDatabase(*context);
-		ValidChecker::Invalidate(db_instance, error.RawMessage());
+		ValidChecker::Invalidate(db_instance, error);
 	}
 	context->ProcessError(error, context->GetCurrentQuery());
 	SetError(std::move(error));

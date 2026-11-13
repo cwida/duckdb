@@ -424,32 +424,32 @@ public:
 	//! whose type is not concrete, such as ANY, takes it as it is
 	DUCKDB_API static Value CastToParameterType(ClientContext &context, Value value, const LogicalType &parameter_type);
 
-	DUCKDB_API unique_ptr<Expression> BindScalarFunction(const Identifier &schema, const Identifier &name,
-	                                                     vector<unique_ptr<Expression>> children, ErrorData &error,
-	                                                     bool is_operator = false,
-	                                                     optional_ptr<Binder> binder = nullptr);
+	DUCKDB_API unique_ptr<Expression>
+	BindScalarFunction(const Identifier &schema, const Identifier &name, vector<unique_ptr<Expression>> children,
+	                   ErrorData &error, bool is_operator = false, optional_ptr<Binder> binder = nullptr,
+	                   Identifier alias = Identifier(), QueryLocation query_location = QueryLocation());
 
 	//! Throws the binding error instead of returning nullptr
-	DUCKDB_API unique_ptr<Expression> BindScalarFunction(const Identifier &schema, const Identifier &name,
-	                                                     vector<unique_ptr<Expression>> children,
-	                                                     bool is_operator = false,
-	                                                     optional_ptr<Binder> binder = nullptr);
+	DUCKDB_API unique_ptr<Expression>
+	BindScalarFunction(const Identifier &schema, const Identifier &name, vector<unique_ptr<Expression>> children,
+	                   bool is_operator = false, optional_ptr<Binder> binder = nullptr, Identifier alias = Identifier(),
+	                   QueryLocation query_location = QueryLocation());
 
-	DUCKDB_API unique_ptr<Expression> BindScalarFunction(const ScalarFunctionCatalogEntry &function,
-	                                                     vector<unique_ptr<Expression>> children, ErrorData &error,
-	                                                     bool is_operator = false,
-	                                                     optional_ptr<Binder> binder = nullptr);
+	DUCKDB_API unique_ptr<Expression>
+	BindScalarFunction(const ScalarFunctionCatalogEntry &function, vector<unique_ptr<Expression>> children,
+	                   ErrorData &error, bool is_operator = false, optional_ptr<Binder> binder = nullptr,
+	                   Identifier alias = Identifier(), QueryLocation query_location = QueryLocation());
 
-	DUCKDB_API unique_ptr<Expression> BindScalarFunction(const shared_ptr<const ScalarFunction> &function,
-	                                                     vector<unique_ptr<Expression>> children,
-	                                                     bool is_operator = false,
-	                                                     optional_ptr<Binder> binder = nullptr);
+	DUCKDB_API unique_ptr<Expression>
+	BindScalarFunction(const shared_ptr<const ScalarFunction> &function, vector<unique_ptr<Expression>> children,
+	                   bool is_operator = false, optional_ptr<Binder> binder = nullptr, Identifier alias = Identifier(),
+	                   QueryLocation query_location = QueryLocation());
 
 	//! Bind a function that does not come from a function set - the function is copied into a definition of its own
-	DUCKDB_API unique_ptr<Expression> BindScalarFunction(const ScalarFunction &function,
-	                                                     vector<unique_ptr<Expression>> children,
-	                                                     bool is_operator = false,
-	                                                     optional_ptr<Binder> binder = nullptr);
+	DUCKDB_API unique_ptr<Expression>
+	BindScalarFunction(const ScalarFunction &function, vector<unique_ptr<Expression>> children,
+	                   bool is_operator = false, optional_ptr<Binder> binder = nullptr, Identifier alias = Identifier(),
+	                   QueryLocation query_location = QueryLocation());
 
 	//! Bind a scalar function from a catalog entry given the full list of (maybe-named) bound arguments. The
 	//! positional/named split is resolved per candidate overload (overloads flagged to capture argument aliases
@@ -457,19 +457,21 @@ public:
 	DUCKDB_API unique_ptr<Expression> BindScalarFunction(const ScalarFunctionCatalogEntry &function,
 	                                                     vector<pair<Identifier, unique_ptr<Expression>>> arguments,
 	                                                     ErrorData &error, bool is_operator = false,
-	                                                     optional_ptr<Binder> binder = nullptr);
+	                                                     optional_ptr<Binder> binder = nullptr,
+	                                                     Identifier alias = Identifier(),
+	                                                     QueryLocation query_location = QueryLocation());
 
-	DUCKDB_API unique_ptr<Expression> BindScalarFunction(const shared_ptr<const ScalarFunction> &function,
-	                                                     vector<unique_ptr<Expression>> children,
-	                                                     vector<pair<Identifier, unique_ptr<Expression>>> keyword_args,
-	                                                     bool is_operator = false,
-	                                                     optional_ptr<Binder> binder = nullptr);
+	DUCKDB_API unique_ptr<Expression>
+	BindScalarFunction(const shared_ptr<const ScalarFunction> &function, vector<unique_ptr<Expression>> children,
+	                   vector<pair<Identifier, unique_ptr<Expression>>> keyword_args, bool is_operator = false,
+	                   optional_ptr<Binder> binder = nullptr, Identifier alias = Identifier(),
+	                   QueryLocation query_location = QueryLocation());
 
-	DUCKDB_API unique_ptr<Expression> BindScalarFunction(const ScalarFunction &function,
-	                                                     vector<unique_ptr<Expression>> children,
-	                                                     vector<pair<Identifier, unique_ptr<Expression>>> keyword_args,
-	                                                     bool is_operator = false,
-	                                                     optional_ptr<Binder> binder = nullptr);
+	DUCKDB_API unique_ptr<Expression>
+	BindScalarFunction(const ScalarFunction &function, vector<unique_ptr<Expression>> children,
+	                   vector<pair<Identifier, unique_ptr<Expression>>> keyword_args, bool is_operator = false,
+	                   optional_ptr<Binder> binder = nullptr, Identifier alias = Identifier(),
+	                   QueryLocation query_location = QueryLocation());
 
 	DUCKDB_API unique_ptr<BoundAggregateExpression>
 	BindAggregateFunction(const shared_ptr<const AggregateFunction> &function, vector<unique_ptr<Expression>> children,
@@ -559,7 +561,8 @@ private:
 
 	unique_ptr<Expression> BindScalarFunction(const FunctionBinding &binding, vector<unique_ptr<Expression>> children,
 	                                          vector<pair<Identifier, unique_ptr<Expression>>> keyword_args,
-	                                          bool is_operator, optional_ptr<Binder> binder);
+	                                          bool is_operator, optional_ptr<Binder> binder, Identifier alias,
+	                                          QueryLocation query_location);
 	unique_ptr<BoundAggregateExpression>
 	BindAggregateFunction(FunctionBinding binding, vector<unique_ptr<Expression>> children,
 	                      vector<pair<Identifier, unique_ptr<Expression>>> keyword_args, unique_ptr<Expression> filter,

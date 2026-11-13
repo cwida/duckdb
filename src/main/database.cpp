@@ -50,6 +50,7 @@
 
 #ifndef DUCKDB_NO_THREADS
 #include "duckdb/common/thread.hpp"
+#include "duckdb/main/settings.hpp"
 #endif
 
 namespace duckdb {
@@ -611,10 +612,10 @@ void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path
 	if (new_config.buffer_pool) {
 		config.buffer_pool = std::move(new_config.buffer_pool);
 	} else {
-		config.buffer_pool =
-		    make_shared_ptr<BufferPool>(*config.block_allocator, config.options.maximum_memory,
-		                                Settings::Get<BufferManagerTrackEvictionTimestampsSetting>(config),
-		                                config.options.allocator_bulk_deallocation_flush_threshold);
+		config.buffer_pool = make_shared_ptr<BufferPool>(
+		    *config.block_allocator, config.options.maximum_memory,
+		    Settings::Get<BufferManagerTrackEvictionTimestampsSetting>(config),
+		    DBConfig::ParseMemoryLimitOrMaximum(Settings::Get<AllocatorBulkDeallocationFlushThresholdSetting>(config)));
 	}
 	config.db_cache_entry = std::move(new_config.db_cache_entry);
 	config.path_manager = std::move(new_config.path_manager);
@@ -661,7 +662,7 @@ shared_ptr<EncryptionUtil> DatabaseInstance::GetMbedTLSUtil(bool force_mbedtls) 
 }
 
 shared_ptr<EncryptionUtil> DatabaseInstance::GetEncryptionUtil(bool read_only) {
-	auto force_mbedtls = config.options.force_mbedtls;
+	auto force_mbedtls = Settings::Get<ForceMbedtlsUnsafeSetting>(config);
 
 	if (force_mbedtls) {
 		// return mbedtls if setting is enabled

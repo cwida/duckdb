@@ -498,7 +498,32 @@ static bool BindPushdownAggregates(ClientContext &context, LogicalAggregate &agg
 	return true;
 }
 
-static unique_ptr<LogicalAggregate> CreateLowerAggregate(LogicalAggregate &aggr, LogicalComparisonJoin &join,
+//! The lower aggregate has at most one row per input row and per combination of its group values
+static void CapLowerAggregateCardinality(ClientContext &context, LogicalAggregate &lower_aggr) {
+	auto &input = *lower_aggr.children[0];
+	if (!input.has_estimated_cardinality) {
+		return;
+	}
+	auto cardinality = input.estimated_cardinality;
+	if (lower_aggr.has_estimated_cardinality) {
+		cardinality = MinValue(cardinality, lower_aggr.estimated_cardinality);
+	}
+	idx_t group_count = 1;
+	for (auto &group : lower_aggr.groups) {
+		ColumnBinding binding;
+		auto stats = GetColumnBinding(*group, binding) ? GetBaseColumnStatistics(context, input, binding) : nullptr;
+		auto distinct_count = stats ? stats->GetDistinctCount() : 0;
+		if (distinct_count == 0 || group_count > cardinality / distinct_count) {
+			group_count = cardinality;
+			break;
+		}
+		group_count *= distinct_count;
+	}
+	lower_aggr.SetEstimatedCardinality(MinValue(cardinality, group_count));
+}
+
+static unique_ptr<LogicalAggregate> CreateLowerAggregate(ClientContext &context, LogicalAggregate &aggr,
+                                                         LogicalComparisonJoin &join,
                                                          PartialAggregatePushdownInfo &info,
                                                          vector<unique_ptr<Expression>> lower_aggregates) {
 	auto lower_aggr =
@@ -507,6 +532,7 @@ static unique_ptr<LogicalAggregate> CreateLowerAggregate(LogicalAggregate &aggr,
 	lower_aggr->children.push_back(std::move(join.children[info.aggregate_side]));
 	lower_aggr->ResolveOperatorTypes();
 	CopyCardinality(*lower_aggr, aggr);
+	CapLowerAggregateCardinality(context, *lower_aggr);
 	return lower_aggr;
 }
 
@@ -1224,7 +1250,7 @@ bool PartialAggregatePushdown::TryPushdownAggregate(unique_ptr<LogicalOperator> 
 		return false;
 	}
 
-	auto lower_aggr = CreateLowerAggregate(*aggr, *join, info, std::move(lower_aggregates));
+	auto lower_aggr = CreateLowerAggregate(optimizer.context, *aggr, *join, info, std::move(lower_aggregates));
 	auto new_join = CreateJoin(*join, info, std::move(lower_aggr));
 	auto upper_aggr = CreateUpperAggregate(*aggr, std::move(new_join), info, std::move(upper_aggregates));
 	auto final_projection =

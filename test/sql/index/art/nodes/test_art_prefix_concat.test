@@ -1,0 +1,677 @@
+# name: test/sql/index/art/nodes/test_art_prefix_concat.test
+# description: Test replacing a Node4 with its remaining child on delete
+# group: [nodes]
+
+# Each scenario builds the smallest tree with one of the shapes that PrefixHandle::Concat handles, and then deletes
+# one key, which leaves a single Node4 with one child. The comment above each scenario names its shape, so a broken
+# branch fails in its own scenario. The gate scenarios place key 1 on chosen row IDs, using v as the row ID.
+# Afterwards, the test:
+# - looks up the remaining keys through the index, which fails if a byte, a child, or a gate bit was lost,
+# - checkpoints, restarts, and looks them up again in the tree loaded from storage,
+# - deletes the row IDs left in the collapsed gates, which fails in debug builds if a gate has the wrong shape,
+# - re-inserts the deleted keys, which splits the merged prefixes again,
+# - deletes all rows, which fails if an index entry is missing, after which debug builds verify that no node is leaked.
+# A Node4 that is itself a gate is unreachable from SQL, because all row IDs share their first key byte.
+
+load {TEST_DIR}/test_art_prefix_concat.db
+
+statement ok
+SET index_scan_percentage = 1.0;
+
+statement ok
+SET index_scan_max_count = 100000;
+
+# The child is a gate and the parent prefix has room for the byte.
+statement ok
+CREATE TABLE child_gate_in_place (k INTEGER);
+
+statement ok
+CREATE INDEX child_gate_in_place_idx ON child_gate_in_place(k);
+
+statement ok
+INSERT INTO child_gate_in_place VALUES (1), (1), (2);
+
+statement ok
+DELETE FROM child_gate_in_place WHERE k IN (2);
+
+# The child is a gate and the parent prefix is full, so the byte gets a new prefix.
+statement ok
+CREATE TABLE child_gate_full_tail (k BIGINT);
+
+statement ok
+CREATE INDEX child_gate_full_tail_idx ON child_gate_full_tail(k);
+
+statement ok
+INSERT INTO child_gate_full_tail VALUES (1), (1), (2);
+
+statement ok
+DELETE FROM child_gate_full_tail WHERE k IN (2);
+
+# The child is a gate below a two-prefix chain whose tail is full.
+statement ok
+CREATE TABLE child_gate_chain_full (k VARCHAR);
+
+statement ok
+CREATE INDEX child_gate_chain_full_idx ON child_gate_chain_full(k);
+
+statement ok
+INSERT INTO child_gate_chain_full VALUES (repeat('a', 30)), (repeat('a', 30)), (repeat('a', 30) || 'b');
+
+statement ok
+DELETE FROM child_gate_chain_full WHERE k IN (repeat('a', 30) || 'b');
+
+# The child is a gate below a two-prefix chain whose tail has room.
+statement ok
+CREATE TABLE child_gate_chain_room (k VARCHAR);
+
+statement ok
+CREATE INDEX child_gate_chain_room_idx ON child_gate_chain_room(k);
+
+statement ok
+INSERT INTO child_gate_chain_room VALUES (repeat('a', 20)), (repeat('a', 20)), (repeat('a', 20) || 'b');
+
+statement ok
+DELETE FROM child_gate_chain_room WHERE k IN (repeat('a', 20) || 'b');
+
+# The child is a gate and the parent is an inner node.
+statement ok
+CREATE TABLE child_gate_parent_node (k SMALLINT);
+
+statement ok
+CREATE INDEX child_gate_parent_node_idx ON child_gate_parent_node(k);
+
+statement ok
+INSERT INTO child_gate_parent_node VALUES (1), (1), (2), (256);
+
+statement ok
+DELETE FROM child_gate_parent_node WHERE k IN (2);
+
+# The child is an inlined leaf and the parent is a prefix.
+statement ok
+CREATE TABLE child_inlined_parent_prefix (k INTEGER);
+
+statement ok
+CREATE INDEX child_inlined_parent_prefix_idx ON child_inlined_parent_prefix(k);
+
+statement ok
+INSERT INTO child_inlined_parent_prefix VALUES (1), (2);
+
+statement ok
+DELETE FROM child_inlined_parent_prefix WHERE k IN (2);
+
+# The child is an inlined leaf and the parent is an inner node.
+statement ok
+CREATE TABLE child_inlined_parent_node (k SMALLINT);
+
+statement ok
+CREATE INDEX child_inlined_parent_node_idx ON child_inlined_parent_node(k);
+
+statement ok
+INSERT INTO child_inlined_parent_node VALUES (1), (2), (256);
+
+statement ok
+DELETE FROM child_inlined_parent_node WHERE k IN (2);
+
+# The child is a prefix, which is merged into the parent prefix.
+statement ok
+CREATE TABLE child_prefix_parent_prefix (k INTEGER);
+
+statement ok
+CREATE INDEX child_prefix_parent_prefix_idx ON child_prefix_parent_prefix(k);
+
+statement ok
+INSERT INTO child_prefix_parent_prefix VALUES (66051), (66052), (131072);
+
+statement ok
+DELETE FROM child_prefix_parent_prefix WHERE k IN (131072);
+
+# The child is a prefix and the parent is an inner node.
+statement ok
+CREATE TABLE child_prefix_parent_node (k INTEGER);
+
+statement ok
+CREATE INDEX child_prefix_parent_node_idx ON child_prefix_parent_node(k);
+
+statement ok
+INSERT INTO child_prefix_parent_node VALUES (-1), (66051), (66052), (131072);
+
+statement ok
+DELETE FROM child_prefix_parent_node WHERE k IN (131072);
+
+# The child is a prefix ending in a gate: the merge stops at the gate.
+statement ok
+CREATE TABLE child_prefix_to_gate (k INTEGER);
+
+statement ok
+CREATE INDEX child_prefix_to_gate_idx ON child_prefix_to_gate(k);
+
+statement ok
+INSERT INTO child_prefix_to_gate VALUES (66051), (66051), (131072);
+
+statement ok
+DELETE FROM child_prefix_to_gate WHERE k IN (131072);
+
+# The child is a prefix that does not fit into the parent prefix, so the merge continues in a new prefix.
+statement ok
+CREATE TABLE child_prefix_overflow (k BIGINT);
+
+statement ok
+CREATE INDEX child_prefix_overflow_idx ON child_prefix_overflow(k);
+
+statement ok
+INSERT INTO child_prefix_overflow VALUES (1), (1), (4294967297);
+
+statement ok
+DELETE FROM child_prefix_overflow WHERE k IN (4294967297);
+
+# The child is a chain of two prefixes ending in a gate, and both are merged into the parent prefix.
+statement ok
+CREATE TABLE child_prefix_chain (k VARCHAR);
+
+statement ok
+CREATE INDEX child_prefix_chain_idx ON child_prefix_chain(k);
+
+statement ok
+INSERT INTO child_prefix_chain VALUES ('pa' || repeat('x', 20)), ('pa' || repeat('x', 20)), ('pb');
+
+statement ok
+DELETE FROM child_prefix_chain WHERE k IN ('pb');
+
+# Inside a gate: the last remaining row ID replaces the gate.
+statement ok
+CREATE TABLE gate_inline_all_the_way_up (k INTEGER, v INTEGER);
+
+statement ok
+CREATE INDEX gate_inline_all_the_way_up_idx ON gate_inline_all_the_way_up(k);
+
+statement ok
+INSERT INTO gate_inline_all_the_way_up SELECT CASE WHEN i IN (0, 256) THEN 1 ELSE i + 10 END, i FROM range(300) r(i);
+
+query I
+SELECT bool_and(rowid = v) FROM gate_inline_all_the_way_up;
+----
+true
+
+statement ok
+DELETE FROM gate_inline_all_the_way_up WHERE v = 256;
+
+# Inside a gate: the remaining row ID is inlined into the parent node.
+statement ok
+CREATE TABLE gate_inline_into_node (k INTEGER, v INTEGER);
+
+statement ok
+CREATE INDEX gate_inline_into_node_idx ON gate_inline_into_node(k);
+
+statement ok
+INSERT INTO gate_inline_into_node SELECT CASE WHEN i IN (0, 256, 65536) THEN 1 ELSE i + 10 END, i FROM range(65537) r(i);
+
+query I
+SELECT bool_and(rowid = v) FROM gate_inline_into_node;
+----
+true
+
+statement ok
+DELETE FROM gate_inline_into_node WHERE v = 256;
+
+# Inside a gate: the remaining child is a nested leaf and the parent is the gate's prefix.
+statement ok
+CREATE TABLE gate_child_leaf_parent_prefix (k INTEGER, v INTEGER);
+
+statement ok
+CREATE INDEX gate_child_leaf_parent_prefix_idx ON gate_child_leaf_parent_prefix(k);
+
+statement ok
+INSERT INTO gate_child_leaf_parent_prefix SELECT CASE WHEN i IN (0, 1, 256) THEN 1 ELSE i + 10 END, i FROM range(300) r(i);
+
+query I
+SELECT bool_and(rowid = v) FROM gate_child_leaf_parent_prefix;
+----
+true
+
+statement ok
+DELETE FROM gate_child_leaf_parent_prefix WHERE v = 256;
+
+# Inside a gate: the remaining child is a prefix, which is merged into the gate's prefix.
+statement ok
+CREATE TABLE gate_child_prefix_parent_prefix (k INTEGER, v INTEGER);
+
+statement ok
+CREATE INDEX gate_child_prefix_parent_prefix_idx ON gate_child_prefix_parent_prefix(k);
+
+statement ok
+INSERT INTO gate_child_prefix_parent_prefix SELECT CASE WHEN i IN (0, 1, 65536) THEN 1 ELSE i + 10 END, i FROM range(65537) r(i);
+
+query I
+SELECT bool_and(rowid = v) FROM gate_child_prefix_parent_prefix;
+----
+true
+
+statement ok
+DELETE FROM gate_child_prefix_parent_prefix WHERE v = 65536;
+
+query I
+SELECT count(*) FROM child_gate_in_place WHERE k = 1;
+----
+2
+
+query I
+SELECT count(*) FROM child_gate_full_tail WHERE k = 1;
+----
+2
+
+query I
+SELECT count(*) FROM child_gate_chain_full WHERE k = repeat('a', 30);
+----
+2
+
+query I
+SELECT count(*) FROM child_gate_chain_room WHERE k = repeat('a', 20);
+----
+2
+
+query I
+SELECT count(*) FROM child_gate_parent_node WHERE k = 1;
+----
+2
+
+query I
+SELECT count(*) FROM child_gate_parent_node WHERE k = 256;
+----
+1
+
+query I
+SELECT count(*) FROM child_inlined_parent_prefix WHERE k = 1;
+----
+1
+
+query I
+SELECT count(*) FROM child_inlined_parent_node WHERE k = 1;
+----
+1
+
+query I
+SELECT count(*) FROM child_inlined_parent_node WHERE k = 256;
+----
+1
+
+query I
+SELECT count(*) FROM child_prefix_parent_prefix WHERE k = 66051;
+----
+1
+
+query I
+SELECT count(*) FROM child_prefix_parent_prefix WHERE k = 66052;
+----
+1
+
+query I
+SELECT count(*) FROM child_prefix_parent_node WHERE k = -1;
+----
+1
+
+query I
+SELECT count(*) FROM child_prefix_parent_node WHERE k = 66051;
+----
+1
+
+query I
+SELECT count(*) FROM child_prefix_parent_node WHERE k = 66052;
+----
+1
+
+query I
+SELECT count(*) FROM child_prefix_to_gate WHERE k = 66051;
+----
+2
+
+query I
+SELECT count(*) FROM child_prefix_overflow WHERE k = 1;
+----
+2
+
+query I
+SELECT count(*) FROM child_prefix_chain WHERE k = 'pa' || repeat('x', 20);
+----
+2
+
+query I
+SELECT list_sort(list(v)) FROM gate_inline_all_the_way_up WHERE k = 1;
+----
+[0]
+
+query I
+SELECT list_sort(list(v)) FROM gate_inline_into_node WHERE k = 1;
+----
+[0, 65536]
+
+query I
+SELECT list_sort(list(v)) FROM gate_child_leaf_parent_prefix WHERE k = 1;
+----
+[0, 1]
+
+query I
+SELECT list_sort(list(v)) FROM gate_child_prefix_parent_prefix WHERE k = 1;
+----
+[0, 1]
+
+statement ok
+CHECKPOINT
+
+restart
+
+statement ok
+SET index_scan_percentage = 1.0;
+
+statement ok
+SET index_scan_max_count = 100000;
+
+query I
+SELECT count(*) FROM child_gate_in_place WHERE k = 1;
+----
+2
+
+query I
+SELECT count(*) FROM child_gate_full_tail WHERE k = 1;
+----
+2
+
+query I
+SELECT count(*) FROM child_gate_chain_full WHERE k = repeat('a', 30);
+----
+2
+
+query I
+SELECT count(*) FROM child_gate_chain_room WHERE k = repeat('a', 20);
+----
+2
+
+query I
+SELECT count(*) FROM child_gate_parent_node WHERE k = 1;
+----
+2
+
+query I
+SELECT count(*) FROM child_gate_parent_node WHERE k = 256;
+----
+1
+
+query I
+SELECT count(*) FROM child_inlined_parent_prefix WHERE k = 1;
+----
+1
+
+query I
+SELECT count(*) FROM child_inlined_parent_node WHERE k = 1;
+----
+1
+
+query I
+SELECT count(*) FROM child_inlined_parent_node WHERE k = 256;
+----
+1
+
+query I
+SELECT count(*) FROM child_prefix_parent_prefix WHERE k = 66051;
+----
+1
+
+query I
+SELECT count(*) FROM child_prefix_parent_prefix WHERE k = 66052;
+----
+1
+
+query I
+SELECT count(*) FROM child_prefix_parent_node WHERE k = -1;
+----
+1
+
+query I
+SELECT count(*) FROM child_prefix_parent_node WHERE k = 66051;
+----
+1
+
+query I
+SELECT count(*) FROM child_prefix_parent_node WHERE k = 66052;
+----
+1
+
+query I
+SELECT count(*) FROM child_prefix_to_gate WHERE k = 66051;
+----
+2
+
+query I
+SELECT count(*) FROM child_prefix_overflow WHERE k = 1;
+----
+2
+
+query I
+SELECT count(*) FROM child_prefix_chain WHERE k = 'pa' || repeat('x', 20);
+----
+2
+
+query I
+SELECT list_sort(list(v)) FROM gate_inline_all_the_way_up WHERE k = 1;
+----
+[0]
+
+query I
+SELECT list_sort(list(v)) FROM gate_inline_into_node WHERE k = 1;
+----
+[0, 65536]
+
+query I
+SELECT list_sort(list(v)) FROM gate_child_leaf_parent_prefix WHERE k = 1;
+----
+[0, 1]
+
+query I
+SELECT list_sort(list(v)) FROM gate_child_prefix_parent_prefix WHERE k = 1;
+----
+[0, 1]
+
+# Delete the row IDs left in the collapsed gates, which only works if the gates were collapsed correctly.
+
+statement ok
+DELETE FROM gate_inline_all_the_way_up WHERE v = 0;
+
+query I
+SELECT count(*) FROM gate_inline_all_the_way_up WHERE k = 1;
+----
+0
+
+statement ok
+DELETE FROM gate_inline_into_node WHERE v = 65536;
+
+query I
+SELECT list_sort(list(v)) FROM gate_inline_into_node WHERE k = 1;
+----
+[0]
+
+statement ok
+DELETE FROM gate_inline_into_node WHERE v = 0;
+
+query I
+SELECT count(*) FROM gate_inline_into_node WHERE k = 1;
+----
+0
+
+# Re-insert the deleted keys, which splits the merged prefixes again.
+
+statement ok
+INSERT INTO child_gate_in_place VALUES (2);
+
+query I
+SELECT count(*) FROM child_gate_in_place WHERE k IN (2);
+----
+1
+
+statement ok
+INSERT INTO child_gate_full_tail VALUES (2);
+
+query I
+SELECT count(*) FROM child_gate_full_tail WHERE k IN (2);
+----
+1
+
+statement ok
+INSERT INTO child_gate_chain_full VALUES (repeat('a', 30) || 'b');
+
+query I
+SELECT count(*) FROM child_gate_chain_full WHERE k IN (repeat('a', 30) || 'b');
+----
+1
+
+statement ok
+INSERT INTO child_gate_chain_room VALUES (repeat('a', 20) || 'b');
+
+query I
+SELECT count(*) FROM child_gate_chain_room WHERE k IN (repeat('a', 20) || 'b');
+----
+1
+
+statement ok
+INSERT INTO child_gate_parent_node VALUES (2);
+
+query I
+SELECT count(*) FROM child_gate_parent_node WHERE k IN (2);
+----
+1
+
+statement ok
+INSERT INTO child_inlined_parent_prefix VALUES (2);
+
+query I
+SELECT count(*) FROM child_inlined_parent_prefix WHERE k IN (2);
+----
+1
+
+statement ok
+INSERT INTO child_inlined_parent_node VALUES (2);
+
+query I
+SELECT count(*) FROM child_inlined_parent_node WHERE k IN (2);
+----
+1
+
+statement ok
+INSERT INTO child_prefix_parent_prefix VALUES (131072);
+
+query I
+SELECT count(*) FROM child_prefix_parent_prefix WHERE k IN (131072);
+----
+1
+
+statement ok
+INSERT INTO child_prefix_parent_node VALUES (131072);
+
+query I
+SELECT count(*) FROM child_prefix_parent_node WHERE k IN (131072);
+----
+1
+
+statement ok
+INSERT INTO child_prefix_to_gate VALUES (131072);
+
+query I
+SELECT count(*) FROM child_prefix_to_gate WHERE k IN (131072);
+----
+1
+
+statement ok
+INSERT INTO child_prefix_overflow VALUES (4294967297);
+
+query I
+SELECT count(*) FROM child_prefix_overflow WHERE k IN (4294967297);
+----
+1
+
+statement ok
+INSERT INTO child_prefix_chain VALUES ('pb');
+
+query I
+SELECT count(*) FROM child_prefix_chain WHERE k IN ('pb');
+----
+1
+
+statement ok
+INSERT INTO gate_inline_all_the_way_up VALUES (1, -1);
+
+query I
+SELECT count(*) FROM gate_inline_all_the_way_up WHERE k = 1;
+----
+1
+
+statement ok
+INSERT INTO gate_inline_into_node VALUES (1, -1);
+
+query I
+SELECT count(*) FROM gate_inline_into_node WHERE k = 1;
+----
+1
+
+statement ok
+INSERT INTO gate_child_leaf_parent_prefix VALUES (1, -1);
+
+query I
+SELECT count(*) FROM gate_child_leaf_parent_prefix WHERE k = 1;
+----
+3
+
+statement ok
+INSERT INTO gate_child_prefix_parent_prefix VALUES (1, -1);
+
+query I
+SELECT count(*) FROM gate_child_prefix_parent_prefix WHERE k = 1;
+----
+3
+
+# Empty all indexes. Deleting fails if an index entry is missing, and debug builds then verify that no node is leaked.
+
+statement ok
+DELETE FROM child_gate_in_place;
+
+statement ok
+DELETE FROM child_gate_full_tail;
+
+statement ok
+DELETE FROM child_gate_chain_full;
+
+statement ok
+DELETE FROM child_gate_chain_room;
+
+statement ok
+DELETE FROM child_gate_parent_node;
+
+statement ok
+DELETE FROM child_inlined_parent_prefix;
+
+statement ok
+DELETE FROM child_inlined_parent_node;
+
+statement ok
+DELETE FROM child_prefix_parent_prefix;
+
+statement ok
+DELETE FROM child_prefix_parent_node;
+
+statement ok
+DELETE FROM child_prefix_to_gate;
+
+statement ok
+DELETE FROM child_prefix_overflow;
+
+statement ok
+DELETE FROM child_prefix_chain;
+
+statement ok
+DELETE FROM gate_inline_all_the_way_up;
+
+statement ok
+DELETE FROM gate_inline_into_node;
+
+statement ok
+DELETE FROM gate_child_leaf_parent_prefix;
+
+statement ok
+DELETE FROM gate_child_prefix_parent_prefix;

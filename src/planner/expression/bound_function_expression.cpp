@@ -21,12 +21,15 @@ static optional_ptr<const Expression> GetLambdaExpression(const BoundFunctionExp
 
 BoundFunctionExpression::BoundFunctionExpression(BoundScalarFunction bound_function,
                                                  vector<unique_ptr<Expression>> arguments,
-                                                 unique_ptr<FunctionData> bind_info_p, bool is_operator)
+                                                 unique_ptr<FunctionData> bind_info_p, bool is_operator,
+                                                 Identifier alias_p, QueryLocation location)
     : Expression(GetFunctionExpressionType(bound_function, arguments, bind_info_p.get()),
                  ExpressionClass::BOUND_FUNCTION, bound_function.GetReturnType()),
       function(std::move(bound_function)), children(std::move(arguments)), bind_info(std::move(bind_info_p)),
       is_operator(is_operator) {
 	D_ASSERT(!function.GetName().empty());
+	alias = std::move(alias_p);
+	query_location = location;
 }
 
 ExpressionType BoundFunctionExpression::GetFunctionExpressionType(const BoundScalarFunction &bound_function,

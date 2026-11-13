@@ -31,7 +31,8 @@
 
 namespace duckdb {
 
-Planner::Planner(ClientContext &context) : binder(Binder::CreateBinder(context)), context(context) {
+Planner::Planner(ClientContext &context, PlanningMode mode)
+    : binder(Binder::CreateBinder(context)), context(context), mode(mode) {
 }
 
 static void RenderSQLExplain(unique_ptr<LogicalOperator> &op, ClientContext &context, Binder &binder) {
@@ -177,6 +178,39 @@ static bool VerifyPlannedExpressions(const LogicalOperator &plan) {
 	}
 	return true;
 }
+
+//! What the signature of a planned statement reads from its bind
+struct BindSignatureState {
+	BindSignatureState(Binder &binder, BoundParameterMap &parameters)
+	    : properties(binder.GetStatementProperties()), rebind(parameters.rebind) {
+		for (auto &entry : parameters.GetParameters()) {
+			parameter_types.emplace(entry.first, entry.second->return_type);
+		}
+	}
+
+	bool operator==(const BindSignatureState &other) const {
+		auto &modified = properties.modified_databases;
+		auto &other_modified = other.properties.modified_databases;
+		for (auto &entry : modified) {
+			auto match = other_modified.find(entry.first);
+			if (match == other_modified.end() || match->second.identity != entry.second.identity ||
+			    !match->second.modifications.Contains(entry.second.modifications) ||
+			    !entry.second.modifications.Contains(match->second.modifications)) {
+				return false;
+			}
+		}
+		return modified.size() == other_modified.size() &&
+		       properties.read_databases == other.properties.read_databases &&
+		       properties.requires_valid_transaction == other.properties.requires_valid_transaction &&
+		       properties.return_type == other.properties.return_type &&
+		       properties.always_require_rebind == other.properties.always_require_rebind &&
+		       parameter_types == other.parameter_types && rebind == other.rebind;
+	}
+
+	StatementProperties properties;
+	identifier_map_t<LogicalType> parameter_types;
+	bool rebind;
+};
 #endif
 
 static void RunPreBindExtensions(ClientContext &context, Binder &binder, SQLStatement &statement) {
@@ -247,7 +281,11 @@ void Planner::CreatePlan(SQLStatement &statement) {
 			throw;
 		}
 	}
-	if (this->plan) {
+	if (this->plan && mode == PlanningMode::FULL) {
+#ifdef D_ASSERT_IS_ENABLED
+		// The bind only mode skips these passes, so they must not change what the signature reads
+		BindSignatureState bind_state(*binder, bound_parameters);
+#endif
 		auto max_tree_depth = Settings::Get<MaxExpressionDepthSetting>(context);
 		CheckTreeDepth(*plan, max_tree_depth);
 
@@ -260,12 +298,15 @@ void Planner::CreatePlan(SQLStatement &statement) {
 		D_ASSERT(!ContainsDependentJoin(*this->plan));
 		D_ASSERT(VerifyPlannedExpressions(*this->plan));
 		D_ASSERT(VerifyCanonicalComparisonJoins(*this->plan));
+		D_ASSERT(BindSignatureState(*binder, bound_parameters) == bind_state);
 	}
 	this->properties = binder->GetStatementProperties();
 	this->properties.parameter_count = parameter_count;
 	properties.bound_all_parameters = !bound_parameters.rebind && parameters_resolved;
 
-	Planner::VerifyPlan(context, plan, bound_parameters.GetParametersPtr());
+	if (mode == PlanningMode::FULL) {
+		Planner::VerifyPlan(context, plan, bound_parameters.GetParametersPtr());
+	}
 
 	// set up a map of parameter number -> value entries
 	for (auto &kv : bound_parameters.GetParameters()) {

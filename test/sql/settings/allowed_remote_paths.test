@@ -1,0 +1,95 @@
+# name: test/sql/settings/allowed_remote_paths.test
+# description: Reject parent traversal in restricted remote paths without decoding filenames as UTF-8
+# group: [settings]
+
+require skip_reload
+
+statement ok
+SET autoload_known_extensions=false;
+
+statement ok
+SET autoinstall_known_extensions=false;
+
+statement ok
+SET allowed_directories=['{TEST_DIR}', 'http://127.0.0.1:1/allowed/', 'https://127.0.0.1:1/allowed/', 'az://cont-public/allowed/', 's3://bucket.name/allowed/', 'custom://bucket.name/allowed/'];
+
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/%2e%2e' (FORMAT CSV);
+
+statement ok
+SET allowed_paths=['http://127.0.0.1:1/explicit/%2e%2e/private'];
+
+# Keep the test offline even when remote extensions are linked into the runner.
+statement ok
+SET disabled_filesystems='HTTPFileSystem,S3FileSystem,AzureBlobStorageFileSystem';
+
+# With unrestricted access, traversal validation must not intercept the request.
+statement error
+SELECT * FROM glob('http://127.0.0.1:1/allowed/%2e%2e/private');
+----
+<REGEX>:.*(requires the extension|has been disabled by configuration).*
+
+statement ok
+SET enable_external_access=false;
+
+# Local filenames are not URL-decoded, and a local dot segment is still valid.
+query I
+SELECT i FROM read_csv('{TEST_DIR}/./%2e%2e');
+----
+42
+
+# Ordinary names and single dots pass validation and reach filesystem dispatch.
+# Escaped bytes need not be UTF-8, and nested escapes are not decoded recursively.
+foreach path file.csv backup..csv ... ./file.csv %2e file%2ecsv %2e%2ecsv file%FF.csv %FF%2e%2e %252e%252e/private one%2ftwo.csv one%5ctwo.csv file% file%2 file%GG
+
+statement error
+SELECT * FROM glob('http://127.0.0.1:1/allowed/{path}');
+----
+<REGEX>:.*(requires the extension|has been disabled by configuration).*
+
+endloop
+
+# Traversal-like text inside an HTTP query or fragment is not part of the path.
+foreach path file.csv?next=/../other file.csv#/../other
+
+statement error
+SELECT * FROM glob('http://127.0.0.1:1/allowed/{path}');
+----
+<REGEX>:.*(requires the extension|has been disabled by configuration).*
+
+endloop
+
+foreach path .. ../private .%2e/private %2e./private %2e%2e/private %2E%2E/private %2E%2e/private sub%2f..%2f..%2fprivate sub%2F..%2F..%2Fprivate sub%5c..%5c..%5cprivate sub%5C..%5C..%5Cprivate sub\..\..\private %FF/%2e%2e/private
+
+statement error
+SELECT * FROM glob('http://127.0.0.1:1/allowed/{path}');
+----
+Permission Error: Cannot access file
+
+endloop
+
+# The same guard applies to HTTPS, object stores, and unrecognized remote schemes.
+foreach prefix https://127.0.0.1:1 az://cont-public s3://bucket.name custom://bucket.name
+
+statement error
+SELECT * FROM glob('{prefix}/allowed/.%2e/private');
+----
+Permission Error: Cannot access file
+
+endloop
+
+# Exact allowlist entries must not bypass traversal validation.
+statement error
+SELECT * FROM glob('http://127.0.0.1:1/explicit/%2e%2e/private');
+----
+Permission Error: Cannot access file
+
+# The HTTP path ends at the first query or fragment marker, not the last one.
+foreach path ..?x=?y %2e%2e#fragment?x=1
+
+statement error
+SELECT * FROM glob('http://127.0.0.1:1/allowed/{path}');
+----
+Permission Error: Cannot access file
+
+endloop

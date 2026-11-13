@@ -11,13 +11,14 @@ BoundConstantExpression::BoundConstantExpression(Value value_p)
       value(std::move(value_p)) {
 }
 
-void BoundConstantExpression::SetValue(Value value_p) {
-	return_type = value_p.type();
-	value = std::move(value_p);
+BoundConstantExpression::BoundConstantExpression(Value value_p, Identifier alias_p, QueryLocation location)
+    : BoundConstantExpression(std::move(value_p)) {
+	alias = std::move(alias_p);
+	query_location = location;
 }
 
-Value BoundConstantExpression::TakeValue() {
-	return std::move(value);
+unique_ptr<Expression> BoundConstantExpression::WithValue(Value new_value) const {
+	return make_uniq<BoundConstantExpression>(std::move(new_value), alias, query_location);
 }
 
 void BoundConstantExpression::SetReturnType(LogicalType type) {

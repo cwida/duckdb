@@ -121,6 +121,21 @@ const vector<reference<JoinRelationSet>> &PlanEnumerator::GetAllNeighborRelation
 	return inserted.first->second;
 }
 
+static bool EnablesJoinKey(const JoinPredicateModel &predicates, JoinRelationSet &set, JoinRelationSet &left,
+                           JoinRelationSet &right) {
+	auto needs_both_inputs = [&](optional_ptr<JoinRelationSet> key) {
+		return key && JoinRelationSet::Intersects(left, *key) && JoinRelationSet::Intersects(right, *key);
+	};
+	for (auto &predicate_ref : predicates.GetGraphPredicates()) {
+		auto &predicate = predicate_ref.get();
+		if (!JoinRelationSet::IsSubset(set, predicate.GetSet()) &&
+		    (needs_both_inputs(predicate.GetLeftSetOptional()) || needs_both_inputs(predicate.GetRightSetOptional()))) {
+			return true;
+		}
+	}
+	return false;
+}
+
 //! Create a new JoinTree node by joining together two previous JoinTree nodes
 unique_ptr<DPJoinNode> PlanEnumerator::CreateJoinTree(JoinRelationSet &set,
                                                       const vector<reference<NeighborInfo>> &possible_connections,
@@ -183,10 +198,21 @@ unique_ptr<DPJoinNode> PlanEnumerator::CreateJoinTree(JoinRelationSet &set,
 		return nullptr;
 	}
 	auto cardinality = cost_model.GetCardinalityEstimator().EstimateCardinality(set);
+	// Avoid large expanding independent builds unless the inputs contribute to the same join key.
+	if (recursive_frontier_estimate > 0 && !left.recursive_properties.depends_on_recursive_input &&
+	    !right.recursive_properties.depends_on_recursive_input) {
+		auto output = cardinality.GetDouble();
+		if (output > left.cardinality.GetDouble() && output > right.cardinality.GetDouble() &&
+		    output > recursive_frontier_estimate &&
+		    !EnablesJoinKey(query_graph_manager.GetPredicateModel(), set, left.set, right.set)) {
+			return nullptr;
+		}
+	}
 	auto cost = cost_model.ComputeCost(left, right, best_candidate->join_operator, cardinality.GetDouble());
 	auto result = make_uniq<DPJoinNode>(set, best_candidate->join_operator, std::move(best_candidate->predicates),
 	                                    best_candidate->generated_cross_product, left.set, right.set, cost);
 	result->cardinality = cardinality;
+	cost_model.UpdateBuildMemory(*result, left, right);
 	return result;
 }
 
@@ -206,10 +232,10 @@ optional_ptr<DPJoinNode> PlanEnumerator::EmitPair(JoinRelationSet &left, JoinRel
 	}
 	// check if this plan is the optimal plan we found for this set of relations
 	auto entry = plans.find(new_set);
-	auto new_cost = new_plan->cost;
-	double old_cost = NumericLimits<double>::Maximum();
+	auto new_cost = cost_model.GetCost(*new_plan);
+	JoinPlanCost old_cost {NumericLimits<double>::Maximum(), NumericLimits<double>::Maximum()};
 	if (entry != plans.end()) {
-		old_cost = entry->second->cost;
+		old_cost = cost_model.GetCost(*entry->second);
 	}
 	if (entry == plans.end() || new_cost < old_cost) {
 		// the new plan costs less than the old plan. Update our DP table.
@@ -433,7 +459,7 @@ bool PlanEnumerator::SolveJoinOrderApproximately() {
 	struct GreedyCandidate {
 		optional_ptr<JoinRelationSet> left;
 		optional_ptr<JoinRelationSet> right;
-		double cost;
+		JoinPlanCost cost;
 	};
 	vector<GreedyCandidate> candidates;
 	auto EmitOrientation = [&](JoinRelationSet &left, JoinRelationSet &right) -> optional_ptr<DPJoinNode> {
@@ -450,7 +476,7 @@ bool PlanEnumerator::SolveJoinOrderApproximately() {
 			node = EmitOrientation(right, left);
 		}
 		if (node) {
-			candidates.push_back({&left, &right, node->cost});
+			candidates.push_back({&left, &right, cost_model.GetCost(*node)});
 		}
 	};
 	auto InitializeCandidates = [&]() {
@@ -466,7 +492,7 @@ bool PlanEnumerator::SolveJoinOrderApproximately() {
 	while (join_relations.size() > 1) {
 		optional_ptr<JoinRelationSet> best_left;
 		optional_ptr<JoinRelationSet> best_right;
-		double best_cost = NumericLimits<double>::Maximum();
+		JoinPlanCost best_cost {NumericLimits<double>::Maximum(), NumericLimits<double>::Maximum()};
 		for (auto &candidate : candidates) {
 			if (!best_left || candidate.cost < best_cost) {
 				best_cost = candidate.cost;
@@ -491,7 +517,10 @@ bool PlanEnumerator::SolveJoinOrderApproximately() {
 					auto left_plan = plans.find(left);
 					auto right_plan = plans.find(right);
 					D_ASSERT(left_plan != plans.end() && right_plan != plans.end());
-					auto cost = left_plan->second->cost + right_plan->second->cost;
+					auto left_cost = cost_model.GetCost(*left_plan->second);
+					auto right_cost = cost_model.GetCost(*right_plan->second);
+					JoinPlanCost cost {left_cost.work + right_cost.work,
+					                   MaxValue(left_cost.memory_excess, right_cost.memory_excess)};
 					if (!best_left || cost < best_cost) {
 						best_cost = cost;
 						best_left = left;
@@ -584,6 +613,14 @@ void PlanEnumerator::InitLeafPlans() {
 		auto join_node = make_uniq<DPJoinNode>(relation_set);
 		join_node->cost = 0;
 		join_node->cardinality = estimator.EstimateCardinality(relation_set);
+		if (query_graph_manager.relation_manager.HasRecursiveRelations()) {
+			auto &relation = query_graph_manager.relation_manager.GetRelation(RelationIndex(i));
+			relation.op.ResolveOperatorTypes();
+			join_node->recursive_properties = relation.recursive_properties;
+			if (join_node->recursive_properties.depends_on_recursive_input) {
+				recursive_frontier_estimate = MaxValue(recursive_frontier_estimate, join_node->cardinality.GetDouble());
+			}
+		}
 		plans[relation_set] = std::move(join_node);
 	}
 }
