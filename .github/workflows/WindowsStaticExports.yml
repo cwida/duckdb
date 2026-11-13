@@ -104,7 +104,7 @@ jobs:
         run: |
           cp test/unittest.exe windows-exports-crash-unittest.exe
           cp duckdb.exe windows-exports-crash-duckdb.exe
-      - name: Load each extension with no extensions linked into the host
+      - name: Load core and test extensions with no extensions linked into the host
         if: ${{ !cancelled() && matrix.arch == 'amd64' && steps.relink.outcome == 'success' }}
         shell: bash
         env:

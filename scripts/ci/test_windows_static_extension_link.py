@@ -1,4 +1,4 @@
-"""Exercise the production Windows extension builders before core targets exist."""
+"""Exercise production Windows builders and API declarations before core targets exist."""
 
 import re
 import shutil
@@ -36,9 +36,18 @@ class WindowsStaticExtensionLinkTests(unittest.TestCase):
                 "__declspec(dllexport) volatile unsigned char unused_data[32768] = {1};\n"
                 "__declspec(dllexport) int unused_function(void) { return unused_data[0]; }\n"
                 "__declspec(dllexport) int used(void) { return 42; }\n"
+                "__declspec(dllexport) volatile int used_data = 7;\n"
+                "__declspec(dllexport) int force(void) { return 0; }\n"
             )
             (root / "extension.c").write_text(
                 "int used(void);\n__declspec(dllexport) int fixture_duckdb_cpp_init(void) { return used(); }\n"
+            )
+            (root / "direct.c").write_text(
+                '#include "duckdb/common/winapi.hpp"\n'
+                "DUCKDB_API int used(void);\n"
+                "DUCKDB_API extern volatile int used_data;\n"
+                "int force(void);\n"
+                "DUCKDB_EXTENSION_API int direct_duckdb_cpp_init(void) { return used() + used_data + force(); }\n"
             )
             (root / "toolchain.cmake").write_text(
                 "set(CMAKE_SYSTEM_NAME Windows)\n"
@@ -57,6 +66,7 @@ find_package(Python3 REQUIRED)
 option(WINDOWS_STATIC_LIBRARY_EXPORTS "Keep exports" OFF)
 option(EXTENSION_STATIC_BUILD "Embed core" ON)
 add_compile_options(/Gy /Gw /GS-)
+add_compile_definitions(DUCKDB_BUILD_LIBRARY)
 function(link_threads LIBRARY LINKAGE)
 endfunction()
 function(duckdb_make_native_lto_archive TARGET)
@@ -73,6 +83,9 @@ add_custom_target(duckdb_platform)
 @FUNCTIONS@
 # Match DuckDB's configure order: extensions precede src/CMakeLists.txt.
 build_extension_library(fixture extension.c)
+build_loadable_extension_directory(direct CPP extension/direct "" "" "" direct.c)
+target_include_directories(direct_loadable_extension PRIVATE "@REPO@/src/include")
+target_link_options(direct_loadable_extension PRIVATE "/MAP:${CMAKE_BINARY_DIR}/direct.map")
 add_library(core_objects OBJECT core.c)
 set(ALL_OBJECT_FILES $<TARGET_OBJECTS:core_objects>)
 add_library(duckdb_static STATIC ${ALL_OBJECT_FILES})
@@ -80,7 +93,7 @@ add_library(duckdb_static STATIC ${ALL_OBJECT_FILES})
 add_library(host SHARED extension.c)
 target_link_libraries(host fixture_extension)
 add_library(duckdb SHARED ${ALL_OBJECT_FILES})
-foreach(target host fixture_loadable_extension duckdb)
+foreach(target host fixture_loadable_extension direct_loadable_extension duckdb)
   target_link_options(${target} PRIVATE /noentry /nodefaultlib /safeseh:no /opt:ref,icf)
 endforeach()
 set(CORE_DEPENDENCY_TARGET fixture_extension)
@@ -167,6 +180,24 @@ file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/host-core.txt"
                     self.assertEqual((build / "host-core.txt").read_text(), "duckdb_static")
                     if keep == "OFF" and static == "ON":
                         self.assertGreater((build / "host.dll").stat().st_size - extension_path.stat().st_size, 30000)
+                    direct_path = build / "extension/direct/direct.duckdb_extension"
+                    direct = run("llvm-readobj", "--coff-exports", str(direct_path))
+                    self.assertIn("Name: direct_duckdb_cpp_init", direct)
+                    self.assertEqual("Name: used\n" in direct, exported)
+                    self.assertEqual("Name: used_data\n" in direct, exported)
+                    self.assertEqual("Name: unused_function" in direct, exported)
+                    self.assertEqual("Name: unused_data" in direct, exported)
+                    direct_map = (build / "direct.map").read_text()
+                    if static == "ON":
+                        # References must retain core code/data even after their exports are removed.
+                        self.assertRegex(direct_map, r"\sused\s")
+                        self.assertRegex(direct_map, r"\sused_data\s")
+                        self.assertNotIn("__imp_used", direct_map)
+                    else:
+                        imports = run("llvm-readobj", "--coff-imports", str(direct_path))
+                        self.assertIn("Name: duckdb.dll", imports)
+                        self.assertIn("Symbol: used ", imports)
+                        self.assertIn("Symbol: used_data ", imports)
 
 
 if __name__ == "__main__":

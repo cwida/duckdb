@@ -90,6 +90,12 @@ def smoke(root):
                 f"FROM duckdb_extensions() WHERE extension_name = '{name}' AND loaded AND install_mode = 'NOT_INSTALLED'; "
             )
             subprocess.run([str(root / "duckdb.exe"), "-bail", "-unsigned", "-c", sql + query], check=True)
+    demo = (root / "test/extension/loadable_extension_demo.duckdb_extension").as_posix().replace("'", "''")
+    sql = (
+        f"LOAD '{core}'; LOAD '{demo}'; "
+        "SELECT CASE WHEN test_alias_hello() = 'Hello Alias!' THEN true ELSE error('Demo extension query failed') END"
+    )
+    subprocess.run([str(root / "duckdb.exe"), "-bail", "-unsigned", "-c", sql], check=True)
     dll = ctypes.CDLL(str(root / "src/duckdb.dll"))
     dll.duckdb_open.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)]
     dll.duckdb_open.restype = ctypes.c_int

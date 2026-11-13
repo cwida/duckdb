@@ -316,6 +316,8 @@ function(build_loadable_extension_directory NAME ABI_TYPE OUTPUT_DIRECTORY EXTEN
             set_property(TARGET ${TARGET_NAME} PROPERTY DUCKDB_SELF_CONTAINED_WINDOWS_EXTENSION TRUE)
             duckdb_link_static_extension_core(${TARGET_NAME} "" ${DUCKDB_EXTRA_LINK_FLAGS})
             if (MSVC)
+                # Statically linked core APIs need direct references, while DUCKDB_EXTENSION_API still exports the entrypoint.
+                target_compile_definitions(${TARGET_NAME} PRIVATE DUCKDB_API=)
                 # link.exe/lld-link only default these on without /DEBUG; pin the --gc-sections equivalent
                 target_link_options(${TARGET_NAME} PRIVATE "$<$<CONFIG:Release>:/OPT:REF;/OPT:ICF>")
             endif()
