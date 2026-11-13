@@ -206,7 +206,7 @@ struct NextUnsigned<uint32_t> {
 
 template <>
 struct NextUnsigned<uint64_t> {
-#if ((__GNUC__ >= 5) || defined(__clang__)) && defined(__SIZEOF_INT128__)
+#if DUCKDB_HAS_INT128
 	using type = __uint128_t;
 #else
 	using type = uhugeint_t;

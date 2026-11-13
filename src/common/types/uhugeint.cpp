@@ -97,7 +97,7 @@ bool Uhugeint::TryNegate(uhugeint_t input, uhugeint_t &result) {
 // Multiply
 //===--------------------------------------------------------------------===//
 bool Uhugeint::TryMultiply(uhugeint_t lhs, uhugeint_t rhs, uhugeint_t &result) {
-#if ((__GNUC__ >= 5) || defined(__clang__)) && defined(__SIZEOF_INT128__)
+#if DUCKDB_HAS_INT128
 	__uint128_t left = __uint128_t(lhs.lower) + (__uint128_t(lhs.upper) << 64);
 	__uint128_t right = __uint128_t(rhs.lower) + (__uint128_t(rhs.upper) << 64);
 	__uint128_t result_u128;
@@ -172,7 +172,7 @@ bool Uhugeint::TryMultiply(uhugeint_t lhs, uhugeint_t rhs, uhugeint_t &result) {
 template <>
 uhugeint_t Uhugeint::Multiply<false>(uhugeint_t lhs, uhugeint_t rhs) {
 	uhugeint_t result;
-#if ((__GNUC__ >= 5) || defined(__clang__)) && defined(__SIZEOF_INT128__)
+#if DUCKDB_HAS_INT128
 	__uint128_t left = __uint128_t(lhs.lower) + (__uint128_t(lhs.upper) << 64);
 	__uint128_t right = __uint128_t(rhs.lower) + (__uint128_t(rhs.upper) << 64);
 	__uint128_t result_u128;

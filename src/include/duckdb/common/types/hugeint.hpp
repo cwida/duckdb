@@ -125,6 +125,8 @@ public:
 	static hugeint_t DivMod(hugeint_t lhs, hugeint_t rhs, hugeint_t &remainder);
 	// DivMod but lhs MUST be positive, and rhs is a uint64_t
 	static hugeint_t DivModPositive(hugeint_t lhs, uint64_t rhs, uint64_t &remainder);
+	// The bit-at-a-time loop DivModPositive falls back on without native 128-bit division (exposed for tests)
+	static hugeint_t DivModPositiveFallback(hugeint_t lhs, uint64_t rhs, uint64_t &remainder);
 
 	static int Sign(hugeint_t n);
 	static hugeint_t Abs(hugeint_t n);

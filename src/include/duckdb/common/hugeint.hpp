@@ -5,6 +5,23 @@
 #include <stdint.h>
 #include "duckdb/common/typedefs.hpp"
 
+//! DUCKDB_HAS_INT128: the compiler has __int128. Multiplication, shifts and comparisons on it are
+//! inlined and need no runtime helper.
+#if ((__GNUC__ >= 5) || defined(__clang__)) && defined(__SIZEOF_INT128__)
+#define DUCKDB_HAS_INT128 1
+#else
+#define DUCKDB_HAS_INT128 0
+#endif
+
+//! DUCKDB_HAS_INT128_DIVISION: 128-bit division uses __int128, which lowers to __divti3 / __udivti3
+//! from libgcc / compiler-rt (also required by third_party/mbedtls). Not under MSVC toolchains,
+//! including clang-cl, which do not link these helpers.
+#if DUCKDB_HAS_INT128 && !defined(_MSC_VER)
+#define DUCKDB_HAS_INT128_DIVISION 1
+#else
+#define DUCKDB_HAS_INT128_DIVISION 0
+#endif
+
 namespace duckdb {
 
 // Forward declaration to allow conversion between hugeint and uhugeint
@@ -195,7 +212,7 @@ constexpr hugeint_t HugeintLeftShift(hugeint_t lhs, uint32_t amount) {
 
 constexpr hugeint_t HugeintMultiplyUnchecked(hugeint_t lhs, hugeint_t rhs) {
 	// Unchecked multiplication uses the low 128 bits, including for negative operands.
-#if ((__GNUC__ >= 5) || defined(__clang__)) && defined(__SIZEOF_INT128__)
+#if DUCKDB_HAS_INT128
 	const auto left = (static_cast<__uint128_t>(static_cast<uint64_t>(lhs.upper)) << 64) | lhs.lower;
 	const auto right = (static_cast<__uint128_t>(static_cast<uint64_t>(rhs.upper)) << 64) | rhs.lower;
 	const auto result = left * right;
@@ -288,16 +305,9 @@ constexpr HugeintDivModResult HugeintDivModMinimum(hugeint_t lhs, hugeint_t rhs)
 
 //! Bit-at-a-time 128-bit division, adapted from
 //! https://github.com/calccrypto/uint128_t/blob/master/uint128_t.cpp
-constexpr HugeintDivModResult HugeintDivMod(hugeint_t lhs, hugeint_t rhs) {
-	if (HugeintEquals(rhs, hugeint_t(0))) {
-		return HugeintDivModResult {hugeint_t(0), lhs};
-	}
-
-	// MINIMUM cannot be negated, so it has to be handled before any sign is stripped
-	if (HugeintEquals(lhs, HugeintMinimum()) || HugeintEquals(rhs, HugeintMinimum())) {
-		return HugeintDivModMinimum(lhs, rhs);
-	}
-
+//! The fallback of HugeintDivMod where native division is not available; compiled everywhere so
+//! that tests can compare both. Precondition: rhs is not zero and neither operand is MINIMUM.
+constexpr HugeintDivModResult HugeintDivModFallback(hugeint_t lhs, hugeint_t rhs) {
 	bool lhs_negative = lhs.upper < 0;
 	bool rhs_negative = rhs.upper < 0;
 	if (lhs_negative) {
@@ -342,6 +352,34 @@ constexpr HugeintDivModResult HugeintDivMod(hugeint_t lhs, hugeint_t rhs) {
 		remainder = HugeintNegate(remainder);
 	}
 	return HugeintDivModResult {quotient, remainder};
+}
+
+//! Truncates toward zero; the remainder has the sign of lhs. Division by zero returns {0, lhs}.
+constexpr HugeintDivModResult HugeintDivMod(hugeint_t lhs, hugeint_t rhs) {
+	if (HugeintEquals(rhs, hugeint_t(0))) {
+		return HugeintDivModResult {hugeint_t(0), lhs};
+	}
+
+	// MINIMUM cannot be negated, so it has to be handled before any sign is stripped
+	if (HugeintEquals(lhs, HugeintMinimum()) || HugeintEquals(rhs, HugeintMinimum())) {
+		return HugeintDivModMinimum(lhs, rhs);
+	}
+
+#if DUCKDB_HAS_INT128_DIVISION
+	// Native 128-bit division: truncates toward zero and gives the remainder the sign of lhs, as
+	// the fallback does. Zero and MINIMUM (the only overflowing case) are handled above.
+	const auto left =
+	    static_cast<__int128>((static_cast<__uint128_t>(static_cast<uint64_t>(lhs.upper)) << 64) | lhs.lower);
+	const auto right =
+	    static_cast<__int128>((static_cast<__uint128_t>(static_cast<uint64_t>(rhs.upper)) << 64) | rhs.lower);
+	const auto q = static_cast<__uint128_t>(left / right);
+	const auto r = static_cast<__uint128_t>(left % right);
+	return HugeintDivModResult {
+	    hugeint_t(static_cast<int64_t>(static_cast<uint64_t>(q >> 64)), static_cast<uint64_t>(q)),
+	    hugeint_t(static_cast<int64_t>(static_cast<uint64_t>(r >> 64)), static_cast<uint64_t>(r))};
+#else
+	return HugeintDivModFallback(lhs, rhs);
+#endif
 }
 
 constexpr hugeint_t::hugeint_t(int64_t value) // NOLINT: Allow implicit conversion from `int64_t`
