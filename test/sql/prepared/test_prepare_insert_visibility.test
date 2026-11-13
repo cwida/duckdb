@@ -1,0 +1,30 @@
+# name: test/sql/prepared/test_prepare_insert_visibility.test
+# description: Prepared SELECT sees rows inserted after PREPARE
+# group: [prepared]
+
+statement ok
+CREATE TABLE t(i INT)
+
+statement ok
+INSERT INTO t SELECT range FROM range(100)
+
+statement ok
+PREPARE q AS SELECT count() FROM t WHERE i = 200
+
+statement ok
+INSERT INTO t VALUES (200)
+
+query I
+EXECUTE q
+----
+1
+
+query I
+EXECUTE q
+----
+1
+
+query I
+SELECT count() FROM t WHERE i = 200
+----
+1

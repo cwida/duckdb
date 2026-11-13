@@ -1,4 +1,5 @@
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/main/prepared_statement.hpp"
 #include "duckdb/parser/statement/prepare_statement.hpp"
 #include "duckdb/planner/planner.hpp"
 #include "duckdb/planner/operator/logical_prepare.hpp"
@@ -10,7 +11,10 @@ BoundStatement Binder::Bind(PrepareStatement &stmt) {
 	auto prepared_data = prepared_planner.PrepareSQLStatement(std::move(stmt.statement));
 	global_binder_state->bound_tables = prepared_planner.binder->global_binder_state->bound_tables;
 
-	if (prepared_planner.properties.always_require_rebind) {
+	if (prepared_planner.plan && !PreparedStatement::CanCachePlan(*prepared_planner.plan)) {
+		prepared_data->properties.always_require_rebind = true;
+	}
+	if (prepared_data->properties.always_require_rebind) {
 		// we always need to rebind - don't keep the plan around
 		prepared_planner.plan.reset();
 	}
