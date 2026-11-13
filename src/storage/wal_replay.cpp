@@ -14,6 +14,7 @@
 #include "duckdb/common/enums/checkpoint_abort.hpp"
 #include "duckdb/execution/index/art/art.hpp"
 #include "duckdb/execution/index/index_type_set.hpp"
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
@@ -693,6 +694,12 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 		if (Settings::Get<DebugAbortOnWalFailureSetting>(config) || error.Type() != ExceptionType::SERIALIZATION) {
 			error.Throw("Failure while replaying WAL file \"" + wal_path + "\": ");
 		}
+		// the WAL is torn: everything after successful_offset is dropped
+		// report it - this is silent data loss from the user's point of view
+		DUCKDB_LOG_WARNING(database.GetDatabase(),
+		                   StringUtil::Format("WAL replay of \"%s\" stopped at offset %llu - the remainder of the "
+		                                      "file could not be replayed and is discarded: %s",
+		                                      wal_path, successful_offset, error.RawMessage()));
 	} catch (...) {
 		// exception thrown in WAL replay: rollback
 		con.Query("ROLLBACK");

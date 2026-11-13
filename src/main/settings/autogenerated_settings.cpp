@@ -15,6 +15,22 @@
 namespace duckdb {
 
 //===----------------------------------------------------------------------===//
+// Abort On Wal Failure
+//===----------------------------------------------------------------------===//
+void AbortOnWalFailureSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &input) {
+	config.options.abort_on_wal_failure = input.GetValue<bool>();
+}
+
+void AbortOnWalFailureSetting::ResetGlobal(DatabaseInstance *db, DBConfig &config) {
+	config.options.abort_on_wal_failure = DBConfigOptions().abort_on_wal_failure;
+}
+
+Value AbortOnWalFailureSetting::GetSetting(const ClientContext &context) {
+	auto &config = DBConfig::GetConfig(context);
+	return Value::BOOLEAN(config.options.abort_on_wal_failure);
+}
+
+//===----------------------------------------------------------------------===//
 // Access Mode
 //===----------------------------------------------------------------------===//
 void AccessModeSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &input) {

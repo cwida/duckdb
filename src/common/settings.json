@@ -1,5 +1,11 @@
 [
     {
+        "name": "abort_on_wal_failure",
+        "description": "Whether to abort startup when the write-ahead log cannot be fully replayed, instead of discarding the part that could not be replayed",
+        "type": "BOOLEAN",
+        "scope": "global"
+    },
+    {
         "name": "access_mode",
         "description": "Access mode of the database (AUTOMATIC, READ_ONLY or READ_WRITE).",
         "type": "ENUM<AccessMode>",

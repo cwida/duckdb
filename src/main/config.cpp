@@ -73,6 +73,7 @@ DebugVerificationMode DBConfigOptions::global_verification_mode = DebugVerificat
 
 static const ConfigurationOption internal_options[] = {
 
+    DUCKDB_GLOBAL(AbortOnWalFailureSetting),
     DUCKDB_GLOBAL(AccessModeSetting),
     DUCKDB_LOCAL(ActiveGrammarExtensionsSetting),
     DUCKDB_SETTING_CALLBACK(AllocatorBackgroundThreadsSetting),

@@ -159,6 +159,79 @@ TEST_CASE("Test torn WAL writes followed by successful commits", "[storage][.]")
 	DeleteDatabase(storage_database);
 }
 
+TEST_CASE("Test abort_on_wal_failure setting", "[storage][.]") {
+	// a torn WAL is tolerated by default: the unreplayable remainder is discarded and startup
+	// continues. abort_on_wal_failure turns that into a startup failure instead, so that a
+	// deployment can choose to be told rather than silently lose the tail of the WAL.
+	auto storage_database = TestCreatePath("abort_on_wal_failure");
+	auto storage_wal = storage_database + ".wal";
+	auto source_database = TestCreatePath("abort_on_wal_failure_source");
+	auto source_wal = source_database + ".wal";
+
+	LocalFileSystem lfs;
+	idx_t wal_size_one_table;
+	DeleteDatabase(storage_database);
+	DeleteDatabase(source_database);
+	{
+		auto config = GetTestConfig();
+		config->options.checkpoint_wal_size = idx_t(-1);
+		config->options.checkpoint_on_shutdown = false;
+		DuckDB db(source_database, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE A (a INTEGER);"));
+		wal_size_one_table = GetWALFileSize(lfs, source_wal);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE B (a INTEGER);"));
+	}
+
+	// tear the WAL in the middle of the second commit
+	auto restore_torn_wal = [&]() {
+		DeleteDatabase(storage_database);
+		CopyFile(lfs, source_database, storage_database);
+		CopyFile(lfs, source_wal, storage_wal);
+		TruncateWAL(lfs, storage_wal, wal_size_one_table + 17);
+	};
+
+	restore_torn_wal();
+	{
+		// default: the torn tail is discarded, so A is there and B is not
+		auto config = GetTestConfig();
+		config->options.checkpoint_wal_size = idx_t(-1);
+		config->options.checkpoint_on_shutdown = false;
+		config->SetOptionByName("abort_on_wal_failure", Value::BOOLEAN(false));
+		DuckDB db(storage_database, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("FROM A"));
+		REQUIRE_FAIL(con.Query("FROM B"));
+	}
+
+	restore_torn_wal();
+	{
+		// with the setting enabled the same file refuses to open
+		auto config = GetTestConfig();
+		config->options.checkpoint_wal_size = idx_t(-1);
+		config->options.checkpoint_on_shutdown = false;
+		config->SetOptionByName("abort_on_wal_failure", Value::BOOLEAN(true));
+		duckdb::unique_ptr<DuckDB> db;
+		REQUIRE_THROWS(db = make_uniq<DuckDB>(storage_database, config.get()));
+	}
+
+	// the setting is readable through the regular settings interface
+	{
+		DuckDB db(nullptr);
+		Connection con(db);
+		auto result = con.Query("SELECT current_setting('abort_on_wal_failure')");
+		REQUIRE_NO_FAIL(*result);
+		REQUIRE(result->GetValue(0, 0) == Value::BOOLEAN(false));
+		REQUIRE_NO_FAIL(con.Query("SET abort_on_wal_failure=true"));
+		result = con.Query("SELECT current_setting('abort_on_wal_failure')");
+		REQUIRE_NO_FAIL(*result);
+		REQUIRE(result->GetValue(0, 0) == Value::BOOLEAN(true));
+	}
+
+	DeleteDatabase(storage_database);
+	DeleteDatabase(source_database);
+}
+
 static void FlipWALByte(FileSystem &fs, const string &path, idx_t byte_pos) {
 	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_READ);
 	auto wal_size = handle->GetFileSize();
