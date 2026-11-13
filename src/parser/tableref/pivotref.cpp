@@ -82,6 +82,9 @@ bool PivotColumnEntry::Equals(const PivotColumnEntry &other) const {
 	if (alias != other.alias) {
 		return false;
 	}
+	if (!ParsedExpression::Equals(expr, other.expr)) {
+		return false;
+	}
 	if (values.size() != other.values.size()) {
 		return false;
 	}
@@ -136,6 +139,40 @@ PivotColumnEntry PivotColumnEntry::Copy() const {
 	result.expr = expr ? expr->Copy() : nullptr;
 	result.alias = alias;
 	return result;
+}
+
+bool PivotColumnEntry::TryExtractUnpivotColumnList(const ParsedExpression &expr, vector<Identifier> &column_names) {
+	auto initial_size = column_names.size();
+	switch (expr.GetExpressionType()) {
+	case ExpressionType::COLUMN_REF: {
+		auto &colref = expr.Cast<ColumnRefExpression>();
+		if (colref.IsQualified()) {
+			return false;
+		}
+		column_names.push_back(colref.GetColumnName());
+		return true;
+	}
+	case ExpressionType::VALUE_CONSTANT: {
+		auto &constant = expr.Cast<ConstantExpression>();
+		column_names.push_back(Identifier(constant.GetLiteral().ToValue().ToString()));
+		return true;
+	}
+	case ExpressionType::FUNCTION: {
+		auto &function = expr.Cast<FunctionExpression>();
+		if (function.FunctionName() != "row" || function.GetArguments().empty()) {
+			return false;
+		}
+		for (auto &child : function.GetArguments()) {
+			if (!TryExtractUnpivotColumnList(child.GetExpression(), column_names)) {
+				column_names.resize(initial_size);
+				return false;
+			}
+		}
+		return true;
+	}
+	default:
+		return false;
+	}
 }
 
 static bool TryFoldForBackwardsCompatibility(const unique_ptr<ParsedExpression> &expr, vector<Value> &values) {

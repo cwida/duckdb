@@ -558,40 +558,6 @@ static void BindPivotConstantInList(unique_ptr<ParsedExpression> &expr, vector<V
 	values.push_back(folded_value);
 }
 
-static bool TryExtractUnpivotList(ParsedExpression &expr, vector<Identifier> &column_names) {
-	auto initial_size = column_names.size();
-	switch (expr.GetExpressionType()) {
-	case ExpressionType::COLUMN_REF: {
-		auto &colref = expr.Cast<ColumnRefExpression>();
-		if (colref.IsQualified()) {
-			return false;
-		}
-		column_names.push_back(colref.GetColumnName());
-		return true;
-	}
-	case ExpressionType::VALUE_CONSTANT: {
-		auto &constant = expr.Cast<ConstantExpression>();
-		column_names.push_back(Identifier(constant.GetLiteral().ToValue().ToString()));
-		return true;
-	}
-	case ExpressionType::FUNCTION: {
-		auto &function = expr.Cast<FunctionExpression>();
-		if (function.FunctionName() != "row" || function.GetArgumentsMutable().empty()) {
-			return false;
-		}
-		for (auto &child : function.GetArgumentsMutable()) {
-			if (!TryExtractUnpivotList(*child.GetExpressionMutable(), column_names)) {
-				column_names.resize(initial_size);
-				return false;
-			}
-		}
-		return true;
-	}
-	default:
-		return false;
-	}
-}
-
 static void BindPivotInList(unique_ptr<ParsedExpression> &expr, vector<Value> &values, Binder &binder) {
 	switch (expr->GetExpressionType()) {
 	case ExpressionType::COLUMN_REF: {
@@ -785,7 +751,7 @@ void Binder::ExtractUnpivotEntries(Binder &child_binder, PivotColumnEntry &entry
 	// unpivoted as expressions instead of being folded into column names.
 	if (entry.expr) {
 		vector<Identifier> column_list;
-		if (TryExtractUnpivotList(*entry.expr, column_list)) {
+		if (PivotColumnEntry::TryExtractUnpivotColumnList(*entry.expr, column_list)) {
 			try {
 				auto expr_copy = entry.expr->Copy();
 				BindPivotInList(expr_copy, entry.values, child_binder);
@@ -814,7 +780,7 @@ void Binder::ExtractUnpivotEntries(Binder &child_binder, PivotColumnEntry &entry
 	}
 
 	vector<Identifier> column_names;
-	if (TryExtractUnpivotList(*entry.expr, column_names)) {
+	if (PivotColumnEntry::TryExtractUnpivotColumnList(*entry.expr, column_names)) {
 		UnpivotEntry unpivot_entry;
 		unpivot_entry.alias = Identifier(entry.alias.GetIdentifierName());
 		for (auto &column_name : column_names) {

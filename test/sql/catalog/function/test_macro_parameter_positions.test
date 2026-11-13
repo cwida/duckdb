@@ -1,0 +1,349 @@
+# name: test/sql/catalog/function/test_macro_parameter_positions.test
+# description: A macro parameter is substituted in every expression of a NEAREST join, a PIVOT, an UNPIVOT and a MATCH_RECOGNIZE, never in an UNPIVOT column name
+# group: [function]
+
+statement ok
+CREATE MACRO rank_pick(c) AS (SELECT t.v FROM (VALUES (0)) u(z) JOIN (VALUES (4::BIGINT), (10::BIGINT)) t(v) NEAREST 1 BY DISTANCE abs(t.v - c));
+
+query II
+SELECT rank_pick(100), rank_pick(0);
+----
+10	4
+
+query I
+SELECT rank_pick(NULL);
+----
+NULL
+
+# a caller column of the parameter's name does not capture the parameter
+query I
+SELECT rank_pick(100) FROM (SELECT 4::BIGINT AS c) s;
+----
+10
+
+query II
+SELECT c, rank_pick(c) FROM (VALUES (0::BIGINT), (100::BIGINT)) s(c) ORDER BY c;
+----
+0	4
+100	10
+
+query II
+SELECT b, rank_pick(b + 1) FROM (VALUES (0::BIGINT), (100::BIGINT)) s(b) ORDER BY b;
+----
+0	4
+100	10
+
+# the same parameter in ORDER BY is the control
+statement ok
+CREATE MACRO order_pick(c) AS (SELECT t.v FROM (VALUES (4::BIGINT), (10::BIGINT)) t(v) ORDER BY abs(t.v - c) LIMIT 1);
+
+query I
+SELECT order_pick(100) FROM (SELECT 4::BIGINT AS c) s;
+----
+10
+
+statement ok
+CREATE MACRO pivot_pick(a) AS (SELECT coalesce("1", 0::BIGINT) FROM (PIVOT (SELECT 7::BIGINT AS v) ON a IN (1) USING max(v)));
+
+query II
+SELECT pivot_pick(1), pivot_pick(2);
+----
+7	0
+
+query I
+SELECT pivot_pick(2) FROM (SELECT 1::BIGINT AS a) s;
+----
+0
+
+statement ok
+CREATE MACRO match_pick(s) AS (SELECT m FROM (SELECT s AS x) t MATCH_RECOGNIZE (MEASURES FIRST(x) AS m ONE ROW PER MATCH PATTERN (A) DEFINE A AS true));
+
+query II
+SELECT match_pick(2), match_pick(NULL);
+----
+2	NULL
+
+query I
+SELECT match_pick(2) FROM (SELECT 1 AS s) w;
+----
+2
+
+query II
+SELECT y, match_pick(y + 1) FROM (VALUES (1), (2)) w(y) ORDER BY y;
+----
+1	2
+2	3
+
+# a PIVOT inside a MATCH_RECOGNIZE input
+statement ok
+CREATE MACRO nested_pick(n) AS (SELECT m FROM (PIVOT (SELECT 7::BIGINT AS v) ON n IN (1) USING max(v)) p MATCH_RECOGNIZE (MEASURES FIRST("1") AS m ONE ROW PER MATCH PATTERN (A) DEFINE A AS true));
+
+query II
+SELECT nested_pick(1), nested_pick(2);
+----
+7	NULL
+
+query I
+SELECT nested_pick(2) FROM (SELECT 1::BIGINT AS n) s;
+----
+NULL
+
+# table macros with the same bodies
+statement ok
+CREATE MACRO rank_table(c) AS TABLE SELECT t.v FROM (VALUES (0)) u(z) JOIN (VALUES (4::BIGINT), (10::BIGINT)) t(v) NEAREST 1 BY DISTANCE abs(t.v - c);
+
+query I
+FROM rank_table(100);
+----
+10
+
+statement ok
+CREATE MACRO pivot_table(a) AS TABLE SELECT coalesce("1", 0::BIGINT) AS r FROM (PIVOT (SELECT 7::BIGINT AS v) ON a IN (1) USING max(v));
+
+query II
+SELECT (FROM pivot_table(1)), (FROM pivot_table(2));
+----
+7	0
+
+statement ok
+CREATE MACRO match_table(s) AS TABLE SELECT m FROM (SELECT s AS x) t MATCH_RECOGNIZE (MEASURES FIRST(x) AS m ONE ROW PER MATCH PATTERN (A) DEFINE A AS true);
+
+query I
+FROM match_table(2);
+----
+2
+
+# a name in a PIVOT IN list stays a name, and an AT clause takes no column, as before
+statement ok
+CREATE MACRO in_table(p) AS TABLE PIVOT (SELECT 7::BIGINT AS v, 2::BIGINT AS a) ON a IN (p) USING max(v);
+
+query I
+SELECT p FROM in_table(2);
+----
+NULL
+
+statement ok
+CREATE TABLE at_source AS SELECT 1 AS i;
+
+statement error
+CREATE MACRO at_table(x) AS TABLE FROM at_source AT (VERSION => x);
+----
+AT clause cannot contain column names
+
+# USING KEY binds only against the CTE's columns, so a parameter of the same name does not reach it
+statement ok
+CREATE MACRO key_table(k) AS TABLE WITH RECURSIVE r(k, v) USING KEY (k) AS (SELECT 1, 1 UNION SELECT r.k, r.v + 1 FROM r WHERE r.v < 3) SELECT * FROM r;
+
+query II
+FROM key_table(5);
+----
+1	3
+
+# a prepared statement parameter in the same positions
+statement ok
+PREPARE rank_prepared AS SELECT t.v FROM (VALUES (0)) u(z) JOIN (VALUES (4::BIGINT), (10::BIGINT)) t(v) NEAREST 1 BY DISTANCE abs(t.v - $1::BIGINT);
+
+query I
+EXECUTE rank_prepared(100);
+----
+10
+
+statement ok
+PREPARE pivot_prepared AS SELECT coalesce("1", 0::BIGINT) FROM (PIVOT (SELECT 7::BIGINT AS v) ON (v - 7 + $1::BIGINT) IN (1) USING max(v));
+
+query I
+EXECUTE pivot_prepared(1);
+----
+7
+
+query I
+EXECUTE pivot_prepared(2);
+----
+0
+
+statement ok
+PREPARE match_prepared AS SELECT m FROM (SELECT $1::INTEGER AS x) t MATCH_RECOGNIZE (MEASURES FIRST(x) AS m ONE ROW PER MATCH PATTERN (A) DEFINE A AS true);
+
+query I
+EXECUTE match_prepared(2);
+----
+2
+
+# table macros with a parameter in a PIVOT ON expression and a NEAREST ranking expression
+statement ok
+CREATE TABLE pivot_source(k INT, c INT, v INT);
+
+statement ok
+INSERT INTO pivot_source VALUES (1, 1, 10), (1, 2, 20), (2, 1, 30);
+
+statement ok
+CREATE MACRO pivot_on_table(x) AS TABLE (PIVOT pivot_source ON (c + x) IN (2, 3) USING sum(v) GROUP BY k);
+
+query III
+SELECT * FROM pivot_on_table(1) ORDER BY k;
+----
+1	10	20
+2	30	NULL
+
+query III
+SELECT * FROM pivot_on_table(0) ORDER BY k;
+----
+1	20	NULL
+2	NULL	NULL
+
+statement ok
+CREATE TABLE near_left(id INT, v INT);
+
+statement ok
+INSERT INTO near_left VALUES (1, 5), (2, 9);
+
+statement ok
+CREATE TABLE near_right(id INT, v INT);
+
+statement ok
+INSERT INTO near_right VALUES (1, 6), (2, 100);
+
+statement ok
+CREATE MACRO nearest_table(x) AS TABLE (SELECT near_left.id, near_right.id AS bid FROM near_left JOIN near_right NEAREST 1 BY DISTANCE abs(near_right.v - x));
+
+query II
+SELECT * FROM nearest_table(7) ORDER BY id;
+----
+1	1
+2	1
+
+query II
+SELECT * FROM nearest_table(90) ORDER BY id;
+----
+1	2
+2	2
+
+# a parameter in MATCH_RECOGNIZE DEFINE and MEASURES, in a table macro and in a scalar macro subquery
+statement ok
+CREATE TABLE ticks(id INT, price INT);
+
+statement ok
+INSERT INTO ticks VALUES (1, 10), (2, 20), (3, 30), (4, 5);
+
+statement ok
+CREATE MACRO define_table(p) AS TABLE SELECT * FROM ticks MATCH_RECOGNIZE (ORDER BY id MEASURES FIRST(A.id) AS s, LAST(A.id) AS e ONE ROW PER MATCH PATTERN (A+) DEFINE A AS price > p);
+
+query II
+FROM define_table(15);
+----
+2	3
+
+query II
+FROM define_table(0);
+----
+1	4
+
+statement ok
+CREATE MACRO measures_table(p) AS TABLE SELECT * FROM ticks MATCH_RECOGNIZE (ORDER BY id MEASURES LAST(A.price) + p AS m ONE ROW PER MATCH PATTERN (A+) DEFINE A AS price > 15);
+
+query I
+FROM measures_table(100);
+----
+130
+
+statement ok
+CREATE MACRO define_pick(p) AS (SELECT count(*) FROM ticks MATCH_RECOGNIZE (ORDER BY id MEASURES FIRST(A.id) AS s ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS price > p));
+
+statement ok
+CREATE MACRO measures_pick(p) AS (SELECT m FROM ticks MATCH_RECOGNIZE (ORDER BY id MEASURES LAST(A.price) + p AS m ONE ROW PER MATCH PATTERN (A+) DEFINE A AS price > 15));
+
+query III
+SELECT define_pick(15), define_pick(NULL), measures_pick(100);
+----
+2	0	130
+
+# a caller column of the parameter's name does not capture it
+query II
+SELECT define_pick(0), measures_pick(1) FROM (SELECT 25 AS p) s;
+----
+4	31
+
+# an UNPIVOT entry the binder reads as column names keeps its names; a parameter reaches any other entry
+statement ok
+CREATE TABLE wide(id INT, a INT, b INT);
+
+statement ok
+INSERT INTO wide VALUES (1, 10, 20);
+
+statement error
+CREATE MACRO unpivot_name_table(a) AS TABLE (UNPIVOT wide ON a, b INTO NAME n VALUE val);
+----
+Conflicting column names for column a!
+
+statement error
+CREATE MACRO unpivot_for_name_table(a) AS TABLE (SELECT * FROM wide UNPIVOT (val FOR n IN (a, b)));
+----
+Conflicting column names for column a!
+
+statement error
+CREATE MACRO unpivot_name_pick(a) AS (SELECT sum(val) FROM (UNPIVOT wide ON a, b INTO NAME n VALUE val));
+----
+Conflicting column names for column a!
+
+statement ok
+CREATE TABLE wide_pairs(id INT, a1 INT, a2 INT, b1 INT);
+
+statement ok
+INSERT INTO wide_pairs VALUES (1, 10, 20, 30);
+
+statement ok
+CREATE MACRO unpivot_lambda_table(p) AS TABLE (UNPIVOT wide_pairs ON COLUMNS(lambda c: c LIKE p) INTO NAME n VALUE val);
+
+query II
+SELECT n, val FROM unpivot_lambda_table('a%') ORDER BY n;
+----
+a1	10
+a2	20
+
+query II
+SELECT n, val FROM unpivot_lambda_table('b%') ORDER BY n;
+----
+b1	30
+
+statement ok
+CREATE MACRO unpivot_lambda_pick(p) AS (SELECT sum(val) FROM (UNPIVOT wide_pairs ON COLUMNS(lambda c: c LIKE p) INTO NAME n VALUE val));
+
+query II
+SELECT unpivot_lambda_pick('a%'), unpivot_lambda_pick('%1');
+----
+30	40
+
+statement ok
+CREATE MACRO unpivot_table(x) AS TABLE (SELECT n, val + x AS val FROM (UNPIVOT wide ON a, b INTO NAME n VALUE val));
+
+query II
+FROM unpivot_table(5) ORDER BY n;
+----
+a	15
+b	25
+
+statement ok
+CREATE MACRO unpivot_for_table(x) AS TABLE (SELECT y, v + x AS v FROM (SELECT 10 AS "2000", 20 AS "2010") UNPIVOT (v FOR y IN (2000, 2010)));
+
+query II
+FROM unpivot_for_table(1) ORDER BY y;
+----
+2000	11
+2010	21
+
+query II
+SELECT y, v FROM (SELECT 10 AS "2000", 20 AS "2010") UNPIVOT (v FOR y IN (2000, 2010)) ORDER BY y;
+----
+2000	10
+2010	20
+
+# subqueries that differ only in a PIVOT IN or an UNPIVOT ON expression are different expressions
+query I
+SELECT (SELECT v FROM (UNPIVOT (SELECT 1 AS a) ON (a + 1) AS x INTO NAME n VALUE v)) FROM range(1) GROUP BY (SELECT v FROM (UNPIVOT (SELECT 1 AS a) ON (a + 2) AS x INTO NAME n VALUE v));
+----
+2
+
+query I
+SELECT (SELECT * FROM (PIVOT (SELECT 2 AS c, 7 AS v UNION ALL SELECT 3, 9) ON c IN (1 + 1) USING max(v))) FROM range(1) GROUP BY (SELECT * FROM (PIVOT (SELECT 2 AS c, 7 AS v UNION ALL SELECT 3, 9) ON c IN (1 + 2) USING max(v)));
+----
+7

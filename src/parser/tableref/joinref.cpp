@@ -107,7 +107,9 @@ bool JoinRef::Equals(const TableRef &other_p) const {
 	}
 	return left->Equals(*other.left) && right->Equals(*other.right) &&
 	       ParsedExpression::Equals(condition, other.condition) &&
-	       ParsedExpression::Equals(ranking_expression, other.ranking_expression) && type == other.type;
+	       ParsedExpression::Equals(ranking_expression, other.ranking_expression) &&
+	       ParsedExpression::ListEquals(duplicate_eliminated_columns, other.duplicate_eliminated_columns) &&
+	       type == other.type;
 }
 
 unique_ptr<TableRef> JoinRef::Copy() {

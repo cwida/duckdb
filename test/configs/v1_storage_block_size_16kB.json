@@ -25,6 +25,12 @@
       ]
     },
     {
+      "reason": "A NEAREST BY join in a macro body is only serialized with storage version v2.0.0 or higher.",
+      "paths": [
+        "test/sql/catalog/function/test_macro_parameter_positions.test"
+      ]
+    },
+    {
       "reason": "Explicit constraint check mode requires storage version v2.0.0 or higher.",
       "paths": [
         "test/sql/constraints/deferred/test_alter_constraint_check_mode.test",
