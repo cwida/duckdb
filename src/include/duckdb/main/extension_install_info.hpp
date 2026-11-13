@@ -27,16 +27,21 @@ enum class ExtensionInstallMode : uint8_t {
 	NOT_INSTALLED = 4
 };
 
-//! Whether the user has opted in to adding external extension repositories. This is a one-way ratchet: once FORBIDDEN
-//! it cannot be moved back within a session. UNDECIDED (the default) blocks adding new repositories, but extensions
-//! from repositories that were already created can still be installed and loaded
+//! Which external extension repositories can be added, and which are trusted. This is a one-way ratchet: while the
+//! database is running the setting can only tighten (HOSTS -> ALLOWED -> HOSTS_ONLY -> FORBIDDEN), never loosen.
+//! HOSTS (the default) allows the repositories resolved from their host (CREATE EXTENSION REPOSITORY <host> without a
+//! prefix) and blocks adding repositories by prefix until the user opts in with ALLOWED; extensions from repositories
+//! that were already created can still be installed and loaded
 enum class ExtensionRepositoryAccess : uint8_t {
-	//! No decision has been made yet - adding repositories fails until the user opts in explicitly
-	UNDECIDED = 0,
+	//! A repository resolved from its host can be added; adding one by prefix fails until the user opts in explicitly
+	HOSTS = 0,
 	//! Adding external repositories is allowed
 	ALLOWED = 1,
 	//! Adding external repositories is forbidden - this cannot be undone in the same session
-	FORBIDDEN = 2
+	FORBIDDEN = 2,
+	//! Only repositories resolved from their host can be added, and only those are trusted: a repository added by
+	//! prefix is distrusted like under FORBIDDEN
+	HOSTS_ONLY = 3
 };
 
 //! The type of a repository determines which public keys are trusted to sign the extensions that it serves. Keys of
@@ -142,6 +147,9 @@ struct ExtensionRepository {
 	vector<string> public_keys;
 	//! Which public keys are trusted to sign the extensions of this repository
 	ExtensionRepositoryType type = ExtensionRepositoryType::CORE;
+	//! (optional) The host the repository was resolved from (CREATE EXTENSION REPOSITORY <name> without a prefix: the
+	//! name); empty for a repository added by prefix
+	string host;
 };
 
 } // namespace duckdb
