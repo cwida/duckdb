@@ -1068,21 +1068,19 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 		REQUIRE_NOTHROW(context.InterruptCheck());
 	}
 
-	SECTION("SuppressInterrupts blocks subsequent Interrupt calls") {
+	SECTION("SuppressInterrupts defers subsequent cancellation") {
 		context.SuppressInterrupts();
-		// Interrupt() uses CAS: NOT_INTERRUPTED -> INTERRUPTED
-		// Since state is SUPPRESSED, CAS fails and interrupt is discarded
+		// Cancellation is retained but does not interrupt the protected statement.
 		context.Interrupt();
 		REQUIRE(!context.IsInterrupted());
 		REQUIRE_NOTHROW(context.InterruptCheck());
 		context.ClearInterrupt();
 	}
 
-	SECTION("SuppressInterrupts overrides a pending interrupt") {
+	SECTION("SuppressInterrupts defers a pending interrupt") {
 		context.Interrupt();
 		REQUIRE(context.IsInterrupted());
-		// SuppressInterrupts unconditionally stores SUPPRESSED,
-		// overriding the INTERRUPTED state
+		// A pending cancellation is deferred until suppression ends.
 		context.SuppressInterrupts();
 		REQUIRE(!context.IsInterrupted());
 		REQUIRE_NOTHROW(context.InterruptCheck());
@@ -1103,7 +1101,7 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 		REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
 		REQUIRE_NO_FAIL(con.Query("CREATE TABLE suppress_test (x INTEGER)"));
 		REQUIRE_NO_FAIL(con.Query("COMMIT"));
-		// After COMMIT, state should be SUPPRESSED — Interrupt() should be discarded
+		// After COMMIT, cancellation is deferred until the next statement.
 		context.Interrupt();
 		REQUIRE(!context.IsInterrupted());
 		REQUIRE_NOTHROW(context.InterruptCheck());

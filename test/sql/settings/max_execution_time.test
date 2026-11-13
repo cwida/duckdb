@@ -220,3 +220,23 @@ SELECT 42;
 
 statement ok
 SET max_execution_time=0;
+
+# A completed COMMIT must not suppress the next statement's deadline.
+statement ok
+SET threads=1;
+
+statement ok
+SET max_execution_time=100;
+
+statement error
+BEGIN; COMMIT; SELECT sum(sin(i)) FROM range(100000000) t(i);
+----
+Query exceeded maximum execution time
+
+statement ok
+RESET max_execution_time;
+
+query I
+SELECT 42;
+----
+42

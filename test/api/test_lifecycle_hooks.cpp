@@ -42,6 +42,112 @@ shared_ptr<TestClientContextState> WithLifecycleState(const Connection &conn) {
 	return state;
 }
 
+struct FinalizationInterruptState : ClientContextState {
+	bool armed = false;
+	bool checked = false;
+
+	void CheckFinalization(ClientContext &context) {
+		if (!armed) {
+			return;
+		}
+		armed = false;
+		context.Interrupt();
+		context.query_deadline = 0;
+		context.BlockingInterruptCheck();
+		auto internal = Connection::CreateInternal(context);
+		internal.context->query_deadline = 0;
+		internal.context->BlockingInterruptCheck();
+		checked = true;
+	}
+
+	void TransactionCommit(MetaTransaction &, ClientContext &context) override {
+		CheckFinalization(context);
+	}
+	void TransactionRollback(MetaTransaction &, ClientContext &context, optional_ptr<ErrorData>) override {
+		CheckFinalization(context);
+	}
+};
+
+TEST_CASE("Transaction finalization finishes despite caller cancellation", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE items(i INTEGER)"));
+	auto state = make_shared_ptr<FinalizationInterruptState>();
+	con.context->GetContext().GetRegisteredState().Insert("finalization_interrupt", state);
+	bool committed = false;
+	SECTION("explicit commit") {
+		con.BeginTransaction();
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO items VALUES (42)"));
+		state->armed = true;
+		REQUIRE_NOTHROW(con.Commit());
+		committed = true;
+	}
+	SECTION("rollback of an interrupted transaction") {
+		con.BeginTransaction();
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO items VALUES (42)"));
+		con.Interrupt();
+		state->armed = true;
+		// Error cleanup enters rollback without clearing the interrupted caller first.
+		REQUIRE_NOTHROW(con.context->transaction.Rollback(nullptr));
+		CHECK(con.context->IsInterrupted());
+	}
+	SECTION("autocommit") {
+		state->armed = true;
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO items VALUES (42)"));
+		committed = true;
+	}
+	SECTION("rollback of a failed statement") {
+		state->armed = true;
+		auto result = con.Query("SELECT error('expected statement failure')");
+		REQUIRE(result->HasError());
+		CHECK_THAT(result->GetError(), Contains("expected statement failure"));
+	}
+	CHECK(state->checked);
+	auto result = con.Query("SELECT count(*) FROM items");
+	REQUIRE_NO_FAIL(*result);
+	CHECK_COLUMN(result, 0, {committed ? 1 : 0});
+	con.Interrupt();
+	CHECK(con.context->IsInterrupted());
+}
+
+struct CommitCancellationState : ClientContextState {
+	bool armed = false;
+	bool interrupted = false;
+
+	void TransactionCommit(MetaTransaction &, ClientContext &context) override {
+		if (armed) {
+			armed = false;
+			interrupted = true;
+			context.Interrupt();
+		}
+	}
+};
+
+TEST_CASE("Cancellation during commit stops later statements in the same query", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE items(i INTEGER)"));
+	auto state = make_shared_ptr<CommitCancellationState>();
+	con.context->GetContext().GetRegisteredState().Insert("commit_cancellation", state);
+	unique_ptr<QueryResult> result;
+	SECTION("autocommit") {
+		state->armed = true;
+		result = con.Query("INSERT INTO items VALUES (42); SELECT sum(sin(i)) FROM range(1000000) t(i)");
+	}
+	SECTION("explicit commit") {
+		con.BeginTransaction();
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO items VALUES (42)"));
+		state->armed = true;
+		result = con.Query("COMMIT; SELECT sum(sin(i)) FROM range(1000000) t(i)");
+	}
+	REQUIRE(state->interrupted);
+	REQUIRE(result->HasError());
+	CHECK_THAT(result->GetError(), Contains("Interrupt"));
+	result = con.Query("SELECT count(*) FROM items");
+	REQUIRE_NO_FAIL(*result);
+	CHECK_COLUMN(result, 0, {1});
+}
+
 TEST_CASE("Test ClientContextState", "[api]") {
 	DuckDB db(nullptr);
 	Connection conn(db);

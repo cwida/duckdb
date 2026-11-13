@@ -87,7 +87,12 @@ struct StatementSignature {
 };
 
 //! Interrupt state for the client context
-enum class ClientInterruptState : uint8_t { NOT_INTERRUPTED, INTERRUPTED, INTERRUPTS_SUPPRESSED };
+enum class ClientInterruptState : uint8_t {
+	NOT_INTERRUPTED,
+	INTERRUPTED,
+	INTERRUPTS_SUPPRESSED,
+	INTERRUPTED_WHILE_SUPPRESSED
+};
 
 //! The ClientContext holds information relevant to the current client session
 //! during execution
@@ -163,7 +168,7 @@ public:
 	DUCKDB_API void Interrupt();
 	DUCKDB_API bool IsInterrupted() const;
 	DUCKDB_API void ClearInterrupt();
-	//! Suppress all further interrupts for the current query (called after irreversible operations like COMMIT)
+	//! Defer cancellation for the current statement, retaining it for later statements in the same query.
 	DUCKDB_API void SuppressInterrupts();
 	DUCKDB_API void CancelTransaction();
 
