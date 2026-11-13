@@ -279,7 +279,7 @@ void Optimizer::RunBuiltInOptimizers() {
 	CTEFilterPusher::ClearDependencies(*plan);
 
 	RunOptimizer(OptimizerType::REGEX_RANGE, [&]() {
-		RegexRangeFilter regex_opt;
+		RegexRangeFilter regex_opt(context);
 		plan = regex_opt.Rewrite(std::move(plan));
 	});
 

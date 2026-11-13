@@ -2,6 +2,8 @@
 # description: Test range filters derived from full regular-expression matches
 # group: [optimizer]
 
+require core_functions
+
 statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
@@ -21,7 +23,7 @@ SET disabled_optimizers = 'filter_pushdown';
 query II
 EXPLAIN SELECT s FROM regex_values WHERE regexp_full_match(s, 'foo');
 ----
-logical_opt	<REGEX>:(?s).*regexp_full_match.*s >= 'foo'::BLOB.*s <= 'foo'::BLOB.*
+logical_opt	<REGEX>:(?s).*regexp_full_match.*encode\(s\) >= 'foo'::BLOB.*encode\(s\) <= 'foo'::BLOB.*
 
 statement ok
 SET disabled_optimizers = '';
@@ -30,3 +32,44 @@ query T
 SELECT s FROM regex_values WHERE regexp_full_match(s, 'foo');
 ----
 foo
+
+# the derived range can be pushed into the scan below a simplified FULL JOIN
+statement ok
+CREATE TABLE t0(a INT, c VARCHAR);
+
+statement ok
+INSERT INTO t0 VALUES (1, 'a'), (2, 'b');
+
+statement ok
+CREATE TABLE t1(a INT);
+
+statement ok
+INSERT INTO t1 VALUES (1);
+
+query ITI
+SELECT * FROM t1 JOIN t0 USING (a) FULL JOIN t1 x ON t0.a <> x.a WHERE t0.c SIMILAR TO 'a';
+----
+1	a	NULL
+
+# the range is compared as BLOB, so the zonemap of the VARCHAR column can still prune row groups
+statement ok
+ATTACH '{TEST_DIR}/regex_range_filter.duckdb' AS db (ROW_GROUP_SIZE 2048);
+
+statement ok
+USE db;
+
+statement ok
+CREATE TABLE t0 AS SELECT (i % 2 + 1)::INT AS a, lpad(i::VARCHAR, 6, '0') AS c FROM range(6144) r(i);
+
+statement ok
+CREATE TABLE t1 AS SELECT 1 AS a;
+
+query II
+EXPLAIN ANALYZE SELECT * FROM t1 JOIN t0 USING (a) FULL JOIN t1 x ON t0.a <> x.a WHERE t0.c SIMILAR TO '0040.*';
+----
+analyzed_plan	<REGEX>:.*encode\(c\).*Row Groups Scanned: 2 / 3.*
+
+query I
+SELECT count(*) FROM t1 JOIN t0 USING (a) FULL JOIN t1 x ON t0.a <> x.a WHERE t0.c SIMILAR TO '0040.*';
+----
+50

@@ -16,10 +16,13 @@ class Optimizer;
 
 class RegexRangeFilter {
 public:
-	RegexRangeFilter() {
+	explicit RegexRangeFilter(ClientContext &context) : context(context) {
 	}
 	//! Perform filter pushdown
 	unique_ptr<LogicalOperator> Rewrite(unique_ptr<LogicalOperator> op);
+
+private:
+	ClientContext &context;
 };
 
 } // namespace duckdb

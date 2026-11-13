@@ -2,7 +2,9 @@
 
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 
+#include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/function/scalar/string_functions.hpp"
+#include "duckdb/main/extension_manager.hpp"
 
 #include "duckdb/planner/expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -33,15 +35,19 @@ unique_ptr<LogicalOperator> RegexRangeFilter::Rewrite(unique_ptr<LogicalOperator
 				continue;
 			}
 			auto &info = func.BindInfo()->Cast<RegexpMatchesBindData>();
-			if (!info.range_success) {
+			// encode (from core_functions) compares the bytes as a BLOB, as the bounds need not be valid UTF-8
+			if (!info.range_success || !ExtensionManager::Get(context).ExtensionIsLoaded("core_functions")) {
 				continue;
 			}
-			auto filter_left = BoundComparisonExpression::Create(
-			    ExpressionType::COMPARE_GREATERTHANOREQUALTO, func.GetChildren()[0]->Copy(),
-			    make_uniq<BoundConstantExpression>(Value::BLOB_RAW(info.range_min)));
-			auto filter_right = BoundComparisonExpression::Create(
-			    ExpressionType::COMPARE_LESSTHANOREQUALTO, func.GetChildren()[0]->Copy(),
-			    make_uniq<BoundConstantExpression>(Value::BLOB_RAW(info.range_max)));
+			vector<unique_ptr<Expression>> arguments;
+			arguments.push_back(func.GetChildren()[0]->Copy());
+			auto blob_input = BindBuiltinScalarExpression(context, "encode", std::move(arguments));
+			auto filter_left =
+			    BoundComparisonExpression::Create(ExpressionType::COMPARE_GREATERTHANOREQUALTO, blob_input->Copy(),
+			                                      make_uniq<BoundConstantExpression>(Value::BLOB_RAW(info.range_min)));
+			auto filter_right =
+			    BoundComparisonExpression::Create(ExpressionType::COMPARE_LESSTHANOREQUALTO, std::move(blob_input),
+			                                      make_uniq<BoundConstantExpression>(Value::BLOB_RAW(info.range_max)));
 			auto filter_expr = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND,
 			                                                         std::move(filter_left), std::move(filter_right));
 
