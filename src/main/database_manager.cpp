@@ -138,26 +138,29 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 				throw BinderException("Database %s is already attached in %s mode, cannot re-attach in %s mode",
 				                      info.name, existing_mode_str, attached_mode);
 			}
-			if (!options.default_table.Name().empty()) {
-				existing_db->GetCatalog().SetDefaultTable(options.default_table.Schema(), options.default_table.Name());
+			if (info.on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT &&
+			    options.vacuum_rebuild_indexes_threshold.IsValid()) {
+				auto previous_setting = existing_db->GetVacuumRebuildIndexThreshold();
+				auto new_setting = options.vacuum_rebuild_indexes_threshold.GetIndex();
+				if (previous_setting != new_setting) {
+					throw BinderException("Cannot re-attach with a different vacuum_rebuild_indexes setting "
+					                      "(previous: %d, new: %d)",
+					                      previous_setting, new_setting);
+				}
 			}
-			if (info.on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
-				// we require the vacuuming threshold for indexed tables to be the same as the already attached db
-				if (options.vacuum_rebuild_indexes_threshold.IsValid()) {
-					auto previous_setting = existing_db->GetVacuumRebuildIndexThreshold();
-					auto new_setting = options.vacuum_rebuild_indexes_threshold.GetIndex();
-					if (previous_setting != new_setting) {
-						throw BinderException("Cannot re-attach with a different vacuum_rebuild_indexes setting "
-						                      "(previous: %d, new: %d)",
-						                      previous_setting, new_setting);
-					}
+			const bool same_attach = !existing_db->GetCatalog().HasConflictingAttachOptions(info.path, options);
+			if (info.on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT ||
+			    (same_attach && !requires_tracking_attaches)) {
+				if (!options.default_table.Name().empty()) {
+					existing_db->GetCatalog().SetDefaultTable(options.default_table.Schema(),
+					                                          options.default_table.Name());
 				}
-				// allow custom catalogs to override this behavior
-				if (!existing_db->GetCatalog().HasConflictingAttachOptions(info.path, options)) {
-					return existing_db;
-				}
-			} else {
 				return existing_db;
+			}
+			if (same_attach) {
+				// Reopen file-based DuckDB so a replaced file is not served from a stale handle.
+				existing_db.reset();
+				DetachDatabase(context, info.name, OnEntryNotFound::RETURN_NULL);
 			}
 		}
 	}

@@ -17,12 +17,40 @@ CREATE TABLE db2.all_types_new AS SELECT * FROM test_all_types();
 statement ok
 DETACH db2;
 
-# ATTACH OR REPLACE same path to same alias should work
+# ATTACH OR REPLACE same path to same alias should reopen, not reuse the handle (#20748)
+statement ok
+CREATE TABLE db1_oid AS SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1';
+
 statement ok
 ATTACH OR REPLACE '{TEST_DIR}/attach_or_replace.db' AS db1;
 
+query I
+SELECT (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1') !=
+       (SELECT database_oid FROM db1_oid)
+----
+true
+
 statement ok
 SELECT * FROM db1.all_types;
+
+# ATTACH IF NOT EXISTS on the same alias is still a no-op
+statement ok
+CREATE TABLE db1_oid_keep AS SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1';
+
+statement ok
+ATTACH IF NOT EXISTS '{TEST_DIR}/attach_or_replace.db' AS db1;
+
+query I
+SELECT (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1') =
+       (SELECT database_oid FROM db1_oid_keep)
+----
+true
+
+statement ok
+DROP TABLE db1_oid;
+
+statement ok
+DROP TABLE db1_oid_keep;
 
 # ATTACHing the same path to a different alias is an error
 statement error
