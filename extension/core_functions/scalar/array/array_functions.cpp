@@ -196,6 +196,10 @@ static auto ArrayGenericFoldStats(ClientContext &context, FunctionStatisticsInpu
 		new_stats.Set(StatsInfo::CANNOT_HAVE_VALID_VALUES);
 	}
 
+	if (lhs_stats.GetType().id() != LogicalTypeId::ARRAY || rhs_stats.GetType().id() != LogicalTypeId::ARRAY) {
+		return new_stats.ToUnique();
+	}
+
 	auto &lhs_child_stats = ArrayStats::GetChildStats(lhs_stats);
 	auto &rhs_child_stats = ArrayStats::GetChildStats(rhs_stats);
 
