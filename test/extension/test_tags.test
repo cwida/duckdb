@@ -27,3 +27,42 @@ SELECT column_name, tags['ext:name'], tags['ext:column_type'] FROM duckdb_column
 ----
 a	loadable_extension_demo	primary
 b	loadable_extension_demo	dimension
+c	loadable_extension_demo	measure
+
+query TT
+SELECT column_name, extra FROM (DESCRIBE tagged_table) ORDER BY column_name;
+----
+a	{"comment":"Primary tagged column","tags":{"ext:name":"loadable_extension_demo","ext:column_type":"primary"}}
+b	{"comment":"Dimension tagged column","tags":{"ext:name":"loadable_extension_demo","ext:column_type":"dimension"}}
+c	{"tags":{"ext:name":"loadable_extension_demo","ext:column_type":"measure"}}
+
+# DESCRIBE binds a table function without executing its scan and exposes bind-time column metadata
+query TT
+SELECT column_name, extra FROM (DESCRIBE FROM quack(999));
+----
+quack	{"comment":"A single duck utterance","tags":{"ext:name":"loadable_extension_demo","ext:column_type":"sound"}}
+
+statement error
+FROM quack(999);
+----
+quack scan must not execute
+
+# Metadata follows simple column references and is dropped for computed expressions
+query TT
+SELECT column_name, extra
+FROM (DESCRIBE SELECT quack AS utterance, quack || '!' AS expression FROM quack(1));
+----
+utterance	{"comment":"A single duck utterance","tags":{"ext:name":"loadable_extension_demo","ext:column_type":"sound"}}
+expression	NULL
+
+query TT
+SELECT column_name, extra FROM (DESCRIBE FROM quack(1) WITH ORDINALITY);
+----
+quack	{"comment":"A single duck utterance","tags":{"ext:name":"loadable_extension_demo","ext:column_type":"sound"}}
+ordinality	NULL
+
+# Metadata follows a column alias given on the table function
+query TT
+SELECT column_name, extra FROM (DESCRIBE SELECT * FROM quack(1) AS t(a));
+----
+a	{"comment":"A single duck utterance","tags":{"ext:name":"loadable_extension_demo","ext:column_type":"sound"}}

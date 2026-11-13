@@ -43,6 +43,7 @@ class BoundTableFunction;
 class TableFilterSet;
 class TableFunctionRef;
 class TableCatalogEntry;
+class ColumnList;
 class SampleOptions;
 struct MultiFileReader;
 struct OperatorPartitionData;
@@ -312,6 +313,8 @@ public:
 		Value identifier;
 	};
 	vector<ColumnIdentifier> column_identifiers;
+	//! The definitions of the returned columns, for functions that are not backed by a catalog table
+	optional_ptr<const ColumnList> columns;
 
 	void InsertOption(const string &name, Value value) { // NOLINT: work-around bug in clang-tidy
 		if (options.find(name) != options.end()) {
