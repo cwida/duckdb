@@ -727,8 +727,10 @@ idx_t Executor::PartialChunkCount() {
 	// one unit fits at a time, so after every pop the consumer reschedules a producer, finds the buffer empty and
 	// takes a task - often the one it just rescheduled, before the woken worker gets to it. A full slice then stalls
 	// the whole pipeline for its length while every worker finishes its unit and parks. The consumer therefore runs
-	// one chunk per slice and returns to its buffer. A thread with no workers to wait for keeps the full slice
-	if (TaskScheduler::GetScheduler(context).NumberOfThreads() > 1 && ResultStoreCanPark()) {
+	// one chunk per slice and returns to its buffer. A thread with no workers to wait for keeps the full slice:
+	// NumberOfThreads counts the external threads too, so only a count above them means workers exist
+	auto external_threads = Settings::Get<ExternalThreadsSetting>(context);
+	if (TaskScheduler::GetScheduler(context).NumberOfThreads() > external_threads && ResultStoreCanPark()) {
 		return 1;
 	}
 	return PipelineTask::PARTIAL_CHUNK_COUNT;
