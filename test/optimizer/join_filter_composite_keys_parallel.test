@@ -1,0 +1,97 @@
+# name: test/optimizer/join_filter_composite_keys_parallel.test
+# description: The per-column runtime filters of a composite-key hash join are filled by a parallel finalize; results are identical across repetitions, join types and thread counts
+# group: [optimizer]
+
+statement ok
+SET threads=8;
+
+# pin the build and probe sides: the RHS of every join below is the build side
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization';
+
+statement ok
+CREATE TABLE probe AS SELECT i::BIGINT AS a, (i % 1000)::BIGINT AS b, (i % 7)::INTEGER AS g FROM range(2000000) t(i);
+
+# 200,000 build rows: enough for a parallel finalize at 8 threads
+statement ok
+CREATE TABLE build AS SELECT (i * 5)::BIGINT AS a, (i % 100)::BIGINT AS b FROM range(200000) t(i);
+
+# keys 2^40 apart: too wide a span for a prefix range filter, so a gets a bloom filter
+statement ok
+CREATE TABLE build_bf AS SELECT (i * 5 * 1099511627776)::BIGINT AS a, (i % 100)::BIGINT AS b FROM range(200000) t(i);
+
+statement ok
+CREATE TABLE probe_bf AS SELECT (i * 1099511627776)::BIGINT AS a, (i % 1000)::BIGINT AS b, (i % 7)::INTEGER AS g FROM range(2000000) t(i);
+
+# ---- rule off (disabled_optimizers): the reference results ----
+
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization,join_filter_composite_keys';
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+1000	3002
+
+query III
+SELECT count(*), count(p.a), sum(p.g) FROM probe p RIGHT JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+200000	1000	3002
+
+query II
+SELECT count(*), sum(p.g) FROM probe_bf p JOIN build_bf b ON p.a = b.a AND p.b = b.b;
+----
+1000	3002
+
+# ---- rule on (the default): the per-column filters are built by the parallel finalize ----
+
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization';
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN PRF\(a\).*b IN PRF\(b\).*
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe_bf p JOIN build_bf b ON p.a = b.a AND p.b = b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN BF\(a\).*b IN PRF\(b\).*
+
+loop i 0 10
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+1000	3002
+
+query III
+SELECT count(*), count(p.a), sum(p.g) FROM probe p RIGHT JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+200000	1000	3002
+
+query II
+SELECT count(*), sum(p.g) FROM probe p WHERE EXISTS (SELECT 1 FROM build b WHERE b.a = p.a AND b.b = p.b);
+----
+1000	3002
+
+query II
+SELECT count(*), sum(p.g) FROM probe_bf p JOIN build_bf b ON p.a = b.a AND p.b = b.b;
+----
+1000	3002
+
+endloop
+
+# one thread: the single-task finalize fills the same filters
+statement ok
+SET threads=1;
+
+query II
+SELECT count(*), sum(p.g) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b;
+----
+1000	3002
+
+query II
+SELECT count(*), sum(p.g) FROM probe_bf p JOIN build_bf b ON p.a = b.a AND p.b = b.b;
+----
+1000	3002

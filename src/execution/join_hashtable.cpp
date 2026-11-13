@@ -1087,33 +1087,108 @@ void JoinHashTable::InsertHashes(Vector &hashes_v, TupleDataChunkState &chunk_st
 	}
 }
 
-unique_ptr<PrefixRangeFilter::BuildState> JoinHashTable::InitializePrefixRangeBuildState() {
-	D_ASSERT(prefix_range_filter);
-	return prefix_range_filter->InitializeBuildState(context);
+optional_ptr<PrefixRangeFilter> JoinHashTable::GetColumnPrefixRangeFilter(idx_t condition_idx) {
+	for (auto &column_filter : column_prefix_range_filters) {
+		if (column_filter.condition_idx == condition_idx) {
+			return column_filter.filter.get();
+		}
+	}
+	return nullptr;
+}
+
+void JoinHashTable::AddColumnPrefixRangeFilter(idx_t condition_idx, unique_ptr<PrefixRangeFilter> filter) {
+	D_ASSERT(!GetColumnPrefixRangeFilter(condition_idx));
+	column_prefix_range_filters.push_back({condition_idx, std::move(filter)});
+}
+
+shared_ptr<BloomFilter> JoinHashTable::GetColumnBloomFilter(idx_t condition_idx) {
+	for (auto &column_filter : column_bloom_filters) {
+		if (column_filter.condition_idx == condition_idx) {
+			return column_filter.filter;
+		}
+	}
+	return nullptr;
+}
+
+void JoinHashTable::AddColumnBloomFilter(idx_t condition_idx, shared_ptr<BloomFilter> filter) {
+	D_ASSERT(!GetColumnBloomFilter(condition_idx));
+	column_bloom_filters.push_back({condition_idx, std::move(filter)});
+}
+
+unique_ptr<JoinHashTable::RuntimeFilterBuildState> JoinHashTable::InitializePrefixRangeBuildState() {
+	D_ASSERT(ShouldBuildPrefixRangeFilter());
+	auto result = make_uniq<RuntimeFilterBuildState>();
+	if (should_build_prefix_range_filter && prefix_range_filter) {
+		result->prefix_range_state = prefix_range_filter->InitializeBuildState(context);
+	}
+	for (auto &column_filter : column_prefix_range_filters) {
+		result->column_prefix_range_states.push_back(column_filter.filter->InitializeBuildState(context));
+	}
+	return result;
 }
 
 idx_t JoinHashTable::GetPrefixRangeBuildStateSize() const {
-	D_ASSERT(prefix_range_filter);
-	return prefix_range_filter->GetBuildStateSize();
+	D_ASSERT(ShouldBuildPrefixRangeFilter());
+	// the per-column bloom filters are filled in place and need no build state of their own
+	idx_t result = sizeof(RuntimeFilterBuildState);
+	if (should_build_prefix_range_filter && prefix_range_filter) {
+		result += prefix_range_filter->GetBuildStateSize();
+	}
+	for (auto &column_filter : column_prefix_range_filters) {
+		result += column_filter.filter->GetBuildStateSize();
+	}
+	return result;
 }
 
-void JoinHashTable::InsertPrefixRangeChunk(TupleDataChunkState &chunk_state, idx_t count,
-                                           PrefixRangeFilter::BuildState &state, bool parallel) {
-	D_ASSERT(prefix_range_filter);
-	Vector build_keys(layout_ptr->GetTypes()[0], count);
-	auto &sel = *FlatVector::IncrementalSelectionVector();
-	data_collection->Gather(chunk_state.row_locations, sel, count, 0, build_keys, sel, nullptr);
-	FlatVector::SetSize(build_keys, count_t(count));
+static void InsertPrefixRangeKeys(PrefixRangeFilter &filter, Vector &build_keys, PrefixRangeFilter::BuildState &state,
+                                  bool parallel) {
 	if (parallel) {
-		prefix_range_filter->InsertKeysParallel(build_keys, state);
+		filter.InsertKeysParallel(build_keys, state);
 	} else {
-		prefix_range_filter->InsertKeys(build_keys, state);
+		filter.InsertKeys(build_keys, state);
 	}
 }
 
-void JoinHashTable::MergePrefixRangeBuildState(PrefixRangeFilter::BuildState &state) {
-	D_ASSERT(prefix_range_filter);
-	prefix_range_filter->MergeBuildState(state);
+void JoinHashTable::InsertPrefixRangeChunk(TupleDataChunkState &chunk_state, idx_t count,
+                                           RuntimeFilterBuildState &state, bool parallel) {
+	auto &sel = *FlatVector::IncrementalSelectionVector();
+	if (state.prefix_range_state) {
+		D_ASSERT(prefix_range_filter);
+		Vector build_keys(layout_ptr->GetTypes()[0], count);
+		data_collection->Gather(chunk_state.row_locations, sel, count, 0, build_keys, sel, nullptr);
+		FlatVector::SetSize(build_keys, count_t(count));
+		InsertPrefixRangeKeys(*prefix_range_filter, build_keys, *state.prefix_range_state, parallel);
+	}
+	D_ASSERT(state.column_prefix_range_states.size() == column_prefix_range_filters.size());
+	for (idx_t i = 0; i < column_prefix_range_filters.size(); i++) {
+		auto &column_filter = column_prefix_range_filters[i];
+		Vector build_keys(layout_ptr->GetTypes()[column_filter.condition_idx], count);
+		data_collection->Gather(chunk_state.row_locations, sel, count, column_filter.condition_idx, build_keys, sel,
+		                        nullptr);
+		FlatVector::SetSize(build_keys, count_t(count));
+		InsertPrefixRangeKeys(*column_filter.filter, build_keys, *state.column_prefix_range_states[i], parallel);
+	}
+	for (auto &column_filter : column_bloom_filters) {
+		// the hash of the single key column, which is what the scan computes for the column it filters
+		Vector build_keys(layout_ptr->GetTypes()[column_filter.condition_idx], count);
+		data_collection->Gather(chunk_state.row_locations, sel, count, column_filter.condition_idx, build_keys, sel,
+		                        nullptr);
+		FlatVector::SetSize(build_keys, count_t(count));
+		Vector hashes(LogicalType::HASH, count);
+		VectorOperations::Hash(build_keys, hashes, count);
+		column_filter.filter->InsertHashes(hashes, sel, count);
+	}
+}
+
+void JoinHashTable::MergePrefixRangeBuildState(RuntimeFilterBuildState &state) {
+	if (state.prefix_range_state) {
+		D_ASSERT(prefix_range_filter);
+		prefix_range_filter->MergeBuildState(*state.prefix_range_state);
+	}
+	D_ASSERT(state.column_prefix_range_states.size() == column_prefix_range_filters.size());
+	for (idx_t i = 0; i < column_prefix_range_filters.size(); i++) {
+		column_prefix_range_filters[i].filter->MergeBuildState(*state.column_prefix_range_states[i]);
+	}
 }
 
 bool JoinHashTable::TryInitializePerfectHashTable() {
@@ -1204,8 +1279,7 @@ void JoinHashTable::InitializePointerTable(idx_t entry_idx_from, idx_t entry_idx
 }
 
 void JoinHashTable::Finalize(idx_t chunk_idx_from, idx_t chunk_idx_to, bool parallel,
-                             optional_ptr<PrefixRangeFilter::BuildState> prefix_range_state,
-                             bool prefix_range_parallel) {
+                             optional_ptr<RuntimeFilterBuildState> prefix_range_state, bool prefix_range_parallel) {
 	// Pointer table should be allocated
 	D_ASSERT(hash_map.get() || perfect_hash_table);
 
@@ -2760,6 +2834,8 @@ void JoinHashTable::ResetForNewIterationSinglePartition() {
 	should_build_bloom_filter = false;
 	prefix_range_filter.reset();
 	should_build_prefix_range_filter = false;
+	column_prefix_range_filters.clear();
+	column_bloom_filters.clear();
 	ResetMarkJoinInfo(*this);
 	// The next iteration may rebuild a different small build side, so this iteration's dictionary
 	// state is stale. Keep in lock-step with BuildDictionaryArrays, which sets these four fields.

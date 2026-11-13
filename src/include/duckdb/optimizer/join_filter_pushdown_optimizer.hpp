@@ -16,6 +16,7 @@
 namespace duckdb {
 class Optimizer;
 class LogicalCTERef;
+class RelationStatsExtractor;
 
 enum class EqualityPropagation { DISABLED, ENABLED };
 
@@ -24,6 +25,7 @@ enum class EqualityPropagation { DISABLED, ENABLED };
 class JoinFilterPushdownOptimizer : public LogicalOperatorVisitor {
 public:
 	explicit JoinFilterPushdownOptimizer(Optimizer &optimizer);
+	~JoinFilterPushdownOptimizer() override;
 
 public:
 	void Optimize(LogicalOperator &op);
@@ -43,6 +45,9 @@ private:
 	void CollectCTEFilters(LogicalOperator &op);
 	void GenerateCTEFilters(LogicalMaterializedCTE &cte);
 	void GenerateJoinFilters(LogicalComparisonJoin &join);
+	//! The equality conditions of a composite-key join whose single-column runtime filter is not worth building:
+	//! the build side is expected to hold most of the distinct values of the probe column
+	vector<idx_t> GetColumnFilterGatedConditions(LogicalComparisonJoin &join);
 	static bool CanGenerateJoinFilters(const LogicalComparisonJoin &join);
 	static void GetCTEFilterTargets(LogicalOperator &op, vector<JoinFilterPushdownColumn> columns,
 	                                reference_map_t<LogicalCTERef, vector<JoinFilterPushdownColumn>> &targets);
@@ -50,5 +55,7 @@ private:
 private:
 	Optimizer &optimizer;
 	reference_map_t<LogicalComparisonJoin, vector<JoinFilterPushdownFilter>> cte_filters;
+	//! Statistics of the join children, used to decide the per-column runtime filters of composite-key joins
+	unique_ptr<RelationStatsExtractor> stats_extractor;
 };
 } // namespace duckdb

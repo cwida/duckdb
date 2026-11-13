@@ -9,6 +9,7 @@
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/scalar/struct_utils.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/optimizer/relation_statistics/relation_statistics_extractor.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -38,6 +39,9 @@ struct FilterTarget {
 };
 
 JoinFilterPushdownOptimizer::JoinFilterPushdownOptimizer(Optimizer &optimizer) : optimizer(optimizer) {
+}
+
+JoinFilterPushdownOptimizer::~JoinFilterPushdownOptimizer() {
 }
 
 static bool IsJoinFilterPushdownIntegralType(const LogicalType &type) {
@@ -756,6 +760,77 @@ bool JoinFilterPushdownOptimizer::CanGenerateJoinFilters(const LogicalComparison
 	return true;
 }
 
+static bool IsEqualityCondition(const JoinCondition &cond) {
+	if (!cond.IsComparison()) {
+		return false;
+	}
+	const auto cmp = cond.GetComparisonType();
+	return cmp == ExpressionType::COMPARE_EQUAL || cmp == ExpressionType::COMPARE_NOT_DISTINCT_FROM;
+}
+
+//! The statistics of the column that a join key refers to. Only a column whose number of distinct values is known
+//! (rather than derived from the cardinality or the value range) qualifies; an expression key does not.
+static optional_ptr<const RelationColumnStats> GetKeyColumnStats(const RelationStats &stats, const Expression &key) {
+	if (key.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+		return nullptr;
+	}
+	auto column = stats.GetColumnStats(key.Cast<BoundColumnRefExpression>().Binding());
+	if (!column) {
+		return nullptr;
+	}
+	switch (column->total_domain.source) {
+	case DistinctCountSource::HLL:
+	case DistinctCountSource::EXACT:
+		return column;
+	default:
+		return nullptr;
+	}
+}
+
+vector<idx_t> JoinFilterPushdownOptimizer::GetColumnFilterGatedConditions(LogicalComparisonJoin &join) {
+	//! A single-column runtime filter is not built when the build side is expected to hold more than this share
+	//! of the distinct values of the probe column: it would pass nearly every probe row
+	static constexpr double MAX_BUILD_TO_PROBE_DISTINCT_RATIO = 0.5;
+
+	vector<idx_t> result;
+	if (join.children.size() != 2) {
+		return result;
+	}
+	if (!stats_extractor) {
+		stats_extractor = make_uniq<RelationStatsExtractor>(optimizer.GetContext());
+	}
+	auto probe_stats = stats_extractor->Extract(*join.children[0]);
+	auto build_stats = stats_extractor->Extract(*join.children[1]);
+	if (!probe_stats || !build_stats) {
+		// without statistics every column keeps its filter: the scan pauses a filter that turns out not to prune
+		return result;
+	}
+	// there cannot be more distinct keys than rows on the build side
+	auto &build = *join.children[1];
+	const auto build_rows = build.has_estimated_cardinality ? build.estimated_cardinality : build_stats->cardinality;
+	for (idx_t cond_idx = 0; cond_idx < join.conditions.size(); cond_idx++) {
+		auto &cond = join.conditions[cond_idx];
+		if (!IsEqualityCondition(cond)) {
+			continue;
+		}
+		auto probe_column = GetKeyColumnStats(*probe_stats, cond.GetLHS());
+		auto build_column = GetKeyColumnStats(*build_stats, cond.GetRHS());
+		if (!probe_column || !build_column || probe_column->total_domain.distinct_count == 0) {
+			continue;
+		}
+		// The filter passes a probe row if its value is among the keys that are present on the build side. These
+		// are the values that the filters and joins below the build side have left of the column (its current
+		// domain), not all values of the column: a join that multiplies the rows adds no keys. The values that the
+		// probe column draws from are all of its values, however many of its rows remain.
+		const auto build_keys = MinValue(build_column->current_domain.distinct_count, build_rows);
+		const auto probe_values = probe_column->total_domain.distinct_count;
+		if (static_cast<double>(build_keys) > static_cast<double>(probe_values) * MAX_BUILD_TO_PROBE_DISTINCT_RATIO) {
+			result.push_back(cond_idx);
+		}
+	}
+	return result;
+}
+
 void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &join) {
 	if (!CanGenerateJoinFilters(join)) {
 		return;
@@ -869,6 +944,18 @@ void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &joi
 	}
 	const idx_t child_idx = join.children[1]->type == LogicalOperatorType::LOGICAL_DELIM_GET ? 0 : 1;
 	pushdown_info->build_side_has_filter = IsFiltering(join.children[child_idx]);
+
+	// The bloom / prefix-range filter of a hash join covers all of its equality keys at once, so it can only be
+	// pushed into a scan for a single-key join. A join on several equality columns gets one single-column filter
+	// per column instead: a probe row whose value in one key column does not occur on the build side cannot match.
+	idx_t equality_count = 0;
+	for (auto &cond : join.conditions) {
+		equality_count += IsEqualityCondition(cond) ? 1 : 0;
+	}
+	if (equality_count >= 2 && !optimizer.OptimizerDisabled(OptimizerType::JOIN_FILTER_COMPOSITE_KEYS)) {
+		pushdown_info->column_runtime_filters = true;
+		pushdown_info->column_filter_gated_conditions = GetColumnFilterGatedConditions(join);
+	}
 
 	// set up the filter pushdown in the join itself
 	join.filter_pushdown = std::move(pushdown_info);

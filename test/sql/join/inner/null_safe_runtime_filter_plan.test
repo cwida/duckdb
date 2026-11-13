@@ -30,10 +30,23 @@ SET dynamic_or_filter_threshold=0;
 statement ok
 INSERT INTO b VALUES (44,0);
 
+# without a filter per equality column, a join on two equality columns publishes the NULL-retaining min/max filter
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization,join_filter_composite_keys';
+
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b AND p.g=b.g;
 ----
 analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IS NULL.*a >= 42.*a IS NULL.*a <= 44.*
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization';
+
+# with it, the NULL-safe column gets a prefix-range filter that retains NULLs
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b AND p.g=b.g;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN PRF\(b\).*
 
 query I
 SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b AND p.g=b.g;

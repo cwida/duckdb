@@ -307,7 +307,8 @@ JOIN dense_build b
 ----
 analyzed_plan	<REGEX>:(?s).*Dynamic.*Filters.*optional:.*\(k.*<=.*
 
-# Multiple equality keys make PRF and Bloom filters ineligible; min/max is used for each key.
+# The filter of the hash table covers all equality keys at once and cannot filter a single column: each key
+# keeps its min/max filter and gets a Bloom filter over its own values (the spans are too wide for a PRF).
 statement ok
 SET dynamic_or_filter_threshold=0;
 
@@ -342,6 +343,30 @@ JOIN multi_build b
  AND p.k2 = b.k2;
 ----
 analyzed_plan	<REGEX>:(?s).*Dynamic.*Filters.*optional:.*\(k1.*<=.*
+
+query II
+EXPLAIN ANALYZE
+SELECT count(*)
+FROM multi_probe p
+JOIN multi_build b
+  ON p.k1 = b.k1
+ AND p.k2 = b.k2;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic.*Filters.*k1 IN BF\(k1\).*k2 IN BF\(k2\).*
+
+# Without a filter per equality column, min/max is the only filter of each key.
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization,join_filter_composite_keys';
+
+query II
+EXPLAIN ANALYZE
+SELECT count(*)
+FROM multi_probe p
+JOIN multi_build b
+  ON p.k1 = b.k1
+ AND p.k2 = b.k2;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic.*Filters.*optional:.*\(k1.*>=.*
 
 query II
 EXPLAIN ANALYZE

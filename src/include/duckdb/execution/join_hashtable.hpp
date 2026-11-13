@@ -299,6 +299,24 @@ public:
 		unique_ptr<ProbeDictionaryState> dict_state;
 	};
 
+	//! A single-column prefix-range filter over the build keys of one join condition
+	struct ColumnPrefixRangeFilter {
+		idx_t condition_idx;
+		unique_ptr<PrefixRangeFilter> filter;
+	};
+	//! A single-column bloom filter over the build keys of one join condition
+	struct ColumnBloomFilter {
+		idx_t condition_idx;
+		shared_ptr<BloomFilter> filter;
+	};
+	//! The build states of the prefix-range filters that one finalize lane fills
+	struct RuntimeFilterBuildState {
+		//! Of the filter over the first join condition (nullptr when that filter is not built)
+		unique_ptr<PrefixRangeFilter::BuildState> prefix_range_state;
+		//! Of the per-column filters, in column_prefix_range_filters order
+		vector<unique_ptr<PrefixRangeFilter::BuildState>> column_prefix_range_states;
+	};
+
 	struct InsertState : SharedState {
 		explicit InsertState(const JoinHashTable &ht);
 		/// Because of the index hick up
@@ -362,7 +380,7 @@ public:
 	//! Finalize must be called before any call to Probe, and after Finalize is called Build should no longer be
 	//! ever called.
 	void Finalize(idx_t chunk_idx_from, idx_t chunk_idx_to, bool parallel,
-	              optional_ptr<PrefixRangeFilter::BuildState> prefix_range_state = nullptr,
+	              optional_ptr<RuntimeFilterBuildState> prefix_range_state = nullptr,
 	              bool prefix_range_parallel = false);
 	//! Probe the HT with the given input chunk, resulting in the given result
 	void Probe(ScanStructure &scan_structure, DataChunk &keys, TupleDataChunkState &key_state, ProbeState &probe_state,
@@ -621,6 +639,12 @@ private:
 	unique_ptr<PrefixRangeFilter> prefix_range_filter;
 	bool should_build_prefix_range_filter = false;
 
+	//! Single-column runtime filters of a join on several equality columns, each over the build keys of one
+	//! join condition (the bloom filter above hashes all keys at once and cannot filter a single scan column).
+	//! Filled during finalize, next to the filters above
+	vector<ColumnPrefixRangeFilter> column_prefix_range_filters;
+	vector<ColumnBloomFilter> column_bloom_filters;
+
 	//! Copying not allowed
 	JoinHashTable(const JoinHashTable &) = delete;
 
@@ -720,6 +744,9 @@ public:
 		if (bloom_filter) {
 			bloom_filter->Seal(context);
 		}
+		for (auto &column_filter : column_bloom_filters) {
+			column_filter.filter->Seal(context);
+		}
 	}
 	//! Whether the filter is complete and rejects enough for pushing it into a scan to pay off
 	bool HasPublishableBloomFilter() const {
@@ -738,15 +765,26 @@ public:
 		return prefix_range_filter;
 	}
 
+	//! Whether finalize fills a prefix-range filter or a per-column runtime filter from the build keys
 	bool ShouldBuildPrefixRangeFilter() const {
-		return should_build_prefix_range_filter && prefix_range_filter;
+		return (should_build_prefix_range_filter && prefix_range_filter) || !column_prefix_range_filters.empty() ||
+		       !column_bloom_filters.empty();
 	}
 
-	unique_ptr<PrefixRangeFilter::BuildState> InitializePrefixRangeBuildState();
+	//! The per-column prefix-range filter over the build keys of the given join condition, if registered
+	optional_ptr<PrefixRangeFilter> GetColumnPrefixRangeFilter(idx_t condition_idx);
+	//! Registers a per-column prefix-range filter that finalize fills from the build keys of the join condition
+	void AddColumnPrefixRangeFilter(idx_t condition_idx, unique_ptr<PrefixRangeFilter> filter);
+	//! The per-column bloom filter over the build keys of the given join condition, if registered
+	shared_ptr<BloomFilter> GetColumnBloomFilter(idx_t condition_idx);
+	//! Registers a per-column bloom filter that finalize fills from the build keys of the join condition
+	void AddColumnBloomFilter(idx_t condition_idx, shared_ptr<BloomFilter> filter);
+
+	unique_ptr<RuntimeFilterBuildState> InitializePrefixRangeBuildState();
 	idx_t GetPrefixRangeBuildStateSize() const;
-	void InsertPrefixRangeChunk(TupleDataChunkState &chunk_state, idx_t count, PrefixRangeFilter::BuildState &state,
+	void InsertPrefixRangeChunk(TupleDataChunkState &chunk_state, idx_t count, RuntimeFilterBuildState &state,
 	                            bool parallel = false);
-	void MergePrefixRangeBuildState(PrefixRangeFilter::BuildState &state);
+	void MergePrefixRangeBuildState(RuntimeFilterBuildState &state);
 
 	//! Get total size of HT if all partitions would be built
 	idx_t GetTotalSize(const vector<reference<JoinHashTable>> &local_hts, idx_t &max_partition_size,
