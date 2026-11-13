@@ -823,9 +823,32 @@ using TableFunctionMultiFileFunction = MultiFileFunction<TableFunctionMultiFileW
 unique_ptr<FunctionData> TableFunctionMultiFileWrapper::MultiFileBindWith(
     ClientContext &context, TableFunctionBindInput &input, vector<LogicalType> &return_types, vector<Identifier> &names,
     TableFunction single_file_function, TableFunctionMultiFileSettings settings) {
-	return TableFunctionMultiFileFunction::MultiFileBindInterface(
+	auto result = TableFunctionMultiFileFunction::MultiFileBindInterface(
 	    context, input, return_types, names,
 	    make_uniq<TableFunctionMultiFileWrapper>(std::move(single_file_function), std::move(settings)));
+	auto &multi_file_data = result->Cast<MultiFileBindData>();
+	auto &data = multi_file_data.bind_data->Cast<TableFunctionMultiFileData>();
+	// a custom multi-file reader may build its files from more than the paths of the call
+	data.bound_from_paths = !input.table_function.get_multi_file_reader;
+	data.call_inputs = input.inputs;
+	data.call_parameters = input.named_parameters;
+	data.bound_file_list = multi_file_data.file_list;
+	return result;
+}
+
+unique_ptr<FunctionData> TableFunctionMultiFileWrapper::MultiFileBindFileListWith(
+    ClientContext &context, const BoundTableFunction &function, const named_argument_map_t &call_parameters,
+    shared_ptr<MultiFileList> file_list, vector<LogicalType> &return_types, vector<Identifier> &names,
+    TableFunction single_file_function, TableFunctionMultiFileSettings settings) {
+	auto result = TableFunctionMultiFileFunction::MultiFileBindFileList(
+	    context, call_parameters, nullptr, MultiFileReader::Create(function), std::move(file_list), return_types, names,
+	    make_uniq<TableFunctionMultiFileWrapper>(std::move(single_file_function), std::move(settings)));
+	auto &multi_file_data = result->Cast<MultiFileBindData>();
+	auto &data = multi_file_data.bind_data->Cast<TableFunctionMultiFileData>();
+	data.bound_from_paths = true;
+	data.call_parameters = call_parameters;
+	data.bound_file_list = multi_file_data.file_list;
+	return result;
 }
 
 static unique_ptr<FunctionData> TableFunctionMultiFileBind(ClientContext &context, TableFunctionBindInput &input,

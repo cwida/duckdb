@@ -269,11 +269,22 @@ public:
 		}
 
 		auto file_list = multi_file_reader->CreateFileList(context, input.inputs[0], glob_input);
+		return MultiFileBindFileList(context, input.named_parameters, input.info, std::move(multi_file_reader),
+		                             std::move(file_list), return_types, names, std::move(interface));
+	}
 
+	//! Bind over a file list that is already known - e.g. the expanded files of a serialized scan
+	static unique_ptr<FunctionData>
+	MultiFileBindFileList(ClientContext &context, const named_argument_map_t &named_parameters,
+	                      optional_ptr<TableFunctionInfo> info, unique_ptr<MultiFileReader> multi_file_reader,
+	                      shared_ptr<MultiFileList> file_list, vector<LogicalType> &return_types,
+	                      vector<Identifier> &names, unique_ptr<MultiFileReaderInterface> interface) {
+		MultiFileOptions file_options;
+		interface->InitializeFileOptions(file_options);
 		interface->InitializeInterface(context, *multi_file_reader, *file_list);
 
-		auto options = interface->InitializeOptions(context, input.info);
-		for (auto &kv : input.named_parameters) {
+		auto options = interface->InitializeOptions(context, info);
+		for (auto &kv : named_parameters) {
 			if (multi_file_reader->ParseOption(kv.first, kv.second, file_options, context)) {
 				continue;
 			}

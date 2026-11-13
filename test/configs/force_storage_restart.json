@@ -81,6 +81,7 @@
         "test/sql/copy/parquet/parquet_prefetch_cost_model.test",
         "test/sql/copy/parquet/parquet_prefetch_cost_model_remote.test",
         "test/sql/copy/parquet/parquet_expression_filter_pruning.test",
+        "test/sql/copy/parquet/parquet_not_materialized_glob.test",
         "test/sql/copy/parquet/page_index/page_index_read.test",
         "test/sql/copy/parquet/page_index/page_index_prefetch.test",
         "test/sql/copy/parquet/page_index/page_index_reference.test",

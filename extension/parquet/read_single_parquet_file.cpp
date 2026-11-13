@@ -8,6 +8,11 @@
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
+#include "duckdb/main/client_context_state.hpp"
+#include "parquet_file_metadata_cache.hpp"
 
 namespace duckdb {
 
@@ -104,6 +109,96 @@ struct ReadSingleParquetFileLocalState : public LocalTableFunctionState {
 	bool has_row_group = false;
 };
 
+//! The metadata of the files a parquet scan was bound on in the current statement. A copy of a plan binds its scans
+//! again, and takes the metadata from here instead of reading the footers of those files once more. It is dropped
+//! between statements, as a later statement can rewrite the files
+class ParquetBoundMetadataState : public ClientContextState {
+public:
+	static constexpr const char *NAME = "parquet_bound_metadata";
+
+	void QueryBegin(ClientContext &context) override {
+		Clear();
+	}
+	void QueryEnd(ClientContext &context) override {
+		Clear();
+	}
+	void StatementBegin(ClientContext &context) override {
+		Clear();
+	}
+	void StatementEnd(ClientContext &context) override {
+		Clear();
+	}
+
+	void Add(const string &path, shared_ptr<ParquetFileMetadataCache> metadata) {
+		lock_guard<mutex> guard(lock);
+		files[path] = std::move(metadata);
+	}
+	shared_ptr<ParquetFileMetadataCache> Find(const string &path) {
+		lock_guard<mutex> guard(lock);
+		auto entry = files.find(path);
+		return entry == files.end() ? nullptr : entry->second;
+	}
+
+private:
+	void Clear() {
+		lock_guard<mutex> guard(lock);
+		files.clear();
+	}
+
+private:
+	mutex lock;
+	unordered_map<string, shared_ptr<ParquetFileMetadataCache>> files;
+};
+
+//! Whether the metadata of this file may be shared between the binds of a query
+static bool CanShareBoundMetadata(const OpenFileInfo &file, const ParquetOptions &options) {
+	if (options.encryption_config) {
+		return false;
+	}
+	string encryption_key;
+	return !file.extended_info || !file.extended_info->TryGetOption("encryption_key", encryption_key);
+}
+
+static shared_ptr<ParquetFileMetadataCache> FindBoundMetadata(ClientContext &context, const OpenFileInfo &file,
+                                                              const ParquetOptions &options) {
+	if (!CanShareBoundMetadata(file, options)) {
+		return nullptr;
+	}
+	auto state =
+	    context.GetContext().GetRegisteredState().Get<ParquetBoundMetadataState>(ParquetBoundMetadataState::NAME);
+	if (!state) {
+		return nullptr;
+	}
+	auto metadata = state->Find(file.path);
+	if (!metadata || metadata->IsValid(file, context) != ParquetCacheValidity::VALID) {
+		return nullptr;
+	}
+	return metadata;
+}
+
+static void AddBoundMetadata(ClientContext &context, const FunctionData &file_bind_data) {
+	auto &data = file_bind_data.Cast<ReadSingleParquetFileData>();
+	if (!data.metadata || !CanShareBoundMetadata(data.file, data.options)) {
+		return;
+	}
+	auto state = context.GetContext().GetRegisteredState().GetOrCreate<ParquetBoundMetadataState>(
+	    ParquetBoundMetadataState::NAME);
+	state->Add(data.file.path, data.metadata);
+}
+
+void ParquetScanFunction::AddBoundMetadata(ClientContext &context, const MultiFileBindData &bind_data) {
+	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
+	if (data.options.schema_bind_data) {
+		duckdb::AddBoundMetadata(context, *data.options.schema_bind_data);
+	}
+	for (auto &union_data : bind_data.union_readers) {
+		auto &file = union_data->Cast<TableFunctionUnionData>();
+		if (file.bind_data) {
+			duckdb::AddBoundMetadata(context, *file.bind_data);
+		}
+	}
+}
+
 static unique_ptr<FunctionData> ReadSingleParquetFileBind(ClientContext &context, TableFunctionBindInput &input,
                                                           vector<LogicalType> &return_types,
                                                           vector<Identifier> &names) {
@@ -134,6 +229,9 @@ static unique_ptr<FunctionData> ReadSingleParquetFileBind(ClientContext &context
 		if (previous.file.path == result->file.path) {
 			known_metadata = previous.metadata;
 		}
+	}
+	if (!known_metadata) {
+		known_metadata = FindBoundMetadata(context, result->file, result->options);
 	}
 	auto reader = make_shared_ptr<ParquetReader>(context, result->file, result->options, std::move(known_metadata));
 	for (auto &column : reader->GetColumns()) {
@@ -475,6 +573,33 @@ static vector<PartitionStatistics> ReadSingleParquetFilePartitionStats(ClientCon
 	return result;
 }
 
+//! Read a column of the single file of a scan as the result of an expression on it
+static void ApplyProjectionExpression(MultiFileBindData &bind_data, idx_t idx,
+                                      const ParquetReaderProjectionExpression &expression) {
+	auto &type = expression.return_type;
+	auto &file = bind_data.union_readers[0]->Cast<TableFunctionUnionData>();
+	// the file is read with this bind data, and every other bind of it takes the expression from here
+	file.bind_data->Cast<ReadSingleParquetFileData>().AddProjectionExpression(idx, expression);
+	bind_data.types[idx] = type;
+	bind_data.columns[idx].type = type;
+	file.types[idx] = type;
+	if (bind_data.initial_reader) {
+		// The cached reader was bound before the expression was pushed down.
+		auto &reader = bind_data.initial_reader->Cast<TableFunctionFileReader>();
+		reader.types[idx] = type;
+		if (idx < reader.columns.size()) {
+			reader.columns[idx].type = type;
+		}
+	}
+	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
+	if (data.options.schema_bind_data && data.options.schema_bind_data != file.bind_data) {
+		data.options.schema_bind_data->Cast<ReadSingleParquetFileData>().AddProjectionExpression(idx, expression);
+	}
+	if (idx < data.options.expected_types.size()) {
+		data.options.expected_types[idx] = type;
+	}
+}
+
 bool ParquetScanFunction::ProjectionExpressionPushdown(ClientContext &context,
                                                        const TableFunctionProjectionExpressionInput &input) {
 	if (input.expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
@@ -535,32 +660,134 @@ bool ParquetScanFunction::ProjectionExpressionPushdown(ClientContext &context,
 	}
 
 	const LogicalType type = LogicalType::BIGINT;
-	const ParquetReaderProjectionExpression expression {ParquetReaderProjectionExpressionType::BYTE_LENGTH, type};
-	// the file is read with this bind data, and every other bind of it takes the expression from here
-	parquet_data.AddProjectionExpression(idx, expression);
-	bind_data.types[idx] = type;
-	bind_data.columns[idx].type = type;
-	file.types[idx] = type;
-	if (bind_data.initial_reader) {
-		// The cached reader was bound before the expression was pushed down.
-		auto &reader = bind_data.initial_reader->Cast<TableFunctionFileReader>();
-		reader.types[idx] = type;
-		if (idx < reader.columns.size()) {
-			reader.columns[idx].type = type;
-		}
-	}
-	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
-	if (data.options.schema_bind_data && data.options.schema_bind_data != file.bind_data) {
-		data.options.schema_bind_data->Cast<ReadSingleParquetFileData>().AddProjectionExpression(idx, expression);
-	}
-	if (idx < data.options.expected_types.size()) {
-		data.options.expected_types[idx] = type;
-	}
+	ApplyProjectionExpression(bind_data, idx, {ParquetReaderProjectionExpressionType::BYTE_LENGTH, type});
 	return true;
 }
 
 const ParquetOptions &ParquetScanFunction::GetFileOptions(const FunctionData &file_bind_data) {
 	return file_bind_data.Cast<ReadSingleParquetFileData>().options;
+}
+
+static void ParquetScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+                                 const BoundTableFunction &) {
+	auto &bind_data = bind_data_p->Cast<MultiFileBindData>();
+	auto &multi_data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
+	if (multi_data.call_inputs.empty()) {
+		throw NotImplementedException("Parquet scan cannot be serialized without the arguments it was called with");
+	}
+	// the expanded files are written - binding the original glob again would list it again. The scan is bound on
+	// the files it was bound on before, as the schema can depend on them, and then reads only those left after pruning
+	vector<Value> files;
+	vector<Value> scanned_files;
+	bool pruned = false;
+	if (multi_data.bound_from_paths) {
+		auto &bound_file_list = multi_data.bound_file_list ? *multi_data.bound_file_list : *bind_data.file_list;
+		for (auto &file : bound_file_list.GetAllFiles()) {
+			files.push_back(file.ToValue());
+		}
+		pruned = &bound_file_list != bind_data.file_list.get();
+		if (pruned) {
+			for (auto &file : bind_data.file_list->GetAllFiles()) {
+				scanned_files.push_back(file.ToValue());
+			}
+		}
+	}
+	unordered_map<idx_t, ParquetReaderProjectionExpression> projection_expressions;
+	if (bind_data.union_readers.size() == 1) {
+		auto &file = bind_data.union_readers[0]->Cast<TableFunctionUnionData>();
+		if (file.bind_data) {
+			projection_expressions = file.bind_data->Cast<ReadSingleParquetFileData>().projection_expressions;
+		}
+	}
+	serializer.WriteProperty(100, "bound_from_paths", multi_data.bound_from_paths);
+	serializer.WritePropertyWithDefault(101, "files", files);
+	serializer.WritePropertyWithDefault(102, "call_inputs", multi_data.call_inputs);
+	serializer.WriteProperty(103, "call_parameters", multi_data.call_parameters);
+	serializer.WriteProperty(104, "types", bind_data.types);
+	serializer.WriteProperty(105, "names", bind_data.names);
+	serializer.WritePropertyWithDefault(106, "projection_expressions", projection_expressions);
+	serializer.WritePropertyWithDefault(107, "pruned", pruned, false);
+	serializer.WritePropertyWithDefault(108, "scanned_files", scanned_files);
+}
+
+//! Bind the scan again from the arguments of its call - for a scan whose files a custom multi-file reader produces
+static unique_ptr<FunctionData> ParquetScanBindCall(ClientContext &context, BoundTableFunction &function,
+                                                    vector<Value> &call_inputs, named_argument_map_t &call_parameters) {
+	vector<LogicalType> input_table_types;
+	vector<Identifier> input_table_names;
+	TableFunctionRef empty_ref;
+	TableFunctionBindInput input(call_inputs, call_parameters, input_table_types, input_table_names,
+	                             function.function_info.get(), nullptr, function, empty_ref, nullptr);
+	vector<LogicalType> types;
+	vector<Identifier> names;
+	return function.bind(context, input, types, names);
+}
+
+static unique_ptr<FunctionData> ParquetScanDeserialize(Deserializer &deserializer, BoundTableFunction &function) {
+	auto &context = deserializer.Get<ClientContext &>();
+	auto bound_from_paths = deserializer.ReadProperty<bool>(100, "bound_from_paths");
+	auto files = deserializer.ReadPropertyWithDefault<vector<Value>>(101, "files");
+	auto call_inputs = deserializer.ReadPropertyWithDefault<vector<Value>>(102, "call_inputs");
+	auto call_parameters = deserializer.ReadProperty<named_argument_map_t>(103, "call_parameters");
+	auto types = deserializer.ReadProperty<vector<LogicalType>>(104, "types");
+	auto names = deserializer.ReadProperty<vector<Identifier>>(105, "names");
+	auto projection_expressions =
+	    deserializer.ReadPropertyWithDefault<unordered_map<idx_t, ParquetReaderProjectionExpression>>(
+	        106, "projection_expressions");
+	auto pruned = deserializer.ReadPropertyWithExplicitDefault<bool>(107, "pruned", false);
+	auto scanned_files = deserializer.ReadPropertyWithDefault<vector<Value>>(108, "scanned_files");
+
+	unique_ptr<FunctionData> result;
+	if (bound_from_paths) {
+		vector<OpenFileInfo> paths;
+		paths.reserve(files.size());
+		for (auto &file : files) {
+			paths.push_back(OpenFileInfo::FromValue(file, function.GetName()));
+		}
+		// with no file to bind on, the scan takes the serialized schema as-is
+		vector<LogicalType> bind_types;
+		vector<Identifier> bind_names;
+		if (files.empty()) {
+			bind_types = types;
+			bind_names = names;
+		}
+		result = TableFunctionMultiFileWrapper::MultiFileBindFileListWith(
+		    context, function, call_parameters, make_shared_ptr<SimpleMultiFileList>(std::move(paths)), bind_types,
+		    bind_names, ParquetScanFunction::GetSingleFileFunction(), ParquetScanFunction::GetMultiFileSettings());
+		auto &multi_file_data = result->Cast<MultiFileBindData>();
+		multi_file_data.bind_data->Cast<TableFunctionMultiFileData>().call_inputs = std::move(call_inputs);
+		if (pruned) {
+			vector<OpenFileInfo> scanned_paths;
+			scanned_paths.reserve(scanned_files.size());
+			for (auto &file : scanned_files) {
+				scanned_paths.push_back(OpenFileInfo::FromValue(file, function.GetName()));
+			}
+			multi_file_data.file_list = make_shared_ptr<SimpleMultiFileList>(std::move(scanned_paths));
+			MultiFileReader::PruneReaders(multi_file_data, *multi_file_data.file_list);
+		}
+	} else {
+		result = ParquetScanBindCall(context, function, call_inputs, call_parameters);
+	}
+	auto &bind_data = result->Cast<MultiFileBindData>();
+	for (auto &entry : projection_expressions) {
+		if (bind_data.union_readers.size() != 1 || entry.first >= bind_data.types.size() ||
+		    !bind_data.union_readers[0]->Cast<TableFunctionUnionData>().bind_data) {
+			throw SerializationException("Parquet scan deserialization failure - cannot push down expression on "
+			                             "column %llu",
+			                             entry.first);
+		}
+		ApplyProjectionExpression(bind_data, entry.first, entry.second);
+	}
+	if (bind_data.types != types || bind_data.names != names) {
+		throw SerializationException("Parquet scan deserialization failure - the files no longer have the schema the "
+		                             "scan was bound with");
+	}
+	return result;
+}
+
+void ParquetScanFunction::SetSerializationCallbacks(TableFunction &function) {
+	function.serialize = ParquetScanSerialize;
+	function.deserialize = ParquetScanDeserialize;
 }
 
 TableFunction ParquetScanFunction::GetSingleFileFunction() {

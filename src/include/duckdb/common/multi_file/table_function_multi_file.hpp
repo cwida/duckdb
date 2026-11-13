@@ -162,6 +162,13 @@ struct TableFunctionMultiFileData : public TableFunctionData {
 	TableFunctionFileReaderOptions options;
 	//! The cardinality estimate of the first file, kept here because its reader can be released or pruned
 	optional_idx cardinality;
+	//! Whether the files were expanded from the paths of the call, so the scan can be bound again from them
+	bool bound_from_paths = false;
+	//! The arguments of the call, to bind the scan again
+	vector<Value> call_inputs;
+	named_argument_map_t call_parameters;
+	//! The files the scan was bound on, before any of them were pruned
+	shared_ptr<MultiFileList> bound_file_list;
 
 	//! Whether the schema every file is read with is known upfront - because it was combined from several files,
 	//! taken from the file the schema was determined on, or given by COPY from the target table
@@ -173,6 +180,10 @@ struct TableFunctionMultiFileData : public TableFunctionData {
 		auto result = make_uniq<TableFunctionMultiFileData>();
 		result->options = options;
 		result->cardinality = cardinality;
+		result->bound_from_paths = bound_from_paths;
+		result->call_inputs = call_inputs;
+		result->call_parameters = call_parameters;
+		result->bound_file_list = bound_file_list;
 		return std::move(result);
 	}
 };
@@ -372,6 +383,12 @@ public:
 	                                                  vector<LogicalType> &return_types, vector<Identifier> &names,
 	                                                  TableFunction single_file_function,
 	                                                  TableFunctionMultiFileSettings settings);
+	//! Bind a scan again over files that were already expanded, with the named parameters of its original call
+	static unique_ptr<FunctionData>
+	MultiFileBindFileListWith(ClientContext &context, const BoundTableFunction &function,
+	                          const named_argument_map_t &call_parameters, shared_ptr<MultiFileList> file_list,
+	                          vector<LogicalType> &return_types, vector<Identifier> &names,
+	                          TableFunction single_file_function, TableFunctionMultiFileSettings settings);
 
 	//! Binds a COPY ... FROM over the wrapped function - assign this to CopyFunction::copy_from_bind, together with
 	//! the wrapped multi-file function as CopyFunction::copy_from_function

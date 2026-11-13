@@ -1,0 +1,135 @@
+# name: test/sql/copy/parquet/parquet_not_materialized_glob.test
+# description: A parquet scan rebound from its expanded files after a plan copy reads the same data
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT i AS a, 'str' || i AS s, i % 4 AS p FROM range(200) t(i))
+TO '{TEST_DIR}/not_materialized_glob' (FORMAT parquet, PARTITION_BY (p));
+
+statement ok
+COPY (SELECT i AS a, 'str' || i AS s FROM range(1000) t(i)) TO '{TEST_DIR}/not_materialized_single.parquet';
+
+statement ok
+COPY (SELECT 1 AS x) TO '{TEST_DIR}/not_materialized_union_1.parquet';
+
+statement ok
+COPY (SELECT 2 AS y, 'z' AS x) TO '{TEST_DIR}/not_materialized_union_2.parquet';
+
+statement ok
+CALL enable_logging('FileSystem');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+EXPLAIN
+WITH t AS NOT MATERIALIZED (
+    SELECT * FROM read_parquet('{TEST_DIR}/not_materialized_glob/**/*.parquet')
+)
+SELECT
+    (SELECT count(*) + 0 FROM t) AS c0,
+    (SELECT count(*) + 1 FROM t) AS c1,
+    (SELECT count(*) + 2 FROM t) AS c2,
+    (SELECT count(*) + 3 FROM t) AS c3,
+    (SELECT count(*) + 4 FROM t) AS c4;
+
+statement ok
+CALL disable_logging();
+
+# the copies of the scan take the footer of the first file from its first bind
+query I
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'READ' AND path LIKE '%not_materialized_glob%'
+----
+1
+
+query IIIII
+WITH t AS NOT MATERIALIZED (
+    SELECT * FROM read_parquet('{TEST_DIR}/not_materialized_glob/**/*.parquet')
+)
+SELECT
+    (SELECT count(*) + 0 FROM t) AS c0,
+    (SELECT count(*) + 1 FROM t) AS c1,
+    (SELECT count(*) + 2 FROM t) AS c2,
+    (SELECT count(*) + 3 FROM t) AS c3,
+    (SELECT count(*) + 4 FROM t) AS c4;
+----
+200	201	202	203	204
+
+# the restored plan has to scan, including after the optimizer has pushed filters and projections
+statement ok
+SET debug_verify_serializer=true
+
+query II
+SELECT p, count(*)
+FROM read_parquet('{TEST_DIR}/not_materialized_glob/**/*.parquet')
+GROUP BY p
+ORDER BY p
+----
+0	50
+1	50
+2	50
+3	50
+
+# every file is pruned away by the hive filter
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/not_materialized_glob/**/*.parquet') WHERE p = 999
+----
+0
+
+query III
+SELECT count(*), max(file_row_number), count(DISTINCT filename)
+FROM read_parquet('{TEST_DIR}/not_materialized_glob/**/*.parquet', filename = true, file_row_number = true)
+WHERE p = 2
+----
+50	49	1
+
+query III
+SELECT list(x ORDER BY x), list(y ORDER BY y), count(DISTINCT filename)
+FROM read_parquet('{TEST_DIR}/not_materialized_union_*.parquet', union_by_name = true, filename = true)
+----
+[1, z]	[2, NULL]	2
+
+# the files are pruned to one of them, whose schema alone differs from that of the scan
+query II
+SELECT x, y
+FROM read_parquet('{TEST_DIR}/not_materialized_union_*.parquet', union_by_name = true, filename = true)
+WHERE filename LIKE '%union_2.parquet'
+----
+z	2
+
+# strlen is pushed into the scan of a single file
+query II
+SELECT sum(strlen(s)), count(*) FROM read_parquet('{TEST_DIR}/not_materialized_single.parquet')
+----
+5890	1000
+
+query II
+SELECT count(*), sum(a) FROM read_parquet('{TEST_DIR}/not_materialized_single.parquet') WHERE a >= 500
+----
+500	374750
+
+query IIIII
+WITH t AS NOT MATERIALIZED (
+    SELECT * FROM read_parquet('{TEST_DIR}/not_materialized_glob/**/*.parquet')
+)
+SELECT
+    (SELECT count(*) + 0 FROM t) AS c0,
+    (SELECT count(*) + 1 FROM t) AS c1,
+    (SELECT count(*) + 2 FROM t) AS c2,
+    (SELECT count(*) + 3 FROM t) AS c3,
+    (SELECT count(*) + 4 FROM t) AS c4;
+----
+200	201	202	203	204
+
+query II
+WITH t AS NOT MATERIALIZED (
+    SELECT * FROM read_parquet('{TEST_DIR}/not_materialized_single.parquet')
+)
+SELECT (SELECT count(*) FROM t), (SELECT max(strlen(s)) FROM t);
+----
+1000	6
+
+statement ok
+SET debug_verify_serializer=false

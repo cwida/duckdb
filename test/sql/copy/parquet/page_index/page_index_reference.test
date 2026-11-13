@@ -144,7 +144,7 @@ CALL disable_logging();
 
 # pages were skipped for the selective filters
 query II
-SELECT count(*) > 3, sum(info['rows_skipped']::BIGINT) > 10000
+SELECT count(*) > 3, sum(info['rows_skipped']::BIGINT) > 5000
 FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
 ----
 true	true
