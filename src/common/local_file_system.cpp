@@ -214,7 +214,7 @@ public:
 	    : FileHandle(file_system, std::move(path), std::move(flags)), fd(fd), db(db) {
 	}
 	~UnixFileHandle() override {
-		UnixFileHandle::Close();
+		CloseDescriptor();
 	}
 
 	int fd;
@@ -225,12 +225,24 @@ public:
 
 public:
 	void Close() override {
-		if (fd != -1) {
-			close(fd);
-			fd = -1;
-			DUCKDB_LOG_FILE_SYSTEM_CLOSE((*this));
+		auto error = CloseDescriptor();
+		if (error != 0 && flags.OpenForWriting()) {
+			throw IOException({{"errno", std::to_string(error)}}, "Could not close file \"%s\": %s", path,
+			                  strerror(error));
 		}
 	};
+
+private:
+	//! Returns the errno of a failed close, or 0
+	int CloseDescriptor() {
+		if (fd == -1) {
+			return 0;
+		}
+		auto error = close(fd) == -1 ? errno : 0;
+		fd = -1;
+		DUCKDB_LOG_FILE_SYSTEM_CLOSE((*this));
+		return error;
+	}
 };
 
 static void CloseFileAndAppendError(int fd, string &extended_error) {
@@ -2017,7 +2029,11 @@ unique_ptr<MemoryMappedFile> LocalFileSystem::MemoryMapFile(const OpenFileInfo &
 void LocalFileSystem::AbortFileWrite(FileHandle &handle) {
 	auto remove_path = handle.GetFlags().ExclusiveCreate();
 	auto path = handle.GetPath();
-	handle.Close();
+	// the write is aborted, so a failed close is ignored
+	try {
+		handle.Close();
+	} catch (...) { // NOLINT
+	}
 	if (remove_path) {
 		TryRemoveFile(path);
 	}

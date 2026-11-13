@@ -185,3 +185,38 @@ TEST_CASE("Test File System in C API", "[capi]") {
 	duckdb_destroy_file_system(&fs);
 	REQUIRE(fs == nullptr);
 }
+
+#ifndef _WIN32
+TEST_CASE("Test a failed close of a written file in the C API", "[capi]") {
+	CAPITester tester;
+	duckdb_client_context context;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	duckdb_connection_get_client_context(tester.connection, &context);
+	auto fs = duckdb_client_context_get_file_system(context);
+	auto options = duckdb_create_file_open_options();
+	REQUIRE(duckdb_file_open_options_set_flag(options, DUCKDB_FILE_FLAG_WRITE, true) == DuckDBSuccess);
+	REQUIRE(duckdb_file_open_options_set_flag(options, DUCKDB_FILE_FLAG_CREATE, true) == DuckDBSuccess);
+	auto file_path = TestCreatePath("test_file_capi_failed_close.txt");
+	duckdb_file_handle file = nullptr;
+	auto open_file = [&]() {
+		REQUIRE(duckdb_file_system_open(fs, file_path.c_str(), options, &file) == DuckDBSuccess);
+	};
+
+	REQUIRE(TestOpenWithFailingClose(file_path, open_file));
+	REQUIRE(duckdb_file_handle_close(file) == DuckDBError);
+	auto error_data = duckdb_file_handle_error_data(file);
+	REQUIRE(duckdb_error_data_error_type(error_data) == DUCKDB_ERROR_IO);
+	REQUIRE(StringUtil::Contains(duckdb_error_data_message(error_data), "Could not close file"));
+	duckdb_destroy_error_data(&error_data);
+	duckdb_destroy_file_handle(&file);
+
+	// destroying the handle ignores the error
+	REQUIRE(TestOpenWithFailingClose(file_path, open_file));
+	duckdb_destroy_file_handle(&file);
+	REQUIRE(file == nullptr);
+
+	duckdb_destroy_file_open_options(&options);
+	duckdb_destroy_file_system(&fs);
+	duckdb_destroy_client_context(&context);
+}
+#endif

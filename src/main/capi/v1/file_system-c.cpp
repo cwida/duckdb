@@ -148,7 +148,11 @@ void duckdb_destroy_file_handle(duckdb_file_handle *file) {
 		return;
 	}
 	auto cfile = reinterpret_cast<duckdb::CFileHandle *>(*file);
-	cfile->handle->Close(); // Ensure the file is closed before destroying
+	// Ensure the file is closed before destroying
+	try {
+		cfile->handle->Close();
+	} catch (...) { // NOLINT
+	}
 	delete cfile;
 	*file = nullptr;
 }

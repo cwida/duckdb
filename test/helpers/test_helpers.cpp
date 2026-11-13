@@ -23,6 +23,11 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #define TESTING_DIRECTORY_NAME "duckdb_unittest_tempdir"
 
@@ -646,6 +651,31 @@ void ClearTestDirectory() {
 string TestCreatePath(string suffix) {
 	return TestJoinPath(TestDirectoryPath(), suffix);
 }
+
+#ifndef _WIN32
+int TestOpenDescriptor(const string &path, const std::function<void()> &open_file) {
+	// the next opened descriptor is the lowest free one
+	auto fd = open("/dev/null", O_RDONLY);
+	if (fd == -1 || close(fd) != 0) {
+		return -1;
+	}
+	open_file();
+	struct stat fd_stat;
+	struct stat path_stat;
+	if (fstat(fd, &fd_stat) != 0 || stat(path.c_str(), &path_stat) != 0) {
+		return -1;
+	}
+	if (fd_stat.st_dev != path_stat.st_dev || fd_stat.st_ino != path_stat.st_ino) {
+		return -1;
+	}
+	return fd;
+}
+
+bool TestOpenWithFailingClose(const string &path, const std::function<void()> &open_file) {
+	auto fd = TestOpenDescriptor(path, open_file);
+	return fd != -1 && close(fd) == 0;
+}
+#endif
 
 bool TestIsInternalError(unordered_set<string> &internal_error_messages, const string &error) {
 	for (auto &error_message : internal_error_messages) {
