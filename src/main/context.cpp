@@ -280,6 +280,12 @@ void Context::FastInterruptCheck() const {
 	}
 }
 
+void Context::InterruptCheck() const {
+	if (context) {
+		context->InterruptCheck();
+	}
+}
+
 bool Context::IsClient() const {
 	return context != nullptr;
 }
