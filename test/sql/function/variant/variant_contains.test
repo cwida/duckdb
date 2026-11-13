@@ -209,6 +209,57 @@ SELECT
 ----
 true	true	false
 
+# A failed object candidate must return control to the enclosing array search.
+query III
+SELECT
+    variant_contains('[{"a": 0, "b": 2}, {"a": 1, "b": 2}]'::JSON::VARIANT,
+                     '[{"a": 1, "b": 2}]'::JSON::VARIANT),
+    variant_contains('[{"a": 1}, {"a": 1, "b": 2}]'::JSON::VARIANT,
+                     '[{"a": 1, "b": 2}]'::JSON::VARIANT),
+    variant_contains('[{"a": 1, "b": 0}, {"a": 0, "b": 2}]'::JSON::VARIANT,
+                     '[{"a": 1, "b": 2}]'::JSON::VARIANT);
+----
+true	true	false
+
+# Nested array results must propagate through their object to the outer array.
+query II
+SELECT
+    variant_contains('[{"a": [0], "b": 2}, {"a": [1, 2], "b": 2}]'::JSON::VARIANT,
+                     '[{"a": [2], "b": 2}]'::JSON::VARIANT),
+    variant_contains('[{"a": [1], "b": 0}, {"a": [2], "b": 2}]'::JSON::VARIANT,
+                     '[{"a": [1], "b": 2}]'::JSON::VARIANT);
+----
+true	false
+
+# Object failures discard pending fields, while array retries preserve them.
+query IIII
+SELECT
+    variant_contains('{"a": 1, "b": {"x": 2, "y": 0}}'::JSON::VARIANT,
+                     '{"a": 1, "b": {"x": 2, "y": 3}}'::JSON::VARIANT),
+    variant_contains('[{"a": 0, "b": {"x": 2}}, {"a": 1, "b": {"x": 2, "y": 3}}]'::JSON::VARIANT,
+                     '[{"a": 1, "b": {"x": 2, "y": 3}}]'::JSON::VARIANT),
+    variant_contains('[{"a": 1, "b": [0, 2]}]'::JSON::VARIANT,
+                     '[{"a": 1, "b": [2]}]'::JSON::VARIANT),
+    variant_contains('[{"a": 0, "b": [0, 2]}]'::JSON::VARIANT,
+                     '[{"a": 1, "b": [2]}]'::JSON::VARIANT);
+----
+false	true	true	false
+
+# Deep nested objects are compared without recursive calls.
+query I
+WITH RECURSIVE nested(i, v) AS (
+    SELECT 0, 42::VARIANT
+    UNION ALL
+    SELECT i + 1, struct_pack(a := v)::VARIANT
+    FROM nested
+    WHERE i < 5000
+)
+SELECT variant_contains(v, v)
+FROM nested
+WHERE i = 5000;
+----
+true
+
 # Empty arrays are contained only where an array occurs.
 query III
 SELECT
