@@ -521,10 +521,6 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 	}
 
 	RelationStats result;
-	result.cardinality =
-	    aggregate.groups.empty()
-	        ? 1
-	        : RelationStatisticsHelper::EstimateDistinctCardinality(cardinality_counts, child_stats.cardinality);
 	result.table_name = Identifier(aggregate.GetName());
 	result.stats_initialized = true;
 	auto bindings = aggregate.GetColumnBindings();
@@ -539,6 +535,11 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 		}
 		result.cardinality = RelationStatisticsHelper::EstimateGroupCardinality(
 		    *aggregate.children[0], child_stats, std::move(groups), extractor, use_operator_cardinality);
+	} else {
+		result.cardinality =
+		    aggregate.groups.empty()
+		        ? 1
+		        : RelationStatisticsHelper::EstimateDistinctCardinality(cardinality_counts, child_stats.cardinality);
 	}
 	for (idx_t group_idx = 0; group_idx < aggregate.groups.size(); group_idx++) {
 		auto &group = *aggregate.groups[group_idx];

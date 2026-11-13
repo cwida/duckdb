@@ -10,7 +10,7 @@ SELECT i::VARCHAR AS k, i % 7 AS g, i AS m FROM range(5000) t(i)
 
 statement ok
 CREATE TABLE repeated_native AS
-SELECT i % 50 AS k, i % 7 AS g, i AS tag FROM range(5000) t(i)
+SELECT i % 50 AS k, i % 17 AS g, i AS tag FROM range(5000) t(i)
 
 statement ok
 CREATE TABLE asymmetric_native AS
@@ -26,7 +26,7 @@ statement ok
 CREATE TABLE large_native AS SELECT i % 50 AS k, i AS tag FROM range(50000) t(i)
 
 statement ok
-CREATE TABLE moderate_native AS SELECT i % 50 AS k FROM range(400) t(i)
+CREATE TABLE moderate_native AS SELECT i % 50 AS k FROM range(1000) t(i)
 
 statement ok
 CREATE TABLE low_native AS SELECT i % 50 AS k FROM range(100) t(i)
