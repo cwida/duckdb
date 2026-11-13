@@ -449,6 +449,279 @@ int GetNext(struct ArrowArrayStream *stream, struct ArrowArray *out) {
 	return DuckDBSuccess;
 }
 
+struct ProjectedStreamData {
+	ArrowArrayStream *source;
+	duckdb::vector<idx_t> child_indexes;
+	duckdb::string error;
+};
+
+struct ProjectedSchemaPrivate {
+	ArrowSchema source;
+};
+
+struct ProjectedArrayPrivate {
+	ArrowArray source;
+};
+
+struct SchemaReleaseGuard {
+	ArrowSchema schema;
+
+	SchemaReleaseGuard() {
+		schema.Init();
+		schema.format = nullptr;
+		schema.name = nullptr;
+		schema.metadata = nullptr;
+		schema.children = nullptr;
+		schema.dictionary = nullptr;
+	}
+	~SchemaReleaseGuard() {
+		if (schema.release) {
+			schema.release(&schema);
+		}
+	}
+};
+
+struct ArrayReleaseGuard {
+	ArrowArray array;
+	bool owned = true;
+
+	ArrayReleaseGuard() {
+		array.Init();
+		array.buffers = nullptr;
+		array.children = nullptr;
+		array.dictionary = nullptr;
+	}
+	~ArrayReleaseGuard() {
+		if (owned && array.release) {
+			array.release(&array);
+		}
+	}
+};
+
+template <class T>
+void DestroyProjectedNodes(T **nodes, idx_t count) {
+	if (!nodes) {
+		return;
+	}
+	for (idx_t i = 0; i < count; i++) {
+		if (!nodes[i]) {
+			continue;
+		}
+		if (nodes[i]->release) {
+			nodes[i]->release(nodes[i]);
+		}
+		delete nodes[i];
+	}
+	delete[] nodes;
+}
+
+template <class T>
+T **CopyProjectedChildren(const T &source, const duckdb::vector<idx_t> &child_indexes, void (*empty_release)(T *)) {
+	auto count = child_indexes.size();
+	T **children = nullptr;
+	try {
+		children = new T *[count]();
+		for (idx_t i = 0; i < count; i++) {
+			auto source_idx = child_indexes[i];
+			if (source_idx == duckdb::DConstants::INVALID_INDEX) {
+				continue;
+			}
+			if (!source.children || source_idx >= duckdb::NumericCast<idx_t>(source.n_children) ||
+			    !source.children[source_idx] || !source.children[source_idx]->release) {
+				DestroyProjectedNodes(children, count);
+				return nullptr;
+			}
+			auto *copied = new T(*source.children[source_idx]);
+			copied->release = empty_release;
+			children[i] = copied;
+		}
+	} catch (...) {
+		DestroyProjectedNodes(children, count);
+		throw;
+	}
+	return children;
+}
+
+void ReleaseProjectedSchema(ArrowSchema *schema) {
+	auto *priv = static_cast<ProjectedSchemaPrivate *>(schema->private_data);
+	auto count = duckdb::NumericCast<idx_t>(schema->n_children);
+	DestroyProjectedNodes(schema->children, count);
+	schema->children = nullptr;
+	if (priv) {
+		if (priv->source.release) {
+			priv->source.release(&priv->source);
+		}
+		delete priv;
+	}
+	schema->private_data = nullptr;
+	schema->release = nullptr;
+}
+
+void ReleaseProjectedArray(ArrowArray *array) {
+	auto *priv = static_cast<ProjectedArrayPrivate *>(array->private_data);
+	auto count = duckdb::NumericCast<idx_t>(array->n_children);
+
+	if (array->children) {
+		for (idx_t i = 0; i < count; i++) {
+			if (array->children[i] && array->children[i]->release) {
+				array->children[i]->release(array->children[i]);
+			}
+		}
+	}
+	if (priv && priv->source.release) {
+		priv->source.release(&priv->source);
+	}
+	DestroyProjectedNodes(array->children, count);
+	array->children = nullptr;
+	delete priv;
+	array->private_data = nullptr;
+	array->release = nullptr;
+}
+
+int ProjectedGetSchema(ArrowArrayStream *stream, ArrowSchema *out) {
+	auto *data = static_cast<ProjectedStreamData *>(stream->private_data);
+	data->error.clear();
+
+	auto *owned = new ProjectedSchemaPrivate;
+	owned->source.Init();
+	owned->source.format = nullptr;
+	owned->source.name = nullptr;
+	owned->source.metadata = nullptr;
+	owned->source.children = nullptr;
+	owned->source.dictionary = nullptr;
+	auto rc = data->source->get_schema(data->source, &owned->source);
+	if (rc != DuckDBSuccess) {
+		if (owned->source.release) {
+			owned->source.release(&owned->source);
+		}
+		delete owned;
+		return rc;
+	}
+
+	auto projected_count = duckdb::NumericCast<int64_t>(data->child_indexes.size());
+	ArrowSchema **children = nullptr;
+	try {
+		children = CopyProjectedChildren<ArrowSchema>(owned->source, data->child_indexes, EmptySchemaRelease);
+	} catch (...) {
+		if (owned->source.release) {
+			owned->source.release(&owned->source);
+		}
+		delete owned;
+		throw;
+	}
+	if (!children) {
+		if (owned->source.release) {
+			owned->source.release(&owned->source);
+		}
+		delete owned;
+		data->error = "arrow_scan: projected column index out of range";
+		return DuckDBError;
+	}
+	*out = owned->source;
+	out->release = nullptr;
+	out->private_data = owned;
+	out->children = children;
+	out->n_children = projected_count;
+	out->release = ReleaseProjectedSchema;
+	return DuckDBSuccess;
+}
+
+int ProjectedGetNext(ArrowArrayStream *stream, ArrowArray *out) {
+	auto *data = static_cast<ProjectedStreamData *>(stream->private_data);
+	data->error.clear();
+
+	ArrayReleaseGuard source;
+	auto rc = data->source->get_next(data->source, &source.array);
+	if (rc != DuckDBSuccess) {
+		return rc;
+	}
+	if (!source.array.release) {
+		*out = source.array;
+		return DuckDBSuccess;
+	}
+
+	auto projected_count = duckdb::NumericCast<int64_t>(data->child_indexes.size());
+	auto **children = CopyProjectedChildren<ArrowArray>(source.array, data->child_indexes, EmptyArrayRelease);
+	if (!children) {
+		data->error = "arrow_scan: projected column index out of range";
+		return DuckDBError;
+	}
+
+	ProjectedArrayPrivate *priv = nullptr;
+	try {
+		priv = new ProjectedArrayPrivate;
+	} catch (...) {
+		DestroyProjectedNodes(children, data->child_indexes.size());
+		throw;
+	}
+	priv->source = source.array;
+	source.owned = false;
+	*out = priv->source;
+	out->release = nullptr;
+	out->private_data = priv;
+	out->children = children;
+	out->n_children = projected_count;
+	out->release = ReleaseProjectedArray;
+	return DuckDBSuccess;
+}
+
+const char *ProjectedGetLastError(ArrowArrayStream *stream) {
+	auto *data = static_cast<ProjectedStreamData *>(stream->private_data);
+	if (!data->error.empty()) {
+		return data->error.c_str();
+	}
+	if (!data->source->get_last_error) {
+		return nullptr;
+	}
+	return data->source->get_last_error(data->source);
+}
+
+void ReleaseProjectedStream(ArrowArrayStream *stream) {
+	delete static_cast<ProjectedStreamData *>(stream->private_data);
+	stream->private_data = nullptr;
+	stream->release = nullptr;
+}
+
+bool IsIdentityProjection(const duckdb::unordered_map<idx_t, idx_t> &filter_to_col, idx_t source_count) {
+	if (filter_to_col.size() != source_count) {
+		return false;
+	}
+	for (idx_t i = 0; i < source_count; i++) {
+		auto it = filter_to_col.find(i);
+		if (it == filter_to_col.end() || it->second != i) {
+			return false;
+		}
+	}
+	return true;
+}
+
+duckdb::vector<idx_t> BuildProjection(const duckdb::unordered_map<idx_t, idx_t> &filter_to_col,
+                                      const ArrowSchema &schema) {
+	auto source_count = duckdb::NumericCast<idx_t>(schema.n_children);
+	idx_t projected_count = 0;
+	for (auto &entry : filter_to_col) {
+		if (entry.first + 1 > projected_count) {
+			projected_count = entry.first + 1;
+		}
+	}
+	duckdb::vector<idx_t> child_indexes(projected_count, duckdb::DConstants::INVALID_INDEX);
+	for (auto &entry : filter_to_col) {
+		if (!schema.children || entry.second >= source_count || !schema.children[entry.second] ||
+		    !schema.children[entry.second]->release) {
+			throw duckdb::InvalidInputException("arrow_scan: projected column index out of range");
+		}
+		child_indexes[entry.first] = entry.second;
+	}
+	return child_indexes;
+}
+
+duckdb::unique_ptr<duckdb::ArrowArrayStreamWrapper> BorrowStream(ArrowArrayStream &source) {
+	auto result = duckdb::make_uniq<duckdb::ArrowArrayStreamWrapper>();
+	result->arrow_array_stream = source;
+	result->arrow_array_stream.release = EmptyStreamRelease;
+	return result;
+}
+
 class CArrowScanFactory : public duckdb::ArrowScanFactory {
 public:
 	explicit CArrowScanFactory(ArrowArrayStream &stream_p) : stream(stream_p) {
@@ -460,9 +733,36 @@ public:
 
 	duckdb::unique_ptr<duckdb::ArrowArrayStreamWrapper>
 	ProduceStream(duckdb::ArrowStreamParameters &parameters) override {
+		auto &source = stream.get();
+		if (source.get_next == GetNext && source.private_data) {
+			static_cast<PrivateData *>(source.private_data)->done = false;
+		}
+
+		auto &filter_to_col = parameters.projected_columns.filter_to_col;
+		if (filter_to_col.empty()) {
+			return BorrowStream(source);
+		}
+
+		SchemaReleaseGuard schema;
+		if (source.get_schema(&source, &schema.schema)) {
+			const char *message = source.get_last_error ? source.get_last_error(&source) : nullptr;
+			throw duckdb::InvalidInputException("arrow_scan: get_schema failed(): %s", message ? message : "");
+		}
+		auto source_count = duckdb::NumericCast<idx_t>(schema.schema.n_children);
+		if (IsIdentityProjection(filter_to_col, source_count)) {
+			return BorrowStream(source);
+		}
+
+		auto child_indexes = BuildProjection(filter_to_col, schema.schema);
 		auto result = duckdb::make_uniq<duckdb::ArrowArrayStreamWrapper>();
-		result->arrow_array_stream = stream.get();
-		result->arrow_array_stream.release = EmptyStreamRelease;
+		auto *data = new ProjectedStreamData;
+		data->source = &source;
+		data->child_indexes = std::move(child_indexes);
+		result->arrow_array_stream.get_schema = ProjectedGetSchema;
+		result->arrow_array_stream.get_next = ProjectedGetNext;
+		result->arrow_array_stream.get_last_error = ProjectedGetLastError;
+		result->arrow_array_stream.release = ReleaseProjectedStream;
+		result->arrow_array_stream.private_data = data;
 		return result;
 	}
 

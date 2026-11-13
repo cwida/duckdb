@@ -331,6 +331,92 @@ TEST_CASE("Test arrow in C API", "[capi][arrow]") {
 		duckdb_destroy_prepare(&stmt);
 	}
 
+	SECTION("test scan projection") {
+		const auto logical_types =
+		    duckdb::vector<LogicalType> {LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::INTEGER),
+		                                 LogicalType(LogicalTypeId::INTEGER)};
+		const auto column_names = duckdb::vector<string> {"a", "b", "c"};
+
+		ArrowSchema arrow_schema;
+		arrow_schema.Init();
+		auto arrow_schema_ptr = &arrow_schema;
+
+		ClientProperties options = (reinterpret_cast<Connection *>(tester.connection)->context->GetClientProperties());
+		duckdb::ArrowConverter::ToArrowSchema(arrow_schema_ptr, logical_types, column_names, options);
+
+		unordered_map<idx_t, const duckdb::shared_ptr<ArrowTypeExtensionData>> extension_type_cast;
+		ArrowAppender appender(logical_types, 2, options, extension_type_cast);
+		Allocator allocator;
+		DataChunk data_chunk;
+		data_chunk.Initialize(allocator, logical_types, 2);
+		data_chunk.data[0].Append(Value::INTEGER(1));
+		data_chunk.data[0].Append(Value::INTEGER(2));
+		data_chunk.data[1].Append(Value::INTEGER(10));
+		data_chunk.data[1].Append(Value::INTEGER(20));
+		data_chunk.data[2].Append(Value::INTEGER(100));
+		data_chunk.data[2].Append(Value::INTEGER(200));
+		data_chunk.SetChildCardinality(2);
+		appender.Append(data_chunk, 0, data_chunk.size(), data_chunk.size());
+
+		ArrowArray arrow_array;
+		arrow_array.Init();
+		auto arrow_array_ptr = &arrow_array;
+		*arrow_array_ptr = appender.Finalize();
+
+		string view_name = "arrow_projected";
+		ArrowArrayStream *arrow_array_stream = nullptr;
+		auto out_stream = reinterpret_cast<duckdb_arrow_stream *>(&arrow_array_stream);
+		auto state = duckdb_arrow_array_scan(tester.connection, view_name.c_str(),
+		                                     reinterpret_cast<duckdb_arrow_schema>(arrow_schema_ptr),
+		                                     reinterpret_cast<duckdb_arrow_array>(arrow_array_ptr), out_stream);
+		REQUIRE(state == DuckDBSuccess);
+
+		auto assert_query = [&](const string &query, const vector<vector<int32_t>> &expected) {
+			state = duckdb_prepare(tester.connection, query.c_str(), &stmt);
+			REQUIRE(state == DuckDBSuccess);
+			REQUIRE(stmt != nullptr);
+			auto result = tester.QueryPrepared(stmt);
+			REQUIRE_NO_FAIL(*result);
+			REQUIRE(result->ColumnCount() == expected[0].size());
+			REQUIRE(result->row_count() == expected.size());
+			for (idx_t row = 0; row < expected.size(); row++) {
+				for (idx_t col = 0; col < expected[row].size(); col++) {
+					REQUIRE(result->Fetch<int32_t>(col, row) == expected[row][col]);
+				}
+			}
+			duckdb_destroy_prepare(&stmt);
+		};
+
+		assert_query("SELECT a, c FROM " + view_name, {{1, 100}, {2, 200}});
+		assert_query("SELECT c, a FROM " + view_name, {{100, 1}, {200, 2}});
+		assert_query("SELECT b FROM " + view_name, {{10}, {20}});
+		assert_query("SELECT * FROM " + view_name, {{1, 10, 100}, {2, 20, 200}});
+
+		// The scan borrows the caller's stream, schema, and array, so their releases are still set.
+		REQUIRE(arrow_schema.release != nullptr);
+		REQUIRE(arrow_schema.n_children == 3);
+		for (int64_t i = 0; i < arrow_schema.n_children; i++) {
+			REQUIRE(arrow_schema.children[i]->release != nullptr);
+		}
+		REQUIRE(arrow_array.release != nullptr);
+		REQUIRE(arrow_array.n_children == 3);
+		for (int64_t i = 0; i < arrow_array.n_children; i++) {
+			REQUIRE(arrow_array.children[i]->release != nullptr);
+		}
+
+		duckdb_destroy_arrow_stream(out_stream);
+		REQUIRE(arrow_array_stream == nullptr);
+		// Destroying the stream still must not release the caller-owned array.
+		REQUIRE(arrow_array.release != nullptr);
+
+		arrow_schema.release(arrow_schema_ptr);
+		REQUIRE(arrow_schema.release == nullptr);
+		arrow_array.release(arrow_array_ptr);
+		REQUIRE(arrow_array.release == nullptr);
+		duckdb_destroy_arrow(&arrow_result);
+		duckdb_destroy_prepare(&stmt);
+	}
+
 	// FIXME: needs test for scanning a fixed size list
 	// this likely requires nanoarrow to create the array to scan
 }
