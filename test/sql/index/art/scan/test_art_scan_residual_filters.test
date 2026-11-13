@@ -1,0 +1,214 @@
+# name: test/sql/index/art/scan/test_art_scan_residual_filters.test
+# description: Test ART index scans with filters that the index does not cover.
+# group: [scan]
+
+statement ok
+CREATE TABLE tbl AS SELECT range AS i, CASE WHEN range % 10 = 0 THEN NULL ELSE range % 7 END AS j, 'str' || (range % 5) AS s FROM range(500000);
+
+statement ok
+CREATE INDEX idx_i ON tbl(i);
+
+# An additional predicate on the indexed column.
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i > 499990 AND i < 499995 AND i <> 499992;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT i FROM tbl WHERE i > 499990 AND i < 499995 AND i <> 499992 ORDER BY i;
+----
+499991
+499993
+499994
+
+# Contradicting predicates on the indexed column.
+
+query I
+SELECT i FROM tbl WHERE i = 5 AND i > 10;
+----
+
+# An expression index where FilterCombiner folds the range into COMPARE_BETWEEN inside a conjunction.
+
+statement ok
+CREATE INDEX idx_expr ON tbl((i + 1));
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i + 1 > 499991 AND i + 1 < 499996 AND i + 1 <> 499993;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT i FROM tbl WHERE i + 1 > 499991 AND i + 1 < 499996 AND i + 1 <> 499993 ORDER BY i;
+----
+499991
+499993
+499994
+
+statement ok
+DROP INDEX idx_expr;
+
+# A point lookup with a filter on a column that is not projected.
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i = 101 AND j = 3;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT i FROM tbl WHERE i = 101 AND j = 3;
+----
+101
+
+# NULL does not pass the filter on the other column.
+
+query I
+SELECT i FROM tbl WHERE i = 100 AND j <> 2;
+----
+
+# A barrier filter on an earlier column runs after the other table filters.
+
+query I
+SELECT i FROM tbl WHERE i = 101 AND s = 'str0' AND __internal_barrier(CASE WHEN j = 3 THEN error('unreachable') ELSE true END);
+----
+
+# A range with a filter on a column that is not projected.
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i BETWEEN 1000 AND 1100 AND j = 2;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT i FROM tbl WHERE i BETWEEN 1000 AND 1100 AND j = 2 ORDER BY i;
+----
+1003
+1017
+1024
+1031
+1038
+1045
+1052
+1059
+1066
+1073
+1087
+1094
+
+# A range with a VARCHAR filter on a projected column.
+
+query II
+EXPLAIN ANALYZE SELECT i, j, s FROM tbl WHERE i BETWEEN 1000 AND 1030 AND s = 'str3';
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query III
+SELECT i, j, s FROM tbl WHERE i BETWEEN 1000 AND 1030 AND s = 'str3' ORDER BY i;
+----
+1003	2	str3
+1008	0	str3
+1013	5	str3
+1018	3	str3
+1023	1	str3
+1028	6	str3
+
+# An OR filter on the other column.
+
+query II
+EXPLAIN ANALYZE SELECT i, j FROM tbl WHERE i BETWEEN 1000 AND 1030 AND (j = 1 OR j = 3);
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query II
+SELECT i, j FROM tbl WHERE i BETWEEN 1000 AND 1030 AND (j = 1 OR j = 3) ORDER BY i;
+----
+1002	1
+1004	3
+1009	1
+1011	3
+1016	1
+1018	3
+1023	1
+1025	3
+
+# Transaction-local inserts, deletes, and updates.
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO tbl VALUES (1050, 2, 'str9');
+
+statement ok
+DELETE FROM tbl WHERE i = 1017;
+
+statement ok
+UPDATE tbl SET j = 2 WHERE i = 1001;
+
+query II
+EXPLAIN ANALYZE SELECT i, j, s FROM tbl WHERE i BETWEEN 1000 AND 1100 AND j = 2;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query III
+SELECT i, j, s FROM tbl WHERE i BETWEEN 1000 AND 1100 AND j = 2 ORDER BY i, s;
+----
+1001	2	str1
+1003	2	str3
+1024	2	str4
+1031	2	str1
+1038	2	str3
+1045	2	str0
+1050	2	str9
+1052	2	str2
+1059	2	str4
+1066	2	str1
+1073	2	str3
+1087	2	str2
+1094	2	str4
+
+statement ok
+ROLLBACK;
+
+# A batch of fetched rows that the residual filter removes entirely, followed by more batches.
+
+statement ok
+SET index_scan_max_count = 100000;
+
+statement ok
+SET debug_physical_table_scan_execution_strategy = 'SYNCHRONOUS';
+
+statement ok
+CREATE TABLE skipped_batch AS SELECT i, (i >= 2048)::INTEGER AS w, 'str' || i AS s FROM range(10000) t(i);
+
+statement ok
+CREATE INDEX idx_skipped_batch ON skipped_batch(i);
+
+query II
+EXPLAIN ANALYZE SELECT i, w, s FROM skipped_batch WHERE i BETWEEN 0 AND 6143 AND w = 1;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+statement ok
+CREATE TABLE skipped_batch_result AS SELECT i, w, s FROM skipped_batch WHERE i BETWEEN 0 AND 6143 AND w = 1;
+
+query IIII
+SELECT count(*), sum(i), min(s), max(s) FROM skipped_batch_result;
+----
+4096	16775168	str2048	str6143
+
+# All fetched batches are removed, the transaction-local row is scanned afterwards.
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO skipped_batch VALUES (5000, 1, 'local');
+
+query III
+SELECT i, w, s FROM skipped_batch WHERE i BETWEEN 0 AND 6143 AND w = 1 AND s = 'local';
+----
+5000	1	local
+
+statement ok
+ROLLBACK;

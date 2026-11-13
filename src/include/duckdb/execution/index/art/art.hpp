@@ -80,6 +80,7 @@ public:
 
 public:
 	//! Try to initialize a scan on the ART with the given expression and filter.
+	//! The scan can return a superset of the rows matching the filter.
 	unique_ptr<IndexScanState> TryInitializeScan(const Expression &expr, const Expression &filter_expr) const;
 	//! Initializes a scan for multiple equality lookup values.
 	unique_ptr<IndexScanState> InitializeBatchScan(unique_ptr<DataChunk> key_columns) const;

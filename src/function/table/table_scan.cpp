@@ -12,6 +12,7 @@
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/types/value_map.hpp"
 #include "duckdb/common/unique_ptr.hpp"
+#include "duckdb/execution/adaptive_filter.hpp"
 #include "duckdb/execution/index/art/art.hpp"
 #include "duckdb/execution/index/art/iterator.hpp"
 #include "duckdb/function/function_set.hpp"
@@ -39,6 +40,7 @@
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/storage_index.hpp"
 #include "duckdb/storage/table_io_manager.hpp"
+#include "duckdb/storage/table/column_segment.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -226,6 +228,31 @@ public:
 		return std::move(l_state);
 	}
 
+	//! The index scan can return a superset of the matching rows, so apply all table filters to the fetched rows.
+	static void FilterFetchedRows(ScanFilterInfo &filter_info, DataChunk &chunk) {
+		auto adaptive_filter = filter_info.GetAdaptiveFilter();
+		if (!adaptive_filter || chunk.size() == 0) {
+			return;
+		}
+		const auto count = chunk.size();
+		SelectionVector sel;
+		sel.Initialize(nullptr);
+		idx_t approved_tuple_count = count;
+		auto &filter_list = filter_info.GetFilterList();
+		const auto &permutation = adaptive_filter->GetPermutation();
+		for (idx_t i = 0; i < filter_list.size(); i++) {
+			auto &filter = filter_list[permutation[i]];
+			ColumnSegment::FilterSelection(sel, chunk.data[filter.scan_column_index], *filter.filter_state, count,
+			                               approved_tuple_count);
+			if (approved_tuple_count == 0) {
+				break;
+			}
+		}
+		if (approved_tuple_count != count) {
+			chunk.Slice(sel, approved_tuple_count);
+		}
+	}
+
 	void TableScanFunc(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) override {
 		auto &bind_data = data_p.bind_data->Cast<TableScanBindData>();
 		auto &duck_table = bind_data.table.Cast<DuckTableEntry>();
@@ -280,9 +307,11 @@ public:
 				if (CanRemoveFilterColumns()) {
 					l_state.all_columns.Reset();
 					storage.Fetch(tx, l_state.all_columns, column_ids, local_vector, scan_count, l_state.fetch_state);
+					FilterFetchedRows(l_state.scan_state.GetFilterInfo(), l_state.all_columns);
 					output.ReferenceColumns(l_state.all_columns, projection_ids);
 				} else {
 					storage.Fetch(tx, output, column_ids, local_vector, scan_count, l_state.fetch_state);
+					FilterFetchedRows(l_state.scan_state.GetFilterInfo(), output);
 				}
 
 				l_state.rows_scanned += scan_count;
@@ -295,6 +324,7 @@ public:
 					}
 
 					// output is empty, loop back, since there might be results to be picked up from LOCAL_STORAGE phase
+					output.Reset();
 					continue;
 				}
 				return;
@@ -996,13 +1026,13 @@ unique_ptr<GlobalTableFunctionState> TableScanInitGlobal(ClientContext &context,
 
 	auto &filter_set = *input.filters;
 
-	// FIXME: We currently only support scanning one ART with one filter.
-	// If multiple filters exist, i.e., a = 11 AND b = 24, we need to
-	// 1.	1.1. Find + scan one ART for a = 11.
-	//		1.2. Find + scan one ART for b = 24.
-	//		1.3. Return the intersecting row IDs.
+	// Scan one ART with the filter on its column. The index scan applies all filters to the fetched rows.
+	// FIXME: For multiple filters, i.e., a = 11 AND b = 24, we could also
+	// 1. Scan the ARTs for a = 11 and b = 24, and intersect the row IDs.
 	// 2. (Reorder and) scan a single ART with a compound key of (a, b).
-	if (filter_set.FilterCount() != 1) {
+	// FIXME: We use the first ART within the thresholds, not the most selective one. Each failed probe can scan up
+	// to max_count row IDs before falling back to a table scan.
+	if (!filter_set.HasFilters()) {
 		return DuckTableScanInitGlobal(context, input, storage, bind_data);
 	}
 
