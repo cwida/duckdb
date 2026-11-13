@@ -298,17 +298,50 @@ void StatisticsPropagator::MultiplyCardinalities(unique_ptr<NodeStatistics> &sta
 	}
 }
 
+//! The product of the child cardinalities bounds an inner join, but outer, anti, mark and single joins also emit the
+//! rows of a side that have no match. Raise the bound to the size of that side, so that a join with an empty side
+//! keeps the cardinality of the side it preserves.
+static void PreserveJoinSideCardinality(JoinType join_type, idx_t left_max, idx_t right_max, NodeStatistics &stats) {
+	idx_t preserved_max;
+	switch (join_type) {
+	case JoinType::LEFT:
+	case JoinType::ANTI:
+	case JoinType::MARK:
+	case JoinType::SINGLE:
+		preserved_max = left_max;
+		break;
+	case JoinType::RIGHT:
+	case JoinType::RIGHT_ANTI:
+		preserved_max = right_max;
+		break;
+	case JoinType::OUTER:
+		// cannot overflow: with an empty side the sum is the other side, otherwise it is at most the product plus one
+		preserved_max = left_max + right_max;
+		break;
+	default:
+		return;
+	}
+	stats.max_cardinality = MaxValue<idx_t>(stats.max_cardinality, preserved_max);
+}
+
 unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalJoin &join,
                                                                      unique_ptr<LogicalOperator> &node_ptr) {
 	// first propagate through the children of the join
 	node_stats = PropagateStatistics(join.children[0]);
+	const idx_t left_max = node_stats && node_stats->has_max_cardinality ? node_stats->max_cardinality : 0;
+	idx_t right_max = 0;
 	for (idx_t child_idx = 1; child_idx < join.children.size(); child_idx++) {
 		auto child_stats = PropagateStatistics(join.children[child_idx]);
 		if (!child_stats) {
 			node_stats = nullptr;
 		} else if (node_stats) {
+			right_max = child_stats->has_max_cardinality ? child_stats->max_cardinality : 0;
 			MultiplyCardinalities(node_stats, *child_stats);
 		}
+	}
+	// MultiplyCardinalities clears the statistics unless both children have a max cardinality
+	if (node_stats && join.children.size() == 2) {
+		PreserveJoinSideCardinality(join.join_type, left_max, right_max, *node_stats);
 	}
 
 	auto join_type = join.join_type;

@@ -1,0 +1,95 @@
+# name: test/optimizer/statistics/statistics_join_empty_side.test
+# description: Joins that preserve the rows of one side keep its cardinality when the other side is empty
+# group: [statistics]
+
+statement ok
+CREATE TABLE integers (v INTEGER);
+
+statement ok
+INSERT INTO integers VALUES (-1), (2);
+
+statement ok
+CREATE TABLE empty_side (k BOOLEAN);
+
+# left join against an empty side keeps every left row
+query II
+SELECT sum(v), sum(v) > 0 FROM integers LEFT JOIN empty_side ON k;
+----
+1	true
+
+query II
+SELECT sum(v), sum(v) > 0 FROM empty_side RIGHT JOIN integers ON k;
+----
+1	true
+
+query II
+SELECT sum(v), sum(v) > 0 FROM integers FULL OUTER JOIN empty_side ON k;
+----
+1	true
+
+query II
+SELECT sum(v), sum(v) > 0 FROM empty_side FULL OUTER JOIN integers ON k;
+----
+1	true
+
+# anti join against an empty side keeps every row
+query II
+SELECT sum(v), sum(v) > 0 FROM integers WHERE NOT EXISTS (SELECT 1 FROM empty_side WHERE k);
+----
+1	true
+
+# mark join keeps every row
+query II
+SELECT sum(v), sum(v) > 0 FROM integers WHERE v IN (SELECT 1 FROM empty_side WHERE k) OR v > -10;
+----
+1	true
+
+# single join keeps every row
+query II
+SELECT sum(v), sum(v) > 0 FROM integers WHERE (SELECT k FROM empty_side WHERE k AND v > 0) IS NULL;
+----
+1	true
+
+# semi join against an empty side keeps no row
+query II
+SELECT sum(v), sum(v) > 0 FROM integers WHERE EXISTS (SELECT 1 FROM empty_side WHERE k);
+----
+NULL	NULL
+
+# the sum must not use the no-overflow implementation on an empty side's cardinality
+statement ok
+CREATE TABLE bigints (v BIGINT);
+
+statement ok
+INSERT INTO bigints VALUES (9223372036854775807), (9223372036854775807);
+
+query I
+SELECT sum(v) FROM bigints LEFT JOIN empty_side ON k;
+----
+18446744073709551614
+
+query I
+SELECT sum(v) FROM empty_side RIGHT JOIN bigints ON k;
+----
+18446744073709551614
+
+query I
+SELECT sum(v) FROM bigints FULL OUTER JOIN empty_side ON k;
+----
+18446744073709551614
+
+statement ok
+CREATE TABLE decimals (v DECIMAL(38, 6));
+
+statement ok
+INSERT INTO decimals VALUES (-2554.73), (29684.72);
+
+query II
+SELECT sum(v), sum(v) >= 10000 FROM decimals LEFT JOIN empty_side ON k;
+----
+27129.990000	true
+
+query III
+SELECT k IS NULL, sum(v), sum(v) > 0 FROM integers LEFT JOIN empty_side ON k GROUP BY ALL;
+----
+true	1	true
