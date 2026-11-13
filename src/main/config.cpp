@@ -20,6 +20,11 @@
 #include "duckdb/common/thread.hpp"
 #endif
 
+#if defined(__GLIBC__)
+#include <sched.h>
+#include <unistd.h>
+#endif
+
 #include <cinttypes>
 #include <cstdio>
 
@@ -720,6 +725,26 @@ void DBConfig::CheckLock(const Identifier &name) {
 	throw InvalidInputException("Cannot change configuration option %s - the configuration has been locked", name);
 }
 
+#if !defined(DUCKDB_NO_THREADS) && defined(__linux__)
+static optional_idx GetCPUAffinityCount() {
+#if defined(__GLIBC__)
+	cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+	// Use the main thread's affinity mask, as this may be called from a pinned worker thread.
+	if (sched_getaffinity(getpid(), sizeof(cpu_set_t), &cpuset) != 0) {
+		return optional_idx();
+	}
+	int cpu_count = CPU_COUNT(&cpuset);
+	if (cpu_count <= 0) {
+		return optional_idx();
+	}
+	return NumericCast<idx_t>(cpu_count);
+#else
+	return optional_idx();
+#endif
+}
+#endif
+
 idx_t DBConfig::GetSystemMaxThreads(FileSystem &fs) {
 #ifdef DUCKDB_NO_THREADS
 	return 1;
@@ -732,7 +757,12 @@ idx_t DBConfig::GetSystemMaxThreads(FileSystem &fs) {
 			return MaxValue<idx_t>(slurm_threads, 1);
 		}
 	}
-	return MaxValue<idx_t>(CGroups::GetCPULimit(fs, physical_cores), 1);
+	idx_t cpu_limit = CGroups::GetCPULimit(fs, physical_cores);
+	optional_idx affinity_count = GetCPUAffinityCount();
+	if (affinity_count.IsValid()) {
+		cpu_limit = MinValue<idx_t>(cpu_limit, affinity_count.GetIndex());
+	}
+	return MaxValue<idx_t>(cpu_limit, 1);
 #else
 	return MaxValue<idx_t>(physical_cores, 1);
 #endif
