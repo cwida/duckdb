@@ -74,7 +74,8 @@ bool StringStats::HasMinMax(const BaseStatistics &stats) {
 		return false;
 	}
 	auto &string_data = GetDataUnsafe(stats);
-	return StatsIsSet(string_data.min_type) && StatsIsSet(string_data.max_type);
+	return StatsIsSet(string_data.min_type) && StatsIsSet(string_data.max_type) &&
+	       Comparator::Operation(string_data.min, string_data.max) <= 0;
 }
 
 bool StringStats::HasMin(const BaseStatistics &stats) {

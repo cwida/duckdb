@@ -1,0 +1,41 @@
+# name: test/sql/copy/parquet/parquet_reversed_string_stats.test
+# description: Ignore reversed string statistics in Parquet files
+# group: [parquet]
+
+require parquet
+
+query TTTII
+SELECT path_in_schema, stats_min, stats_max, min_is_exact, max_is_exact
+FROM parquet_metadata('{DATA_DIR}/parquet-testing/reversed_string_stats.parquet')
+ORDER BY path_in_schema
+----
+b	zzz-unique-max	aaa-unique-min	true	true
+s	zzz-unique-max	aaa-unique-min	true	true
+
+query I
+SELECT count(*)
+FROM '{DATA_DIR}/parquet-testing/reversed_string_stats.parquet'
+WHERE s = 'mmm-target-row'
+----
+1
+
+query I
+SELECT count(*)
+FROM '{DATA_DIR}/parquet-testing/reversed_string_stats.parquet'
+WHERE b = 'mmm-target-row'::BLOB
+----
+1
+
+query I
+SELECT count(*)
+FROM '{DATA_DIR}/parquet-testing/reversed_string_stats.parquet'
+WHERE s < 'bbb'
+----
+1
+
+query I
+SELECT count(*)
+FROM '{DATA_DIR}/parquet-testing/reversed_string_stats.parquet'
+WHERE b > 'yyy'::BLOB
+----
+1
