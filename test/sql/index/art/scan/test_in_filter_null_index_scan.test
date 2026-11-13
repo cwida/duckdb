@@ -1,0 +1,117 @@
+# name: test/sql/index/art/scan/test_in_filter_null_index_scan.test
+# description: The ART index scan must only fetch keys that satisfy every conjunct of an AND'ed IN filter
+# group: [scan]
+
+statement ok
+CREATE TABLE tbl AS SELECT range AS i FROM range(100000);
+
+statement ok
+ALTER TABLE tbl ADD PRIMARY KEY(i);
+
+# a conjunct that admits no key makes the whole filter unsatisfiable - the union of the conjunct candidate values
+# used to be looked up instead, so the row of the other conjunct was returned even though the IN evaluates to NULL
+
+query I
+SELECT i FROM tbl WHERE i = 1 AND i IN (2, NULL) ORDER BY i;
+----
+
+query I
+SELECT i FROM tbl WHERE i IN (1, 5) AND i IN (2, NULL) ORDER BY i;
+----
+
+query I
+SELECT i FROM tbl WHERE i = 3 AND i IN (4, 5, NULL) AND i < 100 ORDER BY i;
+----
+
+# without the NULL the conjuncts still have to be intersected
+
+query I
+SELECT i FROM tbl WHERE i = 1 AND i IN (2) ORDER BY i;
+----
+
+query I
+SELECT i FROM tbl WHERE i IN (1, 5) AND i IN (2, 3) ORDER BY i;
+----
+
+# an IN list that only contains NULL matches nothing
+
+query I
+SELECT i FROM tbl WHERE i IN (NULL) ORDER BY i;
+----
+
+query I
+SELECT i FROM tbl WHERE i = 7 AND i IN (NULL) ORDER BY i;
+----
+
+# the shapes that do have a satisfying key must still be answered by the index, with the correct rows
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i = 3 AND i IN (3, NULL) ORDER BY i;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT i FROM tbl WHERE i = 3 AND i IN (3, NULL) ORDER BY i;
+----
+3
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i IN (10, NULL) AND i IN (10, 20) ORDER BY i;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT i FROM tbl WHERE i IN (10, NULL) AND i IN (10, 20) ORDER BY i;
+----
+10
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i IN (100, NULL) AND i > 50 ORDER BY i;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT i FROM tbl WHERE i IN (100, NULL) AND i > 50 ORDER BY i;
+----
+100
+
+# intersecting can also leave several keys, which are looked up as a batch
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i IN (3, 4, 5, NULL) AND i IN (4, 5, 6) ORDER BY i;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT i FROM tbl WHERE i IN (3, 4, 5, NULL) AND i IN (4, 5, 6) ORDER BY i;
+----
+4
+5
+
+query I
+SELECT i FROM tbl WHERE i IN (5, 5, NULL) AND i IN (5) ORDER BY i;
+----
+5
+
+# a single IN conjunct is unaffected: NULL in the list only matters for values that are not in the list
+
+query I
+SELECT i FROM tbl WHERE i IN (2, NULL) ORDER BY i;
+----
+2
+
+query I
+SELECT i FROM tbl WHERE i IN (7, NULL) OR i = 1 ORDER BY i;
+----
+1
+7
+
+# NOT IN with a NULL in the list matches nothing, and must not be answered with the keys of another conjunct
+
+query I
+SELECT i FROM tbl WHERE i = 1 AND i NOT IN (2, NULL) ORDER BY i;
+----
+
+query I
+SELECT i FROM tbl WHERE i IN (1, 2, 3) AND i NOT IN (2, NULL) ORDER BY i;
+----

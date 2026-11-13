@@ -804,10 +804,36 @@ static bool CollectValuesAndComparisonsFromExpression(const Expression &expr, va
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONJUNCTION &&
 	    expr.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
 		auto &conj = expr.Cast<BoundConjunctionExpression>();
+		value_set_t keys;
+		bool has_keys = false;
 		for (auto &child : conj.GetChildren()) {
-			if (!CollectValuesAndComparisonsFromExpression(*child, in_values, comparisons)) {
+			// the row ids of an ART scan are never re-filtered, so a key must be admitted by every conjunct:
+			// collect each conjunct's keys separately and intersect them rather than unioning them into in_values
+			value_set_t child_keys;
+			if (!CollectValuesAndComparisonsFromExpression(*child, child_keys, comparisons)) {
 				return false;
 			}
+			if (child_keys.empty()) {
+				continue; // conjunct does not enumerate keys (e.g. a range); it is still checked by ValueQualifies
+			}
+			if (!has_keys) {
+				keys = std::move(child_keys);
+				has_keys = true;
+				continue;
+			}
+			for (auto it = keys.begin(); it != keys.end();) {
+				if (child_keys.find(*it) == child_keys.end()) {
+					it = keys.erase(it);
+				} else {
+					++it;
+				}
+			}
+		}
+		if (has_keys && keys.empty()) {
+			return false; // the conjuncts are contradictory: no key can satisfy the whole filter
+		}
+		for (auto &key : keys) {
+			in_values.insert(key);
 		}
 		return true;
 	}
