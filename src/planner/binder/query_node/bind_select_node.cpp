@@ -417,6 +417,9 @@ void Binder::BindModifiers(BoundQueryNode &result, TableIndex table_index, const
 				}
 				ExpressionBinder::PushCollation(context, order_node.expression, order_node.expression->GetReturnType());
 			}
+			// an ORDER BY expression that already appeared cannot refine the ordering any further - the rows
+			// it would compare are exactly the rows the earlier occurrence already tied together
+			BoundOrderModifier::Simplify(order.orders, vector<unique_ptr<Expression>>(), nullptr);
 			break;
 		}
 		default:

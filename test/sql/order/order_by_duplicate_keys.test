@@ -1,0 +1,85 @@
+# name: test/sql/order/order_by_duplicate_keys.test
+# description: Test that a repeated ORDER BY expression is dropped
+# group: [order]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+statement ok
+CREATE TABLE t(a INTEGER, b VARCHAR);
+
+statement ok
+INSERT INTO t VALUES (2, 'y'), (1, 'x'), (2, 'x');
+
+# a repeated key cannot refine the ordering: the rows it would compare are the rows the
+# earlier occurrence already tied together
+query II
+EXPLAIN SELECT * FROM t ORDER BY a, a
+----
+logical_opt	<!REGEX>:.*Order By: a, a.*
+
+query II
+EXPLAIN SELECT * FROM t ORDER BY b, a, b
+----
+logical_opt	<!REGEX>:.*Order By: b, a, b.*
+
+# ... the same holds when the repetition is spelled differently
+query II
+EXPLAIN SELECT a FROM t ORDER BY a, 1
+----
+logical_opt	<!REGEX>:.*Order By: a, a.*
+
+query II
+EXPLAIN SELECT * FROM t ORDER BY a, t.a
+----
+logical_opt	<!REGEX>:.*Order By: a, a.*
+
+# the sort order of the first occurrence is the one that applies
+query I
+SELECT a FROM t ORDER BY a, a
+----
+1
+2
+2
+
+query I
+SELECT a FROM t ORDER BY a DESC, a
+----
+2
+2
+1
+
+query I
+SELECT a FROM t ORDER BY a, a DESC LIMIT 1
+----
+1
+
+# keys that are not repeated are all kept
+query II
+EXPLAIN SELECT * FROM t ORDER BY b, a
+----
+logical_opt	<REGEX>:.*Order By: b, a.*
+
+query II
+SELECT * FROM t ORDER BY b, a
+----
+1	x
+2	x
+2	y
+
+# a collated key is a different expression, so it is not a repetition and both keys are kept
+# (the collation function carries the alias of its argument, so both render as "b")
+query II
+EXPLAIN SELECT b FROM t ORDER BY b, b COLLATE NOCASE
+----
+logical_opt	<REGEX>:.*Order By: b, b.*
+
+query I
+SELECT b FROM t ORDER BY b, b COLLATE NOCASE
+----
+x
+x
+y
