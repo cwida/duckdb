@@ -1006,6 +1006,7 @@ static constexpr const char *AUTOLOADABLE_EXTENSIONS[] = {
     "encodings",
     "excel",
     "fts",
+    "glue",
     "httpfs",
     "iceberg",
     "icu",
