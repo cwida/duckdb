@@ -36,7 +36,8 @@ This project and everyone participating in it is governed by a [Code of Conduct]
 ## CI for pull requests
 
 * Pull requests will need to pass all continuous integration checks before merging.
-* When all checks look good on your local CI, you can open a PR to run the CI on the main DuckDB repo. Submitting changes to an open pull request will move it to 'Draft' state. In that case you can mark it as "Ready for Review" once you've applied all fixes and it passes in your fork to run the public CI again ('ready for review', via the Web UI button on the bottom right).
+* The CI worklow running inside the main repository must be approved on every push by new contributors (until a commit or PR by them is merged). It is recommended to run the same workflow in your own fork (without needing approval) to ensure everything works before opening your PR. See below under "Testing" how to enable this.
+* When all CI checks look good on your fork, you can open a PR to run the CI on the main DuckDB repo. Submitting changes to an open pull request will move it to 'Draft' state. In that case you can mark it as "Ready for Review" once you've applied all fixes and it passes in your fork to run the public CI again ('ready for review', via the Web UI button on the bottom right).
 * Note that occasionally CI failures may be unrelated. You should check whether it's related to your changes (because if it is, that means your changes are breaking something). Otherwise, you should 1) remember to merge with main frequently and run make format-fix (sometimes you need to run generate-files) 2) check if other PR CI's are failing on the same tests (that's usually a giveaway that it's a temporary problem with the CI) and generally 3) investigate that there is no overlap between your changes and the breaking CI.
 
 ## Nightly CI
@@ -60,11 +61,12 @@ This project and everyone participating in it is governed by a [Code of Conduct]
 * Write many tests.
 * Test with different types, especially numerics, strings and complex nested types.
 * Try to test unexpected/incorrect usage as well, instead of only the happy path.
-* `make unit` runs the **fast** unit tests (~one minute), `make allunit` runs **all** unit tests (~one hour).
+* `make unit` runs the **fast** unit tests (~one minute), `make allunit` runs **all** unit tests (~one hour). This will automatically (rebuild) duckdb as needed.
+* To run a single test, run `make release` to build duckdb and the testrunner, and then run something like `./build/release/test/unittest test/issues/general/test_1091.test` or `./build/release/test/unittest 'test/issues/general/*'` (note the quotes to pass the `*` literally to the testrunner). Use `./build/debug/test/unittest --help` for more info.
 * Make sure **all** unit tests pass before sending a PR.
 * Slower tests should be added to the **all** unit tests. You can do this by naming the test file `.test_slow` in the sqllogictests, or by adding `[.]` after the test group in the C++ tests.
 * Look at the code coverage report of your branch and attempt to cover all code paths in the fast unit tests. Attempt to trigger exceptions as well. It is acceptable to have some exceptions not triggered (e.g. out of memory exceptions or type switch exceptions), but large branches of code should always be either covered or removed.
-* DuckDB uses GitHub Actions as its continuous integration (CI) tool. You also have the option to run GitHub Actions on your forked repository. For detailed instructions, you can refer to the [GitHub documentation](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository). Before running GitHub Actions, please ensure that you have all the Git tags from the duckdb/duckdb repository. To accomplish this, execute the following commands `git fetch <your-duckdb/duckdb-repo-remote-name> --tags` and then 
+* DuckDB uses GitHub Actions as its continuous integration (CI) tool. You also have the option to run GitHub Actions on your forked repository. To enable this, go to the "Actions tab" on your fork and click the enable button there to run workflows for all pushes to your fork. For more detailed instructions, you can refer to the [GitHub documentation](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository). Before running GitHub Actions, please ensure that you have all the Git tags from the duckdb/duckdb repository. To accomplish this, execute the following commands `git fetch <your-duckdb/duckdb-repo-remote-name> --tags` and then 
 `git push --tags` These commands will fetch all the git tags from the duckdb/duckdb repository and push them to your forked repository. This ensures that you have all the necessary tags available for your GitHub Actions workflow. 
 
 ## Formatting
