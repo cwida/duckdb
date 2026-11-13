@@ -223,7 +223,7 @@ public:
 		return result;
 	}
 
-	//! Return a string that formats the give number of bytes
+	//! Return a string that formats the given number of bytes
 	DUCKDB_API static string BytesToHumanReadableString(idx_t bytes, idx_t multiplier = 1024);
 
 	DUCKDB_API static string TryParseFormattedBytes(const string &arg, idx_t &result);
