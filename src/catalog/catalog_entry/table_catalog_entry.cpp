@@ -101,9 +101,10 @@ unique_ptr<CreateInfo> TableCatalogEntry::GetInfo() const {
 	// carry the full (possibly nested) schema path: [catalog, schema_path..., name]
 	result->SetQualifiedName(schema.GetQualifiedName(name));
 	result->columns = GetColumns().Copy();
-	result->constraints.reserve(constraints.size());
+	auto &table_constraints = GetConstraints();
+	result->constraints.reserve(table_constraints.size());
 	result->dependencies = dependencies;
-	std::for_each(constraints.begin(), constraints.end(),
+	std::for_each(table_constraints.begin(), table_constraints.end(),
 	              [&result](const unique_ptr<Constraint> &c) { result->constraints.emplace_back(c->Copy()); });
 	result->temporary = temporary;
 	result->internal = internal;
@@ -311,7 +312,7 @@ void TableCatalogEntry::BindUpdateConstraints(Binder &binder, LogicalGet &get, L
 	// suppose we have a constraint CHECK(i + j < 10); now we need both i and j to check the constraint
 	// if we are only updating one of the two columns we add the other one to the UPDATE set
 	// with a "useless" update (i.e. i=i) so we can verify that the CHECK constraint is not violated
-	auto bound_constraints = binder.BindConstraints(constraints, name, GetColumns());
+	auto bound_constraints = binder.BindConstraints(GetConstraints(), name, GetColumns());
 	for (auto &constraint : bound_constraints) {
 		if (constraint->type == ConstraintType::CHECK) {
 			auto &check = constraint->Cast<BoundCheckConstraint>();
