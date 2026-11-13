@@ -40,6 +40,19 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 		}
 		child_stats.push_back(std::move(stats));
 	}
+	if ((expr.GetExpressionType() == ExpressionType::COMPARE_IN ||
+	     expr.GetExpressionType() == ExpressionType::COMPARE_NOT_IN) &&
+	    !child_stats.empty() && HasNoValidValue(child_stats[0].get())) {
+		bool removable = true;
+		for (auto &child : expr.GetChildren()) {
+			removable = removable && IsRemovable(*child);
+		}
+		if (removable) {
+			// x [NOT] IN (...) is NULL for every row when x holds only NULLs
+			expr_ptr = make_uniq<BoundConstantExpression>(Value(LogicalType::BOOLEAN));
+			return PropagateExpression(expr_ptr);
+		}
+	}
 	if (!all_have_stats) {
 		return nullptr;
 	}

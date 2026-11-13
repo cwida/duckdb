@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/column_index.hpp"
 #include "duckdb/common/enums/filter_propagate_result.hpp"
 #include "duckdb/common/table_index.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -63,6 +64,11 @@ public:
 	//! Statistics callback for monotone functions that return NULL for infinite arguments
 	DUCKDB_API static unique_ptr<BaseStatistics> PropagateFiniteMonotoneBounds(ClientContext &context,
 	                                                                           FunctionStatisticsInput &input);
+	//! The statistics of a column emitted by a scan, or nullptr if the scan has none for it
+	static unique_ptr<BaseStatistics> GetColumnStatistics(ClientContext &context, LogicalGet &get,
+	                                                      const ColumnIndex &column_index);
+	//! Whether the statistics prove that an expression is NULL in every row of a non-empty input
+	static bool HasNoValidValue(optional_ptr<const BaseStatistics> stats);
 	//! Compare two sets of statistics and return whether the comparison is always true or false
 	static FilterPropagateResult PropagateComparison(const BaseStatistics &left, const BaseStatistics &right,
 	                                                 ExpressionType comparison);
@@ -160,6 +166,8 @@ private:
 	void TryExecuteAggregates(LogicalAggregate &op, unique_ptr<LogicalOperator> &node_ptr);
 	void ReplaceWithEmptyResult(unique_ptr<LogicalOperator> &node);
 
+	//! Whether an expression can be removed from the plan without an observable effect
+	static bool IsRemovable(const Expression &expr);
 	bool ExpressionIsConstant(Expression &expr, const Value &val);
 	bool ExpressionIsConstantOrNull(Expression &expr, const Value &val);
 

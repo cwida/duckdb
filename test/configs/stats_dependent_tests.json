@@ -8,6 +8,7 @@
         "test/optimizer/statistics/statistics_monotone_infinity.test",
         "test/optimizer/statistics/right_semi_join_filter.test",
         "test/optimizer/statistics/statistics_additive_duplication.test",
+        "test/optimizer/statistics/statistics_all_null_operand.test",
         "test/optimizer/joins/always_true_scan_filter_estimate.test",
         "test/optimizer/fixed_key_domain_plan.test",
         "test/optimizer/fixed_key_domain_replacement_plan.test",
