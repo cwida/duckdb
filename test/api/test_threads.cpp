@@ -9,6 +9,7 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/storage_info.hpp"
 
+#include <condition_variable>
 #include <thread>
 
 using namespace duckdb;
@@ -205,7 +206,7 @@ TEST_CASE("Pipeline sink thread limits cannot raise source or operator caps", "[
 	config.options.maximum_threads = 8;
 	DuckDB db(nullptr, &config);
 	Connection con(db);
-	Executor executor(*con.context);
+	Executor executor(*con.context, false);
 	PipelineBuildState build_state;
 	struct Limits {
 		idx_t source, op, sink, expected, sink_input;
@@ -279,6 +280,66 @@ TEST_CASE("Column data scan batch sizes preserve source parallelism", "[api]") {
 #endif
 }
 #endif
+#endif
+
+#ifndef DUCKDB_NO_THREADS
+namespace {
+
+struct TaskRuns {
+	mutex lock;
+	std::condition_variable cv;
+	vector<string> runs;
+};
+
+class RecordingTask : public Task {
+public:
+	RecordingTask(TaskRuns &runs, string name) : runs(runs), name(std::move(name)) {
+	}
+
+	TaskExecutionResult Execute(TaskExecutionMode mode) override {
+		lock_guard<mutex> guard(runs.lock);
+		runs.runs.push_back(name);
+		runs.cv.notify_all();
+		return TaskExecutionResult::TASK_FINISHED;
+	}
+
+private:
+	TaskRuns &runs;
+	string name;
+};
+
+} // namespace
+
+TEST_CASE("A task kept for its producer is not taken by a worker woken for another producer", "[api]") {
+	DBConfig config;
+	config.options.maximum_threads = 2;
+	DuckDB db(nullptr, &config);
+	auto &scheduler = TaskScheduler::GetScheduler(*db.instance);
+	auto caller_producer = scheduler.CreateProducer();
+	auto other_producer = scheduler.CreateProducer();
+	TaskRuns runs;
+
+	vector<shared_ptr<Task>> caller_tasks {make_shared_ptr<RecordingTask>(runs, "kept")};
+	scheduler.ScheduleTasksKeepingOne(*caller_producer, caller_tasks);
+	REQUIRE(scheduler.GetTaskCountForProducer(*caller_producer) == 1);
+
+	// The single worker is woken for this task only. Running the kept task instead would leave this one unsignaled,
+	// so a consumer that only polls would never see it finish
+	scheduler.ScheduleTask(*other_producer, make_shared_ptr<RecordingTask>(runs, "other"));
+	{
+		std::unique_lock<mutex> guard(runs.lock);
+		runs.cv.wait(guard, [&]() { return !runs.runs.empty(); });
+		REQUIRE(runs.runs.size() == 1);
+		REQUIRE(runs.runs[0] == "other");
+	}
+
+	shared_ptr<Task> kept;
+	REQUIRE(scheduler.GetTaskFromProducer(*caller_producer, kept));
+	REQUIRE(kept->Execute(TaskExecutionMode::PROCESS_ALL) == TaskExecutionResult::TASK_FINISHED);
+	REQUIRE(runs.runs.size() == 2);
+	REQUIRE(runs.runs[1] == "kept");
+	REQUIRE(scheduler.GetTaskCountForProducer(*caller_producer) == 0);
+}
 #endif
 
 #ifdef DUCKDB_NO_THREADS

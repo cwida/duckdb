@@ -19,6 +19,9 @@
 #include "duckdb/parallel/pipeline.hpp"
 
 #include <condition_variable>
+#ifndef DUCKDB_NO_THREADS
+#include <thread>
+#endif
 
 namespace duckdb {
 class BufferedData;
@@ -46,7 +49,7 @@ public:
 	static constexpr idx_t WAIT_TIME = 20;
 
 public:
-	explicit Executor(ClientContext &context);
+	Executor(ClientContext &context, bool caller_completes_query);
 	~Executor();
 
 	ClientContext &context;
@@ -94,6 +97,9 @@ public:
 	//! Flush a thread context into the client context
 	void Flush(ThreadContext &context);
 
+	//! Schedule tasks of this query. When the caller runs tasks until the query completes and schedules them itself,
+	//! one task is kept for it instead of waking a worker thread for it
+	void ScheduleTasks(vector<shared_ptr<Task>> &tasks);
 	//! Reschedules a task that was blocked
 	void RescheduleTask(shared_ptr<Task> &task);
 
@@ -176,6 +182,8 @@ private:
 	void FailExecution();
 	//! Advance to the next executor, or record and return FINISHED
 	QueryResultState FinishExecution();
+	//! Whether the calling thread is the one that runs tasks until the query completes
+	bool OnCompletingThread() const;
 
 	shared_ptr<Pipeline> CreateChildPipeline(Pipeline &current, PhysicalOperator &op);
 
@@ -227,6 +235,12 @@ private:
 
 	//! Currently alive executor tasks
 	atomic<idx_t> executor_tasks;
+	//! Whether the submitting call executes tasks until the query completes before it returns
+	const bool caller_completes_query;
+#ifndef DUCKDB_NO_THREADS
+	//! The thread that submitted the query
+	const std::thread::id caller_thread;
+#endif
 	//! Leaf lock for the result buffer slot. It must not share executor_lock, which is held while
 	//! readiness is checked
 	mutex result_buffer_lock;

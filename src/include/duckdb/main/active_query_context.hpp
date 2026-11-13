@@ -41,6 +41,8 @@ public:
 	shared_ptr<ResultFormat> format;
 	//! The consumer's retention decision, applied to the result statement's buffer when it is created
 	ResultLifetime retention = ResultLifetime::UNDECIDED;
+	//! Whether the submitting call executes tasks until the query completes before it returns
+	bool caller_completes_query = false;
 	//! Whether the statement whose rows the result carries has started
 	bool result_statement_started = false;
 	//! The handle of a statement that expands into several, which the statement producing the result fills in

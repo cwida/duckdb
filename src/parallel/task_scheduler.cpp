@@ -69,12 +69,33 @@ void TaskScheduler::ScheduleTasks(ProducerToken &producer, vector<shared_ptr<Tas
 	ScheduleTasks(producer, tasks, TaskSchedulerType::REGULAR);
 }
 
+void TaskScheduler::ScheduleTasksKeepingOne(ProducerToken &producer, vector<shared_ptr<Task>> &tasks) {
+	D_ASSERT(!tasks.empty());
+	{
+		const annotated_lock_guard<annotated_mutex> lock(producer.producer_lock);
+		if (!producer.producer_task) {
+			auto &kept_task = tasks.back();
+			kept_task->token = producer;
+			producer.producer_task = std::move(kept_task);
+			tasks.pop_back();
+			producer.producer_cv.notify_one();
+		}
+	}
+	if (!tasks.empty()) {
+		ScheduleTasks(producer, tasks, TaskSchedulerType::REGULAR);
+	}
+}
+
 bool TaskScheduler::GetTaskFromProducer(ProducerToken &token, shared_ptr<Task> &task) {
 	const annotated_lock_guard<annotated_mutex> lock(token.producer_lock);
 	return GetTaskFromProducerLocked(token, task);
 }
 
 bool TaskScheduler::GetTaskFromProducerLocked(ProducerToken &token, shared_ptr<Task> &task) {
+	if (token.producer_task) {
+		task = std::move(token.producer_task);
+		return true;
+	}
 	for (auto &queue : queues) {
 		if (queue->DequeueFromProducerLocked(token, task)) {
 			return true;
@@ -399,6 +420,12 @@ idx_t TaskScheduler::GetProducerCount() const {
 
 idx_t TaskScheduler::GetTaskCountForProducer(ProducerToken &token) const {
 	idx_t task_count = 0;
+	{
+		const annotated_lock_guard<annotated_mutex> lock(token.producer_lock);
+		if (token.producer_task) {
+			task_count++;
+		}
+	}
 	for (uint8_t i = 0; i < TASK_SCHEDULER_TYPE_COUNT; i++) {
 		task_count += GetQueue(static_cast<TaskSchedulerType>(i)).GetTaskCountForProducer(token);
 	}
