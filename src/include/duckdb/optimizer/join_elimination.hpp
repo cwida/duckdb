@@ -10,6 +10,7 @@
 
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/typedefs.hpp"
+#include "duckdb/common/reference_map.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/unordered_set.hpp"
@@ -30,7 +31,7 @@ struct DistinctGroupRef {
 };
 
 struct SavedProjectionMap {
-	LogicalOperator *op;
+	reference<LogicalOperator> op;
 	idx_t child_index;
 	vector<ColumnBinding> selected;
 };

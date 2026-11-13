@@ -23,32 +23,34 @@
 namespace duckdb {
 
 // Projection maps name child columns by position. Resolve them to bindings before child elimination moves columns.
-static void SnapshotProjectionMaps(LogicalOperator &op, const unordered_set<LogicalOperator *> &skip,
+// Entries are recorded in pre-order, so every map is recorded before the maps below it.
+static void SnapshotProjectionMaps(LogicalOperator &op, const reference_set_t<LogicalOperator> &skip,
                                    vector<SavedProjectionMap> &saved) {
 	// Skip subtrees owned by child optimizers. Those optimizers can free joins inside them.
-	if (skip.find(&op) != skip.end()) {
+	if (skip.find(op) != skip.end()) {
 		return;
 	}
 	for (idx_t child_index = 0; child_index < op.children.size(); child_index++) {
 		auto projection_map = LogicalOperatorVisitor::GetProjectionMap(op, child_index);
 		if (projection_map && !projection_map->empty()) {
-			SavedProjectionMap entry;
-			entry.op = &op;
-			entry.child_index = child_index;
-			entry.selected = ColumnBindingLayout(op.children[child_index]->GetColumnBindings(),
-			                                      "join elimination projection map")
-			                     .ProjectBindings(*projection_map);
-			saved.push_back(std::move(entry));
+			auto selected = ColumnBindingLayout(op.children[child_index]->GetColumnBindings(),
+			                                    "join elimination projection map")
+			                    .ProjectBindings(*projection_map);
+			saved.push_back(SavedProjectionMap {op, child_index, std::move(selected)});
 		}
 		SnapshotProjectionMaps(*op.children[child_index], skip, saved);
 	}
+}
+
+static bool RefersTo(const SavedProjectionMap &entry, const LogicalOperator &op) {
+	return &entry.op.get() == &op;
 }
 
 static void EraseSavedMaps(vector<SavedProjectionMap> &saved, LogicalOperator &op) {
 	vector<SavedProjectionMap> kept;
 	kept.reserve(saved.size());
 	for (auto &entry : saved) {
-		if (entry.op != &op) {
+		if (!RefersTo(entry, op)) {
 			kept.push_back(std::move(entry));
 		}
 	}
@@ -86,7 +88,7 @@ static void RewriteSavedProjectionMap(vector<ProjectionIndex> &projection_map, c
 static vector<ProjectionIndex> RebuiltProjectionMap(const vector<SavedProjectionMap> &saved, LogicalOperator &op,
                                                     idx_t child_index, const vector<ColumnBinding> &child_bindings) {
 	for (auto &entry : saved) {
-		if (entry.op != &op || entry.child_index != child_index) {
+		if (!RefersTo(entry, op) || entry.child_index != child_index) {
 			continue;
 		}
 		vector<ProjectionIndex> projection_map;
@@ -96,19 +98,13 @@ static vector<ProjectionIndex> RebuiltProjectionMap(const vector<SavedProjection
 	return {};
 }
 
-static void RestoreProjectionMaps(LogicalOperator &op, const vector<SavedProjectionMap> &saved) {
-	for (auto &child : op.children) {
-		RestoreProjectionMaps(*child, saved);
-	}
-	for (auto &entry : saved) {
-		if (entry.op != &op) {
-			continue;
-		}
-		auto projection_map = LogicalOperatorVisitor::GetProjectionMap(op, entry.child_index);
-		if (!projection_map) {
-			continue;
-		}
-		RewriteSavedProjectionMap(*projection_map, entry.selected, op.children[entry.child_index]->GetColumnBindings());
+// Rewrite in reverse pre-order, so each child's map is fixed before its parent reads the child's bindings.
+static void RestoreProjectionMaps(const vector<SavedProjectionMap> &saved) {
+	for (auto it = saved.rbegin(); it != saved.rend(); ++it) {
+		auto &op = it->op.get();
+		auto projection_map = LogicalOperatorVisitor::GetProjectionMap(op, it->child_index);
+		D_ASSERT(projection_map);
+		RewriteSavedProjectionMap(*projection_map, it->selected, op.children[it->child_index]->GetColumnBindings());
 	}
 }
 
@@ -121,9 +117,9 @@ void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<Logical
 		pipe_info.join_parent = parent;
 		pipe_info.join_index = idx;
 		// Children are still attached here. Record maps before they are moved into child optimizers.
-		unordered_set<LogicalOperator *> skip_children;
-		skip_children.insert(op.children[0].get());
-		skip_children.insert(op.children[1].get());
+		reference_set_t<LogicalOperator> skip_children;
+		skip_children.insert(*op.children[0]);
+		skip_children.insert(*op.children[1]);
 		SnapshotProjectionMaps(*pipe_info.root, skip_children, saved_projection_maps);
 		left_child = CreateChildren();
 		right_child = CreateChildren();
@@ -246,9 +242,9 @@ void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<Logical
 		}
 	} else {
 		children_root = op;
-		unordered_set<LogicalOperator *> skip_children;
+		reference_set_t<LogicalOperator> skip_children;
 		for (auto &child : op.children) {
-			skip_children.insert(child.get());
+			skip_children.insert(*child);
 		}
 		SnapshotProjectionMaps(*pipe_info.root, skip_children, saved_projection_maps);
 		for (auto &child : op.children) {
@@ -320,7 +316,7 @@ unique_ptr<LogicalOperator> JoinElimination::TryEliminateJoin() {
 		for (idx_t idx = 0; idx < children.size(); idx++) {
 			children_root->children[idx] = children[idx]->TryEliminateJoin();
 		}
-		RestoreProjectionMaps(*pipe_info.root, saved_projection_maps);
+		RestoreProjectionMaps(saved_projection_maps);
 		return std::move(pipe_info.root);
 	}
 	if (!pipe_info.join_parent) {
@@ -331,7 +327,7 @@ unique_ptr<LogicalOperator> JoinElimination::TryEliminateJoin() {
 
 	auto &join_op = pipe_info.join_parent->children[pipe_info.join_index];
 	auto finish = [&]() {
-		RestoreProjectionMaps(*pipe_info.root, saved_projection_maps);
+		RestoreProjectionMaps(saved_projection_maps);
 		return std::move(pipe_info.root);
 	};
 
