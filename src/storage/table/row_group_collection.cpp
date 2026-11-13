@@ -693,6 +693,8 @@ optional_idx RowGroupCollection::Append(DataChunk &chunk, TableAppendState &stat
 	idx_t total_append_count = chunk.size();
 	idx_t remaining = chunk.size();
 	state.total_append_count += total_append_count;
+	DataChunk remaining_chunk;
+	reference<DataChunk> append_chunk(chunk);
 	while (true) {
 		auto &current_row_group = state.row_group_append_state.row_group->GetNode();
 		// check how much we can fit into the current row_group
@@ -700,7 +702,7 @@ optional_idx RowGroupCollection::Append(DataChunk &chunk, TableAppendState &stat
 		    MinValue<idx_t>(remaining, row_group_size - state.row_group_append_state.offset_in_row_group);
 		if (append_count > 0) {
 			auto previous_allocation_size = current_row_group.GetAllocationSize();
-			current_row_group.Append(state.row_group_append_state, chunk, append_count);
+			current_row_group.Append(state.row_group_append_state, append_chunk, append_count);
 			allocation_size += current_row_group.GetAllocationSize() - previous_allocation_size;
 		}
 		remaining -= append_count;
@@ -711,10 +713,15 @@ optional_idx RowGroupCollection::Append(DataChunk &chunk, TableAppendState &stat
 		current_row_group.FinalizeAppend(state.row_group_append_state);
 		// we expect max 1 iteration of this loop (i.e. a single chunk should never overflow more than one
 		// row_group)
-		D_ASSERT(chunk.size() == remaining + append_count);
-		// slice the input chunk
-		if (remaining < chunk.size()) {
-			chunk.Slice(append_count, remaining);
+		D_ASSERT(append_chunk.get().size() == remaining + append_count);
+		// slice the remaining rows into a separate chunk, so the input chunk is left untouched
+		if (remaining < append_chunk.get().size()) {
+			if (remaining_chunk.ColumnCount() == 0) {
+				remaining_chunk.InitializeEmpty(chunk.GetTypes());
+			}
+			remaining_chunk.Reference(chunk);
+			remaining_chunk.Slice(total_append_count - remaining, remaining);
+			append_chunk = remaining_chunk;
 		}
 		// append a new row_group
 		flushed_row_group_idx = state.row_group_append_state.row_group->GetIndex();
