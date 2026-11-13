@@ -24,8 +24,9 @@ SET disabled_optimizers='join_order,build_side_probe_side,join_filter_pushdown';
 statement ok
 CREATE TABLE p AS SELECT (i%128)::BIGINT k FROM range(10000) t(i);
 
+# Exceed the minimum external reservation even with narrowed key slots.
 statement ok
-CREATE TABLE b AS SELECT (i%64)::BIGINT k, i::BIGINT v FROM range(1000000) t(i);
+CREATE TABLE b AS SELECT (i%64)::BIGINT k, i::BIGINT v FROM range(2000000) t(i);
 
 statement ok
 CALL enable_logging('PhysicalOperator');
@@ -38,7 +39,7 @@ SELECT count(*) FROM p SEMI JOIN b USING(k);
 query II
 SELECT count(*),sum(b.v) FROM (VALUES (0::BIGINT),(63),(127)) p(k) LEFT JOIN b USING(k);
 ----
-31251	15624984375
+62501	62499968750
 
 statement ok
 PRAGMA disable_verify_parallelism;
@@ -58,7 +59,7 @@ SELECT count(*) FROM p SEMI JOIN b USING(k);
 query II
 SELECT count(*),sum(b.v) FROM (VALUES (0::BIGINT),(63),(127)) p(k) LEFT JOIN b USING(k);
 ----
-31251	15624984375
+62501	62499968750
 
 statement ok
 SET debug_force_external=getvariable('initial_force_external');

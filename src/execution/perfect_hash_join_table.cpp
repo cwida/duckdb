@@ -1,3 +1,5 @@
+#include <new>
+
 #include "duckdb/execution/perfect_hash_join_table.hpp"
 
 #include "duckdb/common/array.hpp"
@@ -11,6 +13,13 @@ PerfectHashJoinTable::~PerfectHashJoinTable() {
 
 void PerfectHashJoinTable::InitializeEntries(idx_t from, idx_t to) {
 	memset(entries.get() + from * sizeof(uint64_t), 0, (to - from) * sizeof(uint64_t));
+	if (track_matches) {
+		static_assert(sizeof(atomic<uint64_t>) == sizeof(uint64_t), "Bitmap words must hold atomic flags");
+		auto matches = GetMatchEntries();
+		for (idx_t i = from; i < to; i++) {
+			new (&matches[i]) atomic<uint64_t>(0);
+		}
+	}
 }
 
 void PerfectHashJoinTable::ConvertToDictionary(idx_t pointer_offset) {
@@ -44,7 +53,8 @@ uhugeint_t KeyDistance(uhugeint_t max, uhugeint_t min) {
 template <class T>
 class TypedPerfectHashJoinTable : public PerfectHashJoinTable {
 public:
-	TypedPerfectHashJoinTable(Type type, bool nulls_equal) : PerfectHashJoinTable(type, nulls_equal) {
+	TypedPerfectHashJoinTable(Type type, bool nulls_equal, bool track_matches)
+	    : PerfectHashJoinTable(type, nulls_equal, track_matches) {
 	}
 
 	void UpdateBounds(const Vector &keys) override {
@@ -81,20 +91,33 @@ public:
 		}
 	}
 
-	bool Initialize(Allocator &allocator, idx_t build_count, idx_t pointer_table_size) override {
+	idx_t EstimateSize(idx_t build_count, idx_t pointer_table_size) const override {
 		if (range_too_large || build_count == 0) {
-			return false;
+			return 0;
 		}
 		// Reserve one additional slot for NULL, including an all-NULL build.
-		domain_size = has_bounds ? KeyDistance(max, min).lower + 1 : 0;
-		const auto slots = domain_size + 1;
+		const auto slots = has_bounds ? KeyDistance(max, min).lower + 2 : 1;
 		const auto bytes = IsBitmap() ? ((slots + 63) / 64) * sizeof(uint64_t) : slots * sizeof(uint64_t);
-		const auto budget = IsBitmap() ? MinValue<idx_t>(MAX_BYTES / sizeof(uint64_t), build_count) * sizeof(uint64_t)
-		                               : MinValue<idx_t>(MAX_BYTES, pointer_table_size);
-		if (bytes > budget) {
+		const auto budget = IsBitmap() && !track_matches
+		                        ? MinValue<idx_t>(MAX_BYTES / sizeof(uint64_t), build_count) * sizeof(uint64_t)
+		                        : MinValue<idx_t>(MAX_BYTES, pointer_table_size);
+		if (bytes > budget / (track_matches ? 2 : 1)) {
+			return 0;
+		}
+		return bytes * (track_matches ? 2 : 1);
+	}
+
+	bool Initialize(Allocator &allocator, idx_t build_count, idx_t pointer_table_size) override {
+		const auto size = EstimateSize(build_count, pointer_table_size);
+		if (!size) {
 			return false;
 		}
+		domain_size = has_bounds ? KeyDistance(max, min).lower + 1 : 0;
+		const auto bytes = size / (track_matches ? 2 : 1);
 		entries = allocator.Allocate(bytes);
+		if (track_matches) {
+			match_entries = allocator.Allocate(bytes);
+		}
 		return true;
 	}
 
@@ -114,7 +137,7 @@ public:
 			const auto slot = valid ? GetIndex(Load<T>(row + key_offset)) : domain_size;
 			D_ASSERT(slot <= domain_size);
 			if (IsBitmap()) {
-				const auto mask = uint64_t(1) << (slot % 64);
+				const auto mask = static_cast<uint64_t>(1) << (slot % 64);
 				if (parallel) {
 					auto &word = atomic_directory[slot / 64];
 					if (!(word.load(std::memory_order_relaxed) & mask)) {
@@ -166,23 +189,30 @@ public:
 		D_ASSERT(IsBitmap());
 		D_ASSERT(keys.size() <= STANDARD_VECTOR_SIZE);
 		auto values = keys.Values<T>();
+		if (track_matches) {
+			return ProbeMembershipLoop<true>(values, found_match);
+		}
 		if (ShouldPrefetchMembership(values)) {
 			return ProbeMembershipPrefetched(values, found_match);
 		}
-		auto directory = GetEntries();
-		idx_t match_count = 0;
-		for (idx_t i = 0; i < values.size(); i++) {
-			auto entry = values[i];
-			bool found = false;
-			if (!entry.IsValid()) {
-				found = Contains(directory, domain_size);
-			} else if (InRange(entry.GetValue())) {
-				found = Contains(directory, GetIndex(entry.GetValue()));
-			}
-			found_match[i] = found;
-			match_count += found;
+		return ProbeMembershipLoop<false>(values, found_match);
+	}
+
+	idx_t SelectMatches(array_ptr<const data_ptr_t> rows, const TupleDataLayout &layout, idx_t &offset,
+	                    array_ptr<data_ptr_t> result, bool matched) const override {
+		auto matches = GetMatchEntries();
+		const auto key_offset = layout.GetOffsets()[0];
+		idx_t count = 0;
+		while (offset < rows.size() && count < result.size()) {
+			const auto row = rows[offset++];
+			const auto valid = TemplatedValidityMask<uint8_t>(row, layout.ColumnCount()).RowIsValid(0);
+			const auto slot = valid ? GetIndex(Load<T>(row + key_offset)) : domain_size;
+			const auto mask = static_cast<uint64_t>(1) << (slot % 64);
+			const auto found = (matches[slot / 64].load(std::memory_order_relaxed) & mask) != 0;
+			result[count] = row;
+			count += found == matched;
 		}
-		return match_count;
+		return count;
 	}
 
 	idx_t ProbeDictionary(const Vector &keys, SelectionVector &probe_sel, SelectionVector &build_sel) const override {
@@ -207,6 +237,31 @@ public:
 	}
 
 private:
+	template <bool TRACK_MATCHES>
+	idx_t ProbeMembershipLoop(const VectorIterator<T> &keys, unsafe_unique_array<bool> &found_match) const {
+		const auto directory = GetEntries();
+		idx_t count = 0;
+		for (idx_t i = 0; i < keys.size(); i++) {
+			const auto entry = keys[i];
+			if (entry.IsValid() && !InRange(entry.GetValue())) {
+				found_match[i] = false;
+				continue;
+			}
+			const auto slot = entry.IsValid() ? GetIndex(entry.GetValue()) : domain_size;
+			const auto found = Contains(directory, slot);
+			if (TRACK_MATCHES && found) {
+				const auto mask = static_cast<uint64_t>(1) << (slot % 64);
+				auto &word = GetMatchEntries()[slot / 64];
+				if (!(word.load(std::memory_order_relaxed) & mask)) {
+					word.fetch_or(mask, std::memory_order_relaxed);
+				}
+			}
+			found_match[i] = found;
+			count += found;
+		}
+		return count;
+	}
+
 	bool ShouldPrefetchMembership(const VectorIterator<T> &keys) const {
 #if defined(__GNUC__) || defined(__clang__)
 		if (keys.size() < PREFETCH_MIN_COUNT || EntryCount() * sizeof(uint64_t) <= PREFETCH_MIN_BYTES) {
@@ -241,7 +296,7 @@ private:
 		}
 		// Estimate distinct words after accounting for power-of-two spacing.
 		D_ASSERT(word_variation != 0);
-		const auto word_stride = word_variation & (idx_t(0) - word_variation);
+		const auto word_stride = word_variation & (static_cast<idx_t>(0) - word_variation);
 		return (max_word - min_word) / word_stride >= PREFETCH_MIN_BYTES / sizeof(uint64_t);
 #else
 		return false;
@@ -298,8 +353,8 @@ private:
 	}
 
 	void CheckRange() {
-		const auto max_slots = IsBitmap() ? MAX_BYTES * 8 : MAX_BYTES / sizeof(uint64_t);
-		if (has_bounds && KeyDistance(max, min) >= uhugeint_t(max_slots - 1)) {
+		const auto max_slots = IsBitmap() ? MAX_BYTES * 8 / (track_matches ? 2 : 1) : MAX_BYTES / sizeof(uint64_t);
+		if (has_bounds && KeyDistance(max, min) >= static_cast<uhugeint_t>(max_slots - 1)) {
 			range_too_large = true;
 		}
 	}
@@ -314,13 +369,13 @@ private:
 	}
 
 	static bool Contains(const array_ptr<const uint64_t> &directory, idx_t slot) {
-		return (directory[slot / 64] & (uint64_t(1) << (slot % 64))) != 0;
+		return (directory[slot / 64] & (static_cast<uint64_t>(1) << (slot % 64))) != 0;
 	}
 
 private:
 	static constexpr idx_t PREFETCH_MIN_BYTES = 1024ULL * 1024ULL;
 	static constexpr idx_t PREFETCH_MIN_COUNT = 128;
-	static constexpr uint32_t MISS_BIT = uint32_t(1) << 31;
+	static constexpr uint32_t MISS_BIT = static_cast<uint32_t>(1) << 31;
 	static_assert(MAX_BYTES * 8 < MISS_BIT, "Bitmap slots must leave the high bit available");
 
 	T min {};
@@ -330,28 +385,29 @@ private:
 	idx_t domain_size = 0;
 };
 
-unique_ptr<PerfectHashJoinTable> PerfectHashJoinTable::Create(PhysicalType key_type, Type type, bool nulls_equal) {
+unique_ptr<PerfectHashJoinTable> PerfectHashJoinTable::Create(PhysicalType key_type, Type type, bool nulls_equal,
+                                                              bool track_matches) {
 	switch (key_type) {
 	case PhysicalType::INT8:
-		return make_uniq<TypedPerfectHashJoinTable<int8_t>>(type, nulls_equal);
+		return make_uniq<TypedPerfectHashJoinTable<int8_t>>(type, nulls_equal, track_matches);
 	case PhysicalType::INT16:
-		return make_uniq<TypedPerfectHashJoinTable<int16_t>>(type, nulls_equal);
+		return make_uniq<TypedPerfectHashJoinTable<int16_t>>(type, nulls_equal, track_matches);
 	case PhysicalType::INT32:
-		return make_uniq<TypedPerfectHashJoinTable<int32_t>>(type, nulls_equal);
+		return make_uniq<TypedPerfectHashJoinTable<int32_t>>(type, nulls_equal, track_matches);
 	case PhysicalType::INT64:
-		return make_uniq<TypedPerfectHashJoinTable<int64_t>>(type, nulls_equal);
+		return make_uniq<TypedPerfectHashJoinTable<int64_t>>(type, nulls_equal, track_matches);
 	case PhysicalType::INT128:
-		return make_uniq<TypedPerfectHashJoinTable<hugeint_t>>(type, nulls_equal);
+		return make_uniq<TypedPerfectHashJoinTable<hugeint_t>>(type, nulls_equal, track_matches);
 	case PhysicalType::UINT8:
-		return make_uniq<TypedPerfectHashJoinTable<uint8_t>>(type, nulls_equal);
+		return make_uniq<TypedPerfectHashJoinTable<uint8_t>>(type, nulls_equal, track_matches);
 	case PhysicalType::UINT16:
-		return make_uniq<TypedPerfectHashJoinTable<uint16_t>>(type, nulls_equal);
+		return make_uniq<TypedPerfectHashJoinTable<uint16_t>>(type, nulls_equal, track_matches);
 	case PhysicalType::UINT32:
-		return make_uniq<TypedPerfectHashJoinTable<uint32_t>>(type, nulls_equal);
+		return make_uniq<TypedPerfectHashJoinTable<uint32_t>>(type, nulls_equal, track_matches);
 	case PhysicalType::UINT64:
-		return make_uniq<TypedPerfectHashJoinTable<uint64_t>>(type, nulls_equal);
+		return make_uniq<TypedPerfectHashJoinTable<uint64_t>>(type, nulls_equal, track_matches);
 	case PhysicalType::UINT128:
-		return make_uniq<TypedPerfectHashJoinTable<uhugeint_t>>(type, nulls_equal);
+		return make_uniq<TypedPerfectHashJoinTable<uhugeint_t>>(type, nulls_equal, track_matches);
 	default:
 		return nullptr;
 	}

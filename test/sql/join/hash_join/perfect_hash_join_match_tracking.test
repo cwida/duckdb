@@ -1,0 +1,98 @@
+# name: test/sql/join/hash_join/perfect_hash_join_match_tracking.test
+# description: Right membership tracks equality groups while retaining distinct build rows
+# group: [hash_join]
+
+require skip_reload
+
+statement ok
+SET threads=4;
+
+statement ok
+SET disabled_optimizers='join_order,join_filter_pushdown,statistics_propagation,compressed_materialization';
+
+statement ok
+SET VARIABLE check_activation = NOT current_setting('debug_force_external')
+    AND NOT current_setting('debug_disable_optimizer');
+
+foreach key_type BIGINT HUGEINT VARCHAR
+
+statement ok
+CREATE TABLE b AS SELECT (i%128)::{key_type} k,i id FROM range(4096) t(i);
+
+statement ok
+INSERT INTO b VALUES (NULL,4096),(NULL,4097),(777,4098);
+
+statement ok
+CREATE TABLE p AS SELECT (2*(i%65))::{key_type} k,0 tag FROM range(600000) t(i);
+
+statement ok
+INSERT INTO p VALUES (NULL,0);
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query III
+SELECT count(*),sum(id),count(DISTINCT id) FROM b SEMI JOIN p ON b.k=p.k;
+----
+2048	4192256	2048
+
+query III
+SELECT count(*),sum(id),count(DISTINCT id) FROM b SEMI JOIN p ON b.k IS NOT DISTINCT FROM p.k;
+----
+2050	4200449	2050
+
+query II
+SELECT count(*),count(*) FILTER (WHERE k IS NULL OR id=4098) FROM b ANTI JOIN p ON b.k=p.k;
+----
+2051	3
+
+query II
+SELECT count(*),count(*) FILTER (WHERE k IS NULL OR id=4098)
+FROM b ANTI JOIN p ON b.k IS NOT DISTINCT FROM p.k;
+----
+2049	1
+
+# An extra predicate must mark individual build rows, even within the same key group.
+query III
+SELECT count(*),sum(id),count(*) FILTER (WHERE id%3=0)
+FROM b SEMI JOIN p ON b.k=p.k AND b.id%3<>p.tag;
+----
+1365	2794838	0
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_activation') OR
+       list_sort(list(info['backend'])) = CASE WHEN '{key_type}'='VARCHAR'
+       THEN ['hash','hash','hash','hash','hash'] ELSE ['bitmap','bitmap','bitmap','bitmap','direct'] END
+FROM duckdb_logs_parsed('PhysicalOperator') WHERE class='PhysicalHashJoin' AND event='Lookup';
+----
+true
+
+statement ok
+CREATE TABLE null_build AS SELECT NULL::{key_type} k,i id FROM range(16) t(i);
+
+query I
+SELECT count(*) FROM null_build b ANTI JOIN p USING(k);
+----
+16
+
+query I
+SELECT count(*) FROM null_build b SEMI JOIN p ON b.k IS NOT DISTINCT FROM p.k;
+----
+16
+
+statement ok
+DROP TABLE null_build;
+
+statement ok
+DROP TABLE b;
+
+statement ok
+DROP TABLE p;
+
+endloop

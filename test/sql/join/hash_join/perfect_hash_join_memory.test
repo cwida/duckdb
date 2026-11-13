@@ -1,0 +1,178 @@
+# name: test/sql/join/hash_join/perfect_hash_join_memory.test
+# description: Cost direct lookup before spilling and reserve optional dictionary output separately
+# group: [hash_join]
+
+# The fixed memory budgets below assume default-sized vectors.
+require vector_size 2048
+
+require skip_reload
+
+load {TEST_DIR}/perfect_hash_join_memory.db
+
+statement ok
+SET threads=1;
+
+statement ok
+SET enable_caching_operators=false;
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side,join_filter_pushdown,statistics_propagation,compressed_materialization';
+
+statement ok
+SET VARIABLE check_activation = NOT current_setting('debug_force_external')
+    AND NOT current_setting('debug_disable_optimizer');
+
+statement ok
+CREATE TABLE b AS SELECT i%128 k FROM range(1000000) t(i);
+
+statement ok
+CREATE TABLE u AS SELECT i k,i v FROM range(500000) t(i);
+
+statement ok
+CREATE TABLE p AS SELECT i%160 k FROM range(2000000) t(i);
+
+statement ok
+CREATE TABLE wide AS SELECT CASE WHEN i<500000 THEN i ELSE i+1000000000 END k FROM range(1000000) t(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET memory_limit='32MB';
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# The rows and bitmap fit, while an ordinary whole-build directory would spill.
+query I
+SELECT count(*) FROM p SEMI JOIN b USING(k);
+----
+1600000
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_activation') OR
+       (count(*) FILTER (WHERE event='Lookup' AND info['backend']='bitmap')=1
+        AND count(*) FILTER (WHERE event='Finalize' AND info['external']='0')=1)
+FROM duckdb_logs_parsed('PhysicalOperator') WHERE class='PhysicalHashJoin';
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# Optional dictionary arrays must not force an otherwise in-memory join to spill.
+statement ok
+SET memory_limit='24MB';
+
+query II
+SELECT count(*),sum(u.v) FROM p JOIN u USING(k);
+----
+2000000	159000000
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_activation') OR
+       (count(*) FILTER (WHERE event='Lookup' AND info['backend']='direct')=1
+        AND count(*) FILTER (WHERE event='Finalize' AND info['external']='0')=1
+        AND count(*) FILTER (WHERE event='DictionaryLookup')=0)
+FROM duckdb_logs_parsed('PhysicalOperator') WHERE class='PhysicalHashJoin';
+----
+true
+
+# An unaffordable domain still uses partitioned ordinary hashing.
+query I
+SELECT count(*) FROM p SEMI JOIN wide USING(k);
+----
+2000000
+
+statement ok
+SET memory_limit='128MB';
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query II
+SELECT count(*),sum(u.v) FROM p JOIN u USING(k);
+----
+2000000	159000000
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_activation') OR count(*)=1
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event='DictionaryLookup';
+----
+true
+
+statement ok
+SET threads=4;
+
+statement ok
+SET memory_limit='24MB';
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# Parallel producers retain partially filled blocks; logical row bytes alone do not fit the build.
+query I
+SELECT count(*) FROM (VALUES (0::BIGINT)) v(k) SEMI JOIN b USING(k);
+----
+1
+
+statement ok
+CALL disable_logging();
+
+# External fallback refreshes its reservation before deciding whether to repartition.
+query I
+SELECT NOT getvariable('check_activation') OR count(*)=0
+FROM duckdb_logs_parsed('PhysicalOperator') WHERE class='PhysicalHashJoin' AND event='Repartition';
+----
+true
+
+statement ok
+SET memory_limit='128MB';
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# All producer bounds participate in the global directory estimate.
+query I
+SELECT count(*) FROM p SEMI JOIN wide USING(k);
+----
+2000000
+
+query I
+SELECT count(*) FROM p SEMI JOIN b USING(k);
+----
+1600000
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_activation') OR list_sort(list(info['backend']))=['bitmap','hash']
+FROM duckdb_logs_parsed('PhysicalOperator') WHERE class='PhysicalHashJoin' AND event='Lookup';
+----
+true
+
+statement ok
+RESET memory_limit;

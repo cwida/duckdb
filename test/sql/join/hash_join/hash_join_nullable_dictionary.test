@@ -1,0 +1,193 @@
+# name: test/sql/join/hash_join/hash_join_nullable_dictionary.test
+# description: Shared hash join emission preserves dictionaries across matched and unmatched rows
+# group: [hash_join]
+
+statement ok
+SET enable_caching_operators=false;
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side,join_filter_pushdown,statistics_propagation,compressed_materialization';
+
+statement ok
+CREATE MACRO check_dictionary_emission() AS
+    NOT current_setting('debug_force_external')
+    AND NOT current_setting('debug_disable_optimizer')
+    AND current_setting('debug_verify_vector')='NONE';
+
+foreach key_type BIGINT VARCHAR
+
+statement ok
+CREATE TABLE p AS
+SELECT i, CASE WHEN i%5=4 THEN NULL ELSE (i%5)::{key_type} END k FROM range(5000) t(i);
+
+statement ok
+CREATE TABLE b(k {key_type}, v VARCHAR);
+
+statement ok
+INSERT INTO b VALUES (0,'a_non_inline_zero_payload'),(2,NULL),(7,'orphan'),(NULL,'null_key');
+
+# Unique LEFT preserves output positions, including payload NULLs and missing keys.
+query III
+SELECT count(*),count(*) FILTER (WHERE b.v IS NULL),
+       NOT check_dictionary_emission() OR bool_and(vector_type(b.v)='DICTIONARY_VECTOR')
+FROM p LEFT JOIN b ON p.k=b.k;
+----
+5000	4000	true
+
+query III
+SELECT count(*),count(*) FILTER (WHERE b.v IS NULL),
+       NOT check_dictionary_emission() OR bool_and(vector_type(b.v)='DICTIONARY_VECTOR')
+FROM p LEFT JOIN b ON p.k IS NOT DISTINCT FROM b.k;
+----
+5000	3000	true
+
+query I
+SELECT count(*) FILTER (WHERE b.v IS DISTINCT FROM
+       CASE WHEN p.i%5=0 THEN 'a_non_inline_zero_payload' WHEN p.i%5=4 THEN 'null_key' END)
+FROM p LEFT JOIN b ON p.k IS NOT DISTINCT FROM b.k;
+----
+0
+
+# SINGLE uses the same output path without changing scalar-subquery semantics.
+query III
+SELECT count(*),count(*) FILTER (WHERE v IS NULL),
+       NOT check_dictionary_emission() OR bool_and(vector_type(v)='DICTIONARY_VECTOR')
+FROM (SELECT i,(SELECT b.v FROM b WHERE b.k=p.k) v FROM p);
+----
+5000	4000	true
+
+statement ok
+INSERT INTO b VALUES (0,'another_non_inline_zero_payload');
+
+# Duplicate LEFT emits its unmatched rows in a separate chunk.
+query III
+SELECT count(*),count(*) FILTER (WHERE b.v IS NULL),
+       NOT check_dictionary_emission() OR bool_and(vector_type(b.v)='DICTIONARY_VECTOR')
+FROM p LEFT JOIN b ON p.k=b.k;
+----
+6000	4000	true
+
+# Both the probe phase and the final build scan retain the dictionaries.
+query III
+SELECT count(*),count(*) FILTER (WHERE b.v IS NULL),
+       NOT check_dictionary_emission() OR bool_and(vector_type(b.v)='DICTIONARY_VECTOR')
+FROM p FULL JOIN b ON p.k=b.k;
+----
+6002	4000	true
+
+query III
+SELECT count(*),count(*) FILTER (WHERE b.v IS NULL),
+       NOT check_dictionary_emission() OR bool_and(vector_type(b.v)='DICTIONARY_VECTOR')
+FROM p FULL JOIN b ON p.k IS NOT DISTINCT FROM b.k;
+----
+6001	3000	true
+
+statement error
+SELECT (SELECT b.v FROM b WHERE b.k=p.k) FROM p;
+----
+More than one row returned by a subquery used as an expression
+
+# Residual-qualified SINGLE still checks the whole duplicate chain.
+statement ok
+CREATE TABLE residual_build AS
+SELECT k::{key_type} k,v FROM (VALUES (1,10),(1,10),(1,30),(2,40),(3,NULL)) b(k,v);
+
+statement ok
+CREATE TABLE residual_probe AS SELECT i,(i%5)::{key_type} k,10 cutoff FROM range(5000) p(i);
+
+query III
+SELECT count(*),count(*) FILTER (WHERE v IS DISTINCT FROM
+           CASE WHEN i%5=1 THEN 30 WHEN i%5=2 THEN 40 END),
+       NOT check_dictionary_emission() OR bool_and(vector_type(v)='DICTIONARY_VECTOR')
+FROM (SELECT i,(SELECT b.v FROM residual_build b WHERE b.k=p.k AND b.v!=p.cutoff) v
+      FROM residual_probe p);
+----
+5000	0	true
+
+statement ok
+UPDATE residual_probe SET cutoff=0;
+
+statement error
+SELECT (SELECT b.v FROM residual_build b WHERE b.k=p.k AND b.v!=p.cutoff) FROM residual_probe p;
+----
+More than one row returned by a subquery used as an expression
+
+statement ok
+DROP TABLE residual_build;
+
+statement ok
+DROP TABLE residual_probe;
+
+statement ok
+CREATE TABLE dim(d INTEGER, v VARCHAR);
+
+statement ok
+INSERT INTO dim VALUES (0,'a_surviving_non_inline_payload'),(1,NULL);
+
+statement ok
+CREATE TABLE fact AS SELECT i::{key_type} k, (i%2)::INTEGER d FROM range(4) t(i);
+
+statement ok
+INSERT INTO fact VALUES (7,0);
+
+# The inner join supplies dictionary indices stored in the outer join's row layout.
+query III
+SELECT count(*),count(*) FILTER (WHERE b.v IS NULL),
+       NOT check_dictionary_emission() OR bool_and(vector_type(b.v)='DICTIONARY_VECTOR')
+FROM p LEFT JOIN (SELECT f.k,d.v FROM fact f JOIN dim d USING(d)) b ON p.k=b.k;
+----
+5000	3000	true
+
+query III
+SELECT count(*),count(*) FILTER (WHERE b.v IS NULL),
+       NOT check_dictionary_emission() OR bool_and(vector_type(b.v)='DICTIONARY_VECTOR')
+FROM p FULL JOIN (SELECT f.k,d.v FROM fact f JOIN dim d USING(d)) b ON p.k=b.k;
+----
+5001	3000	true
+
+query III
+SELECT count(*),count(*) FILTER (WHERE v IS NULL),
+       NOT check_dictionary_emission() OR bool_and(vector_type(v)='DICTIONARY_VECTOR')
+FROM (SELECT i,(SELECT d.v FROM fact f JOIN dim d USING(d) WHERE f.k=p.k) v FROM p);
+----
+5000	3000	true
+
+statement ok
+DROP TABLE dim;
+
+statement ok
+DROP TABLE fact;
+
+statement ok
+DROP TABLE b;
+
+statement ok
+DROP TABLE p;
+
+endloop
+
+# Sparse native gathering continues to support nested parents and children.
+statement ok
+CREATE TABLE nested(k INTEGER, a INTEGER[], s STRUCT(x INTEGER), r INTEGER[2]);
+
+statement ok
+INSERT INTO nested VALUES
+    (0,[1,NULL],{'x':NULL},[1,NULL]),
+    (2,NULL,NULL,NULL);
+
+query ITTT rowsort
+SELECT p.k,b.a,b.s,b.r FROM (VALUES (0),(1),(2),(NULL)) p(k) LEFT JOIN nested b USING(k);
+----
+0	[1, NULL]	{'x': NULL}	[1, NULL]
+1	NULL	NULL	NULL
+2	NULL	NULL	NULL
+NULL	NULL	NULL	NULL
+
+query IT rowsort
+SELECT p.k,(SELECT b.a FROM nested b WHERE p.k=b.k)
+FROM (VALUES (0),(1),(2),(NULL)) p(k);
+----
+0	[1, NULL]
+1	NULL
+2	NULL
+NULL	NULL

@@ -1,0 +1,175 @@
+# name: test/sql/join/hash_join/perfect_hash_join_compressed_modes.test
+# description: Compressed probes share membership, row and dictionary-position lookup
+# group: [hash_join]
+
+require skip_reload
+
+load {TEST_DIR}/perfect_hash_join_compressed_modes.db
+
+statement ok
+SET threads=1;
+
+statement ok
+SET enable_caching_operators=false;
+
+statement ok
+SET disabled_optimizers='join_order,join_filter_pushdown,statistics_propagation,compressed_materialization';
+
+statement ok
+SET VARIABLE check_activation = NOT current_setting('debug_force_external')
+    AND NOT current_setting('debug_disable_optimizer');
+
+statement ok
+CREATE TABLE mapping AS SELECT i k,CASE WHEN i=6 THEN NULL ELSE i END target FROM range(8) t(i);
+
+statement ok
+CREATE TABLE p AS SELECT 2*(i%4) k FROM range(245760) t(i);
+
+statement ok
+CREATE VIEW probe AS SELECT m.target FROM p JOIN mapping m USING(k);
+
+statement ok
+CREATE TABLE b AS SELECT CASE WHEN i=8 THEN NULL ELSE i%8 END k,i id FROM range(17) t(i);
+
+statement ok
+CREATE TABLE u AS SELECT CASE WHEN i=8 THEN NULL ELSE i END k,100+i v FROM range(9) t(i);
+
+# Only four entries of the upstream dictionary are referenced, including NULL.
+query I
+SELECT NOT getvariable('check_activation') OR bool_and(vector_type(target)='DICTIONARY_VECTOR') FROM probe;
+----
+true
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# Resolving unreferenced dictionary entries would incorrectly mark odd build keys.
+query II
+SELECT count(*),sum(id) FROM b SEMI JOIN probe p ON b.k=p.target;
+----
+6	44
+
+query II
+SELECT count(*),sum(id) FROM b SEMI JOIN probe p ON b.k IS NOT DISTINCT FROM p.target;
+----
+7	52
+
+query II
+SELECT count(*),sum(id) FROM b ANTI JOIN probe p ON b.k=p.target;
+----
+11	92
+
+query II
+SELECT count(*),sum(id) FROM b ANTI JOIN probe p ON b.k IS NOT DISTINCT FROM p.target;
+----
+10	84
+
+# The same dictionary input resolves directly to positions in the payload dictionary.
+query II
+SELECT count(*),sum(u.v) FROM probe p JOIN u ON p.target=u.k;
+----
+184320	18800640
+
+query II
+SELECT count(*),sum(u.v) FROM probe p JOIN u ON p.target IS NOT DISTINCT FROM u.k;
+----
+245760	25436160
+
+# Extra predicates retain per-row matching while reusing equality-group lookup.
+query II
+SELECT count(*),sum(id) FROM b SEMI JOIN probe p ON b.k=p.target AND (b.id%3<>p.target OR b.id=8);
+----
+4	42
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_activation') OR
+    (count(*) FILTER (WHERE event='Lookup' AND info['backend']='bitmap')=4
+     AND count(*) FILTER (WHERE event='DictionaryLookup')>=2)
+FROM duckdb_logs_parsed('PhysicalOperator') WHERE class='PhysicalHashJoin';
+----
+true
+
+# A new upstream dictionary ID must replace the previous cache even at the same size.
+statement ok
+CREATE TABLE mapping2 AS SELECT k,CASE WHEN target IS NOT NULL THEN target+1 END target FROM mapping;
+
+query II
+SELECT count(*),sum(u.v)
+FROM (SELECT m.target FROM p JOIN mapping m USING(k)
+      UNION ALL SELECT m.target FROM p JOIN mapping2 m USING(k)) p
+JOIN u ON p.target IS NOT DISTINCT FROM u.k;
+----
+491520	51056640
+
+# Storage constant batches alternate matching, missing and NULL keys.
+statement ok
+CREATE TABLE constants AS
+SELECT CASE WHEN i//122880=0 THEN 2 WHEN i//122880=1 THEN 100 ELSE NULL END::BIGINT k
+FROM range(368640) t(i);
+
+statement ok
+CHECKPOINT;
+
+query II
+SELECT count(*),sum(u.v) FROM constants p JOIN u ON p.k IS NOT DISTINCT FROM u.k;
+----
+245760	25804800
+
+query II
+SELECT count(*),sum(id) FROM b SEMI JOIN constants p ON b.k IS NOT DISTINCT FROM p.k;
+----
+3	20
+
+query II
+SELECT count(*),sum(id) FROM b ANTI JOIN constants p ON b.k=p.k;
+----
+15	124
+
+# Rebuild between unique dictionary positions and duplicate row chains in the same domain.
+statement ok
+SET disabled_optimizers='join_order,join_filter_pushdown,statistics_propagation,compressed_materialization,build_side_probe_side';
+
+statement ok
+SET enable_caching_operators=true;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query III
+WITH RECURSIVE r(iter,k,id) AS (
+    VALUES (0,0::BIGINT,0),(0,2::BIGINT,1)
+    UNION ALL
+    SELECT b.iter+1,CASE WHEN b.iter%2=0 THEN 0 ELSE 2*b.id END,b.id
+    FROM probe p JOIN r b ON p.target=b.k WHERE b.iter<3 GROUP BY ALL
+)
+SELECT * FROM r ORDER BY ALL;
+----
+0	0	0
+0	2	1
+1	0	0
+1	0	1
+2	0	0
+2	2	1
+3	0	0
+3	0	1
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_activation') OR count(*)=1
+FROM (
+    SELECT parameters['Conditions']
+    FROM duckdb_logs_parsed('PhysicalOperator') WHERE class='PhysicalHashJoin'
+    GROUP BY ALL
+    HAVING count(*) FILTER (WHERE event='Lookup' AND info['backend']='direct')=3
+       AND count(*) FILTER (WHERE event='DictionaryLookup')=2
+);
+----
+true
