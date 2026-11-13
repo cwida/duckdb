@@ -87,10 +87,17 @@ cat "$file_list" | xargs -0 -n 1 -P "${CI_CPU_COUNT:-1}" bash -c '
 		tail -c "$signature_size" "$signed_extension" > "$signature_file"
 
 		"$script_dir/compute-extension-hash.sh" "$unsigned_extension" > "$hash_file"
-		openssl pkeyutl -verify -pubin -inkey "$public_key_file" -sigfile "$signature_file" -in "$hash_file" \
-			-pkeyopt digest:sha256 >/dev/null
-
-		echo "Verified signature: $relative_path"
+		# LibreSSL (macOS) exits 0 on a failed verification and only says so in the output, so the verdict is read
+		# from the output rather than from the exit code
+		verify_output=$(openssl pkeyutl -verify -pubin -inkey "$public_key_file" -sigfile "$signature_file" \
+			-in "$hash_file" -pkeyopt digest:sha256 2>&1) || true
+		# the last command of the block decides its status: the caller prints the log and exits on failure
+		if [ "$verify_output" = "Signature Verified Successfully" ]; then
+			echo "Verified signature: $relative_path"
+		else
+			echo "Signature verification failed for $relative_path: $verify_output"
+			false
+		fi
 	} >"$log_file" 2>&1; then
 		cat "$log_file"
 		exit 1
