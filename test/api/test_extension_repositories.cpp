@@ -891,3 +891,67 @@ TEST_CASE("Test UPDATE EXTENSIONS keeps the extension directory", "[api]") {
 	REQUIRE(UpdateRows(con, "UPDATE EXTENSIONS") ==
 	        vector<string> {"loadable_extension_demo|my_repo|REPOSITORY_UNREADABLE|default-version|default-version"});
 }
+
+TEST_CASE("Test UPDATE EXTENSIONS under 'hosts_only'", "[api]") {
+	auto fs = FileSystem::CreateLocal();
+	auto demo_extension = fs->JoinPath(TestBuildDirectory(), "test/extension/loadable_extension_demo.duckdb_extension");
+	if (!fs->FileExists(demo_extension)) {
+		WARN("loadable_extension_demo is not built, skipping");
+		return;
+	}
+	auto repository_directory = TestCreatePath("updh_repos");
+	auto extension_directory = TestCreatePath("updh_ext");
+	fs->CreateDirectory(repository_directory);
+
+	auto serve = [&](const string &prefix) {
+		auto served_directory =
+		    fs->JoinPath(fs->JoinPath(prefix, ExtensionHelper::GetVersionDirectoryName()), DuckDB::Platform());
+		fs->CreateDirectoriesRecursive(served_directory);
+		CopyExtensionFile(*fs, demo_extension,
+		                  fs->JoinPath(served_directory, "loadable_extension_demo.duckdb_extension"));
+	};
+	auto host_repository = [&](const string &prefix) {
+		WriteTextFile(fs->JoinPath(repository_directory, "host.example.duckdb_extension.repo.json"),
+		              StringUtil::Format("{\"version\": 1, \"name\": \"host.example\", \"url\": \"%s\", \"host\": "
+		                                 "\"host.example\", \"public_keys\": [\"%s\"]}",
+		                                 prefix, TEST_PUBLIC_KEY));
+	};
+	auto old_prefix = TestCreatePath("updh_old_prefix");
+	auto new_prefix = TestCreatePath("updh_new_prefix");
+	auto by_prefix = TestCreatePath("updh_by_prefix");
+	serve(old_prefix);
+	serve(new_prefix);
+	serve(by_prefix);
+	// a repository as the host form stores it: resolving one needs httpfs and a live host
+	host_repository(old_prefix);
+
+	DBConfig config;
+	config.SetOptionByName("extension_repository_directory", repository_directory);
+	config.SetOptionByName("extension_directories", Value::LIST({Value(extension_directory)}));
+	config.SetOptionByName("allow_extension_repositories", "allowed");
+	config.SetOptionByName("allow_unsigned_extensions", true);
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
+	    "CREATE EXTENSION REPOSITORY prefix_repo WITH PREFIX '%s' USING PUBLIC KEY '%s'", by_prefix, TEST_PUBLIC_KEY)));
+	REQUIRE_NO_FAIL(con.Query("INSTALL loadable_extension_demo FROM 'host.example'"));
+	REQUIRE_NO_FAIL(con.Query("INSTALL loadable_extension_demo FROM prefix_repo"));
+
+	// the repository resolved from its host is updated, the one added by prefix is reported rather than failing
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='hosts_only'"));
+	const string host_row = "loadable_extension_demo|host.example|NO_UPDATE_AVAILABLE|default-version|default-version";
+	const string prefix_row =
+	    "loadable_extension_demo|prefix_repo|REPOSITORY_NOT_TRUSTED|default-version|default-version";
+	REQUIRE(UpdateRows(con, "UPDATE EXTENSIONS") == vector<string> {host_row, prefix_row});
+
+	// a repository that now points elsewhere is updated from where it points now, which the install info records
+	host_repository(new_prefix);
+	REQUIRE(UpdateRows(con, "UPDATE EXTENSIONS") == vector<string> {host_row, prefix_row});
+	auto info_path =
+	    fs->JoinPath(fs->JoinPath(fs->JoinPath(ExtensionHelper::ExtensionDirectory(*db.instance, *fs), "repositories"),
+	                              "host.example"),
+	                 "loadable_extension_demo.duckdb_extension.info");
+	auto info = ExtensionInstallInfo::TryReadInfoFile(*fs, info_path, "loadable_extension_demo");
+	REQUIRE(info->repository_url == new_prefix);
+}

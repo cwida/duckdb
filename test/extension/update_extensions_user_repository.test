@@ -8,7 +8,7 @@ require-env LOCAL_EXTENSION_REPO
 require json
 
 statement ok
-SET extension_directory='{TEST_DIR}/update_extensions_user_repository'
+SET extension_directories=['{TEST_DIR}/update_extensions_user_repository']
 
 statement ok
 SET extension_repository_directory='{TEST_DIR}/update_extensions_user_repository_repos'
