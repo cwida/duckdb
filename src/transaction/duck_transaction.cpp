@@ -302,7 +302,7 @@ ErrorData DuckTransaction::Commit(AttachedDatabase &db, CommitInfo &commit_info,
 			// transaction there is nothing to share the sync with, so sync now under the transaction lock;
 			// otherwise only write the marker and sync once the locks are released
 			bool sync_now = commit_info.active_transactions == ActiveTransactionState::NO_OTHER_TRANSACTIONS;
-			commit_info.wal_sync_offset = commit_state->FlushCommit(sync_now);
+			commit_info.wal_sync_offset = commit_state->FlushCommit(commit_info.commit_id, sync_now);
 		}
 		drop_state.FinalizeCommit();
 		return ErrorData();

@@ -494,12 +494,6 @@ void WriteAheadLog::WriteRowGroupData(const PersistentCollectionData &data) {
 	WriteAheadLogSerializer serializer(*this, WALType::ROW_GROUP_DATA);
 	serializer.WriteProperty(101, "row_group_data", data);
 	serializer.End();
-
-	// mark written blocks as checkpointed
-	auto &block_manager = GetDatabase().GetStorageManager().GetBlockManager();
-	for (auto &block_id : data.GetBlockIds()) {
-		block_manager.MarkBlockAsCheckpointed(block_id);
-	}
 }
 
 void WriteAheadLog::WriteDelete(DataChunk &chunk) {

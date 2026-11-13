@@ -58,6 +58,10 @@ public:
 	virtual bool IsRootBlock(MetaBlockPointer root) = 0;
 	//! Mark a block as included in the next checkpoint
 	virtual void MarkBlockAsCheckpointed(block_id_t block_id) = 0;
+	//! Mark a newly used block as part of a commit: checkpoints whose bound is past the commit include it
+	virtual void MarkBlockAsCommitted(block_id_t block_id, transaction_t commit_id) {
+		MarkBlockAsCheckpointed(block_id);
+	}
 	//! Mark a block as "used"; either the block is removed from the free list, or the reference count is incremented
 	virtual void MarkBlockAsUsed(block_id_t block_id) = 0;
 	//! Mark a block as "modified"; modified blocks are added to the free list after a checkpoint (i.e. their data is
@@ -80,8 +84,8 @@ public:
 	void Write(Block &block) {
 		Write(block, block.id);
 	}
-	//! Write the header; should be the final step of a checkpoint
-	virtual void WriteHeader(QueryContext context, DatabaseHeader header) = 0;
+	//! Write the header of a checkpoint with the given bound; should be the final step of a checkpoint
+	virtual void WriteHeader(QueryContext context, DatabaseHeader header, VisibilityBound bound) = 0;
 
 	//! Returns the number of total blocks
 	virtual idx_t TotalBlocks() = 0;

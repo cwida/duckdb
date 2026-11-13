@@ -926,7 +926,7 @@ block_id_t SingleFileBlockManager::GetFreeBlockIdInternal(FreeBlockType type) {
 	}
 	// add the entry to the list of newly used blocks
 	if (type == FreeBlockType::NEWLY_USED_BLOCK) {
-		newly_used_blocks.insert(block_id);
+		newly_used_blocks[block_id] = MAX_TRANSACTION_ID;
 	}
 	if (BlockIsRegistered(block_id)) {
 		throw InternalException("Free block %d is already registered", block_id);
@@ -955,6 +955,17 @@ void SingleFileBlockManager::MarkBlockAsCheckpointed(block_id_t block_id) {
 	lock_guard<mutex> lock(single_file_block_lock);
 	D_ASSERT(block_id >= 0);
 	newly_used_blocks.erase(block_id);
+}
+
+void SingleFileBlockManager::MarkBlockAsCommitted(block_id_t block_id, transaction_t commit_id) {
+	lock_guard<mutex> lock(single_file_block_lock);
+	auto entry = newly_used_blocks.find(block_id);
+	// optimistic writes keep their blocks newly used until their commit
+	if (entry == newly_used_blocks.end()) {
+		throw InternalException("MarkBlockAsCommitted called with block id %d that is not newly used", block_id);
+	}
+	D_ASSERT(entry->second == MAX_TRANSACTION_ID || entry->second == commit_id);
+	entry->second = commit_id;
 }
 
 void SingleFileBlockManager::MarkBlockAsUsed(block_id_t block_id) {
@@ -1004,7 +1015,7 @@ void SingleFileBlockManager::MarkBlockAsModified(block_id_t block_id) {
 		throw InternalException("MarkBlockAsModified called with already freed block id %d", block_id);
 	}
 	auto newly_used_entry = newly_used_blocks.find(block_id);
-	if (newly_used_entry != newly_used_blocks.end()) {
+	if (newly_used_entry != newly_used_blocks.end() && newly_used_entry->second == MAX_TRANSACTION_ID) {
 		// this block was newly used - and now we are labeling it as no longer being required
 		// we can directly add it back to the free list
 		newly_used_blocks.erase(block_id);
@@ -1012,6 +1023,8 @@ void SingleFileBlockManager::MarkBlockAsModified(block_id_t block_id) {
 	} else {
 		// this block was used in storage, we cannot directly re-use it
 		// add it to the modified blocks indicating it will be re-usable after the next checkpoint
+		// so is a committed newly used block, which the WAL of its commit refers to until a header includes it
+		newly_used_blocks.erase(block_id);
 		modified_blocks.insert(block_id);
 	}
 }
@@ -1063,7 +1076,7 @@ void SingleFileBlockManager::VerifyBlocks(const unordered_map<block_id_t, idx_t>
 		}
 	}
 	for (auto &newly_used_block : newly_used_blocks) {
-		referenced_blocks.insert(newly_used_block);
+		referenced_blocks.insert(newly_used_block.first);
 	}
 	for (auto &free_block : free_list) {
 		referenced_blocks.insert(free_block);
@@ -1108,7 +1121,7 @@ void SingleFileBlockManager::VerifyBlocks(const unordered_map<block_id_t, idx_t>
 			if (!newly_used_blocks_str.empty()) {
 				newly_used_blocks_str += ", ";
 			}
-			newly_used_blocks_str += to_string(block);
+			newly_used_blocks_str += to_string(block.first);
 		}
 
 		throw InternalException(
@@ -1340,7 +1353,7 @@ bool SingleFileBlockManager::AddFreeBlock(unique_lock<mutex> &lock, block_id_t b
 	lock.lock();
 	return false;
 }
-void SingleFileBlockManager::WriteHeader(QueryContext context, DatabaseHeader header) {
+void SingleFileBlockManager::WriteHeader(QueryContext context, DatabaseHeader header, VisibilityBound bound) {
 	auto free_list_blocks = GetFreeListBlocks();
 
 	// now handle the free list
@@ -1359,10 +1372,16 @@ void SingleFileBlockManager::WriteHeader(QueryContext context, DatabaseHeader he
 		all_free_blocks.insert(block);
 	}
 	auto written_multi_use_blocks = multi_use_blocks;
-	// newly used blocks are still free blocks for this checkpoint - so add them to the free list that we write
-	for (auto &newly_used_block : newly_used_blocks) {
-		all_free_blocks.insert(newly_used_block);
-		written_multi_use_blocks.erase(newly_used_block);
+	for (auto entry = newly_used_blocks.begin(); entry != newly_used_blocks.end();) {
+		if (entry->second < bound) {
+			// committed before the bound: this checkpoint includes the block
+			entry = newly_used_blocks.erase(entry);
+			continue;
+		}
+		// newly used blocks are still free blocks for this checkpoint - so add them to the free list that we write
+		all_free_blocks.insert(entry->first);
+		written_multi_use_blocks.erase(entry->first);
+		entry++;
 	}
 
 	if (!free_list_blocks.empty()) {

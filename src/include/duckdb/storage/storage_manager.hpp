@@ -40,7 +40,7 @@ public:
 	//! Write the commit's WAL flush marker. With sync_now the WAL is synced up to it before returning;
 	//! otherwise the marker is only pushed to the OS and the WAL offset to sync up to is returned (0 if
 	//! nothing was written, or it was synced here)
-	virtual idx_t FlushCommit(bool sync_now) = 0;
+	virtual idx_t FlushCommit(transaction_t commit_id, bool sync_now) = 0;
 
 	virtual void AddRowGroupData(DataTable &table, idx_t start_index, idx_t count,
 	                             unique_ptr<PersistentCollectionData> row_group_data) = 0;

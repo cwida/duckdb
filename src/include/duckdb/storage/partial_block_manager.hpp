@@ -68,6 +68,10 @@ public:
 
 	//! Returns a reference to the underlying block manager.
 	BlockManager &GetBlockManager() const;
+	//! Returns what the partial block manager writes for.
+	PartialBlockType GetPartialBlockType() const {
+		return partial_block_type;
+	}
 	//! Returns the query context to attribute IO to.
 	QueryContext GetQueryContext() const;
 

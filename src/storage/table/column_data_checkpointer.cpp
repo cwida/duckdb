@@ -6,6 +6,7 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/logging/log_manager.hpp"
 #include "duckdb/parser/column_definition.hpp"
+#include "duckdb/storage/partial_block_manager.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
@@ -422,6 +423,10 @@ void ColumnDataCheckpointer::Checkpoint() {
 	if (!has_changes) {
 		// Nothing has undergone any changes, no need to checkpoint
 		// just move on to finalizing
+		if (checkpoint_info.GetPartialBlockManager().GetPartialBlockType() == PartialBlockType::APPEND_TO_TABLE) {
+			// an optimistic write: its blocks stay newly used until its commit
+			return;
+		}
 		// mark block ids as checkpointed
 		CheckpointBlockIdMarker marker(storage_manager.GetBlockManager());
 		for (idx_t i = 0; i < checkpoint_states.size(); i++) {
