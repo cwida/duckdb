@@ -14,7 +14,18 @@ INSERT INTO T0(C1) VALUES (1);
 statement ok
 INSERT INTO T1(C1) VALUES (1);
 
-query I
+query III
+WITH CTE AS MATERIALIZED (
+SELECT A1, * FROM T0
+  LEFT JOIN (
+    SELECT C1 AS A1 FROM T1
+  ) ON T0.C1 = A1
+) SELECT * FROM CTE;
+----
+1	1	1
+
+# the CTE has two columns named A1, so the name on its own is ambiguous
+statement error
 WITH CTE AS MATERIALIZED (
 SELECT A1, * FROM T0
   LEFT JOIN (
@@ -22,4 +33,4 @@ SELECT A1, * FROM T0
   ) ON T0.C1 = A1
 ) SELECT A1 FROM CTE;
 ----
-1
+<REGEX>:Binder Error: Ambiguous reference to column name "A1".*

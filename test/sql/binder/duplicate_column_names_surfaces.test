@@ -1,0 +1,147 @@
+# name: test/sql/binder/duplicate_column_names_surfaces.test
+# description: Where duplicate column names are still renamed, and where they are rejected
+# group: [binder]
+
+# ---------------------------------------------------------------------------
+# a derived table keeps duplicate names
+# ---------------------------------------------------------------------------
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM (SELECT 1 AS x, 2 AS x) t);
+----
+x
+x
+
+# ---------------------------------------------------------------------------
+# a CTE keeps them too
+# ---------------------------------------------------------------------------
+
+query I
+SELECT column_name FROM (DESCRIBE WITH c AS (SELECT 1 AS x, 2 AS x) SELECT * FROM c);
+----
+x
+x
+
+query I
+SELECT column_name FROM (DESCRIBE WITH c(x, x) AS (SELECT 1, 2) SELECT * FROM c);
+----
+x
+x
+
+query II
+WITH c AS (SELECT 1 AS x, 2 AS x) SELECT * FROM c;
+----
+1	2
+
+# ---------------------------------------------------------------------------
+# a column alias list on a base table may repeat a name, as it may in PostgreSQL
+# ---------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE base_two(a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO base_two VALUES (7, 8);
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM base_two t(x, x));
+----
+x
+x
+
+# the alias list may even give a generated column the name of the column its expression reads
+statement ok
+CREATE TABLE gen_col (g AS (c) VIRTUAL, c INTEGER);
+
+statement ok
+INSERT INTO gen_col VALUES (5);
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM gen_col t(c));
+----
+c
+c
+
+query II
+SELECT * FROM gen_col t(c);
+----
+5	5
+
+query II
+SELECT * FROM base_two t(x, x);
+----
+7	8
+
+# ---------------------------------------------------------------------------
+# the catalog cannot hold duplicate names, so these must keep renaming
+# (PostgreSQL rejects them outright instead - CREATE VIEW v(x, x) is an error there)
+# ---------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE ctas_dup AS SELECT 1 AS x, 2 AS x;
+
+query I
+SELECT column_name FROM (DESCRIBE ctas_dup);
+----
+x
+x_1
+
+statement ok
+CREATE TABLE ctas_derived AS SELECT * FROM (SELECT 1 AS x, 2 AS x) s;
+
+query I
+SELECT column_name FROM (DESCRIBE ctas_derived);
+----
+x
+x_1
+
+statement ok
+CREATE VIEW view_dup AS SELECT 1 AS x, 2 AS x;
+
+query I
+SELECT column_name FROM (DESCRIBE view_dup);
+----
+x
+x_1
+
+statement error
+CREATE TABLE explicit_dup(x INTEGER, x INTEGER);
+----
+<REGEX>:.*already exists.*
+
+# ---------------------------------------------------------------------------
+# operations that match columns by name reject duplicates rather than guess
+# ---------------------------------------------------------------------------
+
+statement error
+SELECT * FROM (SELECT 1 AS x, 2 AS x) t UNION BY NAME SELECT 9 AS x;
+----
+<REGEX>:.*BY NAME operation doesn't support duplicate names.*
+
+statement ok
+CREATE TABLE insert_target(a INTEGER, b INTEGER);
+
+statement error
+INSERT INTO insert_target BY NAME SELECT * FROM (SELECT 1 AS a, 2 AS a);
+----
+<REGEX>:.*Duplicate column name.*
+
+statement error
+SELECT * FROM (SELECT 1 "hello", 2 "hello") NATURAL JOIN (SELECT 1 "hello", 2 "hello");
+----
+<REGEX>:.*appears more than once on.*side of join.*
+
+# a join on a column that is not the duplicated one is unaffected
+query III
+SELECT * FROM (SELECT 1 AS k, 2 AS x, 3 AS x) a JOIN (SELECT 1 AS k) b USING (k);
+----
+1	2	3
+
+# ---------------------------------------------------------------------------
+# star modifiers apply to every column carrying the name
+# ---------------------------------------------------------------------------
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT * EXCLUDE (x) FROM (SELECT 1 AS x, 2 AS x, 3 AS z) t);
+----
+z

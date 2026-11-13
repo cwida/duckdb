@@ -157,9 +157,6 @@ void CTEBindState::Bind(CTEBinding &binding) {
 		}
 		names[i] = aliases[i];
 	}
-
-	// Rename columns if duplicate names are detected
-	QueryResult::DeduplicateColumns(names);
 }
 
 BoundCTEData Binder::PrepareCTE(const Identifier &ctename, CommonTableExpressionInfo &statement) {

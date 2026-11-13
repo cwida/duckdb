@@ -1,0 +1,37 @@
+# name: test/sql/binder/star_replace_duplicate_column.test
+# description: * REPLACE against a column name that occurs more than once
+# group: [binder]
+
+# a join of two relations with the same column name produces that name twice
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM range(2) t1(i) JOIN range(2) t2(i) ON t1.i=t2.i);
+----
+i
+i
+
+# REPLACE substitutes the expression for every column with that name, so the star still
+# expands to as many columns as the relation has
+query I
+SELECT column_name FROM (DESCRIBE SELECT * REPLACE (99 AS i) FROM range(2) t1(i) JOIN range(2) t2(i) ON t1.i=t2.i);
+----
+i
+i
+
+query II
+SELECT * REPLACE (99 AS i) FROM range(2) t1(i) JOIN range(2) t2(i) ON t1.i=t2.i;
+----
+99	99
+99	99
+
+# the same holds for a derived table that repeats a name
+query I
+SELECT column_name FROM (DESCRIBE SELECT * REPLACE (99 AS x) FROM (SELECT 1 AS x, 2 AS x) t);
+----
+x
+x
+
+# EXCLUDE removes every column with the name, which leaves nothing here
+statement error
+SELECT * EXCLUDE (i) FROM range(2) t1(i) JOIN range(2) t2(i) ON t1.i=t2.i;
+----
+<REGEX>:.*SELECT list is empty after resolving \* expressions.*

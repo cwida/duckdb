@@ -38,6 +38,9 @@ struct UsingColumnSet {
 
 enum class ColumnBindType { EXPAND_GENERATED_COLUMNS, DO_NOT_EXPAND_GENERATED_COLUMNS };
 
+//! What to do when aliasing a set of column names produces the same name twice
+enum class DuplicateColumnNames { RENAME, ALLOW };
+
 //! The BindContext object keeps track of all the tables and columns that are
 //! encountered during the binding process.
 class BindContext {
@@ -60,10 +63,12 @@ public:
 	//! Binds a column expression to the base table. Returns the bound expression
 	//! or throws an exception if the column could not be bound.
 	BindResult BindColumn(ColumnRefExpression &colref, idx_t depth);
-	string BindColumn(PositionalReferenceExpression &ref, Identifier &table_name, Identifier &column_name);
+	string BindColumn(PositionalReferenceExpression &ref, Identifier &table_name, Identifier &column_name,
+	                  optional_idx &column_index);
 	unique_ptr<ColumnRefExpression> PositionToColumn(PositionalReferenceExpression &ref);
 
-	unique_ptr<ParsedExpression> ExpandGeneratedColumn(TableBinding &table_binding, const Identifier &column_name);
+	unique_ptr<ParsedExpression> ExpandGeneratedColumn(TableBinding &table_binding, column_t column_index,
+	                                                   const Identifier &column_name);
 
 	unique_ptr<ParsedExpression>
 	CreateColumnReference(const Identifier &table_name, const Identifier &column_name,
@@ -77,7 +82,8 @@ public:
 	                      ColumnBindType bind_type = ColumnBindType::EXPAND_GENERATED_COLUMNS);
 	unique_ptr<ParsedExpression>
 	CreateColumnReference(const BindingAlias &table_alias, const Identifier &column_name,
-	                      ColumnBindType bind_type = ColumnBindType::EXPAND_GENERATED_COLUMNS);
+	                      ColumnBindType bind_type = ColumnBindType::EXPAND_GENERATED_COLUMNS,
+	                      optional_idx resolved_index = optional_idx());
 
 	//! Generate column expressions for all columns that are present in the
 	//! referenced tables. This is used to resolve the * expression in a
@@ -154,7 +160,8 @@ public:
 	//! Alias a set of column names for the specified table, using the original names if there are not enough aliases
 	//! specified.
 	static vector<Identifier> AliasColumnNames(const Identifier &table_name, const vector<Identifier> &names,
-	                                           const vector<Identifier> &column_aliases);
+	                                           const vector<Identifier> &column_aliases,
+	                                           DuplicateColumnNames duplicates = DuplicateColumnNames::RENAME);
 
 	//! Add all the bindings from a BindContext to this BindContext. The other BindContext is destroyed in the process.
 	void AddContext(BindContext other);

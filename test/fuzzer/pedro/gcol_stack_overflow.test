@@ -9,8 +9,14 @@ insert into t0 VALUES(5);
 
 foreach table_alias t0 c0 c2 order_id total_profit amount_sold price "a.b.c"
 
-query I
+# the alias gives both columns the name c0, so the name on its own is ambiguous
+statement error
 SELECT 1 FROM t0 as {table_alias}(c0) WHERE c0 = 0;
+----
+<REGEX>:Binder Error: Ambiguous reference to column name "c0".*
+
+query I
+SELECT 1 FROM t0 as {table_alias}(c0) WHERE #1 = 0;
 ----
 
 query I
@@ -18,10 +24,15 @@ select 1 from t0 as {table_alias}(c0);
 ----
 1
 
-query I
+statement error
 select c0 from t0 as {table_alias}(c0);
 ----
-5
+<REGEX>:Binder Error: Ambiguous reference to column name "c0".*
+
+query II
+select #1, #2 from t0 as {table_alias}(c0);
+----
+5	5
 
 #table_alias
 endloop

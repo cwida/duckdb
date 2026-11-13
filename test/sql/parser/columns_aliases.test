@@ -28,7 +28,7 @@ SELECT min_a, min_b, min_c FROM (SELECT MIN(COLUMNS('([a-z])\d+')) AS "min_\1" F
 
 # out of range - RE2 just swallows it
 query III
-SELECT min_, "min__1", "min__2" FROM (SELECT MIN(COLUMNS('([a-z])\d+')) AS "min_\2" FROM numerics)
+SELECT #1, #2, #3 FROM (SELECT MIN(COLUMNS('([a-z])\d+')) AS "min_\2" FROM numerics)
 ----
 42	84	126
 

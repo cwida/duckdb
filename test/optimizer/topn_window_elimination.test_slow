@@ -373,7 +373,7 @@ SELECT * FROM (FROM with_optimizer) EXCEPT (FROM without_optimizer);
 statement ok
 CREATE OR REPLACE TABLE with_optimizer AS SELECT a.id, a.vec, neighbor.id as nbr_id, neighbor.vec as nbr_vec
 FROM vectors as a, LATERAL (
-	SELECT *, b.id
+	SELECT *, b.id AS id_1
 	FROM vectors as b
 	ORDER BY list_distance(a.vec, b.vec) LIMIT 1
 ) as neighbor
@@ -385,7 +385,7 @@ set disabled_optimizers = 'top_n_window_elimination'
 statement ok
 CREATE OR REPLACE TABLE without_optimizer AS SELECT a.id, a.vec, neighbor.id as nbr_id, neighbor.vec as nbr_vec
 FROM vectors as a, LATERAL (
-	SELECT *, b.id
+	SELECT *, b.id AS id_1
 	FROM vectors as b
 	ORDER BY list_distance(a.vec, b.vec) LIMIT 1
 ) as neighbor

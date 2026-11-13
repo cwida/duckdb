@@ -1,0 +1,97 @@
+# name: test/sql/copy/parquet/duplicate_column_names.test
+# description: Reading a Parquet file whose schema repeats a column name
+# group: [parquet]
+
+require parquet
+
+# the file genuinely holds two columns called x (COPY cannot write one - it renames on write,
+# so the fixture is produced by an external writer)
+query I
+SELECT name FROM parquet_schema('test/sql/copy/parquet/duplicate_column_names.parquet') OFFSET 1;
+----
+x
+x
+y
+
+# the reader renames the second one, so the schema it reports is not the schema of the file
+# SHOULD: x, x, y - the names the file actually carries, with the second x reachable by position.
+# Dropping the rename is not enough on its own: MultiFileColumnMapper maps global columns to
+# columns of the file by name (NameMapper, mapping mode BY_NAME), so two columns called x both
+# map to the first one and the second column reads the wrong data. The mapper needs to match
+# the nth occurrence of a name against the nth occurrence in the file first.
+query II
+SELECT column_name, column_type FROM (DESCRIBE FROM 'test/sql/copy/parquet/duplicate_column_names.parquet');
+----
+x	INTEGER
+x_1	INTEGER
+y	VARCHAR
+
+query III
+SELECT * FROM 'test/sql/copy/parquet/duplicate_column_names.parquet';
+----
+1	10	a
+2	20	b
+
+# the invented name is what makes the second column addressable today
+# SHOULD: no such column - the second x is reached as #2
+query I
+SELECT x_1 FROM 'test/sql/copy/parquet/duplicate_column_names.parquet';
+----
+10
+20
+
+query I
+SELECT x FROM 'test/sql/copy/parquet/duplicate_column_names.parquet';
+----
+1
+2
+
+# positional access already works and is unaffected by the renaming
+query I
+SELECT #2 FROM 'test/sql/copy/parquet/duplicate_column_names.parquet';
+----
+10
+20
+
+# ---------------------------------------------------------------------------
+# writing: COPY renames repeated names, so the file it writes never carries one
+# ---------------------------------------------------------------------------
+
+statement ok
+COPY (SELECT 1 AS a, 2 AS id, 3 AS "Id") TO '{TEMP_DIR}/copy_dup_case.parquet';
+
+query I
+SELECT name FROM parquet_schema('{TEMP_DIR}/copy_dup_case.parquet') OFFSET 1;
+----
+a
+id
+Id_1
+
+query III
+SELECT * FROM '{TEMP_DIR}/copy_dup_case.parquet';
+----
+1	2	3
+
+statement ok
+COPY (SELECT 2 AS x, 3 AS x) TO '{TEMP_DIR}/copy_dup_exact.parquet';
+
+query I
+SELECT name FROM parquet_schema('{TEMP_DIR}/copy_dup_exact.parquet') OFFSET 1;
+----
+x
+x_1
+
+query II
+SELECT * FROM '{TEMP_DIR}/copy_dup_exact.parquet';
+----
+2	3
+
+# a derived table that keeps the duplicates still writes a file with unique names
+statement ok
+COPY (SELECT * FROM (SELECT 2 AS x, 3 AS x) t) TO '{TEMP_DIR}/copy_dup_derived.parquet';
+
+query I
+SELECT name FROM parquet_schema('{TEMP_DIR}/copy_dup_derived.parquet') OFFSET 1;
+----
+x
+x_1

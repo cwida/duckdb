@@ -51,6 +51,10 @@ bool Binder::TryFindBinding(const Identifier &using_column, const string &join_s
 	}
 	// find the join binding
 	for (auto &binding : bindings) {
+		if (binding.get().HasDuplicateColumnName(using_column)) {
+			// the join column is not well defined if one side has it more than once
+			throw BinderException("Column name %s appears more than once on %s side of join", using_column, join_side);
+		}
 		if (result.IsSet()) {
 			string error = "Column name \"";
 			error += using_column;

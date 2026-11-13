@@ -197,9 +197,9 @@ vector<reference<Binding>> BindContext::GetMatchingBindings(const Identifier &co
 	return result;
 }
 
-unique_ptr<ParsedExpression> BindContext::ExpandGeneratedColumn(TableBinding &table_binding,
+unique_ptr<ParsedExpression> BindContext::ExpandGeneratedColumn(TableBinding &table_binding, column_t column_index,
                                                                 const Identifier &column_name) {
-	auto result = table_binding.ExpandGeneratedColumn(column_name);
+	auto result = table_binding.ExpandGeneratedColumn(column_index);
 	result->SetAlias(column_name);
 	return result;
 }
@@ -222,8 +222,8 @@ static bool ColumnIsGenerated(Binding &binding, column_t index) {
 }
 
 unique_ptr<ParsedExpression> BindContext::CreateColumnReference(const BindingAlias &table_alias,
-                                                                const Identifier &column_name,
-                                                                ColumnBindType bind_type) {
+                                                                const Identifier &column_name, ColumnBindType bind_type,
+                                                                optional_idx resolved_index) {
 	ErrorData error;
 	// emit the full (possibly nested) schema path so the produced reference is unambiguous
 	vector<Identifier> names;
@@ -241,9 +241,25 @@ unique_ptr<ParsedExpression> BindContext::CreateColumnReference(const BindingAli
 	if (!binding) {
 		return std::move(result);
 	}
+	if (!resolved_index.IsValid()) {
+		binding->ThrowIfAmbiguousColumnName(column_name);
+	}
 	auto column_index = binding->GetBindingIndex(column_name);
+	if (resolved_index.IsValid()) {
+		// the reference already knows which column it is - the name on its own may reach a
+		// different column that shadows it
+		auto &binding_names = binding->GetColumnNames();
+		auto index = resolved_index.GetIndex();
+		if (index < binding_names.size() && binding_names[index] == column_name) {
+			column_index = index;
+		}
+	}
 	if (bind_type == ColumnBindType::EXPAND_GENERATED_COLUMNS && ColumnIsGenerated(*binding, column_index)) {
-		return ExpandGeneratedColumn(binding->Cast<TableBinding>(), column_name);
+		return ExpandGeneratedColumn(binding->Cast<TableBinding>(), column_index, column_name);
+	}
+	if (column_index != DConstants::INVALID_INDEX) {
+		// rowid-style columns have no index in the binding - they still resolve by name
+		result->SetResolvedIndex(column_index);
 	}
 	auto &registered_name = binding->GetRegisteredColumnName(column_name);
 	if (registered_name.GetIdentifierName() != column_name.GetIdentifierName()) {
@@ -283,9 +299,14 @@ unique_ptr<ParsedExpression> BindContext::CreateColumnReference(const Identifier
 	if (!binding) {
 		return std::move(result);
 	}
+	binding->ThrowIfAmbiguousColumnName(column_name);
 	auto column_index = binding->GetBindingIndex(column_name);
 	if (bind_type == ColumnBindType::EXPAND_GENERATED_COLUMNS && ColumnIsGenerated(*binding, column_index)) {
-		return ExpandGeneratedColumn(binding->Cast<TableBinding>(), column_name);
+		return ExpandGeneratedColumn(binding->Cast<TableBinding>(), column_index, column_name);
+	}
+	if (column_index != DConstants::INVALID_INDEX) {
+		// rowid-style columns have no index in the binding - they still resolve by name
+		result->SetResolvedIndex(column_index);
 	}
 	auto &registered_name = binding->GetRegisteredColumnName(column_name);
 	if (registered_name.GetIdentifierName() != column_name.GetIdentifierName()) {
@@ -467,7 +488,8 @@ BindResult BindContext::BindColumn(ColumnRefExpression &colref, idx_t depth) {
 	return binding->Bind(colref, depth);
 }
 
-string BindContext::BindColumn(PositionalReferenceExpression &ref, Identifier &table_name, Identifier &column_name) {
+string BindContext::BindColumn(PositionalReferenceExpression &ref, Identifier &table_name, Identifier &column_name,
+                               optional_idx &column_index) {
 	idx_t total_columns = 0;
 	idx_t current_position = ref.Index() - 1;
 	for (auto &entry : bindings_list) {
@@ -483,6 +505,7 @@ string BindContext::BindColumn(PositionalReferenceExpression &ref, Identifier &t
 		if (current_position < entry_column_count) {
 			table_name = binding.GetAlias();
 			column_name = column_names[current_position];
+			column_index = current_position;
 			return string();
 		} else {
 			total_columns += entry_column_count;
@@ -494,12 +517,18 @@ string BindContext::BindColumn(PositionalReferenceExpression &ref, Identifier &t
 
 unique_ptr<ColumnRefExpression> BindContext::PositionToColumn(PositionalReferenceExpression &ref) {
 	Identifier table_name, column_name;
+	optional_idx column_index;
 
-	string error = BindColumn(ref, table_name, column_name);
+	string error = BindColumn(ref, table_name, column_name, column_index);
 	if (!error.empty()) {
 		throw BinderException(error);
 	}
-	return make_uniq<ColumnRefExpression>(column_name, table_name);
+	auto result = make_uniq<ColumnRefExpression>(column_name, table_name);
+	if (column_index.IsValid()) {
+		// a positional reference names a column by index - bind it as such
+		result->SetResolvedIndex(column_index.GetIndex());
+	}
+	return result;
 }
 
 struct StarBindState {
@@ -513,6 +542,13 @@ struct StarBindState {
 	vector<Identifier> candidate_columns;
 };
 
+static void SetResolvedColumnIndex(ParsedExpression &expr, idx_t column_index) {
+	if (expr.GetExpressionClass() != ExpressionClass::COLUMN_REF) {
+		return;
+	}
+	expr.Cast<ColumnRefExpression>().SetResolvedIndex(column_index);
+}
+
 bool CheckExclusionList(StarExpression &expr, const QualifiedColumnName &qualified_name, StarBindState &state) {
 	if (expr.ExcludeList().find(qualified_name) != expr.ExcludeList().end()) {
 		state.excluded_qualified_columns.insert(qualified_name);
@@ -525,14 +561,12 @@ bool HandleRename(StarExpression &expr, const QualifiedColumnName &qualified_nam
                   unique_ptr<ParsedExpression> &new_expr, StarBindState &state) {
 	auto replace_entry = expr.ReplaceList().find(qualified_name.column);
 	if (replace_entry != expr.ReplaceList().end()) {
-		if (state.replaced_columns.find(replace_entry->first) == state.replaced_columns.end()) {
-			new_expr = replace_entry->second->Copy();
-			new_expr->SetAlias(replace_entry->first);
-			state.replaced_columns.insert(replace_entry->first);
-			state.excluded_columns.insert(replace_entry->first);
-		} else {
-			return false;
-		}
+		// every column with this name is replaced - dropping the later ones would expand the
+		// star to fewer columns than the relation has
+		new_expr = replace_entry->second->Copy();
+		new_expr->SetAlias(replace_entry->first);
+		state.replaced_columns.insert(replace_entry->first);
+		state.excluded_columns.insert(replace_entry->first);
 	}
 	auto rename_entry = expr.RenameList().find(qualified_name);
 	if (rename_entry != expr.RenameList().end()) {
@@ -569,7 +603,8 @@ void BindContext::GenerateAllColumnExpressions(StarExpression &expr,
 			auto &binding = *entry;
 			auto &column_names = binding.GetColumnNames();
 			auto &binding_alias = binding.GetBindingAlias();
-			for (auto &column_name : column_names) {
+			for (idx_t col_idx = 0; col_idx < column_names.size(); col_idx++) {
+				auto &column_name = column_names[col_idx];
 				star_state.candidate_columns.push_back(column_name);
 				QualifiedColumnName qualified_column(binding_alias, column_name);
 				if (CheckExclusionList(expr, qualified_column, star_state)) {
@@ -609,8 +644,9 @@ void BindContext::GenerateAllColumnExpressions(StarExpression &expr,
 					handled_using_columns.insert(using_binding);
 					continue;
 				}
-				auto new_expr =
-				    CreateColumnReference(binding_alias, column_name, ColumnBindType::DO_NOT_EXPAND_GENERATED_COLUMNS);
+				auto new_expr = CreateColumnReference(binding_alias, column_name,
+				                                      ColumnBindType::DO_NOT_EXPAND_GENERATED_COLUMNS, col_idx);
+				SetResolvedColumnIndex(*new_expr, col_idx);
 				if (HandleRename(expr, qualified_column, new_expr, star_state)) {
 					new_select_list.push_back(std::move(new_expr));
 				}
@@ -672,14 +708,16 @@ void BindContext::GenerateAllColumnExpressions(StarExpression &expr,
 				}
 			}
 		} else {
-			for (auto &column_name : column_names) {
+			for (idx_t col_idx = 0; col_idx < column_names.size(); col_idx++) {
+				auto &column_name = column_names[col_idx];
 				star_state.candidate_columns.push_back(column_name);
 				QualifiedColumnName qualified_name(binding_alias, column_name);
 				if (CheckExclusionList(expr, qualified_name, star_state)) {
 					continue;
 				}
-				auto new_expr =
-				    CreateColumnReference(binding_alias, column_name, ColumnBindType::DO_NOT_EXPAND_GENERATED_COLUMNS);
+				auto new_expr = CreateColumnReference(binding_alias, column_name,
+				                                      ColumnBindType::DO_NOT_EXPAND_GENERATED_COLUMNS, col_idx);
+				SetResolvedColumnIndex(*new_expr, col_idx);
 				if (HandleRename(expr, qualified_name, new_expr, star_state)) {
 					new_select_list.push_back(std::move(new_expr));
 				}
@@ -766,7 +804,12 @@ void BindContext::AddTableFunction(TableIndex index, const Identifier &alias, co
 	    make_uniq<TableBinding>(alias, types, names, bound_column_ids, entry, index, std::move(virtual_columns)));
 }
 
-static Identifier AddColumnNameToBinding(const Identifier &base_name, identifier_set_t &current_names) {
+static Identifier AddColumnNameToBinding(const Identifier &base_name, identifier_set_t &current_names,
+                                         DuplicateColumnNames duplicates) {
+	if (duplicates == DuplicateColumnNames::ALLOW) {
+		current_names.insert(base_name);
+		return base_name;
+	}
 	idx_t index = 1;
 	Identifier name = base_name;
 	while (current_names.find(name) != current_names.end()) {
@@ -777,7 +820,8 @@ static Identifier AddColumnNameToBinding(const Identifier &base_name, identifier
 }
 
 vector<Identifier> BindContext::AliasColumnNames(const Identifier &table_name, const vector<Identifier> &names,
-                                                 const vector<Identifier> &column_aliases) {
+                                                 const vector<Identifier> &column_aliases,
+                                                 DuplicateColumnNames duplicates) {
 	vector<Identifier> result;
 	if (column_aliases.size() > names.size()) {
 		throw BinderException("table %s has %lld columns available but %lld columns specified", table_name,
@@ -786,17 +830,18 @@ vector<Identifier> BindContext::AliasColumnNames(const Identifier &table_name, c
 	identifier_set_t current_names;
 	// use any provided column aliases first
 	for (idx_t i = 0; i < column_aliases.size(); i++) {
-		result.push_back(AddColumnNameToBinding(column_aliases[i], current_names));
+		result.push_back(AddColumnNameToBinding(column_aliases[i], current_names, duplicates));
 	}
 	// if not enough aliases were provided, use the default names for remaining columns
 	for (idx_t i = column_aliases.size(); i < names.size(); i++) {
-		result.push_back(AddColumnNameToBinding(names[i], current_names));
+		result.push_back(AddColumnNameToBinding(names[i], current_names, duplicates));
 	}
 	return result;
 }
 
 void BindContext::AddSubquery(TableIndex index, const Identifier &alias, SubqueryRef &ref, BoundStatement &subquery) {
-	auto names = AliasColumnNames(alias, subquery.names, ref.column_name_alias);
+	auto duplicates = ref.deduplicate_column_names ? DuplicateColumnNames::RENAME : DuplicateColumnNames::ALLOW;
+	auto names = AliasColumnNames(alias, subquery.names, ref.column_name_alias, duplicates);
 	AddGenericBinding(index, alias, names, subquery.types);
 }
 
@@ -813,7 +858,7 @@ void BindContext::AddView(TableIndex index, const Identifier &alias, SubqueryRef
 
 void BindContext::AddSubquery(TableIndex index, const Identifier &alias, TableFunctionRef &ref,
                               BoundStatement &subquery) {
-	auto names = AliasColumnNames(alias, subquery.names, ref.column_name_alias);
+	auto names = AliasColumnNames(alias, subquery.names, ref.column_name_alias, DuplicateColumnNames::ALLOW);
 	AddGenericBinding(index, alias, names, subquery.types);
 }
 

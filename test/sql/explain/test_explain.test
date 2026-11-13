@@ -24,27 +24,27 @@ statement ok
 SET explain_output='optimized_only'
 
 query II
-EXPLAIN (FORMAT JSON) SELECT SUM(i) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
+EXPLAIN (FORMAT JSON) SELECT SUM(#1) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
 ----
 logical_opt	<REGEX>:.*"name": "CROSS_PRODUCT".*
 
 query II
-EXPLAIN (FORMAT HTML) SELECT SUM(i) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
+EXPLAIN (FORMAT HTML) SELECT SUM(#1) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
 ----
 logical_opt	<REGEX>:.*"name":"CROSS_PRODUCT".*
 
 query II
-EXPLAIN (FORMAT GRAPHVIZ) SELECT SUM(i) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
+EXPLAIN (FORMAT GRAPHVIZ) SELECT SUM(#1) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
 ----
 logical_opt	<REGEX>:.*node_0_0 -> node_0_1;.*
 
 query II
-EXPLAIN (FORMAT YAML) SELECT SUM(i) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
+EXPLAIN (FORMAT YAML) SELECT SUM(#1) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
 ----
 logical_opt	<REGEX>:.*- name: "CROSS_PRODUCT".*
 
 query II
-EXPLAIN (FORMAT MERMAID) SELECT SUM(i) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
+EXPLAIN (FORMAT MERMAID) SELECT SUM(#1) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
 ----
 logical_opt	<REGEX>:.*node_0_.*\["`\*\*CROSS_PRODUCT\*\*.*
 

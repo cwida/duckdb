@@ -28,6 +28,7 @@ bool SubqueryRef::Equals(const TableRef &other_p) const {
 unique_ptr<TableRef> SubqueryRef::Copy() {
 	auto copy = make_uniq<SubqueryRef>(unique_ptr_cast<SQLStatement, SelectStatement>(subquery->Copy()), alias);
 	copy->column_name_alias = column_name_alias;
+	copy->deduplicate_column_names = deduplicate_column_names;
 	CopyProperties(*copy);
 	return std::move(copy);
 }

@@ -74,15 +74,15 @@ FROM read_parquet('{TEMP_DIR}/integers.parquet', schema=map {
 ----
 Map keys must be unique
 
-# cannot duplicate column names
-statement error
+# duplicate column names are allowed - the first one wins for name resolution
+query II
 SELECT *
 FROM read_parquet('{TEMP_DIR}/integers.parquet', schema=map {
                     0: {name: 'cool_column', type: 'BIGINT', default_value: NULL},
                     1: {name: 'cool_column', type: 'UTINYINT', default_value: 43}
                   }) pq
 ----
-Binder Error: table "pq" has duplicate column name "cool_column"
+42	43
 
 # the supplied default value must be castable to the given type for that column
 statement error

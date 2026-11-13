@@ -1,0 +1,204 @@
+# name: test/sql/binder/duplicate_column_names.test
+# description: Column names of queries that produce duplicate column names
+# group: [binder]
+
+# a select list can produce duplicate column names
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT i, i FROM range(5) tbl(i));
+----
+i	BIGINT
+i	BIGINT
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT 'x' AS x, 42 AS x);
+----
+x	VARCHAR
+x	INTEGER
+
+# putting the same query in a FROM clause reports the same names
+query II
+SELECT column_name, column_type FROM (DESCRIBE FROM (SELECT i, i FROM range(5) tbl(i)));
+----
+i	BIGINT
+i	BIGINT
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE FROM (SELECT 'x' AS x, 42 AS x));
+----
+x	VARCHAR
+x	INTEGER
+
+# so can a join of two relations with the same column name
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM range(5) tbl1(i) JOIN range(5) tbl2(i) ON tbl1.i=tbl2.i);
+----
+i	BIGINT
+i	BIGINT
+
+# wrapping any of these in a subquery preserves the names
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM (SELECT i, i FROM range(5) tbl(i)) tbl);
+----
+i	BIGINT
+i	BIGINT
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM (SELECT 'x' AS x, 42 AS x) tbl);
+----
+x	VARCHAR
+x	INTEGER
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM (SELECT i, i, i, i FROM range(5) tbl(i)) tbl);
+----
+i	BIGINT
+i	BIGINT
+i	BIGINT
+i	BIGINT
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM (SELECT * FROM range(5) tbl1(i) JOIN range(5) tbl2(i) ON tbl1.i=tbl2.i) tbl);
+----
+i	BIGINT
+i	BIGINT
+
+# an explicit column alias list may repeat a name as well
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM (VALUES ('x', 42)) v(x, x));
+----
+x	VARCHAR
+x	INTEGER
+
+# the name is ambiguous, as in Postgres - the columns are reachable by position
+statement error
+SELECT x FROM (SELECT i AS i, i + 100 AS i FROM range(1) tbl(i)) tbl(x, x);
+----
+<REGEX>:Binder Error: Ambiguous reference to column name "x".*
+
+query II
+SELECT #1, #2 FROM (SELECT i AS i, i + 100 AS i FROM range(1) tbl(i)) tbl(x, x);
+----
+0	100
+
+statement error
+SELECT x FROM (SELECT 1 AS x, 2 AS x) t;
+----
+<REGEX>:Binder Error: Ambiguous reference to column name "x": "t" has more than one column named "x".*
+
+# qualifying the name does not tell the columns apart either
+statement error
+SELECT t.x FROM (SELECT 1 AS x, 2 AS x) t;
+----
+<REGEX>:Binder Error: Ambiguous reference to column name "x".*
+
+statement error
+SELECT t.x.a FROM (SELECT {'a': 1} AS x, 2 AS x) t;
+----
+<REGEX>:Binder Error: Ambiguous reference to column name "x".*
+
+# a name that is not duplicated resolves as usual
+query I
+SELECT y FROM (SELECT 1 AS x, 2 AS x, 3 AS y) t;
+----
+3
+
+# excluding the name removes every column that carries it
+query I
+SELECT * EXCLUDE (x) FROM (SELECT 1 AS x, 2 AS x, 3 AS y) t;
+----
+3
+
+# values are unaffected
+query II
+SELECT * FROM (SELECT 'x' AS x, 42 AS x) tbl;
+----
+x	42
+
+query IIII
+SELECT * FROM (SELECT i, i + 1, i + 2, i + 3 FROM range(2) tbl(i)) tbl ORDER BY 1;
+----
+0	1	2	3
+1	2	3	4
+
+# the names do not depend on how many levels of FROM the query passes through
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM (SELECT i, i, i, i FROM range(5) tbl(i)) tbl, (SELECT 32 AS i));
+----
+i
+i
+i
+i
+i
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM (SELECT * FROM (SELECT i, i, i, i FROM range(5) tbl(i)) tbl, (SELECT 32 AS i)));
+----
+i
+i
+i
+i
+i
+
+# an explicit alias keeps its name, it is not displaced by a name invented for a duplicate
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM (SELECT i, i FROM range(1) tbl(i)) tbl, (SELECT 32 AS i_1));
+----
+i
+i
+i_1
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM (SELECT * FROM (SELECT i, i FROM range(1) tbl(i)) tbl, (SELECT 32 AS i_1)));
+----
+i
+i
+i_1
+
+query III
+SELECT * FROM (SELECT * FROM (SELECT i, 100 + i AS i FROM range(1) tbl(i)) tbl, (SELECT 32 AS i_1));
+----
+0	100	32
+
+# query() parses its argument and returns it as a subquery
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM query('SELECT 1 AS x, 2 AS x'));
+----
+x	INTEGER
+x	INTEGER
+
+query II
+SELECT * FROM query('SELECT 1 AS x, 2 AS x');
+----
+1	2
+
+# referring to the name in any clause is ambiguous
+statement error
+SELECT * FROM (SELECT 1 AS x, 2 AS x) t GROUP BY x;
+----
+<REGEX>:Binder Error: Ambiguous reference to column name "x".*
+
+statement error
+SELECT * FROM (SELECT 1 AS x, 2 AS x) t ORDER BY x;
+----
+<REGEX>:Binder Error: Ambiguous reference to column name "x".*
+
+statement error
+SELECT * FROM (SELECT 1 AS x, 2 AS x) t WHERE x = 1;
+----
+<REGEX>:Binder Error: Ambiguous reference to column name "x".*
+
+query II
+SELECT #1, count(*) FROM (SELECT 1 AS x, 2 AS x) t GROUP BY #1;
+----
+1	1
+
+query II
+SELECT * FROM (SELECT 1 AS x, 2 AS x) t WHERE #2 = 2;
+----
+1	2
+
+query II
+SELECT * FROM (SELECT 1 AS x, 2 AS x) t UNION ALL SELECT * FROM (SELECT 3 AS x, 4 AS x) u ORDER BY 1;
+----
+1	2
+3	4

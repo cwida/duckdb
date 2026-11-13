@@ -96,9 +96,14 @@ SELECT UNNEST({'a': 44, 'b': 88}), UNNEST([[1, 2, 3], [4, 5]], recursive := true
 44	88	4
 44	88	5
 
-# duplicate names
+# duplicate names - the name is ambiguous, the columns are reachable by position
+statement error
+SELECT a FROM (SELECT UNNEST({'a': 42, 'b': {'a': 88, 'b': 99}}, recursive := true))
+----
+<REGEX>:Binder Error: Ambiguous reference to column name "a".*
+
 query III
-SELECT a, a_1, b FROM (SELECT UNNEST({'a': 42, 'b': {'a': 88, 'b': 99}}, recursive := true))
+SELECT #1, #2, b FROM (SELECT UNNEST({'a': 42, 'b': {'a': 88, 'b': 99}}, recursive := true))
 ----
 42	88	99
 

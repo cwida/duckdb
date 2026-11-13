@@ -217,7 +217,7 @@ SELECT * FROM (SELECT a + 1 as x, b FROM tbl) subq JOIN t1 ON subq.x = t1.i ORDE
 3	2	3
 
 query IIII
-SELECT * FROM (SELECT a.i, b.i FROM t1 a JOIN t2 b ON a.i = b.i) AS join12
+SELECT * FROM (SELECT a.i, b.i AS i2 FROM t1 a JOIN t2 b ON a.i = b.i) AS join12
 JOIN (SELECT c.c, d.d as newD FROM t3 c JOIN t4 d ON c.c = d.d) AS join34 ON join12.i = join34.c ORDER BY 1 LIMIT 3;
 ----
 0	0	0	0
@@ -225,7 +225,7 @@ JOIN (SELECT c.c, d.d as newD FROM t3 c JOIN t4 d ON c.c = d.d) AS join34 ON joi
 2	2	2	2
 
 query III
-SELECT * FROM (SELECT a.i, b.i FROM t1 a JOIN t2 b ON a.i = b.i) AS join12
+SELECT * FROM (SELECT a.i, b.i AS i2 FROM t1 a JOIN t2 b ON a.i = b.i) AS join12
 JOIN t3 on join12.i = t3.c ORDER BY 1 LIMIT 3;
 ----
 0	0	0
@@ -233,7 +233,7 @@ JOIN t3 on join12.i = t3.c ORDER BY 1 LIMIT 3;
 2	2	2
 
 query II
-SELECT * FROM (SELECT a.i, b.i FROM (SELECT * FROM t1) a JOIN (SELECT * FROM t2) b ON a.i = b.i) AS join12
+SELECT * FROM (SELECT a.i, b.i AS i2 FROM (SELECT * FROM t1) a JOIN (SELECT * FROM t2) b ON a.i = b.i) AS join12
 SEMI JOIN (SELECT c.c, d.d AS newD FROM (SELECT * FROM t3) c JOIN (SELECT * FROM t4) d ON c.c = d.d) AS join34 ON join12.i = join34.c ORDER BY 1 LIMIT 3;
 ----
 0	0

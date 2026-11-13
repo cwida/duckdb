@@ -161,7 +161,8 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 		auto index = GenerateTableIndex();
 
 		auto alias = ref.alias.empty() ? ref.Table() : ref.alias;
-		auto names = BindContext::AliasColumnNames(alias, ctebinding->GetColumnNames(), ref.column_name_alias);
+		auto names = BindContext::AliasColumnNames(alias, ctebinding->GetColumnNames(), ref.column_name_alias,
+		                                           DuplicateColumnNames::ALLOW);
 
 		bind_context.AddGenericBinding(index, alias, names, ctebinding->GetColumnTypes());
 
@@ -283,7 +284,8 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 			return_types.push_back(col.Type());
 			return_names.emplace_back(col.Name());
 		}
-		table_names = BindContext::AliasColumnNames(ref.Table(), table_names, ref.column_name_alias);
+		table_names =
+		    BindContext::AliasColumnNames(ref.Table(), table_names, ref.column_name_alias, DuplicateColumnNames::ALLOW);
 
 		virtual_column_map_t virtual_columns;
 		if (scan_function.get_virtual_columns) {

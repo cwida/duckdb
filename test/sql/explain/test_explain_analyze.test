@@ -16,12 +16,12 @@ EXPLAIN ANALYSE SELECT SUM(i) FROM integers
 analyzed_plan	<REGEX>:.*integers.*
 
 query II
-EXPLAIN (ANALYZE) SELECT SUM(i) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
+EXPLAIN (ANALYZE) SELECT SUM(#1) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
 ----
 analyzed_plan	<REGEX>:.*Cross.Product.*
 
 query II
-EXPLAIN (ANALYSE) SELECT SUM(i) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
+EXPLAIN (ANALYSE) SELECT SUM(#1) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
 ----
 analyzed_plan	<REGEX>:.*Cross.Product.*
 
@@ -29,7 +29,7 @@ statement ok
 PRAGMA enable_profiling
 
 query II
-EXPLAIN ANALYZE SELECT SUM(i) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
+EXPLAIN ANALYZE SELECT SUM(#1) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
 ----
 analyzed_plan	<REGEX>:.*Cross.Product.*
 
@@ -37,17 +37,17 @@ statement ok
 PRAGMA disable_profiling
 
 query II
-EXPLAIN ANALYZE SELECT SUM(i) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
+EXPLAIN ANALYZE SELECT SUM(#1) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
 ----
 analyzed_plan	<REGEX>:.*Cross.Product.*
 
 query II
-EXPLAIN (ANALYZE, FORMAT JSON) SELECT SUM(i) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT SUM(#1) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
 ----
 analyzed_plan	<REGEX>:.*"type": "CROSS_PRODUCT".*
 
 query II
-EXPLAIN (ANALYZE, FORMAT JSON) SELECT SUM(i) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT SUM(#1) FROM (SELECT * FROM integers i1, integers i2 UNION ALL SELECT * FROM integers i1, integers i2);
 ----
 analyzed_plan	<REGEX>:.*"type": "CROSS_PRODUCT".*
 

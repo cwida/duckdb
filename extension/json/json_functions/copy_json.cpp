@@ -311,6 +311,8 @@ static BoundStatement CopyToJSONPlanInternal(Binder &binder, CopyStatement &stmt
 	inner_select_stmt->node = std::move(copy_info.select_statement);
 
 	auto source_ref = make_uniq<SubqueryRef>(std::move(inner_select_stmt));
+	// the columns are packed into a STRUCT below, which cannot hold the same name twice
+	source_ref->deduplicate_column_names = true;
 
 	// Build outer: SELECT TO_JSON(STRUCT_PACK(*COLUMNS(*))) FROM <source_ref>
 	copy_info.select_statement = make_uniq_base<QueryNode, SelectNode>();

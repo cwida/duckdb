@@ -171,16 +171,16 @@ SELECT * FROM (a NATURAL FULL OUTER JOIN b NATURAL FULL OUTER JOIN c) NATURAL FU
 ----
 1	2	3	4	5	6
 
-# natural join with ambiguity
-query II
+# natural join with ambiguity - the join column is not well defined
+statement error
 SELECT * FROM (SELECT 1 "hello", 2 "hello") NATURAL JOIN (SELECT 1 "hello", 2 "hello")
 ----
-1	2
+<REGEX>:.*appears more than once on.*side of join.*
 
-query II
+statement error
 SELECT * FROM (SELECT 1 "hello", 2 "HeLlO") NATURAL JOIN (SELECT 1 "hello", 2 "HeLlO")
 ----
-1	2
+<REGEX>:.*appears more than once on.*side of join.*
 
 query IIII
 SELECT * FROM (SELECT 1 "hello", 2 "hello") t1, (SELECT 1 "hello", 2 "hello") t2
@@ -188,15 +188,15 @@ SELECT * FROM (SELECT 1 "hello", 2 "hello") t1, (SELECT 1 "hello", 2 "hello") t2
 1	2	1	2
 
 # using join with ambiguity
-query III
+statement error
 SELECT * FROM (SELECT 1 "hello", 2 "hello") t1 JOIN (SELECT 1 "hello", 2 "hello") t2 USING (hello);
 ----
-1	2	2
+<REGEX>:.*appears more than once on.*side of join.*
 
-query III
+statement error
 SELECT * FROM (SELECT 1 "hello", 2 "HeLlO") t1 JOIN (SELECT 1 "hello", 2 "HeLlO") t2 USING (hello);
 ----
-1	2	2
+<REGEX>:.*appears more than once on.*side of join.*
 
 # ambiguous using column reference
 statement error

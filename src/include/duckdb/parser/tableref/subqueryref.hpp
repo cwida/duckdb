@@ -25,6 +25,9 @@ public:
 
 	//! The subquery
 	unique_ptr<SelectStatement> subquery;
+	//! Whether repeated column names must be renamed - set by rewrites that build a STRUCT out of
+	//! the columns of this subquery, which cannot hold the same name twice
+	bool deduplicate_column_names = false;
 
 public:
 	string ToString() const override;

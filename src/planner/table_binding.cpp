@@ -31,7 +31,10 @@ void Binding::Initialize() {
 		auto &name = names[i];
 		D_ASSERT(!name.empty());
 		if (name_map.find(name) != name_map.end()) {
-			throw BinderException("table %s has duplicate column name %s", alias.GetAlias(), name);
+			// duplicate column name - referring to it by name is ambiguous, the columns remain
+			// reachable by index
+			duplicate_names.insert(name);
+			continue;
 		}
 		name_map[name] = i;
 	}
@@ -95,9 +98,29 @@ column_t Binding::GetBindingIndex(const Identifier &column_name) {
 	return result;
 }
 
+bool Binding::TryGetColumnIndex(ColumnRefExpression &colref, column_t &result) {
+	if (colref.HasResolvedIndex()) {
+		result = colref.GetResolvedIndex();
+		return result < names.size() || IsVirtualColumn(result);
+	}
+	ThrowIfAmbiguousColumnName(colref.GetColumnName());
+	return TryGetBindingIndex(colref.GetColumnName(), result);
+}
+
 bool Binding::HasMatchingBinding(const Identifier &column_name) {
 	column_t result;
 	return TryGetBindingIndex(column_name, result);
+}
+
+bool Binding::HasDuplicateColumnName(const Identifier &column_name) {
+	return duplicate_names.find(column_name) != duplicate_names.end();
+}
+
+void Binding::ThrowIfAmbiguousColumnName(const Identifier &column_name, QueryErrorContext context) {
+	if (HasDuplicateColumnName(column_name)) {
+		throw BinderException(context, "Ambiguous reference to column name %s: %s has more than one column named %s",
+		                      column_name, GetAlias(), column_name);
+	}
 }
 
 void Binding::AddColumnAlias(const Identifier &column_alias, column_t column_index) {
@@ -121,6 +144,24 @@ void Binding::SetBoundColumnAlias(ColumnRefExpression &colref) {
 	colref.SetAlias(GetRegisteredColumnName(colref.GetColumnName()));
 }
 
+void Binding::SetBoundColumnAlias(ColumnRefExpression &colref, column_t column_index) {
+	if (!colref.GetAlias().empty()) {
+		return;
+	}
+	auto entry = name_map.find(colref.GetColumnName());
+	if (entry != name_map.end() && entry->second == column_index) {
+		// the name resolves to this very column - keep the name it is registered under
+		colref.SetAlias(entry->first);
+		return;
+	}
+	if (column_index < names.size()) {
+		// the column is shadowed by an earlier column with the same name
+		colref.SetAlias(names[column_index]);
+		return;
+	}
+	SetBoundColumnAlias(colref);
+}
+
 ErrorData Binding::ColumnNotFoundError(const Identifier &column_name) const {
 	return ErrorData(ExceptionType::BINDER,
 	                 StringUtil::Format("Values list %s does not have a column named %s", GetAlias(), column_name));
@@ -128,16 +169,14 @@ ErrorData Binding::ColumnNotFoundError(const Identifier &column_name) const {
 
 BindResult Binding::Bind(ColumnRefExpression &colref, idx_t depth) {
 	column_t column_index;
-	bool success = false;
-	success = TryGetBindingIndex(colref.GetColumnName(), column_index);
-	if (!success) {
+	if (!TryGetColumnIndex(colref, column_index)) {
 		return BindResult(ColumnNotFoundError(colref.GetColumnName()));
 	}
 	ColumnBinding binding;
 	binding.table_index = index;
 	binding.column_index = ProjectionIndex(column_index);
 	LogicalType sql_type = types[column_index];
-	SetBoundColumnAlias(colref);
+	SetBoundColumnAlias(colref, column_index);
 	return BindResult(make_uniq<BoundColumnRefExpression>(Identifier(colref.GetName()), sql_type, binding, depth));
 }
 
@@ -209,6 +248,9 @@ static void ReplaceAliases(ParsedExpression &root_expr, const ColumnList &list,
 		auto idx_entry = list.GetColumnIndex(col_names[0]);
 		auto &alias = alias_map.at(idx_entry.index);
 		col_names = vector<Identifier> {alias};
+		// a column alias list can give this column the name of another column, so the name on
+		// its own no longer reaches it
+		colref.SetResolvedIndex(idx_entry.index);
 	});
 }
 
@@ -226,21 +268,21 @@ static void BakeTableName(ParsedExpression &root_expr, const BindingAlias &bindi
 	});
 }
 
-unique_ptr<ParsedExpression> TableBinding::ExpandGeneratedColumn(const Identifier &column_name) {
+unique_ptr<ParsedExpression> TableBinding::ExpandGeneratedColumn(column_t column_index) {
 	auto catalog_entry = GetStandardEntry();
 	D_ASSERT(catalog_entry); // Should only be called on a TableBinding
 
 	D_ASSERT(catalog_entry->type == CatalogType::TABLE_ENTRY);
 	auto &table_entry = catalog_entry->Cast<TableCatalogEntry>();
 
-	// Get the index of the generated column
-	auto column_index = GetBindingIndex(column_name);
 	D_ASSERT(table_entry.GetColumn(LogicalIndex(column_index)).Generated());
 	// Get a copy of the generated column
 	auto expression = table_entry.GetColumn(LogicalIndex(column_index)).GeneratedExpression().Copy();
 	unordered_map<idx_t, Identifier> alias_map;
-	for (auto &entry : name_map) {
-		alias_map[entry.second] = entry.first;
+	for (idx_t i = 0; i < names.size(); i++) {
+		// the name map holds one entry per name, so a column shadowed by an earlier column with
+		// the same name is missing from it - take the names positionally instead
+		alias_map[i] = names[i];
 	}
 	ReplaceAliases(*expression, table_entry.GetColumns(), alias_map);
 	BakeTableName(*expression, alias);
@@ -257,8 +299,9 @@ const vector<ColumnIndex> &TableBinding::GetBoundColumnIds() const {
 		D_ASSERT(result.second);
 		auto it = std::find_if(name_map.begin(), name_map.end(),
 		                       [&](const std::pair<const Identifier, idx_t> &it) { return it.second == id; });
-		// assert that every id appears in the name_map
-		D_ASSERT(it != name_map.end());
+		// assert that every id is a column of this binding - a column shadowed by an earlier
+		// column with the same name is absent from the name_map
+		D_ASSERT(it != name_map.end() || id < names.size());
 		// the order that they appear in is not guaranteed to be sequential
 	}
 #endif
@@ -290,9 +333,7 @@ ColumnBinding TableBinding::GetColumnBinding(column_t column_index) {
 BindResult TableBinding::Bind(ColumnRefExpression &colref, idx_t depth) {
 	auto &column_name = colref.GetColumnName();
 	column_t column_index;
-	bool success = false;
-	success = TryGetBindingIndex(column_name, column_index);
-	if (!success) {
+	if (!TryGetColumnIndex(colref, column_index)) {
 		return BindResult(ColumnNotFoundError(column_name));
 	}
 	auto entry = GetStandardEntry();
@@ -314,7 +355,7 @@ BindResult TableBinding::Bind(ColumnRefExpression &colref, idx_t depth) {
 	} else {
 		// normal column: fetch type from base column
 		col_type = types[column_index];
-		SetBoundColumnAlias(colref);
+		SetBoundColumnAlias(colref, column_index);
 	}
 	ColumnBinding binding = GetColumnBinding(column_index);
 	return BindResult(make_uniq<BoundColumnRefExpression>(Identifier(colref.GetName()), col_type, binding, depth));

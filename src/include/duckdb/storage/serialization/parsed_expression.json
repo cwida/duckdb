@@ -156,6 +156,12 @@
         "id": 200,
         "name": "column_names",
         "type": "vector<Identifier>"
+      },
+      {
+        "name": "resolved_index",
+        "type": "optional_idx",
+        "serialize_skip": true,
+        "hash_skip": true
       }
     ]
   },
