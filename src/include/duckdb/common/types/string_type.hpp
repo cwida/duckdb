@@ -196,26 +196,53 @@ public:
 		}
 		// compare up to shared length. if still the same, compare lengths
 		static bool GreaterThan(const string_t &left, const string_t &right) {
+#ifndef DUCKDB_DEBUG_NO_INLINE
+			// length and prefix share the first 8 bytes of a string_t: one load gives both
+			const uint64_t a_head = Load<uint64_t>(const_data_ptr_cast(&left));
+			const uint64_t b_head = Load<uint64_t>(const_data_ptr_cast(&right));
+#if DUCKDB_IS_BIG_ENDIAN
+			const uint32_t a_prefix = static_cast<uint32_t>(a_head);
+			const uint32_t b_prefix = static_cast<uint32_t>(b_head);
+			const uint32_t a_len = static_cast<uint32_t>(a_head >> 32);
+			const uint32_t b_len = static_cast<uint32_t>(b_head >> 32);
+#else
+			const uint32_t a_prefix = BSwap(static_cast<uint32_t>(a_head >> 32));
+			const uint32_t b_prefix = BSwap(static_cast<uint32_t>(b_head >> 32));
+			const uint32_t a_len = static_cast<uint32_t>(a_head);
+			const uint32_t b_len = static_cast<uint32_t>(b_head);
+#endif
+			if (a_prefix != b_prefix) {
+				return a_prefix > b_prefix;
+			}
+			const uint32_t min_length = std::min<uint32_t>(a_len, b_len);
+			if (min_length <= PREFIX_LENGTH) {
+				// the shorter string lies entirely within the (equal) prefix
+				return a_len > b_len;
+			}
+			// the second 8 bytes: the rest of an inlined string, or the pointer of a long one
+			const uint64_t a_rest = Load<uint64_t>(const_data_ptr_cast(left.value.inlined.inlined) + PREFIX_BYTES);
+			const uint64_t b_rest = Load<uint64_t>(const_data_ptr_cast(right.value.inlined.inlined) + PREFIX_BYTES);
+			if (std::max<uint32_t>(a_len, b_len) <= INLINE_LENGTH) {
+				if (a_rest != b_rest) {
+					return BSwapIfLE(a_rest) > BSwapIfLE(b_rest);
+				}
+				return a_len > b_len;
+			} else {
+				// for a pointer string the loaded rest word is the pointer itself; no second load, no IsInlined()
+				auto a_data = a_len > INLINE_LENGTH ? reinterpret_cast<const char *>(static_cast<uintptr_t>(a_rest))
+				                                    : left.value.inlined.inlined;
+				auto b_data = b_len > INLINE_LENGTH ? reinterpret_cast<const char *>(static_cast<uintptr_t>(b_rest))
+				                                    : right.value.inlined.inlined;
+				auto memcmp_res = memcmp(a_data + PREFIX_LENGTH, b_data + PREFIX_LENGTH, min_length - PREFIX_LENGTH);
+				return memcmp_res > 0 || (memcmp_res == 0 && a_len > b_len);
+			}
+#else
 			const uint32_t left_length = UnsafeNumericCast<uint32_t>(left.GetSize());
 			const uint32_t right_length = UnsafeNumericCast<uint32_t>(right.GetSize());
 			const uint32_t min_length = std::min<uint32_t>(left_length, right_length);
-
-#ifndef DUCKDB_DEBUG_NO_INLINE
-			uint32_t a_prefix = Load<uint32_t>(const_data_ptr_cast(left.GetPrefix()));
-			uint32_t b_prefix = Load<uint32_t>(const_data_ptr_cast(right.GetPrefix()));
-
-			// Check on prefix -----
-			// We don't need to mask since:
-			//	if the prefix is greater(after bswap), it will stay greater regardless of the extra bytes
-			// 	if the prefix is smaller(after bswap), it will stay smaller regardless of the extra bytes
-			//	if the prefix is equal, the extra bytes are guaranteed to be /0 for the shorter one
-
-			if (a_prefix != b_prefix) {
-				return BSwapIfLE(a_prefix) > BSwapIfLE(b_prefix);
-			}
-#endif
 			auto memcmp_res = memcmp(left.GetData(), right.GetData(), min_length);
 			return memcmp_res > 0 || (memcmp_res == 0 && left_length > right_length);
+#endif
 		}
 	};
 
