@@ -901,7 +901,7 @@ static auto CV2TableExecBatch(ClientContext &context, TableFunctionInput &input,
 		}
 		// Nothing of this batch passed, but an empty chunk means that the batch is exhausted
 		output.Reset();
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 	}
 }
 

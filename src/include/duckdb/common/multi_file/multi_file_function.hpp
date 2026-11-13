@@ -610,6 +610,7 @@ public:
 			// covers a cancellation that signals without the lock
 			gstate.async_open_settled.wait_for(parallel_lock, std::chrono::milliseconds(10));
 			parallel_lock.unlock();
+			// the throttled FastInterruptCheck() would only read the clock every ~2.5s of waiting here
 			context.InterruptCheck();
 			parallel_lock.lock();
 		}

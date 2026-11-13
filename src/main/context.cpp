@@ -274,6 +274,12 @@ optional_ptr<QueryProfiler> Context::TryGetQueryProfiler(optional_ptr<Context> c
 	return context->TryGetQueryProfiler();
 }
 
+void Context::FastInterruptCheck() const {
+	if (context) {
+		context->FastInterruptCheck();
+	}
+}
+
 void Context::InterruptCheck() const {
 	if (context) {
 		context->InterruptCheck();

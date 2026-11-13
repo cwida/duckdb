@@ -284,7 +284,7 @@ static void SortTiedBucket(ClientContext &context, const ITERATOR &begin, const 
 	if constexpr (SORT_KEY::CONSTANT_SIZE) {
 		duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
 	} else {
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 		D_ASSERT(end - begin >= 2);
 		using SUFFIX = SkaExtractSuffixKey<SORT_KEY>;
 		constexpr idx_t MIN_RADIX_COUNT = 1024;
@@ -330,7 +330,7 @@ static void SortTiedBucket(ClientContext &context, const ITERATOR &begin, const 
 		idx_t scanned = 0;
 		for (auto it = begin + 1; it != end; ++it) {
 			if (++scanned % STANDARD_VECTOR_SIZE == 0) {
-				context.InterruptCheck();
+				context.FastInterruptCheck();
 			}
 			if (it->part0 != samples[0].part0 || !SUFFIX::PrefixMatches(samples[0], *it, offset)) {
 				duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
@@ -353,7 +353,7 @@ static void SortTiedBucket(ClientContext &context, const ITERATOR &begin, const 
 		scanned = 0;
 		for (auto it = begin; it != end; ++it) {
 			if (++scanned % STANDARD_VECTOR_SIZE == 0) {
-				context.InterruptCheck();
+				context.FastInterruptCheck();
 			}
 			it->part0 = SUFFIX::ExtractWord(*it, offset);
 		}
@@ -398,7 +398,7 @@ static void TemplatedSort(ClientContext &context, TupleDataCollection &key_data,
 	};
 	duckdb_vergesort::vergesort(begin, end, std::less<SORT_KEY>(), fallback, merge);
 
-	context.InterruptCheck();
+	context.FastInterruptCheck();
 }
 
 static void SortSwitch(ClientContext &context, TupleDataCollection &key_data, bool is_index_sort) {
@@ -488,7 +488,7 @@ static void TemplatedReorder(ClientContext &context, unique_ptr<TupleDataCollect
 
 	idx_t index = 0;
 	while (index < total_count) {
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 
 		const auto next = MinValue<idx_t>(total_count - index, STANDARD_VECTOR_SIZE);
 		for (idx_t i = 0; i < next; i++) {

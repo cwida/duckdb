@@ -333,7 +333,7 @@ PipelineExecuteResult PipelineExecutor::Execute(idx_t max_chunks) {
 	ExecutionBudget chunk_budget(max_chunks);
 
 	do {
-		context.client.InterruptCheck();
+		context.client.FastInterruptCheck();
 		switch (pending_batch_advance_state) {
 		case PendingBatchAdvanceState::MINIMUM_UPDATE:
 			if (UpdateMinBatchIndex() == SinkNextBatchType::BLOCKED) {
@@ -632,7 +632,7 @@ PipelineExecuteResult PipelineExecutor::PushInputChunk(DataChunk &input, Executi
 	}
 
 	while (true) {
-		context.client.InterruptCheck();
+		context.client.FastInterruptCheck();
 		auto result = ExecutePushInternal(input, chunk_budget);
 		if (result == OperatorResultType::BLOCKED) {
 			remaining_sink_chunk = true;
@@ -757,7 +757,7 @@ OperatorResultType PipelineExecutor::Execute(DataChunk &input, DataChunk &result
 		return OperatorResultType::NEED_MORE_INPUT;
 	}
 	while (true) {
-		context.client.InterruptCheck();
+		context.client.FastInterruptCheck();
 		// now figure out where to put the chunk
 		// if current_idx is the last possible index (>= operators.size()) we write to the result
 		// otherwise we write to an intermediate chunk
@@ -900,7 +900,7 @@ void PipelineExecutor::InitializeChunk(DataChunk &chunk) {
 }
 
 void PipelineExecutor::StartOperator(PhysicalOperator &op) {
-	context.client.InterruptCheck();
+	context.client.FastInterruptCheck();
 	context.thread.profiler.StartOperator(&op);
 }
 

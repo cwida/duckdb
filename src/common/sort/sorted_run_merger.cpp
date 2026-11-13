@@ -959,7 +959,7 @@ static idx_t CollectMergeByteSamples(const SortedRunMerger &merger, const TupleD
 		ExternalBlockIteratorState key_state(*run.key_data, nullptr);
 		idx_t begin = 0;
 		for (idx_t interval_idx = 0; interval_idx < intervals; interval_idx++) {
-			context.InterruptCheck();
+			context.FastInterruptCheck();
 			const auto width = interval_size + (interval_idx < remainder);
 			const auto end = begin + width;
 			const auto phase = (width / run_count) * run_idx + ((width % run_count) * run_idx) / run_count;

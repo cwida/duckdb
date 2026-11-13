@@ -205,3 +205,26 @@ query T
 SELECT pg_sleep(-0.1)
 ----
 NULL
+
+# A sleep is cut short by max_execution_time, also when it is the only thing the query does
+statement ok
+SET max_execution_time = 200
+
+statement error
+SELECT sleep_ms(10000)
+----
+Query exceeded maximum execution time
+
+statement error
+SELECT pg_sleep(10)
+----
+Query exceeded maximum execution time
+
+# A sleep that finishes within the limit still succeeds
+query T
+SELECT sleep_ms(1)
+----
+NULL
+
+statement ok
+RESET max_execution_time

@@ -1241,7 +1241,7 @@ void GroupedAggregateHashTable::Combine(TupleDataCollection &other_data, optiona
 
 	while (fm_state.Scan()) {
 		// Check for interrupts with each chunk
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 		auto &source_rows = fm_state.scan_state.chunk_state;
 		const auto chunk_count = fm_state.groups.size();
 		if (!layout_ptr->AllConstant()) {

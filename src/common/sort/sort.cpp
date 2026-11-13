@@ -550,7 +550,7 @@ SourceResultType Sort::MaterializeColumnData(ExecutionContext &context, Operator
 
 	while (true) {
 		// Check for interrupts since this could be a long-running task
-		context.client.InterruptCheck();
+		context.client.FastInterruptCheck();
 		// Scan a chunk
 		chunk.Reset();
 		GetData(context, chunk, input);

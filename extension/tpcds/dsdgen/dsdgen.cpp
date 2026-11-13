@@ -353,7 +353,7 @@ public:
 			}
 			row_stop(work_item.table_id);
 			if (row_idx % 1000 == 0) {
-				context.InterruptCheck();
+				context.FastInterruptCheck();
 			}
 			if ((row_idx + 1) % DSDGEN_PROGRESS_REPORT_ROW_INTERVAL == 0) {
 				ReportGeneratedWork((row_idx + 1) * work_item.progress_units_per_row);
@@ -512,7 +512,7 @@ public:
 	}
 
 	bool GenerateNext() override {
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 		if (finished.load()) {
 			return true;
 		}
@@ -578,7 +578,7 @@ private:
 			generated_work.fetch_add(current_table_progress_units_per_row);
 			generated_count++;
 			if (generated_count % 1000 == 0) {
-				context.InterruptCheck();
+				context.FastInterruptCheck();
 			}
 		}
 		return false;

@@ -398,7 +398,7 @@ void WindowDistinctAggregator::Finalize(ExecutionContext &context, CollectionPtr
 	while (gdsink.stage.load() != WindowDistinctSortStage::FINISHED) {
 		//	A failed task never completes its stage, so the waiting threads
 		//	leave through the interrupt that the executor raises for the failure
-		context.client.InterruptCheck();
+		context.client.FastInterruptCheck();
 		if (gdsink.TryPrepareNextStage(ldstate)) {
 			ldstate.ExecuteTask(context, gdsink);
 		} else {
@@ -531,7 +531,7 @@ void WindowDistinctSortTree::Build(ClientContext &context, WindowDistinctAggrega
 	while (build_level.load() < tree.size()) {
 		//	A failed run never completes its level, so the waiting threads
 		//	leave through the interrupt that the executor raises for the failure
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 		idx_t level_idx;
 		idx_t run_idx;
 		if (TryNextRun(level_idx, run_idx)) {

@@ -1147,7 +1147,7 @@ public:
 		idx_t pass = 0;
 		JoinBuildRange range;
 		while (queue.Next(start, pass, range)) {
-			sink.context.InterruptCheck();
+			sink.context.FastInterruptCheck();
 			ExecuteHashJoinTableInitTask(sink, range.begin, range.end);
 		}
 		event->FinishTask();
@@ -1224,7 +1224,7 @@ public:
 		idx_t pass = 0;
 		JoinBuildRange range;
 		while (queue.Next(start, pass, range)) {
-			sink.context.InterruptCheck();
+			sink.context.FastInterruptCheck();
 			ExecuteHashJoinFinalizeTask(sink, range, parallel, prefix_range_lane);
 		}
 		event->FinishTask();

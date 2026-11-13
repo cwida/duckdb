@@ -365,7 +365,7 @@ void MergeSortTree<E, O, CMP, F, C>::Build(ClientContext &context) {
 	while (build_level.load() < tree.size()) {
 		//	A failed run never completes its level, so the waiting threads
 		//	leave through the interrupt that the executor raises for the failure
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 		idx_t level_idx;
 		idx_t run_idx;
 		if (TryNextRun(level_idx, run_idx)) {

@@ -53,7 +53,7 @@ The setting is `LOCAL` by default; use `SET GLOBAL max_execution_time=...` to ap
 build/reldebug/duckdb -c "SET max_execution_time=5000; SELECT ..."
 ```
 
-The deadline is enforced at `ClientContext::InterruptCheck()` call sites, so it only fires once execution reaches one of them. Queries that check in frequently abort close to the limit, but time spent in planning or inside a long non-interruptible stretch is not bounded by it.
+The deadline is enforced at `ClientContext::InterruptCheck()` and `FastInterruptCheck()` call sites, so it only fires once execution reaches one of them. Queries that check in frequently abort close to the limit, but time spent in planning or inside a long non-interruptible stretch is not bounded by it.
 
 
 ### Test File Format

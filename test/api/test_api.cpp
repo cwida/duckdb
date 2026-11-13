@@ -1062,10 +1062,10 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 	SECTION("Normal interrupt works") {
 		context.Interrupt();
 		REQUIRE(context.IsInterrupted());
-		REQUIRE_THROWS(context.InterruptCheck());
+		REQUIRE_THROWS(context.FastInterruptCheck());
 		context.ClearInterrupt();
 		REQUIRE(!context.IsInterrupted());
-		REQUIRE_NOTHROW(context.InterruptCheck());
+		REQUIRE_NOTHROW(context.FastInterruptCheck());
 	}
 
 	SECTION("SuppressInterrupts blocks subsequent Interrupt calls") {
@@ -1074,7 +1074,7 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 		// Since state is SUPPRESSED, CAS fails and interrupt is discarded
 		context.Interrupt();
 		REQUIRE(!context.IsInterrupted());
-		REQUIRE_NOTHROW(context.InterruptCheck());
+		REQUIRE_NOTHROW(context.FastInterruptCheck());
 		context.ClearInterrupt();
 	}
 
@@ -1085,7 +1085,7 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 		// overriding the INTERRUPTED state
 		context.SuppressInterrupts();
 		REQUIRE(!context.IsInterrupted());
-		REQUIRE_NOTHROW(context.InterruptCheck());
+		REQUIRE_NOTHROW(context.FastInterruptCheck());
 		context.ClearInterrupt();
 	}
 
@@ -1095,7 +1095,7 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 		// Now back to NOT_INTERRUPTED, Interrupt() should work again
 		context.Interrupt();
 		REQUIRE(context.IsInterrupted());
-		REQUIRE_THROWS(context.InterruptCheck());
+		REQUIRE_THROWS(context.FastInterruptCheck());
 		context.ClearInterrupt();
 	}
 
@@ -1106,7 +1106,7 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 		// After COMMIT, state should be SUPPRESSED — Interrupt() should be discarded
 		context.Interrupt();
 		REQUIRE(!context.IsInterrupted());
-		REQUIRE_NOTHROW(context.InterruptCheck());
+		REQUIRE_NOTHROW(context.FastInterruptCheck());
 		// Cleanup
 		context.ClearInterrupt();
 		REQUIRE_NO_FAIL(con.Query("DROP TABLE suppress_test"));
@@ -1125,7 +1125,7 @@ TEST_CASE("Test internal connections follow the interrupts of their base client"
 		con.context->Interrupt();
 		REQUIRE(child.context->IsInterrupted());
 		REQUIRE(grandchild.context->IsInterrupted());
-		REQUIRE_THROWS(grandchild.context->InterruptCheck());
+		REQUIRE_THROWS(grandchild.context->FastInterruptCheck());
 		con.context->ClearInterrupt();
 		REQUIRE(!grandchild.context->IsInterrupted());
 	}
@@ -1137,13 +1137,13 @@ TEST_CASE("Test internal connections follow the interrupts of their base client"
 	}
 
 	SECTION("The base client's query deadline applies to internal connections while it is set") {
-		REQUIRE_NOTHROW(grandchild.context->BlockingInterruptCheck());
+		REQUIRE_NOTHROW(grandchild.context->InterruptCheck());
 		// a deadline in the past, as a base query that ran out of time would leave it
 		con.context->query_deadline = 1;
-		REQUIRE_THROWS(grandchild.context->BlockingInterruptCheck());
-		REQUIRE_THROWS(child.context->BlockingInterruptCheck());
+		REQUIRE_THROWS(grandchild.context->InterruptCheck());
+		REQUIRE_THROWS(child.context->InterruptCheck());
 		con.context->query_deadline.SetInvalid();
-		REQUIRE_NOTHROW(grandchild.context->BlockingInterruptCheck());
+		REQUIRE_NOTHROW(grandchild.context->InterruptCheck());
 	}
 
 	SECTION("A query running on behalf of the base stops when the base is interrupted") {
