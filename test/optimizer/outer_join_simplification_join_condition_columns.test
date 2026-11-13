@@ -1,0 +1,60 @@
+# name: test/optimizer/outer_join_simplification_join_condition_columns.test
+# description: Columns used in non-comparison join conditions stay required in OuterJoinSimplification
+# group: [optimizer]
+
+statement ok
+CREATE TABLE a(k INT, x INT);
+
+statement ok
+INSERT INTO a VALUES (1, 10), (2, 20);
+
+statement ok
+CREATE TABLE b(k INT, v INT);
+
+statement ok
+INSERT INTO b VALUES (1, 100);
+
+statement ok
+CREATE TABLE c(k INT, v INT);
+
+statement ok
+INSERT INTO c VALUES (1, 1), (2, 2);
+
+# the inner join condition references b.v, so the left join below it must keep b.v
+# and cannot be rewritten to an anti join by the b.k IS NULL filter (issue #27652)
+query I
+SELECT a.k FROM a LEFT JOIN b ON a.k = b.k INNER JOIN c ON a.k = c.k AND (b.v IS NULL OR c.v = 1) WHERE b.k IS NULL;
+----
+2
+
+query II
+EXPLAIN SELECT a.k FROM a LEFT JOIN b ON a.k = b.k INNER JOIN c ON a.k = c.k AND (b.v IS NULL OR c.v = 1) WHERE b.k IS NULL;
+----
+physical_plan	<!REGEX>:.*ANTI.*
+
+# a non-comparison condition that does not reference the left join's right side still allows the rewrite
+query II
+EXPLAIN SELECT a.k FROM a LEFT JOIN b ON a.k = b.k INNER JOIN c ON a.k = c.k AND (a.x IS NULL OR c.v = 1) WHERE b.k IS NULL;
+----
+physical_plan	<REGEX>:.*ANTI.*
+
+# a function over columns of both inputs is a non-comparison condition as well
+query I
+SELECT a.k FROM a LEFT JOIN b ON a.k = b.k INNER JOIN c ON a.k = c.k AND coalesce(b.v, c.v) = 2 WHERE b.k IS NULL;
+----
+2
+
+# with a NULL in b.v the IS NULL predicate is not folded away by statistics
+statement ok
+INSERT INTO b VALUES (1, NULL);
+
+query I
+SELECT a.k FROM a LEFT JOIN b ON a.k = b.k INNER JOIN c ON a.k = c.k AND (b.v IS NULL OR c.v = 1) WHERE b.k IS NULL;
+----
+2
+
+# same for a semi join above the left join
+query I
+SELECT a.k FROM a LEFT JOIN b ON a.k = b.k SEMI JOIN c ON a.k = c.k AND (b.v IS NULL OR c.v = 1) WHERE b.k IS NULL;
+----
+2

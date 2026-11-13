@@ -286,10 +286,10 @@ void OuterJoinSimplification::VisitComparisonJoin(LogicalComparisonJoin &join, L
 
 void OuterJoinSimplification::VisitInnerOrSemiJoin(LogicalComparisonJoin &join, LogicalOperator &op) {
 	for (const auto &condition : join.conditions) {
+		AddRequiredColumns(condition);
 		if (!condition.IsComparison()) {
 			continue;
 		}
-		AddRequiredColumns(condition);
 		if (!FiltersNulls(condition.GetComparisonType())) {
 			continue;
 		}
