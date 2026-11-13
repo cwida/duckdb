@@ -3,6 +3,12 @@
 # group: [nested_schema]
 
 statement ok
+ATTACH '{TEST_DIR}/nested_show_all_tables.db' AS nested_show_all_tables (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+USE nested_show_all_tables;
+
+statement ok
 CREATE SCHEMA a;
 
 statement ok
@@ -29,7 +35,7 @@ CREATE VIEW c.v AS SELECT 2 AS top_column;
 query TTTTTI rowsort
 SHOW ALL TABLES;
 ----
-memory	c	t	[id, v]	[INTEGER, VARCHAR]	false
-memory	c	t	[id]	[INTEGER]	false
-memory	c	v	[nested_column]	[INTEGER]	false
-memory	c	v	[top_column]	[INTEGER]	false
+nested_show_all_tables	c	t	[id, v]	[INTEGER, VARCHAR]	false
+nested_show_all_tables	c	t	[id]	[INTEGER]	false
+nested_show_all_tables	c	v	[nested_column]	[INTEGER]	false
+nested_show_all_tables	c	v	[top_column]	[INTEGER]	false

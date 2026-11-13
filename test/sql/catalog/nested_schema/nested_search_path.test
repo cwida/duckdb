@@ -3,6 +3,12 @@
 # group: [nested_schema]
 
 statement ok
+ATTACH '{TEST_DIR}/nested_search_path.db' AS nested_search_path (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+USE nested_search_path;
+
+statement ok
 ATTACH ':memory:' AS lake;
 
 statement ok
@@ -29,7 +35,7 @@ PREPARE current_namespace AS SELECT database_name, schema_name FROM (SHOW SCHEMA
 query II
 EXECUTE current_namespace;
 ----
-memory	main
+nested_search_path	main
 
 statement ok
 USE lake.s3tablescatalog.salesdemo.retail;

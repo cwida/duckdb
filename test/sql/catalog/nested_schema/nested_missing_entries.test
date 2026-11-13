@@ -3,6 +3,12 @@
 # group: [nested_schema]
 
 statement ok
+ATTACH '{TEST_DIR}/nested_missing_entries.db' AS nested_missing_entries (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+USE nested_missing_entries;
+
+statement ok
 CREATE SCHEMA a;
 
 statement ok
@@ -22,7 +28,7 @@ CREATE TABLE a.b.c.nested_hint_table(i INTEGER);
 statement error
 SELECT * FROM nested_hint_tabl;
 ----
-memory.a.b.c.nested_hint_table
+nested_missing_entries.a.b.c.nested_hint_table
 
 statement ok
 CREATE MACRO a.b.c.nested_hint_function(x) AS x;
@@ -30,7 +36,7 @@ CREATE MACRO a.b.c.nested_hint_function(x) AS x;
 statement error
 SELECT nested_hint_functio(1);
 ----
-memory.a.b.c.nested_hint_function
+nested_missing_entries.a.b.c.nested_hint_function
 
 statement error
 SELECT a.b.c.nested_hint_functio(1);
@@ -52,9 +58,9 @@ ATTACH ':memory:' AS a;
 statement error
 SELECT * FROM nested_hint_tabl;
 ----
-memory.a.b.c.nested_hint_table
+nested_missing_entries.a.b.c.nested_hint_table
 
 query I
-SELECT memory.a.b.c.nested_hint_function(42);
+SELECT nested_missing_entries.a.b.c.nested_hint_function(42);
 ----
 42

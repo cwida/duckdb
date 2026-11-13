@@ -3,6 +3,12 @@
 # group: [nested_schema]
 
 statement ok
+ATTACH '{TEST_DIR}/nested_main_schema.db' AS nested_main_schema (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+USE nested_main_schema;
+
+statement ok
 CREATE SCHEMA main.sub;
 
 statement ok
@@ -14,7 +20,7 @@ SELECT * FROM main.sub.t;
 7
 
 query I
-SELECT * FROM memory.main.sub.t;
+SELECT * FROM nested_main_schema.main.sub.t;
 ----
 7
 
@@ -52,7 +58,7 @@ SELECT * FROM main.sub.t;
 9
 
 query I
-SELECT * FROM memory.main.sub.t;
+SELECT * FROM nested_main_schema.main.sub.t;
 ----
 7
 
