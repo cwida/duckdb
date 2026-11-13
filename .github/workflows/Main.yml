@@ -1563,7 +1563,6 @@ jobs:
           AWS_ENDPOINT_URL: ${{ secrets.S3_DUCKDB_STAGING_ENDPOINT }}
           AWS_ACCESS_KEY_ID: ${{ secrets.S3_DUCKDB_STAGING_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_DUCKDB_STAGING_KEY }}
-          BRANCH: ${{ github.ref_name }}
           DUCKDB_COMMIT: ${{ needs.prepare.outputs.duckdb_commit }}
           DUCKDB_VERSION: ${{ needs.prepare.outputs.duckdb_version }}
           STAGED_VERSION: ${{ needs.prepare.outputs.staged_version }}
@@ -1606,18 +1605,6 @@ jobs:
             --header-upload "Cache-Control: no-cache" \
             "$pointer_file" \
             ":s3:duckdb-staging/release/$RELEASE_LINE/latest_alpha_version.txt"
-
-          rclone copyto \
-            --s3-provider "$s3_provider" \
-            --s3-endpoint "$AWS_ENDPOINT_URL" \
-            --s3-access-key-id "$AWS_ACCESS_KEY_ID" \
-            --s3-secret-access-key "$AWS_SECRET_ACCESS_KEY" \
-            --s3-no-check-bucket \
-            --s3-no-head \
-            --header-upload "Content-Type: text/plain" \
-            --header-upload "Cache-Control: no-cache" \
-            "$pointer_file" \
-            ":s3:duckdb-staging/release/$BRANCH/latest_alpha_version.txt"
 
           target="${DUCKDB_COMMIT:0:10}"
           printf '%s\n' "$DUCKDB_VERSION" > "$pointer_file"
