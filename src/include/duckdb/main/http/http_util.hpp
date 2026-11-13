@@ -71,6 +71,9 @@ struct HTTPParams {
 public:
 	void Initialize(optional_ptr<FileOpener> opener);
 	DUCKDB_API idx_t GetTransportReuseDomain() const;
+	//! Require server certificate verification for the requests made with these parameters, whatever the settings and
+	//! secrets they were initialized from said. The provider recaptures its connection-reuse domain from the new values
+	DUCKDB_API void RequireServerCertificateVerification();
 
 	template <class TARGET>
 	TARGET &Cast() {
