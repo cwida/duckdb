@@ -571,3 +571,107 @@ TEST_CASE("WITH ORDINALITY reports unfiltered positions for table in-out functio
 	REQUIRE(CHECK_COLUMN(complex_filter, 0, {4}));
 	REQUIRE(CHECK_COLUMN(complex_filter, 1, {4}));
 }
+
+// Passes its input through and reports progress as the fraction of an expected number of rows it has seen
+struct ProgressEcho {
+	struct Info : public TableFunctionInfo {
+		explicit Info(int64_t expected_rows_p) : expected_rows(expected_rows_p) {
+		}
+		//! A negative value reports unknown progress
+		int64_t expected_rows;
+	};
+
+	struct BindData : public TableFunctionData {
+		explicit BindData(int64_t expected_rows_p) : expected_rows(expected_rows_p) {
+		}
+		int64_t expected_rows;
+	};
+
+	struct GlobalState : public GlobalTableFunctionState {
+		atomic<idx_t> processed_rows {0};
+	};
+
+	static unique_ptr<FunctionData> Bind(ClientContext &context, TableFunctionBindInput &input,
+	                                     vector<LogicalType> &return_types, vector<Identifier> &names) {
+		for (idx_t i = 0; i < input.input_table_types.size(); i++) {
+			return_types.push_back(input.input_table_types[i]);
+			names.emplace_back(input.input_table_names[i]);
+		}
+		return make_uniq<BindData>(input.info->Cast<Info>().expected_rows);
+	}
+
+	static unique_ptr<GlobalTableFunctionState> GlobalInit(ClientContext &context, TableFunctionInitInput &input) {
+		return make_uniq<GlobalState>();
+	}
+
+	static OperatorResultType Function(ExecutionContext &context, TableFunctionInput &data, DataChunk &input,
+	                                   DataChunk &output) {
+		auto &global_state = data.global_state->Cast<GlobalState>();
+		for (idx_t col_idx = 0; col_idx < input.ColumnCount(); col_idx++) {
+			output.data[col_idx].Reference(input.data[col_idx]);
+		}
+		output.SetChildCardinality(input.size());
+		global_state.processed_rows += input.size();
+		return OperatorResultType::NEED_MORE_INPUT;
+	}
+
+	static double Progress(ClientContext &context, const FunctionData *bind_data_p,
+	                       const GlobalTableFunctionState *global_state_p) {
+		auto &bind_data = bind_data_p->Cast<BindData>();
+		if (bind_data.expected_rows < 0) {
+			return -1;
+		}
+		auto &global_state = global_state_p->Cast<GlobalState>();
+		auto processed = static_cast<double>(global_state.processed_rows.load());
+		return MinValue<double>(100.0, processed * 100.0 / static_cast<double>(bind_data.expected_rows));
+	}
+
+	static void Register(Connection &con, const string &name, int64_t expected_rows, bool report_progress = true) {
+		con.BeginTransaction();
+		auto &catalog = Catalog::GetSystemCatalog(*con.context);
+		TableFunction function(Identifier(name), {LogicalType::TABLE}, nullptr, Bind, GlobalInit);
+		function.in_out_function = Function;
+		if (report_progress) {
+			function.table_in_out_progress = Progress;
+		}
+		function.function_info = make_shared_ptr<Info>(expected_rows);
+		CreateTableFunctionInfo info(function);
+		catalog.CreateTableFunction(*con.context, info);
+		con.Commit();
+	}
+};
+
+TEST_CASE("Table in-out functions can report progress", "[tablefunction]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	ProgressEcho::Register(con, "progress_echo", 200000);
+	ProgressEcho::Register(con, "progress_echo_lagging", 400000);
+	ProgressEcho::Register(con, "progress_echo_unknown", -1);
+	ProgressEcho::Register(con, "progress_echo_none", -1, false);
+
+	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+	REQUIRE_NO_FAIL(con.Query("SET debug_verify_progress='error'"));
+	REQUIRE_NO_FAIL(con.Query("SET debug_verify_progress_ignore=''"));
+
+	// progress that tracks the rows seen by the function is well-formed, monotonic and complete
+	auto result = con.Query("SELECT count(*), sum(i) FROM progress_echo((SELECT i FROM range(200000) t(i)))");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {200000}));
+	REQUIRE(CHECK_COLUMN(result, 1, {Value::HUGEINT(19999900000)}));
+
+	// functions without a progress callback do not affect the pipeline progress
+	result = con.Query("SELECT count(*) FROM progress_echo_none((SELECT i FROM range(200000) t(i)))");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {200000}));
+
+	// the pipeline progress is limited by the progress of the function
+	result = con.Query("SELECT count(*) FROM progress_echo_lagging((SELECT i FROM range(200000) t(i)))");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "INCOMPLETE"));
+
+	// unknown function progress makes the pipeline progress invalid
+	result = con.Query("SELECT count(*) FROM progress_echo_unknown((SELECT i FROM range(200000) t(i)))");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "UNSUPPORTED_SINK"));
+}

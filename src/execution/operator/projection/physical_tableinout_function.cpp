@@ -2,6 +2,8 @@
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/execution/operator/projection/physical_tableinout_function.hpp"
 
+#include <cmath>
+
 namespace duckdb {
 
 class TableInOutLocalState : public OperatorState {
@@ -73,6 +75,22 @@ unique_ptr<GlobalOperatorState> PhysicalTableInOutFunction::GetGlobalOperatorSta
 		result->global_state = function.init_global(context, input);
 	}
 	return std::move(result);
+}
+
+ProgressData PhysicalTableInOutFunction::GetOperatorProgress(ClientContext &context, GlobalOperatorState &gstate_p,
+                                                             const ProgressData upstream_progress) const {
+	if (!function.table_in_out_progress || !upstream_progress.IsValid()) {
+		return upstream_progress;
+	}
+	auto &gstate = gstate_p.Cast<TableInOutGlobalState>();
+	auto percentage = function.table_in_out_progress(context, bind_data.get(), gstate.global_state.get());
+	auto result = upstream_progress;
+	if (!std::isfinite(percentage) || percentage < 0.0 || percentage > 100.0) {
+		result.SetInvalid();
+		return result;
+	}
+	result.done = MinValue(result.done, percentage / 100.0 * result.total);
+	return result;
 }
 
 void PhysicalTableInOutFunction::SetOrdinality(DataChunk &chunk, const optional_idx &ordinality_column_idx,

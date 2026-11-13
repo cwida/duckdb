@@ -24,7 +24,7 @@ BaseTableFunction::BaseTableFunction(table_function_t function_, table_function_
       function(function_), in_out_function(nullptr), in_out_function_final(nullptr), statistics(nullptr),
       statistics_extended(nullptr), dependency(nullptr), cardinality(nullptr), get_metrics(nullptr),
       pushdown_complex_filter(nullptr), pushdown_expression(nullptr), to_string(nullptr), table_scan_progress(nullptr),
-      get_partition_data(nullptr), get_bind_info(nullptr), get_table_entry(nullptr),
+      table_in_out_progress(nullptr), get_partition_data(nullptr), get_bind_info(nullptr), get_table_entry(nullptr),
       projection_expression_pushdown(nullptr), get_multi_file_reader(nullptr), supports_pushdown_type(nullptr),
       supports_pushdown_extract(nullptr), get_partition_info(nullptr), get_partition_stats(nullptr),
       get_virtual_columns(nullptr), get_row_id_columns(nullptr), set_scan_order(nullptr), serialize(nullptr),
@@ -98,6 +98,7 @@ BoundTableFunction::BoundTableFunction(shared_ptr<const TableFunction> function_
 	to_string = function.to_string;
 	to_sql = function.to_sql;
 	table_scan_progress = function.table_scan_progress;
+	table_in_out_progress = function.table_in_out_progress;
 	get_partition_data = function.get_partition_data;
 	get_bind_info = function.get_bind_info;
 	get_table_entry = function.get_table_entry;
@@ -171,8 +172,8 @@ bool BaseTableFunction::operator==(const BaseTableFunction &rhs) const {
 	       statistics == rhs.statistics && dependency == rhs.dependency && cardinality == rhs.cardinality &&
 	       pushdown_complex_filter == rhs.pushdown_complex_filter && pushdown_expression == rhs.pushdown_expression &&
 	       to_string == rhs.to_string && to_sql == rhs.to_sql && table_scan_progress == rhs.table_scan_progress &&
-	       get_partition_data == rhs.get_partition_data && get_bind_info == rhs.get_bind_info &&
-	       get_table_entry == rhs.get_table_entry &&
+	       table_in_out_progress == rhs.table_in_out_progress && get_partition_data == rhs.get_partition_data &&
+	       get_bind_info == rhs.get_bind_info && get_table_entry == rhs.get_table_entry &&
 	       projection_expression_pushdown == rhs.projection_expression_pushdown &&
 	       get_multi_file_reader == rhs.get_multi_file_reader && supports_pushdown_type == rhs.supports_pushdown_type &&
 	       stability == rhs.stability && get_partition_info == rhs.get_partition_info &&
