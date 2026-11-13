@@ -127,6 +127,18 @@ void Pipeline::GetDetailedProgress(PipelineProgress &progress) {
 	auto state = GetSourceState();
 	if (state) {
 		progress.source = source->GetProgress(client, *state);
+	} else if (IsExternalInput()) {
+		// this pipeline has no source state: its producers push their chunks into it, so it advances with them
+		progress.source.done = 0;
+		progress.source.total = 0;
+		for (auto &producer_ref : external_input_producers) {
+			auto producer = producer_ref.lock();
+			D_ASSERT(producer);
+			PipelineProgress producer_progress;
+			producer->GetDetailedProgress(producer_progress);
+			producer_progress.source.Normalize(1.0);
+			progress.source.Add(producer_progress.source);
+		}
 	} else {
 		progress.source.done = 0;
 		progress.source.total = double(source_cardinality);
