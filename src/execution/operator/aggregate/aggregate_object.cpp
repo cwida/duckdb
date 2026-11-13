@@ -48,13 +48,18 @@ AggregateFilterData::AggregateFilterData(ClientContext &context, const Expressio
 
 idx_t AggregateFilterData::Select(DataChunk &chunk) {
 	selected_count = filter_executor.SelectExpression(chunk, true_sel);
+	all_selected = selected_count == chunk.size();
 	return selected_count;
 }
 
 idx_t AggregateFilterData::ApplyFilter(DataChunk &payload) {
 	Select(payload);
 	for (auto col_idx : sliced_columns) {
-		filtered_payload.data[col_idx].Slice(payload.data[col_idx], true_sel, selected_count);
+		if (all_selected) {
+			filtered_payload.data[col_idx].Reference(payload.data[col_idx]);
+		} else {
+			filtered_payload.data[col_idx].Slice(payload.data[col_idx], true_sel, selected_count);
+		}
 	}
 	return selected_count;
 }

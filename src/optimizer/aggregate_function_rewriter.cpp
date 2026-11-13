@@ -10,10 +10,13 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/planner/expression/bound_case_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression_nullability.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
@@ -38,6 +41,19 @@ static void RewriteAggregateCallbacks(Optimizer &optimizer, unique_ptr<LogicalOp
 	}
 }
 
+//! The helper aggregates a rule needs next to a rewritten aggregate
+struct AggregateRewriteHelpers {
+	//! Whether COUNT([x]) is appended: its argument is what Rewrite returns, its reference is the last additional
+	//! expression of the projection
+	bool count = true;
+	//! Further helper aggregates: their references follow the additional expressions of the rule, before the COUNT
+	vector<unique_ptr<Expression>> extras;
+	//! Whether a helper that equals an aggregate of the operator re-uses that aggregate instead of being appended
+	bool dedup = false;
+	//! Whether the rewritten aggregate is the result: no projection expression is created for it
+	bool in_place = false;
+};
+
 class AggregateRewriteRule {
 public:
 	explicit AggregateRewriteRule(Optimizer &optimizer_p) : optimizer(optimizer_p) {
@@ -46,8 +62,13 @@ public:
 
 public:
 	virtual bool ShouldSkip(const LogicalAggregate &aggr) const = 0;
+	virtual bool Match(Expression &expr, vector<reference<Expression>> &bindings) {
+		return matcher->Match(expr, bindings);
+	}
 	virtual bool ShouldRewrite(const LogicalAggregate &aggr, Expression &expr) {
 		return true;
+	}
+	virtual void GetHelpers(const LogicalAggregate &aggr, Expression &expr, AggregateRewriteHelpers &helpers) {
 	}
 	virtual unique_ptr<Expression> Rewrite(unique_ptr<Expression> &expr, vector<reference<Expression>> &bindings,
 	                                       vector<unique_ptr<Expression>> &additional_expressions) = 0;
@@ -333,6 +354,357 @@ unique_ptr<Expression> ListRewriteRule::Rewrite(unique_ptr<Expression> &expr, ve
 	return nullptr;
 }
 
+//! f(CASE WHEN c THEN x END) -> f(x) FILTER (WHERE c), so that the state is only updated for the matching rows and
+//! aggregates that share a condition evaluate it once per chunk. The rewritten forms:
+//!
+//! f(CASE WHEN c THEN x END) -> f(x) FILTER (WHERE c)
+//!     for sum / count / avg / min / max / bool_and / bool_or: both are NULL (0 for count) without a matching row
+//! count(CASE WHEN c THEN k END) -> count(*) FILTER (WHERE c)
+//!     for a non-NULL constant k
+//! sum(CASE WHEN c THEN x ELSE 0 END) -> coalesce(sum(x) FILTER (WHERE c), 0)
+//!     if x is provably not NULL
+//! sum(CASE WHEN c THEN x ELSE 0 END) -> CASE WHEN count(*) > count(*) FILTER (WHERE c)
+//!                                            THEN coalesce(sum(x) FILTER (WHERE c), 0)
+//!                                            ELSE sum(x) FILTER (WHERE c) END
+//!     if x is nullable: a group in which every row matches and every x is NULL is NULL (a sum over NULLs), any other
+//!     group without a non-NULL matching x holds a row that contributed the ELSE 0
+//! sum(CASE WHEN c THEN k ELSE 0 END) -> count(*) FILTER (WHERE c) * k
+//!     for an integer constant k
+//!
+//! Where the aggregate returns a row for an empty input (no groups, or a grouping set without columns), the ELSE 0
+//! forms are wrapped in CASE WHEN count(*) > 0 THEN ... END: the sum over no rows is NULL.
+//!
+//! The CASE only evaluates x for the matching rows, whereas the FILTER form evaluates it for every row. Hence x must
+//! not be able to throw and must not be volatile.
+class CaseToFilterRule : public AggregateRewriteRule {
+public:
+	CaseToFilterRule(Optimizer &optimizer, LogicalOperator &root)
+	    : AggregateRewriteRule(optimizer), nullability(optimizer.context, root) {
+	}
+
+private:
+	enum class CaseShape {
+		//! Not a rewritable aggregate
+		INVALID,
+		//! f(CASE WHEN c THEN x END)
+		ELSE_NULL,
+		//! sum(CASE WHEN c THEN x ELSE 0 END)
+		ELSE_ZERO,
+		//! sum(CASE WHEN c THEN k ELSE 0 END) for an integer constant k
+		CONSTANT_THEN
+	};
+
+private:
+	static const BoundCaseExpression &GetCase(const BoundAggregateExpression &aggr) {
+		return aggr.GetChildren()[0]->Cast<BoundCaseExpression>();
+	}
+
+	static bool IsRewritableFunction(const string &name) {
+		static constexpr const char *FUNCTIONS[] = {"sum", "count", "avg", "min", "max", "bool_and", "bool_or"};
+		for (auto &function_name : FUNCTIONS) {
+			if (name == function_name) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	static bool IsNonNullConstant(const Expression &expr) {
+		return expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT &&
+		       !expr.Cast<BoundConstantExpression>().GetValue().IsNull();
+	}
+
+	static bool IsZero(const Value &value) {
+		if (value.IsNull() || !value.type().IsNumeric()) {
+			return false;
+		}
+		return value == Value::Numeric(value.type(), 0);
+	}
+
+	static CaseShape Classify(const Expression &expr) {
+		if (expr.GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE) {
+			return CaseShape::INVALID;
+		}
+		auto &aggr = expr.Cast<BoundAggregateExpression>();
+		if (aggr.StateExportMode() == AggregateStateExportMode::STATE_EXPORT || aggr.GetOrderBys() ||
+		    aggr.GetFilter() || aggr.IsDistinct() || aggr.GetChildren().size() != 1) {
+			return CaseShape::INVALID;
+		}
+		auto &name = aggr.Function().GetName().GetIdentifierName();
+		if (!IsRewritableFunction(name)) {
+			return CaseShape::INVALID;
+		}
+		auto &child = *aggr.GetChildren()[0];
+		if (child.GetExpressionClass() != ExpressionClass::BOUND_CASE) {
+			return CaseShape::INVALID;
+		}
+		auto &case_expr = child.Cast<BoundCaseExpression>();
+		if (case_expr.CaseChecks().size() != 1) {
+			return CaseShape::INVALID;
+		}
+		auto &when_expr = *case_expr.CaseChecks()[0].when_expr;
+		auto &then_expr = *case_expr.CaseChecks()[0].then_expr;
+		auto &else_expr = case_expr.Else();
+		if (when_expr.IsVolatile() || !when_expr.IsConsistent() || when_expr.HasSubquery() || when_expr.IsAggregate() ||
+		    when_expr.IsWindow()) {
+			return CaseShape::INVALID;
+		}
+		// the CASE evaluates the THEN branch for the matching rows only, the FILTER form for every row
+		if (then_expr.CanThrow() || then_expr.IsVolatile() || then_expr.HasSubquery()) {
+			return CaseShape::INVALID;
+		}
+		// min / max over strings or nested types update their state faster from the vector of the CASE than from a
+		// slice of the argument
+		if ((name == "min" || name == "max") && !TypeIsConstantSize(then_expr.GetReturnType().InternalType())) {
+			return CaseShape::INVALID;
+		}
+		const auto is_sum = name == "sum";
+		// a floating point constant that is summed per row is not count * k, and the aggregate adds exactly that
+		// product for a constant input vector
+		if ((is_sum || name == "avg") && then_expr.GetReturnType().IsFloating() &&
+		    then_expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+			return CaseShape::INVALID;
+		}
+		// the binder casts the branches to the type of the CASE, so that f(x) binds like f(CASE ...)
+		if (then_expr.GetReturnType() != child.GetReturnType()) {
+			return CaseShape::INVALID;
+		}
+		if (else_expr.GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+			return CaseShape::INVALID;
+		}
+		auto &else_value = else_expr.Cast<BoundConstantExpression>().GetValue();
+		if (else_value.IsNull()) {
+			return CaseShape::ELSE_NULL;
+		}
+		if (!is_sum || !IsZero(else_value)) {
+			return CaseShape::INVALID;
+		}
+		// k * count(*) is only the exact sum for an integer k
+		const auto sum_type = aggr.GetReturnType().id();
+		if (IsNonNullConstant(then_expr) && then_expr.GetReturnType().IsIntegral() &&
+		    (sum_type == LogicalTypeId::HUGEINT || sum_type == LogicalTypeId::UHUGEINT)) {
+			return CaseShape::CONSTANT_THEN;
+		}
+		return CaseShape::ELSE_ZERO;
+	}
+
+	//! Binds count(*) FILTER (WHERE filter)
+	unique_ptr<Expression> BindFilteredCount(const Expression &filter) const {
+		FunctionBinder function_binder(optimizer.context);
+		auto count_fun = GetBuiltinAggregateFunction(optimizer.context, CountFun::Name, {});
+		return function_binder.BindAggregateFunction(count_fun, {}, filter.Copy(), AggregateType::NON_DISTINCT);
+	}
+
+	//! Binds the filtered aggregate that replaces f(CASE WHEN c THEN x ...), or returns nullptr if it cannot replace it
+	unique_ptr<Expression> BindFiltered(const BoundAggregateExpression &aggr, CaseShape shape) const {
+		auto &check = GetCase(aggr).CaseChecks()[0];
+		auto &name = aggr.Function().GetName().GetIdentifierName();
+		const auto count_star =
+		    shape == CaseShape::CONSTANT_THEN ||
+		    (shape == CaseShape::ELSE_NULL && name == "count" && IsNonNullConstant(*check.then_expr));
+		unique_ptr<Expression> result;
+		if (count_star) {
+			result = BindFilteredCount(*check.when_expr);
+			if (result->GetReturnType() != LogicalType::BIGINT) {
+				return nullptr;
+			}
+		} else {
+			auto function = TryGetBuiltinAggregateFunction(optimizer.context, aggr.Function().GetName(),
+			                                               {check.then_expr->GetReturnType()});
+			if (!function) {
+				return nullptr;
+			}
+			FunctionBinder function_binder(optimizer.context);
+			vector<unique_ptr<Expression>> children;
+			children.push_back(check.then_expr->Copy());
+			result = function_binder.BindAggregateFunction(function, std::move(children), check.when_expr->Copy(),
+			                                               AggregateType::NON_DISTINCT);
+			if (result->GetReturnType() != aggr.GetReturnType()) {
+				return nullptr;
+			}
+		}
+		result->SetAlias(aggr.GetAlias());
+		return result;
+	}
+
+	//! Whether the function returns a value whenever its arguments are values. The default NULL handling only states
+	//! that a NULL argument gives NULL, not the converse (struct_extract of a NULL field, list_extract past the end)
+	static bool PreservesNotNull(const BoundFunctionExpression &function) {
+		if (function.Function().GetNullHandling() != FunctionNullHandling::DEFAULT_NULL_HANDLING) {
+			return false;
+		}
+		auto &name = function.Function().GetName().GetIdentifierName();
+		return function.IsOperator() && (name == "+" || name == "-" || name == "*");
+	}
+
+	//! Whether the expression is provably not NULL at the output of the operator
+	bool IsNotNull(LogicalOperator &input, const Expression &expr, bool use_statistics) {
+		switch (expr.GetExpressionClass()) {
+		case ExpressionClass::BOUND_CONSTANT:
+			return IsNonNullConstant(expr);
+		case ExpressionClass::BOUND_COLUMN_REF:
+			return use_statistics && nullability.IsNotNull(input, expr);
+		case ExpressionClass::BOUND_FUNCTION: {
+			auto &function = expr.Cast<BoundFunctionExpression>();
+			if (BoundCastExpression::IsCast(expr)) {
+				// a cast between numeric types returns a value or throws
+				auto &source = BoundCastExpression::Child(function);
+				return !BoundCastExpression::IsTryCast(function) && source.GetReturnType().IsNumeric() &&
+				       expr.GetReturnType().IsNumeric() && IsNotNull(input, source, use_statistics);
+			}
+			if (!PreservesNotNull(function) || function.GetChildren().empty()) {
+				return false;
+			}
+			for (auto &child : function.GetChildren()) {
+				if (!IsNotNull(input, *child, use_statistics)) {
+					return false;
+				}
+			}
+			return true;
+		}
+		default:
+			return false;
+		}
+	}
+
+	//! The constant of the projection, typed as the sum: the 0 of coalesce(..., 0) or the factor k of count(*)
+	static optional<Value> GetConstant(const BoundAggregateExpression &aggr, CaseShape shape) {
+		if (shape == CaseShape::CONSTANT_THEN) {
+			auto &then_expr = *GetCase(aggr).CaseChecks()[0].then_expr;
+			return then_expr.Cast<BoundConstantExpression>().GetValue().DefaultTryCastAs(aggr.GetReturnType());
+		}
+		return Value::INTEGER(0).DefaultTryCastAs(aggr.GetReturnType());
+	}
+
+	//! Whether the aggregate returns a row for an empty input
+	static bool HasEmptyGroupingSet(const LogicalAggregate &aggr) {
+		if (aggr.groups.empty()) {
+			return true;
+		}
+		for (auto &grouping_set : aggr.grouping_sets) {
+			if (grouping_set.empty()) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+public:
+	bool ShouldSkip(const LogicalAggregate &) const override {
+		return false;
+	}
+
+	bool Match(Expression &expr, vector<reference<Expression>> &bindings) override {
+		if (Classify(expr) == CaseShape::INVALID) {
+			return false;
+		}
+		bindings.push_back(expr);
+		return true;
+	}
+
+	bool ShouldRewrite(const LogicalAggregate &, Expression &expr) override {
+		auto &aggr = expr.Cast<BoundAggregateExpression>();
+		const auto shape = Classify(expr);
+		if (shape != CaseShape::ELSE_NULL && !GetConstant(aggr, shape)) {
+			return false;
+		}
+		return BindFiltered(aggr, shape) != nullptr;
+	}
+
+	void GetHelpers(const LogicalAggregate &aggr, Expression &expr, AggregateRewriteHelpers &helpers) override {
+		auto &aggregate = expr.Cast<BoundAggregateExpression>();
+		helpers.count = false;
+		helpers.dedup = true;
+		switch (Classify(expr)) {
+		case CaseShape::ELSE_NULL:
+			// f(x) FILTER (WHERE c) is the result
+			helpers.in_place = true;
+			return;
+		case CaseShape::ELSE_ZERO: {
+			auto &check = GetCase(aggregate).CaseChecks()[0];
+			const auto use_statistics = !optimizer.OptimizerDisabled(OptimizerType::STATISTICS_PROPAGATION);
+			if (!IsNotNull(*aggr.children[0], *check.then_expr, use_statistics)) {
+				// count(*) > count(*) FILTER (WHERE c): a row of the group took the ELSE 0
+				helpers.count = true;
+				helpers.extras.push_back(BindFilteredCount(*check.when_expr));
+				return;
+			}
+			break;
+		}
+		default:
+			break;
+		}
+		// count(*) > 0: the aggregate has seen a row
+		helpers.count = HasEmptyGroupingSet(aggr);
+	}
+
+	unique_ptr<Expression> Rewrite(unique_ptr<Expression> &expr, vector<reference<Expression>> &,
+	                               vector<unique_ptr<Expression>> &additional_expressions) override {
+		auto &aggr = expr->Cast<BoundAggregateExpression>();
+		const auto shape = Classify(*expr);
+		auto filtered = BindFiltered(aggr, shape);
+		D_ASSERT(filtered);
+		if (shape != CaseShape::ELSE_NULL) {
+			auto constant = GetConstant(aggr, shape);
+			D_ASSERT(constant);
+			additional_expressions.push_back(make_uniq<BoundConstantExpression>(std::move(*constant)));
+		}
+		expr = std::move(filtered);
+		// the helper count (if any) is count(*)
+		return nullptr;
+	}
+
+	unique_ptr<Expression> CreateProjectionExpression(const LogicalType &aggr_type, unique_ptr<Expression> aggr_ref,
+	                                                  vector<unique_ptr<Expression>> additional_expressions) override {
+		// additional_expressions: the constant, then count(*) FILTER (WHERE c) for the nullable ELSE 0 form, then
+		// count(*) if the rewrite needs it
+		D_ASSERT(!additional_expressions.empty());
+		auto constant = std::move(additional_expressions[0]);
+		unique_ptr<Expression> count_ref;
+		unique_ptr<Expression> matching_ref;
+		if (additional_expressions.size() > 1) {
+			count_ref = std::move(additional_expressions.back());
+		}
+		if (additional_expressions.size() > 2) {
+			matching_ref = std::move(additional_expressions[1]);
+		}
+
+		unique_ptr<Expression> result;
+		if (aggr_ref->GetReturnType() == aggr_type) {
+			// coalesce(sum(x) FILTER (WHERE c), 0)
+			auto coalesce = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_COALESCE, aggr_type);
+			coalesce->GetChildrenMutable().push_back(aggr_ref->Copy());
+			coalesce->GetChildrenMutable().push_back(std::move(constant));
+			if (matching_ref) {
+				// only a group with a row that did not match holds the ELSE 0: without one the sum is the result
+				auto has_else_rows = BoundComparisonExpression::Create(ExpressionType::COMPARE_GREATERTHAN,
+				                                                       std::move(count_ref), std::move(matching_ref));
+				return make_uniq<BoundCaseExpression>(std::move(has_else_rows), std::move(coalesce),
+				                                      std::move(aggr_ref));
+			}
+			result = std::move(coalesce);
+		} else {
+			// count(*) FILTER (WHERE c) * k
+			result = BoundCastExpression::AddCastToType(optimizer.context, std::move(aggr_ref), aggr_type);
+			if (constant->Cast<BoundConstantExpression>().GetValue() != Value::Numeric(aggr_type, 1)) {
+				result = optimizer.BindScalarFunction("*", std::move(result), std::move(constant));
+				result = BoundCastExpression::AddCastToType(optimizer.context, std::move(result), aggr_type);
+			}
+		}
+		if (!count_ref) {
+			return result;
+		}
+		// the sum over an empty input is NULL
+		auto has_rows = BoundComparisonExpression::Create(ExpressionType::COMPARE_GREATERTHAN, std::move(count_ref),
+		                                                  make_uniq<BoundConstantExpression>(Value::BIGINT(0)));
+		return make_uniq<BoundCaseExpression>(std::move(has_rows), std::move(result),
+		                                      make_uniq<BoundConstantExpression>(Value(aggr_type)));
+	}
+
+private:
+	NotNullExpressionAnalyzer nullability;
+};
+
 //! Internal LogicalOperatorVisitor that does the actual rewriting
 class AggregateFunctionRewriterInternal : public LogicalOperatorVisitor {
 public:
@@ -342,8 +714,12 @@ public:
 
 private:
 	struct RewriteInfo {
-		idx_t count_idx;
+		//! The indexes of the helper aggregates: the extra helpers of the rule, followed by the COUNT (if any)
+		vector<idx_t> helper_indexes;
 		vector<unique_ptr<Expression>> additional_expressions;
+		//! The result type of the aggregate before the rewrite
+		LogicalType original_type;
+		bool in_place;
 	};
 
 public:
@@ -389,6 +765,19 @@ private:
 		return nullptr;
 	}
 
+	//! Appends a helper aggregate - or, with dedup, finds an equal aggregate - and returns its index
+	static idx_t AddHelper(LogicalAggregate &aggr, unique_ptr<Expression> helper, bool dedup) {
+		if (dedup) {
+			for (idx_t i = 0; i < aggr.expressions.size(); i++) {
+				if (aggr.expressions[i]->Equals(*helper)) {
+					return i;
+				}
+			}
+		}
+		aggr.expressions.push_back(std::move(helper));
+		return aggr.expressions.size() - 1;
+	}
+
 	void RewriteAggregates(unique_ptr<LogicalOperator> &op) {
 		auto &aggr = op->Cast<LogicalAggregate>();
 		if (rule.ShouldSkip(aggr)) {
@@ -397,37 +786,47 @@ private:
 		const idx_t aggr_count = aggr.expressions.size();
 
 		unordered_map<idx_t, RewriteInfo> rewrites;
+		bool needs_projection = false;
 		for (idx_t i = 0; i < aggr_count; ++i) {
 			auto &expr = aggr.expressions[i];
 			vector<reference<Expression>> bindings;
-			if (!rule.matcher->Match(*expr, bindings)) {
+			if (!rule.Match(*expr, bindings)) {
 				continue;
 			}
 			if (!rule.ShouldRewrite(aggr, *expr)) {
 				continue;
 			}
+			AggregateRewriteHelpers helpers;
+			rule.GetHelpers(aggr, *expr, helpers);
 
 			RewriteInfo rewrite_info;
+			rewrite_info.original_type = expr->GetReturnType();
+			rewrite_info.in_place = helpers.in_place;
 			auto count_arg = rule.Rewrite(expr, bindings, rewrite_info.additional_expressions);
 
-			// Add COUNT([x]) to the aggregate list - the count set holds both the unary count and count_star
-			FunctionBinder function_binder(optimizer.context);
-			vector<unique_ptr<Expression>> count_args;
-			vector<LogicalType> count_arg_types;
-			if (count_arg) {
-				count_arg_types.push_back(count_arg->GetReturnType());
-				count_args.push_back(std::move(count_arg));
+			for (auto &helper : helpers.extras) {
+				rewrite_info.helper_indexes.push_back(AddHelper(aggr, std::move(helper), helpers.dedup));
 			}
-			auto count_fun = GetBuiltinAggregateFunction(optimizer.context, CountFun::Name, count_arg_types);
-			auto count_aggr = function_binder.BindAggregateFunction(count_fun, std::move(count_args), nullptr,
-			                                                        AggregateType::NON_DISTINCT);
-
-			rewrite_info.count_idx = aggr.expressions.size();
+			if (helpers.count) {
+				// Add COUNT([x]) to the aggregate list - the count set holds both the unary count and count_star
+				FunctionBinder function_binder(optimizer.context);
+				vector<unique_ptr<Expression>> count_args;
+				vector<LogicalType> count_arg_types;
+				if (count_arg) {
+					count_arg_types.push_back(count_arg->GetReturnType());
+					count_args.push_back(std::move(count_arg));
+				}
+				auto count_fun = GetBuiltinAggregateFunction(optimizer.context, CountFun::Name, count_arg_types);
+				auto count_aggr = function_binder.BindAggregateFunction(count_fun, std::move(count_args), nullptr,
+				                                                        AggregateType::NON_DISTINCT);
+				rewrite_info.helper_indexes.push_back(AddHelper(aggr, std::move(count_aggr), helpers.dedup));
+			}
+			needs_projection = needs_projection || !rewrite_info.in_place;
 			rewrites.emplace(i, std::move(rewrite_info));
-			aggr.expressions.push_back(std::move(count_aggr));
 		}
 
-		if (rewrites.empty()) {
+		if (!needs_projection) {
+			// nothing was rewritten, or every rewritten aggregate is the result as it is
 			return;
 		}
 
@@ -452,19 +851,19 @@ private:
 			auto aggr_ref = make_uniq<BoundColumnRefExpression>(aggr_type, aggregate_binding);
 
 			const auto rewrite_entry = rewrites.find(i);
-			if (rewrite_entry == rewrites.end()) {
-				// Not rewritten — pass through as-is
+			if (rewrite_entry == rewrites.end() || rewrite_entry->second.in_place) {
+				// Not rewritten, or rewritten in place — pass through as-is
 				projection_expressions.push_back(std::move(aggr_ref));
 				continue;
 			}
 
 			auto &rewrite_info = rewrite_entry->second;
-			ColumnBinding count_binding(aggr.aggregate_index, ProjectionIndex(rewrite_info.count_idx));
-			auto count_ref = make_uniq<BoundColumnRefExpression>(
-			    aggr.expressions[rewrite_info.count_idx]->GetReturnType(), count_binding);
-
-			rewrite_info.additional_expressions.push_back(std::move(count_ref));
-			auto final_result = rule.CreateProjectionExpression(aggr_type, std::move(aggr_ref),
+			for (auto &helper_idx : rewrite_info.helper_indexes) {
+				ColumnBinding helper_binding(aggr.aggregate_index, ProjectionIndex(helper_idx));
+				rewrite_info.additional_expressions.push_back(
+				    make_uniq<BoundColumnRefExpression>(aggr.expressions[helper_idx]->GetReturnType(), helper_binding));
+			}
+			auto final_result = rule.CreateProjectionExpression(rewrite_info.original_type, std::move(aggr_ref),
 			                                                    std::move(rewrite_info.additional_expressions));
 			projection_expressions.push_back(std::move(final_result));
 		}
@@ -510,6 +909,12 @@ void AggregateFunctionRewriter::Optimize(unique_ptr<LogicalOperator> &op) {
 		AggregateFunctionRewriterInternal rewriter(optimizer, *rule);
 		rewriter.Optimize(op);
 	}
+}
+
+void AggregateFunctionRewriter::RewriteCaseToFilter(unique_ptr<LogicalOperator> &op) {
+	CaseToFilterRule rule(optimizer, *op);
+	AggregateFunctionRewriterInternal rewriter(optimizer, rule);
+	rewriter.Optimize(op);
 }
 
 } // namespace duckdb

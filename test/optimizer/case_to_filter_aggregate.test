@@ -1,0 +1,522 @@
+# name: test/optimizer/case_to_filter_aggregate.test
+# description: f(CASE WHEN c THEN x [ELSE 0] END) -> f(x) FILTER (WHERE c)
+# group: [optimizer]
+
+# Every query runs with the rule disabled and enabled (labels compare the two results); EXPLAIN asserts whether the
+# rewrite fired (a FILTER on the aggregate).
+
+statement ok
+SET explain_output='physical_only'
+
+statement ok
+CREATE TABLE t AS
+SELECT i::INTEGER AS i, (i % 7)::INTEGER AS g, CASE WHEN i % 5 = 0 THEN NULL ELSE (i % 100)::INTEGER END AS q,
+       ((i * 3) % 11)::INTEGER AS v, i % 4 = 0 AS c, ((i % 1000) / 100.0)::DECIMAL(15,2) AS d,
+       (i % 13)::DOUBLE / 7 AS dbl, (i % 13)::FLOAT / 7 AS flt, i % 3 = 0 AS b,
+       CASE WHEN i % 6 = 0 THEN NULL ELSE i % 2 = 0 END AS nb, ((i % 10000) / 100.0)::DECIMAL(7,2) AS p
+FROM range(10000) r(i)
+
+statement ok
+CREATE TABLE empty_t AS SELECT * FROM t WHERE false
+
+# a VARCHAR whose cast to INTEGER throws on the rows the CASE guards away
+statement ok
+CREATE TABLE guarded AS SELECT i AS k, CASE WHEN i < 2 THEN i::VARCHAR ELSE 'bad' END AS v FROM range(4) r(i)
+
+# a nullable argument: group 1 has matching rows only, all with a NULL x; group 5 a non-matching row with a NULL x
+statement ok
+CREATE TABLE nz AS SELECT * FROM (VALUES (true, NULL::INT, 1), (true, NULL::INT, 1), (false, 5, 2), (true, 3, 3), (true, NULL, 3), (NULL, 7, 4), (true, NULL, 5), (false, NULL, 5)) t(c, x, g)
+
+foreach disabled 'case_to_filter_aggregate' ''
+
+statement ok
+SET disabled_optimizers = {disabled}
+
+# 1. sum(CASE WHEN c THEN x END) grouped: groups 4, 5, 6 have rows but no matching row -> NULL
+query III nosort case1
+SELECT g, sum(CASE WHEN i < 4 THEN v END), count(CASE WHEN i < 4 THEN v END) FROM t GROUP BY g ORDER BY g
+----
+
+# 2. sum(CASE WHEN c THEN x ELSE 0 END) grouped: a group with rows but no matching row gives 0, not NULL
+query III nosort case2
+SELECT g, sum(CASE WHEN i < 4 THEN v ELSE 0 END), sum(CASE WHEN i < 4 THEN 1 ELSE 0 END) FROM t GROUP BY g ORDER BY g
+----
+
+# 3. ungrouped over an empty input: the CASE forms are NULL (count: 0), with and without ELSE 0
+query IIIII nosort case3a
+SELECT sum(CASE WHEN c THEN v ELSE 0 END), sum(CASE WHEN c THEN 1 ELSE 0 END), sum(CASE WHEN c THEN v END), count(CASE WHEN c THEN v END), sum(CASE WHEN c THEN 3 ELSE 0 END) FROM empty_t
+----
+
+query IIIII nosort case3b
+SELECT sum(CASE WHEN c THEN v ELSE 0 END), sum(CASE WHEN c THEN 1 ELSE 0 END), sum(CASE WHEN c THEN v END), count(CASE WHEN c THEN v END), sum(CASE WHEN c THEN 3 ELSE 0 END) FROM t WHERE i < 0
+----
+
+# ungrouped with rows but no matching row: 0 for the ELSE 0 forms, NULL / 0 for the others
+query IIIII nosort case3c
+SELECT sum(CASE WHEN i < 0 THEN v ELSE 0 END), sum(CASE WHEN i < 0 THEN 1 ELSE 0 END), sum(CASE WHEN i < 0 THEN v END), count(CASE WHEN i < 0 THEN v END), sum(CASE WHEN i < 0 THEN 3 ELSE 0 END) FROM t
+----
+
+# 4. sum(CASE WHEN c THEN 1 ELSE 0 END): the count, typed as the sum (HUGEINT), grouped and ungrouped
+query IIII nosort case4a
+SELECT g, sum(CASE WHEN c THEN 1 ELSE 0 END), typeof(sum(CASE WHEN c THEN 1 ELSE 0 END)), sum(CASE WHEN c THEN v ELSE 0 END) FROM t GROUP BY g ORDER BY g
+----
+
+query III nosort case4b
+SELECT sum(CASE WHEN c THEN 1 ELSE 0 END), typeof(sum(CASE WHEN c THEN 1 ELSE 0 END)), sum(CASE WHEN c THEN 3 ELSE 0 END) FROM t
+----
+
+# 5. a decimal constant branch: DECIMAL(38,1), values equal
+query IIII nosort case5
+SELECT g, sum(CASE WHEN c THEN 2.5 ELSE 0 END), typeof(sum(CASE WHEN c THEN 2.5 ELSE 0 END)), sum(CASE WHEN c THEN v ELSE 0 END) FROM t GROUP BY g ORDER BY g
+----
+
+# 6. a DECIMAL(15,2) argument: typed zero for the group without a match
+query IIII nosort case6
+SELECT g, sum(CASE WHEN i < 4 THEN d ELSE 0 END), typeof(sum(CASE WHEN i < 4 THEN d ELSE 0 END)), count(CASE WHEN i < 4 THEN d END) FROM t GROUP BY g ORDER BY g
+----
+
+# 7. count(CASE WHEN c THEN x END) with NULL x among the matching rows (NULL is not counted in either form)
+query III nosort case7
+SELECT g, count(CASE WHEN c THEN q END), count(CASE WHEN c THEN 1 END) FROM t GROUP BY g ORDER BY g
+----
+
+# 8. count(CASE WHEN c THEN x ELSE 0 END) counts the ELSE rows: not rewritten, same results
+query II nosort case8
+SELECT g, count(CASE WHEN c THEN q ELSE 0 END) FROM t GROUP BY g ORDER BY g
+----
+
+# 9. avg(CASE WHEN c THEN x END) rewrites, avg(CASE WHEN c THEN x ELSE 0 END) does not
+query IIII nosort case9
+SELECT g, avg(CASE WHEN c THEN v END), avg(CASE WHEN c THEN v ELSE 0 END), count(CASE WHEN c THEN v END) FROM t GROUP BY g ORDER BY g
+----
+
+query III nosort case9b
+SELECT avg(CASE WHEN c THEN v END), avg(CASE WHEN c THEN v ELSE 0 END), count(CASE WHEN c THEN v END) FROM t
+----
+
+# 10. min / max; max with a non-NULL ELSE is not rewritten
+query IIII nosort case10
+SELECT g, min(CASE WHEN i < 4 THEN v END), max(CASE WHEN i < 4 THEN v END), max(CASE WHEN i < 4 THEN v ELSE -1 END) FROM t GROUP BY g ORDER BY g
+----
+
+# 11. bool_and / bool_or
+query III nosort case11
+SELECT g, bool_and(CASE WHEN c THEN b END), bool_or(CASE WHEN c THEN b END) FROM t GROUP BY g ORDER BY g
+----
+
+# 12. an existing FILTER (with NULLs in it): not rewritten, same results
+query II nosort case12
+SELECT g, sum(CASE WHEN c THEN v ELSE 0 END) FILTER (WHERE nb) FROM t GROUP BY g ORDER BY g
+----
+
+# 13. DISTINCT: not rewritten, same results
+query III nosort case13
+SELECT g, sum(DISTINCT CASE WHEN c THEN v END), sum(DISTINCT CASE WHEN c THEN v ELSE 0 END) FROM t GROUP BY g ORDER BY g
+----
+
+# 14. a condition that is NULL for some rows behaves as false in both forms
+query III nosort case14
+SELECT g, sum(CASE WHEN q > 50 THEN v ELSE 0 END), count(CASE WHEN q > 50 THEN v END) FROM t GROUP BY g ORDER BY g
+----
+
+# 18. GROUPING SETS / ROLLUP with the ELSE 0 form, including GROUPING()
+query IIIII nosort case18
+SELECT g, b, GROUPING(g, b), sum(CASE WHEN c THEN v ELSE 0 END), sum(CASE WHEN c THEN v END) FROM t GROUP BY ROLLUP (g, b) ORDER BY ALL
+----
+
+# 19. the aggregates of a window (a running frame, and a partition frame that is computed by an aggregate and a join)
+query III nosort case19
+SELECT i, sum(CASE WHEN c THEN v ELSE 0 END) OVER (PARTITION BY g ORDER BY i), count(CASE WHEN c THEN v END) OVER (PARTITION BY g ORDER BY i) FROM t WHERE i < 50 ORDER BY i
+----
+
+query III nosort case19b
+SELECT i, sum(CASE WHEN c THEN v ELSE 0 END) OVER (PARTITION BY g), count(CASE WHEN c THEN v END) OVER (PARTITION BY g) FROM t WHERE i < 50 ORDER BY i
+----
+
+# 21. HUGEINT / UBIGINT / FLOAT / DOUBLE arguments
+query IIIII nosort case21
+SELECT g, sum(CASE WHEN c THEN i::HUGEINT ELSE 0 END), sum(CASE WHEN c THEN i::UBIGINT ELSE 0 END), round(sum(CASE WHEN c THEN flt ELSE 0 END), 3), round(sum(CASE WHEN c THEN dbl ELSE 0 END), 6) FROM t GROUP BY g ORDER BY g
+----
+
+# conditions that are true for every row, false for every row, and NULL for every row
+query IIIII nosort case_const
+SELECT g, sum(CASE WHEN i >= 0 THEN v ELSE 0 END), sum(CASE WHEN i < 0 THEN v ELSE 0 END), sum(CASE WHEN i < 0 THEN v END), count(CASE WHEN NULL::BOOLEAN THEN v END) FROM t GROUP BY g ORDER BY g
+----
+
+query IIII nosort case_const_ungrouped
+SELECT sum(CASE WHEN i >= 0 THEN v ELSE 0 END), sum(CASE WHEN i < 0 THEN v ELSE 0 END), sum(CASE WHEN i < 0 THEN v END), sum(v) FILTER (WHERE i >= 0) FROM t
+----
+
+# IF(c, x, 0) is a CASE
+query III nosort case_if
+SELECT g, sum(IF(c, v, 0)), sum(IF(c, 1, 0)) FROM t GROUP BY g ORDER BY g
+----
+
+# several CASE aggregates sharing the condition next to a user-written FILTER
+query IIIII nosort case17
+SELECT g, sum(CASE WHEN c THEN v ELSE 0 END), sum(CASE WHEN c THEN v ELSE 0 END) + 1, sum(v) FILTER (WHERE c), count(CASE WHEN c THEN v END) FROM t GROUP BY g ORDER BY g
+----
+
+# multi-WHEN: not rewritten, same results
+query II nosort case16
+SELECT g, sum(CASE WHEN c THEN v WHEN b THEN 1 ELSE 0 END) FROM t GROUP BY g ORDER BY g
+----
+
+# a condition over a subquery (a MARK join column)
+query II nosort case_subquery
+SELECT sum(CASE WHEN i IN (SELECT i FROM t WHERE c) THEN v ELSE 0 END), count(CASE WHEN i IN (SELECT i FROM t WHERE c) THEN v END) FROM t
+----
+
+# 22. a THEN expression that can throw keeps its CASE guard: the cast of 'bad' never runs, no Conversion Error
+query RR nosort
+SELECT sum(CASE WHEN k < 2 THEN v::INTEGER ELSE 0 END), avg(CASE WHEN k < 2 THEN v::INTEGER ELSE 0 END) FROM guarded
+----
+1	0.25
+
+query III nosort
+SELECT k % 2, sum(CASE WHEN k < 2 THEN v::INTEGER ELSE 0 END), count(CASE WHEN k < 2 THEN v::INTEGER END) FROM guarded GROUP BY 1 ORDER BY 1
+----
+0	0	1
+1	1	1
+
+# 23. a THEN expression of decimal arithmetic whose result width the binder did not cap cannot overflow: rewritten
+# (TPC-DS q66's `price * quantity` shape: DECIMAL(7,2) * INTEGER = DECIMAL(17,2)); a width of 18 (DECIMAL(15,2) *
+# INTEGER, capped with the overflow check) or 38, an integer multiplication and a cast that can fail keep the CASE
+query IIII nosort case23a
+SELECT g, sum(CASE WHEN c THEN p * v ELSE 0 END), sum(CASE WHEN c THEN p * v END), count(CASE WHEN c THEN p + d END) FROM t GROUP BY g ORDER BY g
+----
+
+query III nosort case23b
+SELECT sum(CASE WHEN c THEN p * v ELSE 0 END), sum(CASE WHEN b THEN p * v END), max(CASE WHEN c THEN p - d END) FROM t
+----
+
+query IIII nosort case23c
+SELECT g, sum(CASE WHEN c THEN d * v ELSE 0 END), sum(CASE WHEN c THEN i * v END), sum(CASE WHEN c THEN d::DECIMAL(20,2) * d::DECIMAL(20,2) END) FROM t GROUP BY g ORDER BY g
+----
+
+# 24. sum(CASE WHEN c THEN x ELSE 0 END) over a nullable x: a group whose rows all match with every x NULL is a sum
+# over NULLs - NULL, not 0; a group with a row that does not match (c false or NULL) takes the ELSE 0 and is 0 even
+# when every matching x is NULL
+query III nosort
+SELECT g, sum(CASE WHEN c THEN x ELSE 0 END), count(CASE WHEN c THEN x END) FROM nz GROUP BY g ORDER BY g
+----
+1	NULL	0
+2	0	0
+3	3	1
+4	0	0
+5	0	0
+
+# ungrouped: all rows match with NULL x -> NULL; one non-matching row -> 0; empty input -> NULL
+query II nosort
+SELECT sum(CASE WHEN c THEN x ELSE 0 END), count(CASE WHEN c THEN x END) FROM nz WHERE g = 1
+----
+NULL	0
+
+query II nosort
+SELECT sum(CASE WHEN c THEN x ELSE 0 END), count(CASE WHEN c THEN x END) FROM nz WHERE g IN (1, 2)
+----
+0	0
+
+query II nosort
+SELECT sum(CASE WHEN c THEN x ELSE 0 END), count(CASE WHEN c THEN x END) FROM nz WHERE g = 99
+----
+NULL	0
+
+# DECIMAL and DOUBLE arguments
+query III nosort
+SELECT g, sum(CASE WHEN c THEN x::DECIMAL(10,2) ELSE 0 END), sum(CASE WHEN c THEN x::DOUBLE ELSE 0 END) FROM nz GROUP BY g ORDER BY g
+----
+1	NULL	NULL
+2	0.00	0.0
+3	3.00	3.0
+4	0.00	0.0
+5	0.00	0.0
+
+# the ELSE NULL forms over the same groups: NULL (count: 0) in both forms
+query IRIIII nosort
+SELECT g, avg(CASE WHEN c THEN x END), min(CASE WHEN c THEN x END), max(CASE WHEN c THEN x END), count(CASE WHEN c THEN x END), bool_and(CASE WHEN c THEN x > 4 END) FROM nz GROUP BY g ORDER BY g
+----
+1	NULL	NULL	NULL	0	NULL
+2	NULL	NULL	NULL	0	NULL
+3	3.0	3	3	1	false
+4	NULL	NULL	NULL	0	NULL
+5	NULL	NULL	NULL	0	NULL
+
+# a non-constant ELSE is not rewritten
+query III nosort
+SELECT g, sum(CASE WHEN c THEN x ELSE g END), sum(CASE WHEN c THEN x ELSE 0 END) FROM nz GROUP BY g ORDER BY g
+----
+1	NULL	NULL
+2	2	0
+3	3	3
+4	4	0
+5	5	0
+
+# over t: q is NULL on every row of `i % 5 = 0`, so that condition's ELSE 0 sum is 0 per group (every group has
+# non-matching rows) and NULL when the input is restricted to the matching rows
+query IIII nosort
+SELECT g, sum(CASE WHEN c THEN q ELSE 0 END), sum(CASE WHEN i % 5 = 0 THEN q ELSE 0 END), count(CASE WHEN c THEN q END) FROM t GROUP BY g ORDER BY g
+----
+0	14344	0	286
+1	14324	0	286
+2	14300	0	286
+3	14276	0	286
+4	14256	0	286
+5	14252	0	285
+6	14248	0	285
+
+query II nosort
+SELECT sum(CASE WHEN i % 5 = 0 THEN q ELSE 0 END), count(CASE WHEN i % 5 = 0 THEN q END) FROM t WHERE i % 5 = 0
+----
+NULL	0
+
+query II nosort
+SELECT sum(CASE WHEN c THEN q ELSE 0 END), sum(CASE WHEN i % 5 = 0 THEN q ELSE 0 END) FROM t
+----
+100000	0
+
+endloop
+
+# EXPLAIN assertions
+
+# fired: the aggregates carry the FILTER, no CASE is left
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN v ELSE 0 END), count(CASE WHEN c THEN v END) FROM t GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*FILTER.*
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN v ELSE 0 END), count(CASE WHEN c THEN v END) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*CASE.*
+
+# 24. a nullable argument (q has NULLs): the ELSE 0 sum carries the exact guard - a `count() FILTER (WHERE c)` helper
+# beside the `count()` and a `CASE WHEN count() > count() FILTER THEN coalesce(..) ELSE sum END` projection
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN q ELSE 0 END), count(CASE WHEN c THEN q END) FROM t GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*count\(\) FILTER \(WHERE #2\).*count\(\).*
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN q ELSE 0 END), count(CASE WHEN c THEN q END) FROM t GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*CASE  WHEN \(\(#4 > #3\)\) THEN \(COALESCE\(#1, 0\)\) ELSE #1 END.*
+
+# the two conditions of an ungrouped pair share one count() and get one count() FILTER each
+query II
+EXPLAIN SELECT sum(CASE WHEN c THEN q ELSE 0 END), sum(CASE WHEN i % 5 = 0 THEN q ELSE 0 END) FROM t
+----
+physical_plan	<REGEX>:(?s).*count\(\) FILTER \(WHERE #1\).*count\(\),.*count\(\) FILTER \(WHERE \(\(#2 % 5\) = 0\)\).*
+
+# arguments provably NOT NULL (columns without NULLs, a product of them) keep the bare coalesce and add no count
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN v ELSE 0 END), sum(CASE WHEN c THEN i ELSE 0 END) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*count.*
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN p * v ELSE 0 END), sum(CASE WHEN c THEN i ELSE 0 END) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*count.*
+
+# a lone conditional aggregate is rewritten as well, also next to a user-written FILTER aggregate
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN v ELSE 0 END) FROM t GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*sum_no_overflow\(#[0-9]+\) FILTER.*
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN v ELSE 0 END), sum(v) FILTER (WHERE b) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*CASE.*
+
+# a condition that the statistics prove to be true for every row (i is never negative) leaves no filter behind: the
+# two sums are the same aggregate
+query II
+EXPLAIN SELECT g, sum(CASE WHEN i >= 0 THEN v ELSE 0 END), sum(CASE WHEN i > -5 THEN v ELSE 0 END) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*(FILTER|sum.*sum).*
+
+# the same holds for a user-written FILTER
+query II
+EXPLAIN SELECT g, sum(v) FILTER (WHERE i >= 0) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*FILTER.*
+
+query II
+EXPLAIN SELECT g, sum(v) FILTER (WHERE i >= 5) FROM t GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*FILTER.*
+
+query II
+EXPLAIN SELECT sum(CASE WHEN c THEN v END), count(CASE WHEN c THEN q END), avg(CASE WHEN c THEN v END), min(CASE WHEN c THEN v END) FROM t
+----
+physical_plan	<REGEX>:(?s).*FILTER.*
+
+# the constant branches become count(*) FILTER
+query II
+EXPLAIN SELECT sum(CASE WHEN c THEN 1 ELSE 0 END), count(CASE WHEN c THEN 1 END) FROM t GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*count\(\) FILTER.*
+
+# a THEN expression that can throw (a VARCHAR -> INTEGER cast) is not rewritten: the CASE is its guard, the FILTER
+# form would evaluate the cast for every row
+query II
+EXPLAIN SELECT sum(CASE WHEN k < 2 THEN v::INTEGER ELSE 0 END), count(CASE WHEN k < 2 THEN v::INTEGER END) FROM guarded
+----
+physical_plan	<!REGEX>:(?s).*FILTER.*
+
+query II
+EXPLAIN SELECT sum(CASE WHEN k < 2 THEN v::INTEGER ELSE 0 END), count(CASE WHEN k < 2 THEN v::INTEGER END) FROM guarded
+----
+physical_plan	<REGEX>:(?s).*CASE.*
+
+# the same shape over an argument that cannot throw still rewrites
+query II
+EXPLAIN SELECT sum(CASE WHEN k < 2 THEN k ELSE 0 END), count(CASE WHEN k < 2 THEN k END) FROM guarded
+----
+physical_plan	<REGEX>:(?s).*FILTER.*
+
+# 23. decimal arithmetic that cannot overflow (DECIMAL(7,2) * INTEGER = DECIMAL(17,2), DECIMAL(7,2) + DECIMAL(15,2) =
+# DECIMAL(16,2)) is rewritten, grouped and ungrouped
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN p * v ELSE 0 END), sum(CASE WHEN c THEN p * v END), count(CASE WHEN c THEN p + d END) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*CASE.*
+
+query II
+EXPLAIN SELECT sum(CASE WHEN c THEN p * v ELSE 0 END), sum(CASE WHEN b THEN p * v END), max(CASE WHEN c THEN p - d END) FROM t
+----
+physical_plan	<REGEX>:(?s).*FILTER.*
+
+# a multiplication capped at DECIMAL(18) (DECIMAL(15,2) * INTEGER) or DECIMAL(38) runs with the overflow check and
+# keeps its CASE, as does an integer multiplication
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN d * v ELSE 0 END), sum(CASE WHEN c THEN d * v END) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*FILTER.*
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN d::DECIMAL(20,2) * d::DECIMAL(20,2) END), sum(CASE WHEN c THEN i * v END) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*FILTER.*
+
+# the exact values of a few rewritten forms
+query IIII
+SELECT sum(CASE WHEN c THEN 1 ELSE 0 END), sum(CASE WHEN c THEN 3 ELSE 0 END), count(CASE WHEN c THEN 1 END), sum(CASE WHEN c THEN v ELSE 0 END) FROM t
+----
+2500	7500	2500	12488
+
+query IIII
+SELECT sum(CASE WHEN c THEN v ELSE 0 END), sum(CASE WHEN c THEN 1 ELSE 0 END), sum(CASE WHEN c THEN v END), count(CASE WHEN c THEN v END) FROM empty_t
+----
+NULL	NULL	NULL	0
+
+query III
+SELECT sum(CASE WHEN i < 0 THEN v ELSE 0 END), sum(CASE WHEN i < 0 THEN 1 ELSE 0 END), sum(CASE WHEN i < 0 THEN v END) FROM t
+----
+0	0	NULL
+
+query II
+SELECT g, sum(CASE WHEN i < 4 THEN d ELSE 0 END) FROM t GROUP BY g ORDER BY g
+----
+0	0.00
+1	0.01
+2	0.02
+3	0.03
+4	0.00
+5	0.00
+6	0.00
+
+# not fired: count / avg / max with a non-NULL ELSE, an existing FILTER, DISTINCT, multi-WHEN, a volatile condition
+query II
+EXPLAIN SELECT g, count(CASE WHEN c THEN q ELSE 0 END), avg(CASE WHEN c THEN v ELSE 0 END), max(CASE WHEN i < 4 THEN v ELSE -1 END) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*FILTER.*
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN v ELSE 0 END) FILTER (WHERE nb) FROM t GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*CASE.*
+
+query II
+EXPLAIN SELECT g, sum(DISTINCT CASE WHEN c THEN v END) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*FILTER.*
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN v WHEN b THEN 1 ELSE 0 END) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*FILTER.*
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN random() > 0.5 THEN v ELSE 0 END) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*FILTER.*
+
+# a condition over a subquery is planned as a MARK join column before the optimizer runs: a plain boolean column,
+# rewritten like any other condition (the results are compared above)
+query II
+EXPLAIN SELECT sum(CASE WHEN i IN (SELECT i FROM t WHERE c) THEN v ELSE 0 END), count(CASE WHEN i IN (SELECT i FROM t WHERE c) THEN v END) FROM t
+----
+physical_plan	<REGEX>:(?s).*FILTER.*
+
+# the aggregates of a window operator are untouched
+query II
+EXPLAIN SELECT i, sum(CASE WHEN c THEN v ELSE 0 END) OVER (PARTITION BY g ORDER BY i), count(CASE WHEN c THEN v END) OVER (PARTITION BY g ORDER BY i) FROM t
+----
+physical_plan	<!REGEX>:(?s).*FILTER.*
+
+# the rule runs after partial aggregate pushdown, which only pushes aggregates without a FILTER below a join: the
+# pre-aggregation below the join keeps its CASE arguments
+statement ok
+CREATE TABLE fact AS SELECT i % 1000 AS dim_key, (i * 17) % 100 AS measure FROM range(100000) r(i)
+
+statement ok
+CREATE TABLE dim AS SELECT i AS dim_key, i % 7 AS d_a, i % 11 AS d_b, i % 13 AS d_c, i % 17 AS d_d FROM range(1000) r(i)
+
+statement ok
+ANALYZE
+
+query II
+EXPLAIN SELECT d_a, d_b, d_c, d_d, sum(CASE WHEN measure > 50 THEN measure ELSE 0 END), sum(CASE WHEN measure < 10 THEN measure ELSE 0 END) FROM fact JOIN dim USING (dim_key) GROUP BY d_a, d_b, d_c, d_d
+----
+physical_plan	<REGEX>:(?s).*Join.*EXPORT_STATE.*CASE.*
+
+statement ok
+SET disabled_optimizers = 'partial_aggregate_pushdown'
+
+query II
+EXPLAIN SELECT d_a, d_b, d_c, d_d, sum(CASE WHEN measure > 50 THEN measure ELSE 0 END), sum(CASE WHEN measure < 10 THEN measure ELSE 0 END) FROM fact JOIN dim USING (dim_key) GROUP BY d_a, d_b, d_c, d_d
+----
+physical_plan	<REGEX>:(?s).*FILTER \(WHERE.*Join.*
+
+statement ok
+SET disabled_optimizers = ''
+
+# 17. two identical CASE aggregates and the user-written FILTER aggregate merge into one sum
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN v ELSE 0 END), sum(CASE WHEN c THEN v ELSE 0 END) + 1, sum(v) FILTER (WHERE c), count(CASE WHEN c THEN v END) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*sum_no_overflow.*sum_no_overflow.*
+
+# disabled_optimizers switches the rule off
+statement ok
+SET disabled_optimizers = 'case_to_filter_aggregate'
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN v ELSE 0 END), count(CASE WHEN c THEN v END) FROM t GROUP BY g
+----
+physical_plan	<!REGEX>:(?s).*FILTER.*
+
+# the rule does not depend on the other aggregate function rewrites
+statement ok
+SET disabled_optimizers = 'aggregate_function_rewriter'
+
+query II
+EXPLAIN SELECT g, sum(CASE WHEN c THEN v ELSE 0 END), count(CASE WHEN c THEN v END), avg(CASE WHEN c THEN v END) FROM t GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*avg\(#[0-9]+\) FILTER.*
+
+statement ok
+SET disabled_optimizers = ''

@@ -75,6 +75,11 @@ void RowOperations::UpdateFilteredStates(RowOperationsState &state, AggregateFil
 	if (count == 0) {
 		return;
 	}
+	if (filter_data.all_selected) {
+		// every row passes the filter: the payload has not been sliced
+		UpdateStates(state, aggr, addresses, filter_data.filtered_payload, arg_idx);
+		return;
+	}
 
 	Vector filtered_addresses(addresses, filter_data.true_sel, count);
 	filtered_addresses.Flatten();

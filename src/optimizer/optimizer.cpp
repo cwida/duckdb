@@ -368,6 +368,13 @@ void Optimizer::RunBuiltInOptimizers() {
 		partial_aggregate_pushdown.VisitOperator(plan);
 	});
 
+	// Rewrites f(CASE WHEN c THEN x END) -> f(x) FILTER (WHERE c). Runs after the rewrites that match aggregates
+	// without a filter (aggregate reuse, partial aggregate pushdown), so that these still see the CASE.
+	RunOptimizer(OptimizerType::CASE_TO_FILTER_AGGREGATE, [&]() {
+		AggregateFunctionRewriter aggregate_function_rewriter(*this);
+		aggregate_function_rewriter.RewriteCaseToFilter(plan);
+	});
+
 	RunOptimizer(OptimizerType::JOIN_ELIMINATION, [&]() {
 		JoinElimination join_elimination;
 		plan = join_elimination.Optimize(std::move(plan));

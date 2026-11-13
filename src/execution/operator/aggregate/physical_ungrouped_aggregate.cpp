@@ -233,7 +233,9 @@ void UngroupedAggregateExecuteState::Sink(LocalUngroupedAggregateState &state, D
 		if (aggregate.GetFilter()) {
 			auto &filtered_data = filter_set.GetFilterData(aggr_idx);
 			chunk_count = filtered_data.selected_count;
-			sel = &filtered_data.true_sel;
+			if (!filtered_data.all_selected) {
+				sel = &filtered_data.true_sel;
+			}
 		}
 		if (chunk_count == 0) {
 			continue;
