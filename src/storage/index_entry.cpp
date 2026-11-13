@@ -30,6 +30,7 @@ void IndexEntry::Append(DataChunk &chunk, Vector &row_ids) {
 		unbound_index.BufferChunk(chunk, row_ids, BufferedIndexReplay::INSERT_ENTRY);
 		return;
 	}
+	D_ASSERT(!shadow_pending);
 	auto &bound_index = owned_index->Cast<BoundIndex>();
 	auto error = bound_index.Append(chunk, row_ids);
 	if (error.HasError()) {
@@ -87,6 +88,7 @@ ErrorData IndexEntry::Append(DataChunk &chunk, Vector &row_ids, const shared_ptr
 	if (append_index) {
 		return append_index->Append(chunk, row_ids, index_append_info);
 	}
+	D_ASSERT(!shadow_pending);
 	return bound_index.Append(chunk, row_ids, index_append_info);
 }
 
@@ -97,6 +99,7 @@ void IndexEntry::RevertAppend(DataChunk &chunk, Vector &row_ids) {
 		return;
 	}
 	if (owned_index->IsBound()) {
+		D_ASSERT(!shadow_pending);
 		owned_index->Cast<BoundIndex>().Delete(chunk, row_ids);
 	}
 }
@@ -287,6 +290,7 @@ void IndexEntry::RemoveFromIndex(DataChunk &chunk, Vector &row_ids, const IndexR
 		// During a checkpoint, route changes through the checkpoint deltas instead of the main index.
 		ApplyIndexRemovalDuringCheckpoint(bound_index, deltas, chunk, row_ids, removal_type);
 	} else {
+		D_ASSERT(!shadow_pending);
 		ApplyIndexRemoval(bound_index, deltas, chunk, row_ids, removal_type);
 	}
 }
@@ -435,6 +439,8 @@ void IndexEntry::VerifyUpdate(const vector<PhysicalIndex> &column_ids) const {
 
 void IndexEntry::Vacuum() {
 	auto entry_lock = lock.GetExclusiveLock();
+	// vacuuming holds the shared checkpoint lock
+	D_ASSERT(!shadow_pending);
 	if (owned_index->IsBound()) {
 		owned_index->Cast<BoundIndex>().Vacuum();
 	}
@@ -446,6 +452,7 @@ void IndexEntry::Rebuild(const IndexRebuildScan &scan) {
 		throw InternalException("RebuildIndexes expects all indexes to be bound during checkpoint");
 	}
 
+	D_ASSERT(!shadow_pending);
 	auto &bound_index = owned_index->Cast<BoundIndex>();
 	bound_index.ResetStorage();
 
@@ -465,7 +472,7 @@ void IndexEntry::Rebuild(const IndexRebuildScan &scan) {
 
 void IndexEntry::RemapRowIds(const IndexRemapScan &scan) {
 	auto entry_lock = lock.GetExclusiveLock();
-	D_ASSERT(owned_index->IsBound());
+	D_ASSERT(owned_index->IsBound() && !shadow_pending);
 	auto &bound_index = owned_index->Cast<BoundIndex>();
 
 	// Delete old rowids first to avoid same-key rowid collisions within the task.
@@ -511,14 +518,18 @@ idx_t IndexEntry::GetInMemorySize() const {
 
 IndexCheckpointResult IndexEntry::Checkpoint(TableIndexWriter &index_writer) {
 	auto entry_lock = lock.GetExclusiveLock();
-	D_ASSERT(owned_index);
+	if (!owned_index) {
+		throw InternalException("Index %llu was removed while a checkpoint that writes it was running", index_oid);
+	}
 
 	auto storage_version = index_writer.GetStorageVersion();
 	if (owned_index->GetCheckpointMode() == IndexCheckpointMode::DEFERRED) {
 		if (owned_index->IsBound() && !owned_index->Cast<BoundIndex>().SupportsDeltaIndexes()) {
 			throw InternalException("Deferred index checkpointing requires delta index support");
 		}
-		return owned_index->Checkpoint(index_writer.GetSharedPartialBlockManager(), storage_version);
+		auto checkpoint = owned_index->Checkpoint(index_writer.GetSharedPartialBlockManager(), storage_version);
+		shadow_pending = checkpoint.shadow_index != nullptr;
+		return checkpoint;
 	}
 
 	auto partial_block_manager = index_writer.CreatePerIndexPartialBlockManager();
@@ -535,6 +546,7 @@ void IndexEntry::InstallShadow(unique_ptr<BoundIndex> shadow_index) {
 }
 
 void IndexEntry::InstallShadowInternal(unique_ptr<BoundIndex> shadow_index) {
+	shadow_pending = false;
 	if (!shadow_index) {
 		return;
 	}
@@ -552,9 +564,10 @@ IndexStorageInfo IndexEntry::SerializeToWAL(const StorageVersion version) {
 void IndexEntry::MergeCheckpointDeltas(const optional_idx checkpoint_id) {
 	auto entry_lock = lock.GetExclusiveLock();
 	// Merge any data appended to the index while the checkpoint was running.
-	if (!owned_index->IsBound()) {
+	if (!owned_index || !owned_index->IsBound()) {
 		return;
 	}
+	D_ASSERT(!shadow_pending);
 	auto &bound_index = owned_index->Cast<BoundIndex>();
 	auto error = deltas.MergeCheckpointDeltas(bound_index);
 	if (error.HasError()) {

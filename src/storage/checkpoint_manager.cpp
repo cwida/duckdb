@@ -277,6 +277,19 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 	auto &dependency_manager = *catalog.GetDependencyManager();
 	catalog_entries = GetCatalogEntries(schemas, options.visibility_bound);
 	dependency_manager.ReorderEntries(catalog_entries, options.visibility_bound);
+	// the indexes of the catalog that the checkpoint writes
+	for (auto &entry : catalog_entries) {
+		auto &catalog_entry = entry.get();
+		if (catalog_entry.type == CatalogType::INDEX_ENTRY) {
+			catalog_index_count++;
+		} else if (catalog_entry.type == CatalogType::TABLE_ENTRY) {
+			for (auto &constraint : catalog_entry.Cast<TableCatalogEntry>().GetConstraints()) {
+				if (constraint->NeedsBackingIndex()) {
+					catalog_index_count++;
+				}
+			}
+		}
+	}
 
 	// write the actual data into the database
 
@@ -305,6 +318,11 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 		list.WriteObject([&](Serializer &obj) { WriteEntry(entry.get(), obj); });
 	});
 	serializer.End();
+	// the index lists of the tables had exactly the indexes of the catalog
+	if (written_index_count != catalog_index_count) {
+		throw InternalException("A checkpoint wrote %llu indexes, its catalog has %llu", written_index_count,
+		                        catalog_index_count);
+	}
 
 	partial_block_manager.FlushPartialBlocks();
 	for (auto &pending : pending_publications) {

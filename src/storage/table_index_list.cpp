@@ -502,6 +502,12 @@ public:
 		D_ASSERT(entry);
 		D_ASSERT(shadow_index);
 	}
+	~PendingIndexPublication() override {
+		if (shadow_index) {
+			// the checkpoint failed: the live index stays
+			entry->InstallShadow(nullptr);
+		}
+	}
 
 	void Publish() override {
 		D_ASSERT(shadow_index);
@@ -516,12 +522,17 @@ private:
 } // namespace
 
 vector<shared_ptr<const IndexStorageInfo>> TableIndexList::Checkpoint(TableIndexWriter &writer) {
-	annotated_lock_guard lock(index_entries_lock);
+	vector<shared_ptr<IndexEntry>> entries;
+	{
+		annotated_lock_guard lock(index_entries_lock);
+		// the indexes of the checkpoint's catalog: adding or removing one holds the checkpoint lock
+		entries = index_entries;
+	}
 
+	// written without the list lock, which every commit that changes the table takes
 	vector<shared_ptr<const IndexStorageInfo>> infos;
-	infos.reserve(index_entries.size());
-
-	for (const auto &entry : index_entries) {
+	infos.reserve(entries.size());
+	for (const auto &entry : entries) {
 		auto checkpoint = entry->Checkpoint(writer);
 		if (checkpoint.shadow_index) {
 			writer.AddPendingPublication(make_uniq<PendingIndexPublication>(entry, std::move(checkpoint.shadow_index)));
@@ -529,6 +540,13 @@ vector<shared_ptr<const IndexStorageInfo>> TableIndexList::Checkpoint(TableIndex
 		infos.push_back(std::move(checkpoint.storage_info));
 	}
 
+#ifdef D_ASSERT_IS_ENABLED
+	{
+		// the list lock was not needed: no index was added or removed meanwhile
+		annotated_lock_guard lock(index_entries_lock);
+		D_ASSERT(index_entries == entries);
+	}
+#endif
 	return infos;
 }
 
@@ -571,8 +589,13 @@ unique_ptr<IndexStorageInfo> TableIndexList::SerializeToWAL(idx_t index_oid, con
 }
 
 void TableIndexList::MergeCheckpointDeltas(const optional_idx checkpoint_id) const {
-	annotated_lock_guard lock(index_entries_lock);
-	for (const auto &entry : index_entries) {
+	vector<shared_ptr<IndexEntry>> entries;
+	{
+		annotated_lock_guard lock(index_entries_lock);
+		entries = index_entries;
+	}
+	// merged without the list lock, as the indexes are written
+	for (const auto &entry : entries) {
 		entry->MergeCheckpointDeltas(checkpoint_id);
 	}
 }

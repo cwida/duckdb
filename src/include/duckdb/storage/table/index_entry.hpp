@@ -224,6 +224,8 @@ private:
 	//! Whether the enforced constraint is deferred. Derived from the catalog constraint, not serialized.
 	const ConstraintCheckMode check_mode;
 	IndexDeltas deltas;
+	//! A checkpoint copied the physical index and installs the copy later: until then, only the deltas change
+	bool shadow_pending = false;
 };
 
 template <class TARGET>

@@ -8,6 +8,7 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
+#include "duckdb/common/thread.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/settings.hpp"
@@ -116,6 +117,11 @@ void SingleFileTableDataWriter::FinalizeTable(const TableStatistics &global_stat
                                               RowGroupCollection &collection,
                                               const vector<shared_ptr<const IndexStorageInfo>> &index_infos,
                                               Serializer &serializer) {
+	checkpoint_manager.written_index_count += index_infos.size();
+	auto index_sleep_ms = Settings::Get<DebugCheckpointIndexSleepMsSetting>(GetDatabase());
+	if (index_sleep_ms > 0) {
+		ThreadUtil::SleepMs(index_sleep_ms);
+	}
 	MetaBlockPointer pointer;
 	idx_t total_rows;
 	idx_t next_row_id;
