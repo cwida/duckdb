@@ -1,0 +1,317 @@
+# name: test/sql/function/variant/variant_value.test
+# description: Test variant_value, which returns the scalar value at a path or index of a VARIANT
+# group: [variant]
+
+require json
+
+statement ok
+CREATE TABLE variants(id INTEGER, v VARIANT);
+
+statement ok
+INSERT INTO variants VALUES
+	(1, {'a': 42, 'b': 'duck', 'c': 3.14::DECIMAL(5,2), 'd': [1, 2, 3], 'e': {'f': true}, 'g': NULL, 'h': DATE '2020-01-01'}::VARIANT),
+	(2, '{"a": 1.5, "g": null}'::JSON::VARIANT),
+	(3, [10, 20, 30]::VARIANT),
+	(4, 'not an object'::VARIANT),
+	(5, NULL);
+
+# the selected scalar keeps its type
+
+query II
+SELECT variant_value(v, 'a'), variant_typeof(variant_value(v, 'a')) FROM variants ORDER BY id;
+----
+42	INT32
+1.5	DOUBLE
+NULL	VARIANT_NULL
+NULL	VARIANT_NULL
+NULL	VARIANT_NULL
+
+query III
+SELECT variant_value(v, 'b'), variant_value(v, 'c'), variant_value(v, 'h') FROM variants WHERE id = 1;
+----
+duck	3.14	2020-01-01
+
+query III
+SELECT variant_typeof(variant_value(v, 'b')), variant_typeof(variant_value(v, 'c')), variant_typeof(variant_value(v, 'h'))
+FROM variants WHERE id = 1;
+----
+VARCHAR	DECIMAL(5, 2)	DATE
+
+# arrays, objects and VARIANT nulls are not scalars
+
+query III
+SELECT variant_value(v, 'd'), variant_value(v, 'e'), variant_value(v, 'g') FROM variants WHERE id = 1;
+----
+NULL	NULL	NULL
+
+query I
+SELECT variant_value(v, 'g') FROM variants WHERE id = 2;
+----
+NULL
+
+query IIII
+SELECT variant_value([]::INTEGER[]::VARIANT, 0), variant_value([]::INTEGER[]::VARIANT, -1),
+       variant_value('{}'::JSON::VARIANT, 'a'), variant_value('{}'::JSON::VARIANT, '');
+----
+NULL	NULL	NULL	NULL
+
+# a JSON null at the root is a SQL NULL VARIANT
+
+query IIII
+SELECT variant_value(v, ''), variant_value(v, 'a'), variant_value(v, 0), variant_value(v, ['', 'a'])
+FROM (SELECT 'null'::JSON::VARIANT v);
+----
+NULL	NULL	NULL	NULL
+
+# the empty path selects the root
+
+query I
+SELECT variant_value(v, '') FROM variants ORDER BY id;
+----
+NULL
+NULL
+NULL
+not an object
+NULL
+
+# missing keys, and keys of non-objects
+
+query I
+SELECT variant_value(v, 'missing') FROM variants ORDER BY id;
+----
+NULL
+NULL
+NULL
+NULL
+NULL
+
+# a NULL path returns NULL
+
+query III
+SELECT variant_value(v, NULL::VARCHAR), variant_value(v, NULL::VARCHAR[]), variant_value(v, NULL::BIGINT)
+FROM variants WHERE id = 1;
+----
+NULL	NULL	NULL
+
+# indexes are 0-based, negative indexes count from the end
+
+query IIIII
+SELECT variant_value(v, 0), variant_value(v, 2), variant_value(v, -1), variant_value(v, -3), variant_value(v, 3)
+FROM variants WHERE id = 3;
+----
+10	30	30	10	NULL
+
+query I
+SELECT variant_value(v, -4) FROM variants WHERE id = 3;
+----
+NULL
+
+query II
+SELECT variant_value([1, 2]::VARIANT, (-9223372036854775808)::BIGINT), variant_value([1, 2]::VARIANT, 9223372036854775807);
+----
+NULL	NULL
+
+# an index into a non-array
+
+query I
+SELECT variant_value(v, 0) FROM variants ORDER BY id;
+----
+NULL
+NULL
+10
+NULL
+NULL
+
+# array elements that are not scalars
+
+query III
+SELECT variant_value(v, 0), variant_value(v, 1), variant_value(v, 2) FROM (SELECT '[[1], 2, null]'::JSON::VARIANT v);
+----
+NULL	2	NULL
+
+# a list of paths returns a list of values, in the order of the paths
+
+query I
+SELECT variant_value(v, ['a', 'd', 'missing']) FROM variants ORDER BY id;
+----
+[42, NULL, NULL]
+[1.5, NULL, NULL]
+[NULL, NULL, NULL]
+[NULL, NULL, NULL]
+NULL
+
+query I
+SELECT variant_value(v, ['h', 'b', 'a']) FROM variants WHERE id = 1;
+----
+[2020-01-01, duck, 42]
+
+query I
+SELECT variant_value(v, ['a', 'a', 'b']) FROM variants WHERE id = 1;
+----
+[42, 42, duck]
+
+query I
+SELECT [variant_typeof(x) for x in variant_value(v, ['h', 'b', 'a'])] FROM variants WHERE id = 1;
+----
+[DATE, VARCHAR, INT32]
+
+query I
+SELECT variant_value(v, []) FROM variants ORDER BY id;
+----
+[]
+[]
+[]
+[]
+NULL
+
+# the results can be used like any other VARIANT
+
+query I
+SELECT id FROM variants WHERE variant_value(v, 'a') = 42;
+----
+1
+
+query I
+SELECT variant_value(v, 'a')::DOUBLE + 1 FROM variants ORDER BY id;
+----
+43.0
+2.5
+NULL
+NULL
+NULL
+
+query II
+SELECT variant_value(v, 0) AS first, count(*) FROM variants GROUP BY first ORDER BY first NULLS LAST;
+----
+10	1
+NULL	4
+
+# the paths have to be constant and not NULL
+
+statement error
+SELECT variant_value(v, ['a', NULL]) FROM variants;
+----
+Binder Error: 'variant_value' does not accept NULL paths
+
+statement error
+SELECT variant_value(v, p) FROM variants, (VALUES ('a')) t(p);
+----
+must be a constant expression
+
+statement error
+SELECT variant_value(v, id) FROM variants;
+----
+must be a constant expression
+
+# prepared statements pick the path or the index overload from the parameter
+
+statement ok
+PREPARE q AS SELECT variant_value(v, $1) FROM (VALUES (1, [10, 20]::VARIANT), (2, {'a': 30}::VARIANT)) t(id, v) ORDER BY id;
+
+query I
+EXECUTE q(0);
+----
+10
+NULL
+
+query I
+EXECUTE q(-1);
+----
+20
+NULL
+
+query I
+EXECUTE q('a');
+----
+NULL
+30
+
+statement ok
+PREPARE q_list AS SELECT variant_value(v, $1) FROM (VALUES (1, [10, 20]::VARIANT), (2, {'a': 30}::VARIANT)) t(id, v) ORDER BY id;
+
+query I
+EXECUTE q_list(['a', 'b']);
+----
+[NULL, NULL]
+[30, NULL]
+
+# the input has to be a VARIANT, a string literal is converted to a VARCHAR VARIANT and is not parsed as JSON
+
+query II
+SELECT variant_value('{"a": 1}', 'a'), variant_value('{"a": 1}', '');
+----
+NULL	{"a": 1}
+
+statement error
+SELECT variant_value(s, 'a') FROM (SELECT '{"a": 1}'::VARCHAR s);
+----
+No function matches the given name and argument types
+
+statement error
+SELECT variant_value('{"a": 1}'::JSON, 'a');
+----
+No function matches the given name and argument types
+
+# more rows than fit in a vector, and lists of values that do not fit in a vector
+
+statement ok
+CREATE TABLE many AS
+SELECT i,
+       CASE WHEN i % 7 = 0 THEN NULL ELSE {'a': i, 'b': 'this is a long string ' || i, 'c': [i]}::VARIANT END AS v,
+       CASE WHEN i % 5 = 0 THEN NULL ELSE [i, i + 1]::VARIANT END AS arr
+FROM range(5000) t(i);
+
+query III
+SELECT count(variant_value(v, 'a')),
+       count(*) FILTER (WHERE variant_value(v, 'a')::BIGINT = i),
+       count(*) FILTER (WHERE variant_value(v, 'b')::VARCHAR = 'this is a long string ' || i)
+FROM many;
+----
+4285	4285	4285
+
+query II
+SELECT count(variant_value(arr, -1)),
+       count(*) FILTER (WHERE variant_value(arr, 0)::BIGINT = i AND variant_value(arr, -1)::BIGINT = i + 1)
+FROM many;
+----
+4000	4000
+
+query IIII
+SELECT count(l),
+       count(*) FILTER (WHERE len(l) = 3 AND l[1]::BIGINT = i AND l[2]::VARCHAR = 'this is a long string ' || i AND l[3] IS NULL),
+       count(*) FILTER (WHERE l IS NULL),
+       sum(len(l))
+FROM (SELECT i, variant_value(v, ['a', 'b', 'c']) AS l FROM many);
+----
+4285	4285	715	12855
+
+# every scalar type is returned with its type and value, nested values are NULL
+
+statement ok
+CREATE TABLE all_types AS
+UNPIVOT (SELECT COLUMNS(*)::VARIANT FROM test_all_types()) ON COLUMNS(*) INTO NAME name VALUE v;
+
+statement ok
+CREATE TABLE all_types_expected AS
+SELECT name, v, CASE WHEN variant_typeof(v) NOT LIKE 'ARRAY%' AND variant_typeof(v) NOT LIKE 'OBJECT%' THEN v END AS expected
+FROM all_types;
+
+query II
+SELECT count(expected), count(*) - count(expected) FROM all_types_expected;
+----
+76	42
+
+statement ok
+CREATE MACRO value_mismatch(actual, expected) AS
+	variant_typeof(actual) IS DISTINCT FROM variant_typeof(expected) OR actual::VARCHAR IS DISTINCT FROM expected::VARCHAR;
+
+query I
+SELECT list(name ORDER BY name) FROM all_types_expected
+WHERE value_mismatch(variant_value(v, ''), expected)
+	OR value_mismatch(variant_value({'x': v}::VARIANT, 'x'), expected)
+	OR value_mismatch(variant_value([v]::VARIANT, 0), expected)
+	OR value_mismatch(variant_value([v, v]::VARIANT, -1), expected)
+	OR value_mismatch(variant_value({'x': v, 'y': v}::VARIANT, ['y', 'x'])[1], expected)
+	OR value_mismatch(variant_value({'x': v, 'y': v}::VARIANT, ['y', 'x'])[2], expected);
+----
+NULL

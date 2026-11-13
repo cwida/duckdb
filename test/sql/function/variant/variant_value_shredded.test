@@ -1,0 +1,149 @@
+# name: test/sql/function/variant/variant_value_shredded.test
+# description: Test variant_value with shredded VARIANT values
+# group: [variant]
+
+require json
+
+load {TEST_DIR}/variant_value_shredded.db readwrite v1.5.0
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+statement ok
+SET force_variant_shredding = 'STRUCT(a INTEGER, b VARCHAR, c INTEGER[])';
+
+statement ok
+CREATE TABLE objects(id INTEGER, v VARIANT);
+
+statement ok
+INSERT INTO objects VALUES
+	-- partially shredded
+	(1, {'z': 9, 'a': 1, 'b': 'this is a long string', 'c': [1, 2]}::VARIANT),
+	-- VARIANT_NULL
+	(2, {'a': 10, 'b': NULL}::VARIANT),
+	-- missing value in shredded schema
+	(3, {'a': 20}::VARIANT),
+	(4, {'z': 40}::VARIANT),
+	-- root with different type than shredded schema
+	(5, 42::VARIANT),
+	-- SQL-NULL
+	(6, NULL::VARIANT);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query I
+SELECT DISTINCT vector_type(v) FROM objects;
+----
+SHREDDED_VECTOR
+
+query III
+SELECT variant_value(v, 'a'), variant_value(v, 'b'), variant_value(v, 'z') FROM objects ORDER BY id;
+----
+1	this is a long string	9
+10	NULL	NULL
+20	NULL	NULL
+NULL	NULL	40
+NULL	NULL	NULL
+NULL	NULL	NULL
+
+query I
+SELECT variant_typeof(variant_value(v, 'a')) FROM objects WHERE id = 1;
+----
+INT32
+
+query I
+SELECT variant_value(v, 'c') FROM objects ORDER BY id;
+----
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+
+query I
+SELECT variant_value(v, ['a', 'c', 'z']) FROM objects ORDER BY id;
+----
+[1, NULL, 9]
+[10, NULL, NULL]
+[20, NULL, NULL]
+[NULL, NULL, 40]
+[NULL, NULL, NULL]
+NULL
+
+query I
+SELECT variant_value(v, 0) FROM objects ORDER BY id;
+----
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+
+# --- Shredded arrays ---
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+statement ok
+SET force_variant_shredding = 'INTEGER[]';
+
+statement ok
+CREATE TABLE arrays(id INTEGER, v VARIANT);
+
+statement ok
+INSERT INTO arrays VALUES
+	(1, [10, 20, 30]::VARIANT),
+	(2, []::INTEGER[]::VARIANT),
+	-- elements with a different type than the shredded schema
+	(3, '[1, "duck", null]'::JSON::VARIANT),
+	-- root with different type than shredded schema
+	(4, 42::VARIANT),
+	(5, NULL::VARIANT);
+
+statement ok
+CREATE TABLE many_arrays AS
+SELECT i, CASE WHEN i % 5 = 0 THEN NULL ELSE [i::INTEGER, i::INTEGER + 1]::VARIANT END AS v FROM range(5000) t(i);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query I
+SELECT DISTINCT vector_type(v) FROM arrays;
+----
+SHREDDED_VECTOR
+
+query I
+SELECT DISTINCT vector_type(v) FROM many_arrays;
+----
+SHREDDED_VECTOR
+
+# more rows than fit in a vector
+
+query III
+SELECT count(variant_value(v, 0)),
+       count(*) FILTER (WHERE variant_value(v, 0)::INTEGER = i AND variant_value(v, -1)::INTEGER = i + 1),
+       count(*) FILTER (WHERE variant_value(v, 2) IS NULL)
+FROM many_arrays;
+----
+4000	4000	5000
+
+query IIII
+SELECT variant_value(v, 0), variant_value(v, 1), variant_value(v, -1), variant_value(v, 3) FROM arrays ORDER BY id;
+----
+10	20	30	NULL
+NULL	NULL	NULL	NULL
+1	duck	NULL	NULL
+NULL	NULL	NULL	NULL
+NULL	NULL	NULL	NULL
+
+query I
+SELECT variant_typeof(variant_value(v, 0)) FROM arrays WHERE id = 1;
+----
+INT32
