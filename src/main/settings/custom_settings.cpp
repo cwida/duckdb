@@ -968,12 +968,12 @@ Value LoggingSink::GetSetting(const ClientContext &context) {
 }
 void LoggingSink::SetGlobal(DatabaseInstance *db_p, DBConfig &config, const Value &parameter) {
 	auto &db = GetDB<LoggingSink>(db_p);
-	db.GetLogManager().SetLogSink(db, parameter.GetValue<string>());
+	db.GetLogManager().SetMainLogSink(db, parameter.GetValue<string>());
 }
 
 void LoggingSink::ResetGlobal(DatabaseInstance *db_p, DBConfig &config) {
 	auto &db = GetDB<LoggingSink>(db_p);
-	db.GetLogManager().SetLogSink(db, LogConfig::DEFAULT_LOG_STORAGE);
+	db.GetLogManager().SetMainLogSink(db, LogConfig::DEFAULT_LOG_STORAGE);
 }
 
 //===----------------------------------------------------------------------===//

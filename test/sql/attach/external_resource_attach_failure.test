@@ -3,7 +3,7 @@
 # group: [attach]
 
 statement ok
-CALL enable_logging('ExternalResource', storage='memory');
+CALL enable_logging('ExternalResource', sink='memory');
 
 statement ok
 CREATE SEQUENCE destroy_seq;

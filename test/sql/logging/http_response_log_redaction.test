@@ -16,7 +16,7 @@ statement ok
 SET autoinstall_known_extensions = false;
 
 statement ok
-CALL enable_logging('HTTP', storage = 'memory');
+CALL enable_logging('HTTP', sink = 'memory');
 
 # INSTALL over HTTP uses core's built-in client without HTTPFS. GitHub redirects to HTTPS,
 # which this path does not follow, so installation fails without installing an extension.

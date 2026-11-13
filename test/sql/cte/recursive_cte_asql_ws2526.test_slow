@@ -126,7 +126,7 @@ SELECT * FROM query(getvariable('asql_sql'));
 60	64	124.0	0.010751	5.570112	01e7dfe76b584e74d7b94e6b02ae4675
 
 statement ok
-CALL enable_logging('PhysicalOperator', storage='memory');
+CALL enable_logging('PhysicalOperator', sink='memory');
 
 statement ok
 CALL truncate_duckdb_logs();
@@ -222,7 +222,7 @@ INSERT INTO asql_marching_directions VALUES
 	(true, true, true, true, NULL, NULL);
 
 statement ok
-CALL enable_logging('PhysicalOperator', storage='memory');
+CALL enable_logging('PhysicalOperator', sink='memory');
 
 statement ok
 CALL truncate_duckdb_logs();

@@ -207,7 +207,7 @@ statement ok
 INSERT INTO edges SELECT id, id FROM nodes;
 
 statement ok
-CALL enable_logging('PhysicalOperator', storage='memory');
+CALL enable_logging('PhysicalOperator', sink='memory');
 
 statement ok
 CALL truncate_duckdb_logs();
@@ -337,7 +337,7 @@ statement ok
 SET threads=2;
 
 statement ok
-CALL enable_logging('PhysicalOperator', storage='memory');
+CALL enable_logging('PhysicalOperator', sink='memory');
 
 statement ok
 CALL truncate_duckdb_logs();
@@ -374,7 +374,7 @@ WHERE class = 'PhysicalRecursiveCTE' AND event = 'RuntimeMetrics';
 1
 
 statement ok
-CALL enable_logging('PhysicalOperator', storage='memory');
+CALL enable_logging('PhysicalOperator', sink='memory');
 
 statement ok
 CALL truncate_duckdb_logs();
@@ -421,7 +421,7 @@ statement ok
 SET threads=4;
 
 statement ok
-CALL enable_logging('PhysicalOperator', storage='memory');
+CALL enable_logging('PhysicalOperator', sink='memory');
 
 statement ok
 CALL truncate_duckdb_logs();

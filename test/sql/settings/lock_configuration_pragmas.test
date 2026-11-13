@@ -205,7 +205,7 @@ CALL enable_logging('QueryLog');
 the configuration has been locked
 
 statement error
-CALL enable_logging(storage='file', storage_path='{TEST_DIR}/locked_logs');
+CALL enable_logging(sink='file', sink_path='{TEST_DIR}/locked_logs');
 ----
 the configuration has been locked
 

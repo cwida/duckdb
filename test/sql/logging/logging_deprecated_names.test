@@ -1,5 +1,5 @@
 # name: test/sql/logging/logging_deprecated_names.test
-# description: The deprecated logging_storage setting keeps working and warns
+# description: The deprecated logging_storage setting and enable_logging storage parameters keep working and warn
 # group: [logging]
 
 statement ok
@@ -86,3 +86,75 @@ statement error
 SET logging_storage = 'file';
 ----
 Cannot select 'file' log sink
+
+# The deprecated storage parameters of enable_logging keep working, and warn
+statement ok
+CALL enable_logging(storage='memory')
+
+query I
+SELECT current_setting('logging_sink');
+----
+memory
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message = 'the storage parameter of enable_logging is deprecated: use sink instead';
+----
+1
+
+statement ok
+CALL enable_logging(storage_path='{TEST_DIR}/logging_deprecated_names.csv', storage_normalize=false)
+
+query I
+SELECT current_setting('logging_sink');
+----
+file
+
+statement ok
+CALL enable_logging(sink='memory')
+
+# A parameter and its deprecated name cannot be combined
+statement error
+CALL enable_logging(sink='memory', storage='stdout')
+----
+EnableLogging: sink cannot be combined with its deprecated name storage
+
+statement error
+CALL enable_logging(sink_path='a.csv', storage_path='b.csv')
+----
+EnableLogging: sink_path cannot be combined with its deprecated name storage_path
+
+statement error
+CALL enable_logging(storage_config='hi')
+----
+EnableLogging: storage_config must be a struct
+
+statement ok
+SET warnings_as_errors = true;
+
+statement error
+CALL enable_logging(storage='memory')
+----
+the storage parameter of enable_logging is deprecated: use sink instead
+
+statement error
+CALL enable_logging(storage_config={'buffer_size': 10})
+----
+the storage_config parameter of enable_logging is deprecated: use sink_config instead
+
+statement error
+CALL enable_logging(storage_path='{TEST_DIR}/logging_deprecated_names.csv')
+----
+the storage_path parameter of enable_logging is deprecated: use sink_path instead
+
+statement error
+CALL enable_logging(storage_normalize=false)
+----
+the storage_normalize parameter of enable_logging is deprecated: use sink_normalize instead
+
+statement error
+CALL enable_logging(storage_buffer_size=10)
+----
+the storage_buffer_size parameter of enable_logging is deprecated: use sink_buffer_size instead
+
+statement ok
+SET warnings_as_errors = false;

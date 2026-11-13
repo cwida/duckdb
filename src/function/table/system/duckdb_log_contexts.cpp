@@ -22,6 +22,14 @@ struct DuckDBLogContextData : public GlobalTableFunctionState {
 	unique_ptr<LogSinkScanState> scan_state;
 };
 
+struct DuckDBLogContextBindData : public TableFunctionData {
+	explicit DuckDBLogContextBindData(string sink_name_p) : sink_name(std::move(sink_name_p)) {
+	}
+
+	//! The sink to scan, or empty for the log sink
+	string sink_name;
+};
+
 static unique_ptr<FunctionData> DuckDBLogContextBind(ClientContext &context, TableFunctionBindInput &input,
                                                      vector<LogicalType> &return_types, vector<Identifier> &names) {
 	names.emplace_back("context_id");
@@ -42,18 +50,13 @@ static unique_ptr<FunctionData> DuckDBLogContextBind(ClientContext &context, Tab
 	names.emplace_back("thread_id");
 	return_types.emplace_back(LogicalType::UBIGINT);
 
-	return nullptr;
+	return make_uniq<DuckDBLogContextBindData>(DuckDBLogFun::GetSinkName(input));
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBLogContextInit(ClientContext &context, TableFunctionInitInput &input) {
-	auto &log_manager = LogManager::Get(context);
-	if (!log_manager.CanScan(LoggingTargetTable::LOG_CONTEXTS)) {
-		throw InvalidConfigurationException(
-		    "Log sink '%s' does not support this query. Select a queryable sink, such as 'memory' or 'file', before "
-		    "generating logs.",
-		    log_manager.GetConfig().storage);
-	}
-	return make_uniq<DuckDBLogContextData>(log_manager.GetLogSink());
+	auto &bind_data = input.bind_data->Cast<DuckDBLogContextBindData>();
+	auto log_sink = LogManager::Get(context).GetScannableLogSink(bind_data.sink_name, LoggingTargetTable::LOG_CONTEXTS);
+	return make_uniq<DuckDBLogContextData>(std::move(log_sink));
 }
 
 void DuckDBLogContextFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
@@ -62,7 +65,7 @@ void DuckDBLogContextFunction(ClientContext &context, TableFunctionInput &data_p
 }
 
 static unique_ptr<TableRef> DuckDBLogContextsBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	auto log_sink = LogManager::Get(context).GetLogSink();
+	auto log_sink = LogManager::Get(context).GetLogSink(DuckDBLogFun::GetSinkName(input));
 
 	// Attempt to let the sink BindReplace the scan function
 	return log_sink->BindReplace(context, input, LoggingTargetTable::LOG_CONTEXTS);
@@ -72,8 +75,10 @@ void DuckDBLogContextFun::RegisterFunction(BuiltinFunctions &set) {
 	auto fun =
 	    TableFunction("duckdb_log_contexts", {}, DuckDBLogContextFunction, DuckDBLogContextBind, DuckDBLogContextInit);
 	fun.bind_replace = DuckDBLogContextsBindReplace;
-	// the log storage grows while a query executes
+	// the log sink grows while a query executes
 	fun.stability = FunctionStability::VOLATILE;
+	fun.GetSignature().WithTypedKwargs("options",
+	                                   [](TypedKwargs &options) { options.Add("sink", LogicalType::VARCHAR); });
 	set.AddFunction(fun);
 }
 

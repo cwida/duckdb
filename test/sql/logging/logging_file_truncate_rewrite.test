@@ -8,7 +8,7 @@ require noforcestorage
 require notwindows
 
 statement ok
-CALL enable_logging(['FileSystem'], storage='file', storage_config={'path': '{TEMP_DIR}/logging_truncate_rewrite.csv', 'normalize': false});
+CALL enable_logging(['FileSystem'], sink='file', sink_config={'path': '{TEMP_DIR}/logging_truncate_rewrite.csv', 'normalize': false});
 
 statement ok
 FROM "{DATA_DIR}/csv/big_number.csv"

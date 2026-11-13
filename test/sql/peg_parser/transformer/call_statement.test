@@ -9,7 +9,7 @@ require skip_reload
 require no_extension_autoloading "FIXME: to be reviewed whether this can be lifted"
 
 statement ok
-CALL enable_logging(['FileSystem'], storage='file', storage_config={'path': '{TEST_DIR}/logging_csv_log.csv', 'normalize': false});
+CALL enable_logging(['FileSystem'], sink='file', sink_config={'path': '{TEST_DIR}/logging_csv_log.csv', 'normalize': false});
 
 statement ok
 CALL enable_logging(['QueryLog', 'FileSystem']);

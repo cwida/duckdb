@@ -1,0 +1,131 @@
+# name: test/sql/logging/logging_multiple_sinks.test
+# description: Add log sinks next to the main log sink with add_log_sink and read them with duckdb_logs(sink=...)
+# group: [logging]
+
+# adding a log sink turns logging on
+query I
+SELECT current_setting('enable_logging')::BOOLEAN
+----
+false
+
+statement ok
+CALL add_log_sink('memory')
+
+query I
+SELECT current_setting('enable_logging')::BOOLEAN
+----
+true
+
+# memory is the main log sink, adding it does not deliver its entries twice
+statement ok
+SELECT write_log('once')
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message = 'once'
+----
+1
+
+query I
+SELECT count(*) FROM duckdb_logs(sink='memory') WHERE message = 'once'
+----
+1
+
+# sinks are named by their type, an unknown name does not create a sink
+statement error
+CALL add_log_sink('audit')
+----
+Log sink 'audit' is not yet registered
+
+statement error
+CALL add_log_sink('file')
+----
+The 'file' log sink requires a path
+
+statement error
+CALL add_log_sink('')
+----
+The log sink name cannot be empty
+
+statement error
+CALL add_log_sink(NULL)
+----
+The log sink name cannot be NULL
+
+statement error
+CALL add_log_sink('stdout', config=42)
+----
+add_log_sink: config must be a struct
+
+# the main log sink cannot be removed, and a sink that was not added cannot be removed or read
+statement error
+CALL remove_log_sink('memory')
+----
+Log sink 'memory' is the main log sink and cannot be removed
+
+statement error
+CALL remove_log_sink('stdout')
+----
+Log sink 'stdout' is not enabled
+
+statement error
+SELECT * FROM duckdb_logs(sink='stdout')
+----
+Log sink 'stdout' is not enabled
+
+statement error
+SELECT * FROM duckdb_logs(sink='unknown')
+----
+Log sink 'unknown' is not yet registered
+
+statement error
+SELECT * FROM duckdb_log_contexts(sink='unknown')
+----
+Log sink 'unknown' is not yet registered
+
+# an added stdout sink cannot be read
+statement ok
+CALL add_log_sink('STDOUT')
+
+statement error
+SELECT count(*) FROM duckdb_logs(sink='stdout')
+----
+Log sink 'stdout' does not support this query
+
+statement error
+SELECT count(*) FROM duckdb_log_contexts(sink='stdout')
+----
+Log sink 'stdout' does not support this query
+
+statement error
+SELECT count(*) FROM duckdb_logs(sink='stdout', denormalized_table=true)
+----
+Log sink 'stdout' does not support this query
+
+# sink names are case insensitive
+statement ok
+CALL remove_log_sink('stdout')
+
+statement error
+CALL remove_log_sink('stdout')
+----
+Log sink 'stdout' is not enabled
+
+# an added sink that becomes the main log sink is no longer an added sink
+statement ok
+CALL add_log_sink('stdout')
+
+statement ok
+SET logging_sink='stdout'
+
+statement error
+CALL remove_log_sink('stdout')
+----
+Log sink 'stdout' is the main log sink and cannot be removed
+
+statement ok
+SET logging_sink='memory'
+
+statement error
+CALL remove_log_sink('stdout')
+----
+Log sink 'stdout' is not enabled

@@ -9,7 +9,7 @@ require noforcestorage
 require skip_reload
 
 statement ok
-CALL enable_logging('HTTP', storage = 'memory');
+CALL enable_logging('HTTP', sink = 'memory');
 
 statement ok
 SET enable_external_file_cache = false;

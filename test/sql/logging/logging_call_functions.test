@@ -115,7 +115,7 @@ require notwindows
 ###
 
 statement ok
-CALL enable_logging('FileSystem', storage='file', storage_config={'path': '{TEST_DIR}/logging_call_functions_test_log'});
+CALL enable_logging('FileSystem', sink='file', sink_config={'path': '{TEST_DIR}/logging_call_functions_test_log'});
 
 query II
 FROM log_settings;
@@ -132,17 +132,17 @@ logging_sink	file
 ###
 
 statement ok
-CALL enable_logging(storage='file', storage_path='{TEST_DIR}/logging_call_functions');
+CALL enable_logging(sink='file', sink_path='{TEST_DIR}/logging_call_functions');
 
 statement ok
 CALL disable_logging()
 
 #### 
-# For the storage_path setting we can even omit the storage and it will automatically set it to storage='file'
+# For the sink_path setting we can even omit the sink and it will automatically set it to sink='file'
 ###
 
 statement ok
-CALL enable_logging(storage_path='{TEST_DIR}/logging_call_functions');
+CALL enable_logging(sink_path='{TEST_DIR}/logging_call_functions');
 
 query II
 FROM log_settings;
@@ -155,7 +155,7 @@ logging_mode	LEVEL_ONLY
 logging_sink	file
 
 statement ok
-CALL enable_logging(storage='memory')
+CALL enable_logging(sink='memory')
 
 #### 
 # Some invalid invocations throw nice errors
@@ -179,7 +179,7 @@ logging_sink	memory
 
 # Unknown storage option: this error is thrown by the log storage, because not all log storages implement the same params
 statement error
-CALL enable_logging(storage='file', level='DEBUG', storage_config={'hocus_pocus': 'this is bogus', 'path': '{TEST_DIR}/hi.csv'});
+CALL enable_logging(sink='file', level='DEBUG', sink_config={'hocus_pocus': 'this is bogus', 'path': '{TEST_DIR}/hi.csv'});
 ----
 Invalid Input Error: Unrecognized log sink config option for sink: 'FileLogSink': 'hocus_pocus'
 
@@ -199,15 +199,15 @@ CALL disable_logging();
 
 # The path param does not exist for the memory storage
 statement error
-CALL enable_logging(storage='memory', storage_config={'path': 'bla'});
+CALL enable_logging(sink='memory', sink_config={'path': 'bla'});
 ----
 Invalid Input Error: Unrecognized log sink config option for sink: 'InMemoryLogSink': 'path'
 
-# storage_config should be a struct
+# sink_config should be a struct
 statement error
-CALL enable_logging(storage_config='hi')
+CALL enable_logging(sink_config='hi')
 ----
-Invalid Input Error: EnableLogging: storage_config must be a struct
+Invalid Input Error: EnableLogging: sink_config must be a struct
 
 # Logging config remains untouched
 query II
@@ -220,9 +220,9 @@ logging_level	INFO
 logging_mode	LEVEL_ONLY
 logging_sink	memory
 
-# Explicitly passing storage= still works and overrides the current setting
+# Explicitly passing sink= still works and overrides the current setting
 statement ok
-CALL enable_logging(storage='memory')
+CALL enable_logging(sink='memory')
 
 query I
 SELECT value FROM duckdb_settings() WHERE name = 'logging_sink';
@@ -232,13 +232,13 @@ memory
 statement ok
 RESET logging_sink
 
-# Same regression with file storage: storage configured via a prior enable_logging(storage='file', ...)
+# Same regression with file storage: storage configured via a prior enable_logging(sink='file', ...)
 # must survive a subsequent no-arg enable_logging() call.
 statement ok
 CALL disable_logging()
 
 statement ok
-CALL enable_logging(storage='file', storage_path='{TEST_DIR}/preserve_storage.log')
+CALL enable_logging(sink='file', sink_path='{TEST_DIR}/preserve_storage.log')
 
 statement ok
 CALL disable_logging()
@@ -257,10 +257,10 @@ CALL disable_logging()
 statement ok
 RESET logging_sink
 
-# storage_config={path:...} without an explicit storage= must auto-promote to file storage
-# (mirroring the storage_path= sugar) — not silently apply a file-only config to the current storage.
+# sink_config={path:...} without an explicit sink= must auto-promote to the file sink
+# (mirroring the sink_path= sugar) — not silently apply a file-only config to the current sink.
 statement ok
-CALL enable_logging(storage_config:={path:'{TEST_DIR}/auto_promote.csv'})
+CALL enable_logging(sink_config:={path:'{TEST_DIR}/auto_promote.csv'})
 
 query I
 SELECT value FROM duckdb_settings() WHERE name = 'logging_sink';
@@ -273,9 +273,9 @@ CALL disable_logging()
 statement ok
 RESET logging_sink
 
-# storage_config keys that no storage recognises must error, not silently pass.
+# sink_config keys that no sink recognises must error, not silently pass.
 statement error
-CALL enable_logging(storage_config:={aaaargh:'blaargh'})
+CALL enable_logging(sink_config:={aaaargh:'blaargh'})
 ----
 Unrecognized log sink config option
 

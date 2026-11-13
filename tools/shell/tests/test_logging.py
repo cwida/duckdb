@@ -10,7 +10,7 @@ from conftest import ShellTest
 def test_logging(shell):
     test = (
         ShellTest(shell)
-        .statement("CALL enable_logging('QueryLog', storage='stdout')")
+        .statement("CALL enable_logging('QueryLog', sink='stdout')")
         .statement('SELECT 1 as a')
     )
     result = test.run()
@@ -22,7 +22,7 @@ def test_logging(shell):
 def test_logging_custom_delim(shell):
     test = (
         ShellTest(shell)
-        .statement("CALL enable_logging('QueryLog', storage='stdout', storage_config={'delim':','})")
+        .statement("CALL enable_logging('QueryLog', sink='stdout', sink_config={'delim':','})")
         .statement('SELECT 1 as a')
     )
     result = test.run()
@@ -90,7 +90,7 @@ def test_logging_error_no_dedup(shell):
 def test_logging_buffering(shell):
     test = (
         ShellTest(shell)
-        .statement("CALL enable_logging('QueryLog', storage='stdout', storage_buffer_size=1000, storage_config={'only_flush_on_full_buffer': true})")
+        .statement("CALL enable_logging('QueryLog', sink='stdout', sink_buffer_size=1000, sink_config={'only_flush_on_full_buffer': true})")
         .statement('SELECT 1 as a')
         .statement('SELECT 2 as b')
     )

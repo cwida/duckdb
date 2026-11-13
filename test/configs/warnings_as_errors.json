@@ -25,7 +25,8 @@
       "reason": "Relies on the default logging configuration, which this config changes (logging enabled at WARNING level)",
       "paths": [
         "test/sql/logging/logging.test",
-        "test/sql/logging/logging_config_separate_databases.test"
+        "test/sql/logging/logging_config_separate_databases.test",
+        "test/sql/logging/logging_multiple_sinks.test"
       ]
     },
     {

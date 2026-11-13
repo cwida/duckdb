@@ -7,7 +7,7 @@ require noforcestorage
 # By default we flush the logger automatically at certain sensible moments (most importantly, on Query End)
 # for this test we want to disable automatic flushing to test the buffer size param  
 statement ok
-CALL enable_logging('QueryLog', storage_config={'buffer_size': 10, 'only_flush_on_full_buffer': true});
+CALL enable_logging('QueryLog', sink_config={'buffer_size': 10, 'only_flush_on_full_buffer': true});
 
 statement ok
 SELECT 1 as a;
@@ -38,7 +38,7 @@ CALL truncate_duckdb_logs()
 
 # Change logging to manualog log type
 statement ok
-CALL enable_logging('', level='trace', storage='memory', storage_config={'buffer_size': 3000, 'only_flush_on_full_buffer': true});
+CALL enable_logging('', level='trace', sink='memory', sink_config={'buffer_size': 3000, 'only_flush_on_full_buffer': true});
 
 # Buffers aaaaalmost full
 statement ok
@@ -74,7 +74,7 @@ statement ok
 CALL truncate_duckdb_logs()
 
 statement ok
-CALL enable_logging(level='trace', storage='memory', storage_config={'buffer_size': 20*2048});
+CALL enable_logging(level='trace', sink='memory', sink_config={'buffer_size': 20*2048});
 
 statement ok
 SELECT write_log('hello from the connection log scope', level := 'error', scope := 'connection') from range(0,40*2048);
@@ -83,7 +83,7 @@ statement ok
 FROM duckdb_logs()
 
 statement ok
-CALL enable_logging(level='trace', storage='file', storage_config={'buffer_size': 20*2048, 'path': '{TEST_DIR}/logging_buffer_size'});
+CALL enable_logging(level='trace', sink='file', sink_config={'buffer_size': 20*2048, 'path': '{TEST_DIR}/logging_buffer_size'});
 
 statement ok
 SELECT write_log('hello from the connection log scope', level := 'error', scope := 'connection') from range(0,40*2048);
@@ -92,7 +92,7 @@ SELECT write_log('hello from the connection log scope', level := 'error', scope 
 # Try direct flushing 
 
 statement ok
-CALL enable_logging(level='trace', storage='file', storage_config={'buffer_size': 0, 'path': '{TEST_DIR}/logging_buffer_size'});
+CALL enable_logging(level='trace', sink='file', sink_config={'buffer_size': 0, 'path': '{TEST_DIR}/logging_buffer_size'});
 
 statement ok
 SELECT write_log('hello from the connection log scope', level := 'error', scope := 'connection') from range(0, 2048);
@@ -101,6 +101,6 @@ SELECT write_log('hello from the connection log scope', level := 'error', scope 
 # Try weird buffer size
 
 statement error
-CALL enable_logging(level='trace', storage='file', storage_config={'buffer_size': -1, 'path': '{TEST_DIR}/logging_buffer_size'});
+CALL enable_logging(level='trace', sink='file', sink_config={'buffer_size': -1, 'path': '{TEST_DIR}/logging_buffer_size'});
 ----
 Invalid Input Error

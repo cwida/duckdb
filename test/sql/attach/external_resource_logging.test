@@ -5,7 +5,7 @@
 require quack
 
 statement ok
-CALL enable_logging('ExternalResource', storage='memory');
+CALL enable_logging('ExternalResource', sink='memory');
 
 statement ok
 CALL quack_serve(token='test_token');

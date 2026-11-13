@@ -33,7 +33,7 @@ statement ok
 BEGIN;
 
 statement ok
-CALL enable_logging(level='debug', storage='memory');
+CALL enable_logging(level='debug', sink='memory');
 
 statement ok
 CALL truncate_duckdb_logs();
@@ -80,7 +80,7 @@ statement ok
 BEGIN;
 
 statement ok
-CALL enable_logging(level='debug', storage='memory');
+CALL enable_logging(level='debug', sink='memory');
 
 statement ok
 CALL truncate_duckdb_logs();
@@ -115,7 +115,7 @@ statement ok
 BEGIN;
 
 statement ok
-CALL enable_logging(level='debug', storage='memory');
+CALL enable_logging(level='debug', sink='memory');
 
 statement ok
 CALL truncate_duckdb_logs();
@@ -159,7 +159,7 @@ statement ok
 BEGIN;
 
 statement ok
-CALL enable_logging(level='debug', storage='memory');
+CALL enable_logging(level='debug', sink='memory');
 
 statement ok
 CALL truncate_duckdb_logs();
@@ -199,7 +199,7 @@ statement ok
 BEGIN;
 
 statement ok
-CALL enable_logging(level='debug', storage='memory');
+CALL enable_logging(level='debug', sink='memory');
 
 statement ok
 CALL truncate_duckdb_logs();
@@ -234,7 +234,7 @@ statement ok
 BEGIN;
 
 statement ok
-CALL enable_logging(level='debug', storage='memory');
+CALL enable_logging(level='debug', sink='memory');
 
 statement ok
 CALL truncate_duckdb_logs();

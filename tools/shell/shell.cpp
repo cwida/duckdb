@@ -1285,7 +1285,7 @@ static void RegisterShellLogger(duckdb::DuckDB &db, duckdb::shared_ptr<duckdb::L
 	auto *db_instance = db.instance.get();
 	auto &log_manager = db_instance->GetLogManager();
 	log_manager.RegisterLogSink("shell_log_sink", sink_ptr);
-	log_manager.SetLogSink(*db_instance, "shell_log_sink");
+	log_manager.SetMainLogSink(*db_instance, "shell_log_sink");
 	log_manager.SetEnableLogging(db_instance);
 	log_manager.SetLogLevel(duckdb::LogLevel::LOG_WARNING);
 }

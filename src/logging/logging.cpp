@@ -20,6 +20,10 @@ bool LogConfig::IsConsistent() const {
 	return false;
 }
 
+bool LogConfig::IsBuiltInLogSink(const string &sink_name) {
+	return sink_name == IN_MEMORY_STORAGE_NAME || sink_name == STDOUT_STORAGE_NAME || sink_name == FILE_STORAGE_NAME;
+}
+
 LogConfig::LogConfig(bool enabled, LogLevel level_p, LogMode mode_p,
                      optional_ptr<unordered_set<string>> enabled_log_types_p,
                      optional_ptr<unordered_set<string>> disabled_log_types_p)

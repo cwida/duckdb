@@ -6,7 +6,7 @@
 require skip_reload
 
 statement ok
-CALL enable_logging(['QueryLog'], storage='memory');
+CALL enable_logging(['QueryLog'], sink='memory');
 
 query I
 /* leading */ SELECT current_query();

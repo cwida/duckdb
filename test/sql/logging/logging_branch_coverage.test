@@ -5,7 +5,7 @@
 require noforcestorage
 
 statement ok
-CALL enable_logging(level = 'trace', storage = 'memory')
+CALL enable_logging(level = 'trace', sink = 'memory')
 
 statement ok
 CALL truncate_duckdb_logs()
@@ -63,6 +63,6 @@ statement ok
 SET disabled_filesystems = 'LocalFileSystem'
 
 statement error
-CALL enable_logging('QueryLog', storage = 'file', storage_path = '{TEST_DIR}/disabled_filesystem.csv')
+CALL enable_logging('QueryLog', sink = 'file', sink_path = '{TEST_DIR}/disabled_filesystem.csv')
 ----
 Can not enable file logging with the LocalFileSystem disabled

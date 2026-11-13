@@ -9,7 +9,7 @@ require notwindows
 
 # Enable FileSystem logging to single csv file  
 statement ok
-CALL enable_logging(['FileSystem'], storage='file', storage_config={'path': '{TEMP_DIR}/logging_csv_log.csv', 'normalize': false});
+CALL enable_logging(['FileSystem'], sink='file', sink_config={'path': '{TEMP_DIR}/logging_csv_log.csv', 'normalize': false});
 
 # Read some data to trigger FileSystem log
 statement ok
@@ -56,7 +56,7 @@ select count(*) FROM "{TEMP_DIR}/logging_csv_log.csv";
 
 # Enable FileSystem logging to normalized files  
 statement ok
-CALL enable_logging(['FileSystem'], storage='file', storage_config={'path': '{TEMP_DIR}/logging_csv_logs_normalized', 'normalize': true});
+CALL enable_logging(['FileSystem'], sink='file', sink_config={'path': '{TEMP_DIR}/logging_csv_logs_normalized', 'normalize': true});
 
 # Read some data to trigger FileSystem log
 statement ok
@@ -123,7 +123,7 @@ select count(*) FROM "{TEMP_DIR}/logging_csv_logs_normalized/duckdb_log_entries.
 0
 
 statement ok
-CALL enable_logging(['FileSystem'], storage='stdout');
+CALL enable_logging(['FileSystem'], sink='stdout');
 
 # TODO: we can't nicely test logging to stdout without polluting test runner output
 
@@ -137,7 +137,7 @@ CALL disable_logging();
 # we flush these buffers after every query anyways
 
 statement ok
-CALL enable_logging(['FileSystem'], storage='stdout', storage_config={'buffer_size': 1000000}); 
+CALL enable_logging(['FileSystem'], sink='stdout', sink_config={'buffer_size': 1000000}); 
 
 statement ok
 CALL disable_logging();
@@ -145,12 +145,12 @@ CALL disable_logging();
 # Try some invalid configs ensuring they throw nice errors 
 
 statement error
-CALL enable_logging(['FileSystem'], storage='stdout', storage_config={'bla': 'bla'});
+CALL enable_logging(['FileSystem'], sink='stdout', sink_config={'bla': 'bla'});
 ----
 Invalid Input Error: Unrecognized log sink config option for sink: 'StdOutLogSink': 'bla'
 
 statement error
-CALL enable_logging(['FileSystem'], storage='stdout', storage_config={'path': './file.csv'});
+CALL enable_logging(['FileSystem'], sink='stdout', sink_config={'path': './file.csv'});
 ----
 Invalid Input Error: Unrecognized log sink config option for sink: 'StdOutLogSink': 'path'
 
@@ -160,7 +160,7 @@ statement ok
 CALL truncate_duckdb_logs()
 
 statement ok
-CALL enable_logging(['QueryLog'], storage='file', storage_config={'path': '{TEMP_DIR}/logging_csv_log.csv'});
+CALL enable_logging(['QueryLog'], sink='file', sink_config={'path': '{TEMP_DIR}/logging_csv_log.csv'});
 
 statement ok
 SELECT 1;
@@ -169,7 +169,7 @@ statement ok
 CALL truncate_duckdb_logs()
 
 # statement error
-# CALL enable_logging(['QueryLog'], storage='file', storage_config={'entries_path': '{TEMP_DIR}/logging_csv_log_entries.csv', 'contexts_path': '{TEMP_DIR}/logging_csv_log_contexts.csv'});
+# CALL enable_logging(['QueryLog'], sink='file', sink_config={'entries_path': '{TEMP_DIR}/logging_csv_log_entries.csv', 'contexts_path': '{TEMP_DIR}/logging_csv_log_contexts.csv'});
 # ----
 # Invalid Configuration Error: Cannot change between normalized and denormalized with a non-empty log. Please truncate the log first
 
@@ -178,12 +178,12 @@ explain FROM duckdb_logs
 
 # This is not allowed
 statement error
-CALL enable_logging(['QueryLog'], storage='file', storage_config={'path': '{TEMP_DIR}/logging_csv_log.csv', 'normalize': true});
+CALL enable_logging(['QueryLog'], sink='file', sink_config={'path': '{TEMP_DIR}/logging_csv_log.csv', 'normalize': true});
 ----
 Invalid Configuration Error: Can not set path to '
 
 statement error
-CALL enable_logging(['QueryLog'], storage='file', storage_config={'path': '{TEMP_DIR}/logging_csv_log.csv', 'normalize': true});
+CALL enable_logging(['QueryLog'], sink='file', sink_config={'path': '{TEMP_DIR}/logging_csv_log.csv', 'normalize': true});
 ----
 ' while normalize is true. Normalize will make DuckDB write multiple log files to more efficiently store log entries. Please specify a directory path instead of a csv file path, or set normalize to false.
 
@@ -195,7 +195,7 @@ CALL disable_logging();
 
 # Test switching CSV delimiters
 statement ok
-CALL enable_logging(['QueryLog'], storage='file', storage_config={'path': '{TEMP_DIR}/logging_csv_log_delim.csv', 'delim': ';'});
+CALL enable_logging(['QueryLog'], sink='file', sink_config={'path': '{TEMP_DIR}/logging_csv_log_delim.csv', 'delim': ';'});
 
 statement ok
 SELECT 1;

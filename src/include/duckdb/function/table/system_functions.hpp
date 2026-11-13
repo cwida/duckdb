@@ -13,6 +13,7 @@
 #include "duckdb/function/built_in_functions.hpp"
 
 namespace duckdb {
+class LogSink;
 
 class Context;
 
@@ -153,6 +154,9 @@ struct DuckDBKeywordsFun {
 
 struct DuckDBLogFun {
 	static void RegisterFunction(BuiltinFunctions &set);
+
+	//! The value of the sink parameter, or an empty string if it was not given
+	static string GetSinkName(TableFunctionBindInput &input);
 };
 
 struct DuckDBLogContextFun {

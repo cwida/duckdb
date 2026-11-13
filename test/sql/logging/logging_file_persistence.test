@@ -10,7 +10,7 @@ load {TEMP_DIR}/logging_file_persistence.test
 
 # Enable FileSystem logging to single csv file  
 statement ok
-CALL enable_logging('FileSystem', storage='file', storage_config={'path': '{TEMP_DIR}/logging_file_persistence.csv'});
+CALL enable_logging('FileSystem', sink='file', sink_config={'path': '{TEMP_DIR}/logging_file_persistence.csv'});
 
 # Read some data to trigger FileSystem log
 statement ok
@@ -27,7 +27,7 @@ restart
 
 # TODO: configuring log storage config is clunky now
 statement ok
-CALL enable_logging('FileSystem', storage='file', storage_config={'path': '{TEMP_DIR}/logging_file_persistence.csv'});
+CALL enable_logging('FileSystem', sink='file', sink_config={'path': '{TEMP_DIR}/logging_file_persistence.csv'});
 
 statement ok
 CALL disable_logging();

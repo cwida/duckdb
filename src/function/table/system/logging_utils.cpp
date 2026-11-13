@@ -4,6 +4,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/logging/log_manager.hpp"
+#include "duckdb/logging/log_sink.hpp"
 #include "duckdb/logging/logging.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
@@ -19,58 +20,70 @@ public:
 	EnableLoggingBindData() {
 	}
 
-	case_insensitive_map_t<Value> storage_config;
+	case_insensitive_map_t<Value> sink_config;
 	LogConfig config;
 	vector<string> log_types_to_set;
+	//! The deprecated parameters that were used, to warn about them
+	vector<string> deprecated_parameters;
 };
 
-//! File logging requires a path. Reject switching to file storage without one before mutating any state, so the
-//! active storage is preserved instead of becoming a path-less storage that throws on every later flush (end-of-query
+//! The sink parameter that replaces a deprecated storage parameter, e.g. storage_path -> sink_path
+static string GetSinkParameterName(const string &storage_parameter) {
+	return "sink" + storage_parameter.substr(strlen("storage"));
+}
+
+//! File logging requires a path. Reject switching to the file sink without one before mutating any state, so the
+//! active sink is preserved instead of becoming a path-less sink that throws on every later flush (end-of-query
 //! and shutdown included).
-static void VerifyFileStoragePath(LogManager &log_manager, const string &storage,
-                                  const case_insensitive_map_t<Value> &storage_config) {
-	if (StringUtil::Lower(storage) != LogConfig::FILE_STORAGE_NAME) {
+static void VerifyFileSinkPath(LogManager &log_manager, const string &sink,
+                               const case_insensitive_map_t<Value> &sink_config) {
+	if (StringUtil::Lower(sink) != LogConfig::FILE_STORAGE_NAME) {
 		return;
 	}
-	auto current_storage = StringUtil::Lower(log_manager.GetConfig().storage);
-	// Already-active file storage keeps its existing path, only a fresh switch is guarded.
-	if (current_storage == LogConfig::FILE_STORAGE_NAME) {
+	// An enabled file sink keeps its existing path, only a fresh switch is guarded.
+	if (log_manager.IsLogSinkEnabled(LogConfig::FILE_STORAGE_NAME)) {
 		return;
 	}
-	auto path_entry = storage_config.find("path");
+	auto path_entry = sink_config.find("path");
 	bool has_usable_path =
-	    path_entry != storage_config.end() && !path_entry->second.IsNull() && !path_entry->second.ToString().empty();
+	    path_entry != sink_config.end() && !path_entry->second.IsNull() && !path_entry->second.ToString().empty();
 	if (!has_usable_path) {
 		throw InvalidInputException(
-		    "Cannot enable 'file' log storage without a valid path. Provide one via storage_path, "
-		    "e.g. CALL enable_logging(storage='file', storage_path='mylog.csv');");
+		    "Cannot enable the 'file' log sink without a valid path. Provide one via sink_path, "
+		    "e.g. CALL enable_logging(sink='file', sink_path='mylog.csv');");
 	}
 }
 
 static void EnableLogging(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto bind_data = data.bind_data->Cast<EnableLoggingBindData>();
 
+	for (auto &parameter : bind_data.deprecated_parameters) {
+		DUCKDB_LOG_WARNING(*context.db, "the %s parameter of enable_logging is deprecated: use %s instead", parameter,
+		                   GetSinkParameterName(parameter));
+	}
+
 	auto &log_manager = context.db->GetLogManager();
 
 	// warnings stop being printed in the CLI when they no longer reach the shell's sink
 	static constexpr const char *SHELL_LOG_SINK = "shell_log_sink";
 	static constexpr const char *DEPRECATED_SHELL_LOG_SINK = "shell_log_storage";
-	const bool leaves_shell_sink = !StringUtil::CIEquals(bind_data.config.storage, SHELL_LOG_SINK) &&
+	// an added shell sink keeps receiving the log entries when the main log sink changes
+	const bool leaves_shell_sink = StringUtil::CIEquals(log_manager.GetConfig().storage, SHELL_LOG_SINK) &&
+	                               !StringUtil::CIEquals(bind_data.config.storage, SHELL_LOG_SINK) &&
 	                               !StringUtil::CIEquals(bind_data.config.storage, DEPRECATED_SHELL_LOG_SINK);
 	const bool drops_warnings = bind_data.config.level > LogLevel::LOG_WARNING || !bind_data.log_types_to_set.empty();
-	if (StringUtil::CIEquals(log_manager.GetConfig().storage, SHELL_LOG_SINK) &&
-	    (leaves_shell_sink || drops_warnings)) {
+	if (log_manager.IsLogSinkEnabled(SHELL_LOG_SINK) && (leaves_shell_sink || drops_warnings)) {
 		DUCKDB_LOG_WARNING(context,
 		                   "The logging settings have been changed so you may lose warnings printed in the CLI.\n"
-		                   "To continue printing warnings to the console, set storage='shell_log_sink'.\n"
+		                   "To continue printing warnings to the console, set sink='shell_log_sink'.\n"
 		                   "For more info see https://duckdb.org/docs/current/operations_manual/logging/overview.")
 	}
 
-	// a prepared call can run after the storage it was bound against changed
-	VerifyFileStoragePath(log_manager, bind_data.config.storage, bind_data.storage_config);
+	// a prepared call can run after the sink it was bound against changed
+	VerifyFileSinkPath(log_manager, bind_data.config.storage, bind_data.sink_config);
 
 	// Apply the config generated from the input - restoring the previous config if that fails part-way
-	auto previous = log_manager.GetConfigAndSink();
+	auto previous = log_manager.GetConfigAndSinks();
 	try {
 		log_manager.SetConfig(*context.db, bind_data.config);
 
@@ -81,12 +94,12 @@ static void EnableLogging(ClientContext &context, TableFunctionInput &data, Data
 			log_manager.SetEnableStructuredLoggers(bind_data.log_types_to_set);
 		}
 
-		if (!bind_data.storage_config.empty()) {
-			log_manager.UpdateLogSinkConfig(*context.db, bind_data.storage_config);
+		if (!bind_data.sink_config.empty()) {
+			log_manager.UpdateMainLogSinkConfig(*context.db, bind_data.sink_config);
 		}
 	} catch (...) {
-		// the previous sink itself, as a new one of its kind would lack its storage config
-		log_manager.RestoreConfig(previous.first, std::move(previous.second));
+		// the previous sinks themselves, as new ones of their kind would lack their sink config
+		log_manager.RestoreConfig(std::move(previous));
 		throw;
 	}
 }
@@ -116,50 +129,59 @@ static unique_ptr<FunctionData> BindEnableLogging(ClientContext &context, TableF
 
 	auto result = make_uniq<EnableLoggingBindData>();
 
-	bool storage_isset = false;
+	bool sink_isset = false;
+	case_insensitive_set_t given_parameters;
 
 	for (const auto &param : input.named_parameters) {
-		auto &key = param.first;
+		auto &name = param.first.GetIdentifierName();
+		auto key = name;
+		if (StringUtil::StartsWith(key, "storage")) {
+			result->deprecated_parameters.push_back(name);
+			key = GetSinkParameterName(key);
+		}
+		if (!given_parameters.insert(key).second) {
+			throw InvalidInputException("EnableLogging: %s cannot be combined with its deprecated name storage%s", key,
+			                            key.substr(strlen("sink")));
+		}
 		if (key == "level") {
 			if (param.second.IsNull()) {
 				throw InvalidInputException("EnableLogging: level cannot be NULL");
 			}
 			result->config.level = EnumUtil::FromString<LogLevel>(param.second.ToString());
-		} else if (key == "storage") {
-			storage_isset = true;
+		} else if (key == "sink") {
+			sink_isset = true;
 			result->config.storage = param.second.ToString();
-		} else if (key == "storage_config") {
+		} else if (key == "sink_config") {
 			if (param.second.type().id() != LogicalTypeId::STRUCT) {
-				throw InvalidInputException("EnableLogging: storage_config must be a struct");
+				throw InvalidInputException("EnableLogging: %s must be a struct", name);
 			}
 			auto &children = StructValue::GetChildren(param.second);
 			for (idx_t i = 0; i < children.size(); i++) {
-				result->storage_config[StructType::GetChildName(param.second.type(), i).GetIdentifierName()] =
-				    children[i];
+				result->sink_config[StructType::GetChildName(param.second.type(), i).GetIdentifierName()] = children[i];
 			}
-		} else if (key == "storage_path") {
-			result->storage_config["path"] = param.second;
-		} else if (key == "storage_normalize") {
-			result->storage_config["normalize"] = param.second;
-		} else if (key == "storage_buffer_size") {
-			result->storage_config["buffer_size"] = param.second;
+		} else if (key == "sink_path") {
+			result->sink_config["path"] = param.second;
+		} else if (key == "sink_normalize") {
+			result->sink_config["normalize"] = param.second;
+		} else if (key == "sink_buffer_size") {
+			result->sink_config["buffer_size"] = param.second;
 		} else {
 			throw InvalidInputException("EnableLogging: unknown named parameter: %s", param.first.c_str());
 		}
 	}
 
-	// If the user didn't explicitly set storage=, infer it. A 'path' in storage_config (provided
-	// either via storage_path= or storage_config={path:...}) implies file storage. Otherwise
-	// preserve the currently configured storage so logging_sink isn't silently reset.
-	if (!storage_isset) {
-		if (result->storage_config.find("path") != result->storage_config.end()) {
+	// If the user didn't explicitly set sink=, infer it. A 'path' in sink_config (provided
+	// either via sink_path= or sink_config={path:...}) implies the file sink. Otherwise
+	// preserve the currently configured sink so logging_sink isn't silently reset.
+	if (!sink_isset) {
+		if (result->sink_config.find("path") != result->sink_config.end()) {
 			result->config.storage = LogConfig::FILE_STORAGE_NAME;
 		} else {
 			result->config.storage = context.db->GetLogManager().GetConfig().storage;
 		}
 	}
 
-	VerifyFileStoragePath(context.db->GetLogManager(), result->config.storage, result->storage_config);
+	VerifyFileSinkPath(context.db->GetLogManager(), result->config.storage, result->sink_config);
 
 	// Process positional params
 	if (!input.inputs.empty()) {
@@ -193,9 +215,9 @@ static void DisableLogging(ClientContext &context, TableFunctionInput &data, Dat
 	context.db->GetLogManager().SetEnableLogging(false);
 }
 
-//! Truncate the current log sink
+//! Truncate the main log sink
 static void TruncateLogs(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
-	context.db->GetLogManager().TruncateLogSink();
+	context.db->GetLogManager().TruncateMainLogSink();
 }
 
 static unique_ptr<FunctionData> BindDisableLogging(ClientContext &context, TableFunctionBindInput &input,
@@ -215,6 +237,66 @@ static unique_ptr<FunctionData> BindTruncateLogs(ClientContext &context, TableFu
 	return make_uniq<EnableLoggingBindData>();
 }
 
+class LogSinkNameBindData : public TableFunctionData {
+public:
+	explicit LogSinkNameBindData(string name_p) : name(std::move(name_p)) {
+	}
+
+	string name;
+	case_insensitive_map_t<Value> sink_config;
+};
+
+static unique_ptr<FunctionData> BindLogSinkName(ClientContext &context, TableFunctionBindInput &input,
+                                                vector<LogicalType> &return_types, vector<Identifier> &names) {
+	if (input.inputs[0].IsNull()) {
+		throw InvalidInputException("The log sink name cannot be NULL");
+	}
+	auto name = input.inputs[0].GetValue<string>();
+	if (name.empty()) {
+		throw InvalidInputException("The log sink name cannot be empty");
+	}
+
+	return_types.emplace_back(LogicalType::BOOLEAN);
+	names.emplace_back("Success");
+
+	return make_uniq<LogSinkNameBindData>(std::move(name));
+}
+
+static unique_ptr<FunctionData> BindAddLogSink(ClientContext &context, TableFunctionBindInput &input,
+                                               vector<LogicalType> &return_types, vector<Identifier> &names) {
+	auto result = BindLogSinkName(context, input, return_types, names);
+	auto &bind_data = result->Cast<LogSinkNameBindData>();
+	for (const auto &param : input.named_parameters) {
+		auto &name = param.first.GetIdentifierName();
+		if (name == "config") {
+			if (param.second.type().id() != LogicalTypeId::STRUCT) {
+				throw InvalidInputException("add_log_sink: config must be a struct");
+			}
+			auto &children = StructValue::GetChildren(param.second);
+			for (idx_t i = 0; i < children.size(); i++) {
+				bind_data.sink_config[StructType::GetChildName(param.second.type(), i).GetIdentifierName()] =
+				    children[i];
+			}
+		} else if (name == "path" || name == "normalize" || name == "buffer_size") {
+			bind_data.sink_config[name] = param.second;
+		} else {
+			throw InvalidInputException("add_log_sink: unknown named parameter: %s", name);
+		}
+	}
+	return result;
+}
+
+//! Also send the log entries to this sink
+static void AddLogSink(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+	auto &bind_data = data.bind_data->Cast<LogSinkNameBindData>();
+	context.db->GetLogManager().AddLogSink(*context.db, bind_data.name, bind_data.sink_config);
+}
+
+static void RemoveLogSink(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+	auto &bind_data = data.bind_data->Cast<LogSinkNameBindData>();
+	context.db->GetLogManager().RemoveLogSink(*context.db, bind_data.name);
+}
+
 void EnableLoggingFun::RegisterFunction(BuiltinFunctions &set) {
 	auto enable_fun = TableFunction("enable_logging", {}, EnableLogging, BindEnableLogging, nullptr, nullptr);
 
@@ -222,9 +304,15 @@ void EnableLoggingFun::RegisterFunction(BuiltinFunctions &set) {
 	    .AddArgs("args", LogicalType::ANY)
 	    .AddKeywordOnly("level", LogicalType::VARCHAR, Value("INFO"))
 	    .WithTypedKwargs("options", [](TypedKwargs &options) {
-		    options.Add("storage", LogicalType::VARCHAR)
+		    options.Add("sink", LogicalType::VARCHAR)
+		        .Add("sink_config", LogicalType::ANY)
+		        // forwarded to the sink_config struct as syntactic sugar
+		        .Add("sink_path", LogicalType::VARCHAR)
+		        .Add("sink_normalize", LogicalType::BOOLEAN)
+		        .Add("sink_buffer_size", LogicalType::UBIGINT)
+		        // deprecated names of the sink parameters
+		        .Add("storage", LogicalType::VARCHAR)
 		        .Add("storage_config", LogicalType::ANY)
-		        // forwarded to the storage_config struct as syntactic sugar
 		        .Add("storage_path", LogicalType::VARCHAR)
 		        .Add("storage_normalize", LogicalType::BOOLEAN)
 		        .Add("storage_buffer_size", LogicalType::UBIGINT);
@@ -241,6 +329,24 @@ void EnableLoggingFun::RegisterFunction(BuiltinFunctions &set) {
 	auto truncate_fun = TableFunction("truncate_duckdb_logs", {}, TruncateLogs, BindTruncateLogs, nullptr, nullptr);
 	truncate_fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(truncate_fun);
+
+	TableFunction add_sink_fun("add_log_sink", FunctionSignature().AddPositionalOnly("sink", LogicalType::VARCHAR),
+	                           AddLogSink, BindAddLogSink);
+	add_sink_fun.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		// path, normalize and buffer_size are forwarded to the config struct as syntactic sugar
+		options.Add("config", LogicalType::ANY)
+		    .Add("path", LogicalType::VARCHAR)
+		    .Add("normalize", LogicalType::BOOLEAN)
+		    .Add("buffer_size", LogicalType::UBIGINT);
+	});
+	// adds a log sink per execution
+	add_sink_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(add_sink_fun);
+
+	auto remove_sink_fun =
+	    TableFunction("remove_log_sink", {LogicalType::VARCHAR}, RemoveLogSink, BindLogSinkName, nullptr, nullptr);
+	remove_sink_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(remove_sink_fun);
 }
 
 } // namespace duckdb

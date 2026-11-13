@@ -58,6 +58,7 @@
         "test/sql/storage/compression/zstd/zstd_compression_ratio.test_slow",
         "test/sql/logging/logging_memory_after_truncate.test",
         "test/sql/logging/logging_deprecated_names.test",
+        "test/sql/logging/logging_multiple_sinks.test",
         "test/sql/logging/logging_scan_progress.test",
         "test/sql/logging/physical_operator_logging.test_slow",
         "test/sql/cte/recursive_cte_logging.test",

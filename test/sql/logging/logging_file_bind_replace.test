@@ -9,7 +9,7 @@ require notwindows
 
 # Enable FileSystem logging to single csv file (note that normalize is implicit here)  
 statement ok
-CALL enable_logging(['QueryLog'], storage_path='{TEST_DIR}/logging_file_bind_replace_log.csv');
+CALL enable_logging(['QueryLog'], sink_path='{TEST_DIR}/logging_file_bind_replace_log.csv');
 
 # Read some data to trigger FileSystem log
 statement ok
@@ -40,7 +40,7 @@ CALL truncate_duckdb_logs();
 
 # Enable FileSystem logging to double csv file  
 statement ok
-CALL enable_logging(['QueryLog'], storage='file', storage_config={'path': '{TEST_DIR}/logging_file_bind_replace_normalized/', 'normalize': true});
+CALL enable_logging(['QueryLog'], sink='file', sink_config={'path': '{TEST_DIR}/logging_file_bind_replace_normalized/', 'normalize': true});
 
 # Trigger log
 statement ok
@@ -66,7 +66,7 @@ CALL truncate_duckdb_logs();
 
 # Now rerun with the in-memory storage to ensure everything matches up
 statement ok
-CALL enable_logging(['QueryLog'], storage='memory');
+CALL enable_logging(['QueryLog'], sink='memory');
 
 statement ok
 SELECT 1 as c
@@ -89,7 +89,7 @@ CALL truncate_duckdb_logs();
 # Now rerun with all log types enabled 
 
 statement ok
-CALL enable_logging(level='trace', storage='memory');
+CALL enable_logging(level='trace', sink='memory');
 
 statement ok
 SELECT 1 as d

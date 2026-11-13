@@ -12,7 +12,7 @@ require exact_vector_size 2048
 set query_timeout 60
 
 statement ok
-CALL enable_logging('PhysicalOperator', storage='memory');
+CALL enable_logging('PhysicalOperator', sink='memory');
 
 statement ok
 SET memory_limit='200MB';
