@@ -1,0 +1,14 @@
+# name: benchmark/micro/copy/to_parquet_file_size_bytes.benchmark
+# description: Copy to Parquet files of 1MB, rotated in the insertion order
+# group: [copy]
+
+name Copy to Parquet files rotated by FILE_SIZE_BYTES
+group copy
+
+require parquet
+
+load
+CREATE TABLE tbl AS SELECT i, (i * 7) % 1000 AS a, 'str' || (i % 10000)::VARCHAR AS s, hash(i) % 1000000 AS h FROM range(10000000) t(i);
+
+run
+COPY tbl TO '${BENCHMARK_DIR}/file_size_bytes' (FORMAT parquet, FILE_SIZE_BYTES '1MB', OVERWRITE_OR_IGNORE TRUE);

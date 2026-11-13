@@ -252,7 +252,9 @@ public:
 	AsyncFileWriter &GetWriter() {
 		return *writer;
 	}
-	idx_t FileSize() const {
+	idx_t FileSize() {
+		// the bloom filter fallback of a thread preparing a row group may be writing
+		lock_guard<mutex> glock(lock);
 		return writer->GetTotalWritten();
 	}
 	optional_idx DictionarySizeLimit() const {

@@ -5,6 +5,20 @@
 
 namespace duckdb {
 
+//! Whether the function writes whole batches of its own size, so that files rotated between batches keep the order
+static bool SupportsOrderedRotation(const CopyFunction &function) {
+	return function.prepare_batch && function.flush_batch && function.file_size_bytes && function.desired_batch_size;
+}
+
+static CopyToFileOptions GetFileOptions(const LogicalCopyToFile &op) {
+	CopyToFileOptions result;
+	result.filename_pattern = op.filename_pattern;
+	result.file_extension = op.file_extension;
+	result.file_size_bytes = op.file_size_bytes;
+	result.overwrite_mode = op.overwrite_mode;
+	return result;
+}
+
 PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCopyToFile &op) {
 	auto &plan = CreatePlan(*op.children[0]);
 	auto &fs = FileSystem::GetFileSystem(context);
@@ -25,7 +39,9 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCopyToFile &op, Physi
 	} else if (op.preserve_order == PreserveOrderType::DONT_PRESERVE_ORDER) {
 		preserve_insertion_order = false;
 	}
-	if (op.per_thread_output || op.file_size_bytes.IsValid() || op.rotate || op.partition_output ||
+	bool ordered_rotation = op.file_size_bytes.IsValid() && !op.batches_per_file.IsValid() &&
+	                        preserve_insertion_order && supports_batch_index && SupportsOrderedRotation(op.function);
+	if (op.per_thread_output || (op.rotate && !ordered_rotation) || op.partition_output ||
 	    !op.partition_columns.empty() || !op.order_columns.empty()) {
 		if (op.preserve_order == PreserveOrderType::PRESERVE_ORDER) {
 			throw InvalidInputException("PRESERVE_ORDER is not supported with these parameters");
@@ -49,6 +65,10 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCopyToFile &op, Physi
 		auto &cast_copy = copy.Cast<PhysicalBatchCopyToFile>();
 		cast_copy.file_path = op.file_path;
 		cast_copy.use_tmp_file = op.use_tmp_file;
+		if (ordered_rotation) {
+			cast_copy.file_path = PhysicalCopyToFile::GetTrimmedPath(context, op.file_path);
+			cast_copy.file_options = GetFileOptions(op);
+		}
 		cast_copy.children.push_back(plan);
 		cast_copy.return_type = op.return_type;
 		cast_copy.query_names = op.query_names;
@@ -67,15 +87,12 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCopyToFile &op, Physi
 	auto &cast_copy = copy.Cast<PhysicalCopyToFile>();
 	cast_copy.file_path = op.file_path;
 	cast_copy.use_tmp_file = op.use_tmp_file;
-	cast_copy.overwrite_mode = op.overwrite_mode;
-	cast_copy.filename_pattern = op.filename_pattern;
-	cast_copy.file_extension = op.file_extension;
+	cast_copy.file_options = GetFileOptions(op);
 	cast_copy.per_thread_output = op.per_thread_output;
 
 	cast_copy.batch_size = op.batch_size;
 	cast_copy.batch_size_bytes = op.batch_size_bytes;
 	cast_copy.batches_per_file = op.batches_per_file;
-	cast_copy.file_size_bytes = op.file_size_bytes;
 
 	cast_copy.return_type = op.return_type;
 	cast_copy.query_names = op.query_names;

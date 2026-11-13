@@ -10,6 +10,7 @@
 
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/filename_pattern.hpp"
+#include "duckdb/execution/operator/persistent/physical_copy_to_file.hpp"
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/parser/parsed_data/copy_info.hpp"
@@ -24,6 +25,7 @@ public:
 public:
 	PhysicalBatchCopyToFile(PhysicalPlan &physical_plan, vector<LogicalType> types, CopyFunction function,
 	                        unique_ptr<FunctionData> bind_data, idx_t estimated_cardinality);
+	~PhysicalBatchCopyToFile() override;
 
 public:
 	InsertionOrderPreservingMap<string> ParamsToString() const override;
@@ -41,9 +43,12 @@ public:
 	//! Fine-grained control over writes
 	optional_idx batch_size;
 	optional_idx batch_size_bytes;
+	//! The files written into the directory file_path when rotating by file_size_bytes
+	CopyToFileOptions file_options;
 
 public:
 	// Source interface
+	unique_ptr<GlobalSourceState> GetGlobalSourceState(ClientContext &context) const override;
 	SourceResultType GetDataInternal(ExecutionContext &context, DataChunk &chunk,
 	                                 OperatorSourceInput &input) const override;
 

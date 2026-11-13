@@ -21,6 +21,7 @@ namespace duckdb {
 struct GlobalFileState;
 struct FileStateHandle;
 struct BoundOrderByNode;
+class CopyOutputLifecycle;
 
 struct CopyToFileInfo {
 	explicit CopyToFileInfo(string file_path_p) : file_path(std::move(file_path_p)) {
@@ -29,6 +30,32 @@ struct CopyToFileInfo {
 	string file_path;
 	unique_ptr<CopyFunctionFileStatistics> file_stats;
 	Value partition_keys;
+};
+
+//! The naming, size limit and overwrite mode of the files a COPY writes
+struct CopyToFileOptions {
+	//! Pattern to use for the file names
+	FilenamePattern filename_pattern;
+	//! File extension, e.g., "parquet"
+	string file_extension;
+	//! The size at which a file is rotated, if files are rotated by size
+	optional_idx file_size_bytes;
+	//! What to do when the "file_path" conflicts with an existing file
+	CopyOverwriteMode overwrite_mode = CopyOverwriteMode::COPY_ERROR_ON_CONFLICT;
+
+	bool RotatesFiles() const {
+		return file_size_bytes.IsValid();
+	}
+};
+
+//! The source state of a COPY, paging through the written files for RETURN_STATS
+class CopyToFileGlobalSourceState : public GlobalSourceState {
+public:
+	idx_t offset = 0;
+
+	idx_t MaxThreads() override {
+		return 1;
+	}
 };
 
 //! Copy the contents of a query into a table
@@ -46,9 +73,20 @@ public:
 
 public:
 	static string GetTrimmedPath(ClientContext &context, const string &file_path);
+	//! Checks an output directory for existing files according to the overwrite mode
+	static void CheckDirectory(FileSystem &fs, const string &file_path, CopyOverwriteMode overwrite_mode);
+	//! Creates the output directory of a copy that writes several files, or checks the existing one
+	static void PrepareOutputDirectory(FileSystem &fs, const string &file_path, CopyOverwriteMode overwrite_mode,
+	                                   CopyOutputLifecycle &output_lifecycle);
 	static void MoveTmpFile(ClientContext &context, const string &tmp_file_path);
 	static string GetNonTmpFile(ClientContext &context, const string &tmp_file_path);
-	static void ReturnStatistics(Context &context, DataChunk &chunk, CopyToFileInfo &written_file_info);
+	static void ReturnStatistics(Context &context, DataChunk &chunk, const string &file_path,
+	                             const CopyToFileInfo &info);
+	//! Appends the next chunk of RETURN_STATS rows of the written files
+	static SourceResultType ReturnWrittenFileStatistics(ClientContext &context, DataChunk &chunk,
+	                                                    CopyToFileGlobalSourceState &source_state,
+	                                                    const vector<unique_ptr<CopyToFileInfo>> &written_files,
+	                                                    bool use_tmp_file);
 	//! Adds the RETURN_STATS row of a COPY that wrote no file, so that RETURN_COLUMN_TYPES can still return the types
 	static void ReturnNoFileStatistics(DataChunk &chunk);
 	//! Sets the last column of every row in the chunk to the RETURN_COLUMN_TYPES value
@@ -118,10 +156,8 @@ public:
 
 	//! Where to write the file
 	string file_path;
-	//! Pattern to use for the file names
-	FilenamePattern filename_pattern;
-	//! File extension, e.g., "parquet"
-	string file_extension;
+	//! The naming, size limit and overwrite mode of the files
+	CopyToFileOptions file_options;
 
 	//! Whether we can write in parallel
 	bool parallel;
@@ -132,12 +168,9 @@ public:
 	optional_idx batch_size;
 	optional_idx batch_size_bytes;
 	optional_idx batches_per_file;
-	optional_idx file_size_bytes;
 
 	//! Whether to write to a temp file before writing to the file at "file_path"
 	bool use_tmp_file;
-	//! What to do when the "file_path" conflicts with an existing file
-	CopyOverwriteMode overwrite_mode;
 	//! What to return, e.g., number of written rows
 	CopyFunctionReturnType return_type;
 	//! The names and types of the copied query, for RETURN_COLUMN_TYPES

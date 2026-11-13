@@ -2,7 +2,9 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/operator/persistent/copy_output_lifecycle.hpp"
+#include "duckdb/execution/operator/persistent/physical_batch_copy_to_file.hpp"
 #include "duckdb/execution/operator/persistent/physical_copy_to_file.hpp"
+#include "duckdb/execution/operator/scan/physical_dummy_scan.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/main/connection.hpp"
@@ -24,6 +26,7 @@ namespace {
 
 struct LifecycleCopyInfo : CopyFunctionInfo {
 	idx_t fail_finalize_after = DConstants::INVALID_INDEX;
+	atomic<idx_t> open_attempts {0};
 	atomic<idx_t> finalize_attempts {0};
 	mutex lock;
 	vector<string> initialized_paths;
@@ -202,8 +205,9 @@ unique_ptr<LocalFunctionData> LifecycleCopyInitializeLocal(ExecutionContext &, F
 
 unique_ptr<GlobalFunctionData> LifecycleCopyInitializeGlobal(ClientContext &context, FunctionData &bind_data,
                                                              const string &path) {
-	auto state = make_uniq<LifecycleCopyGlobalData>(context, path);
 	auto &info = bind_data.Cast<LifecycleCopyBindData>().GetInfo();
+	info.open_attempts++;
+	auto state = make_uniq<LifecycleCopyGlobalData>(context, path);
 	lock_guard<mutex> guard(info.lock);
 	info.initialized_paths.push_back(path);
 	return std::move(state);
@@ -403,7 +407,7 @@ TEST_CASE("Partitioned COPY bounds overlapping input and wakes combined producer
 	copy.expected_types = {LogicalType::BIGINT, LogicalType::BIGINT};
 	copy.names = {Identifier("p"), Identifier("i")};
 	copy.file_path = TestCreatePath("copy_backpressure");
-	copy.file_extension = "test";
+	copy.file_options.file_extension = "test";
 	copy.per_thread_output = false;
 	copy.partition_output = true;
 	copy.partition_columns = {0};
@@ -411,7 +415,7 @@ TEST_CASE("Partitioned COPY bounds overlapping input and wakes combined producer
 	copy.hive_file_pattern = true;
 	copy.use_tmp_file = false;
 	copy.write_empty_file = true;
-	copy.overwrite_mode = CopyOverwriteMode::COPY_OVERWRITE;
+	copy.file_options.overwrite_mode = CopyOverwriteMode::COPY_OVERWRITE;
 	copy.return_type = CopyFunctionReturnType::CHANGED_ROWS;
 	copy.batch_size = STANDARD_VECTOR_SIZE;
 	copy.sink_state = copy.GetGlobalSinkState(context);
@@ -524,6 +528,48 @@ TEST_CASE("Partitioned COPY bounds overlapping input and wakes combined producer
 	REQUIRE(count.GetValue(0, 0) == Value::BIGINT(10 * STANDARD_VECTOR_SIZE));
 	pending->Complete();
 	REQUIRE_NO_FAIL(*pending);
+}
+
+TEST_CASE("A failed open of the first batch COPY file is reported to every worker", "[api][copy]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	REQUIRE_NO_FAIL(connection.Query("SET async_threads=1"));
+	auto &context = *connection.context;
+	auto &fs = FileSystem::GetFileSystem(context);
+
+	auto info = make_shared_ptr<LifecycleCopyInfo>();
+	auto function = CreateLifecycleCopyFunction("copy_lifecycle_failed_open", info, true);
+	PhysicalPlan plan(Allocator::Get(context));
+	vector<LogicalType> types {LogicalType::BIGINT};
+	auto &child = plan.Make<PhysicalDummyScan>(types, 0);
+	auto &copy = plan.Make<PhysicalBatchCopyToFile>(types, function, make_uniq<LifecycleCopyBindData>(info), 0)
+	                 .Cast<PhysicalBatchCopyToFile>();
+	copy.children.push_back(child);
+	// the output directory does not exist, so the open of the file fails
+	auto missing_directory = TestCreatePath("copy_lifecycle_failed_open");
+	RemoveDirectoryIfPresent(fs, missing_directory);
+	copy.file_path = fs.JoinPath(missing_directory, "file.test");
+	copy.use_tmp_file = false;
+	copy.write_empty_file = false;
+	copy.return_type = CopyFunctionReturnType::CHANGED_ROWS;
+	copy.sink_state = copy.GetGlobalSinkState(context);
+
+	ThreadContext thread(context);
+	ExecutionContext execution(context, thread, nullptr);
+	auto local = copy.GetLocalSinkState(execution);
+	local->partition_info.batch_index = 0;
+	local->partition_info.min_batch_index = 0;
+	InterruptState interrupt;
+	OperatorSinkInput input {*copy.sink_state, *local, interrupt};
+	DataChunk chunk;
+	chunk.Initialize(context, types);
+	chunk.data[0].Append(Value::BIGINT(1));
+
+	REQUIRE_THROWS_AS(copy.Sink(execution, chunk, input), IOException);
+	// a second Sink is a worker that initializes after the failed open, which waits on the same job
+	REQUIRE_THROWS_AS(copy.Sink(execution, chunk, input), IOException);
+	REQUIRE(info->open_attempts == 1);
+	REQUIRE(info->initialized_paths.empty());
 }
 #endif
 
