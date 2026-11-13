@@ -107,7 +107,8 @@
     {
       "reason": "disabled_compression_methods doesn't survive database restarts",
       "paths": [
-        "test/sql/settings/setting_validation_and_reset.test"
+        "test/sql/settings/setting_validation_and_reset.test",
+        "test/sql/storage/compression/alp/alp_sampling_ratio.test"
       ]
     },
     {

@@ -91,6 +91,22 @@ TEST_CASE("Test that types without parameters share one type info", "[logical_ty
 	REQUIRE(LogicalType::DECIMAL(18, 3) == LogicalType::DECIMAL(18, 3));
 }
 
+TEST_CASE("VARIANT has canonical metadata when constructed from its id", "[logical_type_immutable]") {
+	const auto canonical = LogicalType::VARIANT();
+	LogicalType from_id(LogicalTypeId::VARIANT);
+	REQUIRE(from_id == canonical);
+	REQUIRE(from_id.IsComplete());
+	REQUIRE(&from_id.GetTypeInfo() == &canonical.GetTypeInfo());
+
+	LogicalType without_info(LogicalTypeId::VARIANT, nullptr);
+	REQUIRE(&without_info.GetTypeInfo() == &canonical.GetTypeInfo());
+
+	auto explicit_info = canonical.GetTypeInfo().Copy();
+	explicit_info->alias = "MY_VARIANT";
+	LogicalType aliased(LogicalTypeId::VARIANT, std::move(explicit_info));
+	REQUIRE(aliased == canonical.WithAlias("MY_VARIANT"));
+}
+
 TEST_CASE("Test that a moved-from type keeps its id", "[logical_type_immutable]") {
 	auto list = LogicalType::LIST(LogicalType::VARCHAR);
 	auto moved = std::move(list);
