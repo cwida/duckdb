@@ -43,7 +43,7 @@ private:
 	void CollectCTEFilters(LogicalOperator &op);
 	void GenerateCTEFilters(LogicalMaterializedCTE &cte);
 	void GenerateJoinFilters(LogicalComparisonJoin &join);
-	static bool CanGenerateJoinFilters(const LogicalComparisonJoin &join);
+	bool CanGenerateJoinFilters(const LogicalComparisonJoin &join);
 	static void GetCTEFilterTargets(LogicalOperator &op, vector<JoinFilterPushdownColumn> columns,
 	                                reference_map_t<LogicalCTERef, vector<JoinFilterPushdownColumn>> &targets);
 

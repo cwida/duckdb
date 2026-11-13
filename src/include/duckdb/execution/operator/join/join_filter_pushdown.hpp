@@ -108,7 +108,9 @@ struct PushdownFilterTarget {
 
 struct JoinFilterPushdownUtil {
 	static bool PushdownJoinFilterExpression(const Expression &expr, JoinFilterPushdownColumn &filter);
-	static bool JoinTypeIsSupported(JoinType join_type);
+	//! Whether join filters can be generated for the join type. RIGHT ANTI joins are only supported if
+	//! right_anti_filters is set (i.e. if the JOIN_FILTER_RIGHT_ANTI optimizer is enabled)
+	static bool JoinTypeIsSupported(JoinType join_type, bool right_anti_filters);
 };
 
 struct JoinFilterPushdownInfo {

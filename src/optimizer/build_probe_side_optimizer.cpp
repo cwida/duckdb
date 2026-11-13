@@ -259,11 +259,12 @@ bool BuildProbeSideOptimizer::TryFlipJoinChildren(LogicalOperator &op) const {
 
 	if (op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
 		auto &join = op.Cast<LogicalComparisonJoin>();
-		if (JoinFilterPushdownUtil::JoinTypeIsSupported(join.join_type)) {
+		auto right_anti_filters = !Optimizer::OptimizerDisabled(context, OptimizerType::JOIN_FILTER_RIGHT_ANTI);
+		if (JoinFilterPushdownUtil::JoinTypeIsSupported(join.join_type, right_anti_filters)) {
 			right_side_build_cost /= DynamicFilterBuildBonus(join, 0, 1, rhs_cardinality);
 		}
 		if (HasInverseJoinType(join.join_type) &&
-		    JoinFilterPushdownUtil::JoinTypeIsSupported(InverseJoinType(join.join_type))) {
+		    JoinFilterPushdownUtil::JoinTypeIsSupported(InverseJoinType(join.join_type), right_anti_filters)) {
 			left_side_build_cost /= DynamicFilterBuildBonus(join, 1, 0, lhs_cardinality);
 		}
 		if (join.join_type == JoinType::SEMI && JoinFilterPushdownOptimizer::IsFiltering(join.children[0])) {

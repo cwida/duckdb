@@ -1,0 +1,220 @@
+# name: test/optimizer/pushdown/join_filter_pushdown_right_anti.test
+# description: RIGHT ANTI joins push join filters into their probe side
+# group: [pushdown]
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE small AS SELECT i::BIGINT AS k, (i % 7)::INTEGER AS v FROM range(2000) t(i);
+
+# every third key
+statement ok
+CREATE TABLE big AS SELECT ((i % 50000) * 3)::BIGINT AS k, (i % 11)::INTEGER AS v FROM range(2000000) t(i);
+
+statement ok
+CREATE TABLE small_null AS SELECT CASE WHEN i % 10 = 0 THEN NULL ELSE i END::BIGINT AS k, (i % 7)::INTEGER AS v FROM range(2000) t(i);
+
+statement ok
+CREATE TABLE big_null AS SELECT CASE WHEN i % 100 = 0 THEN NULL ELSE (i % 50000) * 3 END::BIGINT AS k, (i % 11)::INTEGER AS v FROM range(2000000) t(i);
+
+statement ok
+CREATE TABLE other AS SELECT i::BIGINT AS k, i * 10 AS w FROM range(0, 2000, 5) t(i);
+
+statement ok
+CREATE TABLE empty_big(k BIGINT, v INTEGER);
+
+statement ok
+CREATE TABLE small_str AS SELECT 'key_' || i AS k, (i % 7)::INTEGER AS v FROM range(2000) t(i);
+
+statement ok
+CREATE TABLE big_str AS SELECT 'key_' || ((i % 50000) * 3) AS k, (i % 11)::INTEGER AS v FROM range(2000000) t(i);
+
+query I
+SELECT name FROM duckdb_optimizers() WHERE name = 'join_filter_right_anti';
+----
+join_filter_right_anti
+
+# the anti join is flipped to RIGHT_ANTI (the small side is the build side) and the scan of the probe side gets the
+# build keys as a join filter
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(s.k) FROM small s ANTI JOIN big b ON s.k = b.k WHERE s.k < 500;
+----
+analyzed_plan	<REGEX>:(?s).*Join Type: RIGHT_ANTI.*Table: \S+\.big.*Dynamic Filters:.*
+
+query II
+SELECT count(*), sum(s.k) FROM small s ANTI JOIN big b ON s.k = b.k WHERE s.k < 500;
+----
+333	83167
+
+# NOT EXISTS
+query II
+SELECT count(*), sum(s.k) FROM small s WHERE s.k < 500 AND NOT EXISTS (SELECT 1 FROM big b WHERE b.k = s.k);
+----
+333	83167
+
+# NULL keys on the probe side never match: filtering them out changes nothing
+query II
+SELECT count(*), sum(s.k) FROM small s ANTI JOIN big_null b ON s.k = b.k WHERE s.k < 500;
+----
+335	83467
+
+# NULL keys on the build side have no match and are part of the result: the filter only removes probe rows
+query III
+SELECT count(*), count(s.k), sum(s.k) FROM small_null s ANTI JOIN big b ON s.k = b.k WHERE s.k < 500 OR s.k IS NULL;
+----
+500	300	74997
+
+# IS NOT DISTINCT FROM with NULLs on both sides: NULL matches NULL, the filter has to keep the NULL probe rows
+query III
+SELECT count(*), count(s.k), sum(s.k) FROM small_null s ANTI JOIN big_null b ON s.k IS NOT DISTINCT FROM b.k WHERE s.k < 500 OR s.k IS NULL;
+----
+300	300	74997
+
+query III
+SELECT count(*), count(s.k), sum(s.k) FROM small_null s ANTI JOIN big b ON s.k IS NOT DISTINCT FROM b.k WHERE s.k < 500 OR s.k IS NULL;
+----
+500	300	74997
+
+# NOT IN is a MARK join: NULLs on either side
+query II
+SELECT count(*), sum(s.k) FROM small s WHERE s.k < 500 AND s.k NOT IN (SELECT k FROM big);
+----
+333	83167
+
+query II
+SELECT count(*), sum(s.k) FROM small s WHERE s.k < 500 AND s.k NOT IN (SELECT k FROM big_null);
+----
+0	NULL
+
+# an additional inequality between the two sides: the filter is generated for the equality key only
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(s.k) FROM small s ANTI JOIN big b ON s.k = b.k AND s.v <> b.v WHERE s.k < 500;
+----
+analyzed_plan	<REGEX>:(?s).*Join Type: RIGHT_ANTI.*Dynamic Filters:.*
+
+query II
+SELECT count(*), sum(s.k) FROM small s ANTI JOIN big b ON s.k = b.k AND s.v <> b.v WHERE s.k < 500;
+----
+333	83167
+
+# two equality keys
+query II
+SELECT count(*), sum(s.k) FROM small s ANTI JOIN big b ON s.k = b.k AND s.v = b.v WHERE s.k < 500;
+----
+333	83167
+
+# duplicate build keys
+query II
+SELECT count(*), sum(s.k) FROM (SELECT * FROM small UNION ALL SELECT * FROM small) s ANTI JOIN big b ON s.k = b.k WHERE s.k < 500;
+----
+666	166334
+
+# VARCHAR keys
+query II
+SELECT count(*), sum(s.v) FROM small_str s ANTI JOIN big_str b ON s.k = b.k WHERE s.v < 2;
+----
+381	191
+
+# an empty probe side: all build rows are returned
+query II
+SELECT count(*), sum(s.k) FROM small s ANTI JOIN empty_big b ON s.k = b.k WHERE s.k < 500;
+----
+500	124750
+
+# an empty build side
+query II
+SELECT count(*), sum(s.k) FROM small s ANTI JOIN big b ON s.k = b.k WHERE s.v = 99;
+----
+0	NULL
+
+# below an outer join
+query III
+SELECT count(*), count(o.w), sum(o.w) FROM (SELECT s.k FROM small s ANTI JOIN big b ON s.k = b.k WHERE s.k < 500) t LEFT JOIN other o ON t.k = o.k;
+----
+333	66	163350
+
+# the probe side is an aggregate
+query II
+SELECT count(*), sum(s.k) FROM small s ANTI JOIN (SELECT k, count(*) AS c FROM big GROUP BY k HAVING count(*) > 30) g ON s.k = g.k WHERE s.k < 500;
+----
+333	83167
+
+# the probe side is a materialized CTE
+query II
+WITH m AS MATERIALIZED (SELECT * FROM big WHERE v < 5) SELECT count(*), sum(s.k) FROM small s ANTI JOIN m ON s.k = m.k WHERE s.k < 500;
+----
+333	83167
+
+# EXCEPT is planned as an anti join
+query II
+SELECT count(*), sum(k) FROM (SELECT k FROM small WHERE k < 500 EXCEPT SELECT k FROM big);
+----
+333	83167
+
+# an anti join inside a recursive CTE
+query II
+WITH RECURSIVE r(k, n) AS (SELECT 1::BIGINT, 0 UNION ALL SELECT r.k + 1, n + 1 FROM r ANTI JOIN big b ON r.k = b.k WHERE n < 10) SELECT count(*), sum(k) FROM r;
+----
+3	6
+
+# a volatile probe key: no filter is generated
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM small s ANTI JOIN big b ON s.k = b.k + (random() * 0)::BIGINT WHERE s.k < 500;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters.*
+
+# a plain ANTI join (the join is not flipped) does not get a filter: its unmatched probe rows are the result
+statement ok
+SET disabled_optimizers = 'build_side_probe_side';
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(s.k) FROM small s ANTI JOIN big b ON s.k = b.k WHERE s.k < 500;
+----
+analyzed_plan	<REGEX>:(?s).*Join Type: ANTI.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(s.k) FROM small s ANTI JOIN big b ON s.k = b.k WHERE s.k < 500;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters.*
+
+query II
+SELECT count(*), sum(s.k) FROM small s ANTI JOIN big b ON s.k = b.k WHERE s.k < 500;
+----
+333	83167
+
+# the optimizer can be disabled: the RIGHT_ANTI join is still there, but without a filter
+statement ok
+SET disabled_optimizers = 'join_filter_right_anti';
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(s.k) FROM small s ANTI JOIN big b ON s.k = b.k WHERE s.k < 500;
+----
+analyzed_plan	<REGEX>:(?s).*Join Type: RIGHT_ANTI.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(s.k) FROM small s ANTI JOIN big b ON s.k = b.k WHERE s.k < 500;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters.*
+
+query II
+SELECT count(*), sum(s.k) FROM small s ANTI JOIN big b ON s.k = b.k WHERE s.k < 500;
+----
+333	83167
+
+query III
+SELECT count(*), count(s.k), sum(s.k) FROM small_null s ANTI JOIN big_null b ON s.k IS NOT DISTINCT FROM b.k WHERE s.k < 500 OR s.k IS NULL;
+----
+300	300	74997
+
+# so does disabling join filter pushdown as a whole
+statement ok
+SET disabled_optimizers = 'join_filter_pushdown';
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(s.k) FROM small s ANTI JOIN big b ON s.k = b.k WHERE s.k < 500;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters.*
+
+statement ok
+RESET disabled_optimizers;
