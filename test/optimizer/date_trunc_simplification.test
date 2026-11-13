@@ -212,6 +212,58 @@ select * from test2 where date_trunc('day', d) is distinct from '2025-01-10';
 ----
 2025-01-06
 
+# sub-day parts must not truncate TIMESTAMP bounds to DATE
+foreach datepart hour minute second millisecond microsecond
+
+query II
+select count(*) filter (where date_trunc('{datepart}', d) = TIMESTAMP '2025-01-06 00:00:00'),
+       count(*) filter (where date_trunc('{datepart}', d) > TIMESTAMP '2025-01-06 05:00:00')
+from test2;
+----
+1	1
+
+endloop
+
+query II
+explain analyze select * from test2 where date_trunc('hour', d) >= TIMESTAMP '2025-01-06 05:00:00';
+----
+analyzed_plan	<REGEX>:.*Filters[ \t\n│]*.*d >= '2025-01-07'::DATE.*$
+
+query II
+select date_trunc('hour', d) = TIMESTAMP '2025-01-06 00:00:00',
+       date_trunc('hour', d) > TIMESTAMP '2025-01-06 05:00:00'
+from test2
+order by d;
+----
+true	false
+false	true
+
+query IIIIIIII
+select count(*) filter (where date_trunc('hour', d) = TIMESTAMP '2025-01-06 00:00:00'),
+       count(*) filter (where date_trunc('hour', d) <> TIMESTAMP '2025-01-06 00:00:00'),
+       count(*) filter (where date_trunc('hour', d) < TIMESTAMP '2025-01-06 00:00:00'),
+       count(*) filter (where date_trunc('hour', d) <= TIMESTAMP '2025-01-06 00:00:00'),
+       count(*) filter (where date_trunc('hour', d) > TIMESTAMP '2025-01-06 00:00:00'),
+       count(*) filter (where date_trunc('hour', d) >= TIMESTAMP '2025-01-06 00:00:00'),
+       count(*) filter (where date_trunc('hour', d) is distinct from TIMESTAMP '2025-01-06 00:00:00'),
+       count(*) filter (where date_trunc('hour', d) is not distinct from TIMESTAMP '2025-01-06 00:00:00')
+from test2;
+----
+1	1	0	1	1	2	1	1
+
+query IIIIIIII
+select count(*) filter (where date_trunc('hour', d) = TIMESTAMP '2025-01-06 05:00:00'),
+       count(*) filter (where date_trunc('hour', d) <> TIMESTAMP '2025-01-06 05:00:00'),
+       count(*) filter (where date_trunc('hour', d) < TIMESTAMP '2025-01-06 05:00:00'),
+       count(*) filter (where date_trunc('hour', d) <= TIMESTAMP '2025-01-06 05:00:00'),
+       count(*) filter (where date_trunc('hour', d) > TIMESTAMP '2025-01-06 05:00:00'),
+       count(*) filter (where date_trunc('hour', d) >= TIMESTAMP '2025-01-06 05:00:00'),
+       count(*) filter (where date_trunc('hour', d) is distinct from TIMESTAMP '2025-01-06 05:00:00'),
+       count(*) filter (where date_trunc('hour', d) is not distinct from TIMESTAMP '2025-01-06 05:00:00')
+from test2;
+----
+0	2	1	1	1	1	2	0
+
 #
 # check edge cases
 #
