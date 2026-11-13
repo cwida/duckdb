@@ -6,6 +6,7 @@
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/function/scalar/generic_common.hpp"
+#include "duckdb/main/client_data.hpp"
 #include "duckdb/optimizer/rule/contains_to_in_clause.hpp"
 #include "duckdb/optimizer/rule/distinct_aggregate_optimizer.hpp"
 #include "duckdb/optimizer/rule/empty_needle_removal.hpp"
@@ -19,49 +20,47 @@
 
 namespace duckdb {
 
-const vector<unique_ptr<Rule>> &ExpressionRewriter::GetRules() {
-	if (!rules.empty()) {
-		return rules;
-	}
-	rules.push_back(make_uniq<ConstantOrderNormalizationRule>(*this));
-	rules.push_back(make_uniq<ConstantFoldingRule>(*this));
-	rules.push_back(make_uniq<StructExtractStructPackFoldingRule>(*this));
-	rules.push_back(make_uniq<DistributivityRule>(*this));
-	rules.push_back(make_uniq<ArithmeticSimplificationRule>(*this));
-	rules.push_back(make_uniq<LeastGreatestSimplificationRule>(*this));
-	rules.push_back(make_uniq<CaseSimplificationRule>(*this));
-	rules.push_back(make_uniq<ConjunctionSimplificationRule>(*this));
-	rules.push_back(make_uniq<OrRangeMergeRule>(*this));
-	rules.push_back(make_uniq<DatePartSimplificationRule>(*this));
-	rules.push_back(make_uniq<DateTruncSimplificationRule>(*this));
-	rules.push_back(make_uniq<ComparisonSimplificationRule>(*this));
-	rules.push_back(make_uniq<RowComparisonSimplificationRule>(*this));
-	rules.push_back(make_uniq<InClauseSimplificationRule>(*this));
-	rules.push_back(make_uniq<InEnumSimplificationRule>(*this));
-	rules.push_back(make_uniq<EnumCompareSimplificationRule>(*this));
-	rules.push_back(make_uniq<EqualOrNullSimplification>(*this));
-	rules.push_back(make_uniq<MoveConstantsRule>(*this));
-	rules.push_back(make_uniq<MoveUnaryMinusRule>(*this));
-	rules.push_back(make_uniq<MonotonePreimageRule>(*this));
-	rules.push_back(make_uniq<LikeOptimizationRule>(*this));
-	rules.push_back(make_uniq<StringPrefixRule>(*this));
-	rules.push_back(make_uniq<InstrPrefixRule>(*this));
-	rules.push_back(make_uniq<OrderedAggregateOptimizer>(*this));
-	rules.push_back(make_uniq<DistinctAggregateOptimizer>(*this));
-	rules.push_back(make_uniq<DistinctWindowedOptimizer>(*this));
-	rules.push_back(make_uniq<RegexOptimizationRule>(*this));
-	rules.push_back(make_uniq<RegexpReplaceExtractRule>(*this));
-	rules.push_back(make_uniq<EmptyNeedleRemovalRule>(*this));
-	rules.push_back(make_uniq<NoopReplaceRemovalRule>(*this));
-	rules.push_back(make_uniq<EnumComparisonRule>(*this));
-	rules.push_back(make_uniq<JoinDependentFilterRule>(*this));
-	rules.push_back(make_uniq<TimeStampComparison>(*this));
-	rules.push_back(make_uniq<PredicateFactoringRule>(*this));
-	rules.push_back(make_uniq<ListComprehensionRewriteRule>(*this));
-	rules.push_back(make_uniq<ContainsToInClauseRule>(*this));
-	rules.push_back(make_uniq<NotComparisonSimplificationRule>(*this));
-	rules.push_back(make_uniq<NotConjunctionSimplificationRule>(*this));
-	rules.push_back(make_uniq<NotConstantOrNullSimplificationRule>(*this));
+vector<unique_ptr<Rule>> ExpressionRewriter::CreateDefaultRules(ExpressionRewriter &rewriter) {
+	vector<unique_ptr<Rule>> rules;
+	rules.push_back(make_uniq<ConstantOrderNormalizationRule>(rewriter));
+	rules.push_back(make_uniq<ConstantFoldingRule>(rewriter));
+	rules.push_back(make_uniq<StructExtractStructPackFoldingRule>(rewriter));
+	rules.push_back(make_uniq<DistributivityRule>(rewriter));
+	rules.push_back(make_uniq<ArithmeticSimplificationRule>(rewriter));
+	rules.push_back(make_uniq<LeastGreatestSimplificationRule>(rewriter));
+	rules.push_back(make_uniq<CaseSimplificationRule>(rewriter));
+	rules.push_back(make_uniq<ConjunctionSimplificationRule>(rewriter));
+	rules.push_back(make_uniq<OrRangeMergeRule>(rewriter));
+	rules.push_back(make_uniq<DatePartSimplificationRule>(rewriter));
+	rules.push_back(make_uniq<DateTruncSimplificationRule>(rewriter));
+	rules.push_back(make_uniq<ComparisonSimplificationRule>(rewriter));
+	rules.push_back(make_uniq<RowComparisonSimplificationRule>(rewriter));
+	rules.push_back(make_uniq<InClauseSimplificationRule>(rewriter));
+	rules.push_back(make_uniq<InEnumSimplificationRule>(rewriter));
+	rules.push_back(make_uniq<EnumCompareSimplificationRule>(rewriter));
+	rules.push_back(make_uniq<EqualOrNullSimplification>(rewriter));
+	rules.push_back(make_uniq<MoveConstantsRule>(rewriter));
+	rules.push_back(make_uniq<MoveUnaryMinusRule>(rewriter));
+	rules.push_back(make_uniq<MonotonePreimageRule>(rewriter));
+	rules.push_back(make_uniq<LikeOptimizationRule>(rewriter));
+	rules.push_back(make_uniq<StringPrefixRule>(rewriter));
+	rules.push_back(make_uniq<InstrPrefixRule>(rewriter));
+	rules.push_back(make_uniq<OrderedAggregateOptimizer>(rewriter));
+	rules.push_back(make_uniq<DistinctAggregateOptimizer>(rewriter));
+	rules.push_back(make_uniq<DistinctWindowedOptimizer>(rewriter));
+	rules.push_back(make_uniq<RegexOptimizationRule>(rewriter));
+	rules.push_back(make_uniq<RegexpReplaceExtractRule>(rewriter));
+	rules.push_back(make_uniq<EmptyNeedleRemovalRule>(rewriter));
+	rules.push_back(make_uniq<NoopReplaceRemovalRule>(rewriter));
+	rules.push_back(make_uniq<EnumComparisonRule>(rewriter));
+	rules.push_back(make_uniq<JoinDependentFilterRule>(rewriter));
+	rules.push_back(make_uniq<TimeStampComparison>(rewriter));
+	rules.push_back(make_uniq<PredicateFactoringRule>(rewriter));
+	rules.push_back(make_uniq<ListComprehensionRewriteRule>(rewriter));
+	rules.push_back(make_uniq<ContainsToInClauseRule>(rewriter));
+	rules.push_back(make_uniq<NotComparisonSimplificationRule>(rewriter));
+	rules.push_back(make_uniq<NotConjunctionSimplificationRule>(rewriter));
+	rules.push_back(make_uniq<NotConstantOrNullSimplificationRule>(rewriter));
 
 #ifdef DEBUG
 	for (auto &rule : rules) {
@@ -70,6 +69,19 @@ const vector<unique_ptr<Rule>> &ExpressionRewriter::GetRules() {
 	}
 #endif
 	return rules;
+}
+
+const vector<unique_ptr<Rule>> &ExpressionRewriter::GetRules() {
+	if (!rules.empty()) {
+		return rules;
+	}
+	auto &client_data = ClientData::Get(context);
+	if (!client_data.default_expression_rewriter) {
+		auto default_rewriter = make_uniq<ExpressionRewriter>(context);
+		default_rewriter->rules = CreateDefaultRules(*default_rewriter);
+		client_data.default_expression_rewriter = std::move(default_rewriter);
+	}
+	return client_data.default_expression_rewriter->rules;
 }
 
 void ExpressionRewriter::AddRule(unique_ptr<Rule> rule) {
