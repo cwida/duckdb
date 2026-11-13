@@ -95,6 +95,43 @@ void RegisterRepeatabilityTableFunctions(DuckDB &db) {
 	loader.RegisterFunction(repeatable);
 }
 
+atomic<int32_t> cache_incompatible_scan_count {0};
+
+struct CacheIncompatibleBindData : public TableFunctionData {
+	// Mirrors MultiFileBindData::SupportStatementCache() (duckdb/duckdb#28218): the scan must always
+	// be rebound for a *prepared statement* to see fresh external state on its next execution, but that
+	// is independent of whether two references inside one *already-bound* plan read the same resolved
+	// call and may be executed once.
+	bool SupportStatementCache() const override {
+		return false;
+	}
+};
+
+unique_ptr<FunctionData> CacheIncompatibleBind(ClientContext &, TableFunctionBindInput &,
+                                               vector<LogicalType> &return_types, vector<Identifier> &names) {
+	return_types.emplace_back(LogicalType::INTEGER);
+	names.emplace_back("i");
+	// the positional parameter, not the bind data, identifies the call
+	return make_uniq<CacheIncompatibleBindData>();
+}
+
+unique_ptr<GlobalTableFunctionState> CacheIncompatibleInit(ClientContext &, TableFunctionInitInput &) {
+	auto result = make_uniq<NonSerializableGlobalState>();
+	result->value = ++cache_incompatible_scan_count;
+	return std::move(result);
+}
+
+void RegisterCacheIncompatibleTableFunction(DuckDB &db) {
+	ExtensionInfo extension_info {};
+	ExtensionActiveLoad load_info {*db.instance, extension_info, "test_extension", ""};
+	ExtensionLoader loader {load_info};
+	// One positional parameter, default (CONSISTENT_WITHIN_QUERY) stability, no serialization
+	// callbacks, and bind data that opts out of the statement cache exactly like MultiFileBindData.
+	TableFunction cache_incompatible("cache_incompatible_tf", {LogicalType::INTEGER}, NonSerializableFunction,
+	                                 CacheIncompatibleBind, CacheIncompatibleInit);
+	loader.RegisterFunction(cache_incompatible);
+}
+
 atomic<int32_t> zero_argument_bind_count {0};
 
 struct ZeroArgumentBindData : public TableFunctionData {
@@ -139,6 +176,37 @@ string GetExplainPlan(Connection &con, const string &query) {
 		}
 	}
 	return explain;
+}
+
+TEST_CASE("Common subplans share scans whose bind data opts out of the statement cache only",
+          "[optimizer][common_subplan]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	RegisterCacheIncompatibleTableFunction(db);
+	REQUIRE_NO_FAIL(con.Query("SET explain_output='optimized_only'"));
+
+	// FunctionData::SupportStatementCache() == false governs whether a *prepared statement* must
+	// always be rebound (see Binder::SetAlwaysRequireRebind) - duckdb/duckdb#28218 was caused by
+	// LogicalGet::SupportSerialization() also gating common-subplan sharing on that flag. A positional
+	// parameter identifies this call without serializing the bind data, so two references inside one
+	// already-bound plan are still recognized as the same scan and executed once.
+	const string query = "SELECT count(*) FROM (SELECT i FROM cache_incompatible_tf(7) "
+	                     "INTERSECT ALL SELECT i FROM cache_incompatible_tf(7))";
+	cache_incompatible_scan_count = 0;
+	auto result = con.Query(query);
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+	REQUIRE(cache_incompatible_scan_count.load() == 1);
+	REQUIRE(StringUtil::Contains(GetExplainPlan(con, query), "__common_subplan_"));
+
+	// Different positional parameters identify different calls and must not be merged.
+	const string distinct_query = "SELECT count(*) FROM (SELECT i FROM cache_incompatible_tf(7) "
+	                              "INTERSECT ALL SELECT i FROM cache_incompatible_tf(8))";
+	cache_incompatible_scan_count = 0;
+	result = con.Query(distinct_query);
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(cache_incompatible_scan_count.load() == 2);
+	REQUIRE(!StringUtil::Contains(GetExplainPlan(con, distinct_query), "__common_subplan_"));
 }
 
 } // namespace

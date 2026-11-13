@@ -725,7 +725,7 @@ private:
 	}
 
 	static bool OperatorIsSupported(LogicalOperator &op) {
-		if (!op.SupportSerialization()) {
+		if (op.type != LogicalOperatorType::LOGICAL_GET && !op.SupportSerialization()) {
 			return false;
 		}
 		switch (op.type) {
@@ -751,6 +751,16 @@ private:
 			return true;
 		case LogicalOperatorType::LOGICAL_GET: {
 			auto &get = op.Cast<LogicalGet>();
+			// SupportSerialization() also requires SupportStatementCache(), which governs a different
+			// concern: whether a bound plan may be reused across executions without rebinding (see
+			// Binder::SetAlwaysRequireRebind). Multi-file readers (read_parquet/read_csv/read_json)
+			// report SupportStatementCache() == false purely so a prepared statement always rebinds and
+			// picks up newly-matching glob files; that has no bearing on whether two scans inside this
+			// one already-bound plan read the same input, so it must not gate sharing here. The
+			// verify_serialization opt-out is still honored below.
+			if (!get.function.verify_serialization) {
+				return false;
+			}
 			// A function's arguments do not describe hidden state or volatile work performed by its scan.
 			// Only share scans that explicitly promise repeatable results, or scan an ordinary table.
 			if (ClassifyLogicalOperatorRepeatability(get) != LogicalOperatorRepeatability::REPEATABLE) {

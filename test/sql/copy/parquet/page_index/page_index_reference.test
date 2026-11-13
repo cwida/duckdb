@@ -142,9 +142,15 @@ true
 statement ok
 CALL disable_logging();
 
-# pages were skipped for the selective filters
+# pages were skipped for the selective filters. The sum threshold was lowered from 10000 to 5000
+# (duckdb/duckdb#28218): within-query common-subplan sharing now executes each
+# "X EXCEPT ALL ref" / "ref EXCEPT ALL X" filtered-scan pair once instead of twice, so fewer
+# SkipPages events are logged per file. The prior threshold (10000) left only a 2% margin even on
+# the unpatched baseline for arrow_row_groups_v2 (10232) and was exceeded there once sharing roughly
+# halved it (8000); 5000 keeps a comfortable margin below every observed patched value (8000-30784
+# across the five files here) while still requiring substantial, real page pruning.
 query II
-SELECT count(*) > 3, sum(info['rows_skipped']::BIGINT) > 10000
+SELECT count(*) > 3, sum(info['rows_skipped']::BIGINT) > 5000
 FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
 ----
 true	true
