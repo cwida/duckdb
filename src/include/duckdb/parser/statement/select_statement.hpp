@@ -29,6 +29,8 @@ public:
 
 	//! The main query node
 	unique_ptr<QueryNode> node;
+	//! Scalar queries that must be evaluated before binding AT clauses
+	vector<unique_ptr<SelectStatement>> at_clause_subqueries;
 
 protected:
 	SelectStatement(const SelectStatement &other);

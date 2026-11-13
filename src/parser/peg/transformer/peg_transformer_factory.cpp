@@ -18,6 +18,7 @@
 #include "duckdb/parser/expression/type_expression.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
 #include "duckdb/parser/statement/merge_into_statement.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/constraints/foreign_key_constraint.hpp"
 
 namespace duckdb {
@@ -29,6 +30,18 @@ static unique_ptr<SQLStatement> ExtractAndTransformStatement(PEGTransformer &tra
 
 	if (!transformer.named_parameter_map.empty()) {
 		stmt->named_param_map = transformer.named_parameter_map;
+	}
+	if (!transformer.at_clause_subqueries.empty()) {
+		if (!transformer.named_parameter_map.empty() || transformer.has_anonymous_parameters) {
+			throw ParserException("AT clauses with subqueries cannot be used with parameters");
+		}
+		if (!transformer.pivot_entries.empty()) {
+			throw ParserException("AT clauses with subqueries cannot contain dynamic PIVOT statements");
+		}
+		if (stmt->type != StatementType::SELECT_STATEMENT) {
+			throw ParserException("AT clauses with subqueries are only supported in SELECT statements");
+		}
+		stmt->Cast<SelectStatement>().at_clause_subqueries = std::move(transformer.at_clause_subqueries);
 	}
 	if (!transformer.pivot_entries.empty()) {
 		stmt = transformer.CreatePivotStatement(std::move(stmt));

@@ -75,6 +75,7 @@ struct MatcherToken;
 struct GroupingExpressionMap;
 class Matcher;
 class TokenIterator;
+class SelectStatement;
 
 enum class GroupByExpressionInfoType : uint8_t { EXPRESSION, EMPTY, CUBE, ROLLUP, GROUPING_SETS };
 
@@ -658,6 +659,7 @@ public:
 	deque<identifier_map_t<unique_ptr<WindowExpression>>> window_clauses;
 
 	vector<unique_ptr<CreatePivotEntry>> pivot_entries;
+	vector<unique_ptr<SelectStatement>> at_clause_subqueries;
 	vector<reference<CommonTableExpressionMap>> stored_cte_map;
 
 	bool in_window_definition = false;

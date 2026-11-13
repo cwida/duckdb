@@ -391,6 +391,7 @@ void PEGTransformer::ClearParameters() {
 void PEGTransformer::Clear() {
 	ClearParameters();
 	pivot_entries.clear();
+	at_clause_subqueries.clear();
 	stored_cte_map.clear();
 	window_clauses.clear();
 }

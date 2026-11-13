@@ -4,6 +4,8 @@
 #include <thread>
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/query_result_stream.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/planner/logical_operator.hpp"
 
 using namespace duckdb;
 
@@ -105,6 +107,45 @@ TEST_CASE("Test Submitted Query API", "[api][.]") {
 		REQUIRE(handle->HasError());
 		REQUIRE(duckdb::StringUtil::Contains(handle->GetError(), "SYNTAX_ERROR"));
 	}
+}
+
+TEST_CASE("AT clause scalar selectors work through statement APIs", "[api]") {
+	DuckDB db;
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE at_api_table(i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE SEQUENCE at_api_selector"));
+	const string query = "SELECT * FROM at_api_table AT (VERSION => (SELECT nextval('at_api_selector')))";
+
+	auto submitted = con.Submit(query);
+	REQUIRE(submitted->HasError());
+	REQUIRE(StringUtil::Contains(submitted->GetError(), "Catalog type does not support time travel"));
+	auto result = con.Query("SELECT currval('at_api_selector')");
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+
+	auto statements = con.ExtractStatements(query);
+	REQUIRE(statements.size() == 1);
+	result = con.Query(std::move(statements[0]));
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "Catalog type does not support time travel"));
+	result = con.Query("SELECT currval('at_api_selector')");
+	REQUIRE(CHECK_COLUMN(result, 0, {2}));
+
+	REQUIRE_THROWS(con.ExtractPlan(query));
+	result = con.Query("SELECT currval('at_api_selector')");
+	REQUIRE(CHECK_COLUMN(result, 0, {3}));
+
+	statements = con.ExtractStatements(query);
+	REQUIRE(statements.size() == 1);
+	REQUIRE_THROWS(con.context->BindStatement(std::move(statements[0])));
+	result = con.Query("SELECT currval('at_api_selector')");
+	REQUIRE(CHECK_COLUMN(result, 0, {4}));
+
+	auto prepared = con.Prepare(query);
+	REQUIRE(prepared->HasError());
+	REQUIRE(StringUtil::Contains(prepared->GetError(), "cannot be used in prepared statements"));
+	result = con.Query("SELECT currval('at_api_selector')");
+	REQUIRE(CHECK_COLUMN(result, 0, {4}));
 }
 
 TEST_CASE("Abandoned submitted query must release the active query", "[api]") {

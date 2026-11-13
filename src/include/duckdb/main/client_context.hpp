@@ -48,6 +48,7 @@ class Context;
 class LogicalOperator;
 class PreparedStatement;
 class PreparedStatementData;
+class SelectStatement;
 class StatementIterator;
 struct PreprocessedStatement;
 class Relation;
@@ -344,6 +345,8 @@ private:
 	friend class Parser;
 	friend class ParseIterator;
 	ParserOptions GetParserOptions();
+	void ResolveAtClauseSubqueries(ClientContextLock &lock, SelectStatement &statement,
+	                               const QueryParameters &parameters, bool verify);
 
 	//! Runs a transaction statement without going through the local query processing pipeline.
 	void RunTransactionStatement(const TransactionInfo &info);

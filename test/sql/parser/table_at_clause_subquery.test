@@ -1,0 +1,137 @@
+# name: test/sql/parser/table_at_clause_subquery.test
+# description: Test pre-binding scalar subqueries in table AT clauses
+# group: [parser]
+
+statement ok
+CREATE TABLE tbl(i INTEGER)
+
+statement ok
+CREATE TABLE "tbl$snapshots" (snapshot_id UBIGINT, snapshot_time TIMESTAMP)
+
+statement ok
+INSERT INTO "tbl$snapshots" VALUES (1, '2024-01-01'), (2, '2024-01-02')
+
+statement ok
+CREATE SEQUENCE snapshot_selector
+
+# The scalar selector executes before the table is bound
+statement error
+SELECT * FROM tbl AT (VERSION => (SELECT nextval('snapshot_selector')))
+----
+Catalog type does not support time travel
+
+query I
+SELECT currval('snapshot_selector')
+----
+1
+
+# The complete selector expression is evaluated, with its original type
+statement error
+SELECT * FROM tbl AT (
+    TIMESTAMP => (SELECT max(snapshot_time) FROM "tbl$snapshots") - INTERVAL '1 day'
+)
+----
+Catalog type does not support time travel
+
+# Every selector is resolved before the main statement is bound
+statement error
+SELECT *
+FROM tbl AT (VERSION => (SELECT nextval('snapshot_selector'))),
+     tbl AT (VERSION => (SELECT nextval('snapshot_selector')))
+----
+Catalog type does not support time travel
+
+query I
+SELECT currval('snapshot_selector')
+----
+3
+
+# Normal scalar-subquery cardinality rules apply
+statement error
+SELECT * FROM tbl AT (VERSION => (SELECT i FROM range(2) t(i)))
+----
+More than one row returned by a subquery used as an expression
+
+# Enclosing CTEs and outer aliases are deliberately outside the selector scope
+statement error
+WITH cte_snapshot_source(version) AS MATERIALIZED (VALUES (1))
+SELECT * FROM tbl AT (VERSION => (SELECT version FROM cte_snapshot_source))
+----
+<REGEX>:Catalog Error.*cte_snapshot_source.*does not exist.*
+
+statement error
+SELECT * FROM tbl outer_tbl, tbl AT (VERSION => (SELECT outer_tbl.i))
+----
+<REGEX>:Binder Error.*Referenced table "outer_tbl" not found.*
+
+# A sibling CTE must not leak into the selector's lexical scope
+statement error
+SELECT *
+FROM (WITH sibling_cte(x) AS (SELECT 1) SELECT 1) q,
+     tbl AT (VERSION => (SELECT x FROM sibling_cte))
+----
+<REGEX>:Catalog Error.*sibling_cte.*does not exist.*
+
+# Unsupported execution and persistence contexts fail during parsing
+statement error
+SELECT * FROM tbl AT (VERSION => (SELECT $1))
+----
+AT clauses with subqueries cannot be used with parameters
+
+statement error
+PREPARE at_prepare AS SELECT * FROM tbl AT (VERSION => (SELECT 1))
+----
+AT clauses with subqueries are only supported in SELECT statements
+
+statement error
+EXPLAIN SELECT * FROM tbl AT (VERSION => (SELECT 1))
+----
+AT clauses with subqueries are only supported in SELECT statements
+
+statement error
+CREATE VIEW at_view AS SELECT * FROM tbl AT (VERSION => (SELECT 1))
+----
+AT clauses with subqueries are only supported in SELECT statements
+
+statement error
+CREATE MACRO at_macro() AS TABLE SELECT * FROM tbl AT (VERSION => (SELECT 1))
+----
+AT clauses with subqueries are only supported in SELECT statements
+
+statement ok
+CREATE TABLE trigger_source(i INTEGER)
+
+statement ok
+CREATE TABLE trigger_log(i INTEGER)
+
+statement error
+CREATE TRIGGER at_trigger AFTER INSERT ON trigger_source FOR EACH STATEMENT
+INSERT INTO trigger_log SELECT * FROM tbl AT (VERSION => (SELECT 1))
+----
+AT clauses with subqueries are only supported in SELECT statements
+
+statement ok
+CREATE TABLE pivot_source(k VARCHAR, v INTEGER)
+
+statement error
+SELECT * FROM tbl AT (
+    VERSION => (SELECT count(*) FROM (PIVOT pivot_source ON k USING sum(v)))
+)
+----
+AT clauses with subqueries cannot contain dynamic PIVOT statements
+
+# Statement-copy and reparse verification operate on the resolved constant
+foreach mode COPY_STATEMENT REPARSE_STATEMENT SERIALIZE_STATEMENT PREPARED_STATEMENT EXPLAIN_STATEMENT
+
+statement ok
+SET debug_verify_statement='{mode}'
+
+statement error
+SELECT * FROM tbl AT (VERSION => (SELECT max(snapshot_id) FROM "tbl$snapshots"))
+----
+Catalog type does not support time travel
+
+statement ok
+RESET debug_verify_statement
+
+endloop

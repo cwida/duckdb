@@ -15,7 +15,9 @@ bool AtClause::Equals(const AtClause &other) const {
 }
 
 unique_ptr<AtClause> AtClause::Copy() const {
-	return make_uniq<AtClause>(unit, expr->Copy());
+	auto result = make_uniq<AtClause>(unit, expr->Copy());
+	result->prebind_index = prebind_index;
+	return result;
 }
 
 bool AtClause::Equals(optional_ptr<AtClause> lhs, optional_ptr<AtClause> rhs) {
