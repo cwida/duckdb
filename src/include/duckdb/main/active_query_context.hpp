@@ -18,6 +18,7 @@
 
 namespace duckdb {
 class BaseQueryResult;
+class ClientContextState;
 class QueryResult;
 
 //! The user statement a connection runs, from its submission until a call ends it. A statement that expands into
@@ -51,6 +52,10 @@ public:
 	bool outside_local_transaction = false;
 	//! Whether the registered states saw the begin of the running statement and not yet its end
 	bool statement_began = false;
+	//! Whether QueryBegin has not yet been called on all registered states
+	bool begin_pending = true;
+	//! The states on which QueryBegin completed, while begin_pending is set
+	vector<shared_ptr<ClientContextState>> begun_states;
 
 public:
 	void SetOpenResult(BaseQueryResult &result) {
