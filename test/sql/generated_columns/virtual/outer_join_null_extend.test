@@ -1,0 +1,142 @@
+# name: test/sql/generated_columns/virtual/outer_join_null_extend.test
+# description: Generated columns must NULL-extend on outer joins (not evaluate on unmatched rows)
+# group: [virtual]
+
+statement ok
+CREATE TABLE t1 (c1 INTEGER, g1 AS (1));
+
+statement ok
+CREATE TABLE t2 (c2 INTEGER);
+
+statement ok
+INSERT INTO t1 VALUES (10), (NULL);
+
+statement ok
+INSERT INTO t2 VALUES (20);
+
+# LEFT JOIN ON FALSE: generated column on right side of match is unmatched -> NULL
+query II
+SELECT t1.c1, t1.g1 FROM t2 LEFT JOIN t1 ON FALSE ORDER BY ALL
+----
+NULL	NULL
+
+# LEFT JOIN match: generated column keeps its value
+query II
+SELECT t1.c1, t1.g1 FROM t2 LEFT JOIN t1 ON t1.c1 = 10 ORDER BY ALL
+----
+10	1
+
+# LEFT JOIN with gen c1+1 unmatched -> NULL
+statement ok
+CREATE TABLE a (c1 INTEGER, gen AS (c1 + 1));
+
+statement ok
+CREATE TABLE b (c2 INTEGER);
+
+statement ok
+INSERT INTO a VALUES (5);
+
+statement ok
+INSERT INTO b VALUES (1);
+
+query II
+SELECT a.c1, a.gen FROM b LEFT JOIN a ON FALSE
+----
+NULL	NULL
+
+query II
+SELECT a.c1, a.gen FROM b LEFT JOIN a ON TRUE
+----
+5	6
+
+# COALESCE(c1, 0): unmatched -> NULL; matched with c1 NULL -> 0
+statement ok
+CREATE TABLE c (c1 INTEGER, gen AS (COALESCE(c1, 0)));
+
+statement ok
+CREATE TABLE d (c2 INTEGER);
+
+statement ok
+INSERT INTO c VALUES (NULL), (7);
+
+statement ok
+INSERT INTO d VALUES (1);
+
+query II
+SELECT c.c1, c.gen FROM d LEFT JOIN c ON FALSE
+----
+NULL	NULL
+
+query II
+SELECT c.c1, c.gen FROM d LEFT JOIN c ON c.c1 IS NULL ORDER BY ALL
+----
+NULL	0
+
+query II
+SELECT c.c1, c.gen FROM d LEFT JOIN c ON c.c1 = 7 ORDER BY ALL
+----
+7	7
+
+# nested generated column
+statement ok
+CREATE TABLE n (c1 INTEGER, g1 AS (c1 + 1), g2 AS (g1 + 1));
+
+statement ok
+CREATE TABLE m (c2 INTEGER);
+
+statement ok
+INSERT INTO n VALUES (1);
+
+statement ok
+INSERT INTO m VALUES (1);
+
+query III
+SELECT n.c1, n.g1, n.g2 FROM m LEFT JOIN n ON FALSE
+----
+NULL	NULL	NULL
+
+query III
+SELECT n.c1, n.g1, n.g2 FROM m LEFT JOIN n ON TRUE
+----
+1	2	3
+
+# RIGHT OUTER JOIN
+query II
+SELECT a.c1, a.gen FROM a RIGHT JOIN b ON FALSE
+----
+NULL	NULL
+
+query II
+SELECT a.c1, a.gen FROM a RIGHT JOIN b ON TRUE
+----
+5	6
+
+# FULL OUTER JOIN
+query II
+SELECT a.c1, a.gen FROM a FULL OUTER JOIN b ON FALSE ORDER BY ALL
+----
+5	6
+NULL	NULL
+
+query II
+SELECT a.c1, a.gen FROM a FULL OUTER JOIN b ON TRUE ORDER BY ALL
+----
+5	6
+
+# INNER JOIN unchanged
+query II
+SELECT a.c1, a.gen FROM a INNER JOIN b ON TRUE
+----
+5	6
+
+query I
+SELECT count(*) FROM a INNER JOIN b ON FALSE
+----
+0
+
+# generated constant AS (1) on LEFT of LEFT JOIN still present for left rows
+query II
+SELECT t1.c1, t1.g1 FROM t1 LEFT JOIN t2 ON FALSE ORDER BY ALL
+----
+10	1
+NULL	1

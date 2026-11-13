@@ -3,7 +3,10 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
+#include "duckdb/parser/expression/case_expression.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/planner/bind_context.hpp"
 #include "duckdb/planner/bound_query_node.hpp"
@@ -244,7 +247,17 @@ unique_ptr<ParsedExpression> TableBinding::ExpandGeneratedColumn(const Identifie
 	}
 	ReplaceAliases(*expression, table_entry.GetColumns(), alias_map);
 	BakeTableName(*expression, alias);
-	return (expression);
+
+	// NULL-extend on outer joins: rowid is NULL only for unmatched rows
+	auto rowid_ref = make_uniq<ColumnRefExpression>(Identifier("rowid"), alias);
+	auto is_null = make_uniq<OperatorExpression>(ExpressionType::OPERATOR_IS_NULL, std::move(rowid_ref));
+	auto case_expr = make_uniq<CaseExpression>();
+	CaseCheck check;
+	check.when_expr = std::move(is_null);
+	check.then_expr = make_uniq<ConstantExpression>(Value());
+	case_expr->CaseChecksMutable().push_back(std::move(check));
+	case_expr->ElseMutable() = std::move(expression);
+	return std::move(case_expr);
 }
 
 const vector<ColumnIndex> &TableBinding::GetBoundColumnIds() const {
