@@ -341,6 +341,24 @@ for run in range(1, runs + 1):
     print(f"{sys.argv[1]}\\t{run}\\t{timing}", file=sys.stderr)
 """
 
+    noisy_initial_runner_source = """#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+
+label = os.path.basename(sys.argv[0])
+runs = int(sys.argv[sys.argv.index("--timed-runs") + 1])
+with open(os.environ["BENCHMARK_ORDER_LOG"], "a", encoding="utf-8") as order_log:
+    order_log.write(f"{label}:{runs}\\n")
+counter_path = Path(os.environ["BENCHMARK_COUNTER_DIR"]) / f"{label}.count"
+invocation = int(counter_path.read_text(encoding="utf-8")) if counter_path.exists() else 0
+counter_path.write_text(str(invocation + 1), encoding="utf-8")
+timing = 1.5 if label == "new" and invocation < 2 else 1.0
+print("name\\trun\\ttiming", file=sys.stderr)
+for run in range(1, runs + 1):
+    print(f"{sys.argv[1]}\\t{run}\\t{timing}", file=sys.stderr)
+"""
+
     multi_query_runner_source = """#!/usr/bin/env python3
 import os
 import sys
@@ -734,6 +752,15 @@ for run in range(1, runs + 1):
         self.assertEqual(process.returncode, 1, process.stdout + process.stderr)
         self.assertIn("::error title=Geomean benchmark regression::", process.stdout)
         self.assertIn("result: \033[31mfailed; geomean regression\033[0m", process.stdout)
+
+    def test_geomean_uses_confirmed_measurement(self):
+        process, order, _ = self.run_regression_test(self.noisy_initial_runner_source, ci=True)
+        self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+        self.assertEqual(order, self.expected_order(40))
+        plain_output = re.sub(r"\x1b\[[0-9;]*m", "", process.stdout)
+        self.assertIn("initial: fake.benchmark: 10 pairs | median change +50.0%", plain_output)
+        self.assertIn("geomean: 1.0 s -> 1.0 s", plain_output)
+        self.assertNotIn("Geomean benchmark regression", plain_output)
 
     def test_geomean_absolute_threshold_fails_ci(self):
         process, _, _ = self.run_regression_test(self.stable_runner_source, old_timing="1", new_timing="1.05", ci=True)
