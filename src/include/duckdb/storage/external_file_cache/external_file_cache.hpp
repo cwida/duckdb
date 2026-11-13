@@ -9,6 +9,8 @@
 #pragma once
 
 #include "duckdb/common/atomic.hpp"
+#include "duckdb/common/chrono.hpp"
+#include "duckdb/common/file_system.hpp"
 #include "duckdb/common/map.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/optional.hpp"
@@ -60,12 +62,38 @@ struct CacheValidationInfo {
 
 class ExternalFileCache {
 public:
+	//! Blocks sized from the network are at most this large
+	static constexpr idx_t ADAPTIVE_MAX_BLOCK_SIZE = 32ULL << 20;
+	//! Blocks sized from the network take at least this many times the request latency to transfer
+	static constexpr idx_t ADAPTIVE_LATENCY_FACTOR = 4;
+	//! Large reads of readers that rely on the split for parallelism keep at least this many requests
+	static constexpr idx_t ADAPTIVE_MIN_BLOCKS_PER_READ = 8;
+	//! Host throughput estimates older than this are not used
+	static constexpr double ADAPTIVE_ESTIMATE_TTL_SECONDS = 60.0;
+
+public:
 	//! Get the maximum cache block size for a given file path.
 	DUCKDB_API idx_t GetCacheMaxBlockSize(const string &path) const;
 	//! Get the block size that reads of a given file path are rounded out to.
 	DUCKDB_API idx_t GetCacheMinBlockSize(const string &path) const;
 	//! Whether reads of the given file should go through the cache (remote files only, unless forced).
 	DUCKDB_API bool ShouldCacheFile(const string &path) const;
+
+	//! The smallest multiple of [block_size] that keeps the request latency a small part of each request,
+	//! leaving a large enough read of [nr_bytes] at least [min_blocks_per_read] requests
+	DUCKDB_API static idx_t GetAdaptiveBlockSize(idx_t nr_bytes, idx_t block_size,
+	                                             const NetworkThroughputEstimate &estimate,
+	                                             idx_t min_blocks_per_read = 1);
+	//! Fold a measured estimate into the one of the host of a remote file, keeping the lowest latency seen while
+	//! the entry stays fresh (the time to first byte of a request includes queueing on a busy link) and the latest
+	//! bandwidth
+	void SetHostNetworkThroughput(const string &path, const NetworkThroughputEstimate &estimate,
+	                              time_point<steady_clock> now = steady_clock::now());
+	//! The throughput estimate of the host of a remote file, unless it is older than the TTL.
+	bool TryGetHostNetworkThroughput(const string &path, NetworkThroughputEstimate &result,
+	                                 time_point<steady_clock> now = steady_clock::now()) const;
+	//! Parse a debug_network_throughput_estimate value, false for the empty string
+	DUCKDB_API static bool TryParseDebugThroughput(const string &value, NetworkThroughputEstimate &result);
 
 	//! Cached files
 	struct CachedFile {
@@ -112,8 +140,9 @@ public:
 	//! Get the blocks covering [location, location + nr_bytes), creating empty blocks for the missing bytes.
 	//! Within absorb_ranges ([begin, end) pairs), every smaller cached block is re-fetched with the gaps around it
 	//! when that saves a request; elsewhere only blocks below an eighth of max_block_size are
+	//! The missing bytes are fetched in blocks of up to split_block_size, a multiple of max_block_size.
 	vector<shared_ptr<CacheBlock>>
-	AcquireBlocks(CachedFile &cached_file, idx_t location, idx_t nr_bytes, idx_t max_block_size,
+	AcquireBlocks(CachedFile &cached_file, idx_t location, idx_t nr_bytes, idx_t max_block_size, idx_t split_block_size,
 	              optional_ptr<const vector<pair<idx_t, idx_t>>> absorb_ranges = nullptr);
 	//! Drop all blocks of a file, e.g. because the file changed. Readers keep the blocks they hold.
 	void DropBlocks(CachedFile &cached_file);
@@ -165,6 +194,16 @@ private:
 	unordered_map<string, idx_t> cached_file_keys DUCKDB_GUARDED_BY(lock);
 	//! Lock for accessing cached_file_keys.
 	mutable annotated_mutex lock;
+
+	//! A throughput estimate and when it was last updated
+	struct HostThroughput {
+		NetworkThroughputEstimate estimate;
+		time_point<steady_clock> last_update;
+	};
+	//! Throughput estimate per remote host (scheme and authority of the path)
+	unordered_map<string, HostThroughput> host_throughput DUCKDB_GUARDED_BY(throughput_lock);
+	//! Lock for accessing host_throughput.
+	mutable annotated_mutex throughput_lock;
 };
 
 } // namespace duckdb

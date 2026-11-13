@@ -4,6 +4,8 @@
 #include "duckdb/common/enums/memory_tag.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/map.hpp"
+#include "duckdb/common/operator/double_cast_operator.hpp"
+#include "duckdb/common/path.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/settings.hpp"
@@ -11,6 +13,8 @@
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/object_cache.hpp"
+
+#include <cmath>
 
 namespace duckdb {
 
@@ -42,6 +46,12 @@ idx_t GapBlockCount(idx_t nr_bytes, idx_t max_block_size) {
 //! Whether the last modified timestamp is usable as a cache validator
 bool HasUsableLastModified(timestamp_t last_modified) {
 	return last_modified.IsFinite() && last_modified != timestamp_t(0);
+}
+
+//! The scheme and authority of a remote path, which key the throughput estimates per host
+string GetHostKey(const string &path) {
+	const auto parsed = Path::FromString(path);
+	return parsed.GetScheme() + parsed.GetAuthority();
 }
 
 } // namespace
@@ -103,6 +113,71 @@ idx_t ExternalFileCache::GetCacheMinBlockSize(const string &path) const {
 	}
 	auto &db = buffer_manager.GetDatabase();
 	return Settings::Get<ExternalFileCacheRemoteMinBlockSizeSetting>(db);
+}
+
+idx_t ExternalFileCache::GetAdaptiveBlockSize(idx_t nr_bytes, idx_t block_size,
+                                              const NetworkThroughputEstimate &estimate, idx_t min_blocks_per_read) {
+	D_ASSERT(block_size > 0);
+	// the bytes a request could have received while it waited for its first byte
+	const double bandwidth_delay = estimate.latency_seconds * estimate.bandwidth_bytes_per_s;
+	if (!(bandwidth_delay > 0)) { // also catches NaN
+		return block_size;
+	}
+	// the smallest multiple of the block size that spends most of its request transferring
+	const double efficient_size = MinValue<double>(static_cast<double>(ADAPTIVE_LATENCY_FACTOR) * bandwidth_delay,
+	                                               static_cast<double>(ADAPTIVE_MAX_BLOCK_SIZE));
+	idx_t result = static_cast<idx_t>(std::ceil(efficient_size / static_cast<double>(block_size))) * block_size;
+	result = MinValue(result, MaxValue<idx_t>(ADAPTIVE_MAX_BLOCK_SIZE / block_size, 1) * block_size);
+	if (min_blocks_per_read > 1) {
+		// the read still makes enough requests to be fetched in parallel
+		result = MinValue(result, MaxValue<idx_t>(nr_bytes / min_blocks_per_read / block_size, 1) * block_size);
+	}
+	return MaxValue(result, block_size);
+}
+
+void ExternalFileCache::SetHostNetworkThroughput(const string &path, const NetworkThroughputEstimate &estimate,
+                                                 time_point<steady_clock> now) {
+	auto host = GetHostKey(path);
+	const annotated_lock_guard<annotated_mutex> guard(throughput_lock);
+	auto &entry = host_throughput[std::move(host)];
+	const bool fresh = duration<double>(now - entry.last_update).count() <= ADAPTIVE_ESTIMATE_TTL_SECONDS;
+	if (!fresh || !(entry.estimate.latency_seconds > 0) || estimate.latency_seconds < entry.estimate.latency_seconds) {
+		entry.estimate.latency_seconds = estimate.latency_seconds;
+	}
+	entry.estimate.bandwidth_bytes_per_s = estimate.bandwidth_bytes_per_s;
+	entry.last_update = now;
+}
+
+bool ExternalFileCache::TryParseDebugThroughput(const string &value, NetworkThroughputEstimate &result) {
+	if (value.empty()) {
+		return false;
+	}
+	const auto comma = value.find(',');
+	double latency = 0;
+	double bandwidth = 0;
+	if (comma == string::npos || value.find(',', comma + 1) != string::npos ||
+	    !TryDoubleCast<double>(value.c_str(), comma, latency, true) ||
+	    !TryDoubleCast<double>(value.c_str() + comma + 1, value.size() - comma - 1, bandwidth, true) ||
+	    !(latency > 0) || !(bandwidth > 0)) {
+		throw InvalidInputException("debug_network_throughput_estimate must be two positive numbers, the latency "
+		                            "in seconds and the bandwidth in bytes per second, separated by a comma");
+	}
+	result.latency_seconds = latency;
+	result.bandwidth_bytes_per_s = bandwidth;
+	return true;
+}
+
+bool ExternalFileCache::TryGetHostNetworkThroughput(const string &path, NetworkThroughputEstimate &result,
+                                                    time_point<steady_clock> now) const {
+	const auto host = GetHostKey(path);
+	const annotated_lock_guard<annotated_mutex> guard(throughput_lock);
+	auto entry = host_throughput.find(host);
+	if (entry == host_throughput.end() ||
+	    duration<double>(now - entry->second.last_update).count() > ADAPTIVE_ESTIMATE_TTL_SECONDS) {
+		return false;
+	}
+	result = entry->second.estimate;
+	return true;
 }
 
 bool ExternalFileCache::ShouldCacheFile(const string &path) const {
@@ -177,9 +252,10 @@ static bool WithinRanges(optional_ptr<const vector<pair<idx_t, idx_t>>> ranges, 
 
 vector<shared_ptr<CacheBlock>>
 ExternalFileCache::AcquireBlocks(CachedFile &cached_file, idx_t location, idx_t nr_bytes, idx_t max_block_size,
-                                 optional_ptr<const vector<pair<idx_t, idx_t>>> absorb_ranges) {
+                                 idx_t split_block_size, optional_ptr<const vector<pair<idx_t, idx_t>>> absorb_ranges) {
 	D_ASSERT(nr_bytes > 0);
 	D_ASSERT(max_block_size > 0);
+	D_ASSERT(split_block_size >= max_block_size);
 	const idx_t end = location + nr_bytes;
 
 	const annotated_lock_guard<annotated_mutex> map_guard(cached_file.map_lock);
@@ -227,15 +303,15 @@ ExternalFileCache::AcquireBlocks(CachedFile &cached_file, idx_t location, idx_t 
 			}
 			const idx_t gap_before = gap_end - pos;
 			const idx_t gap_after = next_gap_end - block_end;
-			if (GapBlockCount(gap_before + it->second->size + gap_after, max_block_size) >=
-			    GapBlockCount(gap_before, max_block_size) + GapBlockCount(gap_after, max_block_size)) {
+			if (GapBlockCount(gap_before + it->second->size + gap_after, split_block_size) >=
+			    GapBlockCount(gap_before, split_block_size) + GapBlockCount(gap_after, split_block_size)) {
 				break;
 			}
 			it = blocks.erase(it);
 			gap_end = next_gap_end;
 		}
 		while (pos < gap_end) {
-			const idx_t size = MinValue(gap_end - pos, max_block_size);
+			const idx_t size = MinValue(gap_end - pos, split_block_size);
 			auto block = make_shared_ptr<CacheBlock>(pos, size);
 			blocks.emplace_hint(it, pos, block);
 			result.push_back(std::move(block));

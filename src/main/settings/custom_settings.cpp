@@ -788,6 +788,14 @@ static void ValidateExternalFileCacheBlockSize(const char *name, const Value &in
 	}
 }
 
+void DebugNetworkThroughputEstimateSetting::OnSet(SettingCallbackInfo &info, Value &input) {
+	if (input.IsNull()) {
+		throw InvalidInputException("%s setting cannot be NULL", DebugNetworkThroughputEstimateSetting::Name);
+	}
+	NetworkThroughputEstimate estimate;
+	ExternalFileCache::TryParseDebugThroughput(StringValue::Get(input), estimate);
+}
+
 void ExternalFileCacheLocalMaxBlockSizeSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 	if (input.IsNull()) {
 		throw InvalidInputException("%s setting cannot be NULL", ExternalFileCacheLocalMaxBlockSizeSetting::Name);

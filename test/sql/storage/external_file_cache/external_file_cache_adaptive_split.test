@@ -1,0 +1,70 @@
+# name: test/sql/storage/external_file_cache/external_file_cache_adaptive_split.test
+# description: Test that reads of remote files are split into blocks sized from the network throughput
+# group: [external_file_cache]
+
+require httpfs
+
+require skip_reload
+
+require-env S3_TEST_SERVER_AVAILABLE 1
+
+require-env AWS_DEFAULT_REGION
+
+require-env AWS_ACCESS_KEY_ID
+
+require-env AWS_SECRET_ACCESS_KEY
+
+require-env DUCKDB_S3_ENDPOINT
+
+require-env DUCKDB_S3_USE_SSL
+
+# fail on HTTP errors and connection failures
+set ignore_error_messages
+
+statement ok
+SET s3_url_style='path';
+
+statement ok
+SET external_file_cache_remote_max_block_size=16384;
+
+# 10 ms at 13 MB/s makes an efficient block 4 x 130 KB
+statement ok
+SET debug_network_throughput_estimate='0.01,13000000';
+
+# two identical files of exactly 2000 x 1001 bytes, so the request counts below are exact
+statement ok
+COPY (SELECT repeat('a', 1000) FROM range(2000)) TO 's3://test-bucket/efc_adaptive/blob1.csv' (HEADER false);
+
+statement ok
+COPY (SELECT repeat('a', 1000) FROM range(2000)) TO 's3://test-bucket/efc_adaptive/blob2.csv' (HEADER false);
+
+statement ok
+CALL enable_logging('HTTP');
+
+statement ok
+SET logging_level='debug';
+
+query I
+SELECT octet_length(content) FROM read_blob('s3://test-bucket/efc_adaptive/blob1.csv');
+----
+2002000
+
+# read_blob relies on the split for parallelism, so 8 full requests of 15 blocks each and the remainder
+query I
+SELECT count(*) FROM duckdb_logs_parsed('HTTP') WHERE request.type='GET' AND parse_filename(request.url) ILIKE 'blob1.csv%';
+----
+9
+
+# without the adaptive sizing every request is one 16 KiB block
+statement ok
+SET external_file_cache_remote_adaptive_block_size=false;
+
+query I
+SELECT octet_length(content) FROM read_blob('s3://test-bucket/efc_adaptive/blob2.csv');
+----
+2002000
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('HTTP') WHERE request.type='GET' AND parse_filename(request.url) ILIKE 'blob2.csv%';
+----
+123

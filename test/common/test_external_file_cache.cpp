@@ -4,6 +4,7 @@
 #include "duckdb/common/array.hpp"
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/gzip_file_system.hpp"
+#include "duckdb/common/reference_map.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/thread.hpp"
 #include "duckdb/main/connection.hpp"
@@ -126,6 +127,64 @@ private:
 	bool read_blocked DUCKDB_GUARDED_BY(lock) = false;
 };
 
+//! Tracking file system whose handles report a fixed request latency and bandwidth.
+class ThroughputReportingFileSystem : public SimpleTrackingFileSystem {
+public:
+	unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags,
+	                                optional_ptr<FileOpener> opener = nullptr) override {
+		open_count++;
+		auto handle = SimpleTrackingFileSystem::OpenFile(path, flags, opener);
+		const annotated_lock_guard<annotated_mutex> guard(measured_lock);
+		measured_handles.erase(*handle);
+		return handle;
+	}
+
+	bool CanSeek() override {
+		return seekable;
+	}
+
+	void Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override {
+		SimpleTrackingFileSystem::Read(handle, buffer, nr_bytes, location);
+		MarkMeasured(handle);
+	}
+
+	int64_t Read(FileHandle &handle, void *buffer, int64_t nr_bytes) override {
+		auto bytes_read = LocalFileSystem::Read(handle, buffer, nr_bytes);
+		MarkMeasured(handle);
+		return bytes_read;
+	}
+
+	bool TryGetNetworkThroughput(FileHandle &handle, NetworkThroughputEstimate &result) override {
+		if (!report_throughput) {
+			return false;
+		}
+		if (report_only_after_read) {
+			const annotated_lock_guard<annotated_mutex> guard(measured_lock);
+			if (measured_handles.find(handle) == measured_handles.end()) {
+				return false;
+			}
+		}
+		result = estimate;
+		return true;
+	}
+
+	atomic<idx_t> open_count {0};
+	bool report_throughput = true;
+	//! Report only for handles that have read, like the estimates measured from real requests
+	bool report_only_after_read = false;
+	bool seekable = true;
+	NetworkThroughputEstimate estimate;
+
+private:
+	void MarkMeasured(FileHandle &handle) {
+		const annotated_lock_guard<annotated_mutex> guard(measured_lock);
+		measured_handles.insert(handle);
+	}
+
+	annotated_mutex measured_lock;
+	reference_set_t<FileHandle> measured_handles DUCKDB_GUARDED_BY(measured_lock);
+};
+
 OpenFileInfo MakeTestOpenFileInfo(const string &path) {
 	OpenFileInfo info(path);
 	info.extended_info = make_shared_ptr<ExtendedOpenFileInfo>();
@@ -175,6 +234,15 @@ void WriteTestContent(const string &path, const string &content) {
 	auto handle = local_fs->OpenFile(path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE);
 	handle->Write(QueryContext(), const_cast<char *>(content.data()), content.size(), 0);
 	handle->Sync();
+}
+
+//! The reads that split [nr_bytes] at [location] into blocks of [block_size]
+vector<pair<idx_t, idx_t>> SplitReads(idx_t location, idx_t nr_bytes, idx_t block_size) {
+	vector<pair<idx_t, idx_t>> result;
+	for (idx_t offset = 0; offset < nr_bytes; offset += block_size) {
+		result.emplace_back(location + offset, MinValue(block_size, nr_bytes - offset));
+	}
+	return result;
 }
 
 idx_t CountCachedBlocks(ExternalFileCache &cache) {
@@ -296,6 +364,346 @@ TEST_CASE("Uncached reads are split at the cache block size", "[external_file_ca
 	REQUIRE(!con.Query("SET threads=1")->HasError());
 	REQUIRE(ReadFull(*handle, FILE_SIZE) == content);
 	REQUIRE(recording_fs->TakeReads() == vector<pair<idx_t, idx_t>> {{0, FILE_SIZE}});
+}
+
+TEST_CASE("Adaptive block sizes follow the measured latency and bandwidth", "[external_file_cache]") {
+	const idx_t MiB = 1 << 20;
+	const idx_t BLOCK_SIZE = 2 * MiB;
+	auto block_size = [&](idx_t nr_bytes, double latency_seconds, double bandwidth_bytes_per_s,
+	                      idx_t min_blocks_per_read = 1) {
+		NetworkThroughputEstimate estimate;
+		estimate.latency_seconds = latency_seconds;
+		estimate.bandwidth_bytes_per_s = bandwidth_bytes_per_s;
+		return ExternalFileCache::GetAdaptiveBlockSize(nr_bytes, BLOCK_SIZE, estimate, min_blocks_per_read);
+	};
+	const idx_t MIN_BLOCKS = ExternalFileCache::ADAPTIVE_MIN_BLOCKS_PER_READ;
+
+	// Without an estimate, reads are split at the configured block size
+	REQUIRE(block_size(400 * MiB, 0, 0) == BLOCK_SIZE);
+	REQUIRE(block_size(400 * MiB, 0.02, 0) == BLOCK_SIZE);
+	// A low latency connection keeps the configured block size
+	REQUIRE(block_size(400 * MiB, 0.001, 90e6) == BLOCK_SIZE);
+	// 20 ms at 90 MB/s needs at least 4 times 1.8 MB, rounded up to a multiple of the block size
+	REQUIRE(block_size(400 * MiB, 0.02, 90e6) == 4 * BLOCK_SIZE);
+	// A high latency connection is limited by the largest block size
+	REQUIRE(block_size(400 * MiB, 0.43, 50e6) == ExternalFileCache::ADAPTIVE_MAX_BLOCK_SIZE);
+	REQUIRE(block_size(400 * MiB, 0.02, 1e30) == ExternalFileCache::ADAPTIVE_MAX_BLOCK_SIZE);
+	// A read shorter than the block it needs is not split, e.g. a 3 MB row group at 300 ms and 4 MB/s
+	REQUIRE(block_size(3000000, 0.3, 4e6) == 3 * BLOCK_SIZE);
+
+	// Reads that rely on the split for parallelism still make at least 8 requests
+	REQUIRE(block_size(400 * MiB, 0.02, 90e6, MIN_BLOCKS) == 4 * BLOCK_SIZE);
+	REQUIRE(block_size(100 * MiB, 0.43, 50e6, MIN_BLOCKS) == 12 * MiB);
+	// so their reads of up to 8 blocks keep the configured block size, e.g. the chunks of compressed files
+	REQUIRE(block_size(16 * MiB, 0.43, 50e6, MIN_BLOCKS) == BLOCK_SIZE);
+	REQUIRE(block_size(3000000, 0.3, 4e6, MIN_BLOCKS) == BLOCK_SIZE);
+	REQUIRE(block_size(BLOCK_SIZE / 2, 0.43, 50e6, MIN_BLOCKS) == BLOCK_SIZE);
+
+	// The configured block size is the smallest block, even when it is larger than the largest adaptive block
+	NetworkThroughputEstimate high_latency;
+	high_latency.latency_seconds = 0.43;
+	high_latency.bandwidth_bytes_per_s = 50e6;
+	REQUIRE(ExternalFileCache::GetAdaptiveBlockSize(400 * MiB, 64 * MiB, high_latency) == 64 * MiB);
+}
+
+TEST_CASE("Large reads of remote files are split into blocks sized from the network", "[external_file_cache]") {
+	DuckDB db(nullptr);
+	auto &db_instance = *db.instance;
+	auto remote_fs = make_uniq<ThroughputReportingFileSystem>();
+	auto &cache = db_instance.GetExternalFileCache();
+	Connection con(db);
+
+	const idx_t BLOCK_SIZE = 4096;
+	REQUIRE(
+	    !con.Query(StringUtil::Format("SET external_file_cache_remote_max_block_size=%llu", BLOCK_SIZE))->HasError());
+	// 10 ms at 1 MB/s needs blocks of at least 4 times 10 KB, rounded up to 10 blocks of 4 KiB
+	remote_fs->estimate.latency_seconds = 0.01;
+	remote_fs->estimate.bandwidth_bytes_per_s = 1e6;
+	const idx_t SPLIT_SIZE = 10 * BLOCK_SIZE;
+	const idx_t FILE_SIZE = 80 * BLOCK_SIZE + 100;
+	auto content = MakeTestContent(FILE_SIZE);
+	EFCTestFileGuard test_file("test_efc_adaptive_split.bin", content);
+	const auto remote_path = CACHING_TEST_REMOTE_PREFIX + test_file.GetPath();
+
+	CachingFileSystem cfs(*remote_fs, db_instance);
+
+	SECTION("cached reads") {
+		auto handle = cfs.OpenFile(MakeTestOpenFileInfo(remote_path), ReaderSizedFlags());
+		REQUIRE(ReadFull(*handle, FILE_SIZE) == content);
+		REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, SPLIT_SIZE));
+		REQUIRE(CountCachedBlocks(cache) == 9);
+		REQUIRE(TotalCachedBytes(cache) == FILE_SIZE);
+	}
+	SECTION("uncached reads") {
+		cache.SetEnabled(false);
+		auto handle = cfs.OpenFile(MakeTestOpenFileInfo(remote_path), ReaderSizedFlags());
+		REQUIRE(ReadFull(*handle, FILE_SIZE) == content);
+		REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, SPLIT_SIZE));
+		REQUIRE(CountCachedBlocks(cache) == 0);
+	}
+	SECTION("reads shorter than a block sized from the network are not split") {
+		auto handle = cfs.OpenFile(MakeTestOpenFileInfo(remote_path), ReaderSizedFlags());
+		const idx_t SHORT_READ = 8 * BLOCK_SIZE;
+		REQUIRE(ReadFull(*handle, SHORT_READ) == content.substr(0, SHORT_READ));
+		REQUIRE(remote_fs->TakeReads() == vector<pair<idx_t, idx_t>> {{0, SHORT_READ}});
+	}
+	SECTION("reads of readers that do not size their own reads keep 8 requests") {
+		const idx_t SHORT_READ = 8 * BLOCK_SIZE;
+		SECTION("cached") {
+			auto handle = cfs.OpenFile(MakeTestOpenFileInfo(remote_path), FileFlags::FILE_FLAGS_READ);
+			REQUIRE(ReadFull(*handle, SHORT_READ) == content.substr(0, SHORT_READ));
+			REQUIRE(remote_fs->TakeReads() == SplitReads(0, SHORT_READ, BLOCK_SIZE));
+		}
+		SECTION("uncached") {
+			cache.SetEnabled(false);
+			auto handle = cfs.OpenFile(MakeTestOpenFileInfo(remote_path), FileFlags::FILE_FLAGS_READ);
+			REQUIRE(ReadFull(*handle, SHORT_READ) == content.substr(0, SHORT_READ));
+			REQUIRE(remote_fs->TakeReads() == SplitReads(0, SHORT_READ, BLOCK_SIZE));
+		}
+		SECTION("long reads") {
+			// at most an eighth of the file, rounded down to 10 blocks of 4 KiB
+			auto handle = cfs.OpenFile(MakeTestOpenFileInfo(remote_path), FileFlags::FILE_FLAGS_READ);
+			REQUIRE(ReadFull(*handle, FILE_SIZE) == content);
+			REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, SPLIT_SIZE));
+		}
+	}
+	SECTION("without an estimate") {
+		remote_fs->report_throughput = false;
+		auto handle = cfs.OpenFile(MakeTestOpenFileInfo(remote_path), ReaderSizedFlags());
+		REQUIRE(ReadFull(*handle, FILE_SIZE) == content);
+		REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, BLOCK_SIZE));
+	}
+	SECTION("disabled") {
+		REQUIRE(!con.Query("SET external_file_cache_remote_adaptive_block_size=false")->HasError());
+		auto handle = cfs.OpenFile(MakeTestOpenFileInfo(remote_path), ReaderSizedFlags());
+		REQUIRE(ReadFull(*handle, FILE_SIZE) == content);
+		REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, BLOCK_SIZE));
+	}
+	SECTION("local files") {
+		REQUIRE(!con.Query("SET cache_local_files=true")->HasError());
+		REQUIRE(!con.Query(StringUtil::Format("SET external_file_cache_local_max_block_size=%llu", BLOCK_SIZE))
+		             ->HasError());
+		auto handle = cfs.OpenFile(MakeTestOpenFileInfo(test_file.GetPath()), ReaderSizedFlags());
+		REQUIRE(ReadFull(*handle, FILE_SIZE) == content);
+		REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, BLOCK_SIZE));
+	}
+}
+
+TEST_CASE("Host throughput estimates keep the lowest fresh latency and expire", "[external_file_cache]") {
+	DuckDB db(nullptr);
+	auto &cache = db.instance->GetExternalFileCache();
+	NetworkThroughputEstimate est;
+	NetworkThroughputEstimate out;
+	const auto t0 = steady_clock::now();
+	est.latency_seconds = 0.05;
+	est.bandwidth_bytes_per_s = 1e6;
+	cache.SetHostNetworkThroughput("s3://efc-host/a.bin", est, t0);
+
+	// a higher latency keeps the lower one, the bandwidth follows the latest sample
+	est.latency_seconds = 0.2;
+	est.bandwidth_bytes_per_s = 2e6;
+	cache.SetHostNetworkThroughput("s3://efc-host/b.bin", est, t0 + milliseconds(1000));
+	REQUIRE(cache.TryGetHostNetworkThroughput("s3://efc-host/c.bin", out, t0 + milliseconds(2000)));
+	REQUIRE(out.latency_seconds == 0.05);
+	REQUIRE(out.bandwidth_bytes_per_s == 2e6);
+
+	// a lower latency replaces it
+	est.latency_seconds = 0.01;
+	cache.SetHostNetworkThroughput("s3://efc-host/a.bin", est, t0 + milliseconds(2000));
+	REQUIRE(cache.TryGetHostNetworkThroughput("s3://efc-host/a.bin", out, t0 + milliseconds(2000)));
+	REQUIRE(out.latency_seconds == 0.01);
+
+	// entries expire
+	REQUIRE(!cache.TryGetHostNetworkThroughput("s3://efc-host/a.bin", out, t0 + milliseconds(63000)));
+
+	// an estimate after the expiry starts over instead of keeping the old minimum
+	est.latency_seconds = 0.3;
+	est.bandwidth_bytes_per_s = 3e6;
+	cache.SetHostNetworkThroughput("s3://efc-host/a.bin", est, t0 + milliseconds(120000));
+	REQUIRE(cache.TryGetHostNetworkThroughput("s3://efc-host/a.bin", out, t0 + milliseconds(120000)));
+	REQUIRE(out.latency_seconds == 0.3);
+}
+
+TEST_CASE("The lowest latency seen at a host sizes its reads", "[external_file_cache]") {
+	DuckDB db(nullptr);
+	auto &db_instance = *db.instance;
+	auto remote_fs = make_uniq<ThroughputReportingFileSystem>();
+	Connection con(db);
+
+	const idx_t BLOCK_SIZE = 4096;
+	REQUIRE(
+	    !con.Query(StringUtil::Format("SET external_file_cache_remote_max_block_size=%llu", BLOCK_SIZE))->HasError());
+	remote_fs->estimate.latency_seconds = 0.01;
+	remote_fs->estimate.bandwidth_bytes_per_s = 1e6;
+	const idx_t SPLIT_SIZE = 10 * BLOCK_SIZE;
+	const idx_t FILE_SIZE = 80 * BLOCK_SIZE + 100;
+	auto content = MakeTestContent(FILE_SIZE);
+	EFCTestFileGuard first_file("test_efc_min_latency_first.bin", content);
+	EFCTestFileGuard second_file("test_efc_min_latency_second.bin", content);
+	EFCTestFileGuard third_file("test_efc_min_latency_third.bin", content);
+
+	CachingFileSystem cfs(*remote_fs, db_instance);
+	auto first =
+	    cfs.OpenFile(MakeTestOpenFileInfo(CACHING_TEST_REMOTE_PREFIX + first_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*first, FILE_SIZE) == content);
+	REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, SPLIT_SIZE));
+
+	// the reads of another file publish a larger measured latency
+	remote_fs->estimate.latency_seconds = 0.05;
+	auto second =
+	    cfs.OpenFile(MakeTestOpenFileInfo(CACHING_TEST_REMOTE_PREFIX + second_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*second, FILE_SIZE) == content);
+	REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, SPLIT_SIZE));
+
+	// the lower latency stays the one that sizes the blocks while it is fresh
+	auto third =
+	    cfs.OpenFile(MakeTestOpenFileInfo(CACHING_TEST_REMOTE_PREFIX + third_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*third, FILE_SIZE) == content);
+	REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, SPLIT_SIZE));
+}
+
+TEST_CASE("The first reads of a remote file are sized from other files of its host", "[external_file_cache]") {
+	DuckDB db(nullptr);
+	auto &db_instance = *db.instance;
+	auto remote_fs = make_uniq<ThroughputReportingFileSystem>();
+	auto &cache = db_instance.GetExternalFileCache();
+	Connection con(db);
+
+	const idx_t BLOCK_SIZE = 4096;
+	REQUIRE(
+	    !con.Query(StringUtil::Format("SET external_file_cache_remote_max_block_size=%llu", BLOCK_SIZE))->HasError());
+	remote_fs->estimate.latency_seconds = 0.01;
+	remote_fs->estimate.bandwidth_bytes_per_s = 1e6;
+	const idx_t SPLIT_SIZE = 10 * BLOCK_SIZE;
+	const idx_t FILE_SIZE = 80 * BLOCK_SIZE + 100;
+	auto content = MakeTestContent(FILE_SIZE);
+	EFCTestFileGuard first_file("test_efc_adaptive_host_first.bin", content);
+	EFCTestFileGuard second_file("test_efc_adaptive_host_second.bin", content);
+
+	CachingFileSystem cfs(*remote_fs, db_instance);
+	auto first =
+	    cfs.OpenFile(MakeTestOpenFileInfo(CACHING_TEST_REMOTE_PREFIX + first_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*first, FILE_SIZE) == content);
+	REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, SPLIT_SIZE));
+
+	// A file whose own requests have not been measured yet uses the estimate of its host
+	remote_fs->report_throughput = false;
+	auto second =
+	    cfs.OpenFile(MakeTestOpenFileInfo(CACHING_TEST_REMOTE_PREFIX + second_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*second, FILE_SIZE) == content);
+	REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, SPLIT_SIZE));
+
+	// Reads served from the cache do not open the file to ask for an estimate
+	const idx_t opens = remote_fs->open_count.load();
+	auto cached =
+	    cfs.OpenFile(MakeTestOpenFileInfo(CACHING_TEST_REMOTE_PREFIX + first_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*cached, FILE_SIZE) == content);
+	REQUIRE(remote_fs->TakeReads().empty());
+	REQUIRE(remote_fs->open_count.load() == opens);
+
+	// Estimates are kept per scheme and host
+	NetworkThroughputEstimate estimate;
+	REQUIRE(cache.TryGetHostNetworkThroughput(CACHING_TEST_REMOTE_PREFIX + "other.bin", estimate));
+	REQUIRE(estimate.latency_seconds == 0.01);
+	REQUIRE(!cache.TryGetHostNetworkThroughput("s3://other-bucket/file.bin", estimate));
+	REQUIRE(!cache.TryGetHostNetworkThroughput("https://efc-test/file.bin", estimate));
+}
+
+TEST_CASE("An estimate measured during a file's only read sizes the reads of the next file", "[external_file_cache]") {
+	DuckDB db(nullptr);
+	auto &db_instance = *db.instance;
+	auto remote_fs = make_uniq<ThroughputReportingFileSystem>();
+	Connection con(db);
+
+	const idx_t BLOCK_SIZE = 4096;
+	REQUIRE(
+	    !con.Query(StringUtil::Format("SET external_file_cache_remote_max_block_size=%llu", BLOCK_SIZE))->HasError());
+	remote_fs->estimate.latency_seconds = 0.01;
+	remote_fs->estimate.bandwidth_bytes_per_s = 1e6;
+	remote_fs->report_only_after_read = true;
+	const idx_t SPLIT_SIZE = 10 * BLOCK_SIZE;
+	const idx_t FILE_SIZE = 80 * BLOCK_SIZE + 100;
+	auto content = MakeTestContent(FILE_SIZE);
+	EFCTestFileGuard first_file("test_efc_adaptive_publish_first.bin", content);
+	EFCTestFileGuard second_file("test_efc_adaptive_publish_second.bin", content);
+
+	CachingFileSystem cfs(*remote_fs, db_instance);
+
+	SECTION("a split read") {
+		// There is no estimate yet when the only read of the first file is split
+		auto first =
+		    cfs.OpenFile(MakeTestOpenFileInfo(CACHING_TEST_REMOTE_PREFIX + first_file.GetPath()), ReaderSizedFlags());
+		REQUIRE(ReadFull(*first, FILE_SIZE) == content);
+		REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, BLOCK_SIZE));
+	}
+	SECTION("a sequential read of a file that cannot seek") {
+		remote_fs->seekable = false;
+		auto first = cfs.OpenFile(MakeTestOpenFileInfo(CACHING_TEST_REMOTE_PREFIX + first_file.GetPath()),
+		                          FileFlags::FILE_FLAGS_READ);
+		REQUIRE(ReadSequential(*first, FILE_SIZE) == content);
+		remote_fs->TakeReads();
+		remote_fs->seekable = true;
+	}
+	SECTION("a positional read with the cache disabled") {
+		auto &cache = db_instance.GetExternalFileCache();
+		cache.SetEnabled(false);
+		auto first = cfs.OpenFile(MakeTestOpenFileInfo(CACHING_TEST_REMOTE_PREFIX + first_file.GetPath()),
+		                          FileFlags::FILE_FLAGS_READ);
+		REQUIRE(ReadSequential(*first, FILE_SIZE) == content);
+		REQUIRE(remote_fs->TakeReads() == vector<pair<idx_t, idx_t>> {{0, FILE_SIZE}});
+		cache.SetEnabled(true);
+	}
+
+	// The estimate measured during that read sizes the reads of the next file
+	auto second =
+	    cfs.OpenFile(MakeTestOpenFileInfo(CACHING_TEST_REMOTE_PREFIX + second_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*second, FILE_SIZE) == content);
+	REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, SPLIT_SIZE));
+}
+
+TEST_CASE("A read split into larger blocks keeps the full blocks cached by earlier reads", "[external_file_cache]") {
+	DuckDB db(nullptr);
+	auto &db_instance = *db.instance;
+	auto recording_fs = make_uniq<EFCTrackingFileSystem>();
+	auto &cache = db_instance.GetExternalFileCache();
+	Connection con(db);
+
+	const idx_t BLOCK_SIZE = 4096;
+	const idx_t MIN_BLOCK_SIZE = 256;
+	REQUIRE(
+	    !con.Query(StringUtil::Format("SET external_file_cache_remote_max_block_size=%llu", BLOCK_SIZE))->HasError());
+	REQUIRE(!con.Query(StringUtil::Format("SET external_file_cache_remote_min_block_size=%llu", MIN_BLOCK_SIZE))
+	             ->HasError());
+	const idx_t FILE_SIZE = 39 * BLOCK_SIZE;
+	auto content = MakeTestContent(FILE_SIZE);
+	EFCTestFileGuard test_file("test_efc_adaptive_partially_cached.bin", content);
+
+	CachingFileSystem cfs(*recording_fs, db_instance);
+	auto handle =
+	    cfs.OpenFile(MakeTestOpenFileInfo(CACHING_TEST_REMOTE_PREFIX + test_file.GetPath()), ReaderSizedFlags());
+
+	// reads split at the configured block size cache two full blocks and a small range
+	REQUIRE(ReadFull(*handle, BLOCK_SIZE, 5 * BLOCK_SIZE) == content.substr(5 * BLOCK_SIZE, BLOCK_SIZE));
+	REQUIRE(ReadFull(*handle, MIN_BLOCK_SIZE, 14 * BLOCK_SIZE) == content.substr(14 * BLOCK_SIZE, MIN_BLOCK_SIZE));
+	REQUIRE(ReadFull(*handle, BLOCK_SIZE, 22 * BLOCK_SIZE) == content.substr(22 * BLOCK_SIZE, BLOCK_SIZE));
+	REQUIRE(recording_fs->TakeReads() == vector<pair<idx_t, idx_t>> {{5 * BLOCK_SIZE, BLOCK_SIZE},
+	                                                                 {14 * BLOCK_SIZE, MIN_BLOCK_SIZE},
+	                                                                 {22 * BLOCK_SIZE, BLOCK_SIZE}});
+	REQUIRE(CountCachedBlocks(cache) == 3);
+
+	// 10 ms at 1.6 MB/s splits the next read into blocks of 16 times the configured size, which keep the full blocks
+	// although fetching the first one with its gaps would save a request and fetch the small range with its gaps
+	const idx_t SPLIT_SIZE = 16 * BLOCK_SIZE;
+	REQUIRE(!con.Query("SET debug_network_throughput_estimate='0.01,1600000'")->HasError());
+	REQUIRE(ReadFull(*handle, FILE_SIZE) == content);
+	REQUIRE(recording_fs->TakeReads() == vector<pair<idx_t, idx_t>> {{0, 5 * BLOCK_SIZE},
+	                                                                 {6 * BLOCK_SIZE, SPLIT_SIZE},
+	                                                                 {23 * BLOCK_SIZE, SPLIT_SIZE}});
+	REQUIRE(CountCachedBlocks(cache) == 5);
+	REQUIRE(TotalCachedBytes(cache) == FILE_SIZE);
+
+	REQUIRE(ReadFull(*handle, FILE_SIZE) == content);
+	REQUIRE(recording_fs->TakeReads().empty());
 }
 
 TEST_CASE("Reads of files the cache does not handle are not split", "[external_file_cache]") {
@@ -1348,7 +1756,7 @@ TEST_CASE("Dropping cache blocks preserves existing readers and starts a new gen
 
 	constexpr idx_t BLOCK_SIZE = 4096;
 	constexpr idx_t LOCATION = 7 * BLOCK_SIZE;
-	auto acquired = cache.AcquireBlocks(*cached_file, LOCATION, 2 * BLOCK_SIZE, BLOCK_SIZE);
+	auto acquired = cache.AcquireBlocks(*cached_file, LOCATION, 2 * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
 	REQUIRE(acquired.size() == 2);
 	{
 		const annotated_lock_guard<annotated_mutex> guard(acquired[0]->mtx);
@@ -1367,7 +1775,7 @@ TEST_CASE("Dropping cache blocks preserves existing readers and starts a new gen
 		REQUIRE(acquired[0]->nr_bytes == BLOCK_SIZE);
 	}
 	// Future readers receive fresh blocks
-	auto replacements = cache.AcquireBlocks(*cached_file, LOCATION, 2 * BLOCK_SIZE, BLOCK_SIZE);
+	auto replacements = cache.AcquireBlocks(*cached_file, LOCATION, 2 * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
 	REQUIRE(replacements.size() == 2);
 	REQUIRE(replacements[0] != acquired[0]);
 	REQUIRE(replacements[1] != acquired[1]);
@@ -1392,7 +1800,7 @@ TEST_CASE("Metadata eviction stops when enough memory is reclaimed", "[external_
 	idx_t file_memory = 0;
 	for (idx_t i = 0; i < FILE_COUNT; i++) {
 		auto file = cache.GetOrCreateCachedFile(StringUtil::Format("metadata-eviction-%02llu", i));
-		cache.AcquireBlocks(*file, 0, block_count * BLOCK_SIZE, BLOCK_SIZE);
+		cache.AcquireBlocks(*file, 0, block_count * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
 		if (i == 0) {
 			file_memory = buffer_pool.GetUsedMemory() - initial_memory;
 		}
@@ -1427,7 +1835,7 @@ TEST_CASE("Metadata eviction accounts for files retained by readers", "[external
 	shared_ptr<ExternalFileCache::CachedFile> retained_file;
 	for (idx_t i = 0; i < FILE_COUNT; i++) {
 		auto file = cache.GetOrCreateCachedFile(StringUtil::Format("retained-metadata-%llu", i));
-		cache.AcquireBlocks(*file, 0, BLOCK_COUNT * BLOCK_SIZE, BLOCK_SIZE);
+		cache.AcquireBlocks(*file, 0, BLOCK_COUNT * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
 		if (i == 0) {
 			retained_file = file;
 		}
