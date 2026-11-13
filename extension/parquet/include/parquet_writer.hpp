@@ -226,7 +226,8 @@ public:
 	                     unique_ptr<ParquetWriteTransformData> &transform_data);
 	void FlushRowGroup(PreparedRowGroup &row_group);
 	void Flush(ColumnDataCollection &buffer, unique_ptr<ParquetWriteTransformData> &transform_data);
-	void Finalize();
+	//! Writes the footer and closes the file, syncing it to stable storage first if requested
+	void Finalize(bool fsync);
 
 	static duckdb_parquet::Type::type DuckDBTypeToParquetType(const LogicalType &duckdb_type,
 	                                                          bool write_timestamp_as_int96);

@@ -12,11 +12,16 @@
 #include "duckdb/parallel/event.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parallel/thread_context.hpp"
+#include "duckdb/parser/statement/copy_statement.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "test_helpers.hpp"
 
 #include <chrono>
 #include <condition_variable>
 #include <future>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 using namespace duckdb;
 
@@ -273,12 +278,22 @@ CopyFunction CreateLifecycleCopyFunction(const string &name, const shared_ptr<Li
 	return function;
 }
 
-void RegisterLifecycleCopyFunction(DuckDB &db, const string &name, const shared_ptr<LifecycleCopyInfo> &info,
-                                   bool batch_mode = false) {
+BoundStatement LifecycleCopyPlan(Binder &binder, CopyStatement &stmt) {
+	// plans a CSV copy, whose writer supports FSYNC
+	stmt.info->format = "csv";
+	return binder.Bind(stmt);
+}
+
+void RegisterLifecycleCopyFunction(DuckDB &db, CopyFunction function) {
 	ExtensionInfo extension_info {};
 	ExtensionActiveLoad load_info {*db.instance, extension_info, "copy_output_lifecycle_test", ""};
 	ExtensionLoader loader {load_info};
-	loader.RegisterFunction(CreateLifecycleCopyFunction(name, info, batch_mode));
+	loader.RegisterFunction(std::move(function));
+}
+
+void RegisterLifecycleCopyFunction(DuckDB &db, const string &name, const shared_ptr<LifecycleCopyInfo> &info,
+                                   bool batch_mode = false) {
+	RegisterLifecycleCopyFunction(db, CreateLifecycleCopyFunction(name, info, batch_mode));
 }
 
 void RemoveDirectoryIfPresent(FileSystem &fs, const string &path) {
@@ -656,6 +671,42 @@ TEST_CASE("COPY output lifecycle removes owned files after failure", "[api][copy
 	fs.RemoveFile(successful_path);
 }
 
+TEST_CASE("COPY output lifecycle keeps the replacement of an existing file", "[api][copy]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	auto &fs = FileSystem::GetFileSystem(*connection.context);
+
+	auto replaced_path = TestCreatePath("copy_lifecycle_replaced.test");
+	auto temporary_path = TestCreatePath("tmp_copy_lifecycle_replaced.test");
+	fs.TryRemoveFile(replaced_path);
+	fs.TryRemoveFile(temporary_path);
+	{
+		auto handle = fs.OpenFile(replaced_path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		handle->Close();
+	}
+	{
+		CopyOutputLifecycle lifecycle(*connection.context);
+		lifecycle.RegisterFile(temporary_path);
+		auto handle = fs.OpenFile(temporary_path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		handle->Close();
+		lifecycle.MoveFile(temporary_path, replaced_path);
+	}
+	REQUIRE(fs.FileExists(replaced_path));
+	REQUIRE(!fs.FileExists(temporary_path));
+	fs.RemoveFile(replaced_path);
+
+	// a renamed file that replaced nothing is removed
+	{
+		CopyOutputLifecycle lifecycle(*connection.context);
+		lifecycle.RegisterFile(temporary_path);
+		auto handle = fs.OpenFile(temporary_path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		handle->Close();
+		lifecycle.MoveFile(temporary_path, replaced_path);
+	}
+	REQUIRE(!fs.FileExists(replaced_path));
+	REQUIRE(!fs.FileExists(temporary_path));
+}
+
 TEST_CASE("COPY output lifecycle removes only empty query-created directories", "[api][copy]") {
 	DuckDB db(nullptr);
 	Connection connection(db);
@@ -829,3 +880,68 @@ TEST_CASE("Abandoning multi-chunk COPY statistics preserves finalized files", "[
 	}
 	RemoveDirectoryIfPresent(fs, output);
 }
+
+TEST_CASE("COPY rejects FSYNC for a copy function that cannot sync its files", "[api][copy]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	auto info = make_shared_ptr<LifecycleCopyInfo>();
+	RegisterLifecycleCopyFunction(db, "copy_lifecycle_no_fsync", info);
+	auto output = TestCreatePath("copy_lifecycle_no_fsync.test");
+
+	auto result = connection.Query(
+	    StringUtil::Format("COPY (SELECT 42 AS i) TO '%s' (FORMAT copy_lifecycle_no_fsync, FSYNC)", output));
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "FSYNC is not supported"));
+	REQUIRE(info->initialized_paths.empty());
+}
+
+TEST_CASE("COPY rejects FSYNC for a copy function that plans itself without supporting it", "[api][copy]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	auto &fs = FileSystem::GetFileSystem(*connection.context);
+	auto function = CreateLifecycleCopyFunction("copy_lifecycle_plan", make_shared_ptr<LifecycleCopyInfo>());
+	function.plan = LifecycleCopyPlan;
+	RegisterLifecycleCopyFunction(db, std::move(function));
+	auto output = TestCreatePath("copy_lifecycle_plan.csv");
+	fs.TryRemoveFile(output);
+
+	auto result = connection.Query(
+	    StringUtil::Format("COPY (SELECT 42 AS i) TO '%s' (FORMAT copy_lifecycle_plan, FSYNC)", output));
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "FSYNC is not supported"));
+	REQUIRE(!fs.FileExists(output));
+
+	// the plan is used without FSYNC
+	REQUIRE_NO_FAIL(
+	    connection.Query(StringUtil::Format("COPY (SELECT 42 AS i) TO '%s' (FORMAT copy_lifecycle_plan)", output)));
+	result = connection.Query(StringUtil::Format("SELECT i FROM '%s'", output));
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	fs.RemoveFile(output);
+}
+
+#ifndef _WIN32
+TEST_CASE("COPY with FSYNC syncs the handle of a file that cannot be reopened for writing", "[api][copy]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	auto &fs = FileSystem::GetFileSystem(*connection.context);
+	auto output = TestCreatePath("copy_fsync_read_only.csv");
+	fs.TryRemoveFile(output);
+	REQUIRE_NO_FAIL(connection.Query("CALL enable_logging('FileSystem')"));
+
+	// the file is created read-only, so it cannot be reopened for writing
+	auto previous_mask = umask(0222);
+	auto result = connection.Query(StringUtil::Format("COPY (SELECT 42 AS i) TO '%s' (FSYNC)", output));
+	umask(previous_mask);
+	REQUIRE_NO_FAIL(*result);
+
+	struct stat status;
+	REQUIRE(stat(output.c_str(), &status) == 0);
+	REQUIRE((status.st_mode & 0222) == 0);
+	result = connection.Query(StringUtil::Format(
+	    "SELECT count(*) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC' AND path = '%s'", output));
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+	result = connection.Query(StringUtil::Format("SELECT i FROM '%s'", output));
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	fs.RemoveFile(output);
+}
+#endif

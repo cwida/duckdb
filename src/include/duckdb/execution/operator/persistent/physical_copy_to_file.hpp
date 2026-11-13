@@ -46,7 +46,6 @@ public:
 
 public:
 	static string GetTrimmedPath(ClientContext &context, const string &file_path);
-	static void MoveTmpFile(ClientContext &context, const string &tmp_file_path);
 	static string GetNonTmpFile(ClientContext &context, const string &tmp_file_path);
 	static void ReturnStatistics(Context &context, DataChunk &chunk, CopyToFileInfo &written_file_info);
 	//! Adds the RETURN_STATS row of a COPY that wrote no file, so that RETURN_COLUMN_TYPES can still return the types
@@ -145,6 +144,8 @@ public:
 	vector<LogicalType> query_types;
 	//! Whether to write an empty file if there was no data
 	bool write_empty_file;
+	//! Whether to sync the written files and their directories to stable storage
+	bool fsync = false;
 
 	//! Partitioning-related
 	vector<idx_t> partition_columns;

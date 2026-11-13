@@ -513,7 +513,7 @@ static void ParquetWriteFinalize(ClientContext &context, FunctionData &bind_data
 	}
 
 	// finalize: write any additional metadata to the file here
-	global_state.writer->Finalize();
+	global_state.writer->Finalize(global_state.fsync);
 }
 
 static unique_ptr<LocalFunctionData> ParquetWriteInitializeLocal(ExecutionContext &context, FunctionData &bind_data_p) {
@@ -1146,6 +1146,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	function.copy_to_combine = ParquetWriteCombine;
 	function.copy_to_finalize = ParquetWriteFinalize;
 	function.execution_mode = ParquetWriteExecutionMode;
+	function.supports_fsync = true;
 	function.initialize_operator = ParquetWriteInitializeOperator;
 	function.copy_from_bind = ParquetCopyFromBind;
 	function.copy_from_function = *scan_fun.functions[0];

@@ -54,6 +54,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCopyToFile &op, Physi
 		cast_copy.query_names = op.query_names;
 		cast_copy.query_types = op.query_types;
 		cast_copy.write_empty_file = op.write_empty_file;
+		cast_copy.fsync = op.fsync;
 
 		cast_copy.batch_size = op.batch_size;
 		cast_copy.batch_size_bytes = op.batch_size_bytes;
@@ -88,6 +89,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCopyToFile &op, Physi
 	cast_copy.parallel = mode == CopyFunctionExecutionMode::PARALLEL_COPY_TO_FILE;
 	cast_copy.write_empty_file = op.write_empty_file;
 	cast_copy.hive_file_pattern = op.hive_file_pattern;
+	cast_copy.fsync = op.fsync;
 	cast_copy.order_columns = std::move(op.order_columns);
 	cast_copy.partition_path_expression = std::move(op.partition_path_expression);
 	cast_copy.partition_stats = std::move(op.partition_stats);

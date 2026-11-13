@@ -80,6 +80,7 @@ void LogicalCopyToFile::Serialize(Serializer &serializer) const {
 	                                                            partition_path_expression);
 	serializer.WritePropertyWithDefault(227, "query_names", query_names);
 	serializer.WritePropertyWithDefault(228, "query_types", query_types);
+	serializer.WritePropertyWithDefault(229, "fsync", fsync, false);
 }
 
 unique_ptr<LogicalOperator> LogicalCopyToFile::Deserialize(Deserializer &deserializer) {
@@ -139,6 +140,7 @@ unique_ptr<LogicalOperator> LogicalCopyToFile::Deserialize(Deserializer &deseria
 	                                                             partition_path_expression);
 	auto query_names = deserializer.ReadPropertyWithDefault<vector<Identifier>>(227, "query_names");
 	auto query_types = deserializer.ReadPropertyWithDefault<vector<LogicalType>>(228, "query_types");
+	auto fsync = deserializer.ReadPropertyWithExplicitDefault(229, "fsync", false);
 
 	if (!has_serialize) {
 		// If not serialized, re-bind with the copy info
@@ -177,6 +179,7 @@ unique_ptr<LogicalOperator> LogicalCopyToFile::Deserialize(Deserializer &deseria
 	result->partition_path_expression = std::move(partition_path_expression);
 	result->query_names = std::move(query_names);
 	result->query_types = std::move(query_types);
+	result->fsync = fsync;
 
 	return std::move(result);
 }

@@ -4001,6 +4001,7 @@ public:
 			partitioned_copy.FinalizeActiveWrites();
 			partitioned_copy.copy_gstate.TryFinalizeOwnedFileState();
 			partitioned_copy.copy_gstate.WaitForLifecycleTasks();
+			partitioned_copy.copy_gstate.output_lifecycle.SyncDirectories();
 			partitioned_copy.copy_gstate.MarkSuccessful();
 		}
 	}
@@ -4031,6 +4032,7 @@ void PartitionedCopy::Finalize(Pipeline &pipeline, Event &event, InterruptState 
 		FinalizeActiveWrites();
 		copy_gstate.TryFinalizeOwnedFileState();
 		copy_gstate.WaitForLifecycleTasks();
+		copy_gstate.output_lifecycle.SyncDirectories();
 		copy_gstate.MarkSuccessful();
 	}
 }
@@ -4491,7 +4493,8 @@ void PartitionedCopy::FinalizeFileStates(vector<FileStateHandle> files_to_finali
 // Copy Global State
 //===--------------------------------------------------------------------===//
 CopyToFileGlobalState::CopyToFileGlobalState(const PhysicalCopyToFile &op_p, ClientContext &context_p)
-    : op(op_p), context(context_p), output_lifecycle(context_p), initialized(false), prepare_global_state(nullptr),
+    : op(op_p), context(context_p), output_lifecycle(context_p, op_p.fsync), initialized(false),
+      prepare_global_state(nullptr),
       create_file_state_fun([&](FileStateHandle &file_state) DUCKDB_EXCLUDES(lock) { RequestFileState(file_state); }),
       lifecycle_executor(context_p), output_files(op_p), rows_copied(0), last_file_offset(0) {
 }
@@ -4581,8 +4584,9 @@ void CopyToFileGlobalState::RegisterPendingFileStatePathLocked(PendingFileState 
 }
 
 unique_ptr<GlobalFileState> CopyToFileGlobalState::InitializeFileState(PendingFileState pending_file_state) {
-	output_lifecycle.RegisterFile(pending_file_state.output_path);
+	auto fsync = output_lifecycle.RegisterFile(pending_file_state.output_path);
 	auto data = op.function.copy_to_initialize_global(context, *op.bind_data, pending_file_state.output_path);
+	data->fsync = fsync;
 	if (pending_file_state.written_file_info && pending_file_state.written_file_info->file_stats) {
 		op.function.copy_to_get_written_statistics(context, *op.bind_data, *data,
 		                                           *pending_file_state.written_file_info->file_stats);
@@ -4849,12 +4853,6 @@ string PhysicalCopyToFile::GetTrimmedPath(ClientContext &context, const string &
 	string trimmed_path = file_path;
 	StringUtil::RTrim(trimmed_path, fs.PathSeparator(trimmed_path));
 	return trimmed_path;
-}
-
-void PhysicalCopyToFile::MoveTmpFile(ClientContext &context, const string &tmp_file_path) {
-	auto &fs = FileSystem::GetFileSystem(context);
-	auto file_path = GetNonTmpFile(context, tmp_file_path);
-	fs.MoveFile(tmp_file_path, file_path);
 }
 
 string PhysicalCopyToFile::GetNonTmpFile(ClientContext &context, const string &tmp_file_path) {
@@ -5130,8 +5128,9 @@ SinkFinalizeType PhysicalCopyToFile::Finalize(Pipeline &pipeline, Event &event, 
 		D_ASSERT(!partition_output);
 		D_ASSERT(!file_size_bytes.IsValid());
 		D_ASSERT(!Rotate());
-		MoveTmpFile(context, file_path);
+		gstate.output_lifecycle.MoveFile(file_path, GetNonTmpFile(context, file_path));
 	}
+	gstate.output_lifecycle.SyncDirectories();
 	gstate.MarkSuccessful();
 
 	return SinkFinalizeType::READY;

@@ -56,6 +56,7 @@ public:
 	DUCKDB_API bool OnDiskFile(FileHandle &handle) override;
 	DUCKDB_API bool CanSeek() override;
 	DUCKDB_API void AbortFileWrite(FileHandle &handle) override;
+	DUCKDB_API void FileSync(FileHandle &handle) override;
 
 	//! The compression scheme provided by this filesystem, e.g. "gzip"
 	DUCKDB_API virtual FileCompressionType GetCompressionType() = 0;
@@ -88,6 +89,8 @@ public:
 	DUCKDB_API int64_t ReadData(void *buffer, int64_t nr_bytes);
 	DUCKDB_API int64_t WriteData(data_ptr_t buffer, int64_t nr_bytes);
 	DUCKDB_API void Close() override;
+	//! Completes the current compressed member and syncs the underlying file, so a later write starts a new member
+	DUCKDB_API void Sync();
 	DUCKDB_API void AbortCompressedWrite();
 	//! Counts bytes the stream read from the child handle itself, outside ReadData (e.g. a header), as consumed
 	DUCKDB_API void AddConsumedBytes(idx_t bytes);

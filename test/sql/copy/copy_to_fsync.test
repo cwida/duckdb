@@ -1,0 +1,168 @@
+# name: test/sql/copy/copy_to_fsync.test
+# description: COPY TO with FSYNC syncs the written files and the directories holding their names
+# group: [copy]
+
+require notwindows
+
+require parquet
+
+require json
+
+# the FileSystem log does not survive the restarts of the forced storage configs
+require noforcestorage
+
+statement ok
+CALL enable_logging('FileSystem')
+
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_off.parquet'
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC'
+----
+0
+
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_single.parquet' (FSYNC)
+
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_single.csv' (FSYNC)
+
+# the JSON and GeoJSON copies plan a CSV copy that passes FSYNC on
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_single.json' (FSYNC)
+
+statement ok
+COPY (SELECT 42 AS i, 'POINT (1 2)'::GEOMETRY AS geom) TO '{TEST_DIR}/fsync_single.geojson' (FSYNC)
+
+statement error
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_single.json' (FSYNC NULL)
+----
+NULL is not supported as a valid option for COPY option "fsync"
+
+query I
+SELECT replace(path, '{TEST_DIR}', 'TEST_DIR') FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC' ORDER BY ALL
+----
+TEST_DIR
+TEST_DIR
+TEST_DIR
+TEST_DIR
+TEST_DIR/fsync_single.csv
+TEST_DIR/fsync_single.geojson
+TEST_DIR/fsync_single.json
+TEST_DIR/fsync_single.parquet
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# compressed files are synced through their compression
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_single.csv.gz' (FSYNC)
+
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_single.csv.zst' (FSYNC)
+
+query I
+SELECT replace(path, '{TEST_DIR}', 'TEST_DIR') FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC' ORDER BY ALL
+----
+TEST_DIR
+TEST_DIR
+TEST_DIR/fsync_single.csv.gz
+TEST_DIR/fsync_single.csv.zst
+
+query II
+SELECT (SELECT i FROM '{TEST_DIR}/fsync_single.csv.gz'), (SELECT i FROM '{TEST_DIR}/fsync_single.csv.zst')
+----
+42	42
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# the temporary file replacing an existing file is synced before it is renamed, the directory after that
+statement ok
+COPY (SELECT 43 AS i) TO '{TEST_DIR}/fsync_single.parquet' (FSYNC)
+
+query I
+SELECT list(replace(path, '{TEST_DIR}', 'TEST_DIR') ORDER BY timestamp) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC'
+----
+[TEST_DIR/tmp_fsync_single.parquet, TEST_DIR]
+
+query I
+SELECT i FROM '{TEST_DIR}/fsync_single.parquet'
+----
+43
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# the batched copy of a table
+statement ok
+CREATE TABLE fsync_tbl AS SELECT range AS i FROM range(100000)
+
+statement ok
+COPY fsync_tbl TO '{TEST_DIR}/fsync_batch.parquet' (FSYNC)
+
+query I
+SELECT replace(path, '{TEST_DIR}', 'TEST_DIR') FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC' ORDER BY ALL
+----
+TEST_DIR
+TEST_DIR/fsync_batch.parquet
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# the partition files, their directories, and the directories holding the created directories
+statement ok
+COPY (SELECT i % 2 AS p, i FROM range(10) t(i)) TO '{TEST_DIR}/fsync_part' (FORMAT parquet, PARTITION_BY p, FSYNC)
+
+query I
+SELECT replace(path, '{TEST_DIR}', 'TEST_DIR') FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC' ORDER BY ALL
+----
+TEST_DIR
+TEST_DIR/fsync_part
+TEST_DIR/fsync_part/p=0
+TEST_DIR/fsync_part/p=0/data_0.parquet
+TEST_DIR/fsync_part/p=1
+TEST_DIR/fsync_part/p=1/data_0.parquet
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# rotated files
+statement ok
+COPY (SELECT i FROM range(10000) t(i)) TO '{TEST_DIR}/fsync_rotate'
+	(FORMAT parquet, ROW_GROUP_SIZE 2000, ROW_GROUPS_PER_FILE 1, FSYNC)
+
+query II
+SELECT count(*) > 1, list(file ORDER BY file) = (
+	SELECT list(path ORDER BY path) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC' AND path LIKE '%.parquet')
+FROM glob('{TEST_DIR}/fsync_rotate/*.parquet')
+----
+true	true
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# a device has no stable storage to sync to
+statement ok
+COPY (SELECT 42 AS i) TO '/dev/null' (FORMAT csv, FSYNC)
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC'
+----
+0
+
+# fsync_mode none turns the syncs off
+statement ok
+SET fsync_mode = 'none'
+
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_mode_none.parquet' (FSYNC)
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC'
+----
+0
+
+statement ok
+RESET fsync_mode

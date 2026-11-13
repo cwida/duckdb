@@ -833,6 +833,7 @@ void LocalFileSystem::FileSync(FileHandle &handle) {
 	if (fsync_mode == FileSyncMode::NONE) {
 		return;
 	}
+	DUCKDB_LOG_FILE_SYSTEM_SYNC(handle);
 	int fd = unix_handle.fd;
 
 #ifdef F_FULLFSYNC
@@ -1678,6 +1679,7 @@ void LocalFileSystem::FileSync(FileHandle &handle) {
 	if (fsync_mode == FileSyncMode::NONE) {
 		return;
 	}
+	DUCKDB_LOG_FILE_SYSTEM_SYNC(handle);
 	HANDLE hFile = windows_handle.fd;
 	if (FlushFileBuffers(hFile) == 0) {
 		throw IOException("Could not flush file handle to disk!");

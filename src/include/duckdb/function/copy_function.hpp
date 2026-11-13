@@ -60,6 +60,9 @@ struct LocalFunctionData {
 struct GlobalFunctionData {
 	virtual ~GlobalFunctionData() = default;
 
+	//! Whether the writer syncs the file to stable storage before closing it (COPY TO with FSYNC)
+	bool fsync = false;
+
 	template <class TARGET>
 	TARGET &Cast() {
 		DynamicCastCheck<TARGET>(this);
@@ -276,6 +279,8 @@ public:
 	TableFunction copy_from_function;
 
 	string extension;
+	//! Whether the writer syncs its file before closing it when GlobalFunctionData::fsync is set, allowing FSYNC
+	bool supports_fsync = false;
 
 	//! Additional function info, passed to the bind
 	shared_ptr<CopyFunctionInfo> function_info;

@@ -1,0 +1,74 @@
+# name: test/sql/copy/copy_to_fsync_allowed_paths.test
+# description: COPY TO with FSYNC when the directory of the output is not an allowed path
+# group: [copy]
+
+require notwindows
+
+require skip_reload
+
+# enable_external_access = false disables extension loading
+require no_extension_autoloading "EXPECTED: Test disable loading of extensions"
+
+statement ok
+SET allowed_paths = ['{TEST_DIR}/fsync_allowed.csv', '{TEST_DIR}/tmp_fsync_allowed.csv']
+
+statement ok
+SET enable_external_access = false
+
+# the directory is checked before the rename, so the output is not published and its temporary file is removed
+statement error
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE true, FSYNC)
+----
+Cannot access directory
+
+query I
+SELECT count(*) FROM (FROM glob('{TEST_DIR}/fsync_allowed.csv') UNION ALL FROM glob('{TEST_DIR}/tmp_fsync_allowed.csv'))
+----
+0
+
+# without FSYNC the directory is not accessed
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE true)
+
+query I
+SELECT i FROM '{TEST_DIR}/fsync_allowed.csv'
+----
+42
+
+# the file the output would have replaced survives the failure
+statement error
+COPY (SELECT 43 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE true, FSYNC)
+----
+Cannot access directory
+
+query II
+SELECT i, (SELECT count(*) FROM glob('{TEST_DIR}/tmp_fsync_allowed.csv')) FROM '{TEST_DIR}/fsync_allowed.csv'
+----
+42	0
+
+# without FSYNC the file is replaced
+statement ok
+COPY (SELECT 43 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE true)
+
+query I
+SELECT i FROM '{TEST_DIR}/fsync_allowed.csv'
+----
+43
+
+# fsync_mode none turns the syncs off, so the directory is not accessed either
+statement ok
+SET fsync_mode = 'none'
+
+statement ok
+COPY (SELECT 44 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE false, FSYNC)
+
+statement ok
+COPY (SELECT 45 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE true, FSYNC)
+
+query I
+SELECT i FROM '{TEST_DIR}/fsync_allowed.csv'
+----
+45
+
+statement ok
+RESET fsync_mode
