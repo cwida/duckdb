@@ -1,0 +1,35 @@
+# Default configuration for the "Pull" GitHub App, which keeps this fork in sync with
+# the upstream duckdb/duckdb repository.
+#
+# Pointers:
+#   - App / install / manage:  https://pull.git.ci/
+#   - Source:                  https://github.com/wei/pull
+#   - Configuration reference: https://github.com/wei/pull/blob/master/docs/CONFIGURATIONS.md
+#   - Trigger a manual sync:   https://pull.git.ci/process/<your-user>/duckdb
+
+version: "1"
+
+rules:
+  - base: v1.1-eatoni
+    upstream: duckdb:v1.1-eatoni
+    mergeMethod: hardreset
+
+  - base: v1.2-histrionicus
+    upstream: duckdb:v1.2-histrionicus
+    mergeMethod: hardreset
+
+  - base: v1.3-ossivalis
+    upstream: duckdb:v1.3-ossivalis
+    mergeMethod: hardreset
+
+  - base: v1.4-andium
+    upstream: duckdb:v1.4-andium
+    mergeMethod: hardreset
+
+  - base: v1.5-variegata
+    upstream: duckdb:v1.5-variegata
+    mergeMethod: hardreset
+
+  - base: main
+    upstream: duckdb:main
+    mergeMethod: hardreset
