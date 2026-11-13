@@ -36,7 +36,7 @@ static void WriteExtensionFileToDisk(QueryContext &query_context, FileSystem &fs
 		string signature_key_fingerprint;
 		const bool signature_valid = ExtensionHelper::CheckExtensionBufferSignature(
 		    db, static_cast<char *>(data), data_size, info.repository_type, info.repository_name,
-		    &signature_key_fingerprint);
+		    info.mode != ExtensionInstallMode::REPOSITORY, &signature_key_fingerprint);
 		if (!signature_valid) {
 			throw IOException("Attempting to install an extension file that doesn't have a valid signature, see "
 			                  "https://duckdb.org/docs/current/operations_manual/securing_duckdb/securing_extensions");

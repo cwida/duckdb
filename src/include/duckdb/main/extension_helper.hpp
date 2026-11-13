@@ -160,16 +160,18 @@ public:
 	// Check signature of an Extension stored as FileHandle
 	static bool CheckExtensionSignature(DatabaseInstance &db, FileHandle &handle,
 	                                    ParsedExtensionMetaData &parsed_metadata,
-	                                    ExtensionRepositoryType repository_type, const string &repository_name);
+	                                    ExtensionRepositoryType repository_type, const string &repository_name,
+	                                    bool unknown_origin);
 	// Check signature of an Extension, represented by a buffer and total_buffer_length, and a signature to be added.
 	// When a key matches, its fingerprint is written to signature_key_fingerprint (if provided)
 	static bool CheckExtensionBufferSignature(DatabaseInstance &db, const char *buffer, idx_t buffer_length,
 	                                          const string &signature, ExtensionRepositoryType repository_type,
-	                                          const string &repository_name,
+	                                          const string &repository_name, bool unknown_origin,
 	                                          optional_ptr<string> signature_key_fingerprint = nullptr);
 	// Check signature of an Extension, represented by a buffer and total_buffer_length
 	static bool CheckExtensionBufferSignature(DatabaseInstance &db, const char *buffer, idx_t total_buffer_length,
 	                                          ExtensionRepositoryType repository_type, const string &repository_name,
+	                                          bool unknown_origin,
 	                                          optional_ptr<string> signature_key_fingerprint = nullptr);
 	static ParsedExtensionMetaData ParseExtensionMetaData(const char *metadata) noexcept;
 	static ParsedExtensionMetaData ParseExtensionMetaData(FileHandle &handle);
@@ -193,9 +195,11 @@ public:
 	static const vector<string> GetPublicKeys(bool allow_community_extension = false);
 	//! Get the public keys that are trusted to sign extensions that originate from the given repository. Only the keys
 	//! of that repository are returned: the core keys, the community keys and the key of every user provided
-	//! repository are managed separately, so a leak of any of them only affects that single repository
+	//! repository are managed separately, so a leak of any of them only affects that single repository.
+	//! An unknown origin (a direct load, or an install from a custom path or url) does not come from any repository:
+	//! it trusts the core keys plus - if community extensions are allowed - the community keys
 	static vector<string> GetTrustedPublicKeys(DatabaseInstance &db, ExtensionRepositoryType repository_type,
-	                                           const string &repository_name);
+	                                           const string &repository_name, bool unknown_origin = false);
 
 	//! The origin whose signing keys a load trusts: an explicit FROM trusts the named origin, an autoload (core_only)
 	//! trusts the core keys only, and a plain bare LOAD trusts the core keys plus the community keys for a community

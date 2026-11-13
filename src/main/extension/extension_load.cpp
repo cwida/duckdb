@@ -425,8 +425,8 @@ ParsedExtensionMetaData ExtensionHelper::ParseExtensionMetaData(FileHandle &hand
 
 static bool CheckKnownSignatures(DatabaseInstance &db, const string &two_level_hash, const string &signature,
                                  ExtensionRepositoryType repository_type, const string &repository_name,
-                                 optional_ptr<string> signature_key_fingerprint = nullptr) {
-	for (auto &key : ExtensionHelper::GetTrustedPublicKeys(db, repository_type, repository_name)) {
+                                 bool unknown_origin, optional_ptr<string> signature_key_fingerprint = nullptr) {
+	for (auto &key : ExtensionHelper::GetTrustedPublicKeys(db, repository_type, repository_name, unknown_origin)) {
 		if (duckdb_mbedtls::MbedTlsWrapper::IsValidSha256Signature(key, signature, two_level_hash)) {
 			if (signature_key_fingerprint) {
 				// report the fingerprint of the matching key in the same format as CREATE EXTENSION REPOSITORY
@@ -442,7 +442,8 @@ static bool CheckKnownSignatures(DatabaseInstance &db, const string &two_level_h
 
 bool ExtensionHelper::CheckExtensionSignature(DatabaseInstance &db, FileHandle &handle,
                                               ParsedExtensionMetaData &parsed_metadata,
-                                              ExtensionRepositoryType repository_type, const string &repository_name) {
+                                              ExtensionRepositoryType repository_type, const string &repository_name,
+                                              bool unknown_origin) {
 	auto signature_offset = handle.GetFileSize() - ParsedExtensionMetaData::SIGNATURE_SIZE;
 
 	vector<string> hash_chunks;
@@ -456,12 +457,13 @@ bool ExtensionHelper::CheckExtensionSignature(DatabaseInstance &db, FileHandle &
 	// TODO maybe we should do a stream read / hash update here
 	handle.Read((void *)parsed_metadata.signature.data(), parsed_metadata.signature.size(), signature_offset);
 
-	return CheckKnownSignatures(db, resulting_hash, parsed_metadata.signature, repository_type, repository_name);
+	return CheckKnownSignatures(db, resulting_hash, parsed_metadata.signature, repository_type, repository_name,
+	                            unknown_origin);
 }
 
 bool ExtensionHelper::CheckExtensionBufferSignature(DatabaseInstance &db, const char *buffer, idx_t buffer_length,
                                                     const string &signature, ExtensionRepositoryType repository_type,
-                                                    const string &repository_name,
+                                                    const string &repository_name, bool unknown_origin,
                                                     optional_ptr<string> signature_key_fingerprint) {
 	vector<string> hash_chunks;
 	vector<idx_t> splits;
@@ -471,19 +473,19 @@ bool ExtensionHelper::CheckExtensionBufferSignature(DatabaseInstance &db, const 
 
 	const string resulting_hash = ComputeFinalHash(hash_chunks);
 
-	return CheckKnownSignatures(db, resulting_hash, signature, repository_type, repository_name,
+	return CheckKnownSignatures(db, resulting_hash, signature, repository_type, repository_name, unknown_origin,
 	                            signature_key_fingerprint);
 }
 
 bool ExtensionHelper::CheckExtensionBufferSignature(DatabaseInstance &db, const char *buffer, idx_t total_buffer_length,
                                                     ExtensionRepositoryType repository_type,
-                                                    const string &repository_name,
+                                                    const string &repository_name, bool unknown_origin,
                                                     optional_ptr<string> signature_key_fingerprint) {
 	auto signature_offset = total_buffer_length - ParsedExtensionMetaData::SIGNATURE_SIZE;
 	string signature = std::string(buffer + signature_offset, ParsedExtensionMetaData::SIGNATURE_SIZE);
 
 	return CheckExtensionBufferSignature(db, buffer, signature_offset, signature, repository_type, repository_name,
-	                                     signature_key_fingerprint);
+	                                     unknown_origin, signature_key_fingerprint);
 }
 
 #ifndef WASM_LOADABLE_EXTENSIONS
@@ -714,9 +716,12 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 			// forced onto the core keys - the repository's own name is no longer the trust anchor
 			signing_repository_name = string();
 		}
+		// a bare load of an extension that did not come from a repository trusts the core and community keys
+		bool unknown_origin =
+		    bare_load && !core_only && (!install_info || install_info->mode != ExtensionInstallMode::REPOSITORY);
 		if (parsed_metadata.AppearsValid()) {
-			signature_valid =
-			    CheckExtensionSignature(db, *handle, parsed_metadata, trusted_origin, signing_repository_name);
+			signature_valid = CheckExtensionSignature(db, *handle, parsed_metadata, trusted_origin,
+			                                          signing_repository_name, unknown_origin);
 		} else {
 			signature_valid = false;
 		}

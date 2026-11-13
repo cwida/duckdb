@@ -343,6 +343,24 @@ TEST_CASE("Test that the extension repository directory is a startup-only trust 
 	}
 }
 
+TEST_CASE("Test that an unknown origin trusts the core and community keys", "[api]") {
+	DuckDB db(nullptr);
+	auto &instance = *db.instance;
+
+	auto core_keys = ExtensionHelper::GetTrustedPublicKeys(instance, ExtensionRepositoryType::CORE, "");
+	auto community_keys = ExtensionHelper::GetTrustedPublicKeys(instance, ExtensionRepositoryType::COMMUNITY, "");
+	auto unknown_keys = ExtensionHelper::GetTrustedPublicKeys(instance, ExtensionRepositoryType::CORE, "", true);
+	REQUIRE(unknown_keys.size() == core_keys.size() + community_keys.size());
+	for (auto &key : community_keys) {
+		REQUIRE(std::find(unknown_keys.begin(), unknown_keys.end(), key) != unknown_keys.end());
+	}
+
+	// without community extensions, an unknown origin trusts only the core keys
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET allow_community_extensions = false"));
+	REQUIRE(ExtensionHelper::GetTrustedPublicKeys(instance, ExtensionRepositoryType::CORE, "", true) == core_keys);
+}
+
 TEST_CASE("Test which signing keys a load trusts", "[api]") {
 	using T = ExtensionRepositoryType;
 	// signature (has_from_clause, core_only, recorded_origin)

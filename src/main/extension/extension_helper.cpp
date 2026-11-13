@@ -862,8 +862,12 @@ const vector<string> ExtensionHelper::GetPublicKeys(bool allow_community_extensi
 }
 
 vector<string> ExtensionHelper::GetTrustedPublicKeys(DatabaseInstance &db, ExtensionRepositoryType repository_type,
-                                                     const string &repository_name) {
+                                                     const string &repository_name, bool unknown_origin) {
 	vector<string> keys;
+	if (unknown_origin) {
+		D_ASSERT(repository_type == ExtensionRepositoryType::CORE);
+		return GetPublicKeys(Settings::Get<AllowCommunityExtensionsSetting>(db));
+	}
 	switch (repository_type) {
 	case ExtensionRepositoryType::COMMUNITY:
 		if (!Settings::Get<AllowCommunityExtensionsSetting>(db)) {
