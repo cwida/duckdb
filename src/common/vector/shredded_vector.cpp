@@ -182,4 +182,14 @@ bool ShreddedVector::IsFullyShredded(const Vector &vec) {
 	return false;
 }
 
+optional_ptr<const ValidityMask> ShreddedVector::TryGetRowValidity(const Vector &vec) {
+	VerifyShreddedVector(vec);
+	// the top-level validity of the shredded component holds the per-row validity of the VARIANT
+	auto &shredded = GetShreddedVector(vec);
+	if (shredded.GetVectorType() != VectorType::FLAT_VECTOR) {
+		return nullptr;
+	}
+	return FlatVector::Validity(shredded);
+}
+
 } // namespace duckdb

@@ -70,6 +70,9 @@ struct ShreddedVector {
 
 	//! Returns whether or not the vector is fully shredded
 	DUCKDB_API static bool IsFullyShredded(const Vector &vec);
+
+	//! Returns the mask holding the per-row validity, without unshredding, or nullptr if it is not directly available
+	DUCKDB_API static optional_ptr<const ValidityMask> TryGetRowValidity(const Vector &vec);
 };
 
 } // namespace duckdb

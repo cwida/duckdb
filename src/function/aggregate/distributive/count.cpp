@@ -2,6 +2,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/common/vector/shredded_vector.hpp"
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
@@ -9,6 +10,18 @@
 namespace duckdb {
 
 namespace {
+//! COUNT only needs the per-row validity; obtain it without triggering an (expensive) unshredding
+static optional_ptr<const ValidityMask> TryGetValidity(const Vector &input) {
+	switch (input.GetVectorType()) {
+	case VectorType::FLAT_VECTOR:
+		return FlatVector::Validity(input);
+	case VectorType::SHREDDED_VECTOR:
+		return ShreddedVector::TryGetRowValidity(input);
+	default:
+		return nullptr;
+	}
+}
+
 struct BaseCountFunction {
 	template <class STATE, class OP>
 	static void Combine(const STATE &source, STATE &target, AggregateInputData &) {
@@ -165,9 +178,9 @@ struct CountFunction : public BaseCountFunction {
 	}
 
 	static void CountScatterClusteredGeneric(Vector &input, const ClusteredAggr &cs, idx_t count) {
-		if (input.GetVectorType() == VectorType::FLAT_VECTOR) {
-			auto &validity = FlatVector::Validity(input);
-			CountClusteredRuns(cs, validity,
+		auto validity = TryGetValidity(input);
+		if (validity) {
+			CountClusteredRuns(cs, *validity,
 			                   [&](const sel_t *run_sel, idx_t, idx_t k) { return run_sel ? run_sel[k] : k; });
 			return;
 		}
@@ -230,16 +243,18 @@ struct CountFunction : public BaseCountFunction {
 			return;
 		}
 		auto &input = inputs[0];
-		if (input.GetVectorType() == VectorType::FLAT_VECTOR && states.GetVectorType() == VectorType::FLAT_VECTOR) {
-			auto sdata = FlatVector::GetDataMutable<STATE *>(states);
-			CountFlatLoop(sdata, FlatVector::ValidityMutable(input), count);
-		} else {
-			UnifiedVectorFormat idata, sdata;
-			input.ToUnifiedFormat(idata);
-			states.ToUnifiedFormat(sdata);
-			CountScatterLoop(UnifiedVectorFormat::GetData<STATE *>(sdata), *idata.sel, *sdata.sel, idata.validity,
-			                 count);
+		if (states.GetVectorType() == VectorType::FLAT_VECTOR) {
+			auto validity = TryGetValidity(input);
+			if (validity) {
+				auto sdata = FlatVector::GetDataMutable<STATE *>(states);
+				CountFlatLoop(sdata, *validity, count);
+				return;
+			}
 		}
+		UnifiedVectorFormat idata, sdata;
+		input.ToUnifiedFormat(idata);
+		states.ToUnifiedFormat(sdata);
+		CountScatterLoop(UnifiedVectorFormat::GetData<STATE *>(sdata), *idata.sel, *sdata.sel, idata.validity, count);
 	}
 
 	static inline void CountFlatUpdateLoop(STATE &result, const ValidityMask &mask, idx_t count) {

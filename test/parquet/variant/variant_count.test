@@ -1,0 +1,88 @@
+# name: test/parquet/variant/variant_count.test
+# description: COUNT over a shredded Parquet VARIANT must agree with the count over the unshredded values
+# group: [variant]
+
+require parquet
+
+require json
+
+statement ok
+create macro data() AS TABLE (
+	FROM (VALUES
+		(1, {'a': 21::INTEGER, 'b': 42::INTEGER}::VARIANT),
+		(2, {'a': 1::INTEGER, 'b': 2::INTEGER}::VARIANT),
+		(3, NULL::VARIANT),
+		(4, {'a': 100::INTEGER, 'b': 200::INTEGER}::VARIANT),
+		(5, NULL::VARIANT),
+		(6, 'null'::JSON::VARIANT),
+		(7, {'a': 7::INTEGER}::VARIANT)
+	) t(id, a)
+)
+
+# fully shredded, with a partially shredded row and json nulls in the leftover
+statement ok
+COPY (from data()) TO '{TEST_DIR}/variant_count.parquet' (
+	shredding {
+		a: 'STRUCT(a INTEGER, b INTEGER)'
+	}
+)
+
+query I
+select distinct vector_type(a) from '{TEST_DIR}/variant_count.parquet';
+----
+SHREDDED_VECTOR
+
+# count(column) skips only SQL NULLs, exactly like the non-shredded source
+query II
+select count(a), count(*) from data()
+----
+4	7
+
+query II
+select count(a), count(*) from '{TEST_DIR}/variant_count.parquet'
+----
+4	7
+
+# the values themselves are unaffected
+query I
+select a from '{TEST_DIR}/variant_count.parquet' order by id
+----
+{'a': 21, 'b': 42}
+{'a': 1, 'b': 2}
+NULL
+{'a': 100, 'b': 200}
+NULL
+NULL
+{'a': 7}
+
+# shredded as a LIST, mixed with json nulls
+statement ok
+create macro list_data() AS TABLE (
+	FROM (VALUES
+		(1, [1::INTEGER, 2, 3]::VARIANT),
+		(2, NULL::VARIANT),
+		(3, [4::INTEGER, 5]::VARIANT),
+		(4, 'null'::JSON::VARIANT)
+	) t(id, a)
+)
+
+statement ok
+COPY (from list_data()) TO '{TEST_DIR}/variant_count_list.parquet' (
+	shredding {
+		a: 'INTEGER[]'
+	}
+)
+
+query II
+select count(a), count(*) from '{TEST_DIR}/variant_count_list.parquet'
+----
+2	4
+
+# count over an unshredded variant column still works
+statement ok
+COPY (from data()) TO '{TEST_DIR}/variant_count_plain.parquet' (SHREDDING {a: 'VARIANT'})
+
+query II
+select count(a), count(*) from '{TEST_DIR}/variant_count_plain.parquet'
+----
+4	7
