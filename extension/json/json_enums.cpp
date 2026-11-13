@@ -130,4 +130,27 @@ JSONKeyMatch EnumUtil::FromString<JSONKeyMatch>(const char *value) {
    throw NotImplementedException(StringUtil::Format("Enum value of type JSONKeyMatch: '%s' not implemented", value));
 }
 
+template<>
+const char* EnumUtil::ToChars<JSONInferObject>(JSONInferObject value) {
+	switch(value) {
+	case JSONInferObject::DEFAULT:
+		return "DEFAULT";
+	case JSONInferObject::VARIANT:
+		return "VARIANT";
+	default:
+		throw NotImplementedException(StringUtil::Format("Enum value of type JSONInferObject: '%d' not implemented", value));
+	}
+}
+
+template<>
+JSONInferObject EnumUtil::FromString<JSONInferObject>(const char *value) {
+    if (StringUtil::Equals(value, "DEFAULT")) {
+		return JSONInferObject::DEFAULT;
+	}
+    if (StringUtil::Equals(value, "VARIANT")) {
+		return JSONInferObject::VARIANT;
+	}
+   throw NotImplementedException(StringUtil::Format("Enum value of type JSONInferObject: '%s' not implemented", value));
+}
+
 } // namespace duckdb

@@ -48,6 +48,13 @@ enum class JSONKeyMatch : uint8_t {
 	CASE_INSENSITIVE = 1,
 };
 
+enum class JSONInferObject : uint8_t {
+	//! Infer objects as STRUCT, MAP or JSON
+	DEFAULT = 0,
+	//! Infer objects as VARIANT
+	VARIANT = 1,
+};
+
 template<>
 const char* EnumUtil::ToChars<JSONScanType>(JSONScanType value);
 
@@ -71,5 +78,11 @@ const char* EnumUtil::ToChars<JSONKeyMatch>(JSONKeyMatch value);
 
 template<>
 JSONKeyMatch EnumUtil::FromString<JSONKeyMatch>(const char *value);
+
+template<>
+const char* EnumUtil::ToChars<JSONInferObject>(JSONInferObject value);
+
+template<>
+JSONInferObject EnumUtil::FromString<JSONInferObject>(const char *value);
 
 } // namespace duckdb

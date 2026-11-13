@@ -13,6 +13,7 @@
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/types/type_map.hpp"
+#include "duckdb/function/cast/variant/variant_shredder.hpp"
 #include "duckdb/function/scalar/strftime_format.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "json_enums.hpp"
@@ -48,6 +49,9 @@ public:
 	vector<string> key_names;
 	//! For JSONRecordType::FEATURES: where each column reads its value from, in bind order
 	vector<JSONFeatureColumn> feature_columns;
+	//! For "infer_object=variant": what each column would have been inferred as,
+	//! as the type that the VARIANT is shredded into (INVALID if the column is not a VARIANT)
+	vector<LogicalType> variant_shred_types;
 
 	//! The date format map
 	unique_ptr<DateFormatMap> date_format_map;
@@ -131,6 +135,9 @@ public:
 public:
 	//! Options when transforming the JSON to columnar data
 	JSONTransformOptions transform_options;
+	//! The shredders of the VARIANT columns we're reading, parallel to the projected columns. They are owned here
+	//! because the shredded data that the VARIANT vectors reference must outlive those vectors
+	vector<unique_ptr<variant::VariantShredder>> variant_shredders;
 
 private:
 	void ParseJSON(char *const json_start, const idx_t json_size, const idx_t remaining);
@@ -182,8 +189,8 @@ public:
 	                                                     vector<shared_ptr<JSONReader>> &sampled_readers);
 	//! Derive the columns that are read from a detected JSON structure
 	static void StructureToColumns(ClientContext &context, JSONReaderOptions &options, const JSONStructureNode &node,
-	                               vector<JSONFeatureColumn> &feature_columns, vector<LogicalType> &return_types,
-	                               vector<Identifier> &names);
+	                               vector<JSONFeatureColumn> &feature_columns, vector<LogicalType> &variant_shred_types,
+	                               vector<LogicalType> &return_types, vector<Identifier> &names);
 
 	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
 	                      const BoundTableFunction &function);

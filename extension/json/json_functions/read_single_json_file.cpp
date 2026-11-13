@@ -60,8 +60,6 @@ public:
 struct ReadSingleJSONFileLocalState : public LocalTableFunctionState {
 public:
 	ReadSingleJSONFileLocalState(ClientContext &context, JSONScanGlobalState &gstate) : state(context, gstate) {
-		// the transform options are thread-local
-		state.transform_options = gstate.transform_options;
 	}
 
 public:
@@ -114,6 +112,7 @@ static unique_ptr<FunctionData> ReadSingleJSONFileBind(ClientContext &context, T
 		result->options.sql_type_list = *file_input.expected_types;
 		result->key_names = source.key_names;
 		result->feature_columns = source.feature_columns;
+		result->variant_shred_types = source.variant_shred_types;
 		// the date/timestamp formats that auto-detection settled on are part of how the scan is read
 		result->date_format_map = make_uniq<DateFormatMap>(*source.date_format_map);
 		JSONScan::FinalizeBind(*result, result->options.name_list);
@@ -275,7 +274,8 @@ static unique_ptr<FunctionData> ReadSingleJSONFileCombineSchema(ClientContext &c
 	// the merged structure describes the schema of the scan by itself
 	return_types.clear();
 	names.clear();
-	JSONScan::StructureToColumns(context, result->options, merged, result->feature_columns, return_types, names);
+	JSONScan::StructureToColumns(context, result->options, merged, result->feature_columns, result->variant_shred_types,
+	                             return_types, names);
 
 	// the JSON reader looks columns up by their exact key, so the keys are kept before the column names that are
 	// duplicates for us (e.g. "id" and "Id") are renamed

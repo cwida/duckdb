@@ -1,0 +1,218 @@
+# name: test/sql/json/table/read_json_infer_object_variant.test
+# description: Test the infer_object read option
+# group: [table]
+
+require json
+
+require parquet
+
+# objects are inferred as VARIANT, scalars are unaffected
+query IIII
+SELECT typeof(id), typeof(obj), typeof(arr), typeof(name) FROM read_json_auto('{DATA_DIR}/json/infer_object_variant.ndjson', infer_object='variant') LIMIT 1
+----
+BIGINT	VARIANT	VARIANT[]	VARCHAR
+
+# without the option the same file is inferred as STRUCT
+query IIII
+SELECT typeof(id), typeof(obj), typeof(arr), typeof(name) FROM read_json_auto('{DATA_DIR}/json/infer_object_variant.ndjson') LIMIT 1
+----
+BIGINT	STRUCT(a BIGINT, b VARCHAR)	STRUCT(c BIGINT)[]	VARCHAR
+
+query IIII
+SELECT id, obj::VARCHAR, arr::VARCHAR, name FROM read_json_auto('{DATA_DIR}/json/infer_object_variant.ndjson', infer_object='variant') ORDER BY id
+----
+1	{'a': 1, 'b': x}	[{'c': 2}]	row1
+2	{'a': 2, 'b': y}	[]	row2
+3	{'a': 3}	[{'c': 4}, {'c': 5}]	row3
+4	NULL	NULL	row4
+5	NULL	[{'c': 6}]	row5
+
+query II
+SELECT variant_typeof(obj), variant_typeof(arr[1]) FROM read_json_auto('{DATA_DIR}/json/infer_object_variant.ndjson', infer_object='variant') WHERE id = 1
+----
+OBJECT(a, b)	OBJECT(c)
+
+# nested objects stay VARIANT, also when they are several levels deep
+query III
+SELECT typeof(o), typeof(l), o.a.b.c::VARCHAR FROM read_json_auto('{DATA_DIR}/json/infer_object_variant_nested.ndjson', infer_object='variant') WHERE id = 1
+----
+VARIANT	VARIANT[]	1
+
+query III
+SELECT id, o::VARCHAR, l::VARCHAR FROM read_json_auto('{DATA_DIR}/json/infer_object_variant_nested.ndjson', infer_object='variant') ORDER BY id
+----
+1	{'a': {'b': {'c': 1}}, 's': x}	[{'d': 2}]
+2	{'a': {'b': {'c': 2}}, 's': y}	[]
+3	NULL	NULL
+
+# values that are inferred as JSON become VARIANT as well
+query II
+SELECT typeof(x), x::VARCHAR FROM read_json_auto('{DATA_DIR}/json/infer_object_variant_mixed.ndjson', infer_object='variant') WHERE id = 1
+----
+VARIANT	{'a': 1}
+
+query II
+SELECT variant_typeof(x), x::VARCHAR FROM read_json_auto('{DATA_DIR}/json/infer_object_variant_mixed.ndjson', infer_object='variant') WHERE id = 2
+----
+ARRAY(2)	[1, 2]
+
+# reading objects directly into a VARIANT column also works
+query II
+SELECT obj::VARCHAR, variant_typeof(obj) FROM read_json('{DATA_DIR}/json/infer_object_variant.ndjson', columns = {id: 'BIGINT', obj: 'VARIANT', arr: 'VARIANT[]', name: 'VARCHAR'}) WHERE id = 1
+----
+{'a': 1, 'b': x}	OBJECT(a, b)
+
+# explicit types are not overridden by the option
+query II
+SELECT typeof(obj), typeof(arr) FROM read_json('{DATA_DIR}/json/infer_object_variant.ndjson', columns = {obj: 'STRUCT(a BIGINT, b VARCHAR)', arr: 'STRUCT(c BIGINT)[]'}, infer_object='variant') LIMIT 1
+----
+STRUCT(a BIGINT, b VARCHAR)	STRUCT(c BIGINT)[]
+
+# numbers follow the VARIANT integer rules: signed, unsigned and double
+query II
+SELECT i::VARCHAR, variant_typeof(i) FROM read_json('{DATA_DIR}/json/infer_object_variant_numbers.ndjson', columns = {i: 'VARIANT'}) ORDER BY i
+----
+-9223372036854775808	INT64
+1	UINT64
+
+query II
+SELECT u::VARCHAR, variant_typeof(u) FROM read_json('{DATA_DIR}/json/infer_object_variant_numbers.ndjson', columns = {u: 'VARIANT'}) ORDER BY u
+----
+2	UINT64
+18446744073709551615	UINT64
+
+query II
+SELECT d::VARCHAR, variant_typeof(d) FROM read_json('{DATA_DIR}/json/infer_object_variant_numbers.ndjson', columns = {d: 'VARIANT'}) ORDER BY d
+----
+1.5	DOUBLE
+2.5	DOUBLE
+
+# integers that do not fit a 64-bit integer are read as doubles
+query II
+SELECT bn::VARCHAR, variant_typeof(bn) FROM read_json('{DATA_DIR}/json/infer_object_variant_numbers.ndjson', columns = {bn: 'VARIANT'}) ORDER BY bn
+----
+3	UINT64
+1.8446744073709552e+19	DOUBLE
+
+# the option works for read_json and for multiple files at once
+query II
+SELECT count(*), typeof(any_value(obj)) FROM read_json(['{DATA_DIR}/json/infer_object_variant.ndjson', '{DATA_DIR}/json/infer_object_variant.ndjson'], infer_object='variant')
+----
+10	VARIANT
+
+# the value is case insensitive
+query I
+SELECT typeof(obj) FROM read_json_auto('{DATA_DIR}/json/infer_object_variant.ndjson', infer_object='VARIANT') LIMIT 1
+----
+VARIANT
+
+# prepared statements work too
+statement ok
+PREPARE p AS SELECT typeof(obj) FROM read_json_auto('{DATA_DIR}/json/infer_object_variant.ndjson', infer_object='variant') LIMIT 1
+
+query I
+EXECUTE p
+----
+VARIANT
+
+# unknown values are rejected
+statement error
+SELECT * FROM read_json_auto('{DATA_DIR}/json/infer_object_variant.ndjson', infer_object='nope')
+----
+Binder Error: infer_object must be 'variant', not 'nope'
+
+statement error
+SELECT * FROM read_json('{DATA_DIR}/json/infer_object_variant.ndjson', infer_object='struct')
+----
+Binder Error: infer_object must be 'variant', not 'struct'
+
+# the option does not change the inferred scalars
+query IIII
+SELECT typeof(i), typeof(u), typeof(d), typeof(bn) FROM read_json_auto('{DATA_DIR}/json/infer_object_variant_numbers.ndjson', infer_object='variant') LIMIT 1
+----
+HUGEINT	HUGEINT	DOUBLE	DOUBLE
+
+# values that do not match the inferred type are kept as they are instead of being cast to it
+query III
+SELECT id, o::VARCHAR, m::VARCHAR FROM read_json_auto('{DATA_DIR}/json/infer_object_variant_mismatch.ndjson', sample_size=1, infer_object='variant') ORDER BY id
+----
+1	{'a': 1, 'b': x, 'l': [1, 2]}	{'k': {'n': 1}}
+2	{'a': true, 'b': 2, 'l': [3, four]}	{'k': [1, 2]}
+3	{'a': 1.75, 'b': NULL, 'l': not a list}	{'k': {'n': deep}}
+4	{'a': [1, 2], 'l': {'x': 1}}	{}
+5	{}	NULL
+6	{'c': new key}	NULL
+7	NULL	NULL
+
+# the typed values keep their own type, they are not converted to the inferred one
+query III
+SELECT variant_typeof(o.a), variant_typeof(o.b), variant_typeof(o.l[2]) FROM read_json_auto('{DATA_DIR}/json/infer_object_variant_mismatch.ndjson', sample_size=1, infer_object='variant') WHERE id = 2
+----
+BOOL_TRUE	UINT64	VARCHAR
+
+# an empty object does not get the keys of the inferred type
+query II
+SELECT o::VARCHAR, variant_typeof(o) FROM read_json_auto('{DATA_DIR}/json/infer_object_variant_mismatch.ndjson', sample_size=1, infer_object='variant') WHERE id = 5
+----
+{}	OBJECT()
+
+# files with a different structure do not get the keys of the other files
+query II
+SELECT id, o::VARCHAR FROM read_json_auto(['{DATA_DIR}/json/infer_object_variant_cols1.ndjson', '{DATA_DIR}/json/infer_object_variant_cols2.ndjson'], sample_size=1, infer_object='variant') ORDER BY id
+----
+1	{'a': 1, 'c': 3}
+2	{'a': 2, 'c': 4}
+3	{'b': x, 'd': true}
+4	{'b': y, 'd': false}
+
+# the inferred type is still used for shredding the VARIANT column
+statement ok
+CREATE TABLE shred AS SELECT * FROM read_json_auto('{DATA_DIR}/json/infer_object_variant_mismatch.ndjson', sample_size=1, infer_object='variant')
+
+statement ok
+COPY shred TO '{TEST_DIR}/infer_object_variant_shredded.parquet' (FORMAT parquet)
+
+query I
+SELECT count(*) > 0 FROM parquet_schema('{TEST_DIR}/infer_object_variant_shredded.parquet') WHERE name = 'typed_value' AND duckdb_type = 'BIGINT'
+----
+true
+
+query I
+SELECT count(*) FROM (SELECT * FROM shred EXCEPT ALL SELECT * FROM '{TEST_DIR}/infer_object_variant_shredded.parquet')
+----
+0
+
+# reading more than one vector batch must start every batch from a clean unshredded VARIANT
+statement ok
+COPY (SELECT json_object('a', i, 'v', CASE WHEN i % 1000 = 0 THEN to_json('text') ELSE to_json(i) END) AS o FROM range(3000) t(i)) TO '{TEST_DIR}/infer_object_variant_batches.ndjson' (FORMAT json, ARRAY false)
+
+query II
+SELECT count(*), count(DISTINCT o) FROM read_json_auto('{TEST_DIR}/infer_object_variant_batches.ndjson', sample_size=100, infer_object='variant')
+----
+3000	3000
+
+# values that do not conform to the inferred type are unshredded in every batch
+query ITT
+SELECT variant_extract(o, 'a')::BIGINT, variant_typeof(o.v), variant_extract(o, 'v')::VARCHAR FROM read_json_auto('{TEST_DIR}/infer_object_variant_batches.ndjson', sample_size=100, infer_object='variant') WHERE variant_extract(o, 'a')::BIGINT IN (0, 1, 2000, 2049) ORDER BY 1
+----
+0	VARCHAR	text
+1	UINT64	1
+2000	VARCHAR	text
+2049	UINT64	2049
+
+# the VARIANT values do not depend on how many batches they were read in
+query I
+SELECT count(*) FROM ((SELECT o FROM read_json_auto('{TEST_DIR}/infer_object_variant_batches.ndjson', sample_size=100, infer_object='variant')) EXCEPT ALL (SELECT o::VARIANT FROM read_json_auto('{TEST_DIR}/infer_object_variant_batches.ndjson', columns={'o':'JSON'})))
+----
+0
+
+statement ok
+CREATE TABLE batches AS SELECT o FROM read_json_auto('{TEST_DIR}/infer_object_variant_batches.ndjson', sample_size=100, infer_object='variant')
+
+statement ok
+CHECKPOINT
+
+query III
+SELECT count(*), count(DISTINCT o), count(*) FILTER (WHERE variant_typeof(o) = 'OBJECT(a, v)') FROM batches
+----
+3000	3000	3000

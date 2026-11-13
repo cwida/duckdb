@@ -67,7 +67,17 @@ JSONScanGlobalState::JSONScanGlobalState(ClientContext &context, const JSONScanD
 }
 
 JSONScanLocalState::JSONScanLocalState(ClientContext &context, JSONScanGlobalState &gstate)
-    : scan_state(context, gstate.allocator, gstate.buffer_capacity) {
+    : transform_options(gstate.transform_options), scan_state(context, gstate.allocator, gstate.buffer_capacity) {
+	// each thread gets its own shredders - the shredded data they own is referenced by the VARIANT vectors
+	auto &shred_types = gstate.json_data.variant_shred_types;
+	for (auto &column_index : gstate.column_indices) {
+		const auto col_id = column_index.GetPrimaryIndex();
+		if (col_id >= shred_types.size() || shred_types[col_id].id() == LogicalTypeId::INVALID) {
+			variant_shredders.emplace_back();
+			continue;
+		}
+		variant_shredders.push_back(make_uniq<variant::VariantShredder>(shred_types[col_id]));
+	}
 }
 
 JSONGlobalTableFunctionState::JSONGlobalTableFunctionState(ClientContext &context, const JSONScanData &json_data,
@@ -150,7 +160,8 @@ void JSONScan::AddReadJSONParameters(TableFunction &table_function) {
 		    .Add("records", LogicalType::ANY)
 		    .Add("array", LogicalType::BOOLEAN)
 		    .Add("maximum_sample_files", LogicalType::BIGINT)
-		    .Add("case_insensitive_keys", LogicalType::BOOLEAN);
+		    .Add("case_insensitive_keys", LogicalType::BOOLEAN)
+		    .Add("infer_object", LogicalType::VARCHAR);
 	});
 }
 
@@ -359,6 +370,14 @@ bool JSONScan::ParseOption(ClientContext &context, const Identifier &key, const 
 		options.case_insensitive_keys = BooleanValue::Get(value);
 		return true;
 	}
+	if (key == "infer_object") {
+		auto arg = StringUtil::Lower(StringValue::Get(value));
+		if (arg != "variant") {
+			throw BinderException("infer_object must be 'variant', not '%s'", arg);
+		}
+		options.infer_object = JSONInferObject::VARIANT;
+		return true;
+	}
 	return false;
 }
 
@@ -507,16 +526,17 @@ void ReadJSONFunction(ClientContext &context, JSONReader &json_reader, JSONScanG
 		D_ASSERT(gstate.json_data.options.record_type != JSONRecordType::AUTO_DETECT);
 		bool success;
 		if (gstate.json_data.options.record_type == JSONRecordType::RECORDS) {
-			success = JSONTransform::TransformObject(values, scan_state.allocator.GetYYAlc(), count, gstate.names,
-			                                         result_vectors, lstate.transform_options, gstate.column_indices,
-			                                         lstate.transform_options.error_unknown_key);
+			success = JSONTransform::TransformObject(
+			    values, scan_state.allocator.GetYYAlc(), count, gstate.names, result_vectors, lstate.transform_options,
+			    gstate.column_indices, lstate.transform_options.error_unknown_key, &lstate.variant_shredders);
 		} else if (gstate.json_data.options.record_type == JSONRecordType::FEATURES) {
 			success = TransformGeoJSONFeatures(values, scan_state.allocator.GetYYAlc(), count, gstate, result_vectors,
 			                                   lstate.transform_options);
 		} else {
 			D_ASSERT(gstate.json_data.options.record_type == JSONRecordType::VALUES);
 			success = JSONTransform::Transform(values, scan_state.allocator.GetYYAlc(), *result_vectors[0], count,
-			                                   lstate.transform_options, gstate.column_indices[0]);
+			                                   lstate.transform_options, gstate.column_indices[0],
+			                                   lstate.variant_shredders[0].get());
 		}
 
 		if (!success) {

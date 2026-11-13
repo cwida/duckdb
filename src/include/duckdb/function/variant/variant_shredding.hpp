@@ -71,6 +71,9 @@ public:
 	static LogicalType GetUnshreddedType() {
 		return LogicalType::STRUCT(StructType::GetChildTypes(LogicalType::VARIANT()));
 	}
+	//! Shred 'input' (an unshredded VARIANT vector) into 'output', a shredded VARIANT struct as produced by
+	//! VariantShreddingStats::GetShreddedType. Values that do not match the shredded type are kept unshredded.
+	static void ShredWithFallback(const Vector &input, Vector &output, idx_t count);
 
 public:
 	virtual void WriteVariantValues(UnifiedVariantVectorData &variant, Vector &result,

@@ -15,6 +15,8 @@
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/types/geometry.hpp"
 #include "duckdb/common/types/value_map.hpp"
+#include "duckdb/function/cast/variant/json_to_variant.hpp"
+#include "duckdb/function/cast/variant/variant_shredder.hpp"
 #include "json_geojson.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/types.hpp"
@@ -622,13 +624,15 @@ static bool AssignObjectValues(yyjson_val *objects[], yyjson_alc *alc, const idx
 bool JSONTransform::TransformObject(yyjson_val *objects[], yyjson_alc *alc, const idx_t count,
                                     const vector<string> &names, const vector<Vector *> &result_vectors,
                                     JSONTransformOptions &options,
-                                    optional_ptr<const vector<ColumnIndex>> column_indices, bool error_unknown_key) {
+                                    optional_ptr<const vector<ColumnIndex>> column_indices, bool error_unknown_key,
+                                    optional_ptr<const vector<unique_ptr<variant::VariantShredder>>> shredders) {
 	if (column_indices && column_indices->empty()) {
 		column_indices = nullptr;
 	}
 	D_ASSERT(alc);
 	D_ASSERT(names.size() == result_vectors.size());
 	D_ASSERT(!column_indices || column_indices->size() == names.size());
+	D_ASSERT(!shredders || shredders->size() == names.size());
 	const idx_t column_count = names.size();
 
 	vector<yyjson_val **> nested_vals;
@@ -645,8 +649,9 @@ bool JSONTransform::TransformObject(yyjson_val *objects[], yyjson_alc *alc, cons
 
 	for (idx_t col_idx = 0; col_idx < column_count; col_idx++) {
 		auto child_column_index = column_indices ? &(*column_indices)[col_idx] : nullptr;
+		auto shredder = shredders ? (*shredders)[col_idx].get() : nullptr;
 		if (!JSONTransform::Transform(nested_vals[col_idx], alc, *result_vectors[col_idx], count, options,
-		                              child_column_index)) {
+		                              child_column_index, shredder)) {
 			success = false;
 		}
 	}
@@ -699,6 +704,7 @@ static bool TransformObjectInternal(yyjson_val *objects[], yyjson_alc *alc, Vect
 
 	auto child_indices = column_index ? &column_index->GetChildIndexes() : nullptr;
 	const auto error_unknown_key = child_count == child_vs.size(); // Nothing projected out, error if unknown
+	// only the top-level columns of the scan are shredded, the children of a struct are not
 	return JSONTransform::TransformObject(objects, alc, count, child_names, child_vectors, options, child_indices,
 	                                      error_unknown_key);
 }
@@ -1122,7 +1128,8 @@ static bool TransformValueIntoUnion(yyjson_val **vals, yyjson_alc *alc, Vector &
 }
 
 bool JSONTransform::Transform(yyjson_val *vals[], yyjson_alc *alc, Vector &result, const idx_t count,
-                              JSONTransformOptions &options, optional_ptr<const ColumnIndex> column_index) {
+                              JSONTransformOptions &options, optional_ptr<const ColumnIndex> column_index,
+                              optional_ptr<variant::VariantShredder> shredder) {
 	auto result_type = result.GetType();
 	if ((result_type == LogicalTypeId::TIMESTAMP || result_type == LogicalTypeId::DATE) && options.date_format_map &&
 	    options.date_format_map->HasFormats(result_type.id())) {
@@ -1212,6 +1219,19 @@ bool JSONTransform::Transform(yyjson_val *vals[], yyjson_alc *alc, Vector &resul
 		return TransformValueIntoUnion(vals, alc, result, count, options);
 	case LogicalTypeId::ARRAY:
 		return TransformArrayToArray(vals, alc, result, count, options);
+	case LogicalTypeId::VARIANT: {
+		if (!shredder || !shredder->SupportsShredding()) {
+			// no structure to shred the VARIANT into - read the JSON values directly into the VARIANT
+			return variant::ConvertJSONValuesToVariant(vals, count, result);
+		}
+		// read the JSON values into an unshredded VARIANT first, so that values that do not match the inferred
+		// type are not cast, and shred it afterwards - those values end up in the unshredded part of the VARIANT
+		Vector unshredded(LogicalType::VARIANT(), count);
+		if (!variant::ConvertJSONValuesToVariant(vals, count, unshredded)) {
+			return false;
+		}
+		return shredder->Shred(unshredded, result, count);
+	}
 	default:
 		throw NotImplementedException("Cannot read a value of type %s from a json file", result_type.ToString());
 	}

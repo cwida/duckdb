@@ -336,5 +336,8 @@ bool ConvertJSONToVariant(ToVariantSourceData &source, ToVariantGlobalResultData
 	return true;
 }
 
+//! Convert already-parsed JSON values to their (unshredded) VARIANT representation; a 'nullptr' value yields NULL
+DUCKDB_API bool ConvertJSONValuesToVariant(yyjson_val *values[], idx_t count, Vector &result);
+
 } // namespace variant
 } // namespace duckdb

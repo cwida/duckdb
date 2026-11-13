@@ -68,5 +68,18 @@
         "comment": "Object keys match names ignoring ASCII case"
       }
     ]
+  },
+  {
+    "name": "JSONInferObject",
+    "values": [
+      {
+        "name": "DEFAULT",
+        "comment": "Infer objects as STRUCT, MAP or JSON"
+      },
+      {
+        "name": "VARIANT",
+        "comment": "Infer objects as VARIANT"
+      }
+    ]
   }
 ]

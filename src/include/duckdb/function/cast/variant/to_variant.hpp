@@ -8,6 +8,7 @@
 #include "duckdb/function/cast/variant/union_to_variant.hpp"
 #include "duckdb/function/cast/variant/variant_to_variant.hpp"
 #include "duckdb/function/cast/variant/primitive_to_variant.hpp"
+#include "duckdb/function/cast/variant/variant_shredder.hpp"
 
 namespace duckdb {
 namespace variant {

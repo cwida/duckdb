@@ -38,6 +38,38 @@ static inline LogicalType RemoveDuplicateStructKeys(const LogicalType &type, con
 	}
 }
 
+//! Replaces nested objects that were inferred in a container with VARIANT
+static LogicalType InferObjectAsVariant(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::MAP:
+		return LogicalType::VARIANT();
+	case LogicalTypeId::LIST:
+		return LogicalType::LIST(InferObjectAsVariant(ListType::GetChildType(type)));
+	case LogicalTypeId::ARRAY:
+		return LogicalType::ARRAY(InferObjectAsVariant(ArrayType::GetChildType(type)), ArrayType::GetSize(type));
+	default:
+		return type.IsJSONType() ? LogicalType::VARIANT() : type;
+	}
+}
+
+//! Replaces the inferred type of a column with VARIANT for "infer_object=variant", recording the inferred type
+//! as the type that the VARIANT is shredded into
+static LogicalType ApplyInferObjectOption(const JSONReaderOptions &options, const LogicalType &type,
+                                          vector<LogicalType> &variant_shred_types) {
+	const auto is_object = type.id() == LogicalTypeId::STRUCT || type.id() == LogicalTypeId::MAP || type.IsJSONType();
+	if (!options.InferObjectAsVariant()) {
+		variant_shred_types.emplace_back();
+		return type;
+	}
+	if (is_object) {
+		variant_shred_types.push_back(type);
+		return LogicalType::VARIANT();
+	}
+	variant_shred_types.emplace_back();
+	return InferObjectAsVariant(type);
+}
+
 struct AutoDetectState {
 	AutoDetectState(ClientContext &context_p, JSONScanData &json_data_p, const vector<OpenFileInfo> &files,
 	                vector<shared_ptr<JSONReader>> &sampled_readers_p, MutableDateFormatMap &date_format_map)
@@ -288,11 +320,12 @@ unique_ptr<JSONStructureNode> JSONScan::DetectStructure(ClientContext &context, 
 }
 
 void JSONScan::StructureToColumns(ClientContext &context, JSONReaderOptions &options, const JSONStructureNode &node,
-                                  vector<JSONFeatureColumn> &feature_columns, vector<LogicalType> &return_types,
-                                  vector<Identifier> &names) {
+                                  vector<JSONFeatureColumn> &feature_columns, vector<LogicalType> &variant_shred_types,
+                                  vector<LogicalType> &return_types, vector<Identifier> &names) {
 	// Convert structure to logical type
 	auto type = JSONStructure::StructureToType(context, node, options.max_depth, options.field_appearance_threshold,
 	                                           options.map_inference_threshold);
+	variant_shred_types.clear();
 
 	// Auto-detect record type
 	if (options.record_type == JSONRecordType::AUTO_DETECT) {
@@ -327,7 +360,8 @@ void JSONScan::StructureToColumns(ClientContext &context, JSONReaderOptions &opt
 			return_types.reserve(child_types.size());
 			names.reserve(child_types.size());
 			for (auto &child_type : child_types) {
-				return_types.emplace_back(RemoveDuplicateStructKeys(child_type.second, options.ignore_errors));
+				auto column_type = RemoveDuplicateStructKeys(child_type.second, options.ignore_errors);
+				return_types.emplace_back(ApplyInferObjectOption(options, column_type, variant_shred_types));
 				names.emplace_back(child_type.first);
 			}
 		} else {
@@ -336,7 +370,8 @@ void JSONScan::StructureToColumns(ClientContext &context, JSONReaderOptions &opt
 		}
 	} else {
 		D_ASSERT(options.record_type == JSONRecordType::VALUES);
-		return_types.emplace_back(RemoveDuplicateStructKeys(type, options.ignore_errors));
+		auto column_type = RemoveDuplicateStructKeys(type, options.ignore_errors);
+		return_types.emplace_back(ApplyInferObjectOption(options, column_type, variant_shred_types));
 		// Newline-delimited bare geometries produce a single GEOMETRY column, which "json" would be a poor name for
 		names.emplace_back(type.id() == LogicalTypeId::GEOMETRY ? "geometry" : "json");
 	}
@@ -347,7 +382,8 @@ void JSONScan::AutoDetect(ClientContext &context, JSONScanData &json_data, const
                           vector<Identifier> &names) {
 	json_data.record_type_auto_detected = json_data.options.record_type == JSONRecordType::AUTO_DETECT;
 	auto node = DetectStructure(context, json_data, files, sampled_readers);
-	StructureToColumns(context, json_data.options, *node, json_data.feature_columns, return_types, names);
+	StructureToColumns(context, json_data.options, *node, json_data.feature_columns, json_data.variant_shred_types,
+	                   return_types, names);
 	if (json_data.keep_structure) {
 		// keep the structure around so it can be combined with the structures of other files later on
 		json_data.structure = std::move(node);

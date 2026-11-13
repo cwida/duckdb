@@ -19,6 +19,9 @@ namespace duckdb {
 
 struct DateFormatMap;
 class JSONReader;
+namespace variant {
+class VariantShredder;
+} // namespace variant
 
 //! Options for error handling while transforming JSON
 struct JSONTransformOptions {
@@ -74,11 +77,15 @@ struct TryParseTimeStamp {
 };
 
 struct JSONTransform {
+	//! 'shredder' is the shredder of the VARIANT column that is being transformed, if any
 	static bool Transform(yyjson_val *vals[], yyjson_alc *alc, Vector &result, const idx_t count,
-	                      JSONTransformOptions &options, optional_ptr<const ColumnIndex> column_index);
+	                      JSONTransformOptions &options, optional_ptr<const ColumnIndex> column_index,
+	                      optional_ptr<variant::VariantShredder> shredder = nullptr);
+	//! 'shredders' holds the shredder of every column (in bind order), only used for top-level VARIANT columns
 	static bool TransformObject(yyjson_val *objects[], yyjson_alc *alc, const idx_t count, const vector<string> &names,
 	                            const vector<Vector *> &result_vectors, JSONTransformOptions &options,
-	                            optional_ptr<const vector<ColumnIndex>> column_indices, bool error_unknown_key);
+	                            optional_ptr<const vector<ColumnIndex>> column_indices, bool error_unknown_key,
+	                            optional_ptr<const vector<unique_ptr<variant::VariantShredder>>> shredders = nullptr);
 	static bool GetStringVector(yyjson_val *vals[], const idx_t count, const LogicalType &target, Vector &string_vector,
 	                            JSONTransformOptions &options);
 };

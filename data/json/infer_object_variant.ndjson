@@ -1,0 +1,5 @@
+{"id": 1, "obj": {"a": 1, "b": "x"}, "arr": [{"c": 2}], "name": "row1"}
+{"id": 2, "obj": {"a": 2, "b": "y"}, "arr": [], "name": "row2"}
+{"id": 3, "obj": {"a": 3}, "arr": [{"c": 4}, {"c": 5}], "name": "row3"}
+{"id": 4, "obj": null, "arr": null, "name": "row4"}
+{"id": 5, "arr": [{"c": 6}], "name": "row5"}

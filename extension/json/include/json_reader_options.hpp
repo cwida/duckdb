@@ -130,6 +130,12 @@ struct JSONReaderOptions {
 	//! If a struct contains more fields than this threshold with at least 80% similar types,
 	//! we infer it as MAP type
 	idx_t map_inference_threshold = 200;
+	//! How inferred objects (i.e., anything inferred as STRUCT, MAP or JSON) are read
+	JSONInferObject infer_object = JSONInferObject::DEFAULT;
+	//! Whether inferred objects are read as VARIANT
+	bool InferObjectAsVariant() const {
+		return infer_object == JSONInferObject::VARIANT;
+	}
 	//! User-provided list of names (in order)
 	vector<Identifier> name_list;
 	//! User-provided list of types (in order)
