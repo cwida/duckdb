@@ -45,6 +45,7 @@
     {
       "reason": "Checks common sub-expression extraction performed by the optimizer.",
       "paths": [
+        "test/sql/optimizer/cse_lazy_positions.test",
         "test/sql/optimizer/cse_volatile_aggregate_filter.test"
       ]
     },
