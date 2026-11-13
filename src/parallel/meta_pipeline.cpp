@@ -156,12 +156,12 @@ vector<shared_ptr<Pipeline>> MetaPipeline::AddDependenciesFrom(Pipeline &dependa
 	return created_pipelines;
 }
 
-static bool PipelineExceedsThreadCount(Pipeline &pipeline, const idx_t thread_count) {
+static bool PipelineSaturatesThreads(Pipeline &pipeline, const idx_t thread_count) {
 #ifdef DEBUG
 	// we always add the dependency in debug mode so that this is well-tested
 	return true;
 #else
-	return pipeline.GetSource()->EstimatedThreadCount() > thread_count;
+	return pipeline.GetSource()->EstimatedThreadCount() >= thread_count;
 #endif
 }
 
@@ -192,7 +192,7 @@ void MetaPipeline::AddRecursiveDependencies(const vector<shared_ptr<Pipeline>> &
 	for (; it != child_meta_pipelines.end(); it++) {
 		for (auto &pipeline : it->get()->pipelines) {
 			if (dependency_mode == RecursiveDependencyMode::RESPECT_PARALLELISM &&
-			    !PipelineExceedsThreadCount(*pipeline, thread_count)) {
+			    !PipelineSaturatesThreads(*pipeline, thread_count)) {
 				continue;
 			}
 			auto dependency_type = dependency_mode == RecursiveDependencyMode::FORCE
@@ -214,7 +214,7 @@ void MetaPipeline::AddRecursiveDependencies(const vector<shared_ptr<Pipeline>> &
 					}
 				}
 				if (dependency_mode == RecursiveDependencyMode::RESPECT_PARALLELISM &&
-				    !PipelineExceedsThreadCount(*new_dependency, thread_count)) {
+				    !PipelineSaturatesThreads(*new_dependency, thread_count)) {
 					continue;
 				}
 				AddPipelineDependency(*pipeline, *new_dependency, dependency_type);
