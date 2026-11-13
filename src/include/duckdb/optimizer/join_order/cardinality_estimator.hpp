@@ -72,6 +72,9 @@ private:
 	                                reference_map_t<JoinRelationSet, CompositeJoinPairStats> &inner_join_pair_stats,
 	                                reference_set_t<JoinRelationSet> &capped_join_pairs);
 	double GetJoinPairCap(JoinRelationSet &join_pair);
+	//! The number of key combinations of a join pair whose equalities cover a unique key of one of its relations,
+	//! or 0 if they cover neither relation's key.
+	double GetUniqueJoinPairDomain(JoinRelationSet &join_pair);
 
 	void AddRelationStats(const FilterInfo &filter_info);
 	bool EmptyFilter(const FilterInfo &filter_info);

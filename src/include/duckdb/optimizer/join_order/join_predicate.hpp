@@ -128,6 +128,7 @@ public:
 	void AddEqualityClass(JoinEqualityClass equality_class);
 	void AddDirectEqualityPairClass(JoinRelationSet &pair, idx_t equality_class_index, ColumnBinding first_binding,
 	                                ColumnBinding second_binding);
+	optional_ptr<const RelationPairEqualitySummary> GetDirectEqualityPair(JoinRelationSet &pair) const;
 
 	optional_ptr<const JoinPredicate> GetPredicateByFilterIndex(idx_t filter_index) const;
 	const vector<reference<JoinPredicate>> &GetPredicates() const;

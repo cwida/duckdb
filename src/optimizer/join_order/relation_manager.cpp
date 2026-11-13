@@ -92,6 +92,58 @@ const SingleJoinRelation &RelationManager::GetRelation(RelationIndex index) cons
 	return *relations.at(index.index);
 }
 
+//! The output columns of an operator that together identify a row: the groups of an aggregate, seen through the
+//! filters and projections above it. Empty when the operator has no such key.
+static vector<ColumnBinding> FindUniqueKey(LogicalOperator &op) {
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+		auto &aggregate = op.Cast<LogicalAggregate>();
+		// An absent grouping-set list denotes the single set containing all groups.
+		if (aggregate.groups.empty() || aggregate.grouping_sets.size() > 1 ||
+		    (aggregate.grouping_sets.size() == 1 && aggregate.grouping_sets[0].size() != aggregate.groups.size())) {
+			return {};
+		}
+		vector<ColumnBinding> key;
+		for (idx_t group_idx = 0; group_idx < aggregate.groups.size(); group_idx++) {
+			key.emplace_back(aggregate.group_index, ProjectionIndex(group_idx));
+		}
+		return key;
+	}
+	case LogicalOperatorType::LOGICAL_FILTER: {
+		auto key = FindUniqueKey(*op.children[0]);
+		// A projection map can remove key columns.
+		auto bindings = op.GetColumnBindings();
+		for (auto &binding : key) {
+			if (std::find(bindings.begin(), bindings.end(), binding) == bindings.end()) {
+				return {};
+			}
+		}
+		return key;
+	}
+	case LogicalOperatorType::LOGICAL_PROJECTION: {
+		auto &projection = op.Cast<LogicalProjection>();
+		vector<ColumnBinding> key;
+		for (auto &binding : FindUniqueKey(*op.children[0])) {
+			optional_idx projected;
+			for (idx_t i = 0; i < projection.expressions.size() && !projected.IsValid(); i++) {
+				auto &expression = *projection.expressions[i];
+				if (expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF &&
+				    expression.Cast<BoundColumnRefExpression>().Binding() == binding) {
+					projected = i;
+				}
+			}
+			if (!projected.IsValid()) {
+				return {};
+			}
+			key.emplace_back(projection.table_index, ProjectionIndex(projected.GetIndex()));
+		}
+		return key;
+	}
+	default:
+		return {};
+	}
+}
+
 bool RelationManager::RegisterRelation(LogicalOperator &op, optional_ptr<LogicalOperator> parent, RelationStats stats) {
 	D_ASSERT(!parent || parent->children.size() >= 2);
 	if (!stats.stats_initialized || !stats.MatchesBindings(op.GetColumnBindings())) {
@@ -104,6 +156,15 @@ bool RelationManager::RegisterRelation(LogicalOperator &op, optional_ptr<Logical
 		has_recursive_relations |= relation->recursive_properties.depends_on_recursive_input;
 	}
 	RelationIndex relation_id(relations.size());
+	relation->stats.unique_key.clear();
+	for (auto &binding : FindUniqueKey(op)) {
+		auto column = relation->stats.FindColumn(binding);
+		if (!column.IsValid()) {
+			relation->stats.unique_key.clear();
+			break;
+		}
+		relation->stats.unique_key.push_back(column.GetIndex());
+	}
 
 	unordered_set<TableIndex> relation_bindings;
 	auto table_indexes = op.GetTableIndex();

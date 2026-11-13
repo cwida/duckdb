@@ -196,6 +196,8 @@ struct CardinalityEstimatorState {
 	vector<RelationsSetToStats> relation_set_stats;
 	vector<FilterInfoWithTotalDomains> edges;
 	vector<CardinalityValue> leaf_cardinalities;
+	//! Per relation, the columns that together identify a row (empty if unknown).
+	vector<vector<idx_t>> unique_keys;
 	vector<reference<const JoinOrderOperator>> operators;
 	vector<LogicalJoinStats> boundaries;
 	reference_map_t<JoinRelationSet, CardinalityValue> inner_selectivities;
@@ -499,6 +501,31 @@ double CardinalityEstimator::GetJoinPairCap(JoinRelationSet &join_pair) {
 	return cap == NumericLimits<double>::Maximum() ? 0 : cap;
 }
 
+double CardinalityEstimator::GetUniqueJoinPairDomain(JoinRelationSet &join_pair) {
+	D_ASSERT(join_pair.count == 2);
+	auto equality_pair = predicate_model.GetDirectEqualityPair(join_pair);
+	if (!equality_pair) {
+		return 0;
+	}
+	double domain = 0;
+	for (idx_t relation_index = 0; relation_index < join_pair.count; relation_index++) {
+		auto relation = join_pair.relations[relation_index];
+		auto &equality_bindings =
+		    relation_index == 0 ? equality_pair->first_relation_bindings : equality_pair->second_relation_bindings;
+		auto &unique_key = state->unique_keys.at(relation.index);
+		bool covered = !unique_key.empty();
+		for (auto column : unique_key) {
+			ColumnBinding binding(TableIndex(relation.index), ProjectionIndex(column));
+			covered = covered && equality_bindings.find(binding) != equality_bindings.end();
+		}
+		if (covered) {
+			// Every row of this relation is a different key combination, so the other side matches at most one row.
+			domain = MaxValue(domain, GetNumerator(set_manager.GetJoinRelation(relation)).GetDouble());
+		}
+	}
+	return domain;
+}
+
 bool CardinalityEstimator::ApplyJoinPairCap(CardinalityValue &target_selectivity, JoinRelationSet &join_pair,
                                             reference_map_t<JoinRelationSet, CompositeJoinPairStats> &join_pair_stats,
                                             reference_set_t<JoinRelationSet> &capped_join_pairs) {
@@ -511,9 +538,14 @@ bool CardinalityEstimator::ApplyJoinPairCap(CardinalityValue &target_selectivity
 	}
 	auto &stats = it->second;
 	auto cap = GetJoinPairCap(join_pair);
-	// The cap is an FK/PK heuristic. Avoid applying it to broad fact-to-fact joins where the base row count is much
-	// larger than any observed single-column join domain; in that case row count is a poor proxy for composite NDV.
-	if (!stats.CanApplyCap(cap)) {
+	auto unique_domain = GetUniqueJoinPairDomain(join_pair);
+	if (unique_domain > 0) {
+		// The equalities cover a key: its row count is the composite NDV, not a proxy for it.
+		cap = unique_domain;
+	} else if (!stats.CanApplyCap(cap)) {
+		// The cap is an FK/PK heuristic. Avoid applying it to broad fact-to-fact joins where the base row count is
+		// much larger than any observed single-column join domain; in that case row count is a poor proxy for
+		// composite NDV.
 		return false;
 	}
 	auto &first_d = stats.first_distinct_count;
@@ -930,6 +962,7 @@ void CardinalityEstimator::Initialize(const vector<RelationStats> &relations,
 		D_ASSERT(stats.stats_initialized);
 		auto cardinality = CardinalityValue(static_cast<double>(stats.cardinality));
 		state->leaf_cardinalities.push_back(cardinality);
+		state->unique_keys.push_back(stats.unique_key);
 		state->cardinalities.emplace(set_manager.GetJoinRelation(RelationIndex(i)), cardinality);
 		UpdateTotalDomains(RelationIndex(i), stats, sources);
 	}
