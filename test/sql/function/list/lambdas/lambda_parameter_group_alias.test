@@ -1,0 +1,361 @@
+# name: test/sql/function/list/lambdas/lambda_parameter_group_alias.test
+# description: A bare lambda parameter binds to the parameter, not to a group of the same name
+# group: [lambdas]
+
+statement ok
+CREATE TABLE t AS SELECT 99 AS s;
+
+statement ok
+CREATE TABLE tc AS SELECT 99 AS p_;
+
+statement ok
+CREATE TABLE u AS SELECT * FROM (VALUES (1), (2), (3)) u(s);
+
+# the parameter shadows a grouped select list alias
+
+query II
+SELECT s AS p_, list_transform([1], lambda p_: p_) FROM (SELECT 99 AS s) t GROUP BY p_;
+----
+99	[1]
+
+query II
+SELECT s AS p_, list_transform([1, 2], lambda p_: p_ * 10) FROM u GROUP BY p_ ORDER BY p_;
+----
+1	[10, 20]
+2	[10, 20]
+3	[10, 20]
+
+query II
+SELECT s AS p_, list_transform([NULL, 1], lambda p_: p_ IS NULL) FROM (VALUES (NULL::INT)) v(s) GROUP BY p_;
+----
+NULL	[true, false]
+
+query II
+SELECT s AS p_, list_filter([1, 2], lambda p_: p_ = 1) FROM t GROUP BY p_;
+----
+99	[1]
+
+query II
+SELECT s AS p_, list_reduce([1, 2], lambda p_, y: p_ + y) FROM t GROUP BY p_;
+----
+99	3
+
+query II
+SELECT s AS p_, [p_ for p_ in [1]] FROM t GROUP BY p_;
+----
+99	[1]
+
+query II
+SELECT s + 1 AS p_, list_transform([1], lambda p_: p_) FROM t GROUP BY p_;
+----
+100	[1]
+
+query II
+SELECT {'f': s} AS p_, list_transform([{'f': 1}], lambda p_: p_['f']) FROM t GROUP BY p_;
+----
+{'f': 99}	[1]
+
+query II
+SELECT s AS p_, list_transform([1], lambda p_: p_ + count(*)) FROM t GROUP BY p_;
+----
+99	[2]
+
+query II
+SELECT s AS p_, list_transform([1], lambda p_: sum(s) + p_) FROM t GROUP BY p_;
+----
+99	[100]
+
+# the second parameter is the index
+query II
+SELECT s AS p_, list_transform([10], lambda x, p_: x + p_) FROM t GROUP BY p_;
+----
+99	[11]
+
+query II
+SELECT s AS p_, list_transform([[1]], lambda q: list_transform(q, lambda p_: p_)) FROM t GROUP BY p_;
+----
+99	[[1]]
+
+query II
+SELECT s AS p_, list_transform([1], lambda p_: list_transform([5], lambda y: p_ + y)) FROM t GROUP BY p_;
+----
+99	[[6]]
+
+query II
+SELECT s AS p_, list_transform([1], lambda p_: p_) AS l FROM t GROUP BY GROUPING SETS ((p_), ()) ORDER BY p_ NULLS LAST;
+----
+99	[1]
+NULL	[1]
+
+query II
+SELECT s AS p_, list_transform([1], lambda p_: p_) AS l FROM t GROUP BY ROLLUP (p_) ORDER BY p_ NULLS LAST;
+----
+99	[1]
+NULL	[1]
+
+query III
+SELECT s AS p_, s AS q_, list_transform([1], lambda p_: p_) AS l FROM t GROUP BY CUBE (p_, q_) ORDER BY ALL;
+----
+99	99	[1]
+99	NULL	[1]
+NULL	99	[1]
+NULL	NULL	[1]
+
+query II
+SELECT s AS p_, list_transform([1], lambda P_: P_) FROM t GROUP BY p_;
+----
+99	[1]
+
+statement ok
+CREATE MACRO lambda_in_macro(a) AS list_transform([a], lambda p_: p_);
+
+query II
+SELECT s AS p_, lambda_in_macro(1) FROM t GROUP BY p_;
+----
+99	[1]
+
+# a macro argument expanded into a lambda body reads as the body's parameter of the same name, as without GROUP BY
+statement ok
+CREATE MACRO argument_in_lambda(a) AS list_transform([1], lambda x: a);
+
+query II
+SELECT s AS x, argument_in_lambda(x) FROM t GROUP BY x;
+----
+99	[1]
+
+# a group on a select list position is keyed by the position as text
+query II
+SELECT s AS p_, list_transform([1], lambda "0": "0") FROM t GROUP BY p_;
+----
+99	[1]
+
+# a group that names a column of the enclosing query stays a bare name, alone or inside an expression
+query I
+SELECT (SELECT list_transform([1], lambda k: k) FROM range(1) GROUP BY k) FROM (SELECT 99 AS k) o;
+----
+[1]
+
+query I
+SELECT (SELECT list_transform([1], lambda k: k + 1) FROM range(1) GROUP BY k + 1) FROM (SELECT 99 AS k) o;
+----
+[2]
+
+query I
+SELECT (SELECT list_transform([1], lambda k: -k) FROM range(1) GROUP BY -k) FROM (SELECT 99 AS k) o;
+----
+[-1]
+
+query I
+SELECT (SELECT list_transform([1], lambda k: k::VARCHAR) FROM range(1) GROUP BY k::VARCHAR) FROM (SELECT 99 AS k) o;
+----
+[1]
+
+query I
+SELECT (SELECT list_transform([1], lambda k: list_transform([1], lambda j: k + 1)) FROM range(1) GROUP BY k + 1) FROM (SELECT 99 AS k) o;
+----
+[[2]]
+
+query I
+SELECT (SELECT list_transform([1], lambda k: k) FROM range(1) GROUP BY k HAVING list_transform([1], lambda k: k) = [1]) FROM (SELECT 99 AS k) o;
+----
+[1]
+
+query I
+SELECT (SELECT k + 1 FROM range(1) GROUP BY 1 HAVING list_transform([1], lambda k: k + 1) = [2]) FROM (SELECT 99 AS k) o;
+----
+100
+
+query I
+SELECT (SELECT first(list_transform([1], lambda k: k + 1)) OVER () FROM range(1) GROUP BY k + 1) FROM (SELECT 99 AS k) o;
+----
+[2]
+
+# the other clauses of a grouped query
+
+query I
+SELECT s AS p_ FROM t GROUP BY p_ HAVING list_transform([1], lambda p_: p_) = [1];
+----
+99
+
+query II
+SELECT s AS p_, row_number() OVER () AS rn FROM t GROUP BY p_ QUALIFY list_transform([1], lambda p_: p_) = [1];
+----
+99	1
+
+query I
+SELECT s AS p_ FROM u GROUP BY p_ ORDER BY list_transform([10 - s], lambda p_: p_);
+----
+3
+2
+1
+
+query II
+SELECT s AS p_, first(list_transform([1], lambda p_: p_)) OVER () FROM t GROUP BY p_;
+----
+99	[1]
+
+query II
+SELECT s AS p_, count(*) OVER (PARTITION BY list_transform([1], lambda p_: p_)) AS c FROM u GROUP BY p_ ORDER BY p_;
+----
+1	3
+2	3
+3	3
+
+query II
+SELECT s AS p_, sum(s) OVER (ORDER BY s ROWS BETWEEN list_transform([0], lambda p_: p_)[1] PRECEDING AND CURRENT ROW) AS w FROM u GROUP BY p_ ORDER BY p_;
+----
+1	1
+2	2
+3	3
+
+query I
+SELECT DISTINCT ON (list_transform([1], lambda p_: p_)) s AS p_ FROM u GROUP BY p_ ORDER BY ALL;
+----
+1
+
+# GROUPING of a parameter names no group, whether the group is an alias or a column
+
+statement error
+SELECT s AS p_, list_transform([1], lambda p_: grouping(p_)) FROM t GROUP BY p_;
+----
+GROUPING child "p_" must be a grouping column
+
+statement error
+SELECT p_, list_transform([1], lambda p_: grouping(p_)) FROM tc GROUP BY p_;
+----
+GROUPING child "p_" must be a grouping column
+
+statement error
+SELECT list_transform([1], lambda p_: grouping(p_ + 1)) FROM tc GROUP BY p_ + 1;
+----
+GROUPING child "(p_ + 1)" must be a grouping column
+
+statement error
+SELECT s AS p_ FROM t GROUP BY p_ HAVING list_transform([1], lambda p_: grouping(p_)) = [0];
+----
+GROUPING child "p_" must be a grouping column
+
+statement error
+SELECT (SELECT list_transform([1], lambda k: grouping(k)) FROM range(1) GROUP BY k) FROM (SELECT 99 AS k) o;
+----
+GROUPING child "k" must be a grouping column
+
+# a GROUPING inside a subquery does not reach the enclosing query's group through a parameter
+
+statement error
+SELECT p_, (SELECT list_transform([1], lambda p_: grouping(p_))) FROM tc GROUP BY p_;
+----
+GROUPING statement cannot be used without groups
+
+statement error
+SELECT s AS p_, (SELECT list_transform([1], lambda p_: grouping(p_))) FROM t GROUP BY p_;
+----
+GROUPING statement cannot be used without groups
+
+statement error
+SELECT p_ + 1, (SELECT list_transform([1], lambda p_: grouping(p_ + 1))) FROM tc GROUP BY p_ + 1;
+----
+GROUPING statement cannot be used without groups
+
+statement error
+SELECT p_, (SELECT list_transform([1], lambda p_: grouping(p_)) FROM range(1) GROUP BY range) FROM tc GROUP BY p_;
+----
+GROUPING child "p_" must be a grouping column
+
+# unchanged: no group of that name, or a name that is not a parameter
+
+statement error
+SELECT list_transform([{'x': 1}], lambda p_: grouping(p_.x)) FROM t GROUP BY s;
+----
+GROUPING child "x" must be a grouping column
+
+statement error
+SELECT s, list_transform([1], lambda x: grouping(s + x)) FROM t GROUP BY s;
+----
+must be a grouping column
+
+query I
+SELECT (SELECT list_transform([1], lambda k: k + 1) FROM range(1)) FROM (SELECT 99 AS k) o GROUP BY k + 1;
+----
+[2]
+
+query II
+SELECT s AS p_, list_transform([1], lambda p_: p_) FROM t;
+----
+99	[1]
+
+query II
+SELECT s AS x, argument_in_lambda(x) FROM t;
+----
+99	[1]
+
+query II
+SELECT s AS p_, list_transform([1], lambda p_: p_) FROM t GROUP BY ALL;
+----
+99	[1]
+
+query I
+SELECT s AS p_ FROM t GROUP BY ALL HAVING list_transform([1], lambda p_: p_) = [1];
+----
+99
+
+query II
+SELECT p_, list_transform([1], lambda p_: p_) FROM tc GROUP BY p_;
+----
+99	[1]
+
+query II
+SELECT s AS p_, p_ + 1 FROM t GROUP BY p_;
+----
+99	100
+
+query II
+SELECT s AS p_, list_transform([1], lambda x: x + p_) FROM t GROUP BY p_;
+----
+99	[100]
+
+query I
+SELECT s AS p_ FROM t GROUP BY p_ HAVING list_transform([1], lambda x: x + p_) = [100];
+----
+99
+
+query II
+SELECT s AS p_, list_transform([1], lambda x: grouping(p_)) FROM t GROUP BY p_;
+----
+99	[0]
+
+query II
+SELECT p_, (SELECT list_transform([1], lambda x: grouping(p_))) FROM tc GROUP BY p_;
+----
+99	[0]
+
+query I
+SELECT (SELECT list_transform([1], lambda x: k + 1) FROM range(1) GROUP BY k + 1) FROM (SELECT 99 AS k) o;
+----
+[100]
+
+# a lambda declared inside the group expression binds its own parameter, so the expression is still the group
+query II
+SELECT list_transform([s], lambda x: x + 1) AS l, count(*) FROM t GROUP BY list_transform([s], lambda x: x + 1);
+----
+[100]	1
+
+query I
+SELECT list_transform([1], lambda y: s + 1) FROM t GROUP BY s + 1;
+----
+[100]
+
+query I
+SELECT list_transform([1], lambda y: y + (s + 1)) FROM t GROUP BY s + 1;
+----
+[101]
+
+query II
+SELECT s AS p_, max(list_transform([1], lambda p_: p_)) FROM t GROUP BY p_;
+----
+99	[1]
+
+query I
+SELECT s AS p_ FROM t WHERE list_transform([1], lambda p_: p_) = [1];
+----
+99

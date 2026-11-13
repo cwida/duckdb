@@ -49,3 +49,10 @@ FROM test_all_types() GROUP BY ALL HAVING array_intersect(NULL, NULL);
 query I
 SELECT x FROM (VALUES (42)) t(x) GROUP BY x HAVING list_filter(NULL, lambda_param -> lambda_param = 1);
 ----
+
+# a lambda parameter binds to the parameter, not to a grouped select list alias of the same name
+
+query II
+SELECT s AS p_, list_transform([1], p_ -> p_) FROM (SELECT 99 AS s) t GROUP BY p_;
+----
+99	[1]

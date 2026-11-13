@@ -1,0 +1,22 @@
+# name: test/sql/function/list/lambdas/lambda_parameter_group_json.test
+# description: The JSON arrow operator on a lambda parameter does not bind to a group of the same name
+# group: [lambdas]
+
+require json
+
+query I
+SELECT (SELECT list_transform(['{"f":1}'::JSON], lambda k: k -> 'f') FROM range(1) GROUP BY k -> 'f') FROM (SELECT '{"f":99}'::JSON AS k) o;
+----
+[1]
+
+statement error
+SELECT list_transform(['{"f":1}'::JSON], lambda k: grouping(k -> 'f')) FROM (SELECT '{"f":99}'::JSON AS k) t GROUP BY k -> 'f';
+----
+must be a grouping column
+
+# the arrow over a grouped column that is not a parameter is still the group
+
+query II
+SELECT k -> 'f' AS g, list_transform([1], lambda x: k -> 'f') FROM (SELECT '{"f":99}'::JSON AS k) t GROUP BY k -> 'f';
+----
+99	[99]
