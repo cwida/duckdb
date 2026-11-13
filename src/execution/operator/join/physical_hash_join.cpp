@@ -1906,31 +1906,38 @@ struct JoinFilterPushdownCandidate {
 	bool can_emit_runtime_filter;
 };
 
-unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeFilters(ClientContext &context, const PhysicalComparisonJoin &op,
-                                                              unique_ptr<DataChunk> final_min_max,
-                                                              optional_ptr<JoinHashTable> ht, bool allow_bloom_filters,
-                                                              bool allow_prefix_range_filters,
-                                                              optional_ptr<JoinFilterGlobalState> gstate) const {
-	if (probe_info.empty()) {
-		return final_min_max; // There are no table sources in which we can push down filters
-	}
+struct JoinFilterPushdownInfo::FilterFinalizer {
+	const JoinFilterPushdownInfo &pushdown;
+	ClientContext &context;
+	const PhysicalComparisonJoin &op;
+	DataChunk &final_min_max;
+	optional_ptr<JoinHashTable> ht;
+	optional_ptr<JoinFilterGlobalState> gstate;
+	bool allow_bloom_filters;
+	bool allow_prefix_range_filters;
 
+public:
+	vector<JoinFilterPushdownCandidate> PrepareCandidates() const;
+	//! A zero bit budget disables runtime filters when the per-key share is too small.
+	idx_t SetRuntimeFilterBudget(const vector<JoinFilterPushdownCandidate> &candidates);
+	void FinalizeCandidate(const JoinFilterPushdownCandidate &candidate, idx_t prefix_range_bit_budget);
+};
+
+vector<JoinFilterPushdownCandidate> JoinFilterPushdownInfo::FilterFinalizer::PrepareCandidates() const {
 	vector<JoinFilterPushdownCandidate> candidates;
-	vector<bool> runtime_filter_keys(op.conditions.size(), false);
-	idx_t runtime_filter_count = 0;
 	// Prepare each destination once before dividing the budget among distinct keys.
-	for (auto &info : probe_info) {
+	for (auto &info : pushdown.probe_info) {
 		for (auto &pushdown_column : info.columns) {
 			auto filter_idx = pushdown_column.join_filter_idx;
 			D_ASSERT(filter_idx != DConstants::INVALID_INDEX);
-			D_ASSERT(filter_idx < join_condition.size());
-			const auto key_idx = join_condition[filter_idx];
+			D_ASSERT(filter_idx < pushdown.join_condition.size());
+			const auto key_idx = pushdown.join_condition[filter_idx];
 			const auto cmp = op.conditions[key_idx].GetComparisonType();
 			auto min_idx = filter_idx * 2;
 			auto max_idx = min_idx + 1;
 
-			auto min_val_before_cast = final_min_max->data[min_idx].GetValue(0);
-			auto max_val_before_cast = final_min_max->data[max_idx].GetValue(0);
+			auto min_val_before_cast = final_min_max.data[min_idx].GetValue(0);
+			auto max_val_before_cast = final_min_max.data[max_idx].GetValue(0);
 
 			auto min_val = min_val_before_cast;
 			auto max_val = max_val_before_cast;
@@ -1964,116 +1971,137 @@ unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeFilters(ClientContext &con
 			    ht && gstate && (allow_bloom_filters || allow_prefix_range_filters) &&
 			    pushdown_column.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION &&
 			    runtime_filter_input_type == ht->conditions[key_idx].GetLHS().GetReturnType() &&
-			    !Value::NotDistinctFrom(min_val, max_val) && CanUseBloomFilter(info, context, op, cmp, ht);
-			if (can_emit_runtime_filter && !runtime_filter_keys[key_idx]) {
-				runtime_filter_keys[key_idx] = true;
-				runtime_filter_count++;
-			}
+			    !Value::NotDistinctFrom(min_val, max_val) && pushdown.CanUseBloomFilter(info, context, op, cmp, ht);
 			candidates.push_back({info, pushdown_column, std::move(min_val), std::move(max_val),
 			                      reconstruct_filter_expression, can_emit_runtime_filter});
 		}
 	}
+	return candidates;
+}
 
-	idx_t prefix_range_bit_budget = NumericLimits<idx_t>::Maximum();
-	bool runtime_filter_budget_available = true;
-	if (ht && !ht->HasSingleEqualityKey()) {
-		const auto budget_share = MaxValue<idx_t>(runtime_filter_count, 1);
-		const auto memory_budget = GetJoinRuntimeFilterMemoryBudget(context);
-		ht->SetKeyBloomFilterBudget(memory_budget / budget_share);
-		// Leave room for at least one complete build lane as well as the published bitmaps.
-		const auto prefix_range_budget = MinValue(memory_budget, MAX_PREFIX_RANGE_BUILD_MEMORY);
-		const auto column_budget = prefix_range_budget / budget_share;
-		runtime_filter_budget_available = column_budget >= 128;
-		prefix_range_bit_budget = runtime_filter_budget_available ? ((column_budget - 64) / 8) * 64 : 0;
+idx_t JoinFilterPushdownInfo::FilterFinalizer::SetRuntimeFilterBudget(
+    const vector<JoinFilterPushdownCandidate> &candidates) {
+	if (!ht || ht->HasSingleEqualityKey()) {
+		return NumericLimits<idx_t>::Maximum();
 	}
 
+	vector<bool> runtime_filter_keys(op.conditions.size(), false);
+	idx_t runtime_filter_count = 0;
 	for (auto &candidate : candidates) {
-		auto &info = candidate.info;
-		auto &pushdown_column = candidate.column;
-		const auto filter_idx = pushdown_column.join_filter_idx;
-		const auto key_idx = join_condition[filter_idx];
-		const auto cmp = op.conditions[key_idx].GetComparisonType();
-		auto &filter_col_idx = pushdown_column.probe_column_index.column_index;
-		auto &min_val = candidate.min_val;
-		auto &max_val = candidate.max_val;
-		const auto &condition_type = min_val.type();
-		const bool retain_nulls = cmp == ExpressionType::COMPARE_NOT_DISTINCT_FROM;
-		const auto reconstruct_filter_expression = candidate.reconstruct_expression;
-		const auto can_emit_runtime_filters = runtime_filter_budget_available && candidate.can_emit_runtime_filter;
-		if (Value::NotDistinctFrom(min_val, max_val)) {
-			// min = max - single value
-			// generate a "one-sided" comparison filter for the LHS
-			// Note that this also works for equalities.
-			auto filter_expr = CreateJoinFilterComparisonExpression(
-			    context, pushdown_column, cmp, min_val, condition_type, reconstruct_filter_expression, retain_nulls);
-			if (filter_expr) {
-				info.dynamic_filters->PushFilter(op, filter_col_idx,
-				                                 make_uniq<ExpressionFilter>(std::move(filter_expr)));
-			}
-		} else {
-			if (cmp != ExpressionType::COMPARE_EQUAL && !retain_nulls) {
-				// min != max - generate range filters for non-equality comparisons.
-				// For non-equalities, the range must be half-open.
-				CreateDynamicMinMaxFilters(op, info, context, pushdown_column, filter_col_idx, cmp, min_val, max_val,
-				                           condition_type, reconstruct_filter_expression, true);
-				continue;
-			}
-
-			auto min_val_before_cast = final_min_max->data[filter_idx * 2].GetValue(0);
-			auto max_val_before_cast = final_min_max->data[filter_idx * 2 + 1].GetValue(0);
-			uhugeint_t span;
-			const auto can_compute_span =
-			    PrefixRangeFilter::TryComputeSpan(min_val_before_cast, max_val_before_cast, span);
-			const auto can_emit_prf =
-			    allow_prefix_range_filters && can_emit_runtime_filters &&
-			    PrefixRangeFilter::SupportedType(ht->conditions[key_idx].GetLHS().GetReturnType()) && can_compute_span;
-
-			bool pushed_in_filter = false;
-			if (CanUseInFilter(context, ht, cmp)) {
-				pushed_in_filter = PushInFilter(context, info, pushdown_column, *ht, op, filter_idx, filter_col_idx);
-			}
-
-			static constexpr idx_t SMALL_EXACT_PRF_BITS = 1ULL << 26;
-			const auto exact_prf_bits = MinValue<idx_t>(SMALL_EXACT_PRF_BITS, prefix_range_bit_budget);
-			bool registered_prf =
-			    can_emit_prf && span < exact_prf_bits &&
-			    TryRegisterPrefixRangeFilter(info, context, *ht, op, pushdown_column, filter_col_idx, key_idx,
-			                                 min_val_before_cast, max_val_before_cast, exact_prf_bits, *gstate);
-
-			if (can_emit_prf && !registered_prf) {
-				auto build_count = ht->Count();
-				if (build_count == 0) {
-					build_count = ht->GetSinkCollection().Count();
-				}
-				const auto bloom_filter_bits = MinValue(BloomFilterBitBudget(build_count), prefix_range_bit_budget);
-				registered_prf =
-				    span <= bloom_filter_bits &&
-				    TryRegisterPrefixRangeFilter(info, context, *ht, op, pushdown_column, filter_col_idx, key_idx,
-				                                 min_val_before_cast, max_val_before_cast, bloom_filter_bits, *gstate);
-			}
-			// Keep multi-key min/max filters for their complementary statistics pruning.
-			if (registered_prf && ht->HasSingleEqualityKey()) {
-				continue;
-			}
-
-			if (!pushed_in_filter) {
-				CreateDynamicMinMaxFilters(op, info, context, pushdown_column, filter_col_idx, cmp, min_val, max_val,
-				                           condition_type, reconstruct_filter_expression, false);
-			}
-			if (!registered_prf && allow_bloom_filters && can_emit_runtime_filters) {
-				if (ht->HasPublishableBloomFilter(key_idx)) {
-					// a complete filter was accumulated during Sink (external joins build it there)
-					DeferRuntimeFilter(DeferredRuntimeFilterType::BLOOM_FILTER, op, info, pushdown_column,
-					                   filter_col_idx, key_idx, *gstate);
-				} else if (allow_prefix_range_filters) {
-					// like a prefix-range filter, a bloom filter may be built during finalize when the
-					// finalize materializes the whole build side - an external finalize does not
-					ht->SetBuildBloomFilter(key_idx);
-					DeferRuntimeFilter(DeferredRuntimeFilterType::BLOOM_FILTER, op, info, pushdown_column,
-					                   filter_col_idx, key_idx, *gstate);
-				}
-			}
+		const auto key_idx = pushdown.join_condition[candidate.column.join_filter_idx];
+		if (candidate.can_emit_runtime_filter && !runtime_filter_keys[key_idx]) {
+			runtime_filter_keys[key_idx] = true;
+			runtime_filter_count++;
 		}
+	}
+	const auto budget_share = MaxValue<idx_t>(runtime_filter_count, 1);
+	const auto memory_budget = GetJoinRuntimeFilterMemoryBudget(context);
+	ht->SetKeyBloomFilterBudget(memory_budget / budget_share);
+	// Leave room for at least one complete build lane as well as the published bitmaps.
+	const auto prefix_range_budget = MinValue(memory_budget, MAX_PREFIX_RANGE_BUILD_MEMORY);
+	const auto column_budget = prefix_range_budget / budget_share;
+	return column_budget >= 128 ? ((column_budget - 64) / 8) * 64 : 0;
+}
+
+void JoinFilterPushdownInfo::FilterFinalizer::FinalizeCandidate(const JoinFilterPushdownCandidate &candidate,
+                                                                idx_t prefix_range_bit_budget) {
+	auto &info = candidate.info;
+	auto &pushdown_column = candidate.column;
+	const auto filter_idx = pushdown_column.join_filter_idx;
+	const auto key_idx = pushdown.join_condition[filter_idx];
+	const auto cmp = op.conditions[key_idx].GetComparisonType();
+	auto &filter_col_idx = pushdown_column.probe_column_index.column_index;
+	auto &min_val = candidate.min_val;
+	auto &max_val = candidate.max_val;
+	const auto &condition_type = min_val.type();
+	const bool retain_nulls = cmp == ExpressionType::COMPARE_NOT_DISTINCT_FROM;
+	const auto reconstruct_filter_expression = candidate.reconstruct_expression;
+	const auto can_emit_runtime_filters = prefix_range_bit_budget > 0 && candidate.can_emit_runtime_filter;
+	if (Value::NotDistinctFrom(min_val, max_val)) {
+		// A single build value produces one comparison, including for non-equality joins.
+		auto filter_expr = CreateJoinFilterComparisonExpression(context, pushdown_column, cmp, min_val, condition_type,
+		                                                        reconstruct_filter_expression, retain_nulls);
+		if (filter_expr) {
+			info.dynamic_filters->PushFilter(op, filter_col_idx, make_uniq<ExpressionFilter>(std::move(filter_expr)));
+		}
+		return;
+	}
+	if (cmp != ExpressionType::COMPARE_EQUAL && !retain_nulls) {
+		// Non-equality comparisons need a half-open range.
+		CreateDynamicMinMaxFilters(op, info, context, pushdown_column, filter_col_idx, cmp, min_val, max_val,
+		                           condition_type, reconstruct_filter_expression, true);
+		return;
+	}
+
+	auto min_val_before_cast = final_min_max.data[filter_idx * 2].GetValue(0);
+	auto max_val_before_cast = final_min_max.data[filter_idx * 2 + 1].GetValue(0);
+	uhugeint_t span;
+	const auto can_compute_span = PrefixRangeFilter::TryComputeSpan(min_val_before_cast, max_val_before_cast, span);
+	const auto can_emit_prf = allow_prefix_range_filters && can_emit_runtime_filters &&
+	                          PrefixRangeFilter::SupportedType(ht->conditions[key_idx].GetLHS().GetReturnType()) &&
+	                          can_compute_span;
+
+	bool pushed_in_filter = false;
+	if (pushdown.CanUseInFilter(context, ht, cmp)) {
+		pushed_in_filter = pushdown.PushInFilter(context, info, pushdown_column, *ht, op, filter_idx, filter_col_idx);
+	}
+
+	static constexpr idx_t SMALL_EXACT_PRF_BITS = 1ULL << 26;
+	const auto exact_prf_bits = MinValue<idx_t>(SMALL_EXACT_PRF_BITS, prefix_range_bit_budget);
+	bool registered_prf =
+	    can_emit_prf && span < exact_prf_bits &&
+	    pushdown.TryRegisterPrefixRangeFilter(info, context, *ht, op, pushdown_column, filter_col_idx, key_idx,
+	                                          min_val_before_cast, max_val_before_cast, exact_prf_bits, *gstate);
+
+	if (can_emit_prf && !registered_prf) {
+		auto build_count = ht->Count();
+		if (build_count == 0) {
+			build_count = ht->GetSinkCollection().Count();
+		}
+		const auto bloom_filter_bits = MinValue(BloomFilterBitBudget(build_count), prefix_range_bit_budget);
+		registered_prf =
+		    span <= bloom_filter_bits &&
+		    pushdown.TryRegisterPrefixRangeFilter(info, context, *ht, op, pushdown_column, filter_col_idx, key_idx,
+		                                          min_val_before_cast, max_val_before_cast, bloom_filter_bits, *gstate);
+	}
+	// Keep multi-key min/max filters for their complementary statistics pruning.
+	if (registered_prf && ht->HasSingleEqualityKey()) {
+		return;
+	}
+
+	if (!pushed_in_filter) {
+		CreateDynamicMinMaxFilters(op, info, context, pushdown_column, filter_col_idx, cmp, min_val, max_val,
+		                           condition_type, reconstruct_filter_expression, false);
+	}
+	if (!registered_prf && allow_bloom_filters && can_emit_runtime_filters) {
+		if (ht->HasPublishableBloomFilter(key_idx)) {
+			// A complete filter was accumulated during Sink (external joins build it there).
+			pushdown.DeferRuntimeFilter(DeferredRuntimeFilterType::BLOOM_FILTER, op, info, pushdown_column,
+			                            filter_col_idx, key_idx, *gstate);
+		} else if (allow_prefix_range_filters) {
+			// Build during finalize only when it materializes the whole build side; external finalize does not.
+			ht->SetBuildBloomFilter(key_idx);
+			pushdown.DeferRuntimeFilter(DeferredRuntimeFilterType::BLOOM_FILTER, op, info, pushdown_column,
+			                            filter_col_idx, key_idx, *gstate);
+		}
+	}
+}
+
+unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeFilters(ClientContext &context, const PhysicalComparisonJoin &op,
+                                                              unique_ptr<DataChunk> final_min_max,
+                                                              optional_ptr<JoinHashTable> ht, bool allow_bloom_filters,
+                                                              bool allow_prefix_range_filters,
+                                                              optional_ptr<JoinFilterGlobalState> gstate) const {
+	if (probe_info.empty()) {
+		return final_min_max;
+	}
+
+	FilterFinalizer finalizer {
+	    *this, context, op, *final_min_max, ht, gstate, allow_bloom_filters, allow_prefix_range_filters};
+	auto candidates = finalizer.PrepareCandidates();
+	const auto prefix_range_bit_budget = finalizer.SetRuntimeFilterBudget(candidates);
+	for (auto &candidate : candidates) {
+		finalizer.FinalizeCandidate(candidate, prefix_range_bit_budget);
 	}
 	return final_min_max;
 }

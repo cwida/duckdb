@@ -139,6 +139,8 @@ public:
 	                                      optional_ptr<JoinFilterGlobalState> gstate = nullptr) const;
 
 private:
+	struct FilterFinalizer;
+
 	bool PushInFilter(ClientContext &context, const JoinFilterPushdownFilter &info,
 	                  const JoinFilterPushdownColumn &column, JoinHashTable &ht, const PhysicalOperator &op,
 	                  idx_t filter_idx, ProjectionIndex filter_col_idx) const;
