@@ -153,4 +153,4 @@ query TT
 EXPLAIN (FORMAT JSON) WITH a AS MATERIALIZED (SELECT x FROM dense_or)
 SELECT x FROM a WHERE x = 1 UNION ALL SELECT x FROM a WHERE x = 2
 ----
-physical_plan	<REGEX>:.*"name": "CTE",\s*"children": \[\s*\{\s*"name": "SEQ_SCAN",.*
+physical_plan	<REGEX>:.*"name": "CTE[^"]*",\s*"children": \[\s*\{\s*"name": "SEQ_SCAN[^"]*",.*

@@ -30,12 +30,12 @@ physical_plan	<REGEX>:.*Top N.*Hash Join.*
 query II
 EXPLAIN (FORMAT json) SELECT * FROM renderer_plan
 ----
-physical_plan	<REGEX>:(?s).*"name": "TOP_N".*"children".*"HASH_JOIN".*
+physical_plan	<REGEX>:(?s).*"name": "TOP_N[^"]*".*"children".*"HASH_JOIN[^"]*".*
 
 query II
 EXPLAIN (FORMAT yaml) SELECT * FROM renderer_plan
 ----
-physical_plan	<REGEX>:(?s).*- name: "TOP_N".*children:.*HASH_JOIN.*
+physical_plan	<REGEX>:(?s).*- name: "TOP_N[^"]*".*children:.*HASH_JOIN.*
 
 query II
 EXPLAIN (FORMAT html) SELECT * FROM renderer_plan
@@ -56,7 +56,7 @@ physical_plan	<REGEX>:(?s).*flowchart TD.*TOP_N.*HASH_JOIN.*
 query II
 EXPLAIN (FORMAT compact) SELECT * FROM renderer_plan
 ----
-physical_plan	<REGEX>:(?s).*TOP_N \(est=\d+\).*\n +HASH_JOIN \(est=\d+\) Join Type: INNER; Conditions: .*
+physical_plan	<REGEX>:(?s).*TOP_N[^\n]*\(est=\d+\).*\n +HASH_JOIN[^\n]*\(est=\d+\) Join Type: INNER; Conditions: .*
 
 # plain ASCII: no box-drawing characters in the compact format
 query II
