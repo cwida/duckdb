@@ -63,7 +63,7 @@ static vector<VariantPathComponent> GetVariantExtractPath(const ColumnIndex &ind
 VariantColumnReader::VariantColumnReader(ClientContext &context, const ParquetReader &reader,
                                          const ParquetColumnSchema &schema,
                                          vector<unique_ptr<ColumnReader>> child_readers_p,
-                                         const struct ColumnIndex &index)
+                                         const struct ColumnIndex &index, optional_idx typed_value_field_p)
     : ColumnReader(reader, schema), context(context), index(index), extract_path(GetVariantExtractPath(index)),
       child_readers(std::move(child_readers_p)) {
 	D_ASSERT(Type().InternalType() == PhysicalType::STRUCT);
@@ -90,12 +90,23 @@ VariantColumnReader::VariantColumnReader(ClientContext &context, const ParquetRe
 		                              "as the first two columns",
 		                              reader.GetFileName());
 	}
+
+	if (!typed_value_field_p.IsValid()) {
+		return;
+	}
+	D_ASSERT(child_readers.size() > 2 && child_readers[2]);
+	typed_value_field = typed_value_field_p;
+	//! 'Convert' only has to rebuild this field, so it is handed a group that holds just this shredded field
+	auto &field_type = StructType::GetChildTypes(child_readers[2]->Type())[typed_value_field.GetIndex()];
+	child_list_t<LogicalType> group_children {{"value", LogicalType::BLOB},
+	                                          {"typed_value", LogicalType::STRUCT({field_type})}};
+	typed_value_field_group = LogicalType::STRUCT(std::move(group_children));
 }
 
 VariantColumnReader::VariantColumnReader(ClientContext &context, const ParquetReader &reader,
                                          const ParquetColumnSchema &schema,
                                          vector<unique_ptr<ColumnReader>> child_readers_p)
-    : VariantColumnReader(context, reader, schema, std::move(child_readers_p), {}) {
+    : VariantColumnReader(context, reader, schema, std::move(child_readers_p), {}, optional_idx()) {
 }
 
 ColumnReader &VariantColumnReader::GetChildReader(idx_t child_idx) {
@@ -194,7 +205,23 @@ idx_t VariantColumnReader::Read(ColumnReaderInput &input, Vector &result) {
 		}
 	}
 	// convert the actual columns
-	Convert(metadata_intermediate, intermediate_group, result, num_values);
+	optional_ptr<Vector> group_to_convert(intermediate_group);
+	if (typed_value_field.IsValid()) {
+		//! Only the extracted field can contribute to the result, so drop the sibling shredded fields here:
+		//! 'Convert' then rebuilds just that field instead of every shredded field in the object
+		PrepareChunk(narrow_chunk, narrow_capacity, {typed_value_field_group}, num_values);
+		auto &narrow_group = narrow_chunk.data[0];
+		auto &narrow_entries = StructVector::GetEntries(narrow_group);
+		auto &narrow_typed_value = narrow_entries[1];
+		narrow_entries[0].Reference(value_intermediate);
+		StructVector::GetEntries(narrow_typed_value)[0].Reference(
+		    StructVector::GetEntries(group_entries[1])[typed_value_field.GetIndex()]);
+		//! This struct is built here, so it has to inherit the validity of 'typed_value': a row that is not a
+		//! shredded object has no shredded value and has to fall back to the binary 'value'
+		FlatVector::ValidityMutable(narrow_typed_value).CopyRange(FlatVector::Validity(group_entries[1]), num_values);
+		group_to_convert = narrow_group;
+	}
+	Convert(metadata_intermediate, *group_to_convert, result, num_values);
 	if (index.IsPushdownExtract()) {
 		D_ASSERT(!extract_path.empty());
 		Vector extract_result(LogicalType::VARIANT(), num_values);
