@@ -15,7 +15,6 @@ ScalarFunction InternalCompressedMaterializationCastFun::GetFunction() {
 
 void CMUtils::MarkCast(BoundFunctionExpression &expression) {
 	D_ASSERT(BoundCastExpression::IsCast(expression));
-	D_ASSERT(BoundCastExpression::IsDefaultCast(expression));
 	auto definition = make_shared_ptr<ScalarFunction>(InternalCompressedMaterializationCastFun::GetFunction());
 	auto &function = expression.FunctionMutable();
 	function.SetName(definition->GetName());
