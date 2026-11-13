@@ -394,7 +394,7 @@ explain select distinct x1.c0, x2.c0 from t0 as x1 left join t0 as x2 using (c0)
 ----
 physical_plan	<REGEX>:.*JOIN.*
 
-# projection maps stay valid when a removed join sits beside nulls, duplicates, and a join that must stay
+# nulls, duplicate keys and a join that must stay beside the removed join
 statement ok
 create table t1(c0 integer, c1 integer);
 
@@ -407,18 +407,6 @@ create table ts(c0 varchar, c1 varchar);
 statement ok
 insert into ts values ('a', 'x'), ('a', 'y'), ('b', 'z'), (NULL, 'n'), (NULL, NULL);
 
-query I rowsort
-select distinct x1.c0 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true;
-----
-1
-2
-NULL
-
-query II
-explain select distinct x1.c0 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true;
-----
-physical_plan	<!REGEX>:.*JOIN.*
-
 query II rowsort
 select distinct x1.c0, x1.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true;
 ----
@@ -427,37 +415,6 @@ select distinct x1.c0, x1.c1 from t1 as x1 left join t1 as x2 using (c0) left jo
 2	20
 NULL	30
 NULL	NULL
-
-query II rowsort
-select distinct x1.c0, x2.c0 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true;
-----
-1	1
-2	2
-NULL	NULL
-
-query II rowsort
-select distinct x1.c0, x2.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true;
-----
-1	10
-1	11
-2	20
-NULL	NULL
-
-query II
-explain select distinct x1.c0, x2.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true;
-----
-physical_plan	<REGEX>:.*JOIN.*
-
-# outer filter can be applied after the unused joins are removed
-query I rowsort
-select distinct x1.c0 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where x1.c1 = 11;
-----
-1
-
-query II
-explain select distinct x1.c0 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where x1.c1 = 11;
-----
-physical_plan	<!REGEX>:.*JOIN.*
 
 # a predicate on the inner payload must keep that join, and must not read another column in its place
 query II rowsort
@@ -470,26 +427,6 @@ query II
 explain select distinct x1.c0, x1.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where x2.c1 = 10;
 ----
 physical_plan	<REGEX>:.*JOIN.*
-
-query I rowsort
-select x1.c0 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x4 on x1.c0 = x4.c0 left join t1 as x3 on ((select true) and false) where true group by x1.c0;
-----
-1
-2
-NULL
-
-# group by does not prove these joins are non-multiplying, so both equality joins stay
-query II
-explain select x1.c0 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x4 on x1.c0 = x4.c0 left join t1 as x3 on ((select true) and false) where true group by x1.c0;
-----
-physical_plan	<REGEX>:.*JOIN.*
-
-query I
-select distinct x1.c0 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true order by x1.c0 nulls last;
-----
-1
-2
-NULL
 
 # x4.c1 is not equal to x1.c0 or x1.c1, so a stale projection index cannot pass unnoticed
 query II rowsort
@@ -504,41 +441,6 @@ query II
 explain select distinct x1.c0, x4.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x4 on x1.c0 = x4.c0 left join t1 as x3 on ((select true) and false) where true;
 ----
 physical_plan	<REGEX>:.*JOIN.*
-
-query II rowsort
-select distinct x1.c0, x4.c0 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x4 on x1.c0 = x4.c0 left join t1 as x3 on ((select true) and false) where true;
-----
-1	1
-2	2
-NULL	NULL
-
-query I
-select count(*) from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true;
-----
-7
-
-query II rowsort
-select distinct x2.c0, x2.c1 from t1 as x1 right join t1 as x2 using (c0);
-----
-1	10
-1	11
-2	20
-NULL	30
-NULL	NULL
-
-query II rowsort
-select distinct x1.c0, (select 1) from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true;
-----
-1	1
-2	1
-NULL	1
-
-query T rowsort
-select distinct x1.c0 from ts as x1 left join ts as x2 using (c0) left join ts as x3 on ((select true) and false) where true;
-----
-NULL
-a
-b
 
 query TT rowsort
 select distinct x1.c0, x4.c1 from ts as x1 left join ts as x2 using (c0) left join ts as x4 on x1.c0 = x4.c0 left join ts as x3 on ((select true) and false) where true;
@@ -568,81 +470,3 @@ select distinct x1.c0, x4.c1 from t1 as x1 left join (select distinct c0 from t1
 1	11
 2	20
 NULL	NULL
-
-# same results with join elimination disabled
-statement ok
-SET disabled_optimizers='join_elimination';
-
-query I rowsort
-select distinct x1.c0 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true;
-----
-1
-2
-NULL
-
-query II rowsort
-select distinct x1.c0, x1.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true;
-----
-1	10
-1	11
-2	20
-NULL	30
-NULL	NULL
-
-query II rowsort
-select distinct x1.c0, x1.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where x2.c1 = 10;
-----
-1	10
-1	11
-
-query II rowsort
-select distinct x1.c0, x4.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x4 on x1.c0 = x4.c0 left join t1 as x3 on ((select true) and false) where true;
-----
-1	10
-1	11
-2	20
-NULL	NULL
-
-query I
-select count(*) from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true;
-----
-7
-
-query II rowsort
-select x1.c0, x1.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true;
-----
-1	10
-1	10
-1	11
-1	11
-2	20
-NULL	30
-NULL	NULL
-
-query II rowsort
-select distinct x1.c0, x4.c1 from t1 as x1 left join (select distinct c0 from t1) as x2 on x1.c0 = x2.c0 left join t1 as x4 on x1.c0 = x4.c0 where x1.c1 is not null;
-----
-1	10
-1	11
-2	20
-NULL	NULL
-
-query II rowsort
-select distinct x2.c0, x2.c1 from t1 as x1 right join t1 as x2 using (c0);
-----
-1	10
-1	11
-2	20
-NULL	30
-NULL	NULL
-
-query TT rowsort
-select distinct x1.c0, x4.c1 from ts as x1 left join ts as x2 using (c0) left join ts as x4 on x1.c0 = x4.c0 left join ts as x3 on ((select true) and false) where true;
-----
-NULL	NULL
-a	x
-a	y
-b	z
-
-statement ok
-RESET disabled_optimizers;

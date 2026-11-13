@@ -33,7 +33,7 @@ struct DistinctGroupRef {
 struct SavedProjectionMap {
 	reference<LogicalOperator> op;
 	idx_t child_index;
-	vector<ColumnBinding> selected;
+	vector<ColumnBinding> child_bindings_before;
 };
 
 class PipelineInfo {
@@ -83,11 +83,12 @@ public:
 
 private:
 	unique_ptr<LogicalOperator> TryEliminateJoin();
+	void RestoreProjectionMaps();
 	// void ExtractDistinctReferences(vector<Expression> &expressions, idx_t target_table_index);
 	bool ContainDistinctGroup(vector<ColumnBinding> &exprs);
 
 	PipelineInfo pipe_info;
-	// Projection maps resolved before this optimizer detaches the children it rewrites.
+	//! Child layouts of the projection maps in this pipeline, recorded before the children are rewritten
 	vector<SavedProjectionMap> saved_projection_maps;
 
 	optional_ptr<LogicalOperator> children_root;
