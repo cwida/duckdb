@@ -1,0 +1,45 @@
+# name: test/sql/json/json_number_precision_roundtrip.test
+# description: JSON numbers keep their exact text when re-serialized (to_json/json_extract/COPY TO json)
+# group: [json]
+
+require json
+
+statement ok
+CREATE TABLE s(id INT, j JSON);
+
+statement ok
+INSERT INTO s VALUES (1, '{"amount": 12345678901234.56789}'), (2, '{"n": 1e-400}'),
+                     (3, '{"id": 9007199254740993.5}'), (4, '[3.141592653589793238462643383279]'),
+                     (5, '{"price": 0.1000000000000000055511151231257827}'),
+                     (6, '{"big_int": 12345678901234567890123}');
+
+query II
+SELECT to_json(j), json_extract(j, '$') FROM s ORDER BY id;
+----
+{"amount":12345678901234.56789}	{"amount":12345678901234.56789}
+{"n":1e-400}	{"n":1e-400}
+{"id":9007199254740993.5}	{"id":9007199254740993.5}
+[3.141592653589793238462643383279]	[3.141592653589793238462643383279]
+{"price":0.1000000000000000055511151231257827}	{"price":0.1000000000000000055511151231257827}
+{"big_int":12345678901234567890123}	{"big_int":12345678901234567890123}
+
+query I
+SELECT json_extract('{"a": 1.50}', '$.a');
+----
+1.50
+
+statement ok
+COPY s TO '{TEST_DIR}/s.json'
+
+query I
+SELECT count(*) FROM read_text('{TEST_DIR}/s.json') WHERE content LIKE '%12345678901234.56789%' AND content LIKE '%1e-400%' AND content LIKE '%9007199254740993.5%' AND content LIKE '%3.141592653589793238462643383279%' AND content LIKE '%0.1000000000000000055511151231257827%' AND content LIKE '%12345678901234567890123%'
+----
+1
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/expdir' (FORMAT json)
+
+query I
+SELECT count(*) FROM read_text('{TEST_DIR}/expdir/s.json') WHERE content LIKE '%12345678901234.56789%'
+----
+1

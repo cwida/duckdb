@@ -25,13 +25,14 @@ struct JSONExecutors {
 public:
 	//! Single-argument JSON read function, i.e. json_type('[1, 2, 3]')
 	template <class T>
-	static void UnaryExecute(DataChunk &args, ExpressionState &state, Vector &result, const json_function_t<T> fun) {
+	static void UnaryExecute(DataChunk &args, ExpressionState &state, Vector &result, const json_function_t<T> fun,
+	                         yyjson_read_flag read_flag = JSONCommon::READ_FLAG) {
 		auto &lstate = JSONFunctionLocalState::ResetAndGet(state);
 		auto alc = lstate.json_allocator->GetYYAlc();
 
 		const auto &inputs = args.data[0];
 		UnaryExecutor::Execute<string_t, T>(inputs, result, [&](string_t input) -> optional<T> {
-			auto doc = JSONCommon::ReadDocument(input, JSONCommon::READ_FLAG, alc);
+			auto doc = JSONCommon::ReadDocument(input, read_flag, alc);
 			return fun(doc->root, alc, result);
 		});
 
@@ -40,7 +41,8 @@ public:
 
 	//! Two-argument JSON read function (with path query), i.e. json_type('[1, 2, 3]', '$[0]')
 	template <class T, bool SET_NULL_IF_NOT_FOUND = true>
-	static void BinaryExecute(DataChunk &args, ExpressionState &state, Vector &result, const json_function_t<T> fun) {
+	static void BinaryExecute(DataChunk &args, ExpressionState &state, Vector &result, const json_function_t<T> fun,
+	                          yyjson_read_flag read_flag = JSONCommon::READ_FLAG) {
 		auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 		const auto &info = func_expr.BindInfo()->Cast<JSONReadFunctionData>();
 		auto &lstate = JSONFunctionLocalState::ResetAndGet(state);
@@ -52,7 +54,7 @@ public:
 			const idx_t &len = info.len;
 			if (info.path_type == JSONCommon::JSONPathType::REGULAR) {
 				UnaryExecutor::Execute<string_t, T>(inputs, result, [&](string_t input) -> optional<T> {
-					auto doc = JSONCommon::ReadDocument(input, JSONCommon::READ_FLAG, alc);
+					auto doc = JSONCommon::ReadDocument(input, read_flag, alc);
 					// Use the path elements parsed at bind time when available
 					auto val = info.use_elements ? JSONCommon::GetPathElements(doc->root, info.elements)
 					                             : JSONCommon::GetUnsafe(doc->root, ptr, len);
@@ -68,7 +70,7 @@ public:
 				UnaryExecutor::Execute<string_t, list_entry_t>(inputs, result, [&](string_t input) {
 					vals.clear();
 
-					auto doc = JSONCommon::ReadDocument(input, JSONCommon::READ_FLAG, alc);
+					auto doc = JSONCommon::ReadDocument(input, read_flag, alc);
 					JSONCommon::GetWildcardPath(doc->root, ptr, len, vals);
 
 					auto current_size = ListVector::GetListSize(result);
@@ -107,7 +109,7 @@ public:
 			}
 			BinaryExecutor::Execute<string_t, string_t, T>(
 			    inputs, *casted_paths, result, args.size(), [&](string_t input, string_t path) -> optional<T> {
-				    auto doc = JSONCommon::ReadDocument(input, JSONCommon::READ_FLAG, alc);
+				    auto doc = JSONCommon::ReadDocument(input, read_flag, alc);
 				    auto val = JSONCommon::Get(doc->root, path, args.data[1].GetType().IsIntegral());
 				    if (SET_NULL_IF_NOT_FOUND && !val) {
 					    return nullopt;
@@ -121,7 +123,8 @@ public:
 
 	//! JSON read function with list of path queries, i.e. json_type('[1, 2, 3]', ['$[0]', '$[1]'])
 	template <class T, bool SET_NULL_IF_NOT_FOUND = true>
-	static void ExecuteMany(DataChunk &args, ExpressionState &state, Vector &result, const json_function_t<T> fun) {
+	static void ExecuteMany(DataChunk &args, ExpressionState &state, Vector &result, const json_function_t<T> fun,
+	                        yyjson_read_flag read_flag = JSONCommon::READ_FLAG) {
 		auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 		const auto &info = func_expr.BindInfo()->Cast<JSONReadManyFunctionData>();
 		auto &lstate = JSONFunctionLocalState::ResetAndGet(state);
@@ -154,7 +157,7 @@ public:
 				continue;
 			}
 
-			auto doc = JSONCommon::ReadDocument(inputs[idx], JSONCommon::READ_FLAG, alc);
+			auto doc = JSONCommon::ReadDocument(inputs[idx], read_flag, alc);
 			for (idx_t path_i = 0; path_i < num_paths; path_i++) {
 				auto child_idx = offset + path_i;
 				val = info.use_elements[path_i]

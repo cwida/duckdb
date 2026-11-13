@@ -19,11 +19,11 @@ static inline optional<string_t> ExtractStringFromVal(yyjson_val *val, yyjson_al
 }
 
 static void ExtractFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	JSONExecutors::BinaryExecute<string_t>(args, state, result, ExtractFromVal);
+	JSONExecutors::BinaryExecute<string_t>(args, state, result, ExtractFromVal, JSONCommon::READ_RAW_NUMBERS_FLAG);
 }
 
 static void ExtractManyFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	JSONExecutors::ExecuteMany<string_t>(args, state, result, ExtractFromVal);
+	JSONExecutors::ExecuteMany<string_t>(args, state, result, ExtractFromVal, JSONCommon::READ_RAW_NUMBERS_FLAG);
 }
 
 static void ExtractStringFunction(DataChunk &args, ExpressionState &state, Vector &result) {

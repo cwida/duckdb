@@ -26,7 +26,6 @@ query I
    WHERE json_extract(x,'$')<>x
      AND json_type(x) IN ('OBJECT','ARRAY');
 ----
-[true,false,null,123,-234,34.5e+6,{},[]]
 
 statement ok
 CREATE TABLE j2(id INTEGER PRIMARY KEY, json VARCHAR, src VARCHAR);

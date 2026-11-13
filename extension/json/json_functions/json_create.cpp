@@ -544,7 +544,7 @@ static inline yyjson_mut_val *CreateJSONValueFromJSON(yyjson_mut_doc *doc, const
 
 template <>
 inline yyjson_mut_val *CreateJSONValueFromJSON(yyjson_mut_doc *doc, const string_t &value) {
-	auto value_doc = JSONCommon::ReadDocument(value, JSONCommon::READ_FLAG, &doc->alc);
+	auto value_doc = JSONCommon::ReadDocument(value, JSONCommon::READ_RAW_NUMBERS_FLAG, &doc->alc);
 	auto result = yyjson_val_mut_copy(doc, value_doc->root);
 	return result;
 }

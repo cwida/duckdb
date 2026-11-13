@@ -138,6 +138,9 @@ public:
 	//! Read/Write flags
 	static constexpr auto READ_FLAG =
 	    YYJSON_READ_ALLOW_INF_AND_NAN | YYJSON_READ_ALLOW_TRAILING_COMMAS | YYJSON_READ_BIGNUM_AS_RAW;
+	//! Read flag that additionally keeps every JSON number as raw text, avoiding a DOUBLE round trip
+	static constexpr auto READ_RAW_NUMBERS_FLAG =
+	    YYJSON_READ_ALLOW_INF_AND_NAN | YYJSON_READ_ALLOW_TRAILING_COMMAS | YYJSON_READ_NUMBER_AS_RAW;
 	static constexpr auto READ_STOP_FLAG = READ_FLAG | YYJSON_READ_STOP_WHEN_DONE;
 	static constexpr auto READ_INSITU_FLAG = READ_STOP_FLAG | YYJSON_READ_INSITU;
 	static constexpr auto WRITE_FLAG = YYJSON_WRITE_ALLOW_INF_AND_NAN;
