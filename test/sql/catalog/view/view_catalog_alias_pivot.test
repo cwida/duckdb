@@ -1,0 +1,81 @@
+# name: test/sql/catalog/view/view_catalog_alias_pivot.test
+# description: Test that PIVOT/UNPIVOT views referencing their own catalog survive re-attaching under a different alias
+# group: [view]
+
+statement ok
+ATTACH '{TEST_DIR}/view_catalog_alias_pivot.db' AS db1;
+
+statement ok
+CREATE TABLE db1.t(x INTEGER);
+
+statement ok
+INSERT INTO db1.t VALUES (42);
+
+statement ok
+CREATE TABLE db1.t2(x INTEGER, y INTEGER);
+
+statement ok
+INSERT INTO db1.t2 VALUES (42, 7);
+
+statement ok
+CREATE MACRO db1.identity(v) AS v;
+
+statement ok
+CREATE VIEW db1.v_pivot AS PIVOT db1.t ON x IN (42) USING count(*);
+
+statement ok
+CREATE VIEW db1.v_unpivot AS UNPIVOT db1.t ON x INTO NAME n VALUE val;
+
+statement ok
+CREATE VIEW db1.v_joined AS SELECT * FROM (UNPIVOT db1.t ON x INTO NAME n VALUE val) q, db1.t;
+
+statement ok
+CREATE VIEW db1.v_subquery AS SELECT (SELECT count(*) FROM (UNPIVOT db1.t ON x INTO NAME n VALUE val)) AS c;
+
+statement ok
+CREATE VIEW db1.v_aggregate AS PIVOT db1.t2 ON x IN (42) USING sum(db1.main.identity(y));
+
+statement ok
+CREATE VIEW db1.v_entry AS UNPIVOT db1.t ON (db1.main.identity(x)) INTO NAME n VALUE val;
+
+# the catalog qualifier is dropped from the stored SQL
+query I
+SELECT count(*) FROM duckdb_views() WHERE database_name='db1' AND sql LIKE '%db1.%';
+----
+0
+
+statement ok
+DETACH db1;
+
+statement ok
+ATTACH '{TEST_DIR}/view_catalog_alias_pivot.db' AS db2;
+
+query I
+SELECT * FROM db2.v_pivot;
+----
+1
+
+query II
+SELECT * FROM db2.v_unpivot;
+----
+x	42
+
+query III
+SELECT * FROM db2.v_joined;
+----
+x	42	42
+
+query I
+SELECT * FROM db2.v_subquery;
+----
+1
+
+query I
+SELECT * FROM db2.v_aggregate;
+----
+7
+
+query I
+SELECT count(*) FROM db2.v_entry;
+----
+1
