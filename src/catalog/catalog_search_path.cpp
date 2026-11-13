@@ -166,7 +166,8 @@ void CatalogSearchPath::Set(vector<CatalogSearchEntry> new_paths, CatalogSetPath
 	if (set_type == CatalogSetPathType::SET_SCHEMA && new_paths.size() != 1) {
 		throw CatalogException("%s can set only 1 schema. This has %d", GetSetName(set_type), new_paths.size());
 	}
-	for (auto &path : new_paths) {
+	for (idx_t path_idx = 0; path_idx < new_paths.size(); path_idx++) {
+		auto &path = new_paths[path_idx];
 		if (set_type == CatalogSetPathType::SET_DIRECTLY) {
 			if (path.GetCatalog().empty() || path.GetSchema().empty()) {
 				throw InternalException("SET_WITHOUT_VERIFICATION requires a fully qualified set path");
@@ -190,6 +191,15 @@ void CatalogSearchPath::Set(vector<CatalogSearchEntry> new_paths, CatalogSetPath
 		if (schema_entry) {
 			if (catalog_name.empty()) {
 				catalog_name = GetDefault().GetCatalog();
+				// Keep shorthand only when the new default catalog still resolves it to the same schema.
+				auto default_catalog = path_idx == 0 || new_paths[0].GetCatalog().empty()
+				                           ? DatabaseManager::TryGetDefaultDatabase(context)
+				                           : new_paths[0].GetCatalog();
+				auto &resolved_catalog = schema_entry->ParentCatalog();
+				if (!resolved_catalog.IsSystemCatalog() &&
+				    (!catalog_name.empty() || resolved_catalog.GetName() != default_catalog)) {
+					catalog_name = resolved_catalog.GetName();
+				}
 			}
 			path = CatalogSearchEntry::FromSchemaPath(std::move(catalog_name), std::move(schema_path),
 			                                          path.DefaultSchemaPrecedence());
