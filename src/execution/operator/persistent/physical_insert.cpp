@@ -283,7 +283,7 @@ static idx_t PerformOnConflictAction(InsertLocalState &lstate, InsertGlobalState
 
 	if (GLOBAL) {
 		auto &delete_state = lstate.GetDeleteState(data_table, table, context.client);
-		data_table.Delete(delete_state, context.client, table, row_ids, update_chunk.size());
+		data_table.Delete(delete_state, context.client, table, row_ids, update_chunk.size(), &append_chunk);
 	} else {
 		auto &local_storage = LocalStorage::Get(context.client, data_table.db);
 		local_storage.Delete(data_table, table, row_ids, update_chunk.size());

@@ -158,9 +158,10 @@ public:
 
 	unique_ptr<TableDeleteState> InitializeDelete(TableCatalogEntry &table, ClientContext &context,
 	                                              const vector<unique_ptr<BoundConstraint>> &bound_constraints);
-	//! Delete the entries with the specified row identifier from the table
+	//! Delete the entries with the specified row identifier from the table.
+	//! new_rows contains their replacements for a DELETE + INSERT update, in the same row order.
 	idx_t Delete(TableDeleteState &state, ClientContext &context, DuckTableEntry &table_entry, Vector &row_ids,
-	             idx_t count);
+	             idx_t count, optional_ptr<const DataChunk> new_rows = nullptr);
 
 	unique_ptr<TableUpdateState> InitializeUpdate(TableCatalogEntry &table, ClientContext &context,
 	                                              const vector<unique_ptr<BoundConstraint>> &bound_constraints);
@@ -308,7 +309,8 @@ private:
 	                             const vector<PhysicalIndex> &column_ids);
 	//! Verify constraints with a chunk from the Delete containing all columns of the table
 	void VerifyDeleteConstraints(optional_ptr<LocalTableStorage> storage, TableDeleteState &state,
-	                             ClientContext &context, DataChunk &chunk);
+	                             ClientContext &context, DataChunk &chunk, optional_ptr<const DataChunk> new_rows,
+	                             idx_t row_offset);
 
 	void InitializeScanWithOffset(DuckTransaction &transaction, TableScanState &state,
 	                              const vector<StorageIndex> &column_ids, idx_t start_row, idx_t end_row);
@@ -324,7 +326,7 @@ private:
 	                                      DataChunk &chunk);
 	void VerifyDeleteForeignKeyConstraint(optional_ptr<LocalTableStorage> storage,
 	                                      const BoundForeignKeyConstraint &bound_foreign_key, ClientContext &context,
-	                                      DataChunk &chunk);
+	                                      DataChunk &chunk, optional_ptr<const DataChunk> new_rows, idx_t row_offset);
 
 private:
 	//! The table info

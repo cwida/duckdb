@@ -1,0 +1,129 @@
+# name: test/sql/constraints/foreignkey/fk_update_nonpk_columns.test
+# description: Test that updating non-PK columns of an FK-referenced table does not raise a spurious FK violation (issue #16409)
+# group: [foreignkey]
+
+statement ok
+CREATE TABLE test (id INTEGER PRIMARY KEY, arr VARCHAR[]);
+
+statement ok
+INSERT INTO test VALUES (1, ['asdf', '2e3f']);
+
+statement ok
+CREATE TABLE test_fk (test_id INTEGER REFERENCES test (id), val VARCHAR);
+
+statement ok
+INSERT INTO test_fk VALUES (1, 'blkaj');
+
+# --- Variant 1: plain UPDATE of a LIST column, PK unchanged ---
+statement ok
+UPDATE test SET arr = [] WHERE id = 1;
+
+query IT
+SELECT id, arr FROM test;
+----
+1	[]
+
+# --- Variant 2: UPDATE to a non-empty list, PK unchanged ---
+statement ok
+UPDATE test SET arr = ['x'] WHERE id = 1;
+
+query IT
+SELECT id, arr FROM test;
+----
+1	[x]
+
+# --- Variant 3: INSERT OR REPLACE (same PK) ---
+statement ok
+INSERT OR REPLACE INTO test VALUES (1, ['replaced']);
+
+query IT
+SELECT id, arr FROM test;
+----
+1	[replaced]
+
+# --- Variant 4: INSERT ... ON CONFLICT DO UPDATE (same PK) ---
+statement ok
+INSERT INTO test VALUES (1, ['conflict']) ON CONFLICT (id) DO UPDATE SET arr = EXCLUDED.arr;
+
+query IT
+SELECT id, arr FROM test;
+----
+1	[conflict]
+
+# child reference must still be intact after all those updates
+query IT
+SELECT test_id, val FROM test_fk;
+----
+1	blkaj
+
+# --- Regression: a genuine FK violation must STILL be rejected ---
+
+# deleting the referenced parent row must fail
+statement error
+DELETE FROM test WHERE id = 1;
+----
+<REGEX>:.*Constraint Error.*foreign key.*
+
+# updating the PK column to a value the child does not reference must fail
+statement error
+UPDATE test SET id = 99 WHERE id = 1;
+----
+<REGEX>:.*Constraint Error.*foreign key.*
+
+# RETURNING must not treat projected key columns as assignments.
+query IT
+UPDATE test SET arr = ['returning'] WHERE id = 1 RETURNING id, arr;
+----
+1	[returning]
+
+query IT
+INSERT INTO test VALUES (1, ['returning conflict']) ON CONFLICT DO UPDATE SET arr = EXCLUDED.arr RETURNING id, arr;
+----
+1	[returning conflict]
+
+# Explicit MERGE uses the same update rewrite.
+statement ok
+MERGE INTO test USING (SELECT 1 AS id) src ON test.id = src.id
+WHEN MATCHED THEN UPDATE SET arr = ['merged'];
+
+query IT
+SELECT id, arr FROM test;
+----
+1	[merged]
+
+# A rewrite must still reject an actual change to a referenced key.
+statement error
+UPDATE test SET id = 99, arr = ['invalid'] WHERE id = 1;
+----
+foreign key
+
+query IT
+SELECT id, arr FROM test;
+----
+1	[merged]
+
+# CHECK constraints may project an unchanged primary key.
+statement ok
+CREATE TABLE checked_parent (id INTEGER PRIMARY KEY, arr INTEGER[], CHECK (id > len(arr)));
+
+statement ok
+INSERT INTO checked_parent VALUES (10, [1]);
+
+statement ok
+CREATE TABLE checked_child (pid INTEGER REFERENCES checked_parent(id));
+
+statement ok
+INSERT INTO checked_child VALUES (10);
+
+statement ok
+UPDATE checked_parent SET arr = [1, 2] WHERE id = 10;
+
+statement error
+UPDATE checked_parent SET arr = range(20) WHERE id = 10;
+----
+CHECK constraint
+
+query IT
+SELECT id, arr FROM checked_parent;
+----
+10	[1, 2]

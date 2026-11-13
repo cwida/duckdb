@@ -44,9 +44,14 @@ statement ok
 ATTACH '{TEST_DIR}/test_fk_eager.db' AS fk_db;
 
 # Now, we try to update the PK table.
-# The over-eager constraint checking fix is not yet supported for FKs, thus, we throw a constraint violation.
-statement error
+# Updating only a non-PK column (here, payload) must NOT raise a spurious FK violation —
+# the matching INSERT half of the DELETE+INSERT rewrite re-adds the same PK. See issue #16409.
+statement ok
 UPDATE fk_db.tbl_pk SET payload = {'v': 'new hello', 'i': [7]} WHERE i = 1;
+
+query IT
+SELECT i, payload FROM fk_db.tbl_pk ORDER BY i;
 ----
-<REGEX>:Constraint Error.*Violates foreign key constraint because.*
+1	{'v': new hello, 'i': [7]}
+2	{'v': world, 'i': [43]}
 
