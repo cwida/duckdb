@@ -1,0 +1,258 @@
+# name: test/sql/topn/test_top_n_boundary_nulls.test_slow
+# description: TopN boundary filtering with NULLs, NaN, -0.0 and strings matches a full sort followed by a limit
+# group: [topn]
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE t AS SELECT
+	i,
+	CASE WHEN i % 13 = 0 THEN NULL ELSE (hash(i) % 100000)::BIGINT END AS k,
+	CASE WHEN i % 7 = 0 THEN 'nan'::DOUBLE WHEN i % 11 = 0 THEN -0.0 WHEN i % 17 = 0 THEN NULL
+	     ELSE (hash(i + 1) % 1000)::DOUBLE / 3 END AS d,
+	CASE WHEN i % 19 = 0 THEN NULL ELSE md5(i::VARCHAR) END AS s,
+	CASE WHEN i < 2500000 THEN NULL ELSE i END AS mostly_null
+FROM range(3000000) r(i);
+
+# ORDER BY k NULLS LAST, i
+foreach lim 7 100 5000 40000
+
+statement ok
+CREATE OR REPLACE TABLE topn AS SELECT i FROM t ORDER BY k NULLS LAST, i LIMIT {lim};
+
+statement ok
+SET disabled_optimizers='top_n';
+
+statement ok
+CREATE OR REPLACE TABLE full_sort AS SELECT i FROM t ORDER BY k NULLS LAST, i LIMIT {lim};
+
+statement ok
+RESET disabled_optimizers;
+
+query II
+SELECT (SELECT count(*) FROM topn) = {lim}, (SELECT count(*) FROM (SELECT i FROM topn EXCEPT ALL SELECT i FROM full_sort))
+----
+true	0
+
+endloop
+
+# ORDER BY k NULLS FIRST, i
+foreach lim 7 100 5000 40000
+
+statement ok
+CREATE OR REPLACE TABLE topn AS SELECT i FROM t ORDER BY k NULLS FIRST, i LIMIT {lim};
+
+statement ok
+SET disabled_optimizers='top_n';
+
+statement ok
+CREATE OR REPLACE TABLE full_sort AS SELECT i FROM t ORDER BY k NULLS FIRST, i LIMIT {lim};
+
+statement ok
+RESET disabled_optimizers;
+
+query II
+SELECT (SELECT count(*) FROM topn) = {lim}, (SELECT count(*) FROM (SELECT i FROM topn EXCEPT ALL SELECT i FROM full_sort))
+----
+true	0
+
+endloop
+
+# ORDER BY k DESC NULLS LAST, i
+foreach lim 7 100 5000 40000
+
+statement ok
+CREATE OR REPLACE TABLE topn AS SELECT i FROM t ORDER BY k DESC NULLS LAST, i LIMIT {lim};
+
+statement ok
+SET disabled_optimizers='top_n';
+
+statement ok
+CREATE OR REPLACE TABLE full_sort AS SELECT i FROM t ORDER BY k DESC NULLS LAST, i LIMIT {lim};
+
+statement ok
+RESET disabled_optimizers;
+
+query II
+SELECT (SELECT count(*) FROM topn) = {lim}, (SELECT count(*) FROM (SELECT i FROM topn EXCEPT ALL SELECT i FROM full_sort))
+----
+true	0
+
+endloop
+
+# ORDER BY k DESC NULLS FIRST, i
+foreach lim 7 100 5000 40000
+
+statement ok
+CREATE OR REPLACE TABLE topn AS SELECT i FROM t ORDER BY k DESC NULLS FIRST, i LIMIT {lim};
+
+statement ok
+SET disabled_optimizers='top_n';
+
+statement ok
+CREATE OR REPLACE TABLE full_sort AS SELECT i FROM t ORDER BY k DESC NULLS FIRST, i LIMIT {lim};
+
+statement ok
+RESET disabled_optimizers;
+
+query II
+SELECT (SELECT count(*) FROM topn) = {lim}, (SELECT count(*) FROM (SELECT i FROM topn EXCEPT ALL SELECT i FROM full_sort))
+----
+true	0
+
+endloop
+
+# ORDER BY d NULLS LAST, i
+foreach lim 7 100 5000 40000
+
+statement ok
+CREATE OR REPLACE TABLE topn AS SELECT i FROM t ORDER BY d NULLS LAST, i LIMIT {lim};
+
+statement ok
+SET disabled_optimizers='top_n';
+
+statement ok
+CREATE OR REPLACE TABLE full_sort AS SELECT i FROM t ORDER BY d NULLS LAST, i LIMIT {lim};
+
+statement ok
+RESET disabled_optimizers;
+
+query II
+SELECT (SELECT count(*) FROM topn) = {lim}, (SELECT count(*) FROM (SELECT i FROM topn EXCEPT ALL SELECT i FROM full_sort))
+----
+true	0
+
+endloop
+
+# ORDER BY d DESC NULLS FIRST, i
+foreach lim 7 100 5000 40000
+
+statement ok
+CREATE OR REPLACE TABLE topn AS SELECT i FROM t ORDER BY d DESC NULLS FIRST, i LIMIT {lim};
+
+statement ok
+SET disabled_optimizers='top_n';
+
+statement ok
+CREATE OR REPLACE TABLE full_sort AS SELECT i FROM t ORDER BY d DESC NULLS FIRST, i LIMIT {lim};
+
+statement ok
+RESET disabled_optimizers;
+
+query II
+SELECT (SELECT count(*) FROM topn) = {lim}, (SELECT count(*) FROM (SELECT i FROM topn EXCEPT ALL SELECT i FROM full_sort))
+----
+true	0
+
+endloop
+
+# ORDER BY s NULLS FIRST, i
+foreach lim 7 100 5000 40000
+
+statement ok
+CREATE OR REPLACE TABLE topn AS SELECT i FROM t ORDER BY s NULLS FIRST, i LIMIT {lim};
+
+statement ok
+SET disabled_optimizers='top_n';
+
+statement ok
+CREATE OR REPLACE TABLE full_sort AS SELECT i FROM t ORDER BY s NULLS FIRST, i LIMIT {lim};
+
+statement ok
+RESET disabled_optimizers;
+
+query II
+SELECT (SELECT count(*) FROM topn) = {lim}, (SELECT count(*) FROM (SELECT i FROM topn EXCEPT ALL SELECT i FROM full_sort))
+----
+true	0
+
+endloop
+
+# ORDER BY s DESC NULLS LAST, i
+foreach lim 7 100 5000 40000
+
+statement ok
+CREATE OR REPLACE TABLE topn AS SELECT i FROM t ORDER BY s DESC NULLS LAST, i LIMIT {lim};
+
+statement ok
+SET disabled_optimizers='top_n';
+
+statement ok
+CREATE OR REPLACE TABLE full_sort AS SELECT i FROM t ORDER BY s DESC NULLS LAST, i LIMIT {lim};
+
+statement ok
+RESET disabled_optimizers;
+
+query II
+SELECT (SELECT count(*) FROM topn) = {lim}, (SELECT count(*) FROM (SELECT i FROM topn EXCEPT ALL SELECT i FROM full_sort))
+----
+true	0
+
+endloop
+
+# ORDER BY k % 10, d DESC, i
+foreach lim 7 100 5000 40000
+
+statement ok
+CREATE OR REPLACE TABLE topn AS SELECT i FROM t ORDER BY k % 10, d DESC, i LIMIT {lim};
+
+statement ok
+SET disabled_optimizers='top_n';
+
+statement ok
+CREATE OR REPLACE TABLE full_sort AS SELECT i FROM t ORDER BY k % 10, d DESC, i LIMIT {lim};
+
+statement ok
+RESET disabled_optimizers;
+
+query II
+SELECT (SELECT count(*) FROM topn) = {lim}, (SELECT count(*) FROM (SELECT i FROM topn EXCEPT ALL SELECT i FROM full_sort))
+----
+true	0
+
+endloop
+
+# ORDER BY mostly_null NULLS FIRST, i
+foreach lim 7 100 5000 40000
+
+statement ok
+CREATE OR REPLACE TABLE topn AS SELECT i FROM t ORDER BY mostly_null NULLS FIRST, i LIMIT {lim};
+
+statement ok
+SET disabled_optimizers='top_n';
+
+statement ok
+CREATE OR REPLACE TABLE full_sort AS SELECT i FROM t ORDER BY mostly_null NULLS FIRST, i LIMIT {lim};
+
+statement ok
+RESET disabled_optimizers;
+
+query II
+SELECT (SELECT count(*) FROM topn) = {lim}, (SELECT count(*) FROM (SELECT i FROM topn EXCEPT ALL SELECT i FROM full_sort))
+----
+true	0
+
+endloop
+
+# ORDER BY mostly_null DESC NULLS LAST, i
+foreach lim 7 100 5000 40000
+
+statement ok
+CREATE OR REPLACE TABLE topn AS SELECT i FROM t ORDER BY mostly_null DESC NULLS LAST, i LIMIT {lim};
+
+statement ok
+SET disabled_optimizers='top_n';
+
+statement ok
+CREATE OR REPLACE TABLE full_sort AS SELECT i FROM t ORDER BY mostly_null DESC NULLS LAST, i LIMIT {lim};
+
+statement ok
+RESET disabled_optimizers;
+
+query II
+SELECT (SELECT count(*) FROM topn) = {lim}, (SELECT count(*) FROM (SELECT i FROM topn EXCEPT ALL SELECT i FROM full_sort))
+----
+true	0
+
+endloop
