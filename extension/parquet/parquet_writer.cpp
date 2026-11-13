@@ -1456,6 +1456,19 @@ static bool HasPreparedShreddingTypes(const ShreddingType &shredding_types) {
 	return shredding_types.set || !shredding_types.children.types->empty();
 }
 
+//! The prepared layout only reports shredding derived by analysis; the user's spec is already
+//! in our options, because every file of a COPY is built from the same ParquetOptions.
+static void MergePreparedShreddingTypes(ShreddingType &target, const ShreddingType &source) {
+	for (auto &entry : *source.children.types) {
+		Identifier name(entry.first);
+		if (target.GetChild(name)) {
+			//! An explicit spec wins - a column carrying one is never analyzed
+			continue;
+		}
+		target.AddChild(name, entry.second.Copy());
+	}
+}
+
 void ParquetWriter::InitializeSchemaFromPreparedRowGroup(const PreparedRowGroup &prepared) {
 	auto &layout = prepared.layout;
 	if (file_meta_data.schema.empty()) {
@@ -1463,16 +1476,24 @@ void ParquetWriter::InitializeSchemaFromPreparedRowGroup(const PreparedRowGroup 
 			throw InternalException("Prepared Parquet row group is missing schema");
 		}
 		if (HasPreparedShreddingTypes(layout.shredding_types)) {
-			options.shredding_types = layout.shredding_types.Copy();
+			MergePreparedShreddingTypes(options.shredding_types, layout.shredding_types);
 			InitializeColumnWriters();
 		}
 		auto unique_columns = InitializeColumnWriterSchemaIndices();
-		D_ASSERT(unique_columns == prepared.row_group.columns.size());
 		D_ASSERT(file_meta_data.schema.size() == layout.schema.size());
 		file_meta_data.schema = layout.schema;
 		InitializeColumnOrders(unique_columns);
 	}
 	InitializeStatsUnifiers();
+
+	//! A batch prepared by one file's writer can be flushed into another's. If their leaf
+	//! layouts differ, the leaf indices in the prepared states address the wrong column.
+	if (written_stats && stats_accumulator->stats_unifiers.size() != prepared.row_group.columns.size()) {
+		throw InternalException(
+		    "Parquet writer for '%s' has %llu leaf columns but is flushing a row group prepared with %llu. "
+		    "The prepared layout and the writer's shredding schema disagree.",
+		    options.file_name, stats_accumulator->stats_unifiers.size(), prepared.row_group.columns.size());
+	}
 }
 
 void ParquetWriter::FlushBloomFilters() {

@@ -264,7 +264,9 @@ bool VariantColumnWriter::TryExportPreparedShreddingType(ShreddingType &result) 
 		result = analyzed_shredding_type.Copy();
 		return true;
 	}
-	return StructColumnWriter::TryExportPreparedShreddingType(result);
+	//! Not delegating to StructColumnWriter: it would report the physical children of an
+	//! already-shredded VARIANT (metadata/value/typed_value) as if they were a shredding spec.
+	return false;
 }
 
 } // namespace duckdb

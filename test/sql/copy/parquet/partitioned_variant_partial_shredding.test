@@ -1,0 +1,91 @@
+# name: test/sql/copy/parquet/partitioned_variant_partial_shredding.test
+# description: Partitioned COPY where SHREDDING names only some of the VARIANT columns
+# group: [parquet]
+
+require parquet
+
+# A batch is prepared by the writer of whichever output file was current at the time, but a
+# partitioned COPY can flush it into a different file. The VARIANT column that SHREDDING does
+# not name has its layout derived by analysis, so the two writers must still agree on the leaf
+# columns. They used to not: the receiving writer rebuilt its column writers from the prepared
+# layout, which described the physical children of the already-shredded columns rather than a
+# shredding schema, and came out with fewer leaves than the batch was prepared with. The files
+# were written with corrupt column offsets, or - with RETURN_STATS, where the leaf index is
+# also used to address a stats unifier - the write died on an out-of-bounds access or on
+# "Incorrect size for stats in UnifyMinMax".
+
+statement ok
+CREATE TABLE t AS
+SELECT (i % 3) AS part,
+       {'k': 'v' || (i % 2)}::VARIANT AS shredded,
+       CASE WHEN i % 5 = 0 THEN {'lvl': 'warn'}::VARIANT ELSE ('msg ' || i)::VARIANT END AS unshredded
+FROM range(2000) t(i);
+
+statement ok
+COPY t TO '{TEST_DIR}/partial_shredding' (FORMAT parquet, PARTITION_BY ('part'), OVERWRITE_OR_IGNORE,
+                                          SHREDDING {shredded: 'STRUCT(k VARCHAR)'});
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/partial_shredding/**/*.parquet');
+----
+2000
+
+# Every partition was written, and every one of them can be read back
+query I
+SELECT count(DISTINCT filename) FROM read_parquet('{TEST_DIR}/partial_shredding/**/*.parquet', filename = true);
+----
+3
+
+# The named column is shredded on its declared key
+query I
+SELECT count(DISTINCT path_in_schema) FROM parquet_metadata('{TEST_DIR}/partial_shredding/**/*.parquet')
+WHERE path_in_schema = 'shredded, typed_value, k, typed_value';
+----
+1
+
+# The unnamed column keeps whatever layout analysis chose, consistently across partitions
+query I
+SELECT count(DISTINCT path_in_schema) FROM parquet_metadata('{TEST_DIR}/partial_shredding/**/*.parquet')
+WHERE path_in_schema LIKE 'unshredded%';
+----
+3
+
+# Values survive, including the ones that do not fit the shredded layout
+query II
+SELECT count(*), count(*) FILTER (WHERE unshredded.lvl::VARCHAR = 'warn')
+FROM read_parquet('{TEST_DIR}/partial_shredding/**/*.parquet');
+----
+2000	400
+
+query I
+SELECT count(DISTINCT shredded.k::VARCHAR) FROM read_parquet('{TEST_DIR}/partial_shredding/**/*.parquet');
+----
+2
+
+# RETURN_STATS is the path that used to fail loudest: the leaf index also selects a stats unifier
+statement ok
+COPY t TO '{TEST_DIR}/partial_shredding_stats' (FORMAT parquet, PARTITION_BY ('part'), OVERWRITE_OR_IGNORE,
+                                                SHREDDING {shredded: 'STRUCT(k VARCHAR)'}, RETURN_STATS true);
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/partial_shredding_stats/**/*.parquet');
+----
+2000
+
+# Naming every VARIANT column, and naming none, were always fine - keep them covered
+statement ok
+COPY t TO '{TEST_DIR}/full_shredding' (FORMAT parquet, PARTITION_BY ('part'), OVERWRITE_OR_IGNORE, RETURN_STATS true,
+                                       SHREDDING {shredded: 'STRUCT(k VARCHAR)', unshredded: 'VARCHAR'});
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/full_shredding/**/*.parquet');
+----
+2000
+
+statement ok
+COPY t TO '{TEST_DIR}/no_shredding' (FORMAT parquet, PARTITION_BY ('part'), OVERWRITE_OR_IGNORE, RETURN_STATS true);
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/no_shredding/**/*.parquet');
+----
+2000
