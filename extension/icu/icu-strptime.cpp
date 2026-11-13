@@ -1,4 +1,5 @@
 #include "include/icu-strptime.hpp"
+#include "include/icu-casts.hpp"
 #include "include/icu-datefunc.hpp"
 #include "include/icu-helpers.hpp"
 
@@ -397,31 +398,36 @@ struct ICUStrptime : public ICUDateFunc {
 			}
 			HandleCastError::AssignError(msg, parameters);
 			return nullopt;
-		} else if (!has_offset) {
-			// Convert parts to a TZ (default or parsed) if no offset was provided
-			auto calendar = cal.get();
+		}
+		return ParsedToTimestampTZ(cal, cache, us, has_offset, tz, parameters);
+	}
 
-			// Use the calendar of the time zone if one was provided - the shared calendar keeps the session zone
-			if (tz.GetSize()) {
-				string error_msg;
-				calendar = cache.TryGetCalendar(tz, &error_msg);
-				if (!calendar) {
-					HandleCastError::AssignError(error_msg, parameters);
-					return nullopt;
-				}
-			}
+	static optional<timestamp_tz_t> ParsedToTimestampTZ(CalendarPtr &cal, CalendarCacheState &cache, timestamp_t us,
+	                                                    bool has_offset, string_t tz, CastParameters &parameters) {
+		if (has_offset) {
+			return timestamp_tz_t(us);
+		}
+		// Convert parts to a TZ (default or parsed) if no offset was provided
+		auto calendar = cal.get();
 
-			// Now get the parts in the given time zone
-			timestamp_tz_t result;
+		// Use the calendar of the time zone if one was provided - the shared calendar keeps the session zone
+		if (tz.GetSize()) {
 			string error_msg;
-			if (!TryFromNaive(calendar, us, result, error_msg)) {
+			calendar = cache.TryGetCalendar(tz, &error_msg);
+			if (!calendar) {
 				HandleCastError::AssignError(error_msg, parameters);
 				return nullopt;
 			}
-			return result;
 		}
 
-		return timestamp_tz_t(us);
+		// Now get the parts in the given time zone
+		timestamp_tz_t result;
+		string error_msg;
+		if (!TryFromNaive(calendar, us, result, error_msg)) {
+			HandleCastError::AssignError(error_msg, parameters);
+			return nullopt;
+		}
+		return result;
 	}
 
 	static bool VarcharToTimestampTZ(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
@@ -468,41 +474,65 @@ struct ICUStrptime : public ICUDateFunc {
 		return all_converted;
 	}
 
+	static optional<dtime_tz_t> DatePartToTimeTZ(CalendarPtr &cal, CalendarPtr &instant_cal, CalendarCacheState &cache,
+	                                             string_t input, CastParameters &parameters) {
+		const auto str = input.GetData();
+		const auto len = input.GetSize();
+		timestamp_t us;
+		string_t tz(nullptr, 0);
+		bool has_offset = false;
+		if (Timestamp::TryConvertTimestampTZ(str, len, us, true, has_offset, tz) != TimestampCastResult::SUCCESS ||
+		    !us.IsFinite()) {
+			HandleCastError::AssignError(Time::ConversionError(input), parameters);
+			return nullopt;
+		}
+		auto instant = ParsedToTimestampTZ(cal, cache, us, has_offset, tz, parameters);
+		if (!instant) {
+			return nullopt;
+		}
+		dtime_tz_t result;
+		string error_message;
+		if (!ICUToTimeTZ::ToTimeTZ(instant_cal.get(), *instant, result, error_message)) {
+			HandleCastError::AssignError(error_message.empty() ? Time::ConversionError(input) : error_message,
+			                             parameters);
+			return nullopt;
+		}
+		return result;
+	}
+
 	static bool VarcharToTimeTZ(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 		auto &cast_data = parameters.cast_data->Cast<CastData>();
 		auto &info = cast_data.info->Cast<BindData>();
+		auto &cache = parameters.local_state->Cast<CalendarCacheState>();
 		CalendarPtr cal(info.calendar->Copy());
+		// Setting an instant computes the era, which the next local date's fields would inherit, so it gets its own.
+		CalendarPtr instant_cal(info.calendar->Copy());
+
+		// Read before any row with a date part moves the calendar to its own date.
+		int32_t session_offset;
+		const auto session_offset_in_range = TryGetTimeTZOffset(cal.get(), session_offset);
 
 		bool all_converted = true;
 		UnaryExecutor::Execute<string_t, dtime_tz_t>(
 		    source, result, count, [&](string_t input) -> optional<dtime_tz_t> {
 			    dtime_tz_t result;
-			    const auto str = input.GetData();
-			    const auto len = input.GetSize();
 			    bool has_offset = false;
 			    idx_t pos = 0;
-			    if (!Time::TryConvertTimeTZ(str, len, pos, result, has_offset, false)) {
-				    auto msg = Time::ConversionError(string(str, len));
-				    HandleCastError::AssignError(msg, parameters);
+			    if (!Time::TryConvertTimeTZ(input.GetData(), input.GetSize(), pos, result, has_offset, true)) {
+				    // A text with a date part names an instant, as it does in the cast through TIMESTAMPTZ.
+				    auto converted = DatePartToTimeTZ(cal, instant_cal, cache, input, parameters);
+				    all_converted = all_converted && converted;
+				    return converted;
+			    }
+			    if (has_offset) {
+				    return result;
+			    }
+			    if (!session_offset_in_range) {
+				    HandleCastError::AssignError(TimeTZOffsetError(session_offset), parameters);
 				    all_converted = false;
 				    return nullopt;
-			    } else if (!has_offset) {
-				    // Convert parts to a TZ (default or parsed) if no offset was provided
-				    auto calendar = cal.get();
-
-				    // Extract the offset from the calendar
-				    int32_t offset;
-				    if (!TryGetTimeTZOffset(calendar, offset)) {
-					    HandleCastError::AssignError(TimeTZOffsetError(offset), parameters);
-					    all_converted = false;
-					    return nullopt;
-				    }
-
-				    // Apply it to the offset +00 time we parsed.
-				    result = dtime_tz_t(result.time(), offset);
 			    }
-
-			    return result;
+			    return dtime_tz_t(result.time(), session_offset);
 		    });
 		return all_converted;
 	}
@@ -521,7 +551,7 @@ struct ICUStrptime : public ICUDateFunc {
 		case LogicalTypeId::TIMESTAMP_TZ_NS:
 			return BoundCastInfo(VarcharToTimestampTZNS, std::move(cast_data), InitCastCalendarCache);
 		case LogicalTypeId::TIME_TZ:
-			return BoundCastInfo(VarcharToTimeTZ, std::move(cast_data));
+			return BoundCastInfo(VarcharToTimeTZ, std::move(cast_data), InitCastCalendarCache);
 		default:
 			throw InternalException("Unsupported type for VARCHAR to TIME/TIMESTAMPTZ cast.");
 		}
