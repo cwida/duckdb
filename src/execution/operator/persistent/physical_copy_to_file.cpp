@@ -1792,7 +1792,7 @@ static void FinalizeLifecycleFileState(ClientContext &context, copy_to_finalize_
 void CopyFileLifecycleExecutor::WaitForJob(CopyFileLifecycleJob &job, CopyFileLifecycleWaitMode mode) {
 	while (!job.IsFinished()) {
 		if (mode == CopyFileLifecycleWaitMode::INTERRUPTIBLE) {
-			context.InterruptCheck();
+			context.FastInterruptCheck();
 		}
 		WorkOnTaskOrYield();
 	}
@@ -1806,7 +1806,7 @@ void CopyFileLifecycleExecutor::WaitAll(CopyFileLifecycleWaitMode mode) {
 		return;
 	}
 	while (pending_tasks.load(std::memory_order_acquire) > 0) {
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 		WorkOnTaskOrYield();
 	}
 	ThrowError();
@@ -1855,7 +1855,7 @@ void CopyFileLifecycleExecutor::WorkOnTaskOrYield() {
 void CopyFileLifecycleExecutor::WaitForTaskSlot(CopyFileLifecycleWaitMode mode) {
 	while (pending_tasks >= max_pending_tasks) {
 		if (mode == CopyFileLifecycleWaitMode::INTERRUPTIBLE) {
-			context.InterruptCheck();
+			context.FastInterruptCheck();
 		}
 		if (async_threads == 0 || mode == CopyFileLifecycleWaitMode::DRAIN) {
 			WorkOnTaskOrYield();
@@ -3794,7 +3794,7 @@ void PartitionedCopy::NotifyFlushProgress() {
 template <class FUNC>
 bool PartitionedCopy::TryBlockOnFlush(ExecutionContext &execution_context, InterruptState &interrupt_state,
                                       idx_t observed_progress, FUNC &&can_continue) {
-	context.InterruptCheck();
+	context.FastInterruptCheck();
 	Flush(execution_context, interrupt_state);
 	if (!interrupt_state.CanCallback()) {
 		copy_gstate.lifecycle_executor.WorkOnTaskOrYield();
@@ -3934,7 +3934,7 @@ public:
 		                                   event->Cast<BasePipelineEvent>().pipeline);
 		InterruptState interrupt_state(shared_from_this());
 		while (partitioned_copy.flushing.load(std::memory_order_relaxed) || partitioned_copy.HasDelayedPartitions()) {
-			event->GetClientContext().InterruptCheck();
+			event->GetClientContext().FastInterruptCheck();
 			if (partitioned_copy.flushing.load(std::memory_order_relaxed)) {
 				partitioned_copy.Flush(execution_context, interrupt_state);
 			} else {

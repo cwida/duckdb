@@ -463,7 +463,7 @@ public:
 			return PersistentScanResult::YIELD;
 		}
 		// the prepared vector was filtered out entirely, go the next vector
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 		return PersistentScanResult::NEXT_VECTOR;
 	}
 
@@ -619,7 +619,7 @@ public:
 			}
 
 			// Before looping back, check if we are interrupted
-			context.InterruptCheck();
+			context.FastInterruptCheck();
 		} while (true);
 	}
 

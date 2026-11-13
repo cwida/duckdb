@@ -317,7 +317,7 @@ void LambdaFunctions::ListReduceFunction(DataChunk &args, ExpressionState &state
 	idx_t loops = 0;
 	bool end = false;
 	while (!end) {
-		state.GetContext().InterruptCheck();
+		state.GetContext().FastInterruptCheck();
 		auto &result_chunk = loops % 2 ? odd_result_chunk : even_result_chunk;
 		auto &spare_result_chunk = loops % 2 ? even_result_chunk : odd_result_chunk;
 

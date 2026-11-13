@@ -643,7 +643,7 @@ static void gen_tbl(ClientContext &context, int tnum, DSS_HUGE count, tpch_appen
                     DBGenContext *dbgen_ctx, idx_t offset = 0) {
 	for (DSS_HUGE i = offset + 1; count; count--, i++) {
 		if (count % 1000 == 0) {
-			context.InterruptCheck();
+			context.FastInterruptCheck();
 		}
 		row_start(tnum, dbgen_ctx);
 		switch (tnum) {
@@ -1053,7 +1053,7 @@ public:
 			return;
 		}
 		auto rowcnt = GetDBGenTableRowCount(dbgen_ctx, table_index);
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 		if (children > 1 && current_step != -1) {
 			auto range = GetDBGenTableRange(rowcnt, children, current_step);
 			SkipTable(table_index, children, range.offset);
@@ -1194,7 +1194,7 @@ public:
 	}
 
 	bool GenerateNext() override {
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 		if (finished.load()) {
 			return true;
 		}

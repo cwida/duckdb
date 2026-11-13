@@ -13,7 +13,7 @@ CREATE TABLE interrupt_list AS SELECT list(i) AS l FROM range(1000000) t(i)
 
 # list_transform — uses string formatting (printf) to ensure the per-element cost
 # is high enough (~250ms for 1M elements) that a 50ms deadline reliably fires.
-# Before the fix, ExecuteLambda had no InterruptCheck() calls so the interrupt flag
+# Before the fix, ExecuteLambda had no FastInterruptCheck() calls so the interrupt flag
 # set at the deadline was never read until the entire loop finished.
 
 statement ok

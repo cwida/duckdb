@@ -327,7 +327,7 @@ static void ExecuteLambda(DataChunk &args, ExpressionState &state, Vector &resul
 		for (idx_t child_idx = 0; child_idx < list_entry.length; child_idx++) {
 			// reached STANDARD_VECTOR_SIZE elements
 			if (elem_cnt == STANDARD_VECTOR_SIZE) {
-				state.GetContext().InterruptCheck();
+				state.GetContext().FastInterruptCheck();
 				execute_info.lambda_chunk.Reset();
 				ExecuteExpression(elem_cnt, child_info, info.column_infos, index_vector, execute_info);
 				auto &lambda_vector = execute_info.lambda_chunk.data[0];

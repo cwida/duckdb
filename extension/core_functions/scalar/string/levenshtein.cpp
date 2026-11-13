@@ -38,7 +38,7 @@ static idx_t LevenshteinDistance(Context &context, const T *txt_str, idx_t txt_l
 	}
 
 	for (idx_t pos_txt = 0; pos_txt < txt_len; pos_txt++) {
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 		// calculate distances1 (current raw distances) from the previous row
 
 		distances1[0] = pos_txt + 1;

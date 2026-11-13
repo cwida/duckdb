@@ -499,7 +499,7 @@ void AccountWork(BignumArithmeticState &state, idx_t work) {
 	state.work_since_interrupt_check += work;
 	if (state.work_since_interrupt_check >= INTERRUPT_CHECK_INTERVAL) {
 		state.work_since_interrupt_check = 0;
-		state.context.InterruptCheck();
+		state.context.FastInterruptCheck();
 	}
 }
 

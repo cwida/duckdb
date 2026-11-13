@@ -16,7 +16,7 @@ void ThreadUtil::SleepMs(idx_t sleep_ms, optional_ptr<Context> context) {
 
 	while (true) {
 		if (context) {
-			context->InterruptCheck();
+			context->FastInterruptCheck();
 		}
 		auto elapsed_ms = static_cast<idx_t>(start_time.ElapsedMillis());
 		if (elapsed_ms >= sleep_ms) {

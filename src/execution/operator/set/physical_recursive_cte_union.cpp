@@ -244,7 +244,7 @@ void RecursiveCTEUnionState::PromoteDistinctState(ClientContext &context, idx_t 
 	AggregateHTScanState scan_state;
 	ht->InitializeScan(scan_state);
 	while (ht->Scan(scan_state, groups, payload)) {
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 		if (groups.size() > 0) {
 			SinkDistinct(groups, migration_state, false, false);
 		}

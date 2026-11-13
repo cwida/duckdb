@@ -1175,7 +1175,7 @@ void ClientContext::SuppressInterrupts() {
 	interrupt_state = ClientInterruptState::INTERRUPTS_SUPPRESSED;
 }
 
-void ClientContext::InterruptCheck() const {
+void ClientContext::FastInterruptCheck() const {
 	// Counter for throttling timeout checks - only check every N iterations
 	static constexpr uint32_t TIMEOUT_CHECK_INTERVAL = 256;
 	thread_local uint32_t timeout_check_counter = 0;
@@ -1185,11 +1185,11 @@ void ClientContext::InterruptCheck() const {
 	}
 	// Only check timeout every N calls to avoid expensive steady_clock::now() syscall
 	if (HasQueryDeadline() && ++timeout_check_counter % TIMEOUT_CHECK_INTERVAL == 0) {
-		BlockingInterruptCheck();
+		InterruptCheck();
 	}
 }
 
-void ClientContext::BlockingInterruptCheck() const {
+void ClientContext::InterruptCheck() const {
 	if (IsInterrupted()) {
 		throw InterruptException();
 	}

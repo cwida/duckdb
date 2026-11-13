@@ -420,7 +420,7 @@ void PartitionedTupleData::Repartition(ClientContext &context, PartitionedTupleD
 			auto &chunk_state = iterator.GetChunkState();
 			do {
 				// Check for interrupts with each chunk
-				context.InterruptCheck();
+				context.FastInterruptCheck();
 				const auto count = iterator.GetCurrentChunkCount();
 				new_partitioned_data.Append(append_state, chunk_state, count);
 				if (key_tracker) {

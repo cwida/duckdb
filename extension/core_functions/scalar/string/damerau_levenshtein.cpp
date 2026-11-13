@@ -47,7 +47,7 @@ static idx_t DamerauLevenshteinDistance(Context &context, const T *source_str, i
 	}
 	// loop through string indices - these are offset by 2 from distance indices
 	for (idx_t source_idx = 0; source_idx < source_len; source_idx++) {
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 		// keeps track of the largest string indices of target string matching current source character
 		// same as DB in LW paper
 		idx_t largest_target_chr_matching;

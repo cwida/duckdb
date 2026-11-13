@@ -95,7 +95,7 @@ MetricsTimer Optimizer::StartProfiler(OptimizerType type) {
 }
 
 void Optimizer::RunOptimizer(OptimizerType type, const std::function<void()> &callback) {
-	context.InterruptCheck();
+	context.FastInterruptCheck();
 
 	if (OptimizerDisabled(type)) {
 		// optimizer is marked as disabled: skip

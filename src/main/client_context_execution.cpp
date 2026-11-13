@@ -424,7 +424,7 @@ QueryResultState ClientContext::ExecuteTaskInternal(ClientContextLock &lock, Bas
 	D_ASSERT(active_query);
 	D_ASSERT(active_query->IsOpenResult(result));
 	try {
-		// Surface a pending interrupt even when this thread runs no task that reaches InterruptCheck.
+		// Surface a pending interrupt even when this thread runs no task that reaches an InterruptCheck.
 		// IsInterrupted() rather than InterruptCheck(): we must not enforce query_deadline here.
 		// Skip when the executor already has an error: ExecuteTask rethrows that with its original type.
 		if (IsInterrupted() && !active_query->executor->HasError()) {

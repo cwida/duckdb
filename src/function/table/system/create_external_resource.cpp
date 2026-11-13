@@ -289,8 +289,8 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(bind_data.timeout_seconds);
 	while (true) {
 		// Cooperative cancellation: this blocking loop never yields back to the executor, so surface a
-		// pending Ctrl-C / max_execution_time ourselves (InterruptCheck throws InterruptException on either).
-		context.InterruptCheck();
+		// pending Ctrl-C / max_execution_time ourselves (FastInterruptCheck throws InterruptException on either).
+		context.FastInterruptCheck();
 		auto status_sql = "SELECT state, result FROM " + QualifiedName::Parse(type->status_function).ToString() + "(" +
 		                  handle.ToSQLString() + ")";
 		// One log entry per poll, written once the poll's outcome is known, so a poll is never recorded as 'ok'
@@ -332,11 +332,11 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 			break;
 		}
 		// Interruptible wait: sleep the poll interval in short slices, checking for cancellation between them.
-		// The slice is small so InterruptCheck() is called often enough to honor max_execution_time promptly
+		// The slice is small so FastInterruptCheck() is called often enough to honor max_execution_time promptly
 		// (its deadline check is throttled to run every Nth call).
 		auto poll_until = std::chrono::steady_clock::now() + std::chrono::seconds(bind_data.poll_interval_seconds);
 		while (std::chrono::steady_clock::now() < poll_until) {
-			context.InterruptCheck();
+			context.FastInterruptCheck();
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));
 		}
 	}

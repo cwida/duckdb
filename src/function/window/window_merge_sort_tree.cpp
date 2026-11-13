@@ -222,7 +222,7 @@ void WindowMergeSortTreeLocalState::Finalize(ExecutionContext &context, Interrup
 	while (window_tree.build_stage.load() != WindowMergeSortStage::FINISHED) {
 		//	A failed task never completes its stage, so the waiting threads
 		//	leave through the interrupt that the executor raises for the failure
-		context.client.InterruptCheck();
+		context.client.FastInterruptCheck();
 		if (window_tree.TryPrepareSortStage(*this)) {
 			ExecuteSortTask(context, interrupt);
 		} else {

@@ -203,7 +203,7 @@ bool PatternMatcher::Match(idx_t start, idx_t partition_start, idx_t input_size)
 			// a walk can be long, and a pattern that has to try again for every row longer still
 			if (++steps >= INTERRUPT_INTERVAL) {
 				steps = 0;
-				context.InterruptCheck();
+				context.FastInterruptCheck();
 			}
 			if (state_limit && ++states > state_limit) {
 				throw InvalidInputException(

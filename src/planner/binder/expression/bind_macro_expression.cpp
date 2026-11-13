@@ -209,7 +209,7 @@ BindResult ExpressionBinder::BindMacro(FunctionExpression &function, ScalarMacro
                                        unique_ptr<ParsedExpression> &expr) {
 	auto stack_checker = StackCheck(*expr, 3);
 	// expanding nested macros can take a long time, allow the query to be interrupted
-	context.InterruptCheck();
+	context.FastInterruptCheck();
 
 	// unfold the macro expression
 	auto &member = UnfoldMacroExpression(function, macro_func, expr, depth);

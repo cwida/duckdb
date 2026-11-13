@@ -1077,7 +1077,7 @@ static void ScanPartitions(ExecutionContext &context, WindowMatchRecognizeGlobal
 		idx_t match_number = 0;
 		auto row = partition_start;
 		while (row <= partition_end) {
-			context.client.InterruptCheck();
+			context.client.FastInterruptCheck();
 			row_conditions.BeginMatch(row, match_number + 1);
 			if (!matcher.Match(row, partition_start, partition_end + 1)) {
 				row++;
