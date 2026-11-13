@@ -136,6 +136,10 @@ SELECT count(*), count(distinct era) FROM (SELECT era(ts) era FROM generate_seri
 ----
 17674	236
 
+# Everything from here down is keyed on exact hash values, which any hash-perturbing build changes.
+# Placed here rather than at the top of the file so the assertions above still run.
+require hash_dependent
+
 query I
 SELECT sum(hash(ts::VARCHAR)) FROM generate_series('0600-01-01 12:00:00+00'::TIMESTAMPTZ, '2100-01-01 12:00:00+00'::TIMESTAMPTZ, INTERVAL 13 DAY) t(ts)
 ----

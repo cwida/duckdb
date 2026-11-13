@@ -7,6 +7,10 @@ require icu
 statement ok
 SET TimeZone='UTC'
 
+# Everything from here down is keyed on exact hash values, which any hash-perturbing build changes.
+# Placed here rather than at the top of the file so the assertions above still run.
+require hash_dependent
+
 # every zone at a spread of instants
 query II
 WITH instants(ts) AS (VALUES

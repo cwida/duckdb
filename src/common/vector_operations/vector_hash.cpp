@@ -42,6 +42,14 @@ hash_t CachedHashOp::Operation(hash_t input) {
 }
 
 hash_t CombineHashScalar(hash_t a, hash_t b) {
+#ifdef DUCKDB_HASH_SKEW
+	// Make the collapse target absorbing, so a composite key collapses whenever any component does.
+	// Without this, XORing two independently-collapsed components yields an ordinary value and
+	// multi-column keys never skew - which is most of what a hash table actually groups on.
+	if (a == HASH_SKEW_COLLAPSED || b == HASH_SKEW_COLLAPSED) {
+		return HASH_SKEW_COLLAPSED;
+	}
+#endif
 	a ^= a >> 32;
 	a *= 0xd6e8feb86659fd93U;
 	return a ^ b;

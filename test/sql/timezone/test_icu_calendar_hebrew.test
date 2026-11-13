@@ -185,6 +185,10 @@ SELECT age('2024-03-01 12:00:00+00'::TIMESTAMPTZ, '2022-03-01 12:00:00+00'::TIME
 ----
 Not implemented Error: INTERVALs do not work with 13 month calendars. Try using DATE_DIFF instead.
 
+# Everything from here down is keyed on exact hash values, which any hash-perturbing build changes.
+# Placed here rather than at the top of the file so the assertions above still run.
+require hash_dependent
+
 # a sweep over three centuries
 query II
 SELECT count(*), sum(hash(ts::VARCHAR)) FROM generate_series('1900-01-01 12:00:00+00'::TIMESTAMPTZ, '2200-01-01 12:00:00+00'::TIMESTAMPTZ, INTERVAL 7 DAY) t(ts)

@@ -565,6 +565,33 @@ RequireResult SQLLogicTestRunner::CheckRequire(SQLLogicParser &parser, const vec
 		return RequireResult::PRESENT;
 	}
 
+	// Marks a test whose expectations are keyed on exact hash values (a hash digest, or an
+	// HLL-derived count such as approx_unique). Skipped under every build that perturbs hashing, so
+	// a new hash mode inherits the existing exemptions rather than needing its own marker.
+	if (param == "hash_dependent") {
+#if defined(DUCKDB_HASH_ZERO) || defined(DUCKDB_HASH_SKEW)
+		return RequireResult::MISSING;
+#else
+		return RequireResult::PRESENT;
+#endif
+	}
+
+	if (param == "nohashzero" || param == "no_hash_zero") {
+#ifdef DUCKDB_HASH_ZERO
+		return RequireResult::MISSING;
+#else
+		return RequireResult::PRESENT;
+#endif
+	}
+
+	if (param == "nohashskew" || param == "no_hash_skew") {
+#ifdef DUCKDB_HASH_SKEW
+		return RequireResult::MISSING;
+#else
+		return RequireResult::PRESENT;
+#endif
+	}
+
 	if (param == "nothreadsan") {
 #ifdef DUCKDB_THREAD_SANITIZER
 		return RequireResult::MISSING;

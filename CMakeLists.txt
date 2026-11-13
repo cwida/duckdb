@@ -864,6 +864,14 @@ if(HASH_ZERO)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDUCKDB_HASH_ZERO")
 endif()
 
+# HASH_SKEW=<percent>: collapse that percentage of distinct hash values onto one
+# constant, leaving the rest properly distributed. Unlike HASH_ZERO this keeps the
+# estimators honest and the probe chains bounded, so it models a hot key rather
+# than total degeneracy.
+if(HASH_SKEW)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDUCKDB_HASH_SKEW=${HASH_SKEW}")
+endif()
+
 if(LATEST_STORAGE)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDUCKDB_LATEST_STORAGE")
 endif()
