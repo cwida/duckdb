@@ -1,0 +1,462 @@
+# name: test/optimizer/group_by_top_key_key_types.test
+# description: The top-key filter compares a key per input row: keys whose equal values can differ (-0.0 / 0.0, NaN, INTERVAL, collations), TIME WITH TIME ZONE, and expressions over them
+# group: [optimizer]
+
+# The filter evaluates a key for every input row and the Top-N for one row of the group. The tables below are large
+# enough for the filter to work (a thread starts after 256 rows per key of the limit), and the values that form one
+# group although they can be told apart come in separate runs of rows.
+
+# -0.0 and 0.0 are one group
+statement ok
+CREATE TABLE td AS SELECT * FROM (
+	SELECT -(0::DOUBLE) AS k, i AS v FROM range(4096) r(i)
+	UNION ALL SELECT 0::DOUBLE, i FROM range(4096) r(i)
+	UNION ALL SELECT (i % 300 + 1)::DOUBLE, i FROM range(6000) r(i));
+
+# the same with 0.0 first
+statement ok
+CREATE TABLE tdr AS SELECT * FROM (
+	SELECT 0::DOUBLE AS k, i AS v FROM range(4096) r(i)
+	UNION ALL SELECT -(0::DOUBLE), i FROM range(4096) r(i)
+	UNION ALL SELECT (i % 300 + 1)::DOUBLE, i FROM range(6000) r(i));
+
+statement ok
+CREATE TABLE tf AS SELECT k::FLOAT AS k, v FROM td;
+
+# NaN with either sign is one group, next to the infinities and NULL
+statement ok
+CREATE TABLE tn AS SELECT * FROM (
+	SELECT 'nan'::DOUBLE AS k, i AS v FROM range(4096) r(i)
+	UNION ALL SELECT -('nan'::DOUBLE), i FROM range(4096) r(i)
+	UNION ALL SELECT 'inf'::DOUBLE, i FROM range(3000) r(i)
+	UNION ALL SELECT '-inf'::DOUBLE, i FROM range(3000) r(i)
+	UNION ALL SELECT NULL, i FROM range(2000) r(i)
+	UNION ALL SELECT (i % 300 + 1)::DOUBLE, i FROM range(6000) r(i));
+
+# the DOUBLE inside a STRUCT and a LIST
+statement ok
+CREATE TABLE ts AS SELECT {'a': k} AS s, [k, 1::DOUBLE] AS l, v FROM td;
+
+# 1 month and 30 days are one group; 12:00+01 and 11:00+00 are the same instant, but two groups
+statement ok
+CREATE TABLE ti AS SELECT * FROM (
+	SELECT INTERVAL 1 MONTH AS k, i AS v FROM range(4096) r(i)
+	UNION ALL SELECT INTERVAL 30 DAY, i FROM range(4096) r(i)
+	UNION ALL SELECT INTERVAL (i % 300 + 40) DAY, i FROM range(6000) r(i)
+	UNION ALL SELECT INTERVAL 29 DAY, i FROM range(100) r(i));
+
+statement ok
+CREATE TABLE tz AS SELECT * FROM (
+	SELECT '12:00:00+01'::TIMETZ AS k, i AS v FROM range(4096) r(i)
+	UNION ALL SELECT '11:00:00+00'::TIMETZ, i FROM range(4096) r(i)
+	UNION ALL SELECT '13:00:00+00'::TIMETZ + INTERVAL (i % 300) SECOND, i FROM range(6000) r(i)
+	UNION ALL SELECT '10:00:00+00'::TIMETZ, i FROM range(100) r(i));
+
+# 'k0001' and 'K0001' are one group with the NOCASE collation (column c) and two groups without it (column b)
+statement ok
+CREATE TABLE tc AS SELECT
+	(CASE WHEN i < 6000 THEN 'k' ELSE 'K' END || lpad((i % 300)::VARCHAR, 4, '0')) COLLATE NOCASE AS c,
+	CASE WHEN i < 6000 THEN 'k' ELSE 'K' END || lpad((i % 300)::VARCHAR, 4, '0') AS b,
+	i AS v
+FROM range(12000) r(i);
+
+# nested keys with NULLs inside
+statement ok
+CREATE TABLE tl AS SELECT
+	CASE i % 7 WHEN 0 THEN NULL WHEN 1 THEN [NULL, (i % 50)::INTEGER] WHEN 2 THEN [(i % 50)::INTEGER, NULL] WHEN 3 THEN [(i % 50)::INTEGER] ELSE [(i % 50)::INTEGER, (i % 3)::INTEGER] END AS l,
+	CASE i % 5 WHEN 0 THEN NULL WHEN 1 THEN {'a': NULL, 'b': i % 40} ELSE {'a': i % 40, 'b': NULL} END AS st,
+	i AS v
+FROM range(14000) r(i);
+
+# exact keys: equal values cannot be told apart
+statement ok
+CREATE TABLE te AS SELECT (i % 300)::INTEGER AS k, (i % 7)::DOUBLE AS d, DATE '2024-01-01' + (i % 300)::INTEGER AS dt, 's' || lpad((i % 300)::VARCHAR, 3, '0') AS s, i AS v FROM range(12000) r(i);
+
+statement ok
+SET explain_output = 'optimized_only';
+
+statement ok
+SET threads = 1;
+
+statement ok
+SET disabled_optimizers = '';
+
+# ---------------------------------------------------------------------------------------------------------------
+# Plans: a group key itself passes with every supported type, an expression over group keys only if the keys it
+# reads are exact and it cannot throw
+# ---------------------------------------------------------------------------------------------------------------
+
+# DOUBLE / FLOAT group keys: -0.0 and 0.0 (and all NaNs) have one sort key and compare as equal
+query II
+EXPLAIN SELECT k, count(*) FROM td GROUP BY k ORDER BY k LIMIT 2
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k, count(*) FROM tf GROUP BY k ORDER BY k DESC LIMIT 2
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT s, count(*) FROM ts GROUP BY s ORDER BY s LIMIT 2
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT l, count(*) FROM ts GROUP BY l ORDER BY l LIMIT 2
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT l, st, count(*) FROM tl GROUP BY l, st ORDER BY l DESC, st NULLS FIRST LIMIT 7
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+# a group key that is an expression with a DOUBLE result is the group key itself
+query II
+EXPLAIN SELECT k / 7.0 AS q, count(*) FROM te GROUP BY q ORDER BY q LIMIT 2
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+# an expression over a DOUBLE / FLOAT group key: 1 / -0.0 is not 1 / 0.0, although both rows are in one group
+query II
+EXPLAIN SELECT k, count(*) FROM td GROUP BY k ORDER BY 1.0 / k LIMIT 1
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k, count(*) FROM tf GROUP BY k ORDER BY 1.0 / k LIMIT 1
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k, count(*) FROM td GROUP BY k ORDER BY k::VARCHAR LIMIT 2
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k, count(*) FROM td GROUP BY k ORDER BY signbit(k), k LIMIT 2
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+# ... also inside a nested key
+query II
+EXPLAIN SELECT s, count(*) FROM ts GROUP BY s ORDER BY 1.0 / s.a LIMIT 1
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT l, count(*) FROM ts GROUP BY l ORDER BY 1.0 / l[1] LIMIT 1
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+# an expression that only reads the exact key of several keys passes; one that reads the DOUBLE key does not
+query II
+EXPLAIN SELECT k, d, count(*) FROM te GROUP BY k, d ORDER BY k + 1 LIMIT 2
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k, d, count(*) FROM te GROUP BY k, d ORDER BY k + d LIMIT 2
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+# INTERVAL (equal values have different sort keys) and TIME WITH TIME ZONE are not among the supported key types
+query II
+EXPLAIN SELECT k, count(*) FROM ti GROUP BY k ORDER BY k LIMIT 2
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k, count(*) FROM tz GROUP BY k ORDER BY k LIMIT 2
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k, count(*), sum(v) FROM ti GROUP BY k LIMIT 2
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query II
+EXPLAIN SELECT k, count(*), sum(v) FROM tz GROUP BY k LIMIT 2
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+# ... also as the result of an expression over an exact key
+query II
+EXPLAIN SELECT k, count(*) FROM te GROUP BY k ORDER BY to_days(k) LIMIT 2
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+# a LIMIT without ORDER BY skips a key of such a type for the next one
+query II
+EXPLAIN SELECT k, v % 3 AS m, count(*), sum(v) FROM ti GROUP BY k, v % 3 LIMIT 2
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query II
+EXPLAIN SELECT ti.k, te.k, count(*), sum(ti.v) FROM ti JOIN te ON ti.v = te.v GROUP BY ti.k, te.k LIMIT 2
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+# an expression over an exact key that cannot throw
+query II
+EXPLAIN SELECT k, count(*) FROM te GROUP BY k ORDER BY k + 1 LIMIT 2
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k, count(*) FROM te GROUP BY k ORDER BY k::DOUBLE / 7 LIMIT 2
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+# ... and one that can (the cast overflows for the larger keys)
+query II
+EXPLAIN SELECT k, count(*) FROM te GROUP BY k ORDER BY (k * 1000)::SMALLINT LIMIT 2
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+# exact key types of other kinds
+query II
+EXPLAIN SELECT dt, count(*) FROM te GROUP BY dt ORDER BY dt DESC LIMIT 2
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT s, count(*) FROM te GROUP BY s ORDER BY s LIMIT 2
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+# ---------------------------------------------------------------------------------------------------------------
+# Results: hand-checked rows, the same with the rule disabled and enabled, with one and eight threads
+# ---------------------------------------------------------------------------------------------------------------
+
+foreach disabled 'group_by_top_key' ''
+
+statement ok
+SET disabled_optimizers = {disabled};
+
+foreach threads 1 8
+
+statement ok
+SET threads = {threads};
+
+# the group of -0.0 and 0.0 keeps all of its rows whichever value an expression over the key sees
+query II
+SELECT abs(k), count(*) FROM td GROUP BY k ORDER BY 1.0 / k LIMIT 1
+----
+0.0	8192
+
+query II
+SELECT abs(k), count(*) FROM tdr GROUP BY k ORDER BY 1.0 / k DESC LIMIT 1
+----
+0.0	8192
+
+query II
+SELECT abs(k), count(*) FROM tf GROUP BY k ORDER BY 1.0 / k LIMIT 1
+----
+0.0	8192
+
+query II
+SELECT abs(k), count(*) FROM td GROUP BY k ORDER BY signbit(k) DESC, k LIMIT 1
+----
+0.0	8192
+
+query II
+SELECT abs(s.a), count(*) FROM ts GROUP BY s ORDER BY 1.0 / s.a LIMIT 1
+----
+0.0	8192
+
+query II
+SELECT abs(l[1]), count(*) FROM ts GROUP BY l ORDER BY 1.0 / l[1] LIMIT 1
+----
+0.0	8192
+
+# the group key itself
+query II
+SELECT abs(k), count(*) FROM td GROUP BY k ORDER BY k LIMIT 2
+----
+0.0	8192
+1.0	20
+
+query II
+SELECT abs(k), count(*) FROM tdr GROUP BY k ORDER BY k LIMIT 2
+----
+0.0	8192
+1.0	20
+
+query II
+SELECT abs(k), count(*) FROM td GROUP BY k ORDER BY k DESC LIMIT 301 OFFSET 299
+----
+1.0	20
+0.0	8192
+
+query II
+SELECT abs(k), count(*) FROM tf GROUP BY k ORDER BY k NULLS FIRST LIMIT 2
+----
+0.0	8192
+1.0	20
+
+query II
+SELECT abs(s.a), count(*) FROM ts GROUP BY s ORDER BY s LIMIT 2
+----
+0.0	8192
+1.0	20
+
+query II
+SELECT abs(l[1]), count(*) FROM ts GROUP BY l ORDER BY l LIMIT 2
+----
+0.0	8192
+1.0	20
+
+# NaN is the largest value, all NaNs are one group
+query II
+SELECT k, count(*) FROM tn GROUP BY k ORDER BY k DESC NULLS FIRST LIMIT 3
+----
+NULL	2000
+nan	8192
+inf	3000
+
+query II
+SELECT k, count(*) FROM tn GROUP BY k ORDER BY k DESC LIMIT 3
+----
+nan	8192
+inf	3000
+300.0	20
+
+query II
+SELECT k, count(*) FROM tn GROUP BY k ORDER BY k LIMIT 2
+----
+-inf	3000
+1.0	20
+
+query II
+SELECT k, count(*) FROM tn GROUP BY k ORDER BY k NULLS FIRST LIMIT 2
+----
+NULL	2000
+-inf	3000
+
+query II
+SELECT k, count(*) FROM tn GROUP BY k ORDER BY isnan(k) DESC, k LIMIT 2
+----
+nan	8192
+-inf	3000
+
+# nested keys with NULLs inside, in every order: the rows of the disabled rule
+query II nosort list_asc
+SELECT l, count(*) FROM tl GROUP BY l ORDER BY l LIMIT 5
+----
+
+query II nosort list_desc
+SELECT l, count(*) FROM tl GROUP BY l ORDER BY l DESC LIMIT 5
+----
+
+query II nosort list_asc_nulls_first
+SELECT l, count(*) FROM tl GROUP BY l ORDER BY l NULLS FIRST LIMIT 5
+----
+
+query II nosort list_desc_nulls_first
+SELECT l, count(*) FROM tl GROUP BY l ORDER BY l DESC NULLS FIRST LIMIT 5
+----
+
+query II nosort struct_asc
+SELECT st, count(*) FROM tl GROUP BY st ORDER BY st LIMIT 5
+----
+
+query II nosort struct_desc
+SELECT st, count(*) FROM tl GROUP BY st ORDER BY st DESC LIMIT 5
+----
+
+query II nosort struct_asc_nulls_first
+SELECT st, count(*) FROM tl GROUP BY st ORDER BY st NULLS FIRST LIMIT 5
+----
+
+query II nosort struct_desc_nulls_first
+SELECT st, count(*) FROM tl GROUP BY st ORDER BY st DESC NULLS FIRST LIMIT 5
+----
+
+query III nosort list_struct
+SELECT l, st, count(*) FROM tl GROUP BY l, st ORDER BY l DESC, st NULLS FIRST LIMIT 7
+----
+
+# INTERVAL and TIME WITH TIME ZONE
+query II
+SELECT k = INTERVAL 30 DAY, count(*) FROM ti GROUP BY k ORDER BY k LIMIT 2
+----
+false	100
+true	8192
+
+query II
+SELECT k, count(*) FROM tz GROUP BY k ORDER BY k LIMIT 3
+----
+10:00:00+00	100
+12:00:00+01	4096
+11:00:00+00	4096
+
+# a collated group key, and a collated order over a group key without a collation
+query II
+SELECT lower(c), count(*) FROM tc GROUP BY c ORDER BY c LIMIT 2
+----
+k0000	40
+k0001	40
+
+query II
+SELECT b, count(*) FROM tc GROUP BY b ORDER BY b LIMIT 2
+----
+K0000	20
+K0001	20
+
+query II
+SELECT b, count(*) FROM tc GROUP BY b ORDER BY b COLLATE NOCASE, b LIMIT 3
+----
+K0000	20
+k0000	20
+K0001	20
+
+query II
+SELECT lower(b COLLATE NOCASE), count(*) FROM tc GROUP BY b COLLATE NOCASE ORDER BY b COLLATE NOCASE DESC LIMIT 2
+----
+k0299	40
+k0298	40
+
+# expressions over exact keys
+query II
+SELECT k, count(*) FROM te GROUP BY k ORDER BY k + 1 LIMIT 2
+----
+0	40
+1	40
+
+query II
+SELECT k, count(*) FROM te GROUP BY k ORDER BY k::DOUBLE / 7 DESC LIMIT 2
+----
+299	40
+298	40
+
+query III
+SELECT k, d, count(*) FROM te GROUP BY k, d ORDER BY k + 1, d LIMIT 2
+----
+0	0.0	6
+0	1.0	5
+
+query III
+SELECT k, d, count(*) FROM te GROUP BY k, d ORDER BY k + d, k LIMIT 3
+----
+0	0.0	6
+0	1.0	5
+1	0.0	6
+
+query II
+SELECT dt, count(*) FROM te GROUP BY dt ORDER BY dt DESC LIMIT 2
+----
+2024-10-26	40
+2024-10-25	40
+
+query II
+SELECT s, count(*) FROM te GROUP BY s ORDER BY s LIMIT 2
+----
+s000	40
+s001	40
+
+endloop
+
+endloop

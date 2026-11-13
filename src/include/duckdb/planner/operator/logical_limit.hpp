@@ -36,6 +36,9 @@ public:
 	void Serialize(Serializer &serializer) const override;
 	static unique_ptr<LogicalOperator> Deserialize(Deserializer &deserializer);
 
+	//! Warns that an OFFSET skips rows of an input whose row order is not guaranteed
+	static void WarnUnorderedOffset(ClientContext &context);
+
 protected:
 	void ResolveTypes() override;
 };

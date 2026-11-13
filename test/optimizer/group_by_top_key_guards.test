@@ -1,0 +1,559 @@
+# name: test/optimizer/group_by_top_key_guards.test
+# description: GROUP BY k ORDER BY <prefix of k> LIMIT n: one negative test per precondition next to a positive one, results on edge inputs
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(k1 INTEGER, k2 VARCHAR, v INTEGER);
+
+# 5,000 rows, k1 in 0..999 with duplicates (and NULLs), k2 one of 20 strings (and NULLs), as in group_by_top_key.test
+statement ok
+INSERT INTO t SELECT CASE WHEN i % 97 = 0 THEN NULL ELSE (i * 37) % 1000 END, CASE WHEN i % 41 = 0 THEN NULL ELSE 'k' || ((i * 13) % 20) END, i FROM range(5000) r(i);
+
+# key types: BOOLEAN, LIST and STRUCT with inner NULLs, DOUBLE with NaN / +-inf / +-0.0, HUGEINT beyond BIGINT, UUID,
+# INTERVAL (1 month and 30 days are one group), TIMETZ (ordered by the UTC instant), a column of NULLs only
+statement ok
+CREATE TABLE ty(b BOOLEAN, l INTEGER[], s STRUCT(a INTEGER), d DOUBLE, h HUGEINT, u UUID, iv INTERVAL, tz TIMETZ, an INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO ty SELECT
+	CASE WHEN i % 7 = 0 THEN NULL ELSE i % 2 = 0 END,
+	CASE WHEN i % 5 = 0 THEN NULL ELSE [i % 4, NULL] END,
+	CASE WHEN i % 5 = 0 THEN NULL WHEN i % 5 = 1 THEN {'a': NULL} ELSE {'a': i % 4} END,
+	CASE i % 8 WHEN 0 THEN 'nan'::DOUBLE WHEN 1 THEN 'inf'::DOUBLE WHEN 2 THEN '-inf'::DOUBLE WHEN 3 THEN 0.0 WHEN 4 THEN -0.0 WHEN 5 THEN NULL ELSE (i % 3)::DOUBLE - 1.5 END,
+	(i % 5 - 2)::HUGEINT * 10000000000000000000000000000000000000::HUGEINT - (i % 2) * 5,
+	('00000000-0000-0000-0000-00000000000' || (i % 6))::UUID,
+	CASE i % 4 WHEN 0 THEN INTERVAL 1 MONTH WHEN 1 THEN INTERVAL 30 DAY WHEN 2 THEN INTERVAL 29 DAY ELSE INTERVAL 2 YEAR END,
+	CASE i % 4 WHEN 0 THEN '23:30:00+15'::TIMETZ WHEN 1 THEN '23:00:00-15'::TIMETZ WHEN 2 THEN '01:00:00+00'::TIMETZ ELSE NULL END,
+	NULL, i FROM range(4000) r(i);
+
+# a BIGINT key too wide for compressed materialization to narrow
+statement ok
+CREATE TABLE w AS SELECT ((i * 37) % 1000)::BIGINT * 10000000000 AS k, i AS v FROM range(5000) r(i);
+
+statement ok
+SET explain_output = 'optimized_only';
+
+statement ok
+SET disabled_optimizers = '';
+
+statement ok
+SET disabled_optimizers = '';
+
+# every pin below looks for the `Top Key Filter` operator the rule inserts below the aggregate (present = fired)
+
+# ---------------------------------------------------------------------------------------------------------------
+# POSITIVE: the base shape and the shapes without a pin so far
+# ---------------------------------------------------------------------------------------------------------------
+
+# the base shape every negative below is a one-step variation of
+query II
+EXPLAIN SELECT k1, count(*) FROM t GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+# a derived order key over a DISTINCT in a subquery (the DISTINCT is an aggregate by the time the rule runs): the key
+# is materialised below the filter and the outer projections still resolve
+query II
+EXPLAIN SELECT * FROM (SELECT DISTINCT k1 FROM t) ORDER BY k1 + 1 LIMIT 3
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1 + 1 AS x FROM (SELECT DISTINCT k1 FROM t) ORDER BY x LIMIT 3
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+# UNION (a distinct over a set operation)
+query II
+EXPLAIN SELECT k1 FROM t UNION SELECT k1 + 1 FROM t ORDER BY k1 DESC NULLS FIRST LIMIT 3
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+# a key reached through a projection expression that is not order-preserving by itself (a DOUBLE cast) is
+# substituted and materialised
+query II
+EXPLAIN SELECT k, c FROM (SELECT k1::DOUBLE k, count(*) c FROM t GROUP BY k1) ORDER BY k LIMIT 3
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+# a first key that is neither numeric nor VARCHAR gets the filter without a scan dynamic filter
+query II
+EXPLAIN SELECT b, count(*) FROM ty GROUP BY b ORDER BY b LIMIT 1
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT b, count(*) FROM ty GROUP BY b ORDER BY b LIMIT 1
+----
+logical_opt	<!REGEX>:.*Dynamic Filter.*
+
+query II
+EXPLAIN SELECT l, count(*) FROM ty GROUP BY l ORDER BY l DESC LIMIT 2
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT l, count(*) FROM ty GROUP BY l ORDER BY l DESC LIMIT 2
+----
+logical_opt	<!REGEX>:.*Dynamic Filter.*
+
+# the rule's own scan dynamic filter: under a LIMIT without ORDER BY the Top-N is created by this rule, after the
+# Top-N optimizer, so the only dynamic filter a scan can carry is this rule's (the ORDER BY shapes also carry the TOP_N's
+# on the same column, which hides whether this rule pushed one)
+query II
+EXPLAIN SELECT k, count(*), sum(v) FROM w GROUP BY k LIMIT 3
+----
+logical_opt	<REGEX>:.*Top Key Filter.*Dynamic Filter.*
+
+# ---------------------------------------------------------------------------------------------------------------
+# TOGGLE: disabling the rule removes the filter, its scan dynamic filter and the Top-N over the LIMIT
+# ---------------------------------------------------------------------------------------------------------------
+
+statement ok
+SET disabled_optimizers = 'group_by_top_key';
+
+query II
+EXPLAIN SELECT k, count(*), sum(v) FROM w GROUP BY k LIMIT 3
+----
+logical_opt	<!REGEX>:.*(Top Key Filter|Dynamic Filter).*
+
+query II
+EXPLAIN SELECT k, count(*), sum(v) FROM w GROUP BY k LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query II
+EXPLAIN SELECT * FROM (SELECT DISTINCT k1 FROM t) ORDER BY k1 + 1 LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+statement ok
+SET disabled_optimizers = '';
+
+# ---------------------------------------------------------------------------------------------------------------
+# NEGATIVE per guard; the base shape above is the sibling positive unless one is given
+# ---------------------------------------------------------------------------------------------------------------
+
+# a limit far above the top-key bound
+query II
+EXPLAIN SELECT k1, count(*) c FROM t GROUP BY k1 ORDER BY k1 LIMIT 5000000
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query II
+SELECT count(*), sum(c) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 ORDER BY k1 LIMIT 5000000)
+----
+1001	5000
+
+# a window between the TOP_N and the aggregate reads every group. With the filter below the aggregate the total
+# would be the 14 rows of the three kept groups, not 5,000
+query II
+EXPLAIN SELECT k1, count(*) c, sum(count(*)) OVER () tot FROM t GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query III
+SELECT k1, count(*) c, sum(count(*)) OVER () tot FROM t GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+0	4	5000
+1	5	5000
+2	5	5000
+
+# a filter on the aggregate from an outer query (HAVING by another name). The groups with four rows are 0, 13,
+# 26: a filter on the three smallest keys below the aggregate would leave key 0 only
+query II
+EXPLAIN SELECT * FROM (SELECT k1, count(*) c FROM t GROUP BY k1) WHERE c = 4 ORDER BY k1 LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query II
+SELECT * FROM (SELECT k1, count(*) c FROM t GROUP BY k1) WHERE c = 4 ORDER BY k1 LIMIT 3
+----
+0	4
+13	4
+26	4
+
+# an ungrouped aggregate
+query II
+EXPLAIN SELECT count(*) c FROM t ORDER BY c LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query I
+SELECT count(*) c FROM t ORDER BY c LIMIT 3
+----
+5000
+
+# grouping sets without GROUPING(). Grouping sets with aggregate functions are lowered to a CTE and a UNION
+# before this rule runs (no aggregate below the Top-N), so the aggregate with several sets reaches
+# the rule only without aggregate functions, or with the lowering (`grouping_sets`) disabled. In the (k1) set k2 is
+# NULL for every group, so under ORDER BY k2 NULLS FIRST, k1 the answer is the four smallest k1 groups; a filter on
+# the input's smallest (k2, k1) tuples would keep only rows with a NULL k2 and lose key 0, which has none. The single
+# explicit set is the plain GROUP BY and fires
+query II
+EXPLAIN SELECT k1, k2 FROM t GROUP BY GROUPING SETS ((k1), (k2)) ORDER BY k2 NULLS FIRST, k1 LIMIT 4
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1, k2 FROM t GROUP BY GROUPING SETS ((k1, k2)) ORDER BY k2 NULLS FIRST, k1 LIMIT 4
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query IT
+SELECT k1, k2 FROM t GROUP BY GROUPING SETS ((k1), (k2)) ORDER BY k2 NULLS FIRST, k1 LIMIT 4
+----
+0	NULL
+1	NULL
+2	NULL
+3	NULL
+
+statement ok
+SET disabled_optimizers = 'grouping_sets';
+
+query II
+EXPLAIN SELECT k1, k2, count(*) FROM t GROUP BY GROUPING SETS ((k1), (k2)) ORDER BY k2 NULLS FIRST, k1 LIMIT 4
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1, k2, count(*) FROM t GROUP BY GROUPING SETS ((k1, k2)) ORDER BY k2 NULLS FIRST, k1 LIMIT 4
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query ITI
+SELECT k1, k2, count(*) FROM t GROUP BY GROUPING SETS ((k1), (k2)) ORDER BY k2 NULLS FIRST, k1 LIMIT 4
+----
+0	NULL	4
+1	NULL	5
+2	NULL	5
+3	NULL	5
+
+statement ok
+SET disabled_optimizers = '';
+
+# the lowered shapes (grouping sets with aggregate functions, the lowering on): no filter either
+query II
+EXPLAIN SELECT k1, k2, count(*) FROM t GROUP BY GROUPING SETS ((k1), (k2)) ORDER BY k1 DESC NULLS FIRST, k2 LIMIT 4
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1, k2, count(*) FROM t GROUP BY GROUPING SETS ((k1, k2)) ORDER BY k1 DESC NULLS FIRST, k2 LIMIT 4
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1, k2, count(*) FROM t GROUP BY GROUPING SETS ((k1), (k1, k2)) ORDER BY k1, k2 LIMIT 4
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query III
+SELECT k1, k2, count(*) FROM t GROUP BY GROUPING SETS ((k1), (k1, k2)) ORDER BY k1, k2 LIMIT 4
+----
+0	k0	4
+0	NULL	4
+1	k9	5
+1	NULL	5
+
+# a GROUPING() call over a plain GROUP BY
+query II
+EXPLAIN SELECT k1, GROUPING(k1), count(*) FROM t GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query III
+SELECT k1, GROUPING(k1), count(*) FROM t GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+0	0	4
+1	0	5
+2	0	5
+
+# a volatile group expression is not evaluated a second time below the aggregate; the same expression without
+# the volatile term fires
+query II
+EXPLAIN SELECT k1 + (random() > 2)::INTEGER g, count(*) FROM t GROUP BY 1 ORDER BY 1 LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1 + 0 g, count(*) FROM t GROUP BY 1 ORDER BY 1 LIMIT 3
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+SELECT k1 + (random() > 2)::INTEGER g, count(*) FROM t GROUP BY 1 ORDER BY 1 LIMIT 3
+----
+0	4
+1	5
+2	5
+
+# a volatile projection expression between the TOP_N and the aggregate (the DOUBLE cast above is the sibling)
+query II
+EXPLAIN SELECT k, c FROM (SELECT k1 + (random() > 2)::INTEGER k, count(*) c FROM t GROUP BY k1) ORDER BY k LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top Key Filter.*
+
+query II
+SELECT k, c FROM (SELECT k1 + (random() > 2)::INTEGER k, count(*) c FROM t GROUP BY k1) ORDER BY k LIMIT 3
+----
+0	4
+1	5
+2	5
+
+# ---------------------------------------------------------------------------------------------------------------
+# RESULT: the same rows with the rule disabled and enabled
+# ---------------------------------------------------------------------------------------------------------------
+
+foreach disabled 'group_by_top_key' ''
+
+statement ok
+SET disabled_optimizers = {disabled};
+
+# derived keys over a DISTINCT subquery
+query I
+SELECT * FROM (SELECT DISTINCT k1 FROM t) ORDER BY k1 + 1 LIMIT 3
+----
+0
+1
+2
+
+query I
+SELECT * FROM (SELECT DISTINCT k1 FROM t) ORDER BY -k1 LIMIT 3
+----
+999
+998
+997
+
+query IT
+SELECT * FROM (SELECT DISTINCT k1, k2 FROM t) ORDER BY k1 + 1, k2 LIMIT 3
+----
+0	k0
+1	k9
+2	k18
+
+query I
+SELECT k1 + 1 AS x FROM (SELECT DISTINCT k1 FROM t) ORDER BY x LIMIT 3
+----
+1
+2
+3
+
+# UNION, NULL first
+query I
+SELECT k1 FROM t UNION SELECT k1 + 1 FROM t ORDER BY k1 DESC NULLS FIRST LIMIT 3
+----
+NULL
+1000
+999
+
+# DISTINCT ON with its own ORDER BY
+query II
+SELECT DISTINCT ON (k1) k1, v FROM t ORDER BY k1, v DESC LIMIT 3
+----
+0	4000
+1	4973
+2	4946
+
+# a DOUBLE cast and a narrowing cast above the aggregate
+query RI
+SELECT k, c FROM (SELECT k1::DOUBLE k, count(*) c FROM t GROUP BY k1) ORDER BY k LIMIT 3
+----
+0.0	4
+1.0	5
+2.0	5
+
+query II
+SELECT k1::TINYINT k, count(*) c FROM t WHERE k1 < 100 GROUP BY k1 ORDER BY k LIMIT 3
+----
+0	4
+1	5
+2	5
+
+# the narrowing cast raises for a group outside the returned ones in both arms
+statement error
+SELECT k1::TINYINT k, count(*) c FROM t GROUP BY k1 ORDER BY k LIMIT 3
+----
+Conversion Error
+
+# empty input
+query II
+SELECT k1, count(*) FROM t WHERE v::VARCHAR = 'x' GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+
+# an offset at and past the last group
+query II
+SELECT k1, count(*) FROM t WHERE k1 < 5 GROUP BY k1 ORDER BY k1 LIMIT 3 OFFSET 4
+----
+4	5
+
+query II
+SELECT k1, count(*) FROM t WHERE k1 < 5 GROUP BY k1 ORDER BY k1 LIMIT 3 OFFSET 40
+----
+
+# a key column of NULLs only, alone and as the first key of a prefix
+query II
+SELECT an, count(*) FROM ty GROUP BY an ORDER BY an LIMIT 3
+----
+NULL	4000
+
+query III
+SELECT an, v % 3, count(*) FROM ty GROUP BY ALL ORDER BY an NULLS FIRST, 2 LIMIT 2
+----
+NULL	0	1334
+NULL	1	1333
+
+# BOOLEAN
+query TI
+SELECT b, count(*) FROM ty GROUP BY b ORDER BY b LIMIT 1
+----
+false	1714
+
+query TI
+SELECT b, count(*) FROM ty GROUP BY b ORDER BY b DESC NULLS FIRST LIMIT 2
+----
+NULL	572
+true	1714
+
+# LIST and STRUCT with inner NULLs
+query TI
+SELECT l, count(*) FROM ty GROUP BY l ORDER BY l DESC LIMIT 2
+----
+[3, NULL]	800
+[2, NULL]	800
+
+query TI
+SELECT l, count(*) FROM ty GROUP BY l ORDER BY l NULLS FIRST LIMIT 2
+----
+NULL	800
+[0, NULL]	800
+
+query TI
+SELECT s, count(*) FROM ty GROUP BY s ORDER BY s LIMIT 2
+----
+{'a': 0}	600
+{'a': 1}	600
+
+query TI
+SELECT s, count(*) FROM ty GROUP BY s ORDER BY s DESC LIMIT 2
+----
+{'a': NULL}	800
+{'a': 3}	600
+
+# DOUBLE: -inf first, +0.0 and -0.0 one group, NaN the largest value
+query RI
+SELECT d, count(*) FROM ty GROUP BY d ORDER BY d LIMIT 3
+----
+-inf	500
+-1.5	334
+-0.5	333
+
+query RI
+SELECT d, count(*) FROM ty GROUP BY d ORDER BY d DESC LIMIT 3
+----
+nan	500
+inf	500
+0.5	333
+
+query RI
+SELECT d, count(*) FROM ty GROUP BY d ORDER BY d DESC NULLS FIRST LIMIT 2
+----
+NULL	500
+nan	500
+
+# HUGEINT beyond the BIGINT range
+query TI
+SELECT h, count(*) FROM ty GROUP BY h ORDER BY h LIMIT 3
+----
+-20000000000000000000000000000000000005	400
+-20000000000000000000000000000000000000	400
+-10000000000000000000000000000000000005	400
+
+query TI
+SELECT h, count(*) FROM ty GROUP BY h ORDER BY h DESC LIMIT 2
+----
+20000000000000000000000000000000000000	400
+19999999999999999999999999999999999995	400
+
+# UUID
+query TI
+SELECT u, count(*) FROM ty GROUP BY u ORDER BY u DESC LIMIT 2
+----
+00000000-0000-0000-0000-000000000005	666
+00000000-0000-0000-0000-000000000004	666
+
+# INTERVAL: 1 month and 30 days are one group
+query TI
+SELECT count(*), sum(c) FROM (SELECT iv, count(*) c FROM ty GROUP BY iv ORDER BY iv LIMIT 2)
+----
+2	3000
+
+# TIMETZ: ordered by the UTC instant (23:00-15 is later than 23:30+15)
+query TI
+SELECT tz, count(*) FROM ty GROUP BY tz ORDER BY tz DESC LIMIT 2
+----
+23:00:00-15	1000
+23:30:00+15	1000
+
+query TI
+SELECT tz, count(*) FROM ty GROUP BY tz ORDER BY tz LIMIT 2
+----
+01:00:00+00	1000
+23:30:00+15	1000
+
+# a wide BIGINT key (the rule's own dynamic filter reaches the scan)
+query III
+SELECT k, count(*), sum(v) FROM w GROUP BY k ORDER BY k LIMIT 3
+----
+0	5	10000
+10000000000	5	14865
+20000000000	5	14730
+
+endloop
+
+# the LIMIT without ORDER BY over the wide key returns the three smallest keys through this rule's filter, and the
+# edge-input queries above are fired shapes
+statement ok
+SET disabled_optimizers = '';
+
+query III
+SELECT k, count(*), sum(v) FROM w GROUP BY k LIMIT 3
+----
+0	5	10000
+10000000000	5	14865
+20000000000	5	14730
+
+query II
+EXPLAIN SELECT k1, count(*) FROM t WHERE v::VARCHAR = 'x' GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT an, count(*) FROM ty GROUP BY an ORDER BY an LIMIT 3
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT s, count(*) FROM ty GROUP BY s ORDER BY s DESC LIMIT 2
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT d, count(*) FROM ty GROUP BY d ORDER BY d DESC LIMIT 3
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT h, count(*) FROM ty GROUP BY h ORDER BY h LIMIT 3
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT u, count(*) FROM ty GROUP BY u ORDER BY u DESC LIMIT 2
+----
+logical_opt	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1::TINYINT k, count(*) c FROM t WHERE k1 < 100 GROUP BY k1 ORDER BY k LIMIT 3
+----
+logical_opt	<REGEX>:.*Top Key Filter.*

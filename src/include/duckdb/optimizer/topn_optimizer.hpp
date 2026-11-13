@@ -9,13 +9,18 @@
 #pragma once
 
 #include "duckdb/common/constants.hpp"
+#include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/shared_ptr.hpp"
+#include "duckdb/common/types.hpp"
+#include "duckdb/planner/column_binding.hpp"
 
 namespace duckdb {
 class ClientContext;
 class LogicalOperator;
 class LogicalTopN;
 class Optimizer;
+struct DynamicFilterData;
 
 class TopN {
 public:
@@ -25,6 +30,11 @@ public:
 	unique_ptr<LogicalOperator> Optimize(unique_ptr<LogicalOperator> op);
 	//! Whether we can perform the optimization on this operator
 	static bool CanOptimize(LogicalOperator &op, optional_ptr<ClientContext> context = nullptr);
+	//! Pushes a dynamic filter "binding <comparison_type> [boundary]" into the scans below the operator that produce
+	//! the column. Returns the filter, or nullptr if no scan can evaluate it.
+	static shared_ptr<DynamicFilterData> PushDynamicFilterIntoScans(ClientContext &context, LogicalOperator &child,
+	                                                                ColumnBinding binding, const LogicalType &type,
+	                                                                bool nulls_first, ExpressionType comparison_type);
 
 private:
 	void PushdownDynamicFilters(LogicalTopN &op);

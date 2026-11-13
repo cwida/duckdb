@@ -1,0 +1,67 @@
+# name: test/optimizer/group_by_top_key_throwing_cast_filter.test
+# description: GROUP BY k ORDER BY <prefix of k> LIMIT n: no dynamic filter in the scan when the key is rebuilt on the scan column with a cast that can throw
+# group: [optimizer]
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE cust AS SELECT i::INTEGER AS sk, 'c' || i AS id FROM range(2000) r(i);
+
+statement ok
+CREATE TABLE dd AS SELECT i::INTEGER AS dsk, (DATE '2000-01-01' + (i % 300)::INTEGER) AS d FROM range(1000) r(i);
+
+statement ok
+CREATE TABLE ss AS SELECT (i % 2000)::INTEGER AS csk, (i % 1000)::INTEGER AS dsk FROM range(50000) r(i);
+
+statement ok
+ANALYZE;
+
+# a Top-N over a row-number filter over a DISTINCT whose keys include a DATE -> TIMESTAMP_MS cast. The dynamic filter
+# of the top-key filter would reach a scan through a cast that can throw: it is not pushed. The rows are the same
+# with the rule disabled and enabled.
+foreach disabled 'group_by_top_key' ''
+
+statement ok
+SET disabled_optimizers = {disabled};
+
+query III
+SELECT count(*), min(cid), max(cid) FROM (
+	SELECT uid, cid, ts FROM (
+		SELECT uid, cid, ts, ROW_NUMBER() OVER (PARTITION BY cid ORDER BY ts DESC) AS rn
+		FROM (
+			SELECT DISTINCT c.id AS uid, c.sk AS cid, CAST(d.d AS TIMESTAMP_MS) AS ts
+			FROM cust c JOIN ss ON c.sk = ss.csk JOIN dd d ON ss.dsk = d.dsk
+		)
+		ORDER BY cid, ts DESC
+	)
+	WHERE rn <= 1
+	ORDER BY cid, ts DESC
+	LIMIT 100
+)
+----
+100	0	99
+
+query II
+SELECT uid, cid FROM (
+	SELECT uid, cid, ts, ROW_NUMBER() OVER (PARTITION BY cid ORDER BY ts DESC) AS rn
+	FROM (
+		SELECT DISTINCT c.id AS uid, c.sk AS cid, CAST(d.d AS TIMESTAMP_MS) AS ts
+		FROM cust c JOIN ss ON c.sk = ss.csk JOIN dd d ON ss.dsk = d.dsk
+	)
+)
+WHERE rn <= 1
+ORDER BY cid, ts DESC
+LIMIT 3
+----
+c0	0
+c1	1
+c2	2
+
+# a key that is itself the cast
+query I
+SELECT count(*) FROM (SELECT CAST(d AS TIMESTAMP_MS) AS ts, count(*) FROM dd GROUP BY ts ORDER BY ts LIMIT 10)
+----
+10
+
+endloop

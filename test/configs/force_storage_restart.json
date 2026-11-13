@@ -67,6 +67,7 @@
         "test/sql/cte/recursive_cte_parallel_output_publication.test",
         "test/logging/warnings_as_errors.test",
         "test/logging/offset_order_warning.test",
+        "test/optimizer/group_by_top_key_limit_offset_warning.test",
         "test/sql/types/decimal/decimal_values_warning.test",
         "test/sql/settings/deprecated_settings.test",
         "test/sql/settings/pragma_assignment_deprecated.test",

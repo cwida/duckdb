@@ -262,6 +262,15 @@
       ]
     },
     {
+      "reason": "Checks the plans of the top-key filter, and the groups that a LIMIT without ORDER BY returns through it.",
+      "paths": [
+        "test/optimizer/group_by_top_key.test",
+        "test/optimizer/group_by_top_key_guards.test",
+        "test/optimizer/group_by_top_key_limit.test",
+        "test/optimizer/group_by_top_key_limit_guards.test"
+      ]
+    },
+    {
       "reason": "Checks pruning of a throwing unused secure-view output and safe caller filter pushdown.",
       "paths": [
         "test/sql/sql_export/secure_view_sql_export.test"

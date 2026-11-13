@@ -47,6 +47,8 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "LIMITED_DISTINCT";
 	case PhysicalOperatorType::FILTER:
 		return "FILTER";
+	case PhysicalOperatorType::TOP_KEY_FILTER:
+		return "TOP_KEY_FILTER";
 	case PhysicalOperatorType::PROJECTION:
 		return "PROJECTION";
 	case PhysicalOperatorType::COPY_TO_FILE:

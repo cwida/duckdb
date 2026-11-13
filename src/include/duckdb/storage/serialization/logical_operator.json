@@ -245,6 +245,27 @@
     ]
   },
   {
+    "class": "LogicalTopKeyFilter",
+    "base": "LogicalOperator",
+    "enum": "LOGICAL_TOP_KEY_FILTER",
+    "members": [
+      {
+        "id": 200,
+        "name": "orders",
+        "type": "vector<BoundOrderByNode>"
+      },
+      {
+        "id": 201,
+        "name": "limit",
+        "type": "idx_t"
+      }
+    ],
+    "constructor": [
+      "orders",
+      "limit"
+    ]
+  },
+  {
     "class": "LogicalDistinct",
     "base": "LogicalOperator",
     "enum": "LOGICAL_DISTINCT",

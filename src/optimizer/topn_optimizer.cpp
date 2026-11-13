@@ -63,32 +63,18 @@ bool TopN::CanOptimize(LogicalOperator &op, optional_ptr<ClientContext> context)
 	return false;
 }
 
-void TopN::PushdownDynamicFilters(LogicalTopN &op) {
-	// pushdown dynamic filters through the Top-N operator
-	bool nulls_first = op.orders[0].null_order == OrderByNullType::NULLS_FIRST;
-	auto &type = op.orders[0].expression->GetReturnType();
-	if (!TypeIsNumeric(type.InternalType()) && type.id() != LogicalTypeId::VARCHAR) {
-		// only supported for numeric and varchar types
-		return;
-	}
-	if (op.orders[0].expression->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
-		// we can only pushdown on ORDER BY [col] currently
-		return;
-	}
-	if (op.dynamic_filter) {
-		// dynamic filter is already set
-		return;
-	}
-	auto &colref = op.orders[0].expression->Cast<BoundColumnRefExpression>();
+shared_ptr<DynamicFilterData> TopN::PushDynamicFilterIntoScans(ClientContext &context, LogicalOperator &child,
+                                                               ColumnBinding binding, const LogicalType &type,
+                                                               bool nulls_first, ExpressionType comparison_type) {
 	vector<JoinFilterPushdownColumn> columns;
 	JoinFilterPushdownColumn column;
-	column.probe_column_index = colref.Binding();
+	column.probe_column_index = binding;
 	columns.emplace_back(column);
 	vector<PushdownFilterTarget> pushdown_targets;
-	JoinFilterPushdownOptimizer::GetPushdownFilterTargets(*op.children[0], std::move(columns), pushdown_targets);
+	JoinFilterPushdownOptimizer::GetPushdownFilterTargets(child, std::move(columns), pushdown_targets);
 	if (pushdown_targets.empty()) {
 		// no pushdown targets
-		return;
+		return nullptr;
 	}
 	for (auto &target : pushdown_targets) {
 		auto &pushed_column = target.columns[0];
@@ -98,27 +84,18 @@ void TopN::PushdownDynamicFilters(LogicalTopN &op) {
 			// the pushed expression cannot be reconstructed on top of the raw scan value in the sort
 			// key's type (e.g. a non-integral cast or a VARIANT in between), or the cast chain is not
 			// order-preserving (an explicit TRY_CAST, or a cast that can throw) - bail out
-			return;
+			return nullptr;
+		}
+		bool preserves_cast_errors = false;
+		RuntimeFilterCastUtil::CreateRuntimeFilterInputExpression(context, pushed_column, preserves_cast_errors);
+		if (preserves_cast_errors) {
+			// the reconstructed expression can raise an error for a row that the filter would otherwise skip
+			return nullptr;
 		}
 	}
 	// found pushdown targets! generate dynamic filters
-	ExpressionType comparison_type;
-	if (op.orders[0].type == OrderType::ASCENDING) {
-		// for ascending order, we want the lowest N elements, so we filter on C <= [boundary]
-		// if we only have a single order clause, we can filter on C < boundary
-		comparison_type =
-		    op.orders.size() == 1 ? ExpressionType::COMPARE_LESSTHAN : ExpressionType::COMPARE_LESSTHANOREQUALTO;
-	} else {
-		// for descending order, we want the highest N elements, so we filter on C >= [boundary]
-		// if we only have a single order clause, we can filter on C > boundary
-		comparison_type =
-		    op.orders.size() == 1 ? ExpressionType::COMPARE_GREATERTHAN : ExpressionType::COMPARE_GREATERTHANOREQUALTO;
-	}
 	Value minimum_value = type.InternalType() == PhysicalType::VARCHAR ? Value("") : Value::MinimumValue(type);
 	auto filter_data = make_shared_ptr<DynamicFilterData>(comparison_type, std::move(minimum_value));
-
-	// put the filter into the Top-N clause
-	op.dynamic_filter = filter_data;
 
 	for (auto &target : pushdown_targets) {
 		auto &get = target.get;
@@ -154,6 +131,41 @@ void TopN::PushdownDynamicFilters(LogicalTopN &op) {
 		                             make_uniq<ExpressionFilter>(CreateOptionalFilterExpression(
 		                                 std::move(pushed_expr), pushed_column.storage_type)));
 	}
+	return filter_data;
+}
+
+void TopN::PushdownDynamicFilters(LogicalTopN &op) {
+	// pushdown dynamic filters through the Top-N operator
+	bool nulls_first = op.orders[0].null_order == OrderByNullType::NULLS_FIRST;
+	auto &type = op.orders[0].expression->GetReturnType();
+	if (!TypeIsNumeric(type.InternalType()) && type.id() != LogicalTypeId::VARCHAR) {
+		// only supported for numeric and varchar types
+		return;
+	}
+	if (op.orders[0].expression->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+		// we can only pushdown on ORDER BY [col] currently
+		return;
+	}
+	if (op.dynamic_filter) {
+		// dynamic filter is already set
+		return;
+	}
+	auto &colref = op.orders[0].expression->Cast<BoundColumnRefExpression>();
+	ExpressionType comparison_type;
+	if (op.orders[0].type == OrderType::ASCENDING) {
+		// for ascending order, we want the lowest N elements, so we filter on C <= [boundary]
+		// if we only have a single order clause, we can filter on C < boundary
+		comparison_type =
+		    op.orders.size() == 1 ? ExpressionType::COMPARE_LESSTHAN : ExpressionType::COMPARE_LESSTHANOREQUALTO;
+	} else {
+		// for descending order, we want the highest N elements, so we filter on C >= [boundary]
+		// if we only have a single order clause, we can filter on C > boundary
+		comparison_type =
+		    op.orders.size() == 1 ? ExpressionType::COMPARE_GREATERTHAN : ExpressionType::COMPARE_GREATERTHANOREQUALTO;
+	}
+	// put the filter into the Top-N clause
+	op.dynamic_filter =
+	    PushDynamicFilterIntoScans(context, *op.children[0], colref.Binding(), type, nulls_first, comparison_type);
 }
 
 unique_ptr<LogicalOperator> TopN::Optimize(unique_ptr<LogicalOperator> op) {

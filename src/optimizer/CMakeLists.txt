@@ -14,6 +14,7 @@ add_library_unity(
   aggregate_function_rewriter.cpp
   aggregate_reuse.cpp
   apply_functional_dependencies.cpp
+  group_by_top_key.cpp
   materialized_aggregate_reuse.cpp
   aggregate_rewrite_helper.cpp
   build_probe_side_optimizer.cpp

@@ -50,6 +50,7 @@
 #include "duckdb/planner/operator/logical_load.hpp"
 #include "duckdb/planner/operator/logical_transaction.hpp"
 #include "duckdb/planner/operator/logical_update_extensions.hpp"
+#include "duckdb/planner/operator/logical_top_key_filter.hpp"
 #include "duckdb/planner/operator/logical_top_n.hpp"
 #include "duckdb/planner/operator/logical_trigger.hpp"
 #include "duckdb/planner/operator/logical_unnest.hpp"

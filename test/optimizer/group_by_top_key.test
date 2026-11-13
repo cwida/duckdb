@@ -1,0 +1,864 @@
+# name: test/optimizer/group_by_top_key.test
+# description: GROUP BY k ORDER BY <prefix of k> LIMIT n: a top-key filter below the aggregate
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(k1 INTEGER, k2 VARCHAR, v INTEGER);
+
+# 5,000 rows, k1 in 0..999 with duplicates (and NULLs), k2 one of 20 strings (and NULLs)
+statement ok
+INSERT INTO t SELECT CASE WHEN i % 97 = 0 THEN NULL ELSE (i * 37) % 1000 END, CASE WHEN i % 41 = 0 THEN NULL ELSE 'k' || ((i * 13) % 20) END, i FROM range(5000) r(i);
+
+statement ok
+CREATE TABLE s(k1 INTEGER, w INTEGER);
+
+statement ok
+INSERT INTO s SELECT i, i * 3 FROM range(200) r(i);
+
+# timestamps for an expression group key (date_trunc)
+statement ok
+CREATE TABLE e(ts TIMESTAMP, v INTEGER);
+
+statement ok
+INSERT INTO e SELECT TIMESTAMP '2024-01-01 00:00:00' + INTERVAL (i * 7 % 3000) MINUTE, i FROM range(3000) r(i);
+
+# 1,000 keys over 200,000 rows for a limit close to the key count
+statement ok
+CREATE TABLE big AS SELECT ((i * 7919) % 1000)::INTEGER AS k1, i::INTEGER AS v FROM range(200000) r(i);
+
+# fewer distinct keys than the limit
+statement ok
+CREATE TABLE u(k1 INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO u SELECT i % 10, i FROM range(100) r(i);
+
+# every query runs with the rule disabled and enabled (the foreach): the rows are the hand-checked result of the unmodified plan,
+# which the rewritten plan must reproduce
+
+foreach disabled 'group_by_top_key' ''
+
+statement ok
+SET disabled_optimizers = {disabled};
+
+# 1. count / sum over the three smallest keys: every row of the kept groups passed
+query III nosort
+SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+0	4	10000
+1	5	14865
+2	5	14730
+
+# 2. LIMIT with OFFSET: a boundary of limit + offset keys
+query III nosort
+SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 LIMIT 3 OFFSET 2
+----
+2	5	14730
+3	5	14595
+4	5	14460
+
+# 3. DESC: the >= filter (inverted sort key, the minimum rule of the boundary still applies)
+query III nosort
+SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 DESC LIMIT 3
+----
+999	5	10135
+998	5	10270
+997	5	10405
+
+# 4. NULLS FIRST: the NULL group is the smallest key and is kept (k IS NULL OR .. in the scan filter)
+query III nosort
+SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 NULLS FIRST LIMIT 3
+----
+NULL	52	128622
+0	4	10000
+1	5	14865
+
+# 5. NULLS LAST with fewer than n non-NULL keys: the n-th key is NULL, which publishes no dynamic filter
+query II nosort
+SELECT k1, count(*) FROM t WHERE k1 < 2 OR k1 IS NULL GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+0	4
+1	5
+NULL	52
+
+# the same with DESC NULLS FIRST
+query II nosort
+SELECT k1, count(*) FROM t WHERE k1 < 2 OR k1 IS NULL GROUP BY k1 ORDER BY k1 DESC NULLS FIRST LIMIT 3
+----
+NULL	52
+1	5
+0	4
+
+# 6. a two-key prefix with ties on k1 across groups
+query III nosort
+SELECT k1, k2, count(*) FROM t GROUP BY k1, k2 ORDER BY k1, k2 LIMIT 4
+----
+0	k0	4
+1	k9	5
+2	k18	5
+3	k7	5
+
+# the two-key prefix with mixed directions
+query III nosort
+SELECT k1, k2, count(*) FROM t GROUP BY k1, k2 ORDER BY k1, k2 DESC LIMIT 4
+----
+0	k0	4
+1	k9	5
+2	k18	5
+3	k7	5
+
+# 7. a prefix shorter than the group list: every k2 group of the smallest k1 values is a candidate
+query III nosort
+SELECT k1, k2, count(*) FROM t GROUP BY k1, k2 ORDER BY k1, sum(v), k2 LIMIT 5
+----
+0	k0	4
+1	k9	5
+2	k18	5
+3	k7	5
+4	k16	5
+
+# 8. the prefix followed by an aggregate
+query III nosort
+SELECT k1, k2, count(*) FROM t GROUP BY k1, k2 ORDER BY k1, count(*) DESC, k2 LIMIT 3
+----
+0	k0	4
+1	k9	5
+2	k18	5
+
+# 9. n larger than the number of groups: the heap never fills, every row passes
+query III nosort
+SELECT k1, count(*), sum(v) FROM t WHERE k1 < 5 GROUP BY k1 ORDER BY k1 LIMIT 100
+----
+0	4	10000
+1	5	14865
+2	5	14730
+3	5	14595
+4	5	14460
+
+# fewer than n distinct keys over many rows (k = i % 10, LIMIT 20)
+query III nosort
+SELECT k1, count(*), sum(v) FROM u GROUP BY k1 ORDER BY k1 LIMIT 20
+----
+0	10	450
+1	10	460
+2	10	470
+3	10	480
+4	10	490
+5	10	500
+6	10	510
+7	10	520
+8	10	530
+9	10	540
+
+# 10. LIMIT 0
+query II nosort
+SELECT k1, count(*) FROM t GROUP BY k1 ORDER BY k1 LIMIT 0
+----
+
+# 11. HAVING blocks the rewrite (results unchanged)
+query II nosort
+SELECT k1, count(*) FROM t GROUP BY k1 HAVING count(*) > 4 ORDER BY k1 LIMIT 3
+----
+1	5
+2	5
+3	5
+
+# 12. ROLLUP / GROUPING(): no rewrite (results unchanged)
+query IIII nosort
+SELECT k1, k2, count(*), GROUPING(k1) FROM t WHERE k1 < 3 GROUP BY ROLLUP (k1, k2) ORDER BY k1, k2 LIMIT 5
+----
+0	k0	4	0
+0	NULL	4	0
+1	k9	5	0
+1	NULL	5	0
+2	k18	5	0
+
+# 13. an expression over the group key as the order key: materialised below the filter, which keys on it
+query II nosort
+SELECT k1, count(*) FROM t GROUP BY k1 ORDER BY k1 + 1 LIMIT 3
+----
+0	4
+1	5
+2	5
+
+# an aggregate order key: no rewrite
+query II nosort
+SELECT k1, count(*) FROM t GROUP BY k1 ORDER BY sum(v), k1 LIMIT 3
+----
+738	4
+327	4
+259	4
+
+# 14. DISTINCT: a group per distinct tuple
+query I nosort
+SELECT DISTINCT k1 FROM t ORDER BY k1 LIMIT 3
+----
+0
+1
+2
+
+# DISTINCT over two columns ordered by the second
+query II nosort
+SELECT DISTINCT k1, k2 FROM t ORDER BY k2, k1 LIMIT 4
+----
+0	k0
+20	k0
+40	k0
+60	k0
+
+# DISTINCT ON: its own ORDER BY semantics, no rewrite
+query II nosort
+SELECT DISTINCT ON (k1) k1, v FROM t ORDER BY k1, v LIMIT 3
+----
+0	1000
+1	973
+2	946
+
+# 15. an aggregate over a join: the dynamic filter lands on t's scan through the probe side
+query III nosort
+SELECT t.k1, count(*), sum(w) FROM t JOIN s USING (k1) GROUP BY t.k1 ORDER BY t.k1 LIMIT 3
+----
+0	4	0
+1	5	15
+2	5	30
+
+# 16. DISTINCT and FILTER aggregates
+query III nosort
+SELECT k1, count(DISTINCT v % 7), sum(v) FILTER (WHERE v % 2 = 0) FROM t GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+0	4	10000
+1	5	NULL
+2	5	14730
+
+# 17. a VARCHAR prefix (dynamic filter on the string column)
+query III nosort
+SELECT k2, count(*), sum(v) FROM t GROUP BY k2 ORDER BY k2 LIMIT 3
+----
+k0	243	605280
+k1	244	610268
+k10	244	610240
+
+# a VARCHAR prefix DESC NULLS FIRST
+query II nosort
+SELECT k2, count(*) FROM t GROUP BY k2 ORDER BY k2 DESC NULLS FIRST LIMIT 3
+----
+NULL	122
+k9	244
+k8	244
+
+# a DECIMAL key through a projection
+query II nosort
+SELECT d, count(*) FROM (SELECT (k1 % 7)::DECIMAL(5,1) / 2 d, v FROM t) GROUP BY d ORDER BY d LIMIT 3
+----
+0.0	707
+0.5	708
+1.0	708
+
+# a DATE key through a projection
+query II nosort
+SELECT d, count(*) FROM (SELECT DATE '2024-01-01' + INTERVAL (k1 % 30) DAY d, v FROM t) GROUP BY d ORDER BY d LIMIT 3
+----
+2024-01-01 00:00:00	167
+2024-01-02 00:00:00	169
+2024-01-03 00:00:00	168
+
+# a key cast in a projection between the aggregate and the TOP_N
+query II nosort
+SELECT k, c FROM (SELECT k1::BIGINT k, count(*) c FROM t GROUP BY k1) ORDER BY k LIMIT 3
+----
+0	4
+1	5
+2	5
+
+# 21. LIMIT over the aggregate without ORDER BY (the reference is the explicit ORDER BY, a LIMIT without ORDER BY
+# returns an arbitrary subset of the groups)
+query III nosort
+SELECT * FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 ORDER BY k1 LIMIT 3) ORDER BY ALL
+----
+0	4	10000
+1	5	14865
+2	5	14730
+
+# 22. a subquery shape: the rule fires inside a CTE body and in the outer query
+query II nosort
+WITH top3 AS (SELECT k1, count(*) c FROM t GROUP BY k1 ORDER BY k1 LIMIT 3) SELECT k2, count(*) FROM t WHERE k1 IN (SELECT k1 FROM top3) GROUP BY k2 ORDER BY k2 LIMIT 2
+----
+k0	4
+k18	5
+
+# 23. the smallest keys only in the last rows (descending input order)
+query II nosort
+SELECT k1, count(*) FROM (SELECT 1000 - i k1 FROM range(5000) r(i)) GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+-3999	1
+-3998	1
+-3997	1
+
+# 24. an expression group key (the ORDER BY binds to the group): the expression is evaluated once, in a projection
+# below the filter, and the aggregate groups on that column
+query III nosort
+SELECT k1 % 10 AS m, count(*), sum(v) FROM t GROUP BY k1 % 10 ORDER BY k1 % 10 LIMIT 3
+----
+0	494	1232950
+1	495	1234935
+2	495	1236920
+
+query II nosort
+SELECT k1 % 10 AS m, count(*) FROM t GROUP BY k1 % 10 ORDER BY m DESC LIMIT 3 OFFSET 1
+----
+8	495
+7	495
+6	495
+
+# an expression group key followed by a column key
+query III nosort
+SELECT k1 % 10 AS m, k2, count(*) FROM t GROUP BY k1 % 10, k2 ORDER BY k1 % 10, k2 NULLS FIRST LIMIT 4
+----
+0	NULL	12
+0	k0	241
+0	k10	241
+1	NULL	12
+
+# 25. date_trunc as the group and order key
+query III nosort
+SELECT date_trunc('hour', ts) AS h, count(*), sum(v) FROM e GROUP BY date_trunc('hour', ts) ORDER BY date_trunc('hour', ts) LIMIT 3 OFFSET 2
+----
+2024-01-01 02:00:00	60	79710
+2024-01-01 03:00:00	60	78510
+2024-01-01 04:00:00	60	80310
+
+# 26. cheap expressions over a column group key as the order key: evaluated per input row by the filter
+query II nosort
+SELECT k1, count(*) FROM t GROUP BY k1 ORDER BY -k1 LIMIT 3
+----
+999	5
+998	5
+997	5
+
+query II nosort
+SELECT k1, count(*) FROM t GROUP BY k1 ORDER BY k1::BIGINT * 2 LIMIT 3
+----
+0	4
+1	5
+2	5
+
+# the derived key does not separate the groups: ties are kept, the remaining order keys decide
+query III nosort
+SELECT k1, k2, count(*) FROM t GROUP BY k1, k2 ORDER BY k1 % 7, k2, k1 LIMIT 3
+----
+0	k0	4
+140	k0	5
+280	k0	5
+
+# an expensive derived key (a string concatenation): no rewrite, the per-row evaluation would cost more than it saves
+query II nosort
+SELECT k2, count(*) FROM t GROUP BY k2 ORDER BY k2 || '_' LIMIT 3
+----
+k0	243
+k10	244
+k11	244
+
+# a volatile derived key: no rewrite
+query II nosort
+SELECT k1, count(*) FROM t GROUP BY k1 ORDER BY k1 + (random() > 2)::INTEGER LIMIT 3
+----
+0	4
+1	5
+2	5
+
+# 27. the same over DISTINCT (the binder plans an ORDER BY expression over a DISTINCT as an aggregate with `first`,
+# which does not fire: results only) and through a projection above the aggregate
+query I nosort
+SELECT DISTINCT k1 FROM t ORDER BY k1 + 1 LIMIT 3
+----
+0
+1
+2
+
+query II nosort
+SELECT m, c FROM (SELECT k1 % 10 AS m, count(*) c FROM t GROUP BY k1 % 10) ORDER BY m + 1 LIMIT 3
+----
+0	494
+1	495
+2	495
+
+# 28. a limit close to the number of keys: most rows pass the settled boundary (the filter prunes little), the
+# results do not change
+query III nosort
+SELECT k1, count(*), sum(v) FROM big GROUP BY k1 ORDER BY k1 LIMIT 3 OFFSET 797
+----
+797	200	19932600
+798	200	20068400
+799	200	20004200
+
+endloop
+
+# the plans and the variants below
+statement ok
+SET disabled_optimizers = '';
+
+# 21b. the LIMIT without ORDER BY returns the same three groups as the explicit ORDER BY (the rule turns it into
+# a Top-N over the group key)
+query III
+SELECT * FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3) ORDER BY ALL
+----
+0	4	10000
+1	5	14865
+2	5	14730
+
+# the plans: the TOP_KEY_FILTER below the aggregate and the dynamic filter on the scan for the fired shapes ...
+
+query II
+EXPLAIN SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 DESC LIMIT 3
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 NULLS FIRST LIMIT 3
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1, k2, count(*) FROM t GROUP BY k1, k2 ORDER BY k1, k2 LIMIT 4
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1, k2, count(*) FROM t GROUP BY k1, k2 ORDER BY k1, count(*) DESC, k2 LIMIT 3
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT DISTINCT k1 FROM t ORDER BY k1 LIMIT 3
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT t.k1, count(*), sum(w) FROM t JOIN s USING (k1) GROUP BY t.k1 ORDER BY t.k1 LIMIT 3
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k2, count(*), sum(v) FROM t GROUP BY k2 ORDER BY k2 LIMIT 3
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k, c FROM (SELECT k1::BIGINT k, count(*) c FROM t GROUP BY k1) ORDER BY k LIMIT 3
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+# ... with the dynamic filter in the scan (two optional filters on the same column: the TOP_N's and ours)
+
+query II
+EXPLAIN SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+physical_plan	<REGEX>:.*Dynamic Filter.*
+
+query II
+EXPLAIN SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 NULLS FIRST LIMIT 3
+----
+physical_plan	<REGEX>:.*IS NULL\) OR Dynamic Filter.*
+
+query II
+EXPLAIN SELECT t.k1, count(*), sum(w) FROM t JOIN s USING (k1) GROUP BY t.k1 ORDER BY t.k1 LIMIT 3
+----
+physical_plan	<REGEX>:.*Dynamic Filter.*
+
+# ... and no TOP_KEY_FILTER for the shapes the rule leaves alone
+
+query II
+EXPLAIN SELECT k1, count(*) FROM t GROUP BY k1 HAVING count(*) > 4 ORDER BY k1 LIMIT 3
+----
+physical_plan	<!REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1, k2, count(*), GROUPING(k1) FROM t WHERE k1 < 3 GROUP BY ROLLUP (k1, k2) ORDER BY k1, k2 LIMIT 5
+----
+physical_plan	<!REGEX>:.*Top Key Filter.*
+
+# an expression over the group key, an expression group key (its projection below the filter, the aggregate reads
+# the column) and the date_trunc shape fire; the dynamic filter reaches the scan through an order-preserving cast
+query II
+EXPLAIN SELECT k1, count(*) FROM t GROUP BY k1 ORDER BY k1 + 1 LIMIT 3
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1 % 10 AS m, count(*), sum(v) FROM t GROUP BY k1 % 10 ORDER BY k1 % 10 LIMIT 3
+----
+physical_plan	<REGEX>:(?s).*Hash Group By[^%]*Top Key Filter.*%.*Seq Scan.*
+
+query II
+EXPLAIN SELECT date_trunc('hour', ts) AS h, count(*), sum(v) FROM e GROUP BY date_trunc('hour', ts) ORDER BY date_trunc('hour', ts) LIMIT 3 OFFSET 2
+----
+physical_plan	<REGEX>:(?s).*Top Key Filter.*Projection.*date_trunc.*Seq Scan.*
+
+query II
+EXPLAIN SELECT k1, count(*) FROM t GROUP BY k1 ORDER BY k1::BIGINT * 2 LIMIT 3
+----
+physical_plan	<REGEX>:(?s).*Top Key Filter.*Projection.*\* 2.*Seq Scan.*
+
+# a cast of the group key as the order key keeps the scan's dynamic filter
+query II
+EXPLAIN SELECT k1, count(*) FROM t GROUP BY k1 ORDER BY k1::BIGINT LIMIT 3
+----
+physical_plan	<REGEX>:(?s).*Top Key Filter.*Dynamic Filter.*
+
+# ... but not an expensive or a volatile derived key
+query II
+EXPLAIN SELECT k2, count(*) FROM t GROUP BY k2 ORDER BY k2 || '_' LIMIT 3
+----
+physical_plan	<!REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1, count(*) FROM t GROUP BY k1 ORDER BY k1 + (random() > 2)::INTEGER LIMIT 3
+----
+physical_plan	<!REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1, count(*) FROM t GROUP BY k1 ORDER BY sum(v), k1 LIMIT 3
+----
+physical_plan	<!REGEX>:.*Top Key Filter.*
+
+# a DISTINCT ON is planned as an aggregate grouped on its targets, so it fires like a GROUP BY on them
+query II
+EXPLAIN SELECT DISTINCT ON (k1) k1, v FROM t ORDER BY k1, v LIMIT 3
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1, count(*) FROM t GROUP BY k1 ORDER BY k1 LIMIT 0
+----
+physical_plan	<!REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k1, count(*) FROM t GROUP BY k1 ORDER BY k1 LIMIT 20000
+----
+physical_plan	<!REGEX>:.*Top Key Filter.*
+
+# 18. one and eight threads (the per-thread sets and their merge)
+
+foreach threads 1 8
+
+statement ok
+SET threads = {threads}
+
+# 28. a limit close to the number of keys: most rows pass the settled boundary (the filter prunes little), the
+# results do not change
+query III nosort
+SELECT k1, count(*), sum(v) FROM big GROUP BY k1 ORDER BY k1 LIMIT 3 OFFSET 797
+----
+797	200	19932600
+798	200	20068400
+799	200	20004200
+
+query III nosort
+SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+0	4	10000
+1	5	14865
+2	5	14730
+
+query III nosort
+SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 LIMIT 3 OFFSET 2
+----
+2	5	14730
+3	5	14595
+4	5	14460
+
+query III nosort
+SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 DESC LIMIT 3
+----
+999	5	10135
+998	5	10270
+997	5	10405
+
+query III nosort
+SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 NULLS FIRST LIMIT 3
+----
+NULL	52	128622
+0	4	10000
+1	5	14865
+
+query II nosort
+SELECT k1, count(*) FROM t WHERE k1 < 2 OR k1 IS NULL GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+0	4
+1	5
+NULL	52
+
+query II nosort
+SELECT k1, count(*) FROM t WHERE k1 < 2 OR k1 IS NULL GROUP BY k1 ORDER BY k1 DESC NULLS FIRST LIMIT 3
+----
+NULL	52
+1	5
+0	4
+
+query III nosort
+SELECT k1, k2, count(*) FROM t GROUP BY k1, k2 ORDER BY k1, k2 LIMIT 4
+----
+0	k0	4
+1	k9	5
+2	k18	5
+3	k7	5
+
+query III nosort
+SELECT k1, k2, count(*) FROM t GROUP BY k1, k2 ORDER BY k1, k2 DESC LIMIT 4
+----
+0	k0	4
+1	k9	5
+2	k18	5
+3	k7	5
+
+query III nosort
+SELECT k1, k2, count(*) FROM t GROUP BY k1, k2 ORDER BY k1, sum(v), k2 LIMIT 5
+----
+0	k0	4
+1	k9	5
+2	k18	5
+3	k7	5
+4	k16	5
+
+endloop
+
+# 19. a prepared statement executed twice: the boundary is rebuilt per execution (a stale boundary from the first
+# run would drop every row of the second once the small keys are gone)
+statement ok
+CREATE TABLE p(k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO p SELECT i % 10, i FROM range(1000) r(i);
+
+statement ok
+PREPARE q AS SELECT k, count(*), sum(v) FROM p GROUP BY k ORDER BY k LIMIT 3
+
+query III
+EXECUTE q
+----
+0	100	49500
+1	100	49600
+2	100	49700
+
+statement ok
+DELETE FROM p WHERE k < 5
+
+query III
+EXECUTE q
+----
+5	100	50000
+6	100	50100
+7	100	50200
+
+statement ok
+INSERT INTO p SELECT i % 3, i FROM range(30) r(i);
+
+query III
+EXECUTE q
+----
+0	10	135
+1	10	145
+2	10	155
+
+# 20. a recursive CTE whose recursive member holds the rewritten shape: every iteration starts from a fresh boundary
+query III
+WITH RECURSIVE r(lvl, k, c) AS (
+	(SELECT 0, k1, count(*) FROM t WHERE k1 >= 0 GROUP BY k1 ORDER BY k1 LIMIT 2)
+	UNION ALL
+	(SELECT max(l) + 1, k1, count(*) FROM t, (SELECT max(k) m, max(lvl) l FROM r) WHERE k1 > m AND l < 3 GROUP BY k1 ORDER BY k1 LIMIT 2)
+)
+SELECT * FROM r ORDER BY ALL
+----
+0	0	4
+0	1	5
+1	2	5
+1	3	5
+2	4	5
+2	5	5
+3	6	5
+3	7	5
+
+query II
+EXPLAIN WITH RECURSIVE r(lvl, k, c) AS (
+	(SELECT 0, k1, count(*) FROM t WHERE k1 >= 0 GROUP BY k1 ORDER BY k1 LIMIT 2)
+	UNION ALL
+	(SELECT max(l) + 1, k1, count(*) FROM t, (SELECT max(k) m, max(lvl) l FROM r) WHERE k1 > m AND l < 3 GROUP BY k1 ORDER BY k1 LIMIT 2)
+)
+SELECT * FROM r ORDER BY ALL
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+# 21. the rule can be disabled on its own
+statement ok
+SET disabled_optimizers = 'group_by_top_key'
+
+query II
+EXPLAIN SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+physical_plan	<!REGEX>:.*Top Key Filter.*
+
+query III
+SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+0	4	10000
+1	5	14865
+2	5	14730
+
+statement ok
+SET disabled_optimizers = ''
+
+# 22. EXPLAIN ANALYZE renders the operator
+query II
+EXPLAIN ANALYZE SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+analyzed_plan	<REGEX>:.*Top Key Filter.*
+
+# the rule disabled again: no filter
+statement ok
+SET disabled_optimizers = 'group_by_top_key';
+
+query II
+EXPLAIN SELECT k1, count(*), sum(v) FROM t GROUP BY k1 ORDER BY k1 LIMIT 3
+----
+physical_plan	<!REGEX>:.*Top Key Filter.*
+
+# the filter keeps the order of the rows that pass (several keys: the rows are selected key by key): an aggregate
+# that depends on the order of its input returns the same lists with one thread
+statement ok
+CREATE TABLE ordered AS SELECT (i % 50)::INTEGER AS a, (i % 7)::INTEGER AS b, i AS v FROM range(100000) r(i);
+
+statement ok
+SET threads = 1;
+
+foreach disabled 'group_by_top_key' ''
+
+statement ok
+SET disabled_optimizers = {disabled};
+
+query IIII nosort ordered_lists
+SELECT a, b, list(v)[:5], first(v) FROM ordered GROUP BY a, b ORDER BY a, b LIMIT 4
+----
+
+query III nosort ordered_lists_desc
+SELECT a, b, list(v)[-3:] FROM ordered GROUP BY a, b ORDER BY a DESC, b LIMIT 4
+----
+
+endloop
+
+# the rows that pass are not held back either: of 8,192 rows the group of "true" gets one row in each of the first two
+# chunks of 2,048 rows and the whole of the last one. A chunk with one row is not kept while a later full chunk passes.
+statement ok
+CREATE TABLE sparse AS SELECT i = 2048 OR i = 4096 OR i >= 6144 AS k, i AS v FROM range(8192) r(i);
+
+foreach disabled 'group_by_top_key' ''
+
+statement ok
+SET disabled_optimizers = {disabled};
+
+query II
+SELECT k, list(v)[1:3] FROM sparse GROUP BY k ORDER BY k DESC LIMIT 1
+----
+true	[2048, 4096, 6144]
+
+query II
+SELECT k, string_agg(v::VARCHAR, ',')[1:14] FROM sparse GROUP BY k ORDER BY k DESC LIMIT 1
+----
+true	2048,4096,6144
+
+query IIIIII
+SELECT k, first(v), any_value(v), last(v), arg_min(v, k), arg_max(v, k) FROM sparse GROUP BY k ORDER BY k DESC LIMIT 1
+----
+true	2048	2048	8191	2048	2048
+
+query III
+SELECT k, list(v)[1:3], first(v) FROM sparse GROUP BY k ORDER BY k LIMIT 1
+----
+false	[0, 1, 2]	0
+
+# with several threads the order of the rows of a group is open with and without the filter: the same rows
+statement ok
+SET threads = 8;
+
+query IIII
+SELECT k, list_sort(list(v))[1:3], count(*), sum(v) FROM sparse GROUP BY k ORDER BY k DESC LIMIT 1
+----
+true	[2048, 4096, 6144]	2050	14685184
+
+query II
+SELECT a, list_sort(list(v))[:3] FROM ordered GROUP BY a ORDER BY a LIMIT 2
+----
+0	[0, 50, 100]
+1	[1, 51, 101]
+
+statement ok
+SET threads = 1;
+
+endloop
+
+# a limit that covers a large part of the keys: the scans get no dynamic filter, and a thread that still passes too
+# many rows after its warm-up stops filtering (100 keys, 6000 rows each; 50 and 90 of them are returned)
+statement ok
+CREATE TABLE few_keys AS SELECT (hash(i) % 100)::INTEGER AS k, i % 10 AS v FROM range(600000) r(i);
+
+foreach disabled 'group_by_top_key' ''
+
+statement ok
+SET disabled_optimizers = {disabled};
+
+foreach threads 1 4
+
+statement ok
+SET threads = {threads};
+
+query III nosort few_keys_50
+SELECT k, count(*), sum(v) FROM few_keys GROUP BY k ORDER BY k LIMIT 50
+----
+
+query III nosort few_keys_90
+SELECT k, count(*), sum(v) FROM few_keys GROUP BY k ORDER BY k DESC LIMIT 90
+----
+
+query III nosort few_keys_all
+SELECT k, count(*), sum(v) FROM few_keys GROUP BY k ORDER BY k LIMIT 100
+----
+
+query III nosort few_keys_more
+SELECT k, count(*), sum(v) FROM few_keys GROUP BY k ORDER BY k LIMIT 200
+----
+
+query III nosort few_keys_5
+SELECT k, count(*), sum(v) FROM few_keys GROUP BY k ORDER BY k LIMIT 5
+----
+
+endloop
+
+endloop
+
+statement ok
+SET disabled_optimizers = '';
+
+# 50 of 100 keys: no dynamic filter of the top-key filter; 5 of 100 keys: with a dynamic filter
+query II
+EXPLAIN SELECT k, count(*), sum(v) FROM few_keys GROUP BY k ORDER BY k LIMIT 50
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT k, count(*), sum(v) FROM few_keys GROUP BY k ORDER BY k LIMIT 50
+----
+physical_plan	<!REGEX>:.*Dynamic Filter: true.*
+
+query II
+EXPLAIN SELECT k, count(*), sum(v) FROM few_keys GROUP BY k ORDER BY k LIMIT 5
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
