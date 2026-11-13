@@ -1477,14 +1477,17 @@ void ProfilingRendererSettingsSetting::OnSet(SettingCallbackInfo &info, Value &i
 		}
 		new_settings[StringUtil::Lower(key_value[0].ToString())] = key_value[1].DefaultCastAs(LogicalType::VARCHAR);
 	}
-	// eagerly configure the renderer of the current profiler format to validate the setting values
-	if (info.context) {
-		auto renderer = QueryProfiler::Get(*info.context).GetRenderer();
-		if (renderer) {
-			renderer->Configure(new_settings);
-		}
-	}
 	input = TreeRenderer::RendererSettingsToValue(new_settings);
+	if (info.is_reset) {
+		return;
+	}
+	if (!info.context) {
+		throw InvalidInputException("Could not set option \"%s\" as a global option",
+		                            ProfilingRendererSettingsSetting::Name);
+	}
+	// validate the new values against the renderer of the current profiler format, ignoring the stored ones
+	auto format = ClientConfig::GetConfig(*info.context).profiler_print_format;
+	TreeRenderer::CreateRenderer(*info.context, format == "no_output" ? "query_tree" : format, new_settings);
 }
 
 //===----------------------------------------------------------------------===//

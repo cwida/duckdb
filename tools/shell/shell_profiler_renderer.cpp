@@ -3,7 +3,6 @@
 
 #include "duckdb/common/tree_renderer.hpp"
 #include "duckdb/common/tree_renderer/text_tree_renderer.hpp"
-#include "duckdb/main/client_config.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/profiler_extension.hpp"
 #include "duckdb/main/query_profiler.hpp"

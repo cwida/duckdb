@@ -400,6 +400,19 @@ TEST_CASE("Test the per-connection progress bar options in the startup config", 
 	REQUIRE(CHECK_COLUMN(result, 1, {true}));
 }
 
+TEST_CASE("Test profiling_renderer_settings is rejected in the startup config", "[api]") {
+	DBConfig config;
+	auto settings =
+	    Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, {Value("operator_casing")}, {Value("bogus")});
+	REQUIRE_THROWS_WITH(config.SetOptionByName("profiling_renderer_settings", settings),
+	                    Catch::Contains("profiling_renderer_settings") && Catch::Contains("as a global option"));
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("EXPLAIN SELECT 42"));
+	REQUIRE_NO_FAIL(con.Query("SET profiling_renderer_settings = MAP {'operator_casing': 'title'}"));
+	REQUIRE_FAIL(con.Query("SET profiling_renderer_settings = MAP {'operator_casing': 'bogus'}"));
+}
+
 TEST_CASE("Test buffer_manager_track_eviction_timestamps is fixed once the database is running", "[api]") {
 	DBConfig config;
 	REQUIRE_NOTHROW(config.SetOptionByName("buffer_manager_track_eviction_timestamps", Value::BOOLEAN(true)));
