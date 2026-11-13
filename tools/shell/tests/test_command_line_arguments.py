@@ -44,6 +44,22 @@ def test_storage_version_latest(shell):
     result = test.run()
     result.check_stdout("42")
 
+
+def test_storage_version_help(shell):
+    result = ShellTest(shell).add_argument("-help").run()
+
+    assert result.status_code == 0
+
+    storage_version_lines = [
+        line
+        for line in result.stdout.splitlines()
+        if "-storage-version" in line
+    ]
+
+    assert len(storage_version_lines) == 1
+    assert "Default: 'v2.0.0'" in storage_version_lines[0]
+
+
 def test_command(shell):
     test = (
         ShellTest(shell)

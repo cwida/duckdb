@@ -1,6 +1,7 @@
 #include "shell_state.hpp"
 #include "shell_highlight.hpp"
 #include "terminal.hpp"
+#include "duckdb/storage/storage_info.hpp"
 
 namespace duckdb_shell {
 
@@ -340,6 +341,12 @@ MetadataResult FormatFile(ShellState &state, const vector<string> &args) {
 	return MetadataResult::SUCCESS;
 }
 
+static constexpr const char *CLI_STORAGE_VERSION_HELP =
+    "database storage compatibility version to use. Default: 'v2.0.0'";
+
+static_assert(duckdb::StorageVersionInfo::GetStorageVersionDefault() == duckdb::StorageVersion::V2_0_0,
+              "Update CLI storage version help when the default changes");
+
 static const CommandLineOption command_line_options[] = {
     {"agent", 0, "", SetAgentMode<OptionType::ON>, nullptr,
      "render output for an AI coding agent (compact markdown tables with a loud row/byte cap and a result hash, "
@@ -391,8 +398,7 @@ static const CommandLineOption command_line_options[] = {
     {"separator", 1, "SEP", nullptr, ShellState::SetSeparator, "set output column separator. Default: '|'"},
     {"serve", 0, "[quack[:SECRET]]", SetServeTarget, LaunchServer,
      "serve this database, optionally using a named secret (configurable with .serve_command)", true},
-    {"storage-version", 1, "VER", SetStorageVersion, nullptr,
-     "database storage compatibility version to use. Default: 'v0.10.0'"},
+    {"storage-version", 1, "VER", SetStorageVersion, nullptr, CLI_STORAGE_VERSION_HELP},
     {"table", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::TABLE>, "set output mode to 'table'"},
     {"ui", 0, "", nullptr, LaunchUI, "launches a web interface using the ui extension (configurable with .ui_command)"},
     {"unredacted", 0, "", AllowUnredacted, nullptr, "allow printing unredacted secrets"},
