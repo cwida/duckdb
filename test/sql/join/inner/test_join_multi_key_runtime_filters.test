@@ -148,13 +148,6 @@ SELECT count(*) FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket
 ----
 analyzed_plan	<REGEX>:(?s).*item IN PRF\(item\).*sparse_ticket IN BF\(sparse_ticket\).*
 
-# the build side holds both flag values, so the prefix-range filter covers its range and is skipped
-query II
-EXPLAIN ANALYZE
-SELECT count(*) FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket AND p.flag = b.flag;
-----
-analyzed_plan	<!REGEX>:.*flag IN PRF.*
-
 query I
 SELECT count(*) FROM (
     (SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket AND p.flag = b.flag
@@ -188,7 +181,7 @@ SELECT count(*) FROM (
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON p.item = b.item AND p.str_ticket = b.str_ticket;
 ----
-analyzed_plan	<REGEX>:(?s).*item IN PRF\(item\).*str_ticket IN (PRF|BF)\(str_ticket\).*
+analyzed_plan	<REGEX>:(?s).*item IN PRF\(item\).*str_ticket >=.*str_ticket <=.*str_ticket IN (PRF|BF)\(str_ticket\).*
 
 query I
 SELECT count(*) FROM (
@@ -463,7 +456,7 @@ SET debug_force_external=true;
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket;
 ----
-analyzed_plan	<REGEX>:(?s).*item >= 0.*item IN PRF\(item\).*sparse_ticket >= 0.*sparse_ticket IN BF\(sparse_ticket\).*
+analyzed_plan	<REGEX>:(?s).*item IN PRF\(item\).*sparse_ticket >= 0.*sparse_ticket IN BF\(sparse_ticket\).*
 
 query I
 SELECT count(*) FROM (

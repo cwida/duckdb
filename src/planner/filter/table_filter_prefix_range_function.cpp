@@ -38,8 +38,6 @@
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/planner/table_filter_state.hpp"
 
-#include <bitset>
-
 namespace duckdb {
 
 AllocatedData AllocateBitmap(ClientContext &context, const idx_t word_count, uint64_t *&bitmap_begin) {
@@ -115,15 +113,11 @@ public:
 	void MergeBuildState(PrefixRangeBitmapBuildState &state) {
 		const auto last_word_mask = ~uint64_t(0) >> (WORD_MASK - UnsafeNumericCast<idx_t>((span >> shift) & WORD_MASK));
 		dense = true;
-		idx_t set_buckets = 0;
 		for (idx_t word_idx = 0; word_idx < word_count; word_idx++) {
 			bitmap[word_idx] |= state.bitmap[word_idx];
 			const auto expected = word_idx + 1 == word_count ? last_word_mask : ~uint64_t(0);
 			dense &= bitmap[word_idx] == expected;
-			set_buckets += std::bitset<64>(bitmap[word_idx]).count();
 		}
-		const auto bucket_count = UnsafeNumericCast<idx_t>(span >> shift) + 1;
-		coverage = static_cast<double>(set_buckets) / static_cast<double>(bucket_count);
 		initialized = true;
 	}
 
@@ -350,10 +344,6 @@ public:
 		return dense;
 	}
 
-	double Coverage() const {
-		return coverage;
-	}
-
 	U Min() const {
 		return min;
 	}
@@ -372,8 +362,6 @@ private:
 	bool initialized = false;
 	//! All buckets within span are set, excluding padding bits in the final word.
 	bool dense = false;
-	//! Share of the buckets within span that are set
-	double coverage = 0;
 	U min;
 	U span;
 	idx_t shift;
@@ -491,10 +479,6 @@ public:
 		return bitmap.IsInitialized();
 	}
 
-	double Coverage() const override {
-		return bitmap.Coverage();
-	}
-
 private:
 	PrefixRangeBitmap<Comparable> bitmap;
 };
@@ -568,10 +552,6 @@ public:
 
 	bool IsInitialized() const override {
 		return bitmap.IsInitialized();
-	}
-
-	double Coverage() const override {
-		return bitmap.Coverage();
 	}
 
 private:

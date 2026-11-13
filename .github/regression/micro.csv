@@ -68,3 +68,5 @@ benchmark/micro/list/unnest_repeated_long_string.benchmark
 benchmark/micro/string/substring_grapheme_negative_offset.benchmark
 benchmark/micro/pushdown/multi_key_join_filter.benchmark
 benchmark/micro/pushdown/multi_key_join_filter_covered.benchmark
+benchmark/micro/pushdown/multi_key_join_filter_holes.benchmark
+benchmark/micro/pushdown/multi_key_join_filter_wide.benchmark

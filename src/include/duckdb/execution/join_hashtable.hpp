@@ -623,6 +623,8 @@ private:
 	//! Per-key-column bloom filters of a join with several equality keys
 	vector<shared_ptr<BloomFilter>> key_bloom_filters;
 	vector<bool> should_build_key_bloom_filters;
+	//! Per-column bitmap budget after sharing memory with the other runtime filters.
+	idx_t key_bloom_filter_budget = NumericLimits<idx_t>::Maximum();
 
 	//! Prefix-range filters, indexed by key column
 	vector<unique_ptr<PrefixRangeFilter>> prefix_range_filters;
@@ -714,6 +716,9 @@ public:
 	}
 	//! Requests a finalize-built bloom filter for a key column (in-memory joins only)
 	void SetBuildBloomFilter(idx_t key_idx);
+	void SetKeyBloomFilterBudget(idx_t bytes) {
+		key_bloom_filter_budget = bytes;
+	}
 
 	shared_ptr<BloomFilter> GetBloomFilter() {
 		return bloom_filter;

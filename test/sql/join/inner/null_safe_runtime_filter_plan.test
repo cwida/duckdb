@@ -33,7 +33,7 @@ INSERT INTO b VALUES (44,0);
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b AND p.g=b.g;
 ----
-analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IS NULL.*a >= 42.*a IS NULL.*a <= 44.*
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IS NULL.*a >= 42.*a <= 44.*a IN PRF.*
 
 query I
 SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b AND p.g=b.g;

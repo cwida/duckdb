@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
@@ -93,8 +94,9 @@ struct TableFilterFunctions {
 class BloomFilter {
 public:
 	BloomFilter() = default;
-	//! budget_share filters split the size and memory budget of one filter
-	void Initialize(ClientContext &context_p, idx_t number_of_rows, idx_t budget_share = 1);
+	//! Cap the bitmap size without reducing its desired bits per key.
+	void Initialize(ClientContext &context_p, idx_t number_of_rows,
+	                idx_t max_bitmap_bytes = NumericLimits<idx_t>::Maximum());
 
 	//! VectorOperations::Hash writes at the source row positions, so the hashes to insert are the ones sel
 	//! points at rather than the first count entries
@@ -204,8 +206,6 @@ public:
 	                         idx_t count) const = 0;
 	virtual FilterPropagateResult LookupRange(const Value &lower_bound, const Value &upper_bound) const = 0;
 	virtual bool IsInitialized() const = 0;
-	//! Share of the buckets between min and max that hold a key
-	virtual double Coverage() const = 0;
 	static bool SupportedType(const LogicalType &type);
 	static unique_ptr<PrefixRangeFilter> CreatePrefixRangeFilter(const LogicalType &key_type);
 	static bool TryComputeSpan(const Value &lower_bound, const Value &upper_bound, uhugeint_t &result);

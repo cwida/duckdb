@@ -155,9 +155,6 @@ private:
 	bool CanUseBloomFilter(const JoinFilterPushdownFilter &info, const ClientContext &context,
 	                       const PhysicalComparisonJoin &op, const ExpressionType &cmp,
 	                       optional_ptr<JoinHashTable> ht = nullptr) const;
-	bool CanUsePrefixRangeFilter(const JoinFilterPushdownFilter &info, const ClientContext &context,
-	                             const PhysicalComparisonJoin &op, optional_ptr<JoinHashTable> ht,
-	                             const ExpressionType &cmp, idx_t key_idx) const;
 };
 
 } // namespace duckdb

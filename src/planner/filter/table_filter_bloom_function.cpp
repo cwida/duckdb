@@ -41,7 +41,7 @@ static_assert(MAX_NUM_SECTORS <= (1ULL << SECTOR_HASH_SHIFT) && N_BITS * 8 <= SE
 //! A filter is sized from a cardinality estimate, so never let it claim more than this share of the memory budget
 static constexpr idx_t MAX_MEMORY_FRACTION = 64;
 
-void BloomFilter::Initialize(ClientContext &context_p, idx_t number_of_rows, idx_t budget_share) {
+void BloomFilter::Initialize(ClientContext &context_p, idx_t number_of_rows, idx_t max_bitmap_bytes) {
 	// a published filter is shared with probe-side consumers and must stay immutable
 	D_ASSERT(!published);
 	BufferManager &buffer_manager = BufferManager::GetBufferManager(context_p);
@@ -49,12 +49,9 @@ void BloomFilter::Initialize(ClientContext &context_p, idx_t number_of_rows, idx
 	// a capped filter stays complete - fewer sectors only raise the false positive rate, and Seal drops a
 	// filter that ended up too dense to reject anything
 	const idx_t min_sectors = MIN_NUM_BITS >> LOG_SECTOR_SIZE;
-	D_ASSERT(budget_share > 0);
-	const idx_t budget_bytes = buffer_manager.GetMaxMemory() / MAX_MEMORY_FRACTION / budget_share;
+	const idx_t budget_bytes = MinValue(buffer_manager.GetMaxMemory() / MAX_MEMORY_FRACTION, max_bitmap_bytes);
 	const idx_t budget_sectors = MaxValue(PreviousPowerOfTwo(budget_bytes / sizeof(uint64_t)), min_sectors);
-	const idx_t share_sectors =
-	    PreviousPowerOfTwo(MaxValue<idx_t>(GetNumberOfSectors(number_of_rows) / budget_share, 1));
-	num_sectors = MinValue(MaxValue(share_sectors, min_sectors), budget_sectors);
+	num_sectors = MinValue(GetNumberOfSectors(number_of_rows), budget_sectors);
 	bitmask = num_sectors - 1;
 
 	if (allocated_sectors < num_sectors) {

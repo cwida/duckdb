@@ -1275,16 +1275,12 @@ void JoinHashTable::AllocateHashMap(bool use_radix_layout) {
 		bloom_filter->Initialize(context, MaxValue<idx_t>(Count(), 1));
 	}
 	key_bloom_filters.resize(should_build_key_bloom_filters.size());
-	// the key columns split the size and memory budget of a single bloom filter
-	idx_t key_bloom_filter_count = 0;
-	for (const auto should_build : should_build_key_bloom_filters) {
-		key_bloom_filter_count += should_build;
-	}
+	// The key columns share one bitmap budget with prefix-range filters.
 	for (idx_t key_idx = 0; key_idx < should_build_key_bloom_filters.size(); key_idx++) {
 		auto &filter = key_bloom_filters[key_idx];
 		if (should_build_key_bloom_filters[key_idx] && (!filter || filter->IsSealed())) {
 			filter = make_shared_ptr<BloomFilter>();
-			filter->Initialize(context, MaxValue<idx_t>(Count(), 1), key_bloom_filter_count);
+			filter->Initialize(context, MaxValue<idx_t>(Count(), 1), key_bloom_filter_budget);
 		}
 	}
 
@@ -1328,7 +1324,7 @@ void JoinHashTable::Finalize(idx_t chunk_idx_from, idx_t chunk_idx_to, bool para
 	TupleDataChunkIterator iterator(*data_collection, TupleDataPinProperties::KEEP_EVERYTHING_PINNED, chunk_idx_from,
 	                                chunk_idx_to, false);
 	if (perfect_hash_table) {
-		// a perfect hash table has a single key, which uses the combined bloom filter and not per-key ones
+		// Perfect hash joins have a single key and no per-key Bloom filters.
 		D_ASSERT(key_bloom_filters.empty());
 		unique_ptr<KeyFilterBuildScratch> key_filter_scratch;
 		if (prefix_range_states) {
@@ -2861,6 +2857,7 @@ void JoinHashTable::ResetForNewIterationSinglePartition() {
 	should_build_bloom_filter = false;
 	key_bloom_filters.clear();
 	should_build_key_bloom_filters.clear();
+	key_bloom_filter_budget = NumericLimits<idx_t>::Maximum();
 	prefix_range_filters.clear();
 	should_build_prefix_range_filter = false;
 	ResetMarkJoinInfo(*this);
