@@ -23,7 +23,9 @@ enum class EqualityPropagation { DISABLED, ENABLED };
 //! pushdown
 class JoinFilterPushdownOptimizer : public LogicalOperatorVisitor {
 public:
-	explicit JoinFilterPushdownOptimizer(Optimizer &optimizer);
+	//! use_scan_statistics: whether the table statistics read at optimization time bound the values a scan returns,
+	//! which a DML CTE that runs before the scan can invalidate
+	JoinFilterPushdownOptimizer(Optimizer &optimizer, bool use_scan_statistics);
 
 public:
 	void Optimize(LogicalOperator &op);
@@ -49,6 +51,7 @@ private:
 
 private:
 	Optimizer &optimizer;
+	bool use_scan_statistics;
 	reference_map_t<LogicalComparisonJoin, vector<JoinFilterPushdownFilter>> cte_filters;
 };
 } // namespace duckdb

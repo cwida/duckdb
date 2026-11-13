@@ -164,6 +164,18 @@ static bool IsNullOnlyForNullColumn(Expression &expr) {
 	}
 }
 
+unique_ptr<BaseStatistics> StatisticsPropagator::GetScanColumnStatistics(ClientContext &context, LogicalGet &get,
+                                                                         const ColumnIndex &column_index) {
+	if (get.function.statistics_extended) {
+		TableFunctionGetStatisticsInput input(get.bind_data.get(), column_index);
+		return get.function.statistics_extended(context, input);
+	}
+	if (get.function.statistics) {
+		return get.function.statistics(context, get.bind_data.get(), column_index.GetPrimaryIndex());
+	}
+	return nullptr;
+}
+
 unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalGet &get,
                                                                      unique_ptr<LogicalOperator> &node_ptr) {
 	if (get.function.cardinality) {
@@ -177,14 +189,7 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalGet 
 	}
 	auto &column_ids = get.GetColumnIds();
 	for (idx_t i = 0; i < column_ids.size(); i++) {
-		unique_ptr<BaseStatistics> stats;
-		if (get.function.statistics_extended) {
-			TableFunctionGetStatisticsInput input(get.bind_data.get(), column_ids[i]);
-			stats = get.function.statistics_extended(context, input);
-		} else {
-			stats = get.function.statistics(context, get.bind_data.get(), column_ids[i].GetPrimaryIndex());
-		}
-
+		auto stats = GetScanColumnStatistics(context, get, column_ids[i]);
 		if (stats) {
 			ColumnBinding binding(get.table_index, ProjectionIndex(i));
 			statistics_map.insert(make_pair(binding, std::move(stats)));

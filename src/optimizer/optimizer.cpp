@@ -528,7 +528,7 @@ void Optimizer::RunBuiltInOptimizers() {
 
 	// Generate join filters before row-number and scan-expression rewrites.
 	RunOptimizer(OptimizerType::JOIN_FILTER_PUSHDOWN, [&]() {
-		JoinFilterPushdownOptimizer join_filter_pushdown(*this);
+		JoinFilterPushdownOptimizer join_filter_pushdown(*this, !CTEContainsDML(*plan));
 		join_filter_pushdown.Optimize(*plan);
 	});
 

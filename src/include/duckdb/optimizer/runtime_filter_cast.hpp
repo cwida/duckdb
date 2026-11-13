@@ -25,7 +25,7 @@ struct RuntimeFilterCastUtil {
 	static bool IsBuiltinCast(const Expression &expr);
 	//! Whether the expression contains (or requires) a try cast
 	static bool RuntimeFilterUsesTryCast(const JoinFilterPushdownColumn &column);
-	//! Whether the expression preserves the ordering of the raw projected column
+	//! Whether the expression preserves the ordering of the raw projected column, from its casts or from statistics
 	static bool PreservesStorageOrdering(const JoinFilterPushdownColumn &column);
 	//! The type that CreateRuntimeFilterInputExpression evaluates to for this column
 	static LogicalType GetRuntimeFilterInputType(const JoinFilterPushdownColumn &column,

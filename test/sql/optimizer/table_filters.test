@@ -359,8 +359,8 @@ JOIN phj_build_narrow_cast b
 ----
 10
 
-# Sparse values use an IN filter. It must reconstruct the narrowing cast and
-# retain the original conversion error for out-of-range probe values.
+# Sparse values use an IN filter. When the filters of the scan prove that the narrowing cast cannot fail on the
+# scanned rows, the IN filter compares the raw key.
 statement ok
 SET dynamic_or_filter_threshold=10
 
@@ -380,7 +380,34 @@ FROM (
 JOIN phj_build_narrow_cast_sparse b
   ON p.k::INTEGER = b.k
 ----
+analyzed_plan	<REGEX>:(?s).*optional: \(k IN \(1, 1000000000\)\).*
+
+# Otherwise it must reconstruct the narrowing cast and retain the original conversion error for out-of-range probe
+# values. The filter below removes the out-of-range value without bounding the statistics of k.
+query II
+EXPLAIN ANALYZE
+SELECT count(*)
+FROM (
+  SELECT *
+  FROM phj_probe_narrow_cast
+  WHERE k::VARCHAR < '2'
+) p
+JOIN phj_build_narrow_cast_sparse b
+  ON p.k::INTEGER = b.k
+----
 analyzed_plan	<REGEX>:(?s).*TRY_CAST.*IN \(1, 1000000000\).*
+
+query I
+SELECT count(*)
+FROM (
+  SELECT *
+  FROM phj_probe_narrow_cast
+  WHERE k::VARCHAR < '2'
+) p
+JOIN phj_build_narrow_cast_sparse b
+  ON p.k::INTEGER = b.k
+----
+2
 
 query I
 SELECT count(*)
@@ -457,6 +484,7 @@ FROM range(0, 100000) t(i)
 statement ok
 CHECKPOINT
 
+# The scan filter proves the narrowing cast cannot fail: the min/max filters compare the raw key
 query II
 EXPLAIN ANALYZE
 SELECT count(*)
@@ -468,7 +496,32 @@ FROM (
 JOIN bf_build_narrow_cast_errors b
   ON p.k::INTEGER = b.k
 ----
+analyzed_plan	<REGEX>:(?s).*optional: \(k >= 0\) AND optional: \(k <= 99999000\).*BF.*
+
+query II
+EXPLAIN ANALYZE
+SELECT count(*)
+FROM (
+  SELECT *
+  FROM phj_probe_narrow_cast
+  WHERE k::VARCHAR < '2'
+) p
+JOIN bf_build_narrow_cast_errors b
+  ON p.k::INTEGER = b.k
+----
 analyzed_plan	<REGEX>:(?s).*TRY_CAST.*IN.*BF.*
+
+query II
+SELECT count(*), sum(p.k)
+FROM (
+  SELECT *
+  FROM phj_probe_narrow_cast
+  WHERE k < 2000000000
+) p
+JOIN bf_build_narrow_cast_errors b
+  ON p.k::INTEGER = b.k
+----
+1000	499500000
 
 statement error
 SELECT count(*)

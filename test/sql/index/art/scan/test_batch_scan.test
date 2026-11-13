@@ -12,9 +12,6 @@ statement ok
 SET dynamic_or_filter_threshold = 100;
 
 statement ok
-SET disabled_optimizers = 'compressed_materialization';
-
-statement ok
 CREATE VIEW in_lookup AS SELECT i FROM t WHERE i IN (
     SELECT 1 + 10 * j FROM range(100) r(j)
 );

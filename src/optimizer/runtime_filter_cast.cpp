@@ -83,7 +83,8 @@ static bool ExpressionPreservesStorageOrdering(const Expression &expr) {
 
 bool RuntimeFilterCastUtil::PreservesStorageOrdering(const JoinFilterPushdownColumn &column) {
 	return column.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION &&
-	       (!column.input_expression || ExpressionPreservesStorageOrdering(*column.input_expression));
+	       (!column.input_expression || column.value_preserving_input ||
+	        ExpressionPreservesStorageOrdering(*column.input_expression));
 }
 
 LogicalType RuntimeFilterCastUtil::GetRuntimeFilterInputType(const JoinFilterPushdownColumn &column,
@@ -100,9 +101,10 @@ bool RuntimeFilterCastUtil::RequiresRuntimeFilterExpressionReconstruction(const 
 	       !PreservesStorageOrdering(column);
 }
 
-static void PreserveRuntimeFilterCastErrors(unique_ptr<Expression> &expr, bool &preserves_cast_errors) {
-	ExpressionIterator::EnumerateChildren(
-	    *expr, [&](unique_ptr<Expression> &child) { PreserveRuntimeFilterCastErrors(child, preserves_cast_errors); });
+static void PreserveRuntimeFilterCastErrors(unique_ptr<Expression> &expr, bool can_fail, bool &preserves_cast_errors) {
+	ExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<Expression> &child) {
+		PreserveRuntimeFilterCastErrors(child, can_fail, preserves_cast_errors);
+	});
 	if (!BoundCastExpression::IsCast(*expr)) {
 		return;
 	}
@@ -120,7 +122,9 @@ static void PreserveRuntimeFilterCastErrors(unique_ptr<Expression> &expr, bool &
 	safe_cast->SetAlias(cast.GetAlias());
 	safe_cast->SetQueryLocation(cast.GetQueryLocation());
 	expr = std::move(safe_cast);
-	preserves_cast_errors = true;
+	// the scan can evaluate the filter before its other filters, so a cast that only cannot fail on the returned
+	// rows still becomes a try cast, but has no errors to retain
+	preserves_cast_errors |= can_fail;
 }
 
 unique_ptr<Expression> RuntimeFilterCastUtil::CreateRuntimeFilterInputExpression(ClientContext &context,
@@ -130,7 +134,7 @@ unique_ptr<Expression> RuntimeFilterCastUtil::CreateRuntimeFilterInputExpression
 	preserves_cast_errors = false;
 	auto input = column.input_expression ? column.input_expression->Copy()
 	                                     : make_uniq<BoundReferenceExpression>(column.storage_type, idx_t(0));
-	PreserveRuntimeFilterCastErrors(input, preserves_cast_errors);
+	PreserveRuntimeFilterCastErrors(input, !column.value_preserving_input, preserves_cast_errors);
 	return input;
 }
 

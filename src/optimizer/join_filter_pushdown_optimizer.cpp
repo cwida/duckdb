@@ -9,6 +9,7 @@
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/scalar/struct_utils.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -26,6 +27,7 @@
 #include "duckdb/planner/operator/logical_set_operation.hpp"
 #include "duckdb/planner/operator/logical_unnest.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
+#include "duckdb/storage/statistics/numeric_stats.hpp"
 
 namespace duckdb {
 
@@ -37,7 +39,8 @@ struct FilterTarget {
 	vector<JoinFilterPushdownColumn> columns;
 };
 
-JoinFilterPushdownOptimizer::JoinFilterPushdownOptimizer(Optimizer &optimizer) : optimizer(optimizer) {
+JoinFilterPushdownOptimizer::JoinFilterPushdownOptimizer(Optimizer &optimizer, bool use_scan_statistics)
+    : optimizer(optimizer), use_scan_statistics(use_scan_statistics) {
 }
 
 static bool IsJoinFilterPushdownIntegralType(const LogicalType &type) {
@@ -709,15 +712,11 @@ bool JoinFilterPushdownOptimizer::IsFiltering(const unique_ptr<LogicalOperator> 
 	}
 }
 
-static void SimplifyJoinFilterCastChain(ClientContext &context, JoinFilterPushdownColumn &column,
-                                        ExpressionType comparison) {
-	if (comparison != ExpressionType::COMPARE_EQUAL || column.mode != JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION ||
-	    !IsJoinFilterPushdownIntegralType(column.storage_type) || !column.input_expression) {
-		return;
-	}
+//! Collect the casts of input (outermost first) when it is a chain of built-in integral casts over the scan value
+static bool GetIntegralCastChain(ClientContext &context, const Expression &input,
+                                 vector<reference<const BoundFunctionExpression>> &casts) {
 	auto &cast_functions = CastFunctionSet::Get(context);
-	optional_ptr<const Expression> current = column.input_expression.get();
-	idx_t cast_count = 0;
+	optional_ptr<const Expression> current = &input;
 	while (BoundCastExpression::IsCast(*current)) {
 		auto &cast = current->Cast<BoundFunctionExpression>();
 		const auto &source_type = BoundCastExpression::Child(cast).GetReturnType();
@@ -725,12 +724,70 @@ static void SimplifyJoinFilterCastChain(ClientContext &context, JoinFilterPushdo
 		if (!IsJoinFilterPushdownIntegralType(source_type) || !IsJoinFilterPushdownIntegralType(target_type) ||
 		    !RuntimeFilterCastUtil::IsBuiltinCast(cast) ||
 		    cast_functions.CanOverrideDefaultCast(source_type, target_type)) {
-			return;
+			return false;
 		}
-		cast_count++;
+		casts.push_back(cast);
 		current = BoundCastExpression::Child(cast);
 	}
-	if (cast_count < 2 || current->GetExpressionClass() != ExpressionClass::BOUND_REF ||
+	return current->GetExpressionClass() == ExpressionClass::BOUND_REF;
+}
+
+//! Prove from the statistics of the scanned column that every cast of the filter input succeeds and returns its
+//! input value. A built-in integral cast returns the value of every input its target type can represent, and the
+//! represented values of an integral type are a contiguous range, so the column's min/max decide it.
+static void ProveValuePreservingInput(ClientContext &context, LogicalGet &get, JoinFilterPushdownColumn &column) {
+	if (column.mode != JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION || !column.input_expression ||
+	    !IsJoinFilterPushdownIntegralType(column.storage_type)) {
+		return;
+	}
+	vector<reference<const BoundFunctionExpression>> casts;
+	if (!GetIntegralCastChain(context, *column.input_expression, casts) || casts.empty()) {
+		return;
+	}
+	// the filter values have the outermost target type and are compared in the storage type
+	auto &filter_type = column.input_expression->GetReturnType();
+	if (!Value::MinimumValue(filter_type).DefaultTryCastAs(column.storage_type, nullptr, true) ||
+	    !Value::MaximumValue(filter_type).DefaultTryCastAs(column.storage_type, nullptr, true)) {
+		return;
+	}
+	auto &column_index = column.probe_column_index.column_index;
+	auto stats = StatisticsPropagator::GetScanColumnStatistics(context, get, get.GetColumnIndex(column_index));
+	if (!stats) {
+		return;
+	}
+	// optional filters are wrapped in a function and do not narrow the statistics
+	auto filter = get.table_filters.TryGetFilterByColumnIndex(column_index);
+	if (filter) {
+		StatisticsPropagator::UpdateFilterStatistics(*stats, *filter);
+	}
+	if (!NumericStats::HasMinMax(*stats)) {
+		return;
+	}
+	auto min = NumericStats::Min(*stats);
+	auto max = NumericStats::Max(*stats);
+	for (idx_t i = casts.size(); i > 0; i--) {
+		auto &target_type = casts[i - 1].get().GetReturnType();
+		auto cast_min = min.DefaultTryCastAs(target_type, nullptr, true);
+		auto cast_max = max.DefaultTryCastAs(target_type, nullptr, true);
+		if (!cast_min || !cast_max) {
+			return;
+		}
+		min = std::move(*cast_min);
+		max = std::move(*cast_max);
+	}
+	column.value_preserving_input = true;
+}
+
+static void SimplifyJoinFilterCastChain(ClientContext &context, JoinFilterPushdownColumn &column,
+                                        ExpressionType comparison) {
+	if (comparison != ExpressionType::COMPARE_EQUAL || column.mode != JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION ||
+	    !IsJoinFilterPushdownIntegralType(column.storage_type) || !column.input_expression ||
+	    column.value_preserving_input) {
+		return;
+	}
+	auto &cast_functions = CastFunctionSet::Get(context);
+	vector<reference<const BoundFunctionExpression>> casts;
+	if (!GetIntegralCastChain(context, *column.input_expression, casts) || casts.size() < 2 ||
 	    cast_functions.CanOverrideDefaultCast(column.storage_type, column.input_expression->GetReturnType())) {
 		return;
 	}
@@ -807,6 +864,9 @@ void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &joi
 			if (comparison == ExpressionType::COMPARE_NOT_DISTINCT_FROM &&
 			    column.mode != JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION) {
 				continue;
+			}
+			if (use_scan_statistics) {
+				ProveValuePreservingInput(optimizer.GetContext(), target.get, column);
 			}
 			SimplifyJoinFilterCastChain(optimizer.GetContext(), column, comparison);
 			get_columns.push_back(std::move(column));
