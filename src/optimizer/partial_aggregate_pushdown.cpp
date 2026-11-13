@@ -92,7 +92,9 @@ static void CopyCardinality(LogicalOperator &dst, const LogicalOperator &src) {
 	dst.has_estimated_cardinality = src.has_estimated_cardinality;
 }
 
-static bool IsSupportedAggregate(const BoundAggregateExpression &expr) {
+//! "allow_exported" accepts an aggregate that already exports its state (e.g. the finest level of a ROLLUP / CUBE
+//! cascade): the one-sided pushdown moves it below the join as it is and combines the states above the join
+static bool IsSupportedAggregate(const BoundAggregateExpression &expr, bool allow_exported = false) {
 	if (expr.IsDistinct() || expr.GetFilter() || expr.GetOrderBys()) {
 		return false;
 	}
@@ -104,7 +106,7 @@ static bool IsSupportedAggregate(const BoundAggregateExpression &expr) {
 			return false;
 		}
 	}
-	if (expr.StateExportMode() != AggregateStateExportMode::NONE) {
+	if (expr.StateExportMode() != AggregateStateExportMode::NONE && !allow_exported) {
 		return false;
 	}
 	if (expr.GetChildren().size() > 1) {
@@ -306,7 +308,7 @@ static bool FindAggregateSide(const LogicalAggregate &aggr, PartialAggregatePush
 			return false;
 		}
 		auto &aggregate = expr->Cast<BoundAggregateExpression>();
-		if (!IsSupportedAggregate(aggregate)) {
+		if (!IsSupportedAggregate(aggregate, true)) {
 			return false;
 		}
 		if (aggregate.GetChildren().empty()) {
@@ -477,8 +479,12 @@ static bool BindPushdownAggregates(ClientContext &context, LogicalAggregate &agg
 	FunctionBinder function_binder(context);
 
 	for (idx_t i = 0; i < aggr.expressions.size(); i++) {
-		auto aggregate_copy = unique_ptr_cast<Expression, BoundAggregateExpression>(aggr.expressions[i]->Copy());
-		auto lower_aggregate = ExportAggregateFunction::Bind(std::move(aggregate_copy));
+		auto lower_aggregate = unique_ptr_cast<Expression, BoundAggregateExpression>(aggr.expressions[i]->Copy());
+		if (lower_aggregate->StateExportMode() == AggregateStateExportMode::NONE) {
+			// an aggregate that already exports its state is the lower aggregate as it is: exporting it a second
+			// time would nest the state type
+			lower_aggregate = ExportAggregateFunction::Bind(std::move(lower_aggregate));
+		}
 		auto lower_type = lower_aggregate->GetReturnType();
 		if (!lower_type.IsAggregateState()) {
 			return false;
@@ -1256,8 +1262,15 @@ bool PartialAggregatePushdown::TryPushdownAggregate(unique_ptr<LogicalOperator> 
 	auto final_projection =
 	    BuildFinalProjection(optimizer, *aggr, std::move(upper_aggr), replacement_map,
 	                         [&](idx_t j, unique_ptr<Expression> ref) -> unique_ptr<Expression> {
+		                         auto &original = aggr->expressions[j]->Cast<BoundAggregateExpression>();
+		                         if (original.StateExportMode() != AggregateStateExportMode::NONE) {
+			                         // the consumers of an exported aggregate expect the state: pass the
+			                         // combined state on instead of finalizing it
+			                         D_ASSERT(ref->GetReturnType() == original.GetReturnType());
+			                         return std::move(ref);
+		                         }
 		                         auto finalized = optimizer.BindScalarFunction("finalize", std::move(ref));
-		                         if (finalized->GetReturnType() != aggr->expressions[j]->GetReturnType()) {
+		                         if (finalized->GetReturnType() != original.GetReturnType()) {
 			                         return nullptr; // state does not round-trip back to the original type
 		                         }
 		                         return finalized;
