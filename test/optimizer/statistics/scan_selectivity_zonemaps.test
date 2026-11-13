@@ -1,0 +1,312 @@
+# name: test/optimizer/statistics/scan_selectivity_zonemaps.test
+# description: The estimate of a table scan is bounded by the rows of the row groups whose zonemaps can satisfy its table filters
+# group: [statistics]
+
+# The scan skips every row group whose min/max statistics cannot satisfy the pushed-down filters. The estimate of
+# the scan is bounded by the rows of the row groups that are left. A row group that a range filter cuts counts for
+# the share of its own [min, max] that the range covers, with the default selectivity as its floor, but only where
+# the column is stored in runs: the row group covers at most half of the span of the column, and the row groups
+# together cover the span at most twice (the row groups of a sorted column tile it once). Everywhere else a row
+# group that cannot be skipped counts whole, so that the previous estimate stands.
+
+statement ok
+SET threads=4;
+
+statement ok
+SET explain_output='physical_only';
+
+# i is sorted (one row group = 122,880 consecutive values), d has 100,000 rows per value in order (one or two row
+# groups per value), u is a permutation of i (every row group spans the whole range), c10 cycles, dt follows d
+statement ok
+CREATE TABLE t AS SELECT range AS i, range // 100000 AS d, (range * 7919) % 5000000 AS u, range % 10 AS c10, DATE '2000-01-01' + (range // 100000)::INTEGER AS dt FROM range(5000000);
+
+query I
+SELECT count(*) FROM duckdb_optimizers() WHERE name = 'scan_selectivity_zonemaps';
+----
+1
+
+# ---------------------------------------------------------------------------------------------------------------
+# rule off: the default selectivity of 0.2 is the floor of every range
+# ---------------------------------------------------------------------------------------------------------------
+
+statement ok
+SET disabled_optimizers = 'scan_selectivity_zonemaps';
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE i < 300000;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "1000000"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE dt BETWEEN DATE '2000-01-11' AND DATE '2000-01-15';
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "1000000"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE u < 300000;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "1000000"[\s\S]*
+
+# ---------------------------------------------------------------------------------------------------------------
+# rule on (the default)
+# ---------------------------------------------------------------------------------------------------------------
+
+statement ok
+SET disabled_optimizers = '';
+
+# a range on the sorted column: two whole row groups and the covered share of the third (exact: 300,000 rows)
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE i < 300000;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "300000"[\s\S]*
+
+# the row group that the range cuts keeps the default selectivity as its floor: two whole row groups and 0.2 of the
+# third, of which the range covers 3 % (actual 250,000)
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE i < 250000;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "270336"[\s\S]*
+
+# a range inside one row group: the floor of that row group (actual 10)
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE i < 10;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "24576"[\s\S]*
+
+# a DATE range (five days of fifty, actual 500,000)
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE dt BETWEEN DATE '2000-01-11' AND DATE '2000-01-15';
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "512000"[\s\S]*
+
+# an open DATE range (actual 500,000)
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE dt >= DATE '2000-02-15';
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "514880"[\s\S]*
+
+# a conjunction across two columns that the statistics of the table cannot refute (d = 7 lives in rows
+# 700,000..799,999, and every row group that holds it has i < 900,000): every row group is skipped (actual 0)
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE d = 7 AND i > 900000;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "1"[\s\S]*
+
+# two ranges, on the sorted column and on the permuted one: the first keeps its row groups (1,000,000 rows, exact),
+# the second counts them whole (actual 500,090)
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE i BETWEEN 1000000 AND 1999999 AND u < 2500000;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "1000000"[\s\S]*
+
+# ---------------------------------------------------------------------------------------------------------------
+# no refinement without runs: a row group that spans the range of the column counts whole
+# ---------------------------------------------------------------------------------------------------------------
+
+# a range on the permuted column: every row group intersects, the estimate is unchanged (actual 300,000)
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE u < 300000;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "1000000"[\s\S]*
+
+# a dense skewed column that is not stored in runs: 60 % of the rows are in the last 10 of 140 years and every row
+# group spans 1880..2019. The share of [min, max] that the range covers is 7 % (actual 599,604): the row groups count
+# whole and the estimate is unchanged
+statement ok
+CREATE TABLE skew AS SELECT i::INTEGER AS id, (CASE WHEN (i * 7919 + 17) % 1009 < 605 THEN 2010 + (i * 4099 + 3) % 10 ELSE 1880 + (i * 6007 + 5) % 130 END)::INTEGER AS yr FROM range(1000000) r(i);
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(id) FROM skew WHERE yr > 2009;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "200000"[\s\S]*
+
+query I
+SELECT count(*) FROM skew WHERE yr > 2009;
+----
+599604
+
+# the sorted key of the same table is refined: 30,000 rows of the first row group
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(id) FROM skew WHERE id < 30000;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "30000"[\s\S]*
+
+# a sparse column whose row groups overlap: every 1,000th row carries its own index, the rest cycle through 0..49.
+# Every row group starts at 0 and spans up to its own top index, so each of the later row groups covers less than
+# half of the range, but together they cover it 2.5 times: the column is not stored in runs and the row groups
+# count whole (actual 499,501)
+statement ok
+CREATE TABLE sparse AS SELECT CASE WHEN i % 1000 = 0 THEN i ELSE i % 50 END AS sp FROM range(500000) r(i);
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(sp) FROM sparse WHERE sp < 100;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "100000"[\s\S]*
+
+query I
+SELECT count(*) FROM sparse WHERE sp < 100;
+----
+499501
+
+# ---------------------------------------------------------------------------------------------------------------
+# a row group that holds a single value is not cut by a range: it counts whole
+# ---------------------------------------------------------------------------------------------------------------
+
+# five row groups with one DOUBLE value each (0.0 .. 4.0): three of them pass and count whole (actual 368,640)
+statement ok
+CREATE TABLE constant_groups AS SELECT (range // 122880)::DOUBLE AS x, (range // 122880)::INTEGER AS k FROM range(614400);
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(k) FROM constant_groups WHERE x < 2.5;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "122880"[\s\S]*
+
+# one of five row groups passes: the bound is its rows (actual 122,880), below the default selectivity floor of
+# the table (0.2 of 614,400 is 122,880 as well: the floor of a range, kept where no zonemap says otherwise)
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(k) FROM constant_groups WHERE k < 1;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "122880"[\s\S]*
+
+query II
+SELECT (SELECT count(*) FROM constant_groups WHERE x < 2.5), (SELECT count(*) FROM constant_groups WHERE k < 1);
+----
+368640	122880
+
+# ---------------------------------------------------------------------------------------------------------------
+# results never depend on the rule
+# ---------------------------------------------------------------------------------------------------------------
+
+foreach disabled scan_selectivity_zonemaps extension
+
+statement ok
+SET disabled_optimizers = '{disabled}';
+
+query IIIIII
+SELECT (SELECT count(*) FROM t WHERE i < 300000), (SELECT count(*) FROM t WHERE i < 250000), (SELECT count(*) FROM t WHERE d = 7 AND i > 900000), (SELECT count(*) FROM t WHERE u < 300000), (SELECT count(*) FROM t WHERE i BETWEEN 1000000 AND 1999999 AND u < 2500000), (SELECT count(*) FROM t WHERE dt BETWEEN DATE '2000-01-11' AND DATE '2000-01-15');
+----
+300000	250000	0	300000	500090	500000
+
+endloop
+
+statement ok
+SET disabled_optimizers = '';
+
+# ---------------------------------------------------------------------------------------------------------------
+# the row groups are counted with the rows that the transaction can see
+# ---------------------------------------------------------------------------------------------------------------
+
+# rows that the transaction has inserted are counted
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO t SELECT range + 5000000, 50, 0, 0, DATE '2000-01-01' FROM range(200000);
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE i >= 5000000;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "200000"[\s\S]*
+
+query I
+SELECT count(*) FROM t WHERE i >= 5000000;
+----
+200000
+
+statement ok
+ROLLBACK;
+
+# an update widens the zonemap of its row group at once, also before it is committed: the last row group (84,800
+# rows) now starts at 10, cannot be skipped and counts whole next to the floor of the first one (actual 101)
+statement ok
+BEGIN;
+
+statement ok
+UPDATE t SET i = 10 WHERE i = 4999999;
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE i < 100;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "109376"[\s\S]*
+
+query I
+SELECT count(*) FROM t WHERE i < 100;
+----
+101
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM t WHERE i < 100;
+----
+100
+
+# rows that the transaction has deleted are not counted; after a rollback they are counted again. The last
+# 699,200 rows are exactly the row groups from the 36th on
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM t WHERE i >= 4300800;
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE i >= 4300800;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "1"[\s\S]*
+
+query I
+SELECT count(*) FROM t WHERE i >= 4300800;
+----
+0
+
+statement ok
+ROLLBACK;
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE i >= 4300800;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "699200"[\s\S]*
+
+query I
+SELECT count(*) FROM t WHERE i >= 4300800;
+----
+699200
+
+# a transaction that started before a delete of another connection was committed still sees the rows, and
+# its estimate still counts them
+statement ok con1
+BEGIN;
+
+query I con1
+SELECT count(*) FROM t WHERE i >= 4300800;
+----
+699200
+
+statement ok con2
+DELETE FROM t WHERE i >= 4300800;
+
+query II con1
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE i >= 4300800;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "699200"[\s\S]*
+
+query I con1
+SELECT count(*) FROM t WHERE i >= 4300800;
+----
+699200
+
+statement ok con1
+COMMIT;
+
+# once the delete is visible the row groups are empty for the transaction (actual 0). After a restart the deletes
+# of a row group are not loaded until a scan needs them: such a row group is counted with all of its rows
+query II con1
+EXPLAIN (FORMAT JSON) SELECT sum(c10) FROM t WHERE i >= 4300800;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "(1|699200)"[\s\S]*
+
+query I con1
+SELECT count(*) FROM t WHERE i >= 4300800;
+----
+0

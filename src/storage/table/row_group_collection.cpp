@@ -112,6 +112,16 @@ void RowGroupSegmentTree::Initialize(PersistentTableData &data, optional_ptr<vec
 	root_pointer = data.block_pointer;
 }
 
+idx_t RowGroupSegmentTree::GetRowGroupCountWithoutLoading() const {
+	auto l = Lock();
+	const auto loaded = GetLoadedSegmentCount(l);
+	if (finished_loading) {
+		return loaded;
+	}
+	// the row groups that are still to be read from the table data
+	return loaded + (max_row_group - current_row_group);
+}
+
 optional<LoadedSegment<RowGroup>> RowGroupSegmentTree::LoadSegment() const {
 	if (current_row_group >= max_row_group) {
 		reader.reset();
@@ -165,6 +175,11 @@ idx_t RowGroupCollection::GetNextRowId() const {
 idx_t RowGroupCollection::GetRowGroupCount() const {
 	auto row_groups = GetRowGroups();
 	return row_groups->GetSegmentCount();
+}
+
+idx_t RowGroupCollection::GetRowGroupCountWithoutLoading() const {
+	auto row_groups = GetRowGroups();
+	return row_groups->GetRowGroupCountWithoutLoading();
 }
 
 const vector<LogicalType> &RowGroupCollection::GetTypes() const {

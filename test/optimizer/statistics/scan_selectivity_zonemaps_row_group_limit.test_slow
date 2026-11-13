@@ -1,0 +1,107 @@
+# name: test/optimizer/statistics/scan_selectivity_zonemaps_row_group_limit.test_slow
+# description: The zonemap bound of a scan estimate reads at most 16,384 row groups; a table with more row groups keeps its estimate
+# group: [statistics]
+
+statement ok
+SET explain_output='physical_only';
+
+statement ok
+ATTACH '{TEST_DIR}/scan_selectivity_zonemaps_row_group_limit.db' AS rg (ROW_GROUP_SIZE 2048);
+
+# 16,000 row groups of 2,048 rows: below the limit, every row group is checked (actual 3,276,800 and 2,000,000 rows)
+statement ok
+CREATE TABLE rg.below AS SELECT range AS i, range // 1000000 AS d FROM range(32768000);
+
+query I
+SELECT count(DISTINCT row_group_id) FROM pragma_storage_info('rg.below');
+----
+16000
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(d) FROM rg.below WHERE i < 3276800;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "3276800"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(i) FROM rg.below WHERE d >= 3 AND d <= 4;
+----
+physical_plan	<REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "200[0-9]{4}"[\s\S]*
+
+# 16,386 row groups: above the limit. Every other row group matches the filter (16,779,264 rows): checking only some
+# of the row groups could miss all of them, so the table is not bounded at all and the estimate is the one without
+# the rule
+statement ok
+CREATE TABLE rg.above AS SELECT range AS id, (range // 2048) % 2 AS bucket FROM range(33558528);
+
+query I
+SELECT count(DISTINCT row_group_id) FROM pragma_storage_info('rg.above');
+----
+16386
+
+query II nosort above_alternating
+EXPLAIN SELECT sum(id) FROM rg.above WHERE bucket > 0;
+----
+
+query II nosort above_range
+EXPLAIN SELECT sum(bucket) FROM rg.above WHERE id < 2048;
+----
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(id) FROM rg.above WHERE bucket > 0;
+----
+physical_plan	<!REGEX>:[\s\S]*"SEQ_SCAN"[^}]*"Estimated Cardinality": "1"[\s\S]*
+
+statement ok
+SET disabled_optimizers = 'scan_selectivity_zonemaps';
+
+query II nosort above_alternating
+EXPLAIN SELECT sum(id) FROM rg.above WHERE bucket > 0;
+----
+
+query II nosort above_range
+EXPLAIN SELECT sum(bucket) FROM rg.above WHERE id < 2048;
+----
+
+# the row groups that the transaction has added count towards the limit: 16,386 transaction-local row groups
+statement ok
+SET disabled_optimizers = '';
+
+statement ok
+CREATE TABLE rg.local_rows (i BIGINT);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO rg.local_rows SELECT range FROM range(33558528);
+
+query II nosort local_range
+EXPLAIN SELECT sum(i) FROM rg.local_rows WHERE i < 2048;
+----
+
+statement ok
+SET disabled_optimizers = 'scan_selectivity_zonemaps';
+
+query II nosort local_range
+EXPLAIN SELECT sum(i) FROM rg.local_rows WHERE i < 2048;
+----
+
+query I
+SELECT count(*) FROM rg.local_rows WHERE i < 2048;
+----
+2048
+
+statement ok
+ROLLBACK;
+
+foreach disabled scan_selectivity_zonemaps extension
+
+statement ok
+SET disabled_optimizers = '{disabled}';
+
+query III
+SELECT count(*), sum(id), (SELECT count(*) FROM rg.below WHERE i < 3276800) FROM rg.above WHERE bucket > 0;
+----
+16779264	281560873958400	3276800
+
+endloop

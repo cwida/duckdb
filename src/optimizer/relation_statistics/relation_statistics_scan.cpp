@@ -1,10 +1,13 @@
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 
+#include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/common/types/hugeint.hpp"
+#include "duckdb/function/partition_stats.hpp"
 #include "duckdb/function/table/table_scan.hpp"
+#include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
@@ -17,6 +20,7 @@
 #include "duckdb/planner/operator/logical_expression_get.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 
 namespace duckdb {
@@ -372,6 +376,350 @@ static void ApplyDirectFilterDomain(RelationColumnStats &column, const Expressio
 	                                 expression, binding, column.total_domain.distinct_count));
 }
 
+//===--------------------------------------------------------------------===//
+// Zonemap bound
+//===--------------------------------------------------------------------===//
+//! The [min, max] of a numeric column, over the table or over one row group
+struct ZonemapSpan {
+	double min;
+	double max;
+	//! Integral types count values, floating point types measure lengths
+	bool integral;
+
+	static bool TryGetNumber(const Value &value, double &result, bool &integral) {
+		if (value.IsNull()) {
+			return false;
+		}
+		integral = true;
+		switch (value.type().InternalType()) {
+		case PhysicalType::INT8:
+			result = static_cast<double>(value.GetValueUnsafe<int8_t>());
+			return true;
+		case PhysicalType::INT16:
+			result = static_cast<double>(value.GetValueUnsafe<int16_t>());
+			return true;
+		case PhysicalType::INT32:
+			result = static_cast<double>(value.GetValueUnsafe<int32_t>());
+			return true;
+		case PhysicalType::INT64:
+			result = static_cast<double>(value.GetValueUnsafe<int64_t>());
+			return true;
+		case PhysicalType::UINT8:
+			result = static_cast<double>(value.GetValueUnsafe<uint8_t>());
+			return true;
+		case PhysicalType::UINT16:
+			result = static_cast<double>(value.GetValueUnsafe<uint16_t>());
+			return true;
+		case PhysicalType::UINT32:
+			result = static_cast<double>(value.GetValueUnsafe<uint32_t>());
+			return true;
+		case PhysicalType::UINT64:
+			result = static_cast<double>(value.GetValueUnsafe<uint64_t>());
+			return true;
+		case PhysicalType::INT128:
+			result = Hugeint::Cast<double>(value.GetValueUnsafe<hugeint_t>());
+			return true;
+		case PhysicalType::FLOAT:
+			integral = false;
+			result = static_cast<double>(value.GetValueUnsafe<float>());
+			return Value::IsFinite(result);
+		case PhysicalType::DOUBLE:
+			integral = false;
+			result = value.GetValueUnsafe<double>();
+			return Value::IsFinite(result);
+		default:
+			return false;
+		}
+	}
+
+	static optional<ZonemapSpan> FromStatistics(const BaseStatistics &stats) {
+		if (stats.GetStatsType() != StatisticsType::NUMERIC_STATS || !NumericStats::HasMinMax(stats)) {
+			return {};
+		}
+		ZonemapSpan result;
+		bool max_integral;
+		if (!TryGetNumber(NumericStats::Min(stats), result.min, result.integral) ||
+		    !TryGetNumber(NumericStats::Max(stats), result.max, max_integral) || result.min > result.max) {
+			return {};
+		}
+		return result;
+	}
+
+	double Width() const {
+		return max - min;
+	}
+	//! A row group is clustered on a column if it covers at most half of the span of the column over the table:
+	//! two row groups that each cover more than half overlap
+	bool IsClusteredIn(const ZonemapSpan &table) const {
+		return Width() * 2 <= table.Width();
+	}
+};
+
+//! The comparisons of a filter that only consists of range comparisons between the column and constants
+struct ZonemapRangeFilter {
+	struct Bound {
+		ExpressionType comparison;
+		double value;
+	};
+	vector<Bound> bounds;
+
+	static bool IsFilterColumn(const Expression &expr) {
+		return expr.GetExpressionClass() == ExpressionClass::BOUND_REF ||
+		       expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
+	}
+
+	bool AddComparison(const Expression &expr, const LogicalType &column_type) {
+		if (!BoundComparisonExpression::IsComparison(expr)) {
+			return false;
+		}
+		auto &children = expr.Cast<BoundFunctionExpression>().GetChildren();
+		auto comparison = expr.GetExpressionType();
+		optional_ptr<const Expression> constant = *children[1];
+		if (!IsFilterColumn(*children[0])) {
+			if (!IsFilterColumn(*children[1])) {
+				return false;
+			}
+			constant = *children[0];
+			comparison = FlipComparisonExpression(comparison);
+		}
+		switch (comparison) {
+		case ExpressionType::COMPARE_LESSTHAN:
+		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+		case ExpressionType::COMPARE_GREATERTHAN:
+		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+			break;
+		default:
+			return false;
+		}
+		if (constant->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+			return false;
+		}
+		auto &value = constant->Cast<BoundConstantExpression>().GetValue();
+		Bound bound;
+		bound.comparison = comparison;
+		bool integral;
+		if (!value.type().EqualsIncludingCollation(column_type) ||
+		    !ZonemapSpan::TryGetNumber(value, bound.value, integral)) {
+			return false;
+		}
+		bounds.push_back(bound);
+		return true;
+	}
+
+	//! Reads a filter that is a range comparison, or a conjunction of range comparisons
+	static optional<ZonemapRangeFilter> FromExpression(const Expression &expr, const LogicalType &column_type) {
+		ZonemapRangeFilter result;
+		if (expr.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
+			for (auto &child : expr.Cast<BoundConjunctionExpression>().GetChildren()) {
+				if (!result.AddComparison(*child, column_type)) {
+					return {};
+				}
+			}
+		} else if (!result.AddComparison(expr, column_type)) {
+			return {};
+		}
+		if (result.bounds.empty()) {
+			return {};
+		}
+		return result;
+	}
+
+	//! The share of [min, max] of a row group that the range covers, assuming the values are spread evenly
+	double CoveredShare(const ZonemapSpan &span) const {
+		auto low = span.min;
+		auto high = span.max;
+		for (auto &bound : bounds) {
+			switch (bound.comparison) {
+			case ExpressionType::COMPARE_LESSTHAN:
+				high = MinValue(high, span.integral ? bound.value - 1 : bound.value);
+				break;
+			case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+				high = MinValue(high, bound.value);
+				break;
+			case ExpressionType::COMPARE_GREATERTHAN:
+				low = MaxValue(low, span.integral ? bound.value + 1 : bound.value);
+				break;
+			default:
+				low = MaxValue(low, bound.value);
+				break;
+			}
+		}
+		if (high < low) {
+			return 0;
+		}
+		const double unit = span.integral ? 1 : 0;
+		return MinValue(1.0, (high - low + unit) / (span.Width() + unit));
+	}
+};
+
+struct ZonemapFilter {
+	ZonemapFilter(const Expression &expr, const LogicalType &column_type, StorageIndex storage_index_p,
+	              optional<ZonemapSpan> table_span_p, optional<ZonemapRangeFilter> range_p)
+	    : expr(expr), column_type(column_type), storage_index(std::move(storage_index_p)), table_span(table_span_p),
+	      range(std::move(range_p)) {
+	}
+
+	const Expression &expr;
+	const LogicalType &column_type;
+	StorageIndex storage_index;
+	//! The [min, max] of the column over the table
+	optional<ZonemapSpan> table_span;
+	//! Set if the filter is a range whose covered share of a clustered row group can be interpolated
+	optional<ZonemapRangeFilter> range;
+	//! Whether a row group was counted partially for this filter
+	bool refined = false;
+};
+
+//! An upper bound on the rows that a scan of a DuckDB table returns: the rows of the row groups whose zonemaps
+//! can satisfy every table filter of the scan. A row group that a range filter cuts counts for the share of its
+//! own [min, max] that the range covers, but only where the column is stored in runs, which the zonemaps show: the
+//! row group covers at most half of the span of the column, and the row groups together cover the span at most
+//! ZONEMAP_MAX_SPAN_COVERAGE times. Everywhere else a row group that cannot be pruned counts whole.
+//! Returns an invalid index if the bound is not below the estimate that the scan already has.
+static optional_idx ZonemapFilterBound(LogicalGet &get, ClientContext &context,
+                                       const vector<BaseStatistics> &scan_statistics, idx_t estimate) {
+	//! The work per plan is limited to the row groups of a table of this many row groups (2 billion rows at the
+	//! default row group size). A larger table keeps its estimate: checking only some of its row groups would not
+	//! give a bound, as the row groups that are not checked can hold all of the matching rows
+	static constexpr idx_t ZONEMAP_MAX_ROW_GROUPS = 16384;
+	//! Row groups of a sorted column tile its span (a coverage of 1, slightly more with shared boundaries). At 2, a
+	//! value lies in two row groups on average: the row groups overlap, and [min, max] of a row group says nothing
+	//! about where its rows lie
+	static constexpr double ZONEMAP_MAX_SPAN_COVERAGE = 2.0;
+
+	auto table = get.GetTable();
+	if (!table || !table->IsDuckTable() || !get.function.get_partition_stats) {
+		return optional_idx();
+	}
+	vector<ZonemapFilter> filters;
+	for (auto &entry : get.table_filters) {
+		if (ExpressionFilter::IsOptionalFilter(entry.Filter())) {
+			// optional filters do not restrict the result of the scan
+			continue;
+		}
+		auto &filter = ExpressionFilter::GetExpressionFilter(entry.Filter(), "ZonemapFilterBound");
+		if (filter.expr->HasParameter()) {
+			continue;
+		}
+		const auto column_idx = entry.GetIndex().GetIndex();
+		if (column_idx >= get.GetColumnIds().size() || column_idx >= scan_statistics.size()) {
+			continue;
+		}
+		StorageIndex storage_index;
+		if (!get.TryGetStorageIndex(get.GetColumnIds()[column_idx], storage_index)) {
+			continue;
+		}
+		auto &column_statistics = scan_statistics[column_idx];
+		auto table_span = ZonemapSpan::FromStatistics(column_statistics);
+		optional<ZonemapRangeFilter> range;
+		if (table_span && table_span->Width() > 0) {
+			range = ZonemapRangeFilter::FromExpression(*filter.expr, column_statistics.GetType());
+		}
+		filters.emplace_back(*filter.expr, column_statistics.GetType(), std::move(storage_index), table_span,
+		                     std::move(range));
+	}
+	if (filters.empty()) {
+		return optional_idx();
+	}
+	// the limit is checked before any row group is loaded or collected, and covers the row groups of the table
+	// and the ones that the transaction has added
+	auto &storage = table->Cast<DuckTableEntry>().GetStorage();
+	if (storage.GetRowGroupCountWithoutLoading(context) > ZONEMAP_MAX_ROW_GROUPS) {
+		return optional_idx();
+	}
+
+	GetPartitionStatsInput input(get.function, get.bind_data.get());
+	auto partitions = get.function.get_partition_stats(context, input);
+	if (partitions.empty()) {
+		return optional_idx();
+	}
+	if (partitions.size() > ZONEMAP_MAX_ROW_GROUPS) {
+		return optional_idx();
+	}
+	// rows of the row groups that no filter prunes, and the same rows with the row groups that a range cuts
+	// counted for their covered share
+	idx_t matching_rows = 0;
+	double refined_rows = 0;
+	for (auto &partition : partitions) {
+		bool pruned = false;
+		double share = 1;
+		for (auto &filter : filters) {
+			if (!partition.partition_row_group) {
+				break;
+			}
+			auto stats = partition.partition_row_group->GetColumnStatistics(filter.storage_index);
+			if (!stats || !stats->GetType().EqualsIncludingCollation(filter.column_type)) {
+				// without statistics the row group counts whole for this filter
+				continue;
+			}
+			// the check that the scan uses to skip the row group
+			auto pruning = ExpressionFilter::CheckExpressionStatistics(context, filter.expr, *stats);
+			if (pruning == FilterPropagateResult::FILTER_ALWAYS_FALSE ||
+			    pruning == FilterPropagateResult::FILTER_FALSE_OR_NULL) {
+				pruned = true;
+				break;
+			}
+			if (pruning != FilterPropagateResult::NO_PRUNING_POSSIBLE || !filter.range || !filter.table_span) {
+				continue;
+			}
+			// the range cuts the row group. A row group that holds a single value is not cut, and a row group
+			// that is not clustered on the column says nothing that the statistics of the table do not say
+			auto row_group_span = ZonemapSpan::FromStatistics(*stats);
+			if (!row_group_span || row_group_span->Width() <= 0 || !row_group_span->IsClusteredIn(*filter.table_span)) {
+				continue;
+			}
+			// the rows inside a row group are not counted by any zonemap: the interpolated share keeps the
+			// default selectivity as its floor, like the estimate of a range over the table, and several filters
+			// combine like their estimates over the table do (the smallest one)
+			const auto covered =
+			    MaxValue(RelationStatisticsHelper::DEFAULT_SELECTIVITY, filter.range->CoveredShare(*row_group_span));
+			if (covered < share) {
+				filter.refined = true;
+				share = covered;
+			}
+		}
+		if (pruned) {
+			continue;
+		}
+		matching_rows += partition.count;
+		refined_rows += static_cast<double>(partition.count) * share;
+		if (refined_rows >= static_cast<double>(estimate)) {
+			// the bound only grows from here on: it cannot improve on the estimate, so the remaining row groups
+			// need not be read
+			return optional_idx();
+		}
+	}
+	// the interpolation is only kept if every column it was applied to is stored in runs: the spans of all of its
+	// row groups, also of the ones that another filter skips, cover the span of the column about once
+	bool in_runs = true;
+	for (auto &filter : filters) {
+		if (!filter.refined || !filter.table_span) {
+			continue;
+		}
+		const auto table_width = filter.table_span->Width();
+		double span_coverage = 0;
+		for (auto &partition : partitions) {
+			if (!partition.partition_row_group) {
+				continue;
+			}
+			auto stats = partition.partition_row_group->GetColumnStatistics(filter.storage_index);
+			auto row_group_span = stats ? ZonemapSpan::FromStatistics(*stats) : optional<ZonemapSpan>();
+			if (row_group_span) {
+				span_coverage += MinValue(1.0, row_group_span->Width() / table_width);
+			}
+		}
+		if (span_coverage > ZONEMAP_MAX_SPAN_COVERAGE) {
+			in_runs = false;
+			break;
+		}
+	}
+	auto bound = static_cast<double>(matching_rows);
+	if (in_runs) {
+		bound = MinValue(bound, std::ceil(refined_rows));
+	}
+	return MaxValue<idx_t>(1, RelationStatisticsHelper::CardinalityFromDouble(bound));
+}
+
 unique_ptr<BaseStatistics> RelationStatisticsHelper::GetColumnStatistics(LogicalGet &get, ClientContext &context,
                                                                          const ColumnIndex &column_id) {
 	if (!get.bind_data || (!get.function.statistics && !get.function.statistics_extended)) {
@@ -431,6 +779,21 @@ RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientC
 			auto range_cardinality =
 			    *fraction == 0 ? 0 : FilterFraction(base_table_cardinality, MaxValue(DEFAULT_SELECTIVITY, *fraction));
 			estimate.Combine({range_cardinality, true});
+		}
+	}
+	if (get.table_filters.HasFilters() &&
+	    !Optimizer::OptimizerDisabled(context, OptimizerType::SCAN_SELECTIVITY_ZONEMAPS)) {
+		// the scan skips the row groups whose zonemaps cannot satisfy the filters: their rows bound the estimate
+		auto current_estimate = estimate.cardinality;
+		if (!estimate.supported) {
+			current_estimate = MinValue(current_estimate, FilterFraction(base_table_cardinality, DEFAULT_SELECTIVITY));
+		}
+		// an estimate of at most one row cannot be improved
+		if (current_estimate > 1) {
+			auto zonemap_bound = ZonemapFilterBound(get, context, scan_statistics, current_estimate);
+			if (zonemap_bound.IsValid()) {
+				estimate.Combine({zonemap_bound.GetIndex(), true});
+			}
 		}
 	}
 	ApplyFilterEstimate(result, estimate);

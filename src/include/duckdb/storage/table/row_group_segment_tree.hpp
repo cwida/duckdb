@@ -26,6 +26,8 @@ public:
 	MetaBlockPointer GetRootPointer() const {
 		return root_pointer;
 	}
+	//! The number of row groups, including the ones that are not loaded yet, without loading them
+	idx_t GetRowGroupCountWithoutLoading() const;
 
 protected:
 	optional<LoadedSegment<RowGroup>> LoadSegment() const override;
