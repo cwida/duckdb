@@ -1,3 +1,5 @@
+#include "duckdb/common/types/column/column_data_collection_segment.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
@@ -139,6 +141,128 @@ struct ListConcatInputData {
 	VectorIterator<list_entry_t> list_data;
 };
 
+//! The extra elements a shared-prefix extension appends, gathered per concat input
+struct ListConcatExtensionSource {
+	UnifiedVectorFormat child_data;
+	list_entry_t entry;
+};
+
+//! Append a single-row concat result at the end of a shared list child buffer instead of copying the prefix.
+//! The claimed region lies beyond every published list entry, so rows that reference the same buffer keep
+//! reading their own unchanged prefixes. Returns false if the inputs do not fit the in-place append shape.
+bool TryExtendSharedListChild(ClientContext &context, const vector<ListConcatInputData> &input_data, Vector &result,
+                              idx_t count) {
+	if (count != 1 || input_data.size() < 2) {
+		return false;
+	}
+	// the first input must be a view of a shared buffer and every input must be a valid list
+	auto &prefix = input_data[0];
+	auto prefix_val = prefix.list_data[0];
+	if (!prefix_val.IsValid()) {
+		return false;
+	}
+	auto &buffer_ref = prefix.child_vec.GetBufferRef();
+	if (prefix.child_vec.GetVectorType() != VectorType::FLAT_VECTOR || !buffer_ref ||
+	    buffer_ref->GetBufferType() != VectorBufferType::SHARED_DATA_BUFFER ||
+	    !buffer_ref->Cast<ColumnDataListChildBuffer>().IsUnchangedView()) {
+		return false;
+	}
+	const auto internal_type = prefix.child_vec.GetType().InternalType();
+	D_ASSERT(TypeIsConstantSize(internal_type));
+	const auto type_size = GetTypeIdSize(internal_type);
+	const auto prefix_entry = prefix_val.GetValue();
+
+	// gather the extra elements and reject inputs the type-erased element copy below cannot handle
+	vector<ListConcatExtensionSource> extras;
+	idx_t extra_count = 0;
+	bool extras_have_null = false;
+	for (idx_t input_idx = 1; input_idx < input_data.size(); input_idx++) {
+		auto &input = input_data[input_idx];
+		auto entry_val = input.list_data[0];
+		if (!entry_val.IsValid()) {
+			return false;
+		}
+		ListConcatExtensionSource source;
+		source.entry = entry_val.GetValue();
+		input.child_vec.ToUnifiedFormat(source.child_data);
+		if (!source.child_data.data) {
+			return false;
+		}
+		for (idx_t i = 0; i < source.entry.length; i++) {
+			auto source_idx = source.child_data.sel->get_index(source.entry.offset + i);
+			if (!source.child_data.validity.RowIsValid(source_idx)) {
+				extras_have_null = true;
+			}
+		}
+		extra_count += source.entry.length;
+		extras.push_back(std::move(source));
+	}
+
+	auto owner = buffer_ref->Cast<ColumnDataListChildBuffer>().GetOwner();
+	const auto prefix_end = prefix_entry.offset + prefix_entry.length;
+
+	// claim the region right after the prefix, or grow into fresh shared storage with room to append.
+	// The validity of shared storage is read by every view of a published prefix, so the in-place path never
+	// writes validity: extras with NULLs always take the copying path
+	shared_ptr<ColumnDataSharedListChild> target_owner;
+	BufferHandle target_pin;
+	idx_t write_offset;
+	idx_t result_offset;
+	const auto owner_has_mask = owner->GetValidity().CanHaveNull();
+	if (!extras_have_null && owner->TryClaimExtension(prefix_end, extra_count)) {
+		target_pin = owner->Pin();
+		target_owner = std::move(owner);
+		write_offset = prefix_end;
+		result_offset = prefix_entry.offset;
+	} else {
+		const auto required = prefix_entry.length + extra_count;
+		const auto new_capacity = NextPowerOfTwo(required + 1);
+		auto &buffer_manager = BufferManager::GetBufferManager(context);
+		target_pin = buffer_manager.Allocate(MemoryTag::COLUMN_DATA, new_capacity * type_size, false);
+		memcpy(target_pin.GetDataMutable(), buffer_ref->GetData() + prefix_entry.offset * type_size,
+		       prefix_entry.length * type_size);
+		auto new_owner = make_shared_ptr<ColumnDataSharedListChild>(buffer_manager, target_pin.GetBlockHandle(),
+		                                                            new_capacity, type_size, prefix_entry.length);
+		if (owner_has_mask || extras_have_null) {
+			auto &new_validity = new_owner->GetValidity();
+			new_validity.Initialize(new_capacity);
+			if (owner_has_mask) {
+				new_validity.SliceInPlace(owner->GetValidity(), 0, prefix_entry.offset, prefix_entry.length);
+			}
+		}
+		auto claimed = new_owner->TryClaimExtension(prefix_entry.length, extra_count);
+		D_ASSERT(claimed);
+		(void)claimed;
+		target_owner = std::move(new_owner);
+		write_offset = prefix_entry.length;
+		result_offset = 0;
+	}
+
+	// write the extra elements into the claimed region (validity only on storage nobody else references yet)
+	auto target_data = target_pin.GetDataMutable();
+	auto &target_validity = target_owner->GetValidity();
+	idx_t written = write_offset;
+	for (auto &source : extras) {
+		for (idx_t i = 0; i < source.entry.length; i++) {
+			auto source_idx = source.child_data.sel->get_index(source.entry.offset + i);
+			memcpy(target_data + written * type_size, source.child_data.data + source_idx * type_size, type_size);
+			if (!source.child_data.validity.RowIsValid(source_idx)) {
+				target_validity.SetInvalid(written);
+			}
+			written++;
+		}
+	}
+
+	// publish the result as a view of the target storage
+	const auto result_length = prefix_entry.length + extra_count;
+	auto writer = FlatVector::Writer<list_entry_t>(result, count);
+	writer.WriteValue(list_entry_t {result_offset, result_length});
+	auto &result_child = ListVector::GetChildMutable(result);
+	result_child.SetBuffer(make_buffer<ColumnDataListChildBuffer>(std::move(target_owner), std::move(target_pin),
+	                                                              count_t(result_offset + result_length)));
+	return true;
+}
+
 void ListConcatFunction(DataChunk &args, ExpressionState &state, Vector &result, bool is_operator) {
 	auto count = args.size();
 
@@ -149,6 +273,21 @@ void ListConcatFunction(DataChunk &args, ExpressionState &state, Vector &result,
 			continue;
 		}
 		input_data.emplace_back(input, count);
+	}
+
+	if (TryExtendSharedListChild(state.GetContext(), input_data, result, count)) {
+		return;
+	}
+
+	// never write into a shared child buffer a previous fast-path result left in the reused result vector
+	{
+		auto &result_child = ListVector::GetChildMutable(result);
+		auto &child_buffer_ref = result_child.GetBufferRef();
+		if (child_buffer_ref && child_buffer_ref->GetBufferType() == VectorBufferType::SHARED_DATA_BUFFER) {
+			const auto child_type_size = GetTypeIdSize(result_child.GetType().InternalType());
+			result_child.SetBuffer(
+			    make_buffer<StandardVectorBuffer>(capacity_t(STANDARD_VECTOR_SIZE), child_type_size));
+		}
 	}
 
 	// the || operator yields NULL whenever any input is NULL, while list_concat skips NULLs

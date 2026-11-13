@@ -75,6 +75,10 @@ void ColumnDataConsumer::FinishChunk(ColumnDataConsumerScanState &state) {
 		chunks_in_progress.erase(state.chunk_index);
 		chunk_delete_index = delete_index_end;
 	}
+	// a finished chunk is never read again, its shared list children need not outlive it. Unlike blocks,
+	// which neighboring chunks share, the references belong to this chunk alone
+	auto &chunk_ref = chunk_references[state.chunk_index];
+	chunk_ref.segment->ReleaseSharedListChildren(chunk_ref.chunk_index_in_segment);
 	ConsumeChunks(delete_index_start, delete_index_end);
 }
 void ColumnDataConsumer::ConsumeChunks(idx_t delete_index_start, idx_t delete_index_end) {

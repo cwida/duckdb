@@ -1,0 +1,179 @@
+# name: test/sql/cte/recursive_cte_growing_payload.test
+# description: Recursive CTEs growing a large list payload by appending per iteration
+# group: [cte]
+
+# A list payload grown by one element per iteration. The append extends the shared child
+# buffer in place beyond every published row, so every emitted row keeps its own version.
+query I
+WITH RECURSIVE r(i, acc) AS (
+	SELECT 0::BIGINT, (SELECT list(x) FROM range(1, 3001) t(x))
+	UNION ALL
+	SELECT i + 1, list_append(acc, -(i + 1)) FROM r WHERE i < 100
+)
+SELECT bool_and(
+	len(acc) = 3000 + i
+	AND list_sum(acc) = 4501500 - i * (i + 1) / 2
+	AND acc[1] = 1 AND acc[3000] = 3000
+	AND (i = 0 OR acc[3000 + i] = -i))
+FROM r;
+----
+true
+
+# Growth across capacity boundaries: starting just below a power of two forces the shared
+# buffer to be reallocated mid-loop while earlier rows keep referencing the old buffer.
+query I
+WITH RECURSIVE r(i, acc) AS (
+	SELECT 0::BIGINT, (SELECT list(x) FROM range(1, 4091) t(x))
+	UNION ALL
+	SELECT i + 1, list_append(acc, 10000 + i) FROM r WHERE i < 20
+)
+SELECT bool_and(
+	len(acc) = 4090 + i
+	AND list_sum(acc) = 8366095 + i * 10000 + i * (i - 1) / 2
+	AND (i = 0 OR acc[-1] = 10000 + i - 1))
+FROM r;
+----
+true
+
+# Two appends on the same prefix in one iteration: only one can extend in place,
+# the other must grow into its own buffer. Both results stay independent.
+query I
+WITH RECURSIVE r(i, a, b) AS (
+	SELECT 0::BIGINT, (SELECT list(x) FROM range(1, 2501) t(x)), (SELECT list(x) FROM range(1, 2501) t(x))
+	UNION ALL
+	SELECT i + 1, list_append(a, -(i + 1)), list_append(a, -100 * (i + 1)) FROM r WHERE i < 20
+)
+SELECT bool_and(
+	len(a) = 2500 + i AND len(b) = 2500 + i
+	AND (i = 0 OR (a[-1] = -i AND b[-1] = -100 * i)))
+FROM r;
+----
+true
+
+# Appending NULL elements: extras with NULLs never use the in-place path (other owners read the
+# shared validity words) and grow into a fresh buffer carrying a mask.
+query I
+WITH RECURSIVE r(i, acc) AS (
+	SELECT 0::BIGINT, (SELECT list(x) FROM range(1, 2501) t(x))
+	UNION ALL
+	SELECT i + 1, list_append(acc, CASE WHEN i % 2 = 0 THEN NULL ELSE i END) FROM r WHERE i < 21
+)
+SELECT bool_and(
+	len(acc) = 2500 + i
+	AND list_count(acc) = 2500 + i // 2
+	AND (i < 2 OR (acc[-1] IS NULL) = (i % 2 = 1)))
+FROM r;
+----
+true
+
+# NULL entries already inside the prefix: the shared buffer carries a validity mask
+# and NULL-free in-place appends must preserve it for every row version.
+query I
+WITH RECURSIVE r(i, acc) AS (
+	SELECT 0::BIGINT, (SELECT list(CASE WHEN x % 100 = 0 THEN NULL ELSE x END) FROM range(1, 2501) t(x))
+	UNION ALL
+	SELECT i + 1, list_append(acc, 50000 + i) FROM r WHERE i < 30
+)
+SELECT bool_and(
+	len(acc) = 2500 + i
+	AND list_count(acc) = 2475 + i
+	AND acc[100] IS NULL AND acc[2400] IS NULL AND acc[99] = 99
+	AND (i = 0 OR acc[-1] = 50000 + i - 1))
+FROM r;
+----
+true
+
+# Multi-element growth through list_concat and the || operator
+query I
+WITH RECURSIVE r(i, acc) AS (
+	SELECT 0::BIGINT, (SELECT list(x) FROM range(1, 2101) t(x))
+	UNION ALL
+	SELECT i + 1, acc || [-(i + 1), -2 * (i + 1)] FROM r WHERE i < 20
+)
+SELECT bool_and(
+	len(acc) = 2100 + 2 * i
+	AND (i = 0 OR (acc[-2] = -i AND acc[-1] = -2 * i)))
+FROM r;
+----
+true
+
+# Three-input list_concat growing per iteration
+query I
+WITH RECURSIVE r(i, acc) AS (
+	SELECT 0::BIGINT, (SELECT list(x) FROM range(1, 2101) t(x))
+	UNION ALL
+	SELECT i + 1, list_concat(acc, [-(i + 1)], [-10 * (i + 1)]) FROM r WHERE i < 20
+)
+SELECT bool_and(
+	len(acc) = 2100 + 2 * i
+	AND (i = 0 OR (acc[-2] = -i AND acc[-1] = -10 * i)))
+FROM r;
+----
+true
+
+# Prepend goes through the copy path and must still interact correctly with grown buffers
+query I
+WITH RECURSIVE r(i, acc) AS (
+	SELECT 0::BIGINT, (SELECT list(x) FROM range(1, 2501) t(x))
+	UNION ALL
+	SELECT i + 1, CASE WHEN i % 2 = 0 THEN list_append(acc, -(i + 1)) ELSE list_prepend(-(i + 1), acc) END
+	FROM r WHERE i < 20
+)
+SELECT bool_and(
+	len(acc) = 2500 + i
+	AND list_sum(acc) = 3126250 - i * (i + 1) / 2
+	AND (i = 0 OR (CASE WHEN i % 2 = 1 THEN acc[-1] = -i ELSE acc[1] = -i END)))
+FROM r;
+----
+true
+
+# Appending onto a slice of the carried list: the slice is not a complete prefix view,
+# so the append must fall back to copying and still be correct.
+query I
+WITH RECURSIVE r(i, acc) AS (
+	SELECT 0::BIGINT, (SELECT list(x) FROM range(1, 3001) t(x))
+	UNION ALL
+	SELECT i + 1, list_append(acc[1:2500], -(i + 1)) FROM r WHERE i < 10
+)
+SELECT bool_and(len(acc) = CASE WHEN i = 0 THEN 3000 ELSE 2501 END
+	AND (i = 0 OR acc[-1] = -i)
+	AND (i = 0 OR acc[2500] = 2500)) FROM r;
+----
+true
+
+# Multi-row working table growing independently per row (the in-place path requires
+# single-row chunks, multi-row chunks must stay on the copy path and remain correct)
+query II
+WITH RECURSIVE r(id, i, acc) AS (
+	SELECT t.id, 0::BIGINT, (SELECT list(x) FROM range(1, 3001) u(x)) FROM (VALUES (1), (2), (3)) t(id)
+	UNION ALL
+	SELECT id, i + 1, list_append(acc, -id * (i + 1)) FROM r WHERE i < 25
+)
+SELECT bool_and(
+	len(acc) = 3000 + i
+	AND (i = 0 OR acc[-1] = -id * i)), count(*)
+FROM r;
+----
+true	78
+
+# UNION (distinct) recursion with a growing list payload (hashing path)
+query I
+WITH RECURSIVE r(i, acc) AS (
+	SELECT 0::BIGINT, (SELECT list(x) FROM range(1, 2101) t(x))
+	UNION
+	SELECT i + 1, list_append(acc, -(i + 1)) FROM r WHERE i < 15
+)
+SELECT bool_and(len(acc) = 2100 + i AND (i = 0 OR acc[-1] = -i)) FROM r;
+----
+true
+
+# Growing accumulator consumed through aggregation of every row version
+query III
+WITH RECURSIVE r(i, acc) AS (
+	SELECT 0::BIGINT, (SELECT list(x) FROM range(1, 2101) t(x))
+	UNION ALL
+	SELECT i + 1, list_append(acc, (i + 1) * (i + 1)) FROM r WHERE i < 50
+)
+SELECT count(*), sum(list_sum(acc)), max(len(acc)) FROM r;
+----
+51	113072100	2150

@@ -440,6 +440,14 @@ static void TemplatedColumnDataCopy(ColumnDataMetaData &meta_data, const Unified
 	auto current_index = meta_data.vector_data_index;
 	idx_t remaining = count;
 	while (remaining > 0) {
+		if (segment.GetVectorData(current_index).representation == ColumnDataRepresentation::SHARED_LIST_CHILD) {
+			// shared list children are immutable - continue the append on the next entry
+			if (!segment.GetVectorData(current_index).next_data.IsValid()) {
+				segment.AllocateVector(source.GetType(), meta_data.chunk_data, append_state, current_index);
+			}
+			current_index = segment.GetVectorData(current_index).next_data;
+			continue;
+		}
 		EnsureVectorDataAllocated(meta_data, current_index, OP::TypeSize());
 		auto &current_segment = segment.GetVectorData(current_index);
 		idx_t append_count = MinValue<idx_t>(STANDARD_VECTOR_SIZE - current_segment.count, remaining);
@@ -838,6 +846,82 @@ void ColumnDataCopy<string_t>(ColumnDataMetaData &meta_data, const UnifiedVector
 	}
 }
 
+//! The minimum number of child entries before a list child is stored as a shared buffer instead of block data.
+//! Smaller children fit into a single internal vector, which appends pack and scans read without copying.
+static constexpr idx_t MINIMUM_SHARED_LIST_CHILD_COUNT = STANDARD_VECTOR_SIZE + 1;
+
+//! Store the appended list child as a reference to a shared buffer instead of copying it into block storage.
+//! Children that arrive as a view of a written prefix of an existing shared buffer are referenced without any
+//! copy, so large list payloads that travel between collections unchanged (e.g. across recursive CTE
+//! iterations) cost O(1) per append instead of a full child copy. Returns false if the child must be copied
+//! the regular way.
+static bool TryShareListChild(ColumnDataMetaData &meta_data, Vector &child_vector, const ConsecutiveChildListInfo &info,
+                              VectorDataIndex last_child_index) {
+	auto &segment = meta_data.segment;
+	auto &allocator = *segment.allocator;
+	if (allocator.GetType() == ColumnDataAllocatorType::IN_MEMORY_ALLOCATOR || allocator.IsManagedResultSet()) {
+		// shared storage lives in buffer-managed blocks: in-memory collections may outlive the buffer manager,
+		// and managed result sets must fail cleanly when accessed after the database closes
+		return false;
+	}
+	if (info.needs_slicing || child_vector.GetVectorType() != VectorType::FLAT_VECTOR) {
+		return false;
+	}
+	if (last_child_index.IsValid() && segment.GetVectorData(last_child_index).count != STANDARD_VECTOR_SIZE) {
+		// a shared entry after a partially filled entry would leave reusable space in the middle of the
+		// chain, and later appends into that space would break the child offset order
+		return false;
+	}
+	auto &child_type = child_vector.GetType();
+	const auto internal_type = child_type.InternalType();
+	if (!TypeIsConstantSize(internal_type)) {
+		// variable-size children hold references into storage that the shared storage cannot own
+		return false;
+	}
+	const auto type_size = GetTypeIdSize(internal_type);
+	const auto source_offset = info.child_list_info.offset;
+	const auto length = info.child_list_info.length;
+	auto &buffer_manager = allocator.GetBufferManager();
+
+	shared_ptr<ColumnDataSharedListChild> owner;
+	auto &buffer_ref = child_vector.GetBufferRef();
+	if (buffer_ref && buffer_ref->GetBufferType() == VectorBufferType::SHARED_DATA_BUFFER) {
+		// an unchanged view of shared storage: reference it if the append covers a claimed prefix completely
+		// and the storage belongs to the buffer manager of this collection
+		auto &view = buffer_ref->Cast<ColumnDataListChildBuffer>();
+		if (view.IsUnchangedView()) {
+			auto &view_owner = view.GetOwner();
+			if (source_offset == 0 && length <= view_owner->GetClaimedCount() &&
+			    view_owner->IsBackedBy(buffer_manager)) {
+				owner = view_owner;
+			}
+		}
+	}
+	if (!owner) {
+		if (length < MINIMUM_SHARED_LIST_CHILD_COUNT) {
+			return false;
+		}
+		// materialize the child once into fresh shared storage in a buffer-managed block
+		auto handle = buffer_manager.Allocate(MemoryTag::COLUMN_DATA, length * type_size, false);
+		memcpy(handle.GetDataMutable(), FlatVector::GetData(child_vector) + source_offset * type_size,
+		       length * type_size);
+		owner = make_shared_ptr<ColumnDataSharedListChild>(buffer_manager, handle.GetBlockHandle(), length, type_size,
+		                                                   length);
+		auto &source_validity = FlatVector::Validity(child_vector);
+		if (source_validity.CanHaveNull()) {
+			auto &owner_validity = owner->GetValidity();
+			owner_validity.Initialize(length);
+			owner_validity.SliceInPlace(source_validity, 0, source_offset, length);
+		}
+	}
+
+	auto shared_index = segment.AddSharedListChild(std::move(owner), length, last_child_index, meta_data.chunk_data);
+	if (!meta_data.GetVectorMetaData().child_index.IsValid()) {
+		meta_data.GetVectorMetaData().child_index = segment.AddChildIndex(shared_index);
+	}
+	return true;
+}
+
 template <>
 void ColumnDataCopy<list_entry_t>(ColumnDataMetaData &meta_data, const UnifiedVectorFormat &source_data, Vector &source,
                                   idx_t offset, idx_t copy_count) {
@@ -846,44 +930,50 @@ void ColumnDataCopy<list_entry_t>(ColumnDataMetaData &meta_data, const UnifiedVe
 	auto &child_vector = ListVector::GetChildMutable(source);
 	auto &child_type = child_vector.GetType();
 
-	if (!meta_data.GetVectorMetaData().child_index.IsValid()) {
-		auto child_index = segment.AllocateVector(child_type, meta_data.chunk_data, meta_data.state);
-		meta_data.GetVectorMetaData().child_index = meta_data.segment.AddChildIndex(child_index);
-	}
-
-	auto &child_function = meta_data.copy_function.child_functions[0];
-	auto child_index = segment.GetChildIndex(meta_data.GetVectorMetaData().child_index);
-
-	// figure out the current list size by traversing the set of child entries
+	// figure out the current list size and the end of the chain by traversing the set of child entries
 	idx_t current_list_size = 0;
-	auto current_child_index = child_index;
-	while (current_child_index.IsValid()) {
-		auto &child_vdata = segment.GetVectorData(current_child_index);
-		current_list_size += child_vdata.count;
-		current_child_index = child_vdata.next_data;
+	VectorDataIndex last_child_index;
+	if (meta_data.GetVectorMetaData().child_index.IsValid()) {
+		auto current_child_index = segment.GetChildIndex(meta_data.GetVectorMetaData().child_index);
+		while (current_child_index.IsValid()) {
+			current_list_size += segment.GetVectorCount(current_child_index);
+			last_child_index = current_child_index;
+			current_child_index = segment.GetVectorData(current_child_index).next_data;
+		}
 	}
 
-	// set the child vector
-	UnifiedVectorFormat child_vector_data;
-	ColumnDataMetaData child_meta_data(child_function, meta_data, child_index);
 	auto info = ListVector::GetConsecutiveChildListInfo(source, offset, copy_count);
 
-	if (info.needs_slicing) {
-		SelectionVector sel(info.child_list_info.length);
-		ListVector::GetConsecutiveChildSelVector(source, sel, offset, copy_count);
+	if (!TryShareListChild(meta_data, child_vector, info, last_child_index)) {
+		if (!meta_data.GetVectorMetaData().child_index.IsValid()) {
+			auto child_index = segment.AllocateVector(child_type, meta_data.chunk_data, meta_data.state);
+			meta_data.GetVectorMetaData().child_index = meta_data.segment.AddChildIndex(child_index);
+		}
 
-		auto sliced_child_vector = Vector(child_vector, sel, info.child_list_info.length);
-		sliced_child_vector.Flatten();
-		info.child_list_info.offset = 0;
+		auto &child_function = meta_data.copy_function.child_functions[0];
+		auto child_index = segment.GetChildIndex(meta_data.GetVectorMetaData().child_index);
 
-		sliced_child_vector.ToUnifiedFormat(child_vector_data);
-		child_function.function(child_meta_data, child_vector_data, sliced_child_vector, info.child_list_info.offset,
-		                        info.child_list_info.length);
+		// set the child vector
+		UnifiedVectorFormat child_vector_data;
+		ColumnDataMetaData child_meta_data(child_function, meta_data, child_index);
 
-	} else {
-		child_vector.ToUnifiedFormat(child_vector_data);
-		child_function.function(child_meta_data, child_vector_data, child_vector, info.child_list_info.offset,
-		                        info.child_list_info.length);
+		if (info.needs_slicing) {
+			SelectionVector sel(info.child_list_info.length);
+			ListVector::GetConsecutiveChildSelVector(source, sel, offset, copy_count);
+
+			auto sliced_child_vector = Vector(child_vector, sel, info.child_list_info.length);
+			sliced_child_vector.Flatten();
+			info.child_list_info.offset = 0;
+
+			sliced_child_vector.ToUnifiedFormat(child_vector_data);
+			child_function.function(child_meta_data, child_vector_data, sliced_child_vector,
+			                        info.child_list_info.offset, info.child_list_info.length);
+
+		} else {
+			child_vector.ToUnifiedFormat(child_vector_data);
+			child_function.function(child_meta_data, child_vector_data, child_vector, info.child_list_info.offset,
+			                        info.child_list_info.length);
+		}
 	}
 
 	// now copy the list entries
