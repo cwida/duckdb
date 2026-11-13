@@ -286,7 +286,7 @@ public:
 	//! The number of threads the wrapped function can use to scan this file
 	optional_idx MaxThreads(ClientContext &context, GlobalTableFunctionState &gstate);
 	//! Collect what the wrapped function counted for this file since it was last asked into the state of the scan
-	void CollectMetrics(ClientContext &context, GlobalTableFunctionState &gstate);
+	void CollectMetrics(ClientContext &context, GlobalTableFunctionState &gstate) override;
 
 public:
 	//! The wrapped single-file table function
@@ -390,6 +390,9 @@ public:
 	//! The row groups of a scan that reads a single file, as the wrapped function describes them - the files of a
 	//! scan over several files have not been opened at this point, so their row groups are unknown
 	static vector<PartitionStatistics> GetPartitionStats(ClientContext &context, GetPartitionStatsInput &input);
+
+	//! Report the metrics of the scan: the shared multi-file ones, plus those the readers of its files keep
+	static void GetMetrics(TableFunctionGetMetricsInput &input);
 
 	//! Only present to satisfy MultiFileFunction - the wrapper builds its interface from the function info instead
 	static unique_ptr<MultiFileReaderInterface> CreateInterface(ClientContext &context);

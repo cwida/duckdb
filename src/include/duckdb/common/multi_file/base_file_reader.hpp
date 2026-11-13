@@ -114,6 +114,8 @@ public:
 	                         LocalTableFunctionState &local_state, DataChunk &chunk) = 0;
 	//! Finish scanning a given file
 	DUCKDB_API virtual void FinishFile(ClientContext &context, GlobalTableFunctionState &gstate);
+	//! Collect the metrics this reader has counted into the state of the scan, if it counts any
+	DUCKDB_API virtual void CollectMetrics(ClientContext &context, GlobalTableFunctionState &gstate);
 	//! Get progress within a given file
 	DUCKDB_API virtual double GetProgressInFile(ClientContext &context);
 	//! Get reader metadata, if available

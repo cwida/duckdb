@@ -33,6 +33,9 @@ void BaseFileReader::PrepareReadAhead(ClientContext &context, GlobalTableFunctio
 void BaseFileReader::FinishFile(ClientContext &context, GlobalTableFunctionState &gstate) {
 }
 
+void BaseFileReader::CollectMetrics(ClientContext &context, GlobalTableFunctionState &gstate) {
+}
+
 double BaseFileReader::GetProgressInFile(ClientContext &context) {
 	return 0;
 }
