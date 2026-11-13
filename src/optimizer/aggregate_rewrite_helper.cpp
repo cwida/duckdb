@@ -44,12 +44,13 @@ static void RebindExpression(unique_ptr<Expression> &expr, const column_binding_
 	if (!expr || replacement_map.empty()) {
 		return;
 	}
-	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-	    expr, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &) {
+	expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+	    std::move(expr), [&](const BoundColumnRefExpression &colref) -> unique_ptr<Expression> {
 		    auto entry = replacement_map.find(colref.Binding());
-		    if (entry != replacement_map.end()) {
-			    colref.BindingMutable() = entry->second;
+		    if (entry == replacement_map.end()) {
+			    return nullptr;
 		    }
+		    return colref.WithBinding(entry->second);
 	    });
 }
 
@@ -105,7 +106,7 @@ void AggregateRewriteHelper::StageVolatileAggregateInputs(Optimizer &optimizer, 
 			StageVolatileExpression(child_expr, projection_index, projection->expressions);
 		}
 		if (aggregate.GetOrderBys()) {
-			for (auto &order : aggregate.GetOrderBysMutable()->orders) {
+			for (auto &order : aggregate.GetOrderBys()->orders) {
 				StageVolatileExpression(order.expression, projection_index, projection->expressions);
 			}
 		}

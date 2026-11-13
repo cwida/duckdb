@@ -206,6 +206,16 @@ struct ICUFromNaiveTimestamp : public ICUDateFunc {
 		return timestamp_tz_ns_t(result);
 	}
 
+	static inline timestamp_tz_t Operation(Calendar *calendar, date_t naive) {
+		if (DUCKDB_UNLIKELY(naive == date_t::infinity())) {
+			return timestamp_tz_t::infinity();
+		}
+		if (DUCKDB_UNLIKELY(naive == date_t::ninfinity())) {
+			return timestamp_tz_t::ninfinity();
+		}
+		return Operation(calendar, Timestamp::FromDatetime(naive, dtime_t(0)));
+	}
+
 	template <class SRC, class DST>
 	static bool CastFromNaive(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 		auto &cast_data = parameters.cast_data->Cast<CastData>();
@@ -734,6 +744,11 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 		    .AddParameter("timezone", LogicalType::VARCHAR)
 		    .AddParameter("timestamp", LogicalType::TIMESTAMP_TZ_NS);
 		set.AddFunction(timetzns_fun);
+
+		ScalarFunction date_fun({}, LogicalType::TIMESTAMP_TZ, Execute<ICUFromNaiveTimestamp, date_t, timestamp_tz_t>,
+		                        Bind);
+		date_fun.GetSignature().AddParameter("timezone", LogicalType::VARCHAR).AddParameter("date", LogicalType::DATE);
+		set.AddFunction(date_fun);
 
 		set.ApplyToFunctions([](ScalarFunction &func) {
 			func.SetFallible();

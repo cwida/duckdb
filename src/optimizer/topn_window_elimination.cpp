@@ -713,7 +713,7 @@ vector<unique_ptr<Expression>> TopNWindowElimination::GenerateAggregatePayload(c
 	// Remember order of group columns to recreate that order in new bindings later.
 	// A FLOAT or DOUBLE group holds both 0.0 and -0.0, so such a column is carried in the payload instead.
 	column_binding_map_t<idx_t> group_bindings;
-	for (idx_t i = 0; i < window_expr.PartitionsMutable().size(); i++) {
+	for (idx_t i = 0; i < window_expr.Partitions().size(); i++) {
 		auto &expr = window_expr.PartitionsMutable()[i];
 		const auto &type = expr->GetReturnType();
 		if (TypeVisitor::Contains(type, LogicalTypeId::FLOAT) || TypeVisitor::Contains(type, LogicalTypeId::DOUBLE)) {
@@ -960,7 +960,7 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 	vector<ColumnBinding> projections(window_expr.Partitions().size() + args.size());
 
 	// Build a projection list for an LHS table scan to recreate the column order of an aggregate with struct packing
-	for (idx_t i = 0; i < window_expr.PartitionsMutable().size(); i++) {
+	for (idx_t i = 0; i < window_expr.Partitions().size(); i++) {
 		auto &partition = window_expr.PartitionsMutable()[i];
 		if (!ExtractSingleBinding(&partition, projections[i])) {
 			return false;

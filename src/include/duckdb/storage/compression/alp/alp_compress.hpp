@@ -9,12 +9,9 @@
 #pragma once
 
 #include "duckdb/common/helper.hpp"
-#include "duckdb/common/operator/subtract.hpp"
-#include "duckdb/common/types/null_value.hpp"
 #include "duckdb/function/compression_function.hpp"
 #include "duckdb/storage/compression/standard_compression_state.hpp"
 #include "duckdb/main/config.hpp"
-#include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/compression/alp/algorithm/alp.hpp"
 #include "duckdb/storage/compression/alp/alp_analyze.hpp"
 #include "duckdb/storage/compression/patas/patas.hpp"

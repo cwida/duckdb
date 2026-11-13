@@ -1,5 +1,6 @@
 
 #include "duckdb/optimizer/rule/enum_comparison.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -52,6 +53,16 @@ unique_ptr<Expression> EnumComparisonRule::Apply(LogicalOperator &op, vector<ref
 	auto &left_child = bindings[1].get().Cast<BoundFunctionExpression>();
 	auto &right_child = bindings[3].get().Cast<BoundFunctionExpression>();
 
+	// the rewrite relies on the built-in enum casts - a registered cast need not match by label
+	auto &casts = CastFunctionSet::Get(GetContext());
+	auto &left_type = BoundCastExpression::Child(left_child).GetReturnType();
+	auto &right_type = BoundCastExpression::Child(right_child).GetReturnType();
+	if (casts.CanOverrideDefaultCast(left_type, left_child.GetReturnType()) ||
+	    casts.CanOverrideDefaultCast(right_type, right_child.GetReturnType()) ||
+	    casts.CanOverrideDefaultCast(left_type, right_type)) {
+		return nullptr;
+	}
+
 	if (!AreMatchesPossible(BoundCastExpression::Child(left_child).GetReturnType(),
 	                        BoundCastExpression::Child(right_child).GetReturnType())) {
 		vector<unique_ptr<Expression>> children;
@@ -65,8 +76,8 @@ unique_ptr<Expression> EnumComparisonRule::Apply(LogicalOperator &op, vector<ref
 	}
 
 	auto cast_left_to_right =
-	    BoundCastExpression::AddDefaultCastToType(std::move(BoundCastExpression::ChildMutable(left_child)),
-	                                              BoundCastExpression::Child(right_child).GetReturnType(), true);
+	    BoundCastExpression::AddCastToType(GetContext(), std::move(BoundCastExpression::ChildMutable(left_child)),
+	                                       BoundCastExpression::Child(right_child).GetReturnType(), true);
 	return BoundComparisonExpression::Create(root.GetExpressionType(), std::move(cast_left_to_right),
 	                                         std::move(BoundCastExpression::ChildMutable(right_child)));
 }

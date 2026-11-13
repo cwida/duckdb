@@ -422,9 +422,8 @@ void TableFilterSet::PushFilter(ProjectionIndex col_idx, unique_ptr<TableFilter>
 	} else {
 		// there is already a filter: AND it together
 		auto &existing = ExpressionFilter::GetExpressionFilter(*entry->second, "TableFilterSet::PushFilter");
-		auto and_expr = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND);
-		and_expr->GetChildrenMutable().push_back(std::move(existing.expr));
-		and_expr->GetChildrenMutable().push_back(std::move(new_filter.expr));
+		auto and_expr = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND, std::move(existing.expr),
+		                                                      std::move(new_filter.expr));
 		filters[col_idx] = make_uniq<ExpressionFilter>(std::move(and_expr));
 	}
 }

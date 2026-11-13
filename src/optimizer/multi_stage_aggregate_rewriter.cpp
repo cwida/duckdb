@@ -273,12 +273,13 @@ static void RebindRewriteExpression(unique_ptr<Expression> &expr,
 	if (!expr || replacement_map.empty()) {
 		return;
 	}
-	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-	    expr, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &) {
+	expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+	    std::move(expr), [&](const BoundColumnRefExpression &colref) -> unique_ptr<Expression> {
 		    auto entry = replacement_map.find(colref.Binding());
-		    if (entry != replacement_map.end()) {
-			    colref.BindingMutable() = entry->second;
+		    if (entry == replacement_map.end()) {
+			    return nullptr;
 		    }
+		    return colref.WithBinding(entry->second);
 	    });
 }
 
@@ -897,7 +898,7 @@ unique_ptr<Expression> MultiStageAggregateRewriter::VisitReplace(BoundColumnRefE
                                                                  unique_ptr<Expression> *expr_ptr) {
 	auto entry = replacement_map.find(expr.Binding());
 	if (entry != replacement_map.end()) {
-		expr.BindingMutable() = entry->second;
+		return expr.WithBinding(entry->second);
 	}
 	return nullptr;
 }

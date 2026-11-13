@@ -17,14 +17,14 @@ ConjunctionSimplificationRule::ConjunctionSimplificationRule(ExpressionRewriter 
 
 unique_ptr<Expression> ConjunctionSimplificationRule::RemoveExpression(BoundConjunctionExpression &conj,
                                                                        const Expression &expr) {
-	for (idx_t i = 0; i < conj.GetChildrenMutable().size(); i++) {
-		if (conj.GetChildrenMutable()[i].get() == &expr) {
+	for (idx_t i = 0; i < conj.GetChildren().size(); i++) {
+		if (conj.GetChildren()[i].get() == &expr) {
 			// erase the expression
 			conj.GetChildrenMutable().erase_at(i);
 			break;
 		}
 	}
-	if (conj.GetChildrenMutable().size() == 1) {
+	if (conj.GetChildren().size() == 1) {
 		// one expression remaining: simply return that expression and erase the conjunction
 		return std::move(conj.GetChildrenMutable()[0]);
 	}

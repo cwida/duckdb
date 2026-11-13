@@ -1123,8 +1123,8 @@ static unique_ptr<Expression> TryCastFilterExpression(Context &context, const Ex
 			if (!child.expr) {
 				return nullptr;
 			}
-			auto result = make_uniq<BoundOperatorExpression>(op.GetExpressionType(), op.GetReturnType());
-			result->GetChildrenMutable().push_back(std::move(child.expr));
+			auto result =
+			    make_uniq<BoundOperatorExpression>(op.GetExpressionType(), op.GetReturnType(), std::move(child.expr));
 			return std::move(result);
 		}
 		case ExpressionType::COMPARE_IN: {
@@ -1135,8 +1135,8 @@ static unique_ptr<Expression> TryCastFilterExpression(Context &context, const Ex
 			if (!lhs.expr || !lhs.type) {
 				return nullptr;
 			}
-			auto result = make_uniq<BoundOperatorExpression>(op.GetExpressionType(), op.GetReturnType());
-			result->GetChildrenMutable().push_back(std::move(lhs.expr));
+			auto result =
+			    make_uniq<BoundOperatorExpression>(op.GetExpressionType(), op.GetReturnType(), std::move(lhs.expr));
 			for (idx_t i = 1; i < op.GetChildren().size(); i++) {
 				if (op.GetChildren()[i]->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
 					return nullptr;

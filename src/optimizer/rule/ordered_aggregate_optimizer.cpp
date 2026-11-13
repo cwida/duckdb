@@ -30,7 +30,7 @@ unique_ptr<Expression> OrderedAggregateOptimizer::Apply(ClientContext &context, 
 	}
 
 	// Remove unnecessary ORDER BY clauses and return if nothing remains
-	if (aggr.GetOrderBysMutable()->Simplify(groups, grouping_sets)) {
+	if (aggr.GetOrderBys()->Simplify(groups, grouping_sets)) {
 		aggr.GetOrderBysMutable().reset();
 		changes_made = true;
 		return nullptr;

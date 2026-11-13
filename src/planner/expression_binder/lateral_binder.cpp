@@ -55,18 +55,19 @@ string LateralBinder::UnsupportedAggregateMessage() {
 	return "LATERAL join cannot contain aggregates!";
 }
 
-static void ReduceColumnRefDepth(BoundColumnRefExpression &expr, const CorrelatedColumns &correlated_columns) {
-	// don't need to reduce this
+//! Returns the column reference with a reduced depth, or nullptr if the depth does not need to be reduced
+static unique_ptr<Expression> ReduceColumnRefDepth(const BoundColumnRefExpression &expr,
+                                                   const CorrelatedColumns &correlated_columns) {
 	if (expr.Depth() == 0) {
-		return;
+		return nullptr;
 	}
 	for (auto &correlated : correlated_columns) {
 		if (correlated.binding == expr.Binding()) {
 			D_ASSERT(expr.Depth() > 1);
-			expr.DepthMutable()--;
-			break;
+			return expr.WithDepth(expr.Depth() - 1);
 		}
 	}
+	return nullptr;
 }
 
 static void ReduceColumnDepth(CorrelatedColumns &columns, const CorrelatedColumns &affected_columns) {
@@ -88,7 +89,10 @@ public:
 	void VisitExpression(unique_ptr<Expression> *expression) override {
 		auto &expr = **expression;
 		if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
-			ReduceColumnRefDepth(expr.Cast<BoundColumnRefExpression>(), correlated_columns);
+			auto reduced = ReduceColumnRefDepth(expr.Cast<BoundColumnRefExpression>(), correlated_columns);
+			if (reduced) {
+				*expression = std::move(reduced);
+			}
 		} else if (expr.GetExpressionType() == ExpressionType::SUBQUERY) {
 			ReduceExpressionSubquery(expr.Cast<BoundSubqueryExpression>(), correlated_columns);
 		}
@@ -107,9 +111,9 @@ public:
 
 	static void ReduceExpressionSubquery(BoundSubqueryExpression &expr, const CorrelatedColumns &correlated_columns) {
 		ReduceColumnDepth(expr.GetBinder()->correlated_columns, correlated_columns);
-		if (expr.SubqueryMutable().plan) {
+		if (expr.Subquery().plan) {
 			ExpressionDepthReducerRecursive recursive(correlated_columns);
-			recursive.VisitOperator(*expr.SubqueryMutable().plan);
+			recursive.VisitOperator(*expr.Subquery().plan);
 		}
 	}
 
@@ -124,8 +128,7 @@ public:
 
 protected:
 	unique_ptr<Expression> VisitReplace(BoundColumnRefExpression &expr, unique_ptr<Expression> *expr_ptr) override {
-		ReduceColumnRefDepth(expr, correlated_columns);
-		return nullptr;
+		return ReduceColumnRefDepth(expr, correlated_columns);
 	}
 
 	unique_ptr<Expression> VisitReplace(BoundSubqueryExpression &expr, unique_ptr<Expression> *expr_ptr) override {
@@ -179,17 +182,17 @@ protected:
 		if (!NeedsRebase(expr.Binding(), expr.Depth(), scope_depth)) {
 			return nullptr;
 		}
-		expr.DepthMutable()++;
-		AddCorrelation(correlated_columns, CorrelatedColumnInfo(expr));
-		return nullptr;
+		auto rebased = expr.WithDepth(expr.Depth() + 1);
+		AddCorrelation(correlated_columns, CorrelatedColumnInfo(rebased->Cast<BoundColumnRefExpression>()));
+		return rebased;
 	}
 
 	unique_ptr<Expression> VisitReplace(BoundSubqueryExpression &expr, unique_ptr<Expression> *expr_ptr) override {
 		AdjustCorrelatedColumns(expr.GetBinder()->correlated_columns, scope_depth + 1);
-		if (expr.SubqueryMutable().plan) {
-			CollectLocalBindings(*expr.SubqueryMutable().plan);
+		if (expr.Subquery().plan) {
+			CollectLocalBindings(*expr.Subquery().plan);
 			scope_depth++;
-			VisitOperator(*expr.SubqueryMutable().plan);
+			VisitOperator(*expr.Subquery().plan);
 			scope_depth--;
 		}
 		return nullptr;

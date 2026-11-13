@@ -257,3 +257,75 @@ TEST_CASE("Test Custom Type Function", "[capi]") {
 	REQUIRE(result->row_count() == 1);
 	REQUIRE(result->Fetch<bool>(0, 0) == true);
 }
+
+static bool TimestampToDatePlusOneDay(duckdb_function_info info, idx_t count, duckdb_vector input,
+                                      duckdb_vector output) {
+	auto input_data = static_cast<duckdb_timestamp *>(duckdb_vector_get_data(input));
+	auto output_data = static_cast<duckdb_date *>(duckdb_vector_get_data(output));
+	const int64_t micros_per_day = 86400000000LL;
+	for (idx_t i = 0; i < count; i++) {
+		auto micros = input_data[i].micros;
+		auto days = micros / micros_per_day - (micros % micros_per_day < 0 ? 1 : 0);
+		output_data[i].days = static_cast<int32_t>(days + 1);
+	}
+	return true;
+}
+
+static bool CastToNull(duckdb_function_info info, idx_t count, duckdb_vector input, duckdb_vector output) {
+	duckdb_vector_ensure_validity_writable(output);
+	auto validity = duckdb_vector_get_validity(output);
+	for (idx_t i = 0; i < count; i++) {
+		duckdb_validity_set_row_invalid(validity, i);
+	}
+	return true;
+}
+
+static void RegisterCast(duckdb_connection connection, duckdb_logical_type source, duckdb_logical_type target,
+                         duckdb_cast_function_t function) {
+	auto cast = duckdb_create_cast_function();
+	duckdb_cast_function_set_source_type(cast, source);
+	duckdb_cast_function_set_target_type(cast, target);
+	duckdb_cast_function_set_function(cast, function);
+	REQUIRE(duckdb_register_cast_function(connection, cast) == DuckDBSuccess);
+	duckdb_destroy_cast_function(&cast);
+}
+
+TEST_CASE("Test optimizer rewrites with registered casts", "[capi]") {
+	CAPITester tester;
+	duckdb::unique_ptr<CAPIResult> result;
+	REQUIRE(tester.OpenDatabase(nullptr));
+
+	// date_trunc simplification builds TIMESTAMP -> DATE casts that only invert date_trunc as built-in casts
+	auto timestamp_type = duckdb_create_logical_type(DUCKDB_TYPE_TIMESTAMP);
+	auto date_type = duckdb_create_logical_type(DUCKDB_TYPE_DATE);
+	RegisterCast(tester.connection, timestamp_type, date_type, TimestampToDatePlusOneDay);
+	duckdb_destroy_logical_type(&timestamp_type);
+	duckdb_destroy_logical_type(&date_type);
+
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE days(day_value DATE)"));
+	REQUIRE_NO_FAIL(tester.Query("INSERT INTO days VALUES (DATE '2024-01-01'), (DATE '2024-01-02')"));
+	result = tester.Query(
+	    "SELECT day_value::VARCHAR FROM days WHERE date_trunc('day', day_value) = TIMESTAMP '2024-01-01 00:00:00'");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 1);
+	REQUIRE(result->Fetch<string>(0, 0) == "2024-01-01");
+
+	// the enum comparison rewrite replaces a comparison of VARCHAR casts with an enum -> enum cast
+	const char *left_values[] = {"a", "b"};
+	const char *right_values[] = {"b", "a", "c"};
+	auto left_enum = duckdb_create_enum_type(left_values, 2);
+	auto right_enum = duckdb_create_enum_type(right_values, 3);
+	duckdb_logical_type_set_alias(left_enum, "left_enum");
+	duckdb_logical_type_set_alias(right_enum, "right_enum");
+	REQUIRE(duckdb_register_logical_type(tester.connection, left_enum, nullptr) == DuckDBSuccess);
+	REQUIRE(duckdb_register_logical_type(tester.connection, right_enum, nullptr) == DuckDBSuccess);
+	RegisterCast(tester.connection, left_enum, right_enum, CastToNull);
+	duckdb_destroy_logical_type(&left_enum);
+	duckdb_destroy_logical_type(&right_enum);
+
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE enums(l left_enum, r right_enum)"));
+	REQUIRE_NO_FAIL(tester.Query("INSERT INTO enums VALUES ('a', 'a'), ('b', 'b'), ('a', 'c')"));
+	result = tester.Query("SELECT count(*) FROM enums WHERE l::VARCHAR = r::VARCHAR");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == 2);
+}

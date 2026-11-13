@@ -231,9 +231,8 @@ bool Deliminator::RemoveJoinWithDelimGet(LogicalComparisonJoin &delim_join, cons
 		// Do NOT add for DISTINCT FROM variants, as they handle NULL correctly
 		if (cond.GetComparisonType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM &&
 		    cond.GetComparisonType() != ExpressionType::COMPARE_DISTINCT_FROM) {
-			auto is_not_null_expr =
-			    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN);
-			is_not_null_expr->GetChildrenMutable().push_back(other_side.Copy());
+			auto is_not_null_expr = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL,
+			                                                           LogicalType::BOOLEAN, other_side.Copy());
 			filter_expressions.push_back(std::move(is_not_null_expr));
 		}
 	}

@@ -210,6 +210,8 @@ private:
 	bool HasActiveProducers() const;
 	//! Pop the oldest queued job
 	unique_ptr<ScanReadAheadJob> ClaimJob();
+	//! Return the memory governor's reservation once the scan is exhausted
+	void ReleaseMemoryReservation();
 	//! Mark the scan as done, i.e., no more jobs to produce
 	void SetDone();
 	//! Whether jobs are held back from admission, used to detect gaps in the batch indexes on exhaustion

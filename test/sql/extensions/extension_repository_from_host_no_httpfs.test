@@ -1,0 +1,24 @@
+# name: test/sql/extensions/extension_repository_from_host_no_httpfs.test
+# description: CREATE EXTENSION REPOSITORY <host> names httpfs when it is not there to reach the host
+# group: [extensions]
+
+# httpfs must be absent: not loaded (the encryption config links it statically, see test/configs/encryption.json) and
+# not autoloadable, since an earlier statement would otherwise have loaded it
+require no_extension_autoloading "EXPECTED: the test checks the error when httpfs cannot be loaded"
+
+statement ok
+SET extension_repository_directory='{TEST_DIR}/extension_repositories'
+
+statement ok
+SET autoload_known_extensions=false
+
+# A host reached over https needs httpfs: when it is not there, that is the error, not a missing file.
+statement error
+CREATE EXTENSION REPOSITORY 'needs-httpfs.example'
+----
+<REGEX>:Missing Extension Error.*requires the httpfs extension.*INSTALL AND LOAD httpfs;.*
+
+statement error
+CREATE EXTENSION REPOSITORY byurl WITH PREFIX 'https://needs-httpfs.example/repo'
+----
+<REGEX>:Missing Extension Error.*requires the httpfs extension.*

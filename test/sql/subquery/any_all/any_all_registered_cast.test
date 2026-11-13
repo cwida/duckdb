@@ -1,0 +1,65 @@
+# name: test/sql/subquery/any_all/any_all_registered_cast.test
+# description: IN, ANY and ALL subqueries use the registered TIMESTAMP to TIMESTAMPTZ cast of ICU
+# group: [any_all]
+
+require icu
+
+statement ok
+SET TimeZone = 'America/New_York';
+
+statement ok
+CREATE TABLE tz AS SELECT TIMESTAMPTZ '2020-01-01 05:00:00-05' + INTERVAL (i) HOUR AS t FROM range(5) r(i);
+
+statement ok
+CREATE TABLE ts AS SELECT TIMESTAMP '2020-01-01 05:00:00' + INTERVAL (i) HOUR AS t FROM range(3) r(i);
+
+# the subquery side is cast like the outer side and like an equality join
+query I
+SELECT count(*) FROM tz WHERE t IN (SELECT t FROM ts);
+----
+3
+
+query I
+SELECT count(*) FROM tz JOIN ts ON tz.t = ts.t;
+----
+3
+
+query I
+SELECT count(*) FROM tz WHERE t = ANY (SELECT t FROM ts);
+----
+3
+
+# ICU's cast is not order-preserving across the spring-forward gap: 02:30 does not exist and maps to 07:30 UTC,
+# after 03:00 (07:00 UTC), so the extremum has to be taken after the cast
+statement ok
+CREATE TABLE stamps(stamp TIMESTAMP);
+
+statement ok
+INSERT INTO stamps VALUES ('2024-03-10 02:30:00'), ('2024-03-10 03:00:00');
+
+query I
+SELECT TIMESTAMPTZ '2024-03-10 07:15:00+00' > ANY (SELECT stamp FROM stamps);
+----
+true
+
+query I
+SELECT TIMESTAMPTZ '2024-03-10 07:15:00+00' > ANY (SELECT stamp::TIMESTAMPTZ FROM stamps);
+----
+true
+
+query I
+SELECT TIMESTAMPTZ '2024-03-10 07:15:00+00' < ALL (SELECT stamp FROM stamps);
+----
+false
+
+query I
+SELECT TIMESTAMPTZ '2024-03-10 07:15:00+00' <= ANY (SELECT stamp FROM stamps);
+----
+true
+
+# correlated
+query I
+SELECT count(*) FROM (VALUES (TIMESTAMPTZ '2024-03-10 07:15:00+00')) v(x)
+WHERE x > ANY (SELECT stamp FROM stamps WHERE stamp > x::TIMESTAMP - INTERVAL 1 DAY);
+----
+1
