@@ -175,6 +175,8 @@ private:
 	bool external_batch_initialized = false;
 	//! Rows of the last source chunk that have not been reported to the progress verifier yet
 	idx_t unsampled_progress_rows = 0;
+	//! Whether the source has produced any rows in this execution
+	bool source_produced = false;
 
 private:
 	void StartOperator(PhysicalOperator &op);

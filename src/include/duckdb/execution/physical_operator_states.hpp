@@ -163,6 +163,14 @@ public:
 		ResetBlocking();
 	}
 
+	// Called when the pipeline finishes early. A state whose tasks can block on nested source states must forward
+	// this to them, or the tasks blocked there are never woken and the pipeline never completes.
+	virtual void StopBlocking() {
+		annotated_lock_guard<annotated_mutex> guard(lock);
+		PreventBlocking();
+		UnblockTasks();
+	}
+
 	template <class TARGET>
 	TARGET &Cast() {
 		DynamicCastCheck<TARGET>(this);
@@ -210,6 +218,10 @@ struct OperatorSourceInput {
 	LocalSourceState &local_state;
 	InterruptState &interrupt_state;
 	SourceBatchIndexState batch_index_state = SourceBatchIndexState::UNCHANGED;
+	//! Whether this task has already handed rows from this source to the sink.
+	//! Such a task must not block waiting for other tasks: the sink may be waiting for it (e.g., a partitioned COPY
+	//! cannot flush until every producer has combined).
+	bool produced = false;
 };
 
 struct OperatorSinkCombineInput {

@@ -9,6 +9,7 @@
 #include "duckdb/parallel/thread_context.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
+#include "duckdb/storage/temporary_memory_manager.hpp"
 #include "test_helpers.hpp"
 
 namespace duckdb {
@@ -677,6 +678,66 @@ TEST_CASE("Abandoned aggregate blocks can be evicted before the next sink call",
 		fixture.Combine(0);
 		REQUIRE(fixture.ScanGroupCount() == group_count);
 	}
+}
+
+TEST_CASE("Aggregate scan widens once concurrent queries release memory", "[radix_ht_sink]") {
+	RadixSinkFixture fixture("256MB");
+	auto &client = *fixture.con.context;
+	constexpr idx_t group_count = 131072;
+	for (idx_t offset = 0; offset < group_count; offset += STANDARD_VECTOR_SIZE) {
+		fixture.Keys(offset, group_count);
+		fixture.Sink();
+	}
+	fixture.Combine(0);
+	fixture.radix->Finalize(client, *fixture.global);
+
+	// Another query holds all the memory when the scan is scheduled, so only one partition fits for now
+	auto other_query = TemporaryMemoryManager::Get(client.GetContext()).Register(client.GetContext());
+	constexpr idx_t all_memory = 1ULL << 40;
+	other_query->SetMinimumReservation(all_memory);
+	other_query->SetRemainingSizeAndUpdateReservation(client.GetContext(), all_memory);
+
+	REQUIRE(fixture.radix->MaxThreads(*fixture.global) == 4);
+
+	auto &radix = *fixture.radix;
+	auto &sink = *fixture.global;
+	auto source = radix.GetGlobalSourceState(client);
+	auto first_local = radix.GetLocalSourceState(fixture.context);
+	auto second_local = radix.GetLocalSourceState(fixture.context);
+	auto first_signal = make_shared_ptr<InterruptDoneSignalState>();
+	auto second_signal = make_shared_ptr<InterruptDoneSignalState>();
+	InterruptState first_interrupt(first_signal);
+	InterruptState second_interrupt(second_signal);
+	OperatorSourceInput first {*source, *first_local, first_interrupt};
+	OperatorSourceInput second {*source, *second_local, second_interrupt};
+	DataChunk output;
+	output.Initialize(Allocator::Get(client), fixture.chunk.GetTypes());
+
+	idx_t scanned = 0;
+	REQUIRE(radix.GetData(fixture.context, output, sink, first) == SourceResultType::HAVE_MORE_OUTPUT);
+	scanned += output.size();
+	output.Reset();
+	REQUIRE(radix.GetData(fixture.context, output, sink, second) == SourceResultType::BLOCKED);
+
+	other_query->SetZero();
+	bool second_scanned = false;
+	auto first_result = SourceResultType::HAVE_MORE_OUTPUT;
+	auto second_result = SourceResultType::BLOCKED;
+	while (first_result != SourceResultType::FINISHED || second_result != SourceResultType::FINISHED) {
+		if (first_result != SourceResultType::FINISHED) {
+			output.Reset();
+			first_result = radix.GetData(fixture.context, output, sink, first);
+			scanned += output.size();
+		}
+		if (second_result != SourceResultType::FINISHED) {
+			output.Reset();
+			second_result = radix.GetData(fixture.context, output, sink, second);
+			scanned += output.size();
+			second_scanned |= output.size() != 0;
+		}
+	}
+	REQUIRE(second_scanned);
+	REQUIRE(scanned == group_count);
 }
 
 } // namespace duckdb

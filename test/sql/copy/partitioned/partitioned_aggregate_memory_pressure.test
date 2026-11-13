@@ -1,0 +1,49 @@
+# name: test/sql/copy/partitioned/partitioned_aggregate_memory_pressure.test
+# description: Partitioned COPY of a GROUP BY whose scan waits for memory must not deadlock between the aggregate source and the flush
+# group: [partitioned]
+
+require parquet
+
+# Tiny vectors split the aggregate's spilled data into so many chunks that their unspillable metadata exceeds the limit
+require vector_size 2048
+
+statement ok
+PRAGMA threads=8;
+
+statement ok
+SET memory_limit='100MB';
+
+statement ok
+SET temp_directory='{TEST_DIR}/partitioned_aggregate_memory_pressure_tmp';
+
+# Flush early so that the partitioned sink waits for every producer while aggregate partitions are still being scanned
+statement ok
+SET partitioned_write_flush_threshold=4096;
+
+statement ok
+COPY (
+	SELECT i, count(*) AS c, i % 2 AS part
+	FROM range(5000000) t(i)
+	GROUP BY i
+) TO '{TEST_DIR}/partitioned_aggregate_memory_pressure' (FORMAT PARQUET, PARTITION_BY (part));
+
+query II
+SELECT count(*), sum(c)
+FROM read_parquet('{TEST_DIR}/partitioned_aggregate_memory_pressure/**/*.parquet')
+----
+5000000	5000000
+
+# A thread that produced rows for one grouping set must not wait for memory in the next one either
+# (without aggregates, the grouping sets stay in a single hash aggregate)
+statement ok
+COPY (
+	SELECT i, j, coalesce(i, j) % 2 AS part
+	FROM (SELECT i, i + 1 AS j FROM range(5000000) t(i))
+	GROUP BY GROUPING SETS ((i), (j))
+) TO '{TEST_DIR}/partitioned_aggregate_memory_pressure_grouping_sets' (FORMAT PARQUET, PARTITION_BY (part));
+
+query II
+SELECT count(i), count(j)
+FROM read_parquet('{TEST_DIR}/partitioned_aggregate_memory_pressure_grouping_sets/**/*.parquet')
+----
+5000000	5000000

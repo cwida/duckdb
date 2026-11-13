@@ -607,10 +607,6 @@ public:
 
 	//! Simple Joins
 	idx_t anti_lsel = 0;
-
-	//! Whether this task has produced any rows yet.
-	//! A task that has produced rows must not block waiting for other tasks: the sink may be waiting for it.
-	bool produced = false;
 };
 
 void IEJoinLocalSourceState::FinishTask() {
@@ -1488,7 +1484,7 @@ SourceResultType PhysicalIEJoin::GetDataInternal(ExecutionContext &context, Data
 					if (gsource.stage == IEJoinSourceStage::DONE) {
 						break;
 					}
-					if (lsource.produced) {
+					if (input.produced) {
 						// The remaining tasks can only start once the other tasks of this stage have finished.
 						// This task has already handed rows to the sink, which may in turn be waiting for this task
 						// (e.g., a partitioned COPY cannot flush until every producer has combined), so blocking
@@ -1505,9 +1501,6 @@ SourceResultType PhysicalIEJoin::GetDataInternal(ExecutionContext &context, Data
 		}
 		lsource.ExecuteTask(context, result, input.interrupt_state);
 		lsource.UpdateProgress();
-		if (result.size() != 0) {
-			lsource.produced = true;
-		}
 	}
 	return result.size() == 0 ? SourceResultType::FINISHED : SourceResultType::HAVE_MORE_OUTPUT;
 }

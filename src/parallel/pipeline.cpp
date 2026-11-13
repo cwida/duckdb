@@ -516,9 +516,7 @@ void Pipeline::FinishSourceAndPreventBlocking(ClientContext &context) {
 		return;
 	}
 	source->SourceFinished(context, *source_state);
-	annotated_lock_guard<annotated_mutex> state_guard(source_state->lock);
-	source_state->PreventBlocking();
-	source_state->UnblockTasks();
+	source_state->StopBlocking();
 }
 
 void Pipeline::PreventSourceBlocking() {
@@ -526,9 +524,7 @@ void Pipeline::PreventSourceBlocking() {
 	if (!source_state) {
 		return;
 	}
-	annotated_lock_guard<annotated_mutex> state_guard(source_state->lock);
-	source_state->PreventBlocking();
-	source_state->UnblockTasks();
+	source_state->StopBlocking();
 }
 
 void Pipeline::PreventSinkBlocking() {

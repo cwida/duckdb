@@ -1,0 +1,17 @@
+# name: test/sql/aggregate/external/aggregate_limit_memory_pressure.test
+# description: A LIMIT that finishes the pipeline wakes aggregate scan tasks waiting for memory
+# group: [external]
+
+statement ok
+SET threads=8
+
+statement ok
+SET memory_limit='32MB'
+
+statement ok
+SET temp_directory='{TEST_DIR}/aggregate_limit_memory_pressure'
+
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM range(2000000) t(i) GROUP BY i LIMIT 5)
+----
+5

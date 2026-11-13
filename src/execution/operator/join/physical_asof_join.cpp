@@ -1415,10 +1415,6 @@ public:
 	SelectionVector rsel;
 	//! Pointer to the right marker
 	const bool *rhs_matches = {};
-
-	//! Whether this task has produced any rows yet.
-	//! A task that has produced rows must not block waiting for other tasks: the sink may be waiting for it.
-	bool produced = false;
 };
 
 AsOfLocalSourceState::AsOfLocalSourceState(ExecutionContext &context, AsOfGlobalSourceState &gsource,
@@ -1698,7 +1694,7 @@ SourceResultType PhysicalAsOfJoin::GetDataInternal(ExecutionContext &context, Da
 						gsource.UnblockTasks();
 						break;
 					}
-					if (lsource.produced) {
+					if (input.produced) {
 						// The remaining tasks can only start once the other tasks of this stage have finished
 						// (e.g., the RIGHT stage of an outer join waits for every LEFT task). This task has already
 						// handed rows to the sink, which may in turn be waiting for this task (e.g., a partitioned
@@ -1725,9 +1721,6 @@ SourceResultType PhysicalAsOfJoin::GetDataInternal(ExecutionContext &context, Da
 			auto done = task.begin_idx > lsource.task_begin ? task.begin_idx - lsource.task_begin : 0;
 			auto total = task.end_idx > lsource.task_begin ? task.end_idx - lsource.task_begin : 0;
 			lsource.task_progress.Update(gsource.task_progress, done, total);
-		}
-		if (chunk.size() != 0) {
-			lsource.produced = true;
 		}
 	}
 

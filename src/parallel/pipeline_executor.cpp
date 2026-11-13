@@ -94,6 +94,7 @@ void PipelineExecutor::Reset() {
 	source_finish_notification_state = SourceFinishNotificationState::PENDING;
 	should_flush_current_idx = true;
 	unsampled_progress_rows = 0;
+	source_produced = false;
 	while (!in_process_operators.empty()) {
 		in_process_operators.pop();
 	}
@@ -864,9 +865,13 @@ PipelineExecutor::SourceFetchResult PipelineExecutor::FetchFromSource(DataChunk 
 	StartOperator(*pipeline.source);
 
 	OperatorSourceInput source_input = {*global_source_state, *local_source_state, interrupt_state};
+	source_input.produced = source_produced;
 	SourceFetchResult fetch_result;
 	fetch_result.result = GetData(result, source_input);
 	fetch_result.batch_index_state = source_input.batch_index_state;
+	if (result.size() != 0) {
+		source_produced = true;
+	}
 
 	D_ASSERT(fetch_result.result != SourceResultType::BLOCKED || result.size() == 0);
 	D_ASSERT(fetch_result.batch_index_state != SourceBatchIndexState::ADVANCED ||
