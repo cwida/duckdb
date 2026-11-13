@@ -115,6 +115,7 @@ void CSVFileScan::InitializeFileNamesTypes() {
 		// just read the first column
 		file_types.emplace_back(LogicalType::VARCHAR);
 		projected_columns.insert(0);
+		reads_first_column_to_count_rows = true;
 		projection_ids.emplace_back(0, 0);
 		return;
 	}

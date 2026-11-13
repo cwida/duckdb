@@ -108,6 +108,13 @@ StringValueResult::StringValueResult(CSVStates &states, CSVStateMachine &state_m
 		}
 	}
 
+	// only values stored as strings reach the check, the directly cast types never do; a scan that reads its first
+	// column only to count rows validates a few bytes per row, less than the tracking would cost
+	const bool counts_rows_only = csv_file_scan && csv_file_scan->reads_first_column_to_count_rows;
+	for (idx_t i = 0; i < logical_types.size() && !counts_rows_only; i++) {
+		validates_utf8 =
+		    validates_utf8 || (parse_types[i].validate_utf8 && parse_types[i].type_id == LogicalTypeId::VARCHAR);
+	}
 	// Initialize Parse Chunk
 	parse_chunk.Initialize(buffer_allocator, logical_types, result_size);
 	// one slot more, the cast error search of Flush can stop one past the last row
@@ -485,7 +492,7 @@ void StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 	default: {
 		// By default, we add a string
 		// We only evaluate if a string is utf8 valid, if it's actually a varchar
-		if (parse_types[chunk_col_id].validate_utf8 &&
+		if (parse_types[chunk_col_id].validate_utf8 && !ascii_value &&
 		    !Utf8Proc::IsValid(value_ptr, UnsafeNumericCast<uint32_t>(size))) {
 			bool force_error = !state_machine.options.ignore_errors.GetValue() && sniffing;
 			// Invalid unicode, we must error

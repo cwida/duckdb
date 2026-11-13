@@ -1,0 +1,863 @@
+# name: test/sql/copy/csv/test_block_scan_utf8_dialects.test
+# description: The UTF-8 check skipped for values in ASCII blocks, in multi-byte delimiter, UTF-8 delimiter, CR, CRLF and comment dialects: results, errors and rejects stay the same as the byte loop's
+# group: [csv]
+
+# the fixtures depend on exact byte offsets
+require notwindows
+
+# Every block_scan_utf8_*.csv holds the same rows: invalid bytes in an unquoted, a quoted and an integer value, valid UTF-8
+# in a value and in a quoted value with a row end, an invalid byte as the last byte of the first 64 byte block and as the first byte of the third,
+# an ASCII value crossing a block edge and one whose second block holds valid UTF-8; the comment files add comment lines
+# with non-ASCII bytes. Expected results are those of the build before the change.
+
+# file pipe2, strict, selecting *
+statement error
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 1
+
+# file pipe2, ignore_errors, selecting *
+query IIII
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1	abc	x	7
+4	é	ok	10
+7	two<LF>linesé	w	12
+8	plain	more	13
+13	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	x	18
+14	ccccccccccccccccccccccccccccccccccccccccccéé	x	19
+15	last	row	20
+
+# file pipe2, strict, selecting b
+statement error
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 1
+
+# file pipe2, ignore_errors, selecting b
+query I
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+a
+abc
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+ccccccccccccccccccccccccccccccccccccccccccéé
+fine
+last
+plain
+two<LF>linesé
+é
+
+# file pipe2, strict, selecting c
+statement error
+SELECT replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 7
+
+# file pipe2, ignore_errors, selecting c
+query I
+SELECT replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+b
+more
+ok
+row
+w
+x
+x
+x
+x
+x
+y
+z
+
+# file pipe2, strict, selecting a, d
+statement error
+SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 8
+
+# file pipe2, ignore_errors, selecting a, d
+query II
+SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1	7
+2	8
+3	9
+4	10
+5	11
+7	12
+8	13
+11	0
+12	0
+13	18
+14	19
+15	20
+
+# file pipe2, strict, selecting count(*)
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'})
+----
+13
+
+# file pipe2, ignore_errors, selecting count(*)
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true)
+----
+13
+
+# file pipe2, all_varchar (types inferred, every column validated), ignore_errors, selecting *
+query IIII
+SELECT replace(replace(column0, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column1, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column2, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column3, chr(10), '<LF>'), chr(13), '<CR>') FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', all_varchar=true, ignore_errors=true) ORDER BY ALL
+----
+1	abc	x	7
+13	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	x	18
+14	ccccccccccccccccccccccccccccccccccccccccccéé	x	19
+15	last	row	20
+4	é	ok	10
+7	two<LF>linesé	w	12
+8	plain	more	13
+
+# file pipe2, all_varchar, strict
+statement error
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', all_varchar=true)
+----
+CSV Error on Line: 1
+
+# file pipe2, buffer_size 64, ignore_errors, selecting b, d
+query II
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=64, ignore_errors=true) ORDER BY ALL
+----
+abc	7
+ccccccccccccccccccccccccccccccccccccccccccéé	19
+fine	11
+last	20
+plain	13
+two<LF>linesé	12
+é	10
+
+# file pipe2, buffer_size 100, ignore_errors, selecting b, d
+query II
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=100, ignore_errors=true) ORDER BY ALL
+----
+abc	7
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	18
+ccccccccccccccccccccccccccccccccccccccccccéé	19
+fine	11
+last	20
+plain	13
+two<LF>linesé	12
+é	10
+
+# file pipe2, rejects, selecting *
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_pipe2_star AS SELECT * FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_pipe2_star', rejects_scan='scan_rej_pipe2_star'); SELECT line, column_idx, error_type FROM rej_pipe2_star ORDER BY ALL
+----
+1	2	INVALID ENCODING
+2	2	INVALID ENCODING
+4	2	INVALID ENCODING
+5	2	INVALID ENCODING
+7	3	INVALID ENCODING
+8	4	CAST
+
+# file pipe2, rejects, selecting b
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_pipe2_b AS SELECT b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_pipe2_b', rejects_scan='scan_rej_pipe2_b'); SELECT line, column_idx, error_type FROM rej_pipe2_b ORDER BY ALL
+----
+1	2	INVALID ENCODING
+2	2	INVALID ENCODING
+4	2	INVALID ENCODING
+5	2	INVALID ENCODING
+
+# file pipe2, rejects, selecting a, d
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_pipe2_ad AS SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_pipe2_ad', rejects_scan='scan_rej_pipe2_ad'); SELECT line, column_idx, error_type FROM rej_pipe2_ad ORDER BY ALL
+----
+8	4	CAST
+
+# file cent, strict, selecting *
+statement error
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 1
+
+# file cent, ignore_errors, selecting *
+query IIII
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1	abc	x	7
+4	é	ok	10
+7	two<LF>linesé	w	12
+8	plain	more	13
+13	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	x	18
+14	ccccccccccccccccccccccccccccccccccccccccccéé	x	19
+15	last	row	20
+
+# file cent, strict, selecting b
+statement error
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 1
+
+# file cent, ignore_errors, selecting b
+query I
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+a
+abc
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+ccccccccccccccccccccccccccccccccccccccccccéé
+fine
+last
+plain
+two<LF>linesé
+é
+
+# file cent, strict, selecting c
+statement error
+SELECT replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 7
+
+# file cent, ignore_errors, selecting c
+query I
+SELECT replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+b
+more
+ok
+row
+w
+x
+x
+x
+x
+x
+y
+z
+
+# file cent, strict, selecting a, d
+statement error
+SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 8
+
+# file cent, ignore_errors, selecting a, d
+query II
+SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1	7
+2	8
+3	9
+4	10
+5	11
+7	12
+8	13
+11	0
+12	0
+13	18
+14	19
+15	20
+
+# file cent, strict, selecting count(*)
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'})
+----
+13
+
+# file cent, ignore_errors, selecting count(*)
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true)
+----
+13
+
+# file cent, all_varchar (types inferred, every column validated), ignore_errors, selecting *
+query IIII
+SELECT replace(replace(column0, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column1, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column2, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column3, chr(10), '<LF>'), chr(13), '<CR>') FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', all_varchar=true, ignore_errors=true) ORDER BY ALL
+----
+1	abc	x	7
+13	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	x	18
+14	ccccccccccccccccccccccccccccccccccccccccccéé	x	19
+15	last	row	20
+4	é	ok	10
+7	two<LF>linesé	w	12
+8	plain	more	13
+
+# file cent, all_varchar, strict
+statement error
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', all_varchar=true)
+----
+CSV Error on Line: 1
+
+# file cent, buffer_size 64, ignore_errors, selecting b, d
+query II
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=64, ignore_errors=true) ORDER BY ALL
+----
+abc	7
+ccccccccccccccccccccccccccccccccccccccccccéé	19
+fine	11
+last	20
+plain	13
+two<LF>linesé	12
+é	10
+
+# file cent, buffer_size 100, ignore_errors, selecting b, d
+query II
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=100, ignore_errors=true) ORDER BY ALL
+----
+abc	7
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	18
+ccccccccccccccccccccccccccccccccccccccccccéé	19
+fine	11
+last	20
+plain	13
+two<LF>linesé	12
+é	10
+
+# file cent, rejects, selecting *
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_cent_star AS SELECT * FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_cent_star', rejects_scan='scan_rej_cent_star'); SELECT line, column_idx, error_type FROM rej_cent_star ORDER BY ALL
+----
+1	2	INVALID ENCODING
+2	2	INVALID ENCODING
+4	2	INVALID ENCODING
+5	2	INVALID ENCODING
+7	3	INVALID ENCODING
+8	4	CAST
+
+# file cent, rejects, selecting b
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_cent_b AS SELECT b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_cent_b', rejects_scan='scan_rej_cent_b'); SELECT line, column_idx, error_type FROM rej_cent_b ORDER BY ALL
+----
+1	2	INVALID ENCODING
+2	2	INVALID ENCODING
+4	2	INVALID ENCODING
+5	2	INVALID ENCODING
+
+# file cent, rejects, selecting a, d
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_cent_ad AS SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cent.csv', delim='¦', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_cent_ad', rejects_scan='scan_rej_cent_ad'); SELECT line, column_idx, error_type FROM rej_cent_ad ORDER BY ALL
+----
+8	4	CAST
+
+# file cr, strict, selecting *
+statement error
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 1
+
+# file cr, ignore_errors, selecting *
+query IIII
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1	abc	x	7
+4	é	ok	10
+7	two<CR>linesé	w	12
+8	plain	more	13
+13	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	x	18
+14	ccccccccéé	x	19
+15	last	row	20
+
+# file cr, strict, selecting b
+statement error
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 1
+
+# file cr, ignore_errors, selecting b
+query I
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+a
+abc
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+ccccccccéé
+fine
+last
+plain
+two<CR>linesé
+é
+
+# file cr, strict, selecting c
+statement error
+SELECT replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 7
+
+# file cr, ignore_errors, selecting c
+query I
+SELECT replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+b
+more
+ok
+row
+w
+x
+x
+x
+x
+x
+y
+z
+
+# file cr, strict, selecting a, d
+statement error
+SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 8
+
+# file cr, ignore_errors, selecting a, d
+query II
+SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1	7
+2	8
+3	9
+4	10
+5	11
+7	12
+8	13
+11	0
+12	0
+13	18
+14	19
+15	20
+
+# file cr, strict, selecting count(*)
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'})
+----
+13
+
+# file cr, ignore_errors, selecting count(*)
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true)
+----
+13
+
+# file cr, all_varchar (types inferred, every column validated), ignore_errors, selecting *
+query IIII
+SELECT replace(replace(column0, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column1, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column2, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column3, chr(10), '<LF>'), chr(13), '<CR>') FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', all_varchar=true, ignore_errors=true) ORDER BY ALL
+----
+1	abc	x	7
+13	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	x	18
+14	ccccccccéé	x	19
+15	last	row	20
+4	é	ok	10
+7	two<CR>linesé	w	12
+8	plain	more	13
+
+# file cr, all_varchar, strict
+statement error
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', all_varchar=true)
+----
+CSV Error on Line: 1
+
+# file cr, buffer_size 64, ignore_errors, selecting b, d
+query II
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=64, ignore_errors=true) ORDER BY ALL
+----
+abc	7
+ccccccccéé	19
+fine	11
+last	20
+plain	13
+two<CR>linesé	12
+é	10
+
+# file cr, buffer_size 100, ignore_errors, selecting b, d
+query II
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=100, ignore_errors=true) ORDER BY ALL
+----
+abc	7
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	18
+ccccccccéé	19
+fine	11
+last	20
+plain	13
+two<CR>linesé	12
+é	10
+
+# file cr, rejects, selecting *
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_cr_star AS SELECT * FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_cr_star', rejects_scan='scan_rej_cr_star'); SELECT line, column_idx, error_type FROM rej_cr_star ORDER BY ALL
+----
+1	2	INVALID ENCODING
+2	2	INVALID ENCODING
+4	2	INVALID ENCODING
+5	2	INVALID ENCODING
+7	3	INVALID ENCODING
+8	4	CAST
+
+# file cr, rejects, selecting b
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_cr_b AS SELECT b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_cr_b', rejects_scan='scan_rej_cr_b'); SELECT line, column_idx, error_type FROM rej_cr_b ORDER BY ALL
+----
+1	2	INVALID ENCODING
+2	2	INVALID ENCODING
+4	2	INVALID ENCODING
+5	2	INVALID ENCODING
+
+# file cr, rejects, selecting a, d
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_cr_ad AS SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_cr_ad', rejects_scan='scan_rej_cr_ad'); SELECT line, column_idx, error_type FROM rej_cr_ad ORDER BY ALL
+----
+8	4	CAST
+
+# file crlf_comment, strict, selecting *
+statement error
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 2
+
+# file crlf_comment, ignore_errors, selecting *
+query IIII
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1	abc	x	7
+4	é	ok	10
+7	two<CR><LF>linesé	w	12
+8	plain	more	13
+9	v	w	14
+10	after	comment	15
+13	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	x	18
+14	cccccccccccccccccccccccccccccccccccccccccccéé	x	19
+15	last	row	20
+
+# file crlf_comment, strict, selecting b
+statement error
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 2
+
+# file crlf_comment, ignore_errors, selecting b
+query I
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+a
+abc
+after
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cccccccccccccccccccccccccccccccccccccccccccéé
+fine
+last
+plain
+two<CR><LF>linesé
+v
+é
+
+# file crlf_comment, strict, selecting c
+statement error
+SELECT replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 8
+
+# file crlf_comment, ignore_errors, selecting c
+query I
+SELECT replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+b
+comment
+more
+ok
+row
+w
+w
+x
+x
+x
+x
+x
+y
+z
+
+# file crlf_comment, strict, selecting a, d
+statement error
+SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 9
+
+# file crlf_comment, ignore_errors, selecting a, d
+query II
+SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1	7
+2	8
+3	9
+4	10
+5	11
+7	12
+8	13
+9	14
+10	15
+11	0
+12	0
+13	18
+14	19
+15	20
+
+# file crlf_comment, strict, selecting count(*)
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'})
+----
+15
+
+# file crlf_comment, ignore_errors, selecting count(*)
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true)
+----
+15
+
+# file crlf_comment, all_varchar (types inferred, every column validated), ignore_errors, selecting *
+query IIII
+SELECT replace(replace(column0, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column1, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column2, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column3, chr(10), '<LF>'), chr(13), '<CR>') FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', all_varchar=true, ignore_errors=true) ORDER BY ALL
+----
+1	abc	x	7
+10	after	comment	15
+13	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	x	18
+14	cccccccccccccccccccccccccccccccccccccccccccéé	x	19
+15	last	row	20
+4	é	ok	10
+7	two<CR><LF>linesé	w	12
+8	plain	more	13
+9	v	w	14
+
+# file crlf_comment, all_varchar, strict
+statement error
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', all_varchar=true)
+----
+CSV Error on Line: 2
+
+# file crlf_comment, buffer_size 64, ignore_errors, selecting b, d
+query II
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=64, ignore_errors=true) ORDER BY ALL
+----
+abc	7
+after	15
+cccccccccccccccccccccccccccccccccccccccccccéé	19
+fine	11
+last	20
+plain	13
+two<CR><LF>linesé	12
+v	14
+é	10
+
+# file crlf_comment, buffer_size 100, ignore_errors, selecting b, d
+query II
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=100, ignore_errors=true) ORDER BY ALL
+----
+abc	7
+after	15
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	18
+cccccccccccccccccccccccccccccccccccccccccccéé	19
+fine	11
+last	20
+plain	13
+two<CR><LF>linesé	12
+v	14
+é	10
+
+# file crlf_comment, rejects, selecting *
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_crlf_comment_star AS SELECT * FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_crlf_comment_star', rejects_scan='scan_rej_crlf_comment_star'); SELECT line, column_idx, error_type FROM rej_crlf_comment_star ORDER BY ALL
+----
+2	2	INVALID ENCODING
+3	2	INVALID ENCODING
+5	2	INVALID ENCODING
+6	2	INVALID ENCODING
+8	3	INVALID ENCODING
+9	4	CAST
+
+# file crlf_comment, rejects, selecting b
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_crlf_comment_b AS SELECT b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_crlf_comment_b', rejects_scan='scan_rej_crlf_comment_b'); SELECT line, column_idx, error_type FROM rej_crlf_comment_b ORDER BY ALL
+----
+2	2	INVALID ENCODING
+3	2	INVALID ENCODING
+5	2	INVALID ENCODING
+6	2	INVALID ENCODING
+
+# file crlf_comment, rejects, selecting a, d
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_crlf_comment_ad AS SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_crlf_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_crlf_comment_ad', rejects_scan='scan_rej_crlf_comment_ad'); SELECT line, column_idx, error_type FROM rej_crlf_comment_ad ORDER BY ALL
+----
+9	4	CAST
+
+# file comment, strict, selecting *
+statement error
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 2
+
+# file comment, ignore_errors, selecting *
+query IIII
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1	abc	x	7
+4	é	ok	10
+7	two<LF>linesé	w	12
+8	plain	more	13
+9	v	w	14
+10	after	comment	15
+13	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	x	18
+14	cccccccccccccccccccccccccccccccccccccccccccccccccccccccccéé	x	19
+15	last	row	20
+
+# file comment, strict, selecting b
+statement error
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 2
+
+# file comment, ignore_errors, selecting b
+query I
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+a
+abc
+after
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccéé
+fine
+last
+plain
+two<LF>linesé
+v
+é
+
+# file comment, strict, selecting c
+statement error
+SELECT replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 8
+
+# file comment, ignore_errors, selecting c
+query I
+SELECT replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+b
+comment
+more
+ok
+row
+w
+w
+x
+x
+x
+x
+x
+y
+z
+
+# file comment, strict, selecting a, d
+statement error
+SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}) ORDER BY ALL
+----
+CSV Error on Line: 9
+
+# file comment, ignore_errors, selecting a, d
+query II
+SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1	7
+2	8
+3	9
+4	10
+5	11
+7	12
+8	13
+9	14
+10	15
+11	0
+12	0
+13	18
+14	19
+15	20
+
+# file comment, strict, selecting count(*)
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'})
+----
+15
+
+# file comment, ignore_errors, selecting count(*)
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true)
+----
+15
+
+# file comment, all_varchar (types inferred, every column validated), ignore_errors, selecting *
+query IIII
+SELECT replace(replace(column0, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column1, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column2, chr(10), '<LF>'), chr(13), '<CR>'), replace(replace(column3, chr(10), '<LF>'), chr(13), '<CR>') FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', all_varchar=true, ignore_errors=true) ORDER BY ALL
+----
+1	abc	x	7
+10	after	comment	15
+13	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	x	18
+14	cccccccccccccccccccccccccccccccccccccccccccccccccccccccccéé	x	19
+15	last	row	20
+4	é	ok	10
+7	two<LF>linesé	w	12
+8	plain	more	13
+9	v	w	14
+
+# file comment, all_varchar, strict
+statement error
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', all_varchar=true)
+----
+CSV Error on Line: 2
+
+# file comment, buffer_size 64, ignore_errors, selecting b, d
+query II
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=64, ignore_errors=true) ORDER BY ALL
+----
+abc	7
+after	15
+fine	11
+last	20
+plain	13
+two<LF>linesé	12
+v	14
+é	10
+
+# file comment, buffer_size 100, ignore_errors, selecting b, d
+query II
+SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=100, ignore_errors=true) ORDER BY ALL
+----
+abc	7
+after	15
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	18
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccéé	19
+fine	11
+last	20
+plain	13
+two<LF>linesé	12
+v	14
+é	10
+
+# file comment, rejects, selecting *
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_comment_star AS SELECT * FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_comment_star', rejects_scan='scan_rej_comment_star'); SELECT line, column_idx, error_type FROM rej_comment_star ORDER BY ALL
+----
+2	2	INVALID ENCODING
+3	2	INVALID ENCODING
+5	2	INVALID ENCODING
+6	2	INVALID ENCODING
+8	3	INVALID ENCODING
+9	4	CAST
+
+# file comment, rejects, selecting b
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_comment_b AS SELECT b FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_comment_b', rejects_scan='scan_rej_comment_b'); SELECT line, column_idx, error_type FROM rej_comment_b ORDER BY ALL
+----
+2	2	INVALID ENCODING
+3	2	INVALID ENCODING
+5	2	INVALID ENCODING
+6	2	INVALID ENCODING
+
+# file comment, rejects, selecting a, d
+query III
+CREATE OR REPLACE TEMP TABLE t_rej_comment_ad AS SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_utf8_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_comment_ad', rejects_scan='scan_rej_comment_ad'); SELECT line, column_idx, error_type FROM rej_comment_ad ORDER BY ALL
+----
+9	4	CAST

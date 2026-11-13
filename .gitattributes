@@ -2,3 +2,5 @@
 # byte-exact fixtures: the tests assert byte positions and a buffer layout that CRLF conversion would change
 data/csv/last_value_error_no_newline.csv -text
 data/csv/unterminated_quote_cast_error_eof.csv -text
+# the block scanner's fixtures place bytes at exact offsets of 64 byte blocks and are read with their own newline byte
+data/csv/block_scan_*.csv -text
