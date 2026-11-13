@@ -1,0 +1,131 @@
+# name: test/sql/copy/parquet/bloom_filter_cast.test
+# description: Bloom filters prune row groups for filters on a column cast to a type that preserves its values
+# group: [parquet]
+
+require parquet
+
+# even values only: min/max never rule a row group out, the Bloom filter rules out odd values
+statement ok
+CREATE TABLE numbers AS SELECT ((i % 50) * 2)::INTEGER AS i, ((i % 50) * 2)::FLOAT AS f FROM range(4096) t(i)
+
+statement ok
+COPY numbers TO '{TEST_DIR}/bloom_cast.parquet' (FORMAT parquet, ROW_GROUP_SIZE 2048)
+
+# FLOAT compared with DOUBLE
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM '{TEST_DIR}/bloom_cast.parquet' WHERE f = 25::DOUBLE
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 2.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM '{TEST_DIR}/bloom_cast.parquet' WHERE f IN (25::DOUBLE, 27::DOUBLE)
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 2.*
+
+# INTEGER compared with a list that only fits BIGINT
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM '{TEST_DIR}/bloom_cast.parquet' WHERE i IN (25, 27, 5000000000)
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 2.*
+
+# INTEGER cast to VARCHAR: no integer is printed as '024'
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM '{TEST_DIR}/bloom_cast.parquet' WHERE i::VARCHAR = '024'
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 2.*
+
+# FLOAT cast to VARCHAR loses the stored value: no pruning
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM '{TEST_DIR}/bloom_cast.parquet' WHERE f::VARCHAR = '25.0'
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 2 / 2.*
+
+# the results match the table, including values that are present
+foreach filter f=24::DOUBLE f=25::DOUBLE f=0.1::DOUBLE f=-0.0::DOUBLE f='nan'::DOUBLE f=1e300 i::VARCHAR='24' i::VARCHAR='024' i::VARCHAR='+24' i::DOUBLE=24.0 i::DOUBLE=24.5 i::DECIMAL(18,2)=24.00
+
+query I
+SELECT (SELECT count(*) FROM '{TEST_DIR}/bloom_cast.parquet' WHERE {filter}) = (SELECT count(*) FROM numbers WHERE {filter})
+----
+true
+
+endloop
+
+query I
+SELECT (SELECT count(*) FROM '{TEST_DIR}/bloom_cast.parquet' WHERE f IS NOT DISTINCT FROM 24::DOUBLE) =
+       (SELECT count(*) FROM numbers WHERE f IS NOT DISTINCT FROM 24::DOUBLE)
+----
+true
+
+query I
+SELECT (SELECT count(*) FROM '{TEST_DIR}/bloom_cast.parquet' WHERE i IN (24, 5000000000)) =
+       (SELECT count(*) FROM numbers WHERE i IN (24, 5000000000))
+----
+true
+
+# NaN: a stored FLOAT NaN matches it, no integer does
+statement ok
+COPY (FROM numbers UNION ALL SELECT 0, 'nan'::FLOAT) TO '{TEST_DIR}/bloom_cast_nan.parquet' (FORMAT parquet)
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_cast_nan.parquet' WHERE f = 'nan'::DOUBLE
+----
+1
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_cast_nan.parquet' WHERE i::DOUBLE = 'nan'::DOUBLE
+----
+0
+
+# files whose column is read as a wider type
+statement ok
+COPY (SELECT i::BIGINT AS i, f::DOUBLE AS f FROM numbers) TO '{TEST_DIR}/bloom_cast_wide.parquet' (FORMAT parquet, ROW_GROUP_SIZE 2048)
+
+statement ok
+COPY (SELECT i::VARCHAR AS i, f::VARCHAR AS f FROM numbers) TO '{TEST_DIR}/bloom_cast_varchar.parquet' (FORMAT parquet, ROW_GROUP_SIZE 2048)
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM read_parquet(['{TEST_DIR}/bloom_cast.parquet', '{TEST_DIR}/bloom_cast_wide.parquet'], union_by_name = true) WHERE i = 25
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 4.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM read_parquet(['{TEST_DIR}/bloom_cast.parquet', '{TEST_DIR}/bloom_cast_wide.parquet'], union_by_name = true) WHERE f = 25
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 4.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM read_parquet(['{TEST_DIR}/bloom_cast.parquet', '{TEST_DIR}/bloom_cast_varchar.parquet'], union_by_name = true) WHERE i = '25'
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 4.*
+
+# BIGINT read as DOUBLE loses the stored value: only the DOUBLE file is pruned
+statement ok
+COPY (SELECT i::BIGINT AS x FROM numbers) TO '{TEST_DIR}/bloom_cast_x_bigint.parquet' (FORMAT parquet, ROW_GROUP_SIZE 2048)
+
+statement ok
+COPY (SELECT i::DOUBLE AS x FROM numbers) TO '{TEST_DIR}/bloom_cast_x_double.parquet' (FORMAT parquet, ROW_GROUP_SIZE 2048)
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM read_parquet(['{TEST_DIR}/bloom_cast_x_bigint.parquet', '{TEST_DIR}/bloom_cast_x_double.parquet'], union_by_name = true) WHERE x = 25
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 2 / 4.*
+
+foreach filter i=24 i=25 i=5000000000 f=24 f=25 f=0.1
+
+query I
+SELECT (SELECT count(*) FROM read_parquet(['{TEST_DIR}/bloom_cast.parquet', '{TEST_DIR}/bloom_cast_wide.parquet'], union_by_name = true) WHERE {filter}) =
+       (SELECT 2 * count(*) FROM numbers WHERE {filter})
+----
+true
+
+endloop
+
+foreach value '24' '25' '024'
+
+query I
+SELECT (SELECT count(*) FROM read_parquet(['{TEST_DIR}/bloom_cast.parquet', '{TEST_DIR}/bloom_cast_varchar.parquet'], union_by_name = true) WHERE i = {value}) =
+       (SELECT 2 * count(*) FROM numbers WHERE i::VARCHAR = {value})
+----
+true
+
+endloop

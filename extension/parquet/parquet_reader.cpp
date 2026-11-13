@@ -1789,6 +1789,31 @@ static optional_ptr<ColumnReader> TryGetBloomFilterSource(ColumnReader &column_r
 	return TryGetBloomFilterSource(*expr_reader.child_readers[0]);
 }
 
+//! For a column read as a cast of the file column whose Bloom filter can be probed, the cast
+static optional_ptr<const Expression> TryGetBloomFilterCast(ColumnReader &column_reader,
+                                                            optional_ptr<ColumnReader> &bloom_source) {
+	if (column_reader.Schema().schema_type != ParquetColumnSchemaType::EXPRESSION) {
+		return nullptr;
+	}
+	auto &expr_reader = column_reader.Cast<ExpressionColumnReader>();
+	if (expr_reader.child_readers.size() != 1 || !expr_reader.expr ||
+	    !ParquetStatisticsUtils::IsBloomFilterCast(*expr_reader.expr)) {
+		return nullptr;
+	}
+	auto &child_reader = *expr_reader.child_readers[0];
+	if (child_reader.Schema().schema_type != ParquetColumnSchemaType::COLUMN || child_reader.Type().IsNested()) {
+		return nullptr;
+	}
+	bloom_source = child_reader;
+	return expr_reader.expr.get();
+}
+
+//! The filter applied to the cast of the file column instead of the column read
+static unique_ptr<TableFilter> CreateCastBloomFilter(const TableFilter &filter, const Expression &cast) {
+	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "ParquetReader::CreateCastBloomFilter");
+	return make_uniq<ExpressionFilter>(expr_filter.ToExpression(cast));
+}
+
 static bool TryGetComparisonBloomFilterLeaf(ColumnReader &column_reader, const Expression &expr,
                                             optional_ptr<ColumnReader> &leaf_reader,
                                             unique_ptr<TableFilter> &leaf_filter) {
@@ -1967,6 +1992,10 @@ void ParquetReader::PrepareRowGroupBuffer(ClientContext &context, ParquetReaderS
 			auto prune_result = CheckRowGroupFilterStatistics(context, state, column_reader, filter);
 			// check the bloom filter if present
 			auto bloom_source = TryGetBloomFilterSource(column_reader);
+			optional_ptr<const Expression> bloom_cast;
+			if (!bloom_source) {
+				bloom_cast = TryGetBloomFilterCast(column_reader, bloom_source);
+			}
 			if (bloom_source) {
 				optional_ptr<ColumnReader> bloom_reader = bloom_source;
 				optional_ptr<const TableFilter> bloom_filter = &filter;
@@ -1993,15 +2022,21 @@ void ParquetReader::PrepareRowGroupBuffer(ClientContext &context, ParquetReaderS
 				    bloom_reader->Schema().schema_type == ParquetColumnSchemaType::COLUMN &&
 				    bloom_reader->ColumnIndex() < group.columns.size() && hash_strategy) {
 					auto &bloom_meta_data = group.columns[bloom_reader->ColumnIndex()].meta_data;
-					if (bloom_meta_data.__isset.bloom_filter_offset && bloom_meta_data.bloom_filter_offset > 0 &&
-					    ParquetStatisticsUtils::HasBloomFilterConstants(*bloom_filter, *hash_strategy)) {
-						TryAttachBloomFilterReadHead(context, state, column_reader, filter,
-						                             bloom_source->Type().IsNested(), bloom_reader->ColumnIndex());
-					}
-					if (ParquetStatisticsUtils::BloomFilterExcludes(
-					        *bloom_filter, group.columns[bloom_reader->ColumnIndex()].meta_data,
-					        *state.thrift_file_proto, allocator, bloom_reader->Schema(), *hash_strategy)) {
-						prune_result = FilterPropagateResult::FILTER_ALWAYS_FALSE;
+					if (bloom_meta_data.__isset.bloom_filter_offset && bloom_meta_data.bloom_filter_offset > 0) {
+						unique_ptr<TableFilter> cast_filter;
+						if (bloom_cast) {
+							cast_filter = CreateCastBloomFilter(filter, *bloom_cast);
+							bloom_filter = cast_filter.get();
+						}
+						if (ParquetStatisticsUtils::HasBloomFilterConstants(*bloom_filter, *hash_strategy)) {
+							TryAttachBloomFilterReadHead(context, state, column_reader, filter,
+							                             bloom_source->Type().IsNested(), bloom_reader->ColumnIndex());
+						}
+						if (ParquetStatisticsUtils::BloomFilterExcludes(*bloom_filter, bloom_meta_data,
+						                                                *state.thrift_file_proto, allocator,
+						                                                bloom_reader->Schema(), *hash_strategy)) {
+							prune_result = FilterPropagateResult::FILTER_ALWAYS_FALSE;
+						}
 					}
 				}
 			}
