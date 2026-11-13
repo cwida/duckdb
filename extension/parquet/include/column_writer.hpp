@@ -139,26 +139,18 @@ public:
 	idx_t MaxRepeat() const {
 		return column_schema.max_repeat;
 	}
-	virtual bool HasTransform() {
+	virtual bool HasTransform() const {
 		for (auto &child_writer : child_writers) {
 			if (child_writer->HasTransform()) {
-				throw NotImplementedException("ColumnWriter of type '%s' requires a transform, but is not a root "
-				                              "column, this isn't supported currently",
-				                              child_writer->Type());
+				return true;
 			}
 		}
 		return false;
 	}
-	virtual LogicalType TransformedType() const {
-		throw NotImplementedException("Writer does not have a transformed type");
-	}
-	virtual unique_ptr<Expression> TransformExpression(unique_ptr<BoundReferenceExpression> expr) {
-		throw NotImplementedException("Writer does not have a transform expression");
-	}
+	virtual LogicalType TransformedType() const;
+	virtual unique_ptr<Expression> TransformExpression(unique_ptr<BoundReferenceExpression> expr);
 
-	virtual unique_ptr<ParquetAnalyzeSchemaState> AnalyzeSchemaInit() {
-		return nullptr;
-	}
+	virtual unique_ptr<ParquetAnalyzeSchemaState> AnalyzeSchemaInit();
 
 	const vector<unique_ptr<ColumnWriter>> &ChildWriters() const {
 		return child_writers;
@@ -167,13 +159,9 @@ public:
 	//! Mark this writer (and descendants) as REQUIRED in the Parquet schema
 	void MarkRepetitionRequired();
 
-	virtual void AnalyzeSchema(ParquetAnalyzeSchemaState &state, Vector &input, idx_t count) {
-		throw NotImplementedException("Writer doesn't require an AnalyzeSchema pass");
-	}
+	virtual void AnalyzeSchema(ParquetAnalyzeSchemaState &state, Vector &input, idx_t count);
 
-	virtual void AnalyzeSchemaFinalize(const ParquetAnalyzeSchemaState &state) {
-		throw NotImplementedException("Writer doesn't require an AnalyzeSchemaFinalize pass");
-	}
+	virtual void AnalyzeSchemaFinalize(const ParquetAnalyzeSchemaState &state);
 
 	virtual bool TryExportPreparedShreddingType(ShreddingType &result) const;
 

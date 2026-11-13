@@ -1,0 +1,171 @@
+# name: test/parquet/variant/variant_nested_writing.test
+# description: Write VARIANT at different depths in Parquet containers
+# group: [variant]
+
+require parquet
+
+require json
+
+statement ok
+CREATE TABLE variant_values AS
+FROM (VALUES
+	(0, NULL::VARIANT),
+	(1, 42::VARIANT),
+	(2, NULL::VARIANT),
+	(3, 'a string longer than twelve bytes'::VARIANT),
+	(4, {'duck': 42, 'nested': [1, NULL]}::VARIANT),
+	(5, [1::VARIANT, 'duck', NULL]::VARIANT),
+	(6, '{}'::JSON::VARIANT),
+	(7, '\x00\xFF'::BLOB::VARIANT),
+	(8, true::VARIANT),
+	(9, DATE '2024-01-01'::VARIANT)
+) t(id, v);
+
+# Null parents, empty containers, null elements and unchanged sibling fields.
+statement ok
+CREATE TABLE nested_variants AS
+SELECT id, v,
+	CASE WHEN id = 0 THEN NULL ELSE {'payload': v, 'sibling': id} END AS s,
+	CASE WHEN id = 0 THEN NULL WHEN id = 1 THEN [] ELSE [v, NULL, v] END AS l,
+	CASE WHEN id = 0 THEN NULL WHEN id = 1 THEN map() ELSE map(['value', 'null'], [v, NULL]) END AS m,
+	CASE WHEN v IS NULL THEN NULL ELSE map([v], [id]) END AS map_key,
+	(CASE WHEN id = 0 THEN NULL ELSE [v, NULL] END)::VARIANT[2] AS a
+FROM variant_values;
+
+statement ok
+CREATE TABLE deeply_nested_variants AS
+SELECT id,
+	{'items': [m, NULL, map()], 'sibling': 'unchanged'} AS struct_list_map,
+	[{'items': m, 'sibling': id}, NULL] AS list_struct_map,
+	map(['items', 'null'], [[s, NULL], NULL]) AS map_list_struct,
+	{'nested': {'items': [l, NULL, []]}} AS struct_struct_list_list,
+	map([{'key': v}], [[v, NULL]]) AS struct_map_key,
+	[a, NULL] AS list_array
+FROM nested_variants;
+
+foreach table nested_variants deeply_nested_variants
+
+query I rowsort nested_variant_values
+SELECT * FROM {table};
+----
+
+statement ok
+COPY {table} TO '{TEST_DIR}/{table}.parquet';
+
+query I rowsort nested_variant_values
+SELECT * FROM '{TEST_DIR}/{table}.parquet';
+----
+
+# Empty inputs must still produce a readable schema.
+statement ok
+COPY (SELECT * FROM {table} WHERE false) TO '{TEST_DIR}/{table}_empty.parquet';
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/{table}_empty.parquet';
+----
+0
+
+reset label nested_variant_values
+
+endloop
+
+query TTTT
+SELECT typeof(s), typeof(l), typeof(m), typeof(map_key)
+FROM '{TEST_DIR}/nested_variants.parquet' LIMIT 1;
+----
+STRUCT(payload VARIANT, sibling INTEGER)	VARIANT[]	MAP(VARCHAR, VARIANT)	MAP(VARIANT, INTEGER)
+
+# Entire child vectors can be empty or contain only NULLs.
+statement ok
+COPY (
+	SELECT []::VARIANT[] AS l, map([]::VARIANT[], []::VARIANT[]) AS m,
+		{'v': NULL::VARIANT} AS s, [NULL::VARIANT] AS nulls
+	FROM range(3)
+) TO '{TEST_DIR}/empty_variant_containers.parquet';
+
+query TTTT
+SELECT l, m, s, nulls FROM '{TEST_DIR}/empty_variant_containers.parquet';
+----
+[]	{}	{'v': NULL}	[NULL]
+[]	{}	{'v': NULL}	[NULL]
+[]	{}	{'v': NULL}	[NULL]
+
+# Automatic shredding must reach each nested VARIANT.
+statement ok
+COPY (
+	SELECT {'v': i::VARIANT} AS s, [i::VARIANT] AS l,
+		map([i::VARIANT], [i::VARIANT]) AS m
+	FROM range(10) t(i)
+) TO '{TEST_DIR}/nested_shredded.parquet';
+
+query II
+SELECT count(*) FILTER (WHERE name = 'metadata' AND repetition_type = 'REQUIRED'),
+	count(*) FILTER (WHERE name = 'typed_value' AND type = 'INT64')
+FROM parquet_schema('{TEST_DIR}/nested_shredded.parquet');
+----
+4	4
+
+# Empty objects cannot be shredded and must keep their binary encoding.
+statement ok
+COPY (
+	SELECT {'v': '{}'::JSON::VARIANT} AS s
+	FROM range(10)
+) TO '{TEST_DIR}/nested_unshredded.parquet';
+
+query I
+SELECT count(*) FROM parquet_schema('{TEST_DIR}/nested_unshredded.parquet') WHERE name = 'typed_value';
+----
+0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/nested_unshredded.parquet' WHERE s.v = '{}'::JSON::VARIANT;
+----
+10
+
+# Child vectors larger than STANDARD_VECTOR_SIZE, across multiple row groups.
+statement ok
+CREATE TABLE large_nested_variants AS
+SELECT i, [i::VARIANT, NULL, {'duck': i}::VARIANT] AS l,
+	map(['value', 'null'], [i::VARIANT, NULL]) AS m
+FROM range(5000) t(i);
+
+statement ok
+COPY large_nested_variants TO '{TEST_DIR}/large_nested_variants.parquet' (ROW_GROUP_SIZE 2048);
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM large_nested_variants EXCEPT ALL SELECT * FROM '{TEST_DIR}/large_nested_variants.parquet')
+	UNION ALL
+	(SELECT * FROM '{TEST_DIR}/large_nested_variants.parquet' EXCEPT ALL SELECT * FROM large_nested_variants)
+);
+----
+0
+
+# Rotated files must reuse the nested shredding layout, including map keys.
+statement ok
+COPY (
+	SELECT i, l, m, map([i::VARIANT], [l]) AS map_key
+	FROM large_nested_variants
+) TO '{TEST_DIR}/nested_variant_multiple_files'
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, ROW_GROUPS_PER_FILE 1);
+
+query I
+SELECT count(*) FROM (
+	(SELECT i, l, m, map([i::VARIANT], [l]) AS map_key FROM large_nested_variants
+	 EXCEPT ALL SELECT * FROM '{TEST_DIR}/nested_variant_multiple_files/*.parquet')
+	UNION ALL
+	(SELECT * FROM '{TEST_DIR}/nested_variant_multiple_files/*.parquet'
+	 EXCEPT ALL SELECT i, l, m, map([i::VARIANT], [l]) AS map_key FROM large_nested_variants)
+);
+----
+0
+
+statement ok
+COPY (
+	SELECT list(i::VARIANT ORDER BY i) AS l FROM range(10000) t(i)
+) TO '{TEST_DIR}/large_variant_list.parquet';
+
+query II
+SELECT len(l), list_sum(list_transform(l, lambda x: x::BIGINT)) FROM '{TEST_DIR}/large_variant_list.parquet';
+----
+10000	49995000

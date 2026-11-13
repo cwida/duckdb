@@ -96,7 +96,7 @@ public:
 	void AnalyzeSchemaFinalize(const ParquetAnalyzeSchemaState &state) override;
 	bool TryExportPreparedShreddingType(ShreddingType &result) const override;
 
-	bool HasTransform() override {
+	bool HasTransform() const override {
 		return true;
 	}
 	LogicalType TransformedType() const override {
@@ -107,15 +107,6 @@ public:
 			children.emplace_back(child_name, child_type);
 		}
 		return LogicalType::STRUCT(std::move(children));
-	}
-	unique_ptr<Expression> TransformExpression(unique_ptr<BoundReferenceExpression> expr) override {
-		vector<unique_ptr<Expression>> arguments;
-		arguments.push_back(unique_ptr_cast<BoundReferenceExpression, Expression>(std::move(expr)));
-
-		BoundScalarFunction bound_func(GetTransformFunction(true));
-		bound_func.SetReturnType(TransformedType());
-
-		return make_uniq<BoundFunctionExpression>(std::move(bound_func), std::move(arguments), nullptr);
 	}
 
 public:

@@ -31,7 +31,7 @@ from '{TEST_DIR}/variant_multiple_files/*.parquet'
 
 # Test with a VARIANT in a nested type (STRUCT)
 
-statement error
+statement ok
 copy (
     (
         select {'a': {duck: range}::variant} v
@@ -41,12 +41,6 @@ copy (
         from range(2048)
     )
 ) to '{TEST_DIR}/variant_in_struct_multiple_files' (format parquet, row_group_size 2048, row_groups_per_file 1)
-----
-Not implemented Error: ColumnWriter of type 'VARIANT' requires a transform, but is not a root column, this isn't supported currently
-
-# Enable these when the above statement no longer fails
-# These tests are added to help remind that the multiple-file-scanning logic likely needs adjusting when variants are allowed in non-root columns
-mode skip instable
 
 query I
 select count(*)
@@ -59,5 +53,3 @@ select sum(v.a.duck::int) = 2 * list_sum(range(2048)), sum(v.a.goose::int) = lis
 from '{TEST_DIR}/variant_in_struct_multiple_files/*.parquet'
 ----
 1	1
-
-mode unskip

@@ -194,7 +194,9 @@ void FillShredNode(const ShreddedGroupView &view, const ShredPlan &plan, Vector 
 	writer.untyped_index_data = FlatVector::GetDataMutable<uint32_t>(untyped_index);
 	writer.untyped_index_validity = &FlatVector::ValidityMutable(untyped_index);
 	if (is_object_field) {
-		memset(writer.untyped_index_data, 0, count * sizeof(uint32_t));
+		if (count > 0) {
+			memset(writer.untyped_index_data, 0, count * sizeof(uint32_t));
+		}
 	} else {
 		writer.untyped_index_validity->SetAllInvalid(count);
 	}

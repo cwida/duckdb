@@ -12,8 +12,12 @@
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/common/vector/vector_iterator.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 
@@ -172,24 +176,72 @@ static void ToParquetVariantFunction(DataChunk &input, ExpressionState &state, V
 	ParquetVariantConversion::ToParquetVariant(input.data[0], input.size(), result);
 }
 
-static void ToParquetVariantWriteFunction(DataChunk &input, ExpressionState &state, Vector &result) {
-	ToParquetVariantFunction(input, state, result);
-	// Preserve SQL NULL at the VARIANT group.
-	auto validity = input.data[0].Validity();
-	if (validity.CannotHaveNull()) {
+static void TransformParquetVariants(Vector &input, Vector &result, idx_t count) {
+	if (input.GetType() == result.GetType()) {
+		result.Reference(input);
 		return;
 	}
-	for (idx_t i = 0; i < input.size(); i++) {
-		if (!validity.IsValid(i)) {
-			FlatVector::SetNull(result, i, true);
-		}
+	result.Reserve(count);
+	if (result.GetType().InternalType() != PhysicalType::LIST) {
+		FlatVector::SetSize(result, count);
 	}
+	if (input.GetType().id() == LogicalTypeId::VARIANT) {
+		ParquetVariantConversion::ToParquetVariant(input, count, result);
+		auto validity = input.Validity();
+		if (validity.CanHaveNull()) {
+			for (idx_t i = 0; i < count; i++) {
+				if (!validity.IsValid(i)) {
+					FlatVector::SetNull(result, i, true);
+				}
+			}
+		}
+		return;
+	}
+	switch (input.GetType().InternalType()) {
+	case PhysicalType::STRUCT: {
+		auto &source_children = StructVector::GetEntries(input);
+		auto &target_children = StructVector::GetEntries(result);
+		for (idx_t i = 0; i < source_children.size(); i++) {
+			TransformParquetVariants(source_children[i], target_children[i], count);
+		}
+		break;
+	}
+	case PhysicalType::LIST: {
+		auto &source_child = ListVector::GetChildMutable(input);
+		auto &target_child = ListVector::GetChildMutable(result);
+		auto child_count = ListVector::GetListSize(input);
+		TransformParquetVariants(source_child, target_child, child_count);
+		auto entries = input.Values<list_entry_t>();
+		auto result_entries = FlatVector::Writer<list_entry_t>(result, count);
+		for (idx_t i = 0; i < count; i++) {
+			auto entry = entries[i];
+			if (entry.IsValid()) {
+				result_entries.WriteValue(entry.GetValue());
+			} else {
+				result_entries.WriteNull();
+			}
+		}
+		return;
+	}
+	case PhysicalType::ARRAY:
+		input.Flatten();
+		TransformParquetVariants(ArrayVector::GetChildMutable(input), ArrayVector::GetChildMutable(result),
+		                         count * ArrayType::GetSize(input.GetType()));
+		break;
+	default:
+		throw InternalException("Unsupported Parquet transform type: %s", input.GetType());
+	}
+	FlatVector::CopyValidity(result, input, count);
+}
+
+static void ToParquetVariantWriteFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+	TransformParquetVariants(input.data[0], result, input.size());
 }
 
 ScalarFunction VariantColumnWriter::GetTransformFunction(bool preserve_nulls) {
 	auto function = preserve_nulls ? ToParquetVariantWriteFunction : ToParquetVariantFunction;
 	ScalarFunction transform("variant_to_parquet_variant", {}, LogicalType::ANY, function, BindTransform);
-	transform.GetSignature().AddParameter("variant", LogicalType::VARIANT());
+	transform.GetSignature().AddParameter("variant", preserve_nulls ? LogicalType::ANY : LogicalType::VARIANT());
 	transform.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	// throws for values that are out of range for the parquet variant encoding
 	transform.SetFallible();

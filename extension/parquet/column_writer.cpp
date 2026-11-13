@@ -34,6 +34,9 @@
 #include "duckdb/common/types/string_type.hpp"
 #include "duckdb/common/types/validity_mask.hpp"
 #include "duckdb/common/uhugeint.hpp"
+#include "duckdb/common/vector/array_vector.hpp"
+#include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
 #include "miniz.hpp"
 #include "parquet_field_id.hpp"
 #include "parquet_shredding.hpp"
@@ -143,6 +146,96 @@ ColumnWriter::ColumnWriter(ParquetWriter &writer, ParquetColumnSchema &&column_s
 ColumnWriter::~ColumnWriter() {
 }
 
+LogicalType ColumnWriter::TransformedType() const {
+	if (!HasTransform()) {
+		return Type();
+	}
+	switch (Type().InternalType()) {
+	case PhysicalType::STRUCT: {
+		child_list_t<LogicalType> children;
+		for (auto &child : child_writers) {
+			children.emplace_back(child->Schema().name, child->TransformedType());
+		}
+		return LogicalType::STRUCT(std::move(children));
+	}
+	case PhysicalType::LIST: {
+		auto child_type = child_writers[0]->TransformedType();
+		if (Type().id() == LogicalTypeId::MAP) {
+			return LogicalType::MAP(StructType::GetChildType(child_type, 0), StructType::GetChildType(child_type, 1));
+		}
+		return LogicalType::LIST(std::move(child_type));
+	}
+	case PhysicalType::ARRAY:
+		return LogicalType::ARRAY(child_writers[0]->TransformedType(), ArrayType::GetSize(Type()));
+	default:
+		throw InternalException("Unsupported Parquet transform type: %s", Type());
+	}
+}
+
+unique_ptr<Expression> ColumnWriter::TransformExpression(unique_ptr<BoundReferenceExpression> expr) {
+	vector<unique_ptr<Expression>> arguments;
+	arguments.push_back(std::move(expr));
+	BoundScalarFunction bound_func(VariantColumnWriter::GetTransformFunction(true));
+	bound_func.SetReturnType(TransformedType());
+	return make_uniq<BoundFunctionExpression>(std::move(bound_func), std::move(arguments), nullptr);
+}
+
+struct NestedAnalyzeSchemaState : public ParquetAnalyzeSchemaState {
+	vector<unique_ptr<ParquetAnalyzeSchemaState>> child_states;
+};
+
+unique_ptr<ParquetAnalyzeSchemaState> ColumnWriter::AnalyzeSchemaInit() {
+	if (child_writers.empty()) {
+		return nullptr;
+	}
+	auto result = make_uniq<NestedAnalyzeSchemaState>();
+	bool needs_analyze = false;
+	for (auto &child : child_writers) {
+		auto state = child->AnalyzeSchemaInit();
+		needs_analyze |= bool(state);
+		result->child_states.push_back(std::move(state));
+	}
+	if (!needs_analyze) {
+		return nullptr;
+	}
+	return std::move(result);
+}
+
+void ColumnWriter::AnalyzeSchema(ParquetAnalyzeSchemaState &state_p, Vector &input, idx_t count) {
+	auto &state = state_p.Cast<NestedAnalyzeSchemaState>();
+	switch (Type().InternalType()) {
+	case PhysicalType::STRUCT: {
+		auto &children = StructVector::GetEntries(input);
+		for (idx_t i = 0; i < child_writers.size(); i++) {
+			if (state.child_states[i]) {
+				child_writers[i]->AnalyzeSchema(*state.child_states[i], children[i], count);
+			}
+		}
+		break;
+	}
+	case PhysicalType::LIST:
+		child_writers[0]->AnalyzeSchema(*state.child_states[0], ListVector::GetChildMutable(input),
+		                                ListVector::GetListSize(input));
+		break;
+	case PhysicalType::ARRAY:
+		input.Flatten();
+		child_writers[0]->AnalyzeSchema(*state.child_states[0], ArrayVector::GetChildMutable(input),
+		                                count * ArrayType::GetSize(Type()));
+		break;
+	default:
+		throw InternalException("Unsupported Parquet schema analysis type: %s", Type());
+	}
+}
+
+void ColumnWriter::AnalyzeSchemaFinalize(const ParquetAnalyzeSchemaState &state_p) {
+	auto &state = state_p.Cast<NestedAnalyzeSchemaState>();
+	for (idx_t i = 0; i < child_writers.size(); i++) {
+		if (state.child_states[i]) {
+			child_writers[i]->AnalyzeSchemaFinalize(*state.child_states[i]);
+		}
+	}
+}
+
 void ColumnWriter::MarkRepetitionRequired() {
 	if (column_schema.repetition_type == duckdb_parquet::FieldRepetitionType::REQUIRED) {
 		return;
@@ -165,7 +258,9 @@ void ColumnWriter::DecrementMaxDefineRecursive() {
 bool ColumnWriter::TryExportPreparedShreddingType(ShreddingType &result) const {
 	bool has_shredding = false;
 	auto writer_shredding_type = ShreddingType(Type());
-	for (auto &child_writer : ChildWriters()) {
+	// MAP shredding addresses keys and values directly, without the repeated key_value group.
+	auto &children = Type().id() == LogicalTypeId::MAP ? child_writers[0]->ChildWriters() : ChildWriters();
+	for (auto &child_writer : children) {
 		ShreddingType child_shredding_type;
 		if (!child_writer->TryExportPreparedShreddingType(child_shredding_type)) {
 			continue;

@@ -1,0 +1,19 @@
+# name: test/parquet/variant/variant_list_empty_read.test
+# description: Read shredded variants through the final empty read of a list child
+# group: [variant]
+
+require parquet
+
+# The missing primitive field changes the shredded layout on the final zero-row read.
+query T nosort expected
+SELECT [{'a': [1], 'b': 1}::VARIANT, {'a': [2]}::VARIANT] AS v;
+----
+
+statement ok
+COPY (
+	SELECT [{'a': [1], 'b': 1}::VARIANT, {'a': [2]}::VARIANT] AS v
+) TO '{TEST_DIR}/variant_list_empty_read.parquet' (FORMAT PARQUET);
+
+query T nosort expected
+SELECT * FROM '{TEST_DIR}/variant_list_empty_read.parquet';
+----

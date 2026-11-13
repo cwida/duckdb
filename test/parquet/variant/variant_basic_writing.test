@@ -69,10 +69,13 @@ NULL
 this is a long string
 this is big enough to not be classified as a "short string" by parquet VARIANT
 
-statement error
+statement ok
 COPY (select [123::VARIANT]) TO '{TEST_DIR}/list_of_variant.parquet'
+
+query I
+SELECT * FROM '{TEST_DIR}/list_of_variant.parquet';
 ----
-Not implemented Error: ColumnWriter of type 'VARIANT' requires a transform, but is not a root column, this isn't supported currently
+[123]
 
 statement ok
 create macro data() as table (
