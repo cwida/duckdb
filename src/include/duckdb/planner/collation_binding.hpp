@@ -17,10 +17,23 @@ struct MapCastInfo;
 struct MapCastNode;
 struct DBConfig;
 
+//! A scalar function applied to make a value byte-comparable, looked up in the system catalog
+struct CollationFunctionName {
+	CollationFunctionName(Identifier schema_p, Identifier name_p)
+	    : schema(std::move(schema_p)), name(std::move(name_p)) {
+	}
+	explicit CollationFunctionName(Identifier name_p)
+	    : CollationFunctionName(Identifier::DefaultSchema(), std::move(name_p)) {
+	}
+
+	Identifier schema;
+	Identifier name;
+};
+
 //! Returns the (ordered) list of scalar functions that need to be applied to a value of the given type to make it
 //! byte-comparable under its collation. Returns an empty list if no collation needs to be applied.
-typedef vector<string> (*get_collation_functions_t)(ClientContext &context, const LogicalType &sql_type,
-                                                    CollationType type);
+typedef vector<CollationFunctionName> (*get_collation_functions_t)(ClientContext &context, const LogicalType &sql_type,
+                                                                   CollationType type);
 
 struct CollationCallback {
 	explicit CollationCallback(get_collation_functions_t get_collation_functions_p)
@@ -31,21 +44,22 @@ struct CollationCallback {
 };
 
 struct CollationFunction {
-	//! The name of the scalar function that maps a string to its sort key
-	string name;
+	//! The scalar function that maps a string to its sort key
+	CollationFunctionName function;
 	//! Whether the collation can be combined with other collations, e.g. nocase.noaccent
 	bool combinable;
 };
 
-//! A string collation "x" is the scalar function "collate_x" in the system catalog: it takes a VARCHAR and
-//! returns a VARCHAR or BLOB that is compared (and sorted) instead of the original string.
+//! A string collation "x" is the scalar function "x" in the "collations" schema of the system catalog: it takes a
+//! VARCHAR and returns a VARCHAR or BLOB that is compared (and sorted) instead of the original string.
 struct CollationFunctions {
-	static constexpr const char *PREFIX = "collate_";
+	//! The schema of the system catalog that holds the collation functions
+	static constexpr const char *SCHEMA = "collations";
 	//! Boolean function property that marks a collation as combinable, an absent property means false
 	static constexpr const char *COMBINABLE_PROPERTY = "duckdb.collation.combinable";
 
-	//! The name of the function that implements the collation with the given name
-	DUCKDB_API static string GetFunctionName(const string &collation);
+	//! The schema that holds the collation functions
+	DUCKDB_API static Identifier GetSchema();
 	//! Marks the function as a collation function that can be combined with other collations
 	DUCKDB_API static void SetCombinable(ScalarFunction &function);
 	//! Looks up the function of a collation (autoloading its extension), throws if the collation does not exist

@@ -925,6 +925,17 @@ duckdb_v2_scalar_function_handle MakeVarcharIdentity(duckdb_v2_connection_handle
 	return function;
 }
 
+// Creates a VARCHAR -> VARCHAR identity function in the collations schema, i.e. the collation of the same name.
+duckdb_v2_scalar_function_handle MakeCollation(duckdb_v2_connection_handle conn, std::string_view name,
+                                               duckdb_v2_logical_type_handle varchar) {
+	auto function = MakeVarcharIdentity(conn, name, varchar);
+	constexpr std::string_view schema = "collations";
+	REQUIRE(duckdb_v2_scalar_function_set_schema(function, schema.data(), schema.size(), nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	return function;
+}
+
+
 // Reads a BOOLEAN generic property, -1 if it is not set.
 int GetGenericBoolProperty(duckdb_v2_scalar_function_handle function, std::string_view name) {
 	duckdb_v2_value_handle value = nullptr;
@@ -1011,8 +1022,8 @@ TEST_CASE("V2 scalar: collations are combinable through a generic property", "[c
 	EnvFixture fx;
 	auto varchar = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR);
 
-	// collate_capi_combinable is marked as combinable, collate_capi_plain is not.
-	auto function = MakeVarcharIdentity(fx.conn, "collate_capi_combinable", varchar);
+	// capi_combinable is marked as combinable, capi_plain is not.
+	auto function = MakeCollation(fx.conn, "capi_combinable", varchar);
 	duckdb_v2_value_handle value = nullptr;
 	REQUIRE(duckdb_v2_value_create_bool(fx.factory, true, &value, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_scalar_function_set_generic_property(function, COMBINABLE_PROPERTY_NAME.data(),
@@ -1022,12 +1033,12 @@ TEST_CASE("V2 scalar: collations are combinable through a generic property", "[c
 	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_scalar_function_destroy(&function);
 
-	function = MakeVarcharIdentity(fx.conn, "collate_capi_plain", varchar);
+	function = MakeCollation(fx.conn, "capi_plain", varchar);
 	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_scalar_function_destroy(&function);
 
 	// a property value that is not a BOOLEAN does not make a collation combinable, and does not break it
-	function = MakeVarcharIdentity(fx.conn, "collate_capi_text", varchar);
+	function = MakeCollation(fx.conn, "capi_text", varchar);
 	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, "hello", 5, &value, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_scalar_function_set_generic_property(function, COMBINABLE_PROPERTY_NAME.data(),
 	                                                       COMBINABLE_PROPERTY_NAME.size(), value,
@@ -1038,6 +1049,26 @@ TEST_CASE("V2 scalar: collations are combinable through a generic property", "[c
 	duckdb_v2_logical_type_destroy(&varchar);
 	REQUIRE(QueryI32(fx.conn, "SELECT ('A' COLLATE capi_text = 'A')::INTEGER") == 1);
 	REQUIRE(RunSql(fx.conn, "SELECT 'A' COLLATE nfc.capi_text = 'A'") == DUCKDB_V2_ERROR_QUERY_BINDER);
+
+	// a function in the default schema is not a collation
+	varchar = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR);
+	function = MakeVarcharIdentity(fx.conn, "capi_main", varchar);
+	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_scalar_function_destroy(&function);
+	duckdb_v2_logical_type_destroy(&varchar);
+	REQUIRE(QueryI32(fx.conn, "SELECT (capi_main('A') = 'A')::INTEGER") == 1);
+	REQUIRE(RunSql(fx.conn, "SELECT 'A' COLLATE capi_main = 'A'") != DUCKDB_V2_ERROR_NONE);
+
+	// the schema must exist, and cannot be empty
+	varchar = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR);
+	function = MakeVarcharIdentity(fx.conn, "capi_nowhere", varchar);
+	constexpr std::string_view missing = "no_such_schema";
+	REQUIRE(duckdb_v2_scalar_function_set_schema(function, missing.data(), missing.size(), nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) != DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_schema(function, "", 0, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_scalar_function_destroy(&function);
+	duckdb_v2_logical_type_destroy(&varchar);
 
 	REQUIRE(QueryI32(fx.conn, "SELECT ('A' COLLATE capi_plain = 'A')::INTEGER") == 1);
 	REQUIRE(QueryI32(fx.conn, "SELECT ('A' COLLATE nocase.capi_plain = 'a')::INTEGER") == 1);

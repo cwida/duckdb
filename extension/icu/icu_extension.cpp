@@ -1,3 +1,4 @@
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
@@ -81,25 +82,22 @@ struct IcuBindData : public FunctionData {
 		return CreateInstance(language, country, tag);
 	}
 
-	//! The prefix of the collation functions, and of the ones that are kept for backwards
-	//! compatibility, which return the sort key in hexadecimal instead of as a blob
-	static const string FUNCTION_PREFIX;
+	//! The prefix of the collation functions that are kept for backwards compatibility, which return the sort key in
+	//! hexadecimal instead of as a blob. The collation functions themselves are named after the collation.
 	static const string HEX_FUNCTION_PREFIX;
 
-	static string EncodeFunctionName(const string &collation) {
-		return FUNCTION_PREFIX + collation;
-	}
 	static string EncodeHexFunctionName(const string &collation) {
 		return HEX_FUNCTION_PREFIX + collation;
 	}
 	static string DecodeFunctionName(const Identifier &fname) {
 		auto &name = fname.GetIdentifierName();
-		auto prefix = StringUtil::StartsWith(name, HEX_FUNCTION_PREFIX) ? HEX_FUNCTION_PREFIX : FUNCTION_PREFIX;
-		return name.substr(prefix.size());
+		if (StringUtil::StartsWith(name, HEX_FUNCTION_PREFIX)) {
+			return name.substr(HEX_FUNCTION_PREFIX.size());
+		}
+		return name;
 	}
 };
 
-const string IcuBindData::FUNCTION_PREFIX = CollationFunctions::PREFIX;
 const string IcuBindData::HEX_FUNCTION_PREFIX = "icu_collate_";
 
 //! The two hexadecimal characters of every byte value
@@ -196,8 +194,7 @@ static duckdb::unique_ptr<FunctionData> ICUSortKeyBind(BindScalarFunctionInput &
 
 //! The function a collation pushes into a query, it writes the sort key as a blob
 static ScalarFunction GetCollateFunction(const string &collation, const string &tag) {
-	string fname = IcuBindData::EncodeFunctionName(collation);
-	ScalarFunction result(Identifier(fname), {}, LogicalType::BLOB, ICUCollateFunction<false>, ICUCollateBind);
+	ScalarFunction result(Identifier(collation), {}, LogicalType::BLOB, ICUCollateFunction<false>, ICUCollateBind);
 	result.GetSignature().AddParameter("str", LogicalType::VARCHAR);
 	//! collation tag is added into the Function extra info
 	result.extra_info = tag;
@@ -403,10 +400,19 @@ static void SetICUCalendar(ClientContext &context, SetScope scope, Value &parame
 	throw NotImplementedException("Unknown Calendar '%s'!\n%s", name, candidate_str);
 }
 
+//! Registers a collation function in the collation schema of the system catalog
+static void RegisterCollation(ExtensionLoader &loader, ScalarFunction function) {
+	CreateScalarFunctionInfo info(std::move(function));
+	info.SetQualifiedName(
+	    QualifiedName(info.GetQualifiedName().Catalog(), CollationFunctions::GetSchema(), info.GetFunctionName()));
+	info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+	loader.RegisterFunction(std::move(info));
+}
+
 static void LoadInternal(ExtensionLoader &loader) {
 	// iterate over all the collations
 	for (auto &collation : collation::Collator::GetCollations()) {
-		loader.RegisterFunction(GetCollateFunction(collation, ""));
+		RegisterCollation(loader, GetCollateFunction(collation, ""));
 		loader.RegisterFunction(GetICUCollateFunction(collation, ""));
 	}
 
@@ -420,7 +426,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	 * e.g. "und@colcaselevel=yes;colstrength=primary"
 	 *
 	 */
-	loader.RegisterFunction(GetCollateFunction("icu_noaccent", "und-u-ks-level1-kc-true"));
+	RegisterCollation(loader, GetCollateFunction("icu_noaccent", "und-u-ks-level1-kc-true"));
 	loader.RegisterFunction(GetICUCollateFunction("noaccent", "und-u-ks-level1-kc-true"));
 
 	ScalarFunction sort_key("icu_sort_key", {}, LogicalType::VARCHAR, ICUCollateFunction<true>, ICUSortKeyBind);

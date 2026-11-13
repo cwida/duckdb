@@ -11116,6 +11116,30 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_name(duckdb_v2_scalar
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!
+ * Sets the schema of the system catalog that the scalar function is registered in.
+ *
+ * The schema is borrowed and copied. Calling this again replaces the previous schema. Without a schema the function is
+ * registered in the default schema. The schema must exist when the function is registered, e.g. `collations`, whose
+ * functions are the string collations of the database.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param function The function to set the schema of.
+ * @param schema The name of the schema. Borrowed and copied.
+ * @param schema_length The length of `schema` in bytes. `schema` must be valid UTF-8, need not be null-terminated, and
+ * may be NULL only when this is 0.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_schema(duckdb_v2_scalar_function_handle function,
+                                                                  const char *schema, idx_t schema_length,
+                                                                  duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
  * Returns the documentation of the function so it can be filled in.
  *
  * Set a description with `duckdb_v2_function_docs_set_description()`, and add examples and categories with

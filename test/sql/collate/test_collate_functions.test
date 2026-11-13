@@ -1,15 +1,15 @@
 # name: test/sql/collate/test_collate_functions.test
-# description: Test that collations are registered as collate_<name> functions
+# description: Test that collations are the scalar functions of the collations schema of the system catalog
 # group: [collate]
 
-# built-in collations are scalar functions with the collate_ prefix
+# built-in collations are scalar functions in the collations schema
 query I
-SELECT collate_nocase('HeLLo')
+SELECT system.collations.nocase('HeLLo')
 ----
 hello
 
 query I
-SELECT collate_noaccent('café')
+SELECT system.collations.noaccent('café')
 ----
 cafe
 
@@ -21,9 +21,21 @@ noaccent
 nocase
 
 query I
-SELECT count(*) FROM duckdb_functions() WHERE function_name = 'collate_nocase'
+SELECT schema_name FROM duckdb_functions() WHERE function_name = 'nocase'
 ----
-1
+collations
+
+# the collation functions do not clash with functions of the same name in the default schema
+statement ok
+CREATE MACRO nocase(s) AS 'macro';
+
+query II
+SELECT nocase('A'), 'A' = 'a' COLLATE nocase
+----
+macro	true
+
+statement ok
+DROP MACRO nocase
 
 # nocase and noaccent are combinable
 query I
@@ -43,18 +55,12 @@ SELECT 'a' COLLATE nocas
 ----
 <REGEX>:Catalog Error: Collation with name nocas does not exist!.*Did you mean "nocase"\?.*
 
-# only system scalar functions that take a VARCHAR are collations: macros and functions in other schemas are not
+# only scalar functions of the collations schema are collations, not functions of other schemas
 statement ok
-CREATE MACRO collate_my_macro(s) AS lower(s);
-
-statement ok
-CREATE SCHEMA other;
-
-statement ok
-CREATE MACRO other.collate_other(s) AS lower(s);
+CREATE MACRO my_macro(s) AS lower(s);
 
 query I
-SELECT count(*) FROM pragma_collations() WHERE collname IN ('my_macro', 'other')
+SELECT count(*) FROM pragma_collations() WHERE collname = 'my_macro'
 ----
 0
 

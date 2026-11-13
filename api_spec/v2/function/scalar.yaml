@@ -190,6 +190,35 @@ functions:
     return_type: ERROR
 
 
+  scalar_function_set_schema:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-13" ]
+    description: |
+      Sets the schema of the system catalog that the scalar function is registered in.
+
+      The schema is borrowed and copied. Calling this again replaces the previous schema. Without a schema the
+      function is registered in the default schema. The schema must exist when the function is registered, e.g.
+      `collations`, whose functions are the string collations of the database.
+    parameters:
+      function:
+        type: scalar_function
+        description: The function to set the schema of.
+      schema:
+        type: char
+        indirection: 1
+        const: true
+        kind: IN
+        description: The name of the schema. Borrowed and copied.
+      schema_length:
+        type: idx
+        description: The length of `schema` in bytes. `schema` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+
   scalar_function_get_docs:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-10-09" ]

@@ -128,17 +128,17 @@ statement ok
 INSERT INTO strings VALUES ('a'), ('Müller'), ('ch'), ('aa'), ('ーあ'), (chr(44032)), (chr(19968)), ('')
 
 query I
-SELECT count(*) FROM strings WHERE hex(collate_de(s)) <> icu_sort_key(s, 'de')
+SELECT count(*) FROM strings WHERE hex(system.collations.de(s)) <> icu_sort_key(s, 'de')
 ----
 0
 
 query I
-SELECT count(*) FROM strings WHERE hex(collate_de(s)) <> icu_collate_de(s)
+SELECT count(*) FROM strings WHERE hex(system.collations.de(s)) <> icu_collate_de(s)
 ----
 0
 
 query II
-SELECT typeof(collate_de('a')), typeof(icu_collate_de('a'))
+SELECT typeof(system.collations.de('a')), typeof(icu_collate_de('a'))
 ----
 BLOB	VARCHAR
 

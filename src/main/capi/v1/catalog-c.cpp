@@ -129,13 +129,13 @@ duckdb_catalog_entry duckdb_catalog_get_entry(duckdb_catalog catalog, duckdb_cli
 	auto &context_ref = *reinterpret_cast<duckdb::CClientContextWrapper *>(context);
 
 	auto type = duckdb::CatalogTypeFromC(entry_type);
-	duckdb::Identifier name(entry_name);
+	duckdb::Identifier schema(schema_name);
 	if (type == duckdb::CatalogType::COLLATION_ENTRY) {
-		// a collation is the scalar function that implements it
+		// a collation is the scalar function of the same name in the collation schema
 		type = duckdb::CatalogType::SCALAR_FUNCTION_ENTRY;
-		name = duckdb::Identifier(duckdb::CollationFunctions::GetFunctionName(entry_name));
+		schema = duckdb::CollationFunctions::GetSchema();
 	}
-	auto entry = catalog_ref.catalog.GetEntry(context_ref.context, type, duckdb::Identifier(schema_name), name,
+	auto entry = catalog_ref.catalog.GetEntry(context_ref.context, type, schema, duckdb::Identifier(entry_name),
 	                                          duckdb::OnEntryNotFound::RETURN_NULL);
 
 	if (!entry) {

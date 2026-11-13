@@ -16,8 +16,8 @@
 #include "duckdb/function/function_binder.hpp"
 
 namespace duckdb {
-string CollationFunctions::GetFunctionName(const string &collation) {
-	return PREFIX + collation;
+Identifier CollationFunctions::GetSchema() {
+	return Identifier(SCHEMA);
 }
 
 void CollationFunctions::SetCombinable(ScalarFunction &function) {
@@ -26,8 +26,7 @@ void CollationFunctions::SetCombinable(ScalarFunction &function) {
 
 CollationFunction CollationFunctions::Lookup(ClientContext &context, const string &collation) {
 	auto &catalog = Catalog::GetSystemCatalog(context);
-	auto function_name = GetFunctionName(collation);
-	QualifiedName qualified_name(catalog.GetName(), Identifier::DefaultSchema(), Identifier(function_name));
+	QualifiedName qualified_name(catalog.GetName(), GetSchema(), Identifier(collation));
 	auto entry = catalog.GetEntry<ScalarFunctionCatalogEntry>(context, qualified_name, OnEntryNotFound::RETURN_NULL);
 	if (!entry &&
 	    Catalog::AutoLoadExtensionByCatalogEntry(*context.db, CatalogType::COLLATION_ENTRY, Identifier(collation))) {
@@ -40,36 +39,37 @@ CollationFunction CollationFunctions::Lookup(ClientContext &context, const strin
 	}
 	auto function = entry->functions.GetFunctionByArguments(context, {LogicalType::VARCHAR});
 	if (!function) {
-		throw CatalogException("Collation function \"%s\" must take a single VARCHAR argument", function_name);
+		throw CatalogException("Collation function \"%s\" must take a single VARCHAR argument", collation);
 	}
-	return CollationFunction {function_name, function->GetProperties().GetBooleanProperty(COMBINABLE_PROPERTY)};
+	return CollationFunction {CollationFunctionName(GetSchema(), entry->name),
+	                          function->GetProperties().GetBooleanProperty(COMBINABLE_PROPERTY)};
 }
 
 vector<string> CollationFunctions::GetCollations(ClientContext &context) {
-	// only list what Lookup resolves: scalar functions in the system catalog that take a single VARCHAR
+	// only list what Lookup resolves: scalar functions in the collation schema that take a single VARCHAR
 	vector<string> result;
-	const string prefix = PREFIX;
-	auto &schema = Catalog::GetSystemCatalog(context).GetSchema(context, Identifier::DefaultSchema());
-	schema.Scan(context, CatalogType::SCALAR_FUNCTION_ENTRY, [&](CatalogEntry &entry) {
-		auto &name = entry.name.GetIdentifierName();
-		if (entry.type != CatalogType::SCALAR_FUNCTION_ENTRY || !StringUtil::StartsWith(name, prefix) ||
-		    name.size() <= prefix.size()) {
+	auto schema = Catalog::GetSystemCatalog(context).GetSchema(context, GetSchema(), OnEntryNotFound::RETURN_NULL);
+	if (!schema) {
+		return result;
+	}
+	schema->Scan(context, CatalogType::SCALAR_FUNCTION_ENTRY, [&](CatalogEntry &entry) {
+		if (entry.type != CatalogType::SCALAR_FUNCTION_ENTRY) {
 			return;
 		}
 		auto &function_entry = entry.Cast<ScalarFunctionCatalogEntry>();
 		if (!FunctionBinder::SelectFunction(context, function_entry.functions, {LogicalType::VARCHAR}).IsSuccess()) {
 			return;
 		}
-		result.push_back(name.substr(prefix.size()));
+		result.push_back(entry.name.GetIdentifierName());
 	});
 	return result;
 }
 
-static vector<string> GetVarcharCollationFunctions(ClientContext &context, const LogicalType &sql_type,
+static vector<CollationFunctionName> GetVarcharCollationFunctions(ClientContext &context, const LogicalType &sql_type,
                                                    CollationType type) {
 	if (sql_type.id() != LogicalTypeId::VARCHAR) {
 		// only VARCHAR columns require collation
-		return vector<string>();
+		return vector<CollationFunctionName>();
 	}
 	// replace default collation with system collation
 	auto str_collation = StringType::GetCollation(sql_type);
@@ -83,11 +83,11 @@ static vector<string> GetVarcharCollationFunctions(ClientContext &context, const
 	// bind the collation
 	if (collation.empty() || collation == "binary" || collation == "c" || collation == "posix") {
 		// no collation or binary collation: skip
-		return vector<string>();
+		return vector<CollationFunctionName>();
 	}
-	vector<string> functions;
+	vector<CollationFunctionName> functions;
 	string non_combinable_collation;
-	vector<string> combinable_functions;
+	vector<CollationFunctionName> combinable_functions;
 	unordered_set<string> collations;
 	for (auto &collation_argument : StringUtil::Split(collation, ".")) {
 		if (collations.count(collation_argument)) {
@@ -97,7 +97,7 @@ static vector<string> GetVarcharCollationFunctions(ClientContext &context, const
 		collations.insert(collation_argument);
 		auto function = CollationFunctions::Lookup(context, collation_argument);
 		if (function.combinable) {
-			combinable_functions.push_back(function.name);
+			combinable_functions.push_back(function.function);
 			continue;
 		}
 		if (!functions.empty()) {
@@ -105,7 +105,7 @@ static vector<string> GetVarcharCollationFunctions(ClientContext &context, const
 			                      Identifier(collation_argument));
 		}
 		non_combinable_collation = collation_argument;
-		functions.push_back(function.name);
+		functions.push_back(function.function);
 	}
 	// combinable collations are applied first, in reverse order of specification
 	std::reverse(combinable_functions.begin(), combinable_functions.end());
@@ -117,32 +117,36 @@ static vector<string> GetVarcharCollationFunctions(ClientContext &context, const
 	return combinable_functions;
 }
 
-static vector<string> GetTimeTZCollationFunctions(ClientContext &, const LogicalType &sql_type, CollationType) {
+static vector<CollationFunctionName> GetTimeTZCollationFunctions(ClientContext &, const LogicalType &sql_type,
+                                                                 CollationType) {
 	if (sql_type.id() != LogicalTypeId::TIME_TZ) {
-		return vector<string>();
+		return vector<CollationFunctionName>();
 	}
-	return {"timetz_byte_comparable"};
+	return {CollationFunctionName(Identifier("timetz_byte_comparable"))};
 }
 
-static vector<string> GetBitStringCollationFunctions(ClientContext &, const LogicalType &sql_type, CollationType) {
+static vector<CollationFunctionName> GetBitStringCollationFunctions(ClientContext &, const LogicalType &sql_type,
+                                                                    CollationType) {
 	if (sql_type.id() != LogicalTypeId::BIT) {
-		return vector<string>();
+		return vector<CollationFunctionName>();
 	}
-	return {"bitstring_byte_comparable"};
+	return {CollationFunctionName(Identifier("bitstring_byte_comparable"))};
 }
 
-static vector<string> GetIntervalCollationFunctions(ClientContext &, const LogicalType &sql_type, CollationType) {
+static vector<CollationFunctionName> GetIntervalCollationFunctions(ClientContext &, const LogicalType &sql_type,
+                                                                   CollationType) {
 	if (sql_type.id() != LogicalTypeId::INTERVAL) {
-		return vector<string>();
+		return vector<CollationFunctionName>();
 	}
-	return {"normalized_interval"};
+	return {CollationFunctionName(Identifier("normalized_interval"))};
 }
 
-static vector<string> GetVariantCollationFunctions(ClientContext &, const LogicalType &sql_type, CollationType) {
+static vector<CollationFunctionName> GetVariantCollationFunctions(ClientContext &, const LogicalType &sql_type,
+                                                                  CollationType) {
 	if (sql_type.id() != LogicalTypeId::VARIANT) {
-		return vector<string>();
+		return vector<CollationFunctionName>();
 	}
-	return {"variant_comparator"};
+	return {CollationFunctionName(Identifier("variant_comparator"))};
 }
 
 CollationBinding::CollationBinding() {
@@ -157,15 +161,28 @@ void CollationBinding::RegisterCollation(CollationCallback callback) {
 	collations.push_back(callback);
 }
 
-//! Binds the scalar function with the given name (looked up from the system catalog) around "source".
-static unique_ptr<Expression> ApplyCollationFunction(ClientContext &context, const string &function_name,
+//! Binds the given collation function around "source"
+static unique_ptr<Expression> ApplyCollationFunction(ClientContext &context, const CollationFunctionName &function_name,
                                                      unique_ptr<Expression> source) {
 	auto source_alias = source->GetAlias();
 	vector<unique_ptr<Expression>> children;
 	children.push_back(std::move(source));
 	FunctionBinder function_binder(context);
-	auto function =
-	    function_binder.BindScalarFunction(Identifier::DefaultSchema(), Identifier(function_name), std::move(children));
+	unique_ptr<Expression> function;
+	if (function_name.schema == Identifier::DefaultSchema()) {
+		function = function_binder.BindScalarFunction(function_name.schema, function_name.name, std::move(children));
+	} else {
+		// functions outside of the default schema, such as the collations, live in the system catalog
+		auto &catalog = Catalog::GetSystemCatalog(context);
+		auto entry = catalog.GetEntry<ScalarFunctionCatalogEntry>(
+		    context, QualifiedName(catalog.GetName(), function_name.schema, function_name.name),
+		    OnEntryNotFound::THROW_EXCEPTION);
+		ErrorData error;
+		function = function_binder.BindScalarFunction(*entry, std::move(children), error);
+		if (!function) {
+			error.Throw();
+		}
+	}
 	function->SetAlias(source_alias);
 	return function;
 }

@@ -8,6 +8,9 @@
 #include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/planner/collation_binding.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/parser/parsed_data/create_schema_info.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 
 namespace duckdb {
@@ -292,14 +295,25 @@ string SimpleFunction::ToString() const {
 
 // add your initializer for new functions here
 void BuiltinFunctions::AddCollation(const string &name, ScalarFunction function, bool combinable) {
-	function.SetName(Identifier(CollationFunctions::GetFunctionName(name)));
+	function.SetName(Identifier(name));
 	if (combinable) {
 		CollationFunctions::SetCombinable(function);
 	}
-	AddFunction(std::move(function));
+	CreateScalarFunctionInfo info(std::move(function));
+	info.SetQualifiedName(
+	    QualifiedName(info.GetQualifiedName().Catalog(), CollationFunctions::GetSchema(), info.GetFunctionName()));
+	info.internal = true;
+	catalog.CreateFunction(transaction, info);
 }
 
 void BuiltinFunctions::RegisterCollations() {
+	// the collations are the scalar functions of their own schema
+	CreateSchemaInfo schema;
+	schema.SetQualifiedName(QualifiedName({CollationFunctions::GetSchema()}, Identifier()));
+	schema.internal = true;
+	schema.on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
+	catalog.CreateSchema(transaction, schema);
+
 	AddCollation("nocase", LowerFun::GetFunction(), true);
 	AddCollation("noaccent", StripAccentsFun::GetFunction(), true);
 	AddCollation("nfc", NFCNormalizeFun::GetFunction());
