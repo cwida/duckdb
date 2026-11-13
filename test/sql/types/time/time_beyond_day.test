@@ -38,3 +38,38 @@ query II
 SELECT make_time(12, 30, 60.4), make_time(12, 30, 60.6)
 ----
 12:31:00.4	12:31:00.6
+
+# every producer of a TIME from text, parts or arithmetic keeps it within a day
+foreach type TIME TIME_NS
+
+statement error
+SELECT '100:00:00'::{type}
+----
+time field value out of range
+
+statement error
+SELECT '-01:00:00'::{type}
+----
+time field value out of range
+
+query I
+SELECT try_cast('100:00:00' AS {type})
+----
+NULL
+
+endloop
+
+statement error
+SELECT make_time(100, 0, 0)
+----
+Time out of range
+
+statement error
+SELECT make_time(-1, 0, 0)
+----
+Time out of range
+
+query II
+SELECT TIME '23:00:00' + INTERVAL 100 HOUR, TIME '01:00:00' - INTERVAL 100 HOUR
+----
+03:00:00	21:00:00

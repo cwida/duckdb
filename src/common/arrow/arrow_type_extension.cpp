@@ -599,7 +599,7 @@ struct ArrowVariant {
 		idx_t metadata_idx = DConstants::INVALID_INDEX;
 		idx_t value_idx = DConstants::INVALID_INDEX;
 		for (idx_t i = 0; i < NumericCast<idx_t>(schema.n_children); i++) {
-			const string name = schema.children[i]->name ? schema.children[i]->name : "";
+			const auto name = ArrowType::GetFieldName(*schema.children[i]);
 			if (name == "metadata" && metadata_idx == DConstants::INVALID_INDEX) {
 				metadata_idx = i;
 			} else if (name == "value" && value_idx == DConstants::INVALID_INDEX) {
@@ -633,9 +633,9 @@ struct ArrowVariant {
 			const auto child_type = children.back()->GetDuckType(true);
 			if (child_type.id() != LogicalTypeId::BLOB) {
 				throw InvalidInputException("arrow.parquet.variant field '%s' must be a binary type, got %s",
-				                            schema.children[i]->name, child_type.ToString());
+				                            ArrowType::GetFieldName(*schema.children[i]), child_type.ToString());
 			}
-			storage_children.emplace_back(schema.children[i]->name, LogicalType::BLOB);
+			storage_children.emplace_back(ArrowType::GetFieldName(*schema.children[i]), LogicalType::BLOB);
 		}
 		auto result = make_uniq<ArrowType>(LogicalType::VARIANT(), make_uniq<ArrowStructInfo>(std::move(children)));
 		result->extension_data = make_shared_ptr<ArrowTypeExtensionData>(
