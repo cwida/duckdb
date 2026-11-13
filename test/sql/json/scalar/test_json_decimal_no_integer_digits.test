@@ -1,0 +1,55 @@
+# name: test/sql/json/scalar/test_json_decimal_no_integer_digits.test
+# description: DECIMAL(w, s) with w == s and w > 15 must produce valid JSON numbers (leading zero)
+# group: [scalar]
+
+require json
+
+# top level, to_json and CAST
+query TTT
+SELECT to_json('0.5'::DECIMAL(18,18)), '0.5'::DECIMAL(18,18)::JSON, to_json('-0.5'::DECIMAL(20,20));
+----
+0.500000000000000000	0.500000000000000000	-0.50000000000000000000
+
+# every physical type with width == scale > 15
+query TTTT
+SELECT to_json('0.5'::DECIMAL(16,16)), to_json('0.5'::DECIMAL(18,18)), to_json('0.5'::DECIMAL(19,19)), to_json('0.5'::DECIMAL(38,38));
+----
+0.5000000000000000	0.500000000000000000	0.5000000000000000000	0.50000000000000000000000000000000000000
+
+# zero, smallest and largest values, NULL
+query TTTT
+SELECT to_json('0'::DECIMAL(18,18)), to_json('-0.000000000000000001'::DECIMAL(18,18)), to_json('0.999999999999999999'::DECIMAL(18,18)), to_json(NULL::DECIMAL(18,18));
+----
+0.000000000000000000	-0.000000000000000001	0.999999999999999999	NULL
+
+# output is valid JSON and can be read back
+query TT
+SELECT json_valid(to_json('-0.5'::DECIMAL(18,18))::VARCHAR), json_extract(to_json(['0.5'::DECIMAL(18,18)])::VARCHAR, '$[0]');
+----
+true	0.5
+
+# nested in list, struct, and map
+query T
+SELECT to_json({'l': ['0.5'::DECIMAL(18,18), NULL, '-0.25'::DECIMAL(18,18)], 'm': MAP {'k': '0.5'::DECIMAL(18,18)}});
+----
+{"l":[0.500000000000000000,null,-0.250000000000000000],"m":{"k":0.500000000000000000}}
+
+# column input
+query T
+SELECT to_json(x) FROM (VALUES ('0.5'::DECIMAL(18,18)), ('-0.5'::DECIMAL(18,18)), (NULL)) t(x);
+----
+0.500000000000000000
+-0.500000000000000000
+NULL
+
+# unchanged: widths with integer digits, and widths <= 15 (written as DOUBLE)
+query TTT
+SELECT to_json('0.5'::DECIMAL(19,18)), to_json('12.5'::DECIMAL(18,2)), to_json('0.5'::DECIMAL(3,3));
+----
+0.500000000000000000	12.50	0.5
+
+# the VARCHAR form is not changed
+query T
+SELECT '0.5'::DECIMAL(18,18)::VARCHAR;
+----
+.500000000000000000
