@@ -1,0 +1,24 @@
+# name: test/sql/optimizer/window_fusion.test
+# description: Test basic window fusion rewrites
+# group: [optimizer]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+PRAGMA explain_output = PHYSICAL_ONLY;
+
+query II
+explain
+SELECT id
+FROM range(100) tbl(id)
+QUALIFY row_number() OVER() = 1
+----
+physical_plan	<REGEX>:.*FILTER.*STREAMING_WINDOW.*Limit.*
+
+query I
+SELECT id
+FROM range(100) tbl(id)
+QUALIFY row_number() OVER() = 1
+----
+0

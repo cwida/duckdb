@@ -1,7 +1,7 @@
 //===----------------------------------------------------------------------===//
 //                         DuckDB
 //
-// duckdb/execution/operator/aggregate/physical_window.hpp
+// duckdb/execution/operator/aggregate/physical_streaming_window.hpp
 //
 //
 //===----------------------------------------------------------------------===//
@@ -24,10 +24,12 @@ public:
 public:
 	PhysicalStreamingWindow(PhysicalPlan &physical_plan, vector<LogicalType> types,
 	                        vector<unique_ptr<Expression>> select_list, idx_t estimated_cardinality,
-	                        PhysicalOperatorType type = PhysicalOperatorType::STREAMING_WINDOW);
+	                        optional_idx partition_limit = optional_idx());
 
 	//! The projection list of the WINDOW statement
 	vector<unique_ptr<Expression>> select_list;
+	//! The partition size limit (if any)
+	optional_idx partition_limit;
 
 public:
 	unique_ptr<GlobalOperatorState> GetGlobalOperatorState(ClientContext &context) const override;

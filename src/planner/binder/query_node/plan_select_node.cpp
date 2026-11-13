@@ -218,7 +218,7 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 	}
 
 	if (!statement.windows.empty()) {
-		auto win = make_uniq<LogicalWindow>(statement.window_index);
+		auto win = make_uniq<LogicalWindow>(statement.window_index, optional_idx());
 		win->expressions = std::move(statement.windows);
 		// visit the window expressions
 		for (auto &expr : win->expressions) {

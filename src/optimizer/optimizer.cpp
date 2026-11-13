@@ -48,6 +48,7 @@
 #include "duckdb/optimizer/partitioned_execution.hpp"
 #include "duckdb/optimizer/window_join_pushdown.hpp"
 #include "duckdb/optimizer/window_self_join.hpp"
+#include "duckdb/optimizer/window_fusion.hpp"
 #include "duckdb/optimizer/row_number_rewriter.hpp"
 #include "duckdb/optimizer/optimizer_extension.hpp"
 #include "duckdb/optimizer/outer_join_simplification.hpp"
@@ -482,6 +483,12 @@ void Optimizer::RunBuiltInOptimizers() {
 			projection_placement.Optimize(plan);
 		});
 	}
+
+	// rewrite unique ranking window function + filter on row_number to fused operator
+	RunOptimizer(OptimizerType::WINDOW_FUSION, [&]() {
+		WindowFusion window_fusion(context, &statistics_map);
+		plan = window_fusion.Optimize(std::move(plan));
+	});
 
 	// rewrite row_number window function + filter on row_number to aggregate
 	bool topn_used_late_materialization = false;

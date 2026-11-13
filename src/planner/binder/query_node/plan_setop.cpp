@@ -90,7 +90,7 @@ static unique_ptr<LogicalOperator> AddRowNumber(Binder &binder, const vector<Log
 		ExpressionBinder::PushCollation(context, partition, types[i]);
 		row_number->PartitionsMutable().push_back(std::move(partition));
 	}
-	auto window = make_uniq<LogicalWindow>(binder.GenerateTableIndex());
+	auto window = make_uniq<LogicalWindow>(binder.GenerateTableIndex(), optional_idx());
 	window->expressions.push_back(std::move(row_number));
 	window->AddChild(std::move(child));
 	return std::move(window);

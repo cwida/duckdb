@@ -137,10 +137,17 @@
         "id": 201,
         "name": "expressions",
         "type": "vector<Expression*>"
+      },
+      {
+        "id": 202,
+        "name": "partition_limit",
+        "type": "optional_idx",
+        "default": "optional_idx()"
       }
     ],
     "constructor": [
-      "window_index"
+      "window_index",
+      "partition_limit"
     ]
   },
   {

@@ -408,7 +408,7 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 		AddPostgresSetofColumnAlias(bind_context, bind_index, setof_column_name);
 
 		auto window_index = GenerateTableIndex();
-		auto window = make_uniq<duckdb::LogicalWindow>(window_index);
+		auto window = make_uniq<duckdb::LogicalWindow>(window_index, optional_idx());
 		auto row_number = GetBuiltinWindowFunction(context, RowNumberFun::Name, {})->Bind(context);
 		row_number->WindowStartMutable() = WindowBoundary::UNBOUNDED_PRECEDING;
 		row_number->WindowEndMutable() = WindowBoundary::CURRENT_ROW_ROWS;

@@ -141,7 +141,7 @@ unique_ptr<LogicalOperator> WindowJoinPushdown::OptimizeInternal(unique_ptr<Logi
 		new_join->children.emplace_back(std::move(join.children[1]));
 	}
 
-	auto new_window = make_uniq<LogicalWindow>(window.window_index);
+	auto new_window = make_uniq<LogicalWindow>(window.window_index, window.partition_limit);
 	new_window->children.emplace_back(std::move(new_join));
 	for (auto &expr : window.expressions) {
 		new_window->expressions.emplace_back(std::move(expr));

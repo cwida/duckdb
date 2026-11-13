@@ -437,7 +437,7 @@ static unique_ptr<LogicalWindow> CreateRowNumberWindow(Binder &binder, unique_pt
                                                        TableIndex table_index,
                                                        vector<unique_ptr<Expression>> partitions = {},
                                                        vector<BoundOrderByNode> orders = {}) {
-	auto window = make_uniq<LogicalWindow>(table_index);
+	auto window = make_uniq<LogicalWindow>(table_index, optional_idx());
 
 	auto row_number = GetBuiltinWindowFunction(binder.context, RowNumberFun::Name, {})->Bind(binder.context);
 	row_number->PartitionsMutable() = std::move(partitions);

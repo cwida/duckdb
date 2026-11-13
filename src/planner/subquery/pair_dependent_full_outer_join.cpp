@@ -92,7 +92,7 @@ static void CollectPairDependentBindings(Expression &expression, const unordered
 }
 
 static unique_ptr<LogicalOperator> AddRowIdentity(Binder &binder, unique_ptr<LogicalOperator> source) {
-	auto window = make_uniq<LogicalWindow>(binder.GenerateTableIndex());
+	auto window = make_uniq<LogicalWindow>(binder.GenerateTableIndex(), optional_idx());
 	auto row_number = GetBuiltinWindowFunction(binder.context, RowNumberFun::Name, {})->Bind(binder.context);
 	row_number->WindowStartMutable() = WindowBoundary::UNBOUNDED_PRECEDING;
 	row_number->WindowEndMutable() = WindowBoundary::CURRENT_ROW_ROWS;

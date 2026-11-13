@@ -22,11 +22,15 @@ public:
 	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_WINDOW;
 
 public:
-	explicit LogicalWindow(TableIndex window_index)
-	    : LogicalOperator(LogicalOperatorType::LOGICAL_WINDOW), window_index(window_index) {
+	LogicalWindow(TableIndex window_index, optional_idx partition_limit)
+	    : LogicalOperator(LogicalOperatorType::LOGICAL_WINDOW), window_index(window_index),
+	      partition_limit(partition_limit) {
 	}
 
 	TableIndex window_index;
+
+	//! The maximum number of rows to return per partition
+	optional_idx partition_limit;
 
 public:
 	vector<ColumnBinding> GetColumnBindings() override;

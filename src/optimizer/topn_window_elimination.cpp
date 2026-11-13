@@ -544,15 +544,6 @@ TopNWindowElimination::CreateProjectionOperator(unique_ptr<LogicalOperator> op,
 	return unique_ptr<LogicalOperator>(std::move(logical_projection));
 }
 
-class ColumnReferenceExtractor : public BaseColumnPruner {
-public:
-	static column_binding_map_t<ReferencedColumn> GetReferences(unique_ptr<Expression> *expression) {
-		ColumnReferenceExtractor extractor;
-		extractor.VisitExpression(expression);
-		return extractor.column_references;
-	}
-};
-
 optional_idx TopNWindowElimination::CanOptimize(LogicalOperator &op) {
 	const optional_idx cant_optimize;
 	if (op.type != LogicalOperatorType::LOGICAL_FILTER) {
@@ -660,6 +651,10 @@ optional_idx TopNWindowElimination::CanOptimize(LogicalOperator &op) {
 		return cant_optimize;
 	}
 	const auto &window = child.get().Cast<LogicalWindow>();
+	//	Give up if window fusion has already taking this.
+	if (window.partition_limit.IsValid()) {
+		return cant_optimize;
+	}
 	if (window.window_index != filter_col_idx) {
 		return cant_optimize;
 	}

@@ -362,7 +362,8 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalWindow &op) {
 			window.children.push_back(plan);
 			plan = window;
 		} else if (has_streaming) {
-			auto &window = Make<PhysicalStreamingWindow>(types, std::move(select_list), op.estimated_cardinality);
+			auto &window = Make<PhysicalStreamingWindow>(types, std::move(select_list), op.estimated_cardinality,
+			                                             op.partition_limit);
 			window.children.push_back(plan);
 			plan = window;
 		} else {
