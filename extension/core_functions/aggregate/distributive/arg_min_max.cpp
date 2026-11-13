@@ -99,7 +99,7 @@ struct ArgMinMaxState {
 //! value is typed - exported with the return type and the second argument type of the bound function respectively.
 template <OrderType ORDER, class B>
 struct ArgMinMaxVectorState : ArgMinMaxState<string_t, B> {
-	using STATE_TYPE = OptionalStateType<StructStateType<OptionalStateType<StateSortKey<StateReturnType, ORDER>>,
+	using STATE_TYPE = OptionalStateType<StructStateType<OptionalStateType<StateSortKey<StateReturnType, ORDER, true>>,
 	                                                     OptionalStateType<StateTypedValue<B, StateInputType<1>>>>>;
 };
 
@@ -107,7 +107,7 @@ struct ArgMinMaxVectorState : ArgMinMaxState<string_t, B> {
 //! sort keys.
 template <OrderType ORDER>
 struct ArgMinMaxSortKeyState : ArgMinMaxState<string_t, string_t> {
-	using STATE_TYPE = OptionalStateType<StructStateType<OptionalStateType<StateSortKey<StateReturnType, ORDER>>,
+	using STATE_TYPE = OptionalStateType<StructStateType<OptionalStateType<StateSortKey<StateReturnType, ORDER, true>>,
 	                                                     OptionalStateType<StateSortKey<StateInputType<1>, ORDER>>>>;
 };
 
@@ -332,7 +332,7 @@ struct VectorArgMinMaxBase : ArgMinMaxBase<COMPARATOR> {
 		// slice with a selection vector and generate sort keys
 		SelectionVector sel(assign_sel, assign_count);
 		Vector sliced_input(arg, sel, assign_count);
-		CreateSortKeyHelpers::CreateSortKey(sliced_input, modifiers, sort_key);
+		CreateSortKeyHelpers::CreateSortKeyKeepZeroSign(sliced_input, modifiers, sort_key);
 		auto sort_key_data = FlatVector::GetData<string_t>(sort_key);
 
 		// now assign sort keys
@@ -806,7 +806,7 @@ void SpecializeArgMinMaxNFunction(PhysicalType val_type, PhysicalType arg_type, 
 		break;
 #endif
 	default:
-		SpecializeArgMinMaxNFunction<MinMaxFallbackValue, COMPARATOR>(arg_type, function);
+		SpecializeArgMinMaxNFunction<MinMaxFallbackArgValue, COMPARATOR>(arg_type, function);
 		break;
 	}
 }
@@ -875,7 +875,7 @@ void SpecializeArgMinMaxNullNFunction(PhysicalType val_type, PhysicalType arg_ty
 		break;
 #endif
 	default:
-		SpecializeArgMinMaxNullNFunction<MinMaxFallbackValue, NULLS_LAST, COMPARATOR>(arg_type, function);
+		SpecializeArgMinMaxNullNFunction<MinMaxFallbackArgValue, NULLS_LAST, COMPARATOR>(arg_type, function);
 		break;
 	}
 }

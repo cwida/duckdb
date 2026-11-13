@@ -19,6 +19,8 @@
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/main/client_context.hpp"
 
+#include <cmath>
+
 namespace duckdb {
 
 namespace {
@@ -226,6 +228,22 @@ struct SortKeyConstantOperator {
 			result_value = Radix::DecodeData<T>(input);
 		}
 		return sizeof(T);
+	}
+};
+
+//! The complement of the bits of -0.0 is the key directly below the one Radix gives both zeros.
+template <class T>
+struct SortKeyKeepZeroSignOperator : SortKeyConstantOperator<T> {
+	using BITS = typename std::conditional<sizeof(T) == sizeof(uint32_t), uint32_t, uint64_t>::type;
+
+	template <bool FLIP_BYTES>
+	static idx_t Encode(data_ptr_t result, T input) {
+		if (input == 0 && std::signbit(input)) {
+			const auto bits = Load<BITS>(const_data_ptr_cast(&input));
+			Store<BITS>(BSwapIfLE(FLIP_BYTES ? bits : static_cast<BITS>(~bits)), result);
+			return sizeof(T);
+		}
+		return SortKeyConstantOperator<T>::template Encode<FLIP_BYTES>(result, input);
 	}
 };
 
@@ -600,8 +618,9 @@ void GetSortKeyLength(SortKeyVectorData &vector_data, SortKeyLengthInfo &result)
 // Construct Sort Key
 //===--------------------------------------------------------------------===//
 struct SortKeyConstructInfo {
-	SortKeyConstructInfo(OrderModifiers modifiers_p, unsafe_vector<idx_t> &offsets, data_ptr_t *result_data)
-	    : modifiers(modifiers_p), offsets(offsets), result_data(result_data) {
+	SortKeyConstructInfo(OrderModifiers modifiers_p, unsafe_vector<idx_t> &offsets, data_ptr_t *result_data,
+	                     bool keep_zero_sign_p)
+	    : modifiers(modifiers_p), offsets(offsets), result_data(result_data), keep_zero_sign(keep_zero_sign_p) {
 		flip_bytes = modifiers.order_type == OrderType::DESCENDING;
 	}
 
@@ -609,6 +628,7 @@ struct SortKeyConstructInfo {
 	unsafe_vector<idx_t> &offsets;
 	data_ptr_t *result_data;
 	bool flip_bytes;
+	bool keep_zero_sign;
 };
 
 static void ConstructSortKeyRecursive(SortKeyVectorData &vector_data, SortKeyChunk chunk, SortKeyConstructInfo &info);
@@ -761,10 +781,18 @@ void ConstructSortKeyRecursive(SortKeyVectorData &vector_data, SortKeyChunk chun
 		TemplatedConstructSortKey<SortKeyConstantOperator<int64_t>>(vector_data, chunk, info);
 		break;
 	case PhysicalType::FLOAT:
-		TemplatedConstructSortKey<SortKeyConstantOperator<float>>(vector_data, chunk, info);
+		if (info.keep_zero_sign) {
+			TemplatedConstructSortKey<SortKeyKeepZeroSignOperator<float>>(vector_data, chunk, info);
+		} else {
+			TemplatedConstructSortKey<SortKeyConstantOperator<float>>(vector_data, chunk, info);
+		}
 		break;
 	case PhysicalType::DOUBLE:
-		TemplatedConstructSortKey<SortKeyConstantOperator<double>>(vector_data, chunk, info);
+		if (info.keep_zero_sign) {
+			TemplatedConstructSortKey<SortKeyKeepZeroSignOperator<double>>(vector_data, chunk, info);
+		} else {
+			TemplatedConstructSortKey<SortKeyConstantOperator<double>>(vector_data, chunk, info);
+		}
 		break;
 	case PhysicalType::INTERVAL:
 		TemplatedConstructSortKey<SortKeyConstantOperator<interval_t>>(vector_data, chunk, info);
@@ -866,7 +894,7 @@ void FinalizeSortData(Vector &result, idx_t size, const SortKeyLengthInfo &key_l
 
 void CreateSortKeyInternal(vector<unique_ptr<SortKeyVectorData>> &sort_key_data,
                            const vector<OrderModifiers> &modifiers, const bool &all_constant, Vector &result,
-                           idx_t row_count) {
+                           idx_t row_count, bool keep_zero_sign) {
 	// two phases
 	// a) get the length of the final sorted key
 	// b) allocate the sorted key and construct
@@ -883,7 +911,7 @@ void CreateSortKeyInternal(vector<unique_ptr<SortKeyVectorData>> &sort_key_data,
 	offsets.resize(row_count, 0);
 	// now construct the sort keys
 	for (idx_t c = 0; c < sort_key_data.size(); c++) {
-		SortKeyConstructInfo info(modifiers[c], offsets, data_pointers.get());
+		SortKeyConstructInfo info(modifiers[c], offsets, data_pointers.get(), keep_zero_sign);
 		ConstructSortKey(*sort_key_data[c], info);
 	}
 	FinalizeSortData(result, row_count, key_lengths, offsets);
@@ -954,14 +982,28 @@ static void AssertSortKeyRoundTrip(vector<unique_ptr<SortKeyVectorData>> &sort_k
 
 } // namespace
 
-void CreateSortKeyHelpers::CreateSortKey(const Vector &input, OrderModifiers order_modifier, Vector &result) {
-	// prepare the sort key data
-	const auto input_count = input.size();
+static void CreateSingleColumnSortKey(const Vector &input, idx_t input_count, OrderModifiers order_modifier,
+                                      Vector &result, bool keep_zero_sign) {
 	vector<OrderModifiers> modifiers {order_modifier};
 	vector<unique_ptr<SortKeyVectorData>> sort_key_data;
 	sort_key_data.push_back(make_uniq<SortKeyVectorData>(input, input_count, order_modifier));
+	CreateSortKeyInternal(sort_key_data, modifiers, false, result, input_count, keep_zero_sign);
+}
 
-	CreateSortKeyInternal(sort_key_data, modifiers, false, result, input_count);
+static void SetNullSortKeys(const Vector &input, Vector &result, idx_t count) {
+	UnifiedVectorFormat format;
+	input.ToUnifiedFormat(format);
+	auto &validity = FlatVector::ValidityMutable(result);
+	for (idx_t i = 0; i < count; i++) {
+		auto idx = format.sel->get_index(i);
+		if (!format.validity.RowIsValid(idx)) {
+			validity.SetInvalid(i);
+		}
+	}
+}
+
+void CreateSortKeyHelpers::CreateSortKey(const Vector &input, OrderModifiers order_modifier, Vector &result) {
+	CreateSingleColumnSortKey(input, input.size(), order_modifier, result, false);
 }
 
 void CreateSortKeyHelpers::CreateSortKey(DataChunk &input, const vector<OrderModifiers> &modifiers, Vector &result) {
@@ -970,46 +1012,40 @@ void CreateSortKeyHelpers::CreateSortKey(DataChunk &input, const vector<OrderMod
 	for (idx_t r = 0; r < modifiers.size(); r++) {
 		sort_key_data.push_back(make_uniq<SortKeyVectorData>(input.data[r], input.size(), modifiers[r]));
 	}
-	CreateSortKeyInternal(sort_key_data, modifiers, false, result, input.size());
+	CreateSortKeyInternal(sort_key_data, modifiers, false, result, input.size(), false);
 }
 
 void CreateSortKeyHelpers::CreateSortKey(const Vector &input, idx_t input_count, OrderModifiers order_modifier,
                                          Vector &result) {
-	vector<OrderModifiers> modifiers {order_modifier};
-	vector<unique_ptr<SortKeyVectorData>> sort_key_data;
-	sort_key_data.push_back(make_uniq<SortKeyVectorData>(input, input_count, order_modifier));
-	CreateSortKeyInternal(sort_key_data, modifiers, false, result, input_count);
+	CreateSingleColumnSortKey(input, input_count, order_modifier, result, false);
+}
+
+void CreateSortKeyHelpers::CreateSortKeyKeepZeroSign(const Vector &input, OrderModifiers order_modifier,
+                                                     Vector &result) {
+	CreateSingleColumnSortKey(input, input.size(), order_modifier, result, true);
+}
+
+void CreateSortKeyHelpers::CreateSortKeyKeepZeroSign(const Vector &input, idx_t input_count,
+                                                     OrderModifiers order_modifier, Vector &result) {
+	CreateSingleColumnSortKey(input, input_count, order_modifier, result, true);
 }
 
 void CreateSortKeyHelpers::CreateSortKeyWithValidity(const Vector &input, Vector &result,
                                                      const OrderModifiers &modifiers) {
 	CreateSortKey(input, modifiers, result);
-	UnifiedVectorFormat format;
-	input.ToUnifiedFormat(format);
-	auto &validity = FlatVector::ValidityMutable(result);
-
-	const auto count = input.size();
-	for (idx_t i = 0; i < count; i++) {
-		auto idx = format.sel->get_index(i);
-		if (!format.validity.RowIsValid(idx)) {
-			validity.SetInvalid(i);
-		}
-	}
+	SetNullSortKeys(input, result, input.size());
 }
 
 void CreateSortKeyHelpers::CreateSortKeyWithValidity(const Vector &input, Vector &result,
                                                      const OrderModifiers &modifiers, idx_t count) {
 	CreateSortKey(input, count, modifiers, result);
-	UnifiedVectorFormat format;
-	input.ToUnifiedFormat(format);
-	auto &validity = FlatVector::ValidityMutable(result);
+	SetNullSortKeys(input, result, count);
+}
 
-	for (idx_t i = 0; i < count; i++) {
-		auto idx = format.sel->get_index(i);
-		if (!format.validity.RowIsValid(idx)) {
-			validity.SetInvalid(i);
-		}
-	}
+void CreateSortKeyHelpers::CreateSortKeyKeepZeroSignWithValidity(const Vector &input, Vector &result,
+                                                                 const OrderModifiers &modifiers) {
+	CreateSortKeyKeepZeroSign(input, modifiers, result);
+	SetNullSortKeys(input, result, input.size());
 }
 
 static void CreateSortKeyFunction(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -1020,7 +1056,7 @@ static void CreateSortKeyFunction(DataChunk &args, ExpressionState &state, Vecto
 	for (idx_t c = 0; c < args.ColumnCount(); c += 2) {
 		sort_key_data.push_back(make_uniq<SortKeyVectorData>(args.data[c], args.size(), bind_data.modifiers[c / 2]));
 	}
-	CreateSortKeyInternal(sort_key_data, bind_data.modifiers, bind_data.all_constant, result, args.size());
+	CreateSortKeyInternal(sort_key_data, bind_data.modifiers, bind_data.all_constant, result, args.size(), false);
 #ifdef DEBUG
 	AssertSortKeyRoundTrip(sort_key_data, bind_data.modifiers, result, args.size());
 #endif

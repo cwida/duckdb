@@ -1,0 +1,169 @@
+# name: test/sql/aggregate/aggregates/test_first_negative_zero.test
+# description: first, last, any_value and arbitrary over nested types keep the sign of -0.0
+# group: [aggregates]
+
+# first and last are only deterministic single threaded
+statement ok
+SET threads=1;
+
+# -0.0 is spelled '-0.0'::DOUBLE: a bare -0.0 is DECIMAL negation, and a DECIMAL zero has no sign
+statement ok
+CREATE TABLE zeros AS SELECT '-0.0'::DOUBLE AS d, '-0.0'::FLOAT AS f;
+
+query IIII
+SELECT first([d])::VARCHAR, any_value({'a': d})::VARCHAR, first(d)::VARCHAR, first(f)::VARCHAR FROM zeros;
+----
+[-0.0]	{'a': -0.0}	-0.0	-0.0
+
+query IIII
+SELECT first([d])::VARCHAR, last([d])::VARCHAR, any_value([d])::VARCHAR, arbitrary([d])::VARCHAR FROM zeros;
+----
+[-0.0]	[-0.0]	[-0.0]	[-0.0]
+
+query IIII
+SELECT first([f])::VARCHAR, last([f])::VARCHAR, any_value([f])::VARCHAR, arbitrary([f])::VARCHAR FROM zeros;
+----
+[-0.0]	[-0.0]	[-0.0]	[-0.0]
+
+query IIII
+SELECT first({'a': d, 'b': f})::VARCHAR, last(MAP {'k': d})::VARCHAR, any_value([d, 1]::DOUBLE[2])::VARCHAR,
+	arbitrary([f, 1]::FLOAT[2])::VARCHAR
+FROM zeros;
+----
+{'a': -0.0, 'b': -0.0}	{k=-0.0}	[-0.0, 1.0]	[-0.0, 1.0]
+
+# the zero deep inside a nested value, and as a MAP key
+query II
+SELECT first({'l': [[d]], 'm': MAP {d: [f]}})::VARCHAR, last([{'x': [d]}])::VARCHAR FROM zeros;
+----
+{'l': [[-0.0]], 'm': {-0.0=[-0.0]}}	[{'x': [-0.0]}]
+
+# an uncorrelated scalar subquery that is not provably one row is planned as first
+query I
+SELECT (SELECT [y] FROM (SELECT d AS y FROM zeros) t)::VARCHAR;
+----
+[-0.0]
+
+# NULL rows, NULL elements and NaN beside the zero
+query II
+SELECT first([d, NULL, 'nan'::DOUBLE])::VARCHAR, first({'a': NULL, 'b': [f, NULL]})::VARCHAR FROM zeros;
+----
+[-0.0, NULL, nan]	{'a': NULL, 'b': [-0.0, NULL]}
+
+query III
+SELECT any_value(l)::VARCHAR, first(l)::VARCHAR, last(l)::VARCHAR
+FROM (VALUES (NULL), ([NULL, '-0.0'::DOUBLE]), (NULL)) t(l);
+----
+[NULL, -0.0]	NULL	NULL
+
+# several groups, and groups holding both zeros: first keeps the first seen zero, last the last seen
+query III
+SELECT g, first([v])::VARCHAR, last([v])::VARCHAR
+FROM (VALUES (1, '-0.0'::DOUBLE), (1, 0.0), (2, 0.0), (2, '-0.0'::DOUBLE), (3, '-0.0'::DOUBLE), (4, 0.0)) t(g, v)
+GROUP BY g ORDER BY g;
+----
+1	[-0.0]	[0.0]
+2	[0.0]	[-0.0]
+3	[-0.0]	[-0.0]
+4	[0.0]	[0.0]
+
+# first with ORDER BY is rewritten to arg_min, whose value side stores the same key
+query IIII
+SELECT first([v] ORDER BY k)::VARCHAR, last([v] ORDER BY k)::VARCHAR, arg_min([v], k)::VARCHAR,
+	arg_max({'a': v}, k)::VARCHAR
+FROM (VALUES (1, '-0.0'::DOUBLE), (2, 0.0), (3, '-0.0'::DOUBLE)) t(k, v);
+----
+[-0.0]	[-0.0]	[-0.0]	{'a': -0.0}
+
+# a FLOAT in descending order, the arg_max key
+query II
+SELECT last([v::FLOAT] ORDER BY k)::VARCHAR, arg_max({'a': v::FLOAT}, k)::VARCHAR
+FROM (VALUES (1, 0.0::DOUBLE), (2, '-0.0'::DOUBLE)) t(k, v);
+----
+[-0.0]	{'a': -0.0}
+
+# a flat value is stored as a sort key too when arg_min has no specialization for the pair of types
+query IIIII
+SELECT first(v::FLOAT ORDER BY k)::VARCHAR, last(v::FLOAT ORDER BY k)::VARCHAR, arg_min(v, [k])::VARCHAR,
+	arg_max(v, {'a': k})::VARCHAR, arg_min(v, '00000000-0000-0000-0000-000000000001'::UUID)::VARCHAR
+FROM (VALUES (1, '-0.0'::DOUBLE)) t(k, v);
+----
+-0.0	-0.0	-0.0	-0.0	-0.0
+
+# min and max over a value that needs a collation are planned as arg_min and arg_max, and return the input
+query II
+SELECT min({'i': INTERVAL '1 day', 'z': d})::VARCHAR, max({'i': INTERVAL '1 day', 'z': d})::VARCHAR FROM zeros;
+----
+{'i': 1 day, 'z': -0.0}	{'i': 1 day, 'z': -0.0}
+
+# window aggregates over a frame; first and last over a window are planned as first_value and last_value
+query IIII
+SELECT k, (any_value([v]) FILTER (WHERE k > 1) OVER w)::VARCHAR, (first([v]) OVER w)::VARCHAR,
+	(last([v]) OVER w)::VARCHAR
+FROM (VALUES (1, 0.0::DOUBLE), (2, '-0.0'::DOUBLE), (3, 0.0)) t(k, v)
+WINDOW w AS (ORDER BY k ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING)
+ORDER BY k;
+----
+1	[-0.0]	[0.0]	[-0.0]
+2	[-0.0]	[-0.0]	[0.0]
+3	[0.0]	[0.0]	[0.0]
+
+# a frame wide enough to be combined from the segment tree
+query I
+SELECT count(*) FROM (
+	SELECT (any_value([CASE WHEN i = 1000 THEN '-0.0'::DOUBLE END]) FILTER (WHERE i = 1000)
+		OVER (ORDER BY i ROWS BETWEEN 1000 PRECEDING AND 1000 FOLLOWING))::VARCHAR AS a
+	FROM range(2001) t(i))
+WHERE a = '[-0.0]';
+----
+2001
+
+# the exported state, its import and a persisted state
+query II
+SELECT (first([d]) EXPORT_STATE)::STRUCT(value DOUBLE[])::VARCHAR, finalize(arg_min([d], 1) EXPORT_STATE)::VARCHAR
+FROM zeros;
+----
+{'value': [-0.0]}	[-0.0]
+
+query III
+SELECT finalize(to_aggregate_state({'value': ['-0.0'::DOUBLE]}, 'first', ['DOUBLE[]']))::VARCHAR,
+	finalize(to_aggregate_state({'value': ['-0.0'::FLOAT]}, 'last', ['FLOAT[]']))::VARCHAR,
+	finalize(to_aggregate_state({'arg': ['-0.0'::DOUBLE], 'by': 1}, 'arg_max', ['DOUBLE[]', 'INTEGER']))::VARCHAR;
+----
+[-0.0]	[-0.0]	[-0.0]
+
+# ordering, DISTINCT and grouping still treat the two zeros as one value
+query II
+SELECT [v]::VARCHAR, k FROM (VALUES (1, 0.0::DOUBLE), (2, '-0.0'::DOUBLE)) t(k, v) ORDER BY [v], k;
+----
+[0.0]	1
+[-0.0]	2
+
+query II
+SELECT count(DISTINCT [v]), count(DISTINCT {'a': v}) FROM (VALUES ('-0.0'::DOUBLE), (0.0)) t(v);
+----
+1	1
+
+query I
+SELECT count(*) FROM (SELECT [v] FROM (VALUES ('-0.0'::DOUBLE), (0.0)) t(v) GROUP BY [v]);
+----
+1
+
+# min and max over nested types compare the sort key and are unchanged
+query II
+SELECT min([d])::VARCHAR, max([d])::VARCHAR FROM zeros;
+----
+[0.0]	[0.0]
+
+# a persisted state
+load {TEST_DIR}/first_negative_zero.db readwrite v2.0.0
+
+statement ok
+CREATE TABLE first_state AS SELECT first({'a': '-0.0'::DOUBLE}) EXPORT_STATE AS s;
+
+restart
+
+query I
+SELECT finalize(s)::VARCHAR FROM first_state;
+----
+{'a': -0.0}

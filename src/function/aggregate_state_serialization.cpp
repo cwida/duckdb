@@ -192,6 +192,15 @@ static void SerializeField(const LogicalType &type, const AggregateStateField &f
 	}
 }
 
+static void CreateStateSortKeys(const AggregateStateField &field, const Vector &input, idx_t count, Vector &result) {
+	const OrderModifiers modifiers(field.sort_key_order, OrderByNullType::NULLS_LAST);
+	if (field.sort_key_keeps_zero_sign) {
+		CreateSortKeyHelpers::CreateSortKeyKeepZeroSign(input, count, modifiers, result);
+	} else {
+		CreateSortKeyHelpers::CreateSortKey(input, count, modifiers, result);
+	}
+}
+
 // Recursively deserialize an input vector into a packed state buffer.
 // base: accumulated byte offset within each state slot for this field's parent base.
 static void DeserializeField(const LogicalType &type, const AggregateStateField &field, const Vector &input_vec,
@@ -209,8 +218,7 @@ static void DeserializeField(const LogicalType &type, const AggregateStateField 
 	}
 	case AggregateFieldKind::SORT_KEY: {
 		Vector sort_keys(LogicalType::BLOB);
-		CreateSortKeyHelpers::CreateSortKey(
-		    input_vec, count, OrderModifiers(field.sort_key_order, OrderByNullType::NULLS_LAST), sort_keys);
+		CreateStateSortKeys(field, input_vec, count, sort_keys);
 		auto *key_data = FlatVector::GetData<string_t>(sort_keys);
 		const auto validity = input_vec.Validity();
 		for (idx_t i = 0; i < count; i++) {
@@ -274,10 +282,9 @@ static void DeserializeField(const LogicalType &type, const AggregateStateField 
 		unique_ptr<Vector> encoded_child;
 		if (element.kind == AggregateFieldKind::SORT_KEY) {
 			const auto child_count = ListVector::GetListSize(input_vec);
-			const OrderModifiers modifiers(element.sort_key_order, OrderByNullType::NULLS_LAST);
 			// the result must be sized for the full (possibly larger than standard) child up front
 			encoded_child = make_uniq<Vector>(LogicalType::BLOB, MaxValue<idx_t>(child_count, 1));
-			CreateSortKeyHelpers::CreateSortKey(logical_child, child_count, modifiers, *encoded_child);
+			CreateStateSortKeys(element, logical_child, child_count, *encoded_child);
 			physical_child = *encoded_child;
 		}
 
