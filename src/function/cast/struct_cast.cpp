@@ -282,6 +282,46 @@ StructToMapBoundCastData::InitStructToMapCastLocalState(CastLocalStateParameters
 }
 
 static bool StructToMapCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
+	if (count == 0) {
+		if (result.GetVectorType() != VectorType::CONSTANT_VECTOR) {
+			ListVector::SetListSize(result, 0);
+		}
+		return true;
+	}
+
+	auto write_all_nulls = [&]() {
+		if (result.GetVectorType() == VectorType::CONSTANT_VECTOR ||
+		    source.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+			ConstantVector::SetNull(result, count_t(count));
+		} else {
+			auto list_data = FlatVector::Writer<list_entry_t>(result, count);
+			for (idx_t i = 0; i < count; i++) {
+				list_data.WriteNull();
+			}
+			ListVector::SetListSize(result, 0);
+		}
+	};
+
+	auto validity_entries = source.Validity();
+	bool has_valid_rows = false;
+	if (source.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+		has_valid_rows = !ConstantVector::IsNull(source);
+	} else if (validity_entries.CannotHaveNull()) {
+		has_valid_rows = true;
+	} else {
+		for (idx_t i = 0; i < count; i++) {
+			if (validity_entries.IsValid(i)) {
+				has_valid_rows = true;
+				break;
+			}
+		}
+	}
+
+	if (!has_valid_rows) {
+		write_all_nulls();
+		return true;
+	}
+
 	auto &cast_data = parameters.cast_data->Cast<StructToMapBoundCastData>();
 	auto &local_state = parameters.local_state->Cast<StructToMapCastLocalState>();
 
@@ -326,6 +366,10 @@ static bool StructToMapCast(Vector &source, Vector &result, idx_t count, CastPar
 	auto &map_keys = MapVector::GetKeys(result);
 	CastParameters key_parameters(parameters, cast_data.key_cast.GetCastData(), local_state.key_state);
 	auto keys_converted = cast_data.key_cast.Cast(varchar_keys, map_keys, field_count, key_parameters);
+	if (!keys_converted) {
+		write_all_nulls();
+		return false;
+	}
 
 	// Slice the map keys to create the dictionary
 	SelectionVector slice_sel(total_count);
@@ -369,7 +413,7 @@ static bool StructToMapCast(Vector &source, Vector &result, idx_t count, CastPar
 	// Set the size
 	ListVector::SetListSize(result, total_count);
 
-	return keys_converted && values_converted;
+	return values_converted;
 }
 
 BoundCastInfo DefaultCasts::StructCastSwitch(BindCastInput &input, const LogicalType &source,

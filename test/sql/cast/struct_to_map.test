@@ -106,6 +106,75 @@ SELECT {"a": NULL, "b": NULL, "c": 'value'}::MAP(VARCHAR, VARCHAR);
 ----
 {a=NULL, b=NULL, c=value}
 
+# Issue #27534: Casting NULL STRUCT rows to MAP with a non-VARCHAR key type
+query I
+SELECT (NULL::STRUCT(k VARCHAR, i BIGINT))::MAP(BIGINT, BIGINT);
+----
+NULL
+
+statement ok
+CREATE TABLE s AS SELECT NULL::STRUCT(k VARCHAR, i BIGINT) AS st FROM range(3);
+
+query I
+SELECT st::MAP(VARCHAR, BIGINT) FROM s;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT st::MAP(BIGINT, BIGINT) FROM s;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT TRY_CAST(st AS MAP(BIGINT, BIGINT)) FROM s;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT st::MAP(BIGINT, BIGINT) FROM s WHERE 1 = 0;
+----
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES (1::BIGINT, 'a', 10::BIGINT), (2, 'b', 20), (3, 'c', 30)) v(i, k, j);
+
+query I
+SELECT list_extract([struct_pack(k := k, i := i)], 5)::MAP(BIGINT, BIGINT) FROM t;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT min(struct_pack(k := k, i := i)) FILTER (WHERE j < 0)::MAP(BIGINT, BIGINT) FROM t GROUP BY i;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT TRY_CAST(struct_pack(k := 'not_an_int', i := 1) AS MAP(BIGINT, BIGINT));
+----
+NULL
+
+query I
+SELECT TRY_CAST(CASE WHEN i = 2 THEN NULL ELSE struct_pack(k := k, i := i) END AS MAP(BIGINT, BIGINT)) FROM t;
+----
+NULL
+NULL
+NULL
+
+statement ok
+DROP TABLE s;
+
+statement ok
+DROP TABLE t;
+
 # Constant vector tests
 
 # Single constant struct
