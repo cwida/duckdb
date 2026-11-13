@@ -328,6 +328,12 @@ public:
 		return Iterator(*this, EndPos());
 	}
 
+	//! The entries sorted by key, only for LEXICOGRAPHIC order
+	const vector<VariantObjectEntry> &GetOrderedEntries() const {
+		D_ASSERT(order == VariantIterationOrder::LEXICOGRAPHIC);
+		return ordered_entries;
+	}
+
 private:
 	//! Materializes the entry at the given raw position (before missing-field skipping)
 	VariantObjectEntry RawEntry(idx_t raw_pos) const;

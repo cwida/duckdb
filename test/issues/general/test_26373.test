@@ -1,0 +1,81 @@
+# name: test/issues/general/test_26373.test
+# description: Comparing, grouping and sorting deeply nested VARIANT values does not overflow the stack
+# group: [general]
+
+require parquet
+
+# 100000 levels alternating between an array (the outermost) and an object with key 'a', each holding one element,
+# in the binary encoding of variant_bytes_to_variant. The offsets of an element take as many bytes as its length needs
+statement ok
+CREATE TABLE levels AS
+WITH RECURSIVE levels(depth, child_length, width) AS (
+	SELECT 1, 1, 1
+	UNION ALL
+	SELECT depth + 1, child_length + 2 + depth % 2 + 2 * width,
+	       CASE WHEN child_length + 2 + depth % 2 + 2 * width < 256 THEN 1
+	            WHEN child_length + 2 + depth % 2 + 2 * width < 65536 THEN 2 ELSE 3 END
+	FROM levels WHERE depth < 100000
+)
+SELECT depth,
+       CASE WHEN depth % 2 = 1 THEN printf('%02x0100', 2 + 4 * (width - 1)) ELSE printf('%02x01', 3 + 4 * (width - 1)) END ||
+       repeat('00', width) ||
+       left(printf('%02x%02x%02x', child_length % 256, child_length // 256 % 256, child_length // 65536), 2 * width) AS header
+FROM levels;
+
+# rows 1 and 2 hold a NULL at the bottom, row 3 holds true
+statement ok
+CREATE TABLE t AS
+SELECT id, variant_bytes_to_variant(unhex('1101000161' || string_agg(header, '' ORDER BY depth DESC) || bottom)) AS v
+FROM levels, (VALUES (1, '00'), (2, '00'), (3, '04')) bottoms(id, bottom)
+GROUP BY id, bottom;
+
+query II
+SELECT id, variant_typeof(v) FROM t ORDER BY id;
+----
+1	ARRAY(1)
+2	ARRAY(1)
+3	ARRAY(1)
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT v FROM t);
+----
+2
+
+query I
+SELECT list(id ORDER BY id) FROM t GROUP BY v ORDER BY ALL;
+----
+[1, 2]
+[3]
+
+query I
+SELECT count(*) FROM t a JOIN t b ON a.v = b.v;
+----
+5
+
+query I
+SELECT list(id ORDER BY v, id) FROM t;
+----
+[3, 1, 2]
+
+query I
+SELECT list(id ORDER BY v DESC, id) FROM t;
+----
+[1, 2, 3]
+
+query II
+SELECT count(*) FILTER (WHERE a.v < b.v), count(*) FILTER (WHERE a.v = b.v) FROM t a, t b;
+----
+2	5
+
+# a rank and a delimiter per level, the key 'a' with its delimiter per object, and the bottom value
+query I
+SELECT octet_length(variant_comparator(v)) FROM t WHERE id = 1;
+----
+300001
+
+# wide arrays and their elements in order
+query II
+SELECT count(DISTINCT v), list(n ORDER BY v, n) FROM (VALUES (1, range(100000)), (2, range(100000)), (3, range(99999)),
+	(4, range(1, 100000))) t(n, l), LATERAL (SELECT l::VARIANT AS v);
+----
+3	[3, 1, 2, 4]

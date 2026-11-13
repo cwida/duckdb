@@ -1,0 +1,20 @@
+# name: benchmark/micro/variant/variant_comparator_nested_sort.benchmark
+# description: ORDER BY over an unshredded VARIANT column of nested arrays and objects, stresses the traversal of variant_comparator
+# group: [variant]
+
+name variant_comparator_nested_sort
+group variant
+storage persistent v2.0.0
+
+cache variant_comparator_nested_sort.duckdb
+
+load
+SET variant_minimum_shredding_size = 100000000;
+CREATE TABLE tbl AS SELECT [{'a': [i % 7, i % 11], 'b': {'c': [i % 3]}}, {'a': [i % 5], 'b': {'c': []}}]::VARIANT v FROM range(3000000) t(i);
+CHECKPOINT;
+
+run
+SELECT v FROM tbl ORDER BY v LIMIT 1;
+
+result I
+[{'a': [0, 0], 'b': {'c': [0]}}, {'a': [0], 'b': {'c': []}}]
