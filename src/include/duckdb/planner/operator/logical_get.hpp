@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/common/column_index_map.hpp"
 #include "duckdb/common/enums/ordinality_request_type.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/planner/table_filter_set.hpp"
@@ -18,6 +19,7 @@
 #include "duckdb/storage/table/row_group_order_options.hpp"
 
 namespace duckdb {
+class BaseStatistics;
 class TableCatalogEntry;
 class DynamicTableFilterSet;
 struct LogicalPlanSQLExportField;
@@ -34,6 +36,7 @@ public:
 	LogicalGet(TableIndex table_index, BoundTableFunction function, unique_ptr<FunctionData> bind_data,
 	           vector<LogicalType> returned_types, vector<Identifier> returned_names,
 	           virtual_column_map_t virtual_columns = virtual_column_map_t());
+	~LogicalGet() override;
 
 	//! The table index in the current bind context
 	TableIndex table_index;
@@ -107,6 +110,12 @@ public:
 	bool TryGetStorageIndex(const ColumnIndex &column_index, StorageIndex &out_index) const;
 	void SetScanOrder(unique_ptr<RowGroupOrderOptions> options);
 	void SetPartitionsToScan(vector<idx_t> partition_indices);
+	//! Whether the table function can provide column statistics
+	bool HasColumnStatistics() const;
+	//! Returns the statistics of a column from the table function, cached until the bind data changes
+	unique_ptr<BaseStatistics> GetColumnStatistics(ClientContext &context, const ColumnIndex &column_index);
+	//! Must be called whenever the bind data is modified
+	void ClearColumnStatisticsCache();
 
 	vector<TableIndex> GetTableIndex() const override;
 	//! Skips the serialization check in VerifyPlan
@@ -139,5 +148,7 @@ private:
 private:
 	//! Bound column IDs
 	vector<ColumnIndex> column_ids;
+	//! Column statistics returned by the table function, nullptr if it returned none
+	column_index_map<unique_ptr<BaseStatistics>> column_statistics_cache;
 };
 } // namespace duckdb

@@ -374,14 +374,10 @@ static void ApplyDirectFilterDomain(RelationColumnStats &column, const Expressio
 
 unique_ptr<BaseStatistics> RelationStatisticsHelper::GetColumnStatistics(LogicalGet &get, ClientContext &context,
                                                                          const ColumnIndex &column_id) {
-	if (!get.bind_data || (!get.function.statistics && !get.function.statistics_extended)) {
+	if (!get.bind_data || !get.HasColumnStatistics()) {
 		return nullptr;
 	}
-	if (get.function.statistics_extended) {
-		TableFunctionGetStatisticsInput input(get.bind_data.get(), column_id);
-		return get.function.statistics_extended(context, input);
-	}
-	return get.function.statistics(context, get.bind_data.get(), column_id.GetPrimaryIndex());
+	return get.GetColumnStatistics(context, column_id);
 }
 
 RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientContext &context) {

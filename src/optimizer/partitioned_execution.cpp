@@ -139,7 +139,7 @@ static optional_ptr<LogicalGet> PartitionedExecutionTraceColumns(LogicalOperator
 	}
 	auto &get = child_ref.get().Cast<LogicalGet>();
 
-	if ((!get.function.statistics && !get.function.statistics_extended) || !get.function.get_partition_stats) {
+	if (!get.HasColumnStatistics() || !get.function.get_partition_stats) {
 		return nullptr; // We need these
 	}
 
@@ -202,13 +202,7 @@ static bool PartitionedExecutionMinMaxEqual(const BaseStatistics &stats) {
 static void PartitionedExecutionHandleGlobalStats(Optimizer &optimizer, LogicalOperator &op, LogicalGet &get,
                                                   vector<PartitionedExecutionColumn> &columns) {
 	for (auto it = columns.begin(); it != columns.end();) {
-		unique_ptr<BaseStatistics> stats;
-		if (get.function.statistics_extended) {
-			TableFunctionGetStatisticsInput stats_input(get.bind_data.get(), it->column_index);
-			stats = get.function.statistics_extended(optimizer.context, stats_input);
-		} else {
-			stats = get.function.statistics(optimizer.context, get.bind_data.get(), it->column_index.GetPrimaryIndex());
-		}
+		auto stats = get.GetColumnStatistics(optimizer.context, it->column_index);
 		if (!PartitionedExecutionCanUseStats(stats)) {
 			it = PartitionedExecutionHandleColumnRemoval(op.type, columns, it);
 		} else if (PartitionedExecutionMinMaxEqual(*stats)) {

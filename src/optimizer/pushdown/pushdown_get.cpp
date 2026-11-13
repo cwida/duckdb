@@ -137,6 +137,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownGet(unique_ptr<LogicalOperat
 		filters.clear();
 
 		get.function.pushdown_complex_filter(optimizer.context, get, get.bind_data.get(), expressions);
+		get.ClearColumnStatisticsCache();
 
 		if (expressions.empty()) {
 			restore_barrier_filters();

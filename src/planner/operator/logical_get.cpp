@@ -7,6 +7,7 @@
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
@@ -73,6 +74,9 @@ LogicalGet::LogicalGet(TableIndex table_index, BoundTableFunction function, uniq
     : LogicalOperator(LogicalOperatorType::LOGICAL_GET), table_index(table_index), function(std::move(function)),
       bind_data(std::move(bind_data)), returned_types(std::move(returned_types)), names(std::move(returned_names)),
       virtual_columns(std::move(virtual_columns_p)), extra_info() {
+}
+
+LogicalGet::~LogicalGet() {
 }
 
 optional_ptr<TableCatalogEntry> LogicalGet::GetTable() const {
@@ -323,6 +327,29 @@ idx_t LogicalGet::EstimateSourceCardinality(ClientContext &context) {
 	return 1;
 }
 
+bool LogicalGet::HasColumnStatistics() const {
+	return function.statistics || function.statistics_extended;
+}
+
+unique_ptr<BaseStatistics> LogicalGet::GetColumnStatistics(ClientContext &context, const ColumnIndex &column_index) {
+	auto entry = column_statistics_cache.find(column_index);
+	if (entry == column_statistics_cache.end()) {
+		unique_ptr<BaseStatistics> stats;
+		if (function.statistics_extended) {
+			TableFunctionGetStatisticsInput input(bind_data.get(), column_index);
+			stats = function.statistics_extended(context, input);
+		} else if (function.statistics) {
+			stats = function.statistics(context, bind_data.get(), column_index.GetPrimaryIndex());
+		}
+		entry = column_statistics_cache.emplace(column_index, std::move(stats)).first;
+	}
+	return entry->second ? entry->second->ToUnique() : nullptr;
+}
+
+void LogicalGet::ClearColumnStatisticsCache() {
+	column_statistics_cache.clear();
+}
+
 void LogicalGet::SetScanOrder(unique_ptr<RowGroupOrderOptions> options) {
 	if (!function.set_scan_order) {
 		throw InternalException("LogicalGet::SetScanOrder called but function does not have scan order defined");
@@ -337,6 +364,7 @@ void LogicalGet::SetPartitionsToScan(vector<idx_t> partition_indices) {
 	}
 	scan_partition_indices = partition_indices;
 	function.set_partitions_to_scan(std::move(partition_indices), bind_data.get());
+	ClearColumnStatisticsCache();
 }
 
 void LogicalGet::Serialize(Serializer &serializer) const {
