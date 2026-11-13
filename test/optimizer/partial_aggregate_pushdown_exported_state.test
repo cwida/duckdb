@@ -110,9 +110,21 @@ EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty), count(*), count(qty), avg(q
 logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
 
 query II
-EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty::HUGEINT), sum(qty::DECIMAL(18,2)), avg(qty::DECIMAL(18,2)), min(s), max(qty::DOUBLE / 4), sum(qty::DOUBLE / 4), skewness(qty), kurtosis(qty) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty::BIGINT), sum(qty::DECIMAL(18,2)), avg(qty::DECIMAL(18,2)), min(s), max(qty::DOUBLE / 4), sum(qty::DOUBLE / 4) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
 ----
 logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# a fact side that is empty at run time (statistics cannot tell: every s is below '9z' or is 'oops'): the levels
+# combine over an empty pre-aggregate
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty), count(*) FROM sales JOIN item USING (item_key) WHERE sales.s <> 'oops' AND sales.s > '9z' GROUP BY CUBE (brand, class)
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty), count(*) FROM sales JOIN item USING (item_key) WHERE sales.s <> 'oops' AND sales.s > '9z' GROUP BY CUBE (brand, class)
+----
+logical_opt	<!REGEX>:.*EMPTY_RESULT.*
 
 # ---------------------------------------------------------------------------------------------------------------
 # The base level stays above the join
@@ -179,6 +191,39 @@ logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
 
 query II
 EXPLAIN (FORMAT JSON) SELECT brand, class, sum(TRY_CAST(s AS INTEGER)) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# An aggregate whose update or combine can throw is not run below an inner join either: sum and avg over HUGEINT and
+# DECIMAL(38) add with overflow checks, skewness and kurtosis are marked as able to throw as well. Below a join that
+# preserves the aggregate side they are pushed.
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty::HUGEINT) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, avg(qty::HUGEINT) FROM sales JOIN item USING (item_key) GROUP BY CUBE (brand, class)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty::DECIMAL(38,2)) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, skewness(qty), kurtosis(qty) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty::HUGEINT) EXPORT_STATE FROM sales JOIN item USING (item_key) GROUP BY brand, class
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty::HUGEINT), skewness(qty) FROM sales LEFT JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
 ----
 logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
 
@@ -283,7 +328,7 @@ NULL	c6	134640	396
 NULL	NULL	1886350	3959
 NULL	NULL	1890130	4157
 
-# an empty dimension side, an empty fact side: the grand total row alone
+# an empty dimension side, a fact side that is empty at run time: the grand total row alone
 
 query IIII
 SELECT brand, class, sum(qty), count(*) FROM sales JOIN item USING (item_key) WHERE item.item_key < 0 GROUP BY ROLLUP (brand, class) ORDER BY ALL
@@ -291,7 +336,7 @@ SELECT brand, class, sum(qty), count(*) FROM sales JOIN item USING (item_key) WH
 NULL	NULL	NULL	0
 
 query IIII
-SELECT brand, class, sum(qty), count(*) FROM sales JOIN item USING (item_key) WHERE sales.grp > 99 GROUP BY CUBE (brand, class) ORDER BY ALL
+SELECT brand, class, sum(qty), count(*) FROM sales JOIN item USING (item_key) WHERE sales.s <> 'oops' AND sales.s > '9z' GROUP BY CUBE (brand, class) ORDER BY ALL
 ----
 NULL	NULL	NULL	0
 

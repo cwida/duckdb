@@ -1,0 +1,164 @@
+# name: test/optimizer/partial_aggregate_pushdown_exported_state_overflow.test
+# description: ROLLUP / CUBE / GROUPING SETS over an inner join with an aggregate whose update can overflow: the exported aggregate is not run below the join, where it would also add up the rows the join removes
+# group: [optimizer]
+
+# one scan order, and no join filter that removes the fact rows of the missing key before they are aggregated
+statement ok
+SET threads = 1;
+
+statement ok
+SET disabled_optimizers = 'join_filter_pushdown';
+
+# The fact rows of key 5 hold the HUGEINT and the DECIMAL(38) maximum: adding two of them overflows. The dimension
+# has no key 5, so the join removes them and every sum is 0.
+statement ok
+CREATE TABLE hfact AS SELECT i % 10 AS k, CASE WHEN i % 10 = 5 THEN '170141183460469231731687303715884105727'::HUGEINT ELSE 0::HUGEINT END AS v, CASE WHEN i % 10 = 5 THEN '99999999999999999999999999999999999999'::DECIMAL(38,0) ELSE 0::DECIMAL(38,0) END AS d FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE hdim AS SELECT i AS k, i % 2 AS a, i % 3 AS b FROM range(10) t(i) WHERE i <> 5;
+
+query III
+SELECT d.a, d.b, sum(f.v) FROM hfact f JOIN hdim d ON f.k = d.k GROUP BY ROLLUP (d.a, d.b) ORDER BY ALL
+----
+0	0	0
+0	1	0
+0	2	0
+0	NULL	0
+1	0	0
+1	1	0
+1	NULL	0
+NULL	NULL	0
+
+query III
+SELECT d.a, d.b, sum(f.v) FROM hfact f JOIN hdim d ON f.k = d.k GROUP BY CUBE (d.a, d.b) ORDER BY ALL
+----
+0	0	0
+0	1	0
+0	2	0
+0	NULL	0
+1	0	0
+1	1	0
+1	NULL	0
+NULL	0	0
+NULL	1	0
+NULL	2	0
+NULL	NULL	0
+
+query III
+SELECT d.a, d.b, sum(f.v) FROM hfact f JOIN hdim d ON f.k = d.k GROUP BY GROUPING SETS ((d.a, d.b), (d.a), ()) ORDER BY ALL
+----
+0	0	0
+0	1	0
+0	2	0
+0	NULL	0
+1	0	0
+1	1	0
+1	NULL	0
+NULL	NULL	0
+
+# DECIMAL(38) sum
+query III
+SELECT d.a, d.b, sum(f.d) FROM hfact f JOIN hdim d ON f.k = d.k GROUP BY ROLLUP (d.a, d.b) ORDER BY ALL
+----
+0	0	0
+0	1	0
+0	2	0
+0	NULL	0
+1	0	0
+1	1	0
+1	NULL	0
+NULL	NULL	0
+
+query III
+SELECT d.a, d.b, sum(f.d) FROM hfact f JOIN hdim d ON f.k = d.k GROUP BY CUBE (d.a, d.b) ORDER BY ALL
+----
+0	0	0
+0	1	0
+0	2	0
+0	NULL	0
+1	0	0
+1	1	0
+1	NULL	0
+NULL	0	0
+NULL	1	0
+NULL	2	0
+NULL	NULL	0
+
+query III
+SELECT d.a, d.b, sum(f.d) FROM hfact f JOIN hdim d ON f.k = d.k GROUP BY GROUPING SETS ((d.a, d.b), (d.a), ()) ORDER BY ALL
+----
+0	0	0
+0	1	0
+0	2	0
+0	NULL	0
+1	0	0
+1	1	0
+1	NULL	0
+NULL	NULL	0
+
+# averages add into the same accumulators
+query III
+SELECT d.a, d.b, avg(f.v) FROM hfact f JOIN hdim d ON f.k = d.k GROUP BY ROLLUP (d.a, d.b) ORDER BY ALL
+----
+0	0	0.0
+0	1	0.0
+0	2	0.0
+0	NULL	0.0
+1	0	0.0
+1	1	0.0
+1	NULL	0.0
+NULL	NULL	0.0
+
+query III
+SELECT d.a, d.b, avg(f.d) FROM hfact f JOIN hdim d ON f.k = d.k GROUP BY ROLLUP (d.a, d.b) ORDER BY ALL
+----
+0	0	0.0
+0	1	0.0
+0	2	0.0
+0	NULL	0.0
+1	0	0.0
+1	1	0.0
+1	NULL	0.0
+NULL	NULL	0.0
+
+# an aggregate the query exports itself
+query III
+SELECT a, b, finalize(st) FROM (SELECT d.a, d.b, sum(f.v) EXPORT_STATE AS st FROM hfact f JOIN hdim d ON f.k = d.k GROUP BY d.a, d.b) ORDER BY ALL
+----
+0	0	0
+0	1	0
+0	2	0
+1	0	0
+1	1	0
+
+statement ok
+SET explain_output = 'optimized_only';
+
+# In the JSON plan an operator's children are printed before its own details, so an aggregate (EXPORT_STATE) below
+# the join is printed before the "Join Type" of the join. None of these is.
+query II
+EXPLAIN (FORMAT JSON) SELECT d.a, d.b, sum(f.v) FROM hfact f JOIN hdim d ON f.k = d.k GROUP BY ROLLUP (d.a, d.b)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT d.a, d.b, sum(f.d) FROM hfact f JOIN hdim d ON f.k = d.k GROUP BY CUBE (d.a, d.b)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT d.a, d.b, avg(f.v) FROM hfact f JOIN hdim d ON f.k = d.k GROUP BY GROUPING SETS ((d.a, d.b), (d.a), ())
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# The same cascade over a sum that cannot overflow (BIGINT values in a HUGEINT accumulator) is pre-aggregated below the
+# join, and so is the HUGEINT sum below a LEFT JOIN that keeps every fact row anyway.
+query II
+EXPLAIN (FORMAT JSON) SELECT d.a, d.b, sum(f.k) FROM hfact f JOIN hdim d ON f.k = d.k GROUP BY ROLLUP (d.a, d.b)
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT d.a, d.b, sum(f.v) FROM hfact f LEFT JOIN hdim d ON f.k = d.k GROUP BY ROLLUP (d.a, d.b)
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*

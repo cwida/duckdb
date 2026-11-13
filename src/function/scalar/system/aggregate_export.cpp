@@ -925,6 +925,23 @@ void ExportAggregateFunction::GetSortedStateOrders(const LogicalType &state_type
 	ParseOrderBys(order_entry->second, StructType::GetChildTypes(buffer_struct).size(), orders);
 }
 
+bool ExportAggregateFunction::TryGetCombinedStateLayout(const BoundAggregateFunction &function,
+                                                        optional_ptr<FunctionData> bind_data,
+                                                        AggregateStateLayout &layout) {
+	if (!bind_data || function.GetStateCombineCallback() != CombineAggrStateCombine) {
+		return false;
+	}
+	auto &combine_data = bind_data->Cast<ExportAggregateBindData>();
+	auto &aggr = combine_data.aggr;
+	// states with explicit export / import callbacks are not described by their field layout alone
+	if (!aggr.HasGetStateTypeCallback() || aggr.HasExportAggregateStateCallback() ||
+	    aggr.HasImportAggregateStateCallback()) {
+		return false;
+	}
+	layout = aggr.GetStateType(combine_data.bind_data.get());
+	return true;
+}
+
 void ExportAggregateFunction::SetStateExport(BoundAggregateExpression &aggregate, LogicalType state_layout) {
 	auto &bound_function = aggregate.FunctionMutable();
 	// functions with an explicit export callback use it as the finalize; others use the field-based serialization

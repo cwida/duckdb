@@ -206,6 +206,19 @@ static bool AggregateArgumentsCanThrow(Optimizer &optimizer, unique_ptr<LogicalO
 	return false;
 }
 
+//! An aggregate that already exports its state and whose update or combine can throw (e.g. the checked addition of
+//! sum(HUGEINT)): below an inner join it would also aggregate the rows the join removes
+static bool ExportedAggregatesCanThrow(const LogicalAggregate &aggr) {
+	for (auto &expr : aggr.expressions) {
+		auto &aggregate = expr->Cast<BoundAggregateExpression>();
+		if (aggregate.StateExportMode() != AggregateStateExportMode::NONE &&
+		    aggregate.Function().GetErrorMode() == FunctionErrors::CAN_THROW_RUNTIME_ERROR) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static bool ContainsAggregateInput(const LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
 		return true;
@@ -1245,7 +1258,8 @@ bool PartialAggregatePushdown::TryPushdownAggregate(unique_ptr<LogicalOperator> 
 		return false;
 	}
 	// A preserved side of an outer join keeps every row, so the argument is evaluated on all of them either way.
-	if (join->join_type == JoinType::INNER && AggregateArgumentsCanThrow(optimizer, op)) {
+	if (join->join_type == JoinType::INNER &&
+	    (ExportedAggregatesCanThrow(*aggr) || AggregateArgumentsCanThrow(optimizer, op))) {
 		return false;
 	}
 

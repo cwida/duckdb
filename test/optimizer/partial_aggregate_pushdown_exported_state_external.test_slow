@@ -2,6 +2,9 @@
 # description: ROLLUP over a join whose exported finest level is pre-aggregated below the join: the pre-aggregate and the levels that combine its states run as external aggregates under a small memory limit
 # group: [optimizer]
 
+# the memory limits are sized for full vectors
+require vector_size 2048
+
 load {TEST_DIR}/partial_aggregate_pushdown_exported_state_external.db
 
 statement ok
@@ -36,5 +39,43 @@ query IIIIIII
 SELECT count(*), count(a), count(b), sum(s), sum(c), sum(mn), sum(mx) FROM (SELECT a, b, sum(qty) AS s, count(*) AS c, min(qty) AS mn, max(qty) AS mx FROM fact JOIN dim USING (k) GROUP BY ROLLUP (a, b))
 ----
 3973371	3973370	1986685	14985000000	30000000	765989488	3203048375
+
+endloop
+
+
+# The levels that combine exported states spill them like the aggregate that exported them: min over an 800 byte
+# string keeps its value in the aggregate arena. 62500 states are about 50MB at each of the two grouped levels, above
+# the limit, so the query only completes when the combining levels move their states to spillable storage.
+# the fact rows are generated, so that the memory limit only has to hold the aggregate states
+statement ok
+CREATE VIEW wide_fact AS SELECT (i % 62500)::INTEGER AS k, repeat(md5((i % 62500)::VARCHAR), 25) AS wide FROM range(500000) t(i);
+
+statement ok
+CREATE TABLE wide_dim AS SELECT i::INTEGER AS k, i AS a, i % 100 AS b FROM range(62500) t(i);
+
+statement ok
+SET preserve_insertion_order=false;
+
+statement ok
+SET disabled_optimizers = '';
+
+query II
+EXPLAIN (FORMAT JSON) SELECT a, b, min(wide) FROM wide_fact JOIN wide_dim USING (k) GROUP BY ROLLUP (a, b)
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
+
+statement ok
+SET memory_limit='64MB'
+
+foreach pushdown on off
+
+statement ok
+SET disabled_optimizers = CASE WHEN '{pushdown}' = 'off' THEN 'partial_aggregate_pushdown' ELSE '' END;
+
+# every (a, b) row and every (a) row carries the string of its key
+query IIIII
+SELECT count(*), count(a), count(b), count(w), count(*) FILTER (WHERE a IS NOT NULL AND w <> repeat(md5(a::VARCHAR), 25)) FROM (SELECT a, b, min(wide) AS w FROM wide_fact JOIN wide_dim USING (k) GROUP BY ROLLUP (a, b))
+----
+125001	125000	62500	125001	0
 
 endloop
