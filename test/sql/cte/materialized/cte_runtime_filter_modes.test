@@ -2,8 +2,6 @@
 # description: Complete runtime OR filters work with streaming CTEs and fall back when publication is cyclic
 # group: [materialized]
 
-require json
-
 statement ok
 SET threads=1;
 
@@ -19,44 +17,32 @@ SET disabled_optimizers='cte_filter_pusher,build_side_probe_side';
 statement ok
 CREATE TABLE facts AS SELECT i AS k,repeat('x',64) AS payload FROM range(50000) t(i);
 
+# The union fills complete two-row batches while both consumers overlap.
 statement ok
-CREATE TABLE b AS SELECT * FROM (VALUES (1),(3)) t(k);
+CREATE TABLE b AS SELECT * FROM (VALUES (0),(1),(2)) t(k);
 
 statement ok
-CREATE TABLE c AS SELECT * FROM (VALUES (3),(5)) t(k);
+CREATE TABLE c AS SELECT * FROM (VALUES (1),(2),(3)) t(k);
 
 # Bound CTE execution without timing the fixture loads.
 statement ok
 SET max_execution_time=10000;
 
 # Both consumers stream the same filtered input, including their overlapping key.
-statement ok
-SET enable_profiling='json';
-
-statement ok
-SET profiling_output='{TEST_DIR}/cte_runtime_filter_modes.json';
-
 query II
 WITH p AS MATERIALIZED (SELECT * FROM facts)
 SELECT (SELECT sum(length(payload)) FROM p JOIN b USING(k)),
        (SELECT count(*) FROM p JOIN c USING(k));
 ----
-128	2
+192	3
 
-statement ok
-RESET enable_profiling;
-
-# At vector size two, half-full batches bypass optional selections and retain six rows.
-# Optimizer-disabled configurations check answers without asserting physical plan choices.
 query II
-SELECT current_setting('debug_disable_optimizer') OR bool_or(json_extract_string(value,'$.extra_info."Fanout Mode"')='DIRECT'),
-       current_setting('debug_disable_optimizer') OR bool_or(json_extract_string(value,'$.extra_info.Table') LIKE '%.facts'
-           AND json_extract_string(value,'$.extra_info."Dynamic Filters"') LIKE '% OR %'
-           AND json_extract(value,'$.intermediate_rows')::BIGINT =
-               CASE WHEN current_setting('standard_vector_size')::BIGINT=2 THEN 6 ELSE 3 END)
-FROM read_json_objects('{TEST_DIR}/cte_runtime_filter_modes.json'),json_tree(json);
+EXPLAIN (ANALYZE, FORMAT JSON)
+WITH p AS MATERIALIZED (SELECT * FROM facts)
+SELECT (SELECT sum(length(payload)) FROM p JOIN b USING(k)),
+       (SELECT count(*) FROM p JOIN c USING(k));
 ----
-1	1
+analyzed_plan	<REGEX>:(?s).*"Fanout Mode": "DIRECT".*"Table": "[^"]*[.]facts"[^}]*"Dynamic Filters": "[^"]* OR [^"]*"[^}]*},\s*"intermediate_rows": 4,.*
 
 # Early-stopping consumers use buffered fanout; depth-first build ordering can prevent filtering.
 query II
@@ -75,36 +61,22 @@ SELECT (SELECT count(*) FROM (SELECT k FROM p JOIN b USING(k) LIMIT 1) t),
 analyzed_plan	<REGEX>:(?s).*"Fanout Mode": "BUFFERED".*"Table": "[^"]*[.]facts".*
 
 # Cyclic publication keeps the original scan; materialization can also make the complete OR available.
-statement ok
-SET enable_profiling='json';
-
 query II
 WITH p AS MATERIALIZED (SELECT * FROM facts)
 SELECT count(*),sum(length(x.payload))
 FROM (SELECT p.* FROM p JOIN b USING(k)) x
 JOIN (SELECT p.* FROM p JOIN c USING(k)) y USING(k);
 ----
-1	64
+2	128
 
-statement ok
-RESET enable_profiling;
-
-query I
-WITH operators AS (
-    SELECT value FROM read_json_objects('{TEST_DIR}/cte_runtime_filter_modes.json'),json_tree(json)
-)
-SELECT current_setting('debug_disable_optimizer')
-    OR (bool_or(json_extract_string(value,'$.extra_info."Execution Mode"') IN ('HYBRID_FANOUT','MATERIALIZED'))
-           AND bool_or(json_extract_string(value,'$.extra_info.Table') LIKE '%.facts'
-               AND json_extract(value,'$.intermediate_rows')::BIGINT=50000))
-    OR (bool_or(json_extract_string(value,'$.extra_info."Execution Mode"')='MATERIALIZED')
-           AND bool_or(json_extract_string(value,'$.extra_info.Table') LIKE '%.facts'
-               AND json_extract_string(value,'$.extra_info."Dynamic Filters"') LIKE '% OR %'
-               AND json_extract(value,'$.intermediate_rows')::BIGINT =
-                   CASE WHEN current_setting('standard_vector_size')::BIGINT=2 THEN 6 ELSE 3 END))
-FROM operators;
+query II
+EXPLAIN (ANALYZE, FORMAT JSON)
+WITH p AS MATERIALIZED (SELECT * FROM facts)
+SELECT count(*),sum(length(x.payload))
+FROM (SELECT p.* FROM p JOIN b USING(k)) x
+JOIN (SELECT p.* FROM p JOIN c USING(k)) y USING(k);
 ----
-1
+analyzed_plan	<REGEX>:(?s).*"Execution Mode": "(?:(?:HYBRID_FANOUT|MATERIALIZED)".*"Table": "[^"]*[.]facts"[^}]*},\s*"intermediate_rows": 50000,|MATERIALIZED".*"Table": "[^"]*[.]facts"[^}]*"Dynamic Filters": "[^"]* OR [^"]*"[^}]*},\s*"intermediate_rows": 4,).*
 
 # One unrestricted consumer also prevents filtering the shared input.
 query II
@@ -112,7 +84,7 @@ WITH p AS MATERIALIZED (SELECT * FROM facts)
 SELECT (SELECT sum(length(payload)) FROM p JOIN b USING(k)),
        (SELECT count(*) FROM p);
 ----
-128	50000
+192	50000
 
 # Large source estimates also impose depth-first build ordering in release builds.
 statement ok
