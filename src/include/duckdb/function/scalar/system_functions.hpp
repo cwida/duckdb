@@ -95,4 +95,14 @@ struct ParseLogMessage {
 	static ScalarFunction GetFunction();
 };
 
+struct LastCommitFun {
+	static constexpr const char *Name = "last_commit";
+	static constexpr const char *Parameters = "database";
+	static constexpr const char *Description = "Get the commit id of the last committed transaction that modified the given attached database, or 0 if none has been committed since it was attached. Unlike a row count, this also advances on updates and deletes that change no row count, and unlike a WAL size, it never goes backwards across a checkpoint. Read-only transactions do not advance it.";
+	static constexpr const char *Example = "last_commit('memory')";
+	static constexpr const char *Categories = "";
+
+	static ScalarFunction GetFunction();
+};
+
 } // namespace duckdb

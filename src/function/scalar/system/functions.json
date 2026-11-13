@@ -56,5 +56,13 @@
         "example": "parse_duckdb_log_message('FileSystem', log_message)",
         "type": "scalar_function",
         "struct": "ParseLogMessage"
+    },
+    {
+        "name": "last_commit",
+        "parameters": "database",
+        "description": "Get the commit id of the last committed transaction that modified the given attached database, or 0 if none has been committed since it was attached. Unlike a row count, this also advances on updates and deletes that change no row count, and unlike a WAL size, it never goes backwards across a checkpoint. Read-only transactions do not advance it.",
+        "example": "last_commit('memory')",
+        "type": "scalar_function",
+        "struct": "LastCommitFun"
     }
 ]

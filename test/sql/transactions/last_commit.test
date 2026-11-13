@@ -1,0 +1,114 @@
+# name: test/sql/transactions/last_commit.test
+# description: last_commit(db) only advances on transactions that actually modify data or catalog entries
+# group: [transactions]
+
+statement ok
+CREATE TABLE integers(i INTEGER)
+
+statement ok
+INSERT INTO integers VALUES (1), (2), (3)
+
+# no modifying transaction has been committed on a freshly attached database
+statement ok
+ATTACH ':memory:' AS fresh_db
+
+query I
+SELECT last_commit('fresh_db')
+----
+0
+
+statement error
+SELECT last_commit('this_database_does_not_exist')
+----
+<REGEX>:.*[Uu]nknown database.*
+
+# read-only statements do not advance it
+statement ok
+SET VARIABLE before_reads = last_commit(current_database())
+
+statement ok
+SELECT COUNT(*) FROM integers
+
+statement ok
+SELECT COUNT(*) FROM integers
+
+statement ok
+SELECT COUNT(*) FROM integers
+
+query I
+SELECT last_commit(current_database()) = getvariable('before_reads')
+----
+true
+
+# append (transaction-local storage)
+statement ok
+SET VARIABLE before_append = last_commit(current_database())
+
+statement ok
+INSERT INTO integers VALUES (4)
+
+query I
+SELECT last_commit(current_database()) > getvariable('before_append')
+----
+true
+
+# in-place update (undo buffer, UndoFlags::UPDATE_TUPLE) -- the row count is
+# unchanged and no rows move, so this is the case a row-count based signal
+# would miss
+statement ok
+SET VARIABLE before_update = last_commit(current_database())
+
+statement ok
+UPDATE integers SET i = i + 100 WHERE i = 2
+
+query I
+SELECT last_commit(current_database()) > getvariable('before_update')
+----
+true
+
+# delete (undo buffer, UndoFlags::DELETE_TUPLE)
+statement ok
+SET VARIABLE before_delete = last_commit(current_database())
+
+statement ok
+DELETE FROM integers WHERE i = 1
+
+query I
+SELECT last_commit(current_database()) > getvariable('before_delete')
+----
+true
+
+# catalog change
+statement ok
+SET VARIABLE before_ddl = last_commit(current_database())
+
+statement ok
+CREATE TABLE integers2(i INTEGER)
+
+query I
+SELECT last_commit(current_database()) > getvariable('before_ddl')
+----
+true
+
+# a rolled back transaction does not advance it
+statement ok
+SET VARIABLE before_rollback = last_commit(current_database())
+
+statement ok
+BEGIN TRANSACTION
+
+statement ok
+INSERT INTO integers VALUES (999)
+
+statement ok
+ROLLBACK
+
+query I
+SELECT last_commit(current_database()) = getvariable('before_rollback')
+----
+true
+
+query I
+SELECT COUNT(*) FROM integers WHERE i = 999
+----
+0

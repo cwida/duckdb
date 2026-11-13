@@ -441,6 +441,9 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 	CommitInfo info;
 	info.commit_id = GetCommitTimestamp();
 
+	// must be read before DuckTransaction::Commit below, which can make ChangesMade() return false
+	const bool changes_made = transaction.ChangesMade();
+
 	// commit the UndoBuffer of the transaction
 	if (!error.HasError()) {
 		if (HasOtherTransactions(transaction)) {
@@ -466,7 +469,9 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 		}
 	} else {
 		DUCKDB_LOG(context, TransactionLogType, db, "Commit", info.commit_id);
-		last_commit = info.commit_id;
+		if (changes_made) {
+			last_commit = info.commit_id;
+		}
 		if (wal_written && info.wal_sync_offset > 0) {
 			// published but not yet durable: the transaction stays active until the sync below. An offset
 			// of 0 means nothing reached the WAL, or the commit synced under the lock already

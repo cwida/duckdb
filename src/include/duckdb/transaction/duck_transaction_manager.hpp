@@ -53,6 +53,10 @@ public:
 	VisibilityBound LowestVisibilityBound() const {
 		return lowest_visibility_bound;
 	}
+	//! The commit id of the last committed transaction that actually modified data or catalog entries
+	//! (i.e. for which DuckTransaction::ChangesMade() held). Read-only transactions are committed as
+	//! well, but do not advance this, so it can be used to detect whether a database has been modified.
+	//! Returns 0 if no modifying transaction has been committed since this database was attached.
 	transaction_t GetLastCommit() const {
 		return last_commit;
 	}
@@ -150,8 +154,8 @@ private:
 	//! The lowest bound any active transaction reads at. A version preceding it is visible to
 	//! every active transaction, so whatever it supersedes can be cleaned up or compacted
 	atomic<VisibilityBound> lowest_visibility_bound;
-	//! The last commit timestamp
-	atomic<transaction_t> last_commit;
+	//! The last commit timestamp of a transaction that made changes (see GetLastCommit)
+	atomic<transaction_t> last_commit = {0};
 	//! The currently active checkpoint, zero when none is running
 	atomic<idx_t> active_checkpoint;
 	//! Source of checkpoint identities
