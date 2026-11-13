@@ -41,6 +41,13 @@ private:
 	bool is_unique = false;
 };
 
+//! A closed range of values of an integral column
+struct IntegralValueRange {
+	bool valid = false;
+	int64_t min = 0;
+	int64_t max = 0;
+};
+
 struct RelationColumnStats {
 public:
 	RelationColumnStats(ColumnBinding binding, DistinctCount domain, Identifier name);
@@ -58,6 +65,12 @@ public:
 	//! Structural evidence that permits using current_domain for SEMI/ANTI joins.
 	SemiAntiJoinDomainEvidence semi_anti_join_domain_evidence;
 	Identifier name;
+	//! Whether current_domain follows from a scan filter selectivity that was not sampled
+	bool unsampled_current_domain = false;
+	//! The values of an integral scan column according to its statistics
+	IntegralValueRange value_range;
+	//! The values of an integral scan column among the sampled rows that pass the scan's filters
+	IntegralValueRange sampled_range;
 };
 
 struct RelationStats {

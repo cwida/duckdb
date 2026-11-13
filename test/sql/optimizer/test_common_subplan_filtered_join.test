@@ -2,6 +2,10 @@
 # description: Share common join inputs below differently filtered consumers
 # group: [optimizer]
 
+# these are the estimates without filter sampling
+statement ok
+SET filter_selectivity_sample_size = 0;
+
 statement ok
 CREATE TABLE shared_fact(k INTEGER, j INTEGER, v INTEGER);
 

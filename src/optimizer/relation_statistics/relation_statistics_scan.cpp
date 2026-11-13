@@ -115,6 +115,34 @@ static DistinctCount GetDistinctCountFromStats(BaseStatistics &base_stats, idx_t
 	return DistinctCount(0, DistinctCountSource::CARDINALITY);
 }
 
+//! Integral types whose values all fit in a BIGINT
+static bool HasBigintValueRange(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::UTINYINT:
+	case LogicalTypeId::USMALLINT:
+	case LogicalTypeId::UINTEGER:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static IntegralValueRange GetStatisticsValueRange(const BaseStatistics &statistics) {
+	IntegralValueRange result;
+	if (!HasBigintValueRange(statistics.GetType()) || statistics.GetStatsType() != StatisticsType::NUMERIC_STATS ||
+	    !NumericStats::HasMinMax(statistics)) {
+		return result;
+	}
+	result.min = NumericStats::Min(statistics).DefaultCastAs(LogicalType::BIGINT).GetValue<int64_t>();
+	result.max = NumericStats::Max(statistics).DefaultCastAs(LogicalType::BIGINT).GetValue<int64_t>();
+	result.valid = result.min <= result.max;
+	return result;
+}
+
 struct FilterEstimate {
 	idx_t cardinality;
 	bool supported;
@@ -433,6 +461,42 @@ RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientC
 			estimate.Combine({range_cardinality, true});
 		}
 	}
+	// a sampled selectivity replaces the estimate of the table filters, unless no filter can remove rows
+	bool has_non_optional_filters = false;
+	for (auto &entry : get.table_filters) {
+		if (ExpressionFilter::IsOptionalFilter(entry.Filter())) {
+			continue;
+		}
+		auto &filter = ExpressionFilter::GetExpressionFilter(entry.Filter(), "ExtractGetStats");
+		auto &statistics = scan_statistics[entry.GetIndex().GetIndex()];
+		if (filter.column_indexes.size() <= 1 &&
+		    filter.CheckStatistics(context, statistics) == FilterPropagateResult::FILTER_ALWAYS_TRUE) {
+			continue;
+		}
+		has_non_optional_filters = true;
+	}
+	bool unsampled_filters = has_non_optional_filters;
+	for (idx_t i = 0; i < result.columns.size(); i++) {
+		result.columns[i].value_range = GetStatisticsValueRange(scan_statistics[i]);
+	}
+	if (has_non_optional_filters && base_table_cardinality > 0) {
+		// the integral columns' values among the rows that pass the filters bound the keys they join
+		vector<SampledColumnRange> ranges;
+		for (idx_t i = 0; i < result.columns.size(); i++) {
+			if (HasBigintValueRange(scan_statistics[i].GetType())) {
+				ranges.emplace_back(ProjectionIndex(i));
+			}
+		}
+		auto sample_counts = SampleFilterPassCounts(context, get, {}, ranges);
+		if (!sample_counts.empty() && sample_counts[0] > 0) {
+			auto selectivity = SampledSelectivity(sample_counts[1], sample_counts[0]);
+			estimate = FilterEstimate {FilterFraction(base_table_cardinality, selectivity), true};
+			unsampled_filters = false;
+			for (auto &range : ranges) {
+				result.columns[range.column.GetIndex()].sampled_range = range.range;
+			}
+		}
+	}
 	ApplyFilterEstimate(result, estimate);
 	for (auto &column : result.columns) {
 		for (auto &entry : get.table_filters) {
@@ -442,6 +506,7 @@ RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientC
 			auto &filter = ExpressionFilter::GetExpressionFilter(entry.Filter(), "ExtractGetStats");
 			ApplyDirectFilterDomain(column, *filter.expr, {});
 		}
+		column.unsampled_current_domain = unsampled_filters;
 	}
 	vector<RelationColumnStats> output_columns;
 	for (auto binding : get.GetColumnBindings()) {
@@ -456,7 +521,8 @@ RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientC
 }
 
 optional<RelationStats> RelationStatisticsHelper::ExtractFilterStats(LogicalFilter &filter,
-                                                                     const RelationStats &child_stats) {
+                                                                     const RelationStats &child_stats,
+                                                                     ClientContext &context) {
 	auto result = ProjectOutputStats(child_stats, filter);
 	if (!result) {
 		return {};
@@ -466,6 +532,12 @@ optional<RelationStats> RelationStatisticsHelper::ExtractFilterStats(LogicalFilt
 	FilterEstimate estimate {child_stats.cardinality, true};
 	for (auto &expression : filter.expressions) {
 		estimate.Combine(EstimateFilterRows(child_stats.cardinality, *expression, columns, bindings));
+	}
+	if (child_stats.cardinality > 0) {
+		auto selectivity = SampleFilterSelectivity(context, filter);
+		if (selectivity) {
+			estimate = FilterEstimate {FilterFraction(child_stats.cardinality, *selectivity), true};
+		}
 	}
 	ApplyFilterEstimate(*result, estimate);
 	for (auto &column : result->columns) {

@@ -2,6 +2,10 @@
 # description: Current-domain estimates for filters and grouping
 # group: [statistics]
 
+# these are the estimates without filter sampling
+statement ok
+SET filter_selectivity_sample_size = 0;
+
 statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 

@@ -374,7 +374,7 @@ RelationStatisticsHelper::ExtractOperatorStats(LogicalOperator &op, ClientContex
 		if (child_stats.size() != 1) {
 			return {};
 		}
-		return ExtractFilterStats(op.Cast<LogicalFilter>(), child_stats[0].get());
+		return ExtractFilterStats(op.Cast<LogicalFilter>(), child_stats[0].get(), context);
 	}
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
 		return child_stats.size() == 1 ? ProjectOutputStats(child_stats[0].get(), op) : optional<RelationStats>();

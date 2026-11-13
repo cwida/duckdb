@@ -2,6 +2,7 @@
 #include "duckdb/common/limits.hpp"
 #include "duckdb/optimizer/join_order/join_order_operator.hpp"
 #include "duckdb/optimizer/join_order/join_predicate.hpp"
+#include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 
@@ -121,13 +122,16 @@ public:
 	//! Column binding sets that are equivalent in a join plan.
 	column_binding_set_t equivalent_relations;
 	DomainEstimate domain_estimate;
+	//! The largest current domain of the equivalent columns
+	idx_t current_domain = 0;
 	vector<reference<JoinPredicate>> predicates;
 };
 
 struct FilterInfoWithTotalDomains {
 	FilterInfoWithTotalDomains(JoinPredicate &predicate, RelationsSetToStats &relation_set_to_stats)
 	    : predicate(predicate), domain_estimate(relation_set_to_stats.domain_estimate),
-	      distinct_count(domain_estimate.get().GetDistinctCount(predicate)) {
+	      distinct_count(domain_estimate.get().GetDistinctCount(predicate)),
+	      current_domain(relation_set_to_stats.current_domain) {
 	}
 
 public:
@@ -143,6 +147,7 @@ public:
 	reference<JoinPredicate> predicate;
 	reference<const DomainEstimate> domain_estimate;
 	idx_t distinct_count;
+	idx_t current_domain;
 };
 
 struct SelectivitySubgraph {
@@ -204,8 +209,9 @@ struct CardinalityEstimatorState {
 };
 
 CardinalityEstimator::CardinalityEstimator(JoinRelationSetManager &set_manager,
-                                           const JoinPredicateModel &predicate_model)
-    : state(make_uniq<CardinalityEstimatorState>()), set_manager(set_manager), predicate_model(predicate_model) {
+                                           const JoinPredicateModel &predicate_model, bool use_current_domains)
+    : state(make_uniq<CardinalityEstimatorState>()), set_manager(set_manager), predicate_model(predicate_model),
+      use_current_domains(use_current_domains) {
 }
 
 CardinalityEstimator::~CardinalityEstimator() {
@@ -451,7 +457,11 @@ static double GetEffectiveDistinctCount(double distinct_count) {
 
 CardinalityValue CardinalityEstimator::CalculateInnerJoinSelectivity(CardinalityValue base_selectivity,
                                                                      FilterInfoWithTotalDomains &filter) {
-	auto effective_d = GetEffectiveDistinctCount(filter.GetDistinctCount());
+	auto domain = filter.GetDistinctCount();
+	if (use_current_domains && filter.IsInnerEquality() && filter.current_domain > 0) {
+		domain = MinValue(domain, static_cast<double>(filter.current_domain));
+	}
+	auto effective_d = GetEffectiveDistinctCount(domain);
 	auto comparison_type = filter.GetComparisonType();
 	if (comparison_type == ExpressionType::INVALID) {
 		return base_selectivity / CardinalityValue(effective_d);
@@ -925,13 +935,18 @@ void CardinalityEstimator::Initialize(const vector<RelationStats> &relations,
                                       const join_column_sources_t &sources) {
 	D_ASSERT(state->leaf_cardinalities.empty());
 	InitEquivalentRelations();
+	vector<RelationStats> implied_relations;
+	if (use_current_domains) {
+		implied_relations = ApplyImpliedKeyRanges(relations);
+	}
+	auto &domain_relations = use_current_domains ? implied_relations : relations;
 	for (idx_t i = 0; i < relations.size(); i++) {
 		auto &stats = relations[i];
 		D_ASSERT(stats.stats_initialized);
 		auto cardinality = CardinalityValue(static_cast<double>(stats.cardinality));
 		state->leaf_cardinalities.push_back(cardinality);
 		state->cardinalities.emplace(set_manager.GetJoinRelation(RelationIndex(i)), cardinality);
-		UpdateTotalDomains(RelationIndex(i), stats, sources);
+		UpdateTotalDomains(RelationIndex(i), domain_relations[i], sources);
 	}
 	RestrictFilterDomains(relations);
 	for (auto &domain : state->relation_set_stats) {
@@ -967,8 +982,95 @@ void CardinalityEstimator::UpdateTotalDomains(RelationIndex relation_id, const R
 			}
 			relation_to_tdom.domain_estimate.Update(key, stats.columns[i].total_domain,
 			                                        entry == sources.end() ? nullptr : &entry->second);
+			// a filter estimate without a sample does not show which values remain
+			auto &column = stats.columns[i];
+			auto current_domain = column.unsampled_current_domain ? column.total_domain.distinct_count
+			                                                      : column.current_domain.distinct_count;
+			relation_to_tdom.current_domain = MaxValue(relation_to_tdom.current_domain, current_domain);
 		}
 	}
+}
+
+static bool IsEqualityGroup(const RelationsSetToStats &stats) {
+	if (stats.predicates.empty()) {
+		return false;
+	}
+	for (auto &predicate : stats.predicates) {
+		if (predicate.get().GetComparisonType() != ExpressionType::COMPARE_EQUAL) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static optional_ptr<const RelationColumnStats> GetRelationColumn(const vector<RelationStats> &relations,
+                                                                 const ColumnBinding &binding) {
+	if (binding.table_index.index >= relations.size() ||
+	    binding.column_index.GetIndex() >= relations[binding.table_index.index].columns.size()) {
+		return nullptr;
+	}
+	return relations[binding.table_index.index].columns[binding.column_index.GetIndex()];
+}
+
+//! A key column whose sampled rows that pass its relation's filters span a narrow range implies that range for the
+//! other keys of its equality class: d1.d_year = 1999 restricts d2 through d1.d_week_seq = d2.d_week_seq. Joins then
+//! divide by the current domains of the other columns of such a relation (d2.d_date_sk) as if it was filtered. Its
+//! cardinality and the domain of the key itself stay unchanged, as the range only holds in sets with the filtered
+//! relation.
+vector<RelationStats> CardinalityEstimator::ApplyImpliedKeyRanges(const vector<RelationStats> &relations) const {
+	auto result = relations;
+	for (auto &equivalence : state->relation_set_stats) {
+		if (!IsEqualityGroup(equivalence)) {
+			continue;
+		}
+		IntegralValueRange implied;
+		for (auto &binding : equivalence.equivalent_relations) {
+			auto column = GetRelationColumn(relations, binding);
+			if (!column || !column->sampled_range.valid) {
+				continue;
+			}
+			auto &range = column->sampled_range;
+			implied.min = implied.valid ? MaxValue(implied.min, range.min) : range.min;
+			implied.max = implied.valid ? MinValue(implied.max, range.max) : range.max;
+			implied.valid = true;
+		}
+		if (!implied.valid) {
+			continue;
+		}
+		for (auto &binding : equivalence.equivalent_relations) {
+			auto column = GetRelationColumn(relations, binding);
+			if (!column || column->sampled_range.valid || !column->value_range.valid) {
+				continue;
+			}
+			auto &relation = relations[binding.table_index.index];
+			bool unsampled = false;
+			for (auto &relation_column : relation.columns) {
+				unsampled |= relation_column.unsampled_current_domain;
+			}
+			if (unsampled || relation.cardinality == 0) {
+				continue;
+			}
+			auto &values = column->value_range;
+			auto width = static_cast<double>(values.max) - static_cast<double>(values.min) + 1;
+			auto overlap = MinValue(static_cast<double>(values.max), static_cast<double>(implied.max)) -
+			               MaxValue(static_cast<double>(values.min), static_cast<double>(implied.min)) + 1;
+			if (overlap >= width) {
+				continue;
+			}
+			auto implied_cardinality = MaxValue<idx_t>(
+			    1, LossyNumericCast<idx_t>(static_cast<double>(relation.cardinality) * MaxValue(overlap, 1.0) / width));
+			auto &implied_relation = result[binding.table_index.index];
+			for (idx_t i = 0; i < implied_relation.columns.size(); i++) {
+				if (equivalence.equivalent_relations.count(ColumnBinding(binding.table_index, ProjectionIndex(i)))) {
+					continue;
+				}
+				auto &implied_column = implied_relation.columns[i];
+				implied_column.current_domain = RelationStatisticsHelper::EstimateCurrentDomain(
+				    implied_column.current_domain, relation.cardinality, implied_cardinality);
+			}
+		}
+	}
+	return result;
 }
 
 void CardinalityEstimator::RestrictFilterDomains(const vector<RelationStats> &relation_stats) {

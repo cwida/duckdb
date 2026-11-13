@@ -6,10 +6,12 @@
 #include "duckdb/catalog/dependency_list.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/random_engine.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/storage_compatibility.hpp"
 #include "duckdb/common/typedefs.hpp"
+#include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/types/value_map.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/execution/index/art/art.hpp"
@@ -1119,6 +1121,93 @@ unique_ptr<NodeStatistics> TableScanCardinality(ClientContext &context, const Fu
 	return make_uniq<NodeStatistics>(estimated_cardinality, estimated_cardinality);
 }
 
+//! The maximum number of consecutive rows sampled from each stratum of a table
+static constexpr idx_t TABLE_SAMPLE_MAX_RUN_LENGTH = 8;
+//! Rows of a run are correlated, so a large enough sample spans at least this many strata
+static constexpr idx_t TABLE_SAMPLE_MIN_STRATA = 512;
+
+//! Row ids of a sample made of one run of consecutive rows from each of equally sized strata of the table
+static vector<row_t> TableSampleStrataRowIds(idx_t total_rows, idx_t sample_size) {
+	// each stratum contributes a run of consecutive rows: fetching a row decompresses its neighbours anyway
+	auto run_length = MinValue<idx_t>(TABLE_SAMPLE_MAX_RUN_LENGTH, sample_size / TABLE_SAMPLE_MIN_STRATA);
+	run_length = MaxValue<idx_t>(MinValue<idx_t>(run_length, total_rows / sample_size), 1);
+	const auto stratum_count = (sample_size + run_length - 1) / run_length;
+	const auto stratum_size = static_cast<double>(total_rows) / static_cast<double>(stratum_count);
+	// a run starts at a random position of its stratum that leaves room for the rest of the run
+	const auto run_span = MaxValue<double>(stratum_size - static_cast<double>(run_length - 1), 0);
+	RandomEngine random(0);
+	vector<row_t> row_ids;
+	row_ids.reserve(sample_size);
+	for (idx_t stratum = 0; stratum < stratum_count; stratum++) {
+		auto row_id =
+		    LossyNumericCast<idx_t>(static_cast<double>(stratum) * stratum_size + random.NextRandom() * run_span);
+		auto run_rows = MinValue<idx_t>(run_length, sample_size - stratum * run_length);
+		for (idx_t i = 0; i < run_rows; i++, row_id++) {
+			if (!row_ids.empty() && row_id <= NumericCast<idx_t>(row_ids.back())) {
+				row_id = NumericCast<idx_t>(row_ids.back()) + 1;
+			}
+			if (row_id >= total_rows) {
+				break;
+			}
+			row_ids.push_back(NumericCast<row_t>(row_id));
+		}
+	}
+	return row_ids;
+}
+
+static unique_ptr<ColumnDataCollection> TableScanGetSample(ClientContext &context, TableFunctionGetSampleInput &input) {
+	auto &bind_data = input.bind_data->Cast<TableScanBindData>();
+	auto &duck_table = bind_data.table.Cast<DuckTableEntry>();
+	auto &storage = duck_table.GetStorage();
+	const idx_t total_rows = storage.GetTotalRows();
+	if (total_rows == 0 || input.sample_size == 0 || input.column_indexes.empty()) {
+		return nullptr;
+	}
+	vector<StorageIndex> storage_ids;
+	vector<LogicalType> types;
+	for (auto &column_index : input.column_indexes) {
+		if (column_index.IsVirtualColumn() || column_index.HasChildren()) {
+			return nullptr;
+		}
+		auto &column = duck_table.GetColumn(LogicalIndex(column_index.GetPrimaryIndex()));
+		if (column.Generated()) {
+			return nullptr;
+		}
+		storage_ids.push_back(duck_table.GetStorageIndex(column_index));
+		types.push_back(column.Type());
+	}
+
+	const auto sample_size = MinValue<idx_t>(input.sample_size, total_rows);
+	const auto row_group_size = storage.GetRowGroupSize();
+	const auto row_group_count = (total_rows + row_group_size - 1) / row_group_size;
+	// a large table is not sampled: a sample spread over all of its row groups reads the blocks of each of them
+	const auto max_row_groups = Settings::Get<FilterSelectivitySampleMaxRowGroupsSetting>(context);
+	if (max_row_groups > 0 && row_group_count > max_row_groups) {
+		return nullptr;
+	}
+	auto row_ids = TableSampleStrataRowIds(total_rows, sample_size);
+
+	auto &transaction = DuckTransaction::Get(context, duck_table.catalog);
+	auto result = make_uniq<ColumnDataCollection>(context, types);
+	DataChunk chunk;
+	chunk.Initialize(context, types);
+	Vector row_id_vector(LogicalType::ROW_TYPE);
+	ColumnFetchState fetch_state;
+	for (idx_t offset = 0; offset < row_ids.size(); offset += STANDARD_VECTOR_SIZE) {
+		auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, row_ids.size() - offset);
+		{
+			auto writer = FlatVector::Writer<row_t>(row_id_vector, count);
+			for (idx_t i = 0; i < count; i++) {
+				writer.WriteValue(row_ids[offset + i]);
+			}
+		}
+		chunk.Reset();
+		storage.Fetch(transaction, chunk, storage_ids, row_id_vector, count, fetch_state);
+		result->Append(chunk);
+	}
+	return result;
+}
+
 void TableScanGetMetrics(TableFunctionGetMetricsInput &input) {
 	auto &gstate = input.global_state->Cast<TableScanGlobalState>();
 	auto &local_state = *input.local_state;
@@ -1263,6 +1352,7 @@ TableFunction TableScanFunction::GetFunction() {
 	scan_function.statistics_extended = TableScanStatistics;
 	scan_function.dependency = TableScanDependency;
 	scan_function.cardinality = TableScanCardinality;
+	scan_function.get_sample = TableScanGetSample;
 	scan_function.get_metrics = TableScanGetMetrics;
 	scan_function.pushdown_complex_filter = nullptr;
 	scan_function.to_string = TableScanToString;

@@ -1840,6 +1840,32 @@ struct FileSearchPathSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
+struct FilterSelectivitySampleMaxRowGroupsSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "filter_selectivity_sample_max_row_groups";
+	static constexpr const char *Description = "If set, filter selectivity sampling does not sample tables with more "
+	                                           "row groups than this. 0 samples every table.";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "512";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
+struct FilterSelectivitySampleSizeSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "filter_selectivity_sample_size";
+	static constexpr const char *Description = "The number of rows sampled from a table scan to estimate the "
+	                                           "selectivity of its filters during join ordering. 0 disables sampling.";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "2048";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct ForceColumnMetadataReuseSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "force_column_metadata_reuse";

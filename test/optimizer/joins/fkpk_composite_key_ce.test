@@ -2,6 +2,10 @@
 # description: Cardinality estimation for composite FK/PK joins with transitive equality conditions
 # group: [joins]
 
+# these are the estimates without filter sampling
+statement ok
+SET filter_selectivity_sample_size = 0;
+
 statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 

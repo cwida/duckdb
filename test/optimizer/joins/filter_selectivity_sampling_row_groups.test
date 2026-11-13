@@ -1,0 +1,66 @@
+# name: test/optimizer/joins/filter_selectivity_sampling_row_groups.test
+# description: Do not sample tables with more row groups than filter_selectivity_sample_max_row_groups
+# group: [joins]
+
+# 5 row groups of 122880 rows
+statement ok
+CREATE TABLE t AS SELECT i, i % 50 AS q FROM range(614400) r(i);
+
+statement ok
+SET explain_output = 'optimized_only';
+
+statement ok
+SET filter_selectivity_sample_size = 2048;
+
+# 12288 rows qualify
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM t WHERE q = 7;
+----
+logical_opt	<REGEX>:.*"Table":\s*"memory.main.t",\s*"Type":\s*"Sequential Scan",\s*"Estimated Cardinality":\s*"(9|1[0-5])[0-9]{3}".*
+
+# 87771 rows qualify; without sampling the filter is estimated with the default selectivity (122880 rows)
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM t WHERE i % 7 = 3;
+----
+logical_opt	<REGEX>:.*"Table":\s*"memory.main.t",\s*"Type":\s*"Sequential Scan",\s*"Estimated Cardinality":\s*"(7|8|9|10)[0-9]{4}".*
+
+# a table with more row groups than the limit is not sampled: the filter keeps its estimate without sampling
+statement ok
+SET filter_selectivity_sample_max_row_groups = 4;
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM t WHERE i % 7 = 3;
+----
+logical_opt	<REGEX>:.*"Table":\s*"memory.main.t",\s*"Type":\s*"Sequential Scan",\s*"Estimated Cardinality":\s*"122880".*
+
+statement ok
+SET filter_selectivity_sample_max_row_groups = 5;
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM t WHERE i % 7 = 3;
+----
+logical_opt	<REGEX>:.*"Table":\s*"memory.main.t",\s*"Type":\s*"Sequential Scan",\s*"Estimated Cardinality":\s*"(7|8|9|10)[0-9]{4}".*
+
+# the results do not depend on the sampling
+query I
+SELECT count(*) FROM t WHERE q = 7;
+----
+12288
+
+# a join does not divide by the current domain of a table that is not sampled, as that domain only follows from an
+# estimated filter selectivity
+statement ok
+CREATE TABLE d AS SELECT i AS k, i % 7 AS g FROM range(400000) r(i);
+
+statement ok
+SET filter_selectivity_sample_max_row_groups = 4;
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM t JOIN d ON t.i = d.k WHERE t.q = 7 AND d.g = 3;
+----
+logical_opt	<REGEX>:.*"Join Type":\s*"INNER",\s*"Conditions":\s*"\((i = k|k = i)\)",\s*"Estimated Cardinality":\s*"1[0-4][0-9]{2}".*
+
+query I
+SELECT count(*) FROM t JOIN d ON t.i = d.k WHERE t.q = 7 AND d.g = 3;
+----
+1143

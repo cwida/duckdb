@@ -2,6 +2,10 @@
 # description: Early statistics simplification does not double-count inferred join ranges
 # group: [statistics]
 
+# these are the estimates without filter sampling
+statement ok
+SET filter_selectivity_sample_size = 0;
+
 statement ok
 CREATE TABLE range_dimension AS
 SELECT i::INTEGER k, (i % 10)::INTEGER grp, (i % 3)::INTEGER v FROM range(10000) r(i);

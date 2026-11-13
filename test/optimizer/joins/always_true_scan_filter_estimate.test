@@ -2,6 +2,10 @@
 # description: Proven-true scan predicates do not reduce estimated cardinality
 # group: [joins]
 
+# these are the estimates without filter sampling
+statement ok
+SET filter_selectivity_sample_size = 0;
+
 statement ok
 CREATE TABLE input AS SELECT i AS id, CASE WHEN i=0 THEN NULL ELSE i END AS nullable_id,
                            CASE WHEN i%10=0 THEN 'special' ELSE 'ordinary' END AS label
