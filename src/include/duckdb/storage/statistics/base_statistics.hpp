@@ -126,8 +126,9 @@ public:
 	void Verify(const Vector &vector, idx_t count) const;
 
 	//! The statistics as a struct, by default the rendering stats() shows. With exact, the statistics as they are:
-	//! string bounds are VARCHAR / BLOB values holding their bytes instead of text with \xNN escapes, and geometry
-	//! statistics list the geometry types the column holds
+	//! the bounds of text columns are VARCHAR / BLOB values holding their bytes instead of text with \xNN escapes
+	//! (those of other columns are BLOB values either way), and geometry statistics list the geometry types the
+	//! column holds
 	Value ToStruct(bool exact = false) const;
 	string ToString() const;
 	//! Sets the parts of the statistics a struct (or VARIANT object) in the shape ToStruct produces describes;

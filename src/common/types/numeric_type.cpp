@@ -10,6 +10,7 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/value_operations/value_operations.hpp"
 
 namespace duckdb {
 
@@ -530,6 +531,19 @@ bool NumericType::TryForDigits(idx_t integer_digits, idx_t fractional_digits, Lo
 		return false;
 	}
 	type = ForDigits(integer_digits, NumericCast<uint32_t>(fractional_digits));
+	return true;
+}
+
+bool NumericType::TryExactCast(const Value &value, const LogicalType &type, Value &result) {
+	auto cast = value.DefaultTryCastAs(type, nullptr, true);
+	if (!cast) {
+		return false;
+	}
+	auto back = cast->DefaultTryCastAs(value.type(), nullptr, true);
+	if (!back || !ValueOperations::Equals(*back, value)) {
+		return false;
+	}
+	result = *cast;
 	return true;
 }
 

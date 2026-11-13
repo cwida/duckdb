@@ -8,7 +8,6 @@
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/numeric_blob.hpp"
 #include "duckdb/common/types/numeric_type.hpp"
-#include "duckdb/common/value_operations/value_operations.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/storage/statistics/string_stats.hpp"
 
@@ -19,7 +18,7 @@ namespace duckdb {
 //===--------------------------------------------------------------------===//
 //! Exact values of any representation compare through their canonical encoding, which orders like the values; the
 //! endpoints keep their own representations, which need not have one in common
-static int CompareExact(const Value &left, const Value &right) {
+int NumericRange::Compare(const Value &left, const Value &right) {
 	auto left_blob = NumericBlob::Encode(left.ToString());
 	auto right_blob = NumericBlob::Encode(right.ToString());
 	auto common = MinValue(left_blob.size(), right_blob.size());
@@ -44,10 +43,10 @@ void NumericRange::Merge(const NumericRange &other) {
 		has_values = true;
 		return;
 	}
-	if (CompareExact(other.min, min) < 0) {
+	if (Compare(other.min, min) < 0) {
 		min = other.min;
 	}
-	if (CompareExact(other.max, max) > 0) {
+	if (Compare(other.max, max) > 0) {
 		max = other.max;
 	}
 }
@@ -368,27 +367,14 @@ LogicalType NumericRange::ResolveType() const {
 	return type;
 }
 
-//! Whether the value survives a round trip through the type, i.e. the type can hold it exactly
-static bool TryExactCast(const Value &value, const LogicalType &type, Value &result) {
-	auto cast = value.DefaultTryCastAs(type, nullptr, true);
-	if (!cast) {
-		return false;
-	}
-	auto back = cast->DefaultTryCastAs(value.type(), nullptr, true);
-	if (!back || !ValueOperations::Equals(*back, value)) {
-		return false;
-	}
-	result = *cast;
-	return true;
-}
-
 BaseStatistics NumericRange::ToTyped(const LogicalType &type) const {
 	if (!NumericType::IsExact(type)) {
 		// canonical storage: the string statistics of the blobs are not exact beyond their prefix
 		return BaseStatistics::CreateUnknown(type);
 	}
 	Value typed_min, typed_max;
-	if (has_values && (!TryExactCast(min, type, typed_min) || !TryExactCast(max, type, typed_max))) {
+	if (has_values &&
+	    (!NumericType::TryExactCast(min, type, typed_min) || !NumericType::TryExactCast(max, type, typed_max))) {
 		return BaseStatistics::CreateUnknown(type);
 	}
 	if (BaseStatistics::GetStatsType(type) == StatisticsType::STRING_STATS) {

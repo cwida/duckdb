@@ -46,6 +46,8 @@ public:
 	//! statistics only keep prefixes)
 	bool TryUpdate(const BaseStatistics &typed_stats);
 	void Merge(const NumericRange &other);
+	//! Orders two exact values, whatever their representations
+	static int Compare(const Value &left, const Value &right);
 
 	//! The narrowest representation that holds every value (the default representation for an empty range), or the
 	//! canonical storage type when no representation holds them all

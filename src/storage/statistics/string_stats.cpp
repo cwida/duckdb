@@ -819,7 +819,9 @@ child_list_t<Value> StringStats::ToStruct(const BaseStatistics &stats, bool exac
 	child_list_t<Value> result;
 	auto &string_data = GetDataUnsafe(stats);
 	if (HasMinMax(stats)) {
-		if (exact) {
+		// the bounds of a column that is not text are blobs in either rendering: the setter cannot tell text from
+		// the blob notation
+		if (exact || stats.GetType().id() != LogicalTypeId::VARCHAR) {
 			result.emplace_back("min", StringStatsBoundValue(stats.GetType(), string_data.min));
 			result.emplace_back("max", StringStatsBoundValue(stats.GetType(), string_data.max));
 		} else {

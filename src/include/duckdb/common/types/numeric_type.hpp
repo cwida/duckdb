@@ -65,6 +65,8 @@ struct NumericType {
 	//! The exact value of a numeric string literal ([-]digits[.digits][e[-]digits]) in the narrowest representation
 	//! that holds it; false for anything else (infinities, text)
 	DUCKDB_API static bool TryParseLiteral(const string &text, Value &result);
+	//! The value cast to an exact type that holds it exactly: the cast survives a round trip; false otherwise
+	DUCKDB_API static bool TryExactCast(const Value &value, const LogicalType &type, Value &result);
 	//! Parses the exponent of scientific notation, starting after the 'e'; false for other text
 	DUCKDB_API static bool TryParseExponent(const char *text, idx_t pos, idx_t end, int64_t &exponent);
 	//! The significant integer digits and the fractional digits of a number written in text; false for other text

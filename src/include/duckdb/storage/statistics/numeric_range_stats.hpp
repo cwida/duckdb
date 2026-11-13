@@ -14,6 +14,8 @@
 
 namespace duckdb {
 
+class StatsStructFields;
+
 //! The exact value range of NUMERIC statistics: it decides the representation that holds every value, which lets
 //! operators work on the values in that representation instead of on canonical blobs. NUMERIC statistics are string
 //! statistics over the canonical blobs, so the range extends their extra data; it is unknown for values that did not
@@ -36,6 +38,7 @@ public:
 	DUCKDB_API static void Serialize(const BaseStatistics &stats, Serializer &serializer);
 	DUCKDB_API static void Deserialize(Deserializer &deserializer, BaseStatistics &stats);
 	DUCKDB_API static void ToStruct(const BaseStatistics &stats, child_list_t<Value> &children);
+	DUCKDB_API static void SetFromStruct(BaseStatistics &stats, StatsStructFields &fields);
 
 private:
 	static NumericRangeStats &Get(const BaseStatistics &stats);

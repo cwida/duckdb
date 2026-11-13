@@ -639,12 +639,13 @@ struct ValueField;
 // into a value with the typed constructors, duckdb_v2_value_create_struct, duckdb_v2_value_create_tuple and
 // duckdb_v2_value_create_list.
 struct ValueSpec {
-	enum class Kind { NULL_VALUE, BOOL, INT, DOUBLE, TEXT, STRUCT, TUPLE, LIST };
+	enum class Kind { NULL_VALUE, BOOL, INT, DOUBLE, TEXT, BLOB, STRUCT, TUPLE, LIST };
 	Kind kind = Kind::NULL_VALUE;
 	bool b = false;
 	int32_t i = 0;
 	double d = 0;
 	const char *s = nullptr;
+	std::string bytes;
 	std::vector<ValueField> fields;
 	std::vector<ValueSpec> items;
 };
@@ -680,6 +681,12 @@ ValueSpec Str(const char *s) {
 	ValueSpec spec;
 	spec.kind = ValueSpec::Kind::TEXT;
 	spec.s = s;
+	return spec;
+}
+ValueSpec Blob(std::string bytes) {
+	ValueSpec spec;
+	spec.kind = ValueSpec::Kind::BLOB;
+	spec.bytes = std::move(bytes);
 	return spec;
 }
 ValueSpec Obj(std::initializer_list<ValueField> fields) {
@@ -730,6 +737,9 @@ duckdb_v2_value_handle BuildValue(duckdb_v2_factory_handle factory, const ValueS
 		duckdb_v2_value_create_varchar(factory, text.data(), text.size(), &value, err);
 		break;
 	}
+	case ValueSpec::Kind::BLOB:
+		duckdb_v2_value_create_blob(factory, spec.bytes.data(), spec.bytes.size(), &value, err);
+		break;
 	case ValueSpec::Kind::STRUCT: {
 		bool ok = true;
 		for (auto &field : spec.fields) {
@@ -1691,11 +1701,11 @@ TEST_CASE("V2 stats: string bounds are the bytes they are given", "[capi_v2][sta
 	duckdb_v2_stats_destroy(&copy);
 	duckdb_v2_value_destroy(&lower);
 	duckdb_v2_value_destroy(&upper);
-	auto escaped = MakeVarcharValue(fx.factory, "\\x00");
+	auto escaped = MakeVarcharValue(fx.factory, "\\\\x00");
 	REQUIRE(SetStatsStruct(fx.factory, blobs, {"max"}, {escaped}, nullptr) == DUCKDB_V2_ERROR_NONE);
 	field = StatsField(blobs, "max");
 	REQUIRE(TypeIdOf(field) == DUCKDB_V2_LOGICAL_TYPE_ID_BLOB);
-	REQUIRE(ConsumeBlob(field) == "\\x00");
+	REQUIRE(ConsumeBlob(field) == "\\\\x00");
 	duckdb_v2_value_destroy(&escaped);
 	duckdb_v2_stats_destroy(&blobs);
 }
@@ -1731,6 +1741,25 @@ TEST_CASE("V2 stats: statistics of every kind round-trip through a value", "[cap
 	    // a backslash in a string bound is a character
 	    {"VARCHAR", Obj({{"min", Str("C:\\temp")}, {"max", Str("a\\x41")}}),
 	     "{'min': 'C:\\\\temp', 'max': 'a\\\\x41', 'has_unicode': true, 'has_null': true, 'has_no_null': true}"},
+	    // NUMERIC: the exact range sets the canonical blobs that bound the values
+	    {"NUMERIC", Obj({{"exact_min", Int(1)}, {"exact_max", Int(9)}, {"has_null", Bool(false)}}),
+	     "{'min': '\\\\x80\\\\x80\\\\x00\\\\x02\\\\x00', 'max': '\\\\x80\\\\x80\\\\x00\\\\x0A\\\\x00', 'has_unicode': "
+	     "true, 'representation': "
+	     "TINYINT, 'exact_min': 1, 'exact_max': 9, 'has_null': false, 'has_no_null': true}"},
+	    // the scale of the representation counts fractional places the endpoints need not show
+	    {"NUMERIC", Obj({{"representation", Str("DECIMAL(10,3)")}, {"exact_min", Dbl(1.5)}, {"exact_max", Int(2)}}),
+	     "{'min': '\\\\x80\\\\x80\\\\x00\\\\x02\\\\x06\\\\x00', 'max': '\\\\x80\\\\x80\\\\x00\\\\x03\\\\x00', "
+	     "'has_unicode': true, "
+	     "'representation': 'DECIMAL(4,3)', 'exact_min': 1.5, 'exact_max': 2, 'has_null': true, 'has_no_null': true}"},
+	    // a representation without endpoints: there are no values, every representation holds them
+	    {"NUMERIC", Obj({{"representation", Str("INTEGER")}}),
+	     "{'has_unicode': true, 'representation': INTEGER, 'has_null': true, 'has_no_null': true}"},
+	    {"STRUCT(x NUMERIC)",
+	     Obj({{"child_stats", Obj({{"x", Obj({{"exact_min", Int(-3)}, {"exact_max", Dbl(1.5)}})}})}}),
+	     "{'child_stats': {'x': {'min': '\\\\x00\\\\x7F\\\\xFF\\\\xFB\\\\xFF', 'max': "
+	     "'\\\\x80\\\\x80\\\\x00\\\\x02\\\\x06\\\\x00', "
+	     "'has_unicode': true, 'representation': 'DECIMAL(2,1)', 'exact_min': -3, 'exact_max': 1.5, 'has_null': true, "
+	     "'has_no_null': true}}, 'has_null': true, 'has_no_null': true}"},
 	    {"INTEGER[]",
 	     Obj({{"child_stats", Obj({{"min", Int(1)}, {"max", Int(3)}, {"has_null", Bool(false)}})},
 	          {"has_null", Bool(false)}}),
@@ -1886,6 +1915,30 @@ TEST_CASE("V2 stats: statistics of every kind round-trip through a value", "[cap
 	     Obj({{"child_stats", Tup({Obj({{"min", Int(1)}}), Obj({{"min", Str("a")}, {"other", Int(2)}})})}}),
 	     "'child_stats.element2.other'"},
 	    {"DATE", Obj({{"min", Str("2024-01-01")}, {"max", Int(20241231)}}), "'max'"},
+	    // NUMERIC endpoints come in pairs, in order, as numbers a given representation holds
+	    {"NUMERIC", Obj({{"exact_min", Int(1)}}), "'exact_max'"},
+	    {"NUMERIC", Obj({{"exact_min", Int(5)}, {"exact_max", Int(1)}}), "'exact_max'"},
+	    {"NUMERIC", Obj({{"exact_min", Str("x")}, {"exact_max", Int(1)}}), "'exact_min'"},
+	    {"NUMERIC", Obj({{"representation", Str("DOUBLE")}}), "'representation'"},
+	    {"NUMERIC", Obj({{"representation", Str("DECIMAL(3)")}}), "'representation'"},
+	    {"NUMERIC", Obj({{"representation", Str("TINYINT")}, {"exact_min", Int(1)}, {"exact_max", Int(1000)}}),
+	     "'exact_max'"},
+	    {"NUMERIC", Obj({{"representation", Str("INTEGER")}, {"exact_min", Dbl(1.5)}, {"exact_max", Int(9)}}),
+	     "'exact_min'"},
+	    // the endpoints must lie within the canonical blobs that bound the values, here those of 1 and 9
+	    {"NUMERIC",
+	     Obj({{"min", Blob(std::string("\x80\x80\x00\x02\x00", 5))},
+	          {"max", Blob(std::string("\x80\x80\x00\x0A\x00", 5))},
+	          {"exact_min", Int(0)},
+	          {"exact_max", Int(9)}}),
+	     "'exact_min'"},
+	    {"NUMERIC",
+	     Obj({{"min", Blob(std::string("\x80\x80\x00\x02\x00", 5))},
+	          {"max", Blob(std::string("\x80\x80\x00\x0A\x00", 5))},
+	          {"representation", Str("INTEGER")}}),
+	     "'representation'"},
+	    {"STRUCT(x NUMERIC)", Obj({{"child_stats", Obj({{"x", Obj({{"exact_min", Int(5)}, {"exact_max", Int(1)}})}})}}),
+	     "'child_stats.x.exact_max'"},
 	    {"GEOMETRY", Obj({{"extent", Obj({{"x_min", Str("left")}})}}), "'extent.x_min'"},
 	    {"GEOMETRY", Obj({{"extent", Obj({{"w_min", Int(1)}})}}), "'extent.w_min'"},
 	    {"GEOMETRY", Obj({{"types", Arr({Str("circle")})}}), "'types'"},
@@ -1925,25 +1978,49 @@ TEST_CASE("V2 stats: the output of stats() sets the statistics it shows", "[capi
 	EnvFixture fx;
 	StatsExec(fx.conn,
 	          "CREATE TABLE pairs AS SELECT row(i, 'x' || i) AS r, {'n': i, 'p': row(i)} AS s FROM range(10) t(i)");
+	StatsExec(fx.conn, "CREATE TABLE numbers(n NUMERIC, s STRUCT(x NUMERIC), c NUMERIC, e NUMERIC)");
+	StatsExec(fx.conn, "INSERT INTO numbers VALUES (-3, {'x': 42}, 0.5, NULL), (1.5, {'x': 1e40}, 1e254, NULL)");
 
 	// stats() renders statistics as a VARIANT, with the elements of a TUPLE's child_stats as an array
 	struct Shown {
+		const char *table;
 		const char *column;
 		const char *type;
-		const char *expected;
+		std::string expected;
 	};
+	// 0.5 and 1e254 have no common representation: the values are canonical blobs
+	auto canonical =
+	    std::string("{'min': '\\\\x80\\\\x7F\\\\xFF\\\\x06\\\\x00', 'max': '\\\\x80\\\\x80\\\\xFE\\\\x02\\\\x00', "
+	                "'has_unicode': false, 'representation': CANONICAL, 'exact_min': .5, 'exact_max': 1") +
+	    std::string(254, '0') + ", 'has_null': false, 'has_no_null': true, 'approx_unique': 2}";
 	const Shown cases[] = {
-	    {"r", "TUPLE(INTEGER, VARCHAR)",
+	    {"pairs", "r", "TUPLE(INTEGER, VARCHAR)",
 	     "{'child_stats': ({'min': 0, 'max': 9, 'has_null': false, 'has_no_null': true}, {'min': x0, 'max': x9, "
 	     "'has_unicode': false, 'min_string_length': 2, 'max_string_length': 2, 'total_string_length': 20, "
 	     "'has_null': false, 'has_no_null': true}), 'has_null': false, 'has_no_null': true}"},
-	    {"s", "STRUCT(n INTEGER, p TUPLE(INTEGER))",
+	    {"pairs", "s", "STRUCT(n INTEGER, p TUPLE(INTEGER))",
 	     "{'child_stats': {'n': {'min': 0, 'max': 9, 'has_null': false, 'has_no_null': true}, 'p': {'child_stats': "
 	     "({'min': 0, 'max': 9, 'has_null': false, 'has_no_null': true},), 'has_null': false, 'has_no_null': true}}, "
 	     "'has_null': false, 'has_no_null': true}"},
+	    {"numbers", "n", "NUMERIC",
+	     "{'min': '\\\\x00\\\\x7F\\\\xFF\\\\xFB\\\\xFF', 'max': '\\\\x80\\\\x80\\\\x00\\\\x02\\\\x06\\\\x00', "
+	     "'has_unicode': false, "
+	     "'representation': 'DECIMAL(2,1)', 'exact_min': -3, 'exact_max': 1.5, 'has_null': false, 'has_no_null': true, "
+	     "'approx_unique': 2}"},
+	    {"numbers", "s", "STRUCT(x NUMERIC)",
+	     "{'child_stats': {'x': {'min': '\\\\x80\\\\x80\\\\x01\\\\x05\\\\x03\\\\x00', 'max': "
+	     "'\\\\x80\\\\x80(\\\\x02\\\\x00', "
+	     "'has_unicode': false, 'representation': 'DECIMAL(41,0)', 'exact_min': 42, 'exact_max': "
+	     "10000000000000000000000000000000000000000, 'has_null': false, 'has_no_null': true}}, 'has_null': false, "
+	     "'has_no_null': true}"},
+	    {"numbers", "c", "NUMERIC", canonical},
+	    {"numbers", "e", "NUMERIC",
+	     "{'has_unicode': false, 'max_string_length': 0, 'total_string_length': 0, 'representation': INTEGER, "
+	     "'has_null': true, 'has_no_null': false}"},
 	};
 	for (auto &test : cases) {
-		auto shown = StatsQueryValue(fx.conn, std::string("SELECT stats(") + test.column + ") FROM pairs LIMIT 1");
+		auto shown =
+		    StatsQueryValue(fx.conn, std::string("SELECT stats(") + test.column + ") FROM " + test.table + " LIMIT 1");
 		REQUIRE(shown != nullptr);
 		REQUIRE(TypeIdOf(shown) == DUCKDB_V2_LOGICAL_TYPE_ID_VARIANT);
 		auto stats = StatsOfText(fx.factory, test.type, nullptr);

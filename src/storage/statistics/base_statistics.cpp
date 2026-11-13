@@ -574,6 +574,9 @@ void BaseStatistics::SetFromStruct(const Value &value, const string &path) {
 	default:
 		break;
 	}
+	if (type.id() == LogicalTypeId::NUMERIC) {
+		NumericRangeStats::SetFromStruct(*this, fields);
+	}
 	fields.VerifyAllRead(type);
 }
 
