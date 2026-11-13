@@ -154,7 +154,8 @@ static unordered_set<VariantLogicalType> GetVariantType(const LogicalType &type)
 	case LogicalTypeId::INTEGER:
 		return {VariantLogicalType::INT32};
 	case LogicalTypeId::BIGINT:
-		return {VariantLogicalType::INT64};
+		// UINT64 has no counterpart that fits a BIGINT field, see ValueIsShredded
+		return {VariantLogicalType::INT64, VariantLogicalType::UINT64};
 	case LogicalTypeId::HUGEINT:
 		return {VariantLogicalType::INT128};
 	case LogicalTypeId::UTINYINT:

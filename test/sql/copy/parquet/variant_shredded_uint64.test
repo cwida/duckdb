@@ -1,0 +1,38 @@
+# name: test/sql/copy/parquet/variant_shredded_uint64.test
+# description: UINT64 values in a VARIANT are shredded into the INT64 column, like INT64 is
+# group: [parquet]
+
+require parquet
+
+require json
+
+# UINT64 has no Parquet VARIANT equivalent, so it is stored as an INT64 (both have an 8 byte payload)
+statement ok
+COPY (SELECT {'a': i::UBIGINT}::VARIANT AS v FROM range(10) r(i)) TO '{TEST_DIR}/variant_uint64_direct.parquet'
+
+query II
+SELECT path_in_schema, stats_null_count FROM parquet_metadata('{TEST_DIR}/variant_uint64_direct.parquet')
+WHERE path_in_schema LIKE 'v, typed_value, a%'
+ORDER BY ALL
+----
+v, typed_value, a, typed_value	0
+v, typed_value, a, value	10
+
+# JSON number inference produces UINT64, so this covers every numeric field read from JSON
+statement ok
+COPY (SELECT ('{"a":' || i || '}')::JSON::VARIANT AS v FROM range(10) r(i)) TO '{TEST_DIR}/variant_uint64_json.parquet'
+
+query II
+SELECT path_in_schema, stats_null_count FROM parquet_metadata('{TEST_DIR}/variant_uint64_json.parquet')
+WHERE path_in_schema LIKE 'v, typed_value, a%'
+ORDER BY ALL
+----
+v, typed_value, a, typed_value	0
+v, typed_value, a, value	10
+
+# a UINT64 becomes an INT64 on a Parquet round-trip, even before it was shredded
+query II
+SELECT variant_typeof(v.a), sum(v.a::BIGINT) FROM read_parquet('{TEST_DIR}/variant_uint64_json.parquet')
+GROUP BY ALL
+----
+INT64	45

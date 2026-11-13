@@ -148,7 +148,8 @@ static unordered_set<VariantLogicalType> GetVariantType(const LogicalType &type)
 	case LogicalTypeId::INTEGER:
 		return {VariantLogicalType::INT32};
 	case LogicalTypeId::BIGINT:
-		return {VariantLogicalType::INT64};
+		// UINT64 has no Parquet equivalent and is written as an INT64, see ValueIsShredded
+		return {VariantLogicalType::INT64, VariantLogicalType::UINT64};
 	case LogicalTypeId::FLOAT:
 		return {VariantLogicalType::FLOAT};
 	case LogicalTypeId::DOUBLE:

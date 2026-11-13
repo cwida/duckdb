@@ -342,13 +342,24 @@ bool VariantShreddingState::ValueIsShredded(UnifiedVariantVectorData &variant, i
 	if (!GetVariantTypes().count(type_id)) {
 		return false;
 	}
-	if (type_id == VariantLogicalType::DECIMAL) {
+	switch (type_id) {
+	case VariantLogicalType::DECIMAL: {
 		// the shredded column stores the unscaled value, so it only holds decimals of its scale that fit its width
 		auto decimal_data = VariantUtils::DecodeDecimalData(variant, row, values_index);
 		return type.InternalType() == decimal_data.GetPhysicalType() &&
 		       decimal_data.scale == DecimalType::GetScale(type) && decimal_data.width <= DecimalType::GetWidth(type);
 	}
-	return true;
+	case VariantLogicalType::UINT64:
+		if (type.id() == LogicalTypeId::BIGINT) {
+			// a UINT64 is shredded into an INT64 column, which only holds the non-negative half of its range
+			uint64_t value;
+			memcpy(&value, variant.GetData(row).GetData() + variant.GetByteOffset(row, values_index), sizeof(value));
+			return value <= static_cast<uint64_t>(NumericLimits<int64_t>::Maximum());
+		}
+		return true;
+	default:
+		return true;
+	}
 }
 
 void VariantShreddingState::SetShredded(uint32_t row, uint32_t values_index, uint32_t result_idx) {

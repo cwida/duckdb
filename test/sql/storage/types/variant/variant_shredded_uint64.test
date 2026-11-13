@@ -1,0 +1,89 @@
+# name: test/sql/storage/types/variant/variant_shredded_uint64.test
+# description: UINT64 values in a VARIANT are shredded into an INT64 field, like INT64 values are
+# group: [variant]
+
+require json
+
+load {TEST_DIR}/variant_shredded_uint64.db readwrite v1.5.0
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+# The shredded type is picked from the majority of the values, so an INT64 field also has to accept UBIGINT
+statement ok
+CREATE TABLE mixed AS
+	SELECT CASE WHEN i < 6 THEN i::BIGINT::VARIANT ELSE i::UBIGINT::VARIANT END AS v FROM range(10) t(i);
+
+statement ok
+CHECKPOINT
+
+# UBIGINT values that fit in a BIGINT are shredded, instead of falling back to an unshredded value
+query II
+SELECT variant_typeof(v), count(*) FROM mixed GROUP BY ALL
+----
+INT64	10
+
+query I
+SELECT string_agg(v::VARCHAR, ',' ORDER BY v::BIGINT) FROM mixed
+----
+0,1,2,3,4,5,6,7,8,9
+
+# Values above INT64_MAX have no INT64 counterpart, those remain unshredded
+statement ok
+CREATE TABLE oversized AS
+	SELECT CASE
+		WHEN i < 6 THEN i::BIGINT::VARIANT
+		WHEN i = 6 THEN 9223372036854775807::UBIGINT::VARIANT
+		ELSE 9223372036854775808::UBIGINT::VARIANT
+	END AS v
+	FROM range(10) t(i);
+
+statement ok
+CHECKPOINT
+
+query II
+SELECT variant_typeof(v), count(*) FROM oversized GROUP BY ALL ORDER BY ALL
+----
+INT64	7
+UINT64	3
+
+query I
+SELECT count(*) FROM oversized WHERE v::HUGEINT > 9223372036854775807
+----
+3
+
+# JSON number inference produces UINT64 for every non-negative integer, including object fields
+statement ok
+CREATE TABLE json_objects AS
+	SELECT ('{"a":' || (i - 7) || '}')::JSON::VARIANT AS v FROM range(10) t(i);
+
+statement ok
+CHECKPOINT
+
+query II
+SELECT variant_typeof(v.a), count(*) FROM json_objects GROUP BY ALL
+----
+INT64	10
+
+query I
+SELECT string_agg(v.a::VARCHAR, ',' ORDER BY v.a::BIGINT) FROM json_objects
+----
+-7,-6,-5,-4,-3,-2,-1,0,1,2
+
+restart
+
+query II
+SELECT variant_typeof(v), count(*) FROM mixed GROUP BY ALL
+----
+INT64	10
+
+query II
+SELECT variant_typeof(v), count(*) FROM oversized GROUP BY ALL ORDER BY ALL
+----
+INT64	7
+UINT64	3
+
+query I
+SELECT string_agg(v.a::VARCHAR, ',' ORDER BY v.a::BIGINT) FROM json_objects
+----
+-7,-6,-5,-4,-3,-2,-1,0,1,2

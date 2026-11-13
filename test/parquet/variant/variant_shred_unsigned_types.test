@@ -3,7 +3,7 @@
 
 require parquet
 
-foreach type utinyint usmallint uinteger ubigint uhugeint hugeint
+foreach type utinyint usmallint uinteger uhugeint hugeint
 
 # Shred unsigned types when writing to Parquet
 statement ok
@@ -33,3 +33,30 @@ select stats(obj.field1) from '{TEST_DIR}/{type}_variant.parquet' limit 1;
 {'has_no_null': true, 'has_null': true, 'shredding_state': INCONSISTENT}
 
 endloop
+
+# UBIGINT has no Parquet equivalent either, but its values fit an INT64 when they are small enough
+statement ok
+COPY (
+	SELECT {'field1': i::ubigint}::VARIANT AS obj
+	FROM range(5) t(i)
+) TO '{TEST_DIR}/ubigint_variant.parquet';
+
+query I
+SELECT p.obj.field1 FROM '{TEST_DIR}/ubigint_variant.parquet' p;
+----
+0
+1
+2
+3
+4
+
+# the field is shredded into a BIGINT, so the original UBIGINT type is lost
+query I
+SELECT variant_typeof(p.obj.field1) FROM '{TEST_DIR}/ubigint_variant.parquet' p LIMIT 1;
+----
+INT64
+
+query I
+SELECT stats(obj.field1).shredding_state::VARCHAR FROM '{TEST_DIR}/ubigint_variant.parquet' LIMIT 1;
+----
+SHREDDED
