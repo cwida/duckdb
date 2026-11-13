@@ -23,7 +23,7 @@ SELECT SUFFIX(CURRENT_TIMESTAMP::VARCHAR, '-06');
 ----
 True
 
-foreach func now get_current_timestamp transaction_timestamp
+foreach func now get_current_timestamp transaction_timestamp current_timestamp
 
 query I
 SELECT SUFFIX({func}()::VARCHAR, '-06');
@@ -31,6 +31,13 @@ SELECT SUFFIX({func}()::VARCHAR, '-06');
 True
 
 endloop
+
+# https://github.com/duckdb/duckdb/issues/24446
+# current_timestamp should be listed in duckdb_functions(), like current_date is
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'current_timestamp';
+----
+1
 
 # Ago is a macro based on current_timestamp
 

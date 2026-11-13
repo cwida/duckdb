@@ -146,6 +146,7 @@ static const StaticFunctionDefinition core_functions[] = {
 	DUCKDB_SCALAR_FUNCTION(CurrentSchemaFun),
 	DUCKDB_SCALAR_FUNCTION(CurrentSchemasFun),
 	DUCKDB_SCALAR_FUNCTION(CurrentSettingFun),
+	DUCKDB_SCALAR_FUNCTION_ALIAS(CurrentTimestampFun),
 	DUCKDB_SCALAR_FUNCTION(DamerauLevenshteinFun),
 	DUCKDB_SCALAR_FUNCTION_SET(DateDiffFun),
 	DUCKDB_SCALAR_FUNCTION_SET(DatePartFun),

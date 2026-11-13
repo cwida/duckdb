@@ -231,6 +231,12 @@ struct TransactionTimestampFun {
 	static constexpr const char *Name = "transaction_timestamp";
 };
 
+struct CurrentTimestampFun {
+	using ALIAS = GetCurrentTimestampFun;
+
+	static constexpr const char *Name = "current_timestamp";
+};
+
 struct HoursFun {
 	static constexpr const char *Name = "hour";
 	static constexpr const char *Parameters = "ts";

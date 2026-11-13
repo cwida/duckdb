@@ -39,7 +39,7 @@ DATE
 
 endloop
 
-foreach func now get_current_timestamp transaction_timestamp
+foreach func now get_current_timestamp transaction_timestamp current_timestamp
 
 query I
 SELECT typeof({func}());

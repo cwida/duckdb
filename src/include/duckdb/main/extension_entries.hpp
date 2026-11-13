@@ -307,6 +307,7 @@ static constexpr ExtensionFunctionEntry EXTENSION_FUNCTIONS[] = {
     {"current_schema", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
     {"current_schemas", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
     {"current_setting", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
+    {"current_timestamp", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
     {"damerau_levenshtein", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
     {"dbgen", "tpch", CatalogType::TABLE_FUNCTION_ENTRY},
     {"decode", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},

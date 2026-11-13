@@ -131,7 +131,7 @@
         "description": "Returns the current timestamp",
         "example": "get_current_timestamp()",
         "type": "scalar_function",
-        "aliases": ["now", "transaction_timestamp"]
+        "aliases": ["now", "transaction_timestamp", "current_timestamp"]
     },
     {
         "struct": "HoursFun",
