@@ -110,6 +110,13 @@ static void EnumerateOperatorExpressions(OPERATOR &op, const FUNC &callback) {
 		}
 		break;
 	}
+	case LogicalOperatorType::LOGICAL_TOP_KEY_FILTER: {
+		auto &filter = op.template Cast<LogicalTopKeyFilter>();
+		for (auto &node : filter.orders) {
+			callback(&node.expression);
+		}
+		break;
+	}
 	case LogicalOperatorType::LOGICAL_DISTINCT: {
 		auto &distinct = op.template Cast<LogicalDistinct>();
 		for (auto &target : distinct.distinct_targets) {

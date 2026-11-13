@@ -20,6 +20,7 @@
 #include "duckdb/optimizer/filter_statistics.hpp"
 #include "duckdb/optimizer/filter_pullup.hpp"
 #include "duckdb/optimizer/filter_pushdown.hpp"
+#include "duckdb/optimizer/group_by_top_key.hpp"
 #include "duckdb/optimizer/grouping_sets_optimizer.hpp"
 #include "duckdb/optimizer/in_clause_rewriter.hpp"
 #include "duckdb/optimizer/join_elimination.hpp"
@@ -548,6 +549,13 @@ void Optimizer::RunBuiltInOptimizers() {
 	RunOptimizer(OptimizerType::SCALAR_FN_PUSHDOWN, [&] {
 		ScalarFnPushdown fn_pushdown(context);
 		plan = fn_pushdown.Optimize(std::move(plan));
+	});
+
+	// Bounds the input of grouped aggregates whose Top-N orders by the group keys, and turns a LIMIT over a grouped
+	// aggregate into such a Top-N. Runs last: the filter is placed below the finished aggregate.
+	RunOptimizer(OptimizerType::GROUP_BY_TOP_KEY, [&]() {
+		GroupByTopKey group_by_top_key(*this);
+		plan = group_by_top_key.Optimize(std::move(plan));
 	});
 }
 

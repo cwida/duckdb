@@ -1,0 +1,262 @@
+# name: test/optimizer/group_by_top_key_limit.test
+# description: LIMIT n over a grouped aggregate without ORDER BY: a Top-N over a group key and a top-key filter below the aggregate
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(k1 INTEGER, k2 VARCHAR, d DATE, b BOOLEAN, v INTEGER);
+
+# 20 integer keys (0..19) plus a NULL key, 5 string keys plus NULL, 3 dates, a boolean
+statement ok
+INSERT INTO t SELECT
+	CASE WHEN i % 50 = 49 THEN NULL ELSE (i * 7) % 20 END,
+	CASE WHEN i % 13 = 0 THEN NULL ELSE chr((97 + i % 5)::INTEGER) END,
+	DATE '2024-01-01' + INTERVAL (i % 3) DAY,
+	i % 2 = 0,
+	i
+FROM range(500) r(i);
+
+# every query runs with the rule disabled (the reference result, from an explicit ORDER BY over the same groups) and
+# then with the rule enabled under the same label. A LIMIT without ORDER BY returns an arbitrary subset of the groups,
+# so the query is only checked for its row count and for every row being a real group while the rule is disabled.
+
+statement ok
+SET disabled_optimizers = 'group_by_top_key';
+
+# 1. the reference: the three smallest keys with their aggregates
+query III nosort s01
+SELECT * FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 ORDER BY k1 LIMIT 3) ORDER BY ALL
+----
+
+# rule disabled: the LIMIT without ORDER BY returns three real groups
+query I
+SELECT count(*) FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3)
+----
+3
+
+query I
+SELECT count(*) FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3) l
+WHERE (l.k1, l.c, l.s) IN (SELECT (k1, count(*), sum(v)) FROM t GROUP BY k1)
+----
+3
+
+# the plan keeps the LIMIT
+query II
+EXPLAIN SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3
+----
+physical_plan	<!REGEX>:.*Top N.*
+
+statement ok
+SET disabled_optimizers = '';
+
+# 1. rule enabled: the n smallest keys (deterministic)
+query III nosort s01
+SELECT * FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3) ORDER BY ALL
+----
+
+query II
+EXPLAIN SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3
+----
+physical_plan	<REGEX>:.*Top N.*
+
+query II
+EXPLAIN SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3
+----
+physical_plan	<!REGEX>:.*Streaming Limit.*
+
+# 2. LIMIT with OFFSET: keys ranked 3..5
+query III nosort s02
+SELECT * FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 ORDER BY k1 LIMIT 3 OFFSET 2) ORDER BY ALL
+----
+
+query III nosort s02
+SELECT * FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3 OFFSET 2) ORDER BY ALL
+----
+
+# 3. the NULL key sorts last: not chosen while there are enough non-NULL groups ... (the aggregate stays referenced:
+# an unreferenced aggregate is pruned and the LIMIT over the bare GROUP BY becomes a LIMITED_DISTINCT instead)
+query I
+SELECT count(*) FILTER (WHERE k1 IS NULL) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 20) WHERE c > 0
+----
+0
+
+# ... and included once n covers every group (21 groups)
+query I
+SELECT count(*) FILTER (WHERE k1 IS NULL) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 21) WHERE c > 0
+----
+1
+
+# 4. LIMIT 0: no rewrite, no rows
+query I
+SELECT count(*) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 0)
+----
+0
+
+query II
+EXPLAIN SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 0
+----
+physical_plan	<!REGEX>:.*Top N.*
+
+# 5. n larger than the number of groups: every group, exact aggregates
+query III nosort s05
+SELECT * FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 ORDER BY k1 LIMIT 100) ORDER BY ALL
+----
+
+query III nosort s05
+SELECT * FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 100) ORDER BY ALL
+----
+
+# 6. HAVING blocks the rewrite (a filter between the LIMIT and the aggregate)
+query II
+EXPLAIN SELECT k1, count(*) c FROM t GROUP BY k1 HAVING count(*) > 20 LIMIT 3
+----
+physical_plan	<!REGEX>:.*Top N.*
+
+query I
+SELECT count(*) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 HAVING count(*) > 20 LIMIT 3)
+----
+3
+
+# 7. no column-reference group key: no rewrite
+query II
+EXPLAIN SELECT k1 + 1 k, count(*) c FROM t GROUP BY k1 + 1 LIMIT 3
+----
+physical_plan	<!REGEX>:.*Top N.*
+
+query I
+SELECT count(*) FROM (SELECT k1 + 1 k, count(*) c FROM t GROUP BY k1 + 1 LIMIT 3)
+----
+3
+
+# 8. no aggregate functions: the LIMITED_DISTINCT path stays (DISTINCT and the bare GROUP BY)
+query II
+EXPLAIN SELECT DISTINCT k1 FROM t LIMIT 3
+----
+physical_plan	<REGEX>:.*Limited Distinct.*
+
+query II
+EXPLAIN SELECT k1 FROM t GROUP BY k1 LIMIT 3
+----
+physical_plan	<REGEX>:.*Limited Distinct.*
+
+query II
+EXPLAIN SELECT DISTINCT k1 FROM t LIMIT 3
+----
+physical_plan	<!REGEX>:.*Top N.*
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT k1 FROM t LIMIT 3)
+----
+3
+
+# 9. a non-constant limit: no rewrite
+query II
+EXPLAIN SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT (SELECT 3)
+----
+physical_plan	<!REGEX>:.*Top N.*
+
+query I
+SELECT count(*) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT (SELECT 3))
+----
+3
+
+# a prepared limit: correct results for both parameters
+statement ok
+PREPARE p AS SELECT count(*) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT $1)
+
+query I
+EXECUTE p(3)
+----
+3
+
+query I
+EXECUTE p(25)
+----
+21
+
+# 10. GROUPING SETS / ROLLUP: no rewrite
+query II
+EXPLAIN SELECT k1, k2, count(*) c FROM t GROUP BY ROLLUP (k1, k2) LIMIT 3
+----
+physical_plan	<!REGEX>:.*Top N.*
+
+query I
+SELECT count(*) FROM (SELECT k1, k2, count(*) c FROM t GROUP BY ROLLUP (k1, k2) LIMIT 3)
+----
+3
+
+# 11. a VARCHAR first key: the three smallest strings (NULL last)
+query II
+SELECT k2, count(*) FROM (SELECT k2, k1, count(*) c FROM t GROUP BY k2, k1 ORDER BY k2 LIMIT 3) GROUP BY k2
+----
+a	3
+
+query I
+SELECT count(*) FROM (SELECT k2, k1, count(*) c FROM t GROUP BY k2, k1 LIMIT 3)
+----
+3
+
+# every returned group has k2 = 'a' (there are 20 (k2, k1) groups with k2 = 'a')
+query I
+SELECT count(*) FROM (SELECT k2, k1, count(*) c FROM t GROUP BY k2, k1 LIMIT 3) WHERE k2 = 'a' AND c > 0
+----
+3
+
+query I
+SELECT count(*) FROM (SELECT k2, k1, count(*) c FROM t GROUP BY k2, k1 LIMIT 3) l
+WHERE (l.k2, l.k1, l.c) IN (SELECT (k2, k1, count(*)) FROM t GROUP BY k2, k1)
+----
+3
+
+# 12. a BOOLEAN first key is skipped for the order key, the INTEGER second key is used: the smallest k1 values
+# (k1 and i share their parity, so k1 = 0 pairs with b = true only: (true, 0), (false, 1), (true, 2))
+query I
+SELECT count(*) FROM (SELECT b, k1, count(*) c FROM t GROUP BY b, k1 LIMIT 3) WHERE k1 <= 2 AND c > 0
+----
+3
+
+query II
+EXPLAIN SELECT b, k1, count(*) c FROM t GROUP BY b, k1 LIMIT 3
+----
+physical_plan	<REGEX>:.*Top N.*
+
+# a DATE first key is numeric internally and is the order key: the three groups of the first date
+query I
+SELECT count(*) FROM (SELECT d, k1, count(*) c FROM t GROUP BY d, k1 LIMIT 3) WHERE d = DATE '2024-01-01' AND c > 0
+----
+3
+
+# 13. the group key not in the SELECT list: the TOP_N orders by it below the projection
+query II nosort s13
+SELECT * FROM (SELECT count(*) c, sum(v) s FROM t GROUP BY k1 ORDER BY k1 LIMIT 3) ORDER BY ALL
+----
+
+query II nosort s13
+SELECT * FROM (SELECT count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3) ORDER BY ALL
+----
+
+# 14. one and eight threads
+statement ok
+SET threads = 1
+
+query III nosort s01
+SELECT * FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3) ORDER BY ALL
+----
+
+statement ok
+SET threads = 8
+
+query III nosort s01
+SELECT * FROM (SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3) ORDER BY ALL
+----
+
+# 15. the rule can be disabled on its own
+statement ok
+SET disabled_optimizers = 'group_by_top_key';
+
+query II
+EXPLAIN SELECT k1, count(*) c, sum(v) s FROM t GROUP BY k1 LIMIT 3
+----
+physical_plan	<!REGEX>:.*Top N.*
+
+statement ok
+SET disabled_optimizers = ''

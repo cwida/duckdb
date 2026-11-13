@@ -51,6 +51,7 @@ add_library_unity(
   logical_load.cpp
   logical_transaction.cpp
   logical_update_extensions.cpp
+  logical_top_key_filter.cpp
   logical_top_n.cpp
   logical_trigger.cpp
   logical_unconditional_join.cpp

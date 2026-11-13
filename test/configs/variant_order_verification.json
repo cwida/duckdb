@@ -32,7 +32,8 @@
       "reason": "ENUM is ordered by its dictionary (definition) order natively, but VARIANT stores the enum value as a string and orders it lexically.",
       "paths": [
         "test/sql/export/export_database.test",
-        "test/sql/types/enum/test_enum_table.test"
+        "test/sql/types/enum/test_enum_table.test",
+        "test/optimizer/group_by_top_key_dictionary.test"
       ]
     },
     {
@@ -48,6 +49,8 @@
         "test/sql/topn/top_n_pruning.test",
         "test/sql/topn/topn_nulls_first.test",
         "test/optimizer/remove_redundant_order_keys.test",
+        "test/optimizer/group_by_top_key.test",
+        "test/optimizer/group_by_top_key_guards.test",
         "test/sql/optimizer/secure_view_join_filter_pushdown.test"
       ]
     },

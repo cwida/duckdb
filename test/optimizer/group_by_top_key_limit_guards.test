@@ -1,0 +1,397 @@
+# name: test/optimizer/group_by_top_key_limit_guards.test
+# description: LIMIT n over a grouped aggregate without ORDER BY: one negative test per precondition next to a positive one, results on edge inputs
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(k1 INTEGER, k2 VARCHAR, d DATE, b BOOLEAN, v INTEGER);
+
+# 20 integer keys (0..19: 25 rows each, 20 for keys 3 and 13) plus a NULL key (10 rows), as in group_by_top_key_limit.test
+statement ok
+INSERT INTO t SELECT
+	CASE WHEN i % 50 = 49 THEN NULL ELSE (i * 7) % 20 END,
+	CASE WHEN i % 13 = 0 THEN NULL ELSE chr((97 + i % 5)::INTEGER) END,
+	DATE '2024-01-01' + INTERVAL (i % 3) DAY,
+	i % 2 = 0,
+	i
+FROM range(500) r(i);
+
+# an empty table, a key column of NULLs only, and keys that are neither numeric nor VARCHAR
+statement ok
+CREATE TABLE e(k INTEGER, v INTEGER);
+
+statement ok
+CREATE TABLE an(k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO an SELECT NULL, i FROM range(100) r(i);
+
+statement ok
+CREATE TABLE nk(b BOOLEAN, s STRUCT(a INTEGER), l INTEGER[], v INTEGER);
+
+statement ok
+INSERT INTO nk SELECT CASE WHEN i % 7 = 0 THEN NULL ELSE i % 2 = 0 END, CASE WHEN i % 5 = 0 THEN NULL ELSE {'a': i % 4} END, CASE WHEN i % 5 = 0 THEN NULL ELSE [i % 4] END, i FROM range(200) r(i);
+
+statement ok
+SET explain_output = 'optimized_only';
+
+statement ok
+SET disabled_optimizers = '';
+
+statement ok
+SET disabled_optimizers = '';
+
+# every pin below looks for the `Top N` operator of the optimized plan: none of these queries has an ORDER BY, so a
+# `Top N` can only come from this rule (present = fired, absent = the LIMIT was left alone)
+
+# ---------------------------------------------------------------------------------------------------------------
+# POSITIVE: the base shape and the shapes without a pin so far
+# ---------------------------------------------------------------------------------------------------------------
+
+# the base shape every negative below is a one-step variation of
+query II
+EXPLAIN SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3
+----
+logical_opt	<REGEX>:.*Top N.*
+
+# the n smallest keys, the NULL key last
+query II
+SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3
+----
+0	25
+1	25
+2	25
+
+# the order key: an expression group key is skipped, the VARCHAR column key orders (three groups of k2 = 'a'; c stays
+# referenced, an unreferenced aggregate is pruned and the LIMIT becomes a LIMITED_DISTINCT)
+query II
+EXPLAIN SELECT k1 + 1 k, k2, count(*) c FROM t GROUP BY k1 + 1, k2 LIMIT 3
+----
+logical_opt	<REGEX>:.*Top N.*
+
+query I
+SELECT count(*) FROM (SELECT k1 + 1 k, k2, count(*) c FROM t GROUP BY k1 + 1, k2 LIMIT 3) WHERE c > 0
+----
+3
+
+# the order key: without a numeric / VARCHAR column key the first column key orders (BOOLEAN, STRUCT, LIST)
+query II
+EXPLAIN SELECT b, count(*) c FROM nk GROUP BY b LIMIT 1
+----
+logical_opt	<REGEX>:.*Top N.*
+
+query II
+SELECT b, count(*) c FROM nk GROUP BY b LIMIT 1
+----
+false	86
+
+query II
+EXPLAIN SELECT s, count(*) c FROM nk GROUP BY s LIMIT 2
+----
+logical_opt	<REGEX>:.*Top N.*
+
+query II
+SELECT s, count(*) c FROM nk GROUP BY s LIMIT 2
+----
+{'a': 0}	40
+{'a': 1}	40
+
+query II
+SELECT l, count(*) c FROM nk GROUP BY l LIMIT 2 OFFSET 3
+----
+[3]	40
+NULL	40
+
+# an explicit single grouping set over every key is the plain GROUP BY
+query II
+EXPLAIN SELECT k1, count(*) c FROM t GROUP BY GROUPING SETS ((k1)) LIMIT 3
+----
+logical_opt	<REGEX>:.*Top N.*
+
+# DISTINCT ON without ORDER BY is an aggregate with a first-row aggregate: the three smallest keys, each with a row
+# of its group (which row is not defined without an ORDER BY)
+query II
+EXPLAIN SELECT DISTINCT ON (k1) k1, v FROM t LIMIT 3
+----
+logical_opt	<REGEX>:.*Top N.*
+
+query IT
+SELECT k1, (k1, v) IN (SELECT (k1, v) FROM t) FROM (SELECT DISTINCT ON (k1) k1, v FROM t LIMIT 3) ORDER BY k1
+----
+0	true
+1	true
+2	true
+
+# ---------------------------------------------------------------------------------------------------------------
+# TOGGLE: the rule's own name restores the LIMIT (the fallback-key shape)
+# ---------------------------------------------------------------------------------------------------------------
+
+statement ok
+SET disabled_optimizers = 'group_by_top_key';
+
+query II
+EXPLAIN SELECT b, count(*) c FROM nk GROUP BY b LIMIT 1
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+statement ok
+SET disabled_optimizers = '';
+
+# ---------------------------------------------------------------------------------------------------------------
+# NEGATIVE per guard; the base shape above is the sibling positive unless one is given
+# ---------------------------------------------------------------------------------------------------------------
+
+# a percentage limit (10% of 21 groups)
+query II
+EXPLAIN SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 10%
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query I
+SELECT count(*) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 10%)
+----
+2
+
+# an offset that is not a constant; the constant offset is the sibling positive. OFFSET 20 of 21 groups leaves one
+# row, whichever groups come first. A volatile offset expression stays in the LIMIT, which then sits directly above
+# the projections and the aggregate: only the offset declines (taken as offset 0, the rule would build a
+# TOP_N and the query would return three rows)
+query II
+EXPLAIN SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3 OFFSET (random() * 0 + 2)::INTEGER
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query I
+SELECT count(*) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3 OFFSET (random() * 0 + 20)::INTEGER)
+----
+1
+
+# a subquery offset is planned as a cross product below the LIMIT, so the LIMIT is not directly over the aggregate
+query II
+EXPLAIN SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3 OFFSET (SELECT 2)
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query II
+EXPLAIN SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3 OFFSET 2
+----
+logical_opt	<REGEX>:.*Top N.*
+
+query I
+SELECT count(*) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3 OFFSET (SELECT 20))
+----
+1
+
+# a limit (or limit + offset) far above the top-key bound is not a top-N shape
+query II
+EXPLAIN SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 5000000
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query II
+EXPLAIN SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3 OFFSET 5000000
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query II
+SELECT count(*), sum(c) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 5000000)
+----
+21	500
+
+# a window between the LIMIT and the aggregate. A TOP_N directly above the aggregate would feed the window three
+# groups: n would be 3, not 21
+query II
+EXPLAIN SELECT k1, count(*) c, count(*) OVER () n FROM t GROUP BY k1 LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query I
+SELECT DISTINCT n FROM (SELECT k1, count(*) c, count(*) OVER () n FROM t GROUP BY k1 LIMIT 3)
+----
+21
+
+# a DISTINCT between the LIMIT and the aggregate. The three smallest keys all have 25 rows: a TOP_N below the
+# DISTINCT would leave one distinct count where there are three (25, 20, 10)
+query II
+EXPLAIN SELECT DISTINCT c FROM (SELECT k1, count(*) c FROM t GROUP BY k1) LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT c FROM (SELECT k1, count(*) c FROM t GROUP BY k1) LIMIT 3)
+----
+3
+
+# a filter on the aggregate from an outer query (HAVING by another name). Only keys 3 and 13 have 20 rows: a
+# TOP_N on keys 0..2 below the filter would return nothing
+query II
+EXPLAIN SELECT * FROM (SELECT k1, count(*) c FROM t GROUP BY k1) WHERE c = 20 LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query II
+SELECT * FROM (SELECT k1, count(*) c FROM t GROUP BY k1) WHERE c = 20 LIMIT 3
+----
+3	20
+13	20
+
+# an ungrouped aggregate
+query II
+EXPLAIN SELECT count(*) c FROM t LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query I
+SELECT count(*) c FROM t LIMIT 3
+----
+500
+
+# two grouping sets. Grouping sets with aggregate functions are lowered to a CTE and a UNION before this rule
+# runs (then there is no aggregate below the LIMIT), so the aggregate with two sets reaches the rule only with
+# the lowering (`grouping_sets`) disabled; the single explicit set is the plain GROUP BY and fires
+statement ok
+SET disabled_optimizers = 'grouping_sets';
+
+query II
+EXPLAIN SELECT k1, k2, count(*) c FROM t GROUP BY GROUPING SETS ((k1), (k2)) LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query II
+EXPLAIN SELECT k1, k2, count(*) c FROM t GROUP BY GROUPING SETS ((k1, k2)) LIMIT 3
+----
+logical_opt	<REGEX>:.*Top N.*
+
+# three real groups; every group of both sets once n covers them (21 k1 groups, 6 k2 groups, 500 rows per set)
+query II
+SELECT count(*), count(*) FILTER (WHERE c > 0) FROM (SELECT k1, k2, count(*) c FROM t GROUP BY GROUPING SETS ((k1), (k2)) LIMIT 3)
+----
+3	3
+
+query II
+SELECT count(*), sum(c) FROM (SELECT k1, k2, count(*) c FROM t GROUP BY GROUPING SETS ((k1), (k2)) LIMIT 100)
+----
+27	1000
+
+statement ok
+SET disabled_optimizers = '';
+
+# the lowered shape (the lowering on): no TOP_N either
+query II
+EXPLAIN SELECT k1, k2, count(*) c FROM t GROUP BY GROUPING SETS ((k1), (k2)) LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+# a GROUPING() call over a plain GROUP BY
+query II
+EXPLAIN SELECT k1, GROUPING(k1) g, count(*) c FROM t GROUP BY k1 LIMIT 3
+----
+logical_opt	<!REGEX>:.*Top N.*
+
+query II
+SELECT count(*), sum(g) FROM (SELECT k1, GROUPING(k1) g, count(*) c FROM t GROUP BY k1 LIMIT 3)
+----
+3	0
+
+# ---------------------------------------------------------------------------------------------------------------
+# RESULT: queries whose rows do not depend on which n groups a LIMIT without ORDER BY returns, rule disabled and enabled
+# ---------------------------------------------------------------------------------------------------------------
+
+foreach disabled 'group_by_top_key' ''
+
+statement ok
+SET disabled_optimizers = {disabled};
+
+# empty input: an empty table (folded to an empty result) and a filter that removes every row at run time
+query II
+SELECT k, count(*) c FROM e GROUP BY k LIMIT 3
+----
+
+query I
+SELECT count(*) FROM (SELECT k, count(*) c FROM e GROUP BY k LIMIT 3)
+----
+0
+
+query II
+SELECT k1, count(*) c FROM t WHERE v::VARCHAR = 'x' GROUP BY k1 LIMIT 3
+----
+
+# a key column of NULLs only: one NULL group
+query III
+SELECT k, count(*) c, sum(v) FROM an GROUP BY k LIMIT 3
+----
+NULL	100	4950
+
+# n covers every group: BOOLEAN, STRUCT and LIST keys with a NULL group
+query II
+SELECT * FROM (SELECT b, count(*) c FROM nk GROUP BY b LIMIT 5) ORDER BY ALL
+----
+false	86
+true	85
+NULL	29
+
+query II
+SELECT * FROM (SELECT s, count(*) c FROM nk GROUP BY s LIMIT 10) ORDER BY ALL
+----
+{'a': 0}	40
+{'a': 1}	40
+{'a': 2}	40
+{'a': 3}	40
+NULL	40
+
+query II
+SELECT * FROM (SELECT l, count(*) c FROM nk GROUP BY l LIMIT 10) ORDER BY ALL
+----
+[0]	40
+[1]	40
+[2]	40
+[3]	40
+NULL	40
+
+# an offset at and past the last group
+query I
+SELECT count(*) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3 OFFSET 20)
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3 OFFSET 30)
+----
+0
+
+# a materialized CTE read twice sees the same three groups with the same aggregates
+query II
+WITH top AS MATERIALIZED (SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3) SELECT count(*), count(*) FILTER (WHERE a.c = b.c) FROM top a JOIN top b ON a.k1 IS NOT DISTINCT FROM b.k1
+----
+3	3
+
+# DISTINCT ON without ORDER BY: every returned row is a row of the table
+query I
+SELECT count(*) FROM (SELECT DISTINCT ON (k1) k1, v FROM t LIMIT 3) x WHERE EXISTS (SELECT 1 FROM t WHERE t.k1 IS NOT DISTINCT FROM x.k1 AND t.v = x.v)
+----
+3
+
+endloop
+
+# the edge-input queries above are shapes that the rule rewrites
+statement ok
+SET disabled_optimizers = '';
+
+query II
+EXPLAIN SELECT k1, count(*) c FROM t WHERE v::VARCHAR = 'x' GROUP BY k1 LIMIT 3
+----
+logical_opt	<REGEX>:.*Top N.*
+
+query II
+EXPLAIN SELECT k, count(*) c, sum(v) FROM an GROUP BY k LIMIT 3
+----
+logical_opt	<REGEX>:.*Top N.*
+
+query II
+EXPLAIN SELECT l, count(*) c FROM nk GROUP BY l LIMIT 10
+----
+logical_opt	<REGEX>:.*Top N.*
+
+query II
+EXPLAIN SELECT k1, count(*) c FROM t GROUP BY k1 LIMIT 3 OFFSET 30
+----
+logical_opt	<REGEX>:.*Top N.*

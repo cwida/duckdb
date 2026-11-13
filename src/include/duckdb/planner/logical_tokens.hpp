@@ -63,6 +63,7 @@ class LogicalUpdateExtensions;
 class LogicalVacuum;
 class LogicalSet;
 class LogicalReset;
+class LogicalTopKeyFilter;
 class LogicalTopN;
 class LogicalUnnest;
 class LogicalUpdate;

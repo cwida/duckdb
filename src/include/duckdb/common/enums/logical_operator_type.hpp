@@ -31,6 +31,7 @@ enum class LogicalOperatorType : uint8_t {
 	LOGICAL_PIVOT = 14,
 	LOGICAL_COPY_DATABASE = 15,
 	LOGICAL_SECURE_VIEW = 16,
+	LOGICAL_TOP_KEY_FILTER = 17,
 
 	// -----------------------------
 	// Data sources

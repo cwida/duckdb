@@ -155,6 +155,7 @@ protected:
 	PhysicalOperator &CreatePlan(LogicalMergeInto &op);
 	PhysicalOperator &CreatePlan(LogicalOrder &op);
 	PhysicalOperator &CreatePlan(LogicalTopN &op);
+	PhysicalOperator &CreatePlan(LogicalTopKeyFilter &op);
 	PhysicalOperator &CreatePlan(LogicalPositionalJoin &op);
 	PhysicalOperator &CreatePlan(LogicalProjection &op);
 	PhysicalOperator &CreatePlan(LogicalInsert &op);

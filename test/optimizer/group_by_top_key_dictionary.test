@@ -1,0 +1,221 @@
+# name: test/optimizer/group_by_top_key_dictionary.test
+# description: GROUP BY k ORDER BY <prefix of k> LIMIT n: the top-key filter over dictionary-encoded keys
+# group: [optimizer]
+
+load {TEST_DIR}/group_by_top_key_dictionary.db
+
+statement ok
+SET threads=4
+
+# the build side of a perfect hash join (dense keys 0..999), one NULL b; the probe side has no row with k = 7 in its
+# first half and one in every 100 rows of its second half, so a CASE on b IS NULL over the join takes the ELSE branch
+# for whole chunks (the executor passes the join's dictionary through) and the THEN branch for some rows of the later
+# chunks (a flat result): the TOP_KEY_FILTER's output cache sees both shapes of the same key column
+statement ok
+CREATE TABLE dim AS SELECT i::INTEGER AS k, CASE WHEN i = 7 THEN NULL ELSE 'b' || (i % 50) END AS b, 'n' || i AS n FROM range(1000) r(i)
+
+statement ok
+CREATE TABLE dim2 AS SELECT i::INTEGER AS v, 'w' || (i % 10) AS w FROM range(97) r(i)
+
+statement ok
+CREATE TABLE fact AS SELECT (CASE WHEN i < 300000 THEN 8 + (i * 7919) % 992 WHEN i % 100 = 0 THEN 7 ELSE 8 + (i * 7919) % 992 END)::INTEGER AS k, (i % 97)::INTEGER AS v FROM range(600000) r(i)
+
+# a low-cardinality VARCHAR read back from storage (DICT_FSST segments: the scan emits dictionary vectors) and an ENUM
+statement ok
+CREATE TABLE ds AS SELECT 'k' || ((i * 13) % 20) AS s, ((i * 37) % 1000)::INTEGER AS k1, i::INTEGER AS v FROM range(300000) r(i)
+
+statement ok
+CREATE TYPE color AS ENUM ('red', 'green', 'blue', 'cyan', 'pink')
+
+statement ok
+CREATE TABLE de AS SELECT (['red', 'green', 'blue', 'cyan', 'pink'][1 + i % 5])::color AS c, ((i * 37) % 1000)::INTEGER AS k1, i::INTEGER AS v FROM range(300000) r(i)
+
+# a date dimension for an expression group key (YEAR(d_date)) over a join: the aggregate's input projection reaches
+# the rule with pruned expressions but the types it was resolved with
+statement ok
+CREATE TABLE dd AS SELECT i::INTEGER AS d_date_sk, DATE '1998-01-01' + INTERVAL (i) DAY AS d_ts, (DATE '1998-01-01' + INTERVAL (i) DAY)::DATE AS d_date FROM range(3000) r(i)
+
+statement ok
+CREATE TABLE ss AS SELECT (i % 3000)::INTEGER AS ss_sold_date_sk, i::BIGINT AS ss_ticket_number FROM range(100000) r(i)
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT bool_or(compression IN ('DICT_FSST', 'Dictionary')) FROM pragma_storage_info('ds') WHERE column_name = 's' AND segment_type = 'VARCHAR'
+----
+true
+
+# every query runs with the rule disabled and enabled: the rows are the result of the unmodified plan, which the rewritten plan
+# must reproduce
+
+foreach disabled 'group_by_top_key' ''
+
+statement ok
+SET disabled_optimizers = {disabled};
+
+# 1. the CASE key over the perfect hash join's build column (the ELSE passthrough and the flat THEN chunks)
+query II nosort
+SELECT CASE WHEN b IS NULL THEN 'u' || v::VARCHAR ELSE b END AS cb, v FROM fact JOIN dim USING (k) GROUP BY ALL ORDER BY ALL LIMIT 3
+----
+b0	0
+b0	1
+b0	2
+
+# 2. DISTINCT over a 3-way join
+query III nosort
+SELECT DISTINCT CASE WHEN b IS NULL THEN 'u' || v::VARCHAR ELSE b END AS cb, w, v FROM fact JOIN dim USING (k) JOIN dim2 USING (v) ORDER BY ALL LIMIT 4
+----
+b0	w0	0
+b0	w0	10
+b0	w0	20
+b0	w0	30
+
+# 3. DESC: the rows of the THEN branch lead
+query II nosort
+SELECT DISTINCT CASE WHEN b IS NULL THEN 'u' || v::VARCHAR ELSE b END AS cb, v FROM fact JOIN dim USING (k) ORDER BY cb DESC, v LIMIT 3
+----
+u96	96
+u95	95
+u94	94
+
+# 4. aggregates per CASE key
+query III nosort
+SELECT CASE WHEN b IS NULL THEN 'u' || v::VARCHAR ELSE b END AS cb, count(*), sum(v) FROM fact JOIN dim USING (k) GROUP BY cb ORDER BY cb LIMIT 3
+----
+b0	11383	546422
+b1	11492	551430
+b10	11975	574777
+
+# 5. the THEN shortcut: a first check that holds for whole chunks passes the build column through
+query II nosort
+SELECT CASE WHEN k > 7 THEN b ELSE 'u' || v::VARCHAR END AS cb, v FROM fact JOIN dim USING (k) GROUP BY ALL ORDER BY ALL LIMIT 3
+----
+b0	0
+b0	1
+b0	2
+
+# 6. storage dictionary keys
+query III nosort
+SELECT s, count(*), sum(v) FROM ds GROUP BY s ORDER BY s LIMIT 3
+----
+k0	15000	2249850000
+k1	15000	2250105000
+k10	15000	2250000000
+
+query II nosort
+SELECT DISTINCT s, k1 FROM ds ORDER BY ALL LIMIT 3
+----
+k0	0
+k0	20
+k0	40
+
+query III nosort
+SELECT s, k1, count(*) FROM ds GROUP BY s, k1 ORDER BY s DESC, k1 DESC LIMIT 3
+----
+k9	981	300
+k9	961	300
+k9	941	300
+
+# 7. ENUM keys (ordered by the enum's definition order)
+query III nosort
+SELECT c, count(*), min(v) FROM de GROUP BY c ORDER BY c LIMIT 2
+----
+red	60000	0
+green	60000	1
+
+query II nosort
+SELECT DISTINCT c, k1 FROM de ORDER BY c DESC, k1 LIMIT 3
+----
+pink	3
+pink	8
+pink	13
+
+# 8. an ENUM key beside a storage dictionary key through a join
+query III nosort
+SELECT c, s, count(*) FROM de JOIN ds USING (v) GROUP BY c, s ORDER BY c, s LIMIT 3
+----
+red	k0	15000
+red	k10	15000
+red	k15	15000
+
+# 9. an expression group key over a join (GROUP BY YEAR(d_date) ORDER BY YEAR(d_date) LIMIT): the key is materialised
+# in a projection below the filter over the join's input projection
+query II nosort
+SELECT YEAR(d_date) AS y, COUNT(ss_ticket_number) AS c FROM ss JOIN dd ON ss.ss_sold_date_sk = dd.d_date_sk WHERE YEAR(d_date) >= 2000 AND YEAR(d_date) < 2003 GROUP BY YEAR(d_date) ORDER BY YEAR(d_date) LIMIT 100
+----
+2000	12348
+2001	12045
+2002	12045
+
+query III nosort
+SELECT YEAR(d_date) AS y, COUNT(*) AS c, min(ss_ticket_number) FROM ss JOIN dd ON ss.ss_sold_date_sk = dd.d_date_sk GROUP BY YEAR(d_date) ORDER BY YEAR(d_date) DESC LIMIT 3
+----
+2006	2574	2922
+2005	12045	2557
+2004	12078	2191
+
+query II nosort
+SELECT date_trunc('year', d_ts) AS y, COUNT(*) AS c FROM ss JOIN dd ON ss.ss_sold_date_sk = dd.d_date_sk GROUP BY 1 ORDER BY 1 LIMIT 2
+----
+1998-01-01 00:00:00	12410
+1999-01-01 00:00:00	12410
+
+# the other expression-key shapes of the corpus: a strftime VARCHAR key, CAST(d_date AS VARCHAR), an expression over
+# both join sides, CAST(strftime(..) AS VARCHAR) beside a second group key
+query II nosort
+SELECT strftime(d_date, '%Y-%m') AS ym, count(*) FROM ss JOIN dd ON ss.ss_sold_date_sk = dd.d_date_sk GROUP BY strftime(d_date, '%Y-%m') ORDER BY strftime(d_date, '%Y-%m') DESC LIMIT 3
+----
+2006-03	627
+2006-02	924
+2006-01	1023
+
+query III nosort
+SELECT CAST(d_date AS VARCHAR) AS ds, count(*), max(ss_ticket_number) FROM ss JOIN dd ON ss.ss_sold_date_sk = dd.d_date_sk GROUP BY CAST(d_date AS VARCHAR) ORDER BY CAST(d_date AS VARCHAR) LIMIT 3
+----
+1998-01-01	34	99000
+1998-01-02	34	99001
+1998-01-03	34	99002
+
+query II nosort
+SELECT CAST(d_date AS TIMESTAMP) - INTERVAL 1 MINUTE * (ss_ticket_number % 3) AS t, count(*) FROM ss JOIN dd ON ss.ss_sold_date_sk = dd.d_date_sk GROUP BY 1 ORDER BY 1 LIMIT 4
+----
+1998-01-01 00:00:00	34
+1998-01-01 23:59:00	34
+1998-01-02 23:58:00	34
+1998-01-04 00:00:00	34
+
+query III nosort
+SELECT CAST(strftime(d_date, '%Y') AS VARCHAR) AS y, ss_ticket_number % 2 AS parity, count(*) FROM ss JOIN dd ON ss.ss_sold_date_sk = dd.d_date_sk GROUP BY 1, 2 ORDER BY 1 DESC, 2 LIMIT 3
+----
+2006	0	1287
+2006	1	1287
+2005	0	6006
+
+endloop
+
+# the filter is placed for the shapes above
+query II
+EXPLAIN SELECT CASE WHEN b IS NULL THEN 'u' || v::VARCHAR ELSE b END AS cb, v FROM fact JOIN dim USING (k) GROUP BY ALL ORDER BY ALL LIMIT 3
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT DISTINCT CASE WHEN b IS NULL THEN 'u' || v::VARCHAR ELSE b END AS cb, w, v FROM fact JOIN dim USING (k) JOIN dim2 USING (v) ORDER BY ALL LIMIT 4
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT s, count(*), sum(v) FROM ds GROUP BY s ORDER BY s LIMIT 3
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT c, count(*), min(v) FROM de GROUP BY c ORDER BY c LIMIT 2
+----
+physical_plan	<REGEX>:.*Top Key Filter.*
+
+query II
+EXPLAIN SELECT YEAR(d_date) AS y, COUNT(ss_ticket_number) AS c FROM ss JOIN dd ON ss.ss_sold_date_sk = dd.d_date_sk GROUP BY YEAR(d_date) ORDER BY YEAR(d_date) LIMIT 100
+----
+physical_plan	<REGEX>:.*Top Key Filter.*

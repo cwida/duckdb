@@ -7,6 +7,7 @@
       "reason": "Tests a warning on purpose, or the behavior with warnings_as_errors disabled",
       "paths": [
         "test/logging/warnings_as_errors.test",
+        "test/optimizer/group_by_top_key_limit_guards.test",
         "test/sql/attach/attach_ducklake_metadata_warning.test",
         "test/sql/attach/external_resource_show_subquery.test",
         "test/sql/logging/logging_deprecated_names.test",
