@@ -119,7 +119,7 @@ class ShellTest:
     def get_statements(self):
         statements = []
         for statement in self.statements:
-            if statement.startswith("."):
+            if statement.startswith(".") or statement.startswith("!"):
                 statements.append(statement)
             else:
                 statements.append(statement + ";")

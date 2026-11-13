@@ -8,7 +8,7 @@ from conftest import ShellTest
 from tools.shell.tests.conftest import random_filepath
 
 
-@pytest.mark.parametrize("command", [".sh ls", ".cd ..", ".log file", ".import file.csv tbl", ".open new_file", ".output out", ".once out", ".excel out", ".read myfile.sql", ".pager cat"])
+@pytest.mark.parametrize("command", [".sh ls", "! ls", ".cd ..", ".log file", ".import file.csv tbl", ".open new_file", ".output out", ".once out", ".excel out", ".read myfile.sql", ".pager cat"])
 def test_safe_mode_command(shell, command):
     test = (
         ShellTest(shell, ['-safe'])
@@ -18,7 +18,7 @@ def test_safe_mode_command(shell, command):
     result.check_stderr('cannot be used in -safe mode')
 
 
-@pytest.mark.parametrize("param", [(".sh ls", 'cannot be used in -safe mode'), ("INSTALL extension", "Permission Error")])
+@pytest.mark.parametrize("param", [(".sh ls", 'cannot be used in -safe mode'), ("! ls", 'cannot be used in -safe mode'), ("INSTALL extension", "Permission Error")])
 def test_safe_mode_dot_command(shell, param):
     command = param[0]
     expected_error = param[1]
@@ -40,7 +40,7 @@ def test_safe_mode_database_basic(shell, random_filepath):
     result = test.run()
     result.check_stdout("6")
 
-@pytest.mark.parametrize("command", [".sh ls", ".cd ..", ".log file", ".import file.csv tbl", ".open new_file", ".output out", ".once out", ".excel out", ".read myfile.sql", ".pager cat"])
+@pytest.mark.parametrize("command", [".sh ls", "! ls", ".cd ..", ".log file", ".import file.csv tbl", ".open new_file", ".output out", ".once out", ".excel out", ".read myfile.sql", ".pager cat"])
 @pytest.mark.parametrize("persistent", [False, True])
 def test_safe_mode_database_commands(shell, random_filepath, command, persistent):
     arguments = ['-safe'] if not persistent else [random_filepath, '-safe']

@@ -250,6 +250,51 @@ def test_shell_command_exit_code(shell):
     result.check_stderr("System command returns 3")
 
 
+def test_bang_shell_command(shell):
+    # the rest of the line is passed to the system shell verbatim
+    test = (
+        ShellTest(shell)
+        .statement("!echo quack")
+        .statement("! echo quack | sort")
+    )
+    result = test.run()
+    result.check_stdout("quack")
+    result.check_not_exist("|")
+
+
+@pytest.mark.skipif(os.name == 'nt', reason="uses POSIX shell syntax")
+def test_bang_shell_command_quoting(shell):
+    test = (
+        ShellTest(shell)
+        .statement("! echo 'quack quack' | tr a-z A-Z")
+        .statement('! DUCK=mallard; echo "$DUCK"')
+    )
+    result = test.run()
+    result.check_stdout("QUACK QUACK")
+    result.check_stdout("mallard")
+
+
+def test_bang_shell_command_argument(shell):
+    test = ShellTest(shell).add_argument("-c", "!echo quack")
+    result = test.run()
+    result.check_stdout("quack")
+
+
+def test_bang_inside_statement_is_sql(shell):
+    # a continuation line starting with '!' belongs to the SQL statement
+    test = (
+        ShellTest(shell)
+        .statement("SELECT 42 WHERE 1\n!= 2")
+    )
+    result = test.run()
+    result.check_stdout("42")
+
+
+def test_bang_without_command(shell):
+    test = ShellTest(shell).statement("!")
+    result = test.run()
+    result.check_stderr("Usage: '!CMD ARGS...'")
+
 def test_cd(shell, tmp_path):
     pwd_dir = os.getcwd()
 

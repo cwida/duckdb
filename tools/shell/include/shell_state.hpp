@@ -436,6 +436,8 @@ public:
 	void ClearTempFile();
 	void NewTempFile(const char *zSuffix);
 	int DoMetaCommand(const string &zLine);
+	//! Run a command in the system shell, as used by "!CMD" and .shell/.system
+	int RunSystemCommand(const string &command);
 	idx_t PrintHelp(const char *zPattern);
 
 	void ShellAddHistory(const char *line);
