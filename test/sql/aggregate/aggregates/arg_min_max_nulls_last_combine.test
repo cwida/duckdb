@@ -1,0 +1,71 @@
+# name: test/sql/aggregate/aggregates/arg_min_max_nulls_last_combine.test
+# description: arg_min_nulls_last/arg_max_nulls_last must not pick a NULL ordering value after combining states
+# group: [aggregates]
+
+# Combining a partial state that only saw NULL ordering values used to make it behave as if its value was 0.
+# It then won against positive values (arg_min_nulls_last) and negative values (arg_max_nulls_last).
+
+statement ok
+CREATE TABLE t(grp INTEGER, name VARCHAR, val INTEGER)
+
+statement ok
+INSERT INTO t VALUES (1, 'null', NULL), (2, 'real', 5)
+
+# Combine the state of the NULL row with the state of the real row
+query II
+SELECT finalize(combine_aggr(mn)), finalize(combine_aggr(mx)) FROM (
+	SELECT grp, arg_min_nulls_last(name, val) EXPORT_STATE AS mn, arg_max_nulls_last(name, -val) EXPORT_STATE AS mx
+	FROM t
+	GROUP BY grp
+	ORDER BY grp
+)
+----
+real	real
+
+# Window aggregates combine partial states: rows 0-63 have a NULL value, rows 64-69 have a value
+statement ok
+CREATE TABLE w AS SELECT i AS id, CASE WHEN i >= 64 THEN i END AS val FROM range(70) r(i)
+
+query III
+SELECT
+	id,
+	arg_min_nulls_last(id, val) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW),
+	arg_max_nulls_last(id, -val) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+FROM w
+QUALIFY id >= 64
+ORDER BY id
+----
+64	64	64
+65	64	64
+66	64	64
+67	64	64
+68	64	64
+69	64	64
+
+# Parallel aggregation combines the partial states of the threads. Every group has a single row with a value
+# (id = grp * 1001), all other rows are NULL.
+statement ok
+SET threads = 8
+
+statement ok
+CREATE TABLE events AS
+SELECT i % 1000 AS grp, i AS id, CASE WHEN i // 1000 = i % 1000 THEN 1 END AS val
+FROM range(2000000) r(i)
+
+query II
+SELECT count(*) FILTER (mn <> grp * 1001), count(*) FILTER (mx <> grp * 1001) FROM (
+	SELECT grp, arg_min_nulls_last(id, val) AS mn, arg_max_nulls_last(id, -val) AS mx
+	FROM events
+	GROUP BY grp
+)
+----
+0	0
+
+# top_n_window_elimination rewrites this into arg_min_nulls_last(id, val)
+query I
+SELECT count(*) FILTER (id <> grp * 1001) FROM (
+	SELECT grp, id FROM events
+	QUALIFY row_number() OVER (PARTITION BY grp ORDER BY val ASC NULLS LAST) = 1
+)
+----
+0

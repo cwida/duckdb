@@ -187,7 +187,8 @@ struct ArgMinMaxBase {
 
 		if (!target.is_set || !target.value_is_valid ||
 		    (source.value_is_valid && COMPARATOR::Operation(source.value, target.value))) {
-			Assign(target, source.arg, source.value, !source.arg_is_valid, false, aggregate_input_data);
+			Assign(target, source.arg, source.value, !source.arg_is_valid, !source.value_is_valid,
+			       aggregate_input_data);
 			target.is_set = true;
 		}
 	}
