@@ -1,0 +1,29 @@
+# name: test/sql/extensions/extension_repository_from_host_httpfs.test
+# description: CREATE EXTENSION REPOSITORY <host> refuses to resolve a host whose certificate verification is switched off
+# group: [extensions]
+
+require httpfs
+
+statement ok
+SET extension_repository_directory='{TEST_DIR}/extension_repositories'
+
+# The refusal comes before any request is made, so no host is contacted.
+statement ok
+CREATE SECRET lax (TYPE http, VERIFY_SSL false);
+
+statement error
+CREATE EXTENSION REPOSITORY 'lax.example'
+----
+<REGEX>:Invalid Input Error.*certificate verification is disabled.*VERIFY_SSL.*
+
+statement ok
+DROP SECRET lax
+
+# A secret scoped to another host does not apply: the request is made (and fails on the name, which does not resolve).
+statement ok
+CREATE SECRET lax_elsewhere (TYPE http, VERIFY_SSL false, SCOPE 'https://other.example');
+
+statement error
+CREATE EXTENSION REPOSITORY 'lax.example'
+----
+<REGEX>:IO Error.*does not serve a metadata file.*

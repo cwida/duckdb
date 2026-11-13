@@ -119,6 +119,7 @@ SQLStatement:
     - ShowExternalResourcesStmt
     - ExtensionRepositoryStatement
     - CreateExtensionRepositoryStmt
+    - CreateExtensionRepositoryFromHostStmt
     - DropExtensionRepositoryStmt
 
 SelectStatement:
@@ -1771,6 +1772,9 @@ IdentifierType:
     - AnalyzeKeyword
     - ColId
     - ColIdOrString
+    - ExtensionRepositoryName
+    - ExtensionRepositoryHostName
+    - FromSourceName
     - UsingColumnName
     - ColLabelOrString
     - ColLabelIdentifier

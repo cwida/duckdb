@@ -875,7 +875,7 @@ vector<string> ExtensionHelper::GetTrustedPublicKeys(DatabaseInstance &db, Exten
 		return keys;
 	case ExtensionRepositoryType::USER_PROVIDED: {
 		// when adding repositories has been forbidden, the user repositories are distrusted entirely: their keys are
-		// no longer trusted, so extensions installed from them can no longer be loaded. Note that 'undecided' still
+		// no longer trusted, so extensions installed from them can no longer be loaded. Note that 'hosts' still
 		// trusts existing repositories
 		if (!ExtensionRepositoryManager::TrustsExistingRepositories(db)) {
 			return keys;
@@ -883,7 +883,9 @@ vector<string> ExtensionHelper::GetTrustedPublicKeys(DatabaseInstance &db, Exten
 		// only the keys of the repository the extension came from are trusted
 		ExtensionRepository repository;
 		auto &fs = FileSystem::GetLocal(db);
-		if (ExtensionRepositoryManager::TryGetRepository(db, fs, repository_name, repository)) {
+		// under 'hosts_only' only a repository resolved from its host is trusted
+		if (ExtensionRepositoryManager::TryGetRepository(db, fs, repository_name, repository) &&
+		    ExtensionRepositoryManager::TrustsRepository(db, repository)) {
 			for (auto &public_key : repository.public_keys) {
 				keys.push_back(ExtensionRepositoryManager::ToPEMPublicKey(public_key));
 			}

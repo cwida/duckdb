@@ -164,6 +164,12 @@
         "test/sql/attach/external_resource_null_handle.test",
         "test/sql/attach/external_resource_external_access.test"
       ]
+    },
+    {
+      "reason": "A temporary secret must still be there at the next statement, which a restart in between prevents.",
+      "paths": [
+        "test/sql/extensions/extension_repository_from_host_httpfs.test"
+      ]
     }
   ]
 }
