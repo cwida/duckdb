@@ -167,9 +167,9 @@ public:
 	DUCKDB_API void SuppressInterrupts();
 	DUCKDB_API void CancelTransaction();
 
-	//! Check for interrupt or timeout, throws InterruptException if triggered
+	//! Check for interrupt or timeout, throws InterruptException if triggered; reads the clock every 256th call
 	DUCKDB_API void InterruptCheck() const;
-	//! InterruptCheck that reads the clock on every call, for waits that block between checks
+	//! InterruptCheck that reads the clock on every call while a deadline is set
 	DUCKDB_API void BlockingInterruptCheck() const;
 
 	//! Enable query profiling
