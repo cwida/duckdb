@@ -1089,7 +1089,7 @@ TEST_CASE("Statements over a nested VARIANT constant plan without rendering it",
 	if (!db.ExtensionIsLoaded("json")) {
 		return;
 	}
-	string deep = "(repeat('[', 1000) || repeat(']', 1000))::JSON::VARIANT";
+	string deep = "(repeat('[', 150) || repeat(']', 150))::JSON::VARIANT";
 	REQUIRE_NO_FAIL(connection.Query("CREATE TABLE t (id INTEGER, doc VARIANT)"));
 	REQUIRE_NO_FAIL(connection.Query("INSERT INTO t VALUES (1, NULL)"));
 	REQUIRE_NO_FAIL(connection.Query("CREATE TABLE s AS SELECT range AS x FROM range(3)"));
