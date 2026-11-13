@@ -18,9 +18,19 @@
 #include <condition_variable>
 #include <future>
 
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
+
 using namespace duckdb;
 
 namespace {
+
+#ifndef _WIN32
+void SetReadOnly(const string &path) {
+	REQUIRE(chmod(path.c_str(), S_IRUSR | S_IRGRP | S_IROTH) == 0);
+}
+#endif
 
 struct LifecycleCopyInfo : CopyFunctionInfo {
 	idx_t fail_finalize_after = DConstants::INVALID_INDEX;
@@ -286,6 +296,42 @@ void RemoveDirectoryIfPresent(FileSystem &fs, const string &path) {
 		fs.RemoveDirectoryExtended(path, {RemoveDirectoryMode::RECURSIVE});
 	}
 }
+
+#ifndef _WIN32
+TEST_CASE("COPY TO does not implicitly replace read-only local files", "[copy]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &fs = FileSystem::GetFileSystem(*con.context);
+	auto csv_path = TestCreatePath("copy_readonly_target.csv");
+	auto parquet_path = TestCreatePath("copy_readonly_target.parquet");
+	auto tmp_csv_path = fs.JoinPath(StringUtil::GetFilePath(csv_path), "tmp_" + StringUtil::GetFileName(csv_path));
+	auto tmp_parquet_path =
+	    fs.JoinPath(StringUtil::GetFilePath(parquet_path), "tmp_" + StringUtil::GetFileName(parquet_path));
+
+	fs.TryRemoveFile(csv_path);
+	fs.TryRemoveFile(parquet_path);
+	fs.TryRemoveFile(tmp_csv_path);
+	fs.TryRemoveFile(tmp_parquet_path);
+
+	REQUIRE_NO_FAIL(con.Query("COPY (SELECT 1 AS v) TO '" + csv_path + "' (HEADER)"));
+	REQUIRE_NO_FAIL(con.Query("COPY (SELECT 1 AS v) TO '" + parquet_path + "' (FORMAT parquet)"));
+	SetReadOnly(csv_path);
+	SetReadOnly(parquet_path);
+
+	REQUIRE_FAIL(con.Query("COPY (SELECT 2 AS v) TO '" + csv_path + "' (HEADER)"));
+	REQUIRE_FAIL(con.Query("COPY (SELECT 2 AS v) TO '" + parquet_path + "' (FORMAT parquet)"));
+	REQUIRE(fs.FileExists(csv_path));
+	REQUIRE(fs.FileExists(parquet_path));
+	REQUIRE(!fs.FileExists(tmp_csv_path));
+	REQUIRE(!fs.FileExists(tmp_parquet_path));
+
+	REQUIRE_NO_FAIL(con.Query("COPY (SELECT 3 AS v) TO '" + csv_path + "' (HEADER, OVERWRITE)"));
+	REQUIRE_NO_FAIL(con.Query("COPY (SELECT 3 AS v) TO '" + parquet_path + "' (FORMAT parquet, OVERWRITE)"));
+
+	fs.TryRemoveFile(csv_path);
+	fs.TryRemoveFile(parquet_path);
+}
+#endif
 
 } // namespace
 

@@ -344,7 +344,7 @@ SinkFinalizeType PhysicalBatchCopyToFile::FinalFlush(ClientContext &context, Glo
 	if (function.copy_to_finalize && gstate.global_state) {
 		function.copy_to_finalize(context, *bind_data, *gstate.global_state);
 		if (use_tmp_file) {
-			PhysicalCopyToFile::MoveTmpFile(context, file_path);
+			PhysicalCopyToFile::MoveTmpFile(context, file_path, overwrite_mode);
 		}
 	}
 	gstate.output_lifecycle.MarkSuccessful();
