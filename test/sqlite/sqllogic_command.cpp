@@ -227,10 +227,10 @@ bool CanRestart(Connection &conn) {
 			return false;
 		}
 		auto &temp_schema = schemas[0].get();
-		vector<CatalogType> catalog_types {CatalogType::TABLE_ENTRY,     CatalogType::VIEW_ENTRY,
-		                                   CatalogType::INDEX_ENTRY,     CatalogType::SEQUENCE_ENTRY,
-		                                   CatalogType::COLLATION_ENTRY, CatalogType::TYPE_ENTRY,
-		                                   CatalogType::MACRO_ENTRY,     CatalogType::TABLE_MACRO_ENTRY};
+		vector<CatalogType> catalog_types {CatalogType::TABLE_ENTRY,      CatalogType::VIEW_ENTRY,
+		                                   CatalogType::INDEX_ENTRY,      CatalogType::SEQUENCE_ENTRY,
+		                                   CatalogType::TYPE_ENTRY,       CatalogType::MACRO_ENTRY,
+		                                   CatalogType::TABLE_MACRO_ENTRY};
 		bool found_temp_object = false;
 		for (auto &catalog_type : catalog_types) {
 			temp_schema.Scan(catalog_type, VisibilityBound::AllCommitted(), [&](CatalogEntry &entry) {
