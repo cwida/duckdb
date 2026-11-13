@@ -1,0 +1,751 @@
+# name: test/optimizer/lateral_row_function.test
+# description: A lateral join whose right side is a function of the left row alone (UNNEST of an expression over outer columns, a lateral subquery without a table) runs directly over the left rows
+# group: [optimizer]
+
+# t: duplicate rows apart from the id (1, 2), NULL columns, an empty list, a NULL list, a NULL list element
+statement ok
+CREATE TABLE t(id INTEGER, a INTEGER, b INTEGER, c INTEGER, l INTEGER[]);
+
+statement ok
+INSERT INTO t VALUES (1, 10, 20, 30, [1, 2]), (2, 10, 20, 30, [1, 2]), (3, NULL, 5, NULL, []), (4, NULL, NULL, NULL, NULL), (5, 7, 7, 7, [NULL, 3]), (6, 1, 2, 3, [4]);
+
+statement ok
+CREATE TABLE empty_t(id INTEGER, a INTEGER, b INTEGER, c INTEGER, l INTEGER[]);
+
+statement ok
+CREATE TABLE names(v INTEGER, name VARCHAR);
+
+statement ok
+INSERT INTO names VALUES (10, 'ten'), (20, 'twenty'), (7, 'seven'), (NULL, 'null');
+
+query I
+SELECT name FROM duckdb_optimizers() WHERE name = 'lateral_row_function';
+----
+lateral_row_function
+
+# results
+
+# 1: three columns into a list, duplicate rows (ids 1 and 2) and NULL columns keep their rows
+query II
+SELECT id, u.v FROM t CROSS JOIN UNNEST([a, b, c]) AS u(v) ORDER BY ALL
+----
+1	10
+1	20
+1	30
+2	10
+2	20
+2	30
+3	5
+3	NULL
+3	NULL
+4	NULL
+4	NULL
+4	NULL
+5	7
+5	7
+5	7
+6	1
+6	2
+6	3
+
+# 2: one column in a list
+query II
+SELECT id, v FROM t, UNNEST([a]) AS u(v) ORDER BY ALL
+----
+1	10
+2	10
+3	NULL
+4	NULL
+5	7
+6	1
+
+# 3: an expression list
+query II
+SELECT id, v FROM t, UNNEST([a, a + 1, b * 2]) AS u(v) ORDER BY ALL
+----
+1	10
+1	11
+1	40
+2	10
+2	11
+2	40
+3	10
+3	NULL
+3	NULL
+4	NULL
+4	NULL
+4	NULL
+5	7
+5	8
+5	14
+6	1
+6	2
+6	4
+
+# 4: a function of a list column: NULL and empty lists produce no row
+query II
+SELECT id, v FROM t, UNNEST(list_reverse(l)) AS u(v) ORDER BY ALL
+----
+1	1
+1	2
+2	1
+2	2
+5	3
+5	NULL
+6	4
+
+# 5: a list that is NULL for some rows
+query II
+SELECT id, v FROM t, UNNEST(CASE WHEN a > 5 THEN [a, b] END) AS u(v) ORDER BY ALL
+----
+1	10
+1	20
+2	10
+2	20
+5	7
+5	7
+
+# 6: a lateral subquery with the unnest in its select list
+query II
+SELECT id, v FROM t, LATERAL (SELECT unnest([a, b, c]) AS v) ORDER BY ALL
+----
+1	10
+1	20
+1	30
+2	10
+2	20
+2	30
+3	5
+3	NULL
+3	NULL
+4	NULL
+4	NULL
+4	NULL
+5	7
+5	7
+5	7
+6	1
+6	2
+6	3
+
+# 7: a lateral subquery with a filter on the unnested value and on the outer row
+query II
+SELECT id, v FROM t, LATERAL (SELECT v FROM (SELECT unnest([a, b, c]) AS v) WHERE v > 5 AND a IS NOT NULL) ORDER BY ALL
+----
+1	10
+1	20
+1	30
+2	10
+2	20
+2	30
+5	7
+5	7
+5	7
+
+# 8: a lateral projection without an unnest
+query II
+SELECT id, s FROM t, LATERAL (SELECT a + b AS s) ORDER BY ALL
+----
+1	30
+2	30
+3	NULL
+4	NULL
+5	14
+6	3
+
+# 9: a lateral projection with a filter
+query II
+SELECT id, s FROM t, LATERAL (SELECT a + b AS s WHERE c > 5) ORDER BY ALL
+----
+1	30
+2	30
+5	14
+
+# 10: a filter on the outer table and on the unnested value
+query II
+SELECT id, u.v FROM t CROSS JOIN UNNEST([a, b, c]) AS u(v) WHERE id < 4 AND u.v IS NOT NULL ORDER BY ALL
+----
+1	10
+1	20
+1	30
+2	10
+2	20
+2	30
+3	5
+
+# 11: an aggregate over the unnested value
+query III
+SELECT u.v, count(*), sum(id) FROM t CROSS JOIN UNNEST([a, b, c]) AS u(v) GROUP BY u.v ORDER BY ALL
+----
+1	1	6
+2	1	6
+3	1	6
+5	1	3
+7	3	15
+10	2	3
+20	2	3
+30	2	3
+NULL	5	18
+
+# 12: the unnested value joins another table
+query III
+SELECT id, u.v, name FROM t CROSS JOIN UNNEST([a, b, c]) AS u(v) JOIN names ON names.v = u.v ORDER BY ALL
+----
+1	10	ten
+1	20	twenty
+2	10	ten
+2	20	twenty
+5	7	seven
+5	7	seven
+5	7	seven
+
+# 13: two lateral unnests, the second over the first one's value
+query III
+SELECT id, u.v, w.x FROM t, UNNEST([a, b]) AS u(v), UNNEST([u.v, c]) AS w(x) ORDER BY ALL
+----
+1	10	10
+1	10	30
+1	20	20
+1	20	30
+2	10	10
+2	10	30
+2	20	20
+2	20	30
+3	5	5
+3	5	NULL
+3	NULL	NULL
+3	NULL	NULL
+4	NULL	NULL
+4	NULL	NULL
+4	NULL	NULL
+4	NULL	NULL
+5	7	7
+5	7	7
+5	7	7
+5	7	7
+6	1	1
+6	1	3
+6	2	2
+6	2	3
+
+# 14: an empty outer table
+query II
+SELECT id, u.v FROM empty_t CROSS JOIN UNNEST([a, b, c]) AS u(v) ORDER BY ALL
+----
+
+# 15: an outer table that is a subquery with duplicates
+query II
+SELECT a, u.v FROM (SELECT a, b FROM t UNION ALL SELECT a, b FROM t) s CROSS JOIN UNNEST([a, b]) AS u(v) ORDER BY ALL
+----
+1	1
+1	1
+1	2
+1	2
+7	7
+7	7
+7	7
+7	7
+10	10
+10	10
+10	10
+10	10
+10	20
+10	20
+10	20
+10	20
+NULL	5
+NULL	5
+NULL	NULL
+NULL	NULL
+NULL	NULL
+NULL	NULL
+NULL	NULL
+NULL	NULL
+
+# 16: the bare list column (the case of the unnest rewriter)
+query II
+SELECT id, v FROM t, UNNEST(l) AS u(v) ORDER BY ALL
+----
+1	1
+1	2
+2	1
+2	2
+5	3
+5	NULL
+6	4
+
+# 17: WITH ORDINALITY stays a join
+query III
+SELECT id, v, o FROM t, UNNEST([a, b, c]) WITH ORDINALITY AS u(v, o) ORDER BY ALL
+----
+1	10	1
+1	20	2
+1	30	3
+2	10	1
+2	20	2
+2	30	3
+3	5	2
+3	NULL	1
+3	NULL	3
+4	NULL	1
+4	NULL	2
+4	NULL	3
+5	7	1
+5	7	2
+5	7	3
+6	1	1
+6	2	2
+6	3	3
+
+# 18: LEFT JOIN LATERAL stays a join: rows without a list element are kept
+query II
+SELECT id, v FROM t LEFT JOIN LATERAL (SELECT unnest(list_reverse(l)) AS v) ON true ORDER BY ALL
+----
+1	1
+1	2
+2	1
+2	2
+3	NULL
+4	NULL
+5	3
+5	NULL
+6	4
+
+# 19: a lateral subquery over another table is not a row function
+query II
+SELECT id, name FROM t, LATERAL (SELECT name FROM names WHERE names.v = t.a) ORDER BY ALL
+----
+1	ten
+2	ten
+5	seven
+
+# 20: a lateral aggregate is not a row function
+query II
+SELECT id, m FROM t, LATERAL (SELECT max(v) AS m FROM (SELECT unnest([a, b, c]) AS v)) ORDER BY ALL
+----
+1	30
+2	30
+3	5
+4	NULL
+5	7
+6	3
+
+# 21: a struct list
+query III
+SELECT id, u.v.x, u.v.y FROM t, UNNEST([{'x': a, 'y': b}, {'x': c, 'y': id}]) AS u(v) ORDER BY ALL
+----
+1	10	20
+1	30	1
+2	10	20
+2	30	2
+3	NULL	3
+3	NULL	5
+4	NULL	4
+4	NULL	NULL
+5	7	5
+5	7	7
+6	1	2
+6	3	6
+
+# 22: a VARCHAR list
+query II
+SELECT id, v FROM t, UNNEST([a::VARCHAR, 'k' || b]) AS u(v) ORDER BY ALL
+----
+1	10
+1	k20
+2	10
+2	k20
+3	k5
+3	NULL
+4	NULL
+4	NULL
+5	7
+5	k7
+6	1
+6	k2
+
+# 23: a fixed-size array
+query II
+SELECT id, v FROM t, UNNEST(array_value(a, b)) AS u(v) ORDER BY ALL
+----
+1	10
+1	20
+2	10
+2	20
+3	5
+3	NULL
+4	NULL
+4	NULL
+5	7
+5	7
+6	1
+6	2
+
+# 24: select * through the lateral unnest
+query IIIIII
+SELECT * FROM t, UNNEST([a, b]) AS u(v) ORDER BY ALL
+----
+1	10	20	30	[1, 2]	10
+1	10	20	30	[1, 2]	20
+2	10	20	30	[1, 2]	10
+2	10	20	30	[1, 2]	20
+3	NULL	5	NULL	[]	5
+3	NULL	5	NULL	[]	NULL
+4	NULL	NULL	NULL	NULL	NULL
+4	NULL	NULL	NULL	NULL	NULL
+5	7	7	7	[NULL, 3]	7
+5	7	7	7	[NULL, 3]	7
+6	1	2	3	[4]	1
+6	1	2	3	[4]	2
+
+# 25: a volatile expression in the list stays a join (evaluated once per distinct key there)
+query II
+SELECT id, v FROM t, UNNEST([a, (random() * 0)::INTEGER]) AS u(v) ORDER BY ALL
+----
+1	0
+1	10
+2	0
+2	10
+3	0
+3	NULL
+4	0
+4	NULL
+5	0
+5	7
+6	0
+6	1
+
+# 26: a list column concatenated with another column (the row-number domain of a nested correlated column)
+query II
+SELECT id, v FROM t, UNNEST(l || [a]) AS u(v) ORDER BY ALL
+----
+1	1
+1	2
+1	10
+2	1
+2	2
+2	10
+3	NULL
+5	3
+5	7
+5	NULL
+6	1
+6	4
+
+# 27: a query-written CTE joined with its own distinct keys has the same shape: `=` drops the NULL keys
+query II
+WITH d AS (SELECT * FROM t) SELECT d.id, x.a FROM d JOIN (SELECT DISTINCT a FROM d) x ON d.a = x.a ORDER BY ALL
+----
+1	10
+2	10
+5	7
+6	1
+
+# 28: the same with a null-safe condition and an explicitly materialized CTE (left alone)
+query II
+WITH d AS MATERIALIZED (SELECT * FROM t) SELECT d.id, x.a FROM d JOIN (SELECT DISTINCT a FROM d) x ON d.a IS NOT DISTINCT FROM x.a ORDER BY ALL
+----
+1	10
+2	10
+3	NULL
+4	NULL
+5	7
+6	1
+
+# 29: only some of the distinct keys are joined: rows pair with every group that shares the joined key, a real join
+query III
+WITH d AS (SELECT * FROM t) SELECT d.id, x.a, x.b FROM d JOIN (SELECT DISTINCT a, b FROM d) x ON d.a IS NOT DISTINCT FROM x.a ORDER BY ALL
+----
+1	10	20
+2	10	20
+3	NULL	5
+3	NULL	NULL
+4	NULL	5
+4	NULL	NULL
+5	7	7
+6	1	2
+
+# 30: a filter on a column that is not a key below the DISTINCT: a real semi-join-like restriction, left alone
+query II
+WITH d AS (SELECT * FROM t) SELECT d.id, x.a FROM d JOIN (SELECT DISTINCT a FROM d WHERE id > 1) x ON d.a IS NOT DISTINCT FROM x.a ORDER BY ALL
+----
+1	10
+2	10
+3	NULL
+4	NULL
+5	7
+6	1
+
+# keys of a type in which values that compare equal can differ (0.0 and -0.0, NaN, INTERVAL, collated strings): the
+# join hands every left row the value of its group, so the plan is kept and the results are those of the join
+
+statement ok
+CREATE TABLE z(id INTEGER, a DOUBLE);
+
+statement ok
+INSERT INTO z VALUES (1, '0'), (2, '-0');
+
+# 31: a filter below the DISTINCT that tells 0.0 from -0.0, which the join does not
+query IT
+WITH d AS (SELECT * FROM z) SELECT d.id, signbit(x.a) FROM d JOIN (SELECT DISTINCT a FROM d WHERE signbit(a)) x ON d.a = x.a ORDER BY d.id
+----
+1	true
+2	true
+
+# 32: DOUBLE keys without a zero
+statement ok
+CREATE TABLE dz(id INTEGER, a DOUBLE, b DOUBLE);
+
+statement ok
+INSERT INTO dz VALUES (1, 1.5, 2.5), (2, 1.5, 2.5), (3, 'nan', 4), (4, NULL, 5), (5, 'nan', 4);
+
+query IR
+SELECT id, u.v FROM dz, UNNEST([a, b]) AS u(v) ORDER BY ALL
+----
+1	1.5
+1	2.5
+2	1.5
+2	2.5
+3	4.0
+3	nan
+4	5.0
+4	NULL
+5	4.0
+5	nan
+
+# 33: a case-insensitive key: both rows get the list of their group
+statement ok
+CREATE TABLE cz(id INTEGER, s VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO cz VALUES (1, 'a'), (2, 'A'), (3, 'b');
+
+query II
+SELECT id, count(*) FROM cz, UNNEST([s, s || 'x']) AS u(v) GROUP BY id ORDER BY id
+----
+1	2
+2	2
+3	2
+
+query II
+WITH d AS (SELECT * FROM cz) SELECT d.id, count(*) FROM d JOIN (SELECT DISTINCT s FROM d) x ON d.s = x.s GROUP BY d.id ORDER BY d.id
+----
+1	1
+2	1
+3	1
+
+# 34: INTERVAL keys
+query IT
+SELECT id, u.v FROM (SELECT id, to_days(a) AS i FROM t WHERE id < 3) q, UNNEST([i, i + INTERVAL 1 DAY]) AS u(v) ORDER BY ALL
+----
+1	10 days
+1	11 days
+2	10 days
+2	11 days
+
+# 35: an arbitrary function of an integer key below the DISTINCT: equal keys are identical, the filter moves to the rows
+query II
+WITH d AS (SELECT * FROM t) SELECT d.id, x.a FROM d JOIN (SELECT DISTINCT a FROM d WHERE a % 2 = 0 AND hash(a) IS NOT NULL) x ON d.a = x.a ORDER BY ALL
+----
+1	10
+2	10
+
+# 36: the CTE is defined outside a recursive CTE and joined with its distinct keys inside the recursive member: the
+# definition is computed once
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+CREATE TABLE seed AS SELECT 1 AS x;
+
+query II
+WITH RECURSIVE d AS (SELECT nextval('seq') AS k FROM seed), r(i, k) AS (SELECT 0, 0::BIGINT UNION ALL SELECT r.i + 1, d.k FROM r, d JOIN (SELECT DISTINCT k FROM d) x ON d.k = x.k WHERE r.i < 3) SELECT i, k FROM r ORDER BY i
+----
+0	0
+1	1
+2	1
+3	1
+
+query II
+WITH RECURSIVE d AS (SELECT a FROM t WHERE id = 6), r(i, k) AS (SELECT 0, 0 UNION ALL SELECT r.i + 1, d.a FROM r, d JOIN (SELECT DISTINCT a FROM d) x ON d.a = x.a WHERE r.i < 3) SELECT i, k FROM r ORDER BY i
+----
+0	0
+1	1
+2	1
+3	1
+
+# 37: a volatile CTE definition: both references see the same values
+query I
+WITH d AS (SELECT id, a + (random() * 1000)::INTEGER AS a FROM t) SELECT count(*) FROM d JOIN (SELECT DISTINCT a FROM d) x ON d.a = x.a
+----
+4
+
+# Plans: the decorrelated form is a CTE with an INNER join back; the rewritten one has neither
+
+statement ok
+SET explain_output = 'optimized_only';
+
+# 1 the list of three columns: no CTE, no join
+query II
+EXPLAIN SELECT id, u.v FROM t CROSS JOIN UNNEST([a, b, c]) AS u(v);
+----
+logical_opt	<!REGEX>:(?s).*(CTE Name|Join Type).*
+
+# 4 a function of a list column (the row-number domain)
+query II
+EXPLAIN SELECT id, v FROM t, UNNEST(list_reverse(l)) AS u(v);
+----
+logical_opt	<!REGEX>:(?s).*(CTE Name|Join Type).*
+
+# 6 a lateral subquery with the unnest in its select list
+query II
+EXPLAIN SELECT id, v FROM t, LATERAL (SELECT unnest([a, b, c]) AS v);
+----
+logical_opt	<!REGEX>:(?s).*(CTE Name|Join Type).*
+
+# 7 filters on the unnested value and on the outer row inside the lateral subquery
+query II
+EXPLAIN SELECT id, v FROM t, LATERAL (SELECT v FROM (SELECT unnest([a, b, c]) AS v) WHERE v > 5 AND a IS NOT NULL);
+----
+logical_opt	<!REGEX>:(?s).*(CTE Name|Join Type).*
+
+# 11 below an aggregate
+query II
+EXPLAIN SELECT u.v, count(*), sum(id) FROM t CROSS JOIN UNNEST([a, b, c]) AS u(v) GROUP BY u.v;
+----
+logical_opt	<!REGEX>:(?s).*(CTE Name|Join Type).*
+
+# 12 the join with another table stays, the join back goes
+query II
+EXPLAIN SELECT id, u.v, name FROM t CROSS JOIN UNNEST([a, b, c]) AS u(v) JOIN names ON names.v = u.v;
+----
+logical_opt	<!REGEX>:(?s).*CTE Name.*
+
+# 12 (one INNER join left: the one with names)
+query II
+EXPLAIN SELECT id, u.v, name FROM t CROSS JOIN UNNEST([a, b, c]) AS u(v) JOIN names ON names.v = u.v;
+----
+logical_opt	<REGEX>:(?s).*Join Type: INNER.*
+
+# 13 two lateral unnests, the second over the first: both rewritten
+query II
+EXPLAIN SELECT id, u.v, w.x FROM t, UNNEST([a, b]) AS u(v), UNNEST([u.v, c]) AS w(x);
+----
+logical_opt	<!REGEX>:(?s).*(CTE Name|Join Type).*
+
+# 26 a list column concatenated with another column
+query II
+EXPLAIN SELECT id, v FROM t, UNNEST(l || [a]) AS u(v);
+----
+logical_opt	<!REGEX>:(?s).*(CTE Name|Join Type).*
+
+# 27 a query-written CTE joined with its own distinct keys on `=`: the NULL keys are filtered, no join
+query II
+EXPLAIN WITH d AS (SELECT * FROM t) SELECT d.id, x.a FROM d JOIN (SELECT DISTINCT a FROM d) x ON d.a = x.a;
+----
+logical_opt	<!REGEX>:(?s).*(CTE Name|Join Type).*
+
+# 27 (the IS NOT NULL that replaces the `=`)
+query II
+EXPLAIN WITH d AS (SELECT * FROM t) SELECT d.id, x.a FROM d JOIN (SELECT DISTINCT a FROM d) x ON d.a = x.a;
+----
+logical_opt	<REGEX>:(?s).*IS NOT NULL.*
+
+# 17 WITH ORDINALITY: left alone
+query II
+EXPLAIN SELECT id, v, o FROM t, UNNEST([a, b, c]) WITH ORDINALITY AS u(v, o);
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# 18 LEFT JOIN LATERAL: left alone
+query II
+EXPLAIN SELECT id, v FROM t LEFT JOIN LATERAL (SELECT unnest(list_reverse(l)) AS v) ON true;
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: LEFT.*
+
+# 20 a lateral aggregate: left alone
+query II
+EXPLAIN SELECT id, m FROM t, LATERAL (SELECT max(v) AS m FROM (SELECT unnest([a, b, c]) AS v));
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type.*
+
+# 25 a volatile expression: left alone
+query II
+EXPLAIN SELECT id, v FROM t, UNNEST([a, (random() * 0)::INTEGER]) AS u(v);
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# 28 an explicitly materialized CTE: left alone
+query II
+EXPLAIN WITH d AS MATERIALIZED (SELECT * FROM t) SELECT d.id, x.a FROM d JOIN (SELECT DISTINCT a FROM d) x ON d.a IS NOT DISTINCT FROM x.a;
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# 29 only one of two distinct keys joined: left alone
+query II
+EXPLAIN WITH d AS (SELECT * FROM t) SELECT d.id, x.a, x.b FROM d JOIN (SELECT DISTINCT a, b FROM d) x ON d.a IS NOT DISTINCT FROM x.a;
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# 30 a filter on a non-key column below the DISTINCT: left alone
+query II
+EXPLAIN WITH d AS (SELECT * FROM t) SELECT d.id, x.a FROM d JOIN (SELECT DISTINCT a FROM d WHERE id > 1) x ON d.a IS NOT DISTINCT FROM x.a;
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# 31 a DOUBLE key: left alone
+query II
+EXPLAIN WITH d AS (SELECT * FROM z) SELECT d.id, signbit(x.a) FROM d JOIN (SELECT DISTINCT a FROM d WHERE signbit(a)) x ON d.a = x.a;
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# 32 a list of DOUBLE columns: left alone
+query II
+EXPLAIN SELECT id, u.v FROM dz, UNNEST([a, b]) AS u(v);
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# 32 a list column next to a DOUBLE column is joined on the row number: rewritten
+query II
+EXPLAIN SELECT id, u.v FROM (SELECT id, a, [b] AS l FROM dz) q, UNNEST(l || [a]) AS u(v);
+----
+logical_opt	<!REGEX>:(?s).*(CTE Name|Join Type).*
+
+# 33 a case-insensitive key: left alone
+query II
+EXPLAIN SELECT id, u.v FROM cz, UNNEST([s, s || 'x']) AS u(v);
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# 34 INTERVAL keys: left alone
+query II
+EXPLAIN SELECT id, u.v FROM (SELECT id, to_days(a) AS i FROM t WHERE id < 3) q, UNNEST([i, i + INTERVAL 1 DAY]) AS u(v);
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# 35 a function of an integer key below the DISTINCT: rewritten
+query II
+EXPLAIN WITH d AS (SELECT * FROM t) SELECT d.id, x.a FROM d JOIN (SELECT DISTINCT a FROM d WHERE a % 2 = 0 AND hash(a) IS NOT NULL) x ON d.a = x.a;
+----
+logical_opt	<!REGEX>:(?s).*(CTE Name|Join Type).*
+
+# 36 the join is inside a recursive CTE: left alone
+query II
+EXPLAIN WITH RECURSIVE d AS (SELECT a FROM t WHERE id = 6), r(i, k) AS (SELECT 0, 0 UNION ALL SELECT r.i + 1, d.a FROM r, d JOIN (SELECT DISTINCT a FROM d) x ON d.a = x.a WHERE r.i < 3) SELECT i, k FROM r;
+----
+logical_opt	<REGEX>:(?s).*CTE Name: d.*Join Type: INNER.*
+
+# 37 a volatile CTE definition: left alone
+query II
+EXPLAIN WITH d AS (SELECT id, a + (random() * 1000)::INTEGER AS a FROM t) SELECT count(*) FROM d JOIN (SELECT DISTINCT a FROM d) x ON d.a = x.a;
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# without the rule: the CTE of the left rows and the join back on the three columns
+statement ok
+SET disabled_optimizers = 'lateral_row_function';
+
+query II
+EXPLAIN SELECT id, u.v FROM t CROSS JOIN UNNEST([a, b, c]) AS u(v);
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*

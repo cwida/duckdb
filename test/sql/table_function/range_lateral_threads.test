@@ -10,7 +10,7 @@ SET threads = 4;
 
 # plan unnest with the same delim join as range
 statement ok
-SET disabled_optimizers = 'unnest_rewriter';
+SET disabled_optimizers = 'unnest_rewriter,lateral_row_function';
 
 statement ok
 CALL enable_logging('QueryLog');
