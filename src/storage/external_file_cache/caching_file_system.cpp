@@ -76,12 +76,15 @@ void TightenCacheDeadline(optional<timestamp_t> &cached, const optional<timestam
 class FetchBlockTask : public BaseExecutorTask {
 public:
 	FetchBlockTask(CachingFileHandle &caching_file_handle_p, TaskExecutor &executor, QueryContext context_p,
-	               BufferManager &buffer_manager_p, shared_ptr<CacheBlock> block_p, BufferHandle &result_pin_p)
+	               BufferManager &buffer_manager_p, ExternalFileCacheStats &stats_p, shared_ptr<CacheBlock> block_p,
+	               idx_t request_bytes_p, BufferHandle &result_pin_p)
 	    : BaseExecutorTask(executor), caching_file_handle(caching_file_handle_p), context(context_p),
-	      buffer_manager(buffer_manager_p), block(std::move(block_p)), result_pin(result_pin_p) {
+	      buffer_manager(buffer_manager_p), stats(stats_p), block(std::move(block_p)), request_bytes(request_bytes_p),
+	      result_pin(result_pin_p) {
 	}
 
 	void ExecuteTask() override {
+		bool was_evicted = false;
 		annotated_unique_lock<annotated_mutex> lk(block->mtx);
 
 		while (true) {
@@ -92,10 +95,15 @@ public:
 #ifdef DEBUG
 					D_ASSERT(Checksum(pin.Ptr(), block->nr_bytes) == block->checksum);
 #endif
+					if (request_bytes > 0) {
+						stats.block_hit_count.fetch_add(1, std::memory_order_relaxed);
+						stats.cache_hit_request_bytes.fetch_add(request_bytes, std::memory_order_relaxed);
+					}
 					result_pin = std::move(pin);
 					return;
 				}
 				// Evicted by buffer manager, need to re-fetch
+				was_evicted = true;
 				block->state = CacheBlockState::EMPTY;
 				continue;
 			}
@@ -118,6 +126,13 @@ public:
 					auto buf =
 					    ExternalFileCache::AllocateCacheBuffer(buffer_manager, caching_file_handle.GetPath(), to_read);
 					caching_file_handle.ReadAndRecord(context, buf.GetDataMutable(), to_read, offset);
+					if (request_bytes > 0) {
+						stats.block_miss_count.fetch_add(1, std::memory_order_relaxed);
+					}
+					stats.actual_io_bytes.fetch_add(to_read, std::memory_order_relaxed);
+					if (was_evicted) {
+						stats.eviction_refetch_count.fetch_add(1, std::memory_order_relaxed);
+					}
 					const bool share_block = !caching_file_handle.IsCacheReuseProhibited();
 
 					lk.lock();
@@ -162,7 +177,9 @@ private:
 	CachingFileHandle &caching_file_handle;
 	QueryContext context;
 	BufferManager &buffer_manager;
+	ExternalFileCacheStats &stats;
 	shared_ptr<CacheBlock> block;
+	idx_t request_bytes;
 	BufferHandle &result_pin;
 };
 
@@ -407,6 +424,8 @@ FileBufferHandleGroup CachingFileHandle::Read(const idx_t nr_bytes, const idx_t 
 	if (location >= file_size) {
 		return FileBufferHandleGroup();
 	}
+	external_file_cache.GetStats().read_request_bytes.fetch_add(MinValue(nr_bytes, file_size - location),
+	                                                            std::memory_order_relaxed);
 	const idx_t max_block_size = external_file_cache.GetCacheMaxBlockSize(current_cached_file->path);
 	const idx_t min_block_size =
 	    MinValue(external_file_cache.GetCacheMinBlockSize(current_cached_file->path), max_block_size);
@@ -444,9 +463,15 @@ FileBufferHandleGroup CachingFileHandle::Read(const idx_t nr_bytes, const idx_t 
 	auto &scheduler = TaskScheduler::GetScheduler(db);
 	TaskExecutor executor(scheduler, TaskSchedulerType::ASYNC);
 
+	const idx_t request_end = MinValue(location + nr_bytes, file_size);
 	for (idx_t idx = 0; idx < num_blocks; idx++) {
-		executor.ScheduleTask(make_uniq<FetchBlockTask>(
-		    *this, executor, context, external_file_cache.GetBufferManager(), blocks[idx], pins[idx]));
+		const auto &block = *blocks[idx];
+		const idx_t overlap_start = MaxValue(block.location, location);
+		const idx_t overlap_end = MinValue(block.location + block.size, request_end);
+		const idx_t request_bytes = overlap_end > overlap_start ? overlap_end - overlap_start : 0;
+		executor.ScheduleTask(
+		    make_uniq<FetchBlockTask>(*this, executor, context, external_file_cache.GetBufferManager(),
+		                              external_file_cache.GetStats(), blocks[idx], request_bytes, pins[idx]));
 	}
 	executor.WorkOnTasks();
 

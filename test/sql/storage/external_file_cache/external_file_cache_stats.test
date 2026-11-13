@@ -1,0 +1,85 @@
+# name: test/sql/storage/external_file_cache/external_file_cache_stats.test
+# description: Test hit/miss statistics of the external file cache
+# group: [external_file_cache]
+
+require parquet
+
+statement ok
+set cache_local_files=true;
+
+statement ok
+set enable_external_file_cache=true;
+
+statement ok
+copy (select range i, range % 100 j from range(10000)) to '{TEST_DIR}/test_cache_stats.parquet';
+
+statement ok
+create temp table stats_cold as select * from duckdb_external_file_cache_stats();
+
+statement ok
+select * from '{TEST_DIR}/test_cache_stats.parquet';
+
+# Cold read performs underlying I/O.
+query III
+select s.read_request_bytes > b.read_request_bytes,
+       s.block_miss_count > b.block_miss_count,
+       s.actual_io_bytes > b.actual_io_bytes
+from duckdb_external_file_cache_stats() s, stats_cold b;
+----
+true	true	true
+
+statement ok
+create temp table stats_warm as select * from duckdb_external_file_cache_stats();
+
+statement ok
+select * from '{TEST_DIR}/test_cache_stats.parquet';
+
+# Warm byte hit rate is 100%; cumulative byte and block hit rates are at least 50%.
+query IIII
+with rates as (
+    select s.read_request_bytes - w.read_request_bytes warm_read_bytes,
+           s.cache_hit_request_bytes - w.cache_hit_request_bytes warm_hit_bytes,
+           s.read_request_bytes - c.read_request_bytes total_read_bytes,
+           s.cache_hit_request_bytes - c.cache_hit_request_bytes total_hit_bytes,
+           s.block_hit_count - c.block_hit_count total_hits,
+           s.block_miss_count - c.block_miss_count total_misses,
+           s.actual_io_bytes = w.actual_io_bytes no_warm_io
+    from duckdb_external_file_cache_stats() s, stats_cold c, stats_warm w
+)
+select (100 * warm_hit_bytes / warm_read_bytes)::INTEGER,
+       2 * total_hit_bytes >= total_read_bytes,
+       2 * total_hits >= total_hits + total_misses,
+       no_warm_io
+from rates;
+----
+100	true	true	true
+
+# Re-reading blocks that were evicted counts as eviction refetches.
+statement ok
+copy (select hash(i) a from range(1000000) t(i)) to '{TEST_DIR}/test_cache_stats_evict.parquet';
+
+statement ok
+select sum(a) from '{TEST_DIR}/test_cache_stats_evict.parquet';
+
+statement ok
+create temp table stats_evict as select * from duckdb_external_file_cache_stats();
+
+statement ok
+set memory_limit='1MB';
+
+statement ok
+set memory_limit='1GB';
+
+statement ok
+select sum(a) from '{TEST_DIR}/test_cache_stats_evict.parquet';
+
+query II
+select s.eviction_refetch_count > b.eviction_refetch_count, s.block_miss_count > b.block_miss_count
+from duckdb_external_file_cache_stats() s, stats_evict b;
+----
+true	true
+
+query I
+select cache_hit_request_bytes <= read_request_bytes from duckdb_external_file_cache_stats();
+----
+true

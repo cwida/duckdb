@@ -14,6 +14,7 @@ add_library_unity(
   duckdb_extension_repositories.cpp
   duckdb_extensions.cpp
   duckdb_external_file_cache.cpp
+  duckdb_external_file_cache_stats.cpp
   external_resource_types.cpp
   external_resources.cpp
   duckdb_functions.cpp

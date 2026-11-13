@@ -29,6 +29,7 @@
 #include "duckdb/storage/buffer/buffer_pool_reservation.hpp"
 #include "duckdb/storage/buffer/temporary_file_information.hpp"
 #include "duckdb/storage/external_file_cache/external_file_cache_block.hpp"
+#include "duckdb/storage/external_file_cache/external_file_cache_stats.hpp"
 
 namespace duckdb {
 
@@ -106,6 +107,8 @@ public:
 	void SetEnabled(bool enable);
 	idx_t GetGeneration() const;
 	vector<CachedFileInformation> GetCachedFileInformation() const;
+	//! Cumulative read statistics of the cache
+	ExternalFileCacheStats &GetStats();
 	//! Number of files tracked in the ObjectCache, exposed for testing.
 	idx_t GetCachedFileCount() const;
 
@@ -156,6 +159,8 @@ private:
 
 	//! The BufferManager used to cache files
 	BufferManager &buffer_manager;
+	//! Cumulative read statistics
+	ExternalFileCacheStats stats;
 	//! Whether or not file caching is enabled
 	atomic<bool> enable;
 	//! Generation counter, incremented whenever cache enablement changes.
