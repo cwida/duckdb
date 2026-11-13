@@ -159,6 +159,10 @@ IndexRemovalType CommitState::GetIndexRemovalType(ActiveTransactionState transac
 void CommitState::CommitEntryDrop(CatalogEntry &entry, data_ptr_t dataptr, CommitInfo &info) {
 	auto &drop_state = *info.drop_state;
 	if (entry.temporary || entry.Parent().temporary) {
+		if (entry.Parent().type == CatalogType::DELETED_ENTRY && entry.type == CatalogType::INDEX_ENTRY) {
+			auto &index_entry = entry.Cast<DuckIndexEntry>();
+			index_entry.CommitDrop(drop_state);
+		}
 		return;
 	}
 

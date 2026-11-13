@@ -66,3 +66,82 @@ SELECT A2 FROM A WHERE A1=1
 ----
 1
 
+# test drop index on temporary table (issue #27494)
+statement ok
+CREATE TEMPORARY TABLE t0 (a INT, b INT)
+
+statement ok
+CREATE UNIQUE INDEX ix1 ON t0 (a)
+
+statement ok
+INSERT INTO t0 VALUES (1, 1)
+
+statement error
+INSERT INTO t0 VALUES (1, 2)
+----
+Constraint Error: Duplicate key "a: 1" violates unique constraint
+
+statement ok
+DROP INDEX ix1
+
+query I
+SELECT count(*) FROM duckdb_indexes() WHERE index_name = 'ix1'
+----
+0
+
+# duplicate insert succeeds after dropping unique index
+statement ok
+INSERT INTO t0 VALUES (1, 2)
+
+query II
+SELECT * FROM t0 ORDER BY b
+----
+1	1
+1	2
+
+statement ok
+CREATE TEMPORARY TABLE t9 (a INT, b INT)
+
+statement ok
+CREATE INDEX ix9 ON t9 (a)
+
+statement ok
+DROP INDEX ix9
+
+# alter column type succeeds after dropping index
+statement ok
+ALTER TABLE t9 ALTER COLUMN a SET DATA TYPE BIGINT
+
+# rollback of DROP INDEX on temporary table keeps the index intact
+statement ok
+CREATE TEMPORARY TABLE t_rb (a INT)
+
+statement ok
+CREATE UNIQUE INDEX ix_rb ON t_rb (a)
+
+statement ok
+INSERT INTO t_rb VALUES (1)
+
+statement ok
+BEGIN TRANSACTION
+
+statement ok
+DROP INDEX ix_rb
+
+statement ok
+ROLLBACK
+
+statement error
+INSERT INTO t_rb VALUES (1)
+----
+Constraint Error: Duplicate key "a: 1" violates unique constraint
+
+# dropping temporary table with an index succeeds
+statement ok
+DROP TABLE t_rb
+
+statement ok
+DROP TABLE t0
+
+statement ok
+DROP TABLE t9
