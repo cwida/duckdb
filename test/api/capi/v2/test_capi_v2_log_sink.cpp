@@ -6,7 +6,7 @@
 
 // ---------------------------------------------------------------------------
 // V2 log sink tests: register a log sink of our own, select it with
-// SET logging_storage, and observe the entries its write callback receives.
+// SET logging_sink, and observe the entries its write callback receives.
 //
 // Callbacks avoid Catch assertions: they run inside DuckDB, under its log
 // lock. They record what they see, and the test asserts on it afterwards.
@@ -119,7 +119,7 @@ TEST_CASE("V2 log sink: entries reach the write callback", "[capi_v2][log_sink]"
 	auto store = new Store();
 	REQUIRE(RegisterSink(fx.instance, MakeSink(fx.factory, "v2_store", store)) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(RunSql(fx.conn, "CALL enable_logging()") == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(RunSql(fx.conn, "SET logging_storage = 'v2_store'") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(RunSql(fx.conn, "SET logging_sink = 'v2_store'") == DUCKDB_V2_ERROR_NONE);
 
 	LogTest(fx.conn, "from a connection");
 	auto type = Convert(TEST_LOG_TYPE);
@@ -155,7 +155,7 @@ TEST_CASE("V2 log sink: entries reach the write callback", "[capi_v2][log_sink]"
 
 	// Currently, selecting another sink flushes this one first.
 	auto flushes = store->flushes;
-	REQUIRE(RunSql(fx.conn, "SET logging_storage = 'memory'") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(RunSql(fx.conn, "SET logging_sink = 'memory'") == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(store->flushes > flushes);
 	LogTest(fx.conn, "not for the store");
 	REQUIRE(TestEntries(*store).size() == 3);
@@ -166,10 +166,10 @@ TEST_CASE("V2 log sink: names match case-insensitively", "[capi_v2][log_sink]") 
 	auto store = new Store();
 	REQUIRE(RegisterSink(fx.instance, MakeSink(fx.factory, "Mixed_Case_Store", store)) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(RunSql(fx.conn, "CALL enable_logging()") == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(RunSql(fx.conn, "SET logging_storage = 'MIXED_case_STORE'") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(RunSql(fx.conn, "SET logging_sink = 'MIXED_case_STORE'") == DUCKDB_V2_ERROR_NONE);
 	LogTest(fx.conn, "found");
 	REQUIRE(TestEntries(*store).size() == 1);
-	REQUIRE(RunSql(fx.conn, "SET logging_storage = 'memory'") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(RunSql(fx.conn, "SET logging_sink = 'memory'") == DUCKDB_V2_ERROR_NONE);
 }
 
 TEST_CASE("V2 log sink: a failing write callback never fails the logging operation", "[capi_v2][log_sink]") {
@@ -178,12 +178,12 @@ TEST_CASE("V2 log sink: a failing write callback never fails the logging operati
 	store->fail_writes = true;
 	REQUIRE(RegisterSink(fx.instance, MakeSink(fx.factory, "failing_store", store)) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(RunSql(fx.conn, "CALL enable_logging()") == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(RunSql(fx.conn, "SET logging_storage = 'failing_store'") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(RunSql(fx.conn, "SET logging_sink = 'failing_store'") == DUCKDB_V2_ERROR_NONE);
 
 	LogTest(fx.conn, "dropped");
 	REQUIRE(RunSql(fx.conn, "SELECT 42") == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(store->entries.empty());
-	REQUIRE(RunSql(fx.conn, "SET logging_storage = 'memory'") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(RunSql(fx.conn, "SET logging_sink = 'memory'") == DUCKDB_V2_ERROR_NONE);
 }
 
 TEST_CASE("V2 log sink: the user data lives as long as the instance", "[capi_v2][log_sink]") {

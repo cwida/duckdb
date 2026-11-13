@@ -1,0 +1,80 @@
+# name: test/sql/catalog/nested_schema/nested_main_schema.test
+# description: Resolve schemas nested under main in the default database, not temp
+# group: [nested_schema]
+
+statement ok
+ATTACH '{TEST_DIR}/nested_main_schema.db' AS nested_main_schema (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+USE nested_main_schema;
+
+statement ok
+CREATE SCHEMA main.sub;
+
+statement ok
+CREATE TABLE main.sub.t AS SELECT 7 AS i;
+
+query I
+SELECT * FROM main.sub.t;
+----
+7
+
+query I
+SELECT * FROM nested_main_schema.main.sub.t;
+----
+7
+
+statement ok
+CREATE MACRO main.sub.f() AS 8;
+
+query I
+SELECT main.sub.f();
+----
+8
+
+statement ok
+CREATE VIEW main.sub.v AS SELECT * FROM main.sub.t;
+
+query I
+SELECT * FROM main.sub.v;
+----
+7
+
+statement ok
+ATTACH ':memory:' AS lake;
+
+statement ok
+USE lake;
+
+statement ok
+CREATE SCHEMA main.sub;
+
+statement ok
+CREATE TABLE main.sub.t AS SELECT 9 AS i;
+
+query I
+SELECT * FROM main.sub.t;
+----
+9
+
+query I
+SELECT * FROM nested_main_schema.main.sub.t;
+----
+7
+
+# Unqualified temporary tables still take precedence.
+statement ok
+CREATE TABLE t AS SELECT 10 AS i;
+
+statement ok
+CREATE TEMP TABLE t AS SELECT 99 AS i;
+
+query I
+SELECT * FROM t;
+----
+99
+
+query I
+SELECT * FROM main.sub.t;
+----
+9

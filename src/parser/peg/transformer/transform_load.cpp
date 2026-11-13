@@ -115,8 +115,34 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformCreateExtensionReposito
 	return std::move(result);
 }
 
+// carlopi.github.io: the words joined back into the host name
+Identifier PEGTransformerFactory::TransformExtensionRepositoryHostName(PEGTransformer &transformer,
+                                                                       const Identifier &col_id,
+                                                                       const vector<string> &dot_col_label) {
+	auto name = col_id.GetIdentifierName();
+	for (auto &label : dot_col_label) {
+		name += "." + label;
+	}
+	return Identifier(name);
+}
+
+// CREATE EXTENSION REPOSITORY <name>: the host names the prefix when the statement runs
+unique_ptr<SQLStatement> PEGTransformerFactory::TransformCreateExtensionRepositoryFromHostStmt(
+    PEGTransformer &transformer, const optional<bool> &or_replace, const optional<bool> &if_not_exists,
+    const Identifier &extension_repository_name) {
+	return TransformCreateExtensionRepositoryStmt(transformer, or_replace, if_not_exists, extension_repository_name,
+	                                              string(), optional<vector<string>>());
+}
+
 string PEGTransformerFactory::TransformRepositoryPrefix(PEGTransformer &transformer, const bool &has_result,
                                                         const string &string_literal) {
+	// an empty prefix is not "no prefix": the form without one resolves the repository from its host, and must not be
+	// reachable with keys of the caller's choosing attached
+	if (string_literal.empty()) {
+		throw ParserException(
+		    "CREATE EXTENSION REPOSITORY: the prefix cannot be empty. Leave WITH PREFIX out to resolve "
+		    "the repository from its host");
+	}
 	return string_literal;
 }
 

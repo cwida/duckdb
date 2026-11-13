@@ -127,11 +127,34 @@ Catalog &Catalog::GetCatalog(ClientContext &context, const Identifier &catalog_n
 // Schema
 //===--------------------------------------------------------------------===//
 optional_ptr<CatalogEntry> Catalog::CreateSchema(ClientContext &context, CreateSchemaInfo &info) {
+	CheckNestedSchemaSupport(info.GetQualifiedName(), CatalogType::SCHEMA_ENTRY);
 	auto supports_create_schema = SupportsCreateSchema(info);
 	if (supports_create_schema.HasError()) {
 		supports_create_schema.Throw();
 	}
 	return CreateSchema(GetCatalogTransaction(context), info);
+}
+
+void Catalog::CheckNestedSchemaSupport(const QualifiedName &name, CatalogType type) const {
+	if (SupportsNestedSchemas()) {
+		return;
+	}
+	auto &path = name.Path();
+	auto end = path.size();
+	if (type != CatalogType::SCHEMA_ENTRY && end > 0) {
+		end--;
+	}
+	idx_t schema_count = 0;
+	for (idx_t i = end > 1 ? 1 : 0; i < end; i++) {
+		if (!path[i].empty() && ++schema_count > 1) {
+			while (path[end - 1].empty()) {
+				end--;
+			}
+			auto schema_path =
+			    QualifiedName::FromPath(vector<Identifier>(path.begin() + 1, path.begin() + NumericCast<int64_t>(end)));
+			throw BinderException("Catalog %s does not support nested schemas: %s", GetName(), schema_path.ToString());
+		}
+	}
 }
 
 CatalogTransaction Catalog::GetCatalogTransaction(ClientContext &context) {
@@ -438,6 +461,7 @@ struct CatalogLookup {
 void Catalog::DropEntry(ClientContext &context, DropInfo &info) {
 	if (info.type == CatalogType::SCHEMA_ENTRY) {
 		// DROP SCHEMA
+		CheckNestedSchemaSupport(info.GetQualifiedName(), CatalogType::SCHEMA_ENTRY);
 		DropSchema(context, info);
 		return;
 	}
@@ -483,6 +507,7 @@ optional_ptr<SchemaCatalogEntry> Catalog::GetSchema(CatalogTransaction transacti
 
 optional_ptr<SchemaCatalogEntry> Catalog::GetSchema(ClientContext &context, const EntryLookupInfo &schema_lookup,
                                                     OnEntryNotFound if_not_found) {
+	CheckNestedSchemaSupport(schema_lookup.GetQualifiedName(), CatalogType::SCHEMA_ENTRY);
 	return LookupSchema(GetCatalogTransaction(context), schema_lookup, if_not_found);
 }
 
@@ -582,6 +607,7 @@ optional_ptr<SchemaCatalogEntry>
 Catalog::LookupSchemaPath(CatalogTransaction transaction, const EntryLookupInfo &schema_lookup,
                           OnEntryNotFound if_not_found,
                           const std::function<optional_ptr<CatalogEntry>(const EntryLookupInfo &)> &lookup_root) {
+	CheckNestedSchemaSupport(schema_lookup.GetQualifiedName(), CatalogType::SCHEMA_ENTRY);
 	auto &path = schema_lookup.GetQualifiedName().Path();
 	optional_ptr<SchemaCatalogEntry> schema;
 	// Bound schema lookups lead with the catalog; bare lookups contain just the schema name.
@@ -643,6 +669,7 @@ SchemaCatalogEntry &Catalog::GetSchema(ClientContext &context, const Identifier 
 }
 
 SchemaCatalogEntry &Catalog::GetSchema(CatalogTransaction transaction, const EntryLookupInfo &schema_lookup) {
+	CheckNestedSchemaSupport(schema_lookup.GetQualifiedName(), CatalogType::SCHEMA_ENTRY);
 	return *LookupSchema(transaction, schema_lookup, OnEntryNotFound::THROW_EXCEPTION);
 }
 
@@ -1011,6 +1038,11 @@ CatalogException Catalog::CreateMissingEntryException(CatalogEntryRetriever &ret
 	return CatalogException::MissingEntry(lookup_info, did_you_mean);
 }
 
+CatalogEntryLookup Catalog::TryLookupEntry(CatalogTransaction transaction, const EntryLookupInfo &lookup_info) {
+	CheckNestedSchemaSupport(lookup_info.GetQualifiedName(), lookup_info.GetCatalogType());
+	return TryLookupEntryInternal(transaction, lookup_info);
+}
+
 CatalogEntryLookup Catalog::TryLookupEntryInternal(CatalogTransaction transaction, const EntryLookupInfo &lookup_info) {
 	if (lookup_info.GetAtClause() && !SupportsTimeTravel()) {
 		return {nullptr, nullptr, ErrorData(BinderException("Catalog type does not support time travel"))};
@@ -1043,7 +1075,7 @@ CatalogEntryLookup Catalog::TryLookupEntry(CatalogEntryRetriever &retriever, con
 		auto entries = GetCatalogEntries(retriever, GetName(), Identifier::InvalidSchema());
 		for (auto &entry : entries) {
 			auto transaction = GetCatalogTransaction(context);
-			auto result = TryLookupEntryInternal(
+			auto result = TryLookupEntry(
 			    transaction,
 			    EntryLookupInfo(lookup_info, QualifiedName::FromCatalogSchema(GetName(), entry.GetSchemaPath(),
 			                                                                  lookup_info.GetEntryIdentifier())));
@@ -1056,7 +1088,7 @@ CatalogEntryLookup Catalog::TryLookupEntry(CatalogEntryRetriever &retriever, con
 		}
 	} else {
 		auto transaction = GetCatalogTransaction(context);
-		auto result = TryLookupEntryInternal(transaction, lookup_info);
+		auto result = TryLookupEntry(transaction, lookup_info);
 		if (result.Found()) {
 			return result;
 		}
@@ -1184,7 +1216,7 @@ CatalogEntryLookup Catalog::TryLookupEntry(CatalogEntryRetriever &retriever, con
 	CatalogEntryLookup result;
 	for (auto &lookup : lookups) {
 		auto transaction = lookup.catalog.GetCatalogTransaction(context);
-		result = lookup.catalog.TryLookupEntryInternal(transaction, lookup.lookup_info);
+		result = lookup.catalog.TryLookupEntry(transaction, lookup.lookup_info);
 		if (result.Found()) {
 			break;
 		}
@@ -1303,7 +1335,7 @@ CatalogEntryLookup Catalog::TryLookupDefaultTable(CatalogEntryRetriever &retriev
 
 		EntryLookupInfo info(CatalogType::TABLE_ENTRY,
 		                     QualifiedName(catalog_by_name->GetName(), table_schema, table_name), at_clause, context);
-		return catalog_by_name->TryLookupEntryInternal(transaction, info);
+		return catalog_by_name->TryLookupEntry(transaction, info);
 	}
 
 	return {nullptr, nullptr, ErrorData()};
@@ -1325,7 +1357,7 @@ CatalogEntryLookup Catalog::TryLookupDefaultSchema(CatalogEntryRetriever &retrie
 		auto transaction = catalog_entry->GetCatalogTransaction(retriever.GetContext());
 		EntryLookupInfo default_schema_lookup(
 		    lookup_info, QualifiedName(catalog_entry->GetName(), *default_schema, lookup_info.GetEntryIdentifier()));
-		auto result = catalog_entry->TryLookupEntryInternal(transaction, default_schema_lookup);
+		auto result = catalog_entry->TryLookupEntry(transaction, default_schema_lookup);
 		if (result.Found() || result.error.HasError()) {
 			return result;
 		}

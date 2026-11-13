@@ -1,0 +1,72 @@
+# name: test/sql/catalog/nested_schema/nested_drop_sequence.test
+# description: Drop sequences through deeply nested schema paths
+# group: [nested_schema]
+
+statement ok
+ATTACH ':memory:' AS lake;
+
+statement ok
+USE lake;
+
+statement ok
+CREATE SCHEMA lake.a;
+
+statement ok
+CREATE SCHEMA lake.a.b;
+
+statement ok
+CREATE SCHEMA lake.a.b.c;
+
+statement ok
+CREATE SEQUENCE lake.a.b.c.seq;
+
+query I
+SELECT nextval('lake.a.b.c.seq');
+----
+1
+
+statement ok
+DROP SEQUENCE lake.a.b.c.seq;
+
+statement ok
+DROP SEQUENCE IF EXISTS lake.a.b.c.seq;
+
+statement error
+DROP SEQUENCE lake.a.b.c.seq;
+----
+does not exist
+
+statement ok
+CREATE SEQUENCE lake.a.b.c.seq;
+
+statement ok
+DROP SEQUENCE a.b.c.seq;
+
+query I
+SELECT count(*) FROM duckdb_sequences() WHERE database_name = 'lake';
+----
+0
+
+statement ok
+CREATE SCHEMA lake.a.b.c."d.e";
+
+statement ok
+CREATE SEQUENCE lake.a.b.c."d.e"."s""q";
+
+statement ok
+DROP SEQUENCE lake.a.b.c."d.e"."s""q";
+
+# A same-named sequence in another schema remains.
+statement ok
+CREATE SEQUENCE lake.a.seq START 7;
+
+statement ok
+CREATE SEQUENCE lake.a.b.c.seq;
+
+statement ok
+DROP SEQUENCE a.b.c.seq;
+
+query I
+SELECT nextval('lake.a.seq');
+----
+7

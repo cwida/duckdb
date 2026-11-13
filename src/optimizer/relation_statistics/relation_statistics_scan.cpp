@@ -122,15 +122,6 @@ unique_ptr<BaseStatistics> RelationStatisticsHelper::GetColumnStatistics(Logical
 	return get.function.statistics(context, get.bind_data.get(), column_id.GetPrimaryIndex());
 }
 
-DistinctCount RelationStatisticsHelper::GetDistinctCount(LogicalGet &get, ClientContext &context,
-                                                         const ColumnIndex &column_id, idx_t base_table_cardinality) {
-	auto column_statistics = GetColumnStatistics(get, context, column_id);
-	if (!column_statistics) {
-		return DistinctCount(0, DistinctCountSource::CARDINALITY);
-	}
-	return GetDistinctCountFromStats(*column_statistics, base_table_cardinality);
-}
-
 RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientContext &context) {
 	RelationStats result;
 	auto base_table_cardinality = get.EstimateSourceCardinality(context);
@@ -166,18 +157,40 @@ RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientC
 	}
 
 	result.cardinality = cardinality_after_filters;
+	result.row_retention = base_table_cardinality == 0
+	                           ? 0
+	                           : MinValue(1.0, double(cardinality_after_filters) / double(base_table_cardinality));
 	for (auto &binding : get.GetColumnBindings()) {
 		if (binding.table_index != get.table_index) {
 			continue;
 		}
 		ColumnIndex fallback_column(get.GetAnyColumn());
 		auto column_id = get.GetColumnIds().empty() ? fallback_column : get.GetColumnIndex(binding);
-		auto distinct_count = GetDistinctCount(get, context, column_id, base_table_cardinality);
-		if (distinct_count.distinct_count == 0) {
-			distinct_count = DistinctCount(cardinality_after_filters, DistinctCountSource::CARDINALITY);
+		auto column_statistics = GetColumnStatistics(get, context, column_id);
+		auto total_domain = column_statistics ? GetDistinctCountFromStats(*column_statistics, base_table_cardinality)
+		                                      : DistinctCount(0, DistinctCountSource::CARDINALITY);
+		if (total_domain.distinct_count == 0) {
+			total_domain = DistinctCount(base_table_cardinality, DistinctCountSource::CARDINALITY);
 		}
-		result.columns.emplace_back(binding, distinct_count,
-		                            Identifier(get.GetName() + "." + get.GetColumnName(column_id)));
+		auto current_domain = EstimateCurrentDomain(total_domain, base_table_cardinality, cardinality_after_filters);
+		SemiAntiJoinDomainEvidence semi_anti_join_domain_evidence;
+		for (auto &entry : get.table_filters) {
+			if (ExpressionFilter::IsOptionalFilter(entry.Filter()) ||
+			    get.GetColumnIndex(entry.GetIndex()) != column_id) {
+				continue;
+			}
+			auto &filter =
+			    ExpressionFilter::GetExpressionFilter(entry.Filter(), "RelationStatisticsHelper::ExtractGetStats");
+			auto direct_bound = EstimateDirectFilterDomain(*filter.expr, {}, total_domain.distinct_count);
+			if (direct_bound.IsValid()) {
+				current_domain = DistinctCount(MinValue(current_domain.distinct_count, direct_bound.GetIndex()),
+				                               DistinctCountSource::CARDINALITY);
+				semi_anti_join_domain_evidence.TightenFilterDomainBound(direct_bound.GetIndex());
+			}
+		}
+		result.columns.emplace_back(binding, total_domain, current_domain,
+		                            Identifier(get.GetName() + "." + get.GetColumnName(column_id)),
+		                            semi_anti_join_domain_evidence);
 	}
 	result.stats_initialized = true;
 	D_ASSERT(base_table_cardinality >= cardinality_after_filters);

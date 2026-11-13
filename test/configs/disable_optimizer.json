@@ -129,6 +129,7 @@
       "reason": "Time-out without optimizer.",
       "paths": [
         "test/optimizer/join_dependent_filter.test",
+        "test/optimizer/joins/inequality_only_join_order.test",
         "test/optimizer/joins/no_duplicate_elimination_join.test",
         "test/optimizer/joins/tpcds_nofail.test",
         "test/sql/limit/test_limit0.test",
@@ -239,6 +240,12 @@
       "paths": [
         "test/sql/sql_export/recursive_state.test",
         "test/sql/sql_export/single_child_union.test"
+      ]
+    },
+    {
+      "reason": "Without optimizer cardinality estimates the probe consumer is kept materialized by cost, so no cycle demotion occurs.",
+      "paths": [
+        "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"
       ]
     }
   ]

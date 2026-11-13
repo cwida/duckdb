@@ -21,7 +21,7 @@ class LogManager;
 class ColumnDataCollection;
 class ThreadContext;
 class FileOpener;
-class LogStorage;
+class LogSink;
 class ExecutionContext;
 struct FileHandle;
 

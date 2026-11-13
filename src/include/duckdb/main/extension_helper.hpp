@@ -63,6 +63,12 @@ enum class ExtensionUpdateResultTag : uint8_t {
 	STATICALLY_LOADED = 4,
 	// This means the .info file written during installation was missing or malformed
 	MISSING_INSTALL_INFO = 5,
+	// The user-provided repository the extension was installed from no longer exists
+	REPOSITORY_NOT_FOUND = 6,
+	// The user-provided repository the extension was installed from is not trusted (allow_extension_repositories)
+	REPOSITORY_NOT_TRUSTED = 7,
+	// The file of the user-provided repository the extension was installed from could not be read
+	REPOSITORY_UNREADABLE = 8,
 
 	// The extension was re-downloaded from the repository, but due to a lack of version information
 	// its impossible to tell if the extension is actually updated
@@ -94,6 +100,16 @@ struct ExtensionInstallOptions {
 	bool use_etags = false;
 	//! Throw an error when installing an extension with a different origin than the one that is installed
 	bool throw_on_origin_mismatch = false;
+	//! Install into this extension directory instead of the primary one
+	string extension_directory;
+};
+
+struct InstalledExtensionDirectory {
+	string path;
+	//! The user-provided repository of a per-repository folder, empty for the flat folder
+	string repository;
+	//! The extension directory the folder is in
+	string extension_directory;
 };
 
 class ExtensionHelper {
@@ -141,9 +157,14 @@ public:
 	static string ExtensionDirectory(ClientContext &context);
 	static string ExtensionDirectory(DatabaseInstance &db, FileSystem &fs);
 
-	// Get all extension directory paths
+	// Get all extension directory paths (flat)
 	static vector<string> GetExtensionDirectoryPath(ClientContext &context);
 	static vector<string> GetExtensionDirectoryPath(DatabaseInstance &db, FileSystem &fs);
+
+	// Get all extension directory paths, including those in the 'repositories' subdirectory
+	static vector<InstalledExtensionDirectory> GetInstalledExtensionDirectories(ClientContext &context);
+	static vector<InstalledExtensionDirectory> GetInstalledExtensionDirectories(DatabaseInstance &db, FileSystem &fs);
+
 	//! Whether a file in an extension directory is an installed extension, and not the temporary file of an install
 	static bool IsInstalledExtensionFile(const string &path);
 

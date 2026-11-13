@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/parser/constraint.hpp"
+#include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/common/vector.hpp"
 
 namespace duckdb {
@@ -25,6 +26,8 @@ public:
 	//! The set of foreign key table's columns
 	vector<Identifier> fk_columns;
 	ForeignKeyInfo info;
+	//! The referenced table, including its schema path
+	QualifiedName referenced_table;
 
 public:
 	DUCKDB_API string ToString() const override;

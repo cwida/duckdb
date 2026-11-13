@@ -416,7 +416,9 @@ ColumnConstraintEntry PEGTransformerFactory::TransformForeignKeyConstraint(PEGTr
 	if (column_list) {
 		columns = StringsToIdentifiers(*column_list);
 	}
-	entry.constraint = make_uniq<ForeignKeyConstraint>(columns, vector<Identifier>(), fk_info);
+	auto constraint = make_uniq<ForeignKeyConstraint>(columns, vector<Identifier>(), fk_info);
+	constraint->referenced_table = base_table_name->GetQualifiedName();
+	entry.constraint = std::move(constraint);
 	return entry;
 }
 

@@ -65,7 +65,7 @@ public:
 	}
 
 	//! The full path of this schema (its parent chain outermost first, ending with this schema's own name)
-	vector<Identifier> GetSchemaPath() const;
+	DUCKDB_API vector<Identifier> GetSchemaPath() const;
 	//! The schema path formatted as a SQL name, without the catalog.
 	DUCKDB_API string GetSchemaName() const;
 	//! The fully qualified name of an entry in this schema: [catalog, schema path..., entry_name]

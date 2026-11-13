@@ -1,0 +1,200 @@
+# name: test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test
+# description: The nested buffered-consumer cycle must resolve through a CYCLE demotion, not cost selection
+# group: [materialized]
+
+# The fanout-budget sizes below assume standard vectors.
+require exact_vector_size 2048
+
+# Skipped in configs that restart the database between statements (the in-memory log does not survive) and
+# with the optimizer disabled (without cardinality estimates the probe is kept materialized by cost, so no
+# cycle forms). The behavioral coverage lives in cte_nested_buffered_consumer_cycle.test.
+
+set query_timeout 60
+
+statement ok
+CALL enable_logging('PhysicalOperator', storage='memory');
+
+statement ok
+SET memory_limit='200MB';
+
+query I
+WITH c2 AS MATERIALIZED (SELECT range AS a FROM range(15000000)), c1 AS MATERIALIZED (SELECT a FROM c2 LIMIT 5) SELECT count(*) FROM c2 JOIN c1 ON c2.a = c1.a;
+----
+5
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%reason=CYCLE%';
+----
+true
+
+# A buffered consumer whose execute is scheduled after its own producer's completion is demoted to CTE storage.
+query I
+WITH c2 AS MATERIALIZED (SELECT range a FROM range(2000000)), d AS MATERIALIZED (SELECT a FROM c2 WHERE a % 100000 = 0) SELECT count(*) FROM (SELECT c2.a FROM c2 JOIN d ON c2.a = d.a LIMIT 3) q;
+----
+3
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%reason=GATED%';
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET preserve_insertion_order=false;
+
+# The demotion of the gated probe is a plan-time decision: an early-stopping sibling that could unregister
+# before the exchange watermark must not count as the drainer.
+query I
+WITH c AS MATERIALIZED (SELECT range i FROM range(2000000)), d AS MATERIALIZED (SELECT i FROM c WHERE i % 100000 = 0) SELECT count(*) FROM ((SELECT i FROM c LIMIT 1) UNION ALL (SELECT c.i FROM c JOIN d ON c.i = d.i LIMIT 3) LIMIT 4) q;
+----
+4
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%reason=GATED%';
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# The streaming consumers can trip the progress-stall heuristic while the producer hands off.
+statement ok
+SET debug_verify_progress_ignore='STALLED:CTE_SCAN';
+
+# Protection: an ordered pair of early-stopping consumers of one producer keeps streaming.
+query I
+WITH c AS MATERIALIZED (SELECT i FROM range(1000000) r(i)) SELECT count(*) FROM ((SELECT i FROM c LIMIT 1) UNION ALL (SELECT i FROM c LIMIT 1) LIMIT 2) q;
+----
+2
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%mode=MATERIALIZED%';
+----
+0
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE rf_t AS SELECT (range % 2000000)::BIGINT k FROM range(8000000);
+
+# The runtime-filter scheduling edge ordering the rf_t scan after the join build gates the union-ordered
+# buffered consumer of c. The liveness analysis must model that edge. The gate runs through the union's
+# optional sibling ordering, so the resolution drops that ordering and keeps the consumer streaming
+# instead of demoting it.
+query I
+WITH c AS MATERIALIZED (SELECT range i FROM range(2000000)),
+     d AS MATERIALIZED (SELECT i FROM c WHERE i % 100000 = 0)
+SELECT count(*) FROM (
+    SELECT g.k FROM (
+        SELECT k FROM (
+            (SELECT 0::BIGINT AS k)
+            UNION ALL
+            (SELECT k FROM rf_t GROUP BY k)
+            UNION ALL
+            (SELECT i AS k FROM c LIMIT 3)
+        ) u GROUP BY k
+    ) g JOIN d ON g.k = d.i
+) q;
+----
+20
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%reason=GATED%';
+----
+0
+
+# The resolution must keep the gated consumer streaming, not merely avoid logging a demotion: a suppressed
+# or ineligible runtime-filter edge would also log zero demotions. The edge itself is not observable in the
+# operator log, so the hang bound in cte_gated_buffered_consumer_runtime_filter.test remains the pin for
+# the gating itself.
+query I
+SELECT count(*) > 0 FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%mode=BUFFERED%';
+----
+true
+
+statement ok
+CREATE TEMP TABLE gated_with_filters AS
+SELECT count(*) AS demotions FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%reason=GATED%';
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET disabled_optimizers='join_filter_pushdown';
+
+# Negative control: without the runtime-filter edge nothing gates the consumer in release builds. Debug
+# builds force CanSaturateThreads and the join-ordering dependencies, but those orderings are optional, so
+# the starvation resolution drops them instead of demoting in both build types. The comparison below only
+# requires that disabling the optimizer never introduces additional demotions.
+query I
+WITH c AS MATERIALIZED (SELECT range i FROM range(2000000)),
+     d AS MATERIALIZED (SELECT i FROM c WHERE i % 100000 = 0)
+SELECT count(*) FROM (
+    SELECT g.k FROM (
+        SELECT k FROM (
+            (SELECT 0::BIGINT AS k)
+            UNION ALL
+            (SELECT k FROM rf_t GROUP BY k)
+            UNION ALL
+            (SELECT i AS k FROM c LIMIT 3)
+        ) u GROUP BY k
+    ) g JOIN d ON g.k = d.i
+) q;
+----
+20
+
+# A buffered consumer must exist either way, or the control is vacuous.
+query I
+SELECT count(*) > 0 FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%mode=BUFFERED%';
+----
+true
+
+query I
+SELECT demotions >= (SELECT count(*) FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%reason=GATED%')
+FROM gated_with_filters;
+----
+true
+
+statement ok
+DROP TABLE gated_with_filters;
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+DROP TABLE rf_t;
+
+statement ok
+RESET threads;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET threads=4;
+
+# A starved exchange gated only through the cross product's optional sibling ordering keeps streaming by
+# dropping the ordering instead of materializing (cte_streaming_over_materialization.test bounds the memory
+# end to end).
+query II
+WITH c AS MATERIALIZED (
+    SELECT i FROM range(10000000) r(i)
+)
+SELECT (SELECT count(*) FROM (SELECT * FROM c LIMIT 1)) AS x,
+       (SELECT count(*) FROM (SELECT * FROM c LIMIT 1)) AS y;
+----
+1	1
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%mode=MATERIALIZED%';
+----
+0
+
+statement ok
+RESET threads;

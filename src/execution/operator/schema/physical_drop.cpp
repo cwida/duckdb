@@ -38,13 +38,15 @@ SourceResultType PhysicalDrop::GetDataInternal(ExecutionContext &context, DataCh
 		auto &client_data = ClientData::Get(context.client);
 		auto &default_entry = client_data.catalog_search_path->GetDefault();
 		auto &current_catalog = default_entry.GetCatalog();
-		auto &current_schema = default_entry.GetSchema();
-		D_ASSERT(info->GetQualifiedName().Name() != DEFAULT_SCHEMA);
+		auto current_schema = default_entry.GetSchemaPath();
+		auto &dropped_schema = info->GetQualifiedName().Path();
+		D_ASSERT(dropped_schema.size() > 2 || info->GetQualifiedName().Name() != DEFAULT_SCHEMA);
 
 		auto resolved_current_catalog =
 		    IsInvalidCatalog(current_catalog) ? DatabaseManager::GetDefaultDatabase(context.client) : current_catalog;
-		if (catalog.GetName() == resolved_current_catalog && current_schema == info->GetQualifiedName().Name()) {
-			// Reset the schema to default
+		if (catalog.GetName() == resolved_current_catalog && dropped_schema.size() - 1 <= current_schema.size() &&
+		    std::equal(dropped_schema.begin() + 1, dropped_schema.end(), current_schema.begin())) {
+			// Reset the default when dropping its schema or an ancestor.
 			SchemaSetting::SetLocal(context.client, DEFAULT_SCHEMA);
 		}
 		break;

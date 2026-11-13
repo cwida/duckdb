@@ -58,6 +58,7 @@ namespace duckdb {
 constexpr const char *LoggingMode::Name;
 constexpr const char *LoggingLevel::Name;
 constexpr const char *EnableLogging::Name;
+constexpr const char *LoggingSink::Name;
 constexpr const char *LoggingStorage::Name;
 constexpr const char *EnabledLogTypes::Name;
 constexpr const char *DisabledLogTypes::Name;
@@ -190,12 +191,14 @@ void AllowCommunityExtensionsSetting::OnSet(SettingCallbackInfo &info, Value &in
 // Allow Extension Repositories
 //===----------------------------------------------------------------------===//
 // Ordering of the access levels, independent of the enum's numeric values: while the database is running the setting
-// can only move to a lower level ('undecided' -> 'allowed' -> 'forbidden')
+// can only move to a lower level ('hosts' -> 'allowed' -> 'hosts_only' -> 'forbidden')
 static int ExtensionRepositoryAccessLevel(ExtensionRepositoryAccess access) {
 	switch (access) {
-	case ExtensionRepositoryAccess::UNDECIDED:
-		return 2;
+	case ExtensionRepositoryAccess::HOSTS:
+		return 3;
 	case ExtensionRepositoryAccess::ALLOWED:
+		return 2;
+	case ExtensionRepositoryAccess::HOSTS_ONLY:
 		return 1;
 	default: // FORBIDDEN
 		return 0;
@@ -212,13 +215,13 @@ void AllowExtensionRepositoriesSetting::OnSet(SettingCallbackInfo &info, Value &
 		// the value is set before the database is running (startup) - any value is allowed
 		return;
 	}
-	// while the database is running the setting can only move down: the 'undecided' default can be decided either way,
-	// 'allowed' can still be forbidden, but a decision cannot be reverted. This makes 'forbidden' a one-way ratchet
-	// within a session
+	// while the database is running the setting can only move down: the 'hosts' default can be opened up to 'allowed'
+	// or tightened, 'allowed' can still be tightened, but no step can be reverted. This makes 'forbidden' a one-way
+	// ratchet within a session
 	auto current_access = ExtensionRepositoryManager::GetAccess(*info.db);
 	if (ExtensionRepositoryAccessLevel(new_access) > ExtensionRepositoryAccessLevel(current_access)) {
-		throw InvalidInputException("allow_extension_repositories can only be changed from 'undecided' to 'allowed' or "
-		                            "'forbidden', or from 'allowed' to 'forbidden', while the database is running");
+		throw InvalidInputException("allow_extension_repositories can only be tightened while the database is running: "
+		                            "'hosts' -> 'allowed' -> 'hosts_only' -> 'forbidden'");
 	}
 }
 
@@ -897,19 +900,36 @@ void LoggingLevel::ResetGlobal(DatabaseInstance *db_p, DBConfig &config) {
 }
 
 //===----------------------------------------------------------------------===//
-// Logging Storage
+// Logging Sink
 //===----------------------------------------------------------------------===//
-Value LoggingStorage::GetSetting(const ClientContext &context) {
+Value LoggingSink::GetSetting(const ClientContext &context) {
 	return context.db->GetLogManager().GetConfig().storage;
 }
+void LoggingSink::SetGlobal(DatabaseInstance *db_p, DBConfig &config, const Value &parameter) {
+	auto &db = GetDB<LoggingSink>(db_p);
+	db.GetLogManager().SetLogSink(db, parameter.GetValue<string>());
+}
+
+void LoggingSink::ResetGlobal(DatabaseInstance *db_p, DBConfig &config) {
+	auto &db = GetDB<LoggingSink>(db_p);
+	db.GetLogManager().SetLogSink(db, LogConfig::DEFAULT_LOG_STORAGE);
+}
+
+//===----------------------------------------------------------------------===//
+// Logging Storage (deprecated, use logging_sink)
+//===----------------------------------------------------------------------===//
+Value LoggingStorage::GetSetting(const ClientContext &context) {
+	return LoggingSink::GetSetting(context);
+}
+
 void LoggingStorage::SetGlobal(DatabaseInstance *db_p, DBConfig &config, const Value &parameter) {
 	auto &db = GetDB<LoggingStorage>(db_p);
-	db.GetLogManager().SetLogStorage(db, parameter.GetValue<string>());
+	DUCKDB_LOG_WARNING(db, "the logging_storage setting is deprecated: use logging_sink instead");
+	LoggingSink::SetGlobal(db_p, config, parameter);
 }
 
 void LoggingStorage::ResetGlobal(DatabaseInstance *db_p, DBConfig &config) {
-	auto &db = GetDB<LoggingStorage>(db_p);
-	db.GetLogManager().SetLogStorage(db, LogConfig::DEFAULT_LOG_STORAGE);
+	LoggingSink::ResetGlobal(db_p, config);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1562,7 +1582,7 @@ void SchemaSetting::ResetLocal(ClientContext &context) {
 
 Value SchemaSetting::GetSetting(const ClientContext &context) {
 	auto &client_data = ClientData::Get(context);
-	return client_data.catalog_search_path->GetDefault().GetSchema();
+	return Value(client_data.catalog_search_path->GetDefault().GetSchemaName());
 }
 
 //===----------------------------------------------------------------------===//

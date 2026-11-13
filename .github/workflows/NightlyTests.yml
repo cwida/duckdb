@@ -12,7 +12,7 @@ on:
       - '.github/workflows/NightlyTests.yml'
       - '.github/patches/duckdb-wasm/**'
   pull_request:
-    types: [opened, reopened, ready_for_review, converted_to_draft]
+    types: [opened, reopened, ready_for_review]
     paths:
       - '.github/workflows/NightlyTests.yml'
       - '.github/patches/duckdb-wasm/**'

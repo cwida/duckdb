@@ -1132,7 +1132,7 @@ AlterViewStmt <- 'VIEW' IfExists? BaseTableName RenameAlter
 
 AlterSequenceStmt <- 'SEQUENCE' IfExists? QualifiedSequenceName AlterSequenceOptions
 
-QualifiedSequenceName <- CatalogQualification? SchemaQualification? SequenceName
+QualifiedSequenceName <- CatalogQualification? SchemaQualification* SequenceName
 
 AlterSequenceOptions <- RenameAlterSequenceOptions / SetSequenceOption
 RenameAlterSequenceOptions <- RenameAlter
@@ -1548,7 +1548,7 @@ DropIndex <- 'INDEX' IfExists? List(QualifiedIndexName)
 QualifiedIndexName <- CatalogReservedSchemaIndex / SchemaReservedIndex / QualifiedIndexNameString
 QualifiedIndexNameString <- IndexName
 SchemaReservedIndex <- SchemaQualification ReservedIndexName
-CatalogReservedSchemaIndex <- CatalogQualification ReservedSchemaQualification ReservedIndexName
+CatalogReservedSchemaIndex <- CatalogQualification ReservedSchemaQualification+ ReservedIndexName
 DropSequence <- 'SEQUENCE' IfExists? List(QualifiedSequenceName)
 DropCollation <- 'COLLATION' IfExists? List(CollationName)
 DropType <- 'TYPE' IfExists? List(QualifiedTypeName)
@@ -2043,15 +2043,25 @@ InstallStatement <- 'FORCE'? 'INSTALL' InstallAndLoad? IdentifierOrStringLiteral
 InstallAndLoad <- 'AND' 'LOAD'
 UpdateExtensionsStatement <- 'UPDATE' 'EXTENSIONS' Parens(List(Identifier))?
 FromSource <- FromSourceIdentifier / FromSourceString
-FromSourceIdentifier <- 'FROM' Identifier
+FromSourceIdentifier <- 'FROM' FromSourceName
 FromSourceString <- 'FROM' StringLiteral
+# a repository named after its host is spelled as dotted words: INSTALL x FROM carlopi.github.io
+FromSourceName <- ExtensionRepositoryHostName / Identifier
 VersionNumber <- 'VERSION' IdentifierOrStringLiteral
 
-ExtensionRepositoryStatement <- CreateExtensionRepositoryStmt / DropExtensionRepositoryStmt
-CreateExtensionRepositoryStmt <- 'CREATE' OrReplace? 'EXTENSION' 'REPOSITORY' IfNotExists? ColIdOrString RepositoryPrefix RepositoryPublicKey?
+ExtensionRepositoryStatement <- CreateExtensionRepositoryStmt / CreateExtensionRepositoryFromHostStmt / DropExtensionRepositoryStmt
+CreateExtensionRepositoryStmt <- 'CREATE' OrReplace? 'EXTENSION' 'REPOSITORY' IfNotExists? ExtensionRepositoryName RepositoryPrefix RepositoryPublicKey?
 RepositoryPrefix <- 'WITH'? 'PREFIX' StringLiteral
 RepositoryPublicKey <- 'USING'? 'PUBLIC' ('KEYS' / 'KEY') List(StringLiteral)
-DropExtensionRepositoryStmt <- 'DROP' 'EXTENSION' 'REPOSITORY' IfExists? ColIdOrString
+# "CREATE EXTENSION REPOSITORY carlopi.github.io": without a prefix the name is the host of the publisher, and the host
+# says where its repository is: https://<name>/.well-known/duckdb-extension-repo.json names the prefix (and may carry
+# the signing keys). The rest is CREATE EXTENSION REPOSITORY <name> WITH PREFIX <that prefix>.
+CreateExtensionRepositoryFromHostStmt <- 'CREATE' OrReplace? 'EXTENSION' 'REPOSITORY' IfNotExists? ExtensionRepositoryName
+DropExtensionRepositoryStmt <- 'DROP' 'EXTENSION' 'REPOSITORY' IfExists? ExtensionRepositoryName
+# A repository name: an identifier or a string, or a host spelled as dotted words. A host with a '-' in it cannot be
+# spelled unquoted ('-' is an operator); it is given as a string: 'duckdb-extensions.example.com'
+ExtensionRepositoryName <- ExtensionRepositoryHostName / ColIdOrString
+ExtensionRepositoryHostName <- ColId DotColLabel+
 
 MergeIntoStatement <- WithClause? 'MERGE' 'INTO' TargetOptAlias MergeIntoUsingClause JoinQualifier MergeMatch+ ReturningClause?
 MergeIntoUsingClause <- 'USING' TableRef
@@ -2178,7 +2188,9 @@ TableSubquery <- TableAliasColon? Lateral? SubqueryReference TableAlias? SampleC
 BaseTableRef <- TableAliasColon? BaseTableName TableAlias? AtClause? SampleClause?
 TableAliasColon <- ColIdOrString ':'
 ValuesRef <- TableAliasColon? ValuesClause TableAlias? SampleClause?
-ParensTableRef <- TableAliasColon? Parens(TableRef) TableAlias? SampleClause?
+ParensTableRef <- TableAliasColon? Parens(JoinedTableRef) TableAlias? SampleClause?
+JoinedTableRef <- JoinedTableRefChain / ParensTableRef
+JoinedTableRefChain <- InnerTableRef JoinOrPivot+
 
 JoinOrPivot <- JoinClause / TablePivotClause / TableUnpivotClause
 
@@ -2242,7 +2254,7 @@ NearestValuesRef <- ValuesClause
 NearestTableFunction <- Lateral? QualifiedTableFunction TableFunctionArguments WithOrdinality?
 NearestTableSubquery <- Lateral? SubqueryReference
 NearestBaseTableRef <- BaseTableName AtClause? SampleClause?
-NearestParensTableRef <- Parens(TableRef) SampleClause?
+NearestParensTableRef <- Parens(JoinedTableRef) SampleClause?
 ApproxOrExact <- NearestApprox / NearestExact
 NearestApprox <- 'APPROX'
 NearestExact <- 'EXACT'

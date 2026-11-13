@@ -1,7 +1,7 @@
 #include "duckdb/main/capi_v2/capi_v2_internal.hpp"
 
 #include "duckdb/logging/log_manager.hpp"
-#include "duckdb/logging/log_storage.hpp"
+#include "duckdb/logging/log_sink.hpp"
 
 namespace duckdb::capiv2 {
 
@@ -30,14 +30,14 @@ static auto Convert(CV2LogSinkFlushInfo *info) -> duckdb_v2_log_sink_flush_info_
 
 //! A log sink that hands every entry to the caller's write callback. Errors the callbacks report are dropped:
 //! logging happens inside arbitrary operations, which a sink must not fail.
-class CV2CallbackLogSink final : public LogStorage {
+class CV2CallbackLogSink final : public LogSink {
 public:
 	CV2CallbackLogSink(string name, duckdb_v2_log_sink_write_callback_fn write_cb,
 	                   duckdb_v2_log_sink_flush_callback_fn flush_cb, shared_ptr<CV2UserData> user_data)
 	    : name(std::move(name)), write_cb(write_cb), flush_cb(flush_cb), user_data(std::move(user_data)) {
 	}
 
-	const string GetStorageName() override {
+	const string GetSinkName() override {
 		return name;
 	}
 
@@ -104,8 +104,8 @@ public:
 		    sink_name == LogConfig::FILE_STORAGE_NAME) {
 			throw InvalidInputException("\"%s\" is the name of a log sink DuckDB provides.", name);
 		}
-		shared_ptr<LogStorage> sink = make_shared_ptr<CV2CallbackLogSink>(sink_name, write_cb, flush_cb, user_data);
-		if (!target.GetLogManager().RegisterLogStorage(sink_name, sink)) {
+		shared_ptr<LogSink> sink = make_shared_ptr<CV2CallbackLogSink>(sink_name, write_cb, flush_cb, user_data);
+		if (!target.GetLogManager().RegisterLogSink(sink_name, sink)) {
 			throw InvalidInputException("A log sink named \"%s\" is already registered.", name);
 		}
 	}

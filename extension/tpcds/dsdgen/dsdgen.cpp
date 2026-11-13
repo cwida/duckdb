@@ -182,9 +182,8 @@ static idx_t GetDSDGenTableProgressUnitsPerRow(int table_id) {
 	auto progress_units = output_rows * GetDSDGenTableColumnCount(table_id) * DSDGEN_PROGRESS_UNIT_SCALE;
 	auto child_table = GetDSDGenChildTable(table_id);
 	if (child_table != -1) {
-		progress_units +=
-		    output_rows * GetDSDGenReturnPercent(table_id) * GetDSDGenTableColumnCount(child_table) *
-		    DSDGEN_PROGRESS_UNIT_SCALE / 100;
+		progress_units += output_rows * GetDSDGenReturnPercent(table_id) * GetDSDGenTableColumnCount(child_table) *
+		                  DSDGEN_PROGRESS_UNIT_SCALE / 100;
 	}
 	return progress_units;
 }
@@ -198,10 +197,9 @@ static idx_t GetDSDGenTableChildCount(int table_id, idx_t row_count, idx_t threa
 		return 1;
 	}
 	auto output_row_count = row_count * GetDSDGenTableOutputMultiplier(table_id);
-	auto row_count_child_count =
-	    output_row_count < DSDGEN_PARALLEL_SPLIT_MIN_ROWS
-	        ? 1
-	        : (output_row_count + DSDGEN_TARGET_CHUNK_ROWS - 1) / DSDGEN_TARGET_CHUNK_ROWS;
+	auto row_count_child_count = output_row_count < DSDGEN_PARALLEL_SPLIT_MIN_ROWS
+	                                 ? 1
+	                                 : (output_row_count + DSDGEN_TARGET_CHUNK_ROWS - 1) / DSDGEN_TARGET_CHUNK_ROWS;
 	auto max_child_count =
 	    MinValue<idx_t>(thread_count * DSDGEN_WORK_ITEMS_PER_THREAD, DSDGEN_MAX_WORK_ITEMS_PER_TABLE);
 	max_child_count = MinValue<idx_t>(max_child_count, MaxValue<idx_t>(1, row_count / DSDGEN_MIN_PARALLEL_TASK_ROWS));
@@ -245,10 +243,10 @@ static bool IsDSDGenFactTable(int table_id) {
 }
 
 template <class T>
-static void CreateTPCDSTable(ClientContext &context, const Identifier &catalog_name, const Identifier &schema,
+static void CreateTPCDSTable(ClientContext &context, const Identifier &catalog_name, const vector<Identifier> &schema,
                              string suffix, bool keys, bool overwrite) {
 	auto info = make_uniq<CreateTableInfo>();
-	info->SetQualifiedName(QualifiedName(catalog_name, schema, Identifier(T::Name + suffix)));
+	info->SetQualifiedName(QualifiedName::FromCatalogSchema(catalog_name, schema, Identifier(T::Name + suffix)));
 	info->on_conflict = overwrite ? OnCreateConflict::REPLACE_ON_CONFLICT : OnCreateConflict::ERROR_ON_CONFLICT;
 	info->temporary = false;
 	for (idx_t i = 0; i < T::ColumnCount; i++) {
@@ -265,8 +263,8 @@ static void CreateTPCDSTable(ClientContext &context, const Identifier &catalog_n
 	catalog.CreateTable(context, std::move(info));
 }
 
-void DSDGenWrapper::CreateTPCDSSchema(ClientContext &context, const Identifier &catalog, const Identifier &schema,
-                                      string suffix, bool keys, bool overwrite) {
+void DSDGenWrapper::CreateTPCDSSchema(ClientContext &context, const Identifier &catalog,
+                                      const vector<Identifier> &schema, string suffix, bool keys, bool overwrite) {
 	CreateTPCDSTable<CallCenterInfo>(context, catalog, schema, suffix, keys, overwrite);
 	CreateTPCDSTable<CatalogPageInfo>(context, catalog, schema, suffix, keys, overwrite);
 	CreateTPCDSTable<CatalogReturnsInfo>(context, catalog, schema, suffix, keys, overwrite);
@@ -297,13 +295,14 @@ DSDGenGenerator::~DSDGenGenerator() {
 }
 
 struct TPCDSDSDGenParameters {
-	TPCDSDSDGenParameters(ClientContext &context, Catalog &catalog, const Identifier &schema, const string &suffix) {
+	TPCDSDSDGenParameters(ClientContext &context, Catalog &catalog, const vector<Identifier> &schema,
+	                      const string &suffix) {
 		tables.resize(DBGEN_VERSION);
 		for (auto table_id = CALL_CENTER; table_id < DBGEN_VERSION; table_id++) {
 			auto table_def = GetTDefByNumber(table_id);
 			auto table_name = string(table_def.name) + suffix;
 			auto &table_entry = catalog.GetEntry<TableCatalogEntry>(
-			    context, QualifiedName(catalog.GetName(), schema, Identifier(table_name)));
+			    context, QualifiedName::FromCatalogSchema(catalog.GetName(), schema, Identifier(table_name)));
 			if (!table_entry.IsDuckTable()) {
 				throw InvalidInputException("dsdgen is only supported for DuckDB database files");
 			}
@@ -461,7 +460,7 @@ private:
 class TPCDSDSDGenGenerator : public DSDGenGenerator {
 public:
 	TPCDSDSDGenGenerator(ClientContext &context, double scale, const Identifier &catalog_name,
-	                     const Identifier &schema, string suffix)
+	                     const vector<Identifier> &schema, string suffix)
 	    : context(context), scale(scale), catalog_name(catalog_name), schema(schema), suffix(std::move(suffix)) {
 		if (Value::IsNan(scale)) {
 			throw InvalidInputException("DSDGen requires a valid scale factor");
@@ -542,8 +541,7 @@ public:
 		auto generated_progress = static_cast<double>(current_generated_work) / static_cast<double>(total_work);
 		auto flushed_progress = static_cast<double>(current_flushed_work) / static_cast<double>(total_work);
 		auto flush_weight = mode == DSDGenMode::PARALLEL ? 0.05 : 0.0;
-		auto current_progress =
-		    100.0 * (generated_progress * (1.0 - flush_weight) + flushed_progress * flush_weight);
+		auto current_progress = 100.0 * (generated_progress * (1.0 - flush_weight) + flushed_progress * flush_weight);
 		return MinValue<double>(current_progress, 99.9);
 	}
 
@@ -617,25 +615,25 @@ private:
 			vector<unique_ptr<TPCDSDataAppender>> new_appenders;
 			new_appenders.reserve(parallel_thread_count);
 			auto launched_offset = parallel_work_offset;
-			for (idx_t thread_idx = 0; thread_idx < parallel_thread_count &&
-			                           launched_offset < parallel_work_items.size();
+			for (idx_t thread_idx = 0;
+			     thread_idx < parallel_thread_count && launched_offset < parallel_work_items.size();
 			     thread_idx++, launched_offset++) {
 				auto &work_item = parallel_work_items[launched_offset];
 				new_appenders.push_back(make_uniq<TPCDSDataAppender>(
-				    context, *parameters, scale, TPCDSAppendMode::OPTIMISTIC,
-				    NumericLimits<int64_t>::Maximum(), &generated_work, work_item.table_id));
+				    context, *parameters, scale, TPCDSAppendMode::OPTIMISTIC, NumericLimits<int64_t>::Maximum(),
+				    &generated_work, work_item.table_id));
 			}
 			for (auto &appender : new_appenders) {
-				auto task = make_uniq<ParallelTPCDSAppendTask>(executor, *appender,
-				                                               parallel_work_items[parallel_work_offset]);
+				auto task =
+				    make_uniq<ParallelTPCDSAppendTask>(executor, *appender, parallel_work_items[parallel_work_offset]);
 				executor.ScheduleTask(std::move(task));
 				parallel_work_offset++;
 			}
 			executor.WorkOnTasks();
 			for (idx_t appender_idx = 0; appender_idx < new_appenders.size(); appender_idx++) {
 				auto work_item_idx = parallel_work_offset - new_appenders.size() + appender_idx;
-				finished_appenders.push_back(make_uniq<FinishedDSDGenAppender>(
-				    parallel_work_items[work_item_idx], std::move(new_appenders[appender_idx])));
+				finished_appenders.push_back(make_uniq<FinishedDSDGenAppender>(parallel_work_items[work_item_idx],
+				                                                               std::move(new_appenders[appender_idx])));
 			}
 			return false;
 		}
@@ -653,7 +651,7 @@ private:
 			auto table_name = table_def.name + suffix;
 			D_ASSERT(table_def.name);
 			auto &table_entry = catalog.GetEntry<TableCatalogEntry>(
-			    context, QualifiedName(catalog.GetName(), schema, Identifier(table_name)));
+			    context, QualifiedName::FromCatalogSchema(catalog.GetName(), schema, Identifier(table_name)));
 
 			if (!table_entry.IsDuckTable()) {
 				throw InvalidInputException("dsdgen is only supported for DuckDB database files");
@@ -686,9 +684,8 @@ private:
 			total_row_count += row_count;
 			total_work += GetDSDGenTableProgressUnits(table_idx, row_count);
 		}
-		row_batch_size =
-		    MinValue<idx_t>(DSDGEN_MAX_ROW_BATCH_SIZE,
-		                    MaxValue<idx_t>(DSDGEN_MIN_ROW_BATCH_SIZE, total_row_count / 1000));
+		row_batch_size = MinValue<idx_t>(DSDGEN_MAX_ROW_BATCH_SIZE,
+		                                 MaxValue<idx_t>(DSDGEN_MIN_ROW_BATCH_SIZE, total_row_count / 1000));
 	}
 
 	bool HasParallelWork() const {
@@ -801,7 +798,7 @@ private:
 	ClientContext &context;
 	double scale;
 	Identifier catalog_name;
-	Identifier schema;
+	vector<Identifier> schema;
 	string suffix;
 	unique_ptr<TPCDSDSDGenParameters> parameters;
 	duckdb::vector<duckdb::unique_ptr<tpcds_append_information>> append_info;
@@ -830,12 +827,12 @@ private:
 };
 
 unique_ptr<DSDGenGenerator> CreateDSDGenGenerator(ClientContext &context, double sf, const Identifier &catalog,
-                                                  const Identifier &schema, string suffix) {
+                                                  const vector<Identifier> &schema, string suffix) {
 	return make_uniq<TPCDSDSDGenGenerator>(context, sf, catalog, schema, std::move(suffix));
 }
 
 void DSDGenWrapper::DSDGen(double scale, ClientContext &context, const Identifier &catalog_name,
-                           const Identifier &schema, string suffix) {
+                           const vector<Identifier> &schema, string suffix) {
 	auto generator = CreateDSDGenGenerator(context, scale, catalog_name, schema, std::move(suffix));
 	while (!generator->GenerateNext()) {
 	}

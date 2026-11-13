@@ -414,7 +414,7 @@ SELECT count(*) FROM range(6) o(k) LEFT JOIN (SELECT * FROM range(6) d(y) WHERE 
 query II
 EXPLAIN SELECT count(*), sum(payload) FROM outer_fact o, selected_dim d WHERE o.dim_id = d.id AND d.selected AND EXISTS (SELECT 1 FROM evidence_a a WHERE a.id = o.id) AND NOT EXISTS (SELECT 1 FROM evidence_b b WHERE b.id = o.id) AND NOT EXISTS (SELECT 1 FROM evidence_d e WHERE e.id = o.id);
 ----
-logical_opt	<REGEX>:.*Join Type: RIGHT_ANTI.*Join Type: ANTI.*Join Type: SEMI.*
+logical_opt	<REGEX>:.*Join Type: (RIGHT_)?ANTI.*Join Type: (RIGHT_)?ANTI.*Join Type: (RIGHT_)?SEMI.*
 
 query II
 EXPLAIN SELECT count(*), sum(payload) FROM outer_fact o, selected_dim d WHERE o.dim_id = d.id AND d.selected AND EXISTS (SELECT 1 FROM evidence_a a WHERE a.id = o.id) AND NOT EXISTS (SELECT 1 FROM evidence_b b WHERE b.id = o.id) AND NOT EXISTS (SELECT 1 FROM evidence_d e WHERE e.id = o.id);

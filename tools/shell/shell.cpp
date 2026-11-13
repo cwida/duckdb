@@ -44,7 +44,7 @@
 #endif
 
 #include <stdlib.h>
-#include "duckdb/logging/log_storage.hpp"
+#include "duckdb/logging/log_sink.hpp"
 #include "duckdb/logging/log_manager.hpp"
 #include "duckdb/main/statement_iterator.hpp"
 #include <string.h>
@@ -1279,30 +1279,30 @@ unique_ptr<duckdb::ProgressBarDisplay> CreateAgentProgressBar() {
 	return make_uniq<AgentProgressBarDisplay>();
 }
 
-static void RegisterShellLogger(duckdb::DuckDB &db, duckdb::shared_ptr<duckdb::LogStorage> storage_ptr) {
+static void RegisterShellLogger(duckdb::DuckDB &db, duckdb::shared_ptr<duckdb::LogSink> sink_ptr) {
 	auto *db_instance = db.instance.get();
 	auto &log_manager = db_instance->GetLogManager();
-	log_manager.RegisterLogStorage("shell_log_storage", storage_ptr);
-	log_manager.SetLogStorage(*db_instance, "shell_log_storage");
+	log_manager.RegisterLogSink("shell_log_sink", sink_ptr);
+	log_manager.SetLogSink(*db_instance, "shell_log_sink");
 	log_manager.SetEnableLogging(db_instance);
 	log_manager.SetLogLevel(duckdb::LogLevel::LOG_WARNING);
 }
 
 void ShellState::OpenDB(ShellOpenFlags flags) {
-	// log storage to stdout
-	auto std_out_log_storage = duckdb::make_shared_ptr<ShellLogStorage>(*this);
-	duckdb::shared_ptr<duckdb::LogStorage> storage_ptr = std_out_log_storage;
+	// log sink to stdout
+	auto shell_log_sink = duckdb::make_shared_ptr<ShellLogSink>(*this);
+	duckdb::shared_ptr<duckdb::LogSink> sink_ptr = shell_log_sink;
 
 	if (!db) {
 		try {
 			db = make_uniq<duckdb::DuckDB>(zDbFilename.c_str(), &config);
-			RegisterShellLogger(*db, storage_ptr);
+			RegisterShellLogger(*db, sink_ptr);
 			conn = make_uniq<duckdb::Connection>(*db);
 		} catch (std::exception &ex) {
 			PrintDatabaseError(duckdb::ErrorData(ex));
 			if (flags == ShellOpenFlags::KEEP_ALIVE_ON_FAILURE) {
 				db = make_uniq<duckdb::DuckDB>(":memory:", &config);
-				RegisterShellLogger(*db, storage_ptr);
+				RegisterShellLogger(*db, sink_ptr);
 				conn = make_uniq<duckdb::Connection>(*db);
 			} else {
 				ShellState::Exit(1);

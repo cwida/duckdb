@@ -4,6 +4,8 @@
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
+#include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/planner/binder.hpp"
 
 #include "dbgen/dbgen.hpp"
@@ -20,7 +22,7 @@ struct DBGenFunctionData : public TableFunctionData {
 
 	double sf = 0;
 	Identifier catalog = INVALID_CATALOG;
-	Identifier schema = DEFAULT_SCHEMA;
+	vector<Identifier> schema {DEFAULT_SCHEMA};
 	string suffix;
 	bool overwrite = false;
 	uint32_t children = 1;
@@ -51,10 +53,9 @@ static unique_ptr<FunctionData> DbgenBind(ClientContext &context, TableFunctionB
 	auto result = make_uniq<DBGenFunctionData>();
 
 	// Set the current catalog and schema.
-	const auto current_catalog = DatabaseManager::GetDefaultDatabase(context);
-	const auto current_schema = ClientData::Get(context).catalog_search_path->GetDefault().GetSchema();
-	result->catalog = current_catalog;
-	result->schema = current_schema;
+	result->catalog = DatabaseManager::GetDefaultDatabase(context);
+	result->schema = ClientData::Get(context).catalog_search_path->GetDefault().GetSchemaPath();
+	optional<string> schema_arg;
 
 	for (auto &kv : input.named_parameters) {
 		if (kv.second.IsNull()) {
@@ -65,7 +66,7 @@ static unique_ptr<FunctionData> DbgenBind(ClientContext &context, TableFunctionB
 		} else if (kv.first == "catalog") {
 			result->catalog = Identifier(StringValue::Get(kv.second));
 		} else if (kv.first == "schema") {
-			result->schema = Identifier(StringValue::Get(kv.second));
+			schema_arg = StringValue::Get(kv.second);
 		} else if (kv.first == "suffix") {
 			result->suffix = StringValue::Get(kv.second);
 		} else if (kv.first == "overwrite") {
@@ -78,6 +79,10 @@ static unique_ptr<FunctionData> DbgenBind(ClientContext &context, TableFunctionB
 	}
 	if (result->children != 1 && result->step == -1) {
 		throw InvalidInputException("Step must be defined when children are defined");
+	}
+	if (schema_arg) {
+		auto &catalog = Catalog::GetCatalog(context, result->catalog);
+		result->schema = catalog.ResolveSchema(context, *schema_arg).GetSchemaPath();
 	}
 	if (input.binder) {
 		auto &catalog = Catalog::GetCatalog(context, result->catalog);

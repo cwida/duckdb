@@ -77,7 +77,7 @@ USE new_name.my_schema
 statement error
 USE new_name.my_schema.my_table
 ----
-Parser Error: Expected "USE database" or "USE database.schema"
+Catalog Error: SET schema: No catalog + schema named "new_name.my_schema.my_table" found.
 
 query I
 SELECT * FROM my_table

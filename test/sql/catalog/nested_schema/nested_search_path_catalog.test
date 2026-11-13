@@ -1,0 +1,110 @@
+# name: test/sql/catalog/nested_schema/nested_search_path_catalog.test
+# description: Search paths retain the catalog in which a schema was resolved
+# group: [nested_schema]
+
+load {TEST_DIR}/nested_search_path_catalog.db readwrite v2.0.0
+
+statement ok
+ATTACH '{TEST_DIR}/nested_search_path_other.db' AS other (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE SCHEMA other.a;
+
+statement ok
+CREATE SCHEMA other.a.b;
+
+statement ok
+SET search_path = 'nested_search_path_catalog.main,other.a';
+
+statement ok
+USE a.b;
+
+query II
+SELECT current_database(), current_setting('search_path');
+----
+other	other.a.b
+
+statement ok
+CREATE TABLE t(i INTEGER);
+
+statement ok
+INSERT INTO t VALUES (42);
+
+query I
+SELECT * FROM other.a.b.t;
+----
+42
+
+statement ok
+SET search_path = 'nested_search_path_catalog.main,other.a';
+
+statement ok
+SET schema = 'a.b';
+
+query I
+SELECT * FROM t;
+----
+42
+
+statement ok
+SET search_path = 'nested_search_path_catalog.main,other.a';
+
+statement ok
+SET search_path = 'a.b,nested_search_path_catalog.main';
+
+query I
+SELECT current_setting('search_path');
+----
+other.a.b,nested_search_path_catalog.main
+
+# Top-level schemas found in another catalog retain that catalog too.
+statement ok
+SET search_path = 'nested_search_path_catalog.main,other.a';
+
+statement ok
+SET schema = 'a';
+
+query II
+SELECT current_database(), current_schema();
+----
+other	a
+
+# An implicit entry must not change catalogs when the first entry changes.
+statement ok
+RESET search_path;
+
+statement ok
+CREATE TABLE main.local_table AS SELECT 7 AS i;
+
+statement ok
+SET search_path = 'other.main,main';
+
+query I
+SELECT current_setting('search_path');
+----
+other.main,nested_search_path_catalog.main
+
+query I
+SELECT * FROM local_table;
+----
+7
+
+# System schema aliases keep the current user catalog.
+statement ok
+SET schema = 'pg_catalog';
+
+query II
+SELECT current_database(), current_schema();
+----
+other	pg_catalog
+
+statement ok
+RESET search_path;
+
+statement ok
+SET search_path = 'pg_catalog';
+
+query II
+SELECT current_database(), current_setting('search_path');
+----
+nested_search_path_catalog	pg_catalog

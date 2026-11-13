@@ -63,6 +63,10 @@ static string RepositoryToString(const LoadInfo &info) {
 			result += "IF NOT EXISTS ";
 		}
 		result += SQLIdentifier(info.repository);
+		if (info.repository_url.empty()) {
+			// no prefix: the host names it
+			return result + ";";
+		}
 		result += " WITH PREFIX " + SQLString(info.repository_url);
 		if (!info.public_keys.empty()) {
 			result += info.public_keys.size() > 1 ? " USING PUBLIC KEYS " : " USING PUBLIC KEY ";

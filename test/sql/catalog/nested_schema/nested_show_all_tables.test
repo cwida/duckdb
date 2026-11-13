@@ -1,0 +1,41 @@
+# name: test/sql/catalog/nested_schema/nested_show_all_tables.test
+# description: SHOW ALL TABLES keeps same-named tables and views in different schemas separate
+# group: [nested_schema]
+
+statement ok
+ATTACH '{TEST_DIR}/nested_show_all_tables.db' AS nested_show_all_tables (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+USE nested_show_all_tables;
+
+statement ok
+CREATE SCHEMA a;
+
+statement ok
+CREATE SCHEMA a.b;
+
+statement ok
+CREATE SCHEMA a.b.c;
+
+statement ok
+CREATE SCHEMA c;
+
+statement ok
+CREATE TABLE a.b.c.t(id INTEGER, v VARCHAR);
+
+statement ok
+CREATE TABLE c.t(id INTEGER);
+
+statement ok
+CREATE VIEW a.b.c.v AS SELECT 1 AS nested_column;
+
+statement ok
+CREATE VIEW c.v AS SELECT 2 AS top_column;
+
+query TTTTTI rowsort
+SHOW ALL TABLES;
+----
+nested_show_all_tables	c	t	[id, v]	[INTEGER, VARCHAR]	false
+nested_show_all_tables	c	t	[id]	[INTEGER]	false
+nested_show_all_tables	c	v	[nested_column]	[INTEGER]	false
+nested_show_all_tables	c	v	[top_column]	[INTEGER]	false

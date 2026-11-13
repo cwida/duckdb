@@ -1,0 +1,145 @@
+# name: test/sql/catalog/nested_schema/nested_foreign_key_paths.test
+# description: Foreign keys preserve schema paths and reject cross-schema references
+# group: [nested_schema]
+
+load {TEST_DIR}/nested_foreign_key_paths.db readwrite v2.0.0
+
+statement ok
+CREATE SCHEMA a;
+
+statement ok
+CREATE SCHEMA a.b;
+
+statement ok
+CREATE SCHEMA a.b.s;
+
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE TABLE a.b.s.pk(id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE s.pk(id INTEGER PRIMARY KEY);
+
+statement ok
+INSERT INTO a.b.s.pk VALUES (1);
+
+statement ok
+INSERT INTO s.pk VALUES (2);
+
+statement error
+CREATE TABLE s.fk(id INTEGER REFERENCES a.b.s.pk(id));
+----
+Creating foreign keys across different schemas or catalogs is not supported
+
+statement error
+CREATE TABLE a.b.s.fk(id INTEGER REFERENCES s.pk(id));
+----
+Creating foreign keys across different schemas or catalogs is not supported
+
+statement ok
+CREATE TABLE a.b.s.fk(id INTEGER REFERENCES a.b.s.pk(id));
+
+statement ok
+CREATE TABLE a.b.s.fq(id INTEGER REFERENCES nested_foreign_key_paths.a.b.s.pk(id));
+
+statement ok
+CREATE TABLE a.b.s.local_fk(id INTEGER REFERENCES pk(id));
+
+statement ok
+INSERT INTO a.b.s.fk VALUES (1);
+
+statement ok
+INSERT INTO a.b.s.fq VALUES (1);
+
+statement ok
+INSERT INTO a.b.s.local_fk VALUES (1);
+
+statement error
+INSERT INTO a.b.s.fk VALUES (2);
+----
+Violates foreign key constraint
+
+query I
+SELECT count(*) FROM duckdb_tables()
+WHERE table_name IN ('fk', 'fq', 'local_fk') AND sql LIKE '%REFERENCES a.b.s.pk(id)%';
+----
+3
+
+# A matching table name alone is not a self-reference.
+statement error
+CREATE TABLE s.fk(id INTEGER PRIMARY KEY, parent INTEGER REFERENCES a.b.s.fk(id));
+----
+Creating foreign keys across different schemas or catalogs is not supported
+
+statement ok
+CREATE TABLE a.b.s.self_ok(id INTEGER PRIMARY KEY, parent INTEGER REFERENCES a.b.s.self_ok(id));
+
+statement ok
+INSERT INTO a.b.s.self_ok VALUES (1, NULL);
+
+statement ok
+INSERT INTO a.b.s.self_ok VALUES (2, 1);
+
+query I
+SELECT sql LIKE '%REFERENCES a.b.s.self_ok(id)%' FROM duckdb_tables() WHERE table_name = 'self_ok';
+----
+true
+
+statement ok
+CREATE SCHEMA a.b."s.x";
+
+statement ok
+CREATE TABLE a.b."s.x".pk(id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE a.b."s.x".quoted_fk(id INTEGER REFERENCES a.b."s.x".pk(id));
+
+query I
+SELECT sql LIKE '%REFERENCES a.b."s.x".pk(id)%' FROM duckdb_tables() WHERE table_name = 'quoted_fk';
+----
+true
+
+restart
+
+query I
+SELECT * FROM a.b.s.fk;
+----
+1
+
+statement error
+INSERT INTO a.b.s.fk VALUES (2);
+----
+Violates foreign key constraint
+
+query I
+SELECT count(*) FROM duckdb_tables()
+WHERE table_name IN ('fk', 'fq', 'local_fk') AND sql LIKE '%REFERENCES a.b.s.pk(id)%';
+----
+3
+
+query I
+SELECT sql LIKE '%REFERENCES a.b."s.x".pk(id)%' FROM duckdb_tables() WHERE table_name = 'quoted_fk';
+----
+true
+
+query II
+SELECT * FROM a.b.s.self_ok ORDER BY id;
+----
+1	NULL
+2	1
+
+statement ok
+ATTACH ':memory:' AS other;
+
+statement ok
+CREATE SCHEMA other.s;
+
+statement ok
+CREATE TABLE other.s.pk(id INTEGER PRIMARY KEY);
+
+statement error
+CREATE TABLE s.cross_catalog(id INTEGER REFERENCES other.s.pk(id));
+----
+Creating foreign keys across different schemas or catalogs is not supported
