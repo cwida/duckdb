@@ -13,8 +13,8 @@
 #if defined(DUCKDB_DISABLE_EXTENSION_LOAD)
 #define DUCKDB_EXTENSION_LOAD_DEFINE_WARNING                                                                           \
 	"DUCKDB_DISABLE_EXTENSION_LOAD no longer disables loading and installing extensions: leave "                       \
-	"duckdb_loadable_extensions out of the link instead (ENABLE_EXTENSION_LOAD=OFF, or package_build.py with "         \
-	"extension_load=False)"
+	"duckdb_loadable_extensions out of the link by omitting loadable_extensions from DUCKDB_USE (or use "              \
+	"package_build.py with extension_load=False)"
 #if defined(_MSC_VER)
 #pragma message("warning: " DUCKDB_EXTENSION_LOAD_DEFINE_WARNING)
 #else

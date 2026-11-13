@@ -1,3 +1,4 @@
+set(DUCKDB_EXTEND ${DUCKDB_EXTEND} mysql_scanner odbc_scanner postgres_scanner sqlite_scanner)
 include("${EXTENSION_CONFIG_BASE_DIR}/mysql_scanner.cmake")
 include("${EXTENSION_CONFIG_BASE_DIR}/odbc_scanner.cmake")
 include("${EXTENSION_CONFIG_BASE_DIR}/postgres_scanner.cmake")

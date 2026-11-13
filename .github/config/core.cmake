@@ -1,4 +1,5 @@
 if (NOT DEFINED DUCKDB_MAIN_EXTENSION_CONFIG_TYPE OR DUCKDB_MAIN_EXTENSION_CONFIG_TYPE STREQUAL "IN_TREE")
+    set(DUCKDB_EXTEND ${DUCKDB_EXTEND} autocomplete tpcds tpch demo_capi)
     duckdb_extension_load(autocomplete)
     duckdb_extension_load(core_functions)
     duckdb_extension_load(icu)
@@ -10,6 +11,7 @@ if (NOT DEFINED DUCKDB_MAIN_EXTENSION_CONFIG_TYPE OR DUCKDB_MAIN_EXTENSION_CONFI
 endif()
 
 if (NOT DEFINED DUCKDB_MAIN_EXTENSION_CONFIG_TYPE OR DUCKDB_MAIN_EXTENSION_CONFIG_TYPE STREQUAL "OUT_OF_TREE")
+    set(DUCKDB_EXTEND ${DUCKDB_EXTEND} avro excel inet legacy_parser quack sqlsmith)
     include("${EXTENSION_CONFIG_BASE_DIR}/avro.cmake")
     include("${EXTENSION_CONFIG_BASE_DIR}/excel.cmake")
     include("${EXTENSION_CONFIG_BASE_DIR}/inet.cmake")

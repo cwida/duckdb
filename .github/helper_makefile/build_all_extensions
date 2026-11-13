@@ -10,7 +10,7 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
 configure_ci:
-	cd duckdb && BUILD_ALL_EXT=1 make extension_configuration && cp build/extension_configuration/vcpkg.json ../.
+	cd duckdb && EXTENSION_CONFIGS='.github/config/in_tree_extensions.cmake;.github/config/out_of_tree_extensions.cmake;.github/config/rust_based_extensions.cmake' make extension_configuration && cp build/extension_configuration/vcpkg.json ../.
 
 test_release:
 	./build/release/test/run

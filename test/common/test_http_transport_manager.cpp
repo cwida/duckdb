@@ -1287,7 +1287,7 @@ TEST_CASE("Extension downloads without an HTTP client", "[http_transport_manager
 	    [&]() { ExtensionHelper::InstallExtension(*connection.context, extension_url, options); });
 	CHECK(StringUtil::Contains(error, "HTTP provider 'none' has no HTTP client"));
 	CHECK(StringUtil::Contains(error, extension_url));
-	CHECK(StringUtil::Contains(error, "ENABLE_BUILTIN_HTTPLIB=ON"));
+	CHECK(StringUtil::Contains(error, "httplib to DUCKDB_USE"));
 	TestDeleteDirectory(extension_directory);
 }
 

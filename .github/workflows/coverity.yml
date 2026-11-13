@@ -41,7 +41,7 @@ jobs:
     - name: Build with cov-build
       run: cov-analysis-linux64/bin/cov-build --dir cov-int make
       env:
-        CORE_EXTENSIONS: "autocomplete;icu;tpcds;tpch;fts;httpfs;json;inet"
+        DUCKDB_USE: "core_functions;autocomplete;icu;tpcds;tpch;fts;httpfs;json;inet;httplib;loadable_extensions;local_extension_repository"
 
     - name: Upload the result
       run: |

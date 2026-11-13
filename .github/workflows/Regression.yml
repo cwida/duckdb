@@ -66,7 +66,6 @@ jobs:
         uses: duckdb/duckdb-ci/build-duckdb@main
         env:
           EXTENSION_CONFIGS: '${{ github.workspace }}/.github/config/linux_release_extensions.cmake'
-          DUCKDB_CAPABILITIES: 'httplib loadable_extensions'
           BUILD_BENCHMARK: 1
           BUILD_JEMALLOC: 1
           FORCE_WARN_UNUSED: 1
@@ -128,6 +127,7 @@ jobs:
           BUILD_BENCHMARK: 1
           BUILD_JEMALLOC: 1
           CORE_EXTENSIONS: "icu;tpch;tpcds;fts;json;inet;parquet;autocomplete;httpfs"
+          DUCKDB_USE: "core_functions;icu;tpch;tpcds;fts;json;inet;parquet;autocomplete;httpfs;httplib;loadable_extensions;local_extension_repository"
           DISABLE_SANITIZER: 1
         with:
           build: python3 scripts/ci/retry.py -- make release

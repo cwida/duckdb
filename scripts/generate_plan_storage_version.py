@@ -1,7 +1,7 @@
 # this script re-generates the binary file used for Test deserialized plans from file
 # before running this script, increment the version number in src/planner/logical_operator.cpp and
 # recompile (make debug)
-# Note that the test is not linked unless you BUILD_TPCH=1
+# Note that the test is not linked unless tpch is included in DUCKDB_USE
 
 import os
 import subprocess

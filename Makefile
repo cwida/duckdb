@@ -117,10 +117,112 @@ endif
 COMMON_CMAKE_VARS ?=
 CMAKE_VARS_BUILD ?=
 CMAKE_LLVM_VARS ?=
-SKIP_EXTENSIONS ?=
-BUILD_EXTENSIONS ?=
-CORE_EXTENSIONS ?=
 UNSAFE_NUMERIC_CAST ?=
+
+empty :=
+space := $(empty) $(empty)
+normalize_extension_list = $(strip $(subst ;,$(space),$(1)))
+extension_list = $(subst $(space),;,$(strip $(1)))
+true_values := 1 ON on TRUE true YES yes
+
+# Compatibility for the extension selectors used before DUCKDB_USE/DUCKDB_EXTEND. Keep this until DuckDB 2.1.
+LEGACY_EXTENSION_SELECTION_VARIABLES := BUILD_EXTENSIONS DUCKDB_EXTENSIONS CORE_EXTENSIONS BUILD_AUTOCOMPLETE \
+	BUILD_ICU BUILD_TPCH BUILD_TPCDS BUILD_FTS BUILD_HTTPFS BUILD_JSON LINK_CORE_EXTENSIONS \
+	STATICALLY_LINK_EXTENSIONS DUCKDB_CAPABILITIES SKIP_EXTENSIONS DISABLE_PARQUET DISABLE_CORE_FUNCTIONS \
+	DISABLE_BUILTIN_EXTENSIONS DISABLE_EXTENSION_LOAD DISABLE_BUILTIN_HTTPLIB
+LEGACY_EXTENSION_SELECTION_VARIABLES_USED := $(strip $(foreach legacy_var,$(LEGACY_EXTENSION_SELECTION_VARIABLES),\
+	$(if $(filter undefined,$(origin $(legacy_var))),,$(legacy_var))))
+
+LEGACY_BUILD_EXTENSIONS := $(call normalize_extension_list,$(BUILD_EXTENSIONS))
+ifneq ($(strip $(DUCKDB_EXTENSIONS)),)
+	LEGACY_BUILD_EXTENSIONS := $(call normalize_extension_list,$(DUCKDB_EXTENSIONS))
+endif
+LEGACY_BUILD_EXTENSIONS += $(call normalize_extension_list,$(CORE_EXTENSIONS))
+LEGACY_BUILD_EXTENSIONS += $(if $(filter $(true_values),$(BUILD_AUTOCOMPLETE)),autocomplete)
+LEGACY_BUILD_EXTENSIONS += $(if $(filter $(true_values),$(BUILD_ICU)),icu)
+LEGACY_BUILD_EXTENSIONS += $(if $(filter $(true_values),$(BUILD_TPCH)),tpch)
+LEGACY_BUILD_EXTENSIONS += $(if $(filter $(true_values),$(BUILD_TPCDS)),tpcds)
+LEGACY_BUILD_EXTENSIONS += $(if $(filter $(true_values),$(BUILD_FTS)),fts)
+LEGACY_BUILD_EXTENSIONS += $(if $(filter $(true_values),$(BUILD_HTTPFS)),httpfs)
+LEGACY_BUILD_EXTENSIONS += $(if $(filter $(true_values),$(BUILD_JSON)),json)
+LEGACY_BUILD_EXTENSIONS := $(sort $(LEGACY_BUILD_EXTENSIONS))
+
+LEGACY_SKIP_EXTENSIONS := $(call normalize_extension_list,$(SKIP_EXTENSIONS))
+LEGACY_SKIP_EXTENSIONS += $(if $(filter $(true_values),$(DISABLE_PARQUET)),parquet)
+LEGACY_SKIP_EXTENSIONS += $(if $(filter $(true_values),$(DISABLE_CORE_FUNCTIONS)),core_functions)
+LEGACY_SKIP_EXTENSIONS := $(sort $(LEGACY_SKIP_EXTENSIONS))
+
+LEGACY_EXTENSION_USE := core_functions parquet json icu
+ifneq ($(strip $(STATICALLY_LINK_EXTENSIONS)),)
+	LEGACY_EXTENSION_USE := $(filter-out none,$(call normalize_extension_list,$(STATICALLY_LINK_EXTENSIONS)))
+else ifneq ($(filter $(true_values),$(DISABLE_BUILTIN_EXTENSIONS)),)
+	LEGACY_EXTENSION_USE := core_functions
+else ifneq ($(filter $(true_values),$(LINK_CORE_EXTENSIONS)),)
+	LEGACY_EXTENSION_USE += $(LEGACY_BUILD_EXTENSIONS)
+endif
+LEGACY_CAPABILITY_USE := httplib loadable_extensions local_extension_repository
+ifneq ($(strip $(DUCKDB_CAPABILITIES)),)
+	LEGACY_CAPABILITY_USE := $(filter-out none,$(call normalize_extension_list,$(DUCKDB_CAPABILITIES)))
+endif
+ifneq ($(filter $(true_values),$(DISABLE_EXTENSION_LOAD)),)
+	LEGACY_CAPABILITY_USE := $(filter-out httplib loadable_extensions,$(LEGACY_CAPABILITY_USE))
+endif
+ifneq ($(filter $(true_values),$(DISABLE_BUILTIN_HTTPLIB)),)
+	LEGACY_CAPABILITY_USE := $(filter-out httplib,$(LEGACY_CAPABILITY_USE))
+endif
+LEGACY_EXTENSION_USE := $(filter-out $(LEGACY_SKIP_EXTENSIONS),$(sort $(LEGACY_EXTENSION_USE)))
+LEGACY_CAPABILITY_USE := $(filter-out $(LEGACY_SKIP_EXTENSIONS),$(sort $(LEGACY_CAPABILITY_USE)))
+LEGACY_EXTENSION_EXTEND := $(filter-out $(LEGACY_SKIP_EXTENSIONS) $(LEGACY_EXTENSION_USE),\
+	$(sort core_functions parquet json icu $(LEGACY_BUILD_EXTENSIONS)))
+LEGACY_EXTENSION_SELECTION_ACTIVE := $(strip $(LEGACY_BUILD_EXTENSIONS) $(LEGACY_SKIP_EXTENSIONS) \
+	$(STATICALLY_LINK_EXTENSIONS) $(DUCKDB_CAPABILITIES) \
+	$(filter $(true_values),$(LINK_CORE_EXTENSIONS) $(DISABLE_BUILTIN_EXTENSIONS) \
+		$(DISABLE_EXTENSION_LOAD) $(DISABLE_BUILTIN_HTTPLIB)))
+
+ifneq ($(filter jemalloc,$(LEGACY_BUILD_EXTENSIONS)),)
+	BUILD_JEMALLOC ?= 1
+	LEGACY_EXTENSION_EXTEND := $(filter-out jemalloc,$(LEGACY_EXTENSION_EXTEND))
+endif
+ifneq ($(filter jemalloc,$(LEGACY_SKIP_EXTENSIONS)),)
+	BUILD_JEMALLOC ?= 0
+endif
+
+ifneq ($(strip $(LEGACY_EXTENSION_SELECTION_VARIABLES_USED)),)
+ifneq ($(LEGACY_EXTENSION_SELECTION_ACTIVE),)
+ifneq ($(filter-out undefined,$(origin DUCKDB_USE) $(origin DUCKDB_EXTEND)),)
+$(warning Legacy extension variables $(LEGACY_EXTENSION_SELECTION_VARIABLES_USED) are deprecated and ignored because DUCKDB_USE or DUCKDB_EXTEND is set; support will be removed in DuckDB 2.1)
+else
+	DUCKDB_USE := $(call extension_list,$(LEGACY_EXTENSION_USE) $(LEGACY_CAPABILITY_USE))
+	DUCKDB_EXTEND := $(call extension_list,$(LEGACY_EXTENSION_EXTEND))
+$(warning Legacy extension variables $(LEGACY_EXTENSION_SELECTION_VARIABLES_USED) are deprecated; use DUCKDB_USE='$(DUCKDB_USE)' DUCKDB_EXTEND='$(DUCKDB_EXTEND)' instead; support will be removed in DuckDB 2.1)
+endif
+else
+$(warning Legacy extension variables $(LEGACY_EXTENSION_SELECTION_VARIABLES_USED) are deprecated and have no effect with their current values; support will be removed in DuckDB 2.1)
+endif
+endif
+
+ifneq ($(filter $(true_values),$(BUILD_ALL_EXT)),)
+	EXTENSION_CONFIGS := .github/config/in_tree_extensions.cmake;.github/config/out_of_tree_extensions.cmake;.github/config/rust_based_extensions.cmake
+else ifneq ($(filter $(true_values),$(BUILD_ALL_IT_EXT)),)
+	EXTENSION_CONFIGS := .github/config/in_tree_extensions.cmake
+else ifneq ($(filter $(true_values),$(BUILD_ALL_OOT_EXT)),)
+	EXTENSION_CONFIGS := .github/config/out_of_tree_extensions.cmake
+endif
+LEGACY_BUILD_ALL_VARIABLES_USED := $(strip $(foreach legacy_var,BUILD_ALL_EXT BUILD_ALL_IT_EXT BUILD_ALL_OOT_EXT,\
+	$(if $(filter undefined,$(origin $(legacy_var))),,$(legacy_var))))
+ifneq ($(strip $(LEGACY_BUILD_ALL_VARIABLES_USED)),)
+ifneq ($(filter $(true_values),$(BUILD_ALL_EXT) $(BUILD_ALL_IT_EXT) $(BUILD_ALL_OOT_EXT)),)
+$(warning Legacy extension variables $(LEGACY_BUILD_ALL_VARIABLES_USED) are deprecated; use EXTENSION_CONFIGS='$(EXTENSION_CONFIGS)' instead; support will be removed in DuckDB 2.1)
+else
+$(warning Legacy extension variables $(LEGACY_BUILD_ALL_VARIABLES_USED) are deprecated and have no effect with their current values; support will be removed in DuckDB 2.1)
+endif
+endif
+
+LEGACY_UNSUPPORTED_EXTENSION_VARIABLES_USED := $(strip $(foreach legacy_var,DUCKDB_NEW_EXTENSION_BUILD USE_MERGED_VCPKG_MANIFEST,\
+	$(if $(filter undefined,$(origin $(legacy_var))),,$(legacy_var))))
+ifneq ($(strip $(LEGACY_UNSUPPORTED_EXTENSION_VARIABLES_USED)),)
+$(warning $(LEGACY_UNSUPPORTED_EXTENSION_VARIABLES_USED) no longer change extension builds and can be removed; support will be removed in DuckDB 2.1)
+endif
 ifdef DUCKDB_VERSION
         COMMON_CMAKE_VARS:=${COMMON_CMAKE_VARS} -DDUCKDB_EXPLICIT_VERSION="${DUCKDB_VERSION}"
 else ifdef OVERRIDE_GIT_DESCRIBE
@@ -138,24 +240,11 @@ endif
 ifneq (${CXX_STANDARD}, )
         CMAKE_VARS:=${CMAKE_VARS} -DCMAKE_CXX_STANDARD="${CXX_STANDARD}"
 endif
-ifneq (${DUCKDB_EXTENSIONS}, )
-	BUILD_EXTENSIONS:=${DUCKDB_EXTENSIONS}
-endif
-ifneq (${CORE_EXTENSIONS}, )
-	CORE_EXTENSIONS:=${CORE_EXTENSIONS}
-endif
-ifeq (${DISABLE_PARQUET}, 1)
-	SKIP_EXTENSIONS:=${SKIP_EXTENSIONS};parquet
-endif
 ifeq (${DISABLE_MAIN_DUCKDB_LIBRARY}, 1)
 	CMAKE_VARS:=${CMAKE_VARS} -DBUILD_MAIN_DUCKDB_LIBRARY=0
 endif
 ifneq (${EXTENSION_STATIC_BUILD}, )
 	CMAKE_VARS:=${CMAKE_VARS} -DEXTENSION_STATIC_BUILD=${EXTENSION_STATIC_BUILD}
-endif
-ifeq (${DISABLE_BUILTIN_EXTENSIONS}, 1)
-$(warning DISABLE_BUILTIN_EXTENSIONS is deprecated, use STATICALLY_LINK_EXTENSIONS=core_functions)
-	STATICALLY_LINK_EXTENSIONS ?= core_functions
 endif
 ifeq (${GENERATE_EXTENSION_ENTRIES}, 1)
 	CMAKE_VARS:=${CMAKE_VARS} -DGENERATE_EXTENSION_ENTRIES=1
@@ -170,56 +259,11 @@ endif
 ifeq (${BUILD_BENCHMARK}, 1)
 	CMAKE_VARS:=${CMAKE_VARS} -DBUILD_BENCHMARKS=1
 endif
-ifeq (${BUILD_AUTOCOMPLETE}, 1)
-	BUILD_EXTENSIONS:=${BUILD_EXTENSIONS};autocomplete
-endif
-ifeq (${BUILD_ICU}, 1)
-	BUILD_EXTENSIONS:=${BUILD_EXTENSIONS};icu
-endif
-ifeq (${BUILD_TPCH}, 1)
-	BUILD_EXTENSIONS:=${BUILD_EXTENSIONS};tpch
-endif
-ifeq (${BUILD_TPCDS}, 1)
-	BUILD_EXTENSIONS:=${BUILD_EXTENSIONS};tpcds
-endif
-ifeq (${BUILD_FTS}, 1)
-	BUILD_EXTENSIONS:=${BUILD_EXTENSIONS};fts
-endif
-ifeq (${BUILD_HTTPFS}, 1)
-	BUILD_EXTENSIONS:=${BUILD_EXTENSIONS};httpfs
-endif
-ifeq (${BUILD_JSON}, 1)
-	BUILD_EXTENSIONS:=${BUILD_EXTENSIONS};json
-endif
 ifdef BUILD_JEMALLOC
 	CMAKE_VARS:=${CMAKE_VARS} -DENABLE_JEMALLOC=${BUILD_JEMALLOC}
 endif
-ifdef CORE_EXTENSIONS
-	BUILD_EXTENSIONS:=${BUILD_EXTENSIONS};${CORE_EXTENSIONS}
-endif
-ifeq (${BUILD_ALL_EXT}, 1)
-	EXTENSION_CONFIGS:=.github/config/in_tree_extensions.cmake;.github/config/out_of_tree_extensions.cmake;.github/config/rust_based_extensions.cmake
-else ifeq (${BUILD_ALL_IT_EXT}, 1)
-	EXTENSION_CONFIGS:=.github/config/in_tree_extensions.cmake
-else ifeq (${BUILD_ALL_OOT_EXT}, 1)
-	EXTENSION_CONFIGS:=.github/config/out_of_tree_extensions.cmake
-endif
-
-# Extension-selecting Make builds use the synchronized extension source tree by default.
-# DUCKDB_NEW_EXTENSION_BUILD=0 remains available as a temporary legacy escape hatch.
-ifneq ($(strip $(BUILD_EXTENSIONS)$(EXTENSION_CONFIGS)),)
-ifeq ($(origin DUCKDB_NEW_EXTENSION_BUILD), undefined)
-	DUCKDB_NEW_EXTENSION_BUILD:=1
-endif
-endif
-ifneq ($(filter-out 0,$(strip $(DUCKDB_NEW_EXTENSION_BUILD))),)
-	DUCKDB_NEW_EXTENSION_BUILD_ENABLED:=1
-	export DUCKDB_NEW_EXTENSION_BUILD
-endif
-ifndef DUCKDB_NEW_EXTENSION_BUILD_ENABLED
-ifdef USE_MERGED_VCPKG_MANIFEST
-	EXTENSION_CONFIG_STEP = build/extension_configuration/vcpkg.json
-endif
+ifneq ($(strip $(DUCKDB_USE)$(DUCKDB_EXTEND)$(EXTENSION_CONFIGS)),)
+	DUCKDB_EXTENSION_SYNC_ENABLED:=1
 endif
 
 ifeq (${STATIC_OPENSSL}, 1)
@@ -264,8 +308,11 @@ endif
 ifneq ("${FORCE_QUERY_LOG}a", "a")
 	CMAKE_VARS:=${CMAKE_VARS} -DFORCE_QUERY_LOG=${FORCE_QUERY_LOG}
 endif
-ifneq ($(BUILD_EXTENSIONS),)
-	CMAKE_VARS:=${CMAKE_VARS} -DBUILD_EXTENSIONS="$(BUILD_EXTENSIONS)"
+ifneq ($(origin DUCKDB_USE),undefined)
+	CMAKE_VARS:=${CMAKE_VARS} -DDUCKDB_USE="$(DUCKDB_USE)"
+endif
+ifneq ($(origin DUCKDB_EXTEND),undefined)
+	CMAKE_VARS:=${CMAKE_VARS} -DDUCKDB_EXTEND="$(DUCKDB_EXTEND)"
 endif
 ifneq ($(EXTENSION_CONFIG_BASE_DIR),)
 	CMAKE_VARS:=${CMAKE_VARS} -DEXTENSION_CONFIG_BASE_DIR="$(EXTENSION_CONFIG_BASE_DIR)"
@@ -273,16 +320,6 @@ endif
 ifeq ($(SHADOW_FORBIDDEN_FUNCTIONS),1)
 	CMAKE_VARS:=${CMAKE_VARS} -DSHADOW_FORBIDDEN_FUNCTIONS=1
 endif
-ifneq ($(SKIP_EXTENSIONS),)
-	CMAKE_VARS:=${CMAKE_VARS} -DSKIP_EXTENSIONS="$(SKIP_EXTENSIONS)"
-endif
-# LINK_CORE_EXTENSIONS=1 also links the extensions named in BUILD_EXTENSIONS / CORE_EXTENSIONS, which otherwise are only
-# built; always passed, so leaving it out turns it off again
-CMAKE_VARS:=${CMAKE_VARS} -DLINK_CORE_EXTENSIONS=$(if $(filter 1 ON on TRUE true,$(LINK_CORE_EXTENSIONS)),ON,OFF)
-# what the DuckDB targets link (space or semicolon separated, or none); always passed, so leaving them out restores the
-# defaults
-CMAKE_VARS:=${CMAKE_VARS} -DSTATICALLY_LINK_EXTENSIONS="$(STATICALLY_LINK_EXTENSIONS)"
-CMAKE_VARS:=${CMAKE_VARS} -DDUCKDB_CAPABILITIES="$(DUCKDB_CAPABILITIES)"
 ifneq ($(EXTENSION_CONFIGS),)
 	CMAKE_VARS:=${CMAKE_VARS} -DDUCKDB_EXTENSION_CONFIGS="$(EXTENSION_CONFIGS)"
 endif
@@ -355,15 +392,6 @@ endif
 ifeq (${DEBUG_STACKTRACE}, 1)
 	CMAKE_VARS:=${CMAKE_VARS} -DDEBUG_STACKTRACE=1
 endif
-ifeq (${DISABLE_CORE_FUNCTIONS}, 1)
-	SKIP_EXTENSIONS:=${SKIP_EXTENSIONS};core_functions
-endif
-ifeq (${DISABLE_EXTENSION_LOAD}, 1)
-	CMAKE_VARS:=${CMAKE_VARS} -DENABLE_EXTENSION_LOAD=0
-endif
-ifeq (${DISABLE_BUILTIN_HTTPLIB}, 1)
-	CMAKE_VARS:=${CMAKE_VARS} -DENABLE_BUILTIN_HTTPLIB=0
-endif
 ifeq (${DISABLE_SHELL}, 1)
 	CMAKE_VARS:=${CMAKE_VARS} -DBUILD_SHELL=0
 endif
@@ -415,15 +443,10 @@ endif
 ifneq ("${VCPKG_TARGET_TRIPLET}", "")
 	CMAKE_VARS_BUILD:=${CMAKE_VARS_BUILD} -DVCPKG_TARGET_TRIPLET='${VCPKG_TARGET_TRIPLET}'
 endif
-ifndef DUCKDB_NEW_EXTENSION_BUILD_ENABLED
-ifeq (${USE_MERGED_VCPKG_MANIFEST}, 1)
-	CMAKE_VARS:=${CMAKE_VARS} -DVCPKG_MANIFEST_DIR='${PROJ_DIR}build/extension_configuration'
-endif
-endif
 sync_extensions_into =
 vcpkg_cmake_flag =
-ifdef DUCKDB_NEW_EXTENSION_BUILD_ENABLED
-sync_extensions_into = $(PYTHON) scripts/sync_out_of_tree_extensions.py $(if $(BUILD_EXTENSIONS),--build-extensions "$(BUILD_EXTENSIONS)") $(if $(EXTENSION_CONFIGS),--extension-configs "$(EXTENSION_CONFIGS)") $(if $(EXTENSION_CONFIG_BASE_DIR),--extension-config-base-dir "$(EXTENSION_CONFIG_BASE_DIR)") --output-dir '$(1)' &&
+ifdef DUCKDB_EXTENSION_SYNC_ENABLED
+sync_extensions_into = $(PYTHON) scripts/sync_out_of_tree_extensions.py $(if $(filter-out undefined,$(origin DUCKDB_USE)),--duckdb-use "$(DUCKDB_USE)") $(if $(filter-out undefined,$(origin DUCKDB_EXTEND)),--duckdb-extend "$(DUCKDB_EXTEND)") $(if $(EXTENSION_CONFIGS),--extension-configs "$(EXTENSION_CONFIGS)") $(if $(EXTENSION_CONFIG_BASE_DIR),--extension-config-base-dir "$(EXTENSION_CONFIG_BASE_DIR)") --output-dir '$(1)' &&
 ifneq ("${VCPKG_TOOLCHAIN_PATH}", "")
 vcpkg_cmake_flag = -DVCPKG_MANIFEST_DIR='$(1)'
 endif
@@ -484,12 +507,12 @@ WINDOWS_GENERATOR_PLATFORM ?= x64
 BUNDLED_EXTENSIONS_CONFIGS ?= $(PWD)/.github/config/bundled_extensions.cmake
 windows_release: ${EXTENSION_CONFIG_STEP}
 	$(call sync_extensions_into,${PROJ_DIR}) \
-	cmake $(GENERATOR) $(FORCE_COLOR) $(if $(filter ninja,$(GEN)),,-DCMAKE_GENERATOR_PLATFORM=$(WINDOWS_GENERATOR_PLATFORM)) ${WARNINGS_AS_ERRORS} ${FORCE_WARN_UNUSED_FLAG} ${FORCE_32_BIT_FLAG} ${DISABLE_SANITIZER_FLAG} ${STATIC_LIBCPP} ${CMAKE_VARS} ${CMAKE_VARS_BUILD} $(call vcpkg_cmake_flag,${PROJ_DIR}) -DCMAKE_BUILD_TYPE=Release -DDUCKDB_CAPABILITIES="httplib;loadable_extensions" -DDUCKDB_EXTENSION_CONFIGS="$(BUNDLED_EXTENSIONS_CONFIGS)" . && \
+	cmake $(GENERATOR) $(FORCE_COLOR) $(if $(filter ninja,$(GEN)),,-DCMAKE_GENERATOR_PLATFORM=$(WINDOWS_GENERATOR_PLATFORM)) ${WARNINGS_AS_ERRORS} ${FORCE_WARN_UNUSED_FLAG} ${FORCE_32_BIT_FLAG} ${DISABLE_SANITIZER_FLAG} ${STATIC_LIBCPP} ${CMAKE_VARS} ${CMAKE_VARS_BUILD} $(call vcpkg_cmake_flag,${PROJ_DIR}) -DCMAKE_BUILD_TYPE=Release -DDUCKDB_USE="core_functions;icu;json;parquet;autocomplete;httplib;loadable_extensions" -DDUCKDB_EXTENSION_CONFIGS="$(BUNDLED_EXTENSIONS_CONFIGS)" . && \
 	$(NINJA_BUILD_WRAPPER) cmake --build . --config Release
 
 windows_release_32: ${EXTENSION_CONFIG_STEP}
 	$(call sync_extensions_into,${PROJ_DIR}) \
-	cmake $(GENERATOR) $(FORCE_COLOR) $(if $(filter ninja,$(GEN)),,-DCMAKE_GENERATOR_PLATFORM=Win32) ${WARNINGS_AS_ERRORS} ${FORCE_WARN_UNUSED_FLAG} ${FORCE_32_BIT_FLAG} ${DISABLE_SANITIZER_FLAG} ${STATIC_LIBCPP} ${CMAKE_VARS} ${CMAKE_VARS_BUILD} $(call vcpkg_cmake_flag,${PROJ_DIR}) -DCMAKE_BUILD_TYPE=Release -DDUCKDB_CAPABILITIES="httplib;loadable_extensions" -DDUCKDB_EXTENSION_CONFIGS="$(BUNDLED_EXTENSIONS_CONFIGS)" . && \
+	cmake $(GENERATOR) $(FORCE_COLOR) $(if $(filter ninja,$(GEN)),,-DCMAKE_GENERATOR_PLATFORM=Win32) ${WARNINGS_AS_ERRORS} ${FORCE_WARN_UNUSED_FLAG} ${FORCE_32_BIT_FLAG} ${DISABLE_SANITIZER_FLAG} ${STATIC_LIBCPP} ${CMAKE_VARS} ${CMAKE_VARS_BUILD} $(call vcpkg_cmake_flag,${PROJ_DIR}) -DCMAKE_BUILD_TYPE=Release -DDUCKDB_USE="core_functions;icu;json;parquet;autocomplete;httplib;loadable_extensions" -DDUCKDB_EXTENSION_CONFIGS="$(BUNDLED_EXTENSIONS_CONFIGS)" . && \
 	$(NINJA_BUILD_WRAPPER) cmake --build . --config Release
 
 # The wasm targets do not go through CMAKE_VARS, so DISABLE_RTTI is forwarded explicitly.
@@ -526,12 +549,12 @@ codecov: ${EXTENSION_CONFIG_STEP}
 clreldebug:
 	mkdir -p ./build/clreldebug && \
 	cd build/clreldebug && \
-	cmake $(GENERATOR) $(FORCE_COLOR) ${WARNINGS_AS_ERRORS} ${FORCE_32_BIT_FLAG} ${DISABLE_UNITY_FLAG} ${STATIC_LIBCPP} ${CMAKE_VARS} -DBUILD_FTS_EXTENSION=1 -DENABLE_SANITIZER=0 -DENABLE_UBSAN=0 -DCMAKE_BUILD_TYPE=RelWithDebInfo ../.. && \
+	cmake $(GENERATOR) $(FORCE_COLOR) ${WARNINGS_AS_ERRORS} ${FORCE_32_BIT_FLAG} ${DISABLE_UNITY_FLAG} ${STATIC_LIBCPP} ${CMAKE_VARS} -DENABLE_SANITIZER=0 -DENABLE_UBSAN=0 -DCMAKE_BUILD_TYPE=RelWithDebInfo ../.. && \
 	$(NINJA_BUILD_WRAPPER) cmake --build . --config RelWithDebInfo
 
 SYNC_OUTPUT_DIR ?= build
 sync_out_of_tree_extensions:
-	$(PYTHON) scripts/sync_out_of_tree_extensions.py $(if $(BUILD_EXTENSIONS),--build-extensions "$(BUILD_EXTENSIONS)") $(if $(EXTENSION_CONFIGS),--extension-configs "$(EXTENSION_CONFIGS)") $(if $(EXTENSION_CONFIG_BASE_DIR),--extension-config-base-dir "$(EXTENSION_CONFIG_BASE_DIR)") --output-dir '${PROJ_DIR}$(SYNC_OUTPUT_DIR)'
+	$(PYTHON) scripts/sync_out_of_tree_extensions.py $(if $(filter-out undefined,$(origin DUCKDB_USE)),--duckdb-use "$(DUCKDB_USE)") $(if $(filter-out undefined,$(origin DUCKDB_EXTEND)),--duckdb-extend "$(DUCKDB_EXTEND)") $(if $(EXTENSION_CONFIGS),--extension-configs "$(EXTENSION_CONFIGS)") $(if $(EXTENSION_CONFIG_BASE_DIR),--extension-config-base-dir "$(EXTENSION_CONFIG_BASE_DIR)") --output-dir '${PROJ_DIR}$(SYNC_OUTPUT_DIR)'
 
 extension_configuration: build/extension_configuration/vcpkg.json
 
@@ -539,10 +562,7 @@ extension/extension_config_local.cmake:
 	touch extension/extension_config_local.cmake
 
 build/extension_configuration/vcpkg.json: extension/extension_config_local.cmake extension/extension_config.cmake
-	mkdir -p ./build/extension_configuration && \
-	cd build/extension_configuration && \
-	cmake $(GENERATOR) $(FORCE_COLOR) ${CMAKE_VARS} -DEXTENSION_CONFIG_BUILD=TRUE -DVCPKG_BUILD=1 -DCMAKE_BUILD_TYPE=Release ../.. && \
-	$(NINJA_BUILD_WRAPPER) cmake --build . --config Release
+	$(PYTHON) scripts/sync_out_of_tree_extensions.py $(if $(filter-out undefined,$(origin DUCKDB_USE)),--duckdb-use "$(DUCKDB_USE)") $(if $(filter-out undefined,$(origin DUCKDB_EXTEND)),--duckdb-extend "$(DUCKDB_EXTEND)") $(if $(EXTENSION_CONFIGS),--extension-configs "$(EXTENSION_CONFIGS)") $(if $(EXTENSION_CONFIG_BASE_DIR),--extension-config-base-dir "$(EXTENSION_CONFIG_BASE_DIR)") --output-dir '${PROJ_DIR}build/extension_configuration'
 
 unittest: debug
 	build/debug/test/run $(T)
@@ -717,20 +737,17 @@ shared-libs-release-artifact:
 # Writes a C source defining duckdb_register_static_extensions(), which links statically built extensions and
 # capabilities into a program: compile it next to your own sources, put their archives before libduckdb_static.a, and
 # call the function before opening a database (or compile extension/loader/static_extension_autoregister.cpp too to have
-# it called before main). DUCKDB_CAPABILITIES and STATICALLY_LINK_EXTENSIONS pick them (LINK_EXTENSIONS is
-# the older name for the latter, 'none' picks nothing); each defaults to every archive of its kind in
-# STATIC_EXTENSION_LOADER_BUILD_DIR.
+# it called before main). DUCKDB_USE picks both extensions and capabilities and defaults to every built archive.
 LOADER_BUILT_CAPABILITIES = $(if $(wildcard $(STATIC_EXTENSION_LOADER_BUILD_DIR)/src/main/http/libduckdb_httplib.a),httplib) $(if $(wildcard $(STATIC_EXTENSION_LOADER_BUILD_DIR)/src/main/extension/libduckdb_loadable_extensions.a),loadable_extensions)
 LOADER_BUILT_EXTENSIONS = $(patsubst lib%_extension.a,%,$(notdir $(wildcard $(STATIC_EXTENSION_LOADER_BUILD_DIR)/extension/*/lib*_extension.a)))
-LOADER_CAPABILITIES = $(if $(strip $(DUCKDB_CAPABILITIES)),$(subst ;, ,$(DUCKDB_CAPABILITIES)),$(LOADER_BUILT_CAPABILITIES))
-LOADER_EXTENSIONS = $(or $(strip $(subst ;, ,$(STATICALLY_LINK_EXTENSIONS) $(LINK_EXTENSIONS))),$(LOADER_BUILT_EXTENSIONS))
+LOADER_SELECTION = $(if $(filter-out undefined,$(origin DUCKDB_USE)),$(subst ;, ,$(DUCKDB_USE)),$(LOADER_BUILT_CAPABILITIES) $(LOADER_BUILT_EXTENSIONS))
 STATIC_EXTENSION_LOADER_BUILD_DIR ?= build/release
 STATIC_EXTENSION_LOADER_FILE ?= $(STATIC_EXTENSION_LOADER_BUILD_DIR)/static_extension_loader.c
 
 .PHONY: static_extension_loader
 static_extension_loader:
 	$(PYTHON) scripts/generate_static_extension_loader.py --output "$(STATIC_EXTENSION_LOADER_FILE)" \
-		$(filter-out none,$(LOADER_CAPABILITIES) $(LOADER_EXTENSIONS))
+		$(LOADER_SELECTION)
 	@echo "Wrote $(STATIC_EXTENSION_LOADER_FILE)"
 
 .PHONY: static-libs-release-artifact
@@ -870,7 +887,7 @@ test_benchmark_sql:
 tidy-check:
 	mkdir -p ./build/tidy && \
 	cd build/tidy && \
-	cmake -DCLANG_TIDY=1 -DDISABLE_UNITY=1 -DBUILD_EXTENSIONS=parquet -DBUILD_SHELL=0 ../.. && \
+	cmake -DCLANG_TIDY=1 -DDISABLE_UNITY=1 -DDUCKDB_USE=parquet -DBUILD_SHELL=0 ../.. && \
 	$(PYTHON) ../../scripts/run-clang-tidy.py -quiet -j $(CI_CPU_COUNT) ${TIDY_BINARY_PARAMETER} ${TIDY_SHARD_PARAMETERS} ${TIDY_PERFORM_CHECKS}
 
 install-clangd-tidy:
@@ -881,21 +898,21 @@ install-clangd-tidy:
 tidy-check-clangd:
 	mkdir -p ./build/tidy && \
 	cd build/tidy && \
-	cmake $(GENERATOR) $(FORCE_COLOR) ${STATIC_LIBCPP} ${CMAKE_VARS} -DCLANG_TIDY=1 -DDISABLE_UNITY=1 -DBUILD_EXTENSIONS=parquet -DBUILD_SHELL=0 ../.. && \
+	cmake $(GENERATOR) $(FORCE_COLOR) ${STATIC_LIBCPP} ${CMAKE_VARS} -DCLANG_TIDY=1 -DDISABLE_UNITY=1 -DDUCKDB_USE=parquet -DBUILD_SHELL=0 ../.. && \
 	trap 'rm -rf ./pchs' EXIT && \
 	$(PYTHON) -u ../../scripts/run-clangd-tidy.py -j $(CI_TIDY_JOBS) ${CLANGD_TIDY_BINARY_PARAMETER} ${CLANGD_BINARY_PARAMETER} ${CLANGD_TIDY_QUERY_DRIVER_PARAMETER}
 
 tidy-check-diff:
 	mkdir -p ./build/tidy && \
 	cd build/tidy && \
-	cmake -DCLANG_TIDY=1 -DDISABLE_UNITY=1 -DBUILD_EXTENSIONS=parquet -DBUILD_SHELL=0 ../.. && \
+	cmake -DCLANG_TIDY=1 -DDISABLE_UNITY=1 -DDUCKDB_USE=parquet -DBUILD_SHELL=0 ../.. && \
 	cd ../../ && \
 	git diff origin/${GIT_BASE_BRANCH} . ':(exclude)tools' ':(exclude)extension' ':(exclude)test' ':(exclude)benchmark' ':(exclude)third_party' ':(exclude)src/common/adbc' ':(exclude)src/main/capi' ':(exclude)examples/embedded-c' | $(PYTHON) scripts/clang-tidy-diff.py -path build/tidy -quiet -j $(CI_CPU_COUNT) ${TIDY_BINARY_PARAMETER} ${TIDY_PERFORM_CHECKS} -p1
 
 tidy-fix:
 	mkdir -p ./build/tidy && \
 	cd build/tidy && \
-	cmake -DCLANG_TIDY=1 -DDISABLE_UNITY=1 -DBUILD_EXTENSIONS=parquet -DBUILD_SHELL=0 ../.. && \
+	cmake -DCLANG_TIDY=1 -DDISABLE_UNITY=1 -DDUCKDB_USE=parquet -DBUILD_SHELL=0 ../.. && \
 	$(PYTHON) ../../scripts/run-clang-tidy.py -fix
 
 test_compile: # test compilation of individual cpp files
@@ -1062,4 +1079,4 @@ cleanup-vcpkg:
 	rm -rf vcpkg
 
 test-utils:
-	make release EXTENSION_CONFIGS='.github/config/extensions/httpfs.cmake;.github/config/extensions/test-utils.cmake;.github/config/extensions/inet.cmake' STATICALLY_LINK_EXTENSIONS='core_functions;parquet;json;icu;tpcds;tpch;autocomplete;httpfs;inet;test_utils' DUCKDB_EXTENSIONS='tpcds;icu;autocomplete;tpch;json'
+	make release EXTENSION_CONFIGS='.github/config/extensions/httpfs.cmake;.github/config/extensions/test-utils.cmake;.github/config/extensions/inet.cmake' DUCKDB_USE='core_functions;parquet;json;icu;tpcds;tpch;autocomplete;httpfs;inet;test_utils;httplib;loadable_extensions;local_extension_repository'

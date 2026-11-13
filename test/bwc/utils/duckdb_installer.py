@@ -146,8 +146,7 @@ def install_extensions(cli_path, extensions):
                     + ";".join([f".github/config/extensions/{ext}.cmake" for ext in cmake_files_ext])
                     + "' "
                 )
-            if len(core_extensions) > 0:
-                install_cmd += "DUCKDB_EXTENSIONS='" + ";".join(core_extensions) + "'"
+            install_cmd += "DUCKDB_EXTEND='" + ";".join(failed) + "'"
 
             if len(cmake_files_ext) > 0 or len(core_extensions) > 0:
                 logger.info(

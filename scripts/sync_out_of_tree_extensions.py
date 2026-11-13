@@ -2,13 +2,10 @@
 """
 Syncs out-of-tree extensions into extension/external/<name> directories.
 
-Used when DUCKDB_NEW_EXTENSION_BUILD=1. Reads the following environment variables
-to determine which extensions to sync:
+Reads the following environment variables to determine which extensions to sync:
 
-  BUILD_EXTENSIONS   Semicolon-separated list of extension names
-                     (e.g. "spatial;delta;postgres_scanner")
-  DUCKDB_EXTENSIONS  Alias for BUILD_EXTENSIONS
-  CORE_EXTENSIONS   Legacy extension list, added to BUILD_EXTENSIONS
+  DUCKDB_USE         Space- or semicolon-separated extensions to build and link
+  DUCKDB_EXTEND      Space- or semicolon-separated extensions to build without linking
   EXTENSION_CONFIGS  Semicolon-separated list of cmake config file paths
                      whose duckdb_extension_load(... GIT_URL ...) calls are parsed
   EXTENSION_CONFIG_BASE_DIR
@@ -106,7 +103,7 @@ def parse_cmake_file(cmake_path, extension_config_base_dir=None, include_non_rem
     extensions = []
 
     ext_config_base_dir = Path(extension_config_base_dir or cmake_path.parent / 'extensions').resolve()
-    options = {'DONT_LINK', 'DONT_BUILD', 'LOAD_TESTS', 'APPLY_PATCHES'}
+    options = {'DONT_BUILD', 'LOAD_TESTS', 'APPLY_PATCHES'}
     keywords = options | {
         'SOURCE_DIR',
         'INCLUDE_DIR',
@@ -129,6 +126,8 @@ def parse_cmake_file(cmake_path, extension_config_base_dir=None, include_non_rem
             continue
         if command != 'duckdb_extension_load' or not arguments:
             continue
+        if 'DONT_LINK' in arguments:
+            raise ValueError("DONT_LINK was removed; use DUCKDB_EXTEND")
         name = arguments[0]
         values = {}
         keyword = None
@@ -154,6 +153,42 @@ def parse_cmake_file(cmake_path, extension_config_base_dir=None, include_non_rem
         )
 
     return extensions
+
+
+def parse_cmake_selection(cmake_path, extension_config_base_dir=None, _include_stack=()):
+    """Return extension names listed by literal DUCKDB_USE/DUCKDB_EXTEND set commands."""
+    cmake_path = Path(cmake_path).resolve()
+    if cmake_path in _include_stack:
+        raise ValueError(f"Recursive extension config include: {cmake_path}")
+    include_stack = (*_include_stack, cmake_path)
+    content = cmake_path.read_text(encoding='utf-8')
+    ext_config_base_dir = Path(extension_config_base_dir or cmake_path.parent / 'extensions').resolve()
+    selected = []
+
+    for command, arguments in cmake_commands(content):
+        if command == 'include' and arguments:
+            include_path = arguments[0].replace('${EXTENSION_CONFIG_BASE_DIR}', str(ext_config_base_dir))
+            include_path = include_path.replace('${CMAKE_CURRENT_LIST_DIR}', str(cmake_path.parent))
+            included = Path(include_path)
+            if included.is_absolute():
+                if not included.exists() and 'OPTIONAL' in arguments[1:]:
+                    continue
+                selected.extend(parse_cmake_selection(included, ext_config_base_dir, include_stack))
+            continue
+        if command != 'set' or len(arguments) < 2 or arguments[0] not in ('DUCKDB_USE', 'DUCKDB_EXTEND'):
+            continue
+        if arguments[0] == 'DUCKDB_EXTEND':
+            invalid = {'httplib', 'loadable_extensions', 'local_extension_repository'}
+        else:
+            invalid = set()
+        for argument in arguments[1:]:
+            if argument.startswith('${') or argument in ('CACHE', 'STRING', 'PARENT_SCOPE', 'FORCE'):
+                continue
+            for name in re.split(r'[;,\s]+', argument):
+                if name and name not in invalid:
+                    selected.append(name)
+
+    return selected
 
 
 class ExtensionNotCleanError(Exception):
@@ -445,7 +480,7 @@ def sync_extension(ext, external_dir, repo_root):
 
 
 def collect_extensions(
-    repo_root, build_extensions_arg=None, extension_configs_arg=None, extension_config_base_dir=None
+    repo_root, duckdb_use_arg=None, duckdb_extend_arg=None, extension_configs_arg=None, extension_config_base_dir=None
 ):
     """Return a dict of name -> extension descriptor for all out-of-tree extensions to sync."""
     config_dir = extension_config_base_dir or os.environ.get('EXTENSION_CONFIG_BASE_DIR')
@@ -453,13 +488,70 @@ def collect_extensions(
     if config_dir and not extensions_config_dir.is_dir():
         raise FileNotFoundError(f"Extension config directory does not exist: {extensions_config_dir}")
 
-    raw_build_extensions = (
-        build_extensions_arg or os.environ.get('BUILD_EXTENSIONS') or os.environ.get('DUCKDB_EXTENSIONS') or ''
-    )
-    raw_core_extensions = os.environ.get('CORE_EXTENSIONS', '')
+    raw_duckdb_use = duckdb_use_arg if duckdb_use_arg is not None else os.environ.get('DUCKDB_USE', '')
+    raw_duckdb_extend = duckdb_extend_arg if duckdb_extend_arg is not None else os.environ.get('DUCKDB_EXTEND', '')
     raw_extension_configs = extension_configs_arg or os.environ.get('EXTENSION_CONFIGS') or ''
+    selection_explicit = (
+        duckdb_use_arg is not None
+        or duckdb_extend_arg is not None
+        or 'DUCKDB_USE' in os.environ
+        or 'DUCKDB_EXTEND' in os.environ
+    )
+    legacy_selection = False
+    if not selection_explicit:
+        legacy_variables_used = [
+            variable
+            for variable in [
+                'BUILD_EXTENSIONS',
+                'DUCKDB_EXTENSIONS',
+                'CORE_EXTENSIONS',
+                'BUILD_AUTOCOMPLETE',
+                'BUILD_ICU',
+                'BUILD_TPCH',
+                'BUILD_TPCDS',
+                'BUILD_FTS',
+                'BUILD_HTTPFS',
+                'BUILD_JSON',
+                'SKIP_EXTENSIONS',
+                'DISABLE_PARQUET',
+                'DISABLE_CORE_FUNCTIONS',
+            ]
+            if variable in os.environ
+        ]
+        raw_legacy_build = os.environ.get('DUCKDB_EXTENSIONS') or os.environ.get('BUILD_EXTENSIONS') or ''
+        raw_legacy_core = os.environ.get('CORE_EXTENSIONS', '')
+        legacy_build_names = [raw_legacy_build, raw_legacy_core]
+        for variable, name in [
+            ('BUILD_AUTOCOMPLETE', 'autocomplete'),
+            ('BUILD_ICU', 'icu'),
+            ('BUILD_TPCH', 'tpch'),
+            ('BUILD_TPCDS', 'tpcds'),
+            ('BUILD_FTS', 'fts'),
+            ('BUILD_HTTPFS', 'httpfs'),
+            ('BUILD_JSON', 'json'),
+        ]:
+            if os.environ.get(variable, '').upper() in ('1', 'ON', 'TRUE', 'YES'):
+                legacy_build_names.append(name)
+        raw_legacy_extensions = ';'.join(legacy_build_names)
+        legacy_skip_names = os.environ.get('SKIP_EXTENSIONS', '')
+        if os.environ.get('DISABLE_PARQUET', '').upper() in ('1', 'ON', 'TRUE', 'YES'):
+            legacy_skip_names += ';parquet'
+        if os.environ.get('DISABLE_CORE_FUNCTIONS', '').upper() in ('1', 'ON', 'TRUE', 'YES'):
+            legacy_skip_names += ';core_functions'
+        skipped = {name for name in re.split(r'[;,\s]+', legacy_skip_names) if name}
+        selected = [name for name in re.split(r'[;,\s]+', raw_legacy_extensions) if name and name not in skipped]
+        if selected:
+            raw_duckdb_extend = ';'.join(dict.fromkeys(selected))
+            selection_explicit = True
+            legacy_selection = True
+            print(
+                f"WARNING: Legacy extension variables {' '.join(legacy_variables_used)} are deprecated; "
+                f"use DUCKDB_EXTEND='{raw_duckdb_extend}' instead; support will be removed in DuckDB 2.1",
+                file=sys.stderr,
+            )
 
-    extensions = {}  # name -> descriptor (first seen wins)
+    config_extensions = {}  # name -> descriptor (first seen wins)
+    config_selected_names = []
 
     # Explicit project declarations take precedence, including local and disabled extensions.
     for config_path_str in re.split(r'[;]+', raw_extension_configs):
@@ -468,13 +560,25 @@ def collect_extensions(
             continue
         full_path = repo_root / config_path_str
         for ext in parse_cmake_file(full_path, extensions_config_dir, include_non_remote=True):
-            extensions.setdefault(ext['name'], ext)
+            config_extensions.setdefault(ext['name'], ext)
+        if not selection_explicit:
+            config_selected_names.extend(parse_cmake_selection(full_path, extensions_config_dir))
 
-    # Legacy Makefiles may wrap the whole list in shell quotes.
-    raw_extensions = ';'.join(value.strip("'\"") for value in (raw_build_extensions, raw_core_extensions))
-    for name in re.split(r'[;,\s]+', raw_extensions):
+    raw_extensions = ';'.join(value.strip("'\"") for value in (raw_duckdb_use, raw_duckdb_extend))
+    selected_names = [name.strip("'\"") for name in re.split(r'[;,\s]+', raw_extensions) if name.strip("'\"")]
+    if legacy_selection:
+        selected_names = list(config_extensions) + selected_names
+    elif not selection_explicit:
+        selected_names.extend(config_selected_names)
+    selected_names = list(dict.fromkeys(selected_names))
+
+    extensions = {}
+    for name in selected_names:
+        if name in config_extensions:
+            extensions[name] = config_extensions[name]
+            continue
         name = name.strip("'\"")
-        if not name or name in extensions:
+        if not name:
             continue
         cmake_path = extensions_config_dir / f'{name}.cmake'
         if not cmake_path.exists():
@@ -644,7 +748,8 @@ def main():
     repo_root = Path(__file__).resolve().parent.parent
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--build-extensions', default=None, help='Semicolon-separated list of extension names')
+    parser.add_argument('--duckdb-use', default=None, help='Extensions and capabilities to build and link')
+    parser.add_argument('--duckdb-extend', default=None, help='Extensions to build without linking')
     parser.add_argument('--extension-configs', default=None, help='Semicolon-separated list of cmake config file paths')
     parser.add_argument(
         '--extension-config-base-dir',
@@ -662,7 +767,7 @@ def main():
     output_dir = Path(args.output_dir)
 
     extensions = collect_extensions(
-        repo_root, args.build_extensions, args.extension_configs, args.extension_config_base_dir
+        repo_root, args.duckdb_use, args.duckdb_extend, args.extension_configs, args.extension_config_base_dir
     )
 
     # The directory of each --extension-configs file is the driving extension's repo

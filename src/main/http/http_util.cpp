@@ -278,7 +278,7 @@ unique_ptr<HTTPResponse> HTTPUtil::SendRequest(BaseRequest &request, unique_ptr<
 		if (!client) {
 			throw InvalidConfigurationException(
 			    "HTTP provider '%s' has no HTTP client for '%s', no HTTP request can be performed. Load an extension "
-			    "that provides one (such as httpfs), or build with ENABLE_BUILTIN_HTTPLIB=ON",
+			    "that provides one (such as httpfs), or add httplib to DUCKDB_USE",
 			    GetName(), request.url);
 		}
 	}

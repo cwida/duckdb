@@ -9,8 +9,8 @@
     defined(DUCKDB_DISABLE_EXTENSION_LOAD)
 #define DUCKDB_HTTPLIB_DEFINE_WARNING                                                                                  \
 	"DUCKDB_DISABLE_BUILTIN_HTTPLIB, DISABLE_DUCKDB_REMOTE_INSTALL and DUCKDB_DISABLE_EXTENSION_LOAD no longer "       \
-	"disable the built-in httplib client: leave duckdb_httplib out of the link instead (ENABLE_BUILTIN_HTTPLIB=OFF, "  \
-	"or package_build.py with builtin_httplib=False)"
+	"disable the built-in httplib client: omit httplib from DUCKDB_USE (or use package_build.py with "                 \
+	"builtin_httplib=False)"
 #if defined(_MSC_VER)
 #pragma message("warning: " DUCKDB_HTTPLIB_DEFINE_WARNING)
 #else

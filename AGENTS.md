@@ -238,9 +238,9 @@ DuckDB supports two types of extensions:
 Building with extensions:
 ```bash
 # build all extensions
-BUILD_ALL_EXT=1 make
+EXTENSION_CONFIGS='.github/config/in_tree_extensions.cmake;.github/config/out_of_tree_extensions.cmake;.github/config/rust_based_extensions.cmake' make
 # build specific extensions
-DUCKDB_EXTENSIONS='json;icu' make
+DUCKDB_USE='json;icu' make
 ```
 
 ## Key Development Patterns

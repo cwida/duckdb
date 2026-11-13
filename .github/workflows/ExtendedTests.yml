@@ -50,7 +50,7 @@ jobs:
       id: build
       shell: bash
       env:
-        CORE_EXTENSIONS: "json;parquet;icu;tpch;tpcds;autocomplete"
+        DUCKDB_USE: "core_functions;json;parquet;icu;tpch;tpcds;autocomplete;httplib;loadable_extensions;local_extension_repository"
         GEN: ninja
       run: make reldebug
 
@@ -67,7 +67,7 @@ jobs:
        CXX: clang++
        GEN: ninja
        BUILD_BENCHMARK: 1
-       CORE_EXTENSIONS: "tpch;tpcds;httpfs"
+       DUCKDB_USE: "core_functions;tpch;tpcds;httpfs;httplib;loadable_extensions;local_extension_repository"
 
      steps:
      - uses: actions/checkout@v6
@@ -145,7 +145,7 @@ jobs:
        CXX: clang++
        GEN: ninja
        BUILD_BENCHMARK: 1
-       CORE_EXTENSIONS: "tpch;tpcds;httpfs"
+       DUCKDB_USE: "core_functions;tpch;tpcds;httpfs;httplib;loadable_extensions;local_extension_repository"
 
      steps:
      - uses: actions/checkout@v6
@@ -223,7 +223,7 @@ jobs:
        GEN: ninja
        BUILD_BENCHMARK: 1
        BUILD_JEMALLOC: 1
-       CORE_EXTENSIONS: "tpch;tpcds;httpfs"
+       DUCKDB_USE: "core_functions;tpch;tpcds;httpfs;httplib;loadable_extensions;local_extension_repository"
 
      steps:
        - uses: actions/checkout@v6
@@ -306,7 +306,7 @@ jobs:
        GEN: ninja
        BUILD_BENCHMARK: 1
        BUILD_JEMALLOC: 1
-       CORE_EXTENSIONS: "tpch;tpcds;httpfs"
+       DUCKDB_USE: "core_functions;tpch;tpcds;httpfs;httplib;loadable_extensions;local_extension_repository"
 
      steps:
        - uses: actions/checkout@v6

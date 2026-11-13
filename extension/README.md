@@ -37,44 +37,56 @@ Additionally, we can configure for each extension how we want to build it: for e
 build the loadable extension, or also link the extension in the DuckDB binaries. There's different ways to load extensions
 in DuckDB with various
 
-## Makefile/Cmake variables
-The simplest way to specify which extensions to load is using the `DUCKDB_EXTENSIONS` variable. To specify which extensions
-to build when making duckdb set the extensions variable to a `;` separated list of extensions names. For example:
-```bash
-DUCKDB_EXTENSIONS='json;icu' make
-```
-Make builds that select extensions automatically use the synchronized extension build path. This includes
-`DUCKDB_EXTENSIONS`, `BUILD_EXTENSIONS`, `CORE_EXTENSIONS`, the `BUILD_<extension>` shorthands,
-`BUILD_ALL_*`, and `EXTENSION_CONFIGS`. Set `DUCKDB_NEW_EXTENSION_BUILD=0` to temporarily use the legacy
-build path instead.
+## Makefile/CMake variables
 
-The `DUCKDB_EXTENSIONS` variable is passed to a CMake variable `BUILD_EXTENSIONS` which can also be invoked directly:
+Extension builds use two space- or semicolon-separated lists:
+
+- `DUCKDB_USE` builds extensions or capabilities and links them into DuckDB.
+- `DUCKDB_EXTEND` builds loadable extensions without linking them.
+
+For example:
+
 ```bash
-cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTENSIONS='parquet;icu;tpch;tpcds;fts;json'
+DUCKDB_EXTEND='httpfs ducklake' DUCKDB_USE='parquet json httplib' make
+```
+
+An extension in `DUCKDB_USE` is also built, so listing it in both variables is unnecessary. `DUCKDB_USE` also accepts
+the capabilities `httplib`, `loadable_extensions`, and `local_extension_repository`; capabilities are not valid in
+`DUCKDB_EXTEND`. If either variable is explicitly set, the two lists are an exact selection and an omitted list is empty.
+Without either variable, DuckDB preserves its standard default build.
+
+The same variables can be passed directly to CMake:
+
+```bash
+cmake -DCMAKE_BUILD_TYPE=Release \
+    -DDUCKDB_USE='core_functions;parquet;json;httplib' \
+    -DDUCKDB_EXTEND='httpfs;ducklake'
 ```
 
 ### Project-owned extension revisions
 
-With the synchronized extension build path, the sync script and CMake use the same configuration
-precedence: explicit `EXTENSION_CONFIGS` files first, then named `BUILD_EXTENSIONS` configs.
+The sync script and CMake use the same configuration precedence: explicit `EXTENSION_CONFIGS` files first, then named
+configs for extensions in `DUCKDB_USE` and `DUCKDB_EXTEND`.
 The first declaration of each extension wins, including `SOURCE_DIR` and `DONT_BUILD`
 declarations. An extension project can therefore supply its own repository URLs and
 `GIT_TAG` hashes without changing DuckDB's checked-in defaults:
 
 ```bash
 EXTENSION_CONFIGS=/path/to/project/extension_config.cmake \
-BUILD_EXTENSIONS='httpfs;avro;aws' make reldebug
+DUCKDB_EXTEND='httpfs;avro;aws' make reldebug
 ```
 
-`EXTENSION_CONFIGS` is a semicolon-separated list; earlier files take precedence over later
-files. Make passes it to CMake as `DUCKDB_EXTENSION_CONFIGS`.
+`EXTENSION_CONFIGS` is a semicolon-separated list; earlier files take precedence over later files. Configs can contribute
+default selections with `set(DUCKDB_USE ...)` and `set(DUCKDB_EXTEND ...)`; defaults from multiple configs are combined.
+Explicit user lists replace all config defaults. Make passes `EXTENSION_CONFIGS` to CMake as
+`DUCKDB_EXTENSION_CONFIGS`.
 
 To own the entire directory of named configs, set `EXTENSION_CONFIG_BASE_DIR`. For example,
 the following reads `httpfs.cmake` and `avro.cmake` from the project's directory:
 
 ```bash
 EXTENSION_CONFIG_BASE_DIR=/path/to/project/extension-configs \
-BUILD_EXTENSIONS='httpfs;avro' make reldebug
+DUCKDB_EXTEND='httpfs;avro' make reldebug
 ```
 
 The default is DuckDB's `.github/config/extensions`. A custom directory replaces that
@@ -86,19 +98,14 @@ The sync script also accepts `--extension-configs` and `--extension-config-base-
 CMake accepts `-DEXTENSION_CONFIG_BASE_DIR=...` or the environment variable. Build wrappers
 must pass the same settings to both steps.
 
-Direct CMake builds do not run the synchronization step automatically. Call the sync script first and set
-`DUCKDB_NEW_EXTENSION_BUILD=1`, or use the Make wrapper for builds containing out-of-tree extensions.
+Direct CMake builds do not run the synchronization step automatically. Use the Make wrapper or run
+`make sync_out_of_tree_extensions` before configuring an out-of-tree extension build.
 
 Sync reads literal `duckdb_extension_load` declarations and follows absolute includes and
 includes using `${CMAKE_CURRENT_LIST_DIR}` or `${EXTENSION_CONFIG_BASE_DIR}`. It does not
 evaluate general CMake variables or conditionals; keep repository URLs and commit hashes
 literal in configs used by sync. This controls extension Git revisions, not vcpkg registry
 baselines.
-
-## Makefile environment variables
-Another way to specify building an extension is with the `BUILD_<extension name>` variables defined in the root
-`Makefile` in this repository. For example, to build the JSON extension, simply run `BUILD_JSON=1 make`. These Makevars
-should be added manually for each extension and are simply syntactic sugar around the DUCKDB_EXTENSIONS variable.
 
 ## Config files
 To have more control over how in-tree extensions are built, extension config files should be used. These config files 
@@ -116,11 +123,10 @@ to config files stored anywhere on the machine.
 
 DuckDB will load these config files in reverse order and ignore subsequent calls to load an extension with the 
 same name. This allows overriding the base configuration of an extension by providing a different configuration
-in the local config. For example, the parquet extension is built and statically linked into DuckDB because of these
-lines in `extension/extension_config.cmake`:
+in the local config. For example, the base config selects and describes the Parquet extension with:
 ```cmake
+set(DUCKDB_USE ${DUCKDB_USE} parquet)
 duckdb_extension_load(parquet)
-duckdb_extension_statically_link(parquet)
 ```
 Now say we want to build DuckDB with our custom parquet extension. We can achieve this creating the
 `extension/extension_config_local.cmake` file and adding:
@@ -131,13 +137,9 @@ duckdb_extension_load(parquet
 ```
 
 # Building versus linking
-`duckdb_extension_load` only decides what is built. What the DuckDB targets (the shell, unittest, the library) link
-statically is decided separately: by default the built extensions that the configs list with
-`duckdb_extension_statically_link(<extension_name>)` (plus the ones named in `BUILD_EXTENSIONS` when building with
-`LINK_CORE_EXTENSIONS=1`), or exactly `STATICALLY_LINK_EXTENSIONS` when that is set
-(e.g. `STATICALLY_LINK_EXTENSIONS='core_functions;parquet;json;icu;tpch' make`). An extension that is built but not
-linked is still available: automatic installs come from the build's own extension repository, so it is installed and
-loaded the first time a query needs it.
+`duckdb_extension_load` describes an extension's source and metadata. The resolved `DUCKDB_USE` and `DUCKDB_EXTEND`
+lists decide whether it is built and linked. An extension built through `DUCKDB_EXTEND` is available in the build's
+extension repository. It can be installed and loaded at runtime when `loadable_extensions` is also in `DUCKDB_USE`.
 
 # Using extension config files
 The `duckdb_extension_load` function is used in the configuration files to specify how an extension should
@@ -182,19 +184,7 @@ also possible using the `DONT_BUILD flag`. This will disable the extension from 
 ```cmake
 duckdb_extension_load(parquet DONT_BUILD)
 ```
-Note that this can also be done from the Makefile:
-```bash
-DUCKDB_EXTENSIONS='tpch;json' SKIP_EXTENSIONS=parquet make
-```
-results in:
-```bash
-...
--- Building extension 'tpch' from '/Users/sam/Development/duckdb/extensions'
--- Building extension 'json' from '/Users/sam/Development/duckdb/extensions'
--- Extensions linked into DuckDB: tpch, json
--- Extensions explicitly skipped: parquet
-...
-```
+For command-line builds, use an exact `DUCKDB_USE`/`DUCKDB_EXTEND` selection instead of disabling a default extension.
 
 # Reporting an extension version
 
@@ -257,10 +247,9 @@ This will create a merged manifest in `./build/extension_configuration/vcpkg.jso
 
 Next, run:
 ```shell
-USE_MERGED_VCPKG_MANIFEST=1 VCPKG_TOOLCHAIN_PATH="/path/to/your/vcpkg/installation" make
+VCPKG_TOOLCHAIN_PATH="/path/to/your/vcpkg/installation" make
 ```
-which will use the merged manifest to install all required dependencies, build `extension_1` and `extension_2`, build DuckDB, 
-and finally link both extensions into DuckDB.
+The Make wrapper generates and uses the merged manifest automatically.
 
 # Linking the static archives by hand
 Outside of CMake, a program links one archive per extension it wants, compiles a generated static extension loader,

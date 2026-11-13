@@ -59,7 +59,7 @@ else
 EOL
 
   # Build the extensions using the first config
-  STATICALLY_LINK_EXTENSIONS='core_functions;parquet' LOCAL_EXTENSION_REPO=$LOCAL_EXTENSION_REPO_UPDATED EXTENSION_CONFIGS=$TEST_DIR/extension_config_before.cmake DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
+  DUCKDB_USE='core_functions;parquet;httplib;loadable_extensions;local_extension_repository' DUCKDB_EXTEND='json;tpch;tpcds;icu' LOCAL_EXTENSION_REPO=$LOCAL_EXTENSION_REPO_UPDATED EXTENSION_CONFIGS=$TEST_DIR/extension_config_before.cmake DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
 
   # Set the version and platform now that we have a build
   DUCKDB_VERSION=`$DUCKDB_BUILD_DIR/duckdb -csv -noheader  -c 'select source_id from pragma_version()'`
@@ -83,7 +83,7 @@ EOL
 EOL
 
   # Build the extensions using the second config
-  LOCAL_EXTENSION_REPO=$LOCAL_EXTENSION_REPO_UPDATED EXTENSION_CONFIGS=$TEST_DIR/extension_config_after.cmake BUILD_EXTENSIONS_ONLY=1 DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
+  DUCKDB_EXTEND='json;tpch;icu' LOCAL_EXTENSION_REPO=$LOCAL_EXTENSION_REPO_UPDATED EXTENSION_CONFIGS=$TEST_DIR/extension_config_after.cmake BUILD_EXTENSIONS_ONLY=1 DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
 
   # For good measure, we also gzip one of the files in the repo to ensure we can do both gzipped and non gzipped
   gzip -1 $LOCAL_EXTENSION_REPO_UPDATED/$DUCKDB_VERSION/$DUCKDB_PLATFORM/icu.duckdb_extension
@@ -98,7 +98,7 @@ EOL
 EOL
 
   # Build the extensions using the incorrect platform
-  DUCKDB_PLATFORM=test_platform EXTENSION_CONFIGS=$TEST_DIR/extension_config_incorrect_platform.cmake BUILD_EXTENSIONS_ONLY=1 DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
+  DUCKDB_EXTEND=json DUCKDB_PLATFORM=test_platform EXTENSION_CONFIGS=$TEST_DIR/extension_config_incorrect_platform.cmake BUILD_EXTENSIONS_ONLY=1 DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
 
   cp $DUCKDB_BUILD_DIR/extension/json/json.duckdb_extension $DIRECT_INSTALL_DIR/json_incorrect_platform.duckdb_extension
 
@@ -112,7 +112,7 @@ EOL
 EOL
 
   # Build the extensions using the incorrect platform
-  DUCKDB_EXPLICIT_VERSION=v1337 EXTENSION_CONFIGS=$TEST_DIR/extension_config_before.cmake BUILD_EXTENSIONS_ONLY=1 DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
+  DUCKDB_EXTEND='json;tpch;tpcds;icu' DUCKDB_EXPLICIT_VERSION=v1337 EXTENSION_CONFIGS=$TEST_DIR/extension_config_before.cmake BUILD_EXTENSIONS_ONLY=1 DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
 
   cp $DUCKDB_BUILD_DIR/extension/json/json.duckdb_extension $DIRECT_INSTALL_DIR/json_incorrect_version.duckdb_extension
 
@@ -126,7 +126,7 @@ EOL
 EOL
 
   # Build the extensions using the incorrect platform
-  DUCKDB_PLATFORM=test_platform DUCKDB_EXPLICIT_VERSION=v1337 EXTENSION_CONFIGS=$TEST_DIR/extension_config_before.cmake BUILD_EXTENSIONS_ONLY=1 DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
+  DUCKDB_EXTEND='json;tpch;tpcds;icu' DUCKDB_PLATFORM=test_platform DUCKDB_EXPLICIT_VERSION=v1337 EXTENSION_CONFIGS=$TEST_DIR/extension_config_before.cmake BUILD_EXTENSIONS_ONLY=1 DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
 
   cp $DUCKDB_BUILD_DIR/extension/json/json.duckdb_extension $DIRECT_INSTALL_DIR/json_incorrect_version_and_platform.duckdb_extension
 
@@ -139,7 +139,7 @@ EOL
   ###########################
   # Build clean duckdb
   rm -rf $DUCKDB_BUILD_DIR
-  STATICALLY_LINK_EXTENSIONS='core_functions;parquet' DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
+  DUCKDB_USE='core_functions;parquet;httplib;loadable_extensions;local_extension_repository' DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
 
   # Use duckdb to install the extensions into the repositories (note that we are doing a trick here by setting the extension_directory to the local repo dir)
   $DUCKDB_BUILD_DIR/duckdb -unsigned -c "set allow_extensions_metadata_mismatch=true; set extension_directory='$LOCAL_EXTENSION_REPO_INCORRECT_PLATFORM'; install '$DIRECT_INSTALL_DIR/json_incorrect_platform.duckdb_extension'"

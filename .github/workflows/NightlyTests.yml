@@ -165,7 +165,7 @@ jobs:
     env:
       GEN: ninja
       BUILD_JEMALLOC: 1
-      CORE_EXTENSIONS: "icu;tpch;tpcds;fts;json;inet;httpfs"
+      DUCKDB_USE: "core_functions;icu;tpch;tpcds;fts;json;inet;httpfs;httplib;loadable_extensions;local_extension_repository"
       DISABLE_SANITIZER: 1
       CRASH_ON_ASSERT: 1
       RUN_SLOW_VERIFIERS: 1
@@ -195,7 +195,6 @@ jobs:
       shell: bash
       env:
         VCPKG_TOOLCHAIN_PATH: ${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake
-        USE_MERGED_VCPKG_MANIFEST: 1
       run: python3 scripts/ci/retry.py -- bash -lc 'UNSAFE_NUMERIC_CAST=1 make relassert'
 
     - name: Test
@@ -209,7 +208,7 @@ jobs:
     needs: linux-memory-leaks
     env:
       GEN: ninja
-      CORE_EXTENSIONS: "icu;tpch;tpcds;fts;json;inet"
+      DUCKDB_USE: "core_functions;icu;tpch;tpcds;fts;json;inet;httplib;loadable_extensions;local_extension_repository"
       DISABLE_SANITIZER: 1
       CRASH_ON_ASSERT: 1
       RUN_SLOW_VERIFIERS: 1
@@ -252,7 +251,7 @@ jobs:
     env:
       GEN: ninja
       BUILD_JEMALLOC: 1
-      CORE_EXTENSIONS: "icu;tpch;tpcds;json"
+      DUCKDB_USE: "core_functions;icu;tpch;tpcds;json;httplib;loadable_extensions;local_extension_repository"
     steps:
     - uses: actions/checkout@v6
       with:
@@ -289,7 +288,7 @@ jobs:
       CXX: clang++
       GEN: ninja
       BUILD_JEMALLOC: 1
-      CORE_EXTENSIONS: "icu;tpch;tpcds;fts;json;inet;httpfs"
+      DUCKDB_USE: "core_functions;icu;tpch;tpcds;fts;json;inet;httpfs;httplib;loadable_extensions;local_extension_repository"
       DISABLE_SANITIZER: 1
       CRASH_ON_ASSERT: 1
       RUN_SLOW_VERIFIERS: 1
@@ -319,7 +318,6 @@ jobs:
       shell: bash
       env:
         VCPKG_TOOLCHAIN_PATH: ${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake
-        USE_MERGED_VCPKG_MANIFEST: 1
       run: python3 scripts/ci/retry.py -- bash -lc 'UNSAFE_NUMERIC_CAST=1 make relassert'
 
     - name: Test
@@ -336,7 +334,7 @@ jobs:
       CXX: clang++-20
       DISABLE_SANITIZER: 1
       BUILD_JEMALLOC: 1
-      CORE_EXTENSIONS: 'icu;json;parquet;tpch'
+      DUCKDB_USE: 'core_functions;icu;json;parquet;tpch;httplib;loadable_extensions;local_extension_repository'
       GEN: ninja
 
     steps:
@@ -469,7 +467,7 @@ jobs:
 
       - name: Build
         shell: bash
-        run: python3 scripts/ci/retry.py -- bash -lc 'CORE_EXTENSIONS="tpch" LINK_CORE_EXTENSIONS=1 make'
+        run: python3 scripts/ci/retry.py -- bash -lc 'DUCKDB_USE="core_functions;tpch;httplib;loadable_extensions;local_extension_repository" make'
 
       - name: Start Minio
         working-directory: ${{ github.workspace }}/duckdb-httpfs
@@ -497,7 +495,7 @@ jobs:
      GEN: ninja
      BUILD_BENCHMARK: 1
      BUILD_JEMALLOC: 1
-     CORE_EXTENSIONS: "tpch;tpcds;httpfs"
+     DUCKDB_USE: "core_functions;tpch;tpcds;httpfs;httplib;loadable_extensions;local_extension_repository"
 
    steps:
      - name: Checkout
@@ -596,7 +594,7 @@ jobs:
         id: build
         shell: bash
         env:
-          CORE_EXTENSIONS: "json;parquet"
+          DUCKDB_USE: "core_functions;json;parquet;httplib;loadable_extensions;local_extension_repository"
           GEN: ninja
           STANDARD_VECTOR_SIZE: 512
           DISABLE_SANITIZER: 1
@@ -620,7 +618,7 @@ jobs:
     needs: check-draft
     env:
       GEN: ninja
-      CORE_EXTENSIONS: "icu;parquet;tpch;tpcds;fts;json;inet"
+      DUCKDB_USE: "core_functions;icu;parquet;tpch;tpcds;fts;json;inet;httplib;loadable_extensions;local_extension_repository"
       FORCE_ASYNC_SINK_SOURCE: 1
 
     steps:
@@ -737,7 +735,7 @@ jobs:
    needs: linux-memory-leaks
    env:
      GEN: ninja
-     CORE_EXTENSIONS: "icu;parquet;tpch;tpcds;fts;json;inet"
+     DUCKDB_USE: "core_functions;icu;parquet;tpch;tpcds;fts;json;inet;httplib;loadable_extensions;local_extension_repository"
      HASH_ZERO: 1
      DISABLE_SANITIZER: 1
      LSAN_OPTIONS: suppressions=${{ github.workspace }}/.sanitizer-leak-suppressions.txt
@@ -804,8 +802,7 @@ jobs:
           build: |
             python3 scripts/ci/retry.py -- make release \
               EXTENSION_CONFIGS='.github/config/extensions/httpfs.cmake;.github/config/extensions/test-utils.cmake;.github/config/extensions/inet.cmake' \
-              STATICALLY_LINK_EXTENSIONS='core_functions;parquet;json;icu;tpcds;tpch;autocomplete;httpfs;inet;test_utils' \
-              DUCKDB_EXTENSIONS='tpcds;icu;autocomplete;tpch;json'
+              DUCKDB_USE='core_functions;parquet;json;icu;tpcds;tpch;autocomplete;httpfs;inet;test_utils;httplib;loadable_extensions;local_extension_repository'
           vcpkg-commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
           cache-suffix: nightly_bwc_build
 

@@ -4,7 +4,7 @@
 ```
 git clone https://github.com/duckdb/duckdb
 cd duckdb
-BUILD_BENCHMARK=1 BUILD_TPCH=1 make
+BUILD_BENCHMARK=1 DUCKDB_USE="core_functions parquet json icu tpch httplib loadable_extensions local_extension_repository" make
 ```
 
 #### List all available benchmarks

@@ -356,7 +356,6 @@ jobs:
        CC: C:/rtools42/x86_64-w64-mingw32.static.posix/bin/gcc.exe
        CXX: C:/rtools42/x86_64-w64-mingw32.static.posix/bin/g++.exe
        EXTENSION_CONFIGS: '${GITHUB_WORKSPACE}/.github/config/bundled_extensions.cmake'
-       DUCKDB_CAPABILITIES: 'httplib loadable_extensions'
      steps:
        - name: "Checkout"
          uses: duckdb/duckdb-ci/.github/actions/checkout@main

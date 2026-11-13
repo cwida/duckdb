@@ -99,7 +99,6 @@ jobs:
     runs-on: ${{ inputs.runner_macos_arm64 || 'macos-latest' }}
     env:
       EXTENSION_CONFIGS: '${GITHUB_WORKSPACE}/.github/config/bundled_extensions.cmake'
-      DUCKDB_CAPABILITIES: 'httplib loadable_extensions'
       OSX_BUILD_UNIVERSAL: 1
       GEN: ninja
 

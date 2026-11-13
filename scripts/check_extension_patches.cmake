@@ -37,10 +37,6 @@ macro(duckdb_extension_load NAME)
         list(APPEND APPLYING "${NAME}")
     endif()
 endmacro()
-# What gets linked does not matter for patches.
-macro(duckdb_extension_statically_link)
-endmacro()
-
 # test-utils.cmake sits in extensions/ but is a top-level config itself: it
 # includes ../in_tree_extensions.cmake.
 foreach(config

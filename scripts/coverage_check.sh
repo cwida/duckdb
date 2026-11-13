@@ -8,7 +8,7 @@ lcov --config-file .github/workflows/lcovrc --capture --initial --directory . --
 
 # build with coverage enabled
 mkdir -p build/coverage
-(cd build/coverage && cmake -E env CXXFLAGS="--coverage" cmake -DBUILD_EXTENSIONS="parquet;json;autocomplete;icu" -DENABLE_SANITIZER=0 -DCMAKE_BUILD_TYPE=Debug ../.. && cmake --build .)
+(cd build/coverage && cmake -E env CXXFLAGS="--coverage" cmake -DDUCKDB_USE="core_functions;parquet;json;icu;httplib;loadable_extensions;local_extension_repository" -DDUCKDB_EXTEND=autocomplete -DENABLE_SANITIZER=0 -DCMAKE_BUILD_TYPE=Debug ../.. && cmake --build .)
 
 # run tests
 build/coverage/test/run

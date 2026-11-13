@@ -604,32 +604,323 @@ option(FORCE_QUERY_LOG
        "If enabled, all queries will be logged to the specified path" OFF)
 option(BUILD_SHELL "Build the DuckDB Shell and SQLite API Wrappers" TRUE)
 option(DISABLE_THREADS "Disable support for multi-threading" FALSE)
+
+function(duckdb_normalize_legacy_extension_list INPUT_VALUE OUTPUT_VARIABLE)
+  string(REGEX REPLACE "[ \t\r\n]+" ";" NORMALIZED "${INPUT_VALUE}")
+  list(REMOVE_ITEM NORMALIZED "")
+  if(NORMALIZED)
+    list(REMOVE_DUPLICATES NORMALIZED)
+  endif()
+  set(${OUTPUT_VARIABLE}
+      ${NORMALIZED}
+      PARENT_SCOPE)
+endfunction()
+
+function(duckdb_legacy_variable_enabled VARIABLE OUTPUT_VARIABLE)
+  if(DEFINED ${VARIABLE})
+    string(TOUPPER "${${VARIABLE}}" VALUE)
+  else()
+    set(VALUE "")
+  endif()
+  if(VALUE STREQUAL "1"
+     OR VALUE STREQUAL "ON"
+     OR VALUE STREQUAL "TRUE"
+     OR VALUE STREQUAL "YES")
+    set(${OUTPUT_VARIABLE}
+        TRUE
+        PARENT_SCOPE)
+  else()
+    set(${OUTPUT_VARIABLE}
+        FALSE
+        PARENT_SCOPE)
+  endif()
+endfunction()
+
+# Compatibility for the extension selectors used before
+# DUCKDB_USE/DUCKDB_EXTEND. Keep this until DuckDB 2.1.
+set(DUCKDB_LEGACY_EXTENSION_VARIABLES
+    BUILD_EXTENSIONS
+    DUCKDB_EXTENSIONS
+    CORE_EXTENSIONS
+    BUILD_AUTOCOMPLETE
+    BUILD_ICU
+    BUILD_TPCH
+    BUILD_TPCDS
+    BUILD_FTS
+    BUILD_HTTPFS
+    BUILD_JSON
+    LINK_CORE_EXTENSIONS
+    STATICALLY_LINK_EXTENSIONS
+    DUCKDB_CAPABILITIES
+    SKIP_EXTENSIONS
+    DISABLE_PARQUET
+    DISABLE_CORE_FUNCTIONS
+    DISABLE_BUILTIN_EXTENSIONS
+    DISABLE_EXTENSION_LOAD
+    DISABLE_BUILTIN_HTTPLIB)
+set(DUCKDB_LEGACY_EXTENSION_VARIABLES_USED "")
+foreach(LEGACY_EXTENSION_VARIABLE IN LISTS DUCKDB_LEGACY_EXTENSION_VARIABLES)
+  if(DEFINED ${LEGACY_EXTENSION_VARIABLE})
+    list(APPEND DUCKDB_LEGACY_EXTENSION_VARIABLES_USED
+         ${LEGACY_EXTENSION_VARIABLE})
+  endif()
+endforeach()
+
+if(DEFINED DUCKDB_EXTENSIONS AND NOT "${DUCKDB_EXTENSIONS}" STREQUAL "")
+  duckdb_normalize_legacy_extension_list("${DUCKDB_EXTENSIONS}"
+                                         DUCKDB_LEGACY_BUILD_EXTENSIONS)
+else()
+  duckdb_normalize_legacy_extension_list("${BUILD_EXTENSIONS}"
+                                         DUCKDB_LEGACY_BUILD_EXTENSIONS)
+endif()
+duckdb_normalize_legacy_extension_list("${CORE_EXTENSIONS}"
+                                       DUCKDB_LEGACY_CORE_EXTENSIONS)
+list(APPEND DUCKDB_LEGACY_BUILD_EXTENSIONS ${DUCKDB_LEGACY_CORE_EXTENSIONS})
+foreach(
+  LEGACY_EXTENSION_SHORTHAND
+  AUTOCOMPLETE
+  ICU
+  TPCH
+  TPCDS
+  FTS
+  HTTPFS
+  JSON)
+  duckdb_legacy_variable_enabled(BUILD_${LEGACY_EXTENSION_SHORTHAND}
+                                 LEGACY_EXTENSION_ENABLED)
+  if(LEGACY_EXTENSION_ENABLED)
+    string(TOLOWER "${LEGACY_EXTENSION_SHORTHAND}" LEGACY_EXTENSION_NAME)
+    list(APPEND DUCKDB_LEGACY_BUILD_EXTENSIONS ${LEGACY_EXTENSION_NAME})
+  endif()
+endforeach()
+if(DUCKDB_LEGACY_BUILD_EXTENSIONS)
+  list(REMOVE_DUPLICATES DUCKDB_LEGACY_BUILD_EXTENSIONS)
+endif()
+
+duckdb_normalize_legacy_extension_list("${SKIP_EXTENSIONS}"
+                                       DUCKDB_LEGACY_SKIP_EXTENSIONS)
+duckdb_legacy_variable_enabled(DISABLE_PARQUET LEGACY_DISABLE_PARQUET)
+if(LEGACY_DISABLE_PARQUET)
+  list(APPEND DUCKDB_LEGACY_SKIP_EXTENSIONS parquet)
+endif()
+duckdb_legacy_variable_enabled(DISABLE_CORE_FUNCTIONS
+                               LEGACY_DISABLE_CORE_FUNCTIONS)
+if(LEGACY_DISABLE_CORE_FUNCTIONS)
+  list(APPEND DUCKDB_LEGACY_SKIP_EXTENSIONS core_functions)
+endif()
+if(DUCKDB_LEGACY_SKIP_EXTENSIONS)
+  list(REMOVE_DUPLICATES DUCKDB_LEGACY_SKIP_EXTENSIONS)
+endif()
+
+set(DUCKDB_LEGACY_EXTENSION_SELECTION_ACTIVE FALSE)
+if(DUCKDB_LEGACY_BUILD_EXTENSIONS
+   OR DUCKDB_LEGACY_SKIP_EXTENSIONS
+   OR (DEFINED STATICALLY_LINK_EXTENSIONS
+       AND NOT "${STATICALLY_LINK_EXTENSIONS}" STREQUAL "")
+   OR (DEFINED DUCKDB_CAPABILITIES AND NOT "${DUCKDB_CAPABILITIES}" STREQUAL ""
+      ))
+  set(DUCKDB_LEGACY_EXTENSION_SELECTION_ACTIVE TRUE)
+endif()
+foreach(LEGACY_BOOLEAN_VARIABLE LINK_CORE_EXTENSIONS DISABLE_BUILTIN_EXTENSIONS
+                                DISABLE_EXTENSION_LOAD DISABLE_BUILTIN_HTTPLIB)
+  duckdb_legacy_variable_enabled(${LEGACY_BOOLEAN_VARIABLE}
+                                 LEGACY_BOOLEAN_ENABLED)
+  if(LEGACY_BOOLEAN_ENABLED)
+    set(DUCKDB_LEGACY_EXTENSION_SELECTION_ACTIVE TRUE)
+  endif()
+endforeach()
+
+set(DUCKDB_NEW_EXTENSION_SELECTION FALSE)
+if(DEFINED DUCKDB_USE
+   OR DEFINED ENV{DUCKDB_USE}
+   OR DEFINED DUCKDB_EXTEND
+   OR DEFINED ENV{DUCKDB_EXTEND})
+  set(DUCKDB_NEW_EXTENSION_SELECTION TRUE)
+endif()
+
+if(DUCKDB_LEGACY_EXTENSION_VARIABLES_USED
+   AND DUCKDB_LEGACY_EXTENSION_SELECTION_ACTIVE)
+  if(DUCKDB_NEW_EXTENSION_SELECTION)
+    message(
+      WARNING
+        "Legacy extension variables ${DUCKDB_LEGACY_EXTENSION_VARIABLES_USED} are deprecated and ignored because "
+        "DUCKDB_USE or DUCKDB_EXTEND is set; support will be removed in DuckDB 2.1"
+    )
+  else()
+    set(DUCKDB_LEGACY_USE core_functions parquet json icu)
+    if(DEFINED STATICALLY_LINK_EXTENSIONS
+       AND NOT "${STATICALLY_LINK_EXTENSIONS}" STREQUAL "")
+      duckdb_normalize_legacy_extension_list("${STATICALLY_LINK_EXTENSIONS}"
+                                             DUCKDB_LEGACY_USE)
+      list(REMOVE_ITEM DUCKDB_LEGACY_USE none)
+    else()
+      duckdb_legacy_variable_enabled(DISABLE_BUILTIN_EXTENSIONS
+                                     LEGACY_DISABLE_BUILTIN_EXTENSIONS)
+      duckdb_legacy_variable_enabled(LINK_CORE_EXTENSIONS
+                                     LEGACY_LINK_CORE_EXTENSIONS)
+      if(LEGACY_DISABLE_BUILTIN_EXTENSIONS)
+        set(DUCKDB_LEGACY_USE core_functions)
+      elseif(LEGACY_LINK_CORE_EXTENSIONS)
+        list(APPEND DUCKDB_LEGACY_USE ${DUCKDB_LEGACY_BUILD_EXTENSIONS})
+      endif()
+    endif()
+
+    set(DUCKDB_LEGACY_CAPABILITIES httplib loadable_extensions
+                                   local_extension_repository)
+    if(DEFINED DUCKDB_CAPABILITIES AND NOT "${DUCKDB_CAPABILITIES}" STREQUAL "")
+      duckdb_normalize_legacy_extension_list("${DUCKDB_CAPABILITIES}"
+                                             DUCKDB_LEGACY_CAPABILITIES)
+      list(REMOVE_ITEM DUCKDB_LEGACY_CAPABILITIES none)
+    endif()
+    duckdb_legacy_variable_enabled(DISABLE_EXTENSION_LOAD
+                                   LEGACY_DISABLE_EXTENSION_LOAD)
+    if(LEGACY_DISABLE_EXTENSION_LOAD)
+      list(REMOVE_ITEM DUCKDB_LEGACY_CAPABILITIES httplib loadable_extensions)
+    endif()
+    duckdb_legacy_variable_enabled(DISABLE_BUILTIN_HTTPLIB
+                                   LEGACY_DISABLE_BUILTIN_HTTPLIB)
+    if(LEGACY_DISABLE_BUILTIN_HTTPLIB)
+      list(REMOVE_ITEM DUCKDB_LEGACY_CAPABILITIES httplib)
+    endif()
+
+    list(REMOVE_ITEM DUCKDB_LEGACY_USE ${DUCKDB_LEGACY_SKIP_EXTENSIONS})
+    list(REMOVE_ITEM DUCKDB_LEGACY_CAPABILITIES
+         ${DUCKDB_LEGACY_SKIP_EXTENSIONS})
+    set(DUCKDB_LEGACY_EXTEND core_functions parquet json icu
+                             ${DUCKDB_LEGACY_BUILD_EXTENSIONS})
+    list(REMOVE_ITEM DUCKDB_LEGACY_EXTEND ${DUCKDB_LEGACY_SKIP_EXTENSIONS}
+         ${DUCKDB_LEGACY_USE})
+    if(DUCKDB_LEGACY_USE)
+      list(REMOVE_DUPLICATES DUCKDB_LEGACY_USE)
+    endif()
+    if(DUCKDB_LEGACY_CAPABILITIES)
+      list(REMOVE_DUPLICATES DUCKDB_LEGACY_CAPABILITIES)
+    endif()
+    if(DUCKDB_LEGACY_EXTEND)
+      list(REMOVE_DUPLICATES DUCKDB_LEGACY_EXTEND)
+    endif()
+
+    if(jemalloc IN_LIST DUCKDB_LEGACY_BUILD_EXTENSIONS)
+      set(ENABLE_JEMALLOC
+          ON
+          CACHE BOOL "Use jemalloc as the allocator" FORCE)
+      list(REMOVE_ITEM DUCKDB_LEGACY_EXTEND jemalloc)
+    endif()
+    if(jemalloc IN_LIST DUCKDB_LEGACY_SKIP_EXTENSIONS)
+      set(ENABLE_JEMALLOC
+          OFF
+          CACHE BOOL "Use jemalloc as the allocator" FORCE)
+    endif()
+
+    set(DUCKDB_USE ${DUCKDB_LEGACY_USE} ${DUCKDB_LEGACY_CAPABILITIES})
+    set(DUCKDB_EXTEND ${DUCKDB_LEGACY_EXTEND})
+    set(DUCKDB_LEGACY_EXTENSION_SELECTION_MIGRATED TRUE)
+    message(
+      WARNING
+        "Legacy extension variables ${DUCKDB_LEGACY_EXTENSION_VARIABLES_USED} are deprecated; "
+        "use DUCKDB_USE='${DUCKDB_USE}' DUCKDB_EXTEND='${DUCKDB_EXTEND}' instead; "
+        "support will be removed in DuckDB 2.1")
+  endif()
+elseif(DUCKDB_LEGACY_EXTENSION_VARIABLES_USED)
+  message(
+    WARNING
+      "Legacy extension variables ${DUCKDB_LEGACY_EXTENSION_VARIABLES_USED} are deprecated and have no effect with "
+      "their current values; support will be removed in DuckDB 2.1")
+endif()
+
+duckdb_legacy_variable_enabled(BUILD_ALL_EXT LEGACY_BUILD_ALL_EXT)
+duckdb_legacy_variable_enabled(BUILD_ALL_IT_EXT LEGACY_BUILD_ALL_IT_EXT)
+duckdb_legacy_variable_enabled(BUILD_ALL_OOT_EXT LEGACY_BUILD_ALL_OOT_EXT)
+if(LEGACY_BUILD_ALL_EXT)
+  set(DUCKDB_EXTENSION_CONFIGS
+      ".github/config/in_tree_extensions.cmake;.github/config/out_of_tree_extensions.cmake;.github/config/rust_based_extensions.cmake"
+  )
+elseif(LEGACY_BUILD_ALL_IT_EXT)
+  set(DUCKDB_EXTENSION_CONFIGS ".github/config/in_tree_extensions.cmake")
+elseif(LEGACY_BUILD_ALL_OOT_EXT)
+  set(DUCKDB_EXTENSION_CONFIGS ".github/config/out_of_tree_extensions.cmake")
+endif()
+set(DUCKDB_LEGACY_BUILD_ALL_VARIABLES_USED "")
+foreach(LEGACY_BUILD_ALL_VARIABLE BUILD_ALL_EXT BUILD_ALL_IT_EXT
+                                  BUILD_ALL_OOT_EXT)
+  if(DEFINED ${LEGACY_BUILD_ALL_VARIABLE})
+    list(APPEND DUCKDB_LEGACY_BUILD_ALL_VARIABLES_USED
+         ${LEGACY_BUILD_ALL_VARIABLE})
+  endif()
+endforeach()
+if(DUCKDB_LEGACY_BUILD_ALL_VARIABLES_USED)
+  if(LEGACY_BUILD_ALL_EXT
+     OR LEGACY_BUILD_ALL_IT_EXT
+     OR LEGACY_BUILD_ALL_OOT_EXT)
+    message(
+      WARNING
+        "Legacy extension variables ${DUCKDB_LEGACY_BUILD_ALL_VARIABLES_USED} are deprecated; "
+        "use DUCKDB_EXTENSION_CONFIGS='${DUCKDB_EXTENSION_CONFIGS}' instead; support will be removed in DuckDB 2.1"
+    )
+  else()
+    message(
+      WARNING
+        "Legacy extension variables ${DUCKDB_LEGACY_BUILD_ALL_VARIABLES_USED} are deprecated and have no effect with "
+        "their current values; support will be removed in DuckDB 2.1")
+  endif()
+endif()
+
+set(DUCKDB_LEGACY_UNSUPPORTED_EXTENSION_VARIABLES_USED "")
+foreach(LEGACY_UNSUPPORTED_EXTENSION_VARIABLE DUCKDB_NEW_EXTENSION_BUILD
+                                              USE_MERGED_VCPKG_MANIFEST)
+  if(DEFINED ${LEGACY_UNSUPPORTED_EXTENSION_VARIABLE})
+    list(APPEND DUCKDB_LEGACY_UNSUPPORTED_EXTENSION_VARIABLES_USED
+         ${LEGACY_UNSUPPORTED_EXTENSION_VARIABLE})
+  endif()
+endforeach()
+if(DUCKDB_LEGACY_UNSUPPORTED_EXTENSION_VARIABLES_USED)
+  message(
+    WARNING
+      "${DUCKDB_LEGACY_UNSUPPORTED_EXTENSION_VARIABLES_USED} no longer change extension builds and can be removed; "
+      "support will be removed in DuckDB 2.1")
+endif()
+
+set(DUCKDB_EXTENSION_SELECTION_EXPLICIT FALSE)
+if(DEFINED DUCKDB_USE)
+  set(DUCKDB_EXPLICIT_USE "${DUCKDB_USE}")
+  set(DUCKDB_EXTENSION_SELECTION_EXPLICIT TRUE)
+elseif(DEFINED ENV{DUCKDB_USE})
+  set(DUCKDB_EXPLICIT_USE "$ENV{DUCKDB_USE}")
+  set(DUCKDB_EXTENSION_SELECTION_EXPLICIT TRUE)
+else()
+  set(DUCKDB_EXPLICIT_USE "")
+endif()
+if(DEFINED DUCKDB_EXTEND)
+  set(DUCKDB_EXPLICIT_EXTEND "${DUCKDB_EXTEND}")
+  set(DUCKDB_EXTENSION_SELECTION_EXPLICIT TRUE)
+elseif(DEFINED ENV{DUCKDB_EXTEND})
+  set(DUCKDB_EXPLICIT_EXTEND "$ENV{DUCKDB_EXTEND}")
+  set(DUCKDB_EXTENSION_SELECTION_EXPLICIT TRUE)
+else()
+  set(DUCKDB_EXPLICIT_EXTEND "")
+endif()
+if(DUCKDB_EXTENSION_SELECTION_EXPLICIT)
+  set(DUCKDB_USE
+      "${DUCKDB_EXPLICIT_USE}"
+      CACHE STRING "Extensions and capabilities to build and link")
+  set(DUCKDB_EXTEND
+      "${DUCKDB_EXPLICIT_EXTEND}"
+      CACHE STRING "Extensions to build without linking")
+endif()
+if(DUCKDB_LEGACY_EXTENSION_SELECTION_MIGRATED)
+  # Do not let the generated cache entries mask updated legacy variables on the
+  # next CMake run.
+  unset(DUCKDB_USE CACHE)
+  unset(DUCKDB_EXTEND CACHE)
+endif()
+
 option(
   ENABLE_EXTENSION_LOAD
   "Build libduckdb_loadable_extensions.a and link it into the DuckDB targets, so they can install and load external extensions"
   TRUE)
-option(DISABLE_EXTENSION_LOAD
-       "Deprecated, use ENABLE_EXTENSION_LOAD=OFF instead" FALSE)
 option(
   ENABLE_BUILTIN_HTTPLIB
   "Build libduckdb_httplib.a and link it into the DuckDB targets as their default HTTP client"
   TRUE)
-option(DISABLE_BUILTIN_HTTPLIB
-       "Deprecated, use ENABLE_BUILTIN_HTTPLIB=OFF instead" FALSE)
-option(LINK_CORE_EXTENSIONS
-       "Also statically link the extensions named in BUILD_EXTENSIONS" FALSE)
-set(STATICALLY_LINK_EXTENSIONS
-    ""
-    CACHE
-      STRING
-      "Extensions the DuckDB targets link, e.g. 'json parquet' or 'none' (empty: the built ones the extension configs list with duckdb_extension_statically_link)"
-)
-set(DUCKDB_CAPABILITIES
-    ""
-    CACHE
-      STRING
-      "Capabilities the DuckDB targets link: 'httplib', 'loadable_extensions', 'local_extension_repository' or 'none' (empty: all of them)"
-)
 option(DISABLE_STR_INLINE "Debug setting: disable inlining of strings" FALSE)
 option(DISABLE_MEMORY_SAFETY
        "Debug setting: disable memory access checks at runtime" FALSE)
@@ -736,23 +1027,6 @@ if(PREBUILT_EXTENSIONS AND NOT PREBUILT_BINARY)
   message(FATAL_ERROR "PREBUILT_EXTENSIONS requires PREBUILT_BINARY")
 endif()
 
-if(DISABLE_EXTENSION_LOAD)
-  message(
-    WARNING
-      "DISABLE_EXTENSION_LOAD is deprecated, use ENABLE_EXTENSION_LOAD=OFF")
-  set(ENABLE_EXTENSION_LOAD FALSE)
-endif()
-
-if(DISABLE_BUILTIN_HTTPLIB)
-  message(
-    WARNING
-      "DISABLE_BUILTIN_HTTPLIB is deprecated, use ENABLE_BUILTIN_HTTPLIB=OFF")
-  set(ENABLE_BUILTIN_HTTPLIB FALSE)
-endif()
-if(NOT ENABLE_EXTENSION_LOAD)
-  set(ENABLE_BUILTIN_HTTPLIB FALSE)
-endif()
-
 if(${BUILD_RDTSC})
   add_compile_definitions(RDTSC)
 endif()
@@ -772,22 +1046,12 @@ endif()
 if(NOT BUILD_MAIN_DUCKDB_LIBRARY)
   set(BUILD_UNITTESTS FALSE)
   set(BUILD_SHELL FALSE)
-  set(STATICALLY_LINK_EXTENSIONS core_functions)
-endif()
-
-if(DISABLE_BUILTIN_EXTENSIONS)
-  message(
-    WARNING
-      "DISABLE_BUILTIN_EXTENSIONS is deprecated, use STATICALLY_LINK_EXTENSIONS=core_functions"
-  )
-  unset(DISABLE_BUILTIN_EXTENSIONS CACHE)
-  if("${STATICALLY_LINK_EXTENSIONS}" STREQUAL "")
-    set(STATICALLY_LINK_EXTENSIONS core_functions)
-  endif()
 endif()
 
 if(GENERATE_EXTENSION_ENTRIES)
-  set(STATICALLY_LINK_EXTENSIONS none)
+  set(DUCKDB_EXPLICIT_USE "")
+  set(DUCKDB_EXPLICIT_EXTEND "")
+  set(DUCKDB_EXTENSION_SELECTION_EXPLICIT TRUE)
 endif()
 
 if(TREAT_WARNINGS_AS_ERRORS)

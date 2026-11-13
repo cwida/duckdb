@@ -28,13 +28,13 @@ This file applies to work in `.github/patches/extensions`. Read it before adapti
 The sync workflow keeps existing patches as commits on top of the configured `GIT_TAG` and can export those commits back to patch files:
 
 ```shell
-BUILD_EXTENSIONS=<extension> make sync_out_of_tree_extensions
+DUCKDB_EXTEND=<extension> make sync_out_of_tree_extensions
 cd extension/external/<extension>
 # Make and verify one focused change.
 git add -A
 git commit -m 'NNNN-short-description.patch'
 cd ../../..
-EXPORT_EXTENSION_PATCHES=1 BUILD_EXTENSIONS=<extension> make sync_out_of_tree_extensions
+EXPORT_EXTENSION_PATCHES=1 DUCKDB_EXTEND=<extension> make sync_out_of_tree_extensions
 ```
 
 - Add `APPLY_PATCHES` before the initial sync when creating an extension's first patch.
@@ -52,6 +52,6 @@ EXPORT_EXTENSION_PATCHES=1 BUILD_EXTENSIONS=<extension> make sync_out_of_tree_ex
 
 ## Validate the Change
 
-- Build the touched extension and run its relevant tests against the patched checkout. With the synced checkout, a typical targeted build starts with `DUCKDB_NEW_EXTENSION_BUILD=1 BUILD_EXTENSIONS=<extension> make reldebug`.
+- Build the touched extension and run its relevant tests against the patched checkout. A typical targeted build starts with `DUCKDB_EXTEND=<extension> make reldebug`.
 - Run `make extension-patch-check`.
 - Run `git diff --check` and inspect every changed or newly generated patch before finishing.

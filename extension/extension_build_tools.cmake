@@ -1,15 +1,5 @@
-# Adds extensions to what the DuckDB targets link by default, for extension configs; STATICALLY_LINK_EXTENSIONS
-# replaces the whole default. An extension that is only loaded with duckdb_extension_load is built, not linked, and can be
-# installed from the build's extension repository.
-set(DUCKDB_NEW_EXTENSION_BUILD_ENABLED FALSE)
-if(DEFINED ENV{DUCKDB_NEW_EXTENSION_BUILD})
-    if(NOT "$ENV{DUCKDB_NEW_EXTENSION_BUILD}" STREQUAL "" AND NOT "$ENV{DUCKDB_NEW_EXTENSION_BUILD}" STREQUAL "0")
-        set(DUCKDB_NEW_EXTENSION_BUILD_ENABLED TRUE)
-    endif()
-endif()
-
 function(duckdb_extension_statically_link)
-    set_property(GLOBAL APPEND PROPERTY DUCKDB_EXTENSIONS_STATICALLY_LINKED_BY_CONFIG ${ARGN})
+    message(FATAL_ERROR "duckdb_extension_statically_link() was removed; add the extension to DUCKDB_USE")
 endfunction()
 
 # Deprecated no-op, kept so extensions that still call it configure.
@@ -84,71 +74,18 @@ function(duckdb_link_extensions TARGET)
     endif()
 endfunction()
 
-# Resolves what the DuckDB targets link statically. DUCKDB_CAPABILITIES picks among the capabilities this
-# build makes: httplib, loadable_extensions and local_extension_repository (automatic installs come from this build's
-# repository instead of the core one), all of them by default. STATICALLY_LINK_EXTENSIONS picks the extensions, by
-# default the built ones the extension configs list with duckdb_extension_statically_link(), plus the prebuilt ones.
-# Either can be 'none', and takes names separated by spaces or ';'.
+# Resolves the extensions and capabilities selected by DUCKDB_USE.
 function(duckdb_resolve_static_link OUT_CAPABILITIES OUT_EXTENSIONS)
     set(KNOWN_CAPABILITIES httplib loadable_extensions local_extension_repository)
-    set(BUILT_CAPABILITIES "")
-    if(ENABLE_BUILTIN_HTTPLIB)
-        list(APPEND BUILT_CAPABILITIES httplib)
-    endif()
-    if(ENABLE_EXTENSION_LOAD)
-        list(APPEND BUILT_CAPABILITIES loadable_extensions)
-    endif()
-    list(APPEND BUILT_CAPABILITIES local_extension_repository)
-    set(DEFAULT_CAPABILITIES ${BUILT_CAPABILITIES})
-
-    string(REPLACE " " ";" CAPABILITIES "${DUCKDB_CAPABILITIES}")
-    list(REMOVE_ITEM CAPABILITIES "")
-    if("${CAPABILITIES}" STREQUAL "")
-        set(CAPABILITIES ${DEFAULT_CAPABILITIES})
-    elseif("${CAPABILITIES}" STREQUAL "none")
-        set(CAPABILITIES "")
-    endif()
-    foreach(CAPABILITY IN LISTS CAPABILITIES)
-        if(NOT CAPABILITY IN_LIST KNOWN_CAPABILITIES)
-            message(FATAL_ERROR "Unknown capability '${CAPABILITY}' in DUCKDB_CAPABILITIES, known are: ${KNOWN_CAPABILITIES}")
-        elseif(NOT CAPABILITY IN_LIST BUILT_CAPABILITIES)
-            message(FATAL_ERROR "Capability '${CAPABILITY}' is not built (ENABLE_BUILTIN_HTTPLIB / ENABLE_EXTENSION_LOAD)")
+    set(CAPABILITIES "")
+    set(EXTENSIONS "")
+    foreach(NAME IN LISTS DUCKDB_RESOLVED_USE)
+        if(NAME IN_LIST KNOWN_CAPABILITIES)
+            list(APPEND CAPABILITIES ${NAME})
+        else()
+            list(APPEND EXTENSIONS ${NAME})
         endif()
     endforeach()
-
-    string(REPLACE " " ";" EXTENSIONS "${STATICALLY_LINK_EXTENSIONS}")
-    list(REMOVE_ITEM EXTENSIONS "")
-    if("${EXTENSIONS}" STREQUAL "")
-        get_property(REQUESTED GLOBAL PROPERTY DUCKDB_EXTENSIONS_STATICALLY_LINKED_BY_CONFIG)
-        foreach(EXT_NAME IN LISTS REQUESTED)
-            string(TOUPPER ${EXT_NAME} EXT_NAME_UPPERCASE)
-            if(EXT_NAME IN_LIST KNOWN_CAPABILITIES OR DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_SHOULD_BUILD)
-                list(APPEND EXTENSIONS ${EXT_NAME})
-            endif()
-        endforeach()
-        # a prebuilt extension only exists as an archive, so linking is the only way to make it available
-        foreach(EXT_NAME IN LISTS DUCKDB_EXTENSION_NAMES)
-            string(TOUPPER ${EXT_NAME} EXT_NAME_UPPERCASE)
-            if(DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_SHOULD_BUILD AND NOT "${DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_PREBUILT_PATH}" STREQUAL "")
-                list(APPEND EXTENSIONS ${EXT_NAME})
-            endif()
-        endforeach()
-        if(EXTENSIONS)
-            list(REMOVE_DUPLICATES EXTENSIONS)
-        endif()
-    elseif("${EXTENSIONS}" STREQUAL "none")
-        set(EXTENSIONS "")
-    endif()
-    # a capability listed with the extensions is linked like the others
-    foreach(EXT_NAME IN LISTS EXTENSIONS)
-        if(EXT_NAME IN_LIST KNOWN_CAPABILITIES)
-            list(APPEND CAPABILITIES ${EXT_NAME})
-        endif()
-    endforeach()
-    list(REMOVE_ITEM EXTENSIONS ${KNOWN_CAPABILITIES})
-    if(CAPABILITIES)
-        list(REMOVE_DUPLICATES CAPABILITIES)
-    endif()
 
     set(${OUT_CAPABILITIES} ${CAPABILITIES} PARENT_SCOPE)
     set(${OUT_EXTENSIONS} ${EXTENSIONS} PARENT_SCOPE)
@@ -634,11 +571,12 @@ function(register_extension NAME DONT_BUILD LOAD_TESTS PATH INCLUDE_PATH TEST_PA
     else()
         set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_LOAD_TESTS FALSE PARENT_SCOPE)
     endif()
-    # decided once every config is loaded, see duckdb_resolve_static_link
-    set(LINK_EXTENSION ${BUILD_EXTENSIONS_ONLY})
+    # Decided once every config and the DUCKDB_USE/DUCKDB_EXTEND lists are loaded.
+    set(LINK_EXTENSION FALSE)
     set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_SHOULD_LINK ${LINK_EXTENSION} PARENT_SCOPE)
 
     set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_LINKED_LIBS "${LINKED_LIBS}" PARENT_SCOPE)
+    set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_DONT_BUILD ${DONT_BUILD} PARENT_SCOPE)
 
     # Allows explicitly disabling extensions that may be specified in other configurations
     if (NOT ${DONT_BUILD} AND NOT ${EXTENSION_TESTS_ONLY})
@@ -667,36 +605,17 @@ function(register_extension NAME DONT_BUILD LOAD_TESTS PATH INCLUDE_PATH TEST_PA
 
 endfunction()
 
-# Downloads the external extension repo at the specified commit and calls register_extension
+# Registers an external extension from its synchronized checkout.
 macro(register_external_extension NAME URL COMMIT DONT_BUILD LOAD_TESTS PATH INCLUDE_PATH TEST_PATH APPLY_PATCHES LINKED_LIBS SUBMODULES EXTENSION_VERSION)
-    include(FetchContent)
-
     string(TOUPPER "DUCKDB_${NAME}_DIRECTORY" DIRECTORY_OVERRIDE)
     if(DEFINED ENV{${DIRECTORY_OVERRIDE}})
         set("${NAME}_extension_fc_SOURCE_DIR" "$ENV{${DIRECTORY_OVERRIDE}}")
-    elseif(DUCKDB_NEW_EXTENSION_BUILD_ENABLED)
-        # Use the pre-cloned source from extension/external/<name> (populated by
-        # scripts/sync_out_of_tree_extensions.py via `make sync_out_of_tree_extensions`).
+    elseif(EXISTS "${DUCKDB_MODULE_BASE_DIR}/extension/external/${NAME}/.git")
         set("${NAME}_extension_fc_SOURCE_DIR" "${DUCKDB_MODULE_BASE_DIR}/extension/external/${NAME}")
-        if(NOT EXISTS "${${NAME}_extension_fc_SOURCE_DIR}/.git")
-            message(FATAL_ERROR
-                "DUCKDB_NEW_EXTENSION_BUILD is set but extension '${NAME}' was not found at "
-                "extension/external/${NAME}. Run 'make sync_out_of_tree_extensions' first.")
-        endif()
     else()
-        unset(PATCH_COMMAND)
-        if (${APPLY_PATCHES})
-            set(PATCH_COMMAND ${Python3_EXECUTABLE} ${DUCKDB_MODULE_BASE_DIR}/scripts/apply_extension_patches.py ${DUCKDB_MODULE_BASE_DIR}/.github/patches/extensions/${NAME}/)
-        endif()
-        FETCHCONTENT_DECLARE(
-                ${NAME}_extension_fc
-                GIT_REPOSITORY ${URL}
-                GIT_TAG ${COMMIT}
-                GIT_SUBMODULES "${SUBMODULES}"
-                PATCH_COMMAND ${PATCH_COMMAND}
-                SOURCE_SUBDIR __duckdb_no_add_subdirectory__
-        )
-        FETCHCONTENT_MAKEAVAILABLE(${NAME}_EXTENSION_FC)
+        message(FATAL_ERROR
+            "Out-of-tree extension '${NAME}' is not synchronized at extension/external/${NAME}. "
+            "Use the Make wrapper or run 'make sync_out_of_tree_extensions' before configuring CMake.")
     endif()
 
     # Autogenerate version tag if not provided
@@ -711,10 +630,8 @@ macro(register_external_extension NAME URL COMMIT DONT_BUILD LOAD_TESTS PATH INC
 
     if(DEFINED ENV{${DIRECTORY_OVERRIDE}})
         message(STATUS "Load extension '${NAME}' from local path \"${${NAME}_extension_fc_SOURCE_DIR}\" @ ${EXTERNAL_EXTENSION_VERSION}")
-    elseif(DUCKDB_NEW_EXTENSION_BUILD_ENABLED)
+    elseif(EXISTS "${DUCKDB_MODULE_BASE_DIR}/extension/external/${NAME}/.git")
         message(STATUS "Load extension '${NAME}' from extension/external/${NAME} @ ${EXTERNAL_EXTENSION_VERSION}")
-    else()
-        message(STATUS "Load extension '${NAME}' from ${URL} @ ${EXTERNAL_EXTENSION_VERSION}")
     endif()
 
     if ("${INCLUDE_PATH}" STREQUAL "")
@@ -785,11 +702,30 @@ function(duckdb_extension_load NAME)
     set(oneValueArgs SOURCE_DIR INCLUDE_DIR TEST_DIR GIT_URL GIT_TAG SUBMODULES EXTENSION_VERSION LINKED_LIBS)
     cmake_parse_arguments(duckdb_extension_load "${options}" "${oneValueArgs}" "" ${ARGN})
     if("DONT_LINK" IN_LIST duckdb_extension_load_UNPARSED_ARGUMENTS)
-        message(FATAL_ERROR "duckdb_extension_load(${NAME} DONT_LINK): DONT_LINK was removed, extensions are only linked when listed with duckdb_extension_statically_link() or STATICALLY_LINK_EXTENSIONS")
+        message(FATAL_ERROR "duckdb_extension_load(${NAME} DONT_LINK): DONT_LINK was removed; use DUCKDB_EXTEND")
     endif()
 
     string(TOLOWER ${NAME} EXTENSION_NAME_LOWERCASE)
     string(TOUPPER ${NAME} EXTENSION_NAME_UPPERCASE)
+
+    if(DUCKDB_COLLECT_EXTENSION_DECLARATIONS)
+        if(NOT EXTENSION_NAME_LOWERCASE IN_LIST DUCKDB_DECLARED_EXTENSION_NAMES)
+            set(DECLARATION "duckdb_extension_load([==[${NAME}]==]")
+            math(EXPR LAST_ARGUMENT "${ARGC} - 1")
+            if(LAST_ARGUMENT GREATER 0)
+                foreach(ARGUMENT_INDEX RANGE 1 ${LAST_ARGUMENT})
+                    string(APPEND DECLARATION " [==[${ARGV${ARGUMENT_INDEX}}]==]")
+                endforeach()
+            endif()
+            string(APPEND DECLARATION ")")
+            list(APPEND DUCKDB_DECLARED_EXTENSION_NAMES ${EXTENSION_NAME_LOWERCASE})
+            set(DUCKDB_DECLARED_EXTENSION_NAMES ${DUCKDB_DECLARED_EXTENSION_NAMES} PARENT_SCOPE)
+            set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_DECLARATION "${DECLARATION}" PARENT_SCOPE)
+            set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_DECLARED_DONT_BUILD
+                ${duckdb_extension_load_DONT_BUILD} PARENT_SCOPE)
+        endif()
+        return()
+    endif()
 
     list(FIND PREBUILT_EXTENSIONS ${EXTENSION_NAME_LOWERCASE} PREBUILT_EXTENSION_INDEX)
     if(PREBUILT_EXTENSION_INDEX GREATER -1)
@@ -811,11 +747,6 @@ function(duckdb_extension_load NAME)
 
     # If extension was set already, we ignore subsequent calls
     list (FIND DUCKDB_EXTENSION_NAMES ${EXTENSION_NAME_LOWERCASE} _index)
-    if (${_index} GREATER -1)
-        return()
-    endif()
-
-    list (FIND SKIP_EXTENSIONS ${EXTENSION_NAME_LOWERCASE} _index)
     if (${_index} GREATER -1)
         return()
     endif()
@@ -882,6 +813,7 @@ function(duckdb_extension_load NAME)
     set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_INCLUDE_PATH ${DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_INCLUDE_PATH} PARENT_SCOPE)
     set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_TEST_PATH ${DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_TEST_PATH} PARENT_SCOPE)
     set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_LINKED_LIBS ${DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_LINKED_LIBS} PARENT_SCOPE)
+    set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_DONT_BUILD ${DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_DONT_BUILD} PARENT_SCOPE)
     set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_EXT_VERSION "${DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_EXT_VERSION}" PARENT_SCOPE)
     set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_PREBUILT_PATH "${DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_PREBUILT_PATH}" PARENT_SCOPE)
 endfunction()
@@ -911,67 +843,123 @@ if(NOT IS_DIRECTORY "${EXTENSION_CONFIG_BASE_DIR}")
     message(FATAL_ERROR "Extension config directory does not exist: ${EXTENSION_CONFIG_BASE_DIR}")
 endif()
 
-if(DEFINED CORE_EXTENSIONS)
-    message(DEPRECATION "CORE_EXTENSIONS is deprecated. Use BUILD_EXTENSIONS instead.")
-    if(NOT DEFINED BUILD_EXTENSIONS)
-        set(BUILD_EXTENSIONS ${CORE_EXTENSIONS})
-    else()
-        list(APPEND BUILD_EXTENSIONS ${CORE_EXTENSIONS})
+function(duckdb_normalize_component_list INPUT_VALUE OUTPUT_VARIABLE)
+    string(REGEX REPLACE "[ \t\r\n]+" ";" NORMALIZED "${INPUT_VALUE}")
+    list(REMOVE_ITEM NORMALIZED "")
+    if(NORMALIZED)
+        list(REMOVE_DUPLICATES NORMALIZED)
     endif()
-endif()
+    set(${OUTPUT_VARIABLE} ${NORMALIZED} PARENT_SCOPE)
+endfunction()
+
+set(DUCKDB_CONFIG_USE "")
+set(DUCKDB_CONFIG_EXTEND "")
+set(DUCKDB_DECLARED_EXTENSION_NAMES "")
+set(DUCKDB_COLLECT_EXTENSION_DECLARATIONS TRUE)
+
+macro(duckdb_include_selection_config CONFIG_PATH_VARIABLE)
+    set(DUCKDB_USE "")
+    set(DUCKDB_EXTEND "")
+    set(DUCKDB_SELECTION_CONFIG_PATH "${${CONFIG_PATH_VARIABLE}}")
+    include("${DUCKDB_SELECTION_CONFIG_PATH}")
+    duckdb_normalize_component_list("${DUCKDB_USE}" CONFIG_USE)
+    duckdb_normalize_component_list("${DUCKDB_EXTEND}" CONFIG_EXTEND)
+    list(APPEND DUCKDB_CONFIG_USE ${CONFIG_USE})
+    list(APPEND DUCKDB_CONFIG_EXTEND ${CONFIG_EXTEND})
+endmacro()
 
 # Explicit project configurations take precedence over named defaults.
 foreach(DUCKDB_EXTENSION_CONFIG IN LISTS DUCKDB_EXTENSION_CONFIGS)
     if (NOT "${DUCKDB_EXTENSION_CONFIG}" STREQUAL "")
-        include("${DUCKDB_EXTENSION_CONFIG}")
+        duckdb_include_selection_config(DUCKDB_EXTENSION_CONFIG)
     endif()
 endforeach()
-
-# Load extensions passed through cmake config var
-foreach(EXT IN LISTS BUILD_EXTENSIONS)
-    if("${EXT}" STREQUAL "jemalloc")
-        message(WARNING "The 'jemalloc' allocator is no longer provided as an extension, use 'ENABLE_JEMALLOC=ON' to include jemalloc instead")
-        set(ENABLE_JEMALLOC ON CACHE BOOL "Use jemalloc as the memory allocator for DuckDB" FORCE)
-        # Backward-compat shim: downstream consumers call target_link_libraries(... ${ext}_extension).
-        # We provide an empty INTERFACE target to make sure that doesn't fail.
-        if(NOT TARGET jemalloc_extension)
-            add_library(jemalloc_extension INTERFACE)
-        endif()
-        continue()
-    endif()
-
-    if(NOT "${EXT}" STREQUAL "")
-        if (EXISTS "${EXTENSION_CONFIG_BASE_DIR}/${EXT}.cmake")
-            # out-of-tree extension: load cmake file
-            include("${EXTENSION_CONFIG_BASE_DIR}/${EXT}.cmake")
-        else()
-            # in-tree or non-existent extension: load it
-            duckdb_extension_load(${EXT})
-        endif()
-        if(LINK_CORE_EXTENSIONS)
-            duckdb_extension_statically_link(${EXT})
-        endif()
-    endif()
-endforeach()
-
-# Check if jemalloc is ignored, and if so disable it
-list (FIND SKIP_EXTENSIONS "jemalloc" _index)
-if (${_index} GREATER -1)
-    message(WARNING "The 'jemalloc' allocator is no longer provided as an extension, use 'ENABLE_JEMALLOC=OFF' to disable jemalloc instead")
-    set(ENABLE_JEMALLOC OFF CACHE BOOL "Use jemalloc as the memory allocator for DuckDB" FORCE)
-endif()
-
-
 
 # Local extension config
-if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/extension/extension_config_local.cmake)
-    include(${CMAKE_CURRENT_SOURCE_DIR}/extension/extension_config_local.cmake)
+set(DUCKDB_LOCAL_EXTENSION_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/extension/extension_config_local.cmake")
+if (EXISTS "${DUCKDB_LOCAL_EXTENSION_CONFIG}")
+    duckdb_include_selection_config(DUCKDB_LOCAL_EXTENSION_CONFIG)
 endif()
 
 # Load base extension config
-include(${CMAKE_CURRENT_SOURCE_DIR}/extension/extension_config.cmake)
+set(DUCKDB_BASE_EXTENSION_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/extension/extension_config.cmake")
+duckdb_include_selection_config(DUCKDB_BASE_EXTENSION_CONFIG)
 
+if(DUCKDB_EXTENSION_SELECTION_EXPLICIT)
+    duckdb_normalize_component_list("${DUCKDB_EXPLICIT_USE}" DUCKDB_RESOLVED_USE)
+    duckdb_normalize_component_list("${DUCKDB_EXPLICIT_EXTEND}" DUCKDB_RESOLVED_EXTEND)
+else()
+    set(DUCKDB_RESOLVED_USE ${DUCKDB_CONFIG_USE})
+    set(DUCKDB_RESOLVED_EXTEND ${DUCKDB_CONFIG_EXTEND})
+    if(DUCKDB_RESOLVED_USE)
+        list(REMOVE_DUPLICATES DUCKDB_RESOLVED_USE)
+    endif()
+    if(DUCKDB_RESOLVED_EXTEND)
+        list(REMOVE_DUPLICATES DUCKDB_RESOLVED_EXTEND)
+    endif()
+endif()
 
+set(DUCKDB_KNOWN_CAPABILITIES httplib loadable_extensions local_extension_repository)
+foreach(CAPABILITY IN LISTS DUCKDB_KNOWN_CAPABILITIES)
+    if(CAPABILITY IN_LIST DUCKDB_RESOLVED_EXTEND)
+        message(FATAL_ERROR "Capability '${CAPABILITY}' cannot be listed in DUCKDB_EXTEND; add it to DUCKDB_USE")
+    endif()
+endforeach()
+list(REMOVE_ITEM DUCKDB_RESOLVED_EXTEND ${DUCKDB_RESOLVED_USE})
+
+if(httplib IN_LIST DUCKDB_RESOLVED_USE)
+    set(ENABLE_BUILTIN_HTTPLIB TRUE CACHE BOOL "Build the built-in HTTP client" FORCE)
+else()
+    set(ENABLE_BUILTIN_HTTPLIB FALSE CACHE BOOL "Build the built-in HTTP client" FORCE)
+endif()
+if(loadable_extensions IN_LIST DUCKDB_RESOLVED_USE)
+    set(ENABLE_EXTENSION_LOAD TRUE CACHE BOOL "Build external extension loading" FORCE)
+else()
+    set(ENABLE_EXTENSION_LOAD FALSE CACHE BOOL "Build external extension loading" FORCE)
+endif()
+
+set(DUCKDB_REQUESTED_EXTENSIONS ${DUCKDB_RESOLVED_USE} ${DUCKDB_RESOLVED_EXTEND})
+list(REMOVE_ITEM DUCKDB_REQUESTED_EXTENSIONS ${DUCKDB_KNOWN_CAPABILITIES})
+if(DUCKDB_REQUESTED_EXTENSIONS)
+    list(REMOVE_DUPLICATES DUCKDB_REQUESTED_EXTENSIONS)
+endif()
+
+foreach(EXT IN LISTS DUCKDB_REQUESTED_EXTENSIONS)
+    string(TOUPPER ${EXT} EXT_NAME_UPPERCASE)
+    if(NOT EXT IN_LIST DUCKDB_DECLARED_EXTENSION_NAMES AND
+       EXISTS "${EXTENSION_CONFIG_BASE_DIR}/${EXT}.cmake")
+        include("${EXTENSION_CONFIG_BASE_DIR}/${EXT}.cmake")
+    endif()
+endforeach()
+
+set(DUCKDB_COLLECT_EXTENSION_DECLARATIONS FALSE)
+set(DUCKDB_SELECTED_EXTENSION_CONFIG "${CMAKE_CURRENT_BINARY_DIR}/duckdb_selected_extensions.cmake")
+file(WRITE "${DUCKDB_SELECTED_EXTENSION_CONFIG}" "")
+foreach(EXT IN LISTS DUCKDB_REQUESTED_EXTENSIONS)
+    string(TOUPPER ${EXT} EXT_NAME_UPPERCASE)
+    if("${EXT}" STREQUAL "jemalloc")
+        message(FATAL_ERROR "jemalloc is not an extension; use ENABLE_JEMALLOC=ON")
+    elseif(DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_DECLARED_DONT_BUILD)
+        message(FATAL_ERROR "Extension '${EXT}' was selected but its configuration uses DONT_BUILD")
+    elseif(EXT IN_LIST DUCKDB_DECLARED_EXTENSION_NAMES)
+        file(APPEND "${DUCKDB_SELECTED_EXTENSION_CONFIG}"
+            "${DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_DECLARATION}\n")
+    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extension/${EXT}" OR
+           EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extension_external/${EXT}")
+        file(APPEND "${DUCKDB_SELECTED_EXTENSION_CONFIG}" "duckdb_extension_load([==[${EXT}]==])\n")
+    else()
+        message(FATAL_ERROR "Unknown extension or capability '${EXT}'")
+    endif()
+endforeach()
+include("${DUCKDB_SELECTED_EXTENSION_CONFIG}")
+
+foreach(EXT_NAME IN LISTS DUCKDB_EXTENSION_NAMES)
+    string(TOUPPER ${EXT_NAME} EXT_NAME_UPPERCASE)
+    if(NOT EXT_NAME IN_LIST DUCKDB_REQUESTED_EXTENSIONS)
+        set(DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_SHOULD_BUILD FALSE)
+        set(DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_SHOULD_LINK FALSE)
+    endif()
+endforeach()
 
 
 # Declares which of an extension's sources read EXT_VERSION_<NAME>. DuckDB defines it for the whole extension
@@ -1040,16 +1028,14 @@ unset(DUCKDB_ADDING_EXTENSIONS)
 
 # Resolve what the DuckDB targets link once; each extension's SHOULD_LINK follows it, so everything that reads it agrees
 duckdb_resolve_static_link(DUCKDB_STATICALLY_LINKED_CAPABILITIES DUCKDB_STATICALLY_LINKED_EXTENSIONS)
-if(NOT ${BUILD_EXTENSIONS_ONLY})
-    foreach(EXT_NAME IN LISTS DUCKDB_EXTENSION_NAMES)
-        string(TOUPPER ${EXT_NAME} EXT_NAME_UPPERCASE)
-        if(EXT_NAME IN_LIST DUCKDB_STATICALLY_LINKED_EXTENSIONS)
-            set(DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_SHOULD_LINK TRUE)
-        else()
-            set(DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_SHOULD_LINK FALSE)
-        endif()
-    endforeach()
-endif()
+foreach(EXT_NAME IN LISTS DUCKDB_EXTENSION_NAMES)
+    string(TOUPPER ${EXT_NAME} EXT_NAME_UPPERCASE)
+    if(DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_SHOULD_BUILD AND EXT_NAME IN_LIST DUCKDB_STATICALLY_LINKED_EXTENSIONS)
+        set(DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_SHOULD_LINK TRUE)
+    else()
+        set(DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_SHOULD_LINK FALSE)
+    endif()
+endforeach()
 
 # Output the extensions that we linked into DuckDB for some nice build logs
 set(DEFAULT_LINKED_EXTENSIONS "")

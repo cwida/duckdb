@@ -7,5 +7,6 @@
 #
 
 ################## DELTA
+set(DUCKDB_EXTEND ${DUCKDB_EXTEND} delta unity_catalog)
 include("${EXTENSION_CONFIG_BASE_DIR}/delta.cmake")
 include("${EXTENSION_CONFIG_BASE_DIR}/unity_catalog.cmake")
