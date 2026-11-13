@@ -276,7 +276,12 @@ QualifiedName Binder::BindTableName(CatalogEntryRetriever &retriever, const Qual
 			catalog = DatabaseManager::GetDefaultDatabase(retriever.GetContext());
 		}
 	}
-	return QualifiedName::FromCatalogSchema(std::move(catalog), std::move(schema_path), resolved.Name());
+	auto result = QualifiedName::FromCatalogSchema(std::move(catalog), std::move(schema_path), resolved.Name());
+	auto catalog_entry = Catalog::GetCatalogEntry(retriever, result.Catalog());
+	if (catalog_entry) {
+		catalog_entry->CheckNestedSchemaSupport(result, CatalogType::TABLE_ENTRY);
+	}
+	return result;
 }
 
 QualifiedName Binder::BindTableName(const QualifiedName &name) {
@@ -302,6 +307,7 @@ void Binder::BindCreateSchema(CreateSchemaInfo &info) {
 	info.SetQualifiedName(ResolveCatalog(context, info.GetQualifiedName()));
 
 	auto &resolved_catalog = Catalog::GetCatalog(context, info.SchemaCatalog());
+	resolved_catalog.CheckNestedSchemaSupport(info.GetQualifiedName(), CatalogType::SCHEMA_ENTRY);
 	auto supports_create_schema = resolved_catalog.SupportsCreateSchema(info);
 	if (supports_create_schema.HasError()) {
 		supports_create_schema.Throw();

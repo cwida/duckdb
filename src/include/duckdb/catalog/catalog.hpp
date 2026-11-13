@@ -246,10 +246,13 @@ public:
 	                                                                 const EntryLookupInfo &schema_lookup,
 	                                                                 OnEntryNotFound if_not_found) = 0;
 
-	//! Whether schema strings can denote nested paths as well as literal schema names.
+	//! Whether the catalog supports nested schema lookup, creation and dropping.
+	//! Also enables nested paths in string schema arguments. Literal dotted names do not require this capability.
 	virtual bool SupportsNestedSchemas() const {
 		return false;
 	}
+	//! Reject unsupported nested paths before invoking extension catalog methods.
+	DUCKDB_API void CheckNestedSchemaSupport(const QualifiedName &name, CatalogType type) const;
 	//! Resolve a string schema argument, preferring an existing nested entry over a literal dotted schema.
 	DUCKDB_API QualifiedName ResolveEntryName(ClientContext &context, const string &schema_arg,
 	                                          const string &entry_name, CatalogType type = CatalogType::TABLE_ENTRY,
@@ -542,6 +545,7 @@ private:
 	optional_ptr<CatalogEntry> GetEntryInCatalog(CatalogEntryRetriever &retriever, const EntryLookupInfo &lookup_info,
 	                                             OnEntryNotFound if_not_found);
 	//! Lookup an entry in the schema (taken from the lookup_info), returning the entry and schema if they exist
+	CatalogEntryLookup TryLookupEntry(CatalogTransaction transaction, const EntryLookupInfo &lookup_info);
 	virtual CatalogEntryLookup TryLookupEntryInternal(CatalogTransaction transaction,
 	                                                  const EntryLookupInfo &lookup_info);
 	//! Looks the entry up within this catalog only, using the schema carried in the lookup_info. Does not resolve the

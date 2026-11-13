@@ -1,0 +1,14 @@
+diff --git a/src/include/storage/quack_catalog.hpp b/src/include/storage/quack_catalog.hpp
+index 588eaa2..9dc2c45 100644
+--- a/src/include/storage/quack_catalog.hpp
++++ b/src/include/storage/quack_catalog.hpp
+@@ -30,6 +30,9 @@ public:
+ 	string GetCatalogType() override {
+ 		return "quack";
+ 	}
++	bool SupportsNestedSchemas() const override {
++		return true;
++	}
+ 	static QuackCatalog &GetQuackCatalog(ClientContext &context, Value &catalog_name);
+ 	static bool IsQuackScan(const string &name);
+ 	bool SupportsPushdown(const TableRef &ref) override;

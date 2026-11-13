@@ -724,6 +724,10 @@ CatalogPushdownResult RemotePushdownOptimizer::RewriteStatement(CreateStatement 
 		auto &schema_info = info.Cast<CreateSchemaInfo>();
 		target = ResolveDDLTarget(QualifiedName(schema_info.SchemaCatalog(), Identifier(), schema_info.SchemaName()),
 		                          DDLTarget::NEW_ENTRY, info.type);
+		if (target.catalog && !target.catalog->SupportsNestedSchemas()) {
+			target.catalog->CheckNestedSchemaSupport(binder.ResolveCatalog(binder.context, info.GetQualifiedName()),
+			                                         info.type);
+		}
 	} else {
 		target = ResolveDDLTarget(info.GetQualifiedName(), DDLTarget::NEW_ENTRY, info.type);
 	}
@@ -748,6 +752,10 @@ CatalogPushdownResult RemotePushdownOptimizer::RewriteStatement(DropStatement &s
 		return CatalogPushdownResult::Unknown();
 	}
 	auto target = ResolveDDLTarget(info.GetQualifiedName(), DDLTarget::EXISTING_ENTRY, info.type);
+	if (info.type == CatalogType::SCHEMA_ENTRY && target.catalog && !target.catalog->SupportsNestedSchemas()) {
+		target.catalog->CheckNestedSchemaSupport(binder.ResolveCatalog(binder.context, info.GetQualifiedName()),
+		                                         info.type);
+	}
 	return VerifyStatementSupport(statement, std::move(target));
 }
 
