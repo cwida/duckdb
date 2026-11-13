@@ -1,0 +1,50 @@
+# name: test/sql/index/art/create_index_struct_column_named_like_table.test
+# description: Index expressions on a struct column named like its table keep the column qualifier
+# group: [art]
+
+statement ok
+CREATE TABLE s (s STRUCT(n INTEGER));
+
+statement ok
+INSERT INTO s VALUES ({'n': 1}), ({'n': 2}), (NULL);
+
+statement ok
+CREATE INDEX idx ON s ((s.n::VARCHAR));
+
+query I
+SELECT sql FROM duckdb_indexes() WHERE index_name = 'idx';
+----
+CREATE INDEX idx ON s((CAST(s.n AS VARCHAR)));
+
+# the regenerated statement binds again
+statement ok
+DROP INDEX idx;
+
+statement ok
+CREATE INDEX idx ON s ((CAST(s.n AS VARCHAR)));
+
+query I
+SELECT s.n FROM s WHERE s.n::VARCHAR = '2';
+----
+2
+
+# an explicit table qualifier on the struct column is kept as written
+statement ok
+CREATE INDEX idx2 ON s ((s.s.n + 1));
+
+query I
+SELECT sql FROM duckdb_indexes() WHERE index_name = 'idx2';
+----
+CREATE INDEX idx2 ON s(((s.s.n + 1)));
+
+# plain column references are still stored without the table qualifier
+statement ok
+CREATE TABLE t (t INTEGER, u INTEGER);
+
+statement ok
+CREATE INDEX idx_t ON t (t, u);
+
+query I
+SELECT sql FROM duckdb_indexes() WHERE index_name = 'idx_t';
+----
+CREATE INDEX idx_t ON t(t, u);

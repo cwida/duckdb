@@ -53,7 +53,7 @@ static unique_ptr<Expression> SimplifyEqualityCast(ClientContext &context, Bound
 unique_ptr<Expression> InClauseSimplificationRule::Apply(LogicalOperator &op, vector<reference<Expression>> &bindings,
                                                          bool &changes_made, bool is_root) {
 	auto &expr = bindings[0].get().Cast<BoundOperatorExpression>();
-	if (!BoundCastExpression::IsCast(*expr.GetChildrenMutable()[0])) {
+	if (!BoundCastExpression::IsCast(*expr.GetChildren()[0])) {
 		return nullptr;
 	}
 	auto &cast_expression = expr.GetChildrenMutable()[0]->Cast<BoundFunctionExpression>();
@@ -77,12 +77,12 @@ unique_ptr<Expression> InClauseSimplificationRule::Apply(LogicalOperator &op, ve
 	}
 	vector<unique_ptr<BoundConstantExpression>> cast_list;
 	//! First check if we can cast all children
-	for (size_t i = 1; i < expr.GetChildrenMutable().size(); i++) {
-		if (expr.GetChildrenMutable()[i]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+	for (size_t i = 1; i < expr.GetChildren().size(); i++) {
+		if (expr.GetChildren()[i]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
 			return nullptr;
 		}
-		D_ASSERT(expr.GetChildrenMutable()[i]->IsFoldable());
-		auto constant_value = ExpressionExecutor::EvaluateScalar(GetContext(), *expr.GetChildrenMutable()[i]);
+		D_ASSERT(expr.GetChildren()[i]->IsFoldable());
+		auto constant_value = ExpressionExecutor::EvaluateScalar(GetContext(), *expr.GetChildren()[i]);
 		if (!BoundCastExpression::CastIsInvertible(constant_value.type(), target_type)) {
 			return nullptr;
 		}
@@ -95,7 +95,7 @@ unique_ptr<Expression> InClauseSimplificationRule::Apply(LogicalOperator &op, ve
 		}
 	}
 	//! We can cast, so we move the new constant
-	for (size_t i = 1; i < expr.GetChildrenMutable().size(); i++) {
+	for (size_t i = 1; i < expr.GetChildren().size(); i++) {
 		expr.GetChildrenMutable()[i] = std::move(cast_list[i - 1]);
 
 		//		expr->children[i] = std::move(new_constant_expr);

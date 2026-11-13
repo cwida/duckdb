@@ -1098,9 +1098,9 @@ bool PartialAggregatePushdown::TryOwnerOuterCountPushdown(unique_ptr<LogicalOper
 	auto count_alias = aggregate.GetAlias();
 	auto count_ref =
 	    make_uniq<BoundColumnRefExpression>(count_type, ColumnBinding(lower_aggregate_index, ProjectionIndex(0)));
-	auto count_value = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_COALESCE, count_type);
-	count_value->GetChildrenMutable().push_back(std::move(count_ref));
-	count_value->GetChildrenMutable().push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(count_star ? 1 : 0)));
+	auto count_value =
+	    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_COALESCE, count_type, std::move(count_ref),
+	                                       make_uniq<BoundConstantExpression>(Value::BIGINT(count_star ? 1 : 0)));
 	vector<unique_ptr<Expression>> sum_children;
 	sum_children.push_back(std::move(count_value));
 	auto upper_sum = DEBindAggregate(optimizer.context, "sum", std::move(sum_children));
@@ -1214,7 +1214,7 @@ unique_ptr<Expression> PartialAggregatePushdown::VisitReplace(BoundColumnRefExpr
                                                               unique_ptr<Expression> *expr_ptr) {
 	auto entry = replacement_map.find(expr.Binding());
 	if (entry != replacement_map.end()) {
-		expr.BindingMutable() = entry->second;
+		return expr.WithBinding(entry->second);
 	}
 	return nullptr;
 }

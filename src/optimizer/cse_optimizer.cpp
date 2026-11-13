@@ -149,10 +149,10 @@ void CommonSubExpressionOptimizer::PerformCSEReplacement(unique_ptr<Expression> 
 			    bound_column_ref.GetAlias(), bound_column_ref.GetReturnType(), bound_column_ref.Binding());
 			auto new_column_index = ColumnBinding::PushExpression(state.expressions, std::move(new_col_ref));
 			state.column_map[bound_column_ref.Binding()] = new_column_index;
-			bound_column_ref.BindingMutable() = ColumnBinding(state.projection_index, new_column_index);
+			expr_ptr = bound_column_ref.WithBinding(ColumnBinding(state.projection_index, new_column_index));
 		} else {
-			// else: just update the column binding!
-			bound_column_ref.BindingMutable() = ColumnBinding(state.projection_index, column_entry->second);
+			// else: just point the column reference at the existing column
+			expr_ptr = bound_column_ref.WithBinding(ColumnBinding(state.projection_index, column_entry->second));
 		}
 		return;
 	}

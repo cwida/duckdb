@@ -204,25 +204,25 @@ static bool BindingsBelongToChild(const Expression &expression, LogicalOperator 
 
 static bool RewriteThroughProjection(unique_ptr<Expression> &expression, LogicalProjection &projection) {
 	bool valid = true;
-	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-	    expression, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &) {
+	expression = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+	    std::move(expression), [&](const BoundColumnRefExpression &colref) -> unique_ptr<Expression> {
 		    if (!valid || colref.Depth() != 0 || colref.Binding().table_index != projection.table_index ||
 		        colref.Binding().column_index.GetIndex() >= projection.expressions.size()) {
 			    valid = false;
-			    return;
+			    return nullptr;
 		    }
 		    auto &source = *projection.expressions[colref.Binding().column_index.GetIndex()];
 		    if (source.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
 		        source.GetReturnType() != colref.GetReturnType()) {
 			    valid = false;
-			    return;
+			    return nullptr;
 		    }
 		    auto &source_colref = source.Cast<BoundColumnRefExpression>();
 		    if (source_colref.Depth() != 0) {
 			    valid = false;
-			    return;
+			    return nullptr;
 		    }
-		    colref.BindingMutable() = source_colref.Binding();
+		    return colref.WithBinding(source_colref.Binding());
 	    });
 	return valid;
 }
@@ -565,17 +565,17 @@ static ProjectionRewrite RebuildProjection(Optimizer &optimizer,
 }
 
 static void RewriteLiftedExpression(unique_ptr<Expression> &expression, const vector<LiftDependency> &dependencies) {
-	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-	    expression, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &) {
+	expression = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+	    std::move(expression), [&](const BoundColumnRefExpression &colref) -> unique_ptr<Expression> {
 		    if (colref.Depth() != 0) {
-			    return;
+			    return nullptr;
 		    }
 		    for (auto &dependency : dependencies) {
 			    if (colref.Binding() == dependency.original_binding) {
-				    colref.BindingMutable() = dependency.current_binding;
-				    return;
+				    return colref.WithBinding(dependency.current_binding);
 			    }
 		    }
+		    return nullptr;
 	    });
 }
 

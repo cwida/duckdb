@@ -162,8 +162,7 @@ static unique_ptr<Expression> SimplifyEqualityCastComparison(ClientContext &cont
 static unique_ptr<Expression> CreateNullCheckExpression(ExpressionType expression_type, unique_ptr<Expression> child) {
 	D_ASSERT(expression_type == ExpressionType::OPERATOR_IS_NULL ||
 	         expression_type == ExpressionType::OPERATOR_IS_NOT_NULL);
-	auto result = make_uniq<BoundOperatorExpression>(expression_type, LogicalType::BOOLEAN);
-	result->GetChildrenMutable().push_back(std::move(child));
+	auto result = make_uniq<BoundOperatorExpression>(expression_type, LogicalType::BOOLEAN, std::move(child));
 	return std::move(result);
 }
 

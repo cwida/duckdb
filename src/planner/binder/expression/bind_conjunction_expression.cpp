@@ -9,7 +9,7 @@ BindResult ExpressionBinder::BindExpression(ConjunctionExpression &expr, idx_t d
 	// first try to bind the children of the case expression
 	ErrorData error;
 	vector<unique_ptr<Expression>> children;
-	for (idx_t i = 0; i < expr.GetChildrenMutable().size(); i++) {
+	for (idx_t i = 0; i < expr.GetChildren().size(); i++) {
 		children.push_back(BindChild(expr.GetChildrenMutable()[i], depth, error));
 	}
 	if (error.HasError()) {

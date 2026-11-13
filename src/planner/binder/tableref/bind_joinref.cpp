@@ -388,9 +388,8 @@ BoundStatement Binder::Bind(JoinRef &ref) {
 	// AND the USING/NATURAL conditions onto the condition written in the query, in that order
 	for (auto &condition : extra_conditions) {
 		if (result->condition) {
-			auto conjunction = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND);
-			conjunction->GetChildrenMutable().push_back(std::move(result->condition));
-			conjunction->GetChildrenMutable().push_back(std::move(condition));
+			auto conjunction = make_uniq<BoundConjunctionExpression>(
+			    ExpressionType::CONJUNCTION_AND, std::move(result->condition), std::move(condition));
 			result->condition = std::move(conjunction);
 		} else {
 			result->condition = std::move(condition);

@@ -281,7 +281,7 @@ void TableBindingReplacer::VisitExpression(unique_ptr<Expression> *expression) {
 		auto &bound_column_ref = expr->Cast<BoundColumnRefExpression>();
 		auto entry = table_idx_replacements.find(bound_column_ref.Binding().table_index);
 		if (entry != table_idx_replacements.end()) {
-			bound_column_ref.BindingMutable().table_index = entry->second;
+			expr = bound_column_ref.WithBinding(ColumnBinding(entry->second, bound_column_ref.Binding().column_index));
 		}
 	} else if (expr->GetExpressionClass() == ExpressionClass::BOUND_PARAMETER) {
 		// we have to replace the parameter data if it is a bound parameter

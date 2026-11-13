@@ -8,6 +8,25 @@ BoundOperatorExpression::BoundOperatorExpression(ExpressionType type, LogicalTyp
     : Expression(type, ExpressionClass::BOUND_OPERATOR, std::move(return_type)) {
 }
 
+BoundOperatorExpression::BoundOperatorExpression(ExpressionType type, LogicalType return_type,
+                                                 unique_ptr<Expression> child)
+    : BoundOperatorExpression(type, std::move(return_type)) {
+	children.push_back(std::move(child));
+}
+
+BoundOperatorExpression::BoundOperatorExpression(ExpressionType type, LogicalType return_type,
+                                                 unique_ptr<Expression> left, unique_ptr<Expression> right)
+    : BoundOperatorExpression(type, std::move(return_type)) {
+	children.push_back(std::move(left));
+	children.push_back(std::move(right));
+}
+
+BoundOperatorExpression::BoundOperatorExpression(ExpressionType type, LogicalType return_type,
+                                                 vector<unique_ptr<Expression>> children_p)
+    : BoundOperatorExpression(type, std::move(return_type)) {
+	children = std::move(children_p);
+}
+
 string BoundOperatorExpression::ToString() const {
 	return OperatorExpression::ToString<BoundOperatorExpression, Expression>(*this);
 }

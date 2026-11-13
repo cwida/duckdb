@@ -1,0 +1,57 @@
+diff --git a/src/spatial/index/rtree/rtree_index_plan_scan.cpp b/src/spatial/index/rtree/rtree_index_plan_scan.cpp
+index fc05385..d22f823 100644
+--- a/src/spatial/index/rtree/rtree_index_plan_scan.cpp
++++ b/src/spatial/index/rtree/rtree_index_plan_scan.cpp
+@@ -42,26 +42,23 @@ public:
+ 		optimize_function = RTreeIndexScanOptimizer::Optimize;
+ 	}
+ 
+-	static void RewriteIndexExpression(const vector<column_t> &column_ids, LogicalGet &get, Expression &expr,
+-	                                   bool &rewrite_possible) {
+-		if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+-			auto &bound_colref = expr.Cast<BoundColumnRefExpression>();
+-			// bound column ref: rewrite to fit in the current set of bound column ids
+-			bound_colref.BindingMutable().table_index = get.table_index;
+-			auto &get_column_ids = get.GetColumnIds();
+-			column_t referenced_column = column_ids[bound_colref.Binding().column_index];
+-			// search for the referenced column in the set of column_ids
+-			for (idx_t i = 0; i < get_column_ids.size(); i++) {
+-				if (get_column_ids[i].GetPrimaryIndex() == referenced_column) {
+-					bound_colref.BindingMutable().column_index = ProjectionIndex(i);
+-					return;
+-				}
+-			}
+-			// column id not found in bound columns in the LogicalGet: rewrite not possible
+-			rewrite_possible = false;
+-		}
+-		ExpressionIterator::EnumerateChildren(
+-		    expr, [&](Expression &child) { RewriteIndexExpression(column_ids, get, child, rewrite_possible); });
++	static void RewriteIndexExpression(const vector<column_t> &column_ids, LogicalGet &get,
++	                                   unique_ptr<Expression> &expr, bool &rewrite_possible) {
++		expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
++		    std::move(expr), [&](const BoundColumnRefExpression &bound_colref) {
++			    // bound column ref: rewrite to fit in the current set of bound column ids
++			    auto &get_column_ids = get.GetColumnIds();
++			    column_t referenced_column = column_ids[bound_colref.Binding().column_index];
++			    // search for the referenced column in the set of column_ids
++			    for (idx_t i = 0; i < get_column_ids.size(); i++) {
++				    if (get_column_ids[i].GetPrimaryIndex() == referenced_column) {
++					    return bound_colref.WithBinding(ColumnBinding(get.table_index, ProjectionIndex(i)));
++				    }
++			    }
++			    // column id not found in bound columns in the LogicalGet: rewrite not possible
++			    rewrite_possible = false;
++			    return bound_colref.WithBinding(ColumnBinding(get.table_index, bound_colref.Binding().column_index));
++		    });
+ 	}
+ 
+ 	static void RewriteIndexExpressionForFilter(const vector<column_t> &indexed_columns, LogicalGet &get,
+@@ -393,7 +390,7 @@ public:
+ 			if (filter_column_idx) {
+ 				RewriteIndexExpressionForFilter(indexed_columns, get, index_expr, *filter_column_idx, rewrite_possible);
+ 			} else {
+-				RewriteIndexExpression(indexed_columns, get, *index_expr, rewrite_possible);
++				RewriteIndexExpression(indexed_columns, get, index_expr, rewrite_possible);
+ 			}
+ 			if (!rewrite_possible) {
+ 				// Could not rewrite!

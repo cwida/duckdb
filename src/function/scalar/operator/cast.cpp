@@ -253,7 +253,7 @@ const BoundCastInfo &BoundCastExpression::GetBoundCast(const BoundFunctionExpres
 }
 
 BoundCastInfo &BoundCastExpression::GetBoundCastMutable(BoundFunctionExpression &cast_expr) {
-	return cast_expr.BindInfoMutable()->Cast<CastFunctionData>().bound_cast;
+	return cast_expr.BindInfo()->Cast<CastFunctionData>().bound_cast;
 }
 
 unique_ptr<BaseStatistics> BoundCastExpression::PropagateStatistics(BoundFunctionExpression &cast_expr,

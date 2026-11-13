@@ -280,12 +280,11 @@ unique_ptr<LogicalOperator> DisjunctiveJoinRewriter::CreateBranchJoin(const CTEI
 		vector<unique_ptr<Expression>> exclusions;
 		if (previous.GetComparisonType() == ExpressionType::COMPARE_EQUAL) {
 			// Preserve UNKNOWN, with separate NULL checks that statistics can simplify.
-			auto left_null = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN);
-			left_null->GetChildrenMutable().push_back(previous.GetLHS().Copy());
+			auto left_null = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN,
+			                                                    previous.GetLHS().Copy());
 			exclusions.push_back(std::move(left_null));
-			auto right_null =
-			    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN);
-			right_null->GetChildrenMutable().push_back(previous.GetRHS().Copy());
+			auto right_null = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN,
+			                                                     previous.GetRHS().Copy());
 			exclusions.push_back(std::move(right_null));
 		}
 		exclusions.push_back(BoundComparisonExpression::Create(NegateComparisonExpression(previous.GetComparisonType()),

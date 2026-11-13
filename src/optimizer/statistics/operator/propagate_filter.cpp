@@ -1,5 +1,6 @@
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/scalar/generic_common.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_between_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -323,7 +324,21 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalFilt
 		return make_uniq<NodeStatistics>(0U, 0U);
 	}
 
-	// then propagate to each of the expressions
+	// the filter evaluates its conjuncts in an adaptive order over the input rows, so their verification statistics
+	// are derived from the input statistics before any conjunct narrows them
+	const bool verify_stats = Settings::Get<DebugVerifyStatsSetting>(context);
+	column_binding_map_t<unique_ptr<BaseStatistics>> input_statistics;
+	if (verify_stats) {
+		for (auto &entry : statistics_map) {
+			// compressed materialization registers bindings without statistics
+			if (entry.second) {
+				input_statistics[entry.first] = entry.second->ToUnique();
+			}
+		}
+	}
+	// the conjuncts are propagated against statistics narrowed by the earlier conjuncts: these hold for the filter
+	// output and the pruning of the later conjuncts, but not for the vectors they are evaluated on
+	VerificationStatsGuard narrowing_guard(attach_verification_stats);
 	for (idx_t i = 0; i < filter.expressions.size(); i++) {
 		auto &condition = filter.expressions[i];
 		auto prune_result = HandleFilter(condition);
@@ -350,6 +365,15 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalFilt
 		}
 	}
 	SimplifyConstantOrNull(filter.expressions);
+	if (verify_stats) {
+		// the remaining conjuncts are final: attach the verification statistics derived from the input statistics
+		narrowing_guard.Release();
+		std::swap(statistics_map, input_statistics);
+		for (auto &condition : filter.expressions) {
+			PropagateExpression(condition);
+		}
+		std::swap(statistics_map, input_statistics);
+	}
 	// the max cardinality of a filter is the cardinality of the input (i.e. no tuples get filtered)
 	return std::move(node_stats);
 }

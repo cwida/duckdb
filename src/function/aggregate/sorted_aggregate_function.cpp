@@ -640,7 +640,7 @@ void FunctionBinder::BindSortedAggregate(ClientContext &context, BoundAggregateE
 	// the exported state buffers the values, so the ORDER BY must be preserved verbatim - skip the simplification
 	const bool state_export = expr.StateExportMode() == AggregateStateExportMode::STATE_EXPORT;
 	if (!state_export && Settings::Get<EnableOptimizerSetting>(context)) {
-		if (expr.GetOrderBysMutable()->Simplify(groups, grouping_sets)) {
+		if (expr.GetOrderBys()->Simplify(groups, grouping_sets)) {
 			expr.GetOrderBysMutable().reset();
 			return;
 		}
