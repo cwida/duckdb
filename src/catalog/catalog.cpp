@@ -150,7 +150,8 @@ void Catalog::CheckNestedSchemaSupport(const QualifiedName &name, CatalogType ty
 			while (path[end - 1].empty()) {
 				end--;
 			}
-			auto schema_path = QualifiedName::FromPath(vector<Identifier>(path.begin() + 1, path.begin() + end));
+			auto schema_path =
+			    QualifiedName::FromPath(vector<Identifier>(path.begin() + 1, path.begin() + NumericCast<int64_t>(end)));
 			throw BinderException("Catalog %s does not support nested schemas: %s", GetName(), schema_path.ToString());
 		}
 	}
