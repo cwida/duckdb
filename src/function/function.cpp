@@ -732,9 +732,19 @@ Binder &BindFunctionInput::GetBinder() {
 	return *binder;
 }
 
+FunctionBinder BindFunctionInput::NestedFunctionBinder() {
+	if (binder) {
+		return FunctionBinder(*binder);
+	}
+	return FunctionBinder(context, decimal_width_limit);
+}
+
 DecimalWidthLimit BindFunctionInput::GetDecimalWidthLimit() const {
 	if (binder) {
 		return binder->GetDecimalWidthLimit();
+	}
+	if (decimal_width_limit) {
+		return *decimal_width_limit;
 	}
 	return DecimalWidthLimit::FromSetting(context);
 }

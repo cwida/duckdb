@@ -4,6 +4,7 @@
 #include "duckdb/common/types/cast_helpers.hpp"
 #include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/limits.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/settings.hpp"
@@ -25,6 +26,21 @@ DecimalWidthLimit DecimalWidthLimit::FromSetting(optional_ptr<ClientContext> con
 	const auto width = NumericCast<uint32_t>(
 	    MinValue<idx_t>(MaxValue<idx_t>(max_width, Decimal::MAX_WIDTH_INT128), NumericLimits<uint32_t>::Maximum()));
 	return DecimalWidthLimit(width, hint);
+}
+
+DecimalWidthLimit DecimalWidthLimit::FromReturnType(const LogicalType &return_type) {
+	uint32_t width = Decimal::MAX_WIDTH_INT128;
+	TypeVisitor::Contains(return_type, [&](const LogicalType &type) {
+		if (type.IsAggregateState()) {
+			width = NumericLimits<uint32_t>::Maximum();
+			return true;
+		}
+		if (type.id() == LogicalTypeId::DECIMAL) {
+			width = MaxValue(width, DecimalType::GetWidth(type));
+		}
+		return false;
+	});
+	return DecimalWidthLimit(width, "a deserialized function is rebound within the width of its result");
 }
 
 uint32_t DecimalWidthLimit::ResultWidth(uint32_t max_input_width) const {

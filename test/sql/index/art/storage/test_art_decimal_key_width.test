@@ -5,6 +5,10 @@
 # the storage version is chosen per database below, the configs that force one cannot
 require no_force_storage
 
+# the plan of CREATE INDEX is deserialized before it runs: the keys are rebound within the width they were bound to
+statement ok
+SET debug_verify_serializer = true
+
 # a database of the storage version of wide decimals binds its keys without a bound: a session that bounds decimals to
 # 38 digits computes the same keys as the default session, so the index keeps rejecting duplicates after reopening
 statement ok
@@ -412,13 +416,13 @@ CREATE INDEX nx2 ON d.n ((a::VARCHAR || coalesce(try_cast('1'::BIGNUM AS DECIMAL
 
 # a cast between nested types is refused when a field converts between BIGNUM and DECIMAL, other fields may change
 statement ok
-CREATE TABLE d.s (s STRUCT(n BIGNUM, amount DECIMAL(18,0)))
+CREATE TABLE d.st (s STRUCT(n BIGNUM, amount DECIMAL(18,0)))
 
 statement ok
-CREATE INDEX sx ON d.s ((struct_extract(CAST(s AS STRUCT(n BIGNUM, amount DECIMAL(19,0))), 'amount')))
+CREATE INDEX sx ON d.st ((struct_extract(CAST(s AS STRUCT(n BIGNUM, amount DECIMAL(19,0))), 'amount')))
 
 statement error
-CREATE INDEX sx2 ON d.s ((struct_extract(CAST(s AS STRUCT(n DECIMAL(18,0), amount DECIMAL(18,0))), 'n')))
+CREATE INDEX sx2 ON d.st ((struct_extract(CAST(s AS STRUCT(n DECIMAL(18,0), amount DECIMAL(18,0))), 'n')))
 ----
 <REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
 
@@ -443,18 +447,18 @@ CREATE INDEX nx3 ON d.n ((coalesce(struct_extract(try_cast(row(a) AS STRUCT(v DE
 <REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
 
 statement ok
-CREATE INDEX sx3 ON d.s ((struct_extract(try_cast(row(s.n, s.amount) AS STRUCT(n VARCHAR, amount DECIMAL(19,0))), 'amount')))
+CREATE INDEX sx3 ON d.st ((struct_extract(try_cast(row(s.n, s.amount) AS STRUCT(n VARCHAR, amount DECIMAL(19,0))), 'amount')))
 
 statement error
-CREATE INDEX sx4 ON d.s ((struct_extract(try_cast(row(s.n, s.amount) AS STRUCT(n DECIMAL(18,0), amount DECIMAL(19,0))), 'amount')))
+CREATE INDEX sx4 ON d.st ((struct_extract(try_cast(row(s.n, s.amount) AS STRUCT(n DECIMAL(18,0), amount DECIMAL(19,0))), 'amount')))
 ----
 <REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
 
 statement ok
-CREATE INDEX sx5 ON d.s ((map_values(try_cast(s AS MAP(VARCHAR, VARCHAR)))[1]))
+CREATE INDEX sx5 ON d.st ((map_values(try_cast(s AS MAP(VARCHAR, VARCHAR)))[1]))
 
 statement error
-CREATE INDEX sx6 ON d.s ((map_values(try_cast(s AS MAP(VARCHAR, DECIMAL(18,0))))[1]))
+CREATE INDEX sx6 ON d.st ((map_values(try_cast(s AS MAP(VARCHAR, DECIMAL(18,0))))[1]))
 ----
 <REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
 

@@ -43,6 +43,7 @@ class WindowFunctionSet;
 class BoundSimpleFunction;
 class Binder;
 class DecimalWidthLimit;
+class FunctionBinder;
 
 struct PragmaInfo;
 
@@ -715,8 +716,10 @@ class BindFunctionInput {
 public:
 	BindFunctionInput(ClientContext &context_p, const BoundSimpleFunction &function_p,
 	                  const FunctionSignature &signature_p, vector<unique_ptr<Expression>> &arguments_p,
-	                  optional_ptr<Binder> binder_p = nullptr)
-	    : context(context_p), function(function_p), signature(signature_p), arguments(arguments_p), binder(binder_p) {
+	                  optional_ptr<Binder> binder_p = nullptr,
+	                  optional_ptr<const DecimalWidthLimit> decimal_width_limit_p = nullptr)
+	    : context(context_p), function(function_p), signature(signature_p), arguments(arguments_p), binder(binder_p),
+	      decimal_width_limit(decimal_width_limit_p) {
 	}
 
 	ClientContext &GetClientContext() const {
@@ -727,10 +730,11 @@ public:
 		return binder != nullptr;
 	}
 	DUCKDB_API Binder &GetBinder();
-	optional_ptr<Binder> TryGetBinder() const {
-		return binder;
-	}
-	//! The widest DECIMAL the bind constructs: the limit of the binder, or the max_decimal_width setting without one
+	//! A binder for the functions the bind nests: it binds as this function is bound, within its query or within its
+	//! fixed decimal width
+	DUCKDB_API FunctionBinder NestedFunctionBinder();
+	//! The widest DECIMAL the bind constructs: the limit of the binder, the fixed limit of a bind outside of a query
+	//! (a deserialized function is rebound within the width it was bound in), or the max_decimal_width setting
 	DUCKDB_API DecimalWidthLimit GetDecimalWidthLimit() const;
 	vector<unique_ptr<Expression>> &GetArguments() const {
 		return arguments;
@@ -773,6 +777,8 @@ private:
 	const FunctionSignature &signature;
 	vector<unique_ptr<Expression>> &arguments;
 	optional_ptr<Binder> binder;
+	//! The fixed limit of a bind outside of a query, if any
+	optional_ptr<const DecimalWidthLimit> decimal_width_limit;
 };
 
 } // namespace duckdb

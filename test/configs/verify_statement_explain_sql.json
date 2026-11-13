@@ -139,6 +139,12 @@
       "paths": [
         "test/sql/settings/max_decimal_width.test"
       ]
+    },
+    {
+      "reason": "The rendered SQL spells out the DECIMAL(40,0) type of the stored column a constant is compared with, which the lowered max_decimal_width refuses to bind; the native plan reuses the column's type",
+      "paths": [
+        "test/sql/index/art/storage/test_art_decimal_key_width.test"
+      ]
     }
   ]
 }

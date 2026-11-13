@@ -301,13 +301,12 @@ struct DecimalSumOperation : public OP {
 };
 
 //! Binds the regular sum that sum_no_overflow is a specialized implementation of
-pair<BoundAggregateFunction, unique_ptr<FunctionData>> BindLogicalSum(ClientContext &context,
-                                                                      vector<unique_ptr<Expression>> &arguments,
-                                                                      optional_ptr<Binder> binder_p = nullptr) {
+pair<BoundAggregateFunction, unique_ptr<FunctionData>> BindLogicalSum(FunctionBinder &binder,
+                                                                      vector<unique_ptr<Expression>> &arguments) {
+	auto &context = binder.context;
 	auto &entry = Catalog::GetEntry<AggregateFunctionCatalogEntry>(
 	    context, QualifiedName(Identifier::SystemCatalog(), Identifier::DefaultSchema(), Identifier("sum")));
 	vector<pair<Identifier, unique_ptr<Expression>>> keyword_args;
-	FunctionBinder binder(context, binder_p);
 	auto selection = FunctionBinder::SelectFunction(context, entry.functions, {arguments, keyword_args}, false,
 	                                                binder.FixedDecimalWidthLimit());
 	if (!selection.IsSuccess()) {
@@ -333,7 +332,10 @@ unique_ptr<FunctionData> SumNoOverflowDeserialize(Deserializer &deserializer, Bo
 	for (auto &child : children) {
 		arguments.push_back(child.get().Copy());
 	}
-	auto logical = BindLogicalSum(context, arguments);
+	// the sum is rebound within the decimal width it was bound in
+	const auto decimal_width_limit = DecimalWidthLimit::FromReturnType(return_type);
+	FunctionBinder binder(context, &decimal_width_limit);
+	auto logical = BindLogicalSum(binder, arguments);
 	if (logical.second || (!return_type.IsAggregateState() && logical.first.GetReturnType() != return_type)) {
 		throw SerializationException("Cannot reconstruct the logical sum signature");
 	}
@@ -393,7 +395,8 @@ unique_ptr<FunctionData> SumNoOverflowBind(BindAggregateFunctionInput &input) {
 	auto &function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
 	const auto parameter_type = function.GetArguments()[0];
-	auto logical = BindLogicalSum(input.GetClientContext(), arguments, input.TryGetBinder());
+	auto binder = input.NestedFunctionBinder();
+	auto logical = BindLogicalSum(binder, arguments);
 	if (parameter_type.id() != LogicalTypeId::DECIMAL) {
 		logical.first.ReplaceImplementation(GetSumAggregateNoOverflow(parameter_type.InternalType()));
 		// bound by name there is no statistics proof that the int64 accumulator cannot overflow

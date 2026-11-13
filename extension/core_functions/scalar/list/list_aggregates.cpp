@@ -455,10 +455,10 @@ AggregateFunctionCatalogEntry &GetListAggregateEntry(ClientContext &context, con
 
 //! Binds the aggregate that is applied to the elements of the list
 template <bool IS_AGGR>
-unique_ptr<BoundAggregateExpression> BindListAggregate(ClientContext &context, optional_ptr<Binder> binder,
-                                                       LogicalType child_type, const string &function_name,
+unique_ptr<BoundAggregateExpression> BindListAggregate(FunctionBinder &function_binder, LogicalType child_type,
+                                                       const string &function_name,
                                                        vector<unique_ptr<Expression>> extra_arguments) {
-	auto &func = GetListAggregateEntry(context, function_name);
+	auto &func = GetListAggregateEntry(function_binder.context, function_name);
 
 	// the child expression refers to the list elements
 	vector<unique_ptr<Expression>> children;
@@ -467,7 +467,6 @@ unique_ptr<BoundAggregateExpression> BindListAggregate(ClientContext &context, o
 		children.push_back(std::move(argument));
 	}
 
-	FunctionBinder function_binder(context, binder);
 	if (!IS_AGGR) {
 		// the histogram is computed as an unordered map, which takes any type
 		return function_binder.BindAggregateFunction(HistogramFun::GetHistogramUnorderedMap(child_type),
@@ -511,8 +510,9 @@ void ListAggregatesResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	for (idx_t i = 2; i < input.GetArgumentCount(); i++) {
 		extra_arguments.push_back(input.GetArgument(i).Copy());
 	}
-	auto bound_aggr_function = BindListAggregate<IS_AGGR>(
-	    context, input.TryGetBinder(), ListType::GetChildType(list_type), function_name, std::move(extra_arguments));
+	auto function_binder = input.NestedFunctionBinder();
+	auto bound_aggr_function = BindListAggregate<IS_AGGR>(function_binder, ListType::GetChildType(list_type),
+	                                                      function_name, std::move(extra_arguments));
 
 	bound_function.GetArguments()[0] = LogicalType::LIST(bound_aggr_function->Function().GetArguments()[0]);
 	if (IS_AGGR) {
@@ -546,8 +546,9 @@ unique_ptr<FunctionData> ListAggregatesBind(BindScalarFunctionInput &input) {
 	}
 	auto function_name = IS_AGGR ? input.GetConstant(1).ToString() : string("histogram");
 	auto child_type = ListType::GetChildType(arguments[0]->GetReturnType());
-	auto bound_aggr_function = BindListAggregate<IS_AGGR>(context, input.TryGetBinder(), child_type, function_name,
-	                                                      std::move(extra_arguments));
+	auto function_binder = input.NestedFunctionBinder();
+	auto bound_aggr_function =
+	    BindListAggregate<IS_AGGR>(function_binder, child_type, function_name, std::move(extra_arguments));
 
 	// the extra arguments are passed to the aggregate as constant vectors, so they have to be constant - arguments
 	// that the bind of the aggregate added after them are derived from the list elements

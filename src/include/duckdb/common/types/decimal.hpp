@@ -91,6 +91,11 @@ public:
 	//! The limit of the max_decimal_width setting (at least MAX_WIDTH_INT128, so the fixed-size tiers are never
 	//! bounded by it), or of the uint32_t range of the width without a context
 	static DecimalWidthLimit FromSetting(optional_ptr<ClientContext> context);
+	//! The limit a function with the return type was bound within, for rebinding it when it is deserialized: the
+	//! widest DECIMAL of the type, since a bind constructs no DECIMAL wider than its result beyond the types it casts
+	//! its arguments to, and no bound for an aggregate state, which records the arguments of its aggregate, not the
+	//! result
+	static DecimalWidthLimit FromReturnType(const LogicalType &return_type);
 	DecimalWidthLimit(uint32_t width, const char *hint);
 
 	//! The widest result of combining decimals, given the widest DECIMAL among the inputs: the limit, or the input

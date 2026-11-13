@@ -391,11 +391,14 @@ class FunctionBinder {
 public:
 	DUCKDB_API explicit FunctionBinder(Binder &binder);
 	DUCKDB_API explicit FunctionBinder(ClientContext &context);
-	//! Binds within the query of the binder, if any: a bind callback that binds a nested function passes its own on
-	DUCKDB_API FunctionBinder(ClientContext &context, optional_ptr<Binder> binder);
+	//! Binds outside of a query within a fixed decimal width, if one is given: a deserialized function is rebound
+	//! within the width it was bound in
+	DUCKDB_API FunctionBinder(ClientContext &context, optional_ptr<const DecimalWidthLimit> decimal_width_limit);
 
 	optional_ptr<Binder> binder;
 	ClientContext &context;
+	//! The fixed limit of the DECIMAL widths a bind outside of a query constructs, if any
+	optional_ptr<const DecimalWidthLimit> decimal_width_limit;
 	//! Set when the arguments were bound before, so their collations are not pushed again
 	bool arguments_collated = false;
 
@@ -408,7 +411,8 @@ public:
 	SelectFunction(optional_ptr<ClientContext> context, const BaseFunctionSet &functions,
 	               const FunctionCallArguments &call, bool explicit_casts = false,
 	               optional_ptr<const DecimalWidthLimit> decimal_width_limit = nullptr);
-	//! The fixed limit of the DECIMAL widths the binder constructs, if any: set while the keys of an index are bound
+	//! The fixed limit of the DECIMAL widths the binder constructs, if any: set while the keys of an index are bound,
+	//! and while a function is deserialized
 	optional_ptr<const DecimalWidthLimit> FixedDecimalWidthLimit() const;
 
 	//! Bind a table function: select the overload, check the named arguments against its signature, and fold the

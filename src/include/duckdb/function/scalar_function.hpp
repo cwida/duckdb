@@ -666,9 +666,10 @@ private:
 class BindScalarFunctionInput : public BindFunctionInput {
 public:
 	BindScalarFunctionInput(ClientContext &context_p, BoundScalarFunction &bound_function_p,
-	                        vector<unique_ptr<Expression>> &arguments_p, optional_ptr<Binder> binder_p = nullptr)
+	                        vector<unique_ptr<Expression>> &arguments_p, optional_ptr<Binder> binder_p = nullptr,
+	                        optional_ptr<const DecimalWidthLimit> decimal_width_limit_p = nullptr)
 	    : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p,
-	                        binder_p),
+	                        binder_p, decimal_width_limit_p),
 	      bound_function(bound_function_p) {
 	}
 
@@ -685,9 +686,10 @@ class ResolveScalarFunctionTypesInput : private BindFunctionInput {
 public:
 	ResolveScalarFunctionTypesInput(ClientContext &context_p, BoundScalarFunction &bound_function_p,
 	                                vector<unique_ptr<Expression>> &arguments_p,
-	                                optional_ptr<Binder> binder_p = nullptr)
+	                                optional_ptr<Binder> binder_p = nullptr,
+	                                optional_ptr<const DecimalWidthLimit> decimal_width_limit_p = nullptr)
 	    : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p,
-	                        binder_p),
+	                        binder_p, decimal_width_limit_p),
 	      bound_function(bound_function_p), arguments(arguments_p) {
 	}
 
@@ -696,7 +698,7 @@ public:
 	using BindFunctionInput::GetConstant;
 	using BindFunctionInput::GetDecimalWidthLimit;
 	using BindFunctionInput::GetNonNullConstant;
-	using BindFunctionInput::TryGetBinder;
+	using BindFunctionInput::NestedFunctionBinder;
 	using BindFunctionInput::TryGetConstant;
 
 	BoundScalarFunction &GetBoundFunction() const {

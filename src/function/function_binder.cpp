@@ -28,12 +28,12 @@ FunctionBinder::FunctionBinder(ClientContext &context_p) : binder(nullptr), cont
 }
 FunctionBinder::FunctionBinder(Binder &binder_p) : binder(&binder_p), context(binder_p.context) {
 }
-FunctionBinder::FunctionBinder(ClientContext &context_p, optional_ptr<Binder> binder_p)
-    : binder(binder_p), context(context_p) {
+FunctionBinder::FunctionBinder(ClientContext &context_p, optional_ptr<const DecimalWidthLimit> decimal_width_limit_p)
+    : binder(nullptr), context(context_p), decimal_width_limit(decimal_width_limit_p) {
 }
 
 optional_ptr<const DecimalWidthLimit> FunctionBinder::FixedDecimalWidthLimit() const {
-	return binder ? binder->GetFixedDecimalWidthLimit() : nullptr;
+	return binder ? binder->GetFixedDecimalWidthLimit() : decimal_width_limit;
 }
 
 //! Split the full (maybe-named) argument list into the positional and the named arguments. Returns false, and leaves
@@ -1504,7 +1504,7 @@ FunctionBinder::ResolveScalarFunctionTypes(const FunctionBinding &binding, vecto
 	ResolveIncompleteArgumentTypes(bound_function, arguments);
 
 	if (bound_function.HasResolveTypesCallback()) {
-		ResolveScalarFunctionTypesInput input(context, bound_function, arguments, binder);
+		ResolveScalarFunctionTypesInput input(context, bound_function, arguments, binder, decimal_width_limit);
 		bound_function.GetResolveTypesCallback()(input);
 		VerifyArgumentCount(bound_function, arguments.size());
 	}
@@ -1533,7 +1533,7 @@ FunctionBinder::ResolveScalarFunction(const FunctionBinding &binding, vector<uni
 		}
 	}
 	if (bound_function.HasBindCallback()) {
-		BindScalarFunctionInput input(context, bound_function, arguments, binder);
+		BindScalarFunctionInput input(context, bound_function, arguments, binder, decimal_width_limit);
 		bind_info = bound_function.GetBindCallback()(input);
 		VerifyArgumentCount(bound_function, arguments.size());
 		VerifyBindArgumentTypes(bound_function, arguments);
@@ -1636,7 +1636,7 @@ FunctionBinder::ResolveAggregateFunction(const FunctionBinding &binding, vector<
 	unique_ptr<FunctionData> bind_info;
 
 	if (bound_function.GetCallbacks().HasBindCallback()) {
-		BindAggregateFunctionInput input(context, bound_function, children, binder);
+		BindAggregateFunctionInput input(context, bound_function, children, binder, decimal_width_limit);
 		bind_info = bound_function.GetCallbacks().GetBindCallback()(input);
 
 		// we may have lost some arguments in the bind
