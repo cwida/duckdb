@@ -64,6 +64,9 @@ static void AddProjectedColumns(vector<ProjectionIndex> &result, const vector<Pr
 }
 
 bool StatisticsPropagator::HandleJoinAlwaysMatches(LogicalJoin &join, unique_ptr<LogicalOperator> &node_ptr) {
+	if (mode != StatisticsPropagationMode::FULL) {
+		return false;
+	}
 	switch (join.join_type) {
 	case JoinType::RIGHT_SEMI:
 	case JoinType::SEMI: {
