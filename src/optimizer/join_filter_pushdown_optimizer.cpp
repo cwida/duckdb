@@ -177,18 +177,22 @@ bool JoinFilterPushdownUtil::PushdownJoinFilterExpression(const Expression &expr
 	return true;
 }
 
-bool JoinFilterPushdownUtil::JoinTypeIsSupported(JoinType join_type) {
+bool JoinFilterPushdownUtil::JoinTypeIsSupported(JoinType join_type, bool right_anti_filters) {
 	switch (join_type) {
+	case JoinType::RIGHT_ANTI:
+		// a RIGHT ANTI join emits the build rows without a match: its probe rows only mark build rows as matched.
+		// a probe row whose key is not in the build side cannot mark anything, so it can be filtered out like for
+		// a RIGHT SEMI join
+		return right_anti_filters;
 	case JoinType::MARK:
 	case JoinType::SINGLE:
 	case JoinType::LEFT:
 	case JoinType::OUTER:
 	case JoinType::ANTI:
-	case JoinType::RIGHT_ANTI:
 		// cannot generate join filters for these join types
 		// mark/single - cannot change cardinality of probe side
 		// left/outer always need to include every row from probe side
-		// FIXME: anti/right_anti - we could do this, but need to invert the join conditions
+		// anti - the probe rows without a match are the result
 		return false;
 	default:
 		return true;
@@ -744,7 +748,8 @@ static void SimplifyJoinFilterCastChain(ClientContext &context, JoinFilterPushdo
 }
 
 bool JoinFilterPushdownOptimizer::CanGenerateJoinFilters(const LogicalComparisonJoin &join) {
-	if (!JoinFilterPushdownUtil::JoinTypeIsSupported(join.join_type)) {
+	auto right_anti_filters = !optimizer.OptimizerDisabled(OptimizerType::JOIN_FILTER_RIGHT_ANTI);
+	if (!JoinFilterPushdownUtil::JoinTypeIsSupported(join.join_type, right_anti_filters)) {
 		return false;
 	}
 	for (auto &condition : join.conditions) {
