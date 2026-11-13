@@ -91,9 +91,8 @@ public:
 		return block && (!random_access || !block->GetMemory().IsUnloaded());
 	}
 
-	//! By default, we use CSV_BUFFER_SIZE to allocate each buffer
-	static constexpr idx_t ROWS_PER_BUFFER = 16;
-	static constexpr idx_t MIN_ROWS_PER_BUFFER = 4;
+	//! With the block header and alignment the allocation is exactly 32 MiB, a size the allocation cache reuses
+	static constexpr idx_t CSV_BUFFER_SIZE = 33550336;
 
 	bool last_buffer = false;
 
