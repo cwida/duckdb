@@ -5,6 +5,15 @@
   "inherit_skip_tests": "test/configs/stats_dependent_tests.json",
   "skip_tests": [
     {
+      "reason": "Checks MARK conversion plan shapes and its optimizer gate.",
+      "paths": [
+        "test/optimizer/mark_join_simplifier.test",
+        "test/optimizer/mark_predicates.test",
+        "test/optimizer/mark_join_scalar_subquery.test",
+        "test/optimizer/joins/filtering_join_predicate_ownership.test"
+      ]
+    },
+    {
       "reason": "Checks the plan of an executed query through the profiler output.",
       "paths": [
         "test/optimizer/partial_aggregate_pushdown_serialized_plan.test"

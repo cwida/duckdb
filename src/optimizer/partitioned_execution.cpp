@@ -494,7 +494,7 @@ void PartitionedExecutionSplitPipeline(Optimizer &optimizer, unique_ptr<LogicalO
 		copy->children[0] = std::move(filter);
 
 		// Now push it down
-		FilterPushdown filter_pushdown(optimizer, false);
+		FilterPushdown filter_pushdown(optimizer);
 		copy = filter_pushdown.Rewrite(std::move(copy));
 
 		// Add cardinality estimates for these GETs

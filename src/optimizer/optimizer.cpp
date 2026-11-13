@@ -26,6 +26,7 @@
 #include "duckdb/optimizer/join_filter_pushdown_optimizer.hpp"
 #include "duckdb/optimizer/join_order/join_order_optimizer.hpp"
 #include "duckdb/optimizer/limit_pushdown.hpp"
+#include "duckdb/optimizer/mark_join_simplifier.hpp"
 #include "duckdb/optimizer/regex_range_filter.hpp"
 #include "duckdb/optimizer/remove_duplicate_groups.hpp"
 #include "duckdb/optimizer/remove_redundant_order.hpp"
@@ -125,48 +126,12 @@ static void ClearProjectionMaps(LogicalOperator &op) {
 	}
 }
 
-static bool ContainsDML(const LogicalOperator &op) {
-	switch (op.type) {
-	case LogicalOperatorType::LOGICAL_INSERT:
-	case LogicalOperatorType::LOGICAL_UPDATE:
-	case LogicalOperatorType::LOGICAL_DELETE:
-	case LogicalOperatorType::LOGICAL_MERGE_INTO:
-		return true;
-	default:
-		break;
-	}
-	for (auto &child : op.children) {
-		if (ContainsDML(*child)) {
-			return true;
-		}
-	}
-	return false;
-}
-
 static bool ContainsDataSource(const LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_GET) {
 		return true;
 	}
 	for (auto &child : op.children) {
 		if (ContainsDataSource(*child)) {
-			return true;
-		}
-	}
-	return false;
-}
-
-// Returns true if the plan contains a DML statement inside a CTE body. A top-level
-// DML statement is not flagged. COPY TO is side-effecting, but does not invalidate
-// table statistics and is deliberately excluded here.
-static bool CTEContainsDML(const LogicalOperator &op) {
-	if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE ||
-	    op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
-		if (!op.children.empty() && ContainsDML(*op.children[0])) {
-			return true;
-		}
-	}
-	for (auto &child : op.children) {
-		if (CTEContainsDML(*child)) {
 			return true;
 		}
 	}
@@ -256,12 +221,16 @@ void Optimizer::RunBuiltInOptimizers() {
 	// perform filter pushdown
 	RunOptimizer(OptimizerType::FILTER_PUSHDOWN, [&]() {
 		FilterPushdown filter_pushdown(*this);
-		unordered_set<TableIndex> top_bindings;
-		filter_pushdown.CheckMarkToSemi(*plan, top_bindings);
 		plan = filter_pushdown.Rewrite(std::move(plan));
 	});
 
-	if (!CTEContainsDML(*plan)) {
+	// Expose filtering joins before choosing aggregate key domains.
+	RunOptimizer(OptimizerType::MARK_JOIN_SIMPLIFIER, [&]() {
+		MarkJoinSimplifier mark_simplifier(*this);
+		mark_simplifier.Optimize(plan);
+	});
+
+	if (!plan->CTEContainsDML()) {
 		RunOptimizer(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN, [&]() {
 			DuplicateEliminatedDomainOptimizer domain_optimizer(*this);
 			domain_optimizer.Optimize(plan);
@@ -326,6 +295,12 @@ void Optimizer::RunBuiltInOptimizers() {
 	RunOptimizer(OptimizerType::WINDOW_SELF_JOIN, [&]() {
 		WindowSelfJoinOptimizer window_self_join_optimizer(*this);
 		plan = window_self_join_optimizer.Optimize(std::move(plan));
+	});
+
+	// IN-clause rewriting and delim elimination can expose more filtered markers.
+	RunOptimizer(OptimizerType::MARK_JOIN_SIMPLIFIER, [&]() {
+		MarkJoinSimplifier mark_simplifier(*this);
+		mark_simplifier.Optimize(plan);
 	});
 
 	// Pull up projection from joins
@@ -418,7 +393,7 @@ void Optimizer::RunBuiltInOptimizers() {
 	// convert common subplans into materialized CTEs
 	// Skip when the plan contains a DML CTE: table statistics are stale at plan
 	// time and could cause incorrect deduplication of scans across a DML boundary.
-	if (!CTEContainsDML(*plan)) {
+	if (!plan->CTEContainsDML()) {
 		RunOptimizer(OptimizerType::COMMON_SUBPLAN, [&]() {
 			CommonSubplanOptimizer common_subplan_optimizer(*this);
 			plan = common_subplan_optimizer.Optimize(std::move(plan));
@@ -459,7 +434,7 @@ void Optimizer::RunBuiltInOptimizers() {
 	column_binding_map_t<unique_ptr<BaseStatistics>> statistics_map;
 	bool propagated_statistics = false;
 	bool removed_expressions = false;
-	if (!CTEContainsDML(*plan)) {
+	if (!plan->CTEContainsDML()) {
 		RunOptimizer(OptimizerType::STATISTICS_PROPAGATION, [&]() {
 			StatisticsPropagator propagator(*this, plan);
 			propagator.PropagateStatistics(plan);

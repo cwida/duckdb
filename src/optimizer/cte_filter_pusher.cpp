@@ -25,10 +25,6 @@ unique_ptr<LogicalOperator> CTEFilterPusher::Optimize(unique_ptr<LogicalOperator
 	if (cte_info_map.empty()) {
 		return op;
 	}
-	// Scalar producer pushdown must preserve markers referenced by CTE consumers.
-	FilterPushdown pushdown(optimizer);
-	unordered_set<TableIndex> referenced_bindings;
-	pushdown.CheckMarkToSemi(*op, referenced_bindings);
 	auto ctes = std::move(cte_info_map);
 
 	// Iterate once over all materialized CTEs
@@ -178,7 +174,7 @@ void CTEFilterPusher::PushFilterIntoCTE(MaterializedCTEInfo &info) {
 	new_cte->children.push_back(std::move(info.materialized_cte.children[0]));
 
 	// Push down the filter
-	FilterPushdown pushdown(optimizer, true, FilterPushdown::ProjectionMode::PRESERVE_COMPUTED_EXPRESSIONS);
+	FilterPushdown pushdown(optimizer, FilterPushdown::ProjectionMode::PRESERVE_COMPUTED_EXPRESSIONS);
 	new_cte = pushdown.Rewrite(std::move(new_cte));
 
 	info.materialized_cte.children[0] = std::move(new_cte);

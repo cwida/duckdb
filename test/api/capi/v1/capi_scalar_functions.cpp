@@ -1,4 +1,5 @@
 #include "capi_tester.hpp"
+#include "duckdb/common/array_ptr.hpp"
 
 using namespace duckdb;
 
@@ -770,6 +771,45 @@ TEST_CASE("Test Scalar Functions - Local State", "[capi]") {
 	result = tester.Query("SELECT my_counter_error_high(0) FROM range(10)");
 	REQUIRE_FAIL(result);
 	REQUIRE(StringUtil::Contains(result->ErrorMessage(), "upper limit cannot be greater than 100"));
+}
+
+static void VolatileErrorOverload(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output) {
+	auto &calls = *static_cast<idx_t *>(duckdb_scalar_function_get_extra_info(info));
+	array_ptr<bool> result_data(static_cast<bool *>(duckdb_vector_get_data(output)), duckdb_data_chunk_get_size(input));
+	for (auto &value : result_data) {
+		value = ++calls <= 3;
+	}
+}
+
+TEST_CASE("A volatile error overload retains MARK evaluation", "[capi]") {
+	idx_t calls = 0;
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(*tester.Query("SET threads=1"));
+	REQUIRE_NO_FAIL(*tester.Query("CREATE TABLE probe AS FROM range(9000,9100) t(i)"));
+	REQUIRE_NO_FAIL(*tester.Query("CREATE TABLE build AS FROM range(10000) t(i)"));
+
+	auto function = duckdb_create_scalar_function();
+	duckdb_scalar_function_set_name(function, "error");
+	duckdb_scalar_function_set_volatile(function);
+	auto parameter_type = duckdb_create_logical_type(DUCKDB_TYPE_BIGINT);
+	duckdb_scalar_function_add_parameter(function, parameter_type);
+	duckdb_destroy_logical_type(&parameter_type);
+	auto return_type = duckdb_create_logical_type(DUCKDB_TYPE_BOOLEAN);
+	duckdb_scalar_function_set_return_type(function, return_type);
+	duckdb_destroy_logical_type(&return_type);
+	duckdb_scalar_function_set_function(function, VolatileErrorOverload);
+	duckdb_scalar_function_set_extra_info(function, &calls, nullptr);
+	auto status = duckdb_register_scalar_function(tester.connection, function);
+	duckdb_destroy_scalar_function(&function);
+	REQUIRE(status == DuckDBSuccess);
+
+	auto result = tester.Query("SELECT count(*) FROM probe p JOIN BY (TYPE MARK) "
+	                           "(SELECT i FROM build WHERE error(i)) b ON p.i IS NOT DISTINCT FROM b.i "
+	                           "WHERE __mark_join_marker IS NOT FALSE");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<idx_t>(0, 0) == 0);
+	REQUIRE(calls == 10000);
 }
 
 void ReportErrorFunction(duckdb_function_info info, duckdb_data_chunk, duckdb_vector) {

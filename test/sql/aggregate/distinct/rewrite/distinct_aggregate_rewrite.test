@@ -424,4 +424,4 @@ WHERE p_partkey = ps_partkey
 GROUP BY p_brand, p_type, p_size
 ORDER BY supplier_cnt DESC, p_brand, p_type, p_size;
 ----
-logical_opt	<REGEX>:.*"Groups":\s*\[[^\]]*"ps_suppkey"[^\]]*\].*"Expressions":\s*"(count_star\(\)|count\(#[0-9]+\) EXPORT_STATE)".*
+logical_opt	<REGEX>:.*"Groups":\s*\[\s*"[^"]+"\s*,\s*"[^"]+"\s*,\s*"[^"]+"\s*,\s*"[^"]+"\s*\].*"Expressions":\s*"(count_star\(\)|count\(#[0-9]+\) EXPORT_STATE)".*

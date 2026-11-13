@@ -1,0 +1,114 @@
+# name: test/optimizer/mark_delete.test
+# description: Bound DELETE inputs permit unreferenced MARK removal
+# group: [optimizer]
+
+statement ok
+SET explain_output='optimized_only';
+
+statement ok
+CREATE TABLE target(k INTEGER PRIMARY KEY, payload VARCHAR);
+
+statement ok
+INSERT INTO target VALUES (1,'one'),(2,'two'),(3,'three');
+
+statement ok
+CREATE TABLE keys(k INTEGER);
+
+statement ok
+INSERT INTO keys VALUES (2),(2),(NULL);
+
+query II
+EXPLAIN DELETE FROM target WHERE k IN (SELECT k FROM keys);
+----
+logical_opt	<REGEX>:.*SEMI.*
+
+query II
+EXPLAIN WITH c AS MATERIALIZED (FROM keys) DELETE FROM target WHERE k IN (SELECT k FROM c);
+----
+logical_opt	<REGEX>:.*SEMI.*
+
+statement ok
+SET disabled_optimizers='mark_join_simplifier';
+
+query II
+EXPLAIN DELETE FROM target WHERE k IN (SELECT k FROM keys);
+----
+logical_opt	<REGEX>:.*MARK.*
+
+statement ok
+RESET disabled_optimizers;
+
+query IT
+WITH c AS MATERIALIZED (FROM keys) DELETE FROM target WHERE k IN (SELECT k FROM c) RETURNING *;
+----
+2	two
+
+query IT rowsort
+FROM target;
+----
+1	one
+3	three
+
+# Index maintenance and RETURNING retain their bound column mappings.
+statement ok
+INSERT INTO target VALUES (2,'replacement');
+
+statement ok
+CREATE TABLE extra(k INTEGER, unused INTEGER);
+
+statement ok
+INSERT INTO extra VALUES (2,42),(3,43);
+
+query IT
+DELETE FROM target USING extra
+WHERE target.k=extra.k AND target.k IN (SELECT k FROM keys)
+RETURNING target.k,target.payload;
+----
+2	replacement
+
+statement ok
+PREPARE delete_keys AS DELETE FROM target WHERE k IN (SELECT k FROM keys) RETURNING *;
+
+query IT
+EXECUTE delete_keys;
+----
+
+statement ok
+INSERT INTO keys VALUES (3);
+
+query IT
+EXECUTE delete_keys;
+----
+3	three
+
+statement ok
+DELETE FROM keys;
+
+query IT
+EXECUTE delete_keys;
+----
+
+query IT
+FROM target;
+----
+1	one
+
+statement ok
+INSERT INTO keys VALUES (NULL);
+
+query IT
+EXECUTE delete_keys;
+----
+
+statement ok
+INSERT INTO keys VALUES (1);
+
+query IT
+EXECUTE delete_keys;
+----
+1	one
+
+query I
+SELECT count(*) FROM target;
+----
+0

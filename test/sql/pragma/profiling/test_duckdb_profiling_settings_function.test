@@ -3,7 +3,7 @@
 # group: [profiling]
 
 query I
-SELECT * EXCLUDE(value, description) FROM duckdb_profiling_settings();
+SELECT * EXCLUDE(value, description) FROM duckdb_profiling_settings() ORDER BY name;
 ----
 enable_profiling
 profiling_coverage
@@ -26,7 +26,7 @@ statement ok
 SET tracked_metrics = ['query.cpu_time'];
 
 query II
-SELECT * EXCLUDE(description) FROM duckdb_profiling_settings();
+SELECT * EXCLUDE(description) FROM duckdb_profiling_settings() ORDER BY name;
 ----
 enable_profiling	json
 profiling_coverage	ALL

@@ -18,6 +18,13 @@ static void ErrorFunction(DataChunk &args, ExpressionState &state, Vector &resul
 
 } // namespace
 
+bool ErrorFun::IsError(const BoundScalarFunction &function) {
+	using error_callback_t = void (*)(DataChunk &, ExpressionState &, Vector &);
+	auto &callback = function.GetDefinition()->GetCallbacks().function;
+	optional_ptr<const error_callback_t> target = callback.target<error_callback_t>();
+	return target && *target == ErrorFunction;
+}
+
 ScalarFunction ErrorFun::GetFunction() {
 	auto fun = ScalarFunction("error", {}, LogicalType::SQLNULL, ErrorFunction);
 	fun.GetSignature().AddParameter("message", LogicalType::VARCHAR);

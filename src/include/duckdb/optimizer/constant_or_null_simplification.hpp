@@ -21,10 +21,12 @@ public:
 	unique_ptr<LogicalOperator> Optimize(unique_ptr<LogicalOperator> op);
 
 private:
-	unique_ptr<LogicalOperator> OptimizeInternal(unique_ptr<LogicalOperator> op, bool plan_has_side_effects);
+	void OptimizeInternal(unique_ptr<LogicalOperator> &op, bool plan_has_side_effects,
+	                      NotNullExpressionAnalyzer &analyzer);
 	unique_ptr<Expression> SimplifyExpression(LogicalOperator &input, unique_ptr<Expression> expr,
 	                                          NotNullExpressionAnalyzer &analyzer, bool allow_folding);
-	unique_ptr<LogicalOperator> OptimizeFilter(unique_ptr<LogicalOperator> op, bool plan_has_side_effects);
+	void OptimizeFilter(unique_ptr<LogicalOperator> &op, bool plan_has_side_effects,
+	                    NotNullExpressionAnalyzer &analyzer);
 
 private:
 	ClientContext &context;

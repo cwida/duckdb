@@ -65,6 +65,8 @@ struct JoinFilterPushdownColumn {
 
 enum class DeferredRuntimeFilterType : uint8_t { BLOOM_FILTER, PREFIX_RANGE };
 
+enum class InFilterMode : uint8_t { PRUNING_ONLY, ADAPTIVE_ROW_FILTERING };
+
 struct DeferredRuntimeFilterPushdown {
 	DeferredRuntimeFilterType type = DeferredRuntimeFilterType::BLOOM_FILTER;
 	const PhysicalOperator *op = nullptr;
@@ -139,15 +141,15 @@ public:
 private:
 	bool PushInFilter(ClientContext &context, const JoinFilterPushdownFilter &info,
 	                  const JoinFilterPushdownColumn &column, JoinHashTable &ht, const PhysicalOperator &op,
-	                  idx_t filter_idx, ProjectionIndex filter_col_idx) const;
+	                  idx_t filter_idx, ProjectionIndex filter_col_idx, InFilterMode mode) const;
 
 	void DeferRuntimeFilter(DeferredRuntimeFilterType type, const PhysicalOperator &op,
 	                        const JoinFilterPushdownFilter &info, const JoinFilterPushdownColumn &column,
 	                        ProjectionIndex filter_col_idx, JoinFilterGlobalState &gstate) const;
-	bool TryRegisterPrefixRangeFilter(const JoinFilterPushdownFilter &info, ClientContext &context, JoinHashTable &ht,
-	                                  const PhysicalOperator &op, const JoinFilterPushdownColumn &column,
-	                                  ProjectionIndex filter_col_idx, const Value &min_val, const Value &max_val,
-	                                  idx_t max_bits, JoinFilterGlobalState &gstate) const;
+	void RegisterPrefixRangeFilter(const JoinFilterPushdownFilter &info, ClientContext &context, JoinHashTable &ht,
+	                               const PhysicalOperator &op, const JoinFilterPushdownColumn &column,
+	                               ProjectionIndex filter_col_idx, const Value &min_val, const Value &max_val,
+	                               idx_t max_bits, JoinFilterGlobalState &gstate) const;
 
 	bool CanUseInFilter(const ClientContext &context, optional_ptr<JoinHashTable> ht, const ExpressionType &cmp) const;
 	bool CanUseBloomFilter(const JoinFilterPushdownFilter &info, const ClientContext &context,

@@ -1,0 +1,22 @@
+diff --git a/test/sql/fts/test_indexing.test_slow b/test/sql/fts/test_indexing.test_slow
+index 4643b87..a1f283e 100644
+--- a/test/sql/fts/test_indexing.test_slow
++++ b/test/sql/fts/test_indexing.test_slow
+@@ -62,7 +62,7 @@ one
+ two
+ three
+ 
+-query III
++query III rowsort
+ SELECT termid, docid, fieldid FROM fts_main_documents.terms
+ ----
+ 0	0	0
+@@ -100,7 +100,7 @@ SELECT * FROM qtermids
+ 0
+ 1
+ 
+-query II
++query II rowsort
+ WITH ppterms AS (SELECT stem(unnest(string_split_regex(regexp_replace(lower(strip_accents('QUÁCKED BÁRKED')), '[^a-z]', ' ', 'g'), '\s+')), 'porter') AS term),
+ qtermids AS (SELECT termid FROM fts_main_documents.dict AS dict, ppterms WHERE dict.term = ppterms.term),
+ qterms AS (SELECT termid, docid FROM fts_main_documents.terms AS terms WHERE termid IN (SELECT qtermids.termid FROM qtermids))

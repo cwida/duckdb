@@ -1,0 +1,224 @@
+# name: test/sql/join/mark/predicate_simplification.test
+# description: Marker predicates and non-null NOT IN preserve three-valued results
+# group: [mark]
+
+statement ok
+CREATE TABLE p(a INTEGER);
+
+statement ok
+INSERT INTO p VALUES (1), (2), (3), (NULL);
+
+statement ok
+CREATE TABLE b(b INTEGER);
+
+statement ok
+INSERT INTO b VALUES (2), (NULL);
+
+query II
+SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m IS TRUE;
+----
+2	true
+
+query II
+SELECT a, renamed FROM (SELECT a, m AS renamed FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p)) WHERE renamed IS TRUE;
+----
+2	true
+
+query I rowsort
+SELECT a FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m IS NOT TRUE;
+----
+1
+3
+NULL
+
+query I rowsort
+SELECT a FROM p WHERE (a IN (SELECT b FROM b)) IS NOT TRUE;
+----
+1
+3
+NULL
+
+# IS NOT TRUE does not force a projected marker to FALSE.
+query II rowsort
+SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m IS NOT TRUE;
+----
+1	NULL
+3	NULL
+NULL	NULL
+
+query II rowsort
+SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m IS NULL;
+----
+1	NULL
+3	NULL
+NULL	NULL
+
+query II rowsort
+SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m OR a=1;
+----
+1	NULL
+2	true
+
+query II
+SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m OR NOT NOT m;
+----
+2	true
+
+# The restored TRUE is still NULL-extended by the outer join.
+query II rowsort
+SELECT i, m FROM range(1,5) t(i) LEFT JOIN
+(SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m) q ON i=a;
+----
+1	NULL
+2	true
+3	NULL
+4	NULL
+
+query II rowsort
+WITH c AS MATERIALIZED (SELECT a, a IN (SELECT b FROM b) AS m FROM p)
+SELECT a, m FROM c WHERE m UNION ALL SELECT a, m FROM c WHERE m IS NOT TRUE;
+----
+1	NULL
+2	true
+3	NULL
+NULL	NULL
+
+query I
+WITH c AS MATERIALIZED (SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m)
+SELECT sum(m::INTEGER) FROM c UNION ALL SELECT count(*) FROM c;
+----
+1
+1
+
+query II
+SELECT m, count(*) FROM (SELECT a IN (SELECT b FROM b) AS m FROM p) GROUP BY m HAVING m;
+----
+true	1
+
+# Filtering an unpartitioned window's result cannot change row numbers.
+query III
+SELECT a, m, rn FROM
+(SELECT a, a IN (SELECT b FROM b) AS m, row_number() OVER (ORDER BY a) AS rn FROM p) WHERE m;
+----
+2	true	2
+
+query II
+SELECT a, m FROM
+(SELECT a, a IN (SELECT b FROM b) AS m FROM p ORDER BY a LIMIT 1) WHERE m;
+----
+
+statement ok
+CREATE TABLE p_nonnull AS SELECT a FROM p WHERE a IS NOT NULL;
+
+statement ok
+CREATE TABLE b_nonnull AS SELECT 2 AS b;
+
+query II rowsort
+SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b_nonnull) AS m FROM p_nonnull) WHERE m=false;
+----
+1	false
+3	false
+
+query II rowsort
+SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b_nonnull) AS m FROM p_nonnull) WHERE m IS NOT TRUE;
+----
+1	false
+3	false
+
+statement ok
+CREATE TABLE strings AS SELECT a::VARCHAR AS s FROM p_nonnull;
+
+query I rowsort
+SELECT s FROM strings WHERE s NOT IN (SELECT s FROM strings WHERE s='2');
+----
+1
+3
+
+query II
+SELECT s, m FROM (SELECT s, s IN (SELECT s FROM strings WHERE s='2') AS m FROM strings) WHERE m IS NOT FALSE;
+----
+2	true
+
+statement ok
+PREPARE marker_false AS
+SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b_nonnull) AS m FROM p_nonnull) WHERE NOT m ORDER BY a;
+
+query II
+EXECUTE marker_false;
+----
+1	false
+3	false
+
+statement ok
+INSERT INTO b_nonnull VALUES (NULL);
+
+query II
+EXECUTE marker_false;
+----
+
+statement ok
+DELETE FROM b_nonnull;
+
+query II
+EXECUTE marker_false;
+----
+1	false
+2	false
+3	false
+
+statement ok
+INSERT INTO b_nonnull VALUES (2);
+
+statement ok
+INSERT INTO p_nonnull VALUES (NULL);
+
+query II
+EXECUTE marker_false;
+----
+1	false
+3	false
+
+# Large IN lists introduce a filter projection map after normal filter pushdown.
+query I rowsort
+SELECT a FROM p WHERE coalesce(a,0) IN (1,3,8,16,32,64,128,256,512);
+----
+1
+3
+
+query I rowsort
+SELECT a FROM p WHERE a+1 IN (2,4,8,16,32,64,128,256,512);
+----
+1
+3
+
+query I rowsort
+SELECT a FROM p WHERE a NOT IN (2,4,8,16,32,64,128,256,512);
+----
+1
+3
+
+query I rowsort
+WITH c AS MATERIALIZED (SELECT s FROM strings)
+SELECT s FROM c WHERE s NOT IN ('2','4','8','16','32','64','128','256','512');
+----
+1
+3
+
+query I
+SELECT a FROM p WHERE a NOT IN (2,4,8,16,32,64,128,256,NULL);
+----
+
+statement ok
+CREATE TEMP TABLE tuple_probe AS SELECT row(1,2) AS a;
+
+statement ok
+CREATE TEMP TABLE tuple_build AS SELECT row(1,NULL::INTEGER) AS b;
+
+query I
+SELECT __mark_join_marker FROM tuple_probe JOIN BY (TYPE MARK) tuple_build ON a<>b WHERE NOT __mark_join_marker;
+----
+
+query I
+SELECT __mark_join_marker FROM tuple_probe JOIN BY (TYPE MARK) tuple_build ON a<>b WHERE __mark_join_marker IS NOT TRUE;
+----
+NULL

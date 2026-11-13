@@ -26,6 +26,7 @@
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/operator/logical_column_data_get.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_limit.hpp"
@@ -223,6 +224,164 @@ static unique_ptr<Expression> CreateJoinComparison(ColumnBinding left, ColumnBin
 	                                         make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, right));
 }
 
+struct CompositeEstimateEdge {
+	idx_t left;
+	idx_t right;
+	idx_t key;
+};
+
+static double EstimateCompositeJoins(const vector<DistinctCount> &domains, const vector<CompositeEstimateEdge> &edges,
+                                     idx_t relation_count, bool reverse_classes, bool disconnected_input,
+                                     ExpressionType comparison) {
+	JoinRelationSetManager sets;
+	JoinPredicateModel model;
+	vector<RelationStats> stats;
+	for (idx_t relation = 0; relation < relation_count; relation++) {
+		vector<ColumnBinding> bindings;
+		vector<idx_t> counts;
+		for (idx_t key = 0; key < domains.size(); key++) {
+			bindings.emplace_back(TableIndex(relation), ProjectionIndex(key));
+			counts.push_back(domains[key].distinct_count);
+		}
+		stats.push_back(CreateStats(bindings, counts, 100));
+		for (idx_t key = 0; key < domains.size(); key++) {
+			stats.back().columns[key].total_domain = domains[key];
+			stats.back().columns[key].current_domain = domains[key];
+		}
+		stats.back().Verify(bindings);
+	}
+	vector<unique_ptr<FilterInfo>> filters;
+	for (idx_t class_index = 0; class_index < domains.size(); class_index++) {
+		auto key = reverse_classes ? domains.size() - 1 - class_index : class_index;
+		JoinEqualityClass group;
+		group.index = class_index;
+		for (auto &edge : edges) {
+			if (edge.key != key) {
+				continue;
+			}
+			auto left = ColumnBinding(TableIndex(edge.left), ProjectionIndex(key));
+			auto right = ColumnBinding(TableIndex(edge.right), ProjectionIndex(key));
+			auto &lhs = sets.GetJoinRelation(RelationIndex(edge.left));
+			auto &rhs = sets.GetJoinRelation(RelationIndex(edge.right));
+			auto &pair = sets.Union(lhs, rhs);
+			auto filter = make_uniq<FilterInfo>(CreateJoinComparison(left, right, comparison), pair, filters.size());
+			filter->SetLeftSet(lhs);
+			filter->SetRightSet(rhs);
+			filter->left_binding = left;
+			filter->right_binding = right;
+			auto &predicate = model.RegisterPredicate(*filter, JoinPredicateClass::INNER_EQUALITY, left, right);
+			predicate.SetEqualityClassIndex(optional_idx(class_index));
+			group.columns.insert(left);
+			group.columns.insert(right);
+			group.relations.insert(RelationIndex(edge.left));
+			group.relations.insert(RelationIndex(edge.right));
+			group.edges.emplace_back(predicate, RelationIndex(edge.left), RelationIndex(edge.right), left, right);
+			model.AddDirectEqualityPairClass(pair, class_index, left, right);
+			filters.push_back(std::move(filter));
+		}
+		model.AddEqualityClass(std::move(group));
+	}
+	if (disconnected_input) {
+		auto binding = ColumnBinding(TableIndex(relation_count), ProjectionIndex(0));
+		stats.push_back(CreateStats({binding}, {7}, 7));
+		stats.back().Verify({binding});
+	}
+	CardinalityEstimator estimator(sets, model);
+	estimator.Initialize(stats);
+	auto requested = &sets.GetJoinRelation(RelationIndex(0));
+	for (idx_t relation = 1; relation < stats.size(); relation++) {
+		requested = &sets.Union(*requested, sets.GetJoinRelation(RelationIndex(relation)));
+	}
+	return estimator.EstimateCardinality(*requested).GetDouble();
+}
+
+static double EstimateAccountedCompositePair(const DistinctCount &first, const DistinctCount &second,
+                                             bool reverse_classes, bool disconnected_input) {
+	return EstimateCompositeJoins({first, second}, {{0, 1, 0}, {0, 1, 1}}, 2, reverse_classes, disconnected_input,
+	                              ExpressionType::COMPARE_EQUAL);
+}
+
+TEST_CASE("Only an accounted uncertain equality protects its composite pair", "[optimizer][relation_statistics]") {
+	for (bool reverse_classes : {false, true}) {
+		for (bool disconnected_input : {false, true}) {
+			const double multiplier = disconnected_input ? 7 : 1;
+			for (auto reliable : {DistinctCountSource::EXACT, DistinctCountSource::HLL, DistinctCountSource::MIN_MAX}) {
+				CAPTURE(reverse_classes, disconnected_input, reliable);
+				const DistinctCount first(30, reliable);
+				const DistinctCount observed_second(10, reliable);
+				const DistinctCount uncertain_second(10, DistinctCountSource::CARDINALITY);
+				// The composite cap already accounts for the second key, independent of its source.
+				CHECK(EstimateAccountedCompositePair(first, observed_second, reverse_classes, disconnected_input) ==
+				      Approx(100 * multiplier));
+				CHECK(EstimateAccountedCompositePair(first, uncertain_second, reverse_classes, disconnected_input) ==
+				      Approx(100 * multiplier));
+				CHECK(EstimateAccountedCompositePair(first, DistinctCount(5, DistinctCountSource::CARDINALITY),
+				                                     reverse_classes, disconnected_input) == Approx(100 * multiplier));
+				// A later reliable edge must not undo the first edge's actual floor.
+				CHECK(EstimateAccountedCompositePair(DistinctCount(30, DistinctCountSource::CARDINALITY),
+				                                     observed_second, reverse_classes,
+				                                     disconnected_input) == Approx(2000 * multiplier));
+			}
+			CHECK(EstimateAccountedCompositePair(DistinctCount(30, DistinctCountSource::CARDINALITY),
+			                                     DistinctCount(10, DistinctCountSource::CARDINALITY), reverse_classes,
+			                                     disconnected_input) == Approx(2000 * multiplier));
+		}
+	}
+}
+
+TEST_CASE("Composite caps preserve applied floors across transitive equalities", "[optimizer][relation_statistics]") {
+	for (auto comparison : {ExpressionType::COMPARE_EQUAL, ExpressionType::COMPARE_NOT_DISTINCT_FROM}) {
+		for (bool reverse_classes : {false, true}) {
+			for (bool disconnected_input : {false, true}) {
+				for (auto second_source : {DistinctCountSource::CARDINALITY, DistinctCountSource::EXACT}) {
+					CAPTURE(comparison, reverse_classes, disconnected_input, second_source);
+					vector<DistinctCount> domains {{30, DistinctCountSource::CARDINALITY}, {10, second_source}};
+					double expected = disconnected_input ? 280000 : 40000;
+					if (!disconnected_input && second_source == DistinctCountSource::EXACT) {
+						expected /= 2;
+					}
+					CHECK(EstimateCompositeJoins(domains, {{0, 1, 0}, {0, 2, 0}, {1, 2, 1}}, 3, reverse_classes,
+					                             disconnected_input, comparison) == Approx(expected));
+					CHECK(EstimateCompositeJoins(domains, {{0, 1, 0}, {0, 2, 0}, {1, 2, 0}, {1, 2, 1}}, 3,
+					                             reverse_classes, disconnected_input, comparison) == Approx(expected));
+
+					// Skipped uncertain predicates must leave reliable contribution accounting intact.
+					domains[0].source = DistinctCountSource::EXACT;
+					double reliable_expected = disconnected_input ? 7000.0 / 3 : 10000.0 / 9;
+					if (!disconnected_input && second_source == DistinctCountSource::EXACT) {
+						reliable_expected /= 2;
+					}
+					CHECK(EstimateCompositeJoins(domains, {{0, 1, 0}, {0, 2, 0}, {1, 2, 0}, {1, 2, 1}}, 3,
+					                             reverse_classes, disconnected_input,
+					                             comparison) == Approx(reliable_expected));
+				}
+			}
+		}
+	}
+}
+
+TEST_CASE("Extending and merging selectivity subgraphs preserve composite floors", "[optimizer][relation_statistics]") {
+	for (auto comparison : {ExpressionType::COMPARE_EQUAL, ExpressionType::COMPARE_NOT_DISTINCT_FROM}) {
+		for (bool disconnected_input : {false, true}) {
+			const double multiplier = disconnected_input ? 7 : 1;
+			for (auto source : {DistinctCountSource::CARDINALITY, DistinctCountSource::EXACT}) {
+				CAPTURE(comparison, disconnected_input, source);
+				auto factor = source == DistinctCountSource::CARDINALITY ? 0.2 : 0.01;
+				CHECK(EstimateCompositeJoins(
+				          {{60, DistinctCountSource::EXACT}, {30, source}, {10, DistinctCountSource::EXACT}},
+				          {{0, 2, 0}, {0, 1, 1}, {0, 1, 2}}, 3, false, disconnected_input,
+				          comparison) == Approx(1000000 * multiplier / 60 * factor));
+				CHECK(EstimateCompositeJoins({{90, DistinctCountSource::EXACT},
+				                              {80, DistinctCountSource::EXACT},
+				                              {30, source},
+				                              {10, DistinctCountSource::EXACT}},
+				                             {{0, 1, 0}, {2, 3, 1}, {1, 2, 2}, {1, 2, 3}}, 4, false, disconnected_input,
+				                             comparison) == Approx(100000000 * multiplier / 90 / 80 * factor));
+			}
+		}
+	}
+}
+
 TEST_CASE("Join source populations survive changes in relation cardinality", "[optimizer][relation_statistics]") {
 	for (auto current_rows : {idx_t(100000), idx_t(8006)}) {
 		for (auto weak_source : {DistinctCountSource::CARDINALITY, DistinctCountSource::MIN_MAX}) {
@@ -265,7 +424,9 @@ TEST_CASE("Join source populations survive changes in relation cardinality", "[o
 }
 
 TEST_CASE("Synthetic relation rows do not replace a base join domain", "[optimizer][relation_statistics]") {
-	for (auto synthetic_rows : {idx_t(6), idx_t(600)}) {
+	vector<pair<idx_t, idx_t>> cases {{2, 400000000}, {6, 480000000}, {600, 48000000000}};
+	for (auto &test_case : cases) {
+		auto synthetic_rows = test_case.first;
 		JoinRelationSetManager sets;
 		JoinPredicateModel model;
 		vector<ColumnBinding> bindings;
@@ -308,9 +469,9 @@ TEST_CASE("Synthetic relation rows do not replace a base join domain", "[optimiz
 		CardinalityEstimator estimator(sets, model);
 		estimator.Initialize(stats, {}, sources);
 		auto &base_join = sets.Union(sets.GetJoinRelation(RelationIndex(0)), sets.GetJoinRelation(RelationIndex(1)));
-		REQUIRE(estimator.EstimateCardinality(base_join).GetIndex() == 100000);
+		REQUIRE(estimator.EstimateCardinality(base_join).GetIndex() == 400000000);
 		auto &full_join = sets.Union(base_join, sets.GetJoinRelation(RelationIndex(2)));
-		REQUIRE(estimator.EstimateCardinality(full_join).GetIndex() == 100000);
+		REQUIRE(estimator.EstimateCardinality(full_join).GetIndex() == test_case.second);
 	}
 }
 
@@ -421,9 +582,9 @@ TEST_CASE("Predicate-local fallback domains order competing equality edges", "[o
 			estimator.Initialize(stats, {}, sources);
 			auto &base = sets.Union(sets.GetJoinRelation(RelationIndex(0)), sets.GetJoinRelation(RelationIndex(1)));
 			auto &all = sets.Union(base, sets.GetJoinRelation(RelationIndex(2)));
-			REQUIRE(estimator.EstimateCardinality(base).GetIndex() == 1000);
-			// Use domains 1000 and 100 before the redundant local domain of 10.
-			REQUIRE(estimator.EstimateCardinality(all).GetIndex() == 100);
+			REQUIRE(estimator.EstimateCardinality(base).GetIndex() == 200000);
+			// Raw domains still order the edges; the row-count factor uses the floor.
+			REQUIRE(estimator.EstimateCardinality(all).GetIndex() == 20000);
 		}
 	}
 }
@@ -1074,6 +1235,59 @@ TEST_CASE("Delim SEMI and ANTI joins use domain coverage", "[optimizer][relation
 	    900);
 }
 
+TEST_CASE("Constant membership uses a selectivity floor without discarding domain bounds",
+          "[optimizer][relation_statistics]") {
+	for (idx_t projection_count : {idx_t(0), idx_t(1), idx_t(2)}) {
+		for (auto join_type : {JoinType::SEMI, JoinType::RIGHT_SEMI, JoinType::ANTI, JoinType::RIGHT_ANTI}) {
+			for (idx_t list_size : {idx_t(0), idx_t(8), idx_t(500)}) {
+				auto binding = ColumnBinding(TableIndex(10), ProjectionIndex(0));
+				auto list_binding = ColumnBinding(TableIndex(20), ProjectionIndex(0));
+				auto preserved = CreateStats({binding}, {1000}, 10000);
+				auto collection = make_uniq<ColumnDataCollection>(Allocator::DefaultAllocator(),
+				                                                  vector<LogicalType> {LogicalType::INTEGER});
+				LogicalComparisonJoin join(join_type);
+				join.children.push_back(make_uniq<LogicalDummyScan>(TableIndex(10)));
+				join.children.push_back(make_uniq<LogicalColumnDataGet>(
+				    TableIndex(20), vector<LogicalType> {LogicalType::INTEGER}, std::move(collection)));
+				for (idx_t i = 0; i < projection_count; i++) {
+					vector<unique_ptr<Expression>> expressions;
+					expressions.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, list_binding));
+					list_binding = ColumnBinding(TableIndex(30 + i), ProjectionIndex(0));
+					auto projection = make_uniq<LogicalProjection>(list_binding.table_index, std::move(expressions));
+					projection->children.push_back(std::move(join.children[1]));
+					join.children[1] = std::move(projection);
+				}
+				auto constants = CreateStats({list_binding}, {list_size}, list_size);
+				constants.columns[0].semi_anti_join_domain_evidence.TightenDomainBound(list_size);
+				auto preserve_right = join_type == JoinType::RIGHT_SEMI || join_type == JoinType::RIGHT_ANTI;
+				auto is_semi = join_type == JoinType::SEMI || join_type == JoinType::RIGHT_SEMI;
+				if (preserve_right) {
+					std::swap(join.children[0], join.children[1]);
+				}
+				join.conditions.emplace_back(
+				    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, preserve_right ? list_binding : binding),
+				    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, preserve_right ? binding : list_binding),
+				    ExpressionType::COMPARE_EQUAL);
+				auto &left = preserve_right ? constants : preserved;
+				auto &right = preserve_right ? preserved : constants;
+				auto expected = list_size == 0 ? 0 : MaxValue<idx_t>(2000, list_size * 10);
+				if (!is_semi) {
+					expected = preserved.cardinality - list_size * 10;
+				}
+				auto estimate = RelationStatisticsHelper::EstimateSemiAntiJoinCardinality(join, left, right);
+				REQUIRE(estimate.cardinality == expected);
+				REQUIRE(estimate.used_domain_evidence == (list_size > 0 && (!is_semi || list_size >= 200)));
+				auto result = CreateStats({binding}, {1000}, 10000);
+				RelationStatisticsHelper::ApplySemiAntiJoinStats(join, left, right, result);
+				REQUIRE(result.cardinality == expected);
+				if (is_semi) {
+					REQUIRE(result.columns[0].current_domain.distinct_count <= list_size);
+				}
+			}
+		}
+	}
+}
+
 TEST_CASE("Operator statistics reject incomplete child layouts", "[optimizer][relation_statistics]") {
 	DuckDB db;
 	Connection connection(db);
@@ -1298,6 +1512,57 @@ TEST_CASE("Large cardinality estimates saturate and preserve integer bounds", "[
 	REQUIRE(RelationStatisticsHelper::EstimateDistinctCardinality(domains, maximum - 1) == maximum - 1);
 	REQUIRE(RelationStatisticsHelper::EstimateCurrentDomain(domains[0], maximum, maximum - 1).distinct_count ==
 	        maximum - 1);
+}
+
+TEST_CASE("Complete group counts retain marginal domains", "[optimizer][relation_statistics]") {
+	for (auto source : {DistinctCountSource::EXACT, DistinctCountSource::HLL, DistinctCountSource::MIN_MAX,
+	                    DistinctCountSource::CARDINALITY}) {
+		for (idx_t rows : {idx_t(0), idx_t(1), idx_t(50), idx_t(10000)}) {
+			vector<DistinctCount> domains {{50, source}};
+			auto previous = RelationStatisticsHelper::EstimateDistinctCardinality(domains, rows);
+			domains.emplace_back(1, source);
+			REQUIRE(RelationStatisticsHelper::EstimateDistinctCardinality(domains, rows) == previous);
+			for (idx_t count : {idx_t(2), idx_t(10), idx_t(10000)}) {
+				domains.emplace_back(count, source);
+				auto estimate = RelationStatisticsHelper::EstimateDistinctCardinality(domains, rows);
+				REQUIRE(estimate >= previous);
+				REQUIRE(estimate >= MinValue(count, rows));
+				REQUIRE(estimate <= rows);
+				previous = estimate;
+			}
+		}
+	}
+}
+
+TEST_CASE("Implicit full grouping sets preserve complete group statistics", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto key = ColumnBinding(TableIndex(10), ProjectionIndex(0));
+	auto extra = ColumnBinding(TableIndex(10), ProjectionIndex(1));
+	auto child_stats = CreateStats({key, extra}, {5, 5000}, 5000);
+	LogicalAggregate aggregate(TableIndex(20), TableIndex(30), vector<unique_ptr<Expression>>());
+	aggregate.groups.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, key));
+	auto key_only = RelationStatisticsHelper::ExtractAggregationStats(aggregate, child_stats, *connection.context);
+	REQUIRE(key_only);
+	REQUIRE(key_only->cardinality == 5);
+	REQUIRE(key_only->columns[0].GetSupportedSemiAntiDomainSize().GetIndex() == 5);
+
+	aggregate.groups.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, extra));
+	auto implicit = RelationStatisticsHelper::ExtractAggregationStats(aggregate, child_stats, *connection.context);
+	REQUIRE(implicit);
+	REQUIRE(implicit->cardinality == 5000);
+	REQUIRE_FALSE(implicit->columns[0].GetSupportedSemiAntiDomainSize().IsValid());
+	REQUIRE(implicit->columns[0].total_domain.distinct_count == 5);
+	REQUIRE(implicit->columns[0].total_domain.source == DistinctCountSource::EXACT);
+	REQUIRE(implicit->columns[1].current_domain.distinct_count == 5000);
+
+	aggregate.grouping_sets.emplace_back();
+	aggregate.grouping_sets[0].insert(ProjectionIndex(0));
+	aggregate.grouping_sets[0].insert(ProjectionIndex(1));
+	auto explicit_set = RelationStatisticsHelper::ExtractAggregationStats(aggregate, child_stats, *connection.context);
+	REQUIRE(explicit_set);
+	REQUIRE(explicit_set->cardinality == implicit->cardinality);
+	REQUIRE(explicit_set->columns[0].total_domain.distinct_count == implicit->columns[0].total_domain.distinct_count);
 }
 
 struct CardinalityProviderData : public TableFunctionData {
@@ -1868,7 +2133,7 @@ TEST_CASE("Join-order UNION grouping reuses the original source snapshot", "[opt
 	}
 }
 
-TEST_CASE("UNION grouping estimates ignore cached arm cardinalities", "[optimizer][relation_statistics]") {
+TEST_CASE("UNION grouping estimates ignore operator arm cardinalities", "[optimizer][relation_statistics]") {
 	DuckDB db;
 	Connection connection(db);
 	auto input = make_uniq<LogicalSetOperation>(TableIndex(30), 1, make_uniq<LogicalDummyScan>(TableIndex(10)),
@@ -1881,9 +2146,9 @@ TEST_CASE("UNION grouping estimates ignore cached arm cardinalities", "[optimize
 	aggregate.children.push_back(std::move(input));
 
 	auto bindings = aggregate.GetColumnBindings();
-	for (auto cached_cardinality : {idx_t(0), idx_t(1000)}) {
+	for (auto operator_cardinality : {idx_t(0), idx_t(1000)}) {
 		for (auto &arm : aggregate.children[0]->children) {
-			arm->SetEstimatedCardinality(cached_cardinality);
+			arm->SetEstimatedCardinality(operator_cardinality);
 		}
 		RelationStatsExtractor extractor(*connection.context);
 		auto stats = extractor.Extract(aggregate);
@@ -1893,7 +2158,7 @@ TEST_CASE("UNION grouping estimates ignore cached arm cardinalities", "[optimize
 		REQUIRE(extractor.ExtractedOperatorCount() == 4);
 		for (auto &arm : aggregate.children[0]->children) {
 			REQUIRE(arm->has_estimated_cardinality);
-			REQUIRE(arm->estimated_cardinality == cached_cardinality);
+			REQUIRE(arm->estimated_cardinality == operator_cardinality);
 		}
 		REQUIRE_FALSE(aggregate.has_estimated_cardinality);
 		REQUIRE_FALSE(aggregate.children[0]->has_estimated_cardinality);
@@ -1945,11 +2210,174 @@ TEST_CASE("UNION grouping refinement shares the CTE extraction snapshot", "[opti
 	// Each arm has three rows but only one pair of keys, rather than the UNION's four domain combinations.
 	REQUIRE(stats->cardinality == 2);
 	REQUIRE(stats->MatchesBindings(aggregate.GetColumnBindings()));
-	REQUIRE(cte_lookups == 2);
+	REQUIRE(cte_lookups == 4);
 	REQUIRE(extractor.ExtractedOperatorCount() == 6);
 	REQUIRE(extractor.Extract(aggregate) == stats);
-	REQUIRE(cte_lookups == 2);
+	REQUIRE(cte_lookups == 4);
 	REQUIRE(extractor.ExtractedOperatorCount() == 6);
+}
+
+TEST_CASE("UNION group refinement bounds shared CTE expansion", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	idx_t table_index = 100;
+	auto constant_arm = [&]() {
+		vector<unique_ptr<Expression>> expressions;
+		expressions.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(10)));
+		expressions.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(20)));
+		auto result = make_uniq<LogicalProjection>(TableIndex(table_index++), std::move(expressions));
+		result->children.push_back(make_uniq<LogicalDummyScan>(TableIndex(table_index++)));
+		return result;
+	};
+	auto cte_ref = [&](idx_t definition_index) {
+		return make_uniq<LogicalCTERef>(TableIndex(table_index++), TableIndex(definition_index),
+		                                vector<LogicalType> {LogicalType::INTEGER, LogicalType::INTEGER},
+		                                vector<Identifier> {"a", "b"});
+	};
+	vector<unique_ptr<LogicalOperator>> definitions;
+	auto first = constant_arm();
+	auto second = constant_arm();
+	definitions.push_back(make_uniq<LogicalSetOperation>(TableIndex(table_index++), 2, std::move(first),
+	                                                     std::move(second), LogicalOperatorType::LOGICAL_UNION, true));
+	for (idx_t depth = 1; depth <= 12; depth++) {
+		auto left = cte_ref(depth - 1);
+		auto right = cte_ref(depth - 1);
+		definitions.push_back(make_uniq<LogicalSetOperation>(
+		    TableIndex(table_index++), 2, std::move(left), std::move(right), LogicalOperatorType::LOGICAL_UNION, true));
+	}
+	for (auto depth : {idx_t(4), idx_t(12)}) {
+		CAPTURE(depth);
+		auto input = cte_ref(depth);
+		const auto expected = idx_t(1) << (depth + 1);
+		auto stats = CreateStats(input->GetColumnBindings(), {3 * expected, 3 * expected}, 3 * expected);
+		idx_t lookups = 0;
+		RelationStatsExtractor extractor(*connection.context, [&](TableIndex index) -> optional_ptr<LogicalOperator> {
+			lookups++;
+			REQUIRE(index.index < definitions.size());
+			return *definitions[index.index];
+		});
+		auto estimate = RelationStatisticsHelper::EstimateGroupCardinality(*input, stats, {0, 1}, extractor);
+		// Exhausting the budget discards the partial sum and uses the ordinary estimate.
+		REQUIRE(estimate == (depth == 4 ? expected : stats.cardinality));
+		REQUIRE(lookups <= 1024);
+		// Source extraction stays in the four shared leaf operators.
+		REQUIRE(extractor.ExtractedOperatorCount() == 4);
+	}
+}
+
+TEST_CASE("UNION group refinement bounds projection and CTE reference chains", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	vector<unique_ptr<LogicalOperator>> definitions;
+	definitions.push_back(make_uniq<LogicalSetOperation>(TableIndex(10), 1, make_uniq<LogicalDummyScan>(TableIndex(11)),
+	                                                     make_uniq<LogicalDummyScan>(TableIndex(12)),
+	                                                     LogicalOperatorType::LOGICAL_UNION, true));
+	for (idx_t i = 1; i <= 600; i++) {
+		auto ref_index = TableIndex(100 + 2 * i);
+		auto ref = make_uniq<LogicalCTERef>(ref_index, TableIndex(i - 1), vector<LogicalType> {LogicalType::INTEGER},
+		                                    vector<Identifier> {"k"});
+		vector<unique_ptr<Expression>> expressions;
+		expressions.push_back(
+		    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, ColumnBinding(ref_index, ProjectionIndex(0))));
+		auto projection = make_uniq<LogicalProjection>(TableIndex(101 + 2 * i), std::move(expressions));
+		projection->children.push_back(std::move(ref));
+		definitions.push_back(std::move(projection));
+	}
+	for (auto depth : {idx_t(4), idx_t(600)}) {
+		CAPTURE(depth);
+		auto &input = *definitions[depth];
+		auto stats = CreateStats(input.GetColumnBindings(), {100}, 100);
+		idx_t lookups = 0;
+		RelationStatsExtractor extractor(*connection.context, [&](TableIndex index) -> optional_ptr<LogicalOperator> {
+			lookups++;
+			return *definitions[index.index];
+		});
+		REQUIRE(RelationStatisticsHelper::EstimateGroupCardinality(input, stats, {0}, extractor) ==
+		        (depth == 4 ? 2 : 100));
+		REQUIRE(lookups <= 512);
+	}
+}
+
+TEST_CASE("UNION group refinement rejects unresolved and cyclic CTE layouts", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	LogicalCTERef input(TableIndex(10), TableIndex(20), {LogicalType::INTEGER, LogicalType::INTEGER}, {"a", "b"});
+	LogicalDummyScan wrong_width(TableIndex(30));
+	auto stats = CreateStats(input.GetColumnBindings(), {100, 100}, 1000);
+	auto fallback = RelationStatisticsHelper::EstimateDistinctCardinality(
+	    {DistinctCount(100, DistinctCountSource::EXACT), DistinctCount(100, DistinctCountSource::EXACT)}, 1000);
+	RelationStatsExtractor no_callback(*connection.context);
+	REQUIRE(RelationStatisticsHelper::EstimateGroupCardinality(input, stats, {0, 1}, no_callback) == fallback);
+	for (idx_t mode = 0; mode < 3; mode++) {
+		CAPTURE(mode);
+		RelationStatsExtractor extractor(*connection.context, [&](TableIndex) -> optional_ptr<LogicalOperator> {
+			if (mode == 0) {
+				return nullptr;
+			}
+			if (mode == 1) {
+				return wrong_width;
+			}
+			return input;
+		});
+		REQUIRE(RelationStatisticsHelper::EstimateGroupCardinality(input, stats, {0, 1}, extractor) == fallback);
+	}
+	input.is_recurring = true;
+	idx_t lookups = 0;
+	RelationStatsExtractor recurring(*connection.context, [&](TableIndex) -> optional_ptr<LogicalOperator> {
+		lookups++;
+		return wrong_width;
+	});
+	REQUIRE(RelationStatisticsHelper::EstimateGroupCardinality(input, stats, {0, 1}, recurring) == fallback);
+	REQUIRE(lookups == 0);
+}
+
+TEST_CASE("Shared CTE grouping estimates distinguish requested output positions", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	vector<vector<unique_ptr<Expression>>> rows;
+	for (idx_t i = 1; i <= 3; i++) {
+		vector<unique_ptr<Expression>> row;
+		row.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(i)));
+		rows.push_back(std::move(row));
+	}
+	auto values =
+	    make_uniq<LogicalExpressionGet>(TableIndex(10), vector<LogicalType> {LogicalType::INTEGER}, std::move(rows));
+	vector<unique_ptr<Expression>> columns;
+	columns.push_back(
+	    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, ColumnBinding(TableIndex(10), ProjectionIndex(0))));
+	columns.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(0)));
+	auto definition = make_uniq<LogicalProjection>(TableIndex(20), std::move(columns));
+	definition->children.push_back(std::move(values));
+	auto arm = [&](idx_t column) {
+		auto ref_index = TableIndex(40 + column);
+		auto ref = make_uniq<LogicalCTERef>(ref_index, TableIndex(30),
+		                                    vector<LogicalType> {LogicalType::INTEGER, LogicalType::INTEGER},
+		                                    vector<Identifier> {"varying", "constant"});
+		vector<unique_ptr<Expression>> expressions;
+		expressions.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER,
+		                                                          ColumnBinding(ref_index, ProjectionIndex(column))));
+		auto projection = make_uniq<LogicalProjection>(TableIndex(50 + column), std::move(expressions));
+		projection->children.push_back(std::move(ref));
+		return projection;
+	};
+	LogicalSetOperation input(TableIndex(60), 1, arm(0), arm(1), LogicalOperatorType::LOGICAL_UNION, true);
+	auto stats = CreateStats(input.GetColumnBindings(), {6}, 6);
+	RelationStatsExtractor extractor(*connection.context, [&](TableIndex index) -> optional_ptr<LogicalOperator> {
+		REQUIRE(index == TableIndex(30));
+		return *definition;
+	});
+	// The first arm contributes three keys, the second contributes one.
+	REQUIRE(RelationStatisticsHelper::EstimateGroupCardinality(input, stats, {0}, extractor) == 4);
+}
+
+TEST_CASE("Group estimates without a UNION do not extract their input again", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto input = CreateProjectedDummy(TableIndex(10), TableIndex(20));
+	auto stats = CreateStats(input->GetColumnBindings(), {10}, 100);
+	RelationStatsExtractor extractor(*connection.context);
+	REQUIRE(RelationStatisticsHelper::EstimateGroupCardinality(*input, stats, {0}, extractor) == 10);
+	REQUIRE(extractor.ExtractedOperatorCount() == 0);
 }
 
 TEST_CASE("Standalone join statistics share estimation without mutating the plan", "[optimizer][relation_statistics]") {

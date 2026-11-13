@@ -75,6 +75,23 @@ statement ok
 SET enable_profiling = 'json';
 
 statement ok
+SET tracked_metrics = ['optimizer.mark_join_simplifier'];
+
+statement ok
+SELECT a FROM range(3) t(a) WHERE a IN (SELECT b FROM range(1) t(b));
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT optimizer.mark_join_simplifier > 0 FROM '{TEST_DIR}/profiling_output.json';
+----
+true
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
 SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok

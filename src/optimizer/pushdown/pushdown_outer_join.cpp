@@ -181,8 +181,8 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownOuterJoin(unique_ptr<Logical
 	auto &join = op->Cast<LogicalComparisonJoin>();
 	D_ASSERT(join.join_type == JoinType::OUTER);
 
-	FilterPushdown left_pushdown(optimizer, convert_mark_joins, projection_mode);
-	FilterPushdown right_pushdown(optimizer, convert_mark_joins, projection_mode);
+	FilterPushdown left_pushdown(optimizer, projection_mode);
+	FilterPushdown right_pushdown(optimizer, projection_mode);
 	auto has_applied_pushdown = PushDownFiltersOnCoalescedEqualJoinKeys(
 	    filters, join.conditions, [&](unique_ptr<Expression> filter) { left_pushdown.AddFilter(std::move(filter)); },
 	    [&](unique_ptr<Expression> filter) { right_pushdown.AddFilter(std::move(filter)); });

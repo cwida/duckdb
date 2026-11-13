@@ -279,7 +279,7 @@ WHERE o.o_orderkey NOT IN (
     AND o.o_totalprice + l.l_extendedprice > 250
 );
 ----
-physical_plan	<REGEX>:.*HASH_JOIN.*Join Type: MARK.*
+physical_plan	<REGEX>:.*HASH_JOIN.*Join Type: ANTI.*
 
 query IIIT rowsort
 SELECT o.o_orderkey, o.o_custkey, o.o_totalprice, o.o_orderstatus
@@ -293,6 +293,28 @@ WHERE o.o_orderkey NOT IN (
 ----
 1	100	50.00	O
 4	300	80.00	O
+
+query II
+EXPLAIN SELECT o.o_orderkey, o.o_orderkey IN (
+    SELECT l.l_orderkey FROM lineitem l
+    WHERE l.l_orderkey = o.o_orderkey
+    AND o.o_totalprice + l.l_extendedprice > 250
+) FROM orders o;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*Join Type: MARK.*
+
+query II rowsort
+SELECT o.o_orderkey, o.o_orderkey IN (
+    SELECT l.l_orderkey FROM lineitem l
+    WHERE l.l_orderkey = o.o_orderkey
+    AND o.o_totalprice + l.l_extendedprice > 250
+) FROM orders o;
+----
+1	false
+2	true
+3	true
+4	false
+5	true
 
 query I
 SELECT COUNT(*) FROM lineitem l

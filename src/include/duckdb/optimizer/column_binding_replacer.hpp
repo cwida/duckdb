@@ -37,6 +37,8 @@ public:
 class BindingReplacementGraph {
 public:
 	ColumnBinding Resolve(ColumnBinding binding) const;
+	//! Resolve a binding and any type replacement through the graph.
+	ReplacementBinding ResolveReplacement(ColumnBinding binding) const;
 	//! Find the direct replacement edge for a binding, if any
 	optional_ptr<const ReplacementBinding> Find(ColumnBinding old_binding) const;
 	bool TryAdd(const ReplacementBinding &replacement);
@@ -59,7 +61,6 @@ public:
 	}
 
 private:
-	ReplacementBinding ResolveReplacement(ColumnBinding binding) const;
 	vector<ReplacementBinding> replacement_bindings;
 	//! Index into replacement_bindings by old_binding (unique by construction)
 	column_binding_map_t<idx_t> binding_slots;
@@ -69,6 +70,8 @@ private:
 class ColumnBindingReplacer : public LogicalOperatorVisitor {
 public:
 	ColumnBindingReplacer();
+	//! Borrow a graph for transitive lookups without copying its replacement edges.
+	explicit ColumnBindingReplacer(const BindingReplacementGraph &replacements);
 
 public:
 	//! Update each operator of the plan, recursing directly into children without resolving projection maps
@@ -98,6 +101,7 @@ public:
 	vector<ReplacementBinding> replacement_bindings;
 
 private:
+	optional_ptr<const BindingReplacementGraph> replacement_graph;
 	column_binding_map_t<idx_t> replacement_index;
 	bool use_index = false;
 };
@@ -105,6 +109,8 @@ private:
 //! Like ColumnBindingReplacer, but also updates correlated-column metadata and nested subquery plans.
 class CorrelatedColumnBindingReplacer : public ColumnBindingReplacer {
 public:
+	using ColumnBindingReplacer::ColumnBindingReplacer;
+
 	void VisitOperatorBindings(LogicalOperator &op) override;
 
 protected:

@@ -13,6 +13,7 @@
 
 namespace duckdb {
 class Optimizer;
+class LogicalMaterializedCTE;
 
 //! The PartialAggregatePushdown optimizer pushes partial aggregate states below joins when this can reduce join work
 class PartialAggregatePushdown : public LogicalOperatorVisitor {
@@ -35,6 +36,7 @@ private:
 
 private:
 	Optimizer &optimizer;
+	unordered_map<idx_t, reference<LogicalMaterializedCTE>> cte_definitions;
 	column_binding_map_t<ColumnBinding> replacement_map;
 };
 } // namespace duckdb

@@ -98,7 +98,7 @@ JOIN filter_context_sales_not_null sales USING (k)
 WHERE substring(zip, 1, 5) IN ('10000', '30000', '40000', '50000', '60000', '70000')
 	OR price IS NULL;
 ----
-logical_opt	<REGEX>:.*INNER.*IN \(\.\.\.\).*MARK.*filter_context_address.*
+logical_opt	<REGEX>:.*INNER.*SEMI.*filter_context_address.*
 
 query I
 SELECT count(*)

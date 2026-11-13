@@ -67,8 +67,6 @@ void FilterStatisticsOptimizer::Optimize(unique_ptr<LogicalOperator> &plan) {
 
 	optimizer.RunOptimizer(OptimizerType::FILTER_PUSHDOWN, [&]() {
 		FilterPushdown filter_pushdown(optimizer);
-		unordered_set<TableIndex> top_bindings;
-		filter_pushdown.CheckMarkToSemi(*plan, top_bindings);
 		plan = filter_pushdown.Rewrite(std::move(plan));
 	});
 }

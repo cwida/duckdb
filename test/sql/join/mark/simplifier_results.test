@@ -1,0 +1,203 @@
+# name: test/sql/join/mark/simplifier_results.test
+# description: MARK conversion preserves complete predicates and nested NULL semantics
+# group: [mark]
+
+statement ok
+CREATE TABLE p(a INTEGER);
+
+statement ok
+INSERT INTO p VALUES (0), (1), (2), (NULL);
+
+statement ok
+CREATE TABLE b(b INTEGER);
+
+statement ok
+INSERT INTO b VALUES (1), (NULL);
+
+query I rowsort
+SELECT a FROM p WHERE a IN (SELECT b FROM b);
+----
+1
+
+query I rowsort
+SELECT a FROM p WHERE NOT EXISTS (SELECT 1 FROM b WHERE a IS NOT DISTINCT FROM b);
+----
+0
+2
+
+query I rowsort
+SELECT a FROM p WHERE NOT EXISTS (SELECT 1 FROM b WHERE a IS NOT DISTINCT FROM b AND a+b>0);
+----
+0
+2
+NULL
+
+query I rowsort
+SELECT a FROM p WHERE EXISTS (SELECT 1 FROM b WHERE a IS NOT DISTINCT FROM b AND a+b>0);
+----
+1
+
+query I rowsort
+SELECT a FROM p WHERE NOT EXISTS (SELECT 1 FROM b WHERE a IS NOT DISTINCT FROM b AND (a+b) IS NULL);
+----
+0
+1
+2
+
+query II rowsort
+SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m;
+----
+1	true
+
+query II
+SELECT m, count(*) FROM (SELECT a IN (SELECT b FROM b) AS m FROM p) WHERE m GROUP BY m;
+----
+true	1
+
+query II rowsort
+SELECT a, __mark_join_marker FROM p JOIN BY (TYPE MARK) b ON a IS NOT DISTINCT FROM b WHERE NOT __mark_join_marker;
+----
+0	false
+2	false
+
+query II rowsort
+SELECT a, __mark_join_marker FROM p JOIN BY (TYPE MARK) b ON a=b WHERE NOT __mark_join_marker;
+----
+
+query III rowsort
+SELECT x, m, a
+FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) t
+CROSS JOIN (VALUES (42), (43)) v(x)
+WHERE m;
+----
+42	true	1
+43	true	1
+
+query II rowsort
+SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m
+UNION ALL SELECT 42, false;
+----
+1	true
+42	false
+
+query II
+WITH c AS MATERIALIZED (SELECT a, a IN (SELECT b FROM b) AS m FROM p)
+SELECT (SELECT count(*) FROM c WHERE m), (SELECT count(*) FROM c WHERE m IS NULL);
+----
+1	3
+
+statement ok
+PREPARE marker_query AS SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m ORDER BY a;
+
+query II
+EXECUTE marker_query;
+----
+1	true
+
+statement ok
+DELETE FROM b;
+
+query II
+EXECUTE marker_query;
+----
+
+query I
+SELECT count(*) FROM p JOIN BY (TYPE MARK) b ON a IS NOT DISTINCT FROM b WHERE NOT __mark_join_marker;
+----
+4
+
+statement ok
+INSERT INTO b VALUES (2);
+
+query II
+EXECUTE marker_query;
+----
+2	true
+
+# An active UNION member can be NULL even when the UNION itself is not.
+statement ok
+CREATE TABLE union_probe AS SELECT union_value(i:=NULL::INTEGER) AS a;
+
+statement ok
+CREATE TABLE union_build AS SELECT union_value(i:=NULL::INTEGER) AS b;
+
+query I
+SELECT count(*) FROM union_probe JOIN BY (TYPE MARK) union_build ON a IS NOT DISTINCT FROM b WHERE __mark_join_marker;
+----
+1
+
+# MARK tuple inequality can return NULL when ordinary tuple inequality returns TRUE.
+statement ok
+CREATE TEMP TABLE tuple_probe AS SELECT row(1,2) AS a;
+
+statement ok
+CREATE TEMP TABLE tuple_build AS SELECT row(1,NULL::INTEGER) AS b;
+
+query I
+SELECT count(*) FROM tuple_probe JOIN BY (TYPE MARK) tuple_build ON a<>b WHERE __mark_join_marker;
+----
+0
+
+query I
+SELECT count(*) FROM (VALUES ((1,NULL))) p(a) JOIN BY (TYPE MARK) (VALUES ((1,NULL))) b(b) ON a=b WHERE __mark_join_marker;
+----
+1
+
+# Retain MARK when conversion could change volatile input evaluation.
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE volatile_probe AS SELECT i AS a FROM range(3) t(i);
+
+statement ok
+CREATE TABLE volatile_build AS SELECT 1::BIGINT AS b;
+
+statement ok
+CREATE SEQUENCE marker_sequence;
+
+query III
+SELECT a, v, m FROM (
+	SELECT a, v, a IN (SELECT b FROM volatile_build) AS m
+	FROM (SELECT a, nextval('marker_sequence') AS v FROM volatile_probe)
+) WHERE m;
+----
+1	2	true
+
+query I
+SELECT currval('marker_sequence');
+----
+3
+
+statement ok
+RESET threads;
+
+# The inner join removes invalid strings before the MARK condition evaluates its cast.
+statement ok
+CREATE TABLE fallible_probe AS
+SELECT i, CASE WHEN i=0 THEN 'bad' ELSE '1' END AS s FROM range(-1000,1001) r(i);
+
+statement ok
+CREATE TABLE fallible_filter AS
+SELECT CASE WHEN i%2=0 THEN -1 ELSE 1 END::BIGINT AS k FROM range(100000) r(i);
+
+statement ok
+CREATE TABLE fallible_build AS SELECT 1::INTEGER AS b;
+
+query II
+SELECT count(*), sum(m::INTEGER)
+FROM (
+	SELECT CAST(p.s AS INTEGER) IN (SELECT b FROM fallible_build) AS m
+	FROM fallible_probe p JOIN fallible_filter g ON p.i=g.k
+) q
+WHERE m;
+----
+100000	100000
+
+query I
+SELECT count(*)
+FROM (fallible_probe p JOIN fallible_filter g ON p.i=g.k)
+JOIN BY (TYPE MARK) fallible_build ON CAST(p.s AS INTEGER) IS NOT DISTINCT FROM b
+WHERE NOT __mark_join_marker;
+----
+0

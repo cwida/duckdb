@@ -1,0 +1,87 @@
+# name: test/sql/join/mark/dml_nullability.test
+# description: MARK nullability proofs account for same-statement writes
+# group: [mark]
+
+statement ok
+CREATE TABLE b AS SELECT 2 AS b;
+
+query I
+WITH ins AS (INSERT INTO b VALUES (NULL) RETURNING b)
+SELECT 1 WHERE 1 NOT IN (SELECT b FROM b);
+----
+
+statement ok
+CREATE OR REPLACE TABLE b AS SELECT 2 AS b;
+
+query I
+WITH upd AS (UPDATE b SET b=NULL RETURNING b)
+SELECT 1 WHERE 1 NOT IN (SELECT b FROM b);
+----
+
+statement ok
+CREATE OR REPLACE TABLE b AS SELECT 2 AS b;
+
+query I
+WITH ins AS (INSERT INTO b VALUES (NULL) RETURNING b)
+SELECT m FROM (SELECT 1 IN (SELECT b FROM b) AS m) marked WHERE m IS NOT TRUE;
+----
+NULL
+
+statement ok
+CREATE TABLE p AS SELECT 1 AS a;
+
+statement ok
+CREATE OR REPLACE TABLE b AS SELECT 2 AS b;
+
+query I
+WITH ins AS (INSERT INTO p VALUES (NULL) RETURNING a)
+SELECT a FROM p WHERE a NOT IN (SELECT b FROM b);
+----
+1
+
+# The executed filter still proves the build key non-NULL.
+query I
+WITH ins AS (INSERT INTO b VALUES (NULL) RETURNING b)
+SELECT 1 WHERE 1 NOT IN (SELECT b FROM b WHERE b IS NOT NULL);
+----
+1
+
+statement ok
+CREATE OR REPLACE TABLE b AS SELECT 2 AS b;
+
+query I
+WITH ins AS (INSERT INTO b VALUES (NULL) RETURNING b),
+c AS MATERIALIZED (SELECT b FROM b)
+SELECT 1 WHERE 1 NOT IN (SELECT b FROM c);
+----
+
+statement ok
+CREATE OR REPLACE TABLE b AS SELECT 2 AS b;
+
+# Null-safe comparisons remain two-valued after a write.
+query I
+WITH ins AS (INSERT INTO b VALUES (NULL) RETURNING b)
+SELECT a FROM p JOIN BY(TYPE MARK) b ON a IS NOT DISTINCT FROM b WHERE NOT __mark_join_marker;
+----
+1
+
+statement ok
+CREATE TABLE semi_probe AS SELECT * FROM (VALUES (NULL::INTEGER), (1), (9)) t(i);
+
+statement ok
+CREATE TABLE semi_build AS SELECT 2 AS i;
+
+# The TRUE-only conversion must retain NULL-safe comparison after the write.
+query I
+WITH ins AS (INSERT INTO semi_build VALUES (NULL), (1), (1), (3) RETURNING i)
+SELECT p.i FROM semi_probe p JOIN BY(TYPE MARK) semi_build b
+ON p.i IS NOT DISTINCT FROM b.i WHERE __mark_join_marker ORDER BY p.i NULLS FIRST;
+----
+NULL
+1
+
+# Filtering the consumer does not truncate the unreferenced DML producer.
+query I
+SELECT count(*) FROM semi_build;
+----
+5

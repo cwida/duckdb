@@ -97,6 +97,33 @@ static vector<SemiAntiJoinDomain> ExtractSemiAntiJoinDomains(LogicalComparisonJo
 	return domains;
 }
 
+static SemiAntiJoinCardinalityEstimate EstimateSemiAntiJoin(LogicalComparisonJoin &join, const RelationStats &preserved,
+                                                            const RelationStats &rhs,
+                                                            const vector<SemiAntiJoinDomain> &domains,
+                                                            bool has_residual) {
+	auto estimate = RelationStatisticsHelper::EstimateSemiAntiJoinCardinality(
+	    static_cast<double>(preserved.cardinality), rhs.cardinality, rhs.row_retention, join.join_type, domains,
+	    has_residual);
+	auto is_semi = join.join_type == JoinType::SEMI || join.join_type == JoinType::RIGHT_SEMI;
+	if (!is_semi || join.children.size() != 2) {
+		return estimate;
+	}
+	auto rhs_index = join.join_type == JoinType::RIGHT_SEMI ? 0 : 1;
+	optional_ptr<const LogicalOperator> rhs_op = join.children[rhs_index].get();
+	while (rhs_op->type == LogicalOperatorType::LOGICAL_PROJECTION && rhs_op->children.size() == 1) {
+		rhs_op = rhs_op->children[0].get();
+	}
+	if (rhs_op->type == LogicalOperatorType::LOGICAL_CHUNK_GET) {
+		// Constant-list domains do not describe the frequency of matching values.
+		auto fallback = RelationStatisticsHelper::EstimateSemiAntiJoinFallback(
+		    static_cast<double>(preserved.cardinality), rhs.cardinality, join.join_type);
+		if (estimate.cardinality < fallback.cardinality) {
+			return fallback;
+		}
+	}
+	return estimate;
+}
+
 SemiAntiJoinCardinalityEstimate RelationStatisticsHelper::EstimateSemiAntiJoinCardinality(LogicalComparisonJoin &join,
                                                                                           const RelationStats &left,
                                                                                           const RelationStats &right) {
@@ -105,8 +132,7 @@ SemiAntiJoinCardinalityEstimate RelationStatisticsHelper::EstimateSemiAntiJoinCa
 	auto &rhs = preserve_right ? left : right;
 	bool has_residual;
 	auto domains = ExtractSemiAntiJoinDomains(join, preserved, rhs, has_residual);
-	return EstimateSemiAntiJoinCardinality(static_cast<double>(preserved.cardinality), rhs.cardinality,
-	                                       rhs.row_retention, join.join_type, domains, has_residual);
+	return EstimateSemiAntiJoin(join, preserved, rhs, domains, has_residual);
 }
 
 void RelationStatisticsHelper::ApplySemiAntiJoinStats(LogicalComparisonJoin &join, const RelationStats &left,
@@ -119,8 +145,7 @@ void RelationStatisticsHelper::ApplySemiAntiJoinStats(LogicalComparisonJoin &joi
 	D_ASSERT(result.cardinality == preserved.cardinality);
 	bool has_residual;
 	auto domains = ExtractSemiAntiJoinDomains(join, preserved, rhs, has_residual);
-	auto estimate = EstimateSemiAntiJoinCardinality(static_cast<double>(preserved.cardinality), rhs.cardinality,
-	                                                rhs.row_retention, join.join_type, domains, has_residual);
+	auto estimate = EstimateSemiAntiJoin(join, preserved, rhs, domains, has_residual);
 	result.row_retention = preserved.row_retention;
 	// Keep exact empty-input results and the original integer upper limit across double conversion.
 	auto cardinality = MinValue(preserved.cardinality, CardinalityFromDouble(estimate.cardinality));
@@ -378,6 +403,8 @@ RelationStatisticsHelper::ExtractOperatorStats(LogicalOperator &op, ClientContex
 	}
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
 		return child_stats.size() == 1 ? ProjectOutputStats(child_stats[0].get(), op) : optional<RelationStats>();
+	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE:
+		return child_stats.size() == 2 ? ProjectOutputStats(child_stats[1].get(), op) : optional<RelationStats>();
 	case LogicalOperatorType::LOGICAL_UNNEST:
 		return ExtractUnnestStats(op, child_stats[0].get());
 	case LogicalOperatorType::LOGICAL_LIMIT: {

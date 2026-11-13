@@ -1,5 +1,5 @@
 # name: test/optimizer/pushdown/no_mark_to_semi_if_mark_index_is_projected.test
-# description: No mark to semi conversion if the mark join index is projected
+# description: Filtered and projected markers retain their values
 # group: [pushdown]
 
 statement ok
@@ -71,23 +71,7 @@ SELECT *
 FROM Example
 WHERE parentExists
 ----
-logical_opt	<REGEX>:.*MARK.*
-
-query II
-EXPLAIN
-WITH Example AS (
-	SELECT
-		c.my_key,
-		(c.parent_key IN (SELECT my_key FROM BaseData)) AS parentExists,
-		p.my_key IS NOT NULL AS parentExists2,
-	FROM BaseData AS c
-	LEFT JOIN BaseData AS p ON c.parent_key = p.my_key
-)
-SELECT *
-FROM Example
-WHERE parentExists
-----
-logical_opt	<!REGEX>:.*SEMI.*
+logical_opt	<!REGEX>:.*MARK.*
 
 statement ok
 create table t0 as select range a from range(300);

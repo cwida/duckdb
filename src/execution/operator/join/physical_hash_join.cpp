@@ -41,6 +41,7 @@
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/planner/table_filter_set.hpp"
+#include "duckdb/planner/table_filter_state.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/temporary_memory_manager.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -1501,8 +1502,15 @@ public:
 bool JoinFilterPushdownInfo::CanUseInFilter(const ClientContext &context, optional_ptr<JoinHashTable> ht,
                                             const ExpressionType &cmp) const {
 	auto dynamic_or_filter_threshold = Settings::Get<DynamicOrFilterThresholdSetting>(context);
-	return ht && ht->Count() > 1 && ht->Count() <= dynamic_or_filter_threshold &&
-	       (cmp == ExpressionType::COMPARE_EQUAL || cmp == ExpressionType::COMPARE_NOT_DISTINCT_FROM);
+	if (!ht || ht->Count() <= 1 || dynamic_or_filter_threshold == 0 ||
+	    (cmp != ExpressionType::COMPARE_EQUAL && cmp != ExpressionType::COMPARE_NOT_DISTINCT_FROM)) {
+		return false;
+	}
+	if (ht->Count() <= dynamic_or_filter_threshold) {
+		return true;
+	}
+	static constexpr idx_t MAX_IN_FILTER_BUILD_BYTES = 256ULL * 1024;
+	return ht->Count() <= STANDARD_VECTOR_SIZE && ht->SizeInBytes() <= MAX_IN_FILTER_BUILD_BYTES;
 }
 
 bool JoinFilterPushdownInfo::CanUseBloomFilter(const JoinFilterPushdownFilter &info, const ClientContext &context,
@@ -1599,12 +1607,12 @@ void JoinFilterPushdownInfo::DeferRuntimeFilter(DeferredRuntimeFilterType type, 
 	gstate.deferred_runtime_filters.push_back({type, &op, info.dynamic_filters, column, filter_col_idx});
 }
 
-bool JoinFilterPushdownInfo::TryRegisterPrefixRangeFilter(const JoinFilterPushdownFilter &info, ClientContext &context,
-                                                          JoinHashTable &ht, const PhysicalOperator &op,
-                                                          const JoinFilterPushdownColumn &column,
-                                                          ProjectionIndex filter_col_idx, const Value &min_val,
-                                                          const Value &max_val, idx_t max_bits,
-                                                          JoinFilterGlobalState &gstate) const {
+void JoinFilterPushdownInfo::RegisterPrefixRangeFilter(const JoinFilterPushdownFilter &info, ClientContext &context,
+                                                       JoinHashTable &ht, const PhysicalOperator &op,
+                                                       const JoinFilterPushdownColumn &column,
+                                                       ProjectionIndex filter_col_idx, const Value &min_val,
+                                                       const Value &max_val, idx_t max_bits,
+                                                       JoinFilterGlobalState &gstate) const {
 	if (!ht.GetPrefixRangeFilter()) {
 		const auto key_type = ht.conditions[0].GetLHS().GetReturnType();
 		auto prefix_filter = PrefixRangeFilter::CreatePrefixRangeFilter(key_type);
@@ -1614,7 +1622,6 @@ bool JoinFilterPushdownInfo::TryRegisterPrefixRangeFilter(const JoinFilterPushdo
 	}
 
 	DeferRuntimeFilter(DeferredRuntimeFilterType::PREFIX_RANGE, op, info, column, filter_col_idx, gstate);
-	return true;
 }
 
 unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeMinMax(JoinFilterGlobalState &gstate) const {
@@ -1807,15 +1814,15 @@ static unique_ptr<Expression> CreateJoinFilterComparisonExpression(
 
 bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilterPushdownFilter &info,
                                           const JoinFilterPushdownColumn &column, JoinHashTable &ht,
-                                          const PhysicalOperator &op, idx_t filter_idx,
-                                          ProjectionIndex filter_col_idx) const {
+                                          const PhysicalOperator &op, idx_t filter_idx, ProjectionIndex filter_col_idx,
+                                          InFilterMode mode) const {
 	// Generate an IN filter by scanning the build-side key column.
 	auto build_idx = join_condition[filter_idx];
 	const auto &runtime_type = ht.conditions[build_idx].GetLHS().GetReturnType();
 	Vector tuples_addresses(LogicalType::POINTER, ht.Count());
 	Vector build_vector(ht.layout_ptr->GetTypes()[build_idx], ht.Count());
 	auto key_count = ht.ScanKeyColumn(tuples_addresses, build_vector, build_idx);
-	if (key_count == 0) {
+	if (key_count == 0 || key_count != ht.Count()) {
 		return false;
 	}
 
@@ -1836,6 +1843,7 @@ bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilt
 		filter_input = make_uniq<BoundReferenceExpression>(column.storage_type, idx_t(0));
 	}
 
+	const auto threshold = Settings::Get<DynamicOrFilterThresholdSetting>(context);
 	value_set_t unique_ht_values;
 	for (idx_t k = 0; k < key_count; k++) {
 		auto value = build_vector.GetValue(k).DefaultTryCastAs(filter_input_type);
@@ -1846,6 +1854,9 @@ bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilt
 			continue;
 		}
 		unique_ht_values.insert(std::move(*value));
+		if (unique_ht_values.size() > threshold) {
+			return false;
+		}
 	}
 	vector<Value> in_list(unique_ht_values.begin(), unique_ht_values.end());
 
@@ -1856,6 +1867,13 @@ bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilt
 
 	auto in_expr = ExpressionFilter::CreateInExpression(std::move(filter_input), std::move(in_list));
 	in_expr = RetainRuntimeFilterNulls(std::move(in_expr), std::move(null_check_input));
+	if (mode == InFilterMode::ADAPTIVE_ROW_FILTERING && column.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION &&
+	    ExpressionFilterExecutor::TryCreate(*in_expr)) {
+		auto filter = CreateSelectivityOptionalExpressionFilter(std::move(in_expr), column.storage_type,
+		                                                        SelectivityOptionalFilterType::IN_FILTER);
+		info.dynamic_filters->PushFilter(op, filter_col_idx, std::move(filter));
+		return true;
+	}
 	auto filter = make_uniq<ExpressionFilter>(CreateOptionalFilterExpression(std::move(in_expr), column.storage_type));
 	info.dynamic_filters->PushFilter(op, filter_col_idx, std::move(filter));
 	return true;
@@ -1986,40 +2004,45 @@ unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeFilters(ClientContext &con
 				const auto can_emit_prf = allow_prefix_range_filters && can_emit_runtime_filters && gstate &&
 				                          CanUsePrefixRangeFilter(info, context, op, ht, cmp) && can_compute_span;
 
+				static constexpr idx_t SMALL_EXACT_PRF_BITS = 1ULL << 26;
+				bool registered_prf = false;
+				if (can_emit_prf) {
+					auto max_bits = SMALL_EXACT_PRF_BITS;
+					if (span >= max_bits) {
+						auto build_count = ht->Count();
+						if (build_count == 0) {
+							build_count = ht->GetSinkCollection().Count();
+						}
+						max_bits = BloomFilterBitBudget(build_count);
+					}
+					if (span <= max_bits) {
+						RegisterPrefixRangeFilter(info, context, *ht, op, pushdown_column, filter_col_idx,
+						                          min_val_before_cast, max_val_before_cast, max_bits, *gstate);
+						registered_prf = true;
+					}
+				}
+
+				const auto can_use_bloom = !registered_prf && allow_bloom_filters && can_emit_runtime_filters && ht &&
+				                           gstate && CanUseBloomFilter(info, context, op, cmp, ht);
 				bool pushed_in_filter = false;
 				if (CanUseInFilter(context, ht, cmp)) {
+					// String prefixes can leave false positives that a small IN filter removes.
+					const auto prefer_prf =
+					    registered_prf && runtime_filter_input_type.InternalType() != PhysicalType::VARCHAR;
+					const auto mode =
+					    prefer_prf || can_use_bloom ? InFilterMode::PRUNING_ONLY : InFilterMode::ADAPTIVE_ROW_FILTERING;
 					pushed_in_filter =
-					    PushInFilter(context, info, pushdown_column, *ht, op, filter_idx, filter_col_idx);
+					    PushInFilter(context, info, pushdown_column, *ht, op, filter_idx, filter_col_idx, mode);
 				}
-
-				static constexpr idx_t SMALL_EXACT_PRF_BITS = 1ULL << 26;
-				if (can_emit_prf && span < SMALL_EXACT_PRF_BITS &&
-				    TryRegisterPrefixRangeFilter(info, context, *ht, op, pushdown_column, filter_col_idx,
-				                                 min_val_before_cast, max_val_before_cast, SMALL_EXACT_PRF_BITS,
-				                                 *gstate)) {
+				if (registered_prf) {
 					continue;
-				}
-
-				if (can_emit_prf) {
-					auto build_count = ht->Count();
-					if (build_count == 0) {
-						build_count = ht->GetSinkCollection().Count();
-					}
-					const auto bloom_filter_bits = BloomFilterBitBudget(build_count);
-					if (span <= bloom_filter_bits &&
-					    TryRegisterPrefixRangeFilter(info, context, *ht, op, pushdown_column, filter_col_idx,
-					                                 min_val_before_cast, max_val_before_cast, bloom_filter_bits,
-					                                 *gstate)) {
-						continue;
-					}
 				}
 
 				if (!pushed_in_filter) {
 					CreateDynamicMinMaxFilters(op, info, context, pushdown_column, filter_col_idx, cmp, min_val,
 					                           max_val, condition_type, reconstruct_filter_expression, false);
 				}
-				if (allow_bloom_filters && can_emit_runtime_filters && ht && gstate &&
-				    CanUseBloomFilter(info, context, op, cmp, ht)) {
+				if (can_use_bloom) {
 					if (ht->HasPublishableBloomFilter()) {
 						// a complete filter was accumulated during Sink (external joins build it there)
 						DeferRuntimeFilter(DeferredRuntimeFilterType::BLOOM_FILTER, op, info, pushdown_column,

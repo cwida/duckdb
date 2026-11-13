@@ -9,3 +9,10 @@ FROM duckdb_available_metrics()
 WHERE metric_name = 'query.cpu_time';
 ----
 query.cpu_time	double	CPU time spent on the query	seconds
+
+query IIII
+SELECT metric_name, metric_type, description, unit
+FROM duckdb_available_metrics()
+WHERE metric_name = 'optimizer.mark_join_simplifier';
+----
+optimizer.mark_join_simplifier	double	Time spent in the mark_join_simplifier optimizer	seconds

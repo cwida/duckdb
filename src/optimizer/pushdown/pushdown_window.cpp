@@ -160,7 +160,7 @@ bool FilterPushdown::OnlyRanksWithoutArguments(const LogicalWindow &window) {
 unique_ptr<LogicalOperator> FilterPushdown::PushdownWindow(unique_ptr<LogicalOperator> op) {
 	D_ASSERT(op->type == LogicalOperatorType::LOGICAL_WINDOW);
 	auto &window = op->Cast<LogicalWindow>();
-	FilterPushdown pushdown(optimizer, convert_mark_joins, projection_mode);
+	FilterPushdown pushdown(optimizer, projection_mode);
 
 	// 1. Loop through the expressions, find the window expressions and investigate the partitions
 	// if a filter applies to a partition in each window expression then you can push the filter

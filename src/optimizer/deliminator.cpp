@@ -294,7 +294,7 @@ bool Deliminator::RemoveInequalityJoinWithDelimGet(LogicalComparisonJoin &delim_
 	    delim_conditions.size() != join_conditions.size()) {
 		return false;
 	}
-	NotNullExpressionAnalyzer nullability(context, root);
+	NotNullExpressionAnalyzer nullability(context, *root);
 
 	// TODO: we cannot perform the optimization here because our pure inequality joins don't implement
 	//  JoinType::SINGLE yet, and JoinType::MARK is a special case

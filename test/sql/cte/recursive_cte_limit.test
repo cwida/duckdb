@@ -79,3 +79,21 @@ SELECT count(*) FROM (
 
 statement ok
 RESET max_execution_time
+
+# LIMIT is shared by both UNION branches and resets once per recursive iteration.
+query I
+WITH RECURSIVE t(i) AS (
+	SELECT 0
+	UNION ALL (
+		SELECT i + 1
+		FROM (SELECT i FROM t UNION ALL SELECT i FROM t) u
+		WHERE i < 3
+		LIMIT 1
+	)
+)
+SELECT * FROM t ORDER BY i;
+----
+0
+1
+2
+3

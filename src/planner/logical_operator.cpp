@@ -112,6 +112,39 @@ bool LogicalOperator::HasSideEffects() const {
 	return false;
 }
 
+static bool ContainsDML(const LogicalOperator &op) {
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_INSERT:
+	case LogicalOperatorType::LOGICAL_UPDATE:
+	case LogicalOperatorType::LOGICAL_DELETE:
+	case LogicalOperatorType::LOGICAL_MERGE_INTO:
+		return true;
+	default:
+		break;
+	}
+	for (auto &child : op.children) {
+		if (ContainsDML(*child)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// A top-level DML statement is not flagged. COPY TO does not invalidate table statistics.
+bool LogicalOperator::CTEContainsDML() const {
+	if (type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE || type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
+		if (!children.empty() && ContainsDML(*children[0])) {
+			return true;
+		}
+	}
+	for (auto &child : children) {
+		if (child->CTEContainsDML()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool LogicalOperator::HasVolatileExpressions() const {
 	bool is_volatile = false;
 	LogicalOperatorVisitor::EnumerateExpressions(*this, [&](const unique_ptr<Expression> *expression) {

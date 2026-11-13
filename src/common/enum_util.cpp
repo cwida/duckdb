@@ -3310,6 +3310,24 @@ IdentifierCaseMode EnumUtil::FromString<IdentifierCaseMode>(const char *value) {
 	return static_cast<IdentifierCaseMode>(StringUtil::StringToEnum(GetIdentifierCaseModeValues(), 3, "IdentifierCaseMode", value));
 }
 
+const StringUtil::EnumStringLiteral *GetInFilterModeValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(InFilterMode::PRUNING_ONLY), "PRUNING_ONLY" },
+		{ static_cast<uint32_t>(InFilterMode::ADAPTIVE_ROW_FILTERING), "ADAPTIVE_ROW_FILTERING" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<InFilterMode>(InFilterMode value) {
+	return StringUtil::EnumToString(GetInFilterModeValues(), 2, "InFilterMode", static_cast<uint32_t>(value));
+}
+
+template<>
+InFilterMode EnumUtil::FromString<InFilterMode>(const char *value) {
+	return static_cast<InFilterMode>(StringUtil::StringToEnum(GetInFilterModeValues(), 2, "InFilterMode", value));
+}
+
 const StringUtil::EnumStringLiteral *GetIndexAppendModeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(IndexAppendMode::DEFAULT), "DEFAULT" },
@@ -4668,19 +4686,20 @@ const StringUtil::EnumStringLiteral *GetOptimizerTypeValues() {
 		{ static_cast<uint32_t>(OptimizerType::WINDOW_JOIN_PUSHDOWN), "WINDOW_JOIN_PUSHDOWN" },
 		{ static_cast<uint32_t>(OptimizerType::SELF_JOIN_AGGREGATE), "SELF_JOIN_AGGREGATE" },
 		{ static_cast<uint32_t>(OptimizerType::SCALAR_AGGREGATE_MERGE), "SCALAR_AGGREGATE_MERGE" },
-		{ static_cast<uint32_t>(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN), "DUPLICATE_ELIMINATED_DOMAIN" }
+		{ static_cast<uint32_t>(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN), "DUPLICATE_ELIMINATED_DOMAIN" },
+		{ static_cast<uint32_t>(OptimizerType::MARK_JOIN_SIMPLIFIER), "MARK_JOIN_SIMPLIFIER" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<OptimizerType>(OptimizerType value) {
-	return StringUtil::EnumToString(GetOptimizerTypeValues(), 53, "OptimizerType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetOptimizerTypeValues(), 54, "OptimizerType", static_cast<uint32_t>(value));
 }
 
 template<>
 OptimizerType EnumUtil::FromString<OptimizerType>(const char *value) {
-	return static_cast<OptimizerType>(StringUtil::StringToEnum(GetOptimizerTypeValues(), 53, "OptimizerType", value));
+	return static_cast<OptimizerType>(StringUtil::StringToEnum(GetOptimizerTypeValues(), 54, "OptimizerType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetOrderByColumnTypeValues() {
@@ -6122,19 +6141,20 @@ const StringUtil::EnumStringLiteral *GetSelectivityOptionalFilterTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(SelectivityOptionalFilterType::MIN_MAX), "MIN_MAX" },
 		{ static_cast<uint32_t>(SelectivityOptionalFilterType::BF), "BF" },
-		{ static_cast<uint32_t>(SelectivityOptionalFilterType::PRF), "PRF" }
+		{ static_cast<uint32_t>(SelectivityOptionalFilterType::PRF), "PRF" },
+		{ static_cast<uint32_t>(SelectivityOptionalFilterType::IN_FILTER), "IN_FILTER" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<SelectivityOptionalFilterType>(SelectivityOptionalFilterType value) {
-	return StringUtil::EnumToString(GetSelectivityOptionalFilterTypeValues(), 3, "SelectivityOptionalFilterType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetSelectivityOptionalFilterTypeValues(), 4, "SelectivityOptionalFilterType", static_cast<uint32_t>(value));
 }
 
 template<>
 SelectivityOptionalFilterType EnumUtil::FromString<SelectivityOptionalFilterType>(const char *value) {
-	return static_cast<SelectivityOptionalFilterType>(StringUtil::StringToEnum(GetSelectivityOptionalFilterTypeValues(), 3, "SelectivityOptionalFilterType", value));
+	return static_cast<SelectivityOptionalFilterType>(StringUtil::StringToEnum(GetSelectivityOptionalFilterTypeValues(), 4, "SelectivityOptionalFilterType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetSequenceInfoValues() {

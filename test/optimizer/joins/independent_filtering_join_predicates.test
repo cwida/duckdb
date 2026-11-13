@@ -1,0 +1,95 @@
+# name: test/optimizer/joins/independent_filtering_join_predicates.test
+# description: Independent INNER predicates preserve complete filtering-join conditions
+# group: [joins]
+
+statement ok
+CREATE TABLE external_keys(id INTEGER);
+
+statement ok
+INSERT INTO external_keys VALUES (1), (2), (NULL);
+
+statement ok
+CREATE TABLE external_rows(id INTEGER, k INTEGER);
+
+statement ok
+INSERT INTO external_rows VALUES (1,10), (2,20), (2,20), (3,30), (NULL,NULL);
+
+statement ok
+CREATE TABLE preserved(k INTEGER, a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO preserved VALUES (10,1,1), (20,2,2), (30,3,3), (NULL,NULL,NULL);
+
+statement ok
+CREATE TABLE filtering(a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO filtering VALUES (1,0), (0,1), (2,2), (2,2), (NULL,NULL);
+
+# The two ON equalities must match the same build row, without multiplying matches.
+query I rowsort
+SELECT p.k FROM external_keys e, external_rows r,
+    (preserved p SEMI JOIN filtering f ON p.a=f.a AND p.b=f.b)
+WHERE r.k=p.k AND e.id=r.id;
+----
+20
+20
+
+query I rowsort
+SELECT p.k FROM external_keys e, external_rows r,
+    (preserved p ANTI JOIN filtering f ON p.a=f.a AND p.b=f.b)
+WHERE r.k=p.k AND e.id=r.id;
+----
+10
+
+query I rowsort
+SELECT p.k FROM external_keys e, external_rows r,
+    (preserved p SEMI JOIN filtering f ON p.a IS NOT DISTINCT FROM f.a AND p.b IS NOT DISTINCT FROM f.b)
+WHERE r.k IS NOT DISTINCT FROM p.k AND e.id IS NOT DISTINCT FROM r.id;
+----
+20
+20
+NULL
+
+query I rowsort
+SELECT p.k FROM external_keys e, external_rows r,
+    (preserved p ANTI JOIN filtering f ON p.a IS NOT DISTINCT FROM f.a AND p.b IS NOT DISTINCT FROM f.b)
+WHERE r.k IS NOT DISTINCT FROM p.k AND e.id IS NOT DISTINCT FROM r.id;
+----
+10
+
+# Residual ON predicates remain part of their filtering occurrence.
+query I rowsort
+SELECT p.k FROM external_keys e, external_rows r,
+    (preserved p SEMI JOIN filtering f ON p.a=f.a AND (p.b=f.b OR f.b=0))
+WHERE r.k=p.k AND e.id=r.id;
+----
+10
+20
+20
+
+# A null-introducing boundary retains its multiplicity and post-join predicates.
+query II rowsort
+SELECT p.k, count(f.a) FROM external_keys e, external_rows r,
+    (preserved p LEFT JOIN filtering f ON p.a=f.a AND p.b=f.b)
+WHERE r.k=p.k AND e.id=r.id GROUP BY p.k;
+----
+10	0
+20	4
+
+statement ok
+DELETE FROM filtering;
+
+query I
+SELECT count(*) FROM external_keys e, external_rows r,
+    (preserved p SEMI JOIN filtering f ON p.a=f.a AND p.b=f.b)
+WHERE r.k=p.k AND e.id=r.id;
+----
+0
+
+query I
+SELECT count(*) FROM external_keys e, external_rows r,
+    (preserved p ANTI JOIN filtering f ON p.a=f.a AND p.b=f.b)
+WHERE r.k=p.k AND e.id=r.id;
+----
+3

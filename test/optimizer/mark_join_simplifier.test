@@ -1,0 +1,116 @@
+# name: test/optimizer/mark_join_simplifier.test
+# description: MARK simplification restores projected markers and preserves optimizer gates
+# group: [optimizer]
+
+query I
+SELECT name FROM duckdb_optimizers() WHERE name='mark_join_simplifier';
+----
+mark_join_simplifier
+
+statement ok
+SET explain_output='optimized_only';
+
+statement ok
+CREATE TABLE mark_probe AS SELECT i AS a FROM range(100) t(i);
+
+statement ok
+CREATE TABLE mark_build AS SELECT i AS b FROM range(10) t(i);
+
+query II
+EXPLAIN SELECT a FROM mark_probe WHERE a IN (SELECT b FROM mark_build);
+----
+logical_opt	<REGEX>:.*SEMI.*
+
+query II
+EXPLAIN SELECT a FROM mark_probe WHERE EXISTS (SELECT 1 FROM mark_build WHERE a IS NOT DISTINCT FROM b);
+----
+logical_opt	<REGEX>:.*SEMI.*Conditions:.* = .*
+
+query II
+EXPLAIN SELECT a FROM mark_probe WHERE NOT EXISTS (SELECT 1 FROM mark_build WHERE a IS NOT DISTINCT FROM b);
+----
+logical_opt	<REGEX>:.*ANTI.*
+
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT a FROM mark_probe WHERE a IN (SELECT b FROM mark_build)) SELECT sum(a) FROM c UNION ALL SELECT max(a) FROM c;
+----
+logical_opt	<REGEX>:.*SEMI.*
+
+query II
+EXPLAIN SELECT a, m FROM (SELECT a, a IN (SELECT b FROM mark_build) AS m FROM mark_probe) WHERE m;
+----
+logical_opt	<REGEX>:.*SEMI.*
+
+query II
+EXPLAIN SELECT a, __mark_join_marker FROM mark_probe JOIN BY (TYPE MARK) mark_build ON a IS NOT DISTINCT FROM b WHERE NOT __mark_join_marker;
+----
+logical_opt	<REGEX>:.*ANTI.*
+
+statement ok
+INSERT INTO mark_build VALUES (NULL);
+
+query II
+EXPLAIN SELECT a, __mark_join_marker FROM mark_probe JOIN BY (TYPE MARK) mark_build ON a=b WHERE NOT __mark_join_marker;
+----
+logical_opt	<REGEX>:.*MARK.*
+
+query II
+EXPLAIN SELECT a, m FROM (SELECT a, a IN (SELECT b FROM mark_build) AS m FROM mark_probe);
+----
+logical_opt	<REGEX>:.*MARK.*
+
+query II
+EXPLAIN SELECT a, v, m FROM (SELECT a, v, a IN (SELECT b FROM mark_build) AS m FROM (SELECT a, min(a) AS v FROM mark_probe GROUP BY a)) WHERE m;
+----
+logical_opt	<REGEX>:.*SEMI.*
+
+query II
+EXPLAIN SELECT a, v, m FROM (SELECT a, v, a IN (SELECT b FROM mark_build) AS m FROM (SELECT a, min(a) OVER (PARTITION BY a) AS v FROM mark_probe)) WHERE m;
+----
+logical_opt	<REGEX>:.*SEMI.*
+
+statement ok
+CREATE SEQUENCE marker_sequence;
+
+query II
+EXPLAIN SELECT a, v, m FROM (SELECT a, v, a IN (SELECT b FROM mark_build) AS m FROM (SELECT a, nextval('marker_sequence') AS v FROM mark_probe)) WHERE m;
+----
+logical_opt	<REGEX>:.*MARK.*
+
+statement ok
+SET disabled_optimizers='mark_join_simplifier';
+
+query II
+EXPLAIN SELECT a FROM mark_probe WHERE a IN (SELECT b FROM mark_build);
+----
+logical_opt	<REGEX>:.*MARK.*
+
+query II
+EXPLAIN SELECT a, __mark_join_marker FROM mark_probe JOIN BY (TYPE MARK) mark_build ON a IS NOT DISTINCT FROM b WHERE NOT __mark_join_marker;
+----
+logical_opt	<REGEX>:.*MARK.*
+
+statement ok
+SET disabled_optimizers='filter_pushdown';
+
+query II
+EXPLAIN SELECT a FROM mark_probe WHERE a IN (SELECT b FROM mark_build);
+----
+logical_opt	<REGEX>:.*SEMI.*
+
+statement ok
+RESET disabled_optimizers;
+
+# Retain the evaluation boundary around fallible MARK conditions.
+statement ok
+CREATE TABLE fallible_probe AS SELECT i::VARCHAR AS s FROM range(100) r(i);
+
+query II
+EXPLAIN SELECT s, __mark_join_marker FROM fallible_probe JOIN BY (TYPE MARK) mark_build ON CAST(s AS INTEGER)=b WHERE __mark_join_marker;
+----
+logical_opt	<REGEX>:.*MARK.*
+
+query II
+EXPLAIN SELECT s, __mark_join_marker FROM fallible_probe JOIN BY (TYPE MARK) mark_build ON CAST(s AS INTEGER) IS NOT DISTINCT FROM b WHERE NOT __mark_join_marker;
+----
+logical_opt	<REGEX>:.*MARK.*

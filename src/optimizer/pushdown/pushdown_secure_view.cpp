@@ -42,7 +42,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSecureView(unique_ptr<Logica
 		op->SetEstimatedCardinality(op->children[0]->EstimateCardinality(optimizer.GetContext()));
 	}
 
-	FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode);
+	FilterPushdown child_pushdown(optimizer, projection_mode);
 	for (auto &f : filters) {
 		auto expr = std::move(f->filter);
 		if (secure_view.has_source) {

@@ -27,6 +27,7 @@
 #include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/planner/subquery/flatten_dependent_join.hpp"
+#include "duckdb/planner/subquery/has_volatile_expressions.hpp"
 #include "duckdb/common/enums/logical_operator_type.hpp"
 #include "duckdb/planner/operator/logical_dependent_join.hpp"
 #include "duckdb/planner/subquery/recursive_dependent_join_planner.hpp"
@@ -452,43 +453,6 @@ static bool PerformDelimOnType(const LogicalType &type) {
 		}
 	}
 	return true;
-}
-
-//! Like IsVolatile, but ignores error()
-//! Error is deterministic, so it can be evaluated once per distinct correlated value
-//! FIXME: remove once `error` no longer has to be volatile (fixing blockers is WIP)
-static bool IsVolatileIgnoringError(const Expression &expr) {
-	switch (expr.GetExpressionClass()) {
-	case ExpressionClass::BOUND_FUNCTION: {
-		auto &function = expr.Cast<BoundFunctionExpression>().Function();
-		if (function.HasBindLambdaCallback() ||
-		    (function.GetName() != ErrorFun::Name && function.GetStability() == FunctionStability::VOLATILE)) {
-			return expr.IsVolatile();
-		}
-		break;
-	}
-	case ExpressionClass::BOUND_CASE:
-	case ExpressionClass::BOUND_CONJUNCTION:
-	case ExpressionClass::BOUND_OPERATOR:
-		break;
-	default:
-		return expr.IsVolatile();
-	}
-	bool is_volatile = false;
-	ExpressionIterator::EnumerateChildren(
-	    expr, [&](const Expression &child) { is_volatile = is_volatile || IsVolatileIgnoringError(child); });
-	return is_volatile;
-}
-
-static bool HasVolatileExpressionsIgnoringError(const LogicalOperator &op) {
-	bool is_volatile = false;
-	LogicalOperatorVisitor::EnumerateExpressions(op, [&](const unique_ptr<Expression> *expression) {
-		is_volatile = is_volatile || IsVolatileIgnoringError(**expression);
-	});
-	for (auto &child : op.children) {
-		is_volatile = is_volatile || (child && HasVolatileExpressionsIgnoringError(*child));
-	}
-	return is_volatile;
 }
 
 static bool PerformDuplicateElimination(Binder &binder, CorrelatedColumns &correlated_columns,

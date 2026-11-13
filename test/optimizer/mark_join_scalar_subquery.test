@@ -1,0 +1,206 @@
+# name: test/optimizer/mark_join_scalar_subquery.test
+# description: Scalar-subquery error checks permit MARK conversion while side effects retain it
+# group: [optimizer]
+
+require parquet
+
+statement ok
+SET threads=1;
+
+# MARK eligibility does not change the global volatility of error().
+statement error
+SELECT TRY(error('boom'));
+----
+volatile function
+
+statement error
+SELECT HAS_ERROR(error('boom'));
+----
+volatile function
+
+statement ok
+CREATE TABLE probe_native AS SELECT i FROM range(100) t(i);
+
+statement ok
+CREATE TABLE build_native AS SELECT i FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE lookup_native AS SELECT i AS k, i%7 AS v FROM range(100) t(i);
+
+statement ok
+ANALYZE;
+
+foreach table probe build lookup
+
+statement ok
+COPY {table}_native TO '{TEST_DIR}/mark_build_{table}.parquet';
+
+statement ok
+CREATE VIEW {table}_parquet AS FROM read_parquet('{TEST_DIR}/mark_build_{table}.parquet');
+
+endloop
+
+foreach source native parquet
+
+# The scalar-subquery cardinality check stays inside the build input.
+query I
+SELECT count(*) FROM probe_{source} p WHERE p.i IN
+(SELECT b.i FROM build_{source} b WHERE b.i%7=(SELECT v FROM lookup_{source} WHERE k=2));
+----
+14
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM probe_{source} p WHERE p.i IN
+(SELECT b.i FROM build_{source} b WHERE b.i%7=(SELECT v FROM lookup_{source} WHERE k=2));
+----
+physical_plan	<REGEX>:.*"Join Type": "(RIGHT_)?SEMI".*
+
+statement error
+SELECT count(*) FROM probe_{source} p WHERE p.i IN
+(SELECT b.i FROM build_{source} b WHERE b.i%7=(SELECT v FROM lookup_{source} WHERE k IN (2,3)));
+----
+More than one row returned by a subquery used as an expression
+
+query I
+SELECT count(*) FROM probe_{source} p JOIN BY (TYPE MARK)
+(SELECT b.i FROM build_{source} b WHERE b.i%7=(SELECT v FROM lookup_{source} WHERE k=2)) b
+ON p.i IS NOT DISTINCT FROM b.i WHERE NOT __mark_join_marker;
+----
+86
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM probe_{source} p JOIN BY (TYPE MARK)
+(SELECT b.i FROM build_{source} b WHERE b.i%7=(SELECT v FROM lookup_{source} WHERE k=2)) b
+ON p.i IS NOT DISTINCT FROM b.i WHERE NOT __mark_join_marker;
+----
+physical_plan	<REGEX>:.*"Join Type": "(RIGHT_)?ANTI".*
+
+statement error
+SELECT count(*) FROM probe_{source} p JOIN BY (TYPE MARK)
+(SELECT b.i FROM build_{source} b WHERE b.i%7=(SELECT v FROM lookup_{source} WHERE k IN (2,3))) b
+ON p.i IS NOT DISTINCT FROM b.i WHERE NOT __mark_join_marker;
+----
+More than one row returned by a subquery used as an expression
+
+statement ok
+PREPARE scalar_{source} AS SELECT count(*) FROM probe_{source} p WHERE p.i IN
+(SELECT b.i FROM build_{source} b WHERE b.i%7=(SELECT v FROM lookup_{source} WHERE k=$1));
+
+query I
+EXECUTE scalar_{source}(2);
+----
+14
+
+query I
+EXECUTE scalar_{source}(1);
+----
+15
+
+query I
+EXECUTE scalar_{source}(100);
+----
+0
+
+query I
+SELECT count(*) FROM probe_{source} p JOIN BY (TYPE MARK)
+(SELECT b.i FROM build_{source} b WHERE b.i%7=(SELECT v FROM lookup_{source} WHERE k=100)) b
+ON p.i IS NOT DISTINCT FROM b.i WHERE NOT __mark_join_marker;
+----
+100
+
+# A volatile build filter must retain its evaluation count.
+statement ok
+CREATE SEQUENCE semi_{source};
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM probe_{source} p WHERE p.i IN
+(SELECT b.i FROM build_{source} b WHERE nextval('semi_{source}')<=3);
+----
+physical_plan	<REGEX>:.*"Join Type": "MARK".*
+
+query I
+SELECT count(*) FROM probe_{source} p WHERE p.i IN
+(SELECT b.i FROM build_{source} b WHERE nextval('semi_{source}')<=3);
+----
+3
+
+query I
+SELECT currval('semi_{source}');
+----
+10000
+
+statement ok
+CREATE SEQUENCE anti_{source};
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM probe_{source} p JOIN BY (TYPE MARK)
+(SELECT b.i FROM build_{source} b WHERE nextval('anti_{source}')<=3) b
+ON p.i IS NOT DISTINCT FROM b.i WHERE NOT __mark_join_marker;
+----
+physical_plan	<REGEX>:.*"Join Type": "MARK".*
+
+query I
+SELECT count(*) FROM probe_{source} p JOIN BY (TYPE MARK)
+(SELECT b.i FROM build_{source} b WHERE nextval('anti_{source}')<=3) b
+ON p.i IS NOT DISTINCT FROM b.i WHERE NOT __mark_join_marker;
+----
+97
+
+query I
+SELECT currval('anti_{source}');
+----
+10000
+
+# Ignoring error()'s own volatility must still inspect its arguments.
+statement ok
+CREATE SEQUENCE error_arg_{source};
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM probe_{source} p WHERE p.i IN
+(SELECT b.i FROM build_{source} b
+WHERE error(CASE WHEN nextval('error_arg_{source}')>0 THEN NULL::VARCHAR ELSE 'bad' END) IS NULL);
+----
+physical_plan	<REGEX>:.*"Join Type": "MARK".*
+
+query I
+SELECT count(*) FROM probe_{source} p WHERE p.i IN
+(SELECT b.i FROM build_{source} b
+WHERE error(CASE WHEN nextval('error_arg_{source}')>0 THEN NULL::VARCHAR ELSE 'bad' END) IS NULL);
+----
+100
+
+query I
+SELECT currval('error_arg_{source}');
+----
+10000
+
+statement ok
+CREATE SEQUENCE error_lambda_{source};
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM probe_{source} p WHERE p.i IN
+(SELECT b.i FROM build_{source} b WHERE error(list_extract(list_transform([b.i],
+lambda x: CASE WHEN nextval('error_lambda_{source}')>0 THEN NULL::VARCHAR ELSE 'bad' END),1)) IS NULL);
+----
+physical_plan	<REGEX>:.*"Join Type": "MARK".*
+
+query I
+SELECT count(*) FROM probe_{source} p WHERE p.i IN
+(SELECT b.i FROM build_{source} b WHERE error(list_extract(list_transform([b.i],
+lambda x: CASE WHEN nextval('error_lambda_{source}')>0 THEN NULL::VARCHAR ELSE 'bad' END),1)) IS NULL);
+----
+100
+
+query I
+SELECT currval('error_lambda_{source}');
+----
+10000
+
+# Volatile comparison operands still retain the MARK evaluation boundary.
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM probe_{source} p JOIN BY (TYPE MARK) build_{source} b
+ON p.i=b.i+random() WHERE __mark_join_marker;
+----
+physical_plan	<REGEX>:.*"Join Type": "MARK".*
+
+endloop

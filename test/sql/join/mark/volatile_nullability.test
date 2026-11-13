@@ -1,0 +1,64 @@
+# name: test/sql/join/mark/volatile_nullability.test
+# description: Separate volatile evaluations cannot prove MARK comparisons non-null
+# group: [mark]
+
+statement ok
+CREATE SEQUENCE marker_seq;
+
+query I
+SELECT v FROM (
+    SELECT CASE WHEN nextval('marker_seq')=1 THEN 2 END AS v
+    FROM range(1)
+    WHERE (CASE WHEN nextval('marker_seq')=1 THEN 2 END) IS NOT NULL
+) q WHERE v NOT IN (SELECT 1);
+----
+
+statement ok
+CREATE OR REPLACE SEQUENCE marker_seq;
+
+query I
+SELECT 1 WHERE 1 NOT IN (
+    SELECT CASE WHEN nextval('marker_seq')=1 THEN 2 END
+    FROM range(1)
+    WHERE (CASE WHEN nextval('marker_seq')=1 THEN 2 END) IS NOT NULL
+);
+----
+
+statement ok
+CREATE OR REPLACE SEQUENCE marker_seq;
+
+query II
+SELECT v, m FROM (
+    SELECT v, v IN (SELECT 1) AS m FROM (
+        SELECT CASE WHEN nextval('marker_seq')=1 THEN 2 END AS v
+        FROM range(1)
+        WHERE (CASE WHEN nextval('marker_seq')=1 THEN 2 END) IS NOT NULL
+    ) q
+) marked WHERE NOT m;
+----
+
+statement ok
+CREATE OR REPLACE SEQUENCE marker_seq;
+
+query II
+SELECT v, m FROM (
+    SELECT v, v IN (SELECT 1) AS m FROM (
+        SELECT CASE WHEN nextval('marker_seq')=1 THEN 2 END AS v
+        FROM range(1)
+        WHERE (CASE WHEN nextval('marker_seq')=1 THEN 2 END) IS NOT NULL
+    ) q
+) marked WHERE m IS NOT TRUE;
+----
+NULL	NULL
+
+statement ok
+CREATE OR REPLACE SEQUENCE marker_seq;
+
+query I
+SELECT v FROM (
+    SELECT CASE WHEN nextval('marker_seq')=1 THEN 2 END AS v
+    FROM range(1)
+    WHERE (CASE WHEN nextval('marker_seq')=1 THEN 2 END) IS NOT NULL
+) q WHERE (v IN (SELECT 1)) IS NOT TRUE;
+----
+NULL

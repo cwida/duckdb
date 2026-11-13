@@ -22,15 +22,13 @@ class FilterPushdown {
 public:
 	enum class ProjectionMode : uint8_t { ALLOW_COMPUTED_EXPRESSIONS, PRESERVE_COMPUTED_EXPRESSIONS };
 
-	explicit FilterPushdown(Optimizer &optimizer, bool convert_mark_joins = true,
+	explicit FilterPushdown(Optimizer &optimizer,
 	                        ProjectionMode projection_mode = ProjectionMode::ALLOW_COMPUTED_EXPRESSIONS);
 
 	//! Perform filter pushdown
 	unique_ptr<LogicalOperator> Rewrite(unique_ptr<LogicalOperator> op);
 	//! Return a reference to the client context (from the optimizer)
 	ClientContext &GetContext();
-
-	void CheckMarkToSemi(LogicalOperator &op, const unordered_set<TableIndex> &table_bindings);
 
 	//! Whether a filter carrying a barrier may be pushed through this operator - i.e. whether the operator is
 	//! guaranteed not to remove any rows. A barred expression must never be evaluated on rows that an operator below
@@ -62,7 +60,6 @@ public:
 private:
 	Optimizer &optimizer;
 	FilterCombiner combiner;
-	bool convert_mark_joins;
 	ProjectionMode projection_mode;
 
 	vector<unique_ptr<Filter>> filters;

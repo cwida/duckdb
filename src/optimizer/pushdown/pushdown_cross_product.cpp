@@ -57,8 +57,8 @@ static bool HasTransitiveJoinBounds(const vector<unique_ptr<Filter>> &filters) {
 
 unique_ptr<LogicalOperator> FilterPushdown::PushdownCrossProduct(unique_ptr<LogicalOperator> op) {
 	D_ASSERT(op->children.size() > 1);
-	FilterPushdown left_pushdown(optimizer, convert_mark_joins, projection_mode);
-	FilterPushdown right_pushdown(optimizer, convert_mark_joins, projection_mode);
+	FilterPushdown left_pushdown(optimizer, projection_mode);
+	FilterPushdown right_pushdown(optimizer, projection_mode);
 	vector<unique_ptr<Expression>> join_expressions;
 	vector<unique_ptr<Expression>> deferred_filters;
 	auto join_ref_type = JoinRefType::REGULAR;

@@ -1,0 +1,291 @@
+diff --git a/src/hnsw/hnsw_optimize_scan.cpp b/src/hnsw/hnsw_optimize_scan.cpp
+index 88eff3f..4141af0 100644
+--- a/src/hnsw/hnsw_optimize_scan.cpp
++++ b/src/hnsw/hnsw_optimize_scan.cpp
+@@ -1,6 +1,7 @@
+ #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
+ #include "duckdb/common/types/column/column_data_collection.hpp"
+ #include "duckdb/common/types/column/column_data_scan_states.hpp"
++#include "duckdb/optimizer/column_binding_replacer.hpp"
+ #include "duckdb/optimizer/optimizer_extension.hpp"
+ #include "duckdb/planner/column_binding_map.hpp"
+ #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+@@ -24,6 +25,32 @@
+ 
+ namespace duckdb {
+ 
++static bool SkipPassthroughOperators(unique_ptr<LogicalOperator> *&op, unique_ptr<Expression> &expression) {
++	while ((*op)->children.size() == 1) {
++		if ((*op)->type == LogicalOperatorType::LOGICAL_FILTER) {
++			if (!(*op)->Cast<LogicalFilter>().expressions.empty()) {
++				break;
++			}
++		} else if ((*op)->type == LogicalOperatorType::LOGICAL_PROJECTION) {
++			auto &projection = (*op)->Cast<LogicalProjection>();
++			auto bindings = projection.GetColumnBindings();
++			ColumnBindingReplacer replacer;
++			for (idx_t i = 0; i < projection.expressions.size(); i++) {
++				if (projection.expressions[i]->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
++					return false;
++				}
++				auto &column = projection.expressions[i]->Cast<BoundColumnRefExpression>();
++				replacer.replacement_bindings.emplace_back(bindings[i], column.Binding());
++			}
++			replacer.VisitExpression(&expression);
++		} else {
++			break;
++		}
++		op = &(*op)->children[0];
++	}
++	return true;
++}
++
+ static bool IsMarkerFilter(const LogicalFilter &filter, TableIndex mark_index) {
+ 	if (filter.expressions.size() != 1 ||
+ 	    filter.expressions[0]->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+@@ -34,19 +61,33 @@ static bool IsMarkerFilter(const LogicalFilter &filter, TableIndex mark_index) {
+ }
+ 
+ unique_ptr<HNSWConstantInFilter> HNSWTryExtractConstantInFilter(unique_ptr<LogicalOperator> &root,
+-                                                                unique_ptr<LogicalOperator> *&get_ptr) {
+-	if (root->type != LogicalOperatorType::LOGICAL_FILTER) {
++                                                                unique_ptr<LogicalOperator> *&get_ptr,
++                                                                unique_ptr<Expression> &distance_expression) {
++	auto *join_root = &root;
++	if (!SkipPassthroughOperators(join_root, distance_expression)) {
+ 		return nullptr;
+ 	}
+-	auto &filter = root->Cast<LogicalFilter>();
+-	if (filter.children.size() != 1 || filter.children[0]->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+-		return nullptr;
+-	}
+-
+-	auto &join = filter.children[0]->Cast<LogicalComparisonJoin>();
+-	if (join.join_type != JoinType::MARK || !IsMarkerFilter(filter, join.mark_index)) {
++	optional_ptr<LogicalComparisonJoin> join_ptr;
++	if ((*join_root)->type == LogicalOperatorType::LOGICAL_FILTER) {
++		auto &filter = (*join_root)->Cast<LogicalFilter>();
++		if (filter.children.size() != 1 || filter.children[0]->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
++			return nullptr;
++		}
++		auto &join = filter.children[0]->Cast<LogicalComparisonJoin>();
++		if (join.join_type != JoinType::MARK || !IsMarkerFilter(filter, join.mark_index)) {
++			return nullptr;
++		}
++		join_ptr = join;
++	} else if ((*join_root)->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
++		auto &join = (*join_root)->Cast<LogicalComparisonJoin>();
++		if (join.join_type != JoinType::SEMI) {
++			return nullptr;
++		}
++		join_ptr = join;
++	} else {
+ 		return nullptr;
+ 	}
++	auto &join = *join_ptr;
+ 	if (join.children.size() != 2 || join.conditions.size() != 1) {
+ 		return nullptr;
+ 	}
+@@ -55,15 +96,18 @@ unique_ptr<HNSWConstantInFilter> HNSWTryExtractConstantInFilter(unique_ptr<Logic
+ 	if (!condition.IsComparison() || condition.GetComparisonType() != ExpressionType::COMPARE_EQUAL) {
+ 		return nullptr;
+ 	}
+-	if (join.children[0]->type != LogicalOperatorType::LOGICAL_GET ||
+-	    join.children[1]->type != LogicalOperatorType::LOGICAL_CHUNK_GET) {
++	auto constant_expression = condition.GetRHS().Copy();
++	auto *constant_root = &join.children[1];
++	if (!SkipPassthroughOperators(constant_root, constant_expression) ||
++	    join.children[0]->type != LogicalOperatorType::LOGICAL_GET ||
++	    (*constant_root)->type != LogicalOperatorType::LOGICAL_CHUNK_GET) {
+ 		return nullptr;
+ 	}
+ 
+ 	auto &get = join.children[0]->Cast<LogicalGet>();
+-	auto &chunk_get = join.children[1]->Cast<LogicalColumnDataGet>();
++	auto &chunk_get = (*constant_root)->Cast<LogicalColumnDataGet>();
+ 	if (condition.GetLHS().GetExpressionType() != ExpressionType::BOUND_COLUMN_REF ||
+-	    condition.GetRHS().GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
++	    constant_expression->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+ 		return nullptr;
+ 	}
+ 	if (!chunk_get.collection || chunk_get.collection->ColumnCount() != 1) {
+@@ -74,7 +118,7 @@ unique_ptr<HNSWConstantInFilter> HNSWTryExtractConstantInFilter(unique_ptr<Logic
+ 	}
+ 
+ 	auto &probe = condition.GetLHS().Cast<BoundColumnRefExpression>();
+-	auto &constant = condition.GetRHS().Cast<BoundColumnRefExpression>();
++	auto &constant = constant_expression->Cast<BoundColumnRefExpression>();
+ 	if (probe.Binding().table_index != get.table_index) {
+ 		return nullptr;
+ 	}
+@@ -86,6 +130,10 @@ unique_ptr<HNSWConstantInFilter> HNSWTryExtractConstantInFilter(unique_ptr<Logic
+ 	    chunk_get.collection->Types()[0] != constant.GetReturnType()) {
+ 		return nullptr;
+ 	}
++	if (probe.GetReturnType().id() == LogicalTypeId::UNION) {
++		// UNION equality can return NULL for a non-NULL value with a NULL active member.
++		return nullptr;
++	}
+ 
+ 	auto column_index = get.GetColumnIndex(probe.Binding());
+ 	if (!column_index.HasPrimaryIndex() || column_index.HasChildren() || column_index.IsVirtualColumn()) {
+@@ -163,10 +211,12 @@ public:
+ 		}
+ 
+ 		auto *get_ptr = &projection.children.front();
++		auto distance_expression = projection_expr.Copy();
+ 		unique_ptr<HNSWConstantInFilter> constant_in_filter;
+ 		bool keep_top_n = false;
+ 		if ((*get_ptr)->type != LogicalOperatorType::LOGICAL_GET) {
+-			constant_in_filter = HNSWTryExtractConstantInFilter(projection.children.front(), get_ptr);
++			constant_in_filter =
++			    HNSWTryExtractConstantInFilter(projection.children.front(), get_ptr, distance_expression);
+ 			if (!constant_in_filter) {
+ 				return false;
+ 			}
+@@ -217,7 +267,7 @@ public:
+ 			bindings.clear();
+ 
+ 			// Check that the projection expression is a distance function that matches the index
+-			if (!guard->TryMatchDistanceFunction(projection_expr, bindings)) {
++			if (!guard->TryMatchDistanceFunction(*distance_expression, bindings)) {
+ 				continue;
+ 			}
+ 			// Check that the HNSW index actually indexes the expression
+@@ -284,7 +334,7 @@ public:
+ 			*get_ptr = std::move(new_filter);
+ 		}
+ 
+-		// A retained MARK join rechecks the extracted IN predicate, and the TopN
++		// The retained join rechecks the extracted IN predicate, and the TopN
+ 		// preserves ordering after that join. Both operate on at most `limit` rows.
+ 		if (!keep_top_n) {
+ 			plan = std::move(top_n.children[0]);
+diff --git a/src/hnsw/hnsw_optimize_topk.cpp b/src/hnsw/hnsw_optimize_topk.cpp
+index 01a0561..65ee831 100644
+--- a/src/hnsw/hnsw_optimize_topk.cpp
++++ b/src/hnsw/hnsw_optimize_topk.cpp
+@@ -100,9 +100,10 @@ public:
+ 		}
+ 
+ 		auto *get_ptr = &agg.children[0];
++		auto distance_expression = dist_expr.Copy();
+ 		unique_ptr<HNSWConstantInFilter> constant_in_filter;
+ 		if ((*get_ptr)->type != LogicalOperatorType::LOGICAL_GET) {
+-			constant_in_filter = HNSWTryExtractConstantInFilter(agg.children[0], get_ptr);
++			constant_in_filter = HNSWTryExtractConstantInFilter(agg.children[0], get_ptr, distance_expression);
+ 			if (!constant_in_filter) {
+ 				return false;
+ 			}
+@@ -146,7 +147,7 @@ public:
+ 			bindings.clear();
+ 
+ 			// Check that the projection expression is a distance function that matches the index
+-			if (!guard->TryMatchDistanceFunction(dist_expr, bindings)) {
++			if (!guard->TryMatchDistanceFunction(*distance_expression, bindings)) {
+ 				continue;
+ 			}
+ 			// Check that the HNSW index actually indexes the expression
+diff --git a/src/include/hnsw/hnsw_optimize_filter.hpp b/src/include/hnsw/hnsw_optimize_filter.hpp
+index f52c0de..b1f5737 100644
+--- a/src/include/hnsw/hnsw_optimize_filter.hpp
++++ b/src/include/hnsw/hnsw_optimize_filter.hpp
+@@ -6,10 +6,11 @@
+ namespace duckdb {
+ 
+ class LogicalOperator;
++class Expression;
+ 
+-//! Extracts the constant values from the MARK join generated for a positive
+-//! constant IN predicate and returns the join's left-hand table scan.
++//! Extracts a positive constant IN join and resolves the matching expression to its table scan.
+ unique_ptr<HNSWConstantInFilter> HNSWTryExtractConstantInFilter(unique_ptr<LogicalOperator> &root,
+-                                                                unique_ptr<LogicalOperator> *&get_ptr);
++                                                                unique_ptr<LogicalOperator> *&get_ptr,
++                                                                unique_ptr<Expression> &distance_expression);
+ 
+ } // namespace duckdb
+diff --git a/test/sql/hnsw/hnsw_prefilter.test b/test/sql/hnsw/hnsw_prefilter.test
+index 30996e8..8f6fcbe 100644
+--- a/test/sql/hnsw/hnsw_prefilter.test
++++ b/test/sql/hnsw/hnsw_prefilter.test
+@@ -96,7 +96,7 @@ SELECT unnest(min_by(id, array_distance(vec, [1, 0, 0]::FLOAT[3]), 3)) FROM item
+ 7
+ 8
+ 
+-# DuckDB lowers constant IN lists with at least four values to a MARK join.
++# DuckDB lowers large constant IN lists to a MARK or SEMI join.
+ # The HNSW optimizer extracts that generated constant set into the bitmap scan.
+ statement ok
+ CREATE TABLE in_items (id INTEGER, board_id BIGINT, active BOOLEAN, vec FLOAT[3]);
+@@ -138,6 +138,70 @@ SELECT unnest(min_by(id, array_distance(vec, [0, 0, 0]::FLOAT[3]), 5)) FROM in_i
+ 96
+ 98
+ 
++# Retain support for the MARK join before simplification.
++statement ok
++SET disabled_optimizers = 'mark_join_simplifier';
++
++query II
++EXPLAIN SELECT id FROM in_items WHERE board_id IN (500, 1090, 1092, 1094, 1096, 1098, 2000, 2002, 2004, 2006, NULL, 1090) AND active ORDER BY array_distance(vec, [0, 0, 0]::FLOAT[3]) LIMIT 5;
++----
++physical_plan	<REGEX>:.*HNSW_INDEX_SCAN.*
++
++query I
++SELECT id FROM in_items WHERE board_id IN (500, 1090, 1092, 1094, 1096, 1098, 2000, 2002, 2004, 2006, NULL, 1090) AND active ORDER BY array_distance(vec, [0, 0, 0]::FLOAT[3]) LIMIT 5;
++----
++90
++92
++94
++96
++98
++
++statement ok
++RESET disabled_optimizers;
++
++# Negative membership returns the complement of the constant set.
++query I
++SELECT id FROM in_items WHERE board_id IS NOT NULL AND board_id NOT IN (500, 1090, 1092, 1094, 1096, 1098, 2000, 2002, 2004, 2006) AND active ORDER BY array_distance(vec, [0, 0, 0]::FLOAT[3]) LIMIT 5;
++----
++0
++2
++4
++6
++8
++
++query I
++SELECT count(*) FROM (SELECT id FROM in_items WHERE board_id NOT IN (500, 1090, 1092, 1094, 1096, 1098, 2000, 2002, 2004, 2006, NULL) AND active ORDER BY array_distance(vec, [0, 0, 0]::FLOAT[3]) LIMIT 5);
++----
++0
++
++# SQL equality can return NULL for a non-NULL UNION with a NULL active member.
++statement ok
++CREATE TABLE union_items (id INTEGER, membership UNION(i INTEGER), vec FLOAT[3]);
++
++statement ok
++INSERT INTO union_items SELECT i, union_value(i := CASE WHEN i < 90 THEN NULL::INTEGER ELSE i::INTEGER END), [i, 0, 0]::FLOAT[3] FROM range(100) t(i);
++
++statement ok
++CREATE INDEX union_items_idx ON union_items USING HNSW (vec);
++
++query I
++SELECT id FROM union_items WHERE membership IN (union_value(i := NULL::INTEGER), union_value(i := 90), union_value(i := 91), union_value(i := 92), union_value(i := 93), union_value(i := 94), union_value(i := 95), union_value(i := 96), union_value(i := 97), union_value(i := 98), union_value(i := 99)) ORDER BY array_distance(vec, [0, 0, 0]::FLOAT[3]) LIMIT 5;
++----
++90
++91
++92
++93
++94
++
++query I
++SELECT unnest(min_by(id, array_distance(vec, [0, 0, 0]::FLOAT[3]), 5)) FROM union_items WHERE membership IN (union_value(i := NULL::INTEGER), union_value(i := 90), union_value(i := 91), union_value(i := 92), union_value(i := 93), union_value(i := 94), union_value(i := 95), union_value(i := 96), union_value(i := 97), union_value(i := 98), union_value(i := 99));
++----
++90
++91
++92
++93
++94
++
+ # Rows inserted after index creation participate in pre-filtered searches.
+ statement ok
+ INSERT INTO items VALUES (0, 'keep', [0, 0, 0]::FLOAT[3]);

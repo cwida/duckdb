@@ -1,0 +1,107 @@
+# name: test/optimizer/mark_join_binding_locality.test
+# description: MARK replacements reach remaining predicates and enclosing consumers
+# group: [optimizer]
+
+statement ok
+SET disabled_optimizers='filter_pushdown,join_order';
+
+statement ok
+SET explain_output='optimized_only';
+
+statement ok
+CREATE TABLE binding_probe(id INTEGER NOT NULL, amount INTEGER, label VARCHAR);
+
+statement ok
+INSERT INTO binding_probe VALUES (1,10,'one'),(2,20,'two'),(2,21,'two again'),(3,30,'three'),(4,40,'four');
+
+statement ok
+CREATE TABLE binding_first(k INTEGER);
+
+statement ok
+INSERT INTO binding_first VALUES (1),(2),(4),(NULL);
+
+statement ok
+CREATE TABLE binding_second(k INTEGER);
+
+statement ok
+INSERT INTO binding_second VALUES (2),(3),(NULL);
+
+statement ok
+CREATE VIEW binding_selected AS
+SELECT id,amount,label,first_marker,__mark_join_marker AS second_marker
+FROM (
+    SELECT id,amount,label,__mark_join_marker AS first_marker
+    FROM binding_probe JOIN BY (TYPE MARK) binding_first ON id=k
+    WHERE __mark_join_marker
+) p JOIN BY (TYPE MARK) binding_second ON id=k
+WHERE __mark_join_marker AND first_marker=__mark_join_marker AND amount>10;
+
+query TIIII
+SELECT label,id,amount,first_marker::INTEGER,second_marker::INTEGER
+FROM binding_selected ORDER BY amount;
+----
+two	2	20	1	1
+two again	2	21	1	1
+
+query II
+EXPLAIN SELECT label,id,amount,first_marker,second_marker FROM binding_selected;
+----
+logical_opt	<REGEX>:.*SEMI.*SEMI.*
+
+# Preserve correlated consumers through decorrelation.
+query TIII
+SELECT q.label,q.amount,q.first_marker::INTEGER,v.n
+FROM binding_selected q, LATERAL (
+    SELECT count(*) AS n FROM binding_second WHERE k=q.id OR k=q.amount
+) v ORDER BY q.amount;
+----
+two	20	1	1
+two again	21	1	1
+
+# Materialized outputs and set-operation outputs form new binding boundaries.
+query TIII rowsort
+WITH selected AS MATERIALIZED (SELECT * FROM binding_selected)
+SELECT label,amount,first_marker::INTEGER,second_marker::INTEGER FROM selected
+UNION ALL
+SELECT label,amount,second_marker::INTEGER,first_marker::INTEGER FROM selected;
+----
+two	20	1	1
+two	20	1	1
+two again	21	1	1
+two again	21	1	1
+
+query TIII rowsort
+SELECT label,amount,first_marker::INTEGER,second_marker::INTEGER FROM binding_selected
+UNION ALL
+SELECT label,amount,marker::INTEGER,0 FROM (
+    SELECT label,amount,__mark_join_marker AS marker
+    FROM binding_probe JOIN BY (TYPE MARK) binding_second ON id IS NOT DISTINCT FROM k
+    WHERE NOT __mark_join_marker AND amount<>10
+);
+----
+four	40	0	0
+two	20	1	1
+two again	21	1	1
+
+statement ok
+PREPARE binding_reuse AS
+SELECT label,id,amount,first_marker::INTEGER,second_marker::INTEGER
+FROM binding_selected WHERE amount>$1 ORDER BY amount;
+
+query TIIII
+EXECUTE binding_reuse(20);
+----
+two again	2	21	1	1
+
+query TIIII
+EXECUTE binding_reuse(10);
+----
+two	2	20	1	1
+two again	2	21	1	1
+
+statement ok
+RESET disabled_optimizers;
+
+# Older storage readers use a different implicit MARK column name.
+statement ok
+DROP VIEW binding_selected;

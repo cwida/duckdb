@@ -43,6 +43,7 @@ struct ErrorFun {
 	static constexpr const char *Categories = "";
 
 	static ScalarFunction GetFunction();
+	static bool IsError(const BoundScalarFunction &function);
 };
 
 struct HasErrorFun {

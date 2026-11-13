@@ -14,7 +14,7 @@ public:
 	DomainEstimate();
 
 public:
-	idx_t GetDistinctCount(const JoinPredicate &predicate) const;
+	DistinctCount GetDomain(const JoinPredicate &predicate) const;
 	bool HasReliableDistinctCount() const;
 	idx_t GetReliableDistinctCount() const;
 	void Update(ColumnBinding binding, const DistinctCount &distinct_count,
@@ -35,7 +35,7 @@ private:
 DomainEstimate::DomainEstimate() {
 }
 
-idx_t DomainEstimate::GetDistinctCount(const JoinPredicate &predicate) const {
+DistinctCount DomainEstimate::GetDomain(const JoinPredicate &predicate) const {
 	auto domain = estimate;
 	for (bool left : {true, false}) {
 		auto entry = local_fallbacks.find(predicate.GetStatsBinding(left));
@@ -44,11 +44,11 @@ idx_t DomainEstimate::GetDistinctCount(const JoinPredicate &predicate) const {
 		}
 	}
 	if (!domain) {
-		return NumericLimits<idx_t>::Maximum();
+		return DistinctCount(NumericLimits<idx_t>::Maximum(), DistinctCountSource::CARDINALITY);
 	}
 	auto result = domain->distinct_count;
 	if (!HasReliableDistinctCount() || reliable_source_count != 1) {
-		return result;
+		return *domain;
 	}
 	auto key_domain = NumericLimits<idx_t>::Maximum();
 	for (auto candidate : min_max_candidates) {
@@ -56,7 +56,8 @@ idx_t DomainEstimate::GetDistinctCount(const JoinPredicate &predicate) const {
 			key_domain = MinValue(key_domain, candidate);
 		}
 	}
-	return key_domain == NumericLimits<idx_t>::Maximum() ? result : key_domain;
+	return key_domain == NumericLimits<idx_t>::Maximum() ? *domain
+	                                                     : DistinctCount(key_domain, DistinctCountSource::MIN_MAX);
 }
 
 bool DomainEstimate::HasReliableDistinctCount() const {
@@ -127,11 +128,12 @@ public:
 struct FilterInfoWithTotalDomains {
 	FilterInfoWithTotalDomains(JoinPredicate &predicate, RelationsSetToStats &relation_set_to_stats)
 	    : predicate(predicate), domain_estimate(relation_set_to_stats.domain_estimate),
-	      distinct_count(domain_estimate.get().GetDistinctCount(predicate)) {
+	      domain(domain_estimate.get().GetDomain(predicate)) {
 	}
 
 public:
 	double GetDistinctCount() const;
+	bool RequiresSelectivityFloor() const;
 	bool HasReliableDistinctCount() const;
 	idx_t GetReliableDistinctCount() const;
 	ExpressionType GetComparisonType();
@@ -142,7 +144,7 @@ public:
 public:
 	reference<JoinPredicate> predicate;
 	reference<const DomainEstimate> domain_estimate;
-	idx_t distinct_count;
+	DistinctCount domain;
 };
 
 struct SelectivitySubgraph {
@@ -180,6 +182,7 @@ public:
 	double first_distinct_count = 0;
 	double max_distinct_count = 0;
 	bool has_distinct_count = false;
+	bool has_floored_domain = false;
 };
 
 struct LogicalJoinStats {
@@ -212,7 +215,15 @@ CardinalityEstimator::~CardinalityEstimator() {
 }
 
 double FilterInfoWithTotalDomains::GetDistinctCount() const {
-	return static_cast<double>(distinct_count);
+	return static_cast<double>(domain.distinct_count);
+}
+
+bool FilterInfoWithTotalDomains::RequiresSelectivityFloor() const {
+	auto comparison = GetPredicate().GetComparisonType();
+	return GetPredicate().GetJoinType() == JoinType::INNER &&
+	       (comparison == ExpressionType::COMPARE_EQUAL || comparison == ExpressionType::COMPARE_NOT_DISTINCT_FROM) &&
+	       domain.source == DistinctCountSource::CARDINALITY &&
+	       GetDistinctCount() > 1 / RelationStatisticsHelper::DEFAULT_SELECTIVITY;
 }
 
 bool FilterInfoWithTotalDomains::HasReliableDistinctCount() const {
@@ -452,6 +463,9 @@ static double GetEffectiveDistinctCount(double distinct_count) {
 CardinalityValue CardinalityEstimator::CalculateInnerJoinSelectivity(CardinalityValue base_selectivity,
                                                                      FilterInfoWithTotalDomains &filter) {
 	auto effective_d = GetEffectiveDistinctCount(filter.GetDistinctCount());
+	if (filter.RequiresSelectivityFloor()) {
+		effective_d = 1 / RelationStatisticsHelper::DEFAULT_SELECTIVITY;
+	}
 	auto comparison_type = filter.GetComparisonType();
 	if (comparison_type == ExpressionType::INVALID) {
 		return base_selectivity / CardinalityValue(effective_d);
@@ -521,8 +535,10 @@ bool CardinalityEstimator::ApplyJoinPairCap(CardinalityValue &target_selectivity
 		return false;
 	}
 	if (cap > 0 && first_d < cap && first_d > 0) {
-		// Lower weak same-pair composite evidence to the FK/PK cap.
-		target_selectivity = target_selectivity * CardinalityValue(first_d) / CardinalityValue(cap);
+		// A row-count proxy for a composite key must not undo an uncertain-domain floor.
+		if (!stats.has_floored_domain) {
+			target_selectivity = target_selectivity * CardinalityValue(first_d) / CardinalityValue(cap);
+		}
 		first_d = cap;
 	}
 	capped_join_pairs.insert(join_pair);
@@ -583,13 +599,14 @@ enum class SelectivityEdgeKind : uint8_t {
 	OTHER
 };
 
-static bool EquivalenceGroupApplied(FilterInfoWithTotalDomains &edge, const unordered_set<idx_t> &applied_groups) {
+static bool EquivalenceGroupApplied(FilterInfoWithTotalDomains &edge,
+                                    const unordered_map<idx_t, bool> &applied_groups) {
 	auto equality_class_index = edge.GetPredicate().GetEqualityClassIndex();
 	return equality_class_index.IsValid() && applied_groups.count(equality_class_index.GetIndex()) > 0;
 }
 
 static SelectivityEdgeKind ClassifySelectivityEdge(FilterInfoWithTotalDomains &edge,
-                                                   const unordered_set<idx_t> &applied_groups) {
+                                                   const unordered_map<idx_t, bool> &applied_groups) {
 	if (EquivalenceGroupApplied(edge, applied_groups)) {
 		return SelectivityEdgeKind::REDUNDANT_TRANSITIVE_EQUALITY;
 	}
@@ -608,7 +625,8 @@ static bool CanIncrementExistingJoin(SelectivityEdgeKind kind) {
 }
 
 static void RegisterEqualityJoinPair(FilterInfoWithTotalDomains &edge, JoinRelationSetManager &set_manager,
-                                     reference_map_t<JoinRelationSet, CompositeJoinPairStats> &join_pair_stats) {
+                                     reference_map_t<JoinRelationSet, CompositeJoinPairStats> &join_pair_stats,
+                                     bool has_floored_equivalence) {
 	if (!edge.IsInnerEquality()) {
 		return;
 	}
@@ -616,16 +634,39 @@ static void RegisterEqualityJoinPair(FilterInfoWithTotalDomains &edge, JoinRelat
 	if (!join_pair) {
 		return;
 	}
-	join_pair_stats[*join_pair].RegisterDistinctCount(edge.GetDistinctCount());
+	auto &stats = join_pair_stats[*join_pair];
+	stats.RegisterDistinctCount(edge.GetDistinctCount());
+	if (has_floored_equivalence && edge.RequiresSelectivityFloor()) {
+		stats.has_floored_domain = true;
+	}
 }
 
 struct SelectivityState {
 	vector<SelectivitySubgraph> subgraphs;
-	unordered_set<idx_t> applied_equivalence_groups;
+	//! The value records whether an applied edge in this class used the selectivity floor.
+	unordered_map<idx_t, bool> applied_equivalence_groups;
 	reference_map_t<JoinRelationSet, CompositeJoinPairStats> join_pair_stats;
 	reference_set_t<JoinRelationSet> capped_join_pairs;
 	unordered_set<idx_t> unused_edge_tdoms;
 };
+
+static void RegisterFlooredContribution(FilterInfoWithTotalDomains &edge, JoinRelationSetManager &set_manager,
+                                        SelectivityState &state) {
+	if (!edge.RequiresSelectivityFloor()) {
+		return;
+	}
+	auto equality_class = edge.GetPredicate().GetEqualityClassIndex();
+	if (equality_class.IsValid()) {
+		state.applied_equivalence_groups[equality_class.GetIndex()] = true;
+	}
+	auto pair = GetEqualityJoinPair(edge, set_manager);
+	if (!pair && edge.GetPredicate().HasDisjointJoinEndpoints() && edge.GetPredicate().GetSet().count == 2) {
+		pair = edge.GetPredicate().GetSet();
+	}
+	if (pair) {
+		state.join_pair_stats[*pair].has_floored_domain = true;
+	}
+}
 
 static bool SelectivitySubgraphComplete(SelectivityState &state, JoinRelationSet &set) {
 	return state.subgraphs.size() == 1 && state.subgraphs.at(0).relations &&
@@ -654,10 +695,12 @@ void CardinalityEstimator::ProcessSelectivityEdge(FilterInfoWithTotalDomains &ed
 	}
 
 	auto equality_class_index = edge.GetPredicate().GetEqualityClassIndex();
+	bool has_floored_equivalence = false;
 	if (equality_class_index.IsValid()) {
-		state.applied_equivalence_groups.insert(equality_class_index.GetIndex());
+		has_floored_equivalence =
+		    state.applied_equivalence_groups.emplace(equality_class_index.GetIndex(), false).first->second;
 	}
-	RegisterEqualityJoinPair(edge, set_manager, state.join_pair_stats);
+	RegisterEqualityJoinPair(edge, set_manager, state.join_pair_stats, has_floored_equivalence);
 
 	auto edge_left_set = GetEdgeEndpoint(edge, set_manager, true);
 	auto edge_right_set = GetEdgeEndpoint(edge, set_manager, false);
@@ -680,6 +723,7 @@ void CardinalityEstimator::CreateSelectivitySubgraph(FilterInfoWithTotalDomains 
                                                      JoinRelationSet &edge_right_set, SelectivityState &state) {
 	auto left_subgraph = SelectivitySubgraph();
 	auto selectivity = CalculateInnerJoinSelectivity(CardinalityValue(1), edge);
+	RegisterFlooredContribution(edge, set_manager, state);
 	left_subgraph.relations = &set_manager.Union(edge_left_set, edge_right_set);
 	left_subgraph.selectivity = selectivity;
 	ApplyCompositeJoinPairCaps(left_subgraph.selectivity, *left_subgraph.relations, state.join_pair_stats,
@@ -709,6 +753,7 @@ void CardinalityEstimator::ExtendSelectivitySubgraph(idx_t subgraph_index, Filte
 	}
 
 	auto selectivity = CalculateInnerJoinSelectivity(left_subgraph->selectivity, edge);
+	RegisterFlooredContribution(edge, set_manager, state);
 	left_subgraph->relations = &set_manager.Union(*left_subgraph->relations, *right_subgraph.relations);
 	left_subgraph->selectivity = selectivity;
 	ApplyCompositeJoinPairCaps(left_subgraph->selectivity, *left_subgraph->relations, state.join_pair_stats,
@@ -723,6 +768,7 @@ void CardinalityEstimator::MergeSelectivitySubgraphs(const vector<idx_t> &subgra
 	auto subgraph_to_delete = &state.subgraphs.at(subgraph_connections.at(1));
 	auto selectivity =
 	    CalculateInnerJoinSelectivity(subgraph_to_merge_into->selectivity * subgraph_to_delete->selectivity, edge);
+	RegisterFlooredContribution(edge, set_manager, state);
 	subgraph_to_merge_into->relations =
 	    &set_manager.Union(*subgraph_to_merge_into->relations, *subgraph_to_delete->relations);
 	subgraph_to_merge_into->selectivity = selectivity;

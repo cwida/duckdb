@@ -9,6 +9,7 @@
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
@@ -25,7 +26,7 @@ static void InitializeExecutor(Context &context, const Expression &expression, E
 
 ExpressionFilterState::ExpressionFilterState(Context &context, const Expression &expression) {
 	can_throw = expression.CanThrow();
-	fast_executor = TryCreateFastExecutor(expression, false);
+	fast_executor = ExpressionFilterExecutor::TryCreate(expression);
 	InitializeExecutor(context, expression, *this);
 }
 
@@ -624,6 +625,30 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateComparisonExecutor(const Bo
 	return make_uniq<ComparisonFilterExecutor>(comparison_type, constant->GetValue());
 }
 
+static unique_ptr<ExpressionFilterExecutor> TryCreateInExecutor(const BoundOperatorExpression &expr) {
+	auto &expressions = expr.GetChildren();
+	if (expr.GetExpressionType() != ExpressionType::COMPARE_IN || expressions.size() < 2 ||
+	    !IsColumnReferenceExpression(*expressions[0])) {
+		return nullptr;
+	}
+	const auto type = expressions[0]->GetReturnType().InternalType();
+	if (!IsSupportedComparisonType(type)) {
+		return nullptr;
+	}
+	vector<unique_ptr<ExpressionFilterExecutor>> children;
+	for (idx_t i = 1; i < expressions.size(); i++) {
+		if (expressions[i]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+			return nullptr;
+		}
+		const auto &constant = expressions[i]->Cast<BoundConstantExpression>().GetValue();
+		if (constant.type().InternalType() != type) {
+			return nullptr;
+		}
+		children.push_back(make_uniq<ComparisonFilterExecutor>(ExpressionType::COMPARE_EQUAL, constant));
+	}
+	return make_uniq<ConjunctionOrFilterExecutor>(std::move(children));
+}
+
 static unique_ptr<ExpressionFilterExecutor> TryCreateFunctionExecutor(const BoundFunctionExpression &func,
                                                                       bool inside_selectivity_optional) {
 	if (!inside_selectivity_optional && func.GetChildren().size() == 2 &&
@@ -673,6 +698,8 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expressi
 	switch (expression.GetExpressionClass()) {
 	case ExpressionClass::BOUND_FUNCTION:
 		return TryCreateFunctionExecutor(expression.Cast<BoundFunctionExpression>(), inside_selectivity_optional);
+	case ExpressionClass::BOUND_OPERATOR:
+		return TryCreateInExecutor(expression.Cast<BoundOperatorExpression>());
 	case ExpressionClass::BOUND_CONJUNCTION: {
 		if (expression.GetExpressionType() != ExpressionType::CONJUNCTION_AND &&
 		    expression.GetExpressionType() != ExpressionType::CONJUNCTION_OR) {
@@ -695,6 +722,10 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expressi
 	default:
 		return nullptr;
 	}
+}
+
+unique_ptr<ExpressionFilterExecutor> ExpressionFilterExecutor::TryCreate(const Expression &expression) {
+	return TryCreateFastExecutor(expression, false);
 }
 
 unique_ptr<TableFilterState> TableFilterState::Initialize(ClientContext &context, const TableFilter &filter) {

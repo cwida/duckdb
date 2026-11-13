@@ -1,0 +1,168 @@
+# name: test/optimizer/mark_predicates.test
+# description: Marker predicates and non-null comparisons expose SEMI and ANTI joins
+# group: [optimizer]
+
+statement ok
+SET explain_output='optimized_only';
+
+statement ok
+CREATE TABLE p AS SELECT i AS a FROM range(100) t(i);
+
+statement ok
+CREATE TABLE b AS SELECT i AS b FROM range(10) t(i);
+
+query II
+EXPLAIN SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m IS TRUE;
+----
+logical_opt	<REGEX>:.*SEMI.*
+
+query II
+EXPLAIN SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m=false;
+----
+logical_opt	<REGEX>:.*ANTI.*
+
+query II
+EXPLAIN SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m IS NOT TRUE;
+----
+logical_opt	<REGEX>:.*ANTI.*
+
+query II
+EXPLAIN SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m IS NOT FALSE;
+----
+logical_opt	<REGEX>:.*SEMI.*
+
+query II
+EXPLAIN SELECT a FROM p WHERE a NOT IN (SELECT b FROM b);
+----
+logical_opt	<REGEX>:.*ANTI.*
+
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT a FROM p) SELECT a FROM c WHERE a NOT IN (2,4,8,16,32,64,128,256,512);
+----
+logical_opt	<REGEX>:.*ANTI.*
+
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT b FROM b) SELECT a FROM p WHERE a NOT IN (SELECT b FROM c);
+----
+logical_opt	<REGEX>:.*ANTI.*
+
+# Top-level DML with RETURNING can still use statistics.
+query II
+EXPLAIN DELETE FROM p WHERE a NOT IN (SELECT b FROM b) RETURNING a;
+----
+logical_opt	<REGEX>:.*ANTI.*
+
+# DML CTEs cannot use pre-write table statistics as non-NULL proofs.
+query II
+EXPLAIN WITH ins AS (INSERT INTO b VALUES (NULL) RETURNING b) SELECT a FROM p WHERE a NOT IN (SELECT b FROM b);
+----
+logical_opt	<REGEX>:.*MARK.*
+
+query II
+EXPLAIN WITH ins AS (INSERT INTO b VALUES (NULL) RETURNING b) SELECT a FROM p WHERE a IN (SELECT b FROM b);
+----
+logical_opt	<REGEX>:.*SEMI.*
+
+# Executed filters remain valid proofs after a write.
+query II
+EXPLAIN WITH ins AS (INSERT INTO b VALUES (NULL) RETURNING b) SELECT a FROM p WHERE a IS NOT NULL AND a NOT IN (SELECT b FROM b WHERE b IS NOT NULL);
+----
+logical_opt	<REGEX>:.*ANTI.*
+
+# IN-clause rewriting exposes this MARK join to the later simplifier invocation.
+query II
+EXPLAIN WITH ins AS (INSERT INTO b VALUES (NULL) RETURNING b), c AS MATERIALIZED (SELECT a FROM p WHERE a IS NOT NULL) SELECT a FROM c WHERE a NOT IN (2,4,8,16,32,64,128,256,512);
+----
+logical_opt	<REGEX>:.*ANTI.*
+
+# Positive null-safe MARK joins convert without losing their NULL matches.
+query II
+EXPLAIN WITH ins AS (INSERT INTO b VALUES (NULL) RETURNING b) SELECT a FROM p JOIN BY(TYPE MARK) b ON a IS NOT DISTINCT FROM b WHERE __mark_join_marker;
+----
+logical_opt	<REGEX>:.*SEMI.*IS NOT DISTINCT FROM.*
+
+# Legacy delimiter elimination can expose another eligible MARK join.
+statement ok
+SET delim_join_as_cte=false;
+
+query II
+EXPLAIN WITH ins AS (INSERT INTO b VALUES (NULL) RETURNING b) SELECT a FROM p WHERE EXISTS (SELECT 1 FROM b WHERE b.b=p.a);
+----
+logical_opt	<REGEX>:.*SEMI.*
+
+statement ok
+RESET delim_join_as_cte;
+
+query II
+EXPLAIN SELECT q.a FROM p LEFT JOIN p q ON p.a=q.a AND q.a<10 WHERE q.a NOT IN (SELECT b FROM b);
+----
+logical_opt	<REGEX>:.*MARK.*
+
+statement ok
+CREATE TEMP TABLE tuple_probe AS SELECT row(1,2) AS a;
+
+statement ok
+CREATE TEMP TABLE tuple_build AS SELECT row(1,NULL::INTEGER) AS b;
+
+query II
+EXPLAIN SELECT a FROM tuple_probe JOIN BY (TYPE MARK) tuple_build ON a<>b WHERE NOT __mark_join_marker;
+----
+logical_opt	<REGEX>:.*MARK.*
+
+statement ok
+CREATE TABLE union_probe AS SELECT union_value(i:=NULL::INTEGER) AS a;
+
+statement ok
+CREATE TABLE union_build AS SELECT union_value(i:=NULL::INTEGER) AS b;
+
+query II
+EXPLAIN SELECT a FROM union_probe JOIN BY (TYPE MARK) union_build ON a=b WHERE NOT __mark_join_marker;
+----
+logical_opt	<REGEX>:.*MARK.*
+
+statement ok
+INSERT INTO p VALUES (NULL);
+
+statement ok
+INSERT INTO b VALUES (NULL);
+
+query II
+EXPLAIN SELECT a FROM p WHERE (a IN (SELECT b FROM b)) IS NOT TRUE;
+----
+logical_opt	<REGEX>:.*MARK.*
+
+query II
+EXPLAIN SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m IS NOT TRUE;
+----
+logical_opt	<REGEX>:.*MARK.*
+
+query II
+EXPLAIN SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m IS NOT FALSE;
+----
+logical_opt	<REGEX>:.*MARK.*
+
+query II
+EXPLAIN SELECT a FROM p WHERE a NOT IN (SELECT b FROM b);
+----
+logical_opt	<REGEX>:.*MARK.*
+
+query II
+EXPLAIN SELECT a FROM p WHERE a IS NOT NULL AND a NOT IN (SELECT b FROM b WHERE b IS NOT NULL);
+----
+logical_opt	<REGEX>:.*ANTI.*
+
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT a FROM p) SELECT a FROM c WHERE a NOT IN (2,4,8,16,32,64,128,256,NULL);
+----
+logical_opt	<REGEX>:.*MARK.*
+
+statement ok
+SET disabled_optimizers='mark_join_simplifier';
+
+query II
+EXPLAIN SELECT a, m FROM (SELECT a, a IN (SELECT b FROM b) AS m FROM p) WHERE m IS TRUE;
+----
+logical_opt	<REGEX>:.*MARK.*
+
+statement ok
+RESET disabled_optimizers;

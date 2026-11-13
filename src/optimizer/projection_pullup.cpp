@@ -72,10 +72,14 @@ void ProjectionPullup::InsertProjectionBelowOp(unique_ptr<LogicalOperator> &op, 
 	next.Optimize(child->children[0]);
 }
 
-void ProjectionPullup::PullUpColrefProjection(unique_ptr<LogicalOperator> &op, LogicalProjection &proj,
-                                              vector<ColumnBinding> &proj_bindings) {
+void ProjectionPullup::RemoveProjection(unique_ptr<LogicalOperator> &op, LogicalProjection &proj,
+                                        vector<ColumnBinding> &proj_bindings) {
 	ColumnBindingReplacer replacer;
 	for (idx_t i = 0; i < proj.expressions.size(); i++) {
+		if (proj.expressions[i]->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+			D_ASSERT(proj.expressions[i]->GetExpressionType() == ExpressionType::VALUE_CONSTANT);
+			continue;
+		}
 		auto &colref = proj.expressions[i]->Cast<BoundColumnRefExpression>();
 		replacer.replacement_bindings.emplace_back(proj_bindings[i], colref.Binding());
 	}
@@ -350,7 +354,7 @@ void ProjectionPullup::VisitOperator(unique_ptr<LogicalOperator> &op) {
 				return;
 			}
 			if (all_column_refs) {
-				PullUpColrefProjection(op, proj, proj_bindings);
+				RemoveProjection(op, proj, proj_bindings);
 				return;
 			}
 			PullUpNonColrefProjection(op, proj, proj_bindings, pull_up_to_here);
@@ -370,5 +374,34 @@ void ProjectionPullup::VisitOperator(unique_ptr<LogicalOperator> &op) {
 	// Create new optimizer for child (start fresh without any state)
 	ProjectionPullup next(optimizer, root);
 	next.VisitOperatorChildren(*op);
+	if (op->type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY &&
+	    op->children[0]->type == LogicalOperatorType::LOGICAL_PROJECTION) {
+		auto &projection = op->children[0]->Cast<LogicalProjection>();
+		if (projection.children[0]->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+			return;
+		}
+		for (auto &expr : projection.expressions) {
+			if (expr->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF &&
+			    expr->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
+				return;
+			}
+		}
+		bool can_remove = true;
+		LogicalOperatorVisitor::EnumerateExpressions(*op, [&](unique_ptr<Expression> *expr) {
+			ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+			    **expr, [&](const BoundColumnRefExpression &ref) {
+				    if (ref.Binding().table_index == projection.table_index) {
+					    auto &projected = *projection.expressions[ref.Binding().column_index.GetIndex()];
+					    can_remove &= projected.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF;
+				    }
+			    });
+		});
+		if (!can_remove) {
+			return;
+		}
+		// Aggregate outputs do not depend on the child's column order.
+		auto bindings = projection.GetColumnBindings();
+		next.RemoveProjection(op->children[0], projection, bindings);
+	}
 }
 } // namespace duckdb

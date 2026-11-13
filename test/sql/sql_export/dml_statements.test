@@ -290,7 +290,7 @@ FROM (
 query TT
 EXPLAIN (SQL) WITH x AS MATERIALIZED (SELECT 3 AS v) DELETE FROM dml_cte_target WHERE a IN (SELECT v FROM x);
 ----
-sql	<REGEX>:(?s)WITH\s+x\(\s*c0\s*\)\s+AS\s+MATERIALIZED\s+\(\s*\s+SELECT\s+CAST\(\s*3\s+AS\s+INTEGER\s*\)\s+AS\s+c0\s+\s*\)\s+DELETE\s+FROM\s+\w+\.main\.dml_cte_target\s+WHERE\s+\(\s*rowid\s+=\s+ANY\s+\(\s*\s+SELECT\s+r\d+\.c1\s+AS\s+c1\s+FROM\s+\(\s*\(\s*\s+SELECT\s+r\d+\.column0\s+AS\s+c0,\s*\s+r\d+\.rowid\s+AS\s+c1\s+FROM\s+\w+\.main\.dml_cte_target\s+AS\s+r\d+\(\s*column0\s*\)\s+WHERE\s+\(\s*r\d+\.column0\s+>=\s+CAST\(\s*3\s+AS\s+INTEGER\s*\)\s*\)\s+\s*\)\s+AS\s+r\d+\(\s*c0,\s*\s+c1\s*\)\s+SEMI\s+JOIN\s+x\s+AS\s+r\d+\(\s*c0\s*\)\s+ON\s+\(\s*\(\s*r\d+\.c0\s+=\s+r\d+\.c0\s*\)\s*\)\s+\s*\)\s+\s*\)\s*\)
+sql	<REGEX>:(?s)WITH\s+x\(\s*c0\s*\)\s+AS\s+MATERIALIZED\s+\(\s*SELECT\s+CAST\(\s*3\s+AS\s+INTEGER\s*\)\s+AS\s+c0\s*\)\s+DELETE\s+FROM\s+\w+\.main\.dml_cte_target\s+WHERE\s+\(\s*rowid\s+=\s+ANY\s+\(\s*SELECT\s+r\d+\.c1.*rowid\s+AS\s+c1.*SEMI\s+JOIN\s+x\s+AS\s+r\d+\(\s*c0\s*\).*
 
 statement ok
 WITH x(c0) AS MATERIALIZED (

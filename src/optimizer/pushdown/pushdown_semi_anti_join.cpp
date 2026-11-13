@@ -12,7 +12,7 @@ using Filter = FilterPushdown::Filter;
 unique_ptr<LogicalOperator> FilterPushdown::PushdownSemiAntiJoin(unique_ptr<LogicalOperator> op) {
 	auto &join = op->Cast<LogicalJoin>();
 
-	FilterPushdown right_pushdown(optimizer, convert_mark_joins, projection_mode);
+	FilterPushdown right_pushdown(optimizer, projection_mode);
 	if (op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN && !filters.empty()) {
 		// a right row that matches a left row passes what the filters imply for the right side
 		vector<reference<const Expression>> left_filters;

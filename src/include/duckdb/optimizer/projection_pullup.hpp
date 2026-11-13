@@ -27,8 +27,8 @@ private:
 	void InsertProjectionBelowOp(unique_ptr<LogicalOperator> &op, unique_ptr<LogicalOperator> &child, bool stop_at_op);
 	void CanPullThrough(column_binding_map_t<unique_ptr<Expression>> &projection_map, bool keep_throwing_filters_above,
 	                    bool &can_pull_through);
-	void PullUpColrefProjection(unique_ptr<LogicalOperator> &op, LogicalProjection &proj,
-	                            vector<ColumnBinding> &proj_bindings);
+	void RemoveProjection(unique_ptr<LogicalOperator> &op, LogicalProjection &proj,
+	                      vector<ColumnBinding> &proj_bindings);
 	void PullUpNonColrefProjection(unique_ptr<LogicalOperator> &op, LogicalProjection &proj,
 	                               vector<ColumnBinding> &proj_bindings, idx_t pull_up_to_here);
 };
