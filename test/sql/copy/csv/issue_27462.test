@@ -1,0 +1,32 @@
+# name: test/sql/copy/csv/issue_27462.test
+# description: COPY TO + COPY FROM round trip must not strip single quotes from values
+# group: [csv]
+
+statement ok
+CREATE TABLE s(id INT, v VARCHAR, w VARCHAR);
+
+statement ok
+INSERT INTO s VALUES (1, '''x''', 'a'), (2, 'it''s', 'b'), (3, '''2024-01-01''', 'c'), (4, 'plain', 'd');
+
+statement ok
+COPY s TO '{TEST_DIR}/roundtrip_single_quotes.csv';
+
+statement ok
+CREATE TABLE d AS FROM s LIMIT 0;
+
+statement ok
+COPY d FROM '{TEST_DIR}/roundtrip_single_quotes.csv';
+
+query III
+SELECT s.id, s.v AS written, d.v AS read_back FROM s JOIN d USING (id) ORDER BY s.id;
+----
+1	'x'	'x'
+2	it's	it's
+3	'2024-01-01'	'2024-01-01'
+4	plain	plain
+
+statement ok
+DROP TABLE s;
+
+statement ok
+DROP TABLE d;
