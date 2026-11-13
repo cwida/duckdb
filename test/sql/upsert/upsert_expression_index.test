@@ -1,0 +1,99 @@
+# name: test/sql/upsert/upsert_expression_index.test
+# description: ON CONFLICT with a UNIQUE index on an expression
+# group: [upsert]
+
+statement ok
+CREATE TABLE d (k INT, u VARCHAR);
+
+statement ok
+CREATE UNIQUE INDEX d_up ON d (upper(u));
+
+statement ok
+INSERT INTO d VALUES (1, 'x');
+
+statement ok
+INSERT INTO d VALUES (2, 'X') ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT OR IGNORE INTO d VALUES (3, 'X');
+
+# conflicts within the inserted rows
+statement ok
+INSERT OR IGNORE INTO d VALUES (4, 'y'), (5, 'Y'), (6, NULL), (7, NULL);
+
+query II
+SELECT k, u FROM d ORDER BY k
+----
+1	x
+4	y
+6	NULL
+7	NULL
+
+statement ok
+INSERT INTO d VALUES (8, 'X') ON CONFLICT DO UPDATE SET k = excluded.k;
+
+query II
+SELECT k, u FROM d ORDER BY k
+----
+4	y
+6	NULL
+7	NULL
+8	x
+
+statement ok
+INSERT OR REPLACE INTO d VALUES (9, 'Y');
+
+query II
+SELECT k, u FROM d ORDER BY k
+----
+6	NULL
+7	NULL
+8	x
+9	y
+
+# the expression index is not a conflict target for its plain column
+statement error
+INSERT INTO d VALUES (10, 'X') ON CONFLICT (u) DO NOTHING;
+----
+not referenced by a UNIQUE/PRIMARY KEY
+
+# expression index alongside a primary key
+statement ok
+CREATE TABLE p (k INT PRIMARY KEY, u VARCHAR);
+
+statement ok
+CREATE UNIQUE INDEX p_up ON p (lower(u));
+
+statement ok
+INSERT INTO p VALUES (1, 'A');
+
+statement ok
+INSERT OR IGNORE INTO p VALUES (1, 'B'), (2, 'a'), (3, 'C');
+
+query II
+SELECT k, u FROM p ORDER BY k
+----
+1	A
+3	C
+
+# the expression is evaluated on the key after it is cast to the type of its column
+statement ok
+CREATE TABLE e (k INTEGER, n INTEGER);
+
+statement ok
+CREATE UNIQUE INDEX e_idx ON e ((k * 2));
+
+statement ok
+INSERT INTO e VALUES (1, 0);
+
+statement ok
+INSERT OR IGNORE INTO e SELECT 1.4, 7;
+
+statement ok
+INSERT OR IGNORE INTO e SELECT 2.4, 8 UNION ALL SELECT 1.6, 9;
+
+query I
+SELECT k FROM e ORDER BY k
+----
+1
+2

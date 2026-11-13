@@ -493,6 +493,7 @@ void IndexEntry::VerifyBuffers() {
 IndexInfo IndexEntry::GetStorageInfo() const {
 	auto entry_lock = lock.GetSharedLock();
 	IndexInfo result;
+	result.name = owned_index->GetIndexName();
 	result.is_primary = owned_index->IsPrimary();
 	result.is_unique = owned_index->IsUnique() || result.is_primary;
 	result.is_foreign = owned_index->IsForeign();

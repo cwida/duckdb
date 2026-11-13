@@ -349,7 +349,46 @@ static identifier_set_t GetConflictColumnNames(const TableStorageInfo &storage_i
 	return conflict_column_names;
 }
 
-static bool IsNotNullColumn(TableCatalogEntry &table, Identifier &column_name) {
+static void UnqualifyColumnRefs(unique_ptr<ParsedExpression> &expr) {
+	if (expr->GetExpressionClass() == ExpressionClass::COLUMN_REF) {
+		expr = make_uniq<ColumnRefExpression>(expr->Cast<ColumnRefExpression>().GetColumnName());
+		return;
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    *expr, [&](unique_ptr<ParsedExpression> &child) { UnqualifyColumnRefs(child); });
+}
+
+//! Returns the unqualified key expressions of a unique index, or its columns if it has no catalog entry
+static vector<unique_ptr<ParsedExpression>> GetIndexKeys(ClientContext &context, TableCatalogEntry &table,
+                                                         const IndexInfo &index) {
+	vector<unique_ptr<ParsedExpression>> keys;
+	auto &schema = table.ParentSchema();
+	auto entry = schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::INDEX_ENTRY, index.name);
+	if (entry && entry->Cast<IndexCatalogEntry>().GetTableName() == table.name) {
+		for (auto &expr : entry->Cast<IndexCatalogEntry>().parsed_expressions) {
+			keys.push_back(expr->Copy());
+			UnqualifyColumnRefs(keys.back());
+		}
+		return keys;
+	}
+	for (auto &column : table.GetColumns().Physical()) {
+		if (index.column_set.count(column.Physical().index)) {
+			keys.push_back(make_uniq<ColumnRefExpression>(column.Name()));
+		}
+	}
+	return keys;
+}
+
+static bool IsExpressionIndex(ClientContext &context, TableCatalogEntry &table, const IndexInfo &index) {
+	for (auto &key : GetIndexKeys(context, table, index)) {
+		if (key->GetExpressionClass() != ExpressionClass::COLUMN_REF) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool IsNotNullColumn(TableCatalogEntry &table, Identifier column_name) {
 	auto column_index = table.GetColumnIndex(column_name);
 	for (auto &constraint : table.GetConstraints()) {
 		if (constraint->type == ConstraintType::NOT_NULL &&
@@ -373,7 +412,7 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 	auto storage_info = table.GetStorageInfo(context);
 	auto &columns = table.GetColumns();
 	// set up the columns on which to join
-	vector<vector<Identifier>> all_distinct_on_columns;
+	vector<vector<unique_ptr<ParsedExpression>>> all_distinct_on_keys;
 	if (on_conflict_info.indexed_columns.empty()) {
 		// When omitting the conflict target, we derive the join columns from the primary key/unique constraints
 		// traverse the primary key/unique constraints
@@ -392,20 +431,18 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 			}
 
 			vector<unique_ptr<ParsedExpression>> and_children;
-			auto &indexed_columns = index.column_set;
-			vector<Identifier> distinct_on_columns;
-			for (auto &column : columns.Physical()) {
-				if (!indexed_columns.count(column.Physical().index)) {
-					continue;
-				}
-				auto lhs = make_uniq<ColumnRefExpression>(column.Name(), Identifier(table_name));
-				auto rhs = make_uniq<ColumnRefExpression>(column.Name(), "excluded");
+			auto keys = GetIndexKeys(context, table, index);
+			for (auto &key : keys) {
+				vector<identifier_set_t> lambda_params;
+				auto lhs = key->Copy();
+				DoUpdateSetQualify(lhs, table_name, lambda_params);
+				auto rhs = key->Copy();
+				DoUpdateSetQualify(rhs, "excluded", lambda_params);
 				auto new_condition =
 				    make_uniq<ComparisonExpression>(ExpressionType::COMPARE_EQUAL, std::move(lhs), std::move(rhs));
 				and_children.push_back(std::move(new_condition));
-				distinct_on_columns.emplace_back(column.Name());
 			}
-			all_distinct_on_columns.push_back(std::move(distinct_on_columns));
+			all_distinct_on_keys.push_back(std::move(keys));
 			if (and_children.empty()) {
 				continue;
 			}
@@ -466,7 +503,8 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 		bool index_references_columns = false;
 		bool deferred_index_matches = false;
 		for (auto &index : storage_info.index_info) {
-			if (!index.is_unique || on_conflict_filter != index.column_set) {
+			if (!index.is_unique || on_conflict_filter != index.column_set ||
+			    IsExpressionIndex(context, table, index)) {
 				continue;
 			}
 			if (index.check_mode == ConstraintCheckMode::DEFERRED) {
@@ -485,7 +523,11 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 			throw BinderException("The specified columns as conflict target are not referenced by a UNIQUE/PRIMARY KEY "
 			                      "CONSTRAINT or INDEX");
 		}
-		all_distinct_on_columns.emplace_back(on_conflict_info.indexed_columns);
+		vector<unique_ptr<ParsedExpression>> keys;
+		for (auto &col : on_conflict_info.indexed_columns) {
+			keys.push_back(make_uniq<ColumnRefExpression>(col));
+		}
+		all_distinct_on_keys.push_back(std::move(keys));
 		merge_into->node->using_columns = on_conflict_info.indexed_columns;
 	}
 
@@ -570,19 +612,27 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 	}
 	// cast the conflict columns to the types of the table, so they are compared as they are inserted
 	auto cast_star = make_uniq<StarExpression>();
-	for (auto &distinct_on_columns : all_distinct_on_columns) {
-		for (auto &col : distinct_on_columns) {
-			auto &type = columns.GetColumn(col).Type();
-			if (!TypeExpression::CanRepresent(type) || type.HasAlias() || type.id() == LogicalTypeId::ENUM) {
-				// a parsed cast resolves these types again, by name or from all their values
-				continue;
-			}
-			unique_ptr<ParsedExpression> key = make_uniq<CastExpression>(type, make_uniq<ColumnRefExpression>(col));
-			if (type.id() == LogicalTypeId::VARCHAR) {
-				// a cast from VARCHAR keeps the collation of its source
-				key = make_uniq<CollateExpression>(StringType::GetCollation(type), std::move(key));
-			}
-			cast_star->ReplaceListMutable()[col] = std::move(key);
+	for (auto &distinct_on_keys : all_distinct_on_keys) {
+		for (auto &key_expr : distinct_on_keys) {
+			ParsedExpressionIterator::VisitExpression<ColumnRefExpression>(
+			    *key_expr, [&](const ColumnRefExpression &col_ref) {
+				    auto &col = col_ref.GetColumnName();
+				    if (!columns.ColumnExists(col)) {
+					    return;
+				    }
+				    auto &type = columns.GetColumn(col).Type();
+				    if (!TypeExpression::CanRepresent(type) || type.HasAlias() || type.id() == LogicalTypeId::ENUM) {
+					    // a parsed cast resolves these types again, by name or from all their values
+					    return;
+				    }
+				    unique_ptr<ParsedExpression> key =
+				        make_uniq<CastExpression>(type, make_uniq<ColumnRefExpression>(col));
+				    if (type.id() == LogicalTypeId::VARCHAR) {
+					    // a cast from VARCHAR keeps the collation of its source
+					    key = make_uniq<CollateExpression>(StringType::GetCollation(type), std::move(key));
+				    }
+				    cast_star->ReplaceListMutable()[col] = std::move(key);
+			    });
 		}
 	}
 	if (!cast_star->ReplaceList().empty()) {
@@ -595,18 +645,18 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 	}
 
 	// push DISTINCT ON(unique_columns)
-	for (auto &distinct_on_columns : all_distinct_on_columns) {
+	for (auto &distinct_on_keys : all_distinct_on_keys) {
 		auto distinct_stmt = make_uniq<SelectStatement>();
 		auto select_node = make_uniq<SelectNode>();
 		auto distinct = make_uniq<DistinctModifier>();
 		unique_ptr<ParsedExpression> any_key_null;
-		for (auto &col : distinct_on_columns) {
-			distinct->distinct_on_targets.push_back(make_uniq<ColumnRefExpression>(col));
-			if (IsNotNullColumn(table, col)) {
+		for (auto &key : distinct_on_keys) {
+			distinct->distinct_on_targets.push_back(key->Copy());
+			if (key->GetExpressionClass() == ExpressionClass::COLUMN_REF &&
+			    IsNotNullColumn(table, key->Cast<ColumnRefExpression>().GetColumnName())) {
 				continue;
 			}
-			auto is_null =
-			    make_uniq<OperatorExpression>(ExpressionType::OPERATOR_IS_NULL, make_uniq<ColumnRefExpression>(col));
+			auto is_null = make_uniq<OperatorExpression>(ExpressionType::OPERATOR_IS_NULL, std::move(key));
 			if (any_key_null) {
 				any_key_null = make_uniq<ConjunctionExpression>(ExpressionType::CONJUNCTION_OR, std::move(any_key_null),
 				                                                std::move(is_null));
