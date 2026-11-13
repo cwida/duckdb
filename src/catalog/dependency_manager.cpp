@@ -16,6 +16,7 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/trigger_catalog_entry.hpp"
 #include "duckdb/parser/constraints/foreign_key_constraint.hpp"
+#include "duckdb/parser/parsed_data/alter_table_info.hpp"
 #include "duckdb/catalog/dependency_catalog_set.hpp"
 #include "duckdb/parser/qualified_name.hpp"
 
@@ -668,6 +669,42 @@ catalog_entry_set_t DependencyManager::CheckDropDependencies(CatalogTransaction 
 	return to_drop;
 }
 
+vector<unique_ptr<AlterForeignKeyInfo>> DependencyManager::GetForeignKeyReferences(CatalogTransaction transaction,
+                                                                                   CatalogEntry &entry) {
+	vector<unique_ptr<AlterForeignKeyInfo>> result;
+	if (entry.type != CatalogType::TABLE_ENTRY) {
+		return result;
+	}
+	// a referenced table that is being dropped has already removed its dependency on this table
+	auto info = GetLookupProperties(entry);
+	vector<Identifier> referenced_tables;
+	ScanSubjects(transaction, info, [&](DependencyEntry &dep) {
+		auto &subject = dep.EntryInfo();
+		if (subject.type == CatalogType::TABLE_ENTRY && subject.schema_path == info.schema_path) {
+			referenced_tables.push_back(subject.name);
+		}
+	});
+
+	auto &table = entry.Cast<TableCatalogEntry>();
+	for (auto &constraint : table.GetConstraints()) {
+		if (constraint->type != ConstraintType::FOREIGN_KEY) {
+			continue;
+		}
+		auto &fk = constraint->Cast<ForeignKeyConstraint>();
+		if (fk.info.type != ForeignKeyType::FK_TYPE_FOREIGN_KEY_TABLE) {
+			continue;
+		}
+		if (std::find(referenced_tables.begin(), referenced_tables.end(), fk.info.table) == referenced_tables.end()) {
+			continue;
+		}
+		AlterEntryData alter_data(table.schema.GetQualifiedName(fk.info.table), OnEntryNotFound::THROW_EXCEPTION);
+		result.push_back(make_uniq<AlterForeignKeyInfo>(std::move(alter_data), table.name, fk.pk_columns, fk.fk_columns,
+		                                                fk.info.pk_keys, fk.info.fk_keys,
+		                                                AlterForeignKeyType::AFT_DELETE));
+	}
+	return result;
+}
+
 void DependencyManager::DropObject(CatalogTransaction transaction, CatalogEntry &object, bool cascade) {
 	if (IsSystemEntry(object)) {
 		// Don't do anything for this
@@ -678,10 +715,23 @@ void DependencyManager::DropObject(CatalogTransaction transaction, CatalogEntry 
 	auto to_drop = CheckDropDependencies(transaction, object, cascade);
 	CleanupDependencies(transaction, object);
 
-	for (auto &entry : to_drop) {
-		auto set = entry.get().set;
+	for (auto &entry_ref : to_drop) {
+		auto &entry = entry_ref.get();
+		auto set = entry.set;
 		D_ASSERT(set);
-		set->DropEntry(transaction, entry.get().name, cascade);
+		auto fk_references = GetForeignKeyReferences(transaction, entry);
+		if (!set->DropEntry(transaction, entry.name, cascade)) {
+			continue;
+		}
+		// remove the foreign key references to the dropped table from the referenced tables
+		for (auto &fk_info : fk_references) {
+			auto &schema = entry.ParentSchema();
+			// the referenced table can be dropped by the cascade of the dropped table
+			if (!schema.GetEntry(transaction, CatalogType::TABLE_ENTRY, fk_info->GetQualifiedName().Name())) {
+				continue;
+			}
+			schema.Alter(transaction, *fk_info);
+		}
 	}
 }
 

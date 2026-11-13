@@ -1,0 +1,29 @@
+# name: test/sql/constraints/foreignkey/test_fk_drop_cascade_owned_sequence.test
+# description: Test dropping a foreign key table through DROP ... CASCADE when it owns a sequence used by the referenced table
+# group: [foreignkey]
+
+require skip_reload
+
+statement ok
+CREATE SEQUENCE seq1
+
+statement ok
+CREATE SEQUENCE seq2
+
+statement ok
+CREATE TABLE parent (id INTEGER PRIMARY KEY DEFAULT nextval('seq2'))
+
+statement ok
+CREATE TABLE child (id INTEGER DEFAULT nextval('seq1'), fk INTEGER REFERENCES parent(id))
+
+statement ok
+ALTER SEQUENCE seq2 OWNED BY child
+
+# the parent table is dropped by the cascade of the child through the sequence owned by the child
+statement ok
+DROP SEQUENCE seq1 CASCADE
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE table_name IN ('parent', 'child')
+----
+0

@@ -23,6 +23,7 @@ class DuckCatalog;
 class ClientContext;
 class DependencyEntry;
 class LogicalDependencyList;
+struct AlterForeignKeyInfo;
 
 // The subject of this dependency
 struct DependencySubject {
@@ -137,6 +138,9 @@ private:
 	void VerifyCommitDrop(CatalogTransaction transaction, VisibilityBound visibility_bound, CatalogEntry &object);
 	//! Returns the objects that should be dropped alongside the object
 	catalog_entry_set_t CheckDropDependencies(CatalogTransaction transaction, CatalogEntry &object, bool cascade);
+	//! Returns the foreign key references of a table to the referenced tables that are not being dropped
+	vector<unique_ptr<AlterForeignKeyInfo>> GetForeignKeyReferences(CatalogTransaction transaction,
+	                                                                CatalogEntry &entry);
 	void DropObject(CatalogTransaction transaction, CatalogEntry &object, bool cascade);
 	void AlterObject(CatalogTransaction transaction, CatalogEntry &old_obj, CatalogEntry &new_obj, AlterInfo &info);
 

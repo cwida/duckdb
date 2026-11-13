@@ -1,0 +1,32 @@
+# name: test/sql/constraints/foreignkey/test_fk_drop_cascade.test
+# description: Test dropping tables with foreign key constraints through DROP ... CASCADE
+# group: [foreignkey]
+
+statement ok
+CREATE SEQUENCE seq
+
+statement ok
+CREATE TABLE parent (id INTEGER PRIMARY KEY)
+
+statement ok
+CREATE TABLE child (id INTEGER DEFAULT nextval('seq'), fk INTEGER REFERENCES parent(id))
+
+# dropping the child through a cascade removes the foreign key reference from the parent table
+statement ok
+DROP SEQUENCE seq CASCADE
+
+statement ok
+DROP TABLE parent
+
+# the parent table is dropped by the same cascade
+statement ok
+CREATE SCHEMA s
+
+statement ok
+CREATE TABLE s.parent (id INTEGER PRIMARY KEY)
+
+statement ok
+CREATE TABLE s.child (fk INTEGER REFERENCES s.parent(id))
+
+statement ok
+DROP SCHEMA s CASCADE
