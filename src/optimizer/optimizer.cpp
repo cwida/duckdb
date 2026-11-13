@@ -365,7 +365,6 @@ void Optimizer::RunBuiltInOptimizers() {
 	// and the fact side dominates cardinality — reduces probe-side work.
 	RunOptimizer(OptimizerType::PARTIAL_AGGREGATE_PUSHDOWN, [&]() {
 		PartialAggregatePushdown partial_aggregate_pushdown(*this);
-		partial_aggregate_pushdown.CollectCTEs(*plan);
 		partial_aggregate_pushdown.VisitOperator(plan);
 	});
 

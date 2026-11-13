@@ -28,16 +28,6 @@ namespace duckdb {
 PartialAggregatePushdown::PartialAggregatePushdown(Optimizer &optimizer_p) : optimizer(optimizer_p) {
 }
 
-void PartialAggregatePushdown::CollectCTEs(LogicalOperator &op) {
-	if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
-		auto &cte = op.Cast<LogicalMaterializedCTE>();
-		cte_definitions.emplace(cte.table_index.index, cte);
-	}
-	for (auto &child : op.children) {
-		CollectCTEs(*child);
-	}
-}
-
 //===--------------------------------------------------------------------===//
 // Shared Pushdown Helpers
 //===--------------------------------------------------------------------===//
@@ -1241,6 +1231,10 @@ bool PartialAggregatePushdown::FuseInterveningProjections(LogicalOperator &op) {
 }
 
 void PartialAggregatePushdown::VisitOperator(unique_ptr<LogicalOperator> &op) {
+	if (op->type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
+		auto &cte = op->Cast<LogicalMaterializedCTE>();
+		cte_definitions.emplace(cte.table_index.index, cte);
+	}
 	LogicalOperatorVisitor::VisitOperator(op);
 	FuseInterveningProjections(*op);
 	if (TryDoubleEagerPushdown(op) || TryOwnerOuterCountPushdown(op) || TryPushdownAggregate(op)) {

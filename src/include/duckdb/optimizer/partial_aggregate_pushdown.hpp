@@ -20,7 +20,6 @@ class PartialAggregatePushdown : public LogicalOperatorVisitor {
 public:
 	explicit PartialAggregatePushdown(Optimizer &optimizer);
 
-	void CollectCTEs(LogicalOperator &op);
 	void VisitOperator(unique_ptr<LogicalOperator> &op) override;
 
 private:
