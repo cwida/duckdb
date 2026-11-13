@@ -20,9 +20,9 @@ CREATE TABLE probe AS SELECT i::BIGINT AS a, (i % 1000)::BIGINT AS b, (i % 7)::I
 statement ok
 CREATE TABLE build AS SELECT (i * 2)::BIGINT AS a, (i % 10)::BIGINT AS b, (i % 7)::INTEGER AS c, (i % 13)::INTEGER AS g FROM range(5000) t(i);
 
-# b covers the probe column's 1,000 values (the distinct-count gate refuses its filter); c has 20 values
+# b covers the probe column's 1,000 values (the distinct-count gate refuses its filter); c has 100 values
 statement ok
-CREATE TABLE build_cap AS SELECT (i * 2)::BIGINT AS a, (i % 1000)::BIGINT AS b, (i % 20)::INTEGER AS c FROM range(5000) t(i);
+CREATE TABLE build_cap AS SELECT (i * 2)::BIGINT AS a, (i % 1000)::BIGINT AS b, (i % 100)::INTEGER AS c FROM range(5000) t(i);
 
 statement ok
 CREATE TABLE build_const AS SELECT (i * 2)::BIGINT AS a, 3::BIGINT AS b FROM range(5000) t(i);
@@ -109,7 +109,7 @@ analyzed_plan	<!REGEX>:(?s).*a IN (PRF|BF)\(.*
 
 # ---------------------------------------------------------------------------------------------------------------
 # the distinct-count gate refuses b's filter when the build covers the probe column's values; the count
-# is capped by the build's estimated rows (an equality filter on c leaves ~250 of the 5,000 rows: below half of the
+# is capped by the build's estimated rows (an equality filter on c leaves ~50 of the 5,000 rows: below half of the
 # probe's 1,000 values, not gated), and a key without a distinct count (an aggregate's output) is never gated
 # ---------------------------------------------------------------------------------------------------------------
 
@@ -129,14 +129,15 @@ EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe p JOIN (SELECT a, max(b) AS
 analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IN PRF\(a\).*b IN PRF\(b\).*
 
 # ---------------------------------------------------------------------------------------------------------------
-# key types. VARCHAR, DECIMAL and DATE keys get prefix range filters; a DOUBLE key and HUGEINT keys 10^20
-# apart get a bloom filter next to their min/max bounds
+# key types. VARCHAR, DECIMAL and DATE keys get prefix range filters (a build without string inlining has no prefix
+# range filter for strings: the VARCHAR key gets a bloom filter there); a DOUBLE key and HUGEINT keys 10^20 apart get
+# a bloom filter next to their min/max bounds
 # ---------------------------------------------------------------------------------------------------------------
 
 query II
 EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe_t p JOIN build_t b ON p.s = b.s AND p.m = b.m;
 ----
-analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*s IN PRF\(s\).*m IN PRF\(m\).*
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*s IN (PRF|BF)\(s\).*m IN PRF\(m\).*
 
 query II
 EXPLAIN ANALYZE SELECT count(*), sum(p.g) FROM probe_t p JOIN build_t b ON p.d = b.d AND p.m = b.m;
