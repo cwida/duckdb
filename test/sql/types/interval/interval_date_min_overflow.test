@@ -1,0 +1,41 @@
+# name: test/sql/types/interval/interval_date_min_overflow.test
+# description: Test that date/timestamp + interval does not overflow INT32_MIN days
+# group: [interval]
+
+# a day count summing to INT32_MIN passes IsFinite but is not a valid finite date
+statement error
+SELECT DATE '1970-01-01' + INTERVAL '-2147483648 days -1 microseconds'
+----
+Out of Range
+
+statement error
+SELECT DATE '1970-01-01' + INTERVAL '-2147483648 days'
+----
+Out of Range
+
+statement error
+SELECT TIMESTAMP '1970-01-01 00:00:00' + INTERVAL '-2147483648 days -1 microseconds'
+----
+Out of Range
+
+statement error
+SELECT INTERVAL '-2147483648 days -1 microseconds' + TIMESTAMP '1970-01-01 00:00:00'
+----
+Out of Range
+
+# the offset argument of time_bucket reaches the same path
+statement error
+SELECT time_bucket(INTERVAL '1 day', TIMESTAMP '1970-01-01 00:00:00', INTERVAL '2147483647 days 1 microseconds')
+----
+Out of Range
+
+# valid near-boundary arithmetic still works
+query I
+SELECT DATE '1970-01-01' + INTERVAL '1 day'
+----
+1970-01-02 00:00:00
+
+query I
+SELECT TIMESTAMP '1970-01-01 00:00:00' + INTERVAL '-5 days -1 microseconds'
+----
+1969-12-26 23:59:59.999999

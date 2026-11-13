@@ -628,7 +628,8 @@ bool Interval::TryAdd(date_t left, interval_t right, date_t &result) {
 	    !TryAddOperator::Operation(result.days, int32_t(right.micros / Interval::MICROS_PER_DAY), result.days)) {
 		return false;
 	}
-	return result.IsFinite();
+	// IsFinite only rejects ±INT32_MAX, so INT32_MIN slips through and overflows in date.days-- below
+	return result > date_t::ninfinity() && result < date_t::infinity();
 }
 
 bool Interval::TryAdd(timestamp_t left, interval_t right, timestamp_t &result) {
