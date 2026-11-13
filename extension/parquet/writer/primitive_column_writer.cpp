@@ -50,6 +50,10 @@ public:
 		return size;
 	}
 
+	idx_t AllocationSize() const override {
+		return compressed_buf.GetSize() + (temp_writer ? temp_writer->GetCapacity() : 0);
+	}
+
 private:
 	idx_t size;
 	unique_ptr<MemoryStream> temp_writer;

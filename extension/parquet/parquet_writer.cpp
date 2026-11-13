@@ -105,6 +105,10 @@ public:
 		return size;
 	}
 
+	idx_t AllocationSize() const override {
+		return stream->GetCapacity();
+	}
+
 private:
 	unique_ptr<MemoryStream> stream;
 	data_ptr_t data;
@@ -123,6 +127,10 @@ public:
 
 	idx_t Size() const override {
 		return bloom_filter->Get()->GetLength();
+	}
+
+	idx_t AllocationSize() const override {
+		return bloom_filter->Get()->GetCapacity();
 	}
 
 private:

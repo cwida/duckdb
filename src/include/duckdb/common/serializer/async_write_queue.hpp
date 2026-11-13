@@ -14,6 +14,7 @@
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/serializer/async_memory_governor.hpp"
 
 #include <functional>
@@ -46,6 +47,8 @@ public:
 	virtual data_ptr_t Ptr() = 0;
 	//! Number of bytes exposed by Ptr().
 	virtual idx_t Size() const = 0;
+	//! Stable upper bound on allocation capacity retained while materializing and writing this payload.
+	virtual idx_t AllocationSize() const = 0;
 };
 
 //! Compatibility name for existing stream-oriented callers.
@@ -62,6 +65,7 @@ public:
 	                  AsyncWriteCompletionCallback completion = nullptr);
 
 	idx_t Size() const;
+	idx_t AllocationSize() const;
 
 	unique_ptr<AsyncWritePayload> payload;
 	idx_t offset = 0;
@@ -260,33 +264,37 @@ private:
 private:
 	//! Try to adopt one positional request whose bytes are already tracked as external pending bytes.
 	//! The request is consumed if and only if ACCEPTED is returned.
-	AccountedWriteAdoption TryAdoptAccountedWrite(AsyncWriteRequest &request, ErrorData &error);
+	AccountedWriteAdoption TryAdoptAccountedWrite(AsyncWriteRequest &request, ErrorData &error,
+	                                              optional_idx accounted_allocation_size = optional_idx());
 	//! Track bytes held by a wrapper before they become positional requests.
-	void AddExternalPendingBytes(idx_t bytes, bool update_memory = true);
+	void AddExternalPendingBytes(idx_t bytes, idx_t allocation_size, bool update_memory = true);
 	//! Stop tracking wrapper-held bytes that will never become positional requests.
-	void DiscardExternalPendingBytes(idx_t bytes) noexcept;
+	void DiscardExternalPendingBytes(idx_t bytes, idx_t allocation_size) noexcept;
 	//! Add one request to the managed queue. Caller may mark bytes already tracked as external.
-	void RegisterWriteInternal(AsyncWriteRequest request, idx_t accounted_external_bytes, ScheduleMode schedule_mode);
+	void RegisterWriteInternal(AsyncWriteRequest request, ScheduleMode schedule_mode);
 	//! Schedule drain requests from already registered pending writes.
 	void SchedulePendingWritesInternal(SchedulePolicy policy = SchedulePolicy::THRESHOLD);
 	//! Grow the TemporaryMemoryState reservation coarsely; it is released only when the queue closes.
 	void UpdateMemoryState(MemoryUpdateMode mode = MemoryUpdateMode::COARSE);
+	//! Refresh the reservation and help execute one queued async task.
+	void DrainOneTask();
 
 	//! Return the current async backlog budget after applying the fixed queue cap.
 	idx_t BackpressureBudget();
 	//! Effective byte budget for one managed drain request.
 	idx_t DrainTaskByteBudget() const;
-	//! Return queued/submitted/external bytes that have not reached the target yet. Caller must hold lock.
-	idx_t TotalPendingBytes() const;
+	//! Return allocation capacity charged across all ownership stages.
+	idx_t RetainedBytes();
 	//! Return how many physical bytes can be submitted to the low-level queue before refilling should pause.
 	idx_t SubmittedByteWindow() const;
 
 	//! Move one pending positional write into a physical async request.
 	bool TakePendingWriteRequest(AsyncWriteRequest &request, SchedulePolicy policy);
 	//! Prepare a callback that releases submitted-byte accounting before user callbacks run.
-	AsyncWriteCompletionCallback CreateCompletionAccounting(const AsyncWriteCompletionCallback &user_completion);
+	AsyncWriteCompletionCallback CreateCompletionAccounting(const AsyncWriteCompletionCallback &user_completion,
+	                                                        idx_t allocation_size);
 	//! Release byte accounting for one submitted physical request.
-	void CompleteSubmittedWrite(idx_t offset, idx_t size, optional_ptr<const ErrorData> error);
+	void CompleteSubmittedWrite(idx_t offset, idx_t size, idx_t allocation_size, optional_ptr<const ErrorData> error);
 
 	//! Throw if a mutating API is used after Close().
 	void VerifyOpen() const;
@@ -319,6 +327,10 @@ private:
 	idx_t pending_bytes = 0;
 	//! Bytes tracked by a wrapper before they become positional requests.
 	idx_t external_pending_bytes = 0;
+	//! Allocation capacity retained across wrapper, pending, and submitted writes.
+	idx_t retained_bytes = 0;
+	//! Portion of retained_bytes still owned by the stream wrapper.
+	idx_t external_retained_bytes = 0;
 	//! Bytes submitted to AsyncWriteQueue that have not completed yet.
 	idx_t submitted_bytes = 0;
 	//! Submitted physical requests that have not completed yet.
@@ -398,8 +410,6 @@ private:
 
 	//! Effective byte budget for one managed drain request, never smaller than the coalescing threshold.
 	idx_t DrainTaskByteBudget() const;
-	//! Return queued/submitted bytes that have not reached the target yet. Caller must hold lock.
-	idx_t TotalPendingBytes() const;
 	//! Select the pending write range one primitive task would claim. Caller must hold lock.
 	idx_t SelectPendingWriteEnd(idx_t start, idx_t &selected_bytes) const;
 	//! Select the pending write range for the next physical write request. Caller must hold lock.
@@ -408,7 +418,7 @@ private:
 	idx_t SubmittedByteWindow() const;
 
 	//! Move one byte-budgeted prefix of pending writes into a physical async request.
-	bool TakePendingWriteRequest(AsyncWriteRequest &request, SchedulePolicy policy);
+	bool TakePendingWriteRequest(AsyncWriteRequest &request, SchedulePolicy policy, idx_t &allocation_size);
 	//! Convert one or more contiguous pending writes into a lazily materialized payload.
 	unique_ptr<AsyncWritePayload> CreatePayload(deque<PendingWrite> writes, idx_t size);
 	//! Materialize one pending concurrent-sequential physical request before publishing it to the lower queue.
@@ -416,7 +426,7 @@ private:
 	//! Release byte accounting for one submitted physical request.
 	void CompleteSubmittedWrite(idx_t offset, idx_t size, optional_ptr<const ErrorData> error);
 	//! Latch one local scheduling failure, stop publication, and discard unsubmitted stream work.
-	void FailLocalScheduling(ErrorData error, idx_t unaccepted_size = 0);
+	void FailLocalScheduling(ErrorData error, idx_t unaccepted_size = 0, idx_t unaccepted_allocation_size = 0);
 	//! Return the locally latched scheduling failure, if any. Caller must hold lock.
 	shared_ptr<const ErrorData> GetLocalError() const DUCKDB_REQUIRES(lock);
 
@@ -463,6 +473,8 @@ private:
 	deque<PendingWrite> pending_writes;
 	//! Bytes queued in pending_writes that have not been submitted to AsyncWriteQueue yet.
 	idx_t pending_bytes = 0;
+	//! Allocation capacity of the stream's unsubmitted payloads.
+	idx_t pending_retained_bytes = 0;
 	//! Bytes submitted to AsyncWriteQueue that have not completed yet.
 	idx_t submitted_bytes = 0;
 	//! Submitted physical requests that have not completed yet.

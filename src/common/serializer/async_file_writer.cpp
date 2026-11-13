@@ -26,6 +26,10 @@ public:
 		return size;
 	}
 
+	idx_t AllocationSize() const override {
+		return capacity;
+	}
+
 	idx_t Remaining() const {
 		return capacity - size;
 	}

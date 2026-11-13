@@ -183,6 +183,13 @@ bool ColumnWriter::TryExportPreparedShreddingType(ShreddingType &result) const {
 ColumnWriterState::~ColumnWriterState() {
 }
 
+static bool ShouldCompactCompressedPage(idx_t capacity, idx_t size) {
+	static constexpr idx_t MINIMUM_COMPACTION_SLACK = 4096;
+	D_ASSERT(size <= capacity);
+	auto slack = capacity - size;
+	return slack >= MINIMUM_COMPACTION_SLACK && slack >= capacity / 8;
+}
+
 void ColumnWriter::CompressPage(MemoryStream &temp_writer, size_t &compressed_size, data_ptr_t &compressed_data,
                                 AllocatedData &compressed_buf) {
 	switch (writer.GetCodec()) {
@@ -243,6 +250,13 @@ void ColumnWriter::CompressPage(MemoryStream &temp_writer, size_t &compressed_si
 	if (compressed_size > idx_t(NumericLimits<int32_t>::Maximum())) {
 		throw InternalException("Parquet writer: %d compressed page size out of range for type integer",
 		                        temp_writer.GetPosition());
+	}
+	// Compression allocates the worst-case bound; release the slack before the page is retained until written.
+	if (compressed_buf.IsSet() && ShouldCompactCompressedPage(compressed_buf.GetSize(), compressed_size)) {
+		auto compact_buf = BufferAllocator::Get(writer.GetContext()).Allocate(compressed_size);
+		memcpy(compact_buf.get(), compressed_buf.get(), compressed_size);
+		compressed_buf = std::move(compact_buf);
+		compressed_data = compressed_buf.get();
 	}
 }
 

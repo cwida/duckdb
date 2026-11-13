@@ -10,11 +10,13 @@
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/parallel/task_executor.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 #include "test_helpers.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstring>
 #include <thread>
 
 using namespace duckdb;
@@ -23,16 +25,20 @@ namespace duckdb {
 
 class ManagedAsyncWriteQueueTest {
 public:
-	static bool TryAdopt(ManagedAsyncWriteQueue &queue, AsyncWriteRequest &request, ErrorData &error) {
-		return queue.TryAdoptAccountedWrite(request, error) == ManagedAsyncWriteQueue::AccountedWriteAdoption::ACCEPTED;
+	static bool TryAdopt(ManagedAsyncWriteQueue &queue, AsyncWriteRequest &request, ErrorData &error,
+	                     optional_idx allocation_size = optional_idx()) {
+		return queue.TryAdoptAccountedWrite(request, error, allocation_size) ==
+		       ManagedAsyncWriteQueue::AccountedWriteAdoption::ACCEPTED;
 	}
 
-	static void AddExternalPendingBytes(ManagedAsyncWriteQueue &queue, idx_t size) {
-		queue.AddExternalPendingBytes(size);
+	static void AddExternalPendingBytes(ManagedAsyncWriteQueue &queue, idx_t size,
+	                                    optional_idx allocation_size = optional_idx()) {
+		queue.AddExternalPendingBytes(size, allocation_size.IsValid() ? allocation_size.GetIndex() : size);
 	}
 
-	static void DiscardExternalPendingBytes(ManagedAsyncWriteQueue &queue, idx_t size) {
-		queue.DiscardExternalPendingBytes(size);
+	static void DiscardExternalPendingBytes(ManagedAsyncWriteQueue &queue, idx_t size,
+	                                        optional_idx allocation_size = optional_idx()) {
+		queue.DiscardExternalPendingBytes(size, allocation_size.IsValid() ? allocation_size.GetIndex() : size);
 	}
 
 	static idx_t ExternalPendingBytes(ManagedAsyncWriteQueue &queue) {
@@ -44,6 +50,20 @@ public:
 		lock_guard<mutex> guard(queue.lock);
 		return queue.pending_bytes;
 	}
+
+	static idx_t RetainedBytes(ManagedAsyncWriteQueue &queue) {
+		return queue.RetainedBytes();
+	}
+
+	static idx_t RetainedBytes(ManagedAsyncWriteStreamQueue &queue) {
+		return queue.write_queue->RetainedBytes();
+	}
+
+	static idx_t ExternalRetainedBytes(ManagedAsyncWriteQueue &queue) {
+		lock_guard<mutex> guard(queue.lock);
+		return queue.external_retained_bytes;
+	}
+
 	static ManagedAsyncWriteQueue &UnderlyingQueue(ManagedAsyncWriteStreamQueue &queue) {
 		return *queue.write_queue;
 	}
@@ -629,8 +649,37 @@ public:
 		return data.size();
 	}
 
+	idx_t AllocationSize() const override {
+		return data.capacity();
+	}
+
 private:
 	string data;
+};
+
+class AllocatedAsyncWriteBuffer : public AsyncWriteBuffer {
+public:
+	AllocatedAsyncWriteBuffer(ClientContext &context, const string &contents, idx_t capacity)
+	    : data(BufferAllocator::Get(context).Allocate(capacity)), size(contents.size()) {
+		D_ASSERT(capacity >= size);
+		memcpy(data.get(), contents.data(), size);
+	}
+
+	data_ptr_t Ptr() override {
+		return data.get();
+	}
+
+	idx_t Size() const override {
+		return size;
+	}
+
+	idx_t AllocationSize() const override {
+		return data.GetSize();
+	}
+
+private:
+	AllocatedData data;
+	idx_t size;
 };
 
 class BlockingMaterializationState {
@@ -680,6 +729,10 @@ public:
 
 	idx_t Size() const override {
 		return data.size();
+	}
+
+	idx_t AllocationSize() const override {
+		return data.capacity();
 	}
 
 private:
@@ -1015,6 +1068,296 @@ TEST_CASE("ManagedAsyncWriteQueue accepts non-contiguous positional writes", "[a
 	REQUIRE(saw_second);
 }
 
+TEST_CASE("ManagedAsyncWriteQueue applies backpressure to allocation capacity", "[async_write_queue]") {
+	DuckDB db(nullptr);
+	auto con = CreateConnectionWithAsyncThreads(db);
+	REQUIRE_NO_FAIL(con->Query("SET threads=1; SET memory_limit='512MB'"));
+	AsyncThreadBlocker async_thread_blocker(*con->context, 1);
+	REQUIRE(async_thread_blocker.WaitForStarted());
+	BlockingAsyncWriteTarget target;
+	ManagedAsyncWriteQueue queue(con->context->GetContext(), target);
+
+	idx_t completion_count = 0;
+	idx_t completion_offset = 0;
+	idx_t completion_size = 0;
+	bool completion_error = false;
+	auto completion = [&](idx_t offset, idx_t size, optional_ptr<const ErrorData> error) {
+		completion_count++;
+		completion_offset = offset;
+		completion_size = size;
+		completion_error = error != nullptr;
+	};
+	auto capacity = ManagedAsyncMemoryConfig::MAX_PENDING_BYTES_PER_THREAD + 1;
+	queue.RegisterWrite(
+	    AsyncWriteRequest(make_uniq<AllocatedAsyncWriteBuffer>(*con->context, "abc", capacity), 7, completion),
+	    ManagedAsyncWriteQueue::ScheduleMode::DEFER);
+	auto registered_bytes = ManagedAsyncWriteQueueTest::PendingBytes(queue);
+	auto registered_capacity = ManagedAsyncWriteQueueTest::RetainedBytes(queue);
+
+	std::atomic<bool> pressure_finished(false);
+	string pressure_error;
+	std::thread pressure_thread([&]() {
+		pressure_error = CaptureException([&]() { queue.ApplyBackpressure(); });
+		pressure_finished.store(true);
+	});
+	// The async worker is occupied, so only backpressure can start this write.
+	auto entered_write = target.WaitForEnteredWrites(1);
+	auto pressure_waited = !pressure_finished.load();
+	auto in_flight_capacity = ManagedAsyncWriteQueueTest::RetainedBytes(queue);
+	target.ReleaseWrites();
+	async_thread_blocker.Release();
+	pressure_thread.join();
+	auto close_error = CaptureException([&]() { queue.Close(); });
+
+	REQUIRE(registered_bytes == 3);
+	REQUIRE(registered_capacity == capacity);
+	REQUIRE(entered_write);
+	REQUIRE(pressure_waited);
+	REQUIRE(in_flight_capacity == capacity);
+	REQUIRE(pressure_error.empty());
+	REQUIRE(close_error.empty());
+	REQUIRE(ManagedAsyncWriteQueueTest::RetainedBytes(queue) == 0);
+	REQUIRE(target.write_sizes == vector<idx_t> {3});
+	REQUIRE(target.offsets == vector<idx_t> {7});
+	REQUIRE(completion_count == 1);
+	REQUIRE(completion_offset == 7);
+	REQUIRE(completion_size == 3);
+	REQUIRE(!completion_error);
+}
+
+TEST_CASE("ManagedAsyncWriteStreamQueue drains oversized sequential tails under backpressure", "[async_write_queue]") {
+	for (auto local_file : {true, false}) {
+		CAPTURE(local_file);
+		DuckDB db(nullptr);
+		auto con = CreateConnectionWithAsyncThreads(db);
+		REQUIRE_NO_FAIL(con->Query("SET threads=1; SET memory_limit='512MB'"));
+		AsyncThreadBlocker async_thread_blocker(*con->context, 1);
+		REQUIRE(async_thread_blocker.WaitForStarted());
+		BlockingAsyncWriteTarget target;
+		SequentialAsyncWriteStreamTarget stream_target(target, local_file);
+		ManagedAsyncWriteStreamQueue queue(con->context->GetContext(), stream_target);
+
+		auto head_size = AsyncWriteConfig::REMOTE_COALESCE_THRESHOLD;
+		auto tail_capacity = ManagedAsyncMemoryConfig::MAX_PENDING_BYTES_PER_THREAD + 1;
+		queue.BeginBatch();
+		queue.RegisterWrite(make_uniq<AllocatedAsyncWriteBuffer>(
+		                        *con->context, string(UnsafeNumericCast<size_t>(head_size), 'a'), head_size),
+		                    0);
+		queue.RegisterWrite(make_uniq<AllocatedAsyncWriteBuffer>(*con->context, "end", tail_capacity), head_size);
+		queue.LeaveBatch();
+		auto registered_capacity = ManagedAsyncWriteQueueTest::RetainedBytes(queue);
+
+		mutex pressure_lock;
+		std::condition_variable pressure_cv;
+		bool pressure_finished = false;
+		string pressure_error;
+		std::thread pressure_thread([&]() {
+			pressure_error = CaptureException([&]() { queue.ApplyBackpressure(); });
+			{
+				lock_guard<mutex> guard(pressure_lock);
+				pressure_finished = true;
+			}
+			pressure_cv.notify_all();
+		});
+		// With the async worker occupied, entering the first write proves the pressure thread is helping drain.
+		auto entered_write = target.WaitForEnteredWrites(1);
+		target.ReleaseWrites();
+		async_thread_blocker.Release();
+		bool drained_under_pressure;
+		{
+			unique_lock<mutex> guard(pressure_lock);
+			drained_under_pressure =
+			    pressure_cv.wait_for(guard, std::chrono::seconds(5), [&]() { return pressure_finished; });
+		}
+		string abort_error;
+		if (!drained_under_pressure) {
+			// A failed regression must clear the stranded external allocation so the pressure thread can exit.
+			abort_error = CaptureException([&]() { queue.AbortWrites(); });
+		}
+		pressure_thread.join();
+		auto retained_after_pressure = ManagedAsyncWriteQueueTest::RetainedBytes(queue);
+		auto close_error = CaptureException([&]() { queue.Close(); });
+
+		REQUIRE(registered_capacity == head_size + tail_capacity);
+		REQUIRE(entered_write);
+		REQUIRE(drained_under_pressure);
+		REQUIRE(pressure_error.empty());
+		REQUIRE(abort_error.empty());
+		REQUIRE(close_error.empty());
+		REQUIRE(retained_after_pressure == 0);
+		REQUIRE(ManagedAsyncWriteQueueTest::RetainedBytes(queue) == 0);
+		REQUIRE(target.write_sizes == vector<idx_t> {head_size, 3});
+		REQUIRE(target.offsets == vector<idx_t> {0, head_size});
+		REQUIRE(target.MaxActiveWrites() == 1);
+	}
+}
+
+TEST_CASE("ManagedAsyncWriteStreamQueue rechecks concurrent batches under backpressure", "[async_write_queue]") {
+	DuckDB db(nullptr);
+	auto con = CreateConnectionWithAsyncThreads(db);
+	REQUIRE_NO_FAIL(con->Query("SET threads=1; SET memory_limit='512MB'"));
+	AsyncThreadBlocker async_thread_blocker(*con->context, 1);
+	REQUIRE(async_thread_blocker.WaitForStarted());
+	BlockingAsyncWriteTarget target;
+	SequentialAsyncWriteStreamTarget stream_target(target, false);
+	ManagedAsyncWriteStreamQueue queue(con->context->GetContext(), stream_target);
+
+	auto head_size = AsyncWriteConfig::REMOTE_COALESCE_THRESHOLD;
+	auto tail_capacity = ManagedAsyncMemoryConfig::MAX_PENDING_BYTES_PER_THREAD + 1;
+	queue.BeginBatch();
+	queue.RegisterWrite(make_uniq<AllocatedAsyncWriteBuffer>(
+	                        *con->context, string(UnsafeNumericCast<size_t>(head_size), 'a'), head_size),
+	                    0);
+	queue.RegisterWrite(make_uniq<AllocatedAsyncWriteBuffer>(*con->context, "end", tail_capacity), head_size);
+	queue.LeaveBatch();
+
+	mutex pressure_lock;
+	std::condition_variable pressure_cv;
+	bool pressure_finished = false;
+	string pressure_error;
+	std::thread pressure_thread([&]() {
+		pressure_error = CaptureException([&]() { queue.ApplyBackpressure(); });
+		{
+			lock_guard<mutex> guard(pressure_lock);
+			pressure_finished = true;
+		}
+		pressure_cv.notify_all();
+	});
+	auto entered_write = target.WaitForEnteredWrites(1);
+	auto peer_batch_error = CaptureException([&]() { queue.BeginBatch(); });
+	target.ReleaseWrites();
+	bool returned_during_batch;
+	{
+		unique_lock<mutex> guard(pressure_lock);
+		returned_during_batch =
+		    pressure_cv.wait_for(guard, std::chrono::seconds(5), [&]() { return pressure_finished; });
+	}
+	auto retained_during_batch = ManagedAsyncWriteQueueTest::RetainedBytes(queue);
+	if (peer_batch_error.empty()) {
+		// Model a peer BatchGuard unwinding without Finish() after a write-preparation error.
+		queue.LeaveBatch();
+	}
+	async_thread_blocker.Release();
+	string abort_error;
+	if (!returned_during_batch) {
+		abort_error = CaptureException([&]() { queue.AbortWrites(); });
+	}
+	pressure_thread.join();
+	auto writes_before_resume = target.write_sizes;
+	auto resume_error = CaptureException([&]() {
+		queue.ApplyBackpressure();
+		queue.Close();
+	});
+
+	REQUIRE(entered_write);
+	REQUIRE(peer_batch_error.empty());
+	REQUIRE(returned_during_batch);
+	REQUIRE(pressure_error.empty());
+	REQUIRE(abort_error.empty());
+	REQUIRE(resume_error.empty());
+	REQUIRE(retained_during_batch == tail_capacity);
+	REQUIRE(writes_before_resume == vector<idx_t> {head_size});
+	REQUIRE(ManagedAsyncWriteQueueTest::RetainedBytes(queue) == 0);
+	REQUIRE(target.write_sizes == vector<idx_t> {head_size, 3});
+	REQUIRE(target.offsets == vector<idx_t> {0, head_size});
+	REQUIRE(target.MaxActiveWrites() == 1);
+}
+
+TEST_CASE("ManagedAsyncWriteQueue releases allocation capacity after write failure", "[async_write_queue]") {
+	DuckDB db(nullptr);
+	auto con = CreateConnectionWithAsyncThreads(db);
+	FailingAsyncWriteTarget target;
+	ManagedAsyncWriteQueue queue(con->context->GetContext(), target);
+	mutex completion_lock;
+	vector<idx_t> completion_offsets;
+	vector<idx_t> completion_sizes;
+	bool all_errors = true;
+	auto completion = [&](idx_t offset, idx_t size, optional_ptr<const ErrorData> error) {
+		lock_guard<mutex> guard(completion_lock);
+		completion_offsets.push_back(offset);
+		completion_sizes.push_back(size);
+		all_errors = all_errors && error;
+	};
+	queue.RegisterWrite(
+	    AsyncWriteRequest(make_uniq<AllocatedAsyncWriteBuffer>(*con->context, "abc", 1024), 7, completion),
+	    ManagedAsyncWriteQueue::ScheduleMode::DEFER);
+	queue.RegisterWrite(
+	    AsyncWriteRequest(make_uniq<AllocatedAsyncWriteBuffer>(*con->context, "de", 2048), 10, completion),
+	    ManagedAsyncWriteQueue::ScheduleMode::DEFER);
+	auto registered_capacity = ManagedAsyncWriteQueueTest::RetainedBytes(queue);
+	auto close_error = CaptureException([&]() { queue.Close(); });
+	auto repeated_close_error = CaptureException([&]() { queue.Close(); });
+
+	REQUIRE(registered_capacity == 3072);
+	REQUIRE(close_error.find("Injected managed queue failure") != string::npos);
+	REQUIRE(repeated_close_error == close_error);
+	REQUIRE(ManagedAsyncWriteQueueTest::RetainedBytes(queue) == 0);
+	REQUIRE(ManagedAsyncWriteQueueTest::ExternalRetainedBytes(queue) == 0);
+	REQUIRE(completion_offsets == vector<idx_t> {7, 10});
+	REQUIRE(completion_sizes == vector<idx_t> {3, 2});
+	REQUIRE(all_errors);
+}
+
+TEST_CASE("ManagedAsyncWriteQueue releases pending and active allocation capacity on abort", "[async_write_queue]") {
+	DuckDB db(nullptr);
+	auto con = CreateConnectionWithAsyncThreads(db);
+	BlockingAsyncWriteTarget target;
+	ManagedAsyncWriteQueue queue(con->context->GetContext(), target);
+	mutex completion_lock;
+	std::condition_variable completion_cv;
+	idx_t completion_count = 0;
+	bool pending_completed = false;
+	bool pending_failed = false;
+	idx_t active_size = 0;
+	idx_t pending_size = 0;
+	auto completion = [&](idx_t offset, idx_t size, optional_ptr<const ErrorData> error) {
+		lock_guard<mutex> guard(completion_lock);
+		completion_count++;
+		if (offset == 10) {
+			pending_completed = true;
+			pending_failed = error != nullptr;
+			pending_size = size;
+		} else {
+			active_size = size;
+		}
+		completion_cv.notify_all();
+	};
+	queue.RegisterWrite(
+	    AsyncWriteRequest(make_uniq<AllocatedAsyncWriteBuffer>(*con->context, "abc", 1024), 7, completion));
+	auto entered_write = target.WaitForEnteredWrites(1);
+	queue.RegisterWrite(
+	    AsyncWriteRequest(make_uniq<AllocatedAsyncWriteBuffer>(*con->context, "de", 2048), 10, completion),
+	    ManagedAsyncWriteQueue::ScheduleMode::DEFER);
+	auto registered_capacity = ManagedAsyncWriteQueueTest::RetainedBytes(queue);
+
+	string abort_error;
+	std::thread abort_thread([&]() { abort_error = CaptureException([&]() { queue.AbortWrites(); }); });
+	bool discarded_pending;
+	{
+		unique_lock<mutex> guard(completion_lock);
+		discarded_pending = completion_cv.wait_for(guard, std::chrono::seconds(5), [&]() { return pending_completed; });
+	}
+	auto active_capacity = ManagedAsyncWriteQueueTest::RetainedBytes(queue);
+	target.ReleaseWrites();
+	abort_thread.join();
+	auto repeated_abort_error = CaptureException([&]() { queue.AbortWrites(); });
+
+	REQUIRE(entered_write);
+	REQUIRE(registered_capacity == 3072);
+	REQUIRE(discarded_pending);
+	REQUIRE(active_capacity == 1024);
+	REQUIRE(abort_error.empty());
+	REQUIRE(repeated_abort_error.empty());
+	REQUIRE(ManagedAsyncWriteQueueTest::RetainedBytes(queue) == 0);
+	REQUIRE(ManagedAsyncWriteQueueTest::ExternalRetainedBytes(queue) == 0);
+	REQUIRE(target.write_sizes == vector<idx_t> {3});
+	REQUIRE(target.offsets == vector<idx_t> {7});
+	REQUIRE(completion_count == 2);
+	REQUIRE(pending_failed);
+	REQUIRE(active_size == 3);
+	REQUIRE(pending_size == 2);
+}
+
 TEST_CASE("ManagedAsyncWriteStreamQueue abort permits an in-flight completion refill", "[async_write_queue]") {
 	DuckDB db(nullptr);
 	auto con = CreateConnectionWithAsyncThreads(db);
@@ -1088,31 +1431,49 @@ TEST_CASE("ManagedAsyncWriteStreamQueue abort permits an in-flight completion re
 TEST_CASE("ManagedAsyncWriteQueue reports accounted request adoption ownership", "[async_write_queue]") {
 	DuckDB db(nullptr);
 	auto con = CreateConnectionWithAsyncThreads(db);
-	{
+	const idx_t previous_capacity = 8192;
+	for (auto capacity : vector<idx_t> {2048, 16384}) {
 		TrackingAsyncWriteTarget target;
 		ManagedAsyncWriteQueue queue(con->context->GetContext(), target);
 		idx_t completion_count = 0;
+		idx_t completion_size = 0;
 		bool completion_error = false;
-		auto completion = [&](idx_t, idx_t, optional_ptr<const ErrorData> error) {
+		auto completion = [&](idx_t, idx_t size, optional_ptr<const ErrorData> error) {
 			completion_count++;
+			completion_size = size;
 			completion_error = completion_error || error;
 		};
-		AsyncWriteRequest request(make_uniq<StringAsyncWriteBuffer>("abc"), 7, completion);
+		AsyncWriteRequest request(make_uniq<AllocatedAsyncWriteBuffer>(*con->context, "abc", capacity), 7, completion);
 
-		ManagedAsyncWriteQueueTest::AddExternalPendingBytes(queue, 3);
+		ManagedAsyncWriteQueueTest::AddExternalPendingBytes(queue, 3, previous_capacity);
+		auto external_capacity = ManagedAsyncWriteQueueTest::ExternalRetainedBytes(queue);
+		auto original_capacity = ManagedAsyncWriteQueueTest::RetainedBytes(queue);
 		ErrorData acceptance_error;
-		auto adopted = ManagedAsyncWriteQueueTest::TryAdopt(queue, request, acceptance_error);
+		auto adopted = ManagedAsyncWriteQueueTest::TryAdopt(queue, request, acceptance_error, previous_capacity);
+		auto consumed = request.payload == nullptr;
+		auto remaining_external_bytes = ManagedAsyncWriteQueueTest::ExternalPendingBytes(queue);
+		auto remaining_external_capacity = ManagedAsyncWriteQueueTest::ExternalRetainedBytes(queue);
+		auto pending_bytes = ManagedAsyncWriteQueueTest::PendingBytes(queue);
+		auto adopted_capacity = ManagedAsyncWriteQueueTest::RetainedBytes(queue);
+		if (!adopted) {
+			ManagedAsyncWriteQueueTest::DiscardExternalPendingBytes(queue, 3, previous_capacity);
+		}
+		queue.Close();
+
+		REQUIRE(external_capacity == previous_capacity);
+		REQUIRE(original_capacity == previous_capacity);
 		REQUIRE(adopted);
 		REQUIRE(!acceptance_error.HasError());
-		REQUIRE(request.payload == nullptr);
-		REQUIRE(ManagedAsyncWriteQueueTest::ExternalPendingBytes(queue) == 0);
-		REQUIRE(ManagedAsyncWriteQueueTest::PendingBytes(queue) == 3);
-
-		queue.SchedulePendingWrites(ManagedAsyncWriteQueue::SchedulePolicy::FORCE);
-		queue.Close();
+		REQUIRE(consumed);
+		REQUIRE(remaining_external_bytes == 0);
+		REQUIRE(remaining_external_capacity == 0);
+		REQUIRE(pending_bytes == 3);
+		REQUIRE(adopted_capacity == capacity);
+		REQUIRE(ManagedAsyncWriteQueueTest::RetainedBytes(queue) == 0);
 		REQUIRE(target.writes == vector<string> {"abc"});
 		REQUIRE(target.offsets == vector<idx_t> {7});
 		REQUIRE(completion_count == 1);
+		REQUIRE(completion_size == 3);
 		REQUIRE(!completion_error);
 	}
 
@@ -1121,23 +1482,33 @@ TEST_CASE("ManagedAsyncWriteQueue reports accounted request adoption ownership",
 		ManagedAsyncWriteQueue queue(con->context->GetContext(), target);
 		queue.RegisterWrite(make_uniq<StringAsyncWriteBuffer>("failed"), 0);
 		auto wait_error = CaptureException([&]() { queue.WaitAll(); });
-		REQUIRE(wait_error.find("Injected managed queue failure") != string::npos);
 
 		idx_t completion_count = 0;
-		AsyncWriteRequest request(make_uniq<StringAsyncWriteBuffer>("abc"), 7,
+		AsyncWriteRequest request(make_uniq<AllocatedAsyncWriteBuffer>(*con->context, "abc", 4096), 7,
 		                          [&](idx_t, idx_t, optional_ptr<const ErrorData>) { completion_count++; });
-		ManagedAsyncWriteQueueTest::AddExternalPendingBytes(queue, 3);
+		ManagedAsyncWriteQueueTest::AddExternalPendingBytes(queue, 3, previous_capacity);
 		ErrorData rejection_error;
-		auto adopted = ManagedAsyncWriteQueueTest::TryAdopt(queue, request, rejection_error);
+		auto adopted = ManagedAsyncWriteQueueTest::TryAdopt(queue, request, rejection_error, previous_capacity);
+		auto still_owned = request.payload != nullptr;
+		auto external_bytes = ManagedAsyncWriteQueueTest::ExternalPendingBytes(queue);
+		auto external_capacity = ManagedAsyncWriteQueueTest::ExternalRetainedBytes(queue);
+		auto retained_capacity = ManagedAsyncWriteQueueTest::RetainedBytes(queue);
+		auto pending_bytes = ManagedAsyncWriteQueueTest::PendingBytes(queue);
+		if (!adopted) {
+			ManagedAsyncWriteQueueTest::DiscardExternalPendingBytes(queue, 3, previous_capacity);
+		}
+		auto close_error = CaptureException([&]() { queue.Close(); });
+
+		REQUIRE(wait_error.find("Injected managed queue failure") != string::npos);
 		REQUIRE(!adopted);
 		REQUIRE(rejection_error.HasError());
-		REQUIRE(request.payload != nullptr);
-		REQUIRE(ManagedAsyncWriteQueueTest::ExternalPendingBytes(queue) == 3);
-		REQUIRE(ManagedAsyncWriteQueueTest::PendingBytes(queue) == 0);
+		REQUIRE(still_owned);
+		REQUIRE(external_bytes == 3);
+		REQUIRE(external_capacity == previous_capacity);
+		REQUIRE(retained_capacity == previous_capacity);
+		REQUIRE(pending_bytes == 0);
 		REQUIRE(completion_count == 0);
-
-		ManagedAsyncWriteQueueTest::DiscardExternalPendingBytes(queue, 3);
-		auto close_error = CaptureException([&]() { queue.Close(); });
+		REQUIRE(ManagedAsyncWriteQueueTest::RetainedBytes(queue) == 0);
 		REQUIRE(close_error == wait_error);
 	}
 }

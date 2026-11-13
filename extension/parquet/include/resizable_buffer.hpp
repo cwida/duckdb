@@ -202,6 +202,9 @@ public:
 	shared_ptr<BlockHandle> &GetBlockHandle() {
 		return block_handle;
 	}
+	idx_t GetCapacity() const {
+		return alloc_len;
+	}
 
 private:
 	//! Private so every caller goes through the size threshold instead of registering a managed block directly.
