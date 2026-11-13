@@ -1,0 +1,30 @@
+# name: test/issues/general/test_25888.test
+# description: WHERE above an aggregate combined with QUALIFY must not emit a NULL row when the WHERE clause empties the input
+# group: [general]
+
+statement ok
+SET threads = 1
+
+# The aggregate produces a single row (n=1), the WHERE clause removes it, and the
+# QUALIFY window must not resurrect a NULL row: the result must be empty.
+query I
+WITH s AS (SELECT COUNT(*) AS n FROM (VALUES (1)) t(a))
+SELECT * FROM s q
+WHERE q.n > 5
+QUALIFY ROW_NUMBER() OVER (ORDER BY q.n) = 1
+----
+
+# HAVING as the row-removing predicate
+query I
+SELECT a FROM (VALUES (1), (2)) t(a) GROUP BY a HAVING COUNT(*) > 5
+QUALIFY ROW_NUMBER() OVER (ORDER BY a) = 1
+----
+
+# A row that survives the WHERE clause must still be emitted (not all inputs are removed)
+query I
+WITH s AS (SELECT COUNT(*) AS n FROM (VALUES (1), (2), (3)) t(a))
+SELECT * FROM s q
+WHERE q.n > 1
+QUALIFY ROW_NUMBER() OVER (ORDER BY q.n) = 1
+----
+3
