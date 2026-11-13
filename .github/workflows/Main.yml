@@ -30,7 +30,7 @@ on:
       - 'gh-readonly-queue/**'
   merge_group:
   pull_request:
-    types: [opened, reopened, ready_for_review, converted_to_draft, synchronize]
+    types: [opened, reopened, ready_for_review, synchronize]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/v')) || github.run_id }}
