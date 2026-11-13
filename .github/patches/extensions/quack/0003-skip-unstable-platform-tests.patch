@@ -1,0 +1,42 @@
+diff --git a/test/sql/fetch_cancel_insert.test b/test/sql/fetch_cancel_insert.test
+index e0f319d..ed2358b 100644
+--- a/test/sql/fetch_cancel_insert.test
++++ b/test/sql/fetch_cancel_insert.test
+@@ -2,6 +2,9 @@
+ # description: cancelling a scan whose producer is parked on the fetch buffer frees the connection for later INSERTs
+ # group: [sql]
+ 
++# Cancelling a buffered scan can hang on musl.
++require notmusl
++
+ include test/template/quack_setup.test_template
+ 
+ # The client stops the scan. The producer then fills the small buffer and parks, and it holds the
+diff --git a/test/sql/result_ttl_releases_query.test b/test/sql/result_ttl_releases_query.test
+index 800135d..fe43e45 100644
+--- a/test/sql/result_ttl_releases_query.test
++++ b/test/sql/result_ttl_releases_query.test
+@@ -2,6 +2,9 @@
+ # description: expiring a cache must release the abandoned server-side query too, not just the rows it retained
+ # group: [sql]
+ 
++# Sort memory accounting is unstable on Windows ARM64.
++require notwindows
++
+ include test/template/quack_setup.test_template
+ 
+ statement ok quack_db:quack_server_con
+diff --git a/test/sql/serve_ssl.test b/test/sql/serve_ssl.test
+index 63165eb..f753a4d 100644
+--- a/test/sql/serve_ssl.test
++++ b/test/sql/serve_ssl.test
+@@ -2,6 +2,9 @@
+ # description: quack_serve over HTTPS: generated self-signed keys, and clients pinning the server certificate
+ # group: [sql]
+ 
++# SSL serving can crash on Windows ARM64.
++require notwindows
++
+ require quack
+ 
+ require httpfs
