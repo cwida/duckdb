@@ -424,6 +424,68 @@ inline idx_t DrainRowCount(duckdb_v2_result_handle r) {
 	return total;
 }
 
+// The text of an error info, empty when there is none.
+inline std::string ErrorInfoText(duckdb_v2_error_info_handle err) {
+	const char *text = nullptr;
+	idx_t text_length = 0;
+	if (!err || duckdb_v2_error_info_get_text(err, &text, &text_length) != DUCKDB_V2_ERROR_NONE || !text) {
+		return std::string();
+	}
+	return std::string(text, text_length);
+}
+
+// Binds and plans a single statement without stepping its result, returning the code it failed with and its text.
+inline DUCKDB_V2_ERROR QueryBindError(duckdb_v2_connection_handle conn, std::string_view sql, std::string &message) {
+	duckdb_v2_error_info_handle err = nullptr;
+	duckdb_v2_result_handle result = nullptr;
+	auto rc = Query(conn, sql, &result, &err);
+	message = ErrorInfoText(err);
+	duckdb_v2_error_info_destroy(&err);
+	duckdb_v2_result_destroy(&result);
+	return rc;
+}
+
+// Prepares a single statement, which must succeed.
+inline duckdb_v2_prepared_statement_handle PrepareOne(duckdb_v2_connection_handle conn, std::string_view sql) {
+	duckdb_v2_statement_iterator_handle iter = nullptr;
+	REQUIRE(duckdb_v2_parse_sql(conn, sql.data(), sql.size(), true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_sql_statement_handle stmt = nullptr;
+	auto next_rc = duckdb_v2_statement_iterator_next(iter, &stmt, nullptr);
+	duckdb_v2_statement_iterator_destroy(&iter);
+	REQUIRE(next_rc == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_prepared_statement_handle prepared = nullptr;
+	auto rc = duckdb_v2_prepared_statement_create(conn, stmt, false, &prepared, nullptr);
+	duckdb_v2_sql_statement_destroy(&stmt);
+	REQUIRE(rc == DUCKDB_V2_ERROR_NONE);
+	return prepared;
+}
+
+// Executes a prepared statement with one parameter and drains it, returning the code it failed with and its text.
+// On success `first_integer`, when given, receives the INTEGER in the first row.
+inline DUCKDB_V2_ERROR ExecutePrepared(duckdb_v2_prepared_statement_handle prepared, duckdb_v2_value_handle parameter,
+                                       std::string &message, int32_t *first_integer = nullptr) {
+	duckdb_v2_error_info_handle err = nullptr;
+	duckdb_v2_result_handle result = nullptr;
+	auto rc = duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, &parameter, 1, &result, &err);
+	message = ErrorInfoText(err);
+	duckdb_v2_error_info_destroy(&err);
+	if (rc == DUCKDB_V2_ERROR_NONE && first_integer) {
+		auto chunk = StepChunk(result);
+		REQUIRE(chunk != nullptr);
+		duckdb_v2_vector_handle vec = nullptr;
+		duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, nullptr);
+		duckdb_v2_vector_view view {};
+		duckdb_v2_vector_get_view(vec, &view, nullptr);
+		*first_integer = static_cast<const int32_t *>(view.data)[view.sel ? view.sel[0] : 0];
+		duckdb_v2_data_chunk_destroy(&chunk);
+	}
+	if (rc == DUCKDB_V2_ERROR_NONE) {
+		DrainRowCount(result);
+	}
+	duckdb_v2_result_destroy(&result);
+	return rc;
+}
+
 // Reads the affected-row count of a CHANGED_ROWS result by draining its single-row BIGINT Count chunk.
 // Returns -1 if the stream yields no chunk.
 inline int64_t DrainChangedRows(duckdb_v2_result_handle r) {

@@ -1,4 +1,5 @@
 #include "duckdb/main/capi_v2/capi_v2_function_internal.hpp"
+#include "duckdb/common/type_visitor.hpp"
 
 namespace duckdb::capiv2 {
 
@@ -22,6 +23,23 @@ optional_idx CV2FunctionBindInfo::FindArg(const Identifier &name) const {
 		}
 	}
 	return optional_idx();
+}
+
+void CV2FunctionBindInfo::VerifyReturnTypeResolved(const char *callback, const char *family) const {
+	const auto &return_type = function.GetReturnType();
+	if (return_type.IsComplete()) {
+		return;
+	}
+	// An UNKNOWN type, as of a prepared statement parameter, is known by the time the call is bound again.
+	bool type_unknown = TypeVisitor::Contains(return_type, LogicalTypeId::UNKNOWN);
+	for (idx_t i = 0; i < GetArgCount() && !type_unknown; i++) {
+		type_unknown = TypeVisitor::Contains(GetArgType(i), LogicalTypeId::UNKNOWN);
+	}
+	if (type_unknown) {
+		throw ParameterNotResolvedException();
+	}
+	throw InvalidInputException("The %s callback of %s function %s did not set a concrete return type (it is %s).",
+	                            callback, family, function.GetName(), return_type);
 }
 
 LogicalType CV2ExpressionBindInfo::GetArgType(idx_t index) const {

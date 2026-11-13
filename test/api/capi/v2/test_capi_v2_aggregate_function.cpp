@@ -1,6 +1,9 @@
 #include "test_capi_v2.hpp"
 
 #include <cstring>
+#include <string>
+#include <utility>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // V2 aggregate function tests: build a function on a connection, configure
@@ -435,6 +438,59 @@ void AggArgProbeFinalize(duckdb_v2_aggregate_function_finalize_info_handle info,
 	}
 }
 
+// The bind callback of agg_pick_type sets the return type listed for the type of the first argument, and leaves the
+// declared ANY for an argument type without an entry.
+std::vector<std::pair<DUCKDB_V2_LOGICAL_TYPE_ID, duckdb_v2_logical_type_handle>> agg_pick_return_types;
+
+void AggPickReturnTypeBind(duckdb_v2_function_bind_info_handle info,
+                           duckdb_v2_aggregate_function_bind_info_handle result, duckdb_v2_context_handle,
+                           duckdb_v2_error_info_handle *err) {
+	duckdb_v2_logical_type_handle type = nullptr;
+	auto arg_type = DUCKDB_V2_LOGICAL_TYPE_ID_INVALID;
+	if (duckdb_v2_function_bind_get_arg_type(info, 0, &type, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	duckdb_v2_logical_type_get_id(type, &arg_type, err);
+	duckdb_v2_logical_type_destroy(&type);
+	for (auto &entry : agg_pick_return_types) {
+		if (entry.first == arg_type) {
+			duckdb_v2_aggregate_function_bind_set_return_type(result, entry.second, err);
+			return;
+		}
+	}
+}
+
+void AggEchoArgTypeBind(duckdb_v2_function_bind_info_handle info, duckdb_v2_aggregate_function_bind_info_handle result,
+                        duckdb_v2_context_handle, duckdb_v2_error_info_handle *err) {
+	duckdb_v2_logical_type_handle type = nullptr;
+	if (duckdb_v2_function_bind_get_arg_type(info, 0, &type, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	duckdb_v2_aggregate_function_bind_set_return_type(result, type, err);
+	duckdb_v2_logical_type_destroy(&type);
+}
+
+// Registers name(x ANY) -> ANY with the given bind callback; every group finalizes to the INTEGER 0.
+void RegisterAggAnyToAny(duckdb_v2_connection_handle conn, duckdb_v2_factory_handle factory, std::string_view name,
+                         duckdb_v2_aggregate_function_bind_callback_fn bind) {
+	auto any = MakeType(factory, DUCKDB_V2_LOGICAL_TYPE_ID_ANY);
+	auto function = MakeAggregate(conn, name);
+	auto sig = AggSigOf(function);
+	AggSigParam(sig, "x", any);
+	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, any, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_aggregate_function_set_bind_callback(function, bind, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_aggregate_function_set_size_callback(function, AggArgProbeSize, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_aggregate_function_set_init_callback(function, AggNoopInit, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_aggregate_function_set_update_callback(function, AggNoopUpdate, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_aggregate_function_set_combine_callback(function, AggNoopCombine, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_aggregate_function_set_finalize_callback(function, AggArgProbeFinalize, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_aggregate_function(conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_aggregate_function_destroy(&function);
+	duckdb_v2_logical_type_destroy(&any);
+}
+
 } // namespace
 
 // ===========================================================================
@@ -593,6 +649,77 @@ TEST_CASE("V2 aggregate: bind reads argument count, types and constants", "[capi
 	REQUIRE(Query(fx.conn, "SELECT agg_arg_probe('hello', i) FROM (VALUES (21)) t(i)", &failed) ==
 	        DUCKDB_V2_ERROR_QUERY_BINDER);
 	duckdb_v2_result_destroy(&failed);
+}
+
+// The return type after bind is concrete, or the call fails to bind.
+TEST_CASE("V2 aggregate: a bind callback that leaves the return type incomplete fails the bind",
+          "[capi_v2][aggregate_function]") {
+	EnvFixture fx;
+	auto any = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_ANY);
+	auto integer = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
+	RegisterAggAnyToAny(fx.conn, fx.factory, "agg_pick_type", AggPickReturnTypeBind);
+	agg_pick_return_types = {{DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, integer}, {DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, any}};
+	agg_arg_probe = {};
+	const std::string unresolved =
+	    "The bind callback of aggregate function \"agg_pick_type\" did not set a concrete return type (it is ANY).";
+
+	REQUIRE(AggQueryI64(fx.conn, "SELECT agg_pick_type(i::INTEGER)::BIGINT FROM range(3) t(i)") == 0);
+
+	std::string message;
+	// The callback sets nothing: the declared ANY is left.
+	for (auto sql : {"SELECT agg_pick_type(s) FROM (VALUES ('a'), ('b')) t(s)", "SELECT agg_pick_type('a')",
+	                 "SELECT g, agg_pick_type(s) FROM (VALUES (1, 'a'), (2, 'b')) t(g, s) GROUP BY g",
+	                 "SELECT agg_pick_type(DISTINCT s) FROM (VALUES ('a')) t(s)",
+	                 "SELECT agg_pick_type(s) OVER () FROM (VALUES ('a')) t(s)"}) {
+		INFO(sql);
+		REQUIRE(QueryBindError(fx.conn, sql, message) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(message.find(unresolved) != std::string::npos);
+	}
+	// The callback tries to set ANY itself: the setter refuses it, and the callback reports that.
+	REQUIRE(QueryBindError(fx.conn, "SELECT agg_pick_type(i) FROM range(3) t(i)", message) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(message.find("Return type must be a fully defined concrete type") != std::string::npos);
+
+	// A prepared parameter puts the check off to the execution that gives it a value.
+	auto seven = MakeInt32Value(fx.factory, 7);
+	auto text = MakeVarcharValue(fx.factory, "a");
+	int32_t out = -1;
+	auto prepared = PrepareOne(fx.conn, "SELECT agg_pick_type(?)");
+	REQUIRE(ExecutePrepared(prepared, seven, message, &out) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(out == 0);
+	REQUIRE(ExecutePrepared(prepared, text, message) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(message.find(unresolved) != std::string::npos);
+	out = -1;
+	REQUIRE(ExecutePrepared(prepared, seven, message, &out) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(out == 0);
+	duckdb_v2_prepared_statement_destroy(&prepared);
+
+	// The failed binds left the database usable.
+	REQUIRE(AggQueryI64(fx.conn, "SELECT agg_pick_type(i::INTEGER)::BIGINT FROM range(3) t(i)") == 0);
+
+	agg_pick_return_types.clear();
+	duckdb_v2_value_destroy(&seven);
+	duckdb_v2_value_destroy(&text);
+	duckdb_v2_logical_type_destroy(&any);
+	duckdb_v2_logical_type_destroy(&integer);
+}
+
+// A callback that sets the type of its argument sees UNKNOWN for a prepared parameter, and the bind waits for the
+// value.
+TEST_CASE("V2 aggregate: a bind callback may return the type of a prepared parameter",
+          "[capi_v2][aggregate_function]") {
+	EnvFixture fx;
+	RegisterAggAnyToAny(fx.conn, fx.factory, "agg_echo_type", AggEchoArgTypeBind);
+	agg_arg_probe = {};
+
+	auto seven = MakeInt32Value(fx.factory, 7);
+	std::string message;
+	int32_t out = -1;
+	auto prepared = PrepareOne(fx.conn, "SELECT agg_echo_type(?)");
+	REQUIRE(ExecutePrepared(prepared, seven, message, &out) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(out == 0);
+	duckdb_v2_prepared_statement_destroy(&prepared);
+	duckdb_v2_value_destroy(&seven);
 }
 
 // ===========================================================================
