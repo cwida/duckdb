@@ -156,6 +156,10 @@ public:
 		LoadAllSegments(l);
 		return nodes.size();
 	}
+	//! The number of segments that are loaded so far: unlike GetSegmentCount this does not load the other segments
+	idx_t GetLoadedSegmentCount(SegmentLock &l) const {
+		return nodes.size();
+	}
 	//! Gets a pointer to the nth segment. Negative numbers start from the back.
 	optional_ptr<SegmentNode<T>> GetSegmentByIndex(int64_t index) const {
 		auto l = Lock();

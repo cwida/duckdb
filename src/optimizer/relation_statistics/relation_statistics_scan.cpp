@@ -1,5 +1,6 @@
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 
+#include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/subtract.hpp"
@@ -19,6 +20,7 @@
 #include "duckdb/planner/operator/logical_expression_get.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 
 namespace duckdb {
@@ -573,9 +575,12 @@ struct ZonemapFilter {
 //! own [min, max] that the range covers, but only where the column is stored in runs, which the zonemaps show: the
 //! row group covers at most half of the span of the column, and the row groups together cover the span at most
 //! ZONEMAP_MAX_SPAN_COVERAGE times. Everywhere else a row group that cannot be pruned counts whole.
+//! Returns an invalid index if the bound is not below the estimate that the scan already has.
 static optional_idx ZonemapFilterBound(LogicalGet &get, ClientContext &context,
-                                       const vector<BaseStatistics> &scan_statistics) {
-	//! Above this many row groups, only every k-th row group is checked
+                                       const vector<BaseStatistics> &scan_statistics, idx_t estimate) {
+	//! The work per plan is limited to the row groups of a table of this many row groups (2 billion rows at the
+	//! default row group size). A larger table keeps its estimate: checking only some of its row groups would not
+	//! give a bound, as the row groups that are not checked can hold all of the matching rows
 	static constexpr idx_t ZONEMAP_MAX_ROW_GROUPS = 16384;
 	//! Row groups of a sorted column tile its span (a coverage of 1, slightly more with shared boundaries). At 2, a
 	//! value lies in two row groups on average: the row groups overlap, and [min, max] of a row group says nothing
@@ -616,26 +621,25 @@ static optional_idx ZonemapFilterBound(LogicalGet &get, ClientContext &context,
 	if (filters.empty()) {
 		return optional_idx();
 	}
+	// the limit is checked before any row group is loaded or collected
+	auto &storage = table->Cast<DuckTableEntry>().GetStorage();
+	if (storage.GetRowGroupCountWithoutLoading() > ZONEMAP_MAX_ROW_GROUPS) {
+		return optional_idx();
+	}
 
 	GetPartitionStatsInput input(get.function, get.bind_data.get());
 	auto partitions = get.function.get_partition_stats(context, input);
 	if (partitions.empty()) {
 		return optional_idx();
 	}
-	const idx_t step = (partitions.size() + ZONEMAP_MAX_ROW_GROUPS - 1) / ZONEMAP_MAX_ROW_GROUPS;
-	idx_t total_rows = 0;
-	idx_t checked_rows = 0;
+	if (partitions.size() > ZONEMAP_MAX_ROW_GROUPS) {
+		return optional_idx();
+	}
 	// rows of the row groups that no filter prunes, and the same rows with the row groups that a range cuts
 	// counted for their covered share
 	idx_t matching_rows = 0;
 	double refined_rows = 0;
-	for (idx_t partition_idx = 0; partition_idx < partitions.size(); partition_idx++) {
-		auto &partition = partitions[partition_idx];
-		total_rows += partition.count;
-		if (partition_idx % step != 0) {
-			continue;
-		}
-		checked_rows += partition.count;
+	for (auto &partition : partitions) {
 		bool pruned = false;
 		double share = 1;
 		for (auto &filter : filters) {
@@ -654,7 +658,7 @@ static optional_idx ZonemapFilterBound(LogicalGet &get, ClientContext &context,
 				pruned = true;
 				break;
 			}
-			if (pruning != FilterPropagateResult::NO_PRUNING_POSSIBLE || !filter.range) {
+			if (pruning != FilterPropagateResult::NO_PRUNING_POSSIBLE || !filter.range || !filter.table_span) {
 				continue;
 			}
 			// the range cuts the row group. A row group that holds a single value is not cut, and a row group
@@ -678,32 +682,32 @@ static optional_idx ZonemapFilterBound(LogicalGet &get, ClientContext &context,
 		}
 		matching_rows += partition.count;
 		refined_rows += static_cast<double>(partition.count) * share;
+		if (refined_rows >= static_cast<double>(estimate)) {
+			// the bound only grows from here on: it cannot improve on the estimate, so the remaining row groups
+			// need not be read
+			return optional_idx();
+		}
 	}
-	if (checked_rows == 0) {
-		return optional_idx();
-	}
-	// above the row group limit every k-th row group was checked: scale to the rows they stand for
-	const double scale = static_cast<double>(total_rows) / static_cast<double>(checked_rows);
 	// the interpolation is only kept if every column it was applied to is stored in runs: the spans of all of its
 	// row groups, also of the ones that another filter skips, cover the span of the column about once
 	bool in_runs = true;
 	for (auto &filter : filters) {
-		if (!filter.refined) {
+		if (!filter.refined || !filter.table_span) {
 			continue;
 		}
+		const auto table_width = filter.table_span->Width();
 		double span_coverage = 0;
-		for (idx_t partition_idx = 0; partition_idx < partitions.size(); partition_idx += step) {
-			auto &partition = partitions[partition_idx];
+		for (auto &partition : partitions) {
 			if (!partition.partition_row_group) {
 				continue;
 			}
 			auto stats = partition.partition_row_group->GetColumnStatistics(filter.storage_index);
 			auto row_group_span = stats ? ZonemapSpan::FromStatistics(*stats) : optional<ZonemapSpan>();
 			if (row_group_span) {
-				span_coverage += MinValue(1.0, row_group_span->Width() / filter.table_span->Width());
+				span_coverage += MinValue(1.0, row_group_span->Width() / table_width);
 			}
 		}
-		if (span_coverage * scale > ZONEMAP_MAX_SPAN_COVERAGE) {
+		if (span_coverage > ZONEMAP_MAX_SPAN_COVERAGE) {
 			in_runs = false;
 			break;
 		}
@@ -712,7 +716,6 @@ static optional_idx ZonemapFilterBound(LogicalGet &get, ClientContext &context,
 	if (in_runs) {
 		bound = MinValue(bound, std::ceil(refined_rows));
 	}
-	bound = MinValue(std::round(bound * scale), static_cast<double>(total_rows));
 	return MaxValue<idx_t>(1, RelationStatisticsHelper::CardinalityFromDouble(bound));
 }
 
@@ -777,12 +780,19 @@ RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientC
 			estimate.Combine({range_cardinality, true});
 		}
 	}
-	if (estimate.cardinality > 0 && get.table_filters.HasFilters() &&
+	if (get.table_filters.HasFilters() &&
 	    !Optimizer::OptimizerDisabled(context, OptimizerType::SCAN_SELECTIVITY_ZONEMAPS)) {
 		// the scan skips the row groups whose zonemaps cannot satisfy the filters: their rows bound the estimate
-		auto zonemap_bound = ZonemapFilterBound(get, context, scan_statistics);
-		if (zonemap_bound.IsValid()) {
-			estimate.Combine({zonemap_bound.GetIndex(), true});
+		auto current_estimate = estimate.cardinality;
+		if (!estimate.supported) {
+			current_estimate = MinValue(current_estimate, FilterFraction(base_table_cardinality, DEFAULT_SELECTIVITY));
+		}
+		// an estimate of at most one row cannot be improved
+		if (current_estimate > 1) {
+			auto zonemap_bound = ZonemapFilterBound(get, context, scan_statistics, current_estimate);
+			if (zonemap_bound.IsValid()) {
+				estimate.Combine({zonemap_bound.GetIndex(), true});
+			}
 		}
 	}
 	ApplyFilterEstimate(result, estimate);

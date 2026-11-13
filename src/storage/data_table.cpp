@@ -1692,6 +1692,10 @@ idx_t DataTable::GetRowGroupCount() const {
 	return row_groups->GetRowGroupCount();
 }
 
+idx_t DataTable::GetRowGroupCountWithoutLoading() const {
+	return row_groups->GetRowGroupCountWithoutLoading();
+}
+
 idx_t DataTable::GetRowGroupCountWithLocalStorage(ClientContext &context) {
 	auto &local_storage = LocalStorage::Get(context, db);
 	auto storage = local_storage.GetStorage(*this);
