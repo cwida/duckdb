@@ -21,7 +21,7 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformExplainStatement(
 	bool sql_is_set = false;
 	auto format = ProfilerPrintFormat::Default();
 	if (explain_option_list) {
-		for (auto option : *explain_option_list) {
+		for (const auto &option : *explain_option_list) {
 			auto option_name = StringUtil::Lower(option.name.GetIdentifierName());
 			if (option_name == "format") {
 				if (format_is_set) {
