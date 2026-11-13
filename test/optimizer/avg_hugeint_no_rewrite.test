@@ -1,0 +1,21 @@
+# name: test/optimizer/avg_hugeint_no_rewrite.test
+# description: AVG over HUGEINT must keep the exact native path (not the SUM/COUNT double rewrite)
+# group: [optimizer]
+
+statement ok
+CREATE TABLE avg_hi(hi HUGEINT, bi BIGINT, g INTEGER);
+
+statement ok
+INSERT INTO avg_hi VALUES (1, 1, 1), (2, 2, 1), (3, 3, 2);
+
+statement ok
+SET explain_output='optimized_only';
+
+# The SUM(x) / COUNT(x) rewrite divides in DOUBLE; for HUGEINT the 128-bit sum can exceed 2^53,
+# so the rewrite would drop low bits. It must keep the exact native avg (issue #27865).
+# The numeric correctness is pinned by test/sql/aggregate/aggregates/test_bigint_avg.test,
+# and the 64-bit rewrite (which must stay) by test/optimizer/avg_rewrite_profitability.test
+query II
+EXPLAIN SELECT g, avg(hi) FROM avg_hi GROUP BY g;
+----
+logical_opt	<REGEX>:.*avg\(hi\).*

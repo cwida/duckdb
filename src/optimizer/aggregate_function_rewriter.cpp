@@ -93,6 +93,20 @@ public:
 	}
 
 	bool ShouldRewrite(const LogicalAggregate &aggr, Expression &expr) override {
+		// The AVG(x) -> SUM(x) / COUNT(x) rewrite divides in DOUBLE: SUM(x) (a 128-bit value
+		// for every integer input) is cast to double before the division, so once the sum
+		// reaches 2^53 the rewritten result drops low bits (e.g. comes out 0.5 too small).
+		// For 128-bit integer inputs the sum is always 128-bit and a single row can already
+		// exceed 2^53, so the double-cast division is not reliable there. The native AVG
+		// divides in long double and is exact (the pre-2.0 behaviour), so keep it for these
+		// types. We match the logical type, not the physical one (DECIMAL(12,2) is physically
+		// INT64 but must still rewrite). See issue #27865.
+		auto child_type = expr.Cast<BoundAggregateExpression>().GetChildren()[0]->GetReturnType().id();
+		// Only signed 128-bit integers reach this rule with a native avg (unsigned integers bind
+		// as avg(CAST(x AS DOUBLE)) and never hit it). See issue #27865.
+		if (child_type == LogicalTypeId::HUGEINT) {
+			return false;
+		}
 		if (aggr.groups.empty()) {
 			return true;
 		}
