@@ -112,9 +112,9 @@ statement ok
 RESET max_decimal_width
 
 # functions that bind a nested function or combine types while they bind follow the width of the storage version as
-# well: the sum list_aggr binds, the accumulator of list_reduce, the common type of a comparison and the aggregate
-# finalize rebinds from an exported state. Created by the default session, written by a session that bounds decimals to
-# 38 digits
+# well: the sum list_aggr binds, the accumulator of list_reduce, the common type of a comparison, the aggregate
+# finalize rebinds from an exported state and the type make_type constructs. Created by the default session, written by
+# a session that bounds decimals to 38 digits
 statement ok
 ATTACH '{TEST_DIR}/key_width_functions.db' AS d (STORAGE_VERSION 'v2.1.0')
 
@@ -163,6 +163,16 @@ CREATE TABLE d.e AS SELECT 1 AS id, sum(1::DECIMAL(40,0)) EXPORT_STATE AS s
 statement ok
 CREATE UNIQUE INDEX ex ON d.e ((finalize(s)))
 
+# the type a make_type key folds is bound within the width of the storage version as well
+statement ok
+CREATE TABLE d.k (a VARCHAR)
+
+statement ok
+CREATE UNIQUE INDEX kx ON d.k ((a || CAST(make_type('DECIMAL', width := 40, scale := 0) AS VARCHAR)))
+
+statement ok
+INSERT INTO d.k VALUES ('x')
+
 statement ok
 CHECKPOINT d
 
@@ -190,6 +200,11 @@ query I
 SELECT id FROM d.e WHERE id = 1
 ----
 1
+
+query I
+SELECT a FROM d.k WHERE a = 'x'
+----
+x
 
 statement ok
 DETACH d
@@ -249,6 +264,20 @@ SELECT count(*) FROM d.e
 ----
 2
 
+# the session cannot construct the type, the key holds the name the storage version binds
+statement error
+SELECT make_type('DECIMAL', width := 40, scale := 0)
+----
+<REGEX>:.*DECIMAL type width 40 exceeds the maximum DECIMAL width of 38.*
+
+statement error
+INSERT INTO d.k VALUES ('x')
+----
+<REGEX>:.*Duplicate key.*xDECIMAL\(40,0\).*
+
+statement ok
+INSERT INTO d.k VALUES ('y')
+
 statement ok
 DETACH d
 
@@ -271,6 +300,9 @@ CREATE TABLE d.c (a DECIMAL(38,0), b DECIMAL(38,1))
 
 statement ok
 CREATE TABLE d.e AS SELECT 1 AS id, sum(1::DECIMAL(40,0)) EXPORT_STATE AS s
+
+statement ok
+CREATE TABLE d.k (a VARCHAR)
 
 statement ok
 CHECKPOINT d
@@ -336,6 +368,17 @@ INSERT INTO d.e SELECT 2, s FROM d.e
 <REGEX>:.*Duplicate key.*1.*
 
 statement ok
+CREATE UNIQUE INDEX kx ON d.k ((a || CAST(make_type('DECIMAL', width := 40, scale := 0) AS VARCHAR)))
+
+statement ok
+INSERT INTO d.k VALUES ('x')
+
+statement error
+INSERT INTO d.k VALUES ('x')
+----
+<REGEX>:.*Duplicate key.*xDECIMAL\(40,0\).*
+
+statement ok
 CHECKPOINT d
 
 statement ok
@@ -380,6 +423,14 @@ SELECT id, finalize(s) FROM d.e ORDER BY id
 ----
 1	1
 2	2
+
+statement error
+INSERT INTO d.k VALUES ('x')
+----
+<REGEX>:.*Duplicate key.*xDECIMAL\(40,0\).*
+
+statement ok
+INSERT INTO d.k VALUES ('y')
 
 statement ok
 INSERT INTO d.c VALUES (99999999999999999999999999999999999999, 0.6)

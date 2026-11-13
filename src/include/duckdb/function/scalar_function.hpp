@@ -103,14 +103,24 @@ struct FunctionModifiedDatabasesInput {
 
 struct FunctionBindExpressionInput {
 	FunctionBindExpressionInput(ClientContext &context_p, BoundScalarFunction &bound_function,
-	                            optional_ptr<FunctionData> bind_data_p, vector<unique_ptr<Expression>> &children_p)
-	    : context(context_p), bound_function(bound_function), bind_data(bind_data_p), children(children_p) {
+	                            optional_ptr<FunctionData> bind_data_p, vector<unique_ptr<Expression>> &children_p,
+	                            optional_ptr<Binder> binder_p = nullptr,
+	                            optional_ptr<const DecimalWidthLimit> decimal_width_limit_p = nullptr)
+	    : context(context_p), bound_function(bound_function), bind_data(bind_data_p), children(children_p),
+	      binder(binder_p), decimal_width_limit(decimal_width_limit_p) {
 	}
 
 	ClientContext &context;
 	BoundScalarFunction &bound_function;
 	optional_ptr<FunctionData> bind_data;
 	vector<unique_ptr<Expression>> &children;
+	//! The binder of the query the function is bound in, if any
+	optional_ptr<Binder> binder;
+	//! The fixed limit of a bind outside of a query, if any
+	optional_ptr<const DecimalWidthLimit> decimal_width_limit;
+
+	//! The widest DECIMAL the expression constructs: the limit of the binder, the fixed limit, or the setting
+	DUCKDB_API DecimalWidthLimit GetDecimalWidthLimit() const;
 };
 
 struct FunctionUnbindInput {
