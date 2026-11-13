@@ -101,8 +101,8 @@ public:
 	                                                    AttachOptions &options);
 
 private:
-	//! Initializes the instance and attaches the main database at `path` (in-memory when null).
-	void Initialize(const char *path, DBConfig *config);
+	//! Attaches the main database at the configured path (in-memory when empty) and starts the scheduler.
+	void AttachMainDatabase();
 	//! Initializes the instance without attaching a database: the system catalog is the only catalog until one is
 	//! attached (ATTACH, or DatabaseManager::AttachDatabase).
 	void InitializeEmpty(DBConfig *config);

@@ -310,8 +310,7 @@ static duckdb_ext_api_v1 CreateAPIv1Wrapper() {
 	return CreateAPIv1();
 }
 
-void DatabaseInstance::Initialize(const char *database_path, DBConfig *user_config) {
-	InitializeInstance(database_path, user_config);
+void DatabaseInstance::AttachMainDatabase() {
 	if (!db_manager->HasAttachedDatabase()) {
 		CreateMainDatabase();
 	}
@@ -410,10 +409,12 @@ void DatabaseInstance::InitializeInstance(const char *database_path, DBConfig *u
 }
 
 DuckDB::DuckDB(const char *path, DBConfig *new_config) : instance(make_shared_ptr<DatabaseInstance>()) {
-	instance->Initialize(path, new_config);
+	instance->InitializeInstance(path, new_config);
+	// load extensions before attaching the main database, since replaying its WAL can depend on them
 	if (instance->config.options.load_extensions) {
 		ExtensionHelper::LoadAllExtensions(*this);
 	}
+	instance->AttachMainDatabase();
 	instance->db_manager->FinalizeStartup();
 }
 

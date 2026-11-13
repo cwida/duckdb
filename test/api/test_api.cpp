@@ -712,6 +712,27 @@ TEST_CASE("Test opening an invalid database file", "[api]") {
 	REQUIRE(!success);
 }
 
+// sqllogictest doesn't load extensions (including ICU), so use C++ test here.
+TEST_CASE("Test replaying the WAL of the main database after loading linked extensions", "[api]") {
+	auto path = TestCreatePath("wal_replay_linked_extensions.db");
+	TestDeleteFile(path);
+	TestDeleteFile(path + ".wal");
+	{
+		DuckDB db(path);
+		REQUIRE(db.ExtensionIsLoaded("icu"));
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("PRAGMA disable_checkpoint_on_shutdown"));
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT '2024-01-01 10:00:00 America/Los_Angeles' AS ts"));
+		REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
+		// replaying this cast requires ICU, since only ICU parses time zone names
+		REQUIRE_NO_FAIL(con.Query("ALTER TABLE t ALTER ts TYPE TIMESTAMPTZ"));
+	}
+	DuckDB db(path);
+	Connection con(db);
+	auto result = con.Query("SELECT epoch(ts) FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {1704132000.0}));
+}
+
 TEST_CASE("Test opening a database with invalid metadata block index", "[api]") {
 	auto path = TestCreatePath("invalid_metadata_block_index.db");
 	TestDeleteFile(path);
