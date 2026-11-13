@@ -270,7 +270,7 @@ void WriteAheadLog::WriteHeader() {
 	auto &single_file_block_manager = database.GetStorageManager().GetBlockManager().Cast<SingleFileBlockManager>();
 	auto file_version_number = single_file_block_manager.GetVersionNumber();
 	// double check
-	if (StorageManager::TargetAtLeastVersion(StorageVersion::V1_3_0, file_version_number)) {
+	if (StorageManager::TargetAtLeastVersion(StorageVersion::V1_4_0, file_version_number)) {
 		auto db_identifier = single_file_block_manager.GetDBIdentifier();
 		serializer.WriteList(102, "db_identifier", MainHeader::DB_IDENTIFIER_LEN,
 		                     [&](Serializer::List &list, idx_t i) { list.WriteElement(db_identifier[i]); });
