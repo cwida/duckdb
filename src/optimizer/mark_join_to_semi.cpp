@@ -171,7 +171,11 @@ void MarkJoinToSemi::TryConvert(unique_ptr<LogicalOperator> &op, const unordered
 	}
 	changed = true;
 	if (filter.expressions.empty() && HasIdentityProjection(filter)) {
-		// nothing left to filter or project: the join takes the place of the filter
+		// nothing left to filter or project: the join takes the place of the filter, including its estimated
+		// cardinality (the estimate of the MARK join is the cardinality of its left side)
+		if (filter.has_estimated_cardinality) {
+			join.SetEstimatedCardinality(filter.estimated_cardinality);
+		}
 		op = std::move(filter.children[0]);
 	}
 	op->ResolveOperatorTypes();

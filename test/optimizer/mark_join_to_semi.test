@@ -422,3 +422,54 @@ query II
 SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c < l.v) AND NOT EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) ORDER BY ALL;
 ----
 2	20
+
+statement ok
+RESET disabled_optimizers;
+
+# the converted join takes over the estimated cardinality of the filter it replaces. The estimate of the MARK join
+# is the cardinality of its left side, the filter on the mark carries the estimate of the rows that pass
+statement ok
+CREATE TABLE el AS SELECT i AS k, i % 97 AS v FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE er AS SELECT i * 3 AS k, i % 89 AS c FROM range(100) t(i);
+
+statement ok
+SET explain_output = 'physical_only';
+
+statement ok
+SET disabled_optimizers = 'mark_join_to_semi';
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM el WHERE EXISTS (SELECT 1 FROM er WHERE er.k = el.k AND er.c > el.v);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "MARK",\s*"Conditions": \[[^\]]*\],\s*"Estimated Cardinality": "1000"[\s\S]*"Estimated Cardinality": "200"[\s\S]*
+
+statement ok
+RESET disabled_optimizers;
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM el WHERE EXISTS (SELECT 1 FROM er WHERE er.k = el.k AND er.c > el.v);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "SEMI",\s*"Conditions": \[[^\]]*\],\s*"Estimated Cardinality": "200"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM el WHERE NOT EXISTS (SELECT 1 FROM er WHERE er.k = el.k AND er.c > el.v);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "ANTI",\s*"Conditions": \[[^\]]*\],\s*"Estimated Cardinality": "200"[\s\S]*
+
+# a filter that keeps another expression keeps its own estimate, the join below it keeps the estimate it had
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM el WHERE EXISTS (SELECT 1 FROM er WHERE er.k = el.k AND er.c > el.v) AND random() < 2;
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "SEMI",\s*"Conditions": \[[^\]]*\],\s*"Estimated Cardinality": "1000"[\s\S]*"Estimated Cardinality": "200"[\s\S]*
+
+query I
+SELECT count(*) FROM el WHERE EXISTS (SELECT 1 FROM er WHERE er.k = el.k AND er.c > el.v);
+----
+43
+
+query I
+SELECT count(*) FROM el WHERE NOT EXISTS (SELECT 1 FROM er WHERE er.k = el.k AND er.c > el.v);
+----
+957
