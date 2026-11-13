@@ -1267,7 +1267,7 @@ bool PartialAggregatePushdown::TryPushdownAggregate(unique_ptr<LogicalOperator> 
 			                         // the consumers of an exported aggregate expect the state: pass the
 			                         // combined state on instead of finalizing it
 			                         D_ASSERT(ref->GetReturnType() == original.GetReturnType());
-			                         return std::move(ref);
+			                         return ref;
 		                         }
 		                         auto finalized = optimizer.BindScalarFunction("finalize", std::move(ref));
 		                         if (finalized->GetReturnType() != original.GetReturnType()) {
