@@ -18,7 +18,7 @@ statement ok
 SET dynamic_or_filter_threshold=0;
 
 statement ok
-ATTACH '{TEST_DIR}/adaptive_native_cache.db' AS native_cache (BLOCK_SIZE 16384);
+ATTACH '{TEST_DIR}/adaptive_native_cache.db' AS native_cache (BLOCK_SIZE 16384, STORAGE_VERSION 'v1.3.0');
 
 statement ok
 USE native_cache;

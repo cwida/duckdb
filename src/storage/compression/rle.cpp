@@ -428,6 +428,8 @@ struct RLEScanState : public SegmentScanState {
 	//! If we are running a filter over the column - the runs that match the filter
 	unique_ptr<TableFilterCache> filter_cache;
 	SelectionVector run_indices;
+	vector<idx_t> run_offsets;
+	vector<idx_t> run_row_counts;
 };
 
 template <class T>
@@ -607,34 +609,68 @@ void RLEFilter(ColumnSegment &segment, ColumnScanState &state, idx_t vector_coun
 		RLEScanConstant<T>(scan_state, current_run, vector_count, result);
 		return;
 	}
-	if (scan_state.run_indices.Capacity() < vector_count) {
-		scan_state.run_indices.Initialize(vector_count);
-	}
 	if (!sel.IsSet()) {
+		if (scan_state.run_indices.Capacity() < vector_count) {
+			scan_state.run_indices.Initialize(vector_count);
+		}
+		scan_state.run_offsets.clear();
+		scan_state.run_row_counts.clear();
 		idx_t offset = 0;
 		while (offset < vector_count) {
 			const auto run = scan_state.GetCurrentRun();
 			const auto count = MinValue<idx_t>(run.length - scan_state.position_in_entry, vector_count - offset);
-			for (idx_t i = 0; i < count; i++) {
-				scan_state.run_indices.set_index(offset + i, scan_state.entry_pos);
+			if (offset < sel_count) {
+				scan_state.run_indices.set_index(scan_state.run_row_counts.size(), scan_state.entry_pos);
+				scan_state.run_offsets.push_back(offset);
+				scan_state.run_row_counts.push_back(MinValue<idx_t>(count, sel_count - offset));
 			}
 			offset += count;
-			scan_state.SkipInternal(count);
-		}
-	} else {
-		idx_t previous = 0;
-		for (idx_t i = 0; i < sel_count; i++) {
-			const auto row = sel.get_index(i);
-			if (row < previous || row >= vector_count) {
-				throw InternalException("Invalid row selection in RLE filter");
+			scan_state.position_in_entry += count;
+			if (scan_state.ExhaustedRun(run.length)) {
+				scan_state.ForwardToNextRun();
 			}
-			scan_state.SkipInternal(row - previous);
-			scan_state.GetCurrentRun();
-			scan_state.run_indices.set_index(row, scan_state.entry_pos);
-			previous = row;
 		}
-		scan_state.SkipInternal(vector_count - previous);
+		SelectionVector selected_runs;
+		idx_t selected_run_count = scan_state.run_row_counts.size();
+		scan_state.filter_cache->FilterRuns(
+		    scan_state.run_indices,
+		    array_ptr<const idx_t>(scan_state.run_row_counts.data(), scan_state.run_row_counts.size()), selected_runs,
+		    selected_run_count);
+		SelectionVector selected_rows(sel_count);
+		result.SetVectorType(VectorType::FLAT_VECTOR);
+		auto writer = FlatVector::ScatterWriter<T>(result);
+		idx_t accepted_rows = 0;
+		for (idx_t i = 0; i < selected_run_count; i++) {
+			const auto run = selected_runs.get_index(i);
+			const auto value = run_values[scan_state.run_indices.get_index(run)];
+			const auto start = scan_state.run_offsets[run];
+			const auto count = scan_state.run_row_counts[run];
+			for (idx_t row = start; row < start + count; row++) {
+				writer[row] = value;
+				selected_rows.set_index(accepted_rows++, row);
+			}
+		}
+		if (accepted_rows != sel_count) {
+			sel.Initialize(selected_rows);
+		}
+		sel_count = accepted_rows;
+		return;
 	}
+	if (scan_state.run_indices.Capacity() < vector_count) {
+		scan_state.run_indices.Initialize(vector_count);
+	}
+	idx_t previous = 0;
+	for (idx_t i = 0; i < sel_count; i++) {
+		const auto row = sel.get_index(i);
+		if (row < previous || row >= vector_count) {
+			throw InternalException("Invalid row selection in RLE filter");
+		}
+		scan_state.SkipInternal(row - previous);
+		scan_state.GetCurrentRun();
+		scan_state.run_indices.set_index(row, scan_state.entry_pos);
+		previous = row;
+	}
+	scan_state.SkipInternal(vector_count - previous);
 	scan_state.filter_cache->Filter(scan_state.run_indices, sel, sel_count);
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto data = FlatVector::GetDataMutable<T>(result);

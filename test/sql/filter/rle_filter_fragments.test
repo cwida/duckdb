@@ -1,0 +1,68 @@
+# name: test/sql/filter/rle_filter_fragments.test
+# description: RLE filtering preserves rows across runs, vectors, and partial row groups
+# group: [filter]
+
+statement ok
+SET VARIABLE initial_database = current_database();
+
+statement ok
+ATTACH '{TEST_DIR}/rle_filter_fragments.db' AS fragments (STORAGE_VERSION 'v1.3.0');
+
+statement ok
+USE fragments;
+
+statement ok
+SET force_compression='rle';
+
+statement ok
+CREATE TABLE runs AS SELECT i AS id,((i//997)%3)::BIGINT k FROM range(122891) t(i);
+
+statement ok
+CHECKPOINT;
+
+query II
+SELECT bool_or(compression='RLE'),bool_and(compression IN ('RLE','Constant')) FROM pragma_storage_info('runs') WHERE column_name='k' AND segment_type<>'VALIDITY';
+----
+1	1
+
+query III
+SELECT count(*),sum(id),sum(k) FROM runs WHERE k=1;
+----
+40877	2506373255	40877
+
+query III
+SELECT count(*),sum(id),sum(k) FROM runs WHERE k>=1;
+----
+81754	5053500879	122631
+
+query III
+SELECT count(*),sum(id),sum(k) FROM runs WHERE k=0 OR k=2;
+----
+82014	5044664240	81754
+
+query III
+SELECT count(*),sum(id),sum(k) FROM runs WHERE id%7=0 AND k=1;
+----
+5840	358088360	5840
+
+query III
+SELECT count(*),sum(id),sum(k) FROM runs WHERE id>=1001 AND id<122883 AND k=2;
+----
+40877	2547127624	81754
+
+query III
+SELECT count(*),sum(id),sum(k) FROM runs JOIN (VALUES (2::BIGINT)) b(k) USING(k);
+----
+40877	2547127624	81754
+
+statement ok
+SET schema = getvariable('initial_database');
+
+statement ok
+DETACH fragments;
+
+statement ok
+RESET force_compression;
+
+statement ok
+RESET VARIABLE initial_database;

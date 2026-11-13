@@ -1707,6 +1707,7 @@ static unique_ptr<Expression> CreateRuntimeFilterExpression(ClientContext &conte
 		if (!prefix_range_filter || !prefix_range_filter->IsInitialized()) {
 			return nullptr;
 		}
+		prefix_range_filter->MarkPublished();
 		filter_expr = make_uniq<BoundFunctionExpression>(
 		    BoundScalarFunction(PrefixRangeScalarFun::GetFunction(filter_input_type)), std::move(children),
 		    make_uniq<PrefixRangeFunctionData>(prefix_range_filter, filters_null_values, key_name, key_type,

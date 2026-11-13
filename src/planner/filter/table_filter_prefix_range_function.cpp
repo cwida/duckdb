@@ -413,6 +413,7 @@ private:
 public:
 	void Initialize(ClientContext &context, idx_t number_of_rows, Value min_val, Value max_val,
 	                idx_t max_bits) override {
+		D_ASSERT(!IsPublished());
 		D_ASSERT(min_val <= max_val);
 		D_ASSERT(number_of_rows > 0);
 		const auto min = NumericConverter<T>::Convert(min_val.GetValueUnsafe<T>());
@@ -425,16 +426,19 @@ public:
 	}
 
 	void InsertKeys(Vector &keys, BuildState &state) const override {
+		D_ASSERT(!IsPublished());
 		auto &bitmap_state = state.Cast<PrefixRangeBitmapBuildState>();
 		bitmap.template InsertKeys<T, NumericConverter<T>, false>(keys, bitmap_state.bitmap);
 	}
 
 	void InsertKeysParallel(Vector &keys, BuildState &state) const override {
+		D_ASSERT(!IsPublished());
 		auto &bitmap_state = state.Cast<PrefixRangeBitmapBuildState>();
 		bitmap.template InsertKeys<T, NumericConverter<T>, true>(keys, bitmap_state.bitmap);
 	}
 
 	void MergeBuildState(BuildState &state) override {
+		D_ASSERT(!IsPublished());
 		bitmap.MergeBuildState(state.Cast<PrefixRangeBitmapBuildState>());
 	}
 
@@ -487,6 +491,7 @@ class StringPrefixRangeFilter : public PrefixRangeFilter {
 public:
 	void Initialize(ClientContext &context, idx_t number_of_rows, Value min_val, Value max_val,
 	                idx_t max_bits) override {
+		D_ASSERT(!IsPublished());
 		D_ASSERT(min_val <= max_val);
 		D_ASSERT(number_of_rows > 0);
 		const auto min = StringPrefixConverter::Convert(min_val.GetValueUnsafe<string_t>());
@@ -500,16 +505,19 @@ public:
 	}
 
 	void InsertKeys(Vector &keys, BuildState &state) const override {
+		D_ASSERT(!IsPublished());
 		auto &bitmap_state = state.Cast<PrefixRangeBitmapBuildState>();
 		bitmap.template InsertKeys<string_t, StringPrefixConverter, false>(keys, bitmap_state.bitmap);
 	}
 
 	void InsertKeysParallel(Vector &keys, BuildState &state) const override {
+		D_ASSERT(!IsPublished());
 		auto &bitmap_state = state.Cast<PrefixRangeBitmapBuildState>();
 		bitmap.template InsertKeys<string_t, StringPrefixConverter, true>(keys, bitmap_state.bitmap);
 	}
 
 	void MergeBuildState(BuildState &state) override {
+		D_ASSERT(!IsPublished());
 		bitmap.MergeBuildState(state.Cast<PrefixRangeBitmapBuildState>());
 	}
 

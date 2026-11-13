@@ -23,7 +23,7 @@ statement ok
 SET parquet_use_page_index=false;
 
 statement ok
-ATTACH '{TEST_DIR}/adaptive_nullable_cache.db' AS nullable_cache;
+ATTACH '{TEST_DIR}/adaptive_nullable_cache.db' AS nullable_cache (STORAGE_VERSION 'v1.3.0');
 
 statement ok
 USE nullable_cache;

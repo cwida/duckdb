@@ -67,6 +67,11 @@ protected:
 		count = accepted;
 	}
 
+	void FilterRunsInternal(const SelectionVector &values, array_ptr<const idx_t>, SelectionVector &sel,
+	                        idx_t &count) override {
+		FilterInternal(values, sel, count);
+	}
+
 private:
 	unsafe_unique_array<bool> matches;
 	idx_t match_count;
@@ -112,6 +117,14 @@ void TableFilterCache::FilterConstant(idx_t value_index, idx_t &count) {
 		throw InternalException("Filter cache outlived its filter state");
 	}
 	FilterConstantInternal(value_index, count);
+}
+
+void TableFilterCache::FilterRuns(const SelectionVector &values, array_ptr<const idx_t> row_counts,
+                                  SelectionVector &sel, idx_t &count) {
+	if (identity && !identity->valid) {
+		throw InternalException("Filter cache outlived its filter state");
+	}
+	FilterRunsInternal(values, row_counts, sel, count);
 }
 
 unique_ptr<TableFilterCache> ExpressionFilterExecutor::CreateCache(Vector &values, idx_t count) {
@@ -163,14 +176,19 @@ static FilterCacheProperties GetCacheProperties(const Expression &expression) {
 				result.safe = properties.safe;
 			}
 		}
-		if (function.BindInfo()) {
-			if (name == BloomFilterScalarFun::NAME &&
-			    function.BindInfo()->Cast<BloomFilterFunctionData>().n_vectors_to_check != 0) {
-				result.adaptive = true;
+		if (name == BloomFilterScalarFun::NAME || name == PrefixRangeScalarFun::NAME) {
+			if (!function.BindInfo()) {
+				result.safe = false;
+				return result;
 			}
-			if (name == PrefixRangeScalarFun::NAME &&
-			    function.BindInfo()->Cast<PrefixRangeFunctionData>().n_vectors_to_check != 0) {
-				result.adaptive = true;
+			if (name == BloomFilterScalarFun::NAME) {
+				auto &data = function.BindInfo()->Cast<BloomFilterFunctionData>();
+				result.safe = data.filter && data.filter->IsSealed() && data.filter->IsPublished();
+				result.adaptive = data.n_vectors_to_check != 0;
+			} else {
+				auto &data = function.BindInfo()->Cast<PrefixRangeFunctionData>();
+				result.safe = data.filter && data.filter->IsInitialized() && data.filter->IsPublished();
+				result.adaptive = data.n_vectors_to_check != 0;
 			}
 		}
 	}
@@ -191,11 +209,9 @@ static void InitializeExecutor(Context &context, const Expression &expression, E
 }
 
 ExpressionFilterState::ExpressionFilterState(Context &context, const Expression &expression) {
-	can_throw = expression.CanThrow();
 	fast_executor = TryCreateFastExecutor(expression, false);
 	InitializeExecutor(context, expression, *this);
 	const auto properties = GetCacheProperties(expression);
-	has_adaptive_filter = properties.adaptive;
 	can_cache_result = properties.safe && !properties.adaptive;
 	can_cache = properties.safe && (can_cache_result || (fast_executor && fast_executor->CanCache()));
 }
@@ -541,9 +557,27 @@ protected:
 		}
 	}
 
+	void FilterRunsInternal(const SelectionVector &values, array_ptr<const idx_t> row_counts, SelectionVector &sel,
+	                        idx_t &count) override {
+		for (auto &child : children) {
+			if (count == 0) {
+				break;
+			}
+			child->FilterRuns(values, row_counts, sel, count);
+		}
+	}
+
 private:
 	vector<unique_ptr<TableFilterCache>> children;
 };
+
+static idx_t CountRunRows(array_ptr<const idx_t> row_counts, const SelectionVector &sel, idx_t count) {
+	idx_t rows = 0;
+	for (idx_t i = 0; i < count; i++) {
+		rows += row_counts[sel.get_index(i)];
+	}
+	return rows;
+}
 
 class OptionalFilterCache final : public TableFilterCache {
 public:
@@ -590,6 +624,27 @@ protected:
 		}
 	}
 
+	void FilterRunsInternal(const SelectionVector &values, array_ptr<const idx_t> row_counts, SelectionVector &sel,
+	                        idx_t &count) override {
+		const auto before_rows = CountRunRows(row_counts, sel, count);
+		if (before_rows == 0) {
+			return;
+		}
+		if (!stats.get().IsActive()) {
+			stats.get().Update(0, 0);
+			return;
+		}
+		const auto before_count = count;
+		const auto had_selection = sel.IsSet();
+		child->FilterRuns(values, row_counts, sel, count);
+		const auto accepted_rows = CountRunRows(row_counts, sel, count);
+		stats.get().Update(accepted_rows, before_rows);
+		if (!had_selection && !KeepOptionalSelection(stats.get(), accepted_rows, before_rows)) {
+			sel = SelectionVector();
+			count = before_count;
+		}
+	}
+
 private:
 	unique_ptr<TableFilterCache> child;
 	reference<SelectivityOptionalFilterState::SelectivityStats> stats;
@@ -615,6 +670,14 @@ public:
 			stats = make_uniq<SelectivityOptionalFilterState::SelectivityStats>(data.n_vectors_to_check,
 			                                                                    data.selectivity_threshold);
 		}
+	}
+
+	bool CanCache() const override {
+		return !stats && filter && filter->IsSealed() && filter->IsPublished();
+	}
+	unique_ptr<TableFilterCache> CreateCache(Vector &values, idx_t count) override {
+		D_ASSERT(CanCache());
+		return CreateBooleanCache(*this, values, count);
 	}
 
 	idx_t FilterSelection(SelectionVector &sel, Vector &vector, idx_t scan_count,
@@ -762,6 +825,14 @@ public:
 			stats = make_uniq<SelectivityOptionalFilterState::SelectivityStats>(data.n_vectors_to_check,
 			                                                                    data.selectivity_threshold);
 		}
+	}
+
+	bool CanCache() const override {
+		return !stats && filter && filter->IsInitialized() && filter->IsPublished();
+	}
+	unique_ptr<TableFilterCache> CreateCache(Vector &values, idx_t count) override {
+		D_ASSERT(CanCache());
+		return CreateBooleanCache(*this, values, count);
 	}
 
 	idx_t FilterSelection(SelectionVector &sel, Vector &vector, idx_t scan_count,

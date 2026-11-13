@@ -88,10 +88,17 @@ void StandardColumnData::Filter(TransactionData transaction, idx_t vector_index,
 	auto scan_type = GetVectorScanType(state, target_count, result);
 	bool scan_entire_vector = scan_type == ScanVectorType::SCAN_ENTIRE_VECTOR;
 	bool verify_fetch_row = state.scan_options && state.scan_options->force_fetch_row;
-	const bool needs_row_validity = !filter_includes_validity && state.current->GetNode().GetStats().CanHaveNull();
-	if (!has_filter || !validity_has_filter || !scan_entire_vector || verify_fetch_row || !filter_state.can_cache ||
-	    needs_row_validity) {
+	if (!has_filter || !validity_has_filter || !scan_entire_vector || verify_fetch_row || !filter_state.can_cache) {
 		// Cached evaluation requires safe predicates and complete value validity.
+		ColumnData::Filter(transaction, vector_index, state, result, sel, count, filter, filter_state);
+		return;
+	}
+	bool needs_row_validity = false;
+	if (!filter_includes_validity) {
+		lock_guard<mutex> guard(stats_lock);
+		needs_row_validity = state.current->GetNode().GetStats().CanHaveNull();
+	}
+	if (needs_row_validity) {
 		ColumnData::Filter(transaction, vector_index, state, result, sel, count, filter, filter_state);
 		return;
 	}

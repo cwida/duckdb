@@ -35,6 +35,7 @@ void DictionaryDecoder::InitializeDictionary(idx_t new_dictionary_size, optional
                                              optional_ptr<TableFilterState> filter_state, bool has_defines) {
 	dictionary_size = new_dictionary_size;
 	filter_cache.reset();
+	filter_rejects_null = false;
 	can_have_nulls = has_defines;
 
 	// we use the last entry as a NULL, dictionary vectors don't have a separate validity mask
@@ -52,8 +53,8 @@ void DictionaryDecoder::InitializeDictionary(idx_t new_dictionary_size, optional
 		reader.Plain(reader.block, nullptr, dictionary_size, 0, dictionary_data);
 	}
 
-	if (filter && CanFilter(*filter, *filter_state)) {
-		filter_cache = filter_state->CreateCache(dictionary_data, duckdb_dictionary_size);
+	if (filter && CanFilter(*filter_state)) {
+		CreateFilterCache(*filter_state);
 	}
 }
 
@@ -142,13 +143,25 @@ void DictionaryDecoder::Skip(uint8_t *defines, idx_t skip_count) {
 	dict_decoder->Skip(NumericCast<uint32_t>(valid_count));
 }
 
-bool DictionaryDecoder::CanFilter(const TableFilter &filter, TableFilterState &filter_state) {
+bool DictionaryDecoder::CanFilter(const TableFilterState &filter_state) {
 	return dictionary_size > 0 && filter_state.can_cache;
+}
+
+void DictionaryDecoder::CreateFilterCache(TableFilterState &state) {
+	filter_cache = state.CreateCache(dictionary->data, dictionary_size + can_have_nulls);
+	filter_rejects_null = false;
+	if (filter_cache->CanSkipAll()) {
+		// Skipped pages materialize NULL placeholders on the ordinary-read path.
+		Vector null_value(Value(reader.Type()), count_t(1));
+		auto null_cache = state.CreateCache(null_value, 1);
+		filter_rejects_null = null_cache->CanSkipAll();
+	}
 }
 
 void DictionaryDecoder::ResetFilter(const TableFilterState &state) {
 	if (filter_cache && !filter_cache->IsValidFor(state)) {
 		filter_cache.reset();
+		filter_rejects_null = false;
 	}
 }
 
@@ -158,7 +171,7 @@ bool DictionaryDecoder::HasFilter(TableFilterState &state) {
 		return false;
 	}
 	if (!filter_cache) {
-		filter_cache = state.CreateCache(dictionary->data, dictionary_size + can_have_nulls);
+		CreateFilterCache(state);
 	}
 	return true;
 }

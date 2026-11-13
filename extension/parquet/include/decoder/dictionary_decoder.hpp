@@ -40,15 +40,16 @@ public:
 	void Rebase();
 	idx_t Read(uint8_t *defines, idx_t read_count, Vector &result, idx_t result_offset);
 	void Skip(uint8_t *defines, idx_t skip_count);
-	bool CanFilter(const TableFilter &filter, TableFilterState &filter_state);
+	bool CanFilter(const TableFilterState &filter_state);
 	void Filter(uint8_t *defines, idx_t read_count, Vector &result, SelectionVector &sel, idx_t &approved_tuple_count);
 	void ResetFilter(const TableFilterState &state);
 	bool HasFilter(TableFilterState &state);
 	bool HasFilteredOutAllValues() const {
-		return filter_cache && filter_cache->CanSkipAll();
+		return filter_rejects_null && filter_cache && filter_cache->CanSkipAll();
 	}
 
 private:
+	void CreateFilterCache(TableFilterState &state);
 	idx_t GetValidValues(uint8_t *defines, idx_t read_count, idx_t result_offset);
 	void ConvertDictToSelVec(uint32_t *offsets, const SelectionVector &rows, idx_t count);
 
@@ -62,6 +63,7 @@ private:
 	idx_t dictionary_size;
 	buffer_ptr<DictionaryEntry> dictionary;
 	unique_ptr<TableFilterCache> filter_cache;
+	bool filter_rejects_null = false;
 	bool can_have_nulls;
 };
 

@@ -4,13 +4,234 @@
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/common/shared_ptr_ipp.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/planner/table_filter_state.hpp"
 #include "duckdb/storage/table/column_segment.hpp"
 
 using namespace duckdb;
+
+static unique_ptr<Expression> CacheFunction(ScalarFunction function, unique_ptr<FunctionData> data) {
+	vector<unique_ptr<Expression>> arguments;
+	arguments.push_back(make_uniq<BoundReferenceExpression>(LogicalType::BIGINT, 0));
+	return make_uniq<BoundFunctionExpression>(BoundScalarFunction(function), std::move(arguments), std::move(data));
+}
+
+TEST_CASE("Published pure runtime-filter children support adaptive caches", "[filter][adaptive_cache]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	Vector keys(Value::BIGINT(3000), count_t(1));
+	Vector hashes(LogicalType::HASH);
+	VectorOperations::Hash(keys, hashes, 1);
+	auto bloom = make_shared_ptr<BloomFilter>();
+	bloom->Initialize(*con.context, 1);
+	bloom->InsertHashes(hashes);
+	bloom->Seal(*con.context);
+	auto prefix = PrefixRangeFilter::CreatePrefixRangeFilter(LogicalType::BIGINT);
+	prefix->Initialize(*con.context, 1, Value::BIGINT(3000), Value::BIGINT(3000), 1);
+	auto build_state = prefix->InitializeBuildState(*con.context);
+	prefix->InsertKeys(keys, *build_state);
+	prefix->MergeBuildState(*build_state);
+	float threshold;
+	idx_t vectors;
+	GetThresholdAndVectorsToCheck(SelectivityOptionalFilterType::BF, threshold, vectors);
+	for (bool use_bloom : {false, true}) {
+		for (bool published : {false, true}) {
+			CAPTURE(use_bloom, published);
+			if (published) {
+				if (use_bloom) {
+					bloom->MarkPublished();
+				} else {
+					prefix->MarkPublished();
+				}
+			}
+			auto child =
+			    use_bloom ? CacheFunction(BloomFilterScalarFun::GetFunction(LogicalType::BIGINT),
+			                              make_uniq<BloomFilterFunctionData>(bloom, true, "k", LogicalType::BIGINT,
+			                                                                 threshold, vectors))
+			              : CacheFunction(PrefixRangeScalarFun::GetFunction(LogicalType::BIGINT),
+			                              make_uniq<PrefixRangeFunctionData>(prefix.get(), true, "k",
+			                                                                 LogicalType::BIGINT, threshold, vectors));
+			ExpressionFilter independently_adaptive(child->Copy());
+			REQUIRE_FALSE(TableFilterState::Initialize(*con.context, independently_adaptive)->can_cache);
+			ExpressionFilter wrapped(
+			    CreateSelectivityOptionalFilterExpression(std::move(child), LogicalType::BIGINT, threshold, vectors));
+			auto state = TableFilterState::Initialize(*con.context, wrapped);
+			REQUIRE(state->can_cache == published);
+			if (published) {
+				auto cache = state->CreateCache(keys, 1);
+				SelectionVector codes, selected;
+				idx_t count = 1;
+				cache->Filter(codes, selected, count);
+				REQUIRE(count == 1);
+			}
+		}
+	}
+}
+
+TEST_CASE("Run-weighted cached selections match expanded rows", "[filter][adaptive_cache]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	float threshold;
+	idx_t vectors;
+	GetThresholdAndVectorsToCheck(SelectivityOptionalFilterType::MIN_MAX, threshold, vectors);
+	Vector dictionary(LogicalType::BIGINT, 3);
+	{
+		auto writer = FlatVector::Writer<int64_t>(dictionary, 3);
+		writer.WriteValue(1);
+		writer.WriteValue(2500);
+		writer.WriteValue(3000);
+	}
+	for (int32_t order = 0; order < 3; order++) {
+		auto lower =
+		    ExpressionFilter::CreateComparisonFilter(ExpressionType::COMPARE_GREATERTHANOREQUALTO, Value::BIGINT(2700));
+		auto required =
+		    ExpressionFilter::CreateComparisonFilter(ExpressionType::COMPARE_GREATERTHANOREQUALTO, Value::BIGINT(2000));
+		auto optional =
+		    CreateSelectivityOptionalFilterExpression(lower->expr->Copy(), LogicalType::BIGINT, threshold, vectors);
+		unique_ptr<Expression> expression;
+		if (order == 0) {
+			expression = std::move(optional);
+		} else {
+			expression = make_uniq<BoundConjunctionExpression>(
+			    ExpressionType::CONJUNCTION_AND, order == 1 ? required->expr->Copy() : std::move(optional),
+			    order == 1 ? std::move(optional) : required->expr->Copy());
+		}
+		ExpressionFilter filter(std::move(expression));
+		auto state = TableFilterState::Initialize(*con.context, filter);
+		auto oracle = TableFilterState::Initialize(*con.context, filter);
+		auto cache = state->CreateCache(dictionary, dictionary.size());
+		for (idx_t batch = 0; batch < 6 * vectors; batch++) {
+			CAPTURE(order, batch);
+			vector<idx_t> lengths {9, 1};
+			SelectionVector run_codes(2), row_codes(10), selected_runs, expected_rows;
+			const auto first = batch < vectors ? 2 : 0;
+			run_codes.set_index(0, first);
+			run_codes.set_index(1, 1);
+			for (idx_t row = 0; row < 10; row++) {
+				row_codes.set_index(row, row < lengths[0] ? first : 1);
+			}
+			idx_t run_count = lengths.size(), expected_count = 10;
+			auto expected_cache = oracle->CreateCache(dictionary, dictionary.size());
+			cache->FilterRuns(run_codes, array_ptr<const idx_t>(lengths.data(), lengths.size()), selected_runs,
+			                  run_count);
+			expected_cache->Filter(row_codes, expected_rows, expected_count);
+			vector<idx_t> actual_rows;
+			for (idx_t idx = 0; idx < run_count; idx++) {
+				const auto run = selected_runs.get_index(idx);
+				const auto offset = run == 0 ? 0 : lengths[0];
+				for (idx_t row = 0; row < lengths[run]; row++) {
+					actual_rows.push_back(offset + row);
+				}
+			}
+			REQUIRE(actual_rows.size() == expected_count);
+			for (idx_t row = 0; row < expected_count; row++) {
+				REQUIRE(actual_rows[row] == expected_rows.get_index(row));
+			}
+			if (batch == vectors) {
+				cache = state->CreateCache(dictionary, dictionary.size());
+			}
+		}
+	}
+}
+
+TEST_CASE("Run cache accounting survives selections partial batches and row fallback", "[filter][adaptive_cache]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	float threshold;
+	idx_t vectors;
+	GetThresholdAndVectorsToCheck(SelectivityOptionalFilterType::MIN_MAX, threshold, vectors);
+	auto comparison =
+	    ExpressionFilter::CreateComparisonFilter(ExpressionType::COMPARE_GREATERTHANOREQUALTO, Value::BIGINT(2700));
+	ExpressionFilter filter(
+	    CreateSelectivityOptionalFilterExpression(comparison->expr->Copy(), LogicalType::BIGINT, threshold, vectors));
+	Vector dictionary(LogicalType::BIGINT, 2);
+	{
+		auto writer = FlatVector::Writer<int64_t>(dictionary, 2);
+		writer.WriteValue(1);
+		writer.WriteValue(3000);
+	}
+	for (const bool incoming : {false, true}) {
+		auto state = TableFilterState::Initialize(*con.context, filter);
+		auto oracle = TableFilterState::Initialize(*con.context, filter);
+		auto cache = state->CreateCache(dictionary, dictionary.size());
+		for (idx_t batch = 0; batch < vectors * 6; batch++) {
+			const idx_t count = STANDARD_VECTOR_SIZE - batch % 2;
+			vector<idx_t> lengths {count - 1, 1};
+			if (batch % 2) {
+				std::swap(lengths[0], lengths[1]);
+			}
+			const idx_t first_code = batch < vectors ? 1 : 0;
+			SelectionVector run_codes(2), codes(count), selected_runs, selected_rows, expected;
+			run_codes.set_index(0, first_code);
+			run_codes.set_index(1, 1 - first_code);
+			Vector input(LogicalType::BIGINT, count);
+			{
+				auto writer = FlatVector::Writer<int64_t>(input, count);
+				for (idx_t row = 0; row < count; row++) {
+					const auto code = row < lengths[0] ? first_code : 1 - first_code;
+					codes.set_index(row, code);
+					writer.WriteValue(code == 0 ? 1 : 3000);
+				}
+			}
+			idx_t run_count = 2, expected_count = count;
+			if (incoming) {
+				selected_runs.Initialize(1);
+				selected_runs.set_index(0, 0);
+				run_count = 1;
+				expected_count = lengths[0];
+				expected.Initialize(count);
+				selected_rows.Initialize(count);
+				for (idx_t row = 0; row < expected_count; row++) {
+					expected.set_index(row, row);
+					selected_rows.set_index(row, row);
+				}
+			}
+			const auto before_count = expected_count;
+			ColumnSegment::FilterSelection(expected, input, *oracle, count, expected_count);
+			vector<idx_t> actual;
+			if (batch % 2) {
+				idx_t selected_count = before_count;
+				ColumnSegment::FilterSelection(selected_rows, input, *state, count, selected_count);
+				for (idx_t row = 0; row < selected_count; row++) {
+					actual.push_back(selected_rows.get_index(row));
+				}
+			} else {
+				cache->FilterRuns(run_codes, array_ptr<const idx_t>(lengths.data(), lengths.size()), selected_runs,
+				                  run_count);
+				for (idx_t i = 0; i < run_count; i++) {
+					const auto run = selected_runs.get_index(i);
+					const auto offset = run == 0 ? 0 : lengths[0];
+					for (idx_t row = 0; row < lengths[run]; row++) {
+						actual.push_back(offset + row);
+					}
+				}
+			}
+			CAPTURE(incoming, batch);
+			REQUIRE(actual.size() == expected_count);
+			for (idx_t row = 0; row < expected_count; row++) {
+				REQUIRE(actual[row] == expected.get_index(row));
+			}
+			if (batch == vectors) {
+				cache = state->CreateCache(dictionary, dictionary.size());
+			}
+		}
+		auto replacement = TableFilterState::Initialize(*con.context, filter);
+		REQUIRE_FALSE(cache->IsValidFor(*replacement));
+		state.reset();
+		REQUIRE_FALSE(cache->CanAcceptAll());
+		REQUIRE_FALSE(cache->CanSkipAll());
+#ifndef DUCKDB_CRASH_ON_ASSERT
+		SelectionVector values, selected;
+		idx_t count = 0;
+		REQUIRE_THROWS_AS(cache->FilterRuns(values, array_ptr<const idx_t>(nullptr, 0), selected, count),
+		                  InternalException);
+#endif
+	}
+}
 
 TEST_CASE("Empty mandatory masks preserve feedback from preceding optional filters", "[filter][adaptive_cache]") {
 	DuckDB db(nullptr);
@@ -288,7 +509,7 @@ TEST_CASE("Filter cache capabilities reject mutable, throwing, and unsupported a
 	ExpressionFilter disjunction(make_uniq<BoundConjunctionExpression>(
 	    ExpressionType::CONJUNCTION_OR, adaptive->expr->Copy(), comparison->expr->Copy()));
 	auto disjunction_state = TableFilterState::Initialize(*con.context, disjunction);
-	REQUIRE(disjunction_state->has_adaptive_filter);
+	REQUIRE_FALSE(disjunction_state->Cast<ExpressionFilterState>().can_cache_result);
 	REQUIRE_FALSE(disjunction_state->can_cache);
 
 	float threshold;
@@ -319,7 +540,7 @@ TEST_CASE("Adaptive predicate caches share row feedback with fallback and preser
 		auto state = TableFilterState::Initialize(*con.context, *filter);
 		auto oracle = TableFilterState::Initialize(*con.context, *filter);
 		REQUIRE(state->can_cache);
-		REQUIRE(state->has_adaptive_filter);
+		REQUIRE_FALSE(state->Cast<ExpressionFilterState>().can_cache_result);
 		auto cache = state->CreateCache(dictionary, dictionary.size());
 		REQUIRE(cache->IsValidFor(*state));
 		for (idx_t batch = 0; batch < 60; batch++) {
@@ -368,10 +589,14 @@ TEST_CASE("Adaptive predicate caches share row feedback with fallback and preser
 		auto replacement = TableFilterState::Initialize(*con.context, *filter);
 		REQUIRE_FALSE(cache->IsValidFor(*replacement));
 		state.reset();
+		REQUIRE_FALSE(cache->CanAcceptAll());
+		REQUIRE_FALSE(cache->CanSkipAll());
+#ifndef DUCKDB_CRASH_ON_ASSERT
 		SelectionVector codes;
 		SelectionVector selected;
 		idx_t count = 1;
 		REQUIRE_THROWS_AS(cache->Filter(codes, selected, count), InternalException);
+#endif
 	}
 }
 
@@ -411,7 +636,11 @@ TEST_CASE("Constant cached batches preserve adaptive feedback and mandatory pred
 			}
 		}
 		state.reset();
+		REQUIRE_FALSE(cache->CanAcceptAll());
+		REQUIRE_FALSE(cache->CanSkipAll());
+#ifndef DUCKDB_CRASH_ON_ASSERT
 		idx_t count = STANDARD_VECTOR_SIZE;
 		REQUIRE_THROWS_AS(cache->FilterConstant(0, count), InternalException);
+#endif
 	}
 }
