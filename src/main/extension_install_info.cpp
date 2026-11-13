@@ -1,5 +1,6 @@
 #include "duckdb/main/extension_install_info.hpp"
 #include "duckdb/common/string.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/common/serializer/buffered_file_reader.hpp"
@@ -66,6 +67,39 @@ string ExtensionRepository::TryConvertUrlToKnownRepository(const string &url) {
 		}
 	}
 	return "";
+}
+
+string ExtensionRepository::TryGetBackupRepositoryUrl(const string &url) {
+	if (url == CORE_REPOSITORY_URL) {
+		return CORE_BACKUP_REPOSITORY_URL;
+	}
+	if (url == COMMUNITY_REPOSITORY_URL) {
+		return COMMUNITY_BACKUP_REPOSITORY_URL;
+	}
+	return "";
+}
+
+bool ExtensionRepository::IsOfficialRepositoryUrl(const string &url) {
+	static constexpr const char *OFFICIAL_REPOSITORY_URLS[] = {CORE_REPOSITORY_URL, CORE_NIGHTLY_REPOSITORY_URL,
+	                                                           COMMUNITY_REPOSITORY_URL, CORE_BACKUP_REPOSITORY_URL,
+	                                                           COMMUNITY_BACKUP_REPOSITORY_URL};
+	// strip the scheme: the official repositories are served over both http and https
+	string host_and_path;
+	if (StringUtil::StartsWith(url, "http://")) {
+		host_and_path = url.substr(7);
+	} else if (StringUtil::StartsWith(url, "https://")) {
+		host_and_path = url.substr(8);
+	} else {
+		return false;
+	}
+	for (auto repository_url : OFFICIAL_REPOSITORY_URLS) {
+		string repository_host = string(repository_url).substr(7);
+		// the host must match exactly, so that e.g. "extensions.duckdb.org.example.com" does not match
+		if (host_and_path == repository_host || StringUtil::StartsWith(host_and_path, repository_host + "/")) {
+			return true;
+		}
+	}
+	return false;
 }
 
 ExtensionRepository ExtensionRepository::GetDefaultRepository(optional_ptr<DBConfig> config) {

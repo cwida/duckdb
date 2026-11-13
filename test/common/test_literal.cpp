@@ -48,7 +48,7 @@ TEST_CASE("Value expression conversion preserves VARIANT payloads and floating z
 
 // Parses "SELECT <text>" and returns the constant the parser produced for it.
 static Value ParseConstant(const string &text) {
-	auto expressions = Parser::ParseExpressionList(text);
+	auto expressions = Parser::GetBuiltinParser().ParseExpressionList(text);
 	REQUIRE(expressions.size() == 1);
 	REQUIRE(expressions[0]->GetExpressionClass() == ExpressionClass::CONSTANT);
 	return expressions[0]->Cast<ConstantExpression>().GetLiteral().ToValue();

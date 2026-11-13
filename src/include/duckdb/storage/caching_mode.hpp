@@ -28,4 +28,14 @@ enum class RequestSizing : uint8_t {
 	BY_READER = 1,
 };
 
+//! How reads of cached files are sized, overriding the RequestSizing of their readers.
+enum class ExternalFileCacheRequestSizing : uint8_t {
+	// Each reader chooses through its RequestSizing.
+	AUTO = 0,
+	// Every read covers the aligned blocks of the cache block size around it.
+	GRID = 1,
+	// Every read covers exactly the bytes it requests.
+	EXACT = 2,
+};
+
 } // namespace duckdb

@@ -1,0 +1,48 @@
+# name: test/sql/parser/bare_column_alias_keywords.test
+# description: Pin the set of keywords that cannot be used as a column alias without AS
+# group: [parser]
+
+# every keyword that can trail an expression, function call, type or star is excluded from bare_label_keyword.list
+foreach kw year years month months day days hour hours minute minutes second seconds millisecond milliseconds microsecond microseconds week weeks quarter quarters decade decades century centuries millennium millennia filter over within export_state ignore respect escape varying precision without exclude replace rename
+
+statement error
+SELECT 1 {kw};
+----
+<REGEX>:Parser Error: syntax error.*
+
+statement error
+SELECT 1 {kw}, 2;
+----
+<REGEX>:Parser Error: syntax error.*
+
+query I
+SELECT 1 AS {kw};
+----
+1
+
+query I
+SELECT 1 "{kw}";
+----
+1
+
+endloop
+
+# reserved and type/function keywords are never bare labels
+foreach kw select from where with order limit at like glob similar asof positional
+
+statement error
+SELECT 1 {kw};
+----
+<REGEX>:Parser Error: syntax error.*
+
+endloop
+
+# a representative sample of bare-label keywords, including ones that only matter in other clauses
+foreach kw type name value key data json text version comment first last nulls rows range groups preceding following unbounded current ties others partition percent sample recursive materialized virtual stored cube rollup sets if exists between values row interval time timestamp struct map columns
+
+query I
+SELECT 1 {kw};
+----
+1
+
+endloop

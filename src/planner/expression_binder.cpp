@@ -1,5 +1,7 @@
 #include "duckdb/planner/expression_binder.hpp"
 
+#include "duckdb/function/match_recognize.hpp"
+
 #include "duckdb/parser/expression/list.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -32,6 +34,10 @@ void ExpressionBinder::InitializeStackCheck() {
 	}
 }
 
+void ExpressionBinder::ContinueStackDepth(const ExpressionBinder &parent) {
+	stack_depth = parent.stack_depth;
+}
+
 StackChecker<ExpressionBinder> ExpressionBinder::StackCheck(const ParsedExpression &expr, idx_t extra_stack) {
 	D_ASSERT(stack_depth != DConstants::INVALID_INDEX);
 	auto max_expression_depth = Settings::Get<MaxExpressionDepthSetting>(context);
@@ -46,6 +52,14 @@ StackChecker<ExpressionBinder> ExpressionBinder::StackCheck(const ParsedExpressi
 BindResult ExpressionBinder::BindExpression(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression) {
 	auto stack_checker = StackCheck(*expr);
 
+	if (binder.HasEnclosingScope()) {
+		// an expression an enclosing query groups by is a reference to that group, e.g. `(SELECT x::DATE)`
+		// inside a query that groups by `x::DATE`
+		auto owner = ResolveOuterGroupOwner(*expr);
+		if (owner.IsValid()) {
+			return BindGroupInEnclosingScope(expr, owner.GetIndex(), depth);
+		}
+	}
 	auto &expr_ref = *expr;
 	switch (expr_ref.GetExpressionClass()) {
 	case ExpressionClass::BETWEEN:
@@ -74,6 +88,13 @@ BindResult ExpressionBinder::BindExpression(unique_ptr<ParsedExpression> &expr, 
 			// special case, not in catalog
 			return BindUnnest(function, depth, root_expression);
 		}
+		if (function.FunctionName() == MATCH_RECOGNIZE_RUNNING_MARKER ||
+		    function.FunctionName() == MATCH_RECOGNIZE_FINAL_MARKER) {
+			// RUNNING and FINAL say how much of a match the call below them reads, and only the
+			// MEASURES binder knows what a match is
+			return BindResult(BinderException::Unsupported(
+			    function, "RUNNING and FINAL are only meaningful in the MEASURES of a MATCH_RECOGNIZE"));
+		}
 		// binding a function expression requires an extra parameter for macros
 		return BindExpression(function, depth, expr);
 	}
@@ -81,6 +102,11 @@ BindResult ExpressionBinder::BindExpression(unique_ptr<ParsedExpression> &expr, 
 		const vector<LogicalType> function_child_types;
 		return BindExpression(expr_ref.Cast<LambdaExpression>(), depth, function_child_types, nullptr, nullptr);
 	}
+	case ExpressionClass::PATTERN:
+		// a row pattern is matched by MATCH_RECOGNIZE rather than evaluated, so it is not an expression
+		// anywhere an expression is expected
+		return BindResult(BinderException::Unsupported(expr_ref, "A row pattern is only meaningful in the PATTERN "
+		                                                         "clause of MATCH_RECOGNIZE"));
 	case ExpressionClass::OPERATOR:
 		return BindExpression(expr_ref.Cast<OperatorExpression>(), depth);
 	case ExpressionClass::SUBQUERY:
@@ -147,11 +173,12 @@ BindResult ExpressionBinder::BindInEnclosingScope(ColumnRefExpression &col_ref, 
 	return BindResult(std::move(bind_error));
 }
 
-unique_ptr<Expression> ExpressionBinder::BindChild(unique_ptr<ParsedExpression> &expr, idx_t depth, ErrorData &error) {
+unique_ptr<Expression> ExpressionBinder::BindChild(unique_ptr<ParsedExpression> &expr, idx_t depth, ErrorData &error,
+                                                   const Identifier &alias) {
 	if (!expr) {
 		return nullptr;
 	}
-	auto result = Bind(expr, depth);
+	auto result = Bind(expr, depth, false, alias);
 	if (result.HasError()) {
 		if (!error.HasError()) {
 			error = std::move(result.error);
@@ -268,7 +295,7 @@ unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr
 				result = BoundCastExpression::AddCastToType(context, std::move(result), exchanged_type);
 			}
 		}
-		if (result->GetReturnType().id() == LogicalTypeId::UNKNOWN) {
+		if (ContainsType(result->GetReturnType(), LogicalTypeId::UNKNOWN)) {
 			throw ParameterNotResolvedException();
 		}
 	}
@@ -278,9 +305,10 @@ unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr
 	return result;
 }
 
-BindResult ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression) {
+BindResult ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression,
+                                  const Identifier &alias_p) {
 	auto query_location = expr->GetQueryLocation();
-	auto alias = expr->GetAlias();
+	auto alias = alias_p.empty() ? expr->GetAlias() : alias_p;
 	BindResult result = BindExpression(expr, depth, root_expression);
 	if (result.HasError()) {
 		return result;

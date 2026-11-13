@@ -93,7 +93,7 @@ TEST_CASE("Expression copies preserve collations through binary serialization", 
 	      "[v COLLATE nocase,NULL]::VARCHAR[2]", "{'s': v COLLATE nocase}", "map([v COLLATE nocase], [v])",
 	      "union_value(s := v COLLATE nocase)", "min(v COLLATE nocase)", "first_value(v COLLATE nocase) OVER ()"}) {
 		CAPTURE(expression);
-		Parser parser(connection.context->GetParserOptions());
+		Parser parser(*connection.context);
 		parser.ParseQuery(string("SELECT ") + expression + " AS result FROM values_to_copy");
 		Planner planner(*connection.context);
 		planner.CreatePlan(std::move(parser.statements[0]));
@@ -124,7 +124,7 @@ TEST_CASE("Deserialized bind-expression replacements retain result annotations",
 	});
 	loader.RegisterFunction(std::move(function));
 	connection.BeginTransaction();
-	Parser parser(connection.context->GetParserOptions());
+	Parser parser(*connection.context);
 	parser.ParseQuery("SELECT copy_string('A') COLLATE nocase AS annotated");
 	Planner planner(*connection.context);
 	planner.CreatePlan(std::move(parser.statements[0]));
@@ -159,7 +159,7 @@ TEST_CASE("Expression rewrites preserve compatible result annotations", "[expres
 	      "('A' || '') COLLATE nocase", "CASE WHEN true THEN [[v]] ELSE [['A' COLLATE nocase]] END",
 	      "CAST(12.5 AS DECIMAL(9,2))+CAST(0 AS DECIMAL(9,2))"}) {
 		CAPTURE(expression);
-		Parser parser(connection.context->GetParserOptions());
+		Parser parser(*connection.context);
 		parser.ParseQuery(string("SELECT ") + expression + " AS result FROM rewrite_values");
 		Planner planner(*connection.context);
 		planner.CreatePlan(std::move(parser.statements[0]));
@@ -194,12 +194,14 @@ TEST_CASE("Constant mutations synchronize result types", "[expression_types]") {
 	base.SetReturnType(type);
 	REQUIRE(expression.GetReturnType().EqualsIncludingCollation(type));
 	REQUIRE(expression.GetValue().type().EqualsIncludingCollation(type));
-	expression.SetValue(Value::BIGINT(42));
-	REQUIRE(expression.GetReturnType() == LogicalType::BIGINT);
-	REQUIRE(expression.GetValue() == Value::BIGINT(42));
-	auto value = expression.TakeValue();
-	REQUIRE(value == Value::BIGINT(42));
-	expression.SetValue(Value(type));
-	REQUIRE(expression.GetValue().IsNull());
-	REQUIRE(expression.GetReturnType().EqualsIncludingCollation(type));
+	auto bigint_expr = expression.WithValue(Value::BIGINT(42));
+	auto &bigint_constant = bigint_expr->Cast<BoundConstantExpression>();
+	REQUIRE(bigint_constant.GetReturnType() == LogicalType::BIGINT);
+	REQUIRE(bigint_constant.GetValue() == Value::BIGINT(42));
+	auto null_expr = bigint_constant.WithValue(Value(type));
+	auto &null_constant = null_expr->Cast<BoundConstantExpression>();
+	REQUIRE(null_constant.GetValue().IsNull());
+	REQUIRE(null_constant.GetReturnType().EqualsIncludingCollation(type));
+	// the original constant is unchanged
+	REQUIRE(expression.GetValue() == Value("A"));
 }

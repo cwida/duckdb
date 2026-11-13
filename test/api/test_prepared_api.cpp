@@ -1,5 +1,7 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
+#include "duckdb/planner/planner_extension.hpp"
+#include "duckdb/parser/sql_statement.hpp"
 
 using namespace duckdb;
 
@@ -67,6 +69,23 @@ TEST_CASE("Test type resolution of function with parameter expressions", "[api]"
 	REQUIRE_FAIL(con.Query("SELECT ?"));
 }
 
+TEST_CASE("Test prepared EXPLAIN ANALYZE", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	auto prepared = con.Prepare("EXPLAIN ANALYZE SELECT 42");
+	REQUIRE(!prepared->HasError());
+	// run another query between preparing and executing, and execute more than once
+	REQUIRE_NO_FAIL(con.Query("SELECT 1"));
+	for (idx_t i = 0; i < 2; i++) {
+		auto result = prepared->Execute();
+		REQUIRE_NO_FAIL(*result);
+		auto plan = result->Collection().GetValue(1, 0).ToString();
+		REQUIRE(!StringUtil::Contains(plan, "Query profiling is disabled"));
+		REQUIRE(StringUtil::Contains(plan, "Total Time"));
+	}
+}
+
 TEST_CASE("Test prepared statements and dependencies", "[api]") {
 	duckdb::unique_ptr<QueryResult> result;
 	DuckDB db(nullptr);
@@ -106,6 +125,42 @@ TEST_CASE("Prepared temp table insert is invalidated after drop", "[api]") {
 	auto result = prepared->Execute();
 	REQUIRE(result->HasError());
 	REQUIRE(result->GetError().find("does not exist") != string::npos);
+}
+
+TEST_CASE("Writes to temporary objects register a modification of the temp catalog", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TEMP TABLE t(i INTEGER PRIMARY KEY)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TEMP TABLE audit(i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TEMP SEQUENCE s"));
+
+	auto read = con.Prepare("SELECT * FROM t");
+	REQUIRE(!read->HasError());
+	REQUIRE(read->GetStatementProperties().modified_databases.empty());
+
+	vector<string> writes {
+	    "INSERT INTO t VALUES (1)",
+	    "UPDATE t SET i = 2",
+	    "DELETE FROM t",
+	    "INSERT OR REPLACE INTO t VALUES (1)",
+	    "MERGE INTO t USING (SELECT 1 AS i) s ON t.i = s.i WHEN NOT MATCHED THEN INSERT VALUES (s.i)",
+	    "CREATE TEMP TABLE t2(i INTEGER)",
+	    "CREATE TEMP VIEW v AS SELECT 42",
+	    "CREATE TRIGGER trg AFTER INSERT ON t FOR EACH STATEMENT INSERT INTO audit VALUES (1)",
+	    "CREATE INDEX t_i ON t(i)",
+	    "ALTER TABLE t RENAME TO t3",
+	    "COMMENT ON TABLE t IS 'c'",
+	    "DROP TABLE t",
+	    "SELECT nextval('s')",
+	};
+	for (auto &write : writes) {
+		INFO(write);
+		auto prepared = con.Prepare(write);
+		REQUIRE(!prepared->HasError());
+		auto &modified = prepared->GetStatementProperties().modified_databases;
+		REQUIRE(modified.size() == 1);
+		REQUIRE(modified.count(Identifier::TempCatalog()) == 1);
+	}
 }
 
 TEST_CASE("Dropping connection with prepared statement resets dependencies", "[api]") {
@@ -561,7 +616,7 @@ TEST_CASE("Test prepared statements with extension that can request a rebind", "
 	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE TABLE t1 (c1 INTEGER)"));
 
 	// https://github.com/duckdb/duckdb/pull/11096
-	con.context->registered_state->Insert("test_extension", make_shared_ptr<TestExtensionState>());
+	con.context->GetContext().GetRegisteredState().Insert("test_extension", make_shared_ptr<TestExtensionState>());
 
 	// SelectStatement
 	REQUIRE_NO_FAIL(con.Prepare("SELECT ?")->Execute(42));
@@ -574,4 +629,56 @@ TEST_CASE("Test prepared statements with extension that can request a rebind", "
 
 	// SetVariableStatement
 	REQUIRE_NO_FAIL(con.Prepare("SET VARIABLE test_var = ?")->Execute(42));
+}
+
+static atomic<idx_t> execute_pre_binds {0};
+static atomic<idx_t> post_binds {0};
+
+static void CountExecutePreBind(PlannerExtensionInput &input, SQLStatement &statement) {
+	if (statement.type == StatementType::EXECUTE_STATEMENT) {
+		execute_pre_binds++;
+	}
+}
+
+static void CountPostBind(PlannerExtensionInput &input, BoundStatement &statement) {
+	post_binds++;
+}
+
+TEST_CASE("Planner extension hooks run for EXECUTE", "[api]") {
+	DBConfig config;
+	PlannerExtension extension;
+	extension.pre_bind_function = CountExecutePreBind;
+	extension.post_bind_function = CountPostBind;
+	PlannerExtension::Register(config, extension);
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	// a statement without a data source re-uses its cached plan: only the pre-bind hook sees the EXECUTE
+	REQUIRE_NO_FAIL(con.Query("PREPARE constant AS SELECT $1::INTEGER + 1"));
+	execute_pre_binds = 0;
+	post_binds = 0;
+	auto result = con.Query("EXECUTE constant(41)");
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	REQUIRE(execute_pre_binds == 1);
+	REQUIRE(post_binds == 0);
+
+	auto prepared = con.Prepare("SELECT $1::INTEGER + 1");
+	REQUIRE(!prepared->HasError());
+	execute_pre_binds = 0;
+	post_binds = 0;
+	result = prepared->Execute(41);
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	REQUIRE(execute_pre_binds == 1);
+	REQUIRE(post_binds == 0);
+
+	// a statement reading a table is planned again: the post-bind hooks see the re-planned statement and the EXECUTE
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (42)"));
+	REQUIRE_NO_FAIL(con.Query("PREPARE scan AS SELECT i FROM t"));
+	execute_pre_binds = 0;
+	post_binds = 0;
+	result = con.Query("EXECUTE scan");
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	REQUIRE(execute_pre_binds == 1);
+	REQUIRE(post_binds == 2);
 }

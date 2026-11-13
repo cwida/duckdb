@@ -102,6 +102,9 @@ PEGTransformerFactory::TransformCreateViewStmt(PEGTransformer &transformer, cons
 	if (create_secure) {
 		info->security_type = ViewSecurityType::SECURE_VIEW;
 	}
+	if (create_recursive && !insert_column_list) {
+		throw ParserException("CREATE RECURSIVE VIEW requires a column list");
+	}
 	if (insert_column_list) {
 		info->aliases = StringsToIdentifiers(*insert_column_list);
 	}

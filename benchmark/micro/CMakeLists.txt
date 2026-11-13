@@ -6,6 +6,7 @@ add_library(
   bulkupdate.cpp
   cast.cpp
   executor.cpp
+  concurrent_commits.cpp
   in.cpp
   parser.cpp
   storage.cpp

@@ -15,7 +15,7 @@ cache tpch_sf1_ingest.duckdb
 load benchmark/ingestion/load_tpch.sql
 
 run
-create table ${table_name}_ingested as select * from ${table_name}_${format};
+create table ${table_name}_ingested as select * from ${table_name}_${format} limit 500000;
 
 cleanup
 DROP TABLE ${table_name}_ingested;

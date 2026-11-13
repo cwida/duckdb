@@ -650,9 +650,7 @@ struct ArrowVariant {
 		Vector transformed(StorageType(), count);
 		ParquetVariantConversion::ToParquetVariant(source, count, transformed);
 
-		// The transform encodes a SQL NULL as a Variant-null VALUE (the parquet writer's convention, where
-		// nullability lives at the column level) — over Arrow the SQL NULL must stay a top-level null, so
-		// the mask comes from the SOURCE's validity.
+		// The transform encodes SQL NULL as a Variant-null VALUE; Arrow needs the source's top-level validity.
 		UnifiedVectorFormat source_format;
 		source.ToUnifiedFormat(source_format);
 		bool has_nulls = false;

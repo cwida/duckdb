@@ -1,0 +1,141 @@
+# name: test/sql/cte/materialized/materialized_cte_parallel_scan.test
+# description: Parallel materialized scans preserve partial chunks and nested values
+# group: [materialized]
+
+require 64bit
+
+statement ok
+SET debug_verify_progress='error';
+
+foreach threads 1 4 32 192
+
+statement ok
+SET threads={threads};
+
+foreach rows 0 1 2049 125003
+
+# The self-join requires independently scanning the materialized collection.
+# Include empty inputs, partial vectors and collections spanning many chunks.
+query III
+WITH c AS MATERIALIZED (
+	SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE 'long string payload ' || i::VARCHAR END s,
+	       [i, NULL, i + 1] payload
+	FROM range({rows}) r(i)
+)
+SELECT count(*) = {rows},
+       coalesce(sum(l.i), 0) = {rows}::BIGINT * ({rows} - 1) / 2,
+       count(*) FILTER (WHERE l.s IS DISTINCT FROM
+           CASE WHEN r.i % 7 = 0 THEN NULL ELSE 'long string payload ' || r.i::VARCHAR END
+           OR l.payload IS DISTINCT FROM [r.i, NULL, r.i + 1]) = 0
+FROM c l JOIN c r USING (i);
+----
+true	true	true
+
+# The scalar consumer finishes first, forcing the ordered INSERT consumer to scan the materialized collection.
+statement ok
+CREATE OR REPLACE TABLE parallel_scan_ordered AS
+WITH c AS MATERIALIZED (
+	SELECT i, 'long string payload ' || i::VARCHAR AS s, [i, NULL, i + 1] AS payload
+	FROM range({rows}) r(i)
+)
+SELECT * FROM c WHERE i < (SELECT count(*) FROM c);
+
+query II
+SELECT count(*) = {rows},
+       count(*) FILTER (WHERE i != rowid OR s IS DISTINCT FROM 'long string payload ' || i::VARCHAR
+                          OR payload IS DISTINCT FROM [i, NULL, i + 1]) = 0
+FROM parallel_scan_ordered;
+----
+true	true
+
+endloop
+
+# Sparse producer chunks and a count-only consumer alongside an ordered consumer.
+query II
+WITH c AS MATERIALIZED (
+	SELECT i FROM range(1000003) r(i) WHERE i % 97 = 0
+)
+SELECT (SELECT count(*) FROM c), (SELECT i FROM c ORDER BY i LIMIT 1 OFFSET 10000);
+----
+10310	970000
+
+# Each recursive epoch must start with fresh scan and local state.
+query II
+WITH RECURSIVE r(i, epoch) AS (
+	SELECT i, 0 FROM range(125003) t(i)
+	UNION ALL
+	SELECT i, epoch + 1 FROM r WHERE epoch < 2 AND i % 7 = 0
+)
+SELECT count(*), sum(i) FROM r;
+----
+160719	10045044645
+
+endloop
+
+statement ok
+SET threads=32;
+
+statement ok
+PREPARE parallel_scan AS
+WITH c AS MATERIALIZED (SELECT i FROM range(125003) r(i))
+SELECT count(*), sum(l.i) FROM c l JOIN c r USING (i);
+
+loop iteration 0 3
+
+query II
+EXECUTE parallel_scan;
+----
+125003	7812812503
+
+endloop
+
+# Verify that ordered scans really use the materialized path, rather than direct or buffered exchange.
+query II
+EXPLAIN ANALYZE
+CREATE OR REPLACE TABLE parallel_scan_ordered AS
+WITH c AS MATERIALIZED (SELECT i FROM range(1000003) r(i))
+SELECT i FROM c WHERE i < (SELECT count(*) FROM c);
+----
+analyzed_plan	<REGEX>:.*Materialized Consumers: 1.*
+
+# The nested-value self-join over 400003 rows exhausts the address space of 32-bit builds at 192 threads.
+require 64bit
+
+# Collections of 196 chunks scanned by more threads than there are chunks.
+foreach threads 1 4 32 192
+
+statement ok
+SET threads={threads};
+
+query III
+WITH c AS MATERIALIZED (
+	SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE 'long string payload ' || i::VARCHAR END s,
+	       [i, NULL, i + 1] payload
+	FROM range(400003) r(i)
+)
+SELECT count(*) = 400003,
+       coalesce(sum(l.i), 0) = 400003::BIGINT * (400003 - 1) / 2,
+       count(*) FILTER (WHERE l.s IS DISTINCT FROM
+           CASE WHEN r.i % 7 = 0 THEN NULL ELSE 'long string payload ' || r.i::VARCHAR END
+           OR l.payload IS DISTINCT FROM [r.i, NULL, r.i + 1]) = 0
+FROM c l JOIN c r USING (i);
+----
+true	true	true
+
+statement ok
+CREATE OR REPLACE TABLE parallel_scan_ordered AS
+WITH c AS MATERIALIZED (
+	SELECT i, 'long string payload ' || i::VARCHAR AS s, [i, NULL, i + 1] AS payload
+	FROM range(400003) r(i)
+)
+SELECT * FROM c WHERE i < (SELECT count(*) FROM c);
+
+query II
+SELECT count(*) = 400003,
+       count(*) FILTER (WHERE i != rowid OR s IS DISTINCT FROM 'long string payload ' || i::VARCHAR
+                          OR payload IS DISTINCT FROM [i, NULL, i + 1]) = 0
+FROM parallel_scan_ordered;
+----
+true	true
+
+endloop

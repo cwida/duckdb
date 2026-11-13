@@ -91,6 +91,14 @@ public:
 		return result;
 	}
 
+	//! The definition of a column, with a child for every nested field an identifier can be attached to: the fields of
+	//! a STRUCT, the elements of a LIST or ARRAY, the "key_value" entries of a MAP, and the members of a UNION
+	DUCKDB_API static MultiFileColumnDefinition CreateNested(const Identifier &name, const LogicalType &type);
+	//! The definition of the nested field a path of child indexes addresses, starting at this column: a STRUCT field by
+	//! its index, the elements of a LIST or ARRAY by 0, the keys of a MAP by 0 and its values by 1, and a UNION member
+	//! by its index. Requires a definition from CreateNested; throws when the path addresses no nested field
+	DUCKDB_API MultiFileColumnDefinition &ResolveChildPath(const vector<idx_t> &child_path);
+
 	static vector<MultiFileColumnDefinition> ColumnsFromNamesAndTypes(const vector<Identifier> &names,
 	                                                                  const vector<LogicalType> &types) {
 		vector<MultiFileColumnDefinition> columns;

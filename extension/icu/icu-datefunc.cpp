@@ -1,6 +1,7 @@
 #include "include/icu-datefunc.hpp"
 
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/types/timestamp.hpp"
@@ -18,7 +19,10 @@ ICUDateFunc::BindData::BindData(const string &tz_setting_p, const string &cal_se
 	InitCalendar();
 }
 
-ICUDateFunc::BindData::BindData(ClientContext &context) : cal_setting("gregorian") {
+ICUDateFunc::BindData::BindData(ClientContext &context) : BindData(context.GetContext()) {
+}
+
+ICUDateFunc::BindData::BindData(Context &context) : cal_setting("gregorian") {
 	context.TryGetCurrentSetting("TimeZone", tz_setting);
 	context.TryGetCurrentSetting("Calendar", cal_setting);
 
@@ -48,6 +52,11 @@ unique_ptr<FunctionData> ICUDateFunc::Bind(BindScalarFunctionInput &input) {
 	return make_uniq<BindData>(input.GetClientContext());
 }
 
+unique_ptr<ICUDateFunc::CastData> ICUDateFunc::BindCastData(BindCastInput &input) {
+	input.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
+	return make_uniq<CastData>(make_uniq<BindData>(*input.context));
+}
+
 const ICUDateFunc::CalendarCacheState::CacheEntry &ICUDateFunc::CalendarCacheState::GetEntry(const string_t &tz_id) {
 	if (last && last->first.size() == tz_id.GetSize() &&
 	    memcmp(last->first.data(), tz_id.GetData(), tz_id.GetSize()) == 0) {
@@ -74,6 +83,17 @@ Calendar *ICUDateFunc::CalendarCacheState::GetCalendar(const string_t &tz_id) {
 	auto &entry = GetEntry(tz_id);
 	if (!entry.calendar) {
 		throw NotImplementedException(entry.error);
+	}
+	return entry.calendar.get();
+}
+
+Calendar *ICUDateFunc::CalendarCacheState::TryGetCalendar(const string_t &tz_id, string *error_message) {
+	auto &entry = GetEntry(tz_id);
+	if (!entry.calendar) {
+		if (error_message) {
+			*error_message = entry.error;
+		}
+		return nullptr;
 	}
 	return entry.calendar.get();
 }
@@ -117,7 +137,12 @@ timestamp_tz_t ICUDateFunc::GetTimeUnsafe(Calendar *calendar, uint64_t micros) {
 	if (calendar->HasFailed()) {
 		throw InternalException("Unable to get calendar time.");
 	}
-	return timestamp_tz_t(millis * Interval::MICROS_PER_MSEC + int64_t(micros));
+	// The time is a whole number of milliseconds, so converting it back to microseconds can overflow.
+	int64_t result;
+	if (!Timestamp::TryCombineUnits(millis, int64_t(micros), Interval::MICROS_PER_MSEC, result)) {
+		throw OutOfRangeException("Unable to get calendar time: timestamp out of range");
+	}
+	return timestamp_tz_t(result);
 }
 
 bool ICUDateFunc::TryGetTime(Calendar *calendar, uint64_t micros, timestamp_tz_t &result) {
@@ -128,19 +153,10 @@ bool ICUDateFunc::TryGetTime(Calendar *calendar, uint64_t micros, timestamp_tz_t
 	}
 
 	// The time is a whole number of milliseconds, so converting it back to microseconds can overflow.
-	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(millis, Interval::MICROS_PER_MSEC, millis)) {
+	if (!Timestamp::TryCombineUnits(millis, int64_t(micros), Interval::MICROS_PER_MSEC, result.value)) {
 		return false;
 	}
-	if (!TryAddOperator::Operation<int64_t, int64_t, int64_t>(millis, int64_t(micros), millis)) {
-		return false;
-	}
-
-	// Now make sure the value is in range
-	result.value = millis;
-	date_t out_date = Timestamp::GetDate(timestamp_t(millis));
-	int64_t days_micros;
-	return TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(out_date.days, Interval::MICROS_PER_DAY,
-	                                                                 days_micros);
+	return result.IsFinite();
 }
 
 timestamp_tz_t ICUDateFunc::GetTime(Calendar *calendar, uint64_t micros) {
@@ -160,7 +176,7 @@ bool ICUDateFunc::TryGetTimeNS(Calendar *calendar, uint64_t nanos, timestamp_tz_
 	nanos %= Interval::NANOS_PER_MICRO;
 	timestamp_t us(tstz_micros);
 	timestamp_ns_t ns;
-	if (!Timestamp::TryFromTimestampNanos(us, nanos, ns)) {
+	if (!Timestamp::TryFromTimestampNanos(us, int32_t(nanos), ns)) {
 		return false;
 	}
 	result.value = ns.value;
@@ -206,6 +222,27 @@ int32_t ICUDateFunc::ExtractField(Calendar *calendar, CalendarField field) {
 		throw ConversionException("Unable to extract calendar part");
 	}
 	return result;
+}
+
+bool ICUDateFunc::TryGetTimeTZOffset(Calendar *calendar, int32_t &offset) {
+	offset = ExtractField(calendar, CAL_ZONE_OFFSET);
+	offset += ExtractField(calendar, CAL_DST_OFFSET);
+	offset /= Interval::MSECS_PER_SEC;
+	return offset >= dtime_tz_t::MIN_OFFSET && offset <= dtime_tz_t::MAX_OFFSET;
+}
+
+int32_t ICUDateFunc::GetTimeTZOffset(Calendar *calendar) {
+	int32_t offset;
+	if (!TryGetTimeTZOffset(calendar, offset)) {
+		throw OutOfRangeException(TimeTZOffsetError(offset));
+	}
+	return offset;
+}
+
+string ICUDateFunc::TimeTZOffsetError(int32_t offset) {
+	interval_t interval {0, 0, offset * Interval::MICROS_PER_SEC};
+	return StringUtil::Format("Time zone offset %s is out of range, expected a value between -15:59:59 and +15:59:59",
+	                          Interval::ToString(interval));
 }
 
 int32_t ICUDateFunc::SubtractField(Calendar *calendar, CalendarField field, timestamp_tz_t end_date) {

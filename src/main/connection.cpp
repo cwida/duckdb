@@ -15,19 +15,36 @@
 #include "duckdb/main/relation/view_relation.hpp"
 #include "duckdb/parser/parsed_data/transaction_info.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/main/statement_iterator.hpp"
 
 namespace duckdb {
 
-Connection::Connection(DatabaseInstance &database)
+Connection::Connection(DatabaseInstance &database) : Connection(database, ConnectionType::USER) {
+}
+
+Connection::Connection(DatabaseInstance &database, ConnectionType connection_type)
     : context(make_shared_ptr<ClientContext>(database.shared_from_this())) {
+	context->connection_type = connection_type;
 	auto &connection_manager = ConnectionManager::Get(database);
 	connection_manager.AssignConnectionId(*this);
 	connection_manager.AddConnection(*context);
 }
 
 Connection::Connection(DuckDB &database) : Connection(*database.instance) {
+}
+
+Connection Connection::CreateInternal(DatabaseInstance &database) {
+	return Connection(database, ConnectionType::INTERNAL);
+}
+
+Connection Connection::CreateInternal(ClientContext &caller) {
+	auto con = CreateInternal(*caller.db);
+	auto &context = *con.context;
+	context.base_context = caller.base_context ? caller.base_context : caller.shared_from_this();
+	context.internal_depth = caller.internal_depth + 1;
+	return con;
 }
 
 Connection::Connection(Connection &&other) noexcept {
@@ -151,7 +168,6 @@ unique_ptr<QueryResult> Connection::QueryParamsRecursive(const string &query, ve
 	auto named_params = ConvertParamListToMap(values);
 	QueryParameters parameters;
 	parameters.statement_args = named_params;
-	parameters.result_eagerness = ResultEagerness::FORCED;
 	return context->Query(query, parameters);
 }
 
@@ -168,16 +184,18 @@ unique_ptr<TableDescription> Connection::TableInfo(const Identifier &table_name)
 	return TableInfo(Identifier::InvalidCatalog(), Identifier::DefaultSchema(), table_name);
 }
 
-vector<unique_ptr<SQLStatement>> Connection::ExtractStatements(const string &query) {
-	// Eager convenience over the lazy ClientContext::ExtractStatements iterator: drain the
-	// engine-facing statements into a vector.
+vector<unique_ptr<SQLStatement>> Connection::ExtractStatements(const string &query, bool apply_invalidation_policy) {
 	auto &client_context = *context;
-	auto iterator = client_context.IterateStatements(query);
 	vector<unique_ptr<SQLStatement>> result;
-	while (iterator.Peek()) {
-		if (auto statement = iterator.GetStatement()) {
-			result.push_back(std::move(statement));
+	try {
+		auto iterator = client_context.IterateStatements(query, apply_invalidation_policy);
+		while (iterator.Peek()) {
+			result.push_back(iterator.GetStatement());
 		}
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		client_context.ProcessError(error, query);
+		error.Throw();
 	}
 	return result;
 }
@@ -195,29 +213,17 @@ shared_ptr<Relation> Connection::Table(const Identifier &table_name) {
 }
 
 shared_ptr<Relation> Connection::Table(const Identifier &schema_name, const Identifier &table_name) {
-	auto table_info = TableInfo(Identifier::InvalidCatalog(), schema_name, table_name);
-	if (!table_info) {
-		throw CatalogException("Table %s does not exist!",
-		                       QualifiedName(Identifier(), schema_name, table_name)
-		                           .ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA));
-	}
-	return make_shared_ptr<TableRelation>(context, std::move(table_info));
+	return Table(Identifier::InvalidCatalog(), schema_name, table_name);
 }
 
 shared_ptr<Relation> Connection::Table(const Identifier &catalog_name, const Identifier &schema_name,
                                        const Identifier &table_name) {
-	unique_ptr<TableDescription> table_info;
-	do {
-		table_info = TableInfo(catalog_name, schema_name, table_name);
-		if (table_info) {
-			break;
-		}
-
-		if (catalog_name.empty() && !schema_name.empty()) {
-			table_info = TableInfo(schema_name, Identifier::DefaultSchema(), table_name);
-		}
-	} while (false);
-
+	auto catalog = catalog_name;
+	auto schema = schema_name;
+	if (IsInvalidCatalog(catalog) && !IsInvalidSchema(schema)) {
+		context->RunFunctionInTransaction([&]() { Binder::BindSchemaOrCatalog(*context, catalog, schema); });
+	}
+	auto table_info = TableInfo(catalog, schema, table_name);
 	if (!table_info) {
 		throw CatalogException("Table %s does not exist!",
 		                       QualifiedName(catalog_name, schema_name, table_name)
@@ -299,7 +305,7 @@ shared_ptr<Relation> Connection::ReadCSV(const string &csv_file, const vector<st
 	named_parameter_map_t options;
 	child_list_t<Value> column_list;
 	for (auto &column : columns) {
-		auto col_list = Parser::ParseColumnList(column, context->GetParserOptions());
+		auto col_list = Parser(*context).ParseColumnList(column);
 		if (col_list.LogicalColumnCount() != 1) {
 			throw ParserException("Expected a single column definition");
 		}

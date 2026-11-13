@@ -12,6 +12,7 @@
 #include "duckdb/function/cast/default_casts.hpp"
 
 namespace duckdb {
+class Context;
 
 //! The BoundCastExpression has been moved to a function expression (the __cast scalar function).
 //! This class exists only as a set of helper methods.
@@ -45,10 +46,9 @@ struct BoundCastExpression {
 	                                                      const BaseStatistics &child_stats,
 	                                                      optional_ptr<ClientContext> context = nullptr);
 
-	//! Cast an expression to the specified SQL type, using only the built-in SQL casts
-	static unique_ptr<Expression> AddDefaultCastToType(unique_ptr<Expression> expr, const LogicalType &target_type,
-	                                                   bool try_cast = false);
 	//! Cast an expression to the specified SQL type if required
+	DUCKDB_API static unique_ptr<Expression> AddCastToType(Context &context, unique_ptr<Expression> expr,
+	                                                       const LogicalType &target_type, bool try_cast = false);
 	DUCKDB_API static unique_ptr<Expression> AddCastToType(ClientContext &context, unique_ptr<Expression> expr,
 	                                                       const LogicalType &target_type, bool try_cast = false);
 
@@ -58,6 +58,14 @@ struct BoundCastExpression {
 	//! Returns true if a cast is invertible (i.e. CAST(s -> t -> s) = s for all values of s). This is not true for e.g.
 	//! boolean casts, because that can be e.g. -1 -> TRUE -> 1. This is necessary to prevent some optimizer bugs.
 	static bool CastIsInvertible(const LogicalType &source_type, const LogicalType &target_type);
+	//! Returns true if every value of the integral source type is exactly representable in the floating target type
+	static bool IsLosslessIntegralToFloatingCast(const LogicalType &source_type, const LogicalType &target_type);
+	//! Returns true if CAST(s -> t -> s) = s for all values of s, possibly without preserving their order (e.g. INTEGER
+	//! -> VARCHAR). An (in)equality comparison of the cast with a constant can then be applied to the source values.
+	static bool CastIsInvertibleForEquality(const LogicalType &source_type, const LogicalType &target_type);
+	//! Returns the source value s with CAST(s) = constant, or nullopt if the constant does not round-trip exactly
+	static optional<Value> TryInvertConstant(ClientContext &context, const BoundFunctionExpression &cast_expr,
+	                                         const Value &constant);
 
 	//! Returns true if a cast from source_type to target_type can throw a runtime error
 	static bool CastCanThrow(const LogicalType &source_type, const LogicalType &target_type, bool try_cast);

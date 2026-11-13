@@ -38,6 +38,10 @@ shared_ptr<const WindowFunction> GetBuiltinWindowFunction(ClientContext &context
                                                           const vector<LogicalType> &arguments);
 
 //! Look up a built-in scalar function as GetBuiltinScalarFunction does, and bind it to the given children
+//! The result can be any expression, e.g. a constant if the function was folded during binding
+unique_ptr<Expression> BindBuiltinScalarExpression(ClientContext &context, const Identifier &name,
+                                                   vector<unique_ptr<Expression>> children);
+//! As BindBuiltinScalarExpression, but throws if the result is not a BoundFunctionExpression
 unique_ptr<BoundFunctionExpression> BindBuiltinScalarFunction(ClientContext &context, const Identifier &name,
                                                               vector<unique_ptr<Expression>> children);
 

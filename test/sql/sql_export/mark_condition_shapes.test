@@ -38,7 +38,7 @@ JOIN BY (TYPE MARK) (SELECT 1 b WHERE false) r ON a=b ORDER BY a NULLS LAST;
 1	false
 NULL	false
 
-# Reject forms whose native MARK NULL handling cannot be reconstructed safely.
+# Direct MARK syntax retains the operator's native NULL handling.
 statement ok
 SET debug_verify_serializer=true;
 
@@ -54,17 +54,19 @@ INSERT INTO mark_boundary_l VALUES (NULL,(1,NULL)),(1,(2,3));
 statement ok
 INSERT INTO mark_boundary_r VALUES (NULL,(1,2)),(2,(3,4));
 
-statement error
-EXPLAIN (SQL) SELECT __mark_join_marker FROM mark_boundary_l l JOIN BY (TYPE MARK) mark_boundary_r r ON l.i IS DISTINCT FROM r.i;
+query II
+SELECT l.i,__mark_join_marker FROM mark_boundary_l l JOIN BY (TYPE MARK) mark_boundary_r r ON l.i IS DISTINCT FROM r.i ORDER BY l.i NULLS FIRST;
 ----
-<REGEX>:.*MARK DISTINCT FROM comparisons cannot preserve NULL semantics.*
+NULL	true
+1	true
 
 foreach comparison < > <= >=
 
-statement error
-EXPLAIN (SQL) SELECT __mark_join_marker FROM mark_boundary_l l JOIN BY (TYPE MARK) mark_boundary_r r ON l.t{comparison}r.t;
+query II
+SELECT l.i,__mark_join_marker FROM mark_boundary_l l JOIN BY (TYPE MARK) mark_boundary_r r ON l.t{comparison}r.t ORDER BY l.i NULLS FIRST;
 ----
-<REGEX>:.*MARK ordering comparisons on nested types cannot preserve NULL semantics.*
+NULL	true
+1	true
 
 endloop
 

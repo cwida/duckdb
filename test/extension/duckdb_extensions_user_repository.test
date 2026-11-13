@@ -1,0 +1,89 @@
+# name: test/extension/duckdb_extensions_user_repository.test
+# description: duckdb_extensions() lists extensions installed and loaded from a user-provided repository
+# group: [extension]
+
+# json must be available in the LOCAL_EXTENSION_REPO and not statically linked
+require-env LOCAL_EXTENSION_REPO
+
+require json
+
+statement ok
+SET extension_directory='{TEST_DIR}/duckdb_extensions_user_repository'
+
+statement ok
+SET extension_repository_directory='{TEST_DIR}/duckdb_extensions_user_repository_repos'
+
+# the local repository backs the user-provided repository; the test runner allows unsigned extensions
+statement ok
+CREATE EXTENSION REPOSITORY my_repo WITH PREFIX '{LOCAL_EXTENSION_REPO}' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
+
+# a repository with nothing installed in it adds no rows
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE extension_name='json'
+----
+1
+
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE installed_from='my_repo'
+----
+0
+
+statement ok
+INSTALL json FROM my_repo
+
+# the known json extension keeps its flat row, and the copy from my_repo gets a row of its own
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE extension_name='json'
+----
+2
+
+query IIII
+SELECT installed, loaded, install_mode,
+       replace(install_path, '\', '/') LIKE '%/repositories/my_repo/json.duckdb_extension'
+FROM duckdb_extensions() WHERE extension_name='json' AND installed_from='my_repo'
+----
+true	false	REPOSITORY	true
+
+statement ok
+LOAD json FROM my_repo
+
+# the loaded copy is the one from my_repo, not the flat one
+query III
+SELECT installed_from = 'my_repo', loaded, installed_from = 'my_repo' AND installed FROM duckdb_extensions()
+WHERE extension_name='json' ORDER BY installed_from = 'my_repo'
+----
+false	false	false
+true	true	true
+
+# installing the same extension in the flat folder fills the flat row, the loaded copy stays the one from my_repo
+statement ok
+FORCE INSTALL json FROM '{LOCAL_EXTENSION_REPO}'
+
+query III
+SELECT installed_from = 'my_repo', installed, loaded FROM duckdb_extensions()
+WHERE extension_name='json' ORDER BY installed_from = 'my_repo'
+----
+false	true	false
+true	true	true
+
+# dropping the repository keeps its installed files listed, and the loaded copy stays installed
+statement ok
+DROP EXTENSION REPOSITORY my_repo
+
+query IIII
+SELECT installed_from = 'my_repo', installed, loaded, install_path = '' FROM duckdb_extensions()
+WHERE extension_name='json' ORDER BY installed_from = 'my_repo'
+----
+false	true	false	false
+true	true	true	false
+
+# forbidding repositories only affects loading: the installed files are still listed
+statement ok
+SET allow_extension_repositories='forbidden'
+
+query IIII
+SELECT installed_from = 'my_repo', installed, loaded, install_path = '' FROM duckdb_extensions()
+WHERE extension_name='json' ORDER BY installed_from = 'my_repo'
+----
+false	true	false	false
+true	true	true	false

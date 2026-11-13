@@ -1,0 +1,32 @@
+# name: test/sql/storage/compression/dict_fsst/dict_fsst_corrupt_dict_count_boundary.test
+# description: A DICT_FSST dictionary count that fits the block must still have bounded string lengths
+# group: [dict_fsst]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/dict_fsst_corrupt_dict_count_boundary.db.gz {TEST_DIR}/dict_fsst_corrupt_dict_count_boundary.db
+
+load {TEST_DIR}/dict_fsst_corrupt_dict_count_boundary.db readonly
+
+statement ok
+USE dict_fsst_corrupt_dict_count_boundary
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='s' AND compression='DICT_FSST' LIMIT 1;
+----
+DICT_FSST
+
+statement error
+SELECT count(DISTINCT s) FROM t;
+----
+Data Corruption Error: Corrupted DICT_FSST segment: string lengths exceed the dictionary size
+
+restart
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT count(DISTINCT s) FROM t;
+----
+Data Corruption Error: Corrupted DICT_FSST segment: string lengths exceed the dictionary size

@@ -79,13 +79,14 @@ BindResult ExpressionBinder::BindExpression(TypeExpression &type_expr, idx_t dep
 
 	for (auto &param : unbound_parameters) {
 		// Otherwise, try to fold it to a constant value
-		ConstantBinder binder(this->binder, context, StringUtil::Format("Type parameter for type '%s'", type_name));
+		ConstantBinder binder(this->binder, context, StringUtil::Format("Type parameter for type %s", type_name));
+		binder.ContinueStackDepth(*this);
 
 		auto expr = param->Copy();
 		auto bound_expr = binder.Bind(expr);
 
 		if (!bound_expr->IsFoldable()) {
-			throw BinderException(type_expr, "Type parameter expression for type '%s' is not a constant", type_name);
+			throw BinderException(type_expr, "Type parameter expression for type %s is not a constant", type_name);
 		}
 
 		// The location comes from the parsed parameter, not the bound one.
@@ -109,8 +110,8 @@ BindResult ExpressionBinder::BindExpression(TypeExpression &type_expr, idx_t dep
 	    type_entry.constructors.Bind(context, type_entry.user_type, bound_parameters, type_expr.GetQueryLocation());
 
 	// Return the resulting type!
-	auto result_expr = make_uniq<BoundConstantExpression>(Value::TYPE(result_type));
-	result_expr->SetQueryLocation(type_expr.GetQueryLocation());
+	auto result_expr =
+	    make_uniq<BoundConstantExpression>(Value::TYPE(result_type), Identifier(), type_expr.GetQueryLocation());
 	return BindResult(std::move(result_expr));
 }
 

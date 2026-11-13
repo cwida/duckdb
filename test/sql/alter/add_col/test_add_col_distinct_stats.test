@@ -9,10 +9,10 @@ statement ok
 CREATE SEQUENCE seq;
 
 # IF NOT EXISTS fills the column with the default directly instead of through an UPDATE
-# 2000 distinct values in a scrambled order (7919 is coprime with 2000), using only built-in functions
-# because the default expression is replayed from the WAL before extensions are loaded
+# An odd period avoids alignment with vector boundaries (7919 is coprime with 2001).
+# Use only built-in functions: defaults are replayed from the WAL before extensions are loaded.
 statement ok
-ALTER TABLE t ADD COLUMN IF NOT EXISTS u VARCHAR DEFAULT (nextval('seq') * 7919 % 2000)::VARCHAR;
+ALTER TABLE t ADD COLUMN IF NOT EXISTS u VARCHAR DEFAULT (nextval('seq') * 7919 % 2001)::VARCHAR;
 
 query I
 SELECT s.approx_unique BETWEEN 1000 AND 10000 FROM (SELECT stats(u) s FROM t LIMIT 1);
@@ -21,7 +21,7 @@ true
 
 # appended rows must extend the distinct count instead of replacing it
 statement ok
-INSERT INTO t SELECT 100000 + range, (nextval('seq') * 7919 % 2000)::VARCHAR FROM range(10);
+INSERT INTO t SELECT 100000 + range, (nextval('seq') * 7919 % 2001)::VARCHAR FROM range(10);
 
 query I
 SELECT s.approx_unique BETWEEN 1000 AND 10000 FROM (SELECT stats(u) s FROM t LIMIT 1);

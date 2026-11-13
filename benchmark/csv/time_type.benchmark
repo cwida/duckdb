@@ -7,7 +7,7 @@ group csv
 
 load
 CREATE TABLE t1 AS select '30/07/1992', '30/07/1992 17:15:30';
-insert into t1  select '30/07/1992', '30/07/1992 17:15:30' from range(0,10000000) tbl(i);
+insert into t1  select '30/07/1992', '30/07/1992 17:15:30' from range(0,3000000) tbl(i);
 COPY t1 TO '${BENCHMARK_DIR}/time_timestamp.csv' (FORMAT CSV, HEADER 0);
 
 run

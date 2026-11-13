@@ -165,8 +165,9 @@ functions:
         description: The appender to flush.
     return_type: state
     description: |
-      Flush the appender to the table, forcing the cache of the appender to be cleared. If flushing the data triggers a
-      constraint violation or any other error, then all data is invalidated, and this function returns DuckDBError.
+      Flush the appender to the table, forcing the cache of the appender to be cleared. Requires a connection with no open
+      result. If flushing the data triggers a constraint violation or any other error, then all data is invalidated, and
+      this function returns DuckDBError.
       It is not possible to append more values. Call duckdb_appender_error_data to obtain the error data followed by
       duckdb_appender_destroy to destroy the invalidated appender.
     return_description: '`DuckDBSuccess` on success or `DuckDBError` on failure.'

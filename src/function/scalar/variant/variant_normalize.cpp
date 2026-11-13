@@ -14,9 +14,9 @@
 namespace duckdb {
 
 VariantNormalizerState::VariantNormalizerState(idx_t result_row, VariantVectorData &source,
-                                               OrderedOwningStringMap<uint32_t> &dictionary,
+                                               OrderedOwningStringMap<uint32_t> &dictionary, ArenaAllocator &keys_arena,
                                                SelectionVector &keys_selvec)
-    : source(source), dictionary(dictionary), keys_selvec(keys_selvec),
+    : source(source), dictionary(dictionary), keys_arena(keys_arena), keys_selvec(keys_selvec),
       keys_index_validity(source.keys_index_validity) {
 	auto keys_list_entry = source.keys_data[result_row];
 	auto values_list_entry = source.values_data[result_row];
@@ -38,7 +38,7 @@ data_ptr_t VariantNormalizerState::GetDestination() {
 uint32_t VariantNormalizerState::GetOrCreateIndex(const string_t &key) {
 	auto unsorted_idx = dictionary.size();
 	//! This will later be remapped to the sorted idx (see FinalizeVariantKeys in 'to_variant.cpp')
-	return dictionary.emplace(std::make_pair(key, unsorted_idx)).first->second;
+	return dictionary.emplace(std::make_pair(key, unsorted_idx), keys_arena).first->second;
 }
 
 void VariantNormalizer::VisitNull(VariantNormalizerState &state) {
@@ -117,7 +117,7 @@ void VariantNormalizer::VisitBitstring(const string_t &bits, VariantNormalizerSt
 }
 
 void VariantNormalizer::VisitArray(const UnifiedVariantVectorData &variant, idx_t row,
-                                   const VariantNestedData &nested_data, VariantNormalizerState &state) {
+                                   const VariantNestedData &nested_data, idx_t depth, VariantNormalizerState &state) {
 	state.blob_size += VarintEncode(nested_data.child_count, state.GetDestination());
 	if (!nested_data.child_count) {
 		return;
@@ -136,12 +136,12 @@ void VariantNormalizer::VisitArray(const UnifiedVariantVectorData &variant, idx_
 		result_children_idx++;
 
 		//! Visit the child value
-		VariantVisitor<VariantNormalizer>::Visit(variant, row, values_index, state);
+		VariantVisitor<VariantNormalizer>::Visit(variant, row, values_index, depth + 1, state);
 	}
 }
 
 void VariantNormalizer::VisitObject(const UnifiedVariantVectorData &variant, idx_t row,
-                                    const VariantNestedData &nested_data, VariantNormalizerState &state) {
+                                    const VariantNestedData &nested_data, idx_t depth, VariantNormalizerState &state) {
 	state.blob_size += VarintEncode(nested_data.child_count, state.GetDestination());
 	if (!nested_data.child_count) {
 		return;
@@ -176,7 +176,7 @@ void VariantNormalizer::VisitObject(const UnifiedVariantVectorData &variant, idx
 		state.keys_indexes[children_idx] = keys_idx;
 		children_idx++;
 		keys_idx++;
-		VariantVisitor<VariantNormalizer>::Visit(variant, row, values_index, state);
+		VariantVisitor<VariantNormalizer>::Visit(variant, row, values_index, depth + 1, state);
 	}
 }
 
@@ -212,7 +212,8 @@ void VariantNormalizer::Normalize(const Vector &variant_vec, Vector &result) {
 
 	//! Initialize the dictionary
 	auto &keys_entry = ListVector::GetChildMutable(keys);
-	OrderedOwningStringMap<uint32_t> dictionary(StringVector::GetStringAllocator(keys_entry));
+	OrderedOwningStringMap<uint32_t> dictionary;
+	auto &keys_arena = StringVector::GetStringAllocator(keys_entry);
 
 	VariantVectorData variant_data(result);
 	SelectionVector keys_selvec;
@@ -237,8 +238,8 @@ void VariantNormalizer::Normalize(const Vector &variant_vec, Vector &result) {
 		values_list_entry.offset = ListVector::GetListSize(values);
 
 		//! Visit the source to populate the result
-		VariantNormalizerState visitor_state(i, variant_data, dictionary, keys_selvec);
-		VariantVisitor<VariantNormalizer>::Visit(variant, i, 0, visitor_state);
+		VariantNormalizerState visitor_state(i, variant_data, dictionary, keys_arena, keys_selvec);
+		VariantVisitor<VariantNormalizer>::Visit(variant, i, 0, 0, visitor_state);
 
 		blob_data.SetSizeAndFinalize(visitor_state.blob_size, original_data.GetSize());
 		keys_list_entry.length = visitor_state.keys_size;
@@ -269,6 +270,7 @@ ScalarFunction VariantNormalizeFun::GetFunction() {
 	auto variant_type = LogicalType::VARIANT();
 	ScalarFunction fun("variant_normalize", {}, variant_type, VariantNormalizeFunction, nullptr, VariantNormalizeStats);
 	fun.GetSignature().AddParameter("input_variant", variant_type);
+	fun.SetFallible();
 	return fun;
 }
 

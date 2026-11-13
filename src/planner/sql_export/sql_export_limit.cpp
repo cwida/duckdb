@@ -86,6 +86,11 @@ LimitSQLExporter::LimitExpressionResult LimitSQLExporter::LimitBindingFailure(co
 LimitSQLExporter::LimitExpressionResult LimitSQLExporter::ResolveLimitColumn(const ColumnBinding &binding,
                                                                              LogicalOperator &input,
                                                                              const LogicalPlanVerificationPath &path) {
+	if (context.FindSource(input)) {
+		// A row-stream replacement exposes columns, not the original expressions
+		// that made this LIMIT input independent of the rows being limited.
+		return LimitBindingFailure(path);
+	}
 	auto bindings = input.GetColumnBindings();
 	auto found = std::find(bindings.begin(), bindings.end(), binding);
 	if (found == bindings.end()) {

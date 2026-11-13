@@ -5,11 +5,6 @@ opt: release
 unit: unittest
 
 EXTENSION_CONFIG_STEP ?=
-ifndef DUCKDB_NEW_EXTENSION_BUILD
-ifdef USE_MERGED_VCPKG_MANIFEST
-	EXTENSION_CONFIG_STEP = build/extension_configuration/vcpkg.json
-endif
-endif
 
 GENERATOR ?=
 FORCE_COLOR ?=
@@ -25,10 +20,11 @@ MKFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 PROJ_DIR := $(dir $(MKFILE_PATH))
 
 PYTHON ?= python3
-FORMAT_VENV ?= .cache/format-venv
+PREPARE_VENV ?= .cache/prepare-venv
+FORMAT_VENV ?= $(PREPARE_VENV)
 FORMAT_PYTHON := $(FORMAT_VENV)/bin/python
 FORMAT_SETUP_DEPS := format_venv
-CAPIGEN_VENV ?= .cache/capigen-venv
+CAPIGEN_VENV ?= $(PREPARE_VENV)
 CAPIGEN_PYTHON := $(CAPIGEN_VENV)/bin/python
 CAPIGEN_SETUP_DEPS := capigen_venv
 
@@ -208,6 +204,24 @@ else ifeq (${BUILD_ALL_IT_EXT}, 1)
 else ifeq (${BUILD_ALL_OOT_EXT}, 1)
 	EXTENSION_CONFIGS:=.github/config/out_of_tree_extensions.cmake
 endif
+
+# Extension-selecting Make builds use the synchronized extension source tree by default.
+# DUCKDB_NEW_EXTENSION_BUILD=0 remains available as a temporary legacy escape hatch.
+ifneq ($(strip $(BUILD_EXTENSIONS)$(EXTENSION_CONFIGS)),)
+ifeq ($(origin DUCKDB_NEW_EXTENSION_BUILD), undefined)
+	DUCKDB_NEW_EXTENSION_BUILD:=1
+endif
+endif
+ifneq ($(filter-out 0,$(strip $(DUCKDB_NEW_EXTENSION_BUILD))),)
+	DUCKDB_NEW_EXTENSION_BUILD_ENABLED:=1
+	export DUCKDB_NEW_EXTENSION_BUILD
+endif
+ifndef DUCKDB_NEW_EXTENSION_BUILD_ENABLED
+ifdef USE_MERGED_VCPKG_MANIFEST
+	EXTENSION_CONFIG_STEP = build/extension_configuration/vcpkg.json
+endif
+endif
+
 ifeq (${STATIC_OPENSSL}, 1)
 	CMAKE_VARS:=${CMAKE_VARS} -DOPENSSL_USE_STATIC_LIBS=1
 endif
@@ -401,14 +415,14 @@ endif
 ifneq ("${VCPKG_TARGET_TRIPLET}", "")
 	CMAKE_VARS_BUILD:=${CMAKE_VARS_BUILD} -DVCPKG_TARGET_TRIPLET='${VCPKG_TARGET_TRIPLET}'
 endif
-ifndef DUCKDB_NEW_EXTENSION_BUILD
+ifndef DUCKDB_NEW_EXTENSION_BUILD_ENABLED
 ifeq (${USE_MERGED_VCPKG_MANIFEST}, 1)
 	CMAKE_VARS:=${CMAKE_VARS} -DVCPKG_MANIFEST_DIR='${PROJ_DIR}build/extension_configuration'
 endif
 endif
 sync_extensions_into =
 vcpkg_cmake_flag =
-ifdef DUCKDB_NEW_EXTENSION_BUILD
+ifdef DUCKDB_NEW_EXTENSION_BUILD_ENABLED
 sync_extensions_into = $(PYTHON) scripts/sync_out_of_tree_extensions.py $(if $(BUILD_EXTENSIONS),--build-extensions "$(BUILD_EXTENSIONS)") $(if $(EXTENSION_CONFIGS),--extension-configs "$(EXTENSION_CONFIGS)") $(if $(EXTENSION_CONFIG_BASE_DIR),--extension-config-base-dir "$(EXTENSION_CONFIG_BASE_DIR)") --output-dir '$(1)' &&
 ifneq ("${VCPKG_TOOLCHAIN_PATH}", "")
 vcpkg_cmake_flag = -DVCPKG_MANIFEST_DIR='$(1)'
@@ -553,7 +567,8 @@ TEST_CONFIGS_QUERY_VERIFICATION := \
 	test/configs/verify_statement_serialization.json \
 	test/configs/disable_optimizer.json \
 	test/configs/verification_projection.json \
-	test/configs/verify_column_bindings.json
+	test/configs/verify_column_bindings.json \
+	test/configs/warnings_as_errors.json
 
 TEST_CONFIGS_EXECUTION := \
 	test/configs/internal_vector_serialization.json \
@@ -584,7 +599,6 @@ TEST_CONFIGS_STORAGE_ENGINE := \
 	test/configs/block_verification_latest.json \
 	test/configs/block_size_16kB.json \
 	test/configs/latest_storage_block_size_16kB.json \
-	test/configs/block_allocator_100mib.json \
 	test/configs/compressed_in_memory.json \
 	test/configs/prefetch_all_storage.json \
 	test/configs/force_storage_mmap.json
@@ -672,17 +686,28 @@ relassert: ${EXTENSION_CONFIG_STEP}
 .PHONY: relassert-artifact
 
 relassert-artifact:
+	RELEASE_ARTIFACT_SOURCE_DIR="$(RELEASE_ARTIFACT_SOURCE_DIR)" \
+	RELEASE_ARTIFACT_STAGING_DIR="$(RELEASE_ARTIFACT_STAGING_DIR)" \
+	RELEASE_ARTIFACT_TARBALL="$(RELEASE_ARTIFACT_TARBALL)" \
 	bash scripts/prepare_build_artifact.sh relassert
 
 .PHONY: release-artifact
 
 release-artifact:
+	RELEASE_ARTIFACT_SOURCE_DIR="$(RELEASE_ARTIFACT_SOURCE_DIR)" \
+	RELEASE_ARTIFACT_STAGING_DIR="$(RELEASE_ARTIFACT_STAGING_DIR)" \
+	RELEASE_ARTIFACT_TARBALL="$(RELEASE_ARTIFACT_TARBALL)" \
 	bash scripts/prepare_build_artifact.sh release
 
 .PHONY: cli-release-artifact
 
 cli-release-artifact:
 	bash scripts/package_release_artifact.sh cli "$(ARTIFACT_SUFFIX)" "$(CLI_BINARY)"
+
+.PHONY: cli-zip-release-artifact
+
+cli-zip-release-artifact:
+	PYTHON="$(PYTHON)" bash scripts/package_release_artifact.sh cli-zip "$(ARTIFACT_SUFFIX)" "$(CLI_BINARY)"
 
 .PHONY: shared-libs-release-artifact
 
@@ -763,9 +788,11 @@ toolsci:
 	clang++ --version
 
 test_ci:
-	python3 -m unittest discover --buffer --start-directory scripts/ci $(T)
+	$(PYTHON) scripts/ci/run_unit_tests.py --jobs $(CI_CPU_COUNT) $(T)
 
-.PHONY: format_tools parser_tools spell_tools
+.PHONY: prepare_tools format_tools parser_tools spell_tools
+prepare_tools: spell_tools capigen_venv
+
 format_tools: parser_tools spell_tools
 
 parser_tools:
@@ -778,28 +805,28 @@ parser_tools:
 spell_tools:
 	@if [ "$$(uname -s)" != "Linux" ]; then \
 		echo "Skipping spell_tools on non-Linux"; \
-		exit 0; \
+	else \
+		set -eu; \
+		VERSION=1.45.1; \
+		if [ "$$(uname -m)" = "arm64" ] || [ "$$(uname -m)" = "aarch64" ]; then \
+			ARCH="aarch64"; \
+		else \
+			ARCH="x86_64"; \
+		fi; \
+		TARGET_FILE="$${ARCH}-unknown-linux-musl"; \
+		FILE_NAME="typos-v$${VERSION}-$${TARGET_FILE}.tar.gz"; \
+		DOWNLOAD_URL="https://github.com/crate-ci/typos/releases/download/v$${VERSION}/$${FILE_NAME}"; \
+		$(PYTHON) scripts/ci/retry.py -- curl --fail --location --silent --show-error --output "/tmp/$${FILE_NAME}" "$${DOWNLOAD_URL}"; \
+		TMP_DIR="$$(mktemp -d)"; \
+		tar -xzf "/tmp/$${FILE_NAME}" -C "$${TMP_DIR}"; \
+		TYPOS_BIN="$$(find "$${TMP_DIR}" -type f -name typos | head -n 1)"; \
+		if [ -w /usr/local/bin ]; then \
+			install -m 0755 "$${TYPOS_BIN}" /usr/local/bin/typos; \
+		else \
+			sudo install -m 0755 "$${TYPOS_BIN}" /usr/local/bin/typos; \
+		fi; \
+		typos --version; \
 	fi
-	@set -eu; \
-	VERSION=1.45.1; \
-	if [ "$$(uname -m)" = "arm64" ] || [ "$$(uname -m)" = "aarch64" ]; then \
-		ARCH="aarch64"; \
-	else \
-		ARCH="x86_64"; \
-	fi; \
-	TARGET_FILE="$${ARCH}-unknown-linux-musl"; \
-	FILE_NAME="typos-v$${VERSION}-$${TARGET_FILE}.tar.gz"; \
-	DOWNLOAD_URL="https://github.com/crate-ci/typos/releases/download/v$${VERSION}/$${FILE_NAME}"; \
-	$(PYTHON) scripts/ci/retry.py -- curl --fail --location --silent --show-error --output "/tmp/$${FILE_NAME}" "$${DOWNLOAD_URL}"; \
-	TMP_DIR="$$(mktemp -d)"; \
-	tar -xzf "/tmp/$${FILE_NAME}" -C "$${TMP_DIR}"; \
-	TYPOS_BIN="$$(find "$${TMP_DIR}" -type f -name typos | head -n 1)"; \
-	if [ -w /usr/local/bin ]; then \
-		install -m 0755 "$${TYPOS_BIN}" /usr/local/bin/typos; \
-	else \
-		sudo install -m 0755 "$${TYPOS_BIN}" /usr/local/bin/typos; \
-	fi; \
-	typos --version
 
 .PHONY: enum-integrity-check
 enum-integrity-check:
@@ -880,15 +907,27 @@ format-check: $(FORMAT_SETUP_DEPS)
 format-check-silent: $(FORMAT_SETUP_DEPS)
 	$(FORMAT_PYTHON) scripts/format.py --all --check --silent $(T)
 
+format-check-files: $(FORMAT_SETUP_DEPS)
+	@test -n "$(FORMAT_FILES_FROM)" || (echo "FORMAT_FILES_FROM is required" >&2; exit 1)
+	$(FORMAT_PYTHON) scripts/format.py --files-from "$(FORMAT_FILES_FROM)" --check --silent $(T)
+
+format-fix-files: $(FORMAT_SETUP_DEPS)
+	@test -n "$(FORMAT_FILES_FROM)" || (echo "FORMAT_FILES_FROM is required" >&2; exit 1)
+	$(FORMAT_PYTHON) scripts/format.py --files-from "$(FORMAT_FILES_FROM)" --fix --noconfirm $(T)
+
 format-fix: $(FORMAT_SETUP_DEPS)
 	$(FORMAT_PYTHON) scripts/format.py --all --fix --noconfirm $(T)
 
 format-parser-grammar: $(FORMAT_SETUP_DEPS)
-	$(FORMAT_PYTHON) scripts/format.py src/include/duckdb/parser/peg/transformer/peg_transformer.hpp --fix --noconfirm
-	$(FORMAT_PYTHON) scripts/format.py src/parser/peg/transformer/transform_generated_trampoline.cpp --fix --noconfirm
-	$(FORMAT_PYTHON) scripts/format.py src/parser/peg/compiled_grammar.cpp --fix --noconfirm
-	$(FORMAT_PYTHON) scripts/format.py src/parser/peg/matcher_factory.cpp --fix --noconfirm
-	$(FORMAT_PYTHON) scripts/format.py src/parser/peg/matcher.cpp --fix --noconfirm
+	printf '%s\n' \
+		src/include/duckdb/parser/peg/transformer/peg_transformer.hpp \
+		src/parser/peg/transformer/transform_generated_trampoline.cpp \
+		src/parser/peg/compiled_grammar.cpp \
+		src/parser/peg/matcher_factory.cpp \
+		src/parser/peg/peg_rule_id.cpp \
+		src/include/duckdb/parser/peg/peg_rule_id.hpp \
+		src/parser/peg/matcher.cpp | \
+		$(FORMAT_PYTHON) scripts/format.py --files-from - --fix --noconfirm
 
 .PHONY: parser-grammar-tools parser-grammar
 parser-grammar-tools: $(FORMAT_SETUP_DEPS)
@@ -928,7 +967,7 @@ format-configs:
 
 
 third_party/sqllogictest:
-	git clone --depth=1 --branch ccfelius/sqlite_overflow https://github.com/duckdb/sqllogictest.git third_party/sqllogictest
+	git clone --depth=1 --branch main https://github.com/duckdb/sqllogictest.git third_party/sqllogictest
 
 sqlite: release | third_party/sqllogictest
 	git --git-dir third_party/sqllogictest/.git pull
@@ -960,21 +999,51 @@ coverage-check:
 generate-files-deps:
 	$(PYTHON) -m pip install -U pip
 	$(PYTHON) -m pip install --group api_spec/pyproject.toml:generate
-	$(PYTHON) -m pip install cxxheaderparser pcpp
+
+.PHONY: generate-capi-v1 generate-functions generate-metrics generate-settings generate-serialization
+.PHONY: generate-util generate-storage-info generate-enum-util generate-html-template generate-parser-grammar
+
+generate-capi-v1:
+	CAPIGEN_PYTHON="$(abspath $(CAPIGEN_PYTHON))" ./scripts/capi_v1_regen.sh
+
+generate-functions:
+	$(PYTHON) scripts/generate_functions.py
+
+generate-metrics:
+	$(PYTHON) scripts/generate_metrics.py
+
+generate-settings:
+	$(PYTHON) scripts/generate_settings.py
+
+generate-serialization:
+	$(PYTHON) scripts/generate_serialization.py
+
+generate-util:
+	$(PYTHON) scripts/generate_util.py
+
+generate-storage-info:
+	$(PYTHON) scripts/generate_storage_info.py
+
+generate-enum-util:
+	$(PYTHON) scripts/generate_enum_util.py
+
+generate-html-template:
+	$(PYTHON) scripts/generate_html_template.py
+
+generate-parser-grammar:
+	$(MAKE) parser-grammar
 
 generate-files: $(CAPIGEN_SETUP_DEPS)
-	CAPIGEN_PYTHON="$(abspath $(CAPIGEN_PYTHON))" ./scripts/capi_v1_regen.sh
-	$(PYTHON) scripts/generate_functions.py
-	$(PYTHON) scripts/generate_metrics.py
-	$(PYTHON) scripts/generate_settings.py
-	$(PYTHON) scripts/generate_serialization.py
-	$(PYTHON) scripts/generate_util.py
-	$(PYTHON) scripts/generate_storage_info.py
-	$(PYTHON) scripts/generate_enum_util.py
-	$(PYTHON) scripts/generate_html_template.py
-	$(MAKE) parser-grammar
-# Run the formatter again after (re)generating the files
-	$(MAKE) format-main
+	DUCKDB_FORMAT_SKIP_TYPOS=1 FORMAT_VENV="$(abspath $(CAPIGEN_VENV))" \
+		FORMAT_PYTHON="$(abspath $(CAPIGEN_PYTHON))" \
+		$(MAKE) $(if $(filter -j%,$(MAKEFLAGS)),,-j $(CI_CPU_COUNT)) \
+			generate-capi-v1 generate-functions generate-metrics generate-settings \
+			generate-serialization generate-util generate-storage-info generate-html-template generate-parser-grammar
+	$(MAKE) generate-enum-util
+# Format files modified by the generators without walking every branch change.
+	mkdir -p .cache
+	git diff --name-only --diff-filter=ACMR > .cache/generated-format-files.txt
+	DUCKDB_FORMAT_SKIP_TYPOS=1 FORMAT_FILES_FROM=.cache/generated-format-files.txt $(MAKE) format-fix-files
 
 #### Setup VCPKG to correct version 2026.06.24 tag is cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
 vcpkg/scripts/buildsystems/vcpkg.cmake:

@@ -18,16 +18,16 @@ struct MatchOutcome {
 //! Match the matcher once against the token at `position` of the tokenized query
 MatchOutcome MatchTokenAt(const string &query, idx_t position) {
 	auto compiled = CompiledGrammar::Create();
-	vector<MatcherToken> tokens;
-	ParserTokenizerBehavior behavior(query, tokens);
+	ParserTokenizerBehavior behavior(query);
 	compiled->GetTokenizer().TokenizeInput(behavior);
 
-	TokenIterator iterator(tokens);
+	TokenIterator iterator(behavior);
 	iterator.SetPosition(position);
 
 	vector<MatcherSuggestion> suggestions;
 	ParseResultAllocator parse_results;
-	ParserPackratCache packrat;
+	ArenaAllocator packrat_allocator(Allocator::DefaultAllocator());
+	ParserPackratCache packrat(packrat_allocator);
 	idx_t max_position = 0;
 	ArenaAllocator process_allocator(Allocator::DefaultAllocator());
 	MatchContext context(suggestions, parse_results, process_allocator, max_position, MatchMode::BUILD_PARSE_RESULT,

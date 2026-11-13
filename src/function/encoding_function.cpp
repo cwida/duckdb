@@ -21,11 +21,54 @@ void DecodeUTF16ToUTF8(CSVEncoderBuffer &encoded_buffer, char *target_buffer, id
 			// We are done
 			return;
 		}
+		if (encoded_buffer.cur_pos + 1 >= encoded_buffer.actual_encoded_buffer_size) {
+			if (encoded_buffer.last_buffer) {
+				throw InvalidInputException("File is not utf-16 encoded");
+			}
+			// the second byte is passed on to the next buffer
+			return;
+		}
 		const uint16_t ch =
 		    static_cast<uint16_t>(static_cast<unsigned char>(encoded_ptr[encoded_buffer.cur_pos]) |
 		                          (static_cast<unsigned char>(encoded_ptr[encoded_buffer.cur_pos + 1]) << 8));
 		if (ch >= 0xD800 && ch <= 0xDFFF) {
-			throw InvalidInputException("File is not utf-16 encoded");
+			if (ch >= 0xDC00) {
+				// low surrogate without a preceding high surrogate
+				throw InvalidInputException("File is not utf-16 encoded");
+			}
+			if (encoded_buffer.cur_pos + 3 >= encoded_buffer.actual_encoded_buffer_size) {
+				if (encoded_buffer.last_buffer) {
+					throw InvalidInputException("File is not utf-16 encoded");
+				}
+				// the low surrogate is passed on to the next buffer together with the high surrogate
+				return;
+			}
+			const uint16_t low =
+			    static_cast<uint16_t>(static_cast<unsigned char>(encoded_ptr[encoded_buffer.cur_pos + 2]) |
+			                          (static_cast<unsigned char>(encoded_ptr[encoded_buffer.cur_pos + 3]) << 8));
+			if (low < 0xDC00 || low > 0xDFFF) {
+				throw InvalidInputException("File is not utf-16 encoded");
+			}
+			const uint32_t code_point = 0x10000 + ((static_cast<uint32_t>(ch - 0xD800)) << 10) + (low - 0xDC00);
+			const char utf8[4] = {
+			    static_cast<char>(0xF0 | (code_point >> 18)), static_cast<char>(0x80 | ((code_point >> 12) & 0x3F)),
+			    static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)), static_cast<char>(0x80 | (code_point & 0x3F))};
+			idx_t written = 0;
+			while (written < 4 && target_buffer_current_position < target_buffer_size) {
+				target_buffer[target_buffer_current_position++] = utf8[written++];
+			}
+			if (written < 4) {
+				// We are done, but we have to store the remaining bytes for the next chunk!
+				encoded_buffer.cur_pos += 4;
+				remaining_bytes_size = 0;
+				for (; written < 4; written++) {
+					remaining_bytes_buffer[remaining_bytes_size++] = utf8[written];
+				}
+				return;
+			}
+			// skip the low surrogate, the loop skips the high surrogate
+			encoded_buffer.cur_pos += 2;
+			continue;
 		}
 		if (ch <= 0x007F) {
 			// 1-byte UTF-8 for ASCII characters
@@ -105,7 +148,7 @@ void DecodeUTF8(CSVEncoderBuffer &encoded_buffer, char *target_buffer, idx_t &ta
 void EncodingFunctionSet::Initialize(DBConfig &config) {
 	config.RegisterEncodeFunction({"utf-8", DecodeUTF8, 1, 1});
 	config.RegisterEncodeFunction({"latin-1", DecodeLatin1ToUTF8, 2, 1});
-	config.RegisterEncodeFunction({"utf-16", DecodeUTF16ToUTF8, 2, 2});
+	config.RegisterEncodeFunction({"utf-16", DecodeUTF16ToUTF8, 3, 4});
 }
 
 void DBConfig::RegisterEncodeFunction(const EncodingFunction &function) const {

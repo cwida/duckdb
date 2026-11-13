@@ -1,0 +1,131 @@
+# name: test/optimizer/pushdown/pushdown_window_decreasing_partition.test
+# description: Do not push auxiliary window filters through decreasing partition expressions
+# group: [pushdown]
+
+foreach type INTEGER BIGINT FLOAT DOUBLE DECIMAL(10,2)
+
+statement ok
+CREATE OR REPLACE TABLE t(id INTEGER, x {type});
+
+statement ok
+INSERT INTO t VALUES (1, -2), (2, -2), (3, -1), (4, 0), (5, 1), (6, 2), (7, 2), (8, NULL);
+
+statement ok
+CREATE OR REPLACE VIEW v AS
+SELECT id, x, row_number() OVER (PARTITION BY -x ORDER BY id) AS rn FROM t;
+
+query II
+SELECT id, rn FROM v WHERE x > 0 ORDER BY id;
+----
+5	1
+6	1
+7	2
+
+query II
+SELECT id, rn FROM v WHERE 0 < x ORDER BY id;
+----
+5	1
+6	1
+7	2
+
+query II
+SELECT id, rn FROM v WHERE x >= 0 ORDER BY id;
+----
+4	1
+5	1
+6	1
+7	2
+
+query II
+SELECT id, rn FROM v WHERE 0 <= x ORDER BY id;
+----
+4	1
+5	1
+6	1
+7	2
+
+query II
+SELECT id, rn FROM v WHERE x < 0 ORDER BY id;
+----
+1	1
+2	2
+3	1
+
+query II
+SELECT id, rn FROM v WHERE 0 > x ORDER BY id;
+----
+1	1
+2	2
+3	1
+
+query II
+SELECT id, rn FROM v WHERE x <= 0 ORDER BY id;
+----
+1	1
+2	2
+3	1
+4	1
+
+query II
+SELECT id, rn FROM v WHERE 0 >= x ORDER BY id;
+----
+1	1
+2	2
+3	1
+4	1
+
+query II
+SELECT id, rn FROM v WHERE x IS NULL ORDER BY id;
+----
+8	1
+
+query II
+SELECT id, rn FROM v WHERE x IS DISTINCT FROM 0 ORDER BY id;
+----
+1	1
+2	2
+3	1
+5	1
+6	1
+7	2
+8	1
+
+query II
+SELECT id, rn FROM v WHERE x IS NOT DISTINCT FROM NULL ORDER BY id;
+----
+8	1
+
+endloop
+
+# Negation preserves NaN, which sorts above finite values and infinity.
+statement ok
+CREATE OR REPLACE TABLE t(id INTEGER, x DOUBLE);
+
+statement ok
+INSERT INTO t VALUES (1, '-inf'), (2, -1), (3, 0), (4, 1), (5, 'inf'), (6, 'nan'), (7, 'nan'), (8, NULL);
+
+statement ok
+CREATE OR REPLACE VIEW v AS
+SELECT id, x, row_number() OVER (PARTITION BY -x ORDER BY id) AS rn FROM t;
+
+query II
+SELECT id, rn FROM v WHERE x > 0 ORDER BY id;
+----
+4	1
+5	1
+6	1
+7	2
+
+query II
+SELECT id, rn FROM v WHERE x < 'nan'::DOUBLE ORDER BY id;
+----
+1	1
+2	1
+3	1
+4	1
+5	1
+
+query II
+SELECT id, rn FROM v WHERE x IS NULL ORDER BY id;
+----
+8	1

@@ -12,11 +12,9 @@
  *
  * Various routines that handle distributions, value selections and
  * seed value management for the DSS benchmark. Current functions:
- * tpch_env_config -- set config vars with optional environment override
- * yes_no -- ask simple yes/no question and return boolean result
  * tpch_a_rnd(min, max) -- random alphanumeric within length range
  * pick_str(size, set) -- select a string from the set of size
- * read_dist(file, name, distribution *) -- read named dist from file
+ * read_dist(name, distribution *) -- read named dist from the embedded dists
  * tbl_open(path, mode) -- std fopen with lifenoise
  * julian(date) -- julian date correction
  * rowcnt(tbl) -- proper scaling of given table
@@ -85,54 +83,8 @@ static char alpha_num[65] = "0123456789abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMN
 #define PROTO(s) ()
 #endif
 
-#ifndef WIN32
-char *getenv PROTO((const char *name));
-#endif
 void usage();
-void permute_dist(distribution *d, seed_t *seed, DBGenContext *ctx);
-
-/*
- * tpch_env_config: look for a environmental variable setting and return its
- * value; otherwise return the default supplied
- */
-const char *tpch_env_config(const char *var, const char *dflt) {
-	static char *evar;
-
-	if ((evar = getenv(var)) != NULL)
-		return (evar);
-	else
-		return (dflt);
-}
-
-/*
- * return the answer to a yes/no question as a boolean
- */
-long yes_no(char *prompt) {
-	char reply[128];
-	(void)prompt;
-#ifdef WIN32
-/* Disable warning about conditional expression is constant */
-#pragma warning(disable : 4127)
-#endif
-
-	while (1) {
-#ifdef WIN32
-#pragma warning(default : 4127)
-#endif
-		printf("%s [Y/N]: ", prompt);
-		fgets(reply, 128, stdin);
-		switch (*reply) {
-		case 'y':
-		case 'Y':
-			return (1);
-		case 'n':
-		case 'N':
-			return (0);
-		default:
-			printf("Please answer 'yes' or 'no'.\n");
-		}
-	}
-}
+void permute_dist(distribution *d, int needed, seed_t *seed, DBGenContext *ctx);
 
 /*
  * generate a random string with length randomly selected in [min, max]
@@ -250,10 +202,9 @@ static char read_line_into_buffer(char *buffer, size_t bufsiz, const char **src)
 }
 
 /*
- * load a distribution from a flat file into the target structure;
- * should be rewritten to allow multiple dists in a file
+ * load a distribution from the embedded dists.dss into the target structure
  */
-void read_dist(const char *path, const char *name, distribution *target) {
+void read_dist(const char *name, distribution *target) {
 	const char *src = dists_dss;
 	char line[256], token[256], *c;
 	long weight, count = 0, name_set = 0;
@@ -318,7 +269,7 @@ void agg_str(distribution *set, long count, seed_t *seed, char *dest, DBGenConte
 	d = set;
 	*dest = '\0';
 
-	permute_dist(d, seed, ctx);
+	permute_dist(d, (int)count, seed, ctx);
 	for (i = 0; i < count; i++) {
 		strcat(dest, DIST_MEMBER(set, ctx->permute[i]));
 		strcat(dest, " ");

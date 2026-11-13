@@ -810,7 +810,7 @@ TEST_CASE("An Arrow stream outlives the connection that submitted it", "[api][qu
 	REQUIRE(rows == 3000);
 }
 
-TEST_CASE("A statement on the connection ends an Arrow stream, which the stream reports", "[api][query_result_arrow]") {
+TEST_CASE("A statement on the connection is refused while an Arrow stream is open", "[api][query_result_arrow]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 
@@ -819,15 +819,18 @@ TEST_CASE("A statement on the connection ends an Arrow stream, which the stream 
 	REQUIRE(first);
 	REQUIRE(Rows(*first) == 1000);
 
-	REQUIRE_NO_FAIL(con.Query("SELECT 42"));
+	auto refused = con.Query("SELECT 42");
+	REQUIRE(refused->HasError());
+	REQUIRE(refused->GetErrorType() == ExceptionType::RESOURCE_IN_USE);
 
-	unique_ptr<ArrowArrayWrapper> next;
-	REQUIRE(stream.TryFetch(next) == QueryResultState::EXECUTION_ERROR);
-	REQUIRE(!next);
-	REQUIRE(StringUtil::Contains(stream.GetError(), "cancelled"));
-	REQUIRE(!stream.IsOpen());
-	// The error is sticky
-	REQUIRE_THROWS(stream.Fetch());
+	// The stream reads on, and once it has reported its end the connection takes the next statement
+	idx_t rows = Rows(*first);
+	while (auto array = stream.Fetch()) {
+		rows += Rows(*array);
+	}
+	REQUIRE(!stream.HasError());
+	REQUIRE(rows == 200000);
+	REQUIRE_NO_FAIL(con.Query("SELECT 42"));
 }
 
 TEST_CASE("The chunk accessors reject an Arrow result", "[api][query_result_arrow]") {

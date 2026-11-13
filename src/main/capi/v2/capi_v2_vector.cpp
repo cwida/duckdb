@@ -1,5 +1,6 @@
 #include "duckdb/main/capi_v2/capi_v2_internal.hpp"
 
+#include "duckdb/common/exception/conversion_exception.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
@@ -9,6 +10,7 @@
 #include "duckdb/common/vector/map_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/common/vector/union_vector.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 
 // Out-param zeroing on failure:
 //   - Pointer-bearing out-params (out_view, out_child, out_data) are
@@ -66,14 +68,57 @@ DUCKDB_V2_ERROR duckdb_v2_vector_get_logical_type(duckdb_v2_vector_handle vector
 		}
 		*out_type = nullptr;
 		auto *vec = Convert(vector);
-		auto *lt = new duckdb::LogicalType(vec->GetType());
-		*out_type = reinterpret_cast<_duckdb_v2_logical_type *>(lt);
+		*out_type = Convert(vec->GetType());
 	});
 }
 
 DUCKDB_V2_ERROR duckdb_v2_vector_flatten(duckdb_v2_vector_handle vector, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(vector);
 	return WithErrorHandler(err, [&]() { Convert(vector)->Flatten(); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_vector_cast(duckdb_v2_factory_handle factory, duckdb_v2_vector_handle source,
+                                      duckdb_v2_vector_handle target, DUCKDB_V2_CAST_MODE mode, bool *out_converted,
+                                      duckdb_v2_error_info_handle *cast_err, duckdb_v2_error_info_handle *err) {
+	if (cast_err) {
+		*cast_err = nullptr;
+	}
+	DUCKDB_CHECK_ARG(factory);
+	DUCKDB_CHECK_ARG(source);
+	DUCKDB_CHECK_ARG(target);
+	return WithErrorHandler(err, [&]() {
+		auto *src = Convert(source);
+		auto *dst = Convert(target);
+		if (src == dst) {
+			throw duckdb::InvalidInputException("duckdb_v2_vector_cast: source and target must be different vectors");
+		}
+		if (mode != DUCKDB_V2_CAST_MODE_NORMAL && mode != DUCKDB_V2_CAST_MODE_TRY) {
+			throw duckdb::InvalidInputException("duckdb_v2_vector_cast: invalid cast mode %d", static_cast<int>(mode));
+		}
+		const auto count = src->size();
+		// a try cast collects the error instead of throwing, and NULLs the rows that failed
+		duckdb::string error;
+		auto error_ptr = mode == DUCKDB_V2_CAST_MODE_TRY ? &error : nullptr;
+		auto context = Convert(factory)->TryGetClientContext();
+		// the casts expect a fresh result, so stale validity or data in the target cannot leak into it
+		duckdb::Vector result(dst->GetType(), count);
+		auto converted = context ? duckdb::VectorOperations::TryCast(*context, *src, result, count, error_ptr)
+		                         : duckdb::VectorOperations::DefaultTryCast(*src, result, count, error_ptr);
+		dst->Reference(result);
+		if (out_converted) {
+			*out_converted = converted;
+		}
+		if (cast_err && !converted) {
+			// rendered like any error the API reports, as a conversion error
+			auto info = duckdb::make_uniq<CV2ErrorInfo>();
+			try {
+				throw duckdb::ConversionException(error);
+			} catch (...) {
+				RenderCaughtError(info->code, info->message, info->raw_message);
+			}
+			*cast_err = Convert(info.release());
+		}
+	});
 }
 
 DUCKDB_V2_ERROR duckdb_v2_vector_reference(duckdb_v2_vector_handle vector, duckdb_v2_vector_handle source,

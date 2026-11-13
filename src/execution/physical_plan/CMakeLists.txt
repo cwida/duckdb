@@ -19,7 +19,6 @@ add_library_unity(
   plan_distinct.cpp
   plan_dummy_scan.cpp
   plan_empty_result.cpp
-  plan_execute.cpp
   plan_explain.cpp
   plan_export.cpp
   plan_filter.cpp

@@ -1,9 +1,14 @@
+#include "duckdb/parser/parser.hpp"
 #include "duckdb/function/pragma/pragma_functions.hpp"
 #include "duckdb/function/table/system_functions.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
 #include "duckdb/parser/tableref/showref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/function/aggregate/distributive_functions.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_column_data_get.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
@@ -62,6 +67,32 @@ BaseTableColumnInfo FindBaseTableColumn(LogicalOperator &op, ColumnBinding bindi
 		}
 		break;
 	}
+	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+		// a group or the first value of a column keeps the constraints of that column (DISTINCT plans this way)
+		auto &aggregate = op.Cast<LogicalAggregate>();
+		if (aggregate.grouping_sets.size() > 1) {
+			// ROLLUP, CUBE and GROUPING SETS repeat keys and introduce NULLs
+			break;
+		}
+		optional_ptr<const Expression> source;
+		if (binding.table_index == aggregate.group_index) {
+			if (!aggregate.grouping_sets.empty() &&
+			    aggregate.grouping_sets[0].find(binding.column_index) == aggregate.grouping_sets[0].end()) {
+				break;
+			}
+			source = aggregate.GetExpression(binding);
+		} else if (binding.table_index == aggregate.aggregate_index && !aggregate.groups.empty()) {
+			// without groups first() returns NULL on empty input
+			auto &aggr = aggregate.GetExpression(binding).Cast<BoundAggregateExpression>();
+			if (aggr.Function().GetName() == FirstFun::Name && !aggr.GetFilter() && aggr.GetChildren().size() == 1) {
+				source = *aggr.GetChildren()[0];
+			}
+		}
+		if (source && source->GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+			return FindBaseTableColumn(*aggregate.children[0], source->Cast<BoundColumnRefExpression>().Binding());
+		}
+		break;
+	}
 	case LogicalOperatorType::LOGICAL_LIMIT:
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
 	case LogicalOperatorType::LOGICAL_TOP_N:
@@ -117,7 +148,7 @@ BoundStatement Binder::BindDescribeQuery(ShowRef &ref) {
 			// we can! emit the information from the base table directly
 			PragmaTableInfo::GetColumnInfo(*result.table, *result.column, output);
 			// Override the base column name with the alias if one is specified.
-			if (alias != result.column->Name()) {
+			if (alias.GetIdentifierName() != result.column->Name().GetIdentifierName()) {
 				output.data[0].SetValue(row_index, Value(alias));
 			}
 		} else {
@@ -216,7 +247,8 @@ BoundStatement Binder::BindDescribeTable(ShowRef &ref) {
 	} else {
 		sql = PragmaShow(ref.GetTableName().GetIdentifierName());
 	}
-	auto select = CreateViewInfo::ParseSelect(sql);
+	auto parser = Parser::GetBuiltinParser();
+	auto select = CreateViewInfo::ParseSelect(parser, sql);
 	auto subquery = make_uniq<SubqueryRef>(std::move(select));
 	return Bind(*subquery);
 }
@@ -273,6 +305,9 @@ static void WarnShowDescribesQuery(ClientContext &context) {
 BoundStatement Binder::BindShow(ShowRef &ref) {
 	BoundStatement result;
 	if (ref.GetTableName().empty()) {
+		if (!ref.query) {
+			throw BinderException("SHOW requires a setting name, a table name or a query");
+		}
 		// "SHOW (SELECT ...)": describe the columns of the query. Deprecated in favor of DESCRIBE, and not affected
 		// by show_behavior (a parenthesized query is neither a setting nor a named table).
 		WarnShowDescribesQuery(context);

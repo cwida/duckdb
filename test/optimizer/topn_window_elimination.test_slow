@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 statement ok
 CREATE TABLE tbl AS SELECT * FROM VALUES (0, {'x': 0}, 0), (0, {'x': 1}, 1), (1, {'x': 2}, 2), (null, {'x': 3}, 3), (null, {'x': 4}, 4), t(grp, a, b)
@@ -441,14 +441,14 @@ QUALIFY 2 > row_number() OVER(ORDER BY rand);
 ----
 logical_opt	<!REGEX>:.*FILTER.*WINDOW.*
 
-# NOP comparisons should not be optimised
+# NOP comparisons should be optimised
 query II
 EXPLAIN
 SELECT rand
 FROM ints
 QUALIFY 0 = row_number() OVER(ORDER BY rand);
 ----
-logical_opt	<REGEX>:.*FILTER.*WINDOW.*
+logical_opt	<!REGEX>:.*FILTER.*WINDOW.*
 
 query II
 EXPLAIN
@@ -456,7 +456,15 @@ SELECT rand
 FROM ints
 QUALIFY 1 > row_number() OVER(ORDER BY rand);
 ----
-logical_opt	<REGEX>:.*FILTER.*WINDOW.*
+logical_opt	<!REGEX>:.*FILTER.*WINDOW.*
+
+query II
+EXPLAIN
+SELECT rand
+FROM ints
+QUALIFY 0 >= row_number() OVER(ORDER BY rand);
+----
+logical_opt	<!REGEX>:.*FILTER.*WINDOW.*
 
 # taken from slt_good_12.test (this was previously causing issues in NightlyTests CI)
 statement ok

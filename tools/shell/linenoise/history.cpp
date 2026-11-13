@@ -5,6 +5,10 @@
 #include "shell_state.hpp"
 #include <sys/stat.h>
 
+#if defined(_WIN32) || defined(WIN32)
+#define strdup _strdup
+#endif
+
 namespace duckdb {
 #define LINENOISE_DEFAULT_HISTORY_MAX_LEN 1000
 static idx_t history_max_len = LINENOISE_DEFAULT_HISTORY_MAX_LEN;
@@ -106,6 +110,9 @@ int History::Add(const char *line, idx_t len) {
 			}
 		}
 		linecopy = (char *)malloc((len + replaced_newline_count + 1) * sizeof(char));
+		if (!linecopy) {
+			return 0;
+		}
 		idx_t pos = 0;
 		for (len = 0; line[len]; len++) {
 			if (line[len] == '\r' && line[len + 1] == '\n') {

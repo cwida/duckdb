@@ -27,6 +27,7 @@ struct CreateCollationInfo;
 struct CreateAggregateFunctionInfo;
 struct CreateScalarFunctionInfo;
 struct CreateTableFunctionInfo;
+struct CreatePragmaFunctionInfo;
 struct CreateWindowFunctionInfo;
 
 struct ExtensionLoaderInfo {
@@ -92,6 +93,7 @@ public:
 
 	//! Register a new pragma function set - throw an exception if the function already exists
 	DUCKDB_API void RegisterFunction(PragmaFunctionSet function);
+	DUCKDB_API void RegisterFunction(CreatePragmaFunctionInfo info);
 
 	//! Register a CreateSecretFunction
 	DUCKDB_API void RegisterFunction(CreateSecretFunction function);
@@ -136,7 +138,8 @@ public:
 	//! Registers a rule for combining two types in implicit type resolution (LogicalType::TryGetMaxLogicalType)
 	DUCKDB_API void RegisterCombineTypesRule(CombineTypesRule rule);
 
-	//! Registers a custom metric so it appears in duckdb_available_metrics.
+	//! Registers a custom metric so it appears in duckdb_available_metrics, and so QueryProfiler::SetMetric accepts it.
+	//! The profiler's own metrics cannot be registered.
 	DUCKDB_API void RegisterMetric(MetricInfo info);
 
 private:

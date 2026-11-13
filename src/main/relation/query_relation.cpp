@@ -29,7 +29,7 @@ QueryRelation::~QueryRelation() {
 
 unique_ptr<SelectStatement> QueryRelation::ParseStatement(ClientContext &context, const string &query,
                                                           const string &error) {
-	Parser parser(context.GetParserOptions());
+	Parser parser(context);
 	parser.ParseQuery(query);
 	if (parser.statements.size() != 1) {
 		throw ParserException(error);

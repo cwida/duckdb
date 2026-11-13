@@ -9,6 +9,7 @@
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/lambda_expression.hpp"
+#include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -106,6 +107,25 @@ struct ListReduceRebindResult {
 	bool override_has_accumulator_type = false;
 };
 
+//! Avoid repeated rebinds for DECIMAL type widening by forcing the lambda return type to the chosen accumulator type
+//! when decimals are involved
+static void CastDecimalLambdaToAccumulatorType(ClientContext &context, BindResult &bind_lambda_result,
+                                               const LogicalType &accumulator_type) {
+	auto &rebound_lambda_expr = bind_lambda_result.expression->Cast<BoundLambdaExpression>();
+	const auto return_type = rebound_lambda_expr.LambdaExpr()->GetReturnType();
+	if (return_type == accumulator_type ||
+	    (!TypeContainsDecimal(accumulator_type) && !TypeContainsDecimal(return_type))) {
+		return;
+	}
+	auto cast_expr = BoundCastExpression::AddCastToType(context, std::move(rebound_lambda_expr.LambdaExprMutable()),
+	                                                    accumulator_type);
+	if (!cast_expr) {
+		throw BinderException("Could not cast lambda return type %s to accumulator type %s", return_type.ToString(),
+		                      accumulator_type.ToString());
+	}
+	rebound_lambda_expr.LambdaExprMutable() = std::move(cast_expr);
+}
+
 ListReduceRebindResult MaybeRebindListReduceLambda(ClientContext &context, idx_t depth,
                                                    const vector<LogicalType> &function_child_types,
                                                    bind_lambda_function_t bind_lambda_function,
@@ -158,22 +178,7 @@ ListReduceRebindResult MaybeRebindListReduceLambda(ClientContext &context, idx_t
 			bind_lambda_result.error.Throw();
 		}
 
-		auto &rebound_lambda_expr = bind_lambda_result.expression->Cast<BoundLambdaExpression>();
-		// Avoid repeated rebinds for DECIMAL type widening by forcing the lambda return type to the chosen
-		// accumulator type when decimals are involved.
-		if (TypeContainsDecimal(accumulator_type) ||
-		    TypeContainsDecimal(rebound_lambda_expr.LambdaExpr()->GetReturnType())) {
-			if (rebound_lambda_expr.LambdaExpr()->GetReturnType() != accumulator_type) {
-				const auto old_return_type = rebound_lambda_expr.LambdaExpr()->GetReturnType();
-				auto cast_expr = BoundCastExpression::AddCastToType(
-				    context, std::move(rebound_lambda_expr.LambdaExprMutable()), accumulator_type);
-				if (!cast_expr) {
-					throw BinderException("Could not cast lambda return type %s to accumulator type %s",
-					                      old_return_type.ToString(), accumulator_type.ToString());
-				}
-				rebound_lambda_expr.LambdaExprMutable() = std::move(cast_expr);
-			}
-		}
+		CastDecimalLambdaToAccumulatorType(context, bind_lambda_result, accumulator_type);
 		result.did_rebind = true;
 		result.capture_child_types = std::move(rebind_child_types);
 	} else if (accumulator_type != list_child_type) {
@@ -188,6 +193,7 @@ ListReduceRebindResult MaybeRebindListReduceLambda(ClientContext &context, idx_t
 		if (bind_lambda_result.HasError()) {
 			bind_lambda_result.error.Throw();
 		}
+		CastDecimalLambdaToAccumulatorType(context, bind_lambda_result, accumulator_type);
 		result.did_rebind = true;
 		result.override_accumulator_type_storage = accumulator_type;
 		result.override_has_accumulator_type = true;
@@ -207,7 +213,8 @@ BindResult ExpressionBinder::TryBindLambdaOrJson(FunctionExpression &function, i
 
 	auto setting = Settings::Get<LambdaSyntaxSetting>(context);
 	bool invalid_syntax = setting != LambdaSyntax::ENABLE_SINGLE_ARROW && syntax_type == LambdaSyntaxType::SINGLE_ARROW;
-	bool warn_deprecated_syntax = setting == LambdaSyntax::DEFAULT && syntax_type == LambdaSyntaxType::SINGLE_ARROW;
+	// only arrow lambdas reach this point
+	bool warn_deprecated_syntax = setting == LambdaSyntax::DEFAULT;
 	const string msg = "Deprecated lambda arrow (->) detected. Please transition to the new lambda syntax, "
 	                   "i.e.., lambda x, i: x + i, before DuckDB's next release.\n"
 	                   "Use SET lambda_syntax='ENABLE_SINGLE_ARROW' to revert to the deprecated behavior.\n"
@@ -256,7 +263,7 @@ BindResult ExpressionBinder::TryBindLambdaOrJson(FunctionExpression &function, i
 CatalogEntry &ExpressionBinder::BindFunction(FunctionExpression &function) {
 	QueryErrorContext error_context(function.GetQueryLocation());
 
-	ColumnQualifier qualifier(binder);
+	ColumnQualifier qualifier(binder, lambda_bindings);
 	auto func = qualifier.QualifyFunction(function);
 	if (!func) {
 		// function was not found - check if we this is a table function (to throw a more helpful error message)
@@ -274,6 +281,26 @@ CatalogEntry &ExpressionBinder::BindFunction(FunctionExpression &function) {
 		func = GetCatalogEntry(function_lookup, OnEntryNotFound::THROW_EXCEPTION);
 	}
 	return *func;
+}
+
+//! Rewrite a call that resolved to the built-in has_error into the HAS_ERROR operator and bind that.
+//! The operator binds its argument itself (per-row error capture, TRY transport for nested subqueries),
+//! so the rewrite must happen before the children are bound.
+BindResult ExpressionBinder::BindHasErrorFunction(FunctionExpression &function, idx_t depth,
+                                                  unique_ptr<ParsedExpression> &expr_ptr) {
+	if (function.GetArguments().size() != 1) {
+		throw BinderException(function, "Wrong number of arguments provided to HAS_ERROR expression");
+	}
+	auto &argument = function.GetArgumentsMutable()[0];
+	if (argument.HasName()) {
+		throw BinderException(function, "Named arguments are not supported in HAS_ERROR expression");
+	}
+	auto op = make_uniq<OperatorExpression>(ExpressionType::OPERATOR_HAS_ERROR);
+	op->GetChildrenMutable().push_back(std::move(argument.GetExpressionMutable()));
+	op->SetQueryLocation(function.GetQueryLocation());
+	op->SetAlias(function.GetAlias());
+	expr_ptr = std::move(op);
+	return BindExpression(expr_ptr->Cast<OperatorExpression>(), depth);
 }
 
 BindResult ExpressionBinder::BindExpression(FunctionExpression &function, idx_t depth,
@@ -295,6 +322,11 @@ BindResult ExpressionBinder::BindExpression(FunctionExpression &function, idx_t 
 
 	switch (func.type) {
 	case CatalogType::SCALAR_FUNCTION_ENTRY: {
+		if (func.internal && func.name == "has_error" && func.ParentCatalog().IsSystemCatalog()) {
+			// the built-in has_error binds as the HAS_ERROR operator, whose executor captures errors
+			// raised while evaluating the argument; a user function of the same name resolves normally
+			return BindHasErrorFunction(function, depth, expr_ptr);
+		}
 		auto child = function.IsLambdaFunction();
 		if (child) {
 			auto syntax_type = child->Cast<LambdaExpression>().GetLambdaSyntaxType();
@@ -303,7 +335,10 @@ BindResult ExpressionBinder::BindExpression(FunctionExpression &function, idx_t 
 		return BindFunction(function, func.Cast<ScalarFunctionCatalogEntry>(), depth);
 	}
 	case CatalogType::MACRO_ENTRY:
-		// macro function
+		// macro function - a prepared statement must be re-bound when the macro changes
+		if (!func.ParentCatalog().IsSystemCatalog()) {
+			binder.GetStatementProperties().RegisterDBRead(func.ParentCatalog(), context);
+		}
 		return BindMacro(function, func.Cast<ScalarMacroCatalogEntry>(), depth, expr_ptr);
 	case CatalogType::AGGREGATE_FUNCTION_ENTRY: {
 		// an aggregate belongs to the innermost query level in which one of its arguments resolves a
@@ -348,13 +383,30 @@ BindResult ExpressionBinder::BindAggregateInEnclosingScope(FunctionExpression &a
 }
 
 BindResult ExpressionBinder::BindFunction(FunctionExpression &function, ScalarFunctionCatalogEntry &func, idx_t depth) {
+	// a bound subquery cannot be copied, so keep the parsed arguments to bind them again for the named fallback
+	vector<FunctionArgument> named_fallback;
+	if (function.IsLegacyFunctionCall()) {
+		for (auto &arg : function.GetArguments()) {
+			if (!arg.GetName().empty()) {
+				for (auto &fallback_arg : function.GetArguments()) {
+					named_fallback.push_back(fallback_arg.Copy());
+				}
+				break;
+			}
+		}
+	}
+
 	// bind the children of the function expression
 	ErrorData error;
 
 	// bind each child
 	vector<unique_ptr<Expression>> bound_children;
 	for (idx_t i = 0; i < function.GetArguments().size(); i++) {
-		bound_children.push_back(BindChild(function.GetArgumentsMutable()[i].GetExpressionMutable(), depth, error));
+		// legacy function calls cannot have named arguments, so we ignore the names of the arguments during binding
+		// and pass them all positionally. We do alias them by their name though, so that alias-capturing functions
+		// (e.g. struct_pack) still work and so that re-serializing to the old format can match arguments by name.
+		auto &arg = function.GetArgumentsMutable()[i];
+		bound_children.push_back(BindChild(arg.GetExpressionMutable(), depth, error, arg.GetName()));
 	}
 
 	if (error.HasError()) {
@@ -373,15 +425,6 @@ BindResult ExpressionBinder::BindFunction(FunctionExpression &function, ScalarFu
 	for (idx_t i = 0; i < function.GetArgumentsMutable().size(); i++) {
 		auto &arg = function.GetArgumentsMutable()[i];
 		auto bound_arg = std::move(bound_children[i]);
-
-		// legacy function calls cannot have named arguments, so we ignore the names of the arguments during binding
-		// and pass them all positionally. We do alias them by their name though, so that alias-capturing functions
-		// (e.g. struct_pack) still work and so that re-serializing to the old format can match arguments by name.
-		// Only override the alias when the argument actually carries a name, otherwise we would clobber the
-		// display alias the binding assigned (e.g. clearing a column reference's name to its raw binding).
-		if (!arg.GetName().empty()) {
-			bound_arg->SetAlias(arg.GetName());
-		}
 		if (function.IsLegacyFunctionCall()) {
 			arguments.emplace_back(string(), std::move(bound_arg));
 		} else {
@@ -391,6 +434,22 @@ BindResult ExpressionBinder::BindFunction(FunctionExpression &function, ScalarFu
 
 	FunctionBinder function_binder(binder);
 	auto result = function_binder.BindScalarFunction(func, std::move(arguments), error, function.IsOperator(), &binder);
+	if (!result && !named_fallback.empty()) {
+		// a legacy call that does not bind positionally may use names the function declares (e.g. **kwargs)
+		ErrorData named_error;
+		vector<pair<Identifier, unique_ptr<Expression>>> named_arguments;
+		for (auto &arg : named_fallback) {
+			auto bound_arg = BindChild(arg.GetExpressionMutable(), depth, named_error, arg.GetName());
+			if (named_error.HasError()) {
+				break;
+			}
+			named_arguments.emplace_back(arg.GetName(), std::move(bound_arg));
+		}
+		if (!named_error.HasError()) {
+			result = function_binder.BindScalarFunction(func, std::move(named_arguments), named_error,
+			                                            function.IsOperator(), &binder);
+		}
+	}
 	if (!result) {
 		error.AddQueryLocation(function);
 		error.Throw();
@@ -461,7 +520,8 @@ BindResult ExpressionBinder::BindLambdaFunction(FunctionExpression &function, Sc
 	auto &lambda_expr = args[lambda_expr_idx].GetExpressionMutable()->Cast<LambdaExpression>();
 
 	unique_ptr<ParsedExpression> lambda_expr_copy;
-	const bool is_list_reduce = func.name == "list_reduce";
+	// the aliases of list_reduce (e.g. reduce) are separate catalog entries
+	const bool is_list_reduce = func.name == "list_reduce" || func.alias_of == "list_reduce";
 	if (is_list_reduce) {
 		// We have to make this copy before binding in case we have to double-bind
 		lambda_expr_copy = lambda_expr.Copy();

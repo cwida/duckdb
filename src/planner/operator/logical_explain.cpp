@@ -3,6 +3,7 @@
 #include "duckdb/planner/operator/logical_column_data_get.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
+#include "duckdb/parser/peg/sql_formatter.hpp"
 
 namespace duckdb {
 
@@ -16,7 +17,19 @@ unique_ptr<LogicalOperator> LogicalExplain::CreateSQLResult(ClientContext &conte
 	D_ASSERT(explain_type == ExplainType::EXPLAIN_SQL);
 	D_ASSERT(children.size() == 1);
 	LogicalPlanSQLExportOptions options;
-	options.output_names = sql_output_names;
+	switch (children[0]->type) {
+	case LogicalOperatorType::LOGICAL_INSERT:
+	case LogicalOperatorType::LOGICAL_UPDATE:
+	case LogicalOperatorType::LOGICAL_DELETE:
+	case LogicalOperatorType::LOGICAL_MERGE_INTO:
+	case LogicalOperatorType::LOGICAL_CREATE_TABLE:
+	case LogicalOperatorType::LOGICAL_COPY_TO_FILE:
+		// a data-modifying statement reports a change count; that is not a projection of the generated SQL
+		break;
+	default:
+		options.output_names = sql_output_names;
+		break;
+	}
 	auto exported = LogicalPlanSQLExporter::Export(context, *children[0], options);
 	if (exported.HasError()) {
 		auto &issue = exported.GetIssues()[0];
@@ -51,10 +64,11 @@ unique_ptr<LogicalOperator> LogicalExplain::CreateSQLResult(ClientContext &conte
 	auto collection =
 	    make_uniq<ColumnDataCollection>(context, result_types, ColumnDataAllocatorType::IN_MEMORY_ALLOCATOR);
 	if (exported.IsSuccess()) {
+		auto sql = FormatSQL(exported.GetValue().query->ToString());
 		DataChunk chunk;
 		chunk.Initialize(Allocator::Get(context), result_types);
 		chunk.data[0].Append(Value("sql"));
-		chunk.data[1].Append(Value(exported.GetValue().query->ToString()));
+		chunk.data[1].Append(Value(sql));
 		collection->Append(chunk);
 	}
 	return make_uniq<LogicalColumnDataGet>(table_index, std::move(result_types), std::move(collection));

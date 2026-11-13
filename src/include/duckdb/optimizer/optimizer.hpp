@@ -19,6 +19,7 @@ namespace duckdb {
 class Binder;
 class FilterStatisticsOptimizer;
 class SQLStatement;
+struct MetricsTimer;
 
 class Optimizer {
 public:
@@ -47,13 +48,15 @@ private:
 
 	void RunBuiltInOptimizers();
 	void RunOptimizer(OptimizerType type, const std::function<void()> &callback);
+	MetricsTimer StartProfiler(OptimizerType type);
 	void Verify(LogicalOperator &op);
 
 public:
 	// helper functions
-	unique_ptr<Expression> BindScalarFunction(const Identifier &name, unique_ptr<Expression> c1);
 	unique_ptr<Expression> BindScalarFunction(const Identifier &name, unique_ptr<Expression> c1,
-	                                          unique_ptr<Expression> c2);
+	                                          Identifier alias = Identifier());
+	unique_ptr<Expression> BindScalarFunction(const Identifier &name, unique_ptr<Expression> c1,
+	                                          unique_ptr<Expression> c2, Identifier alias = Identifier());
 	unique_ptr<Expression> BindScalarFunction(const Identifier &name, unique_ptr<Expression> c1,
 	                                          unique_ptr<Expression> c2, unique_ptr<Expression> c3);
 
@@ -61,7 +64,8 @@ private:
 	unique_ptr<LogicalOperator> plan;
 
 private:
-	unique_ptr<Expression> BindScalarFunction(const Identifier &name, vector<unique_ptr<Expression>> children);
+	unique_ptr<Expression> BindScalarFunction(const Identifier &name, vector<unique_ptr<Expression>> children,
+	                                          Identifier alias = Identifier());
 };
 
 } // namespace duckdb

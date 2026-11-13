@@ -85,11 +85,13 @@ inline const Expression &PeelStructExtractPath(const Expression &expr, vector<St
 	auto &base = PeelStructExtractPath(*func.GetChildren()[0], path);
 	auto &input_type = func.GetChildren()[0]->GetReturnType();
 	Identifier child_name;
-	if (input_type.id() == LogicalTypeId::STRUCT && !StructType::IsUnnamed(input_type)) {
+	if (input_type.id() == LogicalTypeId::STRUCT) {
 		child_name = StructType::GetChildName(input_type, child_idx);
 	}
 	path.push_back({child_idx, std::move(child_name)});
 	return base;
 }
+
+const Expression &PeelStructExtractPath(Expression &&expr, vector<StructExtractPathEntry> &path) = delete;
 
 } // namespace duckdb

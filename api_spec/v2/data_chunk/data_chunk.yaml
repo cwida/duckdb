@@ -21,55 +21,21 @@ functions:
   # -----------------------------------------------------------------------
   data_chunk_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
-      Creates an empty data chunk with the given column types.
+      Creates an empty data chunk with the given column types, drawing its allocator from a factory.
 
-      Allocates one FLAT vector per element of the types array, each at default
-      capacity. Every vector starts at size 0; set it with vector_set_size once
-      the vector is populated. The chunk is caller-owned and must be destroyed
-      via data_chunk_destroy.
-    role: constructor
-    belongs_to: data_chunk
-    parameters:
-      types:
-        type: logical_type
-        indirection: 1
-        const: true
-        description: Pointer to an array of logical_type handles, one per column.
-      column_count:
-        type: idx
-        description: Number of elements in the types array.
-      out_chunk:
-        type: data_chunk
-        indirection: 1
-        kind: OUT
-        description: Receives the new chunk handle.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  data_chunk_create_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates an empty data chunk with the given column types, drawing its allocator from the connection's context.
-
-      Like data_chunk_create, but the chunk's vectors are allocated through the
-      connection's context instead of the default allocator, so the memory is
-      accounted to that database. Allocates one FLAT vector per element of the
+      The chunk's vectors are allocated through the factory's database, so the
+      memory is accounted to that database. Allocates one FLAT vector per element of the
       types array, each at default capacity. Every vector starts at size 0; set
       it with vector_set_size once the vector is populated. The chunk is
       caller-owned and must be destroyed via data_chunk_destroy.
     role: constructor
     belongs_to: data_chunk
     parameters:
-      conn:
-        type: connection
-        description: The connection whose context supplies the chunk's allocator.
+      factory:
+        type: factory
+        description: The factory to create with.
       types:
         type: logical_type
         indirection: 1
@@ -90,86 +56,19 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  data_chunk_create_with_context:
+  data_chunk_copy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
-      Creates an empty data chunk with the given column types, drawing its allocator from a context.
+      Creates a deep copy of a data chunk, drawing its allocator from a factory.
 
-      Like data_chunk_create, but the chunk's vectors are allocated through the
-      given context instead of the default allocator, so the memory is accounted
-      to that database. Use this from inside a callback or extension where a
-      context is already in hand. Allocates one FLAT vector per element of the
-      types array, each at default capacity. Every vector starts at size 0; set
-      it with vector_set_size once the vector is populated. The chunk is
-      caller-owned and must be destroyed via data_chunk_destroy.
+      Allocates a new chunk with the source chunk's column types and copies all rows into it, through the factory's database. The copy is flattened and owns all its data, so it stays valid after the source chunk or whatever backs it (such as a column data collection scan state) is destroyed. The returned chunk is caller-owned and must be destroyed via data_chunk_destroy.
     role: constructor
     belongs_to: data_chunk
     parameters:
-      context:
-        type: context
-        description: The context whose allocator will be used for the chunk.
-      types:
-        type: logical_type
-        indirection: 1
-        const: true
-        description: Pointer to an array of logical_type handles, one per column.
-      column_count:
-        type: idx
-        description: Number of elements in the types array.
-      out_chunk:
-        type: data_chunk
-        indirection: 1
-        kind: OUT
-        description: Receives the new chunk handle.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  data_chunk_copy_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a deep copy of a data chunk, drawing its allocator from the connection's context.
-
-      Allocates a new chunk with the source chunk's column types and copies all rows into it. The copy is flattened and owns all its data, so it stays valid after the source chunk or whatever backs it (such as a column data collection scan state) is destroyed. The returned chunk is caller-owned and must be destroyed via data_chunk_destroy.
-    role: constructor
-    belongs_to: data_chunk
-    parameters:
-      conn:
-        type: connection
-        description: The connection whose context supplies the copy's allocator.
-      chunk:
-        type: data_chunk
-        description: The chunk to copy. Left unchanged.
-      out_chunk:
-        type: data_chunk
-        indirection: 1
-        kind: OUT
-        description: Receives the new chunk handle.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  data_chunk_copy_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a deep copy of a data chunk, drawing its allocator from a context.
-
-      Allocates a new chunk with the source chunk's column types and copies all rows into it. Use this from inside a callback or extension where a context is already in hand. The copy is flattened and owns all its data, so it stays valid after the source chunk or whatever backs it (such as a column data collection scan state) is destroyed. The returned chunk is caller-owned and must be destroyed via data_chunk_destroy.
-    role: constructor
-    belongs_to: data_chunk
-    parameters:
-      context:
-        type: context
-        description: The context whose allocator will be used for the copy.
+      factory:
+        type: factory
+        description: The factory to create with.
       chunk:
         type: data_chunk
         description: The chunk to copy. Left unchanged.
@@ -189,7 +88,7 @@ functions:
   # -----------------------------------------------------------------------
   data_chunk_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys a data chunk handle.
 
@@ -205,9 +104,32 @@ functions:
         description: The chunk to destroy.
     return_type: ERROR
 
+  data_chunk_clear:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Empties a data chunk so it can be filled again.
+
+      The chunk's size becomes 0, and each of its vectors becomes a writable FLAT vector of its type again, as on
+      creation, so a chunk can be reused for one batch after another instead of being created for each. Data, views
+      and pointers taken from the chunk or its vectors beforehand do not survive this. Must not be called on a chunk
+      DuckDB lends to a callback for reading.
+    role: method
+    belongs_to: data_chunk
+    parameters:
+      chunk:
+        type: data_chunk
+        description: The chunk to clear.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
+
   data_chunk_get_size:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: Returns the row count of a data chunk.
     role: getter
     belongs_to: data_chunk
@@ -253,7 +175,7 @@ functions:
 
   data_chunk_get_vector_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the number of vectors in a data chunk.
 
@@ -278,7 +200,7 @@ functions:
 
   data_chunk_get_vector:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows the vector at the given index in a data chunk.
 

@@ -5,6 +5,8 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/function/aggregate/distributive_functions.hpp"
+#include "duckdb/parser/expression/case_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/window_expression.hpp"
@@ -18,11 +20,12 @@
 
 namespace duckdb {
 
-static unique_ptr<Expression> CastWindowExpression(unique_ptr<Expression> bound, const LogicalType &type) {
+static unique_ptr<Expression> CastWindowExpression(ClientContext &context, unique_ptr<Expression> bound,
+                                                   const LogicalType &type) {
 	if (!bound) {
 		return nullptr;
 	}
-	return BoundCastExpression::AddDefaultCastToType(std::move(bound), type);
+	return BoundCastExpression::AddCastToType(context, std::move(bound), type);
 }
 
 static bool IsRangeType(const LogicalType &type) {
@@ -59,9 +62,11 @@ static LogicalType BindRangeExpression(ClientContext &context, const string &nam
 	if (bound->GetReturnType() == LogicalType::SQLNULL) {
 		throw BinderException(error_context, "Window RANGE expressions cannot be NULL");
 	}
+	// the function binder casts the operands and folds a constant offset to its value. The origin recognizes a
+	// constant offset in the bound call by value, so keep a copy of it - any other offset stays in place
+	unique_ptr<Expression> offset_copy = origin && bound->IsFoldable() ? bound->Copy() : nullptr;
+	optional_ptr<const Expression> offset = offset_copy ? offset_copy.get() : bound.get();
 	children.emplace_back(std::move(bound));
-	optional_ptr<const Expression> order_input = children[0].get();
-	optional_ptr<const Expression> offset_input = children[1].get();
 
 	FunctionBinder function_binder(context);
 	auto function =
@@ -72,14 +77,44 @@ static LogicalType BindRangeExpression(ClientContext &context, const string &nam
 		throw BinderException(error_context, "Invalid type for Window RANGE expression");
 	}
 	if (origin) {
-		*origin = WindowRangeBoundary::Capture(*function, order_input, offset_input);
+		*origin = WindowRangeBoundary::Capture(*function, *bound_order, *offset);
 	}
 	bound = std::move(function);
 	return bound->GetReturnType();
 }
 
+//! COUNT(*) FILTER (WHERE p) counts the rows where p holds, which is what COUNT(v) counts for a v
+//! that is null exactly where p does not. Spelled that way the frame is answered by a segment tree;
+//! COUNT(*) has no argument for one to be built over, so it counts the rows a filter leaves in one at
+//! a time - a pass over the partition per row, where the frame grows a row at a time.
+static void RewriteFilteredCountStar(WindowExpression &window) {
+	if (!window.FilterMutable() || !window.GetArguments().empty() || window.Distinct() || !window.ArgOrders().empty()) {
+		return;
+	}
+	auto &qualified = window.GetQualifiedName();
+	// COUNT(*) reaches here as COUNT with no argument; the star is what the parser drops
+	const auto &spelled = qualified.Name().GetIdentifierName();
+	if (!qualified.Catalog().empty() || !qualified.Schema().empty() ||
+	    (!StringUtil::CIEquals(spelled, CountFun::Name) && !StringUtil::CIEquals(spelled, CountStarFun::Name))) {
+		return;
+	}
+
+	auto kept = make_uniq<CaseExpression>();
+	CaseCheck check;
+	check.when_expr = std::move(window.FilterMutable());
+	check.then_expr = ConstantExpression::FromValue(Value::BOOLEAN(true));
+	kept->CaseChecksMutable().push_back(std::move(check));
+	kept->ElseMutable() = ConstantExpression::FromValue(Value(LogicalType::BOOLEAN));
+
+	window.GetArgumentsMutable().emplace_back(std::move(kept));
+	window.FilterMutable() = nullptr;
+	window.SetFunctionName(CountFun::Name);
+}
+
 BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_t depth) {
 	QueryErrorContext error_context(window.GetQueryLocation());
+
+	RewriteFilteredCountStar(window);
 
 	//	Check for macros pretending to be aggregates
 	EntryLookupInfo function_lookup(CatalogType::SCALAR_FUNCTION_ENTRY, window.GetQualifiedName(), error_context);
@@ -132,18 +167,30 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	// bind inside the children of the window function
 	// we set the inside_window flag to true to prevent binding nested window functions
 	inside_window = true;
+	// window arguments are evaluated by the window operator, where a transported error flag has no
+	// consumer; nested subqueries in them bind as plain subqueries
+	const auto save_transport_try_errors = transport_try_errors;
+	transport_try_errors = false;
 	ErrorData error;
 	vector<unique_ptr<Expression>> bound_args;
 	for (auto &child : window.GetArgumentsMutable()) {
-		bound_args.push_back(BindChild(child.GetExpressionMutable(), depth, error));
+		// arguments are aliased by their name, if any (see BindFunction for the rationale)
+		bound_args.push_back(BindChild(child.GetExpressionMutable(), depth, error, child.GetName()));
 	}
 	vector<unique_ptr<Expression>> bound_partitions;
 	for (auto &child : window.PartitionsMutable()) {
-		bound_partitions.push_back(BindChild(child, depth, error));
+		auto bound_partition = BindChild(child, depth, error);
+		if (!error.HasError() && bound_partition->IsVolatile()) {
+			throw BinderException(error_context, "PARTITION BY window expressions cannot be volatile");
+		}
+		bound_partitions.push_back(std::move(bound_partition));
 	}
 	vector<unique_ptr<Expression>> bound_orders;
 	for (auto &order : window.OrderByMutable()) {
 		auto bound_order = BindChild(order.expression, depth, error);
+		if (!error.HasError() && bound_order->IsVolatile()) {
+			throw BinderException(error_context, "ORDER BY window expressions cannot be volatile");
+		}
 
 		//	If the frame is a RANGE frame and the type is a time,
 		//	then we have to convert the time to a timestamp to avoid wrapping.
@@ -170,6 +217,7 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	}
 
 	inside_window = false;
+	transport_try_errors = save_transport_try_errors;
 	if (error.HasError()) {
 		// failed to bind children of window function
 		return BindResult(std::move(error));
@@ -191,15 +239,6 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	for (idx_t arg_idx = 0; arg_idx < window.GetArgumentsMutable().size(); arg_idx++) {
 		auto &arg = window.GetArgumentsMutable()[arg_idx];
 		auto bound_arg = std::move(bound_args[arg_idx]);
-
-		// legacy function calls cannot have named arguments, so we ignore the names of the arguments during binding
-		// and pass them all positionally. We do alias them by their name though, so that alias-capturing functions
-		// (e.g. struct_pack) still work and so that re-serializing to the old format can match arguments by name.
-		// Only override the alias when the argument actually carries a name, otherwise we would clobber the
-		// display alias the binding assigned (e.g. clearing a column reference's name to its raw binding).
-		if (!arg.GetName().empty()) {
-			bound_arg->SetAlias(arg.GetName());
-		}
 
 		if (window.IsLegacyFunctionCall()) {
 			arguments.emplace_back(Identifier(), std::move(bound_arg));
@@ -224,7 +263,9 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 
 		// bind the aggregate
 		FunctionBinder function_binder(binder);
-		auto window_bound_aggregate = function_binder.BindAggregateFunction(func, std::move(arguments), error, nullptr);
+		auto window_bound_aggregate = function_binder.BindAggregateFunction(
+		    func, std::move(arguments), error, nullptr,
+		    window.Distinct() ? AggregateType::DISTINCT : AggregateType::NON_DISTINCT);
 		// No function found, throw an error
 		if (!window_bound_aggregate) {
 			error.AddQueryLocation(window);
@@ -261,20 +302,20 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 		// TODO: Move this into the binder
 		auto &bound_function = *window_bound_function->WindowFunction();
 		if (window.Distinct() && !bound_function.CanDistinct()) {
-			throw BinderException(error_context, "DISTINCT is not implemented for the window function \"%s\"",
+			throw BinderException(error_context, "DISTINCT is not implemented for the window function %s",
 			                      window.FunctionName());
 		}
 		if (window.Filter() && !bound_function.CanFilter()) {
-			throw BinderException(error_context, "FILTER is not implemented for the window function \"%s\"",
+			throw BinderException(error_context, "FILTER is not implemented for the window function %s",
 			                      window.FunctionName());
 		}
 		if (!window.ArgOrders().empty() && !bound_function.CanOrderBy()) {
-			throw BinderException(error_context, "ORDER BY is not supported for the window function \"%s\"",
+			throw BinderException(error_context, "ORDER BY is not supported for the window function %s",
 			                      window.FunctionName());
 		}
 		if (window.WindowExclude() != WindowExcludeMode::NO_OTHER && !window.ArgOrders().empty() &&
 		    !bound_function.CanExclude()) {
-			throw BinderException(error_context, "EXCLUDE is not supported for the window function \"%s\"",
+			throw BinderException(error_context, "EXCLUDE is not supported for the window function %s",
 			                      window.FunctionName());
 		}
 		if (window.HasIgnoreNulls() && !bound_function.CanIgnoreNulls()) {
@@ -368,7 +409,7 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 		}
 
 		// Cast all three to match
-		optional_ptr<const Expression> original_order = bound_order.get();
+		auto &original_order = *bound_order;
 		bound_order = BoundCastExpression::AddCastToType(context, std::move(bound_order), order_type);
 		if (!WindowRangeCast::Capture(*bound_order, original_order, result->SQLRangeOrderCastsMutable())) {
 			result->SQLRangeStartBoundaryMutable().reset();
@@ -392,18 +433,18 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 		result->ArgOrdersMutable().emplace_back(type, null_order, std::move(bound_arg_orders[order_idx]));
 	}
 
-	result->FilterMutable() = CastWindowExpression(std::move(bound_filter), LogicalType::BOOLEAN);
+	result->FilterMutable() = CastWindowExpression(context, std::move(bound_filter), LogicalType::BOOLEAN);
 	optional_ptr<const Expression> original_start = bound_start.get();
 	optional_ptr<const Expression> original_end = bound_end.get();
-	result->StartExprMutable() = CastWindowExpression(std::move(bound_start), start_type);
-	result->EndExprMutable() = CastWindowExpression(std::move(bound_end), end_type);
+	result->StartExprMutable() = CastWindowExpression(context, std::move(bound_start), start_type);
+	result->EndExprMutable() = CastWindowExpression(context, std::move(bound_end), end_type);
 	if (result->SQLRangeStartBoundary() &&
-	    !WindowRangeCast::Capture(*result->StartExpr(), original_start,
+	    !WindowRangeCast::Capture(*result->StartExpr(), *original_start,
 	                              result->SQLRangeStartBoundaryMutable()->result_casts)) {
 		result->SQLRangeStartBoundaryMutable().reset();
 	}
 	if (result->SQLRangeEndBoundary() &&
-	    !WindowRangeCast::Capture(*result->EndExpr(), original_end,
+	    !WindowRangeCast::Capture(*result->EndExpr(), *original_end,
 	                              result->SQLRangeEndBoundaryMutable()->result_casts)) {
 		result->SQLRangeEndBoundaryMutable().reset();
 	}

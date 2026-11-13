@@ -6,7 +6,7 @@ AlterTableStmt <- 'TABLE' IfExists? BaseTableName List(AlterTableOptions)
 AlterSchemaStmt <- 'SCHEMA' IfExists? QualifiedName AlterSchemaOptions
 AlterSchemaOptions <- RenameAlter / SetOptions / ResetOptions
 
-AlterTableOptions <- AddColumn / DropConstraint / DropColumn / AlterColumn / AddConstraint / ChangeNullability /
+AlterTableOptions <- AddColumn / DropConstraint / DropColumn / AlterColumn / AddConstraint /
         RenameColumn / RenameAlter / SetPartitionedBy / ResetPartitionedBy / SetSortedBy / ResetSortedBy / SetOptions / ResetOptions
 
 AddConstraint <- 'ADD' TopLevelConstraint

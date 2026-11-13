@@ -1,0 +1,132 @@
+# name: test/sql/copy/copy_column_identifier_conversion.test
+# description: COPY column lists do not use deprecated table-function identifier conversion
+# group: [copy]
+
+require parquet
+
+statement ok
+SET enable_logging = true;
+
+statement ok
+SET VARIABLE p = 64;
+
+foreach conversion DEFAULT DISABLE_IMPLICIT_STRING
+
+statement ok
+SET table_function_identifier_conversion = '{conversion}';
+
+statement ok
+SET warnings_as_errors = true;
+
+foreach partition p 'p' (p)
+
+statement ok
+COPY (SELECT 42 i, getvariable('p') AS p) TO '{TEST_DIR}/copy_columns_{conversion}' (FORMAT parquet, PARTITION_BY {partition}, OVERWRITE);
+
+query II
+SELECT i, p FROM read_parquet('{TEST_DIR}/copy_columns_{conversion}/*/*.parquet', hive_partitioning = true);
+----
+42	64
+
+endloop
+
+statement ok
+COPY (SELECT 42 i, 64 p, 7 q) TO '{TEST_DIR}/copy_multiple_columns_{conversion}' (FORMAT parquet, PARTITION_BY (p, q));
+
+query III
+SELECT i, p, q FROM read_parquet('{TEST_DIR}/copy_multiple_columns_{conversion}/*/*/*.parquet', hive_partitioning = true);
+----
+42	64	7
+
+# A partition column can have the same name as a SQL value function.
+statement ok
+COPY (SELECT 42 i, 'test' AS user) TO '{TEST_DIR}/copy_user_column_{conversion}' (FORMAT parquet, PARTITION_BY user);
+
+query IT
+SELECT i, user FROM read_parquet('{TEST_DIR}/copy_user_column_{conversion}/*/*.parquet', hive_partitioning = true);
+----
+42	test
+
+statement error
+COPY (SELECT 42 i) TO '{TEST_DIR}/copy_missing_column_{conversion}' (FORMAT parquet, PARTITION_BY missing);
+----
+"partition_by" expected to find missing, but it was not found in the table
+
+# CSV column-list options also accept identifiers without warnings.
+statement ok
+COPY (SELECT NULL::VARCHAR a, 'hello' b, NULL::VARCHAR c) TO '{TEST_DIR}/copy_csv_columns_{conversion}.csv' (HEADER, FORCE_QUOTE b);
+
+query I
+SELECT contains(content, '"hello"') FROM read_text('{TEST_DIR}/copy_csv_columns_{conversion}.csv');
+----
+1
+
+statement ok
+CREATE TABLE csv_columns (a VARCHAR, b VARCHAR, c VARCHAR);
+
+statement ok
+COPY csv_columns FROM '{TEST_DIR}/copy_csv_columns_{conversion}.csv' (HEADER, FORCE_NOT_NULL a, ALLOW_QUOTED_NULLS false);
+
+query III
+SELECT length(a), length(b), c IS NULL FROM csv_columns;
+----
+0	5	1
+
+statement ok
+DROP TABLE csv_columns;
+
+# A CSV column list can also name a column after a SQL value function.
+statement ok
+COPY (SELECT 'x' p, 'y' AS user) TO '{TEST_DIR}/copy_csv_user_column_{conversion}.csv' (HEADER, FORCE_QUOTE (p, user));
+
+query I
+SELECT replace(content, chr(10), '|') FROM read_text('{TEST_DIR}/copy_csv_user_column_{conversion}.csv');
+----
+"p","user"|"x","y"|
+
+# ORDER_BY binds its ordering terms against the COPY output columns.
+foreach ordering p 'p' (p)
+
+statement ok
+COPY (SELECT * FROM (VALUES (2), (1), (3)) t(p)) TO '{TEST_DIR}/copy_order_column_{conversion}' (FORMAT parquet, ORDER_BY {ordering}, OVERWRITE);
+
+query I
+SELECT p FROM read_parquet('{TEST_DIR}/copy_order_column_{conversion}/*.parquet', file_row_number = true) ORDER BY file_row_number;
+----
+1
+2
+3
+
+endloop
+
+statement ok
+COPY (SELECT * FROM (VALUES (0, 2, 30), (0, 1, 20), (0, 2, 10), (0, NULL, 40)) t(part, p, q))
+TO '{TEST_DIR}/copy_order_expression_{conversion}'
+(FORMAT parquet, PARTITION_BY part, ORDER_BY (abs(p) DESC NULLS LAST, q));
+
+query I
+SELECT q FROM read_parquet('{TEST_DIR}/copy_order_expression_{conversion}/*/*.parquet', file_row_number = true) ORDER BY file_row_number;
+----
+10
+30
+20
+40
+
+# Actual table-function arguments still follow the conversion setting.
+statement error
+SELECT count(*) FROM glob(no_such_file.csv);
+----
+Deprecated implicit conversion of unbound identifiers to strings in table function arguments detected
+
+query I
+SELECT count(*) FROM glob('no_such_file.csv');
+----
+0
+
+statement ok
+SET warnings_as_errors = false;
+
+endloop
+
+statement ok
+RESET table_function_identifier_conversion;

@@ -5,13 +5,13 @@
 require no_alternative_verify
 
 statement ok
-PRAGMA memory_limit='100MB'
+SET memory_limit='100MB'
 
 statement ok
-PRAGMA temp_directory=''
+SET temp_directory=''
 
 statement ok
-PRAGMA max_temp_directory_size='0B'
+SET max_temp_directory_size='0B'
 
 statement ok
 SET operator_memory_limit='1MB'
@@ -39,6 +39,10 @@ statement error
 SELECT i, SUM(i) OVER (PARTITION BY i % 100000 ORDER BY i) FROM range(5000000) t(i);
 ----
 Out of Memory
+
+# Use one worker for the low-memory success cases.
+statement ok
+SET threads=1
 
 statement ok
 CREATE TABLE t1 AS SELECT * FROM range(1000000)
@@ -91,7 +95,7 @@ statement ok
 RESET operator_memory_limit
 
 statement ok
-PRAGMA memory_limit='1GB'
+SET memory_limit='1GB'
 
 query I
 SELECT COUNT(*) = 0

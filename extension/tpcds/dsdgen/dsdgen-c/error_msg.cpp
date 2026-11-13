@@ -38,6 +38,8 @@
 #include <stdio.h>
 #include "error_msg.h"
 #include "grammar_support.h"
+#include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
 static thread_local int *LN;
 static thread_local char *FN;
 
@@ -159,8 +161,7 @@ void ProcessErrorCode(int nErrorCode, char *szRoutineName, char *szParam, int nP
  * TODO: None
  */
 int ReportError(int nError, const char *msg, int bExit) {
-	fprintf(stderr, "ERROR?!\n");
-	return (nError);
+	return ReportErrorNoLine(nError, msg, bExit);
 }
 
 /*
@@ -178,27 +179,21 @@ int ReportError(int nError, const char *msg, int bExit) {
  * TODO: None
  */
 int ReportErrorNoLine(int nError, const char *msg, int bExit) {
-	char e_msg[1024];
-
+	std::string e_msg = "dsdgen error";
 	if (nError < MAX_ERROR) {
 		switch (Errors[-nError].flags & EFLG_ARG_MASK) {
 		case EFLG_NO_ARG:
-			fprintf(stderr, "%s: %s\n", (bExit) ? "ERROR" : "Warning", Errors[-nError].prompt);
+			e_msg = Errors[-nError].prompt;
 			break;
 		case EFLG_STR_ARG:
-			sprintf(e_msg, Errors[-nError].prompt, msg);
-			fprintf(stderr, "%s: %s\n", (bExit) ? "ERROR" : "Warning", e_msg);
+			e_msg = duckdb::StringUtil::Format(Errors[-nError].prompt, msg ? msg : "");
 			break;
 		}
-
-		if (Errors[-nError].flags & EFLG_SYSTEM)
-			perror(msg);
 	}
-
-	if (bExit)
-		exit(nError);
-	else
-		return (nError);
+	if (bExit) {
+		throw duckdb::InvalidInputException("dsdgen: %s", e_msg);
+	}
+	return (nError);
 }
 
 /*

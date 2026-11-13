@@ -1,0 +1,109 @@
+# name: test/issues/general/test_27205.test
+# description: A cross product keeps a global dictionary column a dictionary when it repeats one of its rows
+# group: [general]
+
+statement ok
+CREATE TABLE dim AS SELECT range AS d_sk, 'day_' || range AS d_name FROM range(400);
+
+statement ok
+CREATE TABLE inv AS SELECT range % 400 AS inv_date_sk, range % 1000 AS inv_item_sk FROM range(3000);
+
+statement ok
+CREATE TABLE fact AS SELECT range % 1000 AS item_sk, range % 400 AS sold_date_sk, range % 50 AS q FROM range(10000);
+
+statement ok
+CREATE TABLE ret AS SELECT range % 1000 AS r_item_sk, (range * 7) % 400 AS r_date_sk FROM range(1500);
+
+# the blockwise NL join repeats rows of the global dictionary column of the hash join below
+query II
+SELECT d.d_name, f.q
+FROM inv i
+JOIN dim d ON i.inv_date_sk = d.d_sk
+LEFT JOIN fact f ON i.inv_item_sk = f.item_sk AND f.sold_date_sk = i.inv_date_sk
+LEFT JOIN ret r ON i.inv_item_sk = r.r_item_sk OR r.r_date_sk = i.inv_date_sk
+ORDER BY 1 LIMIT 2;
+----
+day_0	0
+day_0	0
+
+query III
+SELECT d.d_name, f.q, r.r_item_sk
+FROM inv i
+JOIN dim d ON i.inv_date_sk = d.d_sk
+LEFT JOIN fact f ON i.inv_item_sk = f.item_sk AND f.sold_date_sk = i.inv_date_sk
+LEFT JOIN ret r ON i.inv_item_sk = r.r_item_sk OR r.r_date_sk = i.inv_date_sk
+ORDER BY ALL LIMIT 5;
+----
+day_0	0	0
+day_0	0	0
+day_0	0	0
+day_0	0	0
+day_0	0	0
+
+query IIII
+SELECT count(*), count(DISTINCT s.d_name), sum(s.q), sum(s.r_item_sk) FROM (
+	SELECT d.d_name, f.q, r.r_item_sk
+	FROM inv i
+	JOIN dim d ON i.inv_date_sk = d.d_sk
+	LEFT JOIN fact f ON i.inv_item_sk = f.item_sk AND f.sold_date_sk = i.inv_date_sk
+	LEFT JOIN ret r ON i.inv_item_sk = r.r_item_sk OR r.r_date_sk = i.inv_date_sk
+	ORDER BY 1 LIMIT 100000
+) s;
+----
+78670	400	1929970	32765210
+
+# the same output as the build side of another hash join
+statement ok
+CREATE TABLE big AS SELECT range % 1000 AS k FROM range(200000);
+
+query II
+SELECT count(*), count(DISTINCT x.d_name) FROM big z JOIN (
+	SELECT d.d_name, f.q, i.inv_item_sk
+	FROM inv i
+	JOIN dim d ON i.inv_date_sk = d.d_sk
+	LEFT JOIN fact f ON i.inv_item_sk = f.item_sk AND f.sold_date_sk = i.inv_date_sk
+	LEFT JOIN ret r ON i.inv_item_sk = r.r_item_sk OR r.r_date_sk = i.inv_date_sk
+) x ON z.k = x.inv_item_sk;
+----
+15734000	400
+
+# with keys that rule out a perfect hash join, the build side would otherwise narrow the dictionary column
+query II
+SELECT count(*), count(DISTINCT x.d_name) FROM big z JOIN (
+	SELECT d.d_name, f.q, i.inv_item_sk
+	FROM inv i
+	JOIN dim d ON i.inv_date_sk = d.d_sk
+	LEFT JOIN fact f ON i.inv_item_sk = f.item_sk AND f.sold_date_sk = i.inv_date_sk
+	LEFT JOIN ret r ON i.inv_item_sk = r.r_item_sk OR r.r_date_sk = i.inv_date_sk
+) x ON z.k::VARCHAR = x.inv_item_sk::VARCHAR;
+----
+15734000	400
+
+# NULLs and strings that are not inlined
+statement ok
+CREATE OR REPLACE TABLE dim AS
+SELECT range AS d_sk, CASE WHEN range % 10 = 0 THEN NULL ELSE 'a long day name ' || range END AS d_name FROM range(400);
+
+query III
+SELECT d.d_name, f.q, r.r_item_sk
+FROM inv i
+JOIN dim d ON i.inv_date_sk = d.d_sk
+LEFT JOIN fact f ON i.inv_item_sk = f.item_sk AND f.sold_date_sk = i.inv_date_sk
+LEFT JOIN ret r ON i.inv_item_sk = r.r_item_sk OR r.r_date_sk = i.inv_date_sk
+ORDER BY 1 NULLS FIRST, 2, 3 LIMIT 3;
+----
+NULL	0	0
+NULL	0	0
+NULL	0	0
+
+query III
+SELECT d.d_name, f.q, r.r_item_sk
+FROM inv i
+JOIN dim d ON i.inv_date_sk = d.d_sk
+LEFT JOIN fact f ON i.inv_item_sk = f.item_sk AND f.sold_date_sk = i.inv_date_sk
+LEFT JOIN ret r ON i.inv_item_sk = r.r_item_sk OR r.r_date_sk = i.inv_date_sk
+ORDER BY 1 NULLS LAST, 2, 3 LIMIT 3;
+----
+a long day name 1	1	1
+a long day name 1	1	1
+a long day name 1	1	1

@@ -26,8 +26,10 @@ struct WindowRangeCast {
 	void Serialize(Serializer &serializer) const;
 	static WindowRangeCast Deserialize(Deserializer &deserializer);
 
-	static bool Capture(const Expression &expression, optional_ptr<const Expression> input,
-	                    vector<WindowRangeCast> &casts);
+	//! Records the casts the binder wrapped around an operand of the range arithmetic. The operand is the expression
+	//! still in place, or a copy of a constant operand the function binder may have folded - the chain then ends in
+	//! that constant
+	static bool Capture(const Expression &expression, const Expression &operand, vector<WindowRangeCast> &casts);
 	static optional_ptr<const Expression> Match(const Expression &expression, const vector<WindowRangeCast> &casts);
 };
 
@@ -46,8 +48,8 @@ struct WindowRangeBoundary {
 	void Serialize(Serializer &serializer) const;
 	static unique_ptr<WindowRangeBoundary> Deserialize(Deserializer &deserializer);
 
-	static unique_ptr<WindowRangeBoundary> Capture(const Expression &expression, optional_ptr<const Expression> order,
-	                                               optional_ptr<const Expression> offset);
+	static unique_ptr<WindowRangeBoundary> Capture(const Expression &expression, const Expression &order,
+	                                               const Expression &offset);
 	optional_ptr<const Expression> Match(const Expression &expression, const Expression &order) const;
 };
 } // namespace duckdb

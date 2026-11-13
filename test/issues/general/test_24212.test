@@ -1,0 +1,73 @@
+# name: test/issues/general/test_24212.test
+# description: MERGE NOT MATCHED BY SOURCE UPDATE returns complete rows
+# group: [general]
+
+statement ok
+CREATE TABLE t(i INTEGER, j INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1, 10), (2, 20);
+
+query II
+MERGE INTO t
+USING (VALUES (1, 100)) s(i, j)
+ON t.i = s.i
+WHEN NOT MATCHED BY SOURCE THEN UPDATE SET j = t.j + 1
+RETURNING merge_action, j;
+----
+UPDATE	21
+
+query II
+SELECT * FROM t ORDER BY i;
+----
+1	10
+2	21
+
+statement ok
+CREATE TABLE generated(i INTEGER, j INTEGER, k INTEGER GENERATED ALWAYS AS (j * 2));
+
+statement ok
+INSERT INTO generated(i, j) VALUES (1, 10), (2, 20);
+
+query IIII
+MERGE INTO generated
+USING (VALUES (1, 100)) s(i, j)
+ON generated.i = s.i
+WHEN NOT MATCHED BY SOURCE THEN UPDATE SET j = generated.j + 1
+RETURNING merge_action, i, j, k;
+----
+UPDATE	2	21	42
+
+statement ok
+CREATE TABLE indexed(i INTEGER PRIMARY KEY, j INTEGER);
+
+statement ok
+INSERT INTO indexed VALUES (1, 10), (2, 20);
+
+query III
+MERGE INTO indexed
+USING (VALUES (1)) s(i)
+ON indexed.i = s.i
+WHEN NOT MATCHED BY SOURCE THEN UPDATE SET i = indexed.i + 10
+RETURNING merge_action, i, j;
+----
+UPDATE	12	20
+
+statement ok
+CREATE TABLE combined(i INTEGER, j INTEGER);
+
+statement ok
+INSERT INTO combined VALUES (1, 10), (2, 20);
+
+query III rowsort
+MERGE INTO combined
+USING (VALUES (1, 100), (3, 300)) s(i, j)
+ON combined.i = s.i
+WHEN MATCHED THEN UPDATE SET j = s.j
+WHEN NOT MATCHED BY TARGET THEN INSERT VALUES (s.i, s.j)
+WHEN NOT MATCHED BY SOURCE THEN UPDATE SET j = combined.j + 1
+RETURNING merge_action, i, j;
+----
+INSERT	3	300
+UPDATE	1	100
+UPDATE	2	21

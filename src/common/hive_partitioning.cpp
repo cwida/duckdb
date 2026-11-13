@@ -29,7 +29,7 @@ GetKnownColumnValues(const string &filename, const HivePartitioningFilterInfo &f
 
 	auto &column_map = filter_info.column_map;
 	if (filter_info.filename_enabled) {
-		auto lookup_column_id = column_map.find("filename");
+		auto lookup_column_id = column_map.find(filter_info.filename_column);
 		if (lookup_column_id != column_map.end()) {
 			result.insert(make_pair(lookup_column_id->second, PartitioningColumnValue(filename)));
 		}
@@ -38,7 +38,7 @@ GetKnownColumnValues(const string &filename, const HivePartitioningFilterInfo &f
 	if (filter_info.hive_enabled) {
 		auto partitions = HivePartitioning::Parse(filename);
 		for (auto &partition : partitions) {
-			auto lookup_column_id = column_map.find(partition.first);
+			auto lookup_column_id = column_map.find(Identifier(partition.first));
 			if (lookup_column_id != column_map.end()) {
 				result.insert(
 				    make_pair(lookup_column_id->second, PartitioningColumnValue(partition.first, partition.second)));
@@ -240,21 +240,21 @@ void HivePartitioning::ApplyFiltersToFileList(ClientContext &context, vector<Ope
 		}
 		auto retained = filters[i]->Copy();
 		bool representable = true;
-		ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-		    retained, [&](auto &column, unique_ptr<Expression> &) {
+		retained = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+		    std::move(retained), [&](const BoundColumnRefExpression &column) -> unique_ptr<Expression> {
 			    auto binding = column.Binding();
 			    if (column.Depth() != 0 || binding.table_index != table_index ||
 			        binding.column_index.GetIndex() >= info.column_indexes.size()) {
 				    representable = false;
-				    return;
+				    return nullptr;
 			    }
 			    auto &index = info.column_indexes[binding.column_index.GetIndex()];
 			    if (index.IsVirtualColumn() || index.IsPushdownExtract() || index.HasType()) {
 				    representable = false;
-				    return;
+				    return nullptr;
 			    }
-			    column.BindingMutable() = ColumnBinding(TableIndex(ExtraOperatorInfo::FILE_FILTER_TABLE_INDEX),
-			                                            ProjectionIndex(index.GetPrimaryIndex()));
+			    return column.WithBinding(ColumnBinding(TableIndex(ExtraOperatorInfo::FILE_FILTER_TABLE_INDEX),
+			                                            ProjectionIndex(index.GetPrimaryIndex())));
 		    });
 		if (!representable) {
 			info.extra_info.file_filter_expressions.reset();

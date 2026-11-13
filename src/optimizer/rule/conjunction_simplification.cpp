@@ -17,14 +17,14 @@ ConjunctionSimplificationRule::ConjunctionSimplificationRule(ExpressionRewriter 
 
 unique_ptr<Expression> ConjunctionSimplificationRule::RemoveExpression(BoundConjunctionExpression &conj,
                                                                        const Expression &expr) {
-	for (idx_t i = 0; i < conj.GetChildrenMutable().size(); i++) {
-		if (conj.GetChildrenMutable()[i].get() == &expr) {
+	for (idx_t i = 0; i < conj.GetChildren().size(); i++) {
+		if (conj.GetChildren()[i].get() == &expr) {
 			// erase the expression
 			conj.GetChildrenMutable().erase_at(i);
 			break;
 		}
 	}
-	if (conj.GetChildrenMutable().size() == 1) {
+	if (conj.GetChildren().size() == 1) {
 		// one expression remaining: simply return that expression and erase the conjunction
 		return std::move(conj.GetChildrenMutable()[0]);
 	}
@@ -43,7 +43,7 @@ unique_ptr<Expression> ConjunctionSimplificationRule::Apply(LogicalOperator &op,
 	if (!ExpressionExecutor::TryEvaluateScalar(GetContext(), constant_expr, constant_value)) {
 		return nullptr;
 	}
-	constant_value = constant_value.DefaultCastAs(LogicalType::BOOLEAN);
+	constant_value = constant_value.CastAs(GetContext(), LogicalType::BOOLEAN);
 	if (constant_value.IsNull()) {
 		// FALSE and NULL have the same effect in filters and joins
 		if (conjunction.GetExpressionType() != ExpressionType::CONJUNCTION_OR || !is_root ||

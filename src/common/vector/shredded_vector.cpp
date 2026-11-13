@@ -4,6 +4,8 @@
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/function/scalar/variant_utils.hpp"
+#include "duckdb/common/type_visitor.hpp"
+#include "duckdb/function/variant/variant_shredding.hpp"
 
 namespace duckdb {
 
@@ -66,6 +68,14 @@ buffer_ptr<VectorBuffer> ShreddedVectorBuffer::Deserialize(Deserializer &deseria
 	if (shredded_type.id() != LogicalTypeId::STRUCT || StructType::GetChildCount(shredded_type) != 2) {
 		throw SerializationException("Shredded vector data must be a struct with two children");
 	}
+	auto &unshredded_type = StructType::GetChildType(shredded_type, 0);
+	if (unshredded_type != VariantShredding::GetUnshreddedType()) {
+		throw SerializationException("Shredded vector data's first child must be the canonical VARIANT struct");
+	}
+	auto &inner_shredded_type = StructType::GetChildType(shredded_type, 1);
+	if (TypeVisitor::Contains(inner_shredded_type, LogicalTypeId::VARIANT)) {
+		throw SerializationException("Shredded vector data's second child cannot itself contain a VARIANT type");
+	}
 	Vector shredded_data(shredded_type, MaxValue<idx_t>(count, STANDARD_VECTOR_SIZE));
 	deserializer.ReadObject(92, "shredded_data", [&](Deserializer &obj) { shredded_data.Deserialize(obj, count); });
 	FlatVector::SetSize(shredded_data, count);
@@ -73,23 +83,10 @@ buffer_ptr<VectorBuffer> ShreddedVectorBuffer::Deserialize(Deserializer &deseria
 }
 
 Value ShreddedVectorBuffer::GetValue(const LogicalType &type, idx_t index) const {
-	// FIXME: this is extremely inefficient
-	auto &shredded = StructVector::GetEntries(*shredded_data)[1];
-	auto &unshredded = StructVector::GetEntries(*shredded_data)[0];
-
-	auto shredded_val = shredded.GetValue(index);
-	auto unshredded_val = unshredded.GetValue(index);
-
-	child_list_t<LogicalType> shredded_subtypes;
-	shredded_subtypes.emplace_back(make_pair("unshredded", unshredded.GetType()));
-	shredded_subtypes.emplace_back(make_pair("shredded", shredded.GetType()));
-	Vector new_shredded(LogicalType::STRUCT(std::move(shredded_subtypes)));
-	StructVector::GetEntries(new_shredded)[0].Reference(unshredded_val, count_t(1));
-	StructVector::GetEntries(new_shredded)[1].Reference(shredded_val, count_t(1));
-
-	Vector result_vec(LogicalType::VARIANT(), 1);
-	VariantUtils::UnshredVariantData(new_shredded, result_vec, 1);
-	return result_vec.GetValue(0);
+	Vector input(*shredded_data, index, index + 1);
+	Vector result(LogicalType::VARIANT(), 1);
+	VariantUtils::UnshredVariantData(input, result, 1);
+	return result.GetValue(0);
 }
 
 buffer_ptr<VectorBuffer> ShreddedVectorBuffer::SliceInternal(const LogicalType &type, idx_t offset, idx_t end) {

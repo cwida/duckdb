@@ -83,3 +83,19 @@ query III
 SELECT count(*), min(i), max(i) FROM t
 ----
 8193	0	9999
+
+statement ok
+CREATE TABLE t0(c0 INTEGER);
+
+statement ok
+INSERT INTO t0 VALUES (1);
+
+query I
+SELECT (SELECT 1 FROM (SELECT 1 AS a FROM t0 HAVING true) WHERE a = (SELECT x.a1)) FROM (SELECT 1 AS a1) x;
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT 1 AS a FROM t0 HAVING true)
+----
+1

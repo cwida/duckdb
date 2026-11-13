@@ -29,20 +29,20 @@ struct DecimalParquetValueConversion {
 		if (FIXED_LENGTH) {
 			byte_len = reader.Schema().type_length;
 		} else {
-			byte_len = plain_data.read<uint32_t>();
+			byte_len = plain_data.Read<uint32_t>();
 		}
-		plain_data.available(byte_len);
-		auto res = ParquetDecimalUtils::ReadDecimalValue<DUCKDB_PHYSICAL_TYPE>(const_data_ptr_cast(plain_data.ptr),
-		                                                                       byte_len, reader.Schema());
+		plain_data.Available(byte_len);
+		auto res = ParquetDecimalUtils::ReadDecimalValue<DUCKDB_PHYSICAL_TYPE>(
+		    const_data_ptr_cast(plain_data.GetCurrentLoc()), byte_len, reader.Schema());
 
-		plain_data.inc(byte_len);
+		plain_data.Inc(byte_len);
 		return res;
 	}
 
 	template <bool CHECKED>
 	static void PlainSkip(ByteBuffer &plain_data, ColumnReader &reader) {
-		uint32_t decimal_len = FIXED_LENGTH ? reader.Schema().type_length : plain_data.read<uint32_t>();
-		plain_data.inc(decimal_len);
+		uint32_t decimal_len = FIXED_LENGTH ? reader.Schema().type_length : plain_data.Read<uint32_t>();
+		plain_data.Inc(decimal_len);
 	}
 
 	static bool PlainAvailable(const ByteBuffer &plain_data, const idx_t count) {

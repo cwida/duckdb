@@ -10,16 +10,21 @@
 
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/enums/filter_propagate_result.hpp"
+#include "duckdb/common/operator/aggregate_operators.hpp"
 #include "duckdb/common/operator/comparison_operators.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/storage/statistics/numeric_stats_union.hpp"
 #include "duckdb/common/array_ptr.hpp"
+
+#include <cmath>
+#include <type_traits>
 
 namespace duckdb {
 class BaseStatistics;
 struct SelectionVector;
 class Vector;
 class Value;
+class StatsStructFields;
 
 struct NumericStatsData {
 	//! Whether or not the value has a max value
@@ -82,11 +87,23 @@ struct NumericStats {
 	DUCKDB_API static void Deserialize(Deserializer &deserializer, BaseStatistics &stats);
 
 	DUCKDB_API static child_list_t<Value> ToStruct(const BaseStatistics &stats);
+	//! Sets the parts of the statistics the struct fields describe (the inverse of ToStruct)
+	DUCKDB_API static void SetFromStruct(BaseStatistics &stats, StatsStructFields &fields);
 
 	template <class T>
-	static inline void UpdateValue(T new_value, T &min, T &max) {
-		min = LessThan::Operation(new_value, min) ? new_value : min;
-		max = GreaterThan::Operation(new_value, max) ? new_value : max;
+	static inline void UpdateValue(const T &new_value, T &min, T &max) {
+		min = Min::Operation(new_value, min);
+		max = Max::Operation(new_value, max);
+		if constexpr (std::is_floating_point_v<T>) {
+			// -0.0 == 0.0: prefer -0.0 as min and 0.0 as max so IsConstant can detect mixed zeros
+			if (new_value == T(0)) {
+				if (std::signbit(new_value)) {
+					min = min == T(0) ? new_value : min;
+				} else {
+					max = max == T(0) ? new_value : max;
+				}
+			}
+		}
 	}
 	template <class T>
 	static inline void Update(NumericStatsData &nstats, T new_value) {

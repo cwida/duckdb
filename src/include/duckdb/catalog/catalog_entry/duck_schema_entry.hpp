@@ -67,10 +67,12 @@ public:
 	//! Create a nested schema inside this schema
 	optional_ptr<CatalogEntry> CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info);
 	void Alter(CatalogTransaction transaction, AlterInfo &info) override;
+	using SchemaCatalogEntry::Scan;
 	void Scan(ClientContext &context, CatalogType type, const std::function<void(CatalogEntry &)> &callback) override;
 	void Scan(CatalogTransaction transaction, CatalogType type,
 	          const std::function<void(CatalogEntry &)> &callback) override;
 	void Scan(CatalogType type, const std::function<void(CatalogEntry &)> &callback) override;
+	void Scan(CatalogType type, VisibilityBound bound, const std::function<void(CatalogEntry &)> &callback);
 	void DropEntry(ClientContext &context, DropInfo &info) override;
 	optional_ptr<CatalogEntry> LookupEntry(CatalogTransaction transaction, const EntryLookupInfo &lookup_info) override;
 	CatalogSet::EntryLookup LookupEntryDetailed(CatalogTransaction transaction,
@@ -85,6 +87,9 @@ public:
 	CatalogSet &GetCatalogSet(CatalogType type);
 
 private:
+	//! Drop an entry and remove the foreign key references to it from its referenced tables
+	bool DropEntryInternal(CatalogTransaction transaction, CatalogEntry &entry, const Identifier &name, bool cascade,
+	                       bool allow_drop_internal);
 	void OnDropEntry(CatalogTransaction transaction, CatalogEntry &entry);
 };
 } // namespace duckdb

@@ -19,9 +19,9 @@ using namespace duckdb::cxx;
 } // namespace
 
 TEST_CASE("Stable C++API: ArrowExporter and ArrowImporter round-trip", "[cpp_api][arrow]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
+	auto &factory = conn.GetFactory();
 
 	// Both handles need a Context, which only a callback has, so the round-trip runs inside a scalar function. A
 	// callback must not use Catch assertions, so what it observes is latched and checked after the query.
@@ -36,13 +36,13 @@ TEST_CASE("Stable C++API: ArrowExporter and ArrowImporter round-trip", "[cpp_api
 	observed_value = 0;
 	observed_arrays = 0;
 
-	auto function = ScalarFunction::Create(conn);
+	auto function = ScalarFunction::Create(conn.GetFactory());
 	function.SetName("cpp_arrow_probe");
 	function.SetExecCallback([](ScalarFunction::ExecInput &input) {
-		auto context = input.GetContext();
+		auto &context = input.GetContext();
 
 		std::vector<LogicalType> types;
-		types.push_back(context.ParseType("BIGINT"));
+		types.push_back(context.GetFactory().ParseType("BIGINT"));
 		ArrowExporter exporter(context, types, {"a"});
 
 		// The exporter's schema is what an importer resolves, so the two agree by construction.
@@ -61,7 +61,7 @@ TEST_CASE("Stable C++API: ArrowExporter and ArrowImporter round-trip", "[cpp_api
 		}
 
 		// Build a one-row chunk, push it out to Arrow and read it straight back.
-		DataChunk chunk(context, types);
+		DataChunk chunk(context.GetFactory(), types);
 		auto column = chunk.GetVector(0);
 		column.GetDataMutable<int64_t>()[0] = 4242;
 		column.SetSize(1);
@@ -83,9 +83,9 @@ TEST_CASE("Stable C++API: ArrowExporter and ArrowImporter round-trip", "[cpp_api
 			out[i] = 1;
 		}
 	});
-	const auto integer = conn.ParseType("INTEGER");
+	const auto integer = factory.ParseType("INTEGER");
 	function.GetSignature().AddParameter("x", integer).SetReturnType(integer);
-	function.Register();
+	conn.Register(function);
 
 	conn.Execute("SELECT cpp_arrow_probe(1)").Drain();
 	REQUIRE(observed_count == 1);

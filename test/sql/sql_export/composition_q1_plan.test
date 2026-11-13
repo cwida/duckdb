@@ -32,7 +32,7 @@ ORDER BY
     l_returnflag,
     l_linestatus;
 ----
-sql	<REGEX>:^SELECT.*FROM [(]SELECT.*
+sql	<REGEX>:^SELECT.*FROM [(][[:space:]]*SELECT.*
 
 query TT
 EXPLAIN (SQL) SELECT
@@ -57,4 +57,4 @@ ORDER BY
     l_returnflag,
     l_linestatus;
 ----
-sql	<!REGEX>:.*[(]SELECT.*[(]SELECT.*
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*[(][[:space:]]*SELECT.*

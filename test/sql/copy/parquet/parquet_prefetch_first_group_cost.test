@@ -1,0 +1,71 @@
+# name: test/sql/copy/parquet/parquet_prefetch_first_group_cost.test
+# description: Only speculate on cheap physical filter columns before observing row-group matches
+# group: [parquet]
+
+require parquet
+
+require vector_size 2048
+
+statement ok
+SET threads=1
+
+statement ok
+SET read_ahead_depth=1
+
+statement ok
+COPY (
+    SELECT CASE WHEN i%2000=0 THEN 0 ELSE 1 END AS flag,
+        md5(i::VARCHAR)||md5((i+1)::VARCHAR)||md5((i+2)::VARCHAR)||md5((i+3)::VARCHAR) AS payload
+    FROM range(4096) t(i)
+) TO '{TEST_DIR}/cheap_first_filter.parquet'
+    (ROW_GROUP_SIZE 2048, COMPRESSION 'uncompressed', WRITE_BLOOM_FILTER FALSE)
+
+statement ok
+COPY (
+    SELECT md5(i::VARCHAR) AS f, md5((i+1)::VARCHAR) AS payload
+    FROM range(4096) t(i)
+) TO '{TEST_DIR}/expensive_first_filter.parquet'
+    (ROW_GROUP_SIZE 2048, COMPRESSION 'uncompressed', WRITE_BLOOM_FILTER FALSE)
+
+statement ok
+CALL enable_logging('ParquetPrefetch')
+
+statement ok
+SELECT bit_xor(hash(flag,payload)) FROM read_parquet('{TEST_DIR}/cheap_first_filter.parquet') WHERE flag=1
+
+query IT
+SELECT row_group_id,strategy FROM duckdb_logs_parsed('ParquetPrefetch')
+WHERE file_path LIKE '%cheap_first_filter.parquet' ORDER BY row_group_id
+----
+0	prefetch_filters
+1	whole_group
+
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+SELECT bit_xor(hash(f,payload)) FROM read_parquet('{TEST_DIR}/expensive_first_filter.parquet')
+WHERE f NOT LIKE '%not-in-hex%'
+
+query IT
+SELECT row_group_id,strategy FROM duckdb_logs_parsed('ParquetPrefetch')
+WHERE file_path LIKE '%expensive_first_filter.parquet' ORDER BY row_group_id
+----
+0	whole_group
+1	whole_group
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# A virtual filter has no physical range to schedule as a filter-only I/O phase.
+statement ok
+SELECT bit_xor(hash(flag,payload,file_row_number))
+FROM read_parquet('{TEST_DIR}/cheap_first_filter.parquet',file_row_number=true)
+WHERE file_row_number%2=0
+
+query IT
+SELECT row_group_id,strategy FROM duckdb_logs_parsed('ParquetPrefetch')
+WHERE file_path LIKE '%cheap_first_filter.parquet' ORDER BY row_group_id
+----
+0	whole_group
+1	whole_group

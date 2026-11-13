@@ -148,7 +148,7 @@ TEST_CASE("Logical plan SQL export isolates extension column names and scope mod
 		}
 		leaf->export_sql = [&](SQLExportExtensionOperator &op, LogicalPlanSQLExportContext &,
 		                       const LogicalPlanVerificationPath &path) {
-			Parser parser;
+			Parser parser(*connection.context);
 			parser.ParseQuery(sql);
 			return op.ExportQuery(std::move(parser.statements[0]->Cast<SelectStatement>().node), path);
 		};

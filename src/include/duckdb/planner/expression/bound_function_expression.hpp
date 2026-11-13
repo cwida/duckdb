@@ -21,7 +21,8 @@ public:
 
 public:
 	BoundFunctionExpression(BoundScalarFunction bound_function, vector<unique_ptr<Expression>> arguments,
-	                        unique_ptr<FunctionData> bind_info, bool is_operator = false);
+	                        unique_ptr<FunctionData> bind_info, bool is_operator = false,
+	                        Identifier alias = Identifier(), QueryLocation location = QueryLocation());
 
 public:
 	const BoundScalarFunction &Function() const {
@@ -54,6 +55,7 @@ public:
 	bool IsConsistent() const override;
 	bool IsFoldable() const override;
 	bool CanThrow() const override;
+	bool RequiresRebind() const override;
 	string ToString() const override;
 	bool PropagatesNullValues() const override;
 	hash_t Hash() const override;

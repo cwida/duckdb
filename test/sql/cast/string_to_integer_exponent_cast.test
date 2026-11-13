@@ -327,3 +327,74 @@ query I
 select '1.5000000000000000000e0'::UBIGINT;
 ----
 2
+
+# Fractional parts with a very long run of leading zeros (#26335)
+foreach type TINYINT SMALLINT INTEGER BIGINT HUGEINT UTINYINT USMALLINT UINTEGER UBIGINT UHUGEINT
+
+query I
+select ('0.' || repeat('0', 32768) || '5e0')::{type};
+----
+0
+
+query I
+select ('0.' || repeat('0', 65536) || '5')::{type};
+----
+0
+
+query I
+select ('0.' || repeat('0', 65536) || '5e0')::{type};
+----
+0
+
+query I
+select ('0.' || repeat('0', 32767) || '5e32767')::{type};
+----
+1
+
+query I
+select ('0.' || repeat('0', 32768) || '5e32767')::{type};
+----
+0
+
+query I
+select ('1.' || repeat('0', 40000) || '9e0')::{type};
+----
+1
+
+endloop
+
+query I
+select ('-0.' || repeat('0', 32768) || '5e0')::INTEGER;
+----
+0
+
+query I
+select ('-0.' || repeat('0', 32767) || '5e32767')::INTEGER;
+----
+-1
+
+# BIGNUM does not support exponents
+query I
+select ('0.' || repeat('0', 65536) || '5')::BIGNUM;
+----
+0
+
+query I
+select ('0.1' || repeat('0', 25) || '1')::BIGNUM;
+----
+0
+
+query I
+select ('0.5' || repeat('0', 65536) || '1')::BIGNUM;
+----
+1
+
+query I
+select ('-1.' || repeat('0', 40000) || '9')::BIGNUM;
+----
+-1
+
+query I
+select ('-2.5' || repeat('0', 40000))::BIGNUM;
+----
+-3

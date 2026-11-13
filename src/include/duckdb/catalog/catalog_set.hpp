@@ -77,7 +77,10 @@ public:
 	DUCKDB_API bool DropEntry(ClientContext &context, const Identifier &name, bool cascade,
 	                          bool allow_drop_internal = false);
 	//! Verify that the entry referenced by the dependency is still alive
-	DUCKDB_API void VerifyExistenceOfDependency(transaction_t commit_id, CatalogEntry &entry);
+	DUCKDB_API void VerifyExistenceOfDependency(transaction_t commit_id, VisibilityBound visibility_bound,
+	                                            CatalogEntry &entry);
+	//! Verify that no concurrent dependency creation prevents dropping an entry or one of its members
+	void VerifyCommitDrop(transaction_t commit_id, VisibilityBound visibility_bound, CatalogEntry &entry);
 	//! Verify we can still drop the entry while committing
 	DUCKDB_API void CommitDrop(transaction_t commit_id, VisibilityBound visibility_bound, CatalogEntry &entry);
 
@@ -100,8 +103,8 @@ public:
 	//! entry
 	void Undo(CatalogEntry &entry);
 
-	//! Scan the catalog set, invoking the callback method for every committed entry
-	DUCKDB_API void Scan(const std::function<void(CatalogEntry &)> &callback);
+	//! Scan the catalog set, invoking the callback method for every entry committed below the bound
+	DUCKDB_API void Scan(VisibilityBound bound, const std::function<void(CatalogEntry &)> &callback);
 	//! Scan the catalog set, invoking the callback method for every entry
 	DUCKDB_API void ScanWithPrefix(CatalogTransaction transaction, const std::function<void(CatalogEntry &)> &callback,
 	                               const Identifier &prefix);
@@ -149,7 +152,6 @@ private:
 	CatalogEntry &GetEntryForTransaction(CatalogTransaction transaction, CatalogEntry &current, bool &visible);
 	//! Given a root entry, gets the entry valid for this transaction
 	CatalogEntry &GetEntryForTransaction(CatalogTransaction transaction, CatalogEntry &current);
-	CatalogEntry &GetCommittedEntry(CatalogEntry &current);
 	optional_ptr<CatalogEntry> GetEntryInternal(CatalogTransaction transaction, const Identifier &name);
 	optional_ptr<CatalogEntry> CreateCommittedEntry(unique_ptr<CatalogEntry> entry);
 

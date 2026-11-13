@@ -32,9 +32,10 @@ Value CV2ExpressionBindInfo::GetArgValue(idx_t index) const {
 	return input.GetConstant(index);
 }
 
-CV2ConstantBindInfo::CV2ConstantBindInfo(const BoundTableFunction &function, void *user_data,
-                                         const vector<Value> &positional, const named_argument_map_t &named)
-    : CV2FunctionBindInfo(function, user_data), positional(positional), named(named) {
+CV2ConstantBindInfo::CV2ConstantBindInfo(const BoundSimpleFunction &function, const FunctionSignature &signature,
+                                         void *user_data, const vector<Value> &positional,
+                                         const named_argument_map_t &named)
+    : CV2FunctionBindInfo(function, signature, user_data), positional(positional), named(named) {
 	D_ASSERT(function.GetPositionalArgumentCount() == positional.size());
 }
 
@@ -45,7 +46,7 @@ const Value &CV2ConstantBindInfo::GetArg(idx_t index) const {
 	const auto &name = function.GetNamedArguments()[index - positional.size()];
 	auto entry = named.find(name);
 	if (entry == named.end()) {
-		throw InternalException("Named argument \"%s\" of a table function call has no value", name);
+		throw InternalException("Named argument %s of a function call has no value", name);
 	}
 	return entry->second;
 }
@@ -84,6 +85,10 @@ DUCKDB_V2_ERROR duckdb_v2_function_bind_set_bind_data(duckdb_v2_function_bind_in
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(data);
 	return WithErrorHandler(err, [&]() {
+		auto &bind_data_error = Convert(info)->bind_data_error;
+		if (!bind_data_error.empty()) {
+			throw duckdb::InvalidInputException(bind_data_error);
+		}
 		Convert(info)->out_bind_data =
 		    data->ptr ? duckdb::make_shared_ptr<CV2UserData>(data->ptr, data->destroy, data->equals) : nullptr;
 	});
@@ -120,7 +125,7 @@ DUCKDB_V2_ERROR duckdb_v2_function_bind_get_arg_type(duckdb_v2_function_bind_inf
 	return WithErrorHandler(err, [&]() {
 		auto &bind_info = *Convert(info);
 		CheckArgIndex(bind_info, index, "duckdb_v2_function_bind_get_arg_type");
-		*type = Convert(new duckdb::LogicalType(bind_info.GetArgType(index)));
+		*type = Convert(bind_info.GetArgType(index));
 	});
 }
 
@@ -137,25 +142,27 @@ DUCKDB_V2_ERROR duckdb_v2_function_bind_get_arg_value(duckdb_v2_function_bind_in
 }
 
 DUCKDB_V2_ERROR duckdb_v2_function_bind_get_arg_name(duckdb_v2_function_bind_info_handle info, idx_t index,
-                                                     duckdb_v2_identifier_t *name, duckdb_v2_error_info_handle *err) {
+                                                     const char **name, idx_t *name_length,
+                                                     duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_ARG(name_length);
 	return WithErrorHandler(err, [&]() {
 		auto &bind_info = *Convert(info);
 		CheckArgIndex(bind_info, index, "duckdb_v2_function_bind_get_arg_name");
-		*name = Convert(bind_info.GetArgName(index));
+		SetStringOut(name, name_length, bind_info.GetArgName(index));
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_function_bind_get_arg_index(duckdb_v2_function_bind_info_handle info,
-                                                      const duckdb_v2_identifier_t *name, idx_t *index, bool *found,
+DUCKDB_V2_ERROR duckdb_v2_function_bind_get_arg_index(duckdb_v2_function_bind_info_handle info, const char *name,
+                                                      idx_t name_length, idx_t *index, bool *found,
                                                       duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
 	DUCKDB_CHECK_ARG(index);
 	DUCKDB_CHECK_ARG(found);
 	return WithErrorHandler(err, [&]() {
-		auto entry = Convert(info)->FindArg(duckdb::Identifier(ConvertIdentifierName(name)));
+		auto entry = Convert(info)->FindArg(duckdb::Identifier(ConvertIdentifierName(name, name_length)));
 		*found = entry.IsValid();
 		if (entry.IsValid()) {
 			*index = entry.GetIndex();

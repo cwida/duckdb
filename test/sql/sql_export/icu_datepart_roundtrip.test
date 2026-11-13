@@ -1,0 +1,261 @@
+# name: test/sql/sql_export/icu_datepart_roundtrip.test
+# description: Constant ICU date parts bind and export as the equivalent unary function
+# group: [sql_export]
+
+require icu
+
+statement ok
+SET TimeZone='UTC';
+
+statement ok
+CREATE TABLE export_dates(id INTEGER, part VARCHAR, ts TIMESTAMPTZ);
+
+statement ok
+INSERT INTO export_dates VALUES (0,'hour','1969-12-31 23:59:59.125+00'),
+                                (1,'epoch','2000-02-29 12:34:56.125+00'),
+                                (2,NULL,NULL);
+
+# Export the specialization itself, without restoring the removed constant argument.
+query TT
+EXPLAIN (SQL) SELECT date_part('hour',ts) FROM export_dates;
+----
+sql	<REGEX>:.*main[.]"?hour"?[(].*
+
+query TT
+EXPLAIN (SQL) SELECT datepart('epoch',ts) FROM export_dates;
+----
+sql	<REGEX>:.*main[.]"?epoch"?[(].*
+
+query TT
+EXPLAIN (SQL) SELECT date_part('dow',ts) FROM export_dates;
+----
+sql	<REGEX>:.*main[.]"?dayofweek"?[(].*
+
+# A dynamic part remains a binary call.
+query TT
+EXPLAIN (SQL) SELECT date_part(part,ts) FROM export_dates;
+----
+sql	<REGEX>:.*main[.]"?date_part"?[(].*
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+# The specialization carries the unary definition and its single logical argument.
+query I
+SELECT date_part('hour',to_timestamp(i)) FROM range(2) t(i);
+----
+0
+0
+
+query III
+SELECT date_part('hour',ts),datepart('microseconds',ts),extract(doy FROM ts)
+FROM export_dates ORDER BY id;
+----
+23	59125000	365
+12	56125000	60
+NULL	NULL	NULL
+
+query RR
+SELECT date_part('epoch',ts),date_part(part,ts) FROM export_dates ORDER BY id;
+----
+-0.875	23
+951827696.125	951827696.125
+NULL	NULL
+
+query TT
+SELECT typeof(date_part('hour',ts)),typeof(date_part('epoch',ts)) FROM export_dates LIMIT 1;
+----
+BIGINT	DOUBLE
+
+query I
+SELECT date_part(NULL::VARCHAR,ts) FROM export_dates ORDER BY id;
+----
+NULL
+NULL
+NULL
+
+foreach timezone UTC America/Los_Angeles
+
+statement ok
+SET TimeZone='{timezone}';
+
+foreach disable false true
+
+statement ok
+SET debug_disable_optimizer={disable};
+
+query I
+SELECT count(*) FROM export_dates WHERE
+date_part('hour',ts) IS DISTINCT FROM hour(ts)
+OR date_part('dow',ts) IS DISTINCT FROM dayofweek(ts)
+OR datepart('doy',ts) IS DISTINCT FROM dayofyear(ts)
+OR date_part('milliseconds',ts) IS DISTINCT FROM millisecond(ts)
+OR date_part('microseconds',ts) IS DISTINCT FROM microsecond(ts)
+OR date_part('julian',ts) IS DISTINCT FROM julian(ts)
+OR date_part('epoch',ts) IS DISTINCT FROM epoch(ts);
+----
+0
+
+# Named arguments are resolved before specializing, even when supplied in reverse order.
+query I
+SELECT count(*) FROM export_dates WHERE
+datepart(ts := ts, part := 'hour') IS DISTINCT FROM hour(ts)
+OR date_part(part := part, ts := ts) IS DISTINCT FROM
+   CASE part WHEN 'hour' THEN hour(ts)::DOUBLE WHEN 'epoch' THEN epoch(ts) END;
+----
+0
+
+# The struct overload retains its arguments and is not changed by the scalar callback.
+query I
+SELECT count(*) FROM export_dates WHERE
+date_part(['year','hour'],ts).hour IS DISTINCT FROM hour(ts);
+----
+0
+
+endloop
+
+endloop
+
+statement ok
+RESET debug_disable_optimizer;
+
+statement ok
+SET TimeZone='UTC';
+
+# Preserve the bound calendar adapters across serialization as well as SQL rebinding.
+foreach calendar gregorian buddhist
+
+statement ok
+SET Calendar='{calendar}';
+
+foreach serialize false true
+
+statement ok
+SET debug_verify_serializer={serialize};
+
+query I
+SELECT count(*) FROM export_dates WHERE
+date_part('year',ts) IS DISTINCT FROM year(ts)
+OR date_part('epoch',ts) IS DISTINCT FROM epoch(ts);
+----
+0
+
+endloop
+
+endloop
+
+statement ok
+RESET Calendar;
+
+statement ok
+SET debug_verify_serializer=false;
+
+# Specialization must resolve the builtin overload, regardless of a local macro with the same name.
+statement ok
+CREATE MACRO hour(ts) AS 999;
+
+query I
+SELECT date_part('hour',ts) FROM export_dates ORDER BY id;
+----
+23
+12
+NULL
+
+query TT
+EXPLAIN (SQL) SELECT date_part('hour',ts) FROM export_dates;
+----
+sql	<REGEX>:.*"system"[.]main[.]"?hour"?[(].*
+
+statement ok
+DROP MACRO hour;
+
+# Prepared executions protect ordinary rebinding; strict export verification applies to SELECTs.
+statement ok
+PREPARE exported_part AS SELECT date_part($1,ts) FROM export_dates ORDER BY id;
+
+query I
+EXECUTE exported_part('hour');
+----
+23
+12
+NULL
+
+query R
+EXECUTE exported_part('epoch');
+----
+-0.875
+951827696.125
+NULL
+
+# Folded parts, NULLs and infinities keep the ordinary unary semantics.
+statement ok
+CREATE TABLE boundary_dates AS
+SELECT i AS id, TIMESTAMPTZ '1999-12-20 00:00:00+00' + i * INTERVAL 1 DAY AS ts FROM range(800) t(i);
+
+statement ok
+INSERT INTO boundary_dates VALUES (800,NULL),(801,'infinity'),(802,'-infinity');
+
+query I
+SELECT count(*) FROM boundary_dates
+WHERE date_part('ho' || 'ur',ts) IS DISTINCT FROM hour(ts)
+OR date_part('epoch',ts) IS DISTINCT FROM epoch(ts);
+----
+0
+
+query TTT
+SELECT typeof(date_part('hour',NULL::TIMESTAMPTZ)),
+       typeof(date_part('hour',TIMESTAMPTZ 'infinity')),
+       typeof(date_part('epoch',TIMESTAMPTZ '-infinity'));
+----
+DOUBLE	BIGINT	DOUBLE
+
+# Rebinding also carries the unary overload's optimizer properties. Compare its
+# predicates with direct unary calls under disabled optimization at year boundaries.
+foreach timezone UTC America/Los_Angeles
+
+statement ok
+SET TimeZone='{timezone}';
+
+statement ok
+SET debug_disable_optimizer=true;
+
+statement ok
+CREATE TEMP TABLE expected_parts AS
+SELECT 'isoyear' AS part,id FROM boundary_dates WHERE isoyear(ts)=2000
+UNION ALL SELECT 'yearweek',id FROM boundary_dates WHERE yearweek(ts)=199952
+UNION ALL SELECT 'century',id FROM boundary_dates WHERE century(ts)=20
+UNION ALL SELECT 'millennium',id FROM boundary_dates WHERE millennium(ts)=2
+UNION ALL SELECT 'era',id FROM boundary_dates WHERE era(ts)=1;
+
+statement ok
+SET debug_disable_optimizer=false;
+
+statement ok
+CREATE TEMP TABLE actual_parts AS
+SELECT 'isoyear' AS part,id FROM boundary_dates WHERE date_part('isoyear',ts)=2000
+UNION ALL SELECT 'yearweek',id FROM boundary_dates WHERE date_part('yearweek',ts)=199952
+UNION ALL SELECT 'century',id FROM boundary_dates WHERE date_part('century',ts)=20
+UNION ALL SELECT 'millennium',id FROM boundary_dates WHERE date_part('millennium',ts)=2
+UNION ALL SELECT 'era',id FROM boundary_dates WHERE date_part('era',ts)=1;
+
+query I
+SELECT count(DISTINCT part) FROM expected_parts;
+----
+5
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM actual_parts EXCEPT ALL SELECT * FROM expected_parts)
+  UNION ALL
+  (SELECT * FROM expected_parts EXCEPT ALL SELECT * FROM actual_parts)
+);
+----
+0
+
+statement ok
+DROP TABLE actual_parts;
+
+statement ok
+DROP TABLE expected_parts;
+
+endloop

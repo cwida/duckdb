@@ -45,7 +45,7 @@ SELECT start, token_type, replace(word, chr(10), '<LF>') FROM sql_tokenize('1+--
 query III
 SELECT start, token_type, word FROM sql_tokenize('x::INTEGER y:=1 [:-:-1]');
 ----
-0	COLUMN_NAME	x
+0	IDENTIFIER	x
 1	OPERATOR	::
 3	KEYWORD	INTEGER
 11	IDENTIFIER	y

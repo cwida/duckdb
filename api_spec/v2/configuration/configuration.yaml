@@ -1,65 +1,374 @@
 module: configuration
-# The option handle is a read-only descriptor of one config option as seen
-# from an instance, connection, or context: its canonical name, its current
-# setting at that source's scope, its default setting, description, target
-# scope, and aliases. Options are written with the *_set_option functions,
-# which take a name and a setting directly; descriptors come back from the
-# *_get_option / *_get_option_by_index functions and are destroyed via
+#
+# Reading and writing config options, and describing them.
+#
+# A config handle is the scope options are read from and written at: take one
+# from an instance (GLOBAL alone), or from a connection or context (that
+# client's cascade). config_get_option_value reads the effective value of an
+# option and reports the scope it came from; config_set_option_value writes one at a
+# given scope. Values are typed: they carry the option's type when read, and
+# are cast to it when written, as SQL `SET` does.
+#
+# Definitions: an option handle is an owned, read-only descriptor of one
+# option as registered on the instance: its canonical name, default value,
+# description, the scopes it may be written at, and aliases. It carries no
+# current value, and is the same from every config of one instance.
+# Descriptors come back from the config_get_option_by_name and
+# config_get_option_by_index listing functions and are destroyed via
 # option_destroy.
 #
-# Terminology used in this module:
-#   * option  — a named, registered config item (e.g. "memory_limit").
-#   * setting — the string-encoded value of an option at some scope.
-#   * config  — a collection of option settings (instance GLOBAL or
-#               connection LOCAL).
+# Startup options -- those that cannot change once an instance exists -- are
+# passed to instance_create instead.
 #
-# Implementation note: *_set_option, on both instance and connection,
-# delegates to PhysicalSet::SetVariable once the instance has started, so SQL
-# `SET` and the V2 C API share one resolution and dispatch path: lock check,
-# core-then-extension lookup with autoload, scope target validation, value
-# cast, and generic vs legacy apply. V2 therefore inherits any change to the
-# behavior of `SET` automatically. Before startup, instance_set_option writes
-# the startup DBConfig instead (DBConfig::SetOptionByName), which is how
-# startup-only options reach the instance. See
+# Implementation note: every write delegates to PhysicalSet::SetVariable, so
+# SQL `SET` and the V2 C API share one resolution and dispatch path: lock
+# check, core-then-extension lookup with autoload, scope target validation,
+# value cast, and generic vs legacy apply. See
 # src/include/duckdb/execution/operator/helper/physical_set.hpp.
 enums:
-  OPTION_TARGET_SCOPE:
-    description: |
-      The scope target of an option: where DuckDB permits its setting to be
-      written. UNKNOWN is reported for an option whose declaration carries no
-      explicit scope target, which includes every extension option.
-    values:
-      OPTION_TARGET_SCOPE_UNKNOWN:
-        value: 0
-        description: "Target scope is not known."
-      OPTION_TARGET_SCOPE_GLOBAL_ONLY:
-        description: "May only be written at GLOBAL (instance) scope."
-      OPTION_TARGET_SCOPE_LOCAL_ONLY:
-        description: "May only be written at LOCAL (session) scope."
-      OPTION_TARGET_SCOPE_GLOBAL_DEFAULT:
-        description: "May be written at either scope; defaults to GLOBAL when unspecified."
-      OPTION_TARGET_SCOPE_LOCAL_DEFAULT:
-        description: "May be written at either scope; defaults to LOCAL when unspecified."
   SETTING_SCOPE:
     description: |
-      Destination scope for a connection-side option write, as taken by
-      connection_option_set. AUTOMATIC defers to the option's target scope,
-      like SQL `SET name = value`. GLOBAL writes through to the instance,
-      visible to all connections, like `SET GLOBAL`. LOCAL writes to the
-      connection's session only, like `SET LOCAL` / `SET SESSION`.
+      The scope of an option's value. Writes take DEFAULT, GLOBAL or SESSION:
+      DEFAULT writes to the option's default scope (`[[option_get_default_scope]]`),
+      like SQL `SET name = value`; GLOBAL writes through to the instance, visible to all
+      connections, like `SET GLOBAL`; SESSION writes to one connection's session
+      only, like `SET SESSION`. Reads report GLOBAL or SESSION, as DuckDB
+      attributes the value: an option no scope sets reads as GLOBAL, its
+      default, and a legacy option read through a connection or context reads
+      as SESSION.
     values:
-      SETTING_SCOPE_AUTOMATIC:
+      SETTING_SCOPE_DEFAULT:
         value: 0
-        description: "Resolve from the option's target scope."
+        description: "Write only: the option's default scope (`[[option_get_default_scope]]`), not its default value."
       SETTING_SCOPE_GLOBAL:
-        description: "Write through to the instance (visible to all connections)."
-      SETTING_SCOPE_LOCAL:
-        description: "Write to the connection's session only."
-
+        description: "The instance's value, visible to all connections."
+      SETTING_SCOPE_SESSION:
+        description: "A connection's session value."
 functions:
+  #---------------------------------------------------------------------------------------------------------------------
+  # Where a config comes from
+  #---------------------------------------------------------------------------------------------------------------------
+  instance_get_config:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
+    description: |
+      Borrows the config of an instance: the GLOBAL scope.
+
+      Reads report GLOBAL, and writes are `SET GLOBAL`. Writing at SESSION
+      scope returns ERROR_INPUT_INVALID: an instance has no session. Options
+      that can only be chosen at startup are passed to `[[instance_create_with_options]]`.
+      The returned handle is borrowed: it is valid for as long as the instance
+      is, and must not be destroyed.
+    role: getter
+    belongs_to: instance
+    parameters:
+      instance:
+        type: instance
+        description: "The instance."
+      out_config:
+        type: config
+        indirection: 1
+        kind: OUT
+        description: "Receives the borrowed config."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  connection_get_config:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
+    description: |
+      Borrows the config of a connection.
+
+      Reads follow the connection's cascade: its SESSION value if it set one,
+      otherwise the GLOBAL value, otherwise the default. Writes accept any
+      scope the option supports. The returned handle is borrowed: it is valid
+      for as long as the connection is, and must not be destroyed.
+    role: getter
+    belongs_to: connection
+    parameters:
+      conn:
+        type: connection
+        description: "The connection."
+      out_config:
+        type: config
+        indirection: 1
+        kind: OUT
+        description: "Receives the borrowed config."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  context_get_config:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
+    description: |
+      Borrows the config of a context.
+
+      The same scope `[[connection_get_config]]` gives for the context's
+      connection. The returned handle is borrowed: it is valid for as long as
+      the context is, and must not be destroyed.
+    role: getter
+    belongs_to: context
+    parameters:
+      ctx:
+        type: context
+        description: "The context."
+      out_config:
+        type: config
+        indirection: 1
+        kind: OUT
+        description: "Receives the borrowed config."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Values
+  #---------------------------------------------------------------------------------------------------------------------
+  config_get_option_value:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
+    description: |
+      Reads the effective value of an option in this config, and the scope it
+      came from.
+
+      Aliases resolve transparently, and an unknown name returns
+      ERROR_INPUT_INVALID. The caller destroys the returned value.
+    role: getter
+    belongs_to: config
+    parameters:
+      config:
+        type: config
+        description: "The config to read from."
+      name:
+        type: char
+        indirection: 1
+        const: true
+        kind: IN
+        description: "Option name (canonical or alias)."
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
+      out_value:
+        type: value
+        indirection: 1
+        kind: OUT
+        description: "Receives the value, typed as the option. Owned by the caller."
+      out_scope:
+        type: SETTING_SCOPE
+        indirection: 1
+        kind: OUT
+        description: "Receives the scope the value came from."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  config_set_option_value:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
+    description: |
+      Writes an option in this config.
+
+      `scope` chooses the destination, mirroring SQL:
+        - DEFAULT writes to the option's default scope, like a bare
+          `SET name = value`.
+        - GLOBAL writes through to the instance, visible to all connections,
+          like `SET GLOBAL`.
+        - SESSION writes to one connection's session only, like `SET SESSION`.
+      A scope neither the option (`[[option_supports_scope]]`) nor the config
+      supports returns ERROR_INPUT_INVALID; an instance's config supports only
+      GLOBAL. The value is cast to the option's type as SQL `SET` does. An
+      unknown name is rejected unless an extension that defines it can be
+      autoloaded. An option that can only be chosen at startup is rejected:
+      pass it to `[[instance_create_with_options]]`.
+    role: setter
+    belongs_to: config
+    parameters:
+      config:
+        type: config
+        description: "The config to write to."
+      name:
+        type: char
+        indirection: 1
+        const: true
+        kind: IN
+        description: "Option name (canonical or alias)."
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
+      value:
+        type: value
+        description: "The value, cast to the option's type as SQL `SET` does. Borrowed."
+      scope:
+        type: SETTING_SCOPE
+        description: "Target scope: DEFAULT, GLOBAL, or SESSION."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  config_set_option_text:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
+    description: |
+      Writes an option in this config from text, the form SQL `SET` accepts.
+
+      `[[config_set_option_value]]` with the text as a VARCHAR value: the engine casts
+      it to the option's type, so this is the one-call form for a setting
+      spelled the way SQL spells it, e.g. "1GB" for memory_limit. Scope
+      handling and errors are `[[config_set_option_value]]`'s.
+    role: setter
+    belongs_to: config
+    parameters:
+      config:
+        type: config
+        description: "The config to write to."
+      name:
+        type: char
+        indirection: 1
+        const: true
+        kind: IN
+        description: "Option name (canonical or alias)."
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
+      setting:
+        type: char
+        indirection: 1
+        const: true
+        kind: IN
+        description: "The setting, in the textual form SQL `SET` accepts."
+      setting_length:
+        type: idx
+        description: The length of `setting` in bytes. `setting` need not be null-terminated and may be NULL only when this is 0.
+      scope:
+        type: SETTING_SCOPE
+        description: "Target scope: DEFAULT, GLOBAL, or SESSION."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Definitions
+  #---------------------------------------------------------------------------------------------------------------------
+  config_get_option_by_name:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
+    description: |
+      Describes a config option registered on this config's instance, by name.
+
+      Allocates an option descriptor: canonical name, default value,
+      description, supported and default scopes, and aliases. Aliases resolve transparently — passing an alias returns the
+      canonical option, with the alias listed in its alias array. An unknown
+      name returns ERROR_INPUT_INVALID, which includes an option of an
+      extension that has not loaded yet. The caller destroys the returned
+      option.
+    role: getter
+    belongs_to: config
+    parameters:
+      config:
+        type: config
+        description: "The config whose instance registered the options."
+      name:
+        type: char
+        indirection: 1
+        const: true
+        kind: IN
+        description: "Option name (canonical or alias)."
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
+      out_option:
+        type: option
+        indirection: 1
+        kind: OUT
+        description: "Receives the option descriptor."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  config_get_option_count:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
+    description: |
+      Returns the number of config options registered on this config's instance.
+
+      Counts core options plus the extension options registered on this
+      instance. Aliases are NOT counted separately; each one is reachable
+      through its canonical option's alias array.
+    role: getter
+    belongs_to: config
+    parameters:
+      config:
+        type: config
+        description: "The config whose instance registered the options."
+      out_count:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: "Receives the option count."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  config_get_option_by_index:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
+    description: |
+      Describes the config option at the given index on this config's instance.
+
+      Index space: [0, core_count) addresses core options, [core_count, total)
+      extension options. The mapping is stable for as long as no extension
+      registers new options. An out-of-range index returns ERROR_INPUT_INVALID.
+      The caller destroys the returned option.
+    role: getter
+    belongs_to: config
+    parameters:
+      config:
+        type: config
+        description: "The config whose instance registered the options."
+      index:
+        type: idx
+        description: "The option index, in [0, option_count)."
+      out_option:
+        type: option
+        indirection: 1
+        kind: OUT
+        description: "Receives the option descriptor."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
   option_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys an option descriptor.
 
@@ -76,7 +385,7 @@ functions:
 
   option_get_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows the option's canonical name.
 
@@ -89,10 +398,16 @@ functions:
         type: option
         description: "The option."
       out_name:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: "Receives a borrowed view of the option name. Valid until the option is destroyed."
+        description: "Receives a borrowed pointer to the option name. Valid until the option is destroyed."
+      out_name_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*out_name` in bytes. `*out_name` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1
@@ -100,50 +415,25 @@ functions:
         description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
 
-  option_get_setting:
+  option_get_default_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
-      Borrows the option's current setting (its string-encoded value).
+      Returns the option's static default, as a value of the option's type.
 
-      The effective setting at the scope of the instance, connection, or
-      context the descriptor was read from.
+      A NULL value for an option whose declaration has no default. The caller
+      destroys the returned value.
     role: getter
     belongs_to: option
     parameters:
       option:
         type: option
         description: "The option."
-      out_setting:
-        type: str
-        indirection: 1
-        kind: OUT_BORROW
-        description: "Receives a borrowed view of the setting. Valid until the option is destroyed."
-      err:
-        type: error_info
+      out_value:
+        type: value
         indirection: 1
         kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
-  option_get_default_setting:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Borrows the option's static default setting.
-
-      The empty view for an option whose declaration has no default.
-    role: getter
-    belongs_to: option
-    parameters:
-      option:
-        type: option
-        description: "The option."
-      out_default_setting:
-        type: str
-        indirection: 1
-        kind: OUT_BORROW
-        description: "Receives a borrowed view of the default setting. Valid until the option is destroyed."
+        description: "Receives the default value."
       err:
         type: error_info
         indirection: 1
@@ -153,7 +443,7 @@ functions:
 
   option_get_description:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows the option's human-readable description.
     role: getter
@@ -163,10 +453,16 @@ functions:
         type: option
         description: "The option."
       out_description:
-        type: str
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: "Receives a borrowed view of the description. Valid until the option is destroyed."
+        description: "Receives a borrowed pointer to the description. Valid until the option is destroyed."
+      out_description_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*out_description` in bytes. `*out_description` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1
@@ -174,25 +470,53 @@ functions:
         description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
 
-  option_get_target_scope:
+  option_supports_scope:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
     description: |
-      Returns the option's target scope.
+      Reports whether the option may be written at a scope.
 
-      OPTION_TARGET_SCOPE_UNKNOWN for an option whose declaration carries no
-      explicit scope target, which includes every extension option.
+      GLOBAL and SESSION are the scopes to ask about; DEFAULT is supported by
+      every option that supports either. A write at an unsupported scope
+      returns ERROR_INPUT_INVALID.
     role: getter
     belongs_to: option
     parameters:
       option:
         type: option
         description: "The option."
-      out_target_scope:
-        type: OPTION_TARGET_SCOPE
+      scope:
+        type: SETTING_SCOPE
+        description: "The scope to ask about."
+      out_supported:
+        type: bool
         indirection: 1
         kind: OUT
-        description: "Receives the target scope."
+        description: "Receives whether a write at the scope is accepted."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  option_get_default_scope:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
+    description: |
+      Returns the scope a DEFAULT write of the option goes to: GLOBAL or
+      SESSION.
+    role: getter
+    belongs_to: option
+    parameters:
+      option:
+        type: option
+        description: "The option."
+      out_scope:
+        type: SETTING_SCOPE
+        indirection: 1
+        kind: OUT
+        description: "Receives the default scope."
       err:
         type: error_info
         indirection: 1
@@ -202,7 +526,7 @@ functions:
 
   option_get_alias_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the number of aliases registered for this option.
 
@@ -227,7 +551,7 @@ functions:
 
   option_get_alias:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows the alias name at the given index.
 
@@ -242,72 +566,16 @@ functions:
         type: idx
         description: "The alias index, in [0, alias_count)."
       out_alias:
-        type: identifier
-        indirection: 1
-        kind: OUT_BORROW
-        description: "Receives a borrowed view of the alias. Valid until the option is destroyed."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
-  context_get_option_by_name:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
-    description: |
-      Reads a config option through a context.
-
-      The context is a connection seen from inside DuckDB, so this reads the
-      same cascade `[[connection_get_option_by_name]]` does: the LOCAL override if the
-      connection set one, otherwise the GLOBAL value, otherwise the static
-      default. Aliases resolve transparently, and an unknown name returns
-      ERROR_INPUT_INVALID. The caller destroys the returned option. A context
-      is a read scope: options are written through an instance or connection.
-    role: getter
-    belongs_to: context
-    parameters:
-      ctx:
-        type: context
-        description: "The context."
-      name:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
         const: true
-        kind: IN
-        description: "Option name (canonical or alias)."
-      out_option:
-        type: option
-        indirection: 1
-        kind: OUT
-        description: "Receives the populated option handle."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
-  context_get_option_count:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
-    description: |
-      Returns the number of config options visible to this context.
-
-      The same count `[[instance_get_option_count]]` reports for the underlying
-      instance: core plus extension options, aliases excluded.
-    role: getter
-    belongs_to: context
-    parameters:
-      ctx:
-        type: context
-        description: "The context."
-      out_count:
+        kind: OUT_BORROW
+        description: "Receives a borrowed pointer to the alias. Valid until the option is destroyed."
+      out_alias_length:
         type: idx
         indirection: 1
         kind: OUT
-        description: "Receives the option count."
+        description: Receives the length of `*out_alias` in bytes. `*out_alias` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1
@@ -315,33 +583,3 @@ functions:
         description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
 
-  context_get_option_by_index:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
-    description: |
-      Reads the config option at the given index visible to this context.
-
-      Index space: [0, core_count) addresses core options, [core_count, total)
-      the extension options visible from this context's instance. An
-      out-of-range index returns ERROR_INPUT_INVALID. The caller destroys the
-      returned option.
-    role: getter
-    belongs_to: context
-    parameters:
-      ctx:
-        type: context
-        description: "The context."
-      index:
-        type: idx
-        description: "The option index, in [0, option_count)."
-      out_option:
-        type: option
-        indirection: 1
-        kind: OUT
-        description: "Receives the populated option handle."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR

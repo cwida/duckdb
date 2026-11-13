@@ -83,7 +83,8 @@ void AggregateFinalizeInputData::InitializeLocalState() {
 
 bool AggregateFunctionProperties::operator==(const AggregateFunctionProperties &rhs) const {
 	return FunctionProperties::operator==(rhs) && order_dependent == rhs.order_dependent &&
-	       distinct_dependent == rhs.distinct_dependent && single_value_identity == rhs.single_value_identity;
+	       distinct_dependent == rhs.distinct_dependent && single_value_identity == rhs.single_value_identity &&
+	       is_holistic == rhs.is_holistic;
 }
 bool AggregateFunctionProperties::operator!=(const AggregateFunctionProperties &rhs) const {
 	return !(*this == rhs);
@@ -182,15 +183,9 @@ void BoundAggregateFunction::ReplaceImplementation(const AggregateFunction &func
 
 BindAggregateFunctionInput::BindAggregateFunctionInput(ClientContext &context_p,
                                                        BoundAggregateFunction &bound_function_p,
-                                                       vector<unique_ptr<Expression>> &arguments_p,
-                                                       const vector<Identifier> &argument_names_p)
-    : BindFunctionInput(context_p, bound_function_p, arguments_p, &argument_names_p), bound_function(bound_function_p) {
-}
-
-BindAggregateFunctionInput::BindAggregateFunctionInput(ClientContext &context_p,
-                                                       BoundAggregateFunction &bound_function_p,
                                                        vector<unique_ptr<Expression>> &arguments_p)
-    : BindFunctionInput(context_p, bound_function_p, arguments_p, nullptr), bound_function(bound_function_p) {
+    : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p),
+      bound_function(bound_function_p) {
 }
 
 } // namespace duckdb

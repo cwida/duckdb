@@ -1,0 +1,51 @@
+# name: test/sql/cast/nested_union_variant_to_varchar_quoting.test
+# description: String values of UNION and VARIANT children are quoted and escaped when nested types are cast to VARCHAR
+# group: [cast]
+
+query III
+SELECT ['a, b']::VARCHAR, ['a, b'::UNION(s VARCHAR, i INT)]::VARCHAR, ['a, b'::VARIANT]::VARCHAR
+----
+['a, b']	['a, b']	['a, b']
+
+query II
+SELECT len(['a, b'::UNION(s VARCHAR, i INT)]::VARCHAR::UNION(s VARCHAR, i INT)[]), len(['a, b'::VARIANT]::VARCHAR::VARIANT[])
+----
+1	1
+
+query III
+SELECT {'k': 'x'', ''y'::UNION(s VARCHAR, i INT)}::VARCHAR, MAP{1: 'a, b'::UNION(s VARCHAR, i INT)}::VARCHAR, MAP{'a, b'::UNION(s VARCHAR, i INT): 1}::VARCHAR
+----
+{'k': 'x\', \'y'}	{1='a, b'}	{'a, b'=1}
+
+query I
+SELECT {'k': 'x'', ''y'::UNION(s VARCHAR, i INT)}::VARCHAR::STRUCT(k UNION(s VARCHAR, i INT)) = {'k': 'x'', ''y'::UNION(s VARCHAR, i INT)}
+----
+true
+
+# values that are not strings, and nested values, are written as before
+query II
+SELECT [1::UNION(s VARCHAR, i INT), 'x'::UNION(s VARCHAR, i INT), NULL]::VARCHAR, [[1, 2]::UNION(l INT[], s VARCHAR)]::VARCHAR
+----
+[1, x, NULL]	[[1, 2]]
+
+query I
+SELECT [{'a': 1}::VARIANT, [1, 2]::VARIANT, 'q'::VARIANT, NULL::VARIANT, 'NULL'::VARIANT]::VARCHAR
+----
+[{'a': 1}, [1, 2], q, NULL, 'NULL']
+
+query I
+SELECT ['a, b'::UNION(s VARCHAR, i INT), 'c'::UNION(s VARCHAR, i INT)]::UNION(s VARCHAR, i INT)[2]::VARCHAR
+----
+['a, b', c]
+
+# a UNION or VARIANT that is not nested is not quoted
+query II
+SELECT 'a, b'::UNION(s VARCHAR, i INT)::VARCHAR, 'a, b'::VARIANT::VARCHAR
+----
+a, b	a, b
+
+# a NULL member is written as NULL
+query I
+SELECT [union_value(s := NULL::VARCHAR)::UNION(s VARCHAR, i INT), 'NULL'::UNION(s VARCHAR, i INT)]::VARCHAR
+----
+[NULL, 'NULL']

@@ -1,0 +1,111 @@
+# name: test/optimizer/common_subplan_projection_map.test
+# description: Subplans whose children differ only in projection maps must not be merged
+# group: [optimizer]
+
+statement ok
+create table amt(id int, amount decimal(15,2));
+
+statement ok
+insert into amt values (1,10),(2,20),(3,1),(4,2);
+
+statement ok
+create table a(id int);
+
+statement ok
+insert into a values (1),(3);
+
+statement ok
+create table b(id int);
+
+statement ok
+insert into b values (2),(4);
+
+statement ok
+create view v as select amt.id,
+  case when a.id is not null then 'A' when b.id is not null then 'B' end as typ,
+  case when a.id is not null then amount end as a_amt,
+  case when b.id is not null then amount end as b_amt
+  from amt left join a on a.id = amt.id left join b on b.id = amt.id;
+
+query II
+select (select sum(a_amt) from v where typ in ('A','B')),
+       (select sum(b_amt) from v where typ in ('A','B'));
+----
+11.00	22.00
+
+query II
+select (select sum(b_amt) from v where typ in ('A','B')),
+       (select sum(a_amt) from v where typ in ('A','B'));
+----
+22.00	11.00
+
+# identical subqueries are still shared
+query II
+explain select (select sum(a_amt) from v where typ in ('A','B')),
+               (select sum(a_amt) from v where typ in ('A','B'));
+----
+physical_plan	<REGEX>:.*CTE.*
+
+query II
+select (select sum(a_amt) from v where typ in ('A','B')),
+       (select sum(a_amt) from v where typ in ('A','B'));
+----
+11.00	11.00
+
+# same pattern below a LIMIT
+query II
+select (select sum(a_amt) from (from v where typ in ('A','B') limit 10)),
+       (select sum(b_amt) from (from v where typ in ('A','B') limit 10));
+----
+11.00	22.00
+
+# Projection pullup must not prevent materialization of a repeated view
+statement ok
+CREATE TABLE snap_order(order_id BIGINT, customer_id BIGINT);
+
+statement ok
+CREATE TABLE del_order(order_id BIGINT);
+
+statement ok
+CREATE VIEW orders AS SELECT o.* FROM snap_order o ANTI JOIN del_order d USING (order_id);
+
+query II
+EXPLAIN
+SELECT count(*)
+FROM orders o
+JOIN (
+    SELECT customer_id, count(*) AS n
+    FROM orders
+    WHERE customer_id + order_id > 5
+    GROUP BY customer_id
+) y USING (customer_id);
+----
+physical_plan	<REGEX>:.*__common_subplan.*CTE Scan.*CTE Scan.*
+
+# The repeated view is also materialized when the approximate join order algorithm is used
+statement ok
+CREATE TABLE approx_order AS SELECT range AS order_id, range % 200 AS customer_id FROM range(10000);
+
+statement ok
+CREATE TABLE approx_del AS SELECT order_id FROM approx_order WHERE order_id % 3 = 0;
+
+statement ok
+CREATE TABLE approx_item AS SELECT range AS item_id, range % 200 AS customer_id FROM range(1000);
+
+statement ok
+CREATE VIEW approx_orders AS SELECT o.* FROM approx_order o ANTI JOIN approx_del d USING (order_id);
+
+statement ok
+SET approximate_join_order_threshold=2;
+
+query II
+EXPLAIN
+SELECT count(*), sum(y.n)
+FROM approx_orders o
+LEFT JOIN approx_item i USING (customer_id)
+LEFT JOIN (SELECT customer_id, count(*) AS n FROM approx_orders GROUP BY customer_id) y USING (customer_id);
+----
+physical_plan	<REGEX>:.*__common_subplan.*CTE Scan.*CTE Scan.*
+
+statement ok
+RESET approximate_join_order_threshold;

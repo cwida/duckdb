@@ -1,0 +1,51 @@
+# name: test/sql/copy/parquet/parquet_prefetch_shared_column_chunks.test
+# description: Readers that share column chunks count each chunk once towards the prefetched bytes
+# group: [parquet]
+
+require parquet
+
+statement ok
+SET threads=1
+
+statement ok
+COPY (
+	SELECT CASE WHEN i % 7 = 0 THEN NULL ELSE i END AS i, {'a': i::INT, 'd': CASE WHEN i % 2 = 0 THEN i::VARIANT ELSE md5(i::VARCHAR)::VARIANT END}::VARIANT AS v
+	FROM range(10000) t(i)
+) TO '{TEST_DIR}/shared_chunks.parquet' (ROW_GROUP_SIZE 5000)
+
+statement ok
+CALL enable_logging('ParquetPrefetch')
+
+# two fields of the same variant column are read by two readers over overlapping column chunks
+query II
+SELECT max(v.a::VARCHAR), max(v.d::VARCHAR) FROM read_parquet('{TEST_DIR}/shared_chunks.parquet') WHERE i >= 0
+----
+9999	ffeabd223de0d4eacb9a3e6e53e5448d
+
+# the prefetch log is written for scans that evaluate a filter, the NULLs keep statistics from pruning it
+# the overlap is not mistaken for broken page offsets, so every row group is still prefetched
+query II
+SELECT row_group_id, strategy
+FROM duckdb_logs_parsed('ParquetPrefetch')
+WHERE file_path LIKE '%shared_chunks.parquet'
+ORDER BY row_group_id
+----
+0	whole_group
+1	whole_group
+
+statement ok
+CALL truncate_duckdb_logs()
+
+query II
+SELECT max(v.d::VARCHAR), max(v.d::VARCHAR || '') FROM read_parquet('{TEST_DIR}/shared_chunks.parquet') WHERE i >= 0
+----
+ffeabd223de0d4eacb9a3e6e53e5448d	ffeabd223de0d4eacb9a3e6e53e5448d
+
+query II
+SELECT row_group_id, strategy
+FROM duckdb_logs_parsed('ParquetPrefetch')
+WHERE file_path LIKE '%shared_chunks.parquet'
+ORDER BY row_group_id
+----
+0	whole_group
+1	whole_group

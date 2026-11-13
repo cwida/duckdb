@@ -36,8 +36,7 @@ void RequireTokenList(const TokenList &actual, const std::vector<Token> &expecte
 TEST_CASE("Stable C++API: Tokenize returns typed byte ranges", "[cpp_api]") {
 	using namespace duckdb::cxx;
 
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 
 	std::string sql = "SELECT \"my col\", 'it''s', $$d$$, 1e5, a <> b -- c\n/* d */;";
@@ -61,8 +60,7 @@ TEST_CASE("Stable C++API: Tokenize returns typed byte ranges", "[cpp_api]") {
 TEST_CASE("Stable C++API: Tokenize honors the view's length, not a terminator", "[cpp_api]") {
 	using namespace duckdb::cxx;
 
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 
 	// A view that stops before the terminator, and one that carries an interior NUL.
@@ -79,8 +77,7 @@ TEST_CASE("Stable C++API: Tokenize honors the view's length, not a terminator", 
 TEST_CASE("Stable C++API: Tokenize on empty and malformed input", "[cpp_api]") {
 	using namespace duckdb::cxx;
 
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 
 	RequireTokenList(conn.Tokenize(""), {}, false);
@@ -96,8 +93,7 @@ TEST_CASE("Stable C++API: Tokenize on empty and malformed input", "[cpp_api]") {
 TEST_CASE("Stable C++API: Tokenize on a moved-from connection throws", "[cpp_api]") {
 	using namespace duckdb::cxx;
 
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 	auto other = std::move(conn);
 	REQUIRE_THROWS_MATCHES(conn.Tokenize("SELECT 1"), InvalidInputException, // NOLINT: pinning the moved-from state

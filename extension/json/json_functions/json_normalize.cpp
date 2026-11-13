@@ -1,5 +1,6 @@
 #include "json_common.hpp"
 #include "json_functions.hpp"
+#include "json_stack.hpp"
 
 namespace duckdb {
 
@@ -9,12 +10,11 @@ static void SortKeys(yyjson_mut_val *v) {
 		yyjson_mut_val *val;
 	};
 
-	auto stack = vector<stack_item>();
-	stack.push_back(stack_item {v});
+	Stack<stack_item> stack;
+	stack.Push(stack_item {v});
 
-	while (!stack.empty()) {
-		auto item = stack.back();
-		stack.pop_back();
+	while (!stack.Empty()) {
+		auto item = stack.Pop();
 
 		// if null, do nothing
 		if (!item.val) {
@@ -29,7 +29,7 @@ static void SortKeys(yyjson_mut_val *v) {
 					yyjson_mut_obj_iter iter;
 					yyjson_mut_obj_iter_init(item.val, &iter);
 					yyjson_mut_val *key = yyjson_mut_obj_iter_next(&iter);
-					stack.push_back(stack_item {yyjson_mut_obj_iter_get_val(key)});
+					stack.Push(stack_item {yyjson_mut_obj_iter_get_val(key)});
 				}
 				continue;
 			}
@@ -55,7 +55,7 @@ static void SortKeys(yyjson_mut_val *v) {
 
 			// Recursively sort nested values
 			for (auto &pair : pairs) {
-				stack.push_back(stack_item {pair.second});
+				stack.Push(stack_item {pair.second});
 			}
 
 			// Clear and rebuild in sorted order
@@ -67,7 +67,7 @@ static void SortKeys(yyjson_mut_val *v) {
 			idx_t idx, max;
 			yyjson_mut_val *elem;
 			yyjson_mut_arr_foreach(item.val, idx, max, elem) {
-				stack.push_back(stack_item {elem});
+				stack.Push(stack_item {elem});
 			}
 		}
 	}

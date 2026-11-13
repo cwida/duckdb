@@ -128,6 +128,8 @@ protected:
 	char *WritePadded2(char *target, uint32_t value) const;
 	char *WritePadded3(char *target, uint32_t value) const;
 	char *WritePadded(char *target, uint32_t value, size_t padding) const;
+	//! Write a year - padded to 4 digits within [0, 9999], and in full (with its sign) otherwise
+	char *WriteYear(char *target, int32_t year) const;
 	bool IsDateSpecifier(StrTimeSpecifier specifier);
 	char *WriteDateSpecifier(StrTimeSpecifier specifier, date_t date, char *target) const;
 	char *WriteStandardSpecifier(StrTimeSpecifier specifier, int32_t data[], const char *tz_name, size_t tz_len,

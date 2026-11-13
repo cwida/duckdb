@@ -1,0 +1,74 @@
+# name: test/optimizer/statistics/statistics_join_always_matches_layout.test
+# description: Joins that always match are replaced by cross products that keep the columns the join emitted
+# group: [statistics]
+
+statement ok
+SET debug_verify_column_bindings=true
+
+statement ok
+CREATE TABLE a(x INTEGER);
+
+statement ok
+INSERT INTO a VALUES (1), (2);
+
+statement ok
+CREATE TABLE b(x INTEGER);
+
+statement ok
+INSERT INTO b VALUES (5);
+
+statement ok
+CREATE TABLE c(x INTEGER, y INTEGER);
+
+statement ok
+INSERT INTO c VALUES (1, 10), (2, 20), (NULL, 30);
+
+statement ok
+CREATE TABLE e(a INTEGER);
+
+statement ok
+CREATE TABLE t(a INTEGER);
+
+statement ok
+INSERT INTO t VALUES (2);
+
+query I
+SELECT count(b.x) FROM a a1 SEMI JOIN a a2 ON true LEFT JOIN a a3 ON true JOIN b ON a3.x = b.x;
+----
+0
+
+query II
+SELECT count(x3.a), sum(x3.a) FROM e x1 SEMI JOIN e x2 ON true LEFT JOIN e x4 ON true JOIN e x3 ON x4.a = x3.a FULL JOIN t ON true;
+----
+0	NULL
+
+query II
+SELECT count(a3.x), sum(a3.x) FROM a a1 SEMI JOIN a a2 ON true LEFT JOIN a a3 ON true JOIN c ON a3.x = c.x;
+----
+4	6
+
+# the join condition is always true according to the statistics
+query II
+SELECT sum(c.y), count(*) FROM a a1 SEMI JOIN b ON a1.x < b.x LEFT JOIN a a3 ON true JOIN c ON a3.x = c.x;
+----
+60	4
+
+query II
+SELECT sum(c.y), count(*) FROM a a1 JOIN b ON a1.x < b.x LEFT JOIN a a3 ON true JOIN c ON a3.x = c.x;
+----
+60	4
+
+query III
+SELECT sum(c.y), sum(b.x), count(*) FROM a a1 JOIN b ON a1.x < b.x JOIN c ON a1.x = c.x;
+----
+30	10	2
+
+query II
+SELECT c.y, a1.x FROM c SEMI JOIN b ON c.x < b.x JOIN a a1 ON a1.x = c.x ORDER BY ALL;
+----
+10	1
+20	2
+
+query I
+SELECT * FROM a a1 SEMI JOIN e ON true ORDER BY ALL;
+----

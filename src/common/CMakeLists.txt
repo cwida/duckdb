@@ -45,7 +45,7 @@ add_library_unity(
   encryption_types.cpp
   exception.cpp
   exception_format_value.cpp
-  extra_type_info.cpp
+  logical_type_info.cpp
   file_buffer.cpp
   file_system.cpp
   filename_pattern.cpp
@@ -58,6 +58,7 @@ add_library_unity(
   hive_partitioning.cpp
   json_document.cpp
   pipe_file_system.cpp
+  query_context.cpp
   process_util.cpp
   local_file_system.cpp
   memory_mapped_file.cpp

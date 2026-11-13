@@ -1,0 +1,67 @@
+# name: test/parquet/dlba_utf8_boundaries.test
+# description: DLBA batch validation rejects incomplete UTF-8 at string and scan boundaries
+# group: [parquet]
+
+require parquet
+
+statement ok
+CREATE TABLE truncated_utf8 AS SELECT * FROM (VALUES
+    (1, 'C2'), (2, 'E2'), (3, 'E282'), (4, 'F0'), (5, 'F09F'), (6, 'F09F98')
+) t(id, bytes);
+
+# No following nonempty string: the batch validation must reject the final partial character.
+loop case_id 1 7
+
+loop padding 0 2
+
+statement ok
+COPY (
+    SELECT s FROM (
+        SELECT 0 AS i, from_hex(repeat('61', {padding} * 8) || bytes) AS s
+        FROM truncated_utf8 WHERE id = {case_id}
+        UNION ALL SELECT 1, NULL::BLOB
+        UNION ALL SELECT 2, ''::BLOB
+    ) ORDER BY i
+) TO '{TEST_DIR}/dlba_truncated_{case_id}_{padding}.parquet'
+(FORMAT parquet, PARQUET_VERSION v2, DICTIONARY_SIZE_LIMIT 0);
+
+statement error
+SELECT s FROM read_parquet('{TEST_DIR}/dlba_truncated_{case_id}_{padding}.parquet', binary_as_string=true);
+----
+is not valid UTF8
+
+endloop
+
+endloop
+
+query I
+SELECT bool_and(encodings = 'DELTA_LENGTH_BYTE_ARRAY')
+FROM parquet_metadata('{TEST_DIR}/dlba_truncated_1_0.parquet');
+----
+true
+
+# A valid concatenation with an invalid string boundary around the 2048-row scan batch boundary.
+loop boundary 2047 2050
+
+statement ok
+COPY (
+    SELECT CASE i
+        WHEN {boundary} THEN from_hex('61F09F')
+        WHEN {boundary} + 1 THEN from_hex('988062')
+        ELSE 'a'::BLOB END AS s
+    FROM range(4096) t(i) ORDER BY i
+) TO '{TEST_DIR}/dlba_chunk_split_{boundary}.parquet'
+(FORMAT parquet, PARQUET_VERSION v2, DICTIONARY_SIZE_LIMIT 0, ROW_GROUP_SIZE 4096);
+
+# BLOB values must remain readable without UTF-8 validation.
+query I
+SELECT sum(octet_length(s)) FROM read_parquet('{TEST_DIR}/dlba_chunk_split_{boundary}.parquet');
+----
+4100
+
+statement error
+SELECT sum(strlen(s)) FROM read_parquet('{TEST_DIR}/dlba_chunk_split_{boundary}.parquet', binary_as_string=true);
+----
+is not valid UTF8
+
+endloop

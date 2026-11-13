@@ -1,0 +1,27 @@
+# name: test/sql/optimizer/monotone_preimage_tinyint_boundaries.test
+# description: Test monotone preimage rewrites at TINYINT domain boundaries
+# group: [optimizer]
+
+statement ok
+CREATE TABLE tinyints(x TINYINT)
+
+statement ok
+INSERT INTO tinyints VALUES (CAST(-128 AS TINYINT)), (-2), (0), (2), (127), (NULL)
+
+# The preimage is empty.
+query I
+SELECT count(*) FROM tinyints WHERE +x > 127::TINYINT
+----
+0
+
+# The predicate covers the complete non-NULL domain.
+query I
+SELECT count(*) FROM tinyints WHERE +x >= CAST(-128 AS TINYINT)
+----
+5
+
+# Keep the function on the right to test comparison normalization.
+query I
+SELECT count(*) FROM tinyints WHERE 2::TINYINT < +x
+----
+1

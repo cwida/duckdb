@@ -1,0 +1,93 @@
+# name: test/sql/storage/types/variant/variant_shredding_depth_limit.test
+# description: A checkpoint leaves a VARIANT column unshredded when a value is nested deeper than the visitors allow
+# group: [variant]
+
+require json
+
+load {TEST_DIR}/variant_shredding_depth_limit.db
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+# the JSON text comes from a table, so that no deep VARIANT constant is folded into the plan
+statement ok
+CREATE TABLE src AS
+SELECT i,
+       CASE WHEN i = 0 THEN repeat('{"a":', 128) || '1' || repeat('}', 128) ELSE '{"a": ' || i || '}' END AS deep_object,
+       CASE WHEN i = 0 THEN repeat('[', 500) || '1' || repeat(']', 500) ELSE '[' || i || ']' END AS deep_array,
+       CASE WHEN i = 0 THEN repeat('[', 128) || repeat(']', 128) ELSE '[' || i || ']' END AS empty_at_limit,
+       CASE WHEN i = 0 THEN repeat('{"a":', 127) || '1' || repeat('}', 127) ELSE '{"a": ' || i || '}' END AS below_limit
+FROM range(10) t(i);
+
+# 128 nested objects, the leaf is at the depth limit
+statement ok
+CREATE TABLE deep_object AS SELECT deep_object::JSON::VARIANT AS v, i FROM src;
+
+# arrays far deeper than the limit
+statement ok
+CREATE TABLE deep_array AS SELECT deep_array::JSON::VARIANT AS v, i FROM src;
+
+# an empty array at depth 127 has no children at the limit
+statement ok
+CREATE TABLE empty_at_limit AS SELECT empty_at_limit::JSON::VARIANT AS v, i FROM src;
+
+# 127 nested objects can still be shredded
+statement ok
+CREATE TABLE below_limit AS SELECT below_limit::JSON::VARIANT AS v, i FROM src;
+
+statement ok
+CHECKPOINT;
+
+restart
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+query II
+SELECT count(*), sum(i) FROM deep_object;
+----
+10	45
+
+query I
+SELECT v::VARCHAR FROM deep_object WHERE i = 3;
+----
+{'a': 3}
+
+query I
+SELECT v::VARCHAR FROM deep_array WHERE i = 4;
+----
+[4]
+
+query II
+SELECT length(v::VARCHAR), (SELECT v::VARCHAR FROM below_limit WHERE i = 5) FROM below_limit WHERE i = 0;
+----
+890	{'a': 5}
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('below_limit') WHERE column_name = 'v' AND column_path LIKE '[0, 2%';
+----
+true
+
+query II
+SELECT length(v::VARCHAR), (SELECT count(*) > 0 FROM pragma_storage_info('empty_at_limit') WHERE column_name = 'v' AND column_path LIKE '[0, 2%') FROM empty_at_limit WHERE i = 0;
+----
+256	true
+
+# later checkpoints keep working
+statement ok
+INSERT INTO deep_object SELECT ('{"a": ' || i || '}')::JSON::VARIANT, i FROM range(10, 20) t(i);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query II
+SELECT count(*), sum(i) FROM deep_object;
+----
+20	190
+
+query I
+SELECT v::VARCHAR FROM deep_object WHERE i = 15;
+----
+{'a': 15}

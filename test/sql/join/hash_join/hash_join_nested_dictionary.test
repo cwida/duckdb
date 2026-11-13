@@ -1,0 +1,364 @@
+# name: test/sql/join/hash_join/hash_join_nested_dictionary.test
+# description: Reusable nested dictionaries emitted by hash joins
+# group: [hash_join]
+
+statement ok
+CREATE TABLE list_build AS
+SELECT i % 31 AS k,
+       CASE WHEN i % 11 = 0 THEN NULL
+            WHEN i % 13 = 0 THEN []::BIGINT[]
+            ELSE [i + 2, NULL, i] END AS vals,
+       CASE WHEN i % 11 = 0 OR i % 13 = 0 THEN NULL ELSE i END AS expected
+FROM range(63) t(i);
+
+# Duplicate build keys can produce partial dictionary selections.
+statement ok
+CREATE TABLE list_probe AS SELECT i * 37 % 31 AS k FROM range(6324) t(i);
+
+query II
+SELECT count(*), count(*) FILTER (
+    WHERE list_sort(vals)[1] IS DISTINCT FROM expected
+       OR (expected IS NOT NULL AND expected % 31 <> list_probe.k))
+FROM list_probe JOIN list_build USING (k);
+----
+12852	0
+
+# A volatile filter stays above a left join; every selected row must retain its dictionary mapping.
+query I
+SELECT count(*) FILTER (
+    WHERE list_sort(vals)[1] IS DISTINCT FROM expected
+       OR (expected IS NOT NULL AND expected % 31 <> list_probe.k))
+FROM list_probe LEFT JOIN list_build USING (k)
+WHERE random() < 0.5;
+----
+0
+
+# Unmatched probe rows produce NULL lists.
+statement ok
+INSERT INTO list_probe VALUES (3000);
+
+query III
+SELECT count(*), count(*) FILTER (WHERE vals IS NULL),
+       count(*) FILTER (WHERE list_sort(vals)[1] IS DISTINCT FROM expected)
+FROM list_probe LEFT JOIN list_build USING (k);
+----
+12853	1225	0
+
+# Re-execution must not reuse dictionaries from a previous build.
+statement ok
+PREPARE list_query AS
+SELECT count(*) FILTER (WHERE list_sort(vals)[1] IS DISTINCT FROM expected)
+FROM list_probe JOIN list_build USING (k);
+
+query I
+EXECUTE list_query;
+----
+0
+
+statement ok
+UPDATE list_build SET vals = [42, NULL, -7], expected = -7;
+
+query I
+EXECUTE list_query;
+----
+0
+
+# Supported nested payloads and fallback types contain NULL parents and children.
+statement ok
+CREATE MACRO expected_strings(i) AS
+CASE WHEN i % 11 = 0 THEN NULL WHEN i % 13 = 0 THEN []
+ELSE [repeat('a', 40) || i, NULL, repeat('z', 40) || i] END;
+
+statement ok
+CREATE MACRO expected_lists(i) AS
+CASE WHEN i % 11 = 0 THEN NULL WHEN i % 13 = 0 THEN []
+ELSE [[i, NULL], [i + 1], [], NULL] END;
+
+statement ok
+CREATE MACRO expected_structs(i) AS
+CASE WHEN i % 11 = 0 THEN NULL WHEN i % 13 = 0 THEN []
+ELSE [{'n': i, 's': repeat('x', 40) || i}, NULL, {'n': NULL, 's': NULL}] END;
+
+statement ok
+CREATE MACRO expected_arrays(i) AS
+CASE WHEN i % 11 = 0 THEN NULL ELSE [i, NULL, i + 1]::BIGINT[3] END;
+
+statement ok
+CREATE MACRO expected_list_arrays(i) AS
+CASE WHEN i % 11 = 0 THEN NULL WHEN i % 13 = 0 THEN []
+ELSE [[i, NULL]::BIGINT[2], NULL, [i + 1, i + 2]::BIGINT[2]] END;
+
+statement ok
+CREATE MACRO expected_array_lists(i) AS
+CASE WHEN i % 11 = 0 THEN NULL ELSE [[i, NULL], [], NULL]::BIGINT[][3] END;
+
+statement ok
+CREATE MACRO expected_array_structs(i) AS
+CASE WHEN i % 11 = 0 THEN NULL
+ELSE [{'n': i, 's': repeat('x', 40) || i}, NULL]::STRUCT(n BIGINT, s VARCHAR)[2] END;
+
+statement ok
+CREATE MACRO expected_nested_arrays(i) AS
+CASE WHEN i % 11 = 0 THEN NULL
+ELSE [CASE WHEN i % 7 = 0 THEN NULL ELSE [i, NULL]::BIGINT[2] END,
+      [i + 1, i + 2]::BIGINT[2]]::BIGINT[2][2] END;
+
+statement ok
+CREATE MACRO expected_maps(i) AS
+CASE WHEN i % 11 = 0 THEN NULL
+WHEN i % 13 = 0 THEN MAP([]::VARCHAR[], []::BIGINT[][])
+ELSE MAP([i::VARCHAR, 'other' || i], [[i, NULL], [i + 1]]) END;
+
+statement ok
+CREATE MACRO expected_unions(i) AS
+CASE WHEN i % 11 = 0 THEN NULL WHEN i % 13 = 0 THEN []
+ELSE [union_value(n := i)::UNION(n BIGINT, s VARCHAR),
+      union_value(s := repeat('x', 40) || i)::UNION(n BIGINT, s VARCHAR), NULL] END;
+
+statement ok
+CREATE TEMP MACRO expected_variants(i) AS
+CASE WHEN i % 11 = 0 THEN NULL WHEN i % 13 = 0 THEN []
+ELSE [i::VARIANT, (repeat('x', 40) || i)::VARIANT, NULL, {'n': i, 'a': [i, NULL]}::VARIANT] END;
+
+statement ok
+CREATE TEMP TABLE nested_build AS
+SELECT i AS k,
+       expected_strings(i) AS val_strings,
+       expected_lists(i) AS val_lists,
+       expected_structs(i) AS val_structs,
+       expected_arrays(i) AS val_arrays,
+       expected_list_arrays(i) AS val_list_arrays,
+       expected_array_lists(i) AS val_array_lists,
+       expected_array_structs(i) AS val_array_structs,
+       expected_nested_arrays(i) AS val_nested_arrays,
+       expected_maps(i) AS val_maps,
+       expected_unions(i) AS val_unions,
+       expected_variants(i) AS val_variants
+FROM range(127) t(i);
+
+statement ok
+CREATE TABLE nested_probe AS SELECT i % 127 AS k FROM range(12827) t(i);
+
+# Below the fan-out ratio, the ordinary gather path remains correct.
+query II
+SELECT count(*), count(*) FILTER (
+    WHERE b.val_lists IS DISTINCT FROM expected_lists(p.k))
+FROM (SELECT * FROM nested_probe LIMIT 1270) p
+JOIN nested_build b ON 'key' || p.k = 'key' || b.k;
+----
+1270	0
+
+foreach type strings lists structs arrays list_arrays array_lists array_structs nested_arrays maps unions variants
+
+# The expected value is derived independently from the probe key.
+query II
+SELECT count(*), count(*) FILTER (WHERE b.val_{type} IS DISTINCT FROM expected_{type}(p.k))
+FROM nested_probe p JOIN nested_build b USING (k);
+----
+12827	0
+
+# Unary functions also exercise types that use native gathering.
+query I
+SELECT count(*) FILTER (WHERE hash(b.val_{type}) <> hash(expected_{type}(p.k)))
+FROM nested_probe p JOIN nested_build b USING (k);
+----
+0
+
+# String keys exercise the ordinary hash table instead of perfect row lookup.
+query II
+SELECT count(*), count(*) FILTER (WHERE b.val_{type} IS DISTINCT FROM expected_{type}(p.k))
+FROM nested_probe p JOIN nested_build b ON 'key' || p.k = 'key' || b.k;
+----
+12827	0
+
+endloop
+
+# Unmatched build rows prevent full dictionary coverage in the probe phase.
+statement ok
+CREATE TABLE outer_probe AS SELECT k FROM nested_probe WHERE k <> 126 UNION ALL SELECT 5000;
+
+query II
+SELECT count(*), count(*) FILTER (
+    WHERE b.val_lists IS DISTINCT FROM
+              CASE WHEN p.k = 5000 THEN NULL ELSE expected_lists(coalesce(p.k, 126)) END
+       OR b.val_structs IS DISTINCT FROM
+              CASE WHEN p.k = 5000 THEN NULL ELSE expected_structs(coalesce(p.k, 126)) END)
+FROM outer_probe p FULL JOIN nested_build b USING (k);
+----
+12728	0
+
+# Compact strings expand when gathered into string_t entries. Abandoning an oversized
+# dictionary must leave previously gathered columns intact.
+statement ok
+CREATE TABLE budget_build AS
+SELECT i AS k, i AS row_id, list_resize([''], 300 + i % 2, '') AS vals FROM range(2000) t(i);
+
+statement ok
+CREATE TABLE budget_probe AS SELECT i % 2000 AS k FROM range(6000) t(i);
+
+query II
+SELECT count(*), count(*) FILTER (
+    WHERE row_id <> p.k OR vals IS DISTINCT FROM list_resize([''], 300 + row_id % 2, ''))
+FROM budget_probe p JOIN budget_build b USING (k);
+----
+6000	0
+
+# ARRAY payloads use native gathering, including wide NULL arrays.
+statement ok
+CREATE TABLE wide_array_build AS
+SELECT i AS k, CASE WHEN i = 0 THEN list_resize([i], 512, i)::BIGINT[512] ELSE NULL END AS vals
+FROM range(127) t(i);
+
+query II
+SELECT count(*), count(vals) FROM nested_probe p JOIN wide_array_build b USING (k);
+----
+12827	101
+
+# Top-level STRUCT continues to use ordinary gathering.
+statement ok
+CREATE TABLE struct_build AS SELECT k, {'k': k, 's': repeat('x', 40) || k} AS val FROM nested_build;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE b.val IS DISTINCT FROM {'k': p.k, 's': repeat('x', 40) || p.k})
+FROM nested_probe p JOIN struct_build b USING (k);
+----
+12827	0
+
+# The same fan-out rule applies to scalar strings below 262,144 probe rows.
+statement ok
+CREATE TABLE scalar_build AS SELECT 'key' || i AS k, repeat('value', 10) || i AS val FROM range(17) t(i);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE upper(b.val) IS DISTINCT FROM repeat('VALUE', 10) || (p.i % 17))
+FROM range(1700) p(i) JOIN scalar_build b ON 'key' || (p.i % 17) = b.k;
+----
+1700	0
+
+# Alternate complete and partial selections to exercise dictionary -> flat -> dictionary reuse.
+statement ok
+SET threads=1;
+
+statement ok
+SET enable_caching_operators=false;
+
+# Representation checks require the nested payload on the build side.
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side';
+
+statement ok
+CREATE MACRO check_nested_activation() AS
+    NOT current_setting('debug_force_external')
+    AND NOT current_setting('debug_disable_optimizer')
+    AND current_setting('debug_verify_vector') = 'NONE';
+
+statement ok
+CREATE TABLE coverage_build AS
+SELECT i AS k, CASE WHEN i = 0 THEN range(5) ELSE [11, 12] END AS vals,
+       [i, i + 1]::BIGINT[2] AS arr
+FROM range(2) t(i);
+
+statement ok
+CREATE TABLE coverage_probe AS
+SELECT i, CASE WHEN i // current_setting('standard_vector_size')::BIGINT % 3 = 1 THEN 0 ELSE i % 2 END AS k
+FROM range(greatest(300, 3 * current_setting('standard_vector_size')::BIGINT)) t(i);
+
+query II
+SELECT NOT check_nested_activation() OR bool_and(
+           (vector_type(b.vals) = 'DICTIONARY_VECTOR') =
+           (p.i // current_setting('standard_vector_size')::BIGINT % 3 <> 1)),
+       count(*) FILTER (WHERE list_sort(b.vals) IS DISTINCT FROM CASE WHEN p.k = 0 THEN range(5) ELSE [11, 12] END)
+FROM coverage_probe p JOIN coverage_build b USING (k);
+----
+true	0
+
+query II
+SELECT NOT check_nested_activation() OR bool_and(
+           (vector_type(b.vals) = 'DICTIONARY_VECTOR') =
+           (p.i // current_setting('standard_vector_size')::BIGINT % 3 <> 1)),
+       count(*) FILTER (WHERE list_sort(b.vals) IS DISTINCT FROM CASE WHEN p.k = 0 THEN range(5) ELSE [11, 12] END)
+FROM coverage_probe p JOIN coverage_build b ON 'key' || p.k = 'key' || b.k;
+----
+true	0
+
+# Matched FULL-join chunks can emit dictionaries while unmatched probe rows remain NULL.
+query II
+SELECT NOT check_nested_activation() OR bool_or(vector_type(b.vals) = 'DICTIONARY_VECTOR'),
+       count(*) FILTER (WHERE b.vals IS DISTINCT FROM
+           CASE WHEN p.k = 0 THEN range(5) WHEN p.k = 1 THEN [11, 12] ELSE NULL END)
+FROM (SELECT * FROM coverage_probe UNION ALL SELECT -1, 3) p
+FULL JOIN coverage_build b USING (k);
+----
+true	0
+
+# RIGHT SEMI marks build chains as found before scanning the surviving payloads.
+statement ok
+SET disabled_optimizers='join_order';
+
+query II
+SELECT count(*), count(*) FILTER (
+    WHERE b.vals IS DISTINCT FROM CASE WHEN b.k = 0 THEN range(5) ELSE [11, 12] END)
+FROM coverage_build b SEMI JOIN coverage_probe p USING (k);
+----
+2	0
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side';
+
+# Fully covered chunks would emit dictionaries if the allocation limit had not rejected them.
+query I
+SELECT NOT check_nested_activation() OR bool_and(vector_type(b.vals) = 'FLAT_VECTOR')
+FROM budget_probe p JOIN budget_build b USING (k);
+----
+true
+
+# ARRAY dictionaries have a slow per-array hashing path.
+query II
+SELECT NOT check_nested_activation() OR bool_and(vector_type(b.arr) = 'FLAT_VECTOR'),
+       count(*) FILTER (WHERE b.arr IS DISTINCT FROM [p.k, p.k + 1]::BIGINT[2])
+FROM coverage_probe p JOIN coverage_build b USING (k);
+----
+true	0
+
+# Unique LEFT joins use their direct gather path.
+query II
+SELECT NOT check_nested_activation() OR bool_and(vector_type(b.vals) = 'FLAT_VECTOR'),
+       count(*) FILTER (WHERE b.vals IS DISTINCT FROM CASE WHEN p.k = 0 THEN range(5) ELSE [11, 12] END)
+FROM coverage_probe p LEFT JOIN coverage_build b USING (k);
+----
+true	0
+
+# A nested dictionary larger than one output chunk cannot have complete coverage.
+statement ok
+CREATE TABLE large_build AS
+SELECT i AS k, [i, NULL] AS vals FROM range(current_setting('standard_vector_size')::BIGINT + 1) t(i);
+
+query II
+SELECT NOT check_nested_activation() OR bool_and(vector_type(b.vals) = 'FLAT_VECTOR'),
+       count(*) FILTER (WHERE b.vals IS DISTINCT FROM [p.i % (current_setting('standard_vector_size')::BIGINT + 1), NULL])
+FROM range(2 * (current_setting('standard_vector_size')::BIGINT + 1)) p(i)
+JOIN large_build b ON p.i % (current_setting('standard_vector_size')::BIGINT + 1) = b.k;
+----
+true	0
+
+# Downstream consumers retain values through both representations and materialization.
+query I
+SELECT count(*) FROM (
+    SELECT p.i % 4 AS g, b.vals
+    FROM coverage_probe p JOIN coverage_build b USING (k)
+    GROUP BY ALL
+);
+----
+6
+
+statement ok
+CREATE TABLE saved_payloads AS
+SELECT p.i, p.k, b.vals FROM coverage_probe p JOIN coverage_build b USING (k);
+
+statement ok
+DROP TABLE coverage_build;
+
+query I
+SELECT count(*) FILTER (WHERE vals IS DISTINCT FROM CASE WHEN k = 0 THEN range(5) ELSE [11, 12] END)
+FROM saved_payloads;
+----
+0

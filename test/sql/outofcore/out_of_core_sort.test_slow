@@ -16,7 +16,7 @@ query I
 SELECT bit_xor(hash(*COLUMNS(*)))
 FROM lineitem;
 ----
-3944753436594036139
+340647416945014523
 
 foreach mem 300MiB 600MiB
 
@@ -36,7 +36,7 @@ WITH cte AS (
 SELECT bit_xor(hash(*COLUMNS(*)))
 FROM cte;
 ----
-3944753436594036139
+340647416945014523
 
 endloop
 

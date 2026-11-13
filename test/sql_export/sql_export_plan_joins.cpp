@@ -46,7 +46,7 @@ TEST_CASE("SQL export inlines plain join sources without alias capture", "[sql_e
 				if (is_left && filtered) {
 					sql += " WHERE " + alias + ".x=1";
 				}
-				Parser parser;
+				Parser parser(*connection.context);
 				parser.ParseQuery(sql);
 				return input.ExportQuery(std::move(parser.statements[0]->Cast<SelectStatement>().node), path);
 			};

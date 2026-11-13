@@ -6,7 +6,7 @@ require parquet
 query I
 select variant_to_parquet_variant(NULL)
 ----
-{'metadata': \x01\x00\x00, 'value': \x00}
+{'metadata': '\\x01\\x00\\x00', 'value': '\\x00'}
 
 # We don't expose the overload with a shredded type, only internally will we use that
 statement error

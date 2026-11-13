@@ -27,16 +27,21 @@ enum class ExtensionInstallMode : uint8_t {
 	NOT_INSTALLED = 4
 };
 
-//! Whether the user has opted in to adding external extension repositories. This is a one-way ratchet: once FORBIDDEN
-//! it cannot be moved back within a session. UNDECIDED (the default) blocks adding new repositories, but extensions
-//! from repositories that were already created can still be installed and loaded
+//! Which external extension repositories can be added, and which are trusted. This is a one-way ratchet: while the
+//! database is running the setting can only tighten (HOSTS -> ALLOWED -> HOSTS_ONLY -> FORBIDDEN), never loosen.
+//! HOSTS (the default) allows the repositories resolved from their host (CREATE EXTENSION REPOSITORY <host> without a
+//! prefix) and blocks adding repositories by prefix until the user opts in with ALLOWED; extensions from repositories
+//! that were already created can still be installed and loaded
 enum class ExtensionRepositoryAccess : uint8_t {
-	//! No decision has been made yet - adding repositories fails until the user opts in explicitly
-	UNDECIDED = 0,
+	//! A repository resolved from its host can be added; adding one by prefix fails until the user opts in explicitly
+	HOSTS = 0,
 	//! Adding external repositories is allowed
 	ALLOWED = 1,
 	//! Adding external repositories is forbidden - this cannot be undone in the same session
-	FORBIDDEN = 2
+	FORBIDDEN = 2,
+	//! Only repositories resolved from their host can be added, and only those are trusted: a repository added by
+	//! prefix is distrusted like under FORBIDDEN
+	HOSTS_ONLY = 3
 };
 
 //! The type of a repository determines which public keys are trusted to sign the extensions that it serves. Keys of
@@ -92,6 +97,11 @@ struct ExtensionRepository {
 	static constexpr const char *CORE_NIGHTLY_REPOSITORY_URL = "http://nightly-extensions.duckdb.org";
 	static constexpr const char *COMMUNITY_REPOSITORY_URL = "http://community-extensions.duckdb.org";
 
+	//! Backup servers for the core and community repositories: they serve identical binaries and are used when the
+	//! primary server is unavailable
+	static constexpr const char *CORE_BACKUP_REPOSITORY_URL = "http://extensions.duckdb-backup.org";
+	static constexpr const char *COMMUNITY_BACKUP_REPOSITORY_URL = "http://community-extensions.duckdb-backup.org";
+
 	//! Debugging repositories (target local, relative paths that are produced by DuckDB's build system)
 	static constexpr const char *BUILD_DEBUG_REPOSITORY_PATH = "./build/debug/repository";
 	static constexpr const char *BUILD_RELEASE_REPOSITORY_PATH = "./build/release/repository";
@@ -110,6 +120,10 @@ struct ExtensionRepository {
 	static string TryGetRepositoryUrl(const string &repository);
 	//! Try to convert a url to a known repository name, will return empty string if the repository is unknown
 	static string TryConvertUrlToKnownRepository(const string &url);
+	//! Try to get the backup server url of a repository url, will return empty string if the repository has no backup
+	static string TryGetBackupRepositoryUrl(const string &url);
+	//! Whether a url points into one of the official DuckDB repositories (core, nightly, community or their backups)
+	static bool IsOfficialRepositoryUrl(const string &url);
 
 	//! Get the default repository, optionally passing a config to allow
 	static ExtensionRepository GetDefaultRepository(optional_ptr<DBConfig> config);
@@ -133,6 +147,9 @@ struct ExtensionRepository {
 	vector<string> public_keys;
 	//! Which public keys are trusted to sign the extensions of this repository
 	ExtensionRepositoryType type = ExtensionRepositoryType::CORE;
+	//! (optional) The host the repository was resolved from (CREATE EXTENSION REPOSITORY <name> without a prefix: the
+	//! name); empty for a repository added by prefix
+	string host;
 };
 
 } // namespace duckdb

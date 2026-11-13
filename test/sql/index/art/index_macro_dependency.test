@@ -1,0 +1,54 @@
+# name: test/sql/index/art/index_macro_dependency.test
+# description: Macros used by an index expression cannot be dropped or replaced while the index exists
+# group: [art]
+
+statement ok
+CREATE MACRO m(x) AS x + 1;
+
+statement ok
+CREATE TABLE t(x INT);
+
+statement ok
+CREATE UNIQUE INDEX i ON t(m(x));
+
+statement ok
+INSERT INTO t VALUES (1);
+
+statement error
+DROP MACRO m;
+----
+<REGEX>:.*Dependency Error.*
+
+statement error
+CREATE OR REPLACE MACRO m(x) AS x + 2;
+----
+<REGEX>:.*Dependency Error.*
+
+statement error
+INSERT INTO t VALUES (1);
+----
+<REGEX>:Constraint Error.*Duplicate key.*
+
+query I
+SELECT count(*) FROM duckdb_indexes() WHERE index_name = 'i';
+----
+1
+
+# dropping the index releases the macro
+statement ok
+DROP INDEX i;
+
+statement ok
+DROP MACRO m;
+
+# dropping the table still drops its indexes without CASCADE
+statement ok
+CREATE UNIQUE INDEX j ON t(x);
+
+statement ok
+DROP TABLE t;
+
+query I
+SELECT count(*) FROM duckdb_indexes();
+----
+0

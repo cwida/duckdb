@@ -32,13 +32,6 @@ struct ContainsUnaligned {
 	}
 };
 
-struct ContainsGeneric {
-	template <class UNSIGNED>
-	static bool MatchRemainder(const unsigned char *haystack, const unsigned char *needle, idx_t needle_size) {
-		return memcmp(haystack + sizeof(UNSIGNED), needle + sizeof(UNSIGNED), needle_size - sizeof(UNSIGNED)) == 0;
-	}
-};
-
 template <class UNSIGNED, class OP>
 static idx_t Contains(const unsigned char *haystack, idx_t haystack_size, const unsigned char *needle,
                       idx_t needle_size, idx_t base_offset) {
@@ -49,9 +42,11 @@ static idx_t Contains(const unsigned char *haystack, idx_t haystack_size, const 
 	haystack_size -= needle_size - 1;
 	auto needle_entry = Load<UNSIGNED>(needle);
 	for (idx_t offset = 0; offset < haystack_size; offset++) {
-		// start off by performing a memchr to find the first character of the
+		// FindStrInStr already found the first candidate.
 		auto location =
-		    static_cast<const unsigned char *>(memchr(haystack + offset, needle[0], haystack_size - offset));
+		    offset == 0
+		        ? haystack
+		        : static_cast<const unsigned char *>(memchr(haystack + offset, needle[0], haystack_size - offset));
 		if (!location) {
 			return DConstants::INVALID_INDEX;
 		}
@@ -62,6 +57,66 @@ static idx_t Contains(const unsigned char *haystack, idx_t haystack_size, const 
 			if (OP::template MatchRemainder<UNSIGNED>(location, needle, needle_size)) {
 				return base_offset + offset;
 			}
+		}
+	}
+	return DConstants::INVALID_INDEX;
+}
+
+//! Linear-time (Knuth-Morris-Pratt) search, used when the needle keeps almost-matching the haystack
+static idx_t ContainsLinear(const unsigned char *haystack, idx_t haystack_size, const unsigned char *needle,
+                            idx_t needle_size, idx_t base_offset) {
+	// prefix[i] is the length of the longest proper prefix of needle[0..i] that is also a suffix of it
+	vector<idx_t> prefix(needle_size, 0);
+	for (idx_t i = 1, k = 0; i < needle_size; i++) {
+		while (k > 0 && needle[i] != needle[k]) {
+			k = prefix[k - 1];
+		}
+		if (needle[i] == needle[k]) {
+			k++;
+		}
+		prefix[i] = k;
+	}
+	for (idx_t i = 0, k = 0; i < haystack_size; i++) {
+		while (k > 0 && haystack[i] != needle[k]) {
+			k = prefix[k - 1];
+		}
+		if (haystack[i] == needle[k]) {
+			k++;
+		}
+		if (k == needle_size) {
+			return base_offset + i + 1 - needle_size;
+		}
+	}
+	return DConstants::INVALID_INDEX;
+}
+
+//! Like Contains<uint64_t, ContainsGeneric>, but every candidate position compares up to needle_size bytes, which is
+//! quadratic when the needle keeps almost-matching - switch to a linear-time search once that happens
+static idx_t ContainsLong(const unsigned char *haystack, idx_t haystack_size, const unsigned char *needle,
+                          idx_t needle_size, idx_t base_offset) {
+	if (needle_size > haystack_size) {
+		return DConstants::INVALID_INDEX;
+	}
+	const idx_t candidate_end = haystack_size - (needle_size - 1);
+	auto needle_entry = Load<uint64_t>(needle);
+	// the number of candidates whose remainder we compare before switching, roughly linear in the haystack
+	const idx_t max_full_compares = 16 + (haystack_size * 8) / needle_size;
+	idx_t full_compares = 0;
+	for (idx_t offset = 0; offset < candidate_end; offset++) {
+		auto location =
+		    static_cast<const unsigned char *>(memchr(haystack + offset, needle[0], candidate_end - offset));
+		if (!location) {
+			return DConstants::INVALID_INDEX;
+		}
+		offset = UnsafeNumericCast<idx_t>(location - haystack);
+		if (Load<uint64_t>(location) != needle_entry) {
+			continue;
+		}
+		if (memcmp(location + sizeof(uint64_t), needle + sizeof(uint64_t), needle_size - sizeof(uint64_t)) == 0) {
+			return base_offset + offset;
+		}
+		if (++full_compares > max_full_compares) {
+			return ContainsLinear(location, haystack_size - offset, needle, needle_size, base_offset + offset);
 		}
 	}
 	return DConstants::INVALID_INDEX;
@@ -105,7 +160,7 @@ idx_t FindStrInStr(const unsigned char *haystack, idx_t haystack_size, const uns
 	case 8:
 		return Contains<uint64_t, ContainsAligned>(haystack, haystack_size, needle, 8, base_offset);
 	default:
-		return Contains<uint64_t, ContainsGeneric>(haystack, haystack_size, needle, needle_size, base_offset);
+		return ContainsLong(haystack, haystack_size, needle, needle_size, base_offset);
 	}
 }
 

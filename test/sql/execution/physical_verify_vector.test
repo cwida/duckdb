@@ -79,6 +79,30 @@ SELECT * FROM (VALUES (1), (NULL)) t(nullable_value)
 1
 NULL
 
+# Constant detection must not cast differently shaped VARIANT objects to a common STRUCT.
+query I
+SELECT unnest([empty_struct::VARIANT, struct::VARIANT]) FROM test_all_types();
+----
+{}
+{'a': NULL, 'b': NULL}
+{}
+{'a': 42, 'b': 🦆🦆🦆🦆🦆🦆}
+NULL
+NULL
+
+# Equal-looking payloads must retain their types, including inside nested SQL containers.
+query IIII
+SELECT variant_typeof(v), variant_typeof(s.v), variant_typeof(l[1]), variant_typeof(a[1])
+FROM (
+	SELECT v, {'v': v} AS s, [v] AS l, [v]::VARIANT[1] AS a
+	FROM (VALUES (42::VARIANT), (42::DOUBLE::VARIANT), ('42'::VARIANT), (NULL::VARIANT)) t(v)
+);
+----
+INT32	INT32	INT32	INT32
+DOUBLE	DOUBLE	DOUBLE	DOUBLE
+VARCHAR	VARCHAR	VARCHAR	VARCHAR
+VARIANT_NULL	VARIANT_NULL	VARIANT_NULL	VARIANT_NULL
+
 statement ok
 SET debug_verify_vector = 'nested_shuffle'
 

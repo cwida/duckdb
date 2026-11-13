@@ -14,15 +14,19 @@ CaseSimplificationRule::CaseSimplificationRule(ExpressionRewriter &rewriter) : R
 unique_ptr<Expression> CaseSimplificationRule::Apply(LogicalOperator &op, vector<reference<Expression>> &bindings,
                                                      bool &changes_made, bool is_root) {
 	auto &root = bindings[0].get().Cast<BoundCaseExpression>();
-	for (idx_t i = 0; i < root.CaseChecksMutable().size(); i++) {
+	for (idx_t i = 0; i < root.CaseChecks().size(); i++) {
 		auto &case_check = root.CaseChecksMutable()[i];
 		if (case_check.when_expr->IsFoldable()) {
 			// the WHEN check is a foldable expression
 			// use an ExpressionExecutor to execute the expression
-			auto constant_value = ExpressionExecutor::EvaluateScalar(GetContext(), *case_check.when_expr);
+			Value condition;
+			if (!ExpressionExecutor::TryEvaluateScalar(GetContext(), *case_check.when_expr, condition) ||
+			    !condition.TryCastAs(GetContext(), LogicalType::BOOLEAN)) {
+				// the condition cannot be evaluated: leave it to execution
+				continue;
+			}
 
 			// fold based on the constant condition
-			auto condition = constant_value.DefaultCastAs(LogicalType::BOOLEAN);
 			if (condition.IsNull() || !BooleanValue::Get(condition)) {
 				// the condition is always false: remove this case check
 				root.CaseChecksMutable().erase_at(i);
@@ -33,12 +37,12 @@ unique_ptr<Expression> CaseSimplificationRule::Apply(LogicalOperator &op, vector
 				root.ElseMutable() = std::move(case_check.then_expr);
 				// remove this case check and any case checks after this one
 				root.CaseChecksMutable().erase(root.CaseChecksMutable().begin() + NumericCast<int64_t>(i),
-				                               root.CaseChecksMutable().end());
+				                               root.CaseChecks().end());
 				break;
 			}
 		}
 	}
-	if (root.CaseChecksMutable().empty()) {
+	if (root.CaseChecks().empty()) {
 		// no case checks left: return the ELSE expression
 		return Expression::PreserveReturnType(root.GetReturnType(), std::move(root.ElseMutable()));
 	}

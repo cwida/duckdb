@@ -16,7 +16,7 @@ InsertValuesList <- InsertColumnList? 'VALUES' Parens(List(Expression))
 DoNothingMatchClause <- 'DO' 'NOTHING'
 ErrorMatchClause <- 'ERROR' Expression?
 UpdateMatchSetClause <- 'SET' UpdateMatchSetInfo
-UpdateMatchSetInfo <- UpdateSetClause / StarSymbol
+UpdateMatchSetInfo <- UpdateSetClauseList / StarSymbol
 AndExpression <- 'AND' Expression
 NotMatchedClause <- 'WHEN' 'NOT' 'MATCHED' BySourceOrTarget? AndExpression? 'THEN' MatchedClauseAction
 BySourceOrTarget <- BySource / ByTarget

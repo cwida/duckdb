@@ -3,6 +3,9 @@
 
 namespace duckdb {
 
+PragmaFunctionInfo::~PragmaFunctionInfo() {
+}
+
 //! A pragma's varargs are a positional list, so it declares "*args" and never a "**kwargs" - an argument named after
 //! no parameter stays an error rather than being absorbed
 static FunctionSignature PragmaSignature(vector<LogicalType> arguments, LogicalType varargs) {

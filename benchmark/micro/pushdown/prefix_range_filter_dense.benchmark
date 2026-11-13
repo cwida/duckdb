@@ -1,0 +1,20 @@
+# name: benchmark/micro/pushdown/prefix_range_filter_dense.benchmark
+# description: Dense PRF over nullable RLE data with a partial selection
+# group: [pushdown]
+
+name Dense Prefix Range Filter
+group join
+storage persistent
+
+load
+CREATE TABLE probe(k BIGINT USING COMPRESSION RLE, g INTEGER);
+INSERT INTO probe
+SELECT CASE WHEN i%61<>0 THEN (i//32)%2000-1000 END, i%17 FROM range(32000000) t(i);
+CREATE TABLE build AS
+SELECT i-1000 AS k, i BETWEEN 500 AND 619 AS keep FROM range(2000) t(i);
+
+run
+SELECT count(*), sum(p.k) FROM probe p JOIN build b ON p.k=b.k WHERE b.keep AND p.g<3;
+
+result II
+333268	-146804811

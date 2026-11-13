@@ -1,0 +1,53 @@
+# name: test/sql/storage/storage_option_coverage.test
+# description: Cover storage option validation and I/O mode selection
+# group: [storage]
+
+statement error
+ATTACH '{TEST_DIR}/compressed_disk.db' AS compressed_disk (COMPRESS false)
+----
+COMPRESS can only be set for in-memory databases
+
+statement error
+ATTACH '{TEST_DIR}/zero_row_group.db' AS zero_row_group (ROW_GROUP_SIZE 0)
+----
+row group size must be bigger than 0
+
+statement error
+ATTACH '{TEST_DIR}/unaligned_row_group.db' AS unaligned_row_group (ROW_GROUP_SIZE 77)
+----
+row group size must be divisible by the vector size
+
+statement ok
+ATTACH '{TEST_DIR}/direct_io.db' AS direct_io (IO_MODE 'DIRECT_IO')
+
+statement ok
+DETACH direct_io
+
+statement ok
+SET force_mbedtls_unsafe = true
+
+statement ok
+ATTACH '{TEST_DIR}/encrypted_mmap.db' AS encrypted_mmap (ENCRYPTION_KEY 'secret', IO_MODE 'MMAP')
+
+statement ok
+CREATE TABLE encrypted_mmap.t(i INTEGER)
+
+statement ok
+INSERT INTO encrypted_mmap.t VALUES (42)
+
+statement ok
+DETACH encrypted_mmap
+
+statement ok
+ATTACH '{TEST_DIR}/encrypted_mmap.db' AS encrypted_mmap (ENCRYPTION_KEY 'secret', IO_MODE 'MMAP')
+
+query I
+SELECT * FROM encrypted_mmap.t
+----
+42
+
+statement ok
+DETACH encrypted_mmap
+
+statement ok
+SET force_mbedtls_unsafe = false

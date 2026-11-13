@@ -1,0 +1,66 @@
+# name: test/sql/function/string/regex_replace_dictionary.test
+# description: regexp_replace with a constant pattern and replacement is evaluated once per dictionary entry
+# group: [string]
+
+load {TEST_DIR}/regex_replace_dictionary.db
+
+statement ok
+SET force_compression='dictionary'
+
+statement ok
+CREATE TABLE strings AS SELECT i, CASE i % 3 WHEN 0 THEN 'abcdefghijklé://foo' WHEN 1 THEN 'äabcdefghijk://bar' ELSE NULL END AS s FROM range(300000) t(i)
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT count(*) FROM strings WHERE regexp_replace(s, '://.*', '') = 'abcdefghijklé'
+----
+100000
+
+query II
+SELECT count(*) FILTER (WHERE k = 'abcdefghijklé'), count(*) FILTER (WHERE k = 'äabcdefghijk') FROM (SELECT regexp_replace(s, '://.*$', '') AS k FROM strings)
+----
+100000	100000
+
+query I
+SELECT count(*) FROM strings WHERE regexp_replace(s, '[aeiou]', '_', 'g') LIKE '%_%'
+----
+200000
+
+query I
+SELECT count(*) FROM strings WHERE regexp_replace(s, '(\w+)://(\w+)', '\2://\1') LIKE '%://abcdefghijk%'
+----
+100000
+
+# A byte escape stays fallible: an unreferenced dictionary entry must not be evaluated.
+query I
+SELECT count(*) FROM strings WHERE s LIKE 'a%' AND regexp_replace(s, '\C', '') = substr(s, 2)
+----
+100000
+
+# An invalid replacement stays fallible.
+statement error
+SELECT count(regexp_replace(s, 'a', '\1')) FROM strings
+----
+Invalid replacement string
+
+# Invalid constant patterns bind successfully and fail only when executed.
+statement ok
+PREPARE invalid_constant_pattern AS SELECT regexp_replace(s, '[', '') FROM strings
+
+statement error
+EXECUTE invalid_constant_pattern
+----
+missing ]: [
+
+# Variable patterns and replacements remain fallible.
+query I
+SELECT count(TRY(regexp_replace(s, CASE i % 3 WHEN 0 THEN '^a' ELSE '[' END, ''))) FROM strings
+----
+100000
+
+query I
+SELECT count(TRY(regexp_replace(s, 'a', CASE i % 3 WHEN 0 THEN 'x' ELSE '\1' END))) FROM strings
+----
+100000

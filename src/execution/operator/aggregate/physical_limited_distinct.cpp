@@ -44,7 +44,7 @@ struct LimitedDistinctGlobalSinkState : public GlobalSinkState {
 	LimitedDistinctGlobalSinkState(const PhysicalLimitedDistinct &op, ClientContext &context) : limit_reached(false) {
 		auto aggregate_objects = GetAggregateObjects(op.aggregates);
 		auto payload_types = GetPayloadTypes(op.aggregates);
-		ht = make_uniq<GroupedAggregateHashTable>(context, Allocator::Get(context), op.group_types, payload_types,
+		ht = make_uniq<GroupedAggregateHashTable>(context, BufferAllocator::Get(context), op.group_types, payload_types,
 		                                          aggregate_objects);
 	}
 
@@ -56,7 +56,7 @@ struct LimitedDistinctGlobalSinkState : public GlobalSinkState {
 struct LimitedDistinctLocalSinkState : public LocalSinkState {
 	LimitedDistinctLocalSinkState(const PhysicalLimitedDistinct &op, ExecutionContext &context)
 	    : group_executor(context.client, op.groups), payload_executor(context.client) {
-		auto &allocator = Allocator::Get(context.client);
+		auto &allocator = BufferAllocator::Get(context.client);
 
 		auto aggregate_objects = GetAggregateObjects(op.aggregates);
 		auto payload_types = GetPayloadTypes(op.aggregates);

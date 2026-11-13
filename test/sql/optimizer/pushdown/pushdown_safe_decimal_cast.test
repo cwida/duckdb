@@ -1,0 +1,217 @@
+# name: test/sql/optimizer/pushdown/pushdown_safe_decimal_cast.test
+# description: A cast into a DECIMAL that holds every value of its source cannot throw, so a filter over it is pushed down
+# group: [pushdown]
+
+statement ok
+CREATE TABLE casts(i INTEGER, b BIGINT, u UBIGINT, h HUGEINT, d DECIMAL(10,2), v VARCHAR);
+
+# the extremes of every source type, a row inside the filter range and a NULL row
+statement ok
+INSERT INTO casts VALUES
+    (2147483647, 9223372036854775807, 18446744073709551615, 170141183460469231731687303715884105727, 99999999.99, '150'),
+    (-2147483648, -9223372036854775808, 0, -170141183460469231731687303715884105728, -99999999.99, '-150'),
+    (150, 150, 150, 150, 150.25, '150.25'),
+    (NULL, NULL, NULL, NULL, NULL, NULL);
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+# Filter pushdown keeps a filter that can throw above a projection. The projection below computes a column, so the
+# filter crosses it only if the cast cannot throw, and then ends up in the scan. A filter that can throw is left as a
+# FILTER operator over a scan without filters.
+
+# a DECIMAL column compared with integer literals is cast to a wider DECIMAL of the same scale
+query II
+EXPLAIN SELECT * FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE d BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*Filters:[\s\S]*CAST\(d AS DECIMAL\(12,2\)\) BETWEEN 100.00 AND 200.00[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE d BETWEEN 100 AND 200
+----
+logical_opt	<!REGEX>:[\s\S]*FILTER[\s\S]*
+
+# an integer column compared with decimal literals is cast to a DECIMAL that holds every value of its type
+query II
+EXPLAIN SELECT * FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE i BETWEEN 100.5 AND 200.5
+----
+logical_opt	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*Filters:[\s\S]*CAST\(i AS DECIMAL\(11,1\)\) BETWEEN 100.5 AND 200.5[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM (SELECT b, d, b // 2 AS j FROM casts) WHERE b BETWEEN 100.5 AND 200.5
+----
+logical_opt	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*Filters:[\s\S]*CAST\(b AS DECIMAL\(20,1\)\) BETWEEN 100.5 AND 200.5[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM (SELECT u, d, u // 2 AS j FROM casts) WHERE u BETWEEN 100.5 AND 200.5
+----
+logical_opt	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*Filters:[\s\S]*CAST\(u AS DECIMAL\(21,1\)\) BETWEEN 100.5 AND 200.5[\s\S]*
+
+# no DECIMAL holds every HUGEINT: the filter stays above the projection
+query II
+EXPLAIN SELECT * FROM (SELECT h, d, h // 2 AS j FROM casts) WHERE h BETWEEN 100.5 AND 200.5
+----
+logical_opt	<REGEX>:[\s\S]*FILTER[\s\S]*CAST\(h AS DECIMAL\(38,1\)\) BETWEEN 100.5 AND 200.5[\s\S]*SEQ_SCAN[^│]*│ Table:[\s\S]*
+
+# explicit casts: more digits on both sides of the decimal point
+query II
+EXPLAIN SELECT * FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE CAST(d AS DECIMAL(18,4)) BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*Filters:[\s\S]*CAST\(d AS DECIMAL\(18,4\)\) BETWEEN 100.0000 AND 200.0000[\s\S]*
+
+# the digit table at its boundaries: INTEGER has 10 digits, BIGINT 19, UBIGINT 20
+query II
+EXPLAIN SELECT * FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE CAST(i AS DECIMAL(10,0)) BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*Filters:[\s\S]*CAST\(i AS DECIMAL\(10,0\)\) BETWEEN 100 AND 200[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM (SELECT b, d, b // 2 AS j FROM casts) WHERE CAST(b AS DECIMAL(19,0)) BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*Filters:[\s\S]*CAST\(b AS DECIMAL\(19,0\)\) BETWEEN 100 AND 200[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM (SELECT u, d, u // 2 AS j FROM casts) WHERE CAST(u AS DECIMAL(20,0)) BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*Filters:[\s\S]*CAST\(u AS DECIMAL\(20,0\)\) BETWEEN 100 AND 200[\s\S]*
+
+# one digit short: these casts overflow for the extremes, so the filter stays above the projection
+query II
+EXPLAIN SELECT * FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE CAST(i AS DECIMAL(9,0)) BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*FILTER[\s\S]*CAST\(i AS DECIMAL\(9,0\)\)[\s\S]*SEQ_SCAN[^│]*│ Table:[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM (SELECT b, d, b // 2 AS j FROM casts) WHERE CAST(b AS DECIMAL(18,0)) BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*FILTER[\s\S]*CAST\(b AS DECIMAL\(18,0\)\)[\s\S]*SEQ_SCAN[^│]*│ Table:[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM (SELECT u, d, u // 2 AS j FROM casts) WHERE CAST(u AS DECIMAL(19,0)) BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*FILTER[\s\S]*CAST\(u AS DECIMAL\(19,0\)\)[\s\S]*SEQ_SCAN[^│]*│ Table:[\s\S]*
+
+# a DECIMAL that loses integral digits, or scale: DECIMAL(10,2) -> DECIMAL(10,4) drops two integral digits,
+# DECIMAL(10,2) -> DECIMAL(10,1) rounds, which can carry into another integral digit
+query II
+EXPLAIN SELECT * FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE CAST(d AS DECIMAL(10,4)) BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*FILTER[\s\S]*CAST\(d AS DECIMAL\(10,4\)\)[\s\S]*SEQ_SCAN[^│]*│ Table:[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE CAST(d AS DECIMAL(10,1)) BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*FILTER[\s\S]*CAST\(d AS DECIMAL\(10,1\)\)[\s\S]*SEQ_SCAN[^│]*│ Table:[\s\S]*
+
+# HUGEINT and VARCHAR sources
+query II
+EXPLAIN SELECT * FROM (SELECT h, d, h // 2 AS j FROM casts) WHERE CAST(h AS DECIMAL(38,0)) BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*FILTER[\s\S]*CAST\(h AS DECIMAL\(38,0\)\)[\s\S]*SEQ_SCAN[^│]*│ Table:[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM (SELECT v, d, v || 'x' AS j FROM casts) WHERE CAST(v AS DECIMAL(18,2)) BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*FILTER[\s\S]*CAST\(v AS DECIMAL\(18,2\)\)[\s\S]*SEQ_SCAN[^│]*│ Table:[\s\S]*
+
+# a safe cast of a group column is pushed through the aggregate into the scan, a narrowing one is not
+query II
+EXPLAIN SELECT * FROM (SELECT i, d, count(*) AS c FROM casts GROUP BY ALL) WHERE d BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*AGGREGATE[\s\S]*SEQ_SCAN[\s\S]*Filters:[\s\S]*CAST\(d AS DECIMAL\(12,2\)\) BETWEEN 100.00 AND 200.00[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM (SELECT i, d, count(*) AS c FROM casts GROUP BY ALL) WHERE CAST(d AS DECIMAL(5,2)) BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*FILTER[\s\S]*CAST\(d AS DECIMAL\(5,2\)\)[\s\S]*SEQ_SCAN[^│]*│ Table:[\s\S]*
+
+# the pushed-down filters return the same rows as the filters left in place
+foreach disabled '' 'filter_pushdown'
+
+statement ok
+SET disabled_optimizers = {disabled}
+
+query II
+SELECT i, d FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE d BETWEEN 100 AND 200
+----
+150	150.25
+
+query I
+SELECT i FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE i BETWEEN 100.5 AND 200.5
+----
+150
+
+query I
+SELECT b FROM (SELECT b, d, b // 2 AS j FROM casts) WHERE b BETWEEN 100.5 AND 200.5
+----
+150
+
+query I
+SELECT u FROM (SELECT u, d, u // 2 AS j FROM casts) WHERE u BETWEEN 100.5 AND 200.5
+----
+150
+
+query I
+SELECT i FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE CAST(i AS DECIMAL(10,0)) BETWEEN 100 AND 200
+----
+150
+
+query I
+SELECT b FROM (SELECT b, d, b // 2 AS j FROM casts) WHERE CAST(b AS DECIMAL(19,0)) BETWEEN 100 AND 200
+----
+150
+
+query I
+SELECT u FROM (SELECT u, d, u // 2 AS j FROM casts) WHERE CAST(u AS DECIMAL(20,0)) BETWEEN 100 AND 200
+----
+150
+
+query I
+SELECT d FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE CAST(d AS DECIMAL(18,4)) BETWEEN 100 AND 200
+----
+150.25
+
+query III
+SELECT i, d, c FROM (SELECT i, d, count(*) AS c FROM casts GROUP BY ALL) WHERE d BETWEEN 100 AND 200
+----
+150	150.25	1
+
+# every extreme survives the widening casts, and NULL stays NULL
+query IIII
+SELECT CAST(i AS DECIMAL(10,0)), CAST(b AS DECIMAL(19,0)), CAST(u AS DECIMAL(20,0)), CAST(d AS DECIMAL(18,4)) FROM casts ORDER BY i NULLS LAST
+----
+-2147483648	-9223372036854775808	0	-99999999.9900
+150	150	150	150.2500
+2147483647	9223372036854775807	18446744073709551615	99999999.9900
+NULL	NULL	NULL	NULL
+
+# the casts one digit short do overflow for the extremes, as does the cast of a HUGEINT
+statement error
+SELECT h FROM (SELECT h, d, h // 2 AS j FROM casts) WHERE h BETWEEN 100.5 AND 200.5
+----
+<REGEX>:Conversion Error.*
+
+statement error
+SELECT i FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE CAST(i AS DECIMAL(9,0)) BETWEEN 100 AND 200
+----
+<REGEX>:Conversion Error.*
+
+statement error
+SELECT b FROM (SELECT b, d, b // 2 AS j FROM casts) WHERE CAST(b AS DECIMAL(18,0)) BETWEEN 100 AND 200
+----
+<REGEX>:Conversion Error.*
+
+statement error
+SELECT u FROM (SELECT u, d, u // 2 AS j FROM casts) WHERE CAST(u AS DECIMAL(19,0)) BETWEEN 100 AND 200
+----
+<REGEX>:Conversion Error.*
+
+statement error
+SELECT d FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE CAST(d AS DECIMAL(10,4)) BETWEEN 100 AND 200
+----
+<REGEX>:Conversion Error.*
+
+endloop

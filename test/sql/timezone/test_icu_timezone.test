@@ -197,6 +197,22 @@ NULL	NULL	NULL
 NULL	NULL	NULL
 
 #
+# Date implementation
+#
+query I
+SELECT DATE '2026-11-01' AT TIME ZONE 'Asia/Shanghai';
+----
+2026-10-31 09:00:00-07
+
+query I
+SELECT typeof(DATE '2026-11-01' AT TIME ZONE 'Asia/Shanghai');
+----
+TIMESTAMP WITH TIME ZONE
+
+statement ok
+SELECT DATE '2026-11-01' AT TIME ZONE 'Asia/Shanghai' AT TIME ZONE 'UTC' <= now();
+
+#
 # NS implementations
 #
 query I
@@ -1126,7 +1142,7 @@ select utc_offset, is_dst
 from pg_timezone_names() 
 where name = 'America/Coyhaique'
 ----
--03:00:00	false
+-03:00:00	true
 
 # 2025c
 # Baja California agreed with California’s DST rules in 1953 and in
@@ -1195,3 +1211,13 @@ query I
 select '2026-11-02'::timestamptz
 ----
 2026-11-02 00:00:00-05
+
+# 2026f
+# Cuba will not fall back 2026-11-01; stays on -04 through 2027-11-07.
+statement ok
+set timezone='America/Havana';
+
+query I
+select '2026-11-02'::timestamptz
+----
+2026-11-02 00:00:00-04

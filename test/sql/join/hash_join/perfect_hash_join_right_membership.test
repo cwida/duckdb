@@ -1,0 +1,44 @@
+# name: test/sql/join/hash_join/perfect_hash_join_right_membership.test
+# description: Direct row lookup preserves build-side semi and anti join matches
+# group: [hash_join]
+
+# Keep the operator logs across statements.
+require skip_reload
+
+statement ok
+SET VARIABLE check_perfect_activation =
+    NOT current_setting('debug_force_external') AND NOT current_setting('debug_disable_optimizer');
+
+statement ok
+SET disabled_optimizers='join_order,join_filter_pushdown';
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE b AS SELECT (i%64)::BIGINT k FROM range(200000) t(i);
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query I
+SELECT * FROM (VALUES (0::BIGINT),(63),(127),(NULL)) p(k) SEMI JOIN b USING(k) ORDER BY k;
+----
+0
+63
+
+query I
+SELECT * FROM (VALUES (0::BIGINT),(63),(127),(NULL)) p(k) ANTI JOIN b USING(k) ORDER BY k NULLS LAST;
+----
+127
+NULL
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_perfect_activation') OR list_sort(list(parameters['Join Type'] || '/' || info['backend'])) = ['RIGHT_ANTI/direct','RIGHT_SEMI/direct']
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event='Lookup';
+----
+true

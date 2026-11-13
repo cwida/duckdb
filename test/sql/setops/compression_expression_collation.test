@@ -1,0 +1,91 @@
+# name: test/sql/setops/compression_expression_collation.test
+# description: Compression rebinding preserves collations above the restored output boundary
+# group: [setops]
+
+statement ok
+CREATE TABLE l(s VARCHAR);
+
+statement ok
+INSERT INTO l VALUES ('A'),('A'),('B'),(NULL),(NULL);
+
+statement ok
+CREATE TABLE r(s VARCHAR);
+
+statement ok
+INSERT INTO r VALUES ('a'),('b'),(NULL);
+
+statement ok
+SET threads=1;
+
+# The same logical comparison must survive compression of the ordered child.
+foreach disabled '' 'compressed_materialization'
+
+statement ok
+SET disabled_optimizers={disabled};
+
+query I
+SELECT count(*) FROM ((SELECT s COLLATE NOCASE FROM (SELECT s,rowid FROM l ORDER BY rowid)) EXCEPT (SELECT s FROM r));
+----
+0
+
+query I
+SELECT count(*) FROM ((SELECT s COLLATE NOCASE FROM (SELECT s,rowid FROM l ORDER BY rowid)) INTERSECT (SELECT s FROM r));
+----
+3
+
+query I
+SELECT count(*) FROM ((SELECT s COLLATE NOCASE FROM (SELECT s,rowid FROM l ORDER BY rowid)) EXCEPT ALL (SELECT s FROM r));
+----
+2
+
+query I
+SELECT count(*) FROM ((SELECT s COLLATE NOCASE FROM (SELECT s,rowid FROM l ORDER BY rowid)) INTERSECT ALL (SELECT s FROM r));
+----
+3
+
+# The collation can be introduced on the right input instead.
+query I
+SELECT count(*) FROM ((SELECT s FROM l) EXCEPT ALL (SELECT s COLLATE NOCASE FROM (SELECT s,rowid FROM r ORDER BY rowid)));
+----
+2
+
+# Plain inputs still compare raw values and preserve duplicate counts.
+query I
+SELECT count(*) FROM ((SELECT s FROM (SELECT s,rowid FROM l ORDER BY rowid)) EXCEPT ALL (SELECT s FROM r));
+----
+4
+
+query I
+SELECT count(*) FROM ((SELECT s FROM (SELECT s,rowid FROM l ORDER BY rowid)) INTERSECT ALL (SELECT s FROM r));
+----
+1
+
+endloop
+
+statement ok
+SET disabled_optimizers='';
+
+# Compression remains enabled for the original ordered child.
+query TT
+EXPLAIN (FORMAT JSON) SELECT s,rowid FROM l ORDER BY rowid;
+----
+physical_plan	<REGEX>:.*ORDER_BY.*__internal_compress_string.*__internal_decompress_string.*
+
+statement ok
+SET debug_verify_statement='explain_sql';
+
+# LIMIT produces the ordered row-identity shape when exported as SQL.
+query TT
+EXPLAIN(SQL) SELECT count(*) FROM ((SELECT s COLLATE NOCASE FROM l LIMIT 999) EXCEPT (SELECT s FROM r));
+----
+sql	<REGEX>:.*SELECT.*
+
+query I
+SELECT count(*) FROM ((SELECT s COLLATE NOCASE FROM l LIMIT 999) EXCEPT (SELECT s FROM r));
+----
+0
+
+query I
+SELECT count(*) FROM ((SELECT s COLLATE NOCASE FROM l LIMIT 999) INTERSECT ALL (SELECT s FROM r));
+----
+3

@@ -1,0 +1,63 @@
+# name: test/sql/function/generic/test_resolve_types.test
+# description: Scalar functions resolve their types before the arguments are cast, and bind with the cast arguments
+# group: [generic]
+
+# the overflow check is derived from the types before they are cast
+statement error
+SELECT 99999999999999999999999999999999999999::DECIMAL(38,0) + 1::DECIMAL(38,0);
+----
+Overflow in addition of DECIMAL(38)
+
+query I
+SELECT 1.5::DECIMAL(38,1) * 2.5::DECIMAL(38,1);
+----
+3.75
+
+query II
+SELECT 10.5::DECIMAL(4,1) % 3::DECIMAL(2,0), typeof(10.5::DECIMAL(4,1) % 3::DECIMAL(2,0));
+----
+1.5	DECIMAL(4,1)
+
+# rounding to a negative precision can widen the argument type
+query II
+SELECT round(95::DECIMAL(2,0), -1), typeof(round(95::DECIMAL(2,0), -1));
+----
+100	DECIMAL(3,0)
+
+statement error
+SELECT round(99999999999999999999999999999999999999::DECIMAL(38,0), -1);
+----
+Overflow in ROUND of DECIMAL(38)
+
+# arrays passed to list parameters
+query III
+SELECT list_aggr([1, 2, 3]::INTEGER[3], 'sum'), list_distinct([1, 1, 2]::INTEGER[3]).list_sort(), list_resize([1, 2]::INTEGER[2], 3);
+----
+6	[1, 2]	[1, 2, NULL]
+
+query II
+SELECT array_length([[1, 2], [3, 4], [5, 6]]::INTEGER[2][3], 2), len([1, 2]::INTEGER[2]);
+----
+2	2
+
+# NULL passed to list parameters
+query II
+SELECT list_filter(NULL, lambda x: x > 1), list_transform(NULL, lambda x: x + 1);
+----
+NULL	NULL
+
+# argument types are verified before they are cast
+statement error
+SELECT current_schemas('true');
+----
+current_schemas requires a boolean input
+
+statement error
+SELECT struct_extract(row(1, 2), 'a');
+----
+struct_extract with a string key cannot be used on an unnamed struct
+
+query I
+SELECT SWITCH(2, MAP {1: 'a', 2: 'b'}, 'c');
+----
+b

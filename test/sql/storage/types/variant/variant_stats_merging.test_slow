@@ -34,15 +34,25 @@ select count(*) from tbl where col is null
 ----
 122880
 
-# FIXME: this is wrong
-mode skip instable
-
-query I
-select s.has_null from (select s.fully_shredded.child_stats.stats s from (select stats(col) s from tbl limit 1));
+# NULL lists have no child elements, so their child statistics contain no NULLs.
+query II
+select s.has_null, s.fully_shredded.child_stats.stats.has_null from (select stats(col) s from tbl limit 1);
 ----
-true
+true	false
 
-mode unskip
+# A non-NULL list containing a NULL element has the opposite null statistics.
+statement ok
+CREATE TABLE null_elements AS SELECT [NULL]::VARCHAR[]::VARIANT col;
+
+statement ok
+checkpoint
+
+restart
+
+query II
+select s.has_null, s.fully_shredded.child_stats.stats.has_null from (select stats(col) s from null_elements limit 1);
+----
+false	true
 
 # -------------------------- Shred 'tbl' on INTEGER[] --------------------------
 

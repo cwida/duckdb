@@ -22,6 +22,8 @@ public:
 
 	//! Try to parse and bind a logical type from a string. Throws an exception if the type could not be parsed.
 	LogicalType ParseLogicalType(const string &type_str, ClientContext &context) const;
+	//! Parse and bind a logical type from a string with the default parser, resolving the built-in types only.
+	LogicalType ParseLogicalType(const string &type_str) const;
 
 	//! Get the TypeManager from the DatabaseInstance
 	static TypeManager &Get(DatabaseInstance &db);

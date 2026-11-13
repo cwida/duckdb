@@ -48,27 +48,30 @@ string QualifiedName::ToString(QualifiedNameToStringMode mode) const {
 //! characters like ()'- and keywords without requiring double quotes. It only requires double quotes around .
 //! characters and doubled double quotes (which collapse into a single double quote). It's only possible to fully
 //! double quote a component or not quote it at all.
-vector<Identifier> QualifiedName::ParseComponents(const string &input) {
-	vector<Identifier> result;
+static bool TryParseComponents(const string &input, vector<Identifier> &result, string &error) {
 	idx_t idx = 0;
 	while (idx < input.size()) {
 		string entry;
 		if (input[idx] == '"') {
 			if (!StringUtil::TryParseQuotedString(input, idx, entry)) {
-				throw ParserException("Unterminated quote in qualified name! (input: %s)", input);
+				error = StringUtil::Format("Unterminated quote in qualified name! (input: %s)", input);
+				return false;
 			}
 			if (entry.empty()) {
-				throw ParserException("Zero-length delimited identifier in qualified name! (input: %s)", input);
+				error = StringUtil::Format("Zero-length delimited identifier in qualified name! (input: %s)", input);
+				return false;
 			}
 			if (idx < input.size() && input[idx] != '.') {
-				throw ParserException("Unexpected character after a quoted identifier in a qualified name! (input: %s)",
-				                      input);
+				error = StringUtil::Format(
+				    "Unexpected character after a quoted identifier in a qualified name! (input: %s)", input);
+				return false;
 			}
 		} else {
 			for (; idx < input.size() && input[idx] != '.'; idx++) {
 				if (input[idx] == '"') {
-					throw ParserException("Unexpected quote in the middle of a qualified name component! (input: %s)",
-					                      input);
+					error = StringUtil::Format(
+					    "Unexpected quote in the middle of a qualified name component! (input: %s)", input);
+					return false;
 				}
 				entry += input[idx];
 			}
@@ -77,6 +80,15 @@ vector<Identifier> QualifiedName::ParseComponents(const string &input) {
 		if (idx < input.size()) {
 			idx++;
 		}
+	}
+	return true;
+}
+
+vector<Identifier> QualifiedName::ParseComponents(const string &input) {
+	vector<Identifier> result;
+	string error;
+	if (!TryParseComponents(input, result, error)) {
+		throw ParserException(error);
 	}
 	return result;
 }
@@ -109,6 +121,25 @@ bool QualifiedName::operator!=(const QualifiedName &rhs) const {
 
 QualifiedName QualifiedName::Parse(const string &input) {
 	return FromPath(ParseComponents(input));
+}
+
+bool QualifiedName::TryParse(const string &input, QualifiedName &result, string &error) {
+	vector<Identifier> components;
+	if (!TryParseComponents(input, components, error)) {
+		return false;
+	}
+	if (components.empty()) {
+		error = StringUtil::Format("Zero-length identifier in qualified name! (input: %s)", input);
+		return false;
+	}
+	for (auto &component : components) {
+		if (component.empty()) {
+			error = StringUtil::Format("Zero-length identifier in qualified name! (input: %s)", input);
+			return false;
+		}
+	}
+	result = FromPath(std::move(components));
+	return true;
 }
 
 QualifiedColumnName::QualifiedColumnName() {

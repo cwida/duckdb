@@ -1,0 +1,36 @@
+# name: test/sql/copy/parquet/parquet_signed_zero.test
+# description: Preserve signed zero in Parquet dictionaries
+# group: [parquet]
+
+require parquet
+
+foreach type FLOAT DOUBLE
+
+statement ok
+CREATE OR REPLACE TABLE signed_zero AS
+SELECT (CASE WHEN i % 1000 = 7 THEN '-0.0' ELSE '0.0' END)::{type} AS x,
+       (CASE WHEN i % 1000 = 7 THEN '0.0' ELSE '-0.0' END)::{type} AS y
+FROM range(2000) t(i)
+
+foreach version V1 V2
+
+statement ok
+COPY signed_zero TO '{TEST_DIR}/signed_zero_{type}_{version}.parquet'
+(FORMAT PARQUET, PARQUET_VERSION {version})
+
+query III
+SELECT count(*), count(*) FILTER (WHERE signbit(x)), count(*) FILTER (WHERE signbit(y))
+FROM read_parquet('{TEST_DIR}/signed_zero_{type}_{version}.parquet')
+----
+2000	2	1998
+
+query III
+SELECT count(*), bool_and(encodings = CASE WHEN '{version}' = 'V1' THEN 'PLAIN_DICTIONARY' ELSE 'RLE_DICTIONARY' END),
+       bool_and(stats_distinct_count = 2)
+FROM parquet_metadata('{TEST_DIR}/signed_zero_{type}_{version}.parquet')
+----
+2	true	true
+
+endloop
+
+endloop

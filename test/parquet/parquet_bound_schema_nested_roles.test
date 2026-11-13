@@ -1,0 +1,97 @@
+# name: test/parquet/parquet_bound_schema_nested_roles.test
+# description: Bound schema keeps nested validity and generated roles across file ordering
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 1 id, [{'old':4},NULL] l, MAP {'k':{'old':5}} m UNION ALL SELECT 2,NULL,NULL) TO '{TEST_DIR}/bound_nested_validity.parquet' (FORMAT parquet)
+
+# Add a missing child while keeping container and element NULLs distinct.
+query IIIIII rowsort
+SELECT id, l IS NULL, l[1] IS NULL, l[2] IS NULL, m IS NULL, m['k'] IS NULL
+FROM read_parquet('{TEST_DIR}/bound_nested_validity.parquet', bound_schema={'id':'INTEGER','l':'STRUCT(old INTEGER, fresh INTEGER)[]','m':'MAP(VARCHAR,STRUCT(old INTEGER, fresh INTEGER))'}, hive_partitioning=false)
+----
+1	false	false	true	false	false
+2	true	true	true	true	true
+
+query II
+SELECT l[1].fresh IS NULL, m['k'].fresh IS NULL FROM read_parquet('{TEST_DIR}/bound_nested_validity.parquet', bound_schema={'id':'INTEGER','l':'STRUCT(old INTEGER, fresh INTEGER)[]','m':'MAP(VARCHAR,STRUCT(old INTEGER, fresh INTEGER))'}, hive_partitioning=false) WHERE id=1
+----
+true	true
+
+statement ok
+COPY (SELECT 10 id, {'x':1::BIGINT} s UNION ALL SELECT 20, {'x':2::BIGINT}) TO '{TEST_DIR}/bound_first_match.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT {'x':3::INTEGER} s, 30 id) TO '{TEST_DIR}/bound_first_different.parquet' (FORMAT parquet)
+
+# Same full result when matching and differing physical schemas exchange first-reader roles.
+foreach order match_first different_first
+
+statement ok
+SET VARIABLE bound_order = CASE WHEN '{order}'='match_first' THEN ['{TEST_DIR}/bound_first_match.parquet','{TEST_DIR}/bound_first_different.parquet'] ELSE ['{TEST_DIR}/bound_first_different.parquet','{TEST_DIR}/bound_first_match.parquet'] END
+
+query IIT rowsort
+SELECT id, s.x, typeof(s.x) FROM read_parquet(getvariable('bound_order'), bound_schema={'id':'INTEGER','s':'STRUCT(x BIGINT)'}, hive_partitioning=false)
+----
+10	1	BIGINT
+20	2	BIGINT
+30	3	BIGINT
+
+endloop
+
+# Create the directory, then deliberately write physical shadows under a different Hive value.
+statement ok
+COPY (SELECT 7::BIGINT k, 0 id) TO '{TEST_DIR}/bound_later_roles' (FORMAT parquet, PARTITION_BY(k))
+
+statement ok
+COPY (SELECT 10 id) TO '{TEST_DIR}/bound_later_roles/k=7/first.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 999::BIGINT k, 'physical' Filename, 99::BIGINT FILE_ROW_NUMBER, 20 id) TO '{TEST_DIR}/bound_later_roles/k=7/later.parquet' (FORMAT parquet)
+
+foreach order match_first different_first
+
+statement ok
+SET VARIABLE role_order = CASE WHEN '{order}'='match_first' THEN ['{TEST_DIR}/bound_later_roles/k=7/first.parquet','{TEST_DIR}/bound_later_roles/k=7/later.parquet'] ELSE ['{TEST_DIR}/bound_later_roles/k=7/later.parquet','{TEST_DIR}/bound_later_roles/k=7/first.parquet'] END
+
+query IIII rowsort
+SELECT row_no, part_key, identity, path <> 'physical'
+FROM read_parquet(getvariable('role_order'), bound_schema={'FILE_ROW_NUMBER':'BIGINT','k':'BIGINT','id':'INTEGER','Filename':'VARCHAR'}, filename=true, file_row_number=true, hive_partitioning=true, hive_types={'k':'BIGINT'}, hive_types_autocast=false) t(row_no,part_key,identity,path)
+----
+0	7	10	true
+0	7	20	true
+
+endloop
+
+# The table-function alias exposes the same opt-in contract.
+query I
+SELECT id FROM parquet_scan('{TEST_DIR}/bound_first_different.parquet', bound_schema={'id':'BIGINT','s':'STRUCT(x BIGINT)'}, hive_partitioning=false)
+----
+30
+
+
+# Disjoint STRUCTs inside LIST/MAP retain the ordinary native rejection boundary.
+statement ok
+COPY (SELECT 0 id, [{'fresh':0}] l, MAP {'k':{'fresh':0}} m) TO '{TEST_DIR}/bound_disjoint_target.parquet' (FORMAT parquet)
+
+statement error
+SELECT l FROM read_parquet(['{TEST_DIR}/bound_disjoint_target.parquet','{TEST_DIR}/bound_nested_validity.parquet'], hive_partitioning=false) WHERE id>0
+----
+STRUCT to STRUCT cast must have at least one matching member
+
+statement error
+SELECT l FROM read_parquet('{TEST_DIR}/bound_nested_validity.parquet', bound_schema={'id':'INTEGER','l':'STRUCT(fresh INTEGER)[]','m':'MAP(VARCHAR,STRUCT(fresh INTEGER))'}, hive_partitioning=false)
+----
+STRUCT to STRUCT cast must have at least one matching member
+
+statement error
+SELECT m FROM read_parquet(['{TEST_DIR}/bound_disjoint_target.parquet','{TEST_DIR}/bound_nested_validity.parquet'], hive_partitioning=false) WHERE id>0
+----
+STRUCT to STRUCT cast must have at least one matching member
+
+statement error
+SELECT m FROM read_parquet('{TEST_DIR}/bound_nested_validity.parquet', bound_schema={'id':'INTEGER','l':'STRUCT(fresh INTEGER)[]','m':'MAP(VARCHAR,STRUCT(fresh INTEGER))'}, hive_partitioning=false)
+----
+STRUCT to STRUCT cast must have at least one matching member

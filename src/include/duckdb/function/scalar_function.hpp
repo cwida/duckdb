@@ -137,11 +137,14 @@ struct FunctionToStringInput {
 };
 
 class BindScalarFunctionInput;
+class ResolveScalarFunctionTypesInput;
 
 //! The scalar function type
 typedef std::function<void(DataChunk &, ExpressionState &, Vector &)> scalar_function_t;
 //! The type to bind the scalar function and to create the function data
 typedef unique_ptr<FunctionData> (*bind_scalar_function_t)(BindScalarFunctionInput &input);
+//! The type to resolve the argument and return types of the scalar function, before casts are added to the arguments
+typedef void (*resolve_scalar_types_t)(ResolveScalarFunctionTypesInput &input);
 //! The type to initialize a thread local state for the scalar function
 typedef unique_ptr<FunctionLocalState> (*init_local_state_t)(ExpressionState &state,
                                                              const BoundFunctionExpression &expr,
@@ -189,6 +192,8 @@ public:
 	scalar_function_t function = nullptr;
 	//! Direct selection callback (if any)
 	scalar_function_select_t select_function = nullptr;
+	//! Resolves the argument / return types (if any)
+	resolve_scalar_types_t resolve_types = nullptr;
 	//! The bind function (if any)
 	bind_scalar_function_t bind = nullptr;
 	//! Init thread local state for the function (if any)
@@ -274,6 +279,10 @@ public: // Callbacks
 	auto HasSelectCallback() const -> bool { return callbacks.select_function != nullptr; }
 	auto GetSelectCallback() const -> scalar_function_select_t { return callbacks.select_function; }
 	auto SetSelectCallback(scalar_function_select_t callback) -> void { callbacks.select_function = callback; }
+
+	auto HasResolveTypesCallback() const -> bool { return callbacks.resolve_types != nullptr; }
+	auto GetResolveTypesCallback() const -> resolve_scalar_types_t { return callbacks.resolve_types; }
+	auto SetResolveTypesCallback(resolve_scalar_types_t callback) -> void { callbacks.resolve_types = callback; }
 
 	auto HasBindCallback() const -> bool { return callbacks.bind != nullptr; };
 	auto GetBindCallback() const -> bind_scalar_function_t { return callbacks.bind; };
@@ -424,6 +433,14 @@ public:
 class ScalarFunction : public BaseScalarFunction<ScalarFunction>,
                        public SimpleFunction { // NOLINT: work-around bug in clang-tidy
 public:
+	static constexpr const FunctionKind KIND = FunctionKind::SCALAR;
+	FunctionKind GetKind() const override {
+		return KIND;
+	}
+	//! The properties of the function, for code that only knows it as a SimpleFunction
+	auto GetFunctionProperties() const -> optional_ptr<const FunctionProperties> override {
+		return GetProperties();
+	}
 	DUCKDB_API ScalarFunction(Identifier name, FunctionSignature sig, scalar_function_t function);
 	DUCKDB_API ScalarFunction(Identifier name, vector<LogicalType> arguments, LogicalType return_type,
 	                          scalar_function_t function, bind_scalar_function_t bind = nullptr,
@@ -649,17 +666,9 @@ private:
 class BindScalarFunctionInput : public BindFunctionInput {
 public:
 	BindScalarFunctionInput(ClientContext &context_p, BoundScalarFunction &bound_function_p,
-	                        vector<unique_ptr<Expression>> &arguments_p, const vector<Identifier> &argument_names_p,
-	                        optional_ptr<Binder> binder_p = nullptr)
-	    : BindFunctionInput(context_p, bound_function_p, arguments_p, &argument_names_p),
-	      bound_function(bound_function_p), binder(binder_p) {
-	}
-
-	//! Construct without argument names - looking arguments up by name is not available in this case.
-	BindScalarFunctionInput(ClientContext &context_p, BoundScalarFunction &bound_function_p,
 	                        vector<unique_ptr<Expression>> &arguments_p, optional_ptr<Binder> binder_p = nullptr)
-	    : BindFunctionInput(context_p, bound_function_p, arguments_p, nullptr), bound_function(bound_function_p),
-	      binder(binder_p) {
+	    : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p),
+	      bound_function(bound_function_p), binder(binder_p) {
 	}
 
 	BoundScalarFunction &GetBoundFunction() const {
@@ -670,7 +679,7 @@ public:
 	}
 	Binder &GetBinder() {
 		if (binder == nullptr) {
-			throw InternalException("Function '%s' has cannot be bound without a Binder!", bound_function.GetName());
+			throw InternalException("Function %s has cannot be bound without a Binder!", bound_function.GetName());
 		}
 		return *binder;
 	}
@@ -678,6 +687,41 @@ public:
 private:
 	BoundScalarFunction &bound_function;
 	optional_ptr<Binder> binder;
+};
+
+//! Input of the resolve_types callback - the arguments are read-only, the bound function can be modified
+class ResolveScalarFunctionTypesInput : private BindFunctionInput {
+public:
+	ResolveScalarFunctionTypesInput(ClientContext &context_p, BoundScalarFunction &bound_function_p,
+	                                vector<unique_ptr<Expression>> &arguments_p)
+	    : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p),
+	      bound_function(bound_function_p), arguments(arguments_p) {
+	}
+
+	using BindFunctionInput::GetArgumentName;
+	using BindFunctionInput::GetClientContext;
+	using BindFunctionInput::GetConstant;
+	using BindFunctionInput::GetNonNullConstant;
+	using BindFunctionInput::TryGetConstant;
+
+	BoundScalarFunction &GetBoundFunction() const {
+		return bound_function;
+	}
+	//! The argument expressions - these must not be modified
+	const vector<unique_ptr<Expression>> &GetArguments() const {
+		return arguments;
+	}
+	idx_t GetArgumentCount() const {
+		return arguments.size();
+	}
+	DUCKDB_API const Expression &GetArgument(idx_t arg_idx) const;
+	//! The type of the argument expression, before it is cast to the argument type of the bound function
+	DUCKDB_API const LogicalType &GetArgumentType(idx_t arg_idx) const;
+	DUCKDB_API vector<LogicalType> GetArgumentTypes() const;
+
+private:
+	BoundScalarFunction &bound_function;
+	const vector<unique_ptr<Expression>> &arguments;
 };
 
 } // namespace duckdb

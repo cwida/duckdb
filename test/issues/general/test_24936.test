@@ -55,3 +55,23 @@ query I
 SELECT sum(stats_null_count) FROM parquet_metadata('{TEST_DIR}/24936_list_v1.parquet') WHERE path_in_schema LIKE 'v%';
 ----
 120000
+
+# a large element at the page boundary must not blow up the page size estimate
+statement ok
+SET memory_limit='4GB';
+
+statement ok
+CREATE TABLE big AS
+SELECT list(s ORDER BY i) AS l FROM (
+    SELECT i, CASE WHEN i < 204799 THEN lpad(i::VARCHAR, 508, '0')
+                   WHEN i = 204799 THEN repeat('B', 1000000)
+                   ELSE 'y' END AS s
+    FROM range(224800) r(i));
+
+statement ok
+COPY big TO '{TEST_DIR}/24936_big.parquet' (FORMAT PARQUET);
+
+query I
+SELECT count(*) FROM big JOIN '{TEST_DIR}/24936_big.parquet' p ON (big.l = p.l);
+----
+1

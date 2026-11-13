@@ -1,0 +1,51 @@
+# name: benchmark/micro/parquet/wide_schema_statistics.benchmark
+# description: Avoid rebuilding the Parquet schema for every column statistics request
+# group: [parquet]
+
+name Wide Schema Statistics
+group micro
+subgroup parquet
+
+require parquet
+
+load
+COPY (SELECT
+	i::BIGINT c0, i::BIGINT c1, i::BIGINT c2, i::BIGINT c3,
+	i::BIGINT c4, i::BIGINT c5, i::BIGINT c6, i::BIGINT c7,
+	i::BIGINT c8, i::BIGINT c9, i::BIGINT c10, i::BIGINT c11,
+	i::BIGINT c12, i::BIGINT c13, i::BIGINT c14, i::BIGINT c15,
+	i::BIGINT c16, i::BIGINT c17, i::BIGINT c18, i::BIGINT c19,
+	i::BIGINT c20, i::BIGINT c21, i::BIGINT c22, i::BIGINT c23,
+	i::BIGINT c24, i::BIGINT c25, i::BIGINT c26, i::BIGINT c27,
+	i::BIGINT c28, i::BIGINT c29, i::BIGINT c30, i::BIGINT c31,
+	i::BIGINT c32, i::BIGINT c33, i::BIGINT c34, i::BIGINT c35,
+	i::BIGINT c36, i::BIGINT c37, i::BIGINT c38, i::BIGINT c39,
+	i::BIGINT c40, i::BIGINT c41, i::BIGINT c42, i::BIGINT c43,
+	i::BIGINT c44, i::BIGINT c45, i::BIGINT c46, i::BIGINT c47,
+	i::BIGINT c48, i::BIGINT c49, i::BIGINT c50, i::BIGINT c51,
+	i::BIGINT c52, i::BIGINT c53, i::BIGINT c54, i::BIGINT c55,
+	i::BIGINT c56, i::BIGINT c57, i::BIGINT c58, i::BIGINT c59,
+	i::BIGINT c60, i::BIGINT c61, i::BIGINT c62, i::BIGINT c63,
+	i::BIGINT c64, i::BIGINT c65, i::BIGINT c66, i::BIGINT c67,
+	i::BIGINT c68, i::BIGINT c69, i::BIGINT c70, i::BIGINT c71,
+	i::BIGINT c72, i::BIGINT c73, i::BIGINT c74, i::BIGINT c75,
+	i::BIGINT c76, i::BIGINT c77, i::BIGINT c78, i::BIGINT c79,
+	i::BIGINT c80, i::BIGINT c81, i::BIGINT c82, i::BIGINT c83,
+	i::BIGINT c84, i::BIGINT c85, i::BIGINT c86, i::BIGINT c87,
+	i::BIGINT c88, i::BIGINT c89, i::BIGINT c90, i::BIGINT c91,
+	i::BIGINT c92, i::BIGINT c93, i::BIGINT c94, i::BIGINT c95,
+	i::BIGINT c96, i::BIGINT c97, i::BIGINT c98, i::BIGINT c99,
+	i::BIGINT c100, i::BIGINT c101, i::BIGINT c102, i::BIGINT c103,
+	i::BIGINT c104, i::BIGINT c105, i::BIGINT c106, i::BIGINT c107,
+	i::BIGINT c108, i::BIGINT c109, i::BIGINT c110, i::BIGINT c111,
+	i::BIGINT c112, i::BIGINT c113, i::BIGINT c114, i::BIGINT c115,
+	i::BIGINT c116, i::BIGINT c117, i::BIGINT c118, i::BIGINT c119,
+	i::BIGINT c120, i::BIGINT c121, i::BIGINT c122, i::BIGINT c123,
+	i::BIGINT c124, i::BIGINT c125, i::BIGINT c126, i::BIGINT c127
+FROM range(100) r(i)) TO '${BENCHMARK_DIR}/wide_schema_statistics.parquet';
+
+run
+SELECT sum(list_sum([*COLUMNS(*)])) FROM '${BENCHMARK_DIR}/wide_schema_statistics.parquet' WHERE c0>=0;
+
+result I
+633600

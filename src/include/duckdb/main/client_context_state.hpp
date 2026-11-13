@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/enums/prepared_statement_mode.hpp"
 #include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/common/optional_ptr.hpp"
@@ -17,6 +18,7 @@
 
 namespace duckdb {
 class ClientContext;
+class Context;
 class ErrorData;
 class MetaTransaction;
 class PreparedStatementData;
@@ -45,6 +47,16 @@ public:
 	virtual void QueryEnd(ClientContext &context, optional_ptr<ErrorData> error) {
 		QueryEnd(context);
 	}
+	//! A statement of the active query starts, after QueryBegin and before it is planned. A statement that expands
+	//! into several runs them as one query, with a StatementBegin and StatementEnd for each
+	virtual void StatementBegin(ClientContext &context) {
+	}
+	//! A statement of the active query released its executor and plan, before the next one starts
+	virtual void StatementEnd(ClientContext &context) {
+	}
+	virtual void StatementEnd(ClientContext &context, optional_ptr<ErrorData> error) {
+		StatementEnd(context);
+	}
 	virtual void TransactionBegin(MetaTransaction &transaction, ClientContext &context) {
 	}
 	virtual void TransactionCommit(MetaTransaction &transaction, ClientContext &context) {
@@ -71,9 +83,9 @@ public:
 	}
 	virtual void WriteProfilingInformation(std::ostream &ss) {
 	}
-	virtual void OnTaskStart(ClientContext &context) {
+	virtual void OnTaskStart(Context &context) {
 	}
-	virtual void OnTaskStop(ClientContext &context) {
+	virtual void OnTaskStop(Context &context) {
 	}
 
 public:
@@ -100,6 +112,7 @@ public:
 		}
 		auto cache = make_shared_ptr<T>(std::forward<ARGS>(args)...);
 		registered_state[key] = cache;
+		InvalidateSnapshot();
 		return cache;
 	}
 
@@ -115,26 +128,74 @@ public:
 
 	void Insert(const string &key, shared_ptr<ClientContextState> state_p) {
 		lock_guard<mutex> l(lock);
-		registered_state.insert(make_pair(key, std::move(state_p)));
+		if (registered_state.insert(make_pair(key, std::move(state_p))).second) {
+			InvalidateSnapshot();
+		}
 	}
 
 	void Remove(const string &key) {
 		lock_guard<mutex> l(lock);
-		registered_state.erase(key);
+		if (registered_state.erase(key)) {
+			InvalidateSnapshot();
+		}
 	}
 
 	vector<shared_ptr<ClientContextState>> States() {
 		lock_guard<mutex> l(lock);
+		return StatesInternal();
+	}
+
+	//! Invokes callbacks outside the registry lock, retaining snapshot ownership throughout dispatch.
+	template <class STATE_CALLBACK>
+	void ForEachState(STATE_CALLBACK &&callback) {
+		auto states = StatesSnapshot();
+		if (!states) {
+			return;
+		}
+		for (auto &state : *states) {
+			callback(*state);
+		}
+	}
+
+private:
+	shared_ptr<const vector<shared_ptr<ClientContextState>>> StatesSnapshot() {
+		if (!has_states.load(std::memory_order_acquire)) {
+			return nullptr;
+		}
+		auto snapshot = state_snapshot.atomic_load();
+		if (snapshot) {
+			return snapshot;
+		}
+		lock_guard<mutex> l(lock);
+		snapshot = state_snapshot.atomic_load();
+		if (!snapshot && !registered_state.empty()) {
+			snapshot = make_shared_ptr<vector<shared_ptr<ClientContextState>>>(StatesInternal());
+			state_snapshot.atomic_store(snapshot);
+		}
+		return snapshot;
+	}
+
+	vector<shared_ptr<ClientContextState>> StatesInternal() {
 		vector<shared_ptr<ClientContextState>> states;
+		states.reserve(registered_state.size());
 		for (auto &entry : registered_state) {
 			states.push_back(entry.second);
 		}
 		return states;
 	}
 
+	//! Called with the registry lock held after a successful mutation.
+	void InvalidateSnapshot() {
+		state_snapshot.atomic_store(nullptr);
+		has_states.store(!registered_state.empty(), std::memory_order_release);
+	}
+
 private:
 	mutex lock;
 	unordered_map<string, shared_ptr<ClientContextState>> registered_state;
+	shared_ptr<const vector<shared_ptr<ClientContextState>>> state_snapshot;
+	//! Avoid atomic shared_ptr loads for empty registries.
+	atomic<bool> has_states {false};
 };
 
 } // namespace duckdb

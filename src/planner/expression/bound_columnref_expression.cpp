@@ -6,14 +6,35 @@
 namespace duckdb {
 
 BoundColumnRefExpression::BoundColumnRefExpression(Identifier alias_p, LogicalType type, ColumnBinding binding,
-                                                   idx_t depth)
+                                                   idx_t depth, QueryLocation location)
     : Expression(ExpressionType::BOUND_COLUMN_REF, ExpressionClass::BOUND_COLUMN_REF, std::move(type)),
       binding(binding), depth(depth) {
 	this->alias = std::move(alias_p);
+	query_location = location;
 }
 
 BoundColumnRefExpression::BoundColumnRefExpression(LogicalType type, ColumnBinding binding, idx_t depth)
     : BoundColumnRefExpression(Identifier(), std::move(type), binding, depth) {
+}
+
+unique_ptr<Expression> BoundColumnRefExpression::WithBinding(ColumnBinding new_binding) const {
+	return WithBinding(new_binding, depth);
+}
+
+unique_ptr<Expression> BoundColumnRefExpression::WithBinding(ColumnBinding new_binding, idx_t new_depth) const {
+	return make_uniq<BoundColumnRefExpression>(alias, return_type, new_binding, new_depth, query_location);
+}
+
+unique_ptr<Expression> BoundColumnRefExpression::WithBinding(ColumnBinding new_binding, LogicalType new_type) const {
+	return make_uniq<BoundColumnRefExpression>(alias, std::move(new_type), new_binding, depth, query_location);
+}
+
+unique_ptr<Expression> BoundColumnRefExpression::WithReturnType(LogicalType new_type) const {
+	return WithBinding(binding, std::move(new_type));
+}
+
+unique_ptr<Expression> BoundColumnRefExpression::WithDepth(idx_t new_depth) const {
+	return WithBinding(binding, new_depth);
 }
 
 unique_ptr<Expression> BoundColumnRefExpression::Copy() const {

@@ -1,4 +1,5 @@
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+
 #include "duckdb/parser/expression/function_expression.hpp"
 
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
@@ -21,6 +22,10 @@ BoundAggregateExpression::BoundAggregateExpression(BoundAggregateFunction functi
 
 bool BoundAggregateExpression::IsVolatile() const {
 	return function.GetStability() == FunctionStability::VOLATILE || Expression::IsVolatile();
+}
+
+bool BoundAggregateExpression::CanThrow() const {
+	return function.GetErrorMode() == FunctionErrors::CAN_THROW_RUNTIME_ERROR || Expression::CanThrow();
 }
 
 string BoundAggregateExpression::ToString() const {
@@ -89,6 +94,11 @@ bool BoundAggregateExpression::Equals(const BaseExpression &other_p) const {
 	}
 	for (idx_t i = 0; i < children.size(); i++) {
 		if (!Expression::Equals(*children[i], *other.children[i])) {
+			return false;
+		}
+		// expression equality ignores the return type, but a collation lives in the return type and decides
+		// which argument values compare equal - two aggregates that disagree on it are not the same aggregate
+		if (!children[i]->GetReturnType().EqualsIncludingCollation(other.children[i]->GetReturnType())) {
 			return false;
 		}
 	}

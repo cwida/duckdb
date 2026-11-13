@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 statement ok
 CREATE TABLE integers(i INTEGER);
@@ -170,15 +170,21 @@ logical_opt	<REGEX>:.*EMPTY_RESULT.*
 
 # NaN in column: corner eval returns NaN, is_unusable fires, no bounds derived
 query II
-SELECT s.min, s.max FROM (SELECT STATS(exp(x_nan)) s FROM mixed LIMIT 1)
+SELECT s.min, s.max FROM (SELECT STATS(sinh(x_nan)) s FROM mixed LIMIT 1)
 ----
 NULL	NULL
 
-# finite column: exp bounds propagate correctly
+# finite column: sinh bounds propagate correctly
+query II
+SELECT s.min, s.max FROM (SELECT STATS(sinh(x)) s FROM mixed LIMIT 1)
+----
+0.0	1.1752011936438014
+
+# exp is deliberately not annotated monotone: libm exp is not monotone on every platform
 query II
 SELECT s.min, s.max FROM (SELECT STATS(exp(x)) s FROM mixed LIMIT 1)
 ----
-1.0	2.718281828459045
+NULL	NULL
 
 # sqrt is strictly increasing: perfect squares round exactly, so bounds are exact
 statement ok
@@ -296,6 +302,24 @@ SELECT s.min, s.max FROM (SELECT stats(a * b) s FROM hugeint_stats LIMIT 1)
 ----
 -40000000000000000000	60000000000000000000
 
+# a bound product equal to the HUGEINT minimum fits
+statement ok
+CREATE TABLE hugeint_stats_minimum(a HUGEINT, b HUGEINT);
+
+statement ok
+INSERT INTO hugeint_stats_minimum VALUES (-85070591730234615865843651857942052864, 2), (0, 0);
+
+query II
+SELECT s.min, s.max FROM (SELECT stats(a * b) s FROM hugeint_stats_minimum LIMIT 1)
+----
+-170141183460469231731687303715884105728	0
+
+query I
+SELECT a * b FROM hugeint_stats_minimum
+----
+-170141183460469231731687303715884105728
+0
+
 # potentially overflowing hugeint statistics keep the checked operator
 statement ok
 CREATE TABLE hugeint_stats_overflow(
@@ -331,3 +355,27 @@ statement error
 SELECT multiply_left * multiply_right FROM hugeint_stats_overflow
 ----
 <REGEX>:Out of Range Error.*Overflow in multiplication of INT128.*
+
+# abs on DOUBLE: bounds touching zero, max == 0 with negative min
+statement ok
+CREATE TABLE t_double(c DOUBLE);
+
+statement ok
+INSERT INTO t_double VALUES (-1), (0);
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(ABS(c)) s FROM t_double LIMIT 1)
+----
+0.0	1.0
+
+# abs on FLOAT:
+statement ok
+CREATE TABLE t_float(c FLOAT);
+
+statement ok
+INSERT INTO t_float VALUES (-1), (0);
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(ABS(c)) s FROM t_float LIMIT 1)
+----
+0.0	1.0

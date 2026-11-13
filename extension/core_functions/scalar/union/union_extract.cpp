@@ -42,21 +42,27 @@ void UnionExtractFunction(DataChunk &args, ExpressionState &state, Vector &resul
 	result.Verify();
 }
 
+//! Validates the union argument - the extracted member and the return type are resolved in the bind
+void UnionExtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	auto &bound_function = input.GetBoundFunction();
+	D_ASSERT(bound_function.GetArguments().size() == 2);
+	auto &union_type = input.GetArgumentType(0);
+	if (union_type.id() == LogicalTypeId::UNKNOWN) {
+		throw ParameterNotResolvedException();
+	}
+	if (union_type.id() != LogicalTypeId::UNION) {
+		throw BinderException("union_extract can only take a union parameter");
+	}
+	if (UnionType::GetMemberCount(union_type) == 0) {
+		throw InternalException("Can't extract something from an empty union");
+	}
+	bound_function.GetArguments()[0] = union_type;
+}
+
 unique_ptr<FunctionData> UnionExtractBind(BindScalarFunctionInput &input) {
 	auto &bound_function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
-	D_ASSERT(bound_function.GetArguments().size() == 2);
-	if (arguments[0]->GetReturnType().id() == LogicalTypeId::UNKNOWN) {
-		throw ParameterNotResolvedException();
-	}
-	if (arguments[0]->GetReturnType().id() != LogicalTypeId::UNION) {
-		throw BinderException("union_extract can only take a union parameter");
-	}
 	idx_t union_member_count = UnionType::GetMemberCount(arguments[0]->GetReturnType());
-	if (union_member_count == 0) {
-		throw InternalException("Can't extract something from an empty union");
-	}
-	bound_function.GetArguments()[0] = arguments[0]->GetReturnType();
 
 	auto key_val = input.GetNonNullConstant(1);
 	D_ASSERT(key_val.type().id() == LogicalTypeId::VARCHAR);
@@ -103,6 +109,7 @@ ScalarFunction UnionExtractFun::GetFunction() {
 	// the arguments and return types are actually set in the binder function
 	ScalarFunction fun({}, LogicalType::ANY, UnionExtractFunction, UnionExtractBind, nullptr, nullptr);
 	fun.GetSignature().AddParameter("union", LogicalTypeId::UNION).AddParameter("tag", LogicalType::VARCHAR);
+	fun.SetResolveTypesCallback(UnionExtractResolveTypes);
 	return fun;
 }
 

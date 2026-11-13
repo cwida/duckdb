@@ -88,6 +88,16 @@ struct QualifiedName {
 	const Identifier &Name() const {
 		return path.empty() ? empty : path.back();
 	}
+	//! The (possibly nested) schema qualification between the catalog and the name
+	vector<Identifier> SchemaPath() const {
+		vector<Identifier> result;
+		for (idx_t i = path.size() >= 3 ? 1 : 0; i + 1 < path.size(); i++) {
+			if (!path[i].empty()) {
+				result.push_back(path[i]);
+			}
+		}
+		return result;
+	}
 	//! The full underlying path. Most callers should use Catalog()/Schema()/Name(); this is for multi-level schema
 	//! support (e.g. nested CREATE SCHEMA), where the qualification can be deeper than [catalog, schema].
 	const vector<Identifier> &Path() const {
@@ -140,6 +150,8 @@ struct QualifiedName {
 	//! Parse the (optional) schema and a name from a string in the format of e.g. "schema"."table"; if there is no dot
 	//! the schema will be set to INVALID_SCHEMA
 	static QualifiedName Parse(const string &input);
+	//! Parse a qualified name, returning false and setting the error if it is malformed or any component is empty
+	static bool TryParse(const string &input, QualifiedName &result, string &error);
 	static vector<Identifier> ParseComponents(const string &input);
 	string ToString(QualifiedNameToStringMode mode = QualifiedNameToStringMode::DEFAULT) const;
 	//! Render only the qualification (every component before the name), with a trailing "." after each component

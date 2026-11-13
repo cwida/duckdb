@@ -147,6 +147,7 @@ bool PhysicalResultSink::FlushUnits(ResultSinkGlobalState &gstate, ResultSinkLoc
 
 bool PhysicalResultSink::HandOver(ResultSinkGlobalState &gstate, ResultSinkLocalState &lstate,
                                   unique_ptr<ResultUnit> unit, const InterruptState &interrupt) const {
+	D_ASSERT(unit->row_count > 0);
 	if (BatchOrdered()) {
 		return gstate.buffered_data->Cast<BatchedBufferedData>().AppendOrBlock(std::move(unit), lstate.current_batch,
 		                                                                       interrupt);
@@ -266,7 +267,7 @@ SinkNextBatchType PhysicalResultSink::UpdateMinBatchIndex(ExecutionContext &cont
 unique_ptr<QueryResult> PhysicalResultSink::GetResult(GlobalSinkState &state) const {
 	auto &gstate = state.Cast<ResultSinkGlobalState>();
 	// A draining sink hands its units to the consumer through the buffer, never through a result
-	D_ASSERT(CurrentLifetime(gstate) == ResultLifetime::RETAINED);
+	D_ASSERT(CurrentLifetime(gstate) != ResultLifetime::DRAINING);
 	auto cc = gstate.context.lock();
 	if (!cc) {
 		throw ConnectionException("Connection has already been closed");

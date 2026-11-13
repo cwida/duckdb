@@ -1,0 +1,82 @@
+# name: test/sql/update/update_fetch_partial_vector.test
+# description: Sparse and partial-vector updates on checkpointed (compressed) data
+# group: [update]
+
+load {TEST_DIR}/update_fetch_partial_vector.db
+
+statement ok
+CREATE TABLE t AS
+SELECT i AS id,
+       CASE WHEN i % 5 = 0 THEN NULL ELSE i END AS k,
+       CASE WHEN i % 7 = 0 THEN NULL ELSE 'string_value_' || (i % 100) END AS c,
+       i * 2 AS nn
+FROM range(10000) r(i)
+
+statement ok
+CHECKPOINT
+
+# NULL -> value for both columns
+statement ok
+UPDATE t SET k = 42, c = 'single' WHERE id = 35
+
+# value -> NULL
+statement ok
+UPDATE t SET k = NULL, c = NULL WHERE id = 6
+
+# last row of a vector and first row of the next vector
+statement ok
+UPDATE t SET k = -1, c = 'boundary', nn = -1 WHERE id IN (2047, 2048)
+
+# sparse rows within a single vector
+statement ok
+UPDATE t SET k = k + 1000000, c = c || '_sparse', nn = nn + 1 WHERE id BETWEEN 4096 AND 6143 AND id % 13 = 3
+
+# most of a vector
+statement ok
+UPDATE t SET k = k + 2000000, c = c || '_dense' WHERE id BETWEEN 6144 AND 8191 AND id % 3 <> 0
+
+statement ok
+CREATE VIEW expected AS
+SELECT i AS id,
+       CASE
+           WHEN i = 35 THEN 42
+           WHEN i = 6 THEN NULL
+           WHEN i IN (2047, 2048) THEN -1
+           WHEN i % 5 = 0 THEN NULL
+           WHEN i BETWEEN 4096 AND 6143 AND i % 13 = 3 THEN i + 1000000
+           WHEN i BETWEEN 6144 AND 8191 AND i % 3 <> 0 THEN i + 2000000
+           ELSE i
+       END AS k,
+       CASE
+           WHEN i = 35 THEN 'single'
+           WHEN i = 6 THEN NULL
+           WHEN i IN (2047, 2048) THEN 'boundary'
+           WHEN i % 7 = 0 THEN NULL
+           WHEN i BETWEEN 4096 AND 6143 AND i % 13 = 3 THEN 'string_value_' || (i % 100) || '_sparse'
+           WHEN i BETWEEN 6144 AND 8191 AND i % 3 <> 0 THEN 'string_value_' || (i % 100) || '_dense'
+           ELSE 'string_value_' || (i % 100)
+       END AS c,
+       CASE
+           WHEN i IN (2047, 2048) THEN -1
+           WHEN i BETWEEN 4096 AND 6143 AND i % 13 = 3 THEN i * 2 + 1
+           ELSE i * 2
+       END AS nn
+FROM range(10000) r(i)
+
+query I
+SELECT count(*) FROM t JOIN expected e USING (id)
+WHERE t.k IS DISTINCT FROM e.k OR t.c IS DISTINCT FROM e.c OR t.nn IS DISTINCT FROM e.nn
+----
+0
+
+# the updates survive a checkpoint and a restart
+statement ok
+CHECKPOINT
+
+restart
+
+query I
+SELECT count(*) FROM t JOIN expected e USING (id)
+WHERE t.k IS DISTINCT FROM e.k OR t.c IS DISTINCT FROM e.c OR t.nn IS DISTINCT FROM e.nn
+----
+0

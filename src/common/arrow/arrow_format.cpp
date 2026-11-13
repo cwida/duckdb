@@ -199,6 +199,16 @@ unique_ptr<ArrowArrayWrapper> ArrowFormat::ShareArray(const ArrowArrayOwner &own
 	return result;
 }
 
+idx_t ArrowFormat::ChangedRows(const ArrowArray &array) {
+	if (array.length == 0) {
+		return 0;
+	}
+	D_ASSERT(array.length == 1 && array.n_children == 1);
+	auto &count = *array.children[0];
+	auto values = static_cast<const int64_t *>(count.buffers[1]);
+	return NumericCast<idx_t>(values[array.offset + count.offset]);
+}
+
 //===--------------------------------------------------------------------===//
 // ArrowRetainedCollection
 //===--------------------------------------------------------------------===//

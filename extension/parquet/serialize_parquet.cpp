@@ -89,6 +89,7 @@ void ParquetOptionsSerialization::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<bool>(107, "can_have_nan", parquet_options.can_have_nan, false);
 	serializer.WritePropertyWithDefault<ParquetPrefetchStrategyOption>(108, "prefetch_strategy", parquet_options.prefetch_strategy, ParquetPrefetchStrategyOption::AUTO);
 	serializer.WritePropertyWithDefault<StringColumnReader::Utf8ValidationOption>(109, "utf8_validation", parquet_options.utf8_validation_option, StringColumnReader::Utf8ValidationOption::STRICT_UTF8);
+	serializer.WritePropertyWithDefault<ParquetInt96AsOption>(110, "int96_as", parquet_options.int96_as, ParquetInt96AsOption::TIMESTAMP);
 }
 
 ParquetOptionsSerialization ParquetOptionsSerialization::Deserialize(Deserializer &deserializer) {
@@ -103,6 +104,7 @@ ParquetOptionsSerialization ParquetOptionsSerialization::Deserialize(Deserialize
 	deserializer.ReadPropertyWithExplicitDefault<bool>(107, "can_have_nan", result.parquet_options.can_have_nan, false);
 	deserializer.ReadPropertyWithExplicitDefault<ParquetPrefetchStrategyOption>(108, "prefetch_strategy", result.parquet_options.prefetch_strategy, ParquetPrefetchStrategyOption::AUTO);
 	deserializer.ReadPropertyWithExplicitDefault<StringColumnReader::Utf8ValidationOption>(109, "utf8_validation", result.parquet_options.utf8_validation_option, StringColumnReader::Utf8ValidationOption::STRICT_UTF8);
+	deserializer.ReadPropertyWithExplicitDefault<ParquetInt96AsOption>(110, "int96_as", result.parquet_options.int96_as, ParquetInt96AsOption::TIMESTAMP);
 	return result;
 }
 

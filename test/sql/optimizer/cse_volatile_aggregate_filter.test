@@ -1,0 +1,43 @@
+# name: test/sql/optimizer/cse_volatile_aggregate_filter.test
+# description: Common sub-expressions of volatile aggregate filters are extracted once, the filters stay separate
+# group: [optimizer]
+
+statement ok
+CREATE TABLE g AS SELECT i, repeat(i::VARCHAR, 32) AS s FROM range(20000) t(i)
+
+# sha256(s) is computed once in a projection below the aggregate, the volatile filters are evaluated per aggregate
+query II
+EXPLAIN (FORMAT compact) SELECT count(*) FILTER (WHERE sha256(s) < '8' AND random() < 2.0), sum(i) FILTER (WHERE sha256(s) < '8' AND random() < 2.0) FROM g
+----
+physical_plan	<REGEX>:(?s).*UNGROUPED_AGGREGATE.*PROJECTION.*random\(\).*random\(\).*PROJECTION.*sha256\(s\).*SEQ_SCAN.*
+
+query II
+EXPLAIN (FORMAT compact) SELECT count(*) FILTER (WHERE sha256(s) < '8' AND random() < 2.0), sum(i) FILTER (WHERE sha256(s) < '8' AND random() < 2.0) FROM g
+----
+physical_plan	<!REGEX>:(?s).*sha256.*sha256.*
+
+query II
+SELECT count(*) FILTER (WHERE sha256(s) < '8' AND random() < 2.0), sum(i) FILTER (WHERE sha256(s) < '8' AND random() < 2.0) FROM g
+----
+10056	100093689
+
+# identical deterministic filters stay with the ungrouped aggregate and are evaluated once: nothing is projected
+query II
+EXPLAIN (FORMAT compact) SELECT count(*) FILTER (WHERE sha256(s) < '8'), sum(i) FILTER (WHERE sha256(s) < '8') FROM g
+----
+physical_plan	<REGEX>:(?s).*UNGROUPED_AGGREGATE.*sha256\(.*PROJECTION.*SEQ_SCAN.*
+
+query II
+EXPLAIN (FORMAT compact) SELECT count(*) FILTER (WHERE sha256(s) < '8'), sum(i) FILTER (WHERE sha256(s) < '8') FROM g
+----
+physical_plan	<!REGEX>:(?s).*PROJECTION[^\n]*sha256.*
+
+query II
+SELECT count(*) FILTER (WHERE sha256(s) < '8'), sum(i) FILTER (WHERE sha256(s) < '8') FROM g
+----
+10056	100093689
+
+query II
+SELECT count(*), sum(i) FROM g WHERE sha256(s) < '8'
+----
+10056	100093689

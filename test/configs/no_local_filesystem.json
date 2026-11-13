@@ -9,7 +9,10 @@
     {
       "reason": "Cannot install extensions without a local filesystem",
       "paths": [
-        "test/extension/install_extension_httpfs.test"
+        "test/extension/install_extension_httpfs.test",
+        "test/extension/install_extension_httpfs.test_slow",
+        "test/sql/logging/http_response_log_redaction.test",
+        "test/sql/logging/http_url_log_redaction.test"
       ]
     },
     {
@@ -34,6 +37,12 @@
       "reason": "Writes and reads a local profiling JSON file.",
       "paths": [
         "test/sql/optimizer/nested_null_segment_pruning.test"
+      ]
+    },
+    {
+      "reason": "Checks that disabled_filesystems is empty on startup, which this configuration sets during on_init",
+      "paths": [
+        "test/sql/settings/test_disabled_file_systems.test"
       ]
     }
   ]

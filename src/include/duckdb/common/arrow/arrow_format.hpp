@@ -88,6 +88,8 @@ public:
 	DUCKDB_API static unique_ptr<ArrowArrayWrapper> UnpackUnit(unique_ptr<ResultUnit> unit);
 	//! An export over the owner's buffers whose every node holds the owner, so a moved-out child outlives the rest
 	DUCKDB_API static unique_ptr<ArrowArrayWrapper> ShareArray(const ArrowArrayOwner &owner);
+	//! The count in a CHANGED_ROWS result's array, a single BIGINT row; 0 for an empty array
+	DUCKDB_API static idx_t ChangedRows(const ArrowArray &array);
 
 private:
 	//! The rows an array holds, except at a batch boundary and at a producer's end of input

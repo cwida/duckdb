@@ -47,18 +47,19 @@ public:
 	}
 };
 
+void WriteLogResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	if (input.GetArgumentCount() == 0) {
+		throw BinderException("write_log takes at least one argument");
+	}
+	if (input.GetArgumentType(0) != LogicalType::VARCHAR) {
+		throw InvalidTypeException("write_log first argument must be a VARCHAR");
+	}
+}
+
 unique_ptr<FunctionData> WriteLogBind(BindScalarFunctionInput &input) {
 	auto &context = input.GetClientContext();
 	auto &bound_function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
-
-	if (arguments.empty()) {
-		throw BinderException("write_log takes at least one argument");
-	}
-
-	if (arguments[0]->GetReturnType() != LogicalType::VARCHAR) {
-		throw InvalidTypeException("write_log first argument must be a VARCHAR");
-	}
 
 	// Used to replace the actual log call with a nop: useful for benchmarking
 	auto result = make_uniq<WriteLogBindData>();
@@ -66,38 +67,38 @@ unique_ptr<FunctionData> WriteLogBind(BindScalarFunctionInput &input) {
 	// Default return type
 	bound_function.SetReturnType(LogicalType::VARCHAR);
 
-	auto &names = *input.GetArgumentNames();
 	for (idx_t i = 1; i < arguments.size(); i++) {
 		auto &arg = arguments[i];
+		auto &name = input.GetArgumentName(i);
 		if (arg->HasParameter()) {
 			throw ParameterNotResolvedException();
 		}
-		if (names[i] == "disable_logging") {
+		if (name == "disable_logging") {
 			if (arg->GetReturnType().id() != LogicalTypeId::BOOLEAN) {
 				throw BinderException("write_log: 'disable_logging' argument must be a boolean");
 			}
 			result->disable_logging = BooleanValue::Get(input.GetConstant(i));
-		} else if (names[i] == "scope") {
+		} else if (name == "scope") {
 			if (arg->GetReturnType().id() != LogicalTypeId::VARCHAR) {
 				throw BinderException("write_log: 'scope' argument must be a string");
 			}
 			result->scope = StringValue::Get(input.GetConstant(i));
-		} else if (names[i] == "level") {
+		} else if (name == "level") {
 			if (arg->GetReturnType().id() != LogicalTypeId::VARCHAR) {
 				throw BinderException("write_log: 'level' argument must be a string");
 			}
 			result->level = EnumUtil::FromString<LogLevel>(StringValue::Get(input.GetConstant(i)));
-		} else if (names[i] == "log_type") {
+		} else if (name == "log_type") {
 			if (arg->GetReturnType().id() != LogicalTypeId::VARCHAR) {
 				throw BinderException("write_log: 'log_type' argument must be a string");
 			}
 			result->type = StringValue::Get(input.GetConstant(i));
-		} else if (names[i] == "return_value") {
+		} else if (name == "return_value") {
 			result->return_type = arg->GetReturnType();
 			result->output_col = i;
 			bound_function.SetReturnType(result->return_type);
 		} else {
-			throw BinderException(StringUtil::Format("write_log: Unknown argument '%s'", names[i]));
+			throw BinderException(StringUtil::Format("write_log: Unknown argument %s", name));
 		}
 	}
 
@@ -133,8 +134,8 @@ void WriteLogFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 			WriteLogValues<const DatabaseInstance>(*info.context->db, info.level, input_data, idata.sel, args.size(),
 			                                       info.type);
 		} else if (info.scope == "file_opener") {
-			WriteLogValues<const FileOpener>(*info.context->client_data->file_opener, info.level, input_data, idata.sel,
-			                                 args.size(), info.type);
+			WriteLogValues<const FileOpener>(*info.context->GetContext().TryGetFileOpener(), info.level, input_data,
+			                                 idata.sel, args.size(), info.type);
 		} else {
 			throw InvalidInputException(
 			    "write_log: 'scope' argument unknown: '%s'. Valid values are [connection, database, file_opener]",
@@ -172,7 +173,10 @@ ScalarFunctionSet WriteLogFun::GetFunctions() {
 	ScalarFunction fun({{"string", LogicalType::VARCHAR}}, LogicalType::ANY, WriteLogFunction, WriteLogBind, nullptr,
 	                   nullptr, LogicalType(LogicalTypeId::INVALID), FunctionStability::VOLATILE);
 	fun.GetSignature().AddKwargs("kwargs", LogicalType::ANY);
+	fun.SetResolveTypesCallback(WriteLogResolveTypes);
 	fun.GetProperties().SetRequiresExpressionNames(true);
+	// an unknown scope is only detected while writing
+	fun.SetFallible();
 	fun.SetUnbindCallback(WriteLogUnbind);
 	set.AddFunction(std::move(fun));
 

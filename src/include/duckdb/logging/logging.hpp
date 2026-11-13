@@ -1,7 +1,7 @@
 //===----------------------------------------------------------------------===//
 //                         DuckDB
 //
-// duckdb/logging/log_storage.hpp
+// duckdb/logging/logging.hpp
 //
 //
 //===----------------------------------------------------------------------===//
@@ -71,6 +71,12 @@ struct LoggingContext {
 struct RegisteredLoggingContext {
 	idx_t context_id;
 	LoggingContext context;
+};
+
+//! An immutable LogConfig, together with the config version it was published at
+struct LogConfigSnapshot {
+	shared_ptr<const LogConfig> config;
+	idx_t version = 0;
 };
 
 } // namespace duckdb

@@ -21,10 +21,16 @@ duckdb_state duckdb_pending_prepared_internal(duckdb_prepared_statement prepared
 	}
 	auto wrapper = reinterpret_cast<PreparedStatementWrapper *>(prepared_statement);
 	auto result = new PendingStatementWrapper();
-	result->allow_streaming = allow_streaming;
+	result->allow_streaming = false;
 
 	try {
 		result->statement = wrapper->statement->Submit(wrapper->values);
+		result->allow_streaming =
+		    allow_streaming && duckdb::StreamsByDefault(wrapper->statement->GetStatementType(), *result->statement);
+		if (!result->allow_streaming) {
+			// Settled before the caller drives it, so each execute_task call stays one unit of work
+			result->statement->Materialize();
+		}
 	} catch (std::exception &ex) {
 		result->statement = make_uniq<QueryResult>(duckdb::ErrorData(ex));
 	}
@@ -156,9 +162,7 @@ duckdb_state duckdb_execute_pending(duckdb_pending_result pending_result, duckdb
 	}
 
 	auto result = std::move(wrapper->statement);
-	// A streaming request drains the result through a stream; every other one collects it
-	const bool stream_result = wrapper->allow_streaming && !result->HasError() &&
-	                           result->GetStatementProperties().result_eagerness != duckdb::ResultEagerness::FORCED;
+	const bool stream_result = wrapper->allow_streaming && !result->HasError();
 	try {
 		if (stream_result) {
 			return DuckDBTranslateStreamResult(duckdb::make_uniq<duckdb::QueryResultStream<>>(std::move(result)),

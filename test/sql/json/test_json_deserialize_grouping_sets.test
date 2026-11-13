@@ -1,0 +1,31 @@
+# name: test/sql/json/test_json_deserialize_grouping_sets.test
+# description: Deserialized grouping sets must refer to existing groups
+# group: [json]
+
+require json
+
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"COLUMN_REF","type":"COLUMN_REF","alias":"","query_location":7,"query_location_length":1,"column_names":["a"]}],"from_table":{"type":"SUBQUERY","alias":"","sample":null,"query_location":14,"query_location_length":12,"subquery":{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"a","query_location":22,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]},"column_name_alias":[]},"where_clause":null,"group_expressions":[{"class":"COLUMN_REF","type":"COLUMN_REF","alias":"","query_location":36,"query_location_length":1,"column_names":["a"]}],"group_sets":[[5]],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+Grouping set refers to a group that does not exist
+
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"COLUMN_REF","type":"COLUMN_REF","alias":"","query_location":7,"query_location_length":1,"column_names":["a"]}],"from_table":{"type":"SUBQUERY","alias":"","sample":null,"query_location":14,"query_location_length":12,"subquery":{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"a","query_location":22,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]},"column_name_alias":[]},"where_clause":null,"group_expressions":[{"class":"COLUMN_REF","type":"COLUMN_REF","alias":"","query_location":36,"query_location_length":1,"column_names":["a"]}],"group_sets":[[5]],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+Grouping set refers to a group that does not exist
+
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"COLUMN_REF","type":"COLUMN_REF","alias":"","query_location":7,"query_location_length":1,"column_names":["a"]}],"from_table":{"type":"SUBQUERY","alias":"","sample":null,"query_location":14,"query_location_length":12,"subquery":{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"a","query_location":22,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]},"column_name_alias":[]},"where_clause":null,"group_expressions":[{"class":"COLUMN_REF","type":"COLUMN_REF","alias":"","query_location":36,"query_location_length":1,"column_names":["a"]}],"group_sets":[[18446744073709551615]],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+Grouping set refers to a group that does not exist
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('SELECT a FROM (SELECT 1 a) GROUP BY GROUPING SETS ((a), ())'));
+----
+SELECT a FROM (SELECT 1 AS a) GROUP BY GROUPING SETS ((a),())
+
+query I
+SELECT * FROM json_execute_serialized_sql(json_serialize_sql('SELECT a FROM (SELECT 1 a) GROUP BY ROLLUP (a) ORDER BY a NULLS FIRST'));
+----
+NULL
+1

@@ -51,7 +51,7 @@ unique_ptr<OperatorState> PhysicalTableInOutFunction::GetOperatorState(Execution
 		TableFunctionInitInput input(bind_data.get(), column_ids, projection_ids, table_filters.get());
 		result->local_state = function.init_local(context, input, gstate.global_state.get());
 	}
-	if (!projected_input.empty()) {
+	if (!projected_input.empty() || (ordinality_idx.IsValid() && !table_input)) {
 		vector<LogicalType> input_types;
 		auto &child_types = children[0].get().GetTypes();
 		idx_t input_length = child_types.size() - projected_input.size();
@@ -89,10 +89,11 @@ OperatorResultType PhysicalTableInOutFunction::Execute(ExecutionContext &context
 	auto &gstate = gstate_p.Cast<TableInOutGlobalState>();
 	auto &state = state_p.Cast<TableInOutLocalState>();
 	TableFunctionInput data(bind_data.get(), state.local_state.get(), gstate.global_state.get());
-	if (projected_input.empty()) {
+	if (projected_input.empty() && (!this->ordinality_idx.IsValid() || table_input)) {
 		// straightforward case - no need to project input
 		auto result = function.in_out_function(context, data, input, chunk);
 		if (this->ordinality_idx.IsValid()) {
+			// a TABLE parameter's rows form one invocation: the numbering continues across them
 			const idx_t ordinality = chunk.size();
 			SetOrdinality(chunk, this->ordinality_idx, state.current_ordinality_idx, ordinality);
 			state.current_ordinality_idx += ordinality;
@@ -100,7 +101,8 @@ OperatorResultType PhysicalTableInOutFunction::Execute(ExecutionContext &context
 		chunk.SetChildCardinality(chunk.size());
 		return result;
 	}
-	// when project_input is set we execute the input function row-by-row
+	// with project_input or ordinality over scalar parameters we execute the input function row-by-row
+	// (the ordinality numbering restarts for every input row)
 	if (state.new_row) {
 		if (state.row_index >= input.size()) {
 			// finished processing this chunk

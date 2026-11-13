@@ -1,0 +1,210 @@
+# name: test/sql/types/bignum/test_bignum_modulo.test
+# description: Test bignum modulo
+# group: [bignum]
+
+query I
+SELECT 42::BIGNUM % 7::BIGNUM
+----
+0
+
+query I
+SELECT 43::BIGNUM % 7::BIGNUM
+----
+1
+
+# the remainder takes the sign of the dividend, like the other integer types
+query IIII
+SELECT 7::BIGNUM % 2::BIGNUM, (-7)::BIGNUM % 2::BIGNUM, 7::BIGNUM % (-2)::BIGNUM, (-7)::BIGNUM % (-2)::BIGNUM
+----
+1	-1	1	-1
+
+query IIII
+SELECT 7 % 2, -7 % 2, 7 % -2, -7 % -2
+----
+1	-1	1	-1
+
+# a smaller dividend is returned unchanged
+query II
+SELECT 3::BIGNUM % 7::BIGNUM, (-3)::BIGNUM % 7::BIGNUM
+----
+3	-3
+
+query II
+SELECT 0::BIGNUM % 7::BIGNUM, 0::BIGNUM % (-7)::BIGNUM
+----
+0	0
+
+# zero never carries a sign
+query I
+SELECT (-14)::BIGNUM % 7::BIGNUM
+----
+0
+
+query II
+SELECT NULL::BIGNUM % 7::BIGNUM, 7::BIGNUM % NULL::BIGNUM
+----
+NULL	NULL
+
+# integers are implicitly cast to BIGNUM, the result stays a BIGNUM
+query II
+SELECT 17::BIGNUM % 5, typeof(17::BIGNUM % 5)
+----
+2	BIGNUM
+
+# floating point operands are not rounded to a BIGNUM, both sides are cast to DOUBLE instead
+query II
+SELECT 11::BIGNUM % 2.5::FLOAT, typeof(11::BIGNUM % 2.5::FLOAT)
+----
+1.0	DOUBLE
+
+query II
+SELECT 11::BIGNUM % 2.5::DOUBLE, typeof(11::BIGNUM % 2.5::DOUBLE)
+----
+1.0	DOUBLE
+
+# modulo by zero
+statement error
+SELECT 100::BIGNUM % 0::BIGNUM
+----
+<REGEX>:.*Division by zero.*
+
+query I
+SELECT TRY(100::BIGNUM % 0::BIGNUM)
+----
+NULL
+
+statement ok
+SET error_on_division_by_zero = false
+
+query I
+SELECT 100::BIGNUM % 0::BIGNUM
+----
+NULL
+
+statement ok
+SET error_on_division_by_zero = true
+
+statement error
+SELECT 100::BIGNUM % 0::BIGNUM
+----
+<REGEX>:.*Division by zero.*
+
+# single-digit (< 2^32) divisors
+query I
+SELECT '121932631137021795226185032733622923332237463801111263526900'::BIGNUM % 1000000000::BIGNUM
+----
+263526900
+
+# multi-digit divisors
+query I
+SELECT '121932631137021795226185032733622923332237463801111263526900'::BIGNUM % '987654321098765432109876543210'::BIGNUM
+----
+0
+
+query I
+SELECT '121932631137021795226185032733622923332237463801111263526901'::BIGNUM % '123456789012345678901234567890'::BIGNUM
+----
+1
+
+query I
+SELECT '-121932631137021795226185032733622923332237463801111263526901'::BIGNUM % '123456789012345678901234567890'::BIGNUM
+----
+-1
+
+query I
+SELECT '987654321098765432109876543210'::BIGNUM % '123456789012345678901234567890'::BIGNUM
+----
+9000000000900000000090
+
+query I
+SELECT '-987654321098765432109876543210'::BIGNUM % '123456789012345678901234567890'::BIGNUM
+----
+-9000000000900000000090
+
+query I
+SELECT '123456789012345678901234567890'::BIGNUM % '987654321098765432109876543210'::BIGNUM
+----
+123456789012345678901234567890
+
+# divisor just over 2^64
+query I
+SELECT ('1606938044258990275541962092341162602522202993782792835301376'::BIGNUM + 12345::BIGNUM) % '18446744073709551617'::BIGNUM
+----
+12089
+
+# adversarial base-2^32 digit patterns: a multiply-and-subtract step that borrows two units,
+# and quotient digit estimates that are one too large and need the add-back step
+query I
+SELECT '1461501637330902918124456670229688798170805436416'::BIGNUM % '39614081294025656939896111103'::BIGNUM
+----
+39614079956636711705475285025
+
+query I
+SELECT '1461501636990620551203518206757090818695739998208'::BIGNUM % '79228162495817593515539431425'::BIGNUM
+----
+79228162495817593506949496833
+
+query I
+SELECT '170141183460469231713240559633584619521'::BIGNUM % '79228162477370849454714781695'::BIGNUM
+----
+79228162477370849439682396161
+
+query I
+SELECT '170141183579311475539977298253619134462'::BIGNUM % '39614081266355540837921718271'::BIGNUM
+----
+39614081266355540833626750975
+
+query I
+SELECT '340282366802096219701201473078307061761'::BIGNUM % '79228162505040965560984141823'::BIGNUM
+----
+79228162486594221495864524799
+
+# compare against HUGEINT arithmetic on a range of values that fit in a HUGEINT
+query I
+SELECT count(*)
+FROM (
+	SELECT (hash(i) % 2000000000000000000)::HUGEINT - 1000000000000000000 AS x,
+	       (hash(i + 7) % 20000000000)::HUGEINT - 10000000000 AS y
+	FROM range(2000) t(i)
+)
+WHERE y <> 0 AND x::BIGNUM % y::BIGNUM <> (x % y)::BIGNUM
+----
+0
+
+query I
+SELECT count(*)
+FROM range(-50, 50) t(x), range(-50, 50) t2(y)
+WHERE y <> 0 AND x::BIGNUM % y::BIGNUM <> (x % y)::BIGNUM
+----
+0
+
+# the remainder is zero or has the sign of the dividend on large pseudo-random operands
+statement ok
+CREATE TABLE pairs AS
+SELECT i,
+       (CASE WHEN i % 3 = 0 THEN '-' ELSE '' END || hash(i)::VARCHAR || hash(i + 1000)::VARCHAR || substr(hash(i + 2000)::VARCHAR, 1, 1 + i % 20))::BIGNUM AS a,
+       (CASE WHEN i % 5 = 0 THEN '-' ELSE '' END || substr(hash(i * 31)::VARCHAR || hash(i * 17)::VARCHAR, 1, 1 + i % 45))::BIGNUM AS b
+FROM range(3000) t(i)
+WHERE b <> 0;
+
+query I
+SELECT count(*) FROM pairs WHERE (a % b) <> 0 AND (((a % b) < 0) <> (a < 0))
+----
+0
+
+# a % b = a - (a // b) * b
+query I
+SELECT count(*) FROM pairs WHERE a % b <> a - (a // b) * b
+----
+0
+
+# (a * b) % b = 0 and (a * b + 1) % b = 1 for a > 0 and b > 1
+query I
+SELECT count(*) FROM pairs WHERE (a * b) % b <> 0
+----
+0
+
+query I
+SELECT count(*) FROM pairs WHERE a > 0 AND b > 1 AND (a * b + 1::BIGNUM) % b <> 1
+----
+0

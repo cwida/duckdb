@@ -460,7 +460,6 @@ BoundStatement Binder::ExpandTriggers(QueryNode &node, TableCatalogEntry &table,
 
 	if (!has_returning) {
 		auto &properties = GetStatementProperties();
-		properties.result_eagerness = ResultEagerness::FORCED;
 		properties.return_type = StatementReturnType::CHANGED_ROWS;
 		return chain;
 	}
@@ -514,16 +513,17 @@ BoundStatement Binder::ExpandTriggers(QueryNode &node, TableCatalogEntry &table,
 			remap[injected_virtuals[k].first] = logical_count + k;
 		}
 		for (auto &expr : proj_exprs) {
-			ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-			    expr, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &) {
-				    auto &binding = colref.BindingMutable();
+			expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+			    std::move(expr), [&](const BoundColumnRefExpression &colref) -> unique_ptr<Expression> {
+				    auto &binding = colref.Binding();
 				    if (binding.table_index != base_index) {
-					    return;
+					    return nullptr;
 				    }
 				    auto it = remap.find(binding.column_index.GetIndexUnsafe());
-				    if (it != remap.end()) {
-					    binding.column_index = ProjectionIndex(it->second);
+				    if (it == remap.end()) {
+					    return nullptr;
 				    }
+				    return colref.WithBinding(ColumnBinding(binding.table_index, ProjectionIndex(it->second)));
 			    });
 		}
 	}
@@ -533,7 +533,6 @@ BoundStatement Binder::ExpandTriggers(QueryNode &node, TableCatalogEntry &table,
 	result.plan = std::move(returning_projection);
 
 	auto &properties = GetStatementProperties();
-	properties.result_eagerness = ResultEagerness::FORCED;
 	properties.return_type = StatementReturnType::QUERY_RESULT;
 	return result;
 }
@@ -685,13 +684,13 @@ BoundStatement Binder::ExpandRowTriggers(QueryNode &node, vector<unique_ptr<Pars
 		}
 
 		if (BoundBodyTargetsTable(*bound_body.plan, table)) {
-			throw BinderException("FOR EACH ROW trigger \"%s\" on table \"%s\" writes to the trigger table "
+			throw BinderException("FOR EACH ROW trigger %s on table %s writes to the trigger table "
 			                      "(self-referential triggers are not supported)",
 			                      trigger.name, table.name);
 		}
 
 		if (BoundBodyContainsTrigger(*bound_body.plan)) {
-			throw NotImplementedException("FOR EACH ROW trigger \"%s\" on table \"%s\" writes to a table that has its "
+			throw NotImplementedException("FOR EACH ROW trigger %s on table %s writes to a table that has its "
 			                              "own FOR EACH ROW trigger (cascading row triggers are not yet supported)",
 			                              trigger.name, table.name);
 		}
@@ -720,7 +719,6 @@ BoundStatement Binder::ExpandRowTriggers(QueryNode &node, vector<unique_ptr<Pars
 
 	auto &properties = GetStatementProperties();
 	properties.return_type = StatementReturnType::CHANGED_ROWS;
-	properties.result_eagerness = ResultEagerness::FORCED;
 	return bound;
 }
 

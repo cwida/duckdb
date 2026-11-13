@@ -38,8 +38,12 @@ TimestampComponents ICUHelpers::GetComponents(timestamp_tz_t ts, Calendar *calen
 
 TimestampComponents ICUHelpers::GetComponents(timestamp_tz_ns_t tsns, Calendar *calendar) {
 	// Get the parts in the given time zone
-	auto ts_data = GetComponents(timestamp_tz_t(tsns.value / Interval::NANOS_PER_MICRO), calendar);
-	ts_data.nanosecond = UnsafeNumericCast<int16_t>(tsns.value % Interval::NANOS_PER_MICRO);
+	int64_t micros;
+	int64_t nanos;
+	Timestamp::SplitTime(tsns.value, Interval::NANOS_PER_MICRO, micros, nanos);
+
+	auto ts_data = GetComponents(timestamp_tz_t(micros), calendar);
+	ts_data.nanosecond = UnsafeNumericCast<int16_t>(nanos);
 	return ts_data;
 }
 
@@ -139,12 +143,9 @@ struct ICUStrptime : public ICUDateFunc {
 					result = timestamp_tz_t(parsed.ToTimestamp());
 					return;
 				} else {
-					// Set TZ first, if any.
-					if (!parsed.tz.empty()) {
-						cache.SetTimeZone(calendar, parsed.tz);
-					}
-
-					result = GetTime(calendar, ToMicros(calendar, parsed, format));
+					// Use the calendar of the parsed time zone, if any - the shared calendar keeps the session zone
+					auto row_calendar = parsed.tz.empty() ? calendar : cache.GetCalendar(parsed.tz);
+					result = GetTime(row_calendar, ToMicros(row_calendar, parsed, format));
 					return;
 				}
 			}
@@ -162,11 +163,9 @@ struct ICUStrptime : public ICUDateFunc {
 					result.value = parsed.ToTimestamp().value;
 					return;
 				} else {
-					// Set TZ first, if any.
-					if (!parsed.tz.empty()) {
-						cache.SetTimeZone(calendar, parsed.tz);
-					}
-					result = GetTimeNS(calendar, ToNanos(calendar, parsed, format));
+					// Use the calendar of the parsed time zone, if any - the shared calendar keeps the session zone
+					auto row_calendar = parsed.tz.empty() ? calendar : cache.GetCalendar(parsed.tz);
+					result = GetTimeNS(row_calendar, ToNanos(row_calendar, parsed, format));
 					return;
 				}
 			}
@@ -203,8 +202,9 @@ struct ICUStrptime : public ICUDateFunc {
 				if (parsed.is_special) {
 					result.value = parsed.ToTimestamp().value;
 					return true;
-				} else if (parsed.tz.empty() || cache.TrySetTimeZone(calendar, parsed.tz)) {
-					if (TryGetTime(calendar, ToMicros(calendar, parsed, format), result)) {
+				} else {
+					auto row_calendar = parsed.tz.empty() ? calendar : cache.TryGetCalendar(parsed.tz);
+					if (row_calendar && TryGetTime(row_calendar, ToMicros(row_calendar, parsed, format), result)) {
 						return true;
 					}
 				}
@@ -222,8 +222,9 @@ struct ICUStrptime : public ICUDateFunc {
 				if (parsed.is_special) {
 					result.value = parsed.ToTimestamp().value;
 					return true;
-				} else if (parsed.tz.empty() || cache.TrySetTimeZone(calendar, parsed.tz)) {
-					if (TryGetTimeNS(calendar, ToNanos(calendar, parsed, format), result)) {
+				} else {
+					auto row_calendar = parsed.tz.empty() ? calendar : cache.TryGetCalendar(parsed.tz);
+					if (row_calendar && TryGetTimeNS(row_calendar, ToNanos(row_calendar, parsed, format), result)) {
 						return true;
 					}
 				}
@@ -294,6 +295,7 @@ struct ICUStrptime : public ICUDateFunc {
 				bound_function.SetFunctionCallback(function);
 				bound_function.SetInitStateCallback(InitCalendarCache);
 				bound_function.SetReturnType(has_ns ? LogicalType::TIMESTAMP_TZ_NS : LogicalType::TIMESTAMP_TZ);
+				bound_function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 				return make_uniq<ICUStrptimeBindData>(context, format);
 			}
 		} else if (format_value.type() == LogicalType::LIST(LogicalType::VARCHAR)) {
@@ -322,14 +324,14 @@ struct ICUStrptime : public ICUDateFunc {
 				bound_function.SetFunctionCallback(function);
 				bound_function.SetInitStateCallback(InitCalendarCache);
 				bound_function.SetReturnType(has_ns ? LogicalType::TIMESTAMP_TZ_NS : LogicalType::TIMESTAMP_TZ);
+				bound_function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 				return make_uniq<ICUStrptimeBindData>(context, formats);
 			}
 		}
 
 		// Fall back to faster, non-TZ parsing
 		bound_function.SetBindCallback(bind_strptime);
-		auto argument_names = input.GetArgumentNames();
-		BindScalarFunctionInput new_input(context, bound_function, arguments, *argument_names,
+		BindScalarFunctionInput new_input(context, bound_function, arguments,
 		                                  input.HasBinder() ? &input.GetBinder() : nullptr);
 		return bound_function.GetBindCallback()(new_input);
 	}
@@ -399,18 +401,24 @@ struct ICUStrptime : public ICUDateFunc {
 			// Convert parts to a TZ (default or parsed) if no offset was provided
 			auto calendar = cal.get();
 
-			// Change TZ if one was provided.
+			// Use the calendar of the time zone if one was provided - the shared calendar keeps the session zone
 			if (tz.GetSize()) {
 				string error_msg;
-				cache.SetTimeZone(calendar, tz, &error_msg);
-				if (!error_msg.empty()) {
+				calendar = cache.TryGetCalendar(tz, &error_msg);
+				if (!calendar) {
 					HandleCastError::AssignError(error_msg, parameters);
 					return nullopt;
 				}
 			}
 
 			// Now get the parts in the given time zone
-			return FromNaive(calendar, us);
+			timestamp_tz_t result;
+			string error_msg;
+			if (!TryFromNaive(calendar, us, result, error_msg)) {
+				HandleCastError::AssignError(error_msg, parameters);
+				return nullopt;
+			}
+			return result;
 		}
 
 		return timestamp_tz_t(us);
@@ -422,10 +430,13 @@ struct ICUStrptime : public ICUDateFunc {
 		auto &cache = parameters.local_state->Cast<CalendarCacheState>();
 		CalendarPtr cal(info.calendar->Copy());
 
+		bool all_converted = true;
 		UnaryExecutor::Execute<string_t, timestamp_tz_t>(source, result, count, [&](string_t input) {
-			return VarcharToTimestampTZUS(cal, cache, input, parameters);
+			auto converted = VarcharToTimestampTZUS(cal, cache, input, parameters);
+			all_converted = all_converted && converted;
+			return converted;
 		});
-		return true;
+		return all_converted;
 	}
 
 	static bool VarcharToTimestampTZNS(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
@@ -434,11 +445,13 @@ struct ICUStrptime : public ICUDateFunc {
 		auto &cache = parameters.local_state->Cast<CalendarCacheState>();
 		CalendarPtr cal(info.calendar->Copy());
 
+		bool all_converted = true;
 		UnaryExecutor::Execute<string_t, timestamp_tz_ns_t>(
 		    source, result, count, [&](string_t input) -> optional<timestamp_tz_ns_t> {
 			    int32_t nanos = 0;
 			    auto ts_us = VarcharToTimestampTZUS(cal, cache, input, parameters, &nanos);
 			    if (!ts_us) {
+				    all_converted = false;
 				    return nullopt;
 			    }
 
@@ -446,12 +459,13 @@ struct ICUStrptime : public ICUDateFunc {
 			    timestamp_ns_t result;
 			    if (!Timestamp::TryFromTimestampNanos(us, nanos, result)) {
 				    HandleCastError::AssignError(Timestamp::RangeError(input), parameters);
+				    all_converted = false;
 				    return nullopt;
 			    }
 
 			    return timestamp_tz_ns_t(result);
 		    });
-		return true;
+		return all_converted;
 	}
 
 	static bool VarcharToTimeTZ(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
@@ -459,6 +473,7 @@ struct ICUStrptime : public ICUDateFunc {
 		auto &info = cast_data.info->Cast<BindData>();
 		CalendarPtr cal(info.calendar->Copy());
 
+		bool all_converted = true;
 		UnaryExecutor::Execute<string_t, dtime_tz_t>(
 		    source, result, count, [&](string_t input) -> optional<dtime_tz_t> {
 			    dtime_tz_t result;
@@ -469,15 +484,19 @@ struct ICUStrptime : public ICUDateFunc {
 			    if (!Time::TryConvertTimeTZ(str, len, pos, result, has_offset, false)) {
 				    auto msg = Time::ConversionError(string(str, len));
 				    HandleCastError::AssignError(msg, parameters);
+				    all_converted = false;
 				    return nullopt;
 			    } else if (!has_offset) {
 				    // Convert parts to a TZ (default or parsed) if no offset was provided
 				    auto calendar = cal.get();
 
 				    // Extract the offset from the calendar
-				    auto offset = ExtractField(calendar, CAL_ZONE_OFFSET);
-				    offset += ExtractField(calendar, CAL_DST_OFFSET);
-				    offset /= Interval::MSECS_PER_SEC;
+				    int32_t offset;
+				    if (!TryGetTimeTZOffset(calendar, offset)) {
+					    HandleCastError::AssignError(TimeTZOffsetError(offset), parameters);
+					    all_converted = false;
+					    return nullopt;
+				    }
 
 				    // Apply it to the offset +00 time we parsed.
 				    result = dtime_tz_t(result.time(), offset);
@@ -485,7 +504,7 @@ struct ICUStrptime : public ICUDateFunc {
 
 			    return result;
 		    });
-		return true;
+		return all_converted;
 	}
 
 	static BoundCastInfo BindCastFromVarchar(BindCastInput &input, const LogicalType &source,
@@ -494,7 +513,7 @@ struct ICUStrptime : public ICUDateFunc {
 			throw InternalException("Missing context for VARCHAR to TIME/TIMESTAMPTZ cast.");
 		}
 
-		auto cast_data = make_uniq<CastData>(make_uniq<BindData>(*input.context));
+		auto cast_data = BindCastData(input);
 
 		switch (target.id()) {
 		case LogicalTypeId::TIMESTAMP_TZ:
@@ -638,6 +657,7 @@ struct ICUStrftime : public ICUDateFunc {
 		set.AddFunction(tstz_ns_fun);
 		// throws for unsupported format specifiers
 		set.SetFallible();
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(set);
 	}
 
@@ -660,10 +680,10 @@ struct ICUStrftime : public ICUDateFunc {
 
 		auto offset = ExtractField(calendar, CAL_ZONE_OFFSET) + ExtractField(calendar, CAL_DST_OFFSET);
 		offset /= Interval::MSECS_PER_SEC;
-		offset /= Interval::SECS_PER_MINUTE;
-		int hour_offset = offset / 60;
-		int minute_offset = offset % 60;
-		auto offset_str = Time::ToUTCOffset(hour_offset, minute_offset);
+		int hour_offset = offset / Interval::SECS_PER_HOUR;
+		int minute_offset = (offset % Interval::SECS_PER_HOUR) / Interval::SECS_PER_MINUTE;
+		int second_offset = offset % Interval::SECS_PER_MINUTE;
+		auto offset_str = Time::ToUTCOffset(hour_offset, minute_offset, second_offset);
 		const auto offset_len = offset_str.size();
 
 		const auto len = date_len + 1 + time_len + offset_len;
@@ -701,7 +721,7 @@ struct ICUStrftime : public ICUDateFunc {
 			throw InternalException("Missing context for TIMESTAMPTZ to VARCHAR cast.");
 		}
 
-		auto cast_data = make_uniq<CastData>(make_uniq<BindData>(*input.context));
+		auto cast_data = BindCastData(input);
 
 		switch (source.id()) {
 		case LogicalTypeId::TIMESTAMP_TZ:

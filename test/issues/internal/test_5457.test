@@ -17,7 +17,10 @@ SET memory_limit='300KiB';
 statement ok
 SELECT 42;
 
-# explain causes more allocations
+# Force an allocation failure while producing the EXPLAIN output.
+statement ok
+SET memory_limit='128KiB';
+
 statement error
 EXPLAIN SELECT 42;
 ----

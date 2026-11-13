@@ -2,9 +2,6 @@
 # description: Test different examples that can be found when searching for python list comprehension examples
 # group: [lambdas]
 
-statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
 query I
 SELECT list_transform(list_filter([0, 1, 2, 3, 4, 5], lambda x: x % 2 = 0), lambda y: y * y)
 ----

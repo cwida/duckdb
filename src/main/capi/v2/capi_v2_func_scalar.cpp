@@ -28,9 +28,34 @@ public:
 	CV2UserData handle;
 };
 
+static constexpr const char *SCALAR_BIND_DATA_ERROR =
+    "Scalar functions set the bind data through duckdb_v2_scalar_function_bind_set_bind_data";
+
+//! The arguments of a scalar call before they are cast to the parameter types - the bind data cannot be set
+class CV2ResolveTypesBindInfo final : public CV2FunctionBindInfo {
+public:
+	CV2ResolveTypesBindInfo(const BoundScalarFunction &function, void *user_data,
+	                        const ResolveScalarFunctionTypesInput &input)
+	    : CV2FunctionBindInfo(function, user_data), input(input) {
+		D_ASSERT(GetArgCount() == input.GetArgumentCount());
+		bind_data_error = SCALAR_BIND_DATA_ERROR;
+	}
+
+	LogicalType GetArgType(idx_t index) const override {
+		return input.GetArgumentType(index);
+	}
+	Value GetArgValue(idx_t index) const override {
+		return input.GetConstant(index);
+	}
+
+private:
+	const ResolveScalarFunctionTypesInput &input;
+};
+
 class CV2BindInfo {
 public:
-	BindScalarFunctionInput *in_input = nullptr;
+	//! The bind data the callback set, or nullptr
+	shared_ptr<CV2UserData> out_bind_data;
 };
 
 static auto Convert(duckdb_v2_scalar_function_bind_info_handle info) -> CV2BindInfo * {
@@ -38,6 +63,21 @@ static auto Convert(duckdb_v2_scalar_function_bind_info_handle info) -> CV2BindI
 }
 static auto Convert(CV2BindInfo *info) -> duckdb_v2_scalar_function_bind_info_handle {
 	return reinterpret_cast<duckdb_v2_scalar_function_bind_info_handle>(info);
+}
+
+class CV2ResolveTypesInfo {
+public:
+	explicit CV2ResolveTypesInfo(BoundScalarFunction &bound_function) : bound_function(bound_function) {
+	}
+
+	BoundScalarFunction &bound_function;
+};
+
+static auto Convert(duckdb_v2_scalar_function_resolve_types_info_handle info) -> CV2ResolveTypesInfo * {
+	return reinterpret_cast<CV2ResolveTypesInfo *>(info);
+}
+static auto Convert(CV2ResolveTypesInfo *info) -> duckdb_v2_scalar_function_resolve_types_info_handle {
+	return reinterpret_cast<duckdb_v2_scalar_function_resolve_types_info_handle>(info);
 }
 
 class CV2InitInfo {
@@ -74,30 +114,72 @@ static auto Convert(CV2ExecInfo *info) -> duckdb_v2_scalar_function_exec_info_ha
 	return reinterpret_cast<duckdb_v2_scalar_function_exec_info_handle>(info);
 }
 
+class CV2ScalarStatsInfo {
+public:
+	CV2ScalarStatsInfo(const BoundScalarFunction &function, BaseStatistics &result)
+	    : function(function), result_stats(CV2Stats::Writable(result)) {
+	}
+
+	void *in_user_data = nullptr;
+	void *in_bind_data = nullptr;
+
+	//! Tells the four parts of the argument list apart
+	const BoundScalarFunction &function;
+	vector<CV2Stats> arg_stats;
+	CV2Stats result_stats;
+};
+
+static auto Convert(duckdb_v2_scalar_function_stats_info_handle info) -> CV2ScalarStatsInfo * {
+	return reinterpret_cast<CV2ScalarStatsInfo *>(info);
+}
+static auto Convert(CV2ScalarStatsInfo *info) -> duckdb_v2_scalar_function_stats_info_handle {
+	return reinterpret_cast<duckdb_v2_scalar_function_stats_info_handle>(info);
+}
+
 class CV2ScalarFunctionInfo : public ScalarFunctionInfo {
 public:
+	duckdb_v2_scalar_function_resolve_types_callback_fn resolve_types_cb = nullptr;
 	duckdb_v2_scalar_function_bind_callback_fn bind_cb = nullptr;
 	duckdb_v2_scalar_function_init_callback_fn init_cb = nullptr;
 	duckdb_v2_scalar_function_exec_callback_fn exec_cb = nullptr;
+	duckdb_v2_scalar_function_stats_callback_fn stats_cb = nullptr;
 	shared_ptr<CV2UserData> user_data = nullptr;
 };
+
+static auto CV2ScalarResolveTypes(ResolveScalarFunctionTypesInput &input) -> void {
+	auto &bound_function = input.GetBoundFunction();
+	const auto &info = bound_function.GetExtraFunctionInfo().Cast<CV2ScalarFunctionInfo>();
+
+	CV2ResolveTypesBindInfo bind_info(bound_function, info.user_data ? info.user_data->GetData() : nullptr, input);
+	CV2ResolveTypesInfo result_info(bound_function);
+
+	CV2ErrorInfo err = {};
+	auto err_ptr = Convert(&err);
+	CV2CallbackContext callback_context(input.GetClientContext());
+	info.resolve_types_cb(Convert(&bind_info), Convert(&result_info), Convert(&callback_context), &err_ptr);
+
+	if (err.HasError()) {
+		err.ThrowAsException();
+	}
+}
 
 static auto CV2ScalarBind(BindScalarFunctionInput &input) -> unique_ptr<FunctionData> {
 	const auto &info = input.GetBoundFunction().GetExtraFunctionInfo().Cast<CV2ScalarFunctionInfo>();
 
 	auto &bound_function = input.GetBoundFunction();
 	CV2ExpressionBindInfo bind_info(bound_function, info.user_data ? info.user_data->GetData() : nullptr, input);
-	CV2BindInfo result_info = {};
-	result_info.in_input = &input;
+	bind_info.bind_data_error = SCALAR_BIND_DATA_ERROR;
+	CV2BindInfo result_info;
 
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
-	info.bind_cb(Convert(&bind_info), Convert(&result_info), Convert(&input.GetClientContext()), &err_ptr);
+	CV2CallbackContext callback_context(input.GetClientContext());
+	info.bind_cb(Convert(&bind_info), Convert(&result_info), Convert(&callback_context), &err_ptr);
 
 	unique_ptr<FunctionData> result = nullptr;
-	if (bind_info.out_bind_data) {
+	if (result_info.out_bind_data) {
 		auto set_result = make_uniq<CV2FunctionData>();
-		set_result->handle = std::move(bind_info.out_bind_data);
+		set_result->handle = std::move(result_info.out_bind_data);
 		result = std::move(set_result);
 	}
 
@@ -120,7 +202,8 @@ static auto CV2ScalarInit(ExpressionState &state, const BoundFunctionExpression 
 
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
-	info.init_cb(Convert(&args), Convert(&state.GetContext()), &err_ptr);
+	CV2CallbackContext callback_context(state.GetClientContext());
+	info.init_cb(Convert(&args), Convert(&callback_context), &err_ptr);
 
 	unique_ptr<FunctionLocalState> result = nullptr;
 	if (args.out_init_data.ptr) {
@@ -163,22 +246,53 @@ static auto CV2ScalarExec(DataChunk &input, ExpressionState &state, Vector &resu
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
 
-	info.exec_cb(Convert(&args), Convert(&state.GetContext()), &err_ptr);
+	CV2CallbackContext callback_context(state.GetClientContext());
+	info.exec_cb(Convert(&args), Convert(&callback_context), &err_ptr);
 
 	if (err.HasError()) {
 		err.ThrowAsException();
 	}
 }
 
+static auto CV2ScalarStats(ClientContext &context, FunctionStatisticsInput &input) -> unique_ptr<BaseStatistics> {
+	const auto &function = input.expr.Function();
+	const auto &info = function.GetExtraFunctionInfo().Cast<CV2ScalarFunctionInfo>();
+
+	auto result = BaseStatistics::CreateUnknown(input.expr.GetReturnType());
+	CV2ScalarStatsInfo args(function, result);
+	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
+	if (input.bind_data) {
+		const auto &bind_data = input.bind_data->Cast<CV2FunctionData>();
+		args.in_bind_data = bind_data.handle ? bind_data.handle->GetData() : nullptr;
+	}
+	args.arg_stats.reserve(input.child_stats.size());
+	for (const auto &child_stats : input.child_stats) {
+		args.arg_stats.emplace_back(child_stats);
+	}
+
+	CV2ErrorInfo err = {};
+	auto err_ptr = Convert(&err);
+	CV2CallbackContext callback_context(context);
+	info.stats_cb(Convert(&args), Convert(&callback_context), &err_ptr);
+
+	if (err.HasError()) {
+		err.ThrowAsException();
+	}
+
+	return result.ToUnique();
+}
+
 class CV2ScalarFunction {
 public:
-	CV2ScalarFunction() {
+	explicit CV2ScalarFunction(DatabaseInstance &db) : db(db) {
 		// The exec callback's error slot makes failure part of the API contract, so the function defaults to fallible:
 		// a non-fallible function turns any execution error reported through the slot into an internal error.
 		properties.SetFallible();
 	}
 
-	void Register() {
+	//! Validates the configuration and builds the scalar function to register on `target`.
+	ScalarFunction Build(DatabaseInstance &target) {
+		CheckRegistrationTarget(db, target, "scalar function");
 		if (name.empty()) {
 			throw InvalidInputException("Function name cannot be empty.");
 		}
@@ -188,11 +302,12 @@ public:
 
 		const auto &return_type = signature.GetReturnType();
 
-		// ANY is allowed as a placeholder return type only when a bind callback is present to resolve the actual type.
+		// ANY is allowed as a placeholder return type only when a resolve types callback is present to resolve the
+		// actual type.
 		if (return_type.id() == LogicalTypeId::ANY) {
-			if (info.bind_cb == nullptr) {
+			if (info.resolve_types_cb == nullptr) {
 				throw InvalidInputException(
-				    "An ANY return type requires a bind callback to set the concrete return type.");
+				    "An ANY return type requires a resolve types callback to set the concrete return type.");
 			}
 		} else {
 			if (return_type.id() == LogicalTypeId::INVALID) {
@@ -209,59 +324,31 @@ public:
 		function.SetProperties(properties);
 		function.GetSignature() = signature;
 
+		if (info.resolve_types_cb) {
+			function.SetResolveTypesCallback(CV2ScalarResolveTypes);
+		}
 		if (info.bind_cb) {
 			function.SetBindCallback(CV2ScalarBind);
 		}
 		if (info.init_cb) {
 			function.SetInitStateCallback(CV2ScalarInit);
 		}
+		if (info.stats_cb) {
+			function.SetStatisticsCallback(CV2ScalarStats);
+		}
 		function.SetExtraFunctionInfo<CV2ScalarFunctionInfo>(std::move(info));
 
-		// Call the implementation to register
-		RegisterToCatalog(std::move(function));
+		return function;
 	}
 
-	virtual ~CV2ScalarFunction() = default;
-	virtual void RegisterToCatalog(ScalarFunction function) = 0;
-
 public:
+	//! The database it was created for: the only one it can be registered on.
+	DatabaseInstance &db;
 	FunctionSignature signature;
+	CV2FunctionDocs docs;
 	CV2ScalarFunctionInfo info;
 	Identifier name;
 	FunctionProperties properties;
-};
-
-class CV2ConnectionScalarFunction : public CV2ScalarFunction {
-public:
-	explicit CV2ConnectionScalarFunction(Connection &connection) : connection(connection) {
-	}
-
-	void RegisterToCatalog(ScalarFunction function) override {
-		auto &context = *connection.context;
-
-		context.RunFunctionInTransaction([&]() {
-			auto &catalog = Catalog::GetSystemCatalog(context);
-			CreateScalarFunctionInfo sf_info(std::move(function));
-			sf_info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
-			catalog.CreateFunction(context, sf_info);
-		});
-	}
-
-private:
-	Connection &connection;
-};
-
-class CV2ExtensionScalarFunction : public CV2ScalarFunction {
-public:
-	explicit CV2ExtensionScalarFunction(ExtensionLoader &loader) : loader(loader) {
-	}
-
-	void RegisterToCatalog(ScalarFunction function) override {
-		loader.RegisterFunction(std::move(function));
-	}
-
-private:
-	ExtensionLoader &loader;
 };
 
 static auto Convert(duckdb_v2_scalar_function_handle func) -> CV2ScalarFunction * {
@@ -279,37 +366,32 @@ static auto Convert(CV2ScalarFunction *func) -> duckdb_v2_scalar_function_handle
 
 using namespace duckdb::capiv2;
 
-DUCKDB_V2_ERROR duckdb_v2_scalar_function_create_with_connection(duckdb_v2_connection_handle connection,
-                                                                 duckdb_v2_scalar_function_handle *out_function,
-                                                                 duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(connection);
-	DUCKDB_CHECK_ARG(out_function);
-	*out_function = nullptr;
+DUCKDB_V2_ERROR duckdb_v2_scalar_function_create(duckdb_v2_factory_handle factory,
+                                                 duckdb_v2_scalar_function_handle *function,
+                                                 duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(factory);
+	DUCKDB_CHECK_ARG(function);
+	*function = nullptr;
 	return WithErrorHandler(err, [&]() {
-		auto &conn = *Convert(connection);
-		auto function = duckdb::make_uniq<CV2ConnectionScalarFunction>(conn);
-		*out_function = Convert(function.release());
+		auto result = duckdb::make_uniq<CV2ScalarFunction>(Convert(factory)->GetDatabase());
+		*function = Convert(result.release());
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_scalar_function_create_with_extension(duckdb_v2_extension_handle extension,
-                                                                duckdb_v2_scalar_function_handle *out_function,
-                                                                duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(extension);
-	DUCKDB_CHECK_ARG(out_function);
-	*out_function = nullptr;
-	return WithErrorHandler(err, [&]() {
-		auto &loader = GetExtensionLoader(extension);
-		auto function = duckdb::make_uniq<CV2ExtensionScalarFunction>(loader);
-		*out_function = Convert(function.release());
-	});
+DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_name(duckdb_v2_scalar_function_handle function, const char *name,
+                                                   idx_t name_length, duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(function);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	return WithErrorHandler(
+	    err, [&]() { Convert(function)->name = duckdb::Identifier(ConvertIdentifierName(name, name_length)); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_name(duckdb_v2_scalar_function_handle function, const duckdb_v2_str *name,
+DUCKDB_V2_ERROR duckdb_v2_scalar_function_get_docs(duckdb_v2_scalar_function_handle function,
+                                                   duckdb_v2_function_docs_handle *docs,
                                                    duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(function);
-	DUCKDB_CHECK_ARG(name);
-	return WithErrorHandler(err, [&]() { Convert(function)->name = duckdb::Identifier(ConvertIdentifierName(name)); });
+	DUCKDB_CHECK_ARG(docs);
+	return WithErrorHandler(err, [&]() { *docs = Convert(&Convert(function)->docs); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_scalar_function_get_signature(duckdb_v2_scalar_function_handle function,
@@ -338,6 +420,14 @@ DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_property(duckdb_v2_scalar_function
 	return WithErrorHandler(err, [&]() { SetScalarFunctionProperty(Convert(function)->properties, key, value); });
 }
 
+DUCKDB_V2_ERROR
+duckdb_v2_scalar_function_set_resolve_types_callback(duckdb_v2_scalar_function_handle function,
+                                                     duckdb_v2_scalar_function_resolve_types_callback_fn callback,
+                                                     duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(function);
+	return WithErrorHandler(err, [&]() { Convert(function)->info.resolve_types_cb = callback; });
+}
+
 DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_bind_callback(duckdb_v2_scalar_function_handle function,
                                                             duckdb_v2_scalar_function_bind_callback_fn callback,
                                                             duckdb_v2_error_info_handle *err) {
@@ -359,13 +449,33 @@ DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_exec_callback(duckdb_v2_scalar_fun
 	return WithErrorHandler(err, [&]() { Convert(function)->info.exec_cb = callback; });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_scalar_function_bind_set_return_type(duckdb_v2_scalar_function_bind_info_handle info,
-                                                               duckdb_v2_logical_type_handle return_type,
-                                                               duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_stats_callback(duckdb_v2_scalar_function_handle function,
+                                                             duckdb_v2_scalar_function_stats_callback_fn callback,
+                                                             duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(function);
+	return WithErrorHandler(err, [&]() { Convert(function)->info.stats_cb = callback; });
+}
+
+DUCKDB_V2_ERROR
+duckdb_v2_scalar_function_resolve_types_set_return_type(duckdb_v2_scalar_function_resolve_types_info_handle info,
+                                                        duckdb_v2_logical_type_handle return_type,
+                                                        duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(return_type);
-	return WithErrorHandler(
-	    err, [&]() { Convert(info)->in_input->GetBoundFunction().SetReturnType(*Convert(return_type)); });
+	return WithErrorHandler(err, [&]() {
+		auto type = Convert(return_type);
+		Convert(info)->bound_function.SetReturnType(*type);
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_scalar_function_bind_set_bind_data(duckdb_v2_scalar_function_bind_info_handle info,
+                                                             duckdb_v2_opaque *data, duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(info);
+	DUCKDB_CHECK_ARG(data);
+	return WithErrorHandler(err, [&]() {
+		Convert(info)->out_bind_data =
+		    data->ptr ? duckdb::make_shared_ptr<CV2UserData>(data->ptr, data->destroy, data->equals) : nullptr;
+	});
 }
 
 DUCKDB_V2_ERROR duckdb_v2_scalar_function_init_get_user_data(duckdb_v2_scalar_function_init_info_handle info,
@@ -469,10 +579,95 @@ DUCKDB_V2_ERROR duckdb_v2_scalar_function_exec_get_result(duckdb_v2_scalar_funct
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_scalar_function_register(duckdb_v2_scalar_function_handle function,
-                                                   duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_scalar_function_stats_get_user_data(duckdb_v2_scalar_function_stats_info_handle info,
+                                                              void **data, duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(info);
+	DUCKDB_CHECK_ARG(data);
+	return WithErrorHandler(err, [&]() { *data = Convert(info)->in_user_data; });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_scalar_function_stats_get_bind_data(duckdb_v2_scalar_function_stats_info_handle info,
+                                                              void **data, duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(info);
+	DUCKDB_CHECK_ARG(data);
+	return WithErrorHandler(err, [&]() { *data = Convert(info)->in_bind_data; });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_scalar_function_stats_get_arg_count(duckdb_v2_scalar_function_stats_info_handle info,
+                                                              idx_t *positional_fixed, idx_t *positional_variadic,
+                                                              idx_t *named_fixed, idx_t *named_variadic,
+                                                              duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(info);
+	return WithErrorHandler(err, [&]() {
+		auto &function = Convert(info)->function;
+		if (positional_fixed) {
+			*positional_fixed = function.GetStandardArgumentCount();
+		}
+		if (positional_variadic) {
+			*positional_variadic = function.GetVarArgsCount();
+		}
+		if (named_fixed) {
+			*named_fixed = function.GetKeywordOnlyArgumentCount();
+		}
+		if (named_variadic) {
+			*named_variadic = function.GetKwargsCount();
+		}
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_scalar_function_stats_get_arg_stats(duckdb_v2_scalar_function_stats_info_handle info,
+                                                              idx_t index, duckdb_v2_stats_handle *stats,
+                                                              duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(info);
+	DUCKDB_CHECK_ARG(stats);
+	return WithErrorHandler(err, [&]() {
+		auto &stats_info = *Convert(info);
+		if (index >= stats_info.arg_stats.size()) {
+			throw duckdb::InvalidInputException("Index out of bounds in duckdb_v2_scalar_function_stats_get_arg_stats");
+		}
+		*stats = Convert(&stats_info.arg_stats[index]);
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_scalar_function_stats_get_result_stats(duckdb_v2_scalar_function_stats_info_handle info,
+                                                                 duckdb_v2_stats_handle *stats,
+                                                                 duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(info);
+	DUCKDB_CHECK_ARG(stats);
+	return WithErrorHandler(err, [&]() { *stats = Convert(&Convert(info)->result_stats); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_connection_register_scalar_function(duckdb_v2_connection_handle conn,
+                                                              duckdb_v2_scalar_function_handle function,
+                                                              duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(conn);
 	DUCKDB_CHECK_ARG(function);
-	return WithErrorHandler(err, [&]() { Convert(function)->Register(); });
+	return WithErrorHandler(err, [&]() {
+		auto &context = *Convert(conn)->context;
+		context.RunFunctionInTransaction([&]() {
+			auto &self = *Convert(function);
+			auto info = duckdb::CreateScalarFunctionInfo(self.Build(*context.db));
+			self.docs.AddTo(self.signature, info);
+			info.on_conflict = duckdb::OnCreateConflict::ALTER_ON_CONFLICT;
+			auto &catalog = duckdb::Catalog::GetSystemCatalog(context);
+			catalog.CreateFunction(context, info);
+		});
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_extension_register_scalar_function(duckdb_v2_extension_handle extension,
+                                                             duckdb_v2_scalar_function_handle function,
+                                                             duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(extension);
+	DUCKDB_CHECK_ARG(function);
+	return WithErrorHandler(err, [&]() {
+		auto &self = *Convert(function);
+		auto &loader = GetExtensionLoader(extension);
+		duckdb::CreateScalarFunctionInfo info(self.Build(loader.GetDatabaseInstance()));
+		self.docs.AddTo(self.signature, info);
+		info.on_conflict = duckdb::OnCreateConflict::ALTER_ON_CONFLICT;
+		loader.RegisterFunction(std::move(info));
+	});
 }
 
 DUCKDB_V2_ERROR duckdb_v2_scalar_function_destroy(duckdb_v2_scalar_function_handle *function) {

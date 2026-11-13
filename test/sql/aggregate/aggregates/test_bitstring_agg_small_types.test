@@ -1,0 +1,40 @@
+# name: test/sql/aggregate/aggregates/test_bitstring_agg_small_types.test
+# description: bitstring_agg over ranges that do not fit in the input type
+# group: [aggregates]
+
+statement ok
+CREATE TABLE bt AS SELECT v::TINYINT v FROM (VALUES (-100), (5), (100)) x(v);
+
+query II
+SELECT bit_count(bitstring_agg(v)), bit_length(bitstring_agg(v)) FROM bt;
+----
+3	201
+
+statement ok
+CREATE TABLE bs AS SELECT v::SMALLINT v FROM (VALUES (-20000), (20000)) x(v);
+
+query II
+SELECT bit_count(bitstring_agg(v)), bit_length(bitstring_agg(v)) FROM bs;
+----
+2	40001
+
+statement ok
+CREATE TABLE bt2 AS SELECT v::TINYINT v FROM (VALUES (-128), (127)) x(v);
+
+query II
+SELECT bit_count(bitstring_agg(v)), bit_length(bitstring_agg(v)) FROM bt2;
+----
+2	256
+
+query I
+SELECT bit_length(bitstring_agg(v, (-128)::TINYINT, 127::TINYINT)) FROM bt;
+----
+256
+
+statement ok
+CREATE TABLE bb AS SELECT v::BIGINT v FROM (VALUES (-9223372036854775808), (9223372036854775807)) x(v);
+
+statement error
+SELECT bitstring_agg(v) FROM bb;
+----
+is too large for bitstring aggregation

@@ -3,6 +3,10 @@ include_directories(../third_party/sqlite/include)
 include_directories(include)
 include_directories(extension/debug_fs/include)
 
+if(${DISABLE_THREADS})
+  add_definitions(-DDUCKDB_NO_THREADS)
+endif()
+
 add_definitions(-DDUCKDB_MAJOR_VERSION=${DUCKDB_MAJOR_VERSION})
 add_definitions(-DDUCKDB_MINOR_VERSION=${DUCKDB_MINOR_VERSION})
 add_definitions(-DDUCKDB_PATCH_VERSION=${DUCKDB_PATCH_VERSION})
@@ -23,6 +27,19 @@ if(TARGET parquet_extension)
                              PRIVATE STATIC_LINK_EXPLICIT)
   target_link_libraries(static_link_explicit_smoke duckdb_static)
   duckdb_link_extensions(static_link_explicit_smoke EXPLICIT parquet)
+endif()
+
+# Used by test/helpers to generate test_paths.cpp, so it needs to be set before
+# adding that directory.
+set(UNITTEST_ROOT_DIRECTORY
+    ""
+    CACHE
+      STRING
+      "The unittest root directory (defaults to the project source directory)")
+if(DEFINED UNITTEST_ROOT_DIRECTORY AND NOT UNITTEST_ROOT_DIRECTORY STREQUAL "")
+  set(DUCKDB_TEST_ROOT_DIRECTORY "${UNITTEST_ROOT_DIRECTORY}")
+else()
+  set(DUCKDB_TEST_ROOT_DIRECTORY "${PROJECT_SOURCE_DIR}")
 endif()
 
 if(${ENABLE_UNITTEST_CPP_TESTS})
@@ -52,18 +69,33 @@ if(NOT WIN32 AND NOT SUN)
   endif()
 endif()
 
-set(UNITTEST_ROOT_DIRECTORY
-    ""
-    CACHE
-      STRING
-      "The unittest root directory (defaults to the project source directory)")
-if(DEFINED UNITTEST_ROOT_DIRECTORY AND NOT UNITTEST_ROOT_DIRECTORY STREQUAL "")
-  add_definitions(-DDUCKDB_ROOT_DIRECTORY="${UNITTEST_ROOT_DIRECTORY}")
-else()
-  add_definitions(-DDUCKDB_ROOT_DIRECTORY="${PROJECT_SOURCE_DIR}")
-endif()
-
 add_executable(unittest unittest.cpp ${UNITTEST_OBJECT_FILES})
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
+   AND NOT CMAKE_CROSSCOMPILING
+   AND CMAKE_SIZEOF_VOID_P EQUAL 8
+   AND ENABLE_UNITTEST_CPP_TESTS
+   AND TARGET duckdb)
+  # Exercise real allocator failures without installing hooks in the library.
+  add_executable(
+    block_allocator_fault_injection api/block_allocator_fault_injection.cpp
+                                    ../src/storage/block_allocator.cpp)
+  target_link_libraries(block_allocator_fault_injection duckdb pthread)
+  target_link_options(
+    block_allocator_fault_injection
+    PRIVATE
+    -Wl,--wrap=malloc
+    -Wl,--wrap=_Znwm
+    -Wl,--wrap=_ZdlPv
+    -Wl,--wrap=_ZdlPvm
+    -Wl,--wrap=mmap
+    -Wl,--wrap=mprotect
+    -Wl,--wrap=munmap)
+  set_target_properties(block_allocator_fault_injection
+                        PROPERTIES BUILD_RPATH_USE_ORIGIN TRUE)
+  target_sources(unittest PRIVATE api/test_block_allocator_fault_injection.cpp)
+  add_dependencies(unittest block_allocator_fault_injection)
+endif()
 
 # Enable best-effort stack traces for fatal signals in the test runner without
 # enabling stack traces for every DuckDB exception.
@@ -105,8 +137,14 @@ endif()
 if(TARGET duckdb AND NOT WIN32)
   # Some tests reference internal third-party symbols (e.g. re2/mbedtls) that
   # are linked into duckdb but not exported from the shared library.
-  target_link_libraries(unittest duckdb test_helpers duckdb_re2 duckdb_mbedtls
-                        duckdb_cpp_api)
+  target_link_libraries(
+    unittest
+    duckdb
+    test_helpers
+    duckdb_re2
+    duckdb_mbedtls
+    duckdb_fsst
+    duckdb_cpp_api)
 else()
   # On Windows, tests require internal DuckDB symbols that are not DLL-exported.
   target_link_libraries(unittest duckdb_static test_helpers duckdb_cpp_api)

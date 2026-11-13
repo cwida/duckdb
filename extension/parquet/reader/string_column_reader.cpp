@@ -13,6 +13,7 @@
 #include "duckdb/common/vector/string_vector.hpp"
 #include "parquet_column_schema.hpp"
 #include "parquet_types.h"
+#include "parquet_timestamp.hpp"
 
 namespace duckdb {
 class Vector;
@@ -26,6 +27,10 @@ StringColumnReader::StringColumnReader(const ParquetReader &reader, const Parque
 	fixed_width_string_length = 0;
 	if (schema.parquet_type == Type::FIXED_LEN_BYTE_ARRAY) {
 		fixed_width_string_length = schema.type_length;
+	}
+	if (schema.parquet_type == Type::INT96) {
+		// INT96 is read as a raw 12-byte blob for int96_as='struct' (which converts it to STRUCT(date, time))
+		fixed_width_string_length = sizeof(Int96);
 	}
 }
 
@@ -108,20 +113,28 @@ string_t StringColumnReader::VerifyString(const char *str_data, uint32_t str_len
 
 class ParquetStringVectorBuffer : public AuxiliaryDataHolder {
 public:
-	explicit ParquetStringVectorBuffer(shared_ptr<ResizeableBuffer> buffer_p) : buffer(std::move(buffer_p)) {
+	explicit ParquetStringVectorBuffer(shared_ptr<ResizeableBuffer> buffer_p, BufferHandle handle_p)
+	    : buffer(std::move(buffer_p)), handle(std::move(handle_p)) {
 	}
 
 private:
 	shared_ptr<ResizeableBuffer> buffer;
+	BufferHandle handle;
 };
 
-void StringColumnReader::ReferenceBlock(Vector &result, shared_ptr<ResizeableBuffer> &block) {
-	StringVector::AddAuxiliaryData(result, make_uniq<ParquetStringVectorBuffer>(block));
+void StringColumnReader::ReferenceBlock(Vector &result, shared_ptr<ResizeableBuffer> &block,
+                                        BufferManager &buffer_manager) {
+	auto &block_handle = block->GetBlockHandle();
+	BufferHandle buffer_handle;
+	if (block_handle) {
+		buffer_handle = buffer_manager.Pin(block_handle);
+	}
+	StringVector::AddAuxiliaryData(result, make_uniq<ParquetStringVectorBuffer>(block, std::move(buffer_handle)));
 }
 
 void StringColumnReader::Plain(shared_ptr<ResizeableBuffer> &plain_data, uint8_t *defines, idx_t num_values,
                                idx_t result_offset, Vector &result) {
-	ReferenceBlock(result, plain_data);
+	ReferenceBlock(result, plain_data, GetBufferManager());
 	current_plain_result = &result;
 	PlainTemplated<string_t, StringParquetValueConversion>(*plain_data, defines, num_values, result_offset, result);
 	current_plain_result = nullptr;
@@ -129,7 +142,7 @@ void StringColumnReader::Plain(shared_ptr<ResizeableBuffer> &plain_data, uint8_t
 
 void StringColumnReader::PlainSelect(shared_ptr<ResizeableBuffer> &plain_data, uint8_t *defines, idx_t num_values,
                                      Vector &result, const SelectionVector &sel, idx_t count) {
-	ReferenceBlock(result, plain_data);
+	ReferenceBlock(result, plain_data, GetBufferManager());
 	current_plain_result = &result;
 	PlainSelectTemplated<string_t, StringParquetValueConversion>(*plain_data, defines, num_values, result, sel, count);
 	current_plain_result = nullptr;

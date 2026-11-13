@@ -1,0 +1,18 @@
+# name: benchmark/micro/pushdown/view_filter_below_delim_join.benchmark
+# description: A filter on a view with a correlated subquery in its select list runs before the subquery
+# group: [pushdown]
+
+name ViewFilterBelowDelimJoin
+group micro
+subgroup pushdown
+
+load
+CREATE TABLE facts AS SELECT i AS id, (i % 25) AS customer_id, [ (i % 50), ((i + 1) % 50) ] AS dim_ids FROM range(2000000) r(i);
+CREATE TABLE dims AS SELECT i AS dim_id, 'name ' || i AS name FROM range(50) r(i);
+CREATE VIEW v AS SELECT f.id, f.customer_id, (SELECT list(d.name ORDER BY d.name) FROM UNNEST(f.dim_ids) AS u(dim_id) JOIN dims d ON d.dim_id = u.dim_id) AS dim_names FROM facts f;
+
+run
+SELECT id, dim_names FROM v WHERE customer_id = 7 AND id = 1007;
+
+result II
+1007	[name 7, name 8]

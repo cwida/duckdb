@@ -62,7 +62,7 @@ struct ClusteredAggr {
 
 	struct GroupRun {
 		data_ptr_t state; //! caller fills this after TryClustered; advanced between aggregates
-		const sel_t *sel; //! points to the tuple positions for this run
+		const sel_t *sel; //! strictly increasing input row positions, or nullptr for 0..count-1
 		uint64_t gid;     //! raw group id for this run
 		idx_t count;      //! number of tuples in this group
 	};

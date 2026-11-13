@@ -21,9 +21,9 @@ struct StringChunk {
 	duckdb_v2_vector_handle vec = nullptr;
 
 	explicit StringChunk(DUCKDB_V2_LOGICAL_TYPE_ID id) {
-		auto t = MakeType(env.conn, id);
+		auto t = MakeType(env.factory, id);
 		duckdb_v2_logical_type_handle types[1] = {t};
-		auto rc = duckdb_v2_data_chunk_create(types, 1, &chunk, nullptr);
+		auto rc = duckdb_v2_data_chunk_create(env.factory, types, 1, &chunk, nullptr);
 		duckdb_v2_logical_type_destroy(&t);
 		REQUIRE(rc == DUCKDB_V2_ERROR_NONE);
 		// A REQUIRE throw in a ctor skips the dtor: destroy before failing.
@@ -188,7 +188,7 @@ TEST_CASE("V2: empty string is inlined", "[capi_v2][arena]") {
 
 	for (auto *s : {&a, &b}) {
 		REQUIRE(IsInlined(*s));
-		REQUIRE(Convert(*s).len == 0);
+		REQUIRE(Convert(*s).size() == 0);
 	}
 }
 
@@ -223,16 +223,16 @@ TEST_CASE("V2: BLOB with embedded nulls (inline + heap)", "[capi_v2][arena]") {
 	REQUIRE(duckdb_v2_vector_get_view(fixture.vec, &view, nullptr) == DUCKDB_V2_ERROR_NONE);
 	auto *arr = static_cast<const duckdb_v2_blob_t *>(view.data);
 
-	duckdb_v2_str out = Convert(arr[0]);
-	auto *out_data = reinterpret_cast<const uint8_t *>(out.ptr);
-	REQUIRE(out.len == 5);
+	std::string_view out = Convert(arr[0]);
+	auto *out_data = reinterpret_cast<const uint8_t *>(out.data());
+	REQUIRE(out.size() == 5);
 	REQUIRE(out_data[0] == 0xDE);
 	REQUIRE(out_data[2] == 0x00);
 	REQUIRE(out_data[4] == 0xEF);
 
 	out = Convert(arr[1]);
-	out_data = reinterpret_cast<const uint8_t *>(out.ptr);
-	REQUIRE(out.len == 20);
+	out_data = reinterpret_cast<const uint8_t *>(out.data());
+	REQUIRE(out.size() == 20);
 	REQUIRE(out_data[0] == 0xDE);
 	REQUIRE(out_data[5] == 0x00);
 	REQUIRE(out_data[10] == 0xAD);
@@ -248,7 +248,7 @@ TEST_CASE("V2: arena write on constant vector", "[capi_v2][arena]") {
 	EnvFixture fx;
 	StringChunk fixture(DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR);
 
-	duckdb_v2_value_handle value = MakeVarcharValue(fx.conn, "init");
+	duckdb_v2_value_handle value = MakeVarcharValue(fx.factory, "init");
 	REQUIRE(duckdb_v2_vector_make_constant(fixture.vec, value, 3, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_value_destroy(&value) == DUCKDB_V2_ERROR_NONE);
 

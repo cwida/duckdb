@@ -71,6 +71,11 @@ static string_t TranslateScalarFunction(const string_t &haystack, const string_t
 		input_haystack += sz;
 	}
 
+	if (result.size() > string_t::MAX_STRING_SIZE) {
+		throw OutOfRangeException(
+		    "Cannot create a string of size: '%d' in TRANSLATE, the maximum supported string size is: '%d'",
+		    result.size(), string_t::MAX_STRING_SIZE);
+	}
 	return string_t(result.data(), UnsafeNumericCast<uint32_t>(result.size()));
 }
 
@@ -94,6 +99,7 @@ ScalarFunction TranslateFun::GetFunction() {
 	    .AddParameter("string", LogicalType::VARCHAR)
 	    .AddParameter("from", LogicalType::VARCHAR)
 	    .AddParameter("to", LogicalType::VARCHAR);
+	fun.SetFallible();
 	return fun;
 }
 

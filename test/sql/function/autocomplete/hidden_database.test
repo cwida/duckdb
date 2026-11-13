@@ -1,0 +1,23 @@
+# name: test/sql/function/autocomplete/hidden_database.test
+# description: Test that sql_auto_complete does not suggest a hidden database
+# group: [autocomplete]
+
+require autocomplete
+
+statement ok
+ATTACH ':memory:' AS hidden_db (HIDDEN true);
+
+statement ok
+ATTACH ':memory:' AS shown_db;
+
+# a hidden database is not suggested as a catalog name
+query I
+SELECT count(*) FROM sql_auto_complete('SELECT * FROM hidden_') WHERE suggestion LIKE 'hidden_db%'
+----
+0
+
+# a database that is shown is
+query II
+SELECT suggestion, suggestion_start FROM sql_auto_complete('SELECT * FROM shown_') LIMIT 1;
+----
+shown_db.	14

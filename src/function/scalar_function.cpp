@@ -19,14 +19,32 @@ void ThrowNonFallibleFunctionError(const Identifier &name, std::exception &ex) {
 	if (!Exception::IsExecutionError(error.Type())) {
 		throw;
 	}
-	throw InternalException("Scalar function \"%s\" threw an execution error, but the function is not marked as "
+	throw InternalException("Scalar function %s threw an execution error, but the function is not marked as "
 	                        "fallible - the function must call SetFallible(). Error: %s",
 	                        name, error.RawMessage());
 }
 
+const Expression &ResolveScalarFunctionTypesInput::GetArgument(idx_t arg_idx) const {
+	D_ASSERT(arg_idx < arguments.size());
+	return *arguments[arg_idx];
+}
+
+const LogicalType &ResolveScalarFunctionTypesInput::GetArgumentType(idx_t arg_idx) const {
+	return GetArgument(arg_idx).GetReturnType();
+}
+
+vector<LogicalType> ResolveScalarFunctionTypesInput::GetArgumentTypes() const {
+	vector<LogicalType> result;
+	result.reserve(arguments.size());
+	for (auto &argument : arguments) {
+		result.push_back(argument->GetReturnType());
+	}
+	return result;
+}
+
 bool ScalarFunctionCallbacks::operator==(const ScalarFunctionCallbacks &rhs) const {
-	return bind == rhs.bind && init_local_state == rhs.init_local_state && statistics == rhs.statistics &&
-	       bind_lambda == rhs.bind_lambda && bind_expression == rhs.bind_expression &&
+	return resolve_types == rhs.resolve_types && bind == rhs.bind && init_local_state == rhs.init_local_state &&
+	       statistics == rhs.statistics && bind_lambda == rhs.bind_lambda && bind_expression == rhs.bind_expression &&
 	       get_modified_databases == rhs.get_modified_databases && serialize == rhs.serialize &&
 	       deserialize == rhs.deserialize && filter_prune == rhs.filter_prune && unbind == rhs.unbind;
 }

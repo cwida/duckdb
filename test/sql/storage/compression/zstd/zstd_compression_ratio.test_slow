@@ -13,7 +13,7 @@ statement ok
 CALL enable_logging(level='trace')
 
 statement ok
-PRAGMA force_compression='zstd'
+SET force_compression='zstd'
 
 set seed 0.42
 
@@ -42,7 +42,7 @@ SELECT message FROM duckdb_logs where message.starts_with('ColumnDataCheckpointe
 <REGEX>:.*ZSTD.*230801376
 
 statement ok
-PRAGMA force_compression='uncompressed'
+SET force_compression='uncompressed'
 
 set seed 0.42
 

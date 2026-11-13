@@ -2011,3 +2011,24 @@ apple_banana_mango992016
 apple_banana_mango994009
 apple_banana_mango996004
 apple_banana_mango998001
+
+# Long DLBA strings remain valid when a scan chunk crosses a page boundary.
+statement ok
+COPY (
+    SELECT i, repeat('page-backed-', 8) || i::VARCHAR AS s FROM range(4096) t(i)
+) TO '{TEST_DIR}/dlba_small_pages.parquet'
+(FORMAT parquet, PARQUET_VERSION v2, DICTIONARY_SIZE_LIMIT 0,
+ ROW_GROUP_SIZE 8192, DATA_PAGE_SIZE_LIMIT 16384);
+
+query I
+SELECT bool_and(encodings = 'DELTA_LENGTH_BYTE_ARRAY')
+FROM parquet_metadata('{TEST_DIR}/dlba_small_pages.parquet')
+WHERE path_in_schema = 's';
+----
+true
+
+query II
+SELECT count(*), count(*) FILTER (WHERE s IS DISTINCT FROM repeat('page-backed-', 8) || i::VARCHAR)
+FROM read_parquet('{TEST_DIR}/dlba_small_pages.parquet');
+----
+4096	0

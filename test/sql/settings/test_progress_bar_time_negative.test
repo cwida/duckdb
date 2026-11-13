@@ -1,0 +1,20 @@
+# name: test/sql/settings/test_progress_bar_time_negative.test
+# description: progress_bar_time rejects negative values
+# group: [settings]
+
+statement error
+SET progress_bar_time = -1;
+----
+Invalid Input Error: progress_bar_time setting cannot be negative
+
+# the connection is still usable
+query I
+SELECT 42;
+----
+42
+
+statement ok
+SET progress_bar_time = 100;
+
+statement ok
+RESET progress_bar_time;

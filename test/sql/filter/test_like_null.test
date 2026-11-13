@@ -1,0 +1,78 @@
+# name: test/sql/filter/test_like_null.test
+# description: Test LIKE/ILIKE with NULL pattern via CASE simplification and filters (issue #26433)
+# group: [filter]
+
+statement ok
+CREATE TABLE t(c1 VARCHAR);
+
+statement ok
+INSERT INTO t VALUES ('Jd*q^c'),(''),('x');
+
+# Test 1 — exact regression from issue #26433
+query I
+SELECT count(*) FROM t WHERE c1 ILIKE (CASE CAST(NULL AS BLOB) WHEN NULL THEN c1 END);
+----
+0
+
+# Test 2 — expression-level semantics in projection
+query III
+SELECT c1, (CASE CAST(NULL AS BLOB) WHEN NULL THEN c1 END) AS case_value, c1 ILIKE (CASE CAST(NULL AS BLOB) WHEN NULL THEN c1 END) AS predicate FROM t;
+----
+Jd*q^c	NULL	NULL
+(empty)	NULL	NULL
+x	NULL	NULL
+
+# Test 3 — valid non-NULL CASE control (matches should still be preserved)
+query I
+SELECT count(*) FROM t WHERE c1 ILIKE (CASE WHEN true THEN 'x' ELSE 'other' END);
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE c1 ILIKE (CASE WHEN false THEN 'other' ELSE 'x' END);
+----
+1
+
+# Test 4 — closest sibling operator: LIKE with NULL pattern via CASE
+query I
+SELECT count(*) FROM t WHERE c1 LIKE (CASE CAST(NULL AS BLOB) WHEN NULL THEN c1 END);
+----
+0
+
+# Test 5 — structurally equivalent searched CASE producing NULL
+query I
+SELECT count(*) FROM t WHERE c1 ILIKE (CASE WHEN false THEN c1 END);
+----
+0
+
+query I
+SELECT count(*) FROM t WHERE c1 ILIKE (CASE WHEN false THEN c1 ELSE NULL END);
+----
+0
+
+# Direct NULL pattern control
+query I
+SELECT count(*) FROM t WHERE c1 ILIKE NULL;
+----
+0
+
+query I
+SELECT count(*) FROM t WHERE c1 NOT ILIKE NULL;
+----
+0
+
+query I
+SELECT count(*) FROM t WHERE c1 LIKE NULL;
+----
+0
+
+query I
+SELECT count(*) FROM t WHERE c1 NOT LIKE NULL;
+----
+0
+
+# Scalar evaluation of NULL patterns
+query IIIIII
+SELECT 'x' LIKE NULL, 'x' NOT LIKE NULL, 'x' ILIKE NULL, 'x' NOT ILIKE NULL, NULL LIKE NULL, NULL ILIKE NULL;
+----
+NULL	NULL	NULL	NULL	NULL	NULL

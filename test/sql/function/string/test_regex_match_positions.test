@@ -1,0 +1,47 @@
+# name: test/sql/function/string/test_regex_match_positions.test
+# description: Empty matches, anchors and escape characters in regex and ILIKE functions
+# group: [string]
+
+query IIII
+SELECT regexp_extract_all('ab', '$'), regexp_extract_all('ab', 'x*'), regexp_extract_all('axb', 'x*'), regexp_extract_all('aé中', '');
+----
+['']	['', '', '']	['', x, '', '']	['', '', '', '']
+
+query I
+SELECT regexp_extract_all('ab', '(?P<x>b?)$', ['x']);
+----
+[{'x': b}, {'x': ''}]
+
+query IIII
+SELECT string_split_regex('aaa', '^a'), string_split_regex('a1b2c', '[0-9]'), string_split_regex('ab cd', '\bc'), string_split_regex('abc', '');
+----
+['', aa]	[a, b, c]	['ab ', d]	[a, b, c]
+
+# non-constant patterns
+query II
+SELECT string_split_regex(s, p), string_split_regex(s, p, 'i') FROM (VALUES ('aaa', '^a'), ('aXbxc', 'x')) t(s, p);
+----
+['', aa]	['', aa]
+[aXb, c]	[a, b, c]
+
+statement error
+SELECT string_split_regex('abc', p) FROM (VALUES ('(a')) t(p);
+----
+missing )
+
+statement error
+SELECT regexp_extract('abc', p) FROM (VALUES ('(a')) t(p);
+----
+missing )
+
+query IIII
+SELECT 'aXb' ILIKE 'aXXb' ESCAPE 'X', 'a%b' ILIKE 'aX%b' ESCAPE 'X', 'axb' ILIKE 'aX%b' ESCAPE 'X', 'a%b' NOT ILIKE 'aX%b' ESCAPE 'X';
+----
+true	true	false	false
+
+query I
+SELECT s ILIKE p ESCAPE e FROM (VALUES ('aXb', 'aXXb', 'X'), ('a%b', 'aX%b', 'X'), ('axb', 'aX%b', 'X')) t(s, p, e);
+----
+true
+true
+false

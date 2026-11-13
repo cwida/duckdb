@@ -60,6 +60,10 @@ public:
 	string base_sql_query;
 	string file_name;
 	vector<Condition> conditions;
+	//! The query timeout in effect at this command's position in the file, captured at parse time. Commands
+	//! inside loops execute long after parsing, so reading the runner's current value then would apply the
+	//! last parsed timeout to every queued statement.
+	double query_timeout;
 
 public:
 	Connection &CommandConnection(ExecuteContext &context) const;
@@ -198,12 +202,11 @@ public:
 
 public:
 	void ExecuteInternal(ExecuteContext &context) const override;
-
-	static SleepUnit ParseUnit(const string &unit);
-
 	bool SupportsConcurrent() const override {
 		return true;
 	}
+
+	static SleepUnit ParseUnit(const string &unit);
 
 private:
 	idx_t duration;

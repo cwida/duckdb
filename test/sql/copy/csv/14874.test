@@ -2,8 +2,6 @@
 # description: Test for issue #14784
 # group: [csv]
 
-mode skip instable
-
 query I
 SELECT count(*) FROM read_csv('{DATA_DIR}/csv/drug_exposure.csv');
 ----

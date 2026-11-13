@@ -1,9 +1,11 @@
 #include "duckdb/function/table/system_functions.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/profiler/gathered_metrics.hpp"
 #include "duckdb/function/function_set.hpp"
+#include "duckdb/execution/operator/helper/physical_set.hpp"
 
 namespace duckdb {
 
@@ -34,7 +36,7 @@ static void EnableProfiling(ClientContext &context, TableFunctionInput &data, Da
 		}
 
 		EnableProfilingSetting::ResetLocal(context);
-		ProfilingOutputSetting::ResetLocal(context);
+		Settings::Set<ProfilingOutputSetting>(context, SetScope::SESSION, Value(""));
 	}
 
 	if (!bind_data.format.IsNull()) {
@@ -42,11 +44,13 @@ static void EnableProfiling(ClientContext &context, TableFunctionInput &data, Da
 	}
 
 	if (!bind_data.coverage.IsNull()) {
-		ProfilingCoverageSetting::SetLocal(context, bind_data.coverage);
+		PhysicalSet::SetVariable(context, Identifier(ProfilingCoverageSetting::Name), SetScope::SESSION,
+		                         bind_data.coverage);
 	}
 
 	if (!bind_data.save_location.IsNull()) {
-		ProfilingOutputSetting::SetLocal(context, bind_data.save_location);
+		PhysicalSet::SetVariable(context, Identifier(ProfilingOutputSetting::Name), SetScope::SESSION,
+		                         bind_data.save_location);
 	}
 
 	if (!bind_data.mode.IsNull()) {
@@ -58,7 +62,10 @@ static void EnableProfiling(ClientContext &context, TableFunctionInput &data, Da
 		if (metrics_value.type().id() == LogicalTypeId::VARCHAR) {
 			metrics_value = Value::LIST(LogicalType::VARCHAR, {metrics_value});
 		}
-		TrackedMetricsSetting::SetLocal(context, metrics_value);
+		// validate the metrics like SET tracked_metrics does
+		SettingCallbackInfo info(context, SetScope::SESSION);
+		TrackedMetricsSetting::OnSet(info, metrics_value);
+		Settings::Set<TrackedMetricsSetting>(context, SetScope::SESSION, std::move(metrics_value));
 	}
 }
 
@@ -89,6 +96,21 @@ static unique_ptr<FunctionData> BindEnableProfiling(ClientContext &context, Tabl
 	// The metrics are placed by position however they were passed; the overload settled pattern or list of names
 	bind_data->metrics = input.inputs[0];
 
+	auto &config = DBConfig::GetConfig(context);
+	config.CheckLock(EnableProfilingSetting::Name);
+	if (!bind_data->coverage.IsNull()) {
+		config.CheckLock(ProfilingCoverageSetting::Name);
+	}
+	if (!bind_data->save_location.IsNull()) {
+		config.CheckLock(ProfilingOutputSetting::Name);
+	}
+	if (!bind_data->mode.IsNull()) {
+		config.CheckLock(ProfilingModeSetting::Name);
+	}
+	if (!bind_data->metrics.IsNull()) {
+		config.CheckLock(TrackedMetricsSetting::Name);
+	}
+
 	return_types.emplace_back(LogicalType::BOOLEAN);
 	names.emplace_back("Success");
 
@@ -102,6 +124,7 @@ static void DisableProfiling(ClientContext &context, TableFunctionInput &data, D
 
 static unique_ptr<FunctionData> BindDisableProfiling(ClientContext &context, TableFunctionBindInput &input,
                                                      vector<LogicalType> &return_types, vector<Identifier> &names) {
+	DBConfig::GetConfig(context).CheckLock(EnableProfilingSetting::Name);
 	return_types.emplace_back(LogicalType::BOOLEAN);
 	names.emplace_back("Success");
 
@@ -130,9 +153,12 @@ void EnableProfilingFun::RegisterFunction(BuiltinFunctions &set) {
 	                                                                        .Add("mode", LogicalType::VARCHAR)),
 	                                     EnableProfiling, BindEnableProfiling));
 
+	// reconfigures profiling per execution
+	enable_set.ApplyToFunctions([](TableFunction &function) { function.stability = FunctionStability::VOLATILE; });
 	set.AddFunction(std::move(enable_set));
 
 	auto disable_fun = TableFunction("disable_profiling", {}, DisableProfiling, BindDisableProfiling, nullptr, nullptr);
+	disable_fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(std::move(disable_fun));
 }
 

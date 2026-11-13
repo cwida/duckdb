@@ -133,6 +133,8 @@ public:
 
 	DUCKDB_API static bool InvalidatesTransaction(ExceptionType exception_type);
 	DUCKDB_API static bool InvalidatesDatabase(ExceptionType exception_type);
+	//! Extra info key naming the attached database that has been invalidated for a fatal error, instead of the instance
+	static constexpr const char *INVALIDATED_DATABASE_KEY = "invalidated_database";
 
 	DUCKDB_API static string ConstructMessageRecursive(const string &msg, std::vector<ExceptionFormatValue> &values);
 
@@ -179,6 +181,8 @@ public:
 class OutOfRangeException : public Exception {
 public:
 	DUCKDB_API explicit OutOfRangeException(const string &msg);
+	[[noreturn]] DUCKDB_API static void Throw(const char *message);
+	[[noreturn]] DUCKDB_API static void ThrowConversion(double value, PhysicalType orig_type, PhysicalType new_type);
 
 	template <typename... ARGS>
 	explicit OutOfRangeException(const string &msg, ARGS &&...params)
@@ -255,6 +259,7 @@ public:
 class DataCorruptionException : public Exception {
 public:
 	DUCKDB_API explicit DataCorruptionException(const string &msg);
+	[[noreturn]] DUCKDB_API static void Throw(const char *message);
 
 	template <typename... ARGS>
 	explicit DataCorruptionException(const string &msg, ARGS &&...params)
@@ -285,6 +290,10 @@ public:
 class NotImplementedException : public Exception {
 public:
 	DUCKDB_API explicit NotImplementedException(const string &msg);
+	//! Throw from a non-template helper so template instantiations do not carry the exception construction
+	[[noreturn]] DUCKDB_API static void Throw(const char *message);
+	//! Formats the message with the name of the physical type
+	[[noreturn]] DUCKDB_API static void Throw(const char *message, PhysicalType type);
 	explicit NotImplementedException(const unordered_map<string, string> &extra_info, const string &msg);
 
 	template <typename... ARGS>
@@ -351,6 +360,8 @@ class InternalException : public Exception {
 public:
 	DUCKDB_API explicit InternalException(const string &msg);
 	InternalException(const unordered_map<string, string> &extra_info, const string &msg);
+	//! Throws a fixed message; for templates, so that the throw is not instantiated per type
+	[[noreturn]] DUCKDB_API static void Throw(const char *message);
 
 	template <typename... ARGS>
 	explicit InternalException(const string &msg, ARGS &&...params)
@@ -366,6 +377,7 @@ public:
 class InvalidInputException : public Exception {
 public:
 	DUCKDB_API explicit InvalidInputException(const string &msg);
+	[[noreturn]] DUCKDB_API static void Throw(const char *message);
 	DUCKDB_API explicit InvalidInputException(const unordered_map<string, string> &extra_info, const string &msg);
 
 	template <typename... ARGS>

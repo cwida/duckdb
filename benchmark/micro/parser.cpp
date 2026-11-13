@@ -26,7 +26,7 @@ enum class ParserWorkload : uint8_t {
 };
 
 struct ParserBenchmarkState : public BenchmarkState {
-	ParserOptions options;
+	ParserOptions options = ParserOptions::Builtin();
 	vector<string> queries;
 	idx_t statements_parsed = 0;
 	idx_t parser_errors = 0;
@@ -44,7 +44,6 @@ public:
 	unique_ptr<BenchmarkState> Initialize(BenchmarkConfiguration &config) override {
 		auto state = make_uniq<ParserBenchmarkState>();
 		state->queries = LoadQueries();
-		state->options.compiled_grammar = CompiledGrammar::Create();
 		// Keep malformed-input backtracking under the runner's timeout in Run.
 		if (workload == ParserWorkload::MALFORMED_SELECT) {
 			return std::move(state);

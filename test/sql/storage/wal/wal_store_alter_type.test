@@ -10,7 +10,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 # create a table and add a column to it
 statement ok
@@ -25,7 +25,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 statement ok
 ALTER TABLE test ALTER b TYPE VARCHAR
@@ -43,7 +43,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 query IT
 SELECT * FROM test ORDER BY 1
@@ -69,7 +69,7 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown
 
 statement ok
-PRAGMA wal_autocheckpoint='1TB';
+SET wal_autocheckpoint='1TB';
 
 query IT
 SELECT * FROM test ORDER BY 1

@@ -33,7 +33,11 @@ struct DuckDBTableSampleOperatorData : public GlobalTableFunctionState {
 static unique_ptr<FunctionData> DuckDBTableSampleBind(ClientContext &context, TableFunctionBindInput &input,
                                                       vector<LogicalType> &return_types, vector<Identifier> &names) {
 	// look up the table name in the catalog
-	auto qname = QualifiedName::Parse(input.inputs[0].GetValue<string>());
+	QualifiedName qname;
+	string error;
+	if (!QualifiedName::TryParse(input.inputs[0].GetValue<string>(), qname, error)) {
+		throw ParserException(error);
+	}
 	CatalogEntryRetriever retriever(context);
 	qname = Binder::BindTableName(retriever, qname);
 
@@ -89,9 +93,12 @@ static void DuckDBTableSampleFunction(ClientContext &context, TableFunctionInput
 }
 
 void DuckDBTableSample::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("duckdb_table_sample",
-	                              FunctionSignature().AddPositionalOnly("table_name", LogicalType::VARCHAR),
-	                              DuckDBTableSampleFunction, DuckDBTableSampleBind, DuckDBTableSampleInit));
+	TableFunction table_sample_fun("duckdb_table_sample",
+	                               FunctionSignature().AddPositionalOnly("table_name", LogicalType::VARCHAR),
+	                               DuckDBTableSampleFunction, DuckDBTableSampleBind, DuckDBTableSampleInit);
+	// returns a random sample per execution
+	table_sample_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(table_sample_fun));
 }
 
 } // namespace duckdb

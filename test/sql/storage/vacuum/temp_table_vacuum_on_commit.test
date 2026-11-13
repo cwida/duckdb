@@ -1,0 +1,33 @@
+# name: test/sql/storage/vacuum/temp_table_vacuum_on_commit.test
+# description: Committing a large delete from a temporary table vacuums it, like an in-memory table
+# group: [vacuum]
+
+statement ok
+SET checkpoint_threshold = '1KB'
+
+statement ok
+CREATE TEMP TABLE t AS SELECT range i FROM range(1000000)
+
+statement ok
+CREATE TEMP TABLE before AS SELECT count(DISTINCT row_group_id) AS c FROM pragma_storage_info('t')
+
+statement ok
+DELETE FROM t WHERE i % 10 <> 0
+
+query I
+SELECT count(DISTINCT row_group_id) < (SELECT c FROM before) FROM pragma_storage_info('t')
+----
+true
+
+query II
+SELECT count(*), sum(i) FROM t
+----
+100000	49999500000
+
+statement ok
+INSERT INTO t SELECT range FROM range(10)
+
+query II
+SELECT count(*), sum(i) FROM t
+----
+100010	49999500045

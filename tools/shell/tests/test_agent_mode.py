@@ -487,3 +487,42 @@ def test_streamed_error_without_agent(shell):
     result = test.run()
     assert result.status_code == 1
     result.check_stderr("Conversion Error")
+
+def test_agent_mode_environment_on(shell):
+    # DUCKDB_AGENT_MODE=1 forces agent mode without any agent marker
+    test = ShellTest(shell).env_var("DUCKDB_AGENT_MODE", "1").statement(FIFTY_ROWS)
+    result = test.run()
+    result.check_stdout("|---|")
+    result.check_stderr("duckdb agent mode on (DUCKDB_AGENT_MODE is set)")
+
+def test_agent_mode_environment_off(shell):
+    # DUCKDB_AGENT_MODE=0 turns agent mode off even when an agent's marker is set
+    test = agent_shell(shell).env_var("DUCKDB_AGENT_MODE", "0").statement(FIFTY_ROWS)
+    result = test.run()
+    assert "|---|" not in result.stdout
+    assert "agent mode" not in result.stderr
+
+def test_agent_mode_environment_flag_wins(shell):
+    # -agent / -no-agent take precedence over DUCKDB_AGENT_MODE
+    test = ShellTest(shell).env_var("DUCKDB_AGENT_MODE", "1").add_argument("-no-agent").statement(FIFTY_ROWS)
+    result = test.run()
+    assert "|---|" not in result.stdout
+    test = agent_shell(shell).env_var("DUCKDB_AGENT_MODE", "0").add_argument("-agent").statement(FIFTY_ROWS)
+    result = test.run()
+    result.check_stdout("|---|")
+
+@pytest.mark.parametrize("value", ["", "auto"])
+def test_agent_mode_environment_auto(shell, value):
+    # empty or auto leaves it to the auto-detection
+    test = agent_shell(shell).env_var("DUCKDB_AGENT_MODE", value).statement(FIFTY_ROWS)
+    result = test.run()
+    result.check_stdout("|---|")
+    test = ShellTest(shell).env_var("DUCKDB_AGENT_MODE", value).statement(FIFTY_ROWS)
+    result = test.run()
+    assert "|---|" not in result.stdout
+
+def test_agent_mode_environment_invalid(shell):
+    test = ShellTest(shell).env_var("DUCKDB_AGENT_MODE", "maybe").statement(FIFTY_ROWS)
+    result = test.run()
+    result.check_stderr("ignoring DUCKDB_AGENT_MODE=maybe")
+    assert "|---|" not in result.stdout

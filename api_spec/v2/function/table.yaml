@@ -21,17 +21,31 @@ enums:
         value: 3
         description: The partitions the scan produces are disjoint ranges.
 
+  TABLE_VIRTUAL_COLUMN:
+    description: |
+      A column a table function can produce next to the columns it declares in bind. A query asks for it by name,
+      but it is not part of the function's result columns. Declared with `[[table_function_add_virtual_column]]`.
+      In the column lists of the scan (e.g. `[[table_function_exec_get_column_index]]`), a virtual column is
+      identified by 2^63 plus its value in this enum.
+    values:
+      TABLE_VIRTUAL_COLUMN_FILE_ROW_NUMBER:
+        value: 0
+        description: |
+          `file_row_number`, a BIGINT holding the position of the row within the file it was read from, counting
+          from 0. A function that reads a single file produces it when it is wrapped in a multi-file function (see
+          `[[multi_file_function_create]]`), which is where the name of the file comes from.
+
 #-----------------------------------------------------------------------------------------------------------------------
 # Handles
 #-----------------------------------------------------------------------------------------------------------------------
 handles:
   table_function:
     description: |
-      An owned opaque handle to a custom table function being built. Created with
-      `[[table_function_create_with_connection]]` or `[[table_function_create_with_extension]]`, configured with the
-      setter functions (e.g. `[[table_function_set_name]]`, `[[table_function_set_exec_callback]]`, etc.) and the
-      signature obtained via `[[table_function_get_signature]]`, made available with `[[table_function_register]]`, and
-      destroyed with `[[table_function_destroy]]`.
+      An owned opaque handle to a custom table function being built. Created with `[[table_function_create]]`,
+      configured with the setter functions (e.g. `[[table_function_set_name]]`, `[[table_function_set_exec_callback]]`,
+      etc.) and the signature obtained via `[[table_function_get_signature]]`, made available with
+      `[[connection_register_table_function]]` or `[[extension_register_table_function]]`, and destroyed with
+      `[[table_function_destroy]]`.
 
   table_function_bind_info:
     description: |
@@ -77,6 +91,13 @@ handles:
       when a downstream operator needs to know the batch's ordering position, the values of a set of partitioning
       columns, or both; the handle reports which of those were actually requested and receives the answer.
 
+  table_function_stats_info:
+    description: |
+      A borrowed opaque handle to the arguments supplied to a table function during the "stats" phase of query
+      optimization. The engine invokes the callback once per column the query reads, and the callback can use the
+      handle to find out which column is asked about and to report what it knows about the column's values (its
+      minimum and maximum, whether it holds NULLs, ...) by narrowing the statistics of that column.
+
   table_function_partitioning_info:
     description: |
       A borrowed opaque handle to the arguments supplied to a table function during the "partitioning" phase
@@ -89,15 +110,28 @@ handles:
       next batch of work. The "claim batch" callback receives this handle and can use it to claim the next part of
       the scan from the shared global state for the thread's local state, and to report whether it claimed one.
 
+  table_function_metrics_info:
+    description: |
+      A borrowed opaque handle to the arguments supplied to a table function when the engine collects the metrics
+      of a scan. The "metrics" callback receives this handle and can use it to report the operator metrics of the scan,
+      e.g. how many row groups it read.
+
+  table_function_get_bind_info_info:
+    description: |
+      A borrowed opaque handle to the arguments supplied to a table function when the engine asks it to describe a
+      bound call. The "get bind info" callback receives this handle, and can use it to describe the call in more
+      detail than its columns: with identifiers of its columns (e.g. field ids), and with options - key-value facts
+      about what the call reads.
+
   multi_file_function:
     description: |
       An owned opaque handle to a multi-file table function being built. A multi-file function wraps an already
-      registered table function that reads a single file, and adds everything that is needed to read many files
-      at once on top of it: globbing, lists of files, hive partitioning, the `filename` column, `union_by_name`
-      and the like. Created with `[[multi_file_function_create_with_connection]]` or
-      `[[multi_file_function_create_with_extension]]`, configured with the setter functions (e.g.
+      registered table function that reads a single file, and adds everything that is needed to read many files at once
+      on top of it: globbing, lists of files, hive partitioning, the `filename` column, `union_by_name` and the like.
+      Created with `[[multi_file_function_create]]`, configured with the setter functions (e.g.
       `[[multi_file_function_set_name]]`, `[[multi_file_function_set_single_file_function]]`), made available with
-      `[[multi_file_function_register]]`, and destroyed with `[[multi_file_function_destroy]]`.
+      `[[connection_register_multi_file_function]]` or `[[extension_register_multi_file_function]]`, and destroyed with
+      `[[multi_file_function_destroy]]`.
 
 #-----------------------------------------------------------------------------------------------------------------------
 # Callbacks
@@ -178,6 +212,20 @@ callbacks:
         description: Borrowed error info handle to use to report errors that occur during the callback.
     return_type: void
 
+  table_function_metrics_callback:
+    parameters:
+      info:
+        type: table_function_metrics_info
+        description: Borrowed opaque handle providing access to the information available to the callback.
+      context:
+        type: context
+        description: Borrowed handle to the context of the query currently executing the callback.
+      err:
+        type: error_info
+        indirection: 1
+        description: Borrowed error info handle to use to report errors that occur during the callback.
+    return_type: void
+
   table_function_filter_pushdown_callback:
     parameters:
       info:
@@ -234,6 +282,34 @@ callbacks:
         description: Borrowed error info handle to use to report errors that occur during the callback.
     return_type: void
 
+  table_function_get_bind_info_callback:
+    parameters:
+      info:
+        type: table_function_get_bind_info_info
+        description: Borrowed opaque handle providing access to the information available to the callback.
+      context:
+        type: context
+        description: Borrowed handle to the context of the query the bound call is part of.
+      err:
+        type: error_info
+        indirection: 1
+        description: Borrowed error info handle to use to report errors that occur during the callback.
+    return_type: void
+
+  table_function_stats_callback:
+    parameters:
+      info:
+        type: table_function_stats_info
+        description: Borrowed opaque handle providing access to the information available to the callback.
+      context:
+        type: context
+        description: Borrowed handle to the context of the query currently executing the callback.
+      err:
+        type: error_info
+        indirection: 1
+        description: Borrowed error info handle to use to report errors that occur during the callback.
+    return_type: void
+
 #-----------------------------------------------------------------------------------------------------------------------
 # Functions
 #-----------------------------------------------------------------------------------------------------------------------
@@ -241,48 +317,25 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   # Constructors
   #---------------------------------------------------------------------------------------------------------------------
-  table_function_create_with_connection:
+  table_function_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
-      Creates a new table function that will be registered on the connection's database.
+      Creates a new table function through a factory.
 
       The function starts out empty: configure it with the setter functions (e.g. `[[table_function_set_name]]`,
-      `[[table_function_set_exec_callback]]`, etc.) and the signature obtained via
-      `[[table_function_get_signature]]`, then make it available with `[[table_function_register]]`.
+      `[[table_function_set_exec_callback]]`, etc.) and the signature obtained via `[[table_function_get_signature]]`,
+      then make it available with `[[connection_register_table_function]]` or `[[extension_register_table_function]]`.
       The caller owns the returned handle and must destroy it with `[[table_function_destroy]]`, also after
       registration.
-    parameters:
-      connection:
-        type: connection
-        description: The connection to create the function in.
-      function:
-        type: table_function
-        indirection: 1
-        kind: OUT
-        description: On success, receives the newly created table function. Owned by the caller.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
 
-  table_function_create_with_extension:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
-    description: |
-      Creates a new table function that will be registered on the loading extension's database.
-
-      Use this from an extension load callback, where an extension handle is available. The function starts out
-      empty: configure it with the setter functions (e.g. `[[table_function_set_name]]`,
-      `[[table_function_set_exec_callback]]`, etc.) and the signature obtained via
-      `[[table_function_get_signature]]`, then make it available with `[[table_function_register]]`.
-      The caller owns the returned handle and must destroy it with `[[table_function_destroy]]`, also after
-      registration.
+      The table function can only be registered on the database the factory belongs to.
+    role: constructor
+    belongs_to: table_function
     parameters:
-      extension:
-        type: extension
-        description: The extension to create the function in.
+      factory:
+        type: factory
+        description: The factory to create the table function through.
       function:
         type: table_function
         indirection: 1
@@ -299,7 +352,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_set_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the name of the table function.
 
@@ -310,20 +363,50 @@ functions:
         type: table_function
         description: The function to set the name of.
       name:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The name to set. Borrowed and copied.
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
+
+  table_function_get_docs:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Returns the documentation of the function so it can be filled in.
+
+      Set a description with `[[function_docs_set_description]]`, and add examples and categories with
+      `[[function_docs_add_example]]` and `[[function_docs_add_category]]`. The documentation is modified in place,
+      describes this overload only, and is registered with the function. Optional.
+    parameters:
+      function:
+        type: table_function
+        kind: IN
+        description: The function to get the documentation of.
+      docs:
+        type: function_docs
+        indirection: 1
+        kind: OUT
+        description: The returned documentation. Borrowed and valid for the lifetime of the function handle.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
   table_function_get_signature:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Returns the function's signature so it can be configured.
 
@@ -349,7 +432,7 @@ functions:
 
   table_function_set_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets arbitrary user data on the table function.
 
@@ -373,7 +456,7 @@ functions:
 
   table_function_set_bind_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the bind callback of the table function.
 
@@ -396,7 +479,7 @@ functions:
 
   table_function_set_init_global_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the optional global init callback of the table function.
 
@@ -418,7 +501,7 @@ functions:
 
   table_function_set_init_local_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the optional local init callback of the table function.
 
@@ -439,7 +522,7 @@ functions:
 
   table_function_set_exec_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the exec callback of the table function.
 
@@ -461,7 +544,7 @@ functions:
 
   table_function_set_progress_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the optional progress callback of the table function.
 
@@ -484,7 +567,7 @@ functions:
 
   table_function_set_projection_pushdown:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets whether the table function supports projection pushdown. Defaults to false.
 
@@ -506,9 +589,60 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
+  table_function_add_virtual_column:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Declares that the table function can produce the given virtual column.
+
+      A virtual column is not one of the columns declared in bind: the query asks for it by name, and the function
+      only produces it when it is asked for. It then takes up a vector of the exec callback's output chunk, like any
+      other column the scan produces. This requires projection pushdown (see
+      `[[table_function_set_projection_pushdown]]`), which is what lets the engine ask for it. The global init, local
+      init and exec callbacks recognize the vector by its column index, which is 2^63 plus the value of the
+      `[[TABLE_VIRTUAL_COLUMN]]` (see e.g. `[[table_function_exec_get_column_index]]`).
+    parameters:
+      function:
+        type: table_function
+        description: The function to configure.
+      column:
+        type: TABLE_VIRTUAL_COLUMN
+        description: The virtual column the function can produce.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_set_metrics_callback:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Sets the optional metrics callback of the table function.
+
+      The metrics callback is invoked when the engine collects the metrics of the scan, e.g. when profiling is
+      enabled, and can report what the scan did through its `[[table_function_metrics_info]]`.
+
+      DuckDB does not synchronize the callback with the scan: each thread that scanned invokes it when it finishes,
+      so it can run while other threads still scan and while other threads invoke it. The global state it reads is
+      shared with those threads, so the function must synchronize what the callback reads from it, e.g. by keeping
+      counters in atomics and reading them with an exchange, so that each amount is reported once.
+    parameters:
+      function:
+        type: table_function
+        description: The function to set the metrics callback of.
+      callback:
+        type: table_function_metrics_callback
+        description: The metrics callback to set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
   table_function_set_filter_pushdown_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional filter pushdown callback of the table function.
 
@@ -520,6 +654,14 @@ functions:
       keeps applying the rest above the scan, so accepting a predicate is a promise to filter the rows exactly as
       it would have. The optimizer may invoke the callback more than once for the same query, each time with the
       predicates not yet accepted; it is not invoked when there are none.
+
+      A function that also has projection pushdown (see `[[table_function_set_projection_pushdown]]`) is offered the
+      predicates that apply to a single column of it once more when a scan starts, just before the global init
+      callback, in the same form, with the column references resolved by `[[table_function_filter_pushdown_get_column_index]]`
+      as at optimization time. This is how the callback of a function wrapped in a multi-file function sees the
+      predicates, which the optimizer only offers to the wrapper. The engine applies these predicates to the rows the
+      function produces itself, so the function may use them to skip what the query can never use but does not have to
+      understand them, and accepting one has no effect. The scan keeps the columns the predicates are applied to.
     parameters:
       function:
         type: table_function
@@ -535,7 +677,7 @@ functions:
 
   table_function_set_partition_data_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Sets the optional "partition data" callback of the table function.
 
@@ -559,7 +701,7 @@ functions:
 
   table_function_set_partitioning_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Sets the optional "partitioning" callback of the table function.
 
@@ -584,12 +726,41 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
+  table_function_set_stats_callback:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Sets the optional stats callback of the table function.
+
+      The stats callback is invoked during query optimization once for each declared column the query reads, when the
+      engine wants to know about the column's values without reading them - e.g. to prune a scan whose filter no value
+      can satisfy, to answer `min()` / `max()` from the statistics, or to estimate the selectivity of a filter. Through
+      its `[[table_function_stats_info]]` the callback narrows the statistics of that column (see
+      `[[table_function_stats_get_result_stats]]`): its minimum and maximum, whether it holds NULLs, the statistics of
+      the children of a nested column, ... Leaving the statistics unchanged tells the engine nothing about the column.
+      The statistics must hold for every row the call produces: a bound that excludes a value the scan then produces
+      leads to wrong results. A function without a stats callback gives the engine no statistics for its columns. The
+      callback is only asked about whole declared columns, never about virtual columns or about fields extracted from
+      a column.
+    parameters:
+      function:
+        type: table_function
+        description: The function to set the stats callback of.
+      callback:
+        type: table_function_stats_callback
+        description: The stats callback to set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
   #---------------------------------------------------------------------------------------------------------------------
   # Bind Callback Functions
   #---------------------------------------------------------------------------------------------------------------------
   table_function_bind_add_result_column:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Declares one of the columns the function returns.
 
@@ -602,11 +773,14 @@ functions:
         type: table_function_bind_info
         description: The bind info handle.
       name:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The name of the column. Borrowed and copied.
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       type:
         type: logical_type
         description: The type of the column. Borrowed and copied.
@@ -618,7 +792,7 @@ functions:
 
   table_function_bind_set_cardinality:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the estimated number of rows the scan will produce.
 
@@ -642,7 +816,7 @@ functions:
 
   table_function_bind_set_order_preservation:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: |
       Sets the order guarantee of the rows this call of the function produces. Defaults to
       `ORDER_PRESERVATION_INSERTION_ORDER`.
@@ -670,7 +844,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_init_global_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the user data set via `[[table_function_set_user_data]]`.
     parameters:
       info:
@@ -689,7 +863,7 @@ functions:
 
   table_function_init_global_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -708,7 +882,7 @@ functions:
 
   table_function_init_global_set_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the function's "global state" from the global init callback.
 
@@ -732,7 +906,7 @@ functions:
 
   table_function_init_global_set_max_threads:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets how many threads may scan the function in parallel.
 
@@ -755,7 +929,7 @@ functions:
 
   table_function_init_global_get_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of columns the scan produces.
 
@@ -780,7 +954,7 @@ functions:
 
   table_function_init_global_get_column_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns which declared column the scan's column at the given index stands for.
 
@@ -805,12 +979,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
-  #---------------------------------------------------------------------------------------------------------------------
-  # Local Init Callback Functions
-  #---------------------------------------------------------------------------------------------------------------------
   table_function_init_local_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the user data set via `[[table_function_set_user_data]]`.
     parameters:
       info:
@@ -829,7 +1000,7 @@ functions:
 
   table_function_init_local_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -848,7 +1019,7 @@ functions:
 
   table_function_init_local_get_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Retrieves the global state set by the function's global init callback.
 
@@ -870,7 +1041,7 @@ functions:
 
   table_function_init_local_set_local_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the function's worker-local "local state" from the local init callback.
 
@@ -895,7 +1066,7 @@ functions:
 
   table_function_init_local_get_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of columns the scan produces.
 
@@ -920,7 +1091,7 @@ functions:
 
   table_function_init_local_get_column_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns which declared column the scan's column at the given index stands for.
 
@@ -950,7 +1121,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_exec_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the user data set via `[[table_function_set_user_data]]`.
     parameters:
       info:
@@ -969,7 +1140,7 @@ functions:
 
   table_function_exec_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -988,7 +1159,7 @@ functions:
 
   table_function_exec_get_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Retrieves the global state set by the function's global init callback.
 
@@ -1010,7 +1181,7 @@ functions:
 
   table_function_exec_get_local_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the worker-local local state set by the function's local init callback.
     parameters:
       info:
@@ -1029,7 +1200,7 @@ functions:
 
   table_function_exec_get_output_chunk:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Retrieves the output chunk the exec callback must write the next batch of rows into.
 
@@ -1057,7 +1228,7 @@ functions:
 
   table_function_exec_get_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of columns the scan produces.
 
@@ -1082,7 +1253,7 @@ functions:
 
   table_function_exec_get_column_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns which declared column the scan's column at the given index stands for.
 
@@ -1112,7 +1283,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_progress_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the user data set via `[[table_function_set_user_data]]`.
     parameters:
       info:
@@ -1131,7 +1302,7 @@ functions:
 
   table_function_progress_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -1150,7 +1321,7 @@ functions:
 
   table_function_progress_get_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Retrieves the global state set by the function's global init callback.
 
@@ -1173,7 +1344,7 @@ functions:
 
   table_function_progress_set_progress:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Reports how far the scan has advanced.
 
@@ -1198,7 +1369,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_filter_pushdown_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the user data set via `[[table_function_set_user_data]]`, or null if none was set.
     parameters:
@@ -1218,7 +1389,7 @@ functions:
 
   table_function_filter_pushdown_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the bind data set via `[[function_bind_set_bind_data]]`, or null if none was set.
 
@@ -1241,7 +1412,7 @@ functions:
 
   table_function_filter_pushdown_get_filter_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of filter predicates offered to the function.
 
@@ -1265,7 +1436,7 @@ functions:
 
   table_function_filter_pushdown_get_filter:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the filter predicate at the given index.
 
@@ -1293,7 +1464,7 @@ functions:
 
   table_function_filter_pushdown_accept:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Accepts the filter predicate at the given index: the function will apply it itself.
 
@@ -1315,7 +1486,7 @@ functions:
 
   table_function_filter_pushdown_get_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of columns the predicates can refer to.
 
@@ -1339,7 +1510,7 @@ functions:
 
   table_function_filter_pushdown_get_column_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Resolves a column reference found in a predicate to the declared column it refers to.
 
@@ -1369,7 +1540,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_partition_data_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: Retrieves the user data set via `[[table_function_set_user_data]]`.
     parameters:
       info:
@@ -1388,7 +1559,7 @@ functions:
 
   table_function_partition_data_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -1407,7 +1578,7 @@ functions:
 
   table_function_partition_data_get_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Retrieves the global state set by the function's global init callback.
 
@@ -1429,7 +1600,7 @@ functions:
 
   table_function_partition_data_get_local_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Retrieves the worker-local local state set by the function's local init callback, for the thread that
       produced the batch this call reports on. No other thread observes it, so it needs no synchronization.
@@ -1450,7 +1621,7 @@ functions:
 
   table_function_partition_data_requires_batch_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Returns whether a downstream operator needs this batch's ordering position.
 
@@ -1474,7 +1645,7 @@ functions:
 
   table_function_partition_data_requires_partition_columns:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Returns whether a downstream operator needs this batch's values for a set of partitioning columns.
 
@@ -1497,7 +1668,7 @@ functions:
 
   table_function_partition_data_get_partition_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Returns the number of partitioning columns a downstream operator is requesting values for.
 
@@ -1521,7 +1692,7 @@ functions:
 
   table_function_partition_data_get_partition_column_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Returns which declared column the requested partitioning column at the given index stands for.
 
@@ -1547,7 +1718,7 @@ functions:
 
   table_function_partition_data_set_batch_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Reports the ordering position of the batch the exec callback just produced.
 
@@ -1576,7 +1747,7 @@ functions:
 
   table_function_partition_data_set_partition_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Reports the single value of the partitioning column at the given index, for the batch the exec callback
       just produced.
@@ -1610,7 +1781,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_partitioning_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: Retrieves the user data set via `[[table_function_set_user_data]]`.
     parameters:
       info:
@@ -1629,7 +1800,7 @@ functions:
 
   table_function_partitioning_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -1648,7 +1819,7 @@ functions:
 
   table_function_partitioning_get_partition_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Returns the number of columns the optimizer is asking about: the candidate `GROUP BY` column set.
 
@@ -1671,7 +1842,7 @@ functions:
 
   table_function_partitioning_get_partition_column_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Returns which declared column the candidate `GROUP BY` column at the given index stands for.
 
@@ -1697,7 +1868,7 @@ functions:
 
   table_function_partitioning_set_partition_info:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Reports whether every partition the scan produces carries exactly one distinct value for the candidate
       `GROUP BY` column set.
@@ -1720,23 +1891,196 @@ functions:
     return_type: ERROR
 
   #---------------------------------------------------------------------------------------------------------------------
-  # Register
+  # Stats Callback Functions
   #---------------------------------------------------------------------------------------------------------------------
-  table_function_register:
+  table_function_stats_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
-    description: |
-      Registers the table function, making it available for use in SQL queries.
-
-      The function is registered on the target given at creation: the connection's database or the loading
-      extension. Registration requires a name, a bind callback and an exec callback, and rejects a signature
-      that declares a return type, since a table function declares the columns it returns from its bind
-      callback. The caller still owns the handle after registration and must destroy it with
-      `[[table_function_destroy]]`, which does not affect the registered function.
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: Retrieves the user data set via `[[table_function_set_user_data]]`.
     parameters:
-      function:
-        type: table_function
-        description: The function to register.
+      info:
+        type: table_function_stats_info
+        description: The stats info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the user data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_stats_get_bind_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: Retrieves the bind data set by the function's bind callback.
+    parameters:
+      info:
+        type: table_function_stats_info
+        description: The stats info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the bind data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_stats_get_column_index:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Returns which declared column the statistics describe.
+
+      The result indexes the columns declared with `[[table_function_bind_add_result_column]]`, in declaration order.
+      It is never the index of a virtual column or of a field extracted from a column; the callback is not asked
+      about those.
+    parameters:
+      info:
+        type: table_function_stats_info
+        description: The stats info handle.
+      column_index:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the index of the declared column.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_stats_get_result_stats:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Retrieves the statistics of the column, for the callback to narrow.
+
+      The statistics start out unknown, with every kind of value possible, and are of the column's type as the bind
+      callback declared it. The callback narrows them with `[[stats_set_value]]`, from a STRUCT value in the shape
+      `[[stats_get_value]]` returns - e.g. `{'min': 20, 'max': 30, 'has_null': false}` for an INTEGER column, or the
+      statistics of the fields of a STRUCT column under `child_stats` - and with `[[stats_set_can_have_null]]` /
+      `[[stats_set_can_have_valid]]`. Statistics built with `[[stats_create]]`, e.g. combined from the files of a scan
+      with `[[stats_merge]]`, are copied in with `[[stats_assign]]`. They describe every value the scan produces for
+      the column. Borrowed; valid only for the duration of the callback.
+    parameters:
+      info:
+        type: table_function_stats_info
+        description: The stats info handle.
+      stats:
+        type: stats
+        indirection: 1
+        kind: OUT
+        description: Receives the borrowed, writable statistics of the column.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Metrics Callback Functions
+  #---------------------------------------------------------------------------------------------------------------------
+  table_function_metrics_get_user_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: Retrieves the user data set via `[[table_function_set_user_data]]`.
+    parameters:
+      info:
+        type: table_function_metrics_info
+        description: The metrics info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the user data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_metrics_get_bind_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: Retrieves the bind data set by the function's bind callback.
+    parameters:
+      info:
+        type: table_function_metrics_info
+        description: The metrics info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the bind data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_metrics_get_global_state:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Retrieves the global state set by the function's global init callback.
+
+      The metrics callback can run while the scan is still running, so it must read the global state in a
+      thread-safe way. The global state is null if the scan has not been initialized.
+    parameters:
+      info:
+        type: table_function_metrics_info
+        description: The metrics info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the global state pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_metrics_set:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Reports an operator metric of the scan, by the name DuckDB's profiler uses for it (the names `tracked_metrics`
+      accepts).
+
+      The metrics a scan can report are counters:
+      - `operator.rows_scanned`: the rows the scan read.
+      - `operator.row_groups_scanned`: the row groups the scan read. A row group is the unit a format lets the scan
+        skip, e.g. a Parquet row group or an ORC stripe.
+      - `operator.total_row_groups_to_scan`: the row groups the scan read or skipped.
+      - `operator.bytes_scanned`: the bytes the scan read.
+
+      The engine may collect the metrics of a scan more than once, and adds up what it is told: each value is the
+      amount since the metrics were last collected, except `operator.total_row_groups_to_scan`, which is the number
+      found so far in all. Fails for a name that is not one of the above.
+    parameters:
+      info:
+        type: table_function_metrics_info
+        description: The metrics info handle.
+      name:
+        type: char
+        indirection: 1
+        const: true
+        kind: IN
+        description: The name of the metric. Borrowed.
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8 and need not be null-terminated.
+      value:
+        type: u64
+        description: The value of the metric.
       err:
         type: error_info
         indirection: 1
@@ -1744,11 +2088,69 @@ functions:
     return_type: ERROR
 
   #---------------------------------------------------------------------------------------------------------------------
+  # Register
+  #---------------------------------------------------------------------------------------------------------------------
+  connection_register_table_function:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
+    description: |
+      Registers the table function, making it available for use in SQL queries.
+
+      The function is registered on the connection's database, visible to every connection, in the connection's
+      transaction: inside an explicit transaction, it is invisible to other connections until the transaction commits,
+      and a rollback undoes it. Registration requires a name, a bind callback and an exec callback, and rejects a
+      signature that declares a return type, since a table function declares the columns it returns from its bind
+      callback. The table function must have been created through a factory of the same database. The caller still owns
+      the handle after registration and must destroy it with `[[table_function_destroy]]`, which does not affect the
+      registered function.
+    role: method
+    belongs_to: connection
+    parameters:
+      conn:
+        type: connection
+        description: The connection to register on.
+      function:
+        type: table_function
+        description: The table function to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  extension_register_table_function:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
+    description: |
+      Registers the table function, making it available for use in SQL queries.
+
+      The function is registered on the loading extension's database and attributed to the extension. Use this from the
+      extension's load callback. Registration requires a name, a bind callback and an exec callback, and rejects a
+      signature that declares a return type, since a table function declares the columns it returns from its bind
+      callback. The table function must have been created through a factory of the same database. The caller still owns
+      the handle after registration and must destroy it with `[[table_function_destroy]]`, which does not affect the
+      registered function.
+    role: method
+    belongs_to: extension
+    parameters:
+      extension:
+        type: extension
+        description: The loading extension.
+      function:
+        type: table_function
+        description: The table function to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
   # Destroy
   #---------------------------------------------------------------------------------------------------------------------
   table_function_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Destroys the table function, releasing its resources.
 
@@ -1778,10 +2180,10 @@ functions:
       and again whenever the exec callback leaves the output chunk empty; the scan ends for a thread once the claim
       batch callback does not claim a batch.
 
-      Telling the batches apart lets a caller that scans several batches in parallel put their rows back in the
-      order of the batches, e.g. a multi-file function registered with `[[multi_file_function_register]]` claims
-      the batches of the function itself, so that the rows of a file keep their order also when several threads
-      scan it.
+      Telling the batches apart lets a caller that scans several batches in parallel put their rows back in the order of
+      the batches, e.g. a multi-file function registered with `[[connection_register_multi_file_function]]` or
+      `[[extension_register_multi_file_function]]` claims the batches of the function itself, so that the rows of a file
+      keep their order also when several threads scan it.
 
       The callback runs while the work of the scan is handed out to the threads, possibly while every other
       scanning thread waits for it. It should therefore only claim the work - e.g. reserve the number of the next
@@ -1899,32 +2301,93 @@ functions:
     return_type: ERROR
 
   #---------------------------------------------------------------------------------------------------------------------
-  # File readers
+  # Get Bind Info Callback Functions
   #---------------------------------------------------------------------------------------------------------------------
-  table_function_bind_set_result_column_identifier:
+  table_function_set_get_bind_info_callback:
     lifecycle:
-      - [ "unstable", "v2.0.0", "2026-09-18" ]
+      - [ "unstable", "v2.0.0", "2026-10-06" ]
     description: |
-      Attaches an identifier to a result column, or to a field nested inside one.
+      Sets the optional "get bind info" callback of the table function.
 
-      Identifiers are only consulted when the function reads a file as part of a multi-file function registered
-      with `[[multi_file_function_register]]`, and are ignored otherwise. A multi-file reader can then map the
-      columns of every file onto the columns of the scan by identifier rather than by name - e.g. by the field ids
-      of a file format that carries them, so that renamed columns and fields are still found. An identifier is an
-      INTEGER field id or a VARCHAR name.
+      The engine invokes the callback with the bind data of a bound call when it needs to know more about the call than
+      its columns. E.g. a multi-file function registered with `[[connection_register_multi_file_function]]` or
+      `[[extension_register_multi_file_function]]` asks the function it wraps for every file it binds: it maps the
+      columns of the files onto the columns of its scan by the identifiers the callback reports, and exposes the options
+      it reports as the metadata of the reader of the file. The callback may be invoked more than once for the same bind
+      data, so it should only report what the bind already determined.
+    parameters:
+      function:
+        type: table_function
+        description: The function to set the callback of.
+      callback:
+        type: table_function_get_bind_info_callback
+        description: The "get bind info" callback to set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
 
-      The nested field is addressed by a path of child indexes, starting at the result column at `column_index`:
-      a STRUCT field by its index, the elements of a LIST or ARRAY by `0`, the keys of a MAP by `0` and its values
-      by `1`, and a UNION member by its index. An empty path addresses the result column itself. Setting an
-      identifier again for the same column or field replaces it. Fails with `ERROR_INPUT_INVALID` when the column
-      index is out of range, or the path does not address a nested field of the column's type.
+  table_function_get_bind_info_get_user_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-06" ]
+    description: Retrieves the user data set via `[[table_function_set_user_data]]`.
     parameters:
       info:
-        type: table_function_bind_info
-        description: The bind info handle.
+        type: table_function_get_bind_info_info
+        description: The get bind info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the user data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_get_bind_info_get_bind_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-06" ]
+    description: Retrieves the bind data the function's bind callback set for the bound call being described.
+    parameters:
+      info:
+        type: table_function_get_bind_info_info
+        description: The get bind info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the bind data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_get_bind_info_set_column_identifier:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-06" ]
+    description: |
+      Attaches an identifier to a result column of the bound call, or to a field nested inside one.
+
+      A multi-file reader can then map the columns of every file onto the columns of its scan by identifier rather
+      than by name - e.g. by the field ids of a file format that carries them, so that renamed columns and fields are
+      still found. An identifier is an INTEGER field id or a VARCHAR name.
+
+      The nested field is addressed by a path of child indexes, starting at the result column at `column_index`: a
+      STRUCT field by its index, the elements of a LIST or ARRAY by `0`, the keys of a MAP by `0` and its values by
+      `1`, and a UNION member by its index. An empty path addresses the result column itself. Setting an identifier
+      again for the same column or field replaces it. Fails with `ERROR_INPUT_INVALID` when the column index is out
+      of range, or the path does not address a nested field of the column's type.
+    parameters:
+      info:
+        type: table_function_get_bind_info_info
+        description: The get bind info handle.
       column_index:
         type: idx
-        description: The index of the result column, in the order the columns were declared.
+        description: The index of the result column, in the order the bind callback declared the columns.
       child_path:
         type: idx
         indirection: 1
@@ -1942,27 +2405,32 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
-  table_function_bind_add_file_metadata:
+  table_function_get_bind_info_set_option:
     lifecycle:
-      - [ "unstable", "v2.0.0", "2026-09-18" ]
+      - [ "unstable", "v2.0.0", "2026-10-06" ]
     description: |
-      Adds an entry to the metadata of the file the function reads.
+      Sets an option describing the bound call: a key-value fact about what the call reads, e.g. a property of the
+      file it reads. Setting a key again replaces its value.
 
-      File metadata is only consulted when the function reads a file as part of a multi-file function registered
-      with `[[multi_file_function_register]]`, and is ignored otherwise: it is the key-value metadata the reader of
-      the file exposes to the multi-file reader, e.g. to a custom multi-file reader of another extension. Entries
-      keep the order in which they were added; adding a key again replaces its value.
+      A multi-file function registered with `[[connection_register_multi_file_function]]` or
+      `[[extension_register_multi_file_function]]` exposes the options of the function it wraps as the metadata of the
+      reader of each file, e.g. to a custom multi-file reader of another extension.
     parameters:
       info:
-        type: table_function_bind_info
-        description: The bind info handle.
+        type: table_function_get_bind_info_info
+        description: The get bind info handle.
       key:
-        type: str
+        type: char
         indirection: 1
-        description: The key of the entry. Borrowed and copied.
+        const: true
+        kind: IN
+        description: The key of the option. Borrowed and copied.
+      key_length:
+        type: idx
+        description: The length of `key` in bytes. `key` need not be null-terminated and may be NULL only when this is 0.
       value:
         type: value
-        description: The value of the entry. Borrowed and copied.
+        description: The value of the option. Borrowed and copied.
       err:
         type: error_info
         indirection: 1
@@ -1972,46 +2440,24 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   # Multi-file functions
   #---------------------------------------------------------------------------------------------------------------------
-  multi_file_function_create_with_connection:
+  multi_file_function_create:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-09-18" ]
     description: |
-      Creates a new multi-file function that will be registered on the connection's database.
+      Creates a new multi-file function through a factory.
 
-      The function starts out empty: give it a name with `[[multi_file_function_set_name]]` and the single-file
-      function it wraps with `[[multi_file_function_set_single_file_function]]`, then make it available with
-      `[[multi_file_function_register]]`. The caller owns the returned handle and must destroy it with
-      `[[multi_file_function_destroy]]`, also after registration.
+      The function starts out empty: give it a name with `[[multi_file_function_set_name]]` and the single-file function
+      it wraps with `[[multi_file_function_set_single_file_function]]`, then make it available with
+      `[[connection_register_multi_file_function]]` or `[[extension_register_multi_file_function]]`. The caller owns the
+      returned handle and must destroy it with `[[multi_file_function_destroy]]`, also after registration.
+
+      The multi-file function can only be registered on the database the factory belongs to.
+    role: constructor
+    belongs_to: multi_file_function
     parameters:
-      connection:
-        type: connection
-        description: The connection to create the function in.
-      function:
-        type: multi_file_function
-        indirection: 1
-        kind: OUT
-        description: On success, receives the newly created multi-file function. Owned by the caller.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
-
-  multi_file_function_create_with_extension:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-09-18" ]
-    description: |
-      Creates a new multi-file function that will be registered on the loading extension's database.
-
-      Use this from an extension load callback, where an extension handle is available. The function starts out
-      empty: give it a name with `[[multi_file_function_set_name]]` and the single-file function it wraps with
-      `[[multi_file_function_set_single_file_function]]`, then make it available with
-      `[[multi_file_function_register]]`. The caller owns the returned handle and must destroy it with
-      `[[multi_file_function_destroy]]`, also after registration.
-    parameters:
-      extension:
-        type: extension
-        description: The extension to create the function in.
+      factory:
+        type: factory
+        description: The factory to create the multi-file function through.
       function:
         type: multi_file_function
         indirection: 1
@@ -2036,9 +2482,14 @@ functions:
         type: multi_file_function
         description: The function to set the name of.
       name:
-        type: str
+        type: char
         indirection: 1
+        const: true
+        kind: IN
         description: The name to set. Borrowed and copied.
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` need not be null-terminated and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1
@@ -2051,20 +2502,32 @@ functions:
     description: |
       Sets the name of the table function that reads a single file, which the multi-file function wraps.
 
-      The single-file function must be registered before the multi-file function is, and must take the path of
-      the file to read as its only positional VARCHAR parameter. It is bound once for every file that is read, and
-      every named parameter it declares is also a named parameter of the multi-file function, forwarded to it as
-      given. Everything that involves several files - globbing, lists of files, hive partitioning, the `filename`
-      column, `union_by_name` and the like - is provided by the multi-file function on top of it. The name is
-      borrowed and copied. A single-file function must be set before registration.
+      The single-file function must be registered before the multi-file function is, and must take the file to read as
+      its only positional parameter, of type ANY. It is bound once for every file that is read, and receives the file
+      the way a multi-file function takes one: as the VARCHAR path of the file when there is nothing more to know about
+      it, and otherwise as a STRUCT holding the path in its `filename` field and the options to open the file with in
+      its other fields - e.g. the size of the file, as a file system reported it while globbing, or the options a caller
+      passed along with the file (`read_x([{'filename': 'f.x', 'file_size': 42}])`). Opening the file with those
+      options, set with `[[file_open_options_set_value]]`, lets the file system skip work it would otherwise repeat,
+      such as asking a remote store for the size of the file. A single-file function that takes a VARCHAR parameter
+      instead is still accepted, and only receives the path. Every named parameter the single-file function declares is
+      also a named parameter of the multi-file function, forwarded to it as given. Everything that involves several
+      files - globbing, lists of files, hive partitioning, the `filename` column, `union_by_name` and the like - is
+      provided by the multi-file function on top of it. The name is borrowed and copied. A single-file function must be
+      set before registration.
     parameters:
       function:
         type: multi_file_function
         description: The function to set the single-file function of.
       name:
-        type: str
+        type: char
         indirection: 1
+        const: true
+        kind: IN
         description: The name of the registered single-file table function. Borrowed and copied.
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` need not be null-terminated and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1
@@ -2084,9 +2547,14 @@ functions:
         type: multi_file_function
         description: The function to set the reader type of.
       reader_type:
-        type: str
+        type: char
         indirection: 1
+        const: true
+        kind: IN
         description: The reader type. Borrowed and copied.
+      reader_type_length:
+        type: idx
+        description: The length of `reader_type` in bytes. `reader_type` need not be null-terminated and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1
@@ -2107,36 +2575,79 @@ functions:
         type: multi_file_function
         description: The function to set the file extension of.
       extension:
-        type: str
+        type: char
         indirection: 1
+        const: true
+        kind: IN
         description: The file extension, without a leading dot. Borrowed and copied.
+      extension_length:
+        type: idx
+        description: The length of `extension` in bytes. `extension` need not be null-terminated and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
-  multi_file_function_register:
+  connection_register_multi_file_function:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-09-18" ]
     description: |
       Registers the multi-file function, making it available for use in SQL queries.
 
-      The function is registered on the target given at creation: the connection's database or the loading
-      extension. It can then be called with the path of a single file, a glob pattern, or a list of either, and
-      accepts the options every multi-file function accepts (e.g. `filename`, `hive_partitioning`,
-      `union_by_name`) next to the named parameters of the single-file function. Registration requires a name and
-      a single-file function, and fails when no table function by that name is registered or it does not take the
-      path of a file as its only positional VARCHAR parameter. The caller still owns the handle after registration
-      and must destroy it with `[[multi_file_function_destroy]]`, which does not affect the registered function.
+      The function is registered on the connection's database, visible to every connection, in the connection's
+      transaction: inside an explicit transaction, it is invisible to other connections until the transaction commits,
+      and a rollback undoes it. It can then be called with the path of a single file, a glob pattern, or a list of
+      either, and accepts the options every multi-file function accepts (e.g. `filename`, `hive_partitioning`,
+      `union_by_name`) next to the named parameters of the single-file function. Registration requires a name and a
+      single-file function, and fails when no table function by that name is registered or it does not take the path of
+      the file to read as its only positional parameter (see `[[multi_file_function_set_single_file_function]]`). The
+      multi-file function must have been created through a factory of the same database. The caller still owns the
+      handle after registration and must destroy it with `[[multi_file_function_destroy]]`, which does not affect the
+      registered function.
+    role: method
+    belongs_to: connection
     parameters:
+      conn:
+        type: connection
+        description: The connection to register on.
       function:
         type: multi_file_function
-        description: The function to register.
+        description: The multi-file function to register.
       err:
         type: error_info
         indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  extension_register_multi_file_function:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-18" ]
+    description: |
+      Registers the multi-file function, making it available for use in SQL queries.
+
+      The function is registered on the loading extension's database and attributed to the extension. Use this from the
+      extension's load callback. It can then be called with the path of a single file, a glob pattern, or a list of
+      either, and accepts the options every multi-file function accepts (e.g. `filename`, `hive_partitioning`,
+      `union_by_name`) next to the named parameters of the single-file function. Registration requires a name and a
+      single-file function, and fails when no table function by that name is registered or it does not take the path of
+      the file to read as its only positional parameter (see `[[multi_file_function_set_single_file_function]]`). The
+      multi-file function must have been created through a factory of the same database. The caller still owns the
+      handle after registration and must destroy it with `[[multi_file_function_destroy]]`, which does not affect the
+      registered function.
+    role: method
+    belongs_to: extension
+    parameters:
+      extension:
+        type: extension
+        description: The loading extension.
+      function:
+        type: multi_file_function
+        description: The multi-file function to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
 
   multi_file_function_destroy:

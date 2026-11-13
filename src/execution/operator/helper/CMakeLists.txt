@@ -5,7 +5,6 @@ add_library_unity(
   physical_external_resource.cpp
   physical_create_secret.cpp
   physical_disconnect.cpp
-  physical_execute.cpp
   physical_explain_analyze.cpp
   launch_external_resource.cpp
   physical_limit.cpp

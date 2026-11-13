@@ -1,0 +1,20 @@
+# name: test/sql/sample/repeatable_seed_range.test
+# description: REPEATABLE seeds that do not fit a signed 64-bit integer are rejected
+# group: [sample]
+
+statement error
+SELECT count(*) FROM range(100) USING SAMPLE bernoulli(10%) REPEATABLE (9223372036854775808);
+----
+Parser Error: REPEATABLE seed 9223372036854775808 is out of range
+
+statement error
+SELECT count(*) FROM range(100) USING SAMPLE bernoulli(10%) REPEATABLE (18446744073709551615);
+----
+Parser Error: REPEATABLE seed 18446744073709551615 is out of range
+
+# the maximum seed is deterministic
+query I
+SELECT (SELECT count(*) FROM range(1000) USING SAMPLE bernoulli(10%) REPEATABLE (9223372036854775807)) =
+       (SELECT count(*) FROM range(1000) USING SAMPLE bernoulli(10%) REPEATABLE (9223372036854775807));
+----
+true

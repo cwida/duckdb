@@ -28,7 +28,7 @@ statement ok
 call dbgen(sf=0.1)
 
 statement ok
-pragma threads=1
+SET threads=1
 
 query III nosort q0
 select l_extendedprice, l_discount, l_tax from lineitem

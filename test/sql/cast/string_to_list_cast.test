@@ -555,7 +555,7 @@ select '[{"bar":"\"\"\\\"\"\"\\"}]'::STRUCT(bar VARCHAR)[] a, CAST(a::VARCHAR AS
 query III
 select $$[\  \\abc\\ \ , def, ghi]$$::VARCHAR[] a, a[1], len(a[1])
 ----
-[\  \\abc\\ \, def, ghi]	\  \\abc\\ \	12
+['\\  \\\\abc\\\\ \\', def, ghi]	\  \\abc\\ \	12
 
 query III
 select $$["\  \\abc\\ \ ", def, ghi]$$::VARCHAR[] a, a[1], len(a[1])

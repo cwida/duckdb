@@ -43,6 +43,9 @@ unique_ptr<TableRef> TableRef::Deserialize(Deserializer &deserializer) {
 	case TableReferenceType::JOIN:
 		result = JoinRef::Deserialize(deserializer);
 		break;
+	case TableReferenceType::MATCH_RECOGNIZE:
+		result = MatchRecognizeRef::Deserialize(deserializer);
+		break;
 	case TableReferenceType::PIVOT:
 		result = PivotRef::Deserialize(deserializer);
 		break;
@@ -62,6 +65,7 @@ unique_ptr<TableRef> TableRef::Deserialize(Deserializer &deserializer) {
 	result->sample = std::move(sample);
 	result->query_location = query_location;
 	result->query_location.length = query_location_length;
+	result->VerifyDeserialized();
 	return result;
 }
 
@@ -114,6 +118,9 @@ unique_ptr<TableRef> ColumnDataRef::Deserialize(Deserializer &deserializer) {
 	auto expected_names = deserializer.ReadPropertyWithDefault<vector<Identifier>>(200, "expected_names");
 	auto collection = deserializer.ReadPropertyWithDefault<optionally_owned_ptr<ColumnDataCollection>>(202, "collection");
 	auto result = duckdb::unique_ptr<ColumnDataRef>(new ColumnDataRef(std::move(collection), std::move(expected_names)));
+	if (!result->collection) {
+		throw SerializationException("ColumnDataRef is missing its collection");
+	}
 	return std::move(result);
 }
 
@@ -183,6 +190,21 @@ unique_ptr<TableRef> JoinRef::Deserialize(Deserializer &deserializer) {
 	deserializer.ReadPropertyWithExplicitDefault<idx_t>(210, "nearest_count", result->nearest_count, 1);
 	deserializer.ReadPropertyWithExplicitDefault<OrderType>(211, "nearest_order_type", result->nearest_order_type, OrderType::ASCENDING);
 	deserializer.ReadPropertyWithExplicitDefault<bool>(212, "nearest_approx", result->nearest_approx, false);
+	return std::move(result);
+}
+
+void MatchRecognizeRef::Serialize(Serializer &serializer) const {
+	TableRef::Serialize(serializer);
+	serializer.WritePropertyWithDefault<unique_ptr<TableRef>>(200, "input", input);
+	serializer.WritePropertyWithDefault<unique_ptr<MatchRecognizeConfig>>(201, "config", config);
+	serializer.WritePropertyWithDefault<vector<Identifier>>(202, "column_name_alias", column_name_alias);
+}
+
+unique_ptr<TableRef> MatchRecognizeRef::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<MatchRecognizeRef>(new MatchRecognizeRef());
+	deserializer.ReadPropertyWithDefault<unique_ptr<TableRef>>(200, "input", result->input);
+	deserializer.ReadPropertyWithDefault<unique_ptr<MatchRecognizeConfig>>(201, "config", result->config);
+	deserializer.ReadPropertyWithDefault<vector<Identifier>>(202, "column_name_alias", result->column_name_alias);
 	return std::move(result);
 }
 

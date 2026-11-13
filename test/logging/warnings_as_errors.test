@@ -2,19 +2,17 @@
 # description: Test warnings as errors setting
 # group: [logging]
 
-mode skip need_different_warning
-
 statement ok
 SET warnings_as_errors = False;
 
 # query producing warning
 statement ok
-SELECT list_transform([1], x -> x + 1);
+SELECT write_log('test warning', level := 'warning');
 
 statement error
 SET warnings_as_errors = True;
 ----
-Settings Error: Can not set 'warnings_as_errors=true'; no logger is available. To solve, run: 'SET enable_logging=true;'
+Invalid Input Error: Cannot set 'warnings_as_errors=true'; no logger is available. To solve, run: 'SET enable_logging=true;'
 
 statement ok
 SET enable_logging=true;
@@ -23,8 +21,6 @@ statement ok
 SET warnings_as_errors = True;
 
 statement error
-SELECT list_transform([1], x -> x + 1);
+SELECT write_log('test warning', level := 'warning');
 ----
-Invalid Input Error: Deprecated lambda arrow (->) detected. Please transition to the new lambda syntax, i.e.., lambda x, i: x + i, before DuckDB's next release.
-Use SET lambda_syntax='ENABLE_SINGLE_ARROW' to revert to the deprecated behavior.
-For more information, see https://duckdb.org/docs/current/sql/functions/lambda.html
+Invalid Input Error: test warning

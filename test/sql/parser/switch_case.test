@@ -87,10 +87,13 @@ one
 other
 other
 
-statement error
+# the cases map only has to be constant - its keys and values can be any constant expression
+query I
 SELECT switch(val, MAP { 1+1 : 'one', 1: 'is_null'}, 'other') FROM null_test ORDER BY val;
 ----
-Not implemented Error: Only constant expressions are supported for keys inside SWITCH
+is_null
+one
+other
 
 statement error
 SELECT switch(val, MAP {}, 'other') FROM null_test ORDER BY val;
@@ -116,10 +119,10 @@ Binder Error: SWITCH expected a constant map for the cases
 # which argument holds the cases map comes from the resolved overload, not from scanning for the
 # first MAP-typed argument - a MAP-typed key argument makes the types ambiguous (issue #25379)
 
-statement error
+query I
 SELECT switch(map([false],[10]), map([map([false],[10])],[999]), 777);
 ----
-<REGEX>:.*Only constant expressions are supported for keys inside SWITCH.*
+999
 
 # all four overloads still resolve to the right argument
 

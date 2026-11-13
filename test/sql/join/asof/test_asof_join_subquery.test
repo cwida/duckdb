@@ -17,7 +17,7 @@ INSERT INTO events VALUES
 foreach threshold 0 32
 
 statement ok
-PRAGMA asof_loop_join_threshold = {threshold};
+SET asof_loop_join_threshold = {threshold};
 
 query II
 SELECT begin, value IN (

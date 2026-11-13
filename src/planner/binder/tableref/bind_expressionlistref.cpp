@@ -31,7 +31,34 @@ static void WarnIfDecimalScaleIsReduced(ClientContext &context, const LogicalTyp
 	warned_about_scale_reduction[column_idx] = true;
 }
 
+static void VerifyExpressionListRef(const ExpressionListRef &expr) {
+	// the parser guarantees these, but a deserialized ExpressionListRef might not
+	if (expr.values.empty()) {
+		return;
+	}
+	auto column_count = expr.values[0].size();
+	for (auto &expression_list : expr.values) {
+		if (expression_list.size() != column_count) {
+			throw BinderException("VALUES lists must all be the same length");
+		}
+	}
+	if (!expr.expected_types.empty() && expr.expected_types.size() != column_count) {
+		throw BinderException("VALUES list has %d columns but %d expected types", column_count,
+		                      expr.expected_types.size());
+	}
+	if (!expr.expected_names.empty() && expr.expected_names.size() != column_count) {
+		throw BinderException("VALUES list has %d columns but %d expected names", column_count,
+		                      expr.expected_names.size());
+	}
+	for (auto &type : expr.expected_types) {
+		if (type.IsValid() && !type.IsComplete()) {
+			throw BinderException("VALUES list has an incomplete expected type %s", type.ToString());
+		}
+	}
+}
+
 BoundStatement Binder::Bind(ExpressionListRef &expr) {
+	VerifyExpressionListRef(expr);
 	BoundStatement result;
 	result.types = expr.expected_types;
 	result.names = expr.expected_names;

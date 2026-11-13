@@ -85,8 +85,13 @@ void LowerCase(const char *input_data, idx_t input_length, char *result_data) {
 
 template <bool IS_UPPER>
 static string_t UnicodeCaseConvert(StringHeap &heap, const char *input_data, idx_t input_length) {
-	// first figure out the output length
-	idx_t output_length = GetResultLength<IS_UPPER>(input_data, input_length);
+	const auto ascii_end = FirstNonAscii(input_data, input_length);
+	if (ascii_end == input_length) {
+		// ASCII: code points and bytes coincide
+		return ASCIICaseConvert<IS_UPPER>(heap, input_data, input_length);
+	}
+	// first figure out the output length: the ASCII prefix is one byte per code point
+	idx_t output_length = ascii_end + GetResultLength<IS_UPPER>(input_data + ascii_end, input_length - ascii_end);
 	auto result_str = heap.EmptyString(output_length);
 	auto result_data = result_str.GetDataWriteable();
 

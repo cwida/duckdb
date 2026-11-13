@@ -184,6 +184,35 @@ TEST_CASE("LRU Cache Move-Only Key", "[lru_cache]") {
 	REQUIRE(cache.Size() == 2);
 }
 
+TEST_CASE("LRU Cache Single Entry Eviction", "[lru_cache]") {
+	DuckDB db;
+	auto &buffer_pool = db.instance->GetBufferPool();
+	SharedLruCache<string, TestValue, BufferPoolPayload> cache(0);
+	REQUIRE(!cache.EvictLeastRecentlyUsed());
+
+	for (idx_t i = 1; i <= 3; i++) {
+		const idx_t weight = i == 1 ? 0 : 100;
+		auto reservation = make_uniq<TempBufferPoolReservation>(MemoryTag::OBJECT_CACHE, buffer_pool, weight);
+		cache.Put(StringUtil::Format("key%llu", i), make_shared_ptr<TestValue>(i), std::move(reservation));
+	}
+	REQUIRE(cache.Get("key1") != nullptr);
+	REQUIRE(cache.EvictLeastRecentlyUsed());
+	REQUIRE(cache.Get("key2") == nullptr);
+	REQUIRE(cache.Size() == 2);
+	REQUIRE(cache.CurrentTotalWeight() == 100);
+
+	REQUIRE(cache.Get("key3") != nullptr);
+	// Removing a zero-weight entry still reports progress.
+	REQUIRE(cache.EvictLeastRecentlyUsed());
+	REQUIRE(cache.Get("key1") == nullptr);
+	REQUIRE(cache.Size() == 1);
+	REQUIRE(cache.CurrentTotalWeight() == 100);
+	REQUIRE(cache.EvictLeastRecentlyUsed());
+	REQUIRE(cache.IsEmpty());
+	REQUIRE(cache.CurrentTotalWeight() == 0);
+	REQUIRE(!cache.EvictLeastRecentlyUsed());
+}
+
 TEST_CASE("LRU Cache Unlimited Memory", "[lru_cache]") {
 	DuckDB db;
 	Connection con(db);

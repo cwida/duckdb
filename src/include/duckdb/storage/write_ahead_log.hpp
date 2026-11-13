@@ -16,6 +16,8 @@
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/storage/block.hpp"
 
+#include <condition_variable>
+
 namespace duckdb {
 
 struct AlterInfo;
@@ -120,7 +122,13 @@ public:
 	//! Truncate the WAL to a previous size, and clear anything currently set in the writer.
 	//! Used during RevertCommit.
 	void Truncate(idx_t size);
+	//! Write a WAL_FLUSH marker and sync the WAL up to it
 	void Flush();
+	//! Write a WAL_FLUSH marker and push the buffer to the OS without syncing it. Returns the
+	//! offset covering the marker, to be passed to SyncUpTo. Caller must hold the WAL lock
+	idx_t FlushMarker();
+	//! Block until the WAL is durable up to the given offset
+	void SyncUpTo(idx_t offset);
 	//! Increment the WAL entry count, which is used for the auto-checkpoint threshold.
 	void IncrementWALEntriesCount();
 	void WriteCheckpoint(MetaBlockPointer meta_block);
@@ -132,6 +140,20 @@ protected:
 	string wal_path;
 	atomic<WALInitState> init_state;
 	optional_idx checkpoint_iteration;
+
+	//! Shared-sync state (guarded by sync_lock, which is independent of the WAL lock)
+	mutex sync_lock;
+	std::condition_variable sync_cv;
+	//! Sync offsets are logical (BufferedFileWriter::GetTotalWritten), not file positions: a
+	//! truncation rewinds the file, so a file position can be reused but a logical one cannot
+	//! The WAL is durable up to this logical offset
+	idx_t durable_offset = 0;
+	//! The highest logical offset for which a sync has been requested
+	idx_t requested_sync_offset = 0;
+	//! Whether a sync is in flight; only one runs at a time
+	bool sync_in_flight = false;
+	//! Set when a sync has failed; every further sync of this WAL fails
+	bool sync_failed = false;
 };
 
 } // namespace duckdb

@@ -52,6 +52,8 @@ DROP TYPE name_enum
 ----
 <REGEX>:.*Conversion Error.*Could not convert string.*
 
+mode unskip
+
 # We should be able to cast this back to string
 statement ok
 ALTER TABLE person ALTER name TYPE text
@@ -75,4 +77,4 @@ VARCHAR
 statement error
 ALTER TABLE person ALTER name TYPE bogus_name
 ----
-<REGEX>:.*Conversion Error.*Could not convert string.*
+Type with name bogus_name does not exist

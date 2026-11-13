@@ -26,3 +26,30 @@ SELECT typeof(string_agg(v, '|')), typeof(count(v)), typeof(sum(7))
 FROM (VALUES ('aa'),('b'),('b'),(NULL)) t(v)
 ----
 VARCHAR	BIGINT	HUGEINT
+
+# Ordinary AVG and SUM arithmetic may introduce nullable COUNT during optimization.
+query R
+SELECT avg(v) FROM (VALUES (1::BIGINT),(NULL),(1),(4)) input(v);
+----
+2.0
+
+query IR
+SELECT sum(v), avg(v) FROM (VALUES (1::BIGINT),(NULL),(1),(4)) input(v);
+----
+6	2.0
+
+query I
+SELECT sum(v + 1) FROM (VALUES (1::BIGINT),(NULL),(1),(4)) input(v);
+----
+9
+
+query II
+SELECT count(v), approx_count_distinct(v) FROM (VALUES (1::BIGINT),(NULL),(1),(4)) input(v);
+----
+3	2
+
+query IIIII
+SELECT count(v), approx_count_distinct(v), avg(v), sum(v), sum(v + 1)
+FROM (VALUES (1::BIGINT),(NULL),(1),(4)) input(v) WHERE false;
+----
+0	0	NULL	NULL	NULL

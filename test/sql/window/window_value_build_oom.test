@@ -1,0 +1,46 @@
+# name: test/sql/window/window_value_build_oom.test
+# description: Issue #27591: a value function with ORDER BY arguments fails cleanly when its merge sort tree runs out of memory
+# group: [window]
+
+require 64bit
+
+require vector_size 2048
+
+statement ok
+SET threads = 4;
+
+# The sort data cannot be spilled, so the parallel sort and tree build of the index tree
+# are what run out of memory.
+statement ok
+SET temp_directory = '';
+
+statement ok
+CREATE TABLE t AS
+	SELECT p::INTEGER AS p, j::INTEGER AS j, ((p * 2039 + j) % 7919)::INTEGER AS v
+	FROM range(2048) parts(p), range(2039) rows(j);
+
+# A single partition, so one tree for all rows is built by all threads together.
+# The thread whose task fails must release the threads waiting for its stage
+# instead of them spinning forever (or continuing with an unusable tree).
+statement ok
+SET memory_limit = '400MB';
+
+statement error
+SELECT sum(x)
+FROM (
+	SELECT first_value(v ORDER BY v, j) OVER (ORDER BY p, j ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) AS x
+	FROM t
+);
+----
+Out of Memory
+
+# The index tree still works afterwards in the same connection
+query I
+SELECT sum(x)
+FROM (
+	SELECT first_value(v ORDER BY v, j) OVER (ORDER BY p, j ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) AS x
+	FROM t
+	WHERE p < 8
+);
+----
+62765825

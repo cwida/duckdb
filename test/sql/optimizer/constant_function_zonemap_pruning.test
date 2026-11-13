@@ -13,19 +13,26 @@ SELECT CASE WHEN i < 2048 THEN 17 WHEN i < 4096 THEN 42
 FROM range(8192) t(i);
 
 # No callback: constants produce stats; nullable and varying inputs fail both propagation paths.
-foreach predicate x%100=42 hash(x)=hash(42::BIGINT)
-
 query I
-SELECT count(*) FROM const_db.constant_inputs WHERE {predicate};
+SELECT count(*) FROM const_db.constant_inputs WHERE hash(x)=hash(42::BIGINT);
 ----
 2080
 
 query II
-EXPLAIN ANALYZE SELECT x FROM const_db.constant_inputs WHERE {predicate};
+EXPLAIN ANALYZE SELECT x FROM const_db.constant_inputs WHERE hash(x)=hash(42::BIGINT);
 ----
 analyzed_plan	<REGEX>:.*Row Groups Scanned: 3 / 4.*
 
-endloop
+# The modulo callback also derives bounds for the nullable row group: only RG 2 and RG 4 can hold 42.
+query I
+SELECT count(*) FROM const_db.constant_inputs WHERE x%100=42;
+----
+2080
+
+query II
+EXPLAIN ANALYZE SELECT x FROM const_db.constant_inputs WHERE x%100=42;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 4.*
 
 # hash(NULL) is a non-NULL value: min = max = 17 does not describe the NULL rows.
 query I
@@ -107,7 +114,7 @@ EXPLAIN ANALYZE SELECT s FROM const_db.constant_strings WHERE length_grapheme(s)
 ----
 analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 4.*
 
-# CONSISTENT_WITHIN_QUERY fails the CONSISTENT guard: no statistics are derived, so every RG is scanned.
+# CONSISTENT_WITHIN_QUERY functions are consistent within the query, so RGs 1-3 use constant evaluation and RG 4 is scanned.
 query I
 SELECT count(*) FROM const_db.constant_strings WHERE in_search_path('const_db', s);
 ----
@@ -116,7 +123,7 @@ SELECT count(*) FROM const_db.constant_strings WHERE in_search_path('const_db', 
 query II
 EXPLAIN ANALYZE SELECT s FROM const_db.constant_strings WHERE in_search_path('const_db', s);
 ----
-analyzed_plan	<REGEX>:.*Row Groups Scanned: 4 / 4.*
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 4.*
 
 # Identical inexact bounds must not be treated as a constant input.
 query I

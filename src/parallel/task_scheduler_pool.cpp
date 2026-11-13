@@ -18,9 +18,6 @@
 #elif defined(__GNUC__)
 #include <sched.h>
 #include <unistd.h>
-#if defined(__GLIBC__)
-#include <pthread.h>
-#endif
 #endif
 
 namespace duckdb {
@@ -37,9 +34,6 @@ struct LightWeightSemaphoreWrapper {
 
 struct TaskSchedulerThread {
 #ifndef DUCKDB_NO_THREADS
-	explicit TaskSchedulerThread(unique_ptr<thread> thread_p) : internal_thread(std::move(thread_p)) {
-	}
-
 	unique_ptr<thread> internal_thread;
 #endif
 };
@@ -103,21 +97,6 @@ static vector<int> GetProcessCPUMask() {
 #endif
 }
 
-static void SetThreadAffinity(thread &thread, const vector<int> &available_cpus, idx_t thread_idx) {
-#if defined(__GLIBC__)
-	if (thread_idx < available_cpus.size()) {
-		const auto cpu_id = available_cpus[thread_idx];
-		cpu_set_t cpuset;
-		CPU_ZERO(&cpuset);
-		CPU_SET(cpu_id, &cpuset);
-
-		// note that we don't care about the return value here
-		// if we did not manage to set affinity, the thread just does not have affinity, which is OK
-		pthread_setaffinity_np(thread.native_handle(), sizeof(cpu_set_t), &cpuset);
-	}
-#endif
-}
-
 // Returns the available CPU ids when the pool should pin its threads, or an empty vector to skip pinning.
 // Thread count means the number of threads that the pool should contain.
 static vector<int> GetAvailableCPUsForPinning(TaskSchedulerType pool_type, ThreadPinMode pin_thread_mode,
@@ -150,12 +129,6 @@ static vector<int> GetAvailableCPUsForPinning(TaskSchedulerType pool_type, Threa
 }
 #endif
 
-#ifndef DUCKDB_NO_THREADS
-static void ThreadExecuteTasks(TaskScheduler *scheduler, atomic<bool> *marker, const TaskSchedulerType pool_type) {
-	scheduler->ExecuteForever(marker, pool_type);
-}
-#endif
-
 void TaskSchedulerPool::RelaunchThreads(TaskScheduler &scheduler, bool destroy) {
 #ifndef DUCKDB_NO_THREADS
 	auto &config = DBConfig::GetConfig(db);
@@ -173,49 +146,49 @@ void TaskSchedulerPool::RelaunchThreads(TaskScheduler &scheduler, bool destroy) 
 		current_thread_count = threads.size() + (pool_type == TaskSchedulerType::REGULAR ? external_threads : 0);
 		return;
 	}
-	if (threads.size() != new_thread_count) {
-		// we are changing the number of threads: clear all threads first
-		// we do this even when increasing the number of threads to make sure that all threads follow the current
-		// affinity mask
-		for (idx_t i = 0; i < threads.size(); i++) {
-			*markers[i] = false;
-		}
-		Signal(threads.size());
-		// now join the threads to ensure they are fully stopped before erasing them
-		for (idx_t i = 0; i < threads.size(); i++) {
-			threads[i]->internal_thread->join();
-		}
-		// erase the threads/markers
-		threads.clear();
-		markers.clear();
+	// allocate what the new workers need before stopping the running ones: if this fails, the old pool and its thread
+	// count stay as they were
+	vector<int> available_cpus;
+	if (new_thread_count > 0) {
+		available_cpus = GetAvailableCPUsForPinning(pool_type, pin_thread_mode, new_thread_count);
+		threads.reserve(new_thread_count);
+		markers.reserve(new_thread_count);
 	}
-	if (threads.size() < new_thread_count) {
-		// we are increasing the number of threads: launch them and run tasks on them
-		idx_t create_new_threads = new_thread_count - threads.size();
-
-		const auto available_cpus = GetAvailableCPUsForPinning(pool_type, pin_thread_mode, new_thread_count);
-		for (idx_t i = 0; i < create_new_threads; i++) {
+	// we are changing the number of threads: clear all threads first
+	// we do this even when increasing the number of threads to make sure that all threads follow the current
+	// affinity mask
+	for (idx_t i = 0; i < threads.size(); i++) {
+		*markers[i] = false;
+	}
+	Signal(threads.size());
+	// now join the threads to ensure they are fully stopped before erasing them
+	for (idx_t i = 0; i < threads.size(); i++) {
+		threads[i]->internal_thread->join();
+	}
+	// erase the threads/markers
+	threads.clear();
+	markers.clear();
+	// launch the new threads and run tasks on them
+	// destroying a running thread ends the process: the pool owns a thread as soon as it starts, so everything
+	// that can fail to allocate happens before the thread is created
+	for (idx_t i = 0; i < new_thread_count; i++) {
+		try {
 			// launch a thread and assign it a cancellation marker
 			auto marker = unique_ptr<atomic<bool>>(new atomic<bool>(true));
-			unique_ptr<thread> worker_thread;
-			try {
-				worker_thread = make_uniq<thread>(ThreadExecuteTasks, &scheduler, marker.get(), pool_type);
-				if (!available_cpus.empty()) {
-					SetThreadAffinity(*worker_thread, available_cpus, threads.size());
-				}
-			} catch (std::exception &ex) {
-				// thread constructor failed - this can happen when the system has too many threads allocated
-				// in this case we cannot allocate more threads - stop launching them
-				break;
-			}
-			auto thread_wrapper = make_uniq<TaskSchedulerThread>(std::move(worker_thread));
-
+			auto thread_wrapper = make_uniq<TaskSchedulerThread>();
+			const auto cpu = i < available_cpus.size() ? optional_idx(available_cpus[i]) : optional_idx();
+			thread_wrapper->internal_thread =
+			    make_uniq<thread>(&TaskScheduler::ExecuteForever, &scheduler, marker.get(), pool_type, cpu);
 			threads.push_back(std::move(thread_wrapper));
 			markers.push_back(std::move(marker));
+		} catch (std::exception &ex) {
+			// thread constructor failed - this can happen when the system has too many threads allocated, or when
+			// the marker cannot be allocated - in this case we cannot launch more threads - stop launching them
+			break;
 		}
 	}
 	current_thread_count = threads.size() + (pool_type == TaskSchedulerType::REGULAR ? external_threads : 0);
-	// on destroy the scheduler flushes once after every pool is joined
+	// On destroy the scheduler flushes fallback allocations after joining all pools.
 	if (!destroy) {
 		BlockAllocator::Get(db).FlushAll();
 	}

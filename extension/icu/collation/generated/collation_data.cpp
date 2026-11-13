@@ -31742,7 +31742,7 @@ const CollationInfo collation_infos[] = {
 };
 
 const uint32_t collation_count = 140;
-const uint32_t variable_top_primary = 0x0BFFFFFF;
+const uint32_t variable_top_primaries[] = {0x0505FFFF, 0x0BFFFFFF, 0x0DA2FFFF, 0x0EFFFFFF};
 
 } // namespace collation
 } // namespace duckdb

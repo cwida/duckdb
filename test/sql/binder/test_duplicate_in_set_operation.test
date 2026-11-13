@@ -28,7 +28,7 @@ A
 
 
 statement ok
-pragma explain_output='physical_only';
+SET explain_output='physical_only';
 
 # Ensure that duplicate is performed correctly in the HASH_GROUP_BY operator
 query II

@@ -15,10 +15,15 @@ static bool HasDirectRangeArguments(const BoundScalarFunction &function) {
 	return !properties.GetCaptureArgumentAliases() && !properties.RequiresExpressionNames();
 }
 
-bool WindowRangeCast::Capture(const Expression &expression, optional_ptr<const Expression> input,
-                              vector<WindowRangeCast> &casts) {
+bool WindowRangeCast::Capture(const Expression &expression, const Expression &operand, vector<WindowRangeCast> &casts) {
 	optional_ptr<const Expression> current = expression;
-	while (current.get() != input.get()) {
+	// the operand is the expression itself when it is still in place, or a copy of it when the function binder may
+	// have folded it (a subquery can neither be copied nor compared, it is always matched by identity)
+	while (current.get() != &operand && !current->Equals(operand)) {
+		if (operand.IsFoldable() && current->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+			// the function binder folded the constant operand to its value
+			return true;
+		}
 		if (!BoundCastExpression::IsCast(*current)) {
 			return false;
 		}
@@ -53,9 +58,8 @@ optional_ptr<const Expression> WindowRangeCast::Match(const Expression &expressi
 	return current;
 }
 
-unique_ptr<WindowRangeBoundary> WindowRangeBoundary::Capture(const Expression &expression,
-                                                             optional_ptr<const Expression> order,
-                                                             optional_ptr<const Expression> offset) {
+unique_ptr<WindowRangeBoundary> WindowRangeBoundary::Capture(const Expression &expression, const Expression &order,
+                                                             const Expression &offset) {
 	if (expression.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
 		return nullptr;
 	}

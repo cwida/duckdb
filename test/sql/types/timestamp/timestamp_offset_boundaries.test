@@ -1,0 +1,13 @@
+# name: test/sql/types/timestamp/timestamp_offset_boundaries.test
+# description: Test timestamp offset parsing at representable boundaries
+# group: [timestamp]
+
+query I
+SELECT TRY_CAST('294247-01-10 04:00:54.775806-01' AS TIMESTAMPTZ) IS NULL
+----
+true
+
+query I
+SELECT TRY_CAST('290309-12-22 (BC) 00:00:00+23:59:59' AS TIMESTAMPTZ) IS NULL
+----
+true

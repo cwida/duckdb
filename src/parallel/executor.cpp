@@ -26,6 +26,10 @@
 #include <algorithm>
 #include <chrono>
 
+#ifdef __EMSCRIPTEN_PTHREADS__
+#include <emscripten/threading.h>
+#endif
+
 namespace duckdb {
 
 Executor::Executor(ClientContext &context) : context(context), executor_tasks(0), blocked_thread_time(0) {
@@ -56,6 +60,9 @@ struct ScheduleEventData {
 	const vector<shared_ptr<MetaPipeline>> &meta_pipelines;
 	vector<shared_ptr<Event>> &events;
 	bool initial_schedule;
+	//! The schedule ResolveExternalInputs validated, reused so the runtime-filter edges the analysis saw are
+	//! exactly the edges that run (nullptr when nothing needed resolution or for reschedules).
+	unique_ptr<PipelineSchedule> resolved_schedule;
 };
 
 static shared_ptr<Event> CreatePipelineScheduleEvent(const PipelineScheduleStage &stage, bool initial_schedule) {
@@ -84,9 +91,22 @@ void Executor::ScheduleEventsInternal(ScheduleEventData &event_data) {
 	auto &events = event_data.events;
 	D_ASSERT(events.empty());
 
-	auto schedule = BuildPipelineSchedule(event_data.meta_pipelines);
-	if (schedule->HasCycle()) {
+	auto schedule = std::move(event_data.resolved_schedule);
+	const bool reused_resolved_schedule = schedule != nullptr;
+	if (!schedule) {
+		schedule = BuildPipelineSchedule(event_data.meta_pipelines);
+	}
+	if (schedule->HasCycle(PipelineScheduleGraph::SCHEDULED)) {
 		throw InternalException("Cyclic dependency in pipeline schedule");
+	}
+	if (event_data.initial_schedule && recursive_ctes.empty()) {
+		if (reused_resolved_schedule) {
+			// The reused schedule already carries the runtime-filter edges the liveness analysis validated,
+			// so only the stale filters need clearing.
+			ClearRuntimeFilters(*schedule);
+		} else {
+			ScheduleRuntimeFilters(*schedule);
+		}
 	}
 	events.reserve(schedule->stages.size());
 	for (auto &stage : schedule->stages) {
@@ -115,8 +135,10 @@ void Executor::ScheduleEventsInternal(ScheduleEventData &event_data) {
 	}
 }
 
-void Executor::ScheduleEvents(const vector<shared_ptr<MetaPipeline>> &meta_pipelines) {
+void Executor::ScheduleEvents(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
+                              unique_ptr<PipelineSchedule> resolved_schedule) {
 	ScheduleEventData event_data(meta_pipelines, events, true);
+	event_data.resolved_schedule = std::move(resolved_schedule);
 	ScheduleEventsInternal(event_data);
 }
 
@@ -239,7 +261,7 @@ void Executor::InitializeInternal(PhysicalOperator &plan) {
 		lock_guard<mutex> elock(executor_lock);
 		physical_plan = &plan;
 
-		this->profiler = ClientData::Get(context).profiler;
+		this->profiler = context.GetContext().GetQueryProfilerPtr();
 		this->producer = scheduler.CreateProducer();
 
 		auto verify_progress = Settings::Get<DebugVerifyProgressSetting>(context);
@@ -256,7 +278,9 @@ void Executor::InitializeInternal(PhysicalOperator &plan) {
 		// Resolve graph-dependent input modes after every pipeline and dependency has been constructed.
 		vector<shared_ptr<MetaPipeline>> to_schedule;
 		root_pipeline->GetMetaPipelines(to_schedule, true, true);
-		state.ResolveExternalInputs(to_schedule);
+		// Model the runtime-filter ordering edges under the same condition ScheduleRuntimeFilters uses below:
+		// this is the initial schedule, so only recursive CTEs disable them.
+		auto resolved_schedule = state.ResolveExternalInputs(to_schedule, recursive_ctes.empty());
 
 		profiler->Initialize(plan);
 		root_pipeline->Ready();
@@ -279,7 +303,7 @@ void Executor::InitializeInternal(PhysicalOperator &plan) {
 
 		// finally, verify and schedule
 		VerifyPipelines();
-		ScheduleEvents(to_schedule);
+		ScheduleEvents(to_schedule, std::move(resolved_schedule));
 	}
 }
 
@@ -452,11 +476,19 @@ QueryResultState Executor::ExecuteTask() {
 			TaskScheduler::GetScheduler(context).GetTaskFromProducer(*producer, task);
 		}
 		if (!task && !HasError()) {
+#ifdef __EMSCRIPTEN_PTHREADS__
+			// A positive sleep services the dlopen queue while another worker owns the task.
+			emscripten_thread_sleep(1);
+#endif
 			return IdleState();
 		}
 		if (task) {
 			// partially process the task
-			auto result = task->Execute(TaskExecutionMode::PROCESS_PARTIAL);
+			TaskExecutionResult result;
+			{
+				PipelineTask::PartialChunkBound bound(PartialChunkCount());
+				result = task->Execute(TaskExecutionMode::PROCESS_PARTIAL);
+			}
 			if (result == TaskExecutionResult::TASK_BLOCKED) {
 				task->Deschedule();
 				task.reset();
@@ -584,6 +616,29 @@ vector<LogicalType> Executor::GetTypes() {
 void Executor::PushError(ErrorData exception) {
 	// push the exception onto the stack
 	error_manager.PushError(std::move(exception));
+	InterruptPipelines();
+}
+
+void Executor::PushTaskError(const std::exception &ex) {
+	error_manager.PushTaskError([&]() { return ErrorData(ex); });
+	TryInterruptPipelines();
+}
+
+void Executor::PushTaskError(const char *message) {
+	error_manager.PushTaskError([&]() { return ErrorData(message); });
+	TryInterruptPipelines();
+}
+
+void Executor::TryInterruptPipelines() {
+	try {
+		InterruptPipelines();
+	} catch (...) { // NOLINT
+		// rescheduling blocked tasks can fail when memory runs out, and the error is recorded, so the main thread
+		// sees it and cancels the remaining tasks
+	}
+}
+
+void Executor::InterruptPipelines() {
 	// interrupt execution of any other pipelines that belong to this executor
 	context.interrupt_state = ClientInterruptState::INTERRUPTED;
 	for (auto &pipeline : pipelines) {
@@ -605,12 +660,11 @@ void Executor::ThrowException() {
 }
 
 void Executor::Flush(ThreadContext &thread_context) {
-	auto global_profiler = profiler;
-	if (global_profiler) {
-		global_profiler->Flush(thread_context.profiler);
+	if (profiler) {
+		profiler->Flush(thread_context.profiler);
 
 		auto blocked_time = blocked_thread_time.load();
-		global_profiler->SetBlockedTime(double(blocked_time) / 1000.0 / 1000.0);
+		profiler->SetBlockedTime(double(blocked_time) / 1000.0 / 1000.0);
 	}
 }
 
@@ -621,6 +675,11 @@ idx_t Executor::GetPipelinesProgress(ProgressData &progress) { // LCOV_EXCL_STAR
 	progress.total = 0;
 	idx_t count_invalid = 0;
 	for (auto &pipeline : pipelines) {
+		if (pipeline->GetSource()->type == PhysicalOperatorType::RESULT_COLLECTOR) {
+			// this pipeline only holds the result collector as the root of the plan: it never runs, so including it
+			// would add a row that never completes to the total
+			continue;
+		}
 		ProgressData p;
 		if (!pipeline->GetProgress(p)) {
 			count_invalid++;
@@ -660,6 +719,21 @@ bool Executor::ResultStoreCanPark() {
 	auto buffer = GetResultBuffer();
 	// The store was settled on retained at submission: producers append and never park
 	return !buffer || buffer->Lifetime() != ResultLifetime::RETAINED;
+}
+
+idx_t Executor::PartialChunkCount() {
+	// A thread that runs tasks here while worker threads produce a streaming result is that result's consumer: the
+	// producers park as soon as the buffer is full, and only its pop frees them. When a unit nearly fills the buffer,
+	// one unit fits at a time, so after every pop the consumer reschedules a producer, finds the buffer empty and
+	// takes a task - often the one it just rescheduled, before the woken worker gets to it. A full slice then stalls
+	// the whole pipeline for its length while every worker finishes its unit and parks. The consumer therefore runs
+	// one chunk per slice and returns to its buffer. A thread with no workers to wait for keeps the full slice:
+	// NumberOfThreads counts the external threads too, so only a count above them means workers exist
+	auto external_threads = Settings::Get<ExternalThreadsSetting>(context);
+	if (TaskScheduler::GetScheduler(context).NumberOfThreads() > external_threads && ResultStoreCanPark()) {
+		return 1;
+	}
+	return PipelineTask::PARTIAL_CHUNK_COUNT;
 }
 
 bool Executor::ResultCollectorIsBlocked() {

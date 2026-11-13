@@ -10,8 +10,12 @@ ChunkReference::ChunkReference(ColumnDataCollectionSegment *segment_p, uint32_t 
     : segment(segment_p), chunk_index_in_segment(chunk_index_p) {
 }
 
-uint32_t ChunkReference::GetMinimumBlockID() const {
+optional_idx ChunkReference::GetMinimumBlockID() const {
 	const auto &block_ids = segment->chunk_data[chunk_index_in_segment].block_ids;
+	if (block_ids.empty()) {
+		// all entries of the chunk are stored in metadata
+		return optional_idx();
+	}
 	return *std::min_element(block_ids.begin(), block_ids.end());
 }
 
@@ -38,7 +42,6 @@ bool ColumnDataConsumer::AssignChunk(ColumnDataConsumerScanState &state) {
 	lock_guard<mutex> guard(lock);
 	if (current_chunk_index == chunk_count) {
 		// All chunks have been assigned
-		state.current_chunk_state.handles.clear();
 		state.chunk_index = DConstants::INVALID_INDEX;
 		return false;
 	}
@@ -85,15 +88,22 @@ void ColumnDataConsumer::ConsumeChunks(idx_t delete_index_start, idx_t delete_in
 		auto curr_allocator = curr_chunk_ref.segment->allocator.get();
 		auto prev_min_block_id = prev_chunk_ref.GetMinimumBlockID();
 		auto curr_min_block_id = curr_chunk_ref.GetMinimumBlockID();
-		if (prev_allocator != curr_allocator) {
-			// Moved to the next allocator, delete all remaining blocks in the previous one
-			for (uint32_t block_id = prev_min_block_id; block_id < prev_allocator->BlockCount(); block_id++) {
+		if (!prev_min_block_id.IsValid()) {
+			// The previous chunk holds no blocks
+			continue;
+		}
+		auto prev_min = NumericCast<uint32_t>(prev_min_block_id.GetIndex());
+		if (prev_allocator != curr_allocator || !curr_min_block_id.IsValid()) {
+			// Moved to the next allocator, or past the last block-holding chunk of this allocator
+			// (blockless chunks sort last within an allocator), delete all remaining blocks
+			for (uint32_t block_id = prev_min; block_id < prev_allocator->BlockCount(); block_id++) {
 				prev_allocator->SetDestroyBufferUponUnpin(block_id);
 			}
 			continue;
 		}
 		// Same allocator, see if we can delete blocks
-		for (uint32_t block_id = prev_min_block_id; block_id < curr_min_block_id; block_id++) {
+		auto curr_min = NumericCast<uint32_t>(curr_min_block_id.GetIndex());
+		for (uint32_t block_id = prev_min; block_id < curr_min; block_id++) {
 			prev_allocator->SetDestroyBufferUponUnpin(block_id);
 		}
 	}

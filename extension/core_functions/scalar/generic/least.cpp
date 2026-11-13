@@ -239,15 +239,14 @@ unique_ptr<BaseStatistics> PropagateLeastGreatestStats(ClientContext &context, F
 }
 
 template <class LEAST_GREATER_OP>
-unique_ptr<FunctionData> BindLeastGreatest(BindScalarFunctionInput &input) {
+void LeastGreatestResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &context = input.GetClientContext();
 	auto &bound_function = input.GetBoundFunction();
-	auto &arguments = input.GetArguments();
-	LogicalType child_type = ExpressionBinder::GetExpressionReturnType(*arguments[0]);
-	for (idx_t i = 1; i < arguments.size(); i++) {
-		auto arg_type = ExpressionBinder::GetExpressionReturnType(*arguments[i]);
+	LogicalType child_type = ExpressionBinder::GetExpressionReturnType(input.GetArgument(0));
+	for (idx_t i = 1; i < input.GetArgumentCount(); i++) {
+		auto arg_type = ExpressionBinder::GetExpressionReturnType(input.GetArgument(i));
 		if (!LogicalType::TryGetMaxLogicalType(context, child_type, arg_type, child_type)) {
-			throw BinderException(arguments[i]->GetQueryLocation(),
+			throw BinderException(input.GetArgument(i).GetQueryLocation(),
 			                      "Cannot combine types of %s and %s - an explicit cast is required",
 			                      child_type.ToString(), arg_type.ToString());
 		}
@@ -300,14 +299,14 @@ unique_ptr<FunctionData> BindLeastGreatest(BindScalarFunctionInput &input) {
 		arg = child_type;
 	}
 	bound_function.SetReturnType(child_type);
-	return nullptr;
 }
 
 template <class OP>
 ScalarFunction GetLeastGreatestFunction() {
-	ScalarFunction fun({{"arg1", LogicalType::ANY}}, LogicalType::ANY, nullptr, BindLeastGreatest<OP>,
+	ScalarFunction fun({{"arg1", LogicalType::ANY}}, LogicalType::ANY, nullptr, nullptr,
 	                   PropagateLeastGreatestStats<OP>, nullptr, LogicalType::ANY, FunctionStability::CONSISTENT,
 	                   FunctionNullHandling::SPECIAL_HANDLING);
+	fun.SetResolveTypesCallback(LeastGreatestResolveTypes<OP>);
 	return fun;
 }
 

@@ -80,6 +80,8 @@ enum class PrintOutput { STDOUT, STDERR };
 
 enum class InputMode { STANDARD, FILE, DUCKDB_RC };
 
+enum class OutputCommand { OUTPUT, ONCE, EXCEL };
+
 enum class LargeNumberRendering { NONE = 0, FOOTER = 1, ALL = 2, DEFAULT = 3 };
 
 /*
@@ -101,6 +103,13 @@ enum class PagerMode { PAGER_AUTOMATIC, PAGER_ON, PAGER_OFF };
 
 enum class MetadataResult : uint8_t { SUCCESS = 0, FAIL = 1, EXIT = 2, PRINT_USAGE = 3 };
 enum class HighlightMode : uint32_t { AUTOMATIC, MIXED_MODE, DARK_MODE, LIGHT_MODE };
+
+// Deliberately not a std::exception: command error handlers must not consume an explicit exit.
+struct ShellExitException {
+	explicit ShellExitException(int exit_code) : exit_code(exit_code) {
+	}
+	int exit_code;
+};
 
 enum class ExecuteSQLSingleValueResult {
 	SUCCESS,
@@ -132,6 +141,8 @@ struct MetadataCommand {
 	const char *description;
 	idx_t match_size;
 	const char *extra_description;
+	//! Pass the remainder of the line as one argument instead of splitting it into words
+	bool raw_arguments;
 };
 
 struct ShellColumnInfo {
@@ -254,6 +265,8 @@ public:
 	string agent_name;
 	//! The environment variable that switched agent mode on (e.g. "CLAUDECODE"), empty when forced with -agent
 	string agent_marker;
+	//! Whether DUCKDB_AGENT_MODE forced agent mode on or off (no -agent / -no-agent was given)
+	bool agent_mode_from_environment = false;
 	//! Whether an output mode was given on the command line (-csv, -json, ...): detected agent mode then stays off
 	bool output_mode_flag = false;
 	//! Whether the exit hint (see PrintExitHint) went out already
@@ -335,7 +348,7 @@ public:
 	bool SetOutputMode(const string &mode, const char *tbl_name);
 	bool ImportData(const vector<string> &args);
 	bool OpenDatabase(const vector<string> &args);
-	bool SetOutputFile(const vector<string> &args, char output_mode);
+	bool SetOutputFile(const vector<string> &args, OutputCommand output_command);
 	bool ReadFromFile(const string &file);
 	bool DisplaySchemas(const vector<string> &args);
 	MetadataResult DisplayEntries(const vector<string> &args, char type);
@@ -344,7 +357,8 @@ public:
 	void ShowConfiguration();
 	void ClearInterrupt();
 
-	static void Exit(int exit_code);
+	[[noreturn]] static void Exit(int exit_code);
+	static void IgnoreInterrupts();
 	static idx_t RenderLength(const char *str, idx_t str_len);
 	static idx_t RenderLength(duckdb::string_t str);
 	static idx_t RenderLength(const string &str);
@@ -428,7 +442,7 @@ public:
 	int ShellLoadHistory(const char *path);
 	int ShellSaveHistory(const char *path);
 	int ShellSetHistoryMaxLength(idx_t max_length);
-	char *OneInputLine(FILE *in, char *zPrior, int isContinuation);
+	char *OneInputLine(FILE *in, char *&zPrior, int isContinuation);
 
 	int RunOneSqlLine(InputMode mode, char *zSql);
 	string GetDefaultDuckDBRC();

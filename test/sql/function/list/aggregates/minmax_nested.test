@@ -63,7 +63,7 @@ CREATE TABLE blob_structs AS SELECT {'i': concat('long_prefix_', '\x', 16+i%239)
 query II
 SELECT MIN(s), MAX(s) FROM blob_structs;
 ----
-{'i': long_prefix_\x100}	{'i': long_prefix_\x99}
+{'i': 'long_prefix_\\x100'}	{'i': 'long_prefix_\\x99'}
 
 # null bytes
 statement ok
@@ -72,7 +72,7 @@ INSERT INTO blob_structs VALUES ({'i': '\x00z\x00\x00z\x00zzzz\x00'::blob}), ({'
 query II
 SELECT MIN(s), MAX(s) FROM blob_structs;
 ----
-{'i': \x00z\x00\x00z\x00zzzz\x00}	{'i': zzzzzz\x01\x01\x01\x00\x01\x01\x00}
+{'i': '\\x00z\\x00\\x00z\\x00zzzz\\x00'}	{'i': 'zzzzzz\\x01\\x01\\x01\\x00\\x01\\x01\\x00'}
 
 # multi-member structs
 statement ok

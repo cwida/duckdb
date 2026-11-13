@@ -1,0 +1,40 @@
+# name: test/sql/parser/numeric_literal_underscore_trailing_dot.test
+# description: Numeric literals with an underscore and a second (trailing) dot must error cleanly, not internally
+# group: [parser]
+
+statement error
+SELECT 1.2_3.;
+----
+<REGEX>:.*(Parser|Invalid Input|Conversion) Error.*
+
+statement error
+SELECT 9.41_29.;
+----
+<REGEX>:.*(Parser|Invalid Input|Conversion) Error.*
+
+statement error
+SELECT 1_2.3_4.;
+----
+<REGEX>:.*(Parser|Invalid Input|Conversion) Error.*
+
+statement error
+SELECT -9.41_29.;
+----
+<REGEX>:.*(Parser|Invalid Input|Conversion) Error.*
+
+statement error
+SELECT 999/008.09_91.;
+----
+<REGEX>:.*(Parser|Invalid Input|Conversion) Error.*
+
+# a multi-dot literal without an underscore is a syntax error
+statement error
+SELECT 1.2.3;
+----
+Parser Error: syntax error at or near "1.2.3"
+
+# valid numeric literals (including digit separators and a trailing dot) are unaffected
+query IIIIII
+SELECT 1.23, 1_000.5, 1_2., 12., 100000.000001, -1.23;
+----
+1.23	1000.5	12	12	100000.000001	-1.23

@@ -25,7 +25,7 @@ static unsafe_unique_array<data_t> ReadExtensionFileFromDisk(FileSystem &fs, con
 	auto source_file = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
 	file_size = source_file->GetFileSize();
 	auto in_buffer = make_unsafe_uniq_array<data_t>(file_size);
-	source_file->Read(QueryContext(), in_buffer.get(), file_size);
+	source_file->Read(QueryContext(), in_buffer.get(), file_size, 0);
 	source_file->Close();
 	return in_buffer;
 }
@@ -201,11 +201,61 @@ static unique_ptr<ExtensionInstallInfo> DirectInstallExtension(DatabaseInstance 
 	return make_uniq<ExtensionInstallInfo>(info);
 }
 
-static unique_ptr<ExtensionInstallInfo> InstallFromHttpUrl(DatabaseInstance &db, const string &url,
-                                                           const string &extension_name, const string &temp_path,
-                                                           const string &local_extension_path,
-                                                           ExtensionInstallOptions &options,
-                                                           optional_ptr<ClientContext> context) {
+//! Throws if the url of an extension download is not allowed by the file access settings
+static void VerifyCanDownloadExtension(DatabaseInstance &db, const string &url) {
+	if (Settings::Get<EnableExternalAccessSetting>(db) || ExtensionRepository::IsOfficialRepositoryUrl(url)) {
+		return;
+	}
+	if (db.config.CanAccessFile(url, FileType::FILE_TYPE_REGULAR)) {
+		return;
+	}
+	// with httpfs loaded http repositories are bumped to https: allow them if the http url is allowed
+	if (StringUtil::StartsWith(url, "https://") &&
+	    db.config.CanAccessFile("http://" + url.substr(8), FileType::FILE_TYPE_REGULAR)) {
+		return;
+	}
+	throw PermissionException("Cannot download extension from \"%s\" - external access is disabled by "
+	                          "configuration. Add the repository to allowed_directories to allow it",
+	                          url);
+}
+
+//! Perform the GET request for an extension against a single url
+static unique_ptr<HTTPResponse> RequestExtension(DatabaseInstance &db, optional_ptr<ClientContext> context,
+                                                 const string &url, const HTTPHeaders &headers) {
+	// the official repositories are reachable even when external access is disabled, any other url must be allowed
+	// through allowed_directories or allowed_paths
+	VerifyCanDownloadExtension(db, url);
+	auto &manager = db.config.GetHTTPTransportManager();
+	auto session = context ? manager.CreateSession(*context, url) : manager.CreateSession(db, url);
+	auto &params = session.Parameters();
+
+	// Unclear what's peculiar about extension install flow, but those two parameters are needed
+	// to avoid lengthy retry on 304
+	params.follow_location = false;
+	params.keep_alive = false;
+	// the url was checked above, which also allows the official repositories, so skip the central check
+	params.skip_external_access_check = true;
+
+	GetRequestInfo get_request(url, headers, params, nullptr, nullptr);
+	get_request.try_request = true;
+
+	return session.Request(get_request);
+}
+
+//! Whether a failed response means the server itself is unavailable, as opposed to e.g. the extension not existing
+static bool ServerUnavailable(const HTTPResponse &response) {
+	if (response.HasRequestError()) {
+		// the request never completed: DNS failure, connection refused, timeout, ...
+		return true;
+	}
+	return response.status >= HTTPStatusCode::InternalServerError_500;
+}
+
+//! Install an extension from a http url. If a backup url is given it is tried when the server at url is unavailable
+static unique_ptr<ExtensionInstallInfo>
+InstallFromHttpUrl(DatabaseInstance &db, const string &url, const string &extension_name, const string &temp_path,
+                   const string &local_extension_path, ExtensionInstallOptions &options,
+                   optional_ptr<ClientContext> context, const string &backup_url = string()) {
 	unique_ptr<ExtensionInstallInfo> install_info;
 	{
 		auto &fs = FileSystem::GetLocal(db);
@@ -227,19 +277,17 @@ static unique_ptr<ExtensionInstallInfo> InstallFromHttpUrl(DatabaseInstance &db,
 		headers.Insert("If-None-Match", StringUtil::Format("%s", install_info->etag));
 	}
 
-	auto &manager = db.config.GetHTTPTransportManager();
-	auto session = context ? manager.CreateSession(*context, url) : manager.CreateSession(db, url);
-	auto &params = session.Parameters();
-
-	// Unclear what's peculiar about extension install flow, but those two parameters are needed
-	// to avoid lengthy retry on 304
-	params.follow_location = false;
-	params.keep_alive = false;
-
-	GetRequestInfo get_request(url, headers, params, nullptr, nullptr);
-	get_request.try_request = true;
-
-	auto response = session.Request(get_request);
+	string download_url = url;
+	auto response = RequestExtension(db, context, url, headers);
+	if (!response->Success() && !backup_url.empty() && ServerUnavailable(*response)) {
+		// the server is unavailable - retry against the backup server. If that fails as well we report the error of
+		// the primary server, as that is the one the user asked for
+		auto backup_response = RequestExtension(db, context, backup_url, headers);
+		if (backup_response->Success()) {
+			download_url = backup_url;
+			response = std::move(backup_response);
+		}
+	}
 	if (!response->Success()) {
 		// if we should not retry or exceeded the number of retries - bubble up the error
 		string message;
@@ -283,13 +331,13 @@ static unique_ptr<ExtensionInstallInfo> InstallFromHttpUrl(DatabaseInstance &db,
 
 	if (options.repository) {
 		info.mode = ExtensionInstallMode::REPOSITORY;
-		info.full_path = url;
+		info.full_path = download_url;
 		info.repository_url = options.repository->path;
 		info.repository_type = options.repository->type;
 		info.repository_name = options.repository->name;
 	} else {
 		info.mode = ExtensionInstallMode::CUSTOM_PATH;
-		info.full_path = url;
+		info.full_path = download_url;
 	}
 
 	QueryContext query_context(context);
@@ -310,10 +358,20 @@ static unique_ptr<ExtensionInstallInfo> InstallFromRepository(DatabaseInstance &
 
 	// Special handling for http repository: avoid using regular filesystem (note: the filesystem is not used here)
 	if (HTTPUtil::IsHTTPProtocol(options.repository->path)) {
+		// The core and community repositories have backup servers that serve the same binaries - fall back to those
+		// if the primary server is unavailable. Custom repositories have no backup, so there the error surfaces
+		// directly
+		string backup_url;
+		auto backup_repository_url = ExtensionRepository::TryGetBackupRepositoryUrl(options.repository->path);
+		if (!backup_repository_url.empty()) {
+			backup_url = StringUtil::Replace(generated_url, options.repository->path, backup_repository_url);
+		}
 		if (db.ExtensionIsLoaded("httpfs")) {
 			HTTPUtil::BumpToSecureProtocol(generated_url);
+			HTTPUtil::BumpToSecureProtocol(backup_url);
 		}
-		return InstallFromHttpUrl(db, generated_url, extension_name, temp_path, local_extension_path, options, context);
+		return InstallFromHttpUrl(db, generated_url, extension_name, temp_path, local_extension_path, options, context,
+		                          backup_url);
 	}
 
 	// Default case, let the FileSystem figure it out
@@ -368,12 +426,14 @@ unique_ptr<ExtensionInstallInfo> InstallExternalExtension(DatabaseInstance &db, 
 	// repositories. Core and community extensions keep the flat top-level layout for backwards compatibility
 	string install_path = local_path;
 	if (options.repository && options.repository->type == ExtensionRepositoryType::USER_PROVIDED) {
-		// installing native code from a user-provided repository trusts that repository's signing keys, so it requires
-		// the same explicit opt-in as adding one. Without this, pointing extension_repository_directory at an
-		// attacker-controlled directory and installing from it would bypass the opt-in entirely
-		if (ExtensionRepositoryManager::GetAccess(db) != ExtensionRepositoryAccess::ALLOWED) {
-			throw PermissionException("Installing extensions from a user-provided repository requires "
-			                          "allow_extension_repositories='allowed'");
+		// the opt-in gates adding a repository, i.e. trusting a new signing key. An existing repository stays trusted
+		// while 'hosts' or 'allowed', as it does for LOAD
+		if (!ExtensionRepositoryManager::TrustsRepository(db, *options.repository)) {
+			throw PermissionException(
+			    "Installing extensions from the user-provided repository '%s' is not permitted while "
+			    "allow_extension_repositories='%s'",
+			    options.repository->name,
+			    ExtensionRepositoryManager::AccessToString(ExtensionRepositoryManager::GetAccess(db)));
 		}
 		install_path = fs.JoinPath(fs.JoinPath(local_path, "repositories"), options.repository->name);
 		FileSystem::GetLocal(db).CreateDirectoriesRecursive(install_path);

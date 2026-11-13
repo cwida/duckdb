@@ -15,7 +15,10 @@ struct NFCNormalizeOperator {
 			return input;
 		}
 		auto normalized_str = Utf8Proc::Normalize(input_data, input_length);
-		D_ASSERT(normalized_str);
+		if (!normalized_str) {
+			// invalid UTF-8
+			return input;
+		}
 		auto result_str = heap.AddString(normalized_str);
 		free(normalized_str);
 		return result_str;

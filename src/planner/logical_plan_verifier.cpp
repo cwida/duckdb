@@ -217,6 +217,15 @@ struct LogicalPlanVerificationState {
 		return resolved_outputs.find(reference<LogicalOperator>(op)) != resolved_outputs.end();
 	}
 
+	void AddInvalidResolvedSchema(LogicalOperator &op) {
+		LogicalPlanVerificationIssue issue;
+		issue.code = LogicalPlanVerificationIssueCode::INTERNAL_INVARIANT;
+		issue.path = GetPath(op);
+		issue.construct = GetOperatorConstruct(op);
+		issue.message = "Resolved operator bindings require a complete output type for every column";
+		issues.push_back(std::move(issue));
+	}
+
 	bool HasNullSlots(LogicalOperator &op) const {
 		for (auto &child : op.children) {
 			if (!child) {
@@ -325,15 +334,18 @@ void LogicalPlanVerifier::Verify(ClientContext &context, LogicalOperator &op) {
 	}
 }
 
-bool LogicalPlanVerifier::ResolveOperatorTypes(LogicalOperator &op, LogicalPlanVerificationState &verification_state) {
-	op.types.clear();
+bool LogicalPlanVerifier::ResolveOperatorTypes(LogicalOperator &op, LogicalPlanVerificationState &verification_state,
+                                               TypeResolution resolution) {
+	if (resolution == TypeResolution::RESOLVE) {
+		op.types.clear();
+	}
 	bool children_resolved = true;
 	for (auto &child : op.children) {
 		if (!child) {
 			children_resolved = false;
 			continue;
 		}
-		if (!ResolveOperatorTypes(*child, verification_state)) {
+		if (!ResolveOperatorTypes(*child, verification_state, resolution)) {
 			children_resolved = false;
 		}
 	}
@@ -341,8 +353,23 @@ bool LogicalPlanVerifier::ResolveOperatorTypes(LogicalOperator &op, LogicalPlanV
 		return false;
 	}
 	verification_state.resolved_inputs.insert(reference<LogicalOperator>(op));
-	op.ResolveTypes();
+	if (resolution == TypeResolution::RESOLVE) {
+		op.ResolveTypes();
+	}
 	auto bindings = op.GetColumnBindings();
+	if (resolution == TypeResolution::EXISTING) {
+		bool valid = bindings.size() == op.types.size();
+		for (auto &type : op.types) {
+			valid &= type.IsComplete();
+		}
+		for (auto &binding : bindings) {
+			valid &= binding.table_index.IsValid() && binding.column_index.IsValid();
+		}
+		if (!valid) {
+			verification_state.AddInvalidResolvedSchema(op);
+			return false;
+		}
+	}
 	if (op.type == LogicalOperatorType::LOGICAL_EXTENSION_OPERATOR) {
 		auto &extension_op = op.Cast<LogicalExtensionOperator>();
 		auto identifier = extension_op.GetTypeBindingVerificationIdentifier();
@@ -437,6 +464,20 @@ static void VerifyTableIndexes(LogicalOperator &op, LogicalPlanVerificationState
 
 LogicalPlanVerificationResult<LogicalPlanVerificationSuccess> LogicalPlanVerifier::VerifyAlways(LogicalOperator &op) {
 	return VerifyAlwaysInternal(op, nullptr);
+}
+
+LogicalPlanVerificationResult<LogicalPlanVerificationSuccess>
+LogicalPlanVerifier::VerifyResolvedBindings(LogicalOperator &op) {
+	LogicalPlanVerificationState verification_state(op);
+	ResolveOperatorTypes(op, verification_state, TypeResolution::EXISTING);
+	VerifyColumnBindings(op, verification_state);
+	unordered_map<TableIndex, LogicalPlanVerificationPath> seen_indexes;
+	VerifyTableIndexes(op, verification_state, seen_indexes);
+	if (!verification_state.issues.empty()) {
+		return LogicalPlanVerificationResult<LogicalPlanVerificationSuccess>::Failure(
+		    std::move(verification_state.issues));
+	}
+	return LogicalPlanVerificationResult<LogicalPlanVerificationSuccess>::Success(LogicalPlanVerificationSuccess());
 }
 
 LogicalPlanVerificationResult<LogicalPlanVerificationSuccess>

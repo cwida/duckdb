@@ -25,6 +25,15 @@ public:
 	using BIT_WIDTH_TYPE = uint8_t;
 	using METADATA_POINTER_TYPE = uint32_t;
 
+	//! Conservative upper bounds on encoded vector size, combining maximum bitpacked data and exception sizes.
+	//! Formula: vector_size * max_bit_width / 8 + vector_size * (original_type_size + position_size) +
+	//! encoding_metadata
+	//!
+	//! DOUBLE: 1024 * 64 / 8 + 1024 * (8 + 2) + 13 = 18445 bytes < 32 KiB
+	//! FLOAT:  1024 * 64 / 8 + 1024 * (4 + 2) + 13 = 14349 bytes < 32 KiB
+	//! 32 KiB also accommodates block/segment headers, vector pointers and alignment.
+	static constexpr idx_t MIN_BLOCK_SIZE = static_cast<const idx_t>(1024 * 32);
+
 	static constexpr uint32_t ALP_VECTOR_SIZE = 1024;
 	static constexpr uint32_t RG_SAMPLES = 8;
 	static constexpr uint16_t SAMPLES_PER_VECTOR = 32;

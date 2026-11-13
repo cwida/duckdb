@@ -37,12 +37,12 @@ RESET debug_verify_statement;
 query TT
 EXPLAIN (SQL) SELECT bigint,varchar FROM test_all_types(use_large_enum := true,use_large_bignum := true) ORDER BY bigint NULLS LAST;
 ----
-sql	<REGEX>:.*use_large_enum.*true.*
+sql	<REGEX>:.*use_large_enum.*TRUE.*
 
 query TT
 EXPLAIN (SQL) SELECT bigint,varchar FROM test_all_types(use_large_enum := true,use_large_bignum := true) ORDER BY bigint NULLS LAST;
 ----
-sql	<REGEX>:.*use_large_bignum.*true.*
+sql	<REGEX>:.*use_large_bignum.*TRUE.*
 
 query T
 SELECT * FROM repeat('a''b',3);

@@ -1,0 +1,74 @@
+# name: test/sql/aggregate/aggregate_state_export/test_sorted_aggregate_state_types.test
+# description: The buffered argument columns of an ordered aggregate state are cast to the signature types
+# group: [aggregate_state_export]
+
+# the buffered column cannot be cast to the signature type
+statement error
+SELECT finalize(to_aggregate_state([{'v0': 1}, {'v0': 2}], 'list', ['INTEGER[]'], NULL, [{'column': 0, 'order': 'ASC NULLS FIRST'}]));
+----
+Unimplemented type for cast (INTEGER -> INTEGER[])
+
+statement error
+SELECT finalize(to_aggregate_state([{'v0': 1::BIGINT}], 'list', ['STRUCT(a INTEGER)'], NULL, [{'column': 0, 'order': 'ASC NULLS FIRST'}]));
+----
+Unimplemented type for cast
+
+# the buffered column is cast to the signature type
+query I
+SELECT finalize(to_aggregate_state([{'v0': 1::BIGINT}], 'list', ['VARCHAR'], NULL, [{'column': 0, 'order': 'ASC NULLS FIRST'}]));
+----
+[1]
+
+query I
+SELECT finalize(to_aggregate_state([{'v0': 3}, {'v0': 1}], 'list', ['BIGINT'], NULL, [{'column': 0, 'order': 'ASC NULLS FIRST'}]));
+----
+[1, 3]
+
+query I
+SELECT finalize(to_aggregate_state([{'v0': 1.5::DOUBLE}, {'v0': 0.25::DOUBLE}], 'list', ['DECIMAL(4,2)'], NULL, [{'column': 0, 'order': 'ASC NULLS FIRST'}]));
+----
+[0.25, 1.50]
+
+query I
+SELECT typeof(finalize(to_aggregate_state([{'v0': 1}], 'list', ['HUGEINT'], NULL, [{'column': 0, 'order': 'ASC NULLS FIRST'}])));
+----
+HUGEINT[]
+
+# sort columns keep their own type
+query I
+SELECT finalize(to_aggregate_state([{'v0': 1::BIGINT, 'k': 'b'}, {'v0': 2::BIGINT, 'k': 'a'}], 'list', ['VARCHAR'], NULL, [{'column': 1, 'order': 'ASC NULLS FIRST'}]));
+----
+[2, 1]
+
+# multiple arguments
+query I
+SELECT finalize(to_aggregate_state([{'v0': 1::DOUBLE, 'v1': '10'}, {'v0': 2::DOUBLE, 'v1': '20'}], 'arg_max', ['INTEGER', 'INTEGER'], NULL, [{'column': 0, 'order': 'ASC NULLS FIRST'}]));
+----
+2
+
+# combine states that were cast
+query I
+SELECT finalize(combine(
+	to_aggregate_state([{'v0': 2}], 'list', ['BIGINT'], NULL, [{'column': 0, 'order': 'ASC NULLS FIRST'}]),
+	to_aggregate_state([{'v0': 1}], 'list', ['BIGINT'], NULL, [{'column': 0, 'order': 'ASC NULLS FIRST'}])));
+----
+[1, 2]
+
+# aggregates that accept ANY keep the type of the buffered column
+query II
+SELECT finalize(to_aggregate_state([{'v0': 'x', 'k': 2}, {'v0': NULL, 'k': 1}], 'count', ['VARCHAR'], NULL, [{'column': 1, 'order': 'ASC NULLS FIRST'}])),
+       finalize(to_aggregate_state([{'v0': [1, 2], 'k': 2}, {'v0': [3], 'k': 1}], 'first', ['INTEGER[]'], NULL, [{'column': 1, 'order': 'ASC NULLS FIRST'}]));
+----
+1	[3]
+
+query I
+SELECT finalize(combine(
+	to_aggregate_state([{'v0': 'a', 'k': 2}], 'count', ['VARCHAR'], NULL, [{'column': 1, 'order': 'ASC NULLS FIRST'}]),
+	to_aggregate_state([{'v0': 'b', 'k': 1}], 'count', ['VARCHAR'], NULL, [{'column': 1, 'order': 'ASC NULLS FIRST'}])));
+----
+2
+
+query II
+SELECT count(i ORDER BY i DESC), count(1 ORDER BY 1) FROM range(3) t(i);
+----
+3	3

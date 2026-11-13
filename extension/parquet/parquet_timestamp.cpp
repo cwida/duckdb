@@ -1,11 +1,16 @@
 #include "parquet_timestamp.hpp"
 
+#include "duckdb/common/operator/add.hpp"
+#include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/types/interval.hpp"
+#include "duckdb/common/operator/add.hpp"
+#include "duckdb/common/operator/multiply.hpp"
 
 namespace duckdb {
 
@@ -14,6 +19,18 @@ static constexpr int64_t JULIAN_TO_UNIX_EPOCH_DAYS = 2440588LL;
 static constexpr int64_t MILLISECONDS_PER_DAY = 86400000LL;
 static constexpr int64_t MICROSECONDS_PER_DAY = MILLISECONDS_PER_DAY * 1000LL;
 static constexpr int64_t NANOSECONDS_PER_MICRO = 1000LL;
+static constexpr int64_t NANOSECONDS_PER_DAY = MICROSECONDS_PER_DAY * 1000LL;
+
+bool ParquetTimeIsValid(const int64_t &raw, const int64_t day) {
+	return raw >= 0 && raw <= day;
+}
+
+template <typename T>
+static void CheckParquetTime(const T &raw, const int64_t day) {
+	if (!ParquetTimeIsValid(raw, day)) {
+		throw InvalidInputException("Invalid TIME value %d in Parquet file - TIME values must be within a day", raw);
+	}
+}
 
 static inline int64_t ImpalaTimestampToDays(const Int96 &impala_timestamp) {
 	return impala_timestamp.value[2] - JULIAN_TO_UNIX_EPOCH_DAYS;
@@ -23,12 +40,61 @@ static int64_t ImpalaTimestampToMicroseconds(const Int96 &impala_timestamp) {
 	int64_t days_since_epoch = ImpalaTimestampToDays(impala_timestamp);
 	auto nanoseconds = Load<int64_t>(const_data_ptr_cast(impala_timestamp.value));
 	auto microseconds = nanoseconds / NANOSECONDS_PER_MICRO;
-	return days_since_epoch * MICROSECONDS_PER_DAY + microseconds;
+	int64_t result;
+	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(days_since_epoch, MICROSECONDS_PER_DAY, result) ||
+	    !TryAddOperator::Operation<int64_t, int64_t, int64_t>(result, microseconds, result)) {
+		throw InvalidInputException("Int96 timestamp is out of range");
+	}
+	return result;
+}
+
+static int64_t ImpalaTimestampToNanoseconds(const Int96 &impala_timestamp) {
+	int64_t result;
+	int64_t days_since_epoch = ImpalaTimestampToDays(impala_timestamp);
+	auto nanoseconds = Load<int64_t>(const_data_ptr_cast(impala_timestamp.value));
+	int64_t day_nanoseconds;
+	if (days_since_epoch < 0) {
+		//	Don't saturate the minimum value by going past it
+		if (!TryMultiplyOperator::Operation(days_since_epoch + 1, NANOSECONDS_PER_DAY, day_nanoseconds) ||
+		    !TrySubtractOperator::Operation(nanoseconds, NANOSECONDS_PER_DAY, nanoseconds) ||
+		    !TryAddOperator::Operation(day_nanoseconds, nanoseconds, result)) {
+			// out of range for TIMESTAMP_NS - saturate to -infinity
+			return timestamp_ns_t::ninfinity().value;
+		}
+		return result;
+	}
+	if (!TryMultiplyOperator::Operation(days_since_epoch, NANOSECONDS_PER_DAY, day_nanoseconds) ||
+	    !TryAddOperator::Operation(day_nanoseconds, nanoseconds, result)) {
+		// out of range for TIMESTAMP_NS - saturate to +infinity
+		return timestamp_ns_t::infinity().value;
+	}
+	return result;
+}
+
+timestamp_ns_t ImpalaTimestampToTimestampNS(const Int96 &raw_ts) {
+	timestamp_ns_t result;
+	result.value = ImpalaTimestampToNanoseconds(raw_ts);
+	return result;
 }
 
 timestamp_t ImpalaTimestampToTimestamp(const Int96 &raw_ts) {
 	auto impala_us = ImpalaTimestampToMicroseconds(raw_ts);
 	return Timestamp::FromEpochMicroSeconds(impala_us);
+}
+
+date_t ImpalaTimestampToDate(const Int96 &raw_ts) {
+	auto days_since_epoch = ImpalaTimestampToDays(raw_ts);
+	// the Julian day is unsigned, so the day count can lie outside the finite DATE range
+	if (days_since_epoch <= date_t::ninfinity().days || days_since_epoch >= date_t::infinity().days) {
+		throw InvalidInputException("Int96 timestamp is out of range");
+	}
+	return date_t(static_cast<int32_t>(days_since_epoch));
+}
+
+dtime_ns_t ImpalaTimestampToTimeNs(const Int96 &raw_ts) {
+	auto nanoseconds = Load<int64_t>(const_data_ptr_cast(raw_ts.value));
+	CheckParquetTime(nanoseconds, Interval::NANOS_PER_DAY);
+	return dtime_ns_t(nanoseconds);
 }
 
 Int96 TimestampToImpalaTimestamp(timestamp_t &ts) {
@@ -57,6 +123,24 @@ timestamp_t ParquetTimestampMsToTimestamp(const int64_t &raw_ts) {
 	return Timestamp::FromEpochMs(raw_ts);
 }
 
+timestamp_ns_t ParquetTimestampMsToTimestampNs(const int64_t &raw_ms) {
+	timestamp_ns_t input;
+	input.value = raw_ms;
+	if (!input.IsFinite()) {
+		return input;
+	}
+	return Timestamp::TimestampNsFromEpochMillis(raw_ms);
+}
+
+timestamp_ns_t ParquetTimestampUsToTimestampNs(const int64_t &raw_us) {
+	timestamp_ns_t input;
+	input.value = raw_us;
+	if (!input.IsFinite()) {
+		return input;
+	}
+	return Timestamp::TimestampNsFromEpochMicros(raw_us);
+}
+
 timestamp_ns_t ParquetTimestampNsToTimestampNs(const int64_t &raw_ns) {
 	timestamp_ns_t result;
 	result.value = raw_ns;
@@ -78,14 +162,17 @@ static T ParquetWrapTime(const T &raw, const T day) {
 }
 
 dtime_t ParquetMsIntToTime(const int32_t &raw_millis) {
+	CheckParquetTime(raw_millis, Interval::MSECS_PER_SEC * Interval::SECS_PER_DAY);
 	return Time::FromTimeMs(raw_millis);
 }
 
 dtime_t ParquetIntToTime(const int64_t &raw_micros) {
+	CheckParquetTime(raw_micros, Interval::MICROS_PER_DAY);
 	return dtime_t(raw_micros);
 }
 
 dtime_ns_t ParquetIntToTimeNs(const int64_t &raw_nanos) {
+	CheckParquetTime(raw_nanos, Interval::NANOS_PER_DAY);
 	return dtime_ns_t(raw_nanos);
 }
 

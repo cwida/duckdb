@@ -35,7 +35,7 @@ public:
 };
 
 unique_ptr<GlobalSinkState> PhysicalReservoirSample::GetGlobalSinkState(ClientContext &context) const {
-	return make_uniq<SampleGlobalSinkState>(Allocator::Get(context), *options);
+	return make_uniq<SampleGlobalSinkState>(BufferAllocator::Get(context), *options);
 }
 
 SinkResultType PhysicalReservoirSample::Sink(ExecutionContext &context, DataChunk &chunk,
@@ -45,7 +45,7 @@ SinkResultType PhysicalReservoirSample::Sink(ExecutionContext &context, DataChun
 	lock_guard<mutex> glock(global_state.lock);
 	if (!global_state.sample) {
 		// always gather full thread percentage
-		auto &allocator = Allocator::Get(context.client);
+		auto &allocator = BufferAllocator::Get(context.client);
 		if (options->is_percentage) {
 			double percentage = options->sample_size.GetValue<double>();
 			if (percentage == 0) {

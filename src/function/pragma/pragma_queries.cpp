@@ -170,12 +170,15 @@ static string PragmaImportDatabase(ClientContext &context, const FunctionParamet
 		auto query = string(buffer.get(), UnsafeNumericCast<uint32_t>(fsize));
 		// Replace the placeholder with the path provided to IMPORT
 		if (file == "load.sql") {
-			Parser parser;
+			auto parser = Parser::GetBuiltinParser();
 			parser.ParseQuery(query);
 			auto copy_statements = std::move(parser.statements);
 			query.clear();
 			for (auto &statement_p : copy_statements) {
-				D_ASSERT(statement_p->type == StatementType::COPY_STATEMENT);
+				if (statement_p->type != StatementType::COPY_STATEMENT) {
+					throw InvalidInputException("IMPORT DATABASE: load.sql may only contain COPY statements, found: %s",
+					                            statement_p->ToString());
+				}
 				auto &statement = statement_p->Cast<CopyStatement>();
 				auto &info = *statement.info;
 				auto file_name = fs.ExtractName(info.file_path);

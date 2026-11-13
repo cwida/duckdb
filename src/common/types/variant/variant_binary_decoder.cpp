@@ -1,4 +1,5 @@
 #include "duckdb/common/types/variant/variant_binary_decoder.hpp"
+#include "utf8proc_wrapper.hpp"
 
 #include <string.h>
 
@@ -88,7 +89,11 @@ VariantMetadata::VariantMetadata(const string_t &metadata) : metadata(metadata) 
 		if (data_start + last_offset + string_size > metadata_buffer_capacity) {
 			throw IOException("Corrupted VARIANT 'metadata' buffer");
 		}
-		strings.emplace_back(reinterpret_cast<const char *>(metadata_data + data_start + last_offset), string_size);
+		auto key_data = reinterpret_cast<const char *>(metadata_data + data_start + last_offset);
+		if (!Utf8Proc::IsValid(key_data, string_size)) {
+			throw IOException("Corrupted VARIANT 'metadata' buffer, a dictionary key isn't valid UTF8");
+		}
+		strings.emplace_back(key_data, string_size);
 		last_offset = next_offset;
 	}
 	//! header byte + offsets region + string bytes

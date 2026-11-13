@@ -6,7 +6,7 @@
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
-#include "duckdb/transaction/duck_transaction.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 
@@ -16,19 +16,19 @@ namespace {
 
 // current_query
 void CurrentQueryFunction(DataChunk &input, ExpressionState &state, Vector &result) {
-	Value val(state.GetContext().GetCurrentQuery());
+	Value val(state.GetClientContext().GetCurrentQuery());
 	result.Reference(val, count_t(input.size()));
 }
 
 // current_schema
 void CurrentSchemaFunction(DataChunk &input, ExpressionState &state, Vector &result) {
-	Value val(ClientData::Get(state.GetContext()).catalog_search_path->GetDefault().GetSchema());
+	Value val(ClientData::Get(state.GetClientContext()).catalog_search_path->GetDefault().GetSchema());
 	result.Reference(val, count_t(input.size()));
 }
 
 // current_database
 void CurrentDatabaseFunction(DataChunk &input, ExpressionState &state, Vector &result) {
-	Value val(DatabaseManager::GetDefaultDatabase(state.GetContext()));
+	Value val(DatabaseManager::GetDefaultDatabase(state.GetClientContext()));
 	result.Reference(val, count_t(input.size()));
 }
 
@@ -48,12 +48,14 @@ public:
 	}
 };
 
-unique_ptr<FunctionData> CurrentSchemasBind(BindScalarFunctionInput &input) {
-	auto &context = input.GetClientContext();
-	auto &arguments = input.GetArguments();
-	if (arguments[0]->GetReturnType().id() != LogicalTypeId::BOOLEAN) {
+void CurrentSchemasResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	if (input.GetArgumentType(0).id() != LogicalTypeId::BOOLEAN) {
 		throw BinderException("current_schemas requires a boolean input");
 	}
+}
+
+unique_ptr<FunctionData> CurrentSchemasBind(BindScalarFunctionInput &input) {
+	auto &context = input.GetClientContext();
 	Value schema_value = input.GetConstant(0);
 	Value result_val;
 	if (schema_value.IsNull()) {
@@ -80,7 +82,7 @@ void CurrentSchemasFunction(DataChunk &input, ExpressionState &state, Vector &re
 
 // in_search_path
 void InSearchPathFunction(DataChunk &input, ExpressionState &state, Vector &result) {
-	auto &context = state.GetContext();
+	auto &context = state.GetClientContext();
 	auto &search_path = ClientData::Get(context).catalog_search_path;
 	BinaryExecutor::Execute<string_t, string_t, bool>(
 	    input.data[0], input.data[1], result, [&](string_t db_name, string_t schema_name) {
@@ -91,10 +93,8 @@ void InSearchPathFunction(DataChunk &input, ExpressionState &state, Vector &resu
 
 // txid_current
 void TransactionIdCurrent(DataChunk &input, ExpressionState &state, Vector &result) {
-	auto &context = state.GetContext();
-	auto &catalog = Catalog::GetCatalog(context, DatabaseManager::GetDefaultDatabase(context));
-	auto &transaction = DuckTransaction::Get(context, catalog);
-	auto val = Value::UBIGINT(transaction.start_time);
+	auto &transaction = MetaTransaction::Get(state.GetClientContext());
+	auto val = Value::UBIGINT(transaction.global_transaction_id);
 	result.Reference(val, count_t(input.size()));
 }
 
@@ -128,6 +128,7 @@ ScalarFunction CurrentSchemasFun::GetFunction() {
 	auto varchar_list_type = LogicalType::LIST(LogicalType::VARCHAR);
 	ScalarFunction current_schemas({}, varchar_list_type, CurrentSchemasFunction, CurrentSchemasBind);
 	current_schemas.GetSignature().AddParameter("include_implicit", LogicalType::BOOLEAN);
+	current_schemas.SetResolveTypesCallback(CurrentSchemasResolveTypes);
 	current_schemas.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 	return current_schemas;
 }

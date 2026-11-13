@@ -1,0 +1,38 @@
+# name: test/sql/aggregate/external/adaptive_sink_capacity.test_slow
+# description: Aggregation remains correct when locally unique prefixes later repeat
+# group: [external]
+
+# These memory budgets assume standard-sized vectors.
+require vector_size 2048
+
+statement ok
+SET threads=3;
+
+statement ok
+SET memory_limit='512MB';
+
+query II
+SELECT count(*), sum(chosen_value % 1048576)
+FROM (
+    SELECT customer_id, any_value(i) AS chosen_value
+    FROM (
+        SELECT 'C1000000_' || lpad((i % 1048576)::VARCHAR, 8, '0') AS customer_id, i
+        FROM range(6000000) t(i)
+    ) source
+    GROUP BY customer_id
+) grouped;
+----
+1048576	549755289600
+
+query II
+SELECT count(*), sum(chosen_value % 32768)
+FROM (
+    SELECT customer_id, any_value(i) AS chosen_value
+    FROM (
+        SELECT 'C1000000_' || lpad((i % 32768)::VARCHAR, 8, '0') AS customer_id, i
+        FROM range(3000000) t(i)
+    ) source
+    GROUP BY customer_id
+) grouped;
+----
+32768	536854528

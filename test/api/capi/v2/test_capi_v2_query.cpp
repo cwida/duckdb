@@ -13,23 +13,18 @@ using namespace std;
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// Bug #4: a user-issued BEGIN TRANSACTION must not be treated as a
-// bridge-injected transaction wrap. Destroying the drained BEGIN result must
-// not roll back the user's open transaction.
+// Destroying the drained result of a user-issued BEGIN TRANSACTION must not
+// roll back the user's open transaction.
 // ---------------------------------------------------------------------------
 
 namespace test_capi_v2 {
 TEST_CASE("V2: user BEGIN ... ROLLBACK is not clobbered by the bridge", "[capi_v2][query_execution]") {
 	EnvFixture fx;
 
-	// A lone BEGIN TRANSACTION is a single fragment the user owns. Draining and
-	// destroying its result must leave the transaction open.
+	// Draining and destroying the result of a BEGIN TRANSACTION must leave the transaction open.
 	ExecSQL(fx.conn, "BEGIN TRANSACTION");
 
-	// The transaction is still active: ROLLBACK must succeed. On the buggy code
-	// the BEGIN was misclassified as a bridge wrap, so destroying its result
-	// rolled the transaction back, and this ROLLBACK fails with "no transaction
-	// is active".
+	// The transaction is still active: ROLLBACK must succeed rather than fail with "no transaction is active".
 	duckdb_v2_result_handle r = nullptr;
 	duckdb_v2_error_info_handle err = nullptr;
 	REQUIRE(Query(fx.conn, "ROLLBACK", &r, &err) == DUCKDB_V2_ERROR_NONE);
@@ -121,9 +116,10 @@ TEST_CASE("V2: a max_execution_time timeout surfaces as an error, not CANCELLED"
 	// assertions to the suite total.
 	std::string msg;
 	if (err) {
-		duckdb_v2_str text = {nullptr, 0};
-		duckdb_v2_error_info_get_text(err, &text);
-		msg = Convert(text);
+		const char *text = nullptr;
+		idx_t text_length = 0;
+		duckdb_v2_error_info_get_text(err, &text, &text_length);
+		msg = std::string(text, text_length);
 	}
 	INFO("timeout error detail: " << (!msg.empty() ? msg : "(none)"));
 	CHECK(status != DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED);

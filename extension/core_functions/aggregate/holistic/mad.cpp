@@ -24,8 +24,20 @@ struct MadAccessor {
 	}
 
 	inline RESULT_TYPE operator()(const INPUT_TYPE &input) const {
-		const RESULT_TYPE delta = input - UnsafeNumericCast<RESULT_TYPE>(median);
-		return TryAbsOperator::Operation<RESULT_TYPE, RESULT_TYPE>(delta);
+		if constexpr (std::is_same<RESULT_TYPE, hugeint_t>::value) {
+			// values of opposite sign (e.g. DECIMAL(38)) can be further apart than the range of a hugeint - such
+			// deviations are larger than any other, so saturate them
+			RESULT_TYPE delta;
+			if (!TrySubtractOperator::Operation<RESULT_TYPE, RESULT_TYPE, RESULT_TYPE>(
+			        input, UnsafeNumericCast<RESULT_TYPE>(median), delta) ||
+			    delta == NumericLimits<RESULT_TYPE>::Minimum()) {
+				return NumericLimits<RESULT_TYPE>::Maximum();
+			}
+			return TryAbsOperator::Operation<RESULT_TYPE, RESULT_TYPE>(delta);
+		} else {
+			const RESULT_TYPE delta = input - UnsafeNumericCast<RESULT_TYPE>(median);
+			return TryAbsOperator::Operation<RESULT_TYPE, RESULT_TYPE>(delta);
+		}
 	}
 };
 
@@ -194,11 +206,12 @@ struct MedianAbsoluteDeviationOperation : QuantileOperation {
 			}
 
 			if (gstate && gstate->HasTree()) {
-				med = gstate->GetWindowState().template WindowScalar<MEDIAN_TYPE, false>(data, frames, n, result,
-				                                                                         quantile);
+				med = gstate->GetWindowState().template WindowScalar<MEDIAN_TYPE, false>(partition.context.client, data,
+				                                                                         frames, n, result, quantile);
 			} else {
 				window_state.UpdateSkip(data, frames, included);
-				med = window_state.template WindowScalar<MEDIAN_TYPE, false>(data, frames, n, result, quantile);
+				med = window_state.template WindowScalar<MEDIAN_TYPE, false>(partition.context.client, data, frames, n,
+				                                                             result, quantile);
 			}
 
 			QuantileInterpolator<false> interp(quantile, n, false);
@@ -268,6 +281,7 @@ AggregateFunction GetTypedMedianAbsoluteDeviationAggregateFunction(const Logical
 	fun.SetBindCallback(BindMAD);
 	fun.SetStructStateExport(QuantileStateLayout<STATE>);
 	fun.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
+	fun.SetIsHolistic(true);
 #if !DUCKDB_SMALLER_BINARY(mad_window)
 	fun.SetWindowBatchCallback(OP::template Window<STATE, INPUT_TYPE, TARGET_TYPE>);
 	fun.SetWindowInitCallback(OP::template WindowInit<STATE, INPUT_TYPE>);
@@ -326,6 +340,7 @@ unique_ptr<FunctionData> BindMedianAbsoluteDeviationDecimal(BindAggregateFunctio
 	function.ReplaceImplementation(impl);
 	function.SetName("mad");
 	function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
+	function.SetIsHolistic(true);
 	return BindMAD(input);
 }
 

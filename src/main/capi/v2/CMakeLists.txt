@@ -8,32 +8,41 @@ add_library_unity(
   capi_v2_expression.cpp
   capi_v2_catalog.cpp
   capi_v2_column_data_collection.cpp
+  capi_v2_config.cpp
   capi_v2_connection.cpp
+  capi_v2_custom_option.cpp
   capi_v2_custom_type.cpp
   capi_v2_data_chunk.cpp
   capi_v2_environment.cpp
   capi_v2_error.cpp
   capi_v2_extension.cpp
+  capi_v2_factory.cpp
   capi_v2_file_system.cpp
   capi_v2_func.cpp
   capi_v2_func_aggregate.cpp
   capi_v2_func_cast.cpp
   capi_v2_func_copy.cpp
+  capi_v2_func_docs.cpp
+  capi_v2_func_macro.cpp
+  capi_v2_func_pragma.cpp
   capi_v2_func_properties.cpp
   capi_v2_func_scalar.cpp
   capi_v2_func_signature.cpp
   capi_v2_func_table.cpp
   capi_v2_identifier.cpp
   capi_v2_instance.cpp
+  capi_v2_log_sink.cpp
   capi_v2_logging.cpp
   capi_v2_logical_type.cpp
   capi_v2_option.cpp
   capi_v2_prepared_statement.cpp
   capi_v2_qname.cpp
+  capi_v2_query_metrics.cpp
   capi_v2_replacement_scan.cpp
   capi_v2_result.cpp
   capi_v2_schema.cpp
   capi_v2_statement.cpp
+  capi_v2_stats.cpp
   capi_v2_tokenizer.cpp
   capi_v2_utf8.cpp
   capi_v2_value.cpp

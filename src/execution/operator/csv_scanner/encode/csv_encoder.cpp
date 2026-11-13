@@ -68,11 +68,15 @@ CSVEncoder::CSVEncoder(ClientContext &context_p, const string &encoding_name_to_
 		throw InvalidInputException(error.str());
 	}
 
+	encoding_function = function;
+	if (encoding_name == "utf-8") {
+		// UTF-8 is read straight into the CSV buffers (see CSVFileHandle::Read), the encoder buffers are never used
+		return;
+	}
 	// The encoded buffer is even for the two byte lookup of utf-16, and fits a full lookup plus the probe byte
 	const idx_t lookup_bytes = function->GetLookupBytes();
 	encoded_buffer.Initialize(MaxValue<idx_t>(buffer_size - buffer_size % 2, lookup_bytes + lookup_bytes % 2));
 	remaining_bytes_buffer.Initialize(function->GetBytesPerIteration());
-	encoding_function = function;
 }
 
 void CSVEncoder::Reset() {
@@ -80,6 +84,7 @@ void CSVEncoder::Reset() {
 	encoded_buffer.last_buffer = false;
 	remaining_bytes_buffer.Reset();
 	has_pass_on_byte = false;
+	encoded_bytes_read = 0;
 }
 
 idx_t CSVEncoder::Encode(FileHandle &file_handle_input, char *output_buffer, const idx_t decoded_buffer_size) {
@@ -122,12 +127,14 @@ idx_t CSVEncoder::Encode(FileHandle &file_handle_input, char *output_buffer, con
 		const idx_t bytes_to_read = encoded_buffer.GetCapacity() - pass_on_buffer.size() - has_pass_on_byte;
 		auto actual_encoded_bytes = static_cast<idx_t>(file_handle_input.Read(
 		    context, encoded_buffer.Ptr() + pass_on_buffer.size() + has_pass_on_byte, bytes_to_read));
+		encoded_bytes_read += actual_encoded_bytes;
 		encoded_buffer.SetSize(actual_encoded_bytes + pass_on_buffer.size() + has_pass_on_byte);
 		if (actual_encoded_bytes < bytes_to_read) {
 			encoded_buffer.last_buffer = true;
 			has_pass_on_byte = false;
 		} else {
 			auto bytes_read = static_cast<idx_t>(file_handle_input.Read(context, &pass_on_byte, 1));
+			encoded_bytes_read += bytes_read;
 			if (bytes_read == 0) {
 				encoded_buffer.last_buffer = true;
 				has_pass_on_byte = false;

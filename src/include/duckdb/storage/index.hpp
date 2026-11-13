@@ -14,11 +14,23 @@
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/common/unordered_set.hpp"
+#include "duckdb/storage/storage_info.hpp"
 
 namespace duckdb {
 
 class AttachedDatabase;
 class TableIOManager;
+class TableIndexWriter;
+class PartialBlockManager;
+struct IndexCheckpointResult;
+
+//! Describes how an index participates in a checkpoint when persisting data to the filesystem.
+//!
+//! IMMEDIATE (default): flush buffers under the index lock.
+//! DEFERRED: share blocks across indexes and finish flushing after releasing the lock. Return a logically equivalent
+//! shadow with independent backing for modified buffers; keep the live index usable until installation after flushing.
+//! Concurrent changes use deltas, requiring SupportsDeltaIndexes(), CreateEmptyCopy(), and MergeCheckpointDelta().
+enum class IndexCheckpointMode : uint8_t { IMMEDIATE, DEFERRED };
 
 //! The index is an abstract base class that serves as the basis for indexes
 class Index {
@@ -56,6 +68,14 @@ public:
 
 	//! The index constraint type
 	virtual IndexConstraintType GetConstraintType() const = 0;
+
+	//! Returns how this index participates in a checkpoint, defaults to IMMEDIATE mode.
+	virtual IndexCheckpointMode GetCheckpointMode() const {
+		return IndexCheckpointMode::IMMEDIATE;
+	}
+
+	//! Checkpoint an index, based on the mode supported by the index flushing may be deferred.
+	virtual IndexCheckpointResult Checkpoint(PartialBlockManager &partial_block_manager, const StorageVersion version);
 
 	//! Returns unique flag
 	bool IsUnique() const {

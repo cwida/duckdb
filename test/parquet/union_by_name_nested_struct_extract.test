@@ -1,0 +1,46 @@
+# name: test/parquet/union_by_name_nested_struct_extract.test
+# description: Extracting a nested struct whose fields differ between files with union_by_name
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 1 i, {'a': 1, 'b': 'x', 'n': {'p': 1, 'q': 2}} s) TO '{TEST_DIR}/ubn1.parquet'
+
+statement ok
+COPY (SELECT 2 i, {'b': 'y', 'c': 3.5, 'n': {'q': 20, 'r': 30}} s) TO '{TEST_DIR}/ubn2.parquet'
+
+query II
+SELECT i, s.n FROM read_parquet(['{TEST_DIR}/ubn1.parquet', '{TEST_DIR}/ubn2.parquet'], union_by_name := true) ORDER BY i
+----
+1	{'p': 1, 'q': 2, 'r': NULL}
+2	{'p': NULL, 'q': 20, 'r': 30}
+
+query IIII
+SELECT i, s.n.p, s.n.r, s.b FROM read_parquet(['{TEST_DIR}/ubn1.parquet', '{TEST_DIR}/ubn2.parquet'], union_by_name := true) ORDER BY i
+----
+1	1	NULL	x
+2	NULL	30	y
+
+statement ok
+COPY (SELECT 1 i, {'n': {'m': {'x': 1, 'y': 2}, 'k': 1}} s) TO '{TEST_DIR}/ubn3.parquet'
+
+statement ok
+COPY (SELECT 2 i, {'n': {'m': {'y': 20::BIGINT, 'z': 30}, 'j': 'a'}} s) TO '{TEST_DIR}/ubn4.parquet'
+
+query II
+SELECT i, s.n FROM read_parquet(['{TEST_DIR}/ubn3.parquet', '{TEST_DIR}/ubn4.parquet'], union_by_name := true) ORDER BY i
+----
+1	{'m': {'x': 1, 'y': 2, 'z': NULL}, 'k': 1, 'j': NULL}
+2	{'m': {'x': NULL, 'y': 20, 'z': 30}, 'k': NULL, 'j': a}
+
+query II
+SELECT i, s.n.m FROM read_parquet(['{TEST_DIR}/ubn3.parquet', '{TEST_DIR}/ubn4.parquet'], union_by_name := true) ORDER BY i
+----
+1	{'x': 1, 'y': 2, 'z': NULL}
+2	{'x': NULL, 'y': 20, 'z': 30}
+
+query II
+SELECT i, s.n.m FROM read_parquet(['{TEST_DIR}/ubn3.parquet', '{TEST_DIR}/ubn4.parquet'], union_by_name := true) WHERE s.n.m.y > 5 ORDER BY i
+----
+2	{'x': NULL, 'y': 20, 'z': 30}

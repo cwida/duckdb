@@ -1163,7 +1163,7 @@ select time_bucket('1 microseconds'::interval, '290279-12-24 (BC) 19:59:05.22419
 query I
 select time_bucket('1 microseconds'::interval, '290279-12-24 (BC) 19:59:05.224192+00'::timestamptz);
 ----
-290279-12-24 (BC) 12:06:07.224192-07:52
+290279-12-24 (BC) 12:06:07.224192-07:52:58
 
 # bucketing the last representable instant by a microsecond leaves it where it is
 query I

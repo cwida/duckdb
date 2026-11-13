@@ -1,0 +1,62 @@
+# name: test/optimizer/projection_pullup_projection_map.test
+# description: Projection pullup must not resolve a projection map that is still being repaired
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t1(a INT, b INT);
+
+statement ok
+CREATE TABLE t2(c INT, d INT);
+
+statement ok
+CREATE TABLE t3(e INT, f INT);
+
+statement ok
+INSERT INTO t1 VALUES (1, 10), (2, NULL), (3, 30);
+
+statement ok
+INSERT INTO t2 VALUES (1, 1), (2, 2), (3, 100);
+
+statement ok
+INSERT INTO t3 VALUES (1, 1), (2, 3), (3, 1);
+
+# Both IN filters are rewritten into a MARK join with a projection map on the filter.
+# The inner projection has more outputs than its child, so pulling it above the inner join shrinks the
+# output of the MARK join below the inner filter. The binding replacer then runs from the root before
+# the inner filter's projection map is repaired, and the outer filter's map forces it to be resolved.
+query IIIIIIIII
+SELECT * FROM t3 JOIN (
+  SELECT * FROM t2 JOIN (SELECT a, a AS a2, a AS a3, a AS a4, b IS NULL AS b1 FROM t1) s ON t2.c = s.a
+  WHERE t2.d + s.a IN (1, 2, 3, 4, 5, 6, 7)
+) q ON t3.e = q.c
+WHERE t3.f + q.d IN (1, 2, 3, 4, 5, 6, 7)
+ORDER BY ALL;
+----
+1	1	1	1	1	1	1	1	false
+2	3	2	2	2	2	2	2	true
+
+# Same shape, but the duplicate column references are removed first and the computed projection
+# below them is pulled up afterwards, while the inner filter's projection map is still stale.
+query IIIIIIII
+SELECT * FROM t3 JOIN (
+  SELECT * FROM t2 JOIN (SELECT a, a AS a2, a AS a3, a AS a4 FROM (SELECT a, b IS NULL AS b1 FROM t1)) s ON t2.c = s.a
+  WHERE t2.d + s.a IN (1, 2, 3, 4, 5, 6, 7)
+) q ON t3.e = q.c
+WHERE t3.f + q.d IN (1, 2, 3, 4, 5, 6, 7)
+ORDER BY ALL;
+----
+1	1	1	1	1	1	1	1
+2	3	2	2	2	2	2	2
+
+# The duplicate columns survive the pullup with their own values.
+query IIII
+SELECT q.a2, q.a4, q.b1, count(*) FROM t3 JOIN (
+  SELECT * FROM t2 JOIN (SELECT a, a AS a2, a AS a3, a AS a4, b IS NULL AS b1 FROM t1) s ON t2.c = s.a
+  WHERE t2.d + s.a IN (1, 2, 3, 4, 5, 6, 7)
+) q ON t3.e = q.c
+WHERE t3.f + q.d IN (1, 2, 3, 4, 5, 6, 7)
+GROUP BY ALL
+ORDER BY ALL;
+----
+1	1	false	1
+2	2	true	1

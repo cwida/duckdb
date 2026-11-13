@@ -13,36 +13,21 @@
 namespace duckdb {
 
 static string MarkConditionUnsupportedReason(const LogicalComparisonJoin &join) {
+	if (join.HasNullSafeMarkJoinConditions()) {
+		return string();
+	}
 	bool comparisons_only = !join.conditions.empty();
 	bool all_equal = true;
-	bool all_null_safe = true;
 	for (auto &condition : join.conditions) {
 		if (!condition.IsComparison()) {
 			comparisons_only = false;
 			continue;
 		}
 		all_equal &= condition.GetComparisonType() == ExpressionType::COMPARE_EQUAL;
-		all_null_safe &= condition.GetComparisonType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM;
 	}
-	const bool has_supported_conjunction = join.conditions.size() == 1 || all_equal || all_null_safe;
+	const bool has_supported_conjunction = join.conditions.size() == 1 || all_equal;
 	if (!comparisons_only || !has_supported_conjunction) {
 		return "The MARK condition requires conjunction execution semantics";
-	}
-	for (auto &condition : join.conditions) {
-		switch (condition.GetComparisonType()) {
-		case ExpressionType::COMPARE_DISTINCT_FROM:
-			return "MARK DISTINCT FROM comparisons cannot preserve NULL semantics";
-		case ExpressionType::COMPARE_LESSTHAN:
-		case ExpressionType::COMPARE_GREATERTHAN:
-		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-			if (condition.GetLHS().GetReturnType().IsNested() || condition.GetRHS().GetReturnType().IsNested()) {
-				return "MARK ordering comparisons on nested types cannot preserve NULL semantics";
-			}
-			break;
-		default:
-			break;
-		}
 	}
 	return string();
 }

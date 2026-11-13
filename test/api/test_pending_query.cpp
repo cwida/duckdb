@@ -47,14 +47,18 @@ TEST_CASE("Test Submitted Query API", "[api][.]") {
 	}
 	SECTION("Submit a query while another submitted query exists") {
 		auto handle = con.Submit("SELECT SUM(i) FROM range(1000000) tbl(i)");
+
+		// the connection has an open result, so the second submission is refused
 		auto handle2 = con.Submit("SELECT SUM(i) FROM range(1000000) tbl(i)");
+		REQUIRE(handle2->HasError());
+		REQUIRE(handle2->GetErrorType() == ExceptionType::RESOURCE_IN_USE);
 
-		// the first handle is now closed
-		REQUIRE_THROWS(handle->ExecuteTask());
+		// the first handle is untouched
 		handle->Complete();
-		REQUIRE(handle->HasError());
+		REQUIRE(CHECK_COLUMN(handle, 0, {Value::BIGINT(499999500000)}));
 
-		// we can execute the second one
+		// once it has ended, the connection takes the next one
+		handle2 = con.Submit("SELECT SUM(i) FROM range(1000000) tbl(i)");
 		handle2->Complete();
 		REQUIRE(CHECK_COLUMN(handle2, 0, {Value::BIGINT(499999500000)}));
 
@@ -417,49 +421,39 @@ TEST_CASE("Test Submit Prepared Statements API", "[api][.]") {
 		handle->Complete();
 		REQUIRE(CHECK_COLUMN(handle, 0, {Value::BIGINT(125000250000)}));
 
-		// we can overwrite submitted queries all day long
+		// a result that has ended does not hold the connection, so submission after submission works
 		for (idx_t i = 0; i < 10; i++) {
 			handle = prepare1->Submit(500000);
+			handle->Complete();
 			handle = prepare2->Submit(500000);
+			handle->Complete();
 		}
-
-		handle->Complete();
 		REQUIRE(CHECK_COLUMN(handle, 0, {Value::BIGINT(125000250000)}));
 
-		// however, we can't mix and match...
+		// a result that is still open does hold it
 		handle = prepare1->Submit(500000);
 		auto handle2 = prepare2->Submit(500000);
+		REQUIRE(handle2->HasError());
+		REQUIRE(handle2->GetErrorType() == ExceptionType::RESOURCE_IN_USE);
 
-		// this result is no longer open
 		handle->Complete();
-		REQUIRE(handle->HasError());
+		REQUIRE(CHECK_COLUMN(handle, 0, {Value::BIGINT(374999750000)}));
 	}
 }
 
-TEST_CASE("Auto-rollback of a failed implicitly-wrapped multi-statement via the submit API", "[api]") {
-	// The preprocessor implicitly wraps some statements in a BEGIN/COMMIT, and a failure inside one
-	// must auto-rollback so the connection stays usable without a manual ROLLBACK. This has to hold
-	// on the submit API path too (used by client drivers), which previously skipped auto-rollback.
-	// The CTAS here is load-bearing: a bare PIVOT ends in a SELECT and is not wrapped.
+TEST_CASE("Auto-rollback of a failed statement that expands into several via the submit API", "[api]") {
+	// A statement that expands into several runs in one transaction, and a failure inside it must roll that back so
+	// the connection stays usable without a manual ROLLBACK, on the submit API path too (used by client drivers).
 	DuckDB db;
 	Connection con(db);
 	const char *pivot = "CREATE TEMP TABLE t AS PIVOT (SELECT 'x' AS k, 1 AS v) ON k USING first(does_not_exist)";
 
-	// Parse + expand, then drive each statement through the submit API (no auto-rollback net).
-	auto statements = con.ExtractStatements(string(pivot));
-	REQUIRE(statements.size() > 1);
-	bool saw_error = false;
-	for (auto &stmt : statements) {
-		auto handle = con.Submit(std::move(stmt));
-		if (!handle->HasError()) {
-			handle->Complete();
-		}
-		if (handle->HasError()) {
-			saw_error = true;
-			break;
-		}
+	auto handle = con.Submit(string(pivot));
+	if (!handle->HasError()) {
+		handle->Complete();
 	}
-	REQUIRE(saw_error);
+	REQUIRE(handle->HasError());
+	handle.reset();
 
 	// The connection must be usable again WITHOUT a manual ROLLBACK.
 	auto result = con.Query("SELECT 42");

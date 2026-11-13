@@ -1,0 +1,47 @@
+# name: test/optimizer/compressed_materialization_many_aggregates.test
+# description: Many DISTINCT aggregates over string columns (issue 26865 regression)
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t AS
+SELECT ('v' || (range % 2))::VARCHAR AS c0,
+       ('v' || (range % 3))::VARCHAR AS c1,
+       ('v' || (range % 4))::VARCHAR AS c2,
+       ('v' || (range % 5))::VARCHAR AS c3,
+       ('v' || (range % 6))::VARCHAR AS c4,
+       ('v' || (range % 7))::VARCHAR AS c5,
+       ('v' || (range % 8))::VARCHAR AS c6,
+       ('v' || (range % 9))::VARCHAR AS c7,
+       ('v' || (range % 10))::VARCHAR AS c8,
+       ('v' || (range % 11))::VARCHAR AS c9,
+       ('v' || (range % 12))::VARCHAR AS c10,
+       ('v' || (range % 13))::VARCHAR AS c11,
+       ('v' || (range % 14))::VARCHAR AS c12,
+       ('v' || (range % 15))::VARCHAR AS c13,
+       ('v' || (range % 16))::VARCHAR AS c14,
+       ('v' || (range % 17))::VARCHAR AS c15,
+       ('g' || (range % 4))::VARCHAR AS g
+FROM range(100);
+
+# ungrouped: one rewrite branch per distinct aggregate, all over the same compressed input
+query IIIIIIIIIIIIIIII
+SELECT count(DISTINCT c0), count(DISTINCT c1), count(DISTINCT c2), count(DISTINCT c3), count(DISTINCT c4), count(DISTINCT c5), count(DISTINCT c6), count(DISTINCT c7), count(DISTINCT c8), count(DISTINCT c9), count(DISTINCT c10), count(DISTINCT c11), count(DISTINCT c12), count(DISTINCT c13), count(DISTINCT c14), count(DISTINCT c15) FROM t;
+----
+2	3	4	5	6	7	8	9	10	11	12	13	14	15	16	17
+
+# grouped: branches are joined back on the (compressed) group key
+query TIIIIIIIIIIIIIIII
+SELECT g, count(DISTINCT c0), count(DISTINCT c1), count(DISTINCT c2), count(DISTINCT c3), count(DISTINCT c4), count(DISTINCT c5), count(DISTINCT c6), count(DISTINCT c7), count(DISTINCT c8), count(DISTINCT c9), count(DISTINCT c10), count(DISTINCT c11), count(DISTINCT c12), count(DISTINCT c13), count(DISTINCT c14), count(DISTINCT c15) FROM t GROUP BY g ORDER BY g;
+----
+g0	1	3	1	5	3	7	2	9	5	11	3	13	7	15	4	17
+g1	1	3	1	5	3	7	2	9	5	11	3	13	7	15	4	17
+g2	1	3	1	5	3	7	2	9	5	11	3	13	7	15	4	17
+g3	1	3	1	5	3	7	2	9	5	11	3	13	7	15	4	17
+
+# references above the aggregate must survive the rebinding around (de)compress projections
+query TI
+SELECT g, cd FROM (SELECT g, count(DISTINCT c15) AS cd FROM t GROUP BY g) sub
+WHERE cd > 0 ORDER BY g DESC LIMIT 2;
+----
+g3	17
+g2	17

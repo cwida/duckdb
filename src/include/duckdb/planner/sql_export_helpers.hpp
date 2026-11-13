@@ -14,6 +14,7 @@
 #include "duckdb/parser/expression/conjunction_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/common/type_visitor.hpp"
+#include "duckdb/planner/expression.hpp"
 #include "duckdb/planner/logical_plan_verification_result.hpp"
 
 namespace duckdb {
@@ -65,6 +66,12 @@ struct SQLExportHelpers {
 		issue.construct = std::move(construct);
 		issue.message = std::move(message);
 		return issue;
+	}
+
+	//! Constant ORDER BY keys have no effect, and a literal key would be bound as a position or rejected
+	static bool IsConstantOrderKey(const Expression &bound, const ParsedExpression &exported) {
+		return bound.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT ||
+		       exported.GetExpressionClass() == ExpressionClass::CONSTANT;
 	}
 
 	static unique_ptr<ParsedExpression> OrderExpression(const LogicalType &type,

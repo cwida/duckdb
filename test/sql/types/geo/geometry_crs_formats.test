@@ -1,0 +1,46 @@
+# name: test/sql/types/geo/geometry_crs_formats.test
+# description: Test supported CRS definition formats
+# group: [geo]
+
+query I
+SELECT typeof('POINT(0 1)'::GEOMETRY('  OGC:CRS84  '));
+----
+GEOMETRY('OGC:CRS84')
+
+query I
+SELECT typeof('POINT(0 1)'::GEOMETRY($wkt$PROJCRS("Web Mercator",ID("EPSG",3857))$wkt$));
+----
+GEOMETRY('PROJCRS("Web Mercator",ID("EPSG",3857))')
+
+query I
+SELECT typeof('POINT(0 1)'::GEOMETRY($wkt$GEOGCRS["WGS ""Quoted""",ID["OGC","Q1"]]$wkt$));
+----
+GEOMETRY('GEOGCRS["WGS ""Quoted""",ID["OGC","Q1"]]')
+
+query I
+SELECT typeof('POINT(0 1)'::GEOMETRY(
+	$wkt$BOUNDCRS[SOURCECRS["A"],TARGETCRS["B"],ABRIDGEDTRANSFORMATION["Transform",ID["EPSG",1234]]]$wkt$
+));
+----
+GEOMETRY('BOUNDCRS[SOURCECRS["A"],TARGETCRS["B"],ABRIDGEDTRANSFORMATION["Transform",ID["EPSG",1234]]]')
+
+query I
+SELECT typeof('POINT(0 1)'::GEOMETRY(
+	$wkt$BOUNDCRS[SOURCECRS["A"],TARGETCRS["B"],ABRIDGEDTRANSFORMATION["Fallback Name"]]$wkt$
+));
+----
+GEOMETRY('BOUNDCRS[SOURCECRS["A"],TARGETCRS["B"],ABRIDGEDTRANSFORMATION["Fallback Name"]]')
+
+query I
+SELECT typeof('POINT(0 1)'::GEOMETRY(
+	$json${"type":"BoundCRS","transformation":{"name":"Transform JSON","id":{"authority":"EPSG","code":9999}}}$json$
+));
+----
+GEOMETRY('{"type":"BoundCRS","transformation":{"name":"Transform JSON","id":{"authority":"EPSG","code":9999}}}')
+
+query I
+SELECT typeof('POINT(0 1)'::GEOMETRY(
+	$json${"type":"GeographicCRS","name":"Named JSON","id":{"authority":"AUTH","code":"A1"}}$json$
+));
+----
+GEOMETRY('{"type":"GeographicCRS","name":"Named JSON","id":{"authority":"AUTH","code":"A1"}}')

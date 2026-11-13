@@ -1,0 +1,153 @@
+# name: test/sql/sql_export/collated_aggregate_state.test
+# description: SQL export retains collations in intermediate aggregate states and their type signatures
+# group: [sql_export]
+
+statement ok
+CREATE TABLE collated_state_input(g INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO collated_state_input VALUES (0, 'a'), (0, 'B'), (0, 'Z'), (0, NULL), (1, 'b'), (1, 'y'), (2, NULL);
+
+statement ok
+SET VARIABLE collated_max_state=(SELECT max(s COLLATE NOCASE) EXPORT_STATE FROM collated_state_input);
+
+statement ok
+SET VARIABLE collated_empty_state=(SELECT max(s COLLATE NOCASE) EXPORT_STATE FROM collated_state_input WHERE false);
+
+statement ok
+SET VARIABLE canonical_count_state=(SELECT count(s) EXPORT_STATE FROM collated_state_input);
+
+statement ok
+SET VARIABLE count_star_state=(SELECT count(*) EXPORT_STATE FROM collated_state_input);
+
+statement ok
+SET VARIABLE ordered_collated_state=(SELECT first(s COLLATE NOCASE ORDER BY s COLLATE NOCASE NULLS LAST) EXPORT_STATE FROM collated_state_input);
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query IT rowsort collated_producer
+SELECT g, max(s COLLATE NOCASE) EXPORT_STATE FROM collated_state_input GROUP BY g;
+
+query TTI
+SELECT finalize(lo), finalize(hi), finalize(hi)='z'
+FROM (SELECT min(s COLLATE NOCASE) EXPORT_STATE lo, max(s COLLATE NOCASE) EXPORT_STATE hi FROM collated_state_input);
+----
+a	Z	true
+
+query TI
+SELECT finalize(combine_aggr(state)), finalize(combine_aggr(state))='z'
+FROM (SELECT g, max(s COLLATE NOCASE) EXPORT_STATE state FROM collated_state_input GROUP BY g);
+----
+Z	true
+
+query TI
+SELECT finalize(combine_aggr(state)), finalize(combine_aggr(state))='y'
+FROM (SELECT g, max(s COLLATE NOCASE) FILTER (WHERE s <> 'Z') EXPORT_STATE state FROM collated_state_input GROUP BY g);
+----
+y	true
+
+query II
+SELECT finalize(state) IS NULL, finalize(combine(state, state)) IS NULL
+FROM (SELECT max(s COLLATE NOCASE) EXPORT_STATE state FROM collated_state_input WHERE false);
+----
+true	true
+
+query T rowsort collated_constant
+SELECT getvariable('collated_max_state');
+
+query T rowsort collated_empty_constant
+SELECT getvariable('collated_empty_state');
+
+query TI
+SELECT finalize(getvariable('collated_max_state')), finalize(getvariable('collated_max_state'))='z';
+----
+Z	true
+
+query TI
+SELECT finalize(state), finalize(state)='z'
+FROM (SELECT cast_to_type(struct_pack(arg := s, by := lower(s)), getvariable('collated_max_state')) state
+      FROM collated_state_input WHERE s='Z');
+----
+Z	true
+
+# A state reconstructed from its typed signature must retain the complete nested type.
+query I
+SELECT get_type(state) = get_type(to_aggregate_state(state, 'arg_max',
+       [get_type(NULL::VARCHAR COLLATE NOCASE), get_type(NULL::VARCHAR COLLATE NOCASE)]))
+FROM (SELECT max(s COLLATE NOCASE) EXPORT_STATE state FROM collated_state_input);
+----
+true
+
+query TI
+SELECT finalize(combine(state, rebound)), finalize(combine(state, rebound))='z'
+FROM (SELECT state, to_aggregate_state(state, 'arg_max',
+      [get_type(NULL::VARCHAR COLLATE NOCASE), get_type(NULL::VARCHAR COLLATE NOCASE)]) rebound
+      FROM (SELECT max(s COLLATE NOCASE) EXPORT_STATE state FROM collated_state_input));
+----
+Z	true
+
+query TI
+SELECT finalize(combine(state, getvariable('collated_max_state'))),
+       finalize(combine(state, getvariable('collated_max_state')))='z'
+FROM (SELECT max(s COLLATE NOCASE) EXPORT_STATE state FROM collated_state_input);
+----
+Z	true
+
+# Ordinary collated aggregates and uncollated exported states retain their existing behavior.
+query TTI
+SELECT min(s COLLATE NOCASE), max(s COLLATE NOCASE), max(s COLLATE NOCASE)='z' FROM collated_state_input;
+----
+a	Z	true
+
+query TI
+SELECT finalize(state), finalize(state)='Z'
+FROM (SELECT max(s) EXPORT_STATE state FROM collated_state_input);
+----
+y	false
+
+# Canonical ANY signatures remain accepted for aggregates that use them.
+query I
+SELECT finalize(combine_aggr(state))
+FROM (SELECT g, count(s) EXPORT_STATE state FROM collated_state_input GROUP BY g);
+----
+5
+
+query T rowsort canonical_count_constant
+SELECT getvariable('canonical_count_state');
+
+query T rowsort count_star_constant
+SELECT getvariable('count_star_state');
+
+query T rowsort ordered_collated_constant
+SELECT getvariable('ordered_collated_state');
+
+query IIT
+SELECT finalize(getvariable('canonical_count_state')), finalize(getvariable('count_star_state')),
+       finalize(getvariable('ordered_collated_state'));
+----
+5	7	a
+
+query I
+SELECT finalize(getvariable('ordered_collated_state'))='A';
+----
+true
+
+endloop
+
+reset label collated_producer
+
+reset label collated_constant
+
+reset label collated_empty_constant
+
+reset label canonical_count_constant
+
+reset label count_star_constant
+
+reset label ordered_collated_constant
+
+statement ok
+RESET debug_verify_statement;

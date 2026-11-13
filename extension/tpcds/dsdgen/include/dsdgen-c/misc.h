@@ -43,6 +43,5 @@ int char_op(char *dest, int op, char *s1, char *s2);
 char *gen_text(char *dest, int min, int max, int stream);
 int int_op(int *dest, int op, int arg1, int arg2);
 
-char *env_config(char *var, char *dflt);
 int a_rnd(int min, int max, int column, char *dest);
 #endif

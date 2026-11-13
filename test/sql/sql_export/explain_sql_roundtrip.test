@@ -85,6 +85,11 @@ SELECT count(*),sum(i) FROM explain_data WHERE false;
 ----
 0	NULL
 
+query I
+SELECT count(*) FROM (DESCRIBE SELECT 1 AS n);
+----
+1
+
 query II
 PIVOT (VALUES ('a',1),('a',2),('b',4)) t(k,v) ON k IN ('a','b') USING sum(v);
 ----

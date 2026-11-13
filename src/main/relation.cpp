@@ -38,7 +38,7 @@ shared_ptr<Relation> Relation::Project(const string &expression, const string &a
 }
 
 shared_ptr<Relation> Relation::Project(const string &select_list, const vector<string> &aliases) {
-	auto expressions = Parser::ParseExpressionList(select_list, context->GetContext()->GetParserOptions());
+	auto expressions = Parser(*context->GetContext()).ParseExpressionList(select_list);
 	return make_shared_ptr<ProjectionRelation>(shared_from_this(), std::move(expressions),
 	                                           StringsToIdentifiers(aliases));
 }
@@ -61,7 +61,7 @@ static vector<unique_ptr<ParsedExpression>> StringListToExpressionList(ClientCon
 	}
 	vector<unique_ptr<ParsedExpression>> result_list;
 	for (auto &expr : expressions) {
-		auto expression_list = Parser::ParseExpressionList(expr, context.GetParserOptions());
+		auto expression_list = Parser(context).ParseExpressionList(expr);
 		if (expression_list.size() != 1) {
 			throw ParserException("Expected a single expression in the expression list");
 		}
@@ -77,7 +77,7 @@ shared_ptr<Relation> Relation::Project(const vector<string> &expressions, const 
 }
 
 shared_ptr<Relation> Relation::Filter(const string &expression) {
-	auto expression_list = Parser::ParseExpressionList(expression, context->GetContext()->GetParserOptions());
+	auto expression_list = Parser(*context->GetContext()).ParseExpressionList(expression);
 	if (expression_list.size() != 1) {
 		throw ParserException("Expected a single expression as filter condition");
 	}
@@ -106,7 +106,7 @@ shared_ptr<Relation> Relation::Limit(int64_t limit, int64_t offset) {
 }
 
 shared_ptr<Relation> Relation::Order(const string &expression) {
-	auto order_list = Parser::ParseOrderList(expression, context->GetContext()->GetParserOptions());
+	auto order_list = Parser(*context->GetContext()).ParseOrderList(expression);
 	return Order(std::move(order_list));
 }
 
@@ -120,7 +120,7 @@ shared_ptr<Relation> Relation::Order(const vector<string> &expressions) {
 	}
 	vector<OrderByNode> order_list;
 	for (auto &expression : expressions) {
-		auto inner_list = Parser::ParseOrderList(expression, context->GetContext()->GetParserOptions());
+		auto inner_list = Parser(*context->GetContext()).ParseOrderList(expression);
 		if (inner_list.size() != 1) {
 			throw ParserException("Expected a single ORDER BY expression in the expression list");
 		}
@@ -131,7 +131,7 @@ shared_ptr<Relation> Relation::Order(const vector<string> &expressions) {
 
 shared_ptr<Relation> Relation::Join(const shared_ptr<Relation> &other, const string &condition, JoinType type,
                                     JoinRefType ref_type) {
-	auto expression_list = Parser::ParseExpressionList(condition, context->GetContext()->GetParserOptions());
+	auto expression_list = Parser(*context->GetContext()).ParseExpressionList(condition);
 	D_ASSERT(!expression_list.empty());
 	return Join(other, std::move(expression_list), type, ref_type);
 }
@@ -184,7 +184,7 @@ shared_ptr<Relation> Relation::Alias(const string &alias) {
 }
 
 shared_ptr<Relation> Relation::Aggregate(const string &aggregate_list) {
-	auto expression_list = Parser::ParseExpressionList(aggregate_list, context->GetContext()->GetParserOptions());
+	auto expression_list = Parser(*context->GetContext()).ParseExpressionList(aggregate_list);
 	return make_shared_ptr<AggregateRelation>(shared_from_this(), std::move(expression_list));
 }
 
@@ -193,8 +193,8 @@ shared_ptr<Relation> Relation::Aggregate(vector<unique_ptr<ParsedExpression>> ex
 }
 
 shared_ptr<Relation> Relation::Aggregate(const string &aggregate_list, const string &group_list) {
-	auto expression_list = Parser::ParseExpressionList(aggregate_list, context->GetContext()->GetParserOptions());
-	auto groups = Parser::ParseGroupByList(group_list, context->GetContext()->GetParserOptions());
+	auto expression_list = Parser(*context->GetContext()).ParseExpressionList(aggregate_list);
+	auto groups = Parser(*context->GetContext()).ParseGroupByList(group_list);
 	return make_shared_ptr<AggregateRelation>(shared_from_this(), std::move(expression_list), std::move(groups));
 }
 
@@ -210,7 +210,7 @@ shared_ptr<Relation> Relation::Aggregate(const vector<string> &aggregates, const
 }
 
 shared_ptr<Relation> Relation::Aggregate(vector<unique_ptr<ParsedExpression>> expressions, const string &group_list) {
-	auto groups = Parser::ParseGroupByList(group_list, context->GetContext()->GetParserOptions());
+	auto groups = Parser(*context->GetContext()).ParseGroupByList(group_list);
 	return make_shared_ptr<AggregateRelation>(shared_from_this(), std::move(expressions), std::move(groups));
 }
 

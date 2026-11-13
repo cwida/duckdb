@@ -37,13 +37,18 @@ CreateTableColumnList <- List(CreateTableColumnElement)
 CreateTableColumnElement <- CreateTableColumnDefinition / CreateTableConstraint
 CreateTableColumnDefinition <- ColumnDefinition
 CreateTableConstraint <- TopLevelConstraint
-ColumnDefinition <- DottedIdentifier Type? GeneratedColumn? ConstraintNameClause? ColumnConstraint*
-ColumnConstraint <- NotNullConstraint / UniqueConstraint / PrimaryKeyConstraint / DefaultValue / CheckConstraint / ForeignKeyConstraint / ColumnCollation / ColumnCompression
+ColumnDefinition <- Identifier Type? GeneratedColumn? ColumnConstraint*
+ColumnConstraint <- NameableColumnConstraint / ColumnCollation
+NameableColumnConstraint <- ConstraintNameClause? ColumnConstraintElement
+ColumnConstraintElement <- NotNullConstraint / UniqueConstraint / PrimaryKeyConstraint / DefaultValue / CheckConstraint / ForeignKeyConstraint / ColumnCompression
 NotNullConstraint <- NullConstraint / NotNullColumnConstraint
 NullConstraint <- 'NULL'
 NotNullColumnConstraint <- 'NOT' 'NULL'
-UniqueConstraint <- 'UNIQUE'
-PrimaryKeyConstraint <- 'PRIMARY' 'KEY'
+UniqueConstraint <- 'UNIQUE' ConstraintTiming?
+PrimaryKeyConstraint <- 'PRIMARY' 'KEY' ConstraintTiming?
+ConstraintTiming <- ImmediateConstraint / DeferredConstraint
+ImmediateConstraint <- 'IMMEDIATE'
+DeferredConstraint <- 'DEFERRED'
 DefaultValue <- 'DEFAULT' ColumnDefaultExpr
 CheckConstraint <- 'CHECK' Parens(Expression)
 ForeignKeyConstraint <- 'REFERENCES' BaseTableName Parens(ColumnList)? KeyActions?
@@ -66,13 +71,13 @@ TopLevelConstraint <- ConstraintNameClause? TopLevelConstraintList
 TopLevelConstraintList <- TopPrimaryKeyConstraint / TopCheckConstraint / TopUniqueConstraint / TopForeignKeyConstraint
 ConstraintNameClause <- 'CONSTRAINT' ConstraintName
 TopCheckConstraint <- CheckConstraint
-TopPrimaryKeyConstraint <- 'PRIMARY' 'KEY' ColumnIdList
-TopUniqueConstraint <- 'UNIQUE' ColumnIdList
+TopPrimaryKeyConstraint <- 'PRIMARY' 'KEY' ColumnIdList ConstraintTiming?
+TopUniqueConstraint <- 'UNIQUE' ColumnIdList ConstraintTiming?
 TopForeignKeyConstraint <- 'FOREIGN' 'KEY' ColumnIdList ForeignKeyConstraint
 ColumnIdList <- Parens(List(ColId))
 
 PlainIdentifier <- !ReservedKeyword <[a-z_]i[a-z0-9_]i*>
-QuotedIdentifier <- '"' [^"]* '"'
+QuotedIdentifier <- ('"' [^"]* '"') / ('`' [^`]* '`')
 DottedIdentifier <- Identifier DotColLabel*
 DotColLabel <- '.' ColLabel
 Identifier <- QuotedIdentifier / PlainIdentifier
@@ -85,11 +90,13 @@ TypeName <- UnreservedKeyword / TypeNameKeyword / Identifier
 ColLabel <- ReservedKeyword / UnreservedKeyword / ColumnNameKeyword / FuncNameKeyword / TypeNameKeyword / Identifier
 ColLabelOrString <- ColLabelIdentifier / StringLiteralIdentifier
 ColLabelIdentifier <- ColLabel
+BareColLabel <- BareLabelKeyword / Identifier
 StringLiteralIdentifier <- StringLiteral
 GeneratedColumn <- Generated? 'AS' Parens(Expression) GeneratedColumnType?
 
-Generated <- 'GENERATED' AlwaysOrByDefault?
-AlwaysOrByDefault <- 'ALWAYS' / ('BY' 'DEFAULT')
+Generated <- GeneratedAlways / GeneratedByDefault
+GeneratedAlways <- 'GENERATED' 'ALWAYS'
+GeneratedByDefault <- 'GENERATED' 'BY' 'DEFAULT'
 GeneratedColumnType <- VirtualGeneratedColumn / StoredGeneratedColumn
 
 CommitAction <- 'ON' 'COMMIT' PreserveOrDelete 'ROWS'

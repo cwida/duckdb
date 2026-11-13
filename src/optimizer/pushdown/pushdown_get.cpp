@@ -11,6 +11,11 @@
 
 namespace duckdb {
 
+static unique_ptr<Expression> RenameColumnRef(const BoundColumnRefExpression &ref, Identifier alias) {
+	return make_uniq<BoundColumnRefExpression>(std::move(alias), ref.GetReturnType(), ref.Binding(), ref.Depth(),
+	                                           ref.GetQueryLocation());
+}
+
 /**
  * When a BoundColumnRefExpression that's part of expr (a filter) arrives here, its
  * name will be set to the projection name i.e. "other" for SELECT col as other.
@@ -21,23 +26,23 @@ namespace duckdb {
  */
 static void NormalizeColumnRefAliases(unique_ptr<Expression> &expr, const LogicalGet &get) {
 	const vector<ColumnIndex> &column_ids = get.GetColumnIds();
-	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(expr, [&](auto &ref, auto &) {
+	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(expr, [&](auto &ref, auto &slot) {
 		const ColumnBinding &binding = ref.Binding();
 		if (binding.table_index != get.table_index || binding.column_index >= column_ids.size()) {
 			return;
 		}
 		const ColumnIndex &col_idx = column_ids[binding.column_index];
 		if (!col_idx.HasPrimaryIndex()) {
-			ref.SetAlias(Identifier(col_idx.GetFieldName()));
+			slot = RenameColumnRef(ref, Identifier(col_idx.GetFieldName()));
 			return;
 		}
 		const idx_t primary = col_idx.GetPrimaryIndex();
 		if (col_idx.IsVirtualColumn()) {
 			if (const auto it = get.virtual_columns.find(primary); it != get.virtual_columns.end()) {
-				ref.SetAlias(Identifier(it->second.name.GetIdentifierName()));
+				slot = RenameColumnRef(ref, Identifier(it->second.name.GetIdentifierName()));
 			}
 		} else if (primary < get.names.size()) {
-			ref.SetAlias(Identifier(col_idx.GetName(get.names[primary].GetIdentifierName())));
+			slot = RenameColumnRef(ref, Identifier(col_idx.GetName(get.names[primary].GetIdentifierName())));
 		}
 	});
 }

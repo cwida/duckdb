@@ -1,0 +1,110 @@
+# name: test/optimizer/pushdown/join_filter_target_cardinality.test
+# description: Cost runtime filters at their target scan through a selective join
+# group: [pushdown]
+
+statement ok
+SET disabled_optimizers='build_side_probe_side,compressed_materialization';
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+statement ok
+CREATE TABLE probe AS
+SELECT (i % 1000)::BIGINT k, i FROM range(20000) t(i);
+
+statement ok
+CREATE TABLE build AS
+SELECT ((i % 100) * 10)::INTEGER k, i < 8000 AS keep FROM range(16000) t(i);
+
+statement ok
+CREATE TABLE gate AS SELECT i * 97 AS i FROM range(200) t(i);
+
+statement ok
+ANALYZE;
+
+# The build exceeds the estimated semi-join output, but fits the target scan.
+query II
+EXPLAIN ANALYZE SELECT count(*)
+FROM (probe p SEMI JOIN gate g ON p.i = g.i)
+JOIN build b ON CAST(p.k AS INTEGER) = b.k WHERE b.keep;
+----
+analyzed_plan	<REGEX>:(?s).*k IN PRF\(k\).*
+
+query I
+SELECT count(*)
+FROM (probe p SEMI JOIN gate g ON p.i = g.i)
+JOIN build b ON CAST(p.k AS INTEGER) = b.k WHERE b.keep;
+----
+1600
+
+# Sparse values use the same profitability decision for Bloom filters.
+statement ok
+CREATE TABLE probe_bf AS
+SELECT ((i % 1000) * 1000000)::BIGINT k, i FROM range(20000) t(i);
+
+statement ok
+CREATE TABLE build_bf AS
+SELECT ((i % 100) * 10000000)::INTEGER k, i < 8000 AS keep FROM range(16000) t(i);
+
+statement ok
+ANALYZE;
+
+query II
+EXPLAIN ANALYZE SELECT count(*)
+FROM (probe_bf p SEMI JOIN gate g ON p.i = g.i)
+JOIN build_bf b ON CAST(p.k AS INTEGER) = b.k WHERE b.keep;
+----
+analyzed_plan	<REGEX>:(?s).*k IN BF\(k\).*
+
+query I
+SELECT count(*)
+FROM (probe_bf p SEMI JOIN gate g ON p.i = g.i)
+JOIN build_bf b ON CAST(p.k AS INTEGER) = b.k WHERE b.keep;
+----
+1600
+
+# Unfiltered builds retain the profitability check at the immediate probe.
+query II
+EXPLAIN ANALYZE SELECT count(*)
+FROM (probe p SEMI JOIN gate g ON p.i = g.i)
+JOIN build b ON CAST(p.k AS INTEGER) = b.k;
+----
+analyzed_plan	<!REGEX>:(?s).*k IN (PRF|BF)\(k\).*
+
+query I
+SELECT count(*)
+FROM (probe p SEMI JOIN gate g ON p.i = g.i)
+JOIN build b ON CAST(p.k AS INTEGER) = b.k;
+----
+3200
+
+query II
+EXPLAIN ANALYZE SELECT count(*)
+FROM (probe_bf p SEMI JOIN gate g ON p.i = g.i)
+JOIN build_bf b ON CAST(p.k AS INTEGER) = b.k;
+----
+analyzed_plan	<!REGEX>:(?s).*k IN (PRF|BF)\(k\).*
+
+statement ok
+SET disabled_optimizers='build_side_probe_side,compressed_materialization,join_filter_pushdown';
+
+query II
+EXPLAIN ANALYZE SELECT count(*)
+FROM (probe p SEMI JOIN gate g ON p.i = g.i)
+JOIN build b ON CAST(p.k AS INTEGER) = b.k WHERE b.keep;
+----
+analyzed_plan	<!REGEX>:(?s).*IN (PRF|BF).*
+
+query I
+SELECT count(*)
+FROM (probe p SEMI JOIN gate g ON p.i = g.i)
+JOIN build b ON CAST(p.k AS INTEGER) = b.k WHERE b.keep;
+----
+1600
+
+query I
+SELECT count(*)
+FROM (probe_bf p SEMI JOIN gate g ON p.i = g.i)
+JOIN build_bf b ON CAST(p.k AS INTEGER) = b.k WHERE b.keep;
+----
+1600

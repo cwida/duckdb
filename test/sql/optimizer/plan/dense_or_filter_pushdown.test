@@ -1,0 +1,156 @@
+# name: test/sql/optimizer/plan/dense_or_filter_pushdown.test
+# description: Consecutive integer equality disjunctions have exact range pushdown
+# group: [plan]
+
+statement ok
+CREATE TABLE dense_or AS SELECT i::INTEGER AS x FROM range(-4, 9) t(i)
+
+statement ok
+INSERT INTO dense_or VALUES (NULL)
+
+query I
+SELECT x FROM dense_or WHERE x = 2 OR -1 = x OR x = 1 OR x = 0 ORDER BY x
+----
+-1
+0
+1
+2
+
+# Exact pushdown removes the residual FILTER, also when a range is already pushed.
+query TT
+EXPLAIN (FORMAT JSON) SELECT x FROM dense_or WHERE x BETWEEN 0 AND 3 AND (x = 1 OR x = 2)
+----
+physical_plan	<!REGEX>:.*FILTER.*
+
+query TT
+EXPLAIN (FORMAT JSON) SELECT x FROM dense_or WHERE x = 2 OR -1 = x OR x = 1 OR x = 0
+----
+physical_plan	<!REGEX>:.*FILTER.*
+
+# A gap must keep the exact residual predicate.
+query I
+SELECT x FROM dense_or WHERE x = 1 OR x = 3 ORDER BY x
+----
+1
+3
+
+query TT
+EXPLAIN (FORMAT JSON) SELECT x FROM dense_or WHERE x = 1 OR x = 3
+----
+physical_plan	<REGEX>:.*FILTER.*
+
+query I
+SELECT x FROM dense_or WHERE x = 1 OR x = 1 OR x = 2 ORDER BY x
+----
+1
+2
+
+query I
+SELECT x FROM dense_or WHERE x = 1 OR x = NULL OR x = 2 ORDER BY x
+----
+1
+2
+
+query I
+SELECT x FROM dense_or WHERE x = 1 OR x = NULL ORDER BY x
+----
+1
+
+query I
+SELECT x FROM dense_or WHERE x IS NOT DISTINCT FROM NULL OR x = 1 OR x = 2 ORDER BY x NULLS FIRST
+----
+NULL
+1
+2
+
+# These types have values between 1 and 2.
+statement ok
+CREATE TABLE dense_or_other(d DOUBLE, n DECIMAL(9,2), s VARCHAR)
+
+statement ok
+INSERT INTO dense_or_other VALUES (1, 1, 'a'), (1.5, 1.5, 'ab'), (2, 2, 'b'), (NULL, NULL, NULL)
+
+query I
+SELECT count(*) FROM dense_or_other WHERE d = 1 OR d = 2
+----
+2
+
+query I
+SELECT count(*) FROM dense_or_other WHERE n = 1 OR n = 2
+----
+2
+
+query I
+SELECT count(*) FROM dense_or_other WHERE s = 'a' OR s = 'b'
+----
+2
+
+statement ok
+CREATE TABLE dense_or_unsigned(u UBIGINT)
+
+statement ok
+INSERT INTO dense_or_unsigned VALUES (0), (18446744073709551613), (18446744073709551614), (18446744073709551615), (NULL)
+
+query I
+SELECT count(*) FROM dense_or_unsigned WHERE u = 18446744073709551614::UBIGINT OR u = 18446744073709551615::UBIGINT
+----
+2
+
+statement ok
+CREATE TABLE dense_or_huge(h HUGEINT)
+
+statement ok
+INSERT INTO dense_or_huge VALUES ('-170141183460469231731687303715884105728'::HUGEINT), ('-170141183460469231731687303715884105727'::HUGEINT), (0), (170141183460469231731687303715884105727::HUGEINT)
+
+query I
+SELECT count(*) FROM dense_or_huge WHERE h = '-170141183460469231731687303715884105728'::HUGEINT OR h = '-170141183460469231731687303715884105727'::HUGEINT
+----
+2
+
+# Subtracting these endpoints must not overflow while testing density.
+query I
+SELECT count(*) FROM dense_or_huge WHERE h = '-170141183460469231731687303715884105728'::HUGEINT OR h = 170141183460469231731687303715884105727::HUGEINT
+----
+2
+
+statement ok
+PREPARE dense_or_prepared AS SELECT x FROM dense_or WHERE x = $1 OR x = $2 ORDER BY x
+
+query I
+EXECUTE dense_or_prepared(1, 2)
+----
+1
+2
+
+query I
+EXECUTE dense_or_prepared(1, 3)
+----
+1
+3
+
+query I
+EXECUTE dense_or_prepared(NULL, 2)
+----
+2
+
+# An already-filtered producer retains its existing pushdown boundary.
+query I
+WITH a AS MATERIALIZED (SELECT x FROM dense_or WHERE x BETWEEN 0 AND 3)
+SELECT x FROM a WHERE x = 1 UNION ALL SELECT x FROM a WHERE x = 2 ORDER BY x
+----
+1
+2
+
+# CTE-derived OR filters have exact producer pushdown; consumer filters remain.
+query I
+WITH a AS MATERIALIZED (SELECT x FROM dense_or)
+SELECT x FROM a WHERE x = 1 UNION ALL SELECT x FROM a WHERE x = 2 ORDER BY x
+----
+1
+2
+
+query TT
+EXPLAIN (FORMAT JSON) WITH a AS MATERIALIZED (SELECT x FROM dense_or)
+SELECT x FROM a WHERE x = 1 UNION ALL SELECT x FROM a WHERE x = 2
+----
+physical_plan	<REGEX>:.*"name": "CTE",\s*"children": \[\s*\{\s*"name": "SEQ_SCAN",.*

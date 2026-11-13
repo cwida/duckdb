@@ -1,0 +1,71 @@
+# name: test/sql/window/segment_tree_leaf_batches.test
+# description: Contiguous segment-tree construction across chunk and partition boundaries
+# group: [window]
+
+statement ok
+CREATE MACRO triangular(n) AS n * (n + 1) // 2
+
+statement ok
+CREATE MACRO filtered_prefix(n) AS triangular(n) - 3 * triangular(n // 3) - 7 * triangular(n // 7) + 21 * triangular(n // 21)
+
+foreach threads 1 8
+
+statement ok
+SET threads={threads}
+
+# Empty, singleton, fan-in boundaries, vector boundaries and an incomplete final batch.
+foreach count 0 1 15 16 17 2047 2048 2049 100003
+
+query I
+SELECT count(*) FROM (
+    SELECT i, sum(i) OVER (ORDER BY i ROWS BETWEEN 17 PRECEDING AND 33 FOLLOWING) AS actual
+    FROM range({count}) t(i)
+) t
+WHERE actual IS DISTINCT FROM triangular(least(i + 33, {count} - 1)) - triangular(greatest(i - 17, 0) - 1)
+----
+0
+
+endloop
+
+# FILTER, NULL inputs and EXCLUDE across partition boundaries inside a leaf batch.
+query I
+WITH input AS (
+    SELECT i // 2053 AS p, i % 2053 AS j,
+           CASE WHEN i % 2053 % 7 <> 0 THEN i % 2053 END AS v
+    FROM range(131392) t(i)
+), windowed AS (
+    SELECT *, sum(v) FILTER (WHERE j % 3 <> 0) OVER (
+        PARTITION BY p ORDER BY j ROWS BETWEEN 35 PRECEDING AND 17 FOLLOWING EXCLUDE CURRENT ROW
+    ) AS actual
+    FROM input
+)
+SELECT count(*) FROM windowed
+WHERE coalesce(actual, 0) <> filtered_prefix(least(j + 17, 2052)) - filtered_prefix(greatest(j - 35, 0) - 1)
+    - CASE WHEN j % 3 <> 0 AND j % 7 <> 0 THEN j ELSE 0 END
+----
+0
+
+# Combining across these boundaries would mix different partition-constant arguments.
+query I
+SELECT count(*) FROM (
+    SELECT i, min(i, (i // 2053) % 3 + 1) OVER (PARTITION BY i // 2053 ORDER BY i) AS actual
+    FROM range(131392) t(i)
+) t
+WHERE actual IS DISTINCT FROM list_transform(range(least((i // 2053) % 3 + 1, i % 2053 + 1)), lambda x: (i // 2053) * 2053 + x)
+----
+0
+
+# Ordered, variable-width states retain input order when updates for several nodes share a batch.
+query I
+SELECT count(*) FROM (
+    SELECT i, string_agg(lpad(i::VARCHAR, 20, '0'), '|') OVER (
+        ORDER BY i ROWS BETWEEN 17 PRECEDING AND 33 FOLLOWING
+    ) AS actual
+    FROM range(8195) t(i)
+) t
+WHERE actual IS DISTINCT FROM array_to_string(list_transform(
+    range(greatest(i - 17, 0), least(i + 33, 8194) + 1), lambda x: lpad(x::VARCHAR, 20, '0')), '|')
+----
+0
+
+endloop

@@ -442,7 +442,7 @@ class MemberVariable:
             self.deserialize_default = entry["deserialize_default"]
         if "status" in entry:
             self.status = parse_status(entry["status"])
-        if self.default is None:
+        if self.default is None and self.deserialize_default is None:
             # default default
             self.has_default = has_default_by_default(self.type)
         if "required_until" in entry:
@@ -938,8 +938,8 @@ def generate_class_code(class_entry: SerializableClass):
                     entry.name,
                     entry.id,
                     type_name,
-                    entry.has_default,
-                    entry.default,
+                    entry.has_default or entry.deserialize_default is not None,
+                    (entry.deserialize_default if entry.deserialize_default is not None else entry.default),
                     entry.status,
                     class_entry.pointer_type,
                 )

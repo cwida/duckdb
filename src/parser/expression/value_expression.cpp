@@ -237,6 +237,15 @@ static unique_ptr<ParsedExpression> NestedValueExpression(const LogicalType &typ
 		auto result = ValueFunction("map", std::move(arguments));
 		return type.HasAlias() ? CastTo(type, std::move(result)) : std::move(result);
 	}
+	if (type.id() == LogicalTypeId::UNION && UnionType::GetMemberCount(type) == 1) {
+		auto &member_type = UnionType::GetMemberType(type, 0);
+		auto child = NestedValueExpression(member_type, value ? &UnionValue::GetValue(*value) : nullptr);
+		vector<FunctionArgument> arguments;
+		arguments.emplace_back(UnionType::GetMemberName(type, 0), std::move(child));
+		unique_ptr<ParsedExpression> result =
+		    make_uniq<FunctionExpression>(QualifiedName("system", "main", "union_value"), std::move(arguments));
+		return type.HasAlias() ? CastTo(type, std::move(result)) : std::move(result);
+	}
 	vector<FunctionArgument> arguments;
 	child_list_t<LogicalType> child_types;
 	optional_ptr<const vector<Value>> children;
@@ -244,7 +253,7 @@ static unique_ptr<ParsedExpression> NestedValueExpression(const LogicalType &typ
 	switch (type.id()) {
 	case LogicalTypeId::TUPLE:
 	case LogicalTypeId::STRUCT:
-		function = type.id() == LogicalTypeId::TUPLE || StructType::IsUnnamed(type) ? "row" : "struct_pack";
+		function = type.id() == LogicalTypeId::TUPLE ? "row" : "struct_pack";
 		child_types = StructType::GetChildTypes(type);
 		if (value) {
 			children = StructValue::GetChildren(*value);

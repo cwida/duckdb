@@ -32,6 +32,8 @@
 #include "duckdb/main/setting_info.hpp"
 #include "duckdb/execution/operator/helper/physical_set.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/common/query_context.hpp"
+#include "duckdb/common/file_system.hpp"
 
 // The engine implements the whole V2 C API, including the unstable surface
 #ifndef DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -69,40 +71,49 @@ namespace capiv2 {
 //----------------------------------------------------------------------------------------------------------------------
 // Conversion Helpers
 //----------------------------------------------------------------------------------------------------------------------
-inline auto Convert(duckdb_v2_str str) -> std::string_view {
-	if (!str.ptr) {
-		if (str.len > 0) {
+inline auto Convert(const char *ptr, idx_t len) -> std::string_view {
+	if (!ptr) {
+		if (len > 0) {
 			throw InvalidInputException("byte range cannot be null unless it is empty");
 		}
 		return std::string_view();
 	}
-	return std::string_view(str.ptr, str.len);
+	return std::string_view(ptr, len);
 }
-inline auto Convert(const duckdb_v2_str *str) -> std::string_view {
-	if (!str) {
-		throw InvalidInputException("byte range cannot be null");
+// Writes a borrowed string to an out-param pointer/length pair.
+inline void SetStringOut(const char **out, idx_t *out_length, std::string_view str) {
+	*out = str.data();
+	*out_length = str.size();
+}
+inline void SetStringOut(const char **out, idx_t *out_length, const Identifier &ident) {
+	*out = ident.c_str();
+	*out_length = ident.size();
+}
+
+//! A borrowed, parallel pointer/length UTF-8 string array of `count` entries as passed through the API. A NULL array
+//! reads as all-empty entries.
+class string_view_array {
+public:
+	string_view_array(const char **ptrs, const idx_t *lengths, idx_t count)
+	    : ptrs(ptrs), lengths(lengths), count(count) {
 	}
-	return Convert(*str);
-}
+
+public:
+	bool empty() const {
+		return !ptrs || count == 0;
+	}
+	//! Validates entry `i` and returns it; throws on a malformed entry or invalid UTF-8. Defined in capi_v2_utf8.cpp.
+	std::string_view operator[](idx_t i) const;
+
+private:
+	const char **ptrs;
+	const idx_t *lengths;
+	idx_t count;
+};
 
 // Validates identifier UTF-8 and returns its text; throws on invalid input. Defined in capi_v2_utf8.cpp.
-auto ConvertIdentifierName(duckdb_v2_identifier_t name) -> std::string_view;
-inline auto ConvertIdentifierName(const duckdb_v2_identifier_t *name) -> std::string_view {
-	if (!name) {
-		throw InvalidInputException("identifier cannot be null");
-	}
-	return ConvertIdentifierName(*name);
-}
+auto ConvertIdentifierName(const char *name, idx_t name_length) -> std::string_view;
 
-inline auto Convert(std::string_view str) -> duckdb_v2_str {
-	return duckdb_v2_str {str.data(), str.size()};
-}
-inline auto Convert(const string &str) -> duckdb_v2_str {
-	return duckdb_v2_str {str.data(), str.size()};
-}
-inline auto Convert(const Identifier &ident) -> duckdb_v2_identifier_t {
-	return duckdb_v2_identifier_t {ident.c_str(), ident.size()};
-}
 inline auto Convert(duckdb_v2_hugeint_t value) -> hugeint_t {
 	return hugeint_t(value.upper, value.lower);
 }
@@ -211,6 +222,87 @@ inline auto Convert(duckdb_v2_environment_handle env) -> CV2Environment * {
 
 class CV2Option;
 class CV2Instance;
+class CV2OptionSource;
+
+//! A config handle: the scope config options are read from and written at.
+class CV2Config {
+public:
+	virtual ~CV2Config() = default;
+
+	//! The effective value of `name`, and the scope DuckDB attributes it to. Throws for an unknown option.
+	virtual DUCKDB_V2_SETTING_SCOPE ReadValue(std::string_view name, Value &result) = 0;
+	//! Writes `name` at `scope`, which the option must support.
+	virtual void Write(const Identifier &name, const Value &value, DUCKDB_V2_SETTING_SCOPE scope) = 0;
+	//! Where option descriptors are read from. The same from every config of one instance.
+	virtual unique_ptr<CV2Option> GetOption(std::string_view name) = 0;
+	virtual unique_ptr<CV2Option> GetOptionByIndex(idx_t index) = 0;
+	virtual idx_t GetOptionCount() = 0;
+};
+
+inline auto Convert(duckdb_v2_config_handle config) -> CV2Config * {
+	return reinterpret_cast<CV2Config *>(config);
+}
+
+inline auto Convert(CV2Config *config) -> duckdb_v2_config_handle {
+	return reinterpret_cast<duckdb_v2_config_handle>(config);
+}
+
+//! An instance's config: GLOBAL only.
+class CV2InstanceConfig final : public CV2Config {
+public:
+	explicit CV2InstanceConfig(CV2Instance &instance) : instance(instance) {
+	}
+
+	DUCKDB_V2_SETTING_SCOPE ReadValue(std::string_view name, Value &result) override;
+	void Write(const Identifier &name, const Value &value, DUCKDB_V2_SETTING_SCOPE scope) override;
+	unique_ptr<CV2Option> GetOption(std::string_view name) override;
+	unique_ptr<CV2Option> GetOptionByIndex(idx_t index) override;
+	idx_t GetOptionCount() override;
+
+private:
+	CV2Instance &instance;
+};
+
+//! A factory handle: the scope values, types and data chunks are created in.
+class CV2Factory {
+public:
+	virtual ~CV2Factory() = default;
+
+	//! The database whose allocator and buffer manager back what is created.
+	virtual DatabaseInstance &GetDatabase() = 0;
+	//! The client whose catalog and settings apply, or nullptr when only the built-ins do.
+	virtual optional_ptr<ClientContext> TryGetClientContext() = 0;
+	//! Runs `fn` with a transaction active on the client, for catalog lookups.
+	virtual void WithTransaction(const std::function<void(ClientContext &)> &fn) = 0;
+};
+
+inline auto Convert(duckdb_v2_factory_handle factory) -> CV2Factory * {
+	return reinterpret_cast<CV2Factory *>(factory);
+}
+
+inline auto Convert(CV2Factory *factory) -> duckdb_v2_factory_handle {
+	return reinterpret_cast<duckdb_v2_factory_handle>(factory);
+}
+
+//! An instance's factory: built-in types and casts only, no catalog.
+class CV2InstanceFactory final : public CV2Factory {
+public:
+	explicit CV2InstanceFactory(CV2Instance &instance) : instance(instance) {
+	}
+
+	DatabaseInstance &GetDatabase() override;
+	optional_ptr<ClientContext> TryGetClientContext() override {
+		return nullptr;
+	}
+	void WithTransaction(const std::function<void(ClientContext &)> &fn) override;
+
+private:
+	CV2Instance &instance;
+};
+
+//! The common type of a non-empty set of types, folded left to right in the factory's scope. Throws
+//! NotImplementedException when there is none. Defined in capi_v2_logical_type.cpp.
+auto ResolveCommonType(CV2Factory &factory, const vector<LogicalType> &types) -> LogicalType;
 
 //! The SQL ATTACH `(KEY value)` options of one attach, as the text values a quoted literal produces. Bound to the
 //! instance handle it was created from, which is what future per-instance resources (an allocator, say) would be
@@ -232,44 +324,50 @@ inline auto Convert(CV2AttachOptions *options) -> duckdb_v2_attach_options_handl
 	return reinterpret_cast<duckdb_v2_attach_options_handle>(options);
 }
 
-//! An instance handle: a DuckDB instance plus the configuration it starts with. The instance starts on first use
-//! (instance_attach or connection_create); until then options are staged in the startup config. Every entry point
-//! holds `lock`, which also serializes use of the internal connection.
+//! Throws unless `target` is the database `what` was created for, through its factory.
+inline void CheckRegistrationTarget(const DatabaseInstance &created_for, const DatabaseInstance &target,
+                                    const char *what) {
+	if (&created_for != &target) {
+		throw InvalidInputException("the %s was created through a factory of a different database", what);
+	}
+}
+
+//! A file system handle: the file system plus the query its reads and writes are attributed to, if any.
+class CV2FileSystem {
+public:
+	CV2FileSystem(FileSystem &fs, QueryContext query) : fs(fs), query(query) {
+	}
+
+	FileSystem &fs;
+	QueryContext query;
+};
+
+//! An instance handle: a DuckDB instance, built from its startup options when the handle is created.
 class CV2Instance {
 public:
-	explicit CV2Instance(CV2Environment &env);
+	CV2Instance(CV2Environment &env, DBConfig &startup_config);
 
-	bool IsStarted() const {
-		return database != nullptr;
-	}
-	//! Starts the instance if it has not started yet, consuming the staged config.
-	void Start();
 	//! Attaches the database at `path` under `name` (derived from the path when empty), like ATTACH, optionally as
-	//! the default for new connections; starts the instance first if needed.
+	//! the default for new connections.
 	void Attach(const string &path, const Identifier &name, optional_ptr<const CV2AttachOptions> options,
 	            bool make_default);
-	//! Detaches the database attached from `path`, or attached under that name.
-	void Detach(const string &path);
-	//! Makes the database attached from `path`, or attached under that name, the default for new connections.
-	void SetDefault(const string &path);
-	//! Stages a startup option, or SET GLOBAL once started.
-	void SetOption(const Identifier &name, const string &setting);
-	unique_ptr<CV2Option> GetOption(std::string_view name);
-	idx_t GetOptionCount();
-	unique_ptr<CV2Option> GetOptionByIndex(idx_t index);
-	//! The started instance; starts it if needed.
-	DuckDB &GetDatabase();
-
-	CV2Environment &env;
-	mutex lock;
+	//! Detaches the database attached under `name`.
+	void Detach(const Identifier &name);
+	//! Makes the database attached under `name` the default for new connections.
+	void SetDefault(const Identifier &name);
+	DuckDB &GetDatabase() {
+		return *database;
+	}
 
 private:
-	//! Staged until Start consumes it.
-	unique_ptr<DBConfig> config;
-	//! The staged settings as written, by canonical name: legacy options cannot be read back from a DBConfig.
-	identifier_map_t<string> staged_settings;
+	//! Declared first: the members below are built from it.
 	shared_ptr<DuckDB> database;
-	unique_ptr<Connection> internal_connection;
+
+public:
+	CV2Environment &env;
+	CV2InstanceFactory factory;
+	CV2InstanceConfig config_handle;
+	CV2FileSystem file_system;
 };
 
 inline auto Convert(duckdb_v2_instance_handle instance) -> CV2Instance * {
@@ -280,7 +378,106 @@ inline auto Convert(CV2Instance *instance) -> duckdb_v2_instance_handle {
 	return reinterpret_cast<duckdb_v2_instance_handle>(instance);
 }
 
-using CV2Connection = duckdb::Connection;
+class CV2Context;
+
+//! A client's config: the connection's cascade (SESSION, then GLOBAL, then the default), written like SQL `SET`.
+class CV2ClientConfig final : public CV2Config {
+public:
+	explicit CV2ClientConfig(ClientContext &context) : context(context) {
+	}
+
+	DUCKDB_V2_SETTING_SCOPE ReadValue(std::string_view name, Value &result) override;
+	void Write(const Identifier &name, const Value &value, DUCKDB_V2_SETTING_SCOPE scope) override;
+	unique_ptr<CV2Option> GetOption(std::string_view name) override;
+	unique_ptr<CV2Option> GetOptionByIndex(idx_t index) override;
+	idx_t GetOptionCount() override;
+
+private:
+	ClientContext &context;
+};
+
+//! A context's factory: the context's catalog and settings.
+class CV2ContextFactory final : public CV2Factory {
+public:
+	explicit CV2ContextFactory(CV2Context &context) : context(context) {
+	}
+
+	DatabaseInstance &GetDatabase() override;
+	optional_ptr<ClientContext> TryGetClientContext() override;
+	void WithTransaction(const std::function<void(ClientContext &)> &fn) override;
+
+private:
+	CV2Context &context;
+};
+
+//! A context handle: the client context plus how a call through it obtains a transaction.
+class CV2Context {
+public:
+	explicit CV2Context(ClientContext &context)
+	    : context(context), factory(*this), config_handle(context),
+	      file_system(FileSystem::GetFileSystem(context), QueryContext(context)) {
+	}
+	virtual ~CV2Context() = default;
+
+	//! Runs `fn` with a transaction active on the context.
+	virtual void WithContext(const std::function<void(ClientContext &)> &fn) = 0;
+
+	ClientContext &context;
+	CV2ContextFactory factory;
+	CV2ClientConfig config_handle;
+	CV2FileSystem file_system;
+};
+
+inline DatabaseInstance &CV2ContextFactory::GetDatabase() {
+	return DatabaseInstance::GetDatabase(context.context);
+}
+
+inline optional_ptr<ClientContext> CV2ContextFactory::TryGetClientContext() {
+	return &context.context;
+}
+
+inline void CV2ContextFactory::WithTransaction(const std::function<void(ClientContext &)> &fn) {
+	context.WithContext(fn);
+}
+
+//! A context handed to a callback: the context lock is held and a transaction is already active.
+class CV2CallbackContext final : public CV2Context {
+public:
+	explicit CV2CallbackContext(ClientContext &context) : CV2Context(context) {
+	}
+
+	void WithContext(const std::function<void(ClientContext &)> &fn) override {
+		fn(context);
+	}
+};
+
+//! A context taken from a connection: each call joins the connection's transaction, or runs in one of its own.
+class CV2ConnectionContext final : public CV2Context {
+public:
+	explicit CV2ConnectionContext(ClientContext &context) : CV2Context(context) {
+	}
+
+	void WithContext(const std::function<void(ClientContext &)> &fn) override {
+		context.RunFunctionInTransaction([&]() { fn(context); });
+	}
+};
+
+inline auto Convert(duckdb_v2_context_handle ctx) -> CV2Context * {
+	return reinterpret_cast<CV2Context *>(ctx);
+}
+
+inline auto Convert(CV2Context *ctx) -> duckdb_v2_context_handle {
+	return reinterpret_cast<duckdb_v2_context_handle>(ctx);
+}
+
+//! A connection handle: the connection plus the context handle it lends out.
+class CV2Connection : public Connection {
+public:
+	explicit CV2Connection(DuckDB &database) : Connection(database), context_handle(*context) {
+	}
+
+	CV2ConnectionContext context_handle;
+};
 
 inline auto Convert(duckdb_v2_connection_handle conn) -> CV2Connection * {
 	return reinterpret_cast<CV2Connection *>(conn);
@@ -297,16 +494,6 @@ inline auto Convert(duckdb_v2_sql_statement_handle stmt) -> CV2SQLStatement * {
 }
 inline auto Convert(CV2SQLStatement *stmt) -> duckdb_v2_sql_statement_handle {
 	return reinterpret_cast<duckdb_v2_sql_statement_handle>(stmt);
-}
-
-using CV2Context = duckdb::ClientContext;
-
-inline auto Convert(duckdb_v2_context_handle ctx) -> CV2Context * {
-	return reinterpret_cast<CV2Context *>(ctx);
-}
-
-inline auto Convert(CV2Context *ctx) -> duckdb_v2_context_handle {
-	return reinterpret_cast<duckdb_v2_context_handle>(ctx);
 }
 
 //! The extension handle's backing struct is the load state in capi_v2_extension.cpp, not an ExtensionLoader, so it
@@ -331,41 +518,52 @@ inline auto Convert(CV2FunctionSignature *func) -> duckdb_v2_function_signature_
 	return reinterpret_cast<duckdb_v2_function_signature_handle>(func);
 }
 
-//! Where an option's current setting is read from: a started instance's context (LOCAL -> GLOBAL -> default), or the
-//! startup config of an instance that has not started (staged GLOBAL -> default).
+//! Where an option's current value is read from: a client context's cascade (SESSION -> GLOBAL -> default).
 class CV2OptionSource {
 public:
 	explicit CV2OptionSource(ClientContext &context) : context(&context), config(DBConfig::GetConfig(context)) {
 	}
-	CV2OptionSource(const DBConfig &config, const identifier_map_t<string> &staged_settings)
-	    : config(config), staged_settings(&staged_settings) {
+	//! GLOBAL -> default only.
+	explicit CV2OptionSource(DatabaseInstance &db) : config(DBConfig::GetConfig(db)) {
 	}
 
 	const DBConfig &GetConfig() const {
 		return config;
 	}
-	//! The effective setting of `name`, or `fallback` when the cascade yields NULL.
-	string ReadSetting(const Identifier &name, const string &fallback) const;
+	//! The effective value of `name`, and the scope DuckDB attributes it to. Throws for an unknown option.
+	DUCKDB_V2_SETTING_SCOPE ReadValue(std::string_view name, Value &result) const;
 
 private:
 	optional_ptr<ClientContext> context;
 	const DBConfig &config;
-	optional_ptr<const identifier_map_t<string>> staged_settings;
 };
 
 class CV2Option {
 public:
 	Identifier name;
-	string setting;
-	string default_setting;
+	Value default_value;
 	string description;
-	DUCKDB_V2_OPTION_TARGET_SCOPE target_scope = DUCKDB_V2_OPTION_TARGET_SCOPE_UNKNOWN;
+	bool supports_global = false;
+	bool supports_session = false;
+	DUCKDB_V2_SETTING_SCOPE default_scope = DUCKDB_V2_SETTING_SCOPE_GLOBAL;
 	vector<string> aliases;
 
 	static unique_ptr<CV2Option> FromIndex(const CV2OptionSource &source, idx_t index);
 	static unique_ptr<CV2Option> FromName(const CV2OptionSource &source, std::string_view name);
 	static idx_t Count(const CV2OptionSource &source);
 };
+
+//! The engine's write scope for a V2 scope.
+inline SetScope ConvertSetScope(DUCKDB_V2_SETTING_SCOPE scope) {
+	switch (scope) {
+	case DUCKDB_V2_SETTING_SCOPE_GLOBAL:
+		return SetScope::GLOBAL;
+	case DUCKDB_V2_SETTING_SCOPE_SESSION:
+		return SetScope::SESSION;
+	default:
+		return SetScope::AUTOMATIC;
+	}
+}
 
 inline auto Convert(duckdb_v2_option_handle opt) -> CV2Option * {
 	return reinterpret_cast<CV2Option *>(opt);
@@ -377,11 +575,52 @@ inline auto Convert(CV2Option *opt) -> duckdb_v2_option_handle {
 
 using CV2LogicalType = duckdb::LogicalType;
 
-inline auto Convert(duckdb_v2_logical_type_handle opt) -> CV2LogicalType * {
-	return reinterpret_cast<CV2LogicalType *>(opt);
+//! A logical type handle is the LogicalTypeInfo of the type. An owned handle holds one reference to it; a borrowed
+//! handle holds none and stays valid for as long as the type it was taken from.
+
+//! Views the type behind a handle without touching its reference count
+class CV2LogicalTypeRef {
+public:
+	explicit CV2LogicalTypeRef(duckdb_v2_logical_type_handle handle)
+	    : type(CV2LogicalType::AdoptTypeInfo(*reinterpret_cast<const duckdb::LogicalTypeInfo *>(handle))) {
+	}
+	~CV2LogicalTypeRef() {
+		std::move(type).ReleaseTypeInfo();
+	}
+	CV2LogicalTypeRef(const CV2LogicalTypeRef &) = delete;
+	CV2LogicalTypeRef &operator=(const CV2LogicalTypeRef &) = delete;
+
+	//! Only on a named view - a reference into a temporary view would dangle
+	const CV2LogicalType &operator*() const & {
+		return type;
+	}
+	const CV2LogicalType &operator*() const && = delete;
+	const CV2LogicalType *operator->() const {
+		return &type;
+	}
+
+private:
+	CV2LogicalType type;
+};
+
+inline auto Convert(duckdb_v2_logical_type_handle handle) -> CV2LogicalTypeRef {
+	return CV2LogicalTypeRef(handle);
 }
-inline auto Convert(CV2LogicalType *opt) -> duckdb_v2_logical_type_handle {
-	return reinterpret_cast<duckdb_v2_logical_type_handle>(opt);
+inline auto ConvertTypeInfo(const duckdb::LogicalTypeInfo &type_info) -> duckdb_v2_logical_type_handle {
+	// the handle is opaque - the type info is only ever read through it
+	return reinterpret_cast<duckdb_v2_logical_type_handle>(reinterpret_cast<uintptr_t>(&type_info));
+}
+//! Creates an owned handle, transferring the reference of "type" to it
+inline auto Convert(CV2LogicalType type) -> duckdb_v2_logical_type_handle {
+	return ConvertTypeInfo(std::move(type).ReleaseTypeInfo());
+}
+//! Creates a borrowed handle to "type"
+inline auto ConvertBorrowed(const CV2LogicalType &type) -> duckdb_v2_logical_type_handle {
+	return ConvertTypeInfo(type.GetTypeInfo());
+}
+//! Takes back the reference held by an owned handle
+inline auto TakeOwnership(duckdb_v2_logical_type_handle handle) -> CV2LogicalType {
+	return CV2LogicalType::AdoptTypeInfo(*reinterpret_cast<const duckdb::LogicalTypeInfo *>(handle));
 }
 
 using CV2QualifiedName = duckdb::QualifiedName;
@@ -484,6 +723,14 @@ inline auto Convert(CV2Schema *schema) -> duckdb_v2_schema_handle {
 auto NullArgumentError(duckdb_v2_error_info_handle *err, const char *function, const char *argument) noexcept
     -> DUCKDB_V2_ERROR;
 
+//! Raised for metadata asked for before execution bound the statement that produces it. Reported as
+//! ERROR_INPUT_METADATA_DEFERRED
+class MetadataDeferredException : public InvalidInputException {
+public:
+	explicit MetadataDeferredException(const string &msg) : InvalidInputException(msg) {
+	}
+};
+
 // Classify the exception currently being handled into a V2 error code and detail strings. Must be called from inside
 // a catch block. Never throws: if rendering the detail itself fails, it degrades to a bare code with empty detail
 // (RESOURCE_OUT_OF_MEMORY on allocation failure). Defined in capi_v2.cpp.
@@ -497,8 +744,9 @@ bool IsNullArgument(const T &arg) {
 	return arg == nullptr;
 }
 
-inline bool IsNullArgument(const duckdb_v2_str *arg) {
-	return !arg || (!arg->ptr && arg->len > 0);
+// A string argument is invalid when its pointer is null while it carries a non-zero length.
+inline bool IsNullArgument(const char *arg, idx_t arg_length) {
+	return !arg && arg_length > 0;
 }
 
 // Check if an argument is null and return DUCKDB_V2_ERROR_INPUT_INVALID with a message if it is.
@@ -507,6 +755,13 @@ inline bool IsNullArgument(const duckdb_v2_str *arg) {
 #define DUCKDB_CHECK_ARG(arg)                                                                                          \
 	do {                                                                                                               \
 		if (duckdb::capiv2::IsNullArgument(arg)) {                                                                     \
+			return duckdb::capiv2::NullArgumentError(err, __func__, #arg);                                             \
+		}                                                                                                              \
+	} while (0)
+// The pointer/length form of DUCKDB_CHECK_ARG for a string argument.
+#define DUCKDB_CHECK_STR_ARG(arg, arg_length)                                                                          \
+	do {                                                                                                               \
+		if (duckdb::capiv2::IsNullArgument(arg, arg_length)) {                                                         \
 			return duckdb::capiv2::NullArgumentError(err, __func__, #arg);                                             \
 		}                                                                                                              \
 	} while (0)
@@ -604,18 +859,16 @@ DUCKDB_V2_ERROR WithErrorHandler(duckdb_v2_error_info_handle *err, T callback) n
 //----------------------------------------------------------------------------------------------------------------------
 
 struct ConnectionBusySlotV2 : public ClientContextState {
-	std::atomic<void *> owner {nullptr};
-	// True once the consumer called `connection_interrupt` for the active result.
-	// This flag is how we distinguish a consumer cancellation (-> CANCELLED status) from an DuckDB-initiated interrupt
-	// that shares the INTERRUPT exception type, e.g. a `max_execution_time` timeout (-> error).
-	// The DuckDB's internal interrupt_state is not suitable for this, it is set to stop sibling tasks on any error.
-	// Reset when a new query claims the slot.
-	std::atomic<bool> cancel_requested {false};
+	// The number of `connection_interrupt` calls. A result records it when its statement starts, and an INTERRUPT
+	// error is a consumer cancellation (-> CANCELLED status) only if it moved since: a DuckDB-initiated interrupt,
+	// e.g. a `max_execution_time` timeout, shares the INTERRUPT exception type (-> error). The DuckDB's internal
+	// interrupt_state is not suitable for this, it is set to stop sibling tasks on any error.
+	std::atomic<idx_t> cancel_requests {0};
 };
 
 inline shared_ptr<ConnectionBusySlotV2> GetBusySlot(ClientContext &context) {
 	constexpr auto BUSY_SLOT_STATE_KEY = "v2_connection_busy_slot";
-	return context.registered_state->GetOrCreate<ConnectionBusySlotV2>(BUSY_SLOT_STATE_KEY);
+	return context.GetContext().GetRegisteredState().GetOrCreate<ConnectionBusySlotV2>(BUSY_SLOT_STATE_KEY);
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -625,11 +878,11 @@ inline shared_ptr<ConnectionBusySlotV2> GetBusySlot(ClientContext &context) {
 //! the sink sees the full length up front. Its only influence on the outcome is
 //! the error slot: a code it sets is rethrown as the matching exception type,
 //! which WithErrorHandler then maps straight back.
-inline void InvokeTextSink(duckdb_v2_text_sink_fn sink, duckdb_v2_str text, void *user_data) {
+inline void InvokeTextSink(duckdb_v2_text_sink_fn sink, std::string_view text, void *user_data) {
 	// The slot is always live: sinks populate it, they never allocate or destroy it.
 	CV2ErrorInfo info;
 	auto handle = Convert(&info);
-	sink(&text, user_data, &handle);
+	sink(text.data(), text.size(), user_data, &handle);
 	if (info.HasError()) {
 		info.ThrowAsException();
 	}
@@ -744,21 +997,16 @@ private:
 // Misc
 //----------------------------------------------------------------------------------------------------------------------
 
-inline void BuildParameterMap(const duckdb_v2_identifier_t *parameter_names,
-                              const duckdb_v2_value_handle *parameter_values, idx_t parameter_count,
-                              const char *function_name, identifier_map_t<BoundParameterData> &out) {
+inline void BuildParameterMap(const string_view_array &parameter_names, const duckdb_v2_value_handle *parameter_values,
+                              idx_t parameter_count, const char *function_name,
+                              identifier_map_t<BoundParameterData> &out) {
 	for (idx_t i = 0; i < parameter_count; i++) {
-		auto name = parameter_names ? parameter_names[i] : duckdb_v2_identifier_t {nullptr, 0};
-		// A {NULL, 0} view is a valid (empty) name; only a null pointer with a nonzero length is malformed.
-		if (!name.ptr && name.len > 0) {
-			throw InvalidInputException("malformed parameter name passed to %s", function_name);
-		}
+		// Named iff the name is non-empty; otherwise positional
+		auto name = parameter_names[i];
 		if (!parameter_values[i]) {
 			throw InvalidInputException("null parameter value passed to %s", function_name);
 		}
-		// Named iff the name view is non-empty; otherwise positional
-		auto str = ConvertIdentifierName(name);
-		Identifier key = (name.ptr && name.len > 0) ? Identifier(str) : Identifier(std::to_string(i + 1));
+		Identifier key = name.empty() ? Identifier(std::to_string(i + 1)) : Identifier(name);
 		out[key] = BoundParameterData(*Convert(parameter_values[i]));
 	}
 }

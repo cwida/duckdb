@@ -7,7 +7,7 @@ group logger
 
 load
 CALL enable_logging('FileSystem');
-CREATE TABLE test AS select i from range(0,100000000) t(i);
+CREATE TABLE test AS select i from range(0,5000000) t(i);
 
 run
 copy test to '${BENCHMARK_DIR}/file_handle_logging.csv';

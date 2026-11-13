@@ -215,3 +215,34 @@ SELECT g, finalize(s) FROM state_tbl ORDER BY g;
 query II nosort persisted0
 SELECT g, quantile_cont(d, [0.25, 0.75]) FROM dummy GROUP BY g ORDER BY g;
 ----
+
+# NULL inputs are never buffered, so states with NULL values are rejected
+statement error
+SELECT finalize(to_aggregate_state([NULL, NULL]::TIME[], 'median', ['TIME'], NULL));
+----
+the list cannot contain NULL values
+
+statement error
+SELECT finalize(to_aggregate_state([1, NULL]::BIGINT[], 'median', ['BIGINT'], NULL));
+----
+the list cannot contain NULL values
+
+statement error
+SELECT finalize(to_aggregate_state([1, NULL]::BIGINT[], 'quantile_disc', ['BIGINT', 'DOUBLE'], [NULL, 0.5]));
+----
+the list cannot contain NULL values
+
+statement error
+SELECT finalize(to_aggregate_state([1, NULL]::DOUBLE[], 'mad', ['DOUBLE'], NULL));
+----
+the list cannot contain NULL values
+
+statement error
+SELECT finalize(to_aggregate_state(['a', NULL], 'median', ['VARCHAR'], NULL));
+----
+the list cannot contain NULL values
+
+query II
+SELECT finalize(to_aggregate_state([1, 3]::BIGINT[], 'median', ['BIGINT'], NULL)), finalize(median(x) EXPORT_STATE) FROM (VALUES (1), (NULL), (3)) t(x);
+----
+2.0	2.0

@@ -23,5 +23,6 @@ sed -i .bak -e 's/static_cast<Encoding::type>(/SafeEnumCast<Encoding>(_Encoding_
 sed -i .bak -e 's/static_cast<CompressionCodec::type>(/SafeEnumCast<CompressionCodec>(_CompressionCodec_VALUES_TO_NAMES, /' parquet_types.*
 sed -i .bak -e 's/static_cast<PageType::type>(/SafeEnumCast<PageType>(_PageType_VALUES_TO_NAMES, /' parquet_types.*
 sed -i .bak -e 's/static_cast<BoundaryOrder::type>(/SafeEnumCast<BoundaryOrder>(_BoundaryOrder_VALUES_TO_NAMES, /' parquet_types.*
+python3 arena_transform.py parquet_types.h parquet_types.cpp
 rm *.bak
 rm -rf gen-cpp

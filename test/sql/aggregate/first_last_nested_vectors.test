@@ -2,6 +2,10 @@
 # description: Exercise first, last and any_value with nested values and partially selected vectors
 # group: [aggregate]
 
+# first and last without an ORDER BY depend on the order the threads combine their states in
+statement ok
+SET threads=1
+
 query I
 SELECT first([i]) = CASE WHEN i >= 2500 THEN [2500] ELSE [0] END
 FROM range(3000) r(i)

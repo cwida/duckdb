@@ -178,6 +178,7 @@ void MiniZStreamWrapper::Initialize(QueryContext context, CompressedFile &file, 
 			data_start += GZipConsumeString(context, *file.child_handle);
 		}
 		file.child_handle->Seek(data_start);
+		file.AddConsumedBytes(data_start);
 		// stream is now set to beginning of payload data
 		InitializeInflator();
 	}
@@ -238,8 +239,8 @@ bool MiniZStreamWrapper::ReadNextMemberHeader(StreamData &sd) {
 			}
 			state_bytes_remaining = NumericCast<idx_t>((uint8_t)gzip_xlen[0] | (uint8_t)gzip_xlen[1] << 8);
 			if (gzip_header_size + state_bytes_remaining >= GZIP_HEADER_MAXSIZE) {
-				throw InternalException("Extra field resulting in GZIP header larger than defined maximum (%d)",
-				                        GZIP_HEADER_MAXSIZE);
+				throw DataCorruptionException("Extra field resulting in GZIP header larger than defined maximum (%d)",
+				                              GZIP_HEADER_MAXSIZE);
 			}
 			read_state = GZipReadState::EXTRA_DATA;
 			break;
@@ -265,8 +266,8 @@ bool MiniZStreamWrapper::ReadNextMemberHeader(StreamData &sd) {
 				auto c = *sd.in_buff_start++;
 				gzip_header_size++;
 				if (gzip_header_size >= GZIP_HEADER_MAXSIZE) {
-					throw InternalException("Filename resulting in GZIP header larger than defined maximum (%d)",
-					                        GZIP_HEADER_MAXSIZE);
+					throw DataCorruptionException("Filename resulting in GZIP header larger than defined maximum (%d)",
+					                              GZIP_HEADER_MAXSIZE);
 				}
 				if (c == '\0') {
 					read_state = GZipReadState::DEFLATE;
@@ -502,11 +503,12 @@ string GZipFileSystem::UncompressGZIPString(const char *data, idx_t size) {
 	}
 
 	if (gzip_hdr[3] & GZIP_FLAG_NAME) {
-		char c;
-		do {
-			c = *body_ptr;
-			body_ptr++;
-		} while (c != '\0' && static_cast<idx_t>(body_ptr - data) < size);
+		auto end_ptr = data + size;
+		while (body_ptr < end_ptr) {
+			if (*body_ptr++ == '\0') {
+				break;
+			}
+		}
 	}
 
 	// stream is now set to beginning of payload data
@@ -527,6 +529,7 @@ string GZipFileSystem::UncompressGZIPString(const char *data, idx_t size) {
 		mz_stream_ptr->avail_out = sizeof(decompress_buffer);
 		status = mz_inflate(mz_stream_ptr.get(), duckdb_miniz::MZ_NO_FLUSH);
 		if (status != duckdb_miniz::MZ_STREAM_END && status != duckdb_miniz::MZ_OK) {
+			duckdb_miniz::mz_inflateEnd(mz_stream_ptr.get());
 			throw IOException("Failed to uncompress");
 		}
 		decompressed.append(char_ptr_cast(decompress_buffer), mz_stream_ptr->total_out - decompressed.size());

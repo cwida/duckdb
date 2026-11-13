@@ -9,7 +9,7 @@
 using namespace duckdb;
 
 TEST_CASE("Parse ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE + ToString roundtrip", "[parse_external_resource]") {
-	Parser parser;
+	auto parser = Parser::GetBuiltinParser();
 	parser.ParseQuery(
 	    "ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local' (INSTANCE 'r7i.16xlarge', REGION 'eu-west-1') "
 	    "AS my_db (READ_ONLY)");
@@ -36,7 +36,7 @@ TEST_CASE("Parse ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE + ToString roundtrip"
 	REQUIRE(StringUtil::Contains(str, "AS my_db"));
 
 	// Roundtrip: re-parsing the rendered SQL yields the same statement + resource.
-	Parser reparser;
+	auto reparser = Parser::GetBuiltinParser();
 	reparser.ParseQuery(str);
 	REQUIRE(reparser.statements.size() == 1);
 	REQUIRE(reparser.statements[0]->type == StatementType::ATTACH_STATEMENT);
@@ -48,7 +48,7 @@ TEST_CASE("Parse ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE + ToString roundtrip"
 }
 
 TEST_CASE("Parse ATTACH TO EXTERNAL RESOURCE (reference) + ToString roundtrip", "[parse_external_resource]") {
-	Parser parser;
+	auto parser = Parser::GetBuiltinParser();
 	parser.ParseQuery("ATTACH TO EXTERNAL RESOURCE beefy AS my_db");
 	REQUIRE(parser.statements.size() == 1);
 	REQUIRE(parser.statements[0]->type == StatementType::ATTACH_STATEMENT);
@@ -66,7 +66,7 @@ TEST_CASE("Parse ATTACH TO EXTERNAL RESOURCE (reference) + ToString roundtrip", 
 	REQUIRE(StringUtil::Contains(str, "ATTACH TO EXTERNAL RESOURCE beefy"));
 	REQUIRE(!StringUtil::Contains(str, "CREATE"));
 
-	Parser reparser;
+	auto reparser = Parser::GetBuiltinParser();
 	reparser.ParseQuery(str);
 	REQUIRE(reparser.statements.size() == 1);
 	auto &re = reparser.statements[0]->Cast<AttachStatement>();
@@ -74,7 +74,7 @@ TEST_CASE("Parse ATTACH TO EXTERNAL RESOURCE (reference) + ToString roundtrip", 
 }
 
 TEST_CASE("Parse CONNECT TO NEW TEMPORARY EXTERNAL RESOURCE + ToString roundtrip", "[parse_external_resource]") {
-	Parser parser;
+	auto parser = Parser::GetBuiltinParser();
 	parser.ParseQuery("CONNECT TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local' (region 'eu-west-1')");
 	REQUIRE(parser.statements.size() == 1);
 	REQUIRE(parser.statements[0]->type == StatementType::CONNECT_STATEMENT);
@@ -87,7 +87,7 @@ TEST_CASE("Parse CONNECT TO NEW TEMPORARY EXTERNAL RESOURCE + ToString roundtrip
 	REQUIRE(StringUtil::Contains(str, "CONNECT TO NEW TEMPORARY EXTERNAL RESOURCE"));
 	REQUIRE(StringUtil::Contains(str, "quack@local"));
 
-	Parser reparser;
+	auto reparser = Parser::GetBuiltinParser();
 	reparser.ParseQuery(str);
 	REQUIRE(reparser.statements.size() == 1);
 	REQUIRE(reparser.statements[0]->type == StatementType::CONNECT_STATEMENT);
@@ -96,7 +96,7 @@ TEST_CASE("Parse CONNECT TO NEW TEMPORARY EXTERNAL RESOURCE + ToString roundtrip
 }
 
 TEST_CASE("ATTACH TO EXTERNAL RESOURCE ToString stays reparseable", "[parse_external_resource]") {
-	Parser parser;
+	auto parser = Parser::GetBuiltinParser();
 	parser.ParseQuery("ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local' (\"weird param\" 'v') "
 	                  "AS my_db (\"weird option\" 'w')");
 	REQUIRE(parser.statements.size() == 1);
@@ -106,7 +106,7 @@ TEST_CASE("ATTACH TO EXTERNAL RESOURCE ToString stays reparseable", "[parse_exte
 	auto str = attach.info->ToString();
 	REQUIRE(StringUtil::Contains(str, "\"weird param\""));
 	REQUIRE(StringUtil::Contains(str, "\"weird option\""));
-	Parser reparser;
+	auto reparser = Parser::GetBuiltinParser();
 	reparser.ParseQuery(str);
 	REQUIRE(reparser.statements.size() == 1);
 	REQUIRE(reparser.statements[0]->type == StatementType::ATTACH_STATEMENT);
@@ -116,21 +116,21 @@ TEST_CASE("ATTACH TO EXTERNAL RESOURCE ToString stays reparseable", "[parse_exte
 	attach.info->on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
 	auto ignore_str = attach.info->ToString();
 	REQUIRE(!StringUtil::Contains(ignore_str, "IF NOT EXISTS"));
-	Parser ignore_parser;
+	auto ignore_parser = Parser::GetBuiltinParser();
 	ignore_parser.ParseQuery(ignore_str);
 	REQUIRE(ignore_parser.statements.size() == 1);
 
 	attach.info->on_conflict = OnCreateConflict::REPLACE_ON_CONFLICT;
 	auto replace_str = attach.info->ToString();
 	REQUIRE(!StringUtil::Contains(replace_str, "OR REPLACE"));
-	Parser replace_parser;
+	auto replace_parser = Parser::GetBuiltinParser();
 	replace_parser.ParseQuery(replace_str);
 	REQUIRE(replace_parser.statements.size() == 1);
 }
 
 TEST_CASE("CONNECT TO EXTERNAL RESOURCE option lists", "[parse_external_resource]") {
 	// Provisioning: the create clause claims the list, so it is the recipe's.
-	Parser provision;
+	auto provision = Parser::GetBuiltinParser();
 	provision.ParseQuery("CONNECT TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local' (region 'eu-west-1')");
 	REQUIRE(provision.statements.size() == 1);
 	auto &connect = provision.statements[0]->Cast<ConnectStatement>();
@@ -140,7 +140,7 @@ TEST_CASE("CONNECT TO EXTERNAL RESOURCE option lists", "[parse_external_resource
 
 	// Borrowing: a registered resource takes no create params, so the list is unambiguously the
 	// connection's and is accepted.
-	Parser borrow;
+	auto borrow = Parser::GetBuiltinParser();
 	borrow.ParseQuery("CONNECT TO EXTERNAL RESOURCE beefy (token 'abc')");
 	REQUIRE(borrow.statements.size() == 1);
 	auto &borrowed = borrow.statements[0]->Cast<ConnectStatement>();
@@ -149,7 +149,7 @@ TEST_CASE("CONNECT TO EXTERNAL RESOURCE option lists", "[parse_external_resource
 	// ...and ToString keeps them, so the rendering still round-trips.
 	auto borrowed_str = borrowed.info->ToString();
 	REQUIRE(StringUtil::Contains(borrowed_str, "token"));
-	Parser borrow_again;
+	auto borrow_again = Parser::GetBuiltinParser();
 	borrow_again.ParseQuery(borrowed_str);
 	REQUIRE(borrow_again.statements.size() == 1);
 	auto &again = borrow_again.statements[0]->Cast<ConnectStatement>();
@@ -158,7 +158,7 @@ TEST_CASE("CONNECT TO EXTERNAL RESOURCE option lists", "[parse_external_resource
 
 	// Only the genuinely ambiguous spelling is refused: a second list while provisioning could be told
 	// apart from the first by position alone.
-	Parser rejected;
+	auto rejected = Parser::GetBuiltinParser();
 	REQUIRE_THROWS(
 	    rejected.ParseQuery("CONNECT TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local' (region 'x') (token 'abc')"));
 }

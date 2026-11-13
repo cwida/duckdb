@@ -1,6 +1,9 @@
 #include "duckdb/common/types/hugeint.hpp"
+#include "duckdb/common/operator/add.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/operator/logical_any_join.hpp"
@@ -21,15 +24,15 @@ bool StatisticsPropagator::HandleJoinNeverMatches(LogicalJoin &join, unique_ptr<
 		// semi or inner join on false; entire node can be pruned
 		ReplaceWithEmptyResult(node_ptr);
 		return true;
+
+		// If the filter is always false or Null, the join output is exactly one of its sides:
+		// promote that side together with its projection map so the output layout stays unchanged.
 	case JoinType::RIGHT_ANTI:
-	case JoinType::ANTI: {
-		if (join.join_type == JoinType::RIGHT_ANTI) {
-			std::swap(join.children[0], join.children[1]);
-		}
-		// If the filter is always false or Null, just return the left child.
-		node_ptr = std::move(join.children[0]);
+		node_ptr = LogicalJoin::PromoteJoinSide(std::move(join.children[1]), std::move(join.right_projection_map));
 		return true;
-	}
+	case JoinType::ANTI:
+		node_ptr = LogicalJoin::PromoteJoinSide(std::move(join.children[0]), std::move(join.left_projection_map));
+		return true;
 	case JoinType::LEFT:
 		// anti/left outer join: replace right side with empty node
 		ReplaceWithEmptyResult(join.children[1]);
@@ -46,13 +49,32 @@ bool StatisticsPropagator::HandleJoinNeverMatches(LogicalJoin &join, unique_ptr<
 	}
 }
 
+//! Appends the columns of a join side that the join emits to the projection map of its replacement
+static void AddProjectedColumns(vector<ProjectionIndex> &result, const vector<ProjectionIndex> &projection_map,
+                                idx_t column_count, idx_t offset) {
+	if (projection_map.empty()) {
+		for (idx_t column_idx = 0; column_idx < column_count; column_idx++) {
+			result.emplace_back(offset + column_idx);
+		}
+		return;
+	}
+	for (auto &column_idx : projection_map) {
+		result.emplace_back(offset + column_idx.GetIndex());
+	}
+}
+
 bool StatisticsPropagator::HandleJoinAlwaysMatches(LogicalJoin &join, unique_ptr<LogicalOperator> &node_ptr) {
 	switch (join.join_type) {
 	case JoinType::RIGHT_SEMI:
 	case JoinType::SEMI: {
+		auto &emitted_projection_map =
+		    join.join_type == JoinType::RIGHT_SEMI ? join.right_projection_map : join.left_projection_map;
 		if (join.join_type == JoinType::RIGHT_SEMI) {
 			std::swap(join.children[0], join.children[1]);
 		}
+		// the cross product also emits the columns of the other side: project them out again
+		vector<ProjectionIndex> projection_map;
+		AddProjectedColumns(projection_map, emitted_projection_map, join.children[0]->GetColumnBindings().size(), 0);
 		// when the right child has no data, return an empty set
 		// cannot just return the left child because if the right child has no cardinality
 		// then the whole result should be empty.
@@ -63,14 +85,21 @@ bool StatisticsPropagator::HandleJoinAlwaysMatches(LogicalJoin &join, unique_ptr
 		limit->AddChild(std::move(join.children[1]));
 		auto cross_product = LogicalCrossProduct::Create(std::move(join.children[0]), std::move(limit));
 		cross_product->SetEstimatedCardinality(join.estimated_cardinality);
-		node_ptr = std::move(cross_product);
+		node_ptr = LogicalJoin::PromoteJoinSide(std::move(cross_product), std::move(projection_map));
 		return true;
 	}
 	case JoinType::INNER: {
-		// inner, replace with cross product
+		// inner, replace with cross product - keeping the columns that the join emits
+		vector<ProjectionIndex> projection_map;
+		if (!join.left_projection_map.empty() || !join.right_projection_map.empty()) {
+			auto left_count = join.children[0]->GetColumnBindings().size();
+			AddProjectedColumns(projection_map, join.left_projection_map, left_count, 0);
+			AddProjectedColumns(projection_map, join.right_projection_map, join.children[1]->GetColumnBindings().size(),
+			                    left_count);
+		}
 		auto cross_product = LogicalCrossProduct::Create(std::move(join.children[0]), std::move(join.children[1]));
 		cross_product->SetEstimatedCardinality(join.estimated_cardinality);
-		node_ptr = std::move(cross_product);
+		node_ptr = LogicalJoin::PromoteJoinSide(std::move(cross_product), std::move(projection_map));
 		return true;
 	}
 	default:
@@ -80,7 +109,44 @@ bool StatisticsPropagator::HandleJoinAlwaysMatches(LogicalJoin &join, unique_ptr
 	}
 }
 
+//! The column a join-derived filter can target: the side itself or the column under an invertible numeric cast
+static optional_ptr<const Expression> GetFilterColumn(ClientContext &context, const Expression &expr) {
+	optional_ptr<const Expression> column = expr;
+	if (BoundCastExpression::IsCast(expr)) {
+		auto &cast = expr.Cast<BoundFunctionExpression>();
+		auto source_type = BoundCastExpression::SourceType(cast);
+		auto &target_type = cast.GetReturnType();
+		// Invertible numeric casts also preserve order.
+		if (BoundCastExpression::IsTryCast(cast) || !source_type.IsNumeric() || !target_type.IsNumeric() ||
+		    !BoundCastExpression::CastIsInvertibleForEquality(source_type, target_type)) {
+			return nullptr;
+		}
+		if (!BoundCastExpression::IsDefaultCast(cast) &&
+		    CastFunctionSet::Get(context).CanOverrideDefaultCast(source_type, target_type)) {
+			return nullptr;
+		}
+		column = BoundCastExpression::Child(cast);
+	}
+	if (column->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+		return nullptr;
+	}
+	return column;
+}
+
 void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, unique_ptr<LogicalOperator> &node_ptr) {
+	// every condition is evaluated over the candidate pairs of the join inputs, so the verification statistics of
+	// the condition expressions are derived from the input statistics before any condition narrows them
+	for (auto &condition : join.conditions) {
+		if (condition.IsComparison()) {
+			PropagateExpression(condition.LeftReference());
+			PropagateExpression(condition.RightReference());
+		} else {
+			PropagateExpression(condition.JoinExpressionReference());
+		}
+	}
+	// below, the conditions are propagated again against statistics narrowed by the earlier conditions: these hold
+	// for the join output and the later conditions, but not for the vectors the conditions are evaluated on
+	VerificationStatsGuard narrowing_guard(attach_verification_stats);
 	for (idx_t i = 0; i < join.conditions.size(); i++) {
 		auto &condition = join.conditions[i];
 		if (!condition.IsComparison()) {
@@ -90,6 +156,11 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 
 		const auto stats_left = PropagateExpression(condition.LeftReference());
 		const auto stats_right = PropagateExpression(condition.RightReference());
+		if (join.join_type != JoinType::MARK) {
+			// Ordinary joins reject both FALSE and NULL candidate pairs.
+			condition.SetComparisonType(SimplifyDistinctComparison(condition.GetComparisonType(), stats_left.get(),
+			                                                       stats_right.get(), ComparisonContext::JOIN));
+		}
 		if (stats_left && stats_right) {
 			if ((condition.GetComparisonType() == ExpressionType::COMPARE_DISTINCT_FROM ||
 			     condition.GetComparisonType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM) &&
@@ -163,7 +234,8 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 		}
 		switch (join.join_type) {
 		case JoinType::INNER:
-		case JoinType::SEMI: {
+		case JoinType::SEMI:
+		case JoinType::RIGHT_SEMI: {
 			UpdateFilterStatistics(condition.GetLHS(), condition.GetRHS(), condition.GetComparisonType());
 			auto updated_stats_left = PropagateExpression(condition.LeftReference());
 			auto updated_stats_right = PropagateExpression(condition.RightReference());
@@ -180,11 +252,30 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 				// Update join_stats when is already part of the join
 				condition.SetLeftStats(std::move(updated_stats_left));
 				condition.SetRightStats(std::move(updated_stats_right));
+			} else if (stats_left && stats_right && GetFilterColumn(context, condition.GetLHS()) &&
+			           GetFilterColumn(context, condition.GetRHS())) {
+				// A side is a cast of a column: tighten copies of the side stats instead
+				auto tightened_left = stats_left->Copy();
+				auto tightened_right = stats_right->Copy();
+				UpdateFilterStatistics(tightened_left, tightened_right, condition.GetComparisonType());
+				CreateFilterFromJoinStats(join.children[0], condition.LeftReference(), *stats_left, tightened_left);
+				CreateFilterFromJoinStats(join.children[1], condition.RightReference(), *stats_right, tightened_right);
 			}
 			break;
 		}
 		default:
 			break;
+		}
+	}
+
+	// join conditions can be evaluated over candidate pairs that repeat rows of either side,
+	// so their verification statistics must not carry additive totals
+	for (auto &condition : join.conditions) {
+		if (condition.IsComparison()) {
+			ResetAdditiveVerificationStats(condition.GetLHS());
+			ResetAdditiveVerificationStats(condition.GetRHS());
+		} else {
+			ResetAdditiveVerificationStats(condition.GetJoinExpression());
 		}
 	}
 }
@@ -193,6 +284,9 @@ void StatisticsPropagator::PropagateStatistics(LogicalAnyJoin &join, unique_ptr<
 	// propagate the expression into the join condition
 	// note that a condition that is TRUE_OR_NULL does not always match: a NULL condition rejects the pair
 	PropagateExpression(join.condition);
+	// the condition is evaluated over candidate pairs that repeat rows of either side,
+	// so its verification statistics must not carry additive totals
+	ResetAdditiveVerificationStats(*join.condition);
 	switch (ClassifyFilter(*join.condition)) {
 	case FilterPropagateResult::FILTER_ALWAYS_TRUE:
 		HandleJoinAlwaysMatches(join, node_ptr);
@@ -213,8 +307,12 @@ void StatisticsPropagator::MultiplyCardinalities(unique_ptr<NodeStatistics> &sta
 		return;
 	}
 	stats->estimated_cardinality = MaxValue<idx_t>(stats->estimated_cardinality, new_stats.estimated_cardinality);
-	auto new_max = Hugeint::Multiply(NumericCast<int64_t>(stats->max_cardinality),
-	                                 NumericCast<int64_t>(new_stats.max_cardinality));
+	hugeint_t new_max;
+	if (!Hugeint::TryMultiply(Hugeint::Convert(stats->max_cardinality), Hugeint::Convert(new_stats.max_cardinality),
+	                          new_max)) {
+		stats = nullptr;
+		return;
+	}
 	if (new_max < NumericLimits<int64_t>::Maximum()) {
 		int64_t result;
 		if (!Hugeint::TryCast<int64_t>(new_max, result)) {
@@ -230,14 +328,43 @@ void StatisticsPropagator::MultiplyCardinalities(unique_ptr<NodeStatistics> &sta
 unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalJoin &join,
                                                                      unique_ptr<LogicalOperator> &node_ptr) {
 	// first propagate through the children of the join
-	node_stats = PropagateStatistics(join.children[0]);
-	for (idx_t child_idx = 1; child_idx < join.children.size(); child_idx++) {
-		auto child_stats = PropagateStatistics(join.children[child_idx]);
-		if (!child_stats) {
-			node_stats = nullptr;
-		} else if (node_stats) {
-			MultiplyCardinalities(node_stats, *child_stats);
+	auto left_stats = PropagateStatistics(join.children[0]);
+	auto right_stats = PropagateStatistics(join.children[1]);
+	switch (join.join_type) {
+	case JoinType::SEMI:
+	case JoinType::ANTI:
+	case JoinType::MARK:
+	case JoinType::SINGLE:
+		node_stats = std::move(left_stats);
+		break;
+	case JoinType::RIGHT_SEMI:
+	case JoinType::RIGHT_ANTI:
+		node_stats = std::move(right_stats);
+		break;
+	default:
+		if (left_stats && right_stats && left_stats->has_max_cardinality && right_stats->has_max_cardinality) {
+			idx_t unmatched_rows = 0;
+			if (join.join_type == JoinType::LEFT) {
+				right_stats->max_cardinality = MaxValue<idx_t>(right_stats->max_cardinality, 1);
+			} else if (join.join_type == JoinType::RIGHT) {
+				left_stats->max_cardinality = MaxValue<idx_t>(left_stats->max_cardinality, 1);
+			} else if (join.join_type == JoinType::OUTER) {
+				if (!TryAddOperator::Operation(left_stats->max_cardinality, right_stats->max_cardinality,
+				                               unmatched_rows)) {
+					left_stats.reset();
+				}
+			}
+			if (left_stats) {
+				MultiplyCardinalities(left_stats, *right_stats);
+				if (left_stats) {
+					left_stats->max_cardinality = MaxValue(left_stats->max_cardinality, unmatched_rows);
+				}
+			}
+		} else {
+			left_stats.reset();
 		}
+		node_stats = std::move(left_stats);
+		break;
 	}
 
 	auto join_type = join.join_type;
@@ -253,6 +380,17 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalJoin
 	}
 	if (adds_null_on_right) {
 		right_bindings = join.children[1]->GetColumnBindings();
+	}
+
+	// joins that can emit a row of a side multiple times invalidate that side's additive statistics
+	bool duplicates_left = join_type == JoinType::INNER || join_type == JoinType::LEFT ||
+	                       join_type == JoinType::RIGHT || join_type == JoinType::OUTER;
+	bool duplicates_right = duplicates_left || join_type == JoinType::SINGLE;
+	if (duplicates_left) {
+		ResetAdditiveStatistics(join.children[0]->GetColumnBindings());
+	}
+	if (duplicates_right) {
+		ResetAdditiveStatistics(join.children[1]->GetColumnBindings());
 	}
 
 	// then propagate into the join conditions
@@ -305,20 +443,21 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalPosi
 	D_ASSERT(join.type == LogicalOperatorType::LOGICAL_POSITIONAL_JOIN);
 
 	// first propagate through the children of the join
-	node_stats = PropagateStatistics(join.children[0]);
+	auto join_stats = PropagateStatistics(join.children[0]);
 	for (idx_t child_idx = 1; child_idx < join.children.size(); child_idx++) {
 		auto child_stats = PropagateStatistics(join.children[child_idx]);
 		if (!child_stats) {
-			node_stats = nullptr;
-		} else if (node_stats) {
-			if (!node_stats->has_estimated_cardinality || !child_stats->has_estimated_cardinality ||
-			    !node_stats->has_max_cardinality || !child_stats->has_max_cardinality) {
-				node_stats = nullptr;
+			join_stats = nullptr;
+		} else if (join_stats) {
+			if (!join_stats->has_estimated_cardinality || !child_stats->has_estimated_cardinality ||
+			    !join_stats->has_max_cardinality || !child_stats->has_max_cardinality) {
+				join_stats = nullptr;
 			} else {
-				MaxCardinalities(node_stats, *child_stats);
+				MaxCardinalities(join_stats, *child_stats);
 			}
 		}
 	}
+	node_stats = std::move(join_stats);
 
 	// No conditions.
 
@@ -348,9 +487,14 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalPosi
 void StatisticsPropagator::CreateFilterFromJoinStats(unique_ptr<LogicalOperator> &child, unique_ptr<Expression> &expr,
                                                      const BaseStatistics &stats_before,
                                                      const BaseStatistics &stats_after) {
-	// Only do this for integral colref's that have stats
-	if (expr->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF || !expr->GetReturnType().IsIntegral() ||
-	    !NumericStats::HasMinMax(stats_before) || !NumericStats::HasMinMax(stats_after)) {
+	// Defer join-derived filters until after join ordering.
+	if (mode != StatisticsPropagationMode::FULL) {
+		return;
+	}
+	// Match the numeric types supported by UpdateFilterStatistics.
+	auto column = GetFilterColumn(context, *expr);
+	if (!column || !expr->GetReturnType().IsNumeric() || !NumericStats::HasMinMax(stats_before) ||
+	    !NumericStats::HasMinMax(stats_after)) {
 		return;
 	}
 
@@ -361,15 +505,19 @@ void StatisticsPropagator::CreateFilterFromJoinStats(unique_ptr<LogicalOperator>
 	auto max_after = NumericStats::Max(stats_after);
 
 	vector<unique_ptr<Expression>> filter_exprs;
+	auto add_filter = [&](ExpressionType comparison_type, const Value &bound) {
+		// Inclusive bounds remain conservative when the reverse numeric cast rounds.
+		auto column_bound = bound.DefaultTryCastAs(column->GetReturnType());
+		if (column_bound) {
+			filter_exprs.emplace_back(BoundComparisonExpression::Create(
+			    comparison_type, column->Copy(), make_uniq<BoundConstantExpression>(std::move(*column_bound))));
+		}
+	};
 	if (min_after > min_before) {
-		filter_exprs.emplace_back(
-		    BoundComparisonExpression::Create(ExpressionType::COMPARE_GREATERTHANOREQUALTO, expr->Copy(),
-		                                      make_uniq<BoundConstantExpression>(std::move(min_after))));
+		add_filter(ExpressionType::COMPARE_GREATERTHANOREQUALTO, min_after);
 	}
 	if (max_after < max_before) {
-		filter_exprs.emplace_back(
-		    BoundComparisonExpression::Create(ExpressionType::COMPARE_LESSTHANOREQUALTO, expr->Copy(),
-		                                      make_uniq<BoundConstantExpression>(std::move(max_after))));
+		add_filter(ExpressionType::COMPARE_LESSTHANOREQUALTO, max_after);
 	}
 
 	if (filter_exprs.empty()) {

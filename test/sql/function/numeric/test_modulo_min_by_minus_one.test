@@ -1,0 +1,26 @@
+# name: test/sql/function/numeric/test_modulo_min_by_minus_one.test
+# description: The remainder of the minimum value divided by -1 is 0
+# group: [numeric]
+
+query IIII
+SELECT (-128)::TINYINT % (-1)::TINYINT, (-32768)::SMALLINT % (-1)::SMALLINT, (-2147483648)::INTEGER % (-1)::INTEGER,
+       (-9223372036854775808)::BIGINT % (-1)::BIGINT;
+----
+0	0	0	0
+
+query I
+SELECT (-170141183460469231731687303715884105728)::HUGEINT % (-1)::HUGEINT;
+----
+0
+
+# the integer division of the minimum value by -1 still overflows
+statement error
+SELECT (-9223372036854775808)::BIGINT // (-1)::BIGINT;
+----
+<REGEX>:Out of Range Error.*Overflow in division.*
+
+# other remainders are unaffected
+query II
+SELECT 7 % (-1), (-7) % 3;
+----
+0	-1

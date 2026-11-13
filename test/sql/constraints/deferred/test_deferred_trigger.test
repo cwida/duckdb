@@ -1,0 +1,62 @@
+# name: test/sql/constraints/deferred/test_deferred_trigger.test
+# description: Deferred constraints on tables written by triggers
+# group: [deferred]
+
+require noforcestorage
+
+statement ok
+CREATE TABLE target(id INTEGER);
+
+statement ok
+CREATE TABLE log(id INTEGER PRIMARY KEY DEFERRED);
+
+statement ok
+CREATE TRIGGER log_inserts AFTER INSERT ON target
+REFERENCING NEW TABLE AS inserted
+FOR EACH STATEMENT
+    INSERT INTO log SELECT id FROM inserted;
+
+statement ok
+INSERT INTO target VALUES (1), (2);
+
+# the trigger inserts a duplicate key, so the statement and its trigger are rolled back
+statement error
+INSERT INTO target VALUES (3), (3);
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+query I
+SELECT count(*) FROM target;
+----
+2
+
+# the duplicate is resolved before the commit
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+INSERT INTO target VALUES (1);
+
+query I
+SELECT count(*) FROM log WHERE id = 1;
+----
+2
+
+statement ok
+DELETE FROM log WHERE rowid = (SELECT min(rowid) FROM log WHERE id = 1);
+
+statement ok
+COMMIT;
+
+query I rowsort
+SELECT id FROM target;
+----
+1
+1
+2
+
+query I rowsort
+SELECT id FROM log;
+----
+1
+2

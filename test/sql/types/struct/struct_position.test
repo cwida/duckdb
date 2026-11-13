@@ -253,6 +253,12 @@ SELECT struct_position(ROW(MAP([1], [2])), MAP([1], [3]))
 ----
 NULL
 
+# mixed numeric member types
+query III
+SELECT struct_position(ROW(1.0::FLOAT, 2.0::DOUBLE), 1.0::FLOAT), struct_position(ROW(1.0::FLOAT, 2.0::DOUBLE), 2.0::DOUBLE), struct_position(ROW(1::INT, 2::BIGINT), 1::INT);
+----
+1	2	1
+
 # ==========================================================
 # Errors
 # ==========================================================

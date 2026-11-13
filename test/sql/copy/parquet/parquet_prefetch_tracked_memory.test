@@ -4,27 +4,43 @@
 
 require parquet
 
-# this test calibrates exact memory-fit boundaries (the prefetch span must not fit, the synchronous
-# reads must fit), alternative-verify builds shift both sides of that margin
+# this test calibrates memory-fit boundaries (the prefetch span must not fit, the synchronous
+# reads must fit). The file is large enough that both sides have ample margin: with a 256MB row
+# group span, prefetching needs well over 450MB while the synchronous reads need less than 120MB.
+# Alternative-verify builds and small vectors shift the margins, so they are excluded.
+require vector_size 2048
+
 require no_alternative_verify
 
 statement ok
-copy (select range i from range(16000000)) to '{TEST_DIR}/prefetch_tracked_big.parquet' (ROW_GROUP_SIZE 16000000);
+set threads=1;
 
-# prefetch pins the full ~64MB row group span on top of the decode memory, so it OOMs where sync reads fit
 statement ok
-set memory_limit='240mb';
+copy (select range i from range(64000000)) to '{TEST_DIR}/prefetch_tracked_big.parquet' (ROW_GROUP_SIZE 64000000);
+
+# prefetch pins the full ~256MB row group span on top of the decode memory, so it OOMs where sync reads fit
+statement ok
+set memory_limit='360mb';
 
 statement error
 select count(*), sum(i) from '{TEST_DIR}/prefetch_tracked_big.parquet';
 ----
 Out of Memory
 
-# disabling prefetching reads the file in small synchronous chunks, which fits in the memory limit
+# start from a clean buffer pool so nothing the failed query still holds is counted against the sync reads
+restart
+
+statement ok
+set threads=1;
+
+statement ok
+set memory_limit='360mb';
+
+# disabling prefetching reads the file in small synchronous chunks, which fits comfortably in the memory limit
 statement ok
 set disable_parquet_prefetching=true;
 
 query II
 select count(*), sum(i) from '{TEST_DIR}/prefetch_tracked_big.parquet';
 ----
-16000000	127999992000000
+64000000	2047999968000000

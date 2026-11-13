@@ -129,3 +129,35 @@ SELECT struct_update(col, i := col.i+10, a := NULL, b := NULL::VARCHAR, c := [NU
 {'i': 10, 'a': NULL, 'b': NULL, 'c': [NULL]}
 {'i': 11, 'a': NULL, 'b': NULL, 'c': [NULL]}
 {'i': 12, 'a': NULL, 'b': NULL, 'c': [NULL]}
+
+# A filter over several columns is pushed into the scan as an expression filter; the named arguments
+# must survive the pushdown (#26434).
+statement ok
+CREATE TABLE t0(c0 STRUCT(a INT, b INT), c1 INT);
+
+statement ok
+INSERT INTO t0 VALUES ({'a': 1, 'b': 2}, 5), ({'a': 3, 'b': 4}, NULL), (NULL, 1), ({'a': 7, 'b': 8}, 7);
+
+query II
+SELECT * FROM t0 WHERE struct_update(c0, a := c1) = c0;
+----
+{'a': 7, 'b': 8}	7
+
+query II
+SELECT * FROM t0 WHERE struct_update(c0, a := c1, c := c1) = {'a': 7, 'b': 8, 'c': 7};
+----
+{'a': 7, 'b': 8}	7
+
+query II
+SELECT * FROM t0 WHERE struct_insert(c0, c := c1) = {'a': 7, 'b': 8, 'c': 7};
+----
+{'a': 7, 'b': 8}	7
+
+# a NULL field compares as distinct from a value, a NULL struct gives NULL
+query I
+SELECT struct_update(c0, a := c1) = c0 FROM t0 ORDER BY ALL;
+----
+false
+false
+true
+NULL

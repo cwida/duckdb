@@ -1,0 +1,31 @@
+# name: test/optimizer/pushdown/prefix_pushdown_null_constant.test
+# description: Prefix filter pushdown with a NULL constant must not call StringValue::Get on NULL
+# group: [pushdown]
+
+statement ok
+CREATE TABLE t(s VARCHAR);
+
+statement ok
+INSERT INTO t VALUES ('a'), (NULL);
+
+query I
+SELECT * FROM t WHERE s ^@ nullif(NULL::VARCHAR, s);
+----
+
+query I
+SELECT * FROM t WHERE starts_with(s, nullif(NULL::VARCHAR, s));
+----
+
+statement ok
+DELETE FROM t WHERE s ^@ CAST(nullif(CAST(NULL AS VARCHAR), s) AS VARCHAR);
+
+query I
+SELECT count(*) FROM t;
+----
+2
+
+# a regular prefix filter is still pushed down and returns the right rows
+query I
+SELECT * FROM t WHERE s ^@ 'a';
+----
+a

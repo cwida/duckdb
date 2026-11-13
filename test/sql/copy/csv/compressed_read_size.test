@@ -1,0 +1,43 @@
+# name: test/sql/copy/csv/compressed_read_size.test
+# description: A compressed local file is read in the small chunks of its compression, not in the large chunks of remote files
+# group: [csv]
+
+require parquet
+
+require no_extension_autoloading "FIXME: Autoloading on zstd compression (parquet) not yet there"
+
+# the logging setting does not survive restarts
+require noforcestorage
+
+statement ok
+COPY (SELECT i, md5(i::VARCHAR) AS h FROM range(200000) t(i)) TO '{TEST_DIR}/read_size.csv.gz' (COMPRESSION gzip)
+
+statement ok
+COPY (SELECT i, md5(i::VARCHAR) AS h FROM range(200000) t(i)) TO '{TEST_DIR}/read_size.csv.zst' (COMPRESSION zstd)
+
+statement ok
+CALL enable_logging('FileSystem')
+
+query II
+SELECT count(*), sum(i) FROM '{TEST_DIR}/read_size.csv.gz'
+----
+200000	19999900000
+
+query II
+SELECT count(*), sum(i) FROM '{TEST_DIR}/read_size.csv.zst'
+----
+200000	19999900000
+
+query I
+SELECT max(bytes) <= 262144
+FROM duckdb_logs_parsed('FileSystem')
+WHERE path LIKE '%read_size.csv.gz' AND op = 'READ'
+----
+true
+
+query I
+SELECT max(bytes) <= 262144
+FROM duckdb_logs_parsed('FileSystem')
+WHERE path LIKE '%read_size.csv.zst' AND op = 'READ'
+----
+true

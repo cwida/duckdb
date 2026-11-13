@@ -117,3 +117,23 @@ SELECT variant_typeof(v), v
 FROM (SELECT variant_bytes_to_variant('\x01\x00\x00\x24\x00\x00\x00\x00\x00\x00\x00\x00\x80'::BLOB) AS v);
 ----
 DECIMAL(19, 0)	-9223372036854775808
+
+# ---------- DECIMAL with a scale exceeding the digits of the unscaled value ----------
+
+query II
+SELECT variant_typeof(v), v::VARCHAR
+FROM (SELECT variant_bytes_to_variant('\x01\x00\x00\x20\x03\x05\x00\x00\x00'::BLOB) AS v);
+----
+DECIMAL(3, 3)	.005
+
+query II
+SELECT variant_typeof(v), v::VARCHAR
+FROM (SELECT variant_bytes_to_variant('\x01\x00\x00\x24\x0C\xFB\xFF\xFF\xFF\xFF\xFF\xFF\xFF'::BLOB) AS v);
+----
+DECIMAL(12, 12)	-.000000000005
+
+query II
+SELECT variant_typeof(v), v::VARCHAR
+FROM (SELECT variant_bytes_to_variant('\x01\x00\x00\x28\x26\xFF\xFF\xFF\xFF\x3F\x22\x8A\x09\x7A\xC4\x86\x5A\xA8\x4C\x3B\x4B'::BLOB) AS v);
+----
+DECIMAL(38, 38)	.99999999999999999999999999999999999999

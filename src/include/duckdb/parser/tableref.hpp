@@ -55,12 +55,14 @@ public:
 
 	virtual void Serialize(Serializer &serializer) const;
 	static unique_ptr<TableRef> Deserialize(Deserializer &deserializer);
+	//! Throws a SerializationException if a deserialized table reference does not have a valid shape
+	void VerifyDeserialized() const;
 
 public:
 	template <class TARGET>
 	TARGET &Cast() {
 		if (type != TARGET::TYPE && TARGET::TYPE != TableReferenceType::INVALID) {
-			throw InternalException("Failed to cast constraint to type - constraint type mismatch");
+			InternalException::Throw("Failed to cast constraint to type - constraint type mismatch");
 		}
 		return reinterpret_cast<TARGET &>(*this);
 	}
@@ -68,7 +70,7 @@ public:
 	template <class TARGET>
 	const TARGET &Cast() const {
 		if (type != TARGET::TYPE && TARGET::TYPE != TableReferenceType::INVALID) {
-			throw InternalException("Failed to cast constraint to type - constraint type mismatch");
+			InternalException::Throw("Failed to cast constraint to type - constraint type mismatch");
 		}
 		return reinterpret_cast<const TARGET &>(*this);
 	}

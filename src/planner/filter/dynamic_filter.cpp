@@ -24,13 +24,13 @@ void DynamicFilterData::SetValue(Value val) {
 	if (val.IsNull()) {
 		return;
 	}
-	lock_guard<mutex> l(lock);
+	annotated_lock_guard<annotated_shared_mutex> l(lock);
 	constant = std::move(val);
 	initialized = true;
 }
 
 void DynamicFilterData::Reset() {
-	lock_guard<mutex> l(lock);
+	annotated_lock_guard<annotated_shared_mutex> l(lock);
 	initialized = false;
 }
 

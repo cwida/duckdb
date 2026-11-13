@@ -247,11 +247,18 @@
     "class": "ChangeColumnTypeInfo",
     "base": "AlterTableInfo",
     "enum": "ALTER_COLUMN_TYPE",
+    "finalize_deserialization": [
+      "if (result->column_path.empty()) {",
+      "\tresult->column_path.push_back(std::move(column_name));",
+      "}"
+    ],
     "members": [
       {
         "id": 400,
         "name": "column_name",
-        "type": "Identifier"
+        "type": "Identifier",
+        "serialize_property": "column_path[0]",
+        "deserialize_skip_assign": true
       },
       {
         "id": 401,
@@ -262,6 +269,13 @@
         "id": 402,
         "name": "expression",
         "type": "ParsedExpression*"
+      },
+      {
+        "id": 403,
+        "name": "column_path",
+        "type": "vector<Identifier>",
+        "serialize_property": "column_path.size() > 1 ? column_path : vector<Identifier>()",
+        "default": "vector<Identifier>()"
       }
     ]
   },
@@ -269,16 +283,30 @@
     "class": "SetDefaultInfo",
     "base": "AlterTableInfo",
     "enum": "SET_DEFAULT",
+    "finalize_deserialization": [
+      "if (result->column_path.empty()) {",
+      "\tresult->column_path.push_back(std::move(column_name));",
+      "}"
+    ],
     "members": [
       {
         "id": 400,
         "name": "column_name",
-        "type": "Identifier"
+        "type": "Identifier",
+        "serialize_property": "column_path[0]",
+        "deserialize_skip_assign": true
       },
       {
         "id": 401,
         "name": "expression",
         "type": "ParsedExpression*"
+      },
+      {
+        "id": 402,
+        "name": "column_path",
+        "type": "vector<Identifier>",
+        "serialize_property": "column_path.size() > 1 ? column_path : vector<Identifier>()",
+        "default": "vector<Identifier>()"
       }
     ]
   },
@@ -324,11 +352,25 @@
     "class": "SetNotNullInfo",
     "base": "AlterTableInfo",
     "enum": "SET_NOT_NULL",
+    "finalize_deserialization": [
+      "if (result->column_path.empty()) {",
+      "\tresult->column_path.push_back(std::move(column_name));",
+      "}"
+    ],
     "members": [
       {
         "id": 400,
         "name": "column_name",
-        "type": "Identifier"
+        "type": "Identifier",
+        "serialize_property": "column_path[0]",
+        "deserialize_skip_assign": true
+      },
+      {
+        "id": 401,
+        "name": "column_path",
+        "type": "vector<Identifier>",
+        "serialize_property": "column_path.size() > 1 ? column_path : vector<Identifier>()",
+        "default": "vector<Identifier>()"
       }
     ]
   },
@@ -336,11 +378,25 @@
     "class": "DropNotNullInfo",
     "base": "AlterTableInfo",
     "enum": "DROP_NOT_NULL",
+    "finalize_deserialization": [
+      "if (result->column_path.empty()) {",
+      "\tresult->column_path.push_back(std::move(column_name));",
+      "}"
+    ],
     "members": [
       {
         "id": 400,
         "name": "column_name",
-        "type": "Identifier"
+        "type": "Identifier",
+        "serialize_property": "column_path[0]",
+        "deserialize_skip_assign": true
+      },
+      {
+        "id": 401,
+        "name": "column_path",
+        "type": "vector<Identifier>",
+        "serialize_property": "column_path.size() > 1 ? column_path : vector<Identifier>()",
+        "default": "vector<Identifier>()"
       }
     ]
   },
@@ -458,6 +514,39 @@
         "id": 400,
         "name": "new_name",
         "type": "Identifier"
+      }
+    ]
+  },
+  {
+    "class": "AlterMacroInfo",
+    "base": "AlterInfo",
+    "enum": "ALTER_MACRO",
+    "class_type": "alter_macro_type",
+    "includes": [
+      "duckdb/parser/parsed_data/alter_macro_info.hpp"
+    ],
+    "members": [
+      {
+        "id": 300,
+        "name": "alter_macro_type",
+        "type": "AlterMacroType"
+      },
+      {
+        "id": 301,
+        "name": "entry_catalog_type",
+        "type": "CatalogType"
+      }
+    ]
+  },
+  {
+    "class": "RemoveMacroOverloadInfo",
+    "base": "AlterMacroInfo",
+    "enum": "REMOVE_OVERLOAD",
+    "members": [
+      {
+        "id": 400,
+        "name": "signature",
+        "type": "vector<LogicalType>"
       }
     ]
   },

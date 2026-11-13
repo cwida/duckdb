@@ -1,0 +1,51 @@
+# name: test/sql/error/identifier_quoting_in_messages.test
+# description: Identifiers are quoted exactly once in error messages
+# group: [error]
+
+# the formatter quotes an identifier, a format string that quotes it again prints ""a""
+# these expectations hold the whole phrase, so a doubled quote does not match
+
+statement error
+SELECT 1 AS a, 2 AS a UNION BY NAME SELECT 3 AS a
+----
+the name "a" occurs multiple times
+
+# this message used to wrap both names in single quotes around the formatter's double quotes
+statement error
+SELECT {'a': 1, 'a': 2}
+----
+Duplicate named argument "a" in 'struct_pack'
+
+statement ok
+CREATE SEQUENCE seq_max START 1 MAXVALUE 2
+
+statement ok
+SELECT nextval('seq_max'), nextval('seq_max')
+
+statement error
+SELECT nextval('seq_max')
+----
+reached maximum value of sequence "seq_max" (2)
+
+statement ok
+CREATE TABLE altered_under_us(i INTEGER)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+SELECT * FROM altered_under_us
+
+statement ok con2
+ALTER TABLE altered_under_us ADD COLUMN j INTEGER
+
+statement error con1
+INSERT INTO altered_under_us VALUES (1)
+----
+attempting to insert into table "altered_under_us" but it has been altered by a different transaction
+
+# a name that needs quoting in SQL is quoted the same way, once
+statement error
+SELECT 1 AS "my col", 2 AS "my col" UNION BY NAME SELECT 3 AS "my col"
+----
+the name "my col" occurs multiple times

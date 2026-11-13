@@ -164,7 +164,6 @@ protected:
 	PhysicalOperator &CreatePlan(LogicalUpdate &op);
 	PhysicalOperator &CreatePlan(LogicalPrepare &expr);
 	PhysicalOperator &CreatePlan(LogicalWindow &expr);
-	PhysicalOperator &CreatePlan(LogicalExecute &op);
 	PhysicalOperator &CreatePlan(LogicalPragma &op);
 	PhysicalOperator &CreatePlan(LogicalSample &op);
 	PhysicalOperator &CreatePlan(LogicalSecureView &op);
@@ -189,10 +188,25 @@ protected:
 
 	PhysicalOperator &PlanAsOfJoin(LogicalComparisonJoin &op);
 	PhysicalOperator &PlanComparisonJoin(LogicalComparisonJoin &op);
+	//! Pruning projection maps lifted off a join whose physical operator emits full input widths
+	struct PrunedJoinProjection {
+		bool active = false;
+		bool expanded_left = false;
+		bool expanded_right = false;
+		vector<ProjectionIndex> left_map;
+		vector<ProjectionIndex> right_map;
+		vector<LogicalType> original_types;
+	};
+	PrunedJoinProjection ExtractPrunedJoinProjection(LogicalComparisonJoin &op, const PhysicalOperator &left,
+	                                                 const PhysicalOperator &right, bool expand_left,
+	                                                 bool expand_right);
+	PhysicalOperator &RestorePrunedJoinProjection(LogicalComparisonJoin &op, PhysicalOperator &join,
+	                                              PrunedJoinProjection info);
 	PhysicalOperator &PlanDelimJoin(LogicalComparisonJoin &op);
 	PhysicalOperator &ExtractAggregateExpressions(PhysicalOperator &child, vector<unique_ptr<Expression>> &expressions,
 	                                              vector<unique_ptr<Expression>> &groups,
-	                                              optional_ptr<vector<GroupingSet>> grouping_sets);
+	                                              optional_ptr<vector<GroupingSet>> grouping_sets,
+	                                              bool extract_filters = true);
 
 private:
 	ClientContext &context;
@@ -206,7 +220,7 @@ private:
 	bool PreserveInsertionOrder(PhysicalOperator &plan);
 	bool UseBatchIndex(PhysicalOperator &plan);
 	optional_ptr<PhysicalOperator> PlanAsOfLoopJoin(LogicalComparisonJoin &op, PhysicalOperator &probe,
-	                                                PhysicalOperator &build);
+	                                                PhysicalOperator &build, const idx_t join_cardinality);
 	optional_ptr<PhysicalOperator> PlanAsOfInequalityJoin(LogicalComparisonJoin &op, PhysicalOperator &probe,
 	                                                      PhysicalOperator &build, const idx_t lhs_cardinality,
 	                                                      const idx_t rhs_cardinality);

@@ -1,0 +1,271 @@
+# name: test/sql/storage/concurrent_checkpoint_writes_mid_write.test_slow
+# description: Inserts and deletes run while the checkpoint writes their table, and land in the rewritten table
+# group: [storage]
+
+load {TEST_DIR}/concurrent_checkpoint_writes_mid_write.db
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+CREATE TABLE test (i INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO test SELECT i, 'str' || i FROM range(50000) t(i);
+
+statement ok
+CHECKPOINT
+
+# loaded from disk, the row group has no version info until something deletes from it
+restart
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+# a committed update makes the checkpoint rewrite the row group into a new one, and leaves its version info untouched:
+# the delete below reaches the new row group only through the version info the two row groups share
+statement ok
+UPDATE test SET s = 'pre' WHERE i = 0
+
+# the timing table lives in a database the checkpoint does not write
+statement ok
+ATTACH ':memory:' AS mem
+
+statement ok
+CREATE TABLE mem.timing (who VARCHAR, t TIMESTAMP);
+
+# the checkpoint pauses for eight seconds after it scanned the row groups, before it replaces them
+statement ok
+SET debug_checkpoint_scan_sleep_ms=8000
+
+# ---------------------------------------------------------------------------------------------------------------------
+# autocommit statements during the pause: none of them wait for the checkpoint. The delete hits a row group that had
+# no version info when the checkpoint started rewriting it
+# ---------------------------------------------------------------------------------------------------------------------
+# every thread executes every sleep: the sleeps are the schedule
+concurrentloop threadid 0 5
+
+# thread 4 is a reader that needs the state from before the insert below, so that this is a concurrent checkpoint (a
+# full checkpoint holds the vacuum lock and blocks every writer)
+onlyif threadid=4
+statement ok
+BEGIN TRANSACTION
+
+onlyif threadid=4
+query I
+SELECT COUNT(*) FROM test
+----
+50000
+
+sleep 2000 millisecond
+
+# a commit after the reader started: the checkpoint has to be a concurrent one
+onlyif threadid=0
+statement ok
+INSERT INTO test VALUES (-1, 'pre')
+
+onlyif threadid=0
+statement ok
+INSERT INTO mem.timing VALUES ('checkpoint start', now())
+
+onlyif threadid=0
+statement ok
+CHECKPOINT
+
+onlyif threadid=0
+statement ok
+INSERT INTO mem.timing VALUES ('checkpoint end', now())
+
+sleep 2000 millisecond
+
+onlyif threadid=4
+statement ok
+ROLLBACK
+
+onlyif threadid=1
+statement ok
+INSERT INTO test SELECT i, 'inserted' FROM range(100000, 101000) t(i)
+
+onlyif threadid=2
+statement ok
+DELETE FROM test WHERE i >= 10000 AND i < 11000
+
+onlyif threadid=3
+statement ok
+INSERT INTO test SELECT i, 'inserted' FROM range(110000, 111000) t(i)
+
+onlyif threadid>0&&threadid<4
+statement ok
+INSERT INTO mem.timing VALUES ('writer', now())
+
+endloop
+
+# the writers ran after the checkpoint started and finished during the pause, long before the checkpoint did (a
+# writer waiting for the table would finish after the pause)
+query I
+SELECT COUNT(*) FROM mem.timing w, mem.timing s, mem.timing e WHERE w.who = 'writer' AND s.who = 'checkpoint start' AND e.who = 'checkpoint end' AND w.t > s.t AND w.t < e.t - INTERVAL 4 SECOND
+----
+3
+
+query IIII
+SELECT COUNT(*), COUNT(*) FILTER (WHERE s = 'inserted'), COUNT(*) FILTER (WHERE i >= 10000 AND i < 11000), COUNT(*) FILTER (WHERE i = -1) FROM test
+----
+51001	2000	0	1
+
+query II
+SELECT SUM(i), COUNT(*) = COUNT(DISTINCT rowid) FROM test
+----
+1450474499	true
+
+# the table statistics cover the rows appended during the checkpoint (a stale maximum would prune this filter)
+query I
+SELECT COUNT(*) FROM test WHERE i >= 110000
+----
+1000
+
+# WAL replay of the concurrent commits
+restart
+
+query IIII
+SELECT COUNT(*), COUNT(*) FILTER (WHERE s = 'inserted'), COUNT(*) FILTER (WHERE i >= 10000 AND i < 11000), COUNT(*) FILTER (WHERE i = -1) FROM test
+----
+51001	2000	0	1
+
+query II
+SELECT SUM(i), COUNT(*) = COUNT(DISTINCT rowid) FROM test
+----
+1450474499	true
+
+statement ok
+SET debug_checkpoint_scan_sleep_ms=0
+
+statement ok
+CHECKPOINT
+
+restart
+
+query III
+SELECT COUNT(*), SUM(i), COUNT(*) = COUNT(DISTINCT rowid) FROM test
+----
+51001	1450474499	true
+
+# ---------------------------------------------------------------------------------------------------------------------
+# transactions that inserted before the checkpoint delete during the pause; one commits, the other rolls back. The
+# deletes hit the row group the update below makes the checkpoint rewrite
+# ---------------------------------------------------------------------------------------------------------------------
+statement ok
+SET debug_checkpoint_scan_sleep_ms=8000
+
+# loaded from disk, the row group of the rows appended in the first block has no version info; the update makes the
+# checkpoint rewrite it
+statement ok
+UPDATE test SET s = 'pre2' WHERE i = 100100
+
+statement ok
+ATTACH ':memory:' AS mem
+
+statement ok
+CREATE TABLE mem.timing (who VARCHAR, t TIMESTAMP);
+
+concurrentloop threadid 0 3
+
+onlyif threadid>0
+statement ok
+BEGIN TRANSACTION
+
+onlyif threadid=1
+statement ok
+INSERT INTO test SELECT i, 'committed' FROM range(200000, 201000) t(i)
+
+onlyif threadid=2
+statement ok
+INSERT INTO test SELECT i, 'rolled back' FROM range(300000, 301000) t(i)
+
+sleep 2000 millisecond
+
+# committed after the open transactions started: the checkpoint has to be a concurrent one
+onlyif threadid=0
+statement ok
+INSERT INTO test VALUES (-2, 'pre2')
+
+onlyif threadid=0
+statement ok
+INSERT INTO mem.timing VALUES ('checkpoint start', now())
+
+onlyif threadid=0
+statement ok
+CHECKPOINT
+
+onlyif threadid=0
+statement ok
+INSERT INTO mem.timing VALUES ('checkpoint end', now())
+
+sleep 2000 millisecond
+
+onlyif threadid=1
+statement ok
+DELETE FROM test WHERE i >= 110000 AND i < 111000
+
+onlyif threadid=1
+statement ok
+COMMIT
+
+onlyif threadid=2
+statement ok
+DELETE FROM test WHERE i >= 100100 AND i < 100600
+
+onlyif threadid=2
+statement ok
+ROLLBACK
+
+onlyif threadid>0
+statement ok
+INSERT INTO mem.timing VALUES ('writer', now())
+
+endloop
+
+query I
+SELECT COUNT(*) FROM mem.timing w, mem.timing s, mem.timing e WHERE w.who = 'writer' AND s.who = 'checkpoint start' AND e.who = 'checkpoint end' AND w.t > s.t AND w.t < e.t - INTERVAL 4 SECOND
+----
+2
+
+query IIIII
+SELECT COUNT(*), COUNT(*) FILTER (WHERE s = 'committed'), COUNT(*) FILTER (WHERE s = 'rolled back'), COUNT(*) FILTER (WHERE i >= 110000 AND i < 111000), COUNT(*) FILTER (WHERE i >= 100100 AND i < 100600) FROM test
+----
+51002	1000	0	0	500
+
+query II
+SELECT SUM(i), COUNT(*) = COUNT(DISTINCT rowid) FROM test
+----
+1540474497	true
+
+restart
+
+query IIIII
+SELECT COUNT(*), COUNT(*) FILTER (WHERE s = 'committed'), COUNT(*) FILTER (WHERE s = 'rolled back'), COUNT(*) FILTER (WHERE i >= 110000 AND i < 111000), COUNT(*) FILTER (WHERE i >= 100100 AND i < 100600) FROM test
+----
+51002	1000	0	0	500
+
+query II
+SELECT SUM(i), COUNT(*) = COUNT(DISTINCT rowid) FROM test
+----
+1540474497	true
+
+statement ok
+SET debug_checkpoint_scan_sleep_ms=0
+
+statement ok
+CHECKPOINT
+
+restart
+
+query II
+SELECT SUM(i), COUNT(*) = COUNT(DISTINCT rowid) FROM test
+----
+1540474497	true

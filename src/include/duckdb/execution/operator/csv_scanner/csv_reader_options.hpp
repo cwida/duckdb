@@ -119,7 +119,7 @@ struct CSVReaderOptions {
 	//! The file path of the CSV file to read
 	string file_path;
 	//! Buffer Size (Parallel Scan)
-	CSVOption<idx_t> buffer_size_option = CSVBuffer::ROWS_PER_BUFFER * max_line_size_default;
+	CSVOption<idx_t> buffer_size_option = CSVBuffer::CSV_BUFFER_SIZE;
 	//! Decimal separator when reading as numeric
 	string decimal_separator = ".";
 	//! Whether  to pad rows that do not have enough columns with NULL values
@@ -184,13 +184,14 @@ struct CSVReaderOptions {
 
 	//! Set an option that is supported by both reading and writing functions, called by
 	//! the SetReadOption and SetWriteOption methods
-	bool SetBaseOption(const Identifier &loption, const Value &value, bool write_option = false);
+	bool SetBaseOption(Context &context, const Identifier &loption, const Value &value, bool write_option = false);
 
 	//! loption - lowercase string
 	//! set - argument(s) to the option
 	//! expected_names - names expected if the option is "columns"
-	void SetReadOption(const Identifier &loption, const Value &value, const vector<Identifier> &expected_names);
-	void SetWriteOption(const Identifier &loption, const Value &value);
+	void SetReadOption(Context &context, const Identifier &loption, const Value &value,
+	                   const vector<Identifier> &expected_names);
+	void SetWriteOption(Context &context, const Identifier &loption, const Value &value);
 	void SetDateFormat(LogicalTypeId type, const string &format, bool read_format);
 	void ToNamedParameters(named_parameter_map_t &out) const;
 	void FromNamedParameters(const named_argument_map_t &in, ClientContext &context, MultiFileOptions &file_options);

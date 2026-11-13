@@ -41,6 +41,9 @@ public:
 	DUCKDB_API virtual ~BaseQueryResult();
 
 public:
+	//! Whether the result's schema and properties are known. False for a statement that expands into several until
+	//! the one producing the result is bound, unless it failed. Runs nothing
+	DUCKDB_API bool MetadataAvailable() const;
 	//! Returns the type of the statement that created this result
 	DUCKDB_API StatementType GetStatementType() const;
 	//! Returns the properties of the statement that created this result
@@ -61,6 +64,12 @@ public:
 	DUCKDB_API ErrorData &GetErrorObject();
 	DUCKDB_API const ErrorData &GetErrorObject() const;
 
+protected:
+	//! Creates a successful result whose metadata the statement producing it will provide
+	explicit BaseQueryResult(StatementType statement_type);
+	void SetMetadata(StatementProperties properties, vector<LogicalType> types, vector<Identifier> names);
+	void RequireMetadata() const;
+
 private:
 	//! The type of the statement that created this result
 	StatementType statement_type;
@@ -70,6 +79,7 @@ private:
 	vector<LogicalType> types;
 	//! The names of the result
 	vector<Identifier> names;
+	bool metadata_available = true;
 	//! Whether or not execution was successful
 	bool success;
 	//! The error (in case execution was not successful)
@@ -90,6 +100,10 @@ public:
 	DUCKDB_API QueryResult(shared_ptr<ClientContext> context, PreparedStatementData &statement,
 	                       vector<LogicalType> types, ClientProperties client_properties,
 	                       shared_ptr<BufferedData> buffer);
+	//! Creates the handle of a freshly submitted statement that expands into several: its metadata and buffer come
+	//! from the statement that produces the result, once that is bound
+	QueryResult(shared_ptr<ClientContext> context, StatementType statement_type, shared_ptr<ResultFormat> format,
+	            ClientProperties client_properties);
 	//! Creates a detached result over an existing, finalized collection
 	DUCKDB_API QueryResult(StatementType statement_type, StatementProperties properties, vector<Identifier> names,
 	                       unique_ptr<ColumnDataCollection> collection, ClientProperties client_properties);
@@ -113,11 +127,13 @@ public:
 	static void DeduplicateColumns(vector<string> &names);
 
 public:
-	//! Returns the query's current state. Does not participate in execution.
+	//! Returns the query's current state. Runs no task; for a statement that expands into several, it starts the
+	//! next statement once the running one finished.
 	DUCKDB_API QueryResultState Poll();
 	//! Executes a single task of the query on the calling thread. Decides nothing: READY means the engine is
 	//! waiting for the retention decision, and every further call returns READY, running nothing, until a
-	//! stream is opened or a retained-side call (Materialize, Complete, Collection, ...) is made.
+	//! stream is opened or a retained-side call (Materialize, Complete, Collection, ...) is made. Unless a
+	//! stream drains the result, the call that reports FINISHED ends the query and collects the rows.
 	DUCKDB_API QueryResultState ExecuteTask();
 	//! Blocks until a task is runnable or the engine is waiting on the caller. Runs no task.
 	DUCKDB_API void WaitForTask();
@@ -147,7 +163,8 @@ public:
 	}
 	//! Get the rowcount of the result. Will materialize the full result if it hadn't yet.
 	DUCKDB_API idx_t RowCount();
-	//! Ends the query if it is still open. Idempotent.
+	//! Aborts the query unless a call already ended it: autocommit rolls it back, and inside a transaction a
+	//! statement that may write invalidates the transaction. Idempotent.
 	DUCKDB_API void Close();
 	//! Whether this result is still the connection's open result.
 	DUCKDB_API bool IsOpen();
@@ -213,6 +230,12 @@ private:
 	//! recorded, and reports it as an error state
 	QueryResultState Cancelled();
 	void CompleteInternal(ClientContextLock &lock);
+	//! Ends the query as failed after an exception escaped a call that holds the context lock, and releases the
+	//! context
+	void AbandonAfterThrowInternal(ClientContextLock &lock, ErrorData error);
+	void SettleRetainedInternal(ClientContextLock &lock);
+	//! Ends a query whose retained execution finished and collects its rows
+	QueryResultState EndFinishedInternal(ClientContextLock &lock);
 	void HandleFetchFailure(ClientContextLock &lock, ErrorData error);
 	//! Ends the query and records a commit failure on this result without throwing
 	void EndQuery(ClientContextLock &lock, bool invalidate_transaction = false);
@@ -224,6 +247,12 @@ private:
 	void InitializeChunkFormatState();
 	//! Takes the rows only: the handle already holds the format and state its buffer settled at submission
 	void AdoptCollected(QueryResult &produced);
+	//! Takes the metadata and buffer of the statement that produces the result of a statement that expands
+	void AdoptResultStatement(StatementProperties properties, PreparedStatementData &statement,
+	                          shared_ptr<BufferedData> buffer);
+	//! Takes the metadata, format state and rows of a finished statement that expands into several and returns no
+	//! rows
+	void AdoptRowlessResult(QueryResult &produced);
 	DUCKDB_API void PrepareCollected(const char *expected);
 	DUCKDB_API const ResultFormatGlobalState &CheckedFormatState(const char *expected) const;
 	[[noreturn]] void ThrowFormatMismatch(const char *expected) const;
@@ -232,11 +261,12 @@ private:
 	//! The client context this result belongs to. Null once the query has ended
 	shared_ptr<ClientContext> context;
 	//! The buffer created for this query at submission. It carries the retention decision and, for
-	//! a stream, the units (null for a detached or an error result)
+	//! a stream, the units (null for a detached or an error result, and for a statement that expands until the one
+	//! producing the result has started)
 	shared_ptr<BufferedData> buffer;
 	//! Set at construction; never null for a non-error result
 	shared_ptr<ResultFormat> format;
-	//! Set at construction; never null for a non-error result
+	//! Never null for a non-error result whose metadata is available
 	shared_ptr<ResultFormatGlobalState> format_state;
 	//! In the format's own storage, which also holds the fetch cursor
 	unique_ptr<RetainedResultCollection> collection;

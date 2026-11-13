@@ -1,0 +1,38 @@
+# name: test/sql/storage/compression/zstd/zstd_corrupt_string_length.test
+# description: A Zstd frame must produce all bytes requested by the string lengths
+# group: [zstd]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/zstd_corrupt_string_length.db.gz {TEST_DIR}/zstd_corrupt_string_length.db
+
+load {TEST_DIR}/zstd_corrupt_string_length.db readonly
+
+statement ok
+USE zstd_corrupt_string_length;
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='s' AND compression='ZSTD' LIMIT 1;
+----
+ZSTD
+
+statement ok
+SET memory_limit='1GB';
+
+statement error
+SELECT sum(length(s)) FROM t;
+----
+Data Corruption Error: Corrupted ZSTD vector: frame ended before producing the requested bytes
+
+restart
+
+statement ok
+SET memory_limit='1GB';
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT sum(length(s)) FROM t;
+----
+Data Corruption Error: Corrupted ZSTD vector: frame ended before producing the requested bytes

@@ -1,0 +1,32 @@
+# name: test/sql/function/timestamp/icu_get_time_overflow.test
+# description: ICU date functions on timestamps close to the minimum timestamp
+# group: [timestamp]
+
+require icu
+
+foreach tz UTC Pacific/Chatham Canada/Newfoundland Asia/Kathmandu Asia/Kolkata
+
+statement ok
+SET TimeZone='{tz}';
+
+statement error
+SELECT date_trunc('year', to_timestamp(-9223372036854)::TIMESTAMPTZ)
+----
+out of range
+
+statement error
+SELECT date_trunc('year', TIMESTAMPTZ '290309-12-22 (BC) 00:00:00+00')
+----
+out of range
+
+statement error
+SELECT time_bucket(INTERVAL '1 year', TIMESTAMPTZ '290309-12-22 (BC) 00:00:00+00')
+----
+out of range
+
+query II
+SELECT date_trunc('year', TIMESTAMPTZ '2024-05-05 10:00:00+00')::TIMESTAMP, date_trunc('month', TIMESTAMPTZ '2024-05-05 10:00:00+00')::TIMESTAMP
+----
+2024-01-01 00:00:00	2024-05-01 00:00:00
+
+endloop

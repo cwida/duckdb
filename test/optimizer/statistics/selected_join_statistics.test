@@ -1,0 +1,65 @@
+# name: test/optimizer/statistics/selected_join_statistics.test
+# description: Selected join statistics propagate to enclosing operators
+# group: [statistics]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+CREATE TABLE selected_rows AS SELECT (i%10)::INTEGER k FROM range(1000) t(i);
+
+statement ok
+ANALYZE selected_rows;
+
+# The selected SEMI narrows its output key domain, independently of its row count.
+query II
+EXPLAIN SELECT a.k FROM selected_rows a
+SEMI JOIN (SELECT k FROM (VALUES (1::BIGINT)) t(k) GROUP BY k) d USING(k)
+GROUP BY a.k;
+----
+physical_plan	<REGEX>:(?s).*HASH_GROUP_BY.*~1 row.*HASH_JOIN.*Join Type: SEMI.*
+
+query II
+SELECT a.k, count(*) FROM selected_rows a
+SEMI JOIN (SELECT k FROM (VALUES (1::BIGINT)) t(k) GROUP BY k) d USING(k)
+GROUP BY a.k;
+----
+1	100
+
+# The narrowed domain survives another join and a projection before grouping.
+query II
+EXPLAIN SELECT key FROM (
+    SELECT a.k AS key FROM selected_rows a
+    SEMI JOIN (SELECT k FROM (VALUES (1::BIGINT)) t(k) GROUP BY k) d USING(k)
+    JOIN selected_rows b ON a.k=b.k
+) t GROUP BY key;
+----
+physical_plan	<REGEX>:(?s).*HASH_GROUP_BY.*~1 row.*HASH_JOIN.*
+
+query II
+SELECT key,count(*) FROM (
+    SELECT a.k AS key FROM selected_rows a
+    SEMI JOIN (SELECT k FROM (VALUES (1::BIGINT)) t(k) GROUP BY k) d USING(k)
+    JOIN selected_rows b ON a.k=b.k
+) t GROUP BY key;
+----
+1	10000
+
+# Ordering, offset and limit retain the selected key domain.
+query II
+EXPLAIN SELECT k FROM (
+    SELECT a.k FROM selected_rows a
+    SEMI JOIN (SELECT k FROM (VALUES (1::BIGINT)) t(k) GROUP BY k) d USING(k)
+    ORDER BY a.k LIMIT 5 OFFSET 2
+) t GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*HASH_GROUP_BY.*~1 row.*
+
+query II
+SELECT k,count(*) FROM (
+    SELECT a.k FROM selected_rows a
+    SEMI JOIN (SELECT k FROM (VALUES (1::BIGINT)) t(k) GROUP BY k) d USING(k)
+    ORDER BY a.k LIMIT 5 OFFSET 2
+) t GROUP BY k;
+----
+1	5

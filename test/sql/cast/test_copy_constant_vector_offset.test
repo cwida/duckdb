@@ -1,0 +1,53 @@
+# name: test/sql/cast/test_copy_constant_vector_offset.test
+# description: Copy from a constant vector at an offset beyond the standard vector size
+# group: [cast]
+
+query I
+SELECT count(*) FROM (SELECT TRY_CAST(l AS MAP(VARCHAR, INTEGER)[]) x FROM (SELECT list({'a': [i::INT]}) l FROM range(3000) t(i)));
+----
+1
+
+query I
+SELECT bool_and(x[1]['a'] IS NULL) FROM (SELECT TRY_CAST(l AS MAP(VARCHAR, INTEGER)[]) x FROM (SELECT list({'a': [i::INT]}) l FROM range(2049) t(i)));
+----
+true
+
+query I
+SELECT bool_and(x[2999]['a'] IS NULL) FROM (SELECT TRY_CAST(l AS MAP(VARCHAR, UUID)[]) x FROM (SELECT list({'a': i::INT, 'b': i::INT}) l FROM range(3000) t(i)));
+----
+true
+
+query I
+SELECT max(length(x::VARCHAR)) FROM (SELECT TRY_CAST(l AS MAP(VARCHAR, INT)[][]) x FROM (SELECT list([{'a': [i::INT]}]) l FROM range(3000) t(i)));
+----
+36000
+
+query I
+SELECT max(length(u::MAP(VARCHAR, VARCHAR)[]::VARCHAR)) FROM (SELECT TRY_CAST(l AS STRUCT(a INT, b VARCHAR)[]) u FROM (SELECT list(i) l FROM range(5000) t(i)));
+----
+30000
+
+query I
+SELECT m['2048'] IS NULL FROM (SELECT TRY_CAST(map_from_entries(list({'k': i::VARCHAR, 'v': i::INT})) AS MAP(VARCHAR, UUID)) m FROM range(2049) t(i));
+----
+true
+
+query I
+SELECT x[2049]['b'] FROM (SELECT list({'a': NULL, 'b': i})::MAP(VARCHAR, INT)[] x FROM range(2049) t(i));
+----
+2048
+
+query I
+SELECT x[2049]['a'] IS NULL FROM (SELECT list({'a': NULL, 'b': i})::MAP(VARCHAR, INT)[] x FROM range(2049) t(i));
+----
+true
+
+query I
+SELECT m['2048'] IS NULL FROM (SELECT map(list(i::VARCHAR), list(NULL))::MAP(VARCHAR, INT) m FROM range(2049) t(i));
+----
+true
+
+query I
+SELECT len(list({'a': NULL, 'b': i})::MAP(VARCHAR, INT)[]::VARCHAR) FROM range(3000) t(i);
+----
+52890

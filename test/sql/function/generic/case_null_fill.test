@@ -1,0 +1,229 @@
+# name: test/sql/function/generic/case_null_fill.test
+# description: CASE NULL filling preserves values from other arms and selected row mappings
+# group: [generic]
+
+statement ok
+PRAGMA disable_optimizer;
+
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE case_inputs AS
+SELECT i, NULLIF(i%101, 0)::INTEGER AS n,
+       NULLIF(i%101, 0)::DECIMAL(30,2) AS d,
+       repeat('value', 5) || i::VARCHAR AS s,
+       [i, NULLIF(i%101, 0)] AS l,
+       {'n': NULLIF(i%101, 0), 's': repeat('value', 5) || i::VARCHAR} AS st,
+       map(['n'], [NULLIF(i%101, 0)]) AS m
+FROM range(5003) t(i);
+
+foreach mode none dictionary_expression
+
+statement ok
+SET debug_verify_vector='{mode}';
+
+foreach col n d s l st m
+
+# Overlapping WHEN conditions must retain the first match, including NULL matches.
+query I
+WITH actual AS (
+    SELECT i, CASE WHEN i%11=0 THEN {col}
+                   WHEN i%3=0 THEN NULL
+                   WHEN i%5=0 THEN {col}
+                   ELSE NULL END AS v
+    FROM case_inputs
+), expected AS (
+    SELECT i, {col} AS v FROM case_inputs WHERE i%11=0
+    UNION ALL
+    SELECT i, {col} FROM case_inputs WHERE i%11<>0 AND i%3<>0 AND i%5=0
+    UNION ALL
+    SELECT i, NULL FROM case_inputs WHERE i%11<>0 AND (i%3=0 OR i%5<>0)
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+);
+----
+0
+
+# Inner CASE receives sparse, high original row indices; ELSE writes non-NULL values.
+query I
+WITH actual AS (
+    SELECT i, CASE WHEN i%13=1
+                   THEN CASE WHEN i%7=2 THEN {col}
+                             WHEN i%7=3 THEN NULL
+                             ELSE {col} END
+                   ELSE NULL END AS v
+    FROM case_inputs
+), expected AS (
+    SELECT i, {col} AS v FROM case_inputs WHERE i%13=1 AND i%7<>3
+    UNION ALL
+    SELECT i, NULL FROM case_inputs WHERE i%13<>1 OR i%7=3
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+);
+----
+0
+
+# Multiple projected results share their source but not their output validity.
+query I
+WITH actual AS (
+    SELECT i, {col} AS original,
+           coalesce(CASE WHEN i%7=0 THEN {col} END,
+                    CASE WHEN i%7<>0 THEN {col} END) AS v
+    FROM case_inputs
+), expected AS (
+    SELECT i, {col} AS original, {col} AS v FROM case_inputs
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+);
+----
+0
+
+endloop
+
+# Endpoints straddle validity words and vector boundaries, including partial tails.
+foreach endpoint 0 1 63 64 65 127 128 129 2047 2048 2049 5003
+
+query I
+WITH actual AS (
+    SELECT i, CASE WHEN i%64=0 THEN n
+                   WHEN i%64=63 THEN NULL
+                   WHEN i%64=1 THEN n
+                   ELSE NULL END AS v
+    FROM case_inputs WHERE i<{endpoint}
+), expected AS (
+    SELECT i, n AS v FROM case_inputs WHERE i<{endpoint} AND i%64 IN (0,1)
+    UNION ALL
+    SELECT i, NULL FROM case_inputs WHERE i<{endpoint} AND i%64 NOT IN (0,1)
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+);
+----
+0
+
+endloop
+
+# NULL WHEN conditions follow the remaining arms.
+query I
+SELECT count(*) FROM case_inputs
+WHERE CASE WHEN NULL THEN n WHEN n IS NULL THEN NULL ELSE n END IS DISTINCT FROM n;
+----
+0
+
+endloop
+
+statement ok
+RESET debug_verify_vector;
+
+# Dictionary inputs include repeated and reordered values.
+query I
+WITH actual AS (
+    SELECT CASE WHEN v=1 THEN v WHEN v=2 THEN NULL ELSE v END AS v
+    FROM test_vector_types(1::INTEGER, 2::INTEGER, NULL::INTEGER, all_flat=false) t(v)
+), expected AS (
+    SELECT v FROM test_vector_types(1::INTEGER, 2::INTEGER, NULL::INTEGER, all_flat=true) t(v)
+    WHERE v IS DISTINCT FROM 2
+    UNION ALL
+    SELECT NULL FROM test_vector_types(1::INTEGER, 2::INTEGER, NULL::INTEGER, all_flat=true) t(v)
+    WHERE v=2
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+);
+----
+0
+
+# NULL arms cannot expose rows to later throwing or volatile arms.
+query I
+SELECT sum(CASE WHEN i%3=0 THEN NULL
+                WHEN i%3=1 THEN CAST('42' AS INTEGER)
+                ELSE CAST(i::VARCHAR AS INTEGER) END)
+FROM range(12) t(i);
+----
+194
+
+query I
+SELECT count(CASE WHEN i>=0 THEN NULL ELSE CAST(i || 'bad' AS INTEGER) END)
+FROM range(5003) t(i);
+----
+0
+
+statement error
+SELECT CASE WHEN i=0 THEN NULL ELSE CAST(i || 'bad' AS INTEGER) END FROM range(3) t(i);
+----
+Could not convert string
+
+statement ok
+CREATE SEQUENCE case_fill_seq;
+
+query II
+SELECT count(v), sum(v) FROM (
+    SELECT CASE WHEN i%3=0 THEN NULL
+                WHEN i%3=1 THEN nextval('case_fill_seq')
+                ELSE NULL END AS v
+    FROM range(12) t(i)
+);
+----
+4	10
+
+query I
+SELECT currval('case_fill_seq');
+----
+4
+
+statement ok
+CREATE SEQUENCE case_when_seq;
+
+query II
+SELECT count(v), sum(v) FROM (
+    SELECT CASE WHEN nextval('case_when_seq')%3=0 THEN NULL
+                WHEN i%2=0 THEN i ELSE NULL END AS v
+    FROM range(12) t(i)
+);
+----
+4	20
+
+query I
+SELECT currval('case_when_seq');
+----
+12
+
+statement ok
+PREPARE case_fill AS
+SELECT count(*), sum(v) FROM (
+    SELECT CASE WHEN i%7=$1 THEN n WHEN i%3=0 THEN NULL ELSE n END AS v
+    FROM case_inputs
+);
+
+query II
+EXECUTE case_fill(0);
+----
+5003	177786
+
+query II
+EXECUTE case_fill(6);
+----
+5003	177751
+
+statement ok
+DROP TABLE case_inputs;
+
+statement ok
+DROP SEQUENCE case_fill_seq;
+
+statement ok
+DROP SEQUENCE case_when_seq;

@@ -29,6 +29,13 @@ struct MetricQuerySQL {
 	static constexpr const char *Unit = "";
 	static constexpr const char *TypeStr = "string";
 };
+struct MetricQueryTotalBytesScanned {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "query.total_bytes_scanned";
+	static constexpr const char *Description = "Cumulative compressed size of the Parquet column chunks scanned by the query, however many bytes were read from storage to scan them. Left out if a scan of the query does not count the bytes it scans";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
 struct MetricQueryTotalIntermediateRows {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "query.total_intermediate_rows";
@@ -101,6 +108,13 @@ struct MetricSystemPeakTempDirSize {
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };
+struct MetricSystemTotalBytesSpilled {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "system.total_bytes_spilled";
+	static constexpr const char *Description = "Cumulative bytes written to the temporary (spill) directory";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
 struct MetricSystemTotalMemoryAllocated {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "system.total_memory_allocated";
@@ -123,6 +137,34 @@ struct MetricIOTotalBytesWritten {
 	static constexpr const char *Description = "The total amount of bytes written to storage";
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricIOTotalReadOperations {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "io.total_read_operations";
+	static constexpr const char *Description = "The total number of read operations issued to storage";
+	static constexpr const char *Unit = "operations";
+	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricIOTotalReadTime {
+	using METRIC_TYPE = double;
+	static constexpr const char *Name = "io.total_read_time";
+	static constexpr const char *Description = "The total time spent reading from storage";
+	static constexpr const char *Unit = "seconds";
+	static constexpr const char *TypeStr = "double";
+};
+struct MetricIOTotalWriteOperations {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "io.total_write_operations";
+	static constexpr const char *Description = "The total number of write operations issued to storage";
+	static constexpr const char *Unit = "operations";
+	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricIOTotalWriteTime {
+	using METRIC_TYPE = double;
+	static constexpr const char *Name = "io.total_write_time";
+	static constexpr const char *Description = "The total time spent writing to storage";
+	static constexpr const char *Unit = "seconds";
+	static constexpr const char *TypeStr = "double";
 };
 
 // Storage metrics
@@ -184,6 +226,13 @@ struct MetricStorageWriteToWALLatency {
 };
 
 // Operator metrics
+struct MetricOperatorBytesScanned {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "operator.bytes_scanned";
+	static constexpr const char *Description = "Compressed size of the Parquet column chunks scanned by the operator";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
 struct MetricOperatorCPUTime {
 	using METRIC_TYPE = double;
 	static constexpr const char *Name = "operator.cpu_time";
@@ -211,6 +260,13 @@ struct MetricOperatorIntermediateSizeBytes {
 	static constexpr const char *Description = "Intermediate size in bytes produced by the operator";
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricOperatorName {
+	using METRIC_TYPE = string;
+	static constexpr const char *Name = "operator.name";
+	static constexpr const char *Description = "Name of the operator";
+	static constexpr const char *Unit = "";
+	static constexpr const char *TypeStr = "string";
 };
 struct MetricOperatorRowGroupsScanned {
 	using METRIC_TYPE = uint64_t;
@@ -311,5 +367,11 @@ struct MetricPhysicalPlannerTotalTime {
 	static constexpr const char *Unit = "seconds";
 	static constexpr const char *TypeStr = "double";
 };
+
+template <class... METRICS>
+struct MetricList {};
+
+// The metrics marked "live": they can be read while the query runs
+using LiveMetrics = MetricList<MetricSystemTotalBytesSpilled, MetricSystemTotalMemoryAllocated, MetricIOTotalBytesRead, MetricIOTotalBytesWritten, MetricIOTotalReadOperations, MetricIOTotalReadTime, MetricIOTotalWriteOperations, MetricIOTotalWriteTime>;
 
 } // namespace duckdb

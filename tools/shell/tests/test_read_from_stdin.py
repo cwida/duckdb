@@ -7,6 +7,7 @@ from typing import List
 from conftest import ShellTest
 from conftest import json_extension
 import os
+import re
 
 @pytest.mark.skipif(os.name == 'nt', reason="Skipped on windows")
 class TestReadFromStdin(object):
@@ -143,6 +144,62 @@ class TestReadFromStdin(object):
         result = test.run()
         result.check_stdout("web,8006004,844.21,21")
 
+    @staticmethod
+    def scan_estimate(shell, input_file, source, options=''):
+        test = (
+            ShellTest(shell)
+            .input_file(input_file)
+            .statement(f"EXPLAIN SELECT * FROM read_csv('{source}'{options})")
+            .add_argument(
+                '-csv',
+                ':memory:'
+            )
+        )
+        result = test.run()
+        assert result.status_code == 0
+        estimates = re.findall(r'~([0-9,]+) rows', result.stdout)
+        assert len(estimates) == 1
+        return int(estimates[0].replace(',', ''))
+
+    # the sniffer reads all of this input, in one buffer or in many, so the pipe is estimated like the file
+    @pytest.mark.parametrize("options", [
+        '',
+        ', buffer_size = 8192, sample_size = -1'
+    ])
+    def test_read_stdin_csv_cardinality(self, shell, options):
+        input_file = 'data/csv/test/test.csv'
+        pipe_estimate = self.scan_estimate(shell, input_file, '/dev/stdin', options)
+        file_estimate = self.scan_estimate(shell, input_file, input_file, options)
+        assert pipe_estimate == file_estimate
+
+    def test_read_stdin_csv_cardinality_partial(self, shell):
+        # the sniffer reads part of this input, so the pipe is estimated from at least one buffer
+        input_file = 'data/csv/tpcds_59.csv'
+        options = ', sample_size = 1024, buffer_size = 262144'
+        pipe_estimate = self.scan_estimate(shell, input_file, '/dev/stdin', options)
+        file_estimate = self.scan_estimate(shell, input_file, input_file, options)
+        # ten columns of an estimated five bytes each
+        assert 262144 // 50 <= pipe_estimate < file_estimate
+
+    def test_read_stdin_csv_semi_join_memory(self, shell):
+        # the piped input does not fit in memory, so it has to be the probe side of the join
+        input_data = 'id,payload\n' + ''.join(f'{i},{"x" * 100}\n' for i in range(100000))
+        test = (
+            ShellTest(shell)
+            .add_argument(
+                '-csv',
+                '-c',
+                """
+                SET threads = 2;
+                SET memory_limit = '8MB';
+                SELECT count(*), max(payload) = repeat('x', 100) FROM read_csv('/dev/stdin', buffer_size = 1048576)
+                WHERE id IN (SELECT range FROM range(100));
+                """
+            )
+        )
+        result = test.run_raw(input_data)
+        result.check_stdout('100,true')
+
 
     def test_read_stdin_ndjson(self, shell, json_extension):
         test = (
@@ -275,6 +332,33 @@ class TestReadFromStdin(object):
         )
         result = test.run()
         result.check_stdout('42')
+
+
+    @pytest.mark.parametrize("alias", [
+        "'/dev/stdin'",
+        'stdin',
+        'STDIN'
+    ])
+    def test_copy_from_stdin(self, shell, tmp_path, alias):
+        input_file = tmp_path / 'copy_from_stdin.csv'
+        input_file.write_text('1,2\n3,4\n')
+        test = (
+            ShellTest(shell)
+            .input_file(input_file)
+            .statement("CREATE TABLE t(a INTEGER, b INTEGER)")
+            .statement(f"COPY t FROM {alias}")
+            .statement("SELECT * FROM t ORDER BY a")
+            .add_argument(
+                '-csv',
+                ':memory:'
+            )
+        )
+        result = test.run()
+        result.check_stdout([
+            'a,b',
+            '1,2',
+            '3,4'
+        ])
 
 
     @pytest.mark.parametrize("alias", [

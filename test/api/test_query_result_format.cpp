@@ -545,7 +545,7 @@ TEST_CASE("A format given at submission reaches every completed result", "[api][
 	SECTION("a statement that completes at submission") {
 		auto result = con.context->Query("CREATE TABLE t AS SELECT range i FROM range(20000)", format);
 		REQUIRE_NO_FAIL(*result);
-		// The planner marks it FORCED, so the buffer settled the format before execution started
+		// Query settles retention at submission, so the buffer settled the format before execution started
 		REQUIRE(result->RowCount() == 1);
 	}
 	SECTION("every row-returning statement of a multi-statement query") {

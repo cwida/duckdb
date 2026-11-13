@@ -1,0 +1,31 @@
+# name: test/sql/storage/compression/rle/rle_select_force_fetch_row.test
+# description: Filtered scans with debug_force_fetch_row must fetch rows relative to the segment start
+# group: [rle]
+
+load {TEST_DIR}/rle_select_force_fetch_row.db
+
+statement ok
+SET force_compression='rle';
+
+statement ok
+CREATE TABLE t AS SELECT i, i::BIGINT AS x FROM range(100000) r(i);
+
+statement ok
+CHECKPOINT
+
+restart
+
+# the column spans multiple segments within a single row group
+query I
+SELECT count(*) > 1 FROM pragma_storage_info('t') WHERE column_name = 'x' AND segment_type = 'BIGINT';
+----
+true
+
+statement ok
+SET debug_force_fetch_row = true;
+
+# the filter on i selects rows that live in a later segment of x
+query II
+SELECT count(*), sum(x) FROM t WHERE i BETWEEN 60000 AND 60010;
+----
+11	660055

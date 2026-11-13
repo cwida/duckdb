@@ -3,18 +3,16 @@ module: instance
 # of GLOBAL settings, and the databases attached to it. Creating the handle,
 # attaching a database, and choosing the default database are separate steps:
 #
-#   instance_create(env, &instance);
-#   instance_set_option(instance, "access_mode", "READ_ONLY");   // startup option
-#   instance_attach(instance, "path/to/file.db", NULL, NULL, true); // like ATTACH, and the default database
-#   instance_set_option(instance, "memory_limit", "4GB");        // SET GLOBAL
+#   instance_create_with_options(env, {"access_mode"}, {"READ_ONLY"}, 1, &instance);  // startup option
+#   instance_attach(instance, NULL, "path/to/file.db", NULL, true);     // like ATTACH, and the default database
+#   instance_get_config(instance, &config);
+#   config_set_option_text(config, "memory_limit", "4GB", DEFAULT);     // SET GLOBAL
 #   connection_create(instance, &conn);
 #
-# The instance starts on its first use: the first instance_attach or
-# connection_create. Options set before that point go into the startup
-# configuration, so options that can only be chosen at startup (access_mode,
-# enable_external_access, threads, block sizes, ...) are set through the same
-# call as the ones that can change at runtime. After startup,
-# instance_set_option is SQL `SET GLOBAL`.
+# The instance exists as soon as instance_create returns. Options that can
+# only be chosen at startup (access_mode, allow_unsigned_extensions, ...) are
+# passed to instance_create_with_options; every other option can be passed there too, or
+# written afterwards through the instance's config, which is SQL `SET GLOBAL`.
 #
 # Nothing is attached until instance_attach: only the system catalog and each
 # connection's temporary catalog exist. Attaching never picks a default
@@ -36,15 +34,16 @@ handles:
 functions:
   instance_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
-      Creates an instance handle under the environment.
+      Creates an instance under the environment with no startup options.
 
-      The handle starts with no database attached and with its instance not
-      yet started; set startup options with `[[instance_set_option]]`, then attach
-      a database with `[[instance_attach]]` and pick the default with
-      `[[instance_set_default]]`, or connect with `[[connection_create]]`. The caller destroys it
-      via `[[instance_destroy]]`.
+      The instance is ready on return, with no database attached: attach one
+      with `[[instance_attach]]` and pick the default with
+      `[[instance_set_default]]`, or connect with `[[connection_create]]`.
+      To choose an option that cannot change once the instance exists, such
+      as access_mode, use `[[instance_create_with_options]]` instead. The
+      caller destroys the instance via `[[instance_destroy]]`.
     role: constructor
     belongs_to: instance
     parameters:
@@ -62,9 +61,73 @@ functions:
         kind: OUT
         description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
+  instance_create_with_options:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
+    description: |
+      Creates an instance under the environment, configured with startup
+      options.
+
+      Behaves as `[[instance_create]]`, applying the startup options first.
+
+      Startup options are (name, value) pairs in two parallel arrays, the
+      values in the textual form SQL `SET` accepts. They are the only way to
+      choose an option that cannot change once the instance exists, such as
+      access_mode or allow_unsigned_extensions; every other option can be
+      written now or later through `[[instance_get_config]]`. An option that
+      needs a running instance (the logging options, allowed_directories,
+      allowed_paths, disabled_filesystems) returns ERROR_INPUT_INVALID here:
+      write it through the instance's config after creation. A name no core
+      option or loaded extension defines is kept for an extension to consume
+      while the instance starts up, and creation fails with the names none
+      claimed. The caller destroys the instance via `[[instance_destroy]]`.
+    role: constructor
+    belongs_to: instance
+    parameters:
+      env:
+        type: environment
+        description: "The environment."
+      option_names:
+        type: char
+        indirection: 2
+        const: true
+        kind: IN
+        description: "Optional. An array of option_count option names (canonical or alias). Pass NULL when option_count is 0."
+      option_names_lengths:
+        type: idx
+        indirection: 1
+        const: true
+        kind: IN
+        description: Byte lengths of the entries in `option_names`; element i is the length of `option_names[i]`. May be NULL only when `option_names` is NULL.
+      option_values:
+        type: char
+        indirection: 2
+        const: true
+        kind: IN
+        description: "Optional. An array of option_count values, parallel to option_names, in the textual form SQL `SET` accepts. Pass NULL when option_count is 0."
+      option_values_lengths:
+        type: idx
+        indirection: 1
+        const: true
+        kind: IN
+        description: Byte lengths of the entries in `option_values`; element i is the length of `option_values[i]`. May be NULL only when `option_values` is NULL.
+      option_count:
+        type: idx
+        description: "The number of startup options."
+      out_instance:
+        type: instance
+        indirection: 1
+        kind: OUT
+        description: "Receives the new instance handle."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
   instance_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys the instance handle.
 
@@ -83,20 +146,25 @@ functions:
     return_type: ERROR
   instance_attach:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
-      Attaches a database to the instance, starting it if it has not
-      started yet.
+      Attaches a database to the instance.
 
       Attaches the database at `path` exactly like `ATTACH 'path'`:
-        - `:memory:` or an empty view attaches a fresh in-memory database
-          named `memory`.
+        - `:memory:` or an empty view attaches a fresh in-memory database.
         - any other path attaches that file, creating it if it does not
-          exist, under the name derived from the file's base name.
-      `name` is the name to attach under, like `ATTACH ... AS name`; null, or
-      an empty view, uses the name derived from the path. Naming is how two
-      files with
-      the same base name, or `:memory:` twice, attach side by side. `options`
+          exist.
+      `name` is the name to attach under, like `ATTACH ... AS name`; it is
+      how `[[instance_detach]]` and `[[instance_set_default]]` refer to the
+      database. Null, or an empty view, derives the name from the path the
+      way SQL `ATTACH` without `AS` does:
+        - `memory` for `:memory:` or an empty view;
+        - otherwise the file name up to its first `.`, without any `?query`
+          parameters (`/data/sales.2024.db` attaches as `sales`), with
+          `_db` appended when that is a reserved name such as `system` or
+          `temp`.
+      Naming is how two files with the same base name, or `:memory:` twice,
+      attach side by side. `options`
       may be null; it carries the `(KEY value)` options of SQL `ATTACH`, for
       per-database options such as READ_ONLY, BLOCK_SIZE or ENCRYPTION_KEY,
       and must have been created from this instance handle. `make_default`
@@ -106,25 +174,31 @@ functions:
       default is left alone. A path that is already attached on this or any
       other instance of the environment returns ERROR_RESOURCE_IN_USE, and a
       name that is already attached fails. Options that only apply at startup
-      must be set before the first attach or connection.
+      are passed to `[[instance_create_with_options]]`.
     role: method
     belongs_to: instance
     parameters:
       instance:
         type: instance
         description: "The instance handle."
-      path:
-        type: str
-        indirection: 1
-        const: true
-        kind: IN
-        description: "Path to the database file, or `:memory:` / an empty view for an in-memory database."
       name:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: "Optional. The name to attach under; null or an empty view for the name derived from the path. Borrowed and copied."
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
+      path:
+        type: char
+        indirection: 1
+        const: true
+        kind: IN
+        description: "Path to the database file, or `:memory:` / an empty view for an in-memory database."
+      path_length:
+        type: idx
+        description: The length of `path` in bytes. `path` need not be null-terminated and may be NULL only when this is 0.
       options:
         type: attach_options
         description: "Optional attach options created from `instance`, or null to attach with defaults under the derived name."
@@ -139,31 +213,33 @@ functions:
     return_type: ERROR
   instance_detach:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
-      Detaches the database that was attached from `path`.
+      Detaches the database attached under `name`.
 
       Detaches it like `DETACH`, checkpointing a file database first. Unlike
       SQL, the default database may be detached too; new connections then
       start without a default until `[[instance_set_default]]` names another, and
       existing connections bound to it keep it alive until their transaction
-      on it ends and fail unqualified DDL afterwards. The path is matched
-      against the attached databases as `[[instance_attach]]` recorded it, so pass
-      the path that was passed to `[[instance_attach]]`. Returns ERROR_INPUT_INVALID
-      when no database attached from that path exists. Connections that still
-      reference the database keep it alive until they release it.
+      on it ends and fail unqualified DDL afterwards. Returns
+      ERROR_INPUT_INVALID when no database is attached under that name.
+      Connections that still reference the database keep it alive until they
+      release it.
     role: method
     belongs_to: instance
     parameters:
       instance:
         type: instance
         description: "The instance handle."
-      path:
-        type: str
+      name:
+        type: char
         indirection: 1
         const: true
         kind: IN
-        description: "The path the database was attached from, or the name it is attached under."
+        description: "The name the database is attached under. Borrowed."
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1
@@ -172,10 +248,10 @@ functions:
     return_type: ERROR
   instance_set_default:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
-      Makes the database that was attached from `path` the default database
-      for connections created from now on.
+      Makes the database attached under `name` the default database for
+      connections created from now on.
 
       A connection binds to the default database when it is created, so this
       does not retarget existing connections: their default stays what it was
@@ -184,22 +260,23 @@ functions:
       catalog go. It stays the default for new connections until another
       `[[instance_set_default]]` call or until it is detached; a connection whose
       default has been detached fails unqualified DDL with a message saying
-      so until it selects another with `USE`. `path` is either the path that
-      was passed to `[[instance_attach]]` or the name the database is attached
-      under; a name match wins. Returns ERROR_INPUT_INVALID when neither
-      matches an attached database.
+      so until it selects another with `USE`. Returns ERROR_INPUT_INVALID when
+      no database is attached under that name.
     role: method
     belongs_to: instance
     parameters:
       instance:
         type: instance
         description: "The instance handle."
-      path:
-        type: str
+      name:
+        type: char
         indirection: 1
         const: true
         kind: IN
-        description: "The path the database was attached from, or the name it is attached under."
+        description: "The name the database is attached under. Borrowed."
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1
@@ -208,7 +285,7 @@ functions:
     return_type: ERROR
   attach_options_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Creates an empty set of attach options for use with `[[instance_attach]]` on
       `instance`.
@@ -235,7 +312,7 @@ functions:
     return_type: ERROR
   attach_options_set:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Sets one attach option, like a `(KEY value)` entry of SQL `ATTACH`.
 
@@ -254,17 +331,23 @@ functions:
         type: attach_options
         description: "The attach options."
       key:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: "The option name, e.g. READ_ONLY."
+      key_length:
+        type: idx
+        description: The length of `key` in bytes. `key` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       setting:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: "The option value, in the textual form a quoted SQL literal would carry."
+      setting_length:
+        type: idx
+        description: The length of `setting` in bytes. `setting` need not be null-terminated and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1
@@ -273,7 +356,7 @@ functions:
     return_type: ERROR
   attach_options_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Destroys an attach options handle.
 
@@ -287,150 +370,23 @@ functions:
         indirection: 1
         description: "The attach options to destroy."
     return_type: ERROR
-  instance_set_option:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Sets a config option on the instance (GLOBAL scope).
-
-      Before the instance has started (no `[[instance_attach]]` or
-      `[[connection_create]]` yet), the option goes into the startup configuration: this is the only
-      way to set an option that can only be chosen at startup, such as
-      access_mode or enable_external_access. Unknown names are kept for an
-      extension to consume at startup; if none does, startup fails with the
-      unrecognized names. After startup, this is `SET GLOBAL name = setting`
-      and an unknown name is rejected unless an extension that defines it can
-      be autoloaded. Returns ERROR_INPUT_INVALID for an option declared
-      LOCAL_ONLY, and for a legacy option with no global setter.
-    role: setter
-    belongs_to: instance
-    parameters:
-      instance:
-        type: instance
-        description: "The instance handle."
-      name:
-        type: identifier
-        indirection: 1
-        const: true
-        kind: IN
-        description: "Option name (canonical or alias)."
-      setting:
-        type: str
-        indirection: 1
-        const: true
-        kind: IN
-        description: "The setting, in the textual form SQL `SET` accepts."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-  instance_get_option_by_name:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Reads a config option from the instance (GLOBAL scope) by name.
-
-      Allocates a fully populated option: canonical name, current GLOBAL
-      setting, default setting, description, target scope, and aliases.
-      Before startup the current setting is the staged startup value, or the
-      default. Aliases resolve transparently — passing an alias returns the
-      canonical option, with the alias listed in its alias array. An unknown
-      name returns ERROR_INPUT_INVALID; before startup that includes an
-      option of an extension that has not loaded yet, even if a setting for
-      it has been staged. The caller destroys the returned option.
-    role: getter
-    belongs_to: instance
-    parameters:
-      instance:
-        type: instance
-        description: "The instance handle."
-      name:
-        type: identifier
-        indirection: 1
-        const: true
-        kind: IN
-        description: "Option name (canonical or alias)."
-      out_option:
-        type: option
-        indirection: 1
-        kind: OUT
-        description: "Receives the populated option handle."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-  instance_get_option_count:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Returns the number of config options registered on the instance.
-
-      Counts core options plus the extension options registered on this
-      instance. Aliases are NOT counted separately; each one is reachable
-      through its canonical option's alias array.
-    role: getter
-    belongs_to: instance
-    parameters:
-      instance:
-        type: instance
-        description: "The instance handle."
-      out_count:
-        type: idx
-        indirection: 1
-        kind: OUT
-        description: "Receives the option count."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-  instance_get_option_by_index:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Reads the config option at the given index from the instance.
-
-      Index space: [0, core_count) addresses core options, [core_count, total)
-      extension options. The mapping is stable for as long as no extension
-      registers new options. An out-of-range index returns ERROR_INPUT_INVALID.
-      The caller destroys the returned option.
-    role: getter
-    belongs_to: instance
-    parameters:
-      instance:
-        type: instance
-        description: "The instance handle."
-      index:
-        type: idx
-        description: "The option index, in [0, option_count)."
-      out_option:
-        type: option
-        indirection: 1
-        kind: OUT
-        description: "Receives the populated option handle."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
   library_version:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: "Returns the version of the linked DuckDB library."
     role: getter
     parameters:
       out_version:
-        type: str
-        indirection: 1
-        const: false
-        kind: OUT
+        type: char
+        indirection: 2
+        const: true
+        kind: OUT_BORROW
         description: "The version string."
+      out_version_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*out_version` in bytes. `*out_version` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1

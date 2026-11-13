@@ -63,3 +63,30 @@ SELECT struct_insert(col, a := NULL, b := NULL::VARCHAR, c := [NULL]) FROM tbl O
 {'i': 0, 'a': NULL, 'b': NULL, 'c': [NULL]}
 {'i': 1, 'a': NULL, 'b': NULL, 'c': [NULL]}
 {'i': 2, 'a': NULL, 'b': NULL, 'c': [NULL]}
+
+# prepared statement parameters
+statement ok
+PREPARE q AS SELECT struct_insert($1, b := $2) r;
+
+query I
+EXECUTE q({'a': 1}, 2);
+----
+{'a': 1, 'b': 2}
+
+query I
+EXECUTE q({'x': 'y'}, [1, 2]);
+----
+{'x': y, 'b': [1, 2]}
+
+statement error
+EXECUTE q(1, 2);
+----
+The first argument to struct_insert must be a STRUCT
+
+statement ok
+PREPARE q2 AS SELECT struct_insert({'a': 1}, b := $1) r;
+
+query I
+EXECUTE q2('z');
+----
+{'a': 1, 'b': z}

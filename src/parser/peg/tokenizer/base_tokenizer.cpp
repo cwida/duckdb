@@ -1,10 +1,35 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/peg/tokenizer/tokenizer.hpp"
 #include "duckdb/parser/peg/keyword_helper.hpp"
+#include "duckdb/parser/peg/matcher/operator_matcher.hpp"
 
 namespace duckdb {
 
-TokenizerBehavior::TokenizerBehavior(const string &sql, vector<MatcherToken> &tokens) : sql(sql), tokens(tokens) {
+uint8_t ComputeMatcherTokenClass(TokenType type, const string &text) {
+	switch (type) {
+	case TokenType::KEYWORD:
+	case TokenType::IDENTIFIER:
+		return MatcherTokenClass::WORD;
+	case TokenType::STRING_LITERAL:
+		// string literals are also accepted in identifier positions (e.g. table and file names)
+		return MatcherTokenClass::STRING | MatcherTokenClass::WORD;
+	case TokenType::NUMBER_LITERAL:
+		return MatcherTokenClass::NUMBER;
+	case TokenType::OPERATOR:
+		if (!text.empty() && !Tokenizer::CharacterIsOperator(text[0])) {
+			return 0;
+		}
+		if (OperatorMatcher::HasSpecialPrecedence(text)) {
+			return MatcherTokenClass::OPERATOR;
+		}
+		return MatcherTokenClass::OPERATOR | MatcherTokenClass::GENERIC_OPERATOR;
+	default:
+		// terminators and end-of-input are only matched as literals or by matchers without a FIRST set
+		return 0;
+	}
+}
+
+TokenizerBehavior::TokenizerBehavior(const string &sql) : sql(sql) {
 }
 
 Tokenizer::Tokenizer(const PEGKeywordHelper &keyword_helper_p) : keyword_helper(keyword_helper_p) {
@@ -15,7 +40,9 @@ bool Tokenizer::BackslashEscapesStringLiterals() const {
 }
 
 bool Tokenizer::IsQuotedIdentifierDelimiter(char character) const {
-	return character == '"';
+	// double quotes are the SQL standard delimiter; backticks are accepted as an alternative
+	// (as in several other SQL dialects), with the same doubling rule for escaping the delimiter
+	return character == '"' || character == '`';
 }
 
 void Tokenizer::HandleLastToken(TokenizerBehavior &behavior, TokenizeState state, const string &sql,
@@ -281,6 +308,33 @@ void Tokenizer::PushOperatorToken(TokenizerBehavior &behavior, idx_t start, idx_
 	}
 }
 
+//! Skip an ordinary run, leaving its first special byte (or the final input byte) to the state machine.
+static idx_t SkipTokenizerBytes(const string &sql, idx_t pos, char first, char second) {
+	D_ASSERT(pos < sql.size());
+	const auto end = sql.size() - 1;
+	// Most tokens are short; avoid setting up a block scan for them.
+	for (idx_t count = 0; count < 8 && pos < end; count++, pos++) {
+		if (sql[pos] == first || sql[pos] == second) {
+			return pos;
+		}
+	}
+	while (end - pos >= 32) {
+		uint8_t found = 0;
+		for (idx_t offset = 0; offset < 32; offset++) {
+			auto c = sql[pos + offset];
+			found |= c == first || c == second;
+		}
+		if (found) {
+			break;
+		}
+		pos += 32;
+	}
+	while (pos < end && sql[pos] != first && sql[pos] != second) {
+		pos++;
+	}
+	return pos;
+}
+
 bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 	auto &sql = behavior.sql;
 	auto &tokens = behavior.tokens;
@@ -387,10 +441,17 @@ bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 				last_pos = i + 1;
 				break;
 			}
-			if (CharacterIsInitialNumber(c)) {
-				// parse a numeric literal
+			// '.' starts a number only as a leading decimal (.5); otherwise it is the qualifier (t.a, t.*)
+			if (CharacterIsInitialNumber(c) &&
+			    (c != '.' || (i + 1 < sql.size() && StringUtil::CharacterIsDigit(sql[i + 1])))) {
 				state = TokenizeState::NUMERIC;
 				last_pos = i;
+				break;
+			}
+			if (c == '.') {
+				// emit '.' as it's own token, tokenize what follows independently
+				tokens.emplace_back(string(1, c), last_pos, TokenType::OPERATOR);
+				last_pos = i + 1;
 				break;
 			}
 			if (CharacterIsSpecialStringCharacter(c)) {
@@ -418,8 +479,9 @@ bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 			if (CharacterIsInitialNumber(c)) {
 				break; // Continue tokenizing
 			}
-			// Allow underscore only when immediately followed by a digit (no consecutive underscores)
-			if (c == '_' && i + 1 < sql.size() && CharacterIsInitialNumber(sql[i + 1])) {
+			// A digit separator must sit between two digits
+			if (c == '_' && StringUtil::CharacterIsDigit(sql[i - 1]) && i + 1 < sql.size() &&
+			    StringUtil::CharacterIsDigit(sql[i + 1])) {
 				break;
 			}
 
@@ -494,7 +556,9 @@ bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 			}
 			break;
 		case TokenizeState::STRING_LITERAL:
-			if ((escape_string || BackslashEscapesStringLiterals()) && c == '\\' && i + 1 < sql.size()) {
+			i = SkipTokenizerBytes(sql, i, '\'', '\\');
+			c = sql[i];
+			if (c == '\\' && i + 1 < sql.size() && (escape_string || BackslashEscapesStringLiterals())) {
 				i++;
 				break;
 			}
@@ -511,6 +575,8 @@ bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 			}
 			break;
 		case TokenizeState::QUOTED_IDENTIFIER:
+			i = SkipTokenizerBytes(sql, i, quoted_identifier_delimiter, quoted_identifier_delimiter);
+			c = sql[i];
 			if (c == quoted_identifier_delimiter) {
 				if (i + 1 < sql.size() && sql[i + 1] == quoted_identifier_delimiter) {
 					// escaped - skip escape
@@ -523,6 +589,8 @@ bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 			}
 			break;
 		case TokenizeState::SINGLE_LINE_COMMENT:
+			i = SkipTokenizerBytes(sql, i, '\n', '\r');
+			c = sql[i];
 			if (c == '\n' || c == '\r') {
 				behavior.PushToken(last_pos, i + 1, TokenType::COMMENT);
 				last_pos = i + 1;
@@ -530,6 +598,8 @@ bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 			}
 			break;
 		case TokenizeState::MULTI_LINE_COMMENT:
+			i = SkipTokenizerBytes(sql, i, '/', '*');
+			c = sql[i];
 			if (c == '/' && i + 1 < sql.size() && sql[i + 1] == '*') {
 				i++;
 				multi_line_comment_depth++;
@@ -544,6 +614,8 @@ bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 			}
 			break;
 		case TokenizeState::DOLLAR_QUOTED_STRING: {
+			i = SkipTokenizerBytes(sql, i, '$', '$');
+			c = sql[i];
 			// Dollar-quoted string -- all that will get us out is a $[marker]$
 			if (c != '$') {
 				break;

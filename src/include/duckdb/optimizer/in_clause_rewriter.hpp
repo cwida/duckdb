@@ -31,6 +31,10 @@ public:
 	static constexpr idx_t IN_CLAUSE_REWRITE_THRESHOLD = 6;
 	static bool HasRewritableInClause(const Expression &expr);
 	unique_ptr<LogicalOperator> Rewrite(unique_ptr<LogicalOperator> op);
+	//! skips error-capture interiors (TRY, has_error) and guarded conjunction/CASE/COALESCE children:
+	//! the rewrite would move the probe's evaluation (and its errors) below the operator, outside the
+	//! capture or the guard
+	void VisitExpression(unique_ptr<Expression> *expression) override;
 	unique_ptr<Expression> VisitReplace(BoundOperatorExpression &expr, unique_ptr<Expression> *expr_ptr) override;
 };
 

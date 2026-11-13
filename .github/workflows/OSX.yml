@@ -6,6 +6,8 @@ on:
         type: string
       duckdb_commit:
         type: string
+      is_release_build:
+        type: boolean
       runner_macos_arm64:
         type: string
       skip_tests:
@@ -64,6 +66,33 @@ jobs:
       if: ${{ !inputs.skip_tests }}
       run: make unittest_release
 
+    # SQL navigation needs the query_break hook and locals that release builds optimize away.
+    - name: Build debug executable for LLDB
+      if: ${{ !inputs.skip_tests }}
+      timeout-minutes: 60
+      env:
+        DISABLE_SHELL: 1
+        # Debug enables extra conversion warnings; keep them non-fatal for the LLDB fixture build.
+        TREAT_WARNINGS_AS_ERRORS: 0
+        EXTRA_CMAKE_VARIABLES: -DTREAT_WARNINGS_AS_ERRORS=OFF
+      run: python3 scripts/ci/retry.py -- make debug
+
+    - name: LLDB helper tests
+      id: lldb-tests
+      if: ${{ !inputs.skip_tests }}
+      timeout-minutes: 5
+      run: |
+        python3 scripts/lldb/tests/run_tests.py --unittest build/debug/test/unittest \
+          --lldb "$(xcrun --find lldb)" \
+          --coverage-dir build/lldb-coverage
+
+    - name: Upload LLDB coverage
+      if: ${{ !cancelled() && steps.lldb-tests.outcome != 'skipped' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: lldb-coverage-osx
+        path: build/lldb-coverage
+
   xcode-release:
     # Builds binaries for osx_arm64 and osx_amd64
     name: OSX Release
@@ -100,8 +129,8 @@ jobs:
       - name: CLI check
         run: |
           ./build/release/duckdb -c "PRAGMA platform; PRAGMA version;"
-          if [ "${{ github.ref_name }}" == "main" ]; then
-            # Fail on non-zero major version.
+          if [[ "${{ inputs.is_release_build }}" == "true" ]]; then
+            # Fail on a zero major version.
             ./build/release/duckdb -ascii -noheader -c "SELECT library_version FROM pragma_version() WHERE library_version NOT LIKE 'v0%'" | grep '^v';
           fi
 
@@ -148,10 +177,22 @@ jobs:
           mkdir -p \
             build/release_arm64/libs \
             build/release_arm64/src \
+            build/release_arm64/test/extension \
             build/release_amd64/libs \
-            build/release_amd64/src
+            build/release_amd64/src \
+            build/release_amd64/test/extension
           lipo -extract arm64 -output build/release_arm64/duckdb build/release/duckdb
           lipo -extract x86_64 -output build/release_amd64/duckdb build/release/duckdb
+          lipo -extract arm64 -output build/release_arm64/test/unittest build/release/test/unittest
+          lipo -extract x86_64 -output build/release_amd64/test/unittest build/release/test/unittest
+          cp -p build/release/test/run build/release_arm64/test/run
+          cp -p build/release/test/run build/release_amd64/test/run
+
+          for extension in build/release/test/extension/*.duckdb_extension; do
+            extension_name="$(basename "$extension")"
+            lipo -extract arm64 -output "build/release_arm64/test/extension/$extension_name" "$extension"
+            lipo -extract x86_64 -output "build/release_amd64/test/extension/$extension_name" "$extension"
+          done
 
           for library in build/release/src/libduckdb*.dylib; do
             library_name="$(basename "$library")"
@@ -175,7 +216,7 @@ jobs:
             lipo "build/release_amd64/libs/$library_name" -verify_arch x86_64
           done
 
-          # The universal build emits arm64 metadata; relink x86_64 with its platform metadata.
+          # Relink each arch: universal extensions are double-sized, and lipo -thin drops the metadata footer.
           prebuilt_extensions=()
           loadable_targets=()
           for library in build/release_arm64/libs/lib*_extension.a; do
@@ -187,19 +228,30 @@ jobs:
           done
           prebuilt_extension_list="$(IFS=';'; echo "${prebuilt_extensions[*]}")"
 
-          extension_build_dir=build/release_amd64/core_extensions
-          cmake -S . -B "$extension_build_dir" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DOSX_BUILD_ARCH=x86_64 \
-            -DBUILD_UNITTESTS=OFF \
-            -DBUILD_BENCHMARKS=OFF \
-            -DBUILD_SHELL=OFF \
-            -DDUCKDB_EXPLICIT_PLATFORM=osx_amd64 \
-            -DPREBUILT_BINARY="$PWD/build/release_amd64/libs/libduckdb_static.a" \
-            -DPREBUILT_EXTENSIONS="$prebuilt_extension_list" \
-            -DDUCKDB_EXTENSION_CONFIGS="$PWD/.github/config/bundled_extensions.cmake"
-          cmake --build "$extension_build_dir" --target "${loadable_targets[@]}"
-          cmake --build "$extension_build_dir" --target duckdb_local_extension_repo
+          for target in arm64:arm64:osx_arm64 amd64:x86_64:osx_amd64; do
+            IFS=: read -r dir_arch lipo_arch platform <<< "$target"
+            extension_build_dir="build/release_${dir_arch}/core_extensions"
+            cmake -S . -B "$extension_build_dir" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DOSX_BUILD_ARCH="$lipo_arch" \
+              -DBUILD_UNITTESTS=OFF \
+              -DBUILD_BENCHMARKS=OFF \
+              -DBUILD_SHELL=OFF \
+              -DDUCKDB_EXPLICIT_PLATFORM="$platform" \
+              -DPREBUILT_BINARY="$PWD/build/release_${dir_arch}/libs/libduckdb_static.a" \
+              -DPREBUILT_EXTENSIONS="$prebuilt_extension_list" \
+              -DDUCKDB_EXTENSION_CONFIGS="$PWD/.github/config/bundled_extensions.cmake"
+            cmake --build "$extension_build_dir" --target "${loadable_targets[@]}"
+            cmake --build "$extension_build_dir" --target duckdb_local_extension_repo
+
+            for extension in "$extension_build_dir"/repository/*/*/*.duckdb_extension; do
+              if [[ "$(lipo -archs "$extension")" != "$lipo_arch" ]]; then
+                echo "Expected thin $lipo_arch extension: $extension ($(lipo -archs "$extension"))"
+                exit 1
+              fi
+            done
+            cp -a "$extension_build_dir/repository" "build/release_${dir_arch}/"
+          done
 
           make cli-release-artifact ARTIFACT_SUFFIX=osx-universal CLI_BINARY=build/release/duckdb
           make cli-release-artifact ARTIFACT_SUFFIX=osx-arm64 CLI_BINARY=build/release_arm64/duckdb
@@ -219,6 +271,13 @@ jobs:
             duckdb-shared-libs-osx-amd64.tar.gz \
             duckdb-static-libs-osx-arm64.tar.gz \
             duckdb-static-libs-osx-amd64.tar.gz
+
+          make release-artifact \
+            RELEASE_ARTIFACT_SOURCE_DIR=build/release_arm64 \
+            RELEASE_ARTIFACT_TARBALL=build/release-artifacts/osx-release-arm64-build.tar.gz
+          make release-artifact \
+            RELEASE_ARTIFACT_SOURCE_DIR=build/release_amd64 \
+            RELEASE_ARTIFACT_TARBALL=build/release-artifacts/osx-release-amd64-build.tar.gz
 
       - uses: actions/upload-artifact@v7
         with:
@@ -263,7 +322,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: release-core-extensions-osx-arm64
-          path: build/release/repository
+          path: build/release_arm64/core_extensions/repository
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v7
@@ -271,6 +330,18 @@ jobs:
           name: release-core-extensions-osx-amd64
           path: build/release_amd64/core_extensions/repository
           if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: build/release-artifacts/osx-release-arm64-build.tar.gz
+          if-no-files-found: error
+          archive: false
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: build/release-artifacts/osx-release-amd64-build.tar.gz
+          if-no-files-found: error
+          archive: false
 
       - name: Unit Test
         shell: bash

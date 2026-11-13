@@ -26,14 +26,20 @@ public:
 	struct ChunkReference {
 	public:
 		ChunkReference(ColumnDataCollectionSegment *segment_p, uint32_t chunk_index_p);
-		uint32_t GetMinimumBlockID() const;
+		//! The minimum block id the chunk references, invalid for chunks stored entirely in metadata
+		optional_idx GetMinimumBlockID() const;
 		friend bool operator<(const ChunkReference &lhs, const ChunkReference &rhs) {
 			// Sort by allocator first
 			if (lhs.segment->allocator.get() != rhs.segment->allocator.get()) {
 				return lhs.segment->allocator.get() < rhs.segment->allocator.get();
 			}
-			// Then by minimum block id
-			return lhs.GetMinimumBlockID() < rhs.GetMinimumBlockID();
+			// Then by minimum block id, chunks without blocks sort last
+			auto lhs_min_block_id = lhs.GetMinimumBlockID();
+			auto rhs_min_block_id = rhs.GetMinimumBlockID();
+			if (!lhs_min_block_id.IsValid() || !rhs_min_block_id.IsValid()) {
+				return lhs_min_block_id.IsValid() && !rhs_min_block_id.IsValid();
+			}
+			return lhs_min_block_id.GetIndex() < rhs_min_block_id.GetIndex();
 		}
 
 	public:
@@ -55,7 +61,7 @@ public:
 public:
 	//! Initialize the scan of the ColumnDataCollection
 	void InitializeScan();
-	//! Assign a chunk to the scan state
+	//! Assign a chunk to the scan state; the caller must release its handles if no chunk is assigned.
 	bool AssignChunk(ColumnDataConsumerScanState &state);
 	//! Scan the assigned chunk
 	void ScanChunk(ColumnDataConsumerScanState &state, DataChunk &chunk) const;

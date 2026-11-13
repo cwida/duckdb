@@ -42,7 +42,7 @@ static optional_ptr<LogicalGet> FindQualifiedTableFunction(LogicalOperator &op) 
 
 static void CheckTableFunctionQualification(Connection &connection, const string &sql, const QualifiedName &name,
                                             int64_t first_value) {
-	Parser parser(connection.context->GetParserOptions());
+	Parser parser(*connection.context);
 	parser.ParseQuery(sql);
 	Planner planner(*connection.context);
 	planner.CreatePlan(std::move(parser.statements[0]));

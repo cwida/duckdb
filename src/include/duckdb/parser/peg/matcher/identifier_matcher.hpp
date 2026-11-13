@@ -16,11 +16,22 @@ public:
 	      identifier_mask(keyword_helper_p.GetIdentifierMask(suggestion_type)) {
 	}
 
+	static bool IsQuoteDelimiter(char c) {
+		return c == '"' || c == '`';
+	}
+
 	bool IsQuoted(const string &text) const {
-		if (text.front() == '"' && text.back() == '"') {
-			return true;
+		if (text.size() < 2) {
+			return false;
 		}
-		return false;
+		return IsQuoteDelimiter(text.front()) && text.front() == text.back();
+	}
+
+	//! Strip the surrounding delimiters of a quoted identifier and un-double any escaped delimiters
+	static void UnquoteIdentifier(string &text) {
+		const string delimiter(1, text.front());
+		text = text.substr(1, text.size() - 2);
+		text = StringUtil::Replace(text, delimiter + delimiter, delimiter);
 	}
 
 	bool IsSingleQuoted(const string &text) const {
@@ -41,6 +52,10 @@ public:
 			return true;
 		}
 		if (Tokenizer::CharacterIsInitialNumber(text[0])) {
+			return false;
+		}
+		if (text.back() == '\'') {
+			// a prefixed string literal such as x'41' or e'ab'
 			return false;
 		}
 		return Tokenizer::CharacterIsKeyword(text[0]);
@@ -64,8 +79,7 @@ public:
 
 		string result_text = token_text;
 		if (IsQuoted(result_text)) {
-			result_text = result_text.substr(1, result_text.size() - 2);
-			result_text = StringUtil::Replace(result_text, "\"\"", "\"");
+			UnquoteIdentifier(result_text);
 		} else if (IsSingleQuoted(result_text) && SupportsStringLiteral()) {
 			// a single-quoted token in a table or file-name position is a path, so it is unwrapped but never folded
 			result_text = result_text.substr(1, result_text.size() - 2);
@@ -147,6 +161,10 @@ public:
 		}
 	}
 
+	void InitializeFirstSet(MatcherFirstSet &first_set, const GrammarLiteralTable &table) const override {
+		first_set.class_mask = MatcherTokenClass::WORD;
+	}
+
 private:
 	bool IsAllowedKeyword(TokenIterator &tokens) const {
 		auto info = tokens.CurrentLiteralInfo(literal_table);
@@ -200,8 +218,7 @@ public:
 		// unlike IdentifierMatcher this rule does not unwrap path literals, it only has to avoid folding them
 		const bool is_path_literal = IsSingleQuoted(result_text) && SupportsStringLiteral();
 		if (IsQuoted(result_text)) {
-			result_text = result_text.substr(1, result_text.size() - 2);
-			result_text = StringUtil::Replace(result_text, "\"\"", "\"");
+			UnquoteIdentifier(result_text);
 		} else if (!is_path_literal) {
 			state.FoldIdentifier(result_text);
 		}

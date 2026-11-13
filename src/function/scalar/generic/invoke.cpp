@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/function/lambda_functions.hpp"
 #include "duckdb/function/scalar_function.hpp"

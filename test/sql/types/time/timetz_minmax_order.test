@@ -1,0 +1,55 @@
+# name: test/sql/types/time/timetz_minmax_order.test
+# description: min/max/arg_min/arg_max and sort keys order TIMETZ values by their normalized time
+# group: [time]
+
+statement ok
+CREATE TABLE z AS SELECT * FROM (VALUES (1,'10:00:00+05'::TIMETZ),(2,'09:00:00+00'::TIMETZ),(3,'07:00:00+00'::TIMETZ)) v(i,x);
+
+# 10:00:00+05 is 05:00:00 UTC - the minimum
+query I
+SELECT list(i ORDER BY x) FROM z
+----
+[1, 3, 2]
+
+query IIII
+SELECT max(x), min(x), arg_max(i, x), arg_min(i, x) FROM z
+----
+09:00:00+00	10:00:00+05	2	1
+
+query IIII
+SELECT max(x, 2), min(x, 2), arg_max(i, x, 2), arg_min(i, x, 2) FROM z
+----
+['09:00:00+00', '07:00:00+00']	['10:00:00+05', '07:00:00+00']	[2, 3]	[1, 3]
+
+query III
+SELECT list_sort(list(x)), list(x ORDER BY {'a': x}), list(x ORDER BY [x] DESC) FROM z
+----
+['10:00:00+05', '07:00:00+00', '09:00:00+00']	['10:00:00+05', '07:00:00+00', '09:00:00+00']	['09:00:00+00', '07:00:00+00', '10:00:00+05']
+
+query II
+SELECT max(x) OVER (), min(x) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM z ORDER BY i
+----
+09:00:00+00	10:00:00+05
+09:00:00+00	10:00:00+05
+09:00:00+00	07:00:00+00
+
+# sort keys decode back to the original value
+query I
+SELECT max(x, 3)::VARCHAR FROM (VALUES ('00:00:00+15:59:59'::TIMETZ), ('24:00:00-15:59:59'::TIMETZ), ('12:34:56.789-07:30'::TIMETZ)) v(x)
+----
+['24:00:00-15:59:59', '12:34:56.789-07:30', '00:00:00+15:59:59']
+
+# list aggregates follow the same order, including for other types that are compared through a collation
+query IIII
+SELECT list_max(list(x)), list_min(list(x)), list_max(['1'::BIT, '01'::BIT, '0'::BIT]), list_min([2::VARIANT, 1::VARIANT])
+FROM z
+----
+09:00:00+00	10:00:00+05	1	1
+
+statement ok
+SET default_collation=nocase
+
+query II
+SELECT list_max(['a', 'B']), list_aggr(['a', 'b'], 'string_agg', '-')
+----
+B	a-b

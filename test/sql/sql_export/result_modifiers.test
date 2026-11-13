@@ -179,23 +179,17 @@ SELECT NULL::DECIMAL(9,2) a, [1,NULL] b, {'x': 2} c WHERE false;
 query TT
 EXPLAIN (SQL) SELECT NULL::DECIMAL(9,2) a, [1,NULL] b, {'x': 2} c WHERE false;
 ----
-sql	<REGEX>:.*WHERE .*false.*
+sql	<REGEX>:.*WHERE .*FALSE.*
 
-# This signature has no SQL representation; check native execution with verification disabled.
-statement ok
-SET debug_verify_statement='none';
-
+# A typed empty relation retains COUNT's canonical ANY signature under strict SQL export.
 query T
 SELECT * FROM (SELECT count(x) EXPORT_STATE s FROM (VALUES(1))t(x))t WHERE false;
 ----
 
-statement ok
-SET debug_verify_statement='explain_sql_strict';
-
-statement error
+query TT
 EXPLAIN (SQL) SELECT * FROM (SELECT count(x) EXPORT_STATE s FROM (VALUES(1))t(x))t WHERE false;
 ----
-Aggregate state SQL parameters are not representable
+sql	<REGEX>:.*to_aggregate_state.*ANY.*
 
 query I rowsort
 (VALUES (1),(1),(1),(NULL),(NULL),(2)) UNION (VALUES (1),(1),(NULL),(3));

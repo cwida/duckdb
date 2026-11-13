@@ -1,5 +1,11 @@
 # name: test/sql/upsert/test_problematic_conditional_do_update.test
+# description: Conditional upserts with duplicate input keys
 # group: [upsert]
+
+foreach threads 1 4
+
+statement ok
+SET threads = {threads}
 
 statement ok
 CREATE TABLE users (
@@ -8,11 +14,9 @@ CREATE TABLE users (
 	email TEXT
 );
 
-# FIXME: not consistent
-mode skip instable
-
-# The condition skips the last tuple
-statement error
+# Conflict candidates are deduplicated before matching against the target.
+# The UPDATE condition does not filter rows inserted into an empty target.
+query I
 INSERT INTO users (id, username, email)
 VALUES
 	(3, 'inner_conflict', 'test'),
@@ -21,11 +25,27 @@ VALUES
 ON CONFLICT (id) DO
     UPDATE SET email = EXCLUDED.email
     WHERE EXCLUDED.email != 'filtered_out'
+RETURNING id;
 ----
-Not implemented Error: Inner conflicts detected with a conditional DO UPDATE on-conflict action, not fully implemented yet
+3
 
-# The result of the condition can also be influenced based on previous updates
-statement error
+# Do not depend on which duplicate input row is selected, but its payload must
+# come from one complete input row and only one row may be inserted.
+query II
+SELECT count(*), count(*) FILTER (WHERE (username, email) IN (
+    ('inner_conflict', 'test'),
+    ('inner_conflict2', 'other_test'),
+    ('inner_conflict3', 'filtered_out')
+)) FROM users
+----
+1	1
+
+statement ok
+UPDATE users SET username = 'existing_user', email = 'test'
+
+# The condition sees the existing target value, not intermediate updates from
+# other duplicate candidates. Only email is assigned by the SET clause.
+query IT
 INSERT INTO users (id, username, email)
 VALUES
 	(3, 'inner_conflict', 'test'),
@@ -35,6 +55,52 @@ VALUES
 ON CONFLICT (id) DO
     UPDATE SET email = EXCLUDED.email
     WHERE email != 'other_test' OR EXCLUDED.email == 'dont_skip_me'
+RETURNING id, username;
+----
+3	existing_user
+
+query II
+SELECT count(*), count(*) FILTER (WHERE username = 'existing_user' AND email IN
+    ('test', 'other_test', 'yet_another_test', 'dont_skip_me')) FROM users
+----
+1	1
+
+statement ok
+UPDATE users SET email = 'other_test'
+
+# Equal duplicate payloads make the conditional no-op independent of which
+# candidate is selected.
+query ITT
+INSERT INTO users VALUES
+    (3, 'unused_username', 'yet_another_test'),
+    (3, 'unused_username', 'yet_another_test')
+ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email
+WHERE email != 'other_test' OR EXCLUDED.email = 'dont_skip_me'
 RETURNING *;
 ----
-Not implemented Error: Inner conflicts detected with a conditional DO UPDATE on-conflict action, not fully implemented yet
+
+query ITT
+SELECT * FROM users
+----
+3	existing_user	other_test
+
+# An EXCLUDED value can still make the same condition true.
+query ITT
+INSERT INTO users VALUES
+    (3, 'unused_username', 'dont_skip_me'),
+    (3, 'unused_username', 'dont_skip_me')
+ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email
+WHERE email != 'other_test' OR EXCLUDED.email = 'dont_skip_me'
+RETURNING *;
+----
+3	existing_user	dont_skip_me
+
+query ITT
+SELECT * FROM users
+----
+3	existing_user	dont_skip_me
+
+statement ok
+DROP TABLE users
+
+endloop

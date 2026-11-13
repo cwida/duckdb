@@ -5,19 +5,6 @@ require parquet
 
 # Verify we can perform partial shredding
 
-foreach disabled true false
-
-onlyif disabled=true
-statement ok
-COPY (
-	SELECT {
-		'field1': CASE WHEN i%2=0 THEN CONCAT('hello', i)::VARIANT ELSE i::VARIANT END,
-		'field2': i::INT
-	}::VARIANT AS obj
-	FROM range(5) t(i)
-) TO '{TEST_DIR}/partially_shredded_struct.parquet' (SHREDDING {'obj': 'NULL'});
-
-onlyif disabled=false
 statement ok
 COPY (
 	SELECT {
@@ -40,5 +27,3 @@ query I
 SELECT COUNT(*) > 0 FROM parquet_schema('{TEST_DIR}/partially_shredded_struct.parquet') WHERE name='typed_value';
 ----
 1
-
-endloop

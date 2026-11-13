@@ -114,7 +114,8 @@ static auto CV2ReplacementScanTrampoline(ClientContext &context, ReplacementScan
 
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
-	scan_data.callback(Convert(&args), Convert(&context), &err_ptr);
+	CV2CallbackContext callback_context(context);
+	scan_data.callback(Convert(&args), Convert(&callback_context), &err_ptr);
 
 	if (err.HasError()) {
 		err.ThrowAsException();
@@ -124,7 +125,12 @@ static auto CV2ReplacementScanTrampoline(ClientContext &context, ReplacementScan
 
 class CV2ReplacementScan {
 public:
-	void Register() {
+	explicit CV2ReplacementScan(DatabaseInstance &db) : db(db) {
+	}
+
+	//! Validates the configuration and builds the scan to register on `target`.
+	ReplacementScan Build(DatabaseInstance &target) {
+		CheckRegistrationTarget(db, target, "replacement scan");
 		if (!info.callback) {
 			throw InvalidInputException("Callback must be set for the replacement scan.");
 		}
@@ -136,42 +142,14 @@ public:
 		auto data = make_uniq<CV2ReplacementScanData>();
 		data->callback = info.callback;
 		data->user_data = info.user_data;
-		RegisterScan(ReplacementScan(CV2ReplacementScanTrampoline, std::move(data)));
+		return ReplacementScan(CV2ReplacementScanTrampoline, std::move(data));
 	}
 
-	virtual ~CV2ReplacementScan() = default;
-	virtual void RegisterScan(ReplacementScan scan) = 0;
-
 public:
+	//! The database it was created for: the only one it can be registered on.
+	DatabaseInstance &db;
 	CV2ReplacementScanData info;
 	bool registered = false;
-};
-
-class CV2ConnectionReplacementScan : public CV2ReplacementScan {
-public:
-	explicit CV2ConnectionReplacementScan(Connection &connection) : connection(connection) {
-	}
-
-	void RegisterScan(ReplacementScan scan) override {
-		// Connection-scoped: this touches only the connection's own state, never the shared database config.
-		connection.context->config.replacement_scans.push_back(make_shared_ptr<ReplacementScan>(std::move(scan)));
-	}
-
-private:
-	Connection &connection;
-};
-
-class CV2InstanceReplacementScan : public CV2ReplacementScan {
-public:
-	explicit CV2InstanceReplacementScan(DatabaseInstance &instance) : instance(instance) {
-	}
-
-	void RegisterScan(ReplacementScan scan) override {
-		DBConfig::GetConfig(instance).replacement_scans.push_back(std::move(scan));
-	}
-
-private:
-	DatabaseInstance &instance;
 };
 
 static auto Convert(duckdb_v2_replacement_scan_handle scan) -> CV2ReplacementScan * {
@@ -189,44 +167,15 @@ static auto Convert(CV2ReplacementScan *scan) -> duckdb_v2_replacement_scan_hand
 
 using namespace duckdb::capiv2;
 
-DUCKDB_V2_ERROR duckdb_v2_replacement_scan_create_with_connection(duckdb_v2_connection_handle connection,
-                                                                  duckdb_v2_replacement_scan_handle *out_scan,
-                                                                  duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(connection);
-	DUCKDB_CHECK_ARG(out_scan);
-	*out_scan = nullptr;
+DUCKDB_V2_ERROR duckdb_v2_replacement_scan_create(duckdb_v2_factory_handle factory,
+                                                  duckdb_v2_replacement_scan_handle *scan,
+                                                  duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(factory);
+	DUCKDB_CHECK_ARG(scan);
+	*scan = nullptr;
 	return WithErrorHandler(err, [&]() {
-		auto &conn = *Convert(connection);
-		auto scan = duckdb::make_uniq<CV2ConnectionReplacementScan>(conn);
-		*out_scan = Convert(scan.release());
-	});
-}
-
-DUCKDB_V2_ERROR duckdb_v2_replacement_scan_create_with_instance(duckdb_v2_instance_handle instance,
-                                                                duckdb_v2_replacement_scan_handle *out_scan,
-                                                                duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(instance);
-	DUCKDB_CHECK_ARG(out_scan);
-	*out_scan = nullptr;
-	return WithErrorHandler(err, [&]() {
-		auto &instance_wrapper = *Convert(instance);
-		duckdb::lock_guard<duckdb::mutex> guard(instance_wrapper.lock);
-		auto &db = *instance_wrapper.GetDatabase().instance;
-		auto scan = duckdb::make_uniq<CV2InstanceReplacementScan>(db);
-		*out_scan = Convert(scan.release());
-	});
-}
-
-DUCKDB_V2_ERROR duckdb_v2_replacement_scan_create_with_extension(duckdb_v2_extension_handle extension,
-                                                                 duckdb_v2_replacement_scan_handle *out_scan,
-                                                                 duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(extension);
-	DUCKDB_CHECK_ARG(out_scan);
-	*out_scan = nullptr;
-	return WithErrorHandler(err, [&]() {
-		auto &db = GetExtensionLoader(extension).GetDatabaseInstance();
-		auto scan = duckdb::make_uniq<CV2InstanceReplacementScan>(db);
-		*out_scan = Convert(scan.release());
+		auto result = duckdb::make_uniq<CV2ReplacementScan>(Convert(factory)->GetDatabase());
+		*scan = Convert(result.release());
 	});
 }
 
@@ -292,22 +241,23 @@ DUCKDB_V2_ERROR duckdb_v2_replacement_scan_add_argument(duckdb_v2_replacement_sc
 }
 
 DUCKDB_V2_ERROR duckdb_v2_replacement_scan_add_named_argument(duckdb_v2_replacement_scan_info_handle info,
-                                                              const duckdb_v2_identifier_t *name,
+                                                              const char *name, idx_t name_length,
                                                               duckdb_v2_value_handle value,
                                                               duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
 	DUCKDB_CHECK_ARG(value);
 	return WithErrorHandler(err, [&]() {
 		auto &args = *Convert(info);
 		args.RequireFunctionClaim("duckdb_v2_replacement_scan_add_named_argument");
-		args.out_named_arguments.emplace_back(duckdb::Identifier(ConvertIdentifierName(name)), *Convert(value));
+		args.out_named_arguments.emplace_back(duckdb::Identifier(ConvertIdentifierName(name, name_length)),
+		                                      *Convert(value));
 	});
 }
 
 DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_collection(duckdb_v2_replacement_scan_info_handle info,
                                                           duckdb_v2_column_data_collection_handle collection,
-                                                          const duckdb_v2_identifier_t *column_names,
+                                                          const char **column_names, const idx_t *column_names_lengths,
                                                           idx_t column_count, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(collection);
@@ -326,8 +276,9 @@ DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_collection(duckdb_v2_replacement_
 			    cdc.ColumnCount());
 		}
 		duckdb::vector<duckdb::Identifier> names;
+		string_view_array name_views(column_names, column_names_lengths, column_count);
 		for (idx_t i = 0; i < column_count; i++) {
-			auto name = duckdb::Identifier(ConvertIdentifierName(column_names[i]));
+			auto name = duckdb::Identifier(name_views[i]);
 			if (name.empty()) {
 				throw duckdb::InvalidInputException("Column names cannot be empty.");
 			}
@@ -340,17 +291,17 @@ DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_collection(duckdb_v2_replacement_
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_subquery(duckdb_v2_replacement_scan_info_handle info,
-                                                        const duckdb_v2_str *sql, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_subquery(duckdb_v2_replacement_scan_info_handle info, const char *sql,
+                                                        idx_t sql_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(sql);
+	DUCKDB_CHECK_STR_ARG(sql, sql_length);
 	return WithErrorHandler(err, [&]() {
 		auto &args = *Convert(info);
 
 		// Parsed here rather than when the claim is materialized, so a bad query fails this call instead of
 		// surfacing later as an opaque binding error.
-		duckdb::Parser parser(args.in_context->GetParserOptions());
-		parser.ParseQuery(duckdb::string(Convert(sql)));
+		duckdb::Parser parser(*args.in_context);
+		parser.ParseQuery(duckdb::string(Convert(sql, sql_length)));
 		if (parser.statements.size() != 1) {
 			throw duckdb::InvalidInputException("The replacement subquery must be exactly one SELECT statement.");
 		}
@@ -364,19 +315,48 @@ DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_subquery(duckdb_v2_replacement_sc
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_alias(duckdb_v2_replacement_scan_info_handle info,
-                                                     const duckdb_v2_identifier_t *alias,
-                                                     duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_alias(duckdb_v2_replacement_scan_info_handle info, const char *alias,
+                                                     idx_t alias_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(alias);
-	return WithErrorHandler(err,
-	                        [&]() { Convert(info)->out_alias = duckdb::Identifier(ConvertIdentifierName(alias)); });
+	DUCKDB_CHECK_STR_ARG(alias, alias_length);
+	return WithErrorHandler(
+	    err, [&]() { Convert(info)->out_alias = duckdb::Identifier(ConvertIdentifierName(alias, alias_length)); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_replacement_scan_register(duckdb_v2_replacement_scan_handle scan,
-                                                    duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_connection_register_replacement_scan(duckdb_v2_connection_handle conn,
+                                                               duckdb_v2_replacement_scan_handle scan,
+                                                               duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(conn);
 	DUCKDB_CHECK_ARG(scan);
-	return WithErrorHandler(err, [&]() { Convert(scan)->Register(); });
+	return WithErrorHandler(err, [&]() {
+		auto &context = *Convert(conn)->context;
+		auto built = Convert(scan)->Build(*context.db);
+		// Connection-scoped: this touches only the client's own state, never the shared database config.
+		duckdb::ClientConfig::GetConfig(context).replacement_scans.push_back(
+		    duckdb::make_shared_ptr<duckdb::ReplacementScan>(std::move(built)));
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_instance_register_replacement_scan(duckdb_v2_instance_handle instance,
+                                                             duckdb_v2_replacement_scan_handle scan,
+                                                             duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(instance);
+	DUCKDB_CHECK_ARG(scan);
+	return WithErrorHandler(err, [&]() {
+		auto &db = *Convert(instance)->GetDatabase().instance;
+		duckdb::DBConfig::GetConfig(db).replacement_scans.push_back(Convert(scan)->Build(db));
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_extension_register_replacement_scan(duckdb_v2_extension_handle extension,
+                                                              duckdb_v2_replacement_scan_handle scan,
+                                                              duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(extension);
+	DUCKDB_CHECK_ARG(scan);
+	return WithErrorHandler(err, [&]() {
+		auto &db = GetExtensionLoader(extension).GetDatabaseInstance();
+		duckdb::DBConfig::GetConfig(db).replacement_scans.push_back(Convert(scan)->Build(db));
+	});
 }
 
 DUCKDB_V2_ERROR duckdb_v2_replacement_scan_destroy(duckdb_v2_replacement_scan_handle *scan) {

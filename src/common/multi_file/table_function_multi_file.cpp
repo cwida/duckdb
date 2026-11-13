@@ -1,4 +1,7 @@
 #include "duckdb/common/multi_file/table_function_multi_file.hpp"
+#include "duckdb/common/operator/add.hpp"
+
+#include <algorithm>
 
 #include "duckdb/common/bind_helpers.hpp"
 
@@ -23,10 +26,12 @@ public:
 	//! counted more, so that a reader can be released without losing what it counted.
 	//! "scanned" is handed over and cleared on every report - the profiler sums what each thread reports, so a
 	//! scanned row group must be handed over exactly once. "total" is the size of the scan, which every thread
-	//! reports identically and the profiler does not sum, so it is never cleared
+	//! reports identically and the profiler does not sum, so it is never cleared. "bytes scanned" is handed over
+	//! like "scanned"
 	mutex metrics_lock;
 	idx_t collected_scanned = 0;
 	idx_t collected_total = 0;
+	idx_t collected_bytes_scanned = 0;
 };
 
 class TableFunctionMultiFileLocalState : public LocalTableFunctionState {
@@ -41,6 +46,8 @@ public:
 	shared_ptr<BaseFileReader> reader;
 	//! The local state of the wrapped function
 	unique_ptr<LocalTableFunctionState> local_state;
+	//! Whether what the first scan of the current batch counted has been collected
+	bool batch_metrics_collected = true;
 };
 
 //===--------------------------------------------------------------------===//
@@ -73,8 +80,14 @@ void TableFunctionFileReader::BindFunction(ClientContext &context, const TableFu
 		throw InternalException("Table function %s cannot be wrapped in a multi file function - it has no bind",
 		                        function.name);
 	}
+	// a function that takes the file as ANY gets it together with the options to open it with - one that takes a
+	// VARCHAR only gets its path
 	vector<Value> inputs;
-	inputs.emplace_back(file.path);
+	if (function.GetSignature().GetParameter(0).GetType().id() == LogicalTypeId::ANY) {
+		inputs.emplace_back(file.ToValue());
+	} else {
+		inputs.emplace_back(file.path);
+	}
 	auto parameters = named_parameters;
 	function.GetSignature().FillNamedDefaults(context, parameters);
 	vector<LogicalType> input_table_types;
@@ -84,7 +97,6 @@ void TableFunctionFileReader::BindFunction(ClientContext &context, const TableFu
 	TableFunctionBindInput bind_input(inputs, parameters, input_table_types, input_table_names,
 	                                  function.function_info.get(), nullptr, bound_function, empty_ref);
 	TableFunctionFileBindInput file_input;
-	file_input.file = file;
 	file_input.multi_file_options = file_options;
 	file_input.multi_file_scan = options.multi_file_scan;
 	file_input.schema_only = schema_only;
@@ -96,25 +108,48 @@ void TableFunctionFileReader::BindFunction(ClientContext &context, const TableFu
 		file_input.expected_bind_data = options.schema_bind_data.get();
 	}
 	bind_input.multi_file_input = file_input;
-	TableFunctionFileBindInfo file_info;
-	bind_input.file_info = file_info;
 	names.clear();
 	types.clear();
 	bind_data = function.bind(context, bind_input, types, names);
+	// a function can describe what it bound in more detail than its names and types - e.g. with the field ids of its
+	// columns, and options that describe the file, which are exposed as the metadata of the reader of the file
+	optional<BindInfo> bind_info;
+	if (function.get_bind_info && bind_data) {
+		TableFunctionGetBindInfoInput bind_info_input(context, bind_data.get());
+		bind_info = function.get_bind_info(bind_info_input);
+	}
 	if (settings.get_file_columns && bind_data) {
 		// the function describes the columns of its file itself - names and types alone would lose their nested
 		// structure and the identifiers that map the files of a scan onto one another
 		columns = settings.get_file_columns(context, *bind_data);
-	} else if (!file_info.columns.empty()) {
-		if (file_info.columns.size() != names.size()) {
-			throw InternalException("Table function %s described %llu columns of file \"%s\", but bound %llu",
-			                        function.name, file_info.columns.size(), file.path, names.size());
+	} else if (bind_info && !bind_info->column_identifiers.empty()) {
+		columns.clear();
+		for (idx_t i = 0; i < names.size(); i++) {
+			columns.push_back(MultiFileColumnDefinition::CreateNested(names[i], types[i]));
 		}
-		columns = std::move(file_info.columns);
+		for (auto &entry : bind_info->column_identifiers) {
+			if (entry.column_index >= columns.size()) {
+				throw InternalException("Table function %s attached an identifier to column %llu of file \"%s\", but "
+				                        "bound %llu",
+				                        function.name, entry.column_index, file.path, columns.size());
+			}
+			columns[entry.column_index].ResolveChildPath(entry.child_path).identifier = entry.identifier;
+		}
 	} else {
 		columns = MultiFileColumnDefinition::ColumnsFromNamesAndTypes(names, types);
 	}
-	metadata = std::move(file_info.metadata);
+	metadata.clear();
+	if (bind_info) {
+		// the options are kept unordered - sort them, so the same file always has the same metadata
+		vector<string> keys;
+		for (auto &option : bind_info->options) {
+			keys.push_back(option.first);
+		}
+		std::sort(keys.begin(), keys.end());
+		for (auto &key : keys) {
+			metadata.insert(key, bind_info->options[key]);
+		}
+	}
 
 	cardinality = optional_idx();
 	if (function.cardinality) {
@@ -131,10 +166,20 @@ unique_ptr<BaseStatistics> TableFunctionUnionData::GetStatistics(ClientContext &
 	}
 	for (idx_t col_idx = 0; col_idx < names.size(); col_idx++) {
 		if (Identifier(names[col_idx]) == name) {
-			return statistics(context, bind_data.get(), col_idx);
+			TableFunctionGetStatisticsInput input(bind_data.get(), ColumnIndex(col_idx));
+			return statistics(context, input);
 		}
 	}
 	return nullptr;
+}
+
+unique_ptr<BaseStatistics> TableFunctionUnionData::GetVirtualColumnStatistics(ClientContext &context,
+                                                                              column_t virtual_column_id) {
+	if (!statistics || !bind_data) {
+		return nullptr;
+	}
+	TableFunctionGetStatisticsInput input(bind_data.get(), ColumnIndex(virtual_column_id));
+	return statistics(context, input);
 }
 
 shared_ptr<BaseUnionData> TableFunctionFileReader::GetUnionData(idx_t file_idx) {
@@ -143,7 +188,7 @@ shared_ptr<BaseUnionData> TableFunctionFileReader::GetUnionData(idx_t file_idx) 
 	result->types = types;
 	result->cardinality = cardinality;
 	result->bind_data = bind_data;
-	result->statistics = function.statistics;
+	result->statistics = function.statistics_extended;
 	if (file_idx == 0) {
 		// keep the first reader around so we don't need to bind it again
 		result->reader = shared_from_this();
@@ -152,12 +197,13 @@ shared_ptr<BaseUnionData> TableFunctionFileReader::GetUnionData(idx_t file_idx) 
 }
 
 unique_ptr<BaseStatistics> TableFunctionFileReader::GetStatistics(ClientContext &context, const Identifier &name) {
-	if (!function.statistics || !bind_data) {
+	if (!function.statistics_extended || !bind_data) {
 		return nullptr;
 	}
 	for (idx_t col_idx = 0; col_idx < names.size(); col_idx++) {
 		if (names[col_idx] == name) {
-			return function.statistics(context, bind_data.get(), col_idx);
+			TableFunctionGetStatisticsInput input(bind_data.get(), ColumnIndex(col_idx));
+			return function.statistics_extended(context, input);
 		}
 	}
 	return nullptr;
@@ -165,10 +211,11 @@ unique_ptr<BaseStatistics> TableFunctionFileReader::GetStatistics(ClientContext 
 
 unique_ptr<BaseStatistics> TableFunctionFileReader::GetVirtualColumnStatistics(ClientContext &context,
                                                                                column_t virtual_column_id) {
-	if (!function.statistics || !bind_data) {
+	if (!function.statistics_extended || !bind_data) {
 		return nullptr;
 	}
-	return function.statistics(context, bind_data.get(), virtual_column_id);
+	TableFunctionGetStatisticsInput input(bind_data.get(), ColumnIndex(virtual_column_id));
+	return function.statistics_extended(context, input);
 }
 
 void TableFunctionFileReader::AddVirtualColumn(column_t virtual_column_id) {
@@ -193,6 +240,7 @@ void TableFunctionFileReader::CollectMetrics(ClientContext &context, GlobalTable
 	TableFunctionGetMetricsInput input(context, bind_data.get(), nullptr, global_state.get(), file_metrics);
 	function.get_metrics(input);
 	gstate.collected_scanned += file_metrics.row_groups_scanned;
+	gstate.collected_bytes_scanned += file_metrics.bytes_scanned;
 	// the function reports the size of its file as a whole - only add what it has grown by since we last asked
 	gstate.collected_total += file_metrics.total_row_groups_to_scan - collected_file_total;
 	collected_file_total = file_metrics.total_row_groups_to_scan;
@@ -247,13 +295,14 @@ void TableFunctionFileReader::SetScanState(GlobalTableFunctionState &gstate) {
 }
 
 void TableFunctionFileReader::InitializeFunctionState(ClientContext &context) {
-	lock_guard<mutex> guard(lock);
-	if (global_state || !function.init_global) {
-		return;
-	}
-	TableFunctionFileInitInput file_input;
-	auto init_input = GetInitInput(file_input);
-	global_state = function.init_global(context, init_input);
+	CallOnce(initialize_once, [&] {
+		if (!function.init_global) {
+			return;
+		}
+		TableFunctionFileInitInput file_input;
+		auto init_input = GetInitInput(file_input);
+		global_state = function.init_global(context, init_input);
+	});
 }
 
 void TableFunctionFileReader::PrepareReader(ClientContext &context, GlobalTableFunctionState &gstate) {
@@ -282,6 +331,7 @@ bool TableFunctionFileReader::TryInitializeScan(ClientContext &context, GlobalTa
 	SetScanState(gstate);
 	InitializeFunctionState(context);
 	auto &lstate = lstate_p.Cast<TableFunctionMultiFileLocalState>();
+	lstate.batch_metrics_collected = false;
 	if (!function.init_local) {
 		// the wrapped function has no local state - it can only be scanned by a single thread
 		bool expected = false;
@@ -307,6 +357,16 @@ bool TableFunctionFileReader::TryInitializeScan(ClientContext &context, GlobalTa
 	return true;
 }
 
+void TableFunctionFileReader::PrepareScan(ClientContext &context, GlobalTableFunctionState &,
+                                          LocalTableFunctionState &lstate_p) {
+	if (!settings.prepare_batch) {
+		return;
+	}
+	auto &lstate = lstate_p.Cast<TableFunctionMultiFileLocalState>();
+	TableFunctionInput input(bind_data.get(), lstate.local_state.get(), global_state.get());
+	settings.prepare_batch(context, input);
+}
+
 AsyncResult TableFunctionFileReader::ScheduleIO(ClientContext &context, GlobalTableFunctionState &gstate,
                                                 LocalTableFunctionState &lstate_p) {
 	if (!settings.schedule_io) {
@@ -320,7 +380,7 @@ AsyncResult TableFunctionFileReader::ScheduleIO(ClientContext &context, GlobalTa
 	return result;
 }
 
-AsyncResult TableFunctionFileReader::Scan(ClientContext &context, GlobalTableFunctionState &,
+AsyncResult TableFunctionFileReader::Scan(ClientContext &context, GlobalTableFunctionState &gstate,
                                           LocalTableFunctionState &lstate_p, DataChunk &chunk) {
 	auto &lstate = lstate_p.Cast<TableFunctionMultiFileLocalState>();
 	TableFunctionInput input(bind_data.get(), lstate.local_state.get(), global_state.get());
@@ -328,6 +388,13 @@ AsyncResult TableFunctionFileReader::Scan(ClientContext &context, GlobalTableFun
 	input.async_result = AsyncResultType::IMPLICIT;
 	input.results_execution_mode = AsyncResultsExecutionMode::SYNCHRONOUS;
 	function.function(context, input, chunk);
+	if (!lstate.batch_metrics_collected || chunk.size() == 0) {
+		// the file may already have been finished while this batch was scanned, so what the scan counted is collected
+		// here - once the first scan of the batch has run (Parquet counts a row group then), and again when the batch
+		// ends (a function that counts as it reads, like CSV, counts until then)
+		CollectMetrics(context, gstate);
+		lstate.batch_metrics_collected = true;
+	}
 	if (chunk.size() == 0 && !settings.claim_batch) {
 		// an empty chunk signals the end of the scan for this thread - when the function scans in batches it only
 		// signals the end of the current batch, and the next batch is claimed by TryInitializeScan
@@ -422,7 +489,7 @@ bool TableFunctionMultiFileWrapper::ParseOption(ClientContext &context, const Id
 	if (!settings.sample_files_parameter.empty() && key == settings.sample_files_parameter) {
 		// this parameter of the wrapped function also sets how many files are sampled to determine the schema - a
 		// value we cannot use is left to the function to report, in its own words, when it binds
-		file_options.TrySetMaximumSampleFiles(val);
+		file_options.TrySetMaximumSampleFiles(context.GetContext(), val);
 	}
 	return true;
 }
@@ -453,7 +520,7 @@ bool TableFunctionMultiFileWrapper::ParseCopyOption(ClientContext &context, cons
 	} else if (type.id() == LogicalTypeId::ANY || values[0].type() == type) {
 		val = values[0];
 	} else {
-		val = values[0].DefaultCastAs(type);
+		val = values[0].CastAs(context, type);
 	}
 	return ParseNamedParameter(key, val, options_p.Cast<TableFunctionFileReaderOptions>());
 }
@@ -537,10 +604,26 @@ void TableFunctionMultiFileWrapper::GetVirtualColumns(ClientContext &context, Mu
 	}
 }
 
+void TableFunctionMultiFileWrapper::ReadFilesForStatistics(ClientContext &context, MultiFileBindData &bind_data) {
+	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
+	bind_data.multi_file_reader->ReadFilesForStatistics(context, *bind_data.file_list, bind_data, data.options,
+	                                                    bind_data.file_options);
+}
+
 void TableFunctionMultiFileWrapper::FinalizeBindData(MultiFileBindData &multi_file_data) {
+	auto &data = multi_file_data.bind_data->Cast<TableFunctionMultiFileData>();
+	if (multi_file_data.initial_reader) {
+		// the cardinality estimate comes from the first file - keep it, as a filter pushdown can prune that file's
+		// reader before the optimizer asks for the estimate
+		data.cardinality = multi_file_data.initial_reader->Cast<TableFunctionFileReader>().GetCardinality();
+		if (multi_file_data.union_readers.empty()) {
+			auto file = multi_file_data.initial_reader->GetUnionData(0);
+			file->reader.reset();
+			multi_file_data.union_readers.push_back(std::move(file));
+		}
+	}
 	if (!multi_file_data.file_options.schema.empty()) {
 		// the schema was given up front, so BindReader never ran to find out whether the scan reads several files
-		auto &data = multi_file_data.bind_data->Cast<TableFunctionMultiFileData>();
 		data.options.multi_file_scan = multi_file_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES;
 		return;
 	}
@@ -550,17 +633,13 @@ void TableFunctionMultiFileWrapper::FinalizeBindData(MultiFileBindData &multi_fi
 		// function combined itself can be used to read every file
 		return;
 	}
-	auto &data = multi_file_data.bind_data->Cast<TableFunctionMultiFileData>();
 	data.options.expected_names = std::move(combined_names);
 	data.options.expected_types = std::move(combined_types);
 	data.options.schema_bind_data = std::move(combined_bind_data);
 	// the readers that were opened to combine the schemas were bound before the combined schema was known - release
 	// them so that every file is bound against the combined schema instead
 	multi_file_data.union_readers.clear();
-	if (multi_file_data.initial_reader) {
-		data.cardinality = multi_file_data.initial_reader->Cast<TableFunctionFileReader>().GetCardinality();
-		multi_file_data.initial_reader = nullptr;
-	}
+	multi_file_data.initial_reader = nullptr;
 }
 
 //! Drop the per-file bind data of a scan whose schema the function combined itself - every file is re-bound against
@@ -593,13 +672,11 @@ void TableFunctionMultiFileWrapper::BindReader(ClientContext &context, vector<Lo
 }
 
 unique_ptr<GlobalTableFunctionState>
-TableFunctionMultiFileWrapper::InitializeGlobalState(ClientContext &, MultiFileBindData &bind_data,
+TableFunctionMultiFileWrapper::InitializeGlobalState(ClientContext &, MultiFileBindData &,
                                                      MultiFileGlobalState &global_state) {
 	auto result = make_uniq<TableFunctionMultiFileGlobalState>();
-	// the wrapped function is told which file of this scan it reads, so that a function that reports per-file
-	// information (like the CSV rejects tables) can tell the files of a scan apart from those of another scan
 	result->op = global_state.op;
-	result->file_count = bind_data.file_list->GetTotalFileCount();
+	result->file_count = global_state.file_list.GetTotalFileCount();
 	return std::move(result);
 }
 
@@ -618,11 +695,7 @@ bool TableFunctionMultiFileWrapper::SupportsReadAhead(const MultiFileBindData &b
 		// the schema was combined from the files rather than taken from one of them - ask the first of them
 		file_bind_data = bind_data.union_readers[0]->Cast<TableFunctionUnionData>().bind_data;
 	}
-	if (!file_bind_data) {
-		// we do not have the bind of a file of this scan to ask
-		return false;
-	}
-	return settings.supports_read_ahead(*file_bind_data);
+	return settings.supports_read_ahead(file_bind_data.get());
 }
 
 void TableFunctionMultiFileWrapper::FinishReading(ClientContext &context, GlobalTableFunctionState &,
@@ -667,18 +740,79 @@ shared_ptr<BaseFileReader> TableFunctionMultiFileWrapper::CreateReader(ClientCon
 	return std::move(result);
 }
 
+//! The bytes a row is taken to have when a scan's row count is estimated from the sizes of its files alone: the
+//! floor the parquet reader puts under the ratio it measures in an opened file. A deliberate overestimate of the rows,
+//! the same for every format this wrapper serves - a read_csv or read_json row is typically much wider - since
+//! estimating too many rows is safer than estimating none.
+static constexpr idx_t MIN_ESTIMATED_BYTES_PER_ROW = 10;
+
+//! The row count the caller gives for the whole scan, read_parquet's explicit_cardinality (0 means not given). Looked
+//! up by name, by convention: read_parquet is the only wrapped function that declares it
+static optional_idx ExplicitCardinality(Context &context, const TableFunctionMultiFileData &data) {
+	auto entry = data.options.named_parameters.find(Identifier("explicit_cardinality"));
+	if (entry == data.options.named_parameters.end() || entry->second.IsNull()) {
+		return optional_idx();
+	}
+	auto cardinality = entry->second.CastAs(context, LogicalType::UBIGINT).GetValue<uint64_t>();
+	if (cardinality == 0) {
+		return optional_idx();
+	}
+	return optional_idx(cardinality);
+}
+
 unique_ptr<NodeStatistics> TableFunctionMultiFileWrapper::GetCardinality(ClientContext &context,
                                                                          const MultiFileBindData &bind_data,
                                                                          idx_t file_count) {
-	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
-	auto cardinality = data.cardinality;
-	if (bind_data.initial_reader) {
-		cardinality = bind_data.initial_reader->Cast<TableFunctionFileReader>().GetCardinality();
+	if (bind_data.file_list->IsEmpty()) {
+		return make_uniq<NodeStatistics>(idx_t(0), idx_t(0));
 	}
-	if (!cardinality.IsValid()) {
+	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
+	auto result = make_uniq<NodeStatistics>();
+	auto explicit_cardinality = ExplicitCardinality(context.GetContext(), data);
+	if (explicit_cardinality.IsValid()) {
+		result->has_estimated_cardinality = true;
+		result->estimated_cardinality = explicit_cardinality.GetIndex();
+	} else if (data.cardinality.IsValid()) {
+		result->has_estimated_cardinality = true;
+		result->estimated_cardinality = data.cardinality.GetIndex() * file_count;
+	} else {
+		// no file was opened at bind (e.g. because the schema was given): estimate from the sizes of the files, when
+		// the file list carries them (a local glob, or a list of {filename, file_size} structs)
+		auto rows_per_file = bind_data.file_list->EstimateRowsPerFile(MIN_ESTIMATED_BYTES_PER_ROW);
+		if (rows_per_file.IsValid()) {
+			result->has_estimated_cardinality = true;
+			result->estimated_cardinality = rows_per_file.GetIndex() * file_count;
+		}
+	}
+	const bool single_file_opened =
+	    !bind_data.file_options.union_by_name && bind_data.union_readers.size() == 1 &&
+	    bind_data.file_list->GetExpandResult() == FileExpandResult::SINGLE_FILE &&
+	    bind_data.union_readers[0]->GetFileName() == bind_data.file_list->GetFirstFile().path;
+	const bool all_files_opened = !bind_data.union_readers.empty() &&
+	                              (bind_data.file_options.union_by_name || bind_data.union_readers.size() > 1) &&
+	                              bind_data.union_readers.size() == bind_data.file_list->GetTotalFileCount();
+	if (function.cardinality && (single_file_opened || all_files_opened)) {
+		// the bound is the sum of what each opened file proves it holds
+		idx_t maximum = 0;
+		bool has_maximum = true;
+		for (auto &union_data : bind_data.union_readers) {
+			auto &file = union_data->Cast<TableFunctionUnionData>();
+			auto stats = file.bind_data ? function.cardinality(context, file.bind_data.get()) : nullptr;
+			if (!stats || !stats->has_max_cardinality ||
+			    !TryAddOperator::Operation(maximum, stats->max_cardinality, maximum)) {
+				has_maximum = false;
+				break;
+			}
+		}
+		if (has_maximum) {
+			result->has_max_cardinality = true;
+			result->max_cardinality = maximum;
+		}
+	}
+	if (!result->has_estimated_cardinality && !result->has_max_cardinality) {
 		return nullptr;
 	}
-	return make_uniq<NodeStatistics>(cardinality.GetIndex() * file_count);
+	return result;
 }
 
 //===--------------------------------------------------------------------===//
@@ -747,10 +881,19 @@ static void TableFunctionMultiFileGetMetrics(TableFunctionGetMetricsInput &input
 			reader_data->reader->Cast<TableFunctionFileReader>().CollectMetrics(input.context, scan_state);
 		}
 	}
+	if (input.local_state) {
+		// a batch this thread stopped short, e.g. at a LIMIT, can have counted more for a file that is already finished
+		auto &local = input.local_state->Cast<MultiFileLocalState>();
+		if (local.job && local.job->reader) {
+			local.job->reader->Cast<TableFunctionFileReader>().CollectMetrics(input.context, scan_state);
+		}
+	}
 	lock_guard<mutex> metrics_guard(scan_state.metrics_lock);
 	// the row groups scanned are handed over once - the profiler sums what every thread reports
 	input.operator_metrics.row_groups_scanned += scan_state.collected_scanned;
 	scan_state.collected_scanned = 0;
+	input.operator_metrics.bytes_scanned += scan_state.collected_bytes_scanned;
+	scan_state.collected_bytes_scanned = 0;
 	// the size of the scan is reported as-is - it is not summed across the threads that report it
 	input.operator_metrics.total_row_groups_to_scan = scan_state.collected_total;
 }
@@ -759,16 +902,19 @@ vector<PartitionStatistics> TableFunctionMultiFileWrapper::GetPartitionStats(Cli
                                                                              GetPartitionStatsInput &input) {
 	vector<PartitionStatistics> result;
 	auto &bind_data = input.bind_data->Cast<MultiFileBindData>();
-	if (bind_data.file_list->GetExpandResult() != FileExpandResult::SINGLE_FILE || !bind_data.initial_reader) {
+	if (bind_data.file_list->GetExpandResult() != FileExpandResult::SINGLE_FILE ||
+	    bind_data.union_readers.size() != 1) {
 		return result;
 	}
-	auto &reader = bind_data.initial_reader->Cast<TableFunctionFileReader>();
-	auto &function = reader.GetFunction();
-	if (!function.get_partition_stats || !reader.bind_data) {
+	auto &file = bind_data.union_readers[0]->Cast<TableFunctionUnionData>();
+	DynamicCastCheck<TableFunctionMultiFileWrapper>(bind_data.interface.get());
+	auto &wrapper = static_cast<const TableFunctionMultiFileWrapper &>(*bind_data.interface);
+	auto &function = wrapper.function;
+	if (!function.get_partition_stats || !file.bind_data) {
 		return result;
 	}
 	BoundTableFunction bound_function(function);
-	GetPartitionStatsInput file_input(bound_function, reader.bind_data.get());
+	GetPartitionStatsInput file_input(bound_function, file.bind_data.get());
 	return function.get_partition_stats(context, file_input);
 }
 
@@ -777,9 +923,10 @@ TableFunction TableFunctionMultiFileWrapper::CreateFunction(TableFunction single
                                                             table_function_bind_t bind) {
 	auto &wrapped_signature = single_file_function.GetSignature();
 	if (wrapped_signature.GetPositionalParameterCount() != 1 ||
-	    wrapped_signature.GetParameter(0).GetType() != LogicalType::VARCHAR) {
-		throw InternalException("Only table functions taking a single VARCHAR file path can be wrapped in a multi "
-		                        "file function, %s does not",
+	    (wrapped_signature.GetParameter(0).GetType() != LogicalType::VARCHAR &&
+	     wrapped_signature.GetParameter(0).GetType().id() != LogicalTypeId::ANY)) {
+		throw InternalException("Only table functions taking a single file - an ANY file or a VARCHAR file path - can "
+		                        "be wrapped in a multi file function, %s does not",
 		                        single_file_function.name);
 	}
 	if (settings.reader_type.empty()) {
@@ -798,6 +945,9 @@ TableFunction TableFunctionMultiFileWrapper::CreateFunction(TableFunction single
 	result.filter_prune = single_file_function.filter_prune;
 	result.supports_pushdown_type = single_file_function.supports_pushdown_type;
 	result.late_materialization = single_file_function.late_materialization;
+	// the declared stability of the wrapped function describes its executions independently of the file list, so it
+	// carries over to the multi-file scan - an explicitly volatile declaration is never upgraded
+	result.stability = single_file_function.stability;
 	if (single_file_function.get_partition_stats) {
 		// the row groups of the scan are those of its files
 		result.get_partition_stats = GetPartitionStats;
@@ -806,7 +956,12 @@ TableFunction TableFunctionMultiFileWrapper::CreateFunction(TableFunction single
 		// the metrics of the scan include those the wrapped function keeps per file
 		result.get_metrics = TableFunctionMultiFileGetMetrics;
 	}
-	if (single_file_function.statistics) {
+	if (single_file_function.statistics && !single_file_function.statistics_extended) {
+		throw InternalException("Table function %s defines statistics, but a function wrapped in a multi file function "
+		                        "needs statistics_extended",
+		                        single_file_function.name);
+	}
+	if (single_file_function.statistics_extended) {
 		// the statistics of the scan are those of its files, combined
 		result.statistics_extended = TableFunctionMultiFileFunction::MultiFileScanStatsExtended;
 	}

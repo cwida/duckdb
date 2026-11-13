@@ -30,6 +30,9 @@ duckdb_data_chunk duckdb_create_data_chunk(duckdb_logical_type *column_types, id
 	auto result = new duckdb::DataChunk();
 	try {
 		result->Initialize(duckdb::Allocator::DefaultAllocator(), types);
+		for (auto &vector : result->data) {
+			duckdb::PrepareCAPIVector(vector);
+		}
 	} catch (...) {
 		delete result;
 		return nullptr;

@@ -1,0 +1,32 @@
+# name: test/extension/install_httpfs_https_repository.test
+# description: HTTPS httpfs installation must not recursively autoload itself during file access checks
+# group: [extension]
+
+require skip_reload
+
+statement ok
+SET extension_directory='{TEST_DIR}/install_httpfs_https_repository'
+
+statement ok
+SET custom_extension_repository='https://127.0.0.1:9'
+
+statement ok
+SET autoinstall_extension_repository='https://127.0.0.1:9'
+
+statement ok
+SET autoload_known_extensions=true
+
+statement ok
+SET autoinstall_known_extensions=true
+
+# Keep httpfs unloaded so the HTTPS installation takes the autoload path.
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE extension_name='httpfs' AND loaded
+----
+0
+
+# Bootstrapping httpfs from HTTPS fails without an HTTPS filesystem, but must terminate.
+statement error
+INSTALL httpfs
+----
+Failed to install remote extension "httpfs" from url "https://127.0.0.1:9/

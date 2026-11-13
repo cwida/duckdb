@@ -19,7 +19,7 @@ static void test_helper(string sql, duckdb::vector<string> fixtures = duckdb::ve
 		con.Query(fixture);
 	}
 
-	Parser p;
+	Parser p(*con.context);
 	p.ParseQuery(sql);
 
 	for (auto &statement : p.statements) {
@@ -52,7 +52,7 @@ static void test_helper_multi_db(string sql, duckdb::vector<string> fixtures = d
 		con.Query(fixture);
 	}
 
-	Parser p;
+	Parser p(*con.context);
 	p.ParseQuery(sql);
 
 	for (auto &statement : p.statements) {

@@ -207,7 +207,10 @@ auto LTTBFinalize(Vector &vec, AggregateFinalizeInputData &data, Vector &result,
 	}
 
 	// Reusable vector for materializing each groups points, sized up-front to the largest group.
-	Vector points(struct_type, MaxValue<idx_t>(max_v, 1));
+	// A group can be the whole input, so the vector is allocated through the (tracked) base allocator.
+	DataChunk points_chunk;
+	points_chunk.Initialize(data.allocator.GetUnderlyingAllocator(), {struct_type}, MaxValue<idx_t>(max_v, 1));
+	auto &points = points_chunk.data[0];
 
 	// Now do the selection for each list
 	for (idx_t state_idx = 0; state_idx < count; state_idx++) {
@@ -406,6 +409,7 @@ AggregateFunction GetLTTBFunction(const LogicalType &x_type, const LogicalType &
 	fun.SetSerializeCallback(LTTBSerialize);
 	fun.SetDeserializeCallback(LTTBDeserialize);
 	fun.SetStructStateExport(LTTBStateLayout);
+	fun.SetFallible(); // finalize throws when a group exceeds the selection vector limit
 	return fun;
 }
 

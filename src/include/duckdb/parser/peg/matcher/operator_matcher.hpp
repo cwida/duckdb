@@ -39,6 +39,11 @@ public:
 		return "OPERATOR";
 	}
 
+	void InitializeFirstSet(MatcherFirstSet &first_set, const GrammarLiteralTable &table) const override {
+		first_set.class_mask = mode == OperatorMatcherMode::GENERIC_PRECEDENCE ? MatcherTokenClass::GENERIC_OPERATOR
+		                                                                       : MatcherTokenClass::OPERATOR;
+	}
+
 private:
 	bool MatchOperator(MatchState &state) const {
 		auto token = state.token_iterator.Current();
@@ -59,9 +64,10 @@ private:
 		return true;
 	}
 
-private:
-	static bool HasSpecialPrecedence(const string &operator_name);
+public:
+	DUCKDB_API static bool HasSpecialPrecedence(const string &operator_name);
 
+private:
 	OperatorMatcherMode mode;
 };
 

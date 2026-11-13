@@ -10,6 +10,8 @@
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/unordered_map.hpp"
+#include "duckdb/common/arena_containers/arena_unordered_map.hpp"
+#include "duckdb/common/arena_containers/arena_vector.hpp"
 
 namespace duckdb {
 class Matcher;
@@ -37,14 +39,26 @@ struct ParserPackratEntry {
 
 class ParserPackratCache {
 public:
-	ParserPackratCache();
+	explicit ParserPackratCache(ArenaAllocator &arena);
+	//! Index keys within a known input interval; other keys retain the unbounded map behavior.
+	ParserPackratCache(ArenaAllocator &arena, idx_t token_start, idx_t token_limit);
 	~ParserPackratCache();
 
 	optional_ptr<const ParserPackratEntry> Lookup(const Matcher &matcher, idx_t token_index) const;
 	void Store(const Matcher &matcher, idx_t token_index, ParserPackratEntry entry);
 
 private:
-	unordered_map<ParserPackratKey, ParserPackratEntry, ParserPackratKeyHash> entries;
+	struct Node;
+	bool IsIndexed(idx_t token_index) const {
+		return token_index >= token_start && token_index < token_limit;
+	}
+
+private:
+	ArenaAllocator &arena;
+	arena_vector<optional_ptr<Node>> token_entries;
+	arena_unordered_map<ParserPackratKey, ParserPackratEntry, ParserPackratKeyHash> entries;
+	idx_t token_start;
+	idx_t token_limit;
 };
 
 } // namespace duckdb

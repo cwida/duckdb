@@ -12,19 +12,25 @@ LOAD '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
 statement error
 quack (foo);
 ----
-Binder Error: Function "quack" is a table function but it was used as a scalar function.
+Parser Error: syntax error at or near "quack"
 
 statement error
 quack 's';
 ----
-Catalog Error: Type with name quack does not exist!
+Parser Error: syntax error at or near "quack"
 
 statement error
 unrecognizedkeyword ';';anotherunrecognizedkeyword';';;;;;
 ----
-Catalog Error: Type with name unrecognizedkeyword does not exist!
+Parser Error: syntax error at or near "unrecognizedkeyword"
 
 statement error
 QUACK string_split('hello-world', ';');QUACK string_split('hello-world', ';')
 ----
 <REGEX>:Parser Error: syntax error at or near.*
+
+# a statement that matches the grammar but fails to transform is offered to the extension, not the statement after it
+statement error
+CREATE TABLE t1 (id INTEGER, name ); quack quack quack;
+----
+Parser Error: Column "name" must have a type or be defined as a GENERATED column.

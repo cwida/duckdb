@@ -2,6 +2,7 @@
 
 import os
 import re
+import subprocess
 
 import pytest
 from conftest import ShellTest
@@ -140,6 +141,25 @@ def test_bail_off_continues_after_error(shell):
     result.check_stderr("Parser Error: syntax error at or near")
     assert "reached here" in str(result.stdout)
 
+def test_home_duckdbrc_is_not_read(shell, tmp_path):
+    (tmp_path / '.duckdbrc').write_text('.print init-output\n')
+    for arguments in ([], ['-csv']):
+        test = ShellTest(shell, arguments).env_var('HOME', tmp_path.as_posix()).env_var('USERPROFILE', str(tmp_path))
+        test = test.statement("SELECT 42;")
+        result = test.run()
+        result.check_stdout('42')
+        result.check_not_exist('init-output')
+
+
+def test_shell_test_adds_no_init_once(shell):
+    arguments = ['-csv']
+    assert ShellTest(shell, arguments).arguments.count('--no-init') == 1
+    assert arguments == ['-csv']
+    for _ in range(2):
+        assert ShellTest(shell).arguments.count('--no-init') == 1
+    assert '--no-init' not in ShellTest(shell, ['-init', '/dev/null']).arguments
+
+
 def test_bail_on_missing_init(shell):
     test = (
         ShellTest(shell, ['-init', '___thisfiledoesnotexist'])
@@ -194,7 +214,6 @@ def test_explicit_bail_within_read(shell, generated_file):
     result.check_stderr("selec")
     assert "reached here" in str(result.stdout)
 
-@pytest.mark.skipif(os.name == 'nt', reason="Skipped on windows")
 def test_shell_command(shell):
     test = (
         ShellTest(shell)
@@ -202,6 +221,34 @@ def test_shell_command(shell):
     )
     result = test.run()
     result.check_stdout("quack")
+
+
+def test_shell_command_pipe(shell):
+    # the command line reaches the system shell as-is: echo and sort exist in both sh and cmd.exe,
+    # and a quoted-per-word command line would print the pipe symbol instead of piping
+    test = ShellTest(shell).statement(".shell echo quack | sort")
+    result = test.run()
+    result.check_stdout("quack")
+    result.check_not_exist("|")
+
+
+@pytest.mark.skipif(os.name == 'nt', reason="uses POSIX shell syntax")
+def test_shell_command_quoting(shell):
+    test = (
+        ShellTest(shell)
+        .statement(".shell echo 'quack quack' | tr a-z A-Z")
+        .statement('.system DUCK=mallard; echo "$DUCK"')
+    )
+    result = test.run()
+    result.check_stdout("QUACK QUACK")
+    result.check_stdout("mallard")
+
+
+def test_shell_command_exit_code(shell):
+    test = ShellTest(shell).statement(".shell exit 3")
+    result = test.run()
+    result.check_stderr("System command returns 3")
+
 
 def test_cd(shell, tmp_path):
     pwd_dir = os.getcwd()
@@ -988,7 +1035,6 @@ def test_profiling_select(shell):
     result.check_stderr('Total Time')
     result.check_stdout('42')
 
-@pytest.mark.skipif(os.name == 'nt', reason="echo does not exist on Windows")
 @pytest.mark.parametrize("command", [
     "system",
     "shell"
@@ -1448,5 +1494,123 @@ def test_about(shell):
 
     result = test.run()
     result.check_stdout("DuckDB is an in-process analytical database management system designed for fast ")
+
+
+def test_a_select_that_writes_keeps_its_rows_when_the_renderer_stops_early(shell):
+    # agent mode's renderer stops reading after a cap of rows; the insert must not be undone by that
+    test = (
+        ShellTest(shell)
+        .add_argument("-agent")
+        .statement("create table t(i bigint)")
+        .statement("with ins as (insert into t select range from range(200000) returning i) select * from ins")
+        .statement("select count(*) as c from t")
+    )
+    result = test.run()
+    result.check_stdout("| 200000 |")
+
+
+def run_shell(shell, arguments, sql, timeout=120):
+    # the same environment the ShellTest harness builds, so an agent running the tests does not switch on agent mode
+    environment = os.environ.copy()
+    for key in ShellTest.AGENT_ENVIRONMENT_VARIABLES:
+        environment.pop(key, None)
+    return subprocess.run(
+        [shell, "--batch", "--no-init"] + arguments + ["-c", sql],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=environment,
+    )
+
+
+def test_a_select_that_writes_keeps_its_rows_when_the_output_pipe_closes(shell, tmp_path):
+    database = (tmp_path / "pipe.db").as_posix()
+    created = run_shell(shell, [database], "create table t(i bigint)")
+    assert created.returncode == 0, created.stderr
+    insert = "with ins as (insert into t select range from range(200000) returning i) select * from ins"
+    environment = os.environ.copy()
+    for key in ShellTest.AGENT_ENVIRONMENT_VARIABLES:
+        environment.pop(key, None)
+    reader = subprocess.Popen(
+        [shell, "--batch", "--no-init", "-csv", database, "-c", insert],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=environment,
+    )
+    try:
+        # stop reading after the header, as `| head -1` would, then let the closed pipe stop the shell
+        assert reader.stdout.readline().strip() == "i"
+        reader.stdout.close()
+        reader.stdout = None
+        _, stderr = reader.communicate(timeout=120)
+    finally:
+        reader.kill()
+        reader.wait(timeout=60)
+    counted = run_shell(shell, [database, "-csv", "-noheader"], "select count(*) from t")
+    assert counted.returncode == 0, counted.stderr
+    assert counted.stdout.strip() == "200000", stderr
+
+
+def test_dynamic_pivot(shell):
+    test = (
+        ShellTest(shell)
+        .statement(".mode list")
+        .statement("CREATE TABLE sales(city VARCHAR, year INTEGER, amount INTEGER);")
+        .statement("INSERT INTO sales VALUES ('ams', 2023, 10), ('ams', 2024, 20), ('rtm', 2023, 30);")
+        .statement("PIVOT sales ON year USING sum(amount) ORDER BY city;")
+        .statement("BEGIN; PIVOT sales ON year USING sum(amount) ORDER BY city DESC; COMMIT;")
+    )
+    result = test.run()
+    result.check_stdout(["city|2023|2024", "ams|10|20", "rtm|30|NULL", "city|2023|2024", "rtm|30|NULL", "ams|10|20"])
+
+
+def test_alter_with_volatile_default(shell):
+    test = (
+        ShellTest(shell)
+        .statement(".mode list")
+        .statement("CREATE TABLE t AS SELECT range AS i FROM range(1000);")
+        .statement("ALTER TABLE t ADD COLUMN c DOUBLE DEFAULT random();")
+        .statement("SELECT count(*) AS filled FROM t WHERE c IS NOT NULL;")
+    )
+    result = test.run()
+    result.check_stdout("filled\n1000")
+
+
+def test_failing_alter_leaves_no_column(shell):
+    test = (
+        ShellTest(shell)
+        .statement(".mode list")
+        .statement("CREATE TABLE t AS SELECT range AS i FROM range(1000);")
+        .statement("ALTER TABLE t ADD COLUMN d INTEGER DEFAULT nonexistent_function();")
+        .statement("SELECT count(*) AS columns FROM duckdb_columns() WHERE table_name = 't';")
+    )
+    result = test.run()
+    result.check_stderr("nonexistent_function")
+    assert result.stdout.splitlines()[-2:] == ["columns", "1"]
+
+
+def test_explain_dynamic_pivot_renders_the_plan(shell):
+    test = (
+        ShellTest(shell)
+        .statement("CREATE TABLE sales(city VARCHAR, year INTEGER, amount INTEGER);")
+        .statement("INSERT INTO sales VALUES ('ams', 2023, 10);")
+        .statement("EXPLAIN PIVOT sales ON year USING sum(amount);")
+    )
+    result = test.run()
+    result.check_stdout("Seq Scan")
+    result.check_not_exist("explain_key")
+
+
+def test_describe_dynamic_pivot_renders_the_description(shell):
+    test = (
+        ShellTest(shell)
+        .statement("CREATE TABLE sales(city VARCHAR, year INTEGER, amount INTEGER);")
+        .statement("INSERT INTO sales VALUES ('ams', 2023, 10);")
+        .statement("DESCRIBE PIVOT sales ON year USING sum(amount);")
+    )
+    result = test.run()
+    result.check_stdout("city")
+    result.check_not_exist("column_type")
 
 # fmt: on

@@ -1,0 +1,59 @@
+# name: test/sql/timezone/test_icu_parse_time_zone_per_row.test
+# description: A time zone named in one row does not change the time zone of the following rows
+# group: [timezone]
+
+require icu
+
+statement ok
+SET TimeZone='UTC'
+
+query I
+SELECT s::TIMESTAMPTZ FROM (VALUES (1, '2024-01-01 00:00:00 Asia/Tokyo'), (2, '2024-01-01 00:00:00'), (3, '2024-01-01 00:00:00 America/New_York'), (4, '2024-01-01 00:00:00')) t(i, s) ORDER BY i
+----
+2023-12-31 15:00:00+00
+2024-01-01 00:00:00+00
+2024-01-01 05:00:00+00
+2024-01-01 00:00:00+00
+
+query I
+SELECT s::TIMESTAMPTZ_NS FROM (VALUES (1, '2024-01-01 00:00:00 Asia/Tokyo'), (2, '2024-01-01 00:00:00')) t(i, s) ORDER BY i
+----
+2023-12-31 15:00:00+00
+2024-01-01 00:00:00+00
+
+query I
+SELECT strptime(s, ['%Y-%m-%d %H:%M:%S %Z', '%Y-%m-%d %H:%M:%S']) FROM (VALUES (1, '2024-01-01 00:00:00 Asia/Tokyo'), (2, '2024-01-01 00:00:00')) t(i, s) ORDER BY i
+----
+2023-12-31 15:00:00+00
+2024-01-01 00:00:00+00
+
+query I
+SELECT try_strptime(s, ['%Y-%m-%d %H:%M:%S %Z', '%Y-%m-%d %H:%M:%S']) FROM (VALUES (1, '2024-01-01 00:00:00 Asia/Tokyo'), (2, '2024-01-01 00:00:00'), (3, '2024-01-01 00:00:00 Not/AZone')) t(i, s) ORDER BY i
+----
+2023-12-31 15:00:00+00
+2024-01-01 00:00:00+00
+NULL
+
+statement ok
+COPY (SELECT * FROM (VALUES (1, '2024-01-01 00:00:00 Asia/Tokyo'), (2, '2024-01-01 00:00:00')) t(i, ts)) TO '{TEST_DIR}/tz_rows.csv' (HEADER)
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/tz_rows.csv', columns={'i': 'INTEGER', 'ts': 'TIMESTAMPTZ'}) ORDER BY i
+----
+1	2023-12-31 15:00:00+00
+2	2024-01-01 00:00:00+00
+
+# the session time zone is used for rows without a time zone
+statement ok
+SET TimeZone='Europe/Amsterdam'
+
+query I
+SELECT s::TIMESTAMPTZ FROM (VALUES (1, '2024-01-01 00:00:00 Asia/Tokyo'), (2, '2024-01-01 00:00:00')) t(i, s) ORDER BY i
+----
+2023-12-31 16:00:00+01
+2024-01-01 00:00:00+01
+
+statement error
+SELECT '2024-01-01 00:00:00 Not/AZone'::TIMESTAMPTZ
+----
+Not/AZone

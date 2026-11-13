@@ -1,0 +1,33 @@
+# name: scripts/lldb/tests/test/statements.test
+# description: Fixture for LLDB SQL navigation
+# group: [test]
+
+statement ok
+CREATE TABLE lldb_values(value INTEGER)
+
+statement ok
+INSERT INTO lldb_values VALUES (42)
+
+query I
+SELECT value FROM lldb_values
+----
+42
+
+statement error
+SELECT missing_column FROM lldb_values
+----
+Binder Error
+
+loop i 0 3
+
+query I con2
+SELECT {i} - {i} AS loop_value
+----
+0
+
+endloop
+
+query T
+SELECT 'quoted "value"' AS final_value
+----
+quoted "value"

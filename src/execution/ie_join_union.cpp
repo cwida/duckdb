@@ -304,9 +304,9 @@ void IEJoinUnion::InitializeTables(ClientContext &client, const PhysicalComparis
 	        ? OrderType::DESCENDING
 	        : OrderType::ASCENDING;
 	BoundOrderByNode order1(first_order, OrderByNullType::NULLS_LAST,
-	                        make_uniq<BoundReferenceExpression>(conditions[0].GetLHS().GetReturnType(), 0));
+	                        make_uniq<BoundReferenceExpression>(conditions[0].GetLHS().GetReturnType(), storage_t(0)));
 	BoundOrderByNode order2(second_order, OrderByNullType::NULLS_LAST,
-	                        make_uniq<BoundReferenceExpression>(conditions[1].GetLHS().GetReturnType(), 0));
+	                        make_uniq<BoundReferenceExpression>(conditions[1].GetLHS().GetReturnType(), storage_t(0)));
 
 	// 2. if (op1 ∈ {>, ≥}) sort L1 in descending order
 	// 3. else if (op1 ∈ {<, ≤}) sort L1 in ascending order

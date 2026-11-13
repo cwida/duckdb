@@ -1,3 +1,4 @@
+#include "duckdb/parser/parser.hpp"
 #include "duckdb/catalog/default/default_views.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
@@ -37,7 +38,8 @@ static const DefaultView internal_views[] = {
      "SELECT name, statement, NULL prepare_time, parameter_types, result_types, NULL from_sql, NULL generic_plans, "
      "NULL custom_plans from duckdb_prepared_statements()"},
     {"pg_catalog", "pg_attribute",
-     "SELECT table_oid attrelid, column_name attname, data_type_id atttypid, 0 attstattarget, NULL attlen, "
+     "SELECT table_oid attrelid, column_name attname, "
+     "coalesce(map_type_id_to_pg_oid(data_type_id), data_type_id + 16384) atttypid, 0 attstattarget, NULL attlen, "
      "column_index attnum, 0 attndims, -1 attcacheoff, case when data_type ilike '%decimal%' then "
      "numeric_precision*1000+numeric_scale else -1 end atttypmod, false attbyval, NULL attstorage, NULL attalign, NOT "
      "is_nullable attnotnull, column_default IS NOT NULL atthasdef, false atthasmissing, '' attidentity, '' "
@@ -75,7 +77,9 @@ static const DefaultView internal_views[] = {
     {"pg_catalog", "pg_constraint",
      "SELECT table_oid*1000000+constraint_index oid, constraint_text conname, schema_oid connamespace, CASE "
      "constraint_type WHEN 'CHECK' then 'c' WHEN 'UNIQUE' then 'u' WHEN 'PRIMARY KEY' THEN 'p' WHEN 'FOREIGN KEY' THEN "
-     "'f' ELSE 'x' END contype, false condeferrable, false condeferred, true convalidated, table_oid conrelid, 0 "
+     "'f' ELSE 'x' END contype, constraint_check_mode = 'DEFERRED' condeferrable, constraint_check_mode = 'DEFERRED' "
+     "condeferred, true convalidated, table_oid "
+     "conrelid, 0 "
      "contypid, 0 conindid, 0 conparentid, 0 confrelid, NULL confupdtype, NULL confdeltype, NULL confmatchtype, true "
      "conislocal, 0 coninhcount, false connoinherit, constraint_column_indexes conkey, NULL confkey, NULL conpfeqop, "
      "NULL conppeqop, NULL conffeqop, NULL conexclop, expression conbin FROM duckdb_constraints()"},
@@ -136,7 +140,8 @@ static const DefaultView internal_views[] = {
     {"pg_catalog", "pg_tablespace", "SELECT 0 oid, 'pg_default' spcname, 0 spcowner, NULL spcacl, NULL spcoptions"},
     {"pg_catalog", "pg_type",
      "SELECT CASE WHEN type_oid IS NULL THEN NULL WHEN logical_type = 'ENUM' AND type_name <> 'enum' THEN type_oid "
-     "ELSE map_to_pg_oid(type_name) END oid, format_pg_type(logical_type, type_name) typname, schema_oid typnamespace, "
+     "WHEN internal THEN map_type_id_to_pg_oid(type_oid) END oid, format_pg_type(logical_type, type_name) typname, "
+     "schema_oid typnamespace, "
      "0 typowner, type_size typlen, false typbyval, CASE WHEN logical_type='ENUM' THEN 'e' else 'b' end typtype, CASE "
      "WHEN type_category='NUMERIC' THEN 'N' WHEN type_category='STRING' THEN 'S' WHEN type_category='DATETIME' THEN "
      "'D' WHEN type_category='BOOLEAN' THEN 'B' WHEN type_category='COMPOSITE' THEN 'C' WHEN type_category='USER' THEN "
@@ -197,7 +202,9 @@ static const DefaultView internal_views[] = {
     {"information_schema", "table_constraints",
      "SELECT database_name constraint_catalog, schema_name constraint_schema, constraint_name, database_name "
      "table_catalog, schema_name table_schema, table_name, CASE constraint_type WHEN 'NOT NULL' THEN 'CHECK' ELSE "
-     "constraint_type END constraint_type, 'NO' is_deferrable, 'NO' initially_deferred, 'YES' enforced, 'YES' "
+     "constraint_type END constraint_type, CASE WHEN constraint_check_mode = 'DEFERRED' THEN 'YES' ELSE 'NO' END "
+     "is_deferrable, CASE WHEN "
+     "constraint_check_mode = 'DEFERRED' THEN 'YES' ELSE 'NO' END initially_deferred, 'YES' enforced, 'YES' "
      "nulls_distinct FROM duckdb_constraints() WHERE constraint_type = 'PRIMARY KEY' OR constraint_type = 'FOREIGN "
      "KEY' OR constraint_type = 'UNIQUE' OR constraint_type = 'CHECK' OR constraint_type = 'NOT NULL';"},
     {"information_schema", "constraint_column_usage",
@@ -211,9 +218,8 @@ static const DefaultView internal_views[] = {
      "WHERE constraint_type NOT IN ('NOT NULL');"},
     {"information_schema", "check_constraints",
      "SELECT database_name AS constraint_catalog, schema_name AS constraint_schema, constraint_name, CASE "
-     "constraint_type WHEN 'NOT NULL' THEN column_name || ' IS NOT NULL' ELSE constraint_text END AS check_clause FROM "
-     "(SELECT dc.*, UNNEST(dc.constraint_column_names) AS column_name FROM duckdb_constraints() AS dc WHERE "
-     "constraint_type IN ('CHECK', 'NOT NULL'));"},
+     "constraint_type WHEN 'NOT NULL' THEN constraint_column_names[1] || ' IS NOT NULL' ELSE constraint_text END AS "
+     "check_clause FROM duckdb_constraints() WHERE constraint_type IN ('CHECK', 'NOT NULL');"},
     {"information_schema", "views",
      "SELECT database_name AS table_catalog, schema_name AS table_schema, view_name AS table_name, sql AS "
      "view_definition, 'NONE' AS check_option, 'NO' AS is_updatable, 'NO' AS is_insertable_into, 'NO' AS "
@@ -232,7 +238,8 @@ static unique_ptr<CreateViewInfo> GetDefaultView(ClientContext &context, const I
 			result->temporary = true;
 			result->internal = true;
 
-			return CreateViewInfo::FromSelect(context, std::move(result));
+			auto parser = Parser::GetBuiltinParser();
+			return CreateViewInfo::FromSelect(parser, std::move(result));
 		}
 	}
 	return nullptr;

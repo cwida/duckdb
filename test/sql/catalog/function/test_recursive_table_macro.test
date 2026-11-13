@@ -1,0 +1,46 @@
+# name: test/sql/catalog/function/test_recursive_table_macro.test
+# description: Mutually recursive table macros are detected
+# group: [function]
+
+statement ok
+CREATE MACRO u(x) AS TABLE SELECT 1 a
+
+statement ok
+CREATE MACRO t(x) AS TABLE SELECT * FROM u(x)
+
+# using the same table macro multiple times is fine
+query II
+SELECT * FROM t(1), t(2)
+----
+1	1
+
+statement ok
+CREATE MACRO w(x) AS TABLE SELECT * FROM u(x) JOIN u(x) USING (a)
+
+query I
+SELECT * FROM w(1)
+----
+1
+
+statement ok
+CREATE OR REPLACE MACRO u(x) AS TABLE SELECT * FROM t(x)
+
+statement error
+SELECT * FROM t(1)
+----
+infinite recursion detected: attempting to recursively expand table macro "t"
+
+# recursion through a subquery
+statement ok
+CREATE MACRO u2(x) AS TABLE SELECT 1 a
+
+statement ok
+CREATE MACRO t2(x) AS TABLE SELECT * FROM u2(x)
+
+statement ok
+CREATE OR REPLACE MACRO u2(x) AS TABLE SELECT (SELECT count(*) FROM t2(x)) a
+
+statement error
+SELECT * FROM t2(1)
+----
+infinite recursion detected: attempting to recursively expand table macro "t2"

@@ -238,14 +238,18 @@ LogicalPlanSQLExportResult LogicalColumnDataGet::ToSQL(LogicalPlanSQLExportConte
 		remaining -= chunk.size();
 		for (idx_t row = 0; row < chunk.size(); row++) {
 			vector<unique_ptr<ParsedExpression>> exported_row;
-			for (idx_t column = 0; column < chunk.ColumnCount(); column++) {
-				auto value =
-				    BoundExpressionSQLExporter::Export(BoundConstantExpression(chunk.GetValue(column, row)), {});
-				if (value.HasError()) {
-					return LogicalPlanSQLExportResult::Failure({LogicalPlanSQLExportHelpers::PlanUnsupportedFeature(
-					    path, "chunk_value", "The materialized value cannot be represented in SQL")});
+			if (chunk.ColumnCount() == 0) {
+				exported_row.push_back(make_uniq<ConstantExpression>(Literal::Null()));
+			} else {
+				for (idx_t column = 0; column < chunk.ColumnCount(); column++) {
+					auto value =
+					    BoundExpressionSQLExporter::Export(BoundConstantExpression(chunk.GetValue(column, row)), {});
+					if (value.HasError()) {
+						return LogicalPlanSQLExportResult::Failure({LogicalPlanSQLExportHelpers::PlanUnsupportedFeature(
+						    path, "chunk_value", "The materialized value cannot be represented in SQL")});
+					}
+					exported_row.push_back(std::move(value.GetValue()));
 				}
-				exported_row.push_back(std::move(value.GetValue()));
 			}
 			values->values.push_back(std::move(exported_row));
 		}
@@ -284,7 +288,8 @@ LogicalPlanSQLExportResult LogicalExpressionGet::ToSQL(LogicalPlanSQLExportConte
 	if (fields.HasError()) {
 		return LogicalPlanSQLExportResult::Failure(fields);
 	}
-	if (get.children[0]->type != LogicalOperatorType::LOGICAL_DUMMY_SCAN) {
+	if (get.children[0]->type != LogicalOperatorType::LOGICAL_DUMMY_SCAN ||
+	    export_context.FindSource(*get.children[0])) {
 		return ExportSQLInput(export_context, path, std::move(fields.GetValue()));
 	}
 

@@ -1,0 +1,64 @@
+# name: test/sql/alter/struct/alter_nested_struct_field_not_implemented.test
+# description: ALTER on a nested struct field must not silently target the top-level column
+# group: [struct]
+
+statement ok
+CREATE TABLE test(s STRUCT(a INTEGER, b INTEGER))
+
+statement ok
+INSERT INTO test VALUES ({'a': NULL, 'b': 1})
+
+# https://github.com/duckdb/duckdb/issues/25456 - this used to silently set NOT NULL on the
+# top-level column "s" instead of the nested field "s.a", leaving the NULL field unenforced
+statement error
+ALTER TABLE test ALTER s.a SET NOT NULL
+----
+Setting a NOT NULL constraint on a nested field is not yet supported
+
+statement error
+ALTER TABLE test ALTER s.a DROP NOT NULL
+----
+Dropping a NOT NULL constraint on a nested field is not yet supported
+
+statement error
+ALTER TABLE test ALTER s.a SET DEFAULT 5
+----
+Setting a default value on a nested field is not yet supported
+
+statement error
+ALTER TABLE test ALTER s.a TYPE BIGINT
+----
+Changing the type of a nested field is not yet supported
+
+# the row is untouched. none of the above silently applied to the wrong column
+query I
+SELECT * FROM test
+----
+{'a': NULL, 'b': 1}
+
+# simple (non-nested) columns are unaffected by the guard
+statement ok
+CREATE TABLE simple(a INTEGER, b INTEGER)
+
+statement ok
+INSERT INTO simple VALUES (1, 1)
+
+statement ok
+ALTER TABLE simple ALTER a SET NOT NULL
+
+statement error
+INSERT INTO simple VALUES (NULL, 2)
+----
+NOT NULL constraint failed
+
+statement ok
+ALTER TABLE simple ALTER a DROP NOT NULL
+
+statement ok
+INSERT INTO simple VALUES (NULL, 2)
+
+statement ok
+ALTER TABLE simple ALTER a SET DEFAULT 42
+
+statement ok
+ALTER TABLE simple ALTER a TYPE BIGINT

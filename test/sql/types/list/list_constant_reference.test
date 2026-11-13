@@ -1,0 +1,92 @@
+# name: test/sql/types/list/list_constant_reference.test
+# description: Reusing a constant list reference restores validity after a NULL
+# group: [list]
+
+# Nested-loop MARK comparisons reuse a constant reference for successive probe rows.
+# A NULL probe must not affect comparisons of subsequent non-NULL lists.
+query T
+SELECT list(__mark_join_marker ORDER BY id)
+FROM (VALUES (0,NULL::INTEGER[]),(1,[1,2]),(2,[2,1]),(3,[1,NULL::INTEGER])) p(id,k)
+JOIN BY(TYPE MARK) (VALUES ([1,2]),([1,NULL::INTEGER])) b(k) ON p.k <> b.k;
+----
+[NULL, true, true, true]
+
+query T
+SELECT list(__mark_join_marker ORDER BY id)
+FROM (VALUES (1,[1,2]),(0,NULL::INTEGER[]),(2,[2,1]),(3,[1,NULL::INTEGER])) p(id,k)
+JOIN BY(TYPE MARK) (VALUES ([1,2]),([1,NULL::INTEGER])) b(k) ON p.k <> b.k;
+----
+[NULL, true, true, true]
+
+query T
+SELECT list(__mark_join_marker ORDER BY id)
+FROM (VALUES (1,[1,2]),(2,[2,1]),(3,[1,NULL::INTEGER]),(0,NULL::INTEGER[])) p(id,k)
+JOIN BY(TYPE MARK) (VALUES ([1,2]),([1,NULL::INTEGER])) b(k) ON p.k <> b.k;
+----
+[NULL, true, true, true]
+
+statement ok
+CREATE TABLE list_probes AS
+SELECT * FROM (VALUES (0,NULL::INTEGER[]),(1,[1,2]),(2,[]::INTEGER[]),(3,NULL::INTEGER[]),
+                     (4,[1,NULL::INTEGER]),(5,[2,1]),(6,NULL::INTEGER[]),(7,[1,2])) p(id,k);
+
+statement ok
+CREATE TABLE list_build AS SELECT * FROM (VALUES ([1,2]),([1,2]),([1,NULL::INTEGER]),([]::INTEGER[])) b(k);
+
+# Compare MARK results with scalar comparisons reduced using three-valued OR.
+# Cover repeated NULL-to-value transitions, nested NULLs, empty lists and duplicates.
+foreach comparison = <> < <= > >=
+
+query I
+WITH actual AS (
+    SELECT id, __mark_join_marker AS marker
+    FROM list_probes p JOIN BY(TYPE MARK) list_build b ON p.k {comparison} b.k
+), expected AS (
+    SELECT id, CASE WHEN bool_or(p.k {comparison} b.k) THEN true
+                    WHEN count(*) FILTER (WHERE (p.k {comparison} b.k) IS NULL) > 0 THEN NULL
+                    ELSE false END AS marker
+    FROM list_probes p CROSS JOIN list_build b GROUP BY id
+)
+SELECT count(*) FROM actual JOIN expected USING (id)
+WHERE actual.marker IS DISTINCT FROM expected.marker;
+----
+0
+
+# STRUCT references recursively reuse the list child reference.
+query I
+WITH actual AS (
+    SELECT id, __mark_join_marker AS marker
+    FROM list_probes p JOIN BY(TYPE MARK) list_build b ON {'k':p.k} {comparison} {'k':b.k}
+), expected AS (
+    SELECT id, bool_or({'k':p.k} {comparison} {'k':b.k}) AS marker
+    FROM list_probes p CROSS JOIN list_build b GROUP BY id
+)
+SELECT count(*) FROM actual JOIN expected USING (id)
+WHERE actual.marker IS DISTINCT FROM expected.marker;
+----
+0
+
+endloop
+
+# A NULL build value keeps UNKNOWN results when no comparison is true.
+query T
+SELECT list(__mark_join_marker ORDER BY id)
+FROM list_probes p
+JOIN BY(TYPE MARK) (VALUES ([1,2]),(NULL::INTEGER[])) b(k) ON p.k <> b.k;
+----
+[NULL, NULL, true, NULL, true, true, NULL, NULL]
+
+# An empty build relation produces false, including for NULL probe lists.
+query I
+SELECT count(*) FROM list_probes p
+JOIN BY(TYPE MARK) (SELECT k FROM list_build WHERE false) b ON p.k <> b.k
+WHERE __mark_join_marker IS DISTINCT FROM false;
+----
+0
+
+# Other callers of constant references must preserve NULL and non-NULL list values.
+query T
+SELECT list(k ORDER BY id, n)
+FROM list_probes CROSS JOIN (VALUES (0),(1)) b(n);
+----
+[NULL, NULL, [1, 2], [1, 2], [], [], NULL, NULL, [1, NULL], [1, NULL], [2, 1], [2, 1], NULL, NULL, [1, 2], [1, 2]]

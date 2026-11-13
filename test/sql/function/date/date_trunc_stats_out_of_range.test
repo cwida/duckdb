@@ -1,0 +1,24 @@
+# name: test/sql/function/date/date_trunc_stats_out_of_range.test
+# description: date_trunc statistics over DATE bounds outside the TIMESTAMP range
+# group: [date]
+
+statement ok
+CREATE TABLE d(dt DATE, s VARCHAR);
+
+statement ok
+INSERT INTO d VALUES ('5877642-06-25', 'A'), ('2024-01-01', 'b');
+
+query I
+SELECT date_trunc('day', dt) FROM d WHERE s = 'b';
+----
+2024-01-01 00:00:00
+
+query I
+SELECT date_trunc('month', dt) FROM d WHERE s = 'b';
+----
+2024-01-01 00:00:00
+
+statement error
+SELECT date_trunc('day', dt) FROM d;
+----
+Conversion Error

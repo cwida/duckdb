@@ -1,0 +1,53 @@
+# name: test/sql/storage/temp_directory/initialization_retry.test
+# description: Temporary-directory creation can retry after a failed first spill
+# group: [temp_directory]
+
+require noforcestorage
+
+require skip_reload
+
+statement ok
+SET threads=1;
+
+statement ok
+SET memory_limit='80MB';
+
+statement ok
+COPY (SELECT 42) TO '{TEST_DIR}/temporary_directory_regular_file.csv';
+
+statement ok
+SET temp_directory='{TEST_DIR}/temporary_directory_regular_file.csv';
+
+statement ok
+CREATE TEMP TABLE t AS SELECT i, repeat('y', 80000) AS s FROM range(400) r(i);
+
+# The configured path is a file, so creating the temporary directory fails.
+statement error
+SET memory_limit='10MB';
+----
+temporary_directory_regular_file.csv
+
+statement ok
+SET temp_directory='{TEST_DIR}/temporary_directory_retry.tmp';
+
+statement ok
+SET memory_limit='10MB';
+
+query I
+SELECT sum(temporary_storage_bytes) > 0 FROM duckdb_memory();
+----
+true
+
+# Reading a vector of large strings needs more memory than spilling them.
+statement ok
+SET memory_limit='80MB';
+
+query I
+SELECT sum(length(s)) FROM t;
+----
+32000000
+
+statement error
+SET temp_directory='{TEST_DIR}/temporary_directory_after_use.tmp';
+----
+Cannot switch temporary directory after the current one has been used

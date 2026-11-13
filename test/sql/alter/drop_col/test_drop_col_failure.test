@@ -55,3 +55,24 @@ statement error
 ALTER TABLE test3 DROP COLUMN a
 ----
 Catalog Error: Cannot drop column "a" because it is referenced in primary key constraint PRIMARY KEY(a, b)
+
+# a failed DROP COLUMN must not corrupt the table's generated-column dependencies
+statement ok
+CREATE TABLE gen(a INT PRIMARY KEY, b INT GENERATED ALWAYS AS (a + 1), c INT, d INT GENERATED ALWAYS AS (c * 2))
+
+statement ok
+INSERT INTO gen(a, c) VALUES (1, 10)
+
+statement error
+ALTER TABLE gen DROP COLUMN a CASCADE
+----
+Catalog Error: Cannot drop column "a" because there is a PRIMARY KEY constraint that depends on it
+
+# the table still works: dropping c cascades to the generated column d, leaving (a, b)
+statement ok
+ALTER TABLE gen DROP COLUMN c CASCADE
+
+query II
+SELECT * FROM gen
+----
+1	2

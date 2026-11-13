@@ -48,7 +48,6 @@ NULL	NULL	300	Friday	NULL
 fg5391jn4	92	NULL	2020-12-30 04:25:58.745232+01	NULL
 test	88	NULL	2020-12-30 01:25:58.745232+01	NULL
 
-mode unskip
 
 query TTTTT
 SELECT  typeof(a), typeof(b), typeof(c), typeof(ts), typeof(k)
@@ -57,7 +56,6 @@ LIMIT 1;
 ----
 VARCHAR	BIGINT	BIGINT	VARCHAR	BIGINT
 
-mode skip flaky
 
 # projection pushdown
 query II
@@ -98,4 +96,3 @@ Sunday
 NULL
 NULL
 NULL
-

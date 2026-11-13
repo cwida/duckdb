@@ -1,0 +1,35 @@
+# name: test/sql/index/art/scan/test_art_scan_local_rows_batch_index.test
+# description: Index scans with multiple row ID batches return transaction-local rows last
+# group: [scan]
+
+statement ok
+SET threads = 4;
+
+statement ok
+SET index_scan_max_count = 10000;
+
+statement ok
+CREATE TABLE t(id BIGINT PRIMARY KEY);
+
+statement ok
+INSERT INTO t SELECT range FROM range(300000);
+
+query II
+EXPLAIN ANALYZE SELECT id FROM t WHERE id >= 297000;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO t VALUES (1000000);
+
+loop i 0 50
+
+query I
+SELECT id FROM t WHERE id >= 297000 LIMIT 1 OFFSET 2048;
+----
+299048
+
+endloop

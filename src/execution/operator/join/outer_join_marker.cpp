@@ -65,12 +65,9 @@ void OuterJoinMarker::ConstructLeftJoinResult(DataChunk &left, DataChunk &result
 	}
 	D_ASSERT(count == STANDARD_VECTOR_SIZE);
 	SelectionVector remaining_sel(STANDARD_VECTOR_SIZE);
-	idx_t remaining_count = 0;
-	for (idx_t i = 0; i < left.size(); i++) {
-		if (!found_match[i]) {
-			remaining_sel.set_index(remaining_count++, i);
-		}
-	}
+	auto true_count = SelectionVector::SelectFromBoolean(
+	    found_match.get(), nullptr, left.size(), {}, array_ptr<sel_t>(remaining_sel.data(), remaining_sel.Capacity()));
+	auto remaining_count = left.size() - true_count;
 	if (remaining_count > 0) {
 		result.Slice(left, remaining_sel, remaining_count);
 		for (idx_t idx = left.ColumnCount(); idx < result.ColumnCount(); idx++) {
@@ -112,10 +109,7 @@ void OuterJoinMarker::Scan(OuterJoinGlobalScanState &gstate, OuterJoinLocalScanS
 			for (idx_t i = 0; i < left_column_count; i++) {
 				ConstantVector::SetNull(result.data[i], count_t(result_count));
 			}
-			for (idx_t col_idx = left_column_count; col_idx < result.ColumnCount(); col_idx++) {
-				result.data[col_idx].Slice(lstate.scan_chunk.data[col_idx - left_column_count], lstate.match_sel,
-				                           result_count);
-			}
+			result.Slice(lstate.scan_chunk, lstate.match_sel, result_count, left_column_count);
 		}
 		gstate.rows_scanned.fetch_add(lstate.scan_chunk.size(), std::memory_order_relaxed);
 		if (result_count > 0) {

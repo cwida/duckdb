@@ -105,16 +105,64 @@ require parquet
 
 # a state written through Parquet is re-typed with to_aggregate_state and merges as before
 statement ok
-COPY (SELECT i % 7 AS g, approx_count_distinct(i) EXPORT_STATE AS s FROM range(100000) r(i) GROUP BY g) TO '__TEST_DIR__/approx_count_distinct_states.parquet' (FORMAT PARQUET);
+COPY (SELECT i % 7 AS g, approx_count_distinct(i) EXPORT_STATE AS s FROM range(100000) r(i) GROUP BY g) TO '{TEST_DIR}/approx_count_distinct_states.parquet' (FORMAT PARQUET);
 
 query I
-SELECT finalize(combine_aggr(to_aggregate_state(s, 'approx_count_distinct', ['BIGINT']))) FROM '__TEST_DIR__/approx_count_distinct_states.parquet';
+SELECT finalize(combine_aggr(to_aggregate_state(s, 'approx_count_distinct', ['BIGINT']))) FROM '{TEST_DIR}/approx_count_distinct_states.parquet';
 ----
 99467
 
 query II
-SELECT g, finalize(to_aggregate_state(s, 'approx_count_distinct', ['BIGINT'])) FROM '__TEST_DIR__/approx_count_distinct_states.parquet' ORDER BY g LIMIT 3;
+SELECT g, finalize(to_aggregate_state(s, 'approx_count_distinct', ['BIGINT'])) FROM '{TEST_DIR}/approx_count_distinct_states.parquet' ORDER BY g LIMIT 3;
 ----
 0	13844
 1	14708
 2	13965
+
+# Canonical ANY descriptors preserve the sketch, including NULLs and duplicates.
+query III
+SELECT finalize(to_aggregate_state(s::STRUCT(precision UTINYINT, registers UTINYINT[]),
+                                  'approx_count_distinct', ['ANY'])),
+       finalize(combine(s, to_aggregate_state(s::STRUCT(precision UTINYINT, registers UTINYINT[]),
+                                            'approx_count_distinct', ['ANY']))) = finalize(s),
+       typeof(s) = 'AGGREGATE_STATE' AND typeof(finalize(s)) = 'BIGINT'
+FROM (SELECT approx_count_distinct(v) EXPORT_STATE s FROM (VALUES (1::BIGINT),(1),(NULL),(2)) input(v));
+----
+2	true	true
+
+query I
+SELECT finalize(to_aggregate_state({'precision': 10, 'registers': list_resize([]::UTINYINT[], 1024, 0)},
+                                  'approx_count_distinct', ['ANY']));
+----
+0
+
+# State identity is independent of the input type for approximate count as well.
+query I
+SELECT finalize(combine_aggr(s)) FROM (
+    SELECT approx_count_distinct(v) EXPORT_STATE s FROM (VALUES (1::BIGINT),(NULL)) input(v)
+    UNION ALL
+    SELECT approx_count_distinct(v) EXPORT_STATE s FROM (VALUES ('a'),(NULL)) input(v)
+) input;
+----
+2
+
+statement error
+SELECT finalize(to_aggregate_state({'precision': 10, 'registers': [0, 0, 0]::UTINYINT[]},
+                                  'approx_count_distinct', ['ANY']));
+----
+expected 1024 registers, got 3
+
+# Grouped sketches include an all-NULL group and duplicate values.
+query III rowsort
+SELECT g, finalize(s),
+       finalize(to_aggregate_state(s::STRUCT(precision UTINYINT, registers UTINYINT[]),
+                                  'approx_count_distinct', ['ANY']))
+FROM (
+    SELECT g, approx_count_distinct(v) EXPORT_STATE s
+    FROM (VALUES (0,1::BIGINT),(0,1),(0,NULL),(1,NULL),(2,2)) input(g,v)
+    GROUP BY g
+) states;
+----
+0	1	1
+1	0	0
+2	1	1

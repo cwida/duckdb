@@ -1,0 +1,12 @@
+# name: benchmark/micro/string/lpad.benchmark
+# description: LPAD of short strings to 200 characters with a one-byte pad
+# group: [string]
+
+name LPAD
+group string
+
+run
+SELECT max(strlen(lpad(i::VARCHAR, 200, '0'))) FROM range(2000000) t(i)
+
+result I
+200

@@ -6,8 +6,7 @@
 // query, print the result.
 int main() {
 	try {
-		duckdb::cxx::Environment env;
-		auto db = env.Open(":memory:");
+		duckdb::cxx::Instance db(":memory:");
 		auto conn = db.Connect();
 		auto result = conn.Execute("SELECT 21 * 2 AS answer");
 		std::fputs(result.RenderBox().c_str(), stdout);

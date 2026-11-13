@@ -318,3 +318,9 @@ statement error
 SELECT to_aggregate_state([{'v0': 1, 'v1': 10}], 'list', ['INTEGER'], [NULL], [{'column': 5, 'order': 'ASC NULLS LAST'}]);
 ----
 <REGEX>:.*out of range.*
+
+# the 'order' of an ORDER BY entry must be a string
+statement error
+SELECT to_aggregate_state([{'v0': 'a'}], 'string_agg', ['VARCHAR'], NULL, [{'column': 0, 'order': 42}]);
+----
+<REGEX>:.*'order'.*must be a string.*

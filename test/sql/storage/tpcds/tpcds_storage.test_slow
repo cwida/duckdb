@@ -9,7 +9,7 @@ load {TEST_DIR}/tpcds_storage.db
 foreach compression <compression>
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 statement ok
 call dsdgen(sf=1);
@@ -20,7 +20,7 @@ CHECKPOINT
 restart
 
 statement ok
-PRAGMA default_null_order='postgres'
+SET default_null_order='postgres'
 
 loop i 1 9
 

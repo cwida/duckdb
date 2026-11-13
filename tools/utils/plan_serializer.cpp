@@ -71,7 +71,7 @@ int main(int argc, char **argv) {
 		duckdb::BufferedFileWriter target(db.GetFileSystem(), target_location);
 
 		con.BeginTransaction();
-		duckdb::Parser p;
+		duckdb::Parser p(*con.context);
 		p.ParseQuery(target_stmt);
 
 		duckdb::Planner planner(*con.context);
@@ -117,7 +117,7 @@ int main(int argc, char **argv) {
 
 		// Now execute the original statement as well and compare results
 		con.BeginTransaction();
-		duckdb::Parser p;
+		duckdb::Parser p(*con.context);
 		p.ParseQuery(target_stmt);
 		duckdb::Planner planner(*con.context);
 		planner.CreatePlan(std::move(p.statements[0]));

@@ -13,7 +13,7 @@
 using namespace duckdb;
 
 static duckdb::unique_ptr<SQLStatement> ParseSingleStatement(const string &query) {
-	Parser parser;
+	auto parser = Parser::GetBuiltinParser();
 	parser.ParseQuery(query);
 	REQUIRE(parser.statements.size() == 1);
 	return std::move(parser.statements[0]);

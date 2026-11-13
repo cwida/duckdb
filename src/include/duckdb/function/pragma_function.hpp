@@ -20,6 +20,21 @@ typedef string (*pragma_query_t)(ClientContext &context, const FunctionParameter
 //! Execute the main pragma function
 typedef void (*pragma_function_t)(ClientContext &context, const FunctionParameters &parameters);
 
+struct PragmaFunctionInfo {
+	DUCKDB_API virtual ~PragmaFunctionInfo();
+
+	template <class TARGET>
+	TARGET &Cast() {
+		DynamicCastCheck<TARGET>(this);
+		return reinterpret_cast<TARGET &>(*this);
+	}
+	template <class TARGET>
+	const TARGET &Cast() const {
+		DynamicCastCheck<TARGET>(this);
+		return reinterpret_cast<const TARGET &>(*this);
+	}
+};
+
 //! Pragma functions are invoked by calling PRAGMA x
 //! Pragma functions come in three types:
 //! * Call: function call, e.g. PRAGMA table_info('tbl')
@@ -30,6 +45,10 @@ typedef void (*pragma_function_t)(ClientContext &context, const FunctionParamete
 //! or they can
 class PragmaFunction : public SimpleFunction { // NOLINT: work-around bug in clang-tidy
 public:
+	static constexpr const FunctionKind KIND = FunctionKind::PRAGMA;
+	FunctionKind GetKind() const override {
+		return KIND;
+	}
 	// Call
 	DUCKDB_API static PragmaFunction PragmaCall(const Identifier &name, pragma_query_t query,
 	                                            vector<LogicalType> arguments,
@@ -58,13 +77,15 @@ public:
 	DUCKDB_API static PragmaFunction PragmaStatement(const Identifier &name, pragma_query_t query);
 	DUCKDB_API static PragmaFunction PragmaStatement(const Identifier &name, pragma_function_t function);
 
-	DUCKDB_API string ToString() const;
+	DUCKDB_API string ToString() const override;
 
 public:
 	PragmaType type;
 
 	pragma_query_t query;
 	pragma_function_t function;
+	//! Additional function info, passed to the callbacks through FunctionParameters::function
+	shared_ptr<PragmaFunctionInfo> function_info;
 
 private:
 	PragmaFunction(Identifier name, PragmaType pragma_type, pragma_query_t query, pragma_function_t function,

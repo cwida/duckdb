@@ -1,4 +1,5 @@
 #include "duckdb/execution/operator/csv_scanner/csv_file_scanner.hpp"
+#include "duckdb/main/query_profiler.hpp"
 
 #include "duckdb/execution/operator/csv_scanner/sniffer/csv_sniffer.hpp"
 #include "duckdb/execution/operator/csv_scanner/skip_scanner.hpp"
@@ -11,7 +12,8 @@ CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, CSV
                          const vector<LogicalType> &types, CSVSchema &file_schema, bool per_file_single_threaded,
                          shared_ptr<CSVBufferManager> buffer_manager_p, bool fixed_schema)
     : file(file_p), buffer_manager(std::move(buffer_manager_p)),
-      error_handler(make_shared_ptr<CSVErrorHandler>(options_p.ignore_errors.GetValue())),
+      error_handler(
+          make_shared_ptr<CSVErrorHandler>(options_p.ignore_errors.GetValue(), options_p.store_rejects.GetValue())),
       options(std::move(options_p)) {
 	// Initialize Buffer Manager
 	if (!buffer_manager) {
@@ -51,7 +53,8 @@ CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, CSV
 
 CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, const CSVReaderOptions &options_p,
                          const MultiFileOptions &file_options)
-    : file(file_p), error_handler(make_shared_ptr<CSVErrorHandler>(options_p.ignore_errors.GetValue())),
+    : file(file_p), error_handler(make_shared_ptr<CSVErrorHandler>(options_p.ignore_errors.GetValue(),
+                                                                   options_p.store_rejects.GetValue())),
       options(options_p) {
 	buffer_manager = CSVBufferManager::Open(context, options, file);
 	// Initialize On Disk and Size of file
@@ -76,6 +79,15 @@ CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, con
 	state_machine = make_shared_ptr<CSVStateMachine>(
 	    state_machine_cache.Get(options.dialect_options.state_machine_options), options);
 	SetStart();
+}
+
+void CSVFileScan::CountBytesScanned(CSVBufferManager &manager) {
+	auto bytes = manager.file_handle->TakeStoredBytesRead();
+	if (bytes == 0) {
+		return;
+	}
+	bytes_scanned_unreported += bytes;
+	QueryProfiler::Get(manager.context).TrackBytesScanned(bytes);
 }
 
 void CSVFileScan::SetStart() {
@@ -153,6 +165,9 @@ void CSVFileScan::InitializeProjection() {
 }
 
 void CSVFileScan::Finish() {
+	if (buffer_manager) {
+		CountBytesScanned(*buffer_manager);
+	}
 	buffer_manager.reset();
 }
 

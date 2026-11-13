@@ -1,0 +1,10 @@
+# name: benchmark/h2oai/join/q03_small.benchmark
+# description: Run the small query 03 from the H2OAI join benchmark
+# group: [join]
+
+template benchmark/h2oai/join/h2oai.benchmark.in
+QUERY_NUMBER=3_small
+QUERY_NUMBER_PADDED=03_small
+RESULT_COLUMNS=IIIII
+RESULT_QUERY=SELECT COUNT(DISTINCT medium_id1), COUNT(DISTINCT medium_id4), COUNT(DISTINCT medium_id5), SUM(v2), COUNT(*) FROM ans
+RESULT_ANSWER=10	10	9000	247465306.07761204	5500000

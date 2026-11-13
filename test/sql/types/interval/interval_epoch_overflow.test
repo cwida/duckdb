@@ -1,0 +1,13 @@
+# name: test/sql/types/interval/interval_epoch_overflow.test
+# description: Test interval epoch conversions that exceed integer precision
+# group: [interval]
+
+statement error
+SELECT epoch_us(INTERVAL '2147483647 months')
+----
+Could not convert Month to Microseconds
+
+statement error
+SELECT epoch_ns(INTERVAL '400 years')
+----
+Could not convert Interval to Nanoseconds

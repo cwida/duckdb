@@ -1,0 +1,110 @@
+# name: test/issues/general/test_26797.test
+# description: Every finite int64 is a TIMESTAMP that renders, casts and round-trips
+# group: [general]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+	('int64_min', make_timestamp(-9223372036854775807 - 1)),
+	('above -infinity', make_timestamp(-9223372036854775806)),
+	('before the first midnight', make_timestamp(-9223372022400000001)),
+	('first midnight', make_timestamp(-9223372022400000000)),
+	('largest', make_timestamp(9223372036854775806))) v(k, ts);
+
+query IIIII
+SELECT k, ts::VARCHAR, TRY_CAST(ts AS VARCHAR), ts::DATE, ts::TIME FROM t ORDER BY ts;
+----
+int64_min	290309-12-21 (BC) 19:59:05.224192	290309-12-21 (BC) 19:59:05.224192	290309-12-21 (BC)	19:59:05.224192
+above -infinity	290309-12-21 (BC) 19:59:05.224194	290309-12-21 (BC) 19:59:05.224194	290309-12-21 (BC)	19:59:05.224194
+before the first midnight	290309-12-21 (BC) 23:59:59.999999	290309-12-21 (BC) 23:59:59.999999	290309-12-21 (BC)	23:59:59.999999
+first midnight	290309-12-22 (BC) 00:00:00	290309-12-22 (BC) 00:00:00	290309-12-22 (BC)	00:00:00
+largest	294247-01-10 04:00:54.775806	294247-01-10 04:00:54.775806	294247-01-10	04:00:54.775806
+
+query IIII
+SELECT k, [ts]::VARCHAR, {'a': ts}::VARCHAR, ts::VARIANT::VARCHAR FROM t ORDER BY ts LIMIT 2;
+----
+int64_min	['290309-12-21 (BC) 19:59:05.224192']	{'a': '290309-12-21 (BC) 19:59:05.224192'}	290309-12-21 (BC) 19:59:05.224192
+above -infinity	['290309-12-21 (BC) 19:59:05.224194']	{'a': '290309-12-21 (BC) 19:59:05.224194'}	290309-12-21 (BC) 19:59:05.224194
+
+# the string form parses back to the same value
+query II
+SELECT k, epoch_us(ts::VARCHAR::TIMESTAMP) = epoch_us(ts) FROM t ORDER BY ts;
+----
+int64_min	true
+above -infinity	true
+before the first midnight	true
+first midnight	true
+largest	true
+
+query IIIIIII
+SELECT year(ts), month(ts), day(ts), hour(ts), minute(ts), second(ts), microsecond(ts) FROM t WHERE k = 'int64_min';
+----
+-290308	12	21	19	59	5	5224192
+
+statement error
+SELECT '290309-12-21 (BC) 19:59:05.224191'::TIMESTAMP;
+----
+Conversion Error: timestamp field value out of range
+
+# constructors from epoch counts accept every finite value
+query III
+SELECT epoch_ms(-9223372036854775), make_timestamp_ms(-9223372022400001), epoch_us(to_timestamp(-9223372036854.775808));
+----
+290309-12-21 (BC) 19:59:05.225	290309-12-21 (BC) 23:59:59.999	-9223372036854775808
+
+# arithmetic within the first, partial day of the range
+query IIII
+SELECT TIMESTAMP '290309-12-22 (BC) 00:00:00' - INTERVAL 1 HOUR, make_timestamp(-9223372036854775806) + INTERVAL 1 DAY, DATE '290309-12-21 (BC)' + TIME '23:00:00', epoch_us(DATE '290309-12-22 (BC)' + TIMETZ '00:00:00+01');
+----
+290309-12-21 (BC) 23:00:00	290309-12-22 (BC) 19:59:05.224194	290309-12-21 (BC) 23:00:00	-9223372026000000000
+
+query I
+SELECT time_bucket(INTERVAL '1 hour', TIMESTAMP '290309-12-22 (BC) 00:00:00', TIMESTAMP '2000-01-01 00:00:01');
+----
+290309-12-21 (BC) 23:00:01
+
+# timestamp series step through the first, partial day
+query I
+SELECT epoch_us(ts) FROM generate_series(make_timestamp(-9223372036854775807 - 1), make_timestamp(-9223372036854775804), INTERVAL 2 MICROSECOND) g(ts);
+----
+-9223372036854775808
+-9223372036854775806
+-9223372036854775804
+
+query I
+SELECT ts FROM range(TIMESTAMP '290309-12-22 (BC) 00:00:00', make_timestamp(-9223372036854775806), -INTERVAL 1 HOUR) g(ts);
+----
+290309-12-22 (BC) 00:00:00
+290309-12-21 (BC) 23:00:00
+290309-12-21 (BC) 22:00:00
+290309-12-21 (BC) 21:00:00
+290309-12-21 (BC) 20:00:00
+
+# results beyond the finite values still fail
+statement error
+SELECT make_timestamp(-9223372036854775807 - 1) - INTERVAL 1 MICROSECOND;
+----
+Conversion Error: Date and time not in timestamp range
+
+statement error
+SELECT make_timestamp(9223372036854775806) + INTERVAL 1 MICROSECOND;
+----
+Conversion Error: Date and time not in timestamp range
+
+statement error
+SELECT time_bucket(INTERVAL 1 HOUR, make_timestamp(-9223372036854775806), make_timestamp(-9223372033254775807));
+----
+Out of Range Error: Overflow in TIME_BUCKET: the result is not a finite TIMESTAMP
+
+statement error
+SELECT '294247-01-10 03:00:54.775807-01'::TIMESTAMPTZ;
+----
+Conversion Error: timestamp field value out of range: "294247-01-10 03:00:54.775807-01"
+
+statement ok
+COPY t TO '{TEST_DIR}/test_26797.csv';
+
+query III
+SELECT k, ts, typeof(ts) FROM read_csv('{TEST_DIR}/test_26797.csv') ORDER BY ts LIMIT 2;
+----
+int64_min	290309-12-21 (BC) 19:59:05.224192	TIMESTAMP
+above -infinity	290309-12-21 (BC) 19:59:05.224194	TIMESTAMP

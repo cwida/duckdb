@@ -104,3 +104,135 @@ TEST_CASE("TaskExecutor drains an incremental task to completion") {
 	executor.WorkOnTasks();
 	REQUIRE(steps == STEPS);
 }
+
+namespace {
+
+struct BatchTaskCounts {
+	std::atomic<idx_t> executed {0};
+	std::atomic<idx_t> cancelled {0};
+	std::atomic<idx_t> destroyed {0};
+	std::atomic<idx_t> steps {0};
+};
+
+struct BatchTask : BaseExecutorTask {
+	BatchTask(TaskExecutor &executor, shared_ptr<BatchTaskCounts> counts, idx_t step_count = 1)
+	    : BaseExecutorTask(executor), counts(std::move(counts)), remaining_steps(step_count) {
+	}
+	~BatchTask() override {
+		counts->destroyed++;
+	}
+
+	TaskExecutionResult ExecuteTaskStep() override {
+		counts->steps++;
+		if (--remaining_steps) {
+			return TaskExecutionResult::TASK_NOT_FINISHED;
+		}
+		counts->executed++;
+		return TaskExecutionResult::TASK_FINISHED;
+	}
+	void Cancel() override {
+		counts->cancelled++;
+	}
+
+	shared_ptr<BatchTaskCounts> counts;
+	idx_t remaining_steps;
+};
+
+struct FailingBatchTask : BatchTask {
+	using BatchTask::BatchTask;
+
+	TaskExecutionResult ExecuteTaskStep() override {
+		counts->executed++;
+		throw std::runtime_error("injected batch execution failure");
+	}
+	void Cancel() override {
+		counts->cancelled++;
+		throw std::runtime_error("injected batch cancellation failure");
+	}
+};
+
+} // namespace
+
+TEST_CASE("TaskExecutor drains empty, single and multi-task batches", "[api][task_batch]") {
+	DuckDB db;
+	Connection con(db);
+#ifndef DUCKDB_NO_THREADS
+	REQUIRE_NO_FAIL(con.Query("SET threads=4"));
+	REQUIRE_NO_FAIL(con.Query("SET async_threads=2"));
+#else
+	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+	REQUIRE_NO_FAIL(con.Query("SET async_threads=0"));
+#endif
+	REQUIRE_NO_FAIL(con.Query("SET scheduler_process_partial=true"));
+	for (auto pool : {TaskSchedulerType::REGULAR, TaskSchedulerType::ASYNC}) {
+		for (idx_t task_count : {0, 1, 64, 1025}) {
+			auto counts = make_shared_ptr<BatchTaskCounts>();
+			{
+				TaskExecutor executor(*con.context, pool);
+				vector<unique_ptr<BaseExecutorTask>> tasks;
+				for (idx_t i = 0; i < task_count; i++) {
+					tasks.push_back(make_uniq<BatchTask>(executor, counts, 3));
+				}
+				executor.ScheduleTasks(std::move(tasks));
+				executor.WorkOnTasks();
+				REQUIRE(counts->executed == task_count);
+				REQUIRE(counts->cancelled == 0);
+				REQUIRE(counts->steps == task_count * 3);
+			}
+		}
+	}
+}
+
+TEST_CASE("TaskExecutor drains batch execution and cancellation failures", "[api][task_batch]") {
+	DuckDB db;
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+	auto counts = make_shared_ptr<BatchTaskCounts>();
+	TaskExecutor executor(*con.context);
+	vector<unique_ptr<BaseExecutorTask>> tasks;
+	tasks.push_back(make_uniq<FailingBatchTask>(executor, counts));
+	for (idx_t i = 1; i < 64; i++) {
+		tasks.push_back(make_uniq<BatchTask>(executor, counts));
+	}
+	executor.ScheduleTasks(std::move(tasks));
+	SECTION("Execution failure retires the remainder") {
+		REQUIRE_THROWS(executor.WorkOnTasks());
+		REQUIRE(counts->executed == 1);
+		REQUIRE(counts->cancelled == 63);
+	}
+	SECTION("Cancellation failure still drains the batch") {
+		REQUIRE_NOTHROW(executor.CancelAndDrain());
+		REQUIRE(counts->executed == 0);
+		REQUIRE(counts->cancelled == 64);
+	}
+	REQUIRE(executor.HasError());
+	REQUIRE(counts->destroyed == 64);
+}
+
+#ifndef DUCKDB_NO_THREADS
+TEST_CASE("TaskExecutor accepts concurrent batch submissions", "[api][task_batch]") {
+	DuckDB db;
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET threads=8"));
+	auto counts = make_shared_ptr<BatchTaskCounts>();
+	TaskExecutor executor(*con.context);
+	vector<std::thread> producers;
+	for (idx_t p = 0; p < 4; p++) {
+		producers.emplace_back([&] {
+			for (idx_t batch = 0; batch < 16; batch++) {
+				vector<unique_ptr<BaseExecutorTask>> tasks;
+				for (idx_t i = 0; i < 64; i++) {
+					tasks.push_back(make_uniq<BatchTask>(executor, counts));
+				}
+				executor.ScheduleTasks(std::move(tasks));
+			}
+		});
+	}
+	for (auto &producer : producers) {
+		producer.join();
+	}
+	executor.WorkOnTasks();
+	REQUIRE(counts->executed == 4 * 16 * 64);
+	REQUIRE(counts->cancelled == 0);
+}
+#endif

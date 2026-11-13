@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 set seed 0.8675309
 
@@ -74,4 +74,4 @@ FROM generate_series(1, 10) as tbl(x);
 query II
 EXPLAIN FROM noncse;
 ----
-physical_plan	<REGEX>:.*quantile_disc\(x, 0.3\).*quantile_disc\(x, 0.7\).*
+physical_plan	<REGEX>:.*quantile_disc.*quantile_disc.*

@@ -1,0 +1,114 @@
+# name: test/extension/local_extension_coverage.test
+# description: Cover local extension install and load branches without network access
+# group: [extension]
+
+require notmingw
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+# A repository cannot be combined with a direct file path.
+statement error
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension' FROM core
+----
+IO Error: Cannot combine a FROM repository with a file path
+
+# A known but absent extension includes the install suggestion when autoinstall is disabled.
+statement ok
+SET autoinstall_known_extensions = false
+
+statement ok
+SET extension_directory = '{TEST_DIR}/autoload_missing'
+
+statement ok
+SET extension_directories = []
+
+statement ok
+SET autoload_known_extensions = false
+
+statement error
+SELECT ST_Point(1, 2)
+----
+<REGEX>:Catalog Error: Scalar Function with name "st_point" is not in the catalog, but it exists in the spatial extension.*
+
+statement ok
+SET autoload_known_extensions = true
+
+statement error
+SELECT * FROM delta_scan('missing')
+----
+<REGEX>:.*delta.*
+
+statement error
+LOAD sqlite
+----
+<REGEX>:IO Error: Extension .* not found.*Install it first using "INSTALL sqlite".*
+
+# Install from a local binary, hit the existing-file no-op, then replace it explicitly.
+statement ok
+SET extension_directory = '{TEST_DIR}/local_install'
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+
+statement ok
+FORCE INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+
+query III
+SELECT installed, loaded, install_mode
+FROM duckdb_extensions()
+WHERE extension_name = 'loadable_extension_demo'
+----
+true	false	CUSTOM_PATH
+
+statement ok
+LOAD loadable_extension_demo
+
+query I
+QUACK QUACK QUACK
+----
+QUACK
+QUACK
+QUACK
+
+# Install a second extension in one directory and find it through the second configured search path.
+statement ok
+SET extension_directory = '{TEST_DIR}/second_install'
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo_double.duckdb_extension'
+
+statement ok
+SET extension_directory = ''
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/missing_first', '{TEST_DIR}/second_install']
+
+statement ok
+LOAD loadable_extension_demo_double
+
+query I
+SELECT contains(loaded_extensions(), 'loadable_extension_demo_double')
+----
+true
+
+# Test extensions are unsigned. Rejecting one exercises the complete buffer-signature path without installing it.
+statement ok
+SET extension_directory = '{TEST_DIR}/signature_check'
+
+statement ok
+SET allow_unsigned_extensions = false
+
+statement error
+LOAD '{BUILD_DIRECTORY}/test/extension/cpp_api_demo.duckdb_extension'
+----
+<REGEX>:IO Error: Extension .* could not be loaded because its signature is either missing or invalid.*
+
+statement error
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+----
+<REGEX>:IO Error: Attempting to install an extension file that doesn't have a valid signature.*

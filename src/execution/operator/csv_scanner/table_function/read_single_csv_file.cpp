@@ -93,7 +93,7 @@ static void SniffCSVFile(ClientContext &context, ReadSingleCSVFileData &result, 
                          const MultiFileOptions &file_options, vector<LogicalType> &return_types,
                          vector<Identifier> &names) {
 	auto &options = result.options;
-	result.buffer_manager = CSVBufferManager::Open(context, options, options.file_path, false);
+	result.buffer_manager = CSVBufferManager::Open(context, options, result.file, false);
 	auto &state_machine_cache = CSVStateMachineCache::Get(context);
 	if (file_schema.Empty()) {
 		// the columns of this file are fixed - only its dialect is sniffed
@@ -123,6 +123,9 @@ static unique_ptr<FunctionData> ReadSingleCSVFileBind(ClientContext &context, Ta
 		throw BinderException("read_single_csv_file requires a non-NULL file name");
 	}
 	result->file = TableFunctionFileBindInput::GetFile(input);
+	if (result->file.path.empty()) {
+		throw BinderException("read_single_csv_file requires a non-empty file name");
+	}
 
 	// the options of the scan this file is part of steer the sniffer - the file list is this single file
 	MultiFileOptions file_options;
@@ -383,8 +386,11 @@ static bool ReadSingleCSVFileClaimBatch(ClientContext &context, TableFunctionInp
 }
 
 //! The CSV scanner can be read ahead when the buffers of the file can be addressed individually
-static bool ReadSingleCSVFileSupportsReadAhead(const FunctionData &bind_data) {
-	auto &csv_data = bind_data.Cast<ReadSingleCSVFileData>();
+static bool ReadSingleCSVFileSupportsReadAhead(optional_ptr<const FunctionData> bind_data) {
+	if (!bind_data) {
+		return false;
+	}
+	auto &csv_data = bind_data->Cast<ReadSingleCSVFileData>();
 	return csv_data.buffer_manager && csv_data.buffer_manager->file_handle &&
 	       csv_data.buffer_manager->file_handle->HasKnownBufferRanges();
 }
@@ -427,6 +433,8 @@ static void ReadSingleCSVFileFunction(ClientContext &context, TableFunctionInput
 		auto &csv_reader = *lstate.state.csv_reader;
 		if (csv_reader.IsSuspended() || !csv_reader.FinishedIterator()) {
 			csv_reader.Flush(output);
+			// through the scanner's own reference to the buffer manager, which the file scan drops once it finishes
+			gstate.file_scan->CountBytesScanned(*csv_reader.buffer_manager);
 			if (csv_reader.IsSuspended()) {
 				// the scanner needs a buffer that is not in memory - load it and resume
 				csv_reader.buffer_manager->GetBuffer(csv_reader.PendingBufferIdx());
@@ -458,23 +466,41 @@ static double ReadSingleCSVFileProgress(ClientContext &context, const FunctionDa
 	return gstate.file_scan->GetProgressInFile(context);
 }
 
+//! The bytes scanned are drained, so each is reported once - the profiler sums what every thread reports
+static void ReadSingleCSVFileGetMetrics(TableFunctionGetMetricsInput &input) {
+	if (!input.global_state) {
+		return;
+	}
+	auto &gstate = input.global_state->Cast<ReadSingleCSVFileGlobalState>();
+	if (gstate.file_scan) {
+		input.operator_metrics.bytes_scanned += gstate.file_scan->bytes_scanned_unreported.exchange(0);
+	}
+}
+
 static unique_ptr<NodeStatistics> ReadSingleCSVFileCardinality(ClientContext &context, const FunctionData *bind_data) {
 	auto &csv_data = bind_data->Cast<ReadSingleCSVFileData>();
 	// determined through the scientific method as the average amount of rows in a CSV file
 	idx_t per_file_cardinality = 42;
 	if (csv_data.buffer_manager && csv_data.buffer_manager->file_handle) {
+		auto &file_handle = *csv_data.buffer_manager->file_handle;
 		auto estimated_row_width = csv_data.csv_types.size() * 5;
-		per_file_cardinality = csv_data.buffer_manager->file_handle->FileSize() / estimated_row_width;
+		auto file_size = file_handle.FileSize();
+		if (file_handle.IsPipe()) {
+			// a pipe has no size, the bytes the sniffer read are a lower bound for it
+			file_size = MaxValue<idx_t>(file_size, file_handle.UncompressedBytesRead());
+		}
+		per_file_cardinality = file_size / estimated_row_width;
 	}
 	return make_uniq<NodeStatistics>(per_file_cardinality);
 }
 
 TableFunction ReadCSVTableFunction::GetSingleFileFunction() {
-	TableFunction read_csv("read_single_csv_file", FunctionSignature().AddPositionalOnly("path", LogicalType::VARCHAR),
+	TableFunction read_csv("read_single_csv_file", FunctionSignature().AddPositionalOnly("file", LogicalType::ANY),
 	                       ReadSingleCSVFileFunction, ReadSingleCSVFileBind, ReadSingleCSVFileInitGlobal,
 	                       ReadSingleCSVFileInitLocal);
 	read_csv.table_scan_progress = ReadSingleCSVFileProgress;
 	read_csv.cardinality = ReadSingleCSVFileCardinality;
+	read_csv.get_metrics = ReadSingleCSVFileGetMetrics;
 	read_csv.projection_pushdown = true;
 	ReadCSVAddNamedParameters(read_csv);
 	return read_csv;
@@ -497,6 +523,7 @@ TableFunction ReadCSVTableFunction::GetMultiFileFunction(Identifier name) {
 	settings.schedule_io = ReadSingleCSVFileScheduleIO;
 	// the scanner converts to the types the scan asks for while parsing, rather than casting its output
 	settings.supports_cast_map = true;
+	settings.reports_bytes_scanned = true;
 	return TableFunctionMultiFileWrapper::CreateFunction(GetSingleFileFunction(), std::move(name), std::move(settings));
 }
 

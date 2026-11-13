@@ -300,7 +300,7 @@ void HTMLTreeRenderer::RenderProfiler(const QueryProfiler &profiler, BaseTreeRen
 	query_sql = HighlightSQL(FormatSQL(profiler.GetQuerySQL()));
 	query_timings.clear();
 	for (auto &entry : qm.GetMetricTimings()) {
-		query_timings.emplace_back(entry.first, static_cast<double>(entry.second) / 1e9);
+		query_timings.emplace_back(entry.first, static_cast<double>(entry.second.duration) / 1e9);
 	}
 	has_query_metrics = true;
 	profiler.RenderProfilingNodeTree(*this, ss);

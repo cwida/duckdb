@@ -22,7 +22,7 @@ static BoundCastInfo BindCastScalarFunction(ClientContext &context, const Logica
 
 static BoundCastInfo BindDefaultCastScalarFunction(const LogicalType &source, const LogicalType &target) {
 	CastFunctionSet cast_functions;
-	GetCastFunctionInput input;
+	auto input = GetCastFunctionInput::Default();
 	return cast_functions.GetCastFunction(source, target, input);
 }
 
@@ -100,7 +100,7 @@ static unique_ptr<FunctionLocalState> CastInitLocalState(ExpressionState &state,
 	if (!cast_data.bound_cast.HasInitLocalState()) {
 		return nullptr;
 	}
-	auto context_ptr = state.root.executor->HasContext() ? &state.root.executor->GetContext() : nullptr;
+	auto context_ptr = state.root.executor->TryGetClientContext();
 	CastLocalStateParameters parameters(context_ptr, cast_data.bound_cast.GetCastData());
 	return cast_data.bound_cast.InitLocalState(parameters);
 }
@@ -151,6 +151,7 @@ static unique_ptr<FunctionData> CastFunctionDeserialize(Deserializer &deserializ
 	if (BoundCastCanThrow(bound_cast, source_type, target_type, try_cast)) {
 		function.SetErrorMode(FunctionErrors::CAN_THROW_RUNTIME_ERROR);
 	}
+	function.SetStability(bound_cast.GetStability());
 	SetCastNullHandling(function, target_type);
 	return make_uniq<CastFunctionData>(source_type, target_type, std::move(bound_cast), try_cast, is_default_cast);
 }
@@ -180,6 +181,7 @@ static unique_ptr<Expression> CreateCastExpression(unique_ptr<Expression> child,
 	children.push_back(std::move(child));
 
 	auto can_throw = BoundCastCanThrow(bound_cast, source_type, target_type, try_cast);
+	auto stability = bound_cast.GetStability();
 	auto function_data =
 	    make_uniq<CastFunctionData>(source_type, target_type, std::move(bound_cast), try_cast, is_default_cast);
 
@@ -188,15 +190,14 @@ static unique_ptr<Expression> CreateCastExpression(unique_ptr<Expression> child,
 	if (can_throw) {
 		scalar_function.SetErrorMode(FunctionErrors::CAN_THROW_RUNTIME_ERROR);
 	}
+	scalar_function.SetStability(stability);
 	SetCastNullHandling(scalar_function, target_type);
 
 	BoundScalarFunction bound_function(scalar_function);
 	bound_function.GetArguments() = {source_type};
 
-	auto result = make_uniq<BoundFunctionExpression>(std::move(bound_function), std::move(children),
-	                                                 std::move(function_data), true);
-	result->SetQueryLocation(query_location);
-	return std::move(result);
+	return make_uniq<BoundFunctionExpression>(std::move(bound_function), std::move(children), std::move(function_data),
+	                                          true, Identifier(), query_location);
 }
 
 unique_ptr<Expression> BoundCastExpression::Create(unique_ptr<Expression> child, const LogicalType &target_type,
@@ -252,12 +253,16 @@ const BoundCastInfo &BoundCastExpression::GetBoundCast(const BoundFunctionExpres
 }
 
 BoundCastInfo &BoundCastExpression::GetBoundCastMutable(BoundFunctionExpression &cast_expr) {
-	return cast_expr.BindInfoMutable()->Cast<CastFunctionData>().bound_cast;
+	return cast_expr.BindInfo()->Cast<CastFunctionData>().bound_cast;
 }
 
 unique_ptr<BaseStatistics> BoundCastExpression::PropagateStatistics(BoundFunctionExpression &cast_expr,
                                                                     const BaseStatistics &child_stats,
                                                                     optional_ptr<ClientContext> context) {
+	if (!child_stats.CanHaveNoNull() &&
+	    cast_expr.Function().GetNullHandling() == FunctionNullHandling::DEFAULT_NULL_HANDLING) {
+		return BaseStatistics::FromConstant(Value(cast_expr.GetReturnType())).ToUnique();
+	}
 	auto &cast_data = cast_expr.BindInfoMutable()->Cast<CastFunctionData>();
 	auto result =
 	    cast_data.bound_cast.PropagateStatistics(cast_data.source_type, cast_data.target_type, child_stats, context);

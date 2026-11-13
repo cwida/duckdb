@@ -1,6 +1,6 @@
 WITH RECURSIVE
 params(node_count, iterations) AS (
-	VALUES (50000, 30)
+	VALUES (12000, 30)
 ),
 nodes(node) AS (
 	SELECT node::INTEGER FROM params, range(node_count) nodes(node)

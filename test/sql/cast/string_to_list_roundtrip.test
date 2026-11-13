@@ -24,7 +24,7 @@ select $$["  \"abc\"  ", def, ghi]$$::VARCHAR[] a, a::VARCHAR::VARCHAR[] b, a ==
 query III
 select $$[\  \\abc\\ \ , def, ghi]$$::VARCHAR[] a, a::VARCHAR::VARCHAR[] b, a == b
 ----
-[\  \\abc\\ \, def, ghi]	[\  \\abc\\ \, def, ghi]	true
+['\\  \\\\abc\\\\ \\', def, ghi]	['\\  \\\\abc\\\\ \\', def, ghi]	true
 
 # Escaping backslashes
 query III

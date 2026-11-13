@@ -12,7 +12,7 @@ namespace {
 //! Parse with the grammar used while CONNECT-ed
 vector<unique_ptr<SQLStatement>> ParsePassthrough(ClientContext &context, const string &query) {
 	PassthroughDialect dialect;
-	ParserOptions options;
+	auto options = ParserOptions::Builtin();
 	options.compiled_grammar = dialect.GetCompiledGrammar(context);
 	Parser parser(options);
 	parser.ParseQuery(query);

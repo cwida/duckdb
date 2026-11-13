@@ -160,6 +160,7 @@ TEST_CASE("Logical plan SQL export applies requested output names", "[sql_export
 	REQUIRE(first->RowCount() == 1);
 	REQUIRE(first->Collection().GetValue(0, 0) == Value("sql"));
 	auto sql = first->Collection().GetValue(1, 0).GetValue<string>();
+	REQUIRE(StringUtil::Contains(sql, "\nFROM"));
 	auto explained = connection.Query(sql);
 	REQUIRE_NO_FAIL(*explained);
 	REQUIRE(explained->GetNames() == vector<Identifier> {"same name", "same name"});
@@ -175,7 +176,7 @@ TEST_CASE("Logical plan SQL export applies requested output names", "[sql_export
 	auto rebound_query = connection.Query(rebound->Collection().GetValue(1, 0).GetValue<string>());
 	REQUIRE_NO_FAIL(*rebound_query);
 	REQUIRE(rebound_query->GetTypes() == vector<LogicalType> {LogicalType::VARCHAR, LogicalType::BIGINT});
-	Parser parser;
+	Parser parser(*connection.context);
 	parser.ParseQuery("EXPLAIN (SQL) SELECT 42");
 	auto copied = parser.statements[0]->Copy();
 	REQUIRE(copied->ToString() == "EXPLAIN (SQL) SELECT 42");
@@ -463,7 +464,6 @@ TEST_CASE("Logical plan SQL export retains sampling errors and partial consumpti
 					auto exported = LogicalPlanSQLExporter::Export(*connection.context, *plan);
 					REQUIRE(exported.IsSuccess());
 					QueryParameters parameters;
-					parameters.result_eagerness = ResultEagerness::AUTO;
 					unique_ptr<QueryResult> result;
 					if (route == 0) {
 						result = SubmitSQLExportResult(*connection.context, sql, parameters);

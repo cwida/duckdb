@@ -26,4 +26,4 @@ fi
 
 echo "Successfully generated transformer wrappers"
 
-make format-parser-grammar
+DUCKDB_FORMAT_SKIP_TYPOS=1 make format-parser-grammar

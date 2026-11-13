@@ -87,7 +87,8 @@ public:
 	virtual void AppendToUnit(ResultFormatGlobalState &gstate, ResultFormatLocalState &lstate, DataChunk &chunk) = 0;
 	//! True while a unit that reached the cap is ready to be taken
 	virtual bool IsUnitFinished(ResultFormatLocalState &lstate) = 0;
-	//! The next finished unit; with none ready, the partial unit under construction; null when empty
+	//! The next finished unit; with none ready, the partial unit under construction; null when empty. Never a
+	//! unit without rows: a stream reads only a missing unit as its end
 	virtual unique_ptr<ResultUnit> FinishUnit(ResultFormatGlobalState &gstate, ResultFormatLocalState &lstate) = 0;
 	//! Called for each producer and once for the global instance the producers are merged into
 	virtual unique_ptr<RetainedResultCollection> CreateCollection(ClientContext &context,

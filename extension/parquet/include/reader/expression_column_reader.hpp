@@ -9,6 +9,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "parquet_arena.h"
 
 #include "column_reader.hpp"
 #include "duckdb/execution/expression_executor.hpp"
@@ -57,11 +58,11 @@ public:
 	unique_ptr<ParquetColumnSchema> owned_schema;
 
 public:
-	void InitializeRead(idx_t row_group_idx_p, idx_t row_group_num_rows, const vector<ColumnChunk> &columns,
+	void InitializeRead(idx_t row_group_idx_p, idx_t row_group_num_rows, const duckdb_parquet::ColumnChunkList &columns,
 	                    TProtocol &protocol_p) override;
 
 	idx_t Read(ColumnReaderInput &input, Vector &result) override;
-	unique_ptr<BaseStatistics> Stats(idx_t row_group_idx_p, const vector<ColumnChunk> &columns) override;
+	unique_ptr<BaseStatistics> Stats(idx_t row_group_idx_p, const duckdb_parquet::ColumnChunkList &columns) override;
 
 	void Select(ColumnReaderInput &input, Vector &result, const SelectionVector &sel,
 	            idx_t approved_tuple_count) override;
@@ -69,12 +70,10 @@ public:
 	void Skip(idx_t num_values) override;
 	idx_t GroupRowsAvailable() override;
 
-	uint64_t TotalCompressedSize() override {
-		idx_t total_compressed_size = 0;
+	void GatherColumnChunks(unordered_set<idx_t> &column_chunks) override {
 		for (auto &child_reader : child_readers) {
-			total_compressed_size += child_reader->TotalCompressedSize();
+			child_reader->GatherColumnChunks(column_chunks);
 		}
-		return total_compressed_size;
 	}
 
 	idx_t FileOffset() const override {
@@ -84,6 +83,11 @@ public:
 	void RegisterPrefetch(ThriftFileTransport &transport, bool allow_merge) override {
 		for (auto &child_reader : child_readers) {
 			child_reader->RegisterPrefetch(transport, allow_merge);
+		}
+	}
+	void InitializePageIndex(const ParquetRowGroupPageIndex &page_index) override {
+		for (auto &child_reader : child_readers) {
+			child_reader->InitializePageIndex(page_index);
 		}
 	}
 

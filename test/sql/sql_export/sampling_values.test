@@ -456,7 +456,7 @@ SET debug_verify_statement='explain_sql_strict';
 query TT
 EXPLAIN (SQL) SELECT * FROM range(10000) USING SAMPLE 31 (bernoulli,42);
 ----
-sql	<REGEX>:.*USING SAMPLE 31 [(]Bernoulli, 42[)].*
+sql	<REGEX>:.*USING SAMPLE 31[[:space:]]*[(](?i:Bernoulli), 42[)].*
 
 statement ok
 CREATE TABLE sample_source AS SELECT i FROM range(10000) t(i);
@@ -533,7 +533,7 @@ SELECT * FROM sample_source USING SAMPLE 31 (system) ORDER BY i;
 query TT
 EXPLAIN (SQL) SELECT * FROM sample_source USING SAMPLE 31 (system) ORDER BY i;
 ----
-sql	<REGEX>:.*USING SAMPLE 31 [(]System[)].*
+sql	<REGEX>:.*USING SAMPLE 31[[:space:]]*[(](?i:System)[)].*
 
 query III
 SELECT count(*),count(DISTINCT x),count(*) FILTER (WHERE x>=0 AND x<10000) FROM (SELECT * FROM sample_source USING SAMPLE 31 (system) ORDER BY i) t(x);
@@ -578,7 +578,7 @@ SELECT * FROM range(10000) USING SAMPLE 31 (reservoir);
 query TT
 EXPLAIN (SQL) SELECT * FROM range(10000) USING SAMPLE 31 (reservoir);
 ----
-sql	<REGEX>:.*USING SAMPLE 31 [(]Reservoir[)].*
+sql	<REGEX>:.*USING SAMPLE 31[[:space:]]*[(](?i:Reservoir)[)].*
 
 query III
 SELECT count(*),count(DISTINCT x),count(*) FILTER (WHERE x>=0 AND x<10000) FROM (SELECT * FROM range(10000) USING SAMPLE 31 (reservoir)) t(x);

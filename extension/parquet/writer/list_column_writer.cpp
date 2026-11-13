@@ -19,6 +19,7 @@
 #include "duckdb/common/vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "parquet_column_schema.hpp"
+#include "parquet_writer.hpp"
 #include "parquet_types.h"
 
 namespace duckdb {
@@ -109,6 +110,7 @@ void ListColumnWriter::Prepare(ColumnWriterState &state_p, ColumnWriterState *pa
 			state.repetition_levels.push_back(first_repeat_level);
 			state.is_empty.push_back(true);
 		} else if (validity.RowIsValid(vector_index)) {
+			state.num_values++;
 			// push the repetition levels
 			if (list_data[vector_index].length == 0) {
 				state.definition_levels.push_back(MaxDefine());
@@ -127,6 +129,8 @@ void ListColumnWriter::Prepare(ColumnWriterState &state_p, ColumnWriterState *pa
 			if (!can_have_nulls) {
 				throw IOException("Parquet writer: map key column is not allowed to contain NULL values");
 			}
+			state.own_null_count++;
+			state.num_values++;
 			state.definition_levels.push_back(MaxDefine() - 1);
 			state.repetition_levels.push_back(first_repeat_level);
 			state.is_empty.push_back(true);
@@ -164,6 +168,7 @@ void ListColumnWriter::PrepareWrite(ColumnWriterState &state_p) {
 
 void ListColumnWriter::FinalizeWrite(ColumnWriterState &state_p) {
 	auto &state = state_p.Cast<ListColumnWriterState>();
+	writer.FlushNestedColumnStats(SchemaIndex(), state.own_null_count, state.num_values);
 	GetChildWriter().FinalizeWrite(*state.child_state);
 }
 
@@ -177,7 +182,7 @@ const ColumnWriter &ListColumnWriter::GetChildWriter() const {
 	return *child_writers[0];
 }
 
-idx_t ListColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> &schemas) {
+idx_t ListColumnWriter::FinalizeSchema(duckdb_parquet::SchemaElementList &schemas) {
 	idx_t schema_idx = schemas.size();
 
 	auto &schema = column_schema;
@@ -191,7 +196,8 @@ idx_t ListColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> &sc
 	// set up the two schema elements for the list
 	// for some reason we only set the converted type in the OPTIONAL element
 	// first an OPTIONAL element
-	duckdb_parquet::SchemaElement optional_element;
+	schemas.emplace_back();
+	auto &optional_element = schemas.back();
 	optional_element.repetition_type = null_type;
 	optional_element.num_children = 1;
 	optional_element.converted_type = (type.id() == LogicalTypeId::MAP) ? ConvertedType::MAP : ConvertedType::LIST;
@@ -204,17 +210,16 @@ idx_t ListColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> &sc
 		optional_element.__isset.field_id = true;
 		optional_element.field_id = NumericCast<int32_t>(field_id.GetIndex());
 	}
-	schemas.push_back(std::move(optional_element));
 
 	if (type.id() != LogicalTypeId::MAP) {
-		duckdb_parquet::SchemaElement repeated_element;
+		schemas.emplace_back();
+		auto &repeated_element = schemas.back();
 		repeated_element.repetition_type = FieldRepetitionType::REPEATED;
 		repeated_element.__isset.num_children = true;
 		repeated_element.__isset.type = false;
 		repeated_element.__isset.repetition_type = true;
 		repeated_element.num_children = 1;
 		repeated_element.name = "list";
-		schemas.push_back(std::move(repeated_element));
 	} else {
 		//! When we're describing a MAP, we skip the dummy "list" element
 		//! Instead, the "key_value" struct will be marked as REPEATED

@@ -13,6 +13,8 @@ if (NOT DEFINED DUCKDB_MAIN_EXTENSION_CONFIG_TYPE OR DUCKDB_MAIN_EXTENSION_CONFI
     include("${EXTENSION_CONFIG_BASE_DIR}/avro.cmake")
     include("${EXTENSION_CONFIG_BASE_DIR}/excel.cmake")
     include("${EXTENSION_CONFIG_BASE_DIR}/inet.cmake")
+    include("${EXTENSION_CONFIG_BASE_DIR}/legacy_parser.cmake")
     include("${EXTENSION_CONFIG_BASE_DIR}/quack.cmake")
+    include("${EXTENSION_CONFIG_BASE_DIR}/sirius.cmake")
     include("${EXTENSION_CONFIG_BASE_DIR}/sqlsmith.cmake")
 endif()

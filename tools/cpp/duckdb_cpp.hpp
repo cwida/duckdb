@@ -24,8 +24,8 @@
 /// Failures that are part of a function's contract are documented with `\@throws`; any other failure surfaces as a
 /// plain `Exception`.
 ///
-/// The usual path through the API: an `Environment` opens an `Instance`, an `Instance` hands out `Connection`s, and a
-/// `Connection` parses and executes SQL into a streaming `QueryResult` that yields `DataChunk`s of `Vector`s.
+/// The usual path through the API: open an `Instance`, which hands out `Connection`s, and a `Connection` parses and
+/// executes SQL into a streaming `QueryResult` that yields `DataChunk`s of `Vector`s.
 
 #include <utility>
 #include <string>
@@ -42,10 +42,11 @@
 #include <cstring>
 #include <limits>
 
-// Arrow C Data Interface structs. Forward declared only: the definitions come from `duckdb_v2.h` or from the
-// consumer's own Arrow headers, under the standard ARROW_C_DATA_INTERFACE guard.
+// Arrow C Data and C Stream Interface structs. Forward declared only: the definitions come from `duckdb_v2.h` or from
+// the consumer's own Arrow headers, under the standard ARROW_C_DATA_INTERFACE and ARROW_C_STREAM_INTERFACE guards.
 struct ArrowSchema;
 struct ArrowArray;
+struct ArrowArrayStream;
 
 namespace duckdb {
 namespace cxx {
@@ -58,7 +59,10 @@ namespace cxx {
 typedef uint64_t idx_t;
 
 class Exception;
-class InstanceOption;
+class OptionDescription;
+struct OptionValue;
+class Config;
+class CustomOption;
 class Environment;
 class Instance;
 class Connection;
@@ -73,12 +77,14 @@ class Arena;
 class DataChunk;
 class ColumnDataCollection;
 class QueryResult;
+class ArrowResult;
 class PreparedStatement;
 class ArrowImporter;
 class ArrowExporter;
 
 struct TypeParam;
 struct NamedParam;
+struct ArrowFormat;
 
 enum class LogicalTypeId : uint32_t;
 enum class CastMode : uint8_t;
@@ -87,14 +93,26 @@ template <class CTX>
 class TypeBuilder;
 class CustomType;
 class CastFunction;
+class PragmaFunction;
+class LogSink;
+class MacroFunction;
 class ReplacementScan;
 class QualifiedName;
 class TableDescription;
 class ColumnDescription;
+class QueryMetrics;
+class QueryMetricsNode;
 class FileSystem;
 class FileHandle;
 class FileOpenOptions;
 class MultiFileFunction;
+class ScalarFunction;
+class AggregateFunction;
+class TableFunction;
+class CopyFunction;
+class Factory;
+class Extension;
+class Stats;
 
 //----------------------------------------------------------------------------------------------------------------------
 // Internal Implementation Details
@@ -162,7 +180,7 @@ private:
 /// Grants the .cpp access to the wrappers' private constructors, without making them public. `Handle::release` is not
 /// reachable from here -- only the wrapper type itself befriends its `Handle` base, so calls where the C API takes
 /// ownership release from inside a member of the consuming wrapper.
-struct Factory {
+struct HandleFactory {
 	template <class T, class... ARGS>
 	static auto Make(ARGS &&... args) -> T {
 		return T(std::forward<ARGS>(args)...);
@@ -314,59 +332,46 @@ public:
 //----------------------------------------------------------------------------------------------------------------------
 // Instance Option
 //----------------------------------------------------------------------------------------------------------------------
-// Configuration settings. Write one with `Instance::SetOption` or `Connection::SetOption`, which take the name and
-// value directly; read one back as a `InstanceOption` to inspect its current value, default value, description,
-// target scope or aliases. Settings that can only be chosen at startup are written on an `Instance` before its first
-// `Attach` or `Connect`.
+// Configuration settings. Reached through the `Config` of an `Instance`, a `Connection` or a `Context`: `SetOption`
+// writes one, `GetOption` reads its current value and the scope it came from, and `DescribeOption` describes it
+// -- its default value, description, the scopes it may be written at, and aliases. Settings that can only be chosen at
+// startup are passed to the `Instance` constructor.
 
-/// At which scope a setting may be written.
-enum class OptionTargetScope : uint8_t {
-	/// Unknown: the setting declares no target scope, which includes every extension setting.
-	UNKNOWN = 0,
-	/// Writable only at GLOBAL (database) scope.
-	GLOBAL_ONLY = 1,
-	/// Writable only at LOCAL (session) scope.
-	LOCAL_ONLY = 2,
-	/// Writable at either scope, GLOBAL when unspecified.
-	GLOBAL_DEFAULT = 3,
-	/// Writable at either scope, LOCAL when unspecified.
-	LOCAL_DEFAULT = 4,
-};
-
-/// Which scope a connection-level write applies to.
+/// The scope a setting is written at, or its value was read from.
 enum class SettingScope : uint8_t {
-	/// Resolve from the setting's own target scope, exactly like SQL `SET name = value`.
-	AUTOMATIC = 0,
-	/// Apply to the whole database.
+	/// Write only: the setting's default scope (not its default value), exactly like SQL `SET name = value`.
+	DEFAULT = 0,
+	/// The whole database, like SQL `SET GLOBAL`.
 	GLOBAL = 1,
-	/// Apply to this session only.
-	LOCAL = 2,
+	/// One connection's session, like SQL `SET SESSION`.
+	SESSION = 2,
 };
 
-/// A single configuration setting as read from a database or connection: its current value there, plus the
-/// metadata DuckDB declares for it. Read-only.
+/// The description of a configuration setting, as DuckDB declares it: the same from every source, and without its
+/// current value (read that with `GetOption`). Read-only.
 /// The string accessors return views borrowed from this option, valid until it is destroyed.
-class InstanceOption final : public detail::Handle<InstanceOption> {
-	friend detail::Factory;
+class OptionDescription final : public detail::Handle<OptionDescription> {
+	friend detail::HandleFactory;
 
 public:
-	InstanceOption(InstanceOption &&) noexcept = default;
-	InstanceOption &operator=(InstanceOption &&) noexcept = default;
+	OptionDescription(OptionDescription &&) noexcept = default;
+	OptionDescription &operator=(OptionDescription &&) noexcept = default;
 
 	/// The setting's name.
 	auto GetName() const -> std::string_view;
 
-	/// The setting's current value where it was read from, as text.
-	auto GetValue() const -> std::string_view;
-
-	/// The value the setting falls back to when it is not set. Empty when the setting declares no default.
-	auto GetDefaultValue() const -> std::string_view;
+	/// The value the setting falls back to when it is not set. NULL when the setting declares no default.
+	auto GetDefaultValue() const -> Value;
 
 	/// A human-readable description of the setting.
 	auto GetDescription() const -> std::string_view;
 
-	/// At which scope this setting may be written.
-	auto GetTargetScope() const -> OptionTargetScope;
+	/// Whether the setting may be written at a scope.
+	/// @param scope GLOBAL or SESSION; DEFAULT asks whether it may be written at all.
+	auto SupportsScope(SettingScope scope) const -> bool;
+
+	/// The scope a write at `SettingScope::DEFAULT` goes to: GLOBAL or SESSION.
+	auto GetDefaultScope() const -> SettingScope;
 
 	/// How many alternative names resolve to this setting. 0 for an extension setting.
 	auto GetAliasCount() const -> size_t;
@@ -375,10 +380,58 @@ public:
 	/// @param index Alias index in [0, GetAliasCount()).
 	auto GetAliasByIndex(size_t index) const -> std::string_view;
 
-	~InstanceOption() override;
+	~OptionDescription() override;
 
 private:
-	explicit InstanceOption(void *impl);
+	explicit OptionDescription(void *impl);
+};
+
+/// A borrowed handle to the scope config settings are read from and written at: taken from an `Instance` (the GLOBAL
+/// scope alone), a `Connection` or a `Context` (that client's cascade), and valid for as long as its source is.
+class Config final : public detail::Handle<Config> {
+	friend detail::HandleFactory;
+
+public:
+	~Config() override;
+	Config(Config &&) noexcept = default;
+	Config &operator=(Config &&) noexcept = default;
+
+	/// How many settings this config's database exposes.
+	auto GetOptionCount() const -> size_t;
+
+	/// The description of one setting.
+	/// @param index Setting index in [0, GetOptionCount()).
+	auto DescribeOption(size_t index) const -> OptionDescription;
+
+	/// The description of one setting.
+	/// @param name The setting's name or one of its aliases; an alias resolves to the canonical setting.
+	/// @throws InvalidInputException When no setting goes by that name.
+	auto DescribeOption(std::string_view name) const -> OptionDescription;
+
+	/// The current value of a setting in this config, and the scope it was read from.
+	/// @param name The setting's name or one of its aliases.
+	/// @throws InvalidInputException When no setting goes by that name.
+	auto GetOption(std::string_view name) const -> OptionValue;
+
+	/// `GetOption` for a name that may not be a setting: an empty optional instead of an exception.
+	/// @param name The setting's name or one of its aliases.
+	auto TryGetOption(std::string_view name) const -> std::optional<OptionValue>;
+
+	/// Shorthand for `GetOption`.
+	auto operator[](std::string_view name) const -> OptionValue;
+
+	/// Writes a setting in this config.
+	/// @param name The setting to write, either its canonical name or one of its aliases.
+	/// @param value The new value, cast to the setting's type as SQL `SET` does.
+	/// @param scope GLOBAL to write it database-wide, SESSION for one session only, or DEFAULT for the setting's
+	/// default scope. An `Instance`'s config supports only GLOBAL.
+	/// @throws Exception When no setting goes by that name, the value does not cast, or the scope is not supported.
+	auto SetOption(std::string_view name, const Value &value, SettingScope scope = SettingScope::DEFAULT) -> void;
+	/// The text overload of the above, for a value in the textual form SQL `SET` accepts.
+	auto SetOption(std::string_view name, std::string_view value, SettingScope scope = SettingScope::DEFAULT) -> void;
+
+private:
+	explicit Config(void *impl);
 };
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -397,13 +450,17 @@ enum class LogLevel : uint32_t {
 	LOG_FATAL = 60,
 };
 
-/// A borrowed handle to the client context of a running operation.
-/// Only valid for the duration of the callback it was handed to, it is generally not safe to store.
-class Context final : public detail::Handle<Context> {
-	friend detail::Factory;
+/// A borrowed handle to the scope values, types and data chunks are created in: taken from an `Instance`, a
+/// `Connection` or a `Context`, and valid for as long as its source is. A factory resolves in the scope of its source:
+/// a connection's or a context's factory reaches the catalog and the client's settings, while an instance's factory
+/// knows only the built-in types and casts.
+class Factory final : public detail::Handle<Factory> {
+	friend detail::HandleFactory;
 
 public:
-	~Context() override;
+	~Factory() override;
+	Factory(Factory &&) noexcept = default;
+	Factory &operator=(Factory &&) noexcept = default;
 
 	/// Parses a SQL type expression into an owned type: primitives, parameterized kinds, and extension types alike.
 	/// @param text A type as SQL spells it, e.g. "DECIMAL(18, 3)" or "STRUCT(a INTEGER, b VARCHAR)".
@@ -425,9 +482,6 @@ public:
 	/// Parameterless overload of the above.
 	auto CreateType(const QualifiedName &name) const -> LogicalType;
 
-	/// The file system this context reads and writes through. Borrowed, and valid only while the context is.
-	auto GetFileSystem() const -> FileSystem;
-
 	/// The id-keyed twin of `CreateType`: the id resolves to its canonical name and binds like it.
 	/// @param id The type's id. Without parameters, only ids that name a complete type on their own are accepted;
 	/// parameterized kinds such as LIST or DECIMAL require parameters.
@@ -437,14 +491,52 @@ public:
 	auto CreateType(LogicalTypeId id) const -> LogicalType;
 
 	/// Starts composing a type step by step.
-	/// @return A `TypeBuilder` over this context, for composing a nested type without assembling the parameter vector
+	/// @return A `TypeBuilder` over this factory, for composing a nested type without assembling the parameter vector
 	/// by hand.
-	auto CreateType() -> TypeBuilder<Context>;
+	auto CreateType() -> TypeBuilder<Factory>;
 
-	/// Creates a `Value` in this context; see `Value::Create` for the accepted C++ types.
+	/// Creates a `Value` with this factory; see `Value::Create` for the accepted C++ types.
 	/// @param value The C++ value to convert.
 	template <class T>
 	auto CreateValue(T &&value) -> Value;
+
+	/// Creates an empty chunk with a column per type; see `DataChunk(Factory &, types)`.
+	/// @param types One type per column. Types containing ANY are rejected.
+	auto CreateDataChunk(const std::vector<LogicalType> &types) -> DataChunk;
+
+	/// Creates an empty collection; see `ColumnDataCollection(Factory &, types)`.
+	/// @param types One type per column, at least one. Types containing ANY are rejected.
+	auto CreateColumnDataCollection(const std::vector<LogicalType> &types) -> ColumnDataCollection;
+
+private:
+	explicit Factory(void *impl);
+};
+
+/// A borrowed handle to a client context: the one a callback is handed, valid only for the duration of that callback.
+class Context final : public detail::Handle<Context> {
+	friend detail::HandleFactory;
+
+public:
+	~Context() override;
+	Context(Context &&) noexcept = default;
+	Context &operator=(Context &&) noexcept = default;
+
+	/// The config of this context: its connection's cascade.
+	auto GetConfig() -> Config & {
+		return config;
+	}
+	/// Const overload of the above: a const config reads settings, but does not write them.
+	auto GetConfig() const -> const Config & {
+		return config;
+	}
+
+	/// The file system this context reads and writes through. Borrowed, and valid only while the context is.
+	auto GetFileSystem() const -> FileSystem;
+
+	/// The factory values, types and data chunks are created through in this context.
+	auto GetFactory() -> Factory & {
+		return factory;
+	}
 
 	/// Writes a message to DuckDB's log, readable through `SELECT * FROM duckdb_logs`.
 	/// Whether the entry is recorded is up to the database's log configuration; a message it filters out is dropped
@@ -456,6 +548,119 @@ public:
 
 private:
 	explicit Context(void *impl);
+
+	Factory factory;
+	Config config;
+};
+
+//----------------------------------------------------------------------------------------------------------------------
+// Custom Option
+//----------------------------------------------------------------------------------------------------------------------
+
+/// A configuration setting of your own. Create one through a `Factory` of the database it will be registered in,
+/// describe it (name, type, default value, scopes), then register it with `Connection::Register` or
+/// `Extension::Register`. From then on it is a setting like any other: read and written through a `Config` and from
+/// SQL with `SET` and `RESET`, and described by `Config::DescribeOption`.
+///
+/// Registration is not transactional: a registered option is visible to every connection at once, is not undone by a
+/// rollback, and lives for as long as the database does.
+class CustomOption final : public detail::Handle<CustomOption> {
+	friend detail::HandleFactory;
+	friend class Connection;
+	friend class Extension;
+
+public:
+	class UpdateInput;
+
+	/// Called whenever the option is set or reset, after the new value is cast to the option's type and before it is
+	/// stored. May replace the value through `UpdateInput::SetValue`, or refuse it by throwing. Not called for the
+	/// default value at registration, nor for a value given to the database at startup. Must not write settings
+	/// itself.
+	using UpdateCallback = void (*)(UpdateInput &input);
+
+	CustomOption(CustomOption &&) noexcept = default;
+	CustomOption &operator=(CustomOption &&) noexcept = default;
+
+	~CustomOption() override;
+
+	/// Creates an empty CustomOption through `factory`. Register it through a `Connection` or an `Extension` of the
+	/// factory's database.
+	static auto Create(Factory &factory) -> CustomOption;
+
+	/// Sets the option's name, as `SET` and `Config` refer to it.
+	auto SetName(const std::string &name) & -> CustomOption &;
+	/// Sets the type every value written to the option is cast to. Optional when a default value is set, whose type
+	/// the option then takes.
+	auto SetType(const LogicalType &type) & -> CustomOption &;
+	/// Sets the value the option has until it is set, and that `RESET` restores. Cast to the option's type at
+	/// registration. Without one, the option reads as NULL until it is set.
+	auto SetDefaultValue(const Value &value) & -> CustomOption &;
+	/// Sets the description `OptionDescription::GetDescription` and `duckdb_settings()` report.
+	auto SetDescription(std::string_view description) & -> CustomOption &;
+	/// Sets the scope a write at `SettingScope::DEFAULT` goes to: GLOBAL or SESSION, and one the option supports.
+	/// Defaults to SESSION, or to GLOBAL when the option does not support SESSION.
+	auto SetDefaultScope(SettingScope scope) & -> CustomOption &;
+	/// Sets whether the option can be written at a scope, GLOBAL or SESSION. Both are supported unless told otherwise.
+	auto SetSupportsScope(SettingScope scope, bool supported) & -> CustomOption &;
+
+	/// Constructs user data of type `T`, carried by the registered option and freed at database teardown; read it from
+	/// the update callback via `UpdateInput::GetUserData<T>`. Consumed by registration: set it again before
+	/// re-registering.
+	template <class T, class... ARGS>
+	auto SetUserData(ARGS &&... args) & -> CustomOption & {
+		auto ptr = new T(std::forward<ARGS>(args)...);
+		SetUserDataInternal(ptr, detail::TypedDelete<T>);
+		return *this;
+	}
+
+	auto SetUpdateCallback(UpdateCallback callback) & -> CustomOption &;
+
+private:
+	explicit CustomOption(void *impl);
+	//! Moves what the callback needs into the C handle, right before it is registered.
+	auto PrepareRegistration() -> void;
+
+	auto SetUserDataInternal(void *data, void (*destructor)(void *)) -> void;
+
+	UpdateCallback update_callback = nullptr;
+	detail::UserData user_data;
+
+public:
+	/// What the update callback works with. Borrowed, valid only for the callback duration.
+	class UpdateInput {
+		friend detail::HandleFactory;
+
+	public:
+		/// The user data set via `CustomOption::SetUserData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetUserData() const -> T & {
+			return *static_cast<T *>(GetUserDataInternal());
+		}
+
+		/// The value the option is updated to, cast to its type. On a reset, the default value, which may be NULL.
+		auto GetValue() const -> Value;
+		/// Replaces the value the option is updated to. Cast to the option's type.
+		auto SetValue(const Value &value) -> void;
+		/// The scope the value is written at: GLOBAL or SESSION, a DEFAULT write resolved to the default scope.
+		auto GetScope() const -> SettingScope;
+		/// Whether the update is a reset to the default value, like SQL `RESET`.
+		auto IsReset() const -> bool;
+
+		/// The context setting the option. When the option is written through the config of an `Instance`, or given
+		/// at startup, this is an internal context whose session state is discarded after the update. Borrowed, valid
+		/// only for the callback duration.
+		auto GetContext() -> Context &;
+
+	private:
+		UpdateInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
+		}
+
+		void *args;
+		Context context;
+
+		void *GetUserDataInternal() const;
+	};
 };
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -506,7 +711,7 @@ enum class StatementType : uint8_t {
 /// An owned, parsed SQL statement, produced by `StatementIterator::Next` and executed by `Connection::Execute`.
 /// Executing borrows the statement, so the same one can be executed any number of times.
 class SqlStatement final : public detail::Handle<SqlStatement> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	SqlStatement(SqlStatement &&) noexcept = default;
@@ -529,6 +734,18 @@ public:
 	/// @return Views borrowed from this statement, valid until it is destroyed.
 	auto GetParameterNames() const -> std::vector<std::string_view>;
 
+	/// Makes a collection visible to the statement as a table named `name`, as a common table expression. Each
+	/// execution reads the collection's contents at that moment, so a prepared statement can run again after the
+	/// collection was cleared and refilled. Only SELECT, INSERT, UPDATE, DELETE and MERGE INTO statements accept one.
+	/// @param name The name the statement refers to the collection by; it shadows a catalog table of that name.
+	/// @param collection Borrowed: it must outlive this statement, every statement copied or prepared from it, and
+	/// every result executing it, and must not be cleared or reset while such a result is live.
+	/// @param column_names Names for the collection's columns, one per column; empty names them col1..colN.
+	/// @throws InvalidInputException For another statement type, a name the statement already defines, or a
+	/// mismatched number of column names.
+	auto AddCollection(std::string_view name, const ColumnDataCollection &collection,
+	                   const std::vector<std::string> &column_names = {}) -> void;
+
 private:
 	explicit SqlStatement(void *impl);
 };
@@ -536,7 +753,7 @@ private:
 /// An owned iterator over the statements in a SQL string, produced by `Connection::ParseSQL`.
 /// Statements it has already yielded are independent of it and stay valid after the iterator is destroyed.
 class StatementIterator final : public detail::Handle<StatementIterator> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	StatementIterator(StatementIterator &&) noexcept = default;
@@ -596,10 +813,11 @@ struct TokenList {
 
 /// A statement bound and planned once, executable repeatedly. Produced by `Connection::Prepare`.
 /// Where `Connection::Execute` re-binds on every call, this may run the plan it built at prepare time; ask
-/// `ReusesPlan` which one you got. Execution returns the same `QueryResult`, with identical behaviour.
+/// `ReusesPlan` which one you got. Execution returns the same `QueryResult`, with identical behaviour, or an
+/// `ArrowResult` when an `ArrowFormat` is passed.
 /// It keeps its connection's session alive, so it stays usable even after the `Connection` is gone.
 class PreparedStatement final : public detail::Handle<PreparedStatement> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	PreparedStatement(PreparedStatement &&) noexcept = default;
@@ -626,6 +844,24 @@ public:
 	/// @param parameters One binding per parameter; each binds to $name, or positionally when its name is empty.
 	auto Execute(const std::vector<NamedParam> &parameters) -> QueryResult;
 
+	/// Executes like the positional-parameter `Execute`, into a result that produces Arrow arrays.
+	/// @param parameters Values for the statement's parameters, bound positionally. Not consumed.
+	/// @param parameter_count How many values `parameters` points at.
+	/// @param format The Arrow format options, chiefly the rows-per-array cap.
+	/// @return A streaming Arrow result. Execution is deferred until the result is read; binding errors throw here.
+	/// @throws Exception While an earlier result on the connection is still live, in either format. A failed
+	/// execution leaves the prepared statement usable.
+	auto Execute(const Value *parameters, idx_t parameter_count, ArrowFormat format) -> ArrowResult;
+
+	/// The Arrow form of a statement that takes no parameters.
+	auto Execute(ArrowFormat format) -> ArrowResult;
+
+	/// `std::vector` overload of the positional-parameter Arrow `Execute`.
+	auto Execute(const std::vector<Value> &parameters, ArrowFormat format) -> ArrowResult;
+
+	/// The Arrow form of the named-parameter `Execute`.
+	auto Execute(const std::vector<NamedParam> &parameters, ArrowFormat format) -> ArrowResult;
+
 	/// Whether executions reuse the plan built at prepare time, rather than re-binding each time and being no
 	/// faster than `Connection::Execute`. A static property of the built plan; see the C API's
 	/// `duckdb_v2_prepared_statement_reuses_plan` for what qualifies.
@@ -633,6 +869,8 @@ public:
 
 private:
 	explicit PreparedStatement(void *impl);
+
+	auto ExecuteArrowNamed(const NamedParam *parameters, idx_t parameter_count, ArrowFormat format) -> ArrowResult;
 };
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -646,16 +884,18 @@ private:
 /// A connection to a database.
 /// It must not outlive the `Instance` it was opened on, and only one result may be live on it at a time.
 class Connection final : public detail::Handle<Connection> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
-	Connection(Connection &&other) noexcept {
+	Connection(Connection &&other) noexcept : factory(std::move(other.factory)), config(std::move(other.config)) {
 		std::swap(impl, other.impl);
 		std::swap(owned, other.owned);
 	}
 
 	Connection &operator=(Connection &&other) noexcept {
 		std::swap(impl, other.impl);
+		std::swap(factory, other.factory);
+		std::swap(config, other.config);
 		std::swap(owned, other.owned);
 		return *this;
 	}
@@ -673,42 +913,93 @@ public:
 
 	~Connection() override;
 
-	/// How many settings this connection exposes.
-	auto GetOptionCount() const -> size_t;
+	/// The factory values, types and data chunks are created through on this connection.
+	auto GetFactory() -> Factory & {
+		return factory;
+	}
 
-	/// One setting with its current value on this connection.
-	/// @param index Setting index in [0, GetOptionCount()).
-	auto GetOptionByIndex(size_t index) const -> InstanceOption;
+	/// Registers on this connection's database, in the connection's transaction: inside an explicit transaction a
+	/// rollback undoes catalog entries, though casts and replacement scans take effect immediately. Replacement scans
+	/// stay local to this connection.
+	/// Registers the function. The function object remains valid and may be
+	/// adjusted and registered again; user data set via `SetUserData` is consumed by the first registration.
+	/// @throws InvalidInputException When the name, exec callback, or a usable return type is missing.
+	auto Register(ScalarFunction &scalar_function) -> void;
+	/// Registers the function. The function object remains valid and may be
+	/// adjusted and registered again; user data set via `SetUserData` is consumed by the first registration.
+	/// @throws InvalidInputException When the name, a required callback, or a usable return type is missing.
+	auto Register(AggregateFunction &aggregate_function) -> void;
+	/// Registers the function. The function object remains valid and may be
+	/// adjusted and registered again; user data set via `SetUserData` is consumed by the first registration.
+	/// @throws InvalidInputException When the name, bind callback or exec callback is missing, the signature
+	/// declares a return type, or a partitioning callback is set without a partition data callback.
+	auto Register(TableFunction &table_function) -> void;
+	/// Registers the function. The function object remains valid.
+	/// @throws InvalidInputException When the name or the single-file function is missing, or the single-file
+	/// function does not exist or does not take the file to read as its only positional parameter.
+	auto Register(MultiFileFunction &multi_file_function) -> void;
+	/// Registers the type. The type object remains valid and may be adjusted
+	/// and registered again.
+	/// @throws InvalidInputException When the name or the base type is missing, or the base type is not concrete.
+	auto Register(CustomType &custom_type) -> void;
+	/// Registers the function. The function object remains valid and may be
+	/// adjusted and registered again; user data set via `SetUserData` is consumed by the first registration.
+	/// @throws InvalidInputException When the name is missing, neither side is configured, a configured
+	/// `COPY ... TO` side lacks its batch or flush callback, or a configured `COPY ... FROM` side lacks its bind or
+	/// exec callback.
+	auto Register(CopyFunction &copy_function) -> void;
+	/// Registers the cast, replacing whatever cast was registered for the same type pair. The function object remains
+	/// valid and may be adjusted and registered again; user data set via `SetUserData` is consumed by the first
+	/// registration.
+	/// @throws InvalidInputException When the source type, target type, or exec callback is missing, or either type is
+	/// not concrete.
+	auto Register(CastFunction &cast_function) -> void;
+	/// Registers the pragma. The function object remains valid; user data set via `SetUserData` is consumed by the
+	/// first registration.
+	/// @throws InvalidInputException When the name is missing, not exactly one of the query and exec callbacks is set,
+	/// the signature declares a return type, or a pragma of the same name already exists.
+	auto Register(PragmaFunction &pragma_function) -> void;
+	/// Registers the option on the database, visible to every connection. Not transactional: it takes effect at once,
+	/// also inside an explicit transaction, and a rollback does not undo it. The option object remains valid; user
+	/// data set via `SetUserData` is consumed by the first registration.
+	/// @throws InvalidInputException When the name, or both the type and the default value, are missing, the default
+	/// value does not cast to the type, the scopes are inconsistent, or an option of the same name already exists.
+	auto Register(CustomOption &custom_option) -> void;
+	/// Registers the scan. Scans are consulted in registration order within
+	/// their scope, connection-scoped ones before database-wide ones, and the first to claim a name wins. A scan can
+	/// be registered only once.
+	/// @throws InvalidInputException When the callback is missing, or the scan is already registered.
+	auto Register(ReplacementScan &replacement_scan) -> void;
 
-	/// One setting with its current value on this connection.
-	/// @param name The setting's name or one of its aliases.
-	/// @return The setting.
-	/// @throws InvalidInputException When no setting goes by that name.
-	auto GetOption(std::string_view name) const -> InstanceOption;
+	/// The config of this connection: its own cascade.
+	auto GetConfig() -> Config & {
+		return config;
+	}
+	/// Const overload of the above: a const config reads settings, but does not write them.
+	auto GetConfig() const -> const Config & {
+		return config;
+	}
 
-	/// Writes a setting at the scope it declares for itself, like SQL `SET name = value`.
-	/// @param name The setting to write, either its canonical name or one of its aliases.
-	/// @param value The new value, in the same textual form SQL's `SET` accepts.
-	/// @throws InvalidInputException When no setting goes by that name or the value does not parse.
-	auto SetOption(std::string_view name, std::string_view value) -> void;
+	/// The file system this connection reads and writes through, with its settings and secrets. Borrowed, and valid
+	/// only while the connection is.
+	auto GetFileSystem() const -> FileSystem;
 
-	/// Writes a setting at an explicit scope.
-	/// @param name The setting to write, either its canonical name or one of its aliases.
-	/// @param value The new value, in the same textual form SQL's `SET` accepts.
-	/// @param scope GLOBAL to write it database-wide, LOCAL for this session only.
-	/// @throws Exception When the setting does not allow the requested scope.
-	auto SetOption(std::string_view name, std::string_view value, SettingScope scope) -> void;
+	/// Writes a message to DuckDB's log, readable through `SELECT * FROM duckdb_logs`.
+	/// Whether the entry is recorded is up to the database's log configuration; a message it filters out is dropped
+	/// without error.
+	/// @param level The severity of the message.
+	/// @param message The message body.
+	/// @param log_type The log type to record under, matched case-sensitively. Empty selects the default type.
+	auto Log(LogLevel level, std::string_view message, std::string_view log_type = {}) const -> void;
 
 	/// Parses a SQL string into an iterator over its statements, without binding or executing any of them.
 	/// Parsing happens statement by statement as the iterator advances, so a syntax error surfaces from
 	/// `StatementIterator::Next` rather than from this call.
 	/// @param sql One or more semicolon-separated SQL statements.
-	auto ParseSQL(const char *sql) -> StatementIterator;
-
-	/// `std::string` overload of `ParseSQL`.
-	auto ParseSQL(const std::string &sql) -> StatementIterator {
-		return ParseSQL(sql.c_str());
-	}
+	/// @param apply_invalidation_policy Whether a syntax error invalidates the active transaction, according to the
+	/// transaction invalidation policy. Pass false when the statements are only inspected, e.g. with `Bind`, instead of
+	/// run.
+	auto ParseSQL(std::string_view sql, bool apply_invalidation_policy = true) -> StatementIterator;
 
 	/// Splits a SQL string into its tokens without parsing it: no binding, no catalog access, no transaction. The
 	/// connection supplies the grammar whose keyword set decides KEYWORD versus IDENTIFIER. Offsets are byte offsets
@@ -744,9 +1035,39 @@ public:
 	/// @throws InvalidInputException When `sql` does not hold exactly one statement.
 	auto Execute(const std::string &sql) -> QueryResult;
 
+	/// Executes a statement like `Execute`, into a result that produces Arrow arrays instead of `DataChunk`s.
+	/// @param statement The statement to execute. Not consumed, so it can be executed again.
+	/// @param parameters Values for the statement's parameters, bound positionally ($1 = parameters[0]). Not consumed.
+	/// @param parameter_count How many values `parameters` points at.
+	/// @param format The Arrow format options, chiefly the rows-per-array cap.
+	/// @return A streaming Arrow result. Execution is deferred until the result is read; binding errors throw here.
+	/// @throws Exception While an earlier result on this connection is still live, in either format.
+	auto Execute(const SqlStatement &statement, const Value *parameters, idx_t parameter_count, ArrowFormat format)
+	    -> ArrowResult;
+
+	/// The Arrow form of a statement that takes no parameters.
+	auto Execute(const SqlStatement &statement, ArrowFormat format) -> ArrowResult;
+
+	/// `std::vector` overload of the positional-parameter Arrow `Execute`.
+	auto Execute(const SqlStatement &statement, const std::vector<Value> &parameters, ArrowFormat format)
+	    -> ArrowResult;
+
+	/// The Arrow form of the named-parameter `Execute`.
+	/// @param parameters One binding per parameter; each binds to $name, or positionally when its name is empty. A
+	/// statement cannot mix named and positional parameters.
+	auto Execute(const SqlStatement &statement, const std::vector<NamedParam> &parameters, ArrowFormat format)
+	    -> ArrowResult;
+
+	/// Parses and executes a single SQL statement in one call, into a result that produces Arrow arrays.
+	/// @param sql Exactly one SQL statement. Use `ParseSQL` for multi-statement input.
+	/// @throws InvalidInputException When `sql` does not hold exactly one statement.
+	auto Execute(const std::string &sql, ArrowFormat format) -> ArrowResult;
+
 	/// Binds a statement without executing it, borrowing it rather than consuming it.
 	/// @param statement The statement to bind.
 	/// @return Its signature: the columns it will produce and the parameters it expects.
+	/// @throws Exception With code `DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED` for a statement that expands into several,
+	/// whose columns are known only once it executes.
 	auto Bind(const SqlStatement &statement) const -> Signature;
 
 	/// Resolves a table name and snapshots its description: where it resolved, its columns, and per-column facts.
@@ -754,6 +1075,17 @@ public:
 	/// @throws Exception When the name resolves to nothing, to a view, or is ambiguous between a schema and an attached
 	/// database.
 	auto DescribeTable(const QualifiedName &name) const -> TableDescription;
+
+	/// Enables or disables profiling for the queries this connection runs from now on, which gathers the metrics
+	/// `GetQueryMetrics` reports. Profiling also prints every profile as the `enable_profiling` and `profiling_output`
+	/// options configure, by default to the standard output; set `enable_profiling` to `no_output` to only gather
+	/// metrics. Unstable API.
+	auto EnableProfiling(bool enabled = true) -> void;
+
+	/// Takes a snapshot of the metrics of the last query this connection finished. What it holds is decided by the
+	/// profiling configuration, e.g. `SET enable_profiling = 'no_output'`. Unstable API.
+	/// @throws Exception While a result on this connection is still live.
+	auto GetQueryMetrics() const -> QueryMetrics;
 
 	/// Prepares a statement into a handle that can be executed repeatedly, borrowing it rather than consuming it.
 	/// @param statement The statement to prepare.
@@ -763,47 +1095,9 @@ public:
 	/// `require_cacheable` is set and the plan would not be reused.
 	auto Prepare(const SqlStatement &statement, bool require_cacheable = false) -> PreparedStatement;
 
-	/// `Context::ParseType` outside a callback.
-	/// @param text A type as SQL spells it, e.g. "DECIMAL(18, 3)" or "STRUCT(a INTEGER, b VARCHAR)".
-	auto ParseType(std::string_view text) -> LogicalType;
-
-	/// `Context::CreateType` outside a callback.
-	/// @param name The type's unqualified name, e.g. "LIST" or "DECIMAL".
-	/// @param params The type's parameters, in the order SQL takes them. A `TypeParam` with an empty name is
-	/// positional.
-	auto CreateType(std::string_view name, const std::vector<TypeParam> &params) -> LogicalType;
-	/// Parameterless overload of the above.
-	auto CreateType(std::string_view name) -> LogicalType;
-
-	/// `CreateType` for a name that may be catalog- or schema-qualified. An unqualified name is resolved along the
-	/// search path and then in the system catalog; a qualified one is resolved exactly as written.
-	auto CreateType(const QualifiedName &name, const std::vector<TypeParam> &params) -> LogicalType;
-	/// Parameterless overload of the above.
-	auto CreateType(const QualifiedName &name) -> LogicalType;
-
-	/// The file system this connection reads and writes through. Borrowed, and valid only while the connection is.
-	auto GetFileSystem() const -> FileSystem;
-
-	/// The id-keyed twin of `CreateType`: the id resolves to its canonical name and binds like it.
-	/// @param id The type's id. Without parameters, only ids that name a complete type on their own are accepted;
-	/// parameterized kinds such as LIST or DECIMAL require parameters.
-	/// @param params The type's parameters, as in the name-keyed overload.
-	auto CreateType(LogicalTypeId id, const std::vector<TypeParam> &params) -> LogicalType;
-	/// Parameterless overload of the above.
-	auto CreateType(LogicalTypeId id) -> LogicalType;
-
-	/// Starts composing a type step by step.
-	/// @return A `TypeBuilder` over this connection, for composing a nested type without assembling the parameter
-	/// vector by hand.
-	auto CreateType() -> TypeBuilder<Connection>;
-
-	/// Creates a `Value` on this connection; see `Value::Create` for the accepted C++ types.
-	/// @param value The C++ value to convert.
-	template <class T>
-	auto CreateValue(T &&value) -> Value;
-
 	/// Asks the running query to stop. `QueryResult::Step` then reports CANCELLED, and `FetchChunk` / `Drain` throw
-	/// `InterruptException`. Callable from any thread, and a no-op when no query is running.
+	/// `InterruptException`. An `ArrowResult` reacts the same way, with `FetchArray` in place of `FetchChunk`.
+	/// Callable from any thread, and a no-op when no query is running.
 	auto Interrupt() -> void;
 
 	/// Reads how far the running query has come. Callable from any thread.
@@ -818,6 +1112,12 @@ public:
 
 private:
 	explicit Connection(void *impl, bool owned);
+	Factory factory;
+	Config config;
+
+	auto ExecuteArrowNamed(const SqlStatement &statement, const NamedParam *parameters, idx_t parameter_count,
+	                       ArrowFormat format) -> ArrowResult;
+
 	bool owned = false; // TODO: This should be fixed C++ side
 };
 
@@ -825,22 +1125,117 @@ private:
 // Instance
 //----------------------------------------------------------------------------------------------------------------------
 // An open database: the catalog, the storage behind it, and the settings shared by every session on it. Databases are
-// opened through an `Environment` and worked with through the `Connection`s they hand out.
+// opened by constructing an `Instance` and worked with through the `Connection`s they hand out. Every instance lives in
+// an `Environment`, and a file can only be open in one instance of an environment at a time. Instances opened without
+// an explicit environment share the process-wide default one.
 
-class Instance final : public detail::Handle<Instance> {
-	friend detail::Factory;
+/// The environment database instances are created in. Optional: an `Instance` constructed without one lives in the
+/// process-wide `Environment::Default()`. Create one explicitly to control the lifetime of the environment, or to keep
+/// a group of instances apart from the default one. It must outlive every `Instance` created in it; destroying it
+/// while instances are still alive leaks it.
+class Environment final : public detail::Handle<Environment> {
+public:
+	/// Creates a new environment.
+	Environment();
+	~Environment() override;
+	Environment(Environment &&) noexcept = default;
+	Environment &operator=(Environment &&) noexcept = default;
+
+	/// The process-wide environment instances are created in when none is given. Created on first use and never
+	/// destroyed, so it outlives every instance, including ones destroyed during static destruction.
+	static auto Default() -> Environment &;
+
+	/// How many database instances are currently alive in this environment.
+	auto GetInstanceCount() const -> size_t;
+};
+
+/// The options an `Instance` can only be given when it is created: once it exists they can no longer change, or only
+/// become stricter. Each setter returns the options, so they chain: `StartupOptions().EnableUnsignedExtensions(true)`.
+/// An option left unset keeps DuckDB's default.
+class StartupOptions {
+	friend class Instance;
 
 public:
+	StartupOptions() = default;
+
+	/// Whether extensions built by the community can be loaded. Defaults to true.
+	auto EnableCommunityExtensions(bool value) -> StartupOptions & {
+		allow_community_extensions = value;
+		return *this;
+	}
+
+	/// Whether extensions with an invalid or missing signature can be loaded. Defaults to false.
+	auto EnableUnsignedExtensions(bool value) -> StartupOptions & {
+		allow_unsigned_extensions = value;
+		return *this;
+	}
+
+	/// Whether a fatal error invalidates the instance, refusing every further query on it. Disabling this should be
+	/// done with great care: DuckDB cannot guarantee correct behavior after a fatal error. Defaults to true.
+	auto EnableDatabaseInvalidation(bool value) -> StartupOptions & {
+		disable_database_invalidation = !value;
+		return *this;
+	}
+
+	/// Whether secrets can be printed unredacted. Defaults to false.
+	auto EnableUnredactedSecrets(bool value) -> StartupOptions & {
+		allow_unredacted_secrets = value;
+		return *this;
+	}
+
+	/// Metadata added to the user agent of the HTTP requests DuckDB makes, so callers and wrappers can tag their own
+	/// traffic. Defaults to none.
+	auto SetCustomUserAgent(std::string_view value) -> StartupOptions & {
+		custom_user_agent = std::string(value);
+		return *this;
+	}
+
+private:
+	std::optional<bool> allow_community_extensions;
+	std::optional<bool> allow_unsigned_extensions;
+	std::optional<bool> allow_unredacted_secrets;
+	std::optional<bool> disable_database_invalidation;
+	std::optional<std::string> custom_user_agent;
+};
+
+class Instance final : public detail::Handle<Instance> {
+	friend detail::HandleFactory;
+
+public:
+	/// Creates a database instance with nothing attached, in the default environment. Attach a database with
+	/// `Attach` and make it the default with `SetDefault`.
+	Instance();
+
+	/// Creates a database instance with nothing attached, in the default environment, with the options that can only
+	/// be chosen at startup.
+	explicit Instance(const StartupOptions &options);
+
+	/// Creates a database instance in the default environment, attaches `path`, and makes it the default database.
+	/// @param path The database file, or ":memory:" / the empty string for an in-memory database.
+	/// @param options The options that can only be chosen at startup.
+	explicit Instance(const std::string &path, const StartupOptions &options = {});
+
+	/// Creates a database instance with nothing attached, in `env`.
+	/// @param env The environment to create the instance in. Must outlive the instance.
+	/// @param options The options that can only be chosen at startup.
+	explicit Instance(Environment &env, const StartupOptions &options = {});
+
+	/// Creates a database instance in `env`, attaches `path`, and makes it the default database.
+	/// @param env The environment to create the instance in. Must outlive the instance.
+	/// @param path The database file, or ":memory:" / the empty string for an in-memory database.
+	/// @param options The options that can only be chosen at startup.
+	Instance(Environment &env, const std::string &path, const StartupOptions &options = {});
+
 	~Instance() override;
 	Instance(Instance &&) noexcept = default;
 	Instance &operator=(Instance &&) noexcept = default;
 
-	/// Attaches a database to this instance, like SQL `ATTACH 'path'`, starting the instance if this is its first
-	/// use.
+	/// Attaches a database to this instance, like SQL `ATTACH 'path'`, under the name derived from the path: `memory`
+	/// for an in-memory database, else the file name up to its first `.` (`/data/sales.2024.db` -> `sales`).
 	/// @param path The database file, or ":memory:" / the empty string for an in-memory database.
 	/// @param make_default Whether to make it the default database for sessions opened afterwards, as `SetDefault`
 	/// would; false leaves the default alone.
-	/// @throws Exception When the path is already attached in this environment, or a database of that name exists.
+	/// @throws Exception When the path is already attached in this process, or a database of that name exists.
 	auto Attach(const std::string &path, bool make_default = false) -> void;
 
 	/// Attaches a database under a name and with the per-database options SQL `ATTACH` takes, like
@@ -854,46 +1249,70 @@ public:
 	auto Attach(const std::string &path, const std::string &name,
 	            const std::unordered_map<std::string, std::string> &options, bool make_default = false) -> void;
 
-	/// Detaches the database attached from `path`, like SQL `DETACH`. Connections still using it keep it alive until
-	/// they let go; if it was the default database, new sessions have no default until `SetDefault` names another.
-	/// @param path The path that was passed to `Attach`, or the name the database is attached under.
-	/// @throws InvalidInputException When neither matches an attached database.
-	auto Detach(const std::string &path) -> void;
+	/// Detaches the database attached under `name`, like SQL `DETACH name`. Connections still using it keep it alive
+	/// until they let go; if it was the default database, new sessions have no default until `SetDefault` names
+	/// another.
+	/// @throws InvalidInputException When no database is attached under `name`.
+	auto Detach(const std::string &name) -> void;
 
-	/// Makes the database attached from `path` the default database for sessions opened from now on: where their
+	/// Makes the database attached under `name` the default database for sessions opened from now on: where their
 	/// unqualified DDL and unqualified table lookups that miss the temporary catalog go, unless they `USE` another.
 	/// Sessions already open keep the default they connected with.
-	/// @param path The path that was passed to `Attach`, or the name the database is attached under.
-	/// @throws InvalidInputException When neither matches an attached database.
-	auto SetDefault(const std::string &path) -> void;
+	/// @throws InvalidInputException When no database is attached under `name`.
+	auto SetDefault(const std::string &name) -> void;
 
-	/// How many settings this database exposes.
-	auto GetOptionCount() const -> size_t;
-
-	/// One setting with its current global value.
-	/// @param index Setting index in [0, GetOptionCount()).
-	auto GetOptionByIndex(size_t index) const -> InstanceOption;
-
-	/// One setting with its current global value.
-	/// @param name The setting's name or one of its aliases; an alias resolves to the canonical setting.
-	/// @return The setting.
-	/// @throws InvalidInputException When no setting goes by that name.
-	auto GetOption(std::string_view name) const -> InstanceOption;
-
-	/// Writes a setting globally, for this database and every session on it. Before the first `Attach` or `Connect`
-	/// the setting goes into the startup configuration, which is how settings that can only be chosen at startup,
-	/// such as access_mode, are written; afterwards this is SQL `SET GLOBAL`.
-	/// @param name The setting to write, either its canonical name or one of its aliases.
-	/// @param value The new value, in the same textual form SQL's `SET` accepts.
-	/// @throws InvalidInputException When no setting goes by that name or the value does not parse.
-	auto SetOption(std::string_view name, std::string_view value) -> void;
+	/// The config of this database: the GLOBAL scope. Settings that can only be chosen at startup are passed to the
+	/// constructor instead.
+	auto GetConfig() -> Config & {
+		return config;
+	}
+	/// Const overload of the above: a const config reads settings, but does not write them.
+	auto GetConfig() const -> const Config & {
+		return config;
+	}
 
 	/// Opens a new session on this database, starting the instance if this is its first use.
 	/// @return An owning `Connection`, which disconnects when destroyed. Open one per thread.
 	auto Connect() -> Connection;
 
+	/// The factory for the built-in types, their values and casts, and data chunks on this instance. Anything that
+	/// needs a catalog throws; use a connection's or a context's factory for that.
+	auto GetFactory() -> Factory & {
+		return factory;
+	}
+
+	/// Registers a replacement scan on this database, visible to every connection. Not thread-safe against queries
+	/// binding on other connections: register before issuing queries.
+	/// Registers the scan. Scans are consulted in registration order within
+	/// their scope, connection-scoped ones before database-wide ones, and the first to claim a name wins. A scan can
+	/// be registered only once.
+	/// @throws InvalidInputException When the callback is missing, or the scan is already registered.
+	auto Register(ReplacementScan &replacement_scan) -> void;
+	/// Registers the log sink, making it available to the logging configuration under its name. Not transactional;
+	/// the sink lives as long as the database. User data set via `SetUserData` is consumed by registration.
+	/// @throws InvalidInputException When the name or write callback is missing, or the name is taken, by a sink
+	/// DuckDB provides itself or by one registered before.
+	auto Register(LogSink &log_sink) -> void;
+
+	/// The file system of this database, with its GLOBAL settings and secrets. Borrowed, and valid only while the
+	/// instance is.
+	auto GetFileSystem() const -> FileSystem;
+
+	/// Writes a message to DuckDB's log, readable through `SELECT * FROM duckdb_logs`.
+	/// Whether the entry is recorded is up to the database's log configuration; a message it filters out is dropped
+	/// without error.
+	/// @param level The severity of the message.
+	/// @param message The message body.
+	/// @param log_type The log type to record under, matched case-sensitively. Empty selects the default type.
+	auto Log(LogLevel level, std::string_view message, std::string_view log_type = {}) const -> void;
+
 private:
 	explicit Instance(void *impl);
+	//! The (name, value) pairs of the options that were set, in the textual form SQL `SET` accepts.
+	static auto StartupOptionPairs(const StartupOptions &options) -> std::vector<std::pair<std::string, std::string>>;
+
+	Factory factory;
+	Config config;
 };
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -906,12 +1325,70 @@ private:
 /// The extension being loaded, handed to its load entry point.
 /// Borrowed for the duration of the load: never store or outlive one.
 class Extension final : public detail::Handle<Extension> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	~Extension() override;
 
-	// TODO: (You can't do anything with this yet, but in the future will be able to register functions, types etc.)
+	/// Registers on the loading extension's database, attributed to the extension and visible to every connection.
+	/// Registers the function. The function object remains valid and may be
+	/// adjusted and registered again; user data set via `SetUserData` is consumed by the first registration.
+	/// @throws InvalidInputException When the name, exec callback, or a usable return type is missing.
+	auto Register(ScalarFunction &scalar_function) -> void;
+	/// Registers the function. The function object remains valid and may be
+	/// adjusted and registered again; user data set via `SetUserData` is consumed by the first registration.
+	/// @throws InvalidInputException When the name, a required callback, or a usable return type is missing.
+	auto Register(AggregateFunction &aggregate_function) -> void;
+	/// Registers the function. The function object remains valid and may be
+	/// adjusted and registered again; user data set via `SetUserData` is consumed by the first registration.
+	/// @throws InvalidInputException When the name, bind callback or exec callback is missing, the signature
+	/// declares a return type, or a partitioning callback is set without a partition data callback.
+	auto Register(TableFunction &table_function) -> void;
+	/// Registers the function. The function object remains valid.
+	/// @throws InvalidInputException When the name or the single-file function is missing, or the single-file
+	/// function does not exist or does not take the file to read as its only positional parameter.
+	auto Register(MultiFileFunction &multi_file_function) -> void;
+	/// Registers the type. The type object remains valid and may be adjusted
+	/// and registered again.
+	/// @throws InvalidInputException When the name or the base type is missing, or the base type is not concrete.
+	auto Register(CustomType &custom_type) -> void;
+	/// Registers the function. The function object remains valid and may be
+	/// adjusted and registered again; user data set via `SetUserData` is consumed by the first registration.
+	/// @throws InvalidInputException When the name is missing, neither side is configured, a configured
+	/// `COPY ... TO` side lacks its batch or flush callback, or a configured `COPY ... FROM` side lacks its bind or
+	/// exec callback.
+	auto Register(CopyFunction &copy_function) -> void;
+	/// Registers the cast, replacing whatever cast was registered for the same type pair. The function object remains
+	/// valid and may be adjusted and registered again; user data set via `SetUserData` is consumed by the first
+	/// registration.
+	/// @throws InvalidInputException When the source type, target type, or exec callback is missing, or either type is
+	/// not concrete.
+	auto Register(CastFunction &cast_function) -> void;
+	/// Registers the pragma. The function object remains valid; user data set via `SetUserData` is consumed by the
+	/// first registration.
+	/// @throws InvalidInputException When the name is missing, not exactly one of the query and exec callbacks is set,
+	/// the signature declares a return type, or a pragma of the same name already exists.
+	auto Register(PragmaFunction &pragma_function) -> void;
+	/// Registers the macro function. The function object remains valid.
+	/// @throws InvalidInputException When the name or the body is missing, the body does not parse, the signature has
+	/// a parameter that is not a standard one or declares a return type, or a function of the same name exists.
+	auto Register(MacroFunction &macro_function) -> void;
+	/// Registers the option on the database, visible to every connection. Not transactional: it takes effect at once,
+	/// also inside an explicit transaction, and a rollback does not undo it. The option object remains valid; user
+	/// data set via `SetUserData` is consumed by the first registration.
+	/// @throws InvalidInputException When the name, or both the type and the default value, are missing, the default
+	/// value does not cast to the type, the scopes are inconsistent, or an option of the same name already exists.
+	auto Register(CustomOption &custom_option) -> void;
+	/// Registers the scan. Scans are consulted in registration order within
+	/// their scope, connection-scoped ones before database-wide ones, and the first to claim a name wins. A scan can
+	/// be registered only once.
+	/// @throws InvalidInputException When the callback is missing, or the scan is already registered.
+	auto Register(ReplacementScan &replacement_scan) -> void;
+	/// Registers the log sink, making it available to the logging configuration under its name. Not transactional;
+	/// the sink lives as long as the database. User data set via `SetUserData` is consumed by registration.
+	/// @throws InvalidInputException When the name or write callback is missing, or the name is taken, by a sink
+	/// DuckDB provides itself or by one registered before.
+	auto Register(LogSink &log_sink) -> void;
 
 private:
 	explicit Extension(void *impl);
@@ -923,35 +1400,6 @@ namespace detail {
 /// passed untyped to keep the C loader types out of this header.
 auto RunExtensionEntry(void (*body)(Extension &, Context &), void *extension, void *context, void *err) -> void;
 } // namespace detail
-
-//----------------------------------------------------------------------------------------------------------------------
-// Environment
-//----------------------------------------------------------------------------------------------------------------------
-// The entry point to the API: an `Environment` creates instances and tracks the ones it has created. Create one,
-// keep it for as long as any instance is alive, and create instances through it.
-
-/// The environment instances are created in. It must outlive every `Instance` created through it; destroying it
-/// while instances are still alive leaks them.
-class Environment final : public detail::Handle<Environment> {
-	friend detail::Factory;
-
-public:
-	Environment();
-	~Environment() override;
-	Environment(Environment &&) noexcept = default;
-	Environment &operator=(Environment &&) noexcept = default;
-
-	/// How many databases are currently alive in this environment.
-	auto GetInstanceCount() const -> size_t;
-
-	/// Creates a database instance with nothing attached. Write startup settings with `Instance::SetOption`, then
-	/// attach a database with `Instance::Attach` and make it the default with `Instance::SetDefault`.
-	auto CreateInstance() -> Instance;
-
-	/// Creates a database instance with default settings, attaches `path`, and makes it the default database.
-	/// @param path The database file, or ":memory:" / the empty string for an in-memory database.
-	auto Open(const std::string &path) -> Instance;
-};
 
 /// The version of the DuckDB library this program is linked against, e.g. "v1.5.0", with a suffix such as
 /// "v1.5.0-dev123" on development builds.
@@ -1023,7 +1471,7 @@ enum class LogicalTypeId : uint32_t {
 /// An owned SQL type: a kind plus its parameters, e.g. DECIMAL(18, 3) or STRUCT(a INTEGER, b VARCHAR), and in the case
 /// of extension-defined types, its "alias"
 class LogicalType final : public detail::Handle<LogicalType> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	LogicalType(LogicalType &&) noexcept = default;
@@ -1034,12 +1482,9 @@ public:
 	/// A copy of this type carrying `alias` as its name: the same representation under a distinct identity.
 	/// The alias is by default not registered anywhere; parsing or creating a type with this name does not resolve to
 	/// this type, unless it is explicitly registered in the catalog separately.
-	/// @param ctx The context to create the copy in.
+	/// @param factory The factory to create the copy with.
 	/// @param alias The name the copy carries. Must not be empty.
-	auto WithAlias(const Context &ctx, std::string_view alias) const -> LogicalType;
-
-	/// `WithAlias` outside a callback.
-	auto WithAlias(const Connection &conn, std::string_view alias) const -> LogicalType;
+	auto WithAlias(Factory &factory, std::string_view alias) const -> LogicalType;
 
 	/// An owned copy of this type.
 	auto Copy() const -> LogicalType;
@@ -1154,7 +1599,7 @@ private:
 
 /// An ordered list of (name, type) fields. Names may repeat, and a schema may have no fields at all.
 class Schema final : public detail::Handle<Schema> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	Schema(Schema &&) noexcept = default;
@@ -1531,7 +1976,7 @@ struct uuid_t {
 
 /// An owned SQL value.
 class Value final : public detail::Handle<Value> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	~Value() override;
@@ -1549,13 +1994,10 @@ public:
 	auto ToText() const -> std::string;
 
 	/// Casts the value to another type, following the same rules as a SQL cast.
-	/// @param ctx The context to cast in.
+	/// @param factory The factory supplying the casts.
 	/// @param target The type to cast to.
 	/// @return The converted value. Throws when the cast is not allowed or the value does not fit.
-	auto Cast(const Context &ctx, const LogicalType &target) const -> Value;
-
-	/// `Cast` outside a callback.
-	auto Cast(const Connection &conn, const LogicalType &target) const -> Value;
+	auto Cast(Factory &factory, const LogicalType &target) const -> Value;
 
 	/// Reads the value as `T`, where `T` is one of the primitive types above, or `LogicalType` for a TYPE value.
 	/// Numeric, temporal and boolean values of another type are converted, following cast rules; the remaining `T`s
@@ -1582,172 +2024,107 @@ public:
 	}
 
 	/// A NULL of the given type.
-	/// @param conn The connection to create the value on.
+	/// @param factory The factory to create the value with.
 	/// @param type The type the NULL carries.
-	static auto CreateNull(Connection &conn, const LogicalType &type) -> Value;
-
-	/// `CreateNull` inside a callback.
-	static auto CreateNull(Context &ctx, const LogicalType &type) -> Value;
+	static auto CreateNull(Factory &factory, const LogicalType &type) -> Value;
 
 	/// Creates a value from a C++ value. The overload picked decides the SQL type, so `dtime_t` yields TIME and
 	/// `dtime_ns_t` yields TIME_NS; a `LogicalType` yields a TYPE value. Types with no overload here do not compile --
 	/// cast or build them through the composite constructors instead. Byte strings are copied in, so the value does not
 	/// borrow from the `varchar_t` / `blob_t` handed to it.
-	/// @param conn The connection to create the value on.
+	/// @param factory The factory to create the value with.
 	/// @param value The C++ value to convert.
-	static auto Create(Connection &conn, bool value) -> Value;
-	static auto Create(Connection &conn, uint8_t value) -> Value;
-	static auto Create(Connection &conn, uint16_t value) -> Value;
-	static auto Create(Connection &conn, uint32_t value) -> Value;
-	static auto Create(Connection &conn, uint64_t value) -> Value;
-	static auto Create(Connection &conn, uint128_t value) -> Value;
-	static auto Create(Connection &conn, int8_t value) -> Value;
-	static auto Create(Connection &conn, int16_t value) -> Value;
-	static auto Create(Connection &conn, int32_t value) -> Value;
-	static auto Create(Connection &conn, int64_t value) -> Value;
-	static auto Create(Connection &conn, int128_t value) -> Value;
-	static auto Create(Connection &conn, float value) -> Value;
-	static auto Create(Connection &conn, double value) -> Value;
-	static auto Create(Connection &conn, varchar_t value) -> Value;
-	static auto Create(Connection &conn, blob_t value) -> Value;
-	static auto Create(Connection &conn, const LogicalType &type) -> Value;
-	static auto Create(Connection &conn, date_t value) -> Value;
-	static auto Create(Connection &conn, dtime_t value) -> Value;
-	static auto Create(Connection &conn, dtime_ns_t value) -> Value;
-	static auto Create(Connection &conn, dtime_tz_t value) -> Value;
-	static auto Create(Connection &conn, timestamp_t value) -> Value;
-	static auto Create(Connection &conn, timestamp_s_t value) -> Value;
-	static auto Create(Connection &conn, timestamp_ms_t value) -> Value;
-	static auto Create(Connection &conn, timestamp_ns_t value) -> Value;
-	static auto Create(Connection &conn, timestamp_tz_t value) -> Value;
-	static auto Create(Connection &conn, timestamp_tz_ns_t value) -> Value;
-	static auto Create(Connection &conn, interval_t value) -> Value;
+
+	static auto Create(Factory &factory, bool value) -> Value;
+	static auto Create(Factory &factory, uint8_t value) -> Value;
+	static auto Create(Factory &factory, uint16_t value) -> Value;
+	static auto Create(Factory &factory, uint32_t value) -> Value;
+	static auto Create(Factory &factory, uint64_t value) -> Value;
+	static auto Create(Factory &factory, uint128_t value) -> Value;
+	static auto Create(Factory &factory, int8_t value) -> Value;
+	static auto Create(Factory &factory, int16_t value) -> Value;
+	static auto Create(Factory &factory, int32_t value) -> Value;
+	static auto Create(Factory &factory, int64_t value) -> Value;
+	static auto Create(Factory &factory, int128_t value) -> Value;
+	static auto Create(Factory &factory, float value) -> Value;
+	static auto Create(Factory &factory, double value) -> Value;
+	static auto Create(Factory &factory, varchar_t value) -> Value;
+	static auto Create(Factory &factory, blob_t value) -> Value;
+	static auto Create(Factory &factory, const LogicalType &type) -> Value;
+	static auto Create(Factory &factory, date_t value) -> Value;
+	static auto Create(Factory &factory, dtime_t value) -> Value;
+	static auto Create(Factory &factory, dtime_ns_t value) -> Value;
+	static auto Create(Factory &factory, dtime_tz_t value) -> Value;
+	static auto Create(Factory &factory, timestamp_t value) -> Value;
+	static auto Create(Factory &factory, timestamp_s_t value) -> Value;
+	static auto Create(Factory &factory, timestamp_ms_t value) -> Value;
+	static auto Create(Factory &factory, timestamp_ns_t value) -> Value;
+	static auto Create(Factory &factory, timestamp_tz_t value) -> Value;
+	static auto Create(Factory &factory, timestamp_tz_ns_t value) -> Value;
+	static auto Create(Factory &factory, interval_t value) -> Value;
 
 	template <int8_t WIDTH, uint8_t SCALE>
-	static auto Create(Connection &conn, decimal_t<WIDTH, SCALE> value) -> Value {
-		return CreateDecimal(conn, WidenDecimal(value.value), WIDTH, SCALE);
+	static auto Create(Factory &factory, decimal_t<WIDTH, SCALE> value) -> Value {
+		return CreateDecimal(factory, WidenDecimal(value.value), WIDTH, SCALE);
 	}
 
-	static auto Create(Connection &conn, bit_t value) -> Value;
-	static auto Create(Connection &conn, bignum_t value) -> Value;
-	static auto Create(Connection &conn, uuid_t value) -> Value;
+	static auto Create(Factory &factory, bit_t value) -> Value;
+	static auto Create(Factory &factory, bignum_t value) -> Value;
+	static auto Create(Factory &factory, uuid_t value) -> Value;
 	template <class T>
-	static auto Create(Connection &conn, T value) -> Value = delete;
-
-	/// `Create` inside a callback.
-	/// @param ctx The context to create the value in.
-	/// @param value The C++ value to convert.
-	static auto Create(Context &ctx, bool value) -> Value;
-	static auto Create(Context &ctx, uint8_t value) -> Value;
-	static auto Create(Context &ctx, uint16_t value) -> Value;
-	static auto Create(Context &ctx, uint32_t value) -> Value;
-	static auto Create(Context &ctx, uint64_t value) -> Value;
-	static auto Create(Context &ctx, uint128_t value) -> Value;
-	static auto Create(Context &ctx, int8_t value) -> Value;
-	static auto Create(Context &ctx, int16_t value) -> Value;
-	static auto Create(Context &ctx, int32_t value) -> Value;
-	static auto Create(Context &ctx, int64_t value) -> Value;
-	static auto Create(Context &ctx, int128_t value) -> Value;
-	static auto Create(Context &ctx, float value) -> Value;
-	static auto Create(Context &ctx, double value) -> Value;
-	static auto Create(Context &ctx, varchar_t value) -> Value;
-	static auto Create(Context &ctx, blob_t value) -> Value;
-	static auto Create(Context &ctx, const LogicalType &type) -> Value;
-	static auto Create(Context &ctx, date_t value) -> Value;
-	static auto Create(Context &ctx, dtime_t value) -> Value;
-	static auto Create(Context &ctx, dtime_ns_t value) -> Value;
-	static auto Create(Context &ctx, dtime_tz_t value) -> Value;
-	static auto Create(Context &ctx, timestamp_t value) -> Value;
-	static auto Create(Context &ctx, timestamp_s_t value) -> Value;
-	static auto Create(Context &ctx, timestamp_ms_t value) -> Value;
-	static auto Create(Context &ctx, timestamp_ns_t value) -> Value;
-	static auto Create(Context &ctx, timestamp_tz_t value) -> Value;
-	static auto Create(Context &ctx, timestamp_tz_ns_t value) -> Value;
-	static auto Create(Context &ctx, interval_t value) -> Value;
-
-	template <int8_t WIDTH, uint8_t SCALE>
-	static auto Create(Context &ctx, decimal_t<WIDTH, SCALE> value) -> Value {
-		return CreateDecimal(ctx, WidenDecimal(value.value), WIDTH, SCALE);
-	}
-
-	static auto Create(Context &ctx, bit_t value) -> Value;
-	static auto Create(Context &ctx, bignum_t value) -> Value;
-	static auto Create(Context &ctx, uuid_t value) -> Value;
-	template <class T>
-	static auto Create(Context &ctx, T value) -> Value = delete;
+	static auto Create(Factory &factory, T value) -> Value = delete;
 
 	// Composite construction. Each constructor infers the composite's type from the children it is given, which is why
 	// only the built-in composites are reachable this way: build an aliased or extension-registered composite by
 	// casting one of these to it.
 	//
 	// Children are borrowed for the duration of the call and copied into the result, so the caller keeps its inputs
-	// and nothing in the result points back at them. Each comes in both scope forms, like `Create` and `CreateNull`.
+	// and nothing in the result points back at them.
 	using ValueList = const std::vector<Value> &;
 	using NamedValueList = const std::vector<std::pair<std::string, Value>> &;
 	using KeyValueList = const std::vector<std::pair<Value, Value>> &;
 
 	/// A LIST of the given elements.
-	/// @param conn The connection to create the value on.
+	/// @param factory The factory to create the value with.
 	/// @param values The elements. The element type is the common type of all of them and each is cast to it, so
 	/// mixing INTEGER and VARCHAR yields VARCHAR elements. Must not be empty: with no element there is no type to
 	/// infer, so use the child-type overload for an empty LIST.
 	/// @throws Exception When the elements have no common type.
-	static auto CreateList(Connection &conn, ValueList values) -> Value;
-
-	/// `CreateList` inside a callback.
-	static auto CreateList(Context &ctx, ValueList values) -> Value;
+	static auto CreateList(Factory &factory, ValueList values) -> Value;
 
 	/// An empty LIST.
-	/// @param conn The connection to create the value on.
+	/// @param factory The factory to create the value with.
 	/// @param child_type The element type, not the LIST type.
-	static auto CreateList(Connection &conn, const LogicalType &child_type) -> Value;
-
-	/// `CreateList` inside a callback.
-	static auto CreateList(Context &ctx, const LogicalType &child_type) -> Value;
+	static auto CreateList(Factory &factory, const LogicalType &child_type) -> Value;
 
 	/// An ARRAY of the given elements, its size being how many there are.
-	/// @param conn The connection to create the value on.
+	/// @param factory The factory to create the value with.
 	/// @param values The elements, typed as in `CreateList`. Must not be empty: the smallest ARRAY holds one element.
-	static auto CreateArray(Connection &conn, ValueList values) -> Value;
-
-	/// `CreateArray` inside a callback.
-	static auto CreateArray(Context &ctx, ValueList values) -> Value;
+	static auto CreateArray(Factory &factory, ValueList values) -> Value;
 
 	/// A TUPLE, i.e. a struct whose fields have no names.
-	/// @param conn The connection to create the value on.
+	/// @param factory The factory to create the value with.
 	/// @param values The fields, in order. May be empty: the empty tuple is a type of its own.
-	static auto CreateTuple(Connection &conn, ValueList values = {}) -> Value;
-
-	/// `CreateTuple` inside a callback.
-	static auto CreateTuple(Context &ctx, ValueList values = {}) -> Value;
+	static auto CreateTuple(Factory &factory, ValueList values = {}) -> Value;
 
 	/// A STRUCT of the given fields.
-	/// @param conn The connection to create the value on.
+	/// @param factory The factory to create the value with.
 	/// @param values The (name, value) fields, in order. Names should be unique and either all set or all empty; this
 	/// is not validated. May be empty: the empty struct is a type of its own.
-	static auto CreateStruct(Connection &conn, NamedValueList values = {}) -> Value;
-
-	/// `CreateStruct` inside a callback.
-	static auto CreateStruct(Context &ctx, NamedValueList values = {}) -> Value;
+	static auto CreateStruct(Factory &factory, NamedValueList values = {}) -> Value;
 
 	/// A MAP of the given entries.
-	/// @param conn The connection to create the value on.
+	/// @param factory The factory to create the value with.
 	/// @param values The (key, value) entries. The key and value types are the common types over all entries, and each
 	/// entry is cast to them, as in `CreateList`. Keys must be unique and not NULL. Must not be empty: with no entry
 	/// there are no types to infer, so use the key/value-type overload for an empty MAP.
-	static auto CreateMap(Connection &conn, KeyValueList values) -> Value;
-
-	/// `CreateMap` inside a callback.
-	static auto CreateMap(Context &ctx, KeyValueList values) -> Value;
+	static auto CreateMap(Factory &factory, KeyValueList values) -> Value;
 
 	/// An empty MAP.
-	/// @param conn The connection to create the value on.
+	/// @param factory The factory to create the value with.
 	/// @param key_type The key type, not the MAP type.
 	/// @param value_type The value type, not the MAP type.
-	static auto CreateMap(Connection &conn, const LogicalType &key_type, const LogicalType &value_type) -> Value;
-
-	/// `CreateMap` inside a callback.
-	static auto CreateMap(Context &ctx, const LogicalType &key_type, const LogicalType &value_type) -> Value;
+	static auto CreateMap(Factory &factory, const LogicalType &key_type, const LogicalType &value_type) -> Value;
 
 	/// How many children a composite value has: elements for LIST and ARRAY, fields for STRUCT and TUPLE, two per
 	/// entry for MAP, 2 for UNION, and 0 for anything else. A NULL value has no children.
@@ -1769,8 +2146,7 @@ private:
 
 	/// @internal The runtime forwarder behind the templated DECIMAL constructors, so those can be defined in the header
 	/// without naming a C type.
-	static auto CreateDecimal(Connection &conn, int128_t value, uint8_t width, uint8_t scale) -> Value;
-	static auto CreateDecimal(Context &ctx, int128_t value, uint8_t width, uint8_t scale) -> Value;
+	static auto CreateDecimal(Factory &factory, int128_t value, uint8_t width, uint8_t scale) -> Value;
 
 	/// @internal Sign-extends a DECIMAL's backing integer to the widest storage tier, so one entry point can carry
 	/// every tier.
@@ -1846,14 +2222,18 @@ template <>
 auto Value::Get() const -> LogicalType;
 
 template <class T>
-auto Connection::CreateValue(T &&value) -> Value {
+auto Factory::CreateValue(T &&value) -> Value {
 	return Value::Create(*this, std::forward<T>(value));
 }
 
-template <class T>
-auto Context::CreateValue(T &&value) -> Value {
-	return Value::Create(*this, std::forward<T>(value));
-}
+/// The current value of a setting, and the scope it was read from. Destructures:
+/// `auto [value, scope] = config.GetOption(name)`.
+struct OptionValue {
+	/// The value, typed as the setting.
+	Value value;
+	/// GLOBAL or SESSION, as DuckDB attributes the value.
+	SettingScope scope;
+};
 
 /// One parameter of a type: a value, plus a name when the parameter is a named one. A parameter with an empty name is
 /// positional.
@@ -1890,7 +2270,7 @@ private:
 };
 
 /// Builds a type a piece at a time, without assembling a parameter vector by hand. Start one from
-/// `Context::CreateType()` or `Connection::CreateType()`, chain the setters, and call `Build`.
+/// `Factory::CreateType()`, chain the setters, and call `Build`.
 /// Nested types are added by passing a callback that fills in a builder of its own.
 template <class CTX>
 class TypeBuilder {
@@ -2007,7 +2387,7 @@ struct NamedParam {
 
 /// A borrowed handle to a vector's string heap, valid until that vector is destroyed or reshaped, e.g. by a `Flatten`.
 class Arena final : public detail::Handle<Arena> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	Arena(Arena &&) noexcept = default;
@@ -2203,7 +2583,7 @@ struct ValidityMask {
 /// A borrowed handle to one column of a chunk, or to one child of another vector. Valid for as long as the chunk or
 /// parent vector it belongs to is valid.
 class Vector final : public detail::Handle<Vector> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	Vector(Vector &&) noexcept = default;
@@ -2245,6 +2625,18 @@ public:
 	/// @throws InvalidInputException When the source's type does not match the vector's.
 	auto Reference(const Vector &source) -> void;
 
+	/// Casts every row into `target`, like SQL `CAST`, from this vector's type to the target's. `target` is replaced
+	/// by the result, taking this vector's size; pointers and views taken from it beforehand do not survive this.
+	/// A connection's or callback's factory casts with that client's cast functions and settings, an
+	/// instance's factory with the built-in casts only.
+	/// @throws Exception When a row does not convert; `target` is then unspecified.
+	auto Cast(Factory &factory, Vector &target) const -> void;
+
+	/// `Cast` like SQL `TRY_CAST`: a row that does not convert becomes NULL in `target` instead of failing the cast.
+	/// @param error_message Optional. When not every row converted, receives the conversion error of one that did not.
+	/// @return Whether every row converted.
+	auto TryCast(Factory &factory, Vector &target, std::string *error_message = nullptr) const -> bool;
+
 	/// How many rows the vector holds.
 	auto GetSize() const -> idx_t;
 
@@ -2261,6 +2653,9 @@ public:
 
 	/// How the vector is laid out.
 	auto GetVectorType() const -> VectorType;
+
+	/// The logical type of the vector's rows.
+	auto GetLogicalType() const -> LogicalType;
 
 	/// The validity mask for writing, allocating it if the vector does not have one yet.
 	/// @throws InvalidInputException Unless the vector is FLAT.
@@ -2344,22 +2739,15 @@ private:
 /// A batch of rows, column by column. A chunk owns its vectors, so it must outlive any `Vector`, `VectorView` or
 /// pointer taken from it.
 class DataChunk final : public detail::Handle<DataChunk> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	/// An empty chunk with a column per type, ready to be filled: write the columns' data and give every column its
-	/// row count with `Vector::SetSize`.
+	/// row count with `Vector::SetSize`. The chunk's memory is allocated through the factory's database, so it is
+	/// accounted to that database.
+	/// @param factory The factory whose database supplies the chunk's memory.
 	/// @param types One type per column. Types containing ANY are rejected.
-	explicit DataChunk(const std::vector<LogicalType> &types);
-
-	/// Like `DataChunk(types)`, but the chunk's memory is allocated through the connection's database rather than the
-	/// default allocator, so it is accounted to that database.
-	/// @param conn The connection whose database supplies the chunk's memory.
-	/// @param types One type per column. Types containing ANY are rejected.
-	DataChunk(const Connection &conn, const std::vector<LogicalType> &types);
-
-	/// The `Context` flavor of the connection-scoped constructor, inside a callback.
-	DataChunk(const Context &ctx, const std::vector<LogicalType> &types);
+	DataChunk(Factory &factory, const std::vector<LogicalType> &types);
 
 	DataChunk(DataChunk &&other) noexcept {
 		std::swap(impl, other.impl);
@@ -2383,19 +2771,21 @@ public:
 	/// call. Unstable API.
 	auto GetCapacity() const -> idx_t;
 
+	/// Empties the chunk so it can be filled again: its row count becomes 0, and its vectors writable FLAT vectors of
+	/// their types, as on creation. Pointers and views taken from the chunk or its vectors beforehand do not survive
+	/// this. Not for a chunk DuckDB lends to a callback for reading.
+	auto Clear() -> void;
+
 	/// Access one column, e.g. to read or write its data.
 	/// @param index Column index in [0, GetVectorCount()).
 	/// @return A borrowed handle, valid for as long as this chunk is.
 	auto GetVector(idx_t index) const -> Vector;
 
-	/// A deep copy of this chunk, its memory allocated through the connection's database. The copy is flattened and
+	/// A deep copy of this chunk, its memory allocated through the factory's database. The copy is flattened and
 	/// owns all its data, so it stays valid after this chunk -- or whatever backs it, such as a
 	/// `ColumnDataCollection` scan -- is gone.
-	/// @param conn The connection whose database supplies the copy's memory.
-	auto Copy(const Connection &conn) const -> DataChunk;
-
-	/// The `Context` flavor of `Copy`, inside a callback.
-	auto Copy(const Context &ctx) const -> DataChunk;
+	/// @param factory The factory whose database supplies the copy's memory.
+	auto Copy(Factory &factory) const -> DataChunk;
 
 private:
 	explicit DataChunk(void *impl, bool owned);
@@ -2413,13 +2803,13 @@ private:
 /// An owned collection of rows, all sharing one set of column types fixed at construction.
 /// It must not outlive the `Connection` or `Context` it was created from.
 class ColumnDataCollection final : public detail::Handle<ColumnDataCollection> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	/// Opaque state for appending, from `CreateAppendState`. Only meaningful with the collection that created it, and
 	/// invalidated by `Reset`.
 	class AppendState final : public detail::Handle<AppendState> {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		AppendState(AppendState &&) noexcept = default;
@@ -2434,7 +2824,7 @@ public:
 	/// worker reads and tracks the scan's overall progress. Only meaningful with the collection that created it, and
 	/// invalidated by `Reset`.
 	class SharedScanState final : public detail::Handle<SharedScanState> {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		SharedScanState(SharedScanState &&) noexcept = default;
@@ -2449,7 +2839,7 @@ public:
 	/// its thread most recently scanned alive: scans are zero-copy, so a scanned chunk's data is only valid until this
 	/// state's next `Scan` or its destruction.
 	class WorkerScanState final : public detail::Handle<WorkerScanState> {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		WorkerScanState(WorkerScanState &&) noexcept = default;
@@ -2460,14 +2850,11 @@ public:
 		explicit WorkerScanState(void *impl);
 	};
 
-	/// An empty collection, its memory managed by the connection's database.
-	/// @param conn The connection whose database supplies the collection's memory.
+	/// An empty collection, its memory managed by the factory's database.
+	/// @param factory The factory whose database supplies the collection's memory.
 	/// @param types One type per column, at least one; every chunk appended must match them exactly. Types containing
 	/// ANY are rejected.
-	ColumnDataCollection(const Connection &conn, const std::vector<LogicalType> &types);
-
-	/// The `Context` flavor, inside a callback.
-	ColumnDataCollection(const Context &ctx, const std::vector<LogicalType> &types);
+	ColumnDataCollection(Factory &factory, const std::vector<LogicalType> &types);
 
 	ColumnDataCollection(ColumnDataCollection &&) noexcept = default;
 	ColumnDataCollection &operator=(ColumnDataCollection &&) noexcept = default;
@@ -2544,15 +2931,13 @@ private:
 /// touching the database, and `Flush` runs the statement over everything buffered so far and empties the buffer.
 /// Many small inserts thereby become one bulk insert.
 ///
-/// The appender is built on the public API alone: a connection-scoped `ReplacementScan` exposes the buffer to the
-/// statement under a name. The same can be done by hand when a different shape is needed.
+/// The appender is built on the public API alone: `SqlStatement::AddCollection` exposes the buffer to the statement
+/// under a name. The same can be done by hand when a different shape is needed.
 ///
 /// An appender is bound to the connection it was created on and can only be flushed there. It is not thread-safe:
 /// append from one thread at a time, or give each thread its own appender. It must not outlive its `Connection`.
 ///
-/// Destroying an appender does not flush: rows buffered but not flushed are dropped. Since replacement scans cannot
-/// be unregistered, every appender leaves an inert scan registered on its connection; create appenders once and
-/// reuse them rather than creating one per batch.
+/// Destroying an appender does not flush: rows buffered but not flushed are dropped.
 class Appender {
 public:
 	/// Creates an appender that inserts into `table`.
@@ -2569,12 +2954,14 @@ public:
 	/// Use this when a plain INSERT of every column is not what is needed: a subset of columns, an UPDATE or MERGE
 	/// driven by the buffer, or an INSERT with an ON CONFLICT clause.
 	/// @param conn The connection to buffer against and flush on.
-	/// @param query Exactly one statement, referring to the buffer by `buffer_name`.
+	/// @param query Exactly one SELECT, INSERT, UPDATE, DELETE or MERGE INTO statement, referring to the buffer by
+	/// `buffer_name`.
 	/// @param column_types One type per buffer column, at least one.
-	/// @param buffer_name The name `query` reads the buffer under. Must be unique among the appenders on this
-	/// connection: the first one registered claims the name.
+	/// @param buffer_name The name `query` reads the buffer under. It shadows a table of that name, and must not be
+	/// the name of a common table expression `query` defines itself.
 	/// @param column_names Names for the buffer's columns; empty names them col1..colN.
-	/// @throws InvalidInputException When `column_types` is empty, or `query` is not exactly one statement.
+	/// @throws InvalidInputException When `column_types` is empty, `query` is not exactly one statement of a
+	/// supported type, or it already defines `buffer_name`.
 	Appender(Connection &conn, std::string_view query, std::vector<LogicalType> column_types,
 	         std::string_view buffer_name, const std::vector<std::string> &column_names = {});
 
@@ -2607,23 +2994,16 @@ public:
 	void Clear();
 
 private:
-	// Shared with the replacement scan that exposes the buffer. The scan outlives the appender, since scans cannot be
-	// unregistered, so it holds this by shared_ptr; the appender's destructor nulls the collection to make it decline.
-	struct Buffer {
-		std::string name;
-		std::vector<std::string> column_names;
-		std::unique_ptr<ColumnDataCollection> collection;
-	};
-
 	// The shared body of both constructors.
 	void Initialize(Connection &conn, const std::string &query, std::vector<LogicalType> column_types,
 	                const std::string &buffer_name, const std::vector<std::string> &column_names);
 	void ResetBuffer();
 
-	// The connection the buffer's replacement scan is registered on, and the only one a flush can run on.
+	// The connection the statement runs on.
 	Connection *connection = nullptr;
 	std::vector<LogicalType> types;
-	std::shared_ptr<Buffer> buffer;
+	// The buffer, declared before the statement that borrows it so it is destroyed after it.
+	std::unique_ptr<ColumnDataCollection> collection;
 	// The statement, parsed once and re-executed per flush, and the append state, recreated after every reset.
 	std::unique_ptr<SqlStatement> statement;
 	std::unique_ptr<ColumnDataCollection::AppendState> append_state;
@@ -2638,7 +3018,8 @@ private:
 // Interop with the Arrow C Data Interface, in both directions. `ArrowExporter` fills caller-allocated Arrow structs,
 // which the caller then releases; `ArrowImporter` hands an Arrow array's buffers to `DataChunk`s zero-copy. Both
 // resolve their schema once, at construction, and both gather rows up to a batch size across inputs, so the last
-// input is marked with `flush`.
+// input is marked with `flush`. To execute SQL straight into Arrow arrays, pass an `ArrowFormat` to `Execute` and
+// read the `ArrowResult`.
 
 /// Converts Arrow arrays into `DataChunk`s against one resolved `ArrowSchema`. Construct it once, for example at a
 /// table function's bind time, and reuse it for every array of that shape. Give it an array with `Append`, then call
@@ -2646,7 +3027,7 @@ private:
 /// The importer borrows the context it was created with and must not outlive it. One array is in flight at a time,
 /// and an importer must not be used from two threads at once.
 class ArrowImporter final : public detail::Handle<ArrowImporter> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	/// Resolves `schema` against `context`, extension types included.
@@ -2655,7 +3036,7 @@ public:
 	/// @param batch_size Maximum rows per chunk. A long array is split across several chunks, and rows left over
 	/// that do not fill a batch are held back and joined with the next array unless flushed. 0 means no maximum:
 	/// one chunk per array.
-	ArrowImporter(const Context &context, ArrowSchema &schema, idx_t batch_size = 0);
+	ArrowImporter(Context &context, ArrowSchema &schema, idx_t batch_size = 0);
 
 	ArrowImporter(ArrowImporter &&) noexcept = default;
 	ArrowImporter &operator=(ArrowImporter &&) noexcept = default;
@@ -2694,7 +3075,7 @@ private:
 /// then call `NextArray` until it returns false. Pass `flush` on the last chunk, or call `Flush`.
 /// An exporter must not be used from two threads at once.
 class ArrowExporter final : public detail::Handle<ArrowExporter> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	/// @param context A context with an active transaction, whose Arrow settings are captured.
@@ -2703,7 +3084,7 @@ public:
 	/// @param batch_size Maximum rows per array. A long chunk is split across several arrays, and rows left over
 	/// that do not fill a batch are held back and joined with the next chunk unless flushed. 0 means no maximum:
 	/// one array per chunk.
-	ArrowExporter(const Context &context, const std::vector<LogicalType> &types, const std::vector<std::string> &names,
+	ArrowExporter(Context &context, const std::vector<LogicalType> &types, const std::vector<std::string> &names,
 	              idx_t batch_size = 0);
 
 	ArrowExporter(ArrowExporter &&) noexcept = default;
@@ -2712,7 +3093,7 @@ public:
 	~ArrowExporter() override;
 
 	/// The Arrow schema of the arrays this exporter produces, written into the caller-allocated `out`, which the
-	/// caller then owns and releases with `out.release(&out)`.
+	/// caller then owns and releases with `out.release(&out)`. `out` is left released on any throw.
 	auto GetSchema(ArrowSchema &out) const -> void;
 
 	/// Converts one chunk in full, making the arrays it completed available from `NextArray`. The chunk is borrowed
@@ -2726,8 +3107,8 @@ public:
 	auto Flush() -> void;
 
 	/// Takes the next completed array into the caller-allocated `out`, which the caller then owns and releases.
-	/// @return False when none is ready, leaving `out` released. Rows held back towards an unfinished batch are not
-	/// an array yet; they come out after a further `Append` or a `Flush`.
+	/// @return False when none is ready, leaving `out` released; it is also left released on any throw. Rows held
+	/// back towards an unfinished batch are not an array yet; they come out after a further `Append` or a `Flush`.
 	auto NextArray(ArrowArray &out) -> bool;
 
 private:
@@ -2745,23 +3126,41 @@ private:
 // - `FetchChunk` blocks until the next chunk is ready, and is what most callers probably want.
 // - `Step` performs a bounded amount of work and reports what came of it, which allows an async runtime to drive a
 // query without necessarily occupying a thread indefinitely.
+// An `ArrowResult` (below) is the same stream in Arrow form, read the same two ways.
+
+/// The status of one `QueryResult::Step` or `ArrowResult::Step`.
+enum class StepStatus : uint8_t {
+	/// Nothing was produced by this step; call `Wait`, or come back later.
+	WAITING = 0,
+	/// A chunk was produced, or for an `ArrowResult`, an array.
+	CHUNK = 1,
+	/// The result is exhausted. Sticky.
+	FINISHED = 2,
+	/// The query was canceled. Sticky.
+	CANCELLED = 3,
+};
+
+/// The shape of a result, as `QueryResult::GetResultType` and `ArrowResult::GetResultType` report it.
+enum class ResultType : uint8_t {
+	/// Produces rows: SELECT, EXPLAIN, RETURNING, and other row-producing statements.
+	QUERY_RESULT = 0,
+	/// Carries a count of affected rows: INSERT / UPDATE / DELETE and the like, without RETURNING.
+	CHANGED_ROWS = 1,
+	/// Produces no rows: most DDL and utility statements.
+	NOTHING = 2,
+};
 
 /// A streaming query result.
 class QueryResult final : public detail::Handle<QueryResult> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
-	/// The status of one `Step`.
-	enum class StepStatus : uint8_t {
-		/// No chunk was produced by this step; call `Wait`, or come back later.
-		WAITING = 0,
-		/// A chunk was produced.
-		CHUNK = 1,
-		/// The result is exhausted. Sticky.
-		FINISHED = 2,
-		/// The query was canceled. Sticky.
-		CANCELLED = 3,
-	};
+	/// The status of one `Step`; see `cxx::StepStatus`.
+	using StepStatus = cxx::StepStatus;
+	/// The shape of a result; see `cxx::ResultType`.
+	using ResultType = cxx::ResultType;
+	/// The kind of SQL statement a result came from; see `cxx::StatementType`.
+	using StatementType = cxx::StatementType;
 
 	/// The outcome of one `Step`.
 	struct StepResult {
@@ -2771,34 +3170,22 @@ public:
 		DataChunk chunk;
 	};
 
-	/// The shape of a result.
-	enum class ResultType : uint8_t {
-		/// Produces rows: SELECT, EXPLAIN, RETURNING, and other row-producing statements.
-		QUERY_RESULT = 0,
-		/// Carries a count of affected rows: INSERT / UPDATE / DELETE and the like, without RETURNING.
-		CHANGED_ROWS = 1,
-		/// Produces no rows: most DDL and utility statements.
-		NOTHING = 2,
-	};
-
-	/// The kind of SQL statement a result came from; see `cxx::StatementType`.
-	using StatementType = cxx::StatementType;
-
 	QueryResult(QueryResult &&) noexcept = default;
 	QueryResult &operator=(QueryResult &&) noexcept = default;
 
 	~QueryResult() override;
 
 	/// The result's columns, their names and types, as one owned `Schema`.
-	/// @throws InvalidInputException When the schema is not available yet; step the result first.
+	/// @throws Exception With code `DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED` when the schema is not available yet, for
+	/// a statement that expands into several; step the result first.
 	auto GetSchema() const -> Schema;
 
 	/// The shape of the result, so a caller can decide between consuming rows and draining without inspecting the SQL.
-	/// @throws InvalidInputException When the shape is not available yet; step the result first.
+	/// @throws Exception With code `DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED` when the shape is not available yet, for a
+	/// statement that expands into several; step the result first.
 	auto GetResultType() const -> ResultType;
 
-	/// The kind of SQL statement this result came from.
-	/// @throws InvalidInputException When the kind is not available yet; step the result first.
+	/// The kind of SQL statement this result came from, as written: MULTI for one that expands into several.
 	auto GetStatementType() const -> StatementType;
 
 	/// Does a bounded amount of work and returns without blocking.
@@ -2838,6 +3225,101 @@ private:
 };
 
 //----------------------------------------------------------------------------------------------------------------------
+// Arrow Result
+//----------------------------------------------------------------------------------------------------------------------
+// An `ArrowResult` is the same lazily executed stream in Arrow form: `Execute` with an `ArrowFormat` produces one, and
+// it is read through `FetchArray` and `Step` the way a `QueryResult` is read through `FetchChunk` and `Step`.
+
+/// Selects the Arrow result format: passing one to `Execute` yields an `ArrowResult` instead of a `QueryResult`.
+struct ArrowFormat {
+	/// Explicit so a braced argument cannot silently turn a parameter value into a batch size.
+	explicit ArrowFormat(idx_t batch_size = 0) : batch_size(batch_size) {
+	}
+
+	/// Maximum rows per array; arrays can be shorter. 0 means the engine's default, 131072 today.
+	idx_t batch_size;
+};
+
+/// A streaming query result that produces Arrow arrays: the Arrow form of `QueryResult`, produced by passing an
+/// `ArrowFormat` to `Connection::Execute` or `PreparedStatement::Execute`. It behaves like a `QueryResult` in all but
+/// the format: execution is deferred until the result is read, it is the connection's one live result, and
+/// `Connection::Interrupt` cancels it. Every array holds at most the batch size chosen at execution, and can hold
+/// fewer. Arrays and schemas are written into caller-allocated structs, which the caller then owns and releases
+/// through their `release` callback; they stay valid after the result, its connection, instance and environment are
+/// destroyed. Use a result from one thread at a time.
+class ArrowResult final : public detail::Handle<ArrowResult> {
+	friend detail::HandleFactory;
+
+public:
+	/// The status of one `Step`; see `cxx::StepStatus`.
+	using StepStatus = cxx::StepStatus;
+	/// The shape of a result; see `cxx::ResultType`.
+	using ResultType = cxx::ResultType;
+	/// The kind of SQL statement a result came from; see `cxx::StatementType`.
+	using StatementType = cxx::StatementType;
+
+	ArrowResult(ArrowResult &&) noexcept = default;
+	ArrowResult &operator=(ArrowResult &&) noexcept = default;
+
+	~ArrowResult() override;
+
+	/// The Arrow schema of the result's arrays, a struct with one child per column. Each call writes an independent
+	/// copy. Available as soon as `QueryResult::GetSchema` would be: at once for most statements, after stepping for
+	/// one that expands into several, such as PIVOT.
+	/// @param out Caller-allocated; overwritten. The caller then owns it and releases it with `out.release(&out)`.
+	/// @throws Exception With code `DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED` when the schema is not available yet;
+	/// step the result first. `out` is left released on any throw.
+	auto GetSchema(ArrowSchema &out) const -> void;
+
+	/// The shape of the result, so a caller can decide between reading arrays and draining without inspecting the SQL.
+	/// @throws Exception With code `DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED` when the shape is not available yet, for a
+	/// statement that expands into several; step the result first.
+	auto GetResultType() const -> ResultType;
+
+	/// The kind of SQL statement this result came from, as written: MULTI for one that expands into several.
+	auto GetStatementType() const -> StatementType;
+
+	/// Does a bounded amount of work and returns without blocking.
+	/// @param out Caller-allocated; overwritten. On CHUNK it holds the next array, which the caller then owns and
+	/// releases; otherwise, and on any throw, it is left released.
+	/// @return What the step accomplished.
+	/// @throws Exception On an execution error; the error is sticky, and later `Step`s rethrow it.
+	auto Step(ArrowArray &out) -> StepStatus;
+
+	/// Blocks until `Step` may be able to make progress, returning immediately once the result is finished or
+	/// canceled. May not block at all.
+	/// @throws Exception On an execution error.
+	auto Wait() -> void;
+
+	/// Takes the next array, blocking until it is ready.
+	/// @param out Caller-allocated; overwritten. Holds the array, which the caller then owns and releases, when this
+	/// returns true; left released otherwise, and on any throw.
+	/// @return False at the end of the stream; calling it again then keeps returning false.
+	/// @throws InterruptException When the query was canceled.
+	auto FetchArray(ArrowArray &out) -> bool;
+
+	/// Runs the result to the end, applying its side effects and discarding any rows.
+	/// @return The number of rows affected for a CHANGED_ROWS result, 0 otherwise.
+	/// @throws InterruptException When the query was canceled.
+	auto Drain() -> idx_t;
+
+	/// Turns the result into an Arrow C stream, consuming it: the stream takes the result over, and this wrapper is
+	/// empty afterwards. The stream continues where `Step` and `FetchArray` left off, so arrays already taken are not
+	/// repeated. Converting runs no part of the query, but the stream's `get_schema` can: for a statement that expands
+	/// into several, such as PIVOT, it runs the ones before the statement that returns rows. The stream keeps the
+	/// result alive, with its connection busy and its instance open; releasing the stream destroys the result and
+	/// frees the connection. A failing `get_next` or `get_schema` returns EIO, and `get_last_error` has the message.
+	/// @param out Caller-allocated; overwritten. The caller then owns the stream and releases it with
+	/// `out.release(&out)`.
+	/// @throws Exception When the conversion fails; the result then stays with this wrapper, and `out` is left
+	/// released.
+	auto ToArrowStream(ArrowArrayStream &out) -> void;
+
+private:
+	explicit ArrowResult(void *impl);
+};
+
+//----------------------------------------------------------------------------------------------------------------------
 // Function Signature
 //----------------------------------------------------------------------------------------------------------------------
 
@@ -2861,7 +3343,7 @@ enum class FunctionParameterKind : uint8_t {
 /// Valid for as long as the owning function is.
 /// Setters mutate the function's signature in place.
 class FunctionSignature final : public detail::Handle<FunctionSignature> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	FunctionSignature(FunctionSignature &&) noexcept = default;
@@ -2906,6 +3388,33 @@ public:
 
 private:
 	explicit FunctionSignature(void *impl);
+};
+
+/// The documentation of a function overload, as `duckdb_functions()` reports it.
+/// Borrowed from the function it was read from via `GetDocs`, and valid for as long as that function is.
+/// Setters mutate the function's documentation in place, and return the documentation so they chain.
+class FunctionDocs final : public detail::Handle<FunctionDocs> {
+	friend detail::HandleFactory;
+
+public:
+	FunctionDocs(FunctionDocs &&) noexcept = default;
+	FunctionDocs &operator=(FunctionDocs &&) noexcept = default;
+
+	~FunctionDocs() override;
+
+	/// Sets the description of the overload. Replaces any previous description.
+	auto SetDescription(std::string_view description) -> FunctionDocs &;
+
+	/// Adds an example of calling the overload, e.g. a SQL expression.
+	/// @param title The title of the example; empty for none.
+	/// @param example The example.
+	auto AddExample(std::string_view title, std::string_view example) -> FunctionDocs &;
+
+	/// Adds a category the overload belongs to, e.g. "string" or "aggregate".
+	auto AddCategory(std::string_view category) -> FunctionDocs &;
+
+private:
+	explicit FunctionDocs(void *impl);
 };
 
 /// The sizes of the four parts of a function call's argument list, which follow each other in this order.
@@ -2983,17 +3492,17 @@ public:
 	auto FindArg(const std::string &name) const -> std::optional<idx_t>;
 
 	/// The binding context. Borrowed, valid only for the callback duration.
-	auto GetContext() const -> Context;
+	auto GetContext() -> Context &;
 
 protected:
-	FunctionBindInput(void *args, void *context) : args(args), context(context) {
+	FunctionBindInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 	}
 
 	/// The user data slot of the function, which carries the function's info table
 	void *GetFunctionInfo() const;
 
 	void *args;
-	void *context;
+	Context context;
 
 private:
 	void SetBindDataInternal(void *data, bool (*equals)(void *a, void *b), void (*destructor)(void *));
@@ -3055,51 +3564,125 @@ enum class OrderPreservation : uint8_t {
 };
 
 //----------------------------------------------------------------------------------------------------------------------
+// Statistics
+//----------------------------------------------------------------------------------------------------------------------
+
+/// The statistics of an expression or a column: what values it can produce. A function's stats callback reads the
+/// statistics of its arguments and narrows those of its result, and the engine uses them to simplify the query, e.g.
+/// folding `x IS NULL` to false when `x` cannot be NULL.
+///
+/// Every statistic states what can occur: `true` means a kind of value may be present, `false` guarantees it is
+/// absent. The engine relies on the guarantees, so claiming less than the data holds produces wrong query results.
+/// Borrowed: valid only for the duration of the callback that handed it out. Unstable API.
+class Stats final : public detail::Handle<Stats> {
+	friend detail::HandleFactory;
+
+public:
+	Stats(Stats &&) noexcept = default;
+	Stats &operator=(Stats &&) noexcept = default;
+	~Stats() override = default;
+
+	/// Whether a value can be NULL. False guarantees every value is non-NULL.
+	auto CanHaveNull() const -> bool;
+	/// Whether a value can be valid, i.e. non-NULL. False guarantees every value is NULL. When both this and
+	/// `CanHaveNull` are false, there are no values at all.
+	auto CanHaveValid() const -> bool;
+
+	/// Sets whether a value can be NULL. Setting false is a guarantee the engine relies on; setting true is always
+	/// safe.
+	/// @throws InvalidInputException When the statistics are read-only, such as those of an argument.
+	auto SetCanHaveNull(bool value) -> void;
+	/// Sets whether a value can be valid, i.e. non-NULL. Setting false is a guarantee the engine relies on; setting
+	/// true is always safe.
+	/// @throws InvalidInputException When the statistics are read-only, such as those of an argument.
+	auto SetCanHaveValid(bool value) -> void;
+
+	/// The statistics as a STRUCT value with one field per known statistic, the shape of the SQL function `stats()`:
+	/// `min` and `max` (values of the column's type), `has_null`, `has_no_null`, `approx_unique`, `child_stats` for
+	/// nested types, ... A field is absent when that statistic is unknown. Unstable API.
+	auto GetValue() const -> Value;
+
+	/// Narrows the statistics from a STRUCT value in the shape `GetValue` returns: a field that is set replaces that
+	/// statistic, a NULL or absent field leaves it unchanged. `{'min': 20, 'max': 30, 'has_null': false}` on an
+	/// INTEGER column reports exactly those bounds and the absence of NULLs. A bound is a value of the column's type,
+	/// or one that casts to it. Every statistic states what can occur: a bound that excludes a value the scan then
+	/// produces, or `has_null: false` for a column with NULLs, produces wrong query results. Unstable API.
+	/// @throws InvalidInputException When the value is not a STRUCT, a field does not exist for the type or does not
+	/// convert, or the statistics are read-only, such as those of an argument.
+	auto SetValue(const Value &value) -> void;
+
+private:
+	explicit Stats(void *impl);
+};
+
+//----------------------------------------------------------------------------------------------------------------------
 // Scalar Function
 //----------------------------------------------------------------------------------------------------------------------
 
-/// A user-defined scalar function, built up with the setters and made live with `Register`.
-/// Create one against the `Connection` or `Extension` it will be registered in, describe it (name, signature,
-/// callbacks), then call `Register`. The function object may be destroyed after registration; the registered function
-/// lives on in the catalog.
+/// A user-defined scalar function, built up with the setters and made live with `Connection::Register` or
+/// `Extension::Register`. Create one through a `Factory` of the database it will be registered in, describe it (name,
+/// signature, callbacks), then register it with `Connection::Register` or `Extension::Register`. The function object
+/// may be destroyed after registration; the registered function lives on in the catalog.
 ///
 /// The callbacks receive their state through the input objects: `SetUserData` plants data readable from every
-/// callback, the bind callback may plant bind data for init and exec, and the init callback may plant init data for
-/// exec. A callback reports failure by throwing; the exception surfaces as the query's error.
+/// callback, the resolve types callback may resolve the return type, the bind callback may plant bind data for init
+/// and exec, and the init callback may plant init data for exec. A callback reports failure by throwing; the exception
+/// surfaces as the query's error.
 class ScalarFunction final : public detail::Handle<ScalarFunction> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
+	friend class Connection;
+	friend class Extension;
 
 public:
+	class ResolveTypesInput;
 	class BindInput;
 	class InitInput;
 	class ExecInput;
+	class StatsInput;
 
-	/// Called once per query while the function call is bound. Optional; required when the return type is ANY.
+	/// Called once per query while the function call is bound, before the arguments are cast to the parameter types.
+	/// Optional; required when the return type is ANY.
+	using ResolveTypesCallback = void (*)(ResolveTypesInput &input);
+	/// Called once per query while the function call is bound, after the arguments are cast to the parameter types.
+	/// Optional.
 	using BindCallback = void (*)(BindInput &input);
 	/// Called once per execution thread before the first `ExecCallback` on it. Optional.
 	using InitCallback = void (*)(InitInput &input);
 	/// Called for every batch of rows; must fill the result vector. Required.
 	using ExecCallback = void (*)(ExecInput &input);
+	/// Called while the query is optimized, possibly more than once, to narrow the statistics of the result from
+	/// those of the arguments. Optional; without it the engine knows nothing about the result. Unstable API.
+	using StatsCallback = void (*)(StatsInput &input);
 
 	ScalarFunction(ScalarFunction &&) noexcept = default;
 	ScalarFunction &operator=(ScalarFunction &&) noexcept = default;
 
 	~ScalarFunction() override;
 
-	/// Creates a function that `Register` adds to the connection's database.
-	static auto Create(const Connection &conn) -> ScalarFunction;
-	/// Creates a function that `Register` adds through the loading extension.
-	static auto Create(const Extension &extension) -> ScalarFunction;
+	/// Creates an empty ScalarFunction through `factory`. Register it through a `Connection` or an `Extension` of the
+	/// factory's database.
+	static auto Create(Factory &factory) -> ScalarFunction;
 
 	/// Sets the function's name, as SQL will call it.
 	auto SetName(const std::string &name) & -> ScalarFunction &;
+	/// The documentation of this overload, borrowed for in-place mutation.
+	auto GetDocs() -> FunctionDocs;
+
+	/// Calls `configure` with the documentation of this overload, borrowed for in-place mutation.
+	template <class F>
+	auto WithDocs(F &&configure) & -> ScalarFunction & {
+		auto docs = GetDocs();
+		configure(docs);
+		return *this;
+	}
 
 	/// The function's signature, borrowed for in-place mutation. Registration requires a return type that is either
-	/// a fully defined concrete type, or ANY combined with a bind callback that resolves it.
+	/// a fully defined concrete type, or ANY combined with a resolve types callback that resolves it.
 	auto GetSignature() -> FunctionSignature;
 
 	/// Calls `configure` with the function's signature, borrowed for in-place mutation. Registration requires a return
-	/// type that is either a fully defined concrete type, or ANY combined with a bind callback that resolves it.
+	/// type that is either a fully defined concrete type, or ANY combined with a resolve types callback that resolves
+	/// it.
 	template <class F>
 	auto WithSignature(F &&configure) & -> ScalarFunction & {
 		auto sig = GetSignature();
@@ -3108,7 +3691,8 @@ public:
 	}
 
 	/// Constructs user data of type `T`, carried by the registered function and freed at engine teardown; read it from
-	/// any callback via the inputs' `GetUserData<T>`. Consumed by `Register`: set it again before re-registering.
+	/// any callback via the inputs' `GetUserData<T>`. Consumed by registration: set it again before
+	/// re-registering.
 	template <class T, class... ARGS>
 	auto SetUserData(ARGS &&... args) & -> ScalarFunction & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
@@ -3116,9 +3700,11 @@ public:
 		return *this;
 	}
 
+	auto SetResolveTypesCallback(ResolveTypesCallback callback) & -> ScalarFunction &;
 	auto SetBindCallback(BindCallback callback) & -> ScalarFunction &;
 	auto SetInitCallback(InitCallback callback) & -> ScalarFunction &;
 	auto SetExecCallback(ExecCallback callback) & -> ScalarFunction &;
+	auto SetStatsCallback(StatsCallback callback) & -> ScalarFunction &;
 
 	/// How stable the function's result is across rows and queries. Defaults to `CONSISTENT`.
 	auto SetStability(FunctionStability value) & -> ScalarFunction &;
@@ -3130,25 +3716,25 @@ public:
 	/// How the function interacts with collations on its arguments. Defaults to `PROPAGATE`.
 	auto SetCollationHandling(FunctionCollationHandling value) & -> ScalarFunction &;
 
-	/// Registers the function in the catalog it was created against. The function object remains valid and may be
-	/// adjusted and registered again; user data set via `SetUserData` is consumed by the first `Register`.
-	/// @throws InvalidInputException When the name, exec callback, or a usable return type is missing.
-	auto Register() -> void;
-
 private:
 	explicit ScalarFunction(void *impl);
+	//! Moves what the callbacks need into the C handle, right before it is registered.
+	auto PrepareRegistration() -> void;
 
 	auto SetUserDataInternal(void *data, void (*destructor)(void *)) -> void;
 
+	ResolveTypesCallback resolve_types_callback = nullptr;
 	BindCallback bind_callback = nullptr;
 	InitCallback init_callback = nullptr;
 	ExecCallback exec_callback = nullptr;
+	StatsCallback stats_callback = nullptr;
 	detail::UserData user_data;
 
 public:
-	/// What the bind callback works with. Borrowed, valid only for the callback duration.
-	class BindInput final : public FunctionBindInput {
-		friend detail::Factory;
+	/// What the resolve types callback works with. The argument types are the types the caller passed, before they
+	/// are cast to the parameter types. Borrowed, valid only for the callback duration.
+	class ResolveTypesInput final : public FunctionBindInput {
+		friend detail::HandleFactory;
 
 	public:
 		/// The user data set via `ScalarFunction::SetUserData`.
@@ -3163,17 +3749,52 @@ public:
 		auto SetReturnType(const LogicalType &type) -> void;
 
 	private:
-		BindInput(void *args, void *result, void *context) : FunctionBindInput(args, context), result(result) {
+		ResolveTypesInput(void *args, void *result, void *context) : FunctionBindInput(args, context), result(result) {
 		}
+
+		/// The bind data can only be set from the bind callback
+		using FunctionBindInput::SetBindData;
 
 		void *result;
 
 		void *GetUserDataInternal() const;
 	};
 
+	/// What the bind callback works with. The argument types are the parameter types the arguments were cast to.
+	/// Borrowed, valid only for the callback duration.
+	class BindInput final : public FunctionBindInput {
+		friend detail::HandleFactory;
+
+	public:
+		/// Constructs bind data of type `T`, owned by the bound function call and readable from the init and exec
+		/// callbacks via `GetBindData<T>`. The engine compares bind data when it compares expressions: by
+		/// `operator==` when `T` has one, by identity otherwise.
+		template <class T, class... ARGS>
+		void SetBindData(ARGS &&... args) {
+			auto ptr = new T(std::forward<ARGS>(args)...);
+			SetBindDataInternal(ptr, detail::SelectEquals<T>(), detail::TypedDelete<T>);
+		}
+
+		/// The user data set via `ScalarFunction::SetUserData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetUserData() const -> T & {
+			return *static_cast<T *>(GetUserDataInternal());
+		}
+
+	private:
+		BindInput(void *args, void *result, void *context) : FunctionBindInput(args, context), result(result) {
+		}
+
+		void *result;
+
+		void SetBindDataInternal(void *data, bool (*equals)(void *a, void *b), void (*destructor)(void *));
+		void *GetUserDataInternal() const;
+	};
+
 	/// What the init callback works with. Borrowed, valid only for the callback duration.
 	class InitInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// Constructs init data of type `T`, owned by this execution thread's function state and readable from the
@@ -3199,14 +3820,14 @@ public:
 		}
 
 		/// The context the function is initialized in. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		InitInput(void *args, void *context) : args(args), context(context) {
+		InitInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void SetInitDataInternal(void *data, void (*destructor)(void *));
 		void *GetBindDataInternal() const;
@@ -3215,7 +3836,7 @@ public:
 
 	/// What the exec callback works with. Borrowed, valid only for the callback duration.
 	class ExecInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `BindInput::SetBindData`.
@@ -3259,17 +3880,67 @@ public:
 		auto GetResult() const -> Vector;
 
 		/// The execution context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		ExecInput(void *args, void *context) : args(args), context(context) {
+		ExecInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetInitDataInternal() const;
+		void *GetUserDataInternal() const;
+	};
+
+	/// What the stats callback works with. Borrowed, valid only for the callback duration.
+	///
+	/// The result statistics start out unknown, with every kind of value possible. A callback that leaves them
+	/// unchanged tells the engine nothing.
+	class StatsInput {
+		friend detail::HandleFactory;
+
+	public:
+		/// The bind data set via `BindInput::SetBindData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetBindData() const -> const T & {
+			return *static_cast<const T *>(GetBindDataInternal());
+		}
+
+		/// The user data set via `ScalarFunction::SetUserData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetUserData() const -> T & {
+			return *static_cast<T *>(GetUserDataInternal());
+		}
+
+		/// How many arguments the call has, in all four parts. Valid indices for `GetArgStats` are
+		/// [0, GetArgCount()).
+		auto GetArgCount() const -> idx_t;
+
+		/// The sizes of the four parts of the argument list, as the bind callback saw them.
+		auto GetArgumentCounts() const -> ArgumentCounts;
+
+		/// The statistics of one argument, at the index the bind callback used for it. Read-only.
+		/// @param index Argument index in [0, GetArgCount()).
+		auto GetArgStats(idx_t index) const -> Stats;
+
+		/// The statistics of the result, for the callback to narrow.
+		auto GetResultStats() const -> Stats;
+
+		/// The query's context. Borrowed, valid only for the callback duration.
+		auto GetContext() -> Context &;
+
+	private:
+		StatsInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
+		}
+
+		void *args;
+		Context context;
+
+		void *GetBindDataInternal() const;
 		void *GetUserDataInternal() const;
 	};
 };
@@ -3278,10 +3949,10 @@ public:
 // Aggregate Function
 //----------------------------------------------------------------------------------------------------------------------
 
-/// A user-defined aggregate function, built up with the setters and made live with `Register`.
-/// Create one against the `Connection` or `Extension` it will be registered in, describe it (name, signature,
-/// callbacks), then call `Register`. The function object may be destroyed after registration; the registered function
-/// lives on in the catalog.
+/// A user-defined aggregate function, built up with the setters and made live with `Connection::Register` or
+/// `Extension::Register`. Create one through a `Factory` of the database it will be registered in, describe it (name,
+/// signature, callbacks), then register it with `Connection::Register` or `Extension::Register`. The function object
+/// may be destroyed after registration; the registered function lives on in the catalog.
 ///
 /// The aggregate keeps one state per group. The size callback reports how large a single state is; the init callback
 /// constructs a batch of freshly allocated states; the update callback folds a batch of input rows into their rows'
@@ -3293,7 +3964,9 @@ public:
 /// by throwing; the exception surfaces as the query's error -- except in the destroy callback, whose errors are
 /// dropped, as it runs on a path that must not fail.
 class AggregateFunction final : public detail::Handle<AggregateFunction> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
+	friend class Connection;
+	friend class Extension;
 
 public:
 	/// Whether the aggregate's result depends on the order in which rows are aggregated.
@@ -3319,6 +3992,7 @@ public:
 	class CombineInput;
 	class FinalizeInput;
 	class DestroyInput;
+	class StatsInput;
 
 	/// Called once per query while the function call is bound. Optional; required when the return type is ANY.
 	using BindCallback = void (*)(BindInput &input);
@@ -3334,19 +4008,31 @@ public:
 	using FinalizeCallback = void (*)(FinalizeInput &input);
 	/// Called to release resources a batch of states owns. Optional; must not fail.
 	using DestroyCallback = void (*)(DestroyInput &input);
+	/// Called while the query is optimized, possibly more than once, to narrow the statistics of the result from
+	/// those of the arguments. Optional; without it the engine knows nothing about the result. Unstable API.
+	using StatsCallback = void (*)(StatsInput &input);
 
 	AggregateFunction(AggregateFunction &&) noexcept = default;
 	AggregateFunction &operator=(AggregateFunction &&) noexcept = default;
 
 	~AggregateFunction() override;
 
-	/// Creates a function that `Register` adds to the connection's database.
-	static auto Create(const Connection &conn) -> AggregateFunction;
-	/// Creates a function that `Register` adds through the loading extension.
-	static auto Create(const Extension &extension) -> AggregateFunction;
+	/// Creates an empty AggregateFunction through `factory`. Register it through a `Connection` or an `Extension` of
+	/// the factory's database.
+	static auto Create(Factory &factory) -> AggregateFunction;
 
 	/// Sets the function's name, as SQL will call it.
 	auto SetName(const std::string &name) & -> AggregateFunction &;
+	/// The documentation of this overload, borrowed for in-place mutation.
+	auto GetDocs() -> FunctionDocs;
+
+	/// Calls `configure` with the documentation of this overload, borrowed for in-place mutation.
+	template <class F>
+	auto WithDocs(F &&configure) & -> AggregateFunction & {
+		auto docs = GetDocs();
+		configure(docs);
+		return *this;
+	}
 
 	/// The function's signature, borrowed for in-place mutation. Registration requires a return type that is either
 	/// a fully defined concrete type, or ANY combined with a bind callback that resolves it.
@@ -3362,7 +4048,8 @@ public:
 	}
 
 	/// Constructs user data of type `T`, carried by the registered function and freed at engine teardown; read it from
-	/// any callback via the inputs' `GetUserData<T>`. Consumed by `Register`: set it again before re-registering.
+	/// any callback via the inputs' `GetUserData<T>`. Consumed by registration: set it again before
+	/// re-registering.
 	template <class T, class... ARGS>
 	auto SetUserData(ARGS &&... args) & -> AggregateFunction & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
@@ -3377,6 +4064,7 @@ public:
 	auto SetCombineCallback(CombineCallback callback) & -> AggregateFunction &;
 	auto SetFinalizeCallback(FinalizeCallback callback) & -> AggregateFunction &;
 	auto SetDestroyCallback(DestroyCallback callback) & -> AggregateFunction &;
+	auto SetStatsCallback(StatsCallback callback) & -> AggregateFunction &;
 
 	/// How stable the function's result is across rows and queries. Defaults to `CONSISTENT`.
 	auto SetStability(FunctionStability value) & -> AggregateFunction &;
@@ -3392,13 +4080,10 @@ public:
 	/// Whether the result is affected by a DISTINCT modifier. Defaults to `DEPENDENT`.
 	auto SetDistinctDependence(DistinctDependence value) & -> AggregateFunction &;
 
-	/// Registers the function in the catalog it was created against. The function object remains valid and may be
-	/// adjusted and registered again; user data set via `SetUserData` is consumed by the first `Register`.
-	/// @throws InvalidInputException When the name, a required callback, or a usable return type is missing.
-	auto Register() -> void;
-
 private:
 	explicit AggregateFunction(void *impl);
+	//! Moves what the callbacks need into the C handle, right before it is registered.
+	auto PrepareRegistration() -> void;
 
 	auto SetUserDataInternal(void *data, void (*destructor)(void *)) -> void;
 
@@ -3409,12 +4094,13 @@ private:
 	CombineCallback combine_callback = nullptr;
 	FinalizeCallback finalize_callback = nullptr;
 	DestroyCallback destroy_callback = nullptr;
+	StatsCallback stats_callback = nullptr;
 	detail::UserData user_data;
 
 public:
 	/// What the bind callback works with. Borrowed, valid only for the callback duration.
 	class BindInput final : public FunctionBindInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The user data set via `AggregateFunction::SetUserData`.
@@ -3439,7 +4125,7 @@ public:
 
 	/// What the size callback works with. Borrowed, valid only for the callback duration.
 	class SizeInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `BindInput::SetBindData`.
@@ -3472,7 +4158,7 @@ public:
 
 	/// What the init callback works with. Borrowed, valid only for the callback duration.
 	class InitInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `BindInput::SetBindData`.
@@ -3508,7 +4194,7 @@ public:
 
 	/// What the update callback works with. Borrowed, valid only for the callback duration.
 	class UpdateInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `BindInput::SetBindData`.
@@ -3555,7 +4241,7 @@ public:
 
 	/// What the combine callback works with. Borrowed, valid only for the callback duration.
 	class CombineInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `BindInput::SetBindData`.
@@ -3595,7 +4281,7 @@ public:
 
 	/// What the finalize callback works with. Borrowed, valid only for the callback duration.
 	class FinalizeInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `BindInput::SetBindData`.
@@ -3638,7 +4324,7 @@ public:
 
 	/// What the destroy callback works with. Borrowed, valid only for the callback duration.
 	class DestroyInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `BindInput::SetBindData`.
@@ -3666,6 +4352,57 @@ public:
 		}
 
 		void *args;
+
+		void *GetBindDataInternal() const;
+		void *GetUserDataInternal() const;
+	};
+
+	/// What the stats callback works with. Borrowed, valid only for the callback duration.
+	///
+	/// The result statistics start out unknown, with every kind of value possible. They describe every result the
+	/// aggregate produces, including that of a group with no input rows, such as an ungrouped aggregate over an empty
+	/// table. A callback that leaves them unchanged tells the engine nothing.
+	class StatsInput {
+		friend detail::HandleFactory;
+
+	public:
+		/// The bind data set via `BindInput::SetBindData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetBindData() const -> const T & {
+			return *static_cast<const T *>(GetBindDataInternal());
+		}
+
+		/// The user data set via `AggregateFunction::SetUserData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetUserData() const -> T & {
+			return *static_cast<T *>(GetUserDataInternal());
+		}
+
+		/// How many arguments the call has, in all four parts. Valid indices for `GetArgStats` are
+		/// [0, GetArgCount()).
+		auto GetArgCount() const -> idx_t;
+
+		/// The sizes of the four parts of the argument list, as the bind callback saw them.
+		auto GetArgumentCounts() const -> ArgumentCounts;
+
+		/// The statistics of one argument, at the index the bind callback used for it. Read-only.
+		/// @param index Argument index in [0, GetArgCount()).
+		auto GetArgStats(idx_t index) const -> Stats;
+
+		/// The statistics of the result, for the callback to narrow.
+		auto GetResultStats() const -> Stats;
+
+		/// The query's context. Borrowed, valid only for the callback duration.
+		auto GetContext() -> Context &;
+
+	private:
+		StatsInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
+		}
+
+		void *args;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetUserDataInternal() const;
@@ -3740,7 +4477,7 @@ enum class ExpressionType : uint8_t {
 /// read-only: valid only for the duration of the callback that handed it out, and the children obtained via
 /// `GetChild` share their parent's lifetime.
 class Expression final : public detail::Handle<Expression> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	Expression(Expression &&) noexcept = default;
@@ -3785,10 +4522,10 @@ private:
 // Table Function
 //----------------------------------------------------------------------------------------------------------------------
 
-/// A user-defined table function, built up with the setters and made live with `Register`.
-/// Create one against the `Connection` or `Extension` it will be registered in, describe it (name, signature,
-/// callbacks), then call `Register`. The function object may be destroyed after registration; the registered function
-/// lives on in the catalog.
+/// A user-defined table function, built up with the setters and made live with `Connection::Register` or
+/// `Extension::Register`. Create one through a `Factory` of the database it will be registered in, describe it (name,
+/// signature, callbacks), then register it with `Connection::Register` or `Extension::Register`. The function object
+/// may be destroyed after registration; the registered function lives on in the catalog.
 ///
 /// A table function produces a table rather than a value: the bind callback declares the columns it returns, and the
 /// exec callback is then invoked repeatedly to fill batches of rows until it produces an empty one. Between them, the
@@ -3799,7 +4536,9 @@ private:
 /// callback, and the bind callback may plant bind data readable from every later callback. A callback reports failure
 /// by throwing; the exception surfaces as the query's error.
 class TableFunction final : public detail::Handle<TableFunction> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
+	friend class Connection;
+	friend class Extension;
 
 public:
 	class BindInput;
@@ -3811,6 +4550,9 @@ public:
 	class PartitionDataInput;
 	class PartitioningInput;
 	class ClaimBatchInput;
+	class GetBindInfoInput;
+	class StatsInput;
+	class MetricsInput;
 
 	/// Whether, and how, the scan is partitioned by a set of columns. Reported from the partitioning callback.
 	enum class PartitionInfo : uint8_t {
@@ -3848,19 +4590,60 @@ public:
 	/// the claimed batch only. The callback may run while the other scanning threads wait for it, so it should only
 	/// claim the work (e.g. reserve a block number) and leave reading it to the exec callback. Optional; unstable API.
 	using ClaimBatchCallback = void (*)(ClaimBatchInput &input);
+	/// Called with the bind data of a bound call when the engine needs to know more about the call than its columns:
+	/// identifiers of its columns (e.g. field ids), and options - key-value facts about what the call reads. A
+	/// `MultiFileFunction` wrapping the function asks for every file it binds, maps the columns of the files by the
+	/// identifiers, and exposes the options as the metadata of the reader of the file. May be called more than once
+	/// for the same bind data: only report what the bind already determined. Optional; unstable API.
+	using GetBindInfoCallback = void (*)(GetBindInfoInput &input);
+	/// Called while the query is optimized, once per declared column the query reads, to narrow that column's
+	/// statistics. Optional; without it the engine knows nothing about the columns. Unstable API.
+	using StatsCallback = void (*)(StatsInput &input);
+	/// Called when the engine collects the metrics of the scan, possibly while the scan is still running, to report
+	/// what the scan did. Optional; unstable API.
+	using MetricsCallback = void (*)(MetricsInput &input);
+
+	/// A column a function can produce next to the columns it declares in bind: a query asks for it by name.
+	enum class VirtualColumn : uint8_t {
+		/// `file_row_number`, a BIGINT holding the position of the row within the file it was read from, counting
+		/// from 0. Produced by a function that reads a single file when it is wrapped in a `MultiFileFunction`.
+		FILE_ROW_NUMBER = 0,
+	};
+
+	/// The first column index that stands for a virtual column rather than a declared one. The index the inputs'
+	/// `GetColumnIndex` reports for a virtual column is this plus its value in `VirtualColumn`.
+	static constexpr idx_t VIRTUAL_COLUMN_START = static_cast<idx_t>(1) << 63;
+
+	/// Whether a column index reported by `GetColumnIndex` stands for a virtual column.
+	static auto IsVirtualColumn(idx_t column_index) -> bool {
+		return column_index >= VIRTUAL_COLUMN_START;
+	}
+
+	/// The virtual column a column index reported by `GetColumnIndex` stands for.
+	/// @throws InvalidInputException When the index stands for a declared column.
+	static auto GetVirtualColumn(idx_t column_index) -> VirtualColumn;
 
 	TableFunction(TableFunction &&) noexcept = default;
 	TableFunction &operator=(TableFunction &&) noexcept = default;
 
 	~TableFunction() override;
 
-	/// Creates a function that `Register` adds to the connection's database.
-	static auto Create(const Connection &conn) -> TableFunction;
-	/// Creates a function that `Register` adds through the loading extension.
-	static auto Create(const Extension &extension) -> TableFunction;
+	/// Creates an empty TableFunction through `factory`. Register it through a `Connection` or an `Extension` of the
+	/// factory's database.
+	static auto Create(Factory &factory) -> TableFunction;
 
 	/// Sets the function's name, as SQL will call it.
 	auto SetName(const std::string &name) & -> TableFunction &;
+	/// The documentation of this overload, borrowed for in-place mutation.
+	auto GetDocs() -> FunctionDocs;
+
+	/// Calls `configure` with the documentation of this overload, borrowed for in-place mutation.
+	template <class F>
+	auto WithDocs(F &&configure) & -> TableFunction & {
+		auto docs = GetDocs();
+		configure(docs);
+		return *this;
+	}
 
 	/// The function's signature, borrowed for in-place mutation. A parameter without a default value becomes a
 	/// required positional argument, one with a default becomes a named argument the caller may omit. Registration
@@ -3876,7 +4659,8 @@ public:
 	}
 
 	/// Constructs user data of type `T`, carried by the registered function and freed at engine teardown; read it from
-	/// any callback via the inputs' `GetUserData<T>`. Consumed by `Register`: set it again before re-registering.
+	/// any callback via the inputs' `GetUserData<T>`. Consumed by registration: set it again before
+	/// re-registering.
 	template <class T, class... ARGS>
 	auto SetUserData(ARGS &&... args) & -> TableFunction & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
@@ -3896,6 +4680,10 @@ public:
 	/// that scans several of them in parallel put their rows back in order - e.g. a `MultiFileFunction` wrapping this
 	/// function keeps the rows of a file in order also when several threads scan it. Unstable API.
 	auto SetClaimBatchCallback(ClaimBatchCallback callback) & -> TableFunction &;
+	/// Lets the function describe what a bound call reads: see `GetBindInfoCallback`. Unstable API.
+	auto SetGetBindInfoCallback(GetBindInfoCallback callback) & -> TableFunction &;
+	/// Lets the function narrow the statistics of the columns it produces: see `StatsCallback`. Unstable API.
+	auto SetStatsCallback(StatsCallback callback) & -> TableFunction &;
 
 	/// Declares whether the function supports projection pushdown. Defaults to false. With it, the engine asks for
 	/// only the columns a query uses: the exec callback's output chunk holds one vector per requested column, and
@@ -3903,14 +4691,18 @@ public:
 	/// output chunk always holds every declared column, and the engine drops the unused ones itself.
 	auto SetProjectionPushdown(bool enable) & -> TableFunction &;
 
-	/// Registers the function in the catalog it was created against. The function object remains valid and may be
-	/// adjusted and registered again; user data set via `SetUserData` is consumed by the first `Register`.
-	/// @throws InvalidInputException When the name, bind callback or exec callback is missing, the signature
-	/// declares a return type, or a partitioning callback is set without a partition data callback.
-	auto Register() -> void;
+	/// Declares that the function can produce a virtual column, which a query asks for by name. It then takes up a
+	/// vector of the exec callback's output chunk, whose column index (see `GetColumnIndex`) is
+	/// `VIRTUAL_COLUMN_START` plus the value of the column. Requires projection pushdown. Unstable API.
+	auto AddVirtualColumn(VirtualColumn column) & -> TableFunction &;
+
+	/// Lets the function report what the scan did: see `MetricsCallback`. Unstable API.
+	auto SetMetricsCallback(MetricsCallback callback) & -> TableFunction &;
 
 private:
 	explicit TableFunction(void *impl);
+	//! Moves what the callbacks need into the C handle, right before it is registered.
+	auto PrepareRegistration() -> void;
 
 	auto SetUserDataInternal(void *data, void (*destructor)(void *)) -> void;
 
@@ -3923,12 +4715,15 @@ private:
 	PartitionDataCallback partition_data_callback = nullptr;
 	PartitioningCallback partitioning_callback = nullptr;
 	ClaimBatchCallback claim_batch_callback = nullptr;
+	GetBindInfoCallback get_bind_info_callback = nullptr;
+	StatsCallback stats_callback = nullptr;
+	MetricsCallback metrics_callback = nullptr;
 	detail::UserData user_data;
 
 public:
 	/// What the bind callback works with. Borrowed, valid only for the callback duration.
 	class BindInput final : public FunctionBindInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// Declares one of the columns the function returns. Call it once per column, in order: the exec callback's
@@ -3957,27 +4752,6 @@ public:
 		/// @throws InvalidInputException When order is not a declared enum value.
 		auto SetOrderPreservation(OrderPreservation order) -> void;
 
-		/// Attaches an identifier to a declared result column: an INTEGER field id, or a VARCHAR name. Only consulted
-		/// when the function reads a file for a `MultiFileFunction`, whose reader can then map the columns of every
-		/// file by identifier rather than by name. Unstable API.
-		/// @param column_index The column, in `AddResultColumn` order.
-		/// @param identifier The identifier.
-		/// @throws InvalidInputException When the column was not declared, or the identifier is not an INTEGER or
-		/// VARCHAR.
-		auto SetColumnIdentifier(idx_t column_index, const Value &identifier) -> void;
-
-		/// Attaches an identifier to a field nested inside a declared result column, addressed by a path of child
-		/// indexes: a STRUCT field by its index, the elements of a LIST or ARRAY by 0, the keys of a MAP by 0 and its
-		/// values by 1, and a UNION member by its index. See `SetColumnIdentifier`. Unstable API.
-		/// @throws InvalidInputException When the column was not declared, or the path does not address a nested
-		/// field of it.
-		auto SetColumnIdentifier(idx_t column_index, const std::vector<idx_t> &child_path, const Value &identifier)
-		    -> void;
-
-		/// Adds an entry to the key-value metadata of the file the function reads. Only consulted when the function
-		/// reads a file for a `MultiFileFunction`, as the metadata its reader exposes. Unstable API.
-		auto AddFileMetadata(const std::string &key, const Value &value) -> void;
-
 	private:
 		BindInput(void *args, void *result, void *context) : FunctionBindInput(args, context), result(result) {
 		}
@@ -3989,7 +4763,7 @@ public:
 
 	/// What the global init callback works with. Borrowed, valid only for the callback duration.
 	class InitGlobalInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// Constructs global state of type `T`, shared by every thread scanning the function and readable from the
@@ -4029,14 +4803,15 @@ public:
 		auto GetColumnIndex(idx_t index) const -> idx_t;
 
 		/// The scan's context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		InitGlobalInput(void *args, void *context) : args(args), context(context) {
+		InitGlobalInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void SetGlobalStateInternal(void *data, void (*destructor)(void *));
 		void *GetBindDataInternal() const;
@@ -4045,7 +4820,7 @@ public:
 
 	/// What the local init callback works with. Borrowed, valid only for the callback duration.
 	class InitLocalInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// Constructs local state of type `T`, owned by this scanning thread and readable from the exec callback via
@@ -4085,14 +4860,14 @@ public:
 		auto GetColumnIndex(idx_t index) const -> idx_t;
 
 		/// The scan's context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		InitLocalInput(void *args, void *context) : args(args), context(context) {
+		InitLocalInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void SetLocalStateInternal(void *data, void (*destructor)(void *));
 		void *GetBindDataInternal() const;
@@ -4102,7 +4877,7 @@ public:
 
 	/// What the exec callback works with. Borrowed, valid only for the callback duration.
 	class ExecInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `BindInput::SetBindData`.
@@ -4148,14 +4923,14 @@ public:
 		auto GetColumnIndex(idx_t index) const -> idx_t;
 
 		/// The execution context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		ExecInput(void *args, void *context) : args(args), context(context) {
+		ExecInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetGlobalStateInternal() const;
@@ -4165,7 +4940,7 @@ public:
 
 	/// What the progress callback works with. Borrowed, valid only for the callback duration.
 	class ProgressInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `BindInput::SetBindData`.
@@ -4183,6 +4958,14 @@ public:
 			return *static_cast<T *>(GetGlobalStateInternal());
 		}
 
+		/// The global state set via `InitGlobalInput::SetGlobalState`, or nullptr when the scan has not been
+		/// initialized yet -- which is the case when a `MultiFileFunction` asks about a file it has not started on. The
+		/// state must be read in a thread-safe way.
+		template <class T>
+		auto TryGetGlobalState() const -> T * {
+			return static_cast<T *>(TryGetGlobalStateInternal());
+		}
+
 		/// The user data set via `TableFunction::SetUserData`.
 		/// @throws InvalidInputException When none was set.
 		template <class T>
@@ -4196,17 +4979,18 @@ public:
 		auto SetProgress(double progress) -> void;
 
 		/// The execution context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		ProgressInput(void *args, void *context) : args(args), context(context) {
+		ProgressInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetGlobalStateInternal() const;
+		void *TryGetGlobalStateInternal() const;
 		void *GetUserDataInternal() const;
 	};
 
@@ -4218,8 +5002,15 @@ public:
 	/// the engine as usual, so a callback that recognizes nothing can simply return. The optimizer may run the
 	/// callback more than once for the same query, each time with the predicates not yet accepted, and never with
 	/// none.
+	///
+	/// A function that also has projection pushdown is offered the predicates that apply to a single column of it
+	/// once more when a scan starts, just before the global init callback. That is how the callback of a function
+	/// wrapped in a `MultiFileFunction` sees them, since the optimizer only offers them to the wrapper; the bind data
+	/// is then the one of the file being scanned. The engine applies these predicates to the rows the function
+	/// produces itself, so the function may use them to skip what the query can never use (e.g. the parts of a file
+	/// whose statistics rule them out), and accepting one has no effect. Unstable API.
 	class FilterPushdownInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `BindInput::SetBindData`, mutable: the same object the init and exec callbacks later
@@ -4251,19 +5042,20 @@ public:
 		/// `Expression::GetColumnIndex` indexes.
 		auto GetColumnCount() const -> idx_t;
 		/// Resolves the index a column reference node reports to the declared column (in `BindInput::AddResultColumn`
-		/// order) it refers to.
+		/// order) it refers to, or to the index of a virtual column (see `IsVirtualColumn`).
 		/// @throws InvalidInputException When the index is out of bounds.
 		auto GetColumnIndex(idx_t index) const -> idx_t;
 
 		/// The query's context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		FilterPushdownInput(void *args, void *context) : args(args), context(context) {
+		FilterPushdownInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetUserDataInternal() const;
@@ -4277,7 +5069,7 @@ public:
 	/// `GetPartitionColumnCount`. The engine reads the partition values only when the batch index changes: within one
 	/// thread the index must not decrease, and the values may only change together with it.
 	class PartitionDataInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `BindInput::SetBindData`.
@@ -4329,14 +5121,15 @@ public:
 		auto SetPartitionValue(idx_t index, const Value &value) -> void;
 
 		/// The execution context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		PartitionDataInput(void *args, void *context) : args(args), context(context) {
+		PartitionDataInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetGlobalStateInternal() const;
@@ -4351,7 +5144,7 @@ public:
 	/// `PartitionInfo::SINGLE_VALUE_PARTITIONS` unlocks the optimization; a callback that returns without calling
 	/// `SetPartitionInfo` reports `PartitionInfo::NOT_PARTITIONED`.
 	class PartitioningInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `BindInput::SetBindData`.
@@ -4379,14 +5172,15 @@ public:
 		auto SetPartitionInfo(PartitionInfo partition_info) -> void;
 
 		/// The query's context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		PartitioningInput(void *args, void *context) : args(args), context(context) {
+		PartitioningInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetUserDataInternal() const;
@@ -4398,7 +5192,7 @@ public:
 	/// which is shared with the other scanning threads - and reports whether it claimed one with `SetClaimed`. A
 	/// callback that returns without claiming a batch ends the scan for the thread.
 	class ClaimBatchInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `BindInput::SetBindData`.
@@ -4434,18 +5228,165 @@ public:
 		auto SetClaimed(bool claimed) -> void;
 
 		/// The execution context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		ClaimBatchInput(void *args, void *context) : args(args), context(context) {
+		ClaimBatchInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetGlobalStateInternal() const;
 		void *GetLocalStateInternal() const;
+		void *GetUserDataInternal() const;
+	};
+
+	/// What the get bind info callback works with. Borrowed, valid only for the callback duration. Unstable API.
+	class GetBindInfoInput {
+		friend detail::HandleFactory;
+
+	public:
+		/// The bind data set via `BindInput::SetBindData` for the bound call being described.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetBindData() const -> const T & {
+			return *static_cast<const T *>(GetBindDataInternal());
+		}
+
+		/// The user data set via `TableFunction::SetUserData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetUserData() const -> T & {
+			return *static_cast<T *>(GetUserDataInternal());
+		}
+
+		/// Attaches an identifier to a result column of the bound call: an INTEGER field id, or a VARCHAR name, by
+		/// which a `MultiFileFunction` maps the columns of every file rather than by name.
+		/// @param column_index The column, in `BindInput::AddResultColumn` order.
+		/// @throws InvalidInputException When the column was not declared, or the identifier is not an INTEGER or
+		/// VARCHAR.
+		auto SetColumnIdentifier(idx_t column_index, const Value &identifier) -> void;
+
+		/// Attaches an identifier to a field nested inside a result column, addressed by a path of child indexes: a
+		/// STRUCT field by its index, the elements of a LIST or ARRAY by 0, the keys of a MAP by 0 and its values by
+		/// 1, and a UNION member by its index. See `SetColumnIdentifier`.
+		/// @throws InvalidInputException When the column was not declared, or the path does not address a nested
+		/// field of it.
+		auto SetColumnIdentifier(idx_t column_index, const std::vector<idx_t> &child_path, const Value &identifier)
+		    -> void;
+
+		/// Sets an option describing the bound call: a key-value fact about what the call reads. A `MultiFileFunction`
+		/// exposes the options as the metadata of the reader of the file. Setting a key again replaces its value.
+		auto SetOption(const std::string &key, const Value &value) -> void;
+
+		/// The context of the query the bound call is part of. Borrowed, valid only for the callback duration.
+		auto GetContext() -> Context &;
+
+	private:
+		GetBindInfoInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
+		}
+
+		void *args;
+		Context context;
+
+		void *GetBindDataInternal() const;
+		void *GetUserDataInternal() const;
+	};
+
+	/// What the stats callback works with. Borrowed, valid only for the callback duration.
+	///
+	/// The column statistics start out unknown, with every kind of value possible, and describe every value the scan
+	/// produces for the column. A callback that leaves them unchanged tells the engine nothing.
+	class StatsInput {
+		friend detail::HandleFactory;
+
+	public:
+		/// The bind data set via `BindInput::SetBindData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetBindData() const -> const T & {
+			return *static_cast<const T *>(GetBindDataInternal());
+		}
+
+		/// The user data set via `TableFunction::SetUserData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetUserData() const -> T & {
+			return *static_cast<T *>(GetUserDataInternal());
+		}
+
+		/// Which declared column (in `BindInput::AddResultColumn` order) the statistics describe.
+		auto GetColumnIndex() const -> idx_t;
+
+		/// The statistics of the column, for the callback to narrow.
+		auto GetResultStats() const -> Stats;
+
+		/// The query's context. Borrowed, valid only for the callback duration.
+		auto GetContext() -> Context &;
+
+	private:
+		StatsInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
+		}
+
+		void *args;
+		Context context;
+
+		void *GetBindDataInternal() const;
+		void *GetUserDataInternal() const;
+	};
+
+	/// What the metrics callback works with. Borrowed, valid only for the callback duration. Unstable API.
+	///
+	/// The callback runs when the engine collects the metrics of the scan, which can be while the scan is still
+	/// running, and possibly more than once: it adds up what it is told.
+	class MetricsInput {
+		friend detail::HandleFactory;
+
+	public:
+		/// The bind data set via `BindInput::SetBindData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetBindData() const -> const T & {
+			return *static_cast<const T *>(GetBindDataInternal());
+		}
+
+		/// The user data set via `TableFunction::SetUserData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetUserData() const -> T & {
+			return *static_cast<T *>(GetUserDataInternal());
+		}
+
+		/// The global state set via `InitGlobalInput::SetGlobalState`, or nullptr when the scan has not been
+		/// initialized or set none. The scan can be running, so the state must be read in a thread-safe way.
+		template <class T>
+		auto GetGlobalState() const -> T * {
+			return static_cast<T *>(GetGlobalStateInternal());
+		}
+
+		/// Reports an operator metric of the scan by its profiler name, e.g. "operator.row_groups_scanned" or
+		/// "operator.total_row_groups_to_scan". See `duckdb_v2_table_function_metrics_set` for the accepted names.
+		/// @param name The name of the metric.
+		/// @param value The value since the metrics were last collected ("operator.total_row_groups_to_scan": in all).
+		/// @throws InvalidInputException When the name is not a metric a table function can report.
+		auto SetMetric(std::string_view name, uint64_t value) -> void;
+
+		/// The query's context. Borrowed, valid only for the callback duration.
+		auto GetContext() -> Context &;
+
+	private:
+		MetricsInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
+		}
+
+		void *args;
+		Context context;
+
+		void *GetBindDataInternal() const;
+		void *GetGlobalStateInternal() const;
 		void *GetUserDataInternal() const;
 	};
 };
@@ -4457,17 +5398,23 @@ public:
 /// A table function that reads many files, built on top of a registered `TableFunction` that reads a single one.
 /// Unstable API.
 ///
-/// The single-file function takes the path of the file to read as its only positional VARCHAR parameter, and is bound
-/// and scanned once for every file that is read. The multi-file function adds everything that involves several files:
-/// globbing, lists of files, hive partitioning, the `filename` column, `union_by_name` and the like. Every named
-/// parameter of the single-file function is also a named parameter of the multi-file function, forwarded as given.
+/// The single-file function takes the file to read as its only positional parameter, of type ANY, and is bound and
+/// scanned once for every file that is read. It receives the file as a VARCHAR path, or as a file struct that also
+/// carries the options to open the file with: what a file system reported about it while globbing, or the options a
+/// caller passed along with it. Open the file with `GetFilePath` and `FileOpenOptions::SetValues` to make use of
+/// them. A single-file function that takes a VARCHAR parameter instead only receives the path. The multi-file function
+/// adds everything that involves several files: globbing, lists of files, hive partitioning, the `filename` column,
+/// `union_by_name` and the like. Every named parameter of the single-file function is also a named parameter of the
+/// multi-file function, forwarded as given.
 ///
-/// When the single-file function reads a file for a multi-file function, it can describe the file in more detail than
-/// its columns: `BindInput::SetColumnIdentifier` attaches field ids to the columns, and `BindInput::AddFileMetadata`
-/// the metadata of the file. With a claim batch callback, the rows of a file keep their order also when several
-/// threads scan it.
+/// The single-file function can describe the file it reads in more detail than its columns with a get bind info
+/// callback (`TableFunction::SetGetBindInfoCallback`): the field ids of its columns, which the files of the scan are
+/// mapped onto one another by, and options, which become the metadata of the reader of the file. With a claim batch
+/// callback, the rows of a file keep their order also when several threads scan it.
 class MultiFileFunction final : public detail::Handle<MultiFileFunction> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
+	friend class Connection;
+	friend class Extension;
 
 public:
 	MultiFileFunction(MultiFileFunction &&) noexcept = default;
@@ -4475,10 +5422,9 @@ public:
 
 	~MultiFileFunction() override;
 
-	/// Creates a function that `Register` adds to the connection's database.
-	static auto Create(const Connection &conn) -> MultiFileFunction;
-	/// Creates a function that `Register` adds through the loading extension.
-	static auto Create(const Extension &extension) -> MultiFileFunction;
+	/// Creates an empty MultiFileFunction through `factory`. Register it through a `Connection` or an `Extension` of
+	/// the factory's database.
+	static auto Create(Factory &factory) -> MultiFileFunction;
 
 	/// Sets the function's name, as SQL will call it.
 	auto SetName(const std::string &name) & -> MultiFileFunction &;
@@ -4493,29 +5439,29 @@ public:
 	/// directory then reads the files with that extension inside it.
 	auto SetFileExtension(const std::string &extension) & -> MultiFileFunction &;
 
-	/// Registers the function in the catalog it was created against. The function object remains valid.
-	/// @throws InvalidInputException When the name or the single-file function is missing, or the single-file
-	/// function does not exist or does not take the path of a file as its only positional VARCHAR parameter.
-	auto Register() -> void;
-
 private:
 	explicit MultiFileFunction(void *impl);
+	//! Moves what the callbacks need into the C handle, right before it is registered.
+	auto PrepareRegistration() -> void;
 };
 
 //----------------------------------------------------------------------------------------------------------------------
 // Custom Type
 //----------------------------------------------------------------------------------------------------------------------
 
-/// A user-defined type, built up with the setters and made live with `Register`.
-/// Create one against the `Connection` or `Extension` it will be registered in, give it a name and a base type, then
-/// call `Register`. The type object may be destroyed after registration; the registered type lives on in the catalog.
+/// A user-defined type, built up with the setters and made live with `Connection::Register` or `Extension::Register`.
+/// Create one through a `Factory` of the database it will be registered in, give it a name and a base type, then
+/// register it with `Connection::Register` or `Extension::Register`. The type object may be destroyed after
+/// registration; the registered type lives on in the catalog.
 ///
 /// A custom type borrows its base type's internal representation, so the execution engine needs no special handling
 /// for it, while staying logically distinct from the base type so it can carry its own casts. Values of it are
 /// produced and read with the base type's vector accessors; to hand one back out under the custom name, alias the
 /// base type with `LogicalType::WithAlias`.
 class CustomType final : public detail::Handle<CustomType> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
+	friend class Connection;
+	friend class Extension;
 
 public:
 	CustomType(CustomType &&) noexcept = default;
@@ -4523,10 +5469,9 @@ public:
 
 	~CustomType() override;
 
-	/// Creates a type that `Register` adds to the connection's database.
-	static auto Create(const Connection &conn) -> CustomType;
-	/// Creates a type that `Register` adds through the loading extension.
-	static auto Create(const Extension &extension) -> CustomType;
+	/// Creates an empty CustomType through `factory`. Register it through a `Connection` or an `Extension` of the
+	/// factory's database.
+	static auto Create(Factory &factory) -> CustomType;
 
 	/// Sets the type's name, as SQL will refer to it, and as every logical type instance of it carries as its alias.
 	auto SetName(const std::string &name) & -> CustomType &;
@@ -4534,23 +5479,21 @@ public:
 	/// Sets the type whose representation this type borrows. Must be a fully defined concrete type.
 	auto SetBaseType(const LogicalType &type) & -> CustomType &;
 
-	/// Registers the type in the catalog it was created against. The type object remains valid and may be adjusted
-	/// and registered again.
-	/// @throws InvalidInputException When the name or the base type is missing, or the base type is not concrete.
-	auto Register() -> void;
-
 private:
 	explicit CustomType(void *impl);
+	//! Moves what the callbacks need into the C handle, right before it is registered.
+	auto PrepareRegistration() -> void;
 };
 
 //----------------------------------------------------------------------------------------------------------------------
 // Copy Function
 //----------------------------------------------------------------------------------------------------------------------
 
-/// A user-defined file format for `COPY`, built up with the setters and made live with `Register`.
-/// Create one against the `Connection` or `Extension` it will be registered in, describe it (name, callbacks), then
-/// call `Register`. The function object may be destroyed after registration; the registered function lives on in the
-/// catalog and is reached from SQL with `COPY ... TO 'path' (FORMAT name)` and `COPY table FROM 'path' (FORMAT name)`.
+/// A user-defined file format for `COPY`, built up with the setters and made live with `Connection::Register` or
+/// `Extension::Register`. Create one through a `Factory` of the database it will be registered in, describe it (name,
+/// callbacks), then register it with `Connection::Register` or `Extension::Register`. The function object may be
+/// destroyed after registration; the registered function lives on in the catalog and is reached from SQL with `COPY ...
+/// TO 'path' (FORMAT name)` and `COPY table FROM 'path' (FORMAT name)`.
 ///
 /// The two directions are configured separately and a function may implement either or both. The `COPY ... TO` side
 /// gathers the rows being written into batches and drives its callbacks in this order: bind (once, during planning),
@@ -4564,7 +5507,9 @@ private:
 /// callback of either side, and each side's bind callback may plant bind data readable from that side's later
 /// callbacks. A callback reports failure by throwing; the exception surfaces as the query's error.
 class CopyFunction final : public detail::Handle<CopyFunction> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
+	friend class Connection;
+	friend class Extension;
 
 public:
 	class CopyToBindInput;
@@ -4614,16 +5559,21 @@ public:
 
 	~CopyFunction() override;
 
-	/// Creates a function that `Register` adds to the connection's database.
-	static auto Create(const Connection &conn) -> CopyFunction;
-	/// Creates a function that `Register` adds through the loading extension.
-	static auto Create(const Extension &extension) -> CopyFunction;
+	/// Creates an empty CopyFunction through `factory`. Register it through a `Connection` or an `Extension` of the
+	/// factory's database.
+	static auto Create(Factory &factory) -> CopyFunction;
 
 	/// Sets the function's name: the format SQL selects it with, as in `COPY ... TO 'path' (FORMAT name)`.
 	auto SetName(const std::string &name) & -> CopyFunction &;
 
+	/// Sets the extension of the files the function writes, without the leading dot, e.g. `parquet`. DuckDB uses it
+	/// when it names files itself, as for `PARTITION_BY`; without it such names end in a bare dot.
+	/// @throws InvalidInputException When the extension starts with a dot.
+	auto SetFileExtension(const std::string &extension) & -> CopyFunction &;
+
 	/// Constructs user data of type `T`, carried by the registered function and freed at engine teardown; read it from
-	/// any callback via the inputs' `GetUserData<T>`. Consumed by `Register`: set it again before re-registering.
+	/// any callback via the inputs' `GetUserData<T>`. Consumed by registration: set it again before
+	/// re-registering.
 	template <class T, class... ARGS>
 	auto SetUserData(ARGS &&... args) & -> CopyFunction & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
@@ -4645,15 +5595,10 @@ public:
 	auto SetCopyFromExecCallback(CopyFromExecCallback callback) & -> CopyFunction &;
 	auto SetCopyFromProgressCallback(CopyFromProgressCallback callback) & -> CopyFunction &;
 
-	/// Registers the function in the catalog it was created against. The function object remains valid and may be
-	/// adjusted and registered again; user data set via `SetUserData` is consumed by the first `Register`.
-	/// @throws InvalidInputException When the name is missing, neither side is configured, a configured
-	/// `COPY ... TO` side lacks its batch or flush callback, or a configured `COPY ... FROM` side lacks its bind or
-	/// exec callback.
-	auto Register() -> void;
-
 private:
 	explicit CopyFunction(void *impl);
+	//! Moves what the callbacks need into the C handle, right before it is registered.
+	auto PrepareRegistration() -> void;
 
 	auto SetUserDataInternal(void *data, void (*destructor)(void *)) -> void;
 
@@ -4674,7 +5619,7 @@ private:
 public:
 	/// What the `COPY ... TO` bind callback works with. Borrowed, valid only for the callback duration.
 	class CopyToBindInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// Constructs bind data of type `T`, owned by the bound statement and readable from every later `COPY ... TO`
@@ -4727,14 +5672,15 @@ public:
 		auto GetOptionValue(idx_t index) const -> Value;
 
 		/// The binding context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		CopyToBindInput(void *args, void *context) : args(args), context(context) {
+		CopyToBindInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void SetBindDataInternal(void *data, bool (*equals)(void *a, void *b), void (*destructor)(void *));
 		void *GetUserDataInternal() const;
@@ -4742,7 +5688,7 @@ public:
 
 	/// What the `COPY ... TO` batch size callback works with. Borrowed, valid only for the callback duration.
 	class CopyToBatchSizeInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `CopyToBindInput::SetBindData`.
@@ -4766,14 +5712,15 @@ public:
 		auto SetTarget(idx_t rows) -> void;
 
 		/// The binding context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		CopyToBatchSizeInput(void *args, void *context) : args(args), context(context) {
+		CopyToBatchSizeInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetUserDataInternal() const;
@@ -4781,7 +5728,7 @@ public:
 
 	/// What the `COPY ... TO` init callback works with. Borrowed, valid only for the callback duration.
 	class CopyToInitInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// Constructs init data of type `T`, owned by the file being written and readable from the batch, flush and
@@ -4812,14 +5759,15 @@ public:
 		auto GetFilePath() const -> std::string;
 
 		/// The query context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		CopyToInitInput(void *args, void *context) : args(args), context(context) {
+		CopyToInitInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void SetInitDataInternal(void *data, void (*destructor)(void *));
 		void *GetBindDataInternal() const;
@@ -4828,7 +5776,7 @@ public:
 
 	/// What the `COPY ... TO` batch callback works with. Borrowed, valid only for the callback duration.
 	class CopyToBatchInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// Constructs batch data of type `T`: the prepared form of the batch, handed to the flush callback via
@@ -4868,14 +5816,15 @@ public:
 		auto TakeBatch() -> ColumnDataCollection;
 
 		/// The query context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		CopyToBatchInput(void *args, void *context) : args(args), context(context) {
+		CopyToBatchInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void SetBatchDataInternal(void *data, void (*destructor)(void *));
 		void *GetBindDataInternal() const;
@@ -4885,7 +5834,7 @@ public:
 
 	/// What the `COPY ... TO` flush callback works with. Borrowed, valid only for the callback duration.
 	class CopyToFlushInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `CopyToBindInput::SetBindData`.
@@ -4917,14 +5866,15 @@ public:
 		}
 
 		/// The query context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		CopyToFlushInput(void *args, void *context) : args(args), context(context) {
+		CopyToFlushInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetInitDataInternal() const;
@@ -4934,7 +5884,7 @@ public:
 
 	/// What the `COPY ... TO` finalize callback works with. Borrowed, valid only for the callback duration.
 	class CopyToFinalizeInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `CopyToBindInput::SetBindData`.
@@ -4959,14 +5909,15 @@ public:
 		}
 
 		/// The query context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		CopyToFinalizeInput(void *args, void *context) : args(args), context(context) {
+		CopyToFinalizeInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetInitDataInternal() const;
@@ -4976,7 +5927,7 @@ public:
 	/// What the `COPY ... TO` statistics callback works with. Borrowed, valid only for the callback duration. Unstable
 	/// API.
 	class CopyToStatisticsInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `CopyToBindInput::SetBindData`.
@@ -5007,14 +5958,15 @@ public:
 		auto SetFileSize(idx_t file_size_bytes) -> void;
 
 		/// The query context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		CopyToStatisticsInput(void *args, void *context) : args(args), context(context) {
+		CopyToStatisticsInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetInitDataInternal() const;
@@ -5023,7 +5975,7 @@ public:
 
 	/// What the `COPY ... FROM` bind callback works with. Borrowed, valid only for the callback duration.
 	class CopyFromBindInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// Constructs bind data of type `T`, owned by the bound statement and readable from every later
@@ -5082,14 +6034,15 @@ public:
 		auto SetCardinality(idx_t cardinality, bool is_exact) -> void;
 
 		/// The binding context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		CopyFromBindInput(void *args, void *context) : args(args), context(context) {
+		CopyFromBindInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void SetBindDataInternal(void *data, bool (*equals)(void *a, void *b), void (*destructor)(void *));
 		void *GetUserDataInternal() const;
@@ -5097,7 +6050,7 @@ public:
 
 	/// What the `COPY ... FROM` global init callback works with. Borrowed, valid only for the callback duration.
 	class CopyFromInitGlobalInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// Constructs global state of type `T`, shared by every thread reading the file and readable from the local
@@ -5129,14 +6082,15 @@ public:
 		auto SetMaxThreads(idx_t max_threads) -> void;
 
 		/// The query context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		CopyFromInitGlobalInput(void *args, void *context) : args(args), context(context) {
+		CopyFromInitGlobalInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void SetGlobalStateInternal(void *data, void (*destructor)(void *));
 		void *GetBindDataInternal() const;
@@ -5145,7 +6099,7 @@ public:
 
 	/// What the `COPY ... FROM` local init callback works with. Borrowed, valid only for the callback duration.
 	class CopyFromInitLocalInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// Constructs local state of type `T`, owned by this reading thread and readable from the exec callback via
@@ -5179,14 +6133,15 @@ public:
 		}
 
 		/// The query context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		CopyFromInitLocalInput(void *args, void *context) : args(args), context(context) {
+		CopyFromInitLocalInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void SetLocalStateInternal(void *data, void (*destructor)(void *));
 		void *GetBindDataInternal() const;
@@ -5196,7 +6151,7 @@ public:
 
 	/// What the `COPY ... FROM` exec callback works with. Borrowed, valid only for the callback duration.
 	class CopyFromExecInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `CopyFromBindInput::SetBindData`.
@@ -5236,14 +6191,15 @@ public:
 		auto GetOutputChunk() const -> DataChunk;
 
 		/// The execution context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		CopyFromExecInput(void *args, void *context) : args(args), context(context) {
+		CopyFromExecInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetGlobalStateInternal() const;
@@ -5253,7 +6209,7 @@ public:
 
 	/// What the `COPY ... FROM` progress callback works with. Borrowed, valid only for the callback duration.
 	class CopyFromProgressInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The bind data set via `CopyFromBindInput::SetBindData`.
@@ -5284,14 +6240,15 @@ public:
 		auto SetProgress(double progress) -> void;
 
 		/// The execution context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		CopyFromProgressInput(void *args, void *context) : args(args), context(context) {
+		CopyFromProgressInput(void *args, void *context)
+		    : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetBindDataInternal() const;
 		void *GetGlobalStateInternal() const;
@@ -5312,17 +6269,19 @@ enum class CastMode : uint8_t {
 	TRY = 1,
 };
 
-/// A user-defined cast between two types, built up with the setters and made live with `Register`.
-/// Create one against the `Connection` or `Extension` it will be registered in, describe it (source type, target
-/// type, exec callback), then call `Register`. The function object may be destroyed after registration; the
-/// registered cast lives on.
+/// A user-defined cast between two types, built up with the setters and made live with `Connection::Register` or
+/// `Extension::Register`. Create one through a `Factory` of the database it will be registered in, describe it (source
+/// type, target type, exec callback), then register it with `Connection::Register` or `Extension::Register`. The
+/// function object may be destroyed after registration; the registered cast lives on.
 ///
 /// A cast is keyed by its (source, target) type pair rather than by a name, and is reached from SQL through CAST and
 /// TRY_CAST -- and, when it declares a non-negative implicit cast cost, through the binder converting argument types
 /// on its own. The exec callback converts a whole batch at a time; whether a per-row failure aborts the query or
 /// becomes a NULL follows from `ExecInput::GetMode`.
 class CastFunction final : public detail::Handle<CastFunction> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
+	friend class Connection;
+	friend class Extension;
 
 public:
 	class ExecInput;
@@ -5335,10 +6294,9 @@ public:
 
 	~CastFunction() override;
 
-	/// Creates a cast that `Register` adds to the connection's database.
-	static auto Create(const Connection &conn) -> CastFunction;
-	/// Creates a cast that `Register` adds through the loading extension.
-	static auto Create(const Extension &extension) -> CastFunction;
+	/// Creates an empty CastFunction through `factory`. Register it through a `Connection` or an `Extension` of the
+	/// factory's database.
+	static auto Create(Factory &factory) -> CastFunction;
 
 	/// Sets the type the cast converts from. Must be a fully defined concrete type.
 	auto SetSourceType(const LogicalType &type) & -> CastFunction &;
@@ -5354,7 +6312,8 @@ public:
 	auto SetImplicitCastCost(int64_t cost) & -> CastFunction &;
 
 	/// Constructs user data of type `T`, carried by the registered cast and freed at engine teardown; read it from the
-	/// exec callback via `ExecInput::GetUserData<T>`. Consumed by `Register`: set it again before re-registering.
+	/// exec callback via `ExecInput::GetUserData<T>`. Consumed by registration: set it again before
+	/// re-registering.
 	template <class T, class... ARGS>
 	auto SetUserData(ARGS &&... args) & -> CastFunction & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
@@ -5364,15 +6323,10 @@ public:
 
 	auto SetExecCallback(ExecCallback callback) & -> CastFunction &;
 
-	/// Registers the cast in the database it was created against, replacing whatever cast was registered for the same
-	/// type pair. The function object remains valid and may be adjusted and registered again; user data set via
-	/// `SetUserData` is consumed by the first `Register`.
-	/// @throws InvalidInputException When the source type, target type, or exec callback is missing, or either type is
-	/// not concrete.
-	auto Register() -> void;
-
 private:
 	explicit CastFunction(void *impl);
+	//! Moves what the callbacks need into the C handle, right before it is registered.
+	auto PrepareRegistration() -> void;
 
 	auto SetUserDataInternal(void *data, void (*destructor)(void *)) -> void;
 
@@ -5382,7 +6336,7 @@ private:
 public:
 	/// What the exec callback works with. Borrowed, valid only for the callback duration.
 	class ExecInput {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The user data set via `CastFunction::SetUserData`.
@@ -5408,14 +6362,354 @@ public:
 		auto GetMode() const -> CastMode;
 
 		/// The execution context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		ExecInput(void *args, void *context) : args(args), context(context) {
+		ExecInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
+
+		void *GetUserDataInternal() const;
+	};
+};
+
+//----------------------------------------------------------------------------------------------------------------------
+// Pragma Function
+//----------------------------------------------------------------------------------------------------------------------
+
+/// A user-defined pragma, called with the `PRAGMA` statement. Create one through a `Factory` of the database it will be
+/// registered in, describe it (name, signature, callback), then register it with `Connection::Register` or
+/// `Extension::Register`. The function object may be destroyed after registration; the registered pragma lives on in
+/// the catalog.
+///
+/// A pragma takes constant arguments and is one of two kinds, decided by the callback it is given: a query pragma
+/// returns SQL that runs in place of the `PRAGMA` statement, and an exec pragma runs for its side effects and produces
+/// no rows. Set exactly one of the two callbacks. A pragma without parameters is called as `PRAGMA name`, one with
+/// parameters as `PRAGMA name(...)`. A callback reports failure by throwing; the exception surfaces as the statement's
+/// error.
+class PragmaFunction final : public detail::Handle<PragmaFunction> {
+	friend detail::HandleFactory;
+	friend class Connection;
+	friend class Extension;
+
+public:
+	class QueryInput;
+	class ExecInput;
+
+	/// Called before the `PRAGMA` statement is bound; returns the SQL to run in its place, which may hold several
+	/// statements.
+	using QueryCallback = std::string (*)(QueryInput &input);
+	/// Called when the `PRAGMA` statement executes.
+	using ExecCallback = void (*)(ExecInput &input);
+
+	PragmaFunction(PragmaFunction &&) noexcept = default;
+	PragmaFunction &operator=(PragmaFunction &&) noexcept = default;
+
+	~PragmaFunction() override;
+
+	/// Creates an empty PragmaFunction through `factory`. Register it through a `Connection` or an `Extension` of the
+	/// factory's database.
+	static auto Create(Factory &factory) -> PragmaFunction;
+
+	/// Sets the pragma's name, as the `PRAGMA` statement calls it.
+	auto SetName(const std::string &name) & -> PragmaFunction &;
+	/// The documentation of the pragma, borrowed for in-place mutation.
+	auto GetDocs() -> FunctionDocs;
+
+	/// Calls `configure` with the documentation of the pragma, borrowed for in-place mutation.
+	template <class F>
+	auto WithDocs(F &&configure) & -> PragmaFunction & {
+		auto docs = GetDocs();
+		configure(docs);
+		return *this;
+	}
+
+	/// The pragma's signature, borrowed for in-place mutation. A pragma produces no value, so registration rejects a
+	/// signature with a return type.
+	auto GetSignature() -> FunctionSignature;
+
+	/// Calls `configure` with the pragma's signature, borrowed for in-place mutation.
+	template <class F>
+	auto WithSignature(F &&configure) & -> PragmaFunction & {
+		auto sig = GetSignature();
+		configure(sig);
+		return *this;
+	}
+
+	/// Constructs user data of type `T`, carried by the registered pragma and freed at engine teardown; read it from
+	/// the callback via the input's `GetUserData<T>`. Consumed by registration: set it again before re-registering.
+	template <class T, class... ARGS>
+	auto SetUserData(ARGS &&... args) & -> PragmaFunction & {
+		auto ptr = new T(std::forward<ARGS>(args)...);
+		SetUserDataInternal(ptr, detail::TypedDelete<T>);
+		return *this;
+	}
+
+	/// Makes this a query pragma. Registration fails when an exec callback is set as well.
+	auto SetQueryCallback(QueryCallback callback) & -> PragmaFunction &;
+	/// Makes this an exec pragma. Registration fails when a query callback is set as well.
+	auto SetExecCallback(ExecCallback callback) & -> PragmaFunction &;
+
+private:
+	explicit PragmaFunction(void *impl);
+	//! Moves what the callbacks need into the C handle, right before it is registered.
+	auto PrepareRegistration() -> void;
+
+	auto SetUserDataInternal(void *data, void (*destructor)(void *)) -> void;
+
+	QueryCallback query_callback = nullptr;
+	ExecCallback exec_callback = nullptr;
+	detail::UserData user_data;
+
+public:
+	/// What the query callback works with: the arguments of the `PRAGMA` statement. Borrowed, valid only for the
+	/// callback duration.
+	class QueryInput final : public FunctionBindInput {
+		friend detail::HandleFactory;
+
+	public:
+		/// The user data set via `PragmaFunction::SetUserData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetUserData() const -> T & {
+			return *static_cast<T *>(GetUserDataInternal());
+		}
+
+	private:
+		QueryInput(void *args, void *context) : FunctionBindInput(args, context) {
+		}
+
+		/// Pragmas have no bind data
+		using FunctionBindInput::SetBindData;
+
+		void *GetUserDataInternal() const;
+	};
+
+	/// What the exec callback works with: the arguments of the `PRAGMA` statement. Borrowed, valid only for the
+	/// callback duration.
+	class ExecInput final : public FunctionBindInput {
+		friend detail::HandleFactory;
+
+	public:
+		/// The user data set via `PragmaFunction::SetUserData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetUserData() const -> T & {
+			return *static_cast<T *>(GetUserDataInternal());
+		}
+
+	private:
+		ExecInput(void *args, void *context) : FunctionBindInput(args, context) {
+		}
+
+		/// Pragmas have no bind data
+		using FunctionBindInput::SetBindData;
+
+		void *GetUserDataInternal() const;
+	};
+};
+
+//----------------------------------------------------------------------------------------------------------------------
+// Macro Function
+//----------------------------------------------------------------------------------------------------------------------
+
+/// A function defined in SQL: a call is replaced with the body, an expression for a scalar macro and a query for a
+/// table macro, which refers to the parameters by name. Create one through a `Factory` of the database it will be
+/// registered in, describe it (name, signature, body), then register it with `Extension::Register`; outside an
+/// extension, define a macro with SQL `CREATE MACRO` instead. The function object may be destroyed after
+/// registration; the registered macro lives on in the catalog.
+///
+/// A macro's parameters can always be passed by position or by name, so the signature may only hold standard
+/// parameters, optionally with a default value. A parameter of type ANY is untyped. The result follows from the body,
+/// so the signature cannot set a return type.
+class MacroFunction final : public detail::Handle<MacroFunction> {
+	friend detail::HandleFactory;
+	friend class Extension;
+
+public:
+	MacroFunction(MacroFunction &&) noexcept = default;
+	MacroFunction &operator=(MacroFunction &&) noexcept = default;
+
+	~MacroFunction() override;
+
+	/// Creates an empty scalar macro through `factory`: its body is an expression, and it is called like a scalar
+	/// function. Register it through an `Extension` of the factory's database.
+	static auto CreateScalar(Factory &factory) -> MacroFunction;
+	/// Creates an empty table macro through `factory`: its body is a SELECT query, and it is called like a table
+	/// function. Register it through an `Extension` of the factory's database.
+	static auto CreateTable(Factory &factory) -> MacroFunction;
+
+	/// Sets the macro's name, as SQL calls it.
+	auto SetName(const std::string &name) & -> MacroFunction &;
+	/// Sets the body, as SQL text: an expression for a scalar macro, a SELECT query for a table macro. Parsed at
+	/// registration; names in it are resolved when the macro is called.
+	auto SetBody(std::string_view body) & -> MacroFunction &;
+	/// The documentation of the macro, borrowed for in-place mutation.
+	auto GetDocs() -> FunctionDocs;
+
+	/// Calls `configure` with the documentation of the macro, borrowed for in-place mutation.
+	template <class F>
+	auto WithDocs(F &&configure) & -> MacroFunction & {
+		auto docs = GetDocs();
+		configure(docs);
+		return *this;
+	}
+
+	/// The macro's signature, borrowed for in-place mutation.
+	auto GetSignature() -> FunctionSignature;
+
+	/// Calls `configure` with the macro's signature, borrowed for in-place mutation.
+	template <class F>
+	auto WithSignature(F &&configure) & -> MacroFunction & {
+		auto sig = GetSignature();
+		configure(sig);
+		return *this;
+	}
+
+private:
+	explicit MacroFunction(void *impl);
+};
+
+//----------------------------------------------------------------------------------------------------------------------
+// Log Sink
+//----------------------------------------------------------------------------------------------------------------------
+
+/// The scope a log entry was written in, which decides which of its ids are present.
+enum class LogScope : uint8_t {
+	/// Written for the database as a whole, carrying no connection, transaction or query id.
+	DATABASE = 10,
+	/// Written by a connection, carrying its connection id and, inside one, the transaction and query ids.
+	CONNECTION = 20,
+	/// Written by a thread executing a query, carrying the thread id next to the connection's ids.
+	THREAD = 30,
+};
+
+/// Code of your own that receives DuckDB's log entries. Create one through a `Factory` of the database it will be
+/// registered in, give it a name and a write callback, then register it with `Instance::Register` or
+/// `Extension::Register`, which makes it available to the logging configuration under its name; once the
+/// configuration directs entries to it (currently with `SET logging_sink = '<name>'`), the write callback receives
+/// them. A log sink only receives entries: they cannot be read back through `duckdb_logs`.
+///
+/// Which entries a sink receives, and when and on which thread its callbacks run, are up to DuckDB: the callbacks must
+/// return quickly, must be safe to run concurrently and on any thread, and must not log or change the logging
+/// configuration. An exception a callback throws drops the entry; it never fails the operation that logged.
+class LogSink final : public detail::Handle<LogSink> {
+	friend detail::HandleFactory;
+	friend class Instance;
+	friend class Extension;
+
+public:
+	class Entry;
+	class FlushInput;
+
+	/// Called for every entry to store. Required.
+	using WriteCallback = void (*)(Entry &entry);
+	/// Called when DuckDB flushes its log, so entries the sink holds on to can be written out. When is up to DuckDB.
+	/// Optional.
+	using FlushCallback = void (*)(FlushInput &input);
+
+	LogSink(LogSink &&) noexcept = default;
+	LogSink &operator=(LogSink &&) noexcept = default;
+
+	~LogSink() override;
+
+	/// Creates an empty LogSink through `factory`. Register it through an `Instance` or an `Extension` of the
+	/// factory's database.
+	static auto Create(Factory &factory) -> LogSink;
+
+	/// Sets the name the logging configuration refers to the sink by, matched case-insensitively.
+	auto SetName(const std::string &name) & -> LogSink &;
+
+	/// Constructs user data of type `T`, carried by the registered sink and freed at database teardown; read it
+	/// from the callbacks via `GetUserData<T>`. Consumed by registration.
+	template <class T, class... ARGS>
+	auto SetUserData(ARGS &&... args) & -> LogSink & {
+		auto ptr = new T(std::forward<ARGS>(args)...);
+		SetUserDataInternal(ptr, detail::TypedDelete<T>);
+		return *this;
+	}
+
+	auto SetWriteCallback(WriteCallback callback) & -> LogSink &;
+	auto SetFlushCallback(FlushCallback callback) & -> LogSink &;
+
+private:
+	explicit LogSink(void *impl);
+	//! Moves what the callbacks need into the C handle, right before it is registered.
+	auto PrepareRegistration() -> void;
+
+	auto SetUserDataInternal(void *data, void (*destructor)(void *)) -> void;
+
+	WriteCallback write_callback = nullptr;
+	FlushCallback flush_callback = nullptr;
+	detail::UserData user_data;
+
+public:
+	/// One log entry, borrowed for the duration of the write callback.
+	class Entry {
+		friend detail::HandleFactory;
+
+	public:
+		/// The user data set via `LogSink::SetUserData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetUserData() const -> T & {
+			return *static_cast<T *>(GetUserDataInternal());
+		}
+
+		/// When the entry was written.
+		auto GetTimestamp() const -> timestamp_tz_t;
+		/// The severity of the entry.
+		auto GetLevel() const -> LogLevel;
+		/// The log type the entry was written under, e.g. `QueryLog`. Valid only for the callback duration.
+		auto GetLogType() const -> std::string_view;
+		/// The message. Valid only for the callback duration.
+		auto GetLogMessage() const -> std::string_view;
+		/// The scope the entry was written in, which decides which of the ids below are present.
+		auto GetScope() const -> LogScope;
+		/// The ids `duckdb_logs` reports for the entry, each absent when the entry's scope has none. The thread id
+		/// identifies the thread that logged, which need not be the thread the write callback runs on.
+		auto GetConnectionId() const -> std::optional<idx_t>;
+		auto GetTransactionId() const -> std::optional<idx_t>;
+		auto GetQueryId() const -> std::optional<idx_t>;
+		auto GetThreadId() const -> std::optional<idx_t>;
+
+	private:
+		Entry(void *info, void *user_data, int64_t timestamp, LogLevel level, LogScope scope, std::string_view type,
+		      std::string_view message)
+		    : info(info), user_data(user_data), timestamp(timestamp), level(level), scope(scope), type(type),
+		      message(message) {
+		}
+
+		void *info;
+		void *user_data;
+		int64_t timestamp;
+		LogLevel level;
+		LogScope scope;
+		std::string_view type;
+		std::string_view message;
+
+		void *GetUserDataInternal() const;
+	};
+
+	/// What the flush callback works with. Borrowed, valid only for the callback duration.
+	class FlushInput {
+		friend detail::HandleFactory;
+
+	public:
+		/// The user data set via `LogSink::SetUserData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetUserData() const -> T & {
+			return *static_cast<T *>(GetUserDataInternal());
+		}
+
+	private:
+		explicit FlushInput(void *user_data) : user_data(user_data) {
+		}
+
+		void *user_data;
 
 		void *GetUserDataInternal() const;
 	};
@@ -5457,7 +6751,7 @@ enum class FileFlags : uint8_t {
 /// An open file, obtained from `FileSystem::OpenFile`. Closes on destruction.
 /// Only usable while the `FileSystem` it came from is still valid.
 class FileHandle final : public detail::Handle<FileHandle> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	FileHandle(FileHandle &&) noexcept = default;
@@ -5510,7 +6804,7 @@ private:
 /// How a file is opened: the flags, plus any values the file system handling the path cares about.
 /// Created from the `FileSystem` it will be used with, and reusable across any number of opens.
 class FileOpenOptions final : public detail::Handle<FileOpenOptions> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	FileOpenOptions(FileOpenOptions &&) noexcept = default;
@@ -5530,15 +6824,29 @@ public:
 	/// file system's business, and one it does not recognize is ignored. Setting the same name again replaces it.
 	auto SetValue(std::string_view name, const Value &value) & -> FileOpenOptions &;
 
+	/// Attaches the options a file is specified with, as table functions that read files take it: a STRUCT holding
+	/// the path of the file in its `filename` field, and an option to open the file with in every other field - e.g.
+	/// `{'filename': 'f.parquet', 'file_size': 42}`. A field set to NULL is an option that was not specified. A
+	/// VARCHAR path carries no options, and attaches nothing. See `GetFilePath`.
+	/// @param file The file, a VARCHAR path or a file struct.
+	/// @throws InvalidInputException When the file is neither, or a file struct has no VARCHAR `filename` field.
+	auto SetValues(const Value &file) & -> FileOpenOptions &;
+
 private:
 	explicit FileOpenOptions(void *impl);
 };
+
+/// The path of a file, as table functions that read files take it: a VARCHAR path, or a STRUCT holding the path in
+/// its `filename` field and the options to open the file with in its other fields. See `FileOpenOptions::SetValues`.
+/// @param file The file, a VARCHAR path or a file struct.
+/// @throws InvalidInputException When the file is neither, or a file struct has no VARCHAR `filename` field.
+auto GetFilePath(const Value &file) -> std::string;
 
 /// The file system DuckDB itself reads and writes through, so files open the way the engine would open them --
 /// including through virtual and remote file systems registered by other extensions.
 /// Borrowed from a `Context` or `Connection`, and valid only for as long as that is.
 class FileSystem final : public detail::Handle<FileSystem> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	FileSystem(FileSystem &&) noexcept = default;
@@ -5559,6 +6867,26 @@ public:
 	/// Creates an empty set of options for this file system, the same as `FileOpenOptions::Create(*this)`.
 	auto CreateOpenOptions() const -> FileOpenOptions;
 
+	/// Whether a file exists at `path`, routed the way `OpenFile` routes it. A directory is not a file.
+	auto Exists(const std::string &path) const -> bool;
+	/// Whether `path` names a remote file, e.g. under `s3://` or `https://`. Decided from the path alone, so it
+	/// answers even when the extension providing the remote file system is not loaded.
+	auto IsRemote(const std::string &path) const -> bool;
+	/// `path` expanded as `OpenFile` expands it: a leading `~` becomes the configured home directory.
+	auto Expand(const std::string &path) const -> std::string;
+
+	/// The paths of the files matching a glob pattern, e.g. `data/*.csv`, in the order the file system lists them.
+	/// A pattern without glob characters matches the file it names, if there is one.
+	auto Glob(const std::string &pattern) const -> std::vector<std::string>;
+	/// Moves, or renames, a file. Whether an existing file at `target` is replaced, and whether the move is atomic, is
+	/// up to the file system; moving between two file systems is not supported.
+	/// @throws Exception When the file cannot be moved.
+	auto Move(const std::string &source, const std::string &target) const -> void;
+	/// Removes the file at `path`, if there is one.
+	/// @return Whether a file was removed.
+	/// @throws Exception When the file exists but cannot be removed.
+	auto Remove(const std::string &path) const -> bool;
+
 private:
 	explicit FileSystem(void *impl);
 };
@@ -5575,7 +6903,7 @@ private:
 /// Owned, so a name obtained from somewhere transient -- a replacement scan callback, say -- can be kept for as long
 /// as you like.
 class QualifiedName final : public detail::Handle<QualifiedName> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	QualifiedName(QualifiedName &&) noexcept = default;
@@ -5632,7 +6960,7 @@ inline bool operator!=(const QualifiedName &lhs, const QualifiedName &rhs) {
 /// An owned snapshot of one base table, taken by `Connection::DescribeTable`: where the name resolved, the table's
 /// columns in declared order (generated columns included), and per-column catalog facts. Later DDL does not update it.
 class TableDescription final : public detail::Handle<TableDescription> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	TableDescription(TableDescription &&) noexcept = default;
@@ -5662,7 +6990,7 @@ private:
 /// An owned snapshot of one column of a described table, from `TableDescription::GetColumn`: its name, type and
 /// catalog facts. Independent of the table description it came from.
 class ColumnDescription final : public detail::Handle<ColumnDescription> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
 
 public:
 	ColumnDescription(ColumnDescription &&) noexcept = default;
@@ -5688,13 +7016,82 @@ private:
 };
 
 //----------------------------------------------------------------------------------------------------------------------
+// Query Metrics
+//----------------------------------------------------------------------------------------------------------------------
+
+/// An owned snapshot of the metrics of a query, taken by `Connection::GetQueryMetrics`: a tree whose root describes
+/// the query as a whole and whose other nodes describe its operators. Later queries do not update it. Which metrics
+/// are present, their names and the shape of the tree may change between versions. Unstable API.
+class QueryMetrics final : public detail::Handle<QueryMetrics> {
+	friend detail::HandleFactory;
+
+public:
+	QueryMetrics(QueryMetrics &&) noexcept = default;
+	QueryMetrics &operator=(QueryMetrics &&) noexcept = default;
+
+	~QueryMetrics() override;
+
+	/// The node describing the query as a whole.
+	/// @return A borrowed node, valid for as long as this snapshot is.
+	auto GetRoot() const -> QueryMetricsNode;
+
+private:
+	explicit QueryMetrics(void *impl);
+};
+
+/// One node of a `QueryMetrics` snapshot, carrying a set of named, numeric metrics. Borrowed, valid for as long as the
+/// snapshot is. Unstable API.
+class QueryMetricsNode final : public detail::Handle<QueryMetricsNode> {
+	friend detail::HandleFactory;
+
+public:
+	QueryMetricsNode(QueryMetricsNode &&) noexcept = default;
+	QueryMetricsNode &operator=(QueryMetricsNode &&) noexcept = default;
+
+	~QueryMetricsNode() override;
+
+	/// `QUERY` for the root node, the name of the operator, e.g. `TABLE_SCAN`, for the others.
+	/// @return A view borrowed from the snapshot.
+	auto GetName() const -> std::string_view;
+
+	/// How many children the node has.
+	auto GetChildCount() const -> idx_t;
+
+	/// One child of the node.
+	/// @param index Child index in [0, GetChildCount()).
+	/// @throws Exception When the index is out of range.
+	auto GetChild(idx_t index) const -> QueryMetricsNode;
+
+	/// How many metrics the node carries.
+	auto GetMetricCount() const -> idx_t;
+
+	/// The name of one metric, e.g. `query.total_time`. The order of the metrics is unspecified.
+	/// @param index Metric index in [0, GetMetricCount()).
+	/// @return A view borrowed from the snapshot.
+	/// @throws Exception When the index is out of range.
+	auto GetMetricName(idx_t index) const -> std::string_view;
+
+	/// The value of one metric, a number such as a UBIGINT count or a DOUBLE duration.
+	/// @param index Metric index in [0, GetMetricCount()).
+	/// @throws Exception When the index is out of range.
+	auto GetMetricValue(idx_t index) const -> Value;
+
+	/// Looks a metric up by its exact name.
+	/// @return Its value, or nothing when the node does not carry it.
+	auto GetMetric(std::string_view name) const -> std::optional<Value>;
+
+private:
+	explicit QueryMetricsNode(void *impl);
+};
+
+//----------------------------------------------------------------------------------------------------------------------
 // Replacement Scan
 //----------------------------------------------------------------------------------------------------------------------
 
-/// A user-defined replacement scan, built up with the setters and made live with `Register`.
-/// Create one against the `Connection`, `Instance` or `Extension` it will be registered on, set its callback and
-/// user data, then call `Register`. The scan object may be destroyed after registration; the registered scan lives
-/// on until its scope ends.
+/// A user-defined replacement scan, built up with the setters and made live with `Connection::Register` or
+/// `Extension::Register`. Create one through a `Factory` of the database it will be registered on, set its callback and
+/// user data, then register it with `Connection::Register` or `Extension::Register`. The scan object may be destroyed
+/// after registration; the registered scan lives on until its scope ends.
 ///
 /// The binder consults replacement scans when a table name cannot be resolved in the catalog; this is what makes
 /// `SELECT * FROM 'file.parquet'` work. The callback inspects the unresolved name and either claims it, by naming a
@@ -5702,13 +7099,16 @@ private:
 /// nothing, which lets the next registered scan try. When no scan claims the name, the usual "table does not exist"
 /// error is raised. A callback reports failure by throwing; the exception surfaces as the query's error.
 ///
-/// Scope follows the constructor. A scan created against a `Connection` is visible only to that connection, is
-/// released when it closes, and is consulted before every instance-wide scan, including the built-in file scans. A
-/// scan created against an `Instance` or `Extension` is visible to every connection to that instance and lives until
-/// it closes; registering one is not thread-safe against queries binding on other connections, so do it during
-/// extension load or before issuing queries. A registered scan cannot be unregistered.
+/// Scope follows the registration. A scan registered through a `Connection` is visible only to that connection,
+/// is released when it closes, and is consulted before every instance-wide scan, including the built-in file scans. A
+/// scan registered through an `Instance` or an `Extension` is visible to every connection to that instance
+/// and lives until it closes; registering one is not thread-safe against queries binding on other connections, so do it
+/// during extension load or before issuing queries. A registered scan cannot be unregistered.
 class ReplacementScan final : public detail::Handle<ReplacementScan> {
-	friend detail::Factory;
+	friend detail::HandleFactory;
+	friend class Connection;
+	friend class Extension;
+	friend class Instance;
 
 public:
 	class Input;
@@ -5721,17 +7121,14 @@ public:
 
 	~ReplacementScan() override;
 
-	/// Creates a scan that `Register` adds to the connection, visible only there.
-	static auto Create(const Connection &conn) -> ReplacementScan;
-	/// Creates a scan that `Register` adds to the database, visible to every connection.
-	static auto Create(const Instance &instance) -> ReplacementScan;
-	/// Creates a scan that `Register` adds through the loading extension, visible to every connection.
-	static auto Create(const Extension &extension) -> ReplacementScan;
+	/// Creates an empty ReplacementScan through `factory`. Register it through a `Connection` or an `Extension` of the
+	/// factory's database.
+	static auto Create(Factory &factory) -> ReplacementScan;
 
 	auto SetCallback(Callback callback) & -> ReplacementScan &;
 
 	/// Constructs user data of type `T`, carried by the registered scan and freed when its scope ends; read it from
-	/// the callback via `Input::GetUserData<T>`. Consumed by `Register`.
+	/// the callback via `Input::GetUserData<T>`. Consumed by registration.
 	template <class T, class... ARGS>
 	auto SetUserData(ARGS &&... args) & -> ReplacementScan & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
@@ -5739,14 +7136,10 @@ public:
 		return *this;
 	}
 
-	/// Registers the scan on the target it was created against. Scans are consulted in registration order within
-	/// their scope, connection-scoped ones before database-wide ones, and the first to claim a name wins. A scan can
-	/// be registered only once.
-	/// @throws InvalidInputException When the callback is missing, or the scan is already registered.
-	auto Register() -> void;
-
 private:
 	explicit ReplacementScan(void *impl);
+	//! Moves what the callbacks need into the C handle, right before it is registered.
+	auto PrepareRegistration() -> void;
 
 	auto SetUserDataInternal(void *data, void (*destructor)(void *)) -> void;
 
@@ -5757,7 +7150,7 @@ public:
 	/// What the callback works with. Borrowed, valid only for the callback duration, as are the name views it hands
 	/// out.
 	class Input {
-		friend detail::Factory;
+		friend detail::HandleFactory;
 
 	public:
 		/// The user data set via `ReplacementScan::SetUserData`.
@@ -5816,14 +7209,14 @@ public:
 		auto SetAlias(std::string_view alias) -> void;
 
 		/// The binding context. Borrowed, valid only for the callback duration.
-		auto GetContext() const -> Context;
+		auto GetContext() -> Context &;
 
 	private:
-		Input(void *args, void *context) : args(args), context(context) {
+		Input(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
 		}
 
 		void *args;
-		void *context;
+		Context context;
 
 		void *GetUserDataInternal() const;
 	};
@@ -6137,11 +7530,7 @@ private:
 	}
 };
 
-inline auto Context::CreateType() -> TypeBuilder<Context> {
-	return TypeBuilder(*this);
-}
-
-inline auto Connection::CreateType() -> TypeBuilder<Connection> {
+inline auto Factory::CreateType() -> TypeBuilder<Factory> {
 	return TypeBuilder(*this);
 }
 
@@ -6151,6 +7540,33 @@ inline auto Connection::Execute(const SqlStatement &statement, const std::vector
 
 inline auto PreparedStatement::Execute(const std::vector<Value> &parameters) -> QueryResult {
 	return Execute(parameters.data(), parameters.size());
+}
+
+inline auto Connection::Execute(const SqlStatement &statement, const std::vector<Value> &parameters, ArrowFormat format)
+    -> ArrowResult {
+	return Execute(statement, parameters.data(), parameters.size(), format);
+}
+
+inline auto Connection::Execute(const SqlStatement &statement, const std::vector<NamedParam> &parameters,
+                                ArrowFormat format) -> ArrowResult {
+	return ExecuteArrowNamed(statement, parameters.data(), parameters.size(), format);
+}
+
+inline auto Connection::Execute(const std::string &sql, ArrowFormat format) -> ArrowResult {
+	auto statements = ParseSQL(sql);
+	auto statement = statements.Next();
+	if (!statement || statements.Next()) {
+		throw InvalidInputException("Execute expects exactly one statement; use ParseSQL for multi-statement input");
+	}
+	return Execute(statement, format);
+}
+
+inline auto PreparedStatement::Execute(const std::vector<Value> &parameters, ArrowFormat format) -> ArrowResult {
+	return Execute(parameters.data(), parameters.size(), format);
+}
+
+inline auto PreparedStatement::Execute(const std::vector<NamedParam> &parameters, ArrowFormat format) -> ArrowResult {
+	return ExecuteArrowNamed(parameters.data(), parameters.size(), format);
 }
 
 } // namespace cxx

@@ -1,0 +1,21 @@
+# name: benchmark/micro/pushdown/bloom_filter_cast_input.benchmark
+# description: Runtime Bloom filtering through a narrowing cast
+# group: [pushdown]
+
+name BloomFilterCastInput
+group micro
+subgroup pushdown
+
+load
+CREATE TABLE probe AS SELECT (i % 2000) * 1000000 AS k FROM range(10000000) t(i);
+CREATE TABLE build AS SELECT (i * 1000000)::INTEGER AS k FROM range(0, 2000, 25) t(i);
+
+init
+SET disabled_optimizers='join_order,build_side_probe_side';
+SET dynamic_or_filter_threshold=0;
+
+run
+SELECT count(*) FROM probe p JOIN build b ON CAST(p.k AS INTEGER)=b.k;
+
+result I
+400000

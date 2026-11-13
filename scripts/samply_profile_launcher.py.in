@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+import sys
+
+SOURCE_ROOT = r"@PROJECT_SOURCE_DIR@"
+if SOURCE_ROOT not in sys.path:
+    sys.path.insert(0, SOURCE_ROOT)
+
+from scripts.samply_profile import duckdb_main
+
+if __name__ == "__main__":
+    raise SystemExit(duckdb_main(sys.argv[1:], launcher_path=__file__))

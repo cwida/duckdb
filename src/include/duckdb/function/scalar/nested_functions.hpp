@@ -76,6 +76,10 @@ struct VariableReturnBindData : public FunctionData {
 		auto stype = deserializer.ReadProperty<LogicalType>(100, "variable_return_type");
 		return make_uniq<VariableReturnBindData>(std::move(stype));
 	}
+	//! Bind callback that stores the (resolved) return type of the function
+	static unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input) {
+		return make_uniq<VariableReturnBindData>(input.GetBoundFunction().GetReturnType());
+	}
 };
 
 template <class T, class MAP_TYPE = map<T, idx_t>>

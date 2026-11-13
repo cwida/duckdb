@@ -1,0 +1,107 @@
+# name: test/sql/attach/external_resource_show_subquery.test
+# description: SHOW [ALL] EXTERNAL RESOURCES is a query, so it can be a subquery, a CTE, or filtered
+# group: [attach]
+
+statement ok
+CREATE MACRO list_s(opts) AS TABLE
+    SELECT MAP {'id': 'ext-1'} AS handle, 'ext-name' AS name, 'ext-ref' AS reference, 'running' AS state;
+
+statement ok
+CALL register_external_resource_type('a@sq', kind := 'catalog', create_function := 'noop_create', list_function := 'list_s');
+
+statement ok
+CALL register_external_resource('a@sq', 'mine', MAP {'id': 'local-1'});
+
+# The statement forms, as before.
+query TTTTTTTT
+SHOW EXTERNAL RESOURCES;
+----
+mine	a@sq	true	NULL	NULL	NULL	NULL	{id=local-1}
+
+query TTTTTTTT rowsort
+SHOW ALL EXTERNAL RESOURCES;
+----
+ext-name	a@sq	false	running	ext-ref	NULL	NULL	{id=ext-1}
+mine	a@sq	true	NULL	NULL	NULL	NULL	{id=local-1}
+
+# As a subquery.
+query TT rowsort
+SELECT name, managed FROM (SHOW ALL EXTERNAL RESOURCES);
+----
+ext-name	false
+mine	true
+
+query I
+SELECT count(*) FROM (SHOW EXTERNAL RESOURCES);
+----
+1
+
+# FROM-first, with a WHERE on the result.
+query TT
+FROM (SHOW ALL EXTERNAL RESOURCES) SELECT type, state WHERE NOT managed;
+----
+a@sq	running
+
+query T
+FROM (SHOW ALL EXTERNAL RESOURCES) SELECT handle['id'] WHERE managed;
+----
+local-1
+
+# As a CTE, and joined.
+query TT rowsort
+WITH r AS (SHOW ALL EXTERNAL RESOURCES)
+SELECT r.type, t.name FROM r JOIN duckdb_external_resource_types() t ON t.name = r.type;
+----
+a@sq	a@sq
+a@sq	a@sq
+
+# In a set operation and with ORDER BY / LIMIT around it.
+query I
+SELECT count(*) FROM ((SHOW ALL EXTERNAL RESOURCES) UNION ALL (SHOW EXTERNAL RESOURCES));
+----
+3
+
+query T
+SELECT name FROM (SHOW ALL EXTERNAL RESOURCES) ORDER BY 1 LIMIT 1;
+----
+ext-name
+
+# Also as a bare parenthesized statement.
+query TTTTTTTT
+(SHOW EXTERNAL RESOURCES);
+----
+mine	a@sq	true	NULL	NULL	NULL	NULL	{id=local-1}
+
+# It is a SHOW form, not a DESCRIBE form.
+statement error
+DESCRIBE EXTERNAL RESOURCES;
+----
+<REGEX>:Parser Error.*
+
+statement error
+DESCRIBE ALL EXTERNAL RESOURCES;
+----
+<REGEX>:Parser Error.*
+
+# Neighbouring SHOW forms are unaffected.
+statement ok
+SHOW ALL TABLES;
+
+statement ok
+SHOW ALL;
+
+statement ok
+SHOW TABLES;
+
+statement ok
+CREATE TABLE external (i INTEGER);
+
+query I
+SELECT count(*) FROM (SHOW external);
+----
+1
+
+statement error
+SHOW EXTERNAL RESOURCE;
+----
+<REGEX>:Parser Error.*

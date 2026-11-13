@@ -37,7 +37,7 @@ SELECT (SELECT 42)
 42
 
 statement ok
-PRAGMA explain_output='optimized_only'
+SET explain_output='optimized_only'
 
 query II
 EXPLAIN SELECT (SELECT 42)

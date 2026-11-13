@@ -2,6 +2,7 @@
 
 #include "duckdb/function/lambda_functions.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_lambda_expression.hpp"
 
@@ -10,7 +11,7 @@ namespace duckdb {
 namespace {
 
 struct ReduceExecuteInfo {
-	ReduceExecuteInfo(LambdaFunctions::LambdaInfo &info, ClientContext &context)
+	ReduceExecuteInfo(LambdaFunctions::LambdaInfo &info, Context &context)
 	    : context(context), left_slice(make_uniq<Vector>(Vector::Ref(*info.child_vector))) {
 		if (info.has_initial) {
 			initial_value_offset = 0;
@@ -62,7 +63,7 @@ struct ReduceExecuteInfo {
 	};
 
 	ValidityMask active_rows;
-	ClientContext &context;
+	Context &context;
 	unique_ptr<Vector> left_slice;
 	unique_ptr<Vector> accumulator_cast;
 	unique_ptr<ExpressionExecutor> expr_executor;
@@ -179,7 +180,7 @@ bool ExecuteReduce(const idx_t loops, ReduceExecuteInfo &execute_info, LambdaFun
 	vector<Vector> slices;
 	const idx_t initial_offset = info.has_initial ? 1 : 0;
 	for (idx_t i = 0; i < info.column_infos.size() - initial_offset; i++) {
-		if (info.column_infos[i].vector.get().GetVectorType() == VectorType::CONSTANT_VECTOR) {
+		if (info.column_infos[initial_offset + i].vector.get().GetVectorType() == VectorType::CONSTANT_VECTOR) {
 			// only reference constant vectors
 			input_chunk.data[accumulator_offset + 1 + i].Reference(info.column_infos[initial_offset + i].vector);
 		} else {
@@ -262,6 +263,9 @@ unique_ptr<FunctionData> ListReduceBind(BindScalarFunctionInput &input) {
 	// cast in place, so that the bound lambda expression stays intact as a child of the function
 	bound_lambda_expr.LambdaExprMutable() = std::move(cast_lambda_expr);
 	bound_function.SetReturnType(bound_lambda_expr.LambdaExpr()->GetReturnType());
+	if (bound_lambda_expr.LambdaExpr()->IsVolatile()) {
+		bound_function.SetVolatile();
+	}
 	return make_uniq<ListLambdaBindData>(bound_function.GetReturnType(), bound_lambda_expr.LambdaExpr()->Copy(),
 	                                     has_index, has_initial);
 }

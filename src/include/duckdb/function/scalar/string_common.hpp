@@ -7,6 +7,10 @@
 namespace duckdb {
 
 bool IsAscii(const char *input, idx_t n);
+//! Returns the index of the first byte with the high bit set, or n if all bytes are ASCII
+idx_t FirstNonAscii(const char *input, idx_t n);
+//! Decodes one codepoint and returns its length - throws an InternalException on invalid UTF-8
+idx_t DecodeCodepoint(const char *input, idx_t size, int32_t &codepoint);
 idx_t LowerLength(const char *input_data, idx_t input_length);
 void LowerCase(const char *input_data, idx_t input_length, char *result_data);
 idx_t FindStrInStr(const string_t &haystack_s, const string_t &needle_s);
@@ -32,8 +36,13 @@ template <class TA, class TR>
 static inline TR Length(TA input) {
 	auto input_data = input.GetData();
 	auto input_length = input.GetSize();
-	TR length = 0;
-	for (idx_t i = 0; i < input_length; i++) {
+	// ASCII bytes are one code point each, so only the remainder needs to be counted
+	const auto ascii_end = FirstNonAscii(input_data, input_length);
+	if (ascii_end == input_length) {
+		return UnsafeNumericCast<TR>(input_length);
+	}
+	TR length = UnsafeNumericCast<TR>(ascii_end);
+	for (idx_t i = ascii_end; i < input_length; i++) {
 		length += IsCharacter(input_data[i]);
 	}
 	return length;
@@ -43,13 +52,11 @@ template <class TA, class TR>
 static inline TR GraphemeCount(TA input) {
 	auto input_data = input.GetData();
 	auto input_length = input.GetSize();
-	for (idx_t i = 0; i < input_length; i++) {
-		if (input_data[i] & 0x80) {
-			// non-ascii character: use grapheme iterator on remainder of string
-			return UnsafeNumericCast<TR>(Utf8Proc::GraphemeCount(input_data, input_length));
-		}
+	if (FirstNonAscii(input_data, input_length) == input_length) {
+		// ASCII: every byte is a grapheme cluster
+		return UnsafeNumericCast<TR>(input_length);
 	}
-	return UnsafeNumericCast<TR>(input_length);
+	return UnsafeNumericCast<TR>(Utf8Proc::GraphemeCount(input_data, input_length));
 }
 
 } // namespace duckdb

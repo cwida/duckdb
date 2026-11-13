@@ -44,12 +44,20 @@ unique_ptr<Expression> ContainsToInClauseRule::Apply(LogicalOperator &op, vector
 	vector<Value> non_null_elements;
 	for (const auto &elem : ListValue::GetChildren(list_val)) {
 		if (!elem.IsNull()) {
-			non_null_elements.emplace_back(elem.DefaultCastAs(child_type));
+			non_null_elements.emplace_back(elem.CastAs(GetContext(), child_type));
 		}
 	}
 
 	// No non-NULL elements: never contains any value.
 	if (non_null_elements.empty()) {
+		if (ListValue::GetChildren(list_val).empty()) {
+			// An empty list never contains anything, not even NULL - but keep volatile/throwing probes.
+			if (probe_arg->IsVolatile() || probe_arg->CanThrow()) {
+				return nullptr;
+			}
+			changes_made = true;
+			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
+		}
 		changes_made = true;
 		return ExpressionRewriter::ConstantOrNull(GetContext(), probe_arg->Copy(), Value::BOOLEAN(false));
 	}
@@ -59,8 +67,8 @@ unique_ptr<Expression> ContainsToInClauseRule::Apply(LogicalOperator &op, vector
 		return nullptr;
 	}
 
-	auto in_expr = make_uniq<BoundOperatorExpression>(ExpressionType::COMPARE_IN, LogicalType::BOOLEAN);
-	in_expr->GetChildrenMutable().push_back(probe_arg->Copy());
+	auto in_expr =
+	    make_uniq<BoundOperatorExpression>(ExpressionType::COMPARE_IN, LogicalType::BOOLEAN, probe_arg->Copy());
 	for (auto &v : non_null_elements) {
 		in_expr->GetChildrenMutable().push_back(make_uniq<BoundConstantExpression>(std::move(v)));
 	}

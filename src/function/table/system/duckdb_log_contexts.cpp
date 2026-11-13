@@ -4,7 +4,7 @@
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/logging/log_manager.hpp"
-#include "duckdb/logging/log_storage.hpp"
+#include "duckdb/logging/log_sink.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/parser/tableref.hpp"
@@ -12,16 +12,14 @@
 namespace duckdb {
 
 struct DuckDBLogContextData : public GlobalTableFunctionState {
-	explicit DuckDBLogContextData(shared_ptr<LogStorage> log_storage_p) : log_storage(std::move(log_storage_p)) {
-		scan_state = log_storage->CreateScanState(LoggingTargetTable::LOG_CONTEXTS);
-		log_storage->InitializeScan(*scan_state);
-	}
-	DuckDBLogContextData() : log_storage(nullptr) {
+	explicit DuckDBLogContextData(shared_ptr<LogSink> log_sink_p) : log_sink(std::move(log_sink_p)) {
+		scan_state = log_sink->CreateScanState(LoggingTargetTable::LOG_CONTEXTS);
+		log_sink->InitializeScan(*scan_state);
 	}
 
-	//! The log storage we are scanning
-	shared_ptr<LogStorage> log_storage;
-	unique_ptr<LogStorageScanState> scan_state;
+	//! The log sink we are scanning
+	shared_ptr<LogSink> log_sink;
+	unique_ptr<LogSinkScanState> scan_state;
 };
 
 static unique_ptr<FunctionData> DuckDBLogContextBind(ClientContext &context, TableFunctionBindInput &input,
@@ -48,30 +46,34 @@ static unique_ptr<FunctionData> DuckDBLogContextBind(ClientContext &context, Tab
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBLogContextInit(ClientContext &context, TableFunctionInitInput &input) {
-	if (LogManager::Get(context).CanScan(LoggingTargetTable::LOG_CONTEXTS)) {
-		return make_uniq<DuckDBLogContextData>(LogManager::Get(context).GetLogStorage());
+	auto &log_manager = LogManager::Get(context);
+	if (!log_manager.CanScan(LoggingTargetTable::LOG_CONTEXTS)) {
+		throw InvalidConfigurationException(
+		    "Log sink '%s' does not support this query. Select a queryable sink, such as 'memory' or 'file', before "
+		    "generating logs.",
+		    log_manager.GetConfig().storage);
 	}
-	return make_uniq<DuckDBLogContextData>();
+	return make_uniq<DuckDBLogContextData>(log_manager.GetLogSink());
 }
 
 void DuckDBLogContextFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &data = data_p.global_state->Cast<DuckDBLogContextData>();
-	if (data.log_storage) {
-		data.log_storage->Scan(*data.scan_state, output);
-	}
+	data.log_sink->Scan(*data.scan_state, output);
 }
 
 static unique_ptr<TableRef> DuckDBLogContextsBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	auto log_storage = LogManager::Get(context).GetLogStorage();
+	auto log_sink = LogManager::Get(context).GetLogSink();
 
-	// Attempt to let the storage BindReplace the scan function
-	return log_storage->BindReplace(context, input, LoggingTargetTable::LOG_CONTEXTS);
+	// Attempt to let the sink BindReplace the scan function
+	return log_sink->BindReplace(context, input, LoggingTargetTable::LOG_CONTEXTS);
 }
 
 void DuckDBLogContextFun::RegisterFunction(BuiltinFunctions &set) {
 	auto fun =
 	    TableFunction("duckdb_log_contexts", {}, DuckDBLogContextFunction, DuckDBLogContextBind, DuckDBLogContextInit);
 	fun.bind_replace = DuckDBLogContextsBindReplace;
+	// the log storage grows while a query executes
+	fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fun);
 }
 

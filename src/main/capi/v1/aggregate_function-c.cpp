@@ -98,11 +98,18 @@ void CAPIAggregateUpdate(Vector inputs[], AggregateInputData &aggr_input_data, i
 	DataChunk chunk;
 	for (idx_t c = 0; c < input_count; c++) {
 		inputs[c].Flatten();
+		PrepareCAPIVector(inputs[c]);
 		chunk.data.emplace_back(Vector::Ref(inputs[c]));
 	}
 
+	// the callback expects one state per row - flatten a reference, as callers may hold on to the state buffer
+	auto states = Vector::Ref(state);
+	if (states.GetVectorType() != VectorType::FLAT_VECTOR) {
+		states.Flatten(*FlatVector::IncrementalSelectionVector(), count);
+	}
+
 	auto &bind_data = aggr_input_data.bind_data->Cast<CAggregateFunctionBindData>();
-	auto state_data = FlatVector::GetDataMutableUnsafe<duckdb_aggregate_state>(state);
+	auto state_data = FlatVector::GetDataMutableUnsafe<duckdb_aggregate_state>(states);
 	auto c_input_chunk = reinterpret_cast<duckdb_data_chunk>(&chunk);
 
 	CAggregateExecuteInfo exec_info(bind_data.info);
@@ -128,6 +135,7 @@ void CAPIAggregateCombine(Vector &state, Vector &combined, AggregateInputData &a
 
 void CAPIAggregateFinalize(Vector &state, AggregateFinalizeInputData &aggr_input_data, Vector &result, idx_t count,
                            idx_t offset) {
+	PrepareCAPIVector(result);
 	state.Flatten();
 	auto &bind_data = aggr_input_data.bind_data->Cast<CAggregateFunctionBindData>();
 	auto input_state_data = FlatVector::GetDataMutableUnsafe<duckdb_aggregate_state>(state);

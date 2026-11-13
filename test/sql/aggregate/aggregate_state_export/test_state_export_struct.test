@@ -301,10 +301,6 @@ query IIIIIII nosort res8
 SELECT g, FINALIZE(favg(d) EXPORT_STATE) FROM dummy GROUP BY g ORDER BY g;
 ----
 
-# we skip these for now as argmin/argmax now has a custom binder (so that it can work with extension types like JSON)
-# otherwise we get "Binder Error: Cannot use EXPORT_STATE on aggregate functions with custom binders"
-mode skip instable
-
 query II nosort res7
 select argmin(a,b), argmax(a,b) from (values (1,1), (2,2), (8,8), (10,10)) s(a,b);
 ----
@@ -312,8 +308,6 @@ select argmin(a,b), argmax(a,b) from (values (1,1), (2,2), (8,8), (10,10)) s(a,b
 query II nosort res7
 select FINALIZE(argmin(a,b) EXPORT_STATE), FINALIZE(argmax(a,b) EXPORT_STATE) from (values (1,1), (2,2), (8,8), (10,10)) s(a,b);
 ----
-
-mode unskip
 
 query II nosort res9
 SELECT covar_pop(d, d+1) FROM dummy;
@@ -390,15 +384,18 @@ query II nosort res_kurtosis_pop1
 SELECT g, finalize(kurtosis_pop(d) EXPORT_STATE) FROM dummy GROUP BY g ORDER BY g;
 ----
 
-query T
-SELECT kurtosis(d) EXPORT_STATE FROM dummy;
+# the state holds the count, the mean and the central moments M2..M4
+query IIIII
+SELECT st.n, st.mean, st.m2, st.m3, st.m4
+FROM (SELECT (kurtosis(d) EXPORT_STATE)::STRUCT(n UBIGINT, mean DOUBLE, m2 DOUBLE, m3 DOUBLE, m4 DOUBLE) st FROM dummy);
 ----
-{'n': 100, 'sum': 4950.0, 'sum_sqr': 328350.0, 'sum_cub': 24502500.0, 'sum_four': 1950333330.0}
+100	49.5	83325.0	0.0	124958336.25
 
-query T
-SELECT kurtosis_pop(d) EXPORT_STATE FROM dummy;
+query IIIII
+SELECT st.n, st.mean, st.m2, st.m3, st.m4
+FROM (SELECT (kurtosis_pop(d) EXPORT_STATE)::STRUCT(n UBIGINT, mean DOUBLE, m2 DOUBLE, m3 DOUBLE, m4 DOUBLE) st FROM dummy);
 ----
-{'n': 100, 'sum': 4950.0, 'sum_sqr': 328350.0, 'sum_cub': 24502500.0, 'sum_four': 1950333330.0}
+100	49.5	83325.0	0.0	124958336.25
 
 # You're holding it wrong:
 

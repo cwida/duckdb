@@ -12,6 +12,8 @@
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 
@@ -51,7 +53,7 @@ static void MarkTypedValueShreddingGroupsRequired(ColumnWriter &typed_value) {
 	}
 }
 
-idx_t VariantColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> &schemas) {
+idx_t VariantColumnWriter::FinalizeSchema(duckdb_parquet::SchemaElementList &schemas) {
 	idx_t schema_idx = schemas.size();
 
 	auto &schema = Schema();
@@ -68,7 +70,8 @@ idx_t VariantColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> 
 	}
 
 	// variant group
-	duckdb_parquet::SchemaElement top_element;
+	schemas.emplace_back();
+	auto &top_element = schemas.back();
 	top_element.repetition_type = repetition_type;
 	top_element.num_children = NumericCast<int32_t>(child_writers.size());
 	top_element.logicalType.__isset.VARIANT = true;
@@ -82,7 +85,6 @@ idx_t VariantColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> 
 		top_element.__isset.field_id = true;
 		top_element.field_id = NumericCast<int32_t>(field_id.GetIndex());
 	}
-	schemas.push_back(std::move(top_element));
 
 	idx_t unique_columns = 0;
 	for (auto &child_writer : child_writers) {
@@ -100,7 +102,7 @@ LogicalType VariantColumnWriter::TransformTypedValueRecursive(const LogicalType 
 		for (auto &entry : child_types) {
 			child_list_t<LogicalType> child_children;
 			child_children.emplace_back("value", LogicalType::BLOB);
-			if (entry.second.id() != LogicalTypeId::VARIANT) {
+			if (entry.second.id() != LogicalTypeId::VARIANT && entry.second.id() != LogicalTypeId::SQLNULL) {
 				child_children.emplace_back("typed_value", TransformTypedValueRecursive(entry.second));
 			}
 			replaced_types.emplace_back(entry.first, LogicalType::STRUCT(child_children));
@@ -111,7 +113,7 @@ LogicalType VariantColumnWriter::TransformTypedValueRecursive(const LogicalType 
 		auto &child_type = ListType::GetChildType(type);
 		child_list_t<LogicalType> replaced_types;
 		replaced_types.emplace_back("value", LogicalType::BLOB);
-		if (child_type.id() != LogicalTypeId::VARIANT) {
+		if (child_type.id() != LogicalTypeId::VARIANT && child_type.id() != LogicalTypeId::SQLNULL) {
 			replaced_types.emplace_back("typed_value", TransformTypedValueRecursive(child_type));
 		}
 		return LogicalType::LIST(LogicalType::STRUCT(replaced_types));
@@ -126,7 +128,7 @@ LogicalType VariantColumnWriter::TransformTypedValueRecursive(const LogicalType 
 	}
 }
 
-static LogicalType GetParquetVariantType(optional_ptr<LogicalType> shredding = nullptr) {
+LogicalType VariantColumnWriter::GetParquetVariantType(optional_ptr<LogicalType> shredding) {
 	child_list_t<LogicalType> children;
 	children.emplace_back("metadata", LogicalType::BLOB);
 	children.emplace_back("value", LogicalType::BLOB);
@@ -156,9 +158,9 @@ static unique_ptr<FunctionData> BindTransform(BindScalarFunctionInput &input) {
 		}
 		auto type_str = input.GetNonNullConstant(1);
 		auto shredded_type = TransformStringToLogicalType(type_str.GetValue<string>(), context);
-		bound_function.SetReturnType(GetParquetVariantType(shredded_type));
+		bound_function.SetReturnType(VariantColumnWriter::GetParquetVariantType(shredded_type));
 	} else {
-		bound_function.SetReturnType(GetParquetVariantType());
+		bound_function.SetReturnType(VariantColumnWriter::GetParquetVariantType());
 	}
 
 	return nullptr;
@@ -170,9 +172,23 @@ static void ToParquetVariantFunction(DataChunk &input, ExpressionState &state, V
 	ParquetVariantConversion::ToParquetVariant(input.data[0], input.size(), result);
 }
 
-ScalarFunction VariantColumnWriter::GetTransformFunction() {
-	ScalarFunction transform("variant_to_parquet_variant", {}, LogicalType::ANY, ToParquetVariantFunction,
-	                         BindTransform);
+static void ToParquetVariantWriteFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+	ToParquetVariantFunction(input, state, result);
+	// Preserve SQL NULL at the VARIANT group.
+	auto validity = input.data[0].Validity();
+	if (validity.CannotHaveNull()) {
+		return;
+	}
+	for (idx_t i = 0; i < input.size(); i++) {
+		if (!validity.IsValid(i)) {
+			FlatVector::SetNull(result, i, true);
+		}
+	}
+}
+
+ScalarFunction VariantColumnWriter::GetTransformFunction(bool preserve_nulls) {
+	auto function = preserve_nulls ? ToParquetVariantWriteFunction : ToParquetVariantFunction;
+	ScalarFunction transform("variant_to_parquet_variant", {}, LogicalType::ANY, function, BindTransform);
 	transform.GetSignature().AddParameter("variant", LogicalType::VARIANT());
 	transform.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	// throws for values that are out of range for the parquet variant encoding

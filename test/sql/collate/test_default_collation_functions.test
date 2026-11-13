@@ -1,0 +1,64 @@
+# name: test/sql/collate/test_default_collation_functions.test
+# description: functions that push combinable collations apply the default collation like an explicit one
+# group: [collate]
+
+statement ok
+CREATE TABLE strings AS SELECT i, CASE WHEN i % 2 = 0 THEN 'ABC' ELSE 'xyz' END AS s FROM range(5000) t(i);
+
+# without a default collation the comparison stays binary
+query IIIIII
+SELECT contains('ABC', 'b'), 'ABC' LIKE '%b%', starts_with('ABC', 'a'), 'ABC' GLOB '*b*', instr('ABC', 'b'), list_contains(['A'], 'a')
+----
+false	false	false	false	0	false
+
+# a statement prepared before the setting changes follows it
+statement ok
+PREPARE contains_b AS SELECT contains(?, 'b');
+
+statement ok
+SET default_collation = 'nocase';
+
+query I
+EXECUTE contains_b('ABC')
+----
+true
+
+query IIIIIII
+SELECT contains('ABC', 'b'), 'ABC' LIKE '%b%', starts_with('ABC', 'a'), 'ABC' GLOB '*b*', instr('ABC', 'b'), list_contains(['A'], 'a'), 'A' = 'a'
+----
+true	true	true	true	2	true	true
+
+# the same as with an explicit collation, also for columns over more than one vector
+query IIII
+SELECT count(*) FILTER (WHERE contains(s, 'b')), count(*) FILTER (WHERE s LIKE 'a%'), count(*) FILTER (WHERE starts_with(s, 'XY')),
+       count(*) FILTER (WHERE contains(s, 'b') = contains(s COLLATE NOCASE, 'b'))
+FROM strings
+----
+2500	2500	2500	5000
+
+query I
+SELECT count(*) FROM strings WHERE list_contains(['abc'], s)
+----
+2500
+
+query IIIII
+SELECT list_position(['x', 'A'], 'a'), 'ABC' NOT LIKE '%b%', 'ABC' NOT ILIKE '%b%', 'A_C' LIKE 'aX_c' ESCAPE 'X',
+       ('A_C' LIKE 'aX_c' ESCAPE 'X') = ('A_C' COLLATE NOCASE LIKE 'aX_c' ESCAPE 'X')
+----
+2	false	false	true	true
+
+statement ok
+SET default_collation = 'noaccent.nocase';
+
+query II
+SELECT contains('HÉLLO', 'e'), list_contains(['héllo'], 'HELLO')
+----
+true	true
+
+statement ok
+RESET default_collation;
+
+query II
+SELECT contains('ABC', 'b'), list_contains(['A'], 'a')
+----
+false	false

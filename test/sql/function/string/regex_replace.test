@@ -160,6 +160,27 @@ SELECT regexp_replace(E'https://www.example.com/path\nsecond-line',
 ----
 example.com
 
+# Options are retained when a non-constant input is rewritten to regexp_extract.
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+query II
+EXPLAIN SELECT regexp_replace(s, '^(foo)-(.*)$', '\2', 'i')
+FROM (VALUES ('FOO-bar')) t(s);
+----
+logical_opt	<REGEX>:(?s).*regexp_extract.*'ik'.*
+
+query T
+SELECT regexp_replace(s, '^(foo)-(.*)$', '\2', 'i')
+FROM (VALUES ('FOO-bar'), ('no-match')) t(s)
+ORDER BY s;
+----
+bar
+no-match
+
 # Inline multiline mode makes the trailing `$` an end-of-line anchor. The match no longer spans the
 # whole input, so the optimizer must not rewrite this to regexp_extract and drop the unmatched tail.
 query T

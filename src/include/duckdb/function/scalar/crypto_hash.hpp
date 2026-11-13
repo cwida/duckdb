@@ -9,11 +9,13 @@
 #pragma once
 
 #include "duckdb/common/encryption_state.hpp"
-#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/common/vector/string_vector.hpp"
 #include "duckdb/execution/expression_executor_state.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 namespace crypto_hash_scalar {
@@ -32,12 +34,13 @@ struct LocalState : public FunctionLocalState {
 
 template <CryptoHashFunction FUNCTION>
 unique_ptr<FunctionLocalState> InitLocalState(ExpressionState &state, const BoundFunctionExpression &, FunctionData *) {
-	auto &context = state.GetContext();
-	auto &config = DBConfig::GetConfig(context);
-	if (!config.options.force_mbedtls && config.encryption_util && config.encryption_util->SupportsHash(FUNCTION)) {
+	auto &db = state.GetContext().GetDatabase();
+	auto &config = DBConfig::GetConfig(db);
+	auto force_mbedtls = Settings::Get<ForceMbedtlsUnsafeSetting>(config);
+	if (!force_mbedtls && config.encryption_util && config.encryption_util->SupportsHash(FUNCTION)) {
 		return make_uniq<LocalState>(config.encryption_util, FUNCTION);
 	}
-	return make_uniq<LocalState>(context.db->GetMbedTLSUtil(config.options.force_mbedtls), FUNCTION);
+	return make_uniq<LocalState>(db.GetMbedTLSUtil(force_mbedtls), FUNCTION);
 }
 
 struct StringData {

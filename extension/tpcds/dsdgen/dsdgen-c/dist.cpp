@@ -583,10 +583,7 @@ int dist_op(void *dest, int op, const char *d_name, int vset, int wset, int stre
 		index = vset - 1;
 		dt = wset - 1;
 		if (index >= d->length || index < 0) {
-			fprintf(stderr, "Runtime ERROR: Distribution over-run/under-run\n");
-			fprintf(stderr, "Check distribution definitions and usage for %s.\n", d->name);
-			fprintf(stderr, "index = %d, length=%d.\n", index, d->length);
-			exit(1);
+			INTERNAL("Distribution over-run/under-run");
 		}
 		char_val = dist->strings + dist->value_sets[dt][index];
 	}
@@ -804,63 +801,6 @@ int dist_type(const char *name, int nValueSet) {
 		return (-1);
 
 	return (dist->dist->type_vector[nValueSet - 1]);
-}
-
-/*
- * Routine:
- * Purpose:
- * Algorithm:
- * Data Structures:
- *
- * Params:
- * Returns:
- * Called By:
- * Calls:
- * Assumptions:
- * Side Effects:
- * TODO: None
- */
-void dump_dist(const char *name) {
-	d_idx_t *pIndex;
-	int i, j;
-	char *pCharVal = NULL;
-	int nVal;
-
-	pIndex = find_dist(name);
-	if (pIndex == NULL)
-		ReportErrorNoLine(QERR_BAD_NAME, name, 1);
-	printf("create %s;\n", pIndex->name);
-	printf("set types = (");
-	for (i = 0; i < pIndex->v_width; i++) {
-		if (i > 0)
-			printf(", ");
-		printf("%s", dist_type(name, i + 1) == 7 ? "int" : "varchar");
-	}
-	printf(");\n");
-	printf("set weights = %d;\n", pIndex->w_width);
-	for (i = 0; i < pIndex->length; i++) {
-		printf("add(");
-		for (j = 0; j < pIndex->v_width; j++) {
-			if (j)
-				printf(", ");
-			if (dist_type(name, j + 1) != 7) {
-				dist_member(&pCharVal, name, i + 1, j + 1);
-				printf("\"%s\"", pCharVal);
-			} else {
-				dist_member(&nVal, name, i + 1, j + 1);
-				printf("%d", nVal);
-			}
-		}
-		printf("; ");
-		for (j = 0; j < pIndex->w_width; j++) {
-			if (j)
-				printf(", ");
-			printf("%d", dist_weight(NULL, name, i + 1, j + 1));
-		}
-		printf(");\n");
-	}
-
-	return;
 }
 
 /*

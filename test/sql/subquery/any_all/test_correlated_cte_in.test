@@ -1,0 +1,125 @@
+# name: test/sql/subquery/any_all/test_correlated_cte_in.test
+# description: Preserve correlation on both sides of a MARK join over CTE references
+# group: [any_all]
+
+statement ok
+CREATE TABLE inputs(id INTEGER, xs INTEGER[], ys INTEGER[]);
+
+statement ok
+INSERT INTO inputs VALUES
+    (1, [1, 2, NULL], [1]),
+    (2, [1, 2, NULL], [2]),
+    (3, [1, 2, NULL], []),
+    (4, [1, 2, NULL], [NULL]),
+    (5, [1, 2, NULL], [1, NULL]),
+    (6, [], [1]),
+    (7, [1, 1, 2], [1]),
+    (8, [NULL], []),
+    (9, [1, 2, NULL], NULL),
+    (10, [1, 2, NULL], [1]);
+
+foreach optimizer true false
+
+statement ok
+SET enable_optimizer={optimizer};
+
+foreach cte true false
+
+statement ok
+SET delim_join_as_cte={cte};
+
+# Both CTEs depend on the outer row. Matching values from another row must not leak in.
+query IT
+SELECT needle, (
+    WITH a AS (SELECT unnest(v.xs) AS x),
+         b AS (SELECT v.needle AS x)
+    SELECT list(x ORDER BY x) FROM a WHERE x IN (SELECT x FROM b)
+) AS found
+FROM (VALUES ([1, 2], 1), ([1, 2], 2)) v(xs, needle)
+ORDER BY needle;
+----
+1	[1]
+2	[2]
+
+# The same shape with scalar VARCHAR correlation and UNNEST in both CTEs.
+query IT
+SELECT n, (
+    WITH a AS (SELECT unnest(string_split(v.t, ' ')) AS w),
+         b AS (SELECT unnest(string_split(v.q, ' ')) AS w)
+    SELECT list(w ORDER BY w) FROM a WHERE w IN (SELECT w FROM b)
+) AS found
+FROM (VALUES (1, 'alpha beta gamma', 'alpha'),
+             (2, 'beta gamma delta', 'gamma'),
+             (3, 'delta alpha beta', 'delta')) v(n, t, q)
+ORDER BY n;
+----
+1	[alpha]
+2	[gamma]
+3	[delta]
+
+# Project the markers: NULLs and empty sets must be tracked per outer row.
+query IT
+SELECT id, (
+    WITH a AS MATERIALIZED (SELECT unnest(v.xs) AS x),
+         b AS MATERIALIZED (SELECT unnest(v.ys) AS y)
+    SELECT [list(x IN (SELECT y FROM b) ORDER BY x NULLS LAST),
+            list(x NOT IN (SELECT y FROM b) ORDER BY x NULLS LAST)]
+    FROM a
+) AS found
+FROM inputs v ORDER BY id;
+----
+1	[[true, false, NULL], [false, true, NULL]]
+2	[[false, true, NULL], [true, false, NULL]]
+3	[[false, false, false], [true, true, true]]
+4	[[NULL, NULL, NULL], [NULL, NULL, NULL]]
+5	[[true, NULL, NULL], [false, NULL, NULL]]
+6	[NULL, NULL]
+7	[[true, true, false], [false, false, true]]
+8	[[false], [true]]
+9	[[false, false, false], [true, true, true]]
+10	[[true, false, NULL], [false, true, NULL]]
+
+# A constant left side still needs per-row NULL and empty-set handling.
+query IT
+SELECT id, (
+    WITH b AS (SELECT unnest(v.ys) AS y)
+    SELECT list(x IN (SELECT y FROM b) ORDER BY x NULLS LAST)
+    FROM (VALUES (1), (2), (NULL)) a(x)
+) AS found
+FROM inputs v ORDER BY id;
+----
+1	[true, false, NULL]
+2	[false, true, NULL]
+3	[false, false, false]
+4	[NULL, NULL, NULL]
+5	[true, NULL, NULL]
+6	[true, false, NULL]
+7	[true, false, NULL]
+8	[false, false, false]
+9	[false, false, false]
+10	[true, false, NULL]
+
+# Preserve the dependency through multiple CTE references and a derived table.
+query IT
+SELECT id, (
+    WITH a AS NOT MATERIALIZED (SELECT unnest(v.xs) AS x),
+         b AS NOT MATERIALIZED (SELECT unnest(v.ys) AS y),
+         c AS (SELECT y FROM b UNION ALL SELECT y FROM b)
+    SELECT list(x ORDER BY x) FROM a WHERE x IN (SELECT y FROM (SELECT y FROM c))
+) AS found
+FROM inputs v ORDER BY id;
+----
+1	[1]
+2	[2]
+3	NULL
+4	NULL
+5	[1]
+6	NULL
+7	[1, 1]
+8	NULL
+9	NULL
+10	[1]
+
+endloop
+
+endloop

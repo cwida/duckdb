@@ -53,15 +53,15 @@ SELECT 1 WHERE (1,2) IN (VALUES (1,2),(1,2),(NULL,2));
 ----
 1
 
-statement error
-EXPLAIN (SQL) SELECT __mark_join_marker FROM (VALUES (NULL::INTEGER)) l(a) JOIN BY (TYPE MARK) (VALUES (2)) r(b) ON a IS DISTINCT FROM 2;
+query I
+SELECT __mark_join_marker FROM (VALUES (NULL::INTEGER)) l(a) JOIN BY (TYPE MARK) (VALUES (2)) r(b) ON a IS DISTINCT FROM 2;
 ----
-<REGEX>:.*EXPLAIN \(SQL\) cannot render this query: .*MARK.*semantics.*
+true
 
-statement error
-EXPLAIN (SQL) SELECT __mark_join_marker FROM (VALUES (NULL::INTEGER)) l(a) JOIN BY (TYPE MARK) (VALUES (2)) r(b) ON a IS DISTINCT FROM NULL::INTEGER;
+query I
+SELECT __mark_join_marker FROM (VALUES (NULL::INTEGER)) l(a) JOIN BY (TYPE MARK) (VALUES (2)) r(b) ON a IS DISTINCT FROM NULL::INTEGER;
 ----
-<REGEX>:.*EXPLAIN \(SQL\) cannot render this query: .*MARK.*semantics.*
+false
 
 statement ok
 CREATE TABLE mark_probe(id INTEGER,label VARCHAR,a INTEGER,c INTEGER);

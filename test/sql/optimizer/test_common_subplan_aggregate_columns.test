@@ -1,0 +1,175 @@
+# name: test/sql/optimizer/test_common_subplan_aggregate_columns.test
+# description: Share ungrouped aggregates over identical inputs with different output expressions
+# group: [optimizer]
+
+statement ok
+CREATE TABLE scan_columns AS
+SELECT i::INTEGER AS k,
+       CASE WHEN i % 3 <> 0 THEN i::INTEGER END AS a,
+       (i * 10)::DECIMAL(12,2) AS b,
+       'v' || i AS s
+FROM range(20) t(i);
+
+# No individual scan reads both aggregate payloads.
+query IRR
+SELECT (SELECT count(*) FROM scan_columns WHERE k < 5),
+       (SELECT avg(a) FROM scan_columns WHERE k < 5),
+       (SELECT avg(b) FROM scan_columns WHERE k < 5);
+----
+5	2.3333333333333335	20
+
+# Reordering consumers and renaming their columns preserves the output schema.
+query RRI
+SELECT (SELECT avg(paid) FROM (SELECT b AS paid, k FROM scan_columns) x WHERE k < 5),
+       (SELECT avg(discount) FROM (SELECT a AS discount, k FROM scan_columns) y WHERE k < 5),
+       (SELECT count(*) FROM scan_columns z WHERE z.k < 5);
+----
+20	2.3333333333333335	5
+
+# Grouped and DISTINCT aggregates retain their independent states.
+query III rowsort
+SELECT k % 2, count(DISTINCT a), sum(a) FROM scan_columns WHERE k < 5 GROUP BY k % 2
+UNION ALL
+SELECT k % 2, count(*), sum(b)::BIGINT FROM scan_columns WHERE k < 5 GROUP BY k % 2;
+----
+0	2	6
+0	3	60
+1	1	1
+1	2	40
+
+# String and numeric columns must not be confused when restoring each reader.
+query TT rowsort
+SELECT s, a::VARCHAR FROM scan_columns WHERE k < 3
+UNION ALL
+SELECT s, b::VARCHAR FROM scan_columns WHERE k < 3;
+----
+v0	0.00
+v0	NULL
+v1	1
+v1	10.00
+v2	2
+v2	20.00
+
+# A filter that remains above the scan preserves the aggregate input.
+statement ok
+SET disabled_optimizers='filter_pushdown';
+
+query II
+SELECT (SELECT sum(a) FROM scan_columns WHERE k % 5 = 1),
+       (SELECT sum(b)::BIGINT FROM scan_columns WHERE k % 5 = 1);
+----
+28	340
+
+statement ok
+SET disabled_optimizers='';
+
+# Predicates on different base columns remain different scans.
+query II
+SELECT (SELECT sum(a) FROM scan_columns WHERE k < 5),
+       (SELECT sum(b)::BIGINT FROM scan_columns WHERE a < 5);
+----
+7	70
+
+# Bind each execution's predicate independently, including an empty result.
+statement ok
+PREPARE scan_columns_p AS
+SELECT (SELECT count(*) FROM scan_columns WHERE k < $1),
+       (SELECT sum(a) FROM scan_columns WHERE k < $2),
+       (SELECT sum(b)::BIGINT FROM scan_columns WHERE k < $3);
+
+query III
+EXECUTE scan_columns_p(5, 5, 5);
+----
+5	7	100
+
+query III
+EXECUTE scan_columns_p(5, 3, 2);
+----
+5	3	10
+
+query III
+EXECUTE scan_columns_p(0, 0, 0);
+----
+0	NULL	NULL
+
+query III
+EXECUTE scan_columns_p(5, 5, 5);
+----
+5	7	100
+
+# Sharing aggregates preserves the common input's guarded cast.
+statement ok
+CREATE TABLE guarded_input AS
+SELECT i AS k, CASE WHEN i < 5 THEN i::VARCHAR ELSE 'invalid' END AS v FROM range(10) t(i);
+
+query II
+SELECT (SELECT sum(k) FROM guarded_input WHERE CASE WHEN k < 5 THEN v::INTEGER ELSE -1 END >= 0),
+       (SELECT max(k) FROM guarded_input WHERE CASE WHEN k < 5 THEN v::INTEGER ELSE -1 END >= 0);
+----
+10	4
+
+statement error
+SELECT (SELECT sum(k) FROM guarded_input WHERE v::INTEGER >= 0),
+       (SELECT max(k) FROM guarded_input WHERE v::INTEGER >= 0);
+----
+Could not convert string 'invalid'
+
+# Repeated projections retain their results without sharing bare scans.
+query RR
+SELECT sum(x), avg(x)
+FROM (
+	SELECT a + 1 AS x FROM scan_columns WHERE k < 5
+	UNION ALL
+	SELECT a + 1 AS x FROM scan_columns WHERE k < 5
+);
+----
+20	3.3333333333333335
+
+# Aggregate modifiers and bind data are part of output expression identity.
+statement ok
+CREATE TABLE aggregate_modifiers AS SELECT (i % 3)::INTEGER AS a FROM range(5) t(i);
+
+query RRRR
+SELECT (SELECT avg(DISTINCT a) FROM aggregate_modifiers),
+       (SELECT avg(a) FROM aggregate_modifiers),
+       (SELECT quantile_cont(a, 0.25) FROM aggregate_modifiers),
+       (SELECT quantile_cont(a, 0.75) FROM aggregate_modifiers);
+----
+1	0.8	0	1
+
+query II
+SELECT (SELECT sum(a) FILTER (WHERE k > 1) FROM scan_columns WHERE k < 5),
+       (SELECT sum(b) FILTER (WHERE k > 2)::BIGINT FROM scan_columns WHERE k < 5);
+----
+6	70
+
+# Ordered aggregates retain their independent ordering and payloads.
+query TT
+SELECT (SELECT list(a ORDER BY k) FROM scan_columns WHERE k < 5),
+       (SELECT list(b ORDER BY k DESC) FROM scan_columns WHERE k < 5);
+----
+[NULL, 1, 2, NULL, 4]	[40.00, 30.00, 20.00, 10.00, 0.00]
+
+# A parent must distinguish the canonical aggregate output it reads.
+query IIII
+SELECT (SELECT sum(a) FROM scan_columns WHERE k < 5),
+       (SELECT sum(b)::BIGINT FROM scan_columns WHERE k < 5),
+       (SELECT sum(x)::BIGINT FROM (SELECT sum(a) x FROM scan_columns WHERE k < 5) q),
+       (SELECT sum(x)::BIGINT FROM (SELECT sum(b) x FROM scan_columns WHERE k < 5) q);
+----
+7	100	7	100
+
+# Volatile aggregates must retain all evaluations.
+statement ok
+CREATE SEQUENCE aggregate_calls;
+
+query II
+SELECT (SELECT count(nextval('aggregate_calls')) FROM scan_columns WHERE k < 5),
+       (SELECT count(nextval('aggregate_calls')) FROM scan_columns WHERE k < 5);
+----
+5	5
+
+query I
+SELECT nextval('aggregate_calls');
+----
+11

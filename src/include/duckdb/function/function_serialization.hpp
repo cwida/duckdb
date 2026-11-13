@@ -133,20 +133,19 @@ public:
 		}
 	}
 
-	//! Only written if the function was called with keyword-only or "**kwargs" arguments
+	//! How the arguments split into positional and named ones. Always written for current-version plans, so that a
+	//! reader can tell an all-positional call from a plan written before the names were serialized
 	template <class FUNC>
 	static void SerializeNamedArguments(Serializer &serializer, const FUNC &function) {
 		auto &named_arguments = function.GetNamedArguments();
-		if (named_arguments.empty()) {
-			return;
-		}
-		if constexpr (std::is_same_v<FUNC, BoundTableFunction>) {
-			if (!serializer.ShouldSerialize(StorageVersion::V2_0_0)) {
+		if (!serializer.ShouldSerialize(StorageVersion::V2_0_0)) {
+			if (named_arguments.empty()) {
+				return;
+			}
+			if constexpr (std::is_same_v<FUNC, BoundTableFunction>) {
 				// older versions read a table function's options from the operator's named parameters instead
 				return;
 			}
-		}
-		if (!serializer.ShouldSerialize(StorageVersion::V2_0_0)) {
 			if (named_arguments.size() > function.GetKwargsCount()) {
 				throw SerializationException("Function %s has keyword-only parameters, which cannot be serialized "
 				                             "to a storage version older than v2.0.0",
@@ -156,7 +155,7 @@ public:
 			return;
 		}
 		serializer.WriteProperty(508, "positional_arguments", function.GetPositionalArgumentCount());
-		serializer.WriteProperty(509, "named_arguments", named_arguments);
+		serializer.WritePropertyWithDefault(509, "named_arguments", named_arguments);
 	}
 
 	//! Plans written by versions whose binds erased the arguments they folded into their bind data record the
@@ -165,6 +164,30 @@ public:
 		if (!original_arguments.empty()) {
 			arguments = std::move(original_arguments);
 		}
+	}
+
+	//! Selects the overload of a v1.x aggregate whose bind lost the erased arguments, by its leading parameter types
+	template <class FUNCTION_SET>
+	static optional_idx SelectByLeadingArguments(const FUNCTION_SET &functions, vector<LogicalType> &arguments,
+	                                             const LogicalType &return_type) {
+		for (idx_t offset = 0; offset < functions.functions.size(); offset++) {
+			auto &signature = functions.functions[offset]->GetSignature();
+			if (signature.GetParameterCount() <= arguments.size() ||
+			    signature.GetReturnType().id() != return_type.id()) {
+				continue;
+			}
+			bool leading = true;
+			for (idx_t i = 0; i < arguments.size() && leading; i++) {
+				leading = signature.GetParameter(i).GetType().id() == arguments[i].id();
+			}
+			if (leading) {
+				for (idx_t i = arguments.size(); i < signature.GetParameterCount(); i++) {
+					arguments.push_back(signature.GetParameter(i).GetType());
+				}
+				return offset;
+			}
+		}
+		return optional_idx();
 	}
 
 	//! Splits the argument types a plan recorded into those passed by position and those passed by name
@@ -190,9 +213,9 @@ public:
 	//! Selects the overload of a plan written before v2.0.0, which records its named arguments only as the operator's
 	//! named parameters. Required keyword-only parameters are treated as if they had a default - the bind receives
 	//! those named parameters and rejects a missing one, as it did when the plan was written
-	static optional_idx SelectWithoutNamedArguments(FunctionBinder &binder, const Identifier &name,
-	                                                const TableFunctionSet &functions,
-	                                                const vector<LogicalType> &positional_types) {
+	static FunctionBindResult SelectWithoutNamedArguments(ClientContext &context, const Identifier &name,
+	                                                      const TableFunctionSet &functions,
+	                                                      const vector<LogicalType> &positional_types) {
 		auto relaxed = functions;
 		relaxed.ApplyToFunctions([](TableFunction &function) {
 			auto &signature = function.GetSignature();
@@ -204,8 +227,7 @@ public:
 				}
 			}
 		});
-		ErrorData error;
-		return binder.BindFunction(name, relaxed, positional_types, {}, error);
+		return FunctionBinder::SelectFunction(context, relaxed, positional_types);
 	}
 
 	//! Deserializes a table function, and whether the plan holds its bind data. Without it, the caller binds again
@@ -236,18 +258,22 @@ public:
 		vector<pair<Identifier, LogicalType>> keyword_types;
 		SplitArgumentTypes(qualified_name, arguments, positional_count, named_arguments, positional_types,
 		                   keyword_types);
-		FunctionBinder binder(context);
+		auto func_idx = FunctionBinder::SelectFunction(context, functions, {positional_types, keyword_types});
+		// the error of the selection with the named arguments describes the plan best
 		ErrorData error;
-		auto func_idx = binder.BindFunction(qualified_name.Name(), functions, positional_types, keyword_types, error);
-		if (!func_idx.IsValid() && named_arguments.empty()) {
-			func_idx = SelectWithoutNamedArguments(binder, qualified_name.Name(), functions, positional_types);
+		if (!func_idx) {
+			error = func_idx.GetError();
+			if (named_arguments.empty()) {
+				func_idx = SelectWithoutNamedArguments(context, qualified_name.Name(), functions, positional_types);
+			}
 		}
-		if (!func_idx.IsValid()) {
+		if (!func_idx) {
 			throw SerializationException("Failed to find function %s(%s)\n%s", qualified_name.ToString(),
 			                             StringUtil::ToString(arguments, ","), error.RawMessage());
 		}
 
-		BoundTableFunction function(functions.GetFunctionByOffset(func_idx.GetIndex()));
+		// by index: a selection without named arguments binds to a relaxed copy of the overload
+		BoundTableFunction function(functions.GetFunctionByOffset(func_idx.GetBinding().GetOverloadIndex()));
 		function.GetArguments() = std::move(arguments);
 		function.SetNamedArguments(positional_count, std::move(named_arguments));
 		return make_pair(std::move(function), has_serialize);
@@ -275,23 +301,23 @@ public:
 		case LogicalTypeId::UNION:
 		case LogicalTypeId::VARIANT:
 		case LogicalTypeId::MAP:
-			if (!type.AuxInfo()) {
+			if (!type.HasParameters()) {
 				return true;
 			}
 			return false;
 		case LogicalTypeId::LIST:
-			if (!type.AuxInfo()) {
+			if (!type.HasParameters()) {
 				return true;
 			}
 			return TypeRequiresAssignment(ListType::GetChildType(type));
 		case LogicalTypeId::ARRAY:
-			if (!type.AuxInfo()) {
+			if (!type.HasParameters()) {
 				return true;
 			}
 			return TypeRequiresAssignment(ArrayType::GetChildType(type));
 		case LogicalTypeId::STRUCT:
 		case LogicalTypeId::TUPLE:
-			if (!type.AuxInfo()) {
+			if (!type.HasParameters()) {
 				return true;
 			}
 			if (StructType::GetChildCount(type) == 0) {
@@ -304,21 +330,33 @@ public:
 	}
 
 	//! Plans written before the argument names were serialized hold the names of the named arguments in the aliases
-	//! of the trailing arguments. Only the arguments behind the standard parameters can have been named.
+	//! of the trailing arguments. Only the arguments behind the standard parameters can have been named, and only
+	//! where the function cannot take them positionally - a "*args" function folds its "**kwargs" into "*args", so
+	//! a trailing alias there is a genuine alias, not an argument name.
 	template <class FUNCTION_SET>
 	static void RestoreNamesFromAliases(const FUNCTION_SET &functions, const vector<unique_ptr<Expression>> &children,
-	                                    idx_t &positional_count, vector<Identifier> &named_arguments) {
+	                                    const LogicalType &return_type, idx_t &positional_count,
+	                                    vector<Identifier> &named_arguments) {
 		bool takes_named = false;
 		idx_t standard_count = 0;
 		for (auto &function : functions.functions) {
 			auto &signature = function->GetSignature();
-			if (!signature.GetKwargs()) {
+			if (!signature.GetKwargs() || signature.GetArgs()) {
 				continue;
 			}
 			takes_named = true;
 			standard_count = MaxValue(standard_count, signature.GetPositionalParameterCount());
 		}
 		if (!takes_named || children.size() != positional_count) {
+			return;
+		}
+		// the fields of a v1.x struct_pack are its argument names, also where a rewrite dropped an argument's alias
+		if (standard_count == 0 && return_type.id() == LogicalTypeId::STRUCT &&
+		    StructType::GetChildCount(return_type) == children.size()) {
+			for (idx_t i = 0; i < children.size(); i++) {
+				named_arguments.push_back(StructType::GetChildName(return_type, i));
+			}
+			positional_count = 0;
 			return;
 		}
 		idx_t named_offset = children.size();
@@ -329,6 +367,20 @@ public:
 			named_arguments.push_back(children[i]->GetAlias());
 		}
 		positional_count = named_offset;
+	}
+
+	template <class FUNC>
+	static pair<FUNC, unique_ptr<FunctionData>>
+	ResolveFunction(FunctionBinder &binder, const FunctionBinding &binding, vector<unique_ptr<Expression>> &children,
+	                vector<pair<Identifier, unique_ptr<Expression>>> &keyword_args) {
+		if constexpr (std::is_same_v<FUNC, BoundScalarFunction>) {
+			return binder.ResolveScalarFunction(binding, children, keyword_args);
+		} else if constexpr (std::is_same_v<FUNC, BoundAggregateFunction>) {
+			return binder.ResolveAggregateFunction(binding, children, keyword_args);
+		} else {
+			static_assert(std::is_same_v<FUNC, BoundWindowFunction>, "unsupported bound function type");
+			return binder.ResolveWindowFunction(binding, children, keyword_args);
+		}
 	}
 
 	template <class FUNC, class CATALOG_ENTRY>
@@ -345,6 +397,7 @@ public:
 		auto positional_count = deserializer.ReadPropertyWithDefault<idx_t>(508, "positional_arguments");
 		auto named_arguments = deserializer.ReadPropertyWithDefault<vector<Identifier>>(509, "named_arguments");
 
+		const bool legacy_without_original_arguments = original_arguments.empty() && positional_count == 0;
 		RestoreErasedArguments(arguments, original_arguments);
 
 		if (arguments.empty() && !children.empty()) {
@@ -369,8 +422,13 @@ public:
 
 		// If there are no argument names serialized, treat all arguments as positional
 		if (named_arguments.empty()) {
+			// a current-version plan always records its positional count - only a plan written before the argument
+			// names were serialized leaves both fields empty and holds the names in the aliases of its children
+			const bool argument_names_serialized = positional_count != 0;
 			positional_count = arguments.size();
-			RestoreNamesFromAliases(functions, children, positional_count, named_arguments);
+			if (!argument_names_serialized) {
+				RestoreNamesFromAliases(functions, children, return_type, positional_count, named_arguments);
+			}
 		}
 
 		// Sanity check: The named arguments are the last arguments, so the number of arguments has to add up
@@ -396,17 +454,24 @@ public:
 
 		// Lookup the function (and the correct overload)
 		FunctionBinder binder(context);
-		ErrorData error;
-		const auto func_idx =
-		    binder.BindFunction(qualified_name.Name(), functions, positional_types, keyword_types, error);
-
-		// Ensure the function overload was found
-		if (!func_idx.IsValid()) {
-			throw SerializationException("Failed to find function %s(%s)\n%s", qualified_name.ToString(),
-			                             StringUtil::ToString(arguments, ","), error.RawMessage());
+		binder.arguments_collated = true;
+		const auto func_idx = FunctionBinder::SelectFunction(context, functions, {positional_types, keyword_types});
+		optional_idx overload;
+		if (func_idx.IsSuccess()) {
+			overload = func_idx.GetBinding().GetOverloadIndex();
+		} else if (catalog_type == CatalogType::AGGREGATE_FUNCTION_ENTRY && legacy_without_original_arguments &&
+		           named_arguments.empty() && !arguments.empty()) {
+			overload = SelectByLeadingArguments(functions, arguments, return_type);
+			positional_count = arguments.size();
 		}
 
-		const auto function = functions.GetFunctionByOffset(func_idx.GetIndex());
+		// Ensure the function overload was found
+		if (!overload.IsValid()) {
+			throw SerializationException("Failed to find function %s(%s)\n%s", qualified_name.ToString(),
+			                             StringUtil::ToString(arguments, ","), func_idx.GetError().RawMessage());
+		}
+
+		const auto function = functions.GetFunctionByOffset(overload.GetIndex());
 
 		// Does this function support serializing its bound data?
 		if (!has_serialize) {
@@ -421,8 +486,18 @@ public:
 					children.resize(positional_count);
 				}
 
+				// The bind callback may have changed the argument types, so the selected overload is bound to the
+				// arguments it is called with
+				std::decay_t<decltype(functions)> overload(functions.name);
+				overload.AddFunction(function);
+				auto rebind = FunctionBinder::SelectFunction(context, overload, {children, keyword_args}, true);
+				if (!rebind) {
+					rebind.GetError().Throw();
+				}
+
 				// Resolve function
-				auto [bound_function, bound_data] = binder.ResolveFunction(function, children, keyword_args);
+				auto [bound_function, bound_data] =
+				    ResolveFunction<FUNC>(binder, rebind.GetBinding(), children, keyword_args);
 
 				if (TypeRequiresAssignment(bound_function.GetReturnType())) {
 					bound_function.SetReturnType(std::move(return_type));

@@ -233,34 +233,23 @@ SELECT 1 FROM (SELECT sum(missing_column) OVER () FROM window_input) t;
 ----
 Referenced column "missing_column" not found
 
-# Volatility in order must keep the unused window and its inputs alive.
+# Volatile ordering is rejected before the unused window could be pruned.
 statement ok
 CREATE SEQUENCE window_order_sequence;
 
-query I
+statement error
 SELECT count(*) FROM (SELECT row_number() OVER (ORDER BY nextval('window_order_sequence')) AS unused_w FROM range(3) t(i)) t;
 ----
-3
+ORDER BY window expressions cannot be volatile
 
-query I
-SELECT currval('window_order_sequence');
-----
-3
-
-# Volatility in partition must keep the unused window and its inputs alive.
+# Volatile partitioning is rejected as well.
 statement ok
 CREATE SEQUENCE window_partition_sequence;
 
-query I
+statement error
 SELECT count(*) FROM (SELECT row_number() OVER (PARTITION BY nextval('window_partition_sequence')) AS unused_w FROM range(3) t(i)) t;
 ----
-3
-
-# Match the existing live-window behavior: partition keys are evaluated twice.
-query I
-SELECT currval('window_partition_sequence');
-----
-6
+PARTITION BY window expressions cannot be volatile
 
 # Volatility in filter must keep the unused window and its inputs alive.
 statement ok

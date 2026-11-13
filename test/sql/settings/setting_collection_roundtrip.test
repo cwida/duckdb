@@ -1,0 +1,92 @@
+# name: test/sql/settings/setting_collection_roundtrip.test
+# description: Test collection-valued settings and their reset behavior
+# group: [settings]
+
+statement ok
+SET extension_directories=['first', 'second']
+
+query I
+SELECT current_setting('extension_directories') = ['first', 'second']
+----
+true
+
+statement ok
+RESET extension_directories
+
+query I
+SELECT current_setting('extension_directories') = []::VARCHAR[]
+----
+true
+
+statement ok
+SET allowed_configs=['threads', 'memory_limit']
+
+query I
+SELECT list_sort(current_setting('allowed_configs')) = ['max_memory', 'threads']
+----
+true
+
+statement ok
+RESET allowed_configs
+
+query I
+SELECT current_setting('allowed_configs') = []::VARCHAR[]
+----
+true
+
+statement ok
+SET profiling_renderer_settings=MAP {'maximum_render_width': 300, 'maximum_render_height': 20}
+
+query I
+SELECT current_setting('profiling_renderer_settings')['maximum_render_width'] = '300'
+   AND current_setting('profiling_renderer_settings')['maximum_render_height'] = '20'
+----
+true
+
+statement ok
+RESET profiling_renderer_settings
+
+query I
+SELECT map_entries(current_setting('profiling_renderer_settings')) = []
+----
+true
+
+statement ok
+SET active_grammar_extensions=[]
+
+query I
+SELECT current_setting('active_grammar_extensions') = []::VARCHAR[]
+----
+true
+
+statement ok
+SET active_grammar_extensions=NULL
+
+query I
+SELECT current_setting('active_grammar_extensions') = []::VARCHAR[]
+----
+true
+
+statement error
+SET active_grammar_extensions=['missing', 'missing']
+----
+list contains duplicate value 'missing'
+
+statement error
+SET active_grammar_extensions=['missing', 'also_missing']
+----
+the following extensions don't exist: missing,also_missing
+
+statement ok
+RESET active_grammar_extensions
+
+statement ok
+SET current_dialect=NULL
+
+query I
+SELECT current_setting('current_dialect') IS NULL
+----
+true
+
+statement ok
+RESET current_dialect

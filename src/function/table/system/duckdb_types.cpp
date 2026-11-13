@@ -222,7 +222,7 @@ void DuckDBTypesFunction(ClientContext &context, TableFunctionInput &data_p, Dat
 		tags.Append(Value::MAP(type_entry.tags));
 		internal.Append(Value::BOOLEAN(type_entry.internal));
 		extension_name.Append(type_entry.extension_name.empty() ? Value() : Value(type_entry.extension_name));
-		if (type.id() == LogicalTypeId::ENUM && type.AuxInfo()) {
+		if (type.id() == LogicalTypeId::ENUM && type.HasParameters()) {
 			auto enum_data = FlatVector::GetData<string_t>(EnumType::GetValuesInsertOrder(type));
 			idx_t size = EnumType::GetSize(type);
 

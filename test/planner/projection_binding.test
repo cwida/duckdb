@@ -6,7 +6,7 @@ statement ok
 CREATE TABLE a (i INTEGER, j INTEGER);
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 # verify that ORDER BY binding is consistent in presence of different "table.column" vs "column" bindings
 query I nosort orderbinder

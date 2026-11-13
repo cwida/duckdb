@@ -130,6 +130,7 @@ check_only = True
 confirm = True
 silent = False
 force = False
+typos_files = None
 
 
 parser = argparse.ArgumentParser(prog='python scripts/format.py', description='Format source directory files')
@@ -154,12 +155,30 @@ parser.add_argument(
     type=str,
     help='Write the NUL-separated paths of the files that were actually rewritten to this file',
 )
+parser.add_argument('--files-from', type=str, help='Read newline-separated paths to format from this file')
+parser.add_argument(
+    '--skip-typos',
+    action='store_true',
+    default=os.environ.get('DUCKDB_FORMAT_SKIP_TYPOS') == '1',
+    help='Skip the typos check',
+)
+parser.add_argument(
+    '-j',
+    '--jobs',
+    type=int,
+    default=int(os.environ.get('DUCKDB_FORMAT_JOBS', min(32, (os.cpu_count() or 1) + 4))),
+    help='Number of files to format concurrently',
+)
 args = parser.parse_args()
 
 revision = args.revision
 if args.check and args.fix:
     parser.print_usage()
     exit(1)
+if args.jobs < 1:
+    parser.error('--jobs must be at least 1')
+if args.files_from and (args.all or args.staged or args.directories):
+    parser.error('--files-from cannot be combined with --all, --staged, or --directories')
 
 if args.workdir:
     os.chdir(args.workdir)
@@ -174,12 +193,16 @@ if args.directories:
 
 
 def get_typos_targets():
+    if typos_files is not None:
+        return typos_files
     if format_all:
         return [path for path in formatted_directories if os.path.exists(path)]
     return sorted(set([f.full_path for f in files if os.path.exists(f.full_path)]))
 
 
 def run_typos_check():
+    if args.skip_typos:
+        return 0
     typos_targets = get_typos_targets()
     if not typos_targets:
         return 0
@@ -189,12 +212,18 @@ def run_typos_check():
     typos_command = ['typos', '--force-exclude']
     if not check_only:
         typos_command.append('-w')
-    typos_command += ['-c', 'scripts/typos.toml'] + typos_targets
+    typos_command += ['-c', 'scripts/typos.toml']
+    # check the files in chunks to bound the memory usage of a single typos process
+    typos_chunk_size = 500
+    status = 0
     try:
-        return subprocess.call(typos_command)
+        for start in range(0, len(typos_targets), typos_chunk_size):
+            chunk_status = subprocess.call(typos_command + typos_targets[start : start + typos_chunk_size])
+            status = status or chunk_status
     except FileNotFoundError:
         print('typos not found. Install it with "brew install typos-cli"')
         return 1
+    return status
 
 
 def file_is_ignored(full_path):
@@ -255,7 +284,20 @@ def get_changed_files(revision, staged=False):
     return changed_files
 
 
-if args.staged:
+if args.files_from:
+    source_name = "standard input" if args.files_from == "-" else args.files_from
+    print(action + " files listed in " + source_name)
+    if args.files_from == "-":
+        listed_files = [line.rstrip('\r\n') for line in sys.stdin]
+    else:
+        with open(args.files_from, encoding='utf8', errors='surrogateescape') as source:
+            listed_files = [line.rstrip('\r\n') for line in source]
+    listed_files = list(dict.fromkeys(listed_files))
+    typos_files = sorted(set(path for path in listed_files if os.path.exists(path)))
+    changed_files = [path for path in listed_files if can_format_file(path)]
+    if len(changed_files) == 0:
+        print("No files to format!")
+elif args.staged:
     print(action + " files staged for commit")
     changed_files = get_changed_files(revision, staged=True)
     if len(changed_files) == 0:
@@ -276,7 +318,7 @@ elif os.path.isdir(revision):
     for fname in changed_files:
         print(fname)
 elif not format_all:
-    if revision == 'main' and os.environ.get('DUCKDB_FORMAT_SKIP_FETCH') != '1':
+    if revision == 'main':
         # fetch new changes when comparing to the master
         os.system("git fetch origin main:main")
     print(action + " since branch or revision: " + revision)
@@ -486,7 +528,7 @@ def process_file(f):
 
 
 # Create thread for each file
-with concurrent.futures.ThreadPoolExecutor() as executor:
+with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as executor:
     try:
         threads = [executor.submit(process_file, f) for f in files]
         # Wait for all tasks to complete

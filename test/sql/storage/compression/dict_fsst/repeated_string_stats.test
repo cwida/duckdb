@@ -7,7 +7,7 @@ require vector_size 2048
 load {TEST_DIR}/repeated_string_stats.db readwrite
 
 statement ok
-PRAGMA force_compression = 'dict_fsst'
+SET force_compression = 'dict_fsst'
 
 # Use enough distinct string data to exercise the encoded dictionary path.
 statement ok

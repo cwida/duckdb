@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "duckdb/main/context.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/planner/filter/table_filter_function_helpers.hpp"
 
@@ -34,7 +35,7 @@ void SelectivityOptionalFilterState::SelectivityStats::Update(idx_t accepted, id
 		tuples_accepted = 0;
 		tuples_processed = 0;
 		status = FilterStatus::ACTIVE;
-	} else if (vectors_processed >= n_vectors_to_check) {
+	} else if (status == FilterStatus::ACTIVE && vectors_processed >= n_vectors_to_check) {
 		// pause the filter if we processed enough vectors and the selectivity is too high
 		if (GetSelectivity() >= selectivity_threshold) {
 			status = FilterStatus::PAUSED_DUE_TO_HIGH_SELECTIVITY;
@@ -103,8 +104,8 @@ static unique_ptr<FunctionData> SelectivityOptionalFilterDeserialize(Deserialize
 }
 
 struct SelectivityOptionalFilterLocalState : public FunctionLocalState {
-	SelectivityOptionalFilterLocalState(ClientContext &context, const Expression &child_filter_expr,
-	                                    idx_t n_vectors_to_check, float selectivity_threshold)
+	SelectivityOptionalFilterLocalState(Context &context, const Expression &child_filter_expr, idx_t n_vectors_to_check,
+	                                    float selectivity_threshold)
 	    : stats(n_vectors_to_check, selectivity_threshold), executor(context, child_filter_expr) {
 	}
 
@@ -145,10 +146,10 @@ static idx_t SelectivityOptionalFilterSelect(DataChunk &args, ExpressionState &s
 		return SetAllTrueSelection(count, sel, true_sel, false_sel);
 	}
 
-	SelectionVector temp_true(count);
-	auto result_true_sel = (!true_sel || (sel && true_sel.get() == sel.get())) ? &temp_true : true_sel.get();
-	auto approved_count = local_state.executor.SelectExpression(args, *result_true_sel);
-	approved_count = TranslateSelection(count, sel, *result_true_sel, approved_count, true_sel, false_sel);
+	SelectionVector temp_true;
+	auto &result_true_sel = GetFilterResultSelection(count, sel, true_sel, temp_true);
+	auto approved_count = local_state.executor.SelectExpression(args, result_true_sel);
+	approved_count = TranslateSelection(count, sel, result_true_sel, approved_count, true_sel, false_sel);
 	local_state.Update(approved_count, count);
 	return approved_count;
 }

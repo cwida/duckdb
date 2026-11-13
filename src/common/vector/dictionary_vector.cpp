@@ -74,7 +74,7 @@ void DictionaryBuffer::ToUnifiedFormat(UnifiedVectorFormat &format) const {
 		entry->data.Flatten();
 	}
 	format.data = FlatVector::GetData(entry->data);
-	format.validity = FlatVector::ValidityMutable(entry->data);
+	format.validity = FlatVector::Validity(entry->data);
 }
 
 buffer_ptr<VectorBuffer> DictionaryBuffer::SliceWithCache(SelCache &cache, const LogicalType &type,
@@ -132,6 +132,11 @@ buffer_ptr<VectorBuffer> DictionaryBuffer::SliceInternal(const LogicalType &type
 	return new_buffer;
 }
 
+buffer_ptr<VectorBuffer> DictionaryBuffer::ConstantReferenceInternal(const LogicalType &type, idx_t index,
+                                                                     count_t count) const {
+	return ConstantReference(entry->data, sel_vector.get_index(index), count);
+}
+
 Value DictionaryBuffer::GetValue(const LogicalType &type, idx_t index) const {
 	if (index >= Size()) {
 		throw InternalException("DictionaryBuffer::GetValue out of range for selection vector");
@@ -162,7 +167,7 @@ buffer_ptr<VectorBuffer> DictionaryBuffer::FlattenSliceInternal(const LogicalTyp
 	auto &sel = sel_ref.get();
 
 	// flatten the child using the selection vector
-	return entry->data.BufferMutable().FlattenSlice(type, sel, count);
+	return entry->data.Buffer().FlattenSlice(type, sel, count);
 }
 
 buffer_ptr<DictionaryEntry> DictionaryVector::CreateReusableDictionary(const LogicalType &type, const idx_t &size) {
@@ -183,14 +188,12 @@ const Vector &DictionaryVector::GetCachedHashes(const Vector &input) {
 	D_ASSERT(CanCacheHashes(input));
 
 	const auto &entry = input.Buffer().Cast<DictionaryBuffer>().GetEntry();
-	lock_guard<mutex> guard(entry.cached_hashes_lock);
-
-	if (!entry.cached_hashes) {
-		// Uninitialized: hash the dictionary
+	CallOnce(entry.cached_hashes_once, [&] {
 		const auto dictionary_size = DictionarySize(input).GetIndex();
-		entry.cached_hashes = make_uniq<Vector>(LogicalType::HASH, dictionary_size);
-		VectorOperations::Hash(entry.data, *entry.cached_hashes);
-	}
+		auto hashes = make_uniq<Vector>(LogicalType::HASH, dictionary_size);
+		VectorOperations::Hash(entry.data, *hashes);
+		entry.cached_hashes = std::move(hashes);
+	});
 	return *entry.cached_hashes;
 }
 
@@ -241,6 +244,13 @@ buffer_ptr<VectorBuffer> DictionaryBuffer::Deserialize(Deserializer &deserialize
 	SelectionVector sel(count);
 	deserializer.ReadProperty(91, "sel_vector", reinterpret_cast<data_ptr_t>(sel.data()), sizeof(sel_t) * count);
 	const auto dict_count = deserializer.ReadProperty<idx_t>(92, "dict_count");
+	for (idx_t i = 0; i < count; i++) {
+		if (sel.get_index(i) >= dict_count) {
+			throw SerializationException("Failed to deserialize dictionary vector: selection index %llu is out of "
+			                             "range of the dictionary of size %llu",
+			                             sel.get_index(i), dict_count);
+		}
+	}
 	Vector dict(type, MaxValue<idx_t>(dict_count, STANDARD_VECTOR_SIZE));
 	dict.Deserialize(deserializer, dict_count);
 	FlatVector::SetSize(dict, dict_count);

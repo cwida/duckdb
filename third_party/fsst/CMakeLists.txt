@@ -1,7 +1,3 @@
-if(POLICY CMP0063)
-    cmake_policy(SET CMP0063 NEW)
-endif()
-
 find_package(Threads REQUIRED)
 
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)

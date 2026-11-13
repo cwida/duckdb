@@ -226,3 +226,14 @@ statement error
 select variant_group_object(1, 2);
 ----
 <REGEX>:.*No function matches the given name and argument types 'variant_group_object\(INTEGER_LITERAL, INTEGER_LITERAL\)'.*
+
+# NULL keys are rejected in imported states as well
+statement error
+SELECT finalize(to_aggregate_state([{'key': NULL, 'value': 1::VARIANT}], 'variant_group_object', ['VARCHAR', 'VARIANT']));
+----
+variant_group_object key cannot be NULL
+
+query I
+SELECT finalize(to_aggregate_state([{'key': 'k', 'value': 1::VARIANT}], 'variant_group_object', ['VARCHAR', 'VARIANT']));
+----
+{'k': 1}

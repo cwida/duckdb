@@ -53,6 +53,7 @@ OptionValueSet GetValueForOption(const string &name, const LogicalType &type) {
 	static unordered_map<string, OptionValueSet> value_map = {
 	    {"threads", {Value::BIGINT(42), Value::BIGINT(42)}},
 	    {"checkpoint_threshold", {"4.0 GiB"}},
+	    {"checkpoint_on_shutdown", {false}},
 	    {"debug_checkpoint_abort", {{"none", "before_truncate", "before_header", "after_free_list_write"}}},
 	    {"default_collation", {"nocase"}},
 	    {"default_order", {"DESC"}},
@@ -78,6 +79,7 @@ OptionValueSet GetValueForOption(const string &name, const LogicalType &type) {
 	    {"show_behavior", {EnumUtil::ToString(ShowBehaviorType::TABLE)}},
 	    {"autoload_known_extensions", {false}},
 	    {"autoinstall_known_extensions", {false}},
+	    {"enable_block_allocator", {!DBConfigOptions().enable_block_allocator}},
 	    {"enable_profiling", {"json"}},
 	    {"explain_output", {{"all", "optimized_only", "physical_only"}}},
 	    {"file_search_path", {"test"}},
@@ -114,7 +116,8 @@ OptionValueSet GetValueForOption(const string &name, const LogicalType &type) {
 	    {"enable_logging", {true}},
 	    {"logging_mode", {"ENABLE_SELECTED"}},
 	    {"logging_level", {"FATAL"}},
-	    {"logging_storage", {"stdout"}},
+	    {"logging_sink", {"stdout"}},
+	    {"redact_http_logs", {false}},
 	    {"enable_progress_bar_print", {false}},
 	    {"scalar_subquery_error_on_multiple_rows", {false}},
 	    {"ieee_floating_point_ops", {false}},
@@ -127,6 +130,7 @@ OptionValueSet GetValueForOption(const string &name, const LogicalType &type) {
 	    {"http_proxy", {"localhost:80"}},
 	    {"http_proxy_username", {"john"}},
 	    {"http_proxy_password", {"doe"}},
+	    {"http_retry_quota_throttled", {false}},
 	    {"allocator_flush_threshold", {"4.0 GiB"}},
 	    {"allocator_bulk_deallocation_flush_threshold", {"4.0 GiB"}},
 	    {"arrow_output_version", {"1.5"}},
@@ -134,6 +138,7 @@ OptionValueSet GetValueForOption(const string &name, const LogicalType &type) {
 	    {"external_file_cache_local_max_block_size", {Value::UBIGINT(4096)}},
 	    {"external_file_cache_remote_max_block_size", {Value::UBIGINT(4096)}},
 	    {"external_file_cache_remote_min_block_size", {Value::UBIGINT(8192)}},
+	    {"external_file_cache_request_sizing", {"GRID"}},
 	    {"validate_external_file_cache", {"NO_VALIDATION"}},
 	    {"experimental_metadata_reuse", {false}},
 	    {"storage_block_prefetch", {"always_prefetch"}},
@@ -176,12 +181,14 @@ bool OptionIsExcludedFromTest(const string &name) {
 	    "active_grammar_extensions",
 	    "allow_community_extensions",   // cant change this while db is running
 	    "allow_extension_repositories", // can only be tightened at runtime, cannot be freely reset
+	                                    // is on
 	    "allow_unredacted_secrets",     // cant change this while db is running
 	    "allow_unsigned_extensions",    // cant change this while db is running
 	    "allowed_configs",
 	    "allowed_directories",
+	    "default_grammar_extensions", // non-empty values require a registered grammar extension
 	    "allowed_paths",
-	    "block_allocator_memory", // cant reduce
+	    "buffer_manager_track_eviction_timestamps", // cant change this while db is running
 	    "current_dialect",
 	    "custom_user_agent",
 	    "debug_delta_only_variant_encoding_enabled",

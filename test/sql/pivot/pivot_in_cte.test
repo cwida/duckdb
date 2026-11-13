@@ -1,0 +1,51 @@
+# name: test/sql/pivot/pivot_in_cte.test
+# description: Test PIVOT with extracted values inside a CTE body referencing earlier CTEs
+# group: [pivot]
+
+query I
+WITH src AS (SELECT 'a' AS k), p AS (PIVOT src ON k) SELECT * FROM p;
+----
+1
+
+query I
+WITH src AS (SELECT 'a' AS k), p AS (PIVOT (SELECT * FROM src) ON k) SELECT * FROM p;
+----
+1
+
+query II
+WITH src AS (SELECT 'a' AS k, 1 AS v UNION ALL SELECT 'b', 2), p AS (PIVOT src ON k USING sum(v)) SELECT * FROM p;
+----
+1	2
+
+# chained CTEs
+query I
+WITH s1 AS (SELECT 'x' AS k), s2 AS (SELECT * FROM s1), p AS (PIVOT s2 ON k) SELECT * FROM p;
+----
+1
+
+# inner CTE shadows outer CTE of the same name
+query I
+WITH src AS (SELECT 'a' AS k), p AS (WITH src AS (SELECT 'z' AS k) PIVOT src ON k) SELECT * FROM p;
+----
+1
+
+query I
+WITH src AS (SELECT 'a' AS k), p AS (WITH src AS (SELECT 'z' AS k) PIVOT src ON k) SELECT z FROM p;
+----
+1
+
+# later CTEs are not visible to earlier ones
+statement error
+WITH p AS (PIVOT src ON k), src AS (SELECT 'a' AS k) SELECT * FROM p;
+----
+src
+
+statement error
+WITH src AS (SELECT 'a' AS k), src AS (SELECT 'b' AS k) SELECT * FROM src;
+----
+Duplicate CTE name
+
+query III
+WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM r WHERE i < 3), p AS (PIVOT r ON i) SELECT * FROM p;
+----
+1	1	1

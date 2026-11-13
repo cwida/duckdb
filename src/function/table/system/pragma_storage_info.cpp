@@ -119,7 +119,11 @@ static unique_ptr<FunctionData> PragmaStorageInfoBind(ClientContext &context, Ta
 	names.emplace_back("additional_block_ids");
 	return_types.emplace_back(LogicalType::LIST(LogicalTypeId::BIGINT));
 
-	auto qname = QualifiedName::Parse(input.inputs[0].GetValue<string>());
+	QualifiedName qname;
+	string error;
+	if (!QualifiedName::TryParse(input.inputs[0].GetValue<string>(), qname, error)) {
+		throw ParserException(error);
+	}
 
 	// look up the table name in the catalog
 	CatalogEntryRetriever retriever(context);

@@ -67,6 +67,10 @@ USE db
 statement ok
 DETACH tmp
 
+# Exact pruning counts require synchronously prepared row groups.
+statement ok
+SET read_ahead_depth=0
+
 statement ok
 SET threads TO 1
 

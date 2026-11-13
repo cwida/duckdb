@@ -210,9 +210,7 @@ struct ArgMinMaxBase {
 		auto &context = input.GetClientContext();
 		auto &function = input.GetBoundFunction();
 		auto &arguments = input.GetArguments();
-		if (arguments[1]->GetReturnType().InternalType() == PhysicalType::VARCHAR) {
-			ExpressionBinder::PushCollation(context, arguments[1], arguments[1]->GetReturnType());
-		}
+		ExpressionBinder::PushCollation(context, arguments[1], arguments[1]->GetReturnType());
 		function.GetArguments()[0] = arguments[0]->GetReturnType();
 		function.GetArguments()[1] = arguments[1]->GetReturnType();
 		function.SetReturnType(arguments[0]->GetReturnType());
@@ -379,9 +377,7 @@ struct VectorArgMinMaxBase : ArgMinMaxBase<COMPARATOR> {
 		auto &context = input.GetClientContext();
 		auto &function = input.GetBoundFunction();
 		auto &arguments = input.GetArguments();
-		if (arguments[1]->GetReturnType().InternalType() == PhysicalType::VARCHAR) {
-			ExpressionBinder::PushCollation(context, arguments[1], arguments[1]->GetReturnType());
-		}
+		ExpressionBinder::PushCollation(context, arguments[1], arguments[1]->GetReturnType());
 		function.GetArguments()[0] = arguments[0]->GetReturnType();
 		function.GetArguments()[1] = arguments[1]->GetReturnType();
 		function.SetReturnType(arguments[0]->GetReturnType());
@@ -886,6 +882,7 @@ void SpecializeArgMinMaxNullNFunction(PhysicalType val_type, PhysicalType arg_ty
 
 template <ArgMinMaxNullHandling NULL_HANDLING, bool NULLS_LAST, class COMPARATOR>
 unique_ptr<FunctionData> ArgMinMaxNBind(BindAggregateFunctionInput &input) {
+	auto &context = input.GetClientContext();
 	auto &function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
 	for (auto &arg : arguments) {
@@ -893,6 +890,7 @@ unique_ptr<FunctionData> ArgMinMaxNBind(BindAggregateFunctionInput &input) {
 			throw ParameterNotResolvedException();
 		}
 	}
+	ExpressionBinder::PushCollation(context, arguments[1], arguments[1]->GetReturnType());
 
 	const auto val_type = arguments[0]->GetReturnType().InternalType();
 	const auto arg_type = arguments[1]->GetReturnType().InternalType();
@@ -917,6 +915,7 @@ void AddArgMinMaxNFunction(AggregateFunctionSet &set) {
 	    .AddParameter("arg", LogicalTypeId::ANY)
 	    .AddParameter("val", LogicalTypeId::ANY)
 	    .AddParameter("N", LogicalType::BIGINT);
+	function.SetFallible(); // the update callback rejects NULL and out-of-range n values at runtime
 
 	set.AddFunction(function);
 }

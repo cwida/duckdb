@@ -1,0 +1,160 @@
+# name: test/parquet/schema_nested_evolution.test
+# description: Pushed-down nested extracts must remap evolved field IDs and types
+# group: [parquet]
+
+require parquet
+
+statement ok
+CREATE TABLE original (
+	id INTEGER,
+	payload STRUCT(
+		s STRUCT(n INTEGER, discard VARCHAR),
+		l STRUCT(n INTEGER, discard VARCHAR)[],
+		m MAP(VARCHAR, STRUCT(n INTEGER, discard VARCHAR))
+	)
+);
+
+statement ok
+INSERT INTO original VALUES
+	(1, {'s': {'n': 1, 'discard': 's'}, 'l': [{'n': 2, 'discard': 'l'}, NULL],
+	     'm': MAP {'k': {'n': 3, 'discard': 'm'}, 'null': NULL}}),
+	(2, NULL),
+	(3, {'s': NULL, 'l': [], 'm': MAP {}}),
+	(4, {'s': NULL, 'l': NULL, 'm': NULL});
+
+statement ok
+COPY original TO '{TEST_DIR}/nested_evolution.parquet' (FIELD_IDS {
+	id: 0,
+	payload: {__duckdb_field_id: 1,
+		s: {__duckdb_field_id: 2, n: 3, discard: 4},
+		l: {__duckdb_field_id: 5, element: {__duckdb_field_id: 6, n: 7, discard: 8}},
+		m: {__duckdb_field_id: 9, key: 10, value: {__duckdb_field_id: 11, n: 12, discard: 13}}
+	}
+});
+
+# Widen and rename n, add a non-NULL default, and drop/re-add discard with a new field ID.
+statement ok
+CREATE VIEW mapped AS SELECT * FROM read_parquet('{TEST_DIR}/nested_evolution.parquet', schema = map {
+	0: {name: 'id', type: 'INTEGER', default_value: NULL},
+	1: {
+		name: 'payload',
+		type: 'STRUCT(s STRUCT(renamed BIGINT, added BIGINT, discard VARCHAR), l STRUCT(renamed BIGINT, added BIGINT, discard VARCHAR)[], m MAP(VARCHAR, STRUCT(renamed BIGINT, added BIGINT, discard VARCHAR)))',
+		default_value: NULL,
+		children: map {
+			2: {
+				name: 's', type: 'STRUCT(renamed BIGINT, added BIGINT, discard VARCHAR)', default_value: NULL,
+				children: map {
+					3: {name: 'renamed', type: 'BIGINT', default_value: NULL},
+					20: {name: 'added', type: 'BIGINT', default_value: '42'},
+					21: {name: 'discard', type: 'VARCHAR', default_value: NULL}
+				}
+			},
+			5: {
+				name: 'l', type: 'STRUCT(renamed BIGINT, added BIGINT, discard VARCHAR)[]', default_value: NULL,
+				children: map {
+					6: {
+						name: 'element', type: 'STRUCT(renamed BIGINT, added BIGINT, discard VARCHAR)', default_value: NULL,
+						children: map {
+							7: {name: 'renamed', type: 'BIGINT', default_value: NULL},
+							22: {name: 'added', type: 'BIGINT', default_value: '42'},
+							23: {name: 'discard', type: 'VARCHAR', default_value: NULL}
+						}
+					}
+				}
+			},
+			9: {
+				name: 'm', type: 'MAP(VARCHAR, STRUCT(renamed BIGINT, added BIGINT, discard VARCHAR))', default_value: NULL,
+				children: map {
+					10: {name: 'key', type: 'VARCHAR', default_value: NULL},
+					11: {
+						name: 'value', type: 'STRUCT(renamed BIGINT, added BIGINT, discard VARCHAR)', default_value: NULL,
+						children: map {
+							12: {name: 'renamed', type: 'BIGINT', default_value: NULL},
+							24: {name: 'added', type: 'BIGINT', default_value: '42'},
+							25: {name: 'discard', type: 'VARCHAR', default_value: NULL}
+						}
+					}
+				}
+			}
+		}
+	}
+});
+
+# Each extracted container needs its own mapping after being pushed into the scan.
+query I
+SELECT payload.s FROM mapped ORDER BY id;
+----
+{'renamed': 1, 'added': 42, 'discard': NULL}
+NULL
+NULL
+NULL
+
+query I
+SELECT payload.l FROM mapped ORDER BY id;
+----
+[{'renamed': 2, 'added': 42, 'discard': NULL}, NULL]
+NULL
+[]
+NULL
+
+query I
+SELECT payload.m FROM mapped ORDER BY id;
+----
+{k={'renamed': 3, 'added': 42, 'discard': NULL}, 'null'=NULL}
+NULL
+{}
+NULL
+
+# Reading only re-added fields must not expose the old values or uninitialized data.
+query III
+SELECT payload.s.discard, payload.l[1].discard, payload.m['k'].discard FROM mapped ORDER BY id;
+----
+NULL	NULL	NULL
+NULL	NULL	NULL
+NULL	NULL	NULL
+NULL	NULL	NULL
+
+query III
+SELECT payload.s.discard IS NULL, payload.l[1].discard IS NULL, payload.m['k'].discard IS NULL
+FROM mapped WHERE id = 1;
+----
+true	true	true
+
+query IIIIII
+SELECT payload.s.renamed, payload.s.added, payload.l[1].renamed, payload.l[1].added,
+       payload.m['k'].renamed, payload.m['k'].added FROM mapped WHERE id = 1;
+----
+1	42	2	42	3	42
+
+query IIIII
+SELECT id, payload IS NULL, payload.s IS NULL, len(payload.l), cardinality(payload.m)
+FROM mapped ORDER BY id;
+----
+1	false	false	2	2
+2	true	true	NULL	NULL
+3	false	true	0	0
+4	false	true	NULL	NULL
+
+query I
+SELECT id FROM mapped
+WHERE payload.s.renamed = 1 AND payload.l[1].added = 42 AND payload.m['k'].discard IS NULL;
+----
+1
+
+# Full-value reads and extracted reads must agree.
+statement ok
+CREATE TABLE full_values AS SELECT * FROM mapped;
+
+query I
+SELECT bool_and(m.payload IS NOT DISTINCT FROM f.payload)
+FROM mapped m JOIN full_values f USING (id);
+----
+true
+
+query III
+SELECT bool_and(m.payload.s IS NOT DISTINCT FROM f.payload.s),
+       bool_and(m.payload.l IS NOT DISTINCT FROM f.payload.l),
+       bool_and(m.payload.m IS NOT DISTINCT FROM f.payload.m)
+FROM mapped m JOIN full_values f USING (id);
+----
+true	true	true

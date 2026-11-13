@@ -17,12 +17,18 @@
 
 namespace duckdb {
 
+//! Whether a reader that picks the consumption mode on its consumer's behalf streams a statement: only a SELECT that
+//! returns rows does. written_type is the statement as written, since a prepared execution reports the EXECUTE that
+//! runs it; the result's properties are read only for a SELECT, since a statement that expands into several has none
+//! before it runs. A reader that may stop reading also needs a statement that writes nothing, since a statement
+//! abandoned before its end is rolled back
+DUCKDB_API bool StreamsByDefault(StatementType written_type, const QueryResult &result, bool reads_to_the_end = true);
+
 //! Opening a stream settles retention on draining and consumes the handle: no random access
 class ResultStreamBase {
 public:
 	//! Opens a stream on a submitted query. Throws InvalidInputException when the handle carries an
-	//! error, when its retention is already retained, when the planner marked the statement as
-	//! completing before its result is returned, or when the result's format is not the expected one.
+	//! error, when its retention is already retained, or when the result's format is not the expected one.
 	//! A throw consumes the handle: it is destroyed with this object, which ends the query
 	DUCKDB_API ResultStreamBase(unique_ptr<QueryResult> result, const char *expected_format);
 	DUCKDB_API virtual ~ResultStreamBase();
@@ -31,7 +37,8 @@ public:
 
 public:
 	//! Reports READY while a unit is poppable, else where execution stands. Runs no task. An interrupt
-	//! or an execution error is recorded on the stream and reported as EXECUTION_ERROR
+	//! or an execution error is recorded on the stream and reported as EXECUTION_ERROR. Like ExecuteTask, it does
+	//! not end the query at FINISHED; reading the end of the stream does
 	DUCKDB_API QueryResultState Poll();
 	//! Executes a single task of the query on the calling thread. An interrupt or an execution error
 	//! is recorded on the stream and reported as EXECUTION_ERROR
@@ -42,6 +49,8 @@ public:
 	DUCKDB_API void Close();
 	//! Whether this stream is still the connection's open result
 	DUCKDB_API bool IsOpen();
+	//! Whether the result's schema and properties are known. Runs nothing
+	DUCKDB_API bool MetadataAvailable() const;
 
 	DUCKDB_API void SetError(ErrorData error);
 	DUCKDB_API bool HasError() const;
@@ -70,6 +79,9 @@ protected:
 
 private:
 	unique_ptr<ResultUnit> FetchUnitInternal(ClientContextLock &lock);
+	//! Before the statement producing the result of a statement that expands into several started, the stream
+	//! drives the statements before it through the query
+	QueryResultState DriveWithoutBufferInternal(ClientContextLock &lock, bool execute_task);
 	//! Runs a buffer call under the context lock and maps any failure onto the stream as
 	//! EXECUTION_ERROR. Once the stream has ended it keeps reporting the terminal state
 	QueryResultState GuardedInternal(const char *name,

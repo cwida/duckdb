@@ -1,0 +1,24 @@
+# name: benchmark/micro/window/window_count_star_filtered.benchmark
+# description: Moving COUNT(*) with a FILTER over a frame that grows to the whole partition
+# group: [window]
+
+# A filter makes COUNT(*) count rows rather than read off the frame's size, and a frame that grows
+# a row at a time then covers every row of the partition once per row.
+
+name Windowed COUNT(*) Filtered, Growing
+group window
+
+load
+create table filtered as select b, b % 3 = 0 as keep from range(1000000) tbl(b)
+
+run
+select sum(c)
+from (
+    select count(*) filter (where keep) over (
+        order by b asc
+        rows between unbounded preceding and current row) as c
+    from filtered
+    ) q;
+
+result I
+166667166667

@@ -154,3 +154,35 @@ statement error
 set external_file_cache_remote_max_block_size=0;
 ----
 value must be positive
+
+# The cache reads these settings from the database config, so they are global only
+statement error
+set session external_file_cache_local_max_block_size=4096;
+----
+can only be set globally
+
+statement error
+set session external_file_cache_remote_max_block_size=4096;
+----
+can only be set globally
+
+statement error
+set session external_file_cache_remote_min_block_size=4096;
+----
+can only be set globally
+
+statement error
+set session external_file_cache_request_sizing='GRID';
+----
+can only be set globally
+
+statement ok
+set global external_file_cache_request_sizing='GRID';
+
+query I
+select current_setting('external_file_cache_request_sizing');
+----
+GRID
+
+statement ok
+reset external_file_cache_request_sizing;

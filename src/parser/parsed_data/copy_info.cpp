@@ -1,5 +1,7 @@
 #include "duckdb/parser/parsed_data/copy_info.hpp"
 
+#include "duckdb/common/algorithm.hpp"
+
 #include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/parser/query_node.hpp"
 
@@ -70,18 +72,27 @@ string CopyInfo::CopyOptionsToString() const {
 	if (!format.empty() && !is_format_auto_detected) {
 		stringified.push_back(StringUtil::Format(" FORMAT %s", SQLString(format)));
 	}
+	// render the options in sorted order so the generated text is deterministic across platforms
+	vector<Identifier> parsed_option_names;
 	for (auto &opt : parsed_options) {
-		auto &name = opt.first;
-		auto &expr = opt.second;
+		parsed_option_names.push_back(opt.first);
+	}
+	std::sort(parsed_option_names.begin(), parsed_option_names.end());
+	for (auto &name : parsed_option_names) {
+		auto &expr = parsed_options.find(name)->second;
 		string option_string = StringUtil::Format("%s", name);
 		if (expr) {
 			option_string += " " + expr->ToString();
 		}
 		stringified.push_back(option_string);
 	}
+	vector<Identifier> option_names;
 	for (auto &opt : options) {
-		auto &name = opt.first;
-		auto &values = opt.second;
+		option_names.push_back(opt.first);
+	}
+	std::sort(option_names.begin(), option_names.end());
+	for (auto &name : option_names) {
+		auto &values = options.find(name)->second;
 
 		auto option = StringUtil::Format("%s ", name);
 		if (values.empty()) {

@@ -91,7 +91,7 @@ namespace {
 struct GetBitOperator {
 	template <class TA, class TB, class TR>
 	static inline TR Operation(TA input, TB n) {
-		if (n < 0 || (idx_t)n > Bit::BitLength(input) - 1) {
+		if (n < 0 || UnsafeNumericCast<idx_t>(n) >= Bit::BitLength(input)) {
 			throw OutOfRangeException("bit index %s out of valid range (0..%s)", NumericHelper::ToString(n),
 			                          NumericHelper::ToString(Bit::BitLength(input) - 1));
 		}
@@ -117,7 +117,7 @@ static void SetBitOperation(DataChunk &args, ExpressionState &state, Vector &res
 		    if (new_value != 0 && new_value != 1) {
 			    throw InvalidInputException("The new bit must be 1 or 0");
 		    }
-		    if (n < 0 || (idx_t)n > Bit::BitLength(input) - 1) {
+		    if (n < 0 || UnsafeNumericCast<idx_t>(n) >= Bit::BitLength(input)) {
 			    throw OutOfRangeException("bit index %s out of valid range (0..%s)", NumericHelper::ToString(n),
 			                              NumericHelper::ToString(Bit::BitLength(input) - 1));
 		    }

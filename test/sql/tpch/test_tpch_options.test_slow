@@ -42,9 +42,9 @@ statement ok
 CALL dbgen(sf=1, children =100, step = 0);
 
 query IIII
-select * from nation
+select n_nationkey, n_name, n_regionkey, n_comment = ' haggle. carefully final deposits detect slyly agai' from nation
 ----
-0	ALGERIA	0	furiously regular requests. platelets affix furious
+0	ALGERIA	0	true
 
 query I
 select count(*) from lineitem

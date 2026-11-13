@@ -37,7 +37,6 @@ TEST_CASE("Logical plan SQL export preserves partial CTE streams and errors",
 		auto exported = LogicalPlanSQLExporter::Export(*connection.context, *plan);
 		REQUIRE(exported.IsSuccess());
 		QueryParameters parameters;
-		parameters.result_eagerness = ResultEagerness::AUTO;
 		auto check = [&](unique_ptr<QueryResult> result) {
 			if (result->HasError()) {
 				REQUIRE(producer);

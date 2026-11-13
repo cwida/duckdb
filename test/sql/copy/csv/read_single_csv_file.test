@@ -17,7 +17,7 @@ SELECT * FROM read_single_csv_file('data/csv/glob/a1/*.csv')
 statement error
 SELECT * FROM read_single_csv_file(['data/csv/glob/a1/a1.csv'])
 ----
-<REGEX>:.*No function matches.*
+<REGEX>:Binder Error.*reads a single file - given as a VARCHAR path or as a file struct, not as VARCHAR\[\].*
 
 # projection pushdown - the columns come out in the order they are requested
 query II

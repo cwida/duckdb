@@ -1,0 +1,685 @@
+# name: test/sql/optimizer/or_range_merge.test
+# description: Ranges on the same column joined by OR merge into a single range when they overlap, touch or are adjacent integers
+# group: [optimizer]
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+# x runs from -50 to 149 so that no range bound is pruned by the column statistics; one NULL row
+statement ok
+CREATE TABLE t AS SELECT i::INTEGER AS x, (i % 7)::INTEGER AS y FROM range(-50, 150) r(i) UNION ALL SELECT NULL, 3;
+
+# ---- adjacent integer ranges (TPC-DS q9 shape) ----
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40;
+----
+logical_opt	<REGEX>:.*x >= 1.*x <= 40.*
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40;
+----
+logical_opt	<!REGEX>:.* OR .*
+
+query I nosort adjacent
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40;
+----
+40
+
+# the full five-range OR of q9
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40 OR x BETWEEN 41 AND 60 OR x BETWEEN 61 AND 80 OR x BETWEEN 81 AND 100;
+----
+logical_opt	<REGEX>:.*x >= 1.*x <= 100.*
+
+query I nosort q9
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40 OR x BETWEEN 41 AND 60 OR x BETWEEN 61 AND 80 OR x BETWEEN 81 AND 100;
+----
+100
+
+# ---- overlapping ranges ----
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x BETWEEN 1 AND 25 OR x BETWEEN 20 AND 40;
+----
+logical_opt	<REGEX>:.*x >= 1.*x <= 40.*
+
+query I nosort overlap
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND 25 OR x BETWEEN 20 AND 40;
+----
+40
+
+# a range inside another range
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x BETWEEN 1 AND 40 OR x BETWEEN 10 AND 20;
+----
+logical_opt	<REGEX>:.*x >= 1.*x <= 40.*
+
+query I nosort inside
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND 40 OR x BETWEEN 10 AND 20;
+----
+40
+
+# ---- a gap is kept ----
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR x BETWEEN 22 AND 40;
+----
+logical_opt	<REGEX>:.*x <= 20.* OR .*x >= 22.*
+
+query I nosort gap
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR x BETWEEN 22 AND 40;
+----
+39
+
+# ---- exclusive bounds ----
+
+# [1, 20) and [20, 40] touch: 20 is covered by the second range
+query II
+EXPLAIN SELECT count(*) FROM t WHERE (x >= 1 AND x < 20) OR (x >= 20 AND x <= 40);
+----
+logical_opt	<REGEX>:.*x >= 1.*x <= 40.*
+
+query I nosort touch_right
+SELECT count(*) FROM t WHERE (x >= 1 AND x < 20) OR (x >= 20 AND x <= 40);
+----
+40
+
+# [1, 20] and (20, 40] touch: 20 is covered by the first range
+query II
+EXPLAIN SELECT count(*) FROM t WHERE (x >= 1 AND x <= 20) OR (x > 20 AND x <= 40);
+----
+logical_opt	<REGEX>:.*x >= 1.*x <= 40.*
+
+query I nosort touch_left
+SELECT count(*) FROM t WHERE (x >= 1 AND x <= 20) OR (x > 20 AND x <= 40);
+----
+40
+
+# [1, 20) and (20, 40] leave 20 out: not merged
+query II
+EXPLAIN SELECT count(*) FROM t WHERE (x >= 1 AND x < 20) OR (x > 20 AND x <= 40);
+----
+logical_opt	<REGEX>:.*x < 20.* OR .*x > 20.*
+
+query I nosort exclusive_gap
+SELECT count(*) FROM t WHERE (x >= 1 AND x < 20) OR (x > 20 AND x <= 40);
+----
+39
+
+# [1, 20) and [21, 40] leave 20 out as well: adjacency needs both sides inclusive
+query II
+EXPLAIN SELECT count(*) FROM t WHERE (x >= 1 AND x < 20) OR (x >= 21 AND x <= 40);
+----
+logical_opt	<REGEX>:.*x < 20.* OR .*x >= 21.*
+
+query I nosort exclusive_adjacent
+SELECT count(*) FROM t WHERE (x >= 1 AND x < 20) OR (x >= 21 AND x <= 40);
+----
+39
+
+# mixed inclusive: the outer bounds keep their own inclusivity
+query II
+EXPLAIN SELECT count(*) FROM t WHERE (x > 0 AND x <= 20) OR (x >= 21 AND x < 41);
+----
+logical_opt	<REGEX>:.*x > 0.*x < 41.*
+
+query I nosort mixed
+SELECT count(*) FROM t WHERE (x > 0 AND x <= 20) OR (x >= 21 AND x < 41);
+----
+40
+
+# ---- negative numbers ----
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x BETWEEN -40 AND -21 OR x BETWEEN -20 AND -1;
+----
+logical_opt	<REGEX>:.*x >= -40.*x <= -1.*
+
+query I nosort negative
+SELECT count(*) FROM t WHERE x BETWEEN -40 AND -21 OR x BETWEEN -20 AND -1;
+----
+40
+
+# ---- three ranges in unsorted order ----
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x BETWEEN 41 AND 60 OR x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40;
+----
+logical_opt	<REGEX>:.*x >= 1.*x <= 60.*
+
+query I nosort unsorted
+SELECT count(*) FROM t WHERE x BETWEEN 41 AND 60 OR x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40;
+----
+60
+
+# ---- a child that is not a range stays in place ----
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR y = 5 OR x BETWEEN 21 AND 40;
+----
+logical_opt	<REGEX>:.*y = 5.* OR .*x >= 1.*x <= 40.*
+
+query I nosort other_child
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR y = 5 OR x BETWEEN 21 AND 40;
+----
+55
+
+# ---- ranges on different columns are not merged ----
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR y BETWEEN 21 AND 40;
+----
+logical_opt	<!REGEX>:.*x <= 40.*
+
+query I nosort different_columns
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR y BETWEEN 21 AND 40;
+----
+20
+
+# ---- a non-constant bound is not merged ----
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x BETWEEN 1 AND y OR x BETWEEN 21 AND 40;
+----
+logical_opt	<REGEX>:.*x <= y.*
+
+query I nosort non_constant
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND y OR x BETWEEN 21 AND 40;
+----
+26
+
+# ---- single comparisons are ranges that are open on one side ----
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x < 20 OR x BETWEEN 20 AND 40;
+----
+logical_opt	<REGEX>:.*Filters: x <= 40.*
+
+query I nosort open_lower
+SELECT count(*) FROM t WHERE x < 20 OR x BETWEEN 20 AND 40;
+----
+91
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x >= 30 OR x BETWEEN 1 AND 29;
+----
+logical_opt	<REGEX>:.*Filters: x >= 1.*
+
+query I nosort open_upper
+SELECT count(*) FROM t WHERE x >= 30 OR x BETWEEN 1 AND 29;
+----
+149
+
+# a range that would be open on both sides is not a range: left alone
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x <= 20 OR x > 20;
+----
+logical_opt	<REGEX>:.*x <= 20.* OR .*x > 20.*
+
+query I nosort both_open
+SELECT count(*) FROM t WHERE x <= 20 OR x > 20;
+----
+200
+
+# NOT BETWEEN is bound to such an OR
+query I nosort not_between
+SELECT count(*) FROM t WHERE x NOT BETWEEN 10 AND 20;
+----
+189
+
+# ---- the input need not be a column ----
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE abs(x) BETWEEN 1 AND 20 OR abs(x) BETWEEN 21 AND 40;
+----
+logical_opt	<REGEX>:.*abs\(x\) BETWEEN 1 AND 40.*
+
+query I nosort function_input
+SELECT count(*) FROM t WHERE abs(x) BETWEEN 1 AND 20 OR abs(x) BETWEEN 21 AND 40;
+----
+80
+
+# a volatile input is left alone
+query II
+EXPLAIN SELECT count(*) FROM t WHERE (random() * 100)::INTEGER BETWEEN 1 AND 20 OR (random() * 100)::INTEGER BETWEEN 21 AND 40;
+----
+logical_opt	<REGEX>:.*BETWEEN 1 AND 20.* OR .*BETWEEN 21 AND 40.*
+
+# ---- an input that holds a constant is left alone: constants compare by value, so equal inputs need not compute the same ----
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x + 1 BETWEEN 1 AND 20 OR x + 1 BETWEEN 21 AND 40;
+----
+logical_opt	<REGEX>:.*\(x \+ 1\) BETWEEN 1 AND 20.* OR .*\(x \+ 1\) BETWEEN 21 AND 40.*
+
+query I nosort arithmetic_input
+SELECT count(*) FROM t WHERE x + 1 BETWEEN 1 AND 20 OR x + 1 BETWEEN 21 AND 40;
+----
+40
+
+statement ok
+CREATE TABLE iv AS SELECT INTERVAL '15 days' AS v UNION ALL SELECT INTERVAL '40 days';
+
+# INTERVAL '1 month' equals INTERVAL '30 days', but shifting by either gives a different day
+query II
+EXPLAIN SELECT v FROM iv WHERE day(v + INTERVAL '1 month') BETWEEN 0 AND 10 OR day(v + INTERVAL '30 days') BETWEEN 10 AND 20;
+----
+logical_opt	<REGEX>:.*'1 month'.* OR .*'30 days'.*
+
+query I nosort interval_shift
+SELECT v FROM iv WHERE day(v + INTERVAL '1 month') BETWEEN 0 AND 10 OR day(v + INTERVAL '30 days') BETWEEN 10 AND 20;
+----
+
+# 0.0 equals -0.0, but atan2 tells them apart
+query I nosort signed_zero
+SELECT x FROM (VALUES (0.0), (1.0), (-1.0)) t(x) WHERE atan2(x, 0.0::DOUBLE) BETWEEN 1 AND 2 OR atan2(x, -0.0::DOUBLE) BETWEEN 2 AND 4 ORDER BY x;
+----
+0.0
+1.0
+
+# an expression input without a constant still merges
+query II
+EXPLAIN SELECT count(*) FROM iv WHERE day(v) BETWEEN 1 AND 10 OR day(v) BETWEEN 11 AND 20;
+----
+logical_opt	<REGEX>:.*day.*\(v\) BETWEEN 1 AND 20.*
+
+query I nosort day_input
+SELECT count(*) FROM iv WHERE day(v) BETWEEN 1 AND 10 OR day(v) BETWEEN 11 AND 20;
+----
+1
+
+# a constant inside a lambda body counts too: the body is not a child of its function
+query II
+EXPLAIN SELECT v FROM iv WHERE invoke(lambda a: day(a + INTERVAL '1 month'), v) BETWEEN 0 AND 10 OR invoke(lambda a: day(a + INTERVAL '30 days'), v) BETWEEN 10 AND 20;
+----
+logical_opt	<REGEX>:.*'1 month'.* OR .*'30 days'.*
+
+query I nosort lambda_shift
+SELECT v FROM iv WHERE invoke(lambda a: day(a + INTERVAL '1 month'), v) BETWEEN 0 AND 10 OR invoke(lambda a: day(a + INTERVAL '30 days'), v) BETWEEN 10 AND 20;
+----
+
+# the same through a pair of comparisons joined by AND
+query I nosort lambda_shift_and
+SELECT count(*) FROM (VALUES (INTERVAL '5 days')) t(v) WHERE (invoke(lambda a: day(a + INTERVAL '1 month'), v) >= 0 AND invoke(lambda a: day(a + INTERVAL '30 days'), v) <= 10) OR invoke(lambda a: day(a + INTERVAL '1 month'), v) BETWEEN 10 AND 20;
+----
+0
+
+# a lambda without a constant still merges
+query II
+EXPLAIN SELECT count(*) FROM iv WHERE invoke(lambda a: day(a), v) BETWEEN 1 AND 10 OR invoke(lambda a: day(a), v) BETWEEN 11 AND 20;
+----
+logical_opt	<REGEX>:.*invoke.* BETWEEN 1 AND 20.*
+
+query II
+EXPLAIN SELECT count(*) FROM iv WHERE invoke(lambda a: day(a), v) BETWEEN 1 AND 10 OR invoke(lambda a: day(a), v) BETWEEN 11 AND 20;
+----
+logical_opt	<!REGEX>:.* OR .*
+
+query I nosort lambda_day
+SELECT count(*) FROM iv WHERE invoke(lambda a: day(a), v) BETWEEN 1 AND 10 OR invoke(lambda a: day(a), v) BETWEEN 11 AND 20;
+----
+1
+
+# ---- an empty range is left alone ----
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x BETWEEN 20 AND 10 OR x BETWEEN 1 AND 30;
+----
+logical_opt	<REGEX>:.*x >= 20.*x <= 10.* OR .*
+
+query I nosort empty_range
+SELECT count(*) FROM t WHERE x BETWEEN 20 AND 10 OR x BETWEEN 1 AND 30;
+----
+30
+
+# ---- the merged range next to another filter, as the merged filter of sibling aggregates looks ----
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE y > 2 AND (x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40);
+----
+logical_opt	<REGEX>:.*y > 2.*x >= 1.*x <= 40.*
+
+query I nosort shared
+SELECT count(*) FROM t WHERE y > 2 AND (x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40);
+----
+23
+
+# ---- NULL semantics: NULL input stays NULL, also outside of a WHERE clause ----
+
+query II
+EXPLAIN SELECT x, x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40 FROM t;
+----
+logical_opt	<REGEX>:.*x >= 1.*x <= 40.*
+
+query II nosort nulls
+SELECT x, x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40 FROM t WHERE x IS NULL OR x IN (0, 1, 40, 41) ORDER BY x NULLS FIRST;
+----
+NULL	NULL
+0	false
+1	true
+40	true
+41	false
+
+# ---- integer type boundaries ----
+
+statement ok
+CREATE TABLE tiny AS SELECT i::TINYINT AS v FROM range(-128, 128) r(i) UNION ALL SELECT NULL;
+
+query II
+EXPLAIN SELECT count(*) FROM tiny WHERE v BETWEEN 100 AND 126 OR v BETWEEN 127 AND 127;
+----
+logical_opt	<!REGEX>:.* OR .*
+
+query I nosort tiny_max
+SELECT count(*) FROM tiny WHERE v BETWEEN 100 AND 126 OR v BETWEEN 127 AND 127;
+----
+28
+
+query I nosort tiny_min
+SELECT count(*) FROM tiny WHERE v BETWEEN -128 AND -100 OR v BETWEEN -99 AND -50;
+----
+79
+
+statement ok
+CREATE TABLE utiny AS SELECT i::UTINYINT AS v FROM range(0, 256) r(i);
+
+query II
+EXPLAIN SELECT count(*) FROM utiny WHERE v BETWEEN 0 AND 100 OR v BETWEEN 101 AND 255;
+----
+logical_opt	<!REGEX>:.* OR .*
+
+query I nosort utiny
+SELECT count(*) FROM utiny WHERE v BETWEEN 0 AND 100 OR v BETWEEN 101 AND 255;
+----
+256
+
+statement ok
+CREATE TABLE huge AS SELECT (i * 1000000000000000000000)::HUGEINT AS v FROM range(-50, 50) r(i);
+
+query II
+EXPLAIN SELECT count(*) FROM huge WHERE v BETWEEN 1000000000000000000000 AND 20000000000000000000000 OR v BETWEEN 20000000000000000000001 AND 40000000000000000000000;
+----
+logical_opt	<REGEX>:.*v >= 1000000000000000000000.*v <= 40000000000000000000000.*
+
+query I nosort huge_adjacent
+SELECT count(*) FROM huge WHERE v BETWEEN 1000000000000000000000 AND 20000000000000000000000 OR v BETWEEN 20000000000000000000001 AND 40000000000000000000000;
+----
+40
+
+query II
+EXPLAIN SELECT count(*) FROM huge WHERE v BETWEEN 1000000000000000000000 AND 20000000000000000000000 OR v BETWEEN 21000000000000000000000 AND 40000000000000000000000;
+----
+logical_opt	<REGEX>:.* OR .*
+
+# ---- adjacency is for integers only ----
+
+# DECIMAL: 20.5 lies between 20 and 21
+statement ok
+CREATE TABLE dec AS SELECT (i / 2)::DECIMAL(5,1) AS v FROM range(-20, 100) r(i);
+
+query II
+EXPLAIN SELECT count(*) FROM dec WHERE v BETWEEN 1 AND 20 OR v BETWEEN 21 AND 40;
+----
+logical_opt	<REGEX>:.* OR .*
+
+query I nosort decimal_adjacent
+SELECT count(*) FROM dec WHERE v BETWEEN 1 AND 20 OR v BETWEEN 21 AND 40;
+----
+78
+
+# overlapping DECIMAL ranges still merge
+query II
+EXPLAIN SELECT count(*) FROM dec WHERE v BETWEEN 1 AND 20 OR v BETWEEN 20 AND 40;
+----
+logical_opt	<!REGEX>:.* OR .*
+
+query I nosort decimal_overlap
+SELECT count(*) FROM dec WHERE v BETWEEN 1 AND 20 OR v BETWEEN 20 AND 40;
+----
+79
+
+statement ok
+CREATE TABLE dbl AS SELECT (i / 2)::DOUBLE AS v FROM range(-20, 100) r(i);
+
+query II
+EXPLAIN SELECT count(*) FROM dbl WHERE v BETWEEN 1 AND 20 OR v BETWEEN 21 AND 40;
+----
+logical_opt	<REGEX>:.* OR .*
+
+query I nosort double_adjacent
+SELECT count(*) FROM dbl WHERE v BETWEEN 1 AND 20 OR v BETWEEN 21 AND 40;
+----
+78
+
+query II
+EXPLAIN SELECT count(*) FROM dbl WHERE v BETWEEN 1 AND 20 OR v BETWEEN 20 AND 40;
+----
+logical_opt	<REGEX>:.*v >= 1.0.*v <= 40.0.*
+
+query I nosort double_overlap
+SELECT count(*) FROM dbl WHERE v BETWEEN 1 AND 20 OR v BETWEEN 20 AND 40;
+----
+79
+
+statement ok
+CREATE TABLE dates AS SELECT DATE '2019-12-01' + i::INTEGER AS v FROM range(0, 120) r(i);
+
+query II
+EXPLAIN SELECT count(*) FROM dates WHERE v BETWEEN DATE '2020-01-01' AND DATE '2020-01-31' OR v BETWEEN DATE '2020-02-01' AND DATE '2020-02-29';
+----
+logical_opt	<REGEX>:.* OR .*
+
+query I nosort date_adjacent
+SELECT count(*) FROM dates WHERE v BETWEEN DATE '2020-01-01' AND DATE '2020-01-31' OR v BETWEEN DATE '2020-02-01' AND DATE '2020-02-29';
+----
+60
+
+query II
+EXPLAIN SELECT count(*) FROM dates WHERE v BETWEEN DATE '2020-01-01' AND DATE '2020-02-01' OR v BETWEEN DATE '2020-02-01' AND DATE '2020-02-29';
+----
+logical_opt	<!REGEX>:.* OR .*
+
+query I nosort date_overlap
+SELECT count(*) FROM dates WHERE v BETWEEN DATE '2020-01-01' AND DATE '2020-02-01' OR v BETWEEN DATE '2020-02-01' AND DATE '2020-02-29';
+----
+60
+
+statement ok
+CREATE TABLE strs AS SELECT chr((97 + i)::INTEGER) AS v FROM range(0, 26) r(i);
+
+query II
+EXPLAIN SELECT count(*) FROM strs WHERE v BETWEEN 'a' AND 'f' OR v BETWEEN 'd' AND 'k';
+----
+logical_opt	<!REGEX>:.* OR .*
+
+query I nosort string_overlap
+SELECT count(*) FROM strs WHERE v BETWEEN 'a' AND 'f' OR v BETWEEN 'd' AND 'k';
+----
+11
+
+query II
+EXPLAIN SELECT count(*) FROM strs WHERE v BETWEEN 'a' AND 'b' OR v BETWEEN 'c' AND 'd';
+----
+logical_opt	<REGEX>:.* OR .*
+
+query I nosort string_adjacent
+SELECT count(*) FROM strs WHERE v BETWEEN 'a' AND 'b' OR v BETWEEN 'c' AND 'd';
+----
+4
+
+# ---- the same queries without the expression rewriter give the same answers ----
+
+statement ok
+SET disabled_optimizers = 'expression_rewriter';
+
+query I nosort adjacent
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40;
+----
+
+query I nosort q9
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40 OR x BETWEEN 41 AND 60 OR x BETWEEN 61 AND 80 OR x BETWEEN 81 AND 100;
+----
+
+query I nosort overlap
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND 25 OR x BETWEEN 20 AND 40;
+----
+
+query I nosort inside
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND 40 OR x BETWEEN 10 AND 20;
+----
+
+query I nosort gap
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR x BETWEEN 22 AND 40;
+----
+
+query I nosort touch_right
+SELECT count(*) FROM t WHERE (x >= 1 AND x < 20) OR (x >= 20 AND x <= 40);
+----
+
+query I nosort touch_left
+SELECT count(*) FROM t WHERE (x >= 1 AND x <= 20) OR (x > 20 AND x <= 40);
+----
+
+query I nosort exclusive_gap
+SELECT count(*) FROM t WHERE (x >= 1 AND x < 20) OR (x > 20 AND x <= 40);
+----
+
+query I nosort exclusive_adjacent
+SELECT count(*) FROM t WHERE (x >= 1 AND x < 20) OR (x >= 21 AND x <= 40);
+----
+
+query I nosort mixed
+SELECT count(*) FROM t WHERE (x > 0 AND x <= 20) OR (x >= 21 AND x < 41);
+----
+
+query I nosort negative
+SELECT count(*) FROM t WHERE x BETWEEN -40 AND -21 OR x BETWEEN -20 AND -1;
+----
+
+query I nosort unsorted
+SELECT count(*) FROM t WHERE x BETWEEN 41 AND 60 OR x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40;
+----
+
+query I nosort other_child
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR y = 5 OR x BETWEEN 21 AND 40;
+----
+
+query I nosort different_columns
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND 20 OR y BETWEEN 21 AND 40;
+----
+
+query I nosort non_constant
+SELECT count(*) FROM t WHERE x BETWEEN 1 AND y OR x BETWEEN 21 AND 40;
+----
+
+query I nosort open_lower
+SELECT count(*) FROM t WHERE x < 20 OR x BETWEEN 20 AND 40;
+----
+
+query I nosort open_upper
+SELECT count(*) FROM t WHERE x >= 30 OR x BETWEEN 1 AND 29;
+----
+
+query I nosort both_open
+SELECT count(*) FROM t WHERE x <= 20 OR x > 20;
+----
+
+query I nosort not_between
+SELECT count(*) FROM t WHERE x NOT BETWEEN 10 AND 20;
+----
+
+query I nosort function_input
+SELECT count(*) FROM t WHERE abs(x) BETWEEN 1 AND 20 OR abs(x) BETWEEN 21 AND 40;
+----
+
+query I nosort arithmetic_input
+SELECT count(*) FROM t WHERE x + 1 BETWEEN 1 AND 20 OR x + 1 BETWEEN 21 AND 40;
+----
+
+query I nosort interval_shift
+SELECT v FROM iv WHERE day(v + INTERVAL '1 month') BETWEEN 0 AND 10 OR day(v + INTERVAL '30 days') BETWEEN 10 AND 20;
+----
+
+query I nosort signed_zero
+SELECT x FROM (VALUES (0.0), (1.0), (-1.0)) t(x) WHERE atan2(x, 0.0::DOUBLE) BETWEEN 1 AND 2 OR atan2(x, -0.0::DOUBLE) BETWEEN 2 AND 4 ORDER BY x;
+----
+
+query I nosort day_input
+SELECT count(*) FROM iv WHERE day(v) BETWEEN 1 AND 10 OR day(v) BETWEEN 11 AND 20;
+----
+
+query I nosort lambda_shift
+SELECT v FROM iv WHERE invoke(lambda a: day(a + INTERVAL '1 month'), v) BETWEEN 0 AND 10 OR invoke(lambda a: day(a + INTERVAL '30 days'), v) BETWEEN 10 AND 20;
+----
+
+query I nosort lambda_shift_and
+SELECT count(*) FROM (VALUES (INTERVAL '5 days')) t(v) WHERE (invoke(lambda a: day(a + INTERVAL '1 month'), v) >= 0 AND invoke(lambda a: day(a + INTERVAL '30 days'), v) <= 10) OR invoke(lambda a: day(a + INTERVAL '1 month'), v) BETWEEN 10 AND 20;
+----
+
+query I nosort lambda_day
+SELECT count(*) FROM iv WHERE invoke(lambda a: day(a), v) BETWEEN 1 AND 10 OR invoke(lambda a: day(a), v) BETWEEN 11 AND 20;
+----
+
+query I nosort empty_range
+SELECT count(*) FROM t WHERE x BETWEEN 20 AND 10 OR x BETWEEN 1 AND 30;
+----
+
+query I nosort shared
+SELECT count(*) FROM t WHERE y > 2 AND (x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40);
+----
+
+query II nosort nulls
+SELECT x, x BETWEEN 1 AND 20 OR x BETWEEN 21 AND 40 FROM t WHERE x IS NULL OR x IN (0, 1, 40, 41) ORDER BY x NULLS FIRST;
+----
+
+query I nosort tiny_max
+SELECT count(*) FROM tiny WHERE v BETWEEN 100 AND 126 OR v BETWEEN 127 AND 127;
+----
+
+query I nosort tiny_min
+SELECT count(*) FROM tiny WHERE v BETWEEN -128 AND -100 OR v BETWEEN -99 AND -50;
+----
+
+query I nosort utiny
+SELECT count(*) FROM utiny WHERE v BETWEEN 0 AND 100 OR v BETWEEN 101 AND 255;
+----
+
+query I nosort huge_adjacent
+SELECT count(*) FROM huge WHERE v BETWEEN 1000000000000000000000 AND 20000000000000000000000 OR v BETWEEN 20000000000000000000001 AND 40000000000000000000000;
+----
+
+query I nosort decimal_adjacent
+SELECT count(*) FROM dec WHERE v BETWEEN 1 AND 20 OR v BETWEEN 21 AND 40;
+----
+
+query I nosort decimal_overlap
+SELECT count(*) FROM dec WHERE v BETWEEN 1 AND 20 OR v BETWEEN 20 AND 40;
+----
+
+query I nosort double_adjacent
+SELECT count(*) FROM dbl WHERE v BETWEEN 1 AND 20 OR v BETWEEN 21 AND 40;
+----
+
+query I nosort double_overlap
+SELECT count(*) FROM dbl WHERE v BETWEEN 1 AND 20 OR v BETWEEN 20 AND 40;
+----
+
+query I nosort date_adjacent
+SELECT count(*) FROM dates WHERE v BETWEEN DATE '2020-01-01' AND DATE '2020-01-31' OR v BETWEEN DATE '2020-02-01' AND DATE '2020-02-29';
+----
+
+query I nosort date_overlap
+SELECT count(*) FROM dates WHERE v BETWEEN DATE '2020-01-01' AND DATE '2020-02-01' OR v BETWEEN DATE '2020-02-01' AND DATE '2020-02-29';
+----
+
+query I nosort string_overlap
+SELECT count(*) FROM strs WHERE v BETWEEN 'a' AND 'f' OR v BETWEEN 'd' AND 'k';
+----
+
+query I nosort string_adjacent
+SELECT count(*) FROM strs WHERE v BETWEEN 'a' AND 'b' OR v BETWEEN 'c' AND 'd';
+----
+
+statement ok
+RESET disabled_optimizers;

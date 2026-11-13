@@ -39,7 +39,7 @@ ALTER TABLE test ADD PRIMARY KEY (i)
 statement error
 ALTER TABLE test ADD PRIMARY KEY (j)
 ----
-<REGEX>:Catalog Error.*an index with that name already exists for this table: PRIMARY_test_j.*
+<REGEX>:Catalog Error.*table "test" can have only one primary key.*
 
 # Reverse the column order in the index.
 

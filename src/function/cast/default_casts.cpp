@@ -43,6 +43,7 @@ BoundCastInfo::BoundCastInfo(cast_function_t function_p, unique_ptr<BoundCastDat
 BoundCastInfo BoundCastInfo::Copy() const {
 	auto result = BoundCastInfo(function, cast_data ? cast_data->Copy() : nullptr, init_local_state);
 	result.statistics = statistics;
+	result.stability = stability;
 	return result;
 }
 
@@ -179,9 +180,7 @@ BoundCastInfo DefaultCasts::GetDefaultCastFunction(BindCastInput &input, const L
 	case LogicalTypeId::MAP:
 		return MapCastSwitch(input, source, target);
 	case LogicalTypeId::STRUCT:
-		// an unnamed STRUCT (e.g. from variant shredding with empty keys) is cast positionally, like a TUPLE
-		return StructType::IsUnnamed(source) ? TupleCastSwitch(input, source, target)
-		                                     : StructCastSwitch(input, source, target);
+		return StructCastSwitch(input, source, target);
 	case LogicalTypeId::TUPLE:
 		return TupleCastSwitch(input, source, target);
 	case LogicalTypeId::LIST:

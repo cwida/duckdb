@@ -1,0 +1,20 @@
+# name: test/sql/export/import_database_non_copy_load.test
+# description: IMPORT DATABASE with a non-COPY statement in load.sql
+# group: [export]
+
+statement ok
+CREATE TABLE t(i INT);
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/imp_non_copy';
+
+statement ok
+COPY (SELECT 'SELECT 42;') TO '{TEST_DIR}/imp_non_copy/load.sql' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement ok
+DROP TABLE t;
+
+statement error
+IMPORT DATABASE '{TEST_DIR}/imp_non_copy';
+----
+<REGEX>:Invalid Input Error.*load.sql may only contain COPY statements.*

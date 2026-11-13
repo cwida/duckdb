@@ -1,10 +1,13 @@
 #include "duckdb/optimizer/unnest_rewriter.hpp"
 
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
+
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/optimizer/column_binding_replacer.hpp"
 #include "duckdb/planner/column_binding.hpp"
+#include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_unnest_expression.hpp"
 #include "duckdb/planner/logical_operator.hpp"
@@ -83,7 +86,7 @@ void UnnestRewriterPlanUpdater::VisitExpression(unique_ptr<Expression> *expressi
 		auto &bound_column_ref = expr->Cast<BoundColumnRefExpression>();
 		for (idx_t i = 0; i < replace_bindings.size(); i++) {
 			if (bound_column_ref.Binding() == replace_bindings[i].old_binding) {
-				bound_column_ref.BindingMutable() = replace_bindings[i].new_binding;
+				expr = bound_column_ref.WithBinding(replace_bindings[i].new_binding);
 				break;
 			}
 		}
@@ -217,10 +220,10 @@ void UnnestRewriter::FindCandidates(unique_ptr<LogicalOperator> &root, unique_pt
 				}
 				auto &bind_col = proj.expressions[col_bind.column_index]->Cast<BoundColumnRefExpression>();
 				auto unnest_expr = make_uniq<BoundUnnestExpression>(unnest_get->types[i]);
-				unnest_expr->ChildMutable() = proj.expressions[col_bind.column_index]->Copy();
-				bind_col.BindingMutable() = ColumnBinding(unnest_get_index, bind_col.Binding().column_index);
+				unnest_expr->ChildMutable() =
+				    BoundCastExpression::AddArrayCastToList(context, proj.expressions[col_bind.column_index]->Copy());
 				auto unnest_proj_idx = ColumnBinding::PushExpression(unnest->expressions, std::move(unnest_expr));
-				ColumnBinding new_column_ref(bind_col.Binding().table_index, unnest_proj_idx);
+				ColumnBinding new_column_ref(unnest_get_index, unnest_proj_idx);
 				auto unnest_ref = make_uniq<BoundColumnRefExpression>(bind_col.GetAlias(), unnest_get->types[i],
 				                                                      new_column_ref, bind_col.Depth());
 				proj.expressions[col_bind.column_index] = std::move(unnest_ref);
@@ -236,8 +239,9 @@ void UnnestRewriter::FindCandidates(unique_ptr<LogicalOperator> &root, unique_pt
 	}
 }
 
-static bool ConvertCTETableInOutUnnest(unique_ptr<LogicalOperator> &root, unique_ptr<LogicalOperator> &op,
-                                       TableIndex input_cte_index, bool require_input_cte_ref = true) {
+static bool ConvertCTETableInOutUnnest(ClientContext &context, unique_ptr<LogicalOperator> &root,
+                                       unique_ptr<LogicalOperator> &op, TableIndex input_cte_index,
+                                       bool require_input_cte_ref = true) {
 	if (op->type != LogicalOperatorType::LOGICAL_GET) {
 		return false;
 	}
@@ -284,10 +288,10 @@ static bool ConvertCTETableInOutUnnest(unique_ptr<LogicalOperator> &root, unique
 		}
 		auto &bind_col = proj.expressions[col_bind.column_index]->Cast<BoundColumnRefExpression>();
 		auto unnest_expr = make_uniq<BoundUnnestExpression>(unnest_get->types[i]);
-		unnest_expr->ChildMutable() = proj.expressions[col_bind.column_index]->Copy();
-		bind_col.BindingMutable() = ColumnBinding(unnest_get_index, bind_col.Binding().column_index);
+		unnest_expr->ChildMutable() =
+		    BoundCastExpression::AddArrayCastToList(context, proj.expressions[col_bind.column_index]->Copy());
 		auto unnest_proj_idx = ColumnBinding::PushExpression(unnest->expressions, std::move(unnest_expr));
-		ColumnBinding new_column_ref(bind_col.Binding().table_index, unnest_proj_idx);
+		ColumnBinding new_column_ref(unnest_get_index, unnest_proj_idx);
 		auto unnest_ref = make_uniq<BoundColumnRefExpression>(bind_col.GetAlias(), unnest_get->types[i], new_column_ref,
 		                                                      bind_col.Depth());
 		proj.expressions[col_bind.column_index] = std::move(unnest_ref);
@@ -416,7 +420,7 @@ bool UnnestRewriter::RewriteInlineCTEDedupCandidate(unique_ptr<LogicalOperator> 
 	idx_t other_side = 1 - domain_side.GetIndex();
 	auto domain_ref_bindings = join.children[domain_side.GetIndex()]->GetColumnBindings();
 	if (join.children[other_side]->type == LogicalOperatorType::LOGICAL_GET &&
-	    !ConvertCTETableInOutUnnest(root, join.children[other_side], domain_cte.table_index, false)) {
+	    !ConvertCTETableInOutUnnest(context, root, join.children[other_side], domain_cte.table_index, false)) {
 		return false;
 	}
 
@@ -580,7 +584,7 @@ bool UnnestRewriter::RewriteCTECandidate(unique_ptr<LogicalOperator> &root, uniq
 	idx_t other_side = 1 - domain_side.GetIndex();
 
 	if (join.children[other_side]->type == LogicalOperatorType::LOGICAL_GET &&
-	    !ConvertCTETableInOutUnnest(root, join.children[other_side], dedup_cte.table_index)) {
+	    !ConvertCTETableInOutUnnest(context, root, join.children[other_side], dedup_cte.table_index)) {
 		return false;
 	}
 
@@ -685,14 +689,18 @@ void UnnestRewriter::UpdateRHSBindings(unique_ptr<LogicalOperator> &plan, unique
 	reference<unique_ptr<LogicalOperator>> curr_op = topmost_op.children[0];
 	while (curr_op.get()->type == LogicalOperatorType::LOGICAL_PROJECTION) {
 		path_to_unnest.push_back(curr_op);
-		D_ASSERT(curr_op.get()->type == LogicalOperatorType::LOGICAL_PROJECTION);
-		auto &proj = curr_op.get()->Cast<LogicalProjection>();
-		D_ASSERT(proj.expressions.size() > distinct_unnest_count);
-		auto tbl_idx = proj.table_index;
-		auto payload_count = proj.expressions.size() - distinct_unnest_count;
+		curr_op = curr_op.get()->children[0];
+	}
 
-		// The trailing columns are duplicate-eliminated delimiter columns. References to those slots should
-		// point at the prepended LHS columns after the rewrite, not at shifted payload columns.
+	// The trailing columns are duplicate-eliminated delimiter columns. References to those slots should
+	// point at the prepended LHS columns after the rewrite, not at shifted payload columns.
+	// Upper projections in the path reference the trailing slots of the projection below them,
+	// so resolve bottom-up through the chain of trailing slots.
+	column_binding_map_t<idx_t> trailing_slot_to_lhs;
+	for (idx_t path_idx = path_to_unnest.size(); path_idx > 0; path_idx--) {
+		auto &proj = path_to_unnest[path_idx - 1].get()->Cast<LogicalProjection>();
+		D_ASSERT(proj.expressions.size() > distinct_unnest_count);
+		auto payload_count = proj.expressions.size() - distinct_unnest_count;
 		for (idx_t i = payload_count; i < proj.expressions.size(); i++) {
 			auto &expr = proj.expressions[i];
 			if (expr->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
@@ -700,31 +708,43 @@ void UnnestRewriter::UpdateRHSBindings(unique_ptr<LogicalOperator> &plan, unique
 			}
 			auto &colref = expr->Cast<BoundColumnRefExpression>();
 			auto removed_binding = colref.Binding();
-			if (removed_binding.table_index == overwritten_tbl_idx &&
-			    removed_binding.column_index.GetIndex() < delim_columns.size()) {
-				// CTE-based rewrites can still reference the deduplicated input here; translate it back to the
-				// corresponding domain producer column before finding the new LHS projection slot.
-				removed_binding = delim_columns[removed_binding.column_index.GetIndex()];
-			}
-			for (idx_t lhs_idx = 0; lhs_idx < lhs_bindings.size(); lhs_idx++) {
-				if (removed_binding == lhs_bindings[lhs_idx].binding) {
-					ColumnBinding source_binding(tbl_idx, ProjectionIndex(i));
-					ColumnBinding target_binding(tbl_idx, ProjectionIndex(lhs_idx));
-					updater.replace_bindings.emplace_back(source_binding, target_binding);
-					break;
+			optional_idx found_lhs_idx;
+			auto chained = trailing_slot_to_lhs.find(removed_binding);
+			if (chained != trailing_slot_to_lhs.end()) {
+				found_lhs_idx = chained->second;
+			} else {
+				if (removed_binding.table_index == overwritten_tbl_idx &&
+				    removed_binding.column_index.GetIndex() < delim_columns.size()) {
+					// CTE-based rewrites can still reference the deduplicated input here; translate it back to the
+					// corresponding domain producer column before finding the new LHS projection slot.
+					removed_binding = delim_columns[removed_binding.column_index.GetIndex()];
+				}
+				for (idx_t lhs_idx = 0; lhs_idx < lhs_bindings.size(); lhs_idx++) {
+					if (removed_binding == lhs_bindings[lhs_idx].binding) {
+						found_lhs_idx = lhs_idx;
+						break;
+					}
 				}
 			}
+			if (found_lhs_idx.IsValid()) {
+				ColumnBinding source_binding(proj.table_index, ProjectionIndex(i));
+				ColumnBinding target_binding(proj.table_index, ProjectionIndex(found_lhs_idx.GetIndex()));
+				updater.replace_bindings.emplace_back(source_binding, target_binding);
+				trailing_slot_to_lhs[source_binding] = found_lhs_idx.GetIndex();
+			}
 		}
-		proj.expressions.resize(payload_count);
+	}
 
-		// store all shifted current bindings
+	// drop the trailing delimiter columns and store all shifted payload bindings
+	for (auto &path_op : path_to_unnest) {
+		auto &proj = path_op.get()->Cast<LogicalProjection>();
+		auto payload_count = proj.expressions.size() - distinct_unnest_count;
+		proj.expressions.resize(payload_count);
 		for (idx_t i = 0; i < proj.expressions.size(); i++) {
-			ColumnBinding source_binding(tbl_idx, ProjectionIndex(i));
-			ColumnBinding target_binding(tbl_idx, ProjectionIndex(i + shift));
+			ColumnBinding source_binding(proj.table_index, ProjectionIndex(i));
+			ColumnBinding target_binding(proj.table_index, ProjectionIndex(i + shift));
 			updater.replace_bindings.emplace_back(source_binding, target_binding);
 		}
-
-		curr_op = curr_op.get()->children[0];
 	}
 
 	// update all bindings by shifting them

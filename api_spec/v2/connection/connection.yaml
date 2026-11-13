@@ -3,10 +3,9 @@ module: connection
 functions:
   connection_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
-      Opens a connection to an instance, starting it if it has not
-      started yet.
+      Opens a connection to an instance.
 
       Each connection carries its own client context and session-scoped (LOCAL)
       settings. Connections to the same instance share its catalog, buffer
@@ -33,7 +32,7 @@ functions:
     return_type: ERROR
   connection_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys the connection.
 
@@ -49,145 +48,9 @@ functions:
         indirection: 1
         description: "The connection to destroy."
     return_type: ERROR
-  connection_set_option:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Sets a config option through the connection.
-
-      `scope` chooses the destination, mirroring SQL:
-        - AUTOMATIC resolves it from the option's target scope, like a bare
-          `SET name = setting`.
-        - GLOBAL writes through to the instance, visible to all connections,
-          like `SET GLOBAL`.
-        - LOCAL writes to this connection's session only, like `SET LOCAL` /
-          `SET SESSION`.
-      A disallowed combination returns ERROR_INPUT_INVALID: GLOBAL against a
-      LOCAL_ONLY option, LOCAL against a GLOBAL_ONLY one, and the legacy
-      analogues. An unknown name is rejected unless an extension that
-      defines it can be autoloaded; to stage a setting for an extension
-      before startup, use `[[instance_set_option]]`.
-    role: setter
-    belongs_to: connection
-    parameters:
-      conn:
-        type: connection
-        description: "The connection."
-      name:
-        type: identifier
-        indirection: 1
-        const: true
-        kind: IN
-        description: "Option name (canonical or alias)."
-      setting:
-        type: str
-        indirection: 1
-        const: true
-        kind: IN
-        description: "The setting, in the textual form SQL `SET` accepts."
-      scope:
-        type: SETTING_SCOPE
-        description: "Target scope: AUTOMATIC, GLOBAL, or LOCAL."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-  connection_get_option_by_name:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Reads a config option through the connection.
-
-      Returns the option's effective setting at the connection's scope: the
-      LOCAL override if this connection set one, otherwise the GLOBAL value,
-      otherwise the static default. The remaining fields are populated exactly
-      as by `[[instance_get_option_by_name]]`. Aliases resolve transparently, and an unknown
-      name returns ERROR_INPUT_INVALID. The caller destroys the returned
-      option.
-    role: getter
-    belongs_to: connection
-    parameters:
-      conn:
-        type: connection
-        description: "The connection."
-      name:
-        type: identifier
-        indirection: 1
-        const: true
-        kind: IN
-        description: "Option name (canonical or alias)."
-      out_option:
-        type: option
-        indirection: 1
-        kind: OUT
-        description: "Receives the populated option handle."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-  connection_get_option_count:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Returns the number of config options visible to this connection.
-
-      The same count `[[instance_get_option_count]]` reports for the underlying
-      instance: core plus extension options, aliases excluded.
-    role: getter
-    belongs_to: connection
-    parameters:
-      conn:
-        type: connection
-        description: "The connection."
-      out_count:
-        type: idx
-        indirection: 1
-        kind: OUT
-        description: "Receives the option count."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-  connection_get_option_by_index:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Reads the config option at the given index visible to this connection.
-
-      Index space: [0, core_count) addresses core options, [core_count, total)
-      the extension options visible from this connection's instance. An
-      out-of-range index returns ERROR_INPUT_INVALID. The caller destroys the
-      returned option.
-    role: getter
-    belongs_to: connection
-    parameters:
-      conn:
-        type: connection
-        description: "The connection."
-      index:
-        type: idx
-        description: "The option index, in [0, option_count)."
-      out_option:
-        type: option
-        indirection: 1
-        kind: OUT
-        description: "Receives the populated option handle."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-  # Query processing
   connection_interrupt:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Interrupts the query currently executing on the connection.
 
@@ -211,7 +74,7 @@ functions:
     return_type: ERROR
   connection_progress_get:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Captures a snapshot of the active query's execution progress.
 

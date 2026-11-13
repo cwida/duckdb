@@ -1,0 +1,22 @@
+# name: benchmark/micro/match_recognize/match_recognize_partitions.benchmark
+# description: MATCH_RECOGNIZE over many small partitions
+# group: [match_recognize]
+
+name MatchRecognize Partitions
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE readings AS
+    SELECT (i // 100)::INTEGER AS p, i::INTEGER AS i, (i % 5)::INTEGER AS v
+    FROM range(0, 2000000) t(i);
+
+run
+SELECT count(*) FROM readings MATCH_RECOGNIZE(
+    PARTITION BY p
+    ORDER BY i
+    MEASURES i AS start_i
+    ONE ROW PER MATCH
+    PATTERN (A B)
+    DEFINE A AS v = 0, B AS v = 1
+);

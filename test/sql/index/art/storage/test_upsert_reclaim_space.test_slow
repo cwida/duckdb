@@ -2,7 +2,8 @@
 # description: Test that the block manager reclaims index memory after UPSERT.
 # group: [storage]
 
-mode skip instable
+# Reloading between statements would roll back the open transaction on con1.
+require skip_reload
 
 load {TEST_DIR}/test_reclaim_upsert_space.db
 

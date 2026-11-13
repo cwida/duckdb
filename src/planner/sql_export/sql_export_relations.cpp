@@ -18,6 +18,8 @@
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/planner/operator/logical_empty_result.hpp"
 #include "duckdb/planner/operator/logical_set_operation.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
@@ -179,7 +181,8 @@ LogicalPlanSQLExportResult LogicalProjection::ToSQL(LogicalPlanSQLExportContext 
 		return LogicalPlanSQLExportResult::Failure(fields);
 	}
 	D_ASSERT(projection.expressions.size() == fields.GetValue().size());
-	bool fromless = projection.children[0]->type == LogicalOperatorType::LOGICAL_DUMMY_SCAN;
+	bool fromless = projection.children[0]->type == LogicalOperatorType::LOGICAL_DUMMY_SCAN &&
+	                !export_context.FindSource(*projection.children[0]);
 	auto child =
 	    export_context.ExportChild(*projection.children[0], LogicalPlanSQLExportHelpers::PlanChildPath(path, 0));
 	if (child.HasError()) {
@@ -233,6 +236,9 @@ ExportOrderModifier(LogicalOperator &op, LogicalPlanSQLExportContext &context, c
 		if (expression.HasError()) {
 			return Result::Failure(expression);
 		}
+		if (SQLExportHelpers::IsConstantOrderKey(*order.expression, *expression.GetValue())) {
+			continue;
+		}
 		modifier->orders.emplace_back(
 		    order.type, order.null_order,
 		    SQLExportHelpers::OrderExpression(SemanticExpressionType(*order.expression, expression_context),
@@ -261,6 +267,10 @@ static LogicalPlanSQLExportResult ExportOrderedRelation(LogicalOperator &op, Log
 	auto modifier = ExportOrderModifier(op, context, path, orders, expression_context, 0);
 	if (modifier.HasError()) {
 		return LogicalPlanSQLExportResult::Failure(modifier);
+	}
+	if (modifier.GetValue()->orders.empty()) {
+		LogicalPlanSQLExportHelpers::SetChildScope(*select, std::move(child.GetValue()), plain);
+		return LogicalPlanSQLExportResult::Success({std::move(select), std::move(fields.GetValue())});
 	}
 	select->modifiers.push_back(std::move(modifier.GetValue()));
 	if (!plain && LogicalPlanSQLExportHelpers::ComposeOrder(op, child.GetValue(), *select, expression_context, path)) {
@@ -323,7 +333,7 @@ LogicalPlanSQLExportResult LogicalSetOperation::ToSQL(LogicalPlanSQLExportContex
 		// Retain the UNION boundary when optimization removed every other arm.
 		LogicalEmptyResult empty(op.types, op.GetColumnBindings());
 		empty.ResolveOperatorTypes();
-		auto exported = empty.ToSQL(export_context, path);
+		auto exported = export_context.Export(empty, path);
 		if (exported.HasError()) {
 			return exported;
 		}
@@ -332,10 +342,69 @@ LogicalPlanSQLExportResult LogicalSetOperation::ToSQL(LogicalPlanSQLExportContex
 	return LogicalPlanSQLExportResult::Success({std::move(query), std::move(fields.GetValue())});
 }
 
+//! Whether the aggregate is a DISTINCT ON without ORDER BY: groups plus the first value of every other column
+static bool IsInputOrderedDistinct(const LogicalAggregate &aggregate) {
+	if (!aggregate.preserve_input_order || aggregate.grouping_sets.size() > 1 ||
+	    !aggregate.grouping_functions.empty() || aggregate.groups.empty()) {
+		return false;
+	}
+	for (auto &expression : aggregate.expressions) {
+		auto &aggr = expression->Cast<BoundAggregateExpression>();
+		if (aggr.Function().GetName() != FirstFun::Name || aggr.GetFilter() || aggr.GetOrderBys() ||
+		    aggr.GetChildren().size() != 1 || aggr.IsDistinct()) {
+			return false;
+		}
+	}
+	return true;
+}
+
+//! Export as DISTINCT ON, which keeps the first row of every group in input order
+static LogicalPlanSQLExportResult ExportInputOrderedDistinct(LogicalAggregate &aggregate,
+                                                             LogicalPlanSQLExportContext &context,
+                                                             const LogicalPlanVerificationPath &path) {
+	auto fields = LogicalPlanSQLExportHelpers::CreateFields(aggregate, path);
+	if (fields.HasError()) {
+		return LogicalPlanSQLExportResult::Failure(fields);
+	}
+	auto child = context.ExportChild(*aggregate.children[0], LogicalPlanSQLExportHelpers::PlanChildPath(path, 0));
+	if (child.HasError()) {
+		return LogicalPlanSQLExportResult::Failure(child);
+	}
+	auto expression_context =
+	    LogicalPlanSQLExportHelpers::CreateBindingContext(context.GetClientContext(), {child.GetValue()});
+	vector<reference<const Expression>> expressions;
+	for (auto &group : aggregate.groups) {
+		expressions.push_back(*group);
+	}
+	for (auto &expression : aggregate.expressions) {
+		expressions.push_back(*expression->Cast<BoundAggregateExpression>().GetChildren()[0]);
+	}
+	auto select = make_uniq<SelectNode>();
+	auto modifier = make_uniq<DistinctModifier>();
+	for (idx_t i = 0; i < expressions.size(); i++) {
+		ApplySemanticType(fields.GetValue()[i], expressions[i].get(), expression_context);
+		auto expression = context.ExportExpression(aggregate, expressions, i, expression_context, path);
+		if (expression.HasError()) {
+			return LogicalPlanSQLExportResult::Failure(expression);
+		}
+		if (i < aggregate.groups.size()) {
+			modifier->distinct_on_targets.push_back(expression.GetValue()->Copy());
+		}
+		expression.GetValue()->SetAlias(LogicalPlanSQLExportHelpers::FieldIdentifier(i));
+		select->select_list.push_back(std::move(expression.GetValue()));
+	}
+	select->modifiers.push_back(std::move(modifier));
+	select->from_table = LogicalPlanSQLExportHelpers::CreateSubquery(std::move(child.GetValue()));
+	return LogicalPlanSQLExportResult::Success({std::move(select), std::move(fields.GetValue())});
+}
+
 LogicalPlanSQLExportResult LogicalAggregate::ToSQL(LogicalPlanSQLExportContext &export_context,
                                                    const LogicalPlanVerificationPath &path) {
 	auto &aggregate = *this;
 	D_ASSERT(aggregate.children.size() == 1);
+	if (IsInputOrderedDistinct(aggregate)) {
+		return ExportInputOrderedDistinct(aggregate, export_context, path);
+	}
 #ifdef D_ASSERT_IS_ENABLED
 	for (auto &expression : aggregate.expressions) {
 		D_ASSERT(expression && expression->GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE);
@@ -422,6 +491,10 @@ LogicalPlanSQLExportResult LogicalAggregate::ToSQL(LogicalPlanSQLExportContext &
 		}
 		select->groups.grouping_sets.push_back(std::move(all_groups));
 	}
+	if (select->groups.grouping_sets.empty() && aggregate.expressions.empty()) {
+		// GROUP BY () keeps an aggregate without groups or aggregates producing a single row
+		select->groups.grouping_sets.emplace_back();
+	}
 	for (auto &grouping : aggregate.grouping_functions) {
 		vector<unique_ptr<ParsedExpression>> arguments;
 		for (auto index : grouping) {
@@ -469,7 +542,9 @@ LogicalPlanSQLExportResult LogicalDistinct::ToSQL(LogicalPlanSQLExportContext &c
 		if (order.HasError()) {
 			return LogicalPlanSQLExportResult::Failure(order);
 		}
-		select->modifiers.push_back(std::move(order.GetValue()));
+		if (!order.GetValue()->orders.empty()) {
+			select->modifiers.push_back(std::move(order.GetValue()));
+		}
 	}
 	select->from_table = LogicalPlanSQLExportHelpers::CreateSubquery(std::move(child.GetValue()));
 	return LogicalPlanSQLExportResult::Success({std::move(select), std::move(fields.GetValue())});
@@ -502,7 +577,8 @@ LogicalPlanSQLExportResult LogicalWindow::ToSQL(LogicalPlanSQLExportContext &con
 	if (fields.HasError()) {
 		return LogicalPlanSQLExportResult::Failure(fields);
 	}
-	if (op.children[0]->type == LogicalOperatorType::LOGICAL_GET) {
+	// A replaced input exports as a named source, so its ordinality fusion does not apply.
+	if (op.children[0]->type == LogicalOperatorType::LOGICAL_GET && !context.FindSource(*op.children[0])) {
 		auto &get = op.children[0]->Cast<LogicalGet>();
 		if (get.source_ordinality == OrdinalityType::WITH_ORDINALITY && !get.ordinality_idx.IsValid()) {
 			bool supported =

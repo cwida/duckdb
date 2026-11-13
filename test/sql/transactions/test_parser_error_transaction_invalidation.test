@@ -17,7 +17,7 @@ insert into audit values (21);
 statement error
 inser into audit_backup from audit;
 ----
-Parser Error: syntax error at or near "into"
+Parser Error: syntax error at or near "inser"
 
 statement error
 insert into audit values (22);

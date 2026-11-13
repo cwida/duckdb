@@ -8,10 +8,10 @@ require noforcestorage
 
 # Set the temporary directory to an empty directory.
 statement ok
-PRAGMA temp_directory=''
+SET temp_directory=''
 
 statement ok
-PRAGMA memory_limit='2MB'
+SET memory_limit='2MB'
 
 # we can't offload anything to disk now
 # hence this creation should fail as the table does not fit within our memory limit
@@ -22,13 +22,13 @@ CREATE TABLE t2 AS SELECT * FROM range(1000000);
 
 # after we set the temp directory, we can create this table
 statement ok
-PRAGMA temp_directory='{TEST_DIR}/myfile.tmp'
+SET temp_directory='{TEST_DIR}/myfile.tmp'
 
 statement ok
 CREATE TABLE t2 AS SELECT * FROM range(1000000);
 
 # after the temp directory is created, we can't change the temp directory again
 statement error
-PRAGMA temp_directory=''
+SET temp_directory=''
 ----
 <REGEX>:.*Not implemented Error.*Cannot switch temporary directory.*

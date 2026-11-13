@@ -1,0 +1,65 @@
+# name: test/sql/storage/types/variant/variant_stats_merge_fast.test
+# description: Cover variant statistics merging with small row groups
+# group: [variant]
+
+statement ok
+SET variant_minimum_shredding_size = 0
+
+statement ok
+ATTACH '{TEST_DIR}/variant_stats_merge_fast.db' AS db (
+	ROW_GROUP_SIZE 2048,
+	STORAGE_VERSION 'v1.5.0'
+)
+
+statement ok
+SET force_variant_shredding = 'INTEGER[]'
+
+statement ok
+CREATE TABLE db.lists(v VARIANT)
+
+statement ok
+INSERT INTO db.lists SELECT NULL FROM range(2048)
+
+statement ok
+CHECKPOINT db
+
+statement ok
+SET force_variant_shredding = 'VARCHAR[]'
+
+statement ok
+INSERT INTO db.lists SELECT NULL FROM range(2048)
+
+statement ok
+CHECKPOINT db
+
+query I
+SELECT stats(v).shredding_state FROM db.lists LIMIT 1
+----
+INCONSISTENT
+
+statement ok
+SET force_variant_shredding = 'STRUCT(a INTEGER, b VARCHAR, c BOOLEAN)'
+
+statement ok
+CREATE TABLE db.objects(v VARIANT)
+
+statement ok
+INSERT INTO db.objects SELECT NULL FROM range(2048)
+
+statement ok
+CHECKPOINT db
+
+statement ok
+SET force_variant_shredding = 'STRUCT(b VARCHAR, a INTEGER, c INTEGER)'
+
+statement ok
+INSERT INTO db.objects SELECT NULL FROM range(2048)
+
+statement ok
+CHECKPOINT db
+
+query II
+SELECT s.fully_shredded.a.type, s.fully_shredded.b.type
+FROM (SELECT stats(v) s FROM db.objects LIMIT 1)
+----
+INTEGER	VARCHAR

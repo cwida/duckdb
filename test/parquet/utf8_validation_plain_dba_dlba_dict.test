@@ -231,3 +231,74 @@ query T
 SELECT list(hex(encode(s))) FROM read_parquet('data/parquet-testing/bug10747.parquet', utf8_validation='ignore');
 ----
 [636166, 6C616974]
+
+# Complete DLBA characters remain valid on both sides of the 12-byte inline limit.
+statement ok
+CREATE TABLE dlba_valid_strings AS
+SELECT * FROM (VALUES
+    (0, NULL::VARCHAR),
+    (1, ''),
+    (2, 'ascii'),
+    (3, 'café'),
+    (4, 'Привет'),
+    (5, 'cost €'),
+    (6, 'ok 😀'),
+    (7, repeat('a', 10) || 'é'),
+    (8, repeat('a', 11) || 'é'),
+    (9, repeat('a', 64) || 'é'),
+    (10, repeat('a', 64) || '€'),
+    (11, '😀€é' || repeat('a', 64) || '😀')
+) t(i, s);
+
+statement ok
+COPY (SELECT * FROM dlba_valid_strings ORDER BY i)
+TO '{TEST_DIR}/dlba_complete.parquet'
+(FORMAT parquet, PARQUET_VERSION v2, DICTIONARY_SIZE_LIMIT 0);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE encodings = 'DELTA_LENGTH_BYTE_ARRAY')
+FROM parquet_metadata('{TEST_DIR}/dlba_complete.parquet')
+WHERE path_in_schema = 's';
+----
+1	1
+
+query II
+SELECT count(*), bool_and(p.s IS NOT DISTINCT FROM e.s)
+FROM read_parquet('{TEST_DIR}/dlba_complete.parquet') p
+JOIN dlba_valid_strings e USING (i);
+----
+12	true
+
+# The combined bytes are valid, but every split string must be rejected separately.
+statement ok
+CREATE TABLE dlba_split_cases AS
+SELECT * FROM (VALUES
+    (1, [from_hex('61C2'), NULL::BLOB, ''::BLOB, from_hex('A262')]),
+    (2, [from_hex('61E2'), NULL::BLOB, ''::BLOB, from_hex('82AC62')]),
+    (3, [from_hex('61E282'), NULL::BLOB, ''::BLOB, from_hex('AC62')]),
+    (4, [from_hex('61F0'), NULL::BLOB, ''::BLOB, from_hex('9F988062')]),
+    (5, [from_hex('61F09F'), NULL::BLOB, ''::BLOB, from_hex('988062')]),
+    (6, [from_hex('61F09F98'), NULL::BLOB, ''::BLOB, from_hex('8062')])
+) t(case_id, parts);
+
+loop case_id 1 7
+
+statement ok
+COPY (
+    SELECT s FROM dlba_split_cases, unnest(parts) WITH ORDINALITY u(s, i)
+    WHERE case_id = {case_id} ORDER BY i
+) TO '{TEST_DIR}/dlba_split_{case_id}.parquet'
+(FORMAT parquet, PARQUET_VERSION v2, DICTIONARY_SIZE_LIMIT 0);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE encodings = 'DELTA_LENGTH_BYTE_ARRAY')
+FROM parquet_metadata('{TEST_DIR}/dlba_split_{case_id}.parquet');
+----
+1	1
+
+statement error
+SELECT s FROM read_parquet('{TEST_DIR}/dlba_split_{case_id}.parquet', binary_as_string=true);
+----
+is not valid UTF8
+
+endloop

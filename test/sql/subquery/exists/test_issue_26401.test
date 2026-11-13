@@ -1,0 +1,40 @@
+# name: test/sql/subquery/exists/test_issue_26401.test
+# description: EXISTS with aggregate over empty table - statistics must not remove LIMIT 1
+# group: [exists]
+
+statement ok
+CREATE TABLE t (a INT);
+
+statement ok
+INSERT INTO t VALUES (1), (2);
+
+statement ok
+CREATE TABLE e (a INT);
+
+# inner NOT EXISTS over empty table is true, so outer EXISTS is true
+query T
+SELECT EXISTS (SELECT 1 FROM t WHERE NOT EXISTS (SELECT 1 FROM e));
+----
+1
+
+# double negation: no rows should survive
+query I
+SELECT a FROM t WHERE NOT EXISTS (SELECT 1 FROM t WHERE NOT EXISTS (SELECT 1 FROM e));
+----
+
+# sanity: single level still works
+query I
+SELECT * FROM t WHERE NOT EXISTS (SELECT 1 FROM e) ORDER BY a;
+----
+1
+2
+
+query T
+SELECT EXISTS (SELECT 1 FROM e);
+----
+0
+
+query T
+SELECT NOT EXISTS (SELECT 1 FROM e);
+----
+1

@@ -158,6 +158,29 @@ void ExpressionIterator::VisitExpressionClassMutable(
 	    *expr, [&](unique_ptr<Expression> &child) { VisitExpressionClassMutable(child, expr_class, callback); });
 }
 
+unique_ptr<Expression> ExpressionIterator::PreorderReplace(unique_ptr<Expression> expr,
+                                                           const ReplaceFunction &callback) {
+	auto replacement = callback(*expr);
+	if (replacement) {
+		return replacement;
+	}
+	ExpressionIterator::EnumerateChildren(
+	    *expr, [&](unique_ptr<Expression> &child) { child = PreorderReplace(std::move(child), callback); });
+	return expr;
+}
+
+unique_ptr<Expression> ExpressionIterator::PreorderReplaceClass(unique_ptr<Expression> expr, ExpressionClass expr_class,
+                                                                const ReplaceFunction &callback) {
+	if (expr->GetExpressionClass() == expr_class) {
+		auto replacement = callback(*expr);
+		return replacement ? std::move(replacement) : std::move(expr);
+	}
+	ExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<Expression> &child) {
+		child = PreorderReplaceClass(std::move(child), expr_class, callback);
+	});
+	return expr;
+}
+
 static void ReplaceExpressionInPlace(unique_ptr<Expression> &expr, const Expression &target,
                                      const Expression &replacement) {
 	if (expr->Equals(target)) {

@@ -27,7 +27,7 @@ unique_ptr<BaseStatistics> DirectFileReader::GetStatistics(ClientContext &contex
 bool DirectFileReader::TryInitializeScan(ClientContext &context, GlobalTableFunctionState &gstate,
                                          LocalTableFunctionState &lstate) {
 	auto &state = gstate.Cast<ReadFileGlobalState>();
-	return file_list_idx.GetIndex() < state.file_list->GetTotalFileCount() && !done;
+	return file_list_idx.GetIndex() < state.file_list->GetTotalFileCount() && !done.load(std::memory_order_relaxed);
 }
 
 static void AssertMaxFileSize(const string &file_name, idx_t file_size) {
@@ -52,7 +52,7 @@ static inline void VERIFY(const string &filename, const string_t &content) {
 AsyncResult DirectFileReader::Scan(ClientContext &context, GlobalTableFunctionState &global_state,
                                    LocalTableFunctionState &local_state, DataChunk &output) {
 	auto &state = global_state.Cast<ReadFileGlobalState>();
-	if (done || file_list_idx.GetIndex() >= state.file_list->GetTotalFileCount()) {
+	if (done.load(std::memory_order_relaxed) || file_list_idx.GetIndex() >= state.file_list->GetTotalFileCount()) {
 		return AsyncResult(SourceResultType::FINISHED);
 	}
 
@@ -76,14 +76,14 @@ AsyncResult DirectFileReader::Scan(ClientContext &context, GlobalTableFunctionSt
 	} else if (state.requires_file_metadata) {
 		file_metadata = fs.GetStatsIfExists(file);
 		if (!file_metadata) {
-			done = true;
+			done.store(true, std::memory_order_relaxed);
 			return SourceResultType::FINISHED;
 		}
 	} else {
 		// At least verify that the file exist
 		// The globbing behavior in remote filesystems can lead to files being listed that do not actually exist
 		if (is_remote && !fs.FileExists(file.path)) {
-			done = true;
+			done.store(true, std::memory_order_relaxed);
 			return SourceResultType::FINISHED;
 		}
 	}
@@ -192,12 +192,16 @@ AsyncResult DirectFileReader::Scan(ClientContext &context, GlobalTableFunctionSt
 		}
 	}
 	output.SetChildCardinality(1);
-	done = true;
+	done.store(true, std::memory_order_relaxed);
 	return AsyncResult(SourceResultType::HAVE_MORE_OUTPUT);
 }
 
 void DirectFileReader::FinishFile(ClientContext &context, GlobalTableFunctionState &gstate) {
 	return;
+}
+
+double DirectFileReader::GetProgressInFile(ClientContext &context) {
+	return done.load(std::memory_order_relaxed) ? 100.0 : 0.0;
 }
 
 } // namespace duckdb

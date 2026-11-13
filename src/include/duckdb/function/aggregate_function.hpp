@@ -63,10 +63,6 @@ class BindAggregateFunctionInput : public BindFunctionInput {
 public:
 	// Defined out-of-line: converting to the BindFunctionInput base requires the complete BoundAggregateFunction.
 	BindAggregateFunctionInput(ClientContext &context_p, BoundAggregateFunction &bound_function_p,
-	                           vector<unique_ptr<Expression>> &arguments_p, const vector<Identifier> &argument_names_p);
-
-	//! Construct without argument names - looking arguments up by name is not available in this case.
-	BindAggregateFunctionInput(ClientContext &context_p, BoundAggregateFunction &bound_function_p,
 	                           vector<unique_ptr<Expression>> &arguments_p);
 
 	BoundAggregateFunction &GetBoundFunction() const {
@@ -355,6 +351,9 @@ public:
 	//! Whether a single input row finalizes to that input's first argument unchanged
 	bool single_value_identity = false;
 
+	//! Whether an aggregate is holistic (e.g., don't use it for window segment trees...)
+	bool is_holistic = false;
+
 	bool operator==(const AggregateFunctionProperties &rhs) const;
 	bool operator!=(const AggregateFunctionProperties &rhs) const;
 };
@@ -400,6 +399,10 @@ public: // Properties
 	//! Whether a single input row finalizes to that input's first argument unchanged
 	auto HasSingleValueIdentity() const -> bool { return properties.single_value_identity; }
 	auto SetSingleValueIdentity(bool value) -> void { properties.single_value_identity = value; }
+
+	//! Whether the aggregate is holistic.
+	auto IsHolistic() const -> bool { return properties.is_holistic; }
+	auto SetIsHolistic(bool value) -> void { properties.is_holistic = value; }
 
 	// Derived properties
 	bool CanAggregate() const { return callbacks.update || callbacks.combine || callbacks.finalize; }
@@ -522,6 +525,14 @@ protected:
 
 class AggregateFunction : public BaseAggregateFunction, public SimpleFunction { // NOLINT: work-around bug in clang-tidy
 public:
+	static constexpr const FunctionKind KIND = FunctionKind::AGGREGATE;
+	FunctionKind GetKind() const override {
+		return KIND;
+	}
+	//! The properties of the function, for code that only knows it as a SimpleFunction
+	auto GetFunctionProperties() const -> optional_ptr<const FunctionProperties> override {
+		return GetProperties();
+	}
 	static constexpr aggregate_cluster_update_t NoClusterUpdate() {
 		return nullptr;
 	}
@@ -729,6 +740,10 @@ public:
 	//! Defined out-of-line (after BoundAggregateFunction is complete) so the lambda body can call GetReturnType().
 	template <class STATE>
 	static void WireStructStateType(AggregateFunction &result);
+
+	//! The state layout of a STATE with a STATE_TYPE - defined out-of-line (after BoundAggregateFunction is complete)
+	template <class STATE>
+	static AggregateStateLayout StructStateLayout(AggregateLayoutInput &input);
 
 	template <class STATE>
 	static idx_t StateSize(AggregateStateInput &) {
@@ -942,27 +957,30 @@ private:
 template <class STATE>
 inline void AggregateFunction::WireStructStateType(AggregateFunction &result) {
 	if constexpr (HasStructStateType<STATE>::value) {
-		using ST = typename STATE::STATE_TYPE;
-		result.SetStructStateExport([](AggregateLayoutInput &input) {
-			auto &bound = input.function;
-			AggregateStateLayout layout;
-			if (bound.GetReturnType().IsAggregateState()) {
-				// the function has been modified for state export (see ExportAggregateFunction::SetStateExport) -
-				// its return type IS the state type already
-				layout.type = bound.GetReturnType();
-			} else {
-				layout.type = AggregateFunction::BuildStateLogical<ST, STATE>(bound);
-			}
-			layout.total_state_size = AlignValue<idx_t>(sizeof(STATE));
-			layout.field = BuildStateField<ST>();
-			AggregateStateField::PopulateListFunctions(layout.type, layout.field);
-			return layout;
-		});
+		result.SetStructStateExport(StructStateLayout<STATE>);
 	} else if constexpr (HasPrimitiveLogicalType<STATE>::value) {
 		result.SetStructStateExport([](AggregateLayoutInput &) {
 			return AggregateStateLayout(PrimitiveToLogicalType<STATE>(), AlignValue<idx_t>(sizeof(STATE)));
 		});
 	}
+}
+
+template <class STATE>
+inline AggregateStateLayout AggregateFunction::StructStateLayout(AggregateLayoutInput &input) {
+	using ST = typename STATE::STATE_TYPE;
+	auto &bound = input.function;
+	AggregateStateLayout layout;
+	if (bound.GetReturnType().IsAggregateState()) {
+		// the function has been modified for state export (see ExportAggregateFunction::SetStateExport) -
+		// its return type IS the state type already
+		layout.type = bound.GetReturnType();
+	} else {
+		layout.type = AggregateFunction::BuildStateLogical<ST, STATE>(bound);
+	}
+	layout.total_state_size = AlignValue<idx_t>(sizeof(STATE));
+	layout.field = BuildStateField<ST>();
+	AggregateStateField::PopulateListFunctions(layout.type, layout.field);
+	return layout;
 }
 
 // Defined here (after BoundAggregateFunction is complete) so the body can access the bound function's types.

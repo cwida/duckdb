@@ -43,11 +43,15 @@ struct PreparedStatementInfo {
 
 //! A handle to a prepared statement that lives in the client context. The statement itself is prepared through
 //! `PREPARE <name> AS ...` and executed through `EXECUTE <name>(...)` - this class only holds the name.
+//! A statement that expands into several, or one prepared while CONNECT-ed, is not prepared in the client context,
+//! and each execution submits it anew.
 class PreparedStatement {
 public:
 	//! Create a handle to the prepared statement with the given name in the client context
 	DUCKDB_API PreparedStatement(const shared_ptr<ClientContext> &context, string name, string query,
 	                             PreparedStatementInfo info);
+	//! Create a handle to a statement that each execution submits anew, whose result is known only at execution
+	DUCKDB_API PreparedStatement(const shared_ptr<ClientContext> &context, unique_ptr<SQLStatement> statement);
 	//! Create a prepared statement that was not successfully prepared
 	DUCKDB_API explicit PreparedStatement(ErrorData error);
 
@@ -88,6 +92,8 @@ public:
 	DUCKDB_API bool TryGetParameterType(const Identifier &identifier, LogicalType &result) const;
 	//! Returns the map of parameter index to the expected type of parameter
 	DUCKDB_API case_insensitive_map_t<LogicalType> GetExpectedParameterTypes() const;
+	//! Whether the result names, types and properties are known before execution; runs nothing
+	DUCKDB_API bool MetadataAvailable() const;
 
 	//! Non-blocking. Submits the prepared statement with the given arguments and returns its handle
 	template <typename... ARGS>
@@ -206,10 +212,14 @@ private:
 	ErrorData error;
 	//! The metadata of the statement, as it was prepared
 	PreparedStatementInfo info;
+	//! The statement as the user wrote it, when each execution submits it anew
+	unique_ptr<SQLStatement> written_statement;
 
 private:
-	//! Create the `EXECUTE <name>(...)` statement that runs this prepared statement with the given values
-	unique_ptr<SQLStatement> CreateExecuteStatement(const identifier_map_t<BoundParameterData> &named_values) const;
+	//! Create the statement that runs this prepared statement with the given values, `EXECUTE <name>(...)` or a copy
+	//! of the written statement, whose values are handed to the submission in the parameters
+	unique_ptr<SQLStatement> CreateStatement(identifier_map_t<BoundParameterData> &named_values,
+	                                         QueryParameters &parameters) const;
 
 	unique_ptr<QueryResult> SubmitRecursive(vector<Value> &values) {
 		return Submit(values);

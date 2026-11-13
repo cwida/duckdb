@@ -248,3 +248,40 @@ statement error
 SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'encryption_key': '0123456789112345'}])
 ----
 <REGEX>:Invalid Input Error.*is not encrypted.*
+
+# the single-file function a multi-file function wraps takes its file the same way: as a path, or as a struct that
+# also holds the options to open it with
+query II
+SELECT * FROM read_single_parquet_file('{TEST_DIR}/open_options_1.parquet')
+----
+42	hello
+
+query II
+SELECT * FROM read_single_parquet_file({'filename': '{TEST_DIR}/open_options_1.parquet', 'etag': 'my_etag'})
+----
+42	hello
+
+statement error
+SELECT * FROM read_single_parquet_file({'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': 999999::UBIGINT})
+----
+<REGEX>:Invalid Input Error.*Invalid footer length.*
+
+statement error
+SELECT * FROM read_single_parquet_file({'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': 'notanumber'})
+----
+<REGEX>:Invalid Input Error.*file option "footer_size".*UBIGINT.*
+
+statement error
+SELECT * FROM read_single_parquet_file({'footer_size': 1::UBIGINT})
+----
+<REGEX>:.*requires a file struct to have a "filename" field.*
+
+statement error
+SELECT * FROM read_single_parquet_file(42)
+----
+<REGEX>:Binder Error.*reads a single file - given as a VARCHAR path or as a file struct, not as INTEGER.*
+
+query II
+SELECT * FROM read_single_csv_file({'filename': '{TEST_DIR}/open_options.csv', 'etag': 'my_etag'})
+----
+42	hello

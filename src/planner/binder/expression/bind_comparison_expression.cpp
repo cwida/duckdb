@@ -88,19 +88,19 @@ bool BoundComparisonExpression::TryBindComparison(ClientContext &context, const 
 	case LogicalTypeId::DECIMAL: {
 		// result is a decimal: we need the maximum width and the maximum scale over width
 		vector<LogicalType> argument_types = {left_type, right_type};
-		uint8_t max_width = 0, max_scale = 0, max_width_over_scale = 0;
+		uint32_t max_width = 0, max_scale = 0, max_width_over_scale = 0;
 		for (idx_t i = 0; i < argument_types.size(); i++) {
-			uint8_t width, scale;
+			uint32_t width, scale;
 			auto can_convert = argument_types[i].GetDecimalProperties(width, scale);
 			if (!can_convert) {
 				result_type = res;
 				return true;
 			}
-			max_width = MaxValue<uint8_t>(width, max_width);
-			max_scale = MaxValue<uint8_t>(scale, max_scale);
-			max_width_over_scale = MaxValue<uint8_t>(width - scale, max_width_over_scale);
+			max_width = MaxValue<uint32_t>(width, max_width);
+			max_scale = MaxValue<uint32_t>(scale, max_scale);
+			max_width_over_scale = MaxValue<uint32_t>(width - scale, max_width_over_scale);
 		}
-		max_width = MaxValue<uint8_t>(max_scale + max_width_over_scale, max_width);
+		max_width = MaxValue<uint32_t>(max_scale + max_width_over_scale, max_width);
 		if (max_width > Decimal::MAX_WIDTH_DECIMAL) {
 			// target width does not fit in decimal: truncate the scale (if possible) to try and make it fit
 			max_width = Decimal::MAX_WIDTH_DECIMAL;
@@ -160,30 +160,12 @@ LogicalType ExpressionBinder::GetExpressionReturnType(const Expression &expr) {
 unique_ptr<Expression> ExpressionBinder::CreateBoundComparison(ExpressionType comparison_type,
                                                                unique_ptr<Expression> left,
                                                                unique_ptr<Expression> right, ErrorData &error) {
-	auto left_sql_type = ExpressionBinder::GetExpressionReturnType(*left);
-	auto right_sql_type = ExpressionBinder::GetExpressionReturnType(*right);
-	// cast the input types to the same type
-	// now obtain the result type of the input types
-	LogicalType input_type;
-	if (!BoundComparisonExpression::TryBindComparison(context, left_sql_type, right_sql_type, input_type,
-	                                                  comparison_type)) {
-		error =
-		    ErrorData(ExceptionType::BINDER,
-		              StringUtil::Format("Cannot compare values of type %s and type %s - an explicit cast is required",
-		                                 left_sql_type.ToString(), right_sql_type.ToString()));
+	try {
+		return BoundComparisonExpression::Bind(context, comparison_type, std::move(left), std::move(right));
+	} catch (const std::exception &ex) {
+		error = ErrorData(ex);
 		return nullptr;
 	}
-	// add casts (if necessary)
-	left = BoundCastExpression::AddCastToType(context, std::move(left), input_type,
-	                                          input_type.id() == LogicalTypeId::ENUM);
-	right = BoundCastExpression::AddCastToType(context, std::move(right), input_type,
-	                                           input_type.id() == LogicalTypeId::ENUM);
-
-	PushCollation(context, left, input_type);
-	PushCollation(context, right, input_type);
-
-	// now create the bound comparison expression
-	return BoundComparisonExpression::Create(comparison_type, std::move(left), std::move(right));
 }
 
 BindResult ExpressionBinder::BindExpression(ComparisonExpression &expr, idx_t depth) {

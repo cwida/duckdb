@@ -1,0 +1,261 @@
+# name: test/sql/update/test_update_snapshot_versions.test
+# description: Test that concurrent snapshots see the correct versions of updated rows
+# group: [update]
+
+load {TEST_DIR}/update_snapshot_versions.db
+
+statement ok
+SET immediate_transaction_mode=true
+
+statement ok
+CREATE TABLE t AS SELECT i, i::VARCHAR AS s FROM range(3000) tbl(i);
+
+# con1 sees the original data
+statement ok con1
+BEGIN
+
+query IIII con1
+SELECT SUM(i), COUNT(s), MIN(s), MAX(s) FROM t
+----
+4498500	3000	0	999
+
+statement ok con2
+UPDATE t SET i = i + 1, s = NULL WHERE i % 2 = 0
+
+# con3 sees the first update
+statement ok con3
+BEGIN
+
+query IIII con3
+SELECT SUM(i), COUNT(s), MIN(s), MAX(s) FROM t
+----
+4500000	1500	1	999
+
+statement ok con2
+UPDATE t SET i = i + 10, s = 'x' WHERE i < 1000
+
+# con4 performs uncommitted updates on top of both updates
+statement ok con4
+BEGIN
+
+statement ok con4
+UPDATE t SET i = -1 WHERE i >= 2500
+
+statement ok con4
+UPDATE t SET s = 'y' WHERE i < 0
+
+query IIII con4
+SELECT SUM(i), COUNT(s), MIN(s), MAX(s) FROM t
+----
+3134500	2250	1001	y
+
+query II con4
+SELECT i, s FROM t ORDER BY i DESC, s NULLS LAST LIMIT 3
+----
+2499	2499
+2499	NULL
+2497	2497
+
+# none of the other snapshots see the uncommitted updates
+query IIII
+SELECT SUM(i), COUNT(s), MIN(s), MAX(s) FROM t
+----
+4510000	2000	1001	x
+
+query IIII con3
+SELECT SUM(i), COUNT(s), MIN(s), MAX(s) FROM t
+----
+4500000	1500	1	999
+
+query II con3
+SELECT i, s FROM t ORDER BY i DESC, s NULLS LAST LIMIT 3
+----
+2999	2999
+2999	NULL
+2997	2997
+
+query IIII con1
+SELECT SUM(i), COUNT(s), MIN(s), MAX(s) FROM t
+----
+4498500	3000	0	999
+
+query II con1
+SELECT i, s FROM t ORDER BY i DESC, s NULLS LAST LIMIT 3
+----
+2999	2999
+2998	2998
+2997	2997
+
+# updating rows that were updated after the snapshot was taken is a conflict
+statement error con3
+UPDATE t SET i = 0 WHERE i = 991
+----
+Conflict
+
+statement ok con3
+ROLLBACK
+
+statement ok con4
+ROLLBACK
+
+statement ok con1
+COMMIT
+
+query IIII
+SELECT SUM(i), COUNT(s), MIN(s), MAX(s) FROM t
+----
+4510000	2000	1001	x
+
+statement ok
+UPDATE t SET i = i * 2, s = 'z' WHERE i % 3 = 0
+
+query IIII
+SELECT SUM(i), COUNT(s), MIN(s), MAX(s) FROM t
+----
+6011986	2333	1001	z
+
+statement ok
+CHECKPOINT
+
+restart
+
+query IIII
+SELECT SUM(i), COUNT(s), MIN(s), MAX(s) FROM t
+----
+6011986	2333	1001	z
+
+query II
+SELECT i, s FROM t ORDER BY i DESC, s NULLS LAST LIMIT 3
+----
+5994	z
+5994	z
+5982	z
+
+# rollback restores updated tuples and removes tuples that were not updated before
+statement ok
+CREATE TABLE r AS SELECT i, i::VARCHAR AS s FROM range(5000) tbl(i);
+
+statement ok
+UPDATE r SET i = i + 100000, s = 'first' WHERE i % 3 = 0
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE r SET i = -i, s = NULL WHERE i % 2 = 0
+
+statement ok
+UPDATE r SET s = 'again' WHERE i < 0 AND i % 5 = 0
+
+statement ok
+ROLLBACK
+
+query IIII
+SELECT SUM(i), COUNT(s), COUNT(*) FILTER (s = 'first'), MAX(s) FROM r
+----
+179197500	5000	1667	first
+
+# point lookups through an index from an old snapshot
+statement ok
+CREATE TABLE p (id INTEGER PRIMARY KEY, v INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO p SELECT i, i, 'val' || i::VARCHAR FROM range(10000) tbl(i);
+
+statement ok
+UPDATE p SET v = 1000 WHERE id = 42
+
+statement ok con1
+BEGIN
+
+query II con1
+SELECT v, s FROM p WHERE id = 42
+----
+1000	val42
+
+statement ok
+UPDATE p SET v = NULL, s = 'changed' WHERE id = 42 OR id = 43
+
+statement ok
+UPDATE p SET v = 7 WHERE id = 43
+
+query II con1
+SELECT v, s FROM p WHERE id = 42
+----
+1000	val42
+
+query II con1
+SELECT v, s FROM p WHERE id = 43
+----
+43	val43
+
+query III
+SELECT id, v, s FROM p WHERE id = 42 OR id = 43 ORDER BY id
+----
+42	NULL	changed
+43	7	changed
+
+statement ok con1
+COMMIT
+
+query III con1
+SELECT id, v, s FROM p WHERE id = 42 OR id = 43 ORDER BY id
+----
+42	NULL	changed
+43	7	changed
+
+# many updates of the same vector within one transaction grow its update info
+statement ok
+SET wal_autocheckpoint = '1TB'
+
+statement ok
+CREATE TABLE g AS SELECT i, i::VARCHAR AS s FROM range(4096) tbl(i);
+
+statement ok con1
+BEGIN
+
+statement ok con1
+SELECT COUNT(*) FROM g
+
+statement ok
+BEGIN
+
+loop k 0 40
+
+statement ok
+UPDATE g SET i = i + 10000, s = s || 'x' WHERE i % 40 = {k} OR i % 97 = {k}
+
+endloop
+
+statement ok
+DELETE FROM g WHERE s LIKE '%xx%' AND i % 3 = 0
+
+statement ok
+UPDATE g SET s = 'last' WHERE i > 10000 AND i % 7 = 0
+
+statement ok
+COMMIT
+
+query IIII con1
+SELECT SUM(i), COUNT(s), MAX(s), COUNT(*) FROM g
+----
+8386560	4096	999	4096
+
+statement ok con1
+COMMIT
+
+query IIII
+SELECT SUM(i), COUNT(s), COUNT(*) FILTER (s = 'last'), COUNT(*) FROM g
+----
+65770529	3630	521	3630
+
+# the WAL is replayed correctly
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+restart
+
+query IIII
+SELECT SUM(i), COUNT(s), COUNT(*) FILTER (s = 'last'), COUNT(*) FROM g
+----
+65770529	3630	521	3630

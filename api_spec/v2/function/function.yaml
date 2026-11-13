@@ -35,7 +35,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   function_bind_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: Retrieves the user data set on the function being bound, e.g. via `[[scalar_function_set_user_data]]`.
     parameters:
       info:
@@ -54,14 +54,14 @@ functions:
 
   function_bind_set_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: |
       Sets the function's "bind data" from the bind callback.
 
       The bind data is stored with the bound call site and retrievable from every later callback. The opaque
       handle bundles the pointer with an optional destructor, invoked when the bind data is no longer needed,
       and an optional equality callback used when comparing two bound call sites; without one, pointer equality
-      is used.
+      is used. Scalar functions set their bind data through `[[scalar_function_bind_set_bind_data]]` instead.
     parameters:
       info:
         type: function_bind_info
@@ -81,7 +81,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   function_bind_get_arg_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: |
       Returns the number of arguments of the call site being bound, split into the four parts of the argument list.
 
@@ -122,7 +122,7 @@ functions:
 
   function_bind_get_arg_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: |
       Retrieves the type of the argument at the given index.
 
@@ -148,12 +148,12 @@ functions:
 
   function_bind_get_arg_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: |
       Folds the argument at the given index to a constant value.
 
       Fails if the argument is not constant, e.g. a column reference, or if the index is out of bounds. The
-      arguments of a table function are always constant. The resulting value may be NULL. The returned value is
+      arguments of a table or pragma function are always constant. The resulting value may be NULL. The returned value is
       owned by the caller and must be destroyed via `[[value_destroy]]`.
     parameters:
       info:
@@ -175,7 +175,7 @@ functions:
 
   function_bind_get_arg_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: |
       Retrieves the name of the argument at the given index.
 
@@ -191,10 +191,16 @@ functions:
         type: idx
         description: The index of the argument.
       name:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: Receives a borrowed view of the argument name. Valid only for the duration of the callback.
+        description: Receives a borrowed pointer to the argument name. Valid only for the duration of the callback.
+      name_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*name` in bytes. `*name` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1
@@ -203,7 +209,7 @@ functions:
 
   function_bind_get_arg_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: |
       Looks up the index of an argument by name.
 
@@ -217,11 +223,14 @@ functions:
         type: function_bind_info
         description: The bind info handle.
       name:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The name to look up. Borrowed for the call only.
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       index:
         type: idx
         indirection: 1

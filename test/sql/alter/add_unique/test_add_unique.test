@@ -55,3 +55,24 @@ statement error
 ALTER TABLE g ADD PRIMARY KEY (g);
 ----
 <REGEX>:Binder Error.*cannot create a PRIMARY KEY on a generated column: g.*
+
+# a UNIQUE constraint on the same set of columns already exists
+statement ok
+CREATE TABLE dup(i INT UNIQUE, j INT);
+
+statement error
+ALTER TABLE dup ADD UNIQUE (i);
+----
+<REGEX>:Catalog Error.*table "dup" already has the constraint.*
+
+statement ok
+ALTER TABLE dup ADD UNIQUE (j);
+
+statement error
+ALTER TABLE dup ADD UNIQUE (j);
+----
+<REGEX>:Catalog Error.*table "dup" already has the constraint UNIQUE\(j\).*
+
+# a PRIMARY KEY is a different constraint than a UNIQUE on the same columns
+statement ok
+ALTER TABLE dup ADD PRIMARY KEY (i);

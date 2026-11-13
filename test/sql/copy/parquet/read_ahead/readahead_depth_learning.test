@@ -6,7 +6,8 @@ require parquet
 
 require vector_size 2048
 
-# at read-ahead depth 4 the first 4 row groups are scheduled with fresh scan states before anything decodes;
+# The uncompressed filter column is above the first-group speculation budget.
+# At read-ahead depth 4 the first 4 row groups are scheduled with fresh scan states before anything decodes;
 # every later row group is scheduled with a recycled state that has seen a fully-selective filter, and must
 # switch from whole_group to prefetch_filters. depth is pinned so the strategy sequence is machine-independent.
 statement ok
@@ -28,7 +29,7 @@ COPY (
         END AS c,
         i % 1000 AS g
     FROM RANGE(24576) t(i)
-) TO '{TEST_DIR}/ra_learn.parquet' (ROW_GROUP_SIZE 2048, WRITE_BLOOM_FILTER FALSE)
+) TO '{TEST_DIR}/ra_learn.parquet' (ROW_GROUP_SIZE 2048, WRITE_BLOOM_FILTER FALSE, COMPRESSION 'uncompressed')
 
 statement ok
 CALL enable_logging('ParquetPrefetch')

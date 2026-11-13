@@ -1,0 +1,49 @@
+# name: test/sql/catalog/identifier_embedded_nul.test
+# description: Identifiers with an embedded NUL byte must not resolve to the prefix catalog entry
+# group: [catalog]
+
+statement ok
+CREATE TABLE secret(x INT);
+
+statement ok
+INSERT INTO secret VALUES (42);
+
+# an identifier with an embedded NUL is a different name - it must not resolve to "secret"
+statement error
+SELECT * FROM query_table('secret' || chr(0) || 'other');
+----
+<REGEX>:.*does not exist.*
+
+statement error
+SELECT * FROM query('SELECT * FROM "secret' || chr(0) || 'other"');
+----
+<REGEX>:.*does not exist.*
+
+# a scalar function name with an embedded NUL must not resolve to the prefix function
+statement error
+SELECT * FROM query('SELECT "abs' || chr(0) || 'zz"(-5)');
+----
+<REGEX>:.*(does not exist|not found|No function).*
+
+# a schema name with an embedded NUL must not resolve to an existing schema
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE TABLE s.t(x INT);
+
+statement error
+SELECT * FROM query('SELECT * FROM "s' || chr(0) || 'zz"."t' || chr(0) || 'qq"');
+----
+<REGEX>:.*does not exist.*
+
+# the real table is still reachable, including case-insensitively
+query I
+SELECT x FROM secret;
+----
+42
+
+query I
+SELECT x FROM SECRET;
+----
+42

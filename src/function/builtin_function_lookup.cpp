@@ -38,13 +38,11 @@ shared_ptr<const AggregateFunction> TryGetBuiltinAggregateFunction(ClientContext
 	auto &catalog = Catalog::GetSystemCatalog(context);
 	auto &entry = catalog.GetEntry<AggregateFunctionCatalogEntry>(context, BuiltinName(catalog, name));
 
-	ErrorData error;
-	FunctionBinder function_binder(context);
-	auto index = function_binder.BindFunction(entry.functions.name, entry.functions, arguments, error);
-	if (!index.IsValid()) {
+	auto index = FunctionBinder::SelectFunction(context, entry.functions, arguments);
+	if (!index.IsSuccess()) {
 		return nullptr;
 	}
-	return entry.functions.GetFunctionByOffset(index.GetIndex());
+	return index.GetBinding().GetFunction<AggregateFunction>();
 }
 
 shared_ptr<const WindowFunction> GetBuiltinWindowFunction(ClientContext &context, const Identifier &name,
@@ -54,8 +52,8 @@ shared_ptr<const WindowFunction> GetBuiltinWindowFunction(ClientContext &context
 	return entry.functions.GetFunctionByArguments(context, arguments);
 }
 
-unique_ptr<BoundFunctionExpression> BindBuiltinScalarFunction(ClientContext &context, const Identifier &name,
-                                                              vector<unique_ptr<Expression>> children) {
+unique_ptr<Expression> BindBuiltinScalarExpression(ClientContext &context, const Identifier &name,
+                                                   vector<unique_ptr<Expression>> children) {
 	auto &catalog = Catalog::GetSystemCatalog(context);
 	auto &entry = catalog.GetEntry<ScalarFunctionCatalogEntry>(context, BuiltinName(catalog, name));
 
@@ -73,6 +71,12 @@ unique_ptr<BoundFunctionExpression> BindBuiltinScalarFunction(ClientContext &con
 	if (!expr) {
 		error.Throw();
 	}
+	return expr;
+}
+
+unique_ptr<BoundFunctionExpression> BindBuiltinScalarFunction(ClientContext &context, const Identifier &name,
+                                                              vector<unique_ptr<Expression>> children) {
+	auto expr = BindBuiltinScalarExpression(context, name, std::move(children));
 	if (expr->GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
 		throw InvalidInputException("BindBuiltinScalarFunction did not return a BoundFunctionExpression");
 	}

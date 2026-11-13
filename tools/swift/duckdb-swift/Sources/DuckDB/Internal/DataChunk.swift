@@ -29,7 +29,7 @@ internal import Cduckdb
 #endif
 import Foundation
 
-final class DataChunk: Sendable {
+final class DataChunk: @unchecked Sendable {
   
   var count: DBInt { duckdb_data_chunk_get_size(ptr.pointee) }
   var columnCount: DBInt { duckdb_data_chunk_get_column_count(ptr.pointee) }

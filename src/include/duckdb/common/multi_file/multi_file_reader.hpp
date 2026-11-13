@@ -101,7 +101,7 @@ public:
 	// Reserved field id used for the "_last_updated_sequence_number" field according to the iceberg spec
 	static constexpr int32_t LAST_UPDATED_SEQUENCE_NUMBER_ID = 2147483539;
 	//! The field of a file STRUCT that holds the path of the file - all other fields are open options
-	static constexpr const char *FILE_PATH_FIELD = "filename";
+	static constexpr const char *FILE_PATH_FIELD = OpenFileInfo::PATH_FIELD;
 
 public:
 	virtual ~MultiFileReader();
@@ -148,7 +148,7 @@ public:
 
 	//! Parse the named parameters of a multi-file reader
 	//! Parse an option of a COPY ... FROM that the multi-file reader handles itself
-	DUCKDB_API virtual bool ParseCopyOption(const Identifier &key, const vector<Value> &values,
+	DUCKDB_API virtual bool ParseCopyOption(Context &context, const Identifier &key, const vector<Value> &values,
 	                                        MultiFileOptions &options);
 	DUCKDB_API virtual bool ParseOption(const Identifier &key, const Value &val, MultiFileOptions &options,
 	                                    ClientContext &context);
@@ -222,6 +222,10 @@ public:
 	MultiFileReaderBindData BindFirstReader(ClientContext &context, vector<LogicalType> &return_types,
 	                                        vector<Identifier> &names, MultiFileList &files, MultiFileBindData &result,
 	                                        BaseFileReaderOptions &options, MultiFileOptions &file_options);
+	//! With "maximum_files_for_stats", open every file of a small scan for its row count and column statistics. After
+	//! a custom Bind no file has been opened yet, and all of them are read
+	void ReadFilesForStatistics(ClientContext &context, MultiFileList &files, MultiFileBindData &result,
+	                            BaseFileReaderOptions &options, MultiFileOptions &file_options);
 	//! Bind the schema on the first "maximum_sample_files" files, combining the schemas of the sampled files
 	MultiFileReaderBindData BindSampledReader(ClientContext &context, vector<LogicalType> &return_types,
 	                                          vector<Identifier> &names, MultiFileList &files,
