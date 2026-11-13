@@ -15,11 +15,13 @@
 namespace duckdb {
 
 struct DuckDBTablesData : public GlobalTableFunctionState {
-	DuckDBTablesData() : offset(0) {
+	DuckDBTablesData() : offset(0), needs_storage_info(false) {
 	}
 
 	vector<reference<CatalogEntry>> entries;
+	vector<ColumnIndex> column_ids;
 	idx_t offset;
+	bool needs_storage_info;
 	SystemCatalogScannerStats stats;
 };
 
@@ -81,6 +83,13 @@ unique_ptr<GlobalTableFunctionState> DuckDBTablesInit(ClientContext &context, Ta
 
 	// collect the tables that survive the pushed-down filters
 	result->entries = SystemCatalogScanner::GetEntries(context, input, CatalogType::TABLE_ENTRY, result->stats);
+	result->column_ids = input.column_indexes;
+	for (auto &column_id : result->column_ids) {
+		// estimated_size and index_count require storage information.
+		if (column_id.GetPrimaryIndex() == 11 || column_id.GetPrimaryIndex() == 13) {
+			result->needs_storage_info = true;
+		}
+	}
 	return std::move(result);
 }
 
@@ -104,39 +113,6 @@ void DuckDBTablesFunction(ClientContext &context, TableFunctionInput &data_p, Da
 	// either fill up the chunk or return all the remaining columns
 	idx_t count = 0;
 
-	// database_name, VARCHAR
-	auto &database_name = output.data[0];
-	// database_oid, BIGINT
-	auto &database_oid = output.data[1];
-	// schema_name, VARCHAR
-	auto &schema_name = output.data[2];
-	// schema_oid, BIGINT
-	auto &schema_oid = output.data[3];
-	// table_name, VARCHAR
-	auto &table_name = output.data[4];
-	// table_oid, BIGINT
-	auto &table_oid = output.data[5];
-	// comment, VARCHAR
-	auto &comment = output.data[6];
-	// tags, MAP(VARCHAR, VARCHAR)
-	auto &tags = output.data[7];
-	// internal, BOOLEAN
-	auto &internal = output.data[8];
-	// temporary, BOOLEAN
-	auto &temporary = output.data[9];
-	// has_primary_key, BOOLEAN
-	auto &has_primary_key = output.data[10];
-	// estimated_size, BIGINT
-	auto &estimated_size = output.data[11];
-	// column_count, BIGINT
-	auto &column_count = output.data[12];
-	// index_count, BIGINT
-	auto &index_count = output.data[13];
-	// check_constraint_count, BIGINT
-	auto &check_constraint_count = output.data[14];
-	// sql, VARCHAR
-	auto &sql = output.data[15];
-
 	while (data.offset < data.entries.size() && count < STANDARD_VECTOR_SIZE) {
 		auto &entry = data.entries[data.offset++].get();
 
@@ -144,30 +120,89 @@ void DuckDBTablesFunction(ClientContext &context, TableFunctionInput &data_p, Da
 			continue;
 		}
 		auto &table = entry.Cast<TableCatalogEntry>();
-		auto storage_info = table.GetStorageInfo(context);
-
-		database_name.Append(Value(table.catalog.GetName()));
-		database_oid.Append(Value::BIGINT(NumericCast<int64_t>(table.catalog.GetOid())));
-		schema_name.Append(Value(table.schema.name));
-		schema_oid.Append(Value::BIGINT(NumericCast<int64_t>(table.schema.oid)));
-		table_name.Append(Value(table.name));
-		table_oid.Append(Value::BIGINT(NumericCast<int64_t>(table.oid)));
-		comment.Append(Value(table.comment));
-		tags.Append(Value::MAP(table.tags));
-		internal.Append(Value::BOOLEAN(table.internal));
-		temporary.Append(Value::BOOLEAN(table.temporary));
-		has_primary_key.Append(Value::BOOLEAN(table.HasPrimaryKey()));
-
-		Value card_val = !storage_info.cardinality.IsValid()
-		                     ? Value()
-		                     : Value::BIGINT(NumericCast<int64_t>(storage_info.cardinality.GetIndex()));
-		estimated_size.Append(card_val);
-		column_count.Append(Value::BIGINT(NumericCast<int64_t>(table.GetColumns().LogicalColumnCount())));
-		index_count.Append(Value::BIGINT(NumericCast<int64_t>(storage_info.index_info.size())));
-		check_constraint_count.Append(Value::BIGINT(NumericCast<int64_t>(CheckConstraintCount(table))));
-		auto table_info = table.GetInfo();
-		table_info->StripCatalogQualification();
-		sql.Append(Value(table_info->ToString()));
+		TableStorageInfo storage_info;
+		if (data.needs_storage_info) {
+			storage_info = table.GetStorageInfo(context);
+		}
+		for (idx_t c = 0; c < data.column_ids.size(); c++) {
+			auto column_id = data.column_ids[c].GetPrimaryIndex();
+			auto &col_vector = output.data[c];
+			switch (column_id) {
+			case 0:
+				// database_name, VARCHAR
+				col_vector.Append(Value(table.catalog.GetName()));
+				break;
+			case 1:
+				// database_oid, BIGINT
+				col_vector.Append(Value::BIGINT(NumericCast<int64_t>(table.catalog.GetOid())));
+				break;
+			case 2:
+				// schema_name, VARCHAR
+				col_vector.Append(Value(table.schema.name));
+				break;
+			case 3:
+				// schema_oid, BIGINT
+				col_vector.Append(Value::BIGINT(NumericCast<int64_t>(table.schema.oid)));
+				break;
+			case 4:
+				// table_name, VARCHAR
+				col_vector.Append(Value(table.name));
+				break;
+			case 5:
+				// table_oid, BIGINT
+				col_vector.Append(Value::BIGINT(NumericCast<int64_t>(table.oid)));
+				break;
+			case 6:
+				// comment, VARCHAR
+				col_vector.Append(Value(table.comment));
+				break;
+			case 7:
+				// tags, MAP(VARCHAR, VARCHAR)
+				col_vector.Append(Value::MAP(table.tags));
+				break;
+			case 8:
+				// internal, BOOLEAN
+				col_vector.Append(Value::BOOLEAN(table.internal));
+				break;
+			case 9:
+				// temporary, BOOLEAN
+				col_vector.Append(Value::BOOLEAN(table.temporary));
+				break;
+			case 10:
+				// has_primary_key, BOOLEAN
+				col_vector.Append(Value::BOOLEAN(table.HasPrimaryKey()));
+				break;
+			case 11: {
+				// estimated_size, BIGINT
+				Value cardinality = !storage_info.cardinality.IsValid()
+				                        ? Value()
+				                        : Value::BIGINT(NumericCast<int64_t>(storage_info.cardinality.GetIndex()));
+				col_vector.Append(cardinality);
+				break;
+			}
+			case 12:
+				// column_count, BIGINT
+				col_vector.Append(Value::BIGINT(NumericCast<int64_t>(table.GetColumns().LogicalColumnCount())));
+				break;
+			case 13:
+				// index_count, BIGINT
+				col_vector.Append(Value::BIGINT(NumericCast<int64_t>(storage_info.index_info.size())));
+				break;
+			case 14:
+				// check_constraint_count, BIGINT
+				col_vector.Append(Value::BIGINT(NumericCast<int64_t>(CheckConstraintCount(table))));
+				break;
+			case 15: {
+				// sql, VARCHAR
+				auto table_info = table.GetInfo();
+				table_info->StripCatalogQualification();
+				col_vector.Append(Value(table_info->ToString()));
+				break;
+			}
+			default:
+				throw InternalException("Unsupported column index for duckdb_tables");
+			}
+		}
 		count++;
 	}
 }
@@ -178,6 +213,7 @@ static void DuckDBTablesGetMetrics(TableFunctionGetMetricsInput &input) {
 
 void DuckDBTablesFun::RegisterFunction(BuiltinFunctions &set) {
 	auto function = TableFunction("duckdb_tables", {}, DuckDBTablesFunction, DuckDBTablesBind, DuckDBTablesInit);
+	function.projection_pushdown = true;
 	SystemCatalogScanner::RegisterPushdown(function);
 	function.get_metrics = DuckDBTablesGetMetrics;
 	set.AddFunction(std::move(function));

@@ -1,0 +1,168 @@
+# name: test/sql/table_function/duckdb_tables_projection.test
+# description: Projected duckdb_tables columns preserve values and cardinality
+# group: [table_function]
+
+query I
+SELECT count(*) FROM duckdb_tables()
+----
+0
+
+query T
+SELECT sql FROM duckdb_tables()
+----
+
+statement ok
+CREATE TABLE t(i INTEGER PRIMARY KEY, j VARCHAR, CHECK (i > 0))
+
+statement ok
+INSERT INTO t VALUES (1, 'one'), (2, 'two')
+
+statement ok
+COMMENT ON TABLE t IS 'projected comment'
+
+statement ok
+CREATE INDEX j_idx ON t(j)
+
+statement ok
+CREATE TEMP TABLE tmp(i INTEGER)
+
+statement ok
+CREATE VIEW v AS SELECT * FROM t
+
+statement ok
+ATTACH ':memory:' AS attached
+
+statement ok
+CREATE SCHEMA attached.s
+
+statement ok
+CREATE TABLE attached.s.t(i INTEGER)
+
+# Names, aliases and reordered/duplicate projections across catalogs.
+query TTTT rowsort
+SELECT table_name AS n, schema_name, CASE WHEN database_name = current_database() THEN 'current' ELSE database_name END, table_name FROM duckdb_tables()
+----
+t	main	current	t
+t	s	attached	t
+tmp	main	temp	tmp
+
+query I
+SELECT count(*) FROM duckdb_tables()
+----
+3
+
+query I
+SELECT 1 FROM duckdb_tables()
+----
+1
+1
+1
+
+# Derived fields can be requested independently, including in predicates/order keys.
+query T
+SELECT table_name FROM duckdb_tables() WHERE estimated_size > 0
+----
+t
+
+query TI
+SELECT table_name, estimated_size FROM duckdb_tables() WHERE database_name = current_database() ORDER BY index_count
+----
+t	2
+
+query II
+SELECT index_count, estimated_size FROM duckdb_tables() WHERE database_name = current_database()
+----
+2	2
+
+query IIII
+SELECT check_constraint_count, column_count, temporary, has_primary_key FROM duckdb_tables() WHERE database_name = current_database()
+----
+1	2	False	True
+
+query T
+SELECT comment FROM duckdb_tables() WHERE database_name = current_database()
+----
+projected comment
+
+query TT rowsort
+SELECT table_name, comment FROM duckdb_tables() WHERE database_name <> current_database()
+----
+t	NULL
+tmp	NULL
+
+query IIII
+SELECT database_oid IS NOT NULL, schema_oid IS NOT NULL, table_oid IS NOT NULL, internal FROM duckdb_tables() WHERE database_name = current_database()
+----
+True	True	True	False
+
+query I
+SELECT cardinality(tags) FROM duckdb_tables() WHERE database_name = current_database()
+----
+0
+
+query T
+SELECT sql FROM duckdb_tables() WHERE database_name = 'attached'
+----
+CREATE TABLE s.t(i INTEGER);
+
+query T
+SELECT table_name FROM duckdb_tables() WHERE sql LIKE 'CREATE TEMP%'
+----
+tmp
+
+# SELECT * preserves all columns; compare to independently projected fields.
+statement ok
+CREATE TEMP TABLE captured AS SELECT * FROM duckdb_tables() WHERE table_name <> 'captured'
+
+query I
+SELECT count(*) FROM captured
+----
+3
+
+query I
+SELECT count(*) FROM (SELECT * FROM captured EXCEPT SELECT * FROM duckdb_tables())
+----
+0
+
+# Prepared statements see later catalog changes with the same projection.
+statement ok
+PREPARE tables_in_attached AS SELECT table_name FROM duckdb_tables() WHERE database_name = 'attached' ORDER BY table_name
+
+query T
+EXECUTE tables_in_attached
+----
+t
+
+statement ok
+CREATE TABLE attached.s.u(i INTEGER)
+
+query T
+EXECUTE tables_in_attached
+----
+t
+u
+
+statement ok
+DROP TABLE attached.s.u
+
+query T
+EXECUTE tables_in_attached
+----
+t
+
+query T
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'missing'
+----
+
+# Exercise output spanning more than one standard vector.
+loop i 0 2050
+
+statement ok
+CREATE TABLE attached.s.chunk_{i}(i INTEGER)
+
+endloop
+
+query III
+SELECT count(*), sum(column_count), sum(index_count) FROM duckdb_tables() WHERE database_name = 'attached'
+----
+2051	2051	0
