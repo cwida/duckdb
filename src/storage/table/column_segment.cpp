@@ -162,6 +162,15 @@ void ColumnSegment::Select(ColumnScanState &state, idx_t scan_count, Vector &res
 	function.get().select(*this, state, scan_count, result, sel, sel_count, result_offset, scan_type);
 }
 
+void ColumnSegment::FilterPartial(ColumnScanState &state, idx_t scan_count, Vector &result, SelectionVector &sel,
+                                  idx_t &sel_count, idx_t result_offset, TableFilterState &filter_state) {
+	D_ASSERT(result.GetVectorType() == VectorType::FLAT_VECTOR);
+	if (!function.get().filter_partial) {
+		throw InternalException("ColumnSegment::FilterPartial not implemented for this compression method");
+	}
+	function.get().filter_partial(*this, state, scan_count, result, sel, sel_count, result_offset, filter_state);
+}
+
 void ColumnSegment::Filter(ColumnScanState &state, idx_t scan_count, Vector &result, SelectionVector &sel,
                            idx_t &sel_count, const TableFilter &filter, TableFilterState &filter_state) {
 	if (!function.get().filter) {

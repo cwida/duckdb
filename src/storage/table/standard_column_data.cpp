@@ -9,6 +9,8 @@
 
 namespace duckdb {
 
+static constexpr idx_t UNCOMPRESSED_SELECT_DENSITY = 5;
+
 StandardColumnData::StandardColumnData(BlockManager &block_manager, DataTableInfo &info, idx_t column_index,
                                        LogicalType type, ColumnDataType data_type, optional_ptr<ColumnData> parent)
     : ColumnData(block_manager, info, column_index, std::move(type), data_type, parent) {
@@ -88,16 +90,24 @@ void StandardColumnData::Filter(TransactionData transaction, idx_t vector_index,
 	auto scan_type = GetVectorScanType(state, target_count, result);
 	bool scan_entire_vector = scan_type == ScanVectorType::SCAN_ENTIRE_VECTOR;
 	bool verify_fetch_row = state.scan_options && state.scan_options->force_fetch_row;
+	if (count < target_count && compression && compression->filter_partial && !verify_fetch_row && !HasUpdates() &&
+	    !validity->HasUpdates()) {
+		// Partial filters preserve the loaded validity and evaluate only selected rows.
+		if (!filter_includes_validity) {
+			validity->ScanVector(transaction, vector_index, state.child_states[0], result, target_count,
+			                     ScanVectorType::SCAN_FLAT_VECTOR, state.update_scan_type);
+		} else {
+			validity->Skip(state.child_states[0], target_count);
+		}
+		FilterVectorPartial(state, result, target_count, sel, count, filter_state);
+		return;
+	}
 	if (!has_filter || !validity_has_filter || !scan_entire_vector || verify_fetch_row || filter_state.can_throw) {
 		// we are not scanning an entire vector - this can have several causes (updates, etc)
 		// a filter that can throw is excluded as well: the compression-level filters evaluate it over the distinct
 		// values of the segment (e.g. the dictionary, or the RLE runs), which includes values of rows that another
 		// filter already removed - pushing the filter down there must not raise errors that would not occur otherwise
-		if (count > 0 && count < target_count && CanSelect(target_count, count)) {
-			SelectAndFilter(transaction, vector_index, state, result, sel, count, target_count, filter_state);
-		} else {
-			ColumnData::Filter(transaction, vector_index, state, result, sel, count, filter, filter_state);
-		}
+		ColumnData::Filter(transaction, vector_index, state, result, sel, count, filter, filter_state);
 		return;
 	}
 	FilterVector(state, result, target_count, sel, count, filter, filter_state);
@@ -108,27 +118,27 @@ void StandardColumnData::Filter(TransactionData transaction, idx_t vector_index,
 	}
 }
 
-bool StandardColumnData::CanSelect(idx_t target_count, idx_t sel_count) {
-	auto compression = GetCompressionFunction();
-	auto validity_compression = validity->GetCompressionFunction();
-	if (!compression || !compression->select || !validity_compression || !validity_compression->select ||
-	    HasUpdates() || validity->HasUpdates()) {
-		return false;
-	}
-	// A scan can reference uncompressed data: gathering is worthwhile only for sparse selections.
-	static constexpr idx_t UNCOMPRESSED_SELECT_DENSITY = 5;
-	return compression->type != CompressionType::COMPRESSION_UNCOMPRESSED ||
-	       sel_count * UNCOMPRESSED_SELECT_DENSITY <= target_count;
-}
-
 void StandardColumnData::Select(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
                                 SelectionVector &sel, idx_t sel_count) {
+	// check if we can do a specialized select
+	// the compression functions need to support this
+	auto compression = GetCompressionFunction();
+	bool has_select = compression && compression->select;
+	auto validity_compression = validity->GetCompressionFunction();
+	bool validity_has_select = validity_compression && validity_compression->select;
 	auto target_count = GetVectorCount(vector_index);
-	if (!CanSelect(target_count, sel_count)) {
+	auto scan_type = GetVectorScanType(state, target_count, result);
+	if (!has_select || !validity_has_select || HasUpdates() || validity->HasUpdates()) {
+		// the updates need to be merged into the entire vector, so we cannot select
 		ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
 		return;
 	}
-	auto scan_type = GetVectorScanType(state, target_count, result);
+	// a scan references uncompressed data without copying it: slicing beats gathering unless few rows are selected
+	if (compression->type == CompressionType::COMPRESSION_UNCOMPRESSED &&
+	    sel_count * UNCOMPRESSED_SELECT_DENSITY > target_count) {
+		ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
+		return;
+	}
 	SelectVector(state, result, target_count, sel, sel_count, scan_type);
 	validity->SelectVector(state.child_states[0], result, target_count, sel, sel_count, scan_type);
 }

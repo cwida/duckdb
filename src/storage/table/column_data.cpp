@@ -316,6 +316,49 @@ void ColumnData::SelectVector(ColumnScanState &state, Vector &result, idx_t targ
 	state.internal_index = segment_internal_index;
 }
 
+void ColumnData::FilterVectorPartial(ColumnScanState &state, Vector &result, idx_t target_count, SelectionVector &sel,
+                                     idx_t &sel_count, TableFilterState &filter_state) {
+	BeginScanVectorInternal(state);
+	SelectionVector segment_input(sel_count);
+	SelectionVector result_sel(sel_count);
+	idx_t sel_offset = 0;
+	idx_t result_count = 0;
+	idx_t scanned_count = 0;
+	while (scanned_count < target_count) {
+		auto &current = state.current->GetNode();
+		auto current_start = state.current->GetRowStart();
+		auto scan_count =
+		    MinValue<idx_t>(target_count - scanned_count, current_start + current.count - state.offset_in_column);
+		idx_t segment_count = 0;
+		while (sel_offset < sel_count && sel.get_index(sel_offset) < scanned_count + scan_count) {
+			segment_input.set_index(segment_count++, sel.get_index(sel_offset++));
+		}
+		if (scan_count > 0) {
+			SelectionVector segment_sel(segment_input);
+			current.FilterPartial(state, scan_count, result, segment_sel, segment_count, scanned_count, filter_state);
+			for (idx_t i = 0; i < segment_count; i++) {
+				result_sel.set_index(result_count++, segment_sel.get_index(i));
+			}
+		}
+		scanned_count += scan_count;
+		state.offset_in_column += scan_count;
+		if (scanned_count < target_count) {
+			auto next = data.GetNextSegment(*state.current);
+			if (!next) {
+				break;
+			}
+			state.previous_states.emplace_back(std::move(state.scan_state));
+			state.current = next;
+			state.current->GetNode().InitializeScan(state);
+			state.segment_checked = false;
+		}
+	}
+	state.internal_index = state.offset_in_column;
+	sel.Initialize(result_sel);
+	sel_count = result_count;
+	FlatVector::SetSize(result, count_t(scanned_count));
+}
+
 void ColumnData::FilterVector(ColumnScanState &state, Vector &result, idx_t target_count, SelectionVector &sel,
                               idx_t &sel_count, const TableFilter &filter, TableFilterState &filter_state) {
 	BeginScanVectorInternal(state);
@@ -432,36 +475,6 @@ void ColumnData::Select(TransactionData transaction, idx_t vector_index, ColumnS
 	idx_t scan_count = Scan(transaction, vector_index, state, result);
 	FlatVector::SetSize(result, count_t(scan_count));
 	result.Slice(sel, s_count);
-}
-
-void ColumnData::SelectAndFilter(TransactionData transaction, idx_t vector_index, ColumnScanState &state,
-                                 Vector &result, SelectionVector &sel, idx_t &count, idx_t target_count,
-                                 TableFilterState &filter_state) {
-	D_ASSERT(count > 0 && count <= target_count);
-	const auto selected_count = count;
-	Select(transaction, vector_index, state, result, sel, selected_count);
-	FlatVector::SetSize(result, count_t(selected_count));
-
-	SelectionVector compact_sel;
-	ColumnSegment::FilterSelection(compact_sel, result, filter_state, selected_count, count);
-	if (count == 0) {
-		return;
-	}
-
-	// RowGroup slices filtered columns using original row positions.
-	SelectionVector original_positions(target_count);
-	for (idx_t i = 0; i < target_count; i++) {
-		original_positions.set_index(i, 0);
-	}
-	SelectionVector result_sel(count);
-	for (idx_t i = 0; i < count; i++) {
-		auto compact_idx = compact_sel.get_index(i);
-		auto original_idx = sel.get_index(compact_idx);
-		result_sel.set_index(i, original_idx);
-		original_positions.set_index(original_idx, compact_idx);
-	}
-	result.Slice(original_positions, target_count);
-	sel.Initialize(result_sel);
 }
 
 void ColumnData::Skip(ColumnScanState &state, idx_t s_count) {

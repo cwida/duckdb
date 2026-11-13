@@ -75,9 +75,6 @@ public:
 	//! Direct access to the validity column data. Intended for extensions that need to walk storage internals.
 	ValidityColumnData &GetValidityData();
 
-private:
-	bool CanSelect(idx_t target_count, idx_t sel_count);
-
 protected:
 	//! The validity column data
 	shared_ptr<ValidityColumnData> validity;
