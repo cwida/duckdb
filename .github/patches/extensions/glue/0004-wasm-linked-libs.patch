@@ -1,0 +1,20 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 510da07..4b86a05 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -28,6 +28,15 @@ include_directories(${AWSSDK_INCLUDE_DIRS})
+ set(GLUE_EXTENSION_FILES)
+ add_subdirectory(src)
+ 
++# On wasm the loadable target is an archive and DuckDB produces the side module in a
++# separate emcc step that links only what this variable names; target_link_libraries
++# below does not reach it. Without the SDK archives the module imports every
++# out-of-line Aws:: symbol from the host and fails to load.
++if(EMSCRIPTEN)
++  set(DUCKDB_EXTENSION_GLUE_LINKED_LIBS
++      "../../vcpkg_installed/${VCPKG_TARGET_TRIPLET}/lib/lib*.a")
++endif()
++
+ build_static_extension(${TARGET_NAME} ${GLUE_EXTENSION_FILES})
+ build_loadable_extension(${TARGET_NAME} " " ${GLUE_EXTENSION_FILES})
+ 
