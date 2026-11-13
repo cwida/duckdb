@@ -33,6 +33,8 @@ public:
 
 	//! The physical plan.
 	unique_ptr<PhysicalPlan> physical_plan;
+	//! The prepared statement whose physical plan is referenced by this plan - keeps that plan alive
+	shared_ptr<PreparedStatementData> reused_statement;
 
 	//! The result names of the transaction
 	vector<Identifier> names;
@@ -57,6 +59,15 @@ public:
 	DUCKDB_API LogicalType GetType(const Identifier &identifier);
 	//! Try to get the expected SQL Type of the bound parameter
 	DUCKDB_API bool TryGetType(const Identifier &identifier, LogicalType &result);
+};
+
+//! An EXECUTE statement with the prepared statement and the parameter values it is executed with resolved
+struct PreparedExecution {
+	shared_ptr<PreparedStatementData> prepared;
+	identifier_map_t<BoundParameterData> bind_values;
+	//! Whether the prepared statement has to be planned again instead of re-using its physical plan
+	bool rebind = false;
+	idx_t parameter_count = 0;
 };
 
 DUCKDB_API bool CheckCatalogIdentity(ClientContext &context, const Identifier &catalog_name,

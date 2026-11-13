@@ -88,8 +88,6 @@ string LogicalOperatorToString(LogicalOperatorType type) {
 		return "CREATE_MACRO";
 	case LogicalOperatorType::LOGICAL_EXPLAIN:
 		return "EXPLAIN";
-	case LogicalOperatorType::LOGICAL_EXECUTE:
-		return "EXECUTE";
 	case LogicalOperatorType::LOGICAL_VACUUM:
 		return "VACUUM";
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:

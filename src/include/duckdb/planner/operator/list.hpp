@@ -17,7 +17,6 @@
 #include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_empty_result.hpp"
-#include "duckdb/planner/operator/logical_execute.hpp"
 #include "duckdb/planner/operator/logical_explain.hpp"
 #include "duckdb/planner/operator/logical_export.hpp"
 #include "duckdb/planner/operator/logical_expression_get.hpp"

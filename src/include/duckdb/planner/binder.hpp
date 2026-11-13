@@ -43,6 +43,7 @@ class RE2;
 
 namespace duckdb {
 class BoundResultModifier;
+struct PreparedExecution;
 class BoundSelectNode;
 class ClientContext;
 class ExpressionBinder;
@@ -277,6 +278,11 @@ public:
 public:
 	DUCKDB_API BoundStatement Bind(SQLStatement &statement);
 	DUCKDB_API BoundStatement Bind(QueryNode &node);
+
+	//! Resolve the prepared statement and the parameter values of an EXECUTE statement
+	PreparedExecution ResolveExecute(ExecuteStatement &stmt);
+	//! Plan the prepared statement of an EXECUTE from its unbound statement, using the resolved parameter values
+	BoundStatement BindExecute(PreparedExecution &execution);
 
 	unique_ptr<BoundCreateTableInfo> BindCreateTableInfo(unique_ptr<CreateInfo> info);
 	unique_ptr<BoundCreateTableInfo> BindCreateTableInfo(unique_ptr<CreateInfo> info, SchemaCatalogEntry &schema,

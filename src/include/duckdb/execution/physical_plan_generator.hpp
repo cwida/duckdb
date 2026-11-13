@@ -164,7 +164,6 @@ protected:
 	PhysicalOperator &CreatePlan(LogicalUpdate &op);
 	PhysicalOperator &CreatePlan(LogicalPrepare &expr);
 	PhysicalOperator &CreatePlan(LogicalWindow &expr);
-	PhysicalOperator &CreatePlan(LogicalExecute &op);
 	PhysicalOperator &CreatePlan(LogicalPragma &op);
 	PhysicalOperator &CreatePlan(LogicalSample &op);
 	PhysicalOperator &CreatePlan(LogicalSecureView &op);
