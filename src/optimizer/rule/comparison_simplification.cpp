@@ -267,6 +267,11 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 		//! invertible in practice.
 		auto &cast_expression = column_ref_expr.Cast<BoundFunctionExpression>();
 		auto target_type = BoundCastExpression::SourceType(cast_expression);
+		// a failing TRY_CAST yields NULL, which the comparison on the source value would not produce
+		if (BoundCastExpression::IsTryCast(cast_expression) &&
+		    BoundCastExpression::CastCanThrow(target_type, cast_expression.GetReturnType(), false)) {
+			return nullptr;
+		}
 		if (!constant_value.IsNull() && IsEqualityComparisonType(expr.GetExpressionType()) &&
 		    BoundCastExpression::CastIsInvertibleForEquality(target_type, cast_expression.GetReturnType())) {
 			return SimplifyEqualityCastComparison(GetContext(), expr, cast_expression, constant_value, column_ref_left,
