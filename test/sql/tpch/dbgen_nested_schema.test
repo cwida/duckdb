@@ -1,0 +1,100 @@
+# name: test/sql/tpch/dbgen_nested_schema.test
+# description: dbgen keeps the full current schema path when creating and loading tables
+# group: [tpch]
+
+require tpch
+
+statement ok
+ATTACH '{TEST_DIR}/dbgen_nested_schema.db' AS dbgen_nested (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+USE dbgen_nested;
+
+statement ok
+CREATE SCHEMA a;
+
+statement ok
+CREATE SCHEMA a.b;
+
+statement ok
+CREATE SCHEMA b;
+
+statement ok
+CREATE SCHEMA "a.b";
+
+statement ok
+CREATE TABLE b.region AS SELECT 42 AS sentinel;
+
+statement ok
+USE dbgen_nested.a.b;
+
+statement ok
+CALL dbgen(sf=0);
+
+query I
+SELECT count(*) FROM (SHOW TABLES FROM dbgen_nested.a.b);
+----
+8
+
+query I
+SELECT sentinel FROM dbgen_nested.b.region;
+----
+42
+
+# Both generator modes must load the nested tables, including tables that already exist.
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+statement ok
+CALL dbgen(sf=0.01);
+
+query I
+SELECT count(*) > 0 FROM dbgen_nested.a.b.nation;
+----
+true
+
+query I
+SELECT sentinel FROM dbgen_nested.b.region;
+----
+42
+
+endloop
+
+query I
+SELECT count(*) FROM dbgen_nested.a.b.nation;
+----
+50
+
+# Explicit schema arguments still name one literal schema.
+statement ok
+CALL dbgen(sf=0, schema='a.b');
+
+query I
+SELECT count(*) FROM (SHOW TABLES FROM dbgen_nested."a.b");
+----
+8
+
+query I
+SELECT count(*) FROM dbgen_nested."a.b".nation;
+----
+0
+
+# USE also preserves a literal dot within a nested schema component.
+statement ok
+CREATE SCHEMA dbgen_nested.a."b.c";
+
+statement ok
+USE dbgen_nested.a."b.c";
+
+statement ok
+CALL dbgen(sf=0, suffix='_quoted');
+
+query I
+SELECT count(*) FROM dbgen_nested.a."b.c".nation_quoted;
+----
+0
+
+statement ok
+RESET threads;

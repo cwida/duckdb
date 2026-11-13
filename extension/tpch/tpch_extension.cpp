@@ -20,7 +20,7 @@ struct DBGenFunctionData : public TableFunctionData {
 
 	double sf = 0;
 	Identifier catalog = INVALID_CATALOG;
-	Identifier schema = DEFAULT_SCHEMA;
+	vector<Identifier> schema {DEFAULT_SCHEMA};
 	string suffix;
 	bool overwrite = false;
 	uint32_t children = 1;
@@ -51,10 +51,8 @@ static unique_ptr<FunctionData> DbgenBind(ClientContext &context, TableFunctionB
 	auto result = make_uniq<DBGenFunctionData>();
 
 	// Set the current catalog and schema.
-	const auto current_catalog = DatabaseManager::GetDefaultDatabase(context);
-	const auto current_schema = ClientData::Get(context).catalog_search_path->GetDefault().GetSchema();
-	result->catalog = current_catalog;
-	result->schema = current_schema;
+	result->catalog = DatabaseManager::GetDefaultDatabase(context);
+	result->schema = ClientData::Get(context).catalog_search_path->GetDefault().GetSchemaPath();
 
 	for (auto &kv : input.named_parameters) {
 		if (kv.second.IsNull()) {
@@ -65,7 +63,7 @@ static unique_ptr<FunctionData> DbgenBind(ClientContext &context, TableFunctionB
 		} else if (kv.first == "catalog") {
 			result->catalog = Identifier(StringValue::Get(kv.second));
 		} else if (kv.first == "schema") {
-			result->schema = Identifier(StringValue::Get(kv.second));
+			result->schema = {Identifier(StringValue::Get(kv.second))};
 		} else if (kv.first == "suffix") {
 			result->suffix = StringValue::Get(kv.second);
 		} else if (kv.first == "overwrite") {

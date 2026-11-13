@@ -826,10 +826,10 @@ static void ValidateTPCHTableSchema(const TableCatalogEntry &table, const string
 }
 
 template <class T>
-static void CreateTPCHTable(ClientContext &context, const Identifier &catalog_name, const Identifier &schema,
+static void CreateTPCHTable(ClientContext &context, const Identifier &catalog_name, const vector<Identifier> &schema,
                             string suffix) {
 	auto table_name = string(T::Name) + suffix;
-	auto qualified_name = QualifiedName(catalog_name, schema, Identifier(table_name));
+	auto qualified_name = QualifiedName::FromCatalogSchema(catalog_name, schema, Identifier(table_name));
 
 	auto info = make_uniq<CreateTableInfo>();
 	info->SetQualifiedName(qualified_name);
@@ -847,7 +847,7 @@ static void CreateTPCHTable(ClientContext &context, const Identifier &catalog_na
 	ValidateTPCHTableSchema<T>(table, table_name);
 }
 
-void DBGenWrapper::CreateTPCHSchema(ClientContext &context, const Identifier &catalog, const Identifier &schema,
+void DBGenWrapper::CreateTPCHSchema(ClientContext &context, const Identifier &catalog, const vector<Identifier> &schema,
                                     string suffix) {
 	CreateTPCHTable<RegionInfo>(context, catalog, schema, suffix);
 	CreateTPCHTable<NationInfo>(context, catalog, schema, suffix);
@@ -885,14 +885,15 @@ void skip(int table, int children, DSS_HUGE step, DBGenContext &dbgen_ctx) {
 }
 
 struct TPCHDBgenParameters {
-	TPCHDBgenParameters(ClientContext &context, Catalog &catalog, const Identifier &schema, const string &suffix) {
+	TPCHDBgenParameters(ClientContext &context, Catalog &catalog, const vector<Identifier> &schema,
+	                     const string &suffix) {
 		tables.resize(REGION + 1);
 		for (size_t i = PART; i <= REGION; i++) {
 			auto tname = get_table_name(i);
 			if (!tname.empty()) {
 				string full_tname = string(tname) + string(suffix);
 				auto &tbl_catalog = catalog.GetEntry<TableCatalogEntry>(
-				    context, QualifiedName(catalog.GetName(), schema, Identifier(full_tname)));
+				    context, QualifiedName::FromCatalogSchema(catalog.GetName(), schema, Identifier(full_tname)));
 				tables[i] = &tbl_catalog;
 			}
 		}
@@ -1136,7 +1137,7 @@ DBGenGenerator::~DBGenGenerator() {
 class TPCHDBGenGenerator : public DBGenGenerator {
 public:
 	TPCHDBGenGenerator(ClientContext &context, double flt_scale, const Identifier &catalog_name,
-	                   const Identifier &schema, string suffix, int children, int current_step)
+	                   const vector<Identifier> &schema, string suffix, int children, int current_step)
 	    : context(context), flt_scale(flt_scale), children(children), current_step(current_step) {
 		// NaN compares false against every scale factor check, and reaches an out-of-range cast below
 		if (Value::IsNan(flt_scale)) {
@@ -1494,12 +1495,12 @@ private:
 };
 
 unique_ptr<DBGenGenerator> CreateDBGenGenerator(ClientContext &context, double sf, const Identifier &catalog,
-                                                const Identifier &schema, string suffix, int children, int step) {
+                                               const vector<Identifier> &schema, string suffix, int children, int step) {
 	return make_uniq<TPCHDBGenGenerator>(context, sf, catalog, schema, std::move(suffix), children, step);
 }
 
 void DBGenWrapper::LoadTPCHData(ClientContext &context, double flt_scale, const Identifier &catalog_name,
-                                const Identifier &schema, string suffix, int children, int current_step) {
+                                const vector<Identifier> &schema, string suffix, int children, int current_step) {
 	auto generator =
 	    CreateDBGenGenerator(context, flt_scale, catalog_name, schema, std::move(suffix), children, current_step);
 	while (!generator->GenerateNext()) {

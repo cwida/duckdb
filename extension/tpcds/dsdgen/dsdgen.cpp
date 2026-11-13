@@ -245,10 +245,10 @@ static bool IsDSDGenFactTable(int table_id) {
 }
 
 template <class T>
-static void CreateTPCDSTable(ClientContext &context, const Identifier &catalog_name, const Identifier &schema,
+static void CreateTPCDSTable(ClientContext &context, const Identifier &catalog_name, const vector<Identifier> &schema,
                              string suffix, bool keys, bool overwrite) {
 	auto info = make_uniq<CreateTableInfo>();
-	info->SetQualifiedName(QualifiedName(catalog_name, schema, Identifier(T::Name + suffix)));
+	info->SetQualifiedName(QualifiedName::FromCatalogSchema(catalog_name, schema, Identifier(T::Name + suffix)));
 	info->on_conflict = overwrite ? OnCreateConflict::REPLACE_ON_CONFLICT : OnCreateConflict::ERROR_ON_CONFLICT;
 	info->temporary = false;
 	for (idx_t i = 0; i < T::ColumnCount; i++) {
@@ -265,8 +265,8 @@ static void CreateTPCDSTable(ClientContext &context, const Identifier &catalog_n
 	catalog.CreateTable(context, std::move(info));
 }
 
-void DSDGenWrapper::CreateTPCDSSchema(ClientContext &context, const Identifier &catalog, const Identifier &schema,
-                                      string suffix, bool keys, bool overwrite) {
+void DSDGenWrapper::CreateTPCDSSchema(ClientContext &context, const Identifier &catalog,
+                                    const vector<Identifier> &schema, string suffix, bool keys, bool overwrite) {
 	CreateTPCDSTable<CallCenterInfo>(context, catalog, schema, suffix, keys, overwrite);
 	CreateTPCDSTable<CatalogPageInfo>(context, catalog, schema, suffix, keys, overwrite);
 	CreateTPCDSTable<CatalogReturnsInfo>(context, catalog, schema, suffix, keys, overwrite);
@@ -297,13 +297,14 @@ DSDGenGenerator::~DSDGenGenerator() {
 }
 
 struct TPCDSDSDGenParameters {
-	TPCDSDSDGenParameters(ClientContext &context, Catalog &catalog, const Identifier &schema, const string &suffix) {
+	TPCDSDSDGenParameters(ClientContext &context, Catalog &catalog, const vector<Identifier> &schema,
+	                      const string &suffix) {
 		tables.resize(DBGEN_VERSION);
 		for (auto table_id = CALL_CENTER; table_id < DBGEN_VERSION; table_id++) {
 			auto table_def = GetTDefByNumber(table_id);
 			auto table_name = string(table_def.name) + suffix;
 			auto &table_entry = catalog.GetEntry<TableCatalogEntry>(
-			    context, QualifiedName(catalog.GetName(), schema, Identifier(table_name)));
+			    context, QualifiedName::FromCatalogSchema(catalog.GetName(), schema, Identifier(table_name)));
 			if (!table_entry.IsDuckTable()) {
 				throw InvalidInputException("dsdgen is only supported for DuckDB database files");
 			}
@@ -460,8 +461,8 @@ private:
 
 class TPCDSDSDGenGenerator : public DSDGenGenerator {
 public:
-	TPCDSDSDGenGenerator(ClientContext &context, double scale, const Identifier &catalog_name, const Identifier &schema,
-	                     string suffix)
+	TPCDSDSDGenGenerator(ClientContext &context, double scale, const Identifier &catalog_name,
+	                     const vector<Identifier> &schema, string suffix)
 	    : context(context), scale(scale), catalog_name(catalog_name), schema(schema), suffix(std::move(suffix)) {
 		if (Value::IsNan(scale)) {
 			throw InvalidInputException("DSDGen requires a valid scale factor");
@@ -652,7 +653,7 @@ private:
 			auto table_name = table_def.name + suffix;
 			D_ASSERT(table_def.name);
 			auto &table_entry = catalog.GetEntry<TableCatalogEntry>(
-			    context, QualifiedName(catalog.GetName(), schema, Identifier(table_name)));
+			    context, QualifiedName::FromCatalogSchema(catalog.GetName(), schema, Identifier(table_name)));
 
 			if (!table_entry.IsDuckTable()) {
 				throw InvalidInputException("dsdgen is only supported for DuckDB database files");
@@ -799,7 +800,7 @@ private:
 	ClientContext &context;
 	double scale;
 	Identifier catalog_name;
-	Identifier schema;
+	vector<Identifier> schema;
 	string suffix;
 	unique_ptr<TPCDSDSDGenParameters> parameters;
 	duckdb::vector<duckdb::unique_ptr<tpcds_append_information>> append_info;
@@ -828,12 +829,12 @@ private:
 };
 
 unique_ptr<DSDGenGenerator> CreateDSDGenGenerator(ClientContext &context, double sf, const Identifier &catalog,
-                                                  const Identifier &schema, string suffix) {
+                                                  const vector<Identifier> &schema, string suffix) {
 	return make_uniq<TPCDSDSDGenGenerator>(context, sf, catalog, schema, std::move(suffix));
 }
 
 void DSDGenWrapper::DSDGen(double scale, ClientContext &context, const Identifier &catalog_name,
-                           const Identifier &schema, string suffix) {
+                           const vector<Identifier> &schema, string suffix) {
 	auto generator = CreateDSDGenGenerator(context, scale, catalog_name, schema, std::move(suffix));
 	while (!generator->GenerateNext()) {
 	}
