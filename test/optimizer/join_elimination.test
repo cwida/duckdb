@@ -363,3 +363,110 @@ query II
 explain select distinct pg from (select p.g as pg from p left join (select distinct a from k) s on p.id = s.a order by pg desc limit 3) order by pg;
 ----
 physical_plan	<!REGEX>:.*JOIN.*
+
+# a filter projection map above an eliminated left join must not keep indexes into the removed side
+statement ok
+create table t0(c0 integer);
+
+statement ok
+insert into t0 values (1), (2);
+
+query I rowsort
+select distinct x1.c0 from t0 as x1 left join t0 as x2 using (c0) left join t0 as x3 on ((select true) and false) where true;
+----
+1
+2
+
+query II
+explain select distinct x1.c0 from t0 as x1 left join t0 as x2 using (c0) left join t0 as x3 on ((select true) and false) where true;
+----
+physical_plan	<!REGEX>:.*JOIN.*
+
+# the inner column is referenced, so the join stays
+query II rowsort
+select distinct x1.c0, x2.c0 from t0 as x1 left join t0 as x2 using (c0) left join t0 as x3 on ((select true) and false) where true;
+----
+1	1
+2	2
+
+query II
+explain select distinct x1.c0, x2.c0 from t0 as x1 left join t0 as x2 using (c0) left join t0 as x3 on ((select true) and false) where true;
+----
+physical_plan	<REGEX>:.*JOIN.*
+
+# nulls, duplicate keys and a join that must stay beside the removed join
+statement ok
+create table t1(c0 integer, c1 integer);
+
+statement ok
+insert into t1 values (1, 10), (1, 11), (2, 20), (NULL, 30), (NULL, NULL);
+
+statement ok
+create table ts(c0 varchar, c1 varchar);
+
+statement ok
+insert into ts values ('a', 'x'), ('a', 'y'), ('b', 'z'), (NULL, 'n'), (NULL, NULL);
+
+query II rowsort
+select distinct x1.c0, x1.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true;
+----
+1	10
+1	11
+2	20
+NULL	30
+NULL	NULL
+
+# a predicate on the inner payload must keep that join, and must not read another column in its place
+query II rowsort
+select distinct x1.c0, x1.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where x2.c1 = 10;
+----
+1	10
+1	11
+
+query II
+explain select distinct x1.c0, x1.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where x2.c1 = 10;
+----
+physical_plan	<REGEX>:.*JOIN.*
+
+# x4.c1 is not equal to x1.c0 or x1.c1, so a stale projection index cannot pass unnoticed
+query II rowsort
+select distinct x1.c0, x4.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x4 on x1.c0 = x4.c0 left join t1 as x3 on ((select true) and false) where true;
+----
+1	10
+1	11
+2	20
+NULL	NULL
+
+query II
+explain select distinct x1.c0, x4.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x4 on x1.c0 = x4.c0 left join t1 as x3 on ((select true) and false) where true;
+----
+physical_plan	<REGEX>:.*JOIN.*
+
+query TT rowsort
+select distinct x1.c0, x4.c1 from ts as x1 left join ts as x2 using (c0) left join ts as x4 on x1.c0 = x4.c0 left join ts as x3 on ((select true) and false) where true;
+----
+NULL	NULL
+a	x
+a	y
+b	z
+
+# without distinct the join multiplies matching keys, so elimination must not drop those rows
+query II rowsort
+select x1.c0, x1.c1 from t1 as x1 left join t1 as x2 using (c0) left join t1 as x3 on ((select true) and false) where true;
+----
+1	10
+1	10
+1	11
+1	11
+2	20
+NULL	30
+NULL	NULL
+
+# a distinct subquery is its own elimination region; x4.c1 still has to come from the surviving join
+query II rowsort
+select distinct x1.c0, x4.c1 from t1 as x1 left join (select distinct c0 from t1) as x2 on x1.c0 = x2.c0 left join t1 as x4 on x1.c0 = x4.c0 where x1.c1 is not null;
+----
+1	10
+1	11
+2	20
+NULL	NULL

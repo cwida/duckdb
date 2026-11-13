@@ -10,9 +10,11 @@
 
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/typedefs.hpp"
+#include "duckdb/common/reference_map.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/unordered_set.hpp"
+#include "duckdb/common/vector.hpp"
 #include "duckdb/planner/column_binding.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/expression.hpp"
@@ -26,6 +28,12 @@ class PipelineInfo;
 struct DistinctGroupRef {
 	column_binding_set_t distinct_group;
 	unordered_set<ProjectionIndex> ref_column_ids;
+};
+
+struct SavedProjectionMap {
+	reference<LogicalOperator> op;
+	idx_t child_index;
+	vector<ColumnBinding> child_bindings_before;
 };
 
 class PipelineInfo {
@@ -75,10 +83,13 @@ public:
 
 private:
 	unique_ptr<LogicalOperator> TryEliminateJoin();
+	void RestoreProjectionMaps();
 	// void ExtractDistinctReferences(vector<Expression> &expressions, idx_t target_table_index);
 	bool ContainDistinctGroup(vector<ColumnBinding> &exprs);
 
 	PipelineInfo pipe_info;
+	//! Child layouts of the projection maps in this pipeline, recorded before the children are rewritten
+	vector<SavedProjectionMap> saved_projection_maps;
 
 	optional_ptr<LogicalOperator> children_root;
 	vector<unique_ptr<JoinElimination>> children;

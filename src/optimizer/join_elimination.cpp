@@ -14,10 +14,54 @@
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include <utility>
 
 namespace duckdb {
+
+// Projection maps are positional: record each child layout in pre-order before the children are rewritten
+static void SnapshotProjectionMaps(LogicalOperator &op, const reference_set_t<LogicalOperator> &skip,
+                                   vector<SavedProjectionMap> &saved) {
+	// subtrees owned by child optimizers record their own maps
+	if (skip.find(op) != skip.end()) {
+		return;
+	}
+	for (idx_t child_index = 0; child_index < op.children.size(); child_index++) {
+		auto projection_map = LogicalOperatorVisitor::GetProjectionMap(op, child_index);
+		if (projection_map && !projection_map->empty()) {
+			saved.push_back(SavedProjectionMap {op, child_index, op.children[child_index]->GetColumnBindings()});
+		}
+		SnapshotProjectionMaps(*op.children[child_index], skip, saved);
+	}
+}
+
+static bool RefersTo(const SavedProjectionMap &entry, const LogicalOperator &op) {
+	return &entry.op.get() == &op;
+}
+
+static void EraseSavedMaps(vector<SavedProjectionMap> &saved, LogicalOperator &op) {
+	vector<SavedProjectionMap> kept;
+	kept.reserve(saved.size());
+	for (auto &entry : saved) {
+		if (!RefersTo(entry, op)) {
+			kept.push_back(std::move(entry));
+		}
+	}
+	saved = std::move(kept);
+}
+
+// Remap in reverse pre-order so every child layout is final before its parent reads it
+void JoinElimination::RestoreProjectionMaps() {
+	for (auto it = saved_projection_maps.rbegin(); it != saved_projection_maps.rend(); ++it) {
+		auto &op = it->op.get();
+		auto projection_map = GetProjectionMap(op, it->child_index);
+		D_ASSERT(projection_map);
+		auto child_bindings = op.children[it->child_index]->GetColumnBindings();
+		RemapProjectionMap(*projection_map, it->child_bindings_before, child_bindings);
+	}
+}
+
 void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<LogicalOperator> parent, idx_t idx) {
 	if (op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
 		if (!parent) {
@@ -26,6 +70,10 @@ void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<Logical
 		D_ASSERT(!pipe_info.join_parent);
 		pipe_info.join_parent = parent;
 		pipe_info.join_index = idx;
+		reference_set_t<LogicalOperator> skip_children;
+		skip_children.insert(*op.children[0]);
+		skip_children.insert(*op.children[1]);
+		SnapshotProjectionMaps(*pipe_info.root, skip_children, saved_projection_maps);
 		left_child = CreateChildren();
 		right_child = CreateChildren();
 		// the joins below must keep the columns this join's conditions read
@@ -147,6 +195,11 @@ void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<Logical
 		}
 	} else {
 		children_root = op;
+		reference_set_t<LogicalOperator> skip_children;
+		for (auto &child : op.children) {
+			skip_children.insert(*child);
+		}
+		SnapshotProjectionMaps(*pipe_info.root, skip_children, saved_projection_maps);
 		for (auto &child : op.children) {
 			auto child_optimizer = CreateChildren();
 			child_optimizer->OptimizeInternal(std::move(child));
@@ -216,6 +269,7 @@ unique_ptr<LogicalOperator> JoinElimination::TryEliminateJoin() {
 		for (idx_t idx = 0; idx < children.size(); idx++) {
 			children_root->children[idx] = children[idx]->TryEliminateJoin();
 		}
+		RestoreProjectionMaps();
 		return std::move(pipe_info.root);
 	}
 	if (!pipe_info.join_parent) {
@@ -225,6 +279,11 @@ unique_ptr<LogicalOperator> JoinElimination::TryEliminateJoin() {
 	auto join_parent = pipe_info.join_parent;
 
 	auto &join_op = pipe_info.join_parent->children[pipe_info.join_index];
+	auto finish = [&]() {
+		RestoreProjectionMaps();
+		return std::move(pipe_info.root);
+	};
+
 	join_op->children[0] = left_child->TryEliminateJoin();
 	join_op->children[1] = right_child->TryEliminateJoin();
 
@@ -244,20 +303,20 @@ unique_ptr<LogicalOperator> JoinElimination::TryEliminateJoin() {
 		break;
 	}
 	default:
-		return std::move(pipe_info.root);
+		return finish();
 	}
 	auto &inner_child = inner_idx == 0 ? left_child : right_child;
 	if (inner_child->pipe_info.has_filter) {
-		return std::move(pipe_info.root);
+		return finish();
 	}
 	if (join.filter_pushdown) {
-		return std::move(pipe_info.root);
+		return finish();
 	}
 	auto inner_bindings = join.children[inner_idx]->GetColumnBindings();
 	// ensure join output columns only contains outer table columns
 	for (auto &binding : inner_bindings) {
 		if (pipe_info.ref_table_ids.find(binding.table_index) != pipe_info.ref_table_ids.end()) {
-			return std::move(pipe_info.root);
+			return finish();
 		}
 	}
 
@@ -272,7 +331,7 @@ unique_ptr<LogicalOperator> JoinElimination::TryEliminateJoin() {
 	}
 
 	if (pipe_info.distinct_groups.empty()) {
-		return std::move(pipe_info.root);
+		return finish();
 	}
 	// 1. TODO: guarantee by primary/foreign key
 
@@ -304,9 +363,20 @@ unique_ptr<LogicalOperator> JoinElimination::TryEliminateJoin() {
 	}
 
 	if (is_output_unique) {
-		join_parent->children[pipe_info.join_index] = std::move(join_op->children[outer_idx]);
+		// keep the projection the join applied to its outer side
+		auto &outer_map = outer_idx == 0 ? join.left_projection_map : join.right_projection_map;
+		auto outer_bindings = join.children[outer_idx]->GetColumnBindings();
+		for (auto &entry : saved_projection_maps) {
+			if (RefersTo(entry, *join_op) && entry.child_index == outer_idx) {
+				RemapProjectionMap(outer_map, entry.child_bindings_before, outer_bindings);
+			}
+		}
+		auto replacement = LogicalJoin::PromoteJoinSide(std::move(join.children[outer_idx]), std::move(outer_map));
+		// the join is freed below, its saved maps must not be restored
+		EraseSavedMaps(saved_projection_maps, *join_op);
+		join_parent->children[pipe_info.join_index] = std::move(replacement);
 	}
-	return std::move(pipe_info.root);
+	return finish();
 }
 
 bool JoinElimination::ContainDistinctGroup(vector<ColumnBinding> &column_bindings) {
