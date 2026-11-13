@@ -24,6 +24,8 @@ public:
 private:
 	bool HasMultiBindingFilter(const LogicalOperator &op) const;
 	bool ContainsDelimJoin(const LogicalOperator &op) const;
+	//! Whether a filter or join condition of the plan reads a scanned column that holds only NULLs
+	bool ComparesAllNullColumn(LogicalOperator &plan) const;
 
 private:
 	Optimizer &optimizer;

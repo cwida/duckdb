@@ -174,15 +174,26 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 			condition.SetComparisonType(SimplifyDistinctComparison(condition.GetComparisonType(), stats_left.get(),
 			                                                       stats_right.get(), ComparisonContext::JOIN));
 		}
+		// a side that holds only NULLs never compares TRUE, whatever the statistics of the other side
+		const bool is_distinct = condition.GetComparisonType() == ExpressionType::COMPARE_DISTINCT_FROM ||
+		                         condition.GetComparisonType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM;
+		const bool all_null = !is_distinct &&
+		                      (HasNoValidValue(stats_left.get()) || HasNoValidValue(stats_right.get())) &&
+		                      IsRemovable(condition.GetLHS()) && IsRemovable(condition.GetRHS());
+		if (all_null && !(stats_left && stats_right)) {
+			if (HandleJoinNeverMatches(join, node_ptr)) {
+				return;
+			}
+		}
 		if (stats_left && stats_right) {
-			if ((condition.GetComparisonType() == ExpressionType::COMPARE_DISTINCT_FROM ||
-			     condition.GetComparisonType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM) &&
-			    stats_left->CanHaveNull() && stats_right->CanHaveNull()) {
+			if (is_distinct && stats_left->CanHaveNull() && stats_right->CanHaveNull()) {
 				// null values are equal in this join, and both sides can have null values
 				// nothing to do here
 				continue;
 			}
-			auto prune_result = PropagateComparison(*stats_left, *stats_right, condition.GetComparisonType());
+			auto prune_result = all_null
+			                        ? FilterPropagateResult::FILTER_FALSE_OR_NULL
+			                        : PropagateComparison(*stats_left, *stats_right, condition.GetComparisonType());
 			// Add stats to logical_join for perfect hash join
 			condition.SetLeftStats(stats_left->ToUnique());
 			condition.SetRightStats(stats_right->ToUnique());

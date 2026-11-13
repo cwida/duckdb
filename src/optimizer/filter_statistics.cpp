@@ -5,7 +5,9 @@
 #include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
 
 namespace duckdb {
 
@@ -50,8 +52,70 @@ bool FilterStatisticsOptimizer::ContainsDelimJoin(const LogicalOperator &op) con
 	return false;
 }
 
+//! Collects the columns that the filters and join conditions of the plan read
+static void GetComparedBindings(LogicalOperator &op, column_binding_set_t &bindings) {
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_FILTER:
+	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
+	case LogicalOperatorType::LOGICAL_ANY_JOIN:
+	case LogicalOperatorType::LOGICAL_ASOF_JOIN: {
+		auto add_binding = [&](const BoundColumnRefExpression &ref) {
+			if (ref.Depth() == 0) {
+				bindings.insert(ref.Binding());
+			}
+		};
+		LogicalOperatorVisitor::EnumerateExpressions(op, [&](unique_ptr<Expression> *expr) {
+			ExpressionIterator::VisitExpression<BoundColumnRefExpression>(**expr, add_binding);
+		});
+		break;
+	}
+	default:
+		break;
+	}
+	for (auto &child : op.children) {
+		GetComparedBindings(*child, bindings);
+	}
+}
+
+//! Whether a scan of the plan emits one of the bindings from a column that holds only NULLs
+static bool ScansAllNullBinding(ClientContext &context, LogicalOperator &op, const column_binding_set_t &bindings) {
+	if (op.type == LogicalOperatorType::LOGICAL_GET) {
+		auto &get = op.Cast<LogicalGet>();
+		auto &column_ids = get.GetColumnIds();
+		for (idx_t i = 0; i < column_ids.size(); i++) {
+			if (bindings.find(ColumnBinding(get.table_index, ProjectionIndex(i))) == bindings.end()) {
+				continue;
+			}
+			auto stats = StatisticsPropagator::GetColumnStatistics(context, get, column_ids[i]);
+			if (StatisticsPropagator::HasNoValidValue(stats.get())) {
+				return true;
+			}
+		}
+	}
+	for (auto &child : op.children) {
+		if (ScansAllNullBinding(context, *child, bindings)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FilterStatisticsOptimizer::ComparesAllNullColumn(LogicalOperator &plan) const {
+	if (optimizer.OptimizerDisabled(OptimizerType::STATISTICS_PROPAGATION)) {
+		return false;
+	}
+	column_binding_set_t bindings;
+	GetComparedBindings(plan, bindings);
+	return !bindings.empty() && ScansAllNullBinding(optimizer.context, plan, bindings);
+}
+
 void FilterStatisticsOptimizer::Optimize(unique_ptr<LogicalOperator> &plan) {
-	if (ContainsDelimJoin(*plan) || !HasMultiBindingFilter(*plan)) {
+	if (ContainsDelimJoin(*plan)) {
+		return;
+	}
+	// a comparison with a column that holds only NULLs never passes: propagating the statistics here removes
+	// the filters and joins on it before the join order is chosen
+	if (!HasMultiBindingFilter(*plan) && !ComparesAllNullColumn(*plan)) {
 		return;
 	}
 

@@ -1,0 +1,1026 @@
+# name: test/optimizer/statistics/statistics_all_null_operand.test
+# description: A comparison with an operand that holds only NULLs according to its statistics is NULL for every row
+# group: [statistics]
+
+# the plans depend on the statistics of the loaded tables
+require skip_reload
+
+statement ok
+SET threads=4;
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+SET explain_output = 'physical_only';
+
+# n and s hold only NULLs
+statement ok
+CREATE TABLE t AS SELECT i::INTEGER AS id, NULL::DOUBLE AS n, (i % 10)::INTEGER AS g, NULL::VARCHAR AS s FROM range(10000) r(i);
+
+# d has no NULL, dn has NULLs
+statement ok
+CREATE TABLE u AS SELECT i::INTEGER AS id, i::DOUBLE AS d, CASE WHEN i % 4 = 0 THEN NULL ELSE i::DOUBLE END AS dn, i::VARCHAR AS v FROM range(10000) r(i);
+
+statement ok
+CREATE TABLE w AS SELECT i::INTEGER AS id FROM range(100) r(i);
+
+# one non-NULL value among 10,000
+statement ok
+CREATE TABLE one AS SELECT i::INTEGER AS id, CASE WHEN i = 7777 THEN 7777::DOUBLE END AS n FROM range(10000) r(i);
+
+# filters between two columns
+
+foreach cmp = <> < <= > >=
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE n {cmp} g;
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT count(*) FROM t WHERE n {cmp} g;
+----
+0
+
+query I
+SELECT count(*) FROM t WHERE g {cmp} n;
+----
+0
+
+endloop
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE n = g;
+----
+physical_plan	<!REGEX>:.*SEQ_SCAN.*
+
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u USING (id) WHERE n BETWEEN d AND dn;
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u USING (id) WHERE n IN (d, dn);
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u USING (id) WHERE n NOT IN (d, dn);
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u USING (id) WHERE s LIKE v;
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u USING (id) WHERE v NOT LIKE s;
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u USING (id) WHERE contains(v, s);
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT count(*) FROM t JOIN u USING (id) WHERE n BETWEEN d AND dn OR n IN (d, dn) OR n NOT IN (d, dn) OR s LIKE v OR v NOT LIKE s OR contains(v, s);
+----
+0
+
+# in a projection the comparison is the NULL constant
+query II
+EXPLAIN SELECT n = g, n < d, n BETWEEN d AND dn FROM t JOIN u USING (id);
+----
+physical_plan	<!REGEX>:.*(BETWEEN|n = |n < ).*
+
+query III
+SELECT DISTINCT n = g, n < d, n BETWEEN d AND dn FROM t JOIN u USING (id);
+----
+NULL	NULL	NULL
+
+query IIII
+SELECT count(*), count(n = g), count(n IN (g, id)), count(s LIKE 'a%') FROM t;
+----
+10000	0	0	0
+
+# joins
+
+# INNER, also under a cast that cannot throw
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u ON t.n = u.d;
+----
+physical_plan	<!REGEX>:.*(SEQ_SCAN|JOIN).*
+
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u ON t.n = CAST(u.id AS DOUBLE);
+----
+physical_plan	<!REGEX>:.*(SEQ_SCAN|JOIN).*
+
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u ON t.n < u.d;
+----
+physical_plan	<!REGEX>:.*(SEQ_SCAN|JOIN).*
+
+query I
+SELECT count(*) FROM t JOIN u ON t.n = u.d;
+----
+0
+
+query I
+SELECT count(*) FROM t JOIN u ON t.n < u.d;
+----
+0
+
+# the join that cannot match is removed before the join order: nothing of a five-way join is left
+query II
+EXPLAIN SELECT u.v, w.id FROM w JOIN u ON w.id = u.id JOIN t ON t.n = u.d JOIN u u2 ON u2.id = t.id JOIN w w2 ON w2.id = u2.id ORDER BY u.v;
+----
+physical_plan	<!REGEX>:.*(SEQ_SCAN|JOIN).*
+
+query II
+SELECT u.v, w.id FROM w JOIN u ON w.id = u.id JOIN t ON t.n = u.d JOIN u u2 ON u2.id = t.id JOIN w w2 ON w2.id = u2.id ORDER BY u.v;
+----
+
+# one of several conditions
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u ON t.id = u.id AND t.n = u.d;
+----
+physical_plan	<!REGEX>:.*(SEQ_SCAN|JOIN).*
+
+# SEMI
+query II
+EXPLAIN SELECT count(*) FROM u SEMI JOIN t ON t.n = u.d;
+----
+physical_plan	<!REGEX>:.*(SEQ_SCAN|JOIN).*
+
+query I
+SELECT count(*) FROM u SEMI JOIN t ON t.n = u.d;
+----
+0
+
+query I
+SELECT count(*) FROM u WHERE EXISTS (SELECT 1 FROM t WHERE t.n = u.d);
+----
+0
+
+# IS NOT DISTINCT FROM a column without NULLs is simplified to an equality, which cannot match either
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u ON t.n IS NOT DISTINCT FROM u.d;
+----
+physical_plan	<!REGEX>:.*(SEQ_SCAN|JOIN).*
+
+query I
+SELECT count(*) FROM t JOIN u ON t.n IS NOT DISTINCT FROM u.d;
+----
+0
+
+# outer, ANTI and MARK joins keep their rows
+
+# LEFT: every left row, the right side is not read
+query II
+EXPLAIN SELECT count(*), count(t.id) FROM u LEFT JOIN t ON t.n = u.d;
+----
+physical_plan	<!REGEX>:.*Table: \S+\.t\s.*
+
+query II
+SELECT count(*), count(t.id) FROM u LEFT JOIN t ON t.n = u.d;
+----
+10000	0
+
+# RIGHT: every right row
+query II
+EXPLAIN SELECT count(*), count(t.id) FROM t RIGHT JOIN u ON t.n = u.d;
+----
+physical_plan	<!REGEX>:.*Table: \S+\.t\s.*
+
+query II
+SELECT count(*), count(t.id) FROM t RIGHT JOIN u ON t.n = u.d;
+----
+10000	0
+
+# FULL: both sides are needed, the join stays
+query II
+EXPLAIN SELECT count(*), count(t.id), count(u.id) FROM t FULL JOIN u ON t.n = u.d;
+----
+physical_plan	<REGEX>:.*FULL.*
+
+query III
+SELECT count(*), count(t.id), count(u.id) FROM t FULL JOIN u ON t.n = u.d;
+----
+20000	10000	10000
+
+# ANTI: every left row
+query II
+EXPLAIN SELECT count(*) FROM u ANTI JOIN t ON t.n = u.d;
+----
+physical_plan	<!REGEX>:.*(JOIN|Table: \S+\.t\s).*
+
+query I
+SELECT count(*) FROM u ANTI JOIN t ON t.n = u.d;
+----
+10000
+
+query I
+SELECT count(*) FROM u WHERE NOT EXISTS (SELECT 1 FROM t WHERE t.n = u.d);
+----
+10000
+
+# MARK: NOT IN over a list of NULLs is NULL, not TRUE - the join is kept and no row passes
+query II
+EXPLAIN SELECT count(*) FROM u WHERE u.d NOT IN (SELECT n FROM t);
+----
+physical_plan	<REGEX>:.*MARK.*
+
+query I
+SELECT count(*) FROM u WHERE u.d NOT IN (SELECT n FROM t);
+----
+0
+
+query I
+SELECT count(*) FROM u WHERE u.d IN (SELECT n FROM t);
+----
+0
+
+query II
+SELECT d, d IN (SELECT n FROM t) FROM u WHERE id < 2 ORDER BY d;
+----
+0.0	NULL
+1.0	NULL
+
+# a scalar subquery (SINGLE join)
+query I
+SELECT count(*) FROM u WHERE u.d = (SELECT max(n) FROM t WHERE t.n = u.d);
+----
+0
+
+query II
+SELECT count(*), count(x) FROM (SELECT (SELECT t.id FROM t WHERE t.n = u.d) AS x FROM u);
+----
+10000	0
+
+# comparisons that are not NULL for a NULL operand are kept
+
+# IS NOT DISTINCT FROM against a column with NULLs matches them
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u ON t.n IS NOT DISTINCT FROM u.dn AND t.id = u.id;
+----
+physical_plan	<REGEX>:.*INNER.*IS NOT DISTINCT FROM.*
+
+query I
+SELECT count(*) FROM t JOIN u ON t.n IS NOT DISTINCT FROM u.dn AND t.id = u.id;
+----
+2500
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE n IS DISTINCT FROM g;
+----
+physical_plan	<REGEX>:.*SEQ_SCAN.*
+
+query I
+SELECT count(*) FROM t WHERE n IS DISTINCT FROM g;
+----
+10000
+
+query I
+SELECT count(*) FROM t WHERE n IS NOT DISTINCT FROM s::DOUBLE;
+----
+10000
+
+# a bound of a BETWEEN without a non-NULL value leaves FALSE or NULL, which is not a constant
+query I
+SELECT count(*) FROM t WHERE g BETWEEN n AND id;
+----
+0
+
+query I
+SELECT count(*) FROM t WHERE NOT (g BETWEEN id + 1 AND n);
+----
+10000
+
+query I
+SELECT count(*) FROM t WHERE NOT (g BETWEEN n AND id - 1);
+----
+10
+
+# COALESCE, OR and CASE are not NULL for a NULL operand
+query I
+SELECT count(*) FROM t WHERE coalesce(n, 3) = g;
+----
+1000
+
+query I
+SELECT count(*) FROM t WHERE n = g OR g = 3;
+----
+1000
+
+query I
+SELECT count(*) FROM t WHERE CASE WHEN n = g THEN false ELSE g = 3 END;
+----
+1000
+
+query I
+SELECT count(*) FROM t WHERE (n = g) IS NULL;
+----
+10000
+
+query I
+SELECT count(*) FROM t WHERE NOT (n = g AND g = 3);
+----
+9000
+
+# an operand that can throw or is volatile is never removed
+
+statement ok
+CREATE TABLE tbad AS SELECT n, id::VARCHAR || 'x' AS v FROM t;
+
+query II
+EXPLAIN SELECT count(*) FROM tbad WHERE n = CAST(v AS DOUBLE);
+----
+physical_plan	<REGEX>:.*CAST\(v AS DOUBLE\).*SEQ_SCAN.*
+
+query II
+EXPLAIN SELECT count(*) FROM tbad WHERE (n < CAST(v AS DOUBLE)) IS NULL;
+----
+physical_plan	<REGEX>:.*CAST\(v AS DOUBLE\).*
+
+query II
+EXPLAIN SELECT count(*) FROM tbad WHERE (n BETWEEN TRY_CAST(v AS DOUBLE) AND CAST(v AS DOUBLE)) IS NULL;
+----
+physical_plan	<REGEX>:.*CAST\(v AS DOUBLE\).*
+
+query II
+EXPLAIN SELECT count(*) FROM tbad WHERE (n IN (1, CAST(v AS DOUBLE))) IS NULL;
+----
+physical_plan	<REGEX>:.*CAST\(v AS DOUBLE\).*
+
+statement ok
+CREATE TABLE bad AS SELECT * FROM u UNION ALL SELECT 10000, 10000, 10000, '10000x';
+
+# as a join condition the throwing operand stays in the plan
+query II
+EXPLAIN SELECT count(*) FROM t JOIN bad ON t.n = CAST(bad.v AS DOUBLE);
+----
+physical_plan	<REGEX>:.*INNER.*CAST\(v AS DOUBLE\).*
+
+# TRY_CAST cannot throw
+query II
+EXPLAIN SELECT count(*) FROM t JOIN bad ON t.n = TRY_CAST(bad.v AS DOUBLE);
+----
+physical_plan	<!REGEX>:.*(SEQ_SCAN|JOIN).*
+
+# a cast that can throw but does not for the values of the column
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u ON t.n = CAST(u.v AS DOUBLE);
+----
+physical_plan	<REGEX>:.*INNER.*CAST\(v AS DOUBLE\).*
+
+query I
+SELECT count(*) FROM t JOIN u ON t.n = CAST(u.v AS DOUBLE);
+----
+0
+
+query I
+SELECT count(*) FROM t JOIN u ON t.id = u.id WHERE t.n < CAST(u.v AS DOUBLE);
+----
+0
+
+# arithmetic that can overflow stays, arithmetic that the statistics prove safe does not
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u ON t.n = u.id + 2147483647;
+----
+physical_plan	<REGEX>:.*INNER.*
+
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u ON t.n = u.id + 1;
+----
+physical_plan	<!REGEX>:.*(SEQ_SCAN|JOIN).*
+
+query I
+SELECT count(*) FROM t JOIN u ON t.n = u.id + 1;
+----
+0
+
+# a volatile operand
+query II
+EXPLAIN SELECT count(*) FROM t WHERE n = random();
+----
+physical_plan	<REGEX>:.*SEQ_SCAN.*
+
+query I
+SELECT count(*) FROM t WHERE n = random();
+----
+0
+
+# statistics that do not prove the claim
+
+# one non-NULL value
+query II
+EXPLAIN SELECT count(*) FROM one JOIN u ON one.n = u.d;
+----
+physical_plan	<REGEX>:.*INNER.*
+
+query I
+SELECT count(*) FROM one JOIN u ON one.n = u.d;
+----
+1
+
+query I
+SELECT count(*) FROM one WHERE n > id - 1;
+----
+1
+
+# an updated column: the statistics only widen, also when the value is set back to NULL
+statement ok
+CREATE TABLE upd AS SELECT * FROM t;
+
+query II
+EXPLAIN SELECT count(*) FROM upd JOIN u ON upd.n = u.d;
+----
+physical_plan	<!REGEX>:.*(SEQ_SCAN|JOIN).*
+
+statement ok
+UPDATE upd SET n = 42 WHERE id = 3;
+
+query II
+EXPLAIN SELECT count(*) FROM upd JOIN u ON upd.n = u.d;
+----
+physical_plan	<REGEX>:.*INNER.*
+
+query I
+SELECT count(*) FROM upd JOIN u ON upd.n = u.d;
+----
+1
+
+query I
+SELECT count(*) FROM upd WHERE n > g;
+----
+1
+
+statement ok
+UPDATE upd SET n = NULL WHERE id = 3;
+
+query I
+SELECT count(*) FROM upd JOIN u ON upd.n = u.d;
+----
+0
+
+# a committed append of a non-NULL value
+statement ok
+CREATE TABLE app AS SELECT * FROM t;
+
+statement ok
+INSERT INTO app VALUES (-1, 5, 5, 'five');
+
+query II
+EXPLAIN SELECT count(*) FROM app JOIN u ON app.n = u.d;
+----
+physical_plan	<REGEX>:.*INNER.*
+
+query I
+SELECT count(*) FROM app JOIN u ON app.n = u.d;
+----
+1
+
+query I
+SELECT count(*) FROM app WHERE n = g;
+----
+1
+
+statement ok
+DELETE FROM app WHERE id = -1;
+
+query I
+SELECT count(*) FROM app JOIN u ON app.n = u.d;
+----
+0
+
+# a transaction-local append
+statement ok
+CREATE TABLE loc AS SELECT * FROM t;
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO loc VALUES (-1, 5, 5, 'five');
+
+query II
+EXPLAIN SELECT count(*) FROM loc JOIN u ON loc.n = u.d;
+----
+physical_plan	<REGEX>:.*INNER.*
+
+query I
+SELECT count(*) FROM loc JOIN u ON loc.n = u.d;
+----
+1
+
+query I
+SELECT count(*) FROM loc WHERE n = g;
+----
+1
+
+statement ok
+ROLLBACK;
+
+query II
+EXPLAIN SELECT count(*) FROM loc JOIN u ON loc.n = u.d;
+----
+physical_plan	<!REGEX>:.*(SEQ_SCAN|JOIN).*
+
+# a transaction-local append of NULLs only
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO loc VALUES (-2, NULL, 5, NULL);
+
+query I
+SELECT count(*) FROM loc JOIN u ON loc.n = u.d;
+----
+0
+
+query I
+SELECT count(*) FROM loc WHERE n IS NOT DISTINCT FROM NULL AND n = g;
+----
+0
+
+statement ok
+ROLLBACK;
+
+# a transaction-local append of several row groups with one non-NULL value
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO loc SELECT i::INTEGER, CASE WHEN i = 299999 THEN 5 END, 5, NULL FROM range(300000) r(i);
+
+query I
+SELECT count(*) FROM loc JOIN u ON loc.n = u.d;
+----
+1
+
+query I
+SELECT count(*) FROM loc WHERE n = g;
+----
+1
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM loc JOIN u ON loc.n = u.d;
+----
+0
+
+# a transaction-local update
+statement ok
+BEGIN;
+
+statement ok
+UPDATE loc SET n = 9 WHERE id = 9;
+
+query I
+SELECT count(*) FROM loc JOIN u ON loc.n = u.d;
+----
+1
+
+query I
+SELECT count(*) FROM loc WHERE n = g;
+----
+1
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM loc JOIN u ON loc.n = u.d;
+----
+0
+
+# a transaction-local append to a table created in the same transaction, and a delete of the only non-NULL row
+statement ok
+BEGIN;
+
+statement ok
+CREATE TABLE fresh AS SELECT * FROM t;
+
+query I
+SELECT count(*) FROM fresh JOIN u ON fresh.n = u.d;
+----
+0
+
+statement ok
+INSERT INTO fresh VALUES (-1, 5, 5, 'five');
+
+query I
+SELECT count(*) FROM fresh JOIN u ON fresh.n = u.d;
+----
+1
+
+statement ok
+DELETE FROM fresh WHERE id = -1;
+
+query I
+SELECT count(*) FROM fresh JOIN u ON fresh.n = u.d;
+----
+0
+
+statement ok
+COMMIT;
+
+query I
+SELECT count(*) FROM fresh JOIN u ON fresh.n = u.d;
+----
+0
+
+# another connection's uncommitted and committed rows
+statement ok
+CREATE TABLE shared AS SELECT * FROM t;
+
+statement ok con2
+BEGIN;
+
+statement ok con2
+INSERT INTO shared VALUES (-1, 5, 5, 'five');
+
+# con1 does not see the row
+query I con1
+SELECT count(*) FROM shared JOIN u ON shared.n = u.d;
+----
+0
+
+# con2 does
+query I con2
+SELECT count(*) FROM shared JOIN u ON shared.n = u.d;
+----
+1
+
+# con1 opens a snapshot before the commit and keeps it
+statement ok con1
+BEGIN;
+
+query I con1
+SELECT count(*) FROM shared JOIN u ON shared.n = u.d;
+----
+0
+
+statement ok con2
+COMMIT;
+
+query I con1
+SELECT count(*) FROM shared JOIN u ON shared.n = u.d;
+----
+0
+
+statement ok con1
+COMMIT;
+
+query I con1
+SELECT count(*) FROM shared JOIN u ON shared.n = u.d;
+----
+1
+
+# a snapshot that still sees a non-NULL value another connection has deleted
+statement ok con1
+BEGIN;
+
+query I con1
+SELECT count(*) FROM shared JOIN u ON shared.n = u.d;
+----
+1
+
+statement ok con2
+DELETE FROM shared WHERE id = -1;
+
+query I con2
+SELECT count(*) FROM shared JOIN u ON shared.n = u.d;
+----
+0
+
+# a checkpoint does not drop a row a snapshot still sees
+statement ok con2
+CHECKPOINT;
+
+query I con1
+SELECT count(*) FROM shared JOIN u ON shared.n = u.d;
+----
+1
+
+query I con1
+SELECT count(*) FROM shared WHERE n = id + 6;
+----
+1
+
+statement ok con1
+COMMIT;
+
+query I con1
+SELECT count(*) FROM shared JOIN u ON shared.n = u.d;
+----
+0
+
+# a snapshot that still sees the value another connection has updated to NULL
+statement ok
+CREATE TABLE shared_upd AS SELECT * FROM t;
+
+statement ok
+UPDATE shared_upd SET n = 9 WHERE id = 9;
+
+statement ok con1
+BEGIN;
+
+query I con1
+SELECT count(*) FROM shared_upd JOIN u ON shared_upd.n = u.d;
+----
+1
+
+statement ok con2
+UPDATE shared_upd SET n = NULL WHERE id = 9;
+
+query I con2
+SELECT count(*) FROM shared_upd JOIN u ON shared_upd.n = u.d;
+----
+0
+
+query I con1
+SELECT count(*) FROM shared_upd JOIN u ON shared_upd.n = u.d;
+----
+1
+
+query I con1
+SELECT count(*) FROM shared_upd WHERE n = id;
+----
+1
+
+statement ok con1
+COMMIT;
+
+query I con1
+SELECT count(*) FROM shared_upd JOIN u ON shared_upd.n = u.d;
+----
+0
+
+# a snapshot that still sees the values of a column another connection has updated to NULL in every row
+statement ok
+CREATE TABLE shared_all AS SELECT id, d AS x, d AS y FROM u;
+
+statement ok con1
+BEGIN;
+
+query I con1
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+10000
+
+statement ok con2
+UPDATE shared_all SET x = NULL;
+
+query I con2
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+0
+
+query I con1
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+10000
+
+query I con1
+SELECT count(*) FROM shared_all a JOIN shared_all b ON a.x = b.y;
+----
+10000
+
+statement ok con1
+COMMIT;
+
+query I con1
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+0
+
+# the update to a value rolled back in the connection that made it
+statement ok con1
+BEGIN;
+
+statement ok con1
+UPDATE shared_all SET x = y;
+
+query I con1
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+10000
+
+query I con2
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+0
+
+statement ok con1
+ROLLBACK;
+
+query I con1
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+0
+
+# after a checkpoint the statistics know that the column holds only NULLs
+statement ok
+CHECKPOINT;
+
+query II
+EXPLAIN SELECT count(*) FROM shared_all WHERE x = y;
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+statement ok
+UPDATE shared_all SET x = 5 WHERE id = 5;
+
+query I
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+1
+
+# a prepared statement is planned again after the table changed
+statement ok
+CREATE TABLE prep AS SELECT * FROM t;
+
+statement ok
+PREPARE q AS SELECT count(*) FROM prep JOIN u ON prep.n = u.d;
+
+query I
+EXECUTE q;
+----
+0
+
+statement ok
+INSERT INTO prep VALUES (-1, 5, 5, 'five');
+
+query I
+EXECUTE q;
+----
+1
+
+statement ok
+PREPARE q2 AS SELECT count(*) FROM prep WHERE n = g + ?;
+
+query I
+EXECUTE q2(0);
+----
+1
+
+statement ok
+DELETE FROM prep WHERE id = -1;
+
+query I
+EXECUTE q2(0);
+----
+0
+
+# a column added with a NULL default, then filled
+statement ok
+CREATE TABLE added AS SELECT * FROM w;
+
+statement ok
+ALTER TABLE added ADD COLUMN n DOUBLE;
+
+query I
+SELECT count(*) FROM added JOIN u ON added.n = u.d;
+----
+0
+
+statement ok
+UPDATE added SET n = id;
+
+query I
+SELECT count(*) FROM added JOIN u ON added.n = u.d;
+----
+100
+
+# an empty table has neither NULL nor non-NULL values: its plans are left alone
+statement ok
+CREATE TABLE empty_t(id INTEGER, n DOUBLE);
+
+query II
+EXPLAIN SELECT count(*) FROM empty_t JOIN u ON empty_t.n = u.d;
+----
+physical_plan	<REGEX>:.*INNER.*
+
+query I
+SELECT count(*) FROM empty_t JOIN u ON empty_t.n = u.d;
+----
+0
+
+query II
+SELECT count(*), count(empty_t.id) FROM u LEFT JOIN empty_t ON empty_t.n = u.d;
+----
+10000	0
+
+statement ok
+INSERT INTO empty_t VALUES (1, 1);
+
+query I
+SELECT count(*) FROM empty_t JOIN u ON empty_t.n = u.d;
+----
+1
+
+# a view and a subquery over the column carry its statistics
+statement ok
+CREATE VIEW tv AS SELECT id, n AS nn FROM t WHERE id > 10;
+
+query II
+EXPLAIN SELECT count(*) FROM tv JOIN u ON tv.nn = u.d;
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT count(*) FROM (SELECT g, max(n) AS mx FROM t GROUP BY g) a JOIN u ON a.mx = u.d;
+----
+0
+
+# the null-extended side of an outer join
+query I
+SELECT count(*) FROM (SELECT u.id, t.n FROM u LEFT JOIN t ON t.id = u.id + 20000) a JOIN w ON a.n = w.id;
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT u.id, one.n FROM u LEFT JOIN one ON one.id = u.id) a JOIN u u2 ON a.n = u2.d;
+----
+1
+
+# nested types
+statement ok
+CREATE TABLE nested AS SELECT i AS id, NULL::INTEGER[] AS l, NULL::STRUCT(a INTEGER) AS st, [i] AS l2, {'a': i::INTEGER} AS st2 FROM range(100) r(i);
+
+query II
+SELECT count(*), count(l = l2) FROM nested WHERE st = st2 IS NULL;
+----
+100	0
+
+query I
+SELECT count(*) FROM nested WHERE l = l2 OR st = st2;
+----
+0
+
+# more joins and filters around the pruned comparison
+query III
+SELECT count(*), count(t.id), count(u.id) FROM u LEFT JOIN t ON t.n = u.d AND t.id = u.id;
+----
+10000	0	10000
+
+query I
+SELECT count(*) FROM u WHERE NOT EXISTS (SELECT 1 FROM t WHERE t.n > u.d) AND u.id < 10;
+----
+10
+
+query I
+SELECT count(*) FROM w, t, u WHERE w.id = t.id AND t.n = u.dn;
+----
+0
+
+query II
+SELECT g, count(*) FROM t LEFT JOIN u ON t.n = u.d WHERE g < 2 GROUP BY g ORDER BY g;
+----
+0	1000
+1	1000
+
+# an error another operator of the pruned plan would raise is not raised, as with any empty result derived from statistics
+
+# u.id > 20000 is outside the range of the column: the cast in the join condition never runs
+query I
+SELECT count(*) FROM bad JOIN u ON bad.id = u.id AND CAST(bad.v AS DOUBLE) > 0 WHERE u.id > 20000;
+----
+0
+
+# the scalar subquery returns two rows for most rows of u, but the join on t.n cannot match
+query I
+SELECT count(*) FROM u JOIN w ON w.id = (SELECT w2.id FROM w w2 WHERE w2.id BETWEEN u.id - 1 AND u.id) JOIN t ON t.n = u.d;
+----
+0
+
+# without statistics propagation the comparisons are evaluated
+statement ok
+SET disabled_optimizers = 'statistics_propagation';
+
+query II
+EXPLAIN SELECT count(*) FROM t JOIN u ON t.n = u.d;
+----
+physical_plan	<REGEX>:.*INNER.*SEQ_SCAN.*SEQ_SCAN.*
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE n < g;
+----
+physical_plan	<REGEX>:.*SEQ_SCAN.*
+
+query I
+SELECT count(*) FROM t JOIN u ON t.n = u.d;
+----
+0
+
+query I
+SELECT count(*) FROM t WHERE n < g;
+----
+0
