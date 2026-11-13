@@ -508,8 +508,30 @@ void CSVStateMachineCache::Insert(const CSVStateMachineOptions &state_machine_op
 
 	// 12) Unquoted Escape State
 	if (enable_unquoted_escape) {
-		// Any character can be escaped, so default to STANDARD
-		if (new_line_id == NewLineIdentifier::CARRY_ON) {
+		if (state_machine_options.escape_mode.GetValue() == CSVEscapeMode::QUOTE) {
+			// The escape only escapes the quote and escape characters: any other byte keeps the meaning it has in the
+			// Standard state, so the delimiter still separates values and a newline still ends the record
+			if (multi_byte_delimiter) {
+				transition_array[delimiter_first_byte][static_cast<uint8_t>(CSVState::UNQUOTED_ESCAPE)] =
+				    CSVState::DELIMITER_FIRST_BYTE;
+			} else {
+				transition_array[delimiter_first_byte][static_cast<uint8_t>(CSVState::UNQUOTED_ESCAPE)] =
+				    CSVState::DELIMITER;
+			}
+			transition_array[static_cast<uint8_t>('\n')][static_cast<uint8_t>(CSVState::UNQUOTED_ESCAPE)] =
+			    CSVState::RECORD_SEPARATOR;
+			if (new_line_id == NewLineIdentifier::CARRY_ON) {
+				transition_array[static_cast<uint8_t>('\r')][static_cast<uint8_t>(CSVState::UNQUOTED_ESCAPE)] =
+				    CSVState::CARRIAGE_RETURN;
+			} else {
+				transition_array[static_cast<uint8_t>('\r')][static_cast<uint8_t>(CSVState::UNQUOTED_ESCAPE)] =
+				    CSVState::RECORD_SEPARATOR;
+			}
+			if (comment != '\0') {
+				transition_array[comment][static_cast<uint8_t>(CSVState::UNQUOTED_ESCAPE)] = CSVState::COMMENT;
+			}
+		} else if (new_line_id == NewLineIdentifier::CARRY_ON) {
+			// Any character can be escaped, so default to STANDARD
 			transition_array[static_cast<uint8_t>('\r')][static_cast<uint8_t>(CSVState::UNQUOTED_ESCAPE)] =
 			    CSVState::ESCAPED_RETURN;
 		}

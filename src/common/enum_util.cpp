@@ -1075,6 +1075,24 @@ CAPIResultSetType EnumUtil::FromString<CAPIResultSetType>(const char *value) {
 	return static_cast<CAPIResultSetType>(StringUtil::StringToEnum(GetCAPIResultSetTypeValues(), 4, "CAPIResultSetType", value));
 }
 
+const StringUtil::EnumStringLiteral *GetCSVEscapeModeValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(CSVEscapeMode::ALL), "ALL" },
+		{ static_cast<uint32_t>(CSVEscapeMode::QUOTE), "QUOTE" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<CSVEscapeMode>(CSVEscapeMode value) {
+	return StringUtil::EnumToString(GetCSVEscapeModeValues(), 2, "CSVEscapeMode", static_cast<uint32_t>(value));
+}
+
+template<>
+CSVEscapeMode EnumUtil::FromString<CSVEscapeMode>(const char *value) {
+	return static_cast<CSVEscapeMode>(StringUtil::StringToEnum(GetCSVEscapeModeValues(), 2, "CSVEscapeMode", value));
+}
+
 const StringUtil::EnumStringLiteral *GetCSVStateValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(CSVState::STANDARD), "STANDARD" },

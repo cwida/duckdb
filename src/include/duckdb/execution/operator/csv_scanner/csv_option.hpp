@@ -20,6 +20,15 @@ enum class NewLineIdentifier : uint8_t {
 
 };
 
+//! Which characters the escape character can escape
+enum class CSVEscapeMode : uint8_t {
+	//! The escape character escapes any character that follows it, including the delimiter and a newline
+	ALL = 0,
+	//! The escape character only escapes the quote and escape characters: before any other character it is dropped,
+	//! so a delimiter still separates values and a newline still ends the record
+	QUOTE = 1
+};
+
 class Serializer;
 class Deserializer;
 
@@ -148,6 +157,17 @@ private:
 			return "Single-Line File";
 		default:
 			throw InternalException("Invalid Newline Detected.");
+		}
+	}
+
+	std::string FormatValueInternal(const CSVEscapeMode &val) const {
+		switch (val) {
+		case CSVEscapeMode::ALL:
+			return "all";
+		case CSVEscapeMode::QUOTE:
+			return "quote";
+		default:
+			throw InternalException("Invalid CSV Escape Mode Detected.");
 		}
 	}
 

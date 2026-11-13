@@ -1231,6 +1231,13 @@
         "type": "idx_t",
         "property": "options.rejects_line_size_limit",
         "default": "10000"
+      },
+      {
+        "id": 145,
+        "name": "escape_mode",
+        "property": "options.dialect_options.state_machine_options.escape_mode",
+        "type": "CSVOption<CSVEscapeMode>",
+        "default": "CSVOption<CSVEscapeMode>(CSVEscapeMode::ALL)"
       }
     ],
     "constructor": [

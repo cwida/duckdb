@@ -179,6 +179,9 @@ struct CSVReaderOptions {
 	bool GetRFC4180() const;
 	void SetRFC4180(bool rfc4180);
 
+	string GetEscapeMode() const;
+	void SetEscapeMode(const string &escape_mode);
+
 	CSVOption<char> GetSingleByteDelimiter() const;
 	CSVOption<string> GetMultiByteDelimiter() const;
 
