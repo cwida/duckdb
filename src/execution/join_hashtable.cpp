@@ -1087,33 +1087,137 @@ void JoinHashTable::InsertHashes(Vector &hashes_v, TupleDataChunkState &chunk_st
 	}
 }
 
-unique_ptr<PrefixRangeFilter::BuildState> JoinHashTable::InitializePrefixRangeBuildState() {
-	D_ASSERT(prefix_range_filter);
-	return prefix_range_filter->InitializeBuildState(context);
+JoinHashTable::PrefixRangeBuildStates JoinHashTable::InitializePrefixRangeBuildState() {
+	D_ASSERT(ShouldBuildPrefixRangeFilter());
+	PrefixRangeBuildStates states(prefix_range_filters.size());
+	for (idx_t key_idx = 0; key_idx < prefix_range_filters.size(); key_idx++) {
+		if (prefix_range_filters[key_idx]) {
+			states[key_idx] = prefix_range_filters[key_idx]->InitializeBuildState(context);
+		}
+	}
+	return states;
 }
 
 idx_t JoinHashTable::GetPrefixRangeBuildStateSize() const {
-	D_ASSERT(prefix_range_filter);
-	return prefix_range_filter->GetBuildStateSize();
+	D_ASSERT(ShouldBuildPrefixRangeFilter());
+	idx_t size = 0;
+	for (auto &filter : prefix_range_filters) {
+		if (filter) {
+			size += filter->GetBuildStateSize();
+		}
+	}
+	return size;
 }
 
-void JoinHashTable::InsertPrefixRangeChunk(TupleDataChunkState &chunk_state, idx_t count,
-                                           PrefixRangeFilter::BuildState &state, bool parallel) {
-	D_ASSERT(prefix_range_filter);
-	Vector build_keys(layout_ptr->GetTypes()[0], count);
-	auto &sel = *FlatVector::IncrementalSelectionVector();
-	data_collection->Gather(chunk_state.row_locations, sel, count, 0, build_keys, sel, nullptr);
-	FlatVector::SetSize(build_keys, count_t(count));
-	if (parallel) {
-		prefix_range_filter->InsertKeysParallel(build_keys, state);
-	} else {
-		prefix_range_filter->InsertKeys(build_keys, state);
+void JoinHashTable::SetBuildBloomFilter(idx_t key_idx) {
+	if (HasSingleEqualityKey()) {
+		D_ASSERT(key_idx == 0);
+		should_build_bloom_filter = true;
+		return;
+	}
+	should_build_key_bloom_filters.resize(equality_predicate_columns.size(), false);
+	should_build_key_bloom_filters[key_idx] = true;
+}
+
+shared_ptr<BloomFilter> JoinHashTable::GetBloomFilter(idx_t key_idx) {
+	if (HasSingleEqualityKey()) {
+		D_ASSERT(key_idx == 0);
+		return bloom_filter;
+	}
+	return key_idx < key_bloom_filters.size() ? key_bloom_filters[key_idx] : nullptr;
+}
+
+void JoinHashTable::SealBloomFilter() {
+	if (bloom_filter) {
+		bloom_filter->Seal(context);
+	}
+	for (auto &key_bloom_filter : key_bloom_filters) {
+		if (key_bloom_filter && !key_bloom_filter->IsSealed()) {
+			key_bloom_filter->Seal(context);
+		}
 	}
 }
 
-void JoinHashTable::MergePrefixRangeBuildState(PrefixRangeFilter::BuildState &state) {
-	D_ASSERT(prefix_range_filter);
-	prefix_range_filter->MergeBuildState(state);
+bool JoinHashTable::HasPublishableBloomFilter(idx_t key_idx) const {
+	if (HasSingleEqualityKey()) {
+		D_ASSERT(key_idx == 0);
+		return HasPublishableBloomFilter();
+	}
+	if (key_idx >= key_bloom_filters.size()) {
+		return false;
+	}
+	auto &filter = key_bloom_filters[key_idx];
+	return filter && filter->IsSealed() && filter->IsUseful();
+}
+
+bool JoinHashTable::ShouldBuildPrefixRangeFilter() const {
+	if (!should_build_prefix_range_filter) {
+		return false;
+	}
+	for (auto &filter : prefix_range_filters) {
+		if (filter) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void JoinHashTable::GatherKeyColumn(TupleDataChunkState &chunk_state, idx_t count, idx_t key_idx, Vector &result) {
+	auto &sel = *FlatVector::IncrementalSelectionVector();
+	data_collection->Gather(chunk_state.row_locations, sel, count, key_idx, result, sel, nullptr);
+	FlatVector::SetSize(result, count_t(count));
+}
+
+void JoinHashTable::InsertPrefixRangeChunk(TupleDataChunkState &chunk_state, idx_t count,
+                                           PrefixRangeBuildStates &states, KeyFilterBuildScratch &scratch,
+                                           bool parallel) {
+	D_ASSERT(states.size() == prefix_range_filters.size());
+	scratch.keys.Reset();
+	for (idx_t key_idx = 0; key_idx < prefix_range_filters.size(); key_idx++) {
+		auto &filter = prefix_range_filters[key_idx];
+		if (!filter) {
+			continue;
+		}
+		auto &build_keys = scratch.keys.data[key_idx];
+		GatherKeyColumn(chunk_state, count, key_idx, build_keys);
+		if (parallel) {
+			filter->InsertKeysParallel(build_keys, *states[key_idx]);
+		} else {
+			filter->InsertKeys(build_keys, *states[key_idx]);
+		}
+	}
+}
+
+void JoinHashTable::MergePrefixRangeBuildState(PrefixRangeBuildStates &states) {
+	D_ASSERT(states.size() == prefix_range_filters.size());
+	for (idx_t key_idx = 0; key_idx < prefix_range_filters.size(); key_idx++) {
+		if (prefix_range_filters[key_idx]) {
+			prefix_range_filters[key_idx]->MergeBuildState(*states[key_idx]);
+		}
+	}
+}
+
+JoinHashTable::KeyFilterBuildScratch::KeyFilterBuildScratch(JoinHashTable &ht) : hashes(LogicalType::HASH) {
+	vector<LogicalType> types;
+	for (idx_t key_idx = 0; key_idx < ht.equality_predicate_columns.size(); key_idx++) {
+		types.push_back(ht.layout_ptr->GetTypes()[key_idx]);
+	}
+	keys.Initialize(ht.context, types);
+}
+
+void JoinHashTable::InsertKeyBloomFilterChunk(TupleDataChunkState &chunk_state, idx_t count,
+                                              KeyFilterBuildScratch &scratch) {
+	scratch.keys.Reset();
+	for (idx_t key_idx = 0; key_idx < key_bloom_filters.size(); key_idx++) {
+		auto &filter = key_bloom_filters[key_idx];
+		if (!filter || filter->IsSealed()) {
+			continue;
+		}
+		auto &build_keys = scratch.keys.data[key_idx];
+		GatherKeyColumn(chunk_state, count, key_idx, build_keys);
+		VectorOperations::Hash(build_keys, scratch.hashes, count);
+		filter->InsertHashes(scratch.hashes, *FlatVector::IncrementalSelectionVector(), count);
+	}
 }
 
 bool JoinHashTable::TryInitializePerfectHashTable() {
@@ -1170,6 +1274,15 @@ void JoinHashTable::AllocateHashMap(bool use_radix_layout) {
 		bloom_filter = recycled_bloom_filter ? std::move(recycled_bloom_filter) : make_shared_ptr<BloomFilter>();
 		bloom_filter->Initialize(context, MaxValue<idx_t>(Count(), 1));
 	}
+	key_bloom_filters.resize(should_build_key_bloom_filters.size());
+	// The key columns share one bitmap budget with prefix-range filters.
+	for (idx_t key_idx = 0; key_idx < should_build_key_bloom_filters.size(); key_idx++) {
+		auto &filter = key_bloom_filters[key_idx];
+		if (should_build_key_bloom_filters[key_idx] && (!filter || filter->IsSealed())) {
+			filter = make_shared_ptr<BloomFilter>();
+			filter->Initialize(context, MaxValue<idx_t>(Count(), 1), key_bloom_filter_budget);
+		}
+	}
 
 	if (hash_map.get()) {
 		// There is already a hash map
@@ -1204,21 +1317,26 @@ void JoinHashTable::InitializePointerTable(idx_t entry_idx_from, idx_t entry_idx
 }
 
 void JoinHashTable::Finalize(idx_t chunk_idx_from, idx_t chunk_idx_to, bool parallel,
-                             optional_ptr<PrefixRangeFilter::BuildState> prefix_range_state,
-                             bool prefix_range_parallel) {
+                             optional_ptr<PrefixRangeBuildStates> prefix_range_states, bool prefix_range_parallel) {
 	// Pointer table should be allocated
 	D_ASSERT(hash_map.get() || perfect_hash_table);
 
 	TupleDataChunkIterator iterator(*data_collection, TupleDataPinProperties::KEEP_EVERYTHING_PINNED, chunk_idx_from,
 	                                chunk_idx_to, false);
 	if (perfect_hash_table) {
+		// Perfect hash joins have a single key and no per-key Bloom filters.
+		D_ASSERT(key_bloom_filters.empty());
+		unique_ptr<KeyFilterBuildScratch> key_filter_scratch;
+		if (prefix_range_states) {
+			key_filter_scratch = make_uniq<KeyFilterBuildScratch>(*this);
+		}
 		bool has_chains = false;
 		do {
 			auto &chunk_state = iterator.GetChunkState();
 			has_chains |= perfect_hash_table->Insert(chunk_state.row_locations, *layout_ptr, pointer_offset, parallel);
-			if (prefix_range_state) {
-				InsertPrefixRangeChunk(chunk_state, iterator.GetCurrentChunkCount(), *prefix_range_state,
-				                       prefix_range_parallel);
+			if (prefix_range_states) {
+				InsertPrefixRangeChunk(chunk_state, iterator.GetCurrentChunkCount(), *prefix_range_states,
+				                       *key_filter_scratch, prefix_range_parallel);
 			}
 		} while (iterator.Next());
 		if (has_chains) {
@@ -1230,6 +1348,10 @@ void JoinHashTable::Finalize(idx_t chunk_idx_from, idx_t chunk_idx_to, bool para
 	const auto row_locations = iterator.GetRowLocations();
 	Vector hashes(LogicalType::HASH);
 	InsertState insert_state(*this);
+	unique_ptr<KeyFilterBuildScratch> key_filter_scratch;
+	if (!key_bloom_filters.empty() || prefix_range_states) {
+		key_filter_scratch = make_uniq<KeyFilterBuildScratch>(*this);
+	}
 	do {
 		const auto count = iterator.GetCurrentChunkCount();
 		TupleDataChunkState &chunk_state = iterator.GetChunkState();
@@ -1241,8 +1363,12 @@ void JoinHashTable::Finalize(idx_t chunk_idx_from, idx_t chunk_idx_to, bool para
 			}
 		}
 		InsertHashes(hashes, chunk_state, insert_state, parallel);
-		if (prefix_range_state) {
-			InsertPrefixRangeChunk(chunk_state, count, *prefix_range_state, prefix_range_parallel);
+		if (!key_bloom_filters.empty()) {
+			InsertKeyBloomFilterChunk(chunk_state, count, *key_filter_scratch);
+		}
+		if (prefix_range_states) {
+			InsertPrefixRangeChunk(chunk_state, count, *prefix_range_states, *key_filter_scratch,
+			                       prefix_range_parallel);
 		}
 	} while (iterator.Next());
 }
@@ -2758,7 +2884,10 @@ void JoinHashTable::ResetForNewIterationSinglePartition() {
 	load_factor = DEFAULT_LOAD_FACTOR;
 	bloom_filter.reset();
 	should_build_bloom_filter = false;
-	prefix_range_filter.reset();
+	key_bloom_filters.clear();
+	should_build_key_bloom_filters.clear();
+	key_bloom_filter_budget = NumericLimits<idx_t>::Maximum();
+	prefix_range_filters.clear();
 	should_build_prefix_range_filter = false;
 	ResetMarkJoinInfo(*this);
 	// The next iteration may rebuild a different small build side, so this iteration's dictionary

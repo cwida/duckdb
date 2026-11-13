@@ -71,6 +71,8 @@ struct DeferredRuntimeFilterPushdown {
 	shared_ptr<DynamicTableFilterSet> dynamic_filters;
 	JoinFilterPushdownColumn column;
 	ProjectionIndex filter_col_idx;
+	//! The key column of the hash table the filter is built from
+	idx_t key_idx = 0;
 };
 
 struct JoinFilterGlobalState {
@@ -137,25 +139,24 @@ public:
 	                                      optional_ptr<JoinFilterGlobalState> gstate = nullptr) const;
 
 private:
+	struct FilterFinalizer;
+
 	bool PushInFilter(ClientContext &context, const JoinFilterPushdownFilter &info,
 	                  const JoinFilterPushdownColumn &column, JoinHashTable &ht, const PhysicalOperator &op,
 	                  idx_t filter_idx, ProjectionIndex filter_col_idx) const;
 
 	void DeferRuntimeFilter(DeferredRuntimeFilterType type, const PhysicalOperator &op,
 	                        const JoinFilterPushdownFilter &info, const JoinFilterPushdownColumn &column,
-	                        ProjectionIndex filter_col_idx, JoinFilterGlobalState &gstate) const;
+	                        ProjectionIndex filter_col_idx, idx_t key_idx, JoinFilterGlobalState &gstate) const;
 	bool TryRegisterPrefixRangeFilter(const JoinFilterPushdownFilter &info, ClientContext &context, JoinHashTable &ht,
 	                                  const PhysicalOperator &op, const JoinFilterPushdownColumn &column,
-	                                  ProjectionIndex filter_col_idx, const Value &min_val, const Value &max_val,
-	                                  idx_t max_bits, JoinFilterGlobalState &gstate) const;
+	                                  ProjectionIndex filter_col_idx, idx_t key_idx, const Value &min_val,
+	                                  const Value &max_val, idx_t max_bits, JoinFilterGlobalState &gstate) const;
 
 	bool CanUseInFilter(const ClientContext &context, optional_ptr<JoinHashTable> ht, const ExpressionType &cmp) const;
 	bool CanUseBloomFilter(const JoinFilterPushdownFilter &info, const ClientContext &context,
 	                       const PhysicalComparisonJoin &op, const ExpressionType &cmp,
 	                       optional_ptr<JoinHashTable> ht = nullptr) const;
-	bool CanUsePrefixRangeFilter(const JoinFilterPushdownFilter &info, const ClientContext &context,
-	                             const PhysicalComparisonJoin &op, optional_ptr<JoinHashTable> ht,
-	                             const ExpressionType &cmp) const;
 };
 
 } // namespace duckdb

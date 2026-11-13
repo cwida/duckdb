@@ -307,7 +307,7 @@ JOIN dense_build b
 ----
 analyzed_plan	<REGEX>:(?s).*Dynamic.*Filters.*optional:.*\(k.*<=.*
 
-# Multiple equality keys make PRF and Bloom filters ineligible; min/max is used for each key.
+# Multiple equality keys get min/max and a Bloom filter per key column.
 statement ok
 SET dynamic_or_filter_threshold=0;
 
@@ -351,7 +351,7 @@ JOIN multi_build b
   ON p.k1 = b.k1
  AND p.k2 = b.k2;
 ----
-analyzed_plan	<!REGEX>:.*IN.*(PRF|BF).*\(k[12].*
+analyzed_plan	<REGEX>:(?s).*k1 IN BF\(k1\).*k2 IN BF\(k2\).*
 
 statement ok
 SET disabled_optimizers = '';
