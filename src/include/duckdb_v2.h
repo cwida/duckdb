@@ -13078,6 +13078,10 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_set_user_data(duckdb_v2_ta
  * `duckdb_v2_function_bind_info_handle` it can also inspect the constant argument values and set "bind data" that is
  * shared with all later callbacks. A bind callback must be set before registration.
  *
+ * Plan copying or deserialization may invoke the bind callback again with the same arguments to create fresh bind data.
+ * The full declared result schema, including column names and types, must remain unchanged; otherwise reconstruction
+ * fails with a serialization error.
+ *
  * history:
  * - unstable: v2.0.0
  *
@@ -13207,13 +13211,20 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_set_projection_pushdown(du
 /*!
  * Sets the optional filter pushdown callback of the table function.
  *
- * The filter pushdown callback is invoked while the query is optimized, after the bind callback and before any init
- * callback, with the filter predicates the query applies to the function's rows. Each predicate is a bound expression
- * the callback can inspect with the `expression` functions; the callback accepts the predicates it will apply itself
- * via `duckdb_v2_table_function_filter_pushdown_accept()`, typically after recording what they select in the bind data.
- * The engine then stops applying the accepted predicates and keeps applying the rest above the scan, so accepting a
- * predicate is a promise to filter the rows exactly as it would have. The optimizer may invoke the callback more than
- * once for the same query, each time with the predicates not yet accepted; it is not invoked when there are none.
+ * The filter pushdown callback is invoked after the bind callback and before any init callback, with the filter
+ * predicates the query applies to the function's rows. Each predicate is a bound expression the callback can inspect
+ * with the `expression` functions; the callback accepts the predicates it will apply itself via
+ * `duckdb_v2_table_function_filter_pushdown_accept()`, typically after recording what they select in the bind data. The
+ * engine then stops applying the accepted predicates and keeps applying the rest above the scan, so accepting a
+ * predicate is a promise to filter the rows exactly as it would have. For a given bound scan, the optimizer may invoke
+ * the callback more than once, each time with the predicates not yet accepted; it is not invoked when there are none.
+ *
+ * Plan copying or deserialization may re-run the bind callback to create fresh bind data. The engine then invokes the
+ * filter pushdown callback again with batches of previously accepted predicates and their original scan-column
+ * mappings, which may differ from the final projection. The callback must accept every replayed predicate again and
+ * reconstruct equivalent filtering state in the fresh bind data; otherwise reconstruction fails with an invalid-input
+ * error. Acceptance must therefore be reproducible for the same invocation and result schema, even though a replay
+ * batch omits predicates that were offered alongside them but declined.
  *
  * history:
  * - unstable: v2.0.0

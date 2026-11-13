@@ -90,8 +90,8 @@ duckdb_v2_logical_type_handle MakeTypeInCallback(duckdb_v2_context_handle contex
 	return type;
 }
 
-// The message of a failing query, or the empty string when it succeeded.
-std::string QueryError(duckdb_v2_connection_handle conn, const char *sql) {
+// Requires the query to fail; returns its message and optionally its error code.
+std::string QueryError(duckdb_v2_connection_handle conn, const char *sql, DUCKDB_V2_ERROR *code = nullptr) {
 	duckdb_v2_result_handle result = nullptr;
 	duckdb_v2_error_info_handle err = nullptr;
 	auto rc = Query(conn, sql, &result, &err);
@@ -119,6 +119,9 @@ std::string QueryError(duckdb_v2_connection_handle conn, const char *sql) {
 	}
 	duckdb_v2_error_info_destroy(&err);
 	REQUIRE(rc != DUCKDB_V2_ERROR_NONE);
+	if (code) {
+		*code = rc;
+	}
 	return message;
 }
 
@@ -138,6 +141,25 @@ void DeleteRangeBind(void *ptr) {
 }
 void DeleteRangeGlobal(void *ptr) {
 	delete static_cast<RangeGlobal *>(ptr);
+}
+
+bool schema_rebound = false;
+
+void ChangingSchemaBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_function_bind_info_handle result,
+                          duckdb_v2_context_handle context, duckdb_v2_error_info_handle *err) {
+	auto bigint = MakeTypeInCallback(context, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, err);
+	if (!bigint) {
+		return;
+	}
+	auto name = TableIdent(schema_rebound ? "renamed" : "i");
+	auto rc = duckdb_v2_table_function_bind_add_result_column(result, &name, bigint, err);
+	duckdb_v2_logical_type_destroy(&bigint);
+	if (rc != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	schema_rebound = true;
+	duckdb_v2_opaque bind_data = {new RangeBind {3}, DeleteRangeBind, nullptr};
+	duckdb_v2_function_bind_set_bind_data(info, &bind_data, err);
 }
 
 void RangeBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_function_bind_info_handle result,
@@ -1014,23 +1036,13 @@ void ProjInitLocalCb(duckdb_v2_table_function_init_local_info_handle info, duckd
 	}
 }
 
-void ProjExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_context_handle,
-                duckdb_v2_error_info_handle *err) {
-	void *global_ptr = nullptr;
-	duckdb_v2_data_chunk_handle chunk = nullptr;
+// Fills every output column with declared_index * 100 + row position, proving the column mapping.
+void WriteDeclaredColumns(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_data_chunk_handle chunk,
+                          idx_t position, idx_t rows, duckdb_v2_error_info_handle *err) {
 	idx_t count = 0;
-	if (duckdb_v2_table_function_exec_get_global_state(info, &global_ptr, err) != DUCKDB_V2_ERROR_NONE ||
-	    duckdb_v2_table_function_exec_get_output_chunk(info, &chunk, err) != DUCKDB_V2_ERROR_NONE ||
-	    duckdb_v2_table_function_exec_get_column_count(info, &count, err) != DUCKDB_V2_ERROR_NONE) {
+	if (duckdb_v2_table_function_exec_get_column_count(info, &count, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
-	auto &global = *static_cast<ProjGlobal *>(global_ptr);
-	// Batches are capped by the vector size so the probe also serves builds with a tiny STANDARD_VECTOR_SIZE.
-	idx_t rows = PROJ_ROWS - global.position;
-	if (rows > STANDARD_VECTOR_SIZE) {
-		rows = STANDARD_VECTOR_SIZE;
-	}
-
 	for (idx_t i = 0; i < count; i++) {
 		idx_t column = 0;
 		duckdb_v2_vector_handle vec = nullptr;
@@ -1041,12 +1053,29 @@ void ProjExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_contex
 			return;
 		}
 		for (idx_t row = 0; row < rows; row++) {
-			static_cast<int64_t *>(raw)[row] = static_cast<int64_t>(column * 100 + global.position + row);
+			static_cast<int64_t *>(raw)[row] = static_cast<int64_t>(column * 100 + position + row);
 		}
 		if (i == 0) {
 			duckdb_v2_vector_set_size(vec, rows, err);
 		}
 	}
+}
+
+void ProjExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_context_handle,
+                duckdb_v2_error_info_handle *err) {
+	void *global_ptr = nullptr;
+	duckdb_v2_data_chunk_handle chunk = nullptr;
+	if (duckdb_v2_table_function_exec_get_global_state(info, &global_ptr, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_table_function_exec_get_output_chunk(info, &chunk, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto &global = *static_cast<ProjGlobal *>(global_ptr);
+	// Batches are capped by the vector size so the probe also serves builds with a tiny STANDARD_VECTOR_SIZE.
+	idx_t rows = PROJ_ROWS - global.position;
+	if (rows > STANDARD_VECTOR_SIZE) {
+		rows = STANDARD_VECTOR_SIZE;
+	}
+	WriteDeclaredColumns(info, chunk, global.position, rows, err);
 	global.position += rows;
 }
 
@@ -1098,7 +1127,7 @@ std::vector<int64_t> QueryCells(duckdb_v2_connection_handle conn, const char *sq
 }
 
 // ---------------------------------------------------------------------------
-// claim_probe(n): column i BIGINT with 0..n-1. Its pushdown callback claims every "i < constant" predicate by
+// claim_probe(n): BIGINT columns i (0..n-1) and j (100+i). Its callback claims every "i < constant" predicate by
 // recording the bound in the bind data; the scan then deliberately produces two rows past the bound, which only
 // reach the result if the engine really stopped applying the claimed predicate.
 // ---------------------------------------------------------------------------
@@ -1138,8 +1167,13 @@ void ClaimBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_funct
 	if (!bigint) {
 		return;
 	}
-	auto name_str = TableIdent("i");
-	rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str, bigint, err);
+	for (auto name : {"i", "j"}) {
+		auto name_str = TableIdent(name);
+		rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str, bigint, err);
+		if (rc != DUCKDB_V2_ERROR_NONE) {
+			break;
+		}
+	}
 	duckdb_v2_logical_type_destroy(&bigint);
 	if (rc != DUCKDB_V2_ERROR_NONE) {
 		return;
@@ -1148,8 +1182,9 @@ void ClaimBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_funct
 	duckdb_v2_function_bind_set_bind_data(info, &bind_data, err);
 }
 
-void ClaimPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info, duckdb_v2_context_handle,
-                     duckdb_v2_error_info_handle *err) {
+// Claims "i < constant" predicates; an exact claim also stops the scan at the bound instead of overshooting it.
+void ClaimLessThan(duckdb_v2_table_function_filter_pushdown_info_handle info, duckdb_v2_error_info_handle *err,
+                   bool exact) {
 	void *user_ptr = nullptr;
 	void *bind_ptr = nullptr;
 	idx_t count = 0;
@@ -1203,17 +1238,40 @@ void ClaimPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info, 
 		if (declared != 0) {
 			continue;
 		}
-		bind.bound = bound;
+		bind.bound = bind.bound < 0 ? bound : std::min(bind.bound, bound);
+		if (exact) {
+			bind.count = std::min(bind.count, bind.bound);
+		}
 		if (duckdb_v2_table_function_filter_pushdown_accept(info, i, err) != DUCKDB_V2_ERROR_NONE) {
 			return;
 		}
 	}
 }
 
+void ClaimPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info, duckdb_v2_context_handle,
+                     duckdb_v2_error_info_handle *err) {
+	ClaimLessThan(info, err, false);
+}
+
+void ExactClaimPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info, duckdb_v2_context_handle,
+                          duckdb_v2_error_info_handle *err) {
+	ClaimLessThan(info, err, true);
+}
+
 void ClaimInitGlobalCb(duckdb_v2_table_function_init_global_info_handle info, duckdb_v2_context_handle,
                        duckdb_v2_error_info_handle *err) {
 	duckdb_v2_opaque state = {new ClaimGlobal {0}, DeleteClaimGlobal, nullptr};
 	duckdb_v2_table_function_init_global_set_global_state(info, &state, err);
+}
+
+bool claim_accept_enabled = true;
+
+void OneShotClaimPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info, duckdb_v2_context_handle context,
+                            duckdb_v2_error_info_handle *err) {
+	if (claim_accept_enabled) {
+		ExactClaimPushdownCb(info, context, err);
+		claim_accept_enabled = false;
+	}
 }
 
 void ClaimExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_context_handle,
@@ -1229,13 +1287,6 @@ void ClaimExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_conte
 	auto &bind = *static_cast<ClaimBind *>(bind_ptr);
 	auto &global = *static_cast<ClaimGlobal *>(global_ptr);
 
-	duckdb_v2_vector_handle vec = nullptr;
-	void *raw = nullptr;
-	if (duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, err) != DUCKDB_V2_ERROR_NONE ||
-	    duckdb_v2_vector_get_data_mutable(vec, &raw, err) != DUCKDB_V2_ERROR_NONE) {
-		return;
-	}
-
 	// Two rows past a claimed bound: they surface only if the engine dropped the predicate.
 	auto limit = bind.bound < 0 ? bind.count : bind.bound + 2;
 	if (limit > bind.count) {
@@ -1247,12 +1298,8 @@ void ClaimExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_conte
 	if (produced < 0) {
 		produced = 0;
 	}
-	auto *out = static_cast<int64_t *>(raw);
-	for (int64_t i = 0; i < produced; i++) {
-		out[i] = global.position + i;
-	}
+	WriteDeclaredColumns(info, chunk, static_cast<idx_t>(global.position), static_cast<idx_t>(produced), err);
 	global.position += produced;
-	duckdb_v2_vector_set_size(vec, static_cast<idx_t>(produced), err);
 }
 
 void FailingPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle, duckdb_v2_context_handle,
@@ -1260,7 +1307,8 @@ void FailingPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle, duc
 	SetErrorInfo(err, DUCKDB_V2_ERROR_INPUT_INVALID, "pushdown refused");
 }
 
-void RegisterClaim(EnvFixture &fx, const char *name, duckdb_v2_table_function_filter_pushdown_callback_fn pushdown) {
+void RegisterClaim(EnvFixture &fx, const char *name, duckdb_v2_table_function_filter_pushdown_callback_fn pushdown,
+                   bool projection_pushdown = false) {
 	auto bigint = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
 	auto function = MakeTable(fx.conn, name);
 	TableSigParam(SigOf(function), "n", bigint);
@@ -1271,6 +1319,8 @@ void RegisterClaim(EnvFixture &fx, const char *name, duckdb_v2_table_function_fi
 	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_set_exec_callback(function, ClaimExecCb, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_set_filter_pushdown_callback(function, pushdown, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_table_function_set_projection_pushdown(function, projection_pushdown, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_connection_register_table_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_table_function_destroy(&function);
 	duckdb_v2_logical_type_destroy(&bigint);
@@ -1301,6 +1351,34 @@ TEST_CASE("V2 table: projection pushdown narrows the output chunk", "[capi_v2][t
 	REQUIRE(proj_local_columns == Columns {0, 1, 2});
 }
 
+TEST_CASE("V2 table: scans without filter pushdown survive serialization", "[capi_v2][table_function]") {
+	EnvFixture fx;
+	RegisterRange(fx);
+	RegisterProj(fx.conn, "proj_probe", true);
+	ExecSQL(fx.conn, "SET debug_verify_serializer=true");
+	using Cells = std::vector<int64_t>;
+	REQUIRE(QueryCells(fx.conn, "SELECT i FROM my_range(n => 5) WHERE i % 2 = 0 ORDER BY i") == Cells {0, 2, 4});
+	REQUIRE(QueryCells(fx.conn, "SELECT z, x FROM proj_probe()") == Cells {200, 0, 201, 1, 202, 2});
+	REQUIRE(QueryCells(fx.conn, "SELECT sum(z)::BIGINT FROM proj_probe() "
+	                            "UNION ALL SELECT sum(z)::BIGINT FROM proj_probe()") == Cells {603, 603});
+
+	auto function = MakeTable(fx.conn, "changing_schema");
+	REQUIRE(duckdb_v2_table_function_set_bind_callback(function, ChangingSchemaBindCb, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_table_function_set_init_global_callback(function, RangeInitGlobalCb, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_table_function_set_exec_callback(function, RangeExecCb, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_table_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_table_function_destroy(&function);
+	schema_rebound = false;
+	DUCKDB_V2_ERROR code = DUCKDB_V2_ERROR_NONE;
+	auto error = QueryError(fx.conn, "SELECT i FROM changing_schema()", &code);
+	CAPTURE(error);
+	REQUIRE(code == DUCKDB_V2_ERROR_DATABASE_SERIALIZATION);
+	REQUIRE(error.find("Table function \"changing_schema\" returned a different schema when rebinding") !=
+	        std::string::npos);
+}
+
 TEST_CASE("V2 table: claimed filters are no longer applied by the engine", "[capi_v2][table_function]") {
 	EnvFixture fx;
 	RegisterClaim(fx, "claim_probe", ClaimPushdownCb);
@@ -1316,6 +1394,53 @@ TEST_CASE("V2 table: claimed filters are no longer applied by the engine", "[cap
 	REQUIRE(QueryI64(fx.conn, "SELECT count(*) FROM claim_probe(100) WHERE i < 10 AND i % 2 = 0") == 6);
 	// A comparison the callback does not recognize stays with the engine.
 	REQUIRE(QueryI64(fx.conn, "SELECT count(*) FROM claim_probe(100) WHERE i > 90") == 9);
+}
+
+TEST_CASE("V2 table: accepted filters survive plan serialization", "[capi_v2][table_function]") {
+	auto projection_pushdown = GENERATE(false, true);
+	CAPTURE(projection_pushdown);
+	EnvFixture fx;
+	RegisterClaim(fx, "exact_claim", ExactClaimPushdownCb, projection_pushdown);
+	using Cells = std::vector<int64_t>;
+
+	SECTION("partitioned window self join") {
+		REQUIRE(QueryCells(fx.conn, "SELECT i, sum(i) OVER (PARTITION BY i % 2)::BIGINT "
+		                            "FROM exact_claim(10) WHERE i < 3 ORDER BY i") == Cells {0, 2, 1, 1, 2, 2});
+	}
+	SECTION("common subplans distinguish consumed bounds") {
+		for (auto setting : {"SET disabled_optimizers='common_subplan'", "SET disabled_optimizers=''"}) {
+			CAPTURE(setting);
+			ExecSQL(fx.conn, setting);
+			REQUIRE(QueryCells(fx.conn,
+			                   "SELECT sum(i)::BIGINT FROM exact_claim(10) WHERE i < 3 "
+			                   "UNION ALL SELECT sum(i)::BIGINT FROM exact_claim(10) WHERE i < 5") == Cells {3, 10});
+		}
+	}
+	SECTION("serializer verification after optimization") {
+		ExecSQL(fx.conn, "SET debug_verify_serializer=true");
+		REQUIRE(QueryI64(fx.conn, "SELECT count(*) FROM exact_claim(10)") == 10);
+		REQUIRE(QueryCells(fx.conn, "SELECT i FROM exact_claim(10) WHERE i > 7 ORDER BY i") == Cells {8, 9});
+		REQUIRE(QueryI64(fx.conn, "SELECT count(*) FROM exact_claim(10) WHERE i < 0") == 0);
+		REQUIRE(QueryCells(fx.conn, "SELECT i FROM exact_claim(10) WHERE i < 3 ORDER BY i") == Cells {0, 1, 2});
+		// With projection pushdown, the predicate's column is pruned and its original scan position is not zero.
+		REQUIRE(QueryCells(fx.conn, "SELECT j FROM exact_claim(10) WHERE i < 3 ORDER BY j") == Cells {100, 101, 102});
+		REQUIRE(QueryI64(fx.conn, "SELECT count(*) FROM exact_claim(10) WHERE i < 3 AND i % 2 = 0") == 2);
+		REQUIRE(QueryCells(fx.conn, "SELECT i, sum(i) OVER (PARTITION BY i % 2)::BIGINT "
+		                            "FROM exact_claim(10) WHERE i < 3 ORDER BY i") == Cells {0, 2, 1, 1, 2, 2});
+		ExecSQL(fx.conn, "PREPARE filtered AS SELECT j FROM exact_claim(10) WHERE i < $1 ORDER BY j");
+		REQUIRE(QueryCells(fx.conn, "EXECUTE filtered(3)") == Cells {100, 101, 102});
+		REQUIRE(QueryCells(fx.conn, "EXECUTE filtered(5)") == Cells {100, 101, 102, 103, 104});
+		REQUIRE(QueryCells(fx.conn, "EXECUTE filtered(1)") == Cells {100});
+	}
+	SECTION("replay cannot silently decline a consumed predicate") {
+		RegisterClaim(fx, "one_shot_claim", OneShotClaimPushdownCb, projection_pushdown);
+		claim_accept_enabled = true;
+		ExecSQL(fx.conn, "SET debug_verify_serializer=true");
+		DUCKDB_V2_ERROR code = DUCKDB_V2_ERROR_NONE;
+		auto error = QueryError(fx.conn, "SELECT i FROM one_shot_claim(10) WHERE i < 3", &code);
+		REQUIRE(code == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(error.find("did not accept a previously accepted predicate") != std::string::npos);
+	}
 }
 
 TEST_CASE("V2 table: filter pushdown errors fail the query", "[capi_v2][table_function]") {
@@ -2230,6 +2355,7 @@ std::vector<idx_t> TableArgCounts() {
 
 TEST_CASE("V2 table: named-only parameters and kwargs", "[capi_v2][table_function]") {
 	EnvFixture fx;
+	ExecSQL(fx.conn, "SET debug_verify_serializer=true");
 	auto bigint = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
 	auto any = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_ANY);
 	auto one = MakeInt64Value(fx.factory, 1);

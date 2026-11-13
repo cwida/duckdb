@@ -4,16 +4,38 @@
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
 #include "duckdb/common/multi_file/multi_file_data.hpp"
 #include "duckdb/common/multi_file/table_function_multi_file.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/execution/partition_info.hpp"
 #include "duckdb/function/partition_stats.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/storage/statistics/node_statistics.hpp"
+
+#include <algorithm>
 
 namespace duckdb::capiv2 {
 
 class CV2TableFunctionInfo;
+
+struct CV2TableAcceptedFilterBatch {
+	vector<ColumnIndex> column_ids;
+	vector<unique_ptr<Expression>> filters;
+
+	void Serialize(Serializer &serializer) const {
+		serializer.WriteProperty(100, "column_ids", column_ids);
+		serializer.WriteProperty(101, "filters", filters);
+	}
+
+	static unique_ptr<CV2TableAcceptedFilterBatch> Deserialize(Deserializer &deserializer) {
+		auto result = make_uniq<CV2TableAcceptedFilterBatch>();
+		deserializer.ReadProperty(100, "column_ids", result->column_ids);
+		deserializer.ReadProperty(101, "filters", result->filters);
+		return result;
+	}
+};
 
 //! The bind data of a bound call site. Besides the user's own bind data it carries a borrowed pointer back to the
 //! function info: the progress hook only receives the bind data, so it is its only route to the callbacks. The
@@ -30,17 +52,14 @@ public:
 
 	vector<LogicalType> column_types;
 	vector<Identifier> column_names;
+	//! Retained here because function data is deserialized before LogicalGet's invocation parameters.
+	vector<Value> parameters;
+	named_argument_map_t named_parameters;
+	//! Accepted predicates with their pre-pruning column mapping, replayed on rebind.
+	vector<shared_ptr<const CV2TableAcceptedFilterBatch>> accepted_filters;
 
 	auto Copy() const -> unique_ptr<FunctionData> override {
-		auto copy = make_uniq<CV2TableFunctionData>();
-		copy->handle = handle;
-		copy->info = info;
-		copy->cardinality = cardinality;
-		copy->cardinality_is_exact = cardinality_is_exact;
-		copy->cardinality_set = cardinality_set;
-		copy->column_types = column_types;
-		copy->column_names = column_names;
-		return std::move(copy);
+		return make_uniq<CV2TableFunctionData>(*this);
 	}
 
 	auto Equals(const FunctionData &other) const -> bool override {
@@ -441,6 +460,8 @@ static auto CV2TableBind(ClientContext &context, TableFunctionBindInput &input, 
 
 	result->column_types = args.out_column_types;
 	result->column_names = args.out_column_names;
+	result->parameters = input.inputs;
+	result->named_parameters = input.named_parameters;
 	return_types = std::move(args.out_column_types);
 	names = std::move(args.out_column_names);
 	return std::move(result);
@@ -717,21 +738,16 @@ static auto CV2TableProgress(ClientContext &context, const FunctionData *bind_da
 	return MinValue<double>(MaxValue<double>(args.out_progress, 0.0), 1.0) * 100.0;
 }
 
-//! The optimizer hands over the predicates it would otherwise evaluate above the scan; whatever the callback accepts
-//! is removed from the list, and the engine keeps applying the rest itself.
-static auto CV2TableFilterPushdown(ClientContext &context, LogicalGet &get, FunctionData *bind_data_p,
-                                   vector<unique_ptr<Expression>> &filters) -> void {
-	if (filters.empty()) {
-		return;
-	}
-	const auto &bind_data = bind_data_p->Cast<CV2TableFunctionData>();
+static auto CV2TableOfferFilters(ClientContext &context, const CV2TableFunctionData &bind_data,
+                                 const vector<unique_ptr<Expression>> &filters, const vector<ColumnIndex> &column_ids)
+    -> vector<bool> {
 	const auto &info = *bind_data.info;
 
 	CV2TableFilterPushdownInfo args = {};
 	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
 	args.in_bind_data = bind_data.handle ? bind_data.handle->GetData() : nullptr;
 	args.in_filters = &filters;
-	args.in_column_ids = &get.GetColumnIds();
+	args.in_column_ids = &column_ids;
 	args.out_handled.resize(filters.size(), false);
 
 	CV2ErrorInfo err = {};
@@ -742,14 +758,77 @@ static auto CV2TableFilterPushdown(ClientContext &context, LogicalGet &get, Func
 	if (err.HasError()) {
 		err.ThrowAsException();
 	}
+	return std::move(args.out_handled);
+}
 
-	vector<unique_ptr<Expression>> remaining;
+//! The optimizer hands over the predicates it would otherwise evaluate above the scan; whatever the callback accepts
+//! is removed from the list, and the engine keeps applying the rest itself.
+static auto CV2TableFilterPushdown(ClientContext &context, LogicalGet &get, FunctionData *bind_data_p,
+                                   vector<unique_ptr<Expression>> &filters) -> void {
+	if (filters.empty()) {
+		return;
+	}
+	auto &bind_data = bind_data_p->Cast<CV2TableFunctionData>();
+	const auto &column_ids = get.GetColumnIds();
+	auto handled = CV2TableOfferFilters(context, bind_data, filters, column_ids);
+	vector<unique_ptr<Expression>> accepted, remaining;
 	for (idx_t i = 0; i < filters.size(); i++) {
-		if (!args.out_handled[i]) {
+		if (handled[i]) {
+			accepted.push_back(std::move(filters[i]));
+		} else {
 			remaining.push_back(std::move(filters[i]));
 		}
 	}
+	if (!accepted.empty()) {
+		bind_data.accepted_filters.push_back(make_shared_ptr<CV2TableAcceptedFilterBatch>(
+		    CV2TableAcceptedFilterBatch {column_ids, std::move(accepted)}));
+	}
 	filters = std::move(remaining);
+}
+
+static auto CV2TableReplayAcceptedFilters(ClientContext &context, const CV2TableFunctionData &bind_data) -> void {
+	for (auto &batch : bind_data.accepted_filters) {
+		auto handled = CV2TableOfferFilters(context, bind_data, batch->filters, batch->column_ids);
+		if (!std::all_of(handled.begin(), handled.end(), [](bool accepted) { return accepted; })) {
+			throw InvalidInputException("The filter pushdown callback of table function \"%s\" did not accept a "
+			                            "previously accepted predicate when rebinding.",
+			                            bind_data.info->name.GetIdentifierName());
+		}
+	}
+}
+
+static auto CV2TableSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+                              const BoundTableFunction &) -> void {
+	const auto &bind_data = bind_data_p->Cast<CV2TableFunctionData>();
+	serializer.WriteProperty(100, "parameters", bind_data.parameters);
+	serializer.WriteProperty(101, "named_parameters", bind_data.named_parameters);
+	serializer.WriteProperty(102, "column_types", bind_data.column_types);
+	serializer.WriteProperty(103, "column_names", bind_data.column_names);
+	serializer.WriteProperty(104, "accepted_filters", bind_data.accepted_filters);
+}
+
+static auto CV2TableDeserialize(Deserializer &deserializer, BoundTableFunction &function) -> unique_ptr<FunctionData> {
+	auto parameters = deserializer.ReadProperty<vector<Value>>(100, "parameters");
+	auto named_parameters = deserializer.ReadProperty<named_argument_map_t>(101, "named_parameters");
+	auto column_types = deserializer.ReadProperty<vector<LogicalType>>(102, "column_types");
+	auto column_names = deserializer.ReadProperty<vector<Identifier>>(103, "column_names");
+	auto accepted_filters =
+	    deserializer.ReadProperty<vector<shared_ptr<const CV2TableAcceptedFilterBatch>>>(104, "accepted_filters");
+	auto &context = deserializer.Get<ClientContext &>();
+	vector<LogicalType> input_types, return_types;
+	vector<Identifier> input_names, return_names;
+	TableFunctionRef ref;
+	TableFunctionBindInput input(parameters, named_parameters, input_types, input_names, function.function_info.get(),
+	                             nullptr, function, ref, nullptr);
+	auto result = CV2TableBind(context, input, return_types, return_names);
+	auto &bind_data = result->Cast<CV2TableFunctionData>();
+	if (return_types != column_types || return_names != column_names) {
+		throw SerializationException("Table function \"%s\" returned a different schema when rebinding",
+		                             bind_data.info->name.GetIdentifierName());
+	}
+	bind_data.accepted_filters = std::move(accepted_filters);
+	CV2TableReplayAcceptedFilters(context, bind_data);
+	return result;
 }
 
 //! Batch index is required on every call, even when unrequested: the pipeline range-checks it regardless.
@@ -864,6 +943,9 @@ public:
 		// Always wired: it serves the estimate a bind callback may set, which is not known at registration. It
 		// reports no estimate when the bind callback sets none.
 		function.cardinality = CV2TableCardinality;
+
+		function.SetSerializeCallback(CV2TableSerialize);
+		function.SetDeserializeCallback(CV2TableDeserialize);
 		if (info.progress_cb) {
 			function.table_scan_progress = CV2TableProgress;
 		}
