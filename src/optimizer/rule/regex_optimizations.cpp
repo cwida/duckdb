@@ -88,19 +88,74 @@ static LikeString GetLikeStringEscaped(duckdb_re2::Regexp *regexp, bool contains
 	return ret;
 }
 
+// Which sub-expressions actually contribute characters to the LIKE string. An empty
+// non-capturing group (kRegexpEmptyMatch) matches the empty string and anchors do not
+// consume input, so neither contributes content; a '*' only contributes (a '%') in the
+// '.*' form, any other '*' bails out of the conversion entirely.
+static bool RegexpSubProducesContent(duckdb_re2::Regexp *sub) {
+	switch (sub->op()) {
+	case duckdb_re2::kRegexpAnyChar:
+	case duckdb_re2::kRegexpLiteralString:
+	case duckdb_re2::kRegexpLiteral:
+		return true;
+	case duckdb_re2::kRegexpStar:
+		return sub->nsub() == 1 && sub->sub()[0]->op() == duckdb_re2::kRegexpAnyChar;
+	default:
+		return false;
+	}
+}
+
 static LikeString LikeMatchFromRegex(duckdb_re2::RE2 &pattern) {
 	LikeString ret = LikeString();
-	auto num_subs = pattern.Regexp()->nsub();
-	auto subs = pattern.Regexp()->sub();
+	const auto num_subs = pattern.Regexp()->nsub();
+	const auto subs = pattern.Regexp()->sub();
+	// An empty group (kRegexpEmptyMatch) occupies a position in the concat but matches
+	// nothing, so it must not influence whether a neighbour literal is "first"/"last".
+	// We therefore test, per element, whether there is any *content-producing* sibling
+	// before/after it, and separately whether a ^ / $ anchor pins the respective edge.
+	std::vector<bool> produces_content(num_subs, false);
+	bool anchored_start = false;
+	bool anchored_end = false;
+	for (int i = 0; i < num_subs; i++) {
+		produces_content[i] = RegexpSubProducesContent(subs[i]);
+		if (subs[i]->op() == duckdb_re2::kRegexpBeginText) {
+			anchored_start = true;
+		}
+		if (subs[i]->op() == duckdb_re2::kRegexpEndText) {
+			anchored_end = true;
+		}
+	}
+	const auto first_content = [produces_content](int idx) {
+		for (int i = 0; i < idx; i++) {
+			if (produces_content[i]) {
+				return false;
+			}
+		}
+		return true;
+	};
+	const auto last_content = [num_subs, produces_content](int idx) {
+		for (int i = idx + 1; i < num_subs; i++) {
+			if (produces_content[i]) {
+				return false;
+			}
+		}
+		return true;
+	};
+	const auto needs_leading_percent = [first_content, anchored_start](int idx) {
+		return !anchored_start && first_content(idx);
+	};
+	const auto needs_trailing_percent = [last_content, anchored_end](int idx) {
+		return !anchored_end && last_content(idx);
+	};
 	auto cur_sub_index = 0;
 	while (cur_sub_index < num_subs) {
 		switch (subs[cur_sub_index]->op()) {
 		case duckdb_re2::kRegexpAnyChar:
-			if (cur_sub_index == 0) {
+			if (needs_leading_percent(cur_sub_index)) {
 				ret.like_string += "%";
 			}
 			ret.like_string += "_";
-			if (cur_sub_index + 1 == num_subs) {
+			if (needs_trailing_percent(cur_sub_index)) {
 				ret.like_string += "%";
 			}
 			break;
@@ -118,7 +173,7 @@ static LikeString LikeMatchFromRegex(duckdb_re2::RE2 &pattern) {
 			// if this is the only matching op, we should have directly called
 			// GetEscapedLikeString
 			D_ASSERT(!(cur_sub_index == 0 && cur_sub_index + 1 == num_subs));
-			if (cur_sub_index == 0) {
+			if (needs_leading_percent(cur_sub_index)) {
 				ret.like_string += "%";
 			}
 			// if the kRegexpLiteral or kRegexpLiteralString is the only op to match
@@ -129,7 +184,7 @@ static LikeString LikeMatchFromRegex(duckdb_re2::RE2 &pattern) {
 			}
 			ret.like_string += escaped_like_string.like_string;
 			ret.escaped = escaped_like_string.escaped;
-			if (cur_sub_index + 1 == num_subs) {
+			if (needs_trailing_percent(cur_sub_index)) {
 				ret.like_string += "%";
 			}
 			break;

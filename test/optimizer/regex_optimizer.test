@@ -253,3 +253,82 @@ WITH fetch_schema AS (
   SELECT s FROM test WHERE regexp_matches(s, 'hello', 'm')
 ) SELECT * FROM fetch_schema LIMIT 0;
 ----
+
+# #28536: an empty non-capturing group at the start/end of the pattern must not make
+# RegexOptimizationRule treat a literal as anchored. Before the fix '(?:)abc' became
+# prefix(s,'abc') / 'abc(?:)' became suffix(s,'abc'), dropping rows that contain 'abc'
+# elsewhere; the middle form 'a(?:)bc' and the anchored forms are the regression guards.
+statement ok
+DELETE FROM test;
+
+statement ok
+INSERT INTO test VALUES ('abc'), ('xabc'), ('abcx');
+
+# leading empty group: contains, not prefix
+query II
+explain analyze SELECT regexp_matches(s, '(?:)abc') FROM test;
+----
+analyzed_plan	<REGEX>:.*contains\(s, 'abc'\).*
+
+# trailing empty group: contains, not suffix
+query II
+explain analyze SELECT regexp_matches(s, 'abc(?:)') FROM test;
+----
+analyzed_plan	<REGEX>:.*contains\(s, 'abc'\).*
+
+# empty group in the middle: re2 normalizes 'a(?:)bc' to the literal 'abc' -> contains
+query II
+explain analyze SELECT regexp_matches(s, 'a(?:)bc') FROM test;
+----
+analyzed_plan	<REGEX>:.*contains\(s, 'abc'\).*
+
+# leading anchor still anchors (prefix) even past the empty group
+query II
+explain analyze SELECT regexp_matches(s, '^(?:)abc') FROM test;
+----
+analyzed_plan	<REGEX>:.*prefix\(s, 'abc'\).*
+
+# trailing anchor still anchors (suffix) even past the empty group
+query II
+explain analyze SELECT regexp_matches(s, 'abc(?:)$') FROM test;
+----
+analyzed_plan	<REGEX>:.*suffix\(s, 'abc'\).*
+
+# both anchors: full equality, no %
+query II
+explain analyze SELECT regexp_matches(s, '^(?:)abc$') FROM test;
+----
+analyzed_plan	<REGEX>:.*s = 'abc'.*
+
+# results: the unanchored forms must match all three rows
+query I nosort
+SELECT s FROM test WHERE regexp_matches(s, '(?:)abc');
+----
+abc
+xabc
+abcx
+
+query I nosort
+SELECT s FROM test WHERE regexp_matches(s, 'abc(?:)');
+----
+abc
+xabc
+abcx
+
+# anchored results are unaffected by the empty group
+query I nosort
+SELECT s FROM test WHERE regexp_matches(s, '^(?:)abc');
+----
+abc
+abcx
+
+query I nosort
+SELECT s FROM test WHERE regexp_matches(s, 'abc(?:)$');
+----
+abc
+xabc
+
+query I
+SELECT s FROM test WHERE regexp_matches(s, '^(?:)abc$');
+----
+abc
