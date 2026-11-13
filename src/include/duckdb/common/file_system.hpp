@@ -89,6 +89,7 @@ enum class FileType {
 
 struct FileMetadata {
 	int64_t file_size = -1;
+	//! Nonfinite when the modification time is unavailable
 	timestamp_t last_modification_time = timestamp_t::ninfinity();
 	FileType file_type = FileType::FILE_TYPE_INVALID;
 	optional_idx device_id;
@@ -225,7 +226,7 @@ public:
 
 	//! Returns the file size of a file handle, returns -1 on error
 	DUCKDB_API virtual int64_t GetFileSize(FileHandle &handle);
-	//! Returns the file last modified time of a file handle, returns timespec with zero on all attributes on error
+	//! Returns the last modified time of a file handle, nonfinite when it is unavailable
 	DUCKDB_API virtual timestamp_t GetLastModifiedTime(FileHandle &handle);
 	//! Returns a tag that uniquely identifies the version of the file,
 	//! used for checking cache invalidation for CachingFileSystem httpfs files
