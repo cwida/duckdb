@@ -1,0 +1,91 @@
+# name: test/sql/cte/cte_at_clause.test
+# description: Test that a reference to a CTE rejects an AT clause instead of silently ignoring it
+# group: [cte]
+
+statement ok
+CREATE TABLE t(i INTEGER)
+
+statement ok
+INSERT INTO t VALUES (1), (2)
+
+statement ok
+CREATE VIEW v AS SELECT * FROM t
+
+statement ok
+CREATE VIEW vc AS WITH x AS (SELECT * FROM t) SELECT * FROM x
+
+# a reference to a CTE reads the result of the query that defines it, so there is no other snapshot to read it at
+statement error
+WITH x AS (SELECT * FROM t) SELECT * FROM x AT (VERSION => 3)
+----
+<REGEX>:Binder Error.*AT clause is not supported on a reference to the CTE "x".*
+
+statement error
+WITH x AS (SELECT * FROM t) SELECT * FROM x AT (TIMESTAMP => TIMESTAMP '2020-01-01')
+----
+<REGEX>:Binder Error.*AT clause is not supported on a reference to the CTE "x".*
+
+statement error
+WITH x AS (SELECT * FROM t) SELECT * FROM x AT (TIMESTAMP => (SELECT MIN(i) FROM t))
+----
+<REGEX>:Binder Error.*AT clause is not supported on a reference to the CTE "x".*
+
+# the AT clause was ignored for every kind of CTE reference, including a MATERIALIZED CTE and an aliased one
+statement error
+WITH x AS MATERIALIZED (SELECT * FROM t) SELECT * FROM x AT (VERSION => 3)
+----
+<REGEX>:Binder Error.*AT clause is not supported on a reference to the CTE "x".*
+
+statement error
+WITH x AS (SELECT * FROM t) SELECT count(*) FROM x AS y(c1) AT (VERSION => 3)
+----
+<REGEX>:Binder Error.*AT clause is not supported on a reference to the CTE "x".*
+
+# the name in the error is the CTE that is referenced, not the alias or the name of the referring CTE
+statement error
+WITH x AS (SELECT * FROM t), y AS (SELECT * FROM x) SELECT * FROM y AT (VERSION => 3)
+----
+<REGEX>:Binder Error.*AT clause is not supported on a reference to the CTE "y".*
+
+statement error
+WITH x AS (SELECT * FROM t), y AS (SELECT * FROM x AT (VERSION => 3)) SELECT * FROM y
+----
+<REGEX>:Binder Error.*AT clause is not supported on a reference to the CTE "x".*
+
+# the recursive term of a recursive CTE is the recurring table of the same CTE, which is also not read at a snapshot
+statement error
+WITH RECURSIVE x AS (SELECT 1 AS i UNION ALL SELECT i + 1 FROM x AT (VERSION => 2) WHERE i < 3) SELECT * FROM x
+----
+<REGEX>:Binder Error.*AT clause is not supported on a reference to the CTE "x".*
+
+# references without an AT clause are unaffected, and so is an AT clause that is propagated to the tables a CTE reads
+query I
+WITH x AS (SELECT * FROM t) SELECT count(*) FROM x
+----
+2
+
+query I
+WITH x AS MATERIALIZED (SELECT * FROM t) SELECT count(*) FROM x
+----
+2
+
+query I
+WITH RECURSIVE x AS (SELECT 1 AS i UNION ALL SELECT i + 1 FROM x WHERE i < 3) SELECT count(*) FROM x
+----
+3
+
+statement error
+SELECT * FROM v AT (VERSION => 3)
+----
+Catalog type does not support time travel
+
+statement error
+SELECT * FROM t AT (VERSION => 3)
+----
+Catalog type does not support time travel
+
+# vc refers to a CTE without an AT clause, and the AT of the outer query is propagated to the table inside the CTE
+statement error
+SELECT * FROM vc AT (VERSION => 3)
+----
+Catalog type does not support time travel

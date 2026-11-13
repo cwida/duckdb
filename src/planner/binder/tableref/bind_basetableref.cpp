@@ -153,6 +153,15 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 	BindingAlias binding_alias(ref.GetQualifiedName().Schema(), ref.Table());
 	auto ctebinding = GetCTEBinding(binding_alias);
 	if (ctebinding && ctebinding->CanBeReferenced()) {
+		if (ref.at_clause) {
+			// The CTE is bound once, as part of the query that defines it, and every reference reads from that result.
+			// There is nothing to read at another snapshot - two references could even ask for two different versions -
+			// so the AT clause is rejected instead of silently ignored, as it is for a table or a view.
+			throw BinderException(error_context,
+			                      "AT clause is not supported on a reference to the CTE \"%s\", because the CTE is "
+			                      "materialized at the snapshot of the query that defines it",
+			                      ref.Table().GetIdentifierName());
+		}
 		ctebinding->Reference();
 
 		// There is a CTE binding in the BindContext.
