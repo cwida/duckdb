@@ -384,6 +384,16 @@ void Optimizer::RunBuiltInOptimizers() {
 		plan = unnest_rewriter.Optimize(std::move(plan));
 	});
 
+	// convert common subplans into materialized CTEs
+	// Skip when the plan contains a DML CTE: table statistics are stale at plan
+	// time and could cause incorrect deduplication of scans across a DML boundary.
+	if (!CTEContainsDML(*plan)) {
+		RunOptimizer(OptimizerType::COMMON_SUBPLAN, [&]() {
+			CommonSubplanOptimizer common_subplan_optimizer(*this);
+			plan = common_subplan_optimizer.Optimize(std::move(plan));
+		});
+	}
+
 	// removes unused columns
 	RunOptimizer(OptimizerType::UNUSED_COLUMNS, [&]() {
 		RemoveUnusedColumns unused(*this);
@@ -414,16 +424,6 @@ void Optimizer::RunBuiltInOptimizers() {
 		BuildProbeSideOptimizer build_probe_side_optimizer(context, *plan);
 		build_probe_side_optimizer.VisitOperator(*plan);
 	});
-
-	// convert common subplans into materialized CTEs
-	// Skip when the plan contains a DML CTE: table statistics are stale at plan
-	// time and could cause incorrect deduplication of scans across a DML boundary.
-	if (!CTEContainsDML(*plan)) {
-		RunOptimizer(OptimizerType::COMMON_SUBPLAN, [&]() {
-			CommonSubplanOptimizer common_subplan_optimizer(*this);
-			plan = common_subplan_optimizer.Optimize(std::move(plan));
-		});
-	}
 
 	// pushes LIMIT below PROJECTION
 	RunOptimizer(OptimizerType::LIMIT_PUSHDOWN, [&]() {

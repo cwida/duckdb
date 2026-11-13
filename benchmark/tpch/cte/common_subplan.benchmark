@@ -1,0 +1,23 @@
+# name: benchmark/tpch/cte/common_subplan.benchmark
+# description: Benchmark to check if common subplan optimization is working in the presence of column pruning
+# group: [cte]
+
+name Common Subplan Optimization with Column Pruning
+group cte
+
+require tpch
+
+# create the CSV file
+load
+CALL dbgen(sf=1);
+
+run
+SELECT c1, c2
+FROM (  SELECT SUM(l_partkey) AS c1, AVG(p_partkey) AS c2, COUNT(l_orderkey) AS c3, l_linenumber AS c4
+        FROM lineitem JOIN part ON (l_partkey = p_partkey)
+        GROUP BY l_linenumber)
+UNION ALL
+SELECT c3, c4
+FROM (  SELECT SUM(l_partkey) AS c1, AVG(p_partkey) AS c2, COUNT(l_orderkey) AS c3, l_linenumber AS c4
+        FROM lineitem JOIN part ON (l_partkey = p_partkey)
+        GROUP BY l_linenumber);
