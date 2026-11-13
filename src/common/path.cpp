@@ -357,19 +357,16 @@ size_t Path::ParseUNCScheme(const string &input, Path &parsed) {
 #endif
 
 string Path::AddSuffixToPath(const string &path, const string &suffix) {
-	// we append the ".wal" **before** a question mark in case of GET parameters
-	// but only if we are not in a windows long path (which starts with \\?\)
-	std::size_t question_mark_pos = std::string::npos;
-	if (!StringUtil::StartsWith(path, "\\\\?\\")) {
-		question_mark_pos = path.find('?');
+	// a remote URL may carry a "?query" suffix, which has to stay at the very end of the path
+	// in a local path a question mark is a regular character
+	auto scheme = path.find("://");
+	if (scheme != string::npos) {
+		auto query = path.find('?', scheme + 3);
+		if (query != string::npos) {
+			return path.substr(0, query) + suffix + path.substr(query);
+		}
 	}
-	auto result = path;
-	if (question_mark_pos != std::string::npos) {
-		result.insert(question_mark_pos, suffix);
-	} else {
-		result += suffix;
-	}
-	return result;
+	return path + suffix;
 }
 
 } // namespace duckdb

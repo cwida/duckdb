@@ -1594,3 +1594,13 @@ TEST_CASE("JoinPath keeps a remote URL's query string at the end of the path", "
 	// A '?' in a plain (non-URL) path is a literal character, not a query delimiter.
 	REQUIRE(fs.JoinPath("/tmp/weird?name", "file.parquet") == "/tmp/weird?name/file.parquet");
 }
+
+TEST_CASE("AddSuffixToPath keeps a remote URL's query string at the end of the path", "[file_system]") {
+	REQUIRE(Path::AddSuffixToPath("s3://bucket/dir/db.duckdb?s3_sse_c_key=abc", ".wal") ==
+	        "s3://bucket/dir/db.duckdb.wal?s3_sse_c_key=abc");
+	REQUIRE(Path::AddSuffixToPath("https://host/db.duckdb", ".wal") == "https://host/db.duckdb.wal");
+	// A '?' in a plain (non-URL) path is a literal character, not a query delimiter.
+	REQUIRE(Path::AddSuffixToPath("/tmp/weird?name/db.duckdb", ".wal") == "/tmp/weird?name/db.duckdb.wal");
+	REQUIRE(Path::AddSuffixToPath("what?.db", ".wal") == "what?.db.wal");
+	REQUIRE(Path::AddSuffixToPath(R"(\\?\C:\dir\db.duckdb)", ".wal") == R"(\\?\C:\dir\db.duckdb.wal)");
+}

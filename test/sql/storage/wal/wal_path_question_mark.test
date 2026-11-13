@@ -1,0 +1,31 @@
+# name: test/sql/storage/wal/wal_path_question_mark.test
+# description: The WAL of a local database path containing a question mark is placed next to the database
+# group: [wal]
+
+require skip_reload
+
+# a question mark is not a legal file name character on Windows
+require notwindows
+
+statement ok
+SET wal_autocheckpoint = '1TB';
+
+# a partitioned write creates the directory with a question mark in its name
+statement ok
+COPY (SELECT 1 AS i, 'p' AS part) TO '{TEST_DIR}/dir?' (FORMAT csv, PARTITION_BY part);
+
+statement ok
+ATTACH '{TEST_DIR}/dir?/wal_qm.db' AS qm;
+
+statement ok
+CREATE TABLE qm.t(i INTEGER);
+
+statement ok
+INSERT INTO qm.t VALUES (1), (2);
+
+# the question mark is a regular character in a local path, not the start of a query string (issue #27667)
+query I
+SELECT parse_filename(file) FROM glob('{TEST_DIR}/dir?/wal_qm*') ORDER BY 1;
+----
+wal_qm.db
+wal_qm.db.wal
