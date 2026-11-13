@@ -151,6 +151,33 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 		auto &condition = join.conditions[i];
 		if (!condition.IsComparison()) {
 			PropagateExpression(condition.JoinExpressionReference());
+			// Non-comparison conditions can be classified after propagation, just like comparisons:
+			// a condition that is FALSE-or-NULL never matches, and an always-true one is a no-op.
+			switch (ClassifyFilter(*condition.JoinExpressionReference())) {
+			case FilterPropagateResult::FILTER_ALWAYS_FALSE:
+			case FilterPropagateResult::FILTER_FALSE_OR_NULL:
+				// condition is always false or null, none of the join conditions matter
+				if (HandleJoinNeverMatches(join, node_ptr)) {
+					return;
+				}
+				break;
+			case FilterPropagateResult::FILTER_ALWAYS_TRUE:
+				if (join.conditions.size() > 1) {
+					// there are multiple conditions: erase this always-true condition
+					join.conditions.erase_at(i);
+					i--;
+					removed_expressions = true;
+					continue;
+				}
+				// this is the only condition and it is always true: all conditions are true
+				if (HandleJoinAlwaysMatches(join, node_ptr)) {
+					removed_expressions = true;
+					return;
+				}
+				break;
+			default:
+				break;
+			}
 			continue;
 		}
 
