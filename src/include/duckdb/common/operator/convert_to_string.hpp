@@ -59,6 +59,10 @@ DUCKDB_API string ConvertToString::Operation(timestamp_t input);
 template <>
 DUCKDB_API string ConvertToString::Operation(timestamp_ns_t input);
 template <>
+DUCKDB_API string ConvertToString::Operation(timestamp_ms_t input);
+template <>
+DUCKDB_API string ConvertToString::Operation(timestamp_sec_t input);
+template <>
 DUCKDB_API string ConvertToString::Operation(timestamp_tz_t input);
 template <>
 DUCKDB_API string ConvertToString::Operation(timestamp_tz_ns_t input);

@@ -21,3 +21,92 @@ query II
 SELECT TIMESTAMP '294247-01-10 04:00:54.4'::TIMESTAMP_S, TIMESTAMP '2024-01-01 10:00:00.6'::TIMESTAMP_S
 ----
 294247-01-10 04:00:54	2024-01-01 10:00:01
+
+# #28532: CAST of a TIMESTAMP_MS value whose rounding to seconds goes past the
+# largest TIMESTAMP used to fail while building the error message
+# ("INTERNAL Error: Unrecognized type for ConvertToString INT64") and invalidated the
+# database, because ConvertToString/StringCast had no specialization for timestamp_ms_t.
+# It must raise a regular Conversion Error, exactly like the TIMESTAMP (us) source.
+
+statement error
+SELECT TIMESTAMP_MS '294247-01-10 04:00:54.775'::TIMESTAMP_S
+----
+can't be cast
+
+# the database must remain usable after the failed cast
+query I
+SELECT 42
+----
+42
+
+# the failed ms -> s cast surfaces through TRY_CAST as NULL, and the value is rendered in the error
+query II
+SELECT TRY_CAST(TIMESTAMP_MS '294247-01-10 04:00:54.775' AS TIMESTAMP_S)::VARCHAR, TRY_CAST(TIMESTAMP_MS '294247-01-10 04:00:54.775' AS TIMESTAMP_S)
+----
+NULL	NULL
+
+# in-range ms -> s still rounds correctly
+query II
+SELECT TIMESTAMP_MS '2024-01-01 10:00:00.600'::TIMESTAMP_S, TIMESTAMP_MS '2024-01-01 10:00:00.400'::TIMESTAMP_S
+----
+2024-01-01 10:00:01	2024-01-01 10:00:00
+
+# TIMESTAMP_MS string rendering works (finite and infinity)
+query II
+SELECT CAST(TIMESTAMP_MS '2020-05-17 00:00:00.775' AS VARCHAR), CAST(TIMESTAMP_MS 'infinity' AS VARCHAR)
+----
+2020-05-17 00:00:00.775	infinity
+
+# #28532 (follow-up): a TIMESTAMP_MS column holding only infinity has a finite statistics minimum
+# (the largest finite timestamp_ms value). Statistics propagation folds the ms -> s cast on that
+# minimum, and without the timestamp_ms_t ConvertToString/StringCast specializations the cast of that
+# out-of-range bound raised an INTERNAL Error and invalidated the database. The cast must instead
+# return infinity (infinity -> infinity), exactly as it does when statistics propagation is disabled.
+statement ok
+CREATE TABLE ts_ms_inf(x TIMESTAMP_MS);
+
+statement ok
+INSERT INTO ts_ms_inf VALUES ('infinity');
+
+# the cast over the all-infinity column returns infinity (previously INTERNAL Error, DB invalidated)
+query I
+SELECT CAST(x AS TIMESTAMP_S) FROM ts_ms_inf;
+----
+infinity
+
+# and it renders correctly as a string
+query I
+SELECT CAST(x AS TIMESTAMP_S)::VARCHAR FROM ts_ms_inf;
+----
+infinity
+
+# the database remains usable
+query I
+SELECT 42;
+----
+42
+
+# -infinity source column casts to -infinity
+statement ok
+CREATE TABLE ts_ms_ninf(x TIMESTAMP_MS);
+
+statement ok
+INSERT INTO ts_ms_ninf VALUES ('-infinity');
+
+query I
+SELECT CAST(x AS TIMESTAMP_S) FROM ts_ms_ninf;
+----
+-infinity
+
+# a mixed finite + infinity column casts both values correctly
+statement ok
+CREATE TABLE ts_ms_mixed(x TIMESTAMP_MS);
+
+statement ok
+INSERT INTO ts_ms_mixed VALUES ('infinity'), (TIMESTAMP_MS '1970-01-01 00:00:00.000');
+
+query I
+SELECT CAST(x AS TIMESTAMP_S) FROM ts_ms_mixed ORDER BY x;
+----
+1970-01-01 00:00:00
+infinity

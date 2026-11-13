@@ -84,6 +84,14 @@ string ConvertToString::Operation(timestamp_ns_t input) {
 	return StandardStringCast(input);
 }
 template <>
+string ConvertToString::Operation(timestamp_ms_t input) {
+	return StandardStringCast(input);
+}
+template <>
+string ConvertToString::Operation(timestamp_sec_t input) {
+	return StandardStringCast(input);
+}
+template <>
 string ConvertToString::Operation(timestamp_tz_t input) {
 	return StandardStringCast(input);
 }

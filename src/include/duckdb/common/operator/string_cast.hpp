@@ -69,6 +69,10 @@ template <>
 DUCKDB_API duckdb::string_t StringCast::Operation(timestamp_t input, StringHeap &heap);
 template <>
 DUCKDB_API duckdb::string_t StringCast::Operation(timestamp_ns_t input, StringHeap &heap);
+template <>
+DUCKDB_API duckdb::string_t StringCast::Operation(timestamp_ms_t input, StringHeap &heap);
+template <>
+DUCKDB_API duckdb::string_t StringCast::Operation(timestamp_sec_t input, StringHeap &heap);
 
 template <>
 duckdb::string_t StringCast::Operation(date_t input, StringHeap &heap);
