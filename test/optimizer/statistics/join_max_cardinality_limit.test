@@ -1,0 +1,98 @@
+# name: test/optimizer/statistics/join_max_cardinality_limit.test
+# description: Join max cardinality must bound every join type correctly so necessary LIMITs are not removed
+# group: [statistics]
+
+statement ok
+CREATE TABLE l AS SELECT range AS x FROM range(5);
+
+statement ok
+CREATE TABLE e (y BIGINT);
+
+query I
+SELECT count(*) FROM (SELECT x FROM l LEFT JOIN e ON e.y IS NULL LIMIT 2);
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT x FROM l LEFT JOIN e ON x = y LIMIT 2);
+----
+2
+
+# RIGHT
+query I
+SELECT count(*) FROM (SELECT x FROM e RIGHT JOIN l ON e.y IS NULL LIMIT 2);
+----
+2
+
+# FULL OUTER
+query I
+SELECT count(*) FROM (SELECT x FROM l FULL OUTER JOIN e ON e.y IS NULL LIMIT 2);
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT x FROM e FULL OUTER JOIN l ON e.y IS NULL LIMIT 2);
+----
+2
+
+# SEMI
+query I
+SELECT count(*) FROM (SELECT x FROM l SEMI JOIN e ON e.y IS NULL LIMIT 2);
+----
+0
+
+# ANTI
+query I
+SELECT count(*) FROM (SELECT x FROM l ANTI JOIN e ON e.y IS NULL LIMIT 2);
+----
+2
+
+# MARK
+query I
+SELECT count(m) FROM (SELECT x IN (SELECT y FROM e) AS m FROM l LIMIT 2);
+----
+2
+
+# FULL OUTER with both sides non-empty and no matches returns L + R rows, which exceeds L * R when one side has one row
+statement ok
+CREATE TABLE one AS SELECT 1 AS a;
+
+statement ok
+CREATE TABLE five AS SELECT range + 100 AS b FROM range(5);
+
+statement ok
+CREATE TABLE two AS SELECT range AS c FROM range(2);
+
+query I
+SELECT count(*) FROM (SELECT * FROM (one FULL OUTER JOIN five ON a = b), two LIMIT 11);
+----
+11
+
+query I
+SELECT count(*) FROM (SELECT * FROM (five FULL OUTER JOIN one ON a = b), two LIMIT 11);
+----
+11
+
+statement ok
+CREATE OR REPLACE TABLE t1(c0 BIGINT NOT NULL);
+
+statement ok
+CREATE TABLE t2(c0 REAL DEFAULT(NULL), c1 BIGINT DEFAULT(NULL));
+
+statement ok
+CREATE TABLE t3(c0 BOOLEAN UNIQUE DEFAULT(NULL), PRIMARY KEY(c0));
+
+statement ok
+INSERT INTO t1 VALUES (-1887706000), (1468800000);
+
+statement ok
+INSERT INTO t2(c0) VALUES (467425324);
+
+statement ok
+INSERT INTO t2(c0) VALUES (1217498495);
+
+query I
+SELECT t1.c0 FROM t1 WHERE NOT EXISTS (SELECT 1 FROM (t2 LEFT JOIN t3 ON ((t3.c0) IS NULL)) WHERE t2.c0);
+----
+
+
