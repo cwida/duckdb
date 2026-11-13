@@ -33,7 +33,6 @@
 #include "column_reader.hpp"
 #include "parquet_page_index.hpp"
 #include "duckdb/common/allocator.hpp"
-#include "duckdb/common/mutex.hpp"
 #include "parquet_prefetch_cost_model.hpp"
 #include "parquet_file_metadata_cache.hpp"
 #include "parquet_rle_bp_decoder.hpp"

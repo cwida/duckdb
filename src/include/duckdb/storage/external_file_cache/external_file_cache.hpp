@@ -15,7 +15,6 @@
 #include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/pair.hpp"
-#include "duckdb/common/vector.hpp"
 #include "duckdb/common/shared_ptr_ipp.hpp"
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/thread_annotation.hpp"
