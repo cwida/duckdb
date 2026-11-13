@@ -80,11 +80,29 @@ RecursiveCTEKeyedProperties RecursiveCTEKeyedProperties::Derive(const PhysicalRe
 			break;
 		}
 	}
+	// A declared state projection reads the finalized value straight from the frozen aggregate state, so its
+	// column needs no region slot. Only constant-size results qualify: a projected string would expose
+	// state-owned bytes whose lifetime the readers do not control.
+	result.state_projections.resize(op.payload_aggregates.size());
+	if (result.materialize_finalized_values) {
+		for (idx_t payload_idx = 0; payload_idx < op.payload_aggregates.size(); payload_idx++) {
+			auto &function = op.payload_aggregates[payload_idx]->Cast<BoundAggregateExpression>().Function();
+			const auto &projection = function.GetStateProjection();
+			if (projection.mode == AggregateStateProjection::Mode::NONE ||
+			    !TypeIsConstantSize(op.aggregate_types[payload_idx].InternalType())) {
+				continue;
+			}
+			result.state_projections[payload_idx] = projection;
+		}
+	}
 	// The candidate-reuse paths skip the commit finalization, so the candidates themselves must be scatterable
-	// into the finalized values through each aggregate's first input.
+	// into the finalized values through each materialized aggregate's first input.
 	if (result.materialize_finalized_values && result.can_reuse_new_group_candidates) {
-		for (auto &payload_aggregate : op.payload_aggregates) {
-			if (payload_aggregate->Cast<BoundAggregateExpression>().GetChildren().empty()) {
+		for (idx_t payload_idx = 0; payload_idx < op.payload_aggregates.size(); payload_idx++) {
+			if (result.state_projections[payload_idx].mode != AggregateStateProjection::Mode::NONE) {
+				continue;
+			}
+			if (op.payload_aggregates[payload_idx]->Cast<BoundAggregateExpression>().GetChildren().empty()) {
 				result.materialize_finalized_values = false;
 				break;
 			}
@@ -105,31 +123,57 @@ RecursiveCTEFinalizedValues::RecursiveCTEFinalizedValues(ClientContext &context,
 	if (!enabled) {
 		return;
 	}
-	// One validity byte per aggregate, then the value slots in aggregate order.
-	idx_t offset = op.aggregate_types.size();
+	projections = op.keyed.state_projections;
+	D_ASSERT(projections.size() == op.aggregate_types.size());
+	// One validity byte per materialized aggregate, then the value slots in aggregate order. Projected
+	// aggregates read value and validity from their state and occupy no region bytes.
+	idx_t materialized_count = 0;
+	for (auto &projection : projections) {
+		materialized_count += projection.mode == AggregateStateProjection::Mode::NONE ? 1 : 0;
+	}
+	idx_t offset = materialized_count;
+	idx_t validity_index = 0;
 	value_types.reserve(op.aggregate_types.size());
 	value_offsets.reserve(op.aggregate_types.size());
+	validity_indexes.reserve(op.aggregate_types.size());
 	identity_source_columns.reserve(op.aggregate_types.size());
-	for (auto &aggregate_type : op.aggregate_types) {
+	for (idx_t agg_idx = 0; agg_idx < op.aggregate_types.size(); agg_idx++) {
+		auto &aggregate_type = op.aggregate_types[agg_idx];
 		identity_source_columns.push_back(value_types.size());
 		value_types.push_back(aggregate_type.InternalType());
+		if (projections[agg_idx].mode != AggregateStateProjection::Mode::NONE) {
+			projected_columns.push_back(agg_idx);
+			value_offsets.push_back(DConstants::INVALID_INDEX);
+			validity_indexes.push_back(DConstants::INVALID_INDEX);
+			continue;
+		}
 		value_offsets.push_back(offset);
+		validity_indexes.push_back(validity_index++);
 		offset += FinalizedValueSlotWidth(aggregate_type);
+		has_materialized_varchar = has_materialized_varchar || aggregate_type.InternalType() == PhysicalType::VARCHAR;
 	}
-	region_width = offset;
+	region_width = materialized_count == 0 ? 0 : offset;
 	// The scratch tables size their trailing region through RegionWidthFor, so the layouts must agree.
 	D_ASSERT(region_width == RegionWidthFor(op));
-	// The buffer allocator keeps the finalized strings inside the memory accounting, like the states they mirror.
-	auto heap_holder = make_uniq<StringHeapHolder>(BufferAllocator::Get(context));
-	string_heap = heap_holder->heap;
-	string_arena = make_buffer<AuxiliaryDataSet>();
-	string_arena->data.push_back(std::move(heap_holder));
+	if (has_materialized_varchar) {
+		// The buffer allocator keeps the finalized strings inside the memory accounting, like the states they mirror.
+		auto heap_holder = make_uniq<StringHeapHolder>(BufferAllocator::Get(context));
+		string_heap = heap_holder->heap;
+		string_arena = make_buffer<AuxiliaryDataSet>();
+		string_arena->data.push_back(std::move(heap_holder));
+	}
 	idx_t child_offset = 0;
-	for (auto &payload_aggregate : op.payload_aggregates) {
-		auto &children = payload_aggregate->Cast<BoundAggregateExpression>().GetChildren();
+	for (idx_t agg_idx = 0; agg_idx < op.payload_aggregates.size(); agg_idx++) {
+		auto &children = op.payload_aggregates[agg_idx]->Cast<BoundAggregateExpression>().GetChildren();
 		if (children.empty()) {
-			candidate_source_columns.clear();
-			break;
+			// A projected aggregate without inputs never scatters candidates; a materialized one disables the
+			// candidate paths at plan time before this constructor runs.
+			if (projections[agg_idx].mode == AggregateStateProjection::Mode::NONE) {
+				candidate_source_columns.clear();
+				break;
+			}
+			candidate_source_columns.push_back(DConstants::INVALID_INDEX);
+			continue;
 		}
 		candidate_source_columns.push_back(child_offset);
 		child_offset += children.size();
@@ -140,16 +184,38 @@ idx_t RecursiveCTEFinalizedValues::RegionWidthFor(const PhysicalRecursiveCTE &op
 	if (!op.UsingKey() || !op.keyed.materialize_finalized_values) {
 		return 0;
 	}
-	idx_t width = op.aggregate_types.size();
-	for (auto &aggregate_type : op.aggregate_types) {
-		width += FinalizedValueSlotWidth(aggregate_type);
+	idx_t width = 0;
+	idx_t materialized_count = 0;
+	for (idx_t agg_idx = 0; agg_idx < op.aggregate_types.size(); agg_idx++) {
+		if (op.keyed.state_projections[agg_idx].mode != AggregateStateProjection::Mode::NONE) {
+			continue;
+		}
+		materialized_count++;
+		width += FinalizedValueSlotWidth(op.aggregate_types[agg_idx]);
 	}
-	return width;
+	return materialized_count == 0 ? 0 : width + materialized_count;
 }
 
 void RecursiveCTEFinalizedValues::BindLayout(const TupleDataLayout &layout) {
 	D_ASSERT(enabled && layout.GetTrailingRegionWidth() >= region_width);
-	region_offset = layout.GetTrailingRegionOffset();
+	if (region_width > 0) {
+		region_offset = layout.GetTrailingRegionOffset();
+	}
+	auto &aggregates = layout.GetAggregates();
+	D_ASSERT(aggregates.size() == value_types.size());
+	auto state_offset = layout.GetAggrOffset();
+	state_offsets.clear();
+	state_offsets.reserve(aggregates.size());
+	for (idx_t agg_idx = 0; agg_idx < aggregates.size(); agg_idx++) {
+		state_offsets.push_back(state_offset);
+		// A projected value and its flags must lie inside the aggregate's state
+		D_ASSERT(projections[agg_idx].mode == AggregateStateProjection::Mode::NONE ||
+		         (projections[agg_idx].value_offset + GetTypeIdSize(value_types[agg_idx]) <=
+		              aggregates[agg_idx].payload_size &&
+		          projections[agg_idx].set_offset < aggregates[agg_idx].payload_size &&
+		          projections[agg_idx].valid_offset < aggregates[agg_idx].payload_size));
+		state_offset += aggregates[agg_idx].payload_size;
+	}
 }
 
 string_t RecursiveCTEFinalizedValues::CopyStringToArena(string_t value) {
@@ -161,18 +227,18 @@ string_t RecursiveCTEFinalizedValues::CopyStringToArena(string_t value) {
 template <idx_t WIDTH>
 static void ScatterFixedSlots(const data_ptr_t *address_data, const SelectionVector &sel, idx_t count,
                               const UnifiedVectorFormat &source_format, idx_t region_offset, idx_t slot_offset,
-                              idx_t agg_idx) {
+                              idx_t validity_index) {
 	const auto source_data = source_format.data;
 	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
 		const auto value_idx = sel.get_index(row_idx);
 		const auto region = address_data[value_idx] + region_offset;
 		const auto source_idx = source_format.sel->get_index(value_idx);
 		if (!source_format.validity.RowIsValid(source_idx)) {
-			region[agg_idx] = 0;
+			region[validity_index] = 0;
 			continue;
 		}
 		memcpy(region + slot_offset, source_data + source_idx * WIDTH, WIDTH);
-		region[agg_idx] = 1;
+		region[validity_index] = 1;
 	}
 }
 
@@ -184,8 +250,13 @@ void RecursiveCTEFinalizedValues::ScatterColumns(const Vector &addresses, const 
 	D_ASSERT(addresses.GetVectorType() == VectorType::FLAT_VECTOR);
 	auto address_data = FlatVector::GetData<data_ptr_t>(addresses);
 	for (idx_t agg_idx = 0; agg_idx < value_types.size(); agg_idx++) {
+		if (projections[agg_idx].mode != AggregateStateProjection::Mode::NONE) {
+			// The state itself holds this column's finalized value
+			continue;
+		}
 		auto &source = values.data[source_columns[agg_idx]];
 		const auto slot_offset = value_offsets[agg_idx];
+		const auto validity_index = validity_indexes[agg_idx];
 		const auto slot_width = GetTypeIdSize(value_types[agg_idx]);
 		UnifiedVectorFormat source_format;
 		source.ToUnifiedFormat(source_format);
@@ -195,7 +266,7 @@ void RecursiveCTEFinalizedValues::ScatterColumns(const Vector &addresses, const 
 				const auto value_idx = sel.get_index(row_idx);
 				const auto region = address_data[value_idx] + region_offset;
 				const auto source_idx = source_format.sel->get_index(value_idx);
-				const auto slot_valid = region[agg_idx] != 0;
+				const auto slot_valid = region[validity_index] != 0;
 				if (!source_format.validity.RowIsValid(source_idx)) {
 					if (slot_valid) {
 						// Account for the string bytes this slot stops referencing.
@@ -206,7 +277,7 @@ void RecursiveCTEFinalizedValues::ScatterColumns(const Vector &addresses, const 
 							string_live_bytes -= MinValue<idx_t>(string_live_bytes, previous_size);
 						}
 					}
-					region[agg_idx] = 0;
+					region[validity_index] = 0;
 					continue;
 				}
 				auto value = reinterpret_cast<const string_t *>(source_data)[source_idx];
@@ -227,25 +298,25 @@ void RecursiveCTEFinalizedValues::ScatterColumns(const Vector &addresses, const 
 					value = CopyStringToArena(value);
 				}
 				Store<string_t>(value, region + slot_offset);
-				region[agg_idx] = 1;
+				region[validity_index] = 1;
 			}
 			continue;
 		}
 		switch (slot_width) {
 		case 1:
-			ScatterFixedSlots<1>(address_data, sel, count, source_format, region_offset, slot_offset, agg_idx);
+			ScatterFixedSlots<1>(address_data, sel, count, source_format, region_offset, slot_offset, validity_index);
 			break;
 		case 2:
-			ScatterFixedSlots<2>(address_data, sel, count, source_format, region_offset, slot_offset, agg_idx);
+			ScatterFixedSlots<2>(address_data, sel, count, source_format, region_offset, slot_offset, validity_index);
 			break;
 		case 4:
-			ScatterFixedSlots<4>(address_data, sel, count, source_format, region_offset, slot_offset, agg_idx);
+			ScatterFixedSlots<4>(address_data, sel, count, source_format, region_offset, slot_offset, validity_index);
 			break;
 		case 8:
-			ScatterFixedSlots<8>(address_data, sel, count, source_format, region_offset, slot_offset, agg_idx);
+			ScatterFixedSlots<8>(address_data, sel, count, source_format, region_offset, slot_offset, validity_index);
 			break;
 		case 16:
-			ScatterFixedSlots<16>(address_data, sel, count, source_format, region_offset, slot_offset, agg_idx);
+			ScatterFixedSlots<16>(address_data, sel, count, source_format, region_offset, slot_offset, validity_index);
 			break;
 		default:
 			throw InternalException("Unsupported finalized value slot width");
@@ -261,17 +332,22 @@ void RecursiveCTEFinalizedValues::Scatter(const Vector &addresses, const Selecti
 
 void RecursiveCTEFinalizedValues::ScatterCandidates(const Vector &addresses, const SelectionVector &sel, idx_t count,
                                                     DataChunk &payload) {
-	D_ASSERT(enabled && !candidate_source_columns.empty());
+	D_ASSERT(enabled);
+	if (candidate_source_columns.empty()) {
+		// Every column projects from its state, so the candidates have nothing to publish
+		D_ASSERT(region_width == 0);
+		return;
+	}
 	ScatterColumns(addresses, sel, count, payload, candidate_source_columns);
 }
 
 template <idx_t WIDTH>
 static void GatherFixedSlots(const data_ptr_t *address_data, const SelectionVector &sel, idx_t count,
                              data_ptr_t target_data, ValidityMask &target_validity, idx_t region_offset,
-                             idx_t slot_offset, idx_t agg_idx) {
+                             idx_t slot_offset, idx_t validity_index) {
 	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
 		const auto region = address_data[sel.get_index(row_idx)] + region_offset;
-		if (region[agg_idx] == 0) {
+		if (region[validity_index] == 0) {
 			target_validity.SetInvalid(row_idx);
 			continue;
 		}
@@ -279,23 +355,98 @@ static void GatherFixedSlots(const data_ptr_t *address_data, const SelectionVect
 	}
 }
 
-void RecursiveCTEFinalizedValues::Gather(const Vector &addresses, const SelectionVector &sel, idx_t count,
-                                         DataChunk &values) {
+template <idx_t WIDTH, AggregateStateProjection::Mode MODE>
+static void ProjectStateSlots(const data_ptr_t *address_data, const SelectionVector &sel, idx_t count,
+                              data_ptr_t target_data, ValidityMask &target_validity, idx_t state_offset,
+                              const AggregateStateProjection &projection) {
+	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
+		const auto state = address_data[sel.get_index(row_idx)] + state_offset;
+		if (MODE != AggregateStateProjection::Mode::VALUE && state[projection.set_offset] == 0) {
+			target_validity.SetInvalid(row_idx);
+			continue;
+		}
+		if (MODE == AggregateStateProjection::Mode::VALUE_IF_SET_AND_VALID && state[projection.valid_offset] == 0) {
+			target_validity.SetInvalid(row_idx);
+			continue;
+		}
+		memcpy(target_data + row_idx * WIDTH, state + projection.value_offset, WIDTH);
+	}
+}
+
+template <idx_t WIDTH>
+static void ProjectStateSlotsWidth(const data_ptr_t *address_data, const SelectionVector &sel, idx_t count,
+                                   data_ptr_t target_data, ValidityMask &target_validity, idx_t state_offset,
+                                   const AggregateStateProjection &projection) {
+	switch (projection.mode) {
+	case AggregateStateProjection::Mode::VALUE:
+		ProjectStateSlots<WIDTH, AggregateStateProjection::Mode::VALUE>(address_data, sel, count, target_data,
+		                                                                target_validity, state_offset, projection);
+		break;
+	case AggregateStateProjection::Mode::VALUE_IF_SET:
+		ProjectStateSlots<WIDTH, AggregateStateProjection::Mode::VALUE_IF_SET>(
+		    address_data, sel, count, target_data, target_validity, state_offset, projection);
+		break;
+	case AggregateStateProjection::Mode::VALUE_IF_SET_AND_VALID:
+		ProjectStateSlots<WIDTH, AggregateStateProjection::Mode::VALUE_IF_SET_AND_VALID>(
+		    address_data, sel, count, target_data, target_validity, state_offset, projection);
+		break;
+	default:
+		throw InternalException("Unsupported aggregate state projection mode");
+	}
+}
+
+void RecursiveCTEFinalizedValues::GatherColumns(const Vector &addresses, const SelectionVector &sel, idx_t count,
+                                                DataChunk &values, bool include_projected, bool include_materialized) {
 	D_ASSERT(enabled && values.ColumnCount() == value_types.size());
 	D_ASSERT(addresses.GetVectorType() == VectorType::FLAT_VECTOR);
 	auto address_data = FlatVector::GetData<data_ptr_t>(addresses);
 	for (idx_t agg_idx = 0; agg_idx < value_types.size(); agg_idx++) {
+		const auto projected = projections[agg_idx].mode != AggregateStateProjection::Mode::NONE;
+		if (projected ? !include_projected : !include_materialized) {
+			continue;
+		}
 		auto &target = values.data[agg_idx];
 		target.SetVectorType(VectorType::FLAT_VECTOR);
 		auto &target_validity = FlatVector::ValidityMutable(target);
-		const auto slot_offset = value_offsets[agg_idx];
 		const auto slot_width = GetTypeIdSize(value_types[agg_idx]);
 		const auto target_data = FlatVector::GetDataMutable(target);
+		if (projected) {
+			const auto state_offset = state_offsets[agg_idx];
+			auto &projection = projections[agg_idx];
+			switch (slot_width) {
+			case 1:
+				ProjectStateSlotsWidth<1>(address_data, sel, count, target_data, target_validity, state_offset,
+				                          projection);
+				break;
+			case 2:
+				ProjectStateSlotsWidth<2>(address_data, sel, count, target_data, target_validity, state_offset,
+				                          projection);
+				break;
+			case 4:
+				ProjectStateSlotsWidth<4>(address_data, sel, count, target_data, target_validity, state_offset,
+				                          projection);
+				break;
+			case 8:
+				ProjectStateSlotsWidth<8>(address_data, sel, count, target_data, target_validity, state_offset,
+				                          projection);
+				break;
+			case 16:
+				ProjectStateSlotsWidth<16>(address_data, sel, count, target_data, target_validity, state_offset,
+				                           projection);
+				break;
+			default:
+				throw InternalException("Unsupported projected value width");
+			}
+			FlatVector::SetSize(target, count);
+			continue;
+		}
+		const auto slot_offset = value_offsets[agg_idx];
+		const auto validity_index = validity_indexes[agg_idx];
 		if (value_types[agg_idx] == PhysicalType::VARCHAR) {
 			bool references_arena = false;
 			for (idx_t row_idx = 0; row_idx < count; row_idx++) {
 				const auto region = address_data[sel.get_index(row_idx)] + region_offset;
-				if (region[agg_idx] == 0) {
+				if (region[validity_index] == 0) {
 					target_validity.SetInvalid(row_idx);
 					continue;
 				}
@@ -314,34 +465,54 @@ void RecursiveCTEFinalizedValues::Gather(const Vector &addresses, const Selectio
 		switch (slot_width) {
 		case 1:
 			GatherFixedSlots<1>(address_data, sel, count, target_data, target_validity, region_offset, slot_offset,
-			                    agg_idx);
+			                    validity_index);
 			break;
 		case 2:
 			GatherFixedSlots<2>(address_data, sel, count, target_data, target_validity, region_offset, slot_offset,
-			                    agg_idx);
+			                    validity_index);
 			break;
 		case 4:
 			GatherFixedSlots<4>(address_data, sel, count, target_data, target_validity, region_offset, slot_offset,
-			                    agg_idx);
+			                    validity_index);
 			break;
 		case 8:
 			GatherFixedSlots<8>(address_data, sel, count, target_data, target_validity, region_offset, slot_offset,
-			                    agg_idx);
+			                    validity_index);
 			break;
 		case 16:
 			GatherFixedSlots<16>(address_data, sel, count, target_data, target_validity, region_offset, slot_offset,
-			                     agg_idx);
+			                     validity_index);
 			break;
 		default:
 			throw InternalException("Unsupported finalized value slot width");
 		}
 		FlatVector::SetSize(target, count);
 	}
+}
+
+void RecursiveCTEFinalizedValues::Gather(const Vector &addresses, const SelectionVector &sel, idx_t count,
+                                         DataChunk &values) {
+	GatherColumns(addresses, sel, count, values, true, true);
 	values.CheckCardinality(count);
 }
 
+void RecursiveCTEFinalizedValues::GatherProjected(const Vector &addresses, const SelectionVector &sel, idx_t count,
+                                                  DataChunk &values) {
+	GatherColumns(addresses, sel, count, values, true, false);
+}
+
+void RecursiveCTEFinalizedValues::AssembleOldPayloads(const Vector &addresses, idx_t count,
+                                                      DataChunk &previous_scan_rows, DataChunk &target) {
+	GatherColumns(addresses, *FlatVector::IncrementalSelectionVector(), count, target, false, true);
+	for (idx_t projected_idx = 0; projected_idx < projected_columns.size(); projected_idx++) {
+		target.data[projected_columns[projected_idx]].Reference(previous_scan_rows.data[1 + projected_idx]);
+	}
+	target.CheckCardinality(count);
+}
+
 void RecursiveCTEFinalizedValues::MaybeCompact(GroupedAggregateHashTable &target) {
-	if (!enabled || string_garbage_bytes <= string_live_bytes || string_garbage_bytes < 262144) {
+	if (!enabled || !has_materialized_varchar || string_garbage_bytes <= string_live_bytes ||
+	    string_garbage_bytes < 262144) {
 		return;
 	}
 	auto fresh_holder = make_uniq<StringHeapHolder>(string_heap->GetAllocator().GetUnderlyingAllocator());
@@ -361,13 +532,15 @@ void RecursiveCTEFinalizedValues::MaybeCompact(GroupedAggregateHashTable &target
 		}
 		auto row_locations = FlatVector::GetData<data_ptr_t>(scan_state.scan_states.chunk_state.row_locations);
 		for (idx_t agg_idx = 0; agg_idx < value_types.size(); agg_idx++) {
-			if (value_types[agg_idx] != PhysicalType::VARCHAR) {
+			if (value_types[agg_idx] != PhysicalType::VARCHAR ||
+			    projections[agg_idx].mode != AggregateStateProjection::Mode::NONE) {
 				continue;
 			}
 			const auto slot_offset = value_offsets[agg_idx];
+			const auto validity_index = validity_indexes[agg_idx];
 			for (idx_t row_idx = 0; row_idx < row_count; row_idx++) {
 				const auto region = row_locations[row_idx] + region_offset;
-				if (region[agg_idx] == 0) {
+				if (region[validity_index] == 0) {
 					continue;
 				}
 				auto value = Load<string_t>(region + slot_offset);
@@ -459,7 +632,7 @@ RecursiveCTEKeyedState::RecursiveCTEKeyedState(ClientContext &context, const Phy
 		finalized.BindLayout(ht->GetLayout());
 	}
 	if (!op.UnionAll()) {
-		key_delta = make_uniq<RecursiveCTEKeyDeltaState>(context, op, finalized.Enabled());
+		key_delta = make_uniq<RecursiveCTEKeyDeltaState>(context, op, finalized);
 	}
 	for (auto &spec : op.partial_key_index_specs) {
 		partial_key_indexes.push_back(

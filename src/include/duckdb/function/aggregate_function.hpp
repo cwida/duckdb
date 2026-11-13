@@ -197,6 +197,42 @@ enum class AggregateDestructorType {
 	LEGACY
 };
 
+//! How a finalized value derives from the aggregate state in an AggregateStateProjection
+enum class AggregateStateProjectionMode : uint8_t {
+	//! The finalizer is not a plain state-field copy
+	NONE,
+	//! target = value at value_offset; always valid
+	VALUE,
+	//! valid iff the bool at set_offset, then target = value at value_offset
+	VALUE_IF_SET,
+	//! valid iff the bool at set_offset and the bool at valid_offset, then target = value at value_offset
+	VALUE_IF_SET_AND_VALID
+};
+
+//! Describes a finalizer that only copies a state field: the result is the value at value_offset, valid when the
+//! listed flag bytes allow it. Declared at registration by implementations whose Finalize does nothing else, so a
+//! reader of a frozen state may load the finalized value directly instead of invoking the callback. Replacing the
+//! finalize callback clears the declaration.
+struct AggregateStateProjection {
+	using Mode = AggregateStateProjectionMode;
+
+	Mode mode = Mode::NONE;
+	uint16_t value_offset = 0;
+	uint16_t set_offset = 0;
+	uint16_t valid_offset = 0;
+
+	static AggregateStateProjection Value(idx_t value_offset) {
+		return {Mode::VALUE, NumericCast<uint16_t>(value_offset), 0, 0};
+	}
+	static AggregateStateProjection ValueIfSet(idx_t value_offset, idx_t set_offset) {
+		return {Mode::VALUE_IF_SET, NumericCast<uint16_t>(value_offset), NumericCast<uint16_t>(set_offset), 0};
+	}
+	static AggregateStateProjection ValueIfSetAndValid(idx_t value_offset, idx_t set_offset, idx_t valid_offset) {
+		return {Mode::VALUE_IF_SET_AND_VALID, NumericCast<uint16_t>(value_offset), NumericCast<uint16_t>(set_offset),
+		        NumericCast<uint16_t>(valid_offset)};
+	}
+};
+
 class AggregateFunctionCallbacks {
 public:
 	// clang-format off
@@ -231,9 +267,12 @@ public:
 	aggregate_combine_t GetStateCombineCallback() const { return combine; }
 	bool HasStateCombineCallback() const { return combine != nullptr; }
 
-	void SetStateFinalizeCallback(aggregate_finalize_t callback) { finalize = callback; }
+	void SetStateFinalizeCallback(aggregate_finalize_t callback) { finalize = callback; state_projection = AggregateStateProjection(); }
 	aggregate_finalize_t GetStateFinalizeCallback() const { return finalize; }
 	bool HasStateFinalizeCallback() const { return finalize != nullptr; }
+
+	const AggregateStateProjection &GetStateProjection() const { return state_projection; }
+	void SetStateProjection(const AggregateStateProjection &projection) { state_projection = projection; }
 
 	void SetInitLocalStateFinalizeCallback(aggregate_init_local_state_finalize_t callback) { init_local_state_finalize = callback; }
 	aggregate_init_local_state_finalize_t GetInitLocalStateFinalizeCallback() const { return init_local_state_finalize; }
@@ -295,6 +334,8 @@ public:
 	aggregate_combine_t combine = nullptr;
 	//! The hashed aggregate finalization function (may be null, if window is set)
 	aggregate_finalize_t finalize = nullptr;
+	//! How the finalize projects a state field, when it does nothing else; set with the finalize it describes
+	AggregateStateProjection state_projection;
 	//! Initializes the local state used by the finalize (may be null)
 	aggregate_init_local_state_finalize_t init_local_state_finalize = nullptr;
 	//! The clustered aggregate update function (may be null)
@@ -443,7 +484,10 @@ public: // Callbacks
 
 	auto HasStateFinalizeCallback() const -> bool { return callbacks.finalize != nullptr; }
 	auto GetStateFinalizeCallback() const -> aggregate_finalize_t { return callbacks.finalize; }
-	auto SetStateFinalizeCallback(aggregate_finalize_t callback) -> void { callbacks.finalize = callback; }
+	auto SetStateFinalizeCallback(aggregate_finalize_t callback) -> void { callbacks.SetStateFinalizeCallback(callback); }
+
+	auto GetStateProjection() const -> const AggregateStateProjection & { return callbacks.GetStateProjection(); }
+	auto SetStateProjection(const AggregateStateProjection &projection) -> void { callbacks.SetStateProjection(projection); }
 
 	auto HasInitLocalStateFinalizeCallback() const -> bool { return callbacks.init_local_state_finalize != nullptr; }
 	auto GetInitLocalStateFinalizeCallback() const -> aggregate_init_local_state_finalize_t { return callbacks.init_local_state_finalize; }

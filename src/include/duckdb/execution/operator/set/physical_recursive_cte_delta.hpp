@@ -6,6 +6,8 @@
 
 namespace duckdb {
 
+class RecursiveCTEFinalizedValues;
+
 class RecursiveCTEGroupAddressSet {
 public:
 	void Reset();
@@ -21,9 +23,11 @@ private:
 };
 
 struct RecursiveCTEKeyDeltaState {
-	//! With materialized finalized values (address_only_previous) the previous rows carry only group addresses,
-	//! because the old payload values stay readable from the rows themselves until the commit overwrites them
-	RecursiveCTEKeyDeltaState(ClientContext &context, const PhysicalRecursiveCTE &op, bool address_only_previous);
+	//! With materialized finalized values the previous rows carry the group addresses, because the old values of
+	//! materialized columns stay readable from the rows themselves until the commit overwrites them. Projected
+	//! columns live in the states the commit updates, so their old values ride along, captured at snapshot time.
+	RecursiveCTEKeyDeltaState(ClientContext &context, const PhysicalRecursiveCTE &op,
+	                          const RecursiveCTEFinalizedValues &finalized);
 
 	void Reset();
 	void PrepareCollections();

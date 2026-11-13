@@ -1,0 +1,127 @@
+# name: test/sql/cte/recursive_cte_key_identity_projection.test
+# description: Finalized values of identity-finalize aggregates project from the aggregate states
+# group: [cte]
+
+statement ok
+SET max_execution_time=10000;
+
+# An all-identity payload (count, hugeint sum, double sum, min, max, first, last, any_value) keeps no region
+# bytes at all. Recurring reads and the final drain must see every commit's values.
+
+query IIIRIIII
+WITH RECURSIVE t(k, c, s, d, lo, hi, f, l, a) USING KEY
+	(k, count(c), sum(s), sum(d), min(lo), max(hi), first(f), last(l), any_value(a)) AS (
+	SELECT i, 1, i::BIGINT, i::DOUBLE, i, i, i, i, i FROM range(4) r(i)
+	UNION
+	SELECT n.k, 1, 1::BIGINT, 0.5::DOUBLE, n.lo - 1, n.hi + 1, 99, n.l + 10, 123
+	FROM t n WHERE n.hi < n.k + 2
+)
+SELECT k, c, s, d, lo, hi, f, l FROM t ORDER BY k;
+----
+0	3	2	1.0	-2	2	0	20
+1	3	3	2.0	-1	3	1	21
+2	3	4	3.0	0	4	2	22
+3	3	5	4.0	1	5	3	23
+
+# Mixed payloads: the projected sum reads from the state while avg keeps a region slot, and both stay in
+# step across every touched refresh.
+
+query IIR
+WITH RECURSIVE t(k, s, m) USING KEY (k, sum(s), avg(m)) AS (
+	SELECT i % 2, i::BIGINT, i::DOUBLE FROM range(4) r(i)
+	UNION
+	SELECT k, 3::BIGINT, 1.0::DOUBLE FROM t WHERE s < 10
+)
+SELECT k, s, m FROM t ORDER BY k;
+----
+0	11	1.0
+1	10	1.5
+
+# NULL edges of the two-flag projection: first with a recorded NULL stays NULL but set, min over only-NULL
+# inputs stays unset until a later non-NULL update revives it.
+
+query IIII
+WITH RECURSIVE t(k, f, lo, iter) USING KEY (k, first(f), min(lo), max(iter)) AS (
+	SELECT 1, NULL::INTEGER, NULL::INTEGER, 0
+	UNION
+	SELECT k, 7, 42, iter + 1 FROM t WHERE iter < 1
+)
+SELECT k, f IS NULL, lo, iter FROM t;
+----
+1	true	42	1
+
+# The projected value must be the state's latest commit, not a stale copy: the recurring scan of every
+# iteration reads the hugeint sum as it stood after the previous commit.
+
+query II
+WITH RECURSIVE t(k, s) USING KEY (k, sum(s)) AS (
+	SELECT 0, 1::HUGEINT
+	UNION
+	SELECT n.k, 1::HUGEINT FROM t n JOIN recurring.t r USING (k) WHERE r.s < 4
+)
+SELECT k, s FROM t;
+----
+0	4
+
+# Widening and checked sums stay materialized and correct: the integer sum widens to HUGEINT on finalize and
+# the decimal sum keeps its overflow check.
+
+query III
+WITH RECURSIVE t(k, si, sd) USING KEY (k, sum(si), sum(sd)) AS (
+	SELECT i % 2, i::INTEGER, (i % 3)::DECIMAL(4,1) FROM range(6) r(i)
+	UNION
+	SELECT k, 1::INTEGER, 0.1::DECIMAL(4,1) FROM t WHERE si < 8
+)
+SELECT k, si, sd FROM t ORDER BY k;
+----
+0	8	3.2
+1	9	3.0
+
+statement error
+WITH RECURSIVE t(k, sd) USING KEY (k, sum(sd)) AS (
+	SELECT 1, 6e37::DECIMAL(38,0)
+	UNION
+	SELECT k, 6e37::DECIMAL(38,0) FROM t WHERE sd < 6.5e37::DECIMAL(38,0)
+)
+SELECT k, sd FROM t;
+----
+<REGEX>:.*Overflow in SUM of DECIMAL.*
+
+# Interval min/max project with their 16-byte states.
+
+query III
+WITH RECURSIVE t(k, lo, hi) USING KEY (k, min(lo), max(hi)) AS (
+	SELECT 1, INTERVAL 5 DAYS, INTERVAL 5 DAYS
+	UNION
+	SELECT k, lo - INTERVAL 1 DAY, hi + INTERVAL 1 DAY FROM t WHERE hi < INTERVAL 8 DAYS
+)
+SELECT k, lo, hi FROM t;
+----
+1	2 days	8 days
+
+# A touched key whose new value is comparator-equal but representation-distinct publishes the latest state:
+# last replaces -0.0 with 0.0, the frontier stops, and the projected read sees the stored 0.0.
+
+query II
+WITH RECURSIVE t(k, v) USING KEY (k, last(v)) AS (
+	SELECT 1, -0.0::DOUBLE
+	UNION
+	SELECT k, 0.0::DOUBLE FROM t WHERE k = 1
+)
+SELECT k, signbit(v) FROM t;
+----
+1	false
+
+# Direct key probes gather projected values per match, duplicates included.
+
+query II
+WITH RECURSIVE t(k, s) USING KEY (k, sum(s)) AS (
+	SELECT i, (i + 1)::BIGINT FROM range(2) r(i)
+	UNION
+	SELECT n.k, 1::BIGINT FROM (SELECT k FROM t UNION ALL SELECT k FROM t) n
+	JOIN recurring.t r ON n.k = r.k WHERE r.s < 5
+)
+SELECT k, s FROM t ORDER BY k;
+----
+0	5
+1	6

@@ -8,10 +8,16 @@
 
 namespace duckdb {
 
-static vector<LogicalType> GetPreviousStateTypes(const PhysicalRecursiveCTE &op, bool address_only) {
+static vector<LogicalType> GetPreviousStateTypes(const PhysicalRecursiveCTE &op,
+                                                 const RecursiveCTEFinalizedValues &finalized) {
 	vector<LogicalType> types {LogicalType::POINTER};
-	if (!address_only) {
+	if (!finalized.Enabled()) {
 		types.insert(types.end(), op.payload_types.begin(), op.payload_types.end());
+		return types;
+	}
+	// Projected columns read their old values from the states the commit updates, so the snapshot captures them
+	for (const auto agg_idx : finalized.ProjectedPayloadColumns()) {
+		types.push_back(op.aggregate_types[agg_idx]);
 	}
 	return types;
 }
@@ -81,8 +87,8 @@ bool RecursiveCTEGroupAddressSet::Contains(data_ptr_t address) const {
 }
 
 RecursiveCTEKeyDeltaState::RecursiveCTEKeyDeltaState(ClientContext &context, const PhysicalRecursiveCTE &op,
-                                                     bool address_only_previous)
-    : previous_rows(context, GetPreviousStateTypes(op, address_only_previous)), new_keys(context, op.hash_key_types),
+                                                     const RecursiveCTEFinalizedValues &finalized)
+    : previous_rows(context, GetPreviousStateTypes(op, finalized)), new_keys(context, op.hash_key_types),
       pending_finalized(context, op.aggregate_types), matched_addresses(LogicalType::POINTER),
       finalize_addresses(LogicalType::POINTER), found_groups(STANDARD_VECTOR_SIZE),
       missing_groups(STANDARD_VECTOR_SIZE), changed_groups(STANDARD_VECTOR_SIZE),
@@ -92,9 +98,9 @@ RecursiveCTEKeyDeltaState::RecursiveCTEKeyDeltaState(ClientContext &context, con
 	aggregate_rows.Initialize(Allocator::Get(context), op.aggregate_types);
 	updated_aggregate_rows.Initialize(Allocator::Get(context), op.aggregate_types);
 	result_rows.Initialize(Allocator::Get(context), op.GetTypes());
-	previous_state_rows.Initialize(Allocator::Get(context), GetPreviousStateTypes(op, address_only_previous));
+	previous_state_rows.Initialize(Allocator::Get(context), GetPreviousStateTypes(op, finalized));
 	changed_rows.Initialize(Allocator::Get(context), op.GetTypes());
-	previous_scan_rows.Initialize(Allocator::Get(context), GetPreviousStateTypes(op, address_only_previous));
+	previous_scan_rows.Initialize(Allocator::Get(context), GetPreviousStateTypes(op, finalized));
 	key_scan_rows.Initialize(Allocator::Get(context), op.hash_key_types);
 	vector<LogicalType> comparison_types;
 	comparison_types.reserve(op.payload_types.size() * 2);
@@ -200,6 +206,12 @@ void RecursiveCTEKeyedState::AppendPreviousUsingKeyDeltaRows(Vector &addresses, 
 		for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size(); payload_idx++) {
 			delta.previous_state_rows.data[1 + payload_idx].Reference(delta.aggregate_rows.data[payload_idx]);
 		}
+	} else {
+		const auto &projected_columns = finalized.ProjectedPayloadColumns();
+		for (idx_t projected_idx = 0; projected_idx < projected_columns.size(); projected_idx++) {
+			delta.previous_state_rows.data[1 + projected_idx].Reference(
+			    delta.aggregate_rows.data[projected_columns[projected_idx]]);
+		}
 	}
 	delta.previous_state_rows.CheckCardinality(count);
 	delta.previous_rows.Append(delta.previous_append_state, delta.previous_state_rows);
@@ -213,8 +225,9 @@ void RecursiveCTEKeyedState::SnapshotExistingUsingKeyDeltaAddresses(Vector &addr
 	}
 	CopySelectedAddresses(addresses, *FlatVector::IncrementalSelectionVector(), count, delta.finalize_addresses);
 	if (finalized.Enabled()) {
-		// The rows still hold the finalized values of the previous commit, so the old values stay readable
-		// from the rows until the commit's own scatter and need neither a finalize nor a copy here.
+		// The rows still hold the materialized values of the previous commit, so those old values stay readable
+		// from the rows until the commit's own scatter. Projected values live in the states the update is about
+		// to overwrite, so the snapshot captures them here, before the update runs.
 		if (defer_append) {
 			delta.aggregate_rows.Reset();
 			finalized.Gather(delta.finalize_addresses, *FlatVector::IncrementalSelectionVector(), count,
@@ -222,6 +235,11 @@ void RecursiveCTEKeyedState::SnapshotExistingUsingKeyDeltaAddresses(Vector &addr
 			delta.deferred_previous_rows = true;
 			delta.deferred_count = count;
 			return;
+		}
+		if (finalized.HasProjectedColumns()) {
+			delta.aggregate_rows.Reset();
+			finalized.GatherProjected(delta.finalize_addresses, *FlatVector::IncrementalSelectionVector(), count,
+			                          delta.aggregate_rows);
 		}
 		AppendPreviousUsingKeyDeltaRows(addresses, count);
 		return;
@@ -436,8 +454,8 @@ bool RecursiveCTEKeyedState::TryReuseChangedGroupCandidates(idx_t candidate_coun
 		                      delta.finalize_addresses);
 		if (buffer_finalized) {
 			delta.updated_aggregate_rows.Reset();
-			finalized.Gather(delta.finalize_addresses, *FlatVector::IncrementalSelectionVector(), row_count,
-			                 delta.updated_aggregate_rows);
+			finalized.AssembleOldPayloads(delta.finalize_addresses, row_count, delta.previous_scan_rows,
+			                              delta.updated_aggregate_rows);
 		}
 		FinalizeAggregateRows(delta.row_state, delta.finalize_addresses, delta.aggregate_rows, row_count);
 
@@ -496,13 +514,14 @@ idx_t RecursiveCTEKeyedState::FinalizeUsingKeyDelta(bool update_partial_indexes,
 		                 delta.key_scan_rows);
 		CopySelectedAddresses(group_addresses, *FlatVector::IncrementalSelectionVector(), row_count,
 		                      delta.finalize_addresses);
-		// With materialized values the rows still hold the previous commit's finalized values: read the old
-		// values before this chunk's scatter overwrites them.
+		// With materialized values the rows still hold the previous commit's values: read the old materialized
+		// values before this chunk's scatter overwrites them. Projected old values were captured at snapshot
+		// time and ride in the previous rows.
 		const auto read_old_from_rows = finalized.Enabled();
 		if (read_old_from_rows) {
 			delta.updated_aggregate_rows.Reset();
-			finalized.Gather(delta.finalize_addresses, *FlatVector::IncrementalSelectionVector(), row_count,
-			                 delta.updated_aggregate_rows);
+			finalized.AssembleOldPayloads(delta.finalize_addresses, row_count, delta.previous_scan_rows,
+			                              delta.updated_aggregate_rows);
 		}
 		FinalizeStateRowsFromStates(delta.row_state, delta.finalize_addresses, delta.key_scan_rows,
 		                            delta.aggregate_rows, delta.result_rows);
