@@ -221,20 +221,17 @@ static bool ListToArrayCast(Vector &source, Vector &result, idx_t count, CastPar
 
 		CastParameters child_parameters(parameters, cast_data.child_cast_info.GetCastData(), parameters.local_state);
 
+		Vector source_child_flat(source_cc.GetType(), array_size);
 		if (ldata.offset == 0) {
-			// Fast path: offset is zero, we can just cast `array_size` elements of the child vectors directly
-			// Since the list was constant, there can only be one sequence of data in the child vector
-			return cast_data.child_cast_info.Cast(source_cc, result_cc, array_size, child_parameters);
+			VectorOperations::Copy(source_cc, source_child_flat, array_size, 0, 0);
+		} else {
+			VectorOperations::Copy(source_cc, source_child_flat, ldata.offset + array_size, ldata.offset, 0);
 		}
 
-		// Else, we need to copy the range we want to cast to a new vector and cast that
-		// In theory we could slice the source child to create a dictionary, but we would then have to flatten the
-		// result child which is going to allocate a temp vector and perform a copy anyway. Since we just want to copy a
-		// single contiguous range with a single offset, this is simpler.
-
-		Vector payload_vector(source_cc.GetType(), array_size);
-		VectorOperations::Copy(source_cc, payload_vector, ldata.offset + array_size, ldata.offset, 0);
-		return cast_data.child_cast_info.Cast(payload_vector, result_cc, array_size, child_parameters);
+		Vector cast_result(result_cc.GetType(), array_size);
+		bool ok = cast_data.child_cast_info.Cast(source_child_flat, cast_result, array_size, child_parameters);
+		VectorOperations::Copy(cast_result, result_cc, array_size, 0, 0);
+		return ok;
 
 	} else {
 		source.Flatten();
@@ -282,19 +279,19 @@ static bool ListToArrayCast(Vector &source, Vector &result, idx_t count, CastPar
 		// We can just cast the child vector directly
 		// Note: Its worth doing a CheckAllValid here, the slow path is significantly more expensive
 		if (FlatVector::ValidityMutable(result).CheckAllValid(count)) {
-			// Cast the entries the lists actually point at: the source child's size is unrelated to
-			// array_size * count, so casting the first child_count entries can both overrun the child and
-			// touch entries that no list references.
-			Vector source_slice(source_cc, child_sel, child_count);
-			Vector payload_vector(result_cc.GetType(), child_count);
+			// Gather the source elements the lists point at into a contiguous flat vector.
+			// Using a dictionary slice here would break when the child cast is a nop
+			// (NopCast References the source, then SetVectorSize rejects the non-flat buffer).
+			Vector source_flat(source_cc.GetType(), child_count);
+			VectorOperations::Copy(source_cc, source_flat, child_sel, child_count, 0, 0);
 
-			bool ok = cast_data.child_cast_info.Cast(source_slice, payload_vector, child_count, child_parameters);
+			Vector cast_result(result_cc.GetType(), child_count);
+			bool ok = cast_data.child_cast_info.Cast(source_flat, cast_result, child_count, child_parameters);
 			if (all_ok && !ok) {
 				all_ok = false;
 				HandleCastError::AssignError(*child_parameters.error_message, parameters);
 			}
-			// The slice already put the entries in list order, so this is a straight copy
-			VectorOperations::Copy(payload_vector, result_cc, child_count, 0, 0);
+			VectorOperations::Copy(cast_result, result_cc, child_count, 0, 0);
 			return all_ok;
 		}
 

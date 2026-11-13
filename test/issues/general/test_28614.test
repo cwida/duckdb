@@ -1,0 +1,66 @@
+# name: test/issues/general/test_28614.test
+# description: Correlated TRY_CAST from LIST to ARRAY with non-flat vector types
+# group: [general]
+
+# The correlated predicate causes TEST_VECTOR_TYPES to emit dict/seq vectors
+# through a per-row re-execution. ListToArrayCast used to build a dictionary
+# slice for the child cast; when that cast was a nop it Referenced the slice
+# and SetVectorSize rejected the non-flat buffer.
+
+query I sort
+SELECT o.a
+FROM (VALUES (0), (1), (2), (3)) AS o(a)
+WHERE (
+    SELECT COUNT(*)
+    FROM (
+        SELECT DISTINCT TRY_CAST(test_vector AS INT[2])
+        FROM TEST_VECTOR_TYPES(NULL::INT[])
+        WHERE o.a >= 0
+    ) AS s
+) = 3;
+----
+0
+1
+2
+3
+
+# Same query with optimizer disabled
+statement ok
+PRAGMA disable_optimizer;
+
+query I sort
+SELECT o.a
+FROM (VALUES (0), (1), (2), (3)) AS o(a)
+WHERE (
+    SELECT COUNT(*)
+    FROM (
+        SELECT DISTINCT TRY_CAST(test_vector AS INT[2])
+        FROM TEST_VECTOR_TYPES(NULL::INT[])
+        WHERE o.a >= 0
+    ) AS s
+) = 3;
+----
+0
+1
+2
+3
+
+statement ok
+PRAGMA enable_optimizer;
+
+# Non-correlated variant (control)
+query I sort
+SELECT o.a
+FROM (VALUES (0), (1), (2), (3)) AS o(a)
+WHERE (
+    SELECT COUNT(*)
+    FROM (
+        SELECT DISTINCT TRY_CAST(test_vector AS INT[2])
+        FROM TEST_VECTOR_TYPES(NULL::INT[])
+    ) AS s
+) = 3;
+----
+0
+1
+2
+3
