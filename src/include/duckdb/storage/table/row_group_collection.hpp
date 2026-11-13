@@ -44,6 +44,8 @@ class TableIOManager;
 class CommitDropState;
 class DataTable;
 class DuckTableEntry;
+class OptimisticDataWriter;
+class RowGroupCollectionAlter;
 class RowGroupIterationHelper;
 class TableScanState;
 class BoundIndex;
@@ -207,12 +209,15 @@ public:
 	bool SupportsPerColumnWrites();
 	const vector<LogicalType> &GetTypes() const;
 
-	shared_ptr<RowGroupCollection> AddColumn(ClientContext &context, ColumnDefinition &new_column,
-	                                         ExpressionExecutor &default_executor);
+	//! With a writer, the new column of each row group that is on disk is written as soon as it is filled
+	unique_ptr<RowGroupCollectionAlter> AddColumn(ClientContext &context, ColumnDefinition &new_column,
+	                                              Expression &default_value, unique_ptr<OptimisticDataWriter> writer);
 	shared_ptr<RowGroupCollection> RemoveColumn(idx_t col_idx);
-	shared_ptr<RowGroupCollection> AlterType(ClientContext &context, idx_t changed_idx, const LogicalType &target_type,
-	                                         vector<StorageIndex> bound_columns, Expression &cast_expr,
-	                                         TransactionData transaction);
+	//! With a writer, the converted column of each row group that is on disk is written as soon as it is filled
+	unique_ptr<RowGroupCollectionAlter> AlterType(ClientContext &context, idx_t changed_idx,
+	                                              const LogicalType &target_type, vector<StorageIndex> bound_columns,
+	                                              Expression &cast_expr, TransactionData transaction,
+	                                              unique_ptr<OptimisticDataWriter> writer);
 	void VerifyNewConstraint(const QueryContext &context, DuckTransaction &transaction, DataTable &parent,
 	                         const BoundConstraint &constraint);
 
@@ -254,6 +259,8 @@ public:
 	}
 
 private:
+	friend class RowGroupCollectionAlter;
+
 	optional_ptr<SegmentNode<RowGroup>> NextUpdateRowGroup(RowGroupSegmentTree &row_groups, row_t *ids, idx_t &pos,
 	                                                       idx_t count) const;
 

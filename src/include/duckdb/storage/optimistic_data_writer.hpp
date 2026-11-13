@@ -47,6 +47,10 @@ public:
 	void WriteNewRowGroup(OptimisticWriteCollection &row_groups, idx_t flushed_row_group_idx);
 	//! Write any unflushed row groups of a collection to disk
 	void WriteUnflushedRowGroups(OptimisticWriteCollection &row_groups);
+	//! Prepare writing single columns of the collection's row groups, returns false if they should stay in memory
+	bool PrepareWriteColumn(const RowGroupCollection &collection);
+	//! Write a single column of a row group to disk after PrepareWriteColumn, can be called from several threads
+	void WriteColumn(RowGroup &row_group, idx_t column_idx);
 	//! Final flush of the optimistic writer - fully flushes the partial block manager
 	void FinalFlush();
 	//! Merge the partially written blocks from one optimistic writer into another

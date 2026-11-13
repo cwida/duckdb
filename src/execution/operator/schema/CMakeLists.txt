@@ -2,6 +2,7 @@ add_library_unity(
   duckdb_operator_schema
   OBJECT
   physical_alter.cpp
+  physical_alter_column.cpp
   physical_attach.cpp
   physical_create_index.cpp
   physical_create_schema.cpp

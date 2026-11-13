@@ -1571,6 +1571,11 @@ RowGroupWriteData RowGroup::WriteToDisk(RowGroupWriteInfo &info) const {
 	return std::move(result[0]);
 }
 
+void RowGroup::WriteColumnToDisk(RowGroupWriteInfo &info, idx_t column_idx) {
+	RowGroupWriteData write_data;
+	columns[column_idx] = CheckpointColumn(*this, column_idx, info, write_data);
+}
+
 idx_t RowGroup::GetCommittedRowCount() {
 	auto vinfo = GetVersionInfo();
 	if (!vinfo) {
@@ -1738,7 +1743,8 @@ RowGroupWriteData RowGroup::WriteToDisk(RowGroupWriter &writer) {
 		if (partial_reuse) {
 			if (!ColumnIsLoaded(column_idx)) {
 				column_has_changes = false;
-			} else if (!columns[column_idx]->HasAnyChanges()) {
+			} else if (!columns[column_idx]->HasAnyChanges() && column_pointers[column_idx].IsValid()) {
+				// only metadata that is on disk can be reused, also for an unchanged column
 				column_has_changes = false;
 			}
 		}
@@ -1984,8 +1990,9 @@ bool RowGroup::HasChanges(VisibilityBound bound) const {
 }
 
 bool RowGroup::IsPersistent() const {
-	for (auto &column : columns) {
-		if (!column->IsPersistent()) {
+	for (idx_t c = 0; c < columns.size(); c++) {
+		// columns that are not loaded are on disk
+		if (ColumnIsLoaded(c) && !columns[c]->IsPersistent()) {
 			// column is not persistent
 			return false;
 		}

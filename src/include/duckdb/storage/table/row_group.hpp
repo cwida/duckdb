@@ -240,6 +240,8 @@ public:
 	//! Write the data inside this RowGroup to disk and return a struct with information about the write
 	//! Including the new RowGroup that contains the columns in their written-to-disk form
 	RowGroupWriteData WriteToDisk(RowGroupWriteInfo &info) const;
+	//! Write a single column to disk and replace it with its written-to-disk form
+	void WriteColumnToDisk(RowGroupWriteInfo &info, idx_t column_idx);
 	//! Returns the number of committed rows (count - committed deletes)
 	idx_t GetCommittedRowCount();
 	//! Returns the number of rows visible to the given transaction

@@ -625,7 +625,8 @@ unique_ptr<CatalogEntry> DuckTableEntry::AddColumn(ClientContext &context, AddCo
 		                         schema.GetSchemaPath());
 	}
 	SetAlterDependencies(context, *bound_create_info, info);
-	auto new_storage = make_shared_ptr<DataTable>(context, *storage, info.new_column, *bound_defaults.back());
+	auto new_storage = make_shared_ptr<DataTable>(context, *storage, info.new_column, *bound_defaults.back(),
+	                                              info.defer_column_rewrite);
 	return make_uniq<DuckTableEntry>(catalog, schema, *bound_create_info, new_storage, triggers);
 }
 
@@ -774,6 +775,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::AddField(ClientContext &context, AddFie
 
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
+	change_column_type.defer_column_rewrite = info.defer_column_rewrite;
 	return ChangeColumnType(context, change_column_type, AlterTableType::ADD_FIELD);
 }
 
@@ -1027,6 +1029,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::RemoveField(ClientContext &context, Rem
 
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
+	change_column_type.defer_column_rewrite = info.defer_column_rewrite;
 	return ChangeColumnType(context, change_column_type, AlterTableType::REMOVE_FIELD);
 }
 
@@ -1121,6 +1124,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::RenameField(ClientContext &context, Ren
 	auto function = make_uniq<FunctionExpression>("remap_struct", std::move(children));
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
+	change_column_type.defer_column_rewrite = info.defer_column_rewrite;
 	return ChangeColumnType(context, change_column_type, AlterTableType::RENAME_FIELD);
 }
 
@@ -1330,7 +1334,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 
 	auto new_storage = make_shared_ptr<DataTable>(
 	    context, *storage, columns.LogicalToPhysical(LogicalIndex(change_idx)).index, info.target_type,
-	    std::move(storage_oids), *bound_expression, constraint_to_verify.get());
+	    std::move(storage_oids), *bound_expression, constraint_to_verify.get(), info.defer_column_rewrite);
 	auto result = make_uniq<DuckTableEntry>(catalog, schema, *bound_create_info, new_storage, triggers);
 	return std::move(result);
 }
@@ -1408,8 +1412,13 @@ void DuckTableEntry::Rollback(CatalogEntry &prev_entry) {
 		return;
 	}
 
-	// Rolls back any physical index creation for index-based constraints.
 	auto &prev_table = prev_entry.Cast<DuckTableEntry>();
+	if (storage.get() != &prev_table.GetStorage()) {
+		// release the column this table version wrote to disk, if any
+		storage->RollbackWrittenColumn();
+	}
+
+	// Rolls back any physical index creation for index-based constraints.
 	auto &prev_indexes = prev_table.GetStorage().GetDataTableInfo()->GetIndexes();
 	for (auto oid : GetAddedUniqueIndexOids(prev_table)) {
 		prev_indexes.RemoveIndex(oid);

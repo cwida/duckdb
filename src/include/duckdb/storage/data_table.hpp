@@ -12,6 +12,7 @@
 #include "duckdb/common/enums/constraint_check_mode.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
+#include "duckdb/storage/storage_lock.hpp"
 #include "duckdb/storage/table/persistent_table_data.hpp"
 #include "duckdb/transaction/local_storage.hpp"
 
@@ -57,6 +58,7 @@ struct LocalAppendState;
 struct ParallelTableScanState;
 struct TableAppendState;
 class CommitDropState;
+class ColumnRewrite;
 
 enum class DataTableVersion {
 	MAIN_TABLE, // this is the newest version of the table - it has not been altered or dropped
@@ -71,16 +73,18 @@ public:
 	DataTable(AttachedDatabase &db, shared_ptr<TableIOManager> table_io_manager, vector<Identifier> schema_path,
 	          Identifier table, vector<ColumnDefinition> column_definitions_p,
 	          unique_ptr<PersistentTableData> data = nullptr);
-	//! Constructs a DataTable as a delta on an existing data table with a newly added column
-	DataTable(ClientContext &context, DataTable &parent, ColumnDefinition &new_column, Expression &default_value);
+	//! Constructs a DataTable as a delta with a newly added column, which defer_rewrite leaves to the caller
+	DataTable(ClientContext &context, DataTable &parent, ColumnDefinition &new_column, Expression &default_value,
+	          bool defer_rewrite = false);
 	//! Constructs a DataTable as a delta on an existing data table but with one column removed
 	DataTable(ClientContext &context, DataTable &parent, idx_t removed_column);
-	//! Constructs a DataTable as a delta on an existing data table but with one column changed type
+	//! Constructs a DataTable as a delta with one column changed type, which defer_rewrite leaves to the caller
 	DataTable(ClientContext &context, DataTable &parent, idx_t changed_idx, const LogicalType &target_type,
 	          const vector<StorageIndex> &bound_columns, Expression &cast_expr,
-	          optional_ptr<BoundConstraint> constraint_to_verify = nullptr);
+	          optional_ptr<BoundConstraint> constraint_to_verify = nullptr, bool defer_rewrite = false);
 	//! Constructs a DataTable as a delta on an existing data table but with one column added new constraint
 	DataTable(ClientContext &context, DataTable &parent, BoundConstraint &constraint);
+	~DataTable();
 
 	//! A reference to the database instance
 	AttachedDatabase &db;
@@ -241,6 +245,14 @@ public:
 	void CommitDropTable(CommitDropState &drop_state);
 	//! Accumulates the column's on-disk blocks for reclamation into the drop state.
 	void CommitDropColumn(const idx_t column_index, CommitDropState &drop_state);
+	//! The column rewrite an ADD COLUMN or ALTER TYPE left to its caller, if it is not finished yet
+	optional_ptr<ColumnRewrite> GetColumnRewrite();
+	//! Installs the rewritten column, once every row group of the column rewrite is rewritten
+	void FinishColumnRewrite(ClientContext &context);
+	//! Gives up on an unfinished column rewrite: gives back its blocks and restores the parent
+	void AbortColumnRewrite();
+	//! Gives back the blocks of the column this table version wrote, when its ALTER fails or is rolled back
+	void RollbackWrittenColumn();
 
 	idx_t ColumnCount() const;
 	idx_t GetTotalRows() const;
@@ -302,6 +314,8 @@ public:
 private:
 	//! Verify the new added constraints against current persistent&local data
 	void VerifyNewConstraint(LocalStorage &local_storage, DataTable &parent, const BoundConstraint &constraint);
+	//! Rewrites the column right away, or leaves it to the caller with defer_rewrite
+	void RewriteColumn(ClientContext &context, bool defer_rewrite);
 
 	//! Verify constraints with a chunk from the Update containing only the specified column_ids
 	void VerifyUpdateConstraints(ConstraintState &state, ClientContext &context, DataChunk &chunk,
@@ -337,5 +351,11 @@ private:
 	shared_ptr<RowGroupCollection> row_groups;
 	//! The version of the data table
 	atomic<DataTableVersion> version;
+	//! The column rewrite of the ADD COLUMN or ALTER TYPE that created this table version, until it is finished
+	unique_ptr<ColumnRewrite> column_rewrite;
+	//! The physical column whose data this table version wrote (ADD COLUMN or ALTER TYPE), if any
+	optional_idx written_column;
+	//! Held shared while a column rewrite reads the row groups, which reverting an append waits for
+	StorageLock rewrite_lock;
 };
 } // namespace duckdb

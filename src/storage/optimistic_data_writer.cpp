@@ -191,6 +191,24 @@ void OptimisticWriteCollection::MergeStorage(OptimisticWriteCollection &merge_co
 	collection->MergeStorage(merge_row_groups, nullptr, nullptr);
 }
 
+bool OptimisticDataWriter::PrepareWriteColumn(const RowGroupCollection &collection) {
+	if (collection.GetTotalRows() < collection.GetRowGroupSize()) {
+		// a column of less than a row group would waste most of its block, the checkpoint packs it instead
+		return false;
+	}
+	return PrepareWrite();
+}
+
+void OptimisticDataWriter::WriteColumn(RowGroup &row_group, idx_t column_idx) {
+	D_ASSERT(partial_manager);
+	vector<CompressionType> compression_types;
+	for (auto &column : table.Columns()) {
+		compression_types.push_back(column.CompressionType());
+	}
+	RowGroupWriteInfo info(*partial_manager, compression_types);
+	row_group.WriteColumnToDisk(info, column_idx);
+}
+
 void OptimisticDataWriter::FlushToDisk(OptimisticWriteCollection &collection,
                                        const vector<const_reference<RowGroup>> &row_groups,
                                        const vector<int64_t> &segment_indexes) {

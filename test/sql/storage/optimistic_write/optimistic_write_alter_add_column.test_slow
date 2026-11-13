@@ -1,0 +1,81 @@
+# name: test/sql/storage/optimistic_write/optimistic_write_alter_add_column.test_slow
+# description: ADD COLUMN on a persistent table writes the new column to disk row group by row group
+# group: [optimistic_write]
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB'
+
+statement ok
+ATTACH '{TEST_DIR}/optimistic_write_alter_add_column.db' AS db
+
+statement ok
+CREATE TABLE db.t AS SELECT i FROM range(10000000) t(i)
+
+statement ok
+CHECKPOINT db
+
+# buffering one uncompressed BIGINT column of 10M rows takes ~100MB, which does not fit
+statement ok
+SET memory_limit='32MB'
+
+statement ok
+SET max_temp_directory_size='16MB'
+
+# the ALTERs need about one row group of memory per thread
+statement ok
+SET threads=4
+
+statement ok
+ALTER TABLE db.t ADD COLUMN c1 BIGINT
+
+statement ok
+ALTER TABLE db.t ADD COLUMN c2 BIGINT DEFAULT 42
+
+# IF NOT EXISTS skips the rewrite of a volatile default into an UPDATE, so ADD COLUMN itself writes these values
+statement ok
+ALTER TABLE db.t ADD COLUMN IF NOT EXISTS c3 DOUBLE DEFAULT random()
+
+query II
+SELECT BOOL_AND(persistent), COUNT(*) FILTER (column_name IN ('c1', 'c2') AND compression <> 'Constant') FROM pragma_storage_info('db.t') WHERE column_name IN ('c1', 'c2', 'c3')
+----
+true	0
+
+# WAL replay redoes the ADD COLUMNs within the same memory limit, and the checkpoint after it keeps the written columns
+loop k 0 2
+
+statement ok
+DETACH db
+
+statement ok
+ATTACH '{TEST_DIR}/optimistic_write_alter_add_column.db' AS db
+
+query IIII
+SELECT COUNT(*), COUNT(c1), SUM(c2), COUNT(c3) FROM db.t
+----
+10000000	0	420000000	10000000
+
+statement ok
+CHECKPOINT db
+
+endloop
+
+# the blocks of a rolled back ADD COLUMN are free again right away
+statement ok
+CREATE TEMPORARY TABLE used_before AS SELECT used_blocks FROM pragma_database_size() WHERE database_name = 'db'
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE db.t ADD COLUMN IF NOT EXISTS c4 DOUBLE DEFAULT random()
+
+statement ok
+ROLLBACK
+
+query I
+SELECT used_blocks - (SELECT used_blocks FROM used_before) FROM pragma_database_size() WHERE database_name = 'db'
+----
+0
