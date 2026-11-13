@@ -19,6 +19,10 @@ namespace duckdb {
 HTTPParams::~HTTPParams() {
 }
 
+unique_ptr<HTTPParams> HTTPParams::Clone() const {
+	return make_uniq<HTTPParams>(*this);
+}
+
 bool HTTPParams::ShouldRedactLogs() const {
 	return !db || Settings::Get<RedactHttpLogsSetting>(*db);
 }

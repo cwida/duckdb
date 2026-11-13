@@ -29,6 +29,46 @@ TEST_CASE("PUT requests retain their content type", "[http_transport_manager]") 
 	CHECK(request.content_type == "application/json");
 }
 
+TEST_CASE("HTTP parameter clones copy fields and are independent", "[http_transport_manager]") {
+	HTTPUtil http;
+	HTTPParams params(http);
+	params.timeout = 17;
+	params.retries = 4;
+	params.http_proxy = "proxy.example";
+	params.extra_headers["x-fixture"] = "value";
+	auto clone = params.Clone();
+	REQUIRE(clone);
+	CHECK(&clone->http_util == &params.http_util);
+	CHECK(clone->timeout == 17);
+	CHECK(clone->retries == 4);
+	CHECK(clone->http_proxy == "proxy.example");
+	CHECK(clone->extra_headers["x-fixture"] == "value");
+	clone->retries = 0;
+	clone->extra_headers["x-fixture"] = "request-only";
+	CHECK(params.retries == 4);
+	CHECK(params.extra_headers["x-fixture"] == "value");
+}
+
+struct DerivedTestHTTPParams : public HTTPParams {
+	explicit DerivedTestHTTPParams(HTTPUtil &http_util) : HTTPParams(http_util) {
+	}
+	string provider_field;
+	unique_ptr<HTTPParams> Clone() const override {
+		return make_uniq<DerivedTestHTTPParams>(*this);
+	}
+};
+
+TEST_CASE("HTTP parameter clones preserve derived parameter types", "[http_transport_manager]") {
+	HTTPUtil http;
+	DerivedTestHTTPParams derived(http);
+	derived.provider_field = "resolved";
+	HTTPParams &base = derived;
+	auto clone = base.Clone();
+	clone->retries = 0;
+	CHECK(clone->Cast<DerivedTestHTTPParams>().provider_field == "resolved");
+	CHECK(derived.retries == HTTPParams::DEFAULT_RETRIES);
+}
+
 enum class MockResponseMode : uint8_t {
 	SUCCESS,
 	NULL_RESPONSE,

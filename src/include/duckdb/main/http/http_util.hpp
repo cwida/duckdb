@@ -33,6 +33,9 @@ struct HTTPParams {
 	explicit HTTPParams(HTTPUtil &http_util) : http_util(http_util) {
 	}
 	virtual ~HTTPParams();
+	//! Copy these parameters, e.g. to apply per-request overrides without mutating shared state. Derived parameter
+	//! types override this so that their own fields are preserved.
+	DUCKDB_API virtual unique_ptr<HTTPParams> Clone() const;
 
 	static constexpr uint64_t DEFAULT_TIMEOUT_SECONDS = 30; // 30 sec
 	static constexpr uint64_t DEFAULT_RETRIES = 3;
