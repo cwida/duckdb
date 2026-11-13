@@ -138,6 +138,7 @@
         "test/sql/optimizer/test_in_rewrite_rule.test",
         "test/optimizer/unused_window_columns.test",
         "test/sql/storage/compression/rle/rle_constant.test",
+        "test/sql/storage/corrupt/corrupt_hyperloglog_statistics.test",
         "test/sql/types/geo/geometry_stats.test",
         "test/sql/types/geo/geometry_shred.test",
         "test/sql/types/geo/geometry_shred_types.test",

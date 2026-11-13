@@ -1,0 +1,41 @@
+# name: test/sql/storage/corrupt/corrupt_hyperloglog_statistics.test
+# description: Test corrupt HyperLogLog table statistics
+# group: [corrupt]
+
+require vector_size 2048
+
+unzip data/storage/corrupt_hyperloglog_statistics.db.gz {TEST_DIR}/corrupt_hyperloglog_statistics.db
+
+statement ok
+ATTACH '{TEST_DIR}/corrupt_hyperloglog_statistics.db' AS corrupt_hll_stats
+
+statement ok
+USE corrupt_hll_stats
+
+query III
+SELECT id, k, payload FROM dict_strings LIMIT 1
+----
+0	0	\x00
+
+statement error
+SELECT s FROM dict_strings LIMIT 1
+----
+IO Error: Corrupt HyperLogLog statistics: register value is out of range
+
+unzip data/storage/corrupt_hyperloglog_integer_statistics.db.gz {TEST_DIR}/corrupt_hyperloglog_integer_statistics.db
+
+statement ok
+ATTACH '{TEST_DIR}/corrupt_hyperloglog_integer_statistics.db' AS corrupt_hll_integer_stats
+
+statement ok
+USE corrupt_hll_integer_stats
+
+query I
+SELECT k FROM dict_strings LIMIT 1
+----
+0
+
+statement error
+SELECT id FROM dict_strings LIMIT 1
+----
+IO Error: Corrupt HyperLogLog statistics: register value is out of range

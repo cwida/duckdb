@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/bit_utils.hpp"
+#include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 
@@ -130,6 +131,9 @@ public:
 	//! Algorithm 4
 	void ExtractCounts(uint32_t *c) const {
 		for (idx_t i = 0; i < M; ++i) {
+			if (k[i] > Q + 1) {
+				throw IOException("Corrupt HyperLogLog statistics: register value is out of range");
+			}
 			c[k[i]]++;
 		}
 	};
