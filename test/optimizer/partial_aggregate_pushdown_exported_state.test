@@ -1,0 +1,417 @@
+# name: test/optimizer/partial_aggregate_pushdown_exported_state.test
+# description: Partial aggregate pushdown of aggregates that already export their state: the finest level of a ROLLUP / CUBE / GROUPING SETS cascade over a join is pre-aggregated below the join
+# group: [optimizer]
+
+# A fact table with NULL join keys (every 97th row), NULL arguments (every 11th row) and strings that do not convert
+# to INTEGER on the rows of key 500. The dimension lacks key 500, holds key 3 twice and has NULL brands.
+statement ok
+CREATE TABLE sales AS SELECT CASE WHEN i % 97 = 0 THEN NULL ELSE i % 1000 END::INTEGER AS item_key, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 7) % 1000 END::INTEGER AS qty, (i % 10)::INTEGER AS grp, CASE WHEN i % 1000 = 500 THEN 'oops' ELSE (i % 50)::VARCHAR END AS s FROM range(200000) t(i);
+
+statement ok
+CREATE TABLE item AS SELECT i::INTEGER AS item_key, CASE WHEN i % 50 = 7 THEN NULL ELSE 'b' || (i % 50) END AS brand, 'c' || (i % 7) AS class FROM range(1000) t(i) WHERE i <> 500;
+
+statement ok
+INSERT INTO item VALUES (3, 'bdup', 'c9');
+
+# two many-to-many sides over 50 keys; y lacks key 25
+statement ok
+CREATE TABLE x AS SELECT (i % 50)::INTEGER AS k, (i % 7)::INTEGER AS v FROM range(5000) t(i);
+
+statement ok
+CREATE TABLE y AS SELECT (i % 50)::INTEGER AS k, (i % 4)::INTEGER AS g, (i % 5)::INTEGER AS h FROM range(5000) t(i) WHERE i % 50 <> 25;
+
+statement ok
+ANALYZE;
+
+statement ok
+SET explain_output = 'optimized_only';
+
+# The grouping sets optimizer turns ROLLUP (a, b) into a cascade: the finest level (a, b) aggregates the join and
+# exports its states (EXPORT_STATE), the levels (a) and () combine them. The pushdown pre-aggregates the fact table by
+# its join key below the join: that aggregate is now the one that exports the states and the finest level combines
+# them like the other levels.
+# In the JSON plan an operator's children are printed before its own details. A pushed aggregate (EXPORT_STATE) is a
+# child of the join, so it is printed before the "Join Type" of the join. An aggregate that stays above the join is
+# printed after it.
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty), count(*), avg(qty) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# three levels and the pre-aggregate
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty), count(*), avg(qty) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<REGEX>:(.*"AGGREGATE"){4}.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty), count(*), avg(qty) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:(.*"AGGREGATE"){5}.*
+
+# the states are not exported a second time and not finalized below the cascade: the only finalize calls are those
+# of the three levels
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:(.*finalize){4}.*
+
+# CUBE (a, b): four levels and the pre-aggregate
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty), count(qty) FROM sales JOIN item USING (item_key) GROUP BY CUBE (brand, class)
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty), count(qty) FROM sales JOIN item USING (item_key) GROUP BY CUBE (brand, class)
+----
+logical_opt	<REGEX>:(.*"AGGREGATE"){5}.*
+
+# GROUPING SETS with four sets and a fact column among the groups: the pre-aggregate groups by the join key and that
+# column
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, grp, sum(qty) FROM sales JOIN item USING (item_key) GROUP BY GROUPING SETS ((brand, class, grp), (brand, class), (brand), ())
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# GROUPING() and HAVING are evaluated on top of the cascade
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, GROUPING(brand), sum(qty) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class) HAVING sum(qty) > 100000
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# an aggregate the query exports itself: the states are combined above the join and returned without a finalize
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty) EXPORT_STATE FROM sales JOIN item USING (item_key) GROUP BY brand, class
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*combine_aggr.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty) EXPORT_STATE FROM sales JOIN item USING (item_key) GROUP BY brand, class
+----
+logical_opt	<!REGEX>:.*finalize.*
+
+# the aggregate side of an outer join is pushed when the join preserves it
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty) FROM sales LEFT JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty) FROM item RIGHT JOIN sales USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# every aggregate function with one argument that the cascade exports
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty), count(*), count(qty), avg(qty), min(qty), max(s), any_value(qty * 0), bool_and(qty > 5), bool_or(qty > 990), bit_and(qty), bit_or(qty), bit_xor(qty), product(CASE WHEN qty > 500 THEN 1 ELSE -1 END), approx_count_distinct(qty) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty::HUGEINT), sum(qty::DECIMAL(18,2)), avg(qty::DECIMAL(18,2)), min(s), max(qty::DOUBLE / 4), sum(qty::DOUBLE / 4), skewness(qty), kurtosis(qty) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# ---------------------------------------------------------------------------------------------------------------
+# The base level stays above the join
+# ---------------------------------------------------------------------------------------------------------------
+
+# the pass is disabled
+statement ok
+SET disabled_optimizers = 'partial_aggregate_pushdown';
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty), count(*), avg(qty) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty) EXPORT_STATE FROM sales JOIN item USING (item_key) GROUP BY brand, class
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+statement ok
+SET disabled_optimizers = '';
+
+# no aggregate takes an argument, so there is no aggregate side
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, count(*) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# arguments from both sides of the join
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty), min(brand) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# a FILTER clause
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty) FILTER (WHERE grp > 3), count(*) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# more than one argument
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, arg_max(qty, grp) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# DISTINCT and ordered aggregates are not part of a cascade and are not pushed either
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(DISTINCT qty) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*(EXPORT_STATE|combine_aggr).*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, string_agg(s ORDER BY qty) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*(EXPORT_STATE|combine_aggr).*
+
+# An argument that can throw is not evaluated below an inner join: the fact rows of key 500 hold 'oops' and have no
+# dimension row. The TRY_CAST is pushed.
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(CAST(s AS INTEGER)) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(TRY_CAST(s AS INTEGER)) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# the aggregate side is not the preserved side of the outer join
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty) FROM item LEFT JOIN sales USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty) FROM sales FULL JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# a join condition that is not an equality
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty) FROM sales JOIN item ON sales.item_key < item.item_key AND item.item_key < 3 GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# an aggregate below the aggregate side
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, class, sum(qty) FROM (SELECT item_key, max(qty) AS qty FROM sales GROUP BY ALL) s JOIN item USING (item_key) GROUP BY ROLLUP (brand, class)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# no group from the other side of the join
+query II
+EXPLAIN (FORMAT JSON) SELECT grp, sum(qty) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (grp)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# a single group: the pre-aggregate on the join key would have as many group columns as the aggregate above it
+query II
+EXPLAIN (FORMAT JSON) SELECT brand, sum(qty) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# A many-to-many join: a plain GROUP BY pre-aggregates both sides (two pre-aggregates and the aggregate above the
+# join). An exported aggregate never takes that rewrite, because it would finalize a state that the cascade combines.
+# The ROLLUP gets the one-sided pushdown: its three levels and one pre-aggregate.
+query II
+EXPLAIN (FORMAT JSON) SELECT g, h, sum(x.v), count(*) FROM x JOIN y ON x.k = y.k GROUP BY g, h
+----
+logical_opt	<REGEX>:(.*"AGGREGATE"){3}.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT g, h, sum(x.v), count(*) FROM x JOIN y ON x.k = y.k GROUP BY ROLLUP (g, h)
+----
+logical_opt	<REGEX>:(.*"AGGREGATE"){4}.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT g, h, sum(x.v), count(*) FROM x JOIN y ON x.k = y.k GROUP BY ROLLUP (g, h)
+----
+logical_opt	<!REGEX>:(.*"AGGREGATE"){5}.*
+
+# ---------------------------------------------------------------------------------------------------------------
+# Results, with the pushdown and with the pass disabled, on one and on several threads
+# ---------------------------------------------------------------------------------------------------------------
+
+foreach pushdown on off
+
+statement ok
+SET disabled_optimizers = CASE WHEN '{pushdown}' = 'off' THEN 'partial_aggregate_pushdown' ELSE '' END;
+
+foreach threads 1 8
+
+statement ok
+SET threads = {threads};
+
+# NULL join keys, NULL arguments, NULL group values next to the NULLs of the ROLLUP, fact rows without a dimension row
+
+query IIIIIII
+SELECT brand, class, sum(qty), count(*), count(qty), min(qty), max(s) FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class) ORDER BY ALL LIMIT 6
+----
+b0	c0	244350	593	541	0	0
+b0	c1	252350	594	541	250	0
+b0	c2	260300	594	539	150	0
+b0	c3	179050	395	359	50	0
+b0	c4	278150	594	539	300	0
+b0	c5	288000	594	540	200	0
+
+query IIIIII
+SELECT count(*), count(brand), count(class), sum(sq), sum(c), sum(cq) FROM (SELECT brand, class, sum(qty) AS sq, count(*) AS c, count(qty) AS cq FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class))
+----
+403	394	351	269407818	593814	539832
+
+# the NULL brand is a group of its own next to the NULL rows of the ROLLUP; the duplicated dimension key 3 counts twice
+
+query IIII
+SELECT brand, class, sum(qty), count(*) FROM sales JOIN item USING (item_key) WHERE brand IS NULL OR brand = 'bdup' GROUP BY ROLLUP (brand, class) ORDER BY ALL
+----
+bdup	c9	3780	198
+bdup	NULL	3780	198
+NULL	c0	269411	593
+NULL	c1	278759	594
+NULL	c2	288408	594
+NULL	c3	295911	594
+NULL	c4	305460	594
+NULL	c5	313761	594
+NULL	c6	134640	396
+NULL	NULL	1886350	3959
+NULL	NULL	1890130	4157
+
+# an empty dimension side, an empty fact side: the grand total row alone
+
+query IIII
+SELECT brand, class, sum(qty), count(*) FROM sales JOIN item USING (item_key) WHERE item.item_key < 0 GROUP BY ROLLUP (brand, class) ORDER BY ALL
+----
+NULL	NULL	NULL	0
+
+query IIII
+SELECT brand, class, sum(qty), count(*) FROM sales JOIN item USING (item_key) WHERE sales.grp > 99 GROUP BY CUBE (brand, class) ORDER BY ALL
+----
+NULL	NULL	NULL	0
+
+# CUBE and GROUPING SETS, GROUPING() and HAVING on top of the cascade
+
+query IIIII
+SELECT count(*), count(brand), count(class), sum(sq), sum(cq) FROM (SELECT brand, class, sum(qty) AS sq, count(qty) AS cq FROM sales JOIN item USING (item_key) GROUP BY CUBE (brand, class))
+----
+411	394	359	359210424	719776
+
+query IIIII
+SELECT count(*), count(brand), count(class), count(grp), sum(sq) FROM (SELECT brand, class, grp, sum(qty) AS sq FROM sales JOIN item USING (item_key) GROUP BY GROUPING SETS ((brand, class, grp), (brand, class), (brand), ()))
+----
+754	738	702	351	359210424
+
+query IIIII
+SELECT brand, class, GROUPING(brand), GROUPING(class), sum(qty) FROM sales JOIN item USING (item_key) WHERE brand IN ('b1', 'b2') GROUP BY ROLLUP (brand, class) HAVING sum(qty) > 280000 ORDER BY ALL
+----
+b1	c5	0	0	283087
+b1	c6	0	0	292537
+b1	NULL	0	1	1736100
+b2	c0	0	0	295560
+b2	c6	0	0	285382
+b2	NULL	0	1	1760550
+NULL	NULL	1	1	3496650
+
+# outer joins: the fact rows without a dimension row (NULL keys, key 500) land in the NULL groups
+
+query IIII
+SELECT count(*), count(brand), sum(sq), sum(c) FROM (SELECT brand, class, sum(qty) AS sq, count(*) AS c FROM sales LEFT JOIN item USING (item_key) GROUP BY ROLLUP (brand, class))
+----
+404	394	272482539	600594
+
+query IIII
+SELECT brand, class, sum(qty), count(*) FROM sales LEFT JOIN item USING (item_key) WHERE item.item_key IS NULL GROUP BY ROLLUP (brand, class) ORDER BY ALL
+----
+NULL	NULL	1024907	2260
+NULL	NULL	1024907	2260
+NULL	NULL	1024907	2260
+
+query IIII
+SELECT count(*), count(brand), sum(sq), sum(c) FROM (SELECT brand, class, sum(qty) AS sq, count(*) AS c FROM item LEFT JOIN sales USING (item_key) GROUP BY ROLLUP (brand, class))
+----
+403	394	269407818	593814
+
+query IIII
+SELECT count(*), count(brand), sum(sq), sum(c) FROM (SELECT brand, class, sum(qty) AS sq, count(*) AS c FROM sales FULL JOIN item USING (item_key) GROUP BY ROLLUP (brand, class))
+----
+404	394	272482539	600594
+
+# the cast raises only on rows the join drops: no error, the rows of the TRY_CAST
+
+query II
+SELECT count(*), sum(sq) FROM (SELECT brand, class, sum(CAST(s AS INTEGER)) AS sq FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class))
+----
+403	14550051
+
+query II
+SELECT count(*), sum(sq) FROM (SELECT brand, class, sum(TRY_CAST(s AS INTEGER)) AS sq FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class))
+----
+403	14550051
+
+# every aggregate function the cascade exports that takes one argument, over INTEGER, HUGEINT, DECIMAL, DOUBLE and VARCHAR arguments
+
+query IIIIIIIIIIIIIIII
+SELECT brand, class, sum(qty), count(*), count(qty), avg(qty), min(qty), max(s), any_value(qty * 0), bool_and(qty > 5), bool_or(qty > 990), bit_and(qty), bit_or(qty), bit_xor(qty), product(CASE WHEN qty > 500 THEN 1 ELSE -1 END), approx_count_distinct(qty) FROM sales JOIN item USING (item_key) WHERE brand IN ('b1', 'bdup') GROUP BY ROLLUP (brand, class) ORDER BY ALL LIMIT 5
+----
+b1	c0	119520	396	360	332.0	107	1	0	true	false	41	623	0	1.0	2
+b1	c1	246773	594	539	457.834879406308	7	1	0	true	false	1	975	7	1.0	3
+b1	c2	255780	594	540	473.6666666666667	257	1	0	true	false	257	871	0	1.0	3
+b1	c3	264623	594	539	490.9517625231911	157	1	0	true	false	1	735	157	1.0	3
+b1	c4	273780	594	540	507.0	57	1	0	true	false	57	1023	0	1.0	3
+
+query IIIIIIIIII
+SELECT brand, class, sum(qty::HUGEINT), sum(qty::DECIMAL(18,2)), avg(qty::DECIMAL(18,2))::DECIMAL(18,2), min(s), max(qty::DOUBLE / 4), sum(qty::DOUBLE / 4), round(skewness(qty), 6), round(kurtosis(qty), 6) FROM sales JOIN item USING (item_key) WHERE brand IN ('b1', 'bdup') GROUP BY ROLLUP (brand, class) ORDER BY ALL LIMIT 5
+----
+b1	c0	119520	119520.00	332.00	1	139.25	29880.0	-0.0	-2.011204
+b1	c1	246773	246773.00	457.83	1	226.75	61693.25	-0.003416	-1.501372
+b1	c2	255780	255780.00	473.67	1	201.75	63945.0	0.617276	-1.502788
+b1	c3	264623	264623.00	490.95	1	176.75	66155.75	-0.622792	-1.495287
+b1	c4	273780	273780.00	507.00	1	239.25	68445.0	0.0	-1.502788
+
+# an aggregate the query exports itself is combined above the join and returned as a state
+
+query III
+SELECT brand, class, finalize(st) FROM (SELECT brand, class, sum(qty) EXPORT_STATE AS st FROM sales JOIN item USING (item_key) GROUP BY brand, class) WHERE brand = 'b3' ORDER BY ALL
+----
+b3	c0	290019
+b3	c1	299461
+b3	c2	125252
+b3	c3	253869
+b3	c4	263069
+b3	c5	271719
+b3	c6	281340
+
+# aggregates that stay above the join
+
+query III
+SELECT count(*), sum(sq), sum(c) FROM (SELECT brand, class, sum(qty) FILTER (WHERE grp > 3) AS sq, count(*) AS c FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class))
+----
+403	162122802	593814
+
+query III
+SELECT count(*), sum(sq), count(mb) FROM (SELECT brand, class, sum(qty) AS sq, min(brand) AS mb FROM sales JOIN item USING (item_key) GROUP BY ROLLUP (brand, class))
+----
+403	269407818	395
+
+# a many-to-many join
+
+query IIII
+SELECT g, h, sum(x.v), count(*) FROM x JOIN y ON x.k = y.k WHERE g < 2 AND h < 2 GROUP BY ROLLUP (g, h) ORDER BY ALL
+----
+0	0	75000	25000
+0	1	75200	25000
+0	NULL	150200	50000
+1	0	59900	20000
+1	1	74800	25000
+1	NULL	134700	45000
+NULL	NULL	284900	95000
+
+endloop
+
+endloop
