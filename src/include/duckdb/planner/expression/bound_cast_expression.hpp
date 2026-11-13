@@ -12,6 +12,7 @@
 #include "duckdb/function/cast/default_casts.hpp"
 
 namespace duckdb {
+class Context;
 
 //! The BoundCastExpression has been moved to a function expression (the __cast scalar function).
 //! This class exists only as a set of helper methods.
@@ -45,10 +46,9 @@ struct BoundCastExpression {
 	                                                      const BaseStatistics &child_stats,
 	                                                      optional_ptr<ClientContext> context = nullptr);
 
-	//! Cast an expression to the specified SQL type, using only the built-in SQL casts
-	static unique_ptr<Expression> AddDefaultCastToType(unique_ptr<Expression> expr, const LogicalType &target_type,
-	                                                   bool try_cast = false);
 	//! Cast an expression to the specified SQL type if required
+	DUCKDB_API static unique_ptr<Expression> AddCastToType(Context &context, unique_ptr<Expression> expr,
+	                                                       const LogicalType &target_type, bool try_cast = false);
 	DUCKDB_API static unique_ptr<Expression> AddCastToType(ClientContext &context, unique_ptr<Expression> expr,
 	                                                       const LogicalType &target_type, bool try_cast = false);
 
