@@ -1,0 +1,36 @@
+# name: test/sql/storage/external_file_cache/external_file_cache_spill_temp_directory_full.test_slow
+# description: Spillable cache blocks are dropped instead of failing queries when the temporary directory is full
+# group: [external_file_cache]
+
+require parquet
+
+require httpfs
+
+require skip_reload
+
+statement ok
+SET threads=1;
+
+statement ok
+SET memory_limit='16MB';
+
+statement ok
+SET external_file_cache_spill=true;
+
+statement ok
+SET temp_directory='{TEST_DIR}/external_file_cache_spill_temp_directory_full';
+
+statement ok
+SET max_temp_directory_size='0B';
+
+# every URL is a separate cache entry of ~4MB, together well above the memory limit: later reads evict
+# the cache blocks of earlier reads, and blocks that cannot be spilled must be dropped instead of failing
+loop i 0 8
+
+query IRR
+SELECT count(*), min(temp), max(temp)
+FROM read_parquet('https://github.com/duckdb/duckdb-data/releases/download/v1.0/city_temperature.parquet?v={i}') t(temp);
+----
+2905886	-99.0	110.0
+
+endloop

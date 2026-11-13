@@ -22,7 +22,7 @@ bool IsDroppedBlock(CacheBlock &block) {
 		return false;
 	}
 	auto &memory = block.block_handle->GetMemory();
-	return memory.IsUnloaded() && !memory.MustWriteToTemporaryFile();
+	return memory.IsUnloaded() && !memory.CanReload();
 }
 
 bool IsLoadedBlock(CacheBlock &block) {
@@ -388,7 +388,7 @@ vector<CachedFileInformation> ExternalFileCache::GetCachedFileInformation() cons
 			const auto &memory = block.block_handle->GetMemory();
 			const bool loaded = !memory.IsUnloaded();
 			// An unloaded cache block is spilled if it still has a temporary file backing
-			const bool spilled = !loaded && memory.MustWriteToTemporaryFile();
+			const bool spilled = !loaded && memory.CanReload();
 			result.push_back({file->path, block.nr_bytes, location, loaded, spilled});
 		}
 	}
@@ -416,7 +416,11 @@ BufferHandle ExternalFileCache::AllocateCacheBuffer(BufferManager &buffer_manage
 	const bool spill = Settings::Get<ExternalFileCacheSpillSetting>(buffer_manager.GetDatabase()) &&
 	                   FileSystem::IsRemoteFile(path) && buffer_manager.HasTemporaryDirectory() &&
 	                   nr_bytes >= buffer_manager.GetBlockAllocSize();
-	return buffer_manager.Allocate(MemoryTag::EXTERNAL_FILE_CACHE, nr_bytes, !spill);
+	auto buffer = buffer_manager.Allocate(MemoryTag::EXTERNAL_FILE_CACHE, nr_bytes);
+	if (spill) {
+		buffer.GetBlockHandle()->GetMemory().SetDestroyBufferUpon(DestroyBufferUpon::SPILL_FAILURE);
+	}
+	return buffer;
 }
 
 void ExternalFileCache::DeleteObjectCacheEntries(const vector<string> &paths) {

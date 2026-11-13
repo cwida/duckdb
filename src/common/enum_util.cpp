@@ -2075,19 +2075,20 @@ const StringUtil::EnumStringLiteral *GetDestroyBufferUponValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(DestroyBufferUpon::BLOCK), "BLOCK" },
 		{ static_cast<uint32_t>(DestroyBufferUpon::EVICTION), "EVICTION" },
-		{ static_cast<uint32_t>(DestroyBufferUpon::UNPIN), "UNPIN" }
+		{ static_cast<uint32_t>(DestroyBufferUpon::UNPIN), "UNPIN" },
+		{ static_cast<uint32_t>(DestroyBufferUpon::SPILL_FAILURE), "SPILL_FAILURE" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<DestroyBufferUpon>(DestroyBufferUpon value) {
-	return StringUtil::EnumToString(GetDestroyBufferUponValues(), 3, "DestroyBufferUpon", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetDestroyBufferUponValues(), 4, "DestroyBufferUpon", static_cast<uint32_t>(value));
 }
 
 template<>
 DestroyBufferUpon EnumUtil::FromString<DestroyBufferUpon>(const char *value) {
-	return static_cast<DestroyBufferUpon>(StringUtil::StringToEnum(GetDestroyBufferUponValues(), 3, "DestroyBufferUpon", value));
+	return static_cast<DestroyBufferUpon>(StringUtil::StringToEnum(GetDestroyBufferUponValues(), 4, "DestroyBufferUpon", value));
 }
 
 const StringUtil::EnumStringLiteral *GetDialectCompatibilityModeValues() {

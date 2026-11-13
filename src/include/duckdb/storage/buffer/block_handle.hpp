@@ -176,7 +176,8 @@ public:
 	//! upon eviction/unpin - including replaced persistent handles whose disk block may be
 	//! rewritten in place and must not be read through them again.
 	bool CanReload() const {
-		return destroy_buffer_upon == DestroyBufferUpon::BLOCK;
+		return destroy_buffer_upon == DestroyBufferUpon::BLOCK ||
+		       destroy_buffer_upon == DestroyBufferUpon::SPILL_FAILURE;
 	}
 	//! Returns the memory usage.
 	idx_t GetMemoryUsage() const {

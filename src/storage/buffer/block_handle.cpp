@@ -133,6 +133,20 @@ unique_ptr<FileBuffer> BlockMemory::UnloadAndTakeBlock(BlockLock &l, QueryContex
 		// This is a temporary block that cannot be destroyed upon evict/unpin.
 		// Thus, we write to it to a temporary file.
 		buffer_manager.WriteTemporaryBuffer(context, GetMemoryTag(), BlockId(), *GetBuffer());
+	} else if (BlockId() >= MAXIMUM_BLOCK && destroy_buffer_upon == DestroyBufferUpon::SPILL_FAILURE) {
+		try {
+			if (!buffer_manager.HasTemporaryDirectory()) {
+				destroy_buffer_upon = DestroyBufferUpon::EVICTION;
+			} else {
+				buffer_manager.WriteTemporaryBuffer(context, GetMemoryTag(), BlockId(), *GetBuffer());
+			}
+		} catch (const OutOfMemoryException &) {
+			// The temporary directory is full: destroy the buffer instead of failing the eviction.
+			destroy_buffer_upon = DestroyBufferUpon::EVICTION;
+		} catch (const IOException &) {
+			// The disk is full or the write failed: destroy the buffer instead of failing the eviction.
+			destroy_buffer_upon = DestroyBufferUpon::EVICTION;
+		}
 	}
 	memory_charge.Resize(0);
 	SetState(BlockState::BLOCK_UNLOADED);
