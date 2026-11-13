@@ -173,6 +173,11 @@ struct TableFunctionInitInput {
 			return false;
 		}
 		if (projection_ids.size() == column_ids.size()) {
+			for (idx_t i = 0; i < projection_ids.size(); i++) {
+				if (projection_ids[i] != i) {
+					return true;
+				}
+			}
 			// Filter column is used in remainder of plan, so we cannot remove it.
 			return false;
 		}

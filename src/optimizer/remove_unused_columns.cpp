@@ -1494,10 +1494,8 @@ void RemoveUnusedColumns::RemoveColumnsFromLogicalGet(LogicalGet &get, unique_pt
 		FilterPushdown pushdown(optimizer);
 		op_ref = pushdown.Rewrite(std::move(filter));
 		// if the filters could not be pushed back into the scan, the columns referenced by the
-		// remaining filter have to be included in the output of the scan. Since the projection can
-		// only prune columns when it projects out fewer columns than are scanned (see
-		// TableFunctionInitInput::CanRemoveFilterColumns), we fall back to outputting all columns
-		// in scan order
+		// remaining filter have to be included in the output of the scan. Fall back to outputting
+		// all columns in scan order so the remaining filter can keep using the LogicalGet bindings.
 		if (op_ref->type == LogicalOperatorType::LOGICAL_FILTER) {
 			get.projection_ids.clear();
 		}
