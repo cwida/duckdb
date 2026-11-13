@@ -273,3 +273,42 @@ TEST_CASE("ManagedAsyncTaskQueue closes after failure with pending tasks", "[asy
 		REQUIRE(error.find("Injected async task failure") != string::npos);
 	}
 }
+
+TEST_CASE("AsyncTaskQueue close fails requests whose drain tasks were cancelled", "[async_task_queue]") {
+	DuckDB db(nullptr);
+	auto con = TaskQueueConnectionWithAsyncThreads(db, 1);
+	REQUIRE_NO_FAIL(con->Query("SET threads=1"));
+	AsyncTaskQueue queue(con->context->GetContext(), 8);
+	ConcurrencyLatch latch;
+	std::atomic<idx_t> executed(0);
+	std::atomic<idx_t> failed(0);
+	auto completion = [&](idx_t, optional_ptr<const ErrorData> error) {
+		if (error) {
+			failed++;
+		}
+	};
+	queue.Submit(AsyncTaskRequest(make_uniq<LatchThrowingTask>(latch), 16, completion));
+	const auto started = latch.WaitForEntered(1);
+	// The only worker is blocked, so the remaining drain tasks cannot run before the failure.
+	for (idx_t task = 0; task < 7; task++) {
+		queue.Submit(AsyncTaskRequest(make_uniq<CountingTask>(executed), 16, completion));
+	}
+	latch.Release();
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!queue.HasError() && std::chrono::steady_clock::now() < deadline) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	const auto has_error = queue.HasError();
+	string error;
+	try {
+		queue.Close();
+	} catch (const Exception &ex) {
+		error = ex.what();
+	}
+	REQUIRE(started);
+	REQUIRE(has_error);
+	REQUIRE(StringUtil::Contains(error, "Injected async task failure"));
+	REQUIRE(executed.load() == 0);
+	REQUIRE(failed.load() == 8);
+	REQUIRE(queue.PendingBytes() == 0);
+}

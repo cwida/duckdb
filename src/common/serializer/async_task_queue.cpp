@@ -58,25 +58,31 @@ private:
 	bool finished = false;
 };
 
-class AsyncTaskQueueTask : public BaseExecutorTask {
+class AsyncTaskQueueTask final : public BaseExecutorTask {
 public:
 	AsyncTaskQueueTask(AsyncTaskQueue &queue_p, TaskExecutor &executor) : BaseExecutorTask(executor), queue(queue_p) {
 	}
 
 	~AsyncTaskQueueTask() override {
-		if (!started) {
+		Cancel();
+	}
+
+	void ExecuteTask() override {
+		D_ASSERT(owns_scheduled_slot);
+		owns_scheduled_slot = false;
+		queue.DrainRequest();
+	}
+
+	void Cancel() override {
+		if (owns_scheduled_slot) {
+			owns_scheduled_slot = false;
 			queue.CancelScheduledTask();
 		}
 	}
 
-	void ExecuteTask() override {
-		started = true;
-		queue.DrainRequest();
-	}
-
 private:
 	AsyncTaskQueue &queue;
-	bool started = false;
+	bool owns_scheduled_slot = true;
 };
 
 AsyncTaskQueue::AsyncTaskQueue(Context &context_p, idx_t max_active_tasks_p) : context(context_p) {
@@ -165,7 +171,7 @@ void AsyncTaskQueue::ScheduleTasksInternal() {
 		try {
 			executor->ScheduleTask(std::move(task));
 		} catch (...) {
-			// The task destructor releases this task's slot. Release the slots for tasks not yet created.
+			// ScheduleTask cancels this task and releases its slot. Release the slots for tasks not yet created.
 			CancelScheduledTasks(schedule_count - task_idx - 1);
 			throw;
 		}

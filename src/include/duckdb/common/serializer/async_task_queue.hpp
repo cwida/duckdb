@@ -115,7 +115,7 @@ private:
 	bool closed = false;
 
 	//! Async task executor. If absent, tasks are executed synchronously on submission.
-	//! Keep this after task-accounting fields so queued task destructors can still release slots.
+	//! Keep this after task-accounting fields so the executor's destructor can drain cancellation safely.
 	unique_ptr<TaskExecutor> executor;
 };
 

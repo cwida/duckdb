@@ -236,3 +236,49 @@ TEST_CASE("TaskExecutor accepts concurrent batch submissions", "[api][task_batch
 	REQUIRE(counts->cancelled == 0);
 }
 #endif
+
+namespace {
+
+struct RetainedTaskCounts {
+	idx_t cancelled = 0;
+	idx_t destroyed = 0;
+};
+
+class RetainedCancelledTask : public BaseExecutorTask {
+public:
+	RetainedCancelledTask(TaskExecutor &executor, RetainedTaskCounts &counts_p)
+	    : BaseExecutorTask(executor), counts(counts_p) {
+	}
+	~RetainedCancelledTask() override {
+		counts.destroyed++;
+	}
+	void ExecuteTask() override {
+		throw InternalException("A cancelled task must not execute");
+	}
+	void Cancel() override {
+		counts.cancelled++;
+	}
+
+private:
+	RetainedTaskCounts &counts;
+};
+
+} // namespace
+
+TEST_CASE("TaskExecutor drains cancellation while the task wrapper is still referenced", "[api][async_task_queue]") {
+	DuckDB db;
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+	RetainedTaskCounts counts;
+	TaskExecutor executor(*con.context);
+	executor.ScheduleTask(make_uniq<RetainedCancelledTask>(executor, counts));
+	executor.PushError(ErrorData("Injected async task failure"));
+	shared_ptr<Task> task;
+	REQUIRE(executor.GetTask(task));
+	REQUIRE(task->Execute(TaskExecutionMode::PROCESS_ALL) == TaskExecutionResult::TASK_FINISHED);
+	REQUIRE_THROWS(executor.WorkOnTasks());
+	REQUIRE(counts.cancelled == 1);
+	REQUIRE(counts.destroyed == 0);
+	task.reset();
+	REQUIRE(counts.destroyed == 1);
+}
