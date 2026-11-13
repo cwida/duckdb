@@ -20,20 +20,20 @@ from range(500000) r(i);
 statement ok
 create table f as select (i % 500)::integer x, ((i // 500) % 500)::integer y, i v from range(1000000) r(i);
 
-# two aggregates joined on all of their groups: one row per group
+# two-sided key: two aggregates joined on all of their groups, at most one row per group of the smaller side
 query II
 explain select * from
-	(select x, y, sum(a) s from t group by x, y) g1
+	(select x, y, sum(a) s from t where a < 2 group by x, y) g1
 	join (select x, y, max(b) m from t group by x, y) g2 on g1.x = g2.x and g1.y = g2.y;
 ----
-physical_plan	<REGEX>:.*HASH_JOIN[^~]*~2[0-9]{2},[0-9]{3} rows.*
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~1[0-9]{2},[0-9]{3} rows.*
 
 query I
 select count(*) from
-	(select x, y, sum(a) s from t group by x, y) g1
+	(select x, y, sum(a) s from t where a < 2 group by x, y) g1
 	join (select x, y, max(b) m from t group by x, y) g2 on g1.x = g2.x and g1.y = g2.y;
 ----
-250000
+142858
 
 # a filter above the aggregate keeps the key
 query II
@@ -43,13 +43,35 @@ explain select * from
 ----
 physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[0-9]{2},[0-9]{3} rows.*
 
-# a key on one side is enough: the projection of g2 replaces a group by an expression
+# one-sided key: the projection of g2 replaces a group by an expression, the key of g1 bounds the join by the rows of g2
 query II
 explain select * from
-	(select x, y, sum(a) s from t group by x, y) g1
-	join (select x + 0 as x, y, max(b) m from t group by x, y) g2 on g1.x = g2.x and g1.y = g2.y;
+	(select x, y, sum(a) s from t where a < 2 group by x, y) g1
+	join (select x % 1000 as x, y, max(b) m from t group by x, y) g2 on g1.x = g2.x and g1.y = g2.y;
 ----
 physical_plan	<REGEX>:.*HASH_JOIN[^~]*~2[0-9]{2},[0-9]{3} rows.*
+
+query I
+select count(*) from
+	(select x, y, sum(a) s from t where a < 2 group by x, y) g1
+	join (select x % 1000 as x, y, max(b) m from t group by x, y) g2 on g1.x = g2.x and g1.y = g2.y;
+----
+142858
+
+# no key: both projections replace a group by an expression, the estimate falls back to the general formula
+query II
+explain select * from
+	(select x % 1000 as x, y, sum(a) s from t where a < 2 group by x, y) g1
+	join (select x % 1000 as x, y, max(b) m from t group by x, y) g2 on g1.x = g2.x and g1.y = g2.y;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[0-9]{2},[0-9]{3},[0-9]{3} rows.*
+
+query I
+select count(*) from
+	(select x % 1000 as x, y, sum(a) s from t where a < 2 group by x, y) g1
+	join (select x % 1000 as x, y, max(b) m from t group by x, y) g2 on g1.x = g2.x and g1.y = g2.y;
+----
+142858
 
 # a table joined to an aggregate on all of the aggregate's groups: at most one match per row of the table
 query II
