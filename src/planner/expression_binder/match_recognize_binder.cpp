@@ -647,6 +647,7 @@ BindResult MatchRecognizeDefineBinder::BindAggregate(FunctionExpression &expr, A
 		BindResult operand;
 		{
 			const ScopedScope navigated(scope, MatchRecognizeScope::NAVIGATED);
+			InaccessibleLambdaBindings inaccessible_lambdas(*this, "aggregate functions");
 			operand = BindExpression(inner, depth, false);
 		}
 		if (operand.HasError()) {
@@ -701,6 +702,7 @@ BindResult MatchRecognizeDefineBinder::BindNeighbour(FunctionExpression &functio
 		MatchRecognizeNavigationOffset(context.GetContext(), function_name, arguments[1].GetExpression());
 	}
 	MatchRecognizeRejectNestedStep(arguments[0].GetExpression(), function_name);
+	InaccessibleLambdaBindings inaccessible_lambdas(*this, "row pattern navigation");
 	// A step names the row it starts from rather than the one it reaches: a pattern variable in front
 	// of it is the row that variable denotes (5.6.2), and FIRST or LAST within it says which of that
 	// variable's rows (5.6.4). Stepping and then reading the row reached is the same as reading the
@@ -796,6 +798,7 @@ BindResult MatchRecognizeDefineBinder::BindNavigated(unique_ptr<ParsedExpression
 	BindResult bound;
 	{
 		const ScopedScope navigated(scope, MatchRecognizeScope::NAVIGATED);
+		InaccessibleLambdaBindings inaccessible_lambdas(*this, "row pattern navigation");
 		bound = BindExpression(inner, depth, false);
 	}
 	if (bound.HasError()) {
@@ -983,7 +986,11 @@ BindResult MatchRecognizeMeasureBinder::BindOverMatch(FunctionExpression &expr, 
 	// the frame above already restricts the rows, so the values are not masked as well
 	const auto saved = scoped;
 	scoped = true;
+	// what was written is an aggregate, and an error names it as one
+	const auto saved_kind = window_function_kind;
+	window_function_kind = "aggregate functions";
 	auto result = BindWindowExpression(*window, depth);
+	window_function_kind = saved_kind;
 	scoped = saved;
 	return result;
 }
@@ -1098,6 +1105,7 @@ BindResult MatchRecognizeMeasureBinder::BindNavigation(FunctionExpression &funct
 		symbol = entry->second;
 	}
 	// what is navigated is an expression of the clause's own, so it is read the way one is
+	InaccessibleLambdaBindings inaccessible_lambdas(*this, "row pattern navigation");
 	auto packed = PackValue(state, std::move(inner));
 	auto masked = symbol.empty() ? std::move(packed) : ClassifiedValue(state, symbol, std::move(packed));
 	expr_ptr = MatchScopedValue(context, state, config, std::move(masked), running, function_name == "FIRST", offset);

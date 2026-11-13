@@ -1,0 +1,264 @@
+# name: test/sql/match_recognize/test_match_recognize_lambda_aggregates.test
+# description: MATCH_RECOGNIZE - an aggregate inside a lambda, with a lambda of its own inside it
+# group: [match_recognize]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES ([1, 2], 10, 100), ([3], 20, 200), ([0, 5, 6], 30, 300)) v(l, c, d);
+
+# An aggregate in MEASURES reads the rows of the match, not the elements the enclosing lambda is
+# applied to - so the lambda inside it is not passed the parameters of the enclosing lambda
+
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: sum(list_transform(l, lambda y: y + c)[1])) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+[64]
+
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: x + sum(list_transform(l, lambda y: y + c)[1])) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+[65]
+
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: list_transform([2, 3], lambda z: z + sum(list_transform(l, lambda y: y + c)[1]))) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+[[66, 67]]
+
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: count(*)) AS n
+    PATTERN (A+) DEFINE A AS true)
+----
+[3]
+
+query II
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: sum(list_transform(l, lambda y: y + c)[1])) AS s, list_transform([1], lambda x: x + count(*)) AS n
+    PATTERN (A B) DEFINE A AS c = 10, B AS c = 20)
+----
+[34]	[3]
+
+# running, per row of the match
+query II
+SELECT c, s FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: sum(list_transform(l, lambda y: y + c)[1])) AS s
+    ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true)
+ORDER BY c;
+----
+10	[11]
+20	[34]
+30	[64]
+
+# the columns of the row next to the aggregate
+query II
+SELECT c, s FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: list_transform(l, lambda y: y + sum(list_transform(l, lambda z: z + c)[1]))) AS s
+    ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true)
+ORDER BY c;
+----
+10	[[12, 13]]
+20	[[37]]
+30	[[64, 69, 70]]
+
+# an aggregate with FILTER or ORDER BY is bound over the match before it is recognised as one
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: sum(list_transform(l, lambda y: y + c)[1]) FILTER (WHERE d > 100)) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+[53]
+
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: string_agg(list_transform(l, lambda y: y + c)[1], ',' ORDER BY d DESC)) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+['30,23,11']
+
+# scoped to a variable
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: sum(list_transform(B.l, lambda y: y + B.c)[1])) AS s
+    PATTERN (A B+) DEFINE B AS c > 10)
+----
+[53]
+
+query I
+SELECT s FROM t MATCH_RECOGNIZE (
+    PARTITION BY d % 200 ORDER BY c MEASURES list_transform([1], lambda x: sum(list_transform(l, lambda y: y + c)[1])) AS s
+    PATTERN (A+) DEFINE A AS true)
+ORDER BY s;
+----
+[23]
+[41]
+
+# a macro standing for an aggregate is unfolded first, and what it adds around the aggregate is inside the lambda
+statement ok
+CREATE MACRO m(a, b) AS sum(a) + b;
+
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1, 2], lambda x: m(c, x)) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+[61, 62]
+
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1, 2], lambda x: m(c, x) FILTER (WHERE c > 10)) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+[51, 52]
+
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: count(DISTINCT list_transform(l, lambda y: y + c)[1] % 2)) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+[2]
+
+# the aggregate cannot reference the parameters of the enclosing lambda
+statement error
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: sum(list_transform(l, lambda y: y + x)[1])) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+aggregate functions cannot reference lambda parameters
+
+statement error
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: sum(x)) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+aggregate functions cannot reference lambda parameters
+
+statement error
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: sum(c) FILTER (WHERE x > 0)) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+aggregate functions cannot reference lambda parameters
+
+statement error
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: sum(list_transform(B.l, lambda y: y + x)[1])) AS s
+    PATTERN (A B+) DEFINE B AS c > 10)
+----
+aggregate functions cannot reference lambda parameters
+
+statement error
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1, 2], lambda x: m(x, c) FILTER (WHERE c > 10)) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+aggregate functions cannot reference lambda parameters
+
+# A running aggregate in DEFINE is folded by the matcher, and it reads the rows of the match the same way
+
+query I rowsort
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([1], lambda x: sum(list_transform(l, lambda y: y + c)[1]))[1] < 40)
+----
+1
+2
+
+query I rowsort
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([1], lambda x: x + sum(list_transform(l, lambda y: y + c)[1]))[1] < 40)
+----
+1
+2
+
+statement error
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([1], lambda x: sum(list_transform(l, lambda y: y + x)[1]))[1] < 40)
+----
+aggregate functions cannot reference lambda parameters
+
+statement error
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([1], lambda x: sum(x))[1] < 40)
+----
+aggregate functions cannot reference lambda parameters
+
+# a window function in DEFINE is computed below the matcher, over the rows of the input
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([1], lambda x: lag(list_transform(l, lambda y: y + c)[1]) OVER (ORDER BY c))[1] IS NULL)
+----
+1
+
+statement error
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([1], lambda x: lag(list_transform(l, lambda y: y + x)[1]) OVER (ORDER BY c))[1] IS NULL)
+----
+window functions cannot reference lambda parameters
+
+query I rowsort
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([1], lambda x: m(c, x))[1] < 40)
+----
+1
+2
+
+# A navigation reads a row of the match, which is computed below the matcher - outside the lambda as well
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([1], lambda x: FIRST(list_transform(l, lambda y: y + c)[1]))[1] < 20)
+----
+3
+
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([1], lambda x: x + LAST(list_transform(l, lambda y: y + c)[1]))[1] < 30)
+----
+2
+
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: x + FIRST(list_transform(l, lambda y: y + c)[1])) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+[12]
+
+query I
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: x + LAST(list_transform(l, lambda y: y + c)[1])) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+[31]
+
+statement error
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([1], lambda x: FIRST(list_transform(l, lambda y: y + x)[1]))[1] < 40)
+----
+row pattern navigation cannot reference lambda parameters
+
+statement error
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([1], lambda x: PREV(list_transform(l, lambda y: y + x)[1]))[1] IS NULL)
+----
+row pattern navigation cannot reference lambda parameters
+
+statement error
+FROM t MATCH_RECOGNIZE (
+    ORDER BY c MEASURES list_transform([1], lambda x: FIRST(list_transform(l, lambda y: y + x)[1])) AS s
+    PATTERN (A+) DEFINE A AS true)
+----
+row pattern navigation cannot reference lambda parameters

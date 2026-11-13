@@ -129,20 +129,7 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 	if (inside_aggregate) {
 		throw BinderException(aggr, "aggregate function calls cannot be nested");
 	}
-	// an aggregate is computed over the rows of the query, not over the elements an enclosing lambda is applied to -
-	// so the parameters of the enclosing lambdas can not be referenced in the aggregate
-	struct InaccessibleLambdaBindings {
-		InaccessibleLambdaBindings(ExpressionBinder &binder_p, idx_t count)
-		    : binder(binder_p), previous_count(binder.inaccessible_lambda_binding_count) {
-			binder.inaccessible_lambda_binding_count = count;
-		}
-		~InaccessibleLambdaBindings() {
-			binder.inaccessible_lambda_binding_count = previous_count;
-		}
-		ExpressionBinder &binder;
-		idx_t previous_count;
-	};
-	InaccessibleLambdaBindings inaccessible_lambdas(*this, lambda_bindings ? lambda_bindings->size() : 0);
+	InaccessibleLambdaBindings inaccessible_lambdas(*this, "aggregate functions");
 
 	// first bind the child of the aggregate expression (if any)
 	this->bound_aggregate = true;
