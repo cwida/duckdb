@@ -151,8 +151,6 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlanInternal(LogicalOperator &op)
 		return CreatePlan(op.Cast<LogicalDistinct>());
 	case LogicalOperatorType::LOGICAL_PREPARE:
 		return CreatePlan(op.Cast<LogicalPrepare>());
-	case LogicalOperatorType::LOGICAL_EXECUTE:
-		return CreatePlan(op.Cast<LogicalExecute>());
 	case LogicalOperatorType::LOGICAL_CREATE_VIEW:
 	case LogicalOperatorType::LOGICAL_CREATE_SEQUENCE:
 	case LogicalOperatorType::LOGICAL_CREATE_SCHEMA:

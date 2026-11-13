@@ -78,6 +78,8 @@ public:
 
 	static idx_t BytesPerThread(const CSVReaderOptions &reader_options);
 
+	//! A thread's boundary is ROWS_PER_THREAD / ROWS_PER_BUFFER of the buffer size, and at least one maximum line size
+	static constexpr idx_t ROWS_PER_BUFFER = 16;
 	static constexpr idx_t ROWS_PER_THREAD = 4;
 
 	CSVPosition pos;

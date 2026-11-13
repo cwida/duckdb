@@ -96,6 +96,11 @@ struct ExtensionInstallOptions {
 	bool throw_on_origin_mismatch = false;
 };
 
+struct InstalledExtensionDirectory {
+	string path;
+	string repository;
+};
+
 class ExtensionHelper {
 public:
 	static void LoadAllExtensions(DuckDB &db);
@@ -141,9 +146,14 @@ public:
 	static string ExtensionDirectory(ClientContext &context);
 	static string ExtensionDirectory(DatabaseInstance &db, FileSystem &fs);
 
-	// Get all extension directory paths
+	// Get all extension directory paths (flat)
 	static vector<string> GetExtensionDirectoryPath(ClientContext &context);
 	static vector<string> GetExtensionDirectoryPath(DatabaseInstance &db, FileSystem &fs);
+
+	// Get all extension directory paths, including those in the 'repositories' subdirectory
+	static vector<InstalledExtensionDirectory> GetInstalledExtensionDirectories(ClientContext &context);
+	static vector<InstalledExtensionDirectory> GetInstalledExtensionDirectories(DatabaseInstance &db, FileSystem &fs);
+
 	//! Whether a file in an extension directory is an installed extension, and not the temporary file of an install
 	static bool IsInstalledExtensionFile(const string &path);
 

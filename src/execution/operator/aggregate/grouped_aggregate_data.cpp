@@ -47,14 +47,15 @@ unordered_map<idx_t, idx_t> GroupedAggregateData::AddFilterColumns(const vector<
 		if (!aggr.GetFilter()) {
 			continue;
 		}
-		auto &filter_ref = aggr.GetFilterMutable()->Cast<BoundReferenceExpression>();
+		auto &filter = aggr.GetFilterMutable();
+		auto &filter_ref = filter->Cast<BoundReferenceExpression>();
 		auto entry = payload_columns.find(filter_ref.Index());
 		if (entry == payload_columns.end()) {
 			entry = payload_columns.emplace(filter_ref.Index(), payload_types.size()).first;
 			filter_columns.emplace(payload_types.size(), filter_ref.Index());
 			payload_types.push_back(filter_ref.GetReturnType());
 		}
-		filter_ref.IndexMutable() = entry->second;
+		filter = filter_ref.WithIndex(entry->second);
 	}
 	return filter_columns;
 }

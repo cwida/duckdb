@@ -1,7 +1,9 @@
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/operator/add.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/operator/logical_any_join.hpp"
@@ -119,6 +121,30 @@ struct VerificationStatsGuard {
 	bool &attach;
 	bool previous;
 };
+
+//! The column a join-derived filter can target: the side itself or the column under an invertible numeric cast
+static optional_ptr<const Expression> GetFilterColumn(ClientContext &context, const Expression &expr) {
+	optional_ptr<const Expression> column = expr;
+	if (BoundCastExpression::IsCast(expr)) {
+		auto &cast = expr.Cast<BoundFunctionExpression>();
+		auto source_type = BoundCastExpression::SourceType(cast);
+		auto &target_type = cast.GetReturnType();
+		// Invertible numeric casts also preserve order.
+		if (BoundCastExpression::IsTryCast(cast) || !source_type.IsNumeric() || !target_type.IsNumeric() ||
+		    !BoundCastExpression::CastIsInvertibleForEquality(source_type, target_type)) {
+			return nullptr;
+		}
+		if (!BoundCastExpression::IsDefaultCast(cast) &&
+		    CastFunctionSet::Get(context).CanOverrideDefaultCast(source_type, target_type)) {
+			return nullptr;
+		}
+		column = BoundCastExpression::Child(cast);
+	}
+	if (column->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+		return nullptr;
+	}
+	return column;
+}
 
 void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, unique_ptr<LogicalOperator> &node_ptr) {
 	// every condition is evaluated over the candidate pairs of the join inputs, so the verification statistics of
@@ -239,6 +265,14 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 				// Update join_stats when is already part of the join
 				condition.SetLeftStats(std::move(updated_stats_left));
 				condition.SetRightStats(std::move(updated_stats_right));
+			} else if (stats_left && stats_right && GetFilterColumn(context, condition.GetLHS()) &&
+			           GetFilterColumn(context, condition.GetRHS())) {
+				// A side is a cast of a column: tighten copies of the side stats instead
+				auto tightened_left = stats_left->Copy();
+				auto tightened_right = stats_right->Copy();
+				UpdateFilterStatistics(tightened_left, tightened_right, condition.GetComparisonType());
+				CreateFilterFromJoinStats(join.children[0], condition.LeftReference(), *stats_left, tightened_left);
+				CreateFilterFromJoinStats(join.children[1], condition.RightReference(), *stats_right, tightened_right);
 			}
 			break;
 		}
@@ -470,9 +504,10 @@ void StatisticsPropagator::CreateFilterFromJoinStats(unique_ptr<LogicalOperator>
 	if (mode != StatisticsPropagationMode::FULL) {
 		return;
 	}
-	// Only do this for integral colref's that have stats
-	if (expr->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF || !expr->GetReturnType().IsIntegral() ||
-	    !NumericStats::HasMinMax(stats_before) || !NumericStats::HasMinMax(stats_after)) {
+	// Match the numeric types supported by UpdateFilterStatistics.
+	auto column = GetFilterColumn(context, *expr);
+	if (!column || !expr->GetReturnType().IsNumeric() || !NumericStats::HasMinMax(stats_before) ||
+	    !NumericStats::HasMinMax(stats_after)) {
 		return;
 	}
 
@@ -483,15 +518,19 @@ void StatisticsPropagator::CreateFilterFromJoinStats(unique_ptr<LogicalOperator>
 	auto max_after = NumericStats::Max(stats_after);
 
 	vector<unique_ptr<Expression>> filter_exprs;
+	auto add_filter = [&](ExpressionType comparison_type, const Value &bound) {
+		// Inclusive bounds remain conservative when the reverse numeric cast rounds.
+		auto column_bound = bound.DefaultTryCastAs(column->GetReturnType());
+		if (column_bound) {
+			filter_exprs.emplace_back(BoundComparisonExpression::Create(
+			    comparison_type, column->Copy(), make_uniq<BoundConstantExpression>(std::move(*column_bound))));
+		}
+	};
 	if (min_after > min_before) {
-		filter_exprs.emplace_back(
-		    BoundComparisonExpression::Create(ExpressionType::COMPARE_GREATERTHANOREQUALTO, expr->Copy(),
-		                                      make_uniq<BoundConstantExpression>(std::move(min_after))));
+		add_filter(ExpressionType::COMPARE_GREATERTHANOREQUALTO, min_after);
 	}
 	if (max_after < max_before) {
-		filter_exprs.emplace_back(
-		    BoundComparisonExpression::Create(ExpressionType::COMPARE_LESSTHANOREQUALTO, expr->Copy(),
-		                                      make_uniq<BoundConstantExpression>(std::move(max_after))));
+		add_filter(ExpressionType::COMPARE_LESSTHANOREQUALTO, max_after);
 	}
 
 	if (filter_exprs.empty()) {

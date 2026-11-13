@@ -247,8 +247,8 @@ static bool PushStructCollation(ClientContext &context, unique_ptr<Expression> &
 	vector<unique_ptr<Expression>> arguments;
 	arguments.push_back(std::move(lambda));
 	arguments.push_back(std::move(source));
-	source = function_binder.BindScalarFunction(Identifier::DefaultSchema(), "invoke", std::move(arguments));
-	source->SetAlias(source_alias);
+	source = function_binder.BindScalarFunction(Identifier::DefaultSchema(), "invoke", std::move(arguments), false,
+	                                            nullptr, std::move(source_alias));
 	return true;
 }
 

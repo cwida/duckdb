@@ -25,9 +25,16 @@
       ]
     },
     {
+      "reason": "Checks that a fatal error on the default database invalidates the instance, but this config makes an attached database the default.",
+      "paths": [
+        "test/sql/storage/attach/attach_invalidation_commit.test"
+      ]
+    },
+    {
       "reason": "Requires httpfs to be unloaded, but this config loads it statically.",
       "paths": [
-        "test/extension/install_httpfs_https_repository.test"
+        "test/extension/install_httpfs_https_repository.test",
+        "test/sql/extensions/extension_repository_from_host_no_httpfs.test"
       ]
     },
     {

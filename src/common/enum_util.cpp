@@ -233,6 +233,7 @@
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/planner/logical_operator_repeatability.hpp"
 #include "duckdb/planner/logical_plan_verification_result.hpp"
+#include "duckdb/planner/planner.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/buffer/buffer_pool_reservation.hpp"
@@ -2557,21 +2558,22 @@ ExtensionLoadResult EnumUtil::FromString<ExtensionLoadResult>(const char *value)
 
 const StringUtil::EnumStringLiteral *GetExtensionRepositoryAccessValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
-		{ static_cast<uint32_t>(ExtensionRepositoryAccess::UNDECIDED), "UNDECIDED" },
+		{ static_cast<uint32_t>(ExtensionRepositoryAccess::HOSTS), "HOSTS" },
 		{ static_cast<uint32_t>(ExtensionRepositoryAccess::ALLOWED), "ALLOWED" },
-		{ static_cast<uint32_t>(ExtensionRepositoryAccess::FORBIDDEN), "FORBIDDEN" }
+		{ static_cast<uint32_t>(ExtensionRepositoryAccess::FORBIDDEN), "FORBIDDEN" },
+		{ static_cast<uint32_t>(ExtensionRepositoryAccess::HOSTS_ONLY), "HOSTS_ONLY" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<ExtensionRepositoryAccess>(ExtensionRepositoryAccess value) {
-	return StringUtil::EnumToString(GetExtensionRepositoryAccessValues(), 3, "ExtensionRepositoryAccess", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetExtensionRepositoryAccessValues(), 4, "ExtensionRepositoryAccess", static_cast<uint32_t>(value));
 }
 
 template<>
 ExtensionRepositoryAccess EnumUtil::FromString<ExtensionRepositoryAccess>(const char *value) {
-	return static_cast<ExtensionRepositoryAccess>(StringUtil::StringToEnum(GetExtensionRepositoryAccessValues(), 3, "ExtensionRepositoryAccess", value));
+	return static_cast<ExtensionRepositoryAccess>(StringUtil::StringToEnum(GetExtensionRepositoryAccessValues(), 4, "ExtensionRepositoryAccess", value));
 }
 
 const StringUtil::EnumStringLiteral *GetExtensionRepositoryTypeValues() {
@@ -3851,7 +3853,6 @@ const StringUtil::EnumStringLiteral *GetLogicalOperatorTypeValues() {
 		{ static_cast<uint32_t>(LogicalOperatorType::LOGICAL_CREATE_TRIGGER), "LOGICAL_CREATE_TRIGGER" },
 		{ static_cast<uint32_t>(LogicalOperatorType::LOGICAL_EXPLAIN), "LOGICAL_EXPLAIN" },
 		{ static_cast<uint32_t>(LogicalOperatorType::LOGICAL_PREPARE), "LOGICAL_PREPARE" },
-		{ static_cast<uint32_t>(LogicalOperatorType::LOGICAL_EXECUTE), "LOGICAL_EXECUTE" },
 		{ static_cast<uint32_t>(LogicalOperatorType::LOGICAL_EXPORT), "LOGICAL_EXPORT" },
 		{ static_cast<uint32_t>(LogicalOperatorType::LOGICAL_VACUUM), "LOGICAL_VACUUM" },
 		{ static_cast<uint32_t>(LogicalOperatorType::LOGICAL_SET), "LOGICAL_SET" },
@@ -3869,12 +3870,12 @@ const StringUtil::EnumStringLiteral *GetLogicalOperatorTypeValues() {
 
 template<>
 const char* EnumUtil::ToChars<LogicalOperatorType>(LogicalOperatorType value) {
-	return StringUtil::EnumToString(GetLogicalOperatorTypeValues(), 68, "LogicalOperatorType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetLogicalOperatorTypeValues(), 67, "LogicalOperatorType", static_cast<uint32_t>(value));
 }
 
 template<>
 LogicalOperatorType EnumUtil::FromString<LogicalOperatorType>(const char *value) {
-	return static_cast<LogicalOperatorType>(StringUtil::StringToEnum(GetLogicalOperatorTypeValues(), 68, "LogicalOperatorType", value));
+	return static_cast<LogicalOperatorType>(StringUtil::StringToEnum(GetLogicalOperatorTypeValues(), 67, "LogicalOperatorType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetLogicalPlanVerificationIssueCodeValues() {
@@ -5072,7 +5073,6 @@ const StringUtil::EnumStringLiteral *GetPhysicalOperatorTypeValues() {
 		{ static_cast<uint32_t>(PhysicalOperatorType::EXPLAIN), "EXPLAIN" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::EXPLAIN_ANALYZE), "EXPLAIN_ANALYZE" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::EMPTY_RESULT), "EMPTY_RESULT" },
-		{ static_cast<uint32_t>(PhysicalOperatorType::EXECUTE), "EXECUTE" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::PREPARE), "PREPARE" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::VACUUM), "VACUUM" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::EXPORT), "EXPORT" },
@@ -5098,12 +5098,12 @@ const StringUtil::EnumStringLiteral *GetPhysicalOperatorTypeValues() {
 
 template<>
 const char* EnumUtil::ToChars<PhysicalOperatorType>(PhysicalOperatorType value) {
-	return StringUtil::EnumToString(GetPhysicalOperatorTypeValues(), 90, "PhysicalOperatorType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetPhysicalOperatorTypeValues(), 89, "PhysicalOperatorType", static_cast<uint32_t>(value));
 }
 
 template<>
 PhysicalOperatorType EnumUtil::FromString<PhysicalOperatorType>(const char *value) {
-	return static_cast<PhysicalOperatorType>(StringUtil::StringToEnum(GetPhysicalOperatorTypeValues(), 90, "PhysicalOperatorType", value));
+	return static_cast<PhysicalOperatorType>(StringUtil::StringToEnum(GetPhysicalOperatorTypeValues(), 89, "PhysicalOperatorType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetPhysicalTableScanExecutionStrategyValues() {
@@ -5293,6 +5293,24 @@ const char* EnumUtil::ToChars<PipelineScheduleStageType>(PipelineScheduleStageTy
 template<>
 PipelineScheduleStageType EnumUtil::FromString<PipelineScheduleStageType>(const char *value) {
 	return static_cast<PipelineScheduleStageType>(StringUtil::StringToEnum(GetPipelineScheduleStageTypeValues(), 5, "PipelineScheduleStageType", value));
+}
+
+const StringUtil::EnumStringLiteral *GetPlanningModeValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(PlanningMode::FULL), "FULL" },
+		{ static_cast<uint32_t>(PlanningMode::BIND_ONLY), "BIND_ONLY" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<PlanningMode>(PlanningMode value) {
+	return StringUtil::EnumToString(GetPlanningModeValues(), 2, "PlanningMode", static_cast<uint32_t>(value));
+}
+
+template<>
+PlanningMode EnumUtil::FromString<PlanningMode>(const char *value) {
+	return static_cast<PlanningMode>(StringUtil::StringToEnum(GetPlanningModeValues(), 2, "PlanningMode", value));
 }
 
 const StringUtil::EnumStringLiteral *GetPragmaTypeValues() {

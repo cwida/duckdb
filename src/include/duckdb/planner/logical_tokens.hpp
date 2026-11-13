@@ -30,7 +30,6 @@ class LogicalDelimGet;
 class LogicalDistinct;
 class LogicalDummyScan;
 class LogicalEmptyResult;
-class LogicalExecute;
 class LogicalExplain;
 class LogicalExport;
 class LogicalExpressionGet;

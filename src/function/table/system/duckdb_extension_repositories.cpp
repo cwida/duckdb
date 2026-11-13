@@ -32,6 +32,9 @@ static unique_ptr<FunctionData> DuckDBExtensionRepositoriesBind(ClientContext &c
 	names.emplace_back("public_keys");
 	return_types.emplace_back(LogicalType::LIST(LogicalType::VARCHAR));
 
+	names.emplace_back("host");
+	return_types.emplace_back(LogicalType::VARCHAR);
+
 	return nullptr;
 }
 
@@ -70,12 +73,15 @@ void DuckDBExtensionRepositoriesFunction(ClientContext &context, TableFunctionIn
 	auto &key_fingerprints = output.data[3];
 	// public_keys, LIST(VARCHAR)
 	auto &public_keys = output.data[4];
+	// host, VARCHAR: the host a repository was resolved from, NULL for one added by prefix or built in
+	auto &host = output.data[5];
 
 	while (data.offset < data.entries.size() && count < STANDARD_VECTOR_SIZE) {
 		auto &entry = data.entries[data.offset++];
 		name.Append(Value(entry.name));
 		prefix.Append(Value(entry.path));
 		type.Append(Value(EnumUtil::ToString(entry.type)));
+		host.Append(entry.host.empty() ? Value(LogicalType::VARCHAR) : Value(entry.host));
 		// only user provided repositories have keys of their own - the core and community keys are built in
 		if (entry.public_keys.empty()) {
 			key_fingerprints.Append(Value(LogicalType::LIST(LogicalType::VARCHAR)));

@@ -25,6 +25,7 @@ public:
 	atomic<bool> is_loaded;
 	unique_ptr<ExtensionInstallInfo> install_info;
 	unique_ptr<ExtensionLoadedInfo> load_info;
+	string file_path;
 };
 
 class ExtensionActiveLoad {
@@ -48,7 +49,7 @@ public:
 	Identifier alias;
 
 public:
-	void FinishLoad(ExtensionInstallInfo &install_info);
+	void FinishLoad(ExtensionInstallInfo &install_info, const string &file_path = string());
 	void LoadFail(const ErrorData &error);
 };
 

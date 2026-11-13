@@ -76,7 +76,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_GLOBAL(AccessModeSetting),
     DUCKDB_LOCAL(ActiveGrammarExtensionsSetting),
     DUCKDB_SETTING_CALLBACK(AllocatorBackgroundThreadsSetting),
-    DUCKDB_GLOBAL(AllocatorBulkDeallocationFlushThresholdSetting),
+    DUCKDB_SETTING_CALLBACK(AllocatorBulkDeallocationFlushThresholdSetting),
     DUCKDB_SETTING_CALLBACK(AllocatorFlushThresholdSetting),
     DUCKDB_SETTING_CALLBACK(AllowCommunityExtensionsSetting),
     DUCKDB_SETTING_CALLBACK(AllowExtensionRepositoriesSetting),
@@ -104,17 +104,17 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(CatalogErrorMaxSchemasSetting),
     DUCKDB_SETTING_CALLBACK(CheckpointOnDetachSetting),
     DUCKDB_SETTING(CheckpointOnShutdownSetting),
-    DUCKDB_GLOBAL(CheckpointThresholdSetting),
+    DUCKDB_SETTING_CALLBACK(CheckpointThresholdSetting),
     DUCKDB_LOCAL(CurrentDialectSetting),
     DUCKDB_SETTING_CALLBACK(CurrentTransactionInvalidationPolicySetting),
     DUCKDB_SETTING(CustomExtensionRepositorySetting),
-    DUCKDB_GLOBAL(CustomUserAgentSetting),
+    DUCKDB_SETTING_CALLBACK(CustomUserAgentSetting),
     DUCKDB_SETTING(DebugAbortOnWalFailureSetting),
     DUCKDB_SETTING(DebugAsofIejoinSetting),
     DUCKDB_SETTING_CALLBACK(DebugCheckpointAbortSetting),
     DUCKDB_SETTING(DebugCheckpointScanSleepMsSetting),
     DUCKDB_SETTING(DebugCheckpointSleepMsSetting),
-    DUCKDB_GLOBAL(DebugDeltaOnlyVariantEncodingEnabledSetting),
+    DUCKDB_SETTING_CALLBACK(DebugDeltaOnlyVariantEncodingEnabledSetting),
     DUCKDB_SETTING(DebugDisableOptimizerSetting),
     DUCKDB_SETTING(EnableCachingOperatorsSetting),
     DUCKDB_SETTING(DebugEvictionQueueSleepMicroSecondsSetting),
@@ -126,17 +126,17 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(DebugForceExternalSetting),
     DUCKDB_SETTING(DebugForceFetchRowSetting),
     DUCKDB_SETTING(DebugForceFlushAppendFailureSetting),
-    DUCKDB_GLOBAL(ForceMbedtlsUnsafeSetting),
+    DUCKDB_SETTING_CALLBACK(ForceMbedtlsUnsafeSetting),
     DUCKDB_SETTING(DebugForceNoCrossProductSetting),
     DUCKDB_SETTING(ForceUpdateToDelAndInsertSetting),
-    DUCKDB_GLOBAL(ForceVariantShredding),
+    DUCKDB_SETTING_CALLBACK(ForceVariantShredding),
     DUCKDB_SETTING(DebugForceWalFsyncFailureSetting),
     DUCKDB_SETTING_CALLBACK(DebugInitializeSetting),
     DUCKDB_SETTING(DebugLocalFileSystemDelayMsSetting),
     DUCKDB_SETTING_CALLBACK(DebugOrderVerificationSetting),
     DUCKDB_SETTING_CALLBACK(DebugPhysicalTableScanExecutionStrategySetting),
     DUCKDB_SETTING(DebugSkipCheckpointOnCommitSetting),
-    DUCKDB_GLOBAL(DebugVerificationModeSetting),
+    DUCKDB_SETTING_CALLBACK(DebugVerificationModeSetting),
     DUCKDB_SETTING(DebugVerificationProjectionSetting),
     DUCKDB_SETTING(DebugVerifyAggregateStateExportSetting),
     DUCKDB_SETTING(DebugVerifyBlocksSetting),
@@ -160,10 +160,10 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING_CALLBACK(DialectCompatibilityModeSetting),
     DUCKDB_SETTING_CALLBACK(DisableDatabaseInvalidationSetting),
     DUCKDB_SETTING(DisableTimestamptzCastsSetting),
-    DUCKDB_GLOBAL(DisabledCompressionMethodsSetting),
+    DUCKDB_SETTING_CALLBACK(DisabledCompressionMethodsSetting),
     DUCKDB_GLOBAL(DisabledFilesystemsSetting),
     DUCKDB_GLOBAL(DisabledLogTypes),
-    DUCKDB_GLOBAL(DisabledOptimizersSetting),
+    DUCKDB_SETTING_CALLBACK(DisabledOptimizersSetting),
     DUCKDB_SETTING_CALLBACK(DuckDBAPISetting),
     DUCKDB_SETTING(DynamicOrFilterThresholdSetting),
     DUCKDB_GLOBAL(EnableBlockAllocatorSetting),
@@ -185,7 +185,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(ErrorsAsJSONSetting),
     DUCKDB_SETTING(ExperimentalMetadataReuseSetting),
     DUCKDB_SETTING_CALLBACK(ExplainOutputSetting),
-    DUCKDB_GLOBAL(ExtensionDirectoriesSetting),
+    DUCKDB_SETTING_CALLBACK(ExtensionDirectoriesSetting),
     DUCKDB_SETTING(ExtensionDirectorySetting),
     DUCKDB_SETTING_CALLBACK(ExtensionRepositoryDirectorySetting),
     DUCKDB_SETTING_CALLBACK(ExternalFileCacheLocalMaxBlockSizeSetting),
@@ -247,9 +247,9 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING_CALLBACK(PreserveIdentifierCaseSetting),
     DUCKDB_SETTING(PreserveInsertionOrderSetting),
     DUCKDB_SETTING(ProduceArrowStringViewSetting),
-    DUCKDB_LOCAL(ProfilingCoverageSetting),
+    DUCKDB_SETTING_CALLBACK(ProfilingCoverageSetting),
     DUCKDB_LOCAL(ProfilingModeSetting),
-    DUCKDB_LOCAL(ProfilingOutputSetting),
+    DUCKDB_SETTING_CALLBACK(ProfilingOutputSetting),
     DUCKDB_LOCAL(ProfilingRendererSettingsSetting),
     DUCKDB_SETTING_CALLBACK(ProgressBarTimeSetting),
     DUCKDB_SETTING_CALLBACK(ReadAheadDepthSetting),
@@ -399,8 +399,7 @@ idx_t DBConfig::GetWriteBufferMemoryLimit() const {
 }
 
 vector<string> DBConfig::GetExtensionDirectories() const {
-	std::lock_guard<std::recursive_mutex> guard(config_lock);
-	return options.extension_directories;
+	return Settings::Get<ExtensionDirectoriesSetting>(*this);
 }
 
 void DBConfig::SetOption(const ConfigurationOption &option, const Value &value) {
@@ -461,6 +460,12 @@ void DBConfig::SetOption(optional_ptr<DatabaseInstance> db, const ConfigurationO
 void DBConfig::ResetOption(optional_ptr<DatabaseInstance> db, const ConfigurationOption &option) {
 	if (option.default_value) {
 		// generic option
+		if (option.set_callback) {
+			SettingCallbackInfo info(*this, db);
+			info.is_reset = true;
+			auto reset_value = Value(option.default_value).DefaultCastAs(ParseLogicalType(option.parameter_type));
+			option.set_callback(info, reset_value);
+		}
 		user_settings.ClearSetting(option.setting_idx.GetIndex());
 		return;
 	}
@@ -959,8 +964,9 @@ const string DBConfig::UserAgent() const {
 		user_agent += " " + duckdb_api;
 	}
 
-	if (!options.custom_user_agent.empty()) {
-		user_agent += " " + options.custom_user_agent;
+	auto custom_user_agent = Settings::Get<CustomUserAgentSetting>(*this);
+	if (!custom_user_agent.empty()) {
+		user_agent += " " + custom_user_agent;
 	}
 	return user_agent;
 }
@@ -1033,11 +1039,6 @@ bool DBConfig::IsOptimizerDisabled(OptimizerType type) const {
 	}
 	lock_guard<mutex> guard(disabled_optimizers_lock);
 	return options.disabled_optimizers.find(type) != options.disabled_optimizers.end();
-}
-
-LogicalType DBConfig::GetForceVariantShredding() const {
-	std::lock_guard<std::recursive_mutex> guard(config_lock);
-	return options.force_variant_shredding;
 }
 
 identifier_set_t DBConfig::GetAllowedConfigs() const {

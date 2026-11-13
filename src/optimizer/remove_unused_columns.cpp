@@ -1176,8 +1176,7 @@ void RemoveUnusedColumns::RewriteExpressions(LogicalProjection &proj, idx_t expr
 				    return new_binding_entry->second;
 			    }
 			    // binding does not exist - create it
-			    auto target = make_uniq<BoundColumnRefExpression>(column_type, original_binding);
-			    target->SetAlias(expr.GetAlias());
+			    auto target = make_uniq<BoundColumnRefExpression>(expr.GetAlias(), column_type, original_binding);
 			    auto new_extract = ConstructStructExtractFromPath(context, std::move(target), extract_path);
 			    if (cast_type) {
 				    auto cast = BoundCastExpression::AddCastToType(context, std::move(new_extract), *cast_type);

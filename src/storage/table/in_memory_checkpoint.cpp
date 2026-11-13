@@ -30,7 +30,7 @@ InMemoryCheckpointer::InMemoryCheckpointer(QueryContext context, AttachedDatabas
 void InMemoryCheckpointer::CreateCheckpoint() {
 	auto &transaction_manager = DuckTransactionManager::Get(db);
 	// appends that run alongside the checkpoint start new row groups, index changes go to the checkpoint deltas
-	ActiveCheckpointWrapper active_checkpoint(GetCheckpointContext(), db, transaction_manager);
+	ActiveCheckpointWrapper active_checkpoint(checkpoint_context, db, transaction_manager);
 	{
 		unique_lock<mutex> commit_lock;
 		if (!options.commit_lock) {

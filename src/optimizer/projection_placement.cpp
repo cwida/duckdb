@@ -959,8 +959,7 @@ static void ApplyPlacementGroup(Optimizer &optimizer, column_binding_map_t<uniqu
 		auto expression_index = group.placements[i].expression_index;
 		auto alias = upper_projection.expressions[expression_index]->GetAlias();
 		auto replacement = make_uniq<BoundColumnRefExpression>(
-		    upper_projection.expressions[expression_index]->GetReturnType(), computed_bindings[i]);
-		replacement->SetAlias(std::move(alias));
+		    std::move(alias), upper_projection.expressions[expression_index]->GetReturnType(), computed_bindings[i]);
 		upper_projection.expressions[expression_index] = std::move(replacement);
 	}
 }
