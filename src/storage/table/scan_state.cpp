@@ -225,6 +225,7 @@ ParallelCollectionScanState::ParallelCollectionScanState()
 void ParallelCollectionScanState::AssignRowGroup(optional_ptr<SegmentNode<RowGroup>> row_group) {
 	current_row_group = row_group;
 	while (current_row_group && !ShouldScanPartition(*current_row_group)) {
+		skipped_rows.fetch_add(current_row_group->GetNode().count, std::memory_order_relaxed);
 		current_row_group = GetNextRowGroup(*row_groups, *current_row_group).get();
 	}
 }

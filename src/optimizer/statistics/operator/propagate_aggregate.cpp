@@ -541,13 +541,6 @@ void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_p
 	}
 
 	if (need_to_scan) {
-		// Partial precomputation combines plan-time partition statistics with an execution-time scan that
-		// skips partitions by their index in the row-group list. That list can change in between
-		// (concurrent appends, checkpoints), in which case a skipped partition is scanned again and its
-		// rows are counted twice. Only the full precomputation (no scan) is safe.
-		return;
-	}
-	if (need_to_scan) {
 		// Partial precomputation: some partitions need scanning
 		// Insert a LogicalProjection above the aggregate that combines pre-computed constants with scan results
 		if (!get.function.set_partitions_to_scan) {

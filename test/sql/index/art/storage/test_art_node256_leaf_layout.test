@@ -88,9 +88,9 @@ statement ok
 ATTACH '{TEST_DIR}/node256_{version}.db' AS leaf_db
 
 query I
-SELECT count(*) FROM leaf_db.t WHERE k=0
+SELECT sum(id) FROM leaf_db.t WHERE k=0
 ----
-768
+67272320
 
 query I
 SELECT count(*) FROM leaf_db.t WHERE k=1
@@ -98,7 +98,7 @@ SELECT count(*) FROM leaf_db.t WHERE k=1
 0
 
 query II
-EXPLAIN ANALYZE SELECT count(*) FROM leaf_db.t WHERE k=0;
+EXPLAIN ANALYZE SELECT sum(id) FROM leaf_db.t WHERE k=0;
 ----
 analyzed_plan	<REGEX>:.*Type: Index Scan.*
 
@@ -168,12 +168,12 @@ SELECT count(*) FROM upgrade_db.old_t WHERE k=0
 512
 
 query I
-SELECT count(*) FROM upgrade_db.new_t WHERE k=3
+SELECT sum(id) FROM upgrade_db.new_t WHERE k=3
 ----
-256
+229248
 
 query II
-EXPLAIN ANALYZE SELECT count(*) FROM upgrade_db.new_t WHERE k=3
+EXPLAIN ANALYZE SELECT sum(id) FROM upgrade_db.new_t WHERE k=3
 ----
 analyzed_plan	<REGEX>:.*Type: Index Scan.*
 
@@ -192,9 +192,9 @@ SELECT count(*) FROM upgrade_db.old_t WHERE k=1023
 256
 
 query I
-SELECT count(*) FROM upgrade_db.old_t WHERE k=0
+SELECT sum(id) FROM upgrade_db.old_t WHERE k=0
 ----
-512
+67174144
 
 query I
 SELECT count(*) FROM upgrade_db.old_t WHERE k=1
@@ -202,17 +202,17 @@ SELECT count(*) FROM upgrade_db.old_t WHERE k=1
 0
 
 query II
-EXPLAIN ANALYZE SELECT count(*) FROM upgrade_db.old_t WHERE k=0
+EXPLAIN ANALYZE SELECT sum(id) FROM upgrade_db.old_t WHERE k=0
 ----
 analyzed_plan	<REGEX>:.*Type: Index Scan.*
 
 query I
-SELECT count(*) FROM upgrade_db.new_t WHERE k=3
+SELECT sum(id) FROM upgrade_db.new_t WHERE k=3
 ----
-256
+229248
 
 query II
-EXPLAIN ANALYZE SELECT count(*) FROM upgrade_db.new_t WHERE k=3
+EXPLAIN ANALYZE SELECT sum(id) FROM upgrade_db.new_t WHERE k=3
 ----
 analyzed_plan	<REGEX>:.*Type: Index Scan.*
 

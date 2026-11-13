@@ -403,7 +403,7 @@ struct ParallelCollectionScanState {
 	                                                    SegmentNode<RowGroup> &row_group) const;
 
 	//! The row group collection we are scanning
-	RowGroupCollection *collection;
+	const RowGroupCollection *collection;
 	shared_ptr<RowGroupSegmentTree> row_groups;
 	optional_ptr<SegmentNode<RowGroup>> current_row_group;
 	idx_t vector_index;

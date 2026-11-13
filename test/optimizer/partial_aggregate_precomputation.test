@@ -47,15 +47,11 @@ SELECT count(*), min(i), max(i) FROM t WHERE i >= 2048
 ----
 6144	2048	8191
 
-mode skip "This optimization is currently disabled due to issues with rowgroup reordering"
-
 # Partial precompute: PROJECTION merges precomputed constants with aggregate results
 query II
 EXPLAIN SELECT count(*), min(i), max(i) FROM t WHERE i >= 2048 AND j > 5000
 ----
 physical_plan	<REGEX>:.*COALESCE.*least.*UNGROUPED_AGGREGATE.*
-
-mode unskip
 
 query III
 SELECT count(*), min(i), max(i) FROM t WHERE i >= 2048 AND j > 5000
@@ -133,14 +129,10 @@ analyzed_plan	<REGEX>:.*Type: Index Scan.*
 statement ok
 RESET disabled_optimizers
 
-mode skip "This optimization is currently disabled due to issues with rowgroup reordering"
-
 query II
 EXPLAIN ANALYZE SELECT count(*), min(i), max(i) FROM t WHERE j > 5000
 ----
 analyzed_plan	<REGEX>:.*Type: Sequential Scan.*
-
-mode unskip
 
 query III
 SELECT count(*), min(i), max(i) FROM t WHERE j > 5000

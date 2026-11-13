@@ -150,11 +150,11 @@ SELECT count(*) FILTER (WHERE isnan(d)), count(*) FILTER (WHERE isnan(f)) FROM i
 2048	2048
 
 query II
-EXPLAIN ANALYZE SELECT count(*) FROM isnan_tb WHERE isnan(d);
+EXPLAIN ANALYZE SELECT sum(d) FROM isnan_tb WHERE isnan(d);
 ----
 analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
 
 query II
-EXPLAIN ANALYZE SELECT count(*) FROM isnan_tb WHERE isnan(f);
+EXPLAIN ANALYZE SELECT sum(f) FROM isnan_tb WHERE isnan(f);
 ----
 analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*

@@ -10,10 +10,12 @@
 
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/common/atomic.hpp"
+#include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/function/built_in_functions.hpp"
 
 #include "duckdb/storage/table/row_group_order_options.hpp"
+#include "duckdb/storage/table/table_scan_snapshot.hpp"
 
 namespace duckdb {
 class DuckTableEntry;
@@ -35,11 +37,14 @@ struct TableScanBindData : public TableFunctionData {
 	unique_ptr<RowGroupOrderOptions> order_options;
 	//! Subset of partition indices to scan, if null, scan all
 	unique_ptr<unordered_set<idx_t>> partitions_to_scan;
+	//! Shares the immutable scan snapshot with copies of the bind data.
+	//! The const statistics callback initializes this on demand.
+	mutable shared_ptr<const TableScanSnapshot> scan_snapshot;
 
 public:
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<TableScanBindData>();
-		return &other.table == &table;
+		return &other.table == &table && scan_snapshot == other.scan_snapshot;
 	}
 	unique_ptr<FunctionData> Copy() const override {
 		auto bind_data = make_uniq<TableScanBindData>(table);
@@ -49,6 +54,7 @@ public:
 		bind_data->order_options = order_options ? make_uniq<RowGroupOrderOptions>(*order_options) : nullptr;
 		bind_data->partitions_to_scan =
 		    partitions_to_scan ? make_uniq<unordered_set<idx_t>>(*partitions_to_scan) : nullptr;
+		bind_data->scan_snapshot = scan_snapshot;
 		return std::move(bind_data);
 	}
 };

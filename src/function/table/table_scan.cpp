@@ -348,7 +348,8 @@ public:
 	DuckTableScanState(ClientContext &context, const FunctionData *bind_data_p)
 	    : TableScanGlobalState(context, bind_data_p), bind_data(bind_data_p->Cast<TableScanBindData>()),
 	      duck_table(bind_data.table.Cast<DuckTableEntry>()), tx(DuckTransaction::Get(context, duck_table.catalog)),
-	      storage(duck_table.GetStorage()), total_rows(storage.GetTotalRows()) {
+	      storage(duck_table.GetStorage()),
+	      total_rows(bind_data.scan_snapshot ? bind_data.scan_snapshot->GetTotalRows() : storage.GetTotalRows()) {
 	}
 
 public:
@@ -412,7 +413,7 @@ public:
 	//! Claims the next assignment into the thread's own scan state, returns false when none are left
 	bool ClaimAssignment(ClientContext &context, TableScanLocalState &l_state) {
 		scanned_rows.fetch_add(l_state.assignment_progress.Finish(), std::memory_order_relaxed);
-		auto rows = storage.NextParallelScan(context, state, l_state.scan_state);
+		auto rows = NextParallelScan(context, l_state.scan_state);
 		if (!rows.IsValid()) {
 			return false;
 		}
@@ -424,6 +425,13 @@ public:
 	//! Counts the rows of the current assignment that were consumed by the scan
 	void UpdateScanProgress(TableScanLocalState &l_state, const TableScanState &scan_state) {
 		scanned_rows.fetch_add(l_state.assignment_progress.Update(scan_state), std::memory_order_relaxed);
+	}
+
+	optional_idx NextParallelScan(ClientContext &context, TableScanState &scan_state, bool initialize_columns = true) {
+		if (bind_data.scan_snapshot) {
+			return bind_data.scan_snapshot->NextParallelScan(context, state, scan_state, initialize_columns);
+		}
+		return storage.NextParallelScan(context, state, scan_state, initialize_columns);
 	}
 
 	//! How TableScanFunc's loop proceeds after a persistent scan iteration
@@ -479,7 +487,7 @@ public:
 		{
 			// only the claim and its index need the lock, the per-column setup runs outside it
 			lock_guard<mutex> guard(read_ahead_lock);
-			const auto rows = storage.NextParallelScan(context, state, *job->scan_state, false);
+			const auto rows = NextParallelScan(context, *job->scan_state, false);
 			if (!rows.IsValid()) {
 				return nullptr;
 			}
@@ -696,7 +704,12 @@ unique_ptr<GlobalTableFunctionState> DuckTableScanInitGlobal(ClientContext &cont
 			break;
 		}
 	}
-	storage.InitializeParallelScan(context, g_state->state, input.column_indexes);
+	auto &partition_data = bind_data.scan_snapshot;
+	if (partition_data) {
+		partition_data->InitializeParallelScan(g_state->state);
+	} else {
+		storage.InitializeParallelScan(context, g_state->state, input.column_indexes);
+	}
 	g_state->InitializeScanInfo(input);
 	const bool repeatable_percentage_sample =
 	    input.sample_options && input.sample_options->repeatable && input.sample_options->is_percentage;
@@ -1096,7 +1109,18 @@ vector<PartitionStatistics> TableScanGetPartitionStats(ClientContext &context, G
 	auto &bind_data = input.bind_data->Cast<TableScanBindData>();
 	auto &duck_table = bind_data.table.Cast<DuckTableEntry>();
 	auto &storage = duck_table.GetStorage();
-	return storage.GetPartitionStats(context);
+	if (!bind_data.scan_snapshot) {
+		auto table_scan = RowGroupCollection::CreateScanSnapshot(*storage.GetRowGroupCollection());
+		unique_ptr<const RowGroupCollection> local_scan;
+		auto &local_storage = LocalStorage::Get(context, storage.GetAttached());
+		auto local = local_storage.GetStorage(storage);
+		if (local) {
+			local_scan = RowGroupCollection::CreateScanSnapshot(*local->GetPrimaryCollection().collection);
+		}
+		bind_data.scan_snapshot = make_shared_ptr<TableScanSnapshot>(std::move(table_scan), std::move(local_scan));
+	}
+	auto transaction = TransactionData(DuckTransaction::Get(context, storage.GetAttached()));
+	return bind_data.scan_snapshot->GetPartitionStats(transaction);
 }
 
 optional_ptr<TableCatalogEntry> TableScanGetTableEntry(optional_ptr<const FunctionData> bind_data_p) {

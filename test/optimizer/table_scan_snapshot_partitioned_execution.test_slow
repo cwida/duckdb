@@ -1,0 +1,22 @@
+# name: test/optimizer/table_scan_snapshot_partitioned_execution.test_slow
+# description: Partitioned execution must preserve visibility of DML CTE writes
+# group: [optimizer]
+
+# Four threads keep this input below the minimum size for splitting into ranges.
+statement ok
+SET threads=4
+
+statement ok
+CREATE TABLE t AS SELECT i FROM range(4194304) r(i)
+
+# Getting partition statistics must not freeze the scan before the CTE writes.
+query I
+WITH ins AS (INSERT INTO t VALUES (4194304))
+SELECT i FROM t ORDER BY i DESC LIMIT 1 OFFSET 4194303
+----
+1
+
+query II
+SELECT count(*), max(i) FROM t
+----
+4194305	4194304

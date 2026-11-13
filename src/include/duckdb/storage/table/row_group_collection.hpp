@@ -93,6 +93,8 @@ public:
 	                   idx_t row_start, idx_t total_rows = 0);
 	RowGroupCollection(shared_ptr<DataTableInfo> info, BlockManager &block_manager, vector<LogicalType> types,
 	                   idx_t row_start, idx_t total_rows, idx_t row_group_size);
+	//! Shares the source row groups in a fixed, read-only collection for scans.
+	static unique_ptr<const RowGroupCollection> CreateScanSnapshot(const RowGroupCollection &source);
 
 public:
 	idx_t GetTotalRows() const;
@@ -121,12 +123,12 @@ public:
 	void InitializeScanWithOffset(const QueryContext &context, CollectionScanState &state,
 	                              const vector<StorageIndex> &column_ids, idx_t start_row, idx_t end_row);
 	static bool InitializeScanInRowGroup(ClientContext &context, CollectionScanState &state,
-	                                     RowGroupCollection &collection, SegmentNode<RowGroup> &row_group,
+	                                     const RowGroupCollection &collection, SegmentNode<RowGroup> &row_group,
 	                                     idx_t vector_index, idx_t max_row, bool initialize_columns = true);
-	void InitializeParallelScan(ParallelCollectionScanState &state);
+	void InitializeParallelScan(ParallelCollectionScanState &state) const;
 	//! Claims the next assignment and returns its rows, invalid once none is left, deferring column setup when asked
 	optional_idx NextParallelScan(ClientContext &context, ParallelCollectionScanState &state,
-	                              CollectionScanState &scan_state, bool initialize_columns = true);
+	                              CollectionScanState &scan_state, bool initialize_columns = true) const;
 
 	RowGroupIterationHelper Chunks(DuckTransaction &transaction);
 	RowGroupIterationHelper Chunks(DuckTransaction &transaction, const vector<StorageIndex> &column_ids);

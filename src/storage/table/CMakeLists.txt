@@ -19,6 +19,7 @@ add_library_unity(
   row_number_column_data.cpp
   row_group.cpp
   row_group_collection.cpp
+  table_scan_snapshot.cpp
   row_group_reorderer.cpp
   row_version_manager.cpp
   scan_state.cpp

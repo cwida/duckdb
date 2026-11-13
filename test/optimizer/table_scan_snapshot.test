@@ -1,0 +1,121 @@
+# name: test/optimizer/table_scan_snapshot.test
+# description: Partition statistics and execution share main and transaction-local scan snapshots
+# group: [optimizer]
+
+statement ok
+ATTACH '{TEST_DIR}/table_scan_snapshot.db' AS view_db (ROW_GROUP_SIZE 2048)
+
+statement ok
+USE view_db
+
+statement ok
+CREATE TABLE t AS SELECT i FROM range(8192) r(i)
+
+statement ok
+CHECKPOINT
+
+# Aggregation and ordering must include transaction-local rows.
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO t SELECT i FROM range(8192, 12288) r(i)
+
+query III
+SELECT count(*), min(i), max(i) FROM t WHERE i > 2500
+----
+9787	2501	12287
+
+query I
+SELECT i FROM t ORDER BY i LIMIT 3 OFFSET 8190
+----
+8190
+8191
+8192
+
+query I
+SELECT i FROM t ORDER BY i DESC LIMIT 3 OFFSET 4094
+----
+8193
+8192
+8191
+
+statement ok
+ROLLBACK
+
+# Each execution must observe changes made after PREPARE.
+statement ok
+PREPARE p AS SELECT count(*), min(i), max(i) FROM t WHERE i > 2500
+
+query III
+EXECUTE p
+----
+5691	2501	8191
+
+statement ok
+INSERT INTO t VALUES (9000)
+
+query III
+EXECUTE p
+----
+5692	2501	9000
+
+statement ok
+CHECKPOINT
+
+query III
+EXECUTE p
+----
+5692	2501	9000
+
+statement ok
+PREPARE q AS SELECT i FROM t ORDER BY i DESC LIMIT 3 OFFSET 2047
+
+query I
+EXECUTE q
+----
+6145
+6144
+6143
+
+statement ok
+INSERT INTO t VALUES (10000)
+
+query I
+EXECUTE q
+----
+6146
+6145
+6144
+
+# A write inside the statement must be visible to the following scan.
+statement ok
+CREATE TABLE cte_t AS SELECT i FROM range(8192) r(i)
+
+statement ok
+CHECKPOINT
+
+query I
+WITH ins AS (INSERT INTO cte_t VALUES (10000))
+SELECT i FROM cte_t ORDER BY i DESC LIMIT 3 OFFSET 2047
+----
+6145
+6144
+6143
+
+# Plan-time statistics do not include rows written by the INSERT CTE.
+query III
+WITH ins AS (INSERT INTO cte_t VALUES (-1), (20000))
+SELECT count(*), min(i), max(i) FROM cte_t WHERE i > 2500
+----
+5693	2501	20000
+
+# The scan must see the INSERT even when the table is empty during optimization.
+statement ok
+CREATE TABLE cte_empty_t (i INTEGER)
+
+query I
+WITH ins AS (INSERT INTO cte_empty_t VALUES (1), (2), (3))
+SELECT i FROM cte_empty_t ORDER BY i LIMIT 1 OFFSET 1
+----
+2
