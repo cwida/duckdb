@@ -164,7 +164,8 @@
         "test/sql/optimizer/scalar_aggregate_merge_tpcds.test",
         "test/sql/limit/test_limit0.test",
         "test/sql/optimizer/plan/test_filter_pushdown_large.test",
-        "test/optimizer/joins/denominator_cardinality_estimation.test"
+        "test/optimizer/joins/denominator_cardinality_estimation.test",
+        "test/optimizer/joins/unnest_list_aggregate_estimate.test"
       ]
     },
     {

@@ -1,0 +1,126 @@
+# name: test/sql/optimizer/statistics/list_aggregate_stats_propagation.test
+# description: The list aggregate propagates element statistics and list length bounds
+# group: [statistics]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+CREATE TABLE t AS SELECT i::INT AS v, (i % 3)::INT AS g FROM range(1000) r(i);
+
+statement ok
+CREATE TABLE empty_tbl (v INT, g INT);
+
+# element statistics reach list_extract: l[1] is within [0, 999]
+query II
+EXPLAIN SELECT * FROM (SELECT list(v) l FROM t) WHERE l[1] > 5000;
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT * FROM (SELECT list(v) l FROM t) WHERE l[1] > 5000;
+----
+
+# a filter inside the element range is kept
+query II
+EXPLAIN SELECT * FROM (SELECT list(v ORDER BY v) l FROM t) WHERE l[1] > 500;
+----
+physical_plan	<!REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT l[1] FROM (SELECT list(v ORDER BY v) l FROM t) WHERE l[1] < 500;
+----
+0
+
+# a single input row bounds the list length to one: len folds to a constant
+query II
+EXPLAIN SELECT len(list(v)) FROM (SELECT * FROM t LIMIT 1);
+----
+physical_plan	<REGEX>:.*constant_or_null\(1, list\(.*
+
+query I
+SELECT len(list(v)) FROM (SELECT * FROM t LIMIT 1);
+----
+1
+
+# an empty input gives no length bounds: no fold, and the list is NULL
+query II
+EXPLAIN SELECT len(list(v)) FROM empty_tbl;
+----
+physical_plan	<!REGEX>:.*constant_or_null.*
+
+query II
+SELECT list(v), len(list(v)) FROM empty_tbl;
+----
+NULL	NULL
+
+query I
+SELECT stats(list(v))::VARCHAR LIKE '%min_list_length%' FROM empty_tbl;
+----
+false
+
+# a FILTER that empties a group yields NULL, not an empty list
+query II
+SELECT g, len(list(v) FILTER (WHERE v > 5000)) FROM t GROUP BY g ORDER BY g;
+----
+0	NULL
+1	NULL
+2	NULL
+
+# every non-NULL list holds at least one element, so len(l) = 0 is never true
+query II
+EXPLAIN SELECT * FROM (SELECT g, list(v) FILTER (WHERE v > 5000) l FROM t GROUP BY g) WHERE len(l) = 0;
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT count(*) FROM (SELECT g, list(v) FILTER (WHERE v > 5000) l FROM t GROUP BY g) WHERE l IS NULL;
+----
+3
+
+# NULL inputs are list elements
+query II
+SELECT len(list(x)), len(list(DISTINCT x)) FROM (VALUES (NULL::INT), (NULL)) v(x);
+----
+2	1
+
+# grouping sets: no list exceeds the input rows
+query I
+SELECT count(*) FROM (SELECT list(v) l FROM t GROUP BY GROUPING SETS ((g), ())) WHERE len(l) >= 1000;
+----
+1
+
+query II
+SELECT g, len(l) FROM (SELECT g, list(v) l FROM t GROUP BY GROUPING SETS ((g), ())) ORDER BY g NULLS LAST;
+----
+0	334
+1	333
+2	333
+NULL	1000
+
+# grouping sets over a single row fold to one in every set
+query II
+SELECT g, len(list(v)) FROM (SELECT * FROM t LIMIT 1) GROUP BY GROUPING SETS ((g), ()) ORDER BY g NULLS LAST;
+----
+0	1
+NULL	1
+
+# a prepared fold over a single-row table is re-planned after the table grows
+statement ok
+CREATE TABLE single_row AS SELECT 1::INT AS v;
+
+statement ok
+PREPARE single_len AS SELECT len(list(v)) FROM single_row;
+
+query I
+EXECUTE single_len;
+----
+1
+
+statement ok
+INSERT INTO single_row VALUES (2), (3);
+
+query I
+EXECUTE single_len;
+----
+3

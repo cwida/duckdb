@@ -461,6 +461,10 @@ bool RelationManager::AddRelationWithChildren(JoinOrderOptimizer &optimizer, Log
 		stats_complete = false;
 		return false;
 	}
+	if (op.type == LogicalOperatorType::LOGICAL_UNNEST) {
+		// a LogicalGet keeps its own source estimate, which can be better than the child cardinality
+		op.SetEstimatedCardinality(operator_stats->cardinality);
+	}
 	return AddRelation(input_op, parent, *operator_stats);
 }
 
@@ -491,6 +495,10 @@ bool RelationManager::ExtractJoinRelation(JoinOrderOptimizer &optimizer, Pending
 		join.children[1] = child_optimizer.Optimize(std::move(join.children[1]), &child_stats);
 		if (!AddRelation(*join.children[1], join, child_stats)) {
 			return false;
+		}
+		if (join.Cast<LogicalComparisonJoin>().join_type == JoinType::LEFT) {
+			// the relation can be null-extended: its list element counts must not scale
+			null_extended_relations.insert(relations.size() - 1);
 		}
 		for (auto &binding : join.children[1]->GetColumnBindings()) {
 			relation_mapping[binding.table_index] = RelationIndex(relations.size() - 1);
@@ -673,7 +681,7 @@ bool RelationManager::ExtractJoinRelation(JoinOrderOptimizer &optimizer, Pending
 		op->children[0] = child_optimizer.Optimize(std::move(op->children[0]), &child_stats);
 		auto &proj = op->Cast<LogicalProjection>();
 		// Projection can create columns so we need to add them here
-		auto proj_stats = RelationStatisticsHelper::ExtractProjectionStats(proj, child_stats);
+		auto proj_stats = RelationStatisticsHelper::ExtractProjectionStats(proj, child_stats, context);
 		if (!proj_stats) {
 			stats_complete = false;
 			return false;
@@ -743,6 +751,7 @@ bool RelationManager::ExtractJoinRelation(JoinOrderOptimizer &optimizer, Pending
 				column.total_domain = DistinctCount(cte_cardinality, DistinctCountSource::CARDINALITY);
 				column.current_domain = column.total_domain;
 				column.semi_anti_join_domain_evidence.Invalidate();
+				column.list_stats.reset();
 			}
 		}
 		if (!output_stats || !AddRelation(input_op, parent, *output_stats)) {

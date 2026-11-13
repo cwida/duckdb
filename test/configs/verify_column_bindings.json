@@ -8,6 +8,12 @@
       "paths": [
         "test/sql/aggregate/having/test_scalar_having.test"
       ]
+    },
+    {
+      "reason": "Prepared plans carry unresolved parameter types through projection boundaries, which complete-type binding verification rejects.",
+      "paths": [
+        "test/sql/function/list/list_concat_prepared_projection.test"
+      ]
     }
   ]
 }

@@ -33,6 +33,9 @@ public:
 	optional_ptr<const RelationStats> Extract(LogicalOperator &op);
 	idx_t ExtractedOperatorCount() const;
 	shared_ptr<const JoinOrderSourceStats> GetSourceStats(LogicalOperator &root);
+	ClientContext &GetContext() const {
+		return context;
+	}
 
 private:
 	optional<RelationStats> ExtractInternal(LogicalOperator &op);

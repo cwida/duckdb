@@ -117,7 +117,8 @@
         "test/optimizer/statistics/right_semi_join_filter.test",
         "test/optimizer/statistics/union_selected_cardinality.test",
         "test/sql/optimizer/secure_view_join_filter_pushdown.test",
-        "test/sql/optimizer/test_common_subplan_matching_plan.test"
+        "test/sql/optimizer/test_common_subplan_matching_plan.test",
+        "test/optimizer/joins/unnest_list_aggregate_estimate.test"
       ]
     },
     {
