@@ -1,0 +1,47 @@
+# name: test/sql/copy/parquet/parquet_schema_pushdown_extract_nested_default.test
+# description: A field under a nested field that a file lacks takes the default of the nested field
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT * FROM (VALUES (1, {'x': 1}), (2, {'x': 2})) t(id, s)) TO '{TEMP_DIR}/extract_nested_default.parquet' (FIELD_IDS {id: 1, s: {__duckdb_field_id: 2, x: 3}})
+
+statement ok
+COPY (SELECT * FROM (VALUES (1, {'x': 1}), (2, NULL)) t(id, s)) TO '{TEMP_DIR}/extract_nested_default_null_parent.parquet' (FIELD_IDS {id: 1, s: {__duckdb_field_id: 2, x: 3}})
+
+query II
+SELECT id, s.a.b FROM read_parquet('{TEMP_DIR}/extract_nested_default.parquet', schema := MAP {
+	1: {name: 'id', type: 'INTEGER', default_value: NULL, children: NULL},
+	2: {name: 's', type: 'STRUCT(x INTEGER, a STRUCT(b INTEGER))', default_value: NULL, children: MAP {
+		3: {name: 'x', type: 'INTEGER', default_value: NULL, children: NULL},
+		4: {name: 'a', type: 'STRUCT(b INTEGER)', default_value: NULL, children: MAP {
+			5: {name: 'b', type: 'INTEGER', default_value: NULL, children: NULL}}}}}
+}) ORDER BY id
+----
+1	NULL
+2	NULL
+
+query I
+SELECT count(*) FROM read_parquet('{TEMP_DIR}/extract_nested_default.parquet', schema := MAP {
+	1: {name: 'id', type: 'INTEGER', default_value: NULL, children: NULL},
+	2: {name: 's', type: 'STRUCT(x INTEGER, a STRUCT(b INTEGER))', default_value: NULL, children: MAP {
+		3: {name: 'x', type: 'INTEGER', default_value: NULL, children: NULL},
+		4: {name: 'a', type: 'STRUCT(b INTEGER)', default_value: NULL, children: MAP {
+			5: {name: 'b', type: 'INTEGER', default_value: NULL, children: NULL}}}}}
+}) WHERE s.a.b = 1
+----
+0
+
+# a non-NULL default is NULL where the parent struct is NULL
+query III
+SELECT id, s.a, s.a.b FROM read_parquet('{TEMP_DIR}/extract_nested_default_null_parent.parquet', schema := MAP {
+	1: {name: 'id', type: 'INTEGER', default_value: NULL, children: NULL},
+	2: {name: 's', type: 'STRUCT(x INTEGER, a STRUCT(b INTEGER))', default_value: NULL, children: MAP {
+		3: {name: 'x', type: 'INTEGER', default_value: NULL, children: NULL},
+		4: {name: 'a', type: 'STRUCT(b INTEGER)', default_value: {'b': 7}, children: MAP {
+			5: {name: 'b', type: 'INTEGER', default_value: NULL, children: NULL}}}}}
+}) ORDER BY id
+----
+1	{'b': 7}	7
+2	NULL	NULL

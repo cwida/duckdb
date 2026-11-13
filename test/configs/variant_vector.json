@@ -19,7 +19,8 @@
 				"test/parquet/test_parquet_schema_null_nested.test",
 				"test/parquet/schema_nested_evolution.test",
 				"test/parquet/test_parquet_schema_incompatible_nested_types.test",
-				"test/parquet/parquet_schema_renamed_struct_filter.test"
+				"test/parquet/parquet_schema_renamed_struct_filter.test",
+				"test/sql/copy/parquet/parquet_schema_pushdown_extract_nested_default.test"
 			]
 		},
 		{

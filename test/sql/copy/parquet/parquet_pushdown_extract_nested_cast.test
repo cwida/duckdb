@@ -1,0 +1,22 @@
+# name: test/sql/copy/parquet/parquet_pushdown_extract_nested_cast.test
+# description: A cast pushed into an extract of a nested struct field applies to the field mapped to its global type
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 1 AS id, {'n': {'a': 1, 'b': 2}} AS s) TO '{TEMP_DIR}/nested_cast_1.parquet'
+
+statement ok
+COPY (SELECT 2 AS id, {'n': {'b': 4, 'a': 3}} AS s) TO '{TEMP_DIR}/nested_cast_2.parquet'
+
+query II
+SELECT id, s.n::VARCHAR FROM read_parquet(['{TEMP_DIR}/nested_cast_1.parquet', '{TEMP_DIR}/nested_cast_2.parquet'], union_by_name = true) ORDER BY id
+----
+1	{'a': 1, 'b': 2}
+2	{'a': 3, 'b': 4}
+
+query I
+SELECT id FROM read_parquet(['{TEMP_DIR}/nested_cast_1.parquet', '{TEMP_DIR}/nested_cast_2.parquet'], union_by_name = true) WHERE s.n::VARCHAR = '{''a'': 3, ''b'': 4}'
+----
+2

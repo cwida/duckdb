@@ -59,3 +59,79 @@ query I
 SELECT count(*) FROM mapped WHERE nested.s.a = 42;
 ----
 0
+
+# a cast pushed into the extract of an explicitly NULL field takes the cast type
+statement ok
+COPY (SELECT {'x': NULL} AS s, {'inner': {'x': NULL}} AS n) TO '{TEST_DIR}/schema_null_cast.parquet';
+
+query II
+SELECT s.x::VARCHAR, typeof(s.x::VARCHAR) FROM '{TEST_DIR}/schema_null_cast.parquet';
+----
+NULL	VARCHAR
+
+query I
+SELECT 42;
+----
+42
+
+query II
+SELECT n.inner.x::INTEGER, typeof(n.inner.x::INTEGER) FROM '{TEST_DIR}/schema_null_cast.parquet';
+----
+NULL	INTEGER
+
+query I
+SELECT 42;
+----
+42
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/schema_null_cast.parquet' WHERE s.x::VARCHAR IS NULL;
+----
+1
+
+query I
+SELECT 42;
+----
+42
+
+# so does the implicit cast of a comparison with an explicitly NULL field
+statement ok
+COPY (SELECT range AS k, {'x': NULL, 'y': 'y'} AS s, {'inner': {'x': NULL}} AS n FROM range(10)) TO '{TEST_DIR}/schema_null_compare.parquet';
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/schema_null_compare.parquet' WHERE s.x < -1;
+----
+0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/schema_null_compare.parquet' WHERE s.x <> 1;
+----
+0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/schema_null_compare.parquet' WHERE n.inner.x = 1;
+----
+0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/schema_null_compare.parquet' WHERE k IN (1, 2) OR s.x < 0;
+----
+2
+
+query I
+SELECT 42;
+----
+42
+
+statement ok
+SET disabled_optimizers = 'unused_columns';
+
+query II
+SELECT s.x::VARCHAR, n.inner.x::INTEGER FROM '{TEST_DIR}/schema_null_cast.parquet';
+----
+NULL	NULL
+
+query I
+SELECT 42;
+----
+42
