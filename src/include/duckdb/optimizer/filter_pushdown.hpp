@@ -90,6 +90,10 @@ private:
 	unique_ptr<LogicalOperator> PushdownSecureView(unique_ptr<LogicalOperator> op);
 	//! Remove the filters carrying a barrier from the current filter set and return them
 	vector<unique_ptr<Expression>> ExtractBarrierFilters();
+	//! Let the optimizer extensions replace the filters pushed into op
+	void RunPushdownFilterFunctions(const LogicalOperator &op);
+	//! Push the filters into op, once the optimizer extensions have seen them
+	unique_ptr<LogicalOperator> RewriteOperator(unique_ptr<LogicalOperator> op);
 	// Pushdown an inner join
 	unique_ptr<LogicalOperator> PushdownInnerJoin(unique_ptr<LogicalOperator> op,
 	                                              unordered_set<TableIndex> &left_bindings,

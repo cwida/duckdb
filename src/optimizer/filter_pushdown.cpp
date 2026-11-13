@@ -1,6 +1,7 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/optimizer/filter_combiner.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/optimizer/optimizer_extension.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
@@ -105,13 +106,38 @@ vector<unique_ptr<Expression>> FilterPushdown::ExtractBarrierFilters() {
 	return result;
 }
 
+void FilterPushdown::RunPushdownFilterFunctions(const LogicalOperator &op) {
+	if (filters.empty()) {
+		return;
+	}
+	auto &context = optimizer.GetContext();
+	for (auto &extension : OptimizerExtension::Iterate(context)) {
+		if (!extension.pushdown_filter_function) {
+			continue;
+		}
+		OptimizerExtensionInput input {context, optimizer, extension.optimizer_info.get()};
+		for (auto &f : filters) {
+			extension.pushdown_filter_function(input, op, f->filter);
+			if (!f->filter) {
+				throw InternalException("An optimizer extension's pushdown_filter_function removed a filter");
+			}
+			f->ExtractBindings();
+		}
+	}
+}
+
 unique_ptr<LogicalOperator> FilterPushdown::Rewrite(unique_ptr<LogicalOperator> op) {
 	D_ASSERT(!combiner.HasFilters());
+	RunPushdownFilterFunctions(*op);
+	return RewriteOperator(std::move(op));
+}
+
+unique_ptr<LogicalOperator> FilterPushdown::RewriteOperator(unique_ptr<LogicalOperator> op) {
 	if (!BarrierCanPassThrough(op->type)) {
 		// this operator can remove rows - barred expressions must be evaluated on top of it instead of below it
 		auto barrier_expressions = ExtractBarrierFilters();
 		if (!barrier_expressions.empty()) {
-			auto result = Rewrite(std::move(op));
+			auto result = RewriteOperator(std::move(op));
 			return AddLogicalFilter(std::move(result), std::move(barrier_expressions));
 		}
 	}
