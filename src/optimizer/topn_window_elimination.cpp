@@ -1015,8 +1015,11 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 		}
 		case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
 			auto &join = op.get().Cast<LogicalComparisonJoin>();
-			if (join.join_type != JoinType::INNER && join.join_type != JoinType::SEMI &&
-			    join.join_type != JoinType::ANTI) {
+			if (join.join_type == JoinType::INNER) {
+				// An inner join can produce multiple joined rows with the same base-table rowid.
+				return false;
+			}
+			if (join.join_type != JoinType::SEMI && join.join_type != JoinType::ANTI) {
 				return false;
 			}
 			if (join.join_type == JoinType::INNER) {

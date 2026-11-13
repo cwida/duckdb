@@ -104,6 +104,33 @@ ORDER BY gp
 5	1	ee
 3	2	cc
 
+# Issue #23588: late materialization through a join must preserve duplicate
+# payload rows that share the same base-table rowid.
+statement ok
+CREATE TABLE l_topn_dup(id INTEGER, k INTEGER, p VARCHAR)
+
+statement ok
+CREATE TABLE r_topn_dup(k INTEGER, s INTEGER)
+
+statement ok
+INSERT INTO l_topn_dup VALUES (1, 1, 'x')
+
+statement ok
+INSERT INTO r_topn_dup VALUES (1, 20), (1, 10)
+
+query II
+SELECT id, p
+FROM (
+	SELECT l_topn_dup.id, l_topn_dup.p, r_topn_dup.s
+	FROM l_topn_dup
+	JOIN r_topn_dup ON l_topn_dup.k = r_topn_dup.k
+) AS src
+QUALIFY ROW_NUMBER() OVER (ORDER BY s DESC NULLS LAST) <= 2
+ORDER BY ALL
+----
+1	x
+1	x
+
 # top-2 (limit > 1) with a function payload
 query II
 SELECT id, uv FROM (SELECT *, upper(v) AS uv FROM t)
