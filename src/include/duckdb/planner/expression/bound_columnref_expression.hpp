@@ -36,15 +36,19 @@ public:
 	const ColumnBinding &Binding() const {
 		return binding;
 	}
-	ColumnBinding &BindingMutable() {
-		return binding;
-	}
 	idx_t Depth() const {
 		return depth;
 	}
-	idx_t &DepthMutable() {
-		return depth;
-	}
+	//! Create a column reference with a different binding
+	unique_ptr<Expression> WithBinding(ColumnBinding new_binding) const;
+	//! Create a column reference with a different binding and depth
+	unique_ptr<Expression> WithBinding(ColumnBinding new_binding, idx_t new_depth) const;
+	//! Create a column reference with a different binding and return type
+	unique_ptr<Expression> WithBinding(ColumnBinding new_binding, LogicalType new_type) const;
+	//! Create a column reference with a different return type
+	unique_ptr<Expression> WithReturnType(LogicalType new_type) const;
+	//! Create a column reference with a different depth
+	unique_ptr<Expression> WithDepth(idx_t new_depth) const;
 
 	string ToString() const override;
 	Identifier GetName() const override;

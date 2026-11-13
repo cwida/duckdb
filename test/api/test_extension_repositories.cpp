@@ -1,4 +1,5 @@
 #include "catch.hpp"
+#include "duckdb/common/file_system.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/main/extension.hpp"
@@ -133,17 +134,17 @@ TEST_CASE("Test that forbidding repositories distrusts their keys", "[api]") {
 	REQUIRE_FAIL(con.Query(StringUtil::Format(
 	    "CREATE EXTENSION REPOSITORY other WITH PREFIX 'http://other.com' USING PUBLIC KEY '%s'", OTHER_PUBLIC_KEY)));
 
-	// once forbidden, it cannot be re-enabled or reset to 'undecided' while the database is running
+	// once forbidden, it cannot be re-enabled or reset to 'hosts' while the database is running
 	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='allowed'"));
-	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='undecided'"));
+	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='hosts'"));
 }
 
 TEST_CASE("Test that adding trusted extension repositories must be opted into", "[api]") {
-	auto repository_directory = TestCreatePath("extension_repositories_undecided");
-	auto local_prefix = TestCreatePath("extension_repositories_undecided_prefix");
+	auto repository_directory = TestCreatePath("extension_repositories_hosts");
+	auto local_prefix = TestCreatePath("extension_repositories_hosts_prefix");
 
-	// the default is 'undecided': adding a repository fails until the setting is explicitly moved to 'allowed', which
-	// can be done at startup or at runtime. Once decided, the setting cannot be reverted to 'undecided'
+	// the default is 'hosts': adding a repository by prefix fails until the setting is explicitly moved to 'allowed',
+	// which can be done at startup or at runtime. Once moved, the setting cannot be reverted to 'hosts'
 	{
 		DBConfig config;
 		config.SetOptionByName("extension_repository_directory", repository_directory);
@@ -163,10 +164,10 @@ TEST_CASE("Test that adding trusted extension repositories must be opted into", 
 		                                 local_prefix, TEST_PUBLIC_KEY)));
 
 		// the decision cannot be reverted
-		REQUIRE_FAIL(con.Query("SET allow_extension_repositories='undecided'"));
+		REQUIRE_FAIL(con.Query("SET allow_extension_repositories='hosts'"));
 	}
 
-	// the 'undecided' default keeps trusting repositories that were added earlier, but blocks adding new ones
+	// the 'hosts' default keeps trusting repositories that were added earlier, but blocks adding new ones
 	{
 		DBConfig config;
 		config.SetOptionByName("extension_repository_directory", repository_directory);
@@ -198,6 +199,125 @@ TEST_CASE("Test that adding trusted extension repositories must be opted into", 
 		                       OTHER_PUBLIC_KEY)));
 		REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "other", OTHER_PUBLIC_KEY));
 	}
+}
+
+static void WriteTextFile(const string &path, const string &contents) {
+	auto fs = FileSystem::CreateLocal();
+	auto handle = fs->OpenFile(path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+	handle->Write(QueryContext(), (void *)contents.data(), contents.size(), 0);
+	handle->Sync();
+}
+
+TEST_CASE("Test that a stored repository file is only believed about a host it is named after", "[api]") {
+	auto repository_directory = TestCreatePath("extension_repositories_host_mismatch");
+	auto prefix = TestCreatePath("extension_repositories_host_mismatch_prefix");
+	auto fs = FileSystem::CreateLocal();
+	fs->CreateDirectory(repository_directory);
+	fs->CreateDirectory(prefix);
+	// a file that claims a host it is not named after was not written by DuckDB: under 'hosts_only' a stored host is
+	// what gets a repository trusted, so the claim is refused rather than believed
+	WriteTextFile(fs->JoinPath(repository_directory, "mismatch.example.duckdb_extension.repo.json"),
+	              StringUtil::Format("{\"version\": 1, \"name\": \"mismatch.example\", \"url\": \"%s\", \"host\": "
+	                                 "\"other.example\", \"public_keys\": [\"%s\"]}",
+	                                 prefix, TEST_PUBLIC_KEY));
+
+	DBConfig config;
+	config.SetOptionByName("extension_repository_directory", repository_directory);
+	config.SetOptionByName("autoload_known_extensions", false);
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	auto result = con.Query("SELECT repository_name FROM duckdb_extension_repositories() WHERE type='USER_PROVIDED'");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "names host 'other.example'"));
+	// reading the file fails, so the key is not trusted either way
+	bool trusted = false;
+	try {
+		trusted =
+		    KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "mismatch.example", TEST_PUBLIC_KEY);
+	} catch (std::exception &) {
+	}
+	REQUIRE(!trusted);
+}
+
+TEST_CASE("Test that a repository resolved from its host does not need the opt-in", "[api]") {
+	auto repository_directory = TestCreatePath("extension_repositories_from_host");
+	auto prefix = TestCreatePath("extension_repositories_from_host_prefix");
+	auto fs = FileSystem::CreateLocal();
+	fs->CreateDirectory(repository_directory);
+	fs->CreateDirectory(prefix);
+	// a repository as the host form stores it: resolving one needs httpfs and a live host, which this test has not,
+	// so the stored file stands in for the resolution.
+	// TODO: resolve one for real once duckdb.org serves a .well-known/duckdb-extension-repo.json
+	WriteTextFile(fs->JoinPath(repository_directory, "listed.example.duckdb_extension.repo.json"),
+	              StringUtil::Format("{\"version\": 1, \"name\": \"listed.example\", \"url\": \"%s\", \"host\": "
+	                                 "\"listed.example\", \"public_keys\": [\"%s\"]}",
+	                                 prefix, TEST_PUBLIC_KEY));
+
+	DBConfig config;
+	config.SetOptionByName("extension_repository_directory", repository_directory);
+	config.SetOptionByName("autoload_known_extensions", false);
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	// 'hosts' (the default): a repository by prefix is refused, the one resolved from its host is trusted
+	REQUIRE_FAIL(con.Query(StringUtil::Format("CREATE EXTENSION REPOSITORY by_prefix WITH PREFIX '%s'", prefix)));
+	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", TEST_PUBLIC_KEY));
+	REQUIRE(UserRepositoryCount(con) == 1);
+
+	// the conflict is decided before the host is contacted: IF NOT EXISTS returns the stored definition, a plain CREATE
+	// reports the duplicate; OR REPLACE does resolve, fails here (no httpfs), and keeps the old definition
+	REQUIRE_NO_FAIL(con.Query("CREATE EXTENSION REPOSITORY IF NOT EXISTS listed.example"));
+	REQUIRE_FAIL(con.Query("CREATE EXTENSION REPOSITORY listed.example"));
+	REQUIRE_FAIL(con.Query("CREATE OR REPLACE EXTENSION REPOSITORY listed.example"));
+	REQUIRE_FAIL(con.Query("CREATE EXTENSION REPOSITORY unlisted.example"));
+	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", TEST_PUBLIC_KEY));
+
+	// an empty prefix does not reopen the host form with keys of the caller's choosing: refused at parse, and refused
+	// by the manager when handed in through the API; the pinned key stays
+	REQUIRE_FAIL(con.Query(
+	    StringUtil::Format("CREATE OR REPLACE EXTENSION REPOSITORY listed.example WITH PREFIX '' USING PUBLIC KEY '%s'",
+	                       OTHER_PUBLIC_KEY)));
+	{
+		ExtensionRepository requested("listed.example", "", {OTHER_PUBLIC_KEY});
+		REQUIRE_THROWS(ExtensionRepositoryManager::CreateRepository(*db.instance, FileSystem::GetLocal(*db.instance),
+		                                                            con.context.get(), requested,
+		                                                            OnCreateConflict::REPLACE_ON_CONFLICT));
+	}
+	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", TEST_PUBLIC_KEY));
+	REQUIRE(!KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", OTHER_PUBLIC_KEY));
+
+	// 'hosts_only' keeps trusting the repository resolved from its host, 'forbidden' forbids the form as well
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='hosts_only'"));
+	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "listed.example", TEST_PUBLIC_KEY));
+	REQUIRE_NO_FAIL(con.Query("DROP EXTENSION REPOSITORY listed.example"));
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='forbidden'"));
+	REQUIRE_FAIL(con.Query("CREATE EXTENSION REPOSITORY listed.example"));
+}
+
+TEST_CASE("Test that 'hosts_only' distrusts the repositories added by prefix", "[api]") {
+	auto repository_directory = TestCreatePath("extension_repositories_hosts_only");
+
+	DBConfig config;
+	config.SetOptionByName("extension_repository_directory", repository_directory);
+	config.SetOptionByName("allow_extension_repositories", "allowed");
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
+	    "CREATE EXTENSION REPOSITORY acme WITH PREFIX 'http://acme.com' USING PUBLIC KEY '%s'", TEST_PUBLIC_KEY)));
+	REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "acme", TEST_PUBLIC_KEY));
+
+	// a repository added by prefix is distrusted under 'hosts_only', like under 'forbidden'; it stays listed
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='hosts_only'"));
+	REQUIRE(!KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "acme", TEST_PUBLIC_KEY));
+	REQUIRE(UserRepositoryCount(con) == 1);
+
+	// the ratchet: 'hosts_only' cannot go back to 'allowed' or 'hosts', only on to 'forbidden'
+	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='allowed'"));
+	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='hosts'"));
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='forbidden'"));
+	REQUIRE_FAIL(con.Query("SET allow_extension_repositories='hosts_only'"));
 }
 
 TEST_CASE("Test that the extension repository directory is a startup-only trust anchor", "[api]") {
@@ -534,9 +654,10 @@ static vector<string> LoadedRows(Connection &con, const string &name) {
 	return rows;
 }
 
-TEST_CASE("Test that duckdb_extensions marks the copy that was loaded", "[api]") {
-	auto repository_directory = TestCreatePath("ext_repo_loaded_copy");
-	auto extension_directory = TestCreatePath("ext_repo_loaded_copy_ext");
+TEST_CASE("Test that duckdb_extensions marks the loaded copy", "[api]") {
+	// short names: the test name is part of the path, and LoadLibrary rejects paths over MAX_PATH on Windows
+	auto repository_directory = TestCreatePath("lc_repo");
+	auto extension_directory = TestCreatePath("lc_ext");
 	auto fs = FileSystem::CreateLocal();
 	auto demo = fs->JoinPath(TestBuildDirectory(), "test/extension/loadable_extension_demo.duckdb_extension");
 	if (!fs->FileExists(demo)) {

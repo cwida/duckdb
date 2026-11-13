@@ -109,19 +109,6 @@ bool StatisticsPropagator::HandleJoinAlwaysMatches(LogicalJoin &join, unique_ptr
 	}
 }
 
-//! Suspends attaching verification statistics to propagated expressions for the lifetime of the guard
-struct VerificationStatsGuard {
-	explicit VerificationStatsGuard(bool &attach_p) : attach(attach_p), previous(attach_p) {
-		attach = false;
-	}
-	~VerificationStatsGuard() {
-		attach = previous;
-	}
-
-	bool &attach;
-	bool previous;
-};
-
 //! The column a join-derived filter can target: the side itself or the column under an invertible numeric cast
 static optional_ptr<const Expression> GetFilterColumn(ClientContext &context, const Expression &expr) {
 	optional_ptr<const Expression> column = expr;

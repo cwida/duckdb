@@ -213,10 +213,31 @@ const LogicalTypeInfo *LogicalType::TryGetBuiltinTypeInfo(LogicalTypeId id) noex
 	return builtins->infos[static_cast<uint8_t>(id)];
 }
 
+static unique_ptr<LogicalTypeInfo> CreateVariantTypeInfo() {
+	child_list_t<LogicalType> children;
+	//! keys
+	children.emplace_back("keys", LogicalType::LIST(LogicalTypeId::VARCHAR));
+	//! children
+	children.emplace_back("children",
+	                      LogicalType::LIST(LogicalType::STRUCT(
+	                          {{"keys_index", LogicalType::UINTEGER}, {"values_index", LogicalType::UINTEGER}})));
+	//! values
+	children.emplace_back("values", LogicalType::LIST(LogicalType::STRUCT(
+	                                    {{"type_id", LogicalType::UTINYINT}, {"byte_offset", LogicalType::UINTEGER}})));
+	//! data
+	children.emplace_back("data", LogicalType::BLOB);
+
+	return make_uniq<StructTypeInfo>(std::move(children));
+}
+
 const LogicalTypeInfo &LogicalType::GetBuiltinTypeInfo(LogicalTypeId id) {
 	auto info = TryGetBuiltinTypeInfo(id);
 	if (!info) {
 		throw InternalException("Invalid LogicalType %d", static_cast<uint8_t>(id));
+	}
+	if (id == LogicalTypeId::VARIANT) {
+		static const auto variant_type = CreateImmortal(LogicalTypeId::VARIANT, CreateVariantTypeInfo());
+		return variant_type.GetTypeInfo();
 	}
 	return *info;
 }
@@ -228,10 +249,9 @@ LogicalType::LogicalType(LogicalTypeId id) : type_info_(GetBuiltinTypeInfo(id)) 
 }
 
 const LogicalTypeInfo &LogicalType::AdoptNewTypeInfo(LogicalTypeId id, unique_ptr<LogicalTypeInfo> type_info) {
-	// validates the id - and ensures the builtin infos exist before any type does
-	auto &builtin_type_info = GetBuiltinTypeInfo(id);
+	// Only resolve built-in info when none was supplied, to avoid recursive initialization.
 	if (!type_info) {
-		return builtin_type_info;
+		return GetBuiltinTypeInfo(id);
 	}
 	if (!TryGetPhysicalType(id, *type_info, type_info->physical_type)) {
 		throw InternalException("Invalid LogicalType %d", static_cast<uint8_t>(id));
@@ -1574,7 +1594,8 @@ LogicalType LogicalType::DECIMAL(uint32_t width, uint32_t scale) {
 	if (!Decimal::IsValidWidthScale(width, scale)) {
 		return LogicalType(LogicalTypeId::DECIMAL, make_uniq<DecimalTypeInfo>(width, scale));
 	}
-	constexpr idx_t TYPE_COUNT = DecimalTypeInfoIndex(Decimal::MAX_WIDTH_DECIMAL, Decimal::MAX_WIDTH_DECIMAL) + 1;
+	static constexpr idx_t TYPE_COUNT =
+	    DecimalTypeInfoIndex(Decimal::MAX_WIDTH_DECIMAL, Decimal::MAX_WIDTH_DECIMAL) + 1;
 	static const auto decimal_types = []() {
 		// Finish allocation before immortalizing any info so failed initialization releases partial allocations.
 		array<unique_ptr<LogicalTypeInfo>, TYPE_COUNT> infos;
@@ -2065,26 +2086,8 @@ const string &TemplateType::GetName(const LogicalType &type) {
 // Variant Type
 //===--------------------------------------------------------------------===//
 
-static unique_ptr<LogicalTypeInfo> CreateVariantTypeInfo() {
-	child_list_t<LogicalType> children;
-	//! keys
-	children.emplace_back("keys", LogicalType::LIST(LogicalTypeId::VARCHAR));
-	//! children
-	children.emplace_back("children",
-	                      LogicalType::LIST(LogicalType::STRUCT(
-	                          {{"keys_index", LogicalType::UINTEGER}, {"values_index", LogicalType::UINTEGER}})));
-	//! values
-	children.emplace_back("values", LogicalType::LIST(LogicalType::STRUCT(
-	                                    {{"type_id", LogicalType::UTINYINT}, {"byte_offset", LogicalType::UINTEGER}})));
-	//! data
-	children.emplace_back("data", LogicalType::BLOB);
-
-	return make_uniq<StructTypeInfo>(std::move(children));
-}
-
 LogicalType LogicalType::VARIANT() {
-	static const auto variant_type = CreateImmortal(LogicalTypeId::VARIANT, CreateVariantTypeInfo());
-	return variant_type;
+	return LogicalType(LogicalTypeId::VARIANT);
 }
 
 //===--------------------------------------------------------------------===//

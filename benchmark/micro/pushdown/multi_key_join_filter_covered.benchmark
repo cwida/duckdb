@@ -1,0 +1,26 @@
+# name: benchmark/micro/pushdown/multi_key_join_filter_covered.benchmark
+# description: Two-key join whose small build side holds every value of both key columns
+# group: [pushdown]
+
+name MultiKeyJoinFilterCovered
+group micro
+subgroup pushdown
+
+load
+CREATE TABLE fact AS
+  SELECT ((i % 1000) * 1000003)::BIGINT AS a,
+         (((i // 1000) % 1000) * 1000003)::BIGINT AS b,
+         (i % 997)::INTEGER AS payload
+  FROM range(24000000) t(i);
+CREATE TABLE dim AS
+  SELECT a, b
+  FROM (SELECT DISTINCT a, b FROM fact)
+  WHERE hash(a + b) % 2 = 0;
+
+run
+SELECT count(*), sum(f.payload)
+FROM fact f
+JOIN dim d ON f.a = d.a AND f.b = d.b;
+
+result II
+12278352	6112566278

@@ -178,3 +178,31 @@ query IIIIII
 SELECT line, line_byte_position, byte_position, column_idx, error_type, replace(csv_line, chr(10), '<LF>') FROM rej_chunk ORDER BY ALL
 ----
 2049	20309	20314	3	TOO MANY COLUMNS	x,bad,extra
+
+# a cast error after a full chunk in a column cast after parsing (ENUM), so the cast error search of Flush reads the
+# line position vector at the chunk's end; the rejects name lines 2048 and 2049
+statement ok
+CREATE TYPE mood AS ENUM ('ok');
+
+statement ok
+COPY (SELECT i AS a, CASE WHEN i >= 2047 THEN 'bad' ELSE 'ok' END AS b FROM range(2049) t(i)) TO '{TEST_DIR}/cast_after_chunk.csv' (HEADER false);
+
+query I
+SELECT count(b) FROM read_csv('{TEST_DIR}/cast_after_chunk.csv', auto_detect=false, header=false, delim=',', quote='"', escape='"', new_line='\n', columns={'a': 'INTEGER', 'b': 'mood'}, parallel=false, store_rejects=true, rejects_table='rej_cast', rejects_scan='scan_cast')
+----
+2047
+
+query II
+SELECT line, csv_line FROM rej_cast ORDER BY line
+----
+2048	2047,bad
+2049	2048,bad
+
+# null padding of a short row whose last column is unprojected and skipped, through AddRowWithoutValue
+statement ok
+COPY (SELECT CASE WHEN i = 0 THEN '1,x' ELSE '2,x,7' END FROM range(16) t(i)) TO '{TEST_DIR}/pad_last.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT count(c), count(*) FROM read_csv('{TEST_DIR}/pad_last.csv', auto_detect=false, header=false, delim=',', quote='"', escape='"', new_line='\n', columns={'a': 'INTEGER', 'b': 'VARCHAR', 'c': 'INTEGER'}, parallel=false, null_padding=true)
+----
+15	16

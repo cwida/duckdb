@@ -217,24 +217,35 @@ unique_ptr<Expression> ColumnBindingReplacer::VisitReplace(BoundColumnRefExpress
                                                            unique_ptr<Expression> *expr_ptr) {
 	if (use_index) {
 		auto replacement = FindReplacement(expr.Binding());
-		if (replacement) {
-			expr.BindingMutable() = replacement->new_binding;
-			if (replacement->replace_type) {
-				expr.SetReturnType(replacement->new_type);
-			}
+		if (!replacement) {
+			return nullptr;
 		}
-		return nullptr;
+		if (replacement->replace_type) {
+			return expr.WithBinding(replacement->new_binding, replacement->new_type);
+		}
+		return expr.WithBinding(replacement->new_binding);
 	}
+	// replacements are applied in order, so a later replacement can apply to the result of an earlier one
+	auto binding = expr.Binding();
+	optional_ptr<const LogicalType> new_type;
+	bool replaced = false;
 	for (auto &replacement : replacement_bindings) {
-		if (expr.Binding() != replacement.old_binding) {
+		if (binding != replacement.old_binding) {
 			continue;
 		}
-		expr.BindingMutable() = replacement.new_binding;
+		binding = replacement.new_binding;
+		replaced = true;
 		if (replacement.replace_type) {
-			expr.SetReturnType(replacement.new_type);
+			new_type = replacement.new_type;
 		}
 	}
-	return nullptr;
+	if (!replaced) {
+		return nullptr;
+	}
+	if (new_type) {
+		return expr.WithBinding(binding, *new_type);
+	}
+	return expr.WithBinding(binding);
 }
 
 void CorrelatedColumnBindingReplacer::VisitOperatorBindings(LogicalOperator &op) {
@@ -257,8 +268,8 @@ void CorrelatedColumnBindingReplacer::VisitOperatorBindings(LogicalOperator &op)
 unique_ptr<Expression> CorrelatedColumnBindingReplacer::VisitReplace(BoundSubqueryExpression &expr,
                                                                      unique_ptr<Expression> *expr_ptr) {
 	ReplaceCorrelatedColumns(expr.GetBinder()->correlated_columns, *this);
-	if (expr.SubqueryMutable().plan) {
-		VisitOperator(*expr.SubqueryMutable().plan);
+	if (expr.Subquery().plan) {
+		VisitOperator(*expr.Subquery().plan);
 	}
 	return nullptr;
 }

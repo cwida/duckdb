@@ -548,7 +548,7 @@ bool JoinHashTable::ColumnReferencedByResidual(idx_t build_col_idx) const {
 
 uint8_t JoinHashTable::GetDictSurvivingIndexWidth(idx_t build_col_idx, const Vector &incoming) const {
 	const auto &type = build_types[build_col_idx];
-	// Vector::Dictionary rejects nested types
+	// Keep nested payloads in the regular row layout.
 	switch (type.InternalType()) {
 	case PhysicalType::STRUCT:
 	case PhysicalType::LIST:
@@ -1087,33 +1087,137 @@ void JoinHashTable::InsertHashes(Vector &hashes_v, TupleDataChunkState &chunk_st
 	}
 }
 
-unique_ptr<PrefixRangeFilter::BuildState> JoinHashTable::InitializePrefixRangeBuildState() {
-	D_ASSERT(prefix_range_filter);
-	return prefix_range_filter->InitializeBuildState(context);
+JoinHashTable::PrefixRangeBuildStates JoinHashTable::InitializePrefixRangeBuildState() {
+	D_ASSERT(ShouldBuildPrefixRangeFilter());
+	PrefixRangeBuildStates states(prefix_range_filters.size());
+	for (idx_t key_idx = 0; key_idx < prefix_range_filters.size(); key_idx++) {
+		if (prefix_range_filters[key_idx]) {
+			states[key_idx] = prefix_range_filters[key_idx]->InitializeBuildState(context);
+		}
+	}
+	return states;
 }
 
 idx_t JoinHashTable::GetPrefixRangeBuildStateSize() const {
-	D_ASSERT(prefix_range_filter);
-	return prefix_range_filter->GetBuildStateSize();
+	D_ASSERT(ShouldBuildPrefixRangeFilter());
+	idx_t size = 0;
+	for (auto &filter : prefix_range_filters) {
+		if (filter) {
+			size += filter->GetBuildStateSize();
+		}
+	}
+	return size;
 }
 
-void JoinHashTable::InsertPrefixRangeChunk(TupleDataChunkState &chunk_state, idx_t count,
-                                           PrefixRangeFilter::BuildState &state, bool parallel) {
-	D_ASSERT(prefix_range_filter);
-	Vector build_keys(layout_ptr->GetTypes()[0], count);
-	auto &sel = *FlatVector::IncrementalSelectionVector();
-	data_collection->Gather(chunk_state.row_locations, sel, count, 0, build_keys, sel, nullptr);
-	FlatVector::SetSize(build_keys, count_t(count));
-	if (parallel) {
-		prefix_range_filter->InsertKeysParallel(build_keys, state);
-	} else {
-		prefix_range_filter->InsertKeys(build_keys, state);
+void JoinHashTable::SetBuildBloomFilter(idx_t key_idx) {
+	if (HasSingleEqualityKey()) {
+		D_ASSERT(key_idx == 0);
+		should_build_bloom_filter = true;
+		return;
+	}
+	should_build_key_bloom_filters.resize(equality_predicate_columns.size(), false);
+	should_build_key_bloom_filters[key_idx] = true;
+}
+
+shared_ptr<BloomFilter> JoinHashTable::GetBloomFilter(idx_t key_idx) {
+	if (HasSingleEqualityKey()) {
+		D_ASSERT(key_idx == 0);
+		return bloom_filter;
+	}
+	return key_idx < key_bloom_filters.size() ? key_bloom_filters[key_idx] : nullptr;
+}
+
+void JoinHashTable::SealBloomFilter() {
+	if (bloom_filter) {
+		bloom_filter->Seal(context);
+	}
+	for (auto &key_bloom_filter : key_bloom_filters) {
+		if (key_bloom_filter && !key_bloom_filter->IsSealed()) {
+			key_bloom_filter->Seal(context);
+		}
 	}
 }
 
-void JoinHashTable::MergePrefixRangeBuildState(PrefixRangeFilter::BuildState &state) {
-	D_ASSERT(prefix_range_filter);
-	prefix_range_filter->MergeBuildState(state);
+bool JoinHashTable::HasPublishableBloomFilter(idx_t key_idx) const {
+	if (HasSingleEqualityKey()) {
+		D_ASSERT(key_idx == 0);
+		return HasPublishableBloomFilter();
+	}
+	if (key_idx >= key_bloom_filters.size()) {
+		return false;
+	}
+	auto &filter = key_bloom_filters[key_idx];
+	return filter && filter->IsSealed() && filter->IsUseful();
+}
+
+bool JoinHashTable::ShouldBuildPrefixRangeFilter() const {
+	if (!should_build_prefix_range_filter) {
+		return false;
+	}
+	for (auto &filter : prefix_range_filters) {
+		if (filter) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void JoinHashTable::GatherKeyColumn(TupleDataChunkState &chunk_state, idx_t count, idx_t key_idx, Vector &result) {
+	auto &sel = *FlatVector::IncrementalSelectionVector();
+	data_collection->Gather(chunk_state.row_locations, sel, count, key_idx, result, sel, nullptr);
+	FlatVector::SetSize(result, count_t(count));
+}
+
+void JoinHashTable::InsertPrefixRangeChunk(TupleDataChunkState &chunk_state, idx_t count,
+                                           PrefixRangeBuildStates &states, KeyFilterBuildScratch &scratch,
+                                           bool parallel) {
+	D_ASSERT(states.size() == prefix_range_filters.size());
+	scratch.keys.Reset();
+	for (idx_t key_idx = 0; key_idx < prefix_range_filters.size(); key_idx++) {
+		auto &filter = prefix_range_filters[key_idx];
+		if (!filter) {
+			continue;
+		}
+		auto &build_keys = scratch.keys.data[key_idx];
+		GatherKeyColumn(chunk_state, count, key_idx, build_keys);
+		if (parallel) {
+			filter->InsertKeysParallel(build_keys, *states[key_idx]);
+		} else {
+			filter->InsertKeys(build_keys, *states[key_idx]);
+		}
+	}
+}
+
+void JoinHashTable::MergePrefixRangeBuildState(PrefixRangeBuildStates &states) {
+	D_ASSERT(states.size() == prefix_range_filters.size());
+	for (idx_t key_idx = 0; key_idx < prefix_range_filters.size(); key_idx++) {
+		if (prefix_range_filters[key_idx]) {
+			prefix_range_filters[key_idx]->MergeBuildState(*states[key_idx]);
+		}
+	}
+}
+
+JoinHashTable::KeyFilterBuildScratch::KeyFilterBuildScratch(JoinHashTable &ht) : hashes(LogicalType::HASH) {
+	vector<LogicalType> types;
+	for (idx_t key_idx = 0; key_idx < ht.equality_predicate_columns.size(); key_idx++) {
+		types.push_back(ht.layout_ptr->GetTypes()[key_idx]);
+	}
+	keys.Initialize(ht.context, types);
+}
+
+void JoinHashTable::InsertKeyBloomFilterChunk(TupleDataChunkState &chunk_state, idx_t count,
+                                              KeyFilterBuildScratch &scratch) {
+	scratch.keys.Reset();
+	for (idx_t key_idx = 0; key_idx < key_bloom_filters.size(); key_idx++) {
+		auto &filter = key_bloom_filters[key_idx];
+		if (!filter || filter->IsSealed()) {
+			continue;
+		}
+		auto &build_keys = scratch.keys.data[key_idx];
+		GatherKeyColumn(chunk_state, count, key_idx, build_keys);
+		VectorOperations::Hash(build_keys, scratch.hashes, count);
+		filter->InsertHashes(scratch.hashes, *FlatVector::IncrementalSelectionVector(), count);
+	}
 }
 
 bool JoinHashTable::TryInitializePerfectHashTable() {
@@ -1170,6 +1274,15 @@ void JoinHashTable::AllocateHashMap(bool use_radix_layout) {
 		bloom_filter = recycled_bloom_filter ? std::move(recycled_bloom_filter) : make_shared_ptr<BloomFilter>();
 		bloom_filter->Initialize(context, MaxValue<idx_t>(Count(), 1));
 	}
+	key_bloom_filters.resize(should_build_key_bloom_filters.size());
+	// The key columns share one bitmap budget with prefix-range filters.
+	for (idx_t key_idx = 0; key_idx < should_build_key_bloom_filters.size(); key_idx++) {
+		auto &filter = key_bloom_filters[key_idx];
+		if (should_build_key_bloom_filters[key_idx] && (!filter || filter->IsSealed())) {
+			filter = make_shared_ptr<BloomFilter>();
+			filter->Initialize(context, MaxValue<idx_t>(Count(), 1), key_bloom_filter_budget);
+		}
+	}
 
 	if (hash_map.get()) {
 		// There is already a hash map
@@ -1204,21 +1317,26 @@ void JoinHashTable::InitializePointerTable(idx_t entry_idx_from, idx_t entry_idx
 }
 
 void JoinHashTable::Finalize(idx_t chunk_idx_from, idx_t chunk_idx_to, bool parallel,
-                             optional_ptr<PrefixRangeFilter::BuildState> prefix_range_state,
-                             bool prefix_range_parallel) {
+                             optional_ptr<PrefixRangeBuildStates> prefix_range_states, bool prefix_range_parallel) {
 	// Pointer table should be allocated
 	D_ASSERT(hash_map.get() || perfect_hash_table);
 
 	TupleDataChunkIterator iterator(*data_collection, TupleDataPinProperties::KEEP_EVERYTHING_PINNED, chunk_idx_from,
 	                                chunk_idx_to, false);
 	if (perfect_hash_table) {
+		// Perfect hash joins have a single key and no per-key Bloom filters.
+		D_ASSERT(key_bloom_filters.empty());
+		unique_ptr<KeyFilterBuildScratch> key_filter_scratch;
+		if (prefix_range_states) {
+			key_filter_scratch = make_uniq<KeyFilterBuildScratch>(*this);
+		}
 		bool has_chains = false;
 		do {
 			auto &chunk_state = iterator.GetChunkState();
 			has_chains |= perfect_hash_table->Insert(chunk_state.row_locations, *layout_ptr, pointer_offset, parallel);
-			if (prefix_range_state) {
-				InsertPrefixRangeChunk(chunk_state, iterator.GetCurrentChunkCount(), *prefix_range_state,
-				                       prefix_range_parallel);
+			if (prefix_range_states) {
+				InsertPrefixRangeChunk(chunk_state, iterator.GetCurrentChunkCount(), *prefix_range_states,
+				                       *key_filter_scratch, prefix_range_parallel);
 			}
 		} while (iterator.Next());
 		if (has_chains) {
@@ -1230,6 +1348,10 @@ void JoinHashTable::Finalize(idx_t chunk_idx_from, idx_t chunk_idx_to, bool para
 	const auto row_locations = iterator.GetRowLocations();
 	Vector hashes(LogicalType::HASH);
 	InsertState insert_state(*this);
+	unique_ptr<KeyFilterBuildScratch> key_filter_scratch;
+	if (!key_bloom_filters.empty() || prefix_range_states) {
+		key_filter_scratch = make_uniq<KeyFilterBuildScratch>(*this);
+	}
 	do {
 		const auto count = iterator.GetCurrentChunkCount();
 		TupleDataChunkState &chunk_state = iterator.GetChunkState();
@@ -1241,8 +1363,12 @@ void JoinHashTable::Finalize(idx_t chunk_idx_from, idx_t chunk_idx_to, bool para
 			}
 		}
 		InsertHashes(hashes, chunk_state, insert_state, parallel);
-		if (prefix_range_state) {
-			InsertPrefixRangeChunk(chunk_state, count, *prefix_range_state, prefix_range_parallel);
+		if (!key_bloom_filters.empty()) {
+			InsertKeyBloomFilterChunk(chunk_state, count, *key_filter_scratch);
+		}
+		if (prefix_range_states) {
+			InsertPrefixRangeChunk(chunk_state, count, *prefix_range_states, *key_filter_scratch,
+			                       prefix_range_parallel);
 		}
 	} while (iterator.Next());
 }
@@ -1815,12 +1941,41 @@ void ScanStructure::GatherResult(Vector &result, const idx_t count, const idx_t 
 	                           *FlatVector::IncrementalSelectionVector(), nullptr);
 }
 
+static bool HasNestedDictionary(const vector<buffer_ptr<DictionaryEntry>> &dictionaries) {
+	for (const auto &entry : dictionaries) {
+		if (entry->data.GetType().IsNested()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool SelectionCoversDictionary(const data_ptr_t *row_ptrs, const SelectionVector &ptr_sel, idx_t count,
+                                      idx_t pointer_offset, idx_t dictionary_size) {
+	D_ASSERT(dictionary_size <= STANDARD_VECTOR_SIZE);
+	if (count < dictionary_size) {
+		return false;
+	}
+	validity_t selected_entries[ValidityMask::STANDARD_ENTRY_COUNT] = {};
+	ValidityMask selected(selected_entries, STANDARD_VECTOR_SIZE);
+	for (idx_t i = 0; i < count; i++) {
+		const auto dictionary_idx = Load<uint32_t>(row_ptrs[ptr_sel.get_index(i)] + pointer_offset);
+		D_ASSERT(dictionary_idx < dictionary_size);
+		selected.SetValid(dictionary_idx);
+	}
+	return selected.CheckAllValid(dictionary_size);
+}
+
 void JoinHashTable::GatherRHS(Vector &row_ptrs, const SelectionVector &ptr_sel, const idx_t count, DataChunk &result,
                               idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const {
 	if (use_dict_emission) {
 		const auto ptrs = FlatVector::GetData<data_ptr_t>(row_ptrs);
-		EmitDictVectors(ptrs, ptr_sel, count, result, rhs_col_offset, dictionary_state);
-		return;
+		// Nested consumers may process all backing children, including those absent from the selection.
+		if (!HasNestedDictionary(dict_arrays) ||
+		    SelectionCoversDictionary(ptrs, ptr_sel, count, pointer_offset, Count())) {
+			EmitDictVectors(ptrs, ptr_sel, count, result, rhs_col_offset, dictionary_state);
+			return;
+		}
 	}
 	const auto &result_sel = *FlatVector::IncrementalSelectionVector();
 	const auto ptrs = FlatVector::GetData<data_ptr_t>(row_ptrs);
@@ -2729,7 +2884,10 @@ void JoinHashTable::ResetForNewIterationSinglePartition() {
 	load_factor = DEFAULT_LOAD_FACTOR;
 	bloom_filter.reset();
 	should_build_bloom_filter = false;
-	prefix_range_filter.reset();
+	key_bloom_filters.clear();
+	should_build_key_bloom_filters.clear();
+	key_bloom_filter_budget = NumericLimits<idx_t>::Maximum();
+	prefix_range_filters.clear();
 	should_build_prefix_range_filter = false;
 	ResetMarkJoinInfo(*this);
 	// The next iteration may rebuild a different small build side, so this iteration's dictionary
@@ -2911,19 +3069,32 @@ void ProbeSpill::PrepareNextProbe() {
 struct DictionaryEmissionActivation {
 	//! Caps the dict_arrays allocation; 8 MiB keeps them in L3 and bounds aux_next_ptrs
 	static constexpr idx_t MAX_BUILD_PAYLOAD_BYTES = 8ULL * 1024ULL * 1024ULL;
-	//! Below this, dictionary-emission setup is not amortized by probe-side savings
-	static constexpr idx_t MIN_PROBE_ROWS = 262144;
 	//! Below this ratio, per-row savings are unlikely to amortize the setup cost
 	static constexpr idx_t PROBE_BUILD_RATIO = 100;
 };
 
 idx_t JoinHashTable::ComputeBuildPayloadBytes(const vector<LogicalType> &rhs_output_types) const {
-	// the size of variable-size strings isn't counted here because they are already stored in the TupleDataCollection
-	idx_t payload_bytes_per_row = 0;
+	D_ASSERT(Count() > 0);
+	const auto limit = DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES;
+	idx_t payload_bytes = 0;
+	bool has_nested = false;
 	for (const auto &type : rhs_output_types) {
-		payload_bytes_per_row += GetTypeIdSize(type.InternalType());
+		const auto row_size = GetTypeIdSize(type.InternalType());
+		if (row_size > (limit - payload_bytes) / Count()) {
+			return limit + 1;
+		}
+		payload_bytes += row_size * Count();
+		has_nested |= type.IsNested();
 	}
-	return Count() * payload_bytes_per_row;
+	// Nested gathers copy children; scalar strings continue to reference the pinned build heap.
+	if (has_nested) {
+		const auto collection_bytes = data_collection->SizeInBytes();
+		if (collection_bytes > limit - payload_bytes) {
+			return limit + 1;
+		}
+		payload_bytes += collection_bytes;
+	}
+	return payload_bytes;
 }
 
 bool JoinHashTable::CanUsePerfectDictionaryLookup() const {
@@ -2950,31 +3121,33 @@ bool JoinHashTable::CanUseDictionaryEmission(const PhysicalHashJoin &op, bool ex
 	if (join_type == JoinType::SINGLE) {
 		return false;
 	}
+	// Unique LEFT joins gather directly and never emit dictionaries.
+	if (join_type == JoinType::LEFT && !chains_longer_than_one.load(std::memory_order_relaxed)) {
+		return false;
+	}
 	if (op.rhs_output_columns.col_types.empty()) {
 		return false;
 	}
-	if (Count() == 0) {
+	if (Count() == 0 || Count() > NumericLimits<uint32_t>::Maximum()) {
 		return false;
 	}
-	if (probe_cardinality < Count()) {
+	if (probe_cardinality < Count() ||
+	    (!CanUsePerfectDictionaryLookup() &&
+	     probe_cardinality / DictionaryEmissionActivation::PROBE_BUILD_RATIO < Count())) {
 		return false;
 	}
-	const auto perfect_dictionary_lookup = CanUsePerfectDictionaryLookup();
-	if (!perfect_dictionary_lookup && probe_cardinality < DictionaryEmissionActivation::MIN_PROBE_ROWS) {
-		return false;
-	}
-	if (!perfect_dictionary_lookup && probe_cardinality < DictionaryEmissionActivation::PROBE_BUILD_RATIO * Count()) {
-		return false;
-	}
-	// Vector::Dictionary does not support nested types
 	for (const auto &type : op.rhs_output_columns.col_types) {
-		switch (type.InternalType()) {
-		case PhysicalType::STRUCT:
-		case PhysicalType::LIST:
-		case PhysicalType::ARRAY:
+		if (type.InternalType() == PhysicalType::STRUCT) {
+			// STRUCT vectors apply selections to their children instead of wrapping a dictionary.
 			return false;
-		default:
-			break;
+		}
+		if (type.InternalType() == PhysicalType::ARRAY) {
+			// ARRAY dictionary hashing processes individual arrays instead of batching their children.
+			return false;
+		}
+		if (type.IsNested() && Count() > STANDARD_VECTOR_SIZE) {
+			// A chunk must be able to reference every nested dictionary entry.
+			return false;
 		}
 	}
 	if (ComputeBuildPayloadBytes(op.rhs_output_columns.col_types) >
@@ -3012,6 +3185,7 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 	const auto build_count = collection.Count();
 	// preconditions enforced by CanUseDictionaryEmission
 	D_ASSERT(build_count > 0);
+	D_ASSERT(dict_arrays.empty());
 	// dict index is a uint32_t; assert defensively if MAX_BUILD_PAYLOAD_BYTES is ever relaxed
 	D_ASSERT(build_count <= NumericLimits<uint32_t>::Maximum());
 
@@ -3022,23 +3196,46 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 	                           TupleDataPinProperties::KEEP_EVERYTHING_PINNED);
 	const auto collected = FillWithHTOffsets(scan_state, row_pointer_vector);
 	D_ASSERT(collected == build_count);
-	(void)collected;
+	FlatVector::SetSize(row_pointer_vector, collected);
 	const auto row_ptrs = FlatVector::GetData<data_ptr_t>(row_pointer_vector);
 
-	// LEFT / OUTER joins fill unmatched probe rows with a constant-NULL vector (NextLeftJoin), so they do not
-	// wrap this entry on every chunk; it is only a global dictionary when every chunk goes through EmitDictVectors.
-	const bool dict_on_every_chunk = join_type != JoinType::LEFT && join_type != JoinType::OUTER;
+	// Outer joins and partial nested selections can produce chunks without these dictionaries.
+	bool dict_on_every_chunk = join_type != JoinType::LEFT && join_type != JoinType::OUTER;
+	for (const auto &type : op.rhs_output_columns.col_types) {
+		dict_on_every_chunk &= !type.IsNested();
+	}
 
 	// gather RHS output columns into columnar dictionary arrays
 	const auto &sel = *FlatVector::IncrementalSelectionVector();
+	idx_t dictionary_bytes = 0;
+	vector<buffer_ptr<DictionaryEntry>> dictionaries;
 	for (idx_t col_idx = 0; col_idx < op.rhs_output_columns.col_types.size(); col_idx++) {
 		const auto &type = op.rhs_output_columns.col_types[col_idx];
 		auto dict_entry = dict_on_every_chunk ? DictionaryVector::CreateReusableGlobalDictionary(type, build_count)
 		                                      : DictionaryVector::CreateReusableDictionary(type, build_count);
+		if (dict_entry->data.GetAllocationSize() >
+		    DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES - dictionary_bytes) {
+			return;
+		}
 		const auto output_col_idx = output_columns[col_idx];
-		collection.Gather(row_pointer_vector, sel, build_count, output_col_idx, dict_entry->data, sel, nullptr);
-		dict_arrays.emplace_back(std::move(dict_entry));
+		if (type.IsNested()) {
+			D_ASSERT(build_count <= STANDARD_VECTOR_SIZE);
+			Vector gathered(type, build_count);
+			FlatVector::SetSize(gathered, build_count);
+			collection.Gather(row_pointer_vector, sel, build_count, output_col_idx, gathered, sel, nullptr);
+			// Own nested string heaps independently of the scratch vector.
+			VectorOperations::Copy(gathered, dict_entry->data, build_count, 0, 0);
+		} else {
+			collection.Gather(row_pointer_vector, sel, build_count, output_col_idx, dict_entry->data, sel, nullptr);
+		}
+		const auto allocation_size = dict_entry->data.GetAllocationSize();
+		if (allocation_size > DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES - dictionary_bytes) {
+			return;
+		}
+		dictionary_bytes += allocation_size;
+		dictionaries.emplace_back(std::move(dict_entry));
 	}
+	dict_arrays = std::move(dictionaries);
 
 	// save chain pointers before overwriting NEXT_PTR; GetNextPointer reads them back.
 	// One extra slot is reserved at the end and left null so that `dead_end` has an index
@@ -3062,7 +3259,8 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 	}
 
 	use_dict_emission = true;
-	if (CanUsePerfectDictionaryLookup()) {
+	// Nested output can fall back to native gathering, which needs the original row pointers.
+	if (CanUsePerfectDictionaryLookup() && !HasNestedDictionary(dict_arrays)) {
 		perfect_hash_table->ConvertToDictionary(pointer_offset);
 		DUCKDB_LOG(context, PhysicalOperatorLogType, op, "PhysicalHashJoin", "DictionaryLookup", {});
 	}

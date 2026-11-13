@@ -123,6 +123,7 @@
     {
       "reason": "Relies on exact hash function output.",
       "paths": [
+        "test/sql/join/inner/test_join_multi_key_filter_budget.test",
         "test/sql/function/generic/hash_func.test",
         "test/sql/function/generic/hash_comparison_keys.test",
         "test/sql/copy/file_size_bytes.test",

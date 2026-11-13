@@ -146,11 +146,15 @@ optional<RelationStats> RelationStatsExtractor::ExtractJoinStats(LogicalOperator
 	return graph.CombineRelationStats(op.GetColumnBindings(), relation_stats, estimate.GetIndex());
 }
 
-optional<RelationStats> RelationStatsExtractor::ExtractCTERef(LogicalCTERef &cte_ref) {
+optional_ptr<LogicalOperator> RelationStatsExtractor::GetCTEDefinition(const LogicalCTERef &cte_ref) const {
 	if (cte_ref.is_recurring || !cte_callback) {
-		return {};
+		return nullptr;
 	}
-	auto definition = cte_callback(cte_ref.cte_index);
+	return cte_callback(cte_ref.cte_index);
+}
+
+optional<RelationStats> RelationStatsExtractor::ExtractCTERef(LogicalCTERef &cte_ref) {
+	auto definition = GetCTEDefinition(cte_ref);
 	if (!definition) {
 		return {};
 	}

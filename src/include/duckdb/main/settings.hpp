@@ -21,6 +21,12 @@ struct IsSettingList : std::false_type {};
 template <class T>
 struct IsSettingList<vector<T>> : std::true_type {};
 
+template <class T>
+struct IsSettingMap : std::false_type {};
+
+template <class K, class V>
+struct IsSettingMap<unordered_map<K, V>> : std::true_type {};
+
 struct Settings {
 	template <class OP, class SOURCE>
 	static typename OP::RETURN_TYPE Get(const SOURCE &source) {
@@ -82,6 +88,17 @@ private:
 		return result;
 	}
 
+	template <class T>
+	static typename std::enable_if<IsSettingMap<T>::value, T>::type FromValue(const Value &value) {
+		T result;
+		for (auto &entry : MapValue::GetChildren(value)) {
+			auto &key_value = StructValue::GetChildren(entry);
+			result.emplace(FromValue<typename T::key_type>(key_value[0]),
+			               FromValue<typename T::mapped_type>(key_value[1]));
+		}
+		return result;
+	}
+
 	//! Parses the default value of a setting
 	template <class T>
 	static typename std::enable_if<std::is_enum<T>::value, T>::type FromDefault(const char *default_value) {
@@ -115,6 +132,15 @@ private:
 		}
 		return result;
 	}
+	template <class T>
+	static typename std::enable_if<IsSettingMap<T>::value, T>::type FromDefault(const char *default_value) {
+		// only the empty map is supported as a default
+		if (!StringUtil::Equals(default_value, "{}")) {
+			throw InternalException("Default value \"%s\" of a map setting must be {}", default_value);
+		}
+		return T();
+	}
+
 	//! Splits a list literal (e.g. "['a', 'b']") into its entries
 	static vector<string> SplitListDefault(const char *default_value);
 
@@ -152,6 +178,17 @@ private:
 			children.push_back(ToSettingValue(value));
 		}
 		return Value::LIST(SettingLogicalType(static_cast<const T *>(nullptr)), std::move(children));
+	}
+	template <class K, class V>
+	static Value ToSettingValue(const unordered_map<K, V> &values) {
+		vector<Value> keys;
+		vector<Value> map_values;
+		for (auto &entry : values) {
+			keys.push_back(ToSettingValue(entry.first));
+			map_values.push_back(ToSettingValue(entry.second));
+		}
+		return Value::MAP(SettingLogicalType(static_cast<const K *>(nullptr)),
+		                  SettingLogicalType(static_cast<const V *>(nullptr)), std::move(keys), std::move(map_values));
 	}
 
 	//! The logical type of a setting value, selected by the (unused) pointer type
@@ -277,14 +314,16 @@ struct AllowExtensionRepositoriesSetting {
 	using RETURN_TYPE = string;
 	static constexpr const char *Name = "allow_extension_repositories";
 	static constexpr const char *Description =
-	    "Whether custom trusted extension repositories are 'allowed', 'forbidden' (which also distrusts existing "
-	    "repositories) or 'undecided' (the default: blocks adding new repositories, but keeps trusting existing ones). "
-	    "While the database is running the setting can only move from 'undecided' to 'allowed' or 'forbidden', or from "
-	    "'allowed' to 'forbidden'.";
+	    "Which custom trusted extension repositories can be added, and which are trusted: 'hosts' (the default: a "
+	    "repository named by its host can be added with CREATE EXTENSION REPOSITORY <host>, adding one by prefix needs "
+	    "'allowed', existing repositories stay trusted), 'allowed' (repositories can be added by host or by prefix), "
+	    "'hosts_only' (only repositories resolved from their host can be added, and only those are trusted) or "
+	    "'forbidden' (nothing can be added, and existing repositories are distrusted). While the database is running "
+	    "the setting can only be tightened: 'hosts' -> 'allowed' -> 'hosts_only' -> 'forbidden'.";
 	static constexpr const char *InputType = "VARCHAR";
 	static constexpr bool IsDebug = false;
 	static constexpr bool IsDeprecated = false;
-	static constexpr const char *DefaultValue = "undecided";
+	static constexpr const char *DefaultValue = "hosts";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 	static void OnSet(SettingCallbackInfo &info, Value &input);
@@ -2534,9 +2573,10 @@ struct ProfilingRendererSettingsSetting {
 	static constexpr const char *InputType = "MAP(VARCHAR, VARCHAR)";
 	static constexpr bool IsDebug = false;
 	static constexpr bool IsDeprecated = false;
-	static void SetLocal(ClientContext &context, const Value &parameter);
-	static void ResetLocal(ClientContext &context);
-	static Value GetSetting(const ClientContext &context);
+	static constexpr const char *DefaultValue = "{}";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
 struct ProgressBarTimeSetting {

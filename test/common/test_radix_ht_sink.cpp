@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/limits.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/common/types/hash.hpp"
 #include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/execution/radix_ht_adaptivity.hpp"

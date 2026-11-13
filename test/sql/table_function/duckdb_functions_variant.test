@@ -1,0 +1,18 @@
+# name: test/sql/table_function/duckdb_functions_variant.test
+# description: Typed VARIANT function parameters retain their documentation
+# group: [table_function]
+
+# Check the single-description branch, including examples and categories.
+query TTTT
+SELECT parameters, description, examples[1], categories
+FROM duckdb_functions() WHERE function_name = 'variant_contains';
+----
+[variant_haystack, variant_needle]	Returns whether the needle is contained in the haystack, recursively checking nested arrays and objects.	variant_contains({'a': {'b': 42}}::VARIANT, {'b': 42}::VARIANT)	[variant]
+
+# Multiple descriptions must still distinguish the second argument's type.
+query TTT rowsort
+SELECT parameter_types, parameters, description
+FROM duckdb_functions() WHERE function_name = 'variant_extract';
+----
+[VARIANT, UINTEGER]	[input_variant, index]	Returns the entry at `index` from the `input_variant` if it's an ARRAY.
+[VARIANT, VARCHAR]	[input_variant, field]	Returns the `field` from the `input_variant` if it's an OBJECT.

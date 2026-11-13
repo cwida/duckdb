@@ -1,0 +1,41 @@
+# name: test/sql/join/inner/test_join_multi_key_filter_holes.test
+# description: A half-full runtime filter can reject every probe row
+# group: [inner]
+
+require skip_reload
+
+statement ok
+SET VARIABLE check_runtime_filters =
+    NOT current_setting('debug_force_external') AND NOT current_setting('debug_disable_optimizer')
+    AND NOT current_setting('debug_verify_serializer');
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side,compressed_materialization';
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+statement ok
+CREATE TABLE probe AS SELECT (2*(i%50)+1)::INTEGER a, ((i//50)%100)::INTEGER b FROM range(200000) t(i);
+
+statement ok
+CREATE TABLE build AS SELECT (2*a)::INTEGER a, (b+(a%5)*20)::INTEGER b FROM range(50) t(a), range(20) u(b);
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query I
+SELECT count(*) FROM probe p JOIN build b ON p.a=b.a AND p.b=b.b;
+----
+0
+
+statement ok
+CALL disable_logging();
+
+# Publish both filters; bitmap density alone does not determine probe selectivity.
+query I
+SELECT NOT getvariable('check_runtime_filters') OR count(*)=2
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event='PublishRuntimeFilter' AND info['kind']='PREFIX_RANGE';
+----
+true

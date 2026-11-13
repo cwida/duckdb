@@ -1,0 +1,47 @@
+# name: test/sql/storage/compression/bitpacking/bitpacking_delta_for_sparse_update.test
+# description: Sparse UPDATE of a checkpointed DELTA_FOR column fetches base rows starting mid algorithm group
+# group: [bitpacking]
+
+# This test defaults to another compression function for smaller block sizes,
+# because the bitpacking groups no longer fit the blocks.
+require block_size 262144
+
+load {TEST_DIR}/bitpacking_delta_for_sparse_update.db
+
+statement ok
+SET force_compression = 'bitpacking';
+
+statement ok
+CREATE TABLE t AS SELECT (i % 128)::INTEGER AS h, (i * 3 + i % 2)::BIGINT AS v FROM range(1000000) r(i);
+
+statement ok
+CHECKPOINT;
+
+query I
+SELECT DISTINCT compression FROM pragma_storage_info('t') WHERE column_name = 'v' AND segment_type = 'BIGINT';
+----
+BitPacking
+
+statement ok
+UPDATE t SET v = v + 1 WHERE h = 1;
+
+query III
+SELECT count(*), sum(v), sum(v) FILTER (WHERE h = 1) FROM t;
+----
+1000000	1499999007813	11718789017
+
+query I
+SELECT count(*) FROM t WHERE v <> (rowid * 3 + rowid % 2 + (h = 1)::BIGINT);
+----
+0
+
+statement ok
+UPDATE t SET v = v - 1 WHERE h = 1 OR h = 77;
+
+statement ok
+CHECKPOINT;
+
+query I
+SELECT count(*) FROM t WHERE v <> (rowid * 3 + rowid % 2 - (h = 77)::BIGINT);
+----
+0

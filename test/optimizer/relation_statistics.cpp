@@ -1300,6 +1300,57 @@ TEST_CASE("Large cardinality estimates saturate and preserve integer bounds", "[
 	        maximum - 1);
 }
 
+TEST_CASE("Complete group counts retain marginal domains", "[optimizer][relation_statistics]") {
+	for (auto source : {DistinctCountSource::EXACT, DistinctCountSource::HLL, DistinctCountSource::MIN_MAX,
+	                    DistinctCountSource::CARDINALITY}) {
+		for (idx_t rows : {idx_t(0), idx_t(1), idx_t(50), idx_t(10000)}) {
+			vector<DistinctCount> domains {{50, source}};
+			auto previous = RelationStatisticsHelper::EstimateDistinctCardinality(domains, rows);
+			domains.emplace_back(1, source);
+			REQUIRE(RelationStatisticsHelper::EstimateDistinctCardinality(domains, rows) == previous);
+			for (idx_t count : {idx_t(2), idx_t(10), idx_t(10000)}) {
+				domains.emplace_back(count, source);
+				auto estimate = RelationStatisticsHelper::EstimateDistinctCardinality(domains, rows);
+				REQUIRE(estimate >= previous);
+				REQUIRE(estimate >= MinValue(count, rows));
+				REQUIRE(estimate <= rows);
+				previous = estimate;
+			}
+		}
+	}
+}
+
+TEST_CASE("Implicit full grouping sets preserve complete group statistics", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto key = ColumnBinding(TableIndex(10), ProjectionIndex(0));
+	auto extra = ColumnBinding(TableIndex(10), ProjectionIndex(1));
+	auto child_stats = CreateStats({key, extra}, {5, 5000}, 5000);
+	LogicalAggregate aggregate(TableIndex(20), TableIndex(30), vector<unique_ptr<Expression>>());
+	aggregate.groups.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, key));
+	auto key_only = RelationStatisticsHelper::ExtractAggregationStats(aggregate, child_stats, *connection.context);
+	REQUIRE(key_only);
+	REQUIRE(key_only->cardinality == 5);
+	REQUIRE(key_only->columns[0].GetSupportedSemiAntiDomainSize().GetIndex() == 5);
+
+	aggregate.groups.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, extra));
+	auto implicit = RelationStatisticsHelper::ExtractAggregationStats(aggregate, child_stats, *connection.context);
+	REQUIRE(implicit);
+	REQUIRE(implicit->cardinality == 5000);
+	REQUIRE_FALSE(implicit->columns[0].GetSupportedSemiAntiDomainSize().IsValid());
+	REQUIRE(implicit->columns[0].total_domain.distinct_count == 5);
+	REQUIRE(implicit->columns[0].total_domain.source == DistinctCountSource::EXACT);
+	REQUIRE(implicit->columns[1].current_domain.distinct_count == 5000);
+
+	aggregate.grouping_sets.emplace_back();
+	aggregate.grouping_sets[0].insert(ProjectionIndex(0));
+	aggregate.grouping_sets[0].insert(ProjectionIndex(1));
+	auto explicit_set = RelationStatisticsHelper::ExtractAggregationStats(aggregate, child_stats, *connection.context);
+	REQUIRE(explicit_set);
+	REQUIRE(explicit_set->cardinality == implicit->cardinality);
+	REQUIRE(explicit_set->columns[0].total_domain.distinct_count == implicit->columns[0].total_domain.distinct_count);
+}
+
 struct CardinalityProviderData : public TableFunctionData {
 	NodeStatistics statistics {0, 0};
 	shared_ptr<idx_t> calls = make_shared_ptr<idx_t>(0);
@@ -1491,10 +1542,10 @@ TEST_CASE("Aliases created before joins retain hidden contributors", "[optimizer
 	auto alias_projection = make_uniq<LogicalProjection>(TableIndex(15), std::move(aliases));
 	alias_projection->children.push_back(std::move(inner.children[0]));
 	inner.children[0] = std::move(alias_projection);
-	inner.conditions[0].GetLHS().Cast<BoundColumnRefExpression>().BindingMutable() =
-	    ColumnBinding(TableIndex(15), ProjectionIndex(0));
-	outer_projection.expressions[0]->Cast<BoundColumnRefExpression>().BindingMutable() =
-	    ColumnBinding(TableIndex(15), ProjectionIndex(1));
+	inner.conditions[0].LeftReference() = inner.conditions[0].GetLHS().Cast<BoundColumnRefExpression>().WithBinding(
+	    ColumnBinding(TableIndex(15), ProjectionIndex(0)));
+	outer_projection.expressions[0] = outer_projection.expressions[0]->Cast<BoundColumnRefExpression>().WithBinding(
+	    ColumnBinding(TableIndex(15), ProjectionIndex(1)));
 	JoinOrderSourceStats snapshot(*connection.context, *plan);
 	auto sources = snapshot.Resolve(outer_projection);
 	REQUIRE(sources.at(outer_projection.GetColumnBindings()[0]).equivalents.size() == 1);
@@ -1519,12 +1570,12 @@ TEST_CASE("Projected source equalities exclude correlated operands", "[optimizer
 		auto &join = projection.children[0]->Cast<LogicalComparisonJoin>();
 		auto &condition = join.conditions[0];
 		auto binding = condition.GetLHS().Cast<BoundColumnRefExpression>().Binding();
-		condition.GetLHS().Cast<BoundColumnRefExpression>().DepthMutable() = 1;
+		condition.LeftReference() = condition.GetLHS().Cast<BoundColumnRefExpression>().WithDepth(1);
 		if (cast) {
-			condition.LeftReference() =
-			    BoundCastExpression::AddDefaultCastToType(std::move(condition.LeftReference()), LogicalType::BIGINT);
-			condition.RightReference() =
-			    BoundCastExpression::AddDefaultCastToType(std::move(condition.RightReference()), LogicalType::BIGINT);
+			condition.LeftReference() = BoundCastExpression::AddCastToType(
+			    *connection.context, std::move(condition.LeftReference()), LogicalType::BIGINT);
+			condition.RightReference() = BoundCastExpression::AddCastToType(
+			    *connection.context, std::move(condition.RightReference()), LogicalType::BIGINT);
 		}
 		JoinOrderSourceStats snapshot(*connection.context, projection);
 		auto sources = snapshot.Resolve(projection);
@@ -1868,7 +1919,7 @@ TEST_CASE("Join-order UNION grouping reuses the original source snapshot", "[opt
 	}
 }
 
-TEST_CASE("UNION grouping estimates ignore cached arm cardinalities", "[optimizer][relation_statistics]") {
+TEST_CASE("UNION grouping estimates ignore operator arm cardinalities", "[optimizer][relation_statistics]") {
 	DuckDB db;
 	Connection connection(db);
 	auto input = make_uniq<LogicalSetOperation>(TableIndex(30), 1, make_uniq<LogicalDummyScan>(TableIndex(10)),
@@ -1881,9 +1932,9 @@ TEST_CASE("UNION grouping estimates ignore cached arm cardinalities", "[optimize
 	aggregate.children.push_back(std::move(input));
 
 	auto bindings = aggregate.GetColumnBindings();
-	for (auto cached_cardinality : {idx_t(0), idx_t(1000)}) {
+	for (auto operator_cardinality : {idx_t(0), idx_t(1000)}) {
 		for (auto &arm : aggregate.children[0]->children) {
-			arm->SetEstimatedCardinality(cached_cardinality);
+			arm->SetEstimatedCardinality(operator_cardinality);
 		}
 		RelationStatsExtractor extractor(*connection.context);
 		auto stats = extractor.Extract(aggregate);
@@ -1893,7 +1944,7 @@ TEST_CASE("UNION grouping estimates ignore cached arm cardinalities", "[optimize
 		REQUIRE(extractor.ExtractedOperatorCount() == 4);
 		for (auto &arm : aggregate.children[0]->children) {
 			REQUIRE(arm->has_estimated_cardinality);
-			REQUIRE(arm->estimated_cardinality == cached_cardinality);
+			REQUIRE(arm->estimated_cardinality == operator_cardinality);
 		}
 		REQUIRE_FALSE(aggregate.has_estimated_cardinality);
 		REQUIRE_FALSE(aggregate.children[0]->has_estimated_cardinality);
@@ -1945,11 +1996,174 @@ TEST_CASE("UNION grouping refinement shares the CTE extraction snapshot", "[opti
 	// Each arm has three rows but only one pair of keys, rather than the UNION's four domain combinations.
 	REQUIRE(stats->cardinality == 2);
 	REQUIRE(stats->MatchesBindings(aggregate.GetColumnBindings()));
-	REQUIRE(cte_lookups == 2);
+	REQUIRE(cte_lookups == 4);
 	REQUIRE(extractor.ExtractedOperatorCount() == 6);
 	REQUIRE(extractor.Extract(aggregate) == stats);
-	REQUIRE(cte_lookups == 2);
+	REQUIRE(cte_lookups == 4);
 	REQUIRE(extractor.ExtractedOperatorCount() == 6);
+}
+
+TEST_CASE("UNION group refinement bounds shared CTE expansion", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	idx_t table_index = 100;
+	auto constant_arm = [&]() {
+		vector<unique_ptr<Expression>> expressions;
+		expressions.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(10)));
+		expressions.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(20)));
+		auto result = make_uniq<LogicalProjection>(TableIndex(table_index++), std::move(expressions));
+		result->children.push_back(make_uniq<LogicalDummyScan>(TableIndex(table_index++)));
+		return result;
+	};
+	auto cte_ref = [&](idx_t definition_index) {
+		return make_uniq<LogicalCTERef>(TableIndex(table_index++), TableIndex(definition_index),
+		                                vector<LogicalType> {LogicalType::INTEGER, LogicalType::INTEGER},
+		                                vector<Identifier> {"a", "b"});
+	};
+	vector<unique_ptr<LogicalOperator>> definitions;
+	auto first = constant_arm();
+	auto second = constant_arm();
+	definitions.push_back(make_uniq<LogicalSetOperation>(TableIndex(table_index++), 2, std::move(first),
+	                                                     std::move(second), LogicalOperatorType::LOGICAL_UNION, true));
+	for (idx_t depth = 1; depth <= 12; depth++) {
+		auto left = cte_ref(depth - 1);
+		auto right = cte_ref(depth - 1);
+		definitions.push_back(make_uniq<LogicalSetOperation>(
+		    TableIndex(table_index++), 2, std::move(left), std::move(right), LogicalOperatorType::LOGICAL_UNION, true));
+	}
+	for (auto depth : {idx_t(4), idx_t(12)}) {
+		CAPTURE(depth);
+		auto input = cte_ref(depth);
+		const auto expected = idx_t(1) << (depth + 1);
+		auto stats = CreateStats(input->GetColumnBindings(), {3 * expected, 3 * expected}, 3 * expected);
+		idx_t lookups = 0;
+		RelationStatsExtractor extractor(*connection.context, [&](TableIndex index) -> optional_ptr<LogicalOperator> {
+			lookups++;
+			REQUIRE(index.index < definitions.size());
+			return *definitions[index.index];
+		});
+		auto estimate = RelationStatisticsHelper::EstimateGroupCardinality(*input, stats, {0, 1}, extractor);
+		// Exhausting the budget discards the partial sum and uses the ordinary estimate.
+		REQUIRE(estimate == (depth == 4 ? expected : stats.cardinality));
+		REQUIRE(lookups <= 1024);
+		// Source extraction stays in the four shared leaf operators.
+		REQUIRE(extractor.ExtractedOperatorCount() == 4);
+	}
+}
+
+TEST_CASE("UNION group refinement bounds projection and CTE reference chains", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	vector<unique_ptr<LogicalOperator>> definitions;
+	definitions.push_back(make_uniq<LogicalSetOperation>(TableIndex(10), 1, make_uniq<LogicalDummyScan>(TableIndex(11)),
+	                                                     make_uniq<LogicalDummyScan>(TableIndex(12)),
+	                                                     LogicalOperatorType::LOGICAL_UNION, true));
+	for (idx_t i = 1; i <= 600; i++) {
+		auto ref_index = TableIndex(100 + 2 * i);
+		auto ref = make_uniq<LogicalCTERef>(ref_index, TableIndex(i - 1), vector<LogicalType> {LogicalType::INTEGER},
+		                                    vector<Identifier> {"k"});
+		vector<unique_ptr<Expression>> expressions;
+		expressions.push_back(
+		    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, ColumnBinding(ref_index, ProjectionIndex(0))));
+		auto projection = make_uniq<LogicalProjection>(TableIndex(101 + 2 * i), std::move(expressions));
+		projection->children.push_back(std::move(ref));
+		definitions.push_back(std::move(projection));
+	}
+	for (auto depth : {idx_t(4), idx_t(600)}) {
+		CAPTURE(depth);
+		auto &input = *definitions[depth];
+		auto stats = CreateStats(input.GetColumnBindings(), {100}, 100);
+		idx_t lookups = 0;
+		RelationStatsExtractor extractor(*connection.context, [&](TableIndex index) -> optional_ptr<LogicalOperator> {
+			lookups++;
+			return *definitions[index.index];
+		});
+		REQUIRE(RelationStatisticsHelper::EstimateGroupCardinality(input, stats, {0}, extractor) ==
+		        (depth == 4 ? 2 : 100));
+		REQUIRE(lookups <= 512);
+	}
+}
+
+TEST_CASE("UNION group refinement rejects unresolved and cyclic CTE layouts", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	LogicalCTERef input(TableIndex(10), TableIndex(20), {LogicalType::INTEGER, LogicalType::INTEGER}, {"a", "b"});
+	LogicalDummyScan wrong_width(TableIndex(30));
+	auto stats = CreateStats(input.GetColumnBindings(), {100, 100}, 1000);
+	auto fallback = RelationStatisticsHelper::EstimateDistinctCardinality(
+	    {DistinctCount(100, DistinctCountSource::EXACT), DistinctCount(100, DistinctCountSource::EXACT)}, 1000);
+	RelationStatsExtractor no_callback(*connection.context);
+	REQUIRE(RelationStatisticsHelper::EstimateGroupCardinality(input, stats, {0, 1}, no_callback) == fallback);
+	for (idx_t mode = 0; mode < 3; mode++) {
+		CAPTURE(mode);
+		RelationStatsExtractor extractor(*connection.context, [&](TableIndex) -> optional_ptr<LogicalOperator> {
+			if (mode == 0) {
+				return nullptr;
+			}
+			if (mode == 1) {
+				return wrong_width;
+			}
+			return input;
+		});
+		REQUIRE(RelationStatisticsHelper::EstimateGroupCardinality(input, stats, {0, 1}, extractor) == fallback);
+	}
+	input.is_recurring = true;
+	idx_t lookups = 0;
+	RelationStatsExtractor recurring(*connection.context, [&](TableIndex) -> optional_ptr<LogicalOperator> {
+		lookups++;
+		return wrong_width;
+	});
+	REQUIRE(RelationStatisticsHelper::EstimateGroupCardinality(input, stats, {0, 1}, recurring) == fallback);
+	REQUIRE(lookups == 0);
+}
+
+TEST_CASE("Shared CTE grouping estimates distinguish requested output positions", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	vector<vector<unique_ptr<Expression>>> rows;
+	for (idx_t i = 1; i <= 3; i++) {
+		vector<unique_ptr<Expression>> row;
+		row.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(i)));
+		rows.push_back(std::move(row));
+	}
+	auto values =
+	    make_uniq<LogicalExpressionGet>(TableIndex(10), vector<LogicalType> {LogicalType::INTEGER}, std::move(rows));
+	vector<unique_ptr<Expression>> columns;
+	columns.push_back(
+	    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, ColumnBinding(TableIndex(10), ProjectionIndex(0))));
+	columns.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(0)));
+	auto definition = make_uniq<LogicalProjection>(TableIndex(20), std::move(columns));
+	definition->children.push_back(std::move(values));
+	auto arm = [&](idx_t column) {
+		auto ref_index = TableIndex(40 + column);
+		auto ref = make_uniq<LogicalCTERef>(ref_index, TableIndex(30),
+		                                    vector<LogicalType> {LogicalType::INTEGER, LogicalType::INTEGER},
+		                                    vector<Identifier> {"varying", "constant"});
+		vector<unique_ptr<Expression>> expressions;
+		expressions.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER,
+		                                                          ColumnBinding(ref_index, ProjectionIndex(column))));
+		auto projection = make_uniq<LogicalProjection>(TableIndex(50 + column), std::move(expressions));
+		projection->children.push_back(std::move(ref));
+		return projection;
+	};
+	LogicalSetOperation input(TableIndex(60), 1, arm(0), arm(1), LogicalOperatorType::LOGICAL_UNION, true);
+	auto stats = CreateStats(input.GetColumnBindings(), {6}, 6);
+	RelationStatsExtractor extractor(*connection.context, [&](TableIndex index) -> optional_ptr<LogicalOperator> {
+		REQUIRE(index == TableIndex(30));
+		return *definition;
+	});
+	// The first arm contributes three keys, the second contributes one.
+	REQUIRE(RelationStatisticsHelper::EstimateGroupCardinality(input, stats, {0}, extractor) == 4);
+}
+
+TEST_CASE("Group estimates without a UNION do not extract their input again", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto input = CreateProjectedDummy(TableIndex(10), TableIndex(20));
+	auto stats = CreateStats(input->GetColumnBindings(), {10}, 100);
+	RelationStatsExtractor extractor(*connection.context);
+	REQUIRE(RelationStatisticsHelper::EstimateGroupCardinality(*input, stats, {0}, extractor) == 10);
+	REQUIRE(extractor.ExtractedOperatorCount() == 0);
 }
 
 TEST_CASE("Standalone join statistics share estimation without mutating the plan", "[optimizer][relation_statistics]") {

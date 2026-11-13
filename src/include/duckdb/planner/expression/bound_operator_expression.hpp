@@ -18,6 +18,10 @@ public:
 
 public:
 	BoundOperatorExpression(ExpressionType type, LogicalType return_type);
+	BoundOperatorExpression(ExpressionType type, LogicalType return_type, unique_ptr<Expression> child);
+	BoundOperatorExpression(ExpressionType type, LogicalType return_type, unique_ptr<Expression> left,
+	                        unique_ptr<Expression> right);
+	BoundOperatorExpression(ExpressionType type, LogicalType return_type, vector<unique_ptr<Expression>> children);
 
 public:
 	const vector<unique_ptr<Expression>> &GetChildren() const {

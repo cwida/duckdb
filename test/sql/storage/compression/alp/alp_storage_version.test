@@ -31,7 +31,7 @@ CHECKPOINT alp_v1_4_0_default;
 statement ok
 CHECKPOINT alp_v1_5_0;
 
-# Before storage version v1.5.0 should disable ALP with block sizes smaller than the default
+# Before storage version v1.5.0, ALP is disabled for 16 KiB blocks.
 
 query I
 SELECT compression FROM pragma_storage_info('alp_v1_4_0.t') WHERE segment_type = 'DOUBLE' ORDER BY compression LIMIT 1;

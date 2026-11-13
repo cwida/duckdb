@@ -169,12 +169,14 @@ void AllowCommunityExtensionsSetting::OnSet(SettingCallbackInfo &info, Value &in
 // Allow Extension Repositories
 //===----------------------------------------------------------------------===//
 // Ordering of the access levels, independent of the enum's numeric values: while the database is running the setting
-// can only move to a lower level ('undecided' -> 'allowed' -> 'forbidden')
+// can only move to a lower level ('hosts' -> 'allowed' -> 'hosts_only' -> 'forbidden')
 static int ExtensionRepositoryAccessLevel(ExtensionRepositoryAccess access) {
 	switch (access) {
-	case ExtensionRepositoryAccess::UNDECIDED:
-		return 2;
+	case ExtensionRepositoryAccess::HOSTS:
+		return 3;
 	case ExtensionRepositoryAccess::ALLOWED:
+		return 2;
+	case ExtensionRepositoryAccess::HOSTS_ONLY:
 		return 1;
 	default: // FORBIDDEN
 		return 0;
@@ -191,13 +193,13 @@ void AllowExtensionRepositoriesSetting::OnSet(SettingCallbackInfo &info, Value &
 		// the value is set before the database is running (startup) - any value is allowed
 		return;
 	}
-	// while the database is running the setting can only move down: the 'undecided' default can be decided either way,
-	// 'allowed' can still be forbidden, but a decision cannot be reverted. This makes 'forbidden' a one-way ratchet
-	// within a session
+	// while the database is running the setting can only move down: the 'hosts' default can be opened up to 'allowed'
+	// or tightened, 'allowed' can still be tightened, but no step can be reverted. This makes 'forbidden' a one-way
+	// ratchet within a session
 	auto current_access = ExtensionRepositoryManager::GetAccess(*info.db);
 	if (ExtensionRepositoryAccessLevel(new_access) > ExtensionRepositoryAccessLevel(current_access)) {
-		throw InvalidInputException("allow_extension_repositories can only be changed from 'undecided' to 'allowed' or "
-		                            "'forbidden', or from 'allowed' to 'forbidden', while the database is running");
+		throw InvalidInputException("allow_extension_repositories can only be tightened while the database is running: "
+		                            "'hosts' -> 'allowed' -> 'hosts_only' -> 'forbidden'");
 	}
 }
 
@@ -1460,8 +1462,7 @@ void ProfilingOutputSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 //===----------------------------------------------------------------------===//
 // Profiler Renderer Settings
 //===----------------------------------------------------------------------===//
-void ProfilingRendererSettingsSetting::SetLocal(ClientContext &context, const Value &input) {
-	auto &config = ClientConfig::GetConfig(context);
+void ProfilingRendererSettingsSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 	if (input.IsNull() || input.type().id() != LogicalTypeId::MAP) {
 		throw InvalidInputException("Invalid profiling_renderer_settings type \"%s\", expected a map of settings "
 		                            "(e.g. {'maximum_render_width': 300})",
@@ -1474,35 +1475,16 @@ void ProfilingRendererSettingsSetting::SetLocal(ClientContext &context, const Va
 			throw InvalidInputException("profiling_renderer_settings: the value of \"%s\" cannot be NULL",
 			                            key_value[0].ToString());
 		}
-		new_settings[StringUtil::Lower(key_value[0].ToString())] = key_value[1];
+		new_settings[StringUtil::Lower(key_value[0].ToString())] = key_value[1].DefaultCastAs(LogicalType::VARCHAR);
 	}
 	// eagerly configure the renderer of the current profiler format to validate the setting values
-	auto renderer = QueryProfiler::Get(context).GetRenderer();
-	if (renderer) {
-		renderer->Configure(new_settings);
+	if (info.context) {
+		auto renderer = QueryProfiler::Get(*info.context).GetRenderer();
+		if (renderer) {
+			renderer->Configure(new_settings);
+		}
 	}
-	config.profiling_renderer_settings = std::move(new_settings);
-}
-
-void ProfilingRendererSettingsSetting::ResetLocal(ClientContext &context) {
-	ClientConfig::GetConfig(context).profiling_renderer_settings.clear();
-}
-
-Value ProfilingRendererSettingsSetting::GetSetting(const ClientContext &context) {
-	auto &config = ClientConfig::GetConfig(context);
-	// sort the settings by name so that the rendered value is deterministic
-	vector<string> setting_names;
-	for (auto &entry : config.profiling_renderer_settings) {
-		setting_names.push_back(entry.first);
-	}
-	std::sort(setting_names.begin(), setting_names.end());
-	vector<Value> keys;
-	vector<Value> values;
-	for (auto &name : setting_names) {
-		keys.emplace_back(name);
-		values.push_back(config.profiling_renderer_settings.at(name).DefaultCastAs(LogicalType::VARCHAR));
-	}
-	return Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(keys), std::move(values));
+	input = TreeRenderer::RendererSettingsToValue(new_settings);
 }
 
 //===----------------------------------------------------------------------===//

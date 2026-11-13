@@ -36,7 +36,7 @@ void CSVIterator::Print() const {
 idx_t CSVIterator::BytesPerThread(const CSVReaderOptions &reader_options) {
 	const idx_t buffer_size = reader_options.buffer_size_option.GetValue();
 	const idx_t max_row_size = reader_options.maximum_line_size.GetValue();
-	const idx_t bytes_per_thread = buffer_size / CSVBuffer::ROWS_PER_BUFFER * ROWS_PER_THREAD;
+	const idx_t bytes_per_thread = buffer_size / ROWS_PER_BUFFER * ROWS_PER_THREAD;
 	if (bytes_per_thread < max_row_size) {
 		// If we are setting up the buffer size directly, we must make sure each thread will read the full buffer.
 		return max_row_size;

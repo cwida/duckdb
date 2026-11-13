@@ -513,16 +513,17 @@ BoundStatement Binder::ExpandTriggers(QueryNode &node, TableCatalogEntry &table,
 			remap[injected_virtuals[k].first] = logical_count + k;
 		}
 		for (auto &expr : proj_exprs) {
-			ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-			    expr, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &) {
-				    auto &binding = colref.BindingMutable();
+			expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
+			    std::move(expr), [&](const BoundColumnRefExpression &colref) -> unique_ptr<Expression> {
+				    auto &binding = colref.Binding();
 				    if (binding.table_index != base_index) {
-					    return;
+					    return nullptr;
 				    }
 				    auto it = remap.find(binding.column_index.GetIndexUnsafe());
-				    if (it != remap.end()) {
-					    binding.column_index = ProjectionIndex(it->second);
+				    if (it == remap.end()) {
+					    return nullptr;
 				    }
+				    return colref.WithBinding(ColumnBinding(binding.table_index, ProjectionIndex(it->second)));
 			    });
 		}
 	}

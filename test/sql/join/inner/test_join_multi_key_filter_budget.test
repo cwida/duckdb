@@ -1,0 +1,68 @@
+# name: test/sql/join/inner/test_join_multi_key_filter_budget.test
+# description: Several wide key ranges fall back to useful Bloom filters within a shared budget
+# group: [inner]
+
+require skip_reload
+
+statement ok
+SET VARIABLE check_runtime_filters =
+    NOT current_setting('debug_force_external') AND NOT current_setting('debug_disable_optimizer')
+    AND NOT current_setting('debug_verify_serializer');
+
+statement ok
+SET threads=4;
+
+statement ok
+SET memory_limit='64MB';
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side,compressed_materialization';
+
+statement ok
+CREATE TABLE probe AS
+SELECT i,
+       (hash(i) % 67108864)::INTEGER a,
+       (hash(i+1000003) % 67108864)::INTEGER b,
+       (hash(i+2000006) % 67108864)::INTEGER c,
+       (hash(i+3000009) % 67108864)::INTEGER d,
+       (hash(i+4000012) % 67108864)::INTEGER e,
+       (hash(i+5000015) % 67108864)::INTEGER f,
+       (hash(i+6000018) % 67108864)::INTEGER g,
+       (hash(i+7000021) % 67108864)::INTEGER h
+FROM range(200000) t(i);
+
+statement ok
+CREATE TABLE build AS FROM probe WHERE i%100=0;
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query I
+SELECT count(*) FROM probe p JOIN build b
+ON p.a=b.a AND p.b=b.b AND p.c=b.c AND p.d=b.d
+AND p.e=b.e AND p.f=b.f AND p.g=b.g AND p.h=b.h;
+----
+2000
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_runtime_filters') OR count(*)=8
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event='PublishRuntimeFilter' AND info['kind']='BLOOM_FILTER';
+----
+true
+
+statement ok
+PRAGMA verify_parallelism;
+
+query I
+SELECT count(*) FROM probe p JOIN build b
+ON p.a=b.a AND p.b=b.b AND p.c=b.c AND p.d=b.d
+AND p.e=b.e AND p.f=b.f AND p.g=b.g AND p.h=b.h;
+----
+2000

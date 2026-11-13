@@ -1,0 +1,169 @@
+diff --git a/src/hnsw/hnsw_index.cpp b/src/hnsw/hnsw_index.cpp
+index ee466ba..6e779ae 100644
+--- a/src/hnsw/hnsw_index.cpp
++++ b/src/hnsw/hnsw_index.cpp
+@@ -659,43 +659,37 @@ void HNSWIndex::VerifyAllocations(IndexLock &state) {
+ //------------------------------------------------------------------------------
+ // Can rewrite index expression?
+ //------------------------------------------------------------------------------
+-static void TryBindIndexExpressionInternal(Expression &expr, TableIndex table_idx,
+-                                           const vector<column_t> &index_columns,
+-                                           const vector<ColumnIndex> &table_columns, bool &success, bool &found) {
+-
+-	if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+-		found = true;
+-		auto &ref = expr.Cast<BoundColumnRefExpression>();
+-
+-		// Rewrite the column reference to fit in the current set of bound column ids
+-		ref.BindingMutable().table_index = table_idx;
+-
+-		const auto referenced_column = index_columns[ref.Binding().column_index];
+-		for (idx_t i = 0; i < table_columns.size(); i++) {
+-			if (table_columns[i].GetPrimaryIndex() == referenced_column) {
+-				ref.BindingMutable().column_index = ProjectionIndex(i);
+-				return;
+-			}
+-		}
+-		success = false;
+-	}
+-
+-	ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) {
+-		TryBindIndexExpressionInternal(child, table_idx, index_columns, table_columns, success, found);
+-	});
++static unique_ptr<Expression> TryBindIndexExpressionInternal(unique_ptr<Expression> expr, TableIndex table_idx,
++                                                             const vector<column_t> &index_columns,
++                                                             const vector<ColumnIndex> &table_columns, bool &success,
++                                                             bool &found) {
++	return ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
++	    std::move(expr), [&](const BoundColumnRefExpression &ref) {
++		    found = true;
++
++		    // Rewrite the column reference to fit in the current set of bound column ids
++		    const auto referenced_column = index_columns[ref.Binding().column_index];
++		    for (idx_t i = 0; i < table_columns.size(); i++) {
++			    if (table_columns[i].GetPrimaryIndex() == referenced_column) {
++				    return ref.WithBinding(ColumnBinding(table_idx, ProjectionIndex(i)));
++			    }
++		    }
++		    success = false;
++		    return ref.WithBinding(ColumnBinding(table_idx, ref.Binding().column_index));
++	    });
+ }
+ 
+ bool HNSWIndex::TryBindIndexExpression(LogicalGet &get, unique_ptr<Expression> &result) const {
+ 	auto expr_ptr = unbound_expressions.back()->Copy();
+ 
+-	auto &expr = *expr_ptr;
+ 	auto &index_columns = GetColumnIds();
+ 	auto &table_columns = get.GetColumnIds();
+ 
+ 	auto success = true;
+ 	auto found = false;
+ 
+-	TryBindIndexExpressionInternal(expr, get.table_index, index_columns, table_columns, success, found);
++	expr_ptr = TryBindIndexExpressionInternal(std::move(expr_ptr), get.table_index, index_columns, table_columns,
++	                                          success, found);
+ 
+ 	if (success && found) {
+ 		result = std::move(expr_ptr);
+diff --git a/src/hnsw/hnsw_optimize_join.cpp b/src/hnsw/hnsw_optimize_join.cpp
+index 172b368..0dc4ddf 100644
+--- a/src/hnsw/hnsw_optimize_join.cpp
++++ b/src/hnsw/hnsw_optimize_join.cpp
+@@ -552,14 +552,15 @@ bool HNSWIndexJoinOptimizer::TryOptimize(Binder &binder, ClientContext &context,
+ 		}
+ 
+ 		// We also have to replace the outer table index here with the delim_get table index
+-		ExpressionIterator::EnumerateExpression(bound_index_expr, [&](Expression &child) {
+-			if (child.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+-				auto &bound_colref_expr = child.Cast<BoundColumnRefExpression>();
+-				if (bound_colref_expr.Binding().table_index == outer_get.table_index) {
+-					bound_colref_expr.BindingMutable().table_index = delim_get.table_index;
+-				}
+-			}
+-		});
++		bound_index_expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
++		    std::move(bound_index_expr), [&](const BoundColumnRefExpression &bound_colref_expr)
++		                                     -> unique_ptr<Expression> {
++			    if (bound_colref_expr.Binding().table_index != outer_get.table_index) {
++				    return nullptr;
++			    }
++			    return bound_colref_expr.WithBinding(
++			        ColumnBinding(delim_get.table_index, bound_colref_expr.Binding().column_index));
++		    });
+ 
+ 		auto &lhs_dist_expr = bindings[1];
+ 		auto &rhs_dist_expr = bindings[2];
+@@ -654,37 +655,40 @@ bool HNSWIndexJoinOptimizer::TryOptimize(Binder &binder, ClientContext &context,
+ 	// Start inlining our expressions
+ 	for (auto &expr : new_projection->expressions) {
+ 		auto &ref = expr->Cast<BoundColumnRefExpression>();
++		auto binding = ref.Binding();
+ 
+ 		// If this references the inner table scan, reference the index join instead
+-		if (ref.Binding().table_index == inner_get.table_index) {
+-			ref.BindingMutable().table_index = index_join->table_index;
++		if (binding.table_index == inner_get.table_index) {
++			binding.table_index = index_join->table_index;
+ 		}
+ 
+ 		// If this references the outer proj, replace it with the inner proj
+ 		if (outer_proj_ptr) {
+ 			auto &outer_proj = outer_proj_ptr->get()->Cast<LogicalProjection>();
+-			if (ref.Binding().table_index == outer_proj.table_index) {
++			if (binding.table_index == outer_proj.table_index) {
+ 				// assert that this can only be bound column ref
+-				const auto &outer_expr = outer_proj.GetExpression(ref.Binding());
++				const auto &outer_expr = outer_proj.GetExpression(binding);
+ 				const auto &outer_ref = outer_expr.Cast<BoundColumnRefExpression>();
+ 
+-				ref.BindingMutable() = outer_ref.Binding();
++				binding = outer_ref.Binding();
+ 			}
+ 		}
+ 
+ 		// If this references the inner proj, replace it with the actual expression
+-		if (ref.Binding().table_index == inner_proj.table_index) {
+-			const auto &inner_expr = inner_proj.GetExpression(ref.Binding());
++		if (binding.table_index == inner_proj.table_index) {
++			const auto &inner_expr = inner_proj.GetExpression(binding);
+ 			expr = inner_expr.Copy();
+ 			// These can still reference the delim_get, but we replace them in the next step.
+ 		}
+ 
+ 		// Special case: the window row number expression. Forward this to the index join
+-		else if (ref.Binding().table_index == window.window_index) {
++		else if (binding.table_index == window.window_index) {
+ 			// The special "row_number" expression is always the last column of the index_join itself
+ 			ColumnBinding index_row_number_binding(index_join->table_index,
+ 			                                       ProjectionIndex(index_join->inner_column_ids.size()));
+ 			expr = make_uniq<BoundColumnRefExpression>(LogicalType::BIGINT, index_row_number_binding);
++		} else if (binding != ref.Binding()) {
++			expr = ref.WithBinding(binding);
+ 		}
+ 	}
+ 
+@@ -893,14 +897,15 @@ bool HNSWIndexJoinOptimizer::TryOptimizeArgMin(Binder &binder, ClientContext &co
+ 		if (!guard->TryBindIndexExpression(inner_get, bound_index_expr)) {
+ 			continue;
+ 		}
+-		ExpressionIterator::EnumerateExpression(bound_index_expr, [&](Expression &child) {
+-			if (child.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+-				auto &bound_colref_expr = child.Cast<BoundColumnRefExpression>();
+-				if (bound_colref_expr.Binding().table_index == outer_get.table_index) {
+-					bound_colref_expr.BindingMutable().table_index = delim_get.table_index;
+-				}
+-			}
+-		});
++		bound_index_expr = ExpressionIterator::PreorderReplace<BoundColumnRefExpression>(
++		    std::move(bound_index_expr), [&](const BoundColumnRefExpression &bound_colref_expr)
++		                                     -> unique_ptr<Expression> {
++			    if (bound_colref_expr.Binding().table_index != outer_get.table_index) {
++				    return nullptr;
++			    }
++			    return bound_colref_expr.WithBinding(
++			        ColumnBinding(delim_get.table_index, bound_colref_expr.Binding().column_index));
++		    });
+ 		auto &lhs_dist_expr = bindings[1];
+ 		auto &rhs_dist_expr = bindings[2];
+ 		if (lhs_dist_expr.get().Equals(*bound_index_expr)) {

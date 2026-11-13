@@ -18,6 +18,7 @@
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/main/attached_database.hpp"
+#include "duckdb/parser/statement/execute_statement.hpp"
 #include "duckdb/parser/statement/multi_statement.hpp"
 #include "duckdb/planner/subquery/flatten_dependent_join.hpp"
 #include "duckdb/planner/subquery/recursive_dependent_join_planner.hpp"
@@ -36,7 +37,7 @@ Planner::Planner(ClientContext &context, PlanningMode mode)
 }
 
 static void RenderSQLExplain(unique_ptr<LogicalOperator> &op, ClientContext &context, Binder &binder) {
-	if (op->type == LogicalOperatorType::LOGICAL_PREPARE || op->type == LogicalOperatorType::LOGICAL_EXECUTE) {
+	if (op->type == LogicalOperatorType::LOGICAL_PREPARE) {
 		for (auto &child : op->children) {
 			RenderSQLExplain(child, context, binder);
 		}
@@ -339,6 +340,29 @@ shared_ptr<PreparedStatementData> Planner::PrepareSQLStatement(unique_ptr<SQLSta
 	return prepared_data;
 }
 
+void Planner::CreateExecutePlan(ExecuteStatement &statement) {
+	RunPreBindExtensions(context, *binder, statement);
+	auto execution = binder->ResolveExecute(statement);
+	if (!execution.rebind && execution.prepared->physical_plan) {
+		auto &prepared = *execution.prepared;
+		prepared.Bind(context, execution.bind_values);
+		names = prepared.names;
+		types = prepared.types;
+		properties = prepared.properties;
+		properties.parameter_count = execution.parameter_count;
+		reused_statement = std::move(execution.prepared);
+		return;
+	}
+	// plan the prepared statement again
+	auto bound_statement = binder->BindExecute(execution);
+	RunPostBindExtensions(context, *binder, bound_statement);
+	names = std::move(bound_statement.names);
+	types = std::move(bound_statement.types);
+	plan = std::move(bound_statement.plan);
+	properties = binder->GetStatementProperties();
+	properties.bound_all_parameters = true;
+}
+
 void Planner::CreatePlan(unique_ptr<SQLStatement> statement) {
 	D_ASSERT(statement);
 	Optimizer optimizer(*binder, context);
@@ -364,7 +388,6 @@ void Planner::CreatePlan(unique_ptr<SQLStatement> statement) {
 	case StatementType::LOAD_STATEMENT:
 	case StatementType::EXTENSION_STATEMENT:
 	case StatementType::PREPARE_STATEMENT:
-	case StatementType::EXECUTE_STATEMENT:
 	case StatementType::LOGICAL_PLAN_STATEMENT:
 	case StatementType::ATTACH_STATEMENT:
 	case StatementType::DETACH_STATEMENT:
@@ -375,6 +398,13 @@ void Planner::CreatePlan(unique_ptr<SQLStatement> statement) {
 	case StatementType::DISCONNECT_STATEMENT:
 	case StatementType::EXTERNAL_RESOURCE_STATEMENT:
 		CreatePlan(*statement);
+		break;
+	case StatementType::EXECUTE_STATEMENT:
+		if (reuse_prepared_plans) {
+			CreateExecutePlan(statement->Cast<ExecuteStatement>());
+		} else {
+			CreatePlan(*statement);
+		}
 		break;
 	default:
 		throw NotImplementedException("Cannot plan statement of type %s!", StatementTypeToString(statement->type));

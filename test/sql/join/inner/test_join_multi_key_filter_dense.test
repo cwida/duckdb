@@ -1,0 +1,41 @@
+# name: test/sql/join/inner/test_join_multi_key_filter_dense.test
+# description: Dense multi-key prefix filters reject rows outside the build range
+# group: [inner]
+
+require skip_reload
+
+statement ok
+SET VARIABLE check_runtime_filters =
+    NOT current_setting('debug_force_external') AND NOT current_setting('debug_disable_optimizer')
+    AND NOT current_setting('debug_verify_serializer');
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side,compressed_materialization,statistics_propagation';
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+statement ok
+CREATE TABLE probe AS SELECT (i%1000)::INTEGER a, ((i%1000)%3)::INTEGER b FROM range(200000) t(i);
+
+statement ok
+CREATE TABLE build AS SELECT i::INTEGER a, (i%3)::INTEGER b FROM range(100) t(i);
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query I
+SELECT count(*) FROM probe p JOIN build b ON p.a=b.a AND p.b=b.b;
+----
+20000
+
+statement ok
+CALL disable_logging();
+
+# Every full probe row group spans the build range, but only one tenth of its rows match.
+query I
+SELECT NOT getvariable('check_runtime_filters') OR count(*)=2
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event='PublishRuntimeFilter' AND info['kind']='PREFIX_RANGE';
+----
+true

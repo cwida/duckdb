@@ -181,6 +181,7 @@ bool OptionIsExcludedFromTest(const string &name) {
 	    "active_grammar_extensions",
 	    "allow_community_extensions",   // cant change this while db is running
 	    "allow_extension_repositories", // can only be tightened at runtime, cannot be freely reset
+	                                    // is on
 	    "allow_unredacted_secrets",     // cant change this while db is running
 	    "allow_unsigned_extensions",    // cant change this while db is running
 	    "allowed_configs",

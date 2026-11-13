@@ -1,0 +1,21 @@
+# name: benchmark/micro/pushdown/multi_key_join_filter_holes.benchmark
+# description: A half-full key filter rejects every probe value while another key covers its domain
+# group: [pushdown]
+
+name MultiKeyJoinFilterHoles
+group micro
+subgroup pushdown
+
+load
+CREATE TABLE probe AS
+SELECT (2 * (i % 500) + 1)::INTEGER a, ((i // 500) % 1000)::INTEGER b
+FROM range(24000000) t(i);
+CREATE TABLE build AS
+SELECT (2 * a)::INTEGER a, (b + (a % 5) * 200)::INTEGER b
+FROM range(500) t(a), range(200) u(b);
+
+run
+SELECT count(*) FROM probe p JOIN build b ON p.a = b.a AND p.b = b.b;
+
+result I
+0

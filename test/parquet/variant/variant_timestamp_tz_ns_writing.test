@@ -1,0 +1,52 @@
+# name: test/parquet/variant/variant_timestamp_tz_ns_writing.test
+# description: VARIANT values of type TIMESTAMPTZ_NS are written as the Parquet Variant nanosecond timestamp with time zone
+# group: [variant]
+
+require parquet
+
+# Primitive type 18, TIMESTAMP(isAdjustedToUTC=true, NANOS): header byte 18 << 2 = 0x48
+query I
+SELECT hex(variant_to_parquet_variant('2025-01-02 03:04:05.123456789+00'::TIMESTAMPTZ_NS::VARIANT)::STRUCT(metadata BLOB, value BLOB).value)[1:2];
+----
+48
+
+statement ok
+CREATE MACRO timestamp_tz_ns_data() AS TABLE (
+	FROM (VALUES
+		(1, '2025-01-02 03:04:05.123456789+00'::TIMESTAMPTZ_NS::VARIANT),
+		(2, '1957-11-07 12:33:54.123456789+00'::TIMESTAMPTZ_NS::VARIANT),
+		(3, {'ts': '2025-01-02 03:04:05.000000001+00'::TIMESTAMPTZ_NS, 'n': 42}::VARIANT),
+		(4, ['2025-01-02 03:04:05.5+00'::TIMESTAMPTZ_NS, '1970-01-01 00:00:00+00'::TIMESTAMPTZ_NS]::VARIANT)
+	) t(id, v)
+)
+
+statement ok
+COPY (FROM timestamp_tz_ns_data()) TO '{TEST_DIR}/variant_timestamp_tz_ns_shredded.parquet';
+
+# 'VARIANT' disables shredding, so every value goes through the unshredded encoding
+statement ok
+COPY (FROM timestamp_tz_ns_data()) TO '{TEST_DIR}/variant_timestamp_tz_ns_unshredded.parquet' (SHREDDING {v: 'VARIANT'});
+
+foreach layout shredded unshredded
+
+query II
+SELECT id, variant_typeof(v) FROM '{TEST_DIR}/variant_timestamp_tz_ns_{layout}.parquet' ORDER BY id;
+----
+1	TIMESTAMP_NANOS_TZ
+2	TIMESTAMP_NANOS_TZ
+3	OBJECT(n, ts)
+4	ARRAY(2)
+
+query I
+SELECT variant_typeof(variant_extract(v, 'ts')) FROM '{TEST_DIR}/variant_timestamp_tz_ns_{layout}.parquet' WHERE id = 3;
+----
+TIMESTAMP_NANOS_TZ
+
+query I
+SELECT bool_and(written.v IS NOT DISTINCT FROM source.v)
+FROM '{TEST_DIR}/variant_timestamp_tz_ns_{layout}.parquet' written
+JOIN timestamp_tz_ns_data() source USING (id);
+----
+true
+
+endloop

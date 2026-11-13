@@ -64,10 +64,10 @@
     },
     {
         "name": "allow_extension_repositories",
-        "description": "Whether custom trusted extension repositories are 'allowed', 'forbidden' (which also distrusts existing repositories) or 'undecided' (the default: blocks adding new repositories, but keeps trusting existing ones). While the database is running the setting can only move from 'undecided' to 'allowed' or 'forbidden', or from 'allowed' to 'forbidden'.",
+        "description": "Which custom trusted extension repositories can be added, and which are trusted: 'hosts' (the default: a repository named by its host can be added with CREATE EXTENSION REPOSITORY <host>, adding one by prefix needs 'allowed', existing repositories stay trusted), 'allowed' (repositories can be added by host or by prefix), 'hosts_only' (only repositories resolved from their host can be added, and only those are trusted) or 'forbidden' (nothing can be added, and existing repositories are distrusted). While the database is running the setting can only be tightened: 'hosts' -> 'allowed' -> 'hosts_only' -> 'forbidden'.",
         "type": "VARCHAR",
         "scope": "global",
-        "default_value": "undecided",
+        "default_value": "hosts",
         "on_callbacks": [
             "set"
         ]
@@ -1542,7 +1542,10 @@
         "description": "A map of settings passed to the renderer of the profiler output, e.g. {'max_extra_lines': 100}. Settings not recognized by the active renderer are ignored.",
         "type": "MAP(VARCHAR, VARCHAR)",
         "scope": "local",
-        "custom_implementation": true
+        "default_value": "{}",
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "progress_bar_time",

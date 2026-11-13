@@ -15,18 +15,18 @@ WindowExecutor::WindowExecutor(BoundWindowExpression &wexpr, WindowSharedExpress
                      ? wexpr.OrderBy()[0].expression.get()
                      : nullptr) {
 	if (range_expr) {
-		range_idx = shared.RegisterCollection(wexpr.OrderByMutable()[0].expression, false);
+		range_idx = shared.RegisterCollection(wexpr.OrderBy()[0].expression, false);
 	}
 
-	boundary_start_idx = shared.RegisterEvaluate(wexpr.StartExprMutable());
-	boundary_end_idx = shared.RegisterEvaluate(wexpr.EndExprMutable());
+	boundary_start_idx = shared.RegisterEvaluate(wexpr.StartExpr());
+	boundary_end_idx = shared.RegisterEvaluate(wexpr.EndExpr());
 
 	if (wexpr.WindowFunction()) {
 		if (wexpr.WindowFunction()->HasSharingCallback()) {
 			wexpr.WindowFunction()->GetSharing(*this, shared);
 		} else {
 			//	If no one overrides, assume the arguments are only needed at evaluate time
-			for (auto &child : wexpr.GetChildrenMutable()) {
+			for (auto &child : wexpr.GetChildren()) {
 				child_idx.emplace_back(shared.RegisterEvaluate(child));
 			}
 		}
