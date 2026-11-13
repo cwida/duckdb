@@ -11,6 +11,7 @@
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/logging/logger.hpp"
 
 namespace duckdb {
 
@@ -349,6 +350,24 @@ bool ExpressionBinder::IsPotentialAlias(const ColumnRefExpression &colref) {
 		return colref.ColumnNames()[0] == "alias";
 	}
 	return false;
+}
+
+bool ExpressionBinder::WarnIfDecimalScaleIsReduced(const LogicalType &source_type, const LogicalType &target_type,
+                                                   const string &expression_name) {
+	if (source_type.id() != LogicalTypeId::DECIMAL || target_type.id() != LogicalTypeId::DECIMAL) {
+		return false;
+	}
+	auto source_scale = DecimalType::GetScale(source_type);
+	auto target_scale = DecimalType::GetScale(target_type);
+	if (source_scale <= target_scale) {
+		return false;
+	}
+	DUCKDB_LOG_WARNING(context,
+	                   "Potential loss of decimal precision while resolving the type of a %s expression: type %s is "
+	                   "being cast to %s, reducing the scale from %d to %d. This may cause values to be rounded. "
+	                   "Explicitly cast all values to a compatible DECIMAL type to avoid this warning.",
+	                   expression_name, source_type.ToString(), target_type.ToString(), source_scale, target_scale);
+	return true;
 }
 
 } // namespace duckdb

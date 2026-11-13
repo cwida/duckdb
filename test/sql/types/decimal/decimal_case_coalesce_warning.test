@@ -1,0 +1,131 @@
+# name: test/sql/types/decimal/decimal_case_coalesce_warning.test
+# description: Warn when CASE/COALESCE type resolution reduces a decimal scale
+# group: [decimal]
+
+# Without warnings_as_errors the result is unchanged: the common type is DECIMAL(38,0)
+query II
+SELECT COALESCE(NULL::DECIMAL(38,0), 1.5::DECIMAL(38,20)) AS v, typeof(v);
+----
+2	DECIMAL(38,0)
+
+statement ok
+SET enable_logging=true;
+
+statement ok
+SET warnings_as_errors=true;
+
+statement error
+SELECT COALESCE(NULL::DECIMAL(38,0), 1.5::DECIMAL(38,20));
+----
+<REGEX>:Invalid Input Error: Potential loss of decimal precision while resolving the type of a COALESCE expression: type DECIMAL\(38,20\) is being cast to DECIMAL\(38,0\), reducing the scale from 20 to 0\..*
+
+# The warning is independent of argument order
+statement error
+SELECT COALESCE(1.5::DECIMAL(38,20), NULL::DECIMAL(38,0));
+----
+<REGEX>:Invalid Input Error: Potential loss of decimal precision while resolving the type of a COALESCE expression: type DECIMAL\(38,20\) is being cast to DECIMAL\(38,0\).*
+
+statement error
+SELECT IFNULL(NULL::DECIMAL(38,0), 1.5::DECIMAL(38,20));
+----
+<REGEX>:Invalid Input Error: Potential loss of decimal precision while resolving the type of a COALESCE expression.*
+
+statement error
+SELECT CASE WHEN true THEN 1.5::DECIMAL(38,20) ELSE NULL::DECIMAL(38,0) END;
+----
+<REGEX>:Invalid Input Error: Potential loss of decimal precision while resolving the type of a CASE expression: type DECIMAL\(38,20\) is being cast to DECIMAL\(38,0\), reducing the scale from 20 to 0\..*
+
+statement error
+SELECT CASE WHEN false THEN NULL::DECIMAL(38,0) ELSE 1.5::DECIMAL(38,20) END;
+----
+<REGEX>:Invalid Input Error: Potential loss of decimal precision while resolving the type of a CASE expression: type DECIMAL\(38,20\) is being cast to DECIMAL\(38,0\).*
+
+# Partial scale reduction (39 digits needed)
+statement error
+SELECT CASE WHEN true THEN 32942348563242.111222333444555666777888::DECIMAL(38,24) ELSE NULL::DECIMAL(18,3) END;
+----
+<REGEX>:Invalid Input Error: .*type DECIMAL\(38,24\) is being cast to DECIMAL\(38,23\), reducing the scale from 24 to 23\..*
+
+# Mixing a DECIMAL with an integer keeps the DECIMAL type, so the scale is not reduced
+query II
+SELECT COALESCE(1.5::DECIMAL(38,20), 42::BIGINT) AS v, typeof(v);
+----
+1.50000000000000000000	DECIMAL(38,20)
+
+# Untyped NULL does not affect the common DECIMAL type
+query I
+SELECT COALESCE(NULL, 1.5::DECIMAL(38,20));
+----
+1.50000000000000000000
+
+query I
+SELECT CASE WHEN true THEN 1.5::DECIMAL(38,20) END;
+----
+1.50000000000000000000
+
+# Compatible DECIMAL types do not lose precision
+query I
+SELECT COALESCE(NULL::DECIMAL(10,2), 1.5::DECIMAL(38,20));
+----
+1.50000000000000000000
+
+query I
+SELECT CASE WHEN true THEN 1.5::DECIMAL(18,3) ELSE 2::DECIMAL(10,0) END;
+----
+1.500
+
+# Widening the scale of a narrower decimal does not warn
+query I
+SELECT COALESCE(1::DECIMAL(4,0), 1.25::DECIMAL(5,2));
+----
+1.00
+
+# An explicit cast avoids the warning
+query I
+SELECT COALESCE(NULL::DECIMAL(38,0)::DECIMAL(38,20), 1.5::DECIMAL(38,20));
+----
+1.50000000000000000000
+
+# IN uses the comparison type, which keeps the scale, and does not warn
+query I
+SELECT 1.5::DECIMAL(38,20) IN (NULL::DECIMAL(38,0), 1.5::DECIMAL(38,20));
+----
+true
+
+# Non-decimal types are not affected
+query I
+SELECT COALESCE(NULL::DOUBLE, 1.5::DECIMAL(38,20));
+----
+1.5
+
+statement ok
+CREATE TABLE t(a DECIMAL(38,0), b DECIMAL(38,20));
+
+statement ok
+INSERT INTO t VALUES (NULL, 1.5), (3, 2.25);
+
+statement error
+SELECT COALESCE(a, b) FROM t;
+----
+<REGEX>:Invalid Input Error: Potential loss of decimal precision while resolving the type of a COALESCE expression.*
+
+# Only one warning is emitted per expression
+statement ok
+SET warnings_as_errors=false;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT CASE WHEN a IS NULL THEN b WHEN a > 100 THEN b * 2 ELSE a END FROM t ORDER BY ALL;
+----
+2
+3
+
+query I
+SELECT count(*)
+FROM duckdb_logs
+WHERE log_level = 'WARNING'
+  AND starts_with(message, 'Potential loss of decimal precision while resolving the type of a CASE expression');
+----
+1

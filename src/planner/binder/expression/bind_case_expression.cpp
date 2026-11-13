@@ -31,6 +31,16 @@ BindResult ExpressionBinder::BindExpression(CaseExpression &expr, idx_t depth) {
 		}
 	}
 
+	bool warned =
+	    WarnIfDecimalScaleIsReduced(ExpressionBinder::GetExpressionReturnType(*else_expr), return_type, "CASE");
+	for (auto &check : checks) {
+		if (warned) {
+			break;
+		}
+		warned =
+		    WarnIfDecimalScaleIsReduced(ExpressionBinder::GetExpressionReturnType(*check.second), return_type, "CASE");
+	}
+
 	// bind all the individual components of the CASE statement
 	auto result = make_uniq<BoundCaseExpression>(return_type);
 	for (auto &check : checks) {

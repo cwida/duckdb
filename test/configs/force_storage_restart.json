@@ -68,6 +68,7 @@
         "test/logging/warnings_as_errors.test",
         "test/logging/offset_order_warning.test",
         "test/sql/types/decimal/decimal_values_warning.test",
+        "test/sql/types/decimal/decimal_case_coalesce_warning.test",
         "test/sql/settings/deprecated_settings.test",
         "test/sql/settings/pragma_assignment_deprecated.test",
         "test/sql/copy/copy_column_identifier_conversion.test",

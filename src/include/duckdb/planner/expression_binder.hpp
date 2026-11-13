@@ -330,6 +330,9 @@ protected:
 	LogicalType ResolveOperatorType(OperatorExpression &op, vector<unique_ptr<Expression>> &children);
 	LogicalType ResolveCoalesceType(OperatorExpression &op, vector<unique_ptr<Expression>> &children);
 	LogicalType ResolveNotType(OperatorExpression &op, vector<unique_ptr<Expression>> &children);
+	//! Logs a warning if casting a DECIMAL to the common type of an expression reduces its scale
+	bool WarnIfDecimalScaleIsReduced(const LogicalType &source_type, const LogicalType &target_type,
+	                                 const string &expression_name);
 
 	BindResult BindUnsupportedExpression(ParsedExpression &expr, idx_t depth, const string &message);
 
