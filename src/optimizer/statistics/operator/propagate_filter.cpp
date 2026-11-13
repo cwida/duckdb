@@ -1,5 +1,6 @@
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/scalar/generic_common.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_between_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -301,11 +302,6 @@ FilterPropagateResult StatisticsPropagator::HandleFilter(unique_ptr<Expression> 
 	if (mode == StatisticsPropagationMode::FILTER_SIMPLIFICATION) {
 		original_bindings = GetFilterBindings(*condition);
 	}
-	return HandleFilter(condition, original_bindings);
-}
-
-FilterPropagateResult StatisticsPropagator::HandleFilter(unique_ptr<Expression> &condition,
-                                                         const unordered_set<TableIndex> &original_bindings) {
 	PropagateExpression(condition);
 	if (mode == StatisticsPropagationMode::FILTER_SIMPLIFICATION) {
 		SimplifyFilter(condition);
@@ -328,22 +324,21 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalFilt
 		return make_uniq<NodeStatistics>(0U, 0U);
 	}
 
-	// the filter evaluates its conjuncts in an adaptive order over the input rows, so the verification statistics of
-	// the conjuncts are derived from the input statistics before any conjunct narrows them
-	vector<unordered_set<TableIndex>> original_bindings(filter.expressions.size());
-	for (idx_t i = 0; i < filter.expressions.size(); i++) {
-		if (mode == StatisticsPropagationMode::FILTER_SIMPLIFICATION) {
-			original_bindings[i] = GetFilterBindings(*filter.expressions[i]);
+	// the filter evaluates its conjuncts in an adaptive order over the input rows, so their verification statistics
+	// are derived from the input statistics before any conjunct narrows them
+	const bool verify_stats = Settings::Get<DebugVerifyStatsSetting>(context);
+	column_binding_map_t<unique_ptr<BaseStatistics>> input_statistics;
+	if (verify_stats) {
+		for (auto &entry : statistics_map) {
+			input_statistics[entry.first] = entry.second->ToUnique();
 		}
-		PropagateExpression(filter.expressions[i]);
 	}
-	// below, the conjuncts are propagated again against statistics narrowed by the earlier conjuncts: these hold
-	// for the filter output and the pruning of the later conjuncts, but not for the vectors they are evaluated on
+	// the conjuncts are propagated against statistics narrowed by the earlier conjuncts: these hold for the filter
+	// output and the pruning of the later conjuncts, but not for the vectors they are evaluated on
 	VerificationStatsGuard narrowing_guard(attach_verification_stats);
-	idx_t condition_idx = 0;
-	for (idx_t i = 0; i < filter.expressions.size(); i++, condition_idx++) {
+	for (idx_t i = 0; i < filter.expressions.size(); i++) {
 		auto &condition = filter.expressions[i];
-		auto prune_result = HandleFilter(condition, original_bindings[condition_idx]);
+		auto prune_result = HandleFilter(condition);
 		if (prune_result == FilterPropagateResult::FILTER_ALWAYS_TRUE) {
 			// filter is always true; it is useless to execute it
 			// erase this condition
@@ -367,6 +362,15 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalFilt
 		}
 	}
 	SimplifyConstantOrNull(filter.expressions);
+	if (verify_stats) {
+		// the remaining conjuncts are final: attach the verification statistics derived from the input statistics
+		narrowing_guard.Release();
+		std::swap(statistics_map, input_statistics);
+		for (auto &condition : filter.expressions) {
+			PropagateExpression(condition);
+		}
+		std::swap(statistics_map, input_statistics);
+	}
 	// the max cardinality of a filter is the cardinality of the input (i.e. no tuples get filtered)
 	return std::move(node_stats);
 }

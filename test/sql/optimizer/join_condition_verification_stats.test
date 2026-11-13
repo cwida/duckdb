@@ -292,6 +292,35 @@ SELECT count(*) FROM big_a t1, big_c t2 WHERE t1.n >= 1001 AND t2.n <= 1999 AND 
 ----
 686
 
+# a conjunct that the narrowing by an earlier conjunct makes always true is still dropped: the verification statistics
+# are attached after the narrowing pass, which sees the original conjuncts
+statement ok
+CREATE TABLE prune_left(x INTEGER);
+
+statement ok
+INSERT INTO prune_left VALUES (NULL), (0), (2);
+
+statement ok
+CREATE TABLE prune_right(y INTEGER);
+
+statement ok
+INSERT INTO prune_right VALUES (0), (2);
+
+query II
+EXPLAIN SELECT count(*) FROM prune_left, prune_right WHERE x > 1 AND (x >= 0 OR y > 1);
+----
+physical_plan	<REGEX>:.*FILTER.*Expression: x > CAST\(1 AS INTEGER\) *│.*CROSS_PRODUCT.*
+
+query II
+EXPLAIN SELECT count(*) FROM prune_left, prune_right WHERE x > 1 AND (x >= 0 OR y > 1);
+----
+physical_plan	<!REGEX>:.*(constant_or_null|y > CAST).*
+
+query I
+SELECT count(*) FROM prune_left, prune_right WHERE x > 1 AND (x >= 0 OR y > 1);
+----
+2
+
 query II
 EXPLAIN SELECT count(*) FROM lhs JOIN rhs ON lhs.n >= rhs.n AND lhs.n + 1 >= rhs.n;
 ----

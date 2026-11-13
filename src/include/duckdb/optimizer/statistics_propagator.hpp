@@ -13,7 +13,6 @@
 #include "duckdb/common/table_index.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/unordered_map.hpp"
-#include "duckdb/common/unordered_set.hpp"
 #include "duckdb/planner/bound_tokens.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/logical_tokens.hpp"
@@ -37,6 +36,10 @@ struct VerificationStatsGuard {
 		attach = false;
 	}
 	~VerificationStatsGuard() {
+		Release();
+	}
+	//! Restores attaching before the guard goes out of scope
+	void Release() {
 		attach = previous;
 	}
 
@@ -130,9 +133,6 @@ private:
 	void SimplifyConstantOrNull(vector<unique_ptr<Expression>> &expressions);
 	//! Propagate a filter condition
 	FilterPropagateResult HandleFilter(unique_ptr<Expression> &condition);
-	//! Propagate a filter condition whose relations were captured before an earlier propagation
-	FilterPropagateResult HandleFilter(unique_ptr<Expression> &condition,
-	                                   const unordered_set<TableIndex> &original_bindings);
 	//! Rewrite a join whose condition can never match; returns true if the operator was replaced
 	bool HandleJoinNeverMatches(LogicalJoin &join, unique_ptr<LogicalOperator> &node_ptr);
 	//! Rewrite a join whose condition always matches; returns true if the operator was replaced
