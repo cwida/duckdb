@@ -138,6 +138,16 @@ static bool IsKeyPredicate(const Expression &expr, const ColumnBinding &key) {
 	}
 }
 
+bool SemiJoinKeyFilterTransfer::IsColumnConstantPredicate(const Expression &expr) {
+	optional_ptr<const BoundColumnRefExpression> column;
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(expr, [&](const BoundColumnRefExpression &ref) {
+		if (!column) {
+			column = &ref;
+		}
+	});
+	return column && column->Depth() == 0 && IsKeyPredicate(expr, column->Binding());
+}
+
 //! Points every reference to `from` at `to`
 static void Rebind(unique_ptr<Expression> &expr, const ColumnBinding &from, const ColumnBinding &to) {
 	if (expr->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
@@ -394,6 +404,7 @@ void SemiJoinKeyFilterTransfer::Transfer(LogicalOperator &join_op) {
 	if (transferred.empty()) {
 		return;
 	}
+	filtered_ctes.insert(cte_ref->cte_index);
 	if (filtered) {
 		for (auto &predicate : transferred) {
 			left_op.expressions.push_back(std::move(predicate));

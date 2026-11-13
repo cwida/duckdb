@@ -10,6 +10,7 @@
 
 #include "duckdb/common/table_index.hpp"
 #include "duckdb/common/unordered_map.hpp"
+#include "duckdb/common/unordered_set.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 
 namespace duckdb {
@@ -29,6 +30,14 @@ class SemiJoinKeyFilterTransfer {
 public:
 	void Optimize(unique_ptr<LogicalOperator> &plan);
 
+	//! The materialized CTEs that have a reference this pass filtered
+	const unordered_set<TableIndex> &FilteredCTEs() const {
+		return filtered_ctes;
+	}
+	//! Whether the expression compares one bare column with constants: a comparison, BETWEEN, IN list or NULL test,
+	//! or AND / OR over those. Two such predicates that are equal as expressions accept the same rows.
+	static bool IsColumnConstantPredicate(const Expression &expr);
+
 private:
 	//! The references of a materialized CTE, and how many of them sit directly below a filter
 	struct CTEReferences {
@@ -47,6 +56,7 @@ private:
 
 private:
 	unordered_map<TableIndex, CTEReferences> references;
+	unordered_set<TableIndex> filtered_ctes;
 };
 
 } // namespace duckdb

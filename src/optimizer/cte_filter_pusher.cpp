@@ -4,6 +4,7 @@
 #include "duckdb/optimizer/column_binding_replacer.hpp"
 #include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/optimizer/semi_join_key_filter_transfer.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/expression_barrier.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
@@ -158,10 +159,16 @@ void CTEFilterPusher::PushFilterIntoCTE(MaterializedCTEInfo &info) {
 		reference_filters.push_back(std::move(conjuncts));
 	}
 
-	// (A AND B) OR A is A: a reference whose conjuncts include all conjuncts of another reference adds nothing to
-	// the disjunction
+	// (A AND B) OR A is A: where SemiJoinKeyFilterTransfer copied key predicates onto a reference, a reference whose
+	// conjuncts include all conjuncts of another reference adds nothing to the disjunction. Expression equality
+	// compares constants by value (0.0 equals -0.0), which makes two expressions the same predicate only when the
+	// constants are compared with a column and not passed to a function, so the conjuncts of the reference that is
+	// kept must all be comparisons of a column with constants.
 	auto includes = [](const vector<unique_ptr<Expression>> &conjuncts, const vector<unique_ptr<Expression>> &subset) {
 		for (auto &expr : subset) {
+			if (!SemiJoinKeyFilterTransfer::IsColumnConstantPredicate(*expr)) {
+				return false;
+			}
 			bool found = false;
 			for (auto &conjunct : conjuncts) {
 				if (conjunct->Equals(*expr)) {
@@ -175,12 +182,15 @@ void CTEFilterPusher::PushFilterIntoCTE(MaterializedCTEInfo &info) {
 		}
 		return true;
 	};
-	for (idx_t i = 0; i < reference_filters.size(); i++) {
-		for (idx_t j = 0; j < reference_filters.size(); j++) {
-			if (i != j && includes(reference_filters[i], reference_filters[j])) {
-				reference_filters.erase_at(i);
-				i--;
-				break;
+	auto &cte = info.materialized_cte.Cast<LogicalMaterializedCTE>();
+	if (key_filtered_ctes.find(cte.table_index) != key_filtered_ctes.end()) {
+		for (idx_t i = 0; i < reference_filters.size(); i++) {
+			for (idx_t j = 0; j < reference_filters.size(); j++) {
+				if (i != j && includes(reference_filters[i], reference_filters[j])) {
+					reference_filters.erase_at(i);
+					i--;
+					break;
+				}
 			}
 		}
 	}
