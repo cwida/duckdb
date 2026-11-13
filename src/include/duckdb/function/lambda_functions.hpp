@@ -84,6 +84,9 @@ public:
 	//! Returns the parameter type for binary lambdas
 	static LogicalType BindBinaryChildren(const vector<LogicalType> &function_child_types, const idx_t parameter_idx);
 
+	//! Defers binding while the list argument is an unresolved prepared statement parameter
+	static void ListLambdaResolveTypes(ResolveScalarFunctionTypesInput &input);
+
 	//! Checks for NULL list parameter and prepared statements and adds bound cast expression
 	static unique_ptr<FunctionData> ListLambdaPrepareBind(vector<unique_ptr<Expression>> &arguments,
 	                                                      ClientContext &context, BoundScalarFunction &bound_function);

@@ -104,6 +104,7 @@ ScalarFunction ListTransformFun::GetFunction() {
 	fun.SetDeserializeCallback(ListLambdaBindData::Deserialize);
 	fun.SetBindLambdaCallback(ListTransformBindLambda);
 	fun.SetStatisticsCallback(ListTransformStats);
+	fun.SetResolveTypesCallback(LambdaFunctions::ListLambdaResolveTypes);
 	// the lambda expression that is executed for every element can throw
 	fun.SetFallible();
 

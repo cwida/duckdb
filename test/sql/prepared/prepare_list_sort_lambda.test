@@ -1,0 +1,171 @@
+# name: test/sql/prepared/prepare_list_sort_lambda.test
+# description: An untyped parameter passed to list_sort or a lambda function, nested in another expression
+# group: [prepared]
+
+# list_sort inside a list aggregate
+statement ok
+PREPARE v1 AS SELECT list_min(list_sort($1));
+
+query I
+EXECUTE v1([3, 1, 2]);
+----
+1
+
+query I
+EXECUTE v1(['b', 'a']);
+----
+a
+
+query I
+EXECUTE v1([3, 1, 2]::INTEGER[3]);
+----
+1
+
+query I
+EXECUTE v1(NULL);
+----
+NULL
+
+# quantified comparisons
+statement ok
+PREPARE v2 AS SELECT 1 > ANY(list_sort($1)), 1 = ANY(list_sort($1));
+
+query II
+EXECUTE v2([3, 1, 2]);
+----
+false	true
+
+# CASE
+statement ok
+PREPARE v3 AS SELECT CASE WHEN len($1) > 2 THEN list_sort($1) ELSE list_reverse_sort($1) END;
+
+query I
+EXECUTE v3([3, 1, 2]);
+----
+[1, 2, 3]
+
+query I
+EXECUTE v3([1, 2]);
+----
+[2, 1]
+
+# sort orders and list_grade_up
+statement ok
+PREPARE v4 AS SELECT list_min(list_reverse_sort($1)), list_max(list_sort($1, 'DESC', 'NULLS FIRST')), list_min(list_grade_up($1));
+
+query III
+EXECUTE v4([3, 1, 2]);
+----
+1	3	1
+
+# parameters for the sort order and the null order
+statement ok
+PREPARE v10 AS SELECT list_sort($1, $2, $3), list_grade_up($1, $2, $3);
+
+query II
+EXECUTE v10([3, NULL, 1], 'DESC', 'NULLS FIRST');
+----
+[NULL, 3, 1]	[2, 1, 3]
+
+query II
+EXECUTE v10([3, NULL, 1], 'ASC', 'NULLS LAST');
+----
+[1, 3, NULL]	[3, 1, 2]
+
+# list_filter concatenated with NULL
+statement ok
+PREPARE v5 AS SELECT list_concat(NULL, list_filter($1, lambda x: x > 1));
+
+query I
+EXECUTE v5([1, 2, 3]);
+----
+[2, 3]
+
+query I
+EXECUTE v5([3, 1, 2]::INTEGER[3]);
+----
+[3, 2]
+
+query I
+EXECUTE v5([]::INTEGER[]);
+----
+[]
+
+query I
+EXECUTE v5(NULL);
+----
+NULL
+
+statement ok
+PREPARE v6 AS SELECT list_concat(list_filter($1, lambda x, i: i > 1), NULL);
+
+query I
+EXECUTE v6([1, 2, 3]);
+----
+[2, 3]
+
+# list_filter inside a list aggregate and a CASE
+statement ok
+PREPARE v7 AS SELECT list_min(list_filter($1, lambda x: x > 1)), CASE WHEN true THEN list_filter($1, lambda x: x > 1) END;
+
+query II
+EXECUTE v7([1, 2, 3]);
+----
+2	[2, 3]
+
+query II
+EXECUTE v7(NULL);
+----
+NULL	NULL
+
+# list_transform and list_reduce
+statement ok
+PREPARE v8 AS SELECT list_concat(NULL, list_transform($1, lambda x: x + 1)), list_reduce($1, lambda a, b: a + b);
+
+query II
+EXECUTE v8([1, 2, 3]);
+----
+[2, 3, 4]	6
+
+query II
+EXECUTE v8(NULL);
+----
+NULL	NULL
+
+# list_reduce with an initial value
+statement ok
+PREPARE v11 AS SELECT list_reduce($1, lambda a, b: a + b, $2);
+
+query I
+EXECUTE v11([1, 2, 3], 10);
+----
+16
+
+query I
+EXECUTE v11([]::INTEGER[], 10);
+----
+10
+
+# the same prepared statement with different parameter types
+statement ok
+PREPARE v9 AS SELECT list_concat(NULL, list_sort($1));
+
+query I
+EXECUTE v9([3, 1, 2]);
+----
+[1, 2, 3]
+
+query I
+EXECUTE v9(['b', 'a']);
+----
+[a, b]
+
+query I
+EXECUTE v9([[2], [1]]);
+----
+[[1], [2]]
+
+query I
+EXECUTE v9([3, 1, 2]::INTEGER[3]);
+----
+[1, 2, 3]
