@@ -1,0 +1,328 @@
+# name: test/sql/function/timestamp/test_strptime_error_type.test
+# description: strptime raises an Invalid Input Error for every failure, including fields that make no date
+# group: [timestamp]
+
+statement error
+SELECT strptime('2023-02-29', '%Y-%m-%d');
+----
+Invalid Input Error: Could not parse string "2023-02-29" according to format specifier "%Y-%m-%d"
+2023-02-29
+^
+Error: Day out of range for the month, expected a value between 1 and 28
+
+statement error
+SELECT strptime('hello', '%Y-%m-%d');
+----
+Invalid Input Error: Could not parse string "hello" according to format specifier "%Y-%m-%d"
+hello
+^
+Error: Expected a number
+
+statement error
+SELECT strptime('2023-13-01', '%Y-%m-%d');
+----
+Invalid Input Error: Could not parse string "2023-13-01" according to format specifier "%Y-%m-%d"
+2023-13-01
+     ^
+Error: Month out of range, expected a value between 1 and 12
+
+query III
+SELECT try_strptime('2023-02-29', '%Y-%m-%d'), try_strptime('hello', '%Y-%m-%d'), try_strptime('2023-13-01', '%Y-%m-%d');
+----
+NULL	NULL	NULL
+
+query III
+SELECT TRY(strptime('2023-02-29', '%Y-%m-%d')), TRY(strptime('hello', '%Y-%m-%d')), TRY(strptime('2023-13-01', '%Y-%m-%d'));
+----
+NULL	NULL	NULL
+
+# a day past the end of its month, against the month and the year, including the default year 1900 and a month name
+statement error
+SELECT strptime('2023-02-30 10:00:00', '%Y-%m-%d %H:%M:%S');
+----
+Invalid Input Error: Could not parse string "2023-02-30 10:00:00" according to format specifier "%Y-%m-%d %H:%M:%S"
+2023-02-30 10:00:00
+^
+Error: Day out of range for the month, expected a value between 1 and 28
+
+statement error
+SELECT strptime('31/04/2023', '%d/%m/%Y');
+----
+Invalid Input Error: Could not parse string "31/04/2023" according to format specifier "%d/%m/%Y"
+31/04/2023
+^
+Error: Day out of range for the month, expected a value between 1 and 30
+
+statement error
+SELECT strptime('02-29', '%m-%d');
+----
+Invalid Input Error: Could not parse string "02-29" according to format specifier "%m-%d"
+02-29
+^
+Error: Day out of range for the month, expected a value between 1 and 28
+
+statement error
+SELECT strptime('Feb 30 2023', '%b %d %Y');
+----
+Invalid Input Error: Could not parse string "Feb 30 2023" according to format specifier "%b %d %Y"
+Feb 30 2023
+^
+Error: Day out of range for the month, expected a value between 1 and 28
+
+query IIII
+SELECT strptime('2024-02-29', '%Y-%m-%d'), strptime('00-02-29', '%y-%m-%d'), strptime('31', '%d'), strptime('2023-04-30', '%Y-%m-%d');
+----
+2024-02-29 00:00:00	2000-02-29 00:00:00	1900-01-31 00:00:00	2023-04-30 00:00:00
+
+query I
+SELECT try_strptime('2023-02-30 10:00:00', '%Y-%m-%d %H:%M:%S');
+----
+NULL
+
+# fields out of range on their own
+statement error
+SELECT strptime('2023-02-28 25:00:00', '%Y-%m-%d %H:%M:%S');
+----
+Invalid Input Error: Could not parse string "2023-02-28 25:00:00" according to format specifier "%Y-%m-%d %H:%M:%S"
+2023-02-28 25:00:00
+           ^
+Error: Hour out of range, expected a value between 0 and 23
+
+statement error
+SELECT strptime('2023-02-28 23:59:60', '%Y-%m-%d %H:%M:%S');
+----
+Invalid Input Error: Could not parse string "2023-02-28 23:59:60" according to format specifier "%Y-%m-%d %H:%M:%S"
+2023-02-28 23:59:60
+                 ^
+Error: Seconds out of range, expected a value between 0 and 59
+
+statement error
+SELECT strptime('-2023-02-28', '%Y-%m-%d');
+----
+Invalid Input Error: Could not parse string "-2023-02-28" according to format specifier "%Y-%m-%d"
+-2023-02-28
+^
+Error: Expected a number
+
+statement error
+SELECT strptime('2023-366', '%Y-%j');
+----
+Invalid Input Error: Could not parse string "2023-366" according to format specifier "%Y-%j"
+2023-366
+^
+Error: Year day out of range for the year
+
+query IIII
+SELECT try_strptime('2023-02-28 25:00:00', '%Y-%m-%d %H:%M:%S'), try_strptime('2023-02-28 23:59:60', '%Y-%m-%d %H:%M:%S'), try_strptime('-2023-02-28', '%Y-%m-%d'), try_strptime('2023-366', '%Y-%j');
+----
+NULL	NULL	NULL	NULL
+
+# TIMESTAMP WITH TIME ZONE through %z
+statement error
+SELECT strptime('2023-02-29 +0100', '%Y-%m-%d %z');
+----
+Invalid Input Error: Could not parse string "2023-02-29 +0100" according to format specifier "%Y-%m-%d %z"
+2023-02-29 +0100
+^
+Error: Day out of range for the month, expected a value between 1 and 28
+
+query I
+SELECT try_strptime('2023-02-29 +0100', '%Y-%m-%d %z');
+----
+NULL
+
+# TIMESTAMP_NS through %n: an impossible date, and a date outside the nanosecond range
+statement error
+SELECT strptime('2023-02-29 00:00:00.000000001', '%Y-%m-%d %H:%M:%S.%n');
+----
+Invalid Input Error: Could not parse string "2023-02-29 00:00:00.000000001" according to format specifier "%Y-%m-%d %H:%M:%S.%n"
+2023-02-29 00:00:00.000000001
+^
+Error: Day out of range for the month, expected a value between 1 and 28
+
+statement error
+SELECT strptime('2300-01-01 00:00:00.000000000', '%Y-%m-%d %H:%M:%S.%n');
+----
+Invalid Input Error: Could not parse string "2300-01-01 00:00:00.000000000" according to format specifier "%Y-%m-%d %H:%M:%S.%n"
+2300-01-01 00:00:00.000000000
+^
+Error: Timestamp out of range for TIMESTAMP_NS
+
+statement error
+SELECT strptime('2262-04-12 00:30:00.000000000 +0100', '%Y-%m-%d %H:%M:%S.%n %z');
+----
+Invalid Input Error: Could not parse string "2262-04-12 00:30:00.000000000 +0100" according to format specifier "%Y-%m-%d %H:%M:%S.%n %z"
+2262-04-12 00:30:00.000000000 +0100
+^
+Error: Timestamp out of range for TIMESTAMPTZ_NS
+
+query II
+SELECT try_strptime('2023-02-29 00:00:00.000000001', '%Y-%m-%d %H:%M:%S.%n'), try_strptime('2300-01-01 00:00:00.000000000', '%Y-%m-%d %H:%M:%S.%n');
+----
+NULL	NULL
+
+query III
+SELECT strptime('infinity', '%Y-%m-%d %H:%M:%S.%n')::VARCHAR, strptime('-infinity', '%Y-%m-%d %H:%M:%S.%n')::VARCHAR, strptime('epoch', '%Y-%m-%d %H:%M:%S.%n')::VARCHAR;
+----
+infinity	-infinity	1970-01-01 00:00:00
+
+# a format list reports the last format tried with its reason, and goes on past a format whose fields make no timestamp
+statement error
+SELECT strptime('2023-02-29', ['%Y-%m-%d', '%d/%m/%Y']);
+----
+Invalid Input Error: Could not parse string "2023-02-29" according to format specifier "%d/%m/%Y"
+2023-02-29
+  ^
+Error: Literal does not match, expected /
+
+statement error
+SELECT strptime('2023-02-29', ['%d/%m/%Y', '%Y-%m-%d']);
+----
+Invalid Input Error: Could not parse string "2023-02-29" according to format specifier "%Y-%m-%d"
+2023-02-29
+^
+Error: Day out of range for the month, expected a value between 1 and 28
+
+query I
+SELECT try_strptime('2023-02-29', ['%Y-%m-%d', '%d/%m/%Y']);
+----
+NULL
+
+query II
+SELECT strptime('30/02/23', ['%d/%m/%Y', '%y/%m/%d']), try_strptime('30/02/23', ['%d/%m/%Y', '%y/%m/%d']);
+----
+2030-02-23 00:00:00	2030-02-23 00:00:00
+
+query II
+SELECT strptime('2262-04-12 000000000', ['%Y-%m-%d %n', '%Y-%j-%H %n'])::VARCHAR, try_strptime('2262-04-12 000000000', ['%Y-%m-%d %n', '%Y-%j-%H %n'])::VARCHAR;
+----
+2262-01-04 12:00:00	2262-01-04 12:00:00
+
+# each format of a list reports its own caret, and the AM/PM hour check reports none
+statement error
+SELECT strptime('1/1/2023 13:00 PM', ['%Y-%m-%d', '%m/%d/%Y %H:%M %p']);
+----
+<REGEX>:Invalid Input Error: Could not parse string "1/1/2023 13:00 PM" according to format specifier "%m/%d/%Y %H:%M %p"\n\nError: Invalid hour: 13 AM/PM, expected an hour within the range \[0\.\.12\]\n
+
+# a column: strptime fails exactly on the rows where try_strptime gives NULL
+statement ok
+CREATE TABLE texts AS SELECT * FROM (VALUES (1, '2023-02-28'), (2, '2023-02-29'), (3, 'hello'), (4, '2024-02-29'), (5, NULL)) t(id, s);
+
+query II
+SELECT id, try_strptime(s, '%Y-%m-%d') FROM texts ORDER BY id;
+----
+1	2023-02-28 00:00:00
+2	NULL
+3	NULL
+4	2024-02-29 00:00:00
+5	NULL
+
+query II
+SELECT id, strptime(s, '%Y-%m-%d') FROM texts WHERE id IN (1, 4, 5) ORDER BY id;
+----
+1	2023-02-28 00:00:00
+4	2024-02-29 00:00:00
+5	NULL
+
+statement error
+SELECT strptime(s, '%Y-%m-%d') FROM texts WHERE id <> 3;
+----
+Invalid Input Error: Could not parse string "2023-02-29" according to format specifier "%Y-%m-%d"
+2023-02-29
+^
+Error: Day out of range for the month, expected a value between 1 and 28
+
+# the readers report an impossible date through their own error paths
+statement ok
+COPY (SELECT s AS d FROM texts WHERE id IN (1, 2, 3) ORDER BY id) TO '{TEST_DIR}/strptime_error_type.csv' (HEADER);
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/strptime_error_type.csv', dateformat = '%Y-%m-%d', columns = {'d': 'DATE'});
+----
+Conversion Error: CSV Error on Line: 3
+Original Line: 2023-02-29
+Error when converting column "d". Could not convert string "2023-02-29" to 'DATE'
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/strptime_error_type.csv', timestampformat = '%Y-%m-%d', columns = {'d': 'TIMESTAMP'});
+----
+Conversion Error: CSV Error on Line: 3
+Original Line: 2023-02-29
+Error when converting column "d". Could not convert string "2023-02-29" to 'TIMESTAMP'
+
+query I
+SELECT * FROM read_csv('{TEST_DIR}/strptime_error_type.csv', dateformat = '%Y-%m-%d', columns = {'d': 'DATE'}, store_rejects = true);
+----
+2023-02-28
+
+query IIII
+SELECT line, column_name, error_type, error_message FROM reject_errors ORDER BY line;
+----
+3	d	CAST	Error when converting column "d". Could not convert string "2023-02-29" to 'DATE'
+4	d	CAST	Error when converting column "d". Could not convert string "hello" to 'DATE'
+
+require json
+
+statement ok
+COPY (SELECT s AS d FROM texts WHERE id IN (1, 2) ORDER BY id) TO '{TEST_DIR}/strptime_error_type.json';
+
+statement error
+SELECT * FROM read_json('{TEST_DIR}/strptime_error_type.json', dateformat = '%Y-%m-%d', columns = {'d': 'DATE'});
+----
+<REGEX>:Invalid Input Error: JSON transform error in file "[^"]*", in line 2: \nTry setting 'auto_detect' to true.*
+
+statement error
+SELECT * FROM read_json('{TEST_DIR}/strptime_error_type.json', timestampformat = '%Y-%m-%d', columns = {'d': 'TIMESTAMP'});
+----
+<REGEX>:Invalid Input Error: JSON transform error in file "[^"]*", in line 2: \nTry setting 'auto_detect' to true.*
+
+# the ICU strptime (%Z, or a format list with %z) reads the fields in the session calendar
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement error
+SELECT strptime('0030-01-01 0 UTC', '%Y-%m-%d %n %Z');
+----
+Invalid Input Error: Could not parse string "0030-01-01 0 UTC" according to format specifier "%Y-%m-%d %n %Z"
+0030-01-01 0 UTC
+^
+Error: Timestamp out of range for TIMESTAMPTZ_NS
+
+statement error
+SELECT strptime('2023-01-01 Foo/Bar', '%Y-%m-%d %Z');
+----
+Invalid Input Error: Could not parse string "2023-01-01 Foo/Bar" according to format specifier "%Y-%m-%d %Z"
+2023-01-01 Foo/Bar
+^
+Error: Unknown TimeZone 'Foo/Bar'!
+
+query IIII
+SELECT try_strptime('0030-01-01 0 UTC', '%Y-%m-%d %n %Z'), TRY(strptime('0030-01-01 0 UTC', '%Y-%m-%d %n %Z')), try_strptime('2023-01-01 Foo/Bar', '%Y-%m-%d %Z'), TRY(strptime('2023-01-01 Foo/Bar', '%Y-%m-%d %Z'));
+----
+NULL	NULL	NULL	NULL
+
+query II
+SELECT strptime('30/02/23.0 +0000', ['%Y/%m/%d.%n %z', '%y/%m/%d.%n %z'])::VARCHAR, try_strptime('30/02/23.0 +0000', ['%Y/%m/%d.%n %z', '%y/%m/%d.%n %z'])::VARCHAR;
+----
+2030-02-23 00:00:00+00	2030-02-23 00:00:00+00
+
+query III
+SELECT strptime('2023-01-01 Foo/Bar', ['%Y-%m-%d %Z', '%Y-%m-%d Foo/Bar'])::VARCHAR, try_strptime('2023-01-01 Foo/Bar', ['%Y-%m-%d %Z', '%Y-%m-%d Foo/Bar'])::VARCHAR, strptime('infinity', '%Y-%m-%d %Z')::VARCHAR;
+----
+2023-01-01 00:00:00+00	2023-01-01 00:00:00+00	infinity
+
+query II
+SELECT strptime('2262-04-12 000000000 America/New_York', ['%Y-%m-%d %n %Z', '%Y-%j-%H %n America/New_York'])::VARCHAR, try_strptime('2262-04-12 000000000 America/New_York', ['%Y-%m-%d %n %Z', '%Y-%j-%H %n America/New_York'])::VARCHAR;
+----
+2262-01-04 12:00:00+00	2262-01-04 12:00:00+00
+
+
+statement ok
+SET Calendar = 'persian';
+
+query II
+SELECT strptime('1402-02-31 UTC', '%Y-%m-%d %Z') = make_timestamptz(1402, 2, 31, 0, 0, 0.0, 'UTC'), try_strptime('1402-02-31 UTC', '%Y-%m-%d %Z') = make_timestamptz(1402, 2, 31, 0, 0, 0.0, 'UTC');
+----
+true	true

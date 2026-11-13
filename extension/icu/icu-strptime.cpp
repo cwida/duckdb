@@ -134,44 +134,13 @@ struct ICUStrptime : public ICUDateFunc {
 		return nanos;
 	}
 
+	template <typename T>
 	static inline void ParseOne(Calendar *calendar, CalendarCacheState &cache, string_t input,
-	                            vector<StrpTimeFormat> &formats, timestamp_tz_t &result) {
+	                            vector<StrpTimeFormat> &formats, T &result) {
 		ParseResult parsed;
-		for (auto &format : formats) {
-			if (format.Parse(input, parsed)) {
-				if (parsed.is_special) {
-					result = timestamp_tz_t(parsed.ToTimestamp());
-					return;
-				} else {
-					// Use the calendar of the parsed time zone, if any - the shared calendar keeps the session zone
-					auto row_calendar = parsed.tz.empty() ? calendar : cache.GetCalendar(parsed.tz);
-					result = GetTime(row_calendar, ToMicros(row_calendar, parsed, format));
-					return;
-				}
-			}
+		if (!TryParseOne(calendar, cache, input, formats, parsed, result)) {
+			throw InvalidInputException(parsed.FormatError(input, formats.back().format_specifier));
 		}
-
-		throw InvalidInputException(parsed.FormatError(input, formats[0].format_specifier));
-	}
-
-	static inline void ParseOne(Calendar *calendar, CalendarCacheState &cache, string_t input,
-	                            vector<StrpTimeFormat> &formats, timestamp_tz_ns_t &result) {
-		ParseResult parsed;
-		for (auto &format : formats) {
-			if (format.Parse(input, parsed)) {
-				if (parsed.is_special) {
-					result.value = parsed.ToTimestamp().value;
-					return;
-				} else {
-					// Use the calendar of the parsed time zone, if any - the shared calendar keeps the session zone
-					auto row_calendar = parsed.tz.empty() ? calendar : cache.GetCalendar(parsed.tz);
-					result = GetTimeNS(row_calendar, ToNanos(row_calendar, parsed, format));
-					return;
-				}
-			}
-		}
-
-		throw InvalidInputException(parsed.FormatError(input, formats[0].format_specifier));
 	}
 
 	template <typename T>
@@ -195,42 +164,49 @@ struct ICUStrptime : public ICUDateFunc {
 	}
 
 	static inline bool TryParseOne(Calendar *calendar, CalendarCacheState &cache, string_t input,
-	                               vector<StrpTimeFormat> &formats, timestamp_tz_t &result) {
-		ParseResult parsed;
+	                               vector<StrpTimeFormat> &formats, ParseResult &parsed, timestamp_tz_t &result) {
 		for (auto &format : formats) {
-			if (format.Parse(input, parsed)) {
-				if (parsed.is_special) {
-					result.value = parsed.ToTimestamp().value;
-					return true;
-				} else {
-					auto row_calendar = parsed.tz.empty() ? calendar : cache.TryGetCalendar(parsed.tz);
-					if (row_calendar && TryGetTime(row_calendar, ToMicros(row_calendar, parsed, format), result)) {
-						return true;
-					}
-				}
+			if (!format.Parse(input, parsed)) {
+				continue;
 			}
+			if (parsed.is_special) {
+				result.value = parsed.ToTimestamp().value;
+				return true;
+			}
+			// Use the calendar of the parsed time zone, if any - the shared calendar keeps the session zone
+			auto row_calendar = parsed.tz.empty() ? calendar : cache.TryGetCalendar(parsed.tz, &parsed.error_message);
+			if (row_calendar) {
+				if (TryGetTime(row_calendar, ToMicros(row_calendar, parsed, format), result)) {
+					return true;
+				}
+				parsed.error_message =
+				    "Timestamp out of range for " + LogicalType(LogicalTypeId::TIMESTAMP_TZ).ToString();
+			}
+			parsed.error_position = 0;
 		}
-
 		return false;
 	}
 
 	static inline bool TryParseOne(Calendar *calendar, CalendarCacheState &cache, string_t input,
-	                               vector<StrpTimeFormat> &formats, timestamp_tz_ns_t &result) {
-		ParseResult parsed;
+	                               vector<StrpTimeFormat> &formats, ParseResult &parsed, timestamp_tz_ns_t &result) {
 		for (auto &format : formats) {
-			if (format.Parse(input, parsed)) {
-				if (parsed.is_special) {
-					result.value = parsed.ToTimestamp().value;
-					return true;
-				} else {
-					auto row_calendar = parsed.tz.empty() ? calendar : cache.TryGetCalendar(parsed.tz);
-					if (row_calendar && TryGetTimeNS(row_calendar, ToNanos(row_calendar, parsed, format), result)) {
-						return true;
-					}
-				}
+			if (!format.Parse(input, parsed)) {
+				continue;
 			}
+			if (parsed.is_special) {
+				result.value = parsed.ToTimestamp().value;
+				return true;
+			}
+			auto row_calendar = parsed.tz.empty() ? calendar : cache.TryGetCalendar(parsed.tz, &parsed.error_message);
+			if (row_calendar) {
+				if (TryGetTimeNS(row_calendar, ToNanos(row_calendar, parsed, format), result)) {
+					return true;
+				}
+				parsed.error_message =
+				    "Timestamp out of range for " + LogicalType(LogicalTypeId::TIMESTAMP_TZ_NS).ToString();
+			}
+			parsed.error_position = 0;
 		}
-
 		return false;
 	}
 
@@ -253,7 +229,8 @@ struct ICUStrptime : public ICUDateFunc {
 		} else {
 			UnaryExecutor::Execute<string_t, T>(str_arg, result, [&](string_t input) -> optional<T> {
 				T result;
-				if (TryParseOne(calendar, cache, input, info.formats, result)) {
+				ParseResult parsed;
+				if (TryParseOne(calendar, cache, input, info.formats, parsed, result)) {
 					return result;
 				}
 				return nullopt;

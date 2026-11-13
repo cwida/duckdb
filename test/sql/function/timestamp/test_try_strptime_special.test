@@ -120,7 +120,7 @@ SELECT i, try_strptime(s, '%Y-%m-%d') FROM mixed ORDER BY i
 statement error
 SELECT strptime(s, '%Y-%m-%d') FROM mixed WHERE i = 5
 ----
-Date out of range: 2024-2-30
+Could not parse string "2024-02-30" according to format specifier "%Y-%m-%d"
 
 statement error
 SELECT strptime(s, '%Y-%m-%d') FROM mixed WHERE i = 7
