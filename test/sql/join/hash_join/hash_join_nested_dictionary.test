@@ -319,9 +319,11 @@ FROM coverage_probe p JOIN coverage_build b USING (k);
 ----
 true	0
 
-# Unique LEFT joins use their direct gather path.
+# Unique LEFT joins share the same coverage gate.
 query II
-SELECT NOT check_nested_activation() OR bool_and(vector_type(b.vals) = 'FLAT_VECTOR'),
+SELECT NOT check_nested_activation() OR bool_and(
+           (vector_type(b.vals) = 'DICTIONARY_VECTOR') =
+           (p.i // current_setting('standard_vector_size')::BIGINT % 3 <> 1)),
        count(*) FILTER (WHERE b.vals IS DISTINCT FROM CASE WHEN p.k = 0 THEN range(5) ELSE [11, 12] END)
 FROM coverage_probe p LEFT JOIN coverage_build b USING (k);
 ----

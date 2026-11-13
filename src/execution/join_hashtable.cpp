@@ -510,25 +510,26 @@ static void ScatterDictIndices(uint8_t index_width, const SelectionVector &dict_
 
 //! Load the per-match dict index (width INDEX_T) from each matched row's slot at col_offset into build_sel_vec
 template <class INDEX_T>
-static void LoadDictIndices(const data_ptr_t *ptrs, const SelectionVector &ptr_sel, idx_t count, idx_t col_offset,
+static void LoadDictIndices(const data_ptr_t *ptrs, const JoinBuildSelection &selection, idx_t col_offset,
                             SelectionVector &build_sel_vec) {
-	for (idx_t i = 0; i < count; i++) {
-		build_sel_vec.set_index(i, Load<INDEX_T>(ptrs[ptr_sel.get_index(i)] + col_offset));
+	for (idx_t i = 0; i < selection.match_count; i++) {
+		build_sel_vec.set_index(selection.output.get_index(i),
+		                        Load<INDEX_T>(ptrs[selection.rows.get_index(i)] + col_offset));
 	}
 }
 
 //! Dispatch on the chosen index width (1/2/4 B) to the matching templated LoadDictIndices
-static void LoadDictIndices(uint8_t index_width, const data_ptr_t *ptrs, const SelectionVector &ptr_sel, idx_t count,
+static void LoadDictIndices(uint8_t index_width, const data_ptr_t *ptrs, const JoinBuildSelection &selection,
                             idx_t col_offset, SelectionVector &build_sel_vec) {
 	switch (index_width) {
 	case sizeof(uint8_t):
-		LoadDictIndices<uint8_t>(ptrs, ptr_sel, count, col_offset, build_sel_vec);
+		LoadDictIndices<uint8_t>(ptrs, selection, col_offset, build_sel_vec);
 		break;
 	case sizeof(uint16_t):
-		LoadDictIndices<uint16_t>(ptrs, ptr_sel, count, col_offset, build_sel_vec);
+		LoadDictIndices<uint16_t>(ptrs, selection, col_offset, build_sel_vec);
 		break;
 	default:
-		LoadDictIndices<uint32_t>(ptrs, ptr_sel, count, col_offset, build_sel_vec);
+		LoadDictIndices<uint32_t>(ptrs, selection, col_offset, build_sel_vec);
 		break;
 	}
 }
@@ -1800,19 +1801,10 @@ void ScanStructure::AdvancePointers() {
 	AdvancePointers(this->sel_vector, this->count);
 }
 
-void ScanStructure::GatherResult(Vector &result, const SelectionVector &result_vector,
-                                 const SelectionVector &sel_vector, const idx_t count, const idx_t col_no) {
-	ht.data_collection->Gather(pointers, sel_vector, count, col_no, result, result_vector, nullptr);
-}
-
 void ScanStructure::GatherResult(Vector &result, const SelectionVector &sel_vector, const idx_t count,
                                  const idx_t col_idx) {
-	GatherResult(result, *FlatVector::IncrementalSelectionVector(), sel_vector, count, col_idx);
-}
-
-void ScanStructure::GatherResult(Vector &result, const idx_t count, const idx_t col_idx) {
-	ht.data_collection->Gather(rhs_pointers, *FlatVector::IncrementalSelectionVector(), count, col_idx, result,
-	                           *FlatVector::IncrementalSelectionVector(), nullptr);
+	ht.data_collection->Gather(pointers, sel_vector, count, col_idx, result, *FlatVector::IncrementalSelectionVector(),
+	                           nullptr);
 }
 
 static bool HasNestedDictionary(const vector<buffer_ptr<DictionaryEntry>> &dictionaries) {
@@ -1842,17 +1834,40 @@ static bool SelectionCoversDictionary(const data_ptr_t *row_ptrs, const Selectio
 
 void JoinHashTable::GatherRHS(Vector &row_ptrs, const SelectionVector &ptr_sel, const idx_t count, DataChunk &result,
                               idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const {
+	GatherRHS(row_ptrs, JoinBuildSelection(ptr_sel, count), result, rhs_col_offset, dictionary_state);
+}
+
+void JoinHashTable::GatherRHS(Vector &row_ptrs, const JoinBuildSelection &selection, DataChunk &result,
+                              idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const {
+	const auto ptrs = FlatVector::GetData<data_ptr_t>(row_ptrs);
 	if (use_dict_emission) {
-		const auto ptrs = FlatVector::GetData<data_ptr_t>(row_ptrs);
 		// Nested consumers may process all backing children, including those absent from the selection.
 		if (!HasNestedDictionary(dict_arrays) ||
-		    SelectionCoversDictionary(ptrs, ptr_sel, count, pointer_offset, Count())) {
-			EmitDictVectors(ptrs, ptr_sel, count, result, rhs_col_offset, dictionary_state);
+		    (selection.match_count == selection.count &&
+		     SelectionCoversDictionary(ptrs, selection.rows, selection.match_count, pointer_offset, Count()))) {
+			EmitDictVectors(ptrs, selection, result, rhs_col_offset, dictionary_state);
 			return;
 		}
 	}
-	const auto &result_sel = *FlatVector::IncrementalSelectionVector();
-	const auto ptrs = FlatVector::GetData<data_ptr_t>(row_ptrs);
+
+	const auto null_count = selection.count - selection.match_count;
+	SelectionVector null_sel;
+	if (null_count > 0 && selection.match_count > 0) {
+		null_sel.Initialize(null_count);
+		ValidityMask matched(selection.count);
+		matched.SetAllInvalid(selection.count);
+		for (idx_t i = 0; i < selection.match_count; i++) {
+			matched.SetValid(selection.output.get_index(i));
+		}
+		idx_t null_idx = 0;
+		for (idx_t i = 0; i < selection.count; i++) {
+			if (!matched.RowIsValid(i)) {
+				null_sel.set_index(null_idx++, i);
+			}
+		}
+		D_ASSERT(null_idx == null_count);
+	}
+	const auto &null_rows = selection.match_count == 0 ? *FlatVector::IncrementalSelectionVector() : null_sel;
 	const auto &offsets = layout_ptr->GetOffsets();
 	const auto cond_count = condition_types.size();
 
@@ -1865,24 +1880,34 @@ void JoinHashTable::GatherRHS(Vector &row_ptrs, const SelectionVector &ptr_sel, 
 		if (output_col_idx >= cond_count) {
 			auto dict_column = GetDictSurvivingColumn(output_col_idx - cond_count);
 			if (dict_column) {
-				SelectionVector build_sel_vec(count);
+				SelectionVector build_sel_vec(selection.count);
+				for (idx_t i = 0; i < null_count; i++) {
+					build_sel_vec.set_index(null_rows.get_index(i), dict_column->NullIndex());
+				}
 				const auto col_offset = offsets[output_col_idx];
-				// Read the dict index at the width chosen at layout-publication time
-				LoadDictIndices(dict_column->index_width, ptrs, ptr_sel, count, col_offset, build_sel_vec);
+				LoadDictIndices(dict_column->index_width, ptrs, selection, col_offset, build_sel_vec);
 				const auto &entry = dictionary_state.GetEntry(col_idx, dict_column->entry);
-				vector.Dictionary(entry, build_sel_vec, count);
+				vector.Dictionary(entry, build_sel_vec, selection.count);
 				continue;
 			}
 		}
 
 		D_ASSERT(vector.GetType() == layout_ptr->GetTypes()[output_col_idx]);
+		if (selection.match_count == 0) {
+			ConstantVector::SetNull(vector, count_t(selection.count));
+			continue;
+		}
 		// The native gather writes straight into a flat buffer. A reused output chunk (e.g. across recursive-CTE
 		// iterations) may still hold a DICTIONARY_VECTOR left by a prior dict-emitting iteration; reset it to flat.
 		if (vector.GetVectorType() != VectorType::FLAT_VECTOR) {
 			vector.Initialize();
 		}
-		data_collection->Gather(row_ptrs, ptr_sel, count, output_col_idx, vector, result_sel, nullptr);
-		FlatVector::SetSize(vector, count_t(count));
+		for (idx_t i = 0; i < null_count; i++) {
+			FlatVector::SetNull(vector, null_rows.get_index(i), true);
+		}
+		data_collection->Gather(row_ptrs, selection.rows, selection.match_count, output_col_idx, vector,
+		                        selection.output, nullptr);
+		FlatVector::SetSize(vector, count_t(selection.count));
 	}
 }
 
@@ -2343,11 +2368,8 @@ void ScanStructure::NextLeftJoin(DataChunk &keys, DataChunk &probe_data, DataChu
 				idx_t probe_col_idx = ht.lhs_output_in_probe[i];
 				result.data[i].Slice(probe_data.data[probe_col_idx], sel, remaining_count);
 			}
-			// now set the right side to NULL
-			for (idx_t i = ht.lhs_output_in_probe.size(); i < result.ColumnCount(); i++) {
-				Vector &vec = result.data[i];
-				ConstantVector::SetNull(vec, count_t(remaining_count));
-			}
+			const JoinBuildSelection build_selection(sel, 0, sel, remaining_count);
+			ht.GatherRHS(pointers, build_selection, result, ht.lhs_output_in_probe.size(), dictionary_gather_state);
 		}
 		finished = true;
 	}
@@ -2380,20 +2402,8 @@ void ScanStructure::NextSingleJoin(DataChunk &keys, DataChunk &probe_data, DataC
 		result.data[i].Reference(probe_data.data[probe_col_idx]);
 	}
 
-	// now fetch the data from the RHS
-	for (idx_t i = 0; i < ht.output_columns.size(); i++) {
-		auto &vector = result.data[ht.lhs_output_in_probe.size() + i];
-		// set NULL entries for every entry that was not found
-		for (idx_t j = 0; j < probe_data.size(); j++) {
-			if (!found_match[j]) {
-				FlatVector::SetNull(vector, j, true);
-			}
-		}
-		const auto output_col_idx = ht.output_columns[i];
-		D_ASSERT(vector.GetType() == ht.layout_ptr->GetTypes()[output_col_idx]);
-		GatherResult(vector, result_sel, result_sel, result_count, output_col_idx);
-		FlatVector::SetSize(vector, count_t(probe_data.size()));
-	}
+	const JoinBuildSelection build_selection(result_sel, result_count, result_sel, probe_data.size());
+	ht.GatherRHS(pointers, build_selection, result, ht.lhs_output_in_probe.size(), dictionary_gather_state);
 	result.SetChildCardinality(probe_data.size());
 
 	// like the SEMI, ANTI and MARK join types, the SINGLE join only ever does one pass over the HT per input chunk
@@ -2440,23 +2450,8 @@ void ScanStructure::NextUniqueLeftJoin(DataChunk &keys, DataChunk &probe_data, D
 		result.data[i].Reference(probe_data.data[probe_col_idx]);
 	}
 
-	// Fetch RHS data. If all rows matched we can skip NULL-setting and gather directly.
-	// Otherwise, mark unmatched rows as NULL before gathering matched rows.
-	const bool all_match = result_count == probe_size;
-	for (idx_t i = 0; i < ht.output_columns.size(); i++) {
-		auto &vector = result.data[ht.lhs_output_in_probe.size() + i];
-		if (!all_match) {
-			for (idx_t j = 0; j < probe_size; j++) {
-				if (!found_match[j]) {
-					FlatVector::SetNull(vector, j, true);
-				}
-			}
-		}
-		const auto output_col_idx = ht.output_columns[i];
-		D_ASSERT(vector.GetType() == ht.layout_ptr->GetTypes()[output_col_idx]);
-		GatherResult(vector, result_sel, result_sel, result_count, output_col_idx);
-		FlatVector::SetSize(vector, count_t(probe_size));
-	}
+	const JoinBuildSelection build_selection(result_sel, result_count, result_sel, probe_size);
+	ht.GatherRHS(pointers, build_selection, result, ht.lhs_output_in_probe.size(), dictionary_gather_state);
 
 	// single pass - done
 	result.SetChildCardinality(probe_data.size());
@@ -2951,10 +2946,11 @@ idx_t JoinHashTable::ComputeBuildPayloadBytes(const vector<LogicalType> &rhs_out
 	bool has_nested = false;
 	for (const auto &type : rhs_output_types) {
 		const auto row_size = GetTypeIdSize(type.InternalType());
-		if (row_size > (limit - payload_bytes) / Count()) {
+		const auto entry_count = Count() + !type.IsNested();
+		if (row_size > (limit - payload_bytes) / entry_count) {
 			return limit + 1;
 		}
-		payload_bytes += row_size * Count();
+		payload_bytes += row_size * entry_count;
 		has_nested |= type.IsNested();
 	}
 	// Nested gathers copy children; scalar strings continue to reference the pinned build heap.
@@ -2986,14 +2982,6 @@ bool JoinHashTable::CanUseDictionaryEmission(const PhysicalHashJoin &op, bool ex
 	// mutually exclusive with the dict-surviving path: that path narrows the payload slot to a 1/2/4-byte
 	// index, while NEXT_PTR embedding here overwrites a different field and assumes payload bytes are intact.
 	if (HasDictSurvivingColumns()) {
-		return false;
-	}
-	// SINGLE joins need FlatVector::SetNull for unmatched rows; dictionary vectors cannot supply it
-	if (join_type == JoinType::SINGLE) {
-		return false;
-	}
-	// Unique LEFT joins gather directly and never emit dictionaries.
-	if (join_type == JoinType::LEFT && !chains_longer_than_one.load(std::memory_order_relaxed)) {
 		return false;
 	}
 	if (op.rhs_output_columns.col_types.empty()) {
@@ -3030,16 +3018,20 @@ bool JoinHashTable::CanUseDictionaryEmission(const PhysicalHashJoin &op, bool ex
 	return true;
 }
 
-void JoinHashTable::EmitDictVectors(const data_ptr_t *row_ptrs, const SelectionVector &ptr_sel, idx_t count,
-                                    DataChunk &result, idx_t rhs_col_offset,
-                                    DictionaryOwnershipCache &dictionary_state) const {
+void JoinHashTable::EmitDictVectors(const data_ptr_t *row_ptrs, const JoinBuildSelection &selection, DataChunk &result,
+                                    idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const {
 	D_ASSERT(output_columns.size() == dict_arrays.size());
-	SelectionVector build_sel_vec(count);
-	for (idx_t i = 0; i < count; i++) {
-		const auto idx = ptr_sel.get_index(i);
-		build_sel_vec.set_index(i, Load<uint32_t>(row_ptrs[idx] + pointer_offset));
+	SelectionVector build_sel_vec(selection.count);
+	if (selection.match_count < selection.count) {
+		for (idx_t i = 0; i < selection.count; i++) {
+			build_sel_vec.set_index(i, Count());
+		}
 	}
-	EmitDictVectors(build_sel_vec, count, result, rhs_col_offset, dictionary_state);
+	for (idx_t i = 0; i < selection.match_count; i++) {
+		const auto idx = selection.rows.get_index(i);
+		build_sel_vec.set_index(selection.output.get_index(i), Load<uint32_t>(row_ptrs[idx] + pointer_offset));
+	}
+	EmitDictVectors(build_sel_vec, selection.count, result, rhs_col_offset, dictionary_state);
 }
 
 void JoinHashTable::EmitDictVectors(const SelectionVector &build_sel, idx_t count, DataChunk &result,
@@ -3070,8 +3062,8 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 	FlatVector::SetSize(row_pointer_vector, collected);
 	const auto row_ptrs = FlatVector::GetData<data_ptr_t>(row_pointer_vector);
 
-	// Outer joins and partial nested selections can produce chunks without these dictionaries.
-	bool dict_on_every_chunk = join_type != JoinType::LEFT && join_type != JoinType::OUTER;
+	// Partial nested selections can produce chunks without these dictionaries.
+	bool dict_on_every_chunk = true;
 	for (const auto &type : op.rhs_output_columns.col_types) {
 		dict_on_every_chunk &= !type.IsNested();
 	}
@@ -3082,8 +3074,9 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 	vector<buffer_ptr<DictionaryEntry>> dictionaries;
 	for (idx_t col_idx = 0; col_idx < op.rhs_output_columns.col_types.size(); col_idx++) {
 		const auto &type = op.rhs_output_columns.col_types[col_idx];
-		auto dict_entry = dict_on_every_chunk ? DictionaryVector::CreateReusableGlobalDictionary(type, build_count)
-		                                      : DictionaryVector::CreateReusableDictionary(type, build_count);
+		const auto entry_count = build_count + !type.IsNested();
+		auto dict_entry = dict_on_every_chunk ? DictionaryVector::CreateReusableGlobalDictionary(type, entry_count)
+		                                      : DictionaryVector::CreateReusableDictionary(type, entry_count);
 		if (dict_entry->data.GetAllocationSize() >
 		    DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES - dictionary_bytes) {
 			return;
@@ -3098,6 +3091,7 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 			VectorOperations::Copy(gathered, dict_entry->data, build_count, 0, 0);
 		} else {
 			collection.Gather(row_pointer_vector, sel, build_count, output_col_idx, dict_entry->data, sel, nullptr);
+			FlatVector::SetNull(dict_entry->data, build_count, true);
 		}
 		const auto allocation_size = dict_entry->data.GetAllocationSize();
 		if (allocation_size > DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES - dictionary_bytes) {

@@ -690,7 +690,7 @@ static shared_ptr<TupleDataLayout> BuildJoinLayout(const vector<LogicalType> &co
 }
 
 //! Join-level eligibility for preserving build-side dictionary slots.
-static bool CanUseDictSurvivingJoin(const PhysicalHashJoin &op, const JoinHashTable &ht, bool build_side_multi_source) {
+static bool CanUseDictSurvivingJoin(const PhysicalHashJoin &op, bool build_side_multi_source) {
 	// external is safe here: the dictionary is an in-memory self-owned copy and the index is a plain row-store
 	// column, so a spill/repartition preserves both (unlike the pointer-embedding dict-emission/compressed-probe paths)
 	// a multi-source build (UNION ALL, CTE) can deliver a later chunk flat or as a different dictionary under the
@@ -698,20 +698,6 @@ static bool CanUseDictSurvivingJoin(const PhysicalHashJoin &op, const JoinHashTa
 	// the build subtree is fine: its second phase only ever delivers NULL-only probe columns, which the reserved
 	// NULL index of the owned dictionary encodes.
 	if (build_side_multi_source) {
-		return false;
-	}
-	// SINGLE joins need FlatVector::SetNull on unmatched rows; dictionary vectors cannot supply it
-	if (ht.join_type == JoinType::SINGLE) {
-		return false;
-	}
-	// LEFT may dispatch into NextUniqueLeftJoin, which gathers payload via ScanStructure::GatherResult and
-	// bypasses GatherRHS' dict branch; the narrowed slot would be read as native type and trip the gather type check.
-	if (ht.join_type == JoinType::LEFT) {
-		return false;
-	}
-	// OUTER fills unmatched-probe rows with CONSTANT_NULL (NextLeftJoin), mixing dict chunks with flat fill chunks;
-	// admitting it would re-emit a falsely global dictionary a downstream consumer cannot trust.
-	if (ht.join_type == JoinType::OUTER) {
 		return false;
 	}
 	if (op.rhs_output_columns.col_types.empty()) {
@@ -726,7 +712,7 @@ void HashJoinGlobalSinkState::PublishLayoutIfFirst(HashJoinLocalSinkState &lstat
 		const auto &build_types = lstate.hash_table->build_types;
 
 		shared_ptr<const DictSurvivingInfo> dict_info;
-		if (CanUseDictSurvivingJoin(op, *lstate.hash_table, build_side_multi_source)) {
+		if (CanUseDictSurvivingJoin(op, build_side_multi_source)) {
 			// Per-column width decision lives on the JHT (GetDictSurvivingIndexWidth); feed it each arriving vector.
 			// The dictionary a narrowed slot indexes into is created here, once, and handed to every thread with the
 			// layout: a later chunk may carry no dictionary at all (NULL-only), so no thread can pin it lazily.

@@ -180,7 +180,7 @@ NATION_2	1440
 NATION_3	1440
 NATION_4	1440
 
-# LEFT excluded: NextUniqueLeftJoin gathers outside GatherRHS; build_side_probe_side off keeps the dict side as build
+# LEFT preserves the upstream dictionary through NULL extension.
 statement ok
 SET disabled_optimizers='join_order,build_side_probe_side'
 
@@ -200,7 +200,7 @@ NO_MATCH	800
 statement ok
 SET disabled_optimizers='join_order'
 
-# FULL OUTER excluded: constant-NULL left-fill makes the output stream non-uniform
+# FULL OUTER preserves the dictionary in probe and build output.
 query II
 SELECT COALESCE(u.n_name, 'NO_MATCH') AS nm, COUNT(*) AS cnt
 FROM orders_miss o
@@ -214,7 +214,7 @@ NATION_3	1440
 NATION_4	1440
 NO_MATCH	800
 
-# SINGLE excluded: needs FlatVector::SetNull on unmatched rows, which a dictionary cannot supply
+# SINGLE selects the reserved NULL entry for unmatched rows.
 query I
 SELECT COUNT(*) FROM orders o
 WHERE o.ok < 10

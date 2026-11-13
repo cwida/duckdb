@@ -142,6 +142,22 @@ struct DictSurvivingInfo {
 	static LogicalType IndexType(uint8_t index_width);
 };
 
+//! Maps matched build rows to output positions; remaining output positions contain NULL.
+struct JoinBuildSelection {
+	JoinBuildSelection(const SelectionVector &rows, idx_t count)
+	    : JoinBuildSelection(rows, count, *FlatVector::IncrementalSelectionVector(), count) {
+	}
+	JoinBuildSelection(const SelectionVector &rows, idx_t match_count, const SelectionVector &output, idx_t count)
+	    : rows(rows), match_count(match_count), output(output), count(count) {
+		D_ASSERT(match_count <= count);
+	}
+
+	const SelectionVector &rows;
+	idx_t match_count;
+	const SelectionVector &output;
+	idx_t count;
+};
+
 class JoinHashTable {
 public:
 	using ValidityBytes = TemplatedValidityMask<uint8_t>;
@@ -251,10 +267,7 @@ public:
 	public:
 		void AdvancePointers();
 		void AdvancePointers(const SelectionVector &sel, idx_t sel_count);
-		void GatherResult(Vector &result, const SelectionVector &result_vector, const SelectionVector &sel_vector,
-		                  const idx_t count, const idx_t col_idx);
 		void GatherResult(Vector &result, const SelectionVector &sel_vector, const idx_t count, const idx_t col_idx);
-		void GatherResult(Vector &result, const idx_t count, const idx_t col_idx);
 		idx_t ResolvePredicates(DataChunk &keys, DataChunk &probe_data, SelectionVector &match_sel,
 		                        optional_ptr<SelectionVector> no_match_sel);
 	};
@@ -385,12 +398,14 @@ public:
 	void EmitDictVectors(const SelectionVector &build_sel, idx_t count, DataChunk &result, idx_t rhs_col_offset,
 	                     DictionaryOwnershipCache &dictionary_state) const;
 	//! Emit RHS dictionaries using selected row pointers.
-	void EmitDictVectors(const data_ptr_t *row_ptrs, const SelectionVector &ptr_sel, idx_t count, DataChunk &result,
+	void EmitDictVectors(const data_ptr_t *row_ptrs, const JoinBuildSelection &selection, DataChunk &result,
 	                     idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const;
 	//! Emit RHS output columns for matched rows row_ptrs[ptr_sel[0..count)] into result starting at
 	//! result column rhs_col_offset; routes through EmitDictVectors when use_dict_emission is active.
 	void GatherRHS(Vector &row_ptrs, const SelectionVector &ptr_sel, const idx_t count, DataChunk &result,
 	               idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const;
+	void GatherRHS(Vector &row_ptrs, const JoinBuildSelection &selection, DataChunk &result, idx_t rhs_col_offset,
+	               DictionaryOwnershipCache &dictionary_state) const;
 	//! Follow the chain pointer; when USE_DICT_EMISSION, resolves via aux_next_ptrs
 	template <bool USE_DICT_EMISSION>
 	inline data_ptr_t GetNextPointer(data_ptr_t row_ptr) const {
