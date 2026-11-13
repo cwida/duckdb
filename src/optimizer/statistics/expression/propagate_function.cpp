@@ -13,6 +13,16 @@ namespace duckdb {
 namespace {
 bool TryEvaluateAtConstants(ClientContext &context, const BoundFunctionExpression &func,
                             const vector<Value> &arg_values, Value &result) {
+	//! Early exit for DEFAULT_NULL_HANDLING functions if any input is NULL.
+	//! Bypasses TryEvaluateScalar to avoid O(N) vector materialization overhead for wide nested types.
+	if (func.Function().GetNullHandling() == FunctionNullHandling::DEFAULT_NULL_HANDLING) {
+		for (auto &arg : arg_values) {
+			if (arg.IsNull()) {
+				result = Value(func.GetReturnType());
+				return true;
+			}
+		}
+	}
 	vector<unique_ptr<Expression>> children;
 	children.reserve(arg_values.size());
 	for (auto &v : arg_values) {
