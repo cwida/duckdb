@@ -1,0 +1,145 @@
+# name: test/sql/parser/table_at_clause_prepared.test
+# description: Prepared parameters in a table AT clause are bound at EXECUTE
+# group: [parser]
+
+# No built in catalog supports time travel, so a bound AT clause ends at the catalog lookup with this error;
+# reaching it at EXECUTE shows the parameter was bound there
+
+statement ok
+CREATE TABLE tbl(i INTEGER)
+
+statement error
+SELECT * FROM tbl AT (VERSION => 42)
+----
+Catalog type does not support time travel
+
+statement error
+SELECT * FROM tbl AT (VERSION => 1 + 1)
+----
+Catalog type does not support time travel
+
+statement error
+PREPARE c AS SELECT * FROM tbl AT (VERSION => 1 + 1)
+----
+Catalog type does not support time travel
+
+statement ok
+PREPARE v AS SELECT * FROM tbl AT (VERSION => $1::BIGINT)
+
+statement error
+EXECUTE v(1)
+----
+Catalog type does not support time travel
+
+statement error
+EXECUTE v(2)
+----
+Catalog type does not support time travel
+
+statement error
+EXECUTE v(NULL)
+----
+Catalog type does not support time travel
+
+statement error
+EXECUTE v('abc')
+----
+<REGEX>:Conversion Error.*abc.*
+
+statement ok
+PREPARE ts AS SELECT * FROM tbl AT (TIMESTAMP => $1::TIMESTAMP)
+
+statement error
+EXECUTE ts('2020-01-01')
+----
+Catalog type does not support time travel
+
+statement error
+EXECUTE ts('2021-06-30 12:00:00')
+----
+Catalog type does not support time travel
+
+statement error
+EXECUTE ts(NULL)
+----
+Catalog type does not support time travel
+
+statement error
+EXECUTE ts('not a timestamp')
+----
+<REGEX>:Conversion Error.*not a timestamp.*
+
+statement ok
+PREPARE e AS SELECT * FROM tbl AT (VERSION => $1::BIGINT + 1)
+
+statement error
+EXECUTE e(1)
+----
+Catalog type does not support time travel
+
+statement error
+EXECUTE e(9223372036854775807)
+----
+<REGEX>:Out of Range Error.*
+
+statement ok
+PREPARE u AS SELECT * FROM tbl AT (VERSION => $1)
+
+statement error
+EXECUTE u(1)
+----
+Catalog type does not support time travel
+
+statement ok
+PREPARE n AS SELECT * FROM tbl AT (VERSION => $version::BIGINT)
+
+statement error
+EXECUTE n(version := 3)
+----
+Catalog type does not support time travel
+
+statement ok
+PREPARE s AS SELECT $1::BIGINT AS v, i FROM tbl AT (VERSION => $1::BIGINT)
+
+statement error
+EXECUTE s(1)
+----
+Catalog type does not support time travel
+
+statement ok
+PREPARE q AS SELECT * FROM (SELECT * FROM tbl AT (VERSION => $1::BIGINT)) sq WHERE i > $2::INTEGER
+
+statement error
+EXECUTE q(1, 0)
+----
+Catalog type does not support time travel
+
+statement ok
+CREATE VIEW vw AS SELECT * FROM tbl
+
+statement ok
+PREPARE w AS SELECT * FROM vw AT (VERSION => $1::BIGINT)
+
+statement error
+EXECUTE w(1)
+----
+Catalog type does not support time travel
+
+# binding stops at the parameter, so an error that needs the catalog also moves from PREPARE to EXECUTE
+statement ok
+PREPARE m AS SELECT * FROM missing AT (VERSION => $1::BIGINT)
+
+statement error
+EXECUTE m(1)
+----
+Catalog type does not support time travel
+
+statement error
+PREPARE col AS SELECT * FROM tbl AT (VERSION => i)
+----
+<REGEX>:Binder Error.*AT clause cannot contain column names.*
+
+statement error
+PREPARE colp AS SELECT * FROM tbl AT (VERSION => i + $1::BIGINT)
+----
+<REGEX>:Binder Error.*AT clause cannot contain column names.*

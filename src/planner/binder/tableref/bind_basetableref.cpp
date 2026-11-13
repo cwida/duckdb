@@ -114,6 +114,10 @@ unique_ptr<BoundAtClause> Binder::BindAtClause(optional_ptr<AtClause> at_clause)
 	}
 	ConstantBinder binder(*this, context, "AT clause");
 	auto expr = binder.Bind(at_clause->ExpressionMutable());
+	// The catalog lookup needs the value now, so a statement with a parameter here is bound again at EXECUTE.
+	if (expr->HasParameter()) {
+		throw ParameterNotResolvedException();
+	}
 	auto val = ExpressionExecutor::EvaluateScalar(context, *expr);
 	return make_uniq<BoundAtClause>(at_clause->Unit(), std::move(val));
 }
