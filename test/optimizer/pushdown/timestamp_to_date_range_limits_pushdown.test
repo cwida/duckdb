@@ -1,0 +1,56 @@
+# name: test/optimizer/pushdown/timestamp_to_date_range_limits_pushdown.test
+# description: Test timestamp to date comparisons with dates at and beyond the limits of the timestamp range
+# group: [pushdown]
+
+statement ok
+create table ts_lim(t timestamp);
+
+statement ok
+insert into ts_lim values (timestamp '294247-01-10 00:00:00'), (timestamp '294247-01-10 04:00:54.775806'), (timestamp '2024-01-01 10:00:00'), (timestamp '290309-12-22 (BC) 00:00:00'), (NULL);
+
+# the last day of the timestamp range: the day after it is not a timestamp
+query I
+select count(*) from ts_lim where cast(t as date) = date '294247-01-10';
+----
+2
+
+query I
+select count(*) from ts_lim where date '294247-01-10' = cast(t as date);
+----
+2
+
+query I
+select count(*) from ts_lim where cast(t as date) = date '294247-01-09';
+----
+0
+
+# dates outside the timestamp range
+query I
+select count(*) from ts_lim where cast(t as date) = date '1000000-01-01';
+----
+0
+
+query I
+select count(*) from ts_lim where cast(t as date) = date '290309-12-21 (BC)';
+----
+0
+
+# the first day of the timestamp range
+query I
+select count(*) from ts_lim where cast(t as date) = date '290309-12-22 (BC)';
+----
+1
+
+query I
+select count(*) from ts_lim where cast(t as date) = date '2024-01-01';
+----
+1
+
+query II
+select t, cast(t as date) = date '294247-01-10' from ts_lim order by t;
+----
+290309-12-22 (BC) 00:00:00	false
+2024-01-01 10:00:00	false
+294247-01-10 00:00:00	true
+294247-01-10 04:00:54.775806	true
+NULL	NULL
