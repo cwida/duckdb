@@ -1155,6 +1155,29 @@ bool ClientContext::IsInterrupted() const {
 	return state == ClientInterruptState::INTERRUPTED || (base_context && base_context->IsInterrupted());
 }
 
+void ClientContext::HandlePossibleInterrupt() const {
+	if (IsInterrupted() && !RegisteredStateHandlesInterrupt()) {
+		throw InterruptException();
+	}
+}
+
+bool ClientContext::RegisteredStateHandlesInterrupt() const {
+	// Loaded again seq_cst, even when the caller loaded it relaxed: the states then see what happened before the
+	// interrupt, e.g. the error the executor interrupts the query for (see Executor::HasError)
+	if (interrupt_state.load() == ClientInterruptState::INTERRUPTS_SUPPRESSED) {
+		return true;
+	}
+	// HandlePossibleInterrupt is const, as it is called where the query is only read
+	auto &self = const_cast<ClientContext &>(*this);
+	for (auto &state : context->GetRegisteredState().States()) {
+		if (state->OnInterrupt(self)) {
+			self.SuppressInterrupts();
+			return true;
+		}
+	}
+	return false;
+}
+
 void ClientContext::ClearInterrupt() {
 	interrupt_state = ClientInterruptState::NOT_INTERRUPTED;
 }
@@ -1168,9 +1191,7 @@ void ClientContext::InterruptCheck() const {
 	static constexpr uint32_t TIMEOUT_CHECK_INTERVAL = 256;
 	thread_local uint32_t timeout_check_counter = 0;
 
-	if (IsInterrupted()) {
-		throw InterruptException();
-	}
+	HandlePossibleInterrupt();
 	// Only check timeout every N calls to avoid expensive steady_clock::now() syscall
 	if (HasQueryDeadline() && ++timeout_check_counter % TIMEOUT_CHECK_INTERVAL == 0) {
 		BlockingInterruptCheck();
@@ -1178,10 +1199,8 @@ void ClientContext::InterruptCheck() const {
 }
 
 void ClientContext::BlockingInterruptCheck() const {
-	if (IsInterrupted()) {
-		throw InterruptException();
-	}
-	if (QueryDeadlinePassed()) {
+	HandlePossibleInterrupt();
+	if (QueryDeadlinePassed() && !RegisteredStateHandlesInterrupt()) {
 		throw InterruptException(QUERY_DEADLINE_ERROR);
 	}
 }

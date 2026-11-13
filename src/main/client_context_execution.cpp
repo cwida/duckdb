@@ -428,7 +428,7 @@ QueryResultState ClientContext::ExecuteTaskInternal(ClientContextLock &lock, Bas
 		// IsInterrupted() rather than InterruptCheck(): we must not enforce query_deadline here.
 		// Skip when the executor already has an error: ExecuteTask rethrows that with its original type.
 		if (IsInterrupted() && !active_query->executor->HasError()) {
-			throw InterruptException();
+			HandlePossibleInterrupt();
 		}
 		auto state = active_query->executor->ExecuteTask();
 		UpdateProgressInternal(state);
@@ -533,12 +533,7 @@ QueryResultState ClientContext::StartNextStatementInternal(ClientContextLock &lo
 
 unique_ptr<QueryResult> ClientContext::AdvanceStatementInternal(ClientContextLock &lock) {
 	// Checked before the finished statement is torn down, so a failure is reported against it
-	if (IsInterrupted()) {
-		throw InterruptException();
-	}
-	if (QueryDeadlinePassed()) {
-		throw InterruptException(QUERY_DEADLINE_ERROR);
-	}
+	BlockingInterruptCheck();
 	auto end_error = EndStatementInternal(lock, nullptr);
 	if (end_error.HasError()) {
 		// a state that fails to end the statement fails the query, the way the statement failing would

@@ -1162,6 +1162,61 @@ TEST_CASE("Test internal connections follow the interrupts of their base client"
 	}
 }
 
+struct InterruptHookState : public ClientContextState {
+	explicit InterruptHookState(bool handle_p) : handle(handle_p) {
+	}
+	bool OnInterrupt(ClientContext &context) override {
+		calls++;
+		return handle;
+	}
+	bool handle;
+	idx_t calls = 0;
+};
+
+TEST_CASE("Test a registered state can handle an interrupt instead of failing the query", "[api]") {
+	DuckDB db;
+	Connection con(db);
+	auto &context = *con.context;
+	auto &registered_state = context.context->GetRegisteredState();
+
+	SECTION("A handled interrupt does not fail the query") {
+		auto hook = registered_state.GetOrCreate<InterruptHookState>("interrupt_hook", true);
+		context.Interrupt();
+		// only acting on the interrupt gives the state the chance to handle it
+		REQUIRE(context.IsInterrupted());
+		REQUIRE(hook->calls == 0);
+		REQUIRE_NOTHROW(context.HandlePossibleInterrupt());
+		REQUIRE_NOTHROW(context.InterruptCheck());
+		// handling it suppresses further interrupts, so the state is not asked again
+		context.Interrupt();
+		REQUIRE_NOTHROW(context.HandlePossibleInterrupt());
+		REQUIRE(hook->calls == 1);
+		context.ClearInterrupt();
+		registered_state.Remove("interrupt_hook");
+	}
+
+	SECTION("A handled deadline does not fail the query") {
+		auto hook = registered_state.GetOrCreate<InterruptHookState>("interrupt_hook", true);
+		context.query_deadline = 1;
+		REQUIRE_NOTHROW(context.BlockingInterruptCheck());
+		REQUIRE_NOTHROW(context.BlockingInterruptCheck());
+		REQUIRE(hook->calls == 1);
+		context.query_deadline.SetInvalid();
+		context.ClearInterrupt();
+		registered_state.Remove("interrupt_hook");
+	}
+
+	SECTION("An interrupt that is not handled fails the query") {
+		auto hook = registered_state.GetOrCreate<InterruptHookState>("interrupt_hook", false);
+		context.Interrupt();
+		REQUIRE_THROWS(context.HandlePossibleInterrupt());
+		REQUIRE_THROWS(context.InterruptCheck());
+		REQUIRE(hook->calls > 0);
+		context.ClearInterrupt();
+		registered_state.Remove("interrupt_hook");
+	}
+}
+
 TEST_CASE("Test ExtractStatements error location", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
