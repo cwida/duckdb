@@ -35,6 +35,41 @@ SHOW TABLES FROM lake.s3tablescatalog.salesdemo.retail;
 widget_sales
 widget_view
 
+# Prepared SHOW FROM resolves the schema again after it is recreated.
+statement ok
+CREATE SCHEMA lake.recreated;
+
+statement ok
+CREATE SCHEMA lake.recreated.child;
+
+statement ok
+CREATE TABLE lake.recreated.child.old_table(i INTEGER);
+
+statement ok
+PREPARE list_recreated AS SHOW TABLES FROM lake.recreated.child;
+
+query I
+EXECUTE list_recreated;
+----
+old_table
+
+statement ok
+DROP SCHEMA lake.recreated.child CASCADE;
+
+statement ok
+CREATE SCHEMA lake.recreated.child;
+
+statement ok
+CREATE TABLE lake.recreated.child.new_table(i INTEGER);
+
+query I
+EXECUTE list_recreated;
+----
+new_table
+
+statement ok
+DROP SCHEMA lake.recreated CASCADE;
+
 query I
 SHOW TABLES FROM s3tablescatalog.salesdemo.retail;
 ----

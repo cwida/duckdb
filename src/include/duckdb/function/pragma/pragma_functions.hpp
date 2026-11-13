@@ -10,7 +10,6 @@
 
 #include "duckdb/function/pragma_function.hpp"
 #include "duckdb/function/built_in_functions.hpp"
-#include "duckdb/common/optional_idx.hpp"
 
 namespace duckdb {
 
@@ -22,7 +21,7 @@ struct PragmaFunctions {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
-string PragmaShowTables(ClientContext &context, const string &catalog = "", optional_idx schema_oid = optional_idx());
+string PragmaShowTables(const string &filter);
 string PragmaShowTablesExpanded();
 string PragmaShowDatabases();
 string PragmaShowVariables();

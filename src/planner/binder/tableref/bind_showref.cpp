@@ -214,8 +214,25 @@ BoundStatement Binder::BindDescribeTable(ShowRef &ref) {
 		      "ORDER BY all;";
 	} else if (lname == "\"tables\"") {
 		SetAlwaysRequireRebind();
-		sql = PragmaShowTables(context);
+		vector<string> schemas;
+		for (auto &entry : ClientData::Get(context).catalog_search_path->Get()) {
+			auto catalog = entry.GetCatalog();
+			if (catalog.empty()) {
+				catalog = DatabaseManager::TryGetDefaultDatabase(context);
+				if (catalog.empty()) {
+					continue;
+				}
+			}
+			auto schema = Catalog::GetSchema(context, catalog, entry.GetSchemaPath(), OnEntryNotFound::RETURN_NULL);
+			if (schema) {
+				schemas.push_back(StringUtil::Format("(database_name = %s AND schema_oid = %llu)",
+				                                     SQLString(schema->ParentCatalog().GetName().GetIdentifierName()),
+				                                     schema->oid));
+			}
+		}
+		sql = PragmaShowTables(schemas.empty() ? "false" : StringUtil::Join(schemas, " OR "));
 	} else if (ref.show_type == ShowType::SHOW_FROM) {
+		SetAlwaysRequireRebind();
 		auto schema_path = ref.qualified_name.Parent().Path();
 		Identifier catalog_name;
 		if (schema_path.size() == 1) {
@@ -243,7 +260,15 @@ BoundStatement Binder::BindDescribeTable(ShowRef &ref) {
 			catalog_name = schema_entry->ParentCatalog().GetName();
 			schema_oid = schema_entry->oid;
 		}
-		sql = PragmaShowTables(context, catalog_name.GetIdentifierName(), schema_oid);
+		vector<string> filters;
+		if (!catalog_name.empty()) {
+			filters.push_back(
+			    StringUtil::Format("lower(database_name) = lower(%s)", SQLString(catalog_name.GetIdentifierName())));
+		}
+		if (schema_oid.IsValid()) {
+			filters.push_back(StringUtil::Format("schema_oid = %llu", schema_oid.GetIndex()));
+		}
+		sql = PragmaShowTables(StringUtil::Join(filters, " AND "));
 	} else if (lname == "\"variables\"") {
 		sql = PragmaShowVariables();
 	} else if (lname == "__show_tables_expanded") {

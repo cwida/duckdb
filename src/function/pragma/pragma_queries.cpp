@@ -1,21 +1,14 @@
 #include "duckdb/common/assert.hpp"
-#include "duckdb/catalog/catalog_search_path.hpp"
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/pragma/pragma_functions.hpp"
-#include "duckdb/main/client_data.hpp"
 #include "duckdb/main/config.hpp"
-#include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/parser/parser.hpp"
-#include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/parser/statement/copy_statement.hpp"
 #include "duckdb/parser/statement/export_statement.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
-#include "duckdb/common/enums/on_entry_not_found.hpp"
-#include "duckdb/catalog/catalog.hpp"
-#include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 
 namespace duckdb {
 
@@ -23,35 +16,8 @@ static string PragmaTableInfo(ClientContext &context, const FunctionParameters &
 	return StringUtil::Format("SELECT * FROM pragma_table_info(%s);", SQLString(parameters.values[0].ToString()));
 }
 
-string PragmaShowTables(ClientContext &context, const string &database, optional_idx schema_oid) {
-	string where_clause = "";
-	vector<string> where_conditions;
-	if (!database.empty()) {
-		where_conditions.push_back(StringUtil::Format("lower(database_name) = lower(%s)", SQLString(database)));
-	}
-	if (schema_oid.IsValid()) {
-		where_conditions.push_back(StringUtil::Format("schema_oid = %llu", schema_oid.GetIndex()));
-	}
-	if (where_conditions.empty()) {
-		vector<string> schemas;
-		for (auto &entry : ClientData::Get(context).catalog_search_path->Get()) {
-			auto catalog = entry.GetCatalog();
-			if (catalog.empty()) {
-				catalog = DatabaseManager::TryGetDefaultDatabase(context);
-				if (catalog.empty()) {
-					continue;
-				}
-			}
-			auto schema = Catalog::GetSchema(context, catalog, entry.GetSchemaPath(), OnEntryNotFound::RETURN_NULL);
-			if (schema) {
-				schemas.push_back(StringUtil::Format("(database_name = %s AND schema_oid = %llu)",
-				                                     SQLString(schema->ParentCatalog().GetName().GetIdentifierName()),
-				                                     schema->oid));
-			}
-		}
-		where_conditions.push_back(schemas.empty() ? "false" : "(" + StringUtil::Join(schemas, " OR ") + ")");
-	}
-	where_clause = "WHERE " + StringUtil::Join(where_conditions, " AND ");
+string PragmaShowTables(const string &filter) {
+	auto where_clause = "WHERE " + filter;
 
 	// clang-format off
 	string query = R"EOF(
@@ -80,7 +46,7 @@ string PragmaShowTables(ClientContext &context, const string &database, optional
 }
 
 static string PragmaShowTables(ClientContext &context, const FunctionParameters &parameters) {
-	return PragmaShowTables(context);
+	return "SHOW TABLES";
 }
 
 string PragmaShowTablesExpanded() {
