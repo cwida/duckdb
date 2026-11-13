@@ -108,8 +108,8 @@ enum class PhysicalOperatorType : uint8_t {
 	EXPLAIN,
 	EXPLAIN_ANALYZE,
 	EMPTY_RESULT,
-	EXECUTE,
-	PREPARE,
+	// 70 was EXECUTE - keep the values of the operators after it
+	PREPARE = 71,
 	VACUUM,
 	EXPORT,
 	SET,

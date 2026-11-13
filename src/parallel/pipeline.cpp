@@ -28,6 +28,18 @@ static shared_ptr<GlobalSourceState> ToSharedSourceState(unique_ptr<GlobalSource
 	return shared_ptr<GlobalSourceState>(std::move(state));
 }
 
+//! The chunks per PROCESS_PARTIAL slice on this thread, 0 for PARTIAL_CHUNK_COUNT. Trivially destructible, so no
+//! thread_local destructor is registered
+static thread_local idx_t partial_chunk_bound = 0; // NOLINT
+
+PipelineTask::PartialChunkBound::PartialChunkBound(idx_t chunk_count) : previous(partial_chunk_bound) {
+	partial_chunk_bound = chunk_count;
+}
+
+PipelineTask::PartialChunkBound::~PartialChunkBound() {
+	partial_chunk_bound = previous;
+}
+
 PipelineTask::PipelineTask(Pipeline &pipeline_p, shared_ptr<Event> event_p)
     : ExecutorTask(pipeline_p.executor, std::move(event_p)), pipeline(pipeline_p) {
 	auto sink = pipeline.GetSink();
@@ -45,7 +57,7 @@ TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
 	pipeline_executor->SetTaskForInterrupts(shared_from_this());
 
 	if (mode == TaskExecutionMode::PROCESS_PARTIAL) {
-		auto res = pipeline_executor->Execute(PARTIAL_CHUNK_COUNT);
+		auto res = pipeline_executor->Execute(PartialChunkCount());
 
 		switch (res) {
 		case PipelineExecuteResult::NOT_FINISHED:
@@ -71,6 +83,16 @@ TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
 	pipeline_executor.reset();
 	event->FinishTask();
 	return TaskExecutionResult::TASK_FINISHED;
+}
+
+idx_t PipelineTask::PartialChunkCount() const {
+	// The bound belongs to the consumer of a streaming result: only the pipeline that feeds its buffer can hand it
+	// a unit to pop, so only that pipeline returns to it early. The other pipelines keep the full slice
+	auto sink = pipeline.GetSink();
+	if (partial_chunk_bound && sink && sink->type == PhysicalOperatorType::RESULT_COLLECTOR) {
+		return partial_chunk_bound;
+	}
+	return PARTIAL_CHUNK_COUNT;
 }
 
 Pipeline::Pipeline(Executor &executor_p)

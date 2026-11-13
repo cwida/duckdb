@@ -8,7 +8,19 @@ copy (select 1 as one, repeat('a', 40000000) r from generate_series(1,3)) to '{T
 statement error
 create table t as FROM '{TEST_DIR}/bigval.csv'
 ----
-Possible Solution: Change the maximum length size, e.g., max_line_size=31999996
+Possible Solution: Change the maximum length size, e.g., max_line_size=33550332
+
+# a maximum line size just above its default keeps the default buffer, the suggestion still names that buffer
+statement error
+create table t as FROM read_csv('{TEST_DIR}/bigval.csv', max_line_size = 2000001)
+----
+Possible Solution: Change the maximum length size, e.g., max_line_size=33550332
+
+# sixteen lines of this maximum line size exceed the default buffer by 16 bytes, so the buffer grows to them
+statement error
+create table t as FROM read_csv('{TEST_DIR}/bigval.csv', max_line_size = 2096897)
+----
+Possible Solution: Change the maximum length size, e.g., max_line_size=33550348
 
 statement ok
 create table t as FROM read_csv('{TEST_DIR}/bigval.csv', max_line_size = 40000010)

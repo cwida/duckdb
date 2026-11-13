@@ -49,9 +49,21 @@ enum class ExternalInputEventState : uint8_t {
 };
 
 class PipelineTask : public ExecutorTask {
+public:
 	static constexpr const idx_t PARTIAL_CHUNK_COUNT = 50;
 
-public:
+	//! Bounds the chunks per PROCESS_PARTIAL slice of the result collector pipeline tasks the constructing thread
+	//! executes, for the lifetime of the scope. Other pipelines, and any thread outside a scope, process
+	//! PARTIAL_CHUNK_COUNT chunks per slice
+	class PartialChunkBound {
+	public:
+		explicit PartialChunkBound(idx_t chunk_count);
+		~PartialChunkBound();
+
+	private:
+		idx_t previous;
+	};
+
 	explicit PipelineTask(Pipeline &pipeline_p, shared_ptr<Event> event_p);
 
 	Pipeline &pipeline;
@@ -64,6 +76,10 @@ public:
 
 public:
 	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override;
+
+private:
+	//! The chunks this task's PROCESS_PARTIAL slice processes on the current thread
+	idx_t PartialChunkCount() const;
 };
 
 class PipelineBuildState {

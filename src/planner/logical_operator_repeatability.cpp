@@ -105,7 +105,6 @@ static LogicalOperatorRepeatability ClassifyOperatorType(LogicalOperator &op) {
 	case LogicalOperatorType::LOGICAL_CREATE_TRIGGER:
 	case LogicalOperatorType::LOGICAL_EXPLAIN:
 	case LogicalOperatorType::LOGICAL_PREPARE:
-	case LogicalOperatorType::LOGICAL_EXECUTE:
 	case LogicalOperatorType::LOGICAL_EXPORT:
 	case LogicalOperatorType::LOGICAL_VACUUM:
 	case LogicalOperatorType::LOGICAL_SET:
