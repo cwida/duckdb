@@ -116,16 +116,6 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformCreateExtensionReposito
 }
 
 // carlopi.github.io: the words joined back into the host name
-Identifier PEGTransformerFactory::TransformExtensionRepositoryHostName(PEGTransformer &transformer,
-                                                                       const Identifier &col_id,
-                                                                       const vector<string> &dot_col_label) {
-	auto name = col_id.GetIdentifierName();
-	for (auto &label : dot_col_label) {
-		name += "." + label;
-	}
-	return Identifier(name);
-}
-
 // CREATE EXTENSION REPOSITORY <name>: the host names the prefix when the statement runs
 unique_ptr<SQLStatement> PEGTransformerFactory::TransformCreateExtensionRepositoryFromHostStmt(
     PEGTransformer &transformer, const optional<bool> &or_replace, const optional<bool> &if_not_exists,

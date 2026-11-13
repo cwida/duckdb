@@ -1102,13 +1102,13 @@ class UseGramPreviewEmitter:
 
     def direct_matcher_cpp_type(self, rule_name):
         matcher = self.matcher_overrides[rule_name].matcher
-        if matcher in ("identifier", "reserved_identifier"):
+        if matcher in ("identifier", "reserved_identifier", "dotted_name"):
             return "Identifier"
         return self.cpp_type(rule_name)
 
     def direct_matcher_value_expr(self, rule_name, parse_expr):
         matcher = self.matcher_overrides[rule_name].matcher
-        if matcher in ("identifier", "reserved_identifier"):
+        if matcher in ("identifier", "reserved_identifier", "dotted_name"):
             return f"{parse_expr}.Cast<IdentifierParseResult>().identifier"
         return self.matcher_transform_expr(rule_name, parse_expr)
 
@@ -1116,6 +1116,7 @@ class UseGramPreviewEmitter:
         return self.matcher_overrides[rule_name].matcher in (
             "identifier",
             "reserved_identifier",
+            "dotted_name",
         )
 
     def direct_matcher_vector_push_expr(self, rule_name, var_name):
@@ -1574,7 +1575,7 @@ class UseGramPreviewEmitter:
             return f"TransformNumberLiteral(transformer, {parse_expr})"
         if matcher in ("operator", "all_operators"):
             return f"{parse_expr}.Cast<OperatorParseResult>().operator_token"
-        if matcher in ("identifier", "identifier_string"):
+        if matcher in ("identifier", "identifier_string", "dotted_name"):
             return f"{parse_expr}.Cast<IdentifierParseResult>().identifier.GetIdentifierName()"
         raise RuleNotPlannable(f"unsupported matcher override: {matcher}")
 
@@ -1590,6 +1591,8 @@ def matcher_override_expr(rule_name, override):
         return "make_uniq<ReservedIdentifierMatcher>(SuggestionState::SUGGEST_VARIABLE, keyword_helper)"
     if matcher == "number_literal":
         return "make_uniq<NumberLiteralMatcher>()"
+    if matcher == "dotted_name":
+        return "make_uniq<DottedNameMatcher>()"
     if matcher == "string_literal":
         return "make_uniq<StringLiteralMatcher>()"
     if matcher == "operator":

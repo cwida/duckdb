@@ -1,6 +1,7 @@
 #include "duckdb/parser/peg/matcher/arithmetic_operator_matcher.hpp"
 #include "duckdb/parser/peg/matcher/choice_matcher.hpp"
 #include "duckdb/parser/peg/matcher/end_of_input_matcher.hpp"
+#include "duckdb/parser/peg/matcher/dotted_name_matcher.hpp"
 #include "duckdb/parser/peg/matcher/identifier_matcher.hpp"
 #include "duckdb/parser/peg/matcher/keyword_matcher.hpp"
 #include "duckdb/parser/peg/matcher/list_matcher.hpp"

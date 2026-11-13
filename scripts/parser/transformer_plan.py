@@ -227,7 +227,7 @@ class MatcherOverride:
     matcher: str
 
     def is_identifier(self):
-        return self.matcher in ("identifier", "reserved_identifier")
+        return self.matcher in ("identifier", "reserved_identifier", "dotted_name")
 
     def is_terminal(self):
         return self.matcher in (

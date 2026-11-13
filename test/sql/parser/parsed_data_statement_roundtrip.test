@@ -112,6 +112,11 @@ CREATE EXTENSION REPOSITORY IF NOT EXISTS "parsed-data.example"
 ----
 <REGEX>:.*
 
+statement error
+CREATE EXTENSION REPOSITORY IF NOT EXISTS parsed-data.example
+----
+<REGEX>:.*
+
 statement ok
 RESET autoload_known_extensions
 
