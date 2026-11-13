@@ -1,0 +1,19 @@
+# name: test/sql/types/decimal/decimal_case_coalesce_warning.test
+# description: Warn when CASE or COALESCE reduces decimal scale
+# group: [decimal]
+
+statement ok
+SET enable_logging=true;
+
+statement ok
+SET warnings_as_errors=true;
+
+statement error
+SELECT COALESCE(NULL::DECIMAL(38,0), 1.5::DECIMAL(38,20));
+----
+<REGEX>:.*Potential loss of decimal precision while resolving a COALESCE expression.*
+
+statement error
+SELECT CASE WHEN true THEN 1.5::DECIMAL(38,20) ELSE NULL::DECIMAL(38,0) END;
+----
+<REGEX>:.*Potential loss of decimal precision while resolving a CASE expression.*

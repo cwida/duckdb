@@ -14,8 +14,26 @@
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/function/function_binder.hpp"
+#include "duckdb/logging/logger.hpp"
 
 namespace duckdb {
+
+static bool WarnCoalesceDecimalScaleReduction(ClientContext &context, const LogicalType &source_type,
+                                              const LogicalType &target_type) {
+	if (source_type.id() != LogicalTypeId::DECIMAL || target_type.id() != LogicalTypeId::DECIMAL) {
+		return false;
+	}
+	auto source_scale = DecimalType::GetScale(source_type);
+	auto target_scale = DecimalType::GetScale(target_type);
+	if (source_scale <= target_scale) {
+		return false;
+	}
+	DUCKDB_LOG_WARNING(context,
+	                   "Potential loss of decimal precision while resolving a COALESCE expression: type %s is being "
+	                   "cast to %s, reducing the scale from %d to %d. This may cause values to be rounded.",
+	                   source_type.ToString(), target_type.ToString(), source_scale, target_scale);
+	return true;
+}
 
 LogicalType ExpressionBinder::ResolveNotType(OperatorExpression &op, vector<unique_ptr<Expression>> &children) {
 	// NOT expression, cast child to BOOLEAN
@@ -54,7 +72,14 @@ LogicalType ExpressionBinder::ResolveCoalesceType(OperatorExpression &op, vector
 	}
 
 	// cast all children to the same type
+	bool warned_about_scale_reduction = false;
 	for (auto &child : children) {
+		if (!is_in_operator) {
+			if (!warned_about_scale_reduction) {
+				warned_about_scale_reduction = WarnCoalesceDecimalScaleReduction(
+				    context, ExpressionBinder::GetExpressionReturnType(*child), max_type);
+			}
+		}
 		child = BoundCastExpression::AddCastToType(context, std::move(child), max_type);
 		if (is_in_operator) {
 			// If it's IN/NOT_IN operator, push collation functions.
