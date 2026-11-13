@@ -1,0 +1,21 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 73552f5..1fbf4a3 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -9,6 +9,7 @@ project(${TARGET_NAME}_project)
+ set(CMAKE_CXX_STANDARD 20)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
++set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+ 
+ # DUCKDB_VERSION is passed down as an env var to Vortex which
+ # in turn builds against the respective version. It is mandatory 
+@@ -46,7 +47,7 @@ if(EXISTS "/.dockerenv")
+     find_program(YUM_EXEC yum)
+     if(YUM_EXEC AND NOT INSTALL_SUCCESS)
+         execute_process(
+-            COMMAND yum install -y clang-devel clang
++            COMMAND sh -c "yum install -y clang-devel-$(rpm -q --qf '%{VERSION}-%{RELEASE}' clang) || yum install -y clang-devel clang"
+             RESULT_VARIABLE YUM_RESULT
+         )
+         if(YUM_RESULT EQUAL 0)
