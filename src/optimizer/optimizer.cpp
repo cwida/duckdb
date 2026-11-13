@@ -26,6 +26,7 @@
 #include "duckdb/optimizer/join_filter_pushdown_optimizer.hpp"
 #include "duckdb/optimizer/join_order/join_order_optimizer.hpp"
 #include "duckdb/optimizer/limit_pushdown.hpp"
+#include "duckdb/optimizer/mark_join_to_semi.hpp"
 #include "duckdb/optimizer/regex_range_filter.hpp"
 #include "duckdb/optimizer/remove_duplicate_groups.hpp"
 #include "duckdb/optimizer/remove_redundant_order.hpp"
@@ -472,6 +473,20 @@ void Optimizer::RunBuiltInOptimizers() {
 		MultiStageAggregateRewriter costed_rewriter(*this, AggregateRewritePolicy::COST_BASED, false, statistics_map);
 		costed_rewriter.VisitOperator(plan);
 		if (costed_rewriter.WasChanged()) {
+			StatisticsPropagator propagator(*this, plan);
+			propagator.PropagateStatistics(plan);
+			statistics_map = propagator.GetStatisticsMap();
+			removed_expressions |= propagator.HasRemovedExpressions();
+		}
+		// convert MARK joins that are only consumed by the filter above them into SEMI/ANTI joins. FilterPushdown
+		// does this as well, but unused columns have been removed by now, so marks that were still referenced by a
+		// dead projection then can be converted here
+		bool converted_mark_joins = false;
+		RunOptimizer(OptimizerType::MARK_JOIN_TO_SEMI, [&]() {
+			MarkJoinToSemi mark_join_to_semi(*this);
+			converted_mark_joins = mark_join_to_semi.Optimize(plan);
+		});
+		if (converted_mark_joins) {
 			StatisticsPropagator propagator(*this, plan);
 			propagator.PropagateStatistics(plan);
 			statistics_map = propagator.GetStatisticsMap();

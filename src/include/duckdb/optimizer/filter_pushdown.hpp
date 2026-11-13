@@ -14,6 +14,7 @@
 
 namespace duckdb {
 
+class LogicalComparisonJoin;
 class LogicalGet;
 class LogicalWindow;
 class Optimizer;
@@ -31,6 +32,9 @@ public:
 	ClientContext &GetContext();
 
 	void CheckMarkToSemi(LogicalOperator &op, const unordered_set<TableIndex> &table_bindings);
+	//! Turns the null-safe equalities of a SEMI join that was a MARK join into regular equalities where a key is
+	//! known not to be NULL
+	static void SimplifyNullSafeSemiJoinConditions(ClientContext &context, LogicalComparisonJoin &join);
 
 	//! Whether a filter carrying a barrier may be pushed through this operator - i.e. whether the operator is
 	//! guaranteed not to remove any rows. A barred expression must never be evaluated on rows that an operator below
