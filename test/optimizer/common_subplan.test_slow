@@ -123,13 +123,13 @@ select distinct range from range(10)
 union all
 select distinct range from range(10)
 union all
-select range % 2 as range from (select distinct range from range(10)) group by range
+select range % 2 as range from (select distinct range from range(10)) group by range % 2
 union all
-select range % 2 as range from (select distinct range from range(10)) group by range
+select range % 2 as range from (select distinct range from range(10)) group by range % 2
 union all
-select count(*) from (select range % 2 as range from (select distinct range from range(10)) group by range)
+select count(*) from (select range % 2 as range from (select distinct range from range(10)) group by range % 2)
 union all
-select count(*) from (select range % 2 as range from (select distinct range from range(10)) group by range)
+select count(*) from (select range % 2 as range from (select distinct range from range(10)) group by range % 2)
 ----
 logical_opt	<REGEX>:(?:.*CTE){3}.*(?:.*CTE_SCAN){8}.*
 

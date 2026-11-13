@@ -1,0 +1,673 @@
+# name: test/optimizer/redundant_distinct.test
+# description: A DISTINCT or GROUP BY without aggregate functions over an input that is already distinct on its columns is removed
+# group: [optimizer]
+
+# A DISTINCT / GROUP BY without aggregate functions is planned as an aggregate that only has groups: the plan pins
+# count the `─ Aggregate ─` boxes.
+# l / r: duplicate and NULL keys; pk: PRIMARY KEY (c repeats); cpk: composite PRIMARY KEY (a, b), a alone repeats;
+# un: UNIQUE NOT NULL; dblx: DOUBLE with NaN, 0.0 / -0.0, NULLs; rs: NOCASE strings; rv: binary strings
+statement ok
+CREATE TABLE l(k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO l VALUES (1, 10), (1, 11), (2, 20), (3, 30), (NULL, 40), (NULL, 41), (4, 40);
+
+statement ok
+CREATE TABLE r(k INTEGER, c INTEGER);
+
+statement ok
+INSERT INTO r VALUES (1, 1), (1, 1), (1, 2), (2, 5), (NULL, 7), (NULL, 7), (5, 9);
+
+statement ok
+CREATE TABLE pk(k INTEGER PRIMARY KEY, c INTEGER);
+
+statement ok
+INSERT INTO pk VALUES (1, 1), (2, 2), (3, 3), (4, 3), (5, 5);
+
+statement ok
+CREATE TABLE cpk(a INTEGER, b INTEGER, c INTEGER, PRIMARY KEY (a, b));
+
+statement ok
+INSERT INTO cpk VALUES (1, 10, 0), (1, 11, 0), (2, 20, 0), (5, 2, 0);
+
+statement ok
+CREATE TABLE un(k INTEGER UNIQUE NOT NULL, c INTEGER);
+
+statement ok
+INSERT INTO un VALUES (1, 1), (2, 2), (4, 4);
+
+statement ok
+CREATE TABLE dblx(d DOUBLE);
+
+statement ok
+INSERT INTO dblx VALUES ('nan'), ('nan'), (0.0), (-0.0), (1.5), (1.5), (NULL), (NULL), ('inf');
+
+statement ok
+CREATE TABLE rs(s VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO rs VALUES ('a'), ('A'), ('B'), ('b'), (NULL), (NULL);
+
+statement ok
+CREATE TABLE rv(s VARCHAR);
+
+statement ok
+INSERT INTO rv VALUES ('a'), ('A'), ('a'), ('B'), (NULL), (NULL);
+
+statement ok
+SET explain_output = 'optimized_only';
+
+# ---------------------------------------------------------------------------------------------------------------
+# 1. the duplicate elimination is removed
+# ---------------------------------------------------------------------------------------------------------------
+
+statement ok
+RESET disabled_optimizers;
+
+# the DISTINCT over a GROUP BY key:
+# exactly one aggregate is left
+query II
+EXPLAIN SELECT DISTINCT k FROM (SELECT k, count(*) FROM r GROUP BY k);
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT DISTINCT k FROM (SELECT k, count(*) FROM r GROUP BY k);
+----
+logical_opt	<!REGEX>:(?s).*─ Aggregate ─.*─ Aggregate ─.*
+
+# UNIQUE NOT NULL, a composite PRIMARY KEY with all its columns; through a filter and a sample
+query II
+EXPLAIN SELECT DISTINCT k FROM un;
+----
+logical_opt	<!REGEX>:(?s).*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT DISTINCT a, b FROM cpk;
+----
+logical_opt	<!REGEX>:(?s).*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT DISTINCT k FROM pk WHERE c > 1;
+----
+logical_opt	<!REGEX>:(?s).*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT DISTINCT k FROM pk USING SAMPLE 50 PERCENT (bernoulli, 1);
+----
+logical_opt	<!REGEX>:(?s).*─ Aggregate ─.*
+
+# the preserved side of a SINGLE join (a scalar subquery that may not return several rows) keeps its key: only
+# the inner DISTINCT is left
+query II
+EXPLAIN SELECT DISTINCT k, (SELECT c FROM pk WHERE pk.k = d.k) FROM (SELECT DISTINCT k FROM r) d;
+----
+logical_opt	<REGEX>:(?s).*Join Type: SINGLE.*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT DISTINCT k, (SELECT c FROM pk WHERE pk.k = d.k) FROM (SELECT DISTINCT k FROM r) d;
+----
+logical_opt	<!REGEX>:(?s).*─ Aggregate ─.*─ Aggregate ─.*
+
+# the right side of an INNER join against a key-unique left side keeps its key
+query II
+EXPLAIN SELECT DISTINCT d.k FROM pk p JOIN (SELECT DISTINCT k FROM r) d ON p.k = d.k;
+----
+logical_opt	<!REGEX>:(?s).*─ Aggregate ─.*─ Aggregate ─.*
+
+# ---------------------------------------------------------------------------------------------------------------
+# 2. with the optimizer disabled the aggregates are back
+# ---------------------------------------------------------------------------------------------------------------
+
+statement ok
+SET disabled_optimizers = 'redundant_distinct';
+
+query II
+EXPLAIN SELECT DISTINCT k FROM un;
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT DISTINCT k FROM (SELECT k, count(*) FROM r GROUP BY k);
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*─ Aggregate ─.*
+
+# ---------------------------------------------------------------------------------------------------------------
+# 3. not removed. A removed duplicate elimination replaces one `─ Aggregate ─` box by a projection, so "the aggregate is
+#    still there" (one box where the query has one, two where it has two) fails if it is removed.
+# ---------------------------------------------------------------------------------------------------------------
+
+statement ok
+RESET disabled_optimizers;
+
+
+
+# two grouping sets over a key emit every k twice: the aggregate stays; sibling: the single set goes
+query II
+EXPLAIN SELECT k, c FROM pk GROUP BY GROUPING SETS ((k), (k, c));
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT k, c FROM pk GROUP BY k, c;
+----
+logical_opt	<!REGEX>:(?s).*─ Aggregate ─.*
+
+# a group that is an expression of the key is not a key (k // 2 collides); sibling: the key itself
+query II
+EXPLAIN SELECT k // 2 FROM pk GROUP BY k // 2;
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT k FROM pk GROUP BY k;
+----
+logical_opt	<!REGEX>:(?s).*─ Aggregate ─.*
+
+# half of a composite key, a non-key column of a keyed table, a table function (siblings: section 1)
+query II
+EXPLAIN SELECT DISTINCT a FROM cpk;
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT DISTINCT c FROM pk;
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT DISTINCT i FROM range(5) t(i);
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*
+
+# a GROUPING() function next to the single grouping set: no key, both aggregates stay
+query II
+EXPLAIN SELECT DISTINCT k FROM (SELECT k, GROUPING(k) AS g FROM r GROUP BY k);
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*─ Aggregate ─.*
+
+# a LEFT join against a side that is not key-unique duplicates the left keys ...
+query II
+EXPLAIN SELECT DISTINCT p.k FROM pk p LEFT JOIN r ON p.k = r.k;
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*
+
+# ... the null-extended side of a LEFT join never keeps its keys (two unmatched pk rows give two NULLs); the INNER
+# sibling is in section 1 ...
+query II
+EXPLAIN SELECT DISTINCT d.k FROM pk p LEFT JOIN (SELECT DISTINCT k FROM r) d ON p.k = d.k;
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*Join Type: LEFT.*─ Aggregate ─.*
+
+# ... nor does any side of a FULL join
+query II
+EXPLAIN SELECT DISTINCT p.k FROM pk p FULL JOIN (SELECT DISTINCT k FROM r) d ON p.k = d.k;
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*Join Type: FULL.*─ Aggregate ─.*
+
+# an INNER join keeps a side's keys only through plain-column equalities: an expression key, an inequality
+# (sensitive: pk 1 is below 2 and 5) ...
+query II
+EXPLAIN SELECT DISTINCT p.k FROM pk p JOIN (SELECT DISTINCT k FROM r) d ON p.k = d.k + 1;
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*Join Type: INNER.*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT DISTINCT p.k FROM pk p JOIN (SELECT DISTINCT k FROM r) d ON p.k < d.k;
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*Join Type: INNER.*─ Aggregate ─.*
+
+# ... sibling: the plain equality keeps pk's key, only the inner DISTINCT is left
+query II
+EXPLAIN SELECT DISTINCT p.k FROM pk p JOIN (SELECT DISTINCT k FROM r) d ON p.k = d.k;
+----
+logical_opt	<!REGEX>:(?s).*─ Aggregate ─.*─ Aggregate ─.*
+
+# an AsOf join proves nothing
+query II
+EXPLAIN SELECT DISTINCT p.k FROM pk p ASOF JOIN (SELECT DISTINCT k FROM r) d ON p.k >= d.k;
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*─ Asof Join ─.*─ Aggregate ─.*
+
+# a cross product duplicates the keys
+query II
+EXPLAIN SELECT DISTINCT p.k FROM pk p, (SELECT 1 UNION ALL SELECT 2) x;
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*─ Cross Product ─.*
+
+# ---------------------------------------------------------------------------------------------------------------
+# 4. results ("sensitive": a removed aggregate would
+#    change the rows)
+# ---------------------------------------------------------------------------------------------------------------
+
+# key sources
+query I
+SELECT DISTINCT k FROM un ORDER BY ALL;
+----
+1
+2
+4
+
+query II
+SELECT DISTINCT a, b FROM cpk ORDER BY ALL;
+----
+1	10
+1	11
+2	20
+5	2
+
+# sensitive: cpk.a = 1 twice, pk.c = 3 twice
+query I
+SELECT DISTINCT a FROM cpk ORDER BY ALL;
+----
+1
+2
+5
+
+query I
+SELECT DISTINCT c FROM pk ORDER BY ALL;
+----
+1
+2
+3
+5
+
+query I
+SELECT DISTINCT k FROM (SELECT k, count(*) FROM r GROUP BY k) ORDER BY ALL;
+----
+1
+2
+5
+NULL
+
+query I
+SELECT DISTINCT k FROM (SELECT k, GROUPING(k) AS g FROM r GROUP BY k) ORDER BY ALL;
+----
+1
+2
+5
+NULL
+
+# two grouping sets (every k once per grouping set), an expression of a key (5 keys, 3 groups)
+query II
+SELECT k, c FROM pk GROUP BY GROUPING SETS ((k), (k, c)) ORDER BY ALL;
+----
+1	1
+1	NULL
+2	2
+2	NULL
+3	3
+3	NULL
+4	3
+4	NULL
+5	5
+5	NULL
+
+query I
+SELECT k // 2 FROM pk GROUP BY k // 2 ORDER BY ALL;
+----
+0
+1
+2
+
+# join arms (sensitive: LEFT against r repeats pk 1; the LEFT join's right side has two NULL rows; pk 1 < 2 and 5;
+# the cross product doubles every key)
+query I
+SELECT DISTINCT p.k FROM pk p LEFT JOIN r ON p.k = r.k ORDER BY ALL;
+----
+1
+2
+3
+4
+5
+
+query I
+SELECT DISTINCT d.k FROM pk p LEFT JOIN (SELECT DISTINCT k FROM r) d ON p.k = d.k ORDER BY ALL;
+----
+1
+2
+5
+NULL
+
+query I
+SELECT DISTINCT d.k FROM pk p JOIN (SELECT DISTINCT k FROM r) d ON p.k = d.k ORDER BY ALL;
+----
+1
+2
+5
+
+query I
+SELECT DISTINCT p.k FROM pk p FULL JOIN (SELECT DISTINCT k FROM r) d ON p.k = d.k ORDER BY ALL;
+----
+1
+2
+3
+4
+5
+NULL
+
+query I
+SELECT DISTINCT p.k FROM pk p JOIN (SELECT DISTINCT k FROM r) d ON p.k = d.k + 1 ORDER BY ALL;
+----
+2
+3
+
+query I
+SELECT DISTINCT p.k FROM pk p JOIN (SELECT DISTINCT k FROM r) d ON p.k < d.k ORDER BY ALL;
+----
+1
+2
+3
+4
+
+query I
+SELECT DISTINCT p.k FROM pk p ASOF JOIN (SELECT DISTINCT k FROM r) d ON p.k >= d.k ORDER BY ALL;
+----
+1
+2
+3
+4
+5
+
+query I
+SELECT DISTINCT p.k FROM pk p, (SELECT 1 UNION ALL SELECT 2) x ORDER BY ALL;
+----
+1
+2
+3
+4
+5
+
+query II
+SELECT DISTINCT k, (SELECT c FROM pk WHERE pk.k = d.k) FROM (SELECT DISTINCT k FROM r) d ORDER BY ALL;
+----
+1	1
+2	2
+5	5
+NULL	NULL
+
+# aggregates over a duplicate elimination: a window or a limit in between
+query I
+SELECT max(rn) FROM (SELECT row_number() OVER () AS rn FROM (SELECT k, c FROM r GROUP BY k, c));
+----
+5
+
+query II
+SELECT k, min(c) FROM (SELECT k, c FROM r GROUP BY k, c ORDER BY k, c LIMIT 3) GROUP BY k ORDER BY ALL;
+----
+1	1
+2	5
+
+# a ROLLUP below (its subtotal rows carry c = NULL)
+query IT
+SELECT k, bool_and(c IS NOT NULL) FROM (SELECT k, c FROM r GROUP BY ROLLUP (k, c)) GROUP BY k ORDER BY ALL;
+----
+1	false
+2	false
+5	false
+NULL	false
+
+query II
+SELECT k, max(c) FROM (SELECT k, c, count(*) AS n FROM r GROUP BY k, c) GROUP BY k ORDER BY ALL;
+----
+1	2
+2	5
+5	9
+NULL	7
+
+# a ROLLUP above a duplicate elimination
+query II
+SELECT k, min(c) FROM (SELECT k, c FROM r GROUP BY k, c) GROUP BY ROLLUP (k) ORDER BY ALL;
+----
+1	1
+2	5
+5	9
+NULL	1
+NULL	7
+
+# aggregates that count duplicates over a duplicate elimination
+query III
+SELECT k, min(c), count(*) FROM (SELECT k, c FROM r GROUP BY k, c) GROUP BY k ORDER BY ALL;
+----
+1	1	2
+2	5	1
+5	9	1
+NULL	7	1
+
+query ITT
+SELECT k, min(c, 2), max(c, 2) FROM (SELECT k, c FROM r GROUP BY k, c) GROUP BY k ORDER BY ALL;
+----
+1	[1, 2]	[2, 1]
+2	[5]	[5]
+5	[9]	[9]
+NULL	[7]	[7]
+
+query IT
+SELECT k, min(DISTINCT c, 2) FROM r GROUP BY k ORDER BY ALL;
+----
+1	[1, 2]
+2	[5]
+5	[9]
+NULL	[7]
+
+# aggregates that ignore duplicates over a duplicate elimination
+query ITII
+SELECT k, bool_or(c > 5), bit_and(c), bit_or(c) FROM (SELECT k, c FROM r GROUP BY k, c) GROUP BY k ORDER BY ALL;
+----
+1	false	0	3
+2	false	5	5
+5	true	9	9
+NULL	true	7	7
+
+query III
+SELECT k, sum(DISTINCT c), count(DISTINCT c) FROM (SELECT k, c FROM r GROUP BY k, c) GROUP BY k ORDER BY ALL;
+----
+1	3	2
+2	5	1
+5	9	1
+NULL	7	1
+
+# volatile filters and groups
+query II
+SELECT k, max(c) FROM (SELECT k, c FROM (SELECT k, c FROM r GROUP BY k, c) WHERE random() < 2) GROUP BY k ORDER BY ALL;
+----
+1	2
+2	5
+5	9
+NULL	7
+
+query I
+SELECT max(x) FROM (SELECT k + (random() * 0)::INTEGER AS x FROM r GROUP BY ALL);
+----
+5
+
+# DISTINCT ON with a payload column over a key
+query II
+SELECT DISTINCT ON (k) k, c FROM pk ORDER BY ALL;
+----
+1	1
+2	2
+3	3
+4	3
+5	5
+
+# empty input
+query I
+SELECT count(*) FROM (SELECT DISTINCT k FROM pk WHERE c > 100);
+----
+0
+
+query III
+SELECT max(c), count(DISTINCT c), count(*) FROM (SELECT DISTINCT c FROM r WHERE c > 100);
+----
+NULL	0	0
+
+# DOUBLE: NaN is one group, 0.0 and -0.0 are one group, NULL is one group
+query IIII
+SELECT count(*), count(d), count(*) FILTER (WHERE isnan(d)), count(*) FILTER (WHERE d = 0) FROM (SELECT DISTINCT d FROM (SELECT d FROM dblx GROUP BY d));
+----
+5	4	1	1
+
+query RTII
+SELECT max(d), min(d) = 0, count(DISTINCT d), count(*) FROM (SELECT DISTINCT d FROM dblx);
+----
+nan	true	4	5
+
+# collations: a NOCASE DISTINCT over a binary GROUP BY must still merge 'a' and 'A' (sensitive); NOCASE over NOCASE
+query II
+SELECT count(*), count(x) FROM (SELECT DISTINCT s COLLATE NOCASE AS x FROM (SELECT s FROM rv GROUP BY s));
+----
+3	2
+
+query II
+SELECT count(*), count(s) FROM (SELECT DISTINCT s FROM (SELECT s FROM rs GROUP BY s));
+----
+3	2
+
+# a DISTINCT on a nested type over the duplicate elimination of its elements
+query I
+SELECT count(*) FROM (SELECT DISTINCT x FROM (SELECT [k, c] AS x FROM r GROUP BY k, c));
+----
+5
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# 5. set operations: INTERSECT / EXCEPT are a SEMI / ANTI join below a DISTINCT, which is redundant if the left input
+#    is distinct already
+# ---------------------------------------------------------------------------------------------------------------
+
+# two aggregates are left (the DISTINCTs of the inputs), none above the join
+query II
+EXPLAIN SELECT DISTINCT k FROM r INTERSECT SELECT DISTINCT k FROM l;
+----
+logical_opt	<!REGEX>:(?s).*─ Aggregate ─.*─ Aggregate ─.*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT DISTINCT k FROM r INTERSECT SELECT DISTINCT k FROM l;
+----
+logical_opt	<REGEX>:(?s).*─ Comparison Join ─.*─ Aggregate ─.*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT DISTINCT k FROM r EXCEPT SELECT DISTINCT k FROM l;
+----
+logical_opt	<!REGEX>:(?s).*─ Aggregate ─.*ANTI.*
+
+# the inputs are not distinct: the DISTINCT above the join stays
+query II
+EXPLAIN SELECT k FROM r INTERSECT SELECT k FROM l;
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*SEMI.*
+
+query II
+EXPLAIN SELECT k FROM r EXCEPT SELECT k FROM l;
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*ANTI.*
+
+# a UNION ALL of distinct inputs is not distinct
+query II
+EXPLAIN SELECT DISTINCT k FROM (SELECT DISTINCT k FROM r UNION ALL SELECT DISTINCT k FROM l);
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*─ Union ─.*
+
+query I
+SELECT * FROM (SELECT DISTINCT k FROM r INTERSECT SELECT DISTINCT k FROM l) ORDER BY ALL;
+----
+1
+2
+NULL
+
+query I
+SELECT * FROM (SELECT k FROM r INTERSECT SELECT k FROM l) ORDER BY ALL;
+----
+1
+2
+NULL
+
+query I
+SELECT * FROM (SELECT DISTINCT k FROM r EXCEPT SELECT DISTINCT k FROM l) ORDER BY ALL;
+----
+5
+
+query I
+SELECT * FROM (SELECT DISTINCT k FROM l EXCEPT SELECT DISTINCT k FROM r) ORDER BY ALL;
+----
+3
+4
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT k, c FROM r INTERSECT SELECT DISTINCT k, v FROM l);
+----
+0
+
+query I
+SELECT DISTINCT k FROM (SELECT DISTINCT k FROM r UNION ALL SELECT DISTINCT k FROM l) ORDER BY ALL;
+----
+1
+2
+3
+4
+5
+NULL
+
+# ---------------------------------------------------------------------------------------------------------------
+# 6. a duplicate elimination below another aggregate stays, also if that aggregate ignores duplicates: its input is
+#    not distinct
+# ---------------------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE vt AS SELECT (i % 2)::INTEGER AS a FROM range(10) t(i);
+
+statement ok
+CREATE SEQUENCE vs;
+
+query II
+EXPLAIN SELECT k, min(c) FROM (SELECT k, c FROM r GROUP BY k, c) GROUP BY k;
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT max(a + 1) FROM (SELECT DISTINCT a FROM vt);
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*─ Aggregate ─.*
+
+query II
+EXPLAIN SELECT max(nextval('vs')) FROM (SELECT DISTINCT a FROM vt);
+----
+logical_opt	<REGEX>:(?s).*─ Aggregate ─.*─ Aggregate ─.*
+
+# two rows are left after the DISTINCT: the sequence advances twice, not ten times
+query I
+SELECT max(nextval('vs')) FROM (SELECT DISTINCT a FROM vt);
+----
+2
+
+query I
+SELECT nextval('vs');
+----
+3
+
+query I
+SELECT max(a + 1) FROM (SELECT DISTINCT a FROM vt);
+----
+2
+
+# ---------------------------------------------------------------------------------------------------------------
+# 7. a chain of 30 joins on a key: the distinctness of every join is derived once, the query is planned without
+#    recomputing the left side of the chain at every level
+# ---------------------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE chain(k INTEGER PRIMARY KEY);
+
+statement ok
+INSERT INTO chain SELECT range FROM range(30);
+
+query II
+EXPLAIN SELECT DISTINCT t0.k FROM chain t0 JOIN chain t1 ON t0.k = t1.k JOIN chain t2 ON t1.k = t2.k JOIN chain t3 ON t2.k = t3.k JOIN chain t4 ON t3.k = t4.k JOIN chain t5 ON t4.k = t5.k JOIN chain t6 ON t5.k = t6.k JOIN chain t7 ON t6.k = t7.k JOIN chain t8 ON t7.k = t8.k JOIN chain t9 ON t8.k = t9.k JOIN chain t10 ON t9.k = t10.k JOIN chain t11 ON t10.k = t11.k JOIN chain t12 ON t11.k = t12.k JOIN chain t13 ON t12.k = t13.k JOIN chain t14 ON t13.k = t14.k JOIN chain t15 ON t14.k = t15.k JOIN chain t16 ON t15.k = t16.k JOIN chain t17 ON t16.k = t17.k JOIN chain t18 ON t17.k = t18.k JOIN chain t19 ON t18.k = t19.k JOIN chain t20 ON t19.k = t20.k JOIN chain t21 ON t20.k = t21.k JOIN chain t22 ON t21.k = t22.k JOIN chain t23 ON t22.k = t23.k JOIN chain t24 ON t23.k = t24.k JOIN chain t25 ON t24.k = t25.k JOIN chain t26 ON t25.k = t26.k JOIN chain t27 ON t26.k = t27.k JOIN chain t28 ON t27.k = t28.k JOIN chain t29 ON t28.k = t29.k JOIN chain t30 ON t29.k = t30.k;
+----
+logical_opt	<!REGEX>:(?s).*─ Aggregate ─.*
+
+query II
+SELECT count(*), sum(k) FROM (SELECT DISTINCT t0.k FROM chain t0 JOIN chain t1 ON t0.k = t1.k JOIN chain t2 ON t1.k = t2.k JOIN chain t3 ON t2.k = t3.k JOIN chain t4 ON t3.k = t4.k JOIN chain t5 ON t4.k = t5.k JOIN chain t6 ON t5.k = t6.k JOIN chain t7 ON t6.k = t7.k JOIN chain t8 ON t7.k = t8.k JOIN chain t9 ON t8.k = t9.k JOIN chain t10 ON t9.k = t10.k JOIN chain t11 ON t10.k = t11.k JOIN chain t12 ON t11.k = t12.k JOIN chain t13 ON t12.k = t13.k JOIN chain t14 ON t13.k = t14.k JOIN chain t15 ON t14.k = t15.k JOIN chain t16 ON t15.k = t16.k JOIN chain t17 ON t16.k = t17.k JOIN chain t18 ON t17.k = t18.k JOIN chain t19 ON t18.k = t19.k JOIN chain t20 ON t19.k = t20.k JOIN chain t21 ON t20.k = t21.k JOIN chain t22 ON t21.k = t22.k JOIN chain t23 ON t22.k = t23.k JOIN chain t24 ON t23.k = t24.k JOIN chain t25 ON t24.k = t25.k JOIN chain t26 ON t25.k = t26.k JOIN chain t27 ON t26.k = t27.k JOIN chain t28 ON t27.k = t28.k JOIN chain t29 ON t28.k = t29.k JOIN chain t30 ON t29.k = t30.k);
+----
+30	435
