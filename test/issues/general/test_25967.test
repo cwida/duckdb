@@ -1,0 +1,23 @@
+# name: test/issues/general/test_25967.test
+# description: An UPDATE to a nested VARIANT constant stores the value an INSERT stores
+# group: [general]
+
+require json
+
+# the optimizer folds the cast into a VARIANT constant, which the relation statistics do not render as SQL
+statement ok
+CREATE TABLE t (id INTEGER, doc VARIANT);
+
+statement ok
+INSERT INTO t VALUES (1, NULL), (2, (repeat('[' || array_to_string(range(30), ', ') || ', {"k": "it''s", "n": null}, ', 8) || '[]' ||
+    repeat(']', 8))::JSON);
+
+statement ok
+UPDATE t SET doc = (repeat('[' || array_to_string(range(30), ', ') || ', {"k": "it''s", "n": null}, ', 8) || '[]' ||
+    repeat(']', 8))::JSON WHERE id = 1;
+
+query III
+SELECT variant_typeof(a.doc), length(a.doc::JSON::VARCHAR), a.doc::JSON::VARCHAR = b.doc::JSON::VARCHAR
+FROM t a, t b WHERE a.id = 1 AND b.id = 2;
+----
+ARRAY(32)	834	true
