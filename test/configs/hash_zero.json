@@ -61,7 +61,8 @@
         "test/sql/progress/test_verify_progress.test",
         "test/sql/copy/partitioned/partitioned_write_backpressure.test",
         "test/sql/copy/parquet/read_ahead/readahead_memory_limit.test",
-        "test/sql/copy/parquet/parquet_write_repeated_lists.test"
+        "test/sql/copy/parquet/parquet_write_repeated_lists.test",
+        "test/sql/cte/materialized/cte_runtime_filter_sibling_dependencies.test"
       ]
     },
     {
@@ -95,7 +96,19 @@
         "test/optimizer/statistics/statistics_count_not_null_pruning.test",
         "test/sql/sql_export/aggregate_topn_rewrites.test",
         "test/sql/aggregate/aggregate_state_export/approx_count_distinct_export_state.test",
-        "test/optimizer/pushdown/cte_domain_join_filter.test"
+        "test/optimizer/pushdown/cte_domain_join_filter.test",
+        "test/sql/sql_export/aggregate_literals.test",
+        "test/sql/sql_export/empty_aggregate_state.test",
+        "test/sql/storage/distinct_statistics_sample.test",
+        "test/optimizer/statistics/statistics_early_join_range.test",
+        "test/optimizer/joins/left_join_reordering/left_join_composite_domain.test",
+        "test/optimizer/joins/not_equal_join_cardinality_estimation.test",
+        "test/optimizer/joins/range_join_cardinality_estimation.test",
+        "test/optimizer/statistics/current_domain_cardinality.test",
+        "test/optimizer/statistics/current_domain_join.test",
+        "test/optimizer/statistics/current_domain_semi_anti.test",
+        "test/optimizer/statistics/right_semi_join_filter.test",
+        "test/sql/optimizer/secure_view_join_filter_pushdown.test"
       ]
     },
     {
@@ -115,7 +128,9 @@
         "test/sql/timezone/test_icu_calendar_japanese.test",
         "test/sql/timezone/test_icu_datetime_sweep.test",
         "test/sql/optimizer/constant_function_zonemap_pruning.test",
-        "test/sql/sql_export/call_values.test"
+        "test/sql/sql_export/call_values.test",
+        "test/sql/copy/partitioned/integer_partitioned_write.test",
+        "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test"
       ]
     }
   ]
