@@ -249,9 +249,7 @@ static bool IsMultiColumnExpression(const Expression &expression) {
 			bindings.insert(expr.Cast<BoundColumnRefExpression>().Binding());
 			return;
 		}
-		ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
-			collect(child);
-		});
+		ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) { collect(child); });
 	};
 	collect(expression);
 	return bindings.size() > 1;
