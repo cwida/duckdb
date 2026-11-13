@@ -2,6 +2,9 @@
 # description: Cost direct lookup before spilling and reserve optional dictionary output separately
 # group: [hash_join]
 
+# The fixed memory budgets below assume default-sized vectors.
+require vector_size 2048
+
 require skip_reload
 
 load {TEST_DIR}/perfect_hash_join_memory.db
