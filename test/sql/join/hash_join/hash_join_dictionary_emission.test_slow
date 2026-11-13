@@ -532,7 +532,7 @@ GROUP BY b.v;
 ----
 only-five	26220
 
-# recursive CTE reusing the hash table: each iteration rebuilds the small build, so dict_arrays
+# recursive CTE reusing the hash table: each iteration rebuilds the small build, so materialized dictionaries
 # must be reset between iterations - otherwise stale dictionaries corrupt the aggregated total
 query II
 WITH RECURSIVE r(step, total) AS (
@@ -554,7 +554,7 @@ SELECT step, total FROM r ORDER BY step;
 3	525579900
 4	787779900
 
-# multi-column build: the reset must clear every column of dict_arrays, not just the first
+# multi-column build: the reset must clear every column of materialized dictionaries, not just the first
 query II
 WITH RECURSIVE r(step, total) AS (
     SELECT 0::INTEGER, 0::BIGINT

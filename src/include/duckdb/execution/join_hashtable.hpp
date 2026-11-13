@@ -92,7 +92,7 @@ private:
    The pointers are either NULL
 
    Two-phase lifecycle: the constructor populates only layout-INDEPENDENT state; all layout-DEPENDENT state
-   (layout_ptr, row matchers, tuple_size/pointer_offset/entry_size, data_collection, sink_collection, dead_end,
+   (layout_ptr, row matchers, tuple_size/pointer_offset, data_collection, sink_collection,
    dict_info) is published by FinishInitWithLayout on the first build chunk, so slot widths (and the dictionary
    a narrowed slot indexes into) can be chosen from the data's actual runtime encoding. Until then the JHT is
    unusable except for the null-safe Count() / SizeInBytes() accessors; the layout-dependent accessors assert
@@ -142,21 +142,7 @@ struct DictSurvivingInfo {
 	static LogicalType IndexType(uint8_t index_width);
 };
 
-//! Maps matched build rows to output positions; remaining output positions contain NULL.
-struct JoinBuildSelection {
-	JoinBuildSelection(const SelectionVector &rows, idx_t count)
-	    : JoinBuildSelection(rows, count, *FlatVector::IncrementalSelectionVector(), count) {
-	}
-	JoinBuildSelection(const SelectionVector &rows, idx_t match_count, const SelectionVector &output, idx_t count)
-	    : rows(rows), match_count(match_count), output(output), count(count) {
-		D_ASSERT(match_count <= count);
-	}
-
-	const SelectionVector &rows;
-	idx_t match_count;
-	const SelectionVector &output;
-	idx_t count;
-};
+struct JoinBuildSelection;
 
 class JoinHashTable {
 public:
@@ -276,8 +262,6 @@ public:
 	struct SharedState {
 		SharedState();
 
-		Vector salt_v;
-
 		SelectionVector keys_to_compare_sel;
 		SelectionVector keys_no_match_sel;
 	};
@@ -314,6 +298,7 @@ public:
 
 	struct InsertState : SharedState {
 		explicit InsertState(const JoinHashTable &ht);
+		Vector salt_v;
 		/// Because of the index hick up
 		SelectionVector remaining_sel;
 		SelectionVector key_match_sel;
@@ -401,23 +386,15 @@ public:
 	void EmitDictVectors(const data_ptr_t *row_ptrs, const JoinBuildSelection &selection, DataChunk &result,
 	                     idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const;
 	//! Emit RHS output columns for matched rows row_ptrs[ptr_sel[0..count)] into result starting at
-	//! result column rhs_col_offset; routes through EmitDictVectors when use_dict_emission is active.
+	//! result column rhs_col_offset, preserving prepared or surviving dictionaries where possible.
 	void GatherRHS(Vector &row_ptrs, const SelectionVector &ptr_sel, const idx_t count, DataChunk &result,
 	               idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const;
 	void GatherRHS(Vector &row_ptrs, const JoinBuildSelection &selection, DataChunk &result, idx_t rhs_col_offset,
 	               DictionaryOwnershipCache &dictionary_state) const;
-	//! Follow the chain pointer; when USE_DICT_EMISSION, resolves via aux_next_ptrs
-	template <bool USE_DICT_EMISSION>
-	inline data_ptr_t GetNextPointer(data_ptr_t row_ptr) const {
-		if (USE_DICT_EMISSION) {
-			if (!chains_longer_than_one.load(std::memory_order_relaxed)) {
-				// aux_next_ptrs is unallocated in this case
-				return nullptr;
-			}
-			return aux_next_ptrs_data[Load<uint32_t>(row_ptr + pointer_offset)];
-		}
-		return cast_uint64_to_pointer(Load<uint64_t>(row_ptr + pointer_offset));
-	}
+	//! Advance selected equality chains, compacting the surviving probe positions.
+	idx_t AdvancePointers(Vector &pointers, SelectionVector &out_sel, const SelectionVector &sel, idx_t count) const;
+	//! Mark every build row in the selected equality groups.
+	void MarkMatchedChains(Vector &pointers, const SelectionVector &sel, idx_t count) const;
 
 	idx_t Count() const {
 		return data_collection ? data_collection->Count() : 0;
@@ -495,8 +472,6 @@ public:
 
 	//! Number of hash entries, direct-directory slots or bitmap words to initialize.
 	idx_t capacity = DConstants::INVALID_INDEX;
-	//! The size of an entry as stored in the HashTable
-	idx_t entry_size;
 	//! The total tuple size
 	idx_t tuple_size;
 	//! Next pointer offset in tuple, also used for the position of the hash, which then gets overwritten by the pointer
@@ -524,19 +499,10 @@ public:
 	//! Mapping from lhs_output_columns positions to lhs_probe_data positions
 	vector<idx_t> lhs_output_in_probe;
 
-	//! True once BuildDictionaryArrays has embedded dictionary indices into NEXT_PTR
-	bool use_dict_emission = false;
-	//! Pre-materialized columnar data, one entry per RHS output column
-	vector<buffer_ptr<DictionaryEntry>> dict_arrays;
-	//! Dict-surviving descriptor shared with every other per-thread JHT of the same join; set by
-	//! FinishInitWithLayout, nullptr when no build payload column is narrowed
+	//! Dict-surviving descriptor shared with every per-thread table of the same join.
 	shared_ptr<const DictSurvivingInfo> dict_info;
-	//! Saved NEXT_PTR values, indexed by dict index; only allocated when chains_longer_than_one
-	AllocatedData aux_next_ptrs;
-	//! Typed pointer into aux_next_ptrs; set by BuildDictionaryArrays alongside the allocation
-	data_ptr_t *aux_next_ptrs_data = nullptr;
 
-	//! Total bytes the dict_arrays allocation would cost for the given RHS output types
+	//! Total bytes materialized dictionaries would cost for the given RHS output types
 	idx_t ComputeBuildPayloadBytes(const vector<LogicalType> &rhs_output_types) const;
 	//! Returns true iff small-build-side dictionary emission should activate
 	bool CanUseDictionaryEmission(const PhysicalHashJoin &op, bool external, idx_t probe_cardinality) const;
@@ -602,6 +568,20 @@ private:
 		return reinterpret_cast<atomic<ht_entry_t> *>(hash_map.get());
 	}
 
+	template <bool DICTIONARY>
+	data_ptr_t GetNextPointer(data_ptr_t row) const;
+	template <bool DICTIONARY>
+	idx_t AdvancePointers(Vector &pointers, SelectionVector &out_sel, const SelectionVector &sel, idx_t count) const;
+	template <bool DICTIONARY>
+	void MarkMatchedChains(Vector &pointers, const SelectionVector &sel, idx_t count) const;
+
+	struct MaterializedDictionary {
+		vector<buffer_ptr<DictionaryEntry>> columns;
+		//! Original chain links, indexed by the dictionary position embedded in each row.
+		AllocatedData next_pointers;
+	};
+	unique_ptr<MaterializedDictionary> materialized_dictionary;
+
 	//! Lock for combining data_collection when merging HTs
 	mutex data_lock;
 	//! Partitioned data collection that the data is sunk into when building
@@ -620,8 +600,6 @@ private:
 	idx_t bucket_shift = 0;
 	//! Whether or not NULL values are considered equal in each of the comparisons
 	vector<bool> null_values_are_equal;
-	//! An empty tuple that's a "dead end", can be used to stop chains early
-	unsafe_unique_array<data_t> dead_end;
 
 	//! Bloom filter over the join keys. An external join fills it during Sink, an in-memory join during
 	//! finalize. Shared by every thread-local hash table of this operator, and shared again with any scan it

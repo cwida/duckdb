@@ -1819,7 +1819,7 @@ bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilt
 		}
 		filter_input = std::move(input.expression);
 	} else {
-		filter_input = make_uniq<BoundReferenceExpression>(column.storage_type, idx_t(0));
+		filter_input = make_uniq<BoundReferenceExpression>(column.storage_type, static_cast<idx_t>(0));
 	}
 
 	value_set_t unique_ht_values;

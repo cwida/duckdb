@@ -17,10 +17,7 @@ CREATE TABLE p (pb BOOLEAN);
 statement ok
 INSERT INTO p VALUES (TRUE), (TRUE), (NULL);
 
-# The build side is emitted as dictionary vectors, so the chain pointer of each row holds
-# an index rather than a pointer. Marking a chain as found parks the probe pointer on the
-# dead end row, whose chain field is zero, and index zero belongs to a real row. Following
-# it walked an unrelated chain and segfaulted.
+# Repeated probes of a fully matched equality group must not follow an unrelated dictionary chain.
 query I
 SELECT COUNT(*) FROM p WHERE p.pb IN (SELECT x.f FROM v x JOIN v y ON x.s = y.s CROSS JOIN v z);
 ----
