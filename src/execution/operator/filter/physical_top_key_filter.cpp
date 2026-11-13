@@ -86,7 +86,7 @@ public:
 	static constexpr idx_t WARMUP_ROWS_PER_KEY = 256;
 	//! A thread that still passes more than one in INEFFECTIVE_PASS_FRACTION of this many rows stops filtering: the
 	//! limit covers too many of the keys for the filter to pay off
-	static constexpr idx_t INEFFECTIVE_CHECK_ROWS = 100 * STANDARD_VECTOR_SIZE;
+	static constexpr idx_t INEFFECTIVE_CHECK_ROWS = idx_t(100) * STANDARD_VECTOR_SIZE;
 	static constexpr idx_t INEFFECTIVE_PASS_FRACTION = 8;
 
 public:

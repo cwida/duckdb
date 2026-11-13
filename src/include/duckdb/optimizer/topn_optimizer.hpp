@@ -9,13 +9,18 @@
 #pragma once
 
 #include "duckdb/common/constants.hpp"
+#include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/shared_ptr.hpp"
+#include "duckdb/common/types.hpp"
+#include "duckdb/planner/column_binding.hpp"
 
 namespace duckdb {
 class ClientContext;
 class LogicalOperator;
 class LogicalTopN;
 class Optimizer;
+struct DynamicFilterData;
 
 class TopN {
 public:
