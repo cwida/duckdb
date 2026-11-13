@@ -194,6 +194,14 @@ struct ArrowToDuckDBConversion {
 	                                          ArrowArrayScanState &array_state, idx_t size, const ArrowType &arrow_type,
 	                                          int64_t nested_offset = -1, const ValidityMask *parent_mask = nullptr,
 	                                          uint64_t parent_offset = 0);
+
+	//! A record batch, the struct array a stream yields, reads as a struct array does.
+	static ValidityMask GetRecordBatchValidity(ArrowArray &batch, idx_t chunk_offset, idx_t size);
+	static void RecordBatchColumnToDuckDB(Vector &vector, ArrowArray &batch, idx_t column_idx, idx_t chunk_offset,
+	                                      ArrowArrayScanState &array_state, idx_t size, const ArrowType &arrow_type,
+	                                      ValidityMask &batch_validity);
+	//! A column of a record batch holds its slots from the batch's offset on.
+	static bool ColumnCoversRecordBatch(const ArrowArray &batch, const ArrowArray &column);
 };
 
 struct ArrowTableFunction {

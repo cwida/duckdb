@@ -20,7 +20,7 @@ void AssertExpectedResult(ArrowSchema *schema, ArrowArrayWrapper &array, T expec
 	ArrowArrayStream stream;
 	stream.release = nullptr;
 
-	ArrowArray struct_array;
+	ArrowArray struct_array {};
 	struct_array.n_children = 1;
 	ArrowArray *children[1];
 	struct_array.children = (ArrowArray **)&children;

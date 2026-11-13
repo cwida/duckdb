@@ -165,8 +165,8 @@ functions:
 
       Take the chunks with `[[arrow_importer_next_chunk]]` until that returns NULL. Appending while the previous array
       still has rows left is rejected with `ERROR_INPUT_INVALID`. An array whose shape does not match the resolved
-      schema -- a different child count, a child whose length differs from the array's, a null or already-released
-      child -- is rejected the same way, before anything is read.
+      schema (a different child count, a child shorter than the array's offset plus its length, a null or
+      already-released child) is rejected the same way, before anything is read.
 
       `flush` marks the end of the input: rows that do not fill a batch then come out as a final short chunk instead
       of being held back for the next array. Pass NULL for `array` with `flush` set to release the held rows without

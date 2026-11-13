@@ -132,36 +132,6 @@ namespace {
 // Import conversion
 //----------------------------------------------------------------------------------------------------------------------
 
-//! The record-batch struct may carry a validity bitmap of its own: a clear bit marks the whole row null, so
-//! it has to apply to every column alike. Returns null when the array carries no bitmap, or no row is null.
-auto CV2TopLevelValidity(const ArrowArray &array, idx_t from, idx_t rows) -> unique_ptr<ValidityMask> {
-	if (array.null_count == 0 || array.n_buffers == 0 || !array.buffers || !array.buffers[0]) {
-		return nullptr;
-	}
-	auto bits = static_cast<const uint8_t *>(array.buffers[0]);
-	auto mask = make_uniq<ValidityMask>(rows);
-	for (idx_t row = 0; row < rows; row++) {
-		auto index = NumericCast<idx_t>(array.offset) + from + row;
-		if (!(bits[index / 8] & (1 << (index % 8)))) {
-			mask->SetInvalid(row);
-		}
-	}
-	if (!mask->CanHaveNull()) {
-		return nullptr;
-	}
-	return mask;
-}
-
-//! Marks the rows the record batch calls null as null in this vector too.
-void CV2ApplyTopLevelMask(Vector &vector, const ValidityMask &top_level_mask, idx_t rows) {
-	auto &mask = FlatVector::ValidityMutable(vector);
-	for (idx_t row = 0; row < rows; row++) {
-		if (!top_level_mask.RowIsValid(row)) {
-			mask.SetInvalid(row);
-		}
-	}
-}
-
 //! Converts `rows` rows starting at `from` of `array` into a fresh chunk, through the resolved per-column Arrow types.
 //! `owner` is the shared owner the chunk's zero-copy vectors keep alive; it is null when the caller kept the array, in
 //! which case the result is materialized instead.
@@ -173,48 +143,20 @@ auto CV2ConvertArrowSlice(ClientContext &context, CV2ArrowImporter &importer, Ar
 	auto chunk = make_uniq<DataChunk>();
 	chunk->Initialize(Allocator::DefaultAllocator(), types, MaxValue<idx_t>(rows, 1));
 	chunk->SetChildCardinality(rows);
-	auto top_level_mask = CV2TopLevelValidity(array, from, rows);
+	auto batch_validity = ArrowToDuckDBConversion::GetRecordBatchValidity(array, from, rows);
 	for (idx_t i = 0; i < chunk->ColumnCount(); i++) {
-		auto *child_array = array.children[i];
-		auto arrow_type = arrow_types.at(i);
+		auto &arrow_type = *arrow_types.at(i);
 		// A fresh scan state per slice, so nothing cached for one array leaks into the next. The cost is re-decoding a
 		// dictionary per chunk.
 		auto array_state = make_uniq<ArrowArrayScanState>(context);
 		// The dictionary conversion requires a non-null owned_data to attach to its vectors. When
 		// there is no owner the chunk is materialized below, so an inert wrapper is enough.
 		array_state->owned_data = owner ? owner : duckdb::make_shared_ptr<duckdb::ArrowArrayWrapper>();
-		switch (arrow_type->GetPhysicalType()) {
-		case ArrowArrayPhysicalType::DICTIONARY_ENCODED:
-			if (!child_array->dictionary) {
-				throw InvalidInputException("Dictionary-encoded Arrow array has no dictionary");
-			}
-			// the dictionary conversion folds the mask into its selection vector itself
-			ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(chunk->data[i], *child_array, from, *array_state,
-			                                                       rows, *arrow_type, -1, top_level_mask.get());
-			break;
-		case ArrowArrayPhysicalType::RUN_END_ENCODED:
-			ArrowToDuckDBConversion::ColumnArrowToDuckDBRunEndEncoded(chunk->data[i], *child_array, from, *array_state,
-			                                                          rows, *arrow_type, -1, top_level_mask.get());
-			break;
-		case ArrowArrayPhysicalType::DEFAULT:
-			ArrowToDuckDBConversion::SetValidityMask(chunk->data[i], *child_array, from, rows, array.offset, -1);
-			// Merging before the conversion lets a struct or union column propagate the nulls to its children.
-			if (top_level_mask) {
-				CV2ApplyTopLevelMask(chunk->data[i], *top_level_mask, rows);
-			}
-			ArrowToDuckDBConversion::ColumnArrowToDuckDB(chunk->data[i], *child_array, from, *array_state, rows,
-			                                             *arrow_type, -1, top_level_mask.get());
-			break;
-		default:
-			throw NotImplementedException("Only default Arrow physical types are currently supported");
-		}
+		ArrowToDuckDBConversion::RecordBatchColumnToDuckDB(chunk->data[i], array, i, from, *array_state, rows,
+		                                                   arrow_type, batch_validity);
 		// Re-assert the size after the conversion, mirroring the engine's own scan loop: a dictionary or run-end
 		// conversion replaces the vector rather than filling it.
 		FlatVector::SetSize(chunk->data[i], count_t(rows));
-		// A conversion may rebuild the validity mask from its own buffers, so the top-level nulls go in again.
-		if (top_level_mask && chunk->data[i].GetVectorType() == VectorType::FLAT_VECTOR) {
-			CV2ApplyTopLevelMask(chunk->data[i], *top_level_mask, rows);
-		}
 	}
 	chunk->CheckCardinality(rows);
 	if (owner) {
@@ -243,8 +185,8 @@ void CV2ValidateArrowArray(CV2ArrowImporter &importer, ArrowArray &array) {
 		if (!child_array || !child_array->release) {
 			throw InvalidInputException("Arrow array child is null or already released");
 		}
-		if (child_array->length != array.length) {
-			throw InvalidInputException("Arrow array child length does not match the array length");
+		if (!ArrowToDuckDBConversion::ColumnCoversRecordBatch(array, *child_array)) {
+			throw InvalidInputException("Arrow array child is shorter than the array's offset and length");
 		}
 	}
 	// A positive null count is only meaningful with the validity bitmap to read it from.
