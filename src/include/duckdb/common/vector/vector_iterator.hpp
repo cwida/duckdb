@@ -26,6 +26,8 @@ DUCKDB_API const vector<Vector> &VectorIteratorGetStructEntries(const Vector &ve
 DUCKDB_API const Vector &VectorIteratorGetListChild(const Vector &vector);
 DUCKDB_API idx_t VectorIteratorGetListSize(const Vector &vector);
 
+DUCKDB_API const Vector &VectorIteratorGetArrayChild(const Vector &vector);
+
 class VectorValidityIterator {
 public:
 	explicit VectorValidityIterator(const Vector &vector) : count(vector.size()) {
@@ -182,6 +184,17 @@ public:
 	bool CanHaveNull() const {
 		return format.validity.CanHaveNull();
 	}
+	//! Returns the values in [offset, offset + length) if they are contiguous and all valid, or nullptr otherwise
+	const T *TryGetContiguousData(idx_t offset, idx_t length) const {
+		if (format.sel->IsSet() || !format.validity.CheckAllValid(offset + length, offset)) {
+			return nullptr;
+		}
+		return data + offset;
+	}
+	//! Returns all values if they are contiguous and none of them can be NULL, or nullptr otherwise
+	const T *TryGetContiguousData() const {
+		return format.sel->IsSet() || format.validity.CanHaveNull() ? nullptr : data;
+	}
 
 private:
 	UnifiedVectorFormat format;
@@ -322,6 +335,60 @@ private:
 	idx_t count;
 };
 
+//! Range over the child entries [offset, offset + length) of a list or array entry, for range-based for loops.
+template <class CHILD_ITERATOR>
+struct VectorChildRange {
+private:
+	using ChildEntryType = typename CHILD_ITERATOR::ValueEntry;
+
+	struct RangeIterator {
+	public:
+		RangeIterator(const CHILD_ITERATOR &child_iter, idx_t pos) : child_iter(child_iter), pos(pos) {
+		}
+		RangeIterator &operator++() { // NOLINT: match stl API
+			++pos;
+			return *this;
+		}
+		RangeIterator operator++(int) { // NOLINT: match stl API
+			auto tmp = *this;
+			++pos;
+			return tmp;
+		}
+		bool operator==(const RangeIterator &other) const {
+			return pos == other.pos;
+		}
+		bool operator!=(const RangeIterator &other) const {
+			return pos != other.pos;
+		}
+		ChildEntryType operator*() const {
+			return child_iter[pos];
+		}
+
+	private:
+		const CHILD_ITERATOR &child_iter;
+		idx_t pos;
+	};
+
+public:
+	VectorChildRange(const CHILD_ITERATOR &child_iter, idx_t offset, idx_t length)
+	    : child_iter(child_iter), offset(offset), length(length) {
+	}
+	RangeIterator begin() const { // NOLINT: match stl API
+		return RangeIterator(child_iter, offset);
+	}
+	RangeIterator end() const { // NOLINT: match stl API
+		return RangeIterator(child_iter, offset + length);
+	}
+	idx_t size() const {
+		return length;
+	}
+
+private:
+	const CHILD_ITERATOR &child_iter;
+	idx_t offset;
+	idx_t length;
+};
+
 //! Specialization of VectorIterator for VectorListType<T>.
 //! Iterates over a list vector, exposing per-row NULL information and access to
 //! the child entries via GetChildValue(idx) / GetChildValues().  Supports
@@ -343,55 +410,7 @@ public:
 
 public:
 	//! Range object returned by ValueEntry::GetChildValues() for range-based for loops.
-	struct ChildRange {
-	private:
-		struct RangeIterator {
-		public:
-			RangeIterator(const ChildIteratorType &child_iter, idx_t pos) : child_iter(child_iter), pos(pos) {
-			}
-			RangeIterator &operator++() { // NOLINT: match stl API
-				++pos;
-				return *this;
-			}
-			RangeIterator operator++(int) { // NOLINT: match stl API
-				auto tmp = *this;
-				++pos;
-				return tmp;
-			}
-			bool operator==(const RangeIterator &other) const {
-				return pos == other.pos;
-			}
-			bool operator!=(const RangeIterator &other) const {
-				return pos != other.pos;
-			}
-			ChildEntryType operator*() const {
-				return child_iter[pos];
-			}
-
-		private:
-			const ChildIteratorType &child_iter;
-			idx_t pos;
-		};
-
-	public:
-		ChildRange(const ChildIteratorType &child_iter, idx_t offset, idx_t length)
-		    : child_iter(child_iter), offset(offset), length(length) {
-		}
-		RangeIterator begin() const { // NOLINT: match stl API
-			return RangeIterator(child_iter, offset);
-		}
-		RangeIterator end() const { // NOLINT: match stl API
-			return RangeIterator(child_iter, offset + length);
-		}
-		idx_t size() const {
-			return length;
-		}
-
-	private:
-		const ChildIteratorType &child_iter;
-		idx_t offset;
-		idx_t length;
-	};
+	using ChildRange = VectorChildRange<ChildIteratorType>;
 
 	struct ValueEntry {
 		ValueEntry(const UnifiedVectorFormat &format, const list_entry_t *list_data,
@@ -493,6 +512,136 @@ private:
 	const list_entry_t *list_data;
 	ChildIteratorType child_iter;
 	idx_t count;
+};
+
+//! Specialization of VectorIterator for VectorArrayType<T>.
+//! Iterates over an array vector, exposing per-row NULL information and access to
+//! the child entries via GetChildValue(idx) / GetChildValues(). TryGetData() reads
+//! the elements of an array in place when they are contiguous and not NULL.
+template <class T>
+class VectorIterator<VectorArrayType<T>> {
+private:
+	using ChildIteratorType = VectorIterator<T>;
+	using ChildEntryType = typename ChildIteratorType::ValueEntry;
+
+public:
+	explicit VectorIterator(const Vector &vector)
+	    : child_iter(VectorIteratorGetArrayChild(vector)), array_size(ArrayType::GetSize(vector.GetType())),
+	      count(vector.size()) {
+		vector.ToUnifiedFormat(format);
+		all_data = format.validity.CanHaveNull() ? nullptr : child_iter.TryGetContiguousData();
+	}
+
+public:
+	using ChildRange = VectorChildRange<ChildIteratorType>;
+
+	//! Small enough to be passed in registers
+	struct ValueEntry {
+		ValueEntry(const VectorIterator &parent, idx_t index) : parent(parent), index(index) {
+		}
+
+		bool IsValid() const {
+			return parent.format.validity.RowIsValid(GetSelIndex());
+		}
+		idx_t GetIndex() const {
+			return index;
+		}
+		idx_t GetArraySize() const {
+			return parent.array_size;
+		}
+		//! Returns the child entry at position idx within this array.
+		ChildEntryType GetChildValue(idx_t idx) const {
+			return parent.child_iter[GetOffset() + idx];
+		}
+		//! Returns an iterable range over all child entries in this array.
+		ChildRange GetChildValues() const {
+			return ChildRange(parent.child_iter, GetOffset(), parent.array_size);
+		}
+		//! Returns the elements of this array if they are contiguous and none are NULL, or nullptr otherwise.
+		const T *TryGetData() const {
+			return parent.child_iter.TryGetContiguousData(GetOffset(), parent.array_size);
+		}
+		//! Returns the elements of this array without any checks - requires CanReadAllInPlace().
+		const T *GetDataUnsafe() const {
+			D_ASSERT(parent.CanReadAllInPlace());
+			return parent.all_data + GetOffset();
+		}
+
+	private:
+		idx_t GetSelIndex() const {
+			return parent.format.sel->get_index(index);
+		}
+		idx_t GetOffset() const {
+			return GetSelIndex() * parent.array_size;
+		}
+
+	private:
+		const VectorIterator &parent;
+		idx_t index;
+	};
+
+private:
+	class Iterator {
+	public:
+		Iterator(const VectorIterator &parent, idx_t index) : parent(parent), index(index) {
+		}
+
+	public:
+		Iterator &operator++() { // NOLINT: match stl API
+			++index;
+			return *this;
+		}
+		Iterator operator++(int) { // NOLINT: match stl API
+			auto tmp = *this;
+			++index;
+			return tmp;
+		}
+		bool operator==(const Iterator &other) const {
+			return index == other.index;
+		}
+		bool operator!=(const Iterator &other) const {
+			return index != other.index;
+		}
+		ValueEntry operator*() const {
+			return ValueEntry(parent, index);
+		}
+		ValueEntry operator[](idx_t n) const {
+			return ValueEntry(parent, index + n);
+		}
+
+	private:
+		const VectorIterator &parent;
+		idx_t index;
+	};
+
+public:
+	Iterator begin() { // NOLINT: match stl API
+		return Iterator(*this, 0);
+	}
+	Iterator end() { // NOLINT: match stl API
+		return Iterator(*this, count);
+	}
+	idx_t size() const {
+		return count;
+	}
+	ValueEntry operator[](idx_t i) const {
+		return ValueEntry(*this, i);
+	}
+	bool CanHaveNull() const {
+		return format.validity.CanHaveNull();
+	}
+	//! Whether no array or element can be NULL and every array can be read with ValueEntry::GetDataUnsafe().
+	bool CanReadAllInPlace() const {
+		return all_data != nullptr;
+	}
+
+private:
+	UnifiedVectorFormat format;
+	ChildIteratorType child_iter;
+	idx_t array_size;
+	idx_t count;
+	//! The child data if no array or element can be NULL and the child is contiguous, nullptr otherwise
+	const T *all_data;
 };
 
 template <class T>

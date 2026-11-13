@@ -8,23 +8,57 @@ namespace duckdb {
 //-------------------------------------------------------------------------
 // Folding Operations
 //-------------------------------------------------------------------------
+//! Number of independent partial sums used by ArrayFoldSum
+static constexpr idx_t ARRAY_FOLD_LANES = 16;
+
+//! Sums OP::Term over the element pairs, using independent partial sums so the compiler can vectorize the loop
+template <class OP, class TYPE>
+static TYPE ArrayFoldSum(const TYPE *lhs_data, const TYPE *rhs_data, const idx_t count) {
+	TYPE result = 0;
+	if (count < ARRAY_FOLD_LANES) {
+		for (idx_t i = 0; i < count; i++) {
+			result += OP::Term(lhs_data[i], rhs_data[i]);
+		}
+		return result;
+	}
+
+	TYPE lanes[ARRAY_FOLD_LANES] = {};
+	idx_t i = 0;
+	for (; i + ARRAY_FOLD_LANES <= count; i += ARRAY_FOLD_LANES) {
+		for (idx_t lane = 0; lane < ARRAY_FOLD_LANES; lane++) {
+			lanes[lane] += OP::Term(lhs_data[i + lane], rhs_data[i + lane]);
+		}
+	}
+	for (idx_t lane = 0; lane < ARRAY_FOLD_LANES; lane++) {
+		result += lanes[lane];
+	}
+	for (; i < count; i++) {
+		result += OP::Term(lhs_data[i], rhs_data[i]);
+	}
+	return result;
+}
+
+struct ProductTerm {
+	template <class TYPE>
+	static TYPE Term(const TYPE x, const TYPE y) {
+		return x * y;
+	}
+};
+
+struct SquaredDifferenceTerm {
+	template <class TYPE>
+	static TYPE Term(const TYPE x, const TYPE y) {
+		const auto diff = x - y;
+		return diff * diff;
+	}
+};
+
 struct InnerProductOp {
 	static constexpr bool ALLOW_EMPTY = true;
 
 	template <class TYPE>
 	static TYPE Operation(const TYPE *lhs_data, const TYPE *rhs_data, const idx_t count) {
-		TYPE result = 0;
-
-		auto lhs_ptr = lhs_data;
-		auto rhs_ptr = rhs_data;
-
-		for (idx_t i = 0; i < count; i++) {
-			const auto x = *lhs_ptr++;
-			const auto y = *rhs_ptr++;
-			result += x * y;
-		}
-
-		return result;
+		return ArrayFoldSum<ProductTerm>(lhs_data, rhs_data, count);
 	}
 };
 
@@ -45,16 +79,19 @@ struct CosineSimilarityOp {
 		TYPE distance = 0;
 		TYPE norm_l = 0;
 		TYPE norm_r = 0;
-
-		auto l_ptr = lhs_data;
-		auto r_ptr = rhs_data;
-
-		for (idx_t i = 0; i < count; i++) {
-			const auto x = *l_ptr++;
-			const auto y = *r_ptr++;
-			distance += x * y;
-			norm_l += x * x;
-			norm_r += y * y;
+		if (count < ARRAY_FOLD_LANES) {
+			for (idx_t i = 0; i < count; i++) {
+				const auto x = lhs_data[i];
+				const auto y = rhs_data[i];
+				distance += x * y;
+				norm_l += x * x;
+				norm_r += y * y;
+			}
+		} else {
+			// separate sums vectorize better than a single loop computing all three
+			distance = ArrayFoldSum<ProductTerm>(lhs_data, rhs_data, count);
+			norm_l = ArrayFoldSum<ProductTerm>(lhs_data, lhs_data, count);
+			norm_r = ArrayFoldSum<ProductTerm>(rhs_data, rhs_data, count);
 		}
 
 		const auto norm_product = norm_l * norm_r;
@@ -117,19 +154,7 @@ struct DistanceSquaredOp {
 
 	template <class TYPE>
 	static TYPE Operation(const TYPE *lhs_data, const TYPE *rhs_data, const idx_t count) {
-		TYPE distance = 0;
-
-		auto l_ptr = lhs_data;
-		auto r_ptr = rhs_data;
-
-		for (idx_t i = 0; i < count; i++) {
-			const auto x = *l_ptr++;
-			const auto y = *r_ptr++;
-			const auto diff = x - y;
-			distance += diff * diff;
-		}
-
-		return distance;
+		return ArrayFoldSum<SquaredDifferenceTerm>(lhs_data, rhs_data, count);
 	}
 };
 

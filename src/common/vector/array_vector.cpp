@@ -261,6 +261,10 @@ Vector &ArrayVector::GetChildMutable(Vector &vector) {
 	return GetEntryInternal<Vector>(vector);
 }
 
+const Vector &VectorIteratorGetArrayChild(const Vector &vector) {
+	return ArrayVector::GetChild(vector);
+}
+
 const Vector &ArrayVector::GetEntry(const Vector &vector) {
 	return GetChild(vector);
 }

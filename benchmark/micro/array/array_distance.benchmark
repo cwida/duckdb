@@ -1,0 +1,21 @@
+# name: benchmark/micro/array/array_distance.benchmark
+# description: Euclidean distance between 250K FLOAT[768] arrays and a constant array
+# group: [array]
+
+name Array Distance
+group array
+
+cache array_distance_vectors.duckdb
+
+load
+CREATE TABLE vectors AS
+SELECT i,
+       list_transform(range(768), lambda j: (hash(i * 768 + j) % 1000)::FLOAT / 1000 - 0.5)::FLOAT[768] AS v,
+       list_transform(range(768), lambda j: (hash(i * 768 + j) % 1000)::DOUBLE / 1000 - 0.5)::DOUBLE[768] AS d
+FROM range(250000) r(i);
+
+run
+SELECT round(max(array_distance(v, (SELECT v FROM vectors WHERE i = 0))), 3) FROM vectors;
+
+result I
+12.049
