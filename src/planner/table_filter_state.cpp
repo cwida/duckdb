@@ -21,7 +21,7 @@ namespace duckdb {
 class BooleanFilterCache final : public TableFilterCache {
 public:
 	BooleanFilterCache(const SelectionVector &selected, idx_t selected_count, idx_t count)
-	    : matches(make_unsafe_uniq_array<bool>(count)), match_count(selected_count) {
+	    : matches(make_unsafe_uniq_array<bool>(count)), match_count(selected_count), value_count(count) {
 		memset(matches.get(), 0, count * sizeof(bool));
 		for (idx_t i = 0; i < selected_count; i++) {
 			matches[selected.get_index(i)] = true;
@@ -33,6 +33,10 @@ public:
 	}
 
 protected:
+	bool CanAcceptAllInternal() const override {
+		return match_count == value_count;
+	}
+
 	void FilterConstantInternal(idx_t value_index, idx_t &count) override {
 		if (count != 0 && !matches[value_index]) {
 			count = 0;
@@ -40,7 +44,7 @@ protected:
 	}
 
 	void FilterInternal(const SelectionVector &values, SelectionVector &sel, idx_t &count) override {
-		if (count == 0) {
+		if (count == 0 || match_count == value_count) {
 			return;
 		}
 		if (result.Capacity() < count) {
@@ -66,6 +70,7 @@ protected:
 private:
 	unsafe_unique_array<bool> matches;
 	idx_t match_count;
+	idx_t value_count;
 	SelectionVector result;
 };
 
@@ -89,6 +94,10 @@ bool TableFilterCache::IsValidFor(const TableFilterState &state) const {
 
 bool TableFilterCache::CanSkipAll() const {
 	return (!identity || identity->valid) && CanSkipAllInternal();
+}
+
+bool TableFilterCache::CanAcceptAll() const {
+	return (!identity || identity->valid) && CanAcceptAllInternal();
 }
 
 void TableFilterCache::Filter(const SelectionVector &values, SelectionVector &sel, idx_t &count) {
@@ -454,6 +463,11 @@ private:
 	idx_t current_capacity = 0;
 };
 
+static bool KeepOptionalSelection(const SelectivityOptionalFilterState::SelectivityStats &stats, idx_t accepted,
+                                  idx_t processed) {
+	return static_cast<double>(accepted) < static_cast<double>(processed) * stats.selectivity_threshold;
+}
+
 class SelectivityOptionalFilterExecutor final : public ExpressionFilterExecutor {
 public:
 	SelectivityOptionalFilterExecutor(unique_ptr<ExpressionFilterExecutor> child_p, idx_t n_vectors_to_check,
@@ -479,8 +493,13 @@ public:
 			return approved_tuple_count;
 		}
 		const auto before_count = approved_tuple_count;
+		const auto had_selection = sel.IsSet();
 		child->FilterSelection(sel, vector, scan_count, approved_tuple_count);
 		stats.Update(approved_tuple_count, before_count);
+		if (!had_selection && !KeepOptionalSelection(stats, approved_tuple_count, before_count)) {
+			sel = SelectionVector();
+			approved_tuple_count = before_count;
+		}
 		return approved_tuple_count;
 	}
 
@@ -495,6 +514,15 @@ public:
 	}
 
 protected:
+	bool CanAcceptAllInternal() const override {
+		for (const auto &child : children) {
+			if (!child->CanAcceptAll()) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	void FilterConstantInternal(idx_t value_index, idx_t &count) override {
 		for (auto &child : children) {
 			if (count == 0) {
@@ -524,6 +552,10 @@ public:
 	}
 
 protected:
+	bool CanAcceptAllInternal() const override {
+		return !stats.get().IsActive() || child->CanAcceptAll();
+	}
+
 	void FilterConstantInternal(idx_t value_index, idx_t &count) override {
 		if (count == 0) {
 			return;
@@ -535,6 +567,9 @@ protected:
 		const auto before_count = count;
 		child->FilterConstant(value_index, count);
 		stats.get().Update(count, before_count);
+		if (!KeepOptionalSelection(stats.get(), count, before_count)) {
+			count = before_count;
+		}
 	}
 
 	void FilterInternal(const SelectionVector &values, SelectionVector &sel, idx_t &count) override {
@@ -546,8 +581,13 @@ protected:
 			return;
 		}
 		const auto before_count = count;
+		const auto had_selection = sel.IsSet();
 		child->Filter(values, sel, count);
 		stats.get().Update(count, before_count);
+		if (!had_selection && !KeepOptionalSelection(stats.get(), count, before_count)) {
+			sel = SelectionVector();
+			count = before_count;
+		}
 	}
 
 private:

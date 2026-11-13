@@ -30,8 +30,13 @@ public:
 	void Filter(const SelectionVector &value_indices, SelectionVector &sel, idx_t &count);
 	void FilterConstant(idx_t value_index, idx_t &count);
 	bool CanSkipAll() const;
+	//! Whether this batch can be filtered without reading value indices. Does not advance adaptive feedback.
+	bool CanAcceptAll() const;
 
 protected:
+	virtual bool CanAcceptAllInternal() const {
+		return false;
+	}
 	virtual bool CanSkipAllInternal() const {
 		return false;
 	}

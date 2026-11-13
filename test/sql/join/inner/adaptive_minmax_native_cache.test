@@ -80,7 +80,7 @@ SELECT count(*),sum(p.n) FROM rle_frequency p JOIN numeric_build b ON p.w=b.w AN
 query II
 EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM rle_frequency p JOIN numeric_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
 ----
-analyzed_plan	<REGEX>:(?s).*rle_frequency[^}]*},\s*"intermediate_rows": 122862,.*
+analyzed_plan	<REGEX>:(?s).*rle_frequency[^}]*},\s*"intermediate_rows": 122880,.*
 
 query II
 EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM rle_recovery p JOIN numeric_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
@@ -90,7 +90,7 @@ analyzed_plan	<REGEX>:(?s).*rle_recovery[^}]*},\s*"intermediate_rows": 20480,.*
 query II
 EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM rle_segments p JOIN numeric_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
 ----
-analyzed_plan	<REGEX>:(?s).*rle_segments[^}]*},\s*"intermediate_rows": 122862,.*
+analyzed_plan	<REGEX>:(?s).*rle_segments[^}]*},\s*"intermediate_rows": 122880,.*
 
 query II
 SELECT count(*),sum(p.n) FROM rle_segments p JOIN numeric_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep AND p.k<>2900;
@@ -105,7 +105,7 @@ analyzed_plan	<REGEX>:(?s).*rle_segments[^}]*},\s*"intermediate_rows": 61482,.*
 query II
 EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM dict_frequency p JOIN string_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
 ----
-analyzed_plan	<REGEX>:(?s).*dict_frequency[^}]*},\s*"intermediate_rows": 122862,.*
+analyzed_plan	<REGEX>:(?s).*dict_frequency[^}]*},\s*"intermediate_rows": 122880,.*
 
 query II
 EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM dict_recovery p JOIN string_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;

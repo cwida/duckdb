@@ -92,6 +92,189 @@ static unique_ptr<ExpressionFilter> AdaptiveCacheFilter(bool mandatory) {
 	    ExpressionType::CONJUNCTION_AND, required->expr->Copy(), std::move(optional)));
 }
 
+TEST_CASE("Accept-all cache checks preserve adaptive recovery and mandatory masks", "[filter][adaptive_cache]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	float threshold;
+	idx_t vectors;
+	GetThresholdAndVectorsToCheck(SelectivityOptionalFilterType::MIN_MAX, threshold, vectors);
+	Vector dictionary(LogicalType::BIGINT, 2);
+	{
+		auto writer = FlatVector::Writer<int64_t>(dictionary, 2);
+		writer.WriteValue(1);
+		writer.WriteValue(3000);
+	}
+	SelectionVector codes(STANDARD_VECTOR_SIZE);
+	for (idx_t row = 0; row < STANDARD_VECTOR_SIZE; row++) {
+		codes.set_index(row, 1);
+	}
+	for (bool mandatory : {false, true}) {
+		auto filter = AdaptiveCacheFilter(mandatory);
+		auto state = TableFilterState::Initialize(*con.context, *filter);
+		auto oracle = TableFilterState::Initialize(*con.context, *filter);
+		auto cache = state->CreateCache(dictionary, dictionary.size());
+		REQUIRE_FALSE(cache->CanAcceptAll());
+		Vector input(Value::BIGINT(3000), count_t(STANDARD_VECTOR_SIZE));
+		for (idx_t batch = 0; batch < vectors; batch++) {
+			SelectionVector selected, expected;
+			idx_t count = STANDARD_VECTOR_SIZE, expected_count = count;
+			cache->Filter(codes, selected, count);
+			ColumnSegment::FilterSelection(expected, input, *oracle, STANDARD_VECTOR_SIZE, expected_count);
+			REQUIRE(count == expected_count);
+		}
+		// The mandatory mask distinguishes 1 from 3000 even while optional predicates are paused.
+		REQUIRE(cache->CanAcceptAll() == !mandatory);
+		for (idx_t batch = 0; batch < 2 * vectors; batch++) {
+			CAPTURE(mandatory, batch);
+			const auto accepts_all = cache->CanAcceptAll();
+			REQUIRE(cache->CanAcceptAll() == accepts_all);
+			SelectionVector selected, expected, no_codes;
+			idx_t count = STANDARD_VECTOR_SIZE, expected_count = count;
+			Vector tail(Value::BIGINT(1), count_t(STANDARD_VECTOR_SIZE));
+			cache->Filter(accepts_all ? no_codes : codes, selected, count);
+			// The encoded input must correspond to whichever code path is being tested.
+			ColumnSegment::FilterSelection(expected, input, *oracle, STANDARD_VECTOR_SIZE, expected_count);
+			REQUIRE(count == expected_count);
+			// Exercise rejection and recovery using the lower dictionary entry next.
+			for (idx_t row = 0; row < STANDARD_VECTOR_SIZE; row++) {
+				codes.set_index(row, 0);
+			}
+			count = expected_count = STANDARD_VECTOR_SIZE;
+			selected = SelectionVector();
+			expected = SelectionVector();
+			const auto tail_accepts_all = cache->CanAcceptAll();
+			cache->Filter(tail_accepts_all ? no_codes : codes, selected, count);
+			ColumnSegment::FilterSelection(expected, tail, *oracle, STANDARD_VECTOR_SIZE, expected_count);
+			REQUIRE(count == expected_count);
+			for (idx_t row = 0; row < STANDARD_VECTOR_SIZE; row++) {
+				codes.set_index(row, 1);
+			}
+		}
+		state.reset();
+		REQUIRE_FALSE(cache->CanAcceptAll());
+	}
+}
+
+TEST_CASE("Dense optional batches avoid selections while feedback measures the predicate", "[filter][adaptive_cache]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	float threshold;
+	idx_t vectors;
+	GetThresholdAndVectorsToCheck(SelectivityOptionalFilterType::MIN_MAX, threshold, vectors);
+	auto filter = AdaptiveCacheFilter(false);
+	auto state = TableFilterState::Initialize(*con.context, *filter);
+	auto oracle = TableFilterState::Initialize(*con.context, *filter);
+	Vector dictionary(LogicalType::BIGINT, 2);
+	{
+		auto writer = FlatVector::Writer<int64_t>(dictionary, 2);
+		writer.WriteValue(1);
+		writer.WriteValue(3000);
+	}
+	auto cache = state->CreateCache(dictionary, dictionary.size());
+	SelectionVector codes(STANDARD_VECTOR_SIZE);
+	// These two batches distinguish predicate feedback from the number of rows returned after bypassing.
+	const auto dense_count = idx_t(STANDARD_VECTOR_SIZE * double(threshold)) + 1;
+	const auto selective_count = idx_t(STANDARD_VECTOR_SIZE * (2 * double(threshold) - 1)) + 1;
+	if (dense_count > STANDARD_VECTOR_SIZE || selective_count >= dense_count ||
+	    double(dense_count + selective_count) / (2 * STANDARD_VECTOR_SIZE) >= threshold) {
+		// Small vectors cannot contain this near-full counterexample.
+		return;
+	}
+	REQUIRE(double(dense_count) / STANDARD_VECTOR_SIZE >= threshold);
+	REQUIRE(double(selective_count) / STANDARD_VECTOR_SIZE < threshold);
+	REQUIRE(double(dense_count + selective_count) / (2 * STANDARD_VECTOR_SIZE) < threshold);
+	REQUIRE(double(STANDARD_VECTOR_SIZE + selective_count) / (2 * STANDARD_VECTOR_SIZE) >= threshold);
+	for (idx_t batch = 0; batch < vectors; batch++) {
+		const auto accepted = batch % 2 == 0 ? dense_count : selective_count;
+		Vector input(LogicalType::BIGINT, STANDARD_VECTOR_SIZE);
+		{
+			auto writer = FlatVector::Writer<int64_t>(input, STANDARD_VECTOR_SIZE);
+			for (idx_t row = 0; row < STANDARD_VECTOR_SIZE; row++) {
+				codes.set_index(row, row < accepted ? 1 : 0);
+				writer.WriteValue(row < accepted ? 3000 : 1);
+			}
+		}
+		SelectionVector selected, expected;
+		idx_t count = STANDARD_VECTOR_SIZE, expected_count = count;
+		cache->Filter(codes, selected, count);
+		ColumnSegment::FilterSelection(expected, input, *oracle, STANDARD_VECTOR_SIZE, expected_count);
+		REQUIRE(count == (batch % 2 == 0 ? STANDARD_VECTOR_SIZE : selective_count));
+		REQUIRE(count == expected_count);
+		if (batch % 2 == 0) {
+			REQUIRE_FALSE(selected.IsSet());
+			REQUIRE_FALSE(expected.IsSet());
+		}
+	}
+	REQUIRE_FALSE(cache->CanAcceptAll());
+	for (idx_t row = 0; row < STANDARD_VECTOR_SIZE; row++) {
+		codes.set_index(row, row == 0 ? 0 : 1);
+	}
+	state = TableFilterState::Initialize(*con.context, *filter);
+	cache = state->CreateCache(dictionary, dictionary.size());
+	SelectionVector selected;
+	idx_t prefix_count = STANDARD_VECTOR_SIZE - 1;
+	if (double(prefix_count - 1) / prefix_count < threshold) {
+		return;
+	}
+	cache->Filter(codes, selected, prefix_count);
+	REQUIRE(prefix_count == STANDARD_VECTOR_SIZE - 1);
+	REQUIRE_FALSE(selected.IsSet());
+}
+
+TEST_CASE("Dense optional selection bypass preserves mandatory filters in either order", "[filter][adaptive_cache]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	float threshold;
+	idx_t vectors;
+	GetThresholdAndVectorsToCheck(SelectivityOptionalFilterType::MIN_MAX, threshold, vectors);
+	if (STANDARD_VECTOR_SIZE <= 2 || double(STANDARD_VECTOR_SIZE - 2) / STANDARD_VECTOR_SIZE < threshold) {
+		return;
+	}
+	auto lower =
+	    ExpressionFilter::CreateComparisonFilter(ExpressionType::COMPARE_GREATERTHANOREQUALTO, Value::BIGINT(2700));
+	auto required =
+	    ExpressionFilter::CreateComparisonFilter(ExpressionType::COMPARE_GREATERTHANOREQUALTO, Value::BIGINT(2000));
+	auto optional =
+	    CreateSelectivityOptionalFilterExpression(lower->expr->Copy(), LogicalType::BIGINT, threshold, vectors);
+	Vector dictionary(LogicalType::BIGINT, 3), input(LogicalType::BIGINT, STANDARD_VECTOR_SIZE);
+	{
+		auto writer = FlatVector::Writer<int64_t>(dictionary, 3);
+		writer.WriteValue(1);
+		writer.WriteValue(2500);
+		writer.WriteValue(3000);
+	}
+	SelectionVector codes(STANDARD_VECTOR_SIZE);
+	{
+		auto writer = FlatVector::Writer<int64_t>(input, STANDARD_VECTOR_SIZE);
+		for (idx_t row = 0; row < STANDARD_VECTOR_SIZE; row++) {
+			codes.set_index(row, row < 2 ? row : 2);
+			writer.WriteValue(row == 0 ? 1 : (row == 1 ? 2500 : 3000));
+		}
+	}
+	for (bool mandatory_first : {false, true}) {
+		ExpressionFilter filter(make_uniq<BoundConjunctionExpression>(
+		    ExpressionType::CONJUNCTION_AND, mandatory_first ? required->expr->Copy() : optional->Copy(),
+		    mandatory_first ? optional->Copy() : required->expr->Copy()));
+		auto state = TableFilterState::Initialize(*con.context, filter);
+		auto oracle = TableFilterState::Initialize(*con.context, filter);
+		auto cache = state->CreateCache(dictionary, dictionary.size());
+		for (idx_t batch = 0; batch <= vectors; batch++) {
+			CAPTURE(mandatory_first, batch);
+			SelectionVector selected, expected;
+			idx_t count = STANDARD_VECTOR_SIZE, expected_count = count;
+			cache->Filter(codes, selected, count);
+			ColumnSegment::FilterSelection(expected, input, *oracle, STANDARD_VECTOR_SIZE, expected_count);
+			const auto rejected = mandatory_first && batch < vectors ? 2 : 1;
+			REQUIRE(count == STANDARD_VECTOR_SIZE - rejected);
+			REQUIRE(count == expected_count);
+			for (idx_t row = 0; row < count; row++) {
+				REQUIRE(selected.get_index(row) == expected.get_index(row));
+				REQUIRE(selected.get_index(row) != 0);
+			}
+		}
+	}
+}
+
 TEST_CASE("Filter cache capabilities reject mutable, throwing, and unsupported adaptive expressions",
           "[filter][adaptive_cache]") {
 	DuckDB db(nullptr);

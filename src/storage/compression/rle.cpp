@@ -595,6 +595,12 @@ void RLEFilter(ColumnSegment &segment, ColumnScanState &state, idx_t vector_coun
 		sel_count = 0;
 		return;
 	}
+	if (scan_state.filter_cache->CanAcceptAll()) {
+		SelectionVector no_values;
+		scan_state.filter_cache->Filter(no_values, sel, sel_count);
+		RLEScan<T>(segment, state, vector_count, result);
+		return;
+	}
 	const auto current_run = scan_state.GetCurrentRun();
 	if (CanEmitConstantVector<true>(scan_state.position_in_entry, current_run.length, vector_count)) {
 		scan_state.filter_cache->FilterConstant(scan_state.entry_pos, sel_count);

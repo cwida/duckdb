@@ -35,14 +35,14 @@ JOIN frequency_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
 ----
 122820	122820
 
-# Backoff admits occasional non-matches; dictionary-only sampling would filter all 60.
+# Dense optional results preserve the full batch; the exact join still removes non-matches.
 query II
 EXPLAIN (ANALYZE, FORMAT JSON)
 SELECT count(*),sum(p.n)
 FROM read_parquet('{TEST_DIR}/adaptive_minmax_frequency.parquet') p
 JOIN frequency_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
 ----
-analyzed_plan	<REGEX>:(?s).*"Filename\(s\)": "[^"]*adaptive_minmax_frequency.parquet"[^}]*},\s*"intermediate_rows": 1228[3-7][0-9],.*
+analyzed_plan	<REGEX>:(?s).*"Filename\(s\)": "[^"]*adaptive_minmax_frequency.parquet"[^}]*},\s*"intermediate_rows": 122880,.*
 
 statement ok
 RESET disabled_optimizers;
