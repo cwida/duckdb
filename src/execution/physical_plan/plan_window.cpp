@@ -300,8 +300,11 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalWindow &op) {
 			}
 
 			// If it is in a different partition, skip it
+			// Equivalent partitionings may still differ in length (e.g. PARTITION BY a, a),
+			// and the shared sort layout is built from a single expression.
 			const auto &over_expr = op.expressions[over_idx]->Cast<BoundWindowExpression>();
-			if (!over_expr.PartitionsAreEquivalent(wexpr)) {
+			if (!over_expr.PartitionsAreEquivalent(wexpr) ||
+			    over_expr.Partitions().size() != wexpr.Partitions().size()) {
 				unprocessed.emplace_back(expr_idx);
 				continue;
 			}

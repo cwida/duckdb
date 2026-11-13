@@ -1,0 +1,201 @@
+# name: test/sql/window/test_duplicate_partition_count.test
+# description: Window functions whose partitionings are equivalent but of different lengths
+# group: [window]
+
+statement ok
+CREATE TABLE src(a INTEGER, b INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO src VALUES (1, 1, 10), (1, 2, 20), (2, 1, 30), (NULL, 1, 40), (NULL, 1, 50);
+
+# Functions that cannot become a self-join have to share the partitioning correctly
+query IIII
+SELECT
+	a,
+	v,
+	row_number() OVER (PARTITION BY a, a ORDER BY v) AS rn_aa,
+	row_number() OVER (PARTITION BY a, a, a ORDER BY v) AS rn_aaa
+FROM src
+ORDER BY v;
+----
+1	10	1	1
+1	20	2	2
+2	30	1	1
+NULL	40	1	1
+NULL	50	2	2
+
+# The shorter partitioning first
+query IIII
+SELECT
+	a,
+	v,
+	lag(v) OVER (PARTITION BY a ORDER BY v) AS lag_a,
+	lag(v) OVER (PARTITION BY a, a ORDER BY v) AS lag_aa
+FROM src
+ORDER BY v;
+----
+1	10	NULL	NULL
+1	20	10	10
+2	30	NULL	NULL
+NULL	40	NULL	NULL
+NULL	50	40	40
+
+# ROWS framing keeps the aggregates out of the self-join optimizer
+query IIII
+SELECT
+	a,
+	v,
+	sum(v) OVER (PARTITION BY a, a ORDER BY v ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s_aa,
+	sum(v) OVER (PARTITION BY a, a, a ORDER BY v ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s_aaa
+FROM src
+ORDER BY v;
+----
+1	10	10	10
+1	20	30	30
+2	30	30	30
+NULL	40	40	40
+NULL	50	90	90
+
+# Three different lengths of the same partitioning
+query IIIII
+SELECT
+	a,
+	v,
+	row_number() OVER (PARTITION BY a, a ORDER BY v) AS rn_aa,
+	row_number() OVER (PARTITION BY a ORDER BY v) AS rn_a,
+	row_number() OVER (PARTITION BY a, a, a ORDER BY v) AS rn_aaa
+FROM src
+ORDER BY v;
+----
+1	10	1	1	1
+1	20	2	2	2
+2	30	1	1	1
+NULL	40	1	1	1
+NULL	50	2	2	2
+
+# Duplicates mixed with a second distinct expression
+query IIIII
+SELECT
+	a,
+	b,
+	v,
+	rank() OVER (PARTITION BY b, a, b ORDER BY v) AS rk_bab,
+	rank() OVER (PARTITION BY a, b ORDER BY v) AS rk_ab
+FROM src
+ORDER BY v;
+----
+1	1	10	1	1
+1	2	20	1	1
+2	1	30	1	1
+NULL	1	40	1	1
+NULL	1	50	2	2
+
+# A duplicated expression must not widen a distinct partitioning
+query IIII
+SELECT
+	a,
+	v,
+	sum(v) OVER (PARTITION BY a, a) AS w_aa,
+	sum(v) OVER (PARTITION BY a, b) AS w_ab
+FROM src
+ORDER BY v;
+----
+1	10	30	10
+1	20	30	20
+2	30	30	30
+NULL	40	90	90
+NULL	50	90	90
+
+statement ok
+CREATE TABLE issue(id BIGINT, name VARCHAR, created_at VARCHAR);
+
+statement ok
+INSERT INTO issue VALUES (NULL, 'a', ''), (2, 'Zed', '');
+
+query IIII
+SELECT
+	name,
+	id,
+	bit_and(id) OVER (PARTITION BY id, created_at) AS w_and,
+	bit_or(id) OVER (PARTITION BY created_at, created_at) AS w_or
+FROM issue
+ORDER BY name;
+----
+Zed	2	2	2
+a	NULL	NULL	2
+
+# The self-join optimizer still applies to duplicated partition keys
+query II
+EXPLAIN
+SELECT
+	a,
+	sum(v) OVER (PARTITION BY a, a) AS w_aa,
+	sum(v) OVER (PARTITION BY a) AS w_a
+FROM src;
+----
+physical_plan	<REGEX>:.*Join Type: INNER.*
+
+query II
+EXPLAIN
+SELECT a, sum(v) OVER (PARTITION BY a, a, a) AS w_aaa FROM src;
+----
+physical_plan	<REGEX>:.*Join Type: INNER.*
+
+# Same partition set and the same length, but different multiplicities.
+# PARTITION BY is set-semantics, so a,a,b and a,b,b are both a partitioning by
+# (a, b): equivalent AND equal in length, so they legitimately share one
+# physical window. This is what makes count equality the right invariant rather
+# than requiring identical partition lists.
+query IIIII
+SELECT
+	a,
+	b,
+	v,
+	row_number() OVER (PARTITION BY a, a, b ORDER BY v) AS rn_aab,
+	row_number() OVER (PARTITION BY a, b, b ORDER BY v) AS rn_abb
+FROM src
+ORDER BY v;
+----
+1	1	10	1	1
+1	2	20	1	1
+2	1	30	1	1
+NULL	1	40	1	1
+NULL	1	50	2	2
+
+# The same shape under an aggregate, and against the two-expression form it
+# must agree with.
+query IIIII
+SELECT
+	a,
+	b,
+	v,
+	sum(v) OVER (PARTITION BY a, a, b) AS s_aab,
+	sum(v) OVER (PARTITION BY b, b, a) AS s_bba
+FROM src
+ORDER BY v;
+----
+1	1	10	10	10
+1	2	20	20	20
+2	1	30	30	30
+NULL	1	40	90	90
+NULL	1	50	90	90
+
+# Differing multiplicities that also differ in length must still be kept apart.
+# The shorter partitioning has to come first: the shared sort layout is built
+# from whichever expression is encountered first, so only that order makes the
+# longer list index past the end of it.
+query IIIII
+SELECT
+	a,
+	b,
+	v,
+	row_number() OVER (PARTITION BY a, b ORDER BY v) AS rn_ab,
+	row_number() OVER (PARTITION BY a, a, b ORDER BY v) AS rn_aab
+FROM src
+ORDER BY v;
+----
+1	1	10	1	1
+1	2	20	1	1
+2	1	30	1	1
+NULL	1	40	1	1
+NULL	1	50	2	2
