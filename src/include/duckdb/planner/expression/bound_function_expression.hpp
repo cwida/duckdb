@@ -21,8 +21,8 @@ public:
 
 public:
 	BoundFunctionExpression(BoundScalarFunction bound_function, vector<unique_ptr<Expression>> arguments,
-	                        cow_ptr<FunctionData> bind_info, bool is_operator = false,
-	                        Identifier alias = Identifier(), QueryLocation location = QueryLocation());
+	                        cow_ptr<FunctionData> bind_info, bool is_operator = false, Identifier alias = Identifier(),
+	                        QueryLocation location = QueryLocation());
 
 public:
 	const BoundScalarFunction &Function() const {
