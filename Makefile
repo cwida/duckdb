@@ -661,12 +661,14 @@ allunit: release
 endif
 
 unittest_threadsan: export TSAN_OPTIONS ?= "suppressions=./.sanitizer-thread-suppressions.txt"
+unittest_threadsan: export DUCKDB_TEST_RAW_OUTPUT_TAIL_LINES ?= "0"
 unittest_threadsan: unittest_reldebug
 	build/reldebug/test/run $(UNITTEST_HUGE_FLAGS) --test-config test/configs/threadsan.json "[intraquery],[interquery],[detailed_profiler],test/sql/tpch/tpch_sf01.test_slow" $(T)
 	build/reldebug/test/run $(UNITTEST_HUGE_FLAGS) --test-config test/configs/threadsan.json --test-flags="--force-storage --force-reload" "[interquery]" $(T)
 
 .PHONY: unittest_threadsan_extra
 unittest_threadsan_extra: export TSAN_OPTIONS ?= "suppressions=./.sanitizer-thread-suppressions.txt"
+unittest_threadsan_extra: export DUCKDB_TEST_RAW_OUTPUT_TAIL_LINES ?= "0"
 unittest_threadsan_extra: unittest_reldebug
 	build/reldebug/test/run $(UNITTEST_HUGE_FLAGS) --test-config test/configs/threadsan.json --test-flags="--force-storage" "[interquery]" $(T)
 

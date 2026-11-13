@@ -36,6 +36,18 @@ def strip_ansi_lines(lines: list[str]) -> list[str]:
     return [run_tests.strip_ansi(line) for line in lines]
 
 
+def parsed_failure_lines(lines: list[str]) -> list[str]:
+    # the parsed failure description, without the raw unittest output dump that may follow it
+    stripped = strip_ansi_lines(lines)
+    for idx, line in enumerate(stripped):
+        if line.startswith("--- raw unittest"):
+            stripped = stripped[:idx]
+            break
+    while stripped and not stripped[-1].strip():
+        stripped.pop()
+    return stripped
+
+
 class RunTestsScriptTest(unittest.TestCase):
     def run_timeout_fixture(self, modes, *args):
         with tempfile.TemporaryDirectory() as directory:
@@ -1904,7 +1916,7 @@ test cases: 1 | 1 failed
 """
         lines, reproduce_batch = run_tests.summarize_failure_output(None, stdout, "", batch, returncode=-11)
         self.assertEqual(
-            strip_ansi_lines(lines)[1:],
+            parsed_failure_lines(lines)[1:],
             [
                 "error: FAIL test/sql/crash.test",
                 "",
@@ -1914,6 +1926,8 @@ test cases: 1 | 1 failed
                 "/duckdb/build/release/src/libduckdb.so(duckdb::Execute()+0x34) [0x5678]",
             ],
         )
+        # a crash kills the unittest process mid-run, so the raw output is dumped as well
+        self.assertIn("--- raw unittest stdout ---", strip_ansi_lines(lines))
         self.assertEqual(reproduce_batch, batch)
 
     def test_signal_only_failure_prefers_returncode_over_unrelated_stdout(self):
@@ -1926,13 +1940,17 @@ test cases: 1 | 1 failed
             returncode=-6,
         )
         self.assertEqual(
-            strip_ansi_lines(lines)[1:],
+            parsed_failure_lines(lines)[1:],
             [
                 "error: FAIL test/sql/crash.test",
                 "",
                 run_tests.format_signal_summary(-6),
             ],
         )
+        # the process died from a crash signal, so the raw output is dumped as well
+        stripped_lines = strip_ansi_lines(lines)
+        self.assertIn("--- raw unittest stdout ---", stripped_lines)
+        self.assertIn("before abort", stripped_lines)
         self.assertEqual(reproduce_batch, ["test/sql/crash.test"])
 
     def test_signal_only_failure_uses_last_started_test_for_reproduce(self):
@@ -1954,13 +1972,14 @@ test cases: 1 | 1 failed
             returncode=-11,
         )
         self.assertEqual(
-            strip_ansi_lines(lines)[1:],
+            parsed_failure_lines(lines)[1:],
             [
                 "error: FAIL /tmp/second.test",
                 "",
                 run_tests.format_signal_summary(-11),
             ],
         )
+        self.assertIn("--- raw unittest stdout ---", strip_ansi_lines(lines))
         self.assertEqual(reproduce_batch, ["/tmp/second.test"])
 
     def test_sanitizer_output_is_preferred_over_signal_summary(self):
@@ -1978,7 +1997,7 @@ READ of size 4 at 0xdeadbeef thread T0
             returncode=-6,
         )
         self.assertEqual(
-            strip_ansi_lines(lines)[1:],
+            parsed_failure_lines(lines)[1:],
             [
                 "error: FAIL test/sql/asan.test",
                 "",
@@ -1989,6 +2008,8 @@ READ of size 4 at 0xdeadbeef thread T0
         )
         self.assertEqual(reproduce_batch, ["test/sql/asan.test"])
         self.assertNotIn(run_tests.format_signal_summary(-6), lines)
+        # the sanitizer aborted the process, so the raw output is dumped as well
+        self.assertIn("--- raw unittest stderr ---", strip_ansi_lines(lines))
 
     def test_thread_sanitizer_output_is_not_truncated(self):
         batch = ["test/sql/threadsan.test"]
@@ -2172,6 +2193,28 @@ assertions: 16 | 15 passed | 1 failed
         self.assertNotIn("[TEST_EVENT]", "\n".join(stripped_lines))
         self.assertEqual(reproduce_batch, ["/tmp/a.test", "/tmp/b.test"])
 
+    def test_raw_output_tail_line_count_env(self):
+        # DUCKDB_TEST_RAW_OUTPUT_TAIL_LINES controls how much of the raw unittest output is dumped:
+        # the default only shows the tail, while 0 dumps the full output (used by the ThreadSanitizer job)
+        stderr = "\n".join(f"stderr line {i}" for i in range(120)) + "\n"
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DUCKDB_TEST_RAW_OUTPUT_TAIL_LINES", None)
+            lines = run_tests.render_raw_output_tail("", stderr)
+        default_lines = strip_ansi_lines(lines)
+        # by default only the last 100 lines are dumped, with a truncation header
+        self.assertIn("--- raw unittest stderr (last 100 of 120 lines) ---", default_lines)
+        self.assertIn("stderr line 20", default_lines)
+        self.assertNotIn("stderr line 0", default_lines)
+
+        with mock.patch.dict(os.environ, {"DUCKDB_TEST_RAW_OUTPUT_TAIL_LINES": "0"}, clear=False):
+            lines = run_tests.render_raw_output_tail("", stderr)
+        full_lines = strip_ansi_lines(lines)
+        # with 0 the whole output is dumped, without a truncation header
+        self.assertIn("--- raw unittest stderr ---", full_lines)
+        self.assertIn("stderr line 0", full_lines)
+        self.assertIn("stderr line 119", full_lines)
+
     def test_informative_failures_do_not_dump_raw_output(self):
         batch = ["/tmp/fail.test"]
         stderr = """
@@ -2183,9 +2226,46 @@ Wrong result in query! (/tmp/fail.test:25)!
 Mismatch on row 1, column 1
 [3, 1, 2] <> [1, 2, 3]
 """
-        lines, _ = run_tests.summarize_failure_output(None, "", stderr, batch)
+        lines, _ = run_tests.summarize_failure_output(None, "", stderr, batch, returncode=1)
         stripped_lines = strip_ansi_lines(lines)
         self.assertFalse(any(line.startswith("--- raw unittest") for line in stripped_lines))
+
+    def test_signal_crash_failure_dumps_raw_output(self):
+        # a crash signal kills the unittest process mid-run: the parsed output only shows the crash site,
+        # so the raw output (which can hold the report that explains the crash) is dumped as well
+        batch = ["test/sql/aggregate/aggregates/test_sem.test"]
+        stdout = """
+[0/1] (0%): test/sql/aggregate/aggregates/test_sem.test
+due to a fatal error condition:
+  SIGSEGV - Segmentation violation signal
+
+/duckdb/build/reldebug/src/libduckdb.so(duckdb::RowOperations::CombineStates()+0x12c) [0x1234]
+"""
+        stderr = """
+WARNING: ThreadSanitizer: data race (pid=123)
+  Read of size 8 by thread T2:
+    #0 duckdb::RowOperations::CombineStates()
+
+SUMMARY: ThreadSanitizer: data race in duckdb::RowOperations::CombineStates()
+"""
+        lines, reproduce_batch = run_tests.summarize_failure_output(None, stdout, stderr, batch, returncode=-11)
+        stripped_lines = strip_ansi_lines(lines)
+        self.assertIn("SIGSEGV - Segmentation violation signal", stripped_lines)
+        self.assertIn("--- raw unittest stdout ---", stripped_lines)
+        self.assertIn("--- raw unittest stderr ---", stripped_lines)
+        self.assertIn("SUMMARY: ThreadSanitizer: data race in duckdb::RowOperations::CombineStates()", stripped_lines)
+        self.assertEqual(reproduce_batch, batch)
+
+    def test_runner_stop_signals_are_not_crashes(self):
+        # SIGTERM/SIGINT/SIGKILL are sent by the runner to stop a batch - they must not dump raw output
+        for stop_signal in (-15, -2, -9, -1):
+            self.assertIsNone(run_tests.crash_signal_summary(stop_signal))
+        self.assertEqual(run_tests.crash_signal_summary(-11), run_tests.format_signal_summary(-11))
+        self.assertEqual(run_tests.crash_signal_summary(-6), run_tests.format_signal_summary(-6))
+        # a regular failed test exits normally, and so does a successful one
+        self.assertIsNone(run_tests.crash_signal_summary(1))
+        self.assertIsNone(run_tests.crash_signal_summary(0))
+        self.assertIsNone(run_tests.crash_signal_summary(None))
 
     def test_generic_failure_merges_query_diagnostics_with_assertion_failure(self):
         remote_optimizer_path = REPO_ROOT / "test" / "extension" / "test_remote_optimizer.cpp"

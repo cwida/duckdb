@@ -1293,6 +1293,8 @@ jobs:
       DUCKDB_COMMIT: ${{ needs.prepare.outputs.duckdb_commit }}
       TSAN_OPTIONS: suppressions=.sanitizer-thread-suppressions.txt:external_symbolizer_path=/usr/bin/llvm-symbolizer
       DUCKDB_TEST_DESCRIPTION: 'Tests run with thread sanitizer.'
+      # dump the complete raw unittest stderr so full ThreadSanitizer race reports reach the CI logs
+      DUCKDB_TEST_RAW_OUTPUT_TAIL_LINES: '0'
 
     steps:
     - name: "Checkout"

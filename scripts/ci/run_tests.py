@@ -102,6 +102,7 @@ class FailureInfo:
     actual_result_lines: list[str]
     detail_lines: list[str]
     timeout_seconds: float | None
+    crash_signal: str | None
     reproduce_batch: list[str]
 
 
@@ -992,16 +993,35 @@ def extract_interesting_failure_block(lines: list[str]):
     return []
 
 
-def format_signal_summary(returncode: int | None):
+# signals the runner sends itself to stop a batch - those are not crashes
+NON_CRASH_SIGNALS = frozenset({"SIGINT", "SIGTERM", "SIGKILL", "SIGHUP"})
+
+
+def signal_name_from_returncode(returncode: int | None):
     if returncode is None or returncode >= 0:
         return None
     signal_number = -returncode
     try:
-        signal_name = signal.Signals(signal_number).name
+        return signal.Signals(signal_number).name
     except ValueError:
-        signal_name = f"SIG{signal_number}"
-    description = signal.strsignal(signal_number) or "terminated by signal"
+        return f"SIG{signal_number}"
+
+
+def format_signal_summary(returncode: int | None):
+    signal_name = signal_name_from_returncode(returncode)
+    if signal_name is None:
+        return None
+    description = signal.strsignal(-returncode) or "terminated by signal"
     return f"{signal_name} - {description}"
+
+
+def crash_signal_summary(returncode: int | None):
+    # a crash signal means the unittest process died mid-run - the parsed output only shows the crash site,
+    # while the raw output can hold the report that explains it (e.g. a ThreadSanitizer race report)
+    signal_name = signal_name_from_returncode(returncode)
+    if signal_name is None or signal_name in NON_CRASH_SIGNALS:
+        return None
+    return format_signal_summary(returncode)
 
 
 def retarget_failing_test(new_test_name: str | None, test_name: str | None, line_number: int | None):
@@ -1043,6 +1063,7 @@ def parse_failure_info(message: str | None, stdout: str, stderr: str, batch, ret
                 if event.get("event") == "error" or event.get("status") == "error"
             ],
             timeout_seconds=float(re.search(r"after ([0-9]+(?:\.[0-9]+)?) seconds", message).group(1)),
+            crash_signal=None,
             reproduce_batch=reproduce_batch,
         )
 
@@ -1078,6 +1099,7 @@ def parse_failure_info(message: str | None, stdout: str, stderr: str, batch, ret
             actual_result_lines=stderr_info.actual_result_lines,
             detail_lines=[],
             timeout_seconds=None,
+            crash_signal=None,
             reproduce_batch=reproduce_batch,
         )
 
@@ -1152,6 +1174,7 @@ def parse_failure_info(message: str | None, stdout: str, stderr: str, batch, ret
         actual_result_lines=[],
         detail_lines=detail_lines,
         timeout_seconds=None,
+        crash_signal=crash_signal_summary(returncode),
         reproduce_batch=reproduce_batch,
     )
 
@@ -1189,6 +1212,18 @@ def render_failure_lines(failure: FailureInfo):
 
 
 RAW_OUTPUT_TAIL_LINE_COUNT = 100
+# Set DUCKDB_TEST_RAW_OUTPUT_TAIL_LINES to 0 to dump the full raw unittest output instead of just the tail
+RAW_OUTPUT_TAIL_LINE_COUNT_ENV = "DUCKDB_TEST_RAW_OUTPUT_TAIL_LINES"
+
+
+def raw_output_tail_line_count() -> int:
+    value = os.environ.get(RAW_OUTPUT_TAIL_LINE_COUNT_ENV, "")
+    if not value:
+        return RAW_OUTPUT_TAIL_LINE_COUNT
+    try:
+        return max(0, int(value))
+    except ValueError:
+        return RAW_OUTPUT_TAIL_LINE_COUNT
 
 
 def is_low_information_failure(failure: FailureInfo):
@@ -1203,6 +1238,7 @@ def is_low_information_failure(failure: FailureInfo):
 
 def render_raw_output_tail(stdout: str, stderr: str):
     lines = []
+    tail_line_count = raw_output_tail_line_count()
     for stream_name, output in (("stdout", stdout), ("stderr", stderr)):
         stream_lines = strip_test_event_lines(
             [line.rstrip() for line in strip_ansi(normalize_output(output)).splitlines()]
@@ -1212,7 +1248,7 @@ def render_raw_output_tail(stdout: str, stderr: str):
         if not stream_lines:
             lines.extend(["", f"--- raw unittest {stream_name}: empty ---"])
             continue
-        tail = stream_lines[-RAW_OUTPUT_TAIL_LINE_COUNT:]
+        tail = stream_lines if tail_line_count == 0 else stream_lines[-tail_line_count:]
         header = f"--- raw unittest {stream_name}"
         if len(tail) < len(stream_lines):
             header += f" (last {len(tail)} of {len(stream_lines)} lines)"
@@ -1222,7 +1258,9 @@ def render_raw_output_tail(stdout: str, stderr: str):
 
 def render_failure_lines_with_diagnostics(failure: FailureInfo, stdout: str, stderr: str):
     lines = render_failure_lines(failure)
-    if is_low_information_failure(failure):
+    # low-information failures have nothing useful parsed at all; a crash has a parsed crash site, but the
+    # raw output can still hold what explains it (e.g. a ThreadSanitizer race report printed before the crash)
+    if is_low_information_failure(failure) or failure.crash_signal is not None:
         lines = [*lines, *render_raw_output_tail(stdout, stderr)]
     return lines
 
