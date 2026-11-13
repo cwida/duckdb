@@ -7,9 +7,12 @@ on:
       - .github/workflows/WindowsStaticExports.yml
       - CMakeLists.txt
       - src/CMakeLists.txt
+      - extension/extension_build_tools.cmake
       - scripts/strip_coff_exports.py
       - scripts/ci/test_strip_coff_exports.py
       - scripts/ci/check_windows_static_exports.py
+      - scripts/ci/record_test_batch.py
+      - scripts/ci/test_record_test_batch.py
 
 permissions:
   contents: read
@@ -55,7 +58,7 @@ jobs:
           host_arch: x64
       - name: Test archive export removal
         shell: bash
-        run: python -m unittest scripts.ci.test_strip_coff_exports
+        run: python -m unittest scripts.ci.test_strip_coff_exports scripts.ci.test_record_test_batch
       - name: Prepare Windows headers
         if: matrix.arch == 'amd64'
         shell: bash
@@ -71,7 +74,10 @@ jobs:
       - name: Unit tests with static exports
         if: matrix.arch == 'amd64'
         shell: bash
-        run: python test/run.py 2>&1 | tee windows-exports-before-tests.log
+        run: >-
+          python test/run.py
+          --test-command "python scripts/ci/record_test_batch.py --output windows-exports-before-failures -- {binary} {flags} --use-colour yes -f {test_list}"
+          2>&1 | tee windows-exports-before-tests.log
       - name: Relink without static exports
         id: relink
         if: ${{ !cancelled() && steps.baseline.outcome == 'success' }}
@@ -85,19 +91,16 @@ jobs:
         id: unit_tests
         if: ${{ !cancelled() && matrix.arch == 'amd64' && steps.relink.outcome == 'success' }}
         shell: bash
-        run: python test/run.py 2>&1 | tee windows-exports-after-tests.log
-      - name: Record runtime crash reproductions
+        run: >-
+          python test/run.py
+          --test-command "python scripts/ci/record_test_batch.py --output windows-exports-after-failures -- {binary} {flags} --use-colour yes -f {test_list}"
+          2>&1 | tee windows-exports-after-tests.log
+      - name: Save failing runtime binaries
         if: ${{ !cancelled() && steps.unit_tests.outcome == 'failure' }}
         shell: bash
         run: |
           cp test/unittest.exe windows-exports-crash-unittest.exe
           cp duckdb.exe windows-exports-crash-duckdb.exe
-          for test in \
-            test/common/test_cast_hugeint.test \
-            test/extension/load_extension.test \
-            test/sql/export/parquet/export_parquet_enum.test; do
-            ./test/unittest.exe "$test" --output-sql=true 2>&1 | tee "windows-exports-crash-$(basename "$test").log" || true
-          done
       - name: Load each extension with no extensions linked into the host
         if: ${{ !cancelled() && matrix.arch == 'amd64' && steps.relink.outcome == 'success' }}
         shell: bash
@@ -113,6 +116,7 @@ jobs:
           path: |
             windows-exports-*.json
             windows-exports-*.log
+            windows-exports-*-failures
             windows-exports-crash-*.exe
             test/extension/*.duckdb_extension
             src/duckdb.dll

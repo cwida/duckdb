@@ -92,14 +92,18 @@ if(WIN32
   if(NOT Python3_FOUND)
     message(FATAL_ERROR "Removing Windows static exports requires Python3")
   endif()
-  # The shared library retains the original objects and their DLL exports.
+  # Reuse the core objects while keeping the original archive's host exports.
+  add_library(duckdb_static_no_exports STATIC EXCLUDE_FROM_ALL
+              ${ALL_OBJECT_FILES} ${LINK_OBJECTS})
+  target_link_libraries(duckdb_static_no_exports PUBLIC ${DUCKDB_SYSTEM_LIBS})
+  link_threads(duckdb_static_no_exports PUBLIC)
   set(STRIP_COFF_EXPORTS "${PROJECT_SOURCE_DIR}/scripts/strip_coff_exports.py")
   add_custom_command(
-    TARGET duckdb_static
+    TARGET duckdb_static_no_exports
     POST_BUILD
     COMMAND "${Python3_EXECUTABLE}" "${STRIP_COFF_EXPORTS}"
-            "$<TARGET_FILE:duckdb_static>"
-    COMMENT "Removing DLL exports from duckdb_static"
+            "$<TARGET_FILE:duckdb_static_no_exports>"
+    COMMENT "Removing core DLL exports from the Windows extension archive"
     VERBATIM)
 endif()
 

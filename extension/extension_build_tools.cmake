@@ -305,7 +305,11 @@ function(build_loadable_extension_directory NAME ABI_TYPE OUTPUT_DIRECTORY EXTEN
         # TODO strip all symbols except the capi init
     elseif (EXTENSION_STATIC_BUILD)
         if (WIN32)
-            target_link_libraries(${TARGET_NAME} duckdb_static ${DUCKDB_EXTRA_LINK_FLAGS})
+            if(TARGET duckdb_static_no_exports)
+                target_link_libraries(${TARGET_NAME} duckdb_static_no_exports ${DUCKDB_EXTRA_LINK_FLAGS})
+            else()
+                target_link_libraries(${TARGET_NAME} duckdb_static ${DUCKDB_EXTRA_LINK_FLAGS})
+            endif()
             if (MSVC)
                 # link.exe/lld-link only default these on without /DEBUG; pin the --gc-sections equivalent
                 target_link_options(${TARGET_NAME} PRIVATE "$<$<CONFIG:Release>:/OPT:REF;/OPT:ICF>")

@@ -36,8 +36,10 @@ def compare(before, after):
         raise ValueError("duckdb.dll lost its C API exports")
     if before["dll"]["exports"] != after["dll"]["exports"]:
         raise ValueError("duckdb.dll exports changed")
-    if "duckdb_open" in after["cli"]["exports"]:
-        raise ValueError("The static CLI still exports duckdb_open")
+    if before["cli"]["exports"] != after["cli"]["exports"]:
+        raise ValueError("The CLI exports changed")
+    if before["cli"]["bytes"] != after["cli"]["bytes"]:
+        raise ValueError("The CLI size changed")
     lines = [
         "| Binary | Bytes before -> after | Reduction | Gzip bytes before -> after | Reduction | Exports before -> after |",
         "|---|---:|---:|---:|---:|---:|",
