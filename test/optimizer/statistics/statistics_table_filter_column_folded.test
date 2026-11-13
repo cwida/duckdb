@@ -1,0 +1,86 @@
+# name: test/optimizer/statistics/statistics_table_filter_column_folded.test
+# description: A table filter keeps referencing its column when statistics fold the column away
+# group: [statistics]
+
+# Empty-table statistics must not leave a column-free filter for the next propagation pass.
+statement ok
+CREATE TABLE t0(c0 INTEGER);
+
+query I
+SELECT 1 FROM t0 WHERE (c0 IS NULL) IN (NULL, true) AND (c0 = 1 OR 0 IN (SELECT 0));
+----
+
+# Nullable input must still return the matching row.
+statement ok
+INSERT INTO t0 VALUES (NULL), (5), (1);
+
+query I
+SELECT count(*) FROM t0 WHERE (c0 IS NULL) IN (NULL, true) AND (c0 = 1 OR 0 IN (SELECT 0));
+----
+1
+
+# a column that cannot hold NULL folds `c0 IS NULL` into false
+statement ok
+CREATE TABLE t1(c0 INTEGER NOT NULL);
+
+statement ok
+INSERT INTO t1 VALUES (5), (1);
+
+query I
+SELECT count(*) FROM t1 WHERE (c0 IS NULL) IN (NULL, true) AND (c0 = 1 OR 0 IN (SELECT 0));
+----
+0
+
+# the same queries without statistics propagation produce the same results
+foreach disabled_opt 'statistics_propagation' ''
+
+statement ok
+SET disabled_optimizers to {disabled_opt};
+
+query I
+SELECT count(*) FROM t0 WHERE (c0 IS NULL) IN (NULL, true) AND (c0 = 1 OR 0 IN (SELECT 0));
+----
+1
+
+query I
+SELECT count(*) FROM t1 WHERE (c0 IS NULL) IN (NULL, true) AND (c0 = 1 OR 0 IN (SELECT 0));
+----
+0
+
+endloop
+
+statement ok
+SET disabled_optimizers='';
+
+# the filter stays attached to the column it filters on
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+query II
+EXPLAIN SELECT 1 FROM t1 WHERE (c0 IS NULL) IN (NULL, true) AND (c0 = 1 OR 0 IN (SELECT 0));
+----
+logical_opt	<REGEX>:.*\(c0 IS NULL\) IN \(NULL::BOOLEAN, true\).*
+
+# Statistics can still prune a scan when its filter cannot match any row.
+query II
+EXPLAIN SELECT 1 FROM t1 WHERE c0 IS NULL;
+----
+logical_opt	<!REGEX>:.*IS NULL.*
+
+# a filter on a column that is only referenced by the folded filter keeps the column in the scan
+statement ok
+CREATE TABLE t2(c0 INTEGER NOT NULL, c1 INTEGER);
+
+statement ok
+INSERT INTO t2 VALUES (1, 2), (3, 4);
+
+# `c0 IS NULL` is false for every row, so `false IN (NULL, true)` is NULL and no row passes the filter
+query I
+SELECT count(*) FROM t2 WHERE (c0 IS NULL) IN (NULL, true) AND (c1 = 1 OR 0 IN (SELECT 0));
+----
+0
+
+query I
+SELECT count(*) FROM t2 WHERE (c0 IS NULL) IN (NULL, true) AND (c1 = 2 OR 0 IN (SELECT 0));
+----
+0
