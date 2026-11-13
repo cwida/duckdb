@@ -294,7 +294,7 @@ static ExtensionUpdateResult UpdateExtensionInternal(ClientContext &context, Dat
 		return result;
 	}
 
-	// update the extension from the repository it was installed from, so that it is verified against the same keys
+	// update the extension from the repository it was installed from
 	auto repository_from_info = ExtensionRepository::GetRepositoryByUrl(extension_install_info->repository_url);
 	repository_from_info.type = extension_install_info->repository_type;
 	if (!extension_install_info->repository_name.empty()) {
@@ -320,11 +320,12 @@ static ExtensionUpdateResult UpdateExtensionInternal(ClientContext &context, Dat
 			result.installed_version = result.prev_version;
 			return result;
 		}
-		if (!ExtensionRepositoryManager::TrustsExistingRepositories(db)) {
+		if (!ExtensionRepositoryManager::TrustsRepository(db, user_repository)) {
 			result.tag = ExtensionUpdateResultTag::REPOSITORY_NOT_TRUSTED;
 			result.installed_version = result.prev_version;
 			return result;
 		}
+		repository_from_info = user_repository;
 	}
 
 	// Force install the full url found in this file, enabling etags to ensure efficient updating
